@@ -1,11 +1,18 @@
+import { useEffect } from 'react';
 import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { LINE_NAMES } from '../../src/constants/lineColors';
+import { useAppStore } from '../../src/store/useAppStore';
 
 export default function HomeScreen() {
   const { result, loading, error, permissionDenied, refresh } = useNearestStation();
   const { arrival } = useArrivalInfo(result?.station.name ?? null);
+  const { addFavorite, removeFavorite, isFavorite, loadFavorites } = useAppStore();
+
+  useEffect(() => {
+    loadFavorites();
+  }, []);
 
   if (permissionDenied) {
     return (
@@ -55,8 +62,21 @@ export default function HomeScreen() {
         {result ? (
           <>
             <View style={[styles.stationCard, { borderLeftColor: result.station.lineColor }]}>
-              <View style={[styles.lineBadge, { backgroundColor: result.station.lineColor }]}>
-                <Text style={styles.lineBadgeText}>{LINE_NAMES[result.station.line]}</Text>
+              <View style={styles.stationCardHeader}>
+                <View style={[styles.lineBadge, { backgroundColor: result.station.lineColor }]}>
+                  <Text style={styles.lineBadgeText}>{LINE_NAMES[result.station.line]}</Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() =>
+                    isFavorite(result.station.id)
+                      ? removeFavorite(result.station.id)
+                      : addFavorite(result.station)
+                  }
+                >
+                  <Text style={styles.favoriteIcon}>
+                    {isFavorite(result.station.id) ? '⭐' : '☆'}
+                  </Text>
+                </TouchableOpacity>
               </View>
               <Text style={styles.stationName}>{result.station.name}</Text>
               <Text style={styles.distanceText}>
@@ -138,12 +158,20 @@ const styles = StyleSheet.create({
     borderLeftWidth: 6,
     marginBottom: 24,
   },
+  stationCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  favoriteIcon: {
+    fontSize: 26,
+  },
   lineBadge: {
     alignSelf: 'flex-start',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 20,
-    marginBottom: 12,
   },
   lineBadgeText: {
     color: '#ffffff',
