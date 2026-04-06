@@ -21,7 +21,7 @@ export function useNearestStation(): UseNearestStationReturn {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined as unknown as ReturnType<typeof setInterval>);
 
   const findNearest = useCallback(
     (lat: number, lng: number): NearestStationResult | null => {
@@ -72,7 +72,7 @@ export function useNearestStation(): UseNearestStationReturn {
     refresh();
     intervalRef.current = setInterval(refresh, UPDATE_INTERVAL_MS);
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      clearInterval(intervalRef.current);
     };
   }, [refresh]);
 
