@@ -13,7 +13,7 @@ export function useArrivalInfo(stationName: string | null): UseArrivalInfoReturn
   const [arrival, setArrival] = useState<StationArrival | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined as unknown as ReturnType<typeof setInterval>);
 
   const fetch = useCallback(async () => {
     if (!stationName) {
@@ -36,7 +36,7 @@ export function useArrivalInfo(stationName: string | null): UseArrivalInfoReturn
     fetch();
     intervalRef.current = setInterval(fetch, POLL_INTERVAL_MS);
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      clearInterval(intervalRef.current);
     };
   }, [fetch]);
 
