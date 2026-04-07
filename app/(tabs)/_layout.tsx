@@ -22,6 +22,13 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="map"
+        options={{
+          title: '지도',
+          tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🗺️</Text>,
+        }}
+      />
+      <Tabs.Screen
         name="favorites"
         options={{
           title: '즐겨찾기',
