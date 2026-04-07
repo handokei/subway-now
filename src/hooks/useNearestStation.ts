@@ -10,6 +10,7 @@ const UPDATE_INTERVAL_MS = 30_000;
 
 interface UseNearestStationReturn {
   result: NearestStationResult | null;
+  userLocation: { lat: number; lng: number } | null;
   loading: boolean;
   error: string | null;
   permissionDenied: boolean;
@@ -18,6 +19,7 @@ interface UseNearestStationReturn {
 
 export function useNearestStation(): UseNearestStationReturn {
   const [result, setResult] = useState<NearestStationResult | null>(null);
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
@@ -59,6 +61,7 @@ export function useNearestStation(): UseNearestStationReturn {
         accuracy: Location.Accuracy.High,
       });
 
+      setUserLocation({ lat: location.coords.latitude, lng: location.coords.longitude });
       const nearest = findNearest(location.coords.latitude, location.coords.longitude);
       setResult(nearest);
     } catch (e) {
@@ -76,5 +79,5 @@ export function useNearestStation(): UseNearestStationReturn {
     };
   }, [refresh]);
 
-  return { result, loading, error, permissionDenied, refresh };
+  return { result, userLocation, loading, error, permissionDenied, refresh };
 }

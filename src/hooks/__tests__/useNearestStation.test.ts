@@ -56,6 +56,17 @@ describe('useNearestStation', () => {
     expect(result.current.result?.station.name).toBe('강남');
     expect(result.current.permissionDenied).toBe(false);
     expect(result.current.error).toBeNull();
+    expect(result.current.userLocation).toEqual({ lat: 37.4980, lng: 127.0277 });
+  });
+
+  it('위치 권한 거부 시 userLocation이 null이다', async () => {
+    mockDenied();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.userLocation).toBeNull();
   });
 
   it('500m 초과 거리에 있으면 null을 반환한다', async () => {
