@@ -6,9 +6,9 @@
  * 사용법: node scripts/generate-stations.js
  */
 
-const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
+const iconv = require('iconv-lite');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..');
 const CSV_PATH = path.join(
@@ -24,7 +24,8 @@ const LINE_COLORS = {
 };
 
 function parseCsvEucKr(filePath) {
-  const utf8 = execSync(`iconv -f euc-kr -t utf-8 "${filePath}"`).toString();
+  const buf = fs.readFileSync(filePath);
+  const utf8 = iconv.decode(buf, 'euc-kr');
   const lines = utf8.trim().split('\n');
   const headers = lines[0].split(',').map((h) => h.trim());
   return lines.slice(1).map((line) => {
@@ -51,8 +52,8 @@ function buildStations(rows, lineFilter) {
         name: row['역명'],
         line,
         lineColor: LINE_COLORS[line],
-        lat: parseFloat(row['위도']),
-        lng: parseFloat(row['경도']),
+        lat: Number.parseFloat(row['위도']),
+        lng: Number.parseFloat(row['경도']),
       });
     });
   }
