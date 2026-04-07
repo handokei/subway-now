@@ -23,7 +23,7 @@ GPS 기반으로 현재 탑승 중인 지하철역을 실시간으로 감지하�
 - 모든 작업 브랜치는 `dev`에서 분기하여 `dev`로 PR
 
 ### 작업 순서
-1. **GitHub Issue 먼저 생성** — 모든 작업은 이슈에서 시작
+1. **GitHub Issue 먼저 생성** — 코드 한 줄도 없이 이슈부터
 2. **`dev`에서 브랜치 생성** — `git checkout -b <type>/#이슈번호-이름 dev`
 3. **작은 단위로 커밋** — 기능 단위로 세세하게 남김
 4. **`npm test` 통과 확인** — 커버리지 100% 달성 후 PR 생성
@@ -87,6 +87,37 @@ subway-now/
 ├── .env.example            # 환경변수 템플릿 (git 포함)
 └── CLAUDE.md               # 이 파일
 ```
+
+---
+
+## 테스트 규칙 (필수 준수)
+
+- **모든 새 파일에 테스트 필수** — 테스트 없는 코드는 커밋 불가
+- **커버리지 100%** — lines / functions / branches / statements 모두 100%
+  - `package.json`의 `coverageThreshold`로 자동 강제됨 (미달 시 `npm test` 실패)
+- **테스트 파일 위치**: `src/<모듈>/__tests__/<파일명>.test.ts`
+- **Mock 원칙**: 외부 의존성(`expo-location`, `fetch`, `AsyncStorage`)은 jest.mock()으로 격리
+
+### 테스트 명령
+```bash
+npm test          # 전체 테스트 + 커버리지 리포트
+npm run test:watch  # 파일 변경 감지 테스트
+npm run type-check  # TypeScript 타입 오류 확인
+```
+
+---
+
+## PR 머지 조건 (GitHub Actions Branch Protection)
+
+PR은 아래 조건이 **모두** 충족될 때만 머지 가능:
+
+| 조건 | 자동화 |
+|------|--------|
+| `npm run type-check` 통과 | ✅ CI 자동 실행 |
+| `npm test` 커버리지 100% 통과 | ✅ CI 자동 실행 |
+| GitHub Actions `CI / Type Check & Test` 체크 green | ✅ Branch Protection |
+
+> CI가 실패한 PR은 절대 머지하지 않는다.
 
 ---
 
