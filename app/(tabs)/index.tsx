@@ -1,18 +1,28 @@
-import { useEffect } from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useState } from 'react';
+import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
+import { DestinationPicker } from '../../src/components/DestinationPicker';
+import { getRemainingStops } from '../../src/utils/stationRoute';
 
 export default function HomeScreen() {
   const { result, loading, error, permissionDenied, refresh } = useNearestStation();
   const { arrival } = useArrivalInfo(result?.station.name ?? null);
-  const { addFavorite, removeFavorite, isFavorite, loadFavorites } = useAppStore();
+  const { addFavorite, removeFavorite, isFavorite, loadFavorites, destination, setDestination, loadDestination } = useAppStore();
+  const [pickerVisible, setPickerVisible] = useState(false);
 
   useEffect(() => {
     loadFavorites();
+    loadDestination();
   }, []);
+
+  const remainingStops =
+    result && destination
+      ? getRemainingStops(result.station.id, destination.id)
+      : null;
 
   if (permissionDenied) {
     return (
@@ -84,6 +94,39 @@ export default function HomeScreen() {
               </Text>
             </View>
 
+            <View style={styles.destinationCard}>
+              {destination ? (
+                <View style={styles.destinationInfo}>
+                  <Text style={styles.destinationArrow}>→</Text>
+                  <View>
+                    <Text style={styles.destinationName}>{destination.name}</Text>
+                    {remainingStops !== null ? (
+                      <Text style={styles.remainingText}>{remainingStops} 정거장 남음</Text>
+                    ) : (
+                      <Text style={styles.remainingText}>다른 노선</Text>
+                    )}
+                  </View>
+                </View>
+              ) : null}
+              <TouchableOpacity
+                style={styles.destinationButton}
+                onPress={() => setPickerVisible(true)}
+                testID="destination-button"
+              >
+                <Text style={styles.destinationButtonText}>
+                  {destination ? '목적지 변경' : '목적지 설정'}
+                </Text>
+              </TouchableOpacity>
+              {destination ? (
+                <TouchableOpacity
+                  onPress={() => setDestination(null)}
+                  testID="destination-clear-button"
+                >
+                  <Text style={styles.clearText}>초기화</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+
             {arrival && (
               <View style={styles.arrivalSection}>
                 <Text style={styles.sectionTitle}>열차 도착 정보</Text>
@@ -103,6 +146,15 @@ export default function HomeScreen() {
           </View>
         )}
       </ScrollView>
+
+      <DestinationPicker
+        visible={pickerVisible}
+        onSelect={(station) => {
+          setDestination(station);
+          setPickerVisible(false);
+        }}
+        onClose={() => setPickerVisible(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -157,7 +209,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 24,
     borderLeftWidth: 6,
-    marginBottom: 24,
+    marginBottom: 16,
   },
   stationCardHeader: {
     flexDirection: 'row',
@@ -188,6 +240,49 @@ const styles = StyleSheet.create({
   distanceText: {
     fontSize: 14,
     color: '#8888aa',
+  },
+  destinationCard: {
+    backgroundColor: '#16213e',
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
+  },
+  destinationInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  destinationArrow: {
+    fontSize: 24,
+    color: '#a78bfa',
+    marginRight: 12,
+  },
+  destinationName: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  remainingText: {
+    fontSize: 13,
+    color: '#8888aa',
+    marginTop: 2,
+  },
+  destinationButton: {
+    backgroundColor: '#a78bfa',
+    borderRadius: 10,
+    paddingVertical: 10,
+    alignItems: 'center',
+  },
+  destinationButtonText: {
+    color: '#ffffff',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  clearText: {
+    color: '#8888aa',
+    fontSize: 13,
+    textAlign: 'center',
+    marginTop: 8,
   },
   arrivalSection: {
     backgroundColor: '#16213e',
