@@ -121,6 +121,7 @@ function ArrivalRow({
       <View>
         {items.map((item, idx) => (
           <Text key={idx} style={styles.arrivalItem}>
+            {item.destination ? `${item.destination} · ` : ''}
             {item.arrivalMinutes === 0 ? '곧 도착' : `${item.arrivalMinutes}분 후`}
           </Text>
         ))}
