@@ -1,35 +1,68 @@
-# subway-now — Claude 협업 가이드
+# CLAUDE.md
 
-## 프로젝트 개요
-GPS 기반으로 현재 탑승 중인 지하철역을 실시간으로 감지하는 React Native(Expo) 모바일 앱.
-홈 화면 위젯, 노선 정보, 즐겨찾기/알림 기능을 포함한다.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ---
 
-## 기술 스택
-- **프레임워크**: React Native + Expo (TypeScript)
-- **위치**: expo-location + expo-task-manager
-- **위젯**: expo-widgets (iOS) / react-native-android-widget (Android)
-- **상태 관리**: Zustand
-- **알림**: expo-notifications
+## 프로젝트 개요
+GPS 기반으로 현재 탑승 중인 지하철역을 실시간으로 감지하는 React Native(Expo) 모바일 앱.
+홈 화면 위젯, 노선 정보, 즐겨찾기 기능을 포함한다.
+
+**기술 스택**: React Native + Expo (TypeScript), Zustand, expo-location + expo-task-manager, expo-notifications
+
+---
+
+## 개발 명령어
+
+```bash
+npm start             # Expo 개발 서버 시작
+npm run ios           # iOS 시뮬레이터 실행
+npm run android       # Android 에뮬레이터 실행
+npm test              # 전체 테스트 + 커버리지 리포트 (100% 미달 시 실패)
+npm run test:watch    # 파일 변경 감지 테스트
+npm run type-check    # TypeScript 타입 오류 확인
+```
+
+**단일 테스트 실행:**
+```bash
+npx jest src/hooks/__tests__/useNearestStation.test.ts
+npx jest --testNamePattern="should return nearest station"
+```
+
+---
+
+## 아키텍처
+
+### 데이터 흐름
+```
+GPS (expo-location)
+  → useNearestStation (30s 폴링, 500m 반경 내 최근접 역 탐색)
+    → haversine.ts (거리 계산)
+    → stations.json (서울 지하철 역 좌표 캐시)
+  → useArrivalInfo (30s 폴링, Seoul Open API 호출)
+    → arrivalApi.ts (EXPO_PUBLIC_DATA_API_KEY 사용)
+```
+
+### 레이어 구조
+- **`src/api/`** — 외부 API 호출만 담당. `arrivalApi.ts`가 서울 열린데이터 실시간 도착 정보 API 호출 (응답 없을 시 mock 데이터 fallback)
+- **`src/hooks/`** — 비즈니스 로직 캡슐화. 훅 내부에서 setInterval로 자체 폴링 관리, cleanup은 useEffect return으로 처리
+- **`src/store/`** — Zustand 전역 상태 (즐겨찾기). AsyncStorage로 영속화
+- **`src/utils/`** — 순수 함수들. `haversine.ts` (거리), `widgetStorage.ts` (iOS 위젯 SharedGroupPreferences 브릿지), `buildMapHtml.ts` (Kakao Maps HTML 생성), `kakaoMapLink.ts` (딥링크)
+- **`src/components/`** — `StationMap.tsx`는 WebView 안에 Kakao Maps HTML을 embed하는 방식. 플랫폼별 파일 분기: `StationMap.web.tsx`
+
+### 지도 구현
+Kakao Maps SDK를 직접 import하지 않고, `buildMapHtml.ts`로 HTML 문자열을 생성하여 `WebView`에 주입하는 방식. 웹 플랫폼은 `StationMap.web.tsx`로 별도 구현 (Expo의 `.web.tsx` 플랫폼 확장자 활용).
+
+### iOS 위젯 데이터 공유
+`widgetStorage.ts`가 App Groups를 통해 SharedGroupPreferences에 현재 역 정보를 저장 → iOS 위젯이 해당 데이터를 읽어 표시.
 
 ---
 
 ## GitHub 워크플로우 (필수 준수)
 
 ### 브랜치 전략
-- **`main`** : 운영(배포) 전용 — 직접 커밋 금지, `dev → main` PR로만 반영
-- **`dev`** : 개발 기준 브랜치 — 모든 작업 브랜치의 출발점이자 머지 대상
-- 모든 작업 브랜치는 `dev`에서 분기하여 `dev`로 PR
-
-### 작업 순서
-1. **GitHub Issue 먼저 생성** — 코드 한 줄도 없이 이슈부터
-2. **`dev`에서 브랜치 생성** — `git checkout -b <type>/#이슈번호-이름 dev`
-3. **작은 단위로 커밋** — 기능 단위로 세세하게 남김
-4. **`npm test` 통과 확인** — 커버리지 100% 달성 후 PR 생성
-5. **`npm run type-check` 통과 확인** — 타입 오류 없음 확인 후 PR 생성
-6. **`dev`를 base로 PR 생성** — 본문에 `Closes #이슈번호` 포함
-7. **CI 통과 후 `dev`로 머지** — GitHub Actions `CI / Type Check & Test` 체크 통과 필수
+- **`main`**: 운영 전용 — 직접 커밋 금지, `dev → main` PR로만 반영
+- **`dev`**: 개발 기준 브랜치 — 모든 작업 브랜치의 출발점이자 머지 대상
 
 ### 브랜치 네이밍
 ```
@@ -51,73 +84,34 @@ refactor/#이슈번호-대상     예: refactor/#12-haversine-util
 
 > 커밋 메시지에 `Co-Authored-By` 절대 포함 금지
 
+### 작업 순서
+1. GitHub Issue 먼저 생성
+2. `dev`에서 브랜치 생성
+3. `npm test` 커버리지 100% 확인
+4. `npm run type-check` 통과 확인
+5. `dev`를 base로 PR 생성 — 본문에 `Closes #이슈번호` 포함
+6. GitHub Actions `CI / Type Check & Test` 체크 통과 후 머지
+
 ---
 
-## 보안 원칙 (필수 준수)
+## 테스트 규칙
 
-- **API 키를 코드에 직접 작성 금지** — `.env` 파일에만 보관
-- `.env` 파일은 `.gitignore`에 등록되어 있으며 절대 커밋하지 않음
-- 환경변수는 `EXPO_PUBLIC_` 접두사 사용 (Expo 클라이언트 노출 규칙 준수)
+- **커버리지 100%** (lines / functions / branches / statements) — `package.json`의 `coverageThreshold`로 자동 강제
+- **테스트 파일 위치**: `src/<모듈>/__tests__/<파일명>.test.ts`
+- **Mock 원칙**: `expo-location`, `fetch`, `AsyncStorage`, `widgetStorage`는 `jest.mock()`으로 격리
+- 훅 테스트는 `@testing-library/react-native`의 `renderHook` + `act` + `waitFor` 사용
+- 인터벌 테스트는 `jest.useFakeTimers()` 사용
+
+---
+
+## 보안 원칙
+
+- 환경변수는 `EXPO_PUBLIC_` 접두사 사용, `.env`에만 보관 (절대 커밋 금지)
 - `.env.example`에 키 이름만 남기고 값은 비워둠
 
-### 환경변수 접근 방법
 ```typescript
-// process.env로 직접 접근 (Expo가 자동으로 주입)
 const apiKey = process.env.EXPO_PUBLIC_DATA_API_KEY;
 ```
-
----
-
-## 프로젝트 구조
-```
-subway-now/
-├── app/                    # Expo Router 화면
-│   ├── (tabs)/
-│   │   ├── index.tsx       # 현재 역 메인
-│   │   ├── lines.tsx       # 노선 정보
-│   │   └── favorites.tsx   # 즐겨찾기
-│   └── _layout.tsx
-├── src/
-│   ├── api/                # API 호출 함수
-│   ├── data/               # stations.json (역 좌표 캐시)
-│   ├── hooks/              # 커스텀 훅
-│   ├── utils/              # haversine 등 유틸
-│   └── store/              # Zustand 스토어
-├── .env                    # 로컬 환경변수 (git 제외)
-├── .env.example            # 환경변수 템플릿 (git 포함)
-└── CLAUDE.md               # 이 파일
-```
-
----
-
-## 테스트 규칙 (필수 준수)
-
-- **모든 새 파일에 테스트 필수** — 테스트 없는 코드는 커밋 불가
-- **커버리지 100%** — lines / functions / branches / statements 모두 100%
-  - `package.json`의 `coverageThreshold`로 자동 강제됨 (미달 시 `npm test` 실패)
-- **테스트 파일 위치**: `src/<모듈>/__tests__/<파일명>.test.ts`
-- **Mock 원칙**: 외부 의존성(`expo-location`, `fetch`, `AsyncStorage`)은 jest.mock()으로 격리
-
-### 테스트 명령
-```bash
-npm test          # 전체 테스트 + 커버리지 리포트
-npm run test:watch  # 파일 변경 감지 테스트
-npm run type-check  # TypeScript 타입 오류 확인
-```
-
----
-
-## PR 머지 조건 (GitHub Actions Branch Protection)
-
-PR은 아래 조건이 **모두** 충족될 때만 머지 가능:
-
-| 조건 | 자동화 |
-|------|--------|
-| `npm run type-check` 통과 | ✅ CI 자동 실행 |
-| `npm test` 커버리지 100% 통과 | ✅ CI 자동 실행 |
-| GitHub Actions `CI / Type Check & Test` 체크 green | ✅ Branch Protection |
-
-> CI가 실패한 PR은 절대 머지하지 않는다.
 
 ---
 
