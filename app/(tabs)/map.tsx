@@ -1,9 +1,10 @@
 import React from 'react';
-import { StyleSheet, Text, View, TouchableOpacity } from 'react-native';
+import { Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useMapData } from '../../src/hooks/useMapData';
 import { StationMap } from '../../src/components/StationMap';
+import { buildKakaoMapAppUrl, buildKakaoMapWebUrl } from '../../src/utils/kakaoMapLink';
 
 const KAKAO_KEY = process.env.EXPO_PUBLIC_KAKAO_MAP_KEY ?? '';
 
@@ -14,6 +15,17 @@ export default function MapScreen() {
     userLocation?.lat ?? null,
     userLocation?.lng ?? null
   );
+
+  const openInKakaoMap = async () => {
+    if (!userLocation) return;
+    const lat = result?.station.lat ?? userLocation.lat;
+    const lng = result?.station.lng ?? userLocation.lng;
+    const name = result?.station.name ?? '현재 위치';
+    const appUrl = buildKakaoMapAppUrl(lat, lng);
+    const webUrl = buildKakaoMapWebUrl(name, lat, lng);
+    const canOpen = await Linking.canOpenURL(appUrl);
+    await Linking.openURL(canOpen ? appUrl : webUrl);
+  };
 
   if (permissionDenied) {
     return (
@@ -60,6 +72,9 @@ export default function MapScreen() {
         nearbyStations={nearbyStations}
         kakaoKey={KAKAO_KEY}
       />
+      <TouchableOpacity style={styles.kakaoButton} onPress={openInKakaoMap}>
+        <Text style={styles.kakaoButtonText}>🗺️ 카카오맵에서 보기</Text>
+      </TouchableOpacity>
     </SafeAreaView>
   );
 }
@@ -90,5 +105,17 @@ const styles = StyleSheet.create({
   buttonText: {
     color: '#ffffff',
     fontSize: 16,
+  },
+  kakaoButton: {
+    backgroundColor: '#FAE100',
+    margin: 16,
+    paddingVertical: 14,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  kakaoButtonText: {
+    color: '#3C1E1E',
+    fontSize: 16,
+    fontWeight: 'bold',
   },
 });
