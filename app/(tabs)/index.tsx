@@ -6,23 +6,19 @@ import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
-import { getRemainingStops } from '../../src/utils/stationRoute';
+import { findRoute } from '../../src/utils/stationRoute';
 
 export default function HomeScreen() {
   const { result, loading, error, permissionDenied, refresh } = useNearestStation();
   const { arrival } = useArrivalInfo(result?.station.name ?? null);
-  const { addFavorite, removeFavorite, isFavorite, loadFavorites, destination, setDestination, loadDestination } = useAppStore();
+  const { addFavorite, removeFavorite, isFavorite, loadFavorites, destination, setDestination } = useAppStore();
   const [pickerVisible, setPickerVisible] = useState(false);
 
   useEffect(() => {
     loadFavorites();
-    loadDestination();
   }, []);
 
-  const remainingStops =
-    result && destination
-      ? getRemainingStops(result.station.id, destination.id)
-      : null;
+  const route = result && destination ? findRoute(result.station.id, destination.id) : null;
 
   if (permissionDenied) {
     return (
@@ -100,11 +96,13 @@ export default function HomeScreen() {
                   <Text style={styles.destinationArrow}>→</Text>
                   <View>
                     <Text style={styles.destinationName}>{destination.name}</Text>
-                    {remainingStops !== null ? (
-                      <Text style={styles.remainingText}>{remainingStops} 정거장 남음</Text>
-                    ) : (
-                      <Text style={styles.remainingText}>다른 노선</Text>
-                    )}
+                    {route?.type === 'direct' ? (
+                      <Text style={styles.remainingText}>{route.stops} 정거장 남음</Text>
+                    ) : route?.type === 'transfer' ? (
+                      <Text style={styles.remainingText}>
+                        {route.transferName}에서 환승 · 총 {route.stopsToTransfer + route.stopsFromTransfer} 정거장
+                      </Text>
+                    ) : null}
                   </View>
                 </View>
               ) : null}
