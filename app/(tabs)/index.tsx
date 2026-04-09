@@ -104,6 +104,7 @@ export default function HomeScreen() {
                   </Text>
                 </TouchableOpacity>
               </View>
+              <Text style={styles.currentStationLabel}>현재역</Text>
               <Text style={styles.stationName}>{result.station.name}</Text>
               <Text style={styles.distanceText}>
                 현재 위치에서 약 {Math.round(result.distanceKm * 1000)}m
@@ -117,11 +118,22 @@ export default function HomeScreen() {
                   <View>
                     <Text style={styles.destinationName}>{destination.name}</Text>
                     {route?.type === 'direct' ? (
-                      <Text style={styles.remainingText}>{route.stops} 정거장 남음</Text>
+                      <View style={styles.routeDirectBox}>
+                        <Text style={styles.routeDirectStops}>{route.stops}</Text>
+                        <Text style={styles.routeDirectLabel}>정거장 남음</Text>
+                      </View>
                     ) : route?.type === 'transfer' ? (
-                      <Text style={styles.remainingText}>
-                        {route.transferName}에서 환승 · 총 {route.stopsToTransfer + route.stopsFromTransfer} 정거장
-                      </Text>
+                      <View style={styles.transferBox}>
+                        <View style={styles.transferBeforeRow}>
+                          <Text style={styles.transferBeforeStops}>{route.stopsToTransfer}</Text>
+                          <Text style={styles.transferBeforeLabel}>정거장 후 환승</Text>
+                        </View>
+                        <View style={styles.transferStationRow}>
+                          <Text style={styles.transferIcon}>⇄</Text>
+                          <Text style={styles.transferStationName}>{route.transferName}</Text>
+                        </View>
+                        <Text style={styles.transferAfterText}>환승 후 {route.stopsFromTransfer}정거장</Text>
+                      </View>
                     ) : null}
                   </View>
                 </View>
@@ -279,10 +291,17 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   stationName: {
-    fontSize: 42,
+    fontSize: 32,
     fontWeight: '800',
     color: '#ffffff',
     marginBottom: 8,
+  },
+  currentStationLabel: {
+    fontSize: 12,
+    color: '#8888aa',
+    fontWeight: '600',
+    letterSpacing: 1,
+    marginBottom: 4,
   },
   distanceText: {
     fontSize: 14,
@@ -305,7 +324,7 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   destinationName: {
-    fontSize: 20,
+    fontSize: 30,
     fontWeight: '700',
     color: '#ffffff',
   },
@@ -313,6 +332,60 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#8888aa',
     marginTop: 2,
+  },
+  routeDirectBox: {
+    marginTop: 8,
+    alignItems: 'flex-start',
+  },
+  routeDirectStops: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: '#ffffff',
+    lineHeight: 36,
+  },
+  routeDirectLabel: {
+    fontSize: 13,
+    color: '#8888aa',
+    marginTop: 2,
+  },
+  transferBox: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#2a2a4a',
+    gap: 6,
+  },
+  transferBeforeRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: 4,
+  },
+  transferBeforeStops: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#ffffff',
+  },
+  transferBeforeLabel: {
+    fontSize: 13,
+    color: '#8888aa',
+  },
+  transferStationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  transferIcon: {
+    fontSize: 20,
+    color: '#a78bfa',
+  },
+  transferStationName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  transferAfterText: {
+    fontSize: 13,
+    color: '#8888aa',
   },
   recentDestinationButton: {
     backgroundColor: '#0f0f2a',
