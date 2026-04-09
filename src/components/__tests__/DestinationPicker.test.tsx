@@ -3,20 +3,7 @@ import { render, fireEvent } from '@testing-library/react-native';
 import { DestinationPicker } from '../DestinationPicker';
 import type { Station } from '../../types/station';
 
-jest.mock('@mj-studio/react-native-naver-map', () => {
-  const React = require('react');
-  const { View } = require('react-native');
-  return {
-    NaverMapView: ({ children, ...props }: any) =>
-      React.createElement(View, { testID: 'naver-map-view', ...props }, children),
-    NaverMapMarkerOverlay: ({ children, onTap, latitude, ...props }: any) =>
-      React.createElement(
-        View,
-        { testID: `marker-${latitude}`, onTap, latitude, ...props },
-        children
-      ),
-  };
-});
+jest.mock('@mj-studio/react-native-naver-map');
 
 const mockStation: Station = {
   id: '2-022',
