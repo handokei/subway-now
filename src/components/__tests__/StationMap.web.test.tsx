@@ -26,7 +26,6 @@ const defaultProps = {
   userLng: 127.0276,
   nearestStation: null,
   nearbyStations: [],
-  kakaoKey: 'test-key',
 };
 
 describe('StationMap.web', () => {
@@ -66,9 +65,9 @@ describe('StationMap.web', () => {
     expect(getByText('신논현')).toBeTruthy();
   });
 
-  it('kakaoKey가 없어도 정상 동작한다', () => {
+  it('nearbyStations가 하나일 때 정상 동작한다', () => {
     const { getByText } = render(
-      <StationMap {...defaultProps} nearbyStations={[gangnam]} kakaoKey="" />,
+      <StationMap {...defaultProps} nearbyStations={[gangnam]} />,
     );
     expect(getByText('강남')).toBeTruthy();
   });

@@ -3,13 +3,7 @@ import { render } from '@testing-library/react-native';
 import { StationMap } from '../StationMap';
 import { Station } from '../../types/station';
 
-jest.mock('react-native-webview', () => {
-  const React = require('react');
-  const { View } = require('react-native');
-  return {
-    WebView: (props: object) => React.createElement(View, { testID: 'webview', ...props }),
-  };
-});
+jest.mock('@mj-studio/react-native-naver-map');
 
 const mockStation: Station = {
   id: '2-022',
@@ -20,36 +14,81 @@ const mockStation: Station = {
   lng: 127.0276,
 };
 
+const anotherStation: Station = {
+  id: '2-023',
+  name: '선릉',
+  line: '2',
+  lineColor: '#009D3E',
+  lat: 37.5044,
+  lng: 127.0491,
+};
+
 const baseProps = {
-  userLat: 37.4980,
-  userLng: 127.0277,
+  userLat: 37.498,
+  userLng: 127.027,
   nearestStation: mockStation,
   nearbyStations: [mockStation],
 };
 
 describe('StationMap', () => {
-  it('kakaoKey가 빈 문자열이면 안내 텍스트를 렌더링한다', () => {
-    const { getByText } = render(<StationMap {...baseProps} kakaoKey="" />);
-    expect(getByText('카카오맵 API 키가 필요합니다.')).toBeTruthy();
-    expect(getByText('EXPO_PUBLIC_KAKAO_MAP_KEY를 .env에 설정하세요.')).toBeTruthy();
+  it('NaverMapView를 렌더링한다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    expect(getByTestId('naver-map-view')).toBeTruthy();
   });
 
-  it('kakaoKey가 있으면 WebView를 렌더링한다', () => {
-    const { getByTestId } = render(<StationMap {...baseProps} kakaoKey="test-key" />);
-    expect(getByTestId('webview')).toBeTruthy();
-  });
-
-  it('nearbyStations가 빈 배열이어도 WebView를 렌더링한다', () => {
+  it('nearbyStations의 각 역마다 마커를 렌더링한다', () => {
     const { getByTestId } = render(
-      <StationMap {...baseProps} kakaoKey="test-key" nearbyStations={[]} />
+      <StationMap {...baseProps} nearbyStations={[mockStation, anotherStation]} />
     );
-    expect(getByTestId('webview')).toBeTruthy();
+    expect(getByTestId(`marker-${mockStation.lat}`)).toBeTruthy();
+    expect(getByTestId(`marker-${anotherStation.lat}`)).toBeTruthy();
   });
 
-  it('nearestStation이 null이어도 WebView를 렌더링한다', () => {
-    const { getByTestId } = render(
-      <StationMap {...baseProps} kakaoKey="test-key" nearestStation={null} />
+  it('nearbyStations가 빈 배열이면 마커 없이 렌더링한다', () => {
+    const { getByTestId, queryByTestId } = render(
+      <StationMap {...baseProps} nearbyStations={[]} />
     );
-    expect(getByTestId('webview')).toBeTruthy();
+    expect(getByTestId('naver-map-view')).toBeTruthy();
+    expect(queryByTestId(`marker-${mockStation.lat}`)).toBeNull();
+  });
+
+  it('nearestStation과 일치하는 마커는 크기가 36이다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    const marker = getByTestId(`marker-${mockStation.lat}`);
+    expect(marker.props.width).toBe(36);
+    expect(marker.props.height).toBe(36);
+  });
+
+  it('nearestStation과 일치하지 않는 마커는 크기가 24이다', () => {
+    const { getByTestId } = render(
+      <StationMap {...baseProps} nearbyStations={[mockStation, anotherStation]} />
+    );
+    const marker = getByTestId(`marker-${anotherStation.lat}`);
+    expect(marker.props.width).toBe(24);
+    expect(marker.props.height).toBe(24);
+  });
+
+  it('nearestStation이 null이면 모든 마커 크기가 24이다', () => {
+    const { getByTestId } = render(
+      <StationMap {...baseProps} nearestStation={null} />
+    );
+    const marker = getByTestId(`marker-${mockStation.lat}`);
+    expect(marker.props.width).toBe(24);
+  });
+
+  it('onStationPress가 있으면 마커 onTap 호출 시 station을 전달한다', () => {
+    const onStationPress = jest.fn();
+    const { getByTestId } = render(
+      <StationMap {...baseProps} onStationPress={onStationPress} />
+    );
+    getByTestId(`marker-${mockStation.lat}`).props.onTap();
+    expect(onStationPress).toHaveBeenCalledWith(mockStation);
+  });
+
+  it('onStationPress가 없을 때 마커 onTap 호출해도 에러가 없다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    expect(() => {
+      getByTestId(`marker-${mockStation.lat}`).props.onTap();
+    }).not.toThrow();
   });
 });
