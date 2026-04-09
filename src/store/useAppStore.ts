@@ -3,22 +3,23 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
 
 const FAVORITES_KEY = 'subway-now:favorites';
-const DESTINATION_KEY = 'subway-now:destination';
 
 interface AppState {
   favorites: Station[];
   destination: Station | null;
+  recentDestination: Station | null;
   addFavorite: (station: Station) => Promise<void>;
   removeFavorite: (stationId: string) => Promise<void>;
   isFavorite: (stationId: string) => boolean;
   loadFavorites: () => Promise<void>;
-  setDestination: (station: Station | null) => Promise<void>;
-  loadDestination: () => Promise<void>;
+  setDestination: (station: Station | null) => void;
+  setRecentDestination: (station: Station | null) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
   favorites: [],
   destination: null,
+  recentDestination: null,
 
   loadFavorites: async () => {
     try {
@@ -49,23 +50,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     return get().favorites.some((s) => s.id === stationId);
   },
 
-  setDestination: async (station: Station | null) => {
+  setDestination: (station: Station | null) => {
     set({ destination: station });
-    if (station) {
-      await AsyncStorage.setItem(DESTINATION_KEY, JSON.stringify(station));
-    } else {
-      await AsyncStorage.removeItem(DESTINATION_KEY);
-    }
   },
 
-  loadDestination: async () => {
-    try {
-      const raw = await AsyncStorage.getItem(DESTINATION_KEY);
-      if (raw) {
-        set({ destination: JSON.parse(raw) });
-      }
-    } catch {
-      // 저장된 데이터 없음 — null 유지
-    }
+  setRecentDestination: (station: Station | null) => {
+    set({ recentDestination: station });
   },
 }));

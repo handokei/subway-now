@@ -17,16 +17,22 @@ interface Props {
   visible: boolean;
   onSelect: (station: Station) => void;
   onClose: () => void;
+  recentDestination?: Station | null;
 }
 
-export function DestinationPicker({ visible, onSelect, onClose }: Props) {
+export function DestinationPicker({ visible, onSelect, onClose, recentDestination }: Props) {
   const [query, setQuery] = useState('');
 
   const filtered = useMemo(() => {
     const q = query.trim();
-    if (!q) return allStations.slice(0, 50);
+    if (!q) {
+      if (recentDestination) {
+        return [recentDestination, ...allStations.slice(0, 50).filter((s) => s.id !== recentDestination.id)];
+      }
+      return allStations.slice(0, 50);
+    }
     return allStations.filter((s) => s.name.includes(q));
-  }, [query]);
+  }, [query, recentDestination]);
 
   function handleSelect(station: Station) {
     setQuery('');
@@ -58,6 +64,13 @@ export function DestinationPicker({ visible, onSelect, onClose }: Props) {
         <FlatList
           data={filtered}
           keyExtractor={(item) => item.id}
+          ListHeaderComponent={
+            !query && recentDestination ? (
+              <Text style={styles.sectionLabel} testID="recent-destination-header">
+                이전 목적지
+              </Text>
+            ) : null
+          }
           renderItem={({ item }) => (
             <TouchableOpacity
               style={styles.item}
@@ -107,6 +120,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     fontSize: 16,
+  },
+  sectionLabel: {
+    color: '#8888aa',
+    fontSize: 12,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+    paddingHorizontal: 20,
+    paddingVertical: 8,
   },
   item: {
     flexDirection: 'row',

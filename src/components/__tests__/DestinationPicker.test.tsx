@@ -12,6 +12,15 @@ const mockStation: Station = {
   lng: 127.0276,
 };
 
+const mockRecentStation: Station = {
+  id: '2-021',
+  name: '역삼',
+  line: '2',
+  lineColor: '#009D3E',
+  lat: 37.5006,
+  lng: 127.0365,
+};
+
 const defaultProps = {
   visible: true,
   onSelect: jest.fn(),
@@ -77,5 +86,25 @@ describe('DestinationPicker', () => {
     const { getAllByTestId } = render(<DestinationPicker {...defaultProps} />);
     const items = getAllByTestId(/^station-item-/);
     expect(items.length).toBeGreaterThan(0);
+  });
+
+  it('recentDestination이 있으면 검색어 없을 때 이전 목적지 헤더가 표시된다', () => {
+    const { getByTestId } = render(
+      <DestinationPicker {...defaultProps} recentDestination={mockRecentStation} />
+    );
+    expect(getByTestId('recent-destination-header')).toBeTruthy();
+  });
+
+  it('recentDestination이 없으면 이전 목적지 헤더가 표시되지 않는다', () => {
+    const { queryByTestId } = render(<DestinationPicker {...defaultProps} />);
+    expect(queryByTestId('recent-destination-header')).toBeNull();
+  });
+
+  it('recentDestination이 있을 때 검색어를 입력하면 이전 목적지 헤더가 숨겨진다', () => {
+    const { getByTestId, queryByTestId } = render(
+      <DestinationPicker {...defaultProps} recentDestination={mockRecentStation} />
+    );
+    fireEvent.changeText(getByTestId('search-input'), '강남');
+    expect(queryByTestId('recent-destination-header')).toBeNull();
   });
 });
