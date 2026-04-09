@@ -9,7 +9,7 @@ interface StationMapProps {
   userLng: number;
   nearestStation: Station | null;
   nearbyStations: Station[];
-  kakaoKey: string;
+  onStationPress?: (station: Station) => void;
 }
 
 export function StationMap({ userLat, userLng, nearestStation, nearbyStations }: StationMapProps) {

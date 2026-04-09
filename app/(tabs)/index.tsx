@@ -9,7 +9,7 @@ import { DestinationPicker } from '../../src/components/DestinationPicker';
 import { findRoute } from '../../src/utils/stationRoute';
 
 export default function HomeScreen() {
-  const { result, loading, error, permissionDenied, refresh } = useNearestStation();
+  const { result, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
   const { arrival } = useArrivalInfo(result?.station.name ?? null);
   const { addFavorite, removeFavorite, isFavorite, loadFavorites, destination, setDestination, recentDestination, setRecentDestination } = useAppStore();
   const [pickerVisible, setPickerVisible] = useState(false);
@@ -189,6 +189,8 @@ export default function HomeScreen() {
         }}
         onClose={() => setPickerVisible(false)}
         recentDestination={recentDestination}
+        userLat={userLocation?.lat ?? null}
+        userLng={userLocation?.lng ?? null}
       />
     </SafeAreaView>
   );

@@ -1,15 +1,14 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
-import { WebView } from 'react-native-webview';
+import { StyleSheet, View } from 'react-native';
+import { NaverMapMarkerOverlay, NaverMapView } from '@mj-studio/react-native-naver-map';
 import { Station } from '../types/station';
-import { buildMapHtml } from '../utils/buildMapHtml';
 
 interface StationMapProps {
   userLat: number;
   userLng: number;
   nearestStation: Station | null;
   nearbyStations: Station[];
-  kakaoKey: string;
+  onStationPress?: (station: Station) => void;
 }
 
 export function StationMap({
@@ -17,26 +16,45 @@ export function StationMap({
   userLng,
   nearestStation,
   nearbyStations,
-  kakaoKey,
+  onStationPress,
 }: StationMapProps) {
-  if (!kakaoKey) {
-    return (
-      <View style={styles.fallback}>
-        <Text style={styles.fallbackText}>카카오맵 API 키가 필요합니다.</Text>
-        <Text style={styles.fallbackSub}>EXPO_PUBLIC_KAKAO_MAP_KEY를 .env에 설정하세요.</Text>
-      </View>
-    );
-  }
-
-  const html = buildMapHtml({ userLat, userLng, nearestStation, nearbyStations, kakaoKey });
-
   return (
-    <WebView
+    <NaverMapView
       style={styles.map}
-      source={{ html }}
-      originWhitelist={['*']}
-      javaScriptEnabled
-    />
+      camera={{ latitude: userLat, longitude: userLng, zoom: 15 }}
+      locationOverlay={{ isVisible: true, position: { latitude: userLat, longitude: userLng } }}
+      isShowLocationButton={false}
+      isShowCompass={false}
+    >
+      {nearbyStations.map((station) => {
+        const isNearest = nearestStation?.id === station.id;
+        const size = isNearest ? 36 : 24;
+        return (
+          <NaverMapMarkerOverlay
+            key={station.id}
+            latitude={station.lat}
+            longitude={station.lng}
+            width={size}
+            height={size}
+            caption={{ text: station.name, textSize: 11, color: '#ffffff', haloColor: '#000000' }}
+            onTap={() => onStationPress?.(station)}
+          >
+            <View
+              style={[
+                styles.markerBase,
+                {
+                  width: size,
+                  height: size,
+                  borderRadius: size / 2,
+                  backgroundColor: station.lineColor,
+                  borderWidth: isNearest ? 3 : 2,
+                },
+              ]}
+            />
+          </NaverMapMarkerOverlay>
+        );
+      })}
+    </NaverMapView>
   );
 }
 
@@ -44,20 +62,7 @@ const styles = StyleSheet.create({
   map: {
     flex: 1,
   },
-  fallback: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#1a1a2e',
-    padding: 24,
-  },
-  fallbackText: {
-    color: '#ffffff',
-    fontSize: 16,
-    marginBottom: 8,
-  },
-  fallbackSub: {
-    color: '#8888aa',
-    fontSize: 12,
+  markerBase: {
+    borderColor: '#ffffff',
   },
 });
