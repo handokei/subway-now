@@ -1,6 +1,5 @@
 import React from 'react';
-import { render, fireEvent } from '@testing-library/react-native';
-import { View } from 'react-native';
+import { render } from '@testing-library/react-native';
 import { StationMap } from '../StationMap';
 import { Station } from '../../types/station';
 

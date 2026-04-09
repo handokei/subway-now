@@ -18,12 +18,12 @@ const MAP_RADIUS_KM = 5;
 const allStations = stations as Station[];
 
 interface Props {
-  visible: boolean;
-  onSelect: (station: Station) => void;
-  onClose: () => void;
-  recentDestination?: Station | null;
-  userLat?: number | null;
-  userLng?: number | null;
+  readonly visible: boolean;
+  readonly onSelect: (station: Station) => void;
+  readonly onClose: () => void;
+  readonly recentDestination?: Station | null;
+  readonly userLat?: number | null;
+  readonly userLng?: number | null;
 }
 
 export function DestinationPicker({
@@ -32,6 +32,7 @@ export function DestinationPicker({
   onClose,
   userLat,
   userLng,
+  recentDestination,
 }: Props) {
   const [query, setQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
@@ -66,10 +67,10 @@ export function DestinationPicker({
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={handleClose}>
       <View style={styles.container}>
-        {mapAvailable ? (
+        {mapAvailable && userLat && userLng ? (
           <StationMap
-            userLat={userLat!}
-            userLng={userLng!}
+            userLat={userLat}
+            userLng={userLng}
             nearestStation={null}
             nearbyStations={mapStations}
             onStationPress={handleSelect}

@@ -9,7 +9,6 @@ interface StationMapProps {
   userLng: number;
   nearestStation: Station | null;
   nearbyStations: Station[];
-  onStationPress?: (station: Station) => void;
 }
 
 export function StationMap({ userLat, userLng, nearestStation, nearbyStations }: StationMapProps) {
