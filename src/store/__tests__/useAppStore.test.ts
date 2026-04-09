@@ -26,7 +26,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null });
     jest.clearAllMocks();
   });
 
@@ -143,69 +143,54 @@ describe('useAppStore', () => {
     expect(destination).toBeNull();
   });
 
-  it('setDestination: 목적지를 설정하면 상태가 업데이트된다', async () => {
+  it('setDestination: 목적지를 설정하면 상태가 업데이트된다', () => {
     const { setDestination } = useAppStore.getState();
-    await setDestination(mockStation);
+    setDestination(mockStation);
 
     const { destination } = useAppStore.getState();
     expect(destination?.id).toBe('2-022');
   });
 
-  it('setDestination: null을 설정하면 목적지가 초기화된다', async () => {
+  it('setDestination: null을 설정하면 목적지가 초기화된다', () => {
     const { setDestination } = useAppStore.getState();
-    await setDestination(mockStation);
-    await setDestination(null);
+    setDestination(mockStation);
+    setDestination(null);
 
     const { destination } = useAppStore.getState();
     expect(destination).toBeNull();
   });
 
-  it('setDestination: 역 설정 시 AsyncStorage에 저장한다', async () => {
+  it('setDestination: AsyncStorage를 호출하지 않는다', () => {
     const { setDestination } = useAppStore.getState();
-    await setDestination(mockStation);
+    setDestination(mockStation);
+    setDestination(null);
 
-    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
-      'subway-now:destination',
-      JSON.stringify(mockStation)
+    expect(AsyncStorage.setItem).not.toHaveBeenCalledWith(
+      expect.stringContaining('destination'),
+      expect.anything()
     );
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
   });
 
-  it('setDestination: null 설정 시 AsyncStorage에서 삭제한다', async () => {
-    const { setDestination } = useAppStore.getState();
-    await setDestination(null);
-
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:destination');
+  it('초기 recentDestination은 null이다', () => {
+    const { recentDestination } = useAppStore.getState();
+    expect(recentDestination).toBeNull();
   });
 
-  it('loadDestination: AsyncStorage에서 목적지를 복원한다', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
-      JSON.stringify(mockStation)
-    );
+  it('setRecentDestination: 역을 설정하면 상태가 업데이트된다', () => {
+    const { setRecentDestination } = useAppStore.getState();
+    setRecentDestination(mockStation);
 
-    const { loadDestination } = useAppStore.getState();
-    await loadDestination();
-
-    const { destination } = useAppStore.getState();
-    expect(destination?.id).toBe('2-022');
+    const { recentDestination } = useAppStore.getState();
+    expect(recentDestination?.id).toBe('2-022');
   });
 
-  it('loadDestination: AsyncStorage가 비어있으면 null을 유지한다', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+  it('setRecentDestination: null을 설정하면 초기화된다', () => {
+    const { setRecentDestination } = useAppStore.getState();
+    setRecentDestination(mockStation);
+    setRecentDestination(null);
 
-    const { loadDestination } = useAppStore.getState();
-    await loadDestination();
-
-    const { destination } = useAppStore.getState();
-    expect(destination).toBeNull();
-  });
-
-  it('loadDestination: AsyncStorage 오류 시 null을 유지한다', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
-
-    const { loadDestination } = useAppStore.getState();
-    await loadDestination();
-
-    const { destination } = useAppStore.getState();
-    expect(destination).toBeNull();
+    const { recentDestination } = useAppStore.getState();
+    expect(recentDestination).toBeNull();
   });
 });

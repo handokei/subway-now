@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
@@ -11,12 +11,27 @@ import { findRoute } from '../../src/utils/stationRoute';
 export default function HomeScreen() {
   const { result, loading, error, permissionDenied, refresh } = useNearestStation();
   const { arrival } = useArrivalInfo(result?.station.name ?? null);
-  const { addFavorite, removeFavorite, isFavorite, loadFavorites, destination, setDestination } = useAppStore();
+  const { addFavorite, removeFavorite, isFavorite, loadFavorites, destination, setDestination, recentDestination, setRecentDestination } = useAppStore();
   const [pickerVisible, setPickerVisible] = useState(false);
+  const [arrivedBanner, setArrivedBanner] = useState(false);
+  const arrivedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     loadFavorites();
   }, []);
+
+  useEffect(() => {
+    if (result?.station.id && destination?.id && result.station.id === destination.id) {
+      setArrivedBanner(true);
+      arrivedTimeoutRef.current = setTimeout(() => {
+        setDestination(null);
+        setArrivedBanner(false);
+      }, 2000);
+    }
+    return () => {
+      if (arrivedTimeoutRef.current) clearTimeout(arrivedTimeoutRef.current);
+    };
+  }, [result?.station.id, destination?.id]);
 
   const route = result && destination ? findRoute(result.station.id, destination.id) : null;
 
@@ -62,6 +77,11 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
+      {arrivedBanner && (
+        <View style={styles.arrivedBanner} testID="arrived-banner">
+          <Text style={styles.arrivedBannerText}>도착!</Text>
+        </View>
+      )}
       <ScrollView contentContainerStyle={styles.scroll}>
         <Text style={styles.header}>지금 여기</Text>
 
@@ -148,10 +168,12 @@ export default function HomeScreen() {
       <DestinationPicker
         visible={pickerVisible}
         onSelect={(station) => {
+          setRecentDestination(station);
           setDestination(station);
           setPickerVisible(false);
         }}
         onClose={() => setPickerVisible(false)}
+        recentDestination={recentDestination}
       />
     </SafeAreaView>
   );
@@ -184,6 +206,16 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#1a1a2e',
+  },
+  arrivedBanner: {
+    backgroundColor: '#22c55e',
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  arrivedBannerText: {
+    color: '#ffffff',
+    fontSize: 18,
+    fontWeight: '700',
   },
   scroll: {
     padding: 24,
