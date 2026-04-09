@@ -126,6 +126,21 @@ export default function HomeScreen() {
                   </View>
                 </View>
               ) : null}
+              {!destination && recentDestination && (
+                <TouchableOpacity
+                  style={styles.recentDestinationButton}
+                  onPress={() => setDestination(recentDestination)}
+                  testID="recent-destination-button"
+                >
+                  <Text style={styles.recentDestinationLabel}>이전 목적지</Text>
+                  <View style={styles.recentDestinationRow}>
+                    <Text style={styles.recentDestinationName}>{recentDestination.name}</Text>
+                    <View style={[styles.recentLineBadge, { backgroundColor: recentDestination.lineColor }]}>
+                      <Text style={styles.recentLineText}>{recentDestination.line}호선</Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
                 style={styles.destinationButton}
                 onPress={() => setPickerVisible(true)}
@@ -296,6 +311,42 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#8888aa',
     marginTop: 2,
+  },
+  recentDestinationButton: {
+    backgroundColor: '#0f0f2a',
+    borderWidth: 1,
+    borderColor: '#a78bfa',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    marginBottom: 8,
+  },
+  recentDestinationLabel: {
+    color: '#a78bfa',
+    fontSize: 11,
+    fontWeight: '600',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  recentDestinationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  recentDestinationName: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '700',
+  },
+  recentLineBadge: {
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  recentLineText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: 'bold',
   },
   destinationButton: {
     backgroundColor: '#a78bfa',
