@@ -32,7 +32,6 @@ export function StationMap({
         return (
           <NaverMapMarkerOverlay
             key={station.id}
-            testID={`marker-${station.id}`}
             latitude={station.lat}
             longitude={station.lng}
             width={size}
