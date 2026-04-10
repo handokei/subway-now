@@ -102,7 +102,7 @@ describe('DestinationPicker', () => {
   it('지도 마커 탭으로 onSelect가 호출된다', () => {
     const onSelect = jest.fn();
     const { getByTestId } = render(<DestinationPicker {...mapProps} onSelect={onSelect} />);
-    getByTestId(`marker-${mockStation.lat}`).props.onTap();
+    getByTestId(`marker-${mockStation.lat}-${mockStation.lng}`).props.onTap();
     expect(onSelect).toHaveBeenCalledWith(mockStation);
   });
 
