@@ -32,10 +32,12 @@ export function StationMap({
         return (
           <NaverMapMarkerOverlay
             key={station.id}
+            testID={`marker-${station.id}`}
             latitude={station.lat}
             longitude={station.lng}
             width={size}
             height={size}
+            anchor={{ x: 0.5, y: 0.5 }}
             caption={{ text: station.name, textSize: 11, color: '#ffffff', haloColor: '#000000' }}
             onTap={() => onStationPress?.(station)}
           >

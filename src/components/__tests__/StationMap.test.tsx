@@ -40,8 +40,8 @@ describe('StationMap', () => {
     const { getByTestId } = render(
       <StationMap {...baseProps} nearbyStations={[mockStation, anotherStation]} />
     );
-    expect(getByTestId(`marker-${mockStation.lat}`)).toBeTruthy();
-    expect(getByTestId(`marker-${anotherStation.lat}`)).toBeTruthy();
+    expect(getByTestId(`marker-${mockStation.id}`)).toBeTruthy();
+    expect(getByTestId(`marker-${anotherStation.id}`)).toBeTruthy();
   });
 
   it('nearbyStations가 빈 배열이면 마커 없이 렌더링한다', () => {
@@ -49,12 +49,12 @@ describe('StationMap', () => {
       <StationMap {...baseProps} nearbyStations={[]} />
     );
     expect(getByTestId('naver-map-view')).toBeTruthy();
-    expect(queryByTestId(`marker-${mockStation.lat}`)).toBeNull();
+    expect(queryByTestId(`marker-${mockStation.id}`)).toBeNull();
   });
 
   it('nearestStation과 일치하는 마커는 크기가 36이다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
-    const marker = getByTestId(`marker-${mockStation.lat}`);
+    const marker = getByTestId(`marker-${mockStation.id}`);
     expect(marker.props.width).toBe(36);
     expect(marker.props.height).toBe(36);
   });
@@ -63,7 +63,7 @@ describe('StationMap', () => {
     const { getByTestId } = render(
       <StationMap {...baseProps} nearbyStations={[mockStation, anotherStation]} />
     );
-    const marker = getByTestId(`marker-${anotherStation.lat}`);
+    const marker = getByTestId(`marker-${anotherStation.id}`);
     expect(marker.props.width).toBe(24);
     expect(marker.props.height).toBe(24);
   });
@@ -72,7 +72,7 @@ describe('StationMap', () => {
     const { getByTestId } = render(
       <StationMap {...baseProps} nearestStation={null} />
     );
-    const marker = getByTestId(`marker-${mockStation.lat}`);
+    const marker = getByTestId(`marker-${mockStation.id}`);
     expect(marker.props.width).toBe(24);
   });
 
@@ -81,14 +81,14 @@ describe('StationMap', () => {
     const { getByTestId } = render(
       <StationMap {...baseProps} onStationPress={onStationPress} />
     );
-    getByTestId(`marker-${mockStation.lat}`).props.onTap();
+    getByTestId(`marker-${mockStation.id}`).props.onTap();
     expect(onStationPress).toHaveBeenCalledWith(mockStation);
   });
 
   it('onStationPress가 없을 때 마커 onTap 호출해도 에러가 없다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
     expect(() => {
-      getByTestId(`marker-${mockStation.lat}`).props.onTap();
+      getByTestId(`marker-${mockStation.id}`).props.onTap();
     }).not.toThrow();
   });
 });
