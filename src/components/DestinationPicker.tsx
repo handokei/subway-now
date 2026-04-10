@@ -10,10 +10,7 @@ import {
 import stations from '../data/stations.json';
 import type { Station } from '../types/station';
 import { StationMap } from './StationMap';
-import { haversine } from '../utils/haversine';
 
-
-const MAP_RADIUS_KM = 5;
 
 const allStations = stations as Station[];
 
@@ -41,9 +38,7 @@ export function DestinationPicker({
 
   const mapStations = useMemo(() => {
     if (!userLat || !userLng) return [];
-    return allStations.filter(
-      (s) => haversine(userLat, userLng, s.lat, s.lng) <= MAP_RADIUS_KM
-    );
+    return allStations;
   }, [userLat, userLng]);
 
   const suggestions = useMemo(() => {
@@ -83,7 +78,7 @@ export function DestinationPicker({
           </View>
         )}
 
-        <View style={styles.overlay}>
+        <View style={styles.overlay} pointerEvents="box-none">
           <View style={styles.header}>
             <Text style={styles.title}>목적지 설정</Text>
             <TouchableOpacity onPress={handleClose} testID="close-button">
