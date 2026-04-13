@@ -49,7 +49,8 @@ function buildLookup(apiRows) {
 
   for (const row of apiRows) {
     const fullName = row.BLDN_NM;
-    const baseName = fullName.replace(/\([^)]*\)/, '').trim();
+    const parenIdx = fullName.indexOf('(');
+    const baseName = (parenIdx === -1 ? fullName : fullName.slice(0, parenIdx)).trim();
     const lat = Number.parseFloat(row.LAT);
     const lng = Number.parseFloat(row.LOT);
 
@@ -89,7 +90,8 @@ async function main() {
 
   for (const station of stations) {
     const key = `${station.name}|${station.line}`;
-    const baseName = station.name.replace(/\([^)]*\)/, '').trim();
+    const nameParenIdx = station.name.indexOf('(');
+    const baseName = (nameParenIdx === -1 ? station.name : station.name.slice(0, nameParenIdx)).trim();
     const baseKey = `${baseName}|${station.line}`;
 
     const match = exact.get(key) || exact.get(baseKey) || byPrefix.get(baseKey);
