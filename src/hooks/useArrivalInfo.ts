@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { fetchArrivalInfo, StationArrival } from '../api/arrivalApi';
 
 const POLL_INTERVAL_MS = 30_000;
@@ -13,28 +13,30 @@ export function useArrivalInfo(stationName: string | null): UseArrivalInfoReturn
   const [arrival, setArrival] = useState<StationArrival | null>(null);
   const [loading, setLoading] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined as unknown as ReturnType<typeof setInterval>);
-  const isMountedRef = useRef(true);
-
-  const fetch = useCallback(async () => {
-    if (!stationName) {
-      setArrival(null);
-      return;
-    }
-    setLoading(true);
-    const data = await fetchArrivalInfo(stationName);
-    if (!isMountedRef.current) return;
-    setArrival(data);
-    setLoading(false);
-  }, [stationName]);
 
   useEffect(() => {
-    fetch();
-    intervalRef.current = setInterval(fetch, POLL_INTERVAL_MS);
+    let cancelled = false;
+
+    const poll = async () => {
+      if (!stationName) {
+        setArrival(null);
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      const data = await fetchArrivalInfo(stationName);
+      if (cancelled) return;
+      setArrival(data);
+      setLoading(false);
+    };
+
+    poll();
+    intervalRef.current = setInterval(poll, POLL_INTERVAL_MS);
     return () => {
-      isMountedRef.current = false;
+      cancelled = true;
       clearInterval(intervalRef.current);
     };
-  }, [fetch]);
+  }, [stationName]);
 
   return { arrival, loading, isMock: arrival?.isMock ?? false };
 }
