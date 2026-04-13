@@ -56,7 +56,7 @@ export default function HomeScreen() {
   }, [arrivedBanner]);
 
   useEffect(() => {
-    if (result?.station.id && destination?.id && result.station.id === destination.id) {
+    if (result?.station.id && destination?.id && result.station.id === destination.id && result.distanceKm <= 0.5) {
       setArrivedBanner(true);
       arrivedTimeoutRef.current = setTimeout(() => {
         setDestination(null);
@@ -137,7 +137,9 @@ export default function HomeScreen() {
                   </Text>
                 </TouchableOpacity>
               </View>
-              <Text style={styles.currentStationLabel}>현재역</Text>
+              <Text style={styles.currentStationLabel}>
+                {result.distanceKm <= 0.5 ? '현재역' : '가장 가까운 역'}
+              </Text>
               <Text style={styles.stationName}>{result.station.name}</Text>
               <Text style={styles.distanceText}>
                 현재 위치에서 약 {Math.round(result.distanceKm * 1000)}m

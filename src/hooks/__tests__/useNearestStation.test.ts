@@ -68,7 +68,7 @@ describe('useNearestStation', () => {
     expect(result.current.userLocation).toBeNull();
   });
 
-  it('500m 초과 거리에 있으면 null을 반환한다', async () => {
+  it('500m 초과 거리에서도 가장 가까운 역을 반환한다', async () => {
     mockGranted();
     mockLocation(37.5200, 127.0000);
 
@@ -76,9 +76,8 @@ describe('useNearestStation', () => {
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    if (result.current.result !== null) {
-      expect(result.current.result.distanceKm).toBeLessThanOrEqual(0.5);
-    }
+    expect(result.current.result).not.toBeNull();
+    expect(result.current.result?.distanceKm).toBeGreaterThan(0.5);
   });
 
   it('위치 획득 실패 시 error가 설정된다', async () => {
@@ -142,3 +141,4 @@ describe('useNearestStation', () => {
     clearIntervalSpy.mockRestore();
   });
 });
+
