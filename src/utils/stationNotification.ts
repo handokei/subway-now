@@ -16,6 +16,22 @@ const ALARM_CHANNEL_ID = 'station-alarm';
 // iOS Live Activity 상태 추적 (start vs update 구분)
 let liveActivityStarted = false;
 
+async function scheduleNotification(
+  id: string,
+  content: { title: string; body: string; sound?: boolean; channelId?: string },
+): Promise<void> {
+  try {
+    await Notifications.dismissNotificationAsync(id);
+  } catch {
+    // 기존 알림 없어도 무시
+  }
+  await Notifications.scheduleNotificationAsync({
+    identifier: id,
+    content,
+    trigger: null,
+  });
+}
+
 export function setupNotificationHandler(): void {
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => {
@@ -138,16 +154,7 @@ export async function updateStationNotification(
     if (!liveActivityEnabled) {
       notifLogger.info('Live Activity 비활성 → 알림 fallback');
       const { title, body } = buildContent(currentStation, distanceM, destination, route, etaMinutes, isMock);
-      try {
-        await Notifications.dismissNotificationAsync(NOTIFICATION_ID);
-      } catch {
-        // 기존 알림 없어도 무시하고 계속 진행
-      }
-      await Notifications.scheduleNotificationAsync({
-        identifier: NOTIFICATION_ID,
-        content: { title, body },
-        trigger: null,
-      });
+      await scheduleNotification(NOTIFICATION_ID, { title, body });
       notifLogger.info('알림 예약 완료:', title, body);
       return;
     }
@@ -168,16 +175,7 @@ export async function updateStationNotification(
       liveActivityStarted = false;
       notifLogger.info('Live Activity 실패 → 알림 fallback');
       const { title, body } = buildContent(currentStation, distanceM, destination, route, etaMinutes, isMock);
-      try {
-        await Notifications.dismissNotificationAsync(NOTIFICATION_ID);
-      } catch {
-        // 기존 알림 없어도 무시하고 계속 진행
-      }
-      await Notifications.scheduleNotificationAsync({
-        identifier: NOTIFICATION_ID,
-        content: { title, body },
-        trigger: null,
-      });
+      await scheduleNotification(NOTIFICATION_ID, { title, body });
     }
     return;
   }
@@ -185,16 +183,7 @@ export async function updateStationNotification(
   // Android: 기존 expo-notifications 유지
   const { title, body } = buildContent(currentStation, distanceM, destination, route, etaMinutes, isMock);
   notifLogger.info('Android 알림:', title, body);
-  try {
-    await Notifications.dismissNotificationAsync(NOTIFICATION_ID);
-  } catch {
-    // 기존 알림 없어도 무시하고 계속 진행
-  }
-  await Notifications.scheduleNotificationAsync({
-    identifier: NOTIFICATION_ID,
-    content: { title, body },
-    trigger: null,
-  });
+  await scheduleNotification(NOTIFICATION_ID, { title, body });
   notifLogger.info('알림 예약 완료');
 }
 
@@ -229,21 +218,11 @@ export async function sendAlarmNotification(
     ? `다음 역 ${stationName}에서 환승하세요!`
     : `다음 역 ${stationName}에서 내리세요!`;
 
-  try {
-    await Notifications.dismissNotificationAsync(ALARM_NOTIFICATION_ID);
-  } catch {
-    // 기존 알람 없어도 무시
-  }
-
-  await Notifications.scheduleNotificationAsync({
-    identifier: ALARM_NOTIFICATION_ID,
-    content: {
-      title,
-      body,
-      sound: true,
-      ...(Platform.OS === 'android' && { channelId: ALARM_CHANNEL_ID }),
-    },
-    trigger: null,
+  await scheduleNotification(ALARM_NOTIFICATION_ID, {
+    title,
+    body,
+    sound: true,
+    ...(Platform.OS === 'android' && { channelId: ALARM_CHANNEL_ID }),
   });
   notifLogger.info('알람 알림:', title, body);
 }
@@ -251,7 +230,5 @@ export async function sendAlarmNotification(
 export async function clearAlarmNotification(): Promise<void> {
   try {
     await Notifications.dismissNotificationAsync(ALARM_NOTIFICATION_ID);
-  } catch {
-    // 기존 알람 없어도 무시
-  }
+  } catch { /* 무시 */ }
 }
