@@ -45,7 +45,6 @@ describe('useNearestStation', () => {
 
   it('500m 이내에 역이 있으면 해당 역을 반환한다', async () => {
     mockGranted();
-    // 강남역 좌표 (37.4979, 127.0276) 근처
     mockLocation(37.4980, 127.0277);
 
     const { result } = renderHook(() => useNearestStation());
@@ -71,15 +70,12 @@ describe('useNearestStation', () => {
 
   it('500m 초과 거리에 있으면 null을 반환한다', async () => {
     mockGranted();
-    // 아무 역도 없는 한강 한가운데 좌표
     mockLocation(37.5200, 127.0000);
 
     const { result } = renderHook(() => useNearestStation());
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    // 가장 가까운 역이 500m 밖이면 null
-    // (이 좌표 주변 검사 — 결과가 null 이거나 근처 역일 수 있으므로 distanceKm 체크)
     if (result.current.result !== null) {
       expect(result.current.result.distanceKm).toBeLessThanOrEqual(0.5);
     }

@@ -7,6 +7,10 @@ import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
 import { findRoute } from '../../src/utils/stationRoute';
+import { initStationNotification, updateStationNotification, clearStationNotification } from '../../src/utils/stationNotification';
+import { createLogger } from '../../src/utils/logger';
+
+const logger = createLogger('HomeScreen');
 
 export default function HomeScreen() {
   const { result, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
@@ -15,10 +19,41 @@ export default function HomeScreen() {
   const [pickerVisible, setPickerVisible] = useState(false);
   const [arrivedBanner, setArrivedBanner] = useState(false);
   const arrivedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevNotifKeyRef = useRef<string | undefined>(undefined);
+  const route = result && destination ? findRoute(result.station.id, destination.id) : null;
 
   useEffect(() => {
     loadFavorites();
+    initStationNotification();
   }, []);
+
+  useEffect(() => {
+    if (!result) {
+      if (prevNotifKeyRef.current !== 'none') {
+        prevNotifKeyRef.current = 'none';
+        logger.info('역 없음 → 알림 해제');
+        clearStationNotification();
+      }
+      return;
+    }
+    const key = `${result.station.id}__${destination?.id ?? ''}`;
+    if (key === prevNotifKeyRef.current) return;
+    prevNotifKeyRef.current = key;
+    logger.info('알림 업데이트:', result.station.name, destination ? `→ ${destination.name}` : '');
+    updateStationNotification(
+      result.station,
+      Math.round(result.distanceKm * 1000),
+      destination,
+      route ?? null,
+    ).catch((e) => logger.error('알림 업데이트 실패:', e));
+  }, [result?.station.id, destination?.id, route]);
+
+  useEffect(() => {
+    if (arrivedBanner) {
+      clearStationNotification().catch(console.error);
+      prevNotifKeyRef.current = undefined;
+    }
+  }, [arrivedBanner]);
 
   useEffect(() => {
     if (result?.station.id && destination?.id && result.station.id === destination.id) {
@@ -32,8 +67,6 @@ export default function HomeScreen() {
       if (arrivedTimeoutRef.current) clearTimeout(arrivedTimeoutRef.current);
     };
   }, [result?.station.id, destination?.id]);
-
-  const route = result && destination ? findRoute(result.station.id, destination.id) : null;
 
   if (permissionDenied) {
     return (
@@ -324,7 +357,7 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   destinationName: {
-    fontSize: 30,
+    fontSize: 20,
     fontWeight: '700',
     color: '#ffffff',
   },
