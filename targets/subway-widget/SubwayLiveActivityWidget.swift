@@ -153,7 +153,7 @@ private struct ExpandedRouteView: View {
                   let afterLast = state.stopsAfterLastTransfer,
                   let toFirst = state.stopsToTransfer,
                   let firstName = state.transferStationName {
-            Text("→ \(dest) (\(toFirst)→\(firstName) 환승→\(toSecond)→\(secondName) 환승→\(afterLast)정거장)")
+            Text("→ \(dest) (\(toFirst)정거장→\(firstName) 환승→\(toSecond)정거장→\(secondName) 환승→\(afterLast)정거장)")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .lineLimit(2)
