@@ -16,6 +16,8 @@ struct SubwayActivityAttributes: ActivityAttributes {
         var secondTransferStationName: String?
         var stopsAfterLastTransfer: Int?
         var distanceM: Int
+        var etaMinutes: Int?
+        var isMock: Bool?
     }
 }
 #endif

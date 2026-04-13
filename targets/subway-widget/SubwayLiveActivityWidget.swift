@@ -96,6 +96,19 @@ private struct LockScreenView: View {
             }
 
             Spacer()
+
+            if let eta = state.etaMinutes {
+                VStack(spacing: 2) {
+                    Text("약 \(eta)분")
+                        .font(.title3)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                    Text(state.isMock == true ? "예상" : "소요")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.trailing, 4)
+            }
         }
         .padding(16)
         .background(.black.opacity(0.85))
@@ -115,25 +128,16 @@ private struct LockScreenRouteView: View {
                 .foregroundColor(.white)
 
             if let stops = state.stopsRemaining {
-                Text("\(stops)정거장 남음")
+                Text("\(stops)역 후 \(dest) 도착")
                     .font(.caption)
                     .foregroundColor(.secondary)
-            } else if let toSecond = state.stopsToSecondTransfer,
-                      let secondName = state.secondTransferStationName,
-                      let afterLast = state.stopsAfterLastTransfer,
-                      let toFirst = state.stopsToTransfer,
+            } else if let toFirst = state.stopsToTransfer,
                       let firstName = state.transferStationName {
-                Text("\(toFirst)정거장→\(firstName) 환승→\(toSecond)정거장→\(secondName) 환승→\(afterLast)정거장")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
-            } else if let toTransfer = state.stopsToTransfer,
-                      let transferName = state.transferStationName,
-                      let fromTransfer = state.stopsFromTransfer {
-                Text("\(toTransfer)정거장 후 \(transferName) 환승 · \(fromTransfer)정거장")
+                Text("\(toFirst)역 후 \(firstName) 환승")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+
         }
     }
 }
@@ -143,29 +147,23 @@ private struct ExpandedRouteView: View {
     let dest: String
     let state: SubwayActivityAttributes.ContentState
 
+    private var etaSuffix: String {
+        guard let eta = state.etaMinutes else { return "" }
+        return " · 약 \(eta)분"
+    }
+
     var body: some View {
         if let stops = state.stopsRemaining {
-            Text("→ \(dest) · \(stops)정거장")
+            Text("→ \(dest) · \(stops)역 후 도착\(etaSuffix)")
                 .font(.caption)
                 .foregroundColor(.secondary)
-        } else if let toSecond = state.stopsToSecondTransfer,
-                  let secondName = state.secondTransferStationName,
-                  let afterLast = state.stopsAfterLastTransfer,
-                  let toFirst = state.stopsToTransfer,
+        } else if let toFirst = state.stopsToTransfer,
                   let firstName = state.transferStationName {
-            Text("→ \(dest) (\(toFirst)정거장→\(firstName) 환승→\(toSecond)정거장→\(secondName) 환승→\(afterLast)정거장)")
+            Text("→ \(dest) · \(toFirst)역 후 \(firstName) 환승\(etaSuffix)")
                 .font(.caption)
                 .foregroundColor(.secondary)
-                .lineLimit(2)
-        } else if let toTransfer = state.stopsToTransfer,
-                  let transferName = state.transferStationName,
-                  let fromTransfer = state.stopsFromTransfer {
-            Text("→ \(dest) (\(toTransfer)정거장 후 \(transferName) 환승 · \(fromTransfer)정거장)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(2)
         } else {
-            Text("→ \(dest)")
+            Text("→ \(dest)\(etaSuffix)")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

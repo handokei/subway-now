@@ -8,7 +8,8 @@ import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
 import { findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA } from '../../src/utils/stationRoute';
 import { JourneyTimeline } from '../../src/components/JourneyTimeline';
-import { initStationNotification, updateStationNotification, clearStationNotification } from '../../src/utils/stationNotification';
+import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
+import { useStationAlarm } from '../../src/hooks/useStationAlarm';
 import { createLogger } from '../../src/utils/logger';
 
 const logger = createLogger('HomeScreen');
@@ -33,7 +34,10 @@ export default function HomeScreen() {
     ? calculateETA(nextTrainMinutes, route)
     : null;
   const staticEtaMinutes = route ? calculateStaticETA(route) : null;
-  const displayEta = (etaMinutes !== null && !arrivalIsMock) ? etaMinutes : staticEtaMinutes;
+  const isRealtimeEta = etaMinutes !== null && !arrivalIsMock && arrival !== null;
+  const displayEta = isRealtimeEta ? etaMinutes : staticEtaMinutes;
+
+  useStationAlarm(route, destination?.name ?? null);
 
   useEffect(() => {
     loadFavorites();
@@ -49,7 +53,7 @@ export default function HomeScreen() {
       }
       return;
     }
-    const key = `${result.station.id}__${destination?.id ?? ''}`;
+    const key = `${result.station.id}__${destination?.id ?? ''}__${displayEta ?? ''}__${arrivalIsMock}`;
     if (key === prevNotifKeyRef.current) return;
     prevNotifKeyRef.current = key;
     logger.info('알림 업데이트:', result.station.name, destination ? `→ ${destination.name}` : '');
@@ -58,12 +62,15 @@ export default function HomeScreen() {
       Math.round(result.distanceKm * 1000),
       destination,
       route ?? null,
+      displayEta,
+      arrivalIsMock,
     ).catch((e) => logger.error('알림 업데이트 실패:', e));
-  }, [result?.station.id, destination?.id, route]);
+  }, [result?.station.id, destination?.id, route, displayEta, arrivalIsMock]);
 
   useEffect(() => {
     if (arrivedBanner) {
       clearStationNotification().catch(console.error);
+      clearAlarmNotification().catch(console.error);
       prevNotifKeyRef.current = undefined;
     }
   }, [arrivedBanner]);
@@ -166,7 +173,7 @@ export default function HomeScreen() {
                     <Text style={styles.destinationArrow}>→</Text>
                     <Text style={styles.destinationName}>{destination.name}</Text>
                     {displayEta != null && (
-                      <Text style={styles.etaInline}>약 {displayEta}분 소요{arrivalIsMock ? ' (예상)' : ''}</Text>
+                      <Text style={styles.etaInline}>약 {displayEta}분 소요{!isRealtimeEta ? ' (예상)' : ''}</Text>
                     )}
                   </View>
                   {journey && (

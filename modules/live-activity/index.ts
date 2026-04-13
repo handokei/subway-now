@@ -14,6 +14,8 @@ export interface LiveActivityData {
   secondTransferStationName?: string;
   stopsAfterLastTransfer?: number;
   distanceM: number;
+  etaMinutes?: number;
+  isMock?: boolean;
 }
 
 const LiveActivityModule =

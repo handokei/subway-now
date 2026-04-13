@@ -157,6 +157,50 @@ describe('fetchArrivalInfo', () => {
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
   });
 
+  it('fetch가 5초 초과하면 Mock 데이터를 반환한다', async () => {
+    process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+    jest.useFakeTimers();
+
+    global.fetch = jest.fn().mockImplementation((_url: string, options?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      });
+    });
+
+    const promise = fetchArrivalInfo('강남');
+    jest.advanceTimersByTime(5000);
+    const result = await promise;
+
+    expect(result.isMock).toBe(true);
+
+    jest.useRealTimers();
+    delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+  });
+
+  it('fetch에 AbortController signal을 전달한다', async () => {
+    process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        realtimeArrivalList: [
+          { trainLineNm: '소요산행', barvlDt: 120, btrainNo: 'T001', updnLine: '상행' },
+        ],
+      }),
+    } as Response);
+
+    await fetchArrivalInfo('강남');
+
+    expect(fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+
+    delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+  });
+
   it('trainLineNm, barvlDt, btrainNo가 undefined이면 기본값을 사용한다', async () => {
     process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
 
