@@ -3102,5 +3102,1125 @@
     "lineColor": "#E6186C",
     "lat": 37.433824,
     "lng": 127.129837
+  },
+  {
+    "id": "airport-001",
+    "name": "서울역",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.553247,
+    "lng": 126.969769
+  },
+  {
+    "id": "airport-002",
+    "name": "공덕",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.54253,
+    "lng": 126.952024
+  },
+  {
+    "id": "airport-003",
+    "name": "홍대입구",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.557438,
+    "lng": 126.926715
+  },
+  {
+    "id": "airport-004",
+    "name": "디지털미디어시티",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.576958,
+    "lng": 126.898609
+  },
+  {
+    "id": "airport-005",
+    "name": "마곡나루",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.565543,
+    "lng": 126.827378
+  },
+  {
+    "id": "airport-006",
+    "name": "김포공항",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.561842,
+    "lng": 126.801904
+  },
+  {
+    "id": "airport-007",
+    "name": "계양",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.571662,
+    "lng": 126.7363
+  },
+  {
+    "id": "airport-008",
+    "name": "검암",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.569098,
+    "lng": 126.674007
+  },
+  {
+    "id": "airport-009",
+    "name": "청라국제도시",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.556409,
+    "lng": 126.624648
+  },
+  {
+    "id": "airport-010",
+    "name": "운서",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.492904,
+    "lng": 126.49379
+  },
+  {
+    "id": "airport-011",
+    "name": "공항화물청사",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.459041,
+    "lng": 126.477516
+  },
+  {
+    "id": "airport-012",
+    "name": "인천공항1터미널",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.447464,
+    "lng": 126.452508
+  },
+  {
+    "id": "airport-013",
+    "name": "인천공항2터미널",
+    "line": "airport",
+    "lineColor": "#4B81BF",
+    "lat": 37.460699,
+    "lng": 126.441442
+  },
+  {
+    "id": "gyeongui-001",
+    "name": "운천",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.879942,
+    "lng": 126.769999
+  },
+  {
+    "id": "gyeongui-002",
+    "name": "임진강",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.888421,
+    "lng": 126.746765
+  },
+  {
+    "id": "gyeongui-003",
+    "name": "문산",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.854619,
+    "lng": 126.788047
+  },
+  {
+    "id": "gyeongui-004",
+    "name": "파주",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.815298,
+    "lng": 126.792783
+  },
+  {
+    "id": "gyeongui-005",
+    "name": "월롱",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.796188,
+    "lng": 126.792587
+  },
+  {
+    "id": "gyeongui-006",
+    "name": "금촌",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.766217,
+    "lng": 126.774644
+  },
+  {
+    "id": "gyeongui-007",
+    "name": "금릉",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.751322,
+    "lng": 126.765347
+  },
+  {
+    "id": "gyeongui-008",
+    "name": "운정",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.725826,
+    "lng": 126.767257
+  },
+  {
+    "id": "gyeongui-009",
+    "name": "야당",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.712327,
+    "lng": 126.761356
+  },
+  {
+    "id": "gyeongui-010",
+    "name": "탄현",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.694023,
+    "lng": 126.761086
+  },
+  {
+    "id": "gyeongui-011",
+    "name": "일산",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.682077,
+    "lng": 126.769846
+  },
+  {
+    "id": "gyeongui-012",
+    "name": "풍산",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.672346,
+    "lng": 126.786243
+  },
+  {
+    "id": "gyeongui-013",
+    "name": "백마",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.658239,
+    "lng": 126.794461
+  },
+  {
+    "id": "gyeongui-014",
+    "name": "곡산",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.645676,
+    "lng": 126.801762
+  },
+  {
+    "id": "gyeongui-015",
+    "name": "능곡",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.618808,
+    "lng": 126.820783
+  },
+  {
+    "id": "gyeongui-016",
+    "name": "행신",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.612102,
+    "lng": 126.834146
+  },
+  {
+    "id": "gyeongui-017",
+    "name": "강매",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.612314,
+    "lng": 126.843223
+  },
+  {
+    "id": "gyeongui-018",
+    "name": "화전",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.602888,
+    "lng": 126.868387
+  },
+  {
+    "id": "gyeongui-019",
+    "name": "수색",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.580842,
+    "lng": 126.895611
+  },
+  {
+    "id": "gyeongui-020",
+    "name": "디지털미디어시티",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.577475,
+    "lng": 126.900453
+  },
+  {
+    "id": "gyeongui-021",
+    "name": "가좌",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.568491,
+    "lng": 126.915487
+  },
+  {
+    "id": "gyeongui-022",
+    "name": "홍대입구",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.557641,
+    "lng": 126.926683
+  },
+  {
+    "id": "gyeongui-023",
+    "name": "서강대",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.551881,
+    "lng": 126.935711
+  },
+  {
+    "id": "gyeongui-024",
+    "name": "공덕",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.542596,
+    "lng": 126.952099
+  },
+  {
+    "id": "gyeongui-025",
+    "name": "효창공원앞",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.538579,
+    "lng": 126.96221
+  },
+  {
+    "id": "gyeongui-026",
+    "name": "신촌",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.559733,
+    "lng": 126.942597
+  },
+  {
+    "id": "gyeongui-027",
+    "name": "서울역",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.557231,
+    "lng": 126.97103
+  },
+  {
+    "id": "gyeongui-028",
+    "name": "용산",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.529849,
+    "lng": 126.964561
+  },
+  {
+    "id": "gyeongui-029",
+    "name": "이촌(국립중앙박물관)",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.522427,
+    "lng": 126.973406
+  },
+  {
+    "id": "gyeongui-030",
+    "name": "서빙고",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.519594,
+    "lng": 126.988537
+  },
+  {
+    "id": "gyeongui-031",
+    "name": "한남",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.52943,
+    "lng": 127.009169
+  },
+  {
+    "id": "gyeongui-032",
+    "name": "옥수",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.540446,
+    "lng": 127.018672
+  },
+  {
+    "id": "gyeongui-033",
+    "name": "응봉",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.549946,
+    "lng": 127.034538
+  },
+  {
+    "id": "gyeongui-034",
+    "name": "왕십리(성동구청)",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.561827,
+    "lng": 127.038352
+  },
+  {
+    "id": "gyeongui-035",
+    "name": "청량리(서울시립대입구)",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.580759,
+    "lng": 127.0483
+  },
+  {
+    "id": "gyeongui-036",
+    "name": "외대앞",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.596073,
+    "lng": 127.063549
+  },
+  {
+    "id": "gyeongui-037",
+    "name": "회기",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.58946,
+    "lng": 127.057583
+  },
+  {
+    "id": "gyeongui-038",
+    "name": "중랑",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.594917,
+    "lng": 127.076116
+  },
+  {
+    "id": "gyeongui-039",
+    "name": "상봉(시외버스터미널)",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.596678,
+    "lng": 127.08504
+  },
+  {
+    "id": "gyeongui-040",
+    "name": "망우",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.59955,
+    "lng": 127.091909
+  },
+  {
+    "id": "gyeongui-041",
+    "name": "양원",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.606596,
+    "lng": 127.107906
+  },
+  {
+    "id": "gyeongui-042",
+    "name": "구리",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.603392,
+    "lng": 127.143869
+  },
+  {
+    "id": "gyeongui-043",
+    "name": "도농",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.608806,
+    "lng": 127.161153
+  },
+  {
+    "id": "gyeongui-044",
+    "name": "양정",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.60533,
+    "lng": 127.19364
+  },
+  {
+    "id": "gyeongui-045",
+    "name": "덕소",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.586781,
+    "lng": 127.208832
+  },
+  {
+    "id": "gyeongui-046",
+    "name": "도심",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.579622,
+    "lng": 127.222672
+  },
+  {
+    "id": "gyeongui-047",
+    "name": "팔당",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.547371,
+    "lng": 127.243939
+  },
+  {
+    "id": "gyeongui-048",
+    "name": "운길산",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.554669,
+    "lng": 127.310115
+  },
+  {
+    "id": "gyeongui-049",
+    "name": "양수",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.545981,
+    "lng": 127.329098
+  },
+  {
+    "id": "gyeongui-050",
+    "name": "신원",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.525545,
+    "lng": 127.372921
+  },
+  {
+    "id": "gyeongui-051",
+    "name": "국수",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.516169,
+    "lng": 127.399367
+  },
+  {
+    "id": "gyeongui-052",
+    "name": "아신",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.51382,
+    "lng": 127.443173
+  },
+  {
+    "id": "gyeongui-053",
+    "name": "오빈",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.506062,
+    "lng": 127.473868
+  },
+  {
+    "id": "gyeongui-054",
+    "name": "양평",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.492773,
+    "lng": 127.491837
+  },
+  {
+    "id": "gyeongui-055",
+    "name": "원덕",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.468672,
+    "lng": 127.547076
+  },
+  {
+    "id": "gyeongui-056",
+    "name": "용문",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.48223,
+    "lng": 127.594647
+  },
+  {
+    "id": "gyeongui-057",
+    "name": "지평",
+    "line": "gyeongui",
+    "lineColor": "#77C4A3",
+    "lat": 37.476393,
+    "lng": 127.629874
+  },
+  {
+    "id": "bundang-001",
+    "name": "인천",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.476403,
+    "lng": 126.617326
+  },
+  {
+    "id": "bundang-002",
+    "name": "신포",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.46874,
+    "lng": 126.623853
+  },
+  {
+    "id": "bundang-003",
+    "name": "숭의",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.460789,
+    "lng": 126.638297
+  },
+  {
+    "id": "bundang-004",
+    "name": "인하대",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.448493,
+    "lng": 126.649619
+  },
+  {
+    "id": "bundang-005",
+    "name": "송도",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.428514,
+    "lng": 126.657772
+  },
+  {
+    "id": "bundang-006",
+    "name": "연수",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.417804,
+    "lng": 126.67894
+  },
+  {
+    "id": "bundang-007",
+    "name": "원인재",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.413049,
+    "lng": 126.686648
+  },
+  {
+    "id": "bundang-008",
+    "name": "남동인더스파크",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.407722,
+    "lng": 126.695216
+  },
+  {
+    "id": "bundang-009",
+    "name": "호구포",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.401637,
+    "lng": 126.708627
+  },
+  {
+    "id": "bundang-010",
+    "name": "인천논현",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.400614,
+    "lng": 126.722478
+  },
+  {
+    "id": "bundang-011",
+    "name": "소래포구",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.40095,
+    "lng": 126.733522
+  },
+  {
+    "id": "bundang-012",
+    "name": "월곶",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.391769,
+    "lng": 126.742699
+  },
+  {
+    "id": "bundang-013",
+    "name": "달월",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.379681,
+    "lng": 126.745177
+  },
+  {
+    "id": "bundang-014",
+    "name": "사리",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.28998,
+    "lng": 126.85685
+  },
+  {
+    "id": "bundang-015",
+    "name": "야목",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.264179,
+    "lng": 126.879483
+  },
+  {
+    "id": "bundang-016",
+    "name": "어천",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.250102,
+    "lng": 126.90879
+  },
+  {
+    "id": "bundang-017",
+    "name": "오목천",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.24304,
+    "lng": 126.963676
+  },
+  {
+    "id": "bundang-018",
+    "name": "고색",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.24963,
+    "lng": 126.980248
+  },
+  {
+    "id": "bundang-019",
+    "name": "수원",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.265917,
+    "lng": 126.999422
+  },
+  {
+    "id": "bundang-020",
+    "name": "매교",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.265481,
+    "lng": 127.015678
+  },
+  {
+    "id": "bundang-021",
+    "name": "수원시청",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.261911,
+    "lng": 127.030736
+  },
+  {
+    "id": "bundang-022",
+    "name": "매탄권선",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.252759,
+    "lng": 127.040566
+  },
+  {
+    "id": "bundang-023",
+    "name": "망포",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.245795,
+    "lng": 127.057353
+  },
+  {
+    "id": "bundang-024",
+    "name": "영통",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.251568,
+    "lng": 127.071394
+  },
+  {
+    "id": "bundang-025",
+    "name": "청명",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.259489,
+    "lng": 127.078934
+  },
+  {
+    "id": "bundang-026",
+    "name": "상갈",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.26181,
+    "lng": 127.108847
+  },
+  {
+    "id": "bundang-027",
+    "name": "기흥",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.275061,
+    "lng": 127.11591
+  },
+  {
+    "id": "bundang-028",
+    "name": "신갈",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.286102,
+    "lng": 127.111313
+  },
+  {
+    "id": "bundang-029",
+    "name": "구성",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.298969,
+    "lng": 127.105664
+  },
+  {
+    "id": "bundang-030",
+    "name": "보정",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.312752,
+    "lng": 127.108196
+  },
+  {
+    "id": "bundang-031",
+    "name": "죽전",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.324753,
+    "lng": 127.107395
+  },
+  {
+    "id": "bundang-032",
+    "name": "오리",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.339824,
+    "lng": 127.108942
+  },
+  {
+    "id": "bundang-033",
+    "name": "미금",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.350077,
+    "lng": 127.10891
+  },
+  {
+    "id": "bundang-034",
+    "name": "정자",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.365994,
+    "lng": 127.10807
+  },
+  {
+    "id": "bundang-035",
+    "name": "수내",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.378455,
+    "lng": 127.114322
+  },
+  {
+    "id": "bundang-036",
+    "name": "서현",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.385126,
+    "lng": 127.123592
+  },
+  {
+    "id": "bundang-037",
+    "name": "이매",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.395371,
+    "lng": 127.128248
+  },
+  {
+    "id": "bundang-038",
+    "name": "야탑",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.411185,
+    "lng": 127.128715
+  },
+  {
+    "id": "bundang-039",
+    "name": "모란",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.432052,
+    "lng": 127.129104
+  },
+  {
+    "id": "bundang-040",
+    "name": "태평",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.440019,
+    "lng": 127.127709
+  },
+  {
+    "id": "bundang-041",
+    "name": "가천대",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.448605,
+    "lng": 127.126697
+  },
+  {
+    "id": "bundang-042",
+    "name": "수서",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.487472,
+    "lng": 127.101422
+  },
+  {
+    "id": "bundang-043",
+    "name": "대모산입구",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.491373,
+    "lng": 127.07272
+  },
+  {
+    "id": "bundang-044",
+    "name": "개포동",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.489116,
+    "lng": 127.06614
+  },
+  {
+    "id": "bundang-045",
+    "name": "구룡",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.486839,
+    "lng": 127.058856
+  },
+  {
+    "id": "bundang-046",
+    "name": "도곡",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.491224,
+    "lng": 127.055186
+  },
+  {
+    "id": "bundang-047",
+    "name": "한티",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.496237,
+    "lng": 127.052873
+  },
+  {
+    "id": "bundang-048",
+    "name": "선릉",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.504856,
+    "lng": 127.048807
+  },
+  {
+    "id": "bundang-049",
+    "name": "선정릉",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.510735,
+    "lng": 127.043677
+  },
+  {
+    "id": "bundang-050",
+    "name": "강남구청",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.517469,
+    "lng": 127.041151
+  },
+  {
+    "id": "bundang-051",
+    "name": "압구정로데오",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.527381,
+    "lng": 127.040534
+  },
+  {
+    "id": "bundang-052",
+    "name": "서울숲",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.543617,
+    "lng": 127.044707
+  },
+  {
+    "id": "bundang-053",
+    "name": "왕십리",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.561827,
+    "lng": 127.038352
+  },
+  {
+    "id": "bundang-054",
+    "name": "청량리",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.580759,
+    "lng": 127.0483
+  },
+  {
+    "id": "sinbundang-001",
+    "name": "광교(경기대)",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.30211,
+    "lng": 127.044483
+  },
+  {
+    "id": "sinbundang-002",
+    "name": "광교중앙(아주대)",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.288617,
+    "lng": 127.051478
+  },
+  {
+    "id": "sinbundang-003",
+    "name": "상현",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.297664,
+    "lng": 127.069342
+  },
+  {
+    "id": "sinbundang-004",
+    "name": "성복",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.313335,
+    "lng": 127.0801
+  },
+  {
+    "id": "sinbundang-005",
+    "name": "수지구청",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.322702,
+    "lng": 127.095026
+  },
+  {
+    "id": "sinbundang-006",
+    "name": "동천",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.337928,
+    "lng": 127.102976
+  },
+  {
+    "id": "sinbundang-007",
+    "name": "미금",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.349982,
+    "lng": 127.108918
+  },
+  {
+    "id": "sinbundang-008",
+    "name": "정자",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.367098,
+    "lng": 127.108403
+  },
+  {
+    "id": "sinbundang-009",
+    "name": "판교",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.394761,
+    "lng": 127.112217
+  },
+  {
+    "id": "sinbundang-010",
+    "name": "청계산입구",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.447211,
+    "lng": 127.055664
+  },
+  {
+    "id": "sinbundang-011",
+    "name": "양재시민의숲(매헌)",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.470023,
+    "lng": 127.03842
+  },
+  {
+    "id": "sinbundang-012",
+    "name": "양재(서초구청)",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.483809,
+    "lng": 127.034653
+  },
+  {
+    "id": "sinbundang-013",
+    "name": "강남",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.496837,
+    "lng": 127.028104
+  },
+  {
+    "id": "sinbundang-014",
+    "name": "신논현",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.504598,
+    "lng": 127.02506
+  },
+  {
+    "id": "sinbundang-015",
+    "name": "논현",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.511093,
+    "lng": 127.021415
+  },
+  {
+    "id": "sinbundang-016",
+    "name": "신사",
+    "line": "sinbundang",
+    "lineColor": "#D4003B",
+    "lat": 37.516334,
+    "lng": 127.020114
   }
 ]
