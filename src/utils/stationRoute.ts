@@ -305,38 +305,27 @@ export function buildJourneyDisplay(
 
 const DEFAULT_WAIT_MINUTES = 3;
 
-export function calculateStaticETA(route: Route): number | null {
-  if (!route) return null;
-
+function getTravelMinutes(route: NonNullable<Route>): number {
   if (route.type === 'direct') {
-    return DEFAULT_WAIT_MINUTES + route.stops * MINUTES_PER_STOP;
+    return route.stops * MINUTES_PER_STOP;
   }
 
   if (route.type === 'transfer') {
     const totalStops = route.stopsToTransfer + route.stopsFromTransfer;
-    return DEFAULT_WAIT_MINUTES + totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES;
+    return totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES;
   }
 
-  // multi-transfer
   const transferStops = route.transfers.reduce((sum, t) => sum + t.stopsToTransfer, 0);
   const totalStops = transferStops + route.stopsAfterLastTransfer;
-  return DEFAULT_WAIT_MINUTES + totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES * route.transfers.length;
+  return totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES * route.transfers.length;
+}
+
+export function calculateStaticETA(route: Route): number | null {
+  if (!route) return null;
+  return DEFAULT_WAIT_MINUTES + getTravelMinutes(route);
 }
 
 export function calculateETA(nextTrainMinutes: number, route: Route): number {
   if (!route) return nextTrainMinutes;
-
-  if (route.type === 'direct') {
-    return nextTrainMinutes + route.stops * MINUTES_PER_STOP;
-  }
-
-  if (route.type === 'transfer') {
-    const totalStops = route.stopsToTransfer + route.stopsFromTransfer;
-    return nextTrainMinutes + totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES;
-  }
-
-  // multi-transfer
-  const transferStops = route.transfers.reduce((sum, t) => sum + t.stopsToTransfer, 0);
-  const totalStops = transferStops + route.stopsAfterLastTransfer;
-  return nextTrainMinutes + totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES * route.transfers.length;
+  return nextTrainMinutes + getTravelMinutes(route);
 }

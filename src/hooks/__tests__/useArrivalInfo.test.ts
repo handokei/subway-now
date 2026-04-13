@@ -77,7 +77,7 @@ describe('useArrivalInfo', () => {
   it('stationName이 변경되면 새로운 역의 데이터를 가져온다', async () => {
     (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
 
-    const { result, rerender } = renderHook(
+    const { rerender } = renderHook(
       ({ name }: { name: string | null }) => useArrivalInfo(name),
       { initialProps: { name: '강남' as string | null } }
     );
@@ -106,5 +106,42 @@ describe('useArrivalInfo', () => {
     unmount();
     expect(clearIntervalSpy).toHaveBeenCalled();
     clearIntervalSpy.mockRestore();
+  });
+
+  it('언마운트 후 fetch 응답이 도착하면 상태를 갱신하지 않는다', async () => {
+    let resolve!: (value: typeof mockArrival) => void;
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockImplementation(
+      () => new Promise((r) => { resolve = r; })
+    );
+
+    const { result, unmount } = renderHook(() => useArrivalInfo('강남'));
+
+    expect(result.current.loading).toBe(true);
+
+    unmount();
+    resolve(mockArrival);
+    await Promise.resolve();
+
+    expect(result.current.arrival).toBeNull();
+    expect(result.current.loading).toBe(true);
+  });
+
+  it('stationName이 유효한 값에서 null로 바뀌면 loading이 false가 된다', async () => {
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    const { result, rerender } = renderHook(
+      ({ name }: { name: string | null }) => useArrivalInfo(name),
+      { initialProps: { name: '강남' as string | null } }
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.arrival).toEqual(mockArrival);
+
+    rerender({ name: null });
+
+    await waitFor(() => {
+      expect(result.current.arrival).toBeNull();
+      expect(result.current.loading).toBe(false);
+    });
   });
 });

@@ -10,7 +10,7 @@ export interface StationArrival {
   isMock?: boolean;
 }
 
-export const MOCK_ARRIVALS: StationArrival = {
+export const MOCK_ARRIVALS: Readonly<StationArrival> = Object.freeze({
   up: [
     { destination: '상행 종착역', arrivalMinutes: 2, trainCode: 'UP-001' },
     { destination: '상행 종착역', arrivalMinutes: 8, trainCode: 'UP-002' },
@@ -19,14 +19,15 @@ export const MOCK_ARRIVALS: StationArrival = {
     { destination: '하행 종착역', arrivalMinutes: 4, trainCode: 'DN-001' },
     { destination: '하행 종착역', arrivalMinutes: 11, trainCode: 'DN-002' },
   ],
-};
+  isMock: true,
+});
 
 export async function fetchArrivalInfo(stationName: string): Promise<StationArrival> {
   const apiKey = process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
 
   if (!apiKey) {
     // API 키 없을 때 Mock 데이터 반환
-    return { ...MOCK_ARRIVALS, isMock: true };
+    return MOCK_ARRIVALS;
   }
 
   try {
@@ -34,7 +35,7 @@ export async function fetchArrivalInfo(stationName: string): Promise<StationArri
 
     const response = await fetch(url);
     if (!response.ok) {
-      return { ...MOCK_ARRIVALS, isMock: true };
+      return MOCK_ARRIVALS;
     }
 
     const data = await response.json();
@@ -58,10 +59,10 @@ export async function fetchArrivalInfo(stationName: string): Promise<StationArri
 
     const sliced = { up: up.slice(0, 2), down: down.slice(0, 2) };
     if (sliced.up.length === 0 && sliced.down.length === 0) {
-      return { ...MOCK_ARRIVALS, isMock: true };
+      return MOCK_ARRIVALS;
     }
     return sliced;
   } catch {
-    return { ...MOCK_ARRIVALS, isMock: true };
+    return MOCK_ARRIVALS;
   }
 }

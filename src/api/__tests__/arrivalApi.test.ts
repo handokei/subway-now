@@ -137,6 +137,26 @@ describe('fetchArrivalInfo', () => {
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
   });
 
+  it('상행만 있고 하행이 없으면 실데이터로 반환한다', async () => {
+    process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        realtimeArrivalList: [
+          { trainLineNm: '소요산행', barvlDt: 120, btrainNo: 'T001', updnLine: '상행' },
+        ],
+      }),
+    } as Response);
+
+    const result = await fetchArrivalInfo('소요산');
+    expect(result.up).toHaveLength(1);
+    expect(result.down).toHaveLength(0);
+    expect(result.isMock).toBeUndefined();
+
+    delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+  });
+
   it('trainLineNm, barvlDt, btrainNo가 undefined이면 기본값을 사용한다', async () => {
     process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
 
