@@ -12,6 +12,9 @@ struct SubwayActivityAttributes: ActivityAttributes {
         var stopsToTransfer: Int?
         var transferStationName: String?
         var stopsFromTransfer: Int?
+        var stopsToSecondTransfer: Int?
+        var secondTransferStationName: String?
+        var stopsAfterLastTransfer: Int?
         var distanceM: Int
     }
 }

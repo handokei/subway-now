@@ -2,7 +2,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { Station } from '../types/station';
 import { LINE_COLORS, LINE_NAMES } from '../constants/lineColors';
-import { DirectRoute, TransferRoute } from './stationRoute';
+import { DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
 import * as LiveActivity from 'live-activity';
 import { createLogger } from './logger';
 
@@ -42,7 +42,7 @@ function buildContent(
   currentStation: Station,
   distanceM: number,
   destination?: Station | null,
-  route?: DirectRoute | TransferRoute | null,
+  route?: DirectRoute | TransferRoute | MultiTransferRoute | null,
 ): { title: string; body: string } {
   if (destination && route) {
     const title = `${currentStation.name} → ${destination.name}`;
@@ -50,7 +50,12 @@ function buildContent(
       const body = `${LINE_NAMES[currentStation.line]} · ${route.stops}정거장 남음`;
       return { title, body };
     }
-    const body = `${route.stopsToTransfer}정거장 후 ${route.transferName} 환승 · ${route.stopsFromTransfer}정거장`;
+    if (route.type === 'transfer') {
+      const body = `${route.stopsToTransfer}정거장 후 ${route.transferName} 환승 · ${route.stopsFromTransfer}정거장`;
+      return { title, body };
+    }
+    const [t1, t2] = route.transfers;
+    const body = `${t1.stopsToTransfer}정거장 후 ${t1.transferName} 환승 → ${t2.stopsToTransfer}정거장 후 ${t2.transferName} 환승 · ${route.stopsAfterLastTransfer}정거장`;
     return { title, body };
   }
   return {
@@ -63,7 +68,7 @@ function buildLiveActivityData(
   currentStation: Station,
   distanceM: number,
   destination?: Station | null,
-  route?: DirectRoute | TransferRoute | null,
+  route?: DirectRoute | TransferRoute | MultiTransferRoute | null,
 ): LiveActivity.LiveActivityData {
   const base: LiveActivity.LiveActivityData = {
     stationName: currentStation.name,
@@ -76,10 +81,16 @@ function buildLiveActivityData(
     base.destinationName = destination.name;
     if (route.type === 'direct') {
       base.stopsRemaining = route.stops;
-    } else {
+    } else if (route.type === 'transfer') {
       base.stopsToTransfer = route.stopsToTransfer;
       base.transferStationName = route.transferName;
       base.stopsFromTransfer = route.stopsFromTransfer;
+    } else {
+      base.stopsToTransfer = route.transfers[0].stopsToTransfer;
+      base.transferStationName = route.transfers[0].transferName;
+      base.stopsToSecondTransfer = route.transfers[1].stopsToTransfer;
+      base.secondTransferStationName = route.transfers[1].transferName;
+      base.stopsAfterLastTransfer = route.stopsAfterLastTransfer;
     }
   }
 
@@ -90,7 +101,7 @@ export async function updateStationNotification(
   currentStation: Station,
   distanceM: number,
   destination?: Station | null,
-  route?: DirectRoute | TransferRoute | null,
+  route?: DirectRoute | TransferRoute | MultiTransferRoute | null,
 ): Promise<void> {
   notifLogger.info('updateStation:', currentStation.name, `${distanceM}m`, destination ? `→ ${destination.name}` : '');
 

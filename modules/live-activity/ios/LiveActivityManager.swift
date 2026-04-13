@@ -15,6 +15,9 @@ struct SubwayActivityAttributes: ActivityAttributes {
         var stopsToTransfer: Int?
         var transferStationName: String?
         var stopsFromTransfer: Int?
+        var stopsToSecondTransfer: Int?
+        var secondTransferStationName: String?
+        var stopsAfterLastTransfer: Int?
         var distanceM: Int
     }
 }
@@ -77,6 +80,9 @@ class LiveActivityManager {
             stopsToTransfer: data["stopsToTransfer"] as? Int,
             transferStationName: data["transferStationName"] as? String,
             stopsFromTransfer: data["stopsFromTransfer"] as? Int,
+            stopsToSecondTransfer: data["stopsToSecondTransfer"] as? Int,
+            secondTransferStationName: data["secondTransferStationName"] as? String,
+            stopsAfterLastTransfer: data["stopsAfterLastTransfer"] as? Int,
             distanceM: data["distanceM"] as? Int ?? 0
         )
     }

@@ -118,6 +118,15 @@ private struct LockScreenRouteView: View {
                 Text("\(stops)정거장 남음")
                     .font(.caption)
                     .foregroundColor(.secondary)
+            } else if let toSecond = state.stopsToSecondTransfer,
+                      let secondName = state.secondTransferStationName,
+                      let afterLast = state.stopsAfterLastTransfer,
+                      let toFirst = state.stopsToTransfer,
+                      let firstName = state.transferStationName {
+                Text("\(toFirst)정거장→\(firstName) 환승→\(toSecond)정거장→\(secondName) 환승→\(afterLast)정거장")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
             } else if let toTransfer = state.stopsToTransfer,
                       let transferName = state.transferStationName,
                       let fromTransfer = state.stopsFromTransfer {
@@ -139,6 +148,15 @@ private struct ExpandedRouteView: View {
             Text("→ \(dest) · \(stops)정거장")
                 .font(.caption)
                 .foregroundColor(.secondary)
+        } else if let toSecond = state.stopsToSecondTransfer,
+                  let secondName = state.secondTransferStationName,
+                  let afterLast = state.stopsAfterLastTransfer,
+                  let toFirst = state.stopsToTransfer,
+                  let firstName = state.transferStationName {
+            Text("→ \(dest) (\(toFirst)정거장→\(firstName) 환승→\(toSecond)정거장→\(secondName) 환승→\(afterLast)정거장)")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .lineLimit(2)
         } else if let toTransfer = state.stopsToTransfer,
                   let transferName = state.transferStationName,
                   let fromTransfer = state.stopsFromTransfer {

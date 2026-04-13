@@ -1,6 +1,6 @@
 import { getStationsOnLine, getRemainingStops, findRoute, buildJourneyDisplay, calculateETA } from '../stationRoute';
 import type { Station } from '../../types/station';
-import type { DirectRoute, TransferRoute } from '../stationRoute';
+import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
 
 describe('getStationsOnLine', () => {
   it('returns only stations on the given line, sorted by id', () => {
@@ -112,21 +112,34 @@ describe('findRoute', () => {
     }
   });
 
-  it('환승역이 없으면 null을 반환한다', () => {
-    // 1호선과 9호선은 환승역이 없음
+  it('직접 환승이 없으면 MultiTransferRoute를 반환한다 (8호선→1호선)', () => {
+    const line8 = getStationsOnLine('8');
     const line1 = getStationsOnLine('1');
-    const line9 = getStationsOnLine('9');
-    const line1Names = new Set(line1.map((s) => s.name));
-    const hasTransfer = line9.some((s) => line1Names.has(s.name));
-
-    if (!hasTransfer) {
-      const route = findRoute(line1[0].id, line9[0].id);
-      expect(route).toBeNull();
-    } else {
-      // 환승역이 있으면 TransferRoute를 반환해야 함
-      const route = findRoute(line1[0].id, line9[0].id);
-      expect(route?.type).toBe('transfer');
+    const route = findRoute(line8[0].id, line1[0].id);
+    expect(route).not.toBeNull();
+    expect(route?.type).toBe('multi-transfer');
+    if (route?.type === 'multi-transfer') {
+      expect(route.transfers).toHaveLength(2);
+      expect(route.transfers[0].fromLine).toBe('8');
+      expect(route.transfers[1].toLine).toBe('1');
+      expect(route.stopsAfterLastTransfer).toBeGreaterThanOrEqual(0);
     }
+  });
+
+  it('직접 환승 가능하면 단일 환승을 우선한다', () => {
+    // 8호선 → 2호선은 잠실에서 직접 환승 가능
+    const line8 = getStationsOnLine('8');
+    const line2 = getStationsOnLine('2');
+    const route = findRoute(line8[0].id, line2[0].id);
+    expect(route?.type).toBe('transfer');
+  });
+
+  it('8호선→4호선 multi-transfer 경로를 찾는다', () => {
+    const line8 = getStationsOnLine('8');
+    const line4 = getStationsOnLine('4');
+    const route = findRoute(line8[0].id, line4[0].id);
+    expect(route).not.toBeNull();
+    expect(route?.type).toBe('multi-transfer');
   });
 });
 
@@ -159,6 +172,40 @@ describe('buildJourneyDisplay', () => {
     expect(result!.segments[0].lineColor).toBe('#009D3E');
     expect(result!.segments[0].stops).toBe(3);
     expect(result!.totalStops).toBe(3);
+  });
+
+  it('MultiTransferRoute이면 세그먼트 3개를 반환한다', () => {
+    const route: MultiTransferRoute = {
+      type: 'multi-transfer',
+      transfers: [
+        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+      ],
+      stopsAfterLastTransfer: 4,
+    };
+    const current = mockStation({ name: '암사', line: '8', lineColor: '#E6186C' });
+    const dest = mockStation({ name: '종각', line: '1', lineColor: '#0052A4' });
+
+    const result = buildJourneyDisplay(route, current, dest);
+    expect(result).not.toBeNull();
+    expect(result!.segments).toHaveLength(3);
+
+    expect(result!.segments[0].fromName).toBe('암사');
+    expect(result!.segments[0].toName).toBe('잠실');
+    expect(result!.segments[0].line).toBe('8');
+    expect(result!.segments[0].stops).toBe(3);
+
+    expect(result!.segments[1].fromName).toBe('잠실');
+    expect(result!.segments[1].toName).toBe('시청');
+    expect(result!.segments[1].line).toBe('2');
+    expect(result!.segments[1].stops).toBe(5);
+
+    expect(result!.segments[2].fromName).toBe('시청');
+    expect(result!.segments[2].toName).toBe('종각');
+    expect(result!.segments[2].line).toBe('1');
+    expect(result!.segments[2].stops).toBe(4);
+
+    expect(result!.totalStops).toBe(12);
   });
 
   it('TransferRoute이면 세그먼트 2개를 반환한다', () => {
@@ -211,6 +258,19 @@ describe('calculateETA', () => {
     expect(calculateETA(2, route)).toBe(17);
   });
 
+  it('MultiTransferRoute일 때 대기시간 + 정거장*2분 + 환승3분*2를 반환한다', () => {
+    const route: MultiTransferRoute = {
+      type: 'multi-transfer',
+      transfers: [
+        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+      ],
+      stopsAfterLastTransfer: 4,
+    };
+    // 2분 대기 + 12*2분 + 3분*2 환승 = 32분
+    expect(calculateETA(2, route)).toBe(32);
+  });
+
   it('route가 null이면 대기시간만 반환한다', () => {
     expect(calculateETA(5, null)).toBe(5);
   });
@@ -232,5 +292,23 @@ describe('buildJourneyDisplay — LINE_COLORS fallback', () => {
     const result = buildJourneyDisplay(route, current, dest);
     expect(result!.segments[0].lineColor).toBe('#AAA');
     expect(result!.segments[1].lineColor).toBe('#BBB');
+  });
+
+  it('MultiTransferRoute에서 알 수 없는 노선이면 fallback lineColor를 사용한다', () => {
+    const route: MultiTransferRoute = {
+      type: 'multi-transfer',
+      transfers: [
+        { transferName: '환승A', fromLine: 'unknown1' as string, toLine: 'unknown2' as string, stopsToTransfer: 1 },
+        { transferName: '환승B', fromLine: 'unknown2' as string, toLine: 'unknown3' as string, stopsToTransfer: 2 },
+      ],
+      stopsAfterLastTransfer: 3,
+    };
+    const current = mockStation({ lineColor: '#AAA' });
+    const dest = mockStation({ lineColor: '#BBB' });
+
+    const result = buildJourneyDisplay(route, current, dest);
+    expect(result!.segments[0].lineColor).toBe('#AAA');
+    expect(result!.segments[1].lineColor).toBe('#888888');
+    expect(result!.segments[2].lineColor).toBe('#BBB');
   });
 });
