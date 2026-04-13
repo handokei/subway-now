@@ -15,6 +15,17 @@ describe('getStationsOnLine', () => {
   it('returns empty array for unknown line', () => {
     expect(getStationsOnLine('999')).toEqual([]);
   });
+
+  it.each([
+    ['airport', 13],
+    ['gyeongui', 57],
+    ['bundang', 54],
+    ['sinbundang', 16],
+  ])('%s 노선 역 데이터를 로드한다 (%i개)', (line, expectedCount) => {
+    const stations = getStationsOnLine(line);
+    expect(stations).toHaveLength(expectedCount);
+    stations.forEach((s) => expect(s.line).toBe(line));
+  });
 });
 
 describe('getRemainingStops', () => {
@@ -140,6 +151,55 @@ describe('findRoute', () => {
     const route = findRoute(line8[0].id, line4[0].id);
     expect(route).not.toBeNull();
     expect(route?.type).toBe('multi-transfer');
+  });
+
+  it('신분당선↔2호선 강남역 환승 경로를 찾는다', () => {
+    const sinbundang = getStationsOnLine('sinbundang');
+    const line2 = getStationsOnLine('2');
+    const sinGangnam = sinbundang.find((s) => s.name === '강남');
+    const line2First = line2[0];
+    expect(sinGangnam).toBeDefined();
+    const route = findRoute(sinGangnam!.id, line2First.id);
+    expect(route?.type).toBe('transfer');
+    if (route?.type === 'transfer') {
+      expect(route.transferName).toBe('강남');
+    }
+  });
+
+  it('경의중앙선↔2호선 홍대입구역 환승 경로를 찾는다', () => {
+    const gyeongui = getStationsOnLine('gyeongui');
+    const line2 = getStationsOnLine('2');
+    const gyeonguiHongdae = gyeongui.find((s) => s.name === '홍대입구');
+    const line2First = line2[0];
+    expect(gyeonguiHongdae).toBeDefined();
+    const route = findRoute(gyeonguiHongdae!.id, line2First.id);
+    expect(route?.type).toBe('transfer');
+    if (route?.type === 'transfer') {
+      expect(route.transferName).toBe('홍대입구');
+    }
+  });
+
+  it('공항철도↔경의중앙선 환승 경로를 찾는다', () => {
+    const airport = getStationsOnLine('airport');
+    const gyeongui = getStationsOnLine('gyeongui');
+    const airportFirst = airport[0]; // 서울역
+    const gyeonguiLast = gyeongui[gyeongui.length - 1]; // 지평
+    const route = findRoute(airportFirst.id, gyeonguiLast.id);
+    expect(route?.type).toBe('transfer');
+    if (route?.type === 'transfer') {
+      // 서울역 또는 공덕에서 환승 가능
+      expect(['서울역', '공덕', '홍대입구', '디지털미디어시티']).toContain(route.transferName);
+    }
+  });
+
+  it('수인분당선 직통 경로를 찾는다', () => {
+    const bundang = getStationsOnLine('bundang');
+    const incheon = bundang.find((s) => s.name === '인천');
+    const seoulSup = bundang.find((s) => s.name === '서울숲');
+    expect(incheon).toBeDefined();
+    expect(seoulSup).toBeDefined();
+    const route = findRoute(incheon!.id, seoulSup!.id);
+    expect(route?.type).toBe('direct');
   });
 });
 

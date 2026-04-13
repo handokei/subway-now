@@ -28,6 +28,10 @@ const LINE_TO_ROUTES = {
   '7': ['7호선', '7호선(인천)'],
   '8': ['8호선'],
   '9': ['9호선', '9호선(연장)'],
+  airport: ['공항철도1호선'],
+  gyeongui: ['경의중앙선', '중앙선'],
+  bundang: ['분당선', '수인선'],
+  sinbundang: ['신분당선', '신분당선(연장)', '신분당선(연장2)'],
 };
 
 async function fetchApiStations() {
