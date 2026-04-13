@@ -6,7 +6,7 @@ import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
-import { findRoute, buildJourneyDisplay, calculateETA } from '../../src/utils/stationRoute';
+import { findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA } from '../../src/utils/stationRoute';
 import { JourneyTimeline } from '../../src/components/JourneyTimeline';
 import { initStationNotification, updateStationNotification, clearStationNotification } from '../../src/utils/stationNotification';
 import { createLogger } from '../../src/utils/logger';
@@ -15,7 +15,7 @@ const logger = createLogger('HomeScreen');
 
 export default function HomeScreen() {
   const { result, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
-  const { arrival } = useArrivalInfo(result?.station.name ?? null);
+  const { arrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(result?.station.name ?? null);
   const { addFavorite, removeFavorite, isFavorite, loadFavorites, destination, setDestination, recentDestination, setRecentDestination } = useAppStore();
   const [pickerVisible, setPickerVisible] = useState(false);
   const [arrivedBanner, setArrivedBanner] = useState(false);
@@ -32,6 +32,8 @@ export default function HomeScreen() {
   const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
     ? calculateETA(nextTrainMinutes, route)
     : null;
+  const staticEtaMinutes = route ? calculateStaticETA(route) : null;
+  const displayEta = (etaMinutes !== null && !arrivalIsMock) ? etaMinutes : staticEtaMinutes;
 
   useEffect(() => {
     loadFavorites();
@@ -163,8 +165,8 @@ export default function HomeScreen() {
                   <View style={styles.destinationInfo}>
                     <Text style={styles.destinationArrow}>→</Text>
                     <Text style={styles.destinationName}>{destination.name}</Text>
-                    {etaMinutes != null && (
-                      <Text style={styles.etaInline}>약 {etaMinutes}분 소요</Text>
+                    {displayEta != null && (
+                      <Text style={styles.etaInline}>약 {displayEta}분 소요{arrivalIsMock ? ' (예상)' : ''}</Text>
                     )}
                   </View>
                   {journey && (
@@ -206,13 +208,21 @@ export default function HomeScreen() {
               ) : null}
             </View>
 
-            {arrival && (
-              <View style={styles.arrivalSection}>
-                <Text style={styles.sectionTitle}>열차 도착 정보</Text>
-                <ArrivalRow label="상행" items={arrival.up} />
-                <ArrivalRow label="하행" items={arrival.down} />
-              </View>
-            )}
+            <View style={styles.arrivalSection}>
+              <Text style={styles.sectionTitle}>열차 도착 정보</Text>
+              {arrivalLoading && !arrival && (
+                <Text style={styles.arrivalItem}>불러오는 중...</Text>
+              )}
+              {arrivalIsMock && (
+                <Text style={styles.mockNotice}>실시간 데이터를 불러올 수 없어 예상 데이터를 표시합니다</Text>
+              )}
+              {arrival && (
+                <>
+                  <ArrivalRow label="상행" items={arrival.up} />
+                  <ArrivalRow label="하행" items={arrival.down} />
+                </>
+              )}
+            </View>
           </>
         ) : (
           <View style={styles.center}>
@@ -249,17 +259,20 @@ function ArrivalRow({
   label: string;
   items: { destination: string; arrivalMinutes: number }[];
 }) {
-  if (items.length === 0) return null;
   return (
     <View style={styles.arrivalRow}>
       <Text style={styles.arrivalLabel}>{label}</Text>
       <View>
-        {items.map((item, idx) => (
-          <Text key={idx} style={styles.arrivalItem}>
-            {item.destination ? `${item.destination} · ` : ''}
-            {item.arrivalMinutes === 0 ? '곧 도착' : `${item.arrivalMinutes}분 후`}
-          </Text>
-        ))}
+        {items.length === 0 ? (
+          <Text style={styles.arrivalItem}>도착 정보 없음</Text>
+        ) : (
+          items.map((item, idx) => (
+            <Text key={idx} style={styles.arrivalItem}>
+              {item.destination ? `${item.destination} · ` : ''}
+              {item.arrivalMinutes === 0 ? '곧 도착' : `${item.arrivalMinutes}분 후`}
+            </Text>
+          ))
+        )}
       </View>
     </View>
   );
@@ -426,6 +439,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#16213e',
     borderRadius: 16,
     padding: 20,
+  },
+  mockNotice: {
+    fontSize: 12,
+    color: '#ff9f43',
+    marginBottom: 8,
   },
   sectionTitle: {
     fontSize: 14,

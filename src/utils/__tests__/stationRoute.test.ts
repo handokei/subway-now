@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, findRoute, buildJourneyDisplay, calculateETA } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA } from '../stationRoute';
 import type { Station } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
 
@@ -333,6 +333,44 @@ describe('calculateETA', () => {
 
   it('route가 null이면 대기시간만 반환한다', () => {
     expect(calculateETA(5, null)).toBe(5);
+  });
+});
+
+describe('calculateStaticETA', () => {
+  it('DirectRoute일 때 기본대기3분 + 정거장*2분을 반환한다', () => {
+    const route: DirectRoute = { type: 'direct', stops: 5 };
+    // 3분 대기 + 5*2분 = 13분
+    expect(calculateStaticETA(route)).toBe(13);
+  });
+
+  it('TransferRoute일 때 기본대기3분 + 정거장*2분 + 환승3분을 반환한다', () => {
+    const route: TransferRoute = {
+      type: 'transfer',
+      transferName: '교대',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 1,
+      stopsFromTransfer: 5,
+    };
+    // 3분 대기 + 6*2분 + 3분 환승 = 18분
+    expect(calculateStaticETA(route)).toBe(18);
+  });
+
+  it('MultiTransferRoute일 때 기본대기3분 + 정거장*2분 + 환승3분*2를 반환한다', () => {
+    const route: MultiTransferRoute = {
+      type: 'multi-transfer',
+      transfers: [
+        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+      ],
+      stopsAfterLastTransfer: 4,
+    };
+    // 3분 대기 + 12*2분 + 3분*2 환승 = 33분
+    expect(calculateStaticETA(route)).toBe(33);
+  });
+
+  it('route가 null이면 null을 반환한다', () => {
+    expect(calculateStaticETA(null)).toBeNull();
   });
 });
 

@@ -1,4 +1,4 @@
-import { fetchArrivalInfo } from '../arrivalApi';
+import { fetchArrivalInfo, MOCK_ARRIVALS } from '../arrivalApi';
 
 describe('fetchArrivalInfo', () => {
   beforeEach(() => {
@@ -15,6 +15,7 @@ describe('fetchArrivalInfo', () => {
     expect(result.up[0]).toHaveProperty('destination');
     expect(result.up[0]).toHaveProperty('arrivalMinutes');
     expect(result.up[0]).toHaveProperty('trainCode');
+    expect(result.isMock).toBe(true);
   });
 
   it('API 키가 있으면 fetch를 호출한다', async () => {
@@ -40,11 +41,12 @@ describe('fetchArrivalInfo', () => {
     expect(result.up).toHaveLength(2);
     expect(result.down).toHaveLength(2);
     expect(result.up[0].arrivalMinutes).toBe(2); // 120초 → 2분
+    expect(result.isMock).toBeUndefined();
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
   });
 
-  it('API 응답이 실패하면 에러를 던진다', async () => {
+  it('API 응답이 실패하면 Mock 데이터를 반환한다', async () => {
     process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
 
     global.fetch = jest.fn().mockResolvedValue({
@@ -52,12 +54,30 @@ describe('fetchArrivalInfo', () => {
       status: 500,
     } as Response);
 
-    await expect(fetchArrivalInfo('강남')).rejects.toThrow('도착 정보 API 오류: 500');
+    const result = await fetchArrivalInfo('강남');
+
+    expect(result.up.length).toBeGreaterThan(0);
+    expect(result.down.length).toBeGreaterThan(0);
+    expect(result.isMock).toBe(true);
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
   });
 
-  it('realtimeArrivalList가 없으면 빈 배열을 반환한다', async () => {
+  it('fetch가 네트워크 오류를 발생시키면 Mock 데이터를 반환한다', async () => {
+    process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+
+    global.fetch = jest.fn().mockRejectedValue(new Error('Network error'));
+
+    const result = await fetchArrivalInfo('강남');
+
+    expect(result.up.length).toBeGreaterThan(0);
+    expect(result.down.length).toBeGreaterThan(0);
+    expect(result.isMock).toBe(true);
+
+    delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+  });
+
+  it('realtimeArrivalList가 없으면 Mock 데이터를 반환한다', async () => {
     process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
 
     global.fetch = jest.fn().mockResolvedValue({
@@ -67,10 +87,17 @@ describe('fetchArrivalInfo', () => {
 
     const result = await fetchArrivalInfo('강남');
 
-    expect(result.up).toHaveLength(0);
-    expect(result.down).toHaveLength(0);
+    expect(result.up.length).toBeGreaterThan(0);
+    expect(result.down.length).toBeGreaterThan(0);
+    expect(result.isMock).toBe(true);
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+  });
+
+  it('MOCK_ARRIVALS가 export 된다', () => {
+    expect(MOCK_ARRIVALS).toBeDefined();
+    expect(MOCK_ARRIVALS.up.length).toBeGreaterThan(0);
+    expect(MOCK_ARRIVALS.down.length).toBeGreaterThan(0);
   });
 
   it('arrivalMinutes가 0초이면 0분을 반환한다', async () => {

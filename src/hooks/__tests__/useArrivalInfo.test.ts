@@ -9,6 +9,11 @@ const mockArrival = {
   down: [{ destination: '인천행', arrivalMinutes: 5, trainCode: 'T002' }],
 };
 
+const mockArrivalWithMock = {
+  ...mockArrival,
+  isMock: true,
+};
+
 describe('useArrivalInfo', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -25,6 +30,7 @@ describe('useArrivalInfo', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.arrival).toBeNull();
+    expect(result.current.isMock).toBe(false);
     expect(arrivalApiModule.fetchArrivalInfo).not.toHaveBeenCalled();
   });
 
@@ -36,20 +42,18 @@ describe('useArrivalInfo', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.arrival).toEqual(mockArrival);
-    expect(result.current.error).toBeNull();
+    expect(result.current.isMock).toBe(false);
   });
 
-  it('API 오류 시 error가 설정된다', async () => {
-    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockRejectedValue(
-      new Error('Network error')
-    );
+  it('isMock이 true인 데이터를 받으면 isMock이 true이다', async () => {
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrivalWithMock);
 
     const { result } = renderHook(() => useArrivalInfo('강남'));
 
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(result.current.error).toBe('도착 정보를 불러오지 못했습니다.');
-    expect(result.current.arrival).toBeNull();
+    expect(result.current.arrival).toEqual(mockArrivalWithMock);
+    expect(result.current.isMock).toBe(true);
   });
 
   it('30초 인터벌 후 자동으로 도착 정보를 갱신한다', async () => {
