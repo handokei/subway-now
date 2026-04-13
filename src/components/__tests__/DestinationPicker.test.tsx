@@ -10,8 +10,8 @@ const mockStation: Station = {
   name: '강남',
   line: '2',
   lineColor: '#009D3E',
-  lat: 37.4979,
-  lng: 127.0276,
+  lat: 37.49799,
+  lng: 127.027912,
 };
 
 const defaultProps = {
