@@ -58,25 +58,28 @@ describe('JourneyTimeline', () => {
     expect(getByText('5정거장')).toBeTruthy();
   });
 
-  it('ETA를 표시한다', () => {
-    const { getByText } = render(
-      <JourneyTimeline journey={directJourney} etaMinutes={15} />,
+  it('출발역 dot에 노선 색상을 적용한다', () => {
+    const { getByTestId } = render(<JourneyTimeline journey={directJourney} />);
+    const startDot = getByTestId('start-dot');
+    expect(startDot.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#009D3E' })]),
     );
-    expect(getByText('약 15분 소요')).toBeTruthy();
   });
 
-  it('etaMinutes가 null이면 ETA를 표시하지 않는다', () => {
-    const { queryByText } = render(
-      <JourneyTimeline journey={directJourney} etaMinutes={null} />,
+  it('도착역 dot에 노선 색상을 적용한다', () => {
+    const { getByTestId } = render(<JourneyTimeline journey={directJourney} />);
+    const endDot = getByTestId('end-dot');
+    expect(endDot.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#009D3E' })]),
     );
-    expect(queryByText(/소요/)).toBeNull();
   });
 
-  it('etaMinutes가 undefined이면 ETA를 표시하지 않는다', () => {
-    const { queryByText } = render(
-      <JourneyTimeline journey={directJourney} />,
+  it('환승 시 도착역 dot에 마지막 세그먼트 노선 색상을 적용한다', () => {
+    const { getByTestId } = render(<JourneyTimeline journey={transferJourney} />);
+    const endDot = getByTestId('end-dot');
+    expect(endDot.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#EF7C1C' })]),
     );
-    expect(queryByText(/소요/)).toBeNull();
   });
 
   it('알 수 없는 노선이면 line 값을 그대로 표시한다', () => {

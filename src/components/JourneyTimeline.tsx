@@ -5,10 +5,9 @@ import type { LineNumber } from '../types/station';
 
 interface JourneyTimelineProps {
   journey: JourneyDisplay;
-  etaMinutes?: number | null;
 }
 
-export function JourneyTimeline({ journey, etaMinutes }: JourneyTimelineProps) {
+export function JourneyTimeline({ journey }: JourneyTimelineProps) {
   const { segments } = journey;
 
   return (
@@ -22,7 +21,7 @@ export function JourneyTimeline({ journey, etaMinutes }: JourneyTimelineProps) {
           <View key={idx}>
             {isFirst && (
               <View style={styles.stationRow}>
-                <View style={[styles.dot, styles.startDot]} />
+                <View style={[styles.dot, { backgroundColor: segment.lineColor }]} testID="start-dot" />
                 <Text style={styles.stationName}>{segment.fromName}</Text>
               </View>
             )}
@@ -46,7 +45,7 @@ export function JourneyTimeline({ journey, etaMinutes }: JourneyTimelineProps) {
 
             {isLast && (
               <View style={styles.stationRow}>
-                <View style={[styles.dot, styles.endDot]} />
+                <View style={[styles.dot, { backgroundColor: segment.lineColor }]} testID="end-dot" />
                 <Text style={styles.stationName}>{segment.toName}</Text>
               </View>
             )}
@@ -54,11 +53,6 @@ export function JourneyTimeline({ journey, etaMinutes }: JourneyTimelineProps) {
         );
       })}
 
-      {etaMinutes != null && (
-        <View style={styles.etaRow}>
-          <Text style={styles.etaText}>약 {etaMinutes}분 소요</Text>
-        </View>
-      )}
     </View>
   );
 }
@@ -77,12 +71,6 @@ const styles = StyleSheet.create({
     height: 12,
     borderRadius: 6,
     marginRight: 10,
-  },
-  startDot: {
-    backgroundColor: '#a78bfa',
-  },
-  endDot: {
-    backgroundColor: '#22c55e',
   },
   stationName: {
     fontSize: 16,
@@ -131,16 +119,5 @@ const styles = StyleSheet.create({
   stopsText: {
     fontSize: 13,
     color: '#8888aa',
-  },
-  etaRow: {
-    marginTop: 12,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#2a2a4a',
-  },
-  etaText: {
-    fontSize: 14,
-    color: '#a78bfa',
-    fontWeight: '600',
   },
 });
