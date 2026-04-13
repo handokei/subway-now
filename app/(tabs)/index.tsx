@@ -163,9 +163,12 @@ export default function HomeScreen() {
                   <View style={styles.destinationInfo}>
                     <Text style={styles.destinationArrow}>→</Text>
                     <Text style={styles.destinationName}>{destination.name}</Text>
+                    {etaMinutes != null && (
+                      <Text style={styles.etaInline}>약 {etaMinutes}분 소요</Text>
+                    )}
                   </View>
                   {journey && (
-                    <JourneyTimeline journey={journey} etaMinutes={etaMinutes} />
+                    <JourneyTimeline journey={journey} />
                   )}
                 </View>
               ) : null}
@@ -355,9 +358,16 @@ const styles = StyleSheet.create({
     marginRight: 12,
   },
   destinationName: {
-    fontSize: 20,
-    fontWeight: '700',
+    fontSize: 26,
+    fontWeight: '800',
     color: '#ffffff',
+    flexShrink: 1,
+  },
+  etaInline: {
+    fontSize: 14,
+    color: '#a78bfa',
+    fontWeight: '600',
+    marginLeft: 10,
   },
   recentDestinationButton: {
     backgroundColor: '#0f0f2a',
