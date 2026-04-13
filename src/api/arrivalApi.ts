@@ -22,7 +22,16 @@ export const MOCK_ARRIVALS: Readonly<StationArrival> = Object.freeze({
   isMock: true,
 });
 
-export async function fetchArrivalInfo(stationName: string): Promise<StationArrival> {
+export interface FetchArrivalOptions {
+  timeoutMs?: number;
+  maxPerDirection?: number;
+}
+
+export async function fetchArrivalInfo(
+  stationName: string,
+  options?: FetchArrivalOptions,
+): Promise<StationArrival> {
+  const { timeoutMs = 5000, maxPerDirection = 2 } = options ?? {};
   const apiKey = process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
 
   if (!apiKey) {
@@ -30,10 +39,12 @@ export async function fetchArrivalInfo(stationName: string): Promise<StationArri
     return MOCK_ARRIVALS;
   }
 
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const url = `https://swopenapi.seoul.go.kr/api/subway/${apiKey}/json/realtimeStationArrival/0/10/${encodeURIComponent(stationName)}`;
 
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
       return MOCK_ARRIVALS;
     }
@@ -57,12 +68,14 @@ export async function fetchArrivalInfo(stationName: string): Promise<StationArri
       }
     }
 
-    const sliced = { up: up.slice(0, 2), down: down.slice(0, 2) };
+    const sliced = { up: up.slice(0, maxPerDirection), down: down.slice(0, maxPerDirection) };
     if (sliced.up.length === 0 && sliced.down.length === 0) {
       return MOCK_ARRIVALS;
     }
     return sliced;
   } catch {
     return MOCK_ARRIVALS;
+  } finally {
+    clearTimeout(timeout);
   }
 }

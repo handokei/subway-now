@@ -126,6 +126,74 @@ describe('useArrivalInfo', () => {
     expect(result.current.loading).toBe(true);
   });
 
+  it('같은 역 재진입 시 캐시 데이터를 즉시 표시한다', async () => {
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    const { result, rerender } = renderHook(
+      ({ name }: { name: string | null }) => useArrivalInfo(name),
+      { initialProps: { name: '강남' as string | null } }
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.arrival).toEqual(mockArrival);
+
+    // 다른 역으로 전환
+    rerender({ name: '역삼' });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // 다시 강남으로 복귀 — 캐시 즉시 표시
+    rerender({ name: '강남' });
+    expect(result.current.arrival).toEqual(mockArrival);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('캐시가 없는 새 역은 loading이 true로 시작한다', async () => {
+    let resolveFirst!: (value: typeof mockArrival) => void;
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockImplementation(
+      () => new Promise((r) => { resolveFirst = r; })
+    );
+
+    const { result } = renderHook(() => useArrivalInfo('신규역'));
+
+    expect(result.current.arrival).toBeNull();
+    expect(result.current.loading).toBe(true);
+
+    await act(async () => { resolveFirst(mockArrival); });
+
+    expect(result.current.arrival).toEqual(mockArrival);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('캐시 표시 후 백그라운드 갱신이 데이터를 업데이트한다', async () => {
+    const updatedArrival = {
+      up: [{ destination: '소요산행', arrivalMinutes: 5, trainCode: 'T001' }],
+      down: [{ destination: '인천행', arrivalMinutes: 8, trainCode: 'T002' }],
+    };
+
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    const { result, rerender } = renderHook(
+      ({ name }: { name: string | null }) => useArrivalInfo(name),
+      { initialProps: { name: '강남' as string | null } }
+    );
+
+    await waitFor(() => expect(result.current.arrival).toEqual(mockArrival));
+
+    // 다른 역으로 갔다가 복귀
+    rerender({ name: '역삼' });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // 복귀 시 새로운 데이터로 갱신
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(updatedArrival);
+    rerender({ name: '강남' });
+
+    // 캐시 즉시 표시
+    expect(result.current.arrival).toEqual(mockArrival);
+
+    // 백그라운드 fetch 완료 후 갱신
+    await waitFor(() => expect(result.current.arrival).toEqual(updatedArrival));
+  });
+
   it('stationName이 유효한 값에서 null로 바뀌면 loading이 false가 된다', async () => {
     (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
 
