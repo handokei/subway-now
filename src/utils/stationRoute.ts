@@ -303,6 +303,26 @@ export function buildJourneyDisplay(
   };
 }
 
+const DEFAULT_WAIT_MINUTES = 3;
+
+export function calculateStaticETA(route: Route): number | null {
+  if (!route) return null;
+
+  if (route.type === 'direct') {
+    return DEFAULT_WAIT_MINUTES + route.stops * MINUTES_PER_STOP;
+  }
+
+  if (route.type === 'transfer') {
+    const totalStops = route.stopsToTransfer + route.stopsFromTransfer;
+    return DEFAULT_WAIT_MINUTES + totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES;
+  }
+
+  // multi-transfer
+  const transferStops = route.transfers.reduce((sum, t) => sum + t.stopsToTransfer, 0);
+  const totalStops = transferStops + route.stopsAfterLastTransfer;
+  return DEFAULT_WAIT_MINUTES + totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES * route.transfers.length;
+}
+
 export function calculateETA(nextTrainMinutes: number, route: Route): number {
   if (!route) return nextTrainMinutes;
 
@@ -315,7 +335,8 @@ export function calculateETA(nextTrainMinutes: number, route: Route): number {
     return nextTrainMinutes + totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES;
   }
 
-  // multi-transfer: 2회 환승
-  const totalStops = route.transfers[0].stopsToTransfer + route.transfers[1].stopsToTransfer + route.stopsAfterLastTransfer;
-  return nextTrainMinutes + totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES * 2;
+  // multi-transfer
+  const transferStops = route.transfers.reduce((sum, t) => sum + t.stopsToTransfer, 0);
+  const totalStops = transferStops + route.stopsAfterLastTransfer;
+  return nextTrainMinutes + totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES * route.transfers.length;
 }
