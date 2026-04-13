@@ -9,8 +9,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const API_KEY = process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY || '44696a496d6568673636654f574243';
-const API_URL = `http://openapi.seoul.go.kr:8088/${API_KEY}/json/subwayStationMaster/1/800/`;
+const API_KEY = process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+if (!API_KEY) {
+  console.error('EXPO_PUBLIC_SEOUL_DATA_API_KEY 환경변수를 설정하세요.');
+  process.exit(1);
+}
+const API_URL = `https://openapi.seoul.go.kr:8088/${API_KEY}/json/subwayStationMaster/1/800/`;
 const STATIONS_JSON_PATH = path.join(__dirname, '..', 'src', 'data', 'stations.json');
 
 // stations.json의 line → API ROUTE 매핑
