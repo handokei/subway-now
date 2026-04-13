@@ -69,6 +69,20 @@ const multiTransferRoute: MultiTransferRoute = {
   stopsAfterLastTransfer: 4,
 };
 
+function expectNotificationContent(title: string, body: string) {
+  expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+    expect.objectContaining({ content: { title, body } }),
+  );
+}
+
+function expectAlarmNotification(title: string, body: string, extra?: Record<string, unknown>) {
+  expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+    identifier: 'station-alarm',
+    content: { title, body, sound: true, ...extra },
+    trigger: null,
+  });
+}
+
 describe('stationNotification', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -240,21 +254,13 @@ describe('stationNotification', () => {
       await updateStationNotification(mockStation, 154);
       expect(mockStartLiveActivity).not.toHaveBeenCalled();
       expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: { title: '시청역', body: '1호선 · 약 154m' },
-        })
-      );
+      expectNotificationContent('시청역', '1호선 · 약 154m');
     });
 
     it('startLiveActivity 실패 시 expo-notifications로 폴백한다', async () => {
       mockStartLiveActivity.mockRejectedValueOnce(new Error('ActivityKit 오류'));
       await updateStationNotification(mockStation, 154);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: { title: '시청역', body: '1호선 · 약 154m' },
-        })
-      );
+      expectNotificationContent('시청역', '1호선 · 약 154m');
     });
 
     it('startLiveActivity 실패 시 liveActivityStarted를 false로 리셋한다', async () => {
@@ -287,59 +293,32 @@ describe('stationNotification', () => {
 
     it('목적지 없으면 역 이름과 거리를 표시한다', async () => {
       await updateStationNotification(mockStation, 154);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: { title: '시청역', body: '1호선 · 약 154m' },
-        })
-      );
+      expectNotificationContent('시청역', '1호선 · 약 154m');
     });
 
     it('직통 경로이면 목적지와 정거장 수를 표시한다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, directRoute);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: { title: '시청 → 성신여대입구', body: '1호선 · 4정거장 남음' },
-        })
-      );
+      expectNotificationContent('시청 → 성신여대입구', '1호선 · 4정거장 남음');
     });
 
     it('환승 경로이면 환승 정보를 표시한다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, transferRoute);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: { title: '시청 → 성신여대입구', body: '3역 후 동대문 환승' },
-        })
-      );
+      expectNotificationContent('시청 → 성신여대입구', '3역 후 동대문 환승');
     });
 
     it('multi-transfer 경로이면 두 환승 정보를 표시한다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, multiTransferRoute);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: {
-            title: '시청 → 성신여대입구',
-            body: '3역 후 잠실 환승',
-          },
-        })
-      );
+      expectNotificationContent('시청 → 성신여대입구', '3역 후 잠실 환승');
     });
 
     it('etaMinutes가 있으면 알림 body에 소요 시간이 포함된다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: { title: '시청 → 성신여대입구', body: '1호선 · 4정거장 남음 · 약 12분' },
-        })
-      );
+      expectNotificationContent('시청 → 성신여대입구', '1호선 · 4정거장 남음 · 약 12분');
     });
 
     it('isMock이면 알림 body에 (예상) 표시가 포함된다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, true);
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: { title: '시청 → 성신여대입구', body: '1호선 · 4정거장 남음 · 약 12분 (예상)' },
-        })
-      );
+      expectNotificationContent('시청 → 성신여대입구', '1호선 · 4정거장 남음 · 약 12분 (예상)');
     });
 
     it('dismiss가 실패해도 schedule은 호출된다', async () => {
@@ -418,31 +397,19 @@ describe('stationNotification', () => {
     it('destination 타입이면 하차 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('destination', '강남');
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'station-alarm',
-        content: { title: '하차 알림', body: '다음 역 강남에서 내리세요!', sound: true },
-        trigger: null,
-      });
+      expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!');
     });
 
     it('transfer 타입이면 환승 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('transfer', '시청');
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'station-alarm',
-        content: { title: '환승 알림', body: '다음 역 시청에서 환승하세요!', sound: true },
-        trigger: null,
-      });
+      expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!');
     });
 
     it('Android에서는 channelId가 포함된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
       await sendAlarmNotification('destination', '강남');
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
-        identifier: 'station-alarm',
-        content: { title: '하차 알림', body: '다음 역 강남에서 내리세요!', sound: true, channelId: 'station-alarm' },
-        trigger: null,
-      });
+      expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { channelId: 'station-alarm' });
     });
 
     it('dismiss 실패해도 schedule은 호출된다', async () => {
