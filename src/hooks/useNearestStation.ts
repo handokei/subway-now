@@ -5,7 +5,6 @@ import { haversine } from '../utils/haversine';
 import { NearestStationResult, Station } from '../types/station';
 
 const stations = stationsData as Station[];
-const NEARBY_THRESHOLD_KM = 0.5;
 const UPDATE_INTERVAL_MS = 30_000;
 
 interface UseNearestStationReturn {
@@ -38,7 +37,7 @@ export function useNearestStation(): UseNearestStationReturn {
         }
       }
 
-      if (nearest && minDistance <= NEARBY_THRESHOLD_KM) {
+      if (nearest) {
         return { station: nearest, distanceKm: minDistance };
       }
       return null;
