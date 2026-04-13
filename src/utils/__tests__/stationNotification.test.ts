@@ -7,7 +7,7 @@ import {
   clearStationNotification,
 } from '../stationNotification';
 import { Station } from '../../types/station';
-import { DirectRoute, TransferRoute } from '../stationRoute';
+import { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
 
 jest.mock('expo-notifications');
 jest.mock('../logger', () => ({
@@ -57,6 +57,14 @@ const transferRoute: TransferRoute = {
   toLine: '4',
   stopsToTransfer: 3,
   stopsFromTransfer: 2,
+};
+const multiTransferRoute: MultiTransferRoute = {
+  type: 'multi-transfer',
+  transfers: [
+    { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+    { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+  ],
+  stopsAfterLastTransfer: 4,
 };
 
 describe('stationNotification', () => {
@@ -164,6 +172,20 @@ describe('stationNotification', () => {
       );
     });
 
+    it('multi-transfer 경로이면 두 환승 정보를 포함한다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, multiTransferRoute);
+      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          destinationName: '성신여대입구',
+          stopsToTransfer: 3,
+          transferStationName: '잠실',
+          stopsToSecondTransfer: 5,
+          secondTransferStationName: '시청',
+          stopsAfterLastTransfer: 4,
+        })
+      );
+    });
+
     it('expo-notifications를 호출하지 않는다', async () => {
       await updateStationNotification(mockStation, 154);
       expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
@@ -242,6 +264,18 @@ describe('stationNotification', () => {
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
         expect.objectContaining({
           content: { title: '시청 → 성신여대입구', body: '3정거장 후 동대문 환승 · 2정거장' },
+        })
+      );
+    });
+
+    it('multi-transfer 경로이면 두 환승 정보를 표시한다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, multiTransferRoute);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: {
+            title: '시청 → 성신여대입구',
+            body: '3정거장 후 잠실 환승 → 5정거장 후 시청 환승 · 4정거장',
+          },
         })
       );
     });

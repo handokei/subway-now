@@ -10,6 +10,9 @@ export interface LiveActivityData {
   stopsToTransfer?: number;
   transferStationName?: string;
   stopsFromTransfer?: number;
+  stopsToSecondTransfer?: number;
+  secondTransferStationName?: string;
+  stopsAfterLastTransfer?: number;
   distanceM: number;
 }
 
