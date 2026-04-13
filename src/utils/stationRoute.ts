@@ -1,5 +1,7 @@
 import stations from '../data/stations.json';
 import type { Station } from '../types/station';
+import { LINE_COLORS } from '../constants/lineColors';
+import type { LineNumber } from '../types/station';
 
 const allStations = stations as Station[];
 
@@ -18,6 +20,19 @@ export interface TransferRoute {
 }
 
 export type Route = DirectRoute | TransferRoute | null;
+
+export interface JourneySegment {
+  line: string;
+  lineColor: string;
+  fromName: string;
+  toName: string;
+  stops: number;
+}
+
+export interface JourneyDisplay {
+  segments: JourneySegment[];
+  totalStops: number;
+}
 
 export function getStationsOnLine(line: string): Station[] {
   return allStations
@@ -90,4 +105,63 @@ export function findRoute(currentId: string, destinationId: string): Route {
   }
 
   return bestRoute;
+}
+
+const MINUTES_PER_STOP = 2;
+const TRANSFER_MINUTES = 3;
+
+export function buildJourneyDisplay(
+  route: Route,
+  current: Station,
+  destination: Station,
+): JourneyDisplay | null {
+  if (!route) return null;
+
+  if (route.type === 'direct') {
+    return {
+      segments: [
+        {
+          line: current.line,
+          lineColor: current.lineColor,
+          fromName: current.name,
+          toName: destination.name,
+          stops: route.stops,
+        },
+      ],
+      totalStops: route.stops,
+    };
+  }
+
+  return {
+    segments: [
+      {
+        line: route.fromLine,
+        lineColor: LINE_COLORS[route.fromLine as LineNumber] ?? current.lineColor,
+        fromName: current.name,
+        toName: route.transferName,
+        stops: route.stopsToTransfer,
+      },
+      {
+        line: route.toLine,
+        lineColor: LINE_COLORS[route.toLine as LineNumber] ?? destination.lineColor,
+        fromName: route.transferName,
+        toName: destination.name,
+        stops: route.stopsFromTransfer,
+      },
+    ],
+    totalStops: route.stopsToTransfer + route.stopsFromTransfer,
+  };
+}
+
+export function calculateETA(nextTrainMinutes: number, route: Route): number {
+  if (!route) return nextTrainMinutes;
+
+  const totalStops =
+    route.type === 'direct'
+      ? route.stops
+      : route.stopsToTransfer + route.stopsFromTransfer;
+
+  const transferTime = route.type === 'transfer' ? TRANSFER_MINUTES : 0;
+
+  return nextTrainMinutes + totalStops * MINUTES_PER_STOP + transferTime;
 }

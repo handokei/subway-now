@@ -1,0 +1,146 @@
+import { StyleSheet, Text, View } from 'react-native';
+import { LINE_NAMES } from '../constants/lineColors';
+import type { JourneyDisplay } from '../utils/stationRoute';
+import type { LineNumber } from '../types/station';
+
+interface JourneyTimelineProps {
+  journey: JourneyDisplay;
+  etaMinutes?: number | null;
+}
+
+export function JourneyTimeline({ journey, etaMinutes }: JourneyTimelineProps) {
+  const { segments } = journey;
+
+  return (
+    <View style={styles.container}>
+      {segments.map((segment, idx) => {
+        const isFirst = idx === 0;
+        const isLast = idx === segments.length - 1;
+        const lineName = LINE_NAMES[segment.line as LineNumber] ?? segment.line;
+
+        return (
+          <View key={idx}>
+            {isFirst && (
+              <View style={styles.stationRow}>
+                <View style={[styles.dot, styles.startDot]} />
+                <Text style={styles.stationName}>{segment.fromName}</Text>
+              </View>
+            )}
+
+            <View style={styles.segmentRow}>
+              <View style={[styles.segmentLine, { backgroundColor: segment.lineColor }]} />
+              <View style={styles.segmentInfo}>
+                <View style={[styles.lineBadge, { backgroundColor: segment.lineColor }]}>
+                  <Text style={styles.lineBadgeText}>{lineName}</Text>
+                </View>
+                <Text style={styles.stopsText}>{segment.stops}정거장</Text>
+              </View>
+            </View>
+
+            {!isLast && (
+              <View style={styles.stationRow}>
+                <Text style={styles.transferIcon}>⇄</Text>
+                <Text style={styles.transferName}>{segment.toName}</Text>
+              </View>
+            )}
+
+            {isLast && (
+              <View style={styles.stationRow}>
+                <View style={[styles.dot, styles.endDot]} />
+                <Text style={styles.stationName}>{segment.toName}</Text>
+              </View>
+            )}
+          </View>
+        );
+      })}
+
+      {etaMinutes != null && (
+        <View style={styles.etaRow}>
+          <Text style={styles.etaText}>약 {etaMinutes}분 소요</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    marginTop: 12,
+  },
+  stationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  dot: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    marginRight: 10,
+  },
+  startDot: {
+    backgroundColor: '#a78bfa',
+  },
+  endDot: {
+    backgroundColor: '#22c55e',
+  },
+  stationName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#ffffff',
+  },
+  transferIcon: {
+    fontSize: 16,
+    color: '#a78bfa',
+    width: 12,
+    textAlign: 'center',
+    marginRight: 10,
+  },
+  transferName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#a78bfa',
+  },
+  segmentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingLeft: 4,
+    paddingVertical: 4,
+  },
+  segmentLine: {
+    width: 4,
+    height: 36,
+    borderRadius: 2,
+    marginRight: 14,
+  },
+  segmentInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  lineBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+  },
+  lineBadgeText: {
+    color: '#ffffff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  stopsText: {
+    fontSize: 13,
+    color: '#8888aa',
+  },
+  etaRow: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: '#2a2a4a',
+  },
+  etaText: {
+    fontSize: 14,
+    color: '#a78bfa',
+    fontWeight: '600',
+  },
+});

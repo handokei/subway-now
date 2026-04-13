@@ -6,7 +6,8 @@ import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
-import { findRoute } from '../../src/utils/stationRoute';
+import { findRoute, buildJourneyDisplay, calculateETA } from '../../src/utils/stationRoute';
+import { JourneyTimeline } from '../../src/components/JourneyTimeline';
 import { initStationNotification, updateStationNotification, clearStationNotification } from '../../src/utils/stationNotification';
 import { createLogger } from '../../src/utils/logger';
 
@@ -21,6 +22,16 @@ export default function HomeScreen() {
   const arrivedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const route = result && destination ? findRoute(result.station.id, destination.id) : null;
+  const journey = route && result && destination ? buildJourneyDisplay(route, result.station, destination) : null;
+  const nextTrainMinutes = arrival
+    ? Math.min(
+        arrival.up[0]?.arrivalMinutes ?? Infinity,
+        arrival.down[0]?.arrivalMinutes ?? Infinity,
+      )
+    : null;
+  const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
+    ? calculateETA(nextTrainMinutes, route)
+    : null;
 
   useEffect(() => {
     loadFavorites();
@@ -148,29 +159,14 @@ export default function HomeScreen() {
 
             <View style={styles.destinationCard}>
               {destination ? (
-                <View style={styles.destinationInfo}>
-                  <Text style={styles.destinationArrow}>→</Text>
-                  <View>
+                <View>
+                  <View style={styles.destinationInfo}>
+                    <Text style={styles.destinationArrow}>→</Text>
                     <Text style={styles.destinationName}>{destination.name}</Text>
-                    {route?.type === 'direct' ? (
-                      <View style={styles.routeDirectBox}>
-                        <Text style={styles.routeDirectStops}>{route.stops}</Text>
-                        <Text style={styles.routeDirectLabel}>정거장 남음</Text>
-                      </View>
-                    ) : route?.type === 'transfer' ? (
-                      <View style={styles.transferBox}>
-                        <View style={styles.transferBeforeRow}>
-                          <Text style={styles.transferBeforeStops}>{route.stopsToTransfer}</Text>
-                          <Text style={styles.transferBeforeLabel}>정거장 후 환승</Text>
-                        </View>
-                        <View style={styles.transferStationRow}>
-                          <Text style={styles.transferIcon}>⇄</Text>
-                          <Text style={styles.transferStationName}>{route.transferName}</Text>
-                        </View>
-                        <Text style={styles.transferAfterText}>환승 후 {route.stopsFromTransfer}정거장</Text>
-                      </View>
-                    ) : null}
                   </View>
+                  {journey && (
+                    <JourneyTimeline journey={journey} etaMinutes={etaMinutes} />
+                  )}
                 </View>
               ) : null}
               {!destination && recentDestination && (
@@ -362,65 +358,6 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     color: '#ffffff',
-  },
-  remainingText: {
-    fontSize: 13,
-    color: '#8888aa',
-    marginTop: 2,
-  },
-  routeDirectBox: {
-    marginTop: 8,
-    alignItems: 'flex-start',
-  },
-  routeDirectStops: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: '#ffffff',
-    lineHeight: 36,
-  },
-  routeDirectLabel: {
-    fontSize: 13,
-    color: '#8888aa',
-    marginTop: 2,
-  },
-  transferBox: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#2a2a4a',
-    gap: 6,
-  },
-  transferBeforeRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 4,
-  },
-  transferBeforeStops: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#ffffff',
-  },
-  transferBeforeLabel: {
-    fontSize: 13,
-    color: '#8888aa',
-  },
-  transferStationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  transferIcon: {
-    fontSize: 20,
-    color: '#a78bfa',
-  },
-  transferStationName: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#ffffff',
-  },
-  transferAfterText: {
-    fontSize: 13,
-    color: '#8888aa',
   },
   recentDestinationButton: {
     backgroundColor: '#0f0f2a',
