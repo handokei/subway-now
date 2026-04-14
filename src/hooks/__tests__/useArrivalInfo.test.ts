@@ -83,13 +83,13 @@ describe('useArrivalInfo', () => {
     );
 
     await waitFor(() =>
-      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('강남')
+      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('강남', undefined)
     );
 
     rerender({ name: '역삼' });
 
     await waitFor(() =>
-      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('역삼')
+      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('역삼', undefined)
     );
   });
 
