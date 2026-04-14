@@ -18,7 +18,6 @@ describe('useArrivalInfo', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
-    appStateCallback = null;
   });
 
   afterEach(() => {
