@@ -4,6 +4,7 @@ import { Station } from '../types/station';
 import { LINE_COLORS, LINE_NAMES } from '../constants/lineColors';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
 import * as LiveActivity from 'live-activity';
+import { playAlarmWithRouting, stopAlarm } from './alarmSound';
 import { createLogger } from './logger';
 
 const notifLogger = createLogger('Notification');
@@ -34,13 +35,12 @@ async function scheduleNotification(
 
 export function setupNotificationHandler(): void {
   Notifications.setNotificationHandler({
-    handleNotification: async (notification) => {
-      const isAlarm = notification.request.identifier === ALARM_NOTIFICATION_ID;
+    handleNotification: async () => {
       return {
         shouldShowAlert: true,
         shouldShowBanner: true,
         shouldShowList: true,
-        shouldPlaySound: isAlarm,
+        shouldPlaySound: false,
         shouldSetBadge: false,
       };
     },
@@ -54,11 +54,12 @@ export async function initStationNotification(): Promise<void> {
       importance: Notifications.AndroidImportance.HIGH,
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
     });
+    await Notifications.deleteNotificationChannelAsync(ALARM_CHANNEL_ID).catch(() => {});
     await Notifications.setNotificationChannelAsync(ALARM_CHANNEL_ID, {
       name: '하차/환승 알림',
       importance: Notifications.AndroidImportance.HIGH,
-      sound: 'default',
-      vibrationPattern: [0, 250, 250, 250],
+      sound: null,
+      enableVibrate: false,
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
     });
   }
@@ -220,6 +221,7 @@ export async function clearStationNotification(): Promise<void> {
 export async function sendAlarmNotification(
   type: 'destination' | 'transfer',
   stationName: string,
+  sleepMode: boolean = false,
 ): Promise<void> {
   const isTransfer = type === 'transfer';
   const title = isTransfer ? '환승 알림' : '하차 알림';
@@ -230,13 +232,15 @@ export async function sendAlarmNotification(
   await scheduleNotification(ALARM_NOTIFICATION_ID, {
     title,
     body,
-    sound: true,
+    sound: false,
     ...(Platform.OS === 'android' && { channelId: ALARM_CHANNEL_ID }),
   });
+  await playAlarmWithRouting(sleepMode);
   notifLogger.info('알람 알림:', title, body);
 }
 
 export async function clearAlarmNotification(): Promise<void> {
+  await stopAlarm();
   try {
     await Notifications.dismissNotificationAsync(ALARM_NOTIFICATION_ID);
   } catch { /* 무시 */ }

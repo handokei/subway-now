@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
@@ -10,6 +10,7 @@ import { findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA } from
 import { JourneyTimeline } from '../../src/components/JourneyTimeline';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
+import { AlarmOverlay } from '../../src/components/AlarmOverlay';
 import { createLogger } from '../../src/utils/logger';
 
 const logger = createLogger('HomeScreen');
@@ -17,7 +18,7 @@ const logger = createLogger('HomeScreen');
 export default function HomeScreen() {
   const { result, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
   const { arrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(result?.station.name ?? null);
-  const { addFavorite, removeFavorite, isFavorite, loadFavorites, destination, setDestination, recentDestination, setRecentDestination } = useAppStore();
+  const { addFavorite, removeFavorite, isFavorite, loadFavorites, destination, setDestination, recentDestination, setRecentDestination, sleepMode, setSleepMode, loadSleepMode, alarmEvent, clearAlarmEvent } = useAppStore();
   const [pickerVisible, setPickerVisible] = useState(false);
   const [arrivedBanner, setArrivedBanner] = useState(false);
   const arrivedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -47,6 +48,7 @@ export default function HomeScreen() {
 
   useEffect(() => {
     loadFavorites();
+    loadSleepMode();
     initStationNotification();
   }, []);
 
@@ -77,6 +79,7 @@ export default function HomeScreen() {
     if (arrivedBanner) {
       clearStationNotification().catch(console.error);
       clearAlarmNotification().catch(console.error);
+      clearAlarmEvent();
       prevNotifKeyRef.current = undefined;
     }
   }, [arrivedBanner]);
@@ -212,12 +215,24 @@ export default function HomeScreen() {
                 </Text>
               </TouchableOpacity>
               {destination ? (
-                <TouchableOpacity
-                  onPress={() => setDestination(null)}
-                  testID="destination-clear-button"
-                >
-                  <Text style={styles.clearText}>초기화</Text>
-                </TouchableOpacity>
+                <>
+                  <View style={styles.sleepModeRow} testID="sleep-mode-row">
+                    <Text style={styles.sleepModeLabel}>취침 모드</Text>
+                    <Switch
+                      value={sleepMode}
+                      onValueChange={setSleepMode}
+                      trackColor={{ false: '#2a2a4a', true: '#a78bfa' }}
+                      thumbColor={sleepMode ? '#ffffff' : '#666688'}
+                      testID="home-sleep-mode-switch"
+                    />
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => setDestination(null)}
+                    testID="destination-clear-button"
+                  >
+                    <Text style={styles.clearText}>초기화</Text>
+                  </TouchableOpacity>
+                </>
               ) : null}
             </View>
 
@@ -248,6 +263,10 @@ export default function HomeScreen() {
           </View>
         )}
       </ScrollView>
+
+      {alarmEvent && (
+        <AlarmOverlay event={alarmEvent} onDismiss={clearAlarmEvent} />
+      )}
 
       <DestinationPicker
         visible={pickerVisible}
@@ -441,6 +460,20 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 15,
     fontWeight: '700',
+  },
+  sleepModeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#2a2a4a',
+  },
+  sleepModeLabel: {
+    fontSize: 14,
+    color: '#aaaacc',
+    fontWeight: '600',
   },
   clearText: {
     color: '#8888aa',

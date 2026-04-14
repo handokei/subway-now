@@ -21,6 +21,13 @@ jest.mock('../logger', () => ({
   }),
 }));
 
+const mockPlayAlarmWithRouting = jest.fn().mockResolvedValue(undefined);
+const mockStopAlarm = jest.fn().mockResolvedValue(undefined);
+jest.mock('../alarmSound', () => ({
+  playAlarmWithRouting: (...args: unknown[]) => mockPlayAlarmWithRouting(...args),
+  stopAlarm: () => mockStopAlarm(),
+}));
+
 const mockStartLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockUpdateLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockEndLiveActivity = jest.fn().mockResolvedValue(undefined);
@@ -78,7 +85,7 @@ function expectNotificationContent(title: string, body: string) {
 function expectAlarmNotification(title: string, body: string, extra?: Record<string, unknown>) {
   expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
     identifier: 'station-alarm',
-    content: { title, body, sound: true, ...extra },
+    content: { title, body, sound: false, ...extra },
     trigger: null,
   });
 }
@@ -102,20 +109,14 @@ describe('stationNotification', () => {
       );
     });
 
-    it('일반 알림은 shouldPlaySound false를 반환한다', async () => {
+    it('모든 알림은 shouldPlaySound false를 반환한다', async () => {
       setupNotificationHandler();
       const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
-      const mockNotification = { request: { identifier: 'current-station' } };
-      const result = await handleNotification(mockNotification);
-      expect(result).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
-    });
+      const normalResult = await handleNotification({ request: { identifier: 'current-station' } });
+      expect(normalResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
 
-    it('알람 알림은 shouldPlaySound true를 반환한다', async () => {
-      setupNotificationHandler();
-      const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
-      const mockNotification = { request: { identifier: 'station-alarm' } };
-      const result = await handleNotification(mockNotification);
-      expect(result).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false });
+      const alarmResult = await handleNotification({ request: { identifier: 'station-alarm' } });
+      expect(alarmResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
     });
   });
 
@@ -129,20 +130,29 @@ describe('stationNotification', () => {
 
     it('Android에서는 채널 생성 후 권한 요청한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
+      (Notifications.deleteNotificationChannelAsync as jest.Mock).mockResolvedValue(undefined);
       await initStationNotification();
       expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station', {
         name: '현재 역',
         importance: Notifications.AndroidImportance.HIGH,
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       });
+      expect(Notifications.deleteNotificationChannelAsync).toHaveBeenCalledWith('station-alarm');
       expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm', {
         name: '하차/환승 알림',
         importance: Notifications.AndroidImportance.HIGH,
-        sound: 'default',
-        vibrationPattern: [0, 250, 250, 250],
+        sound: null,
+        enableVibrate: false,
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       });
       expect(Notifications.requestPermissionsAsync).toHaveBeenCalledTimes(1);
+    });
+
+    it('Android에서 기존 채널 삭제 실패해도 정상 동작한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      (Notifications.deleteNotificationChannelAsync as jest.Mock).mockRejectedValue(new Error('채널 없음'));
+      await initStationNotification();
+      expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm', expect.anything());
     });
   });
 
@@ -416,12 +426,20 @@ describe('stationNotification', () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('destination', '강남');
       expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!');
+      expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(false);
     });
 
     it('transfer 타입이면 환승 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('transfer', '시청');
       expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!');
+      expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(false);
+    });
+
+    it('sleepMode가 true이면 playAlarmWithRouting에 true를 전달한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification('destination', '강남', true);
+      expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(true);
     });
 
     it('Android에서는 channelId가 포함된다', async () => {
@@ -439,8 +457,9 @@ describe('stationNotification', () => {
   });
 
   describe('clearAlarmNotification', () => {
-    it('station-alarm을 dismiss한다', async () => {
+    it('사운드를 정지하고 station-alarm을 dismiss한다', async () => {
       await clearAlarmNotification();
+      expect(mockStopAlarm).toHaveBeenCalled();
       expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('station-alarm');
     });
 

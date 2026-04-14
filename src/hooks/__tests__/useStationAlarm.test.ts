@@ -1,5 +1,6 @@
 import { renderHook } from '@testing-library/react-native';
 import { useStationAlarm } from '../useStationAlarm';
+import { useAppStore } from '../../store/useAppStore';
 import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../../utils/stationRoute';
 
 const mockSendAlarmNotification = jest.fn().mockResolvedValue(undefined);
@@ -17,9 +18,14 @@ jest.mock('../../utils/logger', () => ({
   }),
 }));
 
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
+
 describe('useStationAlarm', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    useAppStore.setState({ sleepMode: false, alarmEvent: null });
   });
 
   it('should not send alarm when route is null', () => {
@@ -42,7 +48,7 @@ describe('useStationAlarm', () => {
   it('should send destination alarm for direct route with stops === 1', () => {
     const route: DirectRoute = { type: 'direct', stops: 1 };
     renderHook(() => useStationAlarm(route, '강남'));
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남');
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남', false);
   });
 
   it('should send transfer alarm for transfer route with stopsToTransfer === 1', () => {
@@ -55,7 +61,7 @@ describe('useStationAlarm', () => {
       stopsFromTransfer: 5,
     };
     renderHook(() => useStationAlarm(route, '강남'));
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '시청');
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '시청', false);
   });
 
   it('should send destination alarm for transfer route with stopsFromTransfer === 1', () => {
@@ -68,7 +74,7 @@ describe('useStationAlarm', () => {
       stopsFromTransfer: 1,
     };
     renderHook(() => useStationAlarm(route, '강남'));
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남');
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남', false);
   });
 
   it('should send transfer alarm for multi-transfer route', () => {
@@ -81,7 +87,7 @@ describe('useStationAlarm', () => {
       stopsAfterLastTransfer: 3,
     };
     renderHook(() => useStationAlarm(route, '강남'));
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '시청');
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '시청', false);
   });
 
   it('should not fire same alarm twice', () => {
@@ -103,7 +109,38 @@ describe('useStationAlarm', () => {
 
     rerender({ dest: '잠실' });
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(2);
-    expect(mockSendAlarmNotification).toHaveBeenLastCalledWith('destination', '잠실');
+    expect(mockSendAlarmNotification).toHaveBeenLastCalledWith('destination', '잠실', false);
+  });
+
+  it('should pass sleepMode to sendAlarmNotification', () => {
+    useAppStore.setState({ sleepMode: true });
+    const route: DirectRoute = { type: 'direct', stops: 1 };
+    renderHook(() => useStationAlarm(route, '강남'));
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남', true);
+  });
+
+  it('취침 모드일 때 alarmEvent를 설정한다', () => {
+    useAppStore.setState({ sleepMode: true });
+    const route: DirectRoute = { type: 'direct', stops: 1 };
+    renderHook(() => useStationAlarm(route, '강남'));
+    expect(useAppStore.getState().alarmEvent).toEqual({ type: 'destination', stationName: '강남' });
+  });
+
+  it('취침 모드가 아닐 때 alarmEvent를 설정하지 않는다', () => {
+    useAppStore.setState({ sleepMode: false });
+    const route: DirectRoute = { type: 'direct', stops: 1 };
+    renderHook(() => useStationAlarm(route, '강남'));
+    expect(useAppStore.getState().alarmEvent).toBeNull();
+  });
+
+  it('should not re-fire alarm when sleepMode changes', () => {
+    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const { rerender } = renderHook(() => useStationAlarm(route, '강남'));
+    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+
+    useAppStore.setState({ sleepMode: true });
+    rerender({});
+    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
   });
 
   it('should handle sendAlarmNotification failure gracefully', () => {
