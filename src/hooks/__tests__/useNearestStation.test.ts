@@ -140,5 +140,6 @@ describe('useNearestStation', () => {
     expect(clearIntervalSpy).toHaveBeenCalled();
     clearIntervalSpy.mockRestore();
   });
+
 });
 

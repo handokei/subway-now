@@ -31,11 +31,16 @@ class LiveActivityManager {
 
     private init() {}
 
-    func start(data: [String: Any]) async throws {
-        if let existing = currentActivity {
-            await existing.end(dismissalPolicy: .immediate)
-            currentActivity = nil
+    /// 현재 추적 중인 Activity + 이전 세션에서 남은 고아 Activity 일괄 종료
+    private func endAllActivities() async {
+        currentActivity = nil
+        for activity in Activity<SubwayActivityAttributes>.activities {
+            await activity.end(dismissalPolicy: .immediate)
         }
+    }
+
+    func start(data: [String: Any]) async throws {
+        await endAllActivities()
 
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             throw NSError(
@@ -80,10 +85,7 @@ class LiveActivityManager {
     }
 
     func end() async {
-        if let activity = currentActivity {
-            await activity.end(dismissalPolicy: .immediate)
-            currentActivity = nil
-        }
+        await endAllActivities()
     }
 
     // JSON → Codable 디코딩: 타입 안전성 보장, 필드 추가 시 struct만 수정하면 됨
