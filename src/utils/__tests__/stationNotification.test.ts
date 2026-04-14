@@ -244,6 +244,19 @@ describe('stationNotification', () => {
       );
     });
 
+    it('목적지만 있고 경로가 없으면 destinationName만 포함한다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, null);
+      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({ destinationName: '성신여대입구' })
+      );
+      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+        expect.not.objectContaining({ stopsRemaining: expect.anything() })
+      );
+      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+        expect.not.objectContaining({ stopsToTransfer: expect.anything() })
+      );
+    });
+
     it('expo-notifications를 호출하지 않는다', async () => {
       await updateStationNotification(mockStation, 154);
       expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
@@ -333,6 +346,11 @@ describe('stationNotification', () => {
       (Notifications.scheduleNotificationAsync as jest.Mock).mockImplementation(async () => { callOrder.push('schedule'); return 'id'; });
       await updateStationNotification(mockStation, 154);
       expect(callOrder).toEqual(['dismiss', 'schedule']);
+    });
+
+    it('목적지만 있고 경로가 없으면 제목에 목적지가 표시된다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, null);
+      expectNotificationContent('시청 → 성신여대입구', '1호선 · 약 154m');
     });
 
     it('Live Activity를 호출하지 않는다', async () => {

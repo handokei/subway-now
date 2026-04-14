@@ -45,7 +45,7 @@ class LiveActivityManager {
             )
         }
 
-        let state = buildState(from: data)
+        let state = try decodeState(from: data)
         let attributes = SubwayActivityAttributes()
         let content = ActivityContent(state: state, staleDate: nil)
         currentActivity = try Activity.request(
@@ -53,16 +53,30 @@ class LiveActivityManager {
             content: content,
             pushType: nil
         )
+        #if DEBUG
+        print("[LiveActivity] started, destination=\(state.destinationName ?? "nil")")
+        #endif
     }
 
     func update(data: [String: Any]) async throws {
-        guard let activity = currentActivity else {
-            try await start(data: data)
-            return
+        // Activity 상태 검증: ended/dismissed면 재시작
+        if let activity = currentActivity {
+            if activity.activityState == .active {
+                let state = try decodeState(from: data)
+                let content = ActivityContent(state: state, staleDate: nil)
+                await activity.update(content)
+                #if DEBUG
+                print("[LiveActivity] updated, destination=\(state.destinationName ?? "nil")")
+                #endif
+                return
+            } else {
+                #if DEBUG
+                print("[LiveActivity] activity state=\(activity.activityState), restarting")
+                #endif
+                currentActivity = nil
+            }
         }
-        let state = buildState(from: data)
-        let content = ActivityContent(state: state, staleDate: nil)
-        await activity.update(content)
+        try await start(data: data)
     }
 
     func end() async {
@@ -72,23 +86,10 @@ class LiveActivityManager {
         }
     }
 
-    private func buildState(from data: [String: Any]) -> SubwayActivityAttributes.ContentState {
-        SubwayActivityAttributes.ContentState(
-            stationName: data["stationName"] as? String ?? "",
-            lineName: data["lineName"] as? String ?? "",
-            lineColorHex: data["lineColorHex"] as? String ?? "#888888",
-            destinationName: data["destinationName"] as? String,
-            stopsRemaining: data["stopsRemaining"] as? Int,
-            stopsToTransfer: data["stopsToTransfer"] as? Int,
-            transferStationName: data["transferStationName"] as? String,
-            stopsFromTransfer: data["stopsFromTransfer"] as? Int,
-            stopsToSecondTransfer: data["stopsToSecondTransfer"] as? Int,
-            secondTransferStationName: data["secondTransferStationName"] as? String,
-            stopsAfterLastTransfer: data["stopsAfterLastTransfer"] as? Int,
-            distanceM: data["distanceM"] as? Int ?? 0,
-            etaMinutes: data["etaMinutes"] as? Int,
-            isMock: data["isMock"] as? Bool
-        )
+    // JSON → Codable 디코딩: 타입 안전성 보장, 필드 추가 시 struct만 수정하면 됨
+    private func decodeState(from data: [String: Any]) throws -> SubwayActivityAttributes.ContentState {
+        let jsonData = try JSONSerialization.data(withJSONObject: data)
+        return try JSONDecoder().decode(SubwayActivityAttributes.ContentState.self, from: jsonData)
     }
 }
 #endif

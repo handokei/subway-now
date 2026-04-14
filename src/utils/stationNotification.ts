@@ -75,24 +75,26 @@ function buildContent(
   isMock?: boolean,
 ): { title: string; body: string } {
   const etaSuffix = etaMinutes != null ? ` · 약 ${etaMinutes}분${isMock ? ' (예상)' : ''}` : '';
+
+  // destination layer: 목적지 있으면 title에 반영
+  const title = destination
+    ? `${currentStation.name} → ${destination.name}`
+    : `${currentStation.name}역`;
+
+  // route layer: 경로 정보가 있으면 body에 반영
   if (destination && route) {
-    const title = `${currentStation.name} → ${destination.name}`;
     if (route.type === 'direct') {
-      const body = `${LINE_NAMES[currentStation.line]} · ${route.stops}정거장 남음${etaSuffix}`;
-      return { title, body };
+      return { title, body: `${LINE_NAMES[currentStation.line]} · ${route.stops}정거장 남음${etaSuffix}` };
     }
     if (route.type === 'transfer') {
-      const body = `${route.stopsToTransfer}역 후 ${route.transferName} 환승${etaSuffix}`;
-      return { title, body };
+      return { title, body: `${route.stopsToTransfer}역 후 ${route.transferName} 환승${etaSuffix}` };
     }
     const [t1] = route.transfers;
-    const body = `${t1.stopsToTransfer}역 후 ${t1.transferName} 환승${etaSuffix}`;
-    return { title, body };
+    return { title, body: `${t1.stopsToTransfer}역 후 ${t1.transferName} 환승${etaSuffix}` };
   }
-  return {
-    title: `${currentStation.name}역`,
-    body: `${LINE_NAMES[currentStation.line]} · 약 ${distanceM}m`,
-  };
+
+  // base: 경로 없이 목적지만 있거나 목적지도 없는 경우
+  return { title, body: `${LINE_NAMES[currentStation.line]} · 약 ${distanceM}m${etaSuffix}` };
 }
 
 function buildLiveActivityData(
@@ -103,38 +105,45 @@ function buildLiveActivityData(
   etaMinutes?: number | null,
   isMock?: boolean,
 ): LiveActivity.LiveActivityData {
-  const base: LiveActivity.LiveActivityData = {
+  // station layer: 항상 포함
+  const data: LiveActivity.LiveActivityData = {
     stationName: currentStation.name,
     lineName: LINE_NAMES[currentStation.line],
     lineColorHex: LINE_COLORS[currentStation.line],
     distanceM,
   };
 
-  if (etaMinutes != null) {
-    base.etaMinutes = etaMinutes;
-  }
-  if (isMock) {
-    base.isMock = true;
+  // destination layer: 목적지 있으면 독립적으로 포함
+  if (destination) {
+    data.destinationName = destination.name;
   }
 
+  // route layer: 경로 정보가 있을 때만
   if (destination && route) {
-    base.destinationName = destination.name;
     if (route.type === 'direct') {
-      base.stopsRemaining = route.stops;
+      data.stopsRemaining = route.stops;
     } else if (route.type === 'transfer') {
-      base.stopsToTransfer = route.stopsToTransfer;
-      base.transferStationName = route.transferName;
-      base.stopsFromTransfer = route.stopsFromTransfer;
+      data.stopsToTransfer = route.stopsToTransfer;
+      data.transferStationName = route.transferName;
+      data.stopsFromTransfer = route.stopsFromTransfer;
     } else {
-      base.stopsToTransfer = route.transfers[0].stopsToTransfer;
-      base.transferStationName = route.transfers[0].transferName;
-      base.stopsToSecondTransfer = route.transfers[1].stopsToTransfer;
-      base.secondTransferStationName = route.transfers[1].transferName;
-      base.stopsAfterLastTransfer = route.stopsAfterLastTransfer;
+      data.stopsToTransfer = route.transfers[0].stopsToTransfer;
+      data.transferStationName = route.transfers[0].transferName;
+      data.stopsToSecondTransfer = route.transfers[1].stopsToTransfer;
+      data.secondTransferStationName = route.transfers[1].transferName;
+      data.stopsAfterLastTransfer = route.stopsAfterLastTransfer;
     }
   }
 
-  return base;
+  // eta layer: ETA가 있을 때만
+  if (etaMinutes != null) {
+    data.etaMinutes = etaMinutes;
+  }
+  if (isMock) {
+    data.isMock = true;
+  }
+
+  return data;
 }
 
 export async function updateStationNotification(
