@@ -18,11 +18,24 @@ const logger = createLogger('HomeScreen');
 export default function HomeScreen() {
   const { result, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
   const { arrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(result?.station.name ?? null);
-  const { addFavorite, removeFavorite, isFavorite, loadFavorites, destination, setDestination, recentDestination, setRecentDestination, sleepMode, setSleepMode, loadSleepMode, alarmEvent, clearAlarmEvent } = useAppStore();
+  const addFavorite = useAppStore((s) => s.addFavorite);
+  const removeFavorite = useAppStore((s) => s.removeFavorite);
+  const isFavorite = useAppStore((s) => s.isFavorite);
+  const loadFavorites = useAppStore((s) => s.loadFavorites);
+  const destination = useAppStore((s) => s.destination);
+  const setDestination = useAppStore((s) => s.setDestination);
+  const recentDestination = useAppStore((s) => s.recentDestination);
+  const setRecentDestination = useAppStore((s) => s.setRecentDestination);
+  const sleepMode = useAppStore((s) => s.sleepMode);
+  const setSleepMode = useAppStore((s) => s.setSleepMode);
+  const loadSleepMode = useAppStore((s) => s.loadSleepMode);
+  const alarmEvent = useAppStore((s) => s.alarmEvent);
+  const clearAlarmEvent = useAppStore((s) => s.clearAlarmEvent);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [arrivedBanner, setArrivedBanner] = useState(false);
   const arrivedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
+  const prevDestIdRef = useRef<string | null>(null);
   const route = useMemo(
     () => (result && destination ? findRoute(result.station.id, destination.id) : null),
     [result?.station.id, destination?.id],
@@ -53,6 +66,10 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
+    const prevDestId = prevDestIdRef.current;
+    const currDestId = destination?.id ?? null;
+    prevDestIdRef.current = currDestId;
+
     if (!result) {
       if (prevNotifKeyRef.current !== 'none') {
         prevNotifKeyRef.current = 'none';
@@ -64,15 +81,24 @@ export default function HomeScreen() {
     const key = `${result.station.id}__${destination?.id ?? ''}__${displayEta ?? ''}__${arrivalIsMock}`;
     if (key === prevNotifKeyRef.current) return;
     prevNotifKeyRef.current = key;
-    logger.info('알림 업데이트:', result.station.name, destination ? `→ ${destination.name}` : '');
-    updateStationNotification(
-      result.station,
-      Math.round(result.distanceKm * 1000),
-      destination,
-      route ?? null,
-      displayEta,
-      arrivalIsMock,
-    ).catch((e) => logger.error('알림 업데이트 실패:', e));
+
+    const destinationCleared = prevDestId != null && currDestId == null;
+    const update = async () => {
+      if (destinationCleared) {
+        logger.info('목적지 해제 → Live Activity 종료 후 재시작');
+        await clearStationNotification();
+      }
+      logger.info('알림 업데이트:', result.station.name, destination ? `→ ${destination.name}` : '');
+      await updateStationNotification(
+        result.station,
+        Math.round(result.distanceKm * 1000),
+        destination,
+        route ?? null,
+        displayEta,
+        arrivalIsMock,
+      );
+    };
+    update().catch((e) => logger.error('알림 업데이트 실패:', e));
   }, [result?.station.id, destination?.id, displayEta, arrivalIsMock]);
 
   useEffect(() => {

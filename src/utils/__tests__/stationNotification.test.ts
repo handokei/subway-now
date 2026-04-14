@@ -159,15 +159,13 @@ describe('stationNotification', () => {
   describe('updateStationNotification (iOS - Live Activity)', () => {
     beforeEach(async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      // liveActivityStarted 초기화
-      await clearStationNotification();
       jest.clearAllMocks();
       mockIsLiveActivityEnabled.mockReturnValue(true);
     });
 
-    it('처음 호출 시 startLiveActivity를 호출한다', async () => {
+    it('updateLiveActivity를 호출한다', async () => {
       await updateStationNotification(mockStation, 154);
-      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
           stationName: '시청',
           lineName: '1호선',
@@ -175,26 +173,26 @@ describe('stationNotification', () => {
           distanceM: 154,
         })
       );
-      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+      expect(mockStartLiveActivity).not.toHaveBeenCalled();
     });
 
-    it('두 번째 호출부터는 updateLiveActivity를 호출한다', async () => {
+    it('연속 호출 시 항상 updateLiveActivity를 호출한다', async () => {
       await updateStationNotification(mockStation, 154);
       await updateStationNotification(mockStation, 100);
-      expect(mockStartLiveActivity).toHaveBeenCalledTimes(1);
-      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(2);
+      expect(mockStartLiveActivity).not.toHaveBeenCalled();
     });
 
     it('목적지 없으면 destinationName이 없다', async () => {
       await updateStationNotification(mockStation, 154);
-      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.not.objectContaining({ destinationName: expect.anything() })
       );
     });
 
     it('직통 경로이면 stopsRemaining을 포함한다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, directRoute);
-      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
           destinationName: '성신여대입구',
           stopsRemaining: 4,
@@ -204,7 +202,7 @@ describe('stationNotification', () => {
 
     it('환승 경로이면 환승 정보를 포함한다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, transferRoute);
-      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
           destinationName: '성신여대입구',
           stopsToTransfer: 3,
@@ -216,7 +214,7 @@ describe('stationNotification', () => {
 
     it('multi-transfer 경로이면 두 환승 정보를 포함한다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, multiTransferRoute);
-      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
           destinationName: '성신여대입구',
           stopsToTransfer: 3,
@@ -230,7 +228,7 @@ describe('stationNotification', () => {
 
     it('etaMinutes를 전달하면 Live Activity 데이터에 포함된다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12);
-      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
           etaMinutes: 12,
         })
@@ -239,7 +237,7 @@ describe('stationNotification', () => {
 
     it('isMock이 true이면 Live Activity 데이터에 포함된다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, true);
-      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
           etaMinutes: 12,
           isMock: true,
@@ -249,20 +247,20 @@ describe('stationNotification', () => {
 
     it('etaMinutes가 없으면 Live Activity 데이터에 포함되지 않는다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, directRoute);
-      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.not.objectContaining({ etaMinutes: expect.anything() })
       );
     });
 
     it('목적지만 있고 경로가 없으면 destinationName만 포함한다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, null);
-      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({ destinationName: '성신여대입구' })
       );
-      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.not.objectContaining({ stopsRemaining: expect.anything() })
       );
-      expect(mockStartLiveActivity).toHaveBeenCalledWith(
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.not.objectContaining({ stopsToTransfer: expect.anything() })
       );
     });
@@ -280,32 +278,10 @@ describe('stationNotification', () => {
       expectNotificationContent('시청역', '1호선 · 약 154m');
     });
 
-    it('startLiveActivity 실패 시 expo-notifications로 폴백한다', async () => {
-      mockStartLiveActivity.mockRejectedValueOnce(new Error('ActivityKit 오류'));
+    it('updateLiveActivity 실패 시 expo-notifications로 폴백한다', async () => {
+      mockUpdateLiveActivity.mockRejectedValueOnce(new Error('ActivityKit 오류'));
       await updateStationNotification(mockStation, 154);
       expectNotificationContent('시청역', '1호선 · 약 154m');
-    });
-
-    it('startLiveActivity 실패 시 liveActivityStarted를 false로 리셋한다', async () => {
-      mockStartLiveActivity.mockRejectedValueOnce(new Error('ActivityKit 오류'));
-      await updateStationNotification(mockStation, 154);
-      // liveActivityStarted가 리셋됐으므로 다음 호출도 start를 사용해야 함
-      jest.clearAllMocks();
-      mockIsLiveActivityEnabled.mockReturnValue(true);
-      await updateStationNotification(mockStation, 100);
-      expect(mockStartLiveActivity).toHaveBeenCalled();
-      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
-    });
-
-    it('updateLiveActivity 실패 시 liveActivityStarted를 false로 리셋한다', async () => {
-      await updateStationNotification(mockStation, 154);
-      mockUpdateLiveActivity.mockRejectedValueOnce(new Error('업데이트 오류'));
-      await updateStationNotification(mockStation, 100);
-      // liveActivityStarted가 리셋됐으므로 다음 호출은 start를 사용해야 함
-      jest.clearAllMocks();
-      mockIsLiveActivityEnabled.mockReturnValue(true);
-      await updateStationNotification(mockStation, 80);
-      expect(mockStartLiveActivity).toHaveBeenCalled();
     });
   });
 
@@ -370,39 +346,21 @@ describe('stationNotification', () => {
   });
 
   describe('clearStationNotification', () => {
-    it('iOS에서 endLiveActivity를 호출하고 liveActivityStarted를 초기화한다', async () => {
+    it('iOS에서 endLiveActivity를 호출한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      // 먼저 start 상태로 만들기
-      await updateStationNotification(mockStation, 154);
-      jest.clearAllMocks();
       mockIsLiveActivityEnabled.mockReturnValue(true);
 
       await clearStationNotification();
       expect(mockEndLiveActivity).toHaveBeenCalled();
       expect(Notifications.dismissNotificationAsync).not.toHaveBeenCalled();
-
-      // 초기화 확인: 다음 update는 start를 호출해야 함
-      jest.clearAllMocks();
-      mockIsLiveActivityEnabled.mockReturnValue(true);
-      await updateStationNotification(mockStation, 100);
-      expect(mockStartLiveActivity).toHaveBeenCalled();
     });
 
-    it('iOS에서 endLiveActivity가 실패해도 liveActivityStarted를 초기화한다', async () => {
+    it('iOS에서 endLiveActivity가 실패해도 에러를 던지지 않는다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      await updateStationNotification(mockStation, 154);
-      mockEndLiveActivity.mockRejectedValueOnce(new Error('종료 실패'));
-      jest.clearAllMocks();
-      mockEndLiveActivity.mockRejectedValueOnce(new Error('종료 실패'));
       mockIsLiveActivityEnabled.mockReturnValue(true);
+      mockEndLiveActivity.mockRejectedValueOnce(new Error('종료 실패'));
 
-      await clearStationNotification();
-
-      // 에러 후에도 liveActivityStarted가 리셋되어야 함
-      jest.clearAllMocks();
-      mockIsLiveActivityEnabled.mockReturnValue(true);
-      await updateStationNotification(mockStation, 100);
-      expect(mockStartLiveActivity).toHaveBeenCalled();
+      await expect(clearStationNotification()).resolves.toBeUndefined();
     });
 
     it('iOS에서 Live Activity 비활성화 시 dismissNotificationAsync를 호출한다', async () => {

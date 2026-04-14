@@ -1,8 +1,16 @@
 import { renderHook, act, waitFor } from '@testing-library/react-native';
+import { AppState } from 'react-native';
 import { useArrivalInfo } from '../useArrivalInfo';
 import * as arrivalApiModule from '../../api/arrivalApi';
 
 jest.mock('../../api/arrivalApi');
+
+const mockRemove = jest.fn();
+let appStateCallback: ((state: string) => void) | null = null;
+jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) => {
+  appStateCallback = listener as (state: string) => void;
+  return { remove: mockRemove } as unknown as ReturnType<typeof AppState.addEventListener>;
+});
 
 const mockArrival = {
   up: [{ destination: '소요산행', arrivalMinutes: 2, trainCode: 'T001' }],
@@ -18,6 +26,7 @@ describe('useArrivalInfo', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
+    appStateCallback = null;
   });
 
   afterEach(() => {
@@ -192,6 +201,42 @@ describe('useArrivalInfo', () => {
 
     // 백그라운드 fetch 완료 후 갱신
     await waitFor(() => expect(result.current.arrival).toEqual(updatedArrival));
+  });
+
+  it('AppState가 active로 변경되면 도착 정보를 다시 가져온다', async () => {
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    renderHook(() => useArrivalInfo('강남'));
+
+    await waitFor(() =>
+      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledTimes(1)
+    );
+
+    await act(async () => {
+      appStateCallback?.('active');
+    });
+
+    await waitFor(() =>
+      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledTimes(2)
+    );
+  });
+
+  it('AppState가 background로 변경되면 interval을 정리한다', async () => {
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+    renderHook(() => useArrivalInfo('강남'));
+
+    await waitFor(() =>
+      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledTimes(1)
+    );
+
+    act(() => {
+      appStateCallback?.('background');
+    });
+
+    expect(clearIntervalSpy).toHaveBeenCalled();
+    clearIntervalSpy.mockRestore();
   });
 
   it('stationName이 유효한 값에서 null로 바뀌면 loading이 false가 된다', async () => {

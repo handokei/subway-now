@@ -14,8 +14,6 @@ const NOTIFICATION_ID = 'current-station';
 const ALARM_NOTIFICATION_ID = 'station-alarm';
 const ALARM_CHANNEL_ID = 'station-alarm';
 
-// iOS Live Activity 상태 추적 (start vs update 구분)
-let liveActivityStarted = false;
 
 async function scheduleNotification(
   id: string,
@@ -170,19 +168,11 @@ export async function updateStationNotification(
     }
     const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock);
     try {
-      if (!liveActivityStarted) {
-        liveActivityLogger.info('시작 요청');
-        await LiveActivity.startLiveActivity(data);
-        liveActivityStarted = true;
-        liveActivityLogger.info('시작 성공');
-      } else {
-        liveActivityLogger.info('업데이트 요청');
-        await LiveActivity.updateLiveActivity(data);
-        liveActivityLogger.info('업데이트 성공');
-      }
+      liveActivityLogger.info('업데이트 요청');
+      await LiveActivity.updateLiveActivity(data);
+      liveActivityLogger.info('업데이트 성공');
     } catch (e) {
-      liveActivityLogger.error('시작/업데이트 실패:', e);
-      liveActivityStarted = false;
+      liveActivityLogger.error('업데이트 실패:', e);
       notifLogger.info('Live Activity 실패 → 알림 fallback');
       const { title, body } = buildContent(currentStation, distanceM, destination, route, etaMinutes, isMock);
       await scheduleNotification(NOTIFICATION_ID, { title, body });
@@ -211,7 +201,6 @@ export async function clearStationNotification(): Promise<void> {
     } catch (e) {
       liveActivityLogger.error('종료 실패:', e);
     }
-    liveActivityStarted = false;
     return;
   }
   notifLogger.info('Android 알림 해제');

@@ -1,8 +1,16 @@
 import { renderHook, act, waitFor } from '@testing-library/react-native';
 import * as Location from 'expo-location';
+import { AppState } from 'react-native';
 import { useNearestStation } from '../useNearestStation';
 
 jest.mock('expo-location');
+
+const mockRemove = jest.fn();
+let appStateCallback: ((state: string) => void) | null = null;
+jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) => {
+  appStateCallback = listener as (state: string) => void;
+  return { remove: mockRemove } as unknown as ReturnType<typeof AppState.addEventListener>;
+});
 
 const mockGranted = () => {
   (Location.requestForegroundPermissionsAsync as jest.Mock).mockResolvedValue({
@@ -26,6 +34,7 @@ describe('useNearestStation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
+    appStateCallback = null;
   });
 
   afterEach(() => {
@@ -137,6 +146,44 @@ describe('useNearestStation', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     unmount();
+    expect(clearIntervalSpy).toHaveBeenCalled();
+    clearIntervalSpy.mockRestore();
+  });
+
+  it('AppState가 active로 변경되면 위치를 다시 가져온다', async () => {
+    mockGranted();
+    mockLocation(37.4980, 127.0277);
+
+    renderHook(() => useNearestStation());
+
+    await waitFor(() =>
+      expect(Location.getCurrentPositionAsync).toHaveBeenCalledTimes(1)
+    );
+
+    await act(async () => {
+      appStateCallback?.('active');
+    });
+
+    await waitFor(() =>
+      expect(Location.getCurrentPositionAsync).toHaveBeenCalledTimes(2)
+    );
+  });
+
+  it('AppState가 background로 변경되면 interval을 정리한다', async () => {
+    mockGranted();
+    mockLocation(37.4980, 127.0277);
+
+    const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+    renderHook(() => useNearestStation());
+
+    await waitFor(() =>
+      expect(Location.getCurrentPositionAsync).toHaveBeenCalledTimes(1)
+    );
+
+    act(() => {
+      appStateCallback?.('background');
+    });
+
     expect(clearIntervalSpy).toHaveBeenCalled();
     clearIntervalSpy.mockRestore();
   });
