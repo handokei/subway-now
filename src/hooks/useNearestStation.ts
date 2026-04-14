@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import stationsData from '../data/stations.json';
 import { haversine } from '../utils/haversine';
@@ -73,8 +74,18 @@ export function useNearestStation(): UseNearestStationReturn {
   useEffect(() => {
     refresh();
     intervalRef.current = setInterval(refresh, UPDATE_INTERVAL_MS);
+
+    const subscription = AppState.addEventListener('change', (state) => {
+      clearInterval(intervalRef.current);
+      if (state === 'active') {
+        refresh();
+        intervalRef.current = setInterval(refresh, UPDATE_INTERVAL_MS);
+      }
+    });
+
     return () => {
       clearInterval(intervalRef.current);
+      subscription.remove();
     };
   }, [refresh]);
 

@@ -29,7 +29,10 @@
     "collectCoverageFrom": [
       "src/**/*.{ts,tsx}",
       "!src/**/__tests__/**",
-      "!src/types/**"
+      "!src/types/**",
+      "!src/providers/index.ts",
+      "!src/providers/types.ts",
+      "!src/providers/arrival/index.ts"
     ],
     "moduleFileExtensions": [
       "ts",

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import type { StationArrival } from '../api/arrivalApi';
 import type { ArrivalProvider } from '../providers/types';
 import { createArrivalProvider } from '../providers/factory';
@@ -55,9 +56,19 @@ export function useArrivalInfo(
 
     poll();
     intervalRef.current = setInterval(poll, POLL_INTERVAL_MS);
+
+    const subscription = AppState.addEventListener('change', (state) => {
+      clearInterval(intervalRef.current);
+      if (state === 'active') {
+        poll();
+        intervalRef.current = setInterval(poll, POLL_INTERVAL_MS);
+      }
+    });
+
     return () => {
       cancelled = true;
       clearInterval(intervalRef.current);
+      subscription.remove();
     };
   }, [stationName]);
 

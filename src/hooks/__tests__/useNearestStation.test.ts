@@ -1,8 +1,16 @@
 import { renderHook, act, waitFor } from '@testing-library/react-native';
 import * as Location from 'expo-location';
+import { AppState } from 'react-native';
 import { useNearestStation } from '../useNearestStation';
 
 jest.mock('expo-location');
+
+const mockRemove = jest.fn();
+let appStateCallback: ((state: string) => void) | null = null;
+jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) => {
+  appStateCallback = listener as (state: string) => void;
+  return { remove: mockRemove } as unknown as ReturnType<typeof AppState.addEventListener>;
+});
 
 const mockGranted = () => {
   (Location.requestForegroundPermissionsAsync as jest.Mock).mockResolvedValue({
@@ -26,6 +34,7 @@ describe('useNearestStation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
+    appStateCallback = null;
   });
 
   afterEach(() => {
@@ -139,6 +148,42 @@ describe('useNearestStation', () => {
     unmount();
     expect(clearIntervalSpy).toHaveBeenCalled();
     clearIntervalSpy.mockRestore();
+  });
+
+  it('백그라운드 전환 시 폴링을 중지한다', async () => {
+    mockGranted();
+    mockLocation(37.4980, 127.0277);
+
+    const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+    renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.getCurrentPositionAsync).toHaveBeenCalledTimes(1));
+
+    act(() => { appStateCallback?.('background'); });
+    expect(clearIntervalSpy).toHaveBeenCalled();
+    clearIntervalSpy.mockRestore();
+  });
+
+  it('포그라운드 복귀 시 폴링을 재개한다', async () => {
+    mockGranted();
+    mockLocation(37.4980, 127.0277);
+
+    renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.getCurrentPositionAsync).toHaveBeenCalledTimes(1));
+
+    act(() => { appStateCallback?.('background'); });
+    act(() => { appStateCallback?.('active'); });
+    await waitFor(() => expect(Location.getCurrentPositionAsync).toHaveBeenCalledTimes(2));
+  });
+
+  it('언마운트 시 AppState 리스너를 해제한다', async () => {
+    mockGranted();
+    mockLocation(37.4980, 127.0277);
+
+    const { result, unmount } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    unmount();
+    expect(mockRemove).toHaveBeenCalled();
   });
 
 });

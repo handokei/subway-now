@@ -5,6 +5,19 @@ import type { LineNumber } from '../types/station';
 
 const allStations = stations as Station[];
 
+// O(1) 룩업 테이블 (성능 최적화)
+const stationById = new Map<string, Station>(allStations.map((s) => [s.id, s]));
+const lineStationsCache = new Map<string, Station[]>();
+
+function getLineStationsCached(line: string): Station[] {
+  let cached = lineStationsCache.get(line);
+  if (!cached) {
+    cached = allStations.filter((s) => s.line === line).sort((a, b) => a.id.localeCompare(b.id));
+    lineStationsCache.set(line, cached);
+  }
+  return cached;
+}
+
 export interface DirectRoute {
   type: 'direct';
   stops: number;
@@ -82,58 +95,65 @@ function buildTransferGraph(): void {
 buildTransferGraph();
 
 export function getStationsOnLine(line: string): Station[] {
-  return allStations
-    .filter((s) => s.line === line)
-    .sort((a, b) => a.id.localeCompare(b.id));
+  return getLineStationsCached(line);
 }
 
 export function getRemainingStops(
   currentId: string,
   destinationId: string,
 ): number | null {
-  const current = allStations.find((s) => s.id === currentId);
-  const destination = allStations.find((s) => s.id === destinationId);
+  const current = stationById.get(currentId);
+  const destination = stationById.get(destinationId);
 
   if (!current || !destination) return null;
   if (current.line !== destination.line) return null;
 
-  const lineStations = getStationsOnLine(current.line);
+  const lineStations = getLineStationsCached(current.line);
   const currentIdx = lineStations.findIndex((s) => s.id === currentId);
   const destIdx = lineStations.findIndex((s) => s.id === destinationId);
 
   return Math.abs(destIdx - currentIdx);
 }
 
+function buildNameIndex(stations: Station[]): Map<string, number> {
+  const index = new Map<string, number>();
+  for (let i = 0; i < stations.length; i++) {
+    index.set(stations[i].name, i);
+  }
+  return index;
+}
+
 export function findRoute(currentId: string, destinationId: string): Route {
-  const current = allStations.find((s) => s.id === currentId);
-  const destination = allStations.find((s) => s.id === destinationId);
+  const current = stationById.get(currentId);
+  const destination = stationById.get(destinationId);
 
   if (!current || !destination) return null;
 
   // 같은 노선: 직통
   if (current.line === destination.line) {
-    const lineStations = getStationsOnLine(current.line);
+    const lineStations = getLineStationsCached(current.line);
     const cIdx = lineStations.findIndex((s) => s.id === currentId);
     const dIdx = lineStations.findIndex((s) => s.id === destinationId);
     return { type: 'direct', stops: Math.abs(dIdx - cIdx) };
   }
 
   // 다른 노선: 환승역 탐색
-  const currentLineStations = getStationsOnLine(current.line);
-  const destLineStations = getStationsOnLine(destination.line);
+  const currentLineStations = getLineStationsCached(current.line);
+  const destLineStations = getLineStationsCached(destination.line);
   const currentIdx = currentLineStations.findIndex((s) => s.id === currentId);
   const destIdx = destLineStations.findIndex((s) => s.id === destinationId);
 
-  // 목적지 노선에 같은 이름이 있는 현재 노선의 역 = 환승 후보
+  // 목적지 노선의 이름 → 인덱스 Map (O(1) 룩업)
+  const destNameIndex = buildNameIndex(destLineStations);
+
   let bestRoute: TransferRoute | null = null;
   let bestTotal = Infinity;
 
   for (let i = 0; i < currentLineStations.length; i++) {
     const candidate = currentLineStations[i];
-    const transferTarget = destLineStations.find((s) => s.name === candidate.name);
-    if (!transferTarget) continue;
+    const transferDestIdx = destNameIndex.get(candidate.name);
+    if (transferDestIdx === undefined) continue;
 
-    const transferDestIdx = destLineStations.findIndex((s) => s.id === transferTarget.id);
     const stopsToTransfer = Math.abs(i - currentIdx);
     const stopsFromTransfer = Math.abs(transferDestIdx - destIdx);
     const total = stopsToTransfer + stopsFromTransfer;
@@ -174,6 +194,9 @@ function findMultiTransferRoute(
   let best: MultiTransferRoute | null = null;
   let bestTotal = Infinity;
 
+  const currentNameIndex = buildNameIndex(currentLineStations);
+  const destNameIndex = buildNameIndex(destLineStations);
+
   // 현재 노선에서 갈 수 있는 중간 노선들
   for (const [midLine, transfer1Names] of fromEdges) {
     /* istanbul ignore next -- 직접 환승은 findRoute에서 먼저 처리됨 */
@@ -185,23 +208,24 @@ function findMultiTransferRoute(
     /* istanbul ignore next */
     if (!transfer2Names) continue;
 
-    const midLineStations = getStationsOnLine(midLine);
+    const midLineStations = getLineStationsCached(midLine);
+    const midNameIndex = buildNameIndex(midLineStations);
 
     // 첫 번째 환승: 현재노선 → 중간노선
     for (const t1Name of transfer1Names) {
-      const t1CurrentIdx = currentLineStations.findIndex((s) => s.name === t1Name);
-      const t1MidIdx = midLineStations.findIndex((s) => s.name === t1Name);
-      /* istanbul ignore next -- 환승 그래프가 같은 데이터에서 빌드되므로 -1 불가 */
-      if (t1CurrentIdx === -1 || t1MidIdx === -1) continue;
+      const t1CurrentIdx = currentNameIndex.get(t1Name);
+      const t1MidIdx = midNameIndex.get(t1Name);
+      /* istanbul ignore next -- 환승 그래프가 같은 데이터에서 빌드되므로 undefined 불가 */
+      if (t1CurrentIdx === undefined || t1MidIdx === undefined) continue;
 
       const stopsToFirst = Math.abs(t1CurrentIdx - currentIdx);
 
       // 두 번째 환승: 중간노선 → 목적지노선
       for (const t2Name of transfer2Names) {
-        const t2MidIdx = midLineStations.findIndex((s) => s.name === t2Name);
-        const t2DestIdx = destLineStations.findIndex((s) => s.name === t2Name);
+        const t2MidIdx = midNameIndex.get(t2Name);
+        const t2DestIdx = destNameIndex.get(t2Name);
         /* istanbul ignore next */
-        if (t2MidIdx === -1 || t2DestIdx === -1) continue;
+        if (t2MidIdx === undefined || t2DestIdx === undefined) continue;
 
         const stopsToSecond = Math.abs(t2MidIdx - t1MidIdx);
         const stopsAfter = Math.abs(destIdx - t2DestIdx);
