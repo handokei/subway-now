@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import stationsData from '../data/stations.json';
 import { haversine } from '../utils/haversine';
 import { NearestStationResult, Station } from '../types/station';
+import { usePolling } from './usePolling';
 
 const stations = stationsData as Station[];
 const UPDATE_INTERVAL_MS = 30_000;
@@ -23,7 +23,6 @@ export function useNearestStation(): UseNearestStationReturn {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined as unknown as ReturnType<typeof setInterval>);
 
   const findNearest = useCallback(
     (lat: number, lng: number): NearestStationResult | null => {
@@ -73,21 +72,9 @@ export function useNearestStation(): UseNearestStationReturn {
 
   useEffect(() => {
     refresh();
-    intervalRef.current = setInterval(refresh, UPDATE_INTERVAL_MS);
-
-    const subscription = AppState.addEventListener('change', (state) => {
-      clearInterval(intervalRef.current);
-      if (state === 'active') {
-        refresh();
-        intervalRef.current = setInterval(refresh, UPDATE_INTERVAL_MS);
-      }
-    });
-
-    return () => {
-      clearInterval(intervalRef.current);
-      subscription.remove();
-    };
   }, [refresh]);
+
+  usePolling(refresh, UPDATE_INTERVAL_MS);
 
   return { result, userLocation, loading, error, permissionDenied, refresh };
 }

@@ -254,4 +254,140 @@ describe('useArrivalInfo', () => {
     unmount();
     expect(mockRemove).toHaveBeenCalled();
   });
+
+  it('TTL 만료 시 캐시를 사용하지 않고 loading 상태로 전환한다', async () => {
+    const now = Date.now();
+    jest.spyOn(Date, 'now').mockReturnValue(now);
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    const { result, rerender } = renderHook(
+      ({ name }: { name: string | null }) => useArrivalInfo(name),
+      { initialProps: { name: '강남' as string | null } }
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // 다른 역으로 전환
+    rerender({ name: '역삼' });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // TTL 초과 후 강남 복귀
+    jest.spyOn(Date, 'now').mockReturnValue(now + 31_000);
+    rerender({ name: '강남' });
+
+    // TTL 만료 → 캐시 미사용 → loading 상태
+    expect(result.current.arrival).toBeNull();
+    expect(result.current.loading).toBe(true);
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    jest.restoreAllMocks();
+  });
+
+  it('stationName이 null일 때 폴링 콜백은 fetch하지 않는다', async () => {
+    renderHook(() => useArrivalInfo(null));
+
+    jest.advanceTimersByTime(30_000);
+    await Promise.resolve();
+
+    expect(arrivalApiModule.fetchArrivalInfo).not.toHaveBeenCalled();
+  });
+
+  it('폴링 중 stationName이 변경되면 이전 폴링 응답을 무시한다', async () => {
+    const staleArrival = {
+      up: [{ destination: '이전역', arrivalMinutes: 99, trainCode: 'OLD' }],
+      down: [],
+    };
+    const freshArrival = {
+      up: [{ destination: '새역', arrivalMinutes: 1, trainCode: 'NEW' }],
+      down: [],
+    };
+
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(freshArrival);
+
+    const { result, rerender } = renderHook(
+      ({ name }: { name: string | null }) => useArrivalInfo(name),
+      { initialProps: { name: '강남' as string | null } }
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // 폴링 콜백에서 느린 fetch가 시작되도록 설정
+    let resolvePollingFetch!: (value: typeof staleArrival) => void;
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockImplementation(
+      (name: string) => {
+        if (name === '강남') {
+          return new Promise((r) => { resolvePollingFetch = r; });
+        }
+        return Promise.resolve(freshArrival);
+      }
+    );
+
+    // 폴링 트리거 → '강남'에 대한 느린 fetch 시작
+    act(() => { jest.advanceTimersByTime(30_000); });
+
+    // 역 변경 → stationNameRef.current가 '역삼'으로 바뀜
+    rerender({ name: '역삼' });
+    await waitFor(() => expect(result.current.arrival).toEqual(freshArrival));
+
+    // 이전 폴링의 '강남' 응답 도착 → name !== stationNameRef.current → 무시
+    await act(async () => { resolvePollingFetch(staleArrival); });
+
+    expect(result.current.arrival).toEqual(freshArrival);
+  });
+
+  it('폴링 콜백에서 mock 데이터를 받으면 캐시에 저장하지 않는다', async () => {
+    const now = Date.now();
+    jest.spyOn(Date, 'now').mockReturnValue(now);
+
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    const { result } = renderHook(() => useArrivalInfo('강남'));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.arrival).toEqual(mockArrival);
+
+    // 폴링에서 mock 데이터 반환 → 캐시에 저장 안 됨
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrivalWithMock);
+
+    act(() => { jest.advanceTimersByTime(30_000); });
+    await waitFor(() => expect(result.current.isMock).toBe(true));
+    // mock 데이터가 arrival에 반영되었지만 캐시에는 이전 실제 데이터만 있음
+    expect(result.current.arrival).toEqual(mockArrivalWithMock);
+
+    jest.restoreAllMocks();
+  });
+
+  it('폴링 콜백에서 fetch 실패 시 에러를 무시한다', async () => {
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    const { result } = renderHook(() => useArrivalInfo('강남'));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // 폴링에서 에러 발생
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockRejectedValue(new Error('network'));
+
+    act(() => { jest.advanceTimersByTime(30_000); });
+    await Promise.resolve();
+
+    // 에러 무시 — 기존 데이터 유지
+    expect(result.current.arrival).toEqual(mockArrival);
+  });
+
+  it('포그라운드 복귀 시 캐시를 클리어하고 fresh fetch한다', async () => {
+    const freshArrival = {
+      up: [{ destination: '소요산행', arrivalMinutes: 1, trainCode: 'T003' }],
+      down: [{ destination: '인천행', arrivalMinutes: 3, trainCode: 'T004' }],
+    };
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    const { result } = renderHook(() => useArrivalInfo('강남'));
+    await waitFor(() => expect(result.current.arrival).toEqual(mockArrival));
+
+    // 백그라운드 → 포그라운드 복귀 시 새 데이터
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(freshArrival);
+    act(() => { appStateCallback?.('background'); });
+    act(() => { appStateCallback?.('active'); });
+
+    await waitFor(() => expect(result.current.arrival).toEqual(freshArrival));
+  });
 });

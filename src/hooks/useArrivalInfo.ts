@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { AppState } from 'react-native';
 import type { StationArrival } from '../api/arrivalApi';
 import type { ArrivalProvider } from '../providers/types';
 import { createArrivalProvider } from '../providers/factory';
+import { TtlCache } from '../utils/ttlCache';
+import { usePolling } from './usePolling';
 
 const POLL_INTERVAL_MS = 30_000;
 
@@ -18,9 +19,10 @@ export function useArrivalInfo(
 ): UseArrivalInfoReturn {
   const [arrival, setArrival] = useState<StationArrival | null>(null);
   const [loading, setLoading] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined as unknown as ReturnType<typeof setInterval>);
-  const cacheRef = useRef<Map<string, StationArrival>>(new Map());
+  const cacheRef = useRef(new TtlCache<string, StationArrival>(POLL_INTERVAL_MS));
   const providerRef = useRef<ArrivalProvider>(provider ?? createArrivalProvider());
+  const stationNameRef = useRef(stationName);
+  stationNameRef.current = stationName;
 
   useEffect(() => {
     if (!stationName) {
@@ -29,7 +31,6 @@ export function useArrivalInfo(
       return;
     }
 
-    let cancelled = false;
     const cached = cacheRef.current.get(stationName);
     if (cached) {
       setArrival(cached);
@@ -38,6 +39,12 @@ export function useArrivalInfo(
       setArrival(null);
       setLoading(true);
     }
+  }, [stationName]);
+
+  useEffect(() => {
+    if (!stationName) return;
+
+    let cancelled = false;
 
     const poll = async () => {
       try {
@@ -55,22 +62,28 @@ export function useArrivalInfo(
     };
 
     poll();
-    intervalRef.current = setInterval(poll, POLL_INTERVAL_MS);
-
-    const subscription = AppState.addEventListener('change', (state) => {
-      clearInterval(intervalRef.current);
-      if (state === 'active') {
-        poll();
-        intervalRef.current = setInterval(poll, POLL_INTERVAL_MS);
-      }
-    });
 
     return () => {
       cancelled = true;
-      clearInterval(intervalRef.current);
-      subscription.remove();
     };
   }, [stationName]);
+
+  usePolling(
+    () => {
+      const name = stationNameRef.current;
+      if (!name) return;
+      providerRef.current.getArrival(name).then((data) => {
+        if (name !== stationNameRef.current) return;
+        if (!data.isMock) {
+          cacheRef.current.set(name, data);
+        }
+        setArrival(data);
+        setLoading(false);
+      }).catch(() => {});
+    },
+    POLL_INTERVAL_MS,
+    { onResume: () => cacheRef.current.clear() },
+  );
 
   return { arrival, loading, isMock: arrival?.isMock ?? false };
 }

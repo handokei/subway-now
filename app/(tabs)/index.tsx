@@ -83,9 +83,15 @@ export default function HomeScreen() {
     prevNotifKeyRef.current = key;
 
     const destinationCleared = prevDestId != null && currDestId == null;
+    const destinationChanged = prevDestId != null && currDestId != null && prevDestId !== currDestId;
     const update = async () => {
-      if (destinationCleared) {
-        logger.info('목적지 해제 → Live Activity 종료 후 재시작');
+      if (destinationCleared || destinationChanged) {
+        if (destinationCleared) {
+          logger.info('목적지 해제 → Live Activity 종료 후 재시작');
+        } else {
+          logger.info('목적지 변경 → 이전 알림 교체');
+        }
+        await clearAlarmNotification();
         await clearStationNotification();
       }
       logger.info('알림 업데이트:', result.station.name, destination ? `→ ${destination.name}` : '');
