@@ -1,0 +1,10 @@
+{
+  "platforms": ["ios", "android"],
+  "ios": {
+    "modules": ["AudioRouteModule"],
+    "podspecPath": "AudioRoute.podspec"
+  },
+  "android": {
+    "modules": ["com.subwaynow.audioroute.AudioRouteModule"]
+  }
+}

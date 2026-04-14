@@ -23,7 +23,8 @@
               "NSExceptionAllowsInsecureHTTPLoads": true
             }
           }
-        }
+        },
+        "UIBackgroundModes": ["audio"]
       }
     },
     "android": {

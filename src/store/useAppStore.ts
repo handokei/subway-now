@@ -3,23 +3,37 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
 
 const FAVORITES_KEY = 'subway-now:favorites';
+const SLEEP_MODE_KEY = 'subway-now:sleep-mode';
+
+export interface AlarmEvent {
+  type: 'destination' | 'transfer';
+  stationName: string;
+}
 
 interface AppState {
   favorites: Station[];
   destination: Station | null;
   recentDestination: Station | null;
+  sleepMode: boolean;
+  alarmEvent: AlarmEvent | null;
   addFavorite: (station: Station) => Promise<void>;
   removeFavorite: (stationId: string) => Promise<void>;
   isFavorite: (stationId: string) => boolean;
   loadFavorites: () => Promise<void>;
   setDestination: (station: Station | null) => void;
   setRecentDestination: (station: Station | null) => void;
+  setSleepMode: (enabled: boolean) => Promise<void>;
+  loadSleepMode: () => Promise<void>;
+  setAlarmEvent: (event: AlarmEvent) => void;
+  clearAlarmEvent: () => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
   favorites: [],
   destination: null,
   recentDestination: null,
+  sleepMode: false,
+  alarmEvent: null,
 
   loadFavorites: async () => {
     try {
@@ -56,5 +70,29 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setRecentDestination: (station: Station | null) => {
     set({ recentDestination: station });
+  },
+
+  setSleepMode: async (enabled: boolean) => {
+    set({ sleepMode: enabled });
+    await AsyncStorage.setItem(SLEEP_MODE_KEY, JSON.stringify(enabled));
+  },
+
+  setAlarmEvent: (event: AlarmEvent) => {
+    set({ alarmEvent: event });
+  },
+
+  clearAlarmEvent: () => {
+    set({ alarmEvent: null });
+  },
+
+  loadSleepMode: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(SLEEP_MODE_KEY);
+      if (raw) {
+        set({ sleepMode: JSON.parse(raw) });
+      }
+    } catch {
+      // 저장된 데이터 없음 — false 유지
+    }
   },
 }));

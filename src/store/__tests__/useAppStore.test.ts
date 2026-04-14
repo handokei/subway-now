@@ -26,7 +26,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, alarmEvent: null });
     jest.clearAllMocks();
   });
 
@@ -192,5 +192,80 @@ describe('useAppStore', () => {
 
     const { recentDestination } = useAppStore.getState();
     expect(recentDestination).toBeNull();
+  });
+
+  it('초기 sleepMode는 false이다', () => {
+    const { sleepMode } = useAppStore.getState();
+    expect(sleepMode).toBe(false);
+  });
+
+  it('setSleepMode: true를 설정하면 상태가 업데이트된다', async () => {
+    const { setSleepMode } = useAppStore.getState();
+    await setSleepMode(true);
+
+    const { sleepMode } = useAppStore.getState();
+    expect(sleepMode).toBe(true);
+  });
+
+  it('setSleepMode: AsyncStorage에 저장한다', async () => {
+    const { setSleepMode } = useAppStore.getState();
+    await setSleepMode(true);
+
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:sleep-mode',
+      JSON.stringify(true)
+    );
+  });
+
+  it('loadSleepMode: AsyncStorage에서 데이터를 복원한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(true));
+
+    const { loadSleepMode } = useAppStore.getState();
+    await loadSleepMode();
+
+    const { sleepMode } = useAppStore.getState();
+    expect(sleepMode).toBe(true);
+  });
+
+  it('loadSleepMode: AsyncStorage가 비어있으면 false를 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+
+    const { loadSleepMode } = useAppStore.getState();
+    await loadSleepMode();
+
+    const { sleepMode } = useAppStore.getState();
+    expect(sleepMode).toBe(false);
+  });
+
+  it('loadSleepMode: AsyncStorage 오류 시 false를 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
+
+    const { loadSleepMode } = useAppStore.getState();
+    await loadSleepMode();
+
+    const { sleepMode } = useAppStore.getState();
+    expect(sleepMode).toBe(false);
+  });
+
+  it('초기 alarmEvent는 null이다', () => {
+    const { alarmEvent } = useAppStore.getState();
+    expect(alarmEvent).toBeNull();
+  });
+
+  it('setAlarmEvent: 알람 이벤트를 설정한다', () => {
+    const { setAlarmEvent } = useAppStore.getState();
+    setAlarmEvent({ type: 'destination', stationName: '강남' });
+
+    const { alarmEvent } = useAppStore.getState();
+    expect(alarmEvent).toEqual({ type: 'destination', stationName: '강남' });
+  });
+
+  it('clearAlarmEvent: 알람 이벤트를 초기화한다', () => {
+    const { setAlarmEvent, clearAlarmEvent } = useAppStore.getState();
+    setAlarmEvent({ type: 'transfer', stationName: '역삼' });
+    clearAlarmEvent();
+
+    const { alarmEvent } = useAppStore.getState();
+    expect(alarmEvent).toBeNull();
   });
 });

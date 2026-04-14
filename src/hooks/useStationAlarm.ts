@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { Route } from '../utils/stationRoute';
 import { checkAlarm, alarmKey } from '../utils/stationAlarm';
 import { sendAlarmNotification } from '../utils/stationNotification';
+import { useAppStore } from '../store/useAppStore';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('StationAlarm');
@@ -9,6 +10,13 @@ const logger = createLogger('StationAlarm');
 export function useStationAlarm(route: Route, destinationName: string | null): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
   const prevDestRef = useRef<string | null>(null);
+  const sleepMode = useAppStore((s) => s.sleepMode);
+  const setAlarmEvent = useAppStore((s) => s.setAlarmEvent);
+  const sleepModeRef = useRef(sleepMode);
+
+  useEffect(() => {
+    sleepModeRef.current = sleepMode;
+  }, [sleepMode]);
 
   useEffect(() => {
     if (destinationName !== prevDestRef.current) {
@@ -22,7 +30,10 @@ export function useStationAlarm(route: Route, destinationName: string | null): v
     if (!event) return;
 
     firedAlarmsRef.current.add(alarmKey(event));
-    sendAlarmNotification(event.type, event.stationName).catch((e) =>
+    if (sleepModeRef.current) {
+      setAlarmEvent({ type: event.type, stationName: event.stationName });
+    }
+    sendAlarmNotification(event.type, event.stationName, sleepModeRef.current).catch((e) =>
       logger.error('알람 알림 실패:', e),
     );
   }, [route, destinationName]);
