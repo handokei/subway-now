@@ -1,8 +1,16 @@
 import { renderHook, act, waitFor } from '@testing-library/react-native';
+import { AppState } from 'react-native';
 import { useArrivalInfo } from '../useArrivalInfo';
 import * as arrivalApiModule from '../../api/arrivalApi';
 
 jest.mock('../../api/arrivalApi');
+
+const mockRemove = jest.fn();
+let appStateCallback: ((state: string) => void) | null = null;
+jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) => {
+  appStateCallback = listener as (state: string) => void;
+  return { remove: mockRemove } as unknown as ReturnType<typeof AppState.addEventListener>;
+});
 
 const mockArrival = {
   up: [{ destination: '소요산행', arrivalMinutes: 2, trainCode: 'T001' }],
@@ -18,6 +26,7 @@ describe('useArrivalInfo', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
+    appStateCallback = null;
   });
 
   afterEach(() => {
@@ -211,5 +220,38 @@ describe('useArrivalInfo', () => {
       expect(result.current.arrival).toBeNull();
       expect(result.current.loading).toBe(false);
     });
+  });
+
+  it('백그라운드 전환 시 폴링을 중지한다', async () => {
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+    const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+
+    renderHook(() => useArrivalInfo('강남'));
+    await waitFor(() => expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledTimes(1));
+
+    act(() => { appStateCallback?.('background'); });
+    expect(clearIntervalSpy).toHaveBeenCalled();
+    clearIntervalSpy.mockRestore();
+  });
+
+  it('포그라운드 복귀 시 폴링을 재개한다', async () => {
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    renderHook(() => useArrivalInfo('강남'));
+    await waitFor(() => expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledTimes(1));
+
+    act(() => { appStateCallback?.('background'); });
+    act(() => { appStateCallback?.('active'); });
+    await waitFor(() => expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledTimes(2));
+  });
+
+  it('언마운트 시 AppState 리스너를 해제한다', async () => {
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    const { unmount } = renderHook(() => useArrivalInfo('강남'));
+    await waitFor(() => expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledTimes(1));
+
+    unmount();
+    expect(mockRemove).toHaveBeenCalled();
   });
 });
