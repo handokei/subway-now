@@ -18,6 +18,18 @@ function getLineStationsCached(line: string): Station[] {
   return cached;
 }
 
+// 노선별 name→index 캐시 (성능 최적화: buildNameIndex 중복 호출 제거)
+const lineNameIndexCache = new Map<string, Map<string, number>>();
+
+function getLineNameIndexCached(line: string): Map<string, number> {
+  let cached = lineNameIndexCache.get(line);
+  if (!cached) {
+    cached = buildNameIndex(getLineStationsCached(line));
+    lineNameIndexCache.set(line, cached);
+  }
+  return cached;
+}
+
 export interface DirectRoute {
   type: 'direct';
   stops: number;
@@ -144,7 +156,7 @@ export function findRoute(currentId: string, destinationId: string): Route {
   const destIdx = destLineStations.findIndex((s) => s.id === destinationId);
 
   // 목적지 노선의 이름 → 인덱스 Map (O(1) 룩업)
-  const destNameIndex = buildNameIndex(destLineStations);
+  const destNameIndex = getLineNameIndexCached(destination.line);
 
   let bestRoute: TransferRoute | null = null;
   let bestTotal = Infinity;
@@ -194,8 +206,8 @@ function findMultiTransferRoute(
   let best: MultiTransferRoute | null = null;
   let bestTotal = Infinity;
 
-  const currentNameIndex = buildNameIndex(currentLineStations);
-  const destNameIndex = buildNameIndex(destLineStations);
+  const currentNameIndex = getLineNameIndexCached(current.line);
+  const destNameIndex = getLineNameIndexCached(destination.line);
 
   // 현재 노선에서 갈 수 있는 중간 노선들
   for (const [midLine, transfer1Names] of fromEdges) {
@@ -208,8 +220,7 @@ function findMultiTransferRoute(
     /* istanbul ignore next */
     if (!transfer2Names) continue;
 
-    const midLineStations = getLineStationsCached(midLine);
-    const midNameIndex = buildNameIndex(midLineStations);
+    const midNameIndex = getLineNameIndexCached(midLine);
 
     // 첫 번째 환승: 현재노선 → 중간노선
     for (const t1Name of transfer1Names) {
