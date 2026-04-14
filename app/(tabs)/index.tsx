@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { InteractionManager, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
-import { findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA } from '../../src/utils/stationRoute';
+import { findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA, type Route } from '../../src/utils/stationRoute';
 import { JourneyTimeline } from '../../src/components/JourneyTimeline';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
@@ -36,10 +36,19 @@ export default function HomeScreen() {
   const arrivedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const prevDestIdRef = useRef<string | null>(null);
-  const route = useMemo(
-    () => (result && destination ? findRoute(result.station.id, destination.id) : null),
-    [result?.station.id, destination?.id],
-  );
+  const [route, setRoute] = useState<Route>(null);
+
+  useEffect(() => {
+    if (!result || !destination) {
+      setRoute(null);
+      return;
+    }
+    const interaction = InteractionManager.runAfterInteractions(() => {
+      setRoute(findRoute(result.station.id, destination.id));
+    });
+    return () => interaction.cancel();
+  }, [result?.station.id, destination?.id]);
+
   const journey = useMemo(
     () => (route && result && destination ? buildJourneyDisplay(route, result.station, destination) : null),
     [route, result?.station.id, destination?.id],
@@ -105,7 +114,7 @@ export default function HomeScreen() {
       );
     };
     update().catch((e) => logger.error('알림 업데이트 실패:', e));
-  }, [result?.station.id, destination?.id, displayEta, arrivalIsMock]);
+  }, [result?.station.id, destination?.id, displayEta, arrivalIsMock, route]);
 
   useEffect(() => {
     if (arrivedBanner) {
