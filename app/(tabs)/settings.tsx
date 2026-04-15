@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore } from '../../src/store/useAppStore';
+import AuthSection from '../../src/components/AuthSection';
 
 export default function SettingsScreen() {
   const { sleepMode, setSleepMode, loadSleepMode } = useAppStore();
@@ -13,6 +14,8 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.header}>설정</Text>
+
+      <AuthSection />
 
       <View style={styles.card}>
         <Text style={styles.sectionTitle}>알람</Text>

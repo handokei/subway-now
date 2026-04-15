@@ -24,7 +24,9 @@
             }
           }
         },
-        "UIBackgroundModes": ["audio"]
+        "UIBackgroundModes": [
+          "audio"
+        ]
       }
     },
     "android": {
@@ -57,7 +59,8 @@
       "expo-router",
       "./modules/live-activity/app.plugin.js",
       "./remove-push-entitlement.js",
-      "@bacons/apple-targets"
+      "@bacons/apple-targets",
+      "expo-web-browser"
     ],
     "extra": {
       "publicDataApiKey": "",
