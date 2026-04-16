@@ -112,6 +112,27 @@ describe('DestinationPicker', () => {
     expect(getAllByText('공항철도').length).toBeGreaterThanOrEqual(1);
   });
 
+  it('visible false로 전환 시 모달 세션 로그를 출력한다', () => {
+    const debugSpy = jest.spyOn(console, 'log');
+    const { rerender } = render(<DestinationPicker {...defaultProps} visible={true} />);
+    rerender(<DestinationPicker {...defaultProps} visible={false} />);
+    expect(debugSpy).toHaveBeenCalledWith(
+      expect.stringContaining('[DestinationPicker]'),
+      expect.stringContaining('모달 세션 유지 시간'),
+    );
+    debugSpy.mockRestore();
+  });
+
+  it('처음부터 visible false이면 세션 로그를 출력하지 않는다', () => {
+    const debugSpy = jest.spyOn(console, 'log');
+    render(<DestinationPicker {...defaultProps} visible={false} />);
+    const sessionLogs = debugSpy.mock.calls.filter(
+      (args) => typeof args[1] === 'string' && args[1].includes('모달 세션 유지 시간'),
+    );
+    expect(sessionLogs).toHaveLength(0);
+    debugSpy.mockRestore();
+  });
+
   it('검색창 포커스 시 드롭다운 표시 상태가 활성화된다', () => {
     const { getByTestId, queryByTestId } = render(<DestinationPicker {...defaultProps} />);
     // 검색어 입력 후 선택으로 드롭다운을 닫은 뒤 다시 포커스

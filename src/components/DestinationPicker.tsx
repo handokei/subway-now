@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Modal,
   View,
@@ -11,6 +11,9 @@ import stations from '../data/stations.json';
 import type { Station } from '../types/station';
 import { LINE_NAMES } from '../constants/lineColors';
 import { StationMap } from './StationMap';
+import { createLogger } from '../utils/logger';
+
+const logger = createLogger('DestinationPicker');
 
 
 const allStations = stations as Station[];
@@ -34,6 +37,17 @@ export function DestinationPicker({
 }: Props) {
   const [query, setQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
+  const openTimeRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (visible) {
+      openTimeRef.current = performance.now();
+    } else if (openTimeRef.current !== null) {
+      const duration = performance.now() - openTimeRef.current;
+      logger.debug(`모달 세션 유지 시간: ${duration.toFixed(2)}ms`);
+      openTimeRef.current = null;
+    }
+  }, [visible]);
 
   const mapAvailable = !!(userLat && userLng);
 
@@ -45,7 +59,10 @@ export function DestinationPicker({
   const suggestions = useMemo(() => {
     const q = query.trim();
     if (!q) return [];
-    return allStations.filter((s) => s.name.includes(q)).slice(0, 8);
+    const start = performance.now();
+    const result = allStations.filter((s) => s.name.includes(q)).slice(0, 8);
+    logger.debug(`검색 필터링 "${q}": ${(performance.now() - start).toFixed(2)}ms (${result.length}건)`);
+    return result;
   }, [query]);
 
   function handleSelect(station: Station) {

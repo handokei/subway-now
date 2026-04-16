@@ -44,8 +44,12 @@ export default function HomeScreen() {
       setRoute(null);
       return;
     }
+    const interactionStart = performance.now();
     const interaction = InteractionManager.runAfterInteractions(() => {
-      setRoute(findRoute(result.station.id, destination.id));
+      const route = findRoute(result.station.id, destination.id);
+      const total = performance.now() - interactionStart;
+      logger.debug(`경로 계산 전체 (InteractionManager 포함): ${total.toFixed(2)}ms`);
+      setRoute(route);
     });
     return () => interaction.cancel();
   }, [result?.station.id, destination?.id]);

@@ -2,6 +2,9 @@ import stations from '../data/stations.json';
 import type { Station } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
 import type { LineNumber } from '../types/station';
+import { createLogger } from './logger';
+
+const logger = createLogger('StationRoute');
 
 const allStations = stations as Station[];
 
@@ -136,57 +139,66 @@ function buildNameIndex(stations: Station[]): Map<string, number> {
 }
 
 export function findRoute(currentId: string, destinationId: string): Route {
+  const start = performance.now();
   const current = stationById.get(currentId);
   const destination = stationById.get(destinationId);
 
   if (!current || !destination) return null;
+
+  let result: Route;
 
   // 같은 노선: 직통
   if (current.line === destination.line) {
     const lineStations = getLineStationsCached(current.line);
     const cIdx = lineStations.findIndex((s) => s.id === currentId);
     const dIdx = lineStations.findIndex((s) => s.id === destinationId);
-    return { type: 'direct', stops: Math.abs(dIdx - cIdx) };
-  }
+    result = { type: 'direct', stops: Math.abs(dIdx - cIdx) };
+  } else {
+    // 다른 노선: 환승역 탐색
+    const currentLineStations = getLineStationsCached(current.line);
+    const destLineStations = getLineStationsCached(destination.line);
+    const currentIdx = currentLineStations.findIndex((s) => s.id === currentId);
+    const destIdx = destLineStations.findIndex((s) => s.id === destinationId);
 
-  // 다른 노선: 환승역 탐색
-  const currentLineStations = getLineStationsCached(current.line);
-  const destLineStations = getLineStationsCached(destination.line);
-  const currentIdx = currentLineStations.findIndex((s) => s.id === currentId);
-  const destIdx = destLineStations.findIndex((s) => s.id === destinationId);
+    // 목적지 노선의 이름 → 인덱스 Map (O(1) 룩업)
+    const destNameIndex = getLineNameIndexCached(destination.line);
 
-  // 목적지 노선의 이름 → 인덱스 Map (O(1) 룩업)
-  const destNameIndex = getLineNameIndexCached(destination.line);
+    let bestRoute: TransferRoute | null = null;
+    let bestTotal = Infinity;
 
-  let bestRoute: TransferRoute | null = null;
-  let bestTotal = Infinity;
+    for (let i = 0; i < currentLineStations.length; i++) {
+      const candidate = currentLineStations[i];
+      const transferDestIdx = destNameIndex.get(candidate.name);
+      if (transferDestIdx === undefined) continue;
 
-  for (let i = 0; i < currentLineStations.length; i++) {
-    const candidate = currentLineStations[i];
-    const transferDestIdx = destNameIndex.get(candidate.name);
-    if (transferDestIdx === undefined) continue;
+      const stopsToTransfer = Math.abs(i - currentIdx);
+      const stopsFromTransfer = Math.abs(transferDestIdx - destIdx);
+      const total = stopsToTransfer + stopsFromTransfer;
 
-    const stopsToTransfer = Math.abs(i - currentIdx);
-    const stopsFromTransfer = Math.abs(transferDestIdx - destIdx);
-    const total = stopsToTransfer + stopsFromTransfer;
+      if (total < bestTotal) {
+        bestTotal = total;
+        bestRoute = {
+          type: 'transfer',
+          transferName: candidate.name,
+          fromLine: current.line,
+          toLine: destination.line,
+          stopsToTransfer,
+          stopsFromTransfer,
+        };
+      }
+    }
 
-    if (total < bestTotal) {
-      bestTotal = total;
-      bestRoute = {
-        type: 'transfer',
-        transferName: candidate.name,
-        fromLine: current.line,
-        toLine: destination.line,
-        stopsToTransfer,
-        stopsFromTransfer,
-      };
+    if (bestRoute) {
+      result = bestRoute;
+    } else {
+      // 2회 환승 BFS: 현재노선 → 중간노선 → 목적지노선
+      result = findMultiTransferRoute(current, destination, currentLineStations, destLineStations, currentIdx, destIdx);
     }
   }
 
-  if (bestRoute) return bestRoute;
-
-  // 2회 환승 BFS: 현재노선 → 중간노선 → 목적지노선
-  return findMultiTransferRoute(current, destination, currentLineStations, destLineStations, currentIdx, destIdx);
+  const duration = performance.now() - start;
+  logger.debug(`findRoute(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms`);
+  return result;
 }
 
 function findMultiTransferRoute(
