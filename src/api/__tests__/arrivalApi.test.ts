@@ -3,6 +3,12 @@ import { fetchArrivalInfo, MOCK_ARRIVALS } from '../arrivalApi';
 describe('fetchArrivalInfo', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it('API 키가 없으면 Mock 데이터를 반환한다', async () => {

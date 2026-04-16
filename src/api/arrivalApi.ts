@@ -1,3 +1,7 @@
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('arrivalApi');
+
 export interface ArrivalInfo {
   destination: string;
   arrivalMinutes: number;
@@ -35,17 +39,18 @@ export async function fetchArrivalInfo(
   const apiKey = process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
 
   if (!apiKey) {
-    // API 키 없을 때 Mock 데이터 반환
+    log.warn('API key not set (EXPO_PUBLIC_SEOUL_DATA_API_KEY)');
     return MOCK_ARRIVALS;
   }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = `https://swopenapi.seoul.go.kr/api/subway/${apiKey}/json/realtimeStationArrival/0/10/${encodeURIComponent(stationName)}`;
+    const url = `http://swopenapi.seoul.go.kr/api/subway/${apiKey}/json/realtimeStationArrival/0/10/${encodeURIComponent(stationName)}`;
 
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
+      log.warn(`HTTP ${response.status} for station "${stationName}"`);
       return MOCK_ARRIVALS;
     }
 
@@ -70,10 +75,12 @@ export async function fetchArrivalInfo(
 
     const sliced = { up: up.slice(0, maxPerDirection), down: down.slice(0, maxPerDirection) };
     if (sliced.up.length === 0 && sliced.down.length === 0) {
+      log.warn(`No arrivals for station "${stationName}"`);
       return MOCK_ARRIVALS;
     }
     return sliced;
-  } catch {
+  } catch (e) {
+    log.error(`Fetch failed for station "${stationName}":`, e);
     return MOCK_ARRIVALS;
   } finally {
     clearTimeout(timeout);
