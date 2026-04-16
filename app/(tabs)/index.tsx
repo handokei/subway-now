@@ -126,7 +126,8 @@ export default function HomeScreen() {
   }, [arrivedBanner]);
 
   useEffect(() => {
-    if (result?.station.id && destination?.id && result.station.id === destination.id && result.distanceKm <= 0.5) {
+    if (arrivedBanner) return;
+    if (result?.station.name && destination?.name && result.station.name === destination.name && result.distanceKm <= 0.5) {
       setArrivedBanner(true);
       arrivedTimeoutRef.current = setTimeout(() => {
         setDestination(null);
@@ -136,7 +137,7 @@ export default function HomeScreen() {
     return () => {
       if (arrivedTimeoutRef.current) clearTimeout(arrivedTimeoutRef.current);
     };
-  }, [result?.station.id, destination?.id]);
+  }, [result?.station.name, destination?.name, result?.distanceKm]);
 
   if (permissionDenied) {
     return (

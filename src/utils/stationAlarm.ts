@@ -30,6 +30,12 @@ const checkers: Record<string, AlarmChecker> = {
 
   transfer(route, destinationName, threshold) {
     const r = route as TransferRoute;
+    if (r.transferName === destinationName) {
+      if (r.stopsToTransfer <= threshold) {
+        return { type: 'destination', stationName: destinationName };
+      }
+      return null;
+    }
     if (r.stopsToTransfer <= threshold) {
       return { type: 'transfer', stationName: r.transferName };
     }
@@ -41,12 +47,16 @@ const checkers: Record<string, AlarmChecker> = {
 
   'multi-transfer'(route, destinationName, threshold) {
     const r = route as MultiTransferRoute;
-    const [t1, t2] = r.transfers;
-    if (t1.stopsToTransfer <= threshold) {
-      return { type: 'transfer', stationName: t1.transferName };
-    }
-    if (t2.stopsToTransfer <= threshold) {
-      return { type: 'transfer', stationName: t2.transferName };
+    for (const t of r.transfers) {
+      if (t.transferName === destinationName) {
+        if (t.stopsToTransfer <= threshold) {
+          return { type: 'destination', stationName: destinationName };
+        }
+        return null;
+      }
+      if (t.stopsToTransfer <= threshold) {
+        return { type: 'transfer', stationName: t.transferName };
+      }
     }
     if (r.stopsAfterLastTransfer <= threshold) {
       return { type: 'destination', stationName: destinationName };

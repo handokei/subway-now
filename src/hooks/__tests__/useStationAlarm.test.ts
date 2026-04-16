@@ -143,6 +143,19 @@ describe('useStationAlarm', () => {
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
   });
 
+  it('should send destination alarm (not transfer) when transferName equals destinationName', () => {
+    const route: TransferRoute = {
+      type: 'transfer',
+      transferName: '옥수',
+      fromLine: 'gyeongui',
+      toLine: '3',
+      stopsToTransfer: 0,
+      stopsFromTransfer: 0,
+    };
+    renderHook(() => useStationAlarm(route, '옥수'));
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '옥수', false);
+  });
+
   it('should handle sendAlarmNotification failure gracefully', () => {
     mockSendAlarmNotification.mockRejectedValueOnce(new Error('알림 실패'));
     const route: DirectRoute = { type: 'direct', stops: 1 };
