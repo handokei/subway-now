@@ -106,6 +106,12 @@ describe('DestinationPicker', () => {
     expect(onSelect).toHaveBeenCalledWith(mockStation);
   });
 
+  it('특수 노선 검색 시 한글 호선명이 표시된다', () => {
+    const { getByTestId, getAllByText } = render(<DestinationPicker {...defaultProps} />);
+    fireEvent.changeText(getByTestId('search-input'), '김포공항');
+    expect(getAllByText('공항철도').length).toBeGreaterThanOrEqual(1);
+  });
+
   it('검색창 포커스 시 드롭다운 표시 상태가 활성화된다', () => {
     const { getByTestId, queryByTestId } = render(<DestinationPicker {...defaultProps} />);
     // 검색어 입력 후 선택으로 드롭다운을 닫은 뒤 다시 포커스

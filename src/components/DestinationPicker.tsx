@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import stations from '../data/stations.json';
 import type { Station } from '../types/station';
+import { LINE_NAMES } from '../constants/lineColors';
 import { StationMap } from './StationMap';
 
 
@@ -108,7 +109,7 @@ export function DestinationPicker({
                 >
                   <Text style={styles.suggestionName}>{s.name}</Text>
                   <View style={[styles.lineBadge, { backgroundColor: s.lineColor }]}>
-                    <Text style={styles.lineText}>{s.line}호선</Text>
+                    <Text style={styles.lineText}>{LINE_NAMES[s.line]}</Text>
                   </View>
                 </TouchableOpacity>
               ))}

@@ -241,7 +241,7 @@ export default function HomeScreen() {
                   <View style={styles.recentDestinationRow}>
                     <Text style={styles.recentDestinationName}>{recentDestination.name}</Text>
                     <View style={[styles.recentLineBadge, { backgroundColor: recentDestination.lineColor }]}>
-                      <Text style={styles.recentLineText}>{recentDestination.line}호선</Text>
+                      <Text style={styles.recentLineText}>{LINE_NAMES[recentDestination.line]}</Text>
                     </View>
                   </View>
                 </TouchableOpacity>
