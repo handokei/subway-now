@@ -20,7 +20,6 @@ export default function FavoritesScreen() {
   const favorites = useAppStore((s) => s.favorites);
   const addFavorite = useAppStore((s) => s.addFavorite);
   const removeFavorite = useAppStore((s) => s.removeFavorite);
-  const isFavorite = useAppStore((s) => s.isFavorite);
   const loadFavorites = useAppStore((s) => s.loadFavorites);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -70,7 +69,7 @@ export default function FavoritesScreen() {
               <SearchResultCard
                 key={station.id}
                 station={station}
-                already={isFavorite(station.id)}
+                already={favorites.some((f) => f.id === station.id)}
                 onAdd={() => addFavorite(station)}
               />
             ))
