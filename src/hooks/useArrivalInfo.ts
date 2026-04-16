@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { StationArrival } from '../api/arrivalApi';
 import type { ArrivalProvider } from '../providers/types';
 import { createArrivalProvider } from '../providers/factory';
@@ -6,6 +6,10 @@ import { TtlCache } from '../utils/ttlCache';
 import { usePolling } from './usePolling';
 
 const POLL_INTERVAL_MS = 30_000;
+
+function arrivalEqual(a: StationArrival | null, b: StationArrival): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 interface UseArrivalInfoReturn {
   arrival: StationArrival | null;
@@ -21,11 +25,20 @@ export function useArrivalInfo(
   const [loading, setLoading] = useState(false);
   const cacheRef = useRef(new TtlCache<string, StationArrival>(POLL_INTERVAL_MS));
   const providerRef = useRef<ArrivalProvider>(provider ?? createArrivalProvider());
+  const arrivalRef = useRef<StationArrival | null>(null);
   const stationNameRef = useRef(stationName);
   stationNameRef.current = stationName;
 
+  const updateArrival = useCallback((data: StationArrival) => {
+    if (!arrivalEqual(arrivalRef.current, data)) {
+      arrivalRef.current = data;
+      setArrival(data);
+    }
+  }, []);
+
   useEffect(() => {
     if (!stationName) {
+      arrivalRef.current = null;
       setArrival(null);
       setLoading(false);
       return;
@@ -33,9 +46,10 @@ export function useArrivalInfo(
 
     const cached = cacheRef.current.get(stationName);
     if (cached) {
-      setArrival(cached);
+      updateArrival(cached);
       setLoading(false);
     } else {
+      arrivalRef.current = null;
       setArrival(null);
       setLoading(true);
     }
@@ -53,7 +67,7 @@ export function useArrivalInfo(
         if (!data.isMock) {
           cacheRef.current.set(stationName, data);
         }
-        setArrival(data);
+        updateArrival(data);
       } catch {
         // Provider 내부에서 에러 처리하지만, 미래 변경 대비
       } finally {
@@ -77,7 +91,7 @@ export function useArrivalInfo(
         if (!data.isMock) {
           cacheRef.current.set(name, data);
         }
-        setArrival(data);
+        updateArrival(data);
         setLoading(false);
       }).catch(() => {});
     },
