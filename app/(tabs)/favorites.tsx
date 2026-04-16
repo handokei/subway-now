@@ -17,7 +17,11 @@ import stationsData from '../../src/data/stations.json';
 const allStations = stationsData as Station[];
 
 export default function FavoritesScreen() {
-  const { favorites, addFavorite, removeFavorite, isFavorite, loadFavorites } = useAppStore();
+  const favorites = useAppStore((s) => s.favorites);
+  const addFavorite = useAppStore((s) => s.addFavorite);
+  const removeFavorite = useAppStore((s) => s.removeFavorite);
+  const isFavorite = useAppStore((s) => s.isFavorite);
+  const loadFavorites = useAppStore((s) => s.loadFavorites);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
