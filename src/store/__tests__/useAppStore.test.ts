@@ -71,18 +71,6 @@ describe('useAppStore', () => {
     expect(favorites).toHaveLength(1);
   });
 
-  it('isFavorite: 즐겨찾기 역은 true를 반환한다', async () => {
-    const { addFavorite, isFavorite } = useAppStore.getState();
-    await addFavorite(mockStation);
-
-    expect(isFavorite(mockStation.id)).toBe(true);
-  });
-
-  it('isFavorite: 즐겨찾기 아닌 역은 false를 반환한다', () => {
-    const { isFavorite } = useAppStore.getState();
-    expect(isFavorite('non-existent')).toBe(false);
-  });
-
   it('addFavorite 호출 시 AsyncStorage에 저장한다', async () => {
     const { addFavorite } = useAppStore.getState();
     await addFavorite(mockStation);

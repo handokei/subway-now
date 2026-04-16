@@ -20,7 +20,7 @@ export default function HomeScreen() {
   const { arrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(result?.station.name ?? null);
   const addFavorite = useAppStore((s) => s.addFavorite);
   const removeFavorite = useAppStore((s) => s.removeFavorite);
-  const isFavorite = useAppStore((s) => s.isFavorite);
+  const favorites = useAppStore((s) => s.favorites);
   const loadFavorites = useAppStore((s) => s.loadFavorites);
   const destination = useAppStore((s) => s.destination);
   const setDestination = useAppStore((s) => s.setDestination);
@@ -37,6 +37,7 @@ export default function HomeScreen() {
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const prevDestIdRef = useRef<string | null>(null);
   const [route, setRoute] = useState<Route>(null);
+  const isFav = result ? favorites.some((f) => f.id === result.station.id) : false;
 
   useEffect(() => {
     if (!result || !destination) {
@@ -198,13 +199,13 @@ export default function HomeScreen() {
                 </View>
                 <TouchableOpacity
                   onPress={() =>
-                    isFavorite(result.station.id)
+                    isFav
                       ? removeFavorite(result.station.id)
                       : addFavorite(result.station)
                   }
                 >
                   <Text style={styles.favoriteIcon}>
-                    {isFavorite(result.station.id) ? '⭐' : '☆'}
+                    {isFav ? '⭐' : '☆'}
                   </Text>
                 </TouchableOpacity>
               </View>

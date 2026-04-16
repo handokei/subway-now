@@ -18,7 +18,6 @@ interface AppState {
   alarmEvent: AlarmEvent | null;
   addFavorite: (station: Station) => Promise<void>;
   removeFavorite: (stationId: string) => Promise<void>;
-  isFavorite: (stationId: string) => boolean;
   loadFavorites: () => Promise<void>;
   setDestination: (station: Station | null) => void;
   setRecentDestination: (station: Station | null) => void;
@@ -58,10 +57,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     const updated = get().favorites.filter((s) => s.id !== stationId);
     set({ favorites: updated });
     await AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(updated));
-  },
-
-  isFavorite: (stationId: string) => {
-    return get().favorites.some((s) => s.id === stationId);
   },
 
   setDestination: (station: Station | null) => {
