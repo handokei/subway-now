@@ -4,7 +4,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore } from '../../src/store/useAppStore';
 
 export default function SettingsScreen() {
-  const { sleepMode, setSleepMode, loadSleepMode } = useAppStore();
+  const sleepMode = useAppStore((s) => s.sleepMode);
+  const setSleepMode = useAppStore((s) => s.setSleepMode);
+  const loadSleepMode = useAppStore((s) => s.loadSleepMode);
 
   useEffect(() => {
     loadSleepMode();
