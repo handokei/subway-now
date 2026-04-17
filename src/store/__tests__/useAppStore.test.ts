@@ -148,16 +148,33 @@ describe('useAppStore', () => {
     expect(destination).toBeNull();
   });
 
-  it('setDestination: AsyncStorage를 호출하지 않는다', () => {
+  it('setDestination: 역 설정 시 AsyncStorage에 저장하고 null 시 삭제한다', () => {
     const { setDestination } = useAppStore.getState();
     setDestination(mockStation);
-    setDestination(null);
-
-    expect(AsyncStorage.setItem).not.toHaveBeenCalledWith(
-      expect.stringContaining('destination'),
-      expect.anything()
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:destination',
+      JSON.stringify(mockStation),
     );
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalled();
+
+    jest.clearAllMocks();
+    setDestination(null);
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:destination');
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:fired-alarms');
+  });
+
+  it('setDestination: AsyncStorage 실패 시에도 에러를 던지지 않는다', async () => {
+    (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('저장 실패'));
+    (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('삭제 실패'));
+    (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('삭제 실패'));
+
+    const { setDestination } = useAppStore.getState();
+    setDestination(mockStation);
+    // catch(noop)로 에러가 무시되므로 에러가 던져지지 않아야 한다
+    await new Promise((r) => setTimeout(r, 0));
+
+    setDestination(null);
+    await new Promise((r) => setTimeout(r, 0));
+    // 에러 없이 완료
   });
 
   it('초기 recentDestination은 null이다', () => {

@@ -10,6 +10,7 @@ import { findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA, type 
 import { JourneyTimeline } from '../../src/components/JourneyTimeline';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
+import { useBackgroundLocation } from '../../src/hooks/useBackgroundLocation';
 import { AlarmOverlay } from '../../src/components/AlarmOverlay';
 import { createLogger } from '../../src/utils/logger';
 
@@ -72,6 +73,7 @@ export default function HomeScreen() {
   const displayEta = isRealtimeEta ? etaMinutes : staticEtaMinutes;
 
   useStationAlarm(route, destination?.name ?? null);
+  useBackgroundLocation(destination);
 
   useEffect(() => {
     loadFavorites();

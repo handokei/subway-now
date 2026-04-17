@@ -2,6 +2,7 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { setupNotificationHandler } from '../src/utils/stationNotification';
 import { setMinLevel } from '../src/utils/logger';
+import '../src/tasks/backgroundLocationTask';
 
 setupNotificationHandler();
 
