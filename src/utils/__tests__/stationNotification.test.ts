@@ -284,6 +284,33 @@ describe('stationNotification', () => {
       await updateStationNotification(mockStation, 154);
       expectNotificationContent('시청역', '1호선 · 약 154m');
     });
+
+    it('alarmEvent가 있으면 alarmType과 alarmStationName이 포함된다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, transferRoute, 12, false, { type: 'transfer', stationName: '동대문' });
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          alarmType: 'transfer',
+          alarmStationName: '동대문',
+        })
+      );
+    });
+
+    it('alarmEvent가 destination 타입이면 alarmType이 destination이다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { type: 'destination', stationName: '강남' });
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          alarmType: 'destination',
+          alarmStationName: '강남',
+        })
+      );
+    });
+
+    it('alarmEvent가 없으면 alarmType이 포함되지 않는다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.not.objectContaining({ alarmType: expect.anything() })
+      );
+    });
   });
 
   describe('updateStationNotification (Android - expo-notifications)', () => {

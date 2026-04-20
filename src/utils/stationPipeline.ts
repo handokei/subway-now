@@ -61,6 +61,8 @@ export async function processLocationUpdate(
     destination,
     route,
     eta,
+    undefined,
+    sleepMode ? alarmEvent : null,
   );
 
   return { alarmEvent, nearest };

@@ -16,6 +16,8 @@ export interface LiveActivityData {
   distanceM: number;
   etaMinutes?: number;
   isMock?: boolean;
+  alarmType?: 'destination' | 'transfer';
+  alarmStationName?: string;
 }
 
 const LiveActivityModule =
