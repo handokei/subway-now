@@ -211,12 +211,23 @@ export async function sendAlarmNotification(
   type: 'destination' | 'transfer',
   stationName: string,
   sleepMode: boolean = false,
+  timeBased: boolean = false,
 ): Promise<void> {
   const isTransfer = type === 'transfer';
-  const title = isTransfer ? '환승 알림' : '하차 알림';
-  const body = isTransfer
-    ? `다음 역 ${stationName}에서 환승하세요!`
-    : `다음 역 ${stationName}에서 내리세요!`;
+  let title: string;
+  let body: string;
+
+  if (timeBased) {
+    title = isTransfer ? '환승 임박' : '도착 임박';
+    body = isTransfer
+      ? `곧 ${stationName}에 도착합니다. 환승 준비하세요!`
+      : `곧 ${stationName}에 도착합니다. 하차 준비하세요!`;
+  } else {
+    title = isTransfer ? '환승 알림' : '하차 알림';
+    body = isTransfer
+      ? `다음 역 ${stationName}에서 환승하세요!`
+      : `다음 역 ${stationName}에서 내리세요!`;
+  }
 
   await scheduleNotification(ALARM_NOTIFICATION_ID, {
     title,

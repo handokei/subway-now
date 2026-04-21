@@ -153,6 +153,8 @@ describe('useStationAlarm', () => {
       stopsFromTransfer: 0,
     };
     renderHook(() => useStationAlarm(route, '옥수'));
+    // 시간 기반 알람 (timeBased=true)과 정거장 기반 알람 둘 다 발생
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '옥수', false, true);
     expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '옥수', false);
   });
 
@@ -160,5 +162,63 @@ describe('useStationAlarm', () => {
     mockSendAlarmNotification.mockRejectedValueOnce(new Error('알림 실패'));
     const route: DirectRoute = { type: 'direct', stops: 1 };
     expect(() => renderHook(() => useStationAlarm(route, '강남'))).not.toThrow();
+  });
+
+  // 시간 기반 알람 테스트
+  describe('time-based alarm', () => {
+    it('should send time-based alarm when estimated time <= 30s (0 stops)', () => {
+      const route: DirectRoute = { type: 'direct', stops: 0 };
+      renderHook(() => useStationAlarm(route, '강남'));
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남', false, true);
+      // 정거장 기반 알람도 발생 (stops === 0 <= 1)
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남', false);
+    });
+
+    it('should not send time-based alarm when estimated time > 30s', () => {
+      const route: DirectRoute = { type: 'direct', stops: 3 };
+      renderHook(() => useStationAlarm(route, '강남'));
+      expect(mockSendAlarmNotification).not.toHaveBeenCalledWith('destination', '강남', false, true);
+    });
+
+    it('should send time-based transfer alarm', () => {
+      const route: TransferRoute = {
+        type: 'transfer',
+        transferName: '시청',
+        fromLine: '1',
+        toLine: '2',
+        stopsToTransfer: 0,
+        stopsFromTransfer: 5,
+      };
+      renderHook(() => useStationAlarm(route, '강남'));
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '시청', false, true);
+    });
+
+    it('should set alarmEvent in sleep mode for time-based alarm', () => {
+      useAppStore.setState({ sleepMode: true });
+      const route: DirectRoute = { type: 'direct', stops: 0 };
+      renderHook(() => useStationAlarm(route, '강남'));
+      expect(useAppStore.getState().alarmEvent).toEqual({ type: 'destination', stationName: '강남' });
+    });
+
+    it('should not fire same time-based alarm twice', () => {
+      const route: DirectRoute = { type: 'direct', stops: 0 };
+      const { rerender } = renderHook(() => useStationAlarm(route, '강남'));
+      const timeBasedCalls = mockSendAlarmNotification.mock.calls.filter(
+        (c: unknown[]) => c[3] === true,
+      );
+      expect(timeBasedCalls).toHaveLength(1);
+
+      rerender({});
+      const timeBasedCallsAfter = mockSendAlarmNotification.mock.calls.filter(
+        (c: unknown[]) => c[3] === true,
+      );
+      expect(timeBasedCallsAfter).toHaveLength(1);
+    });
+
+    it('should handle time-based alarm notification failure gracefully', () => {
+      mockSendAlarmNotification.mockRejectedValueOnce(new Error('시간 기반 알림 실패'));
+      const route: DirectRoute = { type: 'direct', stops: 0 };
+      expect(() => renderHook(() => useStationAlarm(route, '강남'))).not.toThrow();
+    });
   });
 });

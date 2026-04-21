@@ -412,6 +412,30 @@ describe('stationNotification', () => {
       await sendAlarmNotification('destination', '강남');
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
     });
+
+    it('timeBased destination이면 도착 임박 알림을 보낸다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification('destination', '강남', false, true);
+      expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!');
+    });
+
+    it('timeBased transfer이면 환승 임박 알림을 보낸다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification('transfer', '시청', false, true);
+      expectAlarmNotification('환승 임박', '곧 시청에 도착합니다. 환승 준비하세요!');
+    });
+
+    it('timeBased + sleepMode이면 playAlarmWithRouting에 true를 전달한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification('destination', '강남', true, true);
+      expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(true);
+    });
+
+    it('timeBased + Android에서는 channelId가 포함된다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      await sendAlarmNotification('destination', '강남', false, true);
+      expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!', { channelId: 'station-alarm' });
+    });
   });
 
   describe('clearAlarmNotification', () => {
