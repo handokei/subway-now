@@ -5,6 +5,8 @@ const log = createLogger('arrivalApi');
 export interface ArrivalInfo {
   destination: string;
   arrivalMinutes: number;
+  arrivalSeconds: number;
+  statusMessage: string;
   trainCode: string;
 }
 
@@ -16,12 +18,12 @@ export interface StationArrival {
 
 export const MOCK_ARRIVALS: Readonly<StationArrival> = Object.freeze({
   up: [
-    { destination: '상행 종착역', arrivalMinutes: 2, trainCode: 'UP-001' },
-    { destination: '상행 종착역', arrivalMinutes: 8, trainCode: 'UP-002' },
+    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001' },
+    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002' },
   ],
   down: [
-    { destination: '하행 종착역', arrivalMinutes: 4, trainCode: 'DN-001' },
-    { destination: '하행 종착역', arrivalMinutes: 11, trainCode: 'DN-002' },
+    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001' },
+    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002' },
   ],
   isMock: true,
 });
@@ -61,9 +63,12 @@ export async function fetchArrivalInfo(
     const down: ArrivalInfo[] = [];
 
     for (const item of items) {
+      const seconds = Math.max(0, item.barvlDt ?? 0);
       const info: ArrivalInfo = {
         destination: item.trainLineNm ?? '',
-        arrivalMinutes: Math.max(0, Math.floor((item.barvlDt ?? 0) / 60)),
+        arrivalMinutes: Math.floor(seconds / 60),
+        arrivalSeconds: seconds,
+        statusMessage: item.arvlMsg2 ?? '',
         trainCode: item.btrainNo ?? '',
       };
       if (item.updnLine === '상행' || item.updnLine === '내선') {

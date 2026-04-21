@@ -5,7 +5,8 @@ import { createArrivalProvider } from '../providers/factory';
 import { TtlCache } from '../utils/ttlCache';
 import { usePolling } from './usePolling';
 
-const POLL_INTERVAL_MS = 30_000;
+const POLL_INTERVAL_MS = 5_000;
+const CACHE_TTL_MS = 30_000;
 
 function arrivalEqual(a: StationArrival | null, b: StationArrival): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -23,7 +24,7 @@ export function useArrivalInfo(
 ): UseArrivalInfoReturn {
   const [arrival, setArrival] = useState<StationArrival | null>(null);
   const [loading, setLoading] = useState(false);
-  const cacheRef = useRef(new TtlCache<string, StationArrival>(POLL_INTERVAL_MS));
+  const cacheRef = useRef(new TtlCache<string, StationArrival>(CACHE_TTL_MS));
   const providerRef = useRef<ArrivalProvider>(provider ?? createArrivalProvider());
   const arrivalRef = useRef<StationArrival | null>(null);
   const stationNameRef = useRef(stationName);
