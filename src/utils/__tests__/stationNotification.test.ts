@@ -436,6 +436,18 @@ describe('stationNotification', () => {
       await sendAlarmNotification('destination', '강남', false, true);
       expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!', { channelId: 'station-alarm' });
     });
+
+    it('timeBased approaching이면 역 접근 알림을 보낸다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification('approaching', '역삼', false, true);
+      expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.');
+    });
+
+    it('timeBased approaching + Android에서는 channelId가 포함된다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      await sendAlarmNotification('approaching', '역삼', false, true);
+      expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { channelId: 'station-alarm' });
+    });
   });
 
   describe('clearAlarmNotification', () => {

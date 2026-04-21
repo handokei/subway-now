@@ -7,7 +7,12 @@ import { createLogger } from '../utils/logger';
 
 const logger = createLogger('StationAlarm');
 
-export function useStationAlarm(route: Route, destinationName: string | null): void {
+export function useStationAlarm(
+  route: Route,
+  destinationName: string | null,
+  nextStationName?: string | null,
+  stopsToNextStation?: number,
+): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
   const prevDestRef = useRef<string | null>(null);
   const sleepMode = useAppStore((s) => s.sleepMode);
@@ -26,11 +31,18 @@ export function useStationAlarm(route: Route, destinationName: string | null): v
 
     if (!route || !destinationName) return;
 
-    // 시간 기반 알람 체크 (약 30초 이하일 때 트리거)
-    const timeEvent = checkTimeBasedAlarm(route, destinationName, firedAlarmsRef.current);
+    // 시간 기반 알람 체크: 매 역 도착 전 알림 (약 30초 이하일 때 트리거)
+    const timeEvent = checkTimeBasedAlarm(
+      nextStationName ?? null,
+      stopsToNextStation ?? 1,
+      destinationName,
+      route,
+      firedAlarmsRef.current,
+    );
     if (timeEvent) {
       firedAlarmsRef.current.add(alarmKey(timeEvent));
-      if (sleepModeRef.current) {
+      // approaching 타입은 일반 역이므로 취침 모드 alarmEvent 설정 불필요
+      if (sleepModeRef.current && timeEvent.type !== 'approaching') {
         setAlarmEvent({ type: timeEvent.type, stationName: timeEvent.stationName });
       }
       sendAlarmNotification(timeEvent.type, timeEvent.stationName, sleepModeRef.current, true).catch((e) =>
@@ -44,10 +56,11 @@ export function useStationAlarm(route: Route, destinationName: string | null): v
 
     firedAlarmsRef.current.add(alarmKey(event));
     if (sleepModeRef.current) {
-      setAlarmEvent({ type: event.type, stationName: event.stationName });
+      // checkAlarm은 'destination' | 'transfer'만 반환 (approaching 불가)
+      setAlarmEvent({ type: event.type as 'destination' | 'transfer', stationName: event.stationName });
     }
     sendAlarmNotification(event.type, event.stationName, sleepModeRef.current).catch((e) =>
       logger.error('알람 알림 실패:', e),
     );
-  }, [route, destinationName]);
+  }, [route, destinationName, nextStationName, stopsToNextStation]);
 }

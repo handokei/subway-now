@@ -21,6 +21,11 @@ describe('alarmKey', () => {
     const event: AlarmEvent = { type: 'transfer', stationName: '시청', timeBased: true };
     expect(alarmKey(event)).toBe('time-transfer:시청');
   });
+
+  it('should return approaching key', () => {
+    const event: AlarmEvent = { type: 'approaching', stationName: '역삼', timeBased: true };
+    expect(alarmKey(event)).toBe('time-approaching:역삼');
+  });
 });
 
 describe('estimateRemainingSeconds', () => {
@@ -327,209 +332,157 @@ describe('checkAlarm', () => {
 describe('checkTimeBasedAlarm', () => {
   const destinationName = '강남';
 
-  it('should return null for null route', () => {
-    expect(checkTimeBasedAlarm(null, destinationName, new Set())).toBeNull();
+  it('should return null when nextStationName is null', () => {
+    const route: DirectRoute = { type: 'direct', stops: 5 };
+    expect(checkTimeBasedAlarm(null, 1, destinationName, route, new Set())).toBeNull();
   });
 
-  describe('DirectRoute', () => {
-    it('should return time-based destination alarm when estimated time <= 30s (0 stops)', () => {
-      const route: DirectRoute = { type: 'direct', stops: 0 };
-      const result = checkTimeBasedAlarm(route, destinationName, new Set());
-      expect(result).toEqual({ type: 'destination', stationName: '강남', timeBased: true });
+  it('should return null when route is null', () => {
+    expect(checkTimeBasedAlarm('역삼', 1, destinationName, null, new Set())).toBeNull();
+  });
+
+  it('should return null when estimated time exceeds threshold', () => {
+    const route: DirectRoute = { type: 'direct', stops: 5 };
+    expect(checkTimeBasedAlarm('역삼', 2, destinationName, route, new Set())).toBeNull();
+  });
+
+  describe('approaching regular station', () => {
+    it('should return approaching alarm for regular station (0 stops to next)', () => {
+      const route: DirectRoute = { type: 'direct', stops: 5 };
+      const result = checkTimeBasedAlarm('역삼', 0, destinationName, route, new Set());
+      expect(result).toEqual({ type: 'approaching', stationName: '역삼', timeBased: true });
     });
 
-    it('should return null when estimated time > 30s (1 stop = 120s)', () => {
+    it('should return null when already fired for that station', () => {
+      const route: DirectRoute = { type: 'direct', stops: 5 };
+      const fired = new Set(['time-approaching:역삼']);
+      expect(checkTimeBasedAlarm('역삼', 0, destinationName, route, fired)).toBeNull();
+    });
+
+    it('should fire for different stations independently', () => {
+      const route: DirectRoute = { type: 'direct', stops: 5 };
+      const fired = new Set(['time-approaching:역삼']);
+      const result = checkTimeBasedAlarm('선릉', 0, destinationName, route, fired);
+      expect(result).toEqual({ type: 'approaching', stationName: '선릉', timeBased: true });
+    });
+  });
+
+  describe('approaching destination station', () => {
+    it('should return destination alarm when next station is destination', () => {
       const route: DirectRoute = { type: 'direct', stops: 1 };
-      expect(checkTimeBasedAlarm(route, destinationName, new Set())).toBeNull();
+      const result = checkTimeBasedAlarm('강남', 0, '강남', route, new Set());
+      expect(result).toEqual({ type: 'destination', stationName: '강남', timeBased: true });
     });
 
-    it('should return null when already fired', () => {
-      const route: DirectRoute = { type: 'direct', stops: 0 };
+    it('should return null when already fired for destination', () => {
+      const route: DirectRoute = { type: 'direct', stops: 1 };
       const fired = new Set(['time-destination:강남']);
-      expect(checkTimeBasedAlarm(route, destinationName, fired)).toBeNull();
-    });
-
-    it('should trigger with custom threshold (240s covers 2 stops)', () => {
-      const route: DirectRoute = { type: 'direct', stops: 2 };
-      const result = checkTimeBasedAlarm(route, destinationName, new Set(), 240);
-      expect(result).toEqual({ type: 'destination', stationName: '강남', timeBased: true });
-    });
-
-    it('should not trigger when estimated time exceeds custom threshold', () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
-      expect(checkTimeBasedAlarm(route, destinationName, new Set(), 240)).toBeNull();
+      expect(checkTimeBasedAlarm('강남', 0, '강남', route, fired)).toBeNull();
     });
   });
 
-  describe('TransferRoute', () => {
-    it('should return time-based transfer alarm when stopsToTransfer estimated time <= 30s', () => {
+  describe('approaching transfer station', () => {
+    it('should return transfer alarm for transfer station (TransferRoute)', () => {
       const route: TransferRoute = {
         type: 'transfer',
         transferName: '시청',
         fromLine: '1',
         toLine: '2',
-        stopsToTransfer: 0,
+        stopsToTransfer: 1,
         stopsFromTransfer: 5,
       };
-      const result = checkTimeBasedAlarm(route, destinationName, new Set());
+      const result = checkTimeBasedAlarm('시청', 0, destinationName, route, new Set());
       expect(result).toEqual({ type: 'transfer', stationName: '시청', timeBased: true });
     });
 
-    it('should return time-based destination alarm when stopsFromTransfer estimated time <= 30s', () => {
-      const route: TransferRoute = {
-        type: 'transfer',
-        transferName: '시청',
-        fromLine: '1',
-        toLine: '2',
-        stopsToTransfer: 5,
-        stopsFromTransfer: 0,
-      };
-      const result = checkTimeBasedAlarm(route, destinationName, new Set());
-      expect(result).toEqual({ type: 'destination', stationName: '강남', timeBased: true });
-    });
-
-    it('should return null when both estimated times > 30s', () => {
-      const route: TransferRoute = {
-        type: 'transfer',
-        transferName: '시청',
-        fromLine: '1',
-        toLine: '2',
-        stopsToTransfer: 3,
-        stopsFromTransfer: 5,
-      };
-      expect(checkTimeBasedAlarm(route, destinationName, new Set())).toBeNull();
-    });
-
-    it('should return destination alarm when transferName equals destinationName and time <= threshold', () => {
-      const route: TransferRoute = {
-        type: 'transfer',
-        transferName: '옥수',
-        fromLine: 'gyeongui',
-        toLine: '3',
-        stopsToTransfer: 0,
-        stopsFromTransfer: 0,
-      };
-      const result = checkTimeBasedAlarm(route, '옥수', new Set());
-      expect(result).toEqual({ type: 'destination', stationName: '옥수', timeBased: true });
-    });
-
-    it('should return null when transferName equals destinationName but time > threshold', () => {
-      const route: TransferRoute = {
-        type: 'transfer',
-        transferName: '옥수',
-        fromLine: 'gyeongui',
-        toLine: '3',
-        stopsToTransfer: 3,
-        stopsFromTransfer: 0,
-      };
-      expect(checkTimeBasedAlarm(route, '옥수', new Set())).toBeNull();
-    });
-
-    it('should return null when already fired', () => {
-      const route: TransferRoute = {
-        type: 'transfer',
-        transferName: '시청',
-        fromLine: '1',
-        toLine: '2',
-        stopsToTransfer: 0,
-        stopsFromTransfer: 5,
-      };
-      const fired = new Set(['time-transfer:시청']);
-      expect(checkTimeBasedAlarm(route, destinationName, fired)).toBeNull();
-    });
-  });
-
-  describe('MultiTransferRoute', () => {
-    const makeMultiRoute = (
-      stops1: number,
-      stops2: number,
-      stopsAfter: number,
-    ): MultiTransferRoute => ({
-      type: 'multi-transfer',
-      transfers: [
-        { transferName: '시청', fromLine: '1', toLine: '3', stopsToTransfer: stops1 },
-        { transferName: '충무로', fromLine: '3', toLine: '4', stopsToTransfer: stops2 },
-      ],
-      stopsAfterLastTransfer: stopsAfter,
-    });
-
-    it('should return time-based transfer alarm for first transfer when time <= 30s', () => {
-      const route = makeMultiRoute(0, 5, 3);
-      const result = checkTimeBasedAlarm(route, destinationName, new Set());
-      expect(result).toEqual({ type: 'transfer', stationName: '시청', timeBased: true });
-    });
-
-    it('should return time-based transfer alarm for second transfer when time <= 30s', () => {
-      const route = makeMultiRoute(5, 0, 3);
-      const result = checkTimeBasedAlarm(route, destinationName, new Set());
-      expect(result).toEqual({ type: 'transfer', stationName: '충무로', timeBased: true });
-    });
-
-    it('should return time-based destination alarm when stopsAfterLastTransfer time <= 30s', () => {
-      const route = makeMultiRoute(5, 3, 0);
-      const result = checkTimeBasedAlarm(route, destinationName, new Set());
-      expect(result).toEqual({ type: 'destination', stationName: '강남', timeBased: true });
-    });
-
-    it('should return null when all estimated times > 30s', () => {
-      const route = makeMultiRoute(3, 4, 5);
-      expect(checkTimeBasedAlarm(route, destinationName, new Set())).toBeNull();
-    });
-
-    it('should return null when already fired', () => {
-      const route = makeMultiRoute(0, 5, 3);
-      const fired = new Set(['time-transfer:시청']);
-      expect(checkTimeBasedAlarm(route, destinationName, fired)).toBeNull();
-    });
-
-    it('should return destination alarm when first transferName equals destinationName and time <= threshold', () => {
+    it('should return transfer alarm for first transfer (MultiTransferRoute)', () => {
       const route: MultiTransferRoute = {
         type: 'multi-transfer',
         transfers: [
-          { transferName: '옥수', fromLine: 'gyeongui', toLine: '3', stopsToTransfer: 0 },
+          { transferName: '시청', fromLine: '1', toLine: '3', stopsToTransfer: 1 },
           { transferName: '충무로', fromLine: '3', toLine: '4', stopsToTransfer: 5 },
         ],
         stopsAfterLastTransfer: 3,
       };
-      const result = checkTimeBasedAlarm(route, '옥수', new Set());
-      expect(result).toEqual({ type: 'destination', stationName: '옥수', timeBased: true });
+      const result = checkTimeBasedAlarm('시청', 0, destinationName, route, new Set());
+      expect(result).toEqual({ type: 'transfer', stationName: '시청', timeBased: true });
     });
 
-    it('should return null when first transferName equals destinationName but time > threshold', () => {
+    it('should return transfer alarm for second transfer (MultiTransferRoute)', () => {
       const route: MultiTransferRoute = {
         type: 'multi-transfer',
         transfers: [
-          { transferName: '옥수', fromLine: 'gyeongui', toLine: '3', stopsToTransfer: 5 },
+          { transferName: '시청', fromLine: '1', toLine: '3', stopsToTransfer: 5 },
           { transferName: '충무로', fromLine: '3', toLine: '4', stopsToTransfer: 1 },
         ],
         stopsAfterLastTransfer: 3,
       };
-      expect(checkTimeBasedAlarm(route, '옥수', new Set())).toBeNull();
+      const result = checkTimeBasedAlarm('충무로', 0, destinationName, route, new Set());
+      expect(result).toEqual({ type: 'transfer', stationName: '충무로', timeBased: true });
     });
 
-    it('should return destination alarm when second transferName equals destinationName and time <= threshold', () => {
+    it('should return null when already fired for transfer station', () => {
+      const route: TransferRoute = {
+        type: 'transfer',
+        transferName: '시청',
+        fromLine: '1',
+        toLine: '2',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 5,
+      };
+      const fired = new Set(['time-transfer:시청']);
+      expect(checkTimeBasedAlarm('시청', 0, destinationName, route, fired)).toBeNull();
+    });
+  });
+
+  describe('direct route: approaching regular station is not destination', () => {
+    it('should return approaching for non-destination station on direct route', () => {
+      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const result = checkTimeBasedAlarm('역삼', 0, '강남', route, new Set());
+      expect(result).toEqual({ type: 'approaching', stationName: '역삼', timeBased: true });
+    });
+  });
+
+  describe('approaching regular station on transfer/multi-transfer route', () => {
+    it('should return approaching for non-transfer station on TransferRoute', () => {
+      const route: TransferRoute = {
+        type: 'transfer',
+        transferName: '시청',
+        fromLine: '1',
+        toLine: '2',
+        stopsToTransfer: 3,
+        stopsFromTransfer: 5,
+      };
+      const result = checkTimeBasedAlarm('종각', 0, destinationName, route, new Set());
+      expect(result).toEqual({ type: 'approaching', stationName: '종각', timeBased: true });
+    });
+
+    it('should return approaching for non-transfer station on MultiTransferRoute', () => {
       const route: MultiTransferRoute = {
         type: 'multi-transfer',
         transfers: [
-          { transferName: '시청', fromLine: '1', toLine: '3', stopsToTransfer: 5 },
-          { transferName: '옥수', fromLine: '3', toLine: 'bundang', stopsToTransfer: 0 },
+          { transferName: '시청', fromLine: '1', toLine: '3', stopsToTransfer: 3 },
+          { transferName: '충무로', fromLine: '3', toLine: '4', stopsToTransfer: 5 },
         ],
-        stopsAfterLastTransfer: 0,
+        stopsAfterLastTransfer: 3,
       };
-      const result = checkTimeBasedAlarm(route, '옥수', new Set());
-      expect(result).toEqual({ type: 'destination', stationName: '옥수', timeBased: true });
+      const result = checkTimeBasedAlarm('종각', 0, destinationName, route, new Set());
+      expect(result).toEqual({ type: 'approaching', stationName: '종각', timeBased: true });
+    });
+  });
+
+  describe('custom threshold', () => {
+    it('should trigger when estimated time equals threshold', () => {
+      const route: DirectRoute = { type: 'direct', stops: 5 };
+      // 1 stop * 120s = 120s, threshold = 120
+      const result = checkTimeBasedAlarm('역삼', 1, destinationName, route, new Set(), 120);
+      expect(result).toEqual({ type: 'approaching', stationName: '역삼', timeBased: true });
     });
 
-    it('should return null when second transferName equals destinationName but time > threshold', () => {
-      const route: MultiTransferRoute = {
-        type: 'multi-transfer',
-        transfers: [
-          { transferName: '시청', fromLine: '1', toLine: '3', stopsToTransfer: 5 },
-          { transferName: '옥수', fromLine: '3', toLine: 'bundang', stopsToTransfer: 3 },
-        ],
-        stopsAfterLastTransfer: 0,
-      };
-      expect(checkTimeBasedAlarm(route, '옥수', new Set())).toBeNull();
+    it('should not trigger when estimated time exceeds threshold', () => {
+      const route: DirectRoute = { type: 'direct', stops: 5 };
+      // 1 stop * 120s = 120s, threshold = 60
+      expect(checkTimeBasedAlarm('역삼', 1, destinationName, route, new Set(), 60)).toBeNull();
     });
   });
 });

@@ -1,6 +1,6 @@
 import type { Route, DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
 
-export type AlarmType = 'destination' | 'transfer';
+export type AlarmType = 'destination' | 'transfer' | 'approaching';
 
 export interface AlarmEvent {
   type: AlarmType;
@@ -92,70 +92,40 @@ export function checkAlarm(
   return event;
 }
 
-type TimeBasedAlarmChecker = (
-  route: NonNullable<Route>,
+function resolveStationType(
+  nextStationName: string,
   destinationName: string,
-  thresholdSeconds: number,
-) => AlarmEvent | null;
+  route: NonNullable<Route>,
+): AlarmType {
+  if (nextStationName === destinationName) return 'destination';
 
-const timeBasedCheckers: Record<string, TimeBasedAlarmChecker> = {
-  direct(route, destinationName, thresholdSeconds) {
-    const r = route as DirectRoute;
-    if (estimateRemainingSeconds(r.stops) <= thresholdSeconds) {
-      return { type: 'destination', stationName: destinationName, timeBased: true };
-    }
-    return null;
-  },
+  if (route.type === 'transfer') {
+    if (nextStationName === route.transferName) return 'transfer';
+  }
 
-  transfer(route, destinationName, thresholdSeconds) {
-    const r = route as TransferRoute;
-    if (r.transferName === destinationName) {
-      if (estimateRemainingSeconds(r.stopsToTransfer) <= thresholdSeconds) {
-        return { type: 'destination', stationName: destinationName, timeBased: true };
-      }
-      return null;
+  if (route.type === 'multi-transfer') {
+    for (const t of route.transfers) {
+      if (nextStationName === t.transferName) return 'transfer';
     }
-    if (estimateRemainingSeconds(r.stopsToTransfer) <= thresholdSeconds) {
-      return { type: 'transfer', stationName: r.transferName, timeBased: true };
-    }
-    if (estimateRemainingSeconds(r.stopsFromTransfer) <= thresholdSeconds) {
-      return { type: 'destination', stationName: destinationName, timeBased: true };
-    }
-    return null;
-  },
+  }
 
-  'multi-transfer'(route, destinationName, thresholdSeconds) {
-    const r = route as MultiTransferRoute;
-    for (const t of r.transfers) {
-      if (t.transferName === destinationName) {
-        if (estimateRemainingSeconds(t.stopsToTransfer) <= thresholdSeconds) {
-          return { type: 'destination', stationName: destinationName, timeBased: true };
-        }
-        return null;
-      }
-      if (estimateRemainingSeconds(t.stopsToTransfer) <= thresholdSeconds) {
-        return { type: 'transfer', stationName: t.transferName, timeBased: true };
-      }
-    }
-    if (estimateRemainingSeconds(r.stopsAfterLastTransfer) <= thresholdSeconds) {
-      return { type: 'destination', stationName: destinationName, timeBased: true };
-    }
-    return null;
-  },
-};
+  return 'approaching';
+}
 
 export function checkTimeBasedAlarm(
-  route: Route,
+  nextStationName: string | null,
+  stopsToNextStation: number,
   destinationName: string,
+  route: Route,
   firedAlarms: Set<string>,
   thresholdSeconds: number = TIME_BASED_THRESHOLD_SECONDS,
 ): AlarmEvent | null {
-  if (!route) return null;
+  if (!nextStationName || !route) return null;
 
-  const checker = timeBasedCheckers[route.type];
-  const event = checker(route, destinationName, thresholdSeconds);
+  if (estimateRemainingSeconds(stopsToNextStation) > thresholdSeconds) return null;
 
-  if (!event) return null;
+  const type = resolveStationType(nextStationName, destinationName, route);
+  const event: AlarmEvent = { type, stationName: nextStationName, timeBased: true };
 
   const key = alarmKey(event);
   if (firedAlarms.has(key)) return null;
