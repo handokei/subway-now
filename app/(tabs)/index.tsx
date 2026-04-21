@@ -3,6 +3,8 @@ import { InteractionManager, ScrollView, StyleSheet, Switch, Text, TouchableOpac
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
+import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
+import { formatArrivalTime } from '../../src/utils/formatTime';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
@@ -17,7 +19,8 @@ const logger = createLogger('HomeScreen');
 
 export default function HomeScreen() {
   const { result, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
-  const { arrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(result?.station.name ?? null);
+  const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(result?.station.name ?? null);
+  const arrival = useArrivalCountdown(rawArrival);
   const addFavorite = useAppStore((s) => s.addFavorite);
   const removeFavorite = useAppStore((s) => s.removeFavorite);
   const favorites = useAppStore((s) => s.favorites);
@@ -60,8 +63,8 @@ export default function HomeScreen() {
   );
   const nextTrainMinutes = arrival
     ? Math.min(
-        arrival.up[0]?.arrivalMinutes ?? Infinity,
-        arrival.down[0]?.arrivalMinutes ?? Infinity,
+        arrival.up[0]?.arrivalSeconds != null ? Math.floor(arrival.up[0].arrivalSeconds / 60) : Infinity,
+        arrival.down[0]?.arrivalSeconds != null ? Math.floor(arrival.down[0].arrivalSeconds / 60) : Infinity,
       )
     : null;
   const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
@@ -336,7 +339,7 @@ function ArrivalRow({
   items,
 }: {
   label: string;
-  items: { destination: string; arrivalMinutes: number }[];
+  items: { destination: string; arrivalSeconds: number; statusMessage: string }[];
 }) {
   return (
     <View style={styles.arrivalRow}>
@@ -346,10 +349,15 @@ function ArrivalRow({
           <Text style={styles.arrivalItem}>도착 정보 없음</Text>
         ) : (
           items.map((item, idx) => (
-            <Text key={idx} style={styles.arrivalItem}>
-              {item.destination ? `${item.destination} · ` : ''}
-              {item.arrivalMinutes === 0 ? '곧 도착' : `${item.arrivalMinutes}분 후`}
-            </Text>
+            <View key={idx} style={styles.arrivalItemContainer}>
+              <Text style={styles.arrivalItem}>
+                {item.destination ? `${item.destination} · ` : ''}
+                {formatArrivalTime(item.arrivalSeconds)}
+              </Text>
+              {item.statusMessage !== '' && (
+                <Text style={styles.statusMessage}>{item.statusMessage}</Text>
+              )}
+            </View>
           ))
         )}
       </View>
@@ -558,11 +566,19 @@ const styles = StyleSheet.create({
     color: '#aaaacc',
     fontWeight: '600',
   },
+  arrivalItemContainer: {
+    marginBottom: 4,
+  },
   arrivalItem: {
     fontSize: 15,
     color: '#ffffff',
     textAlign: 'right',
-    marginBottom: 4,
+  },
+  statusMessage: {
+    fontSize: 12,
+    color: '#a78bfa',
+    textAlign: 'right',
+    marginTop: 2,
   },
   icon: {
     fontSize: 48,

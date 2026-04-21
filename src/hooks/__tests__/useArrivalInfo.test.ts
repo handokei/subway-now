@@ -13,8 +13,8 @@ jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) =>
 });
 
 const mockArrival = {
-  up: [{ destination: '소요산행', arrivalMinutes: 2, trainCode: 'T001' }],
-  down: [{ destination: '인천행', arrivalMinutes: 5, trainCode: 'T002' }],
+  up: [{ destination: '소요산행', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '전역 출발', trainCode: 'T001' }],
+  down: [{ destination: '인천행', arrivalMinutes: 5, arrivalSeconds: 300, statusMessage: '', trainCode: 'T002' }],
 };
 
 const mockArrivalWithMock = {
@@ -65,7 +65,7 @@ describe('useArrivalInfo', () => {
     expect(result.current.isMock).toBe(true);
   });
 
-  it('30초 인터벌 후 자동으로 도착 정보를 갱신한다', async () => {
+  it('5초 인터벌 후 자동으로 도착 정보를 갱신한다', async () => {
     (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
 
     renderHook(() => useArrivalInfo('강남'));
@@ -75,7 +75,7 @@ describe('useArrivalInfo', () => {
     );
 
     act(() => {
-      jest.advanceTimersByTime(30_000);
+      jest.advanceTimersByTime(5_000);
     });
 
     await waitFor(() =>
@@ -175,8 +175,8 @@ describe('useArrivalInfo', () => {
 
   it('캐시 표시 후 백그라운드 갱신이 데이터를 업데이트한다', async () => {
     const updatedArrival = {
-      up: [{ destination: '소요산행', arrivalMinutes: 5, trainCode: 'T001' }],
-      down: [{ destination: '인천행', arrivalMinutes: 8, trainCode: 'T002' }],
+      up: [{ destination: '소요산행', arrivalMinutes: 5, arrivalSeconds: 300, statusMessage: '', trainCode: 'T001' }],
+      down: [{ destination: '인천행', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'T002' }],
     };
 
     (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
@@ -286,7 +286,7 @@ describe('useArrivalInfo', () => {
   it('stationName이 null일 때 폴링 콜백은 fetch하지 않는다', async () => {
     renderHook(() => useArrivalInfo(null));
 
-    jest.advanceTimersByTime(30_000);
+    jest.advanceTimersByTime(5_000);
     await Promise.resolve();
 
     expect(arrivalApiModule.fetchArrivalInfo).not.toHaveBeenCalled();
@@ -294,11 +294,11 @@ describe('useArrivalInfo', () => {
 
   it('폴링 중 stationName이 변경되면 이전 폴링 응답을 무시한다', async () => {
     const staleArrival = {
-      up: [{ destination: '이전역', arrivalMinutes: 99, trainCode: 'OLD' }],
+      up: [{ destination: '이전역', arrivalMinutes: 99, arrivalSeconds: 5940, statusMessage: '', trainCode: 'OLD' }],
       down: [],
     };
     const freshArrival = {
-      up: [{ destination: '새역', arrivalMinutes: 1, trainCode: 'NEW' }],
+      up: [{ destination: '새역', arrivalMinutes: 1, arrivalSeconds: 60, statusMessage: '', trainCode: 'NEW' }],
       down: [],
     };
 
@@ -323,7 +323,7 @@ describe('useArrivalInfo', () => {
     );
 
     // 폴링 트리거 → '강남'에 대한 느린 fetch 시작
-    act(() => { jest.advanceTimersByTime(30_000); });
+    act(() => { jest.advanceTimersByTime(5_000); });
 
     // 역 변경 → stationNameRef.current가 '역삼'으로 바뀜
     rerender({ name: '역삼' });
@@ -349,7 +349,7 @@ describe('useArrivalInfo', () => {
     // 폴링에서 mock 데이터 반환 → 캐시에 저장 안 됨
     (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrivalWithMock);
 
-    act(() => { jest.advanceTimersByTime(30_000); });
+    act(() => { jest.advanceTimersByTime(5_000); });
     await waitFor(() => expect(result.current.isMock).toBe(true));
     // mock 데이터가 arrival에 반영되었지만 캐시에는 이전 실제 데이터만 있음
     expect(result.current.arrival).toEqual(mockArrivalWithMock);
@@ -366,7 +366,7 @@ describe('useArrivalInfo', () => {
     // 폴링에서 에러 발생
     (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockRejectedValue(new Error('network'));
 
-    act(() => { jest.advanceTimersByTime(30_000); });
+    act(() => { jest.advanceTimersByTime(5_000); });
     await Promise.resolve();
 
     // 에러 무시 — 기존 데이터 유지
@@ -375,8 +375,8 @@ describe('useArrivalInfo', () => {
 
   it('포그라운드 복귀 시 캐시를 클리어하고 fresh fetch한다', async () => {
     const freshArrival = {
-      up: [{ destination: '소요산행', arrivalMinutes: 1, trainCode: 'T003' }],
-      down: [{ destination: '인천행', arrivalMinutes: 3, trainCode: 'T004' }],
+      up: [{ destination: '소요산행', arrivalMinutes: 1, arrivalSeconds: 60, statusMessage: '', trainCode: 'T003' }],
+      down: [{ destination: '인천행', arrivalMinutes: 3, arrivalSeconds: 180, statusMessage: '', trainCode: 'T004' }],
     };
     (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
 

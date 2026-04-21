@@ -20,6 +20,8 @@ describe('fetchArrivalInfo', () => {
     expect(result.down.length).toBeGreaterThan(0);
     expect(result.up[0]).toHaveProperty('destination');
     expect(result.up[0]).toHaveProperty('arrivalMinutes');
+    expect(result.up[0]).toHaveProperty('arrivalSeconds');
+    expect(result.up[0]).toHaveProperty('statusMessage');
     expect(result.up[0]).toHaveProperty('trainCode');
     expect(result.isMock).toBe(true);
   });
@@ -47,6 +49,8 @@ describe('fetchArrivalInfo', () => {
     expect(result.up).toHaveLength(2);
     expect(result.down).toHaveLength(2);
     expect(result.up[0].arrivalMinutes).toBe(2); // 120초 → 2분
+    expect(result.up[0].arrivalSeconds).toBe(120);
+    expect(result.up[0].statusMessage).toBe('');
     expect(result.isMock).toBeUndefined();
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
@@ -120,6 +124,7 @@ describe('fetchArrivalInfo', () => {
 
     const result = await fetchArrivalInfo('강남');
     expect(result.up[0].arrivalMinutes).toBe(0);
+    expect(result.up[0].arrivalSeconds).toBe(0);
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
   });
@@ -207,6 +212,26 @@ describe('fetchArrivalInfo', () => {
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
   });
 
+  it('arvlMsg2를 statusMessage로 파싱한다', async () => {
+    process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        realtimeArrivalList: [
+          { trainLineNm: '소요산행', barvlDt: 90, btrainNo: 'T001', updnLine: '상행', arvlMsg2: '전역 출발' },
+        ],
+      }),
+    } as Response);
+
+    const result = await fetchArrivalInfo('강남');
+    expect(result.up[0].statusMessage).toBe('전역 출발');
+    expect(result.up[0].arrivalSeconds).toBe(90);
+    expect(result.up[0].arrivalMinutes).toBe(1);
+
+    delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+  });
+
   it('trainLineNm, barvlDt, btrainNo가 undefined이면 기본값을 사용한다', async () => {
     process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
 
@@ -222,6 +247,8 @@ describe('fetchArrivalInfo', () => {
     const result = await fetchArrivalInfo('강남');
     expect(result.up[0].destination).toBe('');
     expect(result.up[0].arrivalMinutes).toBe(0);
+    expect(result.up[0].arrivalSeconds).toBe(0);
+    expect(result.up[0].statusMessage).toBe('');
     expect(result.up[0].trainCode).toBe('');
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
