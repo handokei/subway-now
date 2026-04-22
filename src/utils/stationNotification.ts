@@ -18,7 +18,7 @@ const ALARM_CHANNEL_ID = 'station-alarm';
 
 async function scheduleNotification(
   id: string,
-  content: { title: string; body: string; sound?: boolean; channelId?: string; interruptionLevel?: 'timeSensitive' },
+  content: { title: string; body: string; sound?: boolean; channelId?: string; interruptionLevel?: 'timeSensitive' | 'critical'; priority?: Notifications.AndroidNotificationPriority },
 ): Promise<void> {
   try {
     await Notifications.dismissNotificationAsync(id);
@@ -57,14 +57,21 @@ export async function initStationNotification(): Promise<void> {
     await Notifications.deleteNotificationChannelAsync(ALARM_CHANNEL_ID).catch(() => {});
     await Notifications.setNotificationChannelAsync(ALARM_CHANNEL_ID, {
       name: '하차/환승 알림',
-      importance: Notifications.AndroidImportance.HIGH,
+      importance: Notifications.AndroidImportance.MAX,
       sound: 'alarm.wav',
       enableVibrate: true,
       vibrationPattern: [0, 1000, 500, 1000],
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      bypassDnd: true,
     });
   }
-  const { status } = await Notifications.requestPermissionsAsync();
+  const { status } = await Notifications.requestPermissionsAsync({
+    ios: {
+      allowAlert: true,
+      allowSound: true,
+      allowCriticalAlerts: true,
+    },
+  });
   notifLogger.info('권한 상태:', status);
 }
 
@@ -250,7 +257,11 @@ export async function sendAlarmNotification(
     title,
     body,
     sound: true,
-    ...(Platform.OS === 'android' && { channelId: ALARM_CHANNEL_ID }),
+    ...(Platform.OS === 'android' && {
+      channelId: ALARM_CHANNEL_ID,
+      priority: Notifications.AndroidNotificationPriority.MAX,
+    }),
+    // NOTE: critical Entitlement 승인 후 'critical'로 변경 → Sleep Focus 완전 관통
     ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
   });
   try {

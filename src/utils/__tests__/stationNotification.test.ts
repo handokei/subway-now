@@ -121,10 +121,16 @@ describe('stationNotification', () => {
   });
 
   describe('initStationNotification', () => {
-    it('iOS에서는 권한 요청만 한다', async () => {
+    it('iOS에서는 critical alerts 포함 권한 요청만 한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await initStationNotification();
-      expect(Notifications.requestPermissionsAsync).toHaveBeenCalledTimes(1);
+      expect(Notifications.requestPermissionsAsync).toHaveBeenCalledWith({
+        ios: {
+          allowAlert: true,
+          allowSound: true,
+          allowCriticalAlerts: true,
+        },
+      });
       expect(Notifications.setNotificationChannelAsync).not.toHaveBeenCalled();
     });
 
@@ -140,11 +146,12 @@ describe('stationNotification', () => {
       expect(Notifications.deleteNotificationChannelAsync).toHaveBeenCalledWith('station-alarm');
       expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm', {
         name: '하차/환승 알림',
-        importance: Notifications.AndroidImportance.HIGH,
+        importance: Notifications.AndroidImportance.MAX,
         sound: 'alarm.wav',
         enableVibrate: true,
         vibrationPattern: [0, 1000, 500, 1000],
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        bypassDnd: true,
       });
       expect(Notifications.requestPermissionsAsync).toHaveBeenCalledTimes(1);
     });
@@ -428,10 +435,10 @@ describe('stationNotification', () => {
       expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(true);
     });
 
-    it('Android에서는 channelId가 포함된다', async () => {
+    it('Android에서는 channelId와 priority MAX가 포함된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
       await sendAlarmNotification('destination', '강남');
-      expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { channelId: 'station-alarm' });
+      expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { channelId: 'station-alarm', priority: 'max' });
     });
 
     it('dismiss 실패해도 schedule은 호출된다', async () => {
@@ -459,10 +466,10 @@ describe('stationNotification', () => {
       expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(true);
     });
 
-    it('timeBased + Android에서는 channelId가 포함된다', async () => {
+    it('timeBased + Android에서는 channelId와 priority MAX가 포함된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
       await sendAlarmNotification('destination', '강남', false, true);
-      expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!', { channelId: 'station-alarm' });
+      expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!', { channelId: 'station-alarm', priority: 'max' });
     });
 
     it('timeBased approaching이면 역 접근 알림을 보낸다', async () => {
@@ -471,10 +478,10 @@ describe('stationNotification', () => {
       expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { interruptionLevel: 'timeSensitive' });
     });
 
-    it('timeBased approaching + Android에서는 channelId가 포함된다', async () => {
+    it('timeBased approaching + Android에서는 channelId와 priority MAX가 포함된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
       await sendAlarmNotification('approaching', '역삼', false, true);
-      expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { channelId: 'station-alarm' });
+      expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { channelId: 'station-alarm', priority: 'max' });
     });
 
     it('playAlarmWithRouting 실패해도 알림은 정상 예약된다', async () => {
