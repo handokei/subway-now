@@ -95,11 +95,16 @@ jobs:
           xcrun simctl install booted "$APP_PATH"
 
       - name: Maestro E2E 테스트 실행
-        run: maestro test .maestro/flows/ --format junit --output maestro-report.xml
+        run: |
+          maestro test .maestro/flows/home/ --format junit --output maestro-home.xml
+          maestro test .maestro/flows/favorites/ --format junit --output maestro-favorites.xml
+          maestro test .maestro/flows/location/ --format junit --output maestro-location.xml
+          maestro test .maestro/flows/navigation/ --format junit --output maestro-navigation.xml
+          maestro test .maestro/flows/alarm/ --format junit --output maestro-alarm.xml
 
       - name: E2E 결과 업로드
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: maestro-results
-          path: maestro-report.xml
+          path: maestro-*.xml
