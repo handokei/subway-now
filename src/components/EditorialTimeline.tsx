@@ -1,9 +1,8 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { colors, typography, spacing } from '../theme';
-import { LINE_NAMES } from '../constants/lineColors';
-import type { LineNumber } from '../types/station';
 import type { Stop } from '../utils/journeyAdapter';
+import { LineBadge, getLineColor } from './LineBadge';
 
 interface Props {
   stops: Stop[];
@@ -54,7 +53,7 @@ export function EditorialTimeline({ stops }: Props) {
             </View>
 
             <View style={{ alignItems: 'flex-end' }}>
-              {s.line != null && <LineTag line={s.line} color={lineC} />}
+              {s.line != null && <LineBadge line={s.line} color={lineC} />}
               {s.stopsFromPrev != null && (
                 <Text style={[typography.mono, { color: colors.subtle, marginTop: 2 }]}>
                   {s.stopsFromPrev}
@@ -66,20 +65,6 @@ export function EditorialTimeline({ stops }: Props) {
       })}
     </View>
   );
-}
-
-function LineTag({ line, color }: { line: string; color: string }) {
-  const label = LINE_NAMES[line as LineNumber] ?? `LINE ${line}`;
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-      <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: color }} />
-      <Text style={[typography.mono, { color, fontWeight: '600' }]}>{label}</Text>
-    </View>
-  );
-}
-
-function getLineColor(line: string): string {
-  return colors.line[line as LineNumber] ?? colors.accent;
 }
 
 export function mix(a: string, b: string, w: number): string {

@@ -1,10 +1,9 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { colors, typography, spacing } from '../theme';
-import { LINE_NAMES } from '../constants/lineColors';
-import type { LineNumber } from '../types/station';
 import { useCountdown } from '../hooks/useCountdown';
 import type { ArrivalTrain } from '../utils/journeyAdapter';
+import { LineBadge, getLineColor } from './LineBadge';
 
 interface Props {
   train: ArrivalTrain;
@@ -12,16 +11,15 @@ interface Props {
 
 export function EditorialArrivalRow({ train }: Props) {
   const { mm, ss } = useCountdown(train.arrivalAtMs);
-  const lineC = colors.line[train.line as LineNumber] ?? colors.accent;
-  const lineLabel = LINE_NAMES[train.line as LineNumber] ?? `LINE ${train.line}`;
+  const lineC = getLineColor(train.line);
 
   return (
     <View style={styles.arrivalRow} testID="editorial-arrival-row">
       <View style={{ minWidth: 90 }}>
         <Text>
-          <Text style={{ ...typography.countMM, color: colors.ink }}>{mm}</Text>
+          <Text style={[typography.countMM, { color: colors.ink }]}>{mm}</Text>
           <Text style={{ fontSize: 20, color: colors.subtle }}> : </Text>
-          <Text style={{ ...typography.countSS, color: colors.muted }}>{ss}</Text>
+          <Text style={[typography.countSS, { color: colors.muted }]}>{ss}</Text>
         </Text>
       </View>
       <View style={{ flex: 1 }}>
@@ -34,10 +32,7 @@ export function EditorialArrivalRow({ train }: Props) {
           </Text>
         )}
       </View>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-        <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: lineC }} />
-        <Text style={[typography.mono, { color: lineC, fontWeight: '600' }]}>{lineLabel}</Text>
-      </View>
+      <LineBadge line={train.line} color={lineC} />
     </View>
   );
 }

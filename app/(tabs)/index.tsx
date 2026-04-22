@@ -17,7 +17,7 @@ import { useBackgroundLocation } from '../../src/hooks/useBackgroundLocation';
 import { AlarmOverlay } from '../../src/components/AlarmOverlay';
 import { createLogger } from '../../src/utils/logger';
 import { colors, typography, spacing, radius } from '../../src/theme';
-import type { LineNumber } from '../../src/types/station';
+import { LineBadge } from '../../src/components/LineBadge';
 
 const logger = createLogger('HomeScreen');
 
@@ -235,7 +235,7 @@ export default function HomeScreen() {
                 </TouchableOpacity>
               </View>
               <View style={styles.metaRow}>
-                <LineDot line={result.station.line} />
+                <LineBadge line={result.station.line} />
                 <Dot />
                 <Text style={[typography.bodySm, { color: colors.muted }]}>
                   {nearest.distanceM} m
@@ -421,17 +421,6 @@ function ArrivalRow({
           ))
         )}
       </View>
-    </View>
-  );
-}
-
-function LineDot({ line }: { line: LineNumber }) {
-  const c = colors.line[line] ?? colors.accent;
-  const label = LINE_NAMES[line] ?? line;
-  return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-      <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: c }} />
-      <Text style={[typography.mono, { color: c, fontWeight: '600' }]}>{label}</Text>
     </View>
   );
 }
