@@ -414,7 +414,7 @@ export function getNextStationName(
     if (route.stopsToTransfer > 0) {
       return getNextStationOnLine(route.fromLine, current.name, route.transferName);
     }
-    // 환승 완료 후: toLine에서 목적지 방향
+    // 환승 완료 후: toLine에서 목적지 방향 (환승역은 양 노선에 동일 이름으로 존재)
     return getNextStationOnLine(route.toLine, current.name, destination.name);
   }
 

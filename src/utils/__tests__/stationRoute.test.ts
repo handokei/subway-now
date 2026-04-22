@@ -451,6 +451,9 @@ describe('getNextStationName', () => {
       expect(getNextStationName('1-001', '1-001', route)).toBeNull();
     });
 
+  });
+
+  describe('TransferRoute', () => {
     it('환승역 이름이 노선에 없으면 null을 반환한다 (targetIdx undefined)', () => {
       const line1 = getStationsOnLine('1');
       const line2 = getStationsOnLine('2');
@@ -464,9 +467,7 @@ describe('getNextStationName', () => {
       };
       expect(getNextStationName(line1[0].id, line2[0].id, route)).toBeNull();
     });
-  });
 
-  describe('TransferRoute', () => {
     it('stopsToTransfer > 0이면 환승역 방향 다음 역을 반환한다', () => {
       // 2호선 강남(2-022) → 3호선 역: 교대(2-023/3-032) 환승
       const line2 = getStationsOnLine('2');
