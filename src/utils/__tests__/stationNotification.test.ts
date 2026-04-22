@@ -85,7 +85,7 @@ function expectNotificationContent(title: string, body: string) {
 function expectAlarmNotification(title: string, body: string, extra?: Record<string, unknown>) {
   expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
     identifier: 'station-alarm',
-    content: { title, body, sound: false, ...extra },
+    content: { title, body, sound: true, ...extra },
     trigger: null,
   });
 }
@@ -109,14 +109,14 @@ describe('stationNotification', () => {
       );
     });
 
-    it('모든 알림은 shouldPlaySound false를 반환한다', async () => {
+    it('일반 알림은 shouldPlaySound false, 알람 알림은 true를 반환한다', async () => {
       setupNotificationHandler();
       const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
       const normalResult = await handleNotification({ request: { identifier: 'current-station' } });
       expect(normalResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
 
       const alarmResult = await handleNotification({ request: { identifier: 'station-alarm' } });
-      expect(alarmResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
+      expect(alarmResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false });
     });
   });
 
@@ -141,8 +141,9 @@ describe('stationNotification', () => {
       expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm', {
         name: '하차/환승 알림',
         importance: Notifications.AndroidImportance.HIGH,
-        sound: null,
-        enableVibrate: false,
+        sound: 'alarm.wav',
+        enableVibrate: true,
+        vibrationPattern: [0, 1000, 500, 1000],
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       });
       expect(Notifications.requestPermissionsAsync).toHaveBeenCalledTimes(1);
@@ -283,6 +284,33 @@ describe('stationNotification', () => {
       await updateStationNotification(mockStation, 154);
       expectNotificationContent('시청역', '1호선 · 약 154m');
     });
+
+    it('alarmEvent가 있으면 alarmType과 alarmStationName이 포함된다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, transferRoute, 12, false, { type: 'transfer', stationName: '동대문' });
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          alarmType: 'transfer',
+          alarmStationName: '동대문',
+        })
+      );
+    });
+
+    it('alarmEvent가 destination 타입이면 alarmType이 destination이다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { type: 'destination', stationName: '강남' });
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          alarmType: 'destination',
+          alarmStationName: '강남',
+        })
+      );
+    });
+
+    it('alarmEvent가 없으면 alarmType이 포함되지 않는다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.not.objectContaining({ alarmType: expect.anything() })
+      );
+    });
   });
 
   describe('updateStationNotification (Android - expo-notifications)', () => {
@@ -383,14 +411,14 @@ describe('stationNotification', () => {
     it('destination 타입이면 하차 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('destination', '강남');
-      expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!');
+      expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { interruptionLevel: 'timeSensitive' });
       expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(false);
     });
 
     it('transfer 타입이면 환승 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('transfer', '시청');
-      expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!');
+      expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!', { interruptionLevel: 'timeSensitive' });
       expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(false);
     });
 
@@ -416,13 +444,13 @@ describe('stationNotification', () => {
     it('timeBased destination이면 도착 임박 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('destination', '강남', false, true);
-      expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!');
+      expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!', { interruptionLevel: 'timeSensitive' });
     });
 
     it('timeBased transfer이면 환승 임박 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('transfer', '시청', false, true);
-      expectAlarmNotification('환승 임박', '곧 시청에 도착합니다. 환승 준비하세요!');
+      expectAlarmNotification('환승 임박', '곧 시청에 도착합니다. 환승 준비하세요!', { interruptionLevel: 'timeSensitive' });
     });
 
     it('timeBased + sleepMode이면 playAlarmWithRouting에 true를 전달한다', async () => {
@@ -440,13 +468,20 @@ describe('stationNotification', () => {
     it('timeBased approaching이면 역 접근 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('approaching', '역삼', false, true);
-      expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.');
+      expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { interruptionLevel: 'timeSensitive' });
     });
 
     it('timeBased approaching + Android에서는 channelId가 포함된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
       await sendAlarmNotification('approaching', '역삼', false, true);
       expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { channelId: 'station-alarm' });
+    });
+
+    it('playAlarmWithRouting 실패해도 알림은 정상 예약된다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      mockPlayAlarmWithRouting.mockRejectedValueOnce(new Error('백그라운드 오디오 실패'));
+      await sendAlarmNotification('destination', '강남');
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
     });
   });
 

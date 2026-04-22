@@ -4,6 +4,11 @@ import { Station } from '../types/station';
 
 const FAVORITES_KEY = 'subway-now:favorites';
 const SLEEP_MODE_KEY = 'subway-now:sleep-mode';
+const DESTINATION_KEY = 'subway-now:destination';
+const FIRED_ALARMS_KEY = 'subway-now:fired-alarms';
+
+// eslint-disable-next-line @typescript-eslint/no-empty-function
+const noop = () => {};
 
 export interface AlarmEvent {
   type: 'destination' | 'transfer';
@@ -61,6 +66,12 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setDestination: (station: Station | null) => {
     set({ destination: station });
+    if (station) {
+      AsyncStorage.setItem(DESTINATION_KEY, JSON.stringify(station)).catch(noop);
+    } else {
+      AsyncStorage.removeItem(DESTINATION_KEY).catch(noop);
+      AsyncStorage.removeItem(FIRED_ALARMS_KEY).catch(noop);
+    }
   },
 
   setRecentDestination: (station: Station | null) => {

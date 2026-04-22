@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import * as Location from 'expo-location';
-import stationsData from '../data/stations.json';
-import { haversine } from '../utils/haversine';
-import { NearestStationResult, Station } from '../types/station';
+import { NearestStationResult } from '../types/station';
+import { findNearestStation } from '../utils/findNearestStation';
 import { usePolling } from './usePolling';
 
-const stations = stationsData as Station[];
 const UPDATE_INTERVAL_MS = 30_000;
 
 interface UseNearestStationReturn {
@@ -24,27 +22,6 @@ export function useNearestStation(): UseNearestStationReturn {
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
 
-  const findNearest = useCallback(
-    (lat: number, lng: number): NearestStationResult | null => {
-      let nearest: Station | null = null;
-      let minDistance = Infinity;
-
-      for (const station of stations) {
-        const dist = haversine(lat, lng, station.lat, station.lng);
-        if (dist < minDistance) {
-          minDistance = dist;
-          nearest = station;
-        }
-      }
-
-      if (nearest) {
-        return { station: nearest, distanceKm: minDistance };
-      }
-      return null;
-    },
-    []
-  );
-
   const refresh = useCallback(async () => {
     try {
       setError(null);
@@ -61,14 +38,14 @@ export function useNearestStation(): UseNearestStationReturn {
       });
 
       setUserLocation({ lat: location.coords.latitude, lng: location.coords.longitude });
-      const nearest = findNearest(location.coords.latitude, location.coords.longitude);
+      const nearest = findNearestStation(location.coords.latitude, location.coords.longitude);
       setResult(nearest);
     } catch (e) {
       setError('위치를 가져오는 데 실패했습니다.');
     } finally {
       setLoading(false);
     }
-  }, [findNearest]);
+  }, []);
 
   useEffect(() => {
     refresh();

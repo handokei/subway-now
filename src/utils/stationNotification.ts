@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { Station } from '../types/station';
 import { LINE_COLORS, LINE_NAMES } from '../constants/lineColors';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
+import type { AlarmEvent } from './stationAlarm';
 import * as LiveActivity from 'live-activity';
 import { playAlarmWithRouting, stopAlarm } from './alarmSound';
 import { createLogger } from './logger';
@@ -10,14 +11,14 @@ import { createLogger } from './logger';
 const notifLogger = createLogger('Notification');
 const liveActivityLogger = createLogger('LiveActivity');
 
-const NOTIFICATION_ID = 'current-station';
-const ALARM_NOTIFICATION_ID = 'station-alarm';
+export const NOTIFICATION_ID = 'current-station';
+export const ALARM_NOTIFICATION_ID = 'station-alarm';
 const ALARM_CHANNEL_ID = 'station-alarm';
 
 
 async function scheduleNotification(
   id: string,
-  content: { title: string; body: string; sound?: boolean; channelId?: string },
+  content: { title: string; body: string; sound?: boolean; channelId?: string; interruptionLevel?: 'timeSensitive' },
 ): Promise<void> {
   try {
     await Notifications.dismissNotificationAsync(id);
@@ -33,12 +34,13 @@ async function scheduleNotification(
 
 export function setupNotificationHandler(): void {
   Notifications.setNotificationHandler({
-    handleNotification: async () => {
+    handleNotification: async (notification) => {
+      const isAlarm = notification.request.identifier === ALARM_NOTIFICATION_ID;
       return {
         shouldShowAlert: true,
         shouldShowBanner: true,
         shouldShowList: true,
-        shouldPlaySound: false,
+        shouldPlaySound: isAlarm,
         shouldSetBadge: false,
       };
     },
@@ -56,8 +58,9 @@ export async function initStationNotification(): Promise<void> {
     await Notifications.setNotificationChannelAsync(ALARM_CHANNEL_ID, {
       name: '하차/환승 알림',
       importance: Notifications.AndroidImportance.HIGH,
-      sound: null,
-      enableVibrate: false,
+      sound: 'alarm.wav',
+      enableVibrate: true,
+      vibrationPattern: [0, 1000, 500, 1000],
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
     });
   }
@@ -103,6 +106,7 @@ function buildLiveActivityData(
   route?: DirectRoute | TransferRoute | MultiTransferRoute | null,
   etaMinutes?: number | null,
   isMock?: boolean,
+  alarmEvent?: AlarmEvent | null,
 ): LiveActivity.LiveActivityData {
   // station layer: 항상 포함
   const data: LiveActivity.LiveActivityData = {
@@ -142,6 +146,12 @@ function buildLiveActivityData(
     data.isMock = true;
   }
 
+  // alarm layer: 알람 이벤트가 있을 때만
+  if (alarmEvent) {
+    data.alarmType = alarmEvent.type;
+    data.alarmStationName = alarmEvent.stationName;
+  }
+
   return data;
 }
 
@@ -152,6 +162,7 @@ export async function updateStationNotification(
   route?: DirectRoute | TransferRoute | MultiTransferRoute | null,
   etaMinutes?: number | null,
   isMock?: boolean,
+  alarmEvent?: AlarmEvent | null,
 ): Promise<void> {
   notifLogger.info('updateStation:', currentStation.name, `${distanceM}m`, destination ? `→ ${destination.name}` : '');
 
@@ -166,7 +177,7 @@ export async function updateStationNotification(
       notifLogger.info('알림 예약 완료:', title, body);
       return;
     }
-    const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock);
+    const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock, alarmEvent);
     try {
       liveActivityLogger.info('업데이트 요청');
       await LiveActivity.updateLiveActivity(data);
@@ -238,10 +249,15 @@ export async function sendAlarmNotification(
   await scheduleNotification(ALARM_NOTIFICATION_ID, {
     title,
     body,
-    sound: false,
+    sound: true,
     ...(Platform.OS === 'android' && { channelId: ALARM_CHANNEL_ID }),
+    ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
   });
-  await playAlarmWithRouting(sleepMode);
+  try {
+    await playAlarmWithRouting(sleepMode);
+  } catch (e) {
+    notifLogger.error('알람 사운드 재생 실패 (백그라운드):', e);
+  }
   notifLogger.info('알람 알림:', title, body);
 }
 

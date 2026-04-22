@@ -12,6 +12,8 @@ import { useAppStore } from '../../src/store/useAppStore';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { Station } from '../../src/types/station';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
+import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
+import { formatArrivalTime } from '../../src/utils/formatTime';
 import stationsData from '../../src/data/stations.json';
 
 const allStations = stationsData as Station[];
@@ -32,7 +34,8 @@ export default function FavoritesScreen() {
     () => favorites.find((f) => f.id === selectedId) ?? null,
     [favorites, selectedId],
   );
-  const { arrival } = useArrivalInfo(selectedStation?.name ?? null);
+  const { arrival: rawArrival } = useArrivalInfo(selectedStation?.name ?? null);
+  const arrival = useArrivalCountdown(rawArrival);
 
   const searchResults = useMemo(() => {
     const trimmed = query.trim();
@@ -139,7 +142,7 @@ function FavoriteCard({
 }: {
   station: Station;
   isExpanded: boolean;
-  arrival: { up: { destination: string; arrivalMinutes: number }[]; down: { destination: string; arrivalMinutes: number }[] } | null;
+  arrival: { up: { destination: string; arrivalSeconds: number; statusMessage: string }[]; down: { destination: string; arrivalSeconds: number; statusMessage: string }[] } | null;
   onToggle: () => void;
   onRemove: () => void;
 }) {
@@ -188,17 +191,22 @@ function ArrivalRow({
   items,
 }: {
   label: string;
-  items: { destination: string; arrivalMinutes: number }[];
+  items: { destination: string; arrivalSeconds: number; statusMessage: string }[];
 }) {
   return (
     <View style={styles.arrivalRow}>
       <Text style={styles.arrivalLabel}>{label}</Text>
       <View>
         {items.map((item, idx) => (
-          <Text key={idx} style={styles.arrivalItem}>
-            {item.destination ? `${item.destination} · ` : ''}
-            {item.arrivalMinutes === 0 ? '곧 도착' : `${item.arrivalMinutes}분 후`}
-          </Text>
+          <View key={idx}>
+            <Text style={styles.arrivalItem}>
+              {item.destination ? `${item.destination} · ` : ''}
+              {formatArrivalTime(item.arrivalSeconds)}
+            </Text>
+            {item.statusMessage !== '' && (
+              <Text style={styles.statusMessage}>{item.statusMessage}</Text>
+            )}
+          </View>
         ))}
       </View>
     </View>
@@ -344,6 +352,12 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#ffffff',
     textAlign: 'right',
+  },
+  statusMessage: {
+    fontSize: 11,
+    color: '#a78bfa',
+    textAlign: 'right',
+    marginTop: 1,
     marginBottom: 2,
   },
   noArrival: {
