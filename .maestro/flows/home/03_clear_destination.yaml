@@ -16,8 +16,9 @@ name: "홈 화면 - 목적지 초기화"
     text: ".*허용.*"
     optional: true
 
-- assertVisible:
-    id: "destination-button"
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
     timeout: 15000
 
 # 목적지 설정
@@ -25,20 +26,17 @@ name: "홈 화면 - 목적지 초기화"
     id: "destination-button"
 - assertVisible:
     id: "search-input"
-    timeout: 5000
 - tapOn:
     id: "search-input"
 - inputText: "홍대입구"
 - assertVisible:
     id: "suggestions-list"
-    timeout: 5000
 - tapOn:
     id: "suggestion-item-2-039"
 
 # 목적지 설정됨 확인
 - assertVisible:
     id: "destination-clear-button"
-    timeout: 5000
 
 # 초기화
 - tapOn:
@@ -47,4 +45,3 @@ name: "홈 화면 - 목적지 초기화"
 # 원래 상태로 복원 확인
 - assertVisible:
     text: "목적지 설정"
-    timeout: 5000

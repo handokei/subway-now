@@ -18,8 +18,9 @@ name: "위치 - 역 변경 (강남 → 잠실)"
     optional: true
 
 # 강남역 감지 확인
-- assertVisible:
-    text: "강남"
+- extendedWaitUntil:
+    visible:
+      text: "강남"
     timeout: 15000
 
 # 잠실역으로 위치 변경
@@ -27,7 +28,8 @@ name: "위치 - 역 변경 (강남 → 잠실)"
     latitude: 37.513262
     longitude: 127.100159
 
-# 잠실역으로 변경될 때까지 대기 (폴링 주기 30초, 2사이클 커버)
-- assertVisible:
-    text: "잠실"
+# 잠실역으로 변경될 때까지 대기 (폴링 주기 10초, 여유 있게 대기)
+- extendedWaitUntil:
+    visible:
+      text: "잠실"
     timeout: 70000

@@ -18,8 +18,9 @@ name: "위치 - 역에서 먼 곳"
     optional: true
 
 # 역 없음 상태 메시지 확인
-- assertVisible:
-    text: "지하철역 근처가 아닙니다"
+- extendedWaitUntil:
+    visible:
+      text: "지하철역 근처가 아닙니다"
     timeout: 15000
 
 # 새로고침 버튼 표시
