@@ -18,6 +18,8 @@ struct SubwayActivityAttributes: ActivityAttributes {
         var distanceM: Int
         var etaMinutes: Int?
         var isMock: Bool?
+        var alarmType: String?
+        var alarmStationName: String?
     }
 }
 #endif

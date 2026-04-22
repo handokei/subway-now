@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { Station } from '../types/station';
 import { LINE_COLORS, LINE_NAMES } from '../constants/lineColors';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
+import type { AlarmEvent } from './stationAlarm';
 import * as LiveActivity from 'live-activity';
 import { playAlarmWithRouting, stopAlarm } from './alarmSound';
 import { createLogger } from './logger';
@@ -105,6 +106,7 @@ function buildLiveActivityData(
   route?: DirectRoute | TransferRoute | MultiTransferRoute | null,
   etaMinutes?: number | null,
   isMock?: boolean,
+  alarmEvent?: AlarmEvent | null,
 ): LiveActivity.LiveActivityData {
   // station layer: 항상 포함
   const data: LiveActivity.LiveActivityData = {
@@ -144,6 +146,12 @@ function buildLiveActivityData(
     data.isMock = true;
   }
 
+  // alarm layer: 알람 이벤트가 있을 때만
+  if (alarmEvent) {
+    data.alarmType = alarmEvent.type;
+    data.alarmStationName = alarmEvent.stationName;
+  }
+
   return data;
 }
 
@@ -154,6 +162,7 @@ export async function updateStationNotification(
   route?: DirectRoute | TransferRoute | MultiTransferRoute | null,
   etaMinutes?: number | null,
   isMock?: boolean,
+  alarmEvent?: AlarmEvent | null,
 ): Promise<void> {
   notifLogger.info('updateStation:', currentStation.name, `${distanceM}m`, destination ? `→ ${destination.name}` : '');
 
@@ -168,7 +177,7 @@ export async function updateStationNotification(
       notifLogger.info('알림 예약 완료:', title, body);
       return;
     }
-    const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock);
+    const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock, alarmEvent);
     try {
       liveActivityLogger.info('업데이트 요청');
       await LiveActivity.updateLiveActivity(data);

@@ -97,7 +97,7 @@ export default function HomeScreen() {
       }
       return;
     }
-    const key = `${result.station.id}__${destination?.id ?? ''}__${displayEta ?? ''}__${arrivalIsMock}`;
+    const key = `${result.station.id}__${destination?.id ?? ''}__${displayEta ?? ''}__${arrivalIsMock}__${alarmEvent?.type ?? ''}`;
     if (key === prevNotifKeyRef.current) return;
     prevNotifKeyRef.current = key;
 
@@ -121,10 +121,11 @@ export default function HomeScreen() {
         route ?? null,
         displayEta,
         arrivalIsMock,
+        alarmEvent,
       );
     };
     update().catch((e) => logger.error('알림 업데이트 실패:', e));
-  }, [result?.station.id, destination?.id, displayEta, arrivalIsMock, route]);
+  }, [result?.station.id, destination?.id, displayEta, arrivalIsMock, route, alarmEvent]);
 
   useEffect(() => {
     if (arrivedBanner) {

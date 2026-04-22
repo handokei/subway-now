@@ -14,7 +14,9 @@ struct SubwayLiveActivityWidget: Widget {
                 // Expanded
                 DynamicIslandExpandedRegion(.leading) {
                     Circle()
-                        .fill(Color(hex: context.state.lineColorHex) ?? .gray)
+                        .fill(context.state.alarmType != nil
+                              ? (context.state.alarmType == "destination" ? Color.red : Color.orange)
+                              : (Color(hex: context.state.lineColorHex) ?? .gray))
                         .frame(width: 12, height: 12)
                         .padding(.leading, 4)
                 }
@@ -24,7 +26,15 @@ struct SubwayLiveActivityWidget: Widget {
                             .font(.headline)
                             .fontWeight(.bold)
                             .foregroundColor(.white)
-                        if let dest = context.state.destinationName {
+                        if let alarmType = context.state.alarmType,
+                           let alarmName = context.state.alarmStationName {
+                            Text(alarmType == "transfer"
+                                 ? "다음 역 \(alarmName)에서 환승하세요!"
+                                 : "다음 역 \(alarmName)에서 내리세요!")
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                                .foregroundColor(alarmType == "destination" ? .red : .orange)
+                        } else if let dest = context.state.destinationName {
                             ExpandedRouteView(dest: dest, state: context.state)
                         } else {
                             Text("\(context.state.lineName) · \(context.state.distanceM)m")
@@ -35,7 +45,9 @@ struct SubwayLiveActivityWidget: Widget {
                 }
             } compactLeading: {
                 Circle()
-                    .fill(Color(hex: context.state.lineColorHex) ?? .gray)
+                    .fill(context.state.alarmType != nil
+                          ? (context.state.alarmType == "destination" ? Color.red : Color.orange)
+                          : (Color(hex: context.state.lineColorHex) ?? .gray))
                     .frame(width: 10, height: 10)
                     .padding(.leading, 2)
             } compactTrailing: {
@@ -46,7 +58,9 @@ struct SubwayLiveActivityWidget: Widget {
                     .lineLimit(1)
             } minimal: {
                 Circle()
-                    .fill(Color(hex: context.state.lineColorHex) ?? .gray)
+                    .fill(context.state.alarmType != nil
+                          ? (context.state.alarmType == "destination" ? Color.red : Color.orange)
+                          : (Color(hex: context.state.lineColorHex) ?? .gray))
                     .frame(width: 10, height: 10)
             }
         }
@@ -61,57 +75,116 @@ private struct LockScreenView: View {
         Color(hex: state.lineColorHex) ?? .gray
     }
 
+    var isUrgent: Bool {
+        state.alarmType != nil
+    }
+
+    var urgentColor: Color {
+        state.alarmType == "destination" ? .red : .orange
+    }
+
+    var urgentText: String {
+        guard let name = state.alarmStationName, let type = state.alarmType else { return "" }
+        return type == "transfer"
+            ? "다음 역 \(name)에서 환승하세요!"
+            : "다음 역 \(name)에서 내리세요!"
+    }
+
     var body: some View {
-        HStack(spacing: 16) {
-            // 노선 색상 바
-            RoundedRectangle(cornerRadius: 4)
-                .fill(lineColor)
-                .frame(width: 6)
+        if isUrgent {
+            // 긴급 모드
+            HStack(spacing: 12) {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(.white.opacity(0.3))
+                    .frame(width: 6)
 
-            VStack(alignment: .leading, spacing: 4) {
-                // 노선 배지
-                Text(state.lineName)
-                    .font(.caption2)
-                    .fontWeight(.bold)
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(lineColor)
-                    .cornerRadius(10)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(state.lineName)
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white.opacity(0.9))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(.white.opacity(0.2))
+                        .cornerRadius(10)
 
-                // 역 이름
-                Text(state.stationName)
-                    .font(.title2)
-                    .fontWeight(.black)
-                    .foregroundColor(.white)
+                    Text(state.stationName)
+                        .font(.title2)
+                        .fontWeight(.black)
+                        .foregroundColor(.white)
 
-                // 목적지 / 거리
-                if let dest = state.destinationName {
-                    LockScreenRouteView(dest: dest, state: state)
-                } else {
-                    Text("약 \(state.distanceM)m")
+                    Text(urgentText)
                         .font(.subheadline)
-                        .foregroundColor(lineColor)
-                }
-            }
-
-            Spacer()
-
-            if let eta = state.etaMinutes {
-                VStack(spacing: 2) {
-                    Text("약 \(eta)분")
-                        .font(.title3)
                         .fontWeight(.bold)
                         .foregroundColor(.white)
-                    Text(state.isMock == true ? "예상" : "소요")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
                 }
-                .padding(.trailing, 4)
+
+                Spacer()
+
+                Text(state.alarmType == "transfer" ? "환승" : "하차")
+                    .font(.title3)
+                    .fontWeight(.black)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.white.opacity(0.2))
+                    .cornerRadius(8)
             }
+            .padding(16)
+            .background(urgentColor)
+        } else {
+            // 일반 모드
+            HStack(spacing: 16) {
+                // 노선 색상 바
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(lineColor)
+                    .frame(width: 6)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    // 노선 배지
+                    Text(state.lineName)
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2)
+                        .background(lineColor)
+                        .cornerRadius(10)
+
+                    // 역 이름
+                    Text(state.stationName)
+                        .font(.title2)
+                        .fontWeight(.black)
+                        .foregroundColor(.white)
+
+                    // 목적지 / 거리
+                    if let dest = state.destinationName {
+                        LockScreenRouteView(dest: dest, state: state)
+                    } else {
+                        Text("약 \(state.distanceM)m")
+                            .font(.subheadline)
+                            .foregroundColor(lineColor)
+                    }
+                }
+
+                Spacer()
+
+                if let eta = state.etaMinutes {
+                    VStack(spacing: 2) {
+                        Text("약 \(eta)분")
+                            .font(.title3)
+                            .fontWeight(.bold)
+                            .foregroundColor(.white)
+                        Text(state.isMock == true ? "예상" : "소요")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.trailing, 4)
+                }
+            }
+            .padding(16)
+            .background(.black.opacity(0.85))
         }
-        .padding(16)
-        .background(.black.opacity(0.85))
     }
 }
 

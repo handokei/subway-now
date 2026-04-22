@@ -222,6 +222,36 @@ describe('processLocationUpdate', () => {
       mockDestination,
       mockRoute,
       12,
+      undefined,
+      null,
+    );
+  });
+
+  it('should pass alarmEvent to updateStationNotification only when sleepMode is true', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+    mockCheckAlarm.mockReturnValue(mockAlarmEvent);
+    mockCalculateStaticETA.mockReturnValue(10);
+
+    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), true);
+
+    expect(mockUpdateStationNotification).toHaveBeenCalledWith(
+      mockStation, 150, mockDestination, mockRoute, 10,
+      undefined, mockAlarmEvent,
+    );
+  });
+
+  it('should not pass alarmEvent to updateStationNotification when sleepMode is false', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+    mockCheckAlarm.mockReturnValue(mockAlarmEvent);
+    mockCalculateStaticETA.mockReturnValue(10);
+
+    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
+
+    expect(mockUpdateStationNotification).toHaveBeenCalledWith(
+      mockStation, 150, mockDestination, mockRoute, 10,
+      undefined, null,
     );
   });
 
@@ -277,6 +307,7 @@ describe('processLocationUpdate', () => {
     // Math.round(0.4567 * 1000) = 457
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
       mockStation, 457, mockDestination, mockRoute, 5,
+      undefined, null,
     );
   });
 
@@ -302,6 +333,7 @@ describe('processLocationUpdate', () => {
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
       mockStation, 150, mockDestination, null, null,
+      undefined, null,
     );
     expect(result.nearest).toBe(mockNearestResult);
   });
