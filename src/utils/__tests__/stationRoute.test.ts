@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName } from '../stationRoute';
 import type { Station } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
 
@@ -408,5 +408,178 @@ describe('buildJourneyDisplay — LINE_COLORS fallback', () => {
     expect(result!.segments[0].lineColor).toBe('#AAA');
     expect(result!.segments[1].lineColor).toBe('#888888');
     expect(result!.segments[2].lineColor).toBe('#BBB');
+  });
+});
+
+describe('getNextStationName', () => {
+  it('route가 null이면 null을 반환한다', () => {
+    expect(getNextStationName('1-001', '1-003', null)).toBeNull();
+  });
+
+  it('currentId가 유효하지 않으면 null을 반환한다', () => {
+    const route: DirectRoute = { type: 'direct', stops: 2 };
+    expect(getNextStationName('invalid-id', '1-003', route)).toBeNull();
+  });
+
+  it('destinationId가 유효하지 않으면 null을 반환한다', () => {
+    const route: DirectRoute = { type: 'direct', stops: 2 };
+    expect(getNextStationName('1-001', 'invalid-id', route)).toBeNull();
+  });
+
+  describe('DirectRoute', () => {
+    it('정방향으로 다음 역을 반환한다', () => {
+      // 1호선: 소요산(1-001) → 보산(1-003), 중간에 동두천(1-002)
+      const route: DirectRoute = { type: 'direct', stops: 2 };
+      const next = getNextStationName('1-001', '1-003', route);
+      // 소요산 다음 역 (1-002)의 이름
+      const line1 = getStationsOnLine('1');
+      const soyo = line1.findIndex((s) => s.id === '1-001');
+      expect(next).toBe(line1[soyo + 1].name);
+    });
+
+    it('역방향으로 다음 역을 반환한다', () => {
+      // 1호선: 보산(1-003) → 소요산(1-001)
+      const route: DirectRoute = { type: 'direct', stops: 2 };
+      const next = getNextStationName('1-003', '1-001', route);
+      const line1 = getStationsOnLine('1');
+      const bosan = line1.findIndex((s) => s.id === '1-003');
+      expect(next).toBe(line1[bosan - 1].name);
+    });
+
+    it('같은 역이면 null을 반환한다 (currentIdx === targetIdx)', () => {
+      const route: DirectRoute = { type: 'direct', stops: 0 };
+      expect(getNextStationName('1-001', '1-001', route)).toBeNull();
+    });
+
+  });
+
+  describe('TransferRoute', () => {
+    it('환승역 이름이 노선에 없으면 null을 반환한다 (targetIdx undefined)', () => {
+      const line1 = getStationsOnLine('1');
+      const line2 = getStationsOnLine('2');
+      const route: TransferRoute = {
+        type: 'transfer',
+        transferName: '존재하지않는역',
+        fromLine: '1',
+        toLine: '2',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 1,
+      };
+      expect(getNextStationName(line1[0].id, line2[0].id, route)).toBeNull();
+    });
+
+    it('stopsToTransfer > 0이면 환승역 방향 다음 역을 반환한다', () => {
+      // 2호선 강남(2-022) → 3호선 역: 교대(2-023/3-032) 환승
+      const line2 = getStationsOnLine('2');
+      const line3 = getStationsOnLine('3');
+      const gangnam = line2.find((s) => s.name === '강남')!;
+      const gyodae3 = line3.find((s) => s.name === '교대')!;
+      const destStation = line3[line3.indexOf(gyodae3) + 1];
+
+      const route: TransferRoute = {
+        type: 'transfer',
+        transferName: '교대',
+        fromLine: '2',
+        toLine: '3',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 1,
+      };
+      const next = getNextStationName(gangnam.id, destStation.id, route);
+      expect(next).toBe('교대');
+    });
+
+    it('stopsToTransfer === 0이면 toLine에서 목적지 방향 다음 역을 반환한다', () => {
+      // 현재 교대역(3호선)에서 목적지 방향으로
+      const line3 = getStationsOnLine('3');
+      const gyodae3 = line3.find((s) => s.name === '교대')!;
+      const gyodaeIdx = line3.indexOf(gyodae3);
+      const destStation = line3[gyodaeIdx + 2]; // 교대에서 2칸 뒤
+
+      const route: TransferRoute = {
+        type: 'transfer',
+        transferName: '교대',
+        fromLine: '2',
+        toLine: '3',
+        stopsToTransfer: 0,
+        stopsFromTransfer: 2,
+      };
+      const next = getNextStationName(gyodae3.id, destStation.id, route);
+      expect(next).toBe(line3[gyodaeIdx + 1].name);
+    });
+  });
+
+  describe('MultiTransferRoute', () => {
+    it('t1.stopsToTransfer > 0이면 첫 번째 환승역 방향 다음 역을 반환한다', () => {
+      // 8호선 → 2호선(잠실 환승) → 1호선(시청 환승)
+      const line8 = getStationsOnLine('8');
+      const line1 = getStationsOnLine('1');
+      const route = findRoute(line8[0].id, line1[0].id);
+      expect(route?.type).toBe('multi-transfer');
+
+      if (route?.type === 'multi-transfer') {
+        const next = getNextStationName(line8[0].id, line1[0].id, route);
+        // 8호선 첫 역에서 다음 역
+        expect(next).toBe(line8[1].name);
+      }
+    });
+
+    it('t1.stopsToTransfer === 0, t2.stopsToTransfer > 0이면 두 번째 환승역 방향 다음 역을 반환한다', () => {
+      // 8호선→1호선 멀티 환승 경로를 가져와서 첫 번째 환승역 위치에서 테스트
+      const line8 = getStationsOnLine('8');
+      const line1 = getStationsOnLine('1');
+      const realRoute = findRoute(line8[0].id, line1[0].id);
+      expect(realRoute?.type).toBe('multi-transfer');
+
+      if (realRoute?.type === 'multi-transfer') {
+        const [t1, t2] = realRoute.transfers;
+        // 첫 번째 환승역에 있는 상태로 가공
+        const modifiedRoute: MultiTransferRoute = {
+          type: 'multi-transfer',
+          transfers: [
+            { ...t1, stopsToTransfer: 0 },
+            t2,
+          ],
+          stopsAfterLastTransfer: realRoute.stopsAfterLastTransfer,
+        };
+        // 첫 번째 환승역은 t1.toLine(=중간노선)에도 있음
+        const midLine = getStationsOnLine(t1.toLine);
+        const t1Station = midLine.find((s) => s.name === t1.transferName)!;
+        const next = getNextStationName(t1Station.id, line1[0].id, modifiedRoute);
+        expect(next).not.toBeNull();
+        // t1.toLine에서 t2.transferName 방향으로 한 역 이동
+        const t1Idx = midLine.indexOf(t1Station);
+        const t2Idx = midLine.findIndex((s) => s.name === t2.transferName);
+        const step = t2Idx > t1Idx ? 1 : -1;
+        expect(next).toBe(midLine[t1Idx + step].name);
+      }
+    });
+
+    it('t1, t2 모두 stopsToTransfer === 0이면 목적지 방향 다음 역을 반환한다', () => {
+      const line8 = getStationsOnLine('8');
+      const line1 = getStationsOnLine('1');
+      const realRoute = findRoute(line8[0].id, line1[0].id);
+      expect(realRoute?.type).toBe('multi-transfer');
+
+      if (realRoute?.type === 'multi-transfer') {
+        const [t1, t2] = realRoute.transfers;
+        const modifiedRoute: MultiTransferRoute = {
+          type: 'multi-transfer',
+          transfers: [
+            { ...t1, stopsToTransfer: 0 },
+            { ...t2, stopsToTransfer: 0 },
+          ],
+          stopsAfterLastTransfer: realRoute.stopsAfterLastTransfer,
+        };
+        // 두 번째 환승역 위치에서 목적지 방향
+        const destLine = getStationsOnLine(t2.toLine);
+        const t2Station = destLine.find((s) => s.name === t2.transferName)!;
+        const next = getNextStationName(t2Station.id, line1[0].id, modifiedRoute);
+        expect(next).not.toBeNull();
+        const t2Idx = destLine.indexOf(t2Station);
+        const destIdx = destLine.findIndex((s) => s.id === line1[0].id);
+        const step = destIdx > t2Idx ? 1 : -1;
+        expect(next).toBe(destLine[t2Idx + step].name);
+      }
+    });
   });
 });

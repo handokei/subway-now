@@ -8,7 +8,7 @@ import { formatArrivalTime } from '../../src/utils/formatTime';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
-import { findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA, type Route } from '../../src/utils/stationRoute';
+import { findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route } from '../../src/utils/stationRoute';
 import { JourneyTimeline } from '../../src/components/JourneyTimeline';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
@@ -75,7 +75,13 @@ export default function HomeScreen() {
   const isRealtimeEta = etaMinutes !== null && !arrivalIsMock && arrival !== null;
   const displayEta = isRealtimeEta ? etaMinutes : staticEtaMinutes;
 
-  useStationAlarm(route, destination?.name ?? null);
+  const nextStationName = useMemo(
+    () => (result && destination && route ? getNextStationName(result.station.id, destination.id, route) : null),
+    [result?.station.id, destination?.id, route],
+  );
+
+  // nextStationName이 확정됐으면 stops=0으로 즉시 시간 기반 임계 통과 (firedAlarms로 중복 방지)
+  useStationAlarm(route, destination?.name ?? null, nextStationName, nextStationName ? 0 : undefined);
   useBackgroundLocation(destination);
 
   useEffect(() => {

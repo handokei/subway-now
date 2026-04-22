@@ -376,3 +376,55 @@ export function calculateETA(nextTrainMinutes: number, route: Route): number {
   if (!route) return nextTrainMinutes;
   return nextTrainMinutes + getTravelMinutes(route);
 }
+
+function getNextStationOnLine(
+  line: string,
+  currentName: string,
+  targetName: string,
+): string | null {
+  const nameIndex = getLineNameIndexCached(line);
+  const currentIdx = nameIndex.get(currentName);
+  const targetIdx = nameIndex.get(targetName);
+  if (currentIdx === undefined || targetIdx === undefined) return null;
+  if (currentIdx === targetIdx) return null;
+
+  const lineStations = getLineStationsCached(line);
+  const step = targetIdx > currentIdx ? 1 : -1;
+  const nextIdx = currentIdx + step;
+  /* istanbul ignore next -- 노선 데이터에서 boundary를 벗어나는 케이스는 발생 불가 */
+  if (nextIdx < 0 || nextIdx >= lineStations.length) return null;
+  return lineStations[nextIdx].name;
+}
+
+export function getNextStationName(
+  currentId: string,
+  destinationId: string,
+  route: Route,
+): string | null {
+  if (!route) return null;
+  const current = stationById.get(currentId);
+  const destination = stationById.get(destinationId);
+  if (!current || !destination) return null;
+
+  if (route.type === 'direct') {
+    return getNextStationOnLine(current.line, current.name, destination.name);
+  }
+
+  if (route.type === 'transfer') {
+    if (route.stopsToTransfer > 0) {
+      return getNextStationOnLine(route.fromLine, current.name, route.transferName);
+    }
+    // 환승 완료 후: toLine에서 목적지 방향 (환승역은 양 노선에 동일 이름으로 존재)
+    return getNextStationOnLine(route.toLine, current.name, destination.name);
+  }
+
+  // multi-transfer
+  const [t1, t2] = route.transfers;
+  if (t1.stopsToTransfer > 0) {
+    return getNextStationOnLine(t1.fromLine, current.name, t1.transferName);
+  }
+  if (t2.stopsToTransfer > 0) {
+    return getNextStationOnLine(t1.toLine, current.name, t2.transferName);
+  }
+  return getNextStationOnLine(t2.toLine, current.name, destination.name);
+}
