@@ -1,30 +1,19 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react-native';
 import { EditorialTimeline, mix, hex } from '../EditorialTimeline';
+import { MOCK_STOPS } from '../../testUtils/fixtures';
 import type { Stop } from '../../utils/journeyAdapter';
 
 describe('EditorialTimeline', () => {
   it('should render all stops', () => {
-    const stops: Stop[] = [
-      { station: '효창공원앞', line: '6', mark: 'filled' },
-      { station: '공덕', line: '5', stopsFromPrev: '2정거장', mark: 'transfer', note: '환승' },
-      { station: '여의나루', line: '5', stopsFromPrev: '3정거장', mark: 'dest', note: '도착' },
-    ];
-
-    render(<EditorialTimeline stops={stops} />);
-
+    render(<EditorialTimeline stops={MOCK_STOPS.threeStops} />);
     expect(screen.getByText('효창공원앞')).toBeTruthy();
     expect(screen.getByText('공덕')).toBeTruthy();
     expect(screen.getByText('여의나루')).toBeTruthy();
   });
 
   it('should render filled dot for first stop', () => {
-    const stops: Stop[] = [
-      { station: '강남', line: '2', mark: 'filled' },
-      { station: '역삼', line: '2', stopsFromPrev: '1정거장', mark: 'dest', note: '도착' },
-    ];
-
-    render(<EditorialTimeline stops={stops} />);
+    render(<EditorialTimeline stops={MOCK_STOPS.twoStops} />);
     expect(screen.getByTestId('filled-dot')).toBeTruthy();
   });
 
@@ -34,48 +23,27 @@ describe('EditorialTimeline', () => {
       { station: '시청', line: '2', stopsFromPrev: '1정거장', mark: 'transfer', note: '환승' },
       { station: '을지로입구', line: '2', stopsFromPrev: '1정거장', mark: 'dest', note: '도착' },
     ];
-
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getByTestId('transfer-dot')).toBeTruthy();
   });
 
   it('should render dest dot for destination stop', () => {
-    const stops: Stop[] = [
-      { station: '강남', line: '2', mark: 'filled' },
-      { station: '역삼', line: '2', stopsFromPrev: '1정거장', mark: 'dest', note: '도착' },
-    ];
-
-    render(<EditorialTimeline stops={stops} />);
+    render(<EditorialTimeline stops={MOCK_STOPS.twoStops} />);
     expect(screen.getByTestId('dest-dot')).toBeTruthy();
   });
 
   it('should render note text', () => {
-    const stops: Stop[] = [
-      { station: '강남', line: '2', mark: 'filled' },
-      { station: '역삼', line: '2', stopsFromPrev: '1정거장', mark: 'dest', note: '도착' },
-    ];
-
-    render(<EditorialTimeline stops={stops} />);
+    render(<EditorialTimeline stops={MOCK_STOPS.twoStops} />);
     expect(screen.getByText('도착')).toBeTruthy();
   });
 
   it('should render stopsFromPrev text', () => {
-    const stops: Stop[] = [
-      { station: '강남', line: '2', mark: 'filled' },
-      { station: '역삼', line: '2', stopsFromPrev: '1정거장', mark: 'dest', note: '도착' },
-    ];
-
-    render(<EditorialTimeline stops={stops} />);
+    render(<EditorialTimeline stops={MOCK_STOPS.twoStops} />);
     expect(screen.getByText('1정거장')).toBeTruthy();
   });
 
   it('should render line name for known lines', () => {
-    const stops: Stop[] = [
-      { station: '강남', line: '2', mark: 'filled' },
-      { station: '역삼', line: '2', stopsFromPrev: '1정거장', mark: 'dest', note: '도착' },
-    ];
-
-    render(<EditorialTimeline stops={stops} />);
+    render(<EditorialTimeline stops={MOCK_STOPS.twoStops} />);
     expect(screen.getAllByText('2호선').length).toBeGreaterThan(0);
   });
 
@@ -84,7 +52,6 @@ describe('EditorialTimeline', () => {
       { station: '출발역', line: null, mark: 'filled' },
       { station: '종착역', line: null, stopsFromPrev: '5정거장', mark: 'dest', note: '도착' },
     ];
-
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getByText('출발역')).toBeTruthy();
     expect(screen.getByText('종착역')).toBeTruthy();
@@ -95,7 +62,6 @@ describe('EditorialTimeline', () => {
       { station: '서울역', line: 'airport', mark: 'filled' },
       { station: '인천공항', line: 'airport', stopsFromPrev: '5정거장', mark: 'dest', note: '도착' },
     ];
-
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getAllByText('공항철도').length).toBeGreaterThan(0);
   });
@@ -105,7 +71,6 @@ describe('EditorialTimeline', () => {
       { station: '출발역', line: 'unknown', mark: 'filled' },
       { station: '종착역', line: 'unknown', stopsFromPrev: '3정거장', mark: 'dest', note: '도착' },
     ];
-
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getAllByText('LINE unknown').length).toBeGreaterThan(0);
   });
@@ -118,18 +83,15 @@ describe('EditorialTimeline', () => {
 
 describe('mix', () => {
   it('should blend two colors at 50%', () => {
-    const result = mix('#FF0000', '#0000FF', 0.5);
-    expect(result).toBe('rgb(128,0,128)');
+    expect(mix('#FF0000', '#0000FF', 0.5)).toBe('rgb(128,0,128)');
   });
 
   it('should return first color at weight 0', () => {
-    const result = mix('#FF0000', '#0000FF', 0);
-    expect(result).toBe('rgb(255,0,0)');
+    expect(mix('#FF0000', '#0000FF', 0)).toBe('rgb(255,0,0)');
   });
 
   it('should return second color at weight 1', () => {
-    const result = mix('#FF0000', '#0000FF', 1);
-    expect(result).toBe('rgb(0,0,255)');
+    expect(mix('#FF0000', '#0000FF', 1)).toBe('rgb(0,0,255)');
   });
 });
 

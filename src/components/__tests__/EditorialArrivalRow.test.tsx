@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react-native';
 import { EditorialArrivalRow } from '../EditorialArrivalRow';
-import type { ArrivalTrain } from '../../utils/journeyAdapter';
+import { makeArrivalTrain } from '../../testUtils/fixtures';
 
 describe('EditorialArrivalRow', () => {
   beforeEach(() => {
@@ -14,93 +14,46 @@ describe('EditorialArrivalRow', () => {
     jest.restoreAllMocks();
   });
 
-  it('should render countdown mm:ss', () => {
-    const train: ArrivalTrain = {
-      direction: '봉화산 방면',
-      line: '6',
-      arrivalAtMs: 1_000_000 + 134 * 1000, // 02:14
-    };
+  const baseTrain = { direction: '봉화산 방면', line: '6', arrivalAtMs: 1_000_000 + 134 * 1000 };
 
-    render(<EditorialArrivalRow train={train} />);
+  it('should render countdown mm:ss', () => {
+    render(<EditorialArrivalRow train={makeArrivalTrain(baseTrain)} />);
     expect(screen.getByText('02')).toBeTruthy();
     expect(screen.getByText('14')).toBeTruthy();
   });
 
   it('should render direction text', () => {
-    const train: ArrivalTrain = {
-      direction: '봉화산 방면',
-      line: '6',
-      arrivalAtMs: 1_000_000 + 60 * 1000,
-    };
-
-    render(<EditorialArrivalRow train={train} />);
+    render(<EditorialArrivalRow train={makeArrivalTrain({ ...baseTrain, arrivalAtMs: 1_000_000 + 60000 })} />);
     expect(screen.getByText('봉화산 방면')).toBeTruthy();
   });
 
   it('should render subtext when provided', () => {
-    const train: ArrivalTrain = {
-      direction: '응암 방면',
-      line: '6',
-      arrivalAtMs: 1_000_000 + 271 * 1000,
-      subtext: '전역 출발',
-    };
-
-    render(<EditorialArrivalRow train={train} />);
+    render(<EditorialArrivalRow train={makeArrivalTrain({ direction: '응암 방면', line: '6', arrivalAtMs: 1_000_000 + 271000, subtext: '전역 출발' })} />);
     expect(screen.getByText('전역 출발')).toBeTruthy();
   });
 
   it('should not render subtext when not provided', () => {
-    const train: ArrivalTrain = {
-      direction: '봉화산 방면',
-      line: '6',
-      arrivalAtMs: 1_000_000 + 60 * 1000,
-    };
-
-    render(<EditorialArrivalRow train={train} />);
+    render(<EditorialArrivalRow train={makeArrivalTrain({ ...baseTrain, arrivalAtMs: 1_000_000 + 60000 })} />);
     expect(screen.queryByText('전역 출발')).toBeNull();
   });
 
   it('should render line label for numeric lines', () => {
-    const train: ArrivalTrain = {
-      direction: '봉화산 방면',
-      line: '6',
-      arrivalAtMs: 1_000_000 + 60 * 1000,
-    };
-
-    render(<EditorialArrivalRow train={train} />);
+    render(<EditorialArrivalRow train={makeArrivalTrain({ ...baseTrain, arrivalAtMs: 1_000_000 + 60000 })} />);
     expect(screen.getByText('6호선')).toBeTruthy();
   });
 
   it('should render line label for special lines', () => {
-    const train: ArrivalTrain = {
-      direction: '인천공항 방면',
-      line: 'airport',
-      arrivalAtMs: 1_000_000 + 600 * 1000,
-    };
-
-    render(<EditorialArrivalRow train={train} />);
+    render(<EditorialArrivalRow train={makeArrivalTrain({ direction: '인천공항 방면', line: 'airport', arrivalAtMs: 1_000_000 + 600000 })} />);
     expect(screen.getByText('공항철도')).toBeTruthy();
   });
 
   it('should fallback to LINE label for unknown lines', () => {
-    const train: ArrivalTrain = {
-      direction: '방면',
-      line: 'unknown',
-      arrivalAtMs: 1_000_000 + 60 * 1000,
-    };
-
-    render(<EditorialArrivalRow train={train} />);
+    render(<EditorialArrivalRow train={makeArrivalTrain({ direction: '방면', line: 'unknown', arrivalAtMs: 1_000_000 + 60000 })} />);
     expect(screen.getByText('LINE unknown')).toBeTruthy();
   });
 
   it('should have testID', () => {
-    const train: ArrivalTrain = {
-      direction: '봉화산 방면',
-      line: '6',
-      arrivalAtMs: 1_000_000 + 60 * 1000,
-    };
-
-    render(<EditorialArrivalRow train={train} />);
+    render(<EditorialArrivalRow train={makeArrivalTrain({ ...baseTrain, arrivalAtMs: 1_000_000 + 60000 })} />);
     expect(screen.getByTestId('editorial-arrival-row')).toBeTruthy();
   });
 });
