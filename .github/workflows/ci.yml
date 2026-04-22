@@ -45,6 +45,12 @@ jobs:
         with:
           xcode-version: latest-stable
 
+      - name: iOS 시뮬레이터 런타임 설치
+        run: |
+          xcodebuild -downloadPlatform iOS
+          xcrun simctl list runtimes
+          xcrun simctl list devices available | grep iPhone
+
       - name: Node.js 20 설정
         uses: actions/setup-node@v4
         with:
