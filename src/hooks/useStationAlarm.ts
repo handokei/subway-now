@@ -34,7 +34,7 @@ export function useStationAlarm(
     // 시간 기반 알람 체크: 매 역 도착 전 알림 (약 30초 이하일 때 트리거)
     const timeEvent = checkTimeBasedAlarm(
       nextStationName ?? null,
-      stopsToNextStation ?? 1,
+      stopsToNextStation,
       destinationName,
       route,
       firedAlarmsRef.current,

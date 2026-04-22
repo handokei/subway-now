@@ -114,13 +114,13 @@ function resolveStationType(
 
 export function checkTimeBasedAlarm(
   nextStationName: string | null,
-  stopsToNextStation: number,
+  stopsToNextStation: number | undefined,
   destinationName: string,
   route: Route,
   firedAlarms: Set<string>,
   thresholdSeconds: number = TIME_BASED_THRESHOLD_SECONDS,
 ): AlarmEvent | null {
-  if (!nextStationName || !route) return null;
+  if (!nextStationName || stopsToNextStation === undefined || !route) return null;
 
   if (estimateRemainingSeconds(stopsToNextStation) > thresholdSeconds) return null;
 

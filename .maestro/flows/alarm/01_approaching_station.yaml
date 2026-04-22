@@ -42,6 +42,10 @@ name: "알림 - 역 접근 시 알림 표시"
     text: "잠실"
     timeout: 5000
 
+# 취침 모드 활성화 (AlarmOverlay 확인용)
+- tapOn:
+    id: "home-sleep-mode-switch"
+
 # 역삼역으로 이동 (강남 → 역삼 방향)
 - setLocation:
     latitude: 37.500622
@@ -56,3 +60,17 @@ name: "알림 - 역 접근 시 알림 표시"
 - assertVisible:
     text: ".*정거장 남음.*"
     timeout: 5000
+
+# 선릉역으로 이동 → 도착 알림 오버레이 확인
+- setLocation:
+    latitude: 37.504286
+    longitude: 127.048203
+
+# 알림 오버레이 표시 확인
+- assertVisible:
+    id: "alarm-overlay"
+    timeout: 70000
+
+# 알람 끄기
+- tapOn:
+    id: "alarm-dismiss-button"
