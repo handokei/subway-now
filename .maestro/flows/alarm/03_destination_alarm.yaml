@@ -1,0 +1,72 @@
+appId: com.subwaynow.app
+name: "알림 - 도착역 접근 시 하차 준비 알림"
+---
+# 잠실새내역에서 시작, 잠실 목적지 설정 후 잠실역으로 이동하여 하차 알림 확인
+- setLocation:
+    latitude: 37.511687
+    longitude: 127.086162
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: allow
+      notifications: allow
+
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+
+# 잠실새내역 감지 확인
+- assertVisible:
+    text: "잠실새내"
+    timeout: 15000
+
+# 목적지 설정 (잠실)
+- tapOn:
+    id: "destination-button"
+- assertVisible:
+    id: "search-input"
+    timeout: 5000
+- tapOn:
+    id: "search-input"
+- inputText: "잠실"
+- assertVisible:
+    id: "suggestions-list"
+    timeout: 5000
+- tapOn:
+    id: "suggestion-item-2-016"
+
+# 목적지 설정됨 확인
+- assertVisible:
+    text: "잠실"
+    timeout: 5000
+
+# 1정거장 남음 확인
+- assertVisible:
+    text: ".*1정거장 남음.*"
+    timeout: 5000
+
+# 취침 모드 활성화 (AlarmOverlay 확인용)
+- tapOn:
+    id: "home-sleep-mode-switch"
+
+# 잠실역으로 이동
+- setLocation:
+    latitude: 37.513262
+    longitude: 127.100159
+
+# 하차 알림 오버레이 표시 확인
+- assertVisible:
+    id: "alarm-overlay"
+    timeout: 70000
+
+- assertVisible:
+    text: "하차 알림"
+
+- assertVisible:
+    text: ".*잠실.*내리세요.*"
+
+# 알람 끄기
+- tapOn:
+    id: "alarm-dismiss-button"

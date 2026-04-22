@@ -1,0 +1,73 @@
+appId: com.subwaynow.app
+name: "알림 - 환승역 접근 시 환승 준비 알림"
+---
+# 시청역(1호선)에서 시작, 잠실(2호선) 목적지 설정
+# 시청역은 1호선→2호선 환승역이므로 환승 알림이 트리거됨
+- setLocation:
+    latitude: 37.565715
+    longitude: 126.977088
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: allow
+      notifications: allow
+
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+
+# 시청역 감지 확인
+- assertVisible:
+    text: "시청"
+    timeout: 15000
+
+# 목적지 설정 (잠실 - 2호선)
+- tapOn:
+    id: "destination-button"
+- assertVisible:
+    id: "search-input"
+    timeout: 5000
+- tapOn:
+    id: "search-input"
+- inputText: "잠실"
+- assertVisible:
+    id: "suggestions-list"
+    timeout: 5000
+- tapOn:
+    id: "suggestion-item-2-016"
+
+# 목적지 설정됨 확인 (환승 경로)
+- assertVisible:
+    text: "잠실"
+    timeout: 5000
+
+# 환승 정보 표시 확인
+- assertVisible:
+    text: ".*환승.*"
+    timeout: 5000
+
+# 취침 모드 활성화 (AlarmOverlay 확인용)
+- tapOn:
+    id: "home-sleep-mode-switch"
+
+# 시청역(2호선) 좌표로 이동 → 환승 도착
+- setLocation:
+    latitude: 37.563588
+    longitude: 126.975411
+
+# 환승 알림 오버레이 표시 확인
+- assertVisible:
+    id: "alarm-overlay"
+    timeout: 70000
+
+- assertVisible:
+    text: "환승 알림"
+
+- assertVisible:
+    text: ".*시청.*환승.*"
+
+# 알람 끄기
+- tapOn:
+    id: "alarm-dismiss-button"
