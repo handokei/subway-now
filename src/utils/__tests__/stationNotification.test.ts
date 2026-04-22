@@ -85,7 +85,7 @@ function expectNotificationContent(title: string, body: string) {
 function expectAlarmNotification(title: string, body: string, extra?: Record<string, unknown>) {
   expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
     identifier: 'station-alarm',
-    content: { title, body, sound: false, ...extra },
+    content: { title, body, sound: true, ...extra },
     trigger: null,
   });
 }
@@ -109,14 +109,14 @@ describe('stationNotification', () => {
       );
     });
 
-    it('모든 알림은 shouldPlaySound false를 반환한다', async () => {
+    it('일반 알림은 shouldPlaySound false, 알람 알림은 true를 반환한다', async () => {
       setupNotificationHandler();
       const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
       const normalResult = await handleNotification({ request: { identifier: 'current-station' } });
       expect(normalResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
 
       const alarmResult = await handleNotification({ request: { identifier: 'station-alarm' } });
-      expect(alarmResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
+      expect(alarmResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false });
     });
   });
 
@@ -141,8 +141,9 @@ describe('stationNotification', () => {
       expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm', {
         name: '하차/환승 알림',
         importance: Notifications.AndroidImportance.HIGH,
-        sound: null,
-        enableVibrate: false,
+        sound: 'alarm.wav',
+        enableVibrate: true,
+        vibrationPattern: [0, 1000, 500, 1000],
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       });
       expect(Notifications.requestPermissionsAsync).toHaveBeenCalledTimes(1);
@@ -383,14 +384,14 @@ describe('stationNotification', () => {
     it('destination 타입이면 하차 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('destination', '강남');
-      expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!');
+      expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { interruptionLevel: 'timeSensitive' });
       expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(false);
     });
 
     it('transfer 타입이면 환승 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('transfer', '시청');
-      expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!');
+      expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!', { interruptionLevel: 'timeSensitive' });
       expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(false);
     });
 
@@ -409,6 +410,13 @@ describe('stationNotification', () => {
     it('dismiss 실패해도 schedule은 호출된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       (Notifications.dismissNotificationAsync as jest.Mock).mockRejectedValueOnce(new Error('없음'));
+      await sendAlarmNotification('destination', '강남');
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
+    });
+
+    it('playAlarmWithRouting 실패해도 알림은 정상 예약된다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      mockPlayAlarmWithRouting.mockRejectedValueOnce(new Error('백그라운드 오디오 실패'));
       await sendAlarmNotification('destination', '강남');
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
     });

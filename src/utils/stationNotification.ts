@@ -10,14 +10,14 @@ import { createLogger } from './logger';
 const notifLogger = createLogger('Notification');
 const liveActivityLogger = createLogger('LiveActivity');
 
-const NOTIFICATION_ID = 'current-station';
-const ALARM_NOTIFICATION_ID = 'station-alarm';
+export const NOTIFICATION_ID = 'current-station';
+export const ALARM_NOTIFICATION_ID = 'station-alarm';
 const ALARM_CHANNEL_ID = 'station-alarm';
 
 
 async function scheduleNotification(
   id: string,
-  content: { title: string; body: string; sound?: boolean; channelId?: string },
+  content: { title: string; body: string; sound?: boolean; channelId?: string; interruptionLevel?: 'timeSensitive' },
 ): Promise<void> {
   try {
     await Notifications.dismissNotificationAsync(id);
@@ -33,12 +33,13 @@ async function scheduleNotification(
 
 export function setupNotificationHandler(): void {
   Notifications.setNotificationHandler({
-    handleNotification: async () => {
+    handleNotification: async (notification) => {
+      const isAlarm = notification.request.identifier === ALARM_NOTIFICATION_ID;
       return {
         shouldShowAlert: true,
         shouldShowBanner: true,
         shouldShowList: true,
-        shouldPlaySound: false,
+        shouldPlaySound: isAlarm,
         shouldSetBadge: false,
       };
     },
@@ -56,8 +57,9 @@ export async function initStationNotification(): Promise<void> {
     await Notifications.setNotificationChannelAsync(ALARM_CHANNEL_ID, {
       name: '하차/환승 알림',
       importance: Notifications.AndroidImportance.HIGH,
-      sound: null,
-      enableVibrate: false,
+      sound: 'alarm.wav',
+      enableVibrate: true,
+      vibrationPattern: [0, 1000, 500, 1000],
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
     });
   }
@@ -221,10 +223,15 @@ export async function sendAlarmNotification(
   await scheduleNotification(ALARM_NOTIFICATION_ID, {
     title,
     body,
-    sound: false,
+    sound: true,
     ...(Platform.OS === 'android' && { channelId: ALARM_CHANNEL_ID }),
+    ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
   });
-  await playAlarmWithRouting(sleepMode);
+  try {
+    await playAlarmWithRouting(sleepMode);
+  } catch (e) {
+    notifLogger.error('알람 사운드 재생 실패 (백그라운드):', e);
+  }
   notifLogger.info('알람 알림:', title, body);
 }
 
