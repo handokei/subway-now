@@ -391,6 +391,7 @@ function getNextStationOnLine(
   const lineStations = getLineStationsCached(line);
   const step = targetIdx > currentIdx ? 1 : -1;
   const nextIdx = currentIdx + step;
+  /* istanbul ignore next -- 노선 데이터에서 boundary를 벗어나는 케이스는 발생 불가 */
   if (nextIdx < 0 || nextIdx >= lineStations.length) return null;
   return lineStations[nextIdx].name;
 }
