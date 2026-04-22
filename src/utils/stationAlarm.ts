@@ -1,16 +1,24 @@
 import type { Route, DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
 
-export type AlarmType = 'destination' | 'transfer';
+export type AlarmType = 'destination' | 'transfer' | 'approaching';
 
 export interface AlarmEvent {
   type: AlarmType;
   stationName: string;
+  timeBased?: boolean;
 }
 
 const DEFAULT_THRESHOLD = 1;
+const SECONDS_PER_STOP = 120;
+const TIME_BASED_THRESHOLD_SECONDS = 30;
 
 export function alarmKey(event: AlarmEvent): string {
-  return `${event.type}:${event.stationName}`;
+  const prefix = event.timeBased ? 'time-' : '';
+  return `${prefix}${event.type}:${event.stationName}`;
+}
+
+export function estimateRemainingSeconds(stops: number): number {
+  return stops * SECONDS_PER_STOP;
 }
 
 type AlarmChecker = (
@@ -77,6 +85,47 @@ export function checkAlarm(
   const event = checker(route, destinationName, threshold);
 
   if (!event) return null;
+
+  const key = alarmKey(event);
+  if (firedAlarms.has(key)) return null;
+
+  return event;
+}
+
+function resolveStationType(
+  nextStationName: string,
+  destinationName: string,
+  route: NonNullable<Route>,
+): AlarmType {
+  if (nextStationName === destinationName) return 'destination';
+
+  if (route.type === 'transfer') {
+    if (nextStationName === route.transferName) return 'transfer';
+  }
+
+  if (route.type === 'multi-transfer') {
+    for (const t of route.transfers) {
+      if (nextStationName === t.transferName) return 'transfer';
+    }
+  }
+
+  return 'approaching';
+}
+
+export function checkTimeBasedAlarm(
+  nextStationName: string | null,
+  stopsToNextStation: number,
+  destinationName: string,
+  route: Route,
+  firedAlarms: Set<string>,
+  thresholdSeconds: number = TIME_BASED_THRESHOLD_SECONDS,
+): AlarmEvent | null {
+  if (!nextStationName || !route) return null;
+
+  if (estimateRemainingSeconds(stopsToNextStation) > thresholdSeconds) return null;
+
+  const type = resolveStationType(nextStationName, destinationName, route);
+  const event: AlarmEvent = { type, stationName: nextStationName, timeBased: true };
 
   const key = alarmKey(event);
   if (firedAlarms.has(key)) return null;

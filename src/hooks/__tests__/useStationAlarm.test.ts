@@ -161,4 +161,99 @@ describe('useStationAlarm', () => {
     const route: DirectRoute = { type: 'direct', stops: 1 };
     expect(() => renderHook(() => useStationAlarm(route, '강남'))).not.toThrow();
   });
+
+  // 시간 기반 알람 테스트
+  describe('time-based alarm', () => {
+    it('should send time-based approaching alarm for regular station', () => {
+      const route: DirectRoute = { type: 'direct', stops: 5 };
+      renderHook(() => useStationAlarm(route, '강남', '역삼', 0));
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith('approaching', '역삼', false, true);
+    });
+
+    it('should send time-based destination alarm when next station is destination', () => {
+      const route: DirectRoute = { type: 'direct', stops: 1 };
+      renderHook(() => useStationAlarm(route, '강남', '강남', 0));
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남', false, true);
+      // 정거장 기반 알람도 발생
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남', false);
+    });
+
+    it('should send time-based transfer alarm when next station is transfer station', () => {
+      const route: TransferRoute = {
+        type: 'transfer',
+        transferName: '시청',
+        fromLine: '1',
+        toLine: '2',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 5,
+      };
+      renderHook(() => useStationAlarm(route, '강남', '시청', 0));
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '시청', false, true);
+      // 정거장 기반 알람도 발생
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '시청', false);
+    });
+
+    it('should not send time-based alarm when nextStationName is not provided', () => {
+      const route: DirectRoute = { type: 'direct', stops: 3 };
+      renderHook(() => useStationAlarm(route, '강남'));
+      // nextStationName이 없으면 시간 기반 알람 미발송
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('should not send time-based alarm when estimated time > 30s', () => {
+      const route: DirectRoute = { type: 'direct', stops: 5 };
+      // stopsToNextStation=1 → 120s > 30s threshold
+      renderHook(() => useStationAlarm(route, '강남', '역삼', 1));
+      expect(mockSendAlarmNotification).not.toHaveBeenCalledWith('approaching', '역삼', false, true);
+    });
+
+    it('should not fire same time-based alarm twice', () => {
+      const route: DirectRoute = { type: 'direct', stops: 5 };
+      const { rerender } = renderHook(() => useStationAlarm(route, '강남', '역삼', 0));
+      const timeBasedCalls = mockSendAlarmNotification.mock.calls.filter(
+        (c: unknown[]) => c[3] === true,
+      );
+      expect(timeBasedCalls).toHaveLength(1);
+
+      rerender({});
+      const timeBasedCallsAfter = mockSendAlarmNotification.mock.calls.filter(
+        (c: unknown[]) => c[3] === true,
+      );
+      expect(timeBasedCallsAfter).toHaveLength(1);
+    });
+
+    it('should set alarmEvent in sleep mode for destination time-based alarm', () => {
+      useAppStore.setState({ sleepMode: true });
+      const route: DirectRoute = { type: 'direct', stops: 1 };
+      renderHook(() => useStationAlarm(route, '강남', '강남', 0));
+      // destination/transfer 타입은 alarmEvent 설정
+      expect(useAppStore.getState().alarmEvent).toEqual({ type: 'destination', stationName: '강남' });
+    });
+
+    it('should not set alarmEvent in sleep mode for approaching time-based alarm', () => {
+      useAppStore.setState({ sleepMode: true });
+      const route: DirectRoute = { type: 'direct', stops: 5 };
+      renderHook(() => useStationAlarm(route, '강남', '역삼', 0));
+      // approaching 타입은 alarmEvent 설정하지 않음
+      expect(useAppStore.getState().alarmEvent).toBeNull();
+    });
+
+    it('should handle time-based alarm notification failure gracefully', () => {
+      mockSendAlarmNotification.mockRejectedValueOnce(new Error('시간 기반 알림 실패'));
+      const route: DirectRoute = { type: 'direct', stops: 5 };
+      expect(() => renderHook(() => useStationAlarm(route, '강남', '역삼', 0))).not.toThrow();
+    });
+
+    it('should fire for different stations as next station changes', () => {
+      const route: DirectRoute = { type: 'direct', stops: 5 };
+      const { rerender } = renderHook(
+        ({ next }: { next: string }) => useStationAlarm(route, '강남', next, 0),
+        { initialProps: { next: '역삼' } },
+      );
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith('approaching', '역삼', false, true);
+
+      rerender({ next: '선릉' });
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith('approaching', '선릉', false, true);
+    });
+  });
 });

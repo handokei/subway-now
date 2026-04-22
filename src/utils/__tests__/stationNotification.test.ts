@@ -441,6 +441,42 @@ describe('stationNotification', () => {
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
     });
 
+    it('timeBased destination이면 도착 임박 알림을 보낸다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification('destination', '강남', false, true);
+      expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!', { interruptionLevel: 'timeSensitive' });
+    });
+
+    it('timeBased transfer이면 환승 임박 알림을 보낸다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification('transfer', '시청', false, true);
+      expectAlarmNotification('환승 임박', '곧 시청에 도착합니다. 환승 준비하세요!', { interruptionLevel: 'timeSensitive' });
+    });
+
+    it('timeBased + sleepMode이면 playAlarmWithRouting에 true를 전달한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification('destination', '강남', true, true);
+      expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(true);
+    });
+
+    it('timeBased + Android에서는 channelId가 포함된다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      await sendAlarmNotification('destination', '강남', false, true);
+      expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!', { channelId: 'station-alarm' });
+    });
+
+    it('timeBased approaching이면 역 접근 알림을 보낸다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification('approaching', '역삼', false, true);
+      expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { interruptionLevel: 'timeSensitive' });
+    });
+
+    it('timeBased approaching + Android에서는 channelId가 포함된다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      await sendAlarmNotification('approaching', '역삼', false, true);
+      expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { channelId: 'station-alarm' });
+    });
+
     it('playAlarmWithRouting 실패해도 알림은 정상 예약된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       mockPlayAlarmWithRouting.mockRejectedValueOnce(new Error('백그라운드 오디오 실패'));

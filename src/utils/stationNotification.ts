@@ -219,15 +219,32 @@ export async function clearStationNotification(): Promise<void> {
 }
 
 export async function sendAlarmNotification(
-  type: 'destination' | 'transfer',
+  type: 'destination' | 'transfer' | 'approaching',
   stationName: string,
   sleepMode: boolean = false,
+  timeBased: boolean = false,
 ): Promise<void> {
-  const isTransfer = type === 'transfer';
-  const title = isTransfer ? '환승 알림' : '하차 알림';
-  const body = isTransfer
-    ? `다음 역 ${stationName}에서 환승하세요!`
-    : `다음 역 ${stationName}에서 내리세요!`;
+  let title: string;
+  let body: string;
+
+  if (timeBased) {
+    if (type === 'transfer') {
+      title = '환승 임박';
+      body = `곧 ${stationName}에 도착합니다. 환승 준비하세요!`;
+    } else if (type === 'destination') {
+      title = '도착 임박';
+      body = `곧 ${stationName}에 도착합니다. 하차 준비하세요!`;
+    } else {
+      title = '역 접근';
+      body = `곧 ${stationName}에 도착합니다.`;
+    }
+  } else {
+    const isTransfer = type === 'transfer';
+    title = isTransfer ? '환승 알림' : '하차 알림';
+    body = isTransfer
+      ? `다음 역 ${stationName}에서 환승하세요!`
+      : `다음 역 ${stationName}에서 내리세요!`;
+  }
 
   await scheduleNotification(ALARM_NOTIFICATION_ID, {
     title,
