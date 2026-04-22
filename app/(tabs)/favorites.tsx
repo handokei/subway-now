@@ -60,6 +60,7 @@ export default function FavoritesScreen() {
           placeholderTextColor="#8888aa"
           value={query}
           onChangeText={setQuery}
+          testID="favorites-search-input"
         />
 
         {isSearching ? (
@@ -78,7 +79,7 @@ export default function FavoritesScreen() {
             ))
           )
         ) : favorites.length === 0 ? (
-          <View style={styles.empty}>
+          <View style={styles.empty} testID="favorites-empty">
             <Text style={styles.emptyIcon}>⭐</Text>
             <Text style={styles.emptyTitle}>즐겨찾기가 없습니다</Text>
             <Text style={styles.emptySubtitle}>
@@ -126,6 +127,7 @@ function SearchResultCard({
         style={[styles.addButton, already && styles.addButtonDisabled]}
         onPress={onAdd}
         disabled={already}
+        testID={`favorite-add-${station.id}`}
       >
         <Text style={styles.addButtonText}>{already ? '✓' : '+'}</Text>
       </TouchableOpacity>
@@ -157,7 +159,7 @@ function FavoriteCard({
         </View>
         <View style={styles.cardActions}>
           <Text style={styles.expandIcon}>{isExpanded ? '▲' : '▼'}</Text>
-          <TouchableOpacity style={styles.removeButton} onPress={onRemove}>
+          <TouchableOpacity style={styles.removeButton} onPress={onRemove} testID={`favorite-remove-${station.id}`}>
             <Text style={styles.removeText}>삭제</Text>
           </TouchableOpacity>
         </View>

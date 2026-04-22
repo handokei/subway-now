@@ -9,7 +9,14 @@
     "web": "expo start --web",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "e2e": "maestro test .maestro/flows/",
+    "e2e:home": "maestro test .maestro/flows/home/",
+    "e2e:favorites": "maestro test .maestro/flows/favorites/",
+    "e2e:navigation": "maestro test .maestro/flows/navigation/",
+    "e2e:location": "maestro test .maestro/flows/location/",
+    "e2e:flow": "maestro test",
+    "verify": "npm test && npm run e2e"
   },
   "jest": {
     "preset": "jest-expo",
