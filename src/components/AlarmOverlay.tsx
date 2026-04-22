@@ -1,6 +1,7 @@
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { AlarmEvent } from '../store/useAppStore';
 import { clearAlarmNotification } from '../utils/stationNotification';
+import { colors, typography, spacing, radius } from '../theme';
 
 interface AlarmOverlayProps {
   event: AlarmEvent;
@@ -40,31 +41,31 @@ export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: colors.bg,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 32,
+    padding: spacing.xxxl,
   },
   title: {
     fontSize: 24,
     fontWeight: '700',
-    color: '#ff6b6b',
-    marginBottom: 24,
+    color: colors.accent,
+    marginBottom: spacing.xxl,
     letterSpacing: 2,
   },
   station: {
     fontSize: 48,
     fontWeight: '900',
-    color: '#ffffff',
+    color: colors.ink,
     textAlign: 'center',
     lineHeight: 64,
     marginBottom: 64,
   },
   button: {
-    backgroundColor: '#ff6b6b',
+    backgroundColor: colors.accent,
     paddingHorizontal: 64,
-    paddingVertical: 24,
-    borderRadius: 32,
+    paddingVertical: spacing.xxl,
+    borderRadius: radius.pill,
   },
   buttonText: {
     color: '#ffffff',

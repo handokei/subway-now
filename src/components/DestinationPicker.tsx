@@ -12,6 +12,7 @@ import type { Station } from '../types/station';
 import { LINE_NAMES } from '../constants/lineColors';
 import { StationMap } from './StationMap';
 import { createLogger } from '../utils/logger';
+import { colors, spacing, radius } from '../theme';
 
 const logger = createLogger('DestinationPicker');
 
@@ -106,7 +107,7 @@ export function DestinationPicker({
           <TextInput
             style={styles.input}
             placeholder="역 이름 검색"
-            placeholderTextColor="#888"
+            placeholderTextColor={colors.subtle}
             value={query}
             onChangeText={(t) => {
               setQuery(t);
@@ -141,16 +142,16 @@ export function DestinationPicker({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: colors.bg,
   },
   mapFallback: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
+    padding: spacing.xxl,
   },
   mapFallbackText: {
-    color: '#8888aa',
+    color: colors.muted,
     fontSize: 14,
     textAlign: 'center',
   },
@@ -164,52 +165,56 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 20,
+    paddingHorizontal: spacing.xl,
     paddingTop: 50,
-    paddingBottom: 12,
-    backgroundColor: 'rgba(26, 26, 46, 0.92)',
+    paddingBottom: spacing.md,
+    backgroundColor: 'rgba(245, 242, 236, 0.92)',
   },
   title: {
-    color: '#fff',
+    color: colors.ink,
     fontSize: 20,
     fontWeight: 'bold',
   },
   closeText: {
-    color: '#a78bfa',
+    color: colors.accent,
     fontSize: 16,
   },
   input: {
-    backgroundColor: '#16213e',
-    color: '#fff',
-    marginHorizontal: 20,
-    borderRadius: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
+    backgroundColor: '#ffffff',
+    color: colors.ink,
+    marginHorizontal: spacing.xl,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
     fontSize: 16,
+    borderWidth: 1,
+    borderColor: colors.hair,
   },
   dropdown: {
-    backgroundColor: '#16213e',
-    marginHorizontal: 20,
+    backgroundColor: '#ffffff',
+    marginHorizontal: spacing.xl,
     marginTop: 4,
-    borderRadius: 8,
+    borderRadius: radius.sm,
     overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: colors.hair,
   },
   suggestionItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: '#2a2a4a',
+    borderBottomColor: colors.hair,
   },
   suggestionName: {
-    color: '#fff',
+    color: colors.ink,
     fontSize: 15,
   },
   lineBadge: {
     borderRadius: 4,
-    paddingHorizontal: 8,
+    paddingHorizontal: spacing.sm,
     paddingVertical: 2,
   },
   lineText: {
