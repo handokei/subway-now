@@ -51,12 +51,6 @@
     },
     "plugins": [
       [
-        "@mj-studio/react-native-naver-map",
-        {
-          "client_id": "4l2hq7pw5l"
-        }
-      ],
-      [
         "expo-location",
         {
           "locationAlwaysAndWhenInUsePermission": "현재 위치한 지하철역을 감지하기 위해 위치 권한이 필요합니다.",

@@ -3,7 +3,10 @@ import { render, fireEvent } from '@testing-library/react-native';
 import { DestinationPicker } from '../DestinationPicker';
 import type { Station } from '../../types/station';
 
-jest.mock('@mj-studio/react-native-naver-map');
+jest.mock('react-native-webview');
+jest.mock('../../utils/buildMapHtml', () => ({
+  buildMapHtml: jest.fn(() => '<html>mock</html>'),
+}));
 
 const mockStation: Station = {
   id: '2-022',
@@ -45,9 +48,9 @@ describe('DestinationPicker', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('좌표가 있으면 네이버 지도를 렌더링한다', () => {
+  it('좌표가 있으면 카카오 지도를 렌더링한다', () => {
     const { getByTestId } = render(<DestinationPicker {...mapProps} />);
-    expect(getByTestId('naver-map-view')).toBeTruthy();
+    expect(getByTestId('kakao-map-webview')).toBeTruthy();
   });
 
   it('좌표가 없으면 map-fallback을 렌더링한다', () => {
@@ -102,7 +105,12 @@ describe('DestinationPicker', () => {
   it('지도 마커 탭으로 onSelect가 호출된다', () => {
     const onSelect = jest.fn();
     const { getByTestId } = render(<DestinationPicker {...mapProps} onSelect={onSelect} />);
-    getByTestId(`marker-${mockStation.lat}-${mockStation.lng}`).props.onTap();
+    const webview = getByTestId('kakao-map-webview');
+    webview.props.onMessage({
+      nativeEvent: {
+        data: JSON.stringify({ type: 'stationPress', station: mockStation }),
+      },
+    });
     expect(onSelect).toHaveBeenCalledWith(mockStation);
   });
 

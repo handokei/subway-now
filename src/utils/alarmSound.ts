@@ -1,7 +1,9 @@
 import { Audio } from 'expo-av';
 import { Vibration } from 'react-native';
 import * as AudioRoute from 'audio-route';
+import { createLogger } from './logger';
 
+const logger = createLogger('AlarmSound');
 const VIBRATION_PATTERN = [0, 1000, 500, 1000, 500, 1000];
 const VIBRATION_DURATION_MS = 5000;
 
@@ -22,8 +24,8 @@ export async function playAlarmWithRouting(sleepMode: boolean): Promise<void> {
       playsInSilentModeIOS: true,
       staysActiveInBackground: true,
     });
-  } catch {
-    // 네이티브 오디오 세션 설정 실패 시 진동 fallback
+  } catch (e) {
+    logger.error('오디오 세션 설정 실패, 진동 fallback:', e);
     Vibration.vibrate(VIBRATION_PATTERN, sleepMode);
     if (!sleepMode) {
       setTimeout(() => Vibration.cancel(), VIBRATION_DURATION_MS);
@@ -51,7 +53,8 @@ export async function playAlarmWithRouting(sleepMode: boolean): Promise<void> {
           }
         });
       }
-    } catch {
+    } catch (e) {
+      logger.error('사운드 재생 실패, 진동 fallback:', e);
       Vibration.vibrate(VIBRATION_PATTERN, sleepMode);
       if (!sleepMode) {
         setTimeout(() => Vibration.cancel(), VIBRATION_DURATION_MS);
@@ -69,8 +72,8 @@ export async function stopAlarm(): Promise<void> {
   if (sound) {
     try {
       await sound.unloadAsync();
-    } catch {
-      // 이미 해제되었거나 네이티브 모듈 오류 — 무시
+    } catch (e) {
+      logger.warn('사운드 해제 실패 (이미 해제됨):', e);
     }
   }
   Vibration.cancel();

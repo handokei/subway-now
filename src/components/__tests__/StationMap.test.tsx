@@ -1,9 +1,12 @@
 import React from 'react';
 import { render } from '@testing-library/react-native';
 import { StationMap } from '../StationMap';
-import { Station } from '../../types/station';
+import type { Station } from '../../types/station';
 
-jest.mock('@mj-studio/react-native-naver-map');
+jest.mock('react-native-webview');
+jest.mock('../../utils/buildMapHtml', () => ({
+  buildMapHtml: jest.fn(() => '<html>mock</html>'),
+}));
 
 const mockStation: Station = {
   id: '2-022',
@@ -31,64 +34,78 @@ const baseProps = {
 };
 
 describe('StationMap', () => {
-  it('NaverMapView를 렌더링한다', () => {
+  it('WebView를 렌더링한다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(getByTestId('naver-map-view')).toBeTruthy();
+    expect(getByTestId('kakao-map-webview')).toBeTruthy();
   });
 
-  it('nearbyStations의 각 역마다 마커를 렌더링한다', () => {
-    const { getByTestId } = render(
-      <StationMap {...baseProps} nearbyStations={[mockStation, anotherStation]} />
-    );
-    expect(getByTestId(`marker-${mockStation.lat}-${mockStation.lng}`)).toBeTruthy();
-    expect(getByTestId(`marker-${anotherStation.lat}-${anotherStation.lng}`)).toBeTruthy();
+  it('buildMapHtml에 올바른 파라미터를 전달한다', () => {
+    const { buildMapHtml } = require('../../utils/buildMapHtml');
+    render(<StationMap {...baseProps} nearbyStations={[mockStation, anotherStation]} />);
+    expect(buildMapHtml).toHaveBeenCalledWith({
+      apiKey: expect.any(String),
+      userLat: 37.498,
+      userLng: 127.027,
+      nearestStation: mockStation,
+      nearbyStations: [mockStation, anotherStation],
+    });
   });
 
-  it('nearbyStations가 빈 배열이면 마커 없이 렌더링한다', () => {
-    const { getByTestId, queryByTestId } = render(
-      <StationMap {...baseProps} nearbyStations={[]} />
-    );
-    expect(getByTestId('naver-map-view')).toBeTruthy();
-    expect(queryByTestId(`marker-${mockStation.lat}-${mockStation.lng}`)).toBeNull();
-  });
-
-  it('nearestStation과 일치하는 마커는 크기가 36이다', () => {
-    const { getByTestId } = render(<StationMap {...baseProps} />);
-    const marker = getByTestId(`marker-${mockStation.lat}-${mockStation.lng}`);
-    expect(marker.props.width).toBe(36);
-    expect(marker.props.height).toBe(36);
-  });
-
-  it('nearestStation과 일치하지 않는 마커는 크기가 24이다', () => {
-    const { getByTestId } = render(
-      <StationMap {...baseProps} nearbyStations={[mockStation, anotherStation]} />
-    );
-    const marker = getByTestId(`marker-${anotherStation.lat}-${anotherStation.lng}`);
-    expect(marker.props.width).toBe(24);
-    expect(marker.props.height).toBe(24);
-  });
-
-  it('nearestStation이 null이면 모든 마커 크기가 24이다', () => {
-    const { getByTestId } = render(
-      <StationMap {...baseProps} nearestStation={null} />
-    );
-    const marker = getByTestId(`marker-${mockStation.lat}-${mockStation.lng}`);
-    expect(marker.props.width).toBe(24);
-  });
-
-  it('onStationPress가 있으면 마커 onTap 호출 시 station을 전달한다', () => {
+  it('stationPress 메시지를 받으면 onStationPress를 호출한다', () => {
     const onStationPress = jest.fn();
     const { getByTestId } = render(
-      <StationMap {...baseProps} onStationPress={onStationPress} />
+      <StationMap {...baseProps} onStationPress={onStationPress} />,
     );
-    getByTestId(`marker-${mockStation.lat}-${mockStation.lng}`).props.onTap();
+    const webview = getByTestId('kakao-map-webview');
+    webview.props.onMessage({
+      nativeEvent: {
+        data: JSON.stringify({ type: 'stationPress', station: mockStation }),
+      },
+    });
     expect(onStationPress).toHaveBeenCalledWith(mockStation);
   });
 
-  it('onStationPress가 없을 때 마커 onTap 호출해도 에러가 없다', () => {
+  it('onStationPress가 없을 때 메시지를 받아도 에러가 없다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    const webview = getByTestId('kakao-map-webview');
+    expect(() => {
+      webview.props.onMessage({
+        nativeEvent: {
+          data: JSON.stringify({ type: 'stationPress', station: mockStation }),
+        },
+      });
+    }).not.toThrow();
+  });
+
+  it('stationPress가 아닌 메시지는 무시한다', () => {
+    const onStationPress = jest.fn();
+    const { getByTestId } = render(
+      <StationMap {...baseProps} onStationPress={onStationPress} />,
+    );
+    getByTestId('kakao-map-webview').props.onMessage({
+      nativeEvent: { data: JSON.stringify({ type: 'other' }) },
+    });
+    expect(onStationPress).not.toHaveBeenCalled();
+  });
+
+  it('잘못된 JSON 메시지를 받아도 에러가 없다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
     expect(() => {
-      getByTestId(`marker-${mockStation.lat}-${mockStation.lng}`).props.onTap();
+      getByTestId('kakao-map-webview').props.onMessage({
+        nativeEvent: { data: 'invalid json' },
+      });
     }).not.toThrow();
+  });
+
+  it('WebView에 html source가 전달된다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    expect(getByTestId('kakao-map-webview').props.source).toEqual({
+      html: '<html>mock</html>',
+    });
+  });
+
+  it('WebView의 scrollEnabled이 false이다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    expect(getByTestId('kakao-map-webview').props.scrollEnabled).toBe(false);
   });
 });
