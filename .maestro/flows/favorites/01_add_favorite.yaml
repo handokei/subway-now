@@ -13,14 +13,16 @@ name: "즐겨찾기 - 추가"
     optional: true
 
 # 즐겨찾기 탭으로 이동
+- extendedWaitUntil:
+    visible:
+      text: "즐겨찾기"
+    timeout: 10000
 - tapOn:
     text: "즐겨찾기"
-    timeout: 10000
 
 # 빈 상태 확인
 - assertVisible:
     id: "favorites-empty"
-    timeout: 5000
 
 # 역 검색
 - tapOn:
@@ -30,7 +32,6 @@ name: "즐겨찾기 - 추가"
 # 검색 결과에서 추가
 - assertVisible:
     text: "강남"
-    timeout: 5000
 - tapOn:
     id: "favorite-add-2-022"
 
@@ -43,4 +44,3 @@ name: "즐겨찾기 - 추가"
 # 즐겨찾기 목록에 표시 확인
 - assertVisible:
     text: "강남"
-    timeout: 5000

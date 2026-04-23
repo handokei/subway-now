@@ -18,8 +18,9 @@ name: "위치 - 역 근처 (강남역)"
     optional: true
 
 # 현재역 라벨 표시 확인 (500m 이내)
-- assertVisible:
-    text: "현재역"
+- extendedWaitUntil:
+    visible:
+      text: "현재역"
     timeout: 15000
 
 # 강남역 이름 표시

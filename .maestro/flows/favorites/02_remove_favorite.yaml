@@ -13,9 +13,12 @@ name: "즐겨찾기 - 삭제"
     optional: true
 
 # 즐겨찾기 탭으로 이동
+- extendedWaitUntil:
+    visible:
+      text: "즐겨찾기"
+    timeout: 10000
 - tapOn:
     text: "즐겨찾기"
-    timeout: 10000
 
 # 먼저 즐겨찾기 추가
 - tapOn:
@@ -23,7 +26,6 @@ name: "즐겨찾기 - 삭제"
 - inputText: "서울역"
 - assertVisible:
     text: "서울역"
-    timeout: 5000
 - tapOn:
     id: "favorite-add-1-034"
 
@@ -36,7 +38,6 @@ name: "즐겨찾기 - 삭제"
 # 즐겨찾기에 있는지 확인
 - assertVisible:
     text: "서울역"
-    timeout: 5000
 
 # 삭제
 - tapOn:
@@ -45,4 +46,3 @@ name: "즐겨찾기 - 삭제"
 # 빈 상태 복원 확인
 - assertVisible:
     id: "favorites-empty"
-    timeout: 5000

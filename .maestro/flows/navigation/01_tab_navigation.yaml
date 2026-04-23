@@ -17,15 +17,17 @@ name: "탭 내비게이션 순회"
     optional: true
 
 # 홈 탭 확인
-- assertVisible:
-    text: "LIVE"
+- extendedWaitUntil:
+    visible:
+      text: "LIVE"
     timeout: 15000
 
 # 지도 탭
 - tapOn:
     text: "지도"
-- assertVisible:
-    text: "네이버 지도에서 보기"
+- extendedWaitUntil:
+    visible:
+      text: "네이버 지도에서 보기"
     timeout: 10000
 
 # 즐겨찾기 탭
@@ -33,18 +35,15 @@ name: "탭 내비게이션 순회"
     text: "즐겨찾기"
 - assertVisible:
     id: "favorites-search-input"
-    timeout: 5000
 
 # 설정 탭
 - tapOn:
     text: "설정"
 - assertVisible:
     id: "sleep-mode-switch"
-    timeout: 5000
 
 # 홈 탭으로 복귀
 - tapOn:
     text: "현재 역"
 - assertVisible:
     text: "LIVE"
-    timeout: 5000
