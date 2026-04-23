@@ -274,7 +274,11 @@ export async function sendAlarmNotification(
 }
 
 export async function clearAlarmNotification(): Promise<void> {
-  await stopAlarm();
+  try {
+    await stopAlarm();
+  } catch {
+    // 사운드 해제 실패 — 무시
+  }
   try {
     await Notifications.dismissNotificationAsync(ALARM_NOTIFICATION_ID);
   } catch { /* 무시 */ }

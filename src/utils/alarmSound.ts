@@ -17,10 +17,19 @@ export async function playAlarmWithRouting(sleepMode: boolean): Promise<void> {
 
   // 오디오 세션을 먼저 활성화해야 AVAudioSession.currentRoute가 정확한 출력 경로를 반환한다.
   // 백그라운드(화면 꺼짐)에서는 세션이 비활성 상태라 이어폰 감지가 실패할 수 있다.
-  await Audio.setAudioModeAsync({
-    playsInSilentModeIOS: true,
-    staysActiveInBackground: true,
-  });
+  try {
+    await Audio.setAudioModeAsync({
+      playsInSilentModeIOS: true,
+      staysActiveInBackground: true,
+    });
+  } catch {
+    // 네이티브 오디오 세션 설정 실패 시 진동 fallback
+    Vibration.vibrate(VIBRATION_PATTERN, sleepMode);
+    if (!sleepMode) {
+      setTimeout(() => Vibration.cancel(), VIBRATION_DURATION_MS);
+    }
+    return;
+  }
 
   if (AudioRoute.isHeadphonesConnected()) {
     try {
@@ -58,7 +67,11 @@ export async function stopAlarm(): Promise<void> {
   const sound = currentSound;
   currentSound = null;
   if (sound) {
-    await sound.unloadAsync();
+    try {
+      await sound.unloadAsync();
+    } catch {
+      // 이미 해제되었거나 네이티브 모듈 오류 — 무시
+    }
   }
   Vibration.cancel();
 }

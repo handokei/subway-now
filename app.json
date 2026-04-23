@@ -24,7 +24,11 @@
             }
           }
         },
-        "UIBackgroundModes": ["audio", "location"]
+        "UIBackgroundModes": [
+          "audio",
+          "location"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -32,7 +36,12 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "permissions": ["ACCESS_FINE_LOCATION", "ACCESS_BACKGROUND_LOCATION"],
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION"
+      ],
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
       "package": "com.subwaynow.app"
@@ -58,7 +67,9 @@
       [
         "expo-notifications",
         {
-          "sounds": ["./assets/sounds/alarm.wav"]
+          "sounds": [
+            "./assets/sounds/alarm.wav"
+          ]
         }
       ],
       "expo-router",
@@ -70,8 +81,22 @@
       "publicDataApiKey": "",
       "seoulDataApiKey": "",
       "eas": {
-        "projectId": ""
-      }
-    }
+        "projectId": "0034b0da-c041-4119-8719-dcd1d517822a",
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "bundleIdentifier": "com.subwaynow.app.widget",
+                  "targetName": "subwaywidget"
+                }
+              ]
+            }
+          }
+        }
+      },
+      "router": {}
+    },
+    "owner": "handokei"
   }
 }
