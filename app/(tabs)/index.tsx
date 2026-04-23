@@ -92,7 +92,7 @@ export default function HomeScreen() {
     loadFavorites();
     loadSleepMode();
     loadAlarmEvent();
-    initStationNotification();
+    initStationNotification().catch((e) => logger.error('알림 초기화 실패:', e));
     const subscription = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         loadAlarmEvent();
