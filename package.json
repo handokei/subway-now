@@ -49,11 +49,10 @@
       "json"
     ],
     "transformIgnorePatterns": [
-      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|react-native-webview|@mj-studio/react-native-naver-map)"
+      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|react-native-webview)"
     ]
   },
   "dependencies": {
-    "@mj-studio/react-native-naver-map": "^2.7.1",
     "@react-native-async-storage/async-storage": "2.2.0",
     "audio-route": "file:./modules/audio-route",
     "expo": "~54.0.33",
