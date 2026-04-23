@@ -23,23 +23,30 @@ export async function playAlarmWithRouting(sleepMode: boolean): Promise<void> {
   });
 
   if (AudioRoute.isHeadphonesConnected()) {
-    const source = sleepMode ? ALARM_SOUND : NOTIFICATION_SOUND;
-    const { sound } = await Audio.Sound.createAsync(source);
-    currentSound = sound;
+    try {
+      const source = sleepMode ? ALARM_SOUND : NOTIFICATION_SOUND;
+      const { sound } = await Audio.Sound.createAsync(source);
+      currentSound = sound;
 
-    if (sleepMode) {
-      await sound.setIsLoopingAsync(true);
-    }
+      if (sleepMode) {
+        await sound.setIsLoopingAsync(true);
+      }
 
-    await sound.playAsync();
+      await sound.playAsync();
 
-    if (!sleepMode) {
-      sound.setOnPlaybackStatusUpdate((status) => {
-        if (status.isLoaded && status.didJustFinish) {
-          sound.unloadAsync();
-          currentSound = null;
-        }
-      });
+      if (!sleepMode) {
+        sound.setOnPlaybackStatusUpdate((status) => {
+          if (status.isLoaded && status.didJustFinish) {
+            sound.unloadAsync();
+            currentSound = null;
+          }
+        });
+      }
+    } catch {
+      Vibration.vibrate(VIBRATION_PATTERN, sleepMode);
+      if (!sleepMode) {
+        setTimeout(() => Vibration.cancel(), VIBRATION_DURATION_MS);
+      }
     }
   } else {
     Vibration.vibrate(VIBRATION_PATTERN, true);

@@ -314,6 +314,10 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       'subway-now:fired-alarms',
       JSON.stringify(['destination:시청']),
     );
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:alarm-event',
+      JSON.stringify(alarmEvent),
+    );
   });
 
   it('기존 firedAlarms에 alarmEvent 키를 추가하여 저장한다', async () => {
@@ -338,6 +342,10 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
       'subway-now:fired-alarms',
       JSON.stringify(['destination:시청', 'transfer:강남']),
+    );
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:alarm-event',
+      JSON.stringify(alarmEvent),
     );
   });
 

@@ -1,5 +1,5 @@
 import * as Notifications from 'expo-notifications';
-import { Platform } from 'react-native';
+import { Platform, Vibration } from 'react-native';
 import {
   setupNotificationHandler,
   initStationNotification,
@@ -85,7 +85,7 @@ function expectNotificationContent(title: string, body: string) {
 function expectAlarmNotification(title: string, body: string, extra?: Record<string, unknown>) {
   expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
     identifier: 'station-alarm',
-    content: { title, body, sound: true, ...extra },
+    content: { title, body, sound: 'alarm.wav', ...extra },
     trigger: null,
   });
 }
@@ -484,11 +484,13 @@ describe('stationNotification', () => {
       expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { channelId: 'station-alarm', priority: 'max' });
     });
 
-    it('playAlarmWithRouting 실패해도 알림은 정상 예약된다', async () => {
+    it('playAlarmWithRouting 실패 시 알림은 정상 예약되고 진동 안전망이 작동한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       mockPlayAlarmWithRouting.mockRejectedValueOnce(new Error('백그라운드 오디오 실패'));
+      const vibrateSpy = jest.spyOn(Vibration, 'vibrate');
       await sendAlarmNotification('destination', '강남');
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
+      expect(vibrateSpy).toHaveBeenCalledWith([0, 1000, 500, 1000], false);
     });
   });
 
