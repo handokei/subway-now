@@ -265,10 +265,43 @@ describe('useAppStore', () => {
     expect(alarmEvent).toEqual({ type: 'destination', stationName: '강남' });
   });
 
-  it('clearAlarmEvent: 알람 이벤트를 초기화한다', () => {
+  it('clearAlarmEvent: 알람 이벤트를 초기화하고 AsyncStorage도 정리한다', () => {
     const { setAlarmEvent, clearAlarmEvent } = useAppStore.getState();
     setAlarmEvent({ type: 'transfer', stationName: '역삼' });
     clearAlarmEvent();
+
+    const { alarmEvent } = useAppStore.getState();
+    expect(alarmEvent).toBeNull();
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:alarm-event');
+  });
+
+  it('loadAlarmEvent: AsyncStorage에서 알람 이벤트를 복원하고 제거한다', async () => {
+    const event = { type: 'destination' as const, stationName: '강남' };
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(event));
+
+    const { loadAlarmEvent } = useAppStore.getState();
+    await loadAlarmEvent();
+
+    const { alarmEvent } = useAppStore.getState();
+    expect(alarmEvent).toEqual(event);
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:alarm-event');
+  });
+
+  it('loadAlarmEvent: AsyncStorage가 비어있으면 null을 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+
+    const { loadAlarmEvent } = useAppStore.getState();
+    await loadAlarmEvent();
+
+    const { alarmEvent } = useAppStore.getState();
+    expect(alarmEvent).toBeNull();
+  });
+
+  it('loadAlarmEvent: AsyncStorage 오류 시 null을 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
+
+    const { loadAlarmEvent } = useAppStore.getState();
+    await loadAlarmEvent();
 
     const { alarmEvent } = useAppStore.getState();
     expect(alarmEvent).toBeNull();

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { InteractionManager, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { AppState, InteractionManager, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
@@ -35,6 +35,7 @@ export default function HomeScreen() {
   const loadSleepMode = useAppStore((s) => s.loadSleepMode);
   const alarmEvent = useAppStore((s) => s.alarmEvent);
   const clearAlarmEvent = useAppStore((s) => s.clearAlarmEvent);
+  const loadAlarmEvent = useAppStore((s) => s.loadAlarmEvent);
   const [pickerVisible, setPickerVisible] = useState(false);
   const [arrivedBanner, setArrivedBanner] = useState(false);
   const arrivedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -81,7 +82,14 @@ export default function HomeScreen() {
   useEffect(() => {
     loadFavorites();
     loadSleepMode();
+    loadAlarmEvent();
     initStationNotification();
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        loadAlarmEvent();
+      }
+    });
+    return () => subscription.remove();
   }, []);
 
   useEffect(() => {

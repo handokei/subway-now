@@ -1,19 +1,13 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
+import type { AlarmEvent } from '../utils/stationAlarm';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY } from '../constants/storageKeys';
 
-const FAVORITES_KEY = 'subway-now:favorites';
-const SLEEP_MODE_KEY = 'subway-now:sleep-mode';
-const DESTINATION_KEY = 'subway-now:destination';
-const FIRED_ALARMS_KEY = 'subway-now:fired-alarms';
+export type { AlarmEvent };
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = () => {};
-
-export interface AlarmEvent {
-  type: 'destination' | 'transfer';
-  stationName: string;
-}
 
 interface AppState {
   favorites: Station[];
@@ -30,6 +24,7 @@ interface AppState {
   loadSleepMode: () => Promise<void>;
   setAlarmEvent: (event: AlarmEvent) => void;
   clearAlarmEvent: () => void;
+  loadAlarmEvent: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -89,6 +84,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   clearAlarmEvent: () => {
     set({ alarmEvent: null });
+    AsyncStorage.removeItem(ALARM_EVENT_KEY).catch(noop);
+  },
+
+  loadAlarmEvent: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(ALARM_EVENT_KEY);
+      if (raw) {
+        set({ alarmEvent: JSON.parse(raw) });
+        await AsyncStorage.removeItem(ALARM_EVENT_KEY);
+      }
+    } catch {
+      // 저장된 데이터 없음 — 무시
+    }
   },
 
   loadSleepMode: async () => {

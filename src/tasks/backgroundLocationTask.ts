@@ -6,14 +6,11 @@ import { alarmKey } from '../utils/stationAlarm';
 import { updateStationNotification } from '../utils/stationNotification';
 import { findNearestStation } from '../utils/findNearestStation';
 import { createLogger } from '../utils/logger';
+import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY } from '../constants/storageKeys';
 
 const logger = createLogger('BackgroundLocation');
 
 export const BACKGROUND_LOCATION_TASK = 'background-location-task';
-
-const DESTINATION_KEY = 'subway-now:destination';
-const SLEEP_MODE_KEY = 'subway-now:sleep-mode';
-const FIRED_ALARMS_KEY = 'subway-now:fired-alarms';
 
 TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   if (error) {
@@ -67,7 +64,10 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
     if (alarmEvent) {
       firedAlarms.add(alarmKey(alarmEvent));
-      await AsyncStorage.setItem(FIRED_ALARMS_KEY, JSON.stringify([...firedAlarms]));
+      await Promise.all([
+        AsyncStorage.setItem(FIRED_ALARMS_KEY, JSON.stringify([...firedAlarms])),
+        AsyncStorage.setItem(ALARM_EVENT_KEY, JSON.stringify(alarmEvent)),
+      ]);
     }
 
     logger.info('백그라운드 위치 업데이트 완료:', latitude.toFixed(4), longitude.toFixed(4));

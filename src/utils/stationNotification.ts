@@ -1,5 +1,5 @@
 import * as Notifications from 'expo-notifications';
-import { Platform } from 'react-native';
+import { Platform, Vibration } from 'react-native';
 import { Station } from '../types/station';
 import { LINE_COLORS, LINE_NAMES } from '../constants/lineColors';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
@@ -18,7 +18,7 @@ const ALARM_CHANNEL_ID = 'station-alarm';
 
 async function scheduleNotification(
   id: string,
-  content: { title: string; body: string; sound?: boolean; channelId?: string; interruptionLevel?: 'timeSensitive' | 'critical'; priority?: Notifications.AndroidNotificationPriority },
+  content: { title: string; body: string; sound?: boolean | string; channelId?: string; interruptionLevel?: 'timeSensitive' | 'critical'; priority?: Notifications.AndroidNotificationPriority },
 ): Promise<void> {
   try {
     await Notifications.dismissNotificationAsync(id);
@@ -256,7 +256,7 @@ export async function sendAlarmNotification(
   await scheduleNotification(ALARM_NOTIFICATION_ID, {
     title,
     body,
-    sound: true,
+    sound: 'alarm.wav',
     ...(Platform.OS === 'android' && {
       channelId: ALARM_CHANNEL_ID,
       priority: Notifications.AndroidNotificationPriority.MAX,
@@ -268,6 +268,7 @@ export async function sendAlarmNotification(
     await playAlarmWithRouting(sleepMode);
   } catch (e) {
     notifLogger.error('알람 사운드 재생 실패 (백그라운드):', e);
+    Vibration.vibrate([0, 1000, 500, 1000], false);
   }
   notifLogger.info('알람 알림:', title, body);
 }

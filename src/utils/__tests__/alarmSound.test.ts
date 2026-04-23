@@ -106,6 +106,31 @@ describe('alarmSound', () => {
       expect(mockSetOnPlaybackStatusUpdate).not.toHaveBeenCalled();
     });
 
+    it('이어폰 연결 + 사운드 재생 실패 시 진동으로 fallback한다', async () => {
+      mockIsHeadphonesConnected.mockReturnValue(true);
+      mockCreateAsync.mockRejectedValueOnce(new Error('audio error'));
+      const vibrateSpy = jest.spyOn(Vibration, 'vibrate');
+      await playAlarmWithRouting(false);
+      expect(vibrateSpy).toHaveBeenCalledWith([0, 1000, 500, 1000, 500, 1000], false);
+    });
+
+    it('이어폰 연결 + 사운드 재생 실패 + 취침모드 시 반복 진동한다', async () => {
+      mockIsHeadphonesConnected.mockReturnValue(true);
+      mockCreateAsync.mockRejectedValueOnce(new Error('audio error'));
+      const vibrateSpy = jest.spyOn(Vibration, 'vibrate');
+      await playAlarmWithRouting(true);
+      expect(vibrateSpy).toHaveBeenCalledWith([0, 1000, 500, 1000, 500, 1000], true);
+    });
+
+    it('이어폰 연결 + 사운드 재생 실패 + 일반모드 시 5초 후 진동 중지한다', async () => {
+      mockIsHeadphonesConnected.mockReturnValue(true);
+      mockCreateAsync.mockRejectedValueOnce(new Error('audio error'));
+      const cancelSpy = jest.spyOn(Vibration, 'cancel');
+      await playAlarmWithRouting(false);
+      jest.advanceTimersByTime(5000);
+      expect(cancelSpy).toHaveBeenCalled();
+    });
+
     it('재생 전 이전 알람을 정리한다', async () => {
       mockIsHeadphonesConnected.mockReturnValue(true);
       await playAlarmWithRouting(false);

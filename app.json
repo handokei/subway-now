@@ -55,6 +55,12 @@
           "locationWhenInUsePermission": "앱 사용 중 현재 지하철역을 감지하기 위해 위치 권한이 필요합니다."
         }
       ],
+      [
+        "expo-notifications",
+        {
+          "sounds": ["./assets/sounds/alarm.wav"]
+        }
+      ],
       "expo-router",
       "./modules/live-activity/app.plugin.js",
       "./remove-push-entitlement.js",
