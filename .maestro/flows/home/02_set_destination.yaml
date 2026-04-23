@@ -16,8 +16,9 @@ name: "홈 화면 - 목적지 설정"
     text: ".*허용.*"
     optional: true
 
-- assertVisible:
-    id: "destination-button"
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
     timeout: 15000
 
 - tapOn:
@@ -25,7 +26,6 @@ name: "홈 화면 - 목적지 설정"
 
 - assertVisible:
     id: "search-input"
-    timeout: 5000
 
 - tapOn:
     id: "search-input"
@@ -33,7 +33,6 @@ name: "홈 화면 - 목적지 설정"
 
 - assertVisible:
     id: "suggestions-list"
-    timeout: 5000
 
 - tapOn:
     id: "suggestion-item-2-016"
@@ -41,7 +40,6 @@ name: "홈 화면 - 목적지 설정"
 # 목적지 설정됨 확인
 - assertVisible:
     text: "잠실"
-    timeout: 5000
 
 - assertVisible:
     text: "목적지 변경"

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, InteractionManager, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { AppState, InteractionManager, Pressable, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
@@ -8,13 +8,16 @@ import { formatArrivalTime } from '../../src/utils/formatTime';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
-import { findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA, type Route } from '../../src/utils/stationRoute';
-import { JourneyTimeline } from '../../src/components/JourneyTimeline';
+import { findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route } from '../../src/utils/stationRoute';
+import { EditorialTimeline } from '../../src/components/EditorialTimeline';
+import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/journeyAdapter';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
 import { useBackgroundLocation } from '../../src/hooks/useBackgroundLocation';
 import { AlarmOverlay } from '../../src/components/AlarmOverlay';
 import { createLogger } from '../../src/utils/logger';
+import { colors, typography, spacing, radius } from '../../src/theme';
+import { LineBadge } from '../../src/components/LineBadge';
 
 const logger = createLogger('HomeScreen');
 
@@ -76,7 +79,13 @@ export default function HomeScreen() {
   const isRealtimeEta = etaMinutes !== null && !arrivalIsMock && arrival !== null;
   const displayEta = isRealtimeEta ? etaMinutes : staticEtaMinutes;
 
-  useStationAlarm(route, destination?.name ?? null);
+  const nextStationName = useMemo(
+    () => (result && destination && route ? getNextStationName(result.station.id, destination.id, route) : null),
+    [result?.station.id, destination?.id, route],
+  );
+
+  // nextStationName이 확정됐으면 stops=0으로 즉시 시간 기반 임계 통과 (firedAlarms로 중복 방지)
+  useStationAlarm(route, destination?.name ?? null, nextStationName, nextStationName ? 0 : undefined);
   useBackgroundLocation(destination);
 
   useEffect(() => {
@@ -198,6 +207,8 @@ export default function HomeScreen() {
     );
   }
 
+  const nearest = result ? nearestResultToNearest(result) : null;
+
   return (
     <SafeAreaView style={styles.container}>
       {arrivedBanner && (
@@ -205,16 +216,26 @@ export default function HomeScreen() {
           <Text style={styles.arrivedBannerText}>도착!</Text>
         </View>
       )}
-      <ScrollView contentContainerStyle={styles.scroll}>
-        <Text style={styles.header}>지금 여기</Text>
-
-        {result ? (
+      <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
+        {result && nearest ? (
           <>
-            <View style={[styles.stationCard, { borderLeftColor: result.station.lineColor }]}>
-              <View style={styles.stationCardHeader}>
-                <View style={[styles.lineBadge, { backgroundColor: result.station.lineColor }]}>
-                  <Text style={styles.lineBadgeText}>{LINE_NAMES[result.station.line]}</Text>
-                </View>
+            {/* Top meta */}
+            <View style={styles.topMeta}>
+              <Text style={[typography.mono, { color: colors.subtle }]}>
+                {new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+              <Text style={[typography.label, { color: colors.subtle }]}>LIVE</Text>
+            </View>
+
+            {/* Hero: nearest station */}
+            <View style={{ paddingHorizontal: spacing.xxl, paddingTop: spacing.xxxl - 4 }}>
+              <Text style={[typography.label, { color: colors.muted, marginBottom: 10 }]}>
+                {result.distanceKm <= 0.5 ? '현재역' : '가장 가까운 역'}
+              </Text>
+              <View style={styles.heroRow}>
+                <Text style={[typography.hero, { color: colors.ink, flex: 1 }]}>
+                  {nearest.name}
+                </Text>
                 <TouchableOpacity
                   onPress={() =>
                     isFav
@@ -227,76 +248,118 @@ export default function HomeScreen() {
                   </Text>
                 </TouchableOpacity>
               </View>
-              <Text style={styles.currentStationLabel}>
-                {result.distanceKm <= 0.5 ? '현재역' : '가장 가까운 역'}
-              </Text>
-              <Text style={styles.stationName}>{result.station.name}</Text>
-              <Text style={styles.distanceText}>
-                현재 위치에서 약 {Math.round(result.distanceKm * 1000)}m
-              </Text>
+              <View style={styles.metaRow}>
+                <LineBadge line={result.station.line} />
+                <Dot />
+                <Text style={[typography.bodySm, { color: colors.muted }]}>
+                  {nearest.distanceM} m
+                </Text>
+                <Dot />
+                <Text style={[typography.bodySm, { color: colors.muted }]}>
+                  {nearest.walkMin} min walk
+                </Text>
+              </View>
             </View>
 
-            <View style={styles.destinationCard}>
-              {destination ? (
-                <View>
-                  <View style={styles.destinationInfo}>
-                    <Text style={styles.destinationArrow}>→</Text>
-                    <Text style={styles.destinationName}>{destination.name}</Text>
-                    {displayEta != null && (
-                      <Text style={styles.etaInline}>약 {displayEta}분 소요{!isRealtimeEta ? ' (예상)' : ''}</Text>
-                    )}
-                  </View>
-                  {journey && (
-                    <JourneyTimeline journey={journey} />
-                  )}
-                </View>
-              ) : null}
-              {!destination && recentDestination && (
-                <TouchableOpacity
-                  style={styles.recentDestinationButton}
-                  onPress={() => setDestination(recentDestination)}
-                  testID="recent-destination-button"
-                >
-                  <Text style={styles.recentDestinationLabel}>이전 목적지</Text>
-                  <View style={styles.recentDestinationRow}>
-                    <Text style={styles.recentDestinationName}>{recentDestination.name}</Text>
-                    <View style={[styles.recentLineBadge, { backgroundColor: recentDestination.lineColor }]}>
-                      <Text style={styles.recentLineText}>{LINE_NAMES[recentDestination.line]}</Text>
+            <Hr />
+
+            {/* Route */}
+            {destination && (
+              <>
+                <View style={{ paddingHorizontal: spacing.xxl, paddingVertical: spacing.xxl }}>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: spacing.xl }}>
+                    <View>
+                      <Text style={[typography.label, { color: colors.muted, marginBottom: 4 }]}>
+                        Route to
+                      </Text>
+                      <Text style={[typography.title, { color: colors.ink }]}>{destination.name}</Text>
+                    </View>
+                    <View style={{ alignItems: 'flex-end' }}>
+                      {displayEta != null && (
+                        <>
+                          <Text style={[typography.countMM, { color: colors.ink }]}>
+                            {displayEta}
+                            <Text style={{ fontSize: 13, color: colors.muted }}> min</Text>
+                          </Text>
+                          <Text style={[typography.label, { color: colors.subtle, marginTop: 4 }]}>
+                            {isRealtimeEta ? 'EST' : '예상'} · {journey?.totalStops ?? 0} STOPS
+                          </Text>
+                        </>
+                      )}
                     </View>
                   </View>
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity
-                style={styles.destinationButton}
-                onPress={() => setPickerVisible(true)}
-                testID="destination-button"
-              >
-                <Text style={styles.destinationButtonText}>
-                  {destination ? '목적지 변경' : '목적지 설정'}
-                </Text>
-              </TouchableOpacity>
-              {destination ? (
-                <>
-                  <View style={styles.sleepModeRow} testID="sleep-mode-row">
-                    <Text style={styles.sleepModeLabel}>취침 모드</Text>
-                    <Switch
-                      value={sleepMode}
-                      onValueChange={setSleepMode}
-                      trackColor={{ false: '#2a2a4a', true: '#a78bfa' }}
-                      thumbColor={sleepMode ? '#ffffff' : '#666688'}
-                      testID="home-sleep-mode-switch"
-                    />
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => setDestination(null)}
-                    testID="destination-clear-button"
-                  >
-                    <Text style={styles.clearText}>초기화</Text>
-                  </TouchableOpacity>
-                </>
-              ) : null}
-            </View>
+                  {journey && (
+                    <EditorialTimeline stops={journeyDisplayToStops(journey)} />
+                  )}
+                </View>
 
+                {/* Actions */}
+                <View style={styles.actionsRow}>
+                  <Pressable onPress={() => setPickerVisible(true)}>
+                    <Text style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}>
+                      목적지 변경 →
+                    </Text>
+                  </Pressable>
+                  <View style={styles.vHair} />
+                  <Pressable onPress={() => setDestination(null)} testID="destination-clear-button">
+                    <Text style={[typography.bodySm, { color: colors.muted }]}>초기화</Text>
+                  </Pressable>
+                </View>
+
+                <Hr />
+
+                {/* Sleep mode */}
+                <View style={styles.sleepRow} testID="sleep-mode-row">
+                  <View>
+                    <Text style={[typography.bodySm, { color: colors.ink, fontWeight: '600' }]}>
+                      취침 모드
+                    </Text>
+                    <Text style={[typography.mono, { color: colors.muted, marginTop: 2 }]}>
+                      환승·도착 1정거장 전 진동 · 알림
+                    </Text>
+                  </View>
+                  <Switch
+                    value={sleepMode}
+                    onValueChange={setSleepMode}
+                    trackColor={{ false: colors.hair, true: colors.accent }}
+                    thumbColor={colors.bg}
+                    testID="home-sleep-mode-switch"
+                  />
+                </View>
+
+                <Hr />
+              </>
+            )}
+
+            {/* No destination: picker + recent */}
+            {!destination && (
+              <View style={{ paddingHorizontal: spacing.xxl, paddingVertical: spacing.xxl }}>
+                {recentDestination && (
+                  <TouchableOpacity
+                    style={styles.recentDestinationButton}
+                    onPress={() => setDestination(recentDestination)}
+                    testID="recent-destination-button"
+                  >
+                    <Text style={styles.recentDestinationLabel}>이전 목적지</Text>
+                    <View style={styles.recentDestinationRow}>
+                      <Text style={styles.recentDestinationName}>{recentDestination.name}</Text>
+                      <View style={[styles.recentLineBadge, { backgroundColor: recentDestination.lineColor }]}>
+                        <Text style={styles.recentLineText}>{LINE_NAMES[recentDestination.line]}</Text>
+                      </View>
+                    </View>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  style={styles.destinationButton}
+                  onPress={() => setPickerVisible(true)}
+                  testID="destination-button"
+                >
+                  <Text style={styles.destinationButtonText}>목적지 설정</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Arrivals — 기존 상행/하행 포맷 유지 */}
             <View style={styles.arrivalSection}>
               <Text style={styles.sectionTitle}>열차 도착 정보</Text>
               {arrivalLoading && !arrival && (
@@ -376,10 +439,13 @@ function ArrivalRow({
   );
 }
 
+const Dot = () => <Text style={{ color: colors.subtle }}>·</Text>;
+const Hr  = () => <View style={{ height: 1, backgroundColor: colors.hair, marginHorizontal: spacing.xxl }} />;
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
+    backgroundColor: colors.bg,
   },
   arrivedBanner: {
     backgroundColor: '#22c55e',
@@ -391,106 +457,55 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
   },
-  scroll: {
-    padding: 24,
-    flexGrow: 1,
-  },
   center: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
+    padding: spacing.xxl,
+    minHeight: 400,
   },
-  header: {
-    fontSize: 14,
-    color: '#8888aa',
-    marginBottom: 16,
-    letterSpacing: 2,
-    textTransform: 'uppercase',
-  },
-  stationCard: {
-    backgroundColor: '#16213e',
-    borderRadius: 16,
-    padding: 24,
-    borderLeftWidth: 6,
-    marginBottom: 16,
-  },
-  stationCardHeader: {
+  topMeta: {
     flexDirection: 'row',
     justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: spacing.xxl,
+    paddingTop: spacing.lg,
+  },
+  heroRow: {
+    flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 12,
   },
   favoriteIcon: {
     fontSize: 26,
+    marginLeft: spacing.md,
   },
-  lineBadge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 20,
-  },
-  lineBadgeText: {
-    color: '#ffffff',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  stationName: {
-    fontSize: 32,
-    fontWeight: '800',
-    color: '#ffffff',
-    marginBottom: 8,
-  },
-  currentStationLabel: {
-    fontSize: 12,
-    color: '#8888aa',
-    fontWeight: '600',
-    letterSpacing: 1,
-    marginBottom: 4,
-  },
-  distanceText: {
-    fontSize: 14,
-    color: '#8888aa',
-  },
-  destinationCard: {
-    backgroundColor: '#16213e',
-    borderRadius: 16,
-    padding: 20,
-    marginBottom: 16,
-  },
-  destinationInfo: {
+  metaRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  actionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 12,
+    gap: spacing.xxl,
+    paddingHorizontal: spacing.xxl,
+    paddingTop: spacing.sm,
   },
-  destinationArrow: {
-    fontSize: 24,
-    color: '#a78bfa',
-    marginRight: 12,
-  },
-  destinationName: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: '#ffffff',
-    flexShrink: 1,
-  },
-  etaInline: {
-    fontSize: 14,
-    color: '#a78bfa',
-    fontWeight: '600',
-    marginLeft: 10,
+  vHair: { width: 1, height: 12, backgroundColor: colors.hair },
+  sleepRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: spacing.xxl,
+    paddingVertical: spacing.xl,
   },
   recentDestinationButton: {
-    backgroundColor: '#0f0f2a',
     borderWidth: 1,
-    borderColor: '#a78bfa',
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    marginBottom: 8,
+    borderColor: colors.accent,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    marginBottom: spacing.sm,
   },
   recentDestinationLabel: {
-    color: '#a78bfa',
+    color: colors.accent,
     fontSize: 11,
     fontWeight: '600',
     letterSpacing: 0.5,
@@ -502,7 +517,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   recentDestinationName: {
-    color: '#ffffff',
+    color: colors.ink,
     fontSize: 16,
     fontWeight: '700',
   },
@@ -517,8 +532,8 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   destinationButton: {
-    backgroundColor: '#a78bfa',
-    borderRadius: 10,
+    backgroundColor: colors.accent,
+    borderRadius: radius.md,
     paddingVertical: 10,
     alignItems: 'center',
   },
@@ -527,40 +542,18 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
   },
-  sleepModeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#2a2a4a',
-  },
-  sleepModeLabel: {
-    fontSize: 14,
-    color: '#aaaacc',
-    fontWeight: '600',
-  },
-  clearText: {
-    color: '#8888aa',
-    fontSize: 13,
-    textAlign: 'center',
-    marginTop: 8,
-  },
   arrivalSection: {
-    backgroundColor: '#16213e',
-    borderRadius: 16,
-    padding: 20,
-  },
-  mockNotice: {
-    fontSize: 12,
-    color: '#ff9f43',
-    marginBottom: 8,
+    marginHorizontal: spacing.xxl,
+    marginTop: spacing.xl,
+    paddingVertical: spacing.xl,
+    paddingHorizontal: spacing.xl,
+    backgroundColor: '#ffffff',
+    borderRadius: radius.lg,
   },
   sectionTitle: {
     fontSize: 14,
-    color: '#8888aa',
-    marginBottom: 16,
+    color: colors.muted,
+    marginBottom: spacing.lg,
     letterSpacing: 1,
     textTransform: 'uppercase',
   },
@@ -570,11 +563,11 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     paddingVertical: 10,
     borderTopWidth: 1,
-    borderTopColor: '#2a2a4a',
+    borderTopColor: colors.hair,
   },
   arrivalLabel: {
     fontSize: 15,
-    color: '#aaaacc',
+    color: colors.muted,
     fontWeight: '600',
   },
   arrivalItemContainer: {
@@ -582,14 +575,19 @@ const styles = StyleSheet.create({
   },
   arrivalItem: {
     fontSize: 15,
-    color: '#ffffff',
+    color: colors.ink,
     textAlign: 'right',
   },
   statusMessage: {
     fontSize: 12,
-    color: '#a78bfa',
+    color: colors.accent,
     textAlign: 'right',
     marginTop: 2,
+  },
+  mockNotice: {
+    fontSize: 12,
+    color: colors.warn,
+    marginBottom: 8,
   },
   icon: {
     fontSize: 48,
@@ -598,31 +596,31 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 22,
     fontWeight: '700',
-    color: '#ffffff',
+    color: colors.ink,
     marginBottom: 12,
     textAlign: 'center',
   },
   subtitle: {
     fontSize: 15,
-    color: '#8888aa',
+    color: colors.muted,
     textAlign: 'center',
     lineHeight: 22,
     marginBottom: 24,
   },
   loadingText: {
     fontSize: 16,
-    color: '#8888aa',
+    color: colors.muted,
   },
   errorText: {
     fontSize: 16,
-    color: '#ff6b6b',
+    color: colors.accent,
     marginBottom: 16,
   },
   button: {
-    backgroundColor: '#0052A4',
+    backgroundColor: colors.accent,
     paddingHorizontal: 28,
     paddingVertical: 14,
-    borderRadius: 12,
+    borderRadius: radius.lg,
   },
   buttonText: {
     color: '#ffffff',

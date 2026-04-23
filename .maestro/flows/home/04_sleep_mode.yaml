@@ -16,8 +16,9 @@ name: "홈 화면 - 취침 모드 토글"
     text: ".*허용.*"
     optional: true
 
-- assertVisible:
-    id: "destination-button"
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
     timeout: 15000
 
 # 목적지 설정 (취침 모드는 목적지 있을 때만 표시)
@@ -25,20 +26,17 @@ name: "홈 화면 - 취침 모드 토글"
     id: "destination-button"
 - assertVisible:
     id: "search-input"
-    timeout: 5000
 - tapOn:
     id: "search-input"
 - inputText: "잠실"
 - assertVisible:
     id: "suggestions-list"
-    timeout: 5000
 - tapOn:
     id: "suggestion-item-2-016"
 
 # 취침 모드 스위치 확인 및 토글
 - assertVisible:
     id: "home-sleep-mode-switch"
-    timeout: 5000
 - tapOn:
     id: "home-sleep-mode-switch"
 
@@ -47,7 +45,6 @@ name: "홈 화면 - 취침 모드 토글"
     text: "설정"
 - assertVisible:
     id: "sleep-mode-switch"
-    timeout: 5000
 
 # 설정 탭에서 토글 해제
 - tapOn:
@@ -58,4 +55,3 @@ name: "홈 화면 - 취침 모드 토글"
     text: "현재 역"
 - assertVisible:
     id: "home-sleep-mode-switch"
-    timeout: 5000

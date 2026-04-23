@@ -2,6 +2,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { LINE_NAMES } from '../constants/lineColors';
 import type { JourneyDisplay } from '../utils/stationRoute';
 import type { LineNumber } from '../types/station';
+import { colors, typography, spacing, radius } from '../theme';
 
 interface JourneyTimelineProps {
   journey: JourneyDisplay;
@@ -59,7 +60,7 @@ export function JourneyTimeline({ journey }: JourneyTimelineProps) {
 
 const styles = StyleSheet.create({
   container: {
-    marginTop: 12,
+    marginTop: spacing.md,
   },
   stationRow: {
     flexDirection: 'row',
@@ -75,11 +76,11 @@ const styles = StyleSheet.create({
   stationName: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#ffffff',
+    color: colors.ink,
   },
   transferIcon: {
     fontSize: 16,
-    color: '#a78bfa',
+    color: colors.accent,
     width: 12,
     textAlign: 'center',
     marginRight: 10,
@@ -87,7 +88,7 @@ const styles = StyleSheet.create({
   transferName: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#a78bfa',
+    color: colors.accent,
   },
   segmentRow: {
     flexDirection: 'row',
@@ -104,12 +105,12 @@ const styles = StyleSheet.create({
   segmentInfo: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: spacing.sm,
   },
   lineBadge: {
-    paddingHorizontal: 8,
+    paddingHorizontal: spacing.sm,
     paddingVertical: 3,
-    borderRadius: 12,
+    borderRadius: radius.lg,
   },
   lineBadgeText: {
     color: '#ffffff',
@@ -118,6 +119,6 @@ const styles = StyleSheet.create({
   },
   stopsText: {
     fontSize: 13,
-    color: '#8888aa',
+    color: colors.muted,
   },
 });
