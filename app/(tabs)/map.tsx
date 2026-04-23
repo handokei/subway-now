@@ -4,7 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useMapData } from '../../src/hooks/useMapData';
 import { StationMap } from '../../src/components/StationMap';
-import { buildNaverMapAppUrl, buildNaverMapWebUrl } from '../../src/utils/naverMapLink';
+import { buildKakaoMapAppUrl, buildKakaoMapWebUrl } from '../../src/utils/kakaoMapLink';
 
 export default function MapScreen() {
   const { userLocation, result, loading, error, permissionDenied, refresh } =
@@ -14,13 +14,13 @@ export default function MapScreen() {
     userLocation?.lng ?? null
   );
 
-  const openInNaverMap = async () => {
+  const openInKakaoMap = async () => {
     if (!userLocation) return;
     const lat = result?.station.lat ?? userLocation.lat;
     const lng = result?.station.lng ?? userLocation.lng;
     const name = result?.station.name ?? '현재 위치';
-    const appUrl = buildNaverMapAppUrl(lat, lng, name);
-    const webUrl = buildNaverMapWebUrl(lat, lng, name);
+    const appUrl = buildKakaoMapAppUrl(lat, lng);
+    const webUrl = buildKakaoMapWebUrl(name, lat, lng);
     const canOpen = await Linking.canOpenURL(appUrl);
     await Linking.openURL(canOpen ? appUrl : webUrl);
   };
@@ -69,8 +69,8 @@ export default function MapScreen() {
         nearestStation={result?.station ?? null}
         nearbyStations={nearbyStations}
       />
-      <TouchableOpacity style={styles.naverButton} onPress={openInNaverMap}>
-        <Text style={styles.naverButtonText}>🗺️ 네이버 지도에서 보기</Text>
+      <TouchableOpacity style={styles.kakaoButton} onPress={openInKakaoMap}>
+        <Text style={styles.kakaoButtonText}>🗺️ 카카오맵에서 보기</Text>
       </TouchableOpacity>
     </SafeAreaView>
   );
@@ -103,15 +103,15 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 16,
   },
-  naverButton: {
-    backgroundColor: '#03C75A',
+  kakaoButton: {
+    backgroundColor: '#FEE500',
     margin: 16,
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: 'center',
   },
-  naverButtonText: {
-    color: '#ffffff',
+  kakaoButtonText: {
+    color: '#191919',
     fontSize: 16,
     fontWeight: 'bold',
   },
