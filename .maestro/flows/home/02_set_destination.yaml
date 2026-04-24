@@ -9,7 +9,7 @@ name: "홈 화면 - 목적지 설정"
     appId: com.subwaynow.app
     clearState: true
     permissions:
-      location: allow
+      location: always
       notifications: allow
 
 - tapOn:
