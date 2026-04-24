@@ -1,6 +1,7 @@
 #if canImport(ActivityKit)
 import ActivityKit
 import Foundation
+import UIKit
 
 // 앱 타겟에서의 SubwayActivityAttributes 정의
 // 위젯 타겟의 동일한 구조체와 이름이 일치해야 ActivityKit이 연동됨
@@ -43,6 +44,14 @@ class LiveActivityManager {
 
     func start(data: [String: Any]) async throws {
         await endAllActivities()
+
+        guard UIDevice.current.userInterfaceIdiom != .pad else {
+            throw NSError(
+                domain: "LiveActivity",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "iPad에서는 Live Activity를 지원하지 않습니다"]
+            )
+        }
 
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             throw NSError(
