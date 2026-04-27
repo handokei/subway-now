@@ -13,4 +13,5 @@ Pod::Spec.new do |s|
   s.source         = { path: '.' }
   s.source_files   = 'ios/**/*.swift'
   s.dependency 'ExpoModulesCore'
+  s.weak_frameworks = ['ActivityKit']
 end

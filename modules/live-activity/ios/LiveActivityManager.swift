@@ -34,6 +34,10 @@ class LiveActivityManager {
 
     private init() {}
 
+    static func isActivityEnabled() -> Bool {
+        return ActivityAuthorizationInfo().areActivitiesEnabled
+    }
+
     /// 현재 추적 중인 Activity + 이전 세션에서 남은 고아 Activity 일괄 종료
     private func endAllActivities() async {
         currentActivity = nil
@@ -43,8 +47,6 @@ class LiveActivityManager {
     }
 
     func start(data: [String: Any]) async throws {
-        await endAllActivities()
-
         guard UIDevice.current.userInterfaceIdiom != .pad else {
             throw NSError(
                 domain: "LiveActivity",
@@ -52,6 +54,8 @@ class LiveActivityManager {
                 userInfo: [NSLocalizedDescriptionKey: "iPad에서는 Live Activity를 지원하지 않습니다"]
             )
         }
+
+        await endAllActivities()
 
         guard ActivityAuthorizationInfo().areActivitiesEnabled else {
             throw NSError(
@@ -75,6 +79,14 @@ class LiveActivityManager {
     }
 
     func update(data: [String: Any]) async throws {
+        guard UIDevice.current.userInterfaceIdiom != .pad else {
+            throw NSError(
+                domain: "LiveActivity",
+                code: 2,
+                userInfo: [NSLocalizedDescriptionKey: "iPad에서는 Live Activity를 지원하지 않습니다"]
+            )
+        }
+
         // Activity 상태 검증: ended/dismissed면 재시작
         if let activity = currentActivity {
             if activity.activityState == .active {
@@ -96,6 +108,7 @@ class LiveActivityManager {
     }
 
     func end() async {
+        guard UIDevice.current.userInterfaceIdiom != .pad else { return }
         await endAllActivities()
     }
 

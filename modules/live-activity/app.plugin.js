@@ -1,4 +1,4 @@
-const { withInfoPlist, withXcodeProject } = require('@expo/config-plugins');
+const { withInfoPlist, withXcodeProject, withEntitlementsPlist } = require('@expo/config-plugins');
 
 const LIVE_ACTIVITY_FILES = ['LiveActivityModule.swift', 'LiveActivityManager.swift'];
 
@@ -78,6 +78,10 @@ const withLiveActivity = (config) => {
   config = withInfoPlist(config, (mod) => {
     mod.modResults['NSSupportsLiveActivities'] = true;
     mod.modResults['NSSupportsLiveActivitiesFrequentUpdates'] = true;
+    return mod;
+  });
+  config = withEntitlementsPlist(config, (mod) => {
+    mod.modResults['com.apple.security.application-groups'] = ['group.com.subwaynow.app'];
     return mod;
   });
   config = withLiveActivityXcodeFiles(config);
