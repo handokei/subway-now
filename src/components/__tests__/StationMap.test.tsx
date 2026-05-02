@@ -145,4 +145,24 @@ describe('StationMap', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
     expect(getByTestId('map-no-api-key')).toBeTruthy();
   });
+
+  it('API 키가 undefined이면 fallback UI를 표시한다', () => {
+    delete process.env.EXPO_PUBLIC_KAKAO_MAP_KEY;
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    expect(getByTestId('map-no-api-key')).toBeTruthy();
+  });
+
+  it('mapLoaded 메시지는 무시된다', () => {
+    const onStationPress = jest.fn();
+    const { getByTestId, queryByTestId } = render(
+      <StationMap {...baseProps} onStationPress={onStationPress} />,
+    );
+    act(() => {
+      getByTestId('kakao-map-webview').props.onMessage({
+        nativeEvent: { data: JSON.stringify({ type: 'mapLoaded' }) },
+      });
+    });
+    expect(onStationPress).not.toHaveBeenCalled();
+    expect(queryByTestId('map-error')).toBeNull();
+  });
 });
