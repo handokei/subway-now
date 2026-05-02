@@ -10,12 +10,12 @@ const ALL_LINES: LineNumber[] = [
 describe('theme', () => {
   describe('colors', () => {
     it('should have all base color tokens', () => {
-      expect(colors.bg).toBe('#F5F2EC');
-      expect(colors.ink).toBe('#1A1814');
-      expect(colors.muted).toBe('#6B6459');
-      expect(colors.subtle).toBe('#A8A197');
-      expect(colors.hair).toBe('rgba(26,24,20,0.08)');
-      expect(colors.accent).toBe('#C8553D');
+      expect(colors.bg).toBe('#1a1a2e');
+      expect(colors.ink).toBe('#ffffff');
+      expect(colors.muted).toBe('#8888aa');
+      expect(colors.subtle).toBe('#aaaacc');
+      expect(colors.hair).toBe('#2a2a4a');
+      expect(colors.accent).toBe('#00D4FF');
       expect(colors.warn).toBe('#ff9f43');
     });
 
@@ -47,9 +47,9 @@ describe('theme', () => {
     });
 
     it('should have new theme tokens (card, onAccent, overlay)', () => {
-      expect(colors.card).toBe('#ffffff');
-      expect(colors.onAccent).toBe('#ffffff');
-      expect(colors.overlay).toBe('rgba(0,0,0,0.4)');
+      expect(colors.card).toBe('#16213e');
+      expect(colors.onAccent).toBe('#000000');
+      expect(colors.overlay).toBe('rgba(0,0,0,0.6)');
     });
   });
 
@@ -64,14 +64,14 @@ describe('theme', () => {
       expect(lightKeys).toEqual(darkKeys);
     });
 
-    it('darkColors는 다크 테마 값을 가진다', () => {
-      expect(darkColors.bg).toBe('#1a1a2e');
-      expect(darkColors.card).toBe('#16213e');
+    it('darkColors는 AMOLED 다크 테마 값을 가진다', () => {
+      expect(darkColors.bg).toBe('#000000');
+      expect(darkColors.card).toBe('#111111');
       expect(darkColors.ink).toBe('#ffffff');
-      expect(darkColors.muted).toBe('#8888aa');
-      expect(darkColors.subtle).toBe('#aaaacc');
-      expect(darkColors.hair).toBe('#2a2a4a');
-      expect(darkColors.overlay).toBe('rgba(0,0,0,0.6)');
+      expect(darkColors.muted).toBe('#888888');
+      expect(darkColors.subtle).toBe('#666666');
+      expect(darkColors.hair).toBe('#222222');
+      expect(darkColors.overlay).toBe('rgba(0,0,0,0.8)');
     });
 
     it('테마 불변 토큰은 양쪽 동일하다', () => {
