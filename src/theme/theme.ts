@@ -6,32 +6,36 @@ import { LINE_COLORS } from '../constants/lineColors';
 
 // 테마 불변 토큰
 const sharedColors = {
-  accent:   '#00D4FF',                 // CTA, 강조 (시안)
-  warn:     '#ff9f43',                 // 경고 (mock 데이터 등)
-  onAccent: '#000000',                 // accent 배경 위 텍스트
+  warn:   '#ff9f43',                   // 경고 (mock 데이터 등)
   line: { ...LINE_COLORS } as Record<LineNumber, string>,
 };
 
+// Editorial Light (B) — 핸드오프 원본
 export const lightColors = {
   ...sharedColors,
-  bg:      '#1a1a2e',                  // 딥 네이비 배경
-  card:    '#16213e',                  // 네이비 카드
-  ink:     '#ffffff',                  // 순백 텍스트
-  muted:   '#8888aa',                  // 보조 텍스트
-  subtle:  '#aaaacc',                  // 메타 정보
-  hair:    '#2a2a4a',                  // divider
-  overlay: 'rgba(0,0,0,0.6)',          // 모달 배경
+  bg:       '#F5F2EC',                 // 따뜻한 페이퍼 배경
+  card:     '#ffffff',                 // 카드, 입력창
+  ink:      '#1A1814',                 // 본문 (near-black warm)
+  muted:    '#6B6459',                 // 보조 텍스트
+  subtle:   '#A8A197',                 // 메타 정보
+  hair:     'rgba(26,24,20,0.08)',     // divider
+  overlay:  'rgba(0,0,0,0.4)',         // 모달 배경
+  accent:   '#C8553D',                 // CTA (어스 레드)
+  onAccent: '#ffffff',                 // accent 위 텍스트
 };
 
+// C · Focus — 다크모드
 export const darkColors = {
   ...sharedColors,
-  bg:      '#000000',                  // AMOLED 퓨어 블랙
-  card:    '#111111',                  // 약간 밝은 카드
-  ink:     '#ffffff',                  // 순백 텍스트
-  muted:   '#888888',                  // 보조 텍스트
-  subtle:  '#666666',                  // 메타 정보
-  hair:    '#222222',                  // divider
-  overlay: 'rgba(0,0,0,0.8)',          // 모달 배경
+  bg:       '#0A0A0A',                 // 거의 퓨어블랙
+  card:     '#1A1A1A',                 // 다크 카드
+  ink:      '#ffffff',                 // 순백 텍스트
+  muted:    '#888888',                 // 보조 텍스트
+  subtle:   '#666666',                 // 메타 정보
+  hair:     '#2A2A2A',                 // divider
+  overlay:  'rgba(0,0,0,0.8)',         // 모달 배경
+  accent:   '#C8E600',                 // CTA (라임그린)
+  onAccent: '#000000',                 // accent 위 텍스트
 };
 
 export type ThemeColors = typeof lightColors;
