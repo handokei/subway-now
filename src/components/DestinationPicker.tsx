@@ -180,7 +180,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
   },
   input: {
-    backgroundColor: '#ffffff',
+    backgroundColor: colors.card,
     color: colors.ink,
     marginHorizontal: spacing.xl,
     borderRadius: radius.sm,
@@ -191,7 +191,7 @@ const styles = StyleSheet.create({
     borderColor: colors.hair,
   },
   dropdown: {
-    backgroundColor: '#ffffff',
+    backgroundColor: colors.card,
     marginHorizontal: spacing.xl,
     marginTop: 4,
     borderRadius: radius.sm,
@@ -218,7 +218,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   lineText: {
-    color: '#fff',
+    color: colors.onAccent, // 노선색 배경 위 텍스트
     fontSize: 12,
     fontWeight: 'bold',
   },

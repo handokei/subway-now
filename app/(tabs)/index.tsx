@@ -453,7 +453,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   arrivedBannerText: {
-    color: '#ffffff',
+    color: '#ffffff', // #22c55e 배너 위 텍스트 — 항상 흰색 유지
     fontSize: 18,
     fontWeight: '700',
   },
@@ -527,7 +527,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   recentLineText: {
-    color: '#fff',
+    color: '#fff', // 노선색(lineColor) 배경 위 텍스트 — 항상 흰색 유지
     fontSize: 11,
     fontWeight: 'bold',
   },
@@ -538,7 +538,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   destinationButtonText: {
-    color: '#ffffff',
+    color: colors.onAccent,
     fontSize: 15,
     fontWeight: '700',
   },
@@ -547,7 +547,7 @@ const styles = StyleSheet.create({
     marginTop: spacing.xl,
     paddingVertical: spacing.xl,
     paddingHorizontal: spacing.xl,
-    backgroundColor: '#ffffff',
+    backgroundColor: colors.card,
     borderRadius: radius.lg,
   },
   sectionTitle: {
@@ -623,7 +623,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
   },
   buttonText: {
-    color: '#ffffff',
+    color: colors.onAccent,
     fontSize: 15,
     fontWeight: '700',
   },

@@ -68,7 +68,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   buttonText: {
-    color: '#ffffff',
+    color: colors.onAccent,
     fontSize: 28,
     fontWeight: '800',
   },
