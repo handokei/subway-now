@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 프로젝트 개요
 GPS 기반으로 현재 탑승 중인 지하철역을 실시간으로 감지하는 React Native(Expo) 모바일 앱.
-홈 화면 위젯, 노선 정보, 즐겨찾기 기능을 포함한다.
+홈 화면 위젯, 노선 정보, 즐겨찾기, 경로 탐색, 취침 모드 알람 기능을 포함한다.
 
-**기술 스택**: React Native + Expo (TypeScript), Zustand, expo-location + expo-task-manager, expo-notifications
+**기술 스택**: React Native + Expo 54 + TypeScript, Zustand, expo-location + expo-task-manager, expo-notifications, expo-router 6
 
 ---
 
@@ -24,7 +24,7 @@ Default vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-
 
 ### Domain docs
 
-Single-context — `CONTEXT.md` + `docs/adr/` at repo root. See `docs/agents/domain.md`.
+Single-context — `docs/adr/` at repo root. See `docs/agents/domain.md`.
 
 ---
 
@@ -45,6 +45,13 @@ npx jest src/hooks/__tests__/useNearestStation.test.ts
 npx jest --testNamePattern="should return nearest station"
 ```
 
+**빌드 & 배포:**
+```bash
+eas build --profile production --platform ios    # 프로덕션 빌드
+eas build --profile development --platform ios   # 개발 빌드 (실기기 테스트)
+eas submit --platform ios --latest               # TestFlight 업로드
+```
+
 ---
 
 ## 아키텍처
@@ -54,23 +61,42 @@ npx jest --testNamePattern="should return nearest station"
 GPS (expo-location)
   → useNearestStation (30s 폴링, 500m 반경 내 최근접 역 탐색)
     → haversine.ts (거리 계산)
-    → stations.json (서울 지하철 역 좌표 캐시)
+    → stations.json (서울 지하철 528개 역 좌표)
   → useArrivalInfo (30s 폴링, Seoul Open API 호출)
-    → arrivalApi.ts (EXPO_PUBLIC_DATA_API_KEY 사용)
+    → Provider 패턴 (BffArrivalProvider / SeoulOpenApiProvider / MockProvider)
+  → useStationAlarm (경로 기반 환승/도착 알람)
+    → stationNotification.ts (Live Activity + 푸시 알림)
 ```
 
 ### 레이어 구조
-- **`src/api/`** — 외부 API 호출만 담당. `arrivalApi.ts`가 서울 열린데이터 실시간 도착 정보 API 호출 (응답 없을 시 mock 데이터 fallback)
-- **`src/hooks/`** — 비즈니스 로직 캡슐화. 훅 내부에서 setInterval로 자체 폴링 관리, cleanup은 useEffect return으로 처리
-- **`src/store/`** — Zustand 전역 상태 (즐겨찾기). AsyncStorage로 영속화
-- **`src/utils/`** — 순수 함수들. `haversine.ts` (거리), `widgetStorage.ts` (iOS 위젯 SharedGroupPreferences 브릿지), `buildMapHtml.ts` (Kakao Maps HTML 생성), `kakaoMapLink.ts` (딥링크)
-- **`src/components/`** — `StationMap.tsx`는 WebView 안에 Kakao Maps HTML을 embed하는 방식. 플랫폼별 파일 분기: `StationMap.web.tsx`
+- **`src/api/`** — 외부 API 호출만 담당
+- **`src/hooks/`** — 비즈니스 로직 캡슐화. 훅 내부에서 setInterval로 자체 폴링 관리
+- **`src/store/`** — Zustand 전역 상태 (즐겨찾기, 목적지, 취침모드). AsyncStorage로 영속화
+- **`src/utils/`** — 순수 함수들. `haversine.ts` (거리), `stationRoute.ts` (경로 탐색), `buildMapHtml.ts` (Kakao Maps HTML), `stationNotification.ts` (Live Activity)
+- **`src/components/`** — UI 컴포넌트. 공통: `ScreenContainer`, `Card`, `SectionHeader`
+- **`src/theme/`** — 테마 시스템. `ThemeProvider` + `useTheme()` (라이트/다크 자동 전환)
+- **`src/providers/`** — 도착 정보 Provider 패턴 (팩토리 기반)
+- **`src/testUtils/`** — 테스트 유틸리티. `renderWithTheme`, `fixtures`
+- **`modules/`** — 네이티브 모듈: `live-activity` (iOS Live Activity), `audio-route` (이어폰 감지)
+- **`targets/`** — `subway-widget` (iOS 홈 위젯)
+
+### 테마 시스템
+- `ThemeProvider` (`src/theme/ThemeContext.tsx`)가 `app/_layout.tsx`에 마운트
+- `useColorScheme()`으로 OS 다크모드 자동 감지
+- 라이트: Editorial Light (B) — 크림톤(`#F5F2EC`) + 어스레드(`#C8553D`)
+- 다크: C · Focus — 퓨어블랙(`#0A0A0A`) + 라임그린(`#C8E600`)
+- 모든 컴포넌트가 `useTheme()`으로 동적 색상 참조 (정적 `colors` import 금지)
+- StyleSheet.create는 레이아웃 전용, 색상은 인라인 `[layout, { color: colors.xxx }]`
 
 ### 지도 구현
-Kakao Maps SDK를 직접 import하지 않고, `buildMapHtml.ts`로 HTML 문자열을 생성하여 `WebView`에 주입하는 방식. 웹 플랫폼은 `StationMap.web.tsx`로 별도 구현 (Expo의 `.web.tsx` 플랫폼 확장자 활용).
+- `buildMapHtml.ts`로 HTML 생성 → `WebView`에 주입 (Kakao Maps SDK)
+- `MarkerClusterer`로 528개 역 마커 성능 최적화 (자동 클러스터링)
+- SDK 로드 실패 시 `window.onerror` → RN fallback UI 표시
+- 웹 플랫폼은 `StationMap.web.tsx`로 별도 구현
 
-### iOS 위젯 데이터 공유
-`widgetStorage.ts`가 App Groups를 통해 SharedGroupPreferences에 현재 역 정보를 저장 → iOS 위젯이 해당 데이터를 읽어 표시.
+### iOS 위젯 & Live Activity
+- `widgetStorage.ts`가 App Groups → SharedGroupPreferences에 현재 역 정보 저장
+- `modules/live-activity/` — iOS Dynamic Island + Lock Screen Live Activity
 
 ---
 
@@ -86,6 +112,7 @@ feat/#이슈번호-기능명       예: feat/#3-nearest-station-hook
 fix/#이슈번호-버그명         예: fix/#7-gps-permission-crash
 chore/#이슈번호-작업명      예: chore/#1-project-init
 refactor/#이슈번호-대상     예: refactor/#12-haversine-util
+perf/#이슈번호-대상         예: perf/#139-map-clustering
 ```
 
 ### 커밋 메시지 형식
@@ -96,7 +123,7 @@ refactor/#이슈번호-대상     예: refactor/#12-haversine-util
 - 변경 사항 2
 ```
 
-**타입**: `feat` | `fix` | `refactor` | `test` | `chore` | `docs` | `style`
+**타입**: `feat` | `fix` | `refactor` | `test` | `chore` | `docs` | `style` | `perf`
 
 > 커밋 메시지에 `Co-Authored-By` 절대 포함 금지
 
@@ -106,7 +133,11 @@ refactor/#이슈번호-대상     예: refactor/#12-haversine-util
 3. `npm test` 커버리지 100% 확인
 4. `npm run type-check` 통과 확인
 5. `dev`를 base로 PR 생성 — 본문에 `Closes #이슈번호` 포함
-6. GitHub Actions `CI / Type Check & Test` 체크 통과 후 머지
+6. GitHub Actions `CI / Type Check & Test` 체크 통과 확인 후 머지
+
+### PR 머지 규칙
+- **CI 통과 필수 확인** — `gh pr checks <PR번호>`로 Type Check & Test pass 확인 후 머지
+- E2E Tests (Maestro)는 CI 환경 제약으로 실패할 수 있음 — Type Check & Test만 필수
 
 ---
 
@@ -114,19 +145,24 @@ refactor/#이슈번호-대상     예: refactor/#12-haversine-util
 
 - **커버리지 100%** (lines / functions / branches / statements) — `package.json`의 `coverageThreshold`로 자동 강제
 - **테스트 파일 위치**: `src/<모듈>/__tests__/<파일명>.test.ts`
-- **Mock 원칙**: `expo-location`, `fetch`, `AsyncStorage`, `widgetStorage`는 `jest.mock()`으로 격리
+- **Mock 원칙**: `expo-location`, `fetch`, `AsyncStorage`, `widgetStorage`, `react-native-webview`는 `jest.mock()`으로 격리
 - 훅 테스트는 `@testing-library/react-native`의 `renderHook` + `act` + `waitFor` 사용
+- 테마 의존 컴포넌트는 `renderWithTheme` (`src/testUtils/renderWithTheme.tsx`) 사용
 - 인터벌 테스트는 `jest.useFakeTimers()` 사용
+- barrel re-export 파일(`**/index.ts`)은 `collectCoverageFrom`에서 제외
 
 ---
 
-## 보안 원칙
+## 환경변수
 
-- 환경변수는 `EXPO_PUBLIC_` 접두사 사용, `.env`에만 보관 (절대 커밋 금지)
+- `EXPO_PUBLIC_` 접두사 사용, `.env`에만 보관 (절대 커밋 금지)
 - `.env.example`에 키 이름만 남기고 값은 비워둠
+- EAS 빌드 시 `eas env:create`로 등록 필요
 
-```typescript
-const apiKey = process.env.EXPO_PUBLIC_DATA_API_KEY;
+```
+EXPO_PUBLIC_DATA_API_KEY=          # (미사용)
+EXPO_PUBLIC_SEOUL_DATA_API_KEY=    # 서울 열린데이터 API
+EXPO_PUBLIC_KAKAO_MAP_KEY=         # 카카오맵 JavaScript API
 ```
 
 ---
@@ -136,3 +172,4 @@ const apiKey = process.env.EXPO_PUBLIC_DATA_API_KEY;
 - 컴포넌트: `UpperCamelCase`
 - 상수: `UPPER_SNAKE_CASE`
 - 파일명: 컴포넌트는 `PascalCase.tsx`, 유틸/훅은 `camelCase.ts`
+- 색상: `useTheme()`으로 동적 참조. 정적 `import { colors }` 사용 금지 (테스트 제외)
