@@ -68,7 +68,6 @@
       ],
       "expo-router",
       "./modules/live-activity/app.plugin.js",
-      "./remove-push-entitlement.js",
       "@bacons/apple-targets"
     ],
     "extra": {
@@ -91,6 +90,7 @@
       },
       "router": {}
     },
-    "owner": "handokei"
+    "owner": "handokei",
+    "scheme": "subwaynow"
   }
 }
