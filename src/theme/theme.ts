@@ -1,22 +1,43 @@
-// theme.ts — Editorial Light (B) 디자인 토큰
+// theme.ts — 디자인 토큰 (라이트/다크)
 // 앱 전체에서 import하여 사용. 색/폰트/간격을 한 곳에서 관리.
 
 import type { LineNumber } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
 
-export const colors = {
-  bg:     '#F5F2EC',                   // 따뜻한 페이퍼 배경
-  ink:    '#1A1814',                   // 본문 (near-black warm)
-  muted:  '#6B6459',                   // 보조 텍스트
-  subtle: '#A8A197',                   // 더 연한 메타 정보
-  hair:   'rgba(26,24,20,0.08)',       // divider
-
+// 테마 불변 토큰
+const sharedColors = {
   accent: '#C8553D',                   // CTA, 강조 (earth red)
   warn:   '#ff9f43',                   // 경고 (mock 데이터 등)
-
-  // 노선 색 — LineNumber 키 사용, LINE_COLORS에서 가져옴
+  onAccent: '#ffffff',                 // accent 배경 위 텍스트
   line: { ...LINE_COLORS } as Record<LineNumber, string>,
 };
+
+export const lightColors = {
+  ...sharedColors,
+  bg:      '#F5F2EC',                  // 따뜻한 페이퍼 배경
+  card:    '#ffffff',                  // 카드, 입력창 배경
+  ink:     '#1A1814',                  // 본문 (near-black warm)
+  muted:   '#6B6459',                  // 보조 텍스트
+  subtle:  '#A8A197',                  // 더 연한 메타 정보
+  hair:    'rgba(26,24,20,0.08)',      // divider
+  overlay: 'rgba(0,0,0,0.4)',          // 모달 배경
+};
+
+export const darkColors = {
+  ...sharedColors,
+  bg:      '#1a1a2e',                  // 딥 다크 배경
+  card:    '#16213e',                  // 카드, 입력창 배경
+  ink:     '#ffffff',                  // 본문 (밝은 텍스트)
+  muted:   '#8888aa',                  // 보조 텍스트
+  subtle:  '#aaaacc',                  // 더 연한 메타 정보
+  hair:    '#2a2a4a',                  // divider
+  overlay: 'rgba(0,0,0,0.6)',          // 모달 배경
+};
+
+export type ThemeColors = typeof lightColors;
+
+/** @deprecated useTheme().colors 사용 권장. 역호환용. See #126, #127 */
+export const colors = lightColors;
 
 export const font = {
   // Pretendard 폰트 적용 전까지 시스템 기본 폰트 사용

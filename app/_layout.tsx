@@ -1,5 +1,6 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
+import { ThemeProvider, useTheme } from '../src/theme';
 import { setupNotificationHandler } from '../src/utils/stationNotification';
 import { setMinLevel } from '../src/utils/logger';
 import '../src/tasks/backgroundLocationTask';
@@ -11,11 +12,20 @@ if (!__DEV__) {
   setMinLevel('warn');
 }
 
-export default function RootLayout() {
+function RootContent() {
+  const { isDark } = useTheme();
   return (
     <>
-      <StatusBar style="light" />
+      <StatusBar style={isDark ? 'light' : 'dark'} />
       <Stack screenOptions={{ headerShown: false }} />
     </>
+  );
+}
+
+export default function RootLayout() {
+  return (
+    <ThemeProvider>
+      <RootContent />
+    </ThemeProvider>
   );
 }
