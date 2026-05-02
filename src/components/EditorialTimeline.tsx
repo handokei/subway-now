@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { colors, typography, spacing } from '../theme';
+import { useTheme, typography, spacing } from '../theme';
 import type { Stop } from '../utils/journeyAdapter';
 import { LineBadge, getLineColor } from './LineBadge';
 
@@ -9,6 +9,7 @@ interface Props {
 }
 
 export function EditorialTimeline({ stops }: Props) {
+  const { colors } = useTheme();
   return (
     <View>
       {stops.map((s, i) => {
@@ -34,7 +35,7 @@ export function EditorialTimeline({ stops }: Props) {
                 <View style={[styles.dot, { backgroundColor: lineC }]} testID="filled-dot" />
               )}
               {s.mark === 'transfer' && (
-                <View style={[styles.dotRing, { borderColor: lineC }]} testID="transfer-dot" />
+                <View style={[styles.dotRing, { borderColor: lineC, backgroundColor: colors.bg }]} testID="transfer-dot" />
               )}
               {s.mark === 'dest' && (
                 <View style={[styles.dotDest, { backgroundColor: lineC }]} testID="dest-dot" />
@@ -99,6 +100,6 @@ const styles = StyleSheet.create({
     width: 1,
   },
   dot:     { width: 10, height: 10, borderRadius: 5 },
-  dotRing: { width: 12, height: 12, borderRadius: 6, borderWidth: 2, backgroundColor: colors.bg },
+  dotRing: { width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
   dotDest: { width: 12, height: 12, borderRadius: 6 },
 });

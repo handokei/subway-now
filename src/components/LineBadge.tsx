@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text } from 'react-native';
-import { colors, typography } from '../theme';
+import { lightColors, typography } from '../theme';
 import { LINE_NAMES } from '../constants/lineColors';
 import type { LineNumber } from '../types/station';
 
@@ -10,7 +10,7 @@ interface LineBadgeProps {
 }
 
 export function getLineColor(line: string): string {
-  return colors.line[line as LineNumber] ?? colors.accent;
+  return lightColors.line[line as LineNumber] ?? lightColors.accent;
 }
 
 export function getLineLabel(line: string): string {

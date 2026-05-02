@@ -1,7 +1,7 @@
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { AlarmEvent } from '../store/useAppStore';
 import { clearAlarmNotification } from '../utils/stationNotification';
-import { colors, typography, spacing, radius } from '../theme';
+import { useTheme, typography, spacing, radius } from '../theme';
 
 interface AlarmOverlayProps {
   event: AlarmEvent;
@@ -14,6 +14,7 @@ export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
   const message = isTransfer
     ? `${event.stationName}에서\n환승하세요`
     : `${event.stationName}에서\n내리세요`;
+  const { colors } = useTheme();
 
   const handleDismiss = async () => {
     await clearAlarmNotification();
@@ -22,16 +23,16 @@ export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
 
   return (
     <Modal visible animationType="fade" testID="alarm-overlay" onRequestClose={handleDismiss}>
-      <View style={styles.container}>
-        <Text style={styles.title}>{title}</Text>
-        <Text style={styles.station}>{message}</Text>
+      <View style={[styles.container, { backgroundColor: colors.bg }]}>
+        <Text style={[styles.title, { color: colors.accent }]}>{title}</Text>
+        <Text style={[styles.station, { color: colors.ink }]}>{message}</Text>
         <TouchableOpacity
-          style={styles.button}
+          style={[styles.button, { backgroundColor: colors.accent }]}
           onPress={handleDismiss}
           testID="alarm-dismiss-button"
           activeOpacity={0.7}
         >
-          <Text style={styles.buttonText}>알람 끄기</Text>
+          <Text style={[styles.buttonText, { color: colors.onAccent }]}>알람 끄기</Text>
         </TouchableOpacity>
       </View>
     </Modal>
@@ -41,7 +42,6 @@ export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.bg,
     alignItems: 'center',
     justifyContent: 'center',
     padding: spacing.xxxl,
@@ -49,26 +49,22 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 24,
     fontWeight: '700',
-    color: colors.accent,
     marginBottom: spacing.xxl,
     letterSpacing: 2,
   },
   station: {
     fontSize: 48,
     fontWeight: '900',
-    color: colors.ink,
     textAlign: 'center',
     lineHeight: 64,
     marginBottom: 64,
   },
   button: {
-    backgroundColor: colors.accent,
     paddingHorizontal: 64,
     paddingVertical: spacing.xxl,
     borderRadius: radius.pill,
   },
   buttonText: {
-    color: colors.onAccent,
     fontSize: 28,
     fontWeight: '800',
   },
