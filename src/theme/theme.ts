@@ -19,22 +19,24 @@ export const lightColors = {
   muted:    '#6B6459',                 // 보조 텍스트
   subtle:   '#A8A197',                 // 메타 정보
   hair:     'rgba(26,24,20,0.08)',     // divider
-  overlay:  'rgba(0,0,0,0.4)',         // 모달 배경
-  accent:   '#C8553D',                 // CTA (어스 레드)
-  onAccent: '#ffffff',                 // accent 위 텍스트
+  overlay:       'rgba(0,0,0,0.4)',      // 모달 배경
+  bgTranslucent: 'rgba(245,242,236,0.92)', // 반투명 bg (헤더 등)
+  accent:        '#C8553D',             // CTA (어스 레드)
+  onAccent:      '#ffffff',             // accent 위 텍스트
 };
 
 // C · Focus — 다크모드
 export const darkColors = {
   ...sharedColors,
-  bg:       '#0A0A0A',                 // 거의 퓨어블랙
-  card:     '#1A1A1A',                 // 다크 카드
-  ink:      '#ffffff',                 // 순백 텍스트
-  muted:    '#888888',                 // 보조 텍스트
-  subtle:   '#666666',                 // 메타 정보
-  hair:     '#2A2A2A',                 // divider
-  overlay:  'rgba(0,0,0,0.8)',         // 모달 배경
-  accent:   '#C8E600',                 // CTA (라임그린)
+  bg:            '#0A0A0A',             // 거의 퓨어블랙
+  card:          '#1A1A1A',             // 다크 카드
+  ink:           '#ffffff',             // 순백 텍스트
+  muted:         '#888888',             // 보조 텍스트
+  subtle:        '#666666',             // 메타 정보
+  hair:          '#2A2A2A',             // divider
+  overlay:       'rgba(0,0,0,0.8)',      // 모달 배경
+  bgTranslucent: 'rgba(10,10,10,0.92)', // 반투명 bg (헤더 등)
+  accent:        '#C8E600',             // CTA (라임그린)
   onAccent: '#000000',                 // accent 위 텍스트
 };
 
