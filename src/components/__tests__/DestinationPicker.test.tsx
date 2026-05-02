@@ -29,9 +29,16 @@ const mapProps = {
   userLng: 127.027,
 };
 
+const originalEnv = process.env.EXPO_PUBLIC_KAKAO_MAP_KEY;
+
 describe('DestinationPicker', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    process.env.EXPO_PUBLIC_KAKAO_MAP_KEY = 'test-key';
+  });
+
+  afterEach(() => {
+    process.env.EXPO_PUBLIC_KAKAO_MAP_KEY = originalEnv;
   });
 
   it('제목, 검색창, 닫기 버튼을 렌더링한다', () => {

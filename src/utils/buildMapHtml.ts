@@ -15,15 +15,12 @@ export function buildMapHtml({
   nearestStation,
   nearbyStations,
 }: BuildMapHtmlParams): string {
-  const markers = nearbyStations
-    .map((s) => {
-      const isNearest = nearestStation?.id === s.id;
-      const size = isNearest ? 36 : 24;
-      const border = isNearest ? 3 : 2;
-      const station = JSON.stringify(s);
-      return `addMarker(map, ${s.lat}, ${s.lng}, "${s.lineColor}", ${size}, ${border}, "${s.name}", ${station});`;
-    })
-    .join('\n');
+  const stationsJson = JSON.stringify(
+    nearbyStations.map((s) => ({
+      ...s,
+      isNearest: nearestStation?.id === s.id,
+    })),
+  );
 
   return `<!DOCTYPE html>
 <html>
@@ -37,51 +34,54 @@ html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;}
 </head>
 <body>
 <div id="map"></div>
-<script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=${apiKey}&autoload=false"></script>
+<script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=${apiKey}&autoload=false&libraries=clusterer"></script>
 <script>
+window.onerror = function(msg) {
+  window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'error', message: String(msg) }));
+  return true;
+};
+
 kakao.maps.load(function(){
-  var map = new kakao.maps.Map(document.getElementById('map'), {
-    center: new kakao.maps.LatLng(${userLat}, ${userLng}),
-    level: 5
-  });
-
-  var userEl = document.createElement('div');
-  userEl.style.cssText = 'width:14px;height:14px;border-radius:50%;background:#4A90D9;border:3px solid #fff;box-shadow:0 0 6px rgba(0,0,0,0.3);';
-  new kakao.maps.CustomOverlay({
-    position: new kakao.maps.LatLng(${userLat}, ${userLng}),
-    content: userEl,
-    map: map,
-    zIndex: 10
-  });
-
-  function addMarker(map, lat, lng, color, size, border, name, station) {
-    var wrap = document.createElement('div');
-    wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;cursor:pointer;';
-
-    var circle = document.createElement('div');
-    circle.style.cssText = 'width:'+size+'px;height:'+size+'px;border-radius:50%;background:'+color+';border:'+border+'px solid #fff;box-sizing:border-box;';
-    wrap.appendChild(circle);
-
-    var label = document.createElement('div');
-    label.style.cssText = 'margin-top:2px;font-size:11px;color:#fff;text-shadow:-1px -1px 0 #000,1px -1px 0 #000,-1px 1px 0 #000,1px 1px 0 #000;white-space:nowrap;font-weight:bold;';
-    label.textContent = name;
-    wrap.appendChild(label);
-
-    wrap.addEventListener('click', function(){
-      if(window.ReactNativeWebView){
-        window.ReactNativeWebView.postMessage(JSON.stringify({type:'stationPress',station:station}));
-      }
+  try {
+    var map = new kakao.maps.Map(document.getElementById('map'), {
+      center: new kakao.maps.LatLng(${userLat}, ${userLng}),
+      level: 5
     });
 
+    var userEl = document.createElement('div');
+    userEl.style.cssText = 'width:14px;height:14px;border-radius:50%;background:#4A90D9;border:3px solid #fff;box-shadow:0 0 6px rgba(0,0,0,0.3);';
     new kakao.maps.CustomOverlay({
-      position: new kakao.maps.LatLng(lat, lng),
-      content: wrap,
+      position: new kakao.maps.LatLng(${userLat}, ${userLng}),
+      content: userEl,
       map: map,
-      yAnchor: 1
+      zIndex: 10
     });
-  }
 
-  ${markers}
+    var stations = ${stationsJson};
+    var markers = stations.map(function(s) {
+      var marker = new kakao.maps.Marker({
+        position: new kakao.maps.LatLng(s.lat, s.lng)
+      });
+      kakao.maps.event.addListener(marker, 'click', function() {
+        if (window.ReactNativeWebView) {
+          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'stationPress', station: s }));
+        }
+      });
+      return marker;
+    });
+
+    new kakao.maps.MarkerClusterer({
+      map: map,
+      markers: markers,
+      gridSize: 60,
+      minLevel: 5,
+      disableClickZoom: false
+    });
+
+    window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'mapLoaded' }));
+  } catch(e) {
+    window.ReactNativeWebView?.postMessage(JSON.stringify({ type: 'error', message: e.message }));
+  }
 });
 </script>
 </body>

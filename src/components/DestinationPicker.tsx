@@ -99,7 +99,7 @@ export function DestinationPicker({
         )}
 
         <View style={styles.overlay} pointerEvents="box-none">
-          <View style={[styles.header, { backgroundColor: colors.overlay }]}>
+          <View style={[styles.header, { backgroundColor: colors.bgTranslucent }]}>
             <Text style={[styles.title, { color: colors.ink }]}>목적지 설정</Text>
             <TouchableOpacity onPress={handleClose} testID="close-button">
               <Text style={[styles.closeText, { color: colors.accent }]}>닫기</Text>

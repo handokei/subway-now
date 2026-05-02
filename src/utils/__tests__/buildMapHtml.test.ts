@@ -28,9 +28,10 @@ const base = {
 };
 
 describe('buildMapHtml', () => {
-  it('Kakao Maps SDK 스크립트를 API 키와 함께 포함한다', () => {
+  it('Kakao Maps SDK 스크립트를 API 키와 clusterer 라이브러리 함께 포함한다', () => {
     const html = buildMapHtml(base);
     expect(html).toContain('dapi.kakao.com/v2/maps/sdk.js?appkey=test-key');
+    expect(html).toContain('libraries=clusterer');
   });
 
   it('사용자 위치를 중심 좌표로 설정한다', () => {
@@ -43,45 +44,54 @@ describe('buildMapHtml', () => {
     expect(html).toContain('background:#4A90D9');
   });
 
-  it('각 역의 마커를 생성한다', () => {
+  it('MarkerClusterer를 생성한다', () => {
     const html = buildMapHtml(base);
-    expect(html).toContain('addMarker(map, 37.4979, 127.0276');
-    expect(html).toContain('addMarker(map, 37.5044, 127.0491');
+    expect(html).toContain('kakao.maps.MarkerClusterer');
   });
 
-  it('nearestStation 마커는 크기 36, 나머지는 24이다', () => {
+  it('역 데이터가 JSON으로 포함된다', () => {
     const html = buildMapHtml(base);
-    expect(html).toContain('addMarker(map, 37.4979, 127.0276, "#009D3E", 36, 3');
-    expect(html).toContain('addMarker(map, 37.5044, 127.0491, "#009D3E", 24, 2');
+    expect(html).toContain('"name":"강남"');
+    expect(html).toContain('"name":"선릉"');
   });
 
-  it('nearestStation이 null이면 모든 마커 크기가 24이다', () => {
+  it('nearestStation 표시를 위한 isNearest 플래그가 포함된다', () => {
+    const html = buildMapHtml(base);
+    const parsed = html.match(/var stations = (\[.*?\]);/s);
+    expect(parsed).toBeTruthy();
+    const stations = JSON.parse(parsed![1]);
+    expect(stations[0].isNearest).toBe(true);
+    expect(stations[1].isNearest).toBe(false);
+  });
+
+  it('nearestStation이 null이면 모든 역이 isNearest false이다', () => {
     const html = buildMapHtml({ ...base, nearestStation: null });
-    expect(html).toContain('addMarker(map, 37.4979, 127.0276, "#009D3E", 24, 2');
-    expect(html).toContain('addMarker(map, 37.5044, 127.0491, "#009D3E", 24, 2');
+    const parsed = html.match(/var stations = (\[.*?\]);/s);
+    const stations = JSON.parse(parsed![1]);
+    expect(stations.every((s: { isNearest: boolean }) => !s.isNearest)).toBe(true);
   });
 
-  it('nearbyStations가 빈 배열이면 역 마커 호출이 없다', () => {
+  it('nearbyStations가 빈 배열이면 빈 JSON 배열이 포함된다', () => {
     const html = buildMapHtml({ ...base, nearbyStations: [] });
-    expect(html).not.toContain('addMarker(map, 37');
+    expect(html).toContain('var stations = [];');
     expect(html).toContain('kakao.maps.load');
   });
 
-  it('역 lineColor가 마커에 적용된다', () => {
-    const custom: Station = { ...station, lineColor: '#FF0000' };
-    const html = buildMapHtml({ ...base, nearbyStations: [custom], nearestStation: null });
-    expect(html).toContain('"#FF0000"');
+  it('마커 클릭 시 postMessage에 stationPress 타입이 포함된다', () => {
+    const html = buildMapHtml(base);
+    expect(html).toContain('stationPress');
+    expect(html).toContain('ReactNativeWebView');
   });
 
-  it('마커 클릭 시 postMessage에 stationPress 타입과 station 데이터가 포함된다', () => {
+  it('SDK 에러 핸들러가 포함된다', () => {
     const html = buildMapHtml(base);
-    expect(html).toContain('ReactNativeWebView.postMessage');
-    expect(html).toContain("'stationPress'");
+    expect(html).toContain('window.onerror');
+    expect(html).toContain('try');
+    expect(html).toContain('catch');
   });
 
-  it('역 이름이 마커 캡션에 포함된다', () => {
+  it('mapLoaded 메시지를 전송한다', () => {
     const html = buildMapHtml(base);
-    expect(html).toContain('"강남"');
-    expect(html).toContain('"선릉"');
+    expect(html).toContain('mapLoaded');
   });
 });
