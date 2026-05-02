@@ -1,4 +1,5 @@
-import { colors, font, typography, spacing, radius } from '../theme';
+import { colors, lightColors, darkColors, font, typography, spacing, radius } from '../theme';
+import type { ThemeColors } from '../theme';
 import type { LineNumber } from '../../types/station';
 
 const ALL_LINES: LineNumber[] = [
@@ -43,6 +44,46 @@ describe('theme', () => {
       expect(colors.line.gyeongui).toBe('#77C4A3');
       expect(colors.line.bundang).toBe('#F5A200');
       expect(colors.line.sinbundang).toBe('#D4003B');
+    });
+
+    it('should have new theme tokens (card, onAccent, overlay)', () => {
+      expect(colors.card).toBe('#ffffff');
+      expect(colors.onAccent).toBe('#ffffff');
+      expect(colors.overlay).toBe('rgba(0,0,0,0.4)');
+    });
+  });
+
+  describe('lightColors / darkColors', () => {
+    it('colors는 lightColors와 동일하다 (역호환)', () => {
+      expect(colors).toBe(lightColors);
+    });
+
+    it('lightColors와 darkColors는 동일한 키를 가진다', () => {
+      const lightKeys = Object.keys(lightColors).sort();
+      const darkKeys = Object.keys(darkColors).sort();
+      expect(lightKeys).toEqual(darkKeys);
+    });
+
+    it('darkColors는 다크 테마 값을 가진다', () => {
+      expect(darkColors.bg).toBe('#1a1a2e');
+      expect(darkColors.card).toBe('#16213e');
+      expect(darkColors.ink).toBe('#ffffff');
+      expect(darkColors.muted).toBe('#8888aa');
+      expect(darkColors.subtle).toBe('#aaaacc');
+      expect(darkColors.hair).toBe('#2a2a4a');
+      expect(darkColors.overlay).toBe('rgba(0,0,0,0.6)');
+    });
+
+    it('테마 불변 토큰은 양쪽 동일하다', () => {
+      expect(lightColors.accent).toBe(darkColors.accent);
+      expect(lightColors.warn).toBe(darkColors.warn);
+      expect(lightColors.onAccent).toBe(darkColors.onAccent);
+      expect(lightColors.line).toEqual(darkColors.line);
+    });
+
+    it('ThemeColors 타입이 존재한다', () => {
+      const themed: ThemeColors = lightColors;
+      expect(themed.bg).toBeDefined();
     });
   });
 
