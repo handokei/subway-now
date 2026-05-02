@@ -5,6 +5,7 @@ import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useMapData } from '../../src/hooks/useMapData';
 import { StationMap } from '../../src/components/StationMap';
 import { buildKakaoMapAppUrl, buildKakaoMapWebUrl } from '../../src/utils/kakaoMapLink';
+import { useTheme } from '../../src/theme';
 
 export default function MapScreen() {
   const { userLocation, result, loading, error, permissionDenied, refresh } =
@@ -13,6 +14,7 @@ export default function MapScreen() {
     userLocation?.lat ?? null,
     userLocation?.lng ?? null
   );
+  const { colors } = useTheme();
 
   const openInKakaoMap = async () => {
     if (!userLocation) return;
@@ -27,11 +29,11 @@ export default function MapScreen() {
 
   if (permissionDenied) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
-          <Text style={styles.message}>위치 권한이 필요합니다.</Text>
-          <TouchableOpacity style={styles.button} onPress={refresh}>
-            <Text style={styles.buttonText}>권한 요청</Text>
+          <Text style={[styles.message, { color: colors.muted }]}>위치 권한이 필요합니다.</Text>
+          <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
+            <Text style={[styles.buttonText, { color: colors.onAccent }]}>권한 요청</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -40,9 +42,9 @@ export default function MapScreen() {
 
   if (loading || !userLocation) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
-          <Text style={styles.message}>위치 확인 중...</Text>
+          <Text style={[styles.message, { color: colors.muted }]}>위치 확인 중...</Text>
         </View>
       </SafeAreaView>
     );
@@ -50,11 +52,11 @@ export default function MapScreen() {
 
   if (error) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
-          <Text style={styles.message}>{error}</Text>
-          <TouchableOpacity style={styles.button} onPress={refresh}>
-            <Text style={styles.buttonText}>다시 시도</Text>
+          <Text style={[styles.message, { color: colors.muted }]}>{error}</Text>
+          <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
+            <Text style={[styles.buttonText, { color: colors.onAccent }]}>다시 시도</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -62,7 +64,7 @@ export default function MapScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]} edges={['top']}>
       <StationMap
         userLat={userLocation.lat}
         userLng={userLocation.lng}
@@ -79,7 +81,6 @@ export default function MapScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
   },
   center: {
     flex: 1,
@@ -88,19 +89,16 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   message: {
-    color: '#8888aa',
     fontSize: 16,
     marginBottom: 16,
     textAlign: 'center',
   },
   button: {
-    backgroundColor: '#4a4a8a',
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 8,
   },
   buttonText: {
-    color: '#ffffff',
     fontSize: 16,
   },
   kakaoButton: {
