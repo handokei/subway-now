@@ -13,7 +13,7 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.subwaynow.app",
       "appleTeamId": "4755N5H4T4",
       "infoPlist": {
@@ -68,7 +68,6 @@
       ],
       "expo-router",
       "./modules/live-activity/app.plugin.js",
-      "./remove-push-entitlement.js",
       "@bacons/apple-targets"
     ],
     "extra": {
@@ -91,6 +90,7 @@
       },
       "router": {}
     },
-    "owner": "handokei"
+    "owner": "handokei",
+    "scheme": "subwaynow"
   }
 }

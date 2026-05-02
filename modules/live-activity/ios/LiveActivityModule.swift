@@ -1,8 +1,5 @@
 import ExpoModulesCore
 import UIKit
-#if canImport(ActivityKit)
-import ActivityKit
-#endif
 
 public class LiveActivityModule: Module {
     public func definition() -> ModuleDefinition {
@@ -27,11 +24,11 @@ public class LiveActivityModule: Module {
         }
 
         Function("isLiveActivityEnabled") { () -> Bool in
-            if #available(iOS 16.1, *) {
+            if #available(iOS 16.2, *) {
                 guard UIDevice.current.userInterfaceIdiom != .pad else {
                     return false
                 }
-                return ActivityAuthorizationInfo().areActivitiesEnabled
+                return LiveActivityManager.isActivityEnabled()
             }
             return false
         }
