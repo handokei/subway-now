@@ -2,7 +2,7 @@ import { StyleSheet, Text, View } from 'react-native';
 import { LINE_NAMES } from '../constants/lineColors';
 import type { JourneyDisplay } from '../utils/stationRoute';
 import type { LineNumber } from '../types/station';
-import { colors, typography, spacing, radius } from '../theme';
+import { useTheme, typography, spacing, radius } from '../theme';
 
 interface JourneyTimelineProps {
   journey: JourneyDisplay;
@@ -10,6 +10,7 @@ interface JourneyTimelineProps {
 
 export function JourneyTimeline({ journey }: JourneyTimelineProps) {
   const { segments } = journey;
+  const { colors } = useTheme();
 
   return (
     <View style={styles.container}>
@@ -23,7 +24,7 @@ export function JourneyTimeline({ journey }: JourneyTimelineProps) {
             {isFirst && (
               <View style={styles.stationRow}>
                 <View style={[styles.dot, { backgroundColor: segment.lineColor }]} testID="start-dot" />
-                <Text style={styles.stationName}>{segment.fromName}</Text>
+                <Text style={[styles.stationName, { color: colors.ink }]}>{segment.fromName}</Text>
               </View>
             )}
 
@@ -33,21 +34,21 @@ export function JourneyTimeline({ journey }: JourneyTimelineProps) {
                 <View style={[styles.lineBadge, { backgroundColor: segment.lineColor }]}>
                   <Text style={styles.lineBadgeText}>{lineName}</Text>
                 </View>
-                <Text style={styles.stopsText}>{segment.stops}정거장</Text>
+                <Text style={[styles.stopsText, { color: colors.muted }]}>{segment.stops}정거장</Text>
               </View>
             </View>
 
             {!isLast && (
               <View style={styles.stationRow}>
-                <Text style={styles.transferIcon}>⇄</Text>
-                <Text style={styles.transferName}>{segment.toName}</Text>
+                <Text style={[styles.transferIcon, { color: colors.accent }]}>⇄</Text>
+                <Text style={[styles.transferName, { color: colors.accent }]}>{segment.toName}</Text>
               </View>
             )}
 
             {isLast && (
               <View style={styles.stationRow}>
                 <View style={[styles.dot, { backgroundColor: segment.lineColor }]} testID="end-dot" />
-                <Text style={styles.stationName}>{segment.toName}</Text>
+                <Text style={[styles.stationName, { color: colors.ink }]}>{segment.toName}</Text>
               </View>
             )}
           </View>
@@ -76,11 +77,9 @@ const styles = StyleSheet.create({
   stationName: {
     fontSize: 16,
     fontWeight: '700',
-    color: colors.ink,
   },
   transferIcon: {
     fontSize: 16,
-    color: colors.accent,
     width: 12,
     textAlign: 'center',
     marginRight: 10,
@@ -88,7 +87,6 @@ const styles = StyleSheet.create({
   transferName: {
     fontSize: 15,
     fontWeight: '600',
-    color: colors.accent,
   },
   segmentRow: {
     flexDirection: 'row',
@@ -113,12 +111,11 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
   },
   lineBadgeText: {
-    color: colors.onAccent, // 노선색 배경 위 텍스트
+    color: '#ffffff', // 노선색 배경 위 텍스트 — 항상 흰색 유지
     fontSize: 12,
     fontWeight: '700',
   },
   stopsText: {
     fontSize: 13,
-    color: colors.muted,
   },
 });
