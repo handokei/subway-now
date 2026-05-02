@@ -1,8 +1,9 @@
 import React from 'react';
 import { StyleSheet, Text } from 'react-native';
-import { render, screen } from '@testing-library/react-native';
+import { screen } from '@testing-library/react-native';
 import { ScreenContainer } from '../ScreenContainer';
-import { ThemeProvider, lightColors, darkColors } from '../../theme';
+import { lightColors, darkColors } from '../../theme';
+import { renderWithTheme } from '../../testUtils/renderWithTheme';
 import * as RN from 'react-native';
 
 jest.mock('react-native-safe-area-context', () => {
@@ -11,9 +12,6 @@ jest.mock('react-native-safe-area-context', () => {
 });
 
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');
-
-const renderWithTheme = (ui: React.ReactElement) =>
-  render(<ThemeProvider>{ui}</ThemeProvider>);
 
 describe('ScreenContainer', () => {
   beforeEach(() => {
