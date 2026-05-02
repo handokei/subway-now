@@ -1,14 +1,12 @@
 import React from 'react';
 import { StyleSheet, Text } from 'react-native';
-import { render, screen } from '@testing-library/react-native';
+import { screen } from '@testing-library/react-native';
 import { Card } from '../Card';
-import { ThemeProvider, lightColors, darkColors } from '../../theme';
+import { lightColors, darkColors } from '../../theme';
+import { renderWithTheme } from '../../testUtils/renderWithTheme';
 import * as RN from 'react-native';
 
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');
-
-const renderWithTheme = (ui: React.ReactElement) =>
-  render(<ThemeProvider>{ui}</ThemeProvider>);
 
 describe('Card', () => {
   beforeEach(() => {
