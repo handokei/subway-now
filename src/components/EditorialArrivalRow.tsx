@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { colors, typography, spacing } from '../theme';
+import { useTheme, typography, spacing } from '../theme';
 import { useCountdown } from '../hooks/useCountdown';
 import type { ArrivalTrain } from '../utils/journeyAdapter';
 import { LineBadge, getLineColor } from './LineBadge';
@@ -12,9 +12,10 @@ interface Props {
 export function EditorialArrivalRow({ train }: Props) {
   const { mm, ss } = useCountdown(train.arrivalAtMs);
   const lineC = getLineColor(train.line);
+  const { colors } = useTheme();
 
   return (
-    <View style={styles.arrivalRow} testID="editorial-arrival-row">
+    <View style={[styles.arrivalRow, { borderBottomColor: colors.hair }]} testID="editorial-arrival-row">
       <View style={{ minWidth: 90 }}>
         <Text>
           <Text style={[typography.countMM, { color: colors.ink }]}>{mm}</Text>
@@ -44,6 +45,5 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
     paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: colors.hair,
   },
 });

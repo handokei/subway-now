@@ -16,12 +16,13 @@ import { useStationAlarm } from '../../src/hooks/useStationAlarm';
 import { useBackgroundLocation } from '../../src/hooks/useBackgroundLocation';
 import { AlarmOverlay } from '../../src/components/AlarmOverlay';
 import { createLogger } from '../../src/utils/logger';
-import { colors, typography, spacing, radius } from '../../src/theme';
+import { useTheme, typography, spacing, radius } from '../../src/theme';
 import { LineBadge } from '../../src/components/LineBadge';
 
 const logger = createLogger('HomeScreen');
 
 export default function HomeScreen() {
+  const { colors } = useTheme();
   const { result, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
   const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(result?.station.name ?? null);
   const arrival = useArrivalCountdown(rawArrival);
@@ -169,15 +170,15 @@ export default function HomeScreen() {
 
   if (permissionDenied) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
           <Text style={styles.icon}>📍</Text>
-          <Text style={styles.title}>위치 권한 필요</Text>
-          <Text style={styles.subtitle}>
+          <Text style={[styles.title, { color: colors.ink }]}>위치 권한 필요</Text>
+          <Text style={[styles.subtitle, { color: colors.muted }]}>
             설정에서 위치 권한을 허용해 주세요.{'\n'}현재 탑승 중인 역을 감지하려면{'\n'}위치 권한이 필요합니다.
           </Text>
-          <TouchableOpacity style={styles.button} onPress={refresh}>
-            <Text style={styles.buttonText}>다시 시도</Text>
+          <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
+            <Text style={[styles.buttonText, { color: colors.onAccent }]}>다시 시도</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -186,9 +187,9 @@ export default function HomeScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
-          <Text style={styles.loadingText}>위치 확인 중...</Text>
+          <Text style={[styles.loadingText, { color: colors.muted }]}>위치 확인 중...</Text>
         </View>
       </SafeAreaView>
     );
@@ -196,11 +197,11 @@ export default function HomeScreen() {
 
   if (error) {
     return (
-      <SafeAreaView style={styles.container}>
+      <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
-          <Text style={styles.errorText}>{error}</Text>
-          <TouchableOpacity style={styles.button} onPress={refresh}>
-            <Text style={styles.buttonText}>새로고침</Text>
+          <Text style={[styles.errorText, { color: colors.accent }]}>{error}</Text>
+          <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
+            <Text style={[styles.buttonText, { color: colors.onAccent }]}>새로고침</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -210,7 +211,7 @@ export default function HomeScreen() {
   const nearest = result ? nearestResultToNearest(result) : null;
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       {arrivedBanner && (
         <View style={styles.arrivedBanner} testID="arrived-banner">
           <Text style={styles.arrivedBannerText}>도착!</Text>
@@ -300,7 +301,7 @@ export default function HomeScreen() {
                       목적지 변경 →
                     </Text>
                   </Pressable>
-                  <View style={styles.vHair} />
+                  <View style={[styles.vHair, { backgroundColor: colors.hair }]} />
                   <Pressable onPress={() => setDestination(null)} testID="destination-clear-button">
                     <Text style={[typography.bodySm, { color: colors.muted }]}>초기화</Text>
                   </Pressable>
@@ -336,13 +337,13 @@ export default function HomeScreen() {
               <View style={{ paddingHorizontal: spacing.xxl, paddingVertical: spacing.xxl }}>
                 {recentDestination && (
                   <TouchableOpacity
-                    style={styles.recentDestinationButton}
+                    style={[styles.recentDestinationButton, { borderColor: colors.accent }]}
                     onPress={() => setDestination(recentDestination)}
                     testID="recent-destination-button"
                   >
-                    <Text style={styles.recentDestinationLabel}>이전 목적지</Text>
+                    <Text style={[styles.recentDestinationLabel, { color: colors.accent }]}>이전 목적지</Text>
                     <View style={styles.recentDestinationRow}>
-                      <Text style={styles.recentDestinationName}>{recentDestination.name}</Text>
+                      <Text style={[styles.recentDestinationName, { color: colors.ink }]}>{recentDestination.name}</Text>
                       <View style={[styles.recentLineBadge, { backgroundColor: recentDestination.lineColor }]}>
                         <Text style={styles.recentLineText}>{LINE_NAMES[recentDestination.line]}</Text>
                       </View>
@@ -350,23 +351,23 @@ export default function HomeScreen() {
                   </TouchableOpacity>
                 )}
                 <TouchableOpacity
-                  style={styles.destinationButton}
+                  style={[styles.destinationButton, { backgroundColor: colors.accent }]}
                   onPress={() => setPickerVisible(true)}
                   testID="destination-button"
                 >
-                  <Text style={styles.destinationButtonText}>목적지 설정</Text>
+                  <Text style={[styles.destinationButtonText, { color: colors.onAccent }]}>목적지 설정</Text>
                 </TouchableOpacity>
               </View>
             )}
 
             {/* Arrivals — 기존 상행/하행 포맷 유지 */}
-            <View style={styles.arrivalSection}>
-              <Text style={styles.sectionTitle}>열차 도착 정보</Text>
+            <View style={[styles.arrivalSection, { backgroundColor: colors.card }]}>
+              <Text style={[styles.sectionTitle, { color: colors.muted }]}>열차 도착 정보</Text>
               {arrivalLoading && !arrival && (
-                <Text style={styles.arrivalItem}>불러오는 중...</Text>
+                <Text style={[styles.arrivalItem, { color: colors.ink }]}>불러오는 중...</Text>
               )}
               {arrivalIsMock && (
-                <Text style={styles.mockNotice}>실시간 데이터를 불러올 수 없어 예상 데이터를 표시합니다</Text>
+                <Text style={[styles.mockNotice, { color: colors.warn }]}>실시간 데이터를 불러올 수 없어 예상 데이터를 표시합니다</Text>
               )}
               {arrival && (
                 <>
@@ -379,10 +380,10 @@ export default function HomeScreen() {
         ) : (
           <View style={styles.center}>
             <Text style={styles.icon}>🚶</Text>
-            <Text style={styles.title}>지하철역 근처가 아닙니다</Text>
-            <Text style={styles.subtitle}>지하철역 500m 이내에 있을 때{'\n'}현재 역이 표시됩니다.</Text>
-            <TouchableOpacity style={styles.button} onPress={refresh}>
-              <Text style={styles.buttonText}>새로고침</Text>
+            <Text style={[styles.title, { color: colors.ink }]}>지하철역 근처가 아닙니다</Text>
+            <Text style={[styles.subtitle, { color: colors.muted }]}>지하철역 500m 이내에 있을 때{'\n'}현재 역이 표시됩니다.</Text>
+            <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
+              <Text style={[styles.buttonText, { color: colors.onAccent }]}>새로고침</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -415,21 +416,22 @@ function ArrivalRow({
   label: string;
   items: { destination: string; arrivalSeconds: number; statusMessage: string }[];
 }) {
+  const { colors } = useTheme();
   return (
-    <View style={styles.arrivalRow}>
-      <Text style={styles.arrivalLabel}>{label}</Text>
+    <View style={[styles.arrivalRow, { borderTopColor: colors.hair }]}>
+      <Text style={[styles.arrivalLabel, { color: colors.muted }]}>{label}</Text>
       <View>
         {items.length === 0 ? (
-          <Text style={styles.arrivalItem}>도착 정보 없음</Text>
+          <Text style={[styles.arrivalItem, { color: colors.ink }]}>도착 정보 없음</Text>
         ) : (
           items.map((item, idx) => (
             <View key={idx} style={styles.arrivalItemContainer}>
-              <Text style={styles.arrivalItem}>
+              <Text style={[styles.arrivalItem, { color: colors.ink }]}>
                 {item.destination ? `${item.destination} · ` : ''}
                 {formatArrivalTime(item.arrivalSeconds)}
               </Text>
               {item.statusMessage !== '' && (
-                <Text style={styles.statusMessage}>{item.statusMessage}</Text>
+                <Text style={[styles.statusMessage, { color: colors.accent }]}>{item.statusMessage}</Text>
               )}
             </View>
           ))
@@ -439,13 +441,18 @@ function ArrivalRow({
   );
 }
 
-const Dot = () => <Text style={{ color: colors.subtle }}>·</Text>;
-const Hr  = () => <View style={{ height: 1, backgroundColor: colors.hair, marginHorizontal: spacing.xxl }} />;
+function Dot() {
+  const { colors } = useTheme();
+  return <Text style={{ color: colors.subtle }}>·</Text>;
+}
+function Hr() {
+  const { colors } = useTheme();
+  return <View style={{ height: 1, backgroundColor: colors.hair, marginHorizontal: spacing.xxl }} />;
+}
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.bg,
   },
   arrivedBanner: {
     backgroundColor: '#22c55e',
@@ -488,7 +495,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xxl,
     paddingTop: spacing.sm,
   },
-  vHair: { width: 1, height: 12, backgroundColor: colors.hair },
+  vHair: { width: 1, height: 12 },
   sleepRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -498,14 +505,12 @@ const styles = StyleSheet.create({
   },
   recentDestinationButton: {
     borderWidth: 1,
-    borderColor: colors.accent,
     borderRadius: radius.md,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     marginBottom: spacing.sm,
   },
   recentDestinationLabel: {
-    color: colors.accent,
     fontSize: 11,
     fontWeight: '600',
     letterSpacing: 0.5,
@@ -517,7 +522,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   recentDestinationName: {
-    color: colors.ink,
     fontSize: 16,
     fontWeight: '700',
   },
@@ -532,13 +536,11 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
   },
   destinationButton: {
-    backgroundColor: colors.accent,
     borderRadius: radius.md,
     paddingVertical: 10,
     alignItems: 'center',
   },
   destinationButtonText: {
-    color: colors.onAccent,
     fontSize: 15,
     fontWeight: '700',
   },
@@ -547,12 +549,10 @@ const styles = StyleSheet.create({
     marginTop: spacing.xl,
     paddingVertical: spacing.xl,
     paddingHorizontal: spacing.xl,
-    backgroundColor: colors.card,
     borderRadius: radius.lg,
   },
   sectionTitle: {
     fontSize: 14,
-    color: colors.muted,
     marginBottom: spacing.lg,
     letterSpacing: 1,
     textTransform: 'uppercase',
@@ -563,11 +563,9 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     paddingVertical: 10,
     borderTopWidth: 1,
-    borderTopColor: colors.hair,
   },
   arrivalLabel: {
     fontSize: 15,
-    color: colors.muted,
     fontWeight: '600',
   },
   arrivalItemContainer: {
@@ -575,18 +573,15 @@ const styles = StyleSheet.create({
   },
   arrivalItem: {
     fontSize: 15,
-    color: colors.ink,
     textAlign: 'right',
   },
   statusMessage: {
     fontSize: 12,
-    color: colors.accent,
     textAlign: 'right',
     marginTop: 2,
   },
   mockNotice: {
     fontSize: 12,
-    color: colors.warn,
     marginBottom: 8,
   },
   icon: {
@@ -596,34 +591,28 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 22,
     fontWeight: '700',
-    color: colors.ink,
     marginBottom: 12,
     textAlign: 'center',
   },
   subtitle: {
     fontSize: 15,
-    color: colors.muted,
     textAlign: 'center',
     lineHeight: 22,
     marginBottom: 24,
   },
   loadingText: {
     fontSize: 16,
-    color: colors.muted,
   },
   errorText: {
     fontSize: 16,
-    color: colors.accent,
     marginBottom: 16,
   },
   button: {
-    backgroundColor: colors.accent,
     paddingHorizontal: 28,
     paddingVertical: 14,
     borderRadius: radius.lg,
   },
   buttonText: {
-    color: colors.onAccent,
     fontSize: 15,
     fontWeight: '700',
   },

@@ -12,7 +12,7 @@ import type { Station } from '../types/station';
 import { LINE_NAMES } from '../constants/lineColors';
 import { StationMap } from './StationMap';
 import { createLogger } from '../utils/logger';
-import { colors, spacing, radius } from '../theme';
+import { useTheme, spacing, radius } from '../theme';
 
 const logger = createLogger('DestinationPicker');
 
@@ -39,6 +39,7 @@ export function DestinationPicker({
   const [query, setQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
   const openTimeRef = useRef<number | null>(null);
+  const { colors } = useTheme();
 
   useEffect(() => {
     if (visible) {
@@ -80,7 +81,7 @@ export function DestinationPicker({
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={handleClose}>
-      <View style={styles.container}>
+      <View style={[styles.container, { backgroundColor: colors.bg }]}>
         {mapAvailable && userLat && userLng ? (
           <StationMap
             userLat={userLat}
@@ -91,21 +92,21 @@ export function DestinationPicker({
           />
         ) : (
           <View style={styles.mapFallback} testID="map-fallback">
-            <Text style={styles.mapFallbackText}>
+            <Text style={[styles.mapFallbackText, { color: colors.muted }]}>
               위치 정보가 없습니다.
             </Text>
           </View>
         )}
 
         <View style={styles.overlay} pointerEvents="box-none">
-          <View style={styles.header}>
-            <Text style={styles.title}>목적지 설정</Text>
+          <View style={[styles.header, { backgroundColor: colors.overlay }]}>
+            <Text style={[styles.title, { color: colors.ink }]}>목적지 설정</Text>
             <TouchableOpacity onPress={handleClose} testID="close-button">
-              <Text style={styles.closeText}>닫기</Text>
+              <Text style={[styles.closeText, { color: colors.accent }]}>닫기</Text>
             </TouchableOpacity>
           </View>
           <TextInput
-            style={styles.input}
+            style={[styles.input, { backgroundColor: colors.card, color: colors.ink, borderColor: colors.hair }]}
             placeholder="역 이름 검색"
             placeholderTextColor={colors.subtle}
             value={query}
@@ -117,15 +118,15 @@ export function DestinationPicker({
             testID="search-input"
           />
           {showDropdown && suggestions.length > 0 && (
-            <View style={styles.dropdown} testID="suggestions-list">
+            <View style={[styles.dropdown, { backgroundColor: colors.card, borderColor: colors.hair }]} testID="suggestions-list">
               {suggestions.map((s) => (
                 <TouchableOpacity
                   key={s.id}
-                  style={styles.suggestionItem}
+                  style={[styles.suggestionItem, { borderBottomColor: colors.hair }]}
                   onPress={() => handleSelect(s)}
                   testID={`suggestion-item-${s.id}`}
                 >
-                  <Text style={styles.suggestionName}>{s.name}</Text>
+                  <Text style={[styles.suggestionName, { color: colors.ink }]}>{s.name}</Text>
                   <View style={[styles.lineBadge, { backgroundColor: s.lineColor }]}>
                     <Text style={styles.lineText}>{LINE_NAMES[s.line]}</Text>
                   </View>
@@ -142,7 +143,6 @@ export function DestinationPicker({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.bg,
   },
   mapFallback: {
     flex: 1,
@@ -151,7 +151,6 @@ const styles = StyleSheet.create({
     padding: spacing.xxl,
   },
   mapFallbackText: {
-    color: colors.muted,
     fontSize: 14,
     textAlign: 'center',
   },
@@ -168,36 +167,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingTop: 50,
     paddingBottom: spacing.md,
-    backgroundColor: 'rgba(245, 242, 236, 0.92)',
   },
   title: {
-    color: colors.ink,
     fontSize: 20,
     fontWeight: 'bold',
   },
   closeText: {
-    color: colors.accent,
     fontSize: 16,
   },
   input: {
-    backgroundColor: colors.card,
-    color: colors.ink,
     marginHorizontal: spacing.xl,
     borderRadius: radius.sm,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     fontSize: 16,
     borderWidth: 1,
-    borderColor: colors.hair,
   },
   dropdown: {
-    backgroundColor: colors.card,
     marginHorizontal: spacing.xl,
     marginTop: 4,
     borderRadius: radius.sm,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: colors.hair,
   },
   suggestionItem: {
     flexDirection: 'row',
@@ -206,10 +197,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     borderBottomWidth: 1,
-    borderBottomColor: colors.hair,
   },
   suggestionName: {
-    color: colors.ink,
     fontSize: 15,
   },
   lineBadge: {
@@ -218,7 +207,7 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   lineText: {
-    color: colors.onAccent, // 노선색 배경 위 텍스트
+    color: '#ffffff', // 노선색 배경 위 텍스트 — 항상 흰색 유지
     fontSize: 12,
     fontWeight: 'bold',
   },
