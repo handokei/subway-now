@@ -113,7 +113,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.lg,
   },
   lineBadgeText: {
-    color: '#ffffff',
+    color: colors.onAccent, // 노선색 배경 위 텍스트
     fontSize: 12,
     fontWeight: '700',
   },
