@@ -6,32 +6,32 @@ import { LINE_COLORS } from '../constants/lineColors';
 
 // 테마 불변 토큰
 const sharedColors = {
-  accent: '#C8553D',                   // CTA, 강조 (earth red)
-  warn:   '#ff9f43',                   // 경고 (mock 데이터 등)
-  onAccent: '#ffffff',                 // accent 배경 위 텍스트
+  accent:   '#00D4FF',                 // CTA, 강조 (시안)
+  warn:     '#ff9f43',                 // 경고 (mock 데이터 등)
+  onAccent: '#000000',                 // accent 배경 위 텍스트
   line: { ...LINE_COLORS } as Record<LineNumber, string>,
 };
 
 export const lightColors = {
   ...sharedColors,
-  bg:      '#F5F2EC',                  // 따뜻한 페이퍼 배경
-  card:    '#ffffff',                  // 카드, 입력창 배경
-  ink:     '#1A1814',                  // 본문 (near-black warm)
-  muted:   '#6B6459',                  // 보조 텍스트
-  subtle:  '#A8A197',                  // 더 연한 메타 정보
-  hair:    'rgba(26,24,20,0.08)',      // divider
-  overlay: 'rgba(0,0,0,0.4)',          // 모달 배경
+  bg:      '#1a1a2e',                  // 딥 네이비 배경
+  card:    '#16213e',                  // 네이비 카드
+  ink:     '#ffffff',                  // 순백 텍스트
+  muted:   '#8888aa',                  // 보조 텍스트
+  subtle:  '#aaaacc',                  // 메타 정보
+  hair:    '#2a2a4a',                  // divider
+  overlay: 'rgba(0,0,0,0.6)',          // 모달 배경
 };
 
 export const darkColors = {
   ...sharedColors,
-  bg:      '#1a1a2e',                  // 딥 다크 배경
-  card:    '#16213e',                  // 카드, 입력창 배경
-  ink:     '#ffffff',                  // 본문 (밝은 텍스트)
-  muted:   '#8888aa',                  // 보조 텍스트
-  subtle:  '#aaaacc',                  // 더 연한 메타 정보
-  hair:    '#2a2a4a',                  // divider
-  overlay: 'rgba(0,0,0,0.6)',          // 모달 배경
+  bg:      '#000000',                  // AMOLED 퓨어 블랙
+  card:    '#111111',                  // 약간 밝은 카드
+  ink:     '#ffffff',                  // 순백 텍스트
+  muted:   '#888888',                  // 보조 텍스트
+  subtle:  '#666666',                  // 메타 정보
+  hair:    '#222222',                  // divider
+  overlay: 'rgba(0,0,0,0.8)',          // 모달 배경
 };
 
 export type ThemeColors = typeof lightColors;
