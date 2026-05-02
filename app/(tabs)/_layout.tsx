@@ -1,8 +1,9 @@
 import { Tabs } from 'expo-router';
 import { Text } from 'react-native';
-import { colors } from '../../src/theme';
+import { useTheme } from '../../src/theme';
 
 export default function TabsLayout() {
+  const { colors } = useTheme();
   return (
     <Tabs
       screenOptions={{
