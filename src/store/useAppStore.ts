@@ -2,7 +2,9 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY } from '../constants/storageKeys';
+
+export type ThemeMode = 'auto' | 'light' | 'dark';
 
 export type { AlarmEvent };
 
@@ -15,6 +17,7 @@ interface AppState {
   recentDestination: Station | null;
   sleepMode: boolean;
   customOrigin: Station | null;
+  themeMode: ThemeMode;
   alarmEvent: AlarmEvent | null;
   addFavorite: (station: Station) => Promise<void>;
   removeFavorite: (stationId: string) => Promise<void>;
@@ -23,6 +26,8 @@ interface AppState {
   setRecentDestination: (station: Station | null) => void;
   setCustomOrigin: (station: Station | null) => void;
   loadCustomOrigin: () => Promise<void>;
+  setThemeMode: (mode: ThemeMode) => Promise<void>;
+  loadThemeMode: () => Promise<void>;
   setSleepMode: (enabled: boolean) => Promise<void>;
   loadSleepMode: () => Promise<void>;
   setAlarmEvent: (event: AlarmEvent) => void;
@@ -36,6 +41,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   recentDestination: null,
   sleepMode: false,
   customOrigin: null,
+  themeMode: 'auto' as ThemeMode,
   alarmEvent: null,
 
   loadFavorites: async () => {
@@ -94,6 +100,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch {
       // 저장된 데이터 없음 — null 유지
+    }
+  },
+
+  setThemeMode: async (mode: ThemeMode) => {
+    set({ themeMode: mode });
+    await AsyncStorage.setItem(THEME_MODE_KEY, JSON.stringify(mode));
+  },
+
+  loadThemeMode: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(THEME_MODE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed === 'auto' || parsed === 'light' || parsed === 'dark') {
+          set({ themeMode: parsed });
+        }
+      }
+    } catch {
+      // 저장된 데이터 없음 — 'auto' 유지
     }
   },
 
