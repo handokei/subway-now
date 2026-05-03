@@ -6,3 +6,4 @@ export const ALARM_EVENT_KEY = 'subway-now:alarm-event';
 export const CUSTOM_ORIGIN_KEY = 'subway-now:custom-origin';
 export const THEME_MODE_KEY = 'subway-now:theme-mode';
 export const ROUTE_PREFERENCE_KEY = 'subway-now:route-preference';
+export const ROUTE_KEY = 'subway-now:route';

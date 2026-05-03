@@ -122,6 +122,70 @@ export function getStationsOnLine(line: string): Station[] {
   return getLineStationsCached(line);
 }
 
+export function findStationByNameAndLine(name: string, line: string): Station | undefined {
+  return getLineStationsCached(line).find((s) => s.name === name);
+}
+
+export function updateRouteFromPosition(
+  storedRoute: NonNullable<Route>,
+  nearestStation: Station,
+  destinationId: string,
+): Route | null {
+  if (storedRoute.type === 'direct') {
+    // getRemainingStops는 다른 노선이면 null을 반환하므로 노선 이탈 시 자동 fallback
+    const dest = stationById.get(destinationId);
+    if (!dest || nearestStation.line !== dest.line) return null;
+    const remaining = getRemainingStops(nearestStation.id, destinationId);
+    return remaining !== null ? { type: 'direct', stops: remaining } : null;
+  }
+
+  if (storedRoute.type === 'transfer') {
+    if (nearestStation.line === storedRoute.fromLine) {
+      const transfer = findStationByNameAndLine(storedRoute.transferName, storedRoute.fromLine);
+      if (!transfer) return null;
+      const stopsToTransfer = getRemainingStops(nearestStation.id, transfer.id);
+      return stopsToTransfer !== null ? { ...storedRoute, stopsToTransfer } : null;
+    }
+    if (nearestStation.line === storedRoute.toLine) {
+      const stopsFromTransfer = getRemainingStops(nearestStation.id, destinationId);
+      return stopsFromTransfer !== null
+        ? { ...storedRoute, stopsToTransfer: 0, stopsFromTransfer }
+        : null;
+    }
+    return null;
+  }
+
+  // multi-transfer
+  const [t1, t2] = storedRoute.transfers;
+
+  if (nearestStation.line === t1.fromLine) {
+    const station = findStationByNameAndLine(t1.transferName, t1.fromLine);
+    if (!station) return null;
+    const stops = getRemainingStops(nearestStation.id, station.id);
+    return stops !== null
+      ? { ...storedRoute, transfers: [{ ...t1, stopsToTransfer: stops }, t2] as MultiTransferRoute['transfers'] }
+      : null;
+  }
+
+  if (nearestStation.line === t1.toLine) {
+    const station = findStationByNameAndLine(t2.transferName, t1.toLine);
+    if (!station) return null;
+    const stops = getRemainingStops(nearestStation.id, station.id);
+    return stops !== null
+      ? { ...storedRoute, transfers: [{ ...t1, stopsToTransfer: 0 }, { ...t2, stopsToTransfer: stops }] as MultiTransferRoute['transfers'] }
+      : null;
+  }
+
+  if (nearestStation.line === t2.toLine) {
+    const stops = getRemainingStops(nearestStation.id, destinationId);
+    return stops !== null
+      ? { ...storedRoute, transfers: [{ ...t1, stopsToTransfer: 0 }, { ...t2, stopsToTransfer: 0 }] as MultiTransferRoute['transfers'], stopsAfterLastTransfer: stops }
+      : null;
+  }
+
+  return null;
+}
+
 export function getRemainingStops(
   currentId: string,
   destinationId: string,

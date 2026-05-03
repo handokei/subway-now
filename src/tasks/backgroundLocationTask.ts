@@ -6,7 +6,8 @@ import { alarmKey } from '../utils/stationAlarm';
 import { updateStationNotification } from '../utils/stationNotification';
 import { findNearestStation } from '../utils/findNearestStation';
 import { createLogger } from '../utils/logger';
-import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY } from '../constants/storageKeys';
+import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY } from '../constants/storageKeys';
+import type { Route } from '../utils/stationRoute';
 
 const logger = createLogger('BackgroundLocation');
 
@@ -26,10 +27,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const { latitude, longitude } = latest.coords;
 
   try {
-    const [destJson, sleepJson, firedJson] = await Promise.all([
+    const [destJson, sleepJson, firedJson, routeJson] = await Promise.all([
       AsyncStorage.getItem(DESTINATION_KEY),
       AsyncStorage.getItem(SLEEP_MODE_KEY),
       AsyncStorage.getItem(FIRED_ALARMS_KEY),
+      AsyncStorage.getItem(ROUTE_KEY),
     ]);
 
     // 목적지 미설정 시 현재 역 알림만 업데이트
@@ -53,6 +55,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     }
     const sleepMode = sleepJson ? JSON.parse(sleepJson) === true : false;
     const firedAlarms = new Set<string>(firedJson ? JSON.parse(firedJson) : []);
+    const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;
 
     const { alarmEvent } = await processLocationUpdate(
       latitude,
@@ -60,6 +63,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       destination,
       firedAlarms,
       sleepMode,
+      storedRoute,
     );
 
     if (alarmEvent) {
