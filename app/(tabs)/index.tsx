@@ -8,7 +8,7 @@ import { formatArrivalTime } from '../../src/utils/formatTime';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
-import { findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route } from '../../src/utils/stationRoute';
+import { findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route, type RouteCandidate } from '../../src/utils/stationRoute';
 import { EditorialTimeline } from '../../src/components/EditorialTimeline';
 import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/journeyAdapter';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
@@ -50,23 +50,30 @@ export default function HomeScreen() {
   const arrivedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const prevDestIdRef = useRef<string | null>(null);
-  const [route, setRoute] = useState<Route>(null);
+  const routePreference = useAppStore((s) => s.routePreference);
+  const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
+  const [candidates, setCandidates] = useState<RouteCandidate[]>([]);
+  const [selectedIdx, setSelectedIdx] = useState(0);
+  const route: Route = candidates[selectedIdx]?.route ?? null;
   const isFav = effectiveOrigin ? favorites.some((f) => f.id === effectiveOrigin.id) : false;
 
   useEffect(() => {
     if (!effectiveOrigin || !destination) {
-      setRoute(null);
+      setCandidates([]);
+      setSelectedIdx(0);
       return;
     }
     const interactionStart = performance.now();
     const interaction = InteractionManager.runAfterInteractions(() => {
-      const route = findRoute(effectiveOrigin.id, destination.id);
+      const results = findRoutes(effectiveOrigin.id, destination.id);
       const total = performance.now() - interactionStart;
       logger.debug(`경로 계산 전체 (InteractionManager 포함): ${total.toFixed(2)}ms`);
-      setRoute(route);
+      setCandidates(results);
+      const picked = pickRouteByPreference(results, routePreference);
+      setSelectedIdx(picked ? results.indexOf(picked) : 0);
     });
     return () => interaction.cancel();
-  }, [effectiveOrigin?.id, destination?.id]);
+  }, [effectiveOrigin?.id, destination?.id, routePreference]);
 
   const journey = useMemo(
     () => (route && effectiveOrigin && destination ? buildJourneyDisplay(route, effectiveOrigin, destination) : null),
@@ -98,6 +105,7 @@ export default function HomeScreen() {
     loadFavorites();
     loadSleepMode();
     loadCustomOrigin();
+    loadRoutePreference();
     loadAlarmEvent();
     initStationNotification().catch((e) => logger.error('알림 초기화 실패:', e));
     const subscription = AppState.addEventListener('change', (state) => {
@@ -308,6 +316,29 @@ export default function HomeScreen() {
                       )}
                     </View>
                   </View>
+                  {candidates.length > 1 && (
+                    <View style={[styles.routePillGroup, { backgroundColor: colors.hair }]} testID="route-segment-control">
+                      {candidates.map((c, i) => {
+                        const active = i === selectedIdx;
+                        const label = c.transferCount <= 1 ? '최적경로' : '최소환승';
+                        return (
+                          <Pressable
+                            key={i}
+                            testID={`route-tab-${i}`}
+                            style={[styles.routePill, active && { backgroundColor: colors.accent }]}
+                            onPress={() => setSelectedIdx(i)}
+                          >
+                            <Text style={[styles.routePillText, { color: active ? colors.onAccent : colors.muted }]}>
+                              {label}
+                            </Text>
+                            <Text style={[styles.routePillSub, { color: active ? colors.onAccent : colors.subtle }]}>
+                              {c.travelMinutes}분 · {c.transferCount}환승
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                  )}
                   {journey && (
                     <EditorialTimeline stops={journeyDisplayToStops(journey)} />
                   )}
@@ -507,6 +538,26 @@ const styles = StyleSheet.create({
     marginLeft: spacing.md,
   },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  routePillGroup: {
+    flexDirection: 'row',
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: spacing.lg,
+  },
+  routePill: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  routePillText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  routePillSub: {
+    fontSize: 11,
+    marginTop: 2,
+  },
   gpsResetButton: {
     marginTop: spacing.md,
     borderWidth: 1,

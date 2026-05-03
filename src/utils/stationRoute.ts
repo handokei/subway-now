@@ -58,6 +58,15 @@ export interface MultiTransferRoute {
 
 export type Route = DirectRoute | TransferRoute | MultiTransferRoute | null;
 
+export type RoutePreference = 'optimal' | 'minTransfer';
+
+export interface RouteCandidate {
+  route: NonNullable<Route>;
+  totalStops: number;
+  transferCount: number;
+  travelMinutes: number;
+}
+
 export interface JourneySegment {
   line: string;
   lineColor: string;
@@ -138,67 +147,121 @@ function buildNameIndex(stations: Station[]): Map<string, number> {
   return index;
 }
 
-export function findRoute(currentId: string, destinationId: string): Route {
+function toCandidate(route: NonNullable<Route>): RouteCandidate {
+  const travelMinutes = getTravelMinutes(route);
+  if (route.type === 'direct') {
+    return { route, totalStops: route.stops, transferCount: 0, travelMinutes };
+  }
+  if (route.type === 'transfer') {
+    const totalStops = route.stopsToTransfer + route.stopsFromTransfer;
+    return { route, totalStops, transferCount: 1, travelMinutes };
+  }
+  const transferStops = route.transfers.reduce((sum, t) => sum + t.stopsToTransfer, 0);
+  const totalStops = transferStops + route.stopsAfterLastTransfer;
+  return { route, totalStops, transferCount: route.transfers.length, travelMinutes };
+}
+
+export function findRoutes(currentId: string, destinationId: string): RouteCandidate[] {
   const start = performance.now();
   const current = stationById.get(currentId);
   const destination = stationById.get(destinationId);
 
-  if (!current || !destination) return null;
-
-  let result: Route;
+  if (!current || !destination) return [];
 
   // 같은 노선: 직통
   if (current.line === destination.line) {
     const lineStations = getLineStationsCached(current.line);
     const cIdx = lineStations.findIndex((s) => s.id === currentId);
     const dIdx = lineStations.findIndex((s) => s.id === destinationId);
-    result = { type: 'direct', stops: Math.abs(dIdx - cIdx) };
-  } else {
-    // 다른 노선: 환승역 탐색
-    const currentLineStations = getLineStationsCached(current.line);
-    const destLineStations = getLineStationsCached(destination.line);
-    const currentIdx = currentLineStations.findIndex((s) => s.id === currentId);
-    const destIdx = destLineStations.findIndex((s) => s.id === destinationId);
+    const direct: DirectRoute = { type: 'direct', stops: Math.abs(dIdx - cIdx) };
+    const duration = performance.now() - start;
+    logger.debug(`findRoutes(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms`);
+    return [toCandidate(direct)];
+  }
 
-    // 목적지 노선의 이름 → 인덱스 Map (O(1) 룩업)
-    const destNameIndex = getLineNameIndexCached(destination.line);
+  // 다른 노선: 단일 환승 + 2회 환승 모두 탐색
+  const currentLineStations = getLineStationsCached(current.line);
+  const destLineStations = getLineStationsCached(destination.line);
+  const currentIdx = currentLineStations.findIndex((s) => s.id === currentId);
+  const destIdx = destLineStations.findIndex((s) => s.id === destinationId);
+  const destNameIndex = getLineNameIndexCached(destination.line);
 
-    let bestRoute: TransferRoute | null = null;
-    let bestTotal = Infinity;
+  // 단일 환승 후보
+  let bestSingle: TransferRoute | null = null;
+  let bestSingleTotal = Infinity;
 
-    for (let i = 0; i < currentLineStations.length; i++) {
-      const candidate = currentLineStations[i];
-      const transferDestIdx = destNameIndex.get(candidate.name);
-      if (transferDestIdx === undefined) continue;
+  for (let i = 0; i < currentLineStations.length; i++) {
+    const candidate = currentLineStations[i];
+    const transferDestIdx = destNameIndex.get(candidate.name);
+    if (transferDestIdx === undefined) continue;
 
-      const stopsToTransfer = Math.abs(i - currentIdx);
-      const stopsFromTransfer = Math.abs(transferDestIdx - destIdx);
-      const total = stopsToTransfer + stopsFromTransfer;
+    const stopsToTransfer = Math.abs(i - currentIdx);
+    const stopsFromTransfer = Math.abs(transferDestIdx - destIdx);
+    const total = stopsToTransfer + stopsFromTransfer;
 
-      if (total < bestTotal) {
-        bestTotal = total;
-        bestRoute = {
-          type: 'transfer',
-          transferName: candidate.name,
-          fromLine: current.line,
-          toLine: destination.line,
-          stopsToTransfer,
-          stopsFromTransfer,
-        };
-      }
-    }
-
-    if (bestRoute) {
-      result = bestRoute;
-    } else {
-      // 2회 환승 BFS: 현재노선 → 중간노선 → 목적지노선
-      result = findMultiTransferRoute(current, destination, currentLineStations, destLineStations, currentIdx, destIdx);
+    if (total < bestSingleTotal) {
+      bestSingleTotal = total;
+      bestSingle = {
+        type: 'transfer',
+        transferName: candidate.name,
+        fromLine: current.line,
+        toLine: destination.line,
+        stopsToTransfer,
+        stopsFromTransfer,
+      };
     }
   }
 
+  // 2회 환승 후보
+  const multiRoute = findMultiTransferRoute(
+    current, destination, currentLineStations, destLineStations, currentIdx, destIdx,
+  );
+
+  // 후보 수집 + 정렬 + 열등 후보 제거
+  const candidates: RouteCandidate[] = [];
+  if (bestSingle) candidates.push(toCandidate(bestSingle));
+  /* istanbul ignore next -- 실제 서울 지하철 데이터에서 2회 환승 불가 노선 조합은 없음 */
+  if (multiRoute) candidates.push(toCandidate(multiRoute));
+
+  candidates.sort((a, b) => a.travelMinutes - b.travelMinutes);
+
+  // strict domination 필터
+  const filtered = candidates.filter((c, i) => {
+    for (let j = 0; j < candidates.length; j++) {
+      if (i === j) continue;
+      const other = candidates[j];
+      /* istanbul ignore next -- 현재 후보는 항상 transferCount가 다름 (1 vs 2) */
+      if (other.travelMinutes <= c.travelMinutes && other.transferCount <= c.transferCount
+          && (other.travelMinutes < c.travelMinutes || other.transferCount < c.transferCount)) {
+        return false;
+      }
+    }
+    return true;
+  });
+
   const duration = performance.now() - start;
-  logger.debug(`findRoute(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms`);
-  return result;
+  logger.debug(`findRoutes(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms`);
+  return filtered;
+}
+
+export function findRoute(currentId: string, destinationId: string): Route {
+  const candidates = findRoutes(currentId, destinationId);
+  if (candidates.length === 0) return null;
+  // 하위 호환: 환승 적은 경로 우선 (기존 동작)
+  return pickRouteByPreference(candidates, 'minTransfer')!.route;
+}
+
+export function pickRouteByPreference(
+  candidates: RouteCandidate[],
+  preference: RoutePreference,
+): RouteCandidate | null {
+  if (candidates.length === 0) return null;
+  if (preference === 'minTransfer') {
+    return [...candidates].sort(
+      (a, b) => a.transferCount - b.transferCount || a.travelMinutes - b.travelMinutes,
+    )[0];
+  }
+  return candidates[0];
 }
 
 function findMultiTransferRoute(
