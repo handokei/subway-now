@@ -4,8 +4,14 @@ import { StationMap } from '../StationMap';
 import type { Station } from '../../types/station';
 
 jest.mock('react-native-webview');
-jest.mock('../../utils/buildMapHtml', () => ({
-  buildMapHtml: jest.fn(() => '<html>mock</html>'),
+jest.mock('../../utils/buildMapConfig', () => ({
+  buildMapConfig: jest.fn(() => ({
+    apiKey: 'test-key',
+    userLat: 37.498,
+    userLng: 127.027,
+    stations: [],
+  })),
+  buildInjectedJS: jest.fn(() => 'window.initMap({}); true;'),
 }));
 
 const originalEnv = process.env.EXPO_PUBLIC_KAKAO_MAP_KEY;
@@ -49,10 +55,27 @@ describe('StationMap', () => {
     expect(getByTestId('kakao-map-webview')).toBeTruthy();
   });
 
-  it('buildMapHtml에 올바른 파라미터를 전달한다', () => {
-    const { buildMapHtml } = require('../../utils/buildMapHtml');
+  it('로딩 인디케이터를 표시한다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    expect(getByTestId('map-loading')).toBeTruthy();
+  });
+
+  it('mapLoaded 메시지 수신 시 로딩 인디케이터를 숨긴다', async () => {
+    const { getByTestId, queryByTestId } = render(<StationMap {...baseProps} />);
+    await act(async () => {
+      getByTestId('kakao-map-webview').props.onMessage({
+        nativeEvent: { data: JSON.stringify({ type: 'mapLoaded' }) },
+      });
+    });
+    await waitFor(() => {
+      expect(queryByTestId('map-loading')).toBeNull();
+    });
+  });
+
+  it('buildMapConfig에 올바른 파라미터를 전달한다', () => {
+    const { buildMapConfig } = require('../../utils/buildMapConfig');
     render(<StationMap {...baseProps} nearbyStations={[mockStation, anotherStation]} />);
-    expect(buildMapHtml).toHaveBeenCalledWith({
+    expect(buildMapConfig).toHaveBeenCalledWith({
       apiKey: 'test-key',
       userLat: 37.498,
       userLng: 127.027,
@@ -66,11 +89,10 @@ describe('StationMap', () => {
     const { getByTestId } = render(
       <StationMap {...baseProps} onStationPress={onStationPress} />,
     );
-    const webview = getByTestId('kakao-map-webview');
     act(() => {
-      webview.props.onMessage({
+      getByTestId('kakao-map-webview').props.onMessage({
         nativeEvent: {
-          data: JSON.stringify({ type: 'stationPress', station: mockStation }),
+          data: JSON.stringify({ type: 'stationPress', message: mockStation }),
         },
       });
     });
@@ -79,12 +101,11 @@ describe('StationMap', () => {
 
   it('onStationPress가 없을 때 메시지를 받아도 에러가 없다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
-    const webview = getByTestId('kakao-map-webview');
     expect(() => {
       act(() => {
-        webview.props.onMessage({
+        getByTestId('kakao-map-webview').props.onMessage({
           nativeEvent: {
-            data: JSON.stringify({ type: 'stationPress', station: mockStation }),
+            data: JSON.stringify({ type: 'stationPress', message: mockStation }),
           },
         });
       });
@@ -93,9 +114,8 @@ describe('StationMap', () => {
 
   it('error 메시지를 받으면 fallback UI를 표시한다', async () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
-    const webview = getByTestId('kakao-map-webview');
     await act(async () => {
-      webview.props.onMessage({
+      getByTestId('kakao-map-webview').props.onMessage({
         nativeEvent: {
           data: JSON.stringify({ type: 'error', message: 'SDK 로드 실패' }),
         },
@@ -108,9 +128,8 @@ describe('StationMap', () => {
 
   it('onError 발생 시 fallback UI를 표시한다', async () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
-    const webview = getByTestId('kakao-map-webview');
     await act(async () => {
-      webview.props.onError();
+      getByTestId('kakao-map-webview').props.onError();
     });
     await waitFor(() => {
       expect(getByTestId('map-error')).toBeTruthy();
@@ -128,13 +147,6 @@ describe('StationMap', () => {
     }).not.toThrow();
   });
 
-  it('WebView에 html source가 전달된다', () => {
-    const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(getByTestId('kakao-map-webview').props.source).toEqual({
-      html: '<html>mock</html>',
-    });
-  });
-
   it('WebView의 scrollEnabled이 false이다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
     expect(getByTestId('kakao-map-webview').props.scrollEnabled).toBe(false);
@@ -150,19 +162,5 @@ describe('StationMap', () => {
     delete process.env.EXPO_PUBLIC_KAKAO_MAP_KEY;
     const { getByTestId } = render(<StationMap {...baseProps} />);
     expect(getByTestId('map-no-api-key')).toBeTruthy();
-  });
-
-  it('mapLoaded 메시지는 무시된다', () => {
-    const onStationPress = jest.fn();
-    const { getByTestId, queryByTestId } = render(
-      <StationMap {...baseProps} onStationPress={onStationPress} />,
-    );
-    act(() => {
-      getByTestId('kakao-map-webview').props.onMessage({
-        nativeEvent: { data: JSON.stringify({ type: 'mapLoaded' }) },
-      });
-    });
-    expect(onStationPress).not.toHaveBeenCalled();
-    expect(queryByTestId('map-error')).toBeNull();
   });
 });
