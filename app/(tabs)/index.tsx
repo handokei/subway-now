@@ -162,7 +162,7 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (arrivedBanner) return;
-    if (result?.station.name && destination?.name && result.station.name === destination.name && result.distanceKm <= 0.5) {
+    if (result && destination && result.station.name === destination.name && result.distanceKm <= 0.5) {
       setArrivedBanner(true);
       arrivedTimeoutRef.current = setTimeout(() => {
         setDestination(null);

@@ -3,33 +3,6 @@ import { render, act, waitFor, fireEvent } from '@testing-library/react-native';
 import { StationMap } from '../StationMap';
 import type { Station } from '../../types/station';
 
-jest.mock('react-native-maps', () => {
-  const RN = require('react-native');
-  const R = require('react');
-  return {
-    __esModule: true,
-    default: ({ children, testID, onMapReady, ...props }: any) => {
-      R.useEffect(() => { onMapReady?.(); }, []);
-      return R.createElement(RN.View, { testID, ...props }, children);
-    },
-    Marker: ({ testID, onPress, ...props }: any) =>
-      R.createElement(RN.View, { testID, onPress, ...props }),
-    PROVIDER_DEFAULT: null,
-  };
-});
-
-jest.mock('react-native-map-clustering', () => {
-  const RN = require('react-native');
-  const R = require('react');
-  return {
-    __esModule: true,
-    default: ({ children, testID, onMapReady, ...props }: any) => {
-      R.useEffect(() => { onMapReady?.(); }, []);
-      return R.createElement(RN.View, { testID, ...props }, children);
-    },
-  };
-});
-
 const mockStation: Station = {
   id: '2-022',
   name: '강남',

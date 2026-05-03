@@ -3,6 +3,8 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { StationMap } from '../../src/components/StationMap';
+import { LocationStateView } from '../../src/components/LocationStateView';
+import { StatusChip } from '../../src/components/StatusChip';
 import stationsData from '../../src/data/stations.json';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useAppStore } from '../../src/store/useAppStore';
@@ -22,39 +24,14 @@ export default function MapScreen() {
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
   const insets = useSafeAreaInsets();
 
-  if (permissionDenied) {
+  if (permissionDenied || loading || !userLocation || error) {
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
-        <View style={styles.center}>
-          <Text style={[styles.message, { color: colors.muted }]}>위치 권한이 필요합니다.</Text>
-          <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
-            <Text style={[styles.buttonText, { color: colors.onAccent }]}>권한 요청</Text>
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  if (loading || !userLocation) {
-    return (
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
-        <View style={styles.center}>
-          <Text style={[styles.message, { color: colors.muted }]}>위치 확인 중...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  if (error) {
-    return (
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
-        <View style={styles.center}>
-          <Text style={[styles.message, { color: colors.muted }]}>{error}</Text>
-          <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
-            <Text style={[styles.buttonText, { color: colors.onAccent }]}>다시 시도</Text>
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
+      <LocationStateView
+        permissionDenied={permissionDenied}
+        loading={loading || !userLocation}
+        error={error}
+        onRetry={refresh}
+      />
     );
   }
 
@@ -64,29 +41,17 @@ export default function MapScreen() {
       {(customOrigin || destination) && (
         <View style={[styles.statusBar, { backgroundColor: colors.card, borderBottomColor: colors.hair }]} testID="status-bar">
           {customOrigin && (
-            <View style={styles.statusChip}>
-              <Text style={[styles.statusLabel, { color: colors.accent }]}>출발</Text>
-              <Text style={[styles.statusName, { color: colors.ink }]} numberOfLines={1}>{customOrigin.name}</Text>
-              <TouchableOpacity onPress={() => setCustomOrigin(null)} testID="clear-origin">
-                <Text style={[styles.statusClose, { color: colors.muted }]}>✕</Text>
-              </TouchableOpacity>
-            </View>
+            <StatusChip label="출발" name={customOrigin.name} onClear={() => setCustomOrigin(null)} testID="clear-origin" />
           )}
           {destination && (
-            <View style={styles.statusChip}>
-              <Text style={[styles.statusLabel, { color: colors.accent }]}>도착</Text>
-              <Text style={[styles.statusName, { color: colors.ink }]} numberOfLines={1}>{destination.name}</Text>
-              <TouchableOpacity onPress={() => setDestination(null)} testID="clear-destination">
-                <Text style={[styles.statusClose, { color: colors.muted }]}>✕</Text>
-              </TouchableOpacity>
-            </View>
+            <StatusChip label="도착" name={destination.name} onClear={() => setDestination(null)} testID="clear-destination" />
           )}
         </View>
       )}
 
       <StationMap
-        userLat={userLocation.lat}
-        userLng={userLocation.lng}
+        userLat={userLocation!.lat}
+        userLng={userLocation!.lng}
         nearestStation={result?.station ?? null}
         nearbyStations={allStations}
         customOriginId={customOrigin?.id}
@@ -102,7 +67,7 @@ export default function MapScreen() {
               <LineBadge line={selectedStation.line} />
             </View>
             <TouchableOpacity onPress={() => setSelectedStation(null)} testID="close-selection">
-              <Text style={[styles.statusClose, { color: colors.muted }]}>✕</Text>
+              <Text style={[styles.closeText, { color: colors.muted }]}>✕</Text>
             </TouchableOpacity>
           </View>
           <View style={styles.selectionButtons}>
@@ -139,25 +104,6 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
-  },
-  message: {
-    fontSize: 16,
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  button: {
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 8,
-  },
-  buttonText: {
-    fontSize: 16,
-  },
   statusBar: {
     flexDirection: 'row',
     paddingHorizontal: spacing.lg,
@@ -165,22 +111,7 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     borderBottomWidth: 1,
   },
-  statusChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-    flex: 1,
-  },
-  statusLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  statusName: {
-    fontSize: 14,
-    fontWeight: '600',
-    flex: 1,
-  },
-  statusClose: {
+  closeText: {
     fontSize: 16,
     paddingHorizontal: spacing.xs,
   },
