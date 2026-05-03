@@ -1,4 +1,4 @@
-import type { Route, DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
+import type { Route } from './stationRoute';
 
 export type AlarmType = 'destination' | 'transfer' | 'approaching';
 
@@ -21,57 +21,43 @@ export function estimateRemainingSeconds(stops: number): number {
   return stops * SECONDS_PER_STOP;
 }
 
-type AlarmChecker = (
+export interface CurrentTarget {
+  name: string;
+  stops: number;
+  alarmType: 'transfer' | 'destination';
+}
+
+/**
+ * 현재 경로에서 알람 대상(환승역 또는 도착역)과 남은 정거장 수를 반환한다.
+ * 경로는 GPS 기반으로 매번 재계산되므로, 첫 번째 구간만이 사용자의 실제 거리를 반영한다.
+ * 따라서 항상 현재 구간의 다음 웨이포인트(환승역 또는 도착역)만 반환한다.
+ *
+ * resolveNextTarget과의 차이: resolveNextTarget은 stopsToTransfer=0을 "환승 완료"로 간주하지만,
+ * 여기서는 "사용자가 환승역에 있다"로 간주하여 환승 알람을 발생시킨다.
+ */
+export function resolveCurrentTarget(
   route: NonNullable<Route>,
   destinationName: string,
-  threshold: number,
-) => AlarmEvent | null;
+): CurrentTarget {
+  if (route.type === 'direct') {
+    return { name: destinationName, stops: route.stops, alarmType: 'destination' };
+  }
 
-const checkers: Record<string, AlarmChecker> = {
-  direct(route, destinationName, threshold) {
-    const r = route as DirectRoute;
-    if (r.stops <= threshold) {
-      return { type: 'destination', stationName: destinationName };
+  if (route.type === 'transfer') {
+    if (route.transferName === destinationName) {
+      return { name: destinationName, stops: route.stopsToTransfer, alarmType: 'destination' };
     }
-    return null;
-  },
+    return { name: route.transferName, stops: route.stopsToTransfer, alarmType: 'transfer' };
+  }
 
-  transfer(route, destinationName, threshold) {
-    const r = route as TransferRoute;
-    if (r.transferName === destinationName) {
-      if (r.stopsToTransfer <= threshold) {
-        return { type: 'destination', stationName: destinationName };
-      }
-      return null;
-    }
-    if (r.stopsToTransfer <= threshold) {
-      return { type: 'transfer', stationName: r.transferName };
-    }
-    if (r.stopsFromTransfer <= threshold) {
-      return { type: 'destination', stationName: destinationName };
-    }
-    return null;
-  },
-
-  'multi-transfer'(route, destinationName, threshold) {
-    const r = route as MultiTransferRoute;
-    for (const t of r.transfers) {
-      if (t.transferName === destinationName) {
-        if (t.stopsToTransfer <= threshold) {
-          return { type: 'destination', stationName: destinationName };
-        }
-        return null;
-      }
-      if (t.stopsToTransfer <= threshold) {
-        return { type: 'transfer', stationName: t.transferName };
-      }
-    }
-    if (r.stopsAfterLastTransfer <= threshold) {
-      return { type: 'destination', stationName: destinationName };
-    }
-    return null;
-  },
-};
+  // multi-transfer: 첫 번째 환승이 항상 현재 구간
+  // (GPS 재계산으로 이전 환승은 경로에서 사라짐)
+  const firstTransfer = route.transfers[0];
+  if (firstTransfer.transferName === destinationName) {
+    return { name: destinationName, stops: firstTransfer.stopsToTransfer, alarmType: 'destination' };
+  }
+  return { name: firstTransfer.transferName, stops: firstTransfer.stopsToTransfer, alarmType: 'transfer' };
+}
 
 export function checkAlarm(
   route: Route,
@@ -81,11 +67,10 @@ export function checkAlarm(
 ): AlarmEvent | null {
   if (!route) return null;
 
-  const checker = checkers[route.type];
-  const event = checker(route, destinationName, threshold);
+  const target = resolveCurrentTarget(route, destinationName);
+  if (target.stops > threshold) return null;
 
-  if (!event) return null;
-
+  const event: AlarmEvent = { type: target.alarmType, stationName: target.name };
   const key = alarmKey(event);
   if (firedAlarms.has(key)) return null;
 
