@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore, type ThemeMode } from '../../src/store/useAppStore';
+import type { RoutePreference } from '../../src/utils/stationRoute';
 import { useTheme, spacing, radius } from '../../src/theme';
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
@@ -17,11 +18,15 @@ export default function SettingsScreen() {
   const themeMode = useAppStore((s) => s.themeMode);
   const setThemeMode = useAppStore((s) => s.setThemeMode);
   const loadThemeMode = useAppStore((s) => s.loadThemeMode);
+  const routePreference = useAppStore((s) => s.routePreference);
+  const setRoutePreference = useAppStore((s) => s.setRoutePreference);
+  const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
   const { colors } = useTheme();
 
   useEffect(() => {
     loadSleepMode();
     loadThemeMode();
+    loadRoutePreference();
   }, []);
 
   return (
@@ -50,6 +55,38 @@ export default function SettingsScreen() {
                 style={[styles.segment, active && { backgroundColor: colors.accent }]}
                 onPress={() => setThemeMode(value)}
                 testID={`theme-${value}`}
+              >
+                <Text style={[styles.segmentText, { color: active ? colors.onAccent : colors.muted }]}>
+                  {label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
+      {/* 경로 */}
+      <View style={[styles.card, { backgroundColor: colors.card }]}>
+        <Text style={[styles.sectionTitle, { color: colors.muted }]}>경로</Text>
+
+        <View style={styles.settingRow}>
+          <View style={styles.settingInfo}>
+            <Text style={[styles.settingLabel, { color: colors.ink }]}>경로 설정</Text>
+            <Text style={[styles.settingDesc, { color: colors.muted }]}>
+              기본 경로 탐색 방식을 선택합니다
+            </Text>
+          </View>
+        </View>
+
+        <View style={[styles.segmentGroup, { backgroundColor: colors.hair }]} testID="route-segment">
+          {([['optimal', '최적경로'], ['minTransfer', '최소환승']] as [RoutePreference, string][]).map(([value, label]) => {
+            const active = routePreference === value;
+            return (
+              <Pressable
+                key={value}
+                style={[styles.segment, active && { backgroundColor: colors.accent }]}
+                onPress={() => setRoutePreference(value)}
+                testID={`route-${value}`}
               >
                 <Text style={[styles.segmentText, { color: active ? colors.onAccent : colors.muted }]}>
                   {label}

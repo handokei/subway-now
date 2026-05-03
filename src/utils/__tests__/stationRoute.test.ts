@@ -1,6 +1,6 @@
-import { getStationsOnLine, getRemainingStops, findRoute, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName } from '../stationRoute';
 import type { Station } from '../../types/station';
-import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
+import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate } from '../stationRoute';
 
 describe('getStationsOnLine', () => {
   it('returns only stations on the given line, sorted by id', () => {
@@ -581,5 +581,69 @@ describe('getNextStationName', () => {
         expect(next).toBe(destLine[t2Idx + step].name);
       }
     });
+  });
+});
+
+describe('findRoutes', () => {
+  it('같은 노선이면 직통 후보 1개를 반환한다', () => {
+    const candidates = findRoutes('1-001', '1-003');
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].route.type).toBe('direct');
+    expect(candidates[0].transferCount).toBe(0);
+  });
+
+  it('다른 노선이면 후보를 travelMinutes 기준 정렬하여 반환한다', () => {
+    // 2호선 강남 → 3호선 교대
+    const candidates = findRoutes('2-022', '3-012');
+    expect(candidates.length).toBeGreaterThanOrEqual(1);
+    for (let i = 1; i < candidates.length; i++) {
+      expect(candidates[i].travelMinutes).toBeGreaterThanOrEqual(candidates[i - 1].travelMinutes);
+    }
+  });
+
+  it('유효하지 않은 역 ID면 빈 배열을 반환한다', () => {
+    expect(findRoutes('invalid', '1-001')).toEqual([]);
+    expect(findRoutes('1-001', 'invalid')).toEqual([]);
+  });
+
+  it('단일 환승 경로의 transferCount는 1이다', () => {
+    const candidates = findRoutes('2-022', '3-012');
+    const single = candidates.find((c) => c.route.type === 'transfer');
+    if (single) {
+      expect(single.transferCount).toBe(1);
+    }
+  });
+});
+
+describe('pickRouteByPreference', () => {
+  const c1: RouteCandidate = {
+    route: { type: 'direct', stops: 3 },
+    totalStops: 3,
+    transferCount: 0,
+    travelMinutes: 6,
+  };
+  const c2: RouteCandidate = {
+    route: { type: 'transfer', transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 2, stopsFromTransfer: 3 },
+    totalStops: 5,
+    transferCount: 1,
+    travelMinutes: 13,
+  };
+
+  it('optimal이면 travelMinutes가 가장 낮은 후보를 반환한다', () => {
+    expect(pickRouteByPreference([c1, c2], 'optimal')).toBe(c1);
+  });
+
+  it('minTransfer이면 transferCount가 가장 낮은 후보를 반환한다', () => {
+    expect(pickRouteByPreference([c2, c1], 'minTransfer')).toBe(c1);
+  });
+
+  it('minTransfer에서 transferCount가 같으면 travelMinutes가 낮은 후보를 반환한다', () => {
+    const fast: RouteCandidate = { route: { type: 'transfer', transferName: 'A', fromLine: '1', toLine: '2', stopsToTransfer: 1, stopsFromTransfer: 2 }, totalStops: 3, transferCount: 1, travelMinutes: 9 };
+    const slow: RouteCandidate = { route: { type: 'transfer', transferName: 'B', fromLine: '1', toLine: '2', stopsToTransfer: 3, stopsFromTransfer: 4 }, totalStops: 7, transferCount: 1, travelMinutes: 17 };
+    expect(pickRouteByPreference([slow, fast], 'minTransfer')).toBe(fast);
+  });
+
+  it('빈 배열이면 null을 반환한다', () => {
+    expect(pickRouteByPreference([], 'optimal')).toBeNull();
   });
 });
