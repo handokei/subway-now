@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
-import { useMapData } from '../../src/hooks/useMapData';
 import { StationMap } from '../../src/components/StationMap';
+import stationsData from '../../src/data/stations.json';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useAppStore } from '../../src/store/useAppStore';
 import { LineBadge } from '../../src/components/LineBadge';
@@ -12,10 +12,7 @@ import type { Station } from '../../src/types/station';
 export default function MapScreen() {
   const { userLocation, result, loading, error, permissionDenied, refresh } =
     useNearestStation();
-  const { nearbyStations } = useMapData(
-    userLocation?.lat ?? null,
-    userLocation?.lng ?? null
-  );
+  const allStations = stationsData as Station[];
   const { colors } = useTheme();
   const customOrigin = useAppStore((s) => s.customOrigin);
   const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
@@ -91,7 +88,7 @@ export default function MapScreen() {
         userLat={userLocation.lat}
         userLng={userLocation.lng}
         nearestStation={result?.station ?? null}
-        nearbyStations={nearbyStations}
+        nearbyStations={allStations}
         customOriginId={customOrigin?.id}
         onStationPress={(station) => setSelectedStation(station)}
       />

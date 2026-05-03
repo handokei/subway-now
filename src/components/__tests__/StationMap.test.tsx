@@ -18,6 +18,18 @@ jest.mock('react-native-maps', () => {
   };
 });
 
+jest.mock('react-native-map-clustering', () => {
+  const RN = require('react-native');
+  const R = require('react');
+  return {
+    __esModule: true,
+    default: ({ children, testID, onMapReady, ...props }: any) => {
+      R.useEffect(() => { onMapReady?.(); }, []);
+      return R.createElement(RN.View, { testID, ...props }, children);
+    },
+  };
+});
+
 const mockStation: Station = {
   id: '2-022',
   name: '강남',

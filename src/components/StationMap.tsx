@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
-import MapView, { Marker, PROVIDER_DEFAULT } from 'react-native-maps';
+import ClusteredMapView from 'react-native-map-clustering';
+import { Marker, PROVIDER_DEFAULT } from 'react-native-maps';
 import type { Station } from '../types/station';
 import { buildMapConfig } from '../utils/buildMapConfig';
 import { useTheme } from '../theme';
@@ -33,17 +34,18 @@ export function StationMap({
 
   return (
     <View style={styles.map}>
-      <MapView
+      <ClusteredMapView
         provider={PROVIDER_DEFAULT}
         style={styles.map}
         initialRegion={{
           latitude: userLat,
           longitude: userLng,
-          latitudeDelta: 0.02,
-          longitudeDelta: 0.02,
+          latitudeDelta: 0.05,
+          longitudeDelta: 0.05,
         }}
         onMapReady={() => setMapReady(true)}
         showsUserLocation
+        clusterColor={colors.accent}
         testID="station-map"
       >
         {mapConfig.stations.map((station) => (
@@ -57,7 +59,7 @@ export function StationMap({
             testID={`marker-${station.id}`}
           />
         ))}
-      </MapView>
+      </ClusteredMapView>
       {!mapReady && (
         <View style={styles.loading} testID="map-loading">
           <ActivityIndicator color={colors.muted} />
