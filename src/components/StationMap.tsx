@@ -56,6 +56,9 @@ export function StationMap({
         <Text style={[styles.fallbackText, { color: colors.muted }]}>
           지도를 불러올 수 없습니다.
         </Text>
+        <Text style={[styles.fallbackText, { color: colors.subtle, marginTop: 8, fontSize: 12 }]}>
+          {mapError}
+        </Text>
       </View>
     );
   }
