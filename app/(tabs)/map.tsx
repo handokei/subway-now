@@ -1,10 +1,9 @@
 import React, { useState } from 'react';
-import { Linking, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useMapData } from '../../src/hooks/useMapData';
 import { StationMap } from '../../src/components/StationMap';
-import { buildKakaoMapAppUrl, buildKakaoMapWebUrl } from '../../src/utils/kakaoMapLink';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useAppStore } from '../../src/store/useAppStore';
 import { LineBadge } from '../../src/components/LineBadge';
@@ -25,17 +24,6 @@ export default function MapScreen() {
   const setRecentDestination = useAppStore((s) => s.setRecentDestination);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
   const insets = useSafeAreaInsets();
-
-  const openInKakaoMap = async () => {
-    if (!userLocation) return;
-    const lat = result?.station.lat ?? userLocation.lat;
-    const lng = result?.station.lng ?? userLocation.lng;
-    const name = result?.station.name ?? '현재 위치';
-    const appUrl = buildKakaoMapAppUrl(lat, lng);
-    const webUrl = buildKakaoMapWebUrl(name, lat, lng);
-    const canOpen = await Linking.canOpenURL(appUrl);
-    await Linking.openURL(canOpen ? appUrl : webUrl);
-  };
 
   if (permissionDenied) {
     return (
@@ -146,11 +134,6 @@ export default function MapScreen() {
         </View>
       )}
 
-      {!selectedStation && (
-        <TouchableOpacity style={[styles.kakaoButton, { marginBottom: 16 + insets.bottom }]} onPress={openInKakaoMap}>
-          <Text style={styles.kakaoButtonText}>🗺️ 카카오맵에서 보기</Text>
-        </TouchableOpacity>
-      )}
     </SafeAreaView>
   );
 }
@@ -237,18 +220,5 @@ const styles = StyleSheet.create({
   selectionButtonText: {
     fontSize: 15,
     fontWeight: '700',
-  },
-  kakaoButton: {
-    backgroundColor: '#FEE500',
-    marginHorizontal: 16,
-    marginTop: 16,
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  kakaoButtonText: {
-    color: '#191919',
-    fontSize: 16,
-    fontWeight: 'bold',
   },
 });
