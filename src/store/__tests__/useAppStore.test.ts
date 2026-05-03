@@ -26,7 +26,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, customOrigin: null, themeMode: 'auto', alarmEvent: null });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', alarmEvent: null });
     jest.clearAllMocks();
   });
 
@@ -390,6 +390,47 @@ describe('useAppStore', () => {
 
     const { themeMode } = useAppStore.getState();
     expect(themeMode).toBe('auto');
+  });
+
+  it('초기 routePreference는 optimal이다', () => {
+    const { routePreference } = useAppStore.getState();
+    expect(routePreference).toBe('optimal');
+  });
+
+  it('setRoutePreference: 상태를 업데이트한다', async () => {
+    const { setRoutePreference } = useAppStore.getState();
+    await setRoutePreference('minTransfer');
+    expect(useAppStore.getState().routePreference).toBe('minTransfer');
+  });
+
+  it('setRoutePreference: AsyncStorage에 저장한다', async () => {
+    const { setRoutePreference } = useAppStore.getState();
+    await setRoutePreference('minTransfer');
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith('subway-now:route-preference', JSON.stringify('minTransfer'));
+  });
+
+  it('loadRoutePreference: AsyncStorage에서 데이터를 복원한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify('minTransfer'));
+    await useAppStore.getState().loadRoutePreference();
+    expect(useAppStore.getState().routePreference).toBe('minTransfer');
+  });
+
+  it('loadRoutePreference: 유효하지 않은 값이면 optimal을 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify('invalid'));
+    await useAppStore.getState().loadRoutePreference();
+    expect(useAppStore.getState().routePreference).toBe('optimal');
+  });
+
+  it('loadRoutePreference: AsyncStorage가 비어있으면 optimal을 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+    await useAppStore.getState().loadRoutePreference();
+    expect(useAppStore.getState().routePreference).toBe('optimal');
+  });
+
+  it('loadRoutePreference: AsyncStorage 오류 시 optimal을 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
+    await useAppStore.getState().loadRoutePreference();
+    expect(useAppStore.getState().routePreference).toBe('optimal');
   });
 
   it('초기 alarmEvent는 null이다', () => {

@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY } from '../constants/storageKeys';
+import type { RoutePreference } from '../utils/stationRoute';
 
 export type ThemeMode = 'auto' | 'light' | 'dark';
 
@@ -18,6 +19,7 @@ interface AppState {
   sleepMode: boolean;
   customOrigin: Station | null;
   themeMode: ThemeMode;
+  routePreference: RoutePreference;
   alarmEvent: AlarmEvent | null;
   addFavorite: (station: Station) => Promise<void>;
   removeFavorite: (stationId: string) => Promise<void>;
@@ -28,6 +30,8 @@ interface AppState {
   loadCustomOrigin: () => Promise<void>;
   setThemeMode: (mode: ThemeMode) => Promise<void>;
   loadThemeMode: () => Promise<void>;
+  setRoutePreference: (pref: RoutePreference) => Promise<void>;
+  loadRoutePreference: () => Promise<void>;
   setSleepMode: (enabled: boolean) => Promise<void>;
   loadSleepMode: () => Promise<void>;
   setAlarmEvent: (event: AlarmEvent) => void;
@@ -42,6 +46,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sleepMode: false,
   customOrigin: null,
   themeMode: 'auto' as ThemeMode,
+  routePreference: 'optimal' as RoutePreference,
   alarmEvent: null,
 
   loadFavorites: async () => {
@@ -119,6 +124,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch {
       // 저장된 데이터 없음 — 'auto' 유지
+    }
+  },
+
+  setRoutePreference: async (pref: RoutePreference) => {
+    set({ routePreference: pref });
+    await AsyncStorage.setItem(ROUTE_PREFERENCE_KEY, JSON.stringify(pref));
+  },
+
+  loadRoutePreference: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(ROUTE_PREFERENCE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed === 'optimal' || parsed === 'minTransfer') {
+          set({ routePreference: parsed });
+        }
+      }
+    } catch {
+      // 저장된 데이터 없음 — 'optimal' 유지
     }
   },
 
