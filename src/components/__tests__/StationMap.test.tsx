@@ -147,6 +147,21 @@ describe('StationMap', () => {
     }).not.toThrow();
   });
 
+  it('알 수 없는 메시지 타입은 무시한다', () => {
+    const onStationPress = jest.fn();
+    const { getByTestId, queryByTestId } = render(
+      <StationMap {...baseProps} onStationPress={onStationPress} />,
+    );
+    act(() => {
+      getByTestId('kakao-map-webview').props.onMessage({
+        nativeEvent: { data: JSON.stringify({ type: 'unknown', message: 'test' }) },
+      });
+    });
+    expect(onStationPress).not.toHaveBeenCalled();
+    expect(queryByTestId('map-error')).toBeNull();
+    expect(getByTestId('map-loading')).toBeTruthy();
+  });
+
   it('WebView의 scrollEnabled이 false이다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
     expect(getByTestId('kakao-map-webview').props.scrollEnabled).toBe(false);
