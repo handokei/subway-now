@@ -1,20 +1,22 @@
 import React from 'react';
-import { render, act, waitFor } from '@testing-library/react-native';
+import { render, act, waitFor, fireEvent } from '@testing-library/react-native';
 import { StationMap } from '../StationMap';
 import type { Station } from '../../types/station';
 
-jest.mock('react-native-webview');
-jest.mock('../../utils/buildMapConfig', () => ({
-  buildMapConfig: jest.fn(() => ({
-    apiKey: 'test-key',
-    userLat: 37.498,
-    userLng: 127.027,
-    stations: [],
-  })),
-  buildInjectedJS: jest.fn(() => 'window.initMap({}); true;'),
-}));
-
-const originalEnv = process.env.EXPO_PUBLIC_KAKAO_MAP_KEY;
+jest.mock('react-native-maps', () => {
+  const RN = require('react-native');
+  const R = require('react');
+  return {
+    __esModule: true,
+    default: ({ children, testID, onMapReady, ...props }: any) => {
+      R.useEffect(() => { onMapReady?.(); }, []);
+      return R.createElement(RN.View, { testID, ...props }, children);
+    },
+    Marker: ({ testID, onPress, ...props }: any) =>
+      R.createElement(RN.View, { testID, onPress, ...props }),
+    PROVIDER_DEFAULT: null,
+  };
+});
 
 const mockStation: Station = {
   id: '2-022',
@@ -38,144 +40,85 @@ const baseProps = {
   userLat: 37.498,
   userLng: 127.027,
   nearestStation: mockStation,
-  nearbyStations: [mockStation],
+  nearbyStations: [mockStation, anotherStation],
 };
 
 describe('StationMap', () => {
-  beforeEach(() => {
-    process.env.EXPO_PUBLIC_KAKAO_MAP_KEY = 'test-key';
-  });
-
-  afterEach(() => {
-    process.env.EXPO_PUBLIC_KAKAO_MAP_KEY = originalEnv;
-  });
-
-  it('WebView를 렌더링한다', () => {
+  it('지도뷰를 렌더링한다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(getByTestId('kakao-map-webview')).toBeTruthy();
+    expect(getByTestId('station-map')).toBeTruthy();
   });
 
-  it('로딩 인디케이터를 표시한다', () => {
-    const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(getByTestId('map-loading')).toBeTruthy();
-  });
-
-  it('mapLoaded 메시지 수신 시 로딩 인디케이터를 숨긴다', async () => {
-    const { getByTestId, queryByTestId } = render(<StationMap {...baseProps} />);
-    await act(async () => {
-      getByTestId('kakao-map-webview').props.onMessage({
-        nativeEvent: { data: JSON.stringify({ type: 'mapLoaded' }) },
-      });
-    });
+  it('onMapReady 후 로딩 인디케이터를 숨긴다', async () => {
+    const { queryByTestId } = render(<StationMap {...baseProps} />);
     await waitFor(() => {
       expect(queryByTestId('map-loading')).toBeNull();
     });
   });
 
+  it('nearbyStations 수만큼 마커를 렌더링한다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    expect(getByTestId('marker-2-022')).toBeTruthy();
+    expect(getByTestId('marker-2-023')).toBeTruthy();
+  });
+
+  it('마커 press 시 onStationPress를 호출한다', () => {
+    const onStationPress = jest.fn();
+    const { getByTestId } = render(
+      <StationMap {...baseProps} onStationPress={onStationPress} />,
+    );
+    fireEvent.press(getByTestId('marker-2-022'));
+    expect(onStationPress).toHaveBeenCalledWith(
+      expect.objectContaining({ id: '2-022', name: '강남' }),
+    );
+  });
+
+  it('onStationPress가 없을 때 마커 press해도 에러가 없다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    expect(() => {
+      fireEvent.press(getByTestId('marker-2-022'));
+    }).not.toThrow();
+  });
+
+  it('nearbyStations가 빈 배열이면 마커가 없다', () => {
+    const { queryByTestId } = render(
+      <StationMap {...baseProps} nearbyStations={[]} />,
+    );
+    expect(queryByTestId('marker-2-022')).toBeNull();
+  });
+
+  it('showsUserLocation이 true이다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    expect(getByTestId('station-map').props.showsUserLocation).toBe(true);
+  });
+
+  it('customOriginId와 일치하는 마커는 accent 색상을 사용한다', () => {
+    const { getByTestId } = render(
+      <StationMap {...baseProps} customOriginId="2-023" />,
+    );
+    // customOriginId와 일치하는 마커의 pinColor가 accent 색상(테마 기본: #C8553D)
+    const marker = getByTestId('marker-2-023');
+    expect(marker.props.pinColor).toBe('#C8553D');
+  });
+
+  it('customOriginId가 없으면 기존 색상 로직을 따른다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    // nearest station은 accent, 나머지는 lineColor
+    const nearestMarker = getByTestId('marker-2-022');
+    expect(nearestMarker.props.pinColor).toBe('#C8553D');
+    const otherMarker = getByTestId('marker-2-023');
+    expect(otherMarker.props.pinColor).toBe('#009D3E');
+  });
+
   it('buildMapConfig에 올바른 파라미터를 전달한다', () => {
-    const { buildMapConfig } = require('../../utils/buildMapConfig');
-    render(<StationMap {...baseProps} nearbyStations={[mockStation, anotherStation]} />);
-    expect(buildMapConfig).toHaveBeenCalledWith({
-      apiKey: 'test-key',
+    const buildMapConfig = jest.requireActual('../../utils/buildMapConfig').buildMapConfig;
+    const result = buildMapConfig({
       userLat: 37.498,
       userLng: 127.027,
       nearestStation: mockStation,
       nearbyStations: [mockStation, anotherStation],
     });
-  });
-
-  it('stationPress 메시지를 받으면 onStationPress를 호출한다', () => {
-    const onStationPress = jest.fn();
-    const { getByTestId } = render(
-      <StationMap {...baseProps} onStationPress={onStationPress} />,
-    );
-    act(() => {
-      getByTestId('kakao-map-webview').props.onMessage({
-        nativeEvent: {
-          data: JSON.stringify({ type: 'stationPress', message: mockStation }),
-        },
-      });
-    });
-    expect(onStationPress).toHaveBeenCalledWith(mockStation);
-  });
-
-  it('onStationPress가 없을 때 메시지를 받아도 에러가 없다', () => {
-    const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(() => {
-      act(() => {
-        getByTestId('kakao-map-webview').props.onMessage({
-          nativeEvent: {
-            data: JSON.stringify({ type: 'stationPress', message: mockStation }),
-          },
-        });
-      });
-    }).not.toThrow();
-  });
-
-  it('error 메시지를 받으면 fallback UI를 표시한다', async () => {
-    const { getByTestId } = render(<StationMap {...baseProps} />);
-    await act(async () => {
-      getByTestId('kakao-map-webview').props.onMessage({
-        nativeEvent: {
-          data: JSON.stringify({ type: 'error', message: 'SDK 로드 실패' }),
-        },
-      });
-    });
-    await waitFor(() => {
-      expect(getByTestId('map-error')).toBeTruthy();
-    });
-  });
-
-  it('onError 발생 시 fallback UI를 표시한다', async () => {
-    const { getByTestId } = render(<StationMap {...baseProps} />);
-    await act(async () => {
-      getByTestId('kakao-map-webview').props.onError();
-    });
-    await waitFor(() => {
-      expect(getByTestId('map-error')).toBeTruthy();
-    });
-  });
-
-  it('잘못된 JSON 메시지를 받아도 에러가 없다', () => {
-    const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(() => {
-      act(() => {
-        getByTestId('kakao-map-webview').props.onMessage({
-          nativeEvent: { data: 'invalid json' },
-        });
-      });
-    }).not.toThrow();
-  });
-
-  it('알 수 없는 메시지 타입은 무시한다', () => {
-    const onStationPress = jest.fn();
-    const { getByTestId, queryByTestId } = render(
-      <StationMap {...baseProps} onStationPress={onStationPress} />,
-    );
-    act(() => {
-      getByTestId('kakao-map-webview').props.onMessage({
-        nativeEvent: { data: JSON.stringify({ type: 'unknown', message: 'test' }) },
-      });
-    });
-    expect(onStationPress).not.toHaveBeenCalled();
-    expect(queryByTestId('map-error')).toBeNull();
-    expect(getByTestId('map-loading')).toBeTruthy();
-  });
-
-  it('WebView의 scrollEnabled이 false이다', () => {
-    const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(getByTestId('kakao-map-webview').props.scrollEnabled).toBe(false);
-  });
-
-  it('API 키가 없으면 fallback UI를 표시한다', () => {
-    process.env.EXPO_PUBLIC_KAKAO_MAP_KEY = '';
-    const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(getByTestId('map-no-api-key')).toBeTruthy();
-  });
-
-  it('API 키가 undefined이면 fallback UI를 표시한다', () => {
-    delete process.env.EXPO_PUBLIC_KAKAO_MAP_KEY;
-    const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(getByTestId('map-no-api-key')).toBeTruthy();
+    expect(result.stations[0].isNearest).toBe(true);
+    expect(result.stations[1].isNearest).toBe(false);
   });
 });

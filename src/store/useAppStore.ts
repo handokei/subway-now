@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY } from '../constants/storageKeys';
 
 export type { AlarmEvent };
 
@@ -14,12 +14,15 @@ interface AppState {
   destination: Station | null;
   recentDestination: Station | null;
   sleepMode: boolean;
+  customOrigin: Station | null;
   alarmEvent: AlarmEvent | null;
   addFavorite: (station: Station) => Promise<void>;
   removeFavorite: (stationId: string) => Promise<void>;
   loadFavorites: () => Promise<void>;
   setDestination: (station: Station | null) => void;
   setRecentDestination: (station: Station | null) => void;
+  setCustomOrigin: (station: Station | null) => void;
+  loadCustomOrigin: () => Promise<void>;
   setSleepMode: (enabled: boolean) => Promise<void>;
   loadSleepMode: () => Promise<void>;
   setAlarmEvent: (event: AlarmEvent) => void;
@@ -32,6 +35,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   destination: null,
   recentDestination: null,
   sleepMode: false,
+  customOrigin: null,
   alarmEvent: null,
 
   loadFavorites: async () => {
@@ -71,6 +75,26 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setRecentDestination: (station: Station | null) => {
     set({ recentDestination: station });
+  },
+
+  setCustomOrigin: (station: Station | null) => {
+    set({ customOrigin: station });
+    if (station) {
+      AsyncStorage.setItem(CUSTOM_ORIGIN_KEY, JSON.stringify(station)).catch(noop);
+    } else {
+      AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY).catch(noop);
+    }
+  },
+
+  loadCustomOrigin: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(CUSTOM_ORIGIN_KEY);
+      if (raw) {
+        set({ customOrigin: JSON.parse(raw) });
+      }
+    } catch {
+      // 저장된 데이터 없음 — null 유지
+    }
   },
 
   setSleepMode: async (enabled: boolean) => {

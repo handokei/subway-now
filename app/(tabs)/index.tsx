@@ -24,7 +24,12 @@ const logger = createLogger('HomeScreen');
 export default function HomeScreen() {
   const { colors } = useTheme();
   const { result, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
-  const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(result?.station.name ?? null);
+  const customOrigin = useAppStore((s) => s.customOrigin);
+  const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
+  const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
+  const isCustomOrigin = customOrigin !== null;
+  const effectiveOrigin = customOrigin ?? result?.station ?? null;
+  const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(effectiveOrigin?.name ?? null);
   const arrival = useArrivalCountdown(rawArrival);
   const addFavorite = useAppStore((s) => s.addFavorite);
   const removeFavorite = useAppStore((s) => s.removeFavorite);
@@ -46,26 +51,26 @@ export default function HomeScreen() {
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const prevDestIdRef = useRef<string | null>(null);
   const [route, setRoute] = useState<Route>(null);
-  const isFav = result ? favorites.some((f) => f.id === result.station.id) : false;
+  const isFav = effectiveOrigin ? favorites.some((f) => f.id === effectiveOrigin.id) : false;
 
   useEffect(() => {
-    if (!result || !destination) {
+    if (!effectiveOrigin || !destination) {
       setRoute(null);
       return;
     }
     const interactionStart = performance.now();
     const interaction = InteractionManager.runAfterInteractions(() => {
-      const route = findRoute(result.station.id, destination.id);
+      const route = findRoute(effectiveOrigin.id, destination.id);
       const total = performance.now() - interactionStart;
       logger.debug(`경로 계산 전체 (InteractionManager 포함): ${total.toFixed(2)}ms`);
       setRoute(route);
     });
     return () => interaction.cancel();
-  }, [result?.station.id, destination?.id]);
+  }, [effectiveOrigin?.id, destination?.id]);
 
   const journey = useMemo(
-    () => (route && result && destination ? buildJourneyDisplay(route, result.station, destination) : null),
-    [route, result?.station.id, destination?.id],
+    () => (route && effectiveOrigin && destination ? buildJourneyDisplay(route, effectiveOrigin, destination) : null),
+    [route, effectiveOrigin?.id, destination?.id],
   );
   const nextTrainMinutes = arrival
     ? Math.min(
@@ -81,17 +86,18 @@ export default function HomeScreen() {
   const displayEta = isRealtimeEta ? etaMinutes : staticEtaMinutes;
 
   const nextStationName = useMemo(
-    () => (result && destination && route ? getNextStationName(result.station.id, destination.id, route) : null),
-    [result?.station.id, destination?.id, route],
+    () => (effectiveOrigin && destination && route ? getNextStationName(effectiveOrigin.id, destination.id, route) : null),
+    [effectiveOrigin?.id, destination?.id, route],
   );
 
   // nextStationName이 확정됐으면 stops=0으로 즉시 시간 기반 임계 통과 (firedAlarms로 중복 방지)
-  useStationAlarm(route, destination?.name ?? null, nextStationName, nextStationName ? 0 : undefined);
+  useStationAlarm(route, destination?.name ?? null);
   useBackgroundLocation(destination);
 
   useEffect(() => {
     loadFavorites();
     loadSleepMode();
+    loadCustomOrigin();
     loadAlarmEvent();
     initStationNotification().catch((e) => logger.error('알림 초기화 실패:', e));
     const subscription = AppState.addEventListener('change', (state) => {
@@ -107,7 +113,7 @@ export default function HomeScreen() {
     const currDestId = destination?.id ?? null;
     prevDestIdRef.current = currDestId;
 
-    if (!result) {
+    if (!effectiveOrigin) {
       if (prevNotifKeyRef.current !== 'none') {
         prevNotifKeyRef.current = 'none';
         logger.info('역 없음 → 알림 해제');
@@ -115,7 +121,7 @@ export default function HomeScreen() {
       }
       return;
     }
-    const key = `${result.station.id}__${destination?.id ?? ''}__${displayEta ?? ''}__${arrivalIsMock}__${alarmEvent?.type ?? ''}`;
+    const key = `${effectiveOrigin.id}__${destination?.id ?? ''}__${displayEta ?? ''}__${arrivalIsMock}__${alarmEvent?.type ?? ''}`;
     if (key === prevNotifKeyRef.current) return;
     prevNotifKeyRef.current = key;
 
@@ -131,10 +137,10 @@ export default function HomeScreen() {
         await clearAlarmNotification();
         await clearStationNotification();
       }
-      logger.info('알림 업데이트:', result.station.name, destination ? `→ ${destination.name}` : '');
+      logger.info('알림 업데이트:', effectiveOrigin.name, destination ? `→ ${destination.name}` : '');
       await updateStationNotification(
-        result.station,
-        Math.round(result.distanceKm * 1000),
+        effectiveOrigin,
+        isCustomOrigin ? 0 : Math.round((result?.distanceKm ?? 0) * 1000),
         destination,
         route ?? null,
         displayEta,
@@ -143,7 +149,7 @@ export default function HomeScreen() {
       );
     };
     update().catch((e) => logger.error('알림 업데이트 실패:', e));
-  }, [result?.station.id, destination?.id, displayEta, arrivalIsMock, route, alarmEvent]);
+  }, [effectiveOrigin?.id, destination?.id, displayEta, arrivalIsMock, route, alarmEvent]);
 
   useEffect(() => {
     if (arrivedBanner) {
@@ -218,30 +224,30 @@ export default function HomeScreen() {
         </View>
       )}
       <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
-        {result && nearest ? (
+        {effectiveOrigin ? (
           <>
             {/* Top meta */}
             <View style={styles.topMeta}>
               <Text style={[typography.mono, { color: colors.subtle }]}>
                 {new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
               </Text>
-              <Text style={[typography.label, { color: colors.subtle }]}>LIVE</Text>
+              <Text style={[typography.label, { color: colors.subtle }]}>{isCustomOrigin ? '수동' : 'LIVE'}</Text>
             </View>
 
-            {/* Hero: nearest station */}
+            {/* Hero: origin station */}
             <View style={{ paddingHorizontal: spacing.xxl, paddingTop: spacing.xxxl - 4 }}>
               <Text style={[typography.label, { color: colors.muted, marginBottom: 10 }]}>
-                {result.distanceKm <= 0.5 ? '현재역' : '가장 가까운 역'}
+                {isCustomOrigin ? '출발역 (수동)' : result && result.distanceKm <= 0.5 ? '현재역' : '가장 가까운 역'}
               </Text>
               <View style={styles.heroRow}>
                 <Text style={[typography.hero, { color: colors.ink, flex: 1 }]}>
-                  {nearest.name}
+                  {effectiveOrigin.name}
                 </Text>
                 <TouchableOpacity
                   onPress={() =>
                     isFav
-                      ? removeFavorite(result.station.id)
-                      : addFavorite(result.station)
+                      ? removeFavorite(effectiveOrigin.id)
+                      : addFavorite(effectiveOrigin)
                   }
                 >
                   <Text style={styles.favoriteIcon}>
@@ -250,16 +256,29 @@ export default function HomeScreen() {
                 </TouchableOpacity>
               </View>
               <View style={styles.metaRow}>
-                <LineBadge line={result.station.line} />
-                <Dot />
-                <Text style={[typography.bodySm, { color: colors.muted }]}>
-                  {nearest.distanceM} m
-                </Text>
-                <Dot />
-                <Text style={[typography.bodySm, { color: colors.muted }]}>
-                  {nearest.walkMin} min walk
-                </Text>
+                <LineBadge line={effectiveOrigin.line} />
+                {!isCustomOrigin && nearest && (
+                  <>
+                    <Dot />
+                    <Text style={[typography.bodySm, { color: colors.muted }]}>
+                      {nearest.distanceM} m
+                    </Text>
+                    <Dot />
+                    <Text style={[typography.bodySm, { color: colors.muted }]}>
+                      {nearest.walkMin} min walk
+                    </Text>
+                  </>
+                )}
               </View>
+              {isCustomOrigin && (
+                <TouchableOpacity
+                  style={[styles.gpsResetButton, { borderColor: colors.accent }]}
+                  onPress={() => setCustomOrigin(null)}
+                  testID="gps-reset-button"
+                >
+                  <Text style={[styles.gpsResetText, { color: colors.accent }]}>GPS 모드로 전환</Text>
+                </TouchableOpacity>
+              )}
             </View>
 
             <Hr />
@@ -381,7 +400,7 @@ export default function HomeScreen() {
           <View style={styles.center}>
             <Text style={styles.icon}>🚶</Text>
             <Text style={[styles.title, { color: colors.ink }]}>지하철역 근처가 아닙니다</Text>
-            <Text style={[styles.subtitle, { color: colors.muted }]}>지하철역 500m 이내에 있을 때{'\n'}현재 역이 표시됩니다.</Text>
+            <Text style={[styles.subtitle, { color: colors.muted }]}>지하철역 500m 이내에 있을 때{'\n'}현재 역이 표시됩니다.{'\n'}지도 탭에서 출발역을 직접 설정할 수 있습니다.</Text>
             <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
               <Text style={[styles.buttonText, { color: colors.onAccent }]}>새로고침</Text>
             </TouchableOpacity>
@@ -488,6 +507,18 @@ const styles = StyleSheet.create({
     marginLeft: spacing.md,
   },
   metaRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  gpsResetButton: {
+    marginTop: spacing.md,
+    borderWidth: 1,
+    borderRadius: radius.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xs,
+    alignSelf: 'flex-start',
+  },
+  gpsResetText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
   actionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
