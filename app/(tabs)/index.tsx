@@ -248,7 +248,7 @@ export default function HomeScreen() {
                 {isCustomOrigin ? '출발역 (수동)' : result && result.distanceKm <= 0.5 ? '현재역' : '가장 가까운 역'}
               </Text>
               <View style={styles.heroRow}>
-                <Text style={[typography.hero, { color: colors.ink, flex: 1 }]}>
+                <Text style={[typography.hero, { color: colors.ink, flex: 1, fontWeight: '900' }]}>
                   {effectiveOrigin.name}
                 </Text>
                 <TouchableOpacity
@@ -300,7 +300,7 @@ export default function HomeScreen() {
                       <Text style={[typography.label, { color: colors.muted, marginBottom: 4 }]}>
                         Route to
                       </Text>
-                      <Text style={[typography.title, { color: colors.ink }]}>{destination.name}</Text>
+                      <Text style={{ fontSize: 32, fontWeight: '900', letterSpacing: -0.8, color: colors.ink }}>{destination.name}</Text>
                     </View>
                     <View style={{ alignItems: 'flex-end' }}>
                       {displayEta != null && (
