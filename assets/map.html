@@ -11,73 +11,89 @@ html,body{margin:0;padding:0;width:100%;height:100%;overflow:hidden;}
 <body>
 <div id="map"></div>
 <script>
-var sdkLoaded = false;
-var sdkTimeout = setTimeout(function() {
-  if (!sdkLoaded) {
-    postMsg('error', 'SDK 로드 타임아웃 (10초)');
-  }
-}, 10000);
+(function() {
+  'use strict';
 
-function postMsg(type, message) {
-  if (window.ReactNativeWebView) {
-    window.ReactNativeWebView.postMessage(JSON.stringify({ type: type, message: message }));
-  }
-}
-
-function onSdkLoadError() {
-  clearTimeout(sdkTimeout);
-  postMsg('error', 'Kakao Maps SDK 스크립트 로드 실패');
-}
-
-window.initMap = function(config) {
-  if (typeof kakao === 'undefined' || !kakao.maps) {
-    postMsg('error', 'Kakao Maps SDK를 사용할 수 없습니다');
-    return;
-  }
-
-  kakao.maps.load(function() {
-    try {
-      sdkLoaded = true;
-      clearTimeout(sdkTimeout);
-
-      var map = new kakao.maps.Map(document.getElementById('map'), {
-        center: new kakao.maps.LatLng(config.userLat, config.userLng),
-        level: 5
-      });
-
-      var userEl = document.createElement('div');
-      userEl.style.cssText = 'width:14px;height:14px;border-radius:50%;background:#4A90D9;border:3px solid #fff;box-shadow:0 0 6px rgba(0,0,0,0.3);';
-      new kakao.maps.CustomOverlay({
-        position: new kakao.maps.LatLng(config.userLat, config.userLng),
-        content: userEl,
-        map: map,
-        zIndex: 10
-      });
-
-      var markers = config.stations.map(function(s) {
-        var marker = new kakao.maps.Marker({
-          position: new kakao.maps.LatLng(s.lat, s.lng)
-        });
-        kakao.maps.event.addListener(marker, 'click', function() {
-          postMsg('stationPress', s);
-        });
-        return marker;
-      });
-
-      new kakao.maps.MarkerClusterer({
-        map: map,
-        markers: markers,
-        gridSize: 60,
-        minLevel: 5,
-        disableClickZoom: false
-      });
-
-      postMsg('mapLoaded', null);
-    } catch(e) {
-      postMsg('error', 'Kakao Maps 초기화 실패: ' + e.message);
+  var sdkLoaded = false;
+  var sdkTimeout = setTimeout(function() {
+    if (!sdkLoaded) {
+      postMsg('error', 'SDK 로드 타임아웃 (10초)');
     }
-  });
-};
+  }, 10000);
+
+  function postMsg(type, data) {
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type: type, message: data }));
+    }
+  }
+
+  window.onSdkLoadError = function() {
+    clearTimeout(sdkTimeout);
+    postMsg('error', 'Kakao Maps SDK 스크립트 로드 실패');
+  };
+
+  window.initMap = function(config) {
+    if (typeof kakao === 'undefined') {
+      postMsg('error', 'Kakao Maps SDK를 사용할 수 없습니다');
+      return;
+    }
+
+    if (!kakao.maps) {
+      postMsg('error', 'Kakao Maps API를 사용할 수 없습니다');
+      return;
+    }
+
+    kakao.maps.load(function() {
+      try {
+        sdkLoaded = true;
+        clearTimeout(sdkTimeout);
+
+        var mapEl = document.getElementById('map');
+        if (!mapEl) {
+          postMsg('error', '지도 컨테이너를 찾을 수 없습니다');
+          return;
+        }
+
+        var map = new kakao.maps.Map(mapEl, {
+          center: new kakao.maps.LatLng(config.userLat, config.userLng),
+          level: 5
+        });
+
+        var userEl = document.createElement('div');
+        userEl.style.cssText = 'width:14px;height:14px;border-radius:50%;background:#4A90D9;border:3px solid #fff;box-shadow:0 0 6px rgba(0,0,0,0.3);';
+        new kakao.maps.CustomOverlay({
+          position: new kakao.maps.LatLng(config.userLat, config.userLng),
+          content: userEl,
+          map: map,
+          zIndex: 10
+        });
+
+        var stations = config.stations || [];
+        var markers = stations.map(function(s) {
+          var marker = new kakao.maps.Marker({
+            position: new kakao.maps.LatLng(s.lat, s.lng)
+          });
+          kakao.maps.event.addListener(marker, 'click', function() {
+            postMsg('stationPress', s);
+          });
+          return marker;
+        });
+
+        new kakao.maps.MarkerClusterer({
+          map: map,
+          markers: markers,
+          gridSize: 60,
+          minLevel: 5,
+          disableClickZoom: false
+        });
+
+        postMsg('mapLoaded', null);
+      } catch(e) {
+        postMsg('error', 'Kakao Maps 초기화 실패: ' + (e.message || String(e)));
+      }
+    });
+  };
+})();
 </script>
 <script id="kakao-sdk" onerror="onSdkLoadError()"></script>
 </body>
