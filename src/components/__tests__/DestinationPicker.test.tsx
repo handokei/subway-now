@@ -4,8 +4,14 @@ import { DestinationPicker } from '../DestinationPicker';
 import type { Station } from '../../types/station';
 
 jest.mock('react-native-webview');
-jest.mock('../../utils/buildMapHtml', () => ({
-  buildMapHtml: jest.fn(() => '<html>mock</html>'),
+jest.mock('../../utils/buildMapConfig', () => ({
+  buildMapConfig: jest.fn(() => ({
+    apiKey: 'test-key',
+    userLat: 37.498,
+    userLng: 127.027,
+    stations: [],
+  })),
+  buildInjectedJS: jest.fn(() => 'window.initMap({}); true;'),
 }));
 
 const mockStation: Station = {
@@ -115,7 +121,7 @@ describe('DestinationPicker', () => {
     const webview = getByTestId('kakao-map-webview');
     webview.props.onMessage({
       nativeEvent: {
-        data: JSON.stringify({ type: 'stationPress', station: mockStation }),
+        data: JSON.stringify({ type: 'stationPress', message: mockStation }),
       },
     });
     expect(onSelect).toHaveBeenCalledWith(mockStation);

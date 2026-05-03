@@ -1,9 +1,11 @@
-import React, { useCallback, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useMemo, useState } from 'react';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 import type { Station } from '../types/station';
-import { buildMapHtml } from '../utils/buildMapHtml';
+import { buildMapConfig, buildInjectedJS } from '../utils/buildMapConfig';
 import { useTheme } from '../theme';
+
+const mapHtml = require('../../assets/map.html');
 
 interface StationMapProps {
   userLat: number;
@@ -23,15 +25,18 @@ export function StationMap({
   const apiKey = process.env.EXPO_PUBLIC_KAKAO_MAP_KEY ?? '';
   const { colors } = useTheme();
   const [mapError, setMapError] = useState<string | null>(null);
+  const [mapLoaded, setMapLoaded] = useState(false);
 
   const handleMessage = useCallback(
     (event: WebViewMessageEvent) => {
       try {
         const data = JSON.parse(event.nativeEvent.data);
         if (data.type === 'stationPress') {
-          onStationPress?.(data.station);
+          onStationPress?.(data.message);
         } else if (data.type === 'error') {
           setMapError(data.message);
+        } else if (data.type === 'mapLoaded') {
+          setMapLoaded(true);
         }
       } catch {
         // 잘못된 메시지 무시
@@ -39,6 +44,12 @@ export function StationMap({
     },
     [onStationPress],
   );
+
+  const injectedJS = useMemo(() => {
+    if (!apiKey) return '';
+    const config = buildMapConfig({ apiKey, userLat, userLng, nearestStation, nearbyStations });
+    return buildInjectedJS(config);
+  }, [apiKey, userLat, userLng, nearestStation?.id, nearbyStations]);
 
   if (!apiKey) {
     return (
@@ -63,17 +74,24 @@ export function StationMap({
     );
   }
 
-  const html = buildMapHtml({ apiKey, userLat, userLng, nearestStation, nearbyStations });
-
   return (
-    <WebView
-      style={styles.map}
-      source={{ html }}
-      onMessage={handleMessage}
-      onError={() => setMapError('WebView 로드 실패')}
-      scrollEnabled={false}
-      testID="kakao-map-webview"
-    />
+    <View style={styles.map}>
+      <WebView
+        style={styles.map}
+        source={mapHtml}
+        injectedJavaScript={injectedJS}
+        onMessage={handleMessage}
+        onError={() => setMapError('WebView 로드 실패')}
+        javaScriptEnabled
+        scrollEnabled={false}
+        testID="kakao-map-webview"
+      />
+      {!mapLoaded && (
+        <View style={styles.loading} testID="map-loading">
+          <ActivityIndicator color={colors.muted} />
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -90,5 +108,10 @@ const styles = StyleSheet.create({
   fallbackText: {
     fontSize: 14,
     textAlign: 'center',
+  },
+  loading: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
