@@ -196,7 +196,8 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     (AsyncStorage.getItem as jest.Mock)
       .mockResolvedValueOnce(JSON.stringify(mockDestination)) // DESTINATION_KEY
       .mockResolvedValueOnce(null)                            // SLEEP_MODE_KEY
-      .mockResolvedValueOnce(null);                           // FIRED_ALARMS_KEY
+      .mockResolvedValueOnce(null)                            // FIRED_ALARMS_KEY
+      .mockResolvedValueOnce(null);                           // ROUTE_KEY
 
     mockProcessLocationUpdate.mockResolvedValue({
       alarmEvent: null,
@@ -214,6 +215,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       mockDestination,
       new Set(),
       false,
+      null,
     );
     expect(AsyncStorage.setItem).not.toHaveBeenCalled();
   });
@@ -224,6 +226,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     (AsyncStorage.getItem as jest.Mock)
       .mockResolvedValueOnce(JSON.stringify(mockDestination))
       .mockResolvedValueOnce('true')
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null);
 
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
@@ -239,6 +242,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       mockDestination,
       new Set(),
       true,
+      null,
     );
   });
 
@@ -246,6 +250,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     (AsyncStorage.getItem as jest.Mock)
       .mockResolvedValueOnce(JSON.stringify(mockDestination))
       .mockResolvedValueOnce('false')
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null);
 
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
@@ -261,6 +266,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       mockDestination,
       new Set(),
       false,
+      null,
     );
   });
 
@@ -271,7 +277,8 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     (AsyncStorage.getItem as jest.Mock)
       .mockResolvedValueOnce(JSON.stringify(mockDestination))
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(JSON.stringify(fired));
+      .mockResolvedValueOnce(JSON.stringify(fired))
+      .mockResolvedValueOnce(null);
 
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
@@ -286,6 +293,75 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       mockDestination,
       new Set(fired),
       false,
+      null,
+    );
+  });
+
+  // ── ROUTE_KEY 관련 테스트 ──
+
+  it('ROUTE_KEY를 AsyncStorage에서 읽는다', async () => {
+    (AsyncStorage.getItem as jest.Mock)
+      .mockResolvedValueOnce(JSON.stringify(mockDestination))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    expect(AsyncStorage.getItem).toHaveBeenCalledWith('subway-now:route');
+  });
+
+  it('routeJson이 있으면 파싱한 route를 processLocationUpdate에 전달한다', async () => {
+    const storedRoute = { type: 'direct', stops: 3 };
+    (AsyncStorage.getItem as jest.Mock)
+      .mockResolvedValueOnce(JSON.stringify(mockDestination))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(JSON.stringify(storedRoute));
+
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.any(Number),
+      mockDestination,
+      new Set(),
+      false,
+      storedRoute,
+    );
+  });
+
+  it('routeJson이 null이면 null storedRoute를 processLocationUpdate에 전달한다', async () => {
+    (AsyncStorage.getItem as jest.Mock)
+      .mockResolvedValueOnce(JSON.stringify(mockDestination))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null);
+
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.any(Number),
+      mockDestination,
+      new Set(),
+      false,
+      null,
     );
   });
 

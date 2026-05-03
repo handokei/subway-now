@@ -160,6 +160,7 @@ describe('useAppStore', () => {
     setDestination(null);
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:destination');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:fired-alarms');
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:route');
   });
 
   it('setDestination: AsyncStorage 실패 시에도 에러를 던지지 않는다', async () => {

@@ -1,5 +1,5 @@
 import { findNearestStation } from './findNearestStation';
-import { findRoute, calculateStaticETA } from './stationRoute';
+import { findRoute, calculateStaticETA, updateRouteFromPosition } from './stationRoute';
 import { checkAlarm, checkTimeBasedAlarm } from './stationAlarm';
 import { sendAlarmNotification, updateStationNotification } from './stationNotification';
 import type { NearestStationResult, Station } from '../types/station';
@@ -83,11 +83,18 @@ export async function processLocationUpdate(
   destination: Station,
   firedAlarms: Set<string>,
   sleepMode: boolean,
+  storedRoute: Route = null,
 ): Promise<PipelineResult> {
   const nearest = findNearestStation(lat, lng);
   if (!nearest) return { alarmEvent: null, nearest: null };
 
-  const route = findRoute(nearest.station.id, destination.id);
+  let route: Route = null;
+  if (storedRoute) {
+    route = updateRouteFromPosition(storedRoute, nearest.station, destination.id);
+  }
+  if (!route) {
+    route = findRoute(nearest.station.id, destination.id);
+  }
   const alarmEvent = evaluateAllAlarms(route, destination.name, firedAlarms);
 
   if (alarmEvent) {

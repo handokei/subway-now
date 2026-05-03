@@ -14,6 +14,8 @@ import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/j
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
 import { useBackgroundLocation } from '../../src/hooks/useBackgroundLocation';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ROUTE_KEY } from '../../src/constants/storageKeys';
 import { AlarmOverlay } from '../../src/components/AlarmOverlay';
 import { createLogger } from '../../src/utils/logger';
 import { useTheme, typography, spacing, radius } from '../../src/theme';
@@ -61,6 +63,7 @@ export default function HomeScreen() {
     if (!effectiveOrigin || !destination) {
       setCandidates([]);
       setSelectedIdx(0);
+      AsyncStorage.removeItem(ROUTE_KEY).catch(() => {});
       return;
     }
     const interactionStart = performance.now();
@@ -71,6 +74,11 @@ export default function HomeScreen() {
       setCandidates(results);
       const picked = pickRouteByPreference(results, routePreference);
       setSelectedIdx(picked ? results.indexOf(picked) : 0);
+      if (picked) {
+        AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(picked.route)).catch(() => {});
+      } else {
+        AsyncStorage.removeItem(ROUTE_KEY).catch(() => {});
+      }
     });
     return () => interaction.cancel();
   }, [effectiveOrigin?.id, destination?.id, routePreference]);
@@ -326,7 +334,10 @@ export default function HomeScreen() {
                             key={i}
                             testID={`route-tab-${i}`}
                             style={[styles.routePill, active && { backgroundColor: colors.accent }]}
-                            onPress={() => setSelectedIdx(i)}
+                            onPress={() => {
+                              setSelectedIdx(i);
+                              AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(c.route)).catch(() => {});
+                            }}
                           >
                             <Text style={[styles.routePillText, { color: active ? colors.onAccent : colors.muted }]}>
                               {label}

@@ -11,9 +11,11 @@ jest.mock('../findNearestStation', () => ({
 
 const mockFindRoute = jest.fn();
 const mockCalculateStaticETA = jest.fn();
+const mockUpdateRouteFromPosition = jest.fn();
 jest.mock('../stationRoute', () => ({
   findRoute: (...args: unknown[]) => mockFindRoute(...args),
   calculateStaticETA: (...args: unknown[]) => mockCalculateStaticETA(...args),
+  updateRouteFromPosition: (...args: unknown[]) => mockUpdateRouteFromPosition(...args),
 }));
 
 const mockCheckAlarm = jest.fn();
@@ -421,6 +423,43 @@ describe('processLocationUpdate', () => {
     await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
 
     expect(mockCheckTimeBasedAlarm).not.toHaveBeenCalled();
+  });
+
+  it('should use updateRouteFromPosition result when storedRoute is provided and succeeds', async () => {
+    const storedRoute: DirectRoute = { type: 'direct', stops: 5 };
+    const updatedRoute: DirectRoute = { type: 'direct', stops: 3 };
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockUpdateRouteFromPosition.mockReturnValue(updatedRoute);
+    mockCalculateStaticETA.mockReturnValue(6);
+
+    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false, storedRoute);
+
+    expect(mockUpdateRouteFromPosition).toHaveBeenCalledWith(storedRoute, mockStation, 'station-2');
+    expect(mockFindRoute).not.toHaveBeenCalled();
+    expect(mockCalculateStaticETA).toHaveBeenCalledWith(updatedRoute);
+  });
+
+  it('should fall back to findRoute when storedRoute is provided but updateRouteFromPosition returns null', async () => {
+    const storedRoute: DirectRoute = { type: 'direct', stops: 5 };
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockUpdateRouteFromPosition.mockReturnValue(null);
+    mockFindRoute.mockReturnValue(mockRoute);
+    mockCalculateStaticETA.mockReturnValue(6);
+
+    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false, storedRoute);
+
+    expect(mockUpdateRouteFromPosition).toHaveBeenCalledWith(storedRoute, mockStation, 'station-2');
+    expect(mockFindRoute).toHaveBeenCalledWith('station-1', 'station-2');
+  });
+
+  it('should call findRoute when no storedRoute is provided (default null)', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+
+    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
+
+    expect(mockUpdateRouteFromPosition).not.toHaveBeenCalled();
+    expect(mockFindRoute).toHaveBeenCalledWith('station-1', 'station-2');
   });
 });
 
