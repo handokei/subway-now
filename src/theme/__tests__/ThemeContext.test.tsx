@@ -3,12 +3,14 @@ import { renderHook } from '@testing-library/react-native';
 import * as RN from 'react-native';
 import { ThemeProvider, useTheme } from '../ThemeContext';
 import { lightColors, darkColors } from '../theme';
+import { useAppStore } from '../../store/useAppStore';
 
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');
 
 describe('ThemeContext', () => {
   beforeEach(() => {
     mockUseColorScheme.mockReturnValue('light');
+    useAppStore.setState({ themeMode: 'auto' });
   });
 
   afterEach(() => {
@@ -37,7 +39,7 @@ describe('ThemeContext', () => {
       <ThemeProvider>{children}</ThemeProvider>
     );
 
-    it('라이트 모드일 때 lightColors를 제공한다', () => {
+    it('auto 모드 + 라이트 시스템일 때 lightColors를 제공한다', () => {
       mockUseColorScheme.mockReturnValue('light');
       const { result } = renderHook(() => useTheme(), { wrapper });
 
@@ -45,7 +47,7 @@ describe('ThemeContext', () => {
       expect(result.current.isDark).toBe(false);
     });
 
-    it('다크 모드일 때 darkColors를 제공한다', () => {
+    it('auto 모드 + 다크 시스템일 때 darkColors를 제공한다', () => {
       mockUseColorScheme.mockReturnValue('dark');
       const { result } = renderHook(() => useTheme(), { wrapper });
 
@@ -53,12 +55,30 @@ describe('ThemeContext', () => {
       expect(result.current.isDark).toBe(true);
     });
 
-    it('scheme이 null일 때 lightColors를 제공한다', () => {
+    it('auto 모드 + scheme null일 때 lightColors를 제공한다', () => {
       mockUseColorScheme.mockReturnValue(null);
       const { result } = renderHook(() => useTheme(), { wrapper });
 
       expect(result.current.colors).toBe(lightColors);
       expect(result.current.isDark).toBe(false);
+    });
+
+    it('light 모드이면 시스템 다크여도 lightColors를 제공한다', () => {
+      useAppStore.setState({ themeMode: 'light' });
+      mockUseColorScheme.mockReturnValue('dark');
+      const { result } = renderHook(() => useTheme(), { wrapper });
+
+      expect(result.current.colors).toBe(lightColors);
+      expect(result.current.isDark).toBe(false);
+    });
+
+    it('dark 모드이면 시스템 라이트여도 darkColors를 제공한다', () => {
+      useAppStore.setState({ themeMode: 'dark' });
+      mockUseColorScheme.mockReturnValue('light');
+      const { result } = renderHook(() => useTheme(), { wrapper });
+
+      expect(result.current.colors).toBe(darkColors);
+      expect(result.current.isDark).toBe(true);
     });
   });
 });

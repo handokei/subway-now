@@ -26,7 +26,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, customOrigin: null, alarmEvent: null });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, customOrigin: null, themeMode: 'auto', alarmEvent: null });
     jest.clearAllMocks();
   });
 
@@ -327,6 +327,69 @@ describe('useAppStore', () => {
 
     const { customOrigin } = useAppStore.getState();
     expect(customOrigin).toBeNull();
+  });
+
+  it('초기 themeMode는 auto이다', () => {
+    const { themeMode } = useAppStore.getState();
+    expect(themeMode).toBe('auto');
+  });
+
+  it('setThemeMode: 테마 모드를 설정하면 상태가 업데이트된다', async () => {
+    const { setThemeMode } = useAppStore.getState();
+    await setThemeMode('dark');
+
+    const { themeMode } = useAppStore.getState();
+    expect(themeMode).toBe('dark');
+  });
+
+  it('setThemeMode: AsyncStorage에 저장한다', async () => {
+    const { setThemeMode } = useAppStore.getState();
+    await setThemeMode('light');
+
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:theme-mode',
+      JSON.stringify('light'),
+    );
+  });
+
+  it('loadThemeMode: AsyncStorage에서 데이터를 복원한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify('dark'));
+
+    const { loadThemeMode } = useAppStore.getState();
+    await loadThemeMode();
+
+    const { themeMode } = useAppStore.getState();
+    expect(themeMode).toBe('dark');
+  });
+
+  it('loadThemeMode: 유효하지 않은 값이면 auto를 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify('invalid'));
+
+    const { loadThemeMode } = useAppStore.getState();
+    await loadThemeMode();
+
+    const { themeMode } = useAppStore.getState();
+    expect(themeMode).toBe('auto');
+  });
+
+  it('loadThemeMode: AsyncStorage가 비어있으면 auto를 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+
+    const { loadThemeMode } = useAppStore.getState();
+    await loadThemeMode();
+
+    const { themeMode } = useAppStore.getState();
+    expect(themeMode).toBe('auto');
+  });
+
+  it('loadThemeMode: AsyncStorage 오류 시 auto를 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
+
+    const { loadThemeMode } = useAppStore.getState();
+    await loadThemeMode();
+
+    const { themeMode } = useAppStore.getState();
+    expect(themeMode).toBe('auto');
   });
 
   it('초기 alarmEvent는 null이다', () => {
