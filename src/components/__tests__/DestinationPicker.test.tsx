@@ -1,18 +1,7 @@
 import React from 'react';
-import { render, fireEvent } from '@testing-library/react-native';
+import { render, fireEvent, act } from '@testing-library/react-native';
 import { DestinationPicker } from '../DestinationPicker';
 import type { Station } from '../../types/station';
-
-jest.mock('react-native-webview');
-jest.mock('../../utils/buildMapConfig', () => ({
-  buildMapConfig: jest.fn(() => ({
-    apiKey: 'test-key',
-    userLat: 37.498,
-    userLng: 127.027,
-    stations: [],
-  })),
-  buildInjectedJS: jest.fn(() => 'window.initMap({}); true;'),
-}));
 
 const mockStation: Station = {
   id: '2-022',
@@ -35,16 +24,9 @@ const mapProps = {
   userLng: 127.027,
 };
 
-const originalEnv = process.env.EXPO_PUBLIC_KAKAO_MAP_KEY;
-
 describe('DestinationPicker', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.EXPO_PUBLIC_KAKAO_MAP_KEY = 'test-key';
-  });
-
-  afterEach(() => {
-    process.env.EXPO_PUBLIC_KAKAO_MAP_KEY = originalEnv;
   });
 
   it('제목, 검색창, 닫기 버튼을 렌더링한다', () => {
@@ -61,9 +43,9 @@ describe('DestinationPicker', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('좌표가 있으면 카카오 지도를 렌더링한다', () => {
+  it('좌표가 있으면 지도를 렌더링한다', () => {
     const { getByTestId } = render(<DestinationPicker {...mapProps} />);
-    expect(getByTestId('kakao-map-webview')).toBeTruthy();
+    expect(getByTestId('station-map')).toBeTruthy();
   });
 
   it('좌표가 없으면 map-fallback을 렌더링한다', () => {
@@ -118,13 +100,10 @@ describe('DestinationPicker', () => {
   it('지도 마커 탭으로 onSelect가 호출된다', () => {
     const onSelect = jest.fn();
     const { getByTestId } = render(<DestinationPicker {...mapProps} onSelect={onSelect} />);
-    const webview = getByTestId('kakao-map-webview');
-    webview.props.onMessage({
-      nativeEvent: {
-        data: JSON.stringify({ type: 'stationPress', message: mockStation }),
-      },
-    });
-    expect(onSelect).toHaveBeenCalledWith(mockStation);
+    fireEvent.press(getByTestId('marker-2-022'));
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: '2-022', name: '강남' }),
+    );
   });
 
   it('특수 노선 검색 시 한글 호선명이 표시된다', () => {
@@ -156,7 +135,6 @@ describe('DestinationPicker', () => {
 
   it('검색창 포커스 시 드롭다운 표시 상태가 활성화된다', () => {
     const { getByTestId, queryByTestId } = render(<DestinationPicker {...defaultProps} />);
-    // 검색어 입력 후 선택으로 드롭다운을 닫은 뒤 다시 포커스
     fireEvent.changeText(getByTestId('search-input'), '강남');
     fireEvent.press(getByTestId(`suggestion-item-${mockStation.id}`));
     expect(queryByTestId('suggestions-list')).toBeNull();

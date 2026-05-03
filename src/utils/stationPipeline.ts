@@ -8,24 +8,6 @@ import type { AlarmEvent } from './stationAlarm';
 
 // ── 순수 함수: 포그라운드/백그라운드 공용 ──
 
-export interface AlarmCheckInput {
-  nearestStationId: string;
-  destinationId: string;
-  destinationName: string;
-  firedAlarms: Set<string>;
-}
-
-export interface AlarmCheckResult {
-  route: Route;
-  alarmEvent: AlarmEvent | null;
-}
-
-export function evaluateAlarm(input: AlarmCheckInput): AlarmCheckResult {
-  const route = findRoute(input.nearestStationId, input.destinationId);
-  const alarmEvent = checkAlarm(route, input.destinationName, input.firedAlarms);
-  return { route, alarmEvent };
-}
-
 export interface NextTarget {
   nextStationName: string;
   stopsToNextStation: number;
@@ -57,6 +39,37 @@ export function resolveNextTarget(route: Route, destinationName: string): NextTa
   return null;
 }
 
+/**
+ * 통합 알람 평가: 정거장 수 기반(우선) + 시간 기반(보조).
+ * 포그라운드(useStationAlarm)와 백그라운드(processLocationUpdate) 모두 이 함수를 사용한다.
+ * 주의: firedAlarms를 변경하지 않는다. 알람 발생 후 키 추가는 호출자 책임이다.
+ */
+export function evaluateAllAlarms(
+  route: Route,
+  destinationName: string,
+  firedAlarms: Set<string>,
+): AlarmEvent | null {
+  if (!route) return null;
+
+  // 1) 정거장 수 기반 알람 (우선)
+  const stopAlarm = checkAlarm(route, destinationName, firedAlarms);
+  if (stopAlarm) return stopAlarm;
+
+  // 2) 시간 기반 알람 (보조)
+  const target = resolveNextTarget(route, destinationName);
+  if (target && target.stopsToNextStation > 0) {
+    return checkTimeBasedAlarm(
+      target.nextStationName,
+      target.stopsToNextStation,
+      destinationName,
+      route,
+      firedAlarms,
+    );
+  }
+
+  return null;
+}
+
 // ── 비동기 파이프라인: 백그라운드 태스크 전용 (부수효과 포함) ──
 
 export interface PipelineResult {
@@ -74,37 +87,15 @@ export async function processLocationUpdate(
   const nearest = findNearestStation(lat, lng);
   if (!nearest) return { alarmEvent: null, nearest: null };
 
-  const { route, alarmEvent } = evaluateAlarm({
-    nearestStationId: nearest.station.id,
-    destinationId: destination.id,
-    destinationName: destination.name,
-    firedAlarms,
-  });
+  const route = findRoute(nearest.station.id, destination.id);
+  const alarmEvent = evaluateAllAlarms(route, destination.name, firedAlarms);
 
-  // 시간 기반 알람: 정거장 수 기반 알람이 없을 때만 체크 (중복 방지)
-  let effectiveAlarmEvent = alarmEvent;
-  if (!alarmEvent) {
-    const target = resolveNextTarget(route, destination.name);
-    if (target && target.stopsToNextStation > 0) {
-      const timeEvent = checkTimeBasedAlarm(
-        target.nextStationName,
-        target.stopsToNextStation,
-        destination.name,
-        route,
-        firedAlarms,
-      );
-      if (timeEvent) {
-        effectiveAlarmEvent = timeEvent;
-      }
-    }
-  }
-
-  if (effectiveAlarmEvent) {
+  if (alarmEvent) {
     await sendAlarmNotification(
-      effectiveAlarmEvent.type,
-      effectiveAlarmEvent.stationName,
+      alarmEvent.type,
+      alarmEvent.stationName,
       sleepMode,
-      effectiveAlarmEvent.timeBased ?? false,
+      alarmEvent.timeBased ?? false,
     );
   }
 
@@ -116,8 +107,8 @@ export async function processLocationUpdate(
     route,
     eta,
     undefined,
-    sleepMode ? effectiveAlarmEvent : null,
+    sleepMode ? alarmEvent : null,
   );
 
-  return { alarmEvent: effectiveAlarmEvent, nearest };
+  return { alarmEvent, nearest };
 }

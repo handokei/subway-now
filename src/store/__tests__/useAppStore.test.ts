@@ -26,7 +26,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, alarmEvent: null });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, customOrigin: null, alarmEvent: null });
     jest.clearAllMocks();
   });
 
@@ -250,6 +250,83 @@ describe('useAppStore', () => {
 
     const { sleepMode } = useAppStore.getState();
     expect(sleepMode).toBe(false);
+  });
+
+  it('초기 customOrigin은 null이다', () => {
+    const { customOrigin } = useAppStore.getState();
+    expect(customOrigin).toBeNull();
+  });
+
+  it('setCustomOrigin: 출발역을 설정하면 상태가 업데이트된다', () => {
+    const { setCustomOrigin } = useAppStore.getState();
+    setCustomOrigin(mockStation);
+
+    const { customOrigin } = useAppStore.getState();
+    expect(customOrigin?.id).toBe('2-022');
+  });
+
+  it('setCustomOrigin: null을 설정하면 출발역이 초기화된다', () => {
+    const { setCustomOrigin } = useAppStore.getState();
+    setCustomOrigin(mockStation);
+    setCustomOrigin(null);
+
+    const { customOrigin } = useAppStore.getState();
+    expect(customOrigin).toBeNull();
+  });
+
+  it('setCustomOrigin: 역 설정 시 AsyncStorage에 저장하고 null 시 삭제한다', () => {
+    const { setCustomOrigin } = useAppStore.getState();
+    setCustomOrigin(mockStation);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:custom-origin',
+      JSON.stringify(mockStation),
+    );
+
+    jest.clearAllMocks();
+    setCustomOrigin(null);
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:custom-origin');
+  });
+
+  it('setCustomOrigin: AsyncStorage 실패 시에도 에러를 던지지 않는다', async () => {
+    (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('저장 실패'));
+    (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('삭제 실패'));
+
+    const { setCustomOrigin } = useAppStore.getState();
+    setCustomOrigin(mockStation);
+    await new Promise((r) => setTimeout(r, 0));
+
+    setCustomOrigin(null);
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it('loadCustomOrigin: AsyncStorage에서 데이터를 복원한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(mockStation));
+
+    const { loadCustomOrigin } = useAppStore.getState();
+    await loadCustomOrigin();
+
+    const { customOrigin } = useAppStore.getState();
+    expect(customOrigin?.id).toBe('2-022');
+  });
+
+  it('loadCustomOrigin: AsyncStorage가 비어있으면 null을 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+
+    const { loadCustomOrigin } = useAppStore.getState();
+    await loadCustomOrigin();
+
+    const { customOrigin } = useAppStore.getState();
+    expect(customOrigin).toBeNull();
+  });
+
+  it('loadCustomOrigin: AsyncStorage 오류 시 null을 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
+
+    const { loadCustomOrigin } = useAppStore.getState();
+    await loadCustomOrigin();
+
+    const { customOrigin } = useAppStore.getState();
+    expect(customOrigin).toBeNull();
   });
 
   it('초기 alarmEvent는 null이다', () => {
