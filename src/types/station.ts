@@ -26,3 +26,10 @@ export interface NearestStationResult {
   station: Station;
   distanceKm: number;
 }
+
+export interface NearestStationsResult {
+  primary: Station;
+  variants: Station[];
+  distanceKm: number;
+  isTransfer: boolean;
+}

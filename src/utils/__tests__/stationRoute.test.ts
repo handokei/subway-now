@@ -698,6 +698,13 @@ describe('updateRouteFromPosition', () => {
       const result = updateRouteFromPosition(storedRoute, gangnam2, '1-033');
       expect(result).toBeNull();
     });
+
+    it('같은 노선이지만 nearestStation ID가 유효하지 않으면 null을 반환한다', () => {
+      const storedRoute: DirectRoute = { type: 'direct', stops: 2 };
+      const fakeStation = { id: 'invalid-id', name: '가짜역', line: '1' as const, lineColor: '#00288C', lat: 0, lng: 0 };
+      const result = updateRouteFromPosition(storedRoute, fakeStation, '1-003');
+      expect(result).toBeNull();
+    });
   });
 
   // ── TransferRoute ──

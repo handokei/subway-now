@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
 import { NearestStationResult } from '../types/station';
 import { findNearestStation } from '../utils/findNearestStation';
@@ -21,6 +21,7 @@ export function useNearestStation(): UseNearestStationReturn {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
+  const isFirstFetch = useRef(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -33,9 +34,23 @@ export function useNearestStation(): UseNearestStationReturn {
       }
       setPermissionDenied(false);
 
-      const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
-      });
+      // 첫 호출: 캐시된 위치로 즉시 UI 표시
+      if (isFirstFetch.current) {
+        const lastKnown = await Location.getLastKnownPositionAsync();
+        if (lastKnown) {
+          setUserLocation({ lat: lastKnown.coords.latitude, lng: lastKnown.coords.longitude });
+          setResult(findNearestStation(lastKnown.coords.latitude, lastKnown.coords.longitude));
+          setLoading(false);
+        }
+      }
+
+      // 첫 호출은 Balanced(빠른 fix), 이후는 High(정밀)
+      const accuracy = isFirstFetch.current
+        ? Location.Accuracy.Balanced
+        : Location.Accuracy.High;
+      isFirstFetch.current = false;
+
+      const location = await Location.getCurrentPositionAsync({ accuracy });
 
       setUserLocation({ lat: location.coords.latitude, lng: location.coords.longitude });
       const nearest = findNearestStation(location.coords.latitude, location.coords.longitude);

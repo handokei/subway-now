@@ -1,4 +1,4 @@
-import { findNearestStation } from '../findNearestStation';
+import { findNearestStation, findNearestStations } from '../findNearestStation';
 
 // haversine을 모킹하여 어떤 역이 가장 가깝게 계산되는지 완전히 제어한다.
 // stations.json 데이터가 크므로 haversine 결과를 고정하여 루프 분기를 독립적으로 검증한다.
@@ -111,5 +111,34 @@ describe('findNearestStation', () => {
     // 첫 번째 역(소요산)이 반환되어야 한다 (거리가 같으면 갱신 안 됨)
     expect(result!.station.id).toBe('1-001');
     expect(result!.distanceKm).toBe(2);
+  });
+});
+
+describe('findNearestStations', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('가장 가까운 역과 동일 이름 환승역 variants를 반환한다', () => {
+    mockHaversine.mockReturnValueOnce(0.1).mockReturnValue(5);
+
+    const result = findNearestStations(37.9481, 127.061034);
+
+    expect(result).not.toBeNull();
+    expect(result!.primary.id).toBe('1-001');
+    expect(result!.distanceKm).toBe(0.1);
+    expect(result!.variants.length).toBeGreaterThanOrEqual(1);
+    expect(result!.variants.every((v) => v.name === result!.primary.name)).toBe(true);
+  });
+
+  it('빈 stations에서 null을 반환한다', () => {
+    jest.resetModules();
+    jest.doMock('../haversine', () => ({ haversine: jest.fn() }));
+    jest.doMock('../../data/stations.json', () => []);
+
+    const { findNearestStations: fn } = require('../findNearestStation');
+    expect(fn(37.5, 127.0)).toBeNull();
+
+    jest.resetModules();
   });
 });
