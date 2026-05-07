@@ -47,12 +47,16 @@ export interface TransferRoute {
   stopsFromTransfer: number;
 }
 
+export interface TransferSegment {
+  transferName: string;
+  fromLine: string;
+  toLine: string;
+  stopsToTransfer: number;
+}
+
 export interface MultiTransferRoute {
   type: 'multi-transfer';
-  transfers: [
-    { transferName: string; fromLine: string; toLine: string; stopsToTransfer: number },
-    { transferName: string; fromLine: string; toLine: string; stopsToTransfer: number },
-  ];
+  transfers: TransferSegment[];
   stopsAfterLastTransfer: number;
 }
 
@@ -155,32 +159,30 @@ export function updateRouteFromPosition(
     return null;
   }
 
-  // multi-transfer
-  const [t1, t2] = storedRoute.transfers;
+  // multi-transfer: transfers 배열을 순회하여 현재 구간 탐색
+  const { transfers } = storedRoute;
 
-  if (nearestStation.line === t1.fromLine) {
-    const station = findStationByNameAndLine(t1.transferName, t1.fromLine);
-    if (!station) return null;
-    const stops = getRemainingStops(nearestStation.id, station.id);
-    return stops !== null
-      ? { ...storedRoute, transfers: [{ ...t1, stopsToTransfer: stops }, t2] as MultiTransferRoute['transfers'] }
-      : null;
+  for (let i = 0; i < transfers.length; i++) {
+    const segment = transfers[i];
+    if (nearestStation.line === segment.fromLine) {
+      const station = findStationByNameAndLine(segment.transferName, segment.fromLine);
+      if (!station) return null;
+      const stops = getRemainingStops(nearestStation.id, station.id);
+      if (stops === null) return null;
+      const updatedTransfers = transfers.map((t, j) =>
+        j < i ? { ...t, stopsToTransfer: 0 } : j === i ? { ...t, stopsToTransfer: stops } : t,
+      );
+      return { ...storedRoute, transfers: updatedTransfers };
+    }
   }
 
-  if (nearestStation.line === t1.toLine) {
-    const station = findStationByNameAndLine(t2.transferName, t1.toLine);
-    if (!station) return null;
-    const stops = getRemainingStops(nearestStation.id, station.id);
-    return stops !== null
-      ? { ...storedRoute, transfers: [{ ...t1, stopsToTransfer: 0 }, { ...t2, stopsToTransfer: stops }] as MultiTransferRoute['transfers'] }
-      : null;
-  }
-
-  if (nearestStation.line === t2.toLine) {
+  // 마지막 환승 이후 구간 (목적지 방향)
+  const lastTransfer = transfers[transfers.length - 1];
+  if (lastTransfer && nearestStation.line === lastTransfer.toLine) {
     const stops = getRemainingStops(nearestStation.id, destinationId);
-    return stops !== null
-      ? { ...storedRoute, transfers: [{ ...t1, stopsToTransfer: 0 }, { ...t2, stopsToTransfer: 0 }] as MultiTransferRoute['transfers'], stopsAfterLastTransfer: stops }
-      : null;
+    if (stops === null) return null;
+    const updatedTransfers = transfers.map((t) => ({ ...t, stopsToTransfer: 0 }));
+    return { ...storedRoute, transfers: updatedTransfers, stopsAfterLastTransfer: stops };
   }
 
   return null;
@@ -446,35 +448,29 @@ export function buildJourneyDisplay(
     };
   }
 
-  // multi-transfer
-  const [t1, t2] = route.transfers;
-  const totalStops = t1.stopsToTransfer + t2.stopsToTransfer + route.stopsAfterLastTransfer;
-  return {
-    segments: [
-      {
-        line: t1.fromLine,
-        lineColor: LINE_COLORS[t1.fromLine as LineNumber] ?? current.lineColor,
-        fromName: current.name,
-        toName: t1.transferName,
-        stops: t1.stopsToTransfer,
-      },
-      {
-        line: t1.toLine,
-        lineColor: LINE_COLORS[t1.toLine as LineNumber] ?? '#888888',
-        fromName: t1.transferName,
-        toName: t2.transferName,
-        stops: t2.stopsToTransfer,
-      },
-      {
-        line: t2.toLine,
-        lineColor: LINE_COLORS[t2.toLine as LineNumber] ?? destination.lineColor,
-        fromName: t2.transferName,
-        toName: destination.name,
-        stops: route.stopsAfterLastTransfer,
-      },
-    ],
-    totalStops,
-  };
+  // multi-transfer: transfers 배열을 순회하여 세그먼트 생성
+  const { transfers } = route;
+  const segments: JourneyDisplay['segments'] = transfers.map((t, i) => {
+    const prevName = i === 0 ? current.name : transfers[i - 1].transferName;
+    const fallbackColor = i === 0 ? current.lineColor : '#888888';
+    return {
+      line: t.fromLine,
+      lineColor: LINE_COLORS[t.fromLine as LineNumber] ?? fallbackColor,
+      fromName: prevName,
+      toName: t.transferName,
+      stops: t.stopsToTransfer,
+    };
+  });
+  const lastTransfer = transfers[transfers.length - 1];
+  segments.push({
+    line: lastTransfer.toLine,
+    lineColor: LINE_COLORS[lastTransfer.toLine as LineNumber] ?? destination.lineColor,
+    fromName: lastTransfer.transferName,
+    toName: destination.name,
+    stops: route.stopsAfterLastTransfer,
+  });
+  const totalStops = transfers.reduce((sum, t) => sum + t.stopsToTransfer, 0) + route.stopsAfterLastTransfer;
+  return { segments, totalStops };
 }
 
 const DEFAULT_WAIT_MINUTES = 3;
@@ -546,12 +542,15 @@ export function getNextStationName(
   }
 
   // multi-transfer
-  const [t1, t2] = route.transfers;
-  if (t1.stopsToTransfer > 0) {
-    return getNextStationOnLine(t1.fromLine, current.name, t1.transferName);
+  // multi-transfer: 첫 번째 미완료 구간의 다음 역 반환
+  const { transfers } = route;
+  for (let i = 0; i < transfers.length; i++) {
+    const segment = transfers[i];
+    if (segment.stopsToTransfer > 0) {
+      const line = i === 0 ? segment.fromLine : transfers[i - 1].toLine;
+      return getNextStationOnLine(line, current.name, segment.transferName);
+    }
   }
-  if (t2.stopsToTransfer > 0) {
-    return getNextStationOnLine(t1.toLine, current.name, t2.transferName);
-  }
-  return getNextStationOnLine(t2.toLine, current.name, destination.name);
+  const lastTransfer = transfers[transfers.length - 1];
+  return getNextStationOnLine(lastTransfer.toLine, current.name, destination.name);
 }

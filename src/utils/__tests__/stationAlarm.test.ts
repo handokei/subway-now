@@ -1,4 +1,4 @@
-import { checkAlarm, checkTimeBasedAlarm, alarmKey, estimateRemainingSeconds, resolveCurrentTarget, AlarmEvent } from '../stationAlarm';
+import { checkAlarm, checkTimeBasedAlarm, alarmKey, estimateRemainingSeconds, resolveAllTargets, AlarmEvent } from '../stationAlarm';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, Route } from '../stationRoute';
 
 // ── 테스트 헬퍼 ──
@@ -71,65 +71,54 @@ describe('estimateRemainingSeconds', () => {
   });
 });
 
-describe('resolveCurrentTarget', () => {
+describe('resolveAllTargets', () => {
   describe('DirectRoute', () => {
-    it('should target destination', () => {
+    it('should return single destination target', () => {
       const route: DirectRoute = { type: 'direct', stops: 5 };
-      expect(resolveCurrentTarget(route, '강남')).toEqual({
-        name: '강남', stops: 5, alarmType: 'destination',
-      });
+      expect(resolveAllTargets(route, '강남')).toEqual([
+        { name: '강남', stops: 5, alarmType: 'destination' },
+      ]);
     });
   });
 
   describe('TransferRoute', () => {
-    it('should target transfer when stopsToTransfer > 0', () => {
-      expect(resolveCurrentTarget(makeTransferRoute(3, 5), '강남')).toEqual({
-        name: '시청', stops: 3, alarmType: 'transfer',
-      });
+    it('should return transfer target followed by destination target', () => {
+      expect(resolveAllTargets(makeTransferRoute(3, 5), '강남')).toEqual([
+        { name: '시청', stops: 3, alarmType: 'transfer' },
+        { name: '강남', stops: 5, alarmType: 'destination' },
+      ]);
     });
 
-    it('should target transfer when stopsToTransfer = 0 (user at transfer)', () => {
-      expect(resolveCurrentTarget(makeTransferRoute(0, 5), '강남')).toEqual({
-        name: '시청', stops: 0, alarmType: 'transfer',
-      });
-    });
-
-    it('should target destination when transferName = destinationName', () => {
-      expect(resolveCurrentTarget(makeTransferRoute(3, 0, '옥수', 'gyeongui', '3'), '옥수')).toEqual({
-        name: '옥수', stops: 3, alarmType: 'destination',
-      });
+    it('should return single destination when transferName equals destinationName', () => {
+      expect(resolveAllTargets(makeTransferRoute(3, 0, '옥수', 'gyeongui', '3'), '옥수')).toEqual([
+        { name: '옥수', stops: 3, alarmType: 'destination' },
+      ]);
     });
   });
 
   describe('MultiTransferRoute', () => {
-    it('should target first transfer (current segment)', () => {
-      expect(resolveCurrentTarget(makeMultiRoute(5, 1, 3), '강남')).toEqual({
-        name: '시청', stops: 5, alarmType: 'transfer',
-      });
+    it('should return all waypoints in order: [transfer1, transfer2, destination]', () => {
+      expect(resolveAllTargets(makeMultiRoute(5, 3, 2), '강남')).toEqual([
+        { name: '시청', stops: 5, alarmType: 'transfer' },
+        { name: '충무로', stops: 3, alarmType: 'transfer' },
+        { name: '강남', stops: 2, alarmType: 'destination' },
+      ]);
     });
 
-    it('should target first transfer even when later segments are closer', () => {
-      expect(resolveCurrentTarget(makeMultiRoute(7, 2, 1, '강남구청', '선릉'), '역삼')).toEqual({
-        name: '강남구청', stops: 7, alarmType: 'transfer',
-      });
+    it('should mark transfer as destination when transferName equals destinationName', () => {
+      expect(resolveAllTargets(makeMultiRoute(1, 5, 3, '옥수'), '옥수')).toEqual([
+        { name: '옥수', stops: 1, alarmType: 'destination' },
+        { name: '충무로', stops: 5, alarmType: 'transfer' },
+        { name: '옥수', stops: 3, alarmType: 'destination' },
+      ]);
     });
 
-    it('should target destination when first transferName = destinationName', () => {
-      expect(resolveCurrentTarget(makeMultiRoute(1, 5, 3, '옥수'), '옥수')).toEqual({
-        name: '옥수', stops: 1, alarmType: 'destination',
-      });
-    });
-
-    it('should target first transfer when stopsToTransfer = 0', () => {
-      expect(resolveCurrentTarget(makeMultiRoute(0, 5, 3), '강남')).toEqual({
-        name: '시청', stops: 0, alarmType: 'transfer',
-      });
-    });
-
-    it('should target destination when first transferName = destinationName and stopsToTransfer = 0', () => {
-      expect(resolveCurrentTarget(makeMultiRoute(0, 5, 3, '옥수'), '옥수')).toEqual({
-        name: '옥수', stops: 0, alarmType: 'destination',
-      });
+    it('should reflect updated stops after first transfer passed', () => {
+      expect(resolveAllTargets(makeMultiRoute(0, 1, 3), '강남')).toEqual([
+        { name: '시청', stops: 0, alarmType: 'transfer' },
+        { name: '충무로', stops: 1, alarmType: 'transfer' },
+        { name: '강남', stops: 3, alarmType: 'destination' },
+      ]);
     });
   });
 });
@@ -207,6 +196,17 @@ describe('checkAlarm', () => {
       expect(checkAlarm(makeTransferRoute(1, 1), destinationName, new Set()))
         .toEqual({ type: 'transfer', stationName: '시청' });
     });
+
+    it('should return destination alarm after transfer is fired and destination is close', () => {
+      const fired = new Set(['transfer:시청']);
+      expect(checkAlarm(makeTransferRoute(0, 1), destinationName, fired))
+        .toEqual({ type: 'destination', stationName: '강남' });
+    });
+
+    it('should return null after transfer is fired but destination is far', () => {
+      const fired = new Set(['transfer:시청']);
+      expect(checkAlarm(makeTransferRoute(0, 5), destinationName, fired)).toBeNull();
+    });
   });
 
   // MultiTransferRoute
@@ -272,6 +272,44 @@ describe('checkAlarm', () => {
 
     it('should return null when first transferName equals destinationName but is far', () => {
       expect(checkAlarm(makeMultiRoute(5, 1, 3, '옥수'), '옥수', new Set())).toBeNull();
+    });
+
+    it('should return second transfer alarm after first is fired', () => {
+      const route = makeMultiRoute(0, 1, 3);
+      const fired = new Set(['transfer:시청']);
+      expect(checkAlarm(route, destinationName, fired))
+        .toEqual({ type: 'transfer', stationName: '충무로' });
+    });
+
+    it('should return destination alarm after both transfers are fired', () => {
+      const route = makeMultiRoute(0, 0, 1);
+      const fired = new Set(['transfer:시청', 'transfer:충무로']);
+      expect(checkAlarm(route, destinationName, fired))
+        .toEqual({ type: 'destination', stationName: '강남' });
+    });
+
+    it('should return null when first is fired but second is still far', () => {
+      const route = makeMultiRoute(0, 5, 3);
+      const fired = new Set(['transfer:시청']);
+      expect(checkAlarm(route, destinationName, fired)).toBeNull();
+    });
+
+    it('should fire alarms sequentially through full journey', () => {
+      const fired = new Set<string>();
+
+      // 1) 첫 환승 접근
+      const step1 = checkAlarm(makeMultiRoute(1, 5, 3), destinationName, fired);
+      expect(step1).toEqual({ type: 'transfer', stationName: '시청' });
+      fired.add('transfer:시청');
+
+      // 2) 첫 환승 통과, 두 번째 접근
+      const step2 = checkAlarm(makeMultiRoute(0, 1, 3), destinationName, fired);
+      expect(step2).toEqual({ type: 'transfer', stationName: '충무로' });
+      fired.add('transfer:충무로');
+
+      // 3) 둘 다 통과, 도착역 접근
+      const step3 = checkAlarm(makeMultiRoute(0, 0, 1), destinationName, fired);
+      expect(step3).toEqual({ type: 'destination', stationName: '강남' });
     });
   });
 

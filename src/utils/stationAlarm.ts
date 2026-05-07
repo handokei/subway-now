@@ -28,36 +28,37 @@ export interface CurrentTarget {
 }
 
 /**
- * 현재 경로에서 알람 대상(환승역 또는 도착역)과 남은 정거장 수를 반환한다.
- * 경로는 GPS 기반으로 매번 재계산되므로, 첫 번째 구간만이 사용자의 실제 거리를 반영한다.
- * 따라서 항상 현재 구간의 다음 웨이포인트(환승역 또는 도착역)만 반환한다.
- *
- * resolveNextTarget과의 차이: resolveNextTarget은 stopsToTransfer=0을 "환승 완료"로 간주하지만,
- * 여기서는 "사용자가 환승역에 있다"로 간주하여 환승 알람을 발생시킨다.
+ * 경로의 모든 웨이포인트(환승역 + 도착역)를 경로 순서대로 반환한다.
+ * checkAlarm이 이 목록을 순회하며, 이미 발생한 알람은 건너뛰고 다음 타겟을 평가한다.
+ * 환승 횟수에 의존하지 않고 transfers 배열을 순회하므로 N번 환승까지 확장 가능하다.
  */
-export function resolveCurrentTarget(
+export function resolveAllTargets(
   route: NonNullable<Route>,
   destinationName: string,
-): CurrentTarget {
+): CurrentTarget[] {
   if (route.type === 'direct') {
-    return { name: destinationName, stops: route.stops, alarmType: 'destination' };
+    return [{ name: destinationName, stops: route.stops, alarmType: 'destination' }];
   }
 
   if (route.type === 'transfer') {
     if (route.transferName === destinationName) {
-      return { name: destinationName, stops: route.stopsToTransfer, alarmType: 'destination' };
+      return [{ name: destinationName, stops: route.stopsToTransfer, alarmType: 'destination' }];
     }
-    return { name: route.transferName, stops: route.stopsToTransfer, alarmType: 'transfer' };
+    return [
+      { name: route.transferName, stops: route.stopsToTransfer, alarmType: 'transfer' },
+      { name: destinationName, stops: route.stopsFromTransfer, alarmType: 'destination' },
+    ];
   }
 
-  // multi-transfer: 첫 번째 환승이 항상 현재 구간
-  // (GPS 재계산으로 이전 환승은 경로에서 사라짐)
-  const firstTransfer = route.transfers[0];
-  if (firstTransfer.transferName === destinationName) {
-    return { name: destinationName, stops: firstTransfer.stopsToTransfer, alarmType: 'destination' };
-  }
-  return { name: firstTransfer.transferName, stops: firstTransfer.stopsToTransfer, alarmType: 'transfer' };
+  // multi-transfer: 모든 웨이포인트를 순서대로 반환
+  const targets: CurrentTarget[] = route.transfers.map((t) => {
+    const alarmType = t.transferName === destinationName ? 'destination' as const : 'transfer' as const;
+    return { name: t.transferName === destinationName ? destinationName : t.transferName, stops: t.stopsToTransfer, alarmType };
+  });
+  targets.push({ name: destinationName, stops: route.stopsAfterLastTransfer, alarmType: 'destination' });
+  return targets;
 }
+
 
 export function checkAlarm(
   route: Route,
@@ -67,14 +68,15 @@ export function checkAlarm(
 ): AlarmEvent | null {
   if (!route) return null;
 
-  const target = resolveCurrentTarget(route, destinationName);
-  if (target.stops > threshold) return null;
-
-  const event: AlarmEvent = { type: target.alarmType, stationName: target.name };
-  const key = alarmKey(event);
-  if (firedAlarms.has(key)) return null;
-
-  return event;
+  const targets = resolveAllTargets(route, destinationName);
+  for (const target of targets) {
+    const event: AlarmEvent = { type: target.alarmType, stationName: target.name };
+    const key = alarmKey(event);
+    if (firedAlarms.has(key)) continue;
+    if (target.stops > threshold) return null;
+    return event;
+  }
+  return null;
 }
 
 function resolveStationType(
