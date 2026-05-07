@@ -197,6 +197,43 @@ describe('useNearestStation', () => {
     expect(mockRemove).toHaveBeenCalled();
   });
 
+  it('환승역 감지 시 isTransfer가 true이고 variants가 반환된다', async () => {
+    mockGranted();
+    // 교대역 좌표 (2호선/3호선 환승역)
+    mockLocation(37.493961, 127.014667);
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.result?.station.name).toBe('교대');
+    expect(result.current.variants.length).toBeGreaterThan(1);
+    expect(result.current.variants.every((v) => v.name === '교대')).toBe(true);
+  });
+
+  it('일반역 감지 시 variants가 1개이다', async () => {
+    mockGranted();
+    // 소요산역 좌표 (1호선 단독역)
+    mockLocation(37.9481, 127.061034);
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.result?.station.name).toBe('소요산');
+    expect(result.current.variants).toHaveLength(1);
+  });
+
+  it('권한 거부 시 variants가 빈 배열이다', async () => {
+    mockDenied();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.variants).toEqual([]);
+  });
+
   it('캐시된 위치가 있으면 즉시 loading이 false가 된다', async () => {
     mockGranted();
     mockLastKnownLocation(37.4980, 127.0277);
