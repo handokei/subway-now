@@ -29,9 +29,11 @@ jest.mock('../stationAlarm', () => ({
 
 const mockSendAlarmNotification = jest.fn();
 const mockUpdateStationNotification = jest.fn();
+const mockSendStationPassedNotification = jest.fn();
 jest.mock('../stationNotification', () => ({
   sendAlarmNotification: (...args: unknown[]) => mockSendAlarmNotification(...args),
   updateStationNotification: (...args: unknown[]) => mockUpdateStationNotification(...args),
+  sendStationPassedNotification: (...args: unknown[]) => mockSendStationPassedNotification(...args),
 }));
 
 import { evaluateAllAlarms, processLocationUpdate, resolveNextTarget } from '../stationPipeline';
@@ -185,6 +187,7 @@ describe('processLocationUpdate', () => {
     jest.clearAllMocks();
     mockSendAlarmNotification.mockResolvedValue(undefined);
     mockUpdateStationNotification.mockResolvedValue(undefined);
+    mockSendStationPassedNotification.mockResolvedValue(undefined);
     mockCalculateStaticETA.mockReturnValue(10);
     mockCheckAlarm.mockReturnValue(null);
     mockCheckTimeBasedAlarm.mockReturnValue(null);
@@ -197,7 +200,7 @@ describe('processLocationUpdate', () => {
       37.5, 127.0, mockDestination, new Set(), false,
     );
 
-    expect(result).toEqual({ alarmEvent: null, nearest: null });
+    expect(result).toEqual({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
     expect(mockFindRoute).not.toHaveBeenCalled();
     expect(mockSendAlarmNotification).not.toHaveBeenCalled();
     expect(mockUpdateStationNotification).not.toHaveBeenCalled();
@@ -460,6 +463,42 @@ describe('processLocationUpdate', () => {
 
     expect(mockUpdateRouteFromPosition).not.toHaveBeenCalled();
     expect(mockFindRoute).toHaveBeenCalledWith('station-1', 'station-2');
+  });
+
+  it('should send station-passed notification when station changes', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+
+    const result = await processLocationUpdate(
+      37.498, 127.028, mockDestination, new Set(), false, null, 'other-station',
+    );
+
+    expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', 3);
+    expect(result.lastNotifiedStationId).toBe('station-1');
+  });
+
+  it('should not send station-passed notification when station is the same', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+
+    const result = await processLocationUpdate(
+      37.498, 127.028, mockDestination, new Set(), false, null, 'station-1',
+    );
+
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(result.lastNotifiedStationId).toBe('station-1');
+  });
+
+  it('should send station-passed notification when lastNotifiedStationId is null', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+
+    const result = await processLocationUpdate(
+      37.498, 127.028, mockDestination, new Set(), false, null, null,
+    );
+
+    expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', 3);
+    expect(result.lastNotifiedStationId).toBe('station-1');
   });
 });
 

@@ -7,3 +7,4 @@ export const CUSTOM_ORIGIN_KEY = 'subway-now:custom-origin';
 export const THEME_MODE_KEY = 'subway-now:theme-mode';
 export const ROUTE_PREFERENCE_KEY = 'subway-now:route-preference';
 export const ROUTE_KEY = 'subway-now:route';
+export const LAST_NOTIFIED_STATION_KEY = 'subway-now:last-notified-station';

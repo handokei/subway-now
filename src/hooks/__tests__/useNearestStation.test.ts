@@ -139,7 +139,7 @@ describe('useNearestStation', () => {
     );
 
     act(() => {
-      jest.advanceTimersByTime(30_000);
+      jest.advanceTimersByTime(10_000);
     });
 
     await waitFor(() =>
@@ -264,7 +264,7 @@ describe('useNearestStation', () => {
     });
 
     act(() => {
-      jest.advanceTimersByTime(30_000);
+      jest.advanceTimersByTime(10_000);
     });
 
     await waitFor(() =>

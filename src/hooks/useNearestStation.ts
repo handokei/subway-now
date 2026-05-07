@@ -4,7 +4,7 @@ import { NearestStationResult, Station } from '../types/station';
 import { findNearestStations } from '../utils/findNearestStation';
 import { usePolling } from './usePolling';
 
-const UPDATE_INTERVAL_MS = 30_000;
+const UPDATE_INTERVAL_MS = 10_000;
 
 interface UseNearestStationReturn {
   result: NearestStationResult | null;

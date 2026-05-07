@@ -31,8 +31,8 @@ export function useBackgroundLocation(destination: Station | null): void {
 
       await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
         accuracy: Location.Accuracy.High,
-        distanceInterval: 100,
-        deferredUpdatesInterval: 30_000,
+        distanceInterval: 50,
+        deferredUpdatesInterval: 10_000,
         showsBackgroundLocationIndicator: true,
         foregroundService: {
           notificationTitle: '지하철 위치 감지 중',
