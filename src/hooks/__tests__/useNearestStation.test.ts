@@ -30,11 +30,22 @@ const mockLocation = (lat: number, lng: number) => {
   });
 };
 
+const mockLastKnownLocation = (lat: number, lng: number) => {
+  (Location.getLastKnownPositionAsync as jest.Mock).mockResolvedValue({
+    coords: { latitude: lat, longitude: lng },
+  });
+};
+
+const mockNoLastKnownLocation = () => {
+  (Location.getLastKnownPositionAsync as jest.Mock).mockResolvedValue(null);
+};
+
 describe('useNearestStation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
     appStateCallback = null;
+    mockNoLastKnownLocation();
   });
 
   afterEach(() => {
@@ -184,6 +195,63 @@ describe('useNearestStation', () => {
 
     unmount();
     expect(mockRemove).toHaveBeenCalled();
+  });
+
+  it('캐시된 위치가 있으면 즉시 loading이 false가 된다', async () => {
+    mockGranted();
+    mockLastKnownLocation(37.4980, 127.0277);
+    mockLocation(37.4980, 127.0277);
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(Location.getLastKnownPositionAsync).toHaveBeenCalled();
+    expect(result.current.result).not.toBeNull();
+    expect(result.current.result?.station.name).toBe('강남');
+  });
+
+  it('첫 호출은 Balanced accuracy, 이후 호출은 High accuracy를 사용한다', async () => {
+    mockGranted();
+    mockNoLastKnownLocation();
+    mockLocation(37.4980, 127.0277);
+
+    renderHook(() => useNearestStation());
+
+    await waitFor(() =>
+      expect(Location.getCurrentPositionAsync).toHaveBeenCalledTimes(1)
+    );
+
+    expect(Location.getCurrentPositionAsync).toHaveBeenCalledWith({
+      accuracy: Location.Accuracy.Balanced,
+    });
+
+    act(() => {
+      jest.advanceTimersByTime(30_000);
+    });
+
+    await waitFor(() =>
+      expect(Location.getCurrentPositionAsync).toHaveBeenCalledTimes(2)
+    );
+
+    expect(Location.getCurrentPositionAsync).toHaveBeenLastCalledWith({
+      accuracy: Location.Accuracy.High,
+    });
+  });
+
+  it('캐시된 위치가 없으면 getCurrentPositionAsync 결과를 기다린다', async () => {
+    mockGranted();
+    mockNoLastKnownLocation();
+    mockLocation(37.4980, 127.0277);
+
+    const { result } = renderHook(() => useNearestStation());
+
+    expect(result.current.loading).toBe(true);
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(Location.getLastKnownPositionAsync).toHaveBeenCalled();
+    expect(result.current.result?.station.name).toBe('강남');
   });
 
 });
