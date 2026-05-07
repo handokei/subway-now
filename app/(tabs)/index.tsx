@@ -25,7 +25,7 @@ const logger = createLogger('HomeScreen');
 
 export default function HomeScreen() {
   const { colors } = useTheme();
-  const { result, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
+  const { result, variants, isTransfer, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
   const customOrigin = useAppStore((s) => s.customOrigin);
   const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
@@ -286,6 +286,28 @@ export default function HomeScreen() {
                   </>
                 )}
               </View>
+              {!isCustomOrigin && isTransfer && variants.length > 1 && (
+                <View style={styles.transferSelector} testID="transfer-line-selector">
+                  <Text style={[typography.bodySm, { color: colors.muted, marginBottom: spacing.sm }]}>
+                    노선을 선택하세요
+                  </Text>
+                  <View style={[styles.transferPillGroup, { backgroundColor: colors.hair }]}>
+                    {variants.map((v) => {
+                      const active = effectiveOrigin.id === v.id;
+                      return (
+                        <Pressable
+                          key={v.id}
+                          testID={`transfer-line-${v.line}`}
+                          style={[styles.transferPill, active && { backgroundColor: colors.accent }]}
+                          onPress={() => setCustomOrigin(v)}
+                        >
+                          <LineBadge line={v.line} color={active ? colors.onAccent : undefined} />
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+              )}
               {isCustomOrigin && (
                 <TouchableOpacity
                   style={[styles.gpsResetButton, { borderColor: colors.accent }]}
@@ -568,6 +590,20 @@ const styles = StyleSheet.create({
   routePillSub: {
     fontSize: 11,
     marginTop: 2,
+  },
+  transferSelector: {
+    marginTop: spacing.md,
+  },
+  transferPillGroup: {
+    flexDirection: 'row',
+    borderRadius: 10,
+    padding: 3,
+  },
+  transferPill: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
   },
   gpsResetButton: {
     marginTop: spacing.md,
