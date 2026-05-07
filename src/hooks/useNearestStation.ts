@@ -9,7 +9,6 @@ const UPDATE_INTERVAL_MS = 30_000;
 interface UseNearestStationReturn {
   result: NearestStationResult | null;
   variants: Station[];
-  isTransfer: boolean;
   userLocation: { lat: number; lng: number } | null;
   loading: boolean;
   error: string | null;
@@ -21,23 +20,19 @@ function applyNearestResult(
   stationsResult: ReturnType<typeof findNearestStations>,
   setResult: (r: NearestStationResult | null) => void,
   setVariants: (v: Station[]) => void,
-  setIsTransfer: (t: boolean) => void,
 ): void {
   if (stationsResult) {
     setResult({ station: stationsResult.primary, distanceKm: stationsResult.distanceKm });
     setVariants(stationsResult.variants);
-    setIsTransfer(stationsResult.isTransfer);
   } else {
     setResult(null);
     setVariants([]);
-    setIsTransfer(false);
   }
 }
 
 export function useNearestStation(): UseNearestStationReturn {
   const [result, setResult] = useState<NearestStationResult | null>(null);
   const [variants, setVariants] = useState<Station[]>([]);
-  const [isTransfer, setIsTransfer] = useState(false);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +56,7 @@ export function useNearestStation(): UseNearestStationReturn {
       setUserLocation({ lat: location.coords.latitude, lng: location.coords.longitude });
       applyNearestResult(
         findNearestStations(location.coords.latitude, location.coords.longitude),
-        setResult, setVariants, setIsTransfer,
+        setResult, setVariants,
       );
     } catch (e) {
       setError('위치를 가져오는 데 실패했습니다.');
@@ -76,5 +71,5 @@ export function useNearestStation(): UseNearestStationReturn {
 
   usePolling(refresh, UPDATE_INTERVAL_MS);
 
-  return { result, variants, isTransfer, userLocation, loading, error, permissionDenied, refresh };
+  return { result, variants, userLocation, loading, error, permissionDenied, refresh };
 }

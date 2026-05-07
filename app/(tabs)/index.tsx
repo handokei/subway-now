@@ -25,7 +25,7 @@ const logger = createLogger('HomeScreen');
 
 export default function HomeScreen() {
   const { colors } = useTheme();
-  const { result, variants, isTransfer, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
+  const { result, variants, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
   const customOrigin = useAppStore((s) => s.customOrigin);
   const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
@@ -59,6 +59,10 @@ export default function HomeScreen() {
   const route: Route = candidates[selectedIdx]?.route ?? null;
   const isFav = effectiveOrigin ? favorites.some((f) => f.id === effectiveOrigin.id) : false;
 
+  // 환승역이면 모든 호선 변형에서 경로 계산 → 출발역 환승 없는 최적 경로 자동 선택
+  const originVariants = !isCustomOrigin && variants.length > 1 ? variants : effectiveOrigin ? [effectiveOrigin] : [];
+  const variantIds = originVariants.map((v) => v.id).join(',');
+
   useEffect(() => {
     if (!effectiveOrigin || !destination) {
       setCandidates([]);
@@ -68,12 +72,17 @@ export default function HomeScreen() {
     }
     const interactionStart = performance.now();
     const interaction = InteractionManager.runAfterInteractions(() => {
-      const results = findRoutes(effectiveOrigin.id, destination.id);
+      let allResults: RouteCandidate[] = [];
+      for (const origin of originVariants) {
+        const routes = findRoutes(origin.id, destination.id);
+        allResults.push(...routes);
+      }
+      allResults.sort((a, b) => a.travelMinutes - b.travelMinutes || a.transferCount - b.transferCount);
       const total = performance.now() - interactionStart;
       logger.debug(`경로 계산 전체 (InteractionManager 포함): ${total.toFixed(2)}ms`);
-      setCandidates(results);
-      const picked = pickRouteByPreference(results, routePreference);
-      setSelectedIdx(picked ? results.indexOf(picked) : 0);
+      setCandidates(allResults);
+      const picked = pickRouteByPreference(allResults, routePreference);
+      setSelectedIdx(picked ? allResults.indexOf(picked) : 0);
       if (picked) {
         AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(picked.route)).catch(() => {});
       } else {
@@ -81,7 +90,7 @@ export default function HomeScreen() {
       }
     });
     return () => interaction.cancel();
-  }, [effectiveOrigin?.id, destination?.id, routePreference]);
+  }, [effectiveOrigin?.id, destination?.id, routePreference, variantIds]);
 
   const journey = useMemo(
     () => (route && effectiveOrigin && destination ? buildJourneyDisplay(route, effectiveOrigin, destination) : null),
@@ -286,28 +295,6 @@ export default function HomeScreen() {
                   </>
                 )}
               </View>
-              {!isCustomOrigin && isTransfer && variants.length > 1 && (
-                <View style={styles.transferSelector} testID="transfer-line-selector">
-                  <Text style={[typography.bodySm, { color: colors.muted, marginBottom: spacing.sm }]}>
-                    노선을 선택하세요
-                  </Text>
-                  <View style={[styles.transferPillGroup, { backgroundColor: colors.hair }]}>
-                    {variants.map((v) => {
-                      const active = effectiveOrigin.id === v.id;
-                      return (
-                        <Pressable
-                          key={v.id}
-                          testID={`transfer-line-${v.line}`}
-                          style={[styles.transferPill, active && { backgroundColor: colors.accent }]}
-                          onPress={() => setCustomOrigin(v)}
-                        >
-                          <LineBadge line={v.line} color={active ? colors.onAccent : undefined} />
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </View>
-              )}
               {isCustomOrigin && (
                 <TouchableOpacity
                   style={[styles.gpsResetButton, { borderColor: colors.accent }]}
@@ -590,20 +577,6 @@ const styles = StyleSheet.create({
   routePillSub: {
     fontSize: 11,
     marginTop: 2,
-  },
-  transferSelector: {
-    marginTop: spacing.md,
-  },
-  transferPillGroup: {
-    flexDirection: 'row',
-    borderRadius: 10,
-    padding: 3,
-  },
-  transferPill: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 8,
-    alignItems: 'center',
   },
   gpsResetButton: {
     marginTop: spacing.md,

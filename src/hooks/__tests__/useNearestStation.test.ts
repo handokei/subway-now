@@ -196,12 +196,11 @@ describe('useNearestStation', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.result?.station.name).toBe('교대');
-    expect(result.current.isTransfer).toBe(true);
     expect(result.current.variants.length).toBeGreaterThan(1);
     expect(result.current.variants.every((v) => v.name === '교대')).toBe(true);
   });
 
-  it('일반역 감지 시 isTransfer가 false이다', async () => {
+  it('일반역 감지 시 variants가 1개이다', async () => {
     mockGranted();
     // 소요산역 좌표 (1호선 단독역)
     mockLocation(37.9481, 127.061034);
@@ -211,11 +210,10 @@ describe('useNearestStation', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.result?.station.name).toBe('소요산');
-    expect(result.current.isTransfer).toBe(false);
     expect(result.current.variants).toHaveLength(1);
   });
 
-  it('권한 거부 시 variants가 빈 배열이고 isTransfer가 false이다', async () => {
+  it('권한 거부 시 variants가 빈 배열이다', async () => {
     mockDenied();
 
     const { result } = renderHook(() => useNearestStation());
@@ -223,7 +221,6 @@ describe('useNearestStation', () => {
     await waitFor(() => expect(result.current.loading).toBe(false));
 
     expect(result.current.variants).toEqual([]);
-    expect(result.current.isTransfer).toBe(false);
   });
 
 });
