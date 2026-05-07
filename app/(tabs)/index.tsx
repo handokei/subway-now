@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, InteractionManager, Pressable, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as SplashScreen from 'expo-splash-screen';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
@@ -117,6 +118,12 @@ export default function HomeScreen() {
   // nextStationName이 확정됐으면 stops=0으로 즉시 시간 기반 임계 통과 (firedAlarms로 중복 방지)
   useStationAlarm(route, destination?.name ?? null);
   useBackgroundLocation(destination);
+
+  useEffect(() => {
+    if (!loading) {
+      SplashScreen.hideAsync();
+    }
+  }, [loading]);
 
   useEffect(() => {
     loadFavorites();
