@@ -84,6 +84,7 @@ export async function processLocationUpdate(
   destination: Station,
   firedAlarms: Set<string>,
   sleepMode: boolean,
+  allowSpeaker: boolean = true,
   storedRoute: Route = null,
   lastNotifiedStationId: string | null = null,
 ): Promise<PipelineResult> {
@@ -105,6 +106,7 @@ export async function processLocationUpdate(
       alarmEvent.stationName,
       sleepMode,
       alarmEvent.timeBased ?? false,
+      allowSpeaker,
     );
   }
 

@@ -103,20 +103,22 @@ function getTaskCallback(): TaskCallback {
   return (global as any).__bgTaskCallback as TaskCallback;
 }
 
-/** AsyncStorage.getItem 5개를 순서대로 모킹한다 (dest, sleep, fired, route, lastNotified) */
+/** AsyncStorage.getItem 6개를 순서대로 모킹한다 (dest, sleep, fired, route, lastNotified, allowSpeaker) */
 function mockStorageValues(
   dest: string | null,
   sleep: string | null = null,
   fired: string | null = null,
   route: string | null = null,
   lastNotified: string | null = null,
+  allowSpeaker: string | null = null,
 ): void {
   (AsyncStorage.getItem as jest.Mock)
     .mockResolvedValueOnce(dest)
     .mockResolvedValueOnce(sleep)
     .mockResolvedValueOnce(fired)
     .mockResolvedValueOnce(route)
-    .mockResolvedValueOnce(lastNotified);
+    .mockResolvedValueOnce(lastNotified)
+    .mockResolvedValueOnce(allowSpeaker);
 }
 
 describe('BACKGROUND_LOCATION_TASK 상수', () => {
@@ -228,6 +230,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       mockDestination,
       new Set(),
       false,
+      true,
       null,
       null,
     );
@@ -252,6 +255,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       mockDestination,
       new Set(),
       true,
+      true,
       null,
       null,
     );
@@ -273,6 +277,53 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       mockDestination,
       new Set(),
       false,
+      true,
+      null,
+      null,
+    );
+  });
+
+  // ── allowSpeaker 파싱 ──
+
+  it("allowSpeakerJson이 'false'이면 allowSpeaker=false로 processLocationUpdate를 호출한다", async () => {
+    mockStorageValues(JSON.stringify(mockDestination), null, null, null, null, 'false');
+
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.any(Number),
+      mockDestination,
+      new Set(),
+      false,
+      false,
+      null,
+      null,
+    );
+  });
+
+  it("allowSpeakerJson이 'true'이면 allowSpeaker=true로 processLocationUpdate를 호출한다", async () => {
+    mockStorageValues(JSON.stringify(mockDestination), null, null, null, null, 'true');
+
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
+      expect.any(Number),
+      expect.any(Number),
+      mockDestination,
+      new Set(),
+      false,
+      true,
       null,
       null,
     );
@@ -297,6 +348,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       mockDestination,
       new Set(fired),
       false,
+      true,
       null,
       null,
     );
@@ -334,6 +386,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       mockDestination,
       new Set(),
       false,
+      true,
       storedRoute,
       null,
     );
@@ -355,6 +408,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       mockDestination,
       new Set(),
       false,
+      true,
       null,
       null,
     );
@@ -480,6 +534,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       mockDestination,
       new Set(),
       false,
+      true,
       null,
       'station-1',
     );

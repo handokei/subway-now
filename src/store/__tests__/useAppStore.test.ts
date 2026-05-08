@@ -26,7 +26,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', alarmEvent: null });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', alarmEvent: null });
     jest.clearAllMocks();
   });
 
@@ -432,6 +432,69 @@ describe('useAppStore', () => {
     (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
     await useAppStore.getState().loadRoutePreference();
     expect(useAppStore.getState().routePreference).toBe('optimal');
+  });
+
+  it('초기 allowSpeaker는 true이다', () => {
+    const { allowSpeaker } = useAppStore.getState();
+    expect(allowSpeaker).toBe(true);
+  });
+
+  it('setAllowSpeaker: false를 설정하면 상태가 업데이트된다', async () => {
+    const { setAllowSpeaker } = useAppStore.getState();
+    await setAllowSpeaker(false);
+
+    const { allowSpeaker } = useAppStore.getState();
+    expect(allowSpeaker).toBe(false);
+  });
+
+  it('setAllowSpeaker: AsyncStorage에 저장한다', async () => {
+    const { setAllowSpeaker } = useAppStore.getState();
+    await setAllowSpeaker(false);
+
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:allow-speaker',
+      JSON.stringify(false),
+    );
+  });
+
+  it('loadAllowSpeaker: AsyncStorage에서 false를 복원한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(false));
+
+    const { loadAllowSpeaker } = useAppStore.getState();
+    await loadAllowSpeaker();
+
+    const { allowSpeaker } = useAppStore.getState();
+    expect(allowSpeaker).toBe(false);
+  });
+
+  it('loadAllowSpeaker: AsyncStorage에서 true를 복원한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(true));
+
+    const { loadAllowSpeaker } = useAppStore.getState();
+    await loadAllowSpeaker();
+
+    const { allowSpeaker } = useAppStore.getState();
+    expect(allowSpeaker).toBe(true);
+  });
+
+  it('loadAllowSpeaker: AsyncStorage가 비어있으면 true를 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+
+    const { loadAllowSpeaker } = useAppStore.getState();
+    await loadAllowSpeaker();
+
+    const { allowSpeaker } = useAppStore.getState();
+    expect(allowSpeaker).toBe(true);
+  });
+
+  it('loadAllowSpeaker: AsyncStorage 오류 시 true를 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
+
+    const { loadAllowSpeaker } = useAppStore.getState();
+    await loadAllowSpeaker();
+
+    const { allowSpeaker } = useAppStore.getState();
+    expect(allowSpeaker).toBe(true);
   });
 
   it('초기 alarmEvent는 null이다', () => {

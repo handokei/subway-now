@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
 import type { RoutePreference } from '../utils/stationRoute';
 
 export type ThemeMode = 'auto' | 'light' | 'dark';
@@ -17,6 +17,7 @@ interface AppState {
   destination: Station | null;
   recentDestination: Station | null;
   sleepMode: boolean;
+  allowSpeaker: boolean;
   customOrigin: Station | null;
   themeMode: ThemeMode;
   routePreference: RoutePreference;
@@ -34,6 +35,8 @@ interface AppState {
   loadRoutePreference: () => Promise<void>;
   setSleepMode: (enabled: boolean) => Promise<void>;
   loadSleepMode: () => Promise<void>;
+  setAllowSpeaker: (enabled: boolean) => Promise<void>;
+  loadAllowSpeaker: () => Promise<void>;
   setAlarmEvent: (event: AlarmEvent) => void;
   clearAlarmEvent: () => void;
   loadAlarmEvent: () => Promise<void>;
@@ -44,6 +47,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   destination: null,
   recentDestination: null,
   sleepMode: false,
+  allowSpeaker: true,
   customOrigin: null,
   themeMode: 'auto' as ThemeMode,
   routePreference: 'optimal' as RoutePreference,
@@ -150,6 +154,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSleepMode: async (enabled: boolean) => {
     set({ sleepMode: enabled });
     await AsyncStorage.setItem(SLEEP_MODE_KEY, JSON.stringify(enabled));
+  },
+
+  setAllowSpeaker: async (enabled: boolean) => {
+    set({ allowSpeaker: enabled });
+    await AsyncStorage.setItem(ALLOW_SPEAKER_KEY, JSON.stringify(enabled));
+  },
+
+  loadAllowSpeaker: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(ALLOW_SPEAKER_KEY);
+      if (raw) {
+        set({ allowSpeaker: JSON.parse(raw) === true });
+      }
+    } catch {
+      // 저장된 데이터 없음 — true 유지
+    }
   },
 
   setAlarmEvent: (event: AlarmEvent) => {
