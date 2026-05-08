@@ -144,10 +144,11 @@ function buildLiveActivityData(
       data.transferStationName = route.transferName;
       data.stopsFromTransfer = route.stopsFromTransfer;
     } else {
-      data.stopsToTransfer = route.transfers[0].stopsToTransfer;
-      data.transferStationName = route.transfers[0].transferName;
-      data.stopsToSecondTransfer = route.transfers[1].stopsToTransfer;
-      data.secondTransferStationName = route.transfers[1].transferName;
+      const [first, second] = route.transfers;
+      data.stopsToTransfer = first.stopsToTransfer;
+      data.transferStationName = first.transferName;
+      data.stopsToSecondTransfer = second.stopsToTransfer;
+      data.secondTransferStationName = second.transferName;
       data.stopsAfterLastTransfer = route.stopsAfterLastTransfer;
     }
   }
