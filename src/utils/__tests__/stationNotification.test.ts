@@ -22,11 +22,11 @@ jest.mock('../logger', () => ({
   }),
 }));
 
-const mockPlayAlarmWithRouting = jest.fn().mockResolvedValue(undefined);
-const mockStopAlarm = jest.fn().mockResolvedValue(undefined);
+const mockVibrateAlarm = jest.fn();
+const mockStopVibration = jest.fn();
 jest.mock('../alarmSound', () => ({
-  playAlarmWithRouting: (...args: unknown[]) => mockPlayAlarmWithRouting(...args),
-  stopAlarm: () => mockStopAlarm(),
+  vibrateAlarm: (...args: unknown[]) => mockVibrateAlarm(...args),
+  stopVibration: () => mockStopVibration(),
 }));
 
 const mockStartLiveActivity = jest.fn().mockResolvedValue(undefined);
@@ -435,20 +435,20 @@ describe('stationNotification', () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('destination', '강남');
       expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { interruptionLevel: 'timeSensitive' });
-      expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(false);
+      expect(mockVibrateAlarm).toHaveBeenCalledWith(false);
     });
 
     it('transfer 타입이면 환승 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('transfer', '시청');
       expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!', { interruptionLevel: 'timeSensitive' });
-      expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(false);
+      expect(mockVibrateAlarm).toHaveBeenCalledWith(false);
     });
 
     it('sleepMode가 true이면 playAlarmWithRouting에 true를 전달한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('destination', '강남', true);
-      expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(true);
+      expect(mockVibrateAlarm).toHaveBeenCalledWith(true);
     });
 
     it('Android에서는 channelId와 priority MAX가 포함된다', async () => {
@@ -479,7 +479,7 @@ describe('stationNotification', () => {
     it('timeBased + sleepMode이면 playAlarmWithRouting에 true를 전달한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('destination', '강남', true, true);
-      expect(mockPlayAlarmWithRouting).toHaveBeenCalledWith(true);
+      expect(mockVibrateAlarm).toHaveBeenCalledWith(true);
     });
 
     it('timeBased + Android에서는 channelId와 priority MAX가 포함된다', async () => {
@@ -500,13 +500,10 @@ describe('stationNotification', () => {
       expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { channelId: 'station-alarm', priority: 'max' });
     });
 
-    it('playAlarmWithRouting 실패 시 알림은 정상 예약되고 진동 안전망이 작동한다', async () => {
+    it('vibrateAlarm을 호출한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      mockPlayAlarmWithRouting.mockRejectedValueOnce(new Error('백그라운드 오디오 실패'));
-      const vibrateSpy = jest.spyOn(Vibration, 'vibrate');
       await sendAlarmNotification('destination', '강남');
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
-      expect(vibrateSpy).toHaveBeenCalledWith([0, 1000, 500, 1000], false);
+      expect(mockVibrateAlarm).toHaveBeenCalledWith(false);
     });
   });
 
@@ -550,7 +547,7 @@ describe('stationNotification', () => {
   describe('clearAlarmNotification', () => {
     it('사운드를 정지하고 station-alarm을 dismiss한다', async () => {
       await clearAlarmNotification();
-      expect(mockStopAlarm).toHaveBeenCalled();
+      expect(mockStopVibration).toHaveBeenCalled();
       expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('station-alarm');
     });
 

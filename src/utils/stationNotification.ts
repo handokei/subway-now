@@ -1,11 +1,11 @@
 import * as Notifications from 'expo-notifications';
-import { Platform, Vibration } from 'react-native';
+import { Platform } from 'react-native';
 import { Station } from '../types/station';
 import { LINE_COLORS, LINE_NAMES } from '../constants/lineColors';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
 import type { AlarmEvent } from './stationAlarm';
 import * as LiveActivity from 'live-activity';
-import { playAlarmWithRouting, stopAlarm } from './alarmSound';
+import { vibrateAlarm, stopVibration } from './alarmSound';
 import { createLogger } from './logger';
 
 const notifLogger = createLogger('Notification');
@@ -299,21 +299,12 @@ export async function sendAlarmNotification(
     // NOTE: critical Entitlement 승인 후 'critical'로 변경 → Sleep Focus 완전 관통
     ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
   });
-  try {
-    await playAlarmWithRouting(sleepMode);
-  } catch (e) {
-    notifLogger.error('알람 사운드 재생 실패 (백그라운드):', e);
-    Vibration.vibrate([0, 1000, 500, 1000], false);
-  }
+  vibrateAlarm(sleepMode);
   notifLogger.info('알람 알림:', title, body);
 }
 
 export async function clearAlarmNotification(): Promise<void> {
-  try {
-    await stopAlarm();
-  } catch {
-    // 사운드 해제 실패 — 무시
-  }
+  stopVibration();
   try {
     await Notifications.dismissNotificationAsync(ALARM_NOTIFICATION_ID);
   } catch { /* 무시 */ }
