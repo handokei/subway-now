@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import ClusteredMapView from 'react-native-map-clustering';
 import { Marker, PROVIDER_DEFAULT } from 'react-native-maps';
 import type { Station } from '../types/station';
@@ -48,17 +48,37 @@ export function StationMap({
         clusterColor={colors.accent}
         testID="station-map"
       >
-        {mapConfig.stations.map((station) => (
-          <Marker
-            key={station.id}
-            coordinate={{ latitude: station.lat, longitude: station.lng }}
-            title={station.name}
-            description={LINE_NAMES[station.line]}
-            pinColor={station.id === customOriginId ? colors.accent : station.isNearest ? colors.accent : station.lineColor}
-            onPress={() => onStationPress?.(station)}
-            testID={`marker-${station.id}`}
-          />
-        ))}
+        {mapConfig.stations.map((station) => {
+          const isHighlighted = station.id === customOriginId || station.isNearest;
+          const dotColor = isHighlighted ? colors.accent : station.lineColor;
+          return (
+            <Marker
+              key={station.id}
+              coordinate={{ latitude: station.lat, longitude: station.lng }}
+              title={station.name}
+              description={LINE_NAMES[station.line]}
+              onPress={() => onStationPress?.(station)}
+              tracksViewChanges={false}
+              testID={`marker-${station.id}`}
+            >
+              <View style={styles.markerContainer}>
+                <View
+                  style={[
+                    styles.markerDot,
+                    { backgroundColor: dotColor, borderColor: colors.card },
+                  ]}
+                  testID={`dot-${station.id}`}
+                />
+                <Text
+                  style={[styles.markerLabel, { color: colors.ink }]}
+                  numberOfLines={1}
+                >
+                  {station.name}
+                </Text>
+              </View>
+            </Marker>
+          );
+        })}
       </ClusteredMapView>
       {!mapReady && (
         <View style={styles.loading} testID="map-loading">
@@ -77,5 +97,21 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  markerContainer: {
+    alignItems: 'center',
+    maxWidth: 60,
+  },
+  markerDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 1,
+  },
+  markerLabel: {
+    fontSize: 9,
+    fontWeight: '600',
+    marginTop: 2,
+    textAlign: 'center',
   },
 });
