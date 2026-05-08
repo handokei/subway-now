@@ -28,6 +28,9 @@ export const MOCK_ARRIVALS: Readonly<StationArrival> = Object.freeze({
   isMock: true,
 });
 
+/** 서울 열린데이터 API updnLine 응답값 — 상행/내선이면 up 방향 */
+const UP_DIRECTION_VALUES = ['상행', '내선'] as const;
+
 export interface FetchArrivalOptions {
   timeoutMs?: number;
   maxPerDirection?: number;
@@ -71,7 +74,7 @@ export async function fetchArrivalInfo(
         statusMessage: item.arvlMsg2 ?? '',
         trainCode: item.btrainNo ?? '',
       };
-      if (item.updnLine === '상행' || item.updnLine === '내선') {
+      if (UP_DIRECTION_VALUES.includes(item.updnLine)) {
         up.push(info);
       } else {
         down.push(info);
