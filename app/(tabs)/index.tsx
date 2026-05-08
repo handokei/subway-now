@@ -254,7 +254,7 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       {arrivedBanner && (
-        <View style={styles.arrivedBanner} testID="arrived-banner">
+        <View style={[styles.arrivedBanner, { backgroundColor: colors.success }]} testID="arrived-banner">
           <Text style={styles.arrivedBannerText}>도착!</Text>
         </View>
       )}
@@ -535,12 +535,11 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   arrivedBanner: {
-    backgroundColor: '#22c55e',
     paddingVertical: 12,
     alignItems: 'center',
   },
   arrivedBannerText: {
-    color: '#ffffff', // #22c55e 배너 위 텍스트 — 항상 흰색 유지
+    color: '#ffffff', // success 배경 위 텍스트 — 항상 흰색 유지
     fontSize: 18,
     fontWeight: '700',
   },

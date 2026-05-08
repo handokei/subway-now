@@ -50,6 +50,8 @@ describe('theme', () => {
       expect(colors.card).toBe('#ffffff');
       expect(colors.onAccent).toBe('#ffffff');
       expect(colors.overlay).toBe('rgba(0,0,0,0.4)');
+      expect(colors.success).toBe('#22c55e');
+      expect(colors.danger).toBe('#ff6b6b');
     });
   });
 
