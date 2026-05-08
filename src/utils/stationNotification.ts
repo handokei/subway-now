@@ -14,6 +14,8 @@ const liveActivityLogger = createLogger('LiveActivity');
 export const NOTIFICATION_ID = 'current-station';
 export const ALARM_NOTIFICATION_ID = 'station-alarm';
 const ALARM_CHANNEL_ID = 'station-alarm';
+export const STATION_PASSED_NOTIFICATION_ID = 'station-passed';
+const STATION_PASSED_CHANNEL_ID = 'station-passed';
 
 
 async function scheduleNotification(
@@ -63,6 +65,11 @@ export async function initStationNotification(): Promise<void> {
       vibrationPattern: [0, 1000, 500, 1000],
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       bypassDnd: true,
+    });
+    await Notifications.setNotificationChannelAsync(STATION_PASSED_CHANNEL_ID, {
+      name: '역 통과 알림',
+      importance: Notifications.AndroidImportance.DEFAULT,
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
     });
   }
   const { status } = await Notifications.requestPermissionsAsync({
@@ -205,11 +212,16 @@ export async function updateStationNotification(
   notifLogger.info('알림 예약 완료');
 }
 
+async function dismissStationPassedNotification(): Promise<void> {
+  await Notifications.dismissNotificationAsync(STATION_PASSED_NOTIFICATION_ID).catch(() => {});
+}
+
 export async function clearStationNotification(): Promise<void> {
   if (Platform.OS === 'ios') {
     if (!LiveActivity.isLiveActivityEnabled()) {
       notifLogger.info('알림 해제 (Live Activity 비활성)');
       await Notifications.dismissNotificationAsync(NOTIFICATION_ID);
+      await dismissStationPassedNotification();
       return;
     }
     try {
@@ -219,10 +231,32 @@ export async function clearStationNotification(): Promise<void> {
     } catch (e) {
       liveActivityLogger.error('종료 실패:', e);
     }
+    await dismissStationPassedNotification();
     return;
   }
   notifLogger.info('Android 알림 해제');
   await Notifications.dismissNotificationAsync(NOTIFICATION_ID);
+  await dismissStationPassedNotification();
+}
+
+export async function sendStationPassedNotification(
+  stationName: string,
+  destinationName: string,
+  stopsRemaining: number | null,
+): Promise<void> {
+  const body = stopsRemaining != null
+    ? `${destinationName}까지 ${stopsRemaining}정거장 남음`
+    : `현재 ${stationName}역`;
+
+  await scheduleNotification(STATION_PASSED_NOTIFICATION_ID, {
+    title: `${stationName}역 통과`,
+    body,
+    ...(Platform.OS === 'android' && {
+      channelId: STATION_PASSED_CHANNEL_ID,
+      priority: Notifications.AndroidNotificationPriority.DEFAULT,
+    }),
+  });
+  notifLogger.info('역 통과 알림:', stationName, body);
 }
 
 export async function sendAlarmNotification(

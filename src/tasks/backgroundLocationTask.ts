@@ -6,7 +6,7 @@ import { alarmKey } from '../utils/stationAlarm';
 import { updateStationNotification } from '../utils/stationNotification';
 import { findNearestStation } from '../utils/findNearestStation';
 import { createLogger } from '../utils/logger';
-import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY } from '../constants/storageKeys';
+import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY } from '../constants/storageKeys';
 import type { Route } from '../utils/stationRoute';
 
 const logger = createLogger('BackgroundLocation');
@@ -27,11 +27,12 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const { latitude, longitude } = latest.coords;
 
   try {
-    const [destJson, sleepJson, firedJson, routeJson] = await Promise.all([
+    const [destJson, sleepJson, firedJson, routeJson, lastNotifiedJson] = await Promise.all([
       AsyncStorage.getItem(DESTINATION_KEY),
       AsyncStorage.getItem(SLEEP_MODE_KEY),
       AsyncStorage.getItem(FIRED_ALARMS_KEY),
       AsyncStorage.getItem(ROUTE_KEY),
+      AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY),
     ]);
 
     // 목적지 미설정 시 현재 역 알림만 업데이트
@@ -57,21 +58,29 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     const firedAlarms = new Set<string>(firedJson ? JSON.parse(firedJson) : []);
     const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;
 
-    const { alarmEvent } = await processLocationUpdate(
+    const { alarmEvent, lastNotifiedStationId: newLastId } = await processLocationUpdate(
       latitude,
       longitude,
       destination,
       firedAlarms,
       sleepMode,
       storedRoute,
+      lastNotifiedJson,
     );
 
+    const writes: Promise<void>[] = [];
     if (alarmEvent) {
       firedAlarms.add(alarmKey(alarmEvent));
-      await Promise.all([
+      writes.push(
         AsyncStorage.setItem(FIRED_ALARMS_KEY, JSON.stringify([...firedAlarms])),
         AsyncStorage.setItem(ALARM_EVENT_KEY, JSON.stringify(alarmEvent)),
-      ]);
+      );
+    }
+    if (newLastId && newLastId !== lastNotifiedJson) {
+      writes.push(AsyncStorage.setItem(LAST_NOTIFIED_STATION_KEY, newLastId));
+    }
+    if (writes.length > 0) {
+      await Promise.all(writes);
     }
 
     logger.info('백그라운드 위치 업데이트 완료:', latitude.toFixed(4), longitude.toFixed(4));

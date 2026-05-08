@@ -1,7 +1,7 @@
 import { findNearestStation } from './findNearestStation';
 import { findRoute, calculateStaticETA, updateRouteFromPosition } from './stationRoute';
 import { checkAlarm, checkTimeBasedAlarm } from './stationAlarm';
-import { sendAlarmNotification, updateStationNotification } from './stationNotification';
+import { sendAlarmNotification, sendStationPassedNotification, updateStationNotification } from './stationNotification';
 import type { NearestStationResult, Station } from '../types/station';
 import type { Route } from './stationRoute';
 import type { AlarmEvent } from './stationAlarm';
@@ -75,6 +75,7 @@ export function evaluateAllAlarms(
 export interface PipelineResult {
   alarmEvent: AlarmEvent | null;
   nearest: NearestStationResult | null;
+  lastNotifiedStationId: string | null;
 }
 
 export async function processLocationUpdate(
@@ -84,9 +85,10 @@ export async function processLocationUpdate(
   firedAlarms: Set<string>,
   sleepMode: boolean,
   storedRoute: Route = null,
+  lastNotifiedStationId: string | null = null,
 ): Promise<PipelineResult> {
   const nearest = findNearestStation(lat, lng);
-  if (!nearest) return { alarmEvent: null, nearest: null };
+  if (!nearest) return { alarmEvent: null, nearest: null, lastNotifiedStationId };
 
   let route: Route = null;
   if (storedRoute) {
@@ -106,6 +108,18 @@ export async function processLocationUpdate(
     );
   }
 
+  // 역 변경 감지 → per-station 알림
+  let newLastNotifiedStationId = lastNotifiedStationId;
+  if (nearest.station.id !== lastNotifiedStationId) {
+    newLastNotifiedStationId = nearest.station.id;
+    const target = resolveNextTarget(route, destination.name);
+    await sendStationPassedNotification(
+      nearest.station.name,
+      destination.name,
+      target?.stopsToNextStation ?? null,
+    );
+  }
+
   const eta = calculateStaticETA(route);
   await updateStationNotification(
     nearest.station,
@@ -117,5 +131,5 @@ export async function processLocationUpdate(
     sleepMode ? alarmEvent : null,
   );
 
-  return { alarmEvent, nearest };
+  return { alarmEvent, nearest, lastNotifiedStationId: newLastNotifiedStationId };
 }
