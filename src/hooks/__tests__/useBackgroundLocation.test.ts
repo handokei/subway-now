@@ -109,8 +109,8 @@ describe('useBackgroundLocation', () => {
         'background-location-task',
         expect.objectContaining({
           accuracy: 6, // Location.Accuracy.High
-          distanceInterval: 100,
-          deferredUpdatesInterval: 30_000,
+          distanceInterval: 50,
+          deferredUpdatesInterval: 10_000,
           showsBackgroundLocationIndicator: true,
           foregroundService: expect.objectContaining({
             notificationTitle: '지하철 위치 감지 중',

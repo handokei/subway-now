@@ -7,6 +7,7 @@ import {
   clearStationNotification,
   sendAlarmNotification,
   clearAlarmNotification,
+  sendStationPassedNotification,
 } from '../stationNotification';
 import { Station } from '../../types/station';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
@@ -152,6 +153,11 @@ describe('stationNotification', () => {
         vibrationPattern: [0, 1000, 500, 1000],
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
         bypassDnd: true,
+      });
+      expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-passed', {
+        name: '역 통과 알림',
+        importance: Notifications.AndroidImportance.DEFAULT,
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       });
       expect(Notifications.requestPermissionsAsync).toHaveBeenCalledTimes(1);
     });
@@ -381,13 +387,13 @@ describe('stationNotification', () => {
   });
 
   describe('clearStationNotification', () => {
-    it('iOS에서 endLiveActivity를 호출한다', async () => {
+    it('iOS에서 endLiveActivity를 호출하고 station-passed 알림도 해제한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       mockIsLiveActivityEnabled.mockReturnValue(true);
 
       await clearStationNotification();
       expect(mockEndLiveActivity).toHaveBeenCalled();
-      expect(Notifications.dismissNotificationAsync).not.toHaveBeenCalled();
+      expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('station-passed');
     });
 
     it('iOS에서 endLiveActivity가 실패해도 에러를 던지지 않는다', async () => {
@@ -398,11 +404,20 @@ describe('stationNotification', () => {
       await expect(clearStationNotification()).resolves.toBeUndefined();
     });
 
+    it('station-passed dismiss 실패해도 에러를 던지지 않는다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      mockIsLiveActivityEnabled.mockReturnValue(true);
+      (Notifications.dismissNotificationAsync as jest.Mock).mockRejectedValue(new Error('dismiss 실패'));
+
+      await expect(clearStationNotification()).resolves.toBeUndefined();
+    });
+
     it('iOS에서 Live Activity 비활성화 시 dismissNotificationAsync를 호출한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       mockIsLiveActivityEnabled.mockReturnValue(false);
       await clearStationNotification();
       expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('current-station');
+      expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('station-passed');
       expect(mockEndLiveActivity).not.toHaveBeenCalled();
     });
 
@@ -410,6 +425,7 @@ describe('stationNotification', () => {
       jest.replaceProperty(Platform, 'OS', 'android');
       await clearStationNotification();
       expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('current-station');
+      expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('station-passed');
       expect(mockEndLiveActivity).not.toHaveBeenCalled();
     });
   });
@@ -491,6 +507,43 @@ describe('stationNotification', () => {
       await sendAlarmNotification('destination', '강남');
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
       expect(vibrateSpy).toHaveBeenCalledWith([0, 1000, 500, 1000], false);
+    });
+  });
+
+  describe('sendStationPassedNotification', () => {
+    it('stopsRemaining이 있으면 남은 정거장 수를 body에 표시한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendStationPassedNotification('역삼', '강남', 3);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'station-passed',
+        content: { title: '역삼역 통과', body: '강남까지 3정거장 남음' },
+        trigger: null,
+      });
+    });
+
+    it('stopsRemaining이 null이면 현재 역만 표시한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendStationPassedNotification('역삼', '강남', null);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'station-passed',
+        content: { title: '역삼역 통과', body: '현재 역삼역' },
+        trigger: null,
+      });
+    });
+
+    it('Android에서는 channelId와 priority DEFAULT가 포함된다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      await sendStationPassedNotification('역삼', '강남', 3);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'station-passed',
+        content: {
+          title: '역삼역 통과',
+          body: '강남까지 3정거장 남음',
+          channelId: 'station-passed',
+          priority: 'default',
+        },
+        trigger: null,
+      });
     });
   });
 

@@ -30,11 +30,22 @@ const mockLocation = (lat: number, lng: number) => {
   });
 };
 
+const mockLastKnownLocation = (lat: number, lng: number) => {
+  (Location.getLastKnownPositionAsync as jest.Mock).mockResolvedValue({
+    coords: { latitude: lat, longitude: lng },
+  });
+};
+
+const mockNoLastKnownLocation = () => {
+  (Location.getLastKnownPositionAsync as jest.Mock).mockResolvedValue(null);
+};
+
 describe('useNearestStation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
     appStateCallback = null;
+    mockNoLastKnownLocation();
   });
 
   afterEach(() => {
@@ -128,7 +139,7 @@ describe('useNearestStation', () => {
     );
 
     act(() => {
-      jest.advanceTimersByTime(30_000);
+      jest.advanceTimersByTime(10_000);
     });
 
     await waitFor(() =>
@@ -184,6 +195,100 @@ describe('useNearestStation', () => {
 
     unmount();
     expect(mockRemove).toHaveBeenCalled();
+  });
+
+  it('환승역 감지 시 isTransfer가 true이고 variants가 반환된다', async () => {
+    mockGranted();
+    // 교대역 좌표 (2호선/3호선 환승역)
+    mockLocation(37.493961, 127.014667);
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.result?.station.name).toBe('교대');
+    expect(result.current.variants.length).toBeGreaterThan(1);
+    expect(result.current.variants.every((v) => v.name === '교대')).toBe(true);
+  });
+
+  it('일반역 감지 시 variants가 1개이다', async () => {
+    mockGranted();
+    // 소요산역 좌표 (1호선 단독역)
+    mockLocation(37.9481, 127.061034);
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.result?.station.name).toBe('소요산');
+    expect(result.current.variants).toHaveLength(1);
+  });
+
+  it('권한 거부 시 variants가 빈 배열이다', async () => {
+    mockDenied();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.variants).toEqual([]);
+  });
+
+  it('캐시된 위치가 있으면 즉시 loading이 false가 된다', async () => {
+    mockGranted();
+    mockLastKnownLocation(37.4980, 127.0277);
+    mockLocation(37.4980, 127.0277);
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(Location.getLastKnownPositionAsync).toHaveBeenCalled();
+    expect(result.current.result).not.toBeNull();
+    expect(result.current.result?.station.name).toBe('강남');
+  });
+
+  it('첫 호출은 Balanced accuracy, 이후 호출은 High accuracy를 사용한다', async () => {
+    mockGranted();
+    mockNoLastKnownLocation();
+    mockLocation(37.4980, 127.0277);
+
+    renderHook(() => useNearestStation());
+
+    await waitFor(() =>
+      expect(Location.getCurrentPositionAsync).toHaveBeenCalledTimes(1)
+    );
+
+    expect(Location.getCurrentPositionAsync).toHaveBeenCalledWith({
+      accuracy: Location.Accuracy.Balanced,
+    });
+
+    act(() => {
+      jest.advanceTimersByTime(10_000);
+    });
+
+    await waitFor(() =>
+      expect(Location.getCurrentPositionAsync).toHaveBeenCalledTimes(2)
+    );
+
+    expect(Location.getCurrentPositionAsync).toHaveBeenLastCalledWith({
+      accuracy: Location.Accuracy.High,
+    });
+  });
+
+  it('캐시된 위치가 없으면 getCurrentPositionAsync 결과를 기다린다', async () => {
+    mockGranted();
+    mockNoLastKnownLocation();
+    mockLocation(37.4980, 127.0277);
+
+    const { result } = renderHook(() => useNearestStation());
+
+    expect(result.current.loading).toBe(true);
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(Location.getLastKnownPositionAsync).toHaveBeenCalled();
+    expect(result.current.result?.station.name).toBe('강남');
   });
 
 });

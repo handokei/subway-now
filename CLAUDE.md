@@ -173,3 +173,9 @@ EXPO_PUBLIC_KAKAO_MAP_KEY=         # 카카오맵 JavaScript API
 - 상수: `UPPER_SNAKE_CASE`
 - 파일명: 컴포넌트는 `PascalCase.tsx`, 유틸/훅은 `camelCase.ts`
 - 색상: `useTheme()`으로 동적 참조. 정적 `import { colors }` 사용 금지 (테스트 제외)
+
+### 확장성/재사용성 (글로벌 규칙 3번 적용)
+- 노선/역 관련 분기: `if-else`/`switch` 대신 `stations.json`, `lineColors.ts` 등 데이터로 구동
+- 상수 위치: `src/constants/`에 `UPPER_SNAKE_CASE`로 분리
+- API Provider: 새 제공자 추가 시 `src/providers/` 인터페이스 구현체만 추가
+- 알람/경로 로직: 환승 횟수에 의존하지 않고 `transfers` 배열 순회로 처리

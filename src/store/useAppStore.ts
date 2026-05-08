@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY } from '../constants/storageKeys';
 import type { RoutePreference } from '../utils/stationRoute';
 
 export type ThemeMode = 'auto' | 'light' | 'dark';
@@ -81,6 +81,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     } else {
       AsyncStorage.removeItem(DESTINATION_KEY).catch(noop);
       AsyncStorage.removeItem(FIRED_ALARMS_KEY).catch(noop);
+      AsyncStorage.removeItem(ROUTE_KEY).catch(noop);
     }
   },
 

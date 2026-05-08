@@ -1,6 +1,6 @@
 import stationsData from '../data/stations.json';
 import { haversine } from './haversine';
-import type { NearestStationResult, Station } from '../types/station';
+import type { NearestStationResult, NearestStationsResult, Station } from '../types/station';
 
 const stations = stationsData as Station[];
 
@@ -17,4 +17,18 @@ export function findNearestStation(lat: number, lng: number): NearestStationResu
   }
 
   return nearest ? { station: nearest, distanceKm: minDistance } : null;
+}
+
+export function findNearestStations(lat: number, lng: number): NearestStationsResult | null {
+  const result = findNearestStation(lat, lng);
+  if (!result) return null;
+
+  const variants = stations.filter((s) => s.name === result.station.name);
+
+  return {
+    primary: result.station,
+    variants,
+    distanceKm: result.distanceKm,
+    isTransfer: variants.length > 1,
+  };
 }

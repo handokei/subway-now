@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as Location from 'expo-location';
-import { NearestStationResult } from '../types/station';
-import { findNearestStation } from '../utils/findNearestStation';
+import { NearestStationResult, Station } from '../types/station';
+import { findNearestStations } from '../utils/findNearestStation';
 import { usePolling } from './usePolling';
 
-const UPDATE_INTERVAL_MS = 30_000;
+const UPDATE_INTERVAL_MS = 10_000;
 
 interface UseNearestStationReturn {
   result: NearestStationResult | null;
+  variants: Station[];
   userLocation: { lat: number; lng: number } | null;
   loading: boolean;
   error: string | null;
@@ -15,12 +16,28 @@ interface UseNearestStationReturn {
   refresh: () => Promise<void>;
 }
 
+function applyNearestResult(
+  stationsResult: ReturnType<typeof findNearestStations>,
+  setResult: (r: NearestStationResult | null) => void,
+  setVariants: (v: Station[]) => void,
+): void {
+  if (stationsResult) {
+    setResult({ station: stationsResult.primary, distanceKm: stationsResult.distanceKm });
+    setVariants(stationsResult.variants);
+  } else {
+    setResult(null);
+    setVariants([]);
+  }
+}
+
 export function useNearestStation(): UseNearestStationReturn {
   const [result, setResult] = useState<NearestStationResult | null>(null);
+  const [variants, setVariants] = useState<Station[]>([]);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
+  const isFirstFetch = useRef(true);
 
   const refresh = useCallback(async () => {
     try {
@@ -33,13 +50,32 @@ export function useNearestStation(): UseNearestStationReturn {
       }
       setPermissionDenied(false);
 
-      const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
-      });
+      // 첫 호출: 캐시된 위치로 즉시 UI 표시
+      if (isFirstFetch.current) {
+        const lastKnown = await Location.getLastKnownPositionAsync();
+        if (lastKnown) {
+          setUserLocation({ lat: lastKnown.coords.latitude, lng: lastKnown.coords.longitude });
+          applyNearestResult(
+            findNearestStations(lastKnown.coords.latitude, lastKnown.coords.longitude),
+            setResult, setVariants,
+          );
+          setLoading(false);
+        }
+      }
+
+      // 첫 호출은 Balanced(빠른 fix), 이후는 High(정밀)
+      const accuracy = isFirstFetch.current
+        ? Location.Accuracy.Balanced
+        : Location.Accuracy.High;
+      isFirstFetch.current = false;
+
+      const location = await Location.getCurrentPositionAsync({ accuracy });
 
       setUserLocation({ lat: location.coords.latitude, lng: location.coords.longitude });
-      const nearest = findNearestStation(location.coords.latitude, location.coords.longitude);
-      setResult(nearest);
+      applyNearestResult(
+        findNearestStations(location.coords.latitude, location.coords.longitude),
+        setResult, setVariants,
+      );
     } catch (e) {
       setError('위치를 가져오는 데 실패했습니다.');
     } finally {
@@ -53,5 +89,5 @@ export function useNearestStation(): UseNearestStationReturn {
 
   usePolling(refresh, UPDATE_INTERVAL_MS);
 
-  return { result, userLocation, loading, error, permissionDenied, refresh };
+  return { result, variants, userLocation, loading, error, permissionDenied, refresh };
 }

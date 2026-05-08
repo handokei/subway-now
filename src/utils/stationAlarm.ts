@@ -1,4 +1,4 @@
-import type { Route, DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
+import type { Route } from './stationRoute';
 
 export type AlarmType = 'destination' | 'transfer' | 'approaching';
 
@@ -21,57 +21,44 @@ export function estimateRemainingSeconds(stops: number): number {
   return stops * SECONDS_PER_STOP;
 }
 
-type AlarmChecker = (
+export interface CurrentTarget {
+  name: string;
+  stops: number;
+  alarmType: 'transfer' | 'destination';
+}
+
+/**
+ * 경로의 모든 웨이포인트(환승역 + 도착역)를 경로 순서대로 반환한다.
+ * checkAlarm이 이 목록을 순회하며, 이미 발생한 알람은 건너뛰고 다음 타겟을 평가한다.
+ * 환승 횟수에 의존하지 않고 transfers 배열을 순회하므로 N번 환승까지 확장 가능하다.
+ */
+export function resolveAllTargets(
   route: NonNullable<Route>,
   destinationName: string,
-  threshold: number,
-) => AlarmEvent | null;
+): CurrentTarget[] {
+  if (route.type === 'direct') {
+    return [{ name: destinationName, stops: route.stops, alarmType: 'destination' }];
+  }
 
-const checkers: Record<string, AlarmChecker> = {
-  direct(route, destinationName, threshold) {
-    const r = route as DirectRoute;
-    if (r.stops <= threshold) {
-      return { type: 'destination', stationName: destinationName };
+  if (route.type === 'transfer') {
+    if (route.transferName === destinationName) {
+      return [{ name: destinationName, stops: route.stopsToTransfer, alarmType: 'destination' }];
     }
-    return null;
-  },
+    return [
+      { name: route.transferName, stops: route.stopsToTransfer, alarmType: 'transfer' },
+      { name: destinationName, stops: route.stopsFromTransfer, alarmType: 'destination' },
+    ];
+  }
 
-  transfer(route, destinationName, threshold) {
-    const r = route as TransferRoute;
-    if (r.transferName === destinationName) {
-      if (r.stopsToTransfer <= threshold) {
-        return { type: 'destination', stationName: destinationName };
-      }
-      return null;
-    }
-    if (r.stopsToTransfer <= threshold) {
-      return { type: 'transfer', stationName: r.transferName };
-    }
-    if (r.stopsFromTransfer <= threshold) {
-      return { type: 'destination', stationName: destinationName };
-    }
-    return null;
-  },
+  // multi-transfer: 모든 웨이포인트를 순서대로 반환
+  const targets: CurrentTarget[] = route.transfers.map((t) => {
+    const alarmType = t.transferName === destinationName ? 'destination' as const : 'transfer' as const;
+    return { name: t.transferName === destinationName ? destinationName : t.transferName, stops: t.stopsToTransfer, alarmType };
+  });
+  targets.push({ name: destinationName, stops: route.stopsAfterLastTransfer, alarmType: 'destination' });
+  return targets;
+}
 
-  'multi-transfer'(route, destinationName, threshold) {
-    const r = route as MultiTransferRoute;
-    for (const t of r.transfers) {
-      if (t.transferName === destinationName) {
-        if (t.stopsToTransfer <= threshold) {
-          return { type: 'destination', stationName: destinationName };
-        }
-        return null;
-      }
-      if (t.stopsToTransfer <= threshold) {
-        return { type: 'transfer', stationName: t.transferName };
-      }
-    }
-    if (r.stopsAfterLastTransfer <= threshold) {
-      return { type: 'destination', stationName: destinationName };
-    }
-    return null;
-  },
-};
 
 export function checkAlarm(
   route: Route,
@@ -81,15 +68,15 @@ export function checkAlarm(
 ): AlarmEvent | null {
   if (!route) return null;
 
-  const checker = checkers[route.type];
-  const event = checker(route, destinationName, threshold);
-
-  if (!event) return null;
-
-  const key = alarmKey(event);
-  if (firedAlarms.has(key)) return null;
-
-  return event;
+  const targets = resolveAllTargets(route, destinationName);
+  for (const target of targets) {
+    const event: AlarmEvent = { type: target.alarmType, stationName: target.name };
+    const key = alarmKey(event);
+    if (firedAlarms.has(key)) continue;
+    if (target.stops > threshold) return null;
+    return event;
+  }
+  return null;
 }
 
 function resolveStationType(

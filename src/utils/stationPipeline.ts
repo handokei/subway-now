@@ -1,7 +1,7 @@
 import { findNearestStation } from './findNearestStation';
-import { findRoute, calculateStaticETA } from './stationRoute';
+import { findRoute, calculateStaticETA, updateRouteFromPosition } from './stationRoute';
 import { checkAlarm, checkTimeBasedAlarm } from './stationAlarm';
-import { sendAlarmNotification, updateStationNotification } from './stationNotification';
+import { sendAlarmNotification, sendStationPassedNotification, updateStationNotification } from './stationNotification';
 import type { NearestStationResult, Station } from '../types/station';
 import type { Route } from './stationRoute';
 import type { AlarmEvent } from './stationAlarm';
@@ -75,6 +75,7 @@ export function evaluateAllAlarms(
 export interface PipelineResult {
   alarmEvent: AlarmEvent | null;
   nearest: NearestStationResult | null;
+  lastNotifiedStationId: string | null;
 }
 
 export async function processLocationUpdate(
@@ -83,11 +84,19 @@ export async function processLocationUpdate(
   destination: Station,
   firedAlarms: Set<string>,
   sleepMode: boolean,
+  storedRoute: Route = null,
+  lastNotifiedStationId: string | null = null,
 ): Promise<PipelineResult> {
   const nearest = findNearestStation(lat, lng);
-  if (!nearest) return { alarmEvent: null, nearest: null };
+  if (!nearest) return { alarmEvent: null, nearest: null, lastNotifiedStationId };
 
-  const route = findRoute(nearest.station.id, destination.id);
+  let route: Route = null;
+  if (storedRoute) {
+    route = updateRouteFromPosition(storedRoute, nearest.station, destination.id);
+  }
+  if (!route) {
+    route = findRoute(nearest.station.id, destination.id);
+  }
   const alarmEvent = evaluateAllAlarms(route, destination.name, firedAlarms);
 
   if (alarmEvent) {
@@ -96,6 +105,18 @@ export async function processLocationUpdate(
       alarmEvent.stationName,
       sleepMode,
       alarmEvent.timeBased ?? false,
+    );
+  }
+
+  // 역 변경 감지 → per-station 알림
+  let newLastNotifiedStationId = lastNotifiedStationId;
+  if (nearest.station.id !== lastNotifiedStationId) {
+    newLastNotifiedStationId = nearest.station.id;
+    const target = resolveNextTarget(route, destination.name);
+    await sendStationPassedNotification(
+      nearest.station.name,
+      destination.name,
+      target?.stopsToNextStation ?? null,
     );
   }
 
@@ -110,5 +131,5 @@ export async function processLocationUpdate(
     sleepMode ? alarmEvent : null,
   );
 
-  return { alarmEvent, nearest };
+  return { alarmEvent, nearest, lastNotifiedStationId: newLastNotifiedStationId };
 }
