@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore, type ThemeMode } from '../../src/store/useAppStore';
 import type { RoutePreference } from '../../src/utils/stationRoute';
 import { useTheme, spacing, radius } from '../../src/theme';
+import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 
 const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
   { value: 'auto', label: '자동' },
@@ -25,6 +26,7 @@ export default function SettingsScreen() {
   const setRoutePreference = useAppStore((s) => s.setRoutePreference);
   const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
   const { colors } = useTheme();
+  const showSleepModeGuide = useSleepModeGuide();
 
   useEffect(() => {
     loadSleepMode();
@@ -114,7 +116,13 @@ export default function SettingsScreen() {
           </View>
           <Switch
             value={sleepMode}
-            onValueChange={setSleepMode}
+            onValueChange={(value) => {
+              if (value) {
+                showSleepModeGuide(() => setSleepMode(true));
+              } else {
+                setSleepMode(false);
+              }
+            }}
             trackColor={{ false: colors.hair, true: colors.accent }}
             thumbColor={sleepMode ? colors.onAccent : colors.subtle}
             testID="sleep-mode-switch"
