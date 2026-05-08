@@ -110,14 +110,17 @@ describe('stationNotification', () => {
       );
     });
 
-    it('일반 알림은 shouldPlaySound false, 알람 알림은 true를 반환한다', async () => {
+    it('일반 알림은 shouldPlaySound false, 알람 알림(sound 있음)은 true를 반환한다', async () => {
       setupNotificationHandler();
       const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
-      const normalResult = await handleNotification({ request: { identifier: 'current-station' } });
+      const normalResult = await handleNotification({ request: { identifier: 'current-station', content: { sound: null } } });
       expect(normalResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
 
-      const alarmResult = await handleNotification({ request: { identifier: 'station-alarm' } });
+      const alarmResult = await handleNotification({ request: { identifier: 'station-alarm', content: { sound: 'alarm.wav' } } });
       expect(alarmResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false });
+
+      const silentAlarmResult = await handleNotification({ request: { identifier: 'station-alarm', content: { sound: null } } });
+      expect(silentAlarmResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
     });
   });
 
@@ -149,6 +152,16 @@ describe('stationNotification', () => {
         name: '하차/환승 알림',
         importance: Notifications.AndroidImportance.MAX,
         sound: 'alarm.wav',
+        enableVibrate: true,
+        vibrationPattern: [0, 1000, 500, 1000],
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        bypassDnd: true,
+      });
+      expect(Notifications.deleteNotificationChannelAsync).toHaveBeenCalledWith('station-alarm-silent');
+      expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm-silent', {
+        name: '하차/환승 알림 (무음)',
+        importance: Notifications.AndroidImportance.MAX,
+        sound: null,
         enableVibrate: true,
         vibrationPattern: [0, 1000, 500, 1000],
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
@@ -504,6 +517,26 @@ describe('stationNotification', () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification('destination', '강남');
       expect(mockVibrateAlarm).toHaveBeenCalledWith(false);
+    });
+
+    it('allowSpeaker=false이면 iOS에서 sound를 false로 설정한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification('destination', '강남', false, false, false);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'station-alarm',
+        content: { title: '하차 알림', body: '다음 역 강남에서 내리세요!', sound: false, interruptionLevel: 'timeSensitive' },
+        trigger: null,
+      });
+    });
+
+    it('allowSpeaker=false이면 Android에서 무음 채널을 사용한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      await sendAlarmNotification('destination', '강남', false, false, false);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'station-alarm',
+        content: { title: '하차 알림', body: '다음 역 강남에서 내리세요!', sound: false, channelId: 'station-alarm-silent', priority: 'max' },
+        trigger: null,
+      });
     });
   });
 

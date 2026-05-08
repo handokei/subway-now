@@ -14,6 +14,7 @@ const liveActivityLogger = createLogger('LiveActivity');
 export const NOTIFICATION_ID = 'current-station';
 export const ALARM_NOTIFICATION_ID = 'station-alarm';
 const ALARM_CHANNEL_ID = 'station-alarm';
+const ALARM_SILENT_CHANNEL_ID = 'station-alarm-silent';
 export const STATION_PASSED_NOTIFICATION_ID = 'station-passed';
 const STATION_PASSED_CHANNEL_ID = 'station-passed';
 
@@ -38,11 +39,12 @@ export function setupNotificationHandler(): void {
   Notifications.setNotificationHandler({
     handleNotification: async (notification) => {
       const isAlarm = notification.request.identifier === ALARM_NOTIFICATION_ID;
+      const hasSound = notification.request.content.sound != null;
       return {
         shouldShowAlert: true,
         shouldShowBanner: true,
         shouldShowList: true,
-        shouldPlaySound: isAlarm,
+        shouldPlaySound: isAlarm && hasSound,
         shouldSetBadge: false,
       };
     },
@@ -61,6 +63,16 @@ export async function initStationNotification(): Promise<void> {
       name: '하차/환승 알림',
       importance: Notifications.AndroidImportance.MAX,
       sound: 'alarm.wav',
+      enableVibrate: true,
+      vibrationPattern: [0, 1000, 500, 1000],
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      bypassDnd: true,
+    });
+    await Notifications.deleteNotificationChannelAsync(ALARM_SILENT_CHANNEL_ID).catch(() => {});
+    await Notifications.setNotificationChannelAsync(ALARM_SILENT_CHANNEL_ID, {
+      name: '하차/환승 알림 (무음)',
+      importance: Notifications.AndroidImportance.MAX,
+      sound: null,
       enableVibrate: true,
       vibrationPattern: [0, 1000, 500, 1000],
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
@@ -265,6 +277,7 @@ export async function sendAlarmNotification(
   stationName: string,
   sleepMode: boolean = false,
   timeBased: boolean = false,
+  allowSpeaker: boolean = true,
 ): Promise<void> {
   let title: string;
   let body: string;
@@ -291,9 +304,9 @@ export async function sendAlarmNotification(
   await scheduleNotification(ALARM_NOTIFICATION_ID, {
     title,
     body,
-    sound: 'alarm.wav',
+    sound: allowSpeaker ? 'alarm.wav' : false,
     ...(Platform.OS === 'android' && {
-      channelId: ALARM_CHANNEL_ID,
+      channelId: allowSpeaker ? ALARM_CHANNEL_ID : ALARM_SILENT_CHANNEL_ID,
       priority: Notifications.AndroidNotificationPriority.MAX,
     }),
     // NOTE: critical Entitlement 승인 후 'critical'로 변경 → Sleep Focus 완전 관통

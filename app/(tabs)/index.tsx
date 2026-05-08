@@ -45,6 +45,7 @@ export default function HomeScreen() {
   const sleepMode = useAppStore((s) => s.sleepMode);
   const setSleepMode = useAppStore((s) => s.setSleepMode);
   const loadSleepMode = useAppStore((s) => s.loadSleepMode);
+  const loadAllowSpeaker = useAppStore((s) => s.loadAllowSpeaker);
   const alarmEvent = useAppStore((s) => s.alarmEvent);
   const clearAlarmEvent = useAppStore((s) => s.clearAlarmEvent);
   const loadAlarmEvent = useAppStore((s) => s.loadAlarmEvent);
@@ -131,6 +132,7 @@ export default function HomeScreen() {
   useEffect(() => {
     loadFavorites();
     loadSleepMode();
+    loadAllowSpeaker();
     loadCustomOrigin();
     loadRoutePreference();
     loadAlarmEvent();

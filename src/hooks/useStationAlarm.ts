@@ -18,12 +18,18 @@ export function useStationAlarm(
   const prevDestRef = useRef<string | null>(null);
   const lastNotifiedStationIdRef = useRef<string | null>(null);
   const sleepMode = useAppStore((s) => s.sleepMode);
+  const allowSpeaker = useAppStore((s) => s.allowSpeaker);
   const setAlarmEvent = useAppStore((s) => s.setAlarmEvent);
   const sleepModeRef = useRef(sleepMode);
+  const allowSpeakerRef = useRef(allowSpeaker);
 
   useEffect(() => {
     sleepModeRef.current = sleepMode;
   }, [sleepMode]);
+
+  useEffect(() => {
+    allowSpeakerRef.current = allowSpeaker;
+  }, [allowSpeaker]);
 
   useEffect(() => {
     if (destinationName !== prevDestRef.current) {
@@ -39,7 +45,7 @@ export function useStationAlarm(
       if (sleepModeRef.current && event.type !== 'approaching') {
         setAlarmEvent({ type: event.type, stationName: event.stationName });
       }
-      sendAlarmNotification(event.type, event.stationName, sleepModeRef.current, event.timeBased ?? false).catch((e) =>
+      sendAlarmNotification(event.type, event.stationName, sleepModeRef.current, event.timeBased ?? false, allowSpeakerRef.current).catch((e) =>
         logger.error('알람 알림 실패:', e),
       );
     }

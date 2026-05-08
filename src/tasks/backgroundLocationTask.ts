@@ -6,7 +6,7 @@ import { alarmKey } from '../utils/stationAlarm';
 import { updateStationNotification } from '../utils/stationNotification';
 import { findNearestStation } from '../utils/findNearestStation';
 import { createLogger } from '../utils/logger';
-import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY } from '../constants/storageKeys';
+import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
 import type { Route } from '../utils/stationRoute';
 
 const logger = createLogger('BackgroundLocation');
@@ -27,12 +27,13 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const { latitude, longitude } = latest.coords;
 
   try {
-    const [destJson, sleepJson, firedJson, routeJson, lastNotifiedJson] = await Promise.all([
+    const [destJson, sleepJson, firedJson, routeJson, lastNotifiedJson, allowSpeakerJson] = await Promise.all([
       AsyncStorage.getItem(DESTINATION_KEY),
       AsyncStorage.getItem(SLEEP_MODE_KEY),
       AsyncStorage.getItem(FIRED_ALARMS_KEY),
       AsyncStorage.getItem(ROUTE_KEY),
       AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY),
+      AsyncStorage.getItem(ALLOW_SPEAKER_KEY),
     ]);
 
     // 목적지 미설정 시 현재 역 알림만 업데이트
@@ -55,6 +56,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       return;
     }
     const sleepMode = sleepJson ? JSON.parse(sleepJson) === true : false;
+    const allowSpeaker = allowSpeakerJson ? JSON.parse(allowSpeakerJson) === true : true;
     const firedAlarms = new Set<string>(firedJson ? JSON.parse(firedJson) : []);
     const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;
 
@@ -64,6 +66,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       destination,
       firedAlarms,
       sleepMode,
+      allowSpeaker,
       storedRoute,
       lastNotifiedJson,
     );

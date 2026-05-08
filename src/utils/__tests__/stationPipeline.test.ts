@@ -227,7 +227,7 @@ describe('processLocationUpdate', () => {
 
     await processLocationUpdate(37.498, 127.028, mockDestination, firedAlarms, false);
 
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '시청', false, false);
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '시청', false, false, true);
     expect(firedAlarms.size).toBe(0);
   });
 
@@ -239,7 +239,7 @@ describe('processLocationUpdate', () => {
 
     await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), true);
 
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '시청', true, false);
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '시청', true, false, true);
   });
 
   it('should not call sendAlarmNotification when no alarm', async () => {
@@ -390,7 +390,7 @@ describe('processLocationUpdate', () => {
     expect(mockCheckTimeBasedAlarm).toHaveBeenCalledWith(
       '시청', 3, '시청', mockRoute, expect.any(Set),
     );
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '시청', false, true);
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '시청', false, true, true);
     expect(result.alarmEvent).toBe(timeEvent);
   });
 
@@ -412,7 +412,7 @@ describe('processLocationUpdate', () => {
 
     await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), true);
 
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '동대문', true, true);
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '동대문', true, true, true);
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
       mockStation, 150, mockDestination, mockRoute, 10, undefined, timeEvent,
     );
@@ -435,7 +435,7 @@ describe('processLocationUpdate', () => {
     mockUpdateRouteFromPosition.mockReturnValue(updatedRoute);
     mockCalculateStaticETA.mockReturnValue(6);
 
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false, storedRoute);
+    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false, true, storedRoute);
 
     expect(mockUpdateRouteFromPosition).toHaveBeenCalledWith(storedRoute, mockStation, 'station-2');
     expect(mockFindRoute).not.toHaveBeenCalled();
@@ -449,7 +449,7 @@ describe('processLocationUpdate', () => {
     mockFindRoute.mockReturnValue(mockRoute);
     mockCalculateStaticETA.mockReturnValue(6);
 
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false, storedRoute);
+    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false, true, storedRoute);
 
     expect(mockUpdateRouteFromPosition).toHaveBeenCalledWith(storedRoute, mockStation, 'station-2');
     expect(mockFindRoute).toHaveBeenCalledWith('station-1', 'station-2');
@@ -470,7 +470,7 @@ describe('processLocationUpdate', () => {
     mockFindRoute.mockReturnValue(mockRoute);
 
     const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false, null, 'other-station',
+      37.498, 127.028, mockDestination, new Set(), false, true, null, 'other-station',
     );
 
     expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', 3);
@@ -482,7 +482,7 @@ describe('processLocationUpdate', () => {
     mockFindRoute.mockReturnValue(mockRoute);
 
     const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false, null, 'station-1',
+      37.498, 127.028, mockDestination, new Set(), false, true, null, 'station-1',
     );
 
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
@@ -494,7 +494,7 @@ describe('processLocationUpdate', () => {
     mockFindRoute.mockReturnValue(mockRoute);
 
     const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false, null, null,
+      37.498, 127.028, mockDestination, new Set(), false, true, null, null,
     );
 
     expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', 3);

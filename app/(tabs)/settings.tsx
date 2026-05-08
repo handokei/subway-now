@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore, type ThemeMode } from '../../src/store/useAppStore';
 import type { RoutePreference } from '../../src/utils/stationRoute';
@@ -15,6 +15,9 @@ export default function SettingsScreen() {
   const sleepMode = useAppStore((s) => s.sleepMode);
   const setSleepMode = useAppStore((s) => s.setSleepMode);
   const loadSleepMode = useAppStore((s) => s.loadSleepMode);
+  const allowSpeaker = useAppStore((s) => s.allowSpeaker);
+  const setAllowSpeaker = useAppStore((s) => s.setAllowSpeaker);
+  const loadAllowSpeaker = useAppStore((s) => s.loadAllowSpeaker);
   const themeMode = useAppStore((s) => s.themeMode);
   const setThemeMode = useAppStore((s) => s.setThemeMode);
   const loadThemeMode = useAppStore((s) => s.loadThemeMode);
@@ -25,6 +28,7 @@ export default function SettingsScreen() {
 
   useEffect(() => {
     loadSleepMode();
+    loadAllowSpeaker();
     loadThemeMode();
     loadRoutePreference();
   }, []);
@@ -114,6 +118,35 @@ export default function SettingsScreen() {
             trackColor={{ false: colors.hair, true: colors.accent }}
             thumbColor={sleepMode ? colors.onAccent : colors.subtle}
             testID="sleep-mode-switch"
+          />
+        </View>
+
+        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: colors.hair }]}>
+          <View style={styles.settingInfo}>
+            <Text style={[styles.settingLabel, { color: colors.ink }]}>스피커 출력 허용</Text>
+            <Text style={[styles.settingDesc, { color: colors.muted }]}>
+              이어폰 미연결 시에도 알람음을 스피커로 재생합니다
+            </Text>
+          </View>
+          <Switch
+            value={allowSpeaker}
+            onValueChange={(value) => {
+              if (!value) {
+                Alert.alert(
+                  '스피커 출력 끄기',
+                  '스피커 출력을 끄면 이어폰이 연결되지 않은 상태에서 진동만 울립니다. 계속하시겠습니까?',
+                  [
+                    { text: '취소', style: 'cancel' },
+                    { text: '끄기', style: 'destructive', onPress: () => setAllowSpeaker(false) },
+                  ],
+                );
+              } else {
+                setAllowSpeaker(true);
+              }
+            }}
+            trackColor={{ false: colors.hair, true: colors.accent }}
+            thumbColor={allowSpeaker ? colors.onAccent : colors.subtle}
+            testID="allow-speaker-switch"
           />
         </View>
       </View>
