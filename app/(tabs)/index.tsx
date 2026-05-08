@@ -21,6 +21,7 @@ import { AlarmOverlay } from '../../src/components/AlarmOverlay';
 import { createLogger } from '../../src/utils/logger';
 import { useTheme, typography, spacing, radius } from '../../src/theme';
 import { LineBadge } from '../../src/components/LineBadge';
+import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 
 const logger = createLogger('HomeScreen');
 
@@ -46,6 +47,7 @@ export default function HomeScreen() {
   const setSleepMode = useAppStore((s) => s.setSleepMode);
   const loadSleepMode = useAppStore((s) => s.loadSleepMode);
   const loadAllowSpeaker = useAppStore((s) => s.loadAllowSpeaker);
+  const showSleepModeGuide = useSleepModeGuide();
   const alarmEvent = useAppStore((s) => s.alarmEvent);
   const clearAlarmEvent = useAppStore((s) => s.clearAlarmEvent);
   const loadAlarmEvent = useAppStore((s) => s.loadAlarmEvent);
@@ -403,7 +405,13 @@ export default function HomeScreen() {
                   </View>
                   <Switch
                     value={sleepMode}
-                    onValueChange={setSleepMode}
+                    onValueChange={(value) => {
+                      if (value) {
+                        showSleepModeGuide(() => setSleepMode(true));
+                      } else {
+                        setSleepMode(false);
+                      }
+                    }}
                     trackColor={{ false: colors.hair, true: colors.accent }}
                     thumbColor={colors.bg}
                     testID="home-sleep-mode-switch"
