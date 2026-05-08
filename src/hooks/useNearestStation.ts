@@ -54,9 +54,10 @@ export function useNearestStation(): UseNearestStationReturn {
       if (isFirstFetch.current) {
         const lastKnown = await Location.getLastKnownPositionAsync();
         if (lastKnown) {
-          setUserLocation({ lat: lastKnown.coords.latitude, lng: lastKnown.coords.longitude });
+          const { latitude, longitude } = lastKnown.coords;
+          setUserLocation({ lat: latitude, lng: longitude });
           applyNearestResult(
-            findNearestStations(lastKnown.coords.latitude, lastKnown.coords.longitude),
+            findNearestStations(latitude, longitude),
             setResult, setVariants,
           );
           setLoading(false);
@@ -70,10 +71,11 @@ export function useNearestStation(): UseNearestStationReturn {
       isFirstFetch.current = false;
 
       const location = await Location.getCurrentPositionAsync({ accuracy });
+      const { latitude, longitude } = location.coords;
 
-      setUserLocation({ lat: location.coords.latitude, lng: location.coords.longitude });
+      setUserLocation({ lat: latitude, lng: longitude });
       applyNearestResult(
-        findNearestStations(location.coords.latitude, location.coords.longitude),
+        findNearestStations(latitude, longitude),
         setResult, setVariants,
       );
     } catch (e) {
