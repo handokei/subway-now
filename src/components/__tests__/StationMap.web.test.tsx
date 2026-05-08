@@ -1,7 +1,7 @@
 import React from 'react';
-import { render } from '@testing-library/react-native';
 import { StationMap } from '../StationMap.web';
 import { Station } from '../../types/station';
+import { renderWithTheme } from '../../testUtils/renderWithTheme';
 
 const gangnam: Station = {
   id: '2-222',
@@ -30,12 +30,12 @@ const defaultProps = {
 
 describe('StationMap.web', () => {
   it('nearbyStations이 없으면 안내 문구를 렌더링한다', () => {
-    const { getByText } = render(<StationMap {...defaultProps} />);
+    const { getByText } = renderWithTheme(<StationMap {...defaultProps} />);
     expect(getByText('주변 1km 내 지하철역이 없습니다.')).toBeTruthy();
   });
 
   it('nearbyStations이 있으면 역 목록과 헤더를 렌더링한다', () => {
-    const { getByText } = render(
+    const { getByText } = renderWithTheme(
       <StationMap {...defaultProps} nearbyStations={[gangnam, sinnonhyeon]} />,
     );
     expect(getByText('주변 지하철역 (1km 이내)')).toBeTruthy();
@@ -44,7 +44,7 @@ describe('StationMap.web', () => {
   });
 
   it('nearestStation과 일치하는 역이 있으면 nearestRow 스타일이 적용된다', () => {
-    const { getByText } = render(
+    const { getByText } = renderWithTheme(
       <StationMap
         {...defaultProps}
         nearbyStations={[gangnam, sinnonhyeon]}
@@ -55,7 +55,7 @@ describe('StationMap.web', () => {
   });
 
   it('nearestStation이 목록에 없으면 nearestRow 스타일 없이 렌더링한다', () => {
-    const { getByText } = render(
+    const { getByText } = renderWithTheme(
       <StationMap
         {...defaultProps}
         nearbyStations={[sinnonhyeon]}
@@ -66,7 +66,7 @@ describe('StationMap.web', () => {
   });
 
   it('nearbyStations가 하나일 때 정상 동작한다', () => {
-    const { getByText } = render(
+    const { getByText } = renderWithTheme(
       <StationMap {...defaultProps} nearbyStations={[gangnam]} />,
     );
     expect(getByText('강남')).toBeTruthy();

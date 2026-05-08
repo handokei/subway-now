@@ -3,6 +3,7 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Station } from '../types/station';
 import { haversine } from '../utils/haversine';
 import { LINE_NAMES } from '../constants/lineColors';
+import { useTheme } from '../theme';
 
 interface StationMapProps {
   userLat: number;
@@ -12,10 +13,12 @@ interface StationMapProps {
 }
 
 export function StationMap({ userLat, userLng, nearestStation, nearbyStations }: StationMapProps) {
+  const { colors } = useTheme();
+
   if (nearbyStations.length === 0) {
     return (
-      <View style={styles.fallback}>
-        <Text style={styles.emptyText}>주변 1km 내 지하철역이 없습니다.</Text>
+      <View style={[styles.fallback, { backgroundColor: colors.bg }]}>
+        <Text style={[styles.emptyText, { color: colors.muted }]}>주변 1km 내 지하철역이 없습니다.</Text>
       </View>
     );
   }
@@ -28,22 +31,29 @@ export function StationMap({ userLat, userLng, nearestStation, nearbyStations }:
     .sort((a, b) => a.distanceM - b.distanceM);
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.content}>
-      <Text style={styles.header}>주변 지하철역 (1km 이내)</Text>
-      {sorted.map(({ station, distanceM }) => (
-        <View
-          key={station.id}
-          style={[styles.row, nearestStation?.id === station.id && styles.nearestRow]}
-        >
-          <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
-            <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
+    <ScrollView style={[styles.container, { backgroundColor: colors.bg }]} contentContainerStyle={styles.content}>
+      <Text style={[styles.header, { color: colors.muted }]}>주변 지하철역 (1km 이내)</Text>
+      {sorted.map(({ station, distanceM }) => {
+        const isNearest = nearestStation?.id === station.id;
+        return (
+          <View
+            key={station.id}
+            style={[
+              styles.row,
+              { backgroundColor: colors.card },
+              isNearest && { borderWidth: 1, borderColor: colors.accent },
+            ]}
+          >
+            <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
+              <Text style={[styles.badgeText, { color: '#ffffff' }]}>{LINE_NAMES[station.line]}</Text>
+            </View>
+            <Text style={[styles.name, { color: isNearest ? colors.accent : colors.ink }]}>
+              {station.name}
+            </Text>
+            <Text style={[styles.distance, { color: colors.muted }]}>{distanceM}m</Text>
           </View>
-          <Text style={[styles.name, nearestStation?.id === station.id && styles.nearestName]}>
-            {station.name}
-          </Text>
-          <Text style={styles.distance}>{distanceM}m</Text>
-        </View>
-      ))}
+        );
+      })}
     </ScrollView>
   );
 }
@@ -51,7 +61,6 @@ export function StationMap({ userLat, userLng, nearestStation, nearbyStations }:
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
   },
   content: {
     padding: 20,
@@ -60,17 +69,14 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1a1a2e',
     padding: 24,
   },
   emptyText: {
-    color: '#8888aa',
     fontSize: 14,
     textAlign: 'center',
   },
   header: {
     fontSize: 12,
-    color: '#8888aa',
     letterSpacing: 1,
     textTransform: 'uppercase',
     marginBottom: 16,
@@ -78,15 +84,10 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#16213e',
     borderRadius: 10,
     padding: 14,
     marginBottom: 8,
     gap: 10,
-  },
-  nearestRow: {
-    borderWidth: 1,
-    borderColor: '#0052A4',
   },
   badge: {
     paddingHorizontal: 8,
@@ -94,21 +95,15 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   badgeText: {
-    color: '#ffffff',
     fontSize: 11,
     fontWeight: '700',
   },
   name: {
     flex: 1,
     fontSize: 16,
-    color: '#ffffff',
     fontWeight: '600',
-  },
-  nearestName: {
-    color: '#6699ff',
   },
   distance: {
     fontSize: 13,
-    color: '#8888aa',
   },
 });
