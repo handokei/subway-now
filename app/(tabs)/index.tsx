@@ -97,12 +97,15 @@ export default function HomeScreen() {
     () => (route && effectiveOrigin && destination ? buildJourneyDisplay(route, effectiveOrigin, destination) : null),
     [route, effectiveOrigin?.id, destination?.id],
   );
-  const nextTrainMinutes = arrival
-    ? Math.min(
-        arrival.up[0]?.arrivalSeconds != null ? Math.floor(arrival.up[0].arrivalSeconds / 60) : Infinity,
-        arrival.down[0]?.arrivalSeconds != null ? Math.floor(arrival.down[0].arrivalSeconds / 60) : Infinity,
-      )
-    : null;
+  const nextTrainMinutes = useMemo(() => {
+    if (!arrival) return null;
+    const directions = [arrival.up, arrival.down];
+    const minutes = directions.map((trains) => {
+      const first = trains[0];
+      return first?.arrivalSeconds != null ? Math.floor(first.arrivalSeconds / 60) : Infinity;
+    });
+    return Math.min(...minutes);
+  }, [arrival]);
   const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
     ? calculateETA(nextTrainMinutes, route)
     : null;
