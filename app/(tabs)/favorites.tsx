@@ -168,7 +168,7 @@ function FavoriteCard({
         <View style={styles.cardActions}>
           <Text style={[styles.expandIcon, { color: colors.muted }]}>{isExpanded ? '▲' : '▼'}</Text>
           <TouchableOpacity style={[styles.removeButton, { backgroundColor: colors.card }]} onPress={onRemove} testID={`favorite-remove-${station.id}`}>
-            <Text style={styles.removeText}>삭제</Text>
+            <Text style={[styles.removeText, { color: colors.danger }]}>삭제</Text>
           </TouchableOpacity>
         </View>
       </TouchableOpacity>
@@ -312,7 +312,6 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   removeText: {
-    color: '#ff6b6b',
     fontSize: 13,
     fontWeight: '600',
   },

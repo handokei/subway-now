@@ -1,7 +1,6 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react-native';
 import { LineBadge, getLineColor, getLineLabel } from '../LineBadge';
-import { colors } from '../../theme';
 
 describe('LineBadge', () => {
   it('should render line label for known numeric lines', () => {
@@ -31,8 +30,8 @@ describe('getLineColor', () => {
     expect(getLineColor('6')).toBe('#CD7C2F');
   });
 
-  it('should return accent color for unknown lines', () => {
-    expect(getLineColor('unknown')).toBe(colors.accent);
+  it('should return fallback color for unknown lines', () => {
+    expect(getLineColor('unknown')).toBe('#888888');
   });
 });
 

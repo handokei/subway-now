@@ -23,6 +23,8 @@ export const lightColors = {
   bgTranslucent: 'rgba(245,242,236,0.92)', // 반투명 bg (헤더 등)
   accent:        '#C8553D',             // CTA (어스 레드)
   onAccent:      '#ffffff',             // accent 위 텍스트
+  success:       '#22c55e',             // 성공/완료 (도착 배너 등)
+  danger:        '#ff6b6b',             // 위험/삭제 (삭제 버튼 등)
 };
 
 // C · Focus — 다크모드
@@ -38,6 +40,8 @@ export const darkColors = {
   bgTranslucent: 'rgba(10,10,10,0.92)', // 반투명 bg (헤더 등)
   accent:        '#C8E600',             // CTA (라임그린)
   onAccent: '#000000',                 // accent 위 텍스트
+  success:       '#22c55e',             // 성공/완료
+  danger:        '#ff6b6b',             // 위험/삭제
 };
 
 export type ThemeColors = typeof lightColors;
