@@ -2,6 +2,7 @@ import { renderHook, act, waitFor } from '@testing-library/react-native';
 import * as Location from 'expo-location';
 import { AppState } from 'react-native';
 import { useNearestStation } from '../useNearestStation';
+import * as findNearestStationModule from '../../utils/findNearestStation';
 
 jest.mock('expo-location');
 
@@ -180,6 +181,21 @@ describe('useNearestStation', () => {
     expect(mockSubscription.remove).toHaveBeenCalled();
   });
 
+  it('inactive 상태에서는 watch를 중지하지 않는다', async () => {
+    mockGranted();
+
+    renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+
+    act(() => { appStateCallback?.('inactive'); });
+
+    // inactive에서는 subscription.remove가 호출되지 않음
+    expect(mockSubscription.remove).not.toHaveBeenCalled();
+    // watch 재시작도 하지 않음
+    expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
+  });
+
   it('포그라운드 복귀 시 watchPositionAsync가 재호출된다', async () => {
     mockGranted();
 
@@ -293,5 +309,68 @@ describe('useNearestStation', () => {
 
     // userLocation이 변경되지 않아야 함
     expect(result.current.userLocation).toBe(firstLocation);
+  });
+
+  it('findNearestStations가 null을 반환하면 result가 null이 된다', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    // 먼저 역을 감지한 상태에서
+    simulateGps(37.4980, 127.0277);
+    await waitFor(() => expect(result.current.result).not.toBeNull());
+
+    // 이후 null 반환
+    const spy = jest.spyOn(findNearestStationModule, 'findNearestStations').mockReturnValue(null);
+    simulateGps(37.0, 127.0);
+
+    await waitFor(() => expect(result.current.result).toBeNull());
+    expect(result.current.variants).toEqual([]);
+
+    spy.mockRestore();
+  });
+
+  it('refresh 중 권한 거부 시 watch를 재시작하지 않는다', async () => {
+    mockGranted();
+    mockLocation(37.4980, 127.0277);
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+
+    // refresh 시 권한 거부
+    (Location.requestForegroundPermissionsAsync as jest.Mock).mockResolvedValueOnce({
+      status: 'denied',
+    });
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.permissionDenied).toBe(true);
+    // watch 재시작 안 함 (초기 1회만)
+    expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('refresh 중 위치 획득 실패 시 watch는 재시작된다', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+
+    // refresh 시 getCurrentPositionAsync 실패
+    (Location.getCurrentPositionAsync as jest.Mock).mockRejectedValueOnce(
+      new Error('GPS 오류'),
+    );
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    // catch 후에도 watch 재시작됨
+    expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2);
   });
 });

@@ -50,8 +50,9 @@ export function useNearestStation(): UseNearestStationReturn {
     const newDistance = stationsResult?.distanceKm ?? 0;
     const stationChanged = newId !== lastStationIdRef.current;
     const distanceDelta = Math.abs(newDistance - lastDistanceRef.current);
+    const noStation = !stationsResult && lastStationIdRef.current !== null;
 
-    if (stationChanged || distanceDelta > MIN_DISTANCE_CHANGE_KM) {
+    if (stationChanged || distanceDelta > MIN_DISTANCE_CHANGE_KM || noStation) {
       lastStationIdRef.current = newId;
       lastDistanceRef.current = newDistance;
       setUserLocation({ lat: latitude, lng: longitude });
