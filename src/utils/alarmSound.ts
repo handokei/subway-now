@@ -14,6 +14,13 @@ const NOTIFICATION_SOUND = require('../../assets/sounds/notification.wav');
 
 let currentSound: Audio.Sound | null = null;
 
+function vibrateWithTimeout(repeat: boolean): void {
+  Vibration.vibrate(VIBRATION_PATTERN, repeat);
+  if (!repeat) {
+    setTimeout(() => Vibration.cancel(), VIBRATION_DURATION_MS);
+  }
+}
+
 export async function playAlarmWithRouting(sleepMode: boolean): Promise<void> {
   await stopAlarm();
 
@@ -26,10 +33,7 @@ export async function playAlarmWithRouting(sleepMode: boolean): Promise<void> {
     });
   } catch (e) {
     logger.error('오디오 세션 설정 실패, 진동 fallback:', e);
-    Vibration.vibrate(VIBRATION_PATTERN, sleepMode);
-    if (!sleepMode) {
-      setTimeout(() => Vibration.cancel(), VIBRATION_DURATION_MS);
-    }
+    vibrateWithTimeout(sleepMode);
     return;
   }
 
@@ -55,14 +59,10 @@ export async function playAlarmWithRouting(sleepMode: boolean): Promise<void> {
       }
     } catch (e) {
       logger.error('사운드 재생 실패, 진동 fallback:', e);
-      Vibration.vibrate(VIBRATION_PATTERN, sleepMode);
-      if (!sleepMode) {
-        setTimeout(() => Vibration.cancel(), VIBRATION_DURATION_MS);
-      }
+      vibrateWithTimeout(sleepMode);
     }
   } else {
-    Vibration.vibrate(VIBRATION_PATTERN, true);
-    setTimeout(() => Vibration.cancel(), VIBRATION_DURATION_MS);
+    vibrateWithTimeout(true);
   }
 }
 
