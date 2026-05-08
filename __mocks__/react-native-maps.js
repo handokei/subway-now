@@ -6,8 +6,8 @@ const MapView = ({ children, testID, onMapReady, ...props }) => {
   return React.createElement(View, { testID, ...props }, children);
 };
 
-const Marker = ({ testID, onPress, ...props }) =>
-  React.createElement(View, { testID, onPress, ...props });
+const Marker = ({ testID, onPress, children, ...props }) =>
+  React.createElement(View, { testID, onPress, ...props }, children);
 
 module.exports = {
   __esModule: true,

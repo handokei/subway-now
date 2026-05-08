@@ -77,22 +77,38 @@ describe('StationMap', () => {
     expect(getByTestId('station-map').props.showsUserLocation).toBe(true);
   });
 
-  it('customOriginId와 일치하는 마커는 accent 색상을 사용한다', () => {
+  it('customOriginId와 일치하는 마커는 accent 색상 dot을 사용한다', () => {
     const { getByTestId } = render(
       <StationMap {...baseProps} customOriginId="2-023" />,
     );
-    // customOriginId와 일치하는 마커의 pinColor가 accent 색상(테마 기본: #C8553D)
-    const marker = getByTestId('marker-2-023');
-    expect(marker.props.pinColor).toBe('#C8553D');
+    const dot = getByTestId('dot-2-023');
+    expect(dot.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
+    );
   });
 
   it('customOriginId가 없으면 기존 색상 로직을 따른다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
-    // nearest station은 accent, 나머지는 lineColor
-    const nearestMarker = getByTestId('marker-2-022');
-    expect(nearestMarker.props.pinColor).toBe('#C8553D');
-    const otherMarker = getByTestId('marker-2-023');
-    expect(otherMarker.props.pinColor).toBe('#009D3E');
+    const nearestDot = getByTestId('dot-2-022');
+    expect(nearestDot.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
+    );
+    const otherDot = getByTestId('dot-2-023');
+    expect(otherDot.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#009D3E' })]),
+    );
+  });
+
+  it('마커에 역 이름 라벨이 표시된다', () => {
+    const { getByText } = render(<StationMap {...baseProps} />);
+    expect(getByText('강남')).toBeTruthy();
+    expect(getByText('선릉')).toBeTruthy();
+  });
+
+  it('모든 마커에 tracksViewChanges={false}가 설정된다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    expect(getByTestId('marker-2-022').props.tracksViewChanges).toBe(false);
+    expect(getByTestId('marker-2-023').props.tracksViewChanges).toBe(false);
   });
 
   it('buildMapConfig에 올바른 파라미터를 전달한다', () => {
