@@ -90,13 +90,13 @@ describe('useStationAlarm', () => {
   });
 
   it('does not evaluate when destination is null', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     renderHook(() => useStationAlarm(defaultInputs({ route })));
     expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
   });
 
   it('builds AlarmSource and calls evaluator', () => {
-    const route: DirectRoute = { type: 'direct', stops: 3 };
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
     renderHook(() =>
       useStationAlarm(
         defaultInputs({
@@ -118,7 +118,7 @@ describe('useStationAlarm', () => {
   });
 
   it('passes null etaSeconds when speed is null', () => {
-    const route: DirectRoute = { type: 'direct', stops: 3 };
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
     renderHook(() =>
       useStationAlarm(
         defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: null }),
@@ -131,7 +131,7 @@ describe('useStationAlarm', () => {
   });
 
   it('passes null etaSeconds when userLocation is null', () => {
-    const route: DirectRoute = { type: 'direct', stops: 3 };
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
     renderHook(() => useStationAlarm(defaultInputs({ route, destination, speedMps: 10 })));
     expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
       expect.objectContaining({ etaSeconds: null }),
@@ -140,7 +140,7 @@ describe('useStationAlarm', () => {
   });
 
   it('sends alarm notification with the full event', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, true);
@@ -175,7 +175,7 @@ describe('useStationAlarm', () => {
   });
 
   it('does not fire the same alarm twice', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     const { rerender } = renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
@@ -184,7 +184,7 @@ describe('useStationAlarm', () => {
   });
 
   it('fires imminent after early for the same waypoint', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     mockEvaluateAlarmPhase.mockReturnValueOnce(earlyDest);
     const { rerender } = renderHook(
       ({ inputs }: { inputs: UseStationAlarmInputs }) => useStationAlarm(inputs),
@@ -205,7 +205,7 @@ describe('useStationAlarm', () => {
   });
 
   it('resets fired alarms when destination changes', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     const { rerender } = renderHook(
       ({ dest }: { dest: Station }) => useStationAlarm(defaultInputs({ route, destination: dest })),
@@ -222,7 +222,7 @@ describe('useStationAlarm', () => {
 
   it('passes sleepMode to sendAlarmNotification', () => {
     useAppStore.setState({ sleepMode: true });
-    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, true, true);
@@ -230,7 +230,7 @@ describe('useStationAlarm', () => {
 
   it('sets alarmEvent in store when sleepMode is on', () => {
     useAppStore.setState({ sleepMode: true });
-    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     expect(useAppStore.getState().alarmEvent).toEqual(earlyDest);
@@ -238,7 +238,7 @@ describe('useStationAlarm', () => {
 
   it('does not set alarmEvent when sleepMode is off', () => {
     useAppStore.setState({ sleepMode: false });
-    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     expect(useAppStore.getState().alarmEvent).toBeNull();
@@ -246,14 +246,14 @@ describe('useStationAlarm', () => {
 
   it('passes allowSpeaker=false from store', () => {
     useAppStore.setState({ allowSpeaker: false });
-    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, false);
   });
 
   it('does not re-fire when sleepMode toggles after first fire', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     const { rerender } = renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
@@ -265,7 +265,7 @@ describe('useStationAlarm', () => {
 
   it('handles sendAlarmNotification rejection gracefully', () => {
     mockSendAlarmNotification.mockRejectedValueOnce(new Error('알림 실패'));
-    const route: DirectRoute = { type: 'direct', stops: 1 };
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     expect(() => renderHook(() => useStationAlarm(defaultInputs({ route, destination })))).not.toThrow();
   });
@@ -279,7 +279,7 @@ describe('useStationAlarm', () => {
     };
 
     it('fires when nearest station changes (notificationState dedup)', async () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
@@ -291,7 +291,7 @@ describe('useStationAlarm', () => {
     });
 
     it('does not fire when stored lastNotifiedStationId equals nearest station', async () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
       mockGetLastNotifiedStationId.mockResolvedValue('S1');
@@ -306,7 +306,7 @@ describe('useStationAlarm', () => {
     });
 
     it('fires again when nearest station changes to a different one', async () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const station1 = makeStation('S1', '역삼');
       const station2 = makeStation('S2', '선릉');
       mockResolveNextTarget.mockReturnValue(directTarget);
@@ -334,7 +334,7 @@ describe('useStationAlarm', () => {
     });
 
     it('does not fire when nearestStation is null', () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       expect(mockGetLastNotifiedStationId).not.toHaveBeenCalled();
@@ -348,7 +348,7 @@ describe('useStationAlarm', () => {
     });
 
     it('does not fire when destination is null', () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const station = makeStation('S1', '역삼');
       renderHook(() => useStationAlarm(defaultInputs({ route, nearestStation: station })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
@@ -356,7 +356,7 @@ describe('useStationAlarm', () => {
     });
 
     it('passes null target when resolveNextTarget returns null', async () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(null);
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
@@ -367,7 +367,7 @@ describe('useStationAlarm', () => {
 
     it('handles sendStationPassedNotification rejection gracefully', async () => {
       mockSendStationPassedNotification.mockRejectedValueOnce(new Error('알림 실패'));
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
       expect(() =>
@@ -380,7 +380,7 @@ describe('useStationAlarm', () => {
 
     it('handles getLastNotifiedStationId rejection gracefully', async () => {
       mockGetLastNotifiedStationId.mockRejectedValueOnce(new Error('storage 실패'));
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
       expect(() =>
@@ -414,6 +414,30 @@ describe('useStationAlarm', () => {
         stopsToNextStation: 3,
         isTransfer: true,
         stopsToDestination: 8,
+      });
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: offRouteStation })));
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockGetLastNotifiedStationId).not.toHaveBeenCalled();
+    });
+
+    it('direct route에서 경로 외 노선의 역은 알림을 발송하지 않는다 (#195 회귀 가드)', () => {
+      // #195: PR #196의 isStationOnRoute(direct)가 항상 true였던 결함을 막는 통합 회귀.
+      // 2호선 강남 → 2호선 잠실 direct 경로 진행 중 GPS가 9호선 한성백제를 잡아도
+      // 거리 게이트(1km)는 통과하지만 isStationOnRoute(direct) → false로 알림 차단.
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+      const offRouteStation: Station = {
+        id: 'OFF-9',
+        name: '한성백제',
+        line: '9',
+        lineColor: '#BB8336',
+        lat: 37.5,
+        lng: 127.0,
+      };
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '잠실',
+        stopsToNextStation: 3,
+        isTransfer: false,
+        stopsToDestination: 3,
       });
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: offRouteStation })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
@@ -461,7 +485,7 @@ describe('useStationAlarm', () => {
     });
 
     it('알림 발송 후에만 notificationState에 저장한다 (실패 시 재시도 가능)', async () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
       mockSendStationPassedNotification.mockRejectedValueOnce(new Error('알림 발송 실패'));
@@ -476,7 +500,7 @@ describe('useStationAlarm', () => {
     });
 
     it('알림 발송이 성공하면 그 후에 notificationState에 저장한다', async () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
 
@@ -505,7 +529,7 @@ describe('useStationAlarm', () => {
     }
 
     it('race: A→B→A 빠른 변동 시 가장 마지막 candidate에 대한 알림만 발송된다', async () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const stationA = makeStation('SA', '강남A');
       const stationB = makeStation('SB', '강남B');
       mockResolveNextTarget.mockReturnValue(directTarget);
@@ -539,7 +563,7 @@ describe('useStationAlarm', () => {
     });
 
     it('cancel 플래그: read 완료 전 언마운트되면 알림을 발송하지 않는다', async () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
 
@@ -562,7 +586,7 @@ describe('useStationAlarm', () => {
     });
 
     it('cancel 플래그: notify 완료 전 언마운트되면 storage write를 하지 않는다', async () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
 

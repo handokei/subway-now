@@ -299,7 +299,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   });
 
   it('routeJson이 있으면 파싱한 route를 processLocationUpdate에 전달한다', async () => {
-    const storedRoute = { type: 'direct', stops: 3 };
+    const storedRoute = { type: 'direct', stops: 3, line: '2' };
     mockStorageValues(JSON.stringify(mockDestination), null, null, JSON.stringify(storedRoute));
 
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });

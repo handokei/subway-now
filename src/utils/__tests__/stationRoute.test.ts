@@ -1,5 +1,5 @@
 import { getStationsOnLine, getRemainingStops, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES } from '../stationRoute';
-import type { Station } from '../../types/station';
+import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 
 describe('getStationsOnLine', () => {
@@ -13,10 +13,10 @@ describe('getStationsOnLine', () => {
   });
 
   it('returns empty array for unknown line', () => {
-    expect(getStationsOnLine('999')).toEqual([]);
+    expect(getStationsOnLine('999' as unknown as LineNumber)).toEqual([]);
   });
 
-  it.each([
+  it.each<[LineNumber, number]>([
     ['airport', 13],
     ['gyeongui', 57],
     ['bundang', 54],
@@ -219,7 +219,7 @@ describe('buildJourneyDisplay', () => {
   });
 
   it('DirectRoute이면 세그먼트 1개를 반환한다', () => {
-    const route: DirectRoute = { type: 'direct', stops: 3 };
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
     const current = mockStation({ id: '2-022', name: '강남' });
     const dest = mockStation({ id: '2-025', name: '잠실' });
 
@@ -300,7 +300,7 @@ describe('buildJourneyDisplay', () => {
 
 describe('calculateETA', () => {
   it('DirectRoute일 때 대기시간 + 정거장*2분을 반환한다', () => {
-    const route: DirectRoute = { type: 'direct', stops: 5 };
+    const route: DirectRoute = { type: 'direct', stops: 5, line: '2' };
     // 3분 대기 + 5*2분 = 13분
     expect(calculateETA(3, route)).toBe(13);
   });
@@ -338,7 +338,7 @@ describe('calculateETA', () => {
 
 describe('calculateStaticETA', () => {
   it('DirectRoute일 때 기본대기3분 + 정거장*2분을 반환한다', () => {
-    const route: DirectRoute = { type: 'direct', stops: 5 };
+    const route: DirectRoute = { type: 'direct', stops: 5, line: '2' };
     // 3분 대기 + 5*2분 = 13분
     expect(calculateStaticETA(route)).toBe(13);
   });
@@ -379,8 +379,8 @@ describe('buildJourneyDisplay — LINE_COLORS fallback', () => {
     const route: TransferRoute = {
       type: 'transfer',
       transferName: '환승역',
-      fromLine: 'unknown1' as string,
-      toLine: 'unknown2' as string,
+      fromLine: 'unknown1' as unknown as LineNumber,
+      toLine: 'unknown2' as unknown as LineNumber,
       stopsToTransfer: 2,
       stopsFromTransfer: 3,
     };
@@ -396,8 +396,8 @@ describe('buildJourneyDisplay — LINE_COLORS fallback', () => {
     const route: MultiTransferRoute = {
       type: 'multi-transfer',
       transfers: [
-        { transferName: '환승A', fromLine: 'unknown1' as string, toLine: 'unknown2' as string, stopsToTransfer: 1 },
-        { transferName: '환승B', fromLine: 'unknown2' as string, toLine: 'unknown3' as string, stopsToTransfer: 2 },
+        { transferName: '환승A', fromLine: 'unknown1' as unknown as LineNumber, toLine: 'unknown2' as unknown as LineNumber, stopsToTransfer: 1 },
+        { transferName: '환승B', fromLine: 'unknown2' as unknown as LineNumber, toLine: 'unknown3' as unknown as LineNumber, stopsToTransfer: 2 },
       ],
       stopsAfterLastTransfer: 3,
     };
@@ -417,19 +417,19 @@ describe('getNextStationName', () => {
   });
 
   it('currentId가 유효하지 않으면 null을 반환한다', () => {
-    const route: DirectRoute = { type: 'direct', stops: 2 };
+    const route: DirectRoute = { type: 'direct', stops: 2, line: '1' };
     expect(getNextStationName('invalid-id', '1-003', route)).toBeNull();
   });
 
   it('destinationId가 유효하지 않으면 null을 반환한다', () => {
-    const route: DirectRoute = { type: 'direct', stops: 2 };
+    const route: DirectRoute = { type: 'direct', stops: 2, line: '1' };
     expect(getNextStationName('1-001', 'invalid-id', route)).toBeNull();
   });
 
   describe('DirectRoute', () => {
     it('정방향으로 다음 역을 반환한다', () => {
       // 1호선: 소요산(1-001) → 보산(1-003), 중간에 동두천(1-002)
-      const route: DirectRoute = { type: 'direct', stops: 2 };
+      const route: DirectRoute = { type: 'direct', stops: 2, line: '1' };
       const next = getNextStationName('1-001', '1-003', route);
       // 소요산 다음 역 (1-002)의 이름
       const line1 = getStationsOnLine('1');
@@ -439,7 +439,7 @@ describe('getNextStationName', () => {
 
     it('역방향으로 다음 역을 반환한다', () => {
       // 1호선: 보산(1-003) → 소요산(1-001)
-      const route: DirectRoute = { type: 'direct', stops: 2 };
+      const route: DirectRoute = { type: 'direct', stops: 2, line: '1' };
       const next = getNextStationName('1-003', '1-001', route);
       const line1 = getStationsOnLine('1');
       const bosan = line1.findIndex((s) => s.id === '1-003');
@@ -447,7 +447,7 @@ describe('getNextStationName', () => {
     });
 
     it('같은 역이면 null을 반환한다 (currentIdx === targetIdx)', () => {
-      const route: DirectRoute = { type: 'direct', stops: 0 };
+      const route: DirectRoute = { type: 'direct', stops: 0, line: '1' };
       expect(getNextStationName('1-001', '1-001', route)).toBeNull();
     });
 
@@ -617,7 +617,7 @@ describe('findRoutes', () => {
 
 describe('pickRouteByPreference', () => {
   const c1: RouteCandidate = {
-    route: { type: 'direct', stops: 3 },
+    route: { type: 'direct', stops: 3, line: '2' },
     totalStops: 3,
     transferCount: 0,
     travelMinutes: 6,
@@ -695,7 +695,7 @@ describe('findRouteCandidatesByCategory', () => {
 
 describe('ROUTE_CATEGORIES comparators', () => {
   const makeCandidate = (transferCount: number, travelMinutes: number): RouteCandidate => ({
-    route: { type: 'direct', stops: Math.max(0, Math.floor(travelMinutes / 2)) },
+    route: { type: 'direct', stops: Math.max(0, Math.floor(travelMinutes / 2)), line: '2' },
     totalStops: Math.max(0, Math.floor(travelMinutes / 2)),
     transferCount,
     travelMinutes,
@@ -759,7 +759,7 @@ describe('updateRouteFromPosition', () => {
     it('현재 역에서 목적지까지 남은 정거장 수로 업데이트한다', () => {
       // 1호선: 소요산(1-001) → 보산(1-003): 2 stops
       // 현재 동두천(1-002)에 있으면 보산까지 1 stop
-      const storedRoute: DirectRoute = { type: 'direct', stops: 2 };
+      const storedRoute: DirectRoute = { type: 'direct', stops: 2, line: '1' };
       const nearestStation = getStationsOnLine('1').find((s) => s.id === '1-002')!;
       const result = updateRouteFromPosition(storedRoute, nearestStation, '1-003');
       expect(result).not.toBeNull();
@@ -770,7 +770,7 @@ describe('updateRouteFromPosition', () => {
     });
 
     it('현재 역과 목적지가 다른 노선이면 null을 반환한다', () => {
-      const storedRoute: DirectRoute = { type: 'direct', stops: 3 };
+      const storedRoute: DirectRoute = { type: 'direct', stops: 3, line: '1' };
       // 2호선 강남, 목적지는 1호선 시청
       const gangnam2 = getStationsOnLine('2').find((s) => s.name === '강남')!;
       const result = updateRouteFromPosition(storedRoute, gangnam2, '1-033');
@@ -778,7 +778,7 @@ describe('updateRouteFromPosition', () => {
     });
 
     it('같은 노선이지만 nearestStation ID가 유효하지 않으면 null을 반환한다', () => {
-      const storedRoute: DirectRoute = { type: 'direct', stops: 2 };
+      const storedRoute: DirectRoute = { type: 'direct', stops: 2, line: '1' };
       const fakeStation = { id: 'invalid-id', name: '가짜역', line: '1' as const, lineColor: '#00288C', lat: 0, lng: 0 };
       const result = updateRouteFromPosition(storedRoute, fakeStation, '1-003');
       expect(result).toBeNull();
@@ -1003,9 +1003,14 @@ describe('isStationOnRoute', () => {
     stopsAfterLastTransfer: 5,
   };
 
-  it('direct route는 항상 true (fromLine 정보 없어 검증 불가)', () => {
-    const route: DirectRoute = { type: 'direct', stops: 3 };
-    expect(isStationOnRoute(makeStation('4'), route)).toBe(true);
+  it('direct route — station.line이 route.line과 일치하면 true', () => {
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+    expect(isStationOnRoute(makeStation('2'), route)).toBe(true);
+  });
+
+  it('direct route — station.line이 route.line과 다르면 false (#195 회귀 가드)', () => {
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+    expect(isStationOnRoute(makeStation('9'), route)).toBe(false);
   });
 
   it('transfer route — fromLine 일치 시 true', () => {
