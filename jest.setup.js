@@ -8,3 +8,28 @@ if (typeof clearInterval === 'undefined') {
 if (typeof setInterval === 'undefined') {
   global.setInterval = () => 0;
 }
+
+// i18n 자동 초기화: 컴포넌트/훅 테스트가 별도 setup 없이도
+// useTranslation()을 사용할 수 있도록 함
+// 테스트 기본 언어는 ko — 기존 한글 텍스트 기준 assertion 유지
+jest.mock('expo-localization', () => ({
+  getLocales: () => [{ languageCode: 'ko' }],
+}));
+
+const i18next = require('i18next');
+const { initReactI18next } = require('react-i18next');
+const en = require('./src/i18n/locales/en.json');
+const ko = require('./src/i18n/locales/ko.json');
+
+i18next.use(initReactI18next).init({
+  compatibilityJSON: 'v4',
+  resources: {
+    en: { translation: en },
+    ko: { translation: ko },
+  },
+  lng: 'ko',
+  fallbackLng: 'en',
+  supportedLngs: ['ko', 'en'],
+  defaultNS: 'translation',
+  interpolation: { escapeValue: false },
+});

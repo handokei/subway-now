@@ -1,0 +1,38 @@
+appId: com.subwaynow.app
+name: "위치 - 역 근처 (강남역)"
+---
+# 강남역 바로 앞 (50m 이내)
+- setLocation:
+    latitude: 37.49799
+    longitude: 127.027912
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+
+# 현재역 라벨 표시 확인 (500m 이내)
+- extendedWaitUntil:
+    visible:
+      text: "현재역"
+    timeout: 15000
+
+# 강남역 이름 표시
+- assertVisible:
+    text: "강남"
+
+# 도착 정보 섹션 표시
+- assertVisible:
+    text: "Next trains"
+
+# 상행/하행 표시
+- assertVisible:
+    text: "상행"
+- assertVisible:
+    text: "하행"

@@ -26,9 +26,19 @@ describe('LINE_NAMES', () => {
   });
 
   it('모든 호선에 이름이 있다', () => {
-    Object.values(LINE_NAMES).forEach((name) => {
+    const names = Object.values(LINE_NAMES);
+    expect(names).toHaveLength(Object.keys(LINE_COLORS).length);
+    names.forEach((name) => {
       expect(typeof name).toBe('string');
       expect(name.length).toBeGreaterThan(0);
     });
+  });
+
+  it('정의되지 않은 호선 키는 undefined를 반환한다', () => {
+    expect(LINE_NAMES['unknown' as never]).toBeUndefined();
+  });
+
+  it('정의되지 않은 키의 디스크립터는 undefined를 반환한다', () => {
+    expect(Object.getOwnPropertyDescriptor(LINE_NAMES, 'unknown' as never)).toBeUndefined();
   });
 });

@@ -43,3 +43,27 @@ coverage/
 # generated native folders
 /ios
 /android
+
+# IDE
+.idea/
+
+# Claude Code
+.claude/
+
+# Maestro E2E 산출물
+.maestro/screenshots/
+
+# Generated coverage temp
+coverage-temp/
+
+# Build artifacts
+*.zip
+
+# Project docs & data (별도 이슈로 관리)
+docs/
+handoff/
+img/
+subway/
+Live\ Activity.md
+oauth-implementation.md
+subway-now_icon.png

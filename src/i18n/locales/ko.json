@@ -1,0 +1,174 @@
+{
+  "common": {
+    "retry": "다시 시도",
+    "close": "닫기",
+    "confirm": "확인",
+    "cancel": "취소"
+  },
+  "tabs": {
+    "current": "현재 역",
+    "map": "지도",
+    "favorites": "즐겨찾기",
+    "settings": "설정"
+  },
+  "permissions": {
+    "locationRequiredTitle": "위치 권한 필요",
+    "locationRequiredShort": "위치 권한이 필요합니다.",
+    "locationRequiredDescription": "설정에서 위치 권한을 허용해 주세요.\n현재 탑승 중인 역을 감지하려면\n위치 권한이 필요합니다.",
+    "request": "권한 요청",
+    "locating": "위치 확인 중..."
+  },
+  "home": {
+    "arrived": "도착!",
+    "live": "LIVE",
+    "manual": "수동",
+    "originManual": "출발역 (수동)",
+    "originCurrent": "현재역",
+    "originNearest": "가장 가까운 역",
+    "switchToGps": "GPS 모드로 전환",
+    "routeTo": "목적지까지",
+    "estimatedSuffix": "예상",
+    "destinationChange": "목적지 변경 →",
+    "destinationReset": "초기화",
+    "destinationSet": "목적지 설정",
+    "previousDestination": "이전 목적지",
+    "sleepMode": "취침 모드",
+    "sleepModeDescription": "환승·도착 1정거장 전 진동 · 알림",
+    "arrivalInfoTitle": "열차 도착 정보",
+    "loading": "불러오는 중...",
+    "mockNotice": "실시간 데이터를 불러올 수 없어 예상 데이터를 표시합니다",
+    "noArrivalInfo": "도착 정보 없음",
+    "notNearStationTitle": "지하철역 근처가 아닙니다",
+    "notNearStationDescription": "지하철역 500m 이내에 있을 때\n현재 역이 표시됩니다.\n지도 탭에서 출발역을 직접 설정할 수 있습니다.",
+    "refresh": "새로고침"
+  },
+  "settings": {
+    "title": "설정",
+    "themeSection": "테마",
+    "themeAuto": "자동",
+    "themeLight": "라이트",
+    "themeDark": "다크",
+    "themeLabel": "다크 모드",
+    "themeDescription": "자동은 기기 설정을 따릅니다",
+    "routeSection": "경로",
+    "routePreferenceLabel": "경로 설정",
+    "routePreferenceDescription": "기본 경로 탐색 방식을 선택합니다",
+    "alarmSection": "알람",
+    "sleepModeLabel": "취침 모드",
+    "sleepModeDescription": "이어폰 연결 시 기상 알람음으로 울립니다",
+    "speakerOutputLabel": "스피커 출력 허용",
+    "speakerOutputDescription": "이어폰 미연결 시에도 알람음을 스피커로 재생합니다",
+    "speakerOffTitle": "스피커 출력 끄기",
+    "speakerOffMessage": "스피커 출력을 끄면 이어폰이 연결되지 않은 상태에서 진동만 울립니다. 계속하시겠습니까?",
+    "speakerOffConfirm": "끄기",
+    "languageSection": "언어",
+    "languageLabel": "앱 언어",
+    "languageDescription": "자동은 기기 설정을 따릅니다",
+    "languageAuto": "자동",
+    "languageKorean": "한국어",
+    "languageEnglish": "English"
+  },
+  "map": {
+    "originBadge": "출발",
+    "destinationBadge": "도착",
+    "setAsOrigin": "출발역으로 설정",
+    "setAsDestination": "도착역으로 설정"
+  },
+  "favorites": {
+    "title": "즐겨찾기",
+    "searchPlaceholder": "역 이름 검색...",
+    "noSearchResults": "검색 결과가 없습니다",
+    "empty": "즐겨찾기가 없습니다",
+    "emptyDescription": "위 검색창에서 역을 검색해 즐겨찾기에\n추가할 수 있습니다.",
+    "remove": "삭제"
+  },
+  "alarmOverlay": {
+    "transferTitle": "환승 알림",
+    "arrivalTitle": "하차 알림",
+    "transferMessage": "{{station}}에서\n환승하세요",
+    "arrivalMessage": "{{station}}에서\n내리세요",
+    "dismiss": "알람 끄기"
+  },
+  "destinationPicker": {
+    "noLocation": "위치 정보가 없습니다.",
+    "title": "목적지 설정",
+    "searchPlaceholder": "역 이름 검색"
+  },
+  "sleepModeGuide": {
+    "title": "취침 모드 안내",
+    "message": "이어폰이 연결되지 않은 경우 알람이 스피커로 재생될 수 있습니다.\n\n스피커 출력을 원하지 않으시면 설정 > 알람에서 '스피커 출력 허용'을 꺼주세요.",
+    "confirm": "확인"
+  },
+  "background": {
+    "title": "지하철 위치 감지 중",
+    "body": "백그라운드에서 현재 역을 추적하고 있습니다"
+  },
+  "arrival": {
+    "upbound": "상행",
+    "downbound": "하행"
+  },
+  "notifications": {
+    "channelStation": "현재 역",
+    "channelTransferAlarm": "하차/환승 알림",
+    "channelTransferAlarmSilent": "하차/환승 알림 (무음)",
+    "channelStationPass": "역 통과 알림",
+    "transferEarlyTitle": "환승 알림",
+    "arrivalEarlyTitle": "하차 알림",
+    "transferImminentTitle": "환승 임박",
+    "arrivalImminentTitle": "도착 임박"
+  },
+  "journey": {
+    "transferNote": "환승",
+    "arrivalNote": "도착"
+  },
+  "routes": {
+    "optimal": "최적경로",
+    "minTransfer": "최소환승"
+  },
+  "time": {
+    "arrivingSoon": "곧 도착",
+    "minutesAndSeconds": "{{min}}분 {{sec}}초",
+    "seconds": "{{sec}}초",
+    "approximateMinutes": "약 {{min}}분",
+    "estimatedSuffix": " (예상)"
+  },
+  "route": {
+    "stops_one": "{{count}}정거장",
+    "stops_other": "{{count}}정거장",
+    "stopsLeft_one": "{{count}}정거장 남음",
+    "stopsLeft_other": "{{count}}정거장 남음",
+    "transferAfterStops": "{{stops}}정거장 후 {{name}} 환승",
+    "minutesAndTransfers_one": "{{min}}분 · {{count}}환승",
+    "minutesAndTransfers_other": "{{min}}분 · {{count}}환승",
+    "directOnly": "{{min}}분 · 직통",
+    "directionToward": "{{name}} 방면",
+    "currentStation": "{{name}}역",
+    "atCurrentStation": "현재 {{name}}역",
+    "approximateDistance": "약 {{m}}m",
+    "stationPassed": "{{name}}역 통과",
+    "stopsRemainingToDestination_one": "{{destination}}까지 {{count}}정거장 남음",
+    "stopsRemainingToDestination_other": "{{destination}}까지 {{count}}정거장 남음",
+    "stopsRemainingViaTransfer": "{{transfer}} 환승까지 {{transferStops}}정거장 · {{destination}}까지 {{totalStops}}정거장"
+  },
+  "lines": {
+    "1": "1호선",
+    "2": "2호선",
+    "3": "3호선",
+    "4": "4호선",
+    "5": "5호선",
+    "6": "6호선",
+    "7": "7호선",
+    "8": "8호선",
+    "9": "9호선",
+    "airport": "공항철도",
+    "gyeongui": "경의중앙선",
+    "bundang": "분당선",
+    "sinbundang": "신분당선"
+  },
+  "alarms": {
+    "earlyTransferBody": "다음 역 {{station}}에서 환승하세요!",
+    "earlyArrivalBody": "다음 역 {{station}}에서 내리세요!",
+    "imminentTransferBody": "곧 {{station}}에 도착합니다. 환승 준비하세요!",
+    "imminentArrivalBody": "곧 {{station}}에 도착합니다. 하차 준비하세요!"
+  }
+}

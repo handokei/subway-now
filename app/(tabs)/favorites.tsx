@@ -1,31 +1,112 @@
-import { useEffect } from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../src/store/useAppStore';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { Station } from '../../src/types/station';
+import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
+import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
+import { formatArrivalTime } from '../../src/utils/formatTime';
+import { getStationDisplayName, matchesStationQuery } from '../../src/utils/stationDisplay';
+import { useTheme, type ThemeColors } from '../../src/theme';
+import stationsData from '../../src/data/stations.json';
+
+const allStations = stationsData as Station[];
 
 export default function FavoritesScreen() {
-  const { favorites, removeFavorite, loadFavorites } = useAppStore();
+  const favorites = useAppStore((s) => s.favorites);
+  const addFavorite = useAppStore((s) => s.addFavorite);
+  const removeFavorite = useAppStore((s) => s.removeFavorite);
+  const loadFavorites = useAppStore((s) => s.loadFavorites);
+  const [query, setQuery] = useState('');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const { colors } = useTheme();
+  const { t } = useTranslation();
 
   useEffect(() => {
     loadFavorites();
   }, []);
 
+  const selectedStation = useMemo(
+    () => favorites.find((f) => f.id === selectedId) ?? null,
+    [favorites, selectedId],
+  );
+  const { arrival: rawArrival } = useArrivalInfo(selectedStation?.name ?? null);
+  const arrival = useArrivalCountdown(rawArrival);
+
+  const searchResults = useMemo(() => {
+    const trimmed = query.trim();
+    if (!trimmed) return [];
+    const lower = trimmed.toLowerCase();
+    return allStations.filter((s) => matchesStationQuery(s, trimmed, lower)).slice(0, 20);
+  }, [query]);
+
+  const isSearching = query.trim().length > 0;
+
+  const handleToggleSelect = (id: string) => {
+    setSelectedId((prev) => (prev === id ? null : id));
+  };
+
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scroll}>
-        <Text style={styles.header}>즐겨찾기</Text>
-        {favorites.length === 0 ? (
-          <View style={styles.empty}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
+        <Text style={[styles.header, { color: colors.muted }]}>{t('favorites.title')}</Text>
+
+        <TextInput
+          style={[styles.searchInput, { backgroundColor: colors.card, color: colors.ink, borderColor: colors.hair }]}
+          placeholder={t('favorites.searchPlaceholder')}
+          placeholderTextColor={colors.muted}
+          value={query}
+          onChangeText={setQuery}
+          testID="favorites-search-input"
+        />
+
+        {isSearching ? (
+          searchResults.length === 0 ? (
+            <View style={styles.empty}>
+              <Text style={[styles.emptyTitle, { color: colors.ink }]}>{t('favorites.noSearchResults')}</Text>
+            </View>
+          ) : (
+            searchResults.map((station) => (
+              <SearchResultCard
+                key={station.id}
+                station={station}
+                already={favorites.some((f) => f.id === station.id)}
+                onAdd={() => addFavorite(station)}
+                colors={colors}
+              />
+            ))
+          )
+        ) : favorites.length === 0 ? (
+          <View style={styles.empty} testID="favorites-empty">
             <Text style={styles.emptyIcon}>⭐</Text>
-            <Text style={styles.emptyTitle}>즐겨찾기가 없습니다</Text>
-            <Text style={styles.emptySubtitle}>
-              현재 역 화면에서 역을 즐겨찾기에{'\n'}추가할 수 있습니다.
+            <Text style={[styles.emptyTitle, { color: colors.ink }]}>{t('favorites.empty')}</Text>
+            <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
+              {t('favorites.emptyDescription')}
             </Text>
           </View>
         ) : (
           favorites.map((station: Station) => (
-            <FavoriteCard key={station.id} station={station} onRemove={() => removeFavorite(station.id)} />
+            <FavoriteCard
+              key={station.id}
+              station={station}
+              isExpanded={station.id === selectedId}
+              arrival={station.id === selectedId ? arrival : null}
+              onToggle={() => handleToggleSelect(station.id)}
+              onRemove={() => {
+                if (selectedId === station.id) setSelectedId(null);
+                removeFavorite(station.id);
+              }}
+              colors={colors}
+            />
           ))
         )}
       </ScrollView>
@@ -33,24 +114,118 @@ export default function FavoritesScreen() {
   );
 }
 
-function FavoriteCard({
+function SearchResultCard({
   station,
-  onRemove,
+  already,
+  onAdd,
+  colors,
 }: {
   station: Station;
-  onRemove: () => void;
+  already: boolean;
+  onAdd: () => void;
+  colors: ThemeColors;
 }) {
   return (
-    <View style={[styles.card, { borderLeftColor: station.lineColor }]}>
+    <View style={[styles.card, { backgroundColor: colors.card, borderLeftColor: station.lineColor }]}>
       <View style={styles.cardInfo}>
         <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
           <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
         </View>
-        <Text style={styles.stationName}>{station.name}</Text>
+        <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayName(station)}</Text>
       </View>
-      <TouchableOpacity style={styles.removeButton} onPress={onRemove}>
-        <Text style={styles.removeText}>삭제</Text>
+      <TouchableOpacity
+        style={[styles.addButton, { backgroundColor: colors.accent }, already && { backgroundColor: colors.hair }]}
+        onPress={onAdd}
+        disabled={already}
+        testID={`favorite-add-${station.id}`}
+      >
+        <Text style={[styles.addButtonText, { color: already ? colors.muted : colors.onAccent }]}>{already ? '✓' : '+'}</Text>
       </TouchableOpacity>
+    </View>
+  );
+}
+
+function FavoriteCard({
+  station,
+  isExpanded,
+  arrival,
+  onToggle,
+  onRemove,
+  colors,
+}: {
+  station: Station;
+  isExpanded: boolean;
+  arrival: { up: { destination: string; arrivalSeconds: number; statusMessage: string }[]; down: { destination: string; arrivalSeconds: number; statusMessage: string }[] } | null;
+  onToggle: () => void;
+  onRemove: () => void;
+  colors: ThemeColors;
+}) {
+  const { t } = useTranslation();
+  return (
+    <View style={[styles.card, { backgroundColor: colors.card, borderLeftColor: station.lineColor }]}>
+      <TouchableOpacity style={styles.cardMain} onPress={onToggle} activeOpacity={0.7}>
+        <View style={styles.cardInfo}>
+          <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
+            <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
+          </View>
+          <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayName(station)}</Text>
+        </View>
+        <View style={styles.cardActions}>
+          <Text style={[styles.expandIcon, { color: colors.muted }]}>{isExpanded ? '▲' : '▼'}</Text>
+          <TouchableOpacity style={[styles.removeButton, { backgroundColor: colors.card }]} onPress={onRemove} testID={`favorite-remove-${station.id}`}>
+            <Text style={[styles.removeText, { color: colors.danger }]}>{t('favorites.remove')}</Text>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+
+      {isExpanded && (
+        <View style={[styles.arrivalSection, { borderTopColor: colors.hair }]}>
+          {arrival ? (
+            <>
+              {arrival.up.length > 0 && (
+                <ArrivalRow label={t('arrival.upbound')} items={arrival.up} colors={colors} />
+              )}
+              {arrival.down.length > 0 && (
+                <ArrivalRow label={t('arrival.downbound')} items={arrival.down} colors={colors} />
+              )}
+              {arrival.up.length === 0 && arrival.down.length === 0 && (
+                <Text style={[styles.noArrival, { color: colors.muted }]}>{t('home.noArrivalInfo')}</Text>
+              )}
+            </>
+          ) : (
+            <Text style={[styles.noArrival, { color: colors.muted }]}>{t('home.loading')}</Text>
+          )}
+        </View>
+      )}
+    </View>
+  );
+}
+
+function ArrivalRow({
+  label,
+  items,
+  colors,
+}: {
+  label: string;
+  items: { destination: string; arrivalSeconds: number; statusMessage: string }[];
+  colors: ThemeColors;
+}) {
+  return (
+    <View style={styles.arrivalRow}>
+      <Text style={[styles.arrivalLabel, { color: colors.subtle }]}>{label}</Text>
+      <View>
+        {items.map((item, idx) => (
+          <View key={idx}>
+            <Text style={[styles.arrivalItem, { color: colors.ink }]}>
+              {item.destination ? `${item.destination} · ` : ''}
+              {formatArrivalTime(item.arrivalSeconds)}
+            </Text>
+            {item.statusMessage !== '' && (
+              <Text style={[styles.statusMessage, { color: colors.accent }]}>{item.statusMessage}</Text>
+            )}
+          </View>
+        ))}
+      </View>
     </View>
   );
 }
@@ -58,7 +233,6 @@ function FavoriteCard({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#1a1a2e',
   },
   scroll: {
     padding: 24,
@@ -66,45 +240,60 @@ const styles = StyleSheet.create({
   },
   header: {
     fontSize: 14,
-    color: '#8888aa',
-    marginBottom: 20,
+    marginBottom: 16,
     letterSpacing: 2,
     textTransform: 'uppercase',
+  },
+  searchInput: {
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    fontSize: 15,
+    marginBottom: 16,
+    borderWidth: 1,
   },
   empty: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    paddingTop: 80,
+    paddingTop: 60,
   },
   emptyIcon: {
     fontSize: 48,
     marginBottom: 16,
   },
   emptyTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
-    color: '#ffffff',
     marginBottom: 8,
   },
   emptySubtitle: {
     fontSize: 14,
-    color: '#8888aa',
     textAlign: 'center',
     lineHeight: 22,
   },
   card: {
-    backgroundColor: '#16213e',
     borderRadius: 12,
-    padding: 16,
     borderLeftWidth: 5,
     marginBottom: 12,
+    overflow: 'hidden',
+  },
+  cardMain: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    padding: 16,
   },
   cardInfo: {
     flex: 1,
+  },
+  cardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  expandIcon: {
+    fontSize: 12,
   },
   badge: {
     alignSelf: 'flex-start',
@@ -114,24 +303,62 @@ const styles = StyleSheet.create({
     marginBottom: 8,
   },
   badgeText: {
-    color: '#ffffff',
+    color: '#ffffff', // 노선색(lineColor) 배경은 항상 진한색 — 흰 텍스트 유지
     fontSize: 12,
     fontWeight: '700',
   },
   stationName: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#ffffff',
   },
   removeButton: {
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: '#2a2a4a',
   },
   removeText: {
-    color: '#ff6b6b',
     fontSize: 13,
     fontWeight: '600',
+  },
+  addButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addButtonText: {
+    fontSize: 18,
+    fontWeight: '700',
+    lineHeight: 20,
+  },
+  arrivalSection: {
+    borderTopWidth: 1,
+    padding: 16,
+  },
+  arrivalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    paddingVertical: 6,
+  },
+  arrivalLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  arrivalItem: {
+    fontSize: 14,
+    textAlign: 'right',
+  },
+  statusMessage: {
+    fontSize: 11,
+    textAlign: 'right',
+    marginTop: 1,
+    marginBottom: 2,
+  },
+  noArrival: {
+    fontSize: 13,
+    textAlign: 'center',
+    paddingVertical: 4,
   },
 });

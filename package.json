@@ -1,15 +1,22 @@
 {
   "name": "subway-now",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web",
     "test": "jest --coverage",
     "test:watch": "jest --watch",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "e2e": "maestro test .maestro/flows/",
+    "e2e:home": "maestro test .maestro/flows/home/",
+    "e2e:favorites": "maestro test .maestro/flows/favorites/",
+    "e2e:navigation": "maestro test .maestro/flows/navigation/",
+    "e2e:location": "maestro test .maestro/flows/location/",
+    "e2e:flow": "maestro test",
+    "verify": "npm test && npm run e2e"
   },
   "jest": {
     "preset": "jest-expo",
@@ -29,7 +36,11 @@
     "collectCoverageFrom": [
       "src/**/*.{ts,tsx}",
       "!src/**/__tests__/**",
-      "!src/types/**"
+      "!src/types/**",
+      "!src/providers/index.ts",
+      "!src/providers/types.ts",
+      "!src/providers/arrival/index.ts",
+      "!src/theme/index.ts"
     ],
     "moduleFileExtensions": [
       "ts",
@@ -39,26 +50,40 @@
       "json"
     ],
     "transformIgnorePatterns": [
-      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg)"
+      "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|react-native-maps|react-native-map-clustering)"
     ]
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
+    "audio-route": "file:./modules/audio-route",
     "expo": "~54.0.33",
+    "expo-av": "~16.0.8",
     "expo-constants": "~18.0.13",
+    "expo-dev-client": "~6.0.20",
     "expo-linking": "~8.0.11",
+    "expo-localization": "~17.0.8",
     "expo-location": "~19.0.8",
     "expo-notifications": "~0.32.16",
     "expo-router": "~6.0.23",
+    "expo-splash-screen": "~31.0.13",
     "expo-status-bar": "~3.0.9",
     "expo-task-manager": "~14.0.9",
+    "i18next": "~26.1.0",
+    "live-activity": "file:./modules/live-activity",
     "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "react-i18next": "~17.0.7",
     "react-native": "0.81.5",
+    "react-native-map-clustering": "^4.0.0",
+    "react-native-maps": "1.20.1",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
+    "react-native-web": "^0.21.2",
     "zustand": "^5.0.12"
   },
   "devDependencies": {
+    "@bacons/apple-targets": "^4.0.6",
+    "@expo/prebuild-config": "^54.0.8",
     "@testing-library/react-native": "^13.3.3",
     "@types/jest": "^29.5.14",
     "@types/react": "~19.1.0",

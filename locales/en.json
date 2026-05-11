@@ -1,0 +1,9 @@
+{
+  "ios": {
+    "CFBundleDisplayName": "subway-now",
+    "CFBundleName": "subway-now"
+  },
+  "android": {
+    "app_name": "subway-now"
+  }
+}

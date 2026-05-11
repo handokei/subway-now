@@ -1,0 +1,156 @@
+import { findNearestStation } from './findNearestStation';
+import { findRoute, calculateStaticETA, isStationOnRoute, updateRouteFromPosition } from './stationRoute';
+import { evaluateAlarmPhase } from './stationAlarm';
+import { sendAlarmNotification, sendStationPassedNotification, updateStationNotification } from './stationNotification';
+import { distanceMetersBetween, estimateEtaSeconds } from './stationEta';
+import { MAX_STATION_DISTANCE_KM } from '../constants/location';
+import type { NearestStationResult, Station } from '../types/station';
+import type { Route } from './stationRoute';
+import type { AlarmEvent } from './stationAlarm';
+
+export interface NextTarget {
+  nextStationName: string;
+  stopsToNextStation: number;
+  isTransfer: boolean;
+  stopsToDestination: number;
+}
+
+export function resolveNextTarget(route: Route, destinationName: string): NextTarget | null {
+  if (!route) return null;
+
+  if (route.type === 'direct') {
+    return {
+      nextStationName: destinationName,
+      stopsToNextStation: route.stops,
+      isTransfer: false,
+      stopsToDestination: route.stops,
+    };
+  }
+
+  if (route.type === 'transfer') {
+    const stopsToDestination = route.stopsToTransfer + route.stopsFromTransfer;
+    if (route.stopsToTransfer > 0) {
+      return {
+        nextStationName: route.transferName,
+        stopsToNextStation: route.stopsToTransfer,
+        isTransfer: true,
+        stopsToDestination,
+      };
+    }
+    return {
+      nextStationName: destinationName,
+      stopsToNextStation: route.stopsFromTransfer,
+      isTransfer: false,
+      stopsToDestination: route.stopsFromTransfer,
+    };
+  }
+
+  if (route.type === 'multi-transfer') {
+    const { transfers } = route;
+    for (let i = 0; i < transfers.length; i++) {
+      const t = transfers[i];
+      if (t.stopsToTransfer > 0) {
+        let remaining = route.stopsAfterLastTransfer;
+        for (let j = i; j < transfers.length; j++) {
+          remaining += transfers[j].stopsToTransfer;
+        }
+        return {
+          nextStationName: t.transferName,
+          stopsToNextStation: t.stopsToTransfer,
+          isTransfer: true,
+          stopsToDestination: remaining,
+        };
+      }
+    }
+    return {
+      nextStationName: destinationName,
+      stopsToNextStation: route.stopsAfterLastTransfer,
+      isTransfer: false,
+      stopsToDestination: route.stopsAfterLastTransfer,
+    };
+  }
+
+  return null;
+}
+
+export interface PipelineResult {
+  alarmEvent: AlarmEvent | null;
+  nearest: NearestStationResult | null;
+  lastNotifiedStationId: string | null;
+}
+
+export interface ProcessLocationInputs {
+  lat: number;
+  lng: number;
+  destination: Station;
+  firedAlarms: Set<string>;
+  sleepMode: boolean;
+  allowSpeaker?: boolean;
+  storedRoute?: Route;
+  lastNotifiedStationId?: string | null;
+  speedMps?: number | null;
+}
+
+export async function processLocationUpdate(inputs: ProcessLocationInputs): Promise<PipelineResult> {
+  const {
+    lat,
+    lng,
+    destination,
+    firedAlarms,
+    sleepMode,
+    allowSpeaker = true,
+    storedRoute = null,
+    lastNotifiedStationId = null,
+    speedMps = null,
+  } = inputs;
+
+  const nearest = findNearestStation(lat, lng, MAX_STATION_DISTANCE_KM);
+  if (!nearest) return { alarmEvent: null, nearest: null, lastNotifiedStationId };
+
+  let route: Route = null;
+  if (storedRoute) {
+    route = updateRouteFromPosition(storedRoute, nearest.station, destination.id);
+  }
+  if (!route) {
+    route = findRoute(nearest.station.id, destination.id);
+  }
+
+  const distanceToDestM = distanceMetersBetween(lat, lng, destination.lat, destination.lng);
+  const etaSeconds = estimateEtaSeconds(distanceToDestM, speedMps);
+
+  const alarmEvent = evaluateAlarmPhase(
+    { route, destinationName: destination.name, etaSeconds },
+    firedAlarms,
+  );
+
+  if (alarmEvent) {
+    await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker);
+  }
+
+  // 역 변경 감지 → per-station 알림. 단, 경로상 노선의 역만 (false alarm 방지)
+  let newLastNotifiedStationId = lastNotifiedStationId;
+  if (route && isStationOnRoute(nearest.station, route) && nearest.station.id !== lastNotifiedStationId) {
+    const target = resolveNextTarget(route, destination.name);
+    if (target) {
+      newLastNotifiedStationId = nearest.station.id;
+      await sendStationPassedNotification(
+        nearest.station.name,
+        destination.name,
+        target,
+      );
+    }
+  }
+
+  const eta = calculateStaticETA(route);
+  await updateStationNotification(
+    nearest.station,
+    Math.round(nearest.distanceKm * 1000),
+    destination,
+    route,
+    eta,
+    undefined,
+    sleepMode ? alarmEvent : null,
+  );
+
+  return { alarmEvent, nearest, lastNotifiedStationId: newLastNotifiedStationId };
+}

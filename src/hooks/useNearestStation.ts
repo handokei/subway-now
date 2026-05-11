@@ -1,50 +1,79 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AppState } from 'react-native';
 import * as Location from 'expo-location';
-import stationsData from '../data/stations.json';
-import { haversine } from '../utils/haversine';
 import { NearestStationResult, Station } from '../types/station';
+import { findNearestStations } from '../utils/findNearestStation';
+import { isAccuracyAcceptable, isLocationFresh } from '../utils/locationGates';
+import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 
-const stations = stationsData as Station[];
-const NEARBY_THRESHOLD_KM = 0.5;
-const UPDATE_INTERVAL_MS = 30_000;
+const DISTANCE_INTERVAL_M = 10;
+const MIN_DISTANCE_CHANGE_KM = 0.01; // 10m
 
 interface UseNearestStationReturn {
   result: NearestStationResult | null;
+  variants: Station[];
+  userLocation: { lat: number; lng: number } | null;
+  speedMps: number | null;
   loading: boolean;
   error: string | null;
   permissionDenied: boolean;
   refresh: () => Promise<void>;
 }
 
+function applyNearestResult(
+  stationsResult: ReturnType<typeof findNearestStations>,
+  setResult: (r: NearestStationResult | null) => void,
+  setVariants: (v: Station[]) => void,
+): void {
+  if (stationsResult) {
+    setResult({ station: stationsResult.primary, distanceKm: stationsResult.distanceKm });
+    setVariants(stationsResult.variants);
+  } else {
+    setResult(null);
+    setVariants([]);
+  }
+}
+
 export function useNearestStation(): UseNearestStationReturn {
   const [result, setResult] = useState<NearestStationResult | null>(null);
+  const [variants, setVariants] = useState<Station[]>([]);
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [speedMps, setSpeedMps] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval>>(undefined as unknown as ReturnType<typeof setInterval>);
+  const subscriptionRef = useRef<Location.LocationSubscription | null>(null);
+  const lastStationIdRef = useRef<string | null>(null);
+  const lastDistanceRef = useRef<number>(0);
 
-  const findNearest = useCallback(
-    (lat: number, lng: number): NearestStationResult | null => {
-      let nearest: Station | null = null;
-      let minDistance = Infinity;
+  const applyLocation = useCallback((coords: Location.LocationObjectCoords) => {
+    const { latitude, longitude, speed } = coords;
+    const stationsResult = findNearestStations(latitude, longitude, MAX_STATION_DISTANCE_KM);
 
-      for (const station of stations) {
-        const dist = haversine(lat, lng, station.lat, station.lng);
-        if (dist < minDistance) {
-          minDistance = dist;
-          nearest = station;
-        }
-      }
+    const newId = stationsResult?.primary.id ?? null;
+    const newDistance = stationsResult?.distanceKm ?? 0;
+    const stationChanged = newId !== lastStationIdRef.current;
+    const distanceDelta = Math.abs(newDistance - lastDistanceRef.current);
+    const noStation = !stationsResult && lastStationIdRef.current !== null;
 
-      if (nearest && minDistance <= NEARBY_THRESHOLD_KM) {
-        return { station: nearest, distanceKm: minDistance };
-      }
-      return null;
-    },
-    []
-  );
+    setSpeedMps(speed != null && speed >= 0 ? speed : null);
 
-  const refresh = useCallback(async () => {
+    if (stationChanged || distanceDelta > MIN_DISTANCE_CHANGE_KM || noStation) {
+      lastStationIdRef.current = newId;
+      lastDistanceRef.current = newDistance;
+      setUserLocation({ lat: latitude, lng: longitude });
+      applyNearestResult(stationsResult, setResult, setVariants);
+    }
+  }, []);
+
+  const stopWatch = useCallback(() => {
+    subscriptionRef.current?.remove();
+    subscriptionRef.current = null;
+  }, []);
+
+  const startWatch = useCallback(async () => {
+    subscriptionRef.current?.remove();
+    subscriptionRef.current = null;
     try {
       setError(null);
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -55,26 +84,69 @@ export function useNearestStation(): UseNearestStationReturn {
       }
       setPermissionDenied(false);
 
-      const location = await Location.getCurrentPositionAsync({
-        accuracy: Location.Accuracy.High,
-      });
+      // 캐시된 위치는 신선하고 정확한 경우만 즉시 표시 (stale/저정확도로 인한 false alarm 방지)
+      const lastKnown = await Location.getLastKnownPositionAsync();
+      if (lastKnown && isLocationFresh(lastKnown.timestamp) && isAccuracyAcceptable(lastKnown.coords.accuracy)) {
+        applyLocation(lastKnown.coords);
+        setLoading(false);
+      }
 
-      const nearest = findNearest(location.coords.latitude, location.coords.longitude);
-      setResult(nearest);
-    } catch (e) {
+      // 연속 GPS 스트리밍 시작 — 저정확도 좌표는 무시
+      subscriptionRef.current = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.High, distanceInterval: DISTANCE_INTERVAL_M },
+        (location) => {
+          if (!isAccuracyAcceptable(location.coords.accuracy)) return;
+          applyLocation(location.coords);
+        },
+      );
+      setLoading(false);
+    } catch {
       setError('위치를 가져오는 데 실패했습니다.');
-    } finally {
       setLoading(false);
     }
-  }, [findNearest]);
+  }, [applyLocation]);
+
+  // 수동 새로고침: watch 중지 → one-shot → watch 재시작
+  const refresh = useCallback(async () => {
+    stopWatch();
+    let shouldRestart = true;
+    try {
+      setError(null);
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setPermissionDenied(true);
+        shouldRestart = false;
+        return;
+      }
+      setPermissionDenied(false);
+      const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
+      if (isAccuracyAcceptable(location.coords.accuracy)) {
+        applyLocation(location.coords);
+      }
+    } catch {
+      setError('위치를 가져오는 데 실패했습니다.');
+    } finally {
+      if (shouldRestart) await startWatch();
+    }
+  }, [stopWatch, startWatch, applyLocation]);
 
   useEffect(() => {
-    refresh();
-    intervalRef.current = setInterval(refresh, UPDATE_INTERVAL_MS);
-    return () => {
-      clearInterval(intervalRef.current);
-    };
-  }, [refresh]);
+    startWatch();
 
-  return { result, loading, error, permissionDenied, refresh };
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        startWatch();
+      } else if (state === 'background') {
+        stopWatch();
+      }
+      // inactive는 일시적 상태(전화 착신 등)이므로 무시
+    });
+
+    return () => {
+      stopWatch();
+      appStateSub.remove();
+    };
+  }, [startWatch, stopWatch]);
+
+  return { result, variants, userLocation, speedMps, loading, error, permissionDenied, refresh };
 }

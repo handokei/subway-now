@@ -1,0 +1,174 @@
+{
+  "common": {
+    "retry": "Retry",
+    "close": "Close",
+    "confirm": "OK",
+    "cancel": "Cancel"
+  },
+  "tabs": {
+    "current": "Current",
+    "map": "Map",
+    "favorites": "Favorites",
+    "settings": "Settings"
+  },
+  "permissions": {
+    "locationRequiredTitle": "Location permission required",
+    "locationRequiredShort": "Location permission required.",
+    "locationRequiredDescription": "Please allow location permission in Settings.\nLocation permission is required to detect your current station.",
+    "request": "Grant permission",
+    "locating": "Locating..."
+  },
+  "home": {
+    "arrived": "Arrived!",
+    "live": "LIVE",
+    "manual": "MANUAL",
+    "originManual": "Origin (manual)",
+    "originCurrent": "Current station",
+    "originNearest": "Nearest station",
+    "switchToGps": "Switch to GPS mode",
+    "routeTo": "Route to",
+    "estimatedSuffix": "EST",
+    "destinationChange": "Change destination →",
+    "destinationReset": "Reset",
+    "destinationSet": "Set destination",
+    "previousDestination": "Previous destination",
+    "sleepMode": "Sleep mode",
+    "sleepModeDescription": "Vibrate and notify 1 stop before transfer or arrival",
+    "arrivalInfoTitle": "Train arrivals",
+    "loading": "Loading...",
+    "mockNotice": "Showing estimated data — real-time unavailable",
+    "noArrivalInfo": "No arrival info",
+    "notNearStationTitle": "Not near a subway station",
+    "notNearStationDescription": "Your current station appears when you are within 500m of a subway station.\nYou can also set the origin manually from the Map tab.",
+    "refresh": "Refresh"
+  },
+  "settings": {
+    "title": "Settings",
+    "themeSection": "Theme",
+    "themeAuto": "Auto",
+    "themeLight": "Light",
+    "themeDark": "Dark",
+    "themeLabel": "Dark mode",
+    "themeDescription": "Auto follows your device setting",
+    "routeSection": "Route",
+    "routePreferenceLabel": "Route preference",
+    "routePreferenceDescription": "Choose the default route search method",
+    "alarmSection": "Alarm",
+    "sleepModeLabel": "Sleep mode",
+    "sleepModeDescription": "Plays the wake-up alarm sound when earphones are connected",
+    "speakerOutputLabel": "Allow speaker output",
+    "speakerOutputDescription": "Plays the alarm through the speaker even without earphones",
+    "speakerOffTitle": "Turn off speaker output",
+    "speakerOffMessage": "Disabling speaker output will play only vibration when earphones are not connected. Continue?",
+    "speakerOffConfirm": "Turn off",
+    "languageSection": "Language",
+    "languageLabel": "App language",
+    "languageDescription": "Auto follows your device setting",
+    "languageAuto": "Auto",
+    "languageKorean": "Korean",
+    "languageEnglish": "English"
+  },
+  "map": {
+    "originBadge": "Origin",
+    "destinationBadge": "Destination",
+    "setAsOrigin": "Set as origin",
+    "setAsDestination": "Set as destination"
+  },
+  "favorites": {
+    "title": "Favorites",
+    "searchPlaceholder": "Search station name...",
+    "noSearchResults": "No search results",
+    "empty": "No favorites yet",
+    "emptyDescription": "Search stations above and add\nthem to your favorites.",
+    "remove": "Remove"
+  },
+  "alarmOverlay": {
+    "transferTitle": "Transfer alert",
+    "arrivalTitle": "Arrival alert",
+    "transferMessage": "Transfer at\n{{station}}",
+    "arrivalMessage": "Exit at\n{{station}}",
+    "dismiss": "Dismiss alarm"
+  },
+  "destinationPicker": {
+    "noLocation": "Location info unavailable.",
+    "title": "Set destination",
+    "searchPlaceholder": "Search station name"
+  },
+  "sleepModeGuide": {
+    "title": "Sleep mode notice",
+    "message": "If earphones are not connected, the alarm may play through the speaker.\n\nIf you do not want speaker output, turn off 'Allow speaker output' under Settings > Alarm.",
+    "confirm": "OK"
+  },
+  "background": {
+    "title": "Detecting subway location",
+    "body": "Tracking your current station in the background"
+  },
+  "arrival": {
+    "upbound": "Upbound",
+    "downbound": "Downbound"
+  },
+  "notifications": {
+    "channelStation": "Current station",
+    "channelTransferAlarm": "Transfer/arrival alert",
+    "channelTransferAlarmSilent": "Transfer/arrival alert (silent)",
+    "channelStationPass": "Station pass alert",
+    "transferEarlyTitle": "Transfer alert",
+    "arrivalEarlyTitle": "Arrival alert",
+    "transferImminentTitle": "Transfer imminent",
+    "arrivalImminentTitle": "Arrival imminent"
+  },
+  "journey": {
+    "transferNote": "Transfer",
+    "arrivalNote": "Arrival"
+  },
+  "routes": {
+    "optimal": "Fastest",
+    "minTransfer": "Fewest transfers"
+  },
+  "time": {
+    "arrivingSoon": "Arriving soon",
+    "minutesAndSeconds": "{{min}}m {{sec}}s",
+    "seconds": "{{sec}}s",
+    "approximateMinutes": "~{{min}}m",
+    "estimatedSuffix": " (estimated)"
+  },
+  "route": {
+    "stops_one": "{{count}} stop",
+    "stops_other": "{{count}} stops",
+    "stopsLeft_one": "{{count}} stop left",
+    "stopsLeft_other": "{{count}} stops left",
+    "transferAfterStops": "Transfer at {{name}} in {{stops}} stops",
+    "minutesAndTransfers_one": "{{min}}m · {{count}} transfer",
+    "minutesAndTransfers_other": "{{min}}m · {{count}} transfers",
+    "directOnly": "{{min}}m · Direct",
+    "directionToward": "Toward {{name}}",
+    "currentStation": "{{name}}",
+    "atCurrentStation": "Currently at {{name}}",
+    "approximateDistance": "~{{m}}m",
+    "stationPassed": "Passed {{name}}",
+    "stopsRemainingToDestination_one": "{{count}} stop to {{destination}}",
+    "stopsRemainingToDestination_other": "{{count}} stops to {{destination}}",
+    "stopsRemainingViaTransfer": "{{transferStops}} stops to {{transfer}} transfer · {{totalStops}} stops to {{destination}}"
+  },
+  "lines": {
+    "1": "Line 1",
+    "2": "Line 2",
+    "3": "Line 3",
+    "4": "Line 4",
+    "5": "Line 5",
+    "6": "Line 6",
+    "7": "Line 7",
+    "8": "Line 8",
+    "9": "Line 9",
+    "airport": "AREX",
+    "gyeongui": "Gyeongui-Jungang Line",
+    "bundang": "Bundang Line",
+    "sinbundang": "Shinbundang Line"
+  },
+  "alarms": {
+    "earlyTransferBody": "Transfer at {{station}} (next stop)!",
+    "earlyArrivalBody": "Exit at {{station}} (next stop)!",
+    "imminentTransferBody": "Arriving at {{station}}. Get ready to transfer!",
+    "imminentArrivalBody": "Arriving at {{station}}. Get ready to exit!"
+  }
+}

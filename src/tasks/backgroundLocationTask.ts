@@ -1,0 +1,89 @@
+import * as TaskManager from 'expo-task-manager';
+import * as Location from 'expo-location';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { processLocationUpdate } from '../utils/stationPipeline';
+import { alarmKey } from '../utils/stationAlarm';
+import { createLogger } from '../utils/logger';
+import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
+import { isAccuracyAcceptable, isLocationFresh } from '../utils/locationGates';
+import type { Route } from '../utils/stationRoute';
+
+const logger = createLogger('BackgroundLocation');
+
+export const BACKGROUND_LOCATION_TASK = 'background-location-task';
+
+TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
+  if (error) {
+    logger.error('백그라운드 위치 오류:', error.message);
+    return;
+  }
+  if (!data) return;
+
+  const { locations } = data as { locations: Location.LocationObject[] };
+  const latest = locations[locations.length - 1];
+  if (!latest) return;
+
+  // iOS deferred 위치 배치에서 stale/저정확도 좌표가 섞여 들어올 수 있음 — 차단
+  if (!isLocationFresh(latest.timestamp)) return;
+  if (!isAccuracyAcceptable(latest.coords.accuracy)) return;
+
+  const { latitude, longitude, speed } = latest.coords;
+  const speedMps = speed != null && speed >= 0 ? speed : null;
+
+  try {
+    const [destJson, sleepJson, firedJson, routeJson, lastNotifiedJson, allowSpeakerJson] = await Promise.all([
+      AsyncStorage.getItem(DESTINATION_KEY),
+      AsyncStorage.getItem(SLEEP_MODE_KEY),
+      AsyncStorage.getItem(FIRED_ALARMS_KEY),
+      AsyncStorage.getItem(ROUTE_KEY),
+      AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY),
+      AsyncStorage.getItem(ALLOW_SPEAKER_KEY),
+    ]);
+
+    // 경로(목적지) 없으면 백그라운드에서도 실시간 현황 알림을 띄우지 않는다.
+    if (!destJson) return;
+
+    let destination;
+    try {
+      destination = JSON.parse(destJson);
+    } catch {
+      logger.error('목적지 JSON 파싱 실패');
+      return;
+    }
+    const sleepMode = sleepJson ? JSON.parse(sleepJson) === true : false;
+    const allowSpeaker = allowSpeakerJson ? JSON.parse(allowSpeakerJson) === true : true;
+    const firedAlarms = new Set<string>(firedJson ? JSON.parse(firedJson) : []);
+    const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;
+
+    const { alarmEvent, lastNotifiedStationId: newLastId } = await processLocationUpdate({
+      lat: latitude,
+      lng: longitude,
+      destination,
+      firedAlarms,
+      sleepMode,
+      allowSpeaker,
+      storedRoute,
+      lastNotifiedStationId: lastNotifiedJson,
+      speedMps,
+    });
+
+    const writes: Promise<void>[] = [];
+    if (alarmEvent) {
+      firedAlarms.add(alarmKey(alarmEvent));
+      writes.push(
+        AsyncStorage.setItem(FIRED_ALARMS_KEY, JSON.stringify([...firedAlarms])),
+        AsyncStorage.setItem(ALARM_EVENT_KEY, JSON.stringify(alarmEvent)),
+      );
+    }
+    if (newLastId && newLastId !== lastNotifiedJson) {
+      writes.push(AsyncStorage.setItem(LAST_NOTIFIED_STATION_KEY, newLastId));
+    }
+    if (writes.length > 0) {
+      await Promise.all(writes);
+    }
+
+    logger.info('백그라운드 위치 업데이트 완료:', latitude.toFixed(4), longitude.toFixed(4));
+  } catch (e) {
+    logger.error('백그라운드 태스크 실패:', e);
+  }
+});

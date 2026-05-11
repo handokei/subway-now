@@ -16,6 +16,7 @@ export type LineNumber =
 export interface Station {
   id: string;
   name: string;
+  nameEn?: string;
   line: LineNumber;
   lineColor: string;
   lat: number;
@@ -25,4 +26,11 @@ export interface Station {
 export interface NearestStationResult {
   station: Station;
   distanceKm: number;
+}
+
+export interface NearestStationsResult {
+  primary: Station;
+  variants: Station[];
+  distanceKm: number;
+  isTransfer: boolean;
 }
