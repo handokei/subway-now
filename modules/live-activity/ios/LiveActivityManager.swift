@@ -3,37 +3,9 @@ import ActivityKit
 import Foundation
 import UIKit
 
-// 앱 타겟에서의 SubwayActivityAttributes 정의
-// 위젯 타겟의 동일한 구조체와 이름이 일치해야 ActivityKit이 연동됨
-@available(iOS 16.2, *)
-struct SubwayActivityAttributes: ActivityAttributes {
-    struct ContentState: Codable, Hashable {
-        var stationName: String
-        var lineName: String
-        var lineColorHex: String
-        var destinationName: String?
-        var stopsRemaining: Int?
-        var stopsToTransfer: Int?
-        var transferStationName: String?
-        var stopsFromTransfer: Int?
-        var stopsToSecondTransfer: Int?
-        var secondTransferStationName: String?
-        var stopsAfterLastTransfer: Int?
-        var distanceM: Int
-        var etaMinutes: Int?
-        var isMock: Bool?
-        var alarmType: String?
-        var alarmStationName: String?
-        // JS에서 i18n으로 빌드된 사용자 노출 텍스트
-        var alarmBody: String?
-        var alarmShortLabel: String?
-        var routeSubtext: String?
-        var routeSummary: String?
-        var etaText: String?
-        var etaSubtext: String?
-        var distanceText: String?
-    }
-}
+// SubwayActivityAttributes 정의는 targets/subway-widget/_shared/SubwayActivityAttributes.swift에
+// 단일 진실 소스로 존재하며, @bacons/apple-targets의 _shared 패턴으로 main 타겟과 widget 타겟에
+// 자동 링크된다.
 
 @available(iOS 16.2, *)
 class LiveActivityManager {
