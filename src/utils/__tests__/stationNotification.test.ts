@@ -356,12 +356,12 @@ describe('stationNotification', () => {
 
     it('환승 경로이면 환승 정보를 표시한다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, transferRoute);
-      expectNotificationContent('시청 → 성신여대입구', '3역 후 동대문 환승');
+      expectNotificationContent('시청 → 성신여대입구', '3정거장 후 동대문 환승');
     });
 
     it('multi-transfer 경로이면 두 환승 정보를 표시한다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, multiTransferRoute);
-      expectNotificationContent('시청 → 성신여대입구', '3역 후 잠실 환승');
+      expectNotificationContent('시청 → 성신여대입구', '3정거장 후 잠실 환승');
     });
 
     it('etaMinutes가 있으면 알림 body에 소요 시간이 포함된다', async () => {

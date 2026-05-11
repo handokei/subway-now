@@ -373,9 +373,10 @@ export default function HomeScreen() {
                             <Text style={[styles.routePillText, { color: active ? colors.onAccent : colors.muted }]}>
                               {t(`routes.${category.key}`)}
                             </Text>
-                            {/* 동적 포맷("N분 · M환승")은 Phase 3에서 i18n 처리 예정 */}
                             <Text style={[styles.routePillSub, { color: active ? colors.onAccent : colors.subtle }]}>
-                              {candidate.travelMinutes}분 · {candidate.transferCount}환승
+                              {candidate.transferCount === 0
+                                ? t('route.directOnly', { min: candidate.travelMinutes })
+                                : t('route.minutesAndTransfers', { min: candidate.travelMinutes, count: candidate.transferCount })}
                             </Text>
                           </Pressable>
                         );

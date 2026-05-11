@@ -103,27 +103,43 @@ function buildContent(
   etaMinutes?: number | null,
   isMock?: boolean,
 ): { title: string; body: string } {
-  const etaSuffix = etaMinutes != null ? ` · 약 ${etaMinutes}분${isMock ? ' (예상)' : ''}` : '';
+  const etaSuffix =
+    etaMinutes != null
+      ? ` · ${i18next.t('time.approximateMinutes', { min: etaMinutes })}${isMock ? i18next.t('time.estimatedSuffix') : ''}`
+      : '';
 
   // destination layer: 목적지 있으면 title에 반영
+  // TODO(phase4): 역명 영문 데이터 도입 시 currentStation.name/destination.name도 현지화 필요
   const title = destination
     ? `${currentStation.name} → ${destination.name}`
-    : `${currentStation.name}역`;
+    : i18next.t('route.currentStation', { name: currentStation.name });
 
   // route layer: 경로 정보가 있으면 body에 반영
   if (destination && route) {
     if (route.type === 'direct') {
-      return { title, body: `${LINE_NAMES[currentStation.line]} · ${route.stops}정거장 남음${etaSuffix}` };
+      return {
+        title,
+        body: `${LINE_NAMES[currentStation.line]} · ${i18next.t('route.stopsLeft', { count: route.stops })}${etaSuffix}`,
+      };
     }
     if (route.type === 'transfer') {
-      return { title, body: `${route.stopsToTransfer}역 후 ${route.transferName} 환승${etaSuffix}` };
+      return {
+        title,
+        body: `${i18next.t('route.transferAfterStops', { stops: route.stopsToTransfer, name: route.transferName })}${etaSuffix}`,
+      };
     }
     const [t1] = route.transfers;
-    return { title, body: `${t1.stopsToTransfer}역 후 ${t1.transferName} 환승${etaSuffix}` };
+    return {
+      title,
+      body: `${i18next.t('route.transferAfterStops', { stops: t1.stopsToTransfer, name: t1.transferName })}${etaSuffix}`,
+    };
   }
 
   // base: 경로 없이 목적지만 있거나 목적지도 없는 경우
-  return { title, body: `${LINE_NAMES[currentStation.line]} · 약 ${distanceM}m${etaSuffix}` };
+  return {
+    title,
+    body: `${LINE_NAMES[currentStation.line]} · ${i18next.t('route.approximateDistance', { m: distanceM })}${etaSuffix}`,
+  };
 }
 
 function buildLiveActivityData(
@@ -258,12 +274,16 @@ export async function sendStationPassedNotification(
   destinationName: string,
   stopsRemaining: number | null,
 ): Promise<void> {
-  const body = stopsRemaining != null
-    ? `${destinationName}까지 ${stopsRemaining}정거장 남음`
-    : `현재 ${stationName}역`;
+  const body =
+    stopsRemaining != null
+      ? i18next.t('route.stopsRemainingToDestination', {
+          destination: destinationName,
+          count: stopsRemaining,
+        })
+      : i18next.t('route.atCurrentStation', { name: stationName });
 
   await scheduleNotification(STATION_PASSED_NOTIFICATION_ID, {
-    title: `${stationName}역 통과`,
+    title: i18next.t('route.stationPassed', { name: stationName }),
     body,
     ...(Platform.OS === 'android' && {
       channelId: STATION_PASSED_CHANNEL_ID,
@@ -275,19 +295,14 @@ export async function sendStationPassedNotification(
 
 import type { AlarmPhaseId } from './alarmPhases';
 
-// 본문(body)의 동적 보간 부분은 Phase 3(#205+)에서 i18n 처리 예정
 const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTransfer: boolean) => { title: string; body: string }> = {
   early: (stationName, isTransfer) => ({
     title: i18next.t(isTransfer ? 'notifications.transferEarlyTitle' : 'notifications.arrivalEarlyTitle'),
-    body: isTransfer
-      ? `다음 역 ${stationName}에서 환승하세요!`
-      : `다음 역 ${stationName}에서 내리세요!`,
+    body: i18next.t(isTransfer ? 'alarms.earlyTransferBody' : 'alarms.earlyArrivalBody', { station: stationName }),
   }),
   imminent: (stationName, isTransfer) => ({
     title: i18next.t(isTransfer ? 'notifications.transferImminentTitle' : 'notifications.arrivalImminentTitle'),
-    body: isTransfer
-      ? `곧 ${stationName}에 도착합니다. 환승 준비하세요!`
-      : `곧 ${stationName}에 도착합니다. 하차 준비하세요!`,
+    body: i18next.t(isTransfer ? 'alarms.imminentTransferBody' : 'alarms.imminentArrivalBody', { station: stationName }),
   }),
 };
 
