@@ -266,7 +266,12 @@ describe('processLocationUpdate', () => {
 
     const result = await call({ lastNotifiedStationId: 'other-station' });
 
-    expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', 3);
+    expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', {
+      nextStationName: '시청',
+      stopsToNextStation: 3,
+      isTransfer: false,
+      stopsToDestination: 3,
+    });
     expect(result.lastNotifiedStationId).toBe('station-1');
   });
 
@@ -286,7 +291,12 @@ describe('processLocationUpdate', () => {
 
     const result = await call({ lastNotifiedStationId: null });
 
-    expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', 3);
+    expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', {
+      nextStationName: '시청',
+      stopsToNextStation: 3,
+      isTransfer: false,
+      stopsToDestination: 3,
+    });
     expect(result.lastNotifiedStationId).toBe('station-1');
   });
 
@@ -368,6 +378,8 @@ describe('resolveNextTarget', () => {
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '강남',
       stopsToNextStation: 5,
+      isTransfer: false,
+      stopsToDestination: 5,
     });
   });
 
@@ -379,6 +391,8 @@ describe('resolveNextTarget', () => {
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '동대문',
       stopsToNextStation: 3,
+      isTransfer: true,
+      stopsToDestination: 5,
     });
   });
 
@@ -390,6 +404,8 @@ describe('resolveNextTarget', () => {
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '강남',
       stopsToNextStation: 2,
+      isTransfer: false,
+      stopsToDestination: 2,
     });
   });
 
@@ -405,6 +421,8 @@ describe('resolveNextTarget', () => {
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '잠실',
       stopsToNextStation: 3,
+      isTransfer: true,
+      stopsToDestination: 12,
     });
   });
 
@@ -420,6 +438,8 @@ describe('resolveNextTarget', () => {
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '시청',
       stopsToNextStation: 5,
+      isTransfer: true,
+      stopsToDestination: 9,
     });
   });
 
@@ -440,6 +460,22 @@ describe('resolveNextTarget', () => {
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '강남',
       stopsToNextStation: 4,
+      isTransfer: false,
+      stopsToDestination: 4,
+    });
+  });
+
+  it('회귀(#214): 환승 전 구간에서 stopsToDestination은 환승 후 구간을 포함한 총합이다', () => {
+    // 용마산 → 군자(환승) → 이대 시나리오: 환승까지 2정거장, 환승 후 9정거장 → 총 11
+    const route: TransferRoute = {
+      type: 'transfer', transferName: '군자', fromLine: '7', toLine: '5',
+      stopsToTransfer: 2, stopsFromTransfer: 9,
+    };
+    expect(resolveNextTarget(route, '이대')).toEqual({
+      nextStationName: '군자',
+      stopsToNextStation: 2,
+      isTransfer: true,
+      stopsToDestination: 11,
     });
   });
 });

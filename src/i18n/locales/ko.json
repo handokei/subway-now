@@ -141,7 +141,8 @@
     "approximateDistance": "약 {{m}}m",
     "stationPassed": "{{name}}역 통과",
     "stopsRemainingToDestination_one": "{{destination}}까지 {{count}}정거장 남음",
-    "stopsRemainingToDestination_other": "{{destination}}까지 {{count}}정거장 남음"
+    "stopsRemainingToDestination_other": "{{destination}}까지 {{count}}정거장 남음",
+    "stopsRemainingViaTransfer": "{{transfer}} 환승까지 {{transferStops}}정거장 · {{destination}}까지 {{totalStops}}정거장"
   },
   "lines": {
     "1": "1호선",

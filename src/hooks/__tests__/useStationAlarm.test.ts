@@ -262,18 +262,25 @@ describe('useStationAlarm', () => {
   });
 
   describe('station-passed notification', () => {
+    const directTarget = {
+      nextStationName: '강남',
+      stopsToNextStation: 3,
+      isTransfer: false,
+      stopsToDestination: 3,
+    };
+
     it('fires when nearest station changes', () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
-      mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 3 });
+      mockResolveNextTarget.mockReturnValue(directTarget);
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
-      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', 3);
+      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', directTarget);
     });
 
     it('does not fire when nearest station is unchanged', () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
-      mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 3 });
+      mockResolveNextTarget.mockReturnValue(directTarget);
       const { rerender } = renderHook(
         ({ s }: { s: Station }) =>
           useStationAlarm(defaultInputs({ route, destination, nearestStation: s })),
@@ -289,7 +296,7 @@ describe('useStationAlarm', () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station1 = makeStation('S1', '역삼');
       const station2 = makeStation('S2', '선릉');
-      mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 3 });
+      mockResolveNextTarget.mockReturnValue(directTarget);
       const { rerender } = renderHook(
         ({ s }: { s: Station }) =>
           useStationAlarm(defaultInputs({ route, destination, nearestStation: s })),
@@ -297,10 +304,16 @@ describe('useStationAlarm', () => {
       );
       expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
 
-      mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 2 });
+      const nextTarget = {
+        nextStationName: '강남',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      };
+      mockResolveNextTarget.mockReturnValue(nextTarget);
       rerender({ s: station2 });
       expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(2);
-      expect(mockSendStationPassedNotification).toHaveBeenLastCalledWith('선릉', '강남', 2);
+      expect(mockSendStationPassedNotification).toHaveBeenLastCalledWith('선릉', '강남', nextTarget);
     });
 
     it('does not fire when nearestStation is null', () => {
@@ -322,7 +335,7 @@ describe('useStationAlarm', () => {
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('passes null stopsRemaining when resolveNextTarget returns null', () => {
+    it('passes null target when resolveNextTarget returns null', () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(null);
@@ -334,7 +347,7 @@ describe('useStationAlarm', () => {
       mockSendStationPassedNotification.mockRejectedValueOnce(new Error('알림 실패'));
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
-      mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 3 });
+      mockResolveNextTarget.mockReturnValue(directTarget);
       expect(() =>
         renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station }))),
       ).not.toThrow();
@@ -358,7 +371,12 @@ describe('useStationAlarm', () => {
         lat: 37.5,
         lng: 127.0,
       };
-      mockResolveNextTarget.mockReturnValue({ nextStationName: '시청', stopsToNextStation: 3 });
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '시청',
+        stopsToNextStation: 3,
+        isTransfer: true,
+        stopsToDestination: 8,
+      });
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: offRouteStation })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
@@ -381,7 +399,13 @@ describe('useStationAlarm', () => {
         lng: 127.0,
       };
       const onRouteStation = makeStation('S1', '서울'); // line '2' (toLine)
-      mockResolveNextTarget.mockReturnValue({ nextStationName: '시청', stopsToNextStation: 2 });
+      const transferTarget = {
+        nextStationName: '시청',
+        stopsToNextStation: 2,
+        isTransfer: true,
+        stopsToDestination: 7,
+      };
+      mockResolveNextTarget.mockReturnValue(transferTarget);
 
       const { rerender } = renderHook(
         ({ s }: { s: Station }) =>
@@ -392,7 +416,7 @@ describe('useStationAlarm', () => {
 
       rerender({ s: onRouteStation });
       expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
-      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('서울', '강남', 2);
+      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('서울', '강남', transferTarget);
     });
   });
 });
