@@ -9,7 +9,7 @@ import { formatArrivalTime } from '../../src/utils/formatTime';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
-import { findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route, type RouteCandidate } from '../../src/utils/stationRoute';
+import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route, type CategorizedRoute, type RoutePreference } from '../../src/utils/stationRoute';
 import { EditorialTimeline } from '../../src/components/EditorialTimeline';
 import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/journeyAdapter';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
@@ -58,9 +58,10 @@ export default function HomeScreen() {
   const prevDestIdRef = useRef<string | null>(null);
   const routePreference = useAppStore((s) => s.routePreference);
   const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
-  const [candidates, setCandidates] = useState<RouteCandidate[]>([]);
-  const [selectedIdx, setSelectedIdx] = useState(0);
-  const route: Route = candidates[selectedIdx]?.route ?? null;
+  const [categorized, setCategorized] = useState<CategorizedRoute[]>([]);
+  const [selectedKey, setSelectedKey] = useState<RoutePreference>(routePreference);
+  const route: Route =
+    categorized.find((r) => r.category.key === selectedKey)?.candidate.route ?? null;
   const isFav = effectiveOrigin ? favorites.some((f) => f.id === effectiveOrigin.id) : false;
 
   // 환승역이면 모든 호선 변형에서 경로 계산 → 출발역 환승 없는 최적 경로 자동 선택
@@ -69,26 +70,23 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!effectiveOrigin || !destination) {
-      setCandidates([]);
-      setSelectedIdx(0);
+      setCategorized([]);
       AsyncStorage.removeItem(ROUTE_KEY).catch(() => {});
       return;
     }
     const interactionStart = performance.now();
     const interaction = InteractionManager.runAfterInteractions(() => {
-      let allResults: RouteCandidate[] = [];
-      for (const origin of originVariants) {
-        const routes = findRoutes(origin.id, destination.id);
-        allResults.push(...routes);
-      }
-      allResults.sort((a, b) => a.travelMinutes - b.travelMinutes || a.transferCount - b.transferCount);
+      const result = findRouteCandidatesByCategory(
+        originVariants.map((o) => o.id),
+        destination.id,
+      );
       const total = performance.now() - interactionStart;
       logger.debug(`경로 계산 전체 (InteractionManager 포함): ${total.toFixed(2)}ms`);
-      setCandidates(allResults);
-      const picked = pickRouteByPreference(allResults, routePreference);
-      setSelectedIdx(picked ? allResults.indexOf(picked) : 0);
-      if (picked) {
-        AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(picked.route)).catch(() => {});
+      setCategorized(result);
+      const preferred = result.find((r) => r.category.key === routePreference) ?? result[0];
+      if (preferred) {
+        setSelectedKey(preferred.category.key);
+        AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(preferred.candidate.route)).catch(() => {});
       } else {
         AsyncStorage.removeItem(ROUTE_KEY).catch(() => {});
       }
@@ -347,26 +345,25 @@ export default function HomeScreen() {
                       )}
                     </View>
                   </View>
-                  {candidates.length > 1 && (
+                  {categorized.length > 0 && (
                     <View style={[styles.routePillGroup, { backgroundColor: colors.hair }]} testID="route-segment-control">
-                      {candidates.map((c, i) => {
-                        const active = i === selectedIdx;
-                        const label = c.transferCount <= 1 ? '최적경로' : '최소환승';
+                      {categorized.map(({ category, candidate }) => {
+                        const active = category.key === selectedKey;
                         return (
                           <Pressable
-                            key={i}
-                            testID={`route-tab-${i}`}
+                            key={category.key}
+                            testID={`route-tab-${category.key}`}
                             style={[styles.routePill, active && { backgroundColor: colors.accent }]}
                             onPress={() => {
-                              setSelectedIdx(i);
-                              AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(c.route)).catch(() => {});
+                              setSelectedKey(category.key);
+                              AsyncStorage.setItem(ROUTE_KEY, JSON.stringify(candidate.route)).catch(() => {});
                             }}
                           >
                             <Text style={[styles.routePillText, { color: active ? colors.onAccent : colors.muted }]}>
-                              {label}
+                              {category.label}
                             </Text>
                             <Text style={[styles.routePillSub, { color: active ? colors.onAccent : colors.subtle }]}>
-                              {c.travelMinutes}분 · {c.transferCount}환승
+                              {candidate.travelMinutes}분 · {candidate.transferCount}환승
                             </Text>
                           </Pressable>
                         );
