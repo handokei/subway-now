@@ -898,8 +898,8 @@ describe('updateRouteFromPosition', () => {
 });
 
 describe('isStationOnRoute', () => {
-  const makeStation = (id: string, line: Station['line']): Station => ({
-    id,
+  const makeStation = (line: Station['line']): Station => ({
+    id: 'X',
     name: 'X',
     line,
     lineColor: '#fff',
@@ -907,70 +907,48 @@ describe('isStationOnRoute', () => {
     lng: 0,
   });
 
+  const transferRoute: TransferRoute = {
+    type: 'transfer',
+    transferName: '동대문',
+    fromLine: '1',
+    toLine: '4',
+    stopsToTransfer: 3,
+    stopsFromTransfer: 2,
+  };
+
+  const multiTransferRoute: MultiTransferRoute = {
+    type: 'multi-transfer',
+    transfers: [
+      { transferName: '동대문', fromLine: '1', toLine: '4', stopsToTransfer: 2 },
+      { transferName: '충무로', fromLine: '4', toLine: '3', stopsToTransfer: 3 },
+    ],
+    stopsAfterLastTransfer: 5,
+  };
+
   it('direct route는 항상 true (fromLine 정보 없어 검증 불가)', () => {
     const route: DirectRoute = { type: 'direct', stops: 3 };
-    expect(isStationOnRoute(makeStation('A', '4'), route)).toBe(true);
+    expect(isStationOnRoute(makeStation('4'), route)).toBe(true);
   });
 
   it('transfer route — fromLine 일치 시 true', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
-      transferName: '동대문',
-      fromLine: '1',
-      toLine: '4',
-      stopsToTransfer: 3,
-      stopsFromTransfer: 2,
-    };
-    expect(isStationOnRoute(makeStation('A', '1'), route)).toBe(true);
+    expect(isStationOnRoute(makeStation('1'), transferRoute)).toBe(true);
   });
 
   it('transfer route — toLine 일치 시 true', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
-      transferName: '동대문',
-      fromLine: '1',
-      toLine: '4',
-      stopsToTransfer: 3,
-      stopsFromTransfer: 2,
-    };
-    expect(isStationOnRoute(makeStation('A', '4'), route)).toBe(true);
+    expect(isStationOnRoute(makeStation('4'), transferRoute)).toBe(true);
   });
 
   it('transfer route — 둘 다 아니면 false', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
-      transferName: '동대문',
-      fromLine: '1',
-      toLine: '4',
-      stopsToTransfer: 3,
-      stopsFromTransfer: 2,
-    };
-    expect(isStationOnRoute(makeStation('A', '7'), route)).toBe(false);
+    expect(isStationOnRoute(makeStation('7'), transferRoute)).toBe(false);
   });
 
   it('multi-transfer route — 환승 구간 어느 노선이든 일치 시 true', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
-      transfers: [
-        { transferName: '동대문', fromLine: '1', toLine: '4', stopsToTransfer: 2 },
-        { transferName: '충무로', fromLine: '4', toLine: '3', stopsToTransfer: 3 },
-      ],
-      stopsAfterLastTransfer: 5,
-    };
-    expect(isStationOnRoute(makeStation('A', '1'), route)).toBe(true);
-    expect(isStationOnRoute(makeStation('A', '4'), route)).toBe(true);
-    expect(isStationOnRoute(makeStation('A', '3'), route)).toBe(true);
+    expect(isStationOnRoute(makeStation('1'), multiTransferRoute)).toBe(true);
+    expect(isStationOnRoute(makeStation('4'), multiTransferRoute)).toBe(true);
+    expect(isStationOnRoute(makeStation('3'), multiTransferRoute)).toBe(true);
   });
 
   it('multi-transfer route — 어느 환승 구간에도 없으면 false', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
-      transfers: [
-        { transferName: '동대문', fromLine: '1', toLine: '4', stopsToTransfer: 2 },
-        { transferName: '충무로', fromLine: '4', toLine: '3', stopsToTransfer: 3 },
-      ],
-      stopsAfterLastTransfer: 5,
-    };
-    expect(isStationOnRoute(makeStation('A', '7'), route)).toBe(false);
+    expect(isStationOnRoute(makeStation('7'), multiTransferRoute)).toBe(false);
   });
 });

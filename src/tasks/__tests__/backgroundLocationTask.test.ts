@@ -506,15 +506,18 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   // ── stale 위치 / 저정확도 게이트 ──
 
-  it('stale 위치(timestamp 30초 초과)는 무시한다', async () => {
-    await taskCallback({
-      data: { locations: [makeLocation(37.498, 127.028, { ageMs: 60_000 })] },
-      error: null,
-    });
+  const runWithLocation = (location: unknown) =>
+    taskCallback({ data: { locations: [location] }, error: null });
 
+  const expectGateBlocked = () => {
     expect(AsyncStorage.getItem).not.toHaveBeenCalled();
     expect(mockFindNearestStation).not.toHaveBeenCalled();
     expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+  };
+
+  it('stale 위치(timestamp 30초 초과)는 무시한다', async () => {
+    await runWithLocation(makeLocation(37.498, 127.028, { ageMs: 60_000 }));
+    expectGateBlocked();
   });
 
   it('timestamp가 없는 위치는 무시한다', async () => {
@@ -530,24 +533,13 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       },
       // timestamp 누락
     };
-
-    await taskCallback({
-      data: { locations: [noTsLocation] },
-      error: null,
-    });
-
-    expect(AsyncStorage.getItem).not.toHaveBeenCalled();
+    await runWithLocation(noTsLocation);
+    expectGateBlocked();
   });
 
   it('저정확도 위치(accuracy 150m 초과)는 무시한다', async () => {
-    await taskCallback({
-      data: { locations: [makeLocation(37.498, 127.028, { accuracy: 200 })] },
-      error: null,
-    });
-
-    expect(AsyncStorage.getItem).not.toHaveBeenCalled();
-    expect(mockFindNearestStation).not.toHaveBeenCalled();
-    expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    await runWithLocation(makeLocation(37.498, 127.028, { accuracy: 200 }));
+    expectGateBlocked();
   });
 
   it('accuracy가 임계값(150m) 이내면 통과한다', async () => {
