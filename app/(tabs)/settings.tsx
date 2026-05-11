@@ -1,16 +1,17 @@
 import { useEffect } from 'react';
 import { Alert, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useTranslation } from 'react-i18next';
 import { useAppStore, type ThemeMode } from '../../src/store/useAppStore';
 import { ROUTE_CATEGORIES } from '../../src/utils/stationRoute';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 
-const THEME_OPTIONS: { value: ThemeMode; label: string }[] = [
-  { value: 'auto', label: '자동' },
-  { value: 'light', label: '라이트' },
-  { value: 'dark', label: '다크' },
-];
+const THEME_OPTIONS = [
+  { value: 'auto', labelKey: 'settings.themeAuto' },
+  { value: 'light', labelKey: 'settings.themeLight' },
+  { value: 'dark', labelKey: 'settings.themeDark' },
+] as const satisfies readonly { value: ThemeMode; labelKey: string }[];
 
 export default function SettingsScreen() {
   const sleepMode = useAppStore((s) => s.sleepMode);
@@ -26,6 +27,7 @@ export default function SettingsScreen() {
   const setRoutePreference = useAppStore((s) => s.setRoutePreference);
   const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
   const { colors } = useTheme();
+  const { t } = useTranslation();
   const showSleepModeGuide = useSleepModeGuide();
 
   useEffect(() => {
@@ -37,23 +39,23 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
-      <Text style={[styles.header, { color: colors.muted }]}>설정</Text>
+      <Text style={[styles.header, { color: colors.muted }]}>{t('settings.title')}</Text>
 
       {/* 테마 */}
       <View style={[styles.card, { backgroundColor: colors.card }]}>
-        <Text style={[styles.sectionTitle, { color: colors.muted }]}>테마</Text>
+        <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.themeSection')}</Text>
 
         <View style={styles.settingRow}>
           <View style={styles.settingInfo}>
-            <Text style={[styles.settingLabel, { color: colors.ink }]}>다크 모드</Text>
+            <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.themeLabel')}</Text>
             <Text style={[styles.settingDesc, { color: colors.muted }]}>
-              자동은 기기 설정을 따릅니다
+              {t('settings.themeDescription')}
             </Text>
           </View>
         </View>
 
         <View style={[styles.segmentGroup, { backgroundColor: colors.hair }]} testID="theme-segment">
-          {THEME_OPTIONS.map(({ value, label }) => {
+          {THEME_OPTIONS.map(({ value, labelKey }) => {
             const active = themeMode === value;
             return (
               <Pressable
@@ -63,7 +65,7 @@ export default function SettingsScreen() {
                 testID={`theme-${value}`}
               >
                 <Text style={[styles.segmentText, { color: active ? colors.onAccent : colors.muted }]}>
-                  {label}
+                  {t(labelKey)}
                 </Text>
               </Pressable>
             );
@@ -73,13 +75,13 @@ export default function SettingsScreen() {
 
       {/* 경로 */}
       <View style={[styles.card, { backgroundColor: colors.card }]}>
-        <Text style={[styles.sectionTitle, { color: colors.muted }]}>경로</Text>
+        <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.routeSection')}</Text>
 
         <View style={styles.settingRow}>
           <View style={styles.settingInfo}>
-            <Text style={[styles.settingLabel, { color: colors.ink }]}>경로 설정</Text>
+            <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.routePreferenceLabel')}</Text>
             <Text style={[styles.settingDesc, { color: colors.muted }]}>
-              기본 경로 탐색 방식을 선택합니다
+              {t('settings.routePreferenceDescription')}
             </Text>
           </View>
         </View>
@@ -95,7 +97,7 @@ export default function SettingsScreen() {
                 testID={`route-${category.key}`}
               >
                 <Text style={[styles.segmentText, { color: active ? colors.onAccent : colors.muted }]}>
-                  {category.label}
+                  {t(`routes.${category.key}`)}
                 </Text>
               </Pressable>
             );
@@ -105,13 +107,13 @@ export default function SettingsScreen() {
 
       {/* 알람 */}
       <View style={[styles.card, { backgroundColor: colors.card }]}>
-        <Text style={[styles.sectionTitle, { color: colors.muted }]}>알람</Text>
+        <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.alarmSection')}</Text>
 
         <View style={styles.settingRow}>
           <View style={styles.settingInfo}>
-            <Text style={[styles.settingLabel, { color: colors.ink }]}>취침 모드</Text>
+            <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.sleepModeLabel')}</Text>
             <Text style={[styles.settingDesc, { color: colors.muted }]}>
-              이어폰 연결 시 기상 알람음으로 울립니다
+              {t('settings.sleepModeDescription')}
             </Text>
           </View>
           <Switch
@@ -131,9 +133,9 @@ export default function SettingsScreen() {
 
         <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: colors.hair }]}>
           <View style={styles.settingInfo}>
-            <Text style={[styles.settingLabel, { color: colors.ink }]}>스피커 출력 허용</Text>
+            <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.speakerOutputLabel')}</Text>
             <Text style={[styles.settingDesc, { color: colors.muted }]}>
-              이어폰 미연결 시에도 알람음을 스피커로 재생합니다
+              {t('settings.speakerOutputDescription')}
             </Text>
           </View>
           <Switch
@@ -141,11 +143,11 @@ export default function SettingsScreen() {
             onValueChange={(value) => {
               if (!value) {
                 Alert.alert(
-                  '스피커 출력 끄기',
-                  '스피커 출력을 끄면 이어폰이 연결되지 않은 상태에서 진동만 울립니다. 계속하시겠습니까?',
+                  t('settings.speakerOffTitle'),
+                  t('settings.speakerOffMessage'),
                   [
-                    { text: '취소', style: 'cancel' },
-                    { text: '끄기', style: 'destructive', onPress: () => setAllowSpeaker(false) },
+                    { text: t('common.cancel'), style: 'cancel' },
+                    { text: t('settings.speakerOffConfirm'), style: 'destructive', onPress: () => setAllowSpeaker(false) },
                   ],
                 );
               } else {

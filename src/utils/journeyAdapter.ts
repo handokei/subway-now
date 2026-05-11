@@ -1,3 +1,4 @@
+import i18next from 'i18next';
 import type { JourneyDisplay } from './stationRoute';
 import type { ArrivalInfo } from '../api/arrivalApi';
 import type { NearestStationResult, LineNumber } from '../types/station';
@@ -45,13 +46,14 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
       });
     }
 
+    // stopsFromPrev 동적 포맷("N정거장")은 Phase 3에서 i18n 처리 예정
     if (!isLast) {
       stops.push({
         station: seg.toName,
         line: segments[i + 1].line,
         stopsFromPrev: `${seg.stops}정거장`,
         mark: 'transfer',
-        note: '환승',
+        note: i18next.t('journey.transferNote'),
       });
     } else {
       stops.push({
@@ -59,7 +61,7 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
         line: seg.line,
         stopsFromPrev: `${seg.stops}정거장`,
         mark: 'dest',
-        note: '도착',
+        note: i18next.t('journey.arrivalNote'),
       });
     }
   }
@@ -73,6 +75,7 @@ export function arrivalInfoToArrivalTrain(
   line: LineNumber,
 ): ArrivalTrain[] {
   const now = Date.now();
+  // direction 동적 포맷("X 방면")은 Phase 3에서 i18n 처리 예정
   return items.map((item) => ({
     direction: item.destination ? `${item.destination} 방면` : direction,
     line,

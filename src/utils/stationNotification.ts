@@ -1,5 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import i18next from 'i18next';
 import { Station } from '../types/station';
 import { LINE_COLORS, LINE_NAMES } from '../constants/lineColors';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
@@ -54,13 +55,13 @@ export function setupNotificationHandler(): void {
 export async function initStationNotification(): Promise<void> {
   if (Platform.OS === 'android') {
     await Notifications.setNotificationChannelAsync('station', {
-      name: '현재 역',
+      name: i18next.t('notifications.channelStation'),
       importance: Notifications.AndroidImportance.HIGH,
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
     });
     await Notifications.deleteNotificationChannelAsync(ALARM_CHANNEL_ID).catch(() => {});
     await Notifications.setNotificationChannelAsync(ALARM_CHANNEL_ID, {
-      name: '하차/환승 알림',
+      name: i18next.t('notifications.channelTransferAlarm'),
       importance: Notifications.AndroidImportance.MAX,
       sound: 'alarm.wav',
       enableVibrate: true,
@@ -70,7 +71,7 @@ export async function initStationNotification(): Promise<void> {
     });
     await Notifications.deleteNotificationChannelAsync(ALARM_SILENT_CHANNEL_ID).catch(() => {});
     await Notifications.setNotificationChannelAsync(ALARM_SILENT_CHANNEL_ID, {
-      name: '하차/환승 알림 (무음)',
+      name: i18next.t('notifications.channelTransferAlarmSilent'),
       importance: Notifications.AndroidImportance.MAX,
       sound: null,
       enableVibrate: true,
@@ -79,7 +80,7 @@ export async function initStationNotification(): Promise<void> {
       bypassDnd: true,
     });
     await Notifications.setNotificationChannelAsync(STATION_PASSED_CHANNEL_ID, {
-      name: '역 통과 알림',
+      name: i18next.t('notifications.channelStationPass'),
       importance: Notifications.AndroidImportance.DEFAULT,
       lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
     });
@@ -274,15 +275,16 @@ export async function sendStationPassedNotification(
 
 import type { AlarmPhaseId } from './alarmPhases';
 
+// 본문(body)의 동적 보간 부분은 Phase 3(#205+)에서 i18n 처리 예정
 const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTransfer: boolean) => { title: string; body: string }> = {
   early: (stationName, isTransfer) => ({
-    title: isTransfer ? '환승 알림' : '하차 알림',
+    title: i18next.t(isTransfer ? 'notifications.transferEarlyTitle' : 'notifications.arrivalEarlyTitle'),
     body: isTransfer
       ? `다음 역 ${stationName}에서 환승하세요!`
       : `다음 역 ${stationName}에서 내리세요!`,
   }),
   imminent: (stationName, isTransfer) => ({
-    title: isTransfer ? '환승 임박' : '도착 임박',
+    title: i18next.t(isTransfer ? 'notifications.transferImminentTitle' : 'notifications.arrivalImminentTitle'),
     body: isTransfer
       ? `곧 ${stationName}에 도착합니다. 환승 준비하세요!`
       : `곧 ${stationName}에 도착합니다. 하차 준비하세요!`,

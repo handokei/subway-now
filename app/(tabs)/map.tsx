@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTranslation } from 'react-i18next';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { StationMap } from '../../src/components/StationMap';
 import { LocationStateView } from '../../src/components/LocationStateView';
@@ -23,6 +24,7 @@ export default function MapScreen() {
   const setRecentDestination = useAppStore((s) => s.setRecentDestination);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
   const insets = useSafeAreaInsets();
+  const { t } = useTranslation();
 
   if (permissionDenied || loading || !userLocation || error) {
     return (
@@ -41,10 +43,10 @@ export default function MapScreen() {
       {(customOrigin || destination) && (
         <View style={[styles.statusBar, { backgroundColor: colors.card, borderBottomColor: colors.hair }]} testID="status-bar">
           {customOrigin && (
-            <StatusChip label="출발" name={customOrigin.name} onClear={() => setCustomOrigin(null)} testID="clear-origin" />
+            <StatusChip label={t('map.originBadge')} name={customOrigin.name} onClear={() => setCustomOrigin(null)} testID="clear-origin" />
           )}
           {destination && (
-            <StatusChip label="도착" name={destination.name} onClear={() => setDestination(null)} testID="clear-destination" />
+            <StatusChip label={t('map.destinationBadge')} name={destination.name} onClear={() => setDestination(null)} testID="clear-destination" />
           )}
         </View>
       )}
@@ -79,7 +81,7 @@ export default function MapScreen() {
               }}
               testID="set-origin-button"
             >
-              <Text style={[styles.selectionButtonText, { color: colors.onAccent }]}>출발역으로 설정</Text>
+              <Text style={[styles.selectionButtonText, { color: colors.onAccent }]}>{t('map.setAsOrigin')}</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.selectionButton, { borderWidth: 1, borderColor: colors.accent }]}
@@ -90,7 +92,7 @@ export default function MapScreen() {
               }}
               testID="set-destination-button"
             >
-              <Text style={[styles.selectionButtonText, { color: colors.accent }]}>도착역으로 설정</Text>
+              <Text style={[styles.selectionButtonText, { color: colors.accent }]}>{t('map.setAsDestination')}</Text>
             </TouchableOpacity>
           </View>
         </View>

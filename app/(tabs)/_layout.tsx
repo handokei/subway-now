@@ -1,9 +1,11 @@
 import { Tabs } from 'expo-router';
 import { Text } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useTheme } from '../../src/theme';
 
 export default function TabsLayout() {
   const { colors } = useTheme();
+  const { t } = useTranslation();
   return (
     <Tabs
       screenOptions={{
@@ -19,28 +21,28 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: '현재 역',
+          title: t('tabs.current'),
           tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🚇</Text>,
         }}
       />
       <Tabs.Screen
         name="map"
         options={{
-          title: '지도',
+          title: t('tabs.map'),
           tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>🗺️</Text>,
         }}
       />
       <Tabs.Screen
         name="favorites"
         options={{
-          title: '즐겨찾기',
+          title: t('tabs.favorites'),
           tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>⭐</Text>,
         }}
       />
       <Tabs.Screen
         name="settings"
         options={{
-          title: '설정',
+          title: t('tabs.settings'),
           tabBarIcon: ({ color }) => <Text style={{ fontSize: 20, color }}>⚙️</Text>,
         }}
       />
