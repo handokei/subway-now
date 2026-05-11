@@ -41,6 +41,15 @@ jest.mock('../notificationState', () => ({
   setLastNotifiedStationId: (...args: unknown[]) => mockSetLastNotifiedStationId(...args),
 }));
 
+const mockLogFiredAlarm = jest.fn();
+const mockLogFiredStationPassed = jest.fn();
+const mockLogSuppressedDedupStation = jest.fn();
+jest.mock('../alarmLog', () => ({
+  logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
+  logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
+  logSuppressedDedupStation: (...args: unknown[]) => mockLogSuppressedDedupStation(...args),
+}));
+
 import { processLocationUpdate, resolveNextTarget } from '../stationPipeline';
 
 const mockStation: Station = {
@@ -76,6 +85,7 @@ function call(overrides: Partial<Parameters<typeof processLocationUpdate>[0]> = 
     destination: mockDestination,
     firedAlarms: new Set(),
     sleepMode: false,
+    source: 'bg',
     ...overrides,
   });
 }
@@ -380,6 +390,51 @@ describe('processLocationUpdate', () => {
 
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+  });
+
+  // ── 알람 로그 적재 (B2 인프라) ──
+
+  describe('알람 로그 적재', () => {
+    it('알람 발사 시 logFiredAlarm(source, event)를 호출한다', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+      await call();
+
+      expect(mockLogFiredAlarm).toHaveBeenCalledWith('bg', mockAlarmEvent);
+    });
+
+    it('역 통과 알림 발사 시 logFiredStationPassed(source, station)를 호출한다', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+
+      await call();
+
+      expect(mockLogFiredStationPassed).toHaveBeenCalledWith('bg', mockStation);
+    });
+
+    it('lastNotifiedStationId 일치로 skip되면 logSuppressedDedupStation을 호출한다', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetLastNotifiedStationId.mockResolvedValue(mockStation.id);
+
+      await call();
+
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockLogSuppressedDedupStation).toHaveBeenCalledWith('bg', mockStation);
+    });
+
+    it('source 인자가 fg면 fg로 전파된다', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+      await call({ source: 'fg' });
+
+      expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', mockAlarmEvent);
+    });
   });
 });
 

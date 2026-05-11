@@ -135,6 +135,7 @@ async function runFgPipelineAt(station: typeof fakeStation) {
     destination: fakeDestination,
     firedAlarms,
     sleepMode: false,
+    source: 'fg',
   });
   // FG의 useStationAlarm 훅이 알람 발사 후 FIRED_ALARMS_KEY를 갱신하는 동작을 시뮬레이션.
   // 이 round-trip이 BG와의 dedup 단일 출처가 된다.

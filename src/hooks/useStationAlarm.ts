@@ -7,6 +7,11 @@ import { distanceMetersBetween, estimateEtaSeconds } from '../utils/stationEta';
 import { resolveNextTarget } from '../utils/stationPipeline';
 import { sendAlarmNotification, sendStationPassedNotification } from '../utils/stationNotification';
 import { getLastNotifiedStationId, setLastNotifiedStationId } from '../utils/notificationState';
+import {
+  logFiredAlarm,
+  logFiredStationPassed,
+  logSuppressedDedupStation,
+} from '../utils/alarmLog';
 import { useAppStore } from '../store/useAppStore';
 import { createLogger } from '../utils/logger';
 
@@ -76,6 +81,7 @@ export function useStationAlarm({
       sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current).catch((e) =>
         logger.error('알람 알림 실패:', e),
       );
+      logFiredAlarm('fg', event);
     }
 
     // 역 변경 감지 → per-station 알림. 단, 경로상 노선의 역만 (false alarm 방지)
@@ -92,7 +98,10 @@ export function useStationAlarm({
         try {
           const lastId = await getLastNotifiedStationId();
           if (cancelled) return;
-          if (candidateStation.id === lastId) return;
+          if (candidateStation.id === lastId) {
+            logSuppressedDedupStation('fg', candidateStation);
+            return;
+          }
           const target = resolveNextTarget(capturedRoute, capturedDestinationName);
           // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
           await sendStationPassedNotification(
@@ -102,6 +111,7 @@ export function useStationAlarm({
           );
           if (cancelled) return;
           await setLastNotifiedStationId(candidateStation.id);
+          logFiredStationPassed('fg', candidateStation);
         } catch (e) {
           logger.error('역 통과 알림 실패:', e);
         }
