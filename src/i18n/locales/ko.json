@@ -141,7 +141,6 @@
     "minutesAndTransfers_one": "{{min}}분 · {{count}}환승",
     "minutesAndTransfers_other": "{{min}}분 · {{count}}환승",
     "directOnly": "{{min}}분 · 직통",
-    "directionToward": "{{name}} 방면",
     "currentStation": "{{name}}역",
     "atCurrentStation": "현재 {{name}}역",
     "approximateDistance": "약 {{m}}m",
@@ -182,5 +181,10 @@
     "summaryWithTransfer_other": "→ {{destination}} · {{count}}역 후 {{name}} 환승{{etaSuffix}}",
     "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
     "etaSuffix": " · 약 {{min}}분"
+  },
+  "direction": {
+    "boundFor": "{{name}}행",
+    "innerLoop": "내선순환",
+    "outerLoop": "외선순환"
   }
 }

@@ -141,7 +141,6 @@
     "minutesAndTransfers_one": "{{min}}m · {{count}} transfer",
     "minutesAndTransfers_other": "{{min}}m · {{count}} transfers",
     "directOnly": "{{min}}m · Direct",
-    "directionToward": "Toward {{name}}",
     "currentStation": "{{name}}",
     "atCurrentStation": "Currently at {{name}}",
     "approximateDistance": "~{{m}}m",
@@ -186,5 +185,10 @@
     "summaryWithTransfer_other": "→ {{destination}} · Transfer at {{name}} in {{count}} stops{{etaSuffix}}",
     "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
     "etaSuffix": " · ~{{min}} min"
+  },
+  "direction": {
+    "boundFor": "Bound for {{name}}",
+    "innerLoop": "Inner Loop",
+    "outerLoop": "Outer Loop"
   }
 }
