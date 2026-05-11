@@ -2,6 +2,7 @@ import React from 'react';
 import { render } from '@testing-library/react-native';
 import { JourneyTimeline } from '../JourneyTimeline';
 import type { JourneyDisplay } from '../../utils/stationRoute';
+import type { LineNumber } from '../../types/station';
 
 const directJourney: JourneyDisplay = {
   segments: [
@@ -86,7 +87,7 @@ describe('JourneyTimeline', () => {
     const unknownLineJourney: JourneyDisplay = {
       segments: [
         {
-          line: 'unknown',
+          line: 'unknown' as unknown as LineNumber,
           lineColor: '#999999',
           fromName: '역A',
           toName: '역B',

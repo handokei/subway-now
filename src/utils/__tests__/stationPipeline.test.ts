@@ -66,7 +66,7 @@ const mockNearestResult: NearestStationResult = {
   distanceKm: 0.15,
 };
 
-const mockRoute: DirectRoute = { type: 'direct', stops: 3 };
+const mockRoute: DirectRoute = { type: 'direct', stops: 3, line: '2' };
 const mockAlarmEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청' };
 
 function call(overrides: Partial<Parameters<typeof processLocationUpdate>[0]> = {}) {
@@ -234,7 +234,7 @@ describe('processLocationUpdate', () => {
   });
 
   it('falls back to findRoute when storedRoute exists but updateRouteFromPosition returns null', async () => {
-    const storedRoute: DirectRoute = { type: 'direct', stops: 5 };
+    const storedRoute: DirectRoute = { type: 'direct', stops: 5, line: '2' };
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockUpdateRouteFromPosition.mockReturnValue(null);
     mockFindRoute.mockReturnValue(mockRoute);
@@ -246,8 +246,8 @@ describe('processLocationUpdate', () => {
   });
 
   it('uses updateRouteFromPosition result when storedRoute is provided and succeeds', async () => {
-    const storedRoute: DirectRoute = { type: 'direct', stops: 5 };
-    const updatedRoute: DirectRoute = { type: 'direct', stops: 3 };
+    const storedRoute: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+    const updatedRoute: DirectRoute = { type: 'direct', stops: 3, line: '2' };
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockUpdateRouteFromPosition.mockReturnValue(updatedRoute);
     mockCalculateStaticETA.mockReturnValue(6);
@@ -389,7 +389,7 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns destination and stops for direct route', () => {
-    const route: DirectRoute = { type: 'direct', stops: 5 };
+    const route: DirectRoute = { type: 'direct', stops: 5, line: '2' };
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '강남',
       stopsToNextStation: 5,

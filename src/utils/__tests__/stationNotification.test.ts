@@ -59,7 +59,7 @@ const mockDestination: Station = {
   lng: 127.0163,
 };
 
-const directRoute: DirectRoute = { type: 'direct', stops: 4 };
+const directRoute: DirectRoute = { type: 'direct', stops: 4, line: '1' };
 const transferRoute: TransferRoute = {
   type: 'transfer',
   transferName: '동대문',

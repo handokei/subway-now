@@ -3,6 +3,7 @@ import {
   arrivalInfoToArrivalTrain,
   nearestResultToNearest,
 } from '../journeyAdapter';
+import type { JourneyDisplay } from '../stationRoute';
 import { MOCK_JOURNEYS, makeNearestResult, makeArrivalInfo } from '../../testUtils/fixtures';
 
 describe('journeyDisplayToStops', () => {
@@ -24,7 +25,7 @@ describe('journeyDisplayToStops', () => {
   });
 
   it('should convert a multi-transfer route (three segments)', () => {
-    const journey = {
+    const journey: JourneyDisplay = {
       segments: [
         { line: '1', lineColor: '#0052A4', fromName: '서울역', toName: '시청', stops: 1 },
         { line: '2', lineColor: '#009D3E', fromName: '시청', toName: '을지로3가', stops: 2 },
@@ -41,7 +42,7 @@ describe('journeyDisplayToStops', () => {
   });
 
   it('should handle special line numbers', () => {
-    const journey = {
+    const journey: JourneyDisplay = {
       segments: [
         { line: 'airport', lineColor: '#4B81BF', fromName: '서울역', toName: '인천공항', stops: 5 },
       ],
