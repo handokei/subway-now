@@ -312,7 +312,7 @@ describe('stationNotification', () => {
     });
 
     it('alarmEvent가 있으면 alarmType과 alarmStationName이 포함된다', async () => {
-      await updateStationNotification(mockStation, 154, mockDestination, transferRoute, 12, false, { type: 'transfer', stationName: '동대문' });
+      await updateStationNotification(mockStation, 154, mockDestination, transferRoute, 12, false, { phaseId: 'early', type: 'transfer', stationName: '동대문' });
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
           alarmType: 'transfer',
@@ -322,7 +322,7 @@ describe('stationNotification', () => {
     });
 
     it('alarmEvent가 destination 타입이면 alarmType이 destination이다', async () => {
-      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { type: 'destination', stationName: '강남' });
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '강남' });
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
           alarmType: 'destination',
@@ -444,84 +444,70 @@ describe('stationNotification', () => {
   });
 
   describe('sendAlarmNotification', () => {
-    it('destination 타입이면 하차 알림을 보낸다', async () => {
+    const earlyDest = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남' };
+    const earlyTransfer = { phaseId: 'early' as const, type: 'transfer' as const, stationName: '시청' };
+    const imminentDest = { phaseId: 'imminent' as const, type: 'destination' as const, stationName: '강남' };
+    const imminentTransfer = { phaseId: 'imminent' as const, type: 'transfer' as const, stationName: '시청' };
+
+    it('early destination이면 하차 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification('destination', '강남');
+      await sendAlarmNotification(earlyDest);
       expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { interruptionLevel: 'timeSensitive' });
       expect(mockVibrateAlarm).toHaveBeenCalledWith(false);
     });
 
-    it('transfer 타입이면 환승 알림을 보낸다', async () => {
+    it('early transfer이면 환승 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification('transfer', '시청');
+      await sendAlarmNotification(earlyTransfer);
       expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!', { interruptionLevel: 'timeSensitive' });
-      expect(mockVibrateAlarm).toHaveBeenCalledWith(false);
     });
 
-    it('sleepMode가 true이면 playAlarmWithRouting에 true를 전달한다', async () => {
+    it('sleepMode가 true이면 vibrateAlarm에 true를 전달한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification('destination', '강남', true);
+      await sendAlarmNotification(earlyDest, true);
       expect(mockVibrateAlarm).toHaveBeenCalledWith(true);
     });
 
     it('Android에서는 channelId와 priority MAX가 포함된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
-      await sendAlarmNotification('destination', '강남');
+      await sendAlarmNotification(earlyDest);
       expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { channelId: 'station-alarm', priority: 'max' });
     });
 
     it('dismiss 실패해도 schedule은 호출된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       (Notifications.dismissNotificationAsync as jest.Mock).mockRejectedValueOnce(new Error('없음'));
-      await sendAlarmNotification('destination', '강남');
+      await sendAlarmNotification(earlyDest);
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
     });
 
-    it('timeBased destination이면 도착 임박 알림을 보낸다', async () => {
+    it('imminent destination이면 도착 임박 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification('destination', '강남', false, true);
+      await sendAlarmNotification(imminentDest);
       expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!', { interruptionLevel: 'timeSensitive' });
     });
 
-    it('timeBased transfer이면 환승 임박 알림을 보낸다', async () => {
+    it('imminent transfer이면 환승 임박 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification('transfer', '시청', false, true);
+      await sendAlarmNotification(imminentTransfer);
       expectAlarmNotification('환승 임박', '곧 시청에 도착합니다. 환승 준비하세요!', { interruptionLevel: 'timeSensitive' });
     });
 
-    it('timeBased + sleepMode이면 playAlarmWithRouting에 true를 전달한다', async () => {
+    it('imminent + sleepMode이면 vibrateAlarm에 true를 전달한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification('destination', '강남', true, true);
+      await sendAlarmNotification(imminentDest, true);
       expect(mockVibrateAlarm).toHaveBeenCalledWith(true);
     });
 
-    it('timeBased + Android에서는 channelId와 priority MAX가 포함된다', async () => {
+    it('imminent + Android에서는 channelId와 priority MAX가 포함된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
-      await sendAlarmNotification('destination', '강남', false, true);
+      await sendAlarmNotification(imminentDest);
       expectAlarmNotification('도착 임박', '곧 강남에 도착합니다. 하차 준비하세요!', { channelId: 'station-alarm', priority: 'max' });
-    });
-
-    it('timeBased approaching이면 역 접근 알림을 보낸다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification('approaching', '역삼', false, true);
-      expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { interruptionLevel: 'timeSensitive' });
-    });
-
-    it('timeBased approaching + Android에서는 channelId와 priority MAX가 포함된다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'android');
-      await sendAlarmNotification('approaching', '역삼', false, true);
-      expectAlarmNotification('역 접근', '곧 역삼에 도착합니다.', { channelId: 'station-alarm', priority: 'max' });
-    });
-
-    it('vibrateAlarm을 호출한다', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification('destination', '강남');
-      expect(mockVibrateAlarm).toHaveBeenCalledWith(false);
     });
 
     it('allowSpeaker=false이면 iOS에서 sound를 false로 설정한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendAlarmNotification('destination', '강남', false, false, false);
+      await sendAlarmNotification(earlyDest, false, false);
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-alarm',
         content: { title: '하차 알림', body: '다음 역 강남에서 내리세요!', sound: false, interruptionLevel: 'timeSensitive' },
@@ -531,7 +517,7 @@ describe('stationNotification', () => {
 
     it('allowSpeaker=false이면 Android에서 무음 채널을 사용한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
-      await sendAlarmNotification('destination', '강남', false, false, false);
+      await sendAlarmNotification(earlyDest, false, false);
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-alarm',
         content: { title: '하차 알림', body: '다음 역 강남에서 내리세요!', sound: false, channelId: 'station-alarm-silent', priority: 'max' },

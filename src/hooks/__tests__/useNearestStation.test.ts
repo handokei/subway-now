@@ -14,7 +14,7 @@ jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) =>
 });
 
 const mockSubscription = { remove: jest.fn() };
-let watchCallback: ((location: { coords: { latitude: number; longitude: number } }) => void) | null = null;
+let watchCallback: ((location: { coords: { latitude: number; longitude: number; speed?: number | null } }) => void) | null = null;
 
 const mockGranted = () => {
   (Location.requestForegroundPermissionsAsync as jest.Mock).mockResolvedValue({
@@ -44,9 +44,9 @@ const mockLocation = (lat: number, lng: number) => {
   });
 };
 
-const simulateGps = (lat: number, lng: number) => {
+const simulateGps = (lat: number, lng: number, speed: number | null = null) => {
   act(() => {
-    watchCallback?.({ coords: { latitude: lat, longitude: lng } });
+    watchCallback?.({ coords: { latitude: lat, longitude: lng, speed } });
   });
 };
 
@@ -102,6 +102,37 @@ describe('useNearestStation', () => {
     expect(result.current.permissionDenied).toBe(false);
     expect(result.current.error).toBeNull();
     expect(result.current.userLocation).toEqual({ lat: 37.4980, lng: 127.0277 });
+  });
+
+  it('GPS speed가 양수이면 speedMps로 노출한다', async () => {
+    mockGranted();
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, 15.5);
+
+    await waitFor(() => expect(result.current.speedMps).toBe(15.5));
+  });
+
+  it('GPS speed가 음수면 speedMps를 null로 정규화한다', async () => {
+    mockGranted();
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, -1);
+
+    await waitFor(() => expect(result.current.speedMps).toBeNull());
+  });
+
+  it('GPS speed가 null이면 speedMps도 null이다', async () => {
+    mockGranted();
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, null);
+
+    await waitFor(() => expect(result.current.result).not.toBeNull());
+    expect(result.current.speedMps).toBeNull();
   });
 
   it('500m 초과 거리에서도 가장 가까운 역을 반환한다', async () => {

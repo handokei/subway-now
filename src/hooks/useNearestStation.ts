@@ -11,6 +11,7 @@ interface UseNearestStationReturn {
   result: NearestStationResult | null;
   variants: Station[];
   userLocation: { lat: number; lng: number } | null;
+  speedMps: number | null;
   loading: boolean;
   error: string | null;
   permissionDenied: boolean;
@@ -35,6 +36,7 @@ export function useNearestStation(): UseNearestStationReturn {
   const [result, setResult] = useState<NearestStationResult | null>(null);
   const [variants, setVariants] = useState<Station[]>([]);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [speedMps, setSpeedMps] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
@@ -42,8 +44,8 @@ export function useNearestStation(): UseNearestStationReturn {
   const lastStationIdRef = useRef<string | null>(null);
   const lastDistanceRef = useRef<number>(0);
 
-  const applyLocation = useCallback((coords: { latitude: number; longitude: number }) => {
-    const { latitude, longitude } = coords;
+  const applyLocation = useCallback((coords: Location.LocationObjectCoords) => {
+    const { latitude, longitude, speed } = coords;
     const stationsResult = findNearestStations(latitude, longitude);
 
     const newId = stationsResult?.primary.id ?? null;
@@ -51,6 +53,8 @@ export function useNearestStation(): UseNearestStationReturn {
     const stationChanged = newId !== lastStationIdRef.current;
     const distanceDelta = Math.abs(newDistance - lastDistanceRef.current);
     const noStation = !stationsResult && lastStationIdRef.current !== null;
+
+    setSpeedMps(speed != null && speed >= 0 ? speed : null);
 
     if (stationChanged || distanceDelta > MIN_DISTANCE_CHANGE_KM || noStation) {
       lastStationIdRef.current = newId;
@@ -137,5 +141,5 @@ export function useNearestStation(): UseNearestStationReturn {
     };
   }, [startWatch, stopWatch]);
 
-  return { result, variants, userLocation, loading, error, permissionDenied, refresh };
+  return { result, variants, userLocation, speedMps, loading, error, permissionDenied, refresh };
 }

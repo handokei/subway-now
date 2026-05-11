@@ -272,34 +272,33 @@ export async function sendStationPassedNotification(
   notifLogger.info('역 통과 알림:', stationName, body);
 }
 
+import type { AlarmPhaseId } from './alarmPhases';
+
+const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTransfer: boolean) => { title: string; body: string }> = {
+  early: (stationName, isTransfer) => ({
+    title: isTransfer ? '환승 알림' : '하차 알림',
+    body: isTransfer
+      ? `다음 역 ${stationName}에서 환승하세요!`
+      : `다음 역 ${stationName}에서 내리세요!`,
+  }),
+  imminent: (stationName, isTransfer) => ({
+    title: isTransfer ? '환승 임박' : '도착 임박',
+    body: isTransfer
+      ? `곧 ${stationName}에 도착합니다. 환승 준비하세요!`
+      : `곧 ${stationName}에 도착합니다. 하차 준비하세요!`,
+  }),
+};
+
+function buildAlarmContent(event: AlarmEvent): { title: string; body: string } {
+  return ALARM_MESSAGE_BUILDERS[event.phaseId](event.stationName, event.type === 'transfer');
+}
+
 export async function sendAlarmNotification(
-  type: 'destination' | 'transfer' | 'approaching',
-  stationName: string,
+  event: AlarmEvent,
   sleepMode: boolean = false,
-  timeBased: boolean = false,
   allowSpeaker: boolean = true,
 ): Promise<void> {
-  let title: string;
-  let body: string;
-
-  if (timeBased) {
-    if (type === 'transfer') {
-      title = '환승 임박';
-      body = `곧 ${stationName}에 도착합니다. 환승 준비하세요!`;
-    } else if (type === 'destination') {
-      title = '도착 임박';
-      body = `곧 ${stationName}에 도착합니다. 하차 준비하세요!`;
-    } else {
-      title = '역 접근';
-      body = `곧 ${stationName}에 도착합니다.`;
-    }
-  } else {
-    const isTransfer = type === 'transfer';
-    title = isTransfer ? '환승 알림' : '하차 알림';
-    body = isTransfer
-      ? `다음 역 ${stationName}에서 환승하세요!`
-      : `다음 역 ${stationName}에서 내리세요!`;
-  }
+  const { title, body } = buildAlarmContent(event);
 
   await scheduleNotification(ALARM_NOTIFICATION_ID, {
     title,

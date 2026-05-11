@@ -1,19 +1,30 @@
 import { useEffect, useRef } from 'react';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
-import { alarmKey } from '../utils/stationAlarm';
-import { evaluateAllAlarms, resolveNextTarget } from '../utils/stationPipeline';
+import { alarmKey, evaluateAlarmPhase } from '../utils/stationAlarm';
+import { distanceMetersBetween, estimateEtaSeconds } from '../utils/stationEta';
+import { resolveNextTarget } from '../utils/stationPipeline';
 import { sendAlarmNotification, sendStationPassedNotification } from '../utils/stationNotification';
 import { useAppStore } from '../store/useAppStore';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('StationAlarm');
 
-export function useStationAlarm(
-  route: Route,
-  destinationName: string | null,
-  nearestStation: Station | null,
-): void {
+export interface UseStationAlarmInputs {
+  route: Route;
+  destination: Station | null;
+  nearestStation: Station | null;
+  userLocation: { lat: number; lng: number } | null;
+  speedMps: number | null;
+}
+
+export function useStationAlarm({
+  route,
+  destination,
+  nearestStation,
+  userLocation,
+  speedMps,
+}: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
   const prevDestRef = useRef<string | null>(null);
   const lastNotifiedStationIdRef = useRef<string | null>(null);
@@ -32,31 +43,55 @@ export function useStationAlarm(
   }, [allowSpeaker]);
 
   useEffect(() => {
+    const destinationName = destination?.name ?? null;
     if (destinationName !== prevDestRef.current) {
       firedAlarmsRef.current = new Set();
       prevDestRef.current = destinationName;
     }
 
-    if (!route || !destinationName) return;
+    if (!route || !destination) return;
 
-    const event = evaluateAllAlarms(route, destinationName, firedAlarmsRef.current);
+    let etaSeconds: number | null = null;
+    if (userLocation) {
+      const distM = distanceMetersBetween(
+        userLocation.lat,
+        userLocation.lng,
+        destination.lat,
+        destination.lng,
+      );
+      etaSeconds = estimateEtaSeconds(distM, speedMps);
+    }
+
+    const event = evaluateAlarmPhase(
+      { route, destinationName: destination.name, etaSeconds },
+      firedAlarmsRef.current,
+    );
     if (event) {
       firedAlarmsRef.current.add(alarmKey(event));
-      if (sleepModeRef.current && event.type !== 'approaching') {
-        setAlarmEvent({ type: event.type, stationName: event.stationName });
+      if (sleepModeRef.current) {
+        setAlarmEvent(event);
       }
-      sendAlarmNotification(event.type, event.stationName, sleepModeRef.current, event.timeBased ?? false, allowSpeakerRef.current).catch((e) =>
+      sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current).catch((e) =>
         logger.error('알람 알림 실패:', e),
       );
     }
 
-    // 역 변경 감지 → per-station 알림 (route + destination이 모두 있을 때만)
-    if (nearestStation && route && destinationName && nearestStation.id !== lastNotifiedStationIdRef.current) {
+    if (nearestStation && nearestStation.id !== lastNotifiedStationIdRef.current) {
       lastNotifiedStationIdRef.current = nearestStation.id;
-      const target = resolveNextTarget(route, destinationName);
+      const target = resolveNextTarget(route, destination.name);
       const stopsRemaining = target?.stopsToNextStation ?? null;
-      sendStationPassedNotification(nearestStation.name, destinationName, stopsRemaining)
+      sendStationPassedNotification(nearestStation.name, destination.name, stopsRemaining)
         .catch((e) => logger.error('역 통과 알림 실패:', e));
     }
-  }, [route, destinationName, nearestStation?.id]);
+  }, [
+    route,
+    destination?.id,
+    destination?.name,
+    destination?.lat,
+    destination?.lng,
+    nearestStation?.id,
+    userLocation?.lat,
+    userLocation?.lng,
+    speedMps,
+  ]);
 }

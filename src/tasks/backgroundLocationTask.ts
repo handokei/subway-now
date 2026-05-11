@@ -24,7 +24,8 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const latest = locations[locations.length - 1];
   if (!latest) return;
 
-  const { latitude, longitude } = latest.coords;
+  const { latitude, longitude, speed } = latest.coords;
+  const speedMps = speed != null && speed >= 0 ? speed : null;
 
   try {
     const [destJson, sleepJson, firedJson, routeJson, lastNotifiedJson, allowSpeakerJson] = await Promise.all([
@@ -60,16 +61,17 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     const firedAlarms = new Set<string>(firedJson ? JSON.parse(firedJson) : []);
     const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;
 
-    const { alarmEvent, lastNotifiedStationId: newLastId } = await processLocationUpdate(
-      latitude,
-      longitude,
+    const { alarmEvent, lastNotifiedStationId: newLastId } = await processLocationUpdate({
+      lat: latitude,
+      lng: longitude,
       destination,
       firedAlarms,
       sleepMode,
       allowSpeaker,
       storedRoute,
-      lastNotifiedJson,
-    );
+      lastNotifiedStationId: lastNotifiedJson,
+      speedMps,
+    });
 
     const writes: Promise<void>[] = [];
     if (alarmEvent) {
