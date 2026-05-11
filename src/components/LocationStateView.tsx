@@ -1,6 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useTranslation } from 'react-i18next';
 import { useTheme } from '../theme';
 
 interface LocationStateViewProps {
@@ -12,14 +13,15 @@ interface LocationStateViewProps {
 
 export function LocationStateView({ permissionDenied, loading, error, onRetry }: LocationStateViewProps) {
   const { colors } = useTheme();
+  const { t } = useTranslation();
 
   if (permissionDenied) {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
-          <Text style={[styles.message, { color: colors.muted }]}>위치 권한이 필요합니다.</Text>
+          <Text style={[styles.message, { color: colors.muted }]}>{t('permissions.locationRequiredShort')}</Text>
           <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={onRetry} testID="location-retry-button">
-            <Text style={[styles.buttonText, { color: colors.onAccent }]}>권한 요청</Text>
+            <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('permissions.request')}</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -30,7 +32,7 @@ export function LocationStateView({ permissionDenied, loading, error, onRetry }:
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
-          <Text style={[styles.message, { color: colors.muted }]}>위치 확인 중...</Text>
+          <Text style={[styles.message, { color: colors.muted }]}>{t('permissions.locating')}</Text>
         </View>
       </SafeAreaView>
     );
@@ -42,7 +44,7 @@ export function LocationStateView({ permissionDenied, loading, error, onRetry }:
         <View style={styles.center}>
           <Text style={[styles.message, { color: colors.muted }]}>{error}</Text>
           <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={onRetry} testID="location-retry-button">
-            <Text style={[styles.buttonText, { color: colors.onAccent }]}>다시 시도</Text>
+            <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('common.retry')}</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>

@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
+import i18next from 'i18next';
 import type { Station } from '../types/station';
 import { BACKGROUND_LOCATION_TASK } from '../tasks/backgroundLocationTask';
 import { createLogger } from '../utils/logger';
@@ -37,9 +38,11 @@ export function useBackgroundLocation(destination: Station | null): void {
         pausesUpdatesAutomatically: false,
         distanceInterval: 20,
         showsBackgroundLocationIndicator: true,
+        // foregroundService 텍스트는 서비스 시작 시점에 OS에 고정됨.
+        // 런타임 언어 변경 반영은 Phase 5(알림 채널/포그라운드 서비스 마이그레이션)에서 처리.
         foregroundService: {
-          notificationTitle: '지하철 위치 감지 중',
-          notificationBody: '백그라운드에서 현재 역을 추적하고 있습니다',
+          notificationTitle: i18next.t('background.title'),
+          notificationBody: i18next.t('background.body'),
         },
       });
       logger.info('백그라운드 위치 추적 시작');

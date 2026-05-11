@@ -1,4 +1,5 @@
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import type { AlarmEvent } from '../store/useAppStore';
 import { clearAlarmNotification } from '../utils/stationNotification';
 import { useTheme, typography, spacing, radius } from '../theme';
@@ -10,10 +11,11 @@ interface AlarmOverlayProps {
 
 export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
   const isTransfer = event.type === 'transfer';
-  const title = isTransfer ? '환승 알림' : '하차 알림';
-  const message = isTransfer
-    ? `${event.stationName}에서\n환승하세요`
-    : `${event.stationName}에서\n내리세요`;
+  const { t } = useTranslation();
+  const title = t(isTransfer ? 'alarmOverlay.transferTitle' : 'alarmOverlay.arrivalTitle');
+  const message = t(isTransfer ? 'alarmOverlay.transferMessage' : 'alarmOverlay.arrivalMessage', {
+    station: event.stationName,
+  });
   const { colors } = useTheme();
 
   const handleDismiss = async () => {
@@ -32,7 +34,7 @@ export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
           testID="alarm-dismiss-button"
           activeOpacity={0.7}
         >
-          <Text style={[styles.buttonText, { color: colors.onAccent }]}>알람 끄기</Text>
+          <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('alarmOverlay.dismiss')}</Text>
         </TouchableOpacity>
       </View>
     </Modal>

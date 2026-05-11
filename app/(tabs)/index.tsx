@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, InteractionManager, Pressable, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
+import { useTranslation } from 'react-i18next';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
@@ -27,6 +28,7 @@ const logger = createLogger('HomeScreen');
 
 export default function HomeScreen() {
   const { colors } = useTheme();
+  const { t } = useTranslation();
   const { result, variants, userLocation, speedMps, loading, error, permissionDenied, refresh } = useNearestStation();
   const customOrigin = useAppStore((s) => s.customOrigin);
   const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
@@ -221,12 +223,12 @@ export default function HomeScreen() {
       <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
           <Text style={styles.icon}>📍</Text>
-          <Text style={[styles.title, { color: colors.ink }]}>위치 권한 필요</Text>
+          <Text style={[styles.title, { color: colors.ink }]}>{t('permissions.locationRequiredTitle')}</Text>
           <Text style={[styles.subtitle, { color: colors.muted }]}>
-            설정에서 위치 권한을 허용해 주세요.{'\n'}현재 탑승 중인 역을 감지하려면{'\n'}위치 권한이 필요합니다.
+            {t('permissions.locationRequiredDescription')}
           </Text>
           <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
-            <Text style={[styles.buttonText, { color: colors.onAccent }]}>다시 시도</Text>
+            <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('common.retry')}</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -237,7 +239,7 @@ export default function HomeScreen() {
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
-          <Text style={[styles.loadingText, { color: colors.muted }]}>위치 확인 중...</Text>
+          <Text style={[styles.loadingText, { color: colors.muted }]}>{t('permissions.locating')}</Text>
         </View>
       </SafeAreaView>
     );
@@ -249,7 +251,7 @@ export default function HomeScreen() {
         <View style={styles.center}>
           <Text style={[styles.errorText, { color: colors.accent }]}>{error}</Text>
           <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
-            <Text style={[styles.buttonText, { color: colors.onAccent }]}>새로고침</Text>
+            <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -262,7 +264,7 @@ export default function HomeScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       {arrivedBanner && (
         <View style={[styles.arrivedBanner, { backgroundColor: colors.success }]} testID="arrived-banner">
-          <Text style={styles.arrivedBannerText}>도착!</Text>
+          <Text style={styles.arrivedBannerText}>{t('home.arrived')}</Text>
         </View>
       )}
       <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
@@ -273,13 +275,17 @@ export default function HomeScreen() {
               <Text style={[typography.mono, { color: colors.subtle }]}>
                 {new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
               </Text>
-              <Text style={[typography.label, { color: colors.subtle }]}>{isCustomOrigin ? '수동' : 'LIVE'}</Text>
+              <Text style={[typography.label, { color: colors.subtle }]}>{isCustomOrigin ? t('home.manual') : t('home.live')}</Text>
             </View>
 
             {/* Hero: origin station */}
             <View style={{ paddingHorizontal: spacing.xxl, paddingTop: spacing.xxxl - 4 }}>
               <Text style={[typography.label, { color: colors.muted, marginBottom: 10 }]}>
-                {isCustomOrigin ? '출발역 (수동)' : result && result.distanceKm <= 0.5 ? '현재역' : '가장 가까운 역'}
+                {isCustomOrigin
+                  ? t('home.originManual')
+                  : result && result.distanceKm <= 0.5
+                  ? t('home.originCurrent')
+                  : t('home.originNearest')}
               </Text>
               <View style={styles.heroRow}>
                 <Text style={[typography.hero, { color: colors.ink, flex: 1, fontWeight: '900' }]}>
@@ -318,7 +324,7 @@ export default function HomeScreen() {
                   onPress={() => setCustomOrigin(null)}
                   testID="gps-reset-button"
                 >
-                  <Text style={[styles.gpsResetText, { color: colors.accent }]}>GPS 모드로 전환</Text>
+                  <Text style={[styles.gpsResetText, { color: colors.accent }]}>{t('home.switchToGps')}</Text>
                 </TouchableOpacity>
               )}
             </View>
@@ -332,7 +338,7 @@ export default function HomeScreen() {
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: spacing.xl }}>
                     <View>
                       <Text style={[typography.label, { color: colors.muted, marginBottom: 4 }]}>
-                        Route to
+                        {t('home.routeTo')}
                       </Text>
                       <Text style={{ fontSize: 32, fontWeight: '900', letterSpacing: -0.8, color: colors.ink }}>{destination.name}</Text>
                     </View>
@@ -344,7 +350,7 @@ export default function HomeScreen() {
                             <Text style={{ fontSize: 13, color: colors.muted }}> min</Text>
                           </Text>
                           <Text style={[typography.label, { color: colors.subtle, marginTop: 4 }]}>
-                            {isRealtimeEta ? 'EST' : '예상'} · {journey?.totalStops ?? 0} STOPS
+                            {isRealtimeEta ? 'EST' : t('home.estimatedSuffix')} · {journey?.totalStops ?? 0} STOPS
                           </Text>
                         </>
                       )}
@@ -365,8 +371,9 @@ export default function HomeScreen() {
                             }}
                           >
                             <Text style={[styles.routePillText, { color: active ? colors.onAccent : colors.muted }]}>
-                              {category.label}
+                              {t(`routes.${category.key}`)}
                             </Text>
+                            {/* 동적 포맷("N분 · M환승")은 Phase 3에서 i18n 처리 예정 */}
                             <Text style={[styles.routePillSub, { color: active ? colors.onAccent : colors.subtle }]}>
                               {candidate.travelMinutes}분 · {candidate.transferCount}환승
                             </Text>
@@ -384,12 +391,12 @@ export default function HomeScreen() {
                 <View style={styles.actionsRow}>
                   <Pressable onPress={() => setPickerVisible(true)}>
                     <Text style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}>
-                      목적지 변경 →
+                      {t('home.destinationChange')}
                     </Text>
                   </Pressable>
                   <View style={[styles.vHair, { backgroundColor: colors.hair }]} />
                   <Pressable onPress={() => setDestination(null)} testID="destination-clear-button">
-                    <Text style={[typography.bodySm, { color: colors.muted }]}>초기화</Text>
+                    <Text style={[typography.bodySm, { color: colors.muted }]}>{t('home.destinationReset')}</Text>
                   </Pressable>
                 </View>
 
@@ -399,10 +406,10 @@ export default function HomeScreen() {
                 <View style={styles.sleepRow} testID="sleep-mode-row">
                   <View>
                     <Text style={[typography.bodySm, { color: colors.ink, fontWeight: '600' }]}>
-                      취침 모드
+                      {t('home.sleepMode')}
                     </Text>
                     <Text style={[typography.mono, { color: colors.muted, marginTop: 2 }]}>
-                      환승·도착 1정거장 전 진동 · 알림
+                      {t('home.sleepModeDescription')}
                     </Text>
                   </View>
                   <Switch
@@ -433,7 +440,7 @@ export default function HomeScreen() {
                     onPress={() => setDestination(recentDestination)}
                     testID="recent-destination-button"
                   >
-                    <Text style={[styles.recentDestinationLabel, { color: colors.accent }]}>이전 목적지</Text>
+                    <Text style={[styles.recentDestinationLabel, { color: colors.accent }]}>{t('home.previousDestination')}</Text>
                     <View style={styles.recentDestinationRow}>
                       <Text style={[styles.recentDestinationName, { color: colors.ink }]}>{recentDestination.name}</Text>
                       <View style={[styles.recentLineBadge, { backgroundColor: recentDestination.lineColor }]}>
@@ -447,24 +454,24 @@ export default function HomeScreen() {
                   onPress={() => setPickerVisible(true)}
                   testID="destination-button"
                 >
-                  <Text style={[styles.destinationButtonText, { color: colors.onAccent }]}>목적지 설정</Text>
+                  <Text style={[styles.destinationButtonText, { color: colors.onAccent }]}>{t('home.destinationSet')}</Text>
                 </TouchableOpacity>
               </View>
             )}
 
             {/* Arrivals — 기존 상행/하행 포맷 유지 */}
             <View style={[styles.arrivalSection, { backgroundColor: colors.card }]}>
-              <Text style={[styles.sectionTitle, { color: colors.muted }]}>열차 도착 정보</Text>
+              <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('home.arrivalInfoTitle')}</Text>
               {arrivalLoading && !arrival && (
-                <Text style={[styles.arrivalItem, { color: colors.ink }]}>불러오는 중...</Text>
+                <Text style={[styles.arrivalItem, { color: colors.ink }]}>{t('home.loading')}</Text>
               )}
               {arrivalIsMock && (
-                <Text style={[styles.mockNotice, { color: colors.warn }]}>실시간 데이터를 불러올 수 없어 예상 데이터를 표시합니다</Text>
+                <Text style={[styles.mockNotice, { color: colors.warn }]}>{t('home.mockNotice')}</Text>
               )}
               {arrival && (
                 <>
-                  <ArrivalRow label="상행" items={arrival.up} />
-                  <ArrivalRow label="하행" items={arrival.down} />
+                  <ArrivalRow label={t('arrival.upbound')} items={arrival.up} />
+                  <ArrivalRow label={t('arrival.downbound')} items={arrival.down} />
                 </>
               )}
             </View>
@@ -472,10 +479,10 @@ export default function HomeScreen() {
         ) : (
           <View style={styles.center}>
             <Text style={styles.icon}>🚶</Text>
-            <Text style={[styles.title, { color: colors.ink }]}>지하철역 근처가 아닙니다</Text>
-            <Text style={[styles.subtitle, { color: colors.muted }]}>지하철역 500m 이내에 있을 때{'\n'}현재 역이 표시됩니다.{'\n'}지도 탭에서 출발역을 직접 설정할 수 있습니다.</Text>
+            <Text style={[styles.title, { color: colors.ink }]}>{t('home.notNearStationTitle')}</Text>
+            <Text style={[styles.subtitle, { color: colors.muted }]}>{t('home.notNearStationDescription')}</Text>
             <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
-              <Text style={[styles.buttonText, { color: colors.onAccent }]}>새로고침</Text>
+              <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
             </TouchableOpacity>
           </View>
         )}
@@ -509,12 +516,13 @@ function ArrivalRow({
   items: { destination: string; arrivalSeconds: number; statusMessage: string }[];
 }) {
   const { colors } = useTheme();
+  const { t } = useTranslation();
   return (
     <View style={[styles.arrivalRow, { borderTopColor: colors.hair }]}>
       <Text style={[styles.arrivalLabel, { color: colors.muted }]}>{label}</Text>
       <View>
         {items.length === 0 ? (
-          <Text style={[styles.arrivalItem, { color: colors.ink }]}>도착 정보 없음</Text>
+          <Text style={[styles.arrivalItem, { color: colors.ink }]}>{t('home.noArrivalInfo')}</Text>
         ) : (
           items.map((item, idx) => (
             <View key={idx} style={styles.arrivalItemContainer}>

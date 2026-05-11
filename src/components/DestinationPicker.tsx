@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   StyleSheet,
 } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import stations from '../data/stations.json';
 import type { Station } from '../types/station';
 import { LINE_NAMES } from '../constants/lineColors';
@@ -40,6 +41,7 @@ export function DestinationPicker({
   const [showDropdown, setShowDropdown] = useState(false);
   const openTimeRef = useRef<number | null>(null);
   const { colors } = useTheme();
+  const { t } = useTranslation();
 
   useEffect(() => {
     if (visible) {
@@ -93,25 +95,25 @@ export function DestinationPicker({
         ) : (
           <View style={styles.mapFallback} testID="map-fallback">
             <Text style={[styles.mapFallbackText, { color: colors.muted }]}>
-              위치 정보가 없습니다.
+              {t('destinationPicker.noLocation')}
             </Text>
           </View>
         )}
 
         <View style={styles.overlay} pointerEvents="box-none">
           <View style={[styles.header, { backgroundColor: colors.bgTranslucent }]}>
-            <Text style={[styles.title, { color: colors.ink }]}>목적지 설정</Text>
+            <Text style={[styles.title, { color: colors.ink }]}>{t('destinationPicker.title')}</Text>
             <TouchableOpacity onPress={handleClose} testID="close-button">
-              <Text style={[styles.closeText, { color: colors.accent }]}>닫기</Text>
+              <Text style={[styles.closeText, { color: colors.accent }]}>{t('common.close')}</Text>
             </TouchableOpacity>
           </View>
           <TextInput
             style={[styles.input, { backgroundColor: colors.card, color: colors.ink, borderColor: colors.hair }]}
-            placeholder="역 이름 검색"
+            placeholder={t('destinationPicker.searchPlaceholder')}
             placeholderTextColor={colors.subtle}
             value={query}
-            onChangeText={(t) => {
-              setQuery(t);
+            onChangeText={(text) => {
+              setQuery(text);
               setShowDropdown(true);
             }}
             onFocus={() => setShowDropdown(true)}

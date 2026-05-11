@@ -8,6 +8,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../src/store/useAppStore';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { Station } from '../../src/types/station';
@@ -27,6 +28,7 @@ export default function FavoritesScreen() {
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const { colors } = useTheme();
+  const { t } = useTranslation();
 
   useEffect(() => {
     loadFavorites();
@@ -54,11 +56,11 @@ export default function FavoritesScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
-        <Text style={[styles.header, { color: colors.muted }]}>즐겨찾기</Text>
+        <Text style={[styles.header, { color: colors.muted }]}>{t('favorites.title')}</Text>
 
         <TextInput
           style={[styles.searchInput, { backgroundColor: colors.card, color: colors.ink, borderColor: colors.hair }]}
-          placeholder="역 이름 검색..."
+          placeholder={t('favorites.searchPlaceholder')}
           placeholderTextColor={colors.muted}
           value={query}
           onChangeText={setQuery}
@@ -68,7 +70,7 @@ export default function FavoritesScreen() {
         {isSearching ? (
           searchResults.length === 0 ? (
             <View style={styles.empty}>
-              <Text style={[styles.emptyTitle, { color: colors.ink }]}>검색 결과가 없습니다</Text>
+              <Text style={[styles.emptyTitle, { color: colors.ink }]}>{t('favorites.noSearchResults')}</Text>
             </View>
           ) : (
             searchResults.map((station) => (
@@ -84,9 +86,9 @@ export default function FavoritesScreen() {
         ) : favorites.length === 0 ? (
           <View style={styles.empty} testID="favorites-empty">
             <Text style={styles.emptyIcon}>⭐</Text>
-            <Text style={[styles.emptyTitle, { color: colors.ink }]}>즐겨찾기가 없습니다</Text>
+            <Text style={[styles.emptyTitle, { color: colors.ink }]}>{t('favorites.empty')}</Text>
             <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
-              위 검색창에서 역을 검색해 즐겨찾기에{'\n'}추가할 수 있습니다.
+              {t('favorites.emptyDescription')}
             </Text>
           </View>
         ) : (
@@ -156,6 +158,7 @@ function FavoriteCard({
   onRemove: () => void;
   colors: ThemeColors;
 }) {
+  const { t } = useTranslation();
   return (
     <View style={[styles.card, { backgroundColor: colors.card, borderLeftColor: station.lineColor }]}>
       <TouchableOpacity style={styles.cardMain} onPress={onToggle} activeOpacity={0.7}>
@@ -168,7 +171,7 @@ function FavoriteCard({
         <View style={styles.cardActions}>
           <Text style={[styles.expandIcon, { color: colors.muted }]}>{isExpanded ? '▲' : '▼'}</Text>
           <TouchableOpacity style={[styles.removeButton, { backgroundColor: colors.card }]} onPress={onRemove} testID={`favorite-remove-${station.id}`}>
-            <Text style={[styles.removeText, { color: colors.danger }]}>삭제</Text>
+            <Text style={[styles.removeText, { color: colors.danger }]}>{t('favorites.remove')}</Text>
           </TouchableOpacity>
         </View>
       </TouchableOpacity>
@@ -178,17 +181,17 @@ function FavoriteCard({
           {arrival ? (
             <>
               {arrival.up.length > 0 && (
-                <ArrivalRow label="상행" items={arrival.up} colors={colors} />
+                <ArrivalRow label={t('arrival.upbound')} items={arrival.up} colors={colors} />
               )}
               {arrival.down.length > 0 && (
-                <ArrivalRow label="하행" items={arrival.down} colors={colors} />
+                <ArrivalRow label={t('arrival.downbound')} items={arrival.down} colors={colors} />
               )}
               {arrival.up.length === 0 && arrival.down.length === 0 && (
-                <Text style={[styles.noArrival, { color: colors.muted }]}>도착 정보 없음</Text>
+                <Text style={[styles.noArrival, { color: colors.muted }]}>{t('home.noArrivalInfo')}</Text>
               )}
             </>
           ) : (
-            <Text style={[styles.noArrival, { color: colors.muted }]}>불러오는 중...</Text>
+            <Text style={[styles.noArrival, { color: colors.muted }]}>{t('home.loading')}</Text>
           )}
         </View>
       )}
