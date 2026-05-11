@@ -2,10 +2,14 @@ import React from 'react';
 import { render, act, waitFor, fireEvent } from '@testing-library/react-native';
 import { StationMap } from '../StationMap';
 import type { Station } from '../../types/station';
+import { installLanguageRestoreHook, setLang } from '../../testUtils/i18nLanguageOverride';
+
+installLanguageRestoreHook();
 
 const mockStation: Station = {
   id: '2-022',
   name: '강남',
+  nameEn: 'Gangnam',
   line: '2',
   lineColor: '#009D3E',
   lat: 37.4979,
@@ -15,6 +19,7 @@ const mockStation: Station = {
 const anotherStation: Station = {
   id: '2-023',
   name: '선릉',
+  nameEn: 'Seolleung',
   line: '2',
   lineColor: '#009D3E',
   lat: 37.5044,
@@ -109,6 +114,19 @@ describe('StationMap', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
     expect(getByTestId('marker-2-022').props.tracksViewChanges).toBe(false);
     expect(getByTestId('marker-2-023').props.tracksViewChanges).toBe(false);
+  });
+
+  it('영어 모드에서 마커 라벨이 nameEn으로 표시된다', () => {
+    setLang('en');
+    const { getByText } = render(<StationMap {...baseProps} />);
+    expect(getByText('Gangnam')).toBeTruthy();
+    expect(getByText('Seolleung')).toBeTruthy();
+  });
+
+  it('영어 모드에서 마커 title이 nameEn으로 설정된다', () => {
+    setLang('en');
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    expect(getByTestId('marker-2-022').props.title).toBe('Gangnam');
   });
 
   it('buildMapConfig에 올바른 파라미터를 전달한다', () => {
