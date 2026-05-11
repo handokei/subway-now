@@ -26,7 +26,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', alarmEvent: null });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null });
     jest.clearAllMocks();
   });
 
@@ -550,5 +550,41 @@ describe('useAppStore', () => {
 
     const { alarmEvent } = useAppStore.getState();
     expect(alarmEvent).toBeNull();
+  });
+
+  // ── localePreference ──
+
+  it('초기 localePreference는 auto이다', () => {
+    expect(useAppStore.getState().localePreference).toBe('auto');
+  });
+
+  it('setLocalePreference: 상태를 업데이트하고 AsyncStorage에 저장한다', async () => {
+    await useAppStore.getState().setLocalePreference('en');
+    expect(useAppStore.getState().localePreference).toBe('en');
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:locale-preference',
+      JSON.stringify('en'),
+    );
+  });
+
+  it('loadLocalePreference: AsyncStorage에서 ko를 복원한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify('ko'));
+    await useAppStore.getState().loadLocalePreference();
+    expect(useAppStore.getState().localePreference).toBe('ko');
+  });
+
+  it.each([
+    ['invalid value', JSON.stringify('jp')],
+    ['null', null],
+    ['storage error', new Error('storage error')],
+  ])('loadLocalePreference: %s이면 auto 유지', async (_label, raw) => {
+    if (raw instanceof Error) {
+      (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(raw);
+    } else {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(raw);
+    }
+    useAppStore.setState({ localePreference: 'auto' });
+    await useAppStore.getState().loadLocalePreference();
+    expect(useAppStore.getState().localePreference).toBe('auto');
   });
 });

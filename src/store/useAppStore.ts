@@ -2,10 +2,13 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY } from '../constants/storageKeys';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
 
 export type ThemeMode = 'auto' | 'light' | 'dark';
+export type LocalePreference = 'auto' | 'ko' | 'en';
+
+const LOCALE_PREFERENCES: readonly LocalePreference[] = ['auto', 'ko', 'en'];
 
 export type { AlarmEvent };
 
@@ -21,6 +24,7 @@ interface AppState {
   customOrigin: Station | null;
   themeMode: ThemeMode;
   routePreference: RoutePreference;
+  localePreference: LocalePreference;
   alarmEvent: AlarmEvent | null;
   addFavorite: (station: Station) => Promise<void>;
   removeFavorite: (stationId: string) => Promise<void>;
@@ -33,6 +37,8 @@ interface AppState {
   loadThemeMode: () => Promise<void>;
   setRoutePreference: (pref: RoutePreference) => Promise<void>;
   loadRoutePreference: () => Promise<void>;
+  setLocalePreference: (pref: LocalePreference) => Promise<void>;
+  loadLocalePreference: () => Promise<void>;
   setSleepMode: (enabled: boolean) => Promise<void>;
   loadSleepMode: () => Promise<void>;
   setAllowSpeaker: (enabled: boolean) => Promise<void>;
@@ -51,6 +57,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   customOrigin: null,
   themeMode: 'auto' as ThemeMode,
   routePreference: 'optimal' as RoutePreference,
+  localePreference: 'auto' as LocalePreference,
   alarmEvent: null,
 
   loadFavorites: async () => {
@@ -148,6 +155,25 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch {
       // 저장된 데이터 없음 — 'optimal' 유지
+    }
+  },
+
+  setLocalePreference: async (pref: LocalePreference) => {
+    set({ localePreference: pref });
+    await AsyncStorage.setItem(LOCALE_PREFERENCE_KEY, JSON.stringify(pref));
+  },
+
+  loadLocalePreference: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(LOCALE_PREFERENCE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (LOCALE_PREFERENCES.includes(parsed)) {
+          set({ localePreference: parsed });
+        }
+      }
+    } catch {
+      // 저장된 데이터 없음 — 'auto' 유지
     }
   },
 

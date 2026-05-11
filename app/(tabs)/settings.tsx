@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { Alert, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import { useAppStore, type ThemeMode } from '../../src/store/useAppStore';
+import { useAppStore, type ThemeMode, type LocalePreference } from '../../src/store/useAppStore';
 import { ROUTE_CATEGORIES } from '../../src/utils/stationRoute';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
@@ -12,6 +12,12 @@ const THEME_OPTIONS = [
   { value: 'light', labelKey: 'settings.themeLight' },
   { value: 'dark', labelKey: 'settings.themeDark' },
 ] as const satisfies readonly { value: ThemeMode; labelKey: string }[];
+
+const LOCALE_OPTIONS = [
+  { value: 'auto', labelKey: 'settings.languageAuto' },
+  { value: 'ko', labelKey: 'settings.languageKorean' },
+  { value: 'en', labelKey: 'settings.languageEnglish' },
+] as const satisfies readonly { value: LocalePreference; labelKey: string }[];
 
 export default function SettingsScreen() {
   const sleepMode = useAppStore((s) => s.sleepMode);
@@ -25,6 +31,8 @@ export default function SettingsScreen() {
   const routePreference = useAppStore((s) => s.routePreference);
   const setRoutePreference = useAppStore((s) => s.setRoutePreference);
   const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
+  const localePreference = useAppStore((s) => s.localePreference);
+  const setLocalePreference = useAppStore((s) => s.setLocalePreference);
   const { colors } = useTheme();
   const { t } = useTranslation();
   const showSleepModeGuide = useSleepModeGuide();
@@ -39,69 +47,35 @@ export default function SettingsScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       <Text style={[styles.header, { color: colors.muted }]}>{t('settings.title')}</Text>
 
-      {/* 테마 */}
-      <View style={[styles.card, { backgroundColor: colors.card }]}>
-        <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.themeSection')}</Text>
+      <SegmentSetting
+        sectionTitle={t('settings.languageSection')}
+        label={t('settings.languageLabel')}
+        description={t('settings.languageDescription')}
+        testIDPrefix="locale"
+        value={localePreference}
+        onChange={setLocalePreference}
+        options={LOCALE_OPTIONS.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
+      />
 
-        <View style={styles.settingRow}>
-          <View style={styles.settingInfo}>
-            <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.themeLabel')}</Text>
-            <Text style={[styles.settingDesc, { color: colors.muted }]}>
-              {t('settings.themeDescription')}
-            </Text>
-          </View>
-        </View>
+      <SegmentSetting
+        sectionTitle={t('settings.themeSection')}
+        label={t('settings.themeLabel')}
+        description={t('settings.themeDescription')}
+        testIDPrefix="theme"
+        value={themeMode}
+        onChange={setThemeMode}
+        options={THEME_OPTIONS.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
+      />
 
-        <View style={[styles.segmentGroup, { backgroundColor: colors.hair }]} testID="theme-segment">
-          {THEME_OPTIONS.map(({ value, labelKey }) => {
-            const active = themeMode === value;
-            return (
-              <Pressable
-                key={value}
-                style={[styles.segment, active && { backgroundColor: colors.accent }]}
-                onPress={() => setThemeMode(value)}
-                testID={`theme-${value}`}
-              >
-                <Text style={[styles.segmentText, { color: active ? colors.onAccent : colors.muted }]}>
-                  {t(labelKey)}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
-
-      {/* 경로 */}
-      <View style={[styles.card, { backgroundColor: colors.card }]}>
-        <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.routeSection')}</Text>
-
-        <View style={styles.settingRow}>
-          <View style={styles.settingInfo}>
-            <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.routePreferenceLabel')}</Text>
-            <Text style={[styles.settingDesc, { color: colors.muted }]}>
-              {t('settings.routePreferenceDescription')}
-            </Text>
-          </View>
-        </View>
-
-        <View style={[styles.segmentGroup, { backgroundColor: colors.hair }]} testID="route-segment">
-          {ROUTE_CATEGORIES.map((category) => {
-            const active = routePreference === category.key;
-            return (
-              <Pressable
-                key={category.key}
-                style={[styles.segment, active && { backgroundColor: colors.accent }]}
-                onPress={() => setRoutePreference(category.key)}
-                testID={`route-${category.key}`}
-              >
-                <Text style={[styles.segmentText, { color: active ? colors.onAccent : colors.muted }]}>
-                  {t(`routes.${category.key}`)}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      </View>
+      <SegmentSetting
+        sectionTitle={t('settings.routeSection')}
+        label={t('settings.routePreferenceLabel')}
+        description={t('settings.routePreferenceDescription')}
+        testIDPrefix="route"
+        value={routePreference}
+        onChange={setRoutePreference}
+        options={ROUTE_CATEGORIES.map((c) => ({ value: c.key, label: t(`routes.${c.key}`) }))}
+      />
 
       {/* 알람 */}
       <View style={[styles.card, { backgroundColor: colors.card }]}>
@@ -159,6 +133,58 @@ export default function SettingsScreen() {
         </View>
       </View>
     </SafeAreaView>
+  );
+}
+
+interface SegmentSettingProps<T extends string> {
+  readonly sectionTitle: string;
+  readonly label: string;
+  readonly description: string;
+  readonly testIDPrefix: string;
+  readonly value: T;
+  readonly onChange: (next: T) => void;
+  readonly options: readonly { value: T; label: string }[];
+}
+
+function SegmentSetting<T extends string>({
+  sectionTitle,
+  label,
+  description,
+  testIDPrefix,
+  value,
+  onChange,
+  options,
+}: SegmentSettingProps<T>) {
+  const { colors } = useTheme();
+  return (
+    <View style={[styles.card, { backgroundColor: colors.card }]}>
+      <Text style={[styles.sectionTitle, { color: colors.muted }]}>{sectionTitle}</Text>
+
+      <View style={styles.settingRow}>
+        <View style={styles.settingInfo}>
+          <Text style={[styles.settingLabel, { color: colors.ink }]}>{label}</Text>
+          <Text style={[styles.settingDesc, { color: colors.muted }]}>{description}</Text>
+        </View>
+      </View>
+
+      <View style={[styles.segmentGroup, { backgroundColor: colors.hair }]} testID={`${testIDPrefix}-segment`}>
+        {options.map(({ value: optionValue, label: optionLabel }) => {
+          const active = value === optionValue;
+          return (
+            <Pressable
+              key={optionValue}
+              style={[styles.segment, active && { backgroundColor: colors.accent }]}
+              onPress={() => onChange(optionValue)}
+              testID={`${testIDPrefix}-${optionValue}`}
+            >
+              <Text style={[styles.segmentText, { color: active ? colors.onAccent : colors.muted }]}>
+                {optionLabel}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
   );
 }
 

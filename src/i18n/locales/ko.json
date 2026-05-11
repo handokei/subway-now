@@ -60,7 +60,13 @@
     "speakerOutputDescription": "이어폰 미연결 시에도 알람음을 스피커로 재생합니다",
     "speakerOffTitle": "스피커 출력 끄기",
     "speakerOffMessage": "스피커 출력을 끄면 이어폰이 연결되지 않은 상태에서 진동만 울립니다. 계속하시겠습니까?",
-    "speakerOffConfirm": "끄기"
+    "speakerOffConfirm": "끄기",
+    "languageSection": "언어",
+    "languageLabel": "앱 언어",
+    "languageDescription": "자동은 기기 설정을 따릅니다",
+    "languageAuto": "자동",
+    "languageKorean": "한국어",
+    "languageEnglish": "English"
   },
   "map": {
     "originBadge": "출발",
