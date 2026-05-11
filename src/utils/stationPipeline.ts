@@ -3,6 +3,7 @@ import { findRoute, calculateStaticETA, isStationOnRoute, updateRouteFromPositio
 import { evaluateAlarmPhase } from './stationAlarm';
 import { sendAlarmNotification, sendStationPassedNotification, updateStationNotification } from './stationNotification';
 import { distanceMetersBetween, estimateEtaSeconds } from './stationEta';
+import { getLastNotifiedStationId, setLastNotifiedStationId } from './notificationState';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import type { NearestStationResult, Station } from '../types/station';
 import type { Route } from './stationRoute';
@@ -76,7 +77,6 @@ export function resolveNextTarget(route: Route, destinationName: string): NextTa
 export interface PipelineResult {
   alarmEvent: AlarmEvent | null;
   nearest: NearestStationResult | null;
-  lastNotifiedStationId: string | null;
 }
 
 export interface ProcessLocationInputs {
@@ -87,7 +87,6 @@ export interface ProcessLocationInputs {
   sleepMode: boolean;
   allowSpeaker?: boolean;
   storedRoute?: Route;
-  lastNotifiedStationId?: string | null;
   speedMps?: number | null;
 }
 
@@ -100,12 +99,11 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     sleepMode,
     allowSpeaker = true,
     storedRoute = null,
-    lastNotifiedStationId = null,
     speedMps = null,
   } = inputs;
 
   const nearest = findNearestStation(lat, lng, MAX_STATION_DISTANCE_KM);
-  if (!nearest) return { alarmEvent: null, nearest: null, lastNotifiedStationId };
+  if (!nearest) return { alarmEvent: null, nearest: null };
 
   let route: Route = null;
   if (storedRoute) {
@@ -128,16 +126,21 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   }
 
   // 역 변경 감지 → per-station 알림. 단, 경로상 노선의 역만 (false alarm 방지)
-  let newLastNotifiedStationId = lastNotifiedStationId;
-  if (route && isStationOnRoute(nearest.station, route) && nearest.station.id !== lastNotifiedStationId) {
-    const target = resolveNextTarget(route, destination.name);
-    if (target) {
-      newLastNotifiedStationId = nearest.station.id;
-      await sendStationPassedNotification(
-        nearest.station.name,
-        destination.name,
-        target,
-      );
+  // 알림 상태는 notificationState 모듈(AsyncStorage)을 단일 출처로 사용해
+  // Foreground/Background 양쪽에서 동일한 dedup이 적용된다.
+  if (route && isStationOnRoute(nearest.station, route)) {
+    const lastNotifiedStationId = await getLastNotifiedStationId();
+    if (nearest.station.id !== lastNotifiedStationId) {
+      const target = resolveNextTarget(route, destination.name);
+      if (target) {
+        // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
+        await sendStationPassedNotification(
+          nearest.station.name,
+          destination.name,
+          target,
+        );
+        await setLastNotifiedStationId(nearest.station.id);
+      }
     }
   }
 
@@ -152,5 +155,5 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     sleepMode ? alarmEvent : null,
   );
 
-  return { alarmEvent, nearest, lastNotifiedStationId: newLastNotifiedStationId };
+  return { alarmEvent, nearest };
 }
