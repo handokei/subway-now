@@ -1,6 +1,6 @@
-import i18next from 'i18next';
 import { getStationDisplayName, getStationDisplayNameByName, matchesStationQuery } from '../stationDisplay';
 import type { Station } from '../../types/station';
+import { installLanguageRestoreHook, setLang } from '../../testUtils/i18nLanguageOverride';
 
 const stations: Station[] = [
   { id: '2-022', name: '강남', nameEn: 'Gangnam', line: '2', lineColor: '#009D3E', lat: 37.5, lng: 127 },
@@ -12,23 +12,9 @@ const stations: Station[] = [
 // zh 등 새 언어 추가 시 이 배열에 한 줄만 추가하면 동일 검증이 자동 적용된다.
 const NON_KO_LANGUAGES = ['en', 'ja'] as const;
 
+installLanguageRestoreHook();
+
 describe('getStationDisplayName', () => {
-  let originalLanguageDescriptor: PropertyDescriptor | undefined;
-
-  beforeEach(() => {
-    originalLanguageDescriptor = Object.getOwnPropertyDescriptor(i18next, 'language');
-  });
-
-  afterEach(() => {
-    if (originalLanguageDescriptor) {
-      Object.defineProperty(i18next, 'language', originalLanguageDescriptor);
-    }
-  });
-
-  function setLang(lang: string) {
-    Object.defineProperty(i18next, 'language', { value: lang, configurable: true });
-  }
-
   it.each(NON_KO_LANGUAGES)('비한국어 모드(%s) + nameEn 존재 → nameEn 반환', (lang) => {
     setLang(lang);
     expect(getStationDisplayName(stations[0])).toBe('Gangnam');
@@ -46,22 +32,6 @@ describe('getStationDisplayName', () => {
 });
 
 describe('getStationDisplayNameByName', () => {
-  let originalLanguageDescriptor: PropertyDescriptor | undefined;
-
-  beforeEach(() => {
-    originalLanguageDescriptor = Object.getOwnPropertyDescriptor(i18next, 'language');
-  });
-
-  afterEach(() => {
-    if (originalLanguageDescriptor) {
-      Object.defineProperty(i18next, 'language', originalLanguageDescriptor);
-    }
-  });
-
-  function setLang(lang: string) {
-    Object.defineProperty(i18next, 'language', { value: lang, configurable: true });
-  }
-
   it.each(NON_KO_LANGUAGES)('비한국어 모드(%s) + 매칭되는 nameEn → 영문 반환', (lang) => {
     setLang(lang);
     expect(getStationDisplayNameByName('강남', stations)).toBe('Gangnam');
