@@ -157,31 +157,28 @@ export default function HomeScreen() {
     const currDestId = destination?.id ?? null;
     prevDestIdRef.current = currDestId;
 
-    if (!effectiveOrigin) {
+    // 실시간 현황(Live Activity/알림)은 경로 진행 중일 때만 노출한다.
+    if (!effectiveOrigin || !destination) {
       if (prevNotifKeyRef.current !== 'none') {
         prevNotifKeyRef.current = 'none';
-        logger.info('역 없음 → 알림 해제');
-        clearStationNotification();
+        logger.info('경로 없음 → 알림 해제');
+        clearAlarmNotification().catch((e) => logger.error('알림 해제 실패:', e));
+        clearStationNotification().catch((e) => logger.error('알림 해제 실패:', e));
       }
       return;
     }
-    const key = `${effectiveOrigin.id}__${destination?.id ?? ''}__${displayEta ?? ''}__${arrivalIsMock}__${alarmEvent?.type ?? ''}`;
+    const key = `${effectiveOrigin.id}__${destination.id}__${displayEta ?? ''}__${arrivalIsMock}__${alarmEvent?.type ?? ''}`;
     if (key === prevNotifKeyRef.current) return;
     prevNotifKeyRef.current = key;
 
-    const destinationCleared = prevDestId != null && currDestId == null;
-    const destinationChanged = prevDestId != null && currDestId != null && prevDestId !== currDestId;
+    const destinationChanged = prevDestId != null && prevDestId !== currDestId;
     const update = async () => {
-      if (destinationCleared || destinationChanged) {
-        if (destinationCleared) {
-          logger.info('목적지 해제 → Live Activity 종료 후 재시작');
-        } else {
-          logger.info('목적지 변경 → 이전 알림 교체');
-        }
+      if (destinationChanged) {
+        logger.info('목적지 변경 → 이전 알림 교체');
         await clearAlarmNotification();
         await clearStationNotification();
       }
-      logger.info('알림 업데이트:', effectiveOrigin.name, destination ? `→ ${destination.name}` : '');
+      logger.info('알림 업데이트:', effectiveOrigin.name, `→ ${destination.name}`);
       await updateStationNotification(
         effectiveOrigin,
         isCustomOrigin ? 0 : Math.round((result?.distanceKm ?? 0) * 1000),

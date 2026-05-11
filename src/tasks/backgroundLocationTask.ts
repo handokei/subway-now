@@ -3,11 +3,8 @@ import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { processLocationUpdate } from '../utils/stationPipeline';
 import { alarmKey } from '../utils/stationAlarm';
-import { updateStationNotification } from '../utils/stationNotification';
-import { findNearestStation } from '../utils/findNearestStation';
 import { createLogger } from '../utils/logger';
 import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
-import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import { isAccuracyAcceptable, isLocationFresh } from '../utils/locationGates';
 import type { Route } from '../utils/stationRoute';
 
@@ -43,17 +40,8 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       AsyncStorage.getItem(ALLOW_SPEAKER_KEY),
     ]);
 
-    // 목적지 미설정 시 현재 역 알림만 업데이트
-    if (!destJson) {
-      const nearest = findNearestStation(latitude, longitude, MAX_STATION_DISTANCE_KM);
-      if (nearest) {
-        await updateStationNotification(
-          nearest.station,
-          Math.round(nearest.distanceKm * 1000),
-        );
-      }
-      return;
-    }
+    // 경로(목적지) 없으면 백그라운드에서도 실시간 현황 알림을 띄우지 않는다.
+    if (!destJson) return;
 
     let destination;
     try {
