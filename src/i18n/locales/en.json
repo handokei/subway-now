@@ -64,9 +64,7 @@
     "languageSection": "Language",
     "languageLabel": "App language",
     "languageDescription": "Auto follows your device setting",
-    "languageAuto": "Auto",
-    "languageKorean": "Korean",
-    "languageEnglish": "English"
+    "languageAuto": "Auto"
   },
   "map": {
     "originBadge": "Origin",

@@ -29,7 +29,7 @@ const logger = createLogger('HomeScreen');
 
 export default function HomeScreen() {
   const { colors } = useTheme();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { result, variants, userLocation, speedMps, loading, error, permissionDenied, refresh } = useNearestStation();
   const customOrigin = useAppStore((s) => s.customOrigin);
   const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
@@ -273,7 +273,7 @@ export default function HomeScreen() {
             {/* Top meta */}
             <View style={styles.topMeta}>
               <Text style={[typography.mono, { color: colors.subtle }]}>
-                {new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}
+                {new Date().toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}
               </Text>
               <Text style={[typography.label, { color: colors.subtle }]}>{isCustomOrigin ? t('home.manual') : t('home.live')}</Text>
             </View>
