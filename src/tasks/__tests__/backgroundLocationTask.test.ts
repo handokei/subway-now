@@ -32,18 +32,6 @@ jest.mock('../../utils/stationAlarm', () => ({
   alarmKey: (...args: unknown[]) => mockAlarmKey(...args),
 }));
 
-// ── stationNotification 모킹 ──
-const mockUpdateStationNotification = jest.fn();
-jest.mock('../../utils/stationNotification', () => ({
-  updateStationNotification: (...args: unknown[]) => mockUpdateStationNotification(...args),
-}));
-
-// ── findNearestStation 모킹 ──
-const mockFindNearestStation = jest.fn();
-jest.mock('../../utils/findNearestStation', () => ({
-  findNearestStation: (...args: unknown[]) => mockFindNearestStation(...args),
-}));
-
 // ── logger 모킹 ──
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({
@@ -56,7 +44,6 @@ jest.mock('../../utils/logger', () => ({
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { AlarmEvent } from '../../utils/stationAlarm';
-import type { NearestStationResult } from '../../types/station';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
 import '../../tasks/backgroundLocationTask';
 import { BACKGROUND_LOCATION_TASK } from '../../tasks/backgroundLocationTask';
@@ -143,8 +130,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
     (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
-    mockUpdateStationNotification.mockResolvedValue(undefined);
-    mockFindNearestStation.mockReturnValue(null);
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -177,38 +162,16 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     expect(AsyncStorage.getItem).not.toHaveBeenCalled();
   });
 
-  // ── 목적지 미설정 + nearest 없음 ──
+  // ── 목적지 미설정: 실시간 현황을 띄우지 않는다 ──
 
-  it('destJson이 없고 findNearestStation이 null을 반환하면 updateStationNotification을 호출하지 않는다', async () => {
+  it('destJson이 없으면 processLocationUpdate를 호출하지 않고 즉시 return한다', async () => {
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
-    mockFindNearestStation.mockReturnValue(null);
-
-    await taskCallback({
-      data: { locations: [makeLocation(37.5, 127.0)] },
-      error: null,
-    });
-
-    expect(mockUpdateStationNotification).not.toHaveBeenCalled();
-    expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
-  });
-
-  // ── 목적지 미설정 + nearest 있음 ──
-
-  it('destJson이 없고 nearest가 있으면 updateStationNotification만 호출한다', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
-    const nearestResult: NearestStationResult = {
-      station: mockStation,
-      distanceKm: 0.2,
-    };
-    mockFindNearestStation.mockReturnValue(nearestResult);
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028)] },
       error: null,
     });
 
-    // Math.round(0.2 * 1000) = 200
-    expect(mockUpdateStationNotification).toHaveBeenCalledWith(mockStation, 200);
     expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
   });
 
@@ -441,8 +404,8 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   // ── 마지막 location 선택 ──
 
   it('locations 배열의 마지막 요소를 사용한다', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
-    mockFindNearestStation.mockReturnValue(null);
+    mockStorageValues(JSON.stringify(mockDestination));
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
 
     const loc1 = makeLocation(37.1, 127.1);
     const loc2 = makeLocation(37.9, 127.9); // 마지막
@@ -452,7 +415,10 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
-    expect(mockFindNearestStation).toHaveBeenCalledWith(37.9, 127.9, 1.0);
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      lat: 37.9,
+      lng: 127.9,
+    }));
   });
 
   // ── stale 위치 / 저정확도 게이트 ──
@@ -462,7 +428,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   const expectGateBlocked = () => {
     expect(AsyncStorage.getItem).not.toHaveBeenCalled();
-    expect(mockFindNearestStation).not.toHaveBeenCalled();
     expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
   };
 
@@ -495,7 +460,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   it('accuracy가 임계값(150m) 이내면 통과한다', async () => {
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
-    mockFindNearestStation.mockReturnValue(null);
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028, { accuracy: 100 })] },
