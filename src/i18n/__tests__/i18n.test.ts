@@ -34,6 +34,11 @@ describe('detectDeviceLanguage', () => {
     expect(detectDeviceLanguage()).toBe('ja');
   });
 
+  it('returns zh when device language is zh', () => {
+    mockGetLocales.mockReturnValueOnce([{ languageCode: 'zh' }]);
+    expect(detectDeviceLanguage()).toBe('zh');
+  });
+
   it('falls back when device language is unsupported', () => {
     mockGetLocales.mockReturnValueOnce([{ languageCode: 'fr' }]);
     expect(detectDeviceLanguage()).toBe(FALLBACK_LANGUAGE);

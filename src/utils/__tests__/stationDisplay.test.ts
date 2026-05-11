@@ -10,7 +10,7 @@ const stations: Station[] = [
 
 // 비한국어(en/ja 등)는 모두 동일 분기(nameEn fallback)를 타므로 데이터 주도로 검증한다.
 // zh 등 새 언어 추가 시 이 배열에 한 줄만 추가하면 동일 검증이 자동 적용된다.
-const NON_KO_LANGUAGES = ['en', 'ja'] as const;
+const NON_KO_LANGUAGES = ['en', 'ja', 'zh'] as const;
 
 installLanguageRestoreHook();
 
