@@ -81,8 +81,9 @@ function main() {
   let matched = 0;
   const unmatched = [];
   const updated = stations.map((station) => {
-    // stations.json의 부역명("왕십리(성동구청)") vs CSV의 본역명("왕십리")
-    const baseName = station.name.replace(/\(.*\)$/, '').trim();
+    // stations.json의 부역명("왕십리(성동구청)") vs CSV의 본역명("왕십리").
+    // `[^)]*`로 닫는 괄호 외 문자만 매칭해 ReDoS(catastrophic backtracking) 회피.
+    const baseName = station.name.replace(/\([^)]*\)$/, '').trim();
     const nameEn =
       nameMap.get(station.name) ??
       nameMap.get(baseName) ??
