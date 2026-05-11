@@ -6,6 +6,10 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": false,
+    "locales": {
+      "ko": "./locales/ko.json",
+      "en": "./locales/en.json"
+    },
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
