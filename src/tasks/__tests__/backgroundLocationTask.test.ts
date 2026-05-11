@@ -32,6 +32,12 @@ jest.mock('../../utils/stationAlarm', () => ({
   alarmKey: (...args: unknown[]) => mockAlarmKey(...args),
 }));
 
+// ── alarmLog 모킹 ──
+const mockLogSuppressedGate = jest.fn();
+jest.mock('../../utils/alarmLog', () => ({
+  logSuppressedGate: (...args: unknown[]) => mockLogSuppressedGate(...args),
+}));
+
 // ── logger 모킹 ──
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({
@@ -422,8 +428,20 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   const runWithLocation = (location: unknown) =>
     taskCallback({ data: { locations: [location] }, error: null });
 
+  // 게이트 drop 시 destination/sleep/route 등 도메인 키는 절대 읽지 않는다.
+  // (ALARM_LOG_KEY는 적재용으로 정상 read/write 됨 — B2 인프라)
+  const DOMAIN_KEYS = [
+    'subway-now:destination',
+    'subway-now:sleep-mode',
+    'subway-now:fired-alarms',
+    'subway-now:route',
+    'subway-now:allow-speaker',
+  ];
   const expectGateBlocked = () => {
-    expect(AsyncStorage.getItem).not.toHaveBeenCalled();
+    const getItemKeys = (AsyncStorage.getItem as jest.Mock).mock.calls.map(([k]) => k);
+    for (const key of DOMAIN_KEYS) {
+      expect(getItemKeys).not.toContain(key);
+    }
     expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
   };
 
@@ -452,6 +470,28 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   it('저정확도 위치(accuracy MAX_ACCURACY_M 초과)는 무시한다', async () => {
     await runWithLocation(makeLocation(37.498, 127.028, { accuracy: MAX_ACCURACY_M + 1 }));
     expectGateBlocked();
+  });
+
+  // ── 알람 로그 적재 (B2 인프라) ──
+
+  it('stale 위치 게이트 drop 시 logSuppressedGate(gate-age, location)을 호출한다', async () => {
+    const ageMs = MAX_LOCATION_AGE_MS + 1_000;
+    await runWithLocation(makeLocation(37.498, 127.028, { ageMs }));
+
+    expect(mockLogSuppressedGate).toHaveBeenCalledWith(
+      'gate-age',
+      expect.objectContaining({ lat: 37.498, lng: 127.028 }),
+    );
+  });
+
+  it('저정확도 게이트 drop 시 logSuppressedGate(gate-accuracy, location)을 호출한다', async () => {
+    const accuracy = MAX_ACCURACY_M + 50;
+    await runWithLocation(makeLocation(37.498, 127.028, { accuracy }));
+
+    expect(mockLogSuppressedGate).toHaveBeenCalledWith(
+      'gate-accuracy',
+      expect.objectContaining({ accuracy }),
+    );
   });
 
   it('accuracy가 임계값(MAX_ACCURACY_M) 이내면 통과한다', async () => {

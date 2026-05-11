@@ -47,6 +47,15 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
 
+const mockLogFiredAlarm = jest.fn();
+const mockLogFiredStationPassed = jest.fn();
+const mockLogSuppressedDedupStation = jest.fn();
+jest.mock('../../utils/alarmLog', () => ({
+  logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
+  logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
+  logSuppressedDedupStation: (...args: unknown[]) => mockLogSuppressedDedupStation(...args),
+}));
+
 const makeStation = (id: string, name: string, lat = 37.5, lng = 127.0): Station => ({
   id,
   name,
@@ -609,6 +618,58 @@ describe('useStationAlarm', () => {
       await Promise.resolve();
 
       expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── 알람 로그 적재 (B2 인프라) ──
+  describe('appendAlarmLog 적재', () => {
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
+    const station = makeStation('S1', '강남', 37.498, 127.028);
+
+    it('알람 발사 시 logFiredAlarm(fg, event)를 호출한다', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      await waitFor(() => {
+        expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest);
+      });
+    });
+
+    it('역 통과 알림 발사 시 logFiredStationPassed(fg, station)을 호출한다', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockSetLastNotifiedStationId.mockResolvedValue(undefined);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 1,
+        isTransfer: false,
+        stopsToDestination: 1,
+      });
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      await waitFor(() => {
+        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg', station);
+      });
+    });
+
+    it('lastNotifiedStationId 일치로 skip 시 logSuppressedDedupStation(fg, station)을 호출한다', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+      mockGetLastNotifiedStationId.mockResolvedValue(station.id);
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedDedupStation).toHaveBeenCalledWith('fg', station);
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
 });

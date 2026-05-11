@@ -6,6 +6,7 @@ import { alarmKey } from '../utils/stationAlarm';
 import { createLogger } from '../utils/logger';
 import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
 import { isAccuracyAcceptable, isLocationFresh } from '../utils/locationGates';
+import { logSuppressedGate } from '../utils/alarmLog';
 import type { Route } from '../utils/stationRoute';
 
 const logger = createLogger('BackgroundLocation');
@@ -23,11 +24,20 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const latest = locations[locations.length - 1];
   if (!latest) return;
 
-  // iOS deferred 위치 배치에서 stale/저정확도 좌표가 섞여 들어올 수 있음 — 차단
-  if (!isLocationFresh(latest.timestamp)) return;
-  if (!isAccuracyAcceptable(latest.coords.accuracy)) return;
+  // iOS deferred 위치 배치에서 stale/저정확도 좌표가 섞여 들어올 수 있음 — 차단.
+  // 측정용으로 게이트 drop을 알람 로그에 fire-and-forget 적재 (B2 인프라).
+  const { latitude: lat, longitude: lng, accuracy } = latest.coords;
+  const ageMs = Date.now() - (latest.timestamp ?? 0);
+  if (!isLocationFresh(latest.timestamp)) {
+    logSuppressedGate('gate-age', { lat, lng, accuracy, ageMs });
+    return;
+  }
+  if (!isAccuracyAcceptable(accuracy)) {
+    logSuppressedGate('gate-accuracy', { lat, lng, accuracy, ageMs });
+    return;
+  }
 
-  const { latitude, longitude, speed } = latest.coords;
+  const { speed } = latest.coords;
   const speedMps = speed != null && speed >= 0 ? speed : null;
 
   try {
@@ -57,14 +67,15 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     // lastNotifiedStationId는 stationPipeline 내부에서 notificationState 모듈을 통해
     // AsyncStorage에 직접 read/write 한다 (Foreground 훅과 단일 출처 공유).
     const { alarmEvent } = await processLocationUpdate({
-      lat: latitude,
-      lng: longitude,
+      lat,
+      lng,
       destination,
       firedAlarms,
       sleepMode,
       allowSpeaker,
       storedRoute,
       speedMps,
+      source: 'bg',
     });
 
     if (alarmEvent) {
@@ -75,7 +86,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       ]);
     }
 
-    logger.info('백그라운드 위치 업데이트 완료:', latitude.toFixed(4), longitude.toFixed(4));
+    logger.info('백그라운드 위치 업데이트 완료:', lat.toFixed(4), lng.toFixed(4));
   } catch (e) {
     logger.error('백그라운드 태스크 실패:', e);
   }

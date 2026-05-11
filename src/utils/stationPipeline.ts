@@ -4,6 +4,12 @@ import { evaluateAlarmPhase } from './stationAlarm';
 import { sendAlarmNotification, sendStationPassedNotification, updateStationNotification } from './stationNotification';
 import { distanceMetersBetween, estimateEtaSeconds } from './stationEta';
 import { getLastNotifiedStationId, setLastNotifiedStationId } from './notificationState';
+import {
+  logFiredAlarm,
+  logFiredStationPassed,
+  logSuppressedDedupStation,
+  type AlarmLogSource,
+} from './alarmLog';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import type { NearestStationResult, Station } from '../types/station';
 import type { Route } from './stationRoute';
@@ -88,6 +94,9 @@ export interface ProcessLocationInputs {
   allowSpeaker?: boolean;
   storedRoute?: Route;
   speedMps?: number | null;
+  // 알람 로그 적재 시 발사 컨텍스트 — 호출자가 명시한다.
+  // 기본값을 두지 않아 컴파일러가 컨텍스트 분류 누락을 잡도록 한다.
+  source: AlarmLogSource;
 }
 
 export async function processLocationUpdate(inputs: ProcessLocationInputs): Promise<PipelineResult> {
@@ -100,6 +109,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     allowSpeaker = true,
     storedRoute = null,
     speedMps = null,
+    source,
   } = inputs;
 
   const nearest = findNearestStation(lat, lng, MAX_STATION_DISTANCE_KM);
@@ -123,6 +133,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
 
   if (alarmEvent) {
     await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker);
+    logFiredAlarm(source, alarmEvent);
   }
 
   // 역 변경 감지 → per-station 알림. 단, 경로상 노선의 역만 (false alarm 방지)
@@ -140,7 +151,10 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
           target,
         );
         await setLastNotifiedStationId(nearest.station.id);
+        logFiredStationPassed(source, nearest.station);
       }
+    } else {
+      logSuppressedDedupStation(source, nearest.station);
     }
   }
 
