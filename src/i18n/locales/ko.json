@@ -176,13 +176,9 @@
     "alarmShortArrival": "하차",
     "etaSubtextEstimated": "예상",
     "etaSubtextDuration": "소요",
-    "stopsToArrival_one": "{{count}}역 후 {{destination}} 도착",
     "stopsToArrival_other": "{{count}}역 후 {{destination}} 도착",
-    "stopsToTransfer_one": "{{count}}역 후 {{name}} 환승",
     "stopsToTransfer_other": "{{count}}역 후 {{name}} 환승",
-    "summaryWithStops_one": "→ {{destination}} · {{count}}역 후 도착{{etaSuffix}}",
     "summaryWithStops_other": "→ {{destination}} · {{count}}역 후 도착{{etaSuffix}}",
-    "summaryWithTransfer_one": "→ {{destination}} · {{count}}역 후 {{name}} 환승{{etaSuffix}}",
     "summaryWithTransfer_other": "→ {{destination}} · {{count}}역 후 {{name}} 환승{{etaSuffix}}",
     "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
     "etaSuffix": " · 약 {{min}}분"
