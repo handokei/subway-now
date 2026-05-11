@@ -15,7 +15,7 @@ jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) =>
 
 const mockSubscription = { remove: jest.fn() };
 type WatchLocation = {
-  coords: { latitude: number; longitude: number; accuracy?: number | null };
+  coords: { latitude: number; longitude: number; speed?: number | null; accuracy?: number | null };
   timestamp?: number;
 };
 let watchCallback: ((location: WatchLocation) => void) | null = null;
@@ -54,10 +54,19 @@ const mockLocation = (lat: number, lng: number, opts: { accuracy?: number | null
   });
 };
 
-const simulateGps = (lat: number, lng: number, accuracy: number | null = null) => {
+const simulateGps = (
+  lat: number,
+  lng: number,
+  opts: { speed?: number | null; accuracy?: number | null } = {},
+) => {
   act(() => {
     watchCallback?.({
-      coords: { latitude: lat, longitude: lng, accuracy },
+      coords: {
+        latitude: lat,
+        longitude: lng,
+        speed: opts.speed ?? null,
+        accuracy: opts.accuracy ?? null,
+      },
       timestamp: Date.now(),
     });
   });
@@ -115,6 +124,37 @@ describe('useNearestStation', () => {
     expect(result.current.permissionDenied).toBe(false);
     expect(result.current.error).toBeNull();
     expect(result.current.userLocation).toEqual({ lat: 37.4980, lng: 127.0277 });
+  });
+
+  it('GPS speed가 양수이면 speedMps로 노출한다', async () => {
+    mockGranted();
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, { speed: 15.5 });
+
+    await waitFor(() => expect(result.current.speedMps).toBe(15.5));
+  });
+
+  it('GPS speed가 음수면 speedMps를 null로 정규화한다', async () => {
+    mockGranted();
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, { speed: -1 });
+
+    await waitFor(() => expect(result.current.speedMps).toBeNull());
+  });
+
+  it('GPS speed가 null이면 speedMps도 null이다', async () => {
+    mockGranted();
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, { speed: null });
+
+    await waitFor(() => expect(result.current.result).not.toBeNull());
+    expect(result.current.speedMps).toBeNull();
   });
 
   it('1km 이내 거리는 정상 반환된다 (거리 상한 내 통과)', async () => {
@@ -428,7 +468,7 @@ describe('useNearestStation', () => {
 
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
-    simulateGps(37.4980, 127.0277, 200);
+    simulateGps(37.4980, 127.0277, { accuracy: 200 });
 
     // 저정확도라 result 갱신 안 됨
     expect(result.current.result).toBeNull();
@@ -442,7 +482,7 @@ describe('useNearestStation', () => {
 
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
-    simulateGps(37.4980, 127.0277, null);
+    simulateGps(37.4980, 127.0277, { accuracy: null });
 
     await waitFor(() => expect(result.current.result).not.toBeNull());
     expect(result.current.result?.station.name).toBe('강남');
@@ -487,7 +527,7 @@ describe('useNearestStation', () => {
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
     // 강원도 등 지하철 역과 멀리 떨어진 좌표
-    simulateGps(38.5, 128.5, 30);
+    simulateGps(38.5, 128.5, { accuracy: 30 });
 
     // MAX_STATION_DISTANCE_KM(1.0) 초과 → null
     expect(result.current.result).toBeNull();

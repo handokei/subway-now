@@ -1,36 +1,27 @@
 import type { Route } from './stationRoute';
+import { ALARM_PHASES, type AlarmContext, type AlarmPhase, type AlarmPhaseId } from './alarmPhases';
 
-export type AlarmType = 'destination' | 'transfer' | 'approaching';
+export type AlarmType = 'destination' | 'transfer';
 
 export interface AlarmEvent {
+  phaseId: AlarmPhaseId;
   type: AlarmType;
   stationName: string;
-  timeBased?: boolean;
 }
 
-const DEFAULT_THRESHOLD = 1;
-const SECONDS_PER_STOP = 120;
-const TIME_BASED_THRESHOLD_SECONDS = 30;
-
-export function alarmKey(event: AlarmEvent): string {
-  const prefix = event.timeBased ? 'time-' : '';
-  return `${prefix}${event.type}:${event.stationName}`;
-}
-
-export function estimateRemainingSeconds(stops: number): number {
-  return stops * SECONDS_PER_STOP;
+export function alarmKey(event: Pick<AlarmEvent, 'phaseId' | 'stationName'>): string {
+  return `${event.phaseId}:${event.stationName}`;
 }
 
 export interface CurrentTarget {
   name: string;
   stops: number;
-  alarmType: 'transfer' | 'destination';
+  alarmType: AlarmType;
 }
 
 /**
  * 경로의 모든 웨이포인트(환승역 + 도착역)를 경로 순서대로 반환한다.
- * checkAlarm이 이 목록을 순회하며, 이미 발생한 알람은 건너뛰고 다음 타겟을 평가한다.
- * 환승 횟수에 의존하지 않고 transfers 배열을 순회하므로 N번 환승까지 확장 가능하다.
+ * transfers 배열을 순회하므로 N번 환승까지 확장 가능하다.
  */
 export function resolveAllTargets(
   route: NonNullable<Route>,
@@ -50,72 +41,64 @@ export function resolveAllTargets(
     ];
   }
 
-  // multi-transfer: 모든 웨이포인트를 순서대로 반환
   const targets: CurrentTarget[] = route.transfers.map((t) => {
-    const alarmType = t.transferName === destinationName ? 'destination' as const : 'transfer' as const;
-    return { name: t.transferName === destinationName ? destinationName : t.transferName, stops: t.stopsToTransfer, alarmType };
+    const isDestination = t.transferName === destinationName;
+    return {
+      name: isDestination ? destinationName : t.transferName,
+      stops: t.stopsToTransfer,
+      alarmType: isDestination ? 'destination' : 'transfer',
+    };
   });
-  targets.push({ name: destinationName, stops: route.stopsAfterLastTransfer, alarmType: 'destination' });
+  const lastTransferIsDestination = targets[targets.length - 1]?.name === destinationName;
+  if (!lastTransferIsDestination) {
+    targets.push({ name: destinationName, stops: route.stopsAfterLastTransfer, alarmType: 'destination' });
+  }
   return targets;
 }
 
-
-export function checkAlarm(
-  route: Route,
-  destinationName: string,
-  firedAlarms: Set<string>,
-  threshold: number = DEFAULT_THRESHOLD,
-): AlarmEvent | null {
-  if (!route) return null;
-
-  const targets = resolveAllTargets(route, destinationName);
-  for (const target of targets) {
-    const event: AlarmEvent = { type: target.alarmType, stationName: target.name };
-    const key = alarmKey(event);
-    if (firedAlarms.has(key)) continue;
-    if (target.stops > threshold) return null;
-    return event;
-  }
-  return null;
+export interface AlarmSource {
+  route: Route;
+  destinationName: string;
+  etaSeconds: number | null;
 }
 
-function resolveStationType(
-  nextStationName: string,
-  destinationName: string,
-  route: NonNullable<Route>,
-): AlarmType {
-  if (nextStationName === destinationName) return 'destination';
+/**
+ * 경로상 웨이포인트를 순회하며 phase 조건을 평가한다.
+ *
+ * - etaSeconds는 최종 목적지 웨이포인트에만 적용된다 (GPS 거리 산출이 도착역 기준이므로).
+ *   환승역은 정거장 수 기반(early) 으로만 평가된다.
+ * - 어느 phase도 발사되지 않은 fresh 웨이포인트에서 트리거가 없으면 null을 반환한다.
+ *   이미 한 번이라도 발사된 웨이포인트는 통과한 것으로 간주하고 다음으로 진행한다.
+ *   환승 전 도착역 알람이 먼저 울리는 것을 막는다 (#152 회귀 방지).
+ */
+export function evaluateAlarmPhase(
+  source: AlarmSource,
+  firedAlarms: Set<string>,
+  phases: AlarmPhase[] = ALARM_PHASES,
+): AlarmEvent | null {
+  if (!source.route) return null;
 
-  if (route.type === 'transfer') {
-    if (nextStationName === route.transferName) return 'transfer';
-  }
+  const targets = resolveAllTargets(source.route, source.destinationName);
 
-  if (route.type === 'multi-transfer') {
-    for (const t of route.transfers) {
-      if (nextStationName === t.transferName) return 'transfer';
+  for (let i = 0; i < targets.length; i++) {
+    const target = targets[i];
+    const isFinal = i === targets.length - 1;
+
+    const context: AlarmContext = {
+      remainingStops: target.stops,
+      etaSeconds: isFinal ? source.etaSeconds : null,
+    };
+
+    for (const phase of phases) {
+      const key = `${phase.id}:${target.name}`;
+      if (firedAlarms.has(key)) continue;
+      if (!phase.evaluate(context)) continue;
+      return { phaseId: phase.id, type: target.alarmType, stationName: target.name };
     }
+
+    const anyFired = phases.some((p) => firedAlarms.has(`${p.id}:${target.name}`));
+    if (!anyFired) return null;
   }
 
-  return 'approaching';
-}
-
-export function checkTimeBasedAlarm(
-  nextStationName: string | null,
-  stopsToNextStation: number,
-  destinationName: string,
-  route: Route,
-  firedAlarms: Set<string>,
-  thresholdSeconds: number = TIME_BASED_THRESHOLD_SECONDS,
-): AlarmEvent | null {
-  if (!nextStationName || !route) return null;
-
-  if (estimateRemainingSeconds(stopsToNextStation) > thresholdSeconds) return null;
-
-  const type = resolveStationType(nextStationName, destinationName, route);
-  const event: AlarmEvent = { type, stationName: nextStationName, timeBased: true };
-
-  const key = alarmKey(event);
-  if (firedAlarms.has(key)) return null;
-
-  return event;
+  return null;
 }

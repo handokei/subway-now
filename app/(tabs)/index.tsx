@@ -27,7 +27,7 @@ const logger = createLogger('HomeScreen');
 
 export default function HomeScreen() {
   const { colors } = useTheme();
-  const { result, variants, userLocation, loading, error, permissionDenied, refresh } = useNearestStation();
+  const { result, variants, userLocation, speedMps, loading, error, permissionDenied, refresh } = useNearestStation();
   const customOrigin = useAppStore((s) => s.customOrigin);
   const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
@@ -119,8 +119,13 @@ export default function HomeScreen() {
     [effectiveOrigin?.id, destination?.id, route],
   );
 
-  // nextStationName이 확정됐으면 stops=0으로 즉시 시간 기반 임계 통과 (firedAlarms로 중복 방지)
-  useStationAlarm(route, destination?.name ?? null, result?.station ?? null);
+  useStationAlarm({
+    route,
+    destination,
+    nearestStation: result?.station ?? null,
+    userLocation,
+    speedMps,
+  });
   useBackgroundLocation(destination);
 
   useEffect(() => {

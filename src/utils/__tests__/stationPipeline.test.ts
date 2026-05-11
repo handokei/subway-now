@@ -2,8 +2,6 @@ import type { Station, NearestStationResult } from '../../types/station';
 import type { Route, DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
 import type { AlarmEvent } from '../stationAlarm';
 
-// ── 모든 외부 의존성 모킹 ──
-
 const mockFindNearestStation = jest.fn();
 jest.mock('../findNearestStation', () => ({
   findNearestStation: (...args: unknown[]) => mockFindNearestStation(...args),
@@ -20,12 +18,10 @@ jest.mock('../stationRoute', () => ({
   isStationOnRoute: (...args: unknown[]) => mockIsStationOnRoute(...args),
 }));
 
-const mockCheckAlarm = jest.fn();
-const mockCheckTimeBasedAlarm = jest.fn();
+const mockEvaluateAlarmPhase = jest.fn();
 const mockAlarmKey = jest.fn();
 jest.mock('../stationAlarm', () => ({
-  checkAlarm: (...args: unknown[]) => mockCheckAlarm(...args),
-  checkTimeBasedAlarm: (...args: unknown[]) => mockCheckTimeBasedAlarm(...args),
+  evaluateAlarmPhase: (...args: unknown[]) => mockEvaluateAlarmPhase(...args),
   alarmKey: (...args: unknown[]) => mockAlarmKey(...args),
 }));
 
@@ -38,9 +34,7 @@ jest.mock('../stationNotification', () => ({
   sendStationPassedNotification: (...args: unknown[]) => mockSendStationPassedNotification(...args),
 }));
 
-import { evaluateAllAlarms, processLocationUpdate, resolveNextTarget } from '../stationPipeline';
-
-// ── 테스트 픽스처 ──
+import { processLocationUpdate, resolveNextTarget } from '../stationPipeline';
 
 const mockStation: Station = {
   id: 'station-1',
@@ -66,123 +60,18 @@ const mockNearestResult: NearestStationResult = {
 };
 
 const mockRoute: DirectRoute = { type: 'direct', stops: 3 };
+const mockAlarmEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청' };
 
-const mockAlarmEvent: AlarmEvent = { type: 'destination', stationName: '시청' };
-
-describe('evaluateAllAlarms', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    mockCheckTimeBasedAlarm.mockReturnValue(null);
+function call(overrides: Partial<Parameters<typeof processLocationUpdate>[0]> = {}) {
+  return processLocationUpdate({
+    lat: 37.498,
+    lng: 127.028,
+    destination: mockDestination,
+    firedAlarms: new Set(),
+    sleepMode: false,
+    ...overrides,
   });
-
-  it('should return null for null route', () => {
-    expect(evaluateAllAlarms(null, '강남', new Set())).toBeNull();
-    expect(mockCheckAlarm).not.toHaveBeenCalled();
-  });
-
-  it('should return stop-based alarm when checkAlarm fires', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1 };
-    mockCheckAlarm.mockReturnValue(mockAlarmEvent);
-
-    const result = evaluateAllAlarms(route, '시청', new Set());
-
-    expect(result).toBe(mockAlarmEvent);
-    expect(mockCheckTimeBasedAlarm).not.toHaveBeenCalled();
-  });
-
-  it('should check time-based alarm when stop-based alarm is null', () => {
-    const route: DirectRoute = { type: 'direct', stops: 3 };
-    mockCheckAlarm.mockReturnValue(null);
-    const timeEvent: AlarmEvent = { type: 'destination', stationName: '시청', timeBased: true };
-    mockCheckTimeBasedAlarm.mockReturnValue(timeEvent);
-
-    const result = evaluateAllAlarms(route, '시청', new Set());
-
-    expect(mockCheckTimeBasedAlarm).toHaveBeenCalledWith(
-      '시청', 3, '시청', route, expect.any(Set),
-    );
-    expect(result).toBe(timeEvent);
-  });
-
-  it('should use resolveNextTarget for transfer route', () => {
-    const route: TransferRoute = {
-      type: 'transfer', transferName: '동대문', fromLine: '1', toLine: '4',
-      stopsToTransfer: 5, stopsFromTransfer: 2,
-    };
-    mockCheckAlarm.mockReturnValue(null);
-    mockCheckTimeBasedAlarm.mockReturnValue(null);
-
-    evaluateAllAlarms(route, '강남', new Set());
-
-    expect(mockCheckTimeBasedAlarm).toHaveBeenCalledWith(
-      '동대문', 5, '강남', route, expect.any(Set),
-    );
-  });
-
-  it('should use resolveNextTarget for multi-transfer route', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
-      transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
-        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
-      ],
-      stopsAfterLastTransfer: 4,
-    };
-    mockCheckAlarm.mockReturnValue(null);
-    mockCheckTimeBasedAlarm.mockReturnValue(null);
-
-    evaluateAllAlarms(route, '강남', new Set());
-
-    expect(mockCheckTimeBasedAlarm).toHaveBeenCalledWith(
-      '잠실', 3, '강남', route, expect.any(Set),
-    );
-  });
-
-  it('should return null when both alarms return null', () => {
-    const route: DirectRoute = { type: 'direct', stops: 3 };
-    mockCheckAlarm.mockReturnValue(null);
-    mockCheckTimeBasedAlarm.mockReturnValue(null);
-
-    expect(evaluateAllAlarms(route, '시청', new Set())).toBeNull();
-  });
-
-  it('should pass firedAlarms to both alarm checks', () => {
-    const route: DirectRoute = { type: 'direct', stops: 3 };
-    const firedAlarms = new Set(['destination:시청']);
-    mockCheckAlarm.mockReturnValue(null);
-
-    evaluateAllAlarms(route, '시청', firedAlarms);
-
-    expect(mockCheckAlarm).toHaveBeenCalledWith(route, '시청', firedAlarms);
-    expect(mockCheckTimeBasedAlarm).toHaveBeenCalledWith(
-      '시청', 3, '시청', route, firedAlarms,
-    );
-  });
-
-  it('should return null when stopsToNextStation is 0 (already at target)', () => {
-    const route: DirectRoute = { type: 'direct', stops: 0 };
-    mockCheckAlarm.mockReturnValue(null);
-
-    expect(evaluateAllAlarms(route, '강남', new Set())).toBeNull();
-    expect(mockCheckTimeBasedAlarm).not.toHaveBeenCalled();
-  });
-
-  it('should skip time-based alarm for transfer route with stopsToTransfer = 0 and stopsFromTransfer > 0', () => {
-    const route: TransferRoute = {
-      type: 'transfer', transferName: '동대문', fromLine: '1', toLine: '4',
-      stopsToTransfer: 0, stopsFromTransfer: 5,
-    };
-    mockCheckAlarm.mockReturnValue(null);
-    mockCheckTimeBasedAlarm.mockReturnValue(null);
-
-    evaluateAllAlarms(route, '강남', new Set());
-
-    // resolveNextTarget returns destination with stopsFromTransfer=5
-    expect(mockCheckTimeBasedAlarm).toHaveBeenCalledWith(
-      '강남', 5, '강남', route, expect.any(Set),
-    );
-  });
-});
+}
 
 describe('processLocationUpdate', () => {
   beforeEach(() => {
@@ -191,77 +80,81 @@ describe('processLocationUpdate', () => {
     mockUpdateStationNotification.mockResolvedValue(undefined);
     mockSendStationPassedNotification.mockResolvedValue(undefined);
     mockCalculateStaticETA.mockReturnValue(10);
-    mockCheckAlarm.mockReturnValue(null);
-    mockCheckTimeBasedAlarm.mockReturnValue(null);
+    mockEvaluateAlarmPhase.mockReturnValue(null);
     mockIsStationOnRoute.mockReturnValue(true);
   });
 
-  it('should return null nearest and null alarmEvent when findNearestStation returns null', async () => {
+  it('returns null nearest and null alarm when findNearestStation returns null', async () => {
     mockFindNearestStation.mockReturnValue(null);
-
-    const result = await processLocationUpdate(
-      37.5, 127.0, mockDestination, new Set(), false,
-    );
-
+    const result = await call();
     expect(result).toEqual({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
     expect(mockFindRoute).not.toHaveBeenCalled();
     expect(mockSendAlarmNotification).not.toHaveBeenCalled();
-    expect(mockUpdateStationNotification).not.toHaveBeenCalled();
   });
 
-  it('should call findRoute and evaluateAllAlarms with correct arguments', async () => {
+  it('calls findRoute and evaluator with full source', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
 
-    await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false,
-    );
+    await call({ speedMps: 10 });
 
     expect(mockFindRoute).toHaveBeenCalledWith('station-1', 'station-2');
-    expect(mockCheckAlarm).toHaveBeenCalledWith(mockRoute, '시청', expect.any(Set));
+    expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+      expect.objectContaining({
+        route: mockRoute,
+        destinationName: '시청',
+        etaSeconds: expect.any(Number),
+      }),
+      expect.any(Set),
+    );
   });
 
-  it('should send alarm notification when alarm fires (without mutating firedAlarms)', async () => {
-    mockFindNearestStation.mockReturnValue(mockNearestResult);
-    mockFindRoute.mockReturnValue(mockRoute);
-    mockCheckAlarm.mockReturnValue(mockAlarmEvent);
-
-    const firedAlarms = new Set<string>();
-
-    await processLocationUpdate(37.498, 127.028, mockDestination, firedAlarms, false);
-
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '시청', false, false, true);
-    expect(firedAlarms.size).toBe(0);
-  });
-
-  it('should pass sleepMode to sendAlarmNotification', async () => {
-    mockFindNearestStation.mockReturnValue(mockNearestResult);
-    mockFindRoute.mockReturnValue(mockRoute);
-    mockCheckAlarm.mockReturnValue(mockAlarmEvent);
-    mockAlarmKey.mockReturnValue('destination:시청');
-
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), true);
-
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '시청', true, false, true);
-  });
-
-  it('should not call sendAlarmNotification when no alarm', async () => {
+  it('passes null etaSeconds when speedMps is not provided', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
 
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
+    await call();
 
+    expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+      expect.objectContaining({ etaSeconds: null }),
+      expect.any(Set),
+    );
+  });
+
+  it('sends alarm notification with the full event when alarm fires', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+    mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+    await call();
+
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith(mockAlarmEvent, false, true);
+  });
+
+  it('passes sleepMode and allowSpeaker to sendAlarmNotification', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+    mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+    await call({ sleepMode: true, allowSpeaker: false });
+
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith(mockAlarmEvent, true, false);
+  });
+
+  it('does not call sendAlarmNotification when no alarm', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+    await call();
     expect(mockSendAlarmNotification).not.toHaveBeenCalled();
   });
 
-  it('should call updateStationNotification with correct arguments', async () => {
+  it('calls updateStationNotification with computed args', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
     mockCalculateStaticETA.mockReturnValue(12);
 
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
+    await call();
 
-    // distanceKm 0.15 → Math.round(0.15 * 1000) = 150
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
       mockStation,
       150,
@@ -273,235 +166,153 @@ describe('processLocationUpdate', () => {
     );
   });
 
-  it('should pass alarmEvent to updateStationNotification only when sleepMode is true', async () => {
+  it('passes alarmEvent to updateStationNotification only when sleepMode is true', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
-    mockCheckAlarm.mockReturnValue(mockAlarmEvent);
+    mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
     mockCalculateStaticETA.mockReturnValue(10);
 
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), true);
+    await call({ sleepMode: true });
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
-      mockStation, 150, mockDestination, mockRoute, 10,
-      undefined, mockAlarmEvent,
+      mockStation, 150, mockDestination, mockRoute, 10, undefined, mockAlarmEvent,
     );
   });
 
-  it('should not pass alarmEvent to updateStationNotification when sleepMode is false', async () => {
+  it('does not pass alarmEvent to updateStationNotification when sleepMode is false', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
-    mockCheckAlarm.mockReturnValue(mockAlarmEvent);
-    mockCalculateStaticETA.mockReturnValue(10);
+    mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
 
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
+    await call();
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
-      mockStation, 150, mockDestination, mockRoute, 10,
-      undefined, null,
+      mockStation, 150, mockDestination, mockRoute, 10, undefined, null,
     );
   });
 
-  it('should call calculateStaticETA with route', async () => {
+  it('returns alarmEvent and nearest in result', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
+    mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
 
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
-
-    expect(mockCalculateStaticETA).toHaveBeenCalledWith(mockRoute);
-  });
-
-  it('should return alarmEvent and nearest in result', async () => {
-    mockFindNearestStation.mockReturnValue(mockNearestResult);
-    mockFindRoute.mockReturnValue(mockRoute);
-    mockCheckAlarm.mockReturnValue(mockAlarmEvent);
-    mockAlarmKey.mockReturnValue('destination:시청');
-
-    const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false,
-    );
+    const result = await call();
 
     expect(result.alarmEvent).toBe(mockAlarmEvent);
     expect(result.nearest).toBe(mockNearestResult);
   });
 
-  it('should return null alarmEvent and nearest result when no alarm', async () => {
+  it('returns null alarm when evaluator returns null', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
 
-    const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false,
-    );
+    const result = await call();
 
     expect(result.alarmEvent).toBeNull();
     expect(result.nearest).toBe(mockNearestResult);
   });
 
-  it('should round distanceKm to meters correctly', async () => {
-    const nearestWithFraction: NearestStationResult = {
-      station: mockStation,
-      distanceKm: 0.4567,
-    };
-    mockFindNearestStation.mockReturnValue(nearestWithFraction);
+  it('rounds distanceKm to meters correctly', async () => {
+    mockFindNearestStation.mockReturnValue({ station: mockStation, distanceKm: 0.4567 });
     mockFindRoute.mockReturnValue(mockRoute);
     mockCalculateStaticETA.mockReturnValue(5);
 
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
-
-    // Math.round(0.4567 * 1000) = 457
-    expect(mockUpdateStationNotification).toHaveBeenCalledWith(
-      mockStation, 457, mockDestination, mockRoute, 5,
-      undefined, null,
-    );
-  });
-
-  it('should not call alarmKey in processLocationUpdate (responsibility moved to caller)', async () => {
-    mockFindNearestStation.mockReturnValue(mockNearestResult);
-    mockFindRoute.mockReturnValue(mockRoute);
-    mockCheckAlarm.mockReturnValue(mockAlarmEvent);
-
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
-
-    expect(mockAlarmKey).not.toHaveBeenCalled();
-  });
-
-  it('should use null route correctly when findRoute returns null', async () => {
-    mockFindNearestStation.mockReturnValue(mockNearestResult);
-    mockFindRoute.mockReturnValue(null);
-    mockCalculateStaticETA.mockReturnValue(null);
-
-    const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false,
-    );
+    await call();
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
-      mockStation, 150, mockDestination, null, null,
-      undefined, null,
+      mockStation, 457, mockDestination, mockRoute, 5, undefined, null,
     );
-    expect(result.nearest).toBe(mockNearestResult);
   });
 
-  it('should check time-based alarm when stop-count alarm is null', async () => {
+  it('falls back to findRoute when storedRoute exists but updateRouteFromPosition returns null', async () => {
+    const storedRoute: DirectRoute = { type: 'direct', stops: 5 };
     mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockUpdateRouteFromPosition.mockReturnValue(null);
     mockFindRoute.mockReturnValue(mockRoute);
-    const timeEvent: AlarmEvent = { type: 'destination', stationName: '시청', timeBased: true };
-    mockCheckTimeBasedAlarm.mockReturnValue(timeEvent);
 
-    const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false,
-    );
+    await call({ storedRoute });
 
-    expect(mockCheckTimeBasedAlarm).toHaveBeenCalledWith(
-      '시청', 3, '시청', mockRoute, expect.any(Set),
-    );
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '시청', false, true, true);
-    expect(result.alarmEvent).toBe(timeEvent);
+    expect(mockUpdateRouteFromPosition).toHaveBeenCalledWith(storedRoute, mockStation, 'station-2');
+    expect(mockFindRoute).toHaveBeenCalledWith('station-1', 'station-2');
   });
 
-  it('should skip time-based alarm when stop-count alarm already exists', async () => {
-    mockFindNearestStation.mockReturnValue(mockNearestResult);
-    mockFindRoute.mockReturnValue(mockRoute);
-    mockCheckAlarm.mockReturnValue(mockAlarmEvent);
-
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
-
-    expect(mockCheckTimeBasedAlarm).not.toHaveBeenCalled();
-  });
-
-  it('should pass timeBased flag to sendAlarmNotification for time-based alarm with sleepMode', async () => {
-    mockFindNearestStation.mockReturnValue(mockNearestResult);
-    mockFindRoute.mockReturnValue(mockRoute);
-    const timeEvent: AlarmEvent = { type: 'transfer', stationName: '동대문', timeBased: true };
-    mockCheckTimeBasedAlarm.mockReturnValue(timeEvent);
-
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), true);
-
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '동대문', true, true, true);
-    expect(mockUpdateStationNotification).toHaveBeenCalledWith(
-      mockStation, 150, mockDestination, mockRoute, 10, undefined, timeEvent,
-    );
-  });
-
-  it('should not check time-based alarm when route is null', async () => {
-    mockFindNearestStation.mockReturnValue(mockNearestResult);
-    mockFindRoute.mockReturnValue(null);
-    mockCalculateStaticETA.mockReturnValue(null);
-
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
-
-    expect(mockCheckTimeBasedAlarm).not.toHaveBeenCalled();
-  });
-
-  it('should use updateRouteFromPosition result when storedRoute is provided and succeeds', async () => {
+  it('uses updateRouteFromPosition result when storedRoute is provided and succeeds', async () => {
     const storedRoute: DirectRoute = { type: 'direct', stops: 5 };
     const updatedRoute: DirectRoute = { type: 'direct', stops: 3 };
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockUpdateRouteFromPosition.mockReturnValue(updatedRoute);
     mockCalculateStaticETA.mockReturnValue(6);
 
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false, true, storedRoute);
+    await call({ storedRoute });
 
     expect(mockUpdateRouteFromPosition).toHaveBeenCalledWith(storedRoute, mockStation, 'station-2');
     expect(mockFindRoute).not.toHaveBeenCalled();
     expect(mockCalculateStaticETA).toHaveBeenCalledWith(updatedRoute);
   });
 
-  it('should fall back to findRoute when storedRoute is provided but updateRouteFromPosition returns null', async () => {
-    const storedRoute: DirectRoute = { type: 'direct', stops: 5 };
-    mockFindNearestStation.mockReturnValue(mockNearestResult);
-    mockUpdateRouteFromPosition.mockReturnValue(null);
-    mockFindRoute.mockReturnValue(mockRoute);
-    mockCalculateStaticETA.mockReturnValue(6);
-
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false, true, storedRoute);
-
-    expect(mockUpdateRouteFromPosition).toHaveBeenCalledWith(storedRoute, mockStation, 'station-2');
-    expect(mockFindRoute).toHaveBeenCalledWith('station-1', 'station-2');
-  });
-
-  it('should call findRoute when no storedRoute is provided (default null)', async () => {
+  it('calls findRoute when no storedRoute is provided', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
 
-    await processLocationUpdate(37.498, 127.028, mockDestination, new Set(), false);
+    await call();
 
     expect(mockUpdateRouteFromPosition).not.toHaveBeenCalled();
     expect(mockFindRoute).toHaveBeenCalledWith('station-1', 'station-2');
   });
 
-  it('should send station-passed notification when station changes', async () => {
+  it('sends station-passed notification when station changes', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
 
-    const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false, true, null, 'other-station',
-    );
+    const result = await call({ lastNotifiedStationId: 'other-station' });
 
     expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', 3);
     expect(result.lastNotifiedStationId).toBe('station-1');
   });
 
-  it('should not send station-passed notification when station is the same', async () => {
+  it('does not send station-passed notification when station is the same', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
 
-    const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false, true, null, 'station-1',
-    );
+    const result = await call({ lastNotifiedStationId: 'station-1' });
 
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     expect(result.lastNotifiedStationId).toBe('station-1');
   });
 
-  it('should send station-passed notification when lastNotifiedStationId is null', async () => {
+  it('sends station-passed notification when lastNotifiedStationId is null', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
 
-    const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false, true, null, null,
-    );
+    const result = await call({ lastNotifiedStationId: null });
 
     expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', 3);
     expect(result.lastNotifiedStationId).toBe('station-1');
+  });
+
+  it('does not mutate firedAlarms (responsibility moved to caller)', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+    mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+    const firedAlarms = new Set<string>();
+    await call({ firedAlarms });
+
+    expect(firedAlarms.size).toBe(0);
+    expect(mockAlarmKey).not.toHaveBeenCalled();
+  });
+
+  it('handles null route gracefully', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(null);
+    mockCalculateStaticETA.mockReturnValue(null);
+
+    const result = await call();
+
+    expect(mockUpdateStationNotification).toHaveBeenCalledWith(
+      mockStation, 150, mockDestination, null, null, undefined, null,
+    );
+    expect(result.nearest).toBe(mockNearestResult);
   });
 
   it('경로 외 노선의 역이면 station-passed 알림을 보내지 않고 lastNotifiedStationId를 갱신하지 않는다', async () => {
@@ -509,9 +320,7 @@ describe('processLocationUpdate', () => {
     mockFindRoute.mockReturnValue(mockRoute);
     mockIsStationOnRoute.mockReturnValue(false);
 
-    const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false, true, null, 'previous-station',
-    );
+    const result = await call({ lastNotifiedStationId: 'previous-station' });
 
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     expect(result.lastNotifiedStationId).toBe('previous-station');
@@ -521,9 +330,7 @@ describe('processLocationUpdate', () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(null);
 
-    const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false, true, null, null,
-    );
+    const result = await call({ lastNotifiedStationId: null });
 
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     expect(result.lastNotifiedStationId).toBeNull();
@@ -532,7 +339,7 @@ describe('processLocationUpdate', () => {
   it('findNearestStation을 MAX_STATION_DISTANCE_KM(1.0)와 함께 호출한다', async () => {
     mockFindNearestStation.mockReturnValue(null);
 
-    await processLocationUpdate(37.5, 127.0, mockDestination, new Set(), false);
+    await call({ lat: 37.5, lng: 127.0 });
 
     expect(mockFindNearestStation).toHaveBeenCalledWith(37.5, 127.0, 1.0);
   });
@@ -544,9 +351,7 @@ describe('processLocationUpdate', () => {
     mockFindRoute.mockReturnValue(corruptedRoute);
     mockIsStationOnRoute.mockReturnValue(true);
 
-    const result = await processLocationUpdate(
-      37.498, 127.028, mockDestination, new Set(), false, true, null, 'prev-station',
-    );
+    const result = await call({ lastNotifiedStationId: 'prev-station' });
 
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     expect(result.lastNotifiedStationId).toBe('prev-station');
@@ -554,11 +359,11 @@ describe('processLocationUpdate', () => {
 });
 
 describe('resolveNextTarget', () => {
-  it('should return null for null route', () => {
+  it('returns null for null route', () => {
     expect(resolveNextTarget(null, '강남')).toBeNull();
   });
 
-  it('should return destination and stops for direct route', () => {
+  it('returns destination and stops for direct route', () => {
     const route: DirectRoute = { type: 'direct', stops: 5 };
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '강남',
@@ -566,7 +371,7 @@ describe('resolveNextTarget', () => {
     });
   });
 
-  it('should return transfer station for transfer route with stopsToTransfer > 0', () => {
+  it('returns transfer station for transfer route with stopsToTransfer > 0', () => {
     const route: TransferRoute = {
       type: 'transfer', transferName: '동대문', fromLine: '1', toLine: '4',
       stopsToTransfer: 3, stopsFromTransfer: 2,
@@ -577,7 +382,7 @@ describe('resolveNextTarget', () => {
     });
   });
 
-  it('should return destination for transfer route with stopsToTransfer = 0', () => {
+  it('returns destination for transfer route with stopsToTransfer = 0', () => {
     const route: TransferRoute = {
       type: 'transfer', transferName: '동대문', fromLine: '1', toLine: '4',
       stopsToTransfer: 0, stopsFromTransfer: 2,
@@ -588,7 +393,7 @@ describe('resolveNextTarget', () => {
     });
   });
 
-  it('should return first transfer for multi-transfer route with stopsToTransfer > 0', () => {
+  it('returns first transfer for multi-transfer route with stopsToTransfer > 0', () => {
     const route: MultiTransferRoute = {
       type: 'multi-transfer',
       transfers: [
@@ -603,7 +408,7 @@ describe('resolveNextTarget', () => {
     });
   });
 
-  it('should return second transfer when first has stopsToTransfer = 0', () => {
+  it('returns second transfer when first has stopsToTransfer = 0', () => {
     const route: MultiTransferRoute = {
       type: 'multi-transfer',
       transfers: [
@@ -618,12 +423,12 @@ describe('resolveNextTarget', () => {
     });
   });
 
-  it('should return null for unknown route type', () => {
+  it('returns null for unknown route type', () => {
     const route = { type: 'unknown' } as unknown as Route;
     expect(resolveNextTarget(route, '강남')).toBeNull();
   });
 
-  it('should return destination when all transfers have stopsToTransfer = 0', () => {
+  it('returns destination when all transfers have stopsToTransfer = 0', () => {
     const route: MultiTransferRoute = {
       type: 'multi-transfer',
       transfers: [

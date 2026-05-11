@@ -84,7 +84,7 @@ const mockDestination = {
 function makeLocation(
   lat: number,
   lng: number,
-  opts: { ageMs?: number; accuracy?: number | null } = {},
+  opts: { speed?: number | null; ageMs?: number; accuracy?: number | null } = {},
 ) {
   return {
     coords: {
@@ -94,7 +94,7 @@ function makeLocation(
       accuracy: opts.accuracy ?? null,
       altitudeAccuracy: null,
       heading: null,
-      speed: null,
+      speed: opts.speed ?? null,
     },
     timestamp: Date.now() - (opts.ageMs ?? 0),
   };
@@ -228,16 +228,16 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
-      37.498,
-      127.028,
-      mockDestination,
-      new Set(),
-      false,
-      true,
-      null,
-      null,
-    );
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      lat: 37.498,
+      lng: 127.028,
+      destination: mockDestination,
+      firedAlarms: new Set(),
+      sleepMode: false,
+      allowSpeaker: true,
+      storedRoute: null,
+      lastNotifiedStationId: null,
+    }));
     expect(AsyncStorage.setItem).not.toHaveBeenCalled();
   });
 
@@ -253,16 +253,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
-      expect.any(Number),
-      expect.any(Number),
-      mockDestination,
-      new Set(),
-      true,
-      true,
-      null,
-      null,
-    );
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      sleepMode: true,
+    }));
   });
 
   it("sleepJson이 'false'이면 sleepMode=false로 processLocationUpdate를 호출한다", async () => {
@@ -275,16 +268,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
-      expect.any(Number),
-      expect.any(Number),
-      mockDestination,
-      new Set(),
-      false,
-      true,
-      null,
-      null,
-    );
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      sleepMode: false,
+    }));
   });
 
   // ── allowSpeaker 파싱 ──
@@ -299,16 +285,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
-      expect.any(Number),
-      expect.any(Number),
-      mockDestination,
-      new Set(),
-      false,
-      false,
-      null,
-      null,
-    );
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      allowSpeaker: false,
+    }));
   });
 
   it("allowSpeakerJson이 'true'이면 allowSpeaker=true로 processLocationUpdate를 호출한다", async () => {
@@ -321,16 +300,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
-      expect.any(Number),
-      expect.any(Number),
-      mockDestination,
-      new Set(),
-      false,
-      true,
-      null,
-      null,
-    );
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      allowSpeaker: true,
+    }));
   });
 
   // ── firedAlarms 파싱 ──
@@ -346,16 +318,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
-      expect.any(Number),
-      expect.any(Number),
-      mockDestination,
-      new Set(fired),
-      false,
-      true,
-      null,
-      null,
-    );
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      firedAlarms: new Set(fired),
+    }));
   });
 
   // ── ROUTE_KEY 관련 테스트 ──
@@ -384,16 +349,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
-      expect.any(Number),
-      expect.any(Number),
-      mockDestination,
-      new Set(),
-      false,
-      true,
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
       storedRoute,
-      null,
-    );
+    }));
   });
 
   it('routeJson이 null이면 null storedRoute를 processLocationUpdate에 전달한다', async () => {
@@ -406,22 +364,15 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
-      expect.any(Number),
-      expect.any(Number),
-      mockDestination,
-      new Set(),
-      false,
-      true,
-      null,
-      null,
-    );
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      storedRoute: null,
+    }));
   });
 
   // ── alarmEvent 있음: firedAlarms 저장 ──
 
   it('alarmEvent가 있으면 alarmKey를 추가하고 AsyncStorage.setItem을 호출한다', async () => {
-    const alarmEvent: AlarmEvent = { type: 'destination', stationName: '시청' };
+    const alarmEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청' };
     mockStorageValues(JSON.stringify(mockDestination));
 
     mockProcessLocationUpdate.mockResolvedValue({
@@ -448,7 +399,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   });
 
   it('기존 firedAlarms에 alarmEvent 키를 추가하여 저장한다', async () => {
-    const alarmEvent: AlarmEvent = { type: 'transfer', stationName: '강남' };
+    const alarmEvent: AlarmEvent = { phaseId: 'early', type: 'transfer', stationName: '강남' };
     const existingFired = ['destination:시청'];
     mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(existingFired));
 
@@ -582,16 +533,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     });
 
     expect(AsyncStorage.getItem).toHaveBeenCalledWith('subway-now:last-notified-station');
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(
-      expect.any(Number),
-      expect.any(Number),
-      mockDestination,
-      new Set(),
-      false,
-      true,
-      null,
-      'station-1',
-    );
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      lastNotifiedStationId: 'station-1',
+    }));
   });
 
   it('lastNotifiedStationId가 변경되면 AsyncStorage에 저장한다', async () => {
@@ -629,6 +573,30 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     });
 
     expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+  });
+
+  it('GPS speed가 양수이면 speedMps로 processLocationUpdate에 전달한다', async () => {
+    mockStorageValues(JSON.stringify(mockDestination));
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028, { speed: 12.5 })] },
+      error: null,
+    });
+
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({ speedMps: 12.5 }));
+  });
+
+  it('GPS speed가 음수이면 speedMps를 null로 정규화한다', async () => {
+    mockStorageValues(JSON.stringify(mockDestination));
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028, { speed: -1 })] },
+      error: null,
+    });
+
+    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({ speedMps: null }));
   });
 
   it('lastNotifiedStationId가 null이면 저장하지 않는다', async () => {

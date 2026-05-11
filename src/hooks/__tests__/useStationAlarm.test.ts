@@ -1,8 +1,9 @@
 import { renderHook } from '@testing-library/react-native';
-import { useStationAlarm } from '../useStationAlarm';
+import { useStationAlarm, type UseStationAlarmInputs } from '../useStationAlarm';
 import { useAppStore } from '../../store/useAppStore';
 import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../../utils/stationRoute';
 import type { Station } from '../../types/station';
+import type { AlarmEvent } from '../../utils/stationAlarm';
 
 const mockSendAlarmNotification = jest.fn().mockResolvedValue(undefined);
 const mockSendStationPassedNotification = jest.fn().mockResolvedValue(undefined);
@@ -12,11 +13,17 @@ jest.mock('../../utils/stationNotification', () => ({
   sendStationPassedNotification: (...args: unknown[]) => mockSendStationPassedNotification(...args),
 }));
 
-const mockEvaluateAllAlarms = jest.fn();
-const mockResolveNextTarget = jest.fn();
+const mockEvaluateAlarmPhase = jest.fn();
+jest.mock('../../utils/stationAlarm', () => {
+  const actual = jest.requireActual('../../utils/stationAlarm');
+  return {
+    ...actual,
+    evaluateAlarmPhase: (...args: unknown[]) => mockEvaluateAlarmPhase(...args),
+  };
+});
 
+const mockResolveNextTarget = jest.fn();
 jest.mock('../../utils/stationPipeline', () => ({
-  evaluateAllAlarms: (...args: unknown[]) => mockEvaluateAllAlarms(...args),
   resolveNextTarget: (...args: unknown[]) => mockResolveNextTarget(...args),
 }));
 
@@ -30,55 +37,107 @@ jest.mock('../../utils/logger', () => ({
 }));
 
 jest.mock('@react-native-async-storage/async-storage', () =>
-  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
 
-const makeStation = (id: string, name: string): Station => ({
+const makeStation = (id: string, name: string, lat = 37.5, lng = 127.0): Station => ({
   id,
   name,
   line: '2',
   lineColor: '#33A23D',
-  lat: 37.5,
-  lng: 127.0,
+  lat,
+  lng,
 });
+
+const destination = makeStation('D1', '강남', 37.498, 127.028);
+const altDestination = makeStation('D2', '잠실', 37.513, 127.100);
+
+const earlyDest: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남' };
+const earlyTransfer: AlarmEvent = { phaseId: 'early', type: 'transfer', stationName: '시청' };
+const imminentDest: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: '강남' };
+
+function defaultInputs(overrides: Partial<UseStationAlarmInputs> = {}): UseStationAlarmInputs {
+  return {
+    route: null,
+    destination: null,
+    nearestStation: null,
+    userLocation: null,
+    speedMps: null,
+    ...overrides,
+  };
+}
 
 describe('useStationAlarm', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     useAppStore.setState({ sleepMode: false, allowSpeaker: true, alarmEvent: null });
-    mockEvaluateAllAlarms.mockReturnValue(null);
+    mockEvaluateAlarmPhase.mockReturnValue(null);
     mockResolveNextTarget.mockReturnValue(null);
   });
 
-  it('should not send alarm when route is null', () => {
-    renderHook(() => useStationAlarm(null, '강남', null));
-    expect(mockEvaluateAllAlarms).not.toHaveBeenCalled();
-    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+  it('does not evaluate when route is null', () => {
+    renderHook(() => useStationAlarm(defaultInputs({ destination })));
+    expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
   });
 
-  it('should not send alarm when destinationName is null', () => {
+  it('does not evaluate when destination is null', () => {
     const route: DirectRoute = { type: 'direct', stops: 1 };
-    renderHook(() => useStationAlarm(route, null, null));
-    expect(mockEvaluateAllAlarms).not.toHaveBeenCalled();
-    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    renderHook(() => useStationAlarm(defaultInputs({ route })));
+    expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
   });
 
-  it('should not send alarm when evaluateAllAlarms returns null', () => {
+  it('builds AlarmSource and calls evaluator', () => {
     const route: DirectRoute = { type: 'direct', stops: 3 };
-    mockEvaluateAllAlarms.mockReturnValue(null);
-    renderHook(() => useStationAlarm(route, '강남', null));
-    expect(mockEvaluateAllAlarms).toHaveBeenCalledWith(route, '강남', expect.any(Set));
-    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({
+          route,
+          destination,
+          userLocation: { lat: 37.4, lng: 127.0 },
+          speedMps: 10,
+        }),
+      ),
+    );
+    expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+      expect.objectContaining({
+        route,
+        destinationName: '강남',
+        etaSeconds: expect.any(Number),
+      }),
+      expect.any(Set),
+    );
   });
 
-  it('should send destination alarm for direct route', () => {
+  it('passes null etaSeconds when speed is null', () => {
+    const route: DirectRoute = { type: 'direct', stops: 3 };
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: null }),
+      ),
+    );
+    expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+      expect.objectContaining({ etaSeconds: null }),
+      expect.any(Set),
+    );
+  });
+
+  it('passes null etaSeconds when userLocation is null', () => {
+    const route: DirectRoute = { type: 'direct', stops: 3 };
+    renderHook(() => useStationAlarm(defaultInputs({ route, destination, speedMps: 10 })));
+    expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+      expect.objectContaining({ etaSeconds: null }),
+      expect.any(Set),
+    );
+  });
+
+  it('sends alarm notification with the full event', () => {
     const route: DirectRoute = { type: 'direct', stops: 1 };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '강남' });
-    renderHook(() => useStationAlarm(route, '강남', null));
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남', false, false, true);
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, true);
   });
 
-  it('should send transfer alarm for transfer route', () => {
+  it('sends transfer alarm for transfer route', () => {
     const route: TransferRoute = {
       type: 'transfer',
       transferName: '시청',
@@ -87,26 +146,12 @@ describe('useStationAlarm', () => {
       stopsToTransfer: 1,
       stopsFromTransfer: 5,
     };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'transfer', stationName: '시청' });
-    renderHook(() => useStationAlarm(route, '강남', null));
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '시청', false, false, true);
+    mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+    renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyTransfer, false, true);
   });
 
-  it('should send destination alarm for transfer route stopsFromTransfer', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
-      transferName: '시청',
-      fromLine: '1',
-      toLine: '2',
-      stopsToTransfer: 5,
-      stopsFromTransfer: 1,
-    };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '강남' });
-    renderHook(() => useStationAlarm(route, '강남', null));
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남', false, false, true);
-  });
-
-  it('should send transfer alarm for multi-transfer route', () => {
+  it('sends transfer alarm for multi-transfer route', () => {
     const route: MultiTransferRoute = {
       type: 'multi-transfer',
       transfers: [
@@ -115,72 +160,93 @@ describe('useStationAlarm', () => {
       ],
       stopsAfterLastTransfer: 3,
     };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'transfer', stationName: '시청' });
-    renderHook(() => useStationAlarm(route, '강남', null));
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '시청', false, false, true);
+    mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+    renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyTransfer, false, true);
   });
 
-  it('should not fire same alarm twice', () => {
+  it('does not fire the same alarm twice', () => {
     const route: DirectRoute = { type: 'direct', stops: 1 };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '강남' });
-    const { rerender } = renderHook(() => useStationAlarm(route, '강남', null));
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    const { rerender } = renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
-
     rerender({});
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
   });
 
-  it('should reset fired alarms when destination changes', () => {
+  it('fires imminent after early for the same waypoint', () => {
     const route: DirectRoute = { type: 'direct', stops: 1 };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '강남' });
+    mockEvaluateAlarmPhase.mockReturnValueOnce(earlyDest);
     const { rerender } = renderHook(
-      ({ dest }: { dest: string }) => useStationAlarm(route, dest, null),
-      { initialProps: { dest: '강남' } },
+      ({ inputs }: { inputs: UseStationAlarmInputs }) => useStationAlarm(inputs),
+      {
+        initialProps: {
+          inputs: defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: 5 }),
+        },
+      },
+    );
+    expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(earlyDest, false, true);
+
+    mockEvaluateAlarmPhase.mockReturnValueOnce(imminentDest);
+    rerender({
+      inputs: defaultInputs({ route, destination, userLocation: { lat: 37.49, lng: 127.025 }, speedMps: 20 }),
+    });
+    expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(imminentDest, false, true);
+    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(2);
+  });
+
+  it('resets fired alarms when destination changes', () => {
+    const route: DirectRoute = { type: 'direct', stops: 1 };
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    const { rerender } = renderHook(
+      ({ dest }: { dest: Station }) => useStationAlarm(defaultInputs({ route, destination: dest })),
+      { initialProps: { dest: destination } },
     );
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
 
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '잠실' });
-    rerender({ dest: '잠실' });
+    const altEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '잠실' };
+    mockEvaluateAlarmPhase.mockReturnValue(altEvent);
+    rerender({ dest: altDestination });
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(2);
-    expect(mockSendAlarmNotification).toHaveBeenLastCalledWith('destination', '잠실', false, false, true);
+    expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(altEvent, false, true);
   });
 
-  it('should pass sleepMode to sendAlarmNotification', () => {
+  it('passes sleepMode to sendAlarmNotification', () => {
     useAppStore.setState({ sleepMode: true });
     const route: DirectRoute = { type: 'direct', stops: 1 };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '강남' });
-    renderHook(() => useStationAlarm(route, '강남', null));
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남', true, false, true);
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, true, true);
   });
 
-  it('취침 모드일 때 alarmEvent를 설정한다', () => {
+  it('sets alarmEvent in store when sleepMode is on', () => {
     useAppStore.setState({ sleepMode: true });
     const route: DirectRoute = { type: 'direct', stops: 1 };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '강남' });
-    renderHook(() => useStationAlarm(route, '강남', null));
-    expect(useAppStore.getState().alarmEvent).toEqual({ type: 'destination', stationName: '강남' });
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+    expect(useAppStore.getState().alarmEvent).toEqual(earlyDest);
   });
 
-  it('취침 모드가 아닐 때 alarmEvent를 설정하지 않는다', () => {
+  it('does not set alarmEvent when sleepMode is off', () => {
     useAppStore.setState({ sleepMode: false });
     const route: DirectRoute = { type: 'direct', stops: 1 };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '강남' });
-    renderHook(() => useStationAlarm(route, '강남', null));
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     expect(useAppStore.getState().alarmEvent).toBeNull();
   });
 
-  it('should pass allowSpeaker=false to sendAlarmNotification when store has allowSpeaker=false', () => {
+  it('passes allowSpeaker=false from store', () => {
     useAppStore.setState({ allowSpeaker: false });
     const route: DirectRoute = { type: 'direct', stops: 1 };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '강남' });
-    renderHook(() => useStationAlarm(route, '강남', null));
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith('destination', '강남', false, false, false);
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, false);
   });
 
-  it('should not re-fire alarm when sleepMode changes', () => {
+  it('does not re-fire when sleepMode toggles after first fire', () => {
     const route: DirectRoute = { type: 'direct', stops: 1 };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '강남' });
-    const { rerender } = renderHook(() => useStationAlarm(route, '강남', null));
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    const { rerender } = renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
 
     useAppStore.setState({ sleepMode: true });
@@ -188,89 +254,29 @@ describe('useStationAlarm', () => {
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
   });
 
-  it('should handle sendAlarmNotification failure gracefully', () => {
+  it('handles sendAlarmNotification rejection gracefully', () => {
     mockSendAlarmNotification.mockRejectedValueOnce(new Error('알림 실패'));
     const route: DirectRoute = { type: 'direct', stops: 1 };
-    mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '강남' });
-    expect(() => renderHook(() => useStationAlarm(route, '강남', null))).not.toThrow();
-  });
-
-  describe('time-based alarm', () => {
-    it('should send time-based alarm with timeBased flag', () => {
-      const route: DirectRoute = { type: 'direct', stops: 5 };
-      mockEvaluateAllAlarms.mockReturnValue({ type: 'approaching', stationName: '역삼', timeBased: true });
-      renderHook(() => useStationAlarm(route, '강남', null));
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith('approaching', '역삼', false, true, true);
-    });
-
-    it('should send time-based transfer alarm', () => {
-      const route: TransferRoute = {
-        type: 'transfer',
-        transferName: '시청',
-        fromLine: '1',
-        toLine: '2',
-        stopsToTransfer: 1,
-        stopsFromTransfer: 5,
-      };
-      mockEvaluateAllAlarms.mockReturnValue({ type: 'transfer', stationName: '시청', timeBased: true });
-      renderHook(() => useStationAlarm(route, '강남', null));
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith('transfer', '시청', false, true, true);
-    });
-
-    it('should set alarmEvent in sleep mode for destination time-based alarm', () => {
-      useAppStore.setState({ sleepMode: true });
-      const route: DirectRoute = { type: 'direct', stops: 1 };
-      mockEvaluateAllAlarms.mockReturnValue({ type: 'destination', stationName: '강남', timeBased: true });
-      renderHook(() => useStationAlarm(route, '강남', null));
-      expect(useAppStore.getState().alarmEvent).toEqual({ type: 'destination', stationName: '강남' });
-    });
-
-    it('should not set alarmEvent in sleep mode for approaching time-based alarm', () => {
-      useAppStore.setState({ sleepMode: true });
-      const route: DirectRoute = { type: 'direct', stops: 5 };
-      mockEvaluateAllAlarms.mockReturnValue({ type: 'approaching', stationName: '역삼', timeBased: true });
-      renderHook(() => useStationAlarm(route, '강남', null));
-      expect(useAppStore.getState().alarmEvent).toBeNull();
-    });
-
-    it('should handle time-based alarm notification failure gracefully', () => {
-      mockSendAlarmNotification.mockRejectedValueOnce(new Error('시간 기반 알림 실패'));
-      const route: DirectRoute = { type: 'direct', stops: 5 };
-      mockEvaluateAllAlarms.mockReturnValue({ type: 'approaching', stationName: '역삼', timeBased: true });
-      expect(() => renderHook(() => useStationAlarm(route, '강남', null))).not.toThrow();
-    });
-
-    it('should set alarmEvent in sleep mode for transfer time-based alarm', () => {
-      useAppStore.setState({ sleepMode: true });
-      const route: TransferRoute = {
-        type: 'transfer',
-        transferName: '시청',
-        fromLine: '1',
-        toLine: '2',
-        stopsToTransfer: 1,
-        stopsFromTransfer: 5,
-      };
-      mockEvaluateAllAlarms.mockReturnValue({ type: 'transfer', stationName: '시청', timeBased: true });
-      renderHook(() => useStationAlarm(route, '강남', null));
-      expect(useAppStore.getState().alarmEvent).toEqual({ type: 'transfer', stationName: '시청' });
-    });
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    expect(() => renderHook(() => useStationAlarm(defaultInputs({ route, destination })))).not.toThrow();
   });
 
   describe('station-passed notification', () => {
-    it('역이 변경되면 per-station 알림을 발송한다', () => {
+    it('fires when nearest station changes', () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 3 });
-      renderHook(() => useStationAlarm(route, '강남', station));
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
       expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', 3);
     });
 
-    it('같은 역이면 per-station 알림을 발송하지 않는다', () => {
+    it('does not fire when nearest station is unchanged', () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 3 });
       const { rerender } = renderHook(
-        ({ s }: { s: Station }) => useStationAlarm(route, '강남', s),
+        ({ s }: { s: Station }) =>
+          useStationAlarm(defaultInputs({ route, destination, nearestStation: s })),
         { initialProps: { s: station } },
       );
       expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
@@ -279,13 +285,14 @@ describe('useStationAlarm', () => {
       expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
     });
 
-    it('역이 다른 역으로 변경되면 다시 발송한다', () => {
+    it('fires again when nearest station changes to a different one', () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station1 = makeStation('S1', '역삼');
       const station2 = makeStation('S2', '선릉');
       mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 3 });
       const { rerender } = renderHook(
-        ({ s }: { s: Station }) => useStationAlarm(route, '강남', s),
+        ({ s }: { s: Station }) =>
+          useStationAlarm(defaultInputs({ route, destination, nearestStation: s })),
         { initialProps: { s: station1 } },
       );
       expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
@@ -296,39 +303,41 @@ describe('useStationAlarm', () => {
       expect(mockSendStationPassedNotification).toHaveBeenLastCalledWith('선릉', '강남', 2);
     });
 
-    it('nearestStation이 null이면 per-station 알림을 발송하지 않는다', () => {
+    it('does not fire when nearestStation is null', () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
-      renderHook(() => useStationAlarm(route, '강남', null));
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('route가 없으면 per-station 알림을 발송하지 않는다', () => {
+    it('does not fire when route is null', () => {
       const station = makeStation('S1', '역삼');
-      renderHook(() => useStationAlarm(null, '강남', station));
+      renderHook(() => useStationAlarm(defaultInputs({ destination, nearestStation: station })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('destinationName이 없으면 per-station 알림을 발송하지 않는다', () => {
+    it('does not fire when destination is null', () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
-      renderHook(() => useStationAlarm(route, null, station));
+      renderHook(() => useStationAlarm(defaultInputs({ route, nearestStation: station })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
-    it('resolveNextTarget이 null을 반환하면 stopsRemaining을 null로 전달한다', () => {
+    it('passes null stopsRemaining when resolveNextTarget returns null', () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(null);
-      renderHook(() => useStationAlarm(route, '강남', station));
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
       expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', null);
     });
 
-    it('sendStationPassedNotification 실패 시 에러를 던지지 않는다', () => {
+    it('handles sendStationPassedNotification rejection gracefully', () => {
       mockSendStationPassedNotification.mockRejectedValueOnce(new Error('알림 실패'));
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 3 });
-      expect(() => renderHook(() => useStationAlarm(route, '강남', station))).not.toThrow();
+      expect(() =>
+        renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station }))),
+      ).not.toThrow();
     });
 
     it('transfer route에서 경로 외 노선의 역은 알림을 발송하지 않는다', () => {
@@ -350,7 +359,7 @@ describe('useStationAlarm', () => {
         lng: 127.0,
       };
       mockResolveNextTarget.mockReturnValue({ nextStationName: '시청', stopsToNextStation: 3 });
-      renderHook(() => useStationAlarm(route, '강남', offRouteStation));
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: offRouteStation })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
 
@@ -375,7 +384,8 @@ describe('useStationAlarm', () => {
       mockResolveNextTarget.mockReturnValue({ nextStationName: '시청', stopsToNextStation: 2 });
 
       const { rerender } = renderHook(
-        ({ s }: { s: Station }) => useStationAlarm(route, '강남', s),
+        ({ s }: { s: Station }) =>
+          useStationAlarm(defaultInputs({ route, destination, nearestStation: s })),
         { initialProps: { s: offRouteStation } },
       );
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
