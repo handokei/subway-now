@@ -1,9 +1,11 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
+import { I18nextProvider } from 'react-i18next';
 import { ThemeProvider, useTheme } from '../src/theme';
 import { setupNotificationHandler } from '../src/utils/stationNotification';
 import { setMinLevel } from '../src/utils/logger';
+import { i18n } from '../src/i18n';
 import '../src/tasks/backgroundLocationTask';
 
 SplashScreen.preventAutoHideAsync();
@@ -26,8 +28,10 @@ function RootContent() {
 
 export default function RootLayout() {
   return (
-    <ThemeProvider>
-      <RootContent />
-    </ThemeProvider>
+    <I18nextProvider i18n={i18n}>
+      <ThemeProvider>
+        <RootContent />
+      </ThemeProvider>
+    </I18nextProvider>
   );
 }

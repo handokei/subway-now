@@ -1,0 +1,8 @@
+{
+  "common": {
+    "retry": "다시 시도",
+    "close": "닫기",
+    "confirm": "확인",
+    "cancel": "취소"
+  }
+}
