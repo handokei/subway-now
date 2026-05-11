@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -150,10 +150,28 @@ function LocaleListSetting({
   onChange,
 }: LocaleListSettingProps) {
   const { colors } = useTheme();
+  const { i18n } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+
   const rows: readonly { value: LocalePreference; label: string }[] = [
     { value: 'auto', label: autoLabel },
     ...LANGUAGE_REGISTRY.map((lang) => ({ value: lang.code, label: lang.nativeName })),
   ];
+
+  const resolvedCode = i18n.language?.split('-')[0];
+  const resolvedNativeName = LANGUAGE_REGISTRY.find((l) => l.code === resolvedCode)?.nativeName;
+  const triggerText =
+    value === 'auto'
+      ? resolvedNativeName
+        ? `${autoLabel} (${resolvedNativeName})`
+        : autoLabel
+      : (rows.find((r) => r.value === value)?.label ?? autoLabel);
+
+  const handleSelect = (next: LocalePreference) => {
+    onChange(next);
+    setExpanded(false);
+  };
+
   return (
     <View style={[styles.card, { backgroundColor: colors.card }]}>
       <Text style={[styles.sectionTitle, { color: colors.muted }]}>{sectionTitle}</Text>
@@ -165,41 +183,55 @@ function LocaleListSetting({
         </View>
       </View>
 
-      <View
-        style={[styles.localeList, { borderTopColor: colors.hair }]}
-        testID="locale-list"
-        accessibilityRole="radiogroup"
+      <Pressable
+        style={[styles.localeTrigger, { borderTopColor: colors.hair }]}
+        onPress={() => setExpanded((v) => !v)}
+        testID="locale-trigger"
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${triggerText}`}
+        accessibilityState={{ expanded }}
       >
-        {rows.map(({ value: rowValue, label: rowLabel }, index) => {
-          const active = value === rowValue;
-          return (
-            <Pressable
-              key={rowValue}
-              style={[
-                styles.localeRow,
-                index > 0 && { borderTopWidth: 1, borderTopColor: colors.hair },
-              ]}
-              onPress={() => onChange(rowValue)}
-              testID={`locale-row-${rowValue}`}
-              accessibilityRole="radio"
-              accessibilityState={{ selected: active }}
-            >
-              <Text style={[styles.localeRowLabel, { color: active ? colors.ink : colors.muted }]}>
-                {rowLabel}
-              </Text>
-              <View
+        <Text style={[styles.localeTriggerValue, { color: colors.ink }]}>{triggerText}</Text>
+        <Text style={[styles.localeChevron, { color: colors.muted }]}>{expanded ? '▴' : '▾'}</Text>
+      </Pressable>
+
+      {expanded && (
+        <View
+          style={[styles.localeList, { borderTopColor: colors.hair }]}
+          testID="locale-list"
+          accessibilityRole="radiogroup"
+        >
+          {rows.map(({ value: rowValue, label: rowLabel }, index) => {
+            const active = value === rowValue;
+            return (
+              <Pressable
+                key={rowValue}
                 style={[
-                  styles.localeRadio,
-                  { borderColor: active ? colors.accent : colors.hair },
-                  active && { backgroundColor: colors.accent },
+                  styles.localeRow,
+                  index > 0 && { borderTopWidth: 1, borderTopColor: colors.hair },
                 ]}
+                onPress={() => handleSelect(rowValue)}
+                testID={`locale-row-${rowValue}`}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: active }}
               >
-                {active && <View style={[styles.localeRadioDot, { backgroundColor: colors.onAccent }]} />}
-              </View>
-            </Pressable>
-          );
-        })}
-      </View>
+                <Text style={[styles.localeRowLabel, { color: active ? colors.ink : colors.muted }]}>
+                  {rowLabel}
+                </Text>
+                <View
+                  style={[
+                    styles.localeRadio,
+                    { borderColor: active ? colors.accent : colors.hair },
+                    active && { backgroundColor: colors.accent },
+                  ]}
+                >
+                  {active && <View style={[styles.localeRadioDot, { backgroundColor: colors.onAccent }]} />}
+                </View>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
     </View>
   );
 }
@@ -316,8 +348,24 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
-  localeList: {
+  localeTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    paddingVertical: spacing.sm,
     marginTop: spacing.md,
+    borderTopWidth: 1,
+  },
+  localeTriggerValue: {
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  localeChevron: {
+    fontSize: 14,
+    marginLeft: spacing.sm,
+  },
+  localeList: {
     borderTopWidth: 1,
   },
   localeRow: {
