@@ -1,0 +1,183 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1284" height="2778" viewBox="0 0 1284 2778">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#CDEBF7"></stop>
+      <stop offset="0.55" stop-color="#9ED3EA"></stop>
+      <stop offset="1" stop-color="#6FB6D4"></stop>
+    </linearGradient>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"></stop>
+      <stop offset="0.55" stop-color="#F4F1E6"></stop>
+      <stop offset="1" stop-color="#CFC9B8"></stop>
+    </linearGradient>
+    <linearGradient id="windshield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2B3A55"></stop>
+      <stop offset="0.5" stop-color="#3E5578"></stop>
+      <stop offset="1" stop-color="#1A2438"></stop>
+    </linearGradient>
+    <radialGradient id="headlight" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFFCE8"></stop>
+      <stop offset="0.45" stop-color="#FFE48A"></stop>
+      <stop offset="1" stop-color="#FFB833"></stop>
+    </radialGradient>
+    <radialGradient id="halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FFE58A" stop-opacity="0.65"></stop>
+      <stop offset="1" stop-color="#FFE58A" stop-opacity="0"></stop>
+    </radialGradient>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="6"></feGaussianBlur>
+    </filter>
+  </defs>
+
+  
+  <rect width="1284" height="2778" fill="url(#sky)"></rect>
+
+  
+  <circle cx="1080" cy="540" r="220" fill="#FFE58A" opacity="0.32" filter="url(#soft)"></circle>
+
+  
+  <g filter="url(#soft)" opacity="0.95">
+    
+    <g fill="#FFFFFF" opacity="0.55">
+      <ellipse cx="200" cy="300" rx="140" ry="40"></ellipse>
+      <ellipse cx="320" cy="270" rx="90" ry="30"></ellipse>
+      <ellipse cx="100" cy="330" rx="80" ry="26"></ellipse>
+    </g>
+    <g fill="#FFFFFF">
+      <ellipse cx="240" cy="380" rx="160" ry="46"></ellipse>
+      <ellipse cx="140" cy="360" rx="80" ry="36"></ellipse>
+      <ellipse cx="350" cy="370" rx="90" ry="38"></ellipse>
+    </g>
+
+    <g fill="#FFFFFF" opacity="0.9">
+      <ellipse cx="1050" cy="260" rx="140" ry="40"></ellipse>
+      <ellipse cx="1160" cy="290" rx="110" ry="32"></ellipse>
+      <ellipse cx="940" cy="290" rx="80" ry="28"></ellipse>
+    </g>
+    <g fill="#FFFFFF">
+      <ellipse cx="1060" cy="430" rx="170" ry="44"></ellipse>
+      <ellipse cx="950" cy="410" rx="80" ry="34"></ellipse>
+      <ellipse cx="1180" cy="420" rx="86" ry="34"></ellipse>
+    </g>
+
+    
+    <g fill="#FFFFFF" opacity="0.85">
+      <ellipse cx="640" cy="200" rx="100" ry="26"></ellipse>
+      <ellipse cx="580" cy="210" rx="56" ry="18"></ellipse>
+      <ellipse cx="710" cy="214" rx="60" ry="18"></ellipse>
+    </g>
+
+    
+    <g fill="#FFFFFF" opacity="0.75">
+      <ellipse cx="170" cy="900" rx="140" ry="32"></ellipse>
+      <ellipse cx="90" cy="920" rx="80" ry="22"></ellipse>
+      <ellipse cx="260" cy="920" rx="80" ry="22"></ellipse>
+    </g>
+    <g fill="#FFFFFF" opacity="0.75">
+      <ellipse cx="1100" cy="960" rx="150" ry="34"></ellipse>
+      <ellipse cx="1000" cy="980" rx="80" ry="22"></ellipse>
+      <ellipse cx="1200" cy="978" rx="60" ry="20"></ellipse>
+    </g>
+  </g>
+
+  
+  <g transform="translate(642 1640) scale(1.05) translate(-512 -512)">
+    
+    <ellipse cx="512" cy="968" rx="400" ry="30" fill="rgba(20,30,50,0.28)"></ellipse>
+
+    
+    <g stroke="#4C5568" stroke-width="12" stroke-linecap="round">
+      <line x1="140" y1="978" x2="884" y2="978"></line>
+      <line x1="190" y1="936" x2="834" y2="936"></line>
+    </g>
+    <g fill="#4C5568">
+      <rect x="240" y="948" width="22" height="42" rx="3"></rect>
+      <rect x="360" y="948" width="22" height="42" rx="3"></rect>
+      <rect x="480" y="948" width="22" height="42" rx="3"></rect>
+      <rect x="600" y="948" width="22" height="42" rx="3"></rect>
+      <rect x="720" y="948" width="22" height="42" rx="3"></rect>
+    </g>
+
+    
+    <path d="M 140 930 L 140 290 Q 140 100 512 100 Q 884 100 884 290 L 884 930 Z" fill="url(#body)"></path>
+    <path d="M 140 400 L 180 400 L 180 930 L 140 930 Z" fill="rgba(0,0,0,0.06)"></path>
+    <path d="M 844 400 L 884 400 L 884 930 L 844 930 Z" fill="rgba(0,0,0,0.08)"></path>
+
+    
+    <path d="M 190 180 Q 330 120 512 118 Q 694 120 834 180 L 834 212 Q 694 156 512 154 Q 330 156 190 212 Z" fill="rgba(255,255,255,0.85)"></path>
+    <g fill="#C9C3B2">
+      <rect x="400" y="120" width="76" height="20" rx="5"></rect>
+      <rect x="548" y="120" width="76" height="20" rx="5"></rect>
+    </g>
+
+    
+    <rect x="140" y="820" width="744" height="26" fill="#F4B740"></rect>
+    <rect x="140" y="852" width="744" height="10" fill="#D68F1A"></rect>
+
+    
+    <path d="M 218 380 Q 218 190 512 190 Q 806 190 806 380 L 806 600 L 218 600 Z" fill="#0F1A30"></path>
+    <path d="M 240 394 Q 240 212 512 212 Q 784 212 784 394 L 784 582 L 240 582 Z" fill="url(#windshield)"></path>
+    <rect x="507" y="212" width="10" height="370" fill="#0F1A30"></rect>
+    <rect x="240" y="572" width="544" height="14" fill="#0F1A30"></rect>
+
+    
+    <g stroke="#1A2438" stroke-width="8" stroke-linecap="round" fill="none">
+      <path d="M 340 570 L 300 474"></path>
+      <path d="M 684 570 L 724 474"></path>
+      <circle cx="340" cy="572" r="6" fill="#1A2438"></circle>
+      <circle cx="684" cy="572" r="6" fill="#1A2438"></circle>
+    </g>
+
+    
+    <path d="M 280 440 Q 280 300 470 290" stroke="rgba(255,255,255,0.4)" stroke-width="16" fill="none" stroke-linecap="round"></path>
+    <path d="M 320 560 Q 330 490 400 470" stroke="rgba(255,255,255,0.25)" stroke-width="10" fill="none" stroke-linecap="round"></path>
+    <path d="M 620 300 Q 700 310 740 380" stroke="rgba(255,255,255,0.18)" stroke-width="8" fill="none" stroke-linecap="round"></path>
+
+    
+    <rect x="300" y="640" width="424" height="70" rx="12" fill="#120F14"></rect>
+    <rect x="306" y="646" width="412" height="58" rx="8" fill="#1A1A22"></rect>
+    <g fill="#FFC44D">
+      <rect x="338" y="662" width="16" height="26"></rect><rect x="362" y="662" width="16" height="26"></rect><rect x="386" y="662" width="16" height="26"></rect>
+      <rect x="418" y="662" width="16" height="26"></rect><rect x="442" y="662" width="16" height="26"></rect><rect x="466" y="662" width="16" height="26"></rect>
+      <rect x="498" y="662" width="16" height="26"></rect><rect x="522" y="662" width="16" height="26"></rect>
+      <rect x="554" y="662" width="16" height="26"></rect><rect x="578" y="662" width="16" height="26"></rect><rect x="602" y="662" width="16" height="26"></rect>
+      <rect x="634" y="662" width="16" height="26"></rect><rect x="658" y="662" width="16" height="26"></rect>
+    </g>
+
+    
+    <circle cx="290" cy="770" r="140" fill="url(#halo)"></circle>
+    <circle cx="734" cy="770" r="140" fill="url(#halo)"></circle>
+    <circle cx="290" cy="770" r="62" fill="url(#headlight)"></circle>
+    <circle cx="734" cy="770" r="62" fill="url(#headlight)"></circle>
+    <circle cx="290" cy="770" r="62" fill="none" stroke="#0F1A30" stroke-width="8"></circle>
+    <circle cx="734" cy="770" r="62" fill="none" stroke="#0F1A30" stroke-width="8"></circle>
+    <ellipse cx="272" cy="752" rx="14" ry="10" fill="#FFFFFF"></ellipse>
+    <ellipse cx="716" cy="752" rx="14" ry="10" fill="#FFFFFF"></ellipse>
+
+    
+    <line x1="180" y1="400" x2="180" y2="780" stroke="rgba(0,0,0,0.1)" stroke-width="4"></line>
+    <line x1="844" y1="400" x2="844" y2="780" stroke="rgba(0,0,0,0.1)" stroke-width="4"></line>
+
+    
+    <rect x="398" y="898" width="228" height="34" rx="10" fill="#2C3650"></rect>
+    <rect x="446" y="926" width="132" height="18" rx="5" fill="#0F1A30"></rect>
+
+    <g fill="rgba(0,0,0,0.18)">
+      <circle cx="210" cy="890" r="5"></circle><circle cx="260" cy="890" r="5"></circle>
+      <circle cx="760" cy="890" r="5"></circle><circle cx="810" cy="890" r="5"></circle>
+    </g>
+  </g>
+
+  
+  <g text-anchor="middle" font-family="-apple-system, &#39;SF Pro Display&#39;, &#39;Pretendard&#39;, sans-serif">
+    <text x="642" y="2380" font-size="172" font-weight="800" fill="#0F1A30" letter-spacing="-6">지금 어디</text>
+    <text x="642" y="2470" font-size="46" font-weight="500" fill="#0F1A30" opacity="0.7" letter-spacing="0.6">실시간 지하철 도착 정보</text>
+  </g>
+
+  
+  <g fill="#0F1A30" opacity="0.35">
+    <circle cx="602" cy="2640" r="9"></circle>
+    <circle cx="642" cy="2640" r="9"></circle>
+    <circle cx="682" cy="2640" r="9"></circle>
+  </g>
+</svg>

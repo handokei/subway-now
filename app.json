@@ -11,9 +11,9 @@
       "en": "./locales/en.json"
     },
     "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "image": "./assets/splash/splash-ko-1284x2778.png",
+      "resizeMode": "cover",
+      "backgroundColor": "#CDEBF7"
     },
     "ios": {
       "supportsTablet": false,
