@@ -1,5 +1,6 @@
 import en from './locales/en.json';
 import ko from './locales/ko.json';
+import ja from './locales/ja.json';
 
 // 지원 언어를 한 곳에서 관리한다. 새 언어 추가 시 이 배열에 한 줄을 추가하고
 // 로케일 JSON 파일을 import 하면 RESOURCES/SUPPORTED_LANGUAGES/SupportedLanguage가
@@ -8,6 +9,7 @@ import ko from './locales/ko.json';
 export const LANGUAGE_REGISTRY = [
   { code: 'ko', nativeName: '한국어', translation: ko },
   { code: 'en', nativeName: 'English', translation: en },
+  { code: 'ja', nativeName: '日本語', translation: ja },
 ] as const;
 
 export const SUPPORTED_LANGUAGES = LANGUAGE_REGISTRY.map(

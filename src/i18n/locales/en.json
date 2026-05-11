@@ -70,7 +70,9 @@
     "originBadge": "Origin",
     "destinationBadge": "Destination",
     "setAsOrigin": "Set as origin",
-    "setAsDestination": "Set as destination"
+    "setAsDestination": "Set as destination",
+    "nearbyStationsHeader": "Nearby stations (within 1km)",
+    "noNearbyStations": "No subway stations within 1km."
   },
   "favorites": {
     "title": "Favorites",

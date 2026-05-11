@@ -39,6 +39,16 @@ describe('getStationDisplayName', () => {
     setLang('ko');
     expect(getStationDisplayName(stations[0])).toBe('강남');
   });
+
+  it('일본어 모드 + nameEn 존재 → 영문(라틴 표기) fallback', () => {
+    setLang('ja');
+    expect(getStationDisplayName(stations[0])).toBe('Gangnam');
+  });
+
+  it('일본어 모드 + nameEn 누락 → 한글 fallback', () => {
+    setLang('ja');
+    expect(getStationDisplayName(stations[2])).toBe('신기역');
+  });
 });
 
 describe('getStationDisplayNameByName', () => {
@@ -76,6 +86,11 @@ describe('getStationDisplayNameByName', () => {
   it('한글 모드 → 항상 입력 그대로', () => {
     setLang('ko');
     expect(getStationDisplayNameByName('강남', stations)).toBe('강남');
+  });
+
+  it('일본어 모드 → nameEn으로 lookup (라틴 표기 fallback)', () => {
+    setLang('ja');
+    expect(getStationDisplayNameByName('강남', stations)).toBe('Gangnam');
   });
 });
 

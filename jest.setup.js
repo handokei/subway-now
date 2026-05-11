@@ -18,18 +18,16 @@ jest.mock('expo-localization', () => ({
 
 const i18next = require('i18next');
 const { initReactI18next } = require('react-i18next');
-const en = require('./src/i18n/locales/en.json');
-const ko = require('./src/i18n/locales/ko.json');
+const { LANGUAGE_REGISTRY, FALLBACK_LANGUAGE } = require('./src/i18n/types');
 
 i18next.use(initReactI18next).init({
   compatibilityJSON: 'v4',
-  resources: {
-    en: { translation: en },
-    ko: { translation: ko },
-  },
+  resources: Object.fromEntries(
+    LANGUAGE_REGISTRY.map((lang) => [lang.code, { translation: lang.translation }]),
+  ),
   lng: 'ko',
-  fallbackLng: 'en',
-  supportedLngs: ['ko', 'en'],
+  fallbackLng: FALLBACK_LANGUAGE,
+  supportedLngs: LANGUAGE_REGISTRY.map((lang) => lang.code),
   defaultNS: 'translation',
   interpolation: { escapeValue: false },
 });
