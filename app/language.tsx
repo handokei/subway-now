@@ -28,6 +28,7 @@ export default function LanguageScreen() {
         options={{
           headerShown: true,
           title: t('settings.languageSection'),
+          headerBackTitle: t('tabs.settings'),
           headerStyle: { backgroundColor: colors.bg },
           headerTintColor: colors.ink,
         }}
