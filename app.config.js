@@ -24,7 +24,7 @@ module.exports = {
       supportsTablet: false,
       bundleIdentifier: 'com.subwaynow.app',
       appleTeamId: '4755N5H4T4',
-      buildNumber: '38',
+      buildNumber: '39',
       infoPlist: {
         NSAppTransportSecurity: {
           NSExceptionDomains: {
