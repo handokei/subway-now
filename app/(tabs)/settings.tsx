@@ -22,7 +22,6 @@ export default function SettingsScreen() {
   const loadAllowSpeaker = useAppStore((s) => s.loadAllowSpeaker);
   const themeMode = useAppStore((s) => s.themeMode);
   const setThemeMode = useAppStore((s) => s.setThemeMode);
-  const loadThemeMode = useAppStore((s) => s.loadThemeMode);
   const routePreference = useAppStore((s) => s.routePreference);
   const setRoutePreference = useAppStore((s) => s.setRoutePreference);
   const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
@@ -33,7 +32,6 @@ export default function SettingsScreen() {
   useEffect(() => {
     loadSleepMode();
     loadAllowSpeaker();
-    loadThemeMode();
     loadRoutePreference();
   }, []);
 
