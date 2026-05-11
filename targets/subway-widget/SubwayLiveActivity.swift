@@ -20,6 +20,14 @@ struct SubwayActivityAttributes: ActivityAttributes {
         var isMock: Bool?
         var alarmType: String?
         var alarmStationName: String?
+        // JS에서 i18n으로 빌드된 사용자 노출 텍스트
+        var alarmBody: String?
+        var alarmShortLabel: String?
+        var routeSubtext: String?
+        var routeSummary: String?
+        var etaText: String?
+        var etaSubtext: String?
+        var distanceText: String?
     }
 }
 #endif

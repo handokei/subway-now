@@ -170,5 +170,21 @@
     "earlyArrivalBody": "Exit at {{station}} (next stop)!",
     "imminentTransferBody": "Arriving at {{station}}. Get ready to transfer!",
     "imminentArrivalBody": "Arriving at {{station}}. Get ready to exit!"
+  },
+  "liveActivity": {
+    "alarmShortTransfer": "Transfer",
+    "alarmShortArrival": "Exit",
+    "etaSubtextEstimated": "estimated",
+    "etaSubtextDuration": "duration",
+    "stopsToArrival_one": "{{count}} stop to {{destination}}",
+    "stopsToArrival_other": "{{count}} stops to {{destination}}",
+    "stopsToTransfer_one": "Transfer at {{name}} in {{count}} stop",
+    "stopsToTransfer_other": "Transfer at {{name}} in {{count}} stops",
+    "summaryWithStops_one": "→ {{destination}} · {{count}} stop to arrival{{etaSuffix}}",
+    "summaryWithStops_other": "→ {{destination}} · {{count}} stops to arrival{{etaSuffix}}",
+    "summaryWithTransfer_one": "→ {{destination}} · Transfer at {{name}} in {{count}} stop{{etaSuffix}}",
+    "summaryWithTransfer_other": "→ {{destination}} · Transfer at {{name}} in {{count}} stops{{etaSuffix}}",
+    "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
+    "etaSuffix": " · ~{{min}} min"
   }
 }
