@@ -559,9 +559,7 @@ describe('useAppStore', () => {
   });
 
   it('setLocalePreference: 상태를 업데이트하고 AsyncStorage에 저장한다', async () => {
-    const { setLocalePreference } = useAppStore.getState();
-    await setLocalePreference('en');
-
+    await useAppStore.getState().setLocalePreference('en');
     expect(useAppStore.getState().localePreference).toBe('en');
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
       'subway-now:locale-preference',
@@ -575,22 +573,16 @@ describe('useAppStore', () => {
     expect(useAppStore.getState().localePreference).toBe('ko');
   });
 
-  it('loadLocalePreference: 유효하지 않은 값이면 auto 유지', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify('jp'));
-    useAppStore.setState({ localePreference: 'auto' });
-    await useAppStore.getState().loadLocalePreference();
-    expect(useAppStore.getState().localePreference).toBe('auto');
-  });
-
-  it('loadLocalePreference: 비어있으면 auto 유지', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
-    useAppStore.setState({ localePreference: 'auto' });
-    await useAppStore.getState().loadLocalePreference();
-    expect(useAppStore.getState().localePreference).toBe('auto');
-  });
-
-  it('loadLocalePreference: AsyncStorage 오류 시 auto 유지', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
+  it.each([
+    ['invalid value', JSON.stringify('jp')],
+    ['null', null],
+    ['storage error', new Error('storage error')],
+  ])('loadLocalePreference: %s이면 auto 유지', async (_label, raw) => {
+    if (raw instanceof Error) {
+      (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(raw);
+    } else {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(raw);
+    }
     useAppStore.setState({ localePreference: 'auto' });
     await useAppStore.getState().loadLocalePreference();
     expect(useAppStore.getState().localePreference).toBe('auto');
