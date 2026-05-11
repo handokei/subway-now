@@ -1,16 +1,22 @@
 import { StyleSheet, Text, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { LINE_NAMES } from '../constants/lineColors';
 import type { JourneyDisplay } from '../utils/stationRoute';
-import type { LineNumber } from '../types/station';
+import type { LineNumber, Station } from '../types/station';
 import { useTheme, typography, spacing, radius } from '../theme';
+import { getStationDisplayNameByName } from '../utils/stationDisplay';
+import stationsData from '../data/stations.json';
 
 interface JourneyTimelineProps {
   journey: JourneyDisplay;
 }
 
+const STATIONS = stationsData as Station[];
+
 export function JourneyTimeline({ journey }: JourneyTimelineProps) {
   const { segments } = journey;
   const { colors } = useTheme();
+  const { t } = useTranslation();
 
   return (
     <View style={styles.container}>
@@ -24,7 +30,7 @@ export function JourneyTimeline({ journey }: JourneyTimelineProps) {
             {isFirst && (
               <View style={styles.stationRow}>
                 <View style={[styles.dot, { backgroundColor: segment.lineColor }]} testID="start-dot" />
-                <Text style={[styles.stationName, { color: colors.ink }]}>{segment.fromName}</Text>
+                <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayNameByName(segment.fromName, STATIONS)}</Text>
               </View>
             )}
 
@@ -34,21 +40,21 @@ export function JourneyTimeline({ journey }: JourneyTimelineProps) {
                 <View style={[styles.lineBadge, { backgroundColor: segment.lineColor }]}>
                   <Text style={styles.lineBadgeText}>{lineName}</Text>
                 </View>
-                <Text style={[styles.stopsText, { color: colors.muted }]}>{segment.stops}정거장</Text>
+                <Text style={[styles.stopsText, { color: colors.muted }]}>{t('route.stops', { count: segment.stops })}</Text>
               </View>
             </View>
 
             {!isLast && (
               <View style={styles.stationRow}>
                 <Text style={[styles.transferIcon, { color: colors.accent }]}>⇄</Text>
-                <Text style={[styles.transferName, { color: colors.accent }]}>{segment.toName}</Text>
+                <Text style={[styles.transferName, { color: colors.accent }]}>{getStationDisplayNameByName(segment.toName, STATIONS)}</Text>
               </View>
             )}
 
             {isLast && (
               <View style={styles.stationRow}>
                 <View style={[styles.dot, { backgroundColor: segment.lineColor }]} testID="end-dot" />
-                <Text style={[styles.stationName, { color: colors.ink }]}>{segment.toName}</Text>
+                <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayNameByName(segment.toName, STATIONS)}</Text>
               </View>
             )}
           </View>

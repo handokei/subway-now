@@ -3,6 +3,9 @@ import { render } from '@testing-library/react-native';
 import { JourneyTimeline } from '../JourneyTimeline';
 import type { JourneyDisplay } from '../../utils/stationRoute';
 import type { LineNumber } from '../../types/station';
+import { installLanguageRestoreHook, setLang } from '../../testUtils/i18nLanguageOverride';
+
+installLanguageRestoreHook();
 
 const directJourney: JourneyDisplay = {
   segments: [
@@ -81,6 +84,35 @@ describe('JourneyTimeline', () => {
     expect(endDot.props.style).toEqual(
       expect.arrayContaining([expect.objectContaining({ backgroundColor: '#EF7C1C' })]),
     );
+  });
+
+  it('영어 모드에서 환승 여정 역명이 nameEn으로 표시된다', () => {
+    setLang('en');
+    const { getByText } = render(<JourneyTimeline journey={transferJourney} />);
+    expect(getByText('Gangnam')).toBeTruthy();
+    expect(getByText('Seoul Nat`l Univ. of Education')).toBeTruthy();
+    expect(getByText('Gyeongbokgung')).toBeTruthy();
+    expect(getByText('1 stop')).toBeTruthy();
+    expect(getByText('5 stops')).toBeTruthy();
+  });
+
+  it('영어 모드 + stations에 없는 역명은 원본 그대로 표시한다', () => {
+    setLang('en');
+    const unknownStationJourney: JourneyDisplay = {
+      segments: [
+        {
+          line: '2',
+          lineColor: '#009D3E',
+          fromName: '없는역A',
+          toName: '없는역B',
+          stops: 1,
+        },
+      ],
+      totalStops: 1,
+    };
+    const { getByText } = render(<JourneyTimeline journey={unknownStationJourney} />);
+    expect(getByText('없는역A')).toBeTruthy();
+    expect(getByText('없는역B')).toBeTruthy();
   });
 
   it('알 수 없는 노선이면 line 값을 그대로 표시한다', () => {

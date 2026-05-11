@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import ClusteredMapView from 'react-native-map-clustering';
 import { Marker, PROVIDER_DEFAULT } from 'react-native-maps';
 import type { Station } from '../types/station';
@@ -26,6 +27,7 @@ export function StationMap({
   onStationPress,
 }: StationMapProps) {
   const { colors } = useTheme();
+  const { i18n } = useTranslation();
   const [mapReady, setMapReady] = useState(false);
 
   const mapConfig = useMemo(
@@ -54,7 +56,7 @@ export function StationMap({
           const dotColor = isHighlighted ? colors.accent : station.lineColor;
           return (
             <Marker
-              key={station.id}
+              key={`${station.id}-${i18n.language}`}
               coordinate={{ latitude: station.lat, longitude: station.lng }}
               title={getStationDisplayName(station)}
               description={LINE_NAMES[station.line]}
