@@ -86,8 +86,7 @@ export function useStationAlarm({
     ) {
       lastNotifiedStationIdRef.current = nearestStation.id;
       const target = resolveNextTarget(route, destination.name);
-      const stopsRemaining = target?.stopsToNextStation ?? null;
-      sendStationPassedNotification(nearestStation.name, destination.name, stopsRemaining)
+      sendStationPassedNotification(nearestStation.name, destination.name, target)
         .catch((e) => logger.error('역 통과 알림 실패:', e));
     }
   }, [

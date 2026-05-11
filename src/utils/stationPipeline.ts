@@ -11,29 +11,63 @@ import type { AlarmEvent } from './stationAlarm';
 export interface NextTarget {
   nextStationName: string;
   stopsToNextStation: number;
+  isTransfer: boolean;
+  stopsToDestination: number;
 }
 
 export function resolveNextTarget(route: Route, destinationName: string): NextTarget | null {
   if (!route) return null;
 
   if (route.type === 'direct') {
-    return { nextStationName: destinationName, stopsToNextStation: route.stops };
+    return {
+      nextStationName: destinationName,
+      stopsToNextStation: route.stops,
+      isTransfer: false,
+      stopsToDestination: route.stops,
+    };
   }
 
   if (route.type === 'transfer') {
+    const stopsToDestination = route.stopsToTransfer + route.stopsFromTransfer;
     if (route.stopsToTransfer > 0) {
-      return { nextStationName: route.transferName, stopsToNextStation: route.stopsToTransfer };
+      return {
+        nextStationName: route.transferName,
+        stopsToNextStation: route.stopsToTransfer,
+        isTransfer: true,
+        stopsToDestination,
+      };
     }
-    return { nextStationName: destinationName, stopsToNextStation: route.stopsFromTransfer };
+    return {
+      nextStationName: destinationName,
+      stopsToNextStation: route.stopsFromTransfer,
+      isTransfer: false,
+      stopsToDestination: route.stopsFromTransfer,
+    };
   }
 
   if (route.type === 'multi-transfer') {
-    for (const t of route.transfers) {
+    const { transfers } = route;
+    for (let i = 0; i < transfers.length; i++) {
+      const t = transfers[i];
       if (t.stopsToTransfer > 0) {
-        return { nextStationName: t.transferName, stopsToNextStation: t.stopsToTransfer };
+        let remaining = route.stopsAfterLastTransfer;
+        for (let j = i; j < transfers.length; j++) {
+          remaining += transfers[j].stopsToTransfer;
+        }
+        return {
+          nextStationName: t.transferName,
+          stopsToNextStation: t.stopsToTransfer,
+          isTransfer: true,
+          stopsToDestination: remaining,
+        };
       }
     }
-    return { nextStationName: destinationName, stopsToNextStation: route.stopsAfterLastTransfer };
+    return {
+      nextStationName: destinationName,
+      stopsToNextStation: route.stopsAfterLastTransfer,
+      isTransfer: false,
+      stopsToDestination: route.stopsAfterLastTransfer,
+    };
   }
 
   return null;
@@ -102,7 +136,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
       await sendStationPassedNotification(
         nearest.station.name,
         destination.name,
-        target.stopsToNextStation,
+        target,
       );
     }
   }

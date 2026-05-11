@@ -141,7 +141,8 @@
     "approximateDistance": "~{{m}}m",
     "stationPassed": "Passed {{name}}",
     "stopsRemainingToDestination_one": "{{count}} stop to {{destination}}",
-    "stopsRemainingToDestination_other": "{{count}} stops to {{destination}}"
+    "stopsRemainingToDestination_other": "{{count}} stops to {{destination}}",
+    "stopsRemainingViaTransfer": "{{transferStops}} stops to {{transfer}} transfer · {{totalStops}} stops to {{destination}}"
   },
   "lines": {
     "1": "Line 1",

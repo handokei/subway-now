@@ -5,6 +5,7 @@ import { Station } from '../types/station';
 import { LINE_COLORS, LINE_NAMES } from '../constants/lineColors';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
 import type { AlarmEvent } from './stationAlarm';
+import type { NextTarget } from './stationPipeline';
 import * as LiveActivity from 'live-activity';
 import { vibrateAlarm, stopVibration } from './alarmSound';
 import { createLogger } from './logger';
@@ -272,15 +273,24 @@ export async function clearStationNotification(): Promise<void> {
 export async function sendStationPassedNotification(
   stationName: string,
   destinationName: string,
-  stopsRemaining: number | null,
+  target: NextTarget | null,
 ): Promise<void> {
-  const body =
-    stopsRemaining != null
-      ? i18next.t('route.stopsRemainingToDestination', {
-          destination: destinationName,
-          count: stopsRemaining,
-        })
-      : i18next.t('route.atCurrentStation', { name: stationName });
+  let body: string;
+  if (target == null) {
+    body = i18next.t('route.atCurrentStation', { name: stationName });
+  } else if (target.isTransfer) {
+    body = i18next.t('route.stopsRemainingViaTransfer', {
+      transfer: target.nextStationName,
+      transferStops: target.stopsToNextStation,
+      destination: destinationName,
+      totalStops: target.stopsToDestination,
+    });
+  } else {
+    body = i18next.t('route.stopsRemainingToDestination', {
+      destination: destinationName,
+      count: target.stopsToDestination,
+    });
+  }
 
   await scheduleNotification(STATION_PASSED_NOTIFICATION_ID, {
     title: i18next.t('route.stationPassed', { name: stationName }),

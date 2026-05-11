@@ -527,9 +527,14 @@ describe('stationNotification', () => {
   });
 
   describe('sendStationPassedNotification', () => {
-    it('stopsRemaining이 있으면 남은 정거장 수를 body에 표시한다', async () => {
+    it('마지막 구간(isTransfer=false)이면 목적지까지 남은 정거장 수를 body에 표시한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
-      await sendStationPassedNotification('역삼', '강남', 3);
+      await sendStationPassedNotification('역삼', '강남', {
+        nextStationName: '강남',
+        stopsToNextStation: 3,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-passed',
         content: { title: '역삼역 통과', body: '강남까지 3정거장 남음' },
@@ -537,7 +542,25 @@ describe('stationNotification', () => {
       });
     });
 
-    it('stopsRemaining이 null이면 현재 역만 표시한다', async () => {
+    it('환승 전 구간(isTransfer=true)이면 환승역과 최종 목적지를 모두 표시한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendStationPassedNotification('용마산', '이대', {
+        nextStationName: '군자',
+        stopsToNextStation: 2,
+        isTransfer: true,
+        stopsToDestination: 11,
+      });
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'station-passed',
+        content: {
+          title: '용마산역 통과',
+          body: '군자 환승까지 2정거장 · 이대까지 11정거장',
+        },
+        trigger: null,
+      });
+    });
+
+    it('target이 null이면 현재 역만 표시한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendStationPassedNotification('역삼', '강남', null);
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
@@ -549,7 +572,12 @@ describe('stationNotification', () => {
 
     it('Android에서는 channelId와 priority DEFAULT가 포함된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
-      await sendStationPassedNotification('역삼', '강남', 3);
+      await sendStationPassedNotification('역삼', '강남', {
+        nextStationName: '강남',
+        stopsToNextStation: 3,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-passed',
         content: {
