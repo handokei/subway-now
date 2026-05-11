@@ -10,3 +10,4 @@ export const ROUTE_KEY = 'subway-now:route';
 export const LAST_NOTIFIED_STATION_KEY = 'subway-now:last-notified-station';
 export const ALLOW_SPEAKER_KEY = 'subway-now:allow-speaker';
 export const SLEEP_MODE_GUIDE_SHOWN_KEY = 'subway-now:sleep-mode-guide-shown';
+export const LOCALE_PREFERENCE_KEY = 'subway-now:locale-preference';

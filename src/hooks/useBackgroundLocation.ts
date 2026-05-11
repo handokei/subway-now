@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
-import i18next from 'i18next';
+import { useTranslation } from 'react-i18next';
 import type { Station } from '../types/station';
 import { BACKGROUND_LOCATION_TASK } from '../tasks/backgroundLocationTask';
 import { createLogger } from '../utils/logger';
@@ -12,6 +12,8 @@ const logger = createLogger('BackgroundLocation');
 const noop = () => {};
 
 export function useBackgroundLocation(destination: Station | null): void {
+  const { t } = useTranslation();
+
   useEffect(() => {
     if (!destination) {
       Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(noop);
@@ -38,11 +40,12 @@ export function useBackgroundLocation(destination: Station | null): void {
         pausesUpdatesAutomatically: false,
         distanceInterval: 20,
         showsBackgroundLocationIndicator: true,
-        // foregroundService 텍스트는 서비스 시작 시점에 OS에 고정됨.
-        // 런타임 언어 변경 반영은 Phase 5(알림 채널/포그라운드 서비스 마이그레이션)에서 처리.
+        // foregroundService 알림 텍스트는 task 시작 시점 언어로 고정. 사용자가 추적 중 언어를
+        // 바꿔도 GPS 추적 공백을 만들지 않기 위해 i18n.language를 deps에 두지 않는다.
+        // 다음 destination 변경 시점에 자연스럽게 새 언어로 반영된다.
         foregroundService: {
-          notificationTitle: i18next.t('background.title'),
-          notificationBody: i18next.t('background.body'),
+          notificationTitle: t('background.title'),
+          notificationBody: t('background.body'),
         },
       });
       logger.info('백그라운드 위치 추적 시작');
@@ -52,5 +55,6 @@ export function useBackgroundLocation(destination: Station | null): void {
       cancelled = true;
       Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(noop);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [destination?.id]);
 }

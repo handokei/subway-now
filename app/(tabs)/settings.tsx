@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { Alert, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import { useAppStore, type ThemeMode } from '../../src/store/useAppStore';
+import { useAppStore, type ThemeMode, type LocalePreference } from '../../src/store/useAppStore';
 import { ROUTE_CATEGORIES } from '../../src/utils/stationRoute';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
@@ -12,6 +12,12 @@ const THEME_OPTIONS = [
   { value: 'light', labelKey: 'settings.themeLight' },
   { value: 'dark', labelKey: 'settings.themeDark' },
 ] as const satisfies readonly { value: ThemeMode; labelKey: string }[];
+
+const LOCALE_OPTIONS = [
+  { value: 'auto', labelKey: 'settings.languageAuto' },
+  { value: 'ko', labelKey: 'settings.languageKorean' },
+  { value: 'en', labelKey: 'settings.languageEnglish' },
+] as const satisfies readonly { value: LocalePreference; labelKey: string }[];
 
 export default function SettingsScreen() {
   const sleepMode = useAppStore((s) => s.sleepMode);
@@ -26,6 +32,8 @@ export default function SettingsScreen() {
   const routePreference = useAppStore((s) => s.routePreference);
   const setRoutePreference = useAppStore((s) => s.setRoutePreference);
   const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
+  const localePreference = useAppStore((s) => s.localePreference);
+  const setLocalePreference = useAppStore((s) => s.setLocalePreference);
   const { colors } = useTheme();
   const { t } = useTranslation();
   const showSleepModeGuide = useSleepModeGuide();
@@ -40,6 +48,38 @@ export default function SettingsScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       <Text style={[styles.header, { color: colors.muted }]}>{t('settings.title')}</Text>
+
+      {/* 언어 */}
+      <View style={[styles.card, { backgroundColor: colors.card }]}>
+        <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.languageSection')}</Text>
+
+        <View style={styles.settingRow}>
+          <View style={styles.settingInfo}>
+            <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.languageLabel')}</Text>
+            <Text style={[styles.settingDesc, { color: colors.muted }]}>
+              {t('settings.languageDescription')}
+            </Text>
+          </View>
+        </View>
+
+        <View style={[styles.segmentGroup, { backgroundColor: colors.hair }]} testID="locale-segment">
+          {LOCALE_OPTIONS.map(({ value, labelKey }) => {
+            const active = localePreference === value;
+            return (
+              <Pressable
+                key={value}
+                style={[styles.segment, active && { backgroundColor: colors.accent }]}
+                onPress={() => setLocalePreference(value)}
+                testID={`locale-${value}`}
+              >
+                <Text style={[styles.segmentText, { color: active ? colors.onAccent : colors.muted }]}>
+                  {t(labelKey)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
 
       {/* 테마 */}
       <View style={[styles.card, { backgroundColor: colors.card }]}>

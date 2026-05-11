@@ -52,39 +52,48 @@ export function setupNotificationHandler(): void {
   });
 }
 
+const STATION_CHANNEL_ID = 'station';
+
+// Android 알림 채널을 현재 언어 기준으로 재생성. 권한 다이얼로그를 트리거하지 않으므로
+// 언어 전환마다 호출해도 안전.
+export async function refreshNotificationChannels(): Promise<void> {
+  if (Platform.OS !== 'android') return;
+  await Notifications.deleteNotificationChannelAsync(STATION_CHANNEL_ID).catch(() => {});
+  await Notifications.setNotificationChannelAsync(STATION_CHANNEL_ID, {
+    name: i18next.t('notifications.channelStation'),
+    importance: Notifications.AndroidImportance.HIGH,
+    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+  });
+  await Notifications.deleteNotificationChannelAsync(ALARM_CHANNEL_ID).catch(() => {});
+  await Notifications.setNotificationChannelAsync(ALARM_CHANNEL_ID, {
+    name: i18next.t('notifications.channelTransferAlarm'),
+    importance: Notifications.AndroidImportance.MAX,
+    sound: 'alarm.wav',
+    enableVibrate: true,
+    vibrationPattern: [0, 1000, 500, 1000],
+    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    bypassDnd: true,
+  });
+  await Notifications.deleteNotificationChannelAsync(ALARM_SILENT_CHANNEL_ID).catch(() => {});
+  await Notifications.setNotificationChannelAsync(ALARM_SILENT_CHANNEL_ID, {
+    name: i18next.t('notifications.channelTransferAlarmSilent'),
+    importance: Notifications.AndroidImportance.MAX,
+    sound: null,
+    enableVibrate: true,
+    vibrationPattern: [0, 1000, 500, 1000],
+    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    bypassDnd: true,
+  });
+  await Notifications.deleteNotificationChannelAsync(STATION_PASSED_CHANNEL_ID).catch(() => {});
+  await Notifications.setNotificationChannelAsync(STATION_PASSED_CHANNEL_ID, {
+    name: i18next.t('notifications.channelStationPass'),
+    importance: Notifications.AndroidImportance.DEFAULT,
+    lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+  });
+}
+
 export async function initStationNotification(): Promise<void> {
-  if (Platform.OS === 'android') {
-    await Notifications.setNotificationChannelAsync('station', {
-      name: i18next.t('notifications.channelStation'),
-      importance: Notifications.AndroidImportance.HIGH,
-      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-    });
-    await Notifications.deleteNotificationChannelAsync(ALARM_CHANNEL_ID).catch(() => {});
-    await Notifications.setNotificationChannelAsync(ALARM_CHANNEL_ID, {
-      name: i18next.t('notifications.channelTransferAlarm'),
-      importance: Notifications.AndroidImportance.MAX,
-      sound: 'alarm.wav',
-      enableVibrate: true,
-      vibrationPattern: [0, 1000, 500, 1000],
-      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-      bypassDnd: true,
-    });
-    await Notifications.deleteNotificationChannelAsync(ALARM_SILENT_CHANNEL_ID).catch(() => {});
-    await Notifications.setNotificationChannelAsync(ALARM_SILENT_CHANNEL_ID, {
-      name: i18next.t('notifications.channelTransferAlarmSilent'),
-      importance: Notifications.AndroidImportance.MAX,
-      sound: null,
-      enableVibrate: true,
-      vibrationPattern: [0, 1000, 500, 1000],
-      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-      bypassDnd: true,
-    });
-    await Notifications.setNotificationChannelAsync(STATION_PASSED_CHANNEL_ID, {
-      name: i18next.t('notifications.channelStationPass'),
-      importance: Notifications.AndroidImportance.DEFAULT,
-      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-    });
-  }
+  await refreshNotificationChannels();
   const { status } = await Notifications.requestPermissionsAsync({
     ios: {
       allowAlert: true,

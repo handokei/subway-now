@@ -140,7 +140,7 @@ describe('useBackgroundLocation', () => {
     expect(mockStartLocationUpdatesAsync).not.toHaveBeenCalled();
   });
 
-  // ── 태스크가 이미 등록된 경우 ──
+  // ── 태스크가 이미 등록된 경우: GPS 추적 공백 방지를 위해 재시작하지 않음 ──
 
   it('태스크가 이미 등록되어 있으면 startLocationUpdatesAsync를 호출하지 않는다', async () => {
     mockIsTaskRegisteredAsync.mockResolvedValueOnce(true);

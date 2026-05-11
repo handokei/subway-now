@@ -60,7 +60,13 @@
     "speakerOutputDescription": "Plays the alarm through the speaker even without earphones",
     "speakerOffTitle": "Turn off speaker output",
     "speakerOffMessage": "Disabling speaker output will play only vibration when earphones are not connected. Continue?",
-    "speakerOffConfirm": "Turn off"
+    "speakerOffConfirm": "Turn off",
+    "languageSection": "Language",
+    "languageLabel": "App language",
+    "languageDescription": "Auto follows your device setting",
+    "languageAuto": "Auto",
+    "languageKorean": "Korean",
+    "languageEnglish": "English"
   },
   "map": {
     "originBadge": "Origin",
