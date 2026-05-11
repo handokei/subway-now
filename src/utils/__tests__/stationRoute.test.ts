@@ -1,6 +1,6 @@
-import { getStationsOnLine, getRemainingStops, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, findRouteCandidatesByCategory, ROUTE_CATEGORIES } from '../stationRoute';
 import type { Station } from '../../types/station';
-import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate } from '../stationRoute';
+import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 
 describe('getStationsOnLine', () => {
   it('returns only stations on the given line, sorted by id', () => {
@@ -645,6 +645,84 @@ describe('pickRouteByPreference', () => {
 
   it('빈 배열이면 null을 반환한다', () => {
     expect(pickRouteByPreference([], 'optimal')).toBeNull();
+  });
+});
+
+describe('findRouteCandidatesByCategory', () => {
+  it('직통 경로일 때 모든 카테고리가 후보를 반환한다 (같은 경로를 가리킴)', () => {
+    const result = findRouteCandidatesByCategory(['1-001'], '1-003');
+    expect(result).toHaveLength(ROUTE_CATEGORIES.length);
+    result.forEach((entry) => {
+      expect(entry.candidate.route.type).toBe('direct');
+    });
+    expect(result[0].candidate).toBe(result[1].candidate);
+  });
+
+  it('환승 경로가 있어도 항상 모든 카테고리에 대해 결과를 반환한다', () => {
+    const result = findRouteCandidatesByCategory(['2-022'], '3-012');
+    expect(result.length).toBe(ROUTE_CATEGORIES.length);
+    const keys = result.map((r) => r.category.key);
+    expect(keys).toEqual(ROUTE_CATEGORIES.map((c) => c.key));
+  });
+
+  it('originIds가 비어있으면 빈 배열을 반환한다', () => {
+    expect(findRouteCandidatesByCategory([], '1-001')).toEqual([]);
+  });
+
+  it('유효하지 않은 origin이면 빈 배열을 반환한다', () => {
+    expect(findRouteCandidatesByCategory(['invalid-id'], '1-001')).toEqual([]);
+  });
+
+  it('여러 originIds를 모두 탐색하여 카테고리별 최적을 선택한다', () => {
+    // 3-032(교대 3호선) → 3-034 직통, 2-022(강남 2호선) → 3-034는 환승 필요
+    // optimal 카테고리는 더 짧은 직통 후보(transferCount=0)를 선택해야 한다.
+    const result = findRouteCandidatesByCategory(['2-022', '3-032'], '3-034');
+    expect(result.length).toBe(ROUTE_CATEGORIES.length);
+    const optimal = result.find((r) => r.category.key === 'optimal')!;
+    expect(optimal.candidate.transferCount).toBe(0);
+    expect(optimal.candidate.route.type).toBe('direct');
+  });
+
+  it('커스텀 categories 인자를 받아 해당 정렬 기준으로 동작한다', () => {
+    const onlyOptimal: RouteCategory[] = [
+      { key: 'optimal', label: '빠른길', comparator: (a, b) => a.travelMinutes - b.travelMinutes },
+    ];
+    const result = findRouteCandidatesByCategory(['1-001'], '1-003', onlyOptimal);
+    expect(result).toHaveLength(1);
+    expect(result[0].category.label).toBe('빠른길');
+  });
+});
+
+describe('ROUTE_CATEGORIES comparators', () => {
+  const makeCandidate = (transferCount: number, travelMinutes: number): RouteCandidate => ({
+    route: { type: 'direct', stops: Math.max(0, Math.floor(travelMinutes / 2)) },
+    totalStops: Math.max(0, Math.floor(travelMinutes / 2)),
+    transferCount,
+    travelMinutes,
+  });
+
+  it('optimal: travelMinutes 차이가 우선, 동률이면 transferCount로 정렬한다', () => {
+    const optimal = ROUTE_CATEGORIES.find((c) => c.key === 'optimal')!;
+    const fast = makeCandidate(2, 10);
+    const slow = makeCandidate(0, 20);
+    expect(optimal.comparator(fast, slow)).toBeLessThan(0);
+    expect(optimal.comparator(slow, fast)).toBeGreaterThan(0);
+
+    const sameTimeMoreTransfer = makeCandidate(2, 10);
+    const sameTimeFewerTransfer = makeCandidate(0, 10);
+    expect(optimal.comparator(sameTimeMoreTransfer, sameTimeFewerTransfer)).toBeGreaterThan(0);
+  });
+
+  it('minTransfer: transferCount 차이가 우선, 동률이면 travelMinutes로 정렬한다', () => {
+    const minTransfer = ROUTE_CATEGORIES.find((c) => c.key === 'minTransfer')!;
+    const fewer = makeCandidate(0, 30);
+    const more = makeCandidate(2, 10);
+    expect(minTransfer.comparator(fewer, more)).toBeLessThan(0);
+    expect(minTransfer.comparator(more, fewer)).toBeGreaterThan(0);
+
+    const sameTransferSlower = makeCandidate(1, 20);
+    const sameTransferFaster = makeCandidate(1, 10);
+    expect(minTransfer.comparator(sameTransferSlower, sameTransferFaster)).toBeGreaterThan(0);
   });
 });
 
