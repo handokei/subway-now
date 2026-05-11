@@ -43,6 +43,7 @@ jest.mock('../../utils/logger', () => ({
 }));
 
 import { useBackgroundLocation } from '../useBackgroundLocation';
+import { LOCATION_TRACKING_OPTIONS } from '../../constants/locationTracking';
 
 // ── 픽스처 ──
 
@@ -106,24 +107,25 @@ describe('useBackgroundLocation', () => {
     renderHook(() => useBackgroundLocation(mockDestination));
 
     await waitFor(() => {
-      expect(mockStartLocationUpdatesAsync).toHaveBeenCalledWith(
-        'background-location-task',
-        expect.objectContaining({
-          accuracy: 6, // Location.Accuracy.High
-          activityType: 2, // Location.LocationActivityType.AutomotiveNavigation
-          pausesUpdatesAutomatically: false,
-          distanceInterval: 20,
-          showsBackgroundLocationIndicator: true,
-          foregroundService: expect.objectContaining({
-            notificationTitle: '지하철 위치 감지 중',
-            notificationBody: '백그라운드에서 현재 역을 추적하고 있습니다',
-          }),
-        }),
-      );
+      expect(mockStartLocationUpdatesAsync).toHaveBeenCalled();
     });
 
+    expect(mockStartLocationUpdatesAsync).toHaveBeenCalledWith(
+      'background-location-task',
+      expect.any(Object),
+    );
+
+    // 회귀 가드: 추적 옵션 형태를 LOCATION_TRACKING_OPTIONS 상수와 strict 비교.
+    // - 임의 키 추가(예: deferredUpdatesInterval 재유입) → toEqual 실패
+    // - 키 제거/변경 → toEqual 실패
+    // foregroundService는 i18n 의존이라 분리 검증.
     const callArgs = mockStartLocationUpdatesAsync.mock.calls[0]?.[1] as Record<string, unknown>;
-    expect(callArgs).not.toHaveProperty('deferredUpdatesInterval');
+    const { foregroundService, ...trackingOpts } = callArgs;
+    expect(trackingOpts).toEqual(LOCATION_TRACKING_OPTIONS);
+    expect(foregroundService).toEqual({
+      notificationTitle: '지하철 위치 감지 중',
+      notificationBody: '백그라운드에서 현재 역을 추적하고 있습니다',
+    });
   });
 
   // ── 권한 거부 ──
