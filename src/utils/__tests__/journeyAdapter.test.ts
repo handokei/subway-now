@@ -62,10 +62,10 @@ describe('arrivalInfoToArrivalTrain', () => {
   afterEach(() => { jest.restoreAllMocks(); });
 
   it('should convert arrival info with destination', () => {
-    const items = [makeArrivalInfo({ destination: '봉화산', arrivalSeconds: 134 })];
+    const items = [makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134 })];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
     expect(result).toEqual([
-      { direction: '봉화산 방면', line: '6', arrivalAtMs: 1000000 + 134 * 1000, subtext: undefined },
+      { direction: '봉화산행', line: '6', arrivalAtMs: 1000000 + 134 * 1000, subtext: undefined },
     ]);
   });
 
@@ -76,15 +76,15 @@ describe('arrivalInfoToArrivalTrain', () => {
   });
 
   it('should include statusMessage as subtext when present', () => {
-    const items = [makeArrivalInfo({ destination: '응암', arrivalSeconds: 271, statusMessage: '전역 출발' })];
+    const items = [makeArrivalInfo({ destination: '응암행', arrivalSeconds: 271, statusMessage: '전역 출발' })];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
     expect(result[0].subtext).toBe('전역 출발');
   });
 
   it('should handle multiple items', () => {
     const items = [
-      makeArrivalInfo({ destination: '봉화산', arrivalSeconds: 134 }),
-      makeArrivalInfo({ destination: '응암', arrivalSeconds: 271, statusMessage: '진입 중', trainCode: 'T002' }),
+      makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134 }),
+      makeArrivalInfo({ destination: '응암행', arrivalSeconds: 271, statusMessage: '진입 중', trainCode: 'T002' }),
     ];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
     expect(result).toHaveLength(2);
@@ -93,7 +93,7 @@ describe('arrivalInfoToArrivalTrain', () => {
   });
 
   it('should handle special line number', () => {
-    const items = [makeArrivalInfo({ destination: '인천공항', arrivalSeconds: 600, trainCode: 'A001' })];
+    const items = [makeArrivalInfo({ destination: '인천공항행', arrivalSeconds: 600, trainCode: 'A001' })];
     const result = arrivalInfoToArrivalTrain(items, '상행', 'airport');
     expect(result[0].line).toBe('airport');
   });
