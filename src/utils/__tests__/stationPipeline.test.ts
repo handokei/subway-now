@@ -34,6 +34,13 @@ jest.mock('../stationNotification', () => ({
   sendStationPassedNotification: (...args: unknown[]) => mockSendStationPassedNotification(...args),
 }));
 
+const mockGetLastNotifiedStationId = jest.fn();
+const mockSetLastNotifiedStationId = jest.fn();
+jest.mock('../notificationState', () => ({
+  getLastNotifiedStationId: (...args: unknown[]) => mockGetLastNotifiedStationId(...args),
+  setLastNotifiedStationId: (...args: unknown[]) => mockSetLastNotifiedStationId(...args),
+}));
+
 import { processLocationUpdate, resolveNextTarget } from '../stationPipeline';
 
 const mockStation: Station = {
@@ -82,12 +89,14 @@ describe('processLocationUpdate', () => {
     mockCalculateStaticETA.mockReturnValue(10);
     mockEvaluateAlarmPhase.mockReturnValue(null);
     mockIsStationOnRoute.mockReturnValue(true);
+    mockGetLastNotifiedStationId.mockResolvedValue(null);
+    mockSetLastNotifiedStationId.mockResolvedValue(undefined);
   });
 
   it('returns null nearest and null alarm when findNearestStation returns null', async () => {
     mockFindNearestStation.mockReturnValue(null);
     const result = await call();
-    expect(result).toEqual({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    expect(result).toEqual({ alarmEvent: null, nearest: null });
     expect(mockFindRoute).not.toHaveBeenCalled();
     expect(mockSendAlarmNotification).not.toHaveBeenCalled();
   });
@@ -260,11 +269,12 @@ describe('processLocationUpdate', () => {
     expect(mockFindRoute).toHaveBeenCalledWith('station-1', 'station-2');
   });
 
-  it('sends station-passed notification when station changes', async () => {
+  it('sends station-passed notification and writes to notificationState when station changes', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
+    mockGetLastNotifiedStationId.mockResolvedValue('other-station');
 
-    const result = await call({ lastNotifiedStationId: 'other-station' });
+    await call();
 
     expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', {
       nextStationName: '시청',
@@ -272,24 +282,26 @@ describe('processLocationUpdate', () => {
       isTransfer: false,
       stopsToDestination: 3,
     });
-    expect(result.lastNotifiedStationId).toBe('station-1');
+    expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith('station-1');
   });
 
-  it('does not send station-passed notification when station is the same', async () => {
+  it('does not send station-passed notification when station is the same as stored', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
+    mockGetLastNotifiedStationId.mockResolvedValue('station-1');
 
-    const result = await call({ lastNotifiedStationId: 'station-1' });
+    await call();
 
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
-    expect(result.lastNotifiedStationId).toBe('station-1');
+    expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
   });
 
-  it('sends station-passed notification when lastNotifiedStationId is null', async () => {
+  it('sends station-passed notification when stored lastNotifiedStationId is null', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
+    mockGetLastNotifiedStationId.mockResolvedValue(null);
 
-    const result = await call({ lastNotifiedStationId: null });
+    await call();
 
     expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', {
       nextStationName: '시청',
@@ -297,7 +309,7 @@ describe('processLocationUpdate', () => {
       isTransfer: false,
       stopsToDestination: 3,
     });
-    expect(result.lastNotifiedStationId).toBe('station-1');
+    expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith('station-1');
   });
 
   it('does not mutate firedAlarms (responsibility moved to caller)', async () => {
@@ -325,25 +337,27 @@ describe('processLocationUpdate', () => {
     expect(result.nearest).toBe(mockNearestResult);
   });
 
-  it('경로 외 노선의 역이면 station-passed 알림을 보내지 않고 lastNotifiedStationId를 갱신하지 않는다', async () => {
+  it('경로 외 노선의 역이면 station-passed 알림을 보내지 않고 notificationState를 갱신하지 않는다', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
     mockIsStationOnRoute.mockReturnValue(false);
+    mockGetLastNotifiedStationId.mockResolvedValue('previous-station');
 
-    const result = await call({ lastNotifiedStationId: 'previous-station' });
+    await call();
 
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
-    expect(result.lastNotifiedStationId).toBe('previous-station');
+    expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
   });
 
   it('route가 null이면 station-passed 알림을 보내지 않는다', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(null);
 
-    const result = await call({ lastNotifiedStationId: null });
+    await call();
 
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
-    expect(result.lastNotifiedStationId).toBeNull();
+    expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+    expect(mockGetLastNotifiedStationId).not.toHaveBeenCalled();
   });
 
   it('findNearestStation을 MAX_STATION_DISTANCE_KM(1.0)와 함께 호출한다', async () => {
@@ -354,17 +368,18 @@ describe('processLocationUpdate', () => {
     expect(mockFindNearestStation).toHaveBeenCalledWith(37.5, 127.0, 1.0);
   });
 
-  it('route 타입이 unknown(타입 오염)으로 resolveNextTarget이 null이면 알림 미발송 + ref 미갱신', async () => {
+  it('route 타입이 unknown(타입 오염)으로 resolveNextTarget이 null이면 알림 미발송 + notificationState 미갱신', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     // AsyncStorage 등에서 손상된 route가 들어온 케이스
     const corruptedRoute = { type: 'unknown', stops: 0 } as unknown as DirectRoute;
     mockFindRoute.mockReturnValue(corruptedRoute);
     mockIsStationOnRoute.mockReturnValue(true);
+    mockGetLastNotifiedStationId.mockResolvedValue('prev-station');
 
-    const result = await call({ lastNotifiedStationId: 'prev-station' });
+    await call();
 
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
-    expect(result.lastNotifiedStationId).toBe('prev-station');
+    expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
   });
 });
 

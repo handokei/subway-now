@@ -4,7 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { processLocationUpdate } from '../utils/stationPipeline';
 import { alarmKey } from '../utils/stationAlarm';
 import { createLogger } from '../utils/logger';
-import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
+import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
 import { isAccuracyAcceptable, isLocationFresh } from '../utils/locationGates';
 import type { Route } from '../utils/stationRoute';
 
@@ -31,12 +31,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const speedMps = speed != null && speed >= 0 ? speed : null;
 
   try {
-    const [destJson, sleepJson, firedJson, routeJson, lastNotifiedJson, allowSpeakerJson] = await Promise.all([
+    const [destJson, sleepJson, firedJson, routeJson, allowSpeakerJson] = await Promise.all([
       AsyncStorage.getItem(DESTINATION_KEY),
       AsyncStorage.getItem(SLEEP_MODE_KEY),
       AsyncStorage.getItem(FIRED_ALARMS_KEY),
       AsyncStorage.getItem(ROUTE_KEY),
-      AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY),
       AsyncStorage.getItem(ALLOW_SPEAKER_KEY),
     ]);
 
@@ -55,7 +54,9 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     const firedAlarms = new Set<string>(firedJson ? JSON.parse(firedJson) : []);
     const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;
 
-    const { alarmEvent, lastNotifiedStationId: newLastId } = await processLocationUpdate({
+    // lastNotifiedStationId는 stationPipeline 내부에서 notificationState 모듈을 통해
+    // AsyncStorage에 직접 read/write 한다 (Foreground 훅과 단일 출처 공유).
+    const { alarmEvent } = await processLocationUpdate({
       lat: latitude,
       lng: longitude,
       destination,
@@ -63,23 +64,15 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       sleepMode,
       allowSpeaker,
       storedRoute,
-      lastNotifiedStationId: lastNotifiedJson,
       speedMps,
     });
 
-    const writes: Promise<void>[] = [];
     if (alarmEvent) {
       firedAlarms.add(alarmKey(alarmEvent));
-      writes.push(
+      await Promise.all([
         AsyncStorage.setItem(FIRED_ALARMS_KEY, JSON.stringify([...firedAlarms])),
         AsyncStorage.setItem(ALARM_EVENT_KEY, JSON.stringify(alarmEvent)),
-      );
-    }
-    if (newLastId && newLastId !== lastNotifiedJson) {
-      writes.push(AsyncStorage.setItem(LAST_NOTIFIED_STATION_KEY, newLastId));
-    }
-    if (writes.length > 0) {
-      await Promise.all(writes);
+      ]);
     }
 
     logger.info('백그라운드 위치 업데이트 완료:', latitude.toFixed(4), longitude.toFixed(4));

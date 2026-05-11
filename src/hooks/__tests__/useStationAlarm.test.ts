@@ -1,4 +1,4 @@
-import { renderHook } from '@testing-library/react-native';
+import { renderHook, waitFor } from '@testing-library/react-native';
 import { useStationAlarm, type UseStationAlarmInputs } from '../useStationAlarm';
 import { useAppStore } from '../../store/useAppStore';
 import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../../utils/stationRoute';
@@ -25,6 +25,13 @@ jest.mock('../../utils/stationAlarm', () => {
 const mockResolveNextTarget = jest.fn();
 jest.mock('../../utils/stationPipeline', () => ({
   resolveNextTarget: (...args: unknown[]) => mockResolveNextTarget(...args),
+}));
+
+const mockGetLastNotifiedStationId = jest.fn();
+const mockSetLastNotifiedStationId = jest.fn();
+jest.mock('../../utils/notificationState', () => ({
+  getLastNotifiedStationId: (...args: unknown[]) => mockGetLastNotifiedStationId(...args),
+  setLastNotifiedStationId: (...args: unknown[]) => mockSetLastNotifiedStationId(...args),
 }));
 
 jest.mock('../../utils/logger', () => ({
@@ -73,6 +80,8 @@ describe('useStationAlarm', () => {
     useAppStore.setState({ sleepMode: false, allowSpeaker: true, alarmEvent: null });
     mockEvaluateAlarmPhase.mockReturnValue(null);
     mockResolveNextTarget.mockReturnValue(null);
+    mockGetLastNotifiedStationId.mockResolvedValue(null);
+    mockSetLastNotifiedStationId.mockResolvedValue(undefined);
   });
 
   it('does not evaluate when route is null', () => {
@@ -269,30 +278,34 @@ describe('useStationAlarm', () => {
       stopsToDestination: 3,
     };
 
-    it('fires when nearest station changes', () => {
+    it('fires when nearest station changes (notificationState dedup)', async () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
-      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', directTarget);
+
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', directTarget);
+      });
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith('S1');
     });
 
-    it('does not fire when nearest station is unchanged', () => {
+    it('does not fire when stored lastNotifiedStationId equals nearest station', async () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(directTarget);
-      const { rerender } = renderHook(
-        ({ s }: { s: Station }) =>
-          useStationAlarm(defaultInputs({ route, destination, nearestStation: s })),
-        { initialProps: { s: station } },
-      );
-      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+      mockGetLastNotifiedStationId.mockResolvedValue('S1');
 
-      rerender({ s: station });
-      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
+
+      await waitFor(() => {
+        expect(mockGetLastNotifiedStationId).toHaveBeenCalled();
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
-    it('fires again when nearest station changes to a different one', () => {
+    it('fires again when nearest station changes to a different one', async () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station1 = makeStation('S1', '역삼');
       const station2 = makeStation('S2', '선릉');
@@ -302,7 +315,9 @@ describe('useStationAlarm', () => {
           useStationAlarm(defaultInputs({ route, destination, nearestStation: s })),
         { initialProps: { s: station1 } },
       );
-      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+      });
 
       const nextTarget = {
         nextStationName: '강남',
@@ -312,7 +327,9 @@ describe('useStationAlarm', () => {
       };
       mockResolveNextTarget.mockReturnValue(nextTarget);
       rerender({ s: station2 });
-      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(2);
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(2);
+      });
       expect(mockSendStationPassedNotification).toHaveBeenLastCalledWith('선릉', '강남', nextTarget);
     });
 
@@ -320,12 +337,14 @@ describe('useStationAlarm', () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockGetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('does not fire when route is null', () => {
       const station = makeStation('S1', '역삼');
       renderHook(() => useStationAlarm(defaultInputs({ destination, nearestStation: station })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockGetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
     it('does not fire when destination is null', () => {
@@ -333,17 +352,20 @@ describe('useStationAlarm', () => {
       const station = makeStation('S1', '역삼');
       renderHook(() => useStationAlarm(defaultInputs({ route, nearestStation: station })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockGetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
-    it('passes null target when resolveNextTarget returns null', () => {
+    it('passes null target when resolveNextTarget returns null', async () => {
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
       mockResolveNextTarget.mockReturnValue(null);
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
-      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', null);
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', null);
+      });
     });
 
-    it('handles sendStationPassedNotification rejection gracefully', () => {
+    it('handles sendStationPassedNotification rejection gracefully', async () => {
       mockSendStationPassedNotification.mockRejectedValueOnce(new Error('알림 실패'));
       const route: DirectRoute = { type: 'direct', stops: 3 };
       const station = makeStation('S1', '역삼');
@@ -351,6 +373,22 @@ describe('useStationAlarm', () => {
       expect(() =>
         renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station }))),
       ).not.toThrow();
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+    });
+
+    it('handles getLastNotifiedStationId rejection gracefully', async () => {
+      mockGetLastNotifiedStationId.mockRejectedValueOnce(new Error('storage 실패'));
+      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const station = makeStation('S1', '역삼');
+      mockResolveNextTarget.mockReturnValue(directTarget);
+      expect(() =>
+        renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station }))),
+      ).not.toThrow();
+      await waitFor(() => {
+        expect(mockGetLastNotifiedStationId).toHaveBeenCalled();
+      });
     });
 
     it('transfer route에서 경로 외 노선의 역은 알림을 발송하지 않는다', () => {
@@ -379,9 +417,10 @@ describe('useStationAlarm', () => {
       });
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: offRouteStation })));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockGetLastNotifiedStationId).not.toHaveBeenCalled();
     });
 
-    it('경로 외 역 다음에 경로상 역이 오면 알림을 발송한다 (ref 미갱신 검증)', () => {
+    it('경로 외 역 다음에 경로상 역이 오면 알림을 발송한다', async () => {
       const route: TransferRoute = {
         type: 'transfer',
         transferName: '시청',
@@ -415,8 +454,137 @@ describe('useStationAlarm', () => {
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
 
       rerender({ s: onRouteStation });
-      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+      });
       expect(mockSendStationPassedNotification).toHaveBeenCalledWith('서울', '강남', transferTarget);
+    });
+
+    it('알림 발송 후에만 notificationState에 저장한다 (실패 시 재시도 가능)', async () => {
+      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const station = makeStation('S1', '역삼');
+      mockResolveNextTarget.mockReturnValue(directTarget);
+      mockSendStationPassedNotification.mockRejectedValueOnce(new Error('알림 발송 실패'));
+
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
+
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+      // 알림 발송 실패 시 storage write를 하지 않아 다음 폴링에서 재시도 가능
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+    });
+
+    it('알림 발송이 성공하면 그 후에 notificationState에 저장한다', async () => {
+      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const station = makeStation('S1', '역삼');
+      mockResolveNextTarget.mockReturnValue(directTarget);
+
+      const callOrder: string[] = [];
+      mockSendStationPassedNotification.mockImplementationOnce(async () => {
+        callOrder.push('notify');
+      });
+      mockSetLastNotifiedStationId.mockImplementationOnce(async () => {
+        callOrder.push('write');
+      });
+
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
+
+      await waitFor(() => {
+        expect(mockSetLastNotifiedStationId).toHaveBeenCalled();
+      });
+      expect(callOrder).toEqual(['notify', 'write']);
+    });
+
+    function deferred<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((res) => {
+        resolve = res;
+      });
+      return { promise, resolve };
+    }
+
+    it('race: A→B→A 빠른 변동 시 가장 마지막 candidate에 대한 알림만 발송된다', async () => {
+      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const stationA = makeStation('SA', '강남A');
+      const stationB = makeStation('SB', '강남B');
+      mockResolveNextTarget.mockReturnValue(directTarget);
+
+      const readA = deferred<string | null>();
+      const readB = deferred<string | null>();
+      const readA2 = deferred<string | null>();
+      mockGetLastNotifiedStationId
+        .mockReturnValueOnce(readA.promise)
+        .mockReturnValueOnce(readB.promise)
+        .mockReturnValueOnce(readA2.promise);
+
+      const { rerender } = renderHook(
+        ({ s }: { s: Station }) =>
+          useStationAlarm(defaultInputs({ route, destination, nearestStation: s })),
+        { initialProps: { s: stationA } },
+      );
+      rerender({ s: stationB });
+      rerender({ s: stationA });
+
+      // 세 IIFE 모두 read를 대기 중 — 이제 모두 resolve
+      readA.resolve(null);
+      readB.resolve(null);
+      readA2.resolve(null);
+
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+      });
+      // 처음 두 IIFE는 cancelled 가드에 막혀 마지막(A) 한 번만 알림 발사
+      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남A', '강남', directTarget);
+    });
+
+    it('cancel 플래그: read 완료 전 언마운트되면 알림을 발송하지 않는다', async () => {
+      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const station = makeStation('S1', '역삼');
+      mockResolveNextTarget.mockReturnValue(directTarget);
+
+      const read = deferred<string | null>();
+      mockGetLastNotifiedStationId.mockReturnValueOnce(read.promise);
+
+      const { unmount } = renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      unmount();
+      read.resolve(null);
+
+      // microtask 진행을 위해 한 사이클 양보
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+    });
+
+    it('cancel 플래그: notify 완료 전 언마운트되면 storage write를 하지 않는다', async () => {
+      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const station = makeStation('S1', '역삼');
+      mockResolveNextTarget.mockReturnValue(directTarget);
+
+      const notify = deferred<void>();
+      mockSendStationPassedNotification.mockReturnValueOnce(notify.promise);
+
+      const { unmount } = renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      // notify가 시작될 때까지 기다림
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+
+      unmount();
+      notify.resolve();
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     });
   });
 });
