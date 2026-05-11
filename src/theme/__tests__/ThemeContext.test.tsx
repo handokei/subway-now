@@ -8,9 +8,12 @@ import { useAppStore } from '../../store/useAppStore';
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');
 
 describe('ThemeContext', () => {
+  let loadThemeMode: jest.Mock;
+
   beforeEach(() => {
     mockUseColorScheme.mockReturnValue('light');
-    useAppStore.setState({ themeMode: 'auto' });
+    loadThemeMode = jest.fn();
+    useAppStore.setState({ themeMode: 'auto', loadThemeMode });
   });
 
   afterEach(() => {
@@ -79,6 +82,12 @@ describe('ThemeContext', () => {
 
       expect(result.current.colors).toBe(darkColors);
       expect(result.current.isDark).toBe(true);
+    });
+
+    it('마운트 시 저장된 테마 모드를 로드한다', () => {
+      renderHook(() => useTheme(), { wrapper });
+
+      expect(loadThemeMode).toHaveBeenCalledTimes(1);
     });
   });
 });
