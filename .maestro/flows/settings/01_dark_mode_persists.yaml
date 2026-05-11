@@ -1,0 +1,88 @@
+appId: com.subwaynow.app
+name: "설정 - 다크모드 재시작 후 즉시 적용"
+---
+# Step 1: 초기 실행 (clearState로 AsyncStorage 초기화)
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+# dev-client URL 선택 화면 (개발 빌드에서만)
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+
+- tapOn:
+    text: "Continue"
+    optional: true
+
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+
+# Dev Menu가 있으면 swipe down으로 dismiss
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+# 홈 로드 대기
+- extendedWaitUntil:
+    visible:
+      text: "LIVE"
+    timeout: 30000
+
+- takeScreenshot: .maestro/screenshots/01_initial_home_light
+
+# 설정 탭 이동
+- tapOn:
+    point: "87%,95%"
+
+# 다크 선택
+- tapOn:
+    id: "theme-dark"
+
+- takeScreenshot: .maestro/screenshots/02_settings_dark_selected
+
+# Step 2: 앱 종료 후 cold restart (AsyncStorage 유지)
+- stopApp:
+    appId: com.subwaynow.app
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: false
+    permissions:
+      location: always
+      notifications: allow
+
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+# 핵심 검증: 재시작 직후 홈 탭이 즉시 다크 테마로 보여야 함
+- extendedWaitUntil:
+    visible:
+      text: "LIVE"
+    timeout: 30000
+
+- takeScreenshot: .maestro/screenshots/03_home_after_restart_should_be_dark
+
+# 설정 탭 진입 — 다크 segment가 active 상태로 유지되었는지
+- tapOn:
+    point: "87%,95%"
+
+- extendedWaitUntil:
+    visible:
+      id: "theme-dark"
+    timeout: 10000
+
+- takeScreenshot: .maestro/screenshots/04_settings_dark_still_active

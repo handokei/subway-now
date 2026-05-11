@@ -50,6 +50,9 @@ coverage/
 # Claude Code
 .claude/
 
+# Maestro E2E 산출물
+.maestro/screenshots/
+
 # Generated coverage temp
 coverage-temp/
 
