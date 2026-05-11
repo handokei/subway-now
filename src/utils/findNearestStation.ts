@@ -4,7 +4,11 @@ import type { NearestStationResult, NearestStationsResult, Station } from '../ty
 
 const stations = stationsData as Station[];
 
-export function findNearestStation(lat: number, lng: number): NearestStationResult | null {
+export function findNearestStation(
+  lat: number,
+  lng: number,
+  maxDistanceKm?: number,
+): NearestStationResult | null {
   let nearest: Station | null = null;
   let minDistance = Infinity;
 
@@ -16,11 +20,17 @@ export function findNearestStation(lat: number, lng: number): NearestStationResu
     }
   }
 
-  return nearest ? { station: nearest, distanceKm: minDistance } : null;
+  if (!nearest) return null;
+  if (maxDistanceKm != null && minDistance > maxDistanceKm) return null;
+  return { station: nearest, distanceKm: minDistance };
 }
 
-export function findNearestStations(lat: number, lng: number): NearestStationsResult | null {
-  const result = findNearestStation(lat, lng);
+export function findNearestStations(
+  lat: number,
+  lng: number,
+  maxDistanceKm?: number,
+): NearestStationsResult | null {
+  const result = findNearestStation(lat, lng, maxDistanceKm);
   if (!result) return null;
 
   const variants = stations.filter((s) => s.name === result.station.name);

@@ -1,8 +1,9 @@
 import { findNearestStation } from './findNearestStation';
-import { findRoute, calculateStaticETA, updateRouteFromPosition } from './stationRoute';
+import { findRoute, calculateStaticETA, isStationOnRoute, updateRouteFromPosition } from './stationRoute';
 import { evaluateAlarmPhase } from './stationAlarm';
 import { sendAlarmNotification, sendStationPassedNotification, updateStationNotification } from './stationNotification';
 import { distanceMetersBetween, estimateEtaSeconds } from './stationEta';
+import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import type { NearestStationResult, Station } from '../types/station';
 import type { Route } from './stationRoute';
 import type { AlarmEvent } from './stationAlarm';
@@ -69,7 +70,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     speedMps = null,
   } = inputs;
 
-  const nearest = findNearestStation(lat, lng);
+  const nearest = findNearestStation(lat, lng, MAX_STATION_DISTANCE_KM);
   if (!nearest) return { alarmEvent: null, nearest: null, lastNotifiedStationId };
 
   let route: Route = null;
@@ -92,15 +93,18 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker);
   }
 
+  // 역 변경 감지 → per-station 알림. 단, 경로상 노선의 역만 (false alarm 방지)
   let newLastNotifiedStationId = lastNotifiedStationId;
-  if (nearest.station.id !== lastNotifiedStationId) {
-    newLastNotifiedStationId = nearest.station.id;
+  if (route && isStationOnRoute(nearest.station, route) && nearest.station.id !== lastNotifiedStationId) {
     const target = resolveNextTarget(route, destination.name);
-    await sendStationPassedNotification(
-      nearest.station.name,
-      destination.name,
-      target?.stopsToNextStation ?? null,
-    );
+    if (target) {
+      newLastNotifiedStationId = nearest.station.id;
+      await sendStationPassedNotification(
+        nearest.station.name,
+        destination.name,
+        target.stopsToNextStation,
+      );
+    }
   }
 
   const eta = calculateStaticETA(route);

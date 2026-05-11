@@ -3,7 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
 import type { AlarmEvent } from '../utils/stationAlarm';
 import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
-import type { RoutePreference } from '../utils/stationRoute';
+import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
 
 export type ThemeMode = 'auto' | 'light' | 'dark';
 
@@ -142,7 +142,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       const raw = await AsyncStorage.getItem(ROUTE_PREFERENCE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed === 'optimal' || parsed === 'minTransfer') {
+        if (ROUTE_CATEGORIES.some((c) => c.key === parsed)) {
           set({ routePreference: parsed });
         }
       }

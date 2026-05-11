@@ -71,6 +71,32 @@ export interface RouteCandidate {
   travelMinutes: number;
 }
 
+export interface RouteCategory {
+  key: RoutePreference;
+  label: string;
+  comparator: (a: RouteCandidate, b: RouteCandidate) => number;
+}
+
+export interface CategorizedRoute {
+  category: RouteCategory;
+  candidate: RouteCandidate;
+}
+
+export const ROUTE_CATEGORIES: readonly RouteCategory[] = [
+  {
+    key: 'optimal',
+    label: '최적경로',
+    comparator: (a, b) =>
+      a.travelMinutes - b.travelMinutes || a.transferCount - b.transferCount,
+  },
+  {
+    key: 'minTransfer',
+    label: '최소환승',
+    comparator: (a, b) =>
+      a.transferCount - b.transferCount || a.travelMinutes - b.travelMinutes,
+  },
+];
+
 export interface JourneySegment {
   line: string;
   lineColor: string;
@@ -188,6 +214,21 @@ export function updateRouteFromPosition(
   return null;
 }
 
+export function isStationOnRoute(station: Station, route: NonNullable<Route>): boolean {
+  if (route.type === 'direct') {
+    // direct는 fromLine 정보가 없어서 노선 검증이 불가능 — 통과
+    return true;
+  }
+  if (route.type === 'transfer') {
+    return station.line === route.fromLine || station.line === route.toLine;
+  }
+  // multi-transfer
+  for (const t of route.transfers) {
+    if (station.line === t.fromLine || station.line === t.toLine) return true;
+  }
+  return false;
+}
+
 export function getRemainingStops(
   currentId: string,
   destinationId: string,
@@ -283,7 +324,8 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
     current, destination, currentLineStations, destLineStations, currentIdx, destIdx,
   );
 
-  // 후보 수집 + 정렬 + 열등 후보 제거
+  // 후보 수집 + 정렬 — 도미네이션 필터는 적용하지 않음.
+  // 카테고리별 선택은 findRouteCandidatesByCategory에서 책임진다.
   const candidates: RouteCandidate[] = [];
   if (bestSingle) candidates.push(toCandidate(bestSingle));
   /* istanbul ignore next -- 실제 서울 지하철 데이터에서 2회 환승 불가 노선 조합은 없음 */
@@ -291,23 +333,22 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
 
   candidates.sort((a, b) => a.travelMinutes - b.travelMinutes);
 
-  // strict domination 필터
-  const filtered = candidates.filter((c, i) => {
-    for (let j = 0; j < candidates.length; j++) {
-      if (i === j) continue;
-      const other = candidates[j];
-      /* istanbul ignore next -- 현재 후보는 항상 transferCount가 다름 (1 vs 2) */
-      if (other.travelMinutes <= c.travelMinutes && other.transferCount <= c.transferCount
-          && (other.travelMinutes < c.travelMinutes || other.transferCount < c.transferCount)) {
-        return false;
-      }
-    }
-    return true;
-  });
-
   const duration = performance.now() - start;
   logger.debug(`findRoutes(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms`);
-  return filtered;
+  return candidates;
+}
+
+export function findRouteCandidatesByCategory(
+  originIds: readonly string[],
+  destinationId: string,
+  categories: readonly RouteCategory[] = ROUTE_CATEGORIES,
+): CategorizedRoute[] {
+  const all = originIds.flatMap((id) => findRoutes(id, destinationId));
+  if (all.length === 0) return [];
+  return categories.map((category) => ({
+    category,
+    candidate: [...all].sort(category.comparator)[0],
+  }));
 }
 
 export function findRoute(currentId: string, destinationId: string): Route {
@@ -322,12 +363,10 @@ export function pickRouteByPreference(
   preference: RoutePreference,
 ): RouteCandidate | null {
   if (candidates.length === 0) return null;
-  if (preference === 'minTransfer') {
-    return [...candidates].sort(
-      (a, b) => a.transferCount - b.transferCount || a.travelMinutes - b.travelMinutes,
-    )[0];
-  }
-  return candidates[0];
+  const category = ROUTE_CATEGORIES.find((c) => c.key === preference);
+  /* istanbul ignore next -- RoutePreference 유니온이 ROUTE_CATEGORIES 키와 동기화되므로 undefined 불가 */
+  if (!category) return candidates[0];
+  return [...candidates].sort(category.comparator)[0];
 }
 
 function findMultiTransferRoute(

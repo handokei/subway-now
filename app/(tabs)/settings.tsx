@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { Alert, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore, type ThemeMode } from '../../src/store/useAppStore';
-import type { RoutePreference } from '../../src/utils/stationRoute';
+import { ROUTE_CATEGORIES } from '../../src/utils/stationRoute';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 
@@ -85,17 +85,17 @@ export default function SettingsScreen() {
         </View>
 
         <View style={[styles.segmentGroup, { backgroundColor: colors.hair }]} testID="route-segment">
-          {([['optimal', '최적경로'], ['minTransfer', '최소환승']] as [RoutePreference, string][]).map(([value, label]) => {
-            const active = routePreference === value;
+          {ROUTE_CATEGORIES.map((category) => {
+            const active = routePreference === category.key;
             return (
               <Pressable
-                key={value}
+                key={category.key}
                 style={[styles.segment, active && { backgroundColor: colors.accent }]}
-                onPress={() => setRoutePreference(value)}
-                testID={`route-${value}`}
+                onPress={() => setRoutePreference(category.key)}
+                testID={`route-${category.key}`}
               >
                 <Text style={[styles.segmentText, { color: active ? colors.onAccent : colors.muted }]}>
-                  {label}
+                  {category.label}
                 </Text>
               </Pressable>
             );

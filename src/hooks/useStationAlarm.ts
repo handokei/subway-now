@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { isStationOnRoute } from '../utils/stationRoute';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
 import { alarmKey, evaluateAlarmPhase } from '../utils/stationAlarm';
@@ -76,7 +77,13 @@ export function useStationAlarm({
       );
     }
 
-    if (nearestStation && nearestStation.id !== lastNotifiedStationIdRef.current) {
+    // 역 변경 감지 → per-station 알림. 단, 경로상 노선의 역만 (false alarm 방지)
+    if (
+      nearestStation &&
+      route &&
+      isStationOnRoute(nearestStation, route) &&
+      nearestStation.id !== lastNotifiedStationIdRef.current
+    ) {
       lastNotifiedStationIdRef.current = nearestStation.id;
       const target = resolveNextTarget(route, destination.name);
       const stopsRemaining = target?.stopsToNextStation ?? null;

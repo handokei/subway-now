@@ -7,6 +7,8 @@ import { updateStationNotification } from '../utils/stationNotification';
 import { findNearestStation } from '../utils/findNearestStation';
 import { createLogger } from '../utils/logger';
 import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
+import { MAX_STATION_DISTANCE_KM } from '../constants/location';
+import { isAccuracyAcceptable, isLocationFresh } from '../utils/locationGates';
 import type { Route } from '../utils/stationRoute';
 
 const logger = createLogger('BackgroundLocation');
@@ -24,6 +26,10 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const latest = locations[locations.length - 1];
   if (!latest) return;
 
+  // iOS deferred 위치 배치에서 stale/저정확도 좌표가 섞여 들어올 수 있음 — 차단
+  if (!isLocationFresh(latest.timestamp)) return;
+  if (!isAccuracyAcceptable(latest.coords.accuracy)) return;
+
   const { latitude, longitude, speed } = latest.coords;
   const speedMps = speed != null && speed >= 0 ? speed : null;
 
@@ -39,7 +45,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
     // 목적지 미설정 시 현재 역 알림만 업데이트
     if (!destJson) {
-      const nearest = findNearestStation(latitude, longitude);
+      const nearest = findNearestStation(latitude, longitude, MAX_STATION_DISTANCE_KM);
       if (nearest) {
         await updateStationNotification(
           nearest.station,

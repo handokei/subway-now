@@ -81,18 +81,22 @@ const mockDestination = {
   lng: 126.977,
 };
 
-function makeLocation(lat: number, lng: number, speed: number | null = null) {
+function makeLocation(
+  lat: number,
+  lng: number,
+  opts: { speed?: number | null; ageMs?: number; accuracy?: number | null } = {},
+) {
   return {
     coords: {
       latitude: lat,
       longitude: lng,
       altitude: null,
-      accuracy: null,
+      accuracy: opts.accuracy ?? null,
       altitudeAccuracy: null,
       heading: null,
-      speed,
+      speed: opts.speed ?? null,
     },
-    timestamp: Date.now(),
+    timestamp: Date.now() - (opts.ageMs ?? 0),
   };
 }
 
@@ -448,7 +452,57 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
-    expect(mockFindNearestStation).toHaveBeenCalledWith(37.9, 127.9);
+    expect(mockFindNearestStation).toHaveBeenCalledWith(37.9, 127.9, 1.0);
+  });
+
+  // ── stale 위치 / 저정확도 게이트 ──
+
+  const runWithLocation = (location: unknown) =>
+    taskCallback({ data: { locations: [location] }, error: null });
+
+  const expectGateBlocked = () => {
+    expect(AsyncStorage.getItem).not.toHaveBeenCalled();
+    expect(mockFindNearestStation).not.toHaveBeenCalled();
+    expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+  };
+
+  it('stale 위치(timestamp 30초 초과)는 무시한다', async () => {
+    await runWithLocation(makeLocation(37.498, 127.028, { ageMs: 60_000 }));
+    expectGateBlocked();
+  });
+
+  it('timestamp가 없는 위치는 무시한다', async () => {
+    const noTsLocation = {
+      coords: {
+        latitude: 37.498,
+        longitude: 127.028,
+        altitude: null,
+        accuracy: null,
+        altitudeAccuracy: null,
+        heading: null,
+        speed: null,
+      },
+      // timestamp 누락
+    };
+    await runWithLocation(noTsLocation);
+    expectGateBlocked();
+  });
+
+  it('저정확도 위치(accuracy 150m 초과)는 무시한다', async () => {
+    await runWithLocation(makeLocation(37.498, 127.028, { accuracy: 200 }));
+    expectGateBlocked();
+  });
+
+  it('accuracy가 임계값(150m) 이내면 통과한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+    mockFindNearestStation.mockReturnValue(null);
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028, { accuracy: 100 })] },
+      error: null,
+    });
+
+    expect(AsyncStorage.getItem).toHaveBeenCalled();
   });
 
   // ── 전체 try-catch 에러 핸들링 ──
@@ -526,7 +580,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
 
     await taskCallback({
-      data: { locations: [makeLocation(37.498, 127.028, 12.5)] },
+      data: { locations: [makeLocation(37.498, 127.028, { speed: 12.5 })] },
       error: null,
     });
 
@@ -538,7 +592,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
 
     await taskCallback({
-      data: { locations: [makeLocation(37.498, 127.028, -1)] },
+      data: { locations: [makeLocation(37.498, 127.028, { speed: -1 })] },
       error: null,
     });
 
