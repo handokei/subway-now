@@ -14,6 +14,7 @@ jest.mock('expo-location', () => ({
   stopLocationUpdatesAsync: (...args: unknown[]) =>
     mockStopLocationUpdatesAsync(...args),
   Accuracy: { High: 6 },
+  LocationActivityType: { AutomotiveNavigation: 2 },
 }));
 
 // ── expo-task-manager 모킹 ──
@@ -109,8 +110,9 @@ describe('useBackgroundLocation', () => {
         'background-location-task',
         expect.objectContaining({
           accuracy: 6, // Location.Accuracy.High
+          activityType: 2, // Location.LocationActivityType.AutomotiveNavigation
+          pausesUpdatesAutomatically: false,
           distanceInterval: 20,
-          deferredUpdatesInterval: 3_000,
           showsBackgroundLocationIndicator: true,
           foregroundService: expect.objectContaining({
             notificationTitle: '지하철 위치 감지 중',
@@ -119,6 +121,9 @@ describe('useBackgroundLocation', () => {
         }),
       );
     });
+
+    const callArgs = mockStartLocationUpdatesAsync.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(callArgs).not.toHaveProperty('deferredUpdatesInterval');
   });
 
   // ── 권한 거부 ──
