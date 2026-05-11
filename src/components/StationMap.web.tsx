@@ -3,6 +3,7 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Station } from '../types/station';
 import { haversine } from '../utils/haversine';
 import { LINE_NAMES } from '../constants/lineColors';
+import { getStationDisplayName } from '../utils/stationDisplay';
 import { useTheme } from '../theme';
 
 interface StationMapProps {
@@ -48,7 +49,7 @@ export function StationMap({ userLat, userLng, nearestStation, nearbyStations }:
               <Text style={[styles.badgeText, { color: '#ffffff' }]}>{LINE_NAMES[station.line]}</Text>
             </View>
             <Text style={[styles.name, { color: isNearest ? colors.accent : colors.ink }]}>
-              {station.name}
+              {getStationDisplayName(station)}
             </Text>
             <Text style={[styles.distance, { color: colors.muted }]}>{distanceM}m</Text>
           </View>

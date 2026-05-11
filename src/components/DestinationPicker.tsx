@@ -13,6 +13,7 @@ import type { Station } from '../types/station';
 import { LINE_NAMES } from '../constants/lineColors';
 import { StationMap } from './StationMap';
 import { createLogger } from '../utils/logger';
+import { getStationDisplayName, matchesStationQuery } from '../utils/stationDisplay';
 import { useTheme, spacing, radius } from '../theme';
 
 const logger = createLogger('DestinationPicker');
@@ -64,7 +65,8 @@ export function DestinationPicker({
     const q = query.trim();
     if (!q) return [];
     const start = performance.now();
-    const result = allStations.filter((s) => s.name.includes(q)).slice(0, 8);
+    const qLower = q.toLowerCase();
+    const result = allStations.filter((s) => matchesStationQuery(s, q, qLower)).slice(0, 8);
     logger.debug(`검색 필터링 "${q}": ${(performance.now() - start).toFixed(2)}ms (${result.length}건)`);
     return result;
   }, [query]);
@@ -128,7 +130,7 @@ export function DestinationPicker({
                   onPress={() => handleSelect(s)}
                   testID={`suggestion-item-${s.id}`}
                 >
-                  <Text style={[styles.suggestionName, { color: colors.ink }]}>{s.name}</Text>
+                  <Text style={[styles.suggestionName, { color: colors.ink }]}>{getStationDisplayName(s)}</Text>
                   <View style={[styles.lineBadge, { backgroundColor: s.lineColor }]}>
                     <Text style={styles.lineText}>{LINE_NAMES[s.line]}</Text>
                   </View>

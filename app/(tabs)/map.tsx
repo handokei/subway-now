@@ -10,6 +10,7 @@ import stationsData from '../../src/data/stations.json';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useAppStore } from '../../src/store/useAppStore';
 import { LineBadge } from '../../src/components/LineBadge';
+import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import type { Station } from '../../src/types/station';
 
 export default function MapScreen() {
@@ -43,10 +44,10 @@ export default function MapScreen() {
       {(customOrigin || destination) && (
         <View style={[styles.statusBar, { backgroundColor: colors.card, borderBottomColor: colors.hair }]} testID="status-bar">
           {customOrigin && (
-            <StatusChip label={t('map.originBadge')} name={customOrigin.name} onClear={() => setCustomOrigin(null)} testID="clear-origin" />
+            <StatusChip label={t('map.originBadge')} name={getStationDisplayName(customOrigin)} onClear={() => setCustomOrigin(null)} testID="clear-origin" />
           )}
           {destination && (
-            <StatusChip label={t('map.destinationBadge')} name={destination.name} onClear={() => setDestination(null)} testID="clear-destination" />
+            <StatusChip label={t('map.destinationBadge')} name={getStationDisplayName(destination)} onClear={() => setDestination(null)} testID="clear-destination" />
           )}
         </View>
       )}
@@ -65,7 +66,7 @@ export default function MapScreen() {
         <View style={[styles.selectionCard, { backgroundColor: colors.card, borderColor: colors.hair, paddingBottom: spacing.xl + insets.bottom }]} testID="selection-card">
           <View style={styles.selectionHeader}>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.selectionName, { color: colors.ink }]}>{selectedStation.name}</Text>
+              <Text style={[styles.selectionName, { color: colors.ink }]}>{getStationDisplayName(selectedStation)}</Text>
               <LineBadge line={selectedStation.line} />
             </View>
             <TouchableOpacity onPress={() => setSelectedStation(null)} testID="close-selection">

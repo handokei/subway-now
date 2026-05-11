@@ -15,6 +15,7 @@ import { Station } from '../../src/types/station';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../../src/utils/formatTime';
+import { getStationDisplayName, matchesStationQuery } from '../../src/utils/stationDisplay';
 import { useTheme, type ThemeColors } from '../../src/theme';
 import stationsData from '../../src/data/stations.json';
 
@@ -44,7 +45,8 @@ export default function FavoritesScreen() {
   const searchResults = useMemo(() => {
     const trimmed = query.trim();
     if (!trimmed) return [];
-    return allStations.filter((s) => s.name.includes(trimmed)).slice(0, 20);
+    const lower = trimmed.toLowerCase();
+    return allStations.filter((s) => matchesStationQuery(s, trimmed, lower)).slice(0, 20);
   }, [query]);
 
   const isSearching = query.trim().length > 0;
@@ -129,7 +131,7 @@ function SearchResultCard({
         <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
           <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
         </View>
-        <Text style={[styles.stationName, { color: colors.ink }]}>{station.name}</Text>
+        <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayName(station)}</Text>
       </View>
       <TouchableOpacity
         style={[styles.addButton, { backgroundColor: colors.accent }, already && { backgroundColor: colors.hair }]}
@@ -166,7 +168,7 @@ function FavoriteCard({
           <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
             <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
           </View>
-          <Text style={[styles.stationName, { color: colors.ink }]}>{station.name}</Text>
+          <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayName(station)}</Text>
         </View>
         <View style={styles.cardActions}>
           <Text style={[styles.expandIcon, { color: colors.muted }]}>{isExpanded ? '▲' : '▼'}</Text>

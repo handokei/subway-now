@@ -13,6 +13,7 @@ import { DestinationPicker } from '../../src/components/DestinationPicker';
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route, type CategorizedRoute, type RoutePreference } from '../../src/utils/stationRoute';
 import { EditorialTimeline } from '../../src/components/EditorialTimeline';
 import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/journeyAdapter';
+import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
 import { useBackgroundLocation } from '../../src/hooks/useBackgroundLocation';
@@ -286,7 +287,7 @@ export default function HomeScreen() {
               </Text>
               <View style={styles.heroRow}>
                 <Text style={[typography.hero, { color: colors.ink, flex: 1, fontWeight: '900' }]}>
-                  {effectiveOrigin.name}
+                  {getStationDisplayName(effectiveOrigin)}
                 </Text>
                 <TouchableOpacity
                   onPress={() =>
@@ -337,7 +338,7 @@ export default function HomeScreen() {
                       <Text style={[typography.label, { color: colors.muted, marginBottom: 4 }]}>
                         {t('home.routeTo')}
                       </Text>
-                      <Text style={{ fontSize: 32, fontWeight: '900', letterSpacing: -0.8, color: colors.ink }}>{destination.name}</Text>
+                      <Text style={{ fontSize: 32, fontWeight: '900', letterSpacing: -0.8, color: colors.ink }}>{getStationDisplayName(destination)}</Text>
                     </View>
                     <View style={{ alignItems: 'flex-end' }}>
                       {displayEta != null && (
@@ -440,7 +441,7 @@ export default function HomeScreen() {
                   >
                     <Text style={[styles.recentDestinationLabel, { color: colors.accent }]}>{t('home.previousDestination')}</Text>
                     <View style={styles.recentDestinationRow}>
-                      <Text style={[styles.recentDestinationName, { color: colors.ink }]}>{recentDestination.name}</Text>
+                      <Text style={[styles.recentDestinationName, { color: colors.ink }]}>{getStationDisplayName(recentDestination)}</Text>
                       <View style={[styles.recentLineBadge, { backgroundColor: recentDestination.lineColor }]}>
                         <Text style={styles.recentLineText}>{LINE_NAMES[recentDestination.line]}</Text>
                       </View>

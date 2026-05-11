@@ -6,6 +6,7 @@ import type { Station } from '../../types/station';
 const mockStation: Station = {
   id: '2-022',
   name: '강남',
+  nameEn: 'Gangnam',
   line: '2',
   lineColor: '#009D3E',
   lat: 37.49799,

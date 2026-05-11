@@ -1,7 +1,11 @@
 import i18next from 'i18next';
 import type { JourneyDisplay } from './stationRoute';
 import type { ArrivalInfo } from '../api/arrivalApi';
-import type { NearestStationResult, LineNumber } from '../types/station';
+import type { NearestStationResult, LineNumber, Station } from '../types/station';
+import { getStationDisplayName, getStationDisplayNameByName } from './stationDisplay';
+import stationsData from '../data/stations.json';
+
+const allStations = stationsData as Station[];
 
 export interface Stop {
   station: string;
@@ -40,7 +44,7 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
 
     if (isFirst) {
       stops.push({
-        station: seg.fromName,
+        station: getStationDisplayNameByName(seg.fromName, allStations),
         line: seg.line,
         mark: 'filled',
       });
@@ -48,7 +52,7 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
 
     if (!isLast) {
       stops.push({
-        station: seg.toName,
+        station: getStationDisplayNameByName(seg.toName, allStations),
         line: segments[i + 1].line,
         stopsFromPrev: i18next.t('route.stops', { count: seg.stops }),
         mark: 'transfer',
@@ -56,7 +60,7 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
       });
     } else {
       stops.push({
-        station: seg.toName,
+        station: getStationDisplayNameByName(seg.toName, allStations),
         line: seg.line,
         stopsFromPrev: i18next.t('route.stops', { count: seg.stops }),
         mark: 'dest',
@@ -74,8 +78,13 @@ export function arrivalInfoToArrivalTrain(
   line: LineNumber,
 ): ArrivalTrain[] {
   const now = Date.now();
+  // item.destination은 서울 열린데이터 API의 trainLineNm 기반으로 "소요산행", "내선순환" 같은
+  // 방면 표현이 포함되어 순수 역명 lookup이 실패할 수 있다. 매칭 실패 시 한글 원본 그대로 fallback.
+  // 영문 모드에서 방면 표현 자체 번역은 별도 이슈(서울 API 응답 후처리 i18n)로 추적.
   return items.map((item) => ({
-    direction: item.destination ? i18next.t('route.directionToward', { name: item.destination }) : direction,
+    direction: item.destination
+      ? i18next.t('route.directionToward', { name: getStationDisplayNameByName(item.destination, allStations) })
+      : direction,
     line,
     arrivalAtMs: now + item.arrivalSeconds * 1000,
     subtext: item.statusMessage || undefined,
@@ -85,7 +94,8 @@ export function arrivalInfoToArrivalTrain(
 export function nearestResultToNearest(result: NearestStationResult): HandoffNearest {
   const distanceM = Math.round(result.distanceKm * 1000);
   return {
-    name: result.station.name,
+    // handoff 정보의 name은 사용자에게 표시되므로 현재 언어로 변환
+    name: getStationDisplayName(result.station),
     line: result.station.line,
     distanceM,
     walkMin: Math.max(1, Math.ceil(distanceM / WALK_SPEED_M_PER_MIN)),

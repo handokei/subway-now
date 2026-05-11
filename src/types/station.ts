@@ -16,6 +16,7 @@ export type LineNumber =
 export interface Station {
   id: string;
   name: string;
+  nameEn?: string;
   line: LineNumber;
   lineColor: string;
   lat: number;

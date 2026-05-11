@@ -6,6 +6,7 @@ import type { Station } from '../types/station';
 import { buildMapConfig } from '../utils/buildMapConfig';
 import { useTheme } from '../theme';
 import { LINE_NAMES } from '../constants/lineColors';
+import { getStationDisplayName } from '../utils/stationDisplay';
 
 interface StationMapProps {
   userLat: number;
@@ -55,7 +56,7 @@ export function StationMap({
             <Marker
               key={station.id}
               coordinate={{ latitude: station.lat, longitude: station.lng }}
-              title={station.name}
+              title={getStationDisplayName(station)}
               description={LINE_NAMES[station.line]}
               onPress={() => onStationPress?.(station)}
               tracksViewChanges={false}
@@ -73,7 +74,7 @@ export function StationMap({
                   style={[styles.markerLabel, { color: colors.ink }]}
                   numberOfLines={1}
                 >
-                  {station.name}
+                  {getStationDisplayName(station)}
                 </Text>
               </View>
             </Marker>
