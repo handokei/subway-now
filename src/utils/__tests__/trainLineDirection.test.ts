@@ -13,60 +13,21 @@ describe('parseTrainLineDirection', () => {
     await i18next.changeLanguage('ko');
   });
 
-  describe('내선/외선순환', () => {
-    it('한글 모드: 내선순환은 그대로', () => {
-      expect(parseTrainLineDirection('내선순환', stations)).toBe('내선순환');
-    });
-
-    it('영문 모드: 내선순환 → Inner Loop', async () => {
-      await i18next.changeLanguage('en');
-      expect(parseTrainLineDirection('내선순환', stations)).toBe('Inner Loop');
-    });
-
-    it('한글 모드: 외선순환은 그대로', () => {
-      expect(parseTrainLineDirection('외선순환', stations)).toBe('외선순환');
-    });
-
-    it('영문 모드: 외선순환 → Outer Loop', async () => {
-      await i18next.changeLanguage('en');
-      expect(parseTrainLineDirection('외선순환', stations)).toBe('Outer Loop');
-    });
-  });
-
-  describe('X행 패턴', () => {
-    it('한글 모드: 소요산행은 그대로 표시', () => {
-      expect(parseTrainLineDirection('소요산행', stations)).toBe('소요산행');
-    });
-
-    it('영문 모드: 소요산행 → Bound for Soyosan', async () => {
-      await i18next.changeLanguage('en');
-      expect(parseTrainLineDirection('소요산행', stations)).toBe('Bound for Soyosan');
-    });
-
-    it('영문 모드: 매칭 안 되는 역명 → 한글 그대로 boundFor', async () => {
-      await i18next.changeLanguage('en');
-      expect(parseTrainLineDirection('알수없는행', stations)).toBe('Bound for 알수없는');
-    });
-
-    it('nameEn 누락된 역의 X행 → 한글 fallback', async () => {
-      await i18next.changeLanguage('en');
-      expect(parseTrainLineDirection('없는역행', stations)).toBe('Bound for 없는역');
-    });
-  });
-
-  describe('알 수 없는 패턴', () => {
-    it('한글 모드: 패턴 외 입력은 원본 그대로', () => {
-      expect(parseTrainLineDirection('급행임시', stations)).toBe('급행임시');
-    });
-
-    it('영문 모드: 빈 문자열 → 그대로', async () => {
-      await i18next.changeLanguage('en');
-      expect(parseTrainLineDirection('', stations)).toBe('');
-    });
-
-    it('영문 모드: "행" 단독 → 원본 그대로 (빈 역명 가드)', async () => {
-      await i18next.changeLanguage('en');
-      expect(parseTrainLineDirection('행', stations)).toBe('행');
-    });
+  it.each([
+    // [lang, input, expected, 설명]
+    ['ko', '내선순환', '내선순환'],
+    ['en', '내선순환', 'Inner Loop'],
+    ['ko', '외선순환', '외선순환'],
+    ['en', '외선순환', 'Outer Loop'],
+    ['ko', '소요산행', '소요산행'],
+    ['en', '소요산행', 'Bound for Soyosan'],
+    ['en', '알수없는행', 'Bound for 알수없는'],
+    ['en', '없는역행', 'Bound for 없는역'],
+    ['ko', '급행임시', '급행임시'],
+    ['en', '', ''],
+    ['en', '행', '행'],
+  ])('lang=%s, input=%s → %s', async (lang, input, expected) => {
+    await i18next.changeLanguage(lang);
+    expect(parseTrainLineDirection(input, stations)).toBe(expected);
   });
 });
