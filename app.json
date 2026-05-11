@@ -66,6 +66,7 @@
         }
       ],
       "expo-router",
+      "expo-localization",
       "./modules/live-activity/app.plugin.js",
       "@bacons/apple-targets"
     ],
