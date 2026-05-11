@@ -47,6 +47,7 @@ import type { AlarmEvent } from '../../utils/stationAlarm';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
 import '../../tasks/backgroundLocationTask';
 import { BACKGROUND_LOCATION_TASK } from '../../tasks/backgroundLocationTask';
+import { MAX_ACCURACY_M, MAX_LOCATION_AGE_MS } from '../../constants/location';
 
 // ── 픽스처 ──
 
@@ -426,8 +427,8 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
   };
 
-  it('stale 위치(timestamp 30초 초과)는 무시한다', async () => {
-    await runWithLocation(makeLocation(37.498, 127.028, { ageMs: 60_000 }));
+  it('stale 위치(timestamp MAX_LOCATION_AGE_MS 초과)는 무시한다', async () => {
+    await runWithLocation(makeLocation(37.498, 127.028, { ageMs: MAX_LOCATION_AGE_MS + 1 }));
     expectGateBlocked();
   });
 
@@ -448,16 +449,16 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     expectGateBlocked();
   });
 
-  it('저정확도 위치(accuracy 150m 초과)는 무시한다', async () => {
-    await runWithLocation(makeLocation(37.498, 127.028, { accuracy: 200 }));
+  it('저정확도 위치(accuracy MAX_ACCURACY_M 초과)는 무시한다', async () => {
+    await runWithLocation(makeLocation(37.498, 127.028, { accuracy: MAX_ACCURACY_M + 1 }));
     expectGateBlocked();
   });
 
-  it('accuracy가 임계값(150m) 이내면 통과한다', async () => {
+  it('accuracy가 임계값(MAX_ACCURACY_M) 이내면 통과한다', async () => {
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
 
     await taskCallback({
-      data: { locations: [makeLocation(37.498, 127.028, { accuracy: 100 })] },
+      data: { locations: [makeLocation(37.498, 127.028, { accuracy: MAX_ACCURACY_M - 50 })] },
       error: null,
     });
 
