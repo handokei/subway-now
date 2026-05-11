@@ -3,6 +3,8 @@ import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import { NearestStationResult, Station } from '../types/station';
 import { findNearestStations } from '../utils/findNearestStation';
+import { isAccuracyAcceptable, isLocationFresh } from '../utils/locationGates';
+import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 
 const DISTANCE_INTERVAL_M = 10;
 const MIN_DISTANCE_CHANGE_KM = 0.01; // 10m
@@ -44,7 +46,7 @@ export function useNearestStation(): UseNearestStationReturn {
 
   const applyLocation = useCallback((coords: { latitude: number; longitude: number }) => {
     const { latitude, longitude } = coords;
-    const stationsResult = findNearestStations(latitude, longitude);
+    const stationsResult = findNearestStations(latitude, longitude, MAX_STATION_DISTANCE_KM);
 
     const newId = stationsResult?.primary.id ?? null;
     const newDistance = stationsResult?.distanceKm ?? 0;
@@ -78,17 +80,20 @@ export function useNearestStation(): UseNearestStationReturn {
       }
       setPermissionDenied(false);
 
-      // 캐시된 위치로 즉시 UI 표시
+      // 캐시된 위치는 신선하고 정확한 경우만 즉시 표시 (stale/저정확도로 인한 false alarm 방지)
       const lastKnown = await Location.getLastKnownPositionAsync();
-      if (lastKnown) {
+      if (lastKnown && isLocationFresh(lastKnown.timestamp) && isAccuracyAcceptable(lastKnown.coords.accuracy)) {
         applyLocation(lastKnown.coords);
         setLoading(false);
       }
 
-      // 연속 GPS 스트리밍 시작
+      // 연속 GPS 스트리밍 시작 — 저정확도 좌표는 무시
       subscriptionRef.current = await Location.watchPositionAsync(
         { accuracy: Location.Accuracy.High, distanceInterval: DISTANCE_INTERVAL_M },
-        (location) => applyLocation(location.coords),
+        (location) => {
+          if (!isAccuracyAcceptable(location.coords.accuracy)) return;
+          applyLocation(location.coords);
+        },
       );
       setLoading(false);
     } catch {
@@ -111,7 +116,9 @@ export function useNearestStation(): UseNearestStationReturn {
       }
       setPermissionDenied(false);
       const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      applyLocation(location.coords);
+      if (isAccuracyAcceptable(location.coords.accuracy)) {
+        applyLocation(location.coords);
+      }
     } catch {
       setError('위치를 가져오는 데 실패했습니다.');
     } finally {

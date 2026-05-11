@@ -12,10 +12,12 @@ jest.mock('../findNearestStation', () => ({
 const mockFindRoute = jest.fn();
 const mockCalculateStaticETA = jest.fn();
 const mockUpdateRouteFromPosition = jest.fn();
+const mockIsStationOnRoute = jest.fn();
 jest.mock('../stationRoute', () => ({
   findRoute: (...args: unknown[]) => mockFindRoute(...args),
   calculateStaticETA: (...args: unknown[]) => mockCalculateStaticETA(...args),
   updateRouteFromPosition: (...args: unknown[]) => mockUpdateRouteFromPosition(...args),
+  isStationOnRoute: (...args: unknown[]) => mockIsStationOnRoute(...args),
 }));
 
 const mockCheckAlarm = jest.fn();
@@ -191,6 +193,7 @@ describe('processLocationUpdate', () => {
     mockCalculateStaticETA.mockReturnValue(10);
     mockCheckAlarm.mockReturnValue(null);
     mockCheckTimeBasedAlarm.mockReturnValue(null);
+    mockIsStationOnRoute.mockReturnValue(true);
   });
 
   it('should return null nearest and null alarmEvent when findNearestStation returns null', async () => {
@@ -499,6 +502,54 @@ describe('processLocationUpdate', () => {
 
     expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남', '시청', 3);
     expect(result.lastNotifiedStationId).toBe('station-1');
+  });
+
+  it('경로 외 노선의 역이면 station-passed 알림을 보내지 않고 lastNotifiedStationId를 갱신하지 않는다', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+    mockIsStationOnRoute.mockReturnValue(false);
+
+    const result = await processLocationUpdate(
+      37.498, 127.028, mockDestination, new Set(), false, true, null, 'previous-station',
+    );
+
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(result.lastNotifiedStationId).toBe('previous-station');
+  });
+
+  it('route가 null이면 station-passed 알림을 보내지 않는다', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(null);
+
+    const result = await processLocationUpdate(
+      37.498, 127.028, mockDestination, new Set(), false, true, null, null,
+    );
+
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(result.lastNotifiedStationId).toBeNull();
+  });
+
+  it('findNearestStation을 MAX_STATION_DISTANCE_KM(1.0)와 함께 호출한다', async () => {
+    mockFindNearestStation.mockReturnValue(null);
+
+    await processLocationUpdate(37.5, 127.0, mockDestination, new Set(), false);
+
+    expect(mockFindNearestStation).toHaveBeenCalledWith(37.5, 127.0, 1.0);
+  });
+
+  it('route 타입이 unknown(타입 오염)으로 resolveNextTarget이 null이면 알림 미발송 + ref 미갱신', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    // AsyncStorage 등에서 손상된 route가 들어온 케이스
+    const corruptedRoute = { type: 'unknown', stops: 0 } as unknown as DirectRoute;
+    mockFindRoute.mockReturnValue(corruptedRoute);
+    mockIsStationOnRoute.mockReturnValue(true);
+
+    const result = await processLocationUpdate(
+      37.498, 127.028, mockDestination, new Set(), false, true, null, 'prev-station',
+    );
+
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    expect(result.lastNotifiedStationId).toBe('prev-station');
   });
 });
 

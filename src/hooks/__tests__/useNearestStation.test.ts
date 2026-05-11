@@ -14,7 +14,11 @@ jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) =>
 });
 
 const mockSubscription = { remove: jest.fn() };
-let watchCallback: ((location: { coords: { latitude: number; longitude: number } }) => void) | null = null;
+type WatchLocation = {
+  coords: { latitude: number; longitude: number; accuracy?: number | null };
+  timestamp?: number;
+};
+let watchCallback: ((location: WatchLocation) => void) | null = null;
 
 const mockGranted = () => {
   (Location.requestForegroundPermissionsAsync as jest.Mock).mockResolvedValue({
@@ -28,9 +32,14 @@ const mockDenied = () => {
   });
 };
 
-const mockLastKnownLocation = (lat: number, lng: number) => {
+const mockLastKnownLocation = (
+  lat: number,
+  lng: number,
+  opts: { ageMs?: number; accuracy?: number | null } = {},
+) => {
   (Location.getLastKnownPositionAsync as jest.Mock).mockResolvedValue({
-    coords: { latitude: lat, longitude: lng },
+    coords: { latitude: lat, longitude: lng, accuracy: opts.accuracy ?? null },
+    timestamp: Date.now() - (opts.ageMs ?? 0),
   });
 };
 
@@ -38,15 +47,19 @@ const mockNoLastKnownLocation = () => {
   (Location.getLastKnownPositionAsync as jest.Mock).mockResolvedValue(null);
 };
 
-const mockLocation = (lat: number, lng: number) => {
+const mockLocation = (lat: number, lng: number, opts: { accuracy?: number | null } = {}) => {
   (Location.getCurrentPositionAsync as jest.Mock).mockResolvedValue({
-    coords: { latitude: lat, longitude: lng },
+    coords: { latitude: lat, longitude: lng, accuracy: opts.accuracy ?? null },
+    timestamp: Date.now(),
   });
 };
 
-const simulateGps = (lat: number, lng: number) => {
+const simulateGps = (lat: number, lng: number, accuracy: number | null = null) => {
   act(() => {
-    watchCallback?.({ coords: { latitude: lat, longitude: lng } });
+    watchCallback?.({
+      coords: { latitude: lat, longitude: lng, accuracy },
+      timestamp: Date.now(),
+    });
   });
 };
 
@@ -104,18 +117,19 @@ describe('useNearestStation', () => {
     expect(result.current.userLocation).toEqual({ lat: 37.4980, lng: 127.0277 });
   });
 
-  it('500m 초과 거리에서도 가장 가까운 역을 반환한다', async () => {
+  it('1km 이내 거리는 정상 반환된다 (거리 상한 내 통과)', async () => {
     mockGranted();
 
     const { result } = renderHook(() => useNearestStation());
 
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
-    simulateGps(37.5200, 127.0000);
+    simulateGps(37.5035, 127.0277);
 
     await waitFor(() => expect(result.current.result).not.toBeNull());
 
-    expect(result.current.result?.distanceKm).toBeGreaterThan(0.5);
+    expect(result.current.result?.distanceKm).toBeGreaterThan(0);
+    expect(result.current.result?.distanceKm).toBeLessThanOrEqual(1.0);
   });
 
   it('watchPositionAsync 실패 시 error가 설정된다', async () => {
@@ -372,5 +386,110 @@ describe('useNearestStation', () => {
 
     // catch 후에도 watch 재시작됨
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2);
+  });
+
+  it('stale 캐시 위치(30초 초과)는 무시하고 watch만 시작한다', async () => {
+    mockGranted();
+    mockLastKnownLocation(37.4980, 127.0277, { ageMs: 60_000 });
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    // stale 캐시는 무시 → result는 null 유지 (watch 콜백 전까지)
+    expect(result.current.result).toBeNull();
+  });
+
+  it('저정확도 캐시 위치(150m 초과)는 무시한다', async () => {
+    mockGranted();
+    mockLastKnownLocation(37.4980, 127.0277, { accuracy: 200 });
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    expect(result.current.result).toBeNull();
+  });
+
+  it('신선하고 정확한 캐시 위치는 사용한다', async () => {
+    mockGranted();
+    mockLastKnownLocation(37.4980, 127.0277, { ageMs: 5_000, accuracy: 30 });
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.result).not.toBeNull());
+    expect(result.current.result?.station.name).toBe('강남');
+  });
+
+  it('watch 콜백 저정확도(150m 초과) 좌표는 setState하지 않는다', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, 200);
+
+    // 저정확도라 result 갱신 안 됨
+    expect(result.current.result).toBeNull();
+    expect(result.current.userLocation).toBeNull();
+  });
+
+  it('watch 콜백 accuracy가 null이면 통과한다', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, null);
+
+    await waitFor(() => expect(result.current.result).not.toBeNull());
+    expect(result.current.result?.station.name).toBe('강남');
+  });
+
+  it('refresh 시 저정확도 좌표는 setState하지 않는다', async () => {
+    mockGranted();
+    mockLocation(37.4980, 127.0277, { accuracy: 200 });
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(Location.getCurrentPositionAsync).toHaveBeenCalled();
+    // 저정확도라 result 갱신 안 됨
+    expect(result.current.result).toBeNull();
+  });
+
+  it('timestamp가 없는 캐시 위치는 무시한다', async () => {
+    mockGranted();
+    (Location.getLastKnownPositionAsync as jest.Mock).mockResolvedValue({
+      coords: { latitude: 37.4980, longitude: 127.0277, accuracy: null },
+      // timestamp 누락
+    });
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    expect(result.current.result).toBeNull();
+  });
+
+  it('1km 초과 거리의 위치는 findNearestStations가 null을 반환한다', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    // 강원도 등 지하철 역과 멀리 떨어진 좌표
+    simulateGps(38.5, 128.5, 30);
+
+    // MAX_STATION_DISTANCE_KM(1.0) 초과 → null
+    expect(result.current.result).toBeNull();
   });
 });

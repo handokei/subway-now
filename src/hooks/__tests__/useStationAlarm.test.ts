@@ -330,5 +330,59 @@ describe('useStationAlarm', () => {
       mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 3 });
       expect(() => renderHook(() => useStationAlarm(route, '강남', station))).not.toThrow();
     });
+
+    it('transfer route에서 경로 외 노선의 역은 알림을 발송하지 않는다', () => {
+      const route: TransferRoute = {
+        type: 'transfer',
+        transferName: '시청',
+        fromLine: '1',
+        toLine: '2',
+        stopsToTransfer: 3,
+        stopsFromTransfer: 5,
+      };
+      // 4호선 역 (경로상 노선 1, 2가 아님)
+      const offRouteStation: Station = {
+        id: 'OFF-1',
+        name: '동대문',
+        line: '4',
+        lineColor: '#00A4E3',
+        lat: 37.5,
+        lng: 127.0,
+      };
+      mockResolveNextTarget.mockReturnValue({ nextStationName: '시청', stopsToNextStation: 3 });
+      renderHook(() => useStationAlarm(route, '강남', offRouteStation));
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('경로 외 역 다음에 경로상 역이 오면 알림을 발송한다 (ref 미갱신 검증)', () => {
+      const route: TransferRoute = {
+        type: 'transfer',
+        transferName: '시청',
+        fromLine: '1',
+        toLine: '2',
+        stopsToTransfer: 3,
+        stopsFromTransfer: 5,
+      };
+      const offRouteStation: Station = {
+        id: 'OFF-1',
+        name: '동대문',
+        line: '4',
+        lineColor: '#00A4E3',
+        lat: 37.5,
+        lng: 127.0,
+      };
+      const onRouteStation = makeStation('S1', '서울'); // line '2' (toLine)
+      mockResolveNextTarget.mockReturnValue({ nextStationName: '시청', stopsToNextStation: 2 });
+
+      const { rerender } = renderHook(
+        ({ s }: { s: Station }) => useStationAlarm(route, '강남', s),
+        { initialProps: { s: offRouteStation } },
+      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+
+      rerender({ s: onRouteStation });
+      expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('서울', '강남', 2);
+    });
   });
 });

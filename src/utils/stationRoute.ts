@@ -188,6 +188,21 @@ export function updateRouteFromPosition(
   return null;
 }
 
+export function isStationOnRoute(station: Station, route: NonNullable<Route>): boolean {
+  if (route.type === 'direct') {
+    // direct는 fromLine 정보가 없어서 노선 검증이 불가능 — 통과
+    return true;
+  }
+  if (route.type === 'transfer') {
+    return station.line === route.fromLine || station.line === route.toLine;
+  }
+  // multi-transfer
+  for (const t of route.transfers) {
+    if (station.line === t.fromLine || station.line === t.toLine) return true;
+  }
+  return false;
+}
+
 export function getRemainingStops(
   currentId: string,
   destinationId: string,
