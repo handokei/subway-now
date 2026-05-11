@@ -82,8 +82,11 @@ function main() {
   const unmatched = [];
   const updated = stations.map((station) => {
     // stations.json의 부역명("왕십리(성동구청)") vs CSV의 본역명("왕십리").
-    // `[^)]*`로 닫는 괄호 외 문자만 매칭해 ReDoS(catastrophic backtracking) 회피.
-    const baseName = station.name.replace(/\([^)]*\)$/, '').trim();
+    // 정규식 backtracking 위험을 피하기 위해 명시적 문자열 연산 사용.
+    const openIdx = station.name.lastIndexOf('(');
+    const baseName = openIdx >= 0 && station.name.endsWith(')')
+      ? station.name.slice(0, openIdx).trim()
+      : station.name;
     const nameEn =
       nameMap.get(station.name) ??
       nameMap.get(baseName) ??
