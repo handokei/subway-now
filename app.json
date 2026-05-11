@@ -2,7 +2,6 @@
   "expo": {
     "name": "subway-now",
     "slug": "subway-now",
-    "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
@@ -66,6 +65,7 @@
         }
       ],
       "expo-router",
+      "expo-localization",
       "./modules/live-activity/app.plugin.js",
       "@bacons/apple-targets"
     ],
