@@ -1,4 +1,5 @@
 import React from 'react';
+import i18next from 'i18next';
 import { StationMap } from '../StationMap.web';
 import { Station } from '../../types/station';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
@@ -31,14 +32,14 @@ const defaultProps = {
 describe('StationMap.web', () => {
   it('nearbyStations이 없으면 안내 문구를 렌더링한다', () => {
     const { getByText } = renderWithTheme(<StationMap {...defaultProps} />);
-    expect(getByText('주변 1km 내 지하철역이 없습니다.')).toBeTruthy();
+    expect(getByText(i18next.t('map.noNearbyStations'))).toBeTruthy();
   });
 
   it('nearbyStations이 있으면 역 목록과 헤더를 렌더링한다', () => {
     const { getByText } = renderWithTheme(
       <StationMap {...defaultProps} nearbyStations={[gangnam, sinnonhyeon]} />,
     );
-    expect(getByText('주변 지하철역 (1km 이내)')).toBeTruthy();
+    expect(getByText(i18next.t('map.nearbyStationsHeader'))).toBeTruthy();
     expect(getByText('강남')).toBeTruthy();
     expect(getByText('신논현')).toBeTruthy();
   });

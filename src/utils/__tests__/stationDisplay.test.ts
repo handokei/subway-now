@@ -1,6 +1,6 @@
-import i18next from 'i18next';
 import { getStationDisplayName, getStationDisplayNameByName, matchesStationQuery } from '../stationDisplay';
 import type { Station } from '../../types/station';
+import { installLanguageRestoreHook, setLang } from '../../testUtils/i18nLanguageOverride';
 
 const stations: Station[] = [
   { id: '2-022', name: '강남', nameEn: 'Gangnam', line: '2', lineColor: '#009D3E', lat: 37.5, lng: 127 },
@@ -8,30 +8,20 @@ const stations: Station[] = [
   { id: '5-555', name: '신기역', line: '5', lineColor: '#996CAC', lat: 37, lng: 127 },
 ];
 
+// 비한국어(en/ja 등)는 모두 동일 분기(nameEn fallback)를 타므로 데이터 주도로 검증한다.
+// zh 등 새 언어 추가 시 이 배열에 한 줄만 추가하면 동일 검증이 자동 적용된다.
+const NON_KO_LANGUAGES = ['en', 'ja'] as const;
+
+installLanguageRestoreHook();
+
 describe('getStationDisplayName', () => {
-  let originalLanguageDescriptor: PropertyDescriptor | undefined;
-
-  beforeEach(() => {
-    originalLanguageDescriptor = Object.getOwnPropertyDescriptor(i18next, 'language');
-  });
-
-  afterEach(() => {
-    if (originalLanguageDescriptor) {
-      Object.defineProperty(i18next, 'language', originalLanguageDescriptor);
-    }
-  });
-
-  function setLang(lang: string) {
-    Object.defineProperty(i18next, 'language', { value: lang, configurable: true });
-  }
-
-  it('영문 모드 + nameEn 존재 → 영문 표시', () => {
-    setLang('en');
+  it.each(NON_KO_LANGUAGES)('비한국어 모드(%s) + nameEn 존재 → nameEn 반환', (lang) => {
+    setLang(lang);
     expect(getStationDisplayName(stations[0])).toBe('Gangnam');
   });
 
-  it('영문 모드 + nameEn 누락 → 한글 fallback', () => {
-    setLang('en');
+  it.each(NON_KO_LANGUAGES)('비한국어 모드(%s) + nameEn 누락 → 한글 fallback', (lang) => {
+    setLang(lang);
     expect(getStationDisplayName(stations[2])).toBe('신기역');
   });
 
@@ -42,24 +32,8 @@ describe('getStationDisplayName', () => {
 });
 
 describe('getStationDisplayNameByName', () => {
-  let originalLanguageDescriptor: PropertyDescriptor | undefined;
-
-  beforeEach(() => {
-    originalLanguageDescriptor = Object.getOwnPropertyDescriptor(i18next, 'language');
-  });
-
-  afterEach(() => {
-    if (originalLanguageDescriptor) {
-      Object.defineProperty(i18next, 'language', originalLanguageDescriptor);
-    }
-  });
-
-  function setLang(lang: string) {
-    Object.defineProperty(i18next, 'language', { value: lang, configurable: true });
-  }
-
-  it('영문 모드 + 매칭되는 nameEn → 영문 반환', () => {
-    setLang('en');
+  it.each(NON_KO_LANGUAGES)('비한국어 모드(%s) + 매칭되는 nameEn → 영문 반환', (lang) => {
+    setLang(lang);
     expect(getStationDisplayNameByName('강남', stations)).toBe('Gangnam');
   });
 

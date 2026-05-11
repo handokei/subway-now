@@ -12,6 +12,7 @@ module.exports = {
     locales: {
       ko: './locales/ko.json',
       en: './locales/en.json',
+      ja: './locales/ja.json',
     },
     splash: {
       image: './assets/splash/splash-ko-1284x2778.png',

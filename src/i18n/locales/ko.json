@@ -70,7 +70,9 @@
     "originBadge": "출발",
     "destinationBadge": "도착",
     "setAsOrigin": "출발역으로 설정",
-    "setAsDestination": "도착역으로 설정"
+    "setAsDestination": "도착역으로 설정",
+    "nearbyStationsHeader": "주변 지하철역 (1km 이내)",
+    "noNearbyStations": "주변 1km 내 지하철역이 없습니다."
   },
   "favorites": {
     "title": "즐겨찾기",
