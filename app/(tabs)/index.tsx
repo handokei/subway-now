@@ -36,8 +36,6 @@ export default function HomeScreen() {
   const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
   const isCustomOrigin = customOrigin !== null;
   const effectiveOrigin = customOrigin ?? result?.station ?? null;
-  const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(effectiveOrigin?.name ?? null);
-  const arrival = useArrivalCountdown(rawArrival);
   const addFavorite = useAppStore((s) => s.addFavorite);
   const removeFavorite = useAppStore((s) => s.removeFavorite);
   const favorites = useAppStore((s) => s.favorites);
@@ -65,6 +63,10 @@ export default function HomeScreen() {
   const [selectedKey, setSelectedKey] = useState<RoutePreference>(routePreference);
   const route: Route =
     categorized.find((r) => r.category.key === selectedKey)?.candidate.route ?? null;
+  const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(
+    route ? (effectiveOrigin?.name ?? null) : null,
+  );
+  const arrival = useArrivalCountdown(rawArrival);
   const isFav = effectiveOrigin ? favorites.some((f) => f.id === effectiveOrigin.id) : false;
 
   // 환승역이면 모든 호선 변형에서 경로 계산 → 출발역 환승 없는 최적 경로 자동 선택
@@ -458,22 +460,24 @@ export default function HomeScreen() {
               </View>
             )}
 
-            {/* Arrivals — 기존 상행/하행 포맷 유지 */}
-            <View style={[styles.arrivalSection, { backgroundColor: colors.card }]}>
-              <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('home.arrivalInfoTitle')}</Text>
-              {arrivalLoading && !arrival && (
-                <Text style={[styles.arrivalItem, { color: colors.ink }]}>{t('home.loading')}</Text>
-              )}
-              {arrivalIsMock && (
-                <Text style={[styles.mockNotice, { color: colors.warn }]}>{t('home.mockNotice')}</Text>
-              )}
-              {arrival && (
-                <>
-                  <ArrivalRow label={t('arrival.upbound')} items={arrival.up} />
-                  <ArrivalRow label={t('arrival.downbound')} items={arrival.down} />
-                </>
-              )}
-            </View>
+            {/* Arrivals — 경로 선택된 경우에만 노출 */}
+            {route && (
+              <View style={[styles.arrivalSection, { backgroundColor: colors.card }]}>
+                <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('home.arrivalInfoTitle')}</Text>
+                {arrivalLoading && !arrival && (
+                  <Text style={[styles.arrivalItem, { color: colors.ink }]}>{t('home.loading')}</Text>
+                )}
+                {arrivalIsMock && (
+                  <Text style={[styles.mockNotice, { color: colors.warn }]}>{t('home.mockNotice')}</Text>
+                )}
+                {arrival && (
+                  <>
+                    <ArrivalRow label={t('arrival.upbound')} items={arrival.up} />
+                    <ArrivalRow label={t('arrival.downbound')} items={arrival.down} />
+                  </>
+                )}
+              </View>
+            )}
           </>
         ) : (
           <View style={styles.center}>
