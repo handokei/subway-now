@@ -112,6 +112,32 @@ describe('findNearestStation', () => {
     expect(result!.station.id).toBe('1-001');
     expect(result!.distanceKm).toBe(2);
   });
+
+  it('maxDistanceKm을 초과하면 null을 반환한다', () => {
+    mockHaversine.mockReturnValue(5); // 모든 역 5km
+
+    const result = findNearestStation(37.5, 127.0, 1.0);
+
+    expect(result).toBeNull();
+  });
+
+  it('maxDistanceKm 이내일 때 정상적으로 역을 반환한다', () => {
+    mockHaversine.mockReturnValueOnce(0.5).mockReturnValue(5);
+
+    const result = findNearestStation(37.5, 127.0, 1.0);
+
+    expect(result).not.toBeNull();
+    expect(result!.distanceKm).toBe(0.5);
+  });
+
+  it('maxDistanceKm 미지정 시 기존 동작 유지 (거리 무관 반환)', () => {
+    mockHaversine.mockReturnValue(100); // 100km (매우 멀음)
+
+    const result = findNearestStation(37.5, 127.0);
+
+    expect(result).not.toBeNull();
+    expect(result!.distanceKm).toBe(100);
+  });
 });
 
 describe('findNearestStations', () => {
@@ -140,5 +166,23 @@ describe('findNearestStations', () => {
     expect(fn(37.5, 127.0)).toBeNull();
 
     jest.resetModules();
+  });
+
+  it('maxDistanceKm을 초과하면 null을 반환한다', () => {
+    mockHaversine.mockReturnValue(5);
+
+    const result = findNearestStations(37.5, 127.0, 1.0);
+
+    expect(result).toBeNull();
+  });
+
+  it('maxDistanceKm 이내일 때 variants와 함께 반환한다', () => {
+    mockHaversine.mockReturnValueOnce(0.2).mockReturnValue(5);
+
+    const result = findNearestStations(37.5, 127.0, 1.0);
+
+    expect(result).not.toBeNull();
+    expect(result!.distanceKm).toBe(0.2);
+    expect(result!.variants.length).toBeGreaterThanOrEqual(1);
   });
 });
