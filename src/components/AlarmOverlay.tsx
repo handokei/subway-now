@@ -2,7 +2,12 @@ import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import type { AlarmEvent } from '../store/useAppStore';
 import { clearAlarmNotification } from '../utils/stationNotification';
+import { getStationDisplayNameByName } from '../utils/stationDisplay';
+import stationsData from '../data/stations.json';
+import type { Station } from '../types/station';
 import { useTheme, typography, spacing, radius } from '../theme';
+
+const allStations = stationsData as Station[];
 
 interface AlarmOverlayProps {
   event: AlarmEvent;
@@ -14,7 +19,7 @@ export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
   const { t } = useTranslation();
   const title = t(isTransfer ? 'alarmOverlay.transferTitle' : 'alarmOverlay.arrivalTitle');
   const message = t(isTransfer ? 'alarmOverlay.transferMessage' : 'alarmOverlay.arrivalMessage', {
-    station: event.stationName,
+    station: getStationDisplayNameByName(event.stationName, allStations),
   });
   const { colors } = useTheme();
 

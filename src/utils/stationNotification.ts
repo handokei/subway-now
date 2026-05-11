@@ -9,6 +9,10 @@ import type { NextTarget } from './stationPipeline';
 import * as LiveActivity from 'live-activity';
 import { vibrateAlarm, stopVibration } from './alarmSound';
 import { createLogger } from './logger';
+import { getStationDisplayName, getStationDisplayNameByName } from './stationDisplay';
+import stationsData from '../data/stations.json';
+
+const allStations = stationsData as Station[];
 
 const notifLogger = createLogger('Notification');
 const liveActivityLogger = createLogger('LiveActivity');
@@ -119,10 +123,10 @@ function buildContent(
       : '';
 
   // destination layer: 목적지 있으면 title에 반영
-  // TODO(phase4): 역명 영문 데이터 도입 시 currentStation.name/destination.name도 현지화 필요
+  const currentName = getStationDisplayName(currentStation);
   const title = destination
-    ? `${currentStation.name} → ${destination.name}`
-    : i18next.t('route.currentStation', { name: currentStation.name });
+    ? `${currentName} → ${getStationDisplayName(destination)}`
+    : i18next.t('route.currentStation', { name: currentName });
 
   // route layer: 경로 정보가 있으면 body에 반영
   if (destination && route) {
@@ -135,13 +139,13 @@ function buildContent(
     if (route.type === 'transfer') {
       return {
         title,
-        body: `${i18next.t('route.transferAfterStops', { stops: route.stopsToTransfer, name: route.transferName })}${etaSuffix}`,
+        body: `${i18next.t('route.transferAfterStops', { stops: route.stopsToTransfer, name: getStationDisplayNameByName(route.transferName, allStations) })}${etaSuffix}`,
       };
     }
     const [t1] = route.transfers;
     return {
       title,
-      body: `${i18next.t('route.transferAfterStops', { stops: t1.stopsToTransfer, name: t1.transferName })}${etaSuffix}`,
+      body: `${i18next.t('route.transferAfterStops', { stops: t1.stopsToTransfer, name: getStationDisplayNameByName(t1.transferName, allStations) })}${etaSuffix}`,
     };
   }
 
@@ -161,9 +165,9 @@ function buildLiveActivityData(
   isMock?: boolean,
   alarmEvent?: AlarmEvent | null,
 ): LiveActivity.LiveActivityData {
-  // station layer: 항상 포함
+  // station layer: 항상 포함. Live Activity는 사용자 노출이므로 현재 언어로 표시.
   const data: LiveActivity.LiveActivityData = {
-    stationName: currentStation.name,
+    stationName: getStationDisplayName(currentStation),
     lineName: LINE_NAMES[currentStation.line],
     lineColorHex: LINE_COLORS[currentStation.line],
     distanceM,
@@ -171,7 +175,7 @@ function buildLiveActivityData(
 
   // destination layer: 목적지 있으면 독립적으로 포함
   if (destination) {
-    data.destinationName = destination.name;
+    data.destinationName = getStationDisplayName(destination);
   }
 
   // route layer: 경로 정보가 있을 때만
@@ -180,14 +184,14 @@ function buildLiveActivityData(
       data.stopsRemaining = route.stops;
     } else if (route.type === 'transfer') {
       data.stopsToTransfer = route.stopsToTransfer;
-      data.transferStationName = route.transferName;
+      data.transferStationName = getStationDisplayNameByName(route.transferName, allStations);
       data.stopsFromTransfer = route.stopsFromTransfer;
     } else {
       const [first, second] = route.transfers;
       data.stopsToTransfer = first.stopsToTransfer;
-      data.transferStationName = first.transferName;
+      data.transferStationName = getStationDisplayNameByName(first.transferName, allStations);
       data.stopsToSecondTransfer = second.stopsToTransfer;
-      data.secondTransferStationName = second.transferName;
+      data.secondTransferStationName = getStationDisplayNameByName(second.transferName, allStations);
       data.stopsAfterLastTransfer = route.stopsAfterLastTransfer;
     }
   }
@@ -200,10 +204,10 @@ function buildLiveActivityData(
     data.isMock = true;
   }
 
-  // alarm layer: 알람 이벤트가 있을 때만
+  // alarm layer: 알람 이벤트가 있을 때만. 위젯에 표시되므로 현재 언어로 변환.
   if (alarmEvent) {
     data.alarmType = alarmEvent.type;
-    data.alarmStationName = alarmEvent.stationName;
+    data.alarmStationName = getStationDisplayNameByName(alarmEvent.stationName, allStations);
   }
 
   return data;
@@ -284,25 +288,28 @@ export async function sendStationPassedNotification(
   destinationName: string,
   target: NextTarget | null,
 ): Promise<void> {
+  // 사용자 노출 텍스트이므로 현재 언어로 변환. caller는 한글 역명을 그대로 전달.
+  const displayStation = getStationDisplayNameByName(stationName, allStations);
+  const displayDestination = getStationDisplayNameByName(destinationName, allStations);
   let body: string;
   if (target == null) {
-    body = i18next.t('route.atCurrentStation', { name: stationName });
+    body = i18next.t('route.atCurrentStation', { name: displayStation });
   } else if (target.isTransfer) {
     body = i18next.t('route.stopsRemainingViaTransfer', {
-      transfer: target.nextStationName,
+      transfer: getStationDisplayNameByName(target.nextStationName, allStations),
       transferStops: target.stopsToNextStation,
-      destination: destinationName,
+      destination: displayDestination,
       totalStops: target.stopsToDestination,
     });
   } else {
     body = i18next.t('route.stopsRemainingToDestination', {
-      destination: destinationName,
+      destination: displayDestination,
       count: target.stopsToDestination,
     });
   }
 
   await scheduleNotification(STATION_PASSED_NOTIFICATION_ID, {
-    title: i18next.t('route.stationPassed', { name: stationName }),
+    title: i18next.t('route.stationPassed', { name: displayStation }),
     body,
     ...(Platform.OS === 'android' && {
       channelId: STATION_PASSED_CHANNEL_ID,
@@ -317,11 +324,15 @@ import type { AlarmPhaseId } from './alarmPhases';
 const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTransfer: boolean) => { title: string; body: string }> = {
   early: (stationName, isTransfer) => ({
     title: i18next.t(isTransfer ? 'notifications.transferEarlyTitle' : 'notifications.arrivalEarlyTitle'),
-    body: i18next.t(isTransfer ? 'alarms.earlyTransferBody' : 'alarms.earlyArrivalBody', { station: stationName }),
+    body: i18next.t(isTransfer ? 'alarms.earlyTransferBody' : 'alarms.earlyArrivalBody', {
+      station: getStationDisplayNameByName(stationName, allStations),
+    }),
   }),
   imminent: (stationName, isTransfer) => ({
     title: i18next.t(isTransfer ? 'notifications.transferImminentTitle' : 'notifications.arrivalImminentTitle'),
-    body: i18next.t(isTransfer ? 'alarms.imminentTransferBody' : 'alarms.imminentArrivalBody', { station: stationName }),
+    body: i18next.t(isTransfer ? 'alarms.imminentTransferBody' : 'alarms.imminentArrivalBody', {
+      station: getStationDisplayNameByName(stationName, allStations),
+    }),
   }),
 };
 
