@@ -4,11 +4,12 @@ import { Station } from '../types/station';
 import type { AlarmEvent } from '../utils/stationAlarm';
 import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY } from '../constants/storageKeys';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
+import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../i18n/types';
 
 export type ThemeMode = 'auto' | 'light' | 'dark';
-export type LocalePreference = 'auto' | 'ko' | 'en';
+export type LocalePreference = 'auto' | SupportedLanguage;
 
-const LOCALE_PREFERENCES: readonly LocalePreference[] = ['auto', 'ko', 'en'];
+const LOCALE_PREFERENCES: readonly LocalePreference[] = ['auto', ...SUPPORTED_LANGUAGES];
 
 export type { AlarmEvent };
 

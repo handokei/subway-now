@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAppStore, type ThemeMode, type LocalePreference } from '../../src/store/useAppStore';
 import { ROUTE_CATEGORIES } from '../../src/utils/stationRoute';
+import { LANGUAGE_REGISTRY } from '../../src/i18n/types';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 
@@ -12,12 +13,6 @@ const THEME_OPTIONS = [
   { value: 'light', labelKey: 'settings.themeLight' },
   { value: 'dark', labelKey: 'settings.themeDark' },
 ] as const satisfies readonly { value: ThemeMode; labelKey: string }[];
-
-const LOCALE_OPTIONS = [
-  { value: 'auto', labelKey: 'settings.languageAuto' },
-  { value: 'ko', labelKey: 'settings.languageKorean' },
-  { value: 'en', labelKey: 'settings.languageEnglish' },
-] as const satisfies readonly { value: LocalePreference; labelKey: string }[];
 
 export default function SettingsScreen() {
   const sleepMode = useAppStore((s) => s.sleepMode);
@@ -48,14 +43,13 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={styles.scroll}>
         <Text style={[styles.header, { color: colors.muted }]}>{t('settings.title')}</Text>
 
-        <SegmentSetting
+        <LocaleListSetting
           sectionTitle={t('settings.languageSection')}
           label={t('settings.languageLabel')}
           description={t('settings.languageDescription')}
-          testIDPrefix="locale"
+          autoLabel={t('settings.languageAuto')}
           value={localePreference}
           onChange={setLocalePreference}
-          options={LOCALE_OPTIONS.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
         />
 
         <SegmentSetting
@@ -135,6 +129,78 @@ export default function SettingsScreen() {
         </View>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+interface LocaleListSettingProps {
+  readonly sectionTitle: string;
+  readonly label: string;
+  readonly description: string;
+  readonly autoLabel: string;
+  readonly value: LocalePreference;
+  readonly onChange: (next: LocalePreference) => void;
+}
+
+function LocaleListSetting({
+  sectionTitle,
+  label,
+  description,
+  autoLabel,
+  value,
+  onChange,
+}: LocaleListSettingProps) {
+  const { colors } = useTheme();
+  const rows: readonly { value: LocalePreference; label: string }[] = [
+    { value: 'auto', label: autoLabel },
+    ...LANGUAGE_REGISTRY.map((lang) => ({ value: lang.code, label: lang.nativeName })),
+  ];
+  return (
+    <View style={[styles.card, { backgroundColor: colors.card }]}>
+      <Text style={[styles.sectionTitle, { color: colors.muted }]}>{sectionTitle}</Text>
+
+      <View style={styles.settingRow}>
+        <View style={styles.settingInfo}>
+          <Text style={[styles.settingLabel, { color: colors.ink }]}>{label}</Text>
+          <Text style={[styles.settingDesc, { color: colors.muted }]}>{description}</Text>
+        </View>
+      </View>
+
+      <View
+        style={[styles.localeList, { borderTopColor: colors.hair }]}
+        testID="locale-list"
+        accessibilityRole="radiogroup"
+      >
+        {rows.map(({ value: rowValue, label: rowLabel }, index) => {
+          const active = value === rowValue;
+          return (
+            <Pressable
+              key={rowValue}
+              style={[
+                styles.localeRow,
+                index > 0 && { borderTopWidth: 1, borderTopColor: colors.hair },
+              ]}
+              onPress={() => onChange(rowValue)}
+              testID={`locale-row-${rowValue}`}
+              accessibilityRole="radio"
+              accessibilityState={{ selected: active }}
+            >
+              <Text style={[styles.localeRowLabel, { color: active ? colors.ink : colors.muted }]}>
+                {rowLabel}
+              </Text>
+              <View
+                style={[
+                  styles.localeRadio,
+                  { borderColor: active ? colors.accent : colors.hair },
+                  active && { backgroundColor: colors.accent },
+                ]}
+              >
+                {active && <View style={[styles.localeRadioDot, { backgroundColor: colors.onAccent }]} />}
+              </View>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
   );
 }
 
@@ -249,5 +315,33 @@ const styles = StyleSheet.create({
   segmentText: {
     fontSize: 13,
     fontWeight: '600',
+  },
+  localeList: {
+    marginTop: spacing.md,
+    borderTopWidth: 1,
+  },
+  localeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    paddingVertical: spacing.sm,
+  },
+  localeRowLabel: {
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  localeRadio: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  localeRadioDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
 });

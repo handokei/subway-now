@@ -64,9 +64,7 @@
     "languageSection": "언어",
     "languageLabel": "앱 언어",
     "languageDescription": "자동은 기기 설정을 따릅니다",
-    "languageAuto": "자동",
-    "languageKorean": "한국어",
-    "languageEnglish": "English"
+    "languageAuto": "자동"
   },
   "map": {
     "originBadge": "출발",
@@ -175,9 +173,13 @@
     "alarmShortArrival": "하차",
     "etaSubtextEstimated": "예상",
     "etaSubtextDuration": "소요",
+    "stopsToArrival_one": "{{count}}역 후 {{destination}} 도착",
     "stopsToArrival_other": "{{count}}역 후 {{destination}} 도착",
+    "stopsToTransfer_one": "{{count}}역 후 {{name}} 환승",
     "stopsToTransfer_other": "{{count}}역 후 {{name}} 환승",
+    "summaryWithStops_one": "→ {{destination}} · {{count}}역 후 도착{{etaSuffix}}",
     "summaryWithStops_other": "→ {{destination}} · {{count}}역 후 도착{{etaSuffix}}",
+    "summaryWithTransfer_one": "→ {{destination}} · {{count}}역 후 {{name}} 환승{{etaSuffix}}",
     "summaryWithTransfer_other": "→ {{destination}} · {{count}}역 후 {{name}} 환승{{etaSuffix}}",
     "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
     "etaSuffix": " · 약 {{min}}분"

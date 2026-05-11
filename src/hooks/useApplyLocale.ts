@@ -1,11 +1,11 @@
 import { useEffect } from 'react';
 import * as Localization from 'expo-localization';
 import i18next from 'i18next';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore, type LocalePreference } from '../store/useAppStore';
 import { FALLBACK_LANGUAGE, SUPPORTED_LANGUAGES, type SupportedLanguage } from '../i18n/types';
 
 export function resolveLanguage(
-  preference: 'auto' | 'ko' | 'en',
+  preference: LocalePreference,
   osLanguageCode: string | null | undefined,
 ): SupportedLanguage {
   if (preference === 'auto') {
