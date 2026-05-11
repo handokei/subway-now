@@ -118,5 +118,50 @@
   "routes": {
     "optimal": "최적경로",
     "minTransfer": "최소환승"
+  },
+  "time": {
+    "arrivingSoon": "곧 도착",
+    "minutesAndSeconds": "{{min}}분 {{sec}}초",
+    "seconds": "{{sec}}초",
+    "approximateMinutes": "약 {{min}}분",
+    "estimatedSuffix": " (예상)"
+  },
+  "route": {
+    "stops_one": "{{count}}정거장",
+    "stops_other": "{{count}}정거장",
+    "stopsLeft_one": "{{count}}정거장 남음",
+    "stopsLeft_other": "{{count}}정거장 남음",
+    "transferAfterStops": "{{stops}}정거장 후 {{name}} 환승",
+    "minutesAndTransfers_one": "{{min}}분 · {{count}}환승",
+    "minutesAndTransfers_other": "{{min}}분 · {{count}}환승",
+    "directOnly": "{{min}}분 · 직통",
+    "directionToward": "{{name}} 방면",
+    "currentStation": "{{name}}역",
+    "atCurrentStation": "현재 {{name}}역",
+    "approximateDistance": "약 {{m}}m",
+    "stationPassed": "{{name}}역 통과",
+    "stopsRemainingToDestination_one": "{{destination}}까지 {{count}}정거장 남음",
+    "stopsRemainingToDestination_other": "{{destination}}까지 {{count}}정거장 남음"
+  },
+  "lines": {
+    "1": "1호선",
+    "2": "2호선",
+    "3": "3호선",
+    "4": "4호선",
+    "5": "5호선",
+    "6": "6호선",
+    "7": "7호선",
+    "8": "8호선",
+    "9": "9호선",
+    "airport": "공항철도",
+    "gyeongui": "경의중앙선",
+    "bundang": "분당선",
+    "sinbundang": "신분당선"
+  },
+  "alarms": {
+    "earlyTransferBody": "다음 역 {{station}}에서 환승하세요!",
+    "earlyArrivalBody": "다음 역 {{station}}에서 내리세요!",
+    "imminentTransferBody": "곧 {{station}}에 도착합니다. 환승 준비하세요!",
+    "imminentArrivalBody": "곧 {{station}}에 도착합니다. 하차 준비하세요!"
   }
 }

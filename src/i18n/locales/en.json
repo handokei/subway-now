@@ -118,5 +118,50 @@
   "routes": {
     "optimal": "Fastest",
     "minTransfer": "Fewest transfers"
+  },
+  "time": {
+    "arrivingSoon": "Arriving soon",
+    "minutesAndSeconds": "{{min}}m {{sec}}s",
+    "seconds": "{{sec}}s",
+    "approximateMinutes": "~{{min}}m",
+    "estimatedSuffix": " (estimated)"
+  },
+  "route": {
+    "stops_one": "{{count}} stop",
+    "stops_other": "{{count}} stops",
+    "stopsLeft_one": "{{count}} stop left",
+    "stopsLeft_other": "{{count}} stops left",
+    "transferAfterStops": "Transfer at {{name}} in {{stops}} stops",
+    "minutesAndTransfers_one": "{{min}}m · {{count}} transfer",
+    "minutesAndTransfers_other": "{{min}}m · {{count}} transfers",
+    "directOnly": "{{min}}m · Direct",
+    "directionToward": "Toward {{name}}",
+    "currentStation": "{{name}}",
+    "atCurrentStation": "Currently at {{name}}",
+    "approximateDistance": "~{{m}}m",
+    "stationPassed": "Passed {{name}}",
+    "stopsRemainingToDestination_one": "{{count}} stop to {{destination}}",
+    "stopsRemainingToDestination_other": "{{count}} stops to {{destination}}"
+  },
+  "lines": {
+    "1": "Line 1",
+    "2": "Line 2",
+    "3": "Line 3",
+    "4": "Line 4",
+    "5": "Line 5",
+    "6": "Line 6",
+    "7": "Line 7",
+    "8": "Line 8",
+    "9": "Line 9",
+    "airport": "AREX",
+    "gyeongui": "Gyeongui-Jungang Line",
+    "bundang": "Bundang Line",
+    "sinbundang": "Shinbundang Line"
+  },
+  "alarms": {
+    "earlyTransferBody": "Transfer at {{station}} (next stop)!",
+    "earlyArrivalBody": "Exit at {{station}} (next stop)!",
+    "imminentTransferBody": "Arriving at {{station}}. Get ready to transfer!",
+    "imminentArrivalBody": "Arriving at {{station}}. Get ready to exit!"
   }
 }

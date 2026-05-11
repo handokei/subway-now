@@ -46,12 +46,11 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
       });
     }
 
-    // stopsFromPrev 동적 포맷("N정거장")은 Phase 3에서 i18n 처리 예정
     if (!isLast) {
       stops.push({
         station: seg.toName,
         line: segments[i + 1].line,
-        stopsFromPrev: `${seg.stops}정거장`,
+        stopsFromPrev: i18next.t('route.stops', { count: seg.stops }),
         mark: 'transfer',
         note: i18next.t('journey.transferNote'),
       });
@@ -59,7 +58,7 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
       stops.push({
         station: seg.toName,
         line: seg.line,
-        stopsFromPrev: `${seg.stops}정거장`,
+        stopsFromPrev: i18next.t('route.stops', { count: seg.stops }),
         mark: 'dest',
         note: i18next.t('journey.arrivalNote'),
       });
@@ -75,9 +74,8 @@ export function arrivalInfoToArrivalTrain(
   line: LineNumber,
 ): ArrivalTrain[] {
   const now = Date.now();
-  // direction 동적 포맷("X 방면")은 Phase 3에서 i18n 처리 예정
   return items.map((item) => ({
-    direction: item.destination ? `${item.destination} 방면` : direction,
+    direction: item.destination ? i18next.t('route.directionToward', { name: item.destination }) : direction,
     line,
     arrivalAtMs: now + item.arrivalSeconds * 1000,
     subtext: item.statusMessage || undefined,
