@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
+import { useRouter } from 'expo-router';
 import { useAppStore, type ThemeMode, type LocalePreference } from '../../src/store/useAppStore';
 import { ROUTE_CATEGORIES } from '../../src/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../../src/i18n/types';
@@ -27,9 +28,9 @@ export default function SettingsScreen() {
   const setRoutePreference = useAppStore((s) => s.setRoutePreference);
   const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
   const localePreference = useAppStore((s) => s.localePreference);
-  const setLocalePreference = useAppStore((s) => s.setLocalePreference);
   const { colors } = useTheme();
   const { t } = useTranslation();
+  const router = useRouter();
   const showSleepModeGuide = useSleepModeGuide();
 
   useEffect(() => {
@@ -43,13 +44,13 @@ export default function SettingsScreen() {
       <ScrollView contentContainerStyle={styles.scroll}>
         <Text style={[styles.header, { color: colors.muted }]}>{t('settings.title')}</Text>
 
-        <LocaleListSetting
+        <LocaleNavSetting
           sectionTitle={t('settings.languageSection')}
           label={t('settings.languageLabel')}
           description={t('settings.languageDescription')}
           autoLabel={t('settings.languageAuto')}
           value={localePreference}
-          onChange={setLocalePreference}
+          onPress={() => router.push('/language')}
         />
 
         <SegmentSetting
@@ -132,28 +133,36 @@ export default function SettingsScreen() {
   );
 }
 
-interface LocaleListSettingProps {
+interface LocaleNavSettingProps {
   readonly sectionTitle: string;
   readonly label: string;
   readonly description: string;
   readonly autoLabel: string;
   readonly value: LocalePreference;
-  readonly onChange: (next: LocalePreference) => void;
+  readonly onPress: () => void;
 }
 
-function LocaleListSetting({
+function LocaleNavSetting({
   sectionTitle,
   label,
   description,
   autoLabel,
   value,
-  onChange,
-}: LocaleListSettingProps) {
+  onPress,
+}: LocaleNavSettingProps) {
   const { colors } = useTheme();
-  const rows: readonly { value: LocalePreference; label: string }[] = [
-    { value: 'auto', label: autoLabel },
-    ...LANGUAGE_REGISTRY.map((lang) => ({ value: lang.code, label: lang.nativeName })),
-  ];
+  const { i18n } = useTranslation();
+
+  const resolvedCode = i18n.language?.split('-')[0];
+  const resolvedNativeName = LANGUAGE_REGISTRY.find((l) => l.code === resolvedCode)?.nativeName;
+  const selectedNativeName = LANGUAGE_REGISTRY.find((l) => l.code === value)?.nativeName;
+  const triggerText =
+    value === 'auto'
+      ? resolvedNativeName
+        ? `${autoLabel} (${resolvedNativeName})`
+        : autoLabel
+      : (selectedNativeName ?? autoLabel);
+
   return (
     <View style={[styles.card, { backgroundColor: colors.card }]}>
       <Text style={[styles.sectionTitle, { color: colors.muted }]}>{sectionTitle}</Text>
@@ -165,41 +174,16 @@ function LocaleListSetting({
         </View>
       </View>
 
-      <View
-        style={[styles.localeList, { borderTopColor: colors.hair }]}
-        testID="locale-list"
-        accessibilityRole="radiogroup"
+      <Pressable
+        style={[styles.localeTrigger, { borderTopColor: colors.hair }]}
+        onPress={onPress}
+        testID="locale-trigger"
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${triggerText}`}
       >
-        {rows.map(({ value: rowValue, label: rowLabel }, index) => {
-          const active = value === rowValue;
-          return (
-            <Pressable
-              key={rowValue}
-              style={[
-                styles.localeRow,
-                index > 0 && { borderTopWidth: 1, borderTopColor: colors.hair },
-              ]}
-              onPress={() => onChange(rowValue)}
-              testID={`locale-row-${rowValue}`}
-              accessibilityRole="radio"
-              accessibilityState={{ selected: active }}
-            >
-              <Text style={[styles.localeRowLabel, { color: active ? colors.ink : colors.muted }]}>
-                {rowLabel}
-              </Text>
-              <View
-                style={[
-                  styles.localeRadio,
-                  { borderColor: active ? colors.accent : colors.hair },
-                  active && { backgroundColor: colors.accent },
-                ]}
-              >
-                {active && <View style={[styles.localeRadioDot, { backgroundColor: colors.onAccent }]} />}
-              </View>
-            </Pressable>
-          );
-        })}
-      </View>
+        <Text style={[styles.localeTriggerValue, { color: colors.ink }]}>{triggerText}</Text>
+        <Text style={[styles.localeChevron, { color: colors.muted }]}>›</Text>
+      </Pressable>
     </View>
   );
 }
@@ -316,32 +300,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
-  localeList: {
-    marginTop: spacing.md,
-    borderTopWidth: 1,
-  },
-  localeRow: {
+  localeTrigger: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     minHeight: 44,
     paddingVertical: spacing.sm,
+    marginTop: spacing.md,
+    borderTopWidth: 1,
   },
-  localeRowLabel: {
+  localeTriggerValue: {
     fontSize: 15,
     fontWeight: '500',
   },
-  localeRadio: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  localeRadioDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+  localeChevron: {
+    fontSize: 20,
+    marginLeft: spacing.sm,
   },
 });
