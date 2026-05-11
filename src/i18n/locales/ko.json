@@ -170,5 +170,17 @@
     "earlyArrivalBody": "다음 역 {{station}}에서 내리세요!",
     "imminentTransferBody": "곧 {{station}}에 도착합니다. 환승 준비하세요!",
     "imminentArrivalBody": "곧 {{station}}에 도착합니다. 하차 준비하세요!"
+  },
+  "liveActivity": {
+    "alarmShortTransfer": "환승",
+    "alarmShortArrival": "하차",
+    "etaSubtextEstimated": "예상",
+    "etaSubtextDuration": "소요",
+    "stopsToArrival_other": "{{count}}역 후 {{destination}} 도착",
+    "stopsToTransfer_other": "{{count}}역 후 {{name}} 환승",
+    "summaryWithStops_other": "→ {{destination}} · {{count}}역 후 도착{{etaSuffix}}",
+    "summaryWithTransfer_other": "→ {{destination}} · {{count}}역 후 {{name}} 환승{{etaSuffix}}",
+    "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
+    "etaSuffix": " · 약 {{min}}분"
   }
 }

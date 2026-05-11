@@ -208,6 +208,55 @@ function buildLiveActivityData(
   if (alarmEvent) {
     data.alarmType = alarmEvent.type;
     data.alarmStationName = getStationDisplayNameByName(alarmEvent.stationName, allStations);
+    const isTransferAlarm = alarmEvent.type === 'transfer';
+    data.alarmBody = i18next.t(isTransferAlarm ? 'alarms.earlyTransferBody' : 'alarms.earlyArrivalBody', {
+      station: data.alarmStationName,
+    });
+    data.alarmShortLabel = i18next.t(
+      isTransferAlarm ? 'liveActivity.alarmShortTransfer' : 'liveActivity.alarmShortArrival',
+    );
+  }
+
+  // 사용자 노출 텍스트 빌드 — Widget이 직접 조립하지 않도록 JS에서 미리 i18n.
+  data.distanceText = i18next.t('route.approximateDistance', { m: distanceM });
+  if (etaMinutes != null) {
+    data.etaText = i18next.t('time.approximateMinutes', { min: etaMinutes });
+    data.etaSubtext = i18next.t(
+      isMock ? 'liveActivity.etaSubtextEstimated' : 'liveActivity.etaSubtextDuration',
+    );
+  }
+  const etaSuffix = etaMinutes != null ? i18next.t('liveActivity.etaSuffix', { min: etaMinutes }) : '';
+  if (destination) {
+    const destName = data.destinationName as string;
+    if (data.stopsRemaining != null) {
+      data.routeSubtext = i18next.t('liveActivity.stopsToArrival', {
+        count: data.stopsRemaining,
+        destination: destName,
+      });
+      data.routeSummary = i18next.t('liveActivity.summaryWithStops', {
+        count: data.stopsRemaining,
+        destination: destName,
+        etaSuffix,
+      });
+      // MultiTransferRoute의 경우 첫 번째 환승 정보만 표시. 두 번째 환승은 라우트 빌더에서
+      // raw 필드에는 채워지지만 Live Activity 텍스트에는 반영되지 않음 (기존 Swift 동작 동일).
+    } else if (data.stopsToTransfer != null && data.transferStationName) {
+      data.routeSubtext = i18next.t('liveActivity.stopsToTransfer', {
+        count: data.stopsToTransfer,
+        name: data.transferStationName,
+      });
+      data.routeSummary = i18next.t('liveActivity.summaryWithTransfer', {
+        count: data.stopsToTransfer,
+        name: data.transferStationName,
+        destination: destName,
+        etaSuffix,
+      });
+    } else {
+      data.routeSummary = i18next.t('liveActivity.summaryDestinationOnly', {
+        destination: destName,
+        etaSuffix,
+      });
+    }
   }
 
   return data;

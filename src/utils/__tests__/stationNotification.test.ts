@@ -317,6 +317,8 @@ describe('stationNotification', () => {
         expect.objectContaining({
           alarmType: 'transfer',
           alarmStationName: '동대문',
+          alarmBody: '다음 역 동대문에서 환승하세요!',
+          alarmShortLabel: '환승',
         })
       );
     });
@@ -327,6 +329,47 @@ describe('stationNotification', () => {
         expect.objectContaining({
           alarmType: 'destination',
           alarmStationName: '강남',
+          alarmBody: '다음 역 강남에서 내리세요!',
+          alarmShortLabel: '하차',
+        })
+      );
+    });
+
+    it('direct route + ETA가 있으면 routeSubtext/routeSummary/etaText/distanceText가 빌드된다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeSubtext: expect.stringContaining('도착'),
+          routeSummary: expect.stringContaining('→'),
+          etaText: expect.stringContaining('12'),
+          etaSubtext: '소요',
+          distanceText: expect.stringContaining('154'),
+        })
+      );
+    });
+
+    it('isMock=true면 etaSubtext가 예상으로 빌드된다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, true);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({ etaSubtext: '예상' })
+      );
+    });
+
+    it('transfer route이면 routeSubtext에 환승 역명이 포함된다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, transferRoute);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeSubtext: expect.stringContaining('환승'),
+          routeSummary: expect.stringContaining('환승'),
+        })
+      );
+    });
+
+    it('destination만 있고 route가 없으면 summaryDestinationOnly로 빌드된다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          routeSummary: expect.stringMatching(/^→ /),
         })
       );
     });
