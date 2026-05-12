@@ -1,13 +1,10 @@
 #if canImport(ActivityKit)
 import ActivityKit
 
-// ActivityKit이 앱 타겟과 위젯 타겟에서 동일한 정의를 요구한다.
-// @bacons/apple-targets의 _shared 디렉토리는 main target과 widget target에 자동 링크된다.
-//
-// ⚠️ MIRROR: modules/live-activity/ios/SubwayActivityAttributes.swift
-// LiveActivity CocoaPod 모듈은 _shared 자동 링크 범위 밖이라 별도 사본을 유지한다.
-// 이 파일을 수정하면 반드시 위 경로의 사본도 함께 갱신해야 widget/app/pod 세 곳의
-// ActivityKit wire format이 일치한다.
+// ⚠️ MIRROR: targets/subway-widget/_shared/SubwayActivityAttributes.swift
+// LiveActivity CocoaPod 모듈은 @bacons/apple-targets의 _shared 자동 링크 범위 밖이라
+// pod 컴파일 단위에 동일한 정의를 사본으로 두어야 한다. 원본을 수정하면 반드시 함께 갱신하여
+// app 모듈과 widget extension 간 ActivityKit wire format을 일치시킨다.
 @available(iOS 16.1, *)
 struct SubwayActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
