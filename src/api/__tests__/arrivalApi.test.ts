@@ -325,6 +325,42 @@ describe('fetchArrivalInfo', () => {
       expect(result.up.map((i) => i.arrivalCode)).toEqual([1, 0, -1, -1]);
     });
 
+    it('lstcarAt: "1" 또는 1 → isLastTrain true, 그외 false', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', lstcarAt: '1' },
+            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', lstcarAt: 1 },
+            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행', lstcarAt: '0' },
+            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남', { maxPerDirection: 4 });
+      expect(result.up.map((i) => i.isLastTrain)).toEqual([true, true, false, false]);
+    });
+
+    it('btrainSttus → trainType 매핑', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', btrainSttus: '급행' },
+            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', btrainSttus: 'ITX' },
+            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행', btrainSttus: '특급' },
+            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남', { maxPerDirection: 4 });
+      expect(result.up.map((i) => i.trainType)).toEqual(['express', 'itx', 'rapid', 'normal']);
+    });
+
     it('realtimeArrivalList가 빈 배열이면 Mock으로 fallback', async () => {
       process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
       global.fetch = jest.fn().mockResolvedValue({

@@ -41,6 +41,8 @@ function info(arrivalCode: number, overrides?: Partial<ArrivalInfo>): ArrivalInf
     trainCode: 'T1',
     receivedAtMs: 1_700_000_000_000,
     arrivalCode,
+    isLastTrain: false,
+    trainType: 'normal',
     ...overrides,
   };
 }

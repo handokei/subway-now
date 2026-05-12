@@ -1,4 +1,5 @@
 import { createLogger } from '../utils/logger';
+import { parseTrainType, type TrainType } from '../constants/trainTypes';
 
 const log = createLogger('arrivalApi');
 
@@ -15,6 +16,10 @@ export interface ArrivalInfo {
    * 누락/비숫자는 -1. fusion 우선순위 판정에 사용 (constants/arrivalCodes.ts).
    */
   arrivalCode: number;
+  /** lstcarAt === '1'이면 막차. 사용자 안전성 표시용. */
+  isLastTrain: boolean;
+  /** btrainSttus 매핑. 'normal'은 라벨 빈 문자열로 배지 미표시. */
+  trainType: TrainType;
 }
 
 export interface StationArrival {
@@ -25,12 +30,12 @@ export interface StationArrival {
 
 export const MOCK_ARRIVALS: Readonly<StationArrival> = Object.freeze({
   up: [
-    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001', receivedAtMs: 0, arrivalCode: -1 },
-    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002', receivedAtMs: 0, arrivalCode: -1 },
+    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
+    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
   ],
   down: [
-    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001', receivedAtMs: 0, arrivalCode: -1 },
-    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002', receivedAtMs: 0, arrivalCode: -1 },
+    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
+    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
   ],
   isMock: true,
 });
@@ -113,6 +118,8 @@ export async function fetchArrivalInfo(
         trainCode: item.btrainNo ?? '',
         receivedAtMs,
         arrivalCode: Number.isFinite(parsedCode) ? parsedCode : -1,
+        isLastTrain: item.lstcarAt === '1' || item.lstcarAt === 1,
+        trainType: parseTrainType(item.btrainSttus),
       };
       if (UP_DIRECTION_VALUES.includes(item.updnLine)) {
         up.push(info);
