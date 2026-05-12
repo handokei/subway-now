@@ -273,9 +273,15 @@ export default function HomeScreen() {
           <>
             {/* Top meta */}
             <View style={styles.topMeta}>
-              <Text style={[typography.mono, { color: colors.subtle }]}>
-                {new Date().toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}
-              </Text>
+              <Pressable
+                onLongPress={__DEV__ ? () => useAppStore.getState().setDebugVisible(true) : undefined}
+                delayLongPress={700}
+                testID="home-clock"
+              >
+                <Text style={[typography.mono, { color: colors.subtle }]}>
+                  {new Date().toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}
+                </Text>
+              </Pressable>
               <Text style={[typography.label, { color: colors.subtle }]}>{isCustomOrigin ? t('home.manual') : t('home.live')}</Text>
             </View>
 
