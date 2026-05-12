@@ -8,6 +8,17 @@ import { usePolling } from './usePolling';
 const POLL_INTERVAL_MS = 5_000;
 const CACHE_TTL_MS = 30_000;
 
+/**
+ * 모듈 스코프 싱글톤 — fusion에서 동일 station name을 여러 hook 인스턴스가 폴링할 때
+ * 중복 네트워크 호출을 막기 위한 공유 캐시.
+ */
+const arrivalCache = new TtlCache<string, StationArrival>(CACHE_TTL_MS);
+
+/** 테스트 격리용 — useArrivalInfo 사용처 외에는 호출하지 말 것. */
+export function __resetArrivalCacheForTests(): void {
+  arrivalCache.clear();
+}
+
 function arrivalEqual(a: StationArrival | null, b: StationArrival): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -24,7 +35,6 @@ export function useArrivalInfo(
 ): UseArrivalInfoReturn {
   const [arrival, setArrival] = useState<StationArrival | null>(null);
   const [loading, setLoading] = useState(false);
-  const cacheRef = useRef(new TtlCache<string, StationArrival>(CACHE_TTL_MS));
   const providerRef = useRef<ArrivalProvider>(provider ?? createArrivalProvider());
   const arrivalRef = useRef<StationArrival | null>(null);
   const stationNameRef = useRef(stationName);
@@ -45,7 +55,7 @@ export function useArrivalInfo(
       return;
     }
 
-    const cached = cacheRef.current.get(stationName);
+    const cached = arrivalCache.get(stationName);
     if (cached) {
       updateArrival(cached);
       setLoading(false);
@@ -66,7 +76,7 @@ export function useArrivalInfo(
         const data = await providerRef.current.getArrival(stationName);
         if (cancelled) return;
         if (!data.isMock) {
-          cacheRef.current.set(stationName, data);
+          arrivalCache.set(stationName, data);
         }
         updateArrival(data);
       } catch {
@@ -90,14 +100,14 @@ export function useArrivalInfo(
       providerRef.current.getArrival(name).then((data) => {
         if (name !== stationNameRef.current) return;
         if (!data.isMock) {
-          cacheRef.current.set(name, data);
+          arrivalCache.set(name, data);
         }
         updateArrival(data);
         setLoading(false);
       }).catch(() => {});
     },
     POLL_INTERVAL_MS,
-    { onResume: () => cacheRef.current.clear() },
+    { onResume: () => arrivalCache.clear() },
   );
 
   return { arrival, loading, isMock: arrival?.isMock ?? false };
