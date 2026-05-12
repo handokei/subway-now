@@ -1,5 +1,6 @@
 import React from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { Station } from '../types/station';
 import { haversine } from '../utils/haversine';
 import { LINE_NAMES } from '../constants/lineColors';
@@ -15,11 +16,12 @@ interface StationMapProps {
 
 export function StationMap({ userLat, userLng, nearestStation, nearbyStations }: StationMapProps) {
   const { colors } = useTheme();
+  const { t } = useTranslation();
 
   if (nearbyStations.length === 0) {
     return (
       <View style={[styles.fallback, { backgroundColor: colors.bg }]}>
-        <Text style={[styles.emptyText, { color: colors.muted }]}>주변 1km 내 지하철역이 없습니다.</Text>
+        <Text style={[styles.emptyText, { color: colors.muted }]}>{t('map.noNearbyStations')}</Text>
       </View>
     );
   }
@@ -33,7 +35,7 @@ export function StationMap({ userLat, userLng, nearestStation, nearbyStations }:
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: colors.bg }]} contentContainerStyle={styles.content}>
-      <Text style={[styles.header, { color: colors.muted }]}>주변 지하철역 (1km 이내)</Text>
+      <Text style={[styles.header, { color: colors.muted }]}>{t('map.nearbyStationsHeader')}</Text>
       {sorted.map(({ station, distanceM }) => {
         const isNearest = nearestStation?.id === station.id;
         return (

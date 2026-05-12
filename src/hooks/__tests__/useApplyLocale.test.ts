@@ -14,9 +14,13 @@ describe('resolveLanguage', () => {
   it.each([
     ['ko', 'en', 'ko'],
     ['en', 'ko', 'en'],
+    ['ja', 'ko', 'ja'],
+    ['zh', 'ko', 'zh'],
     ['auto', 'ko', 'ko'],
     ['auto', 'en', 'en'],
-    ['auto', 'ja', 'en'],
+    ['auto', 'ja', 'ja'],
+    ['auto', 'zh', 'zh'],
+    ['auto', 'fr', 'en'],
     ['auto', null, 'en'],
   ] as const)('resolveLanguage(%s, %s) === %s', (preference, os, expected) => {
     expect(resolveLanguage(preference as LocalePreference, os)).toBe(expected);

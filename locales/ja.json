@@ -1,0 +1,9 @@
+{
+  "ios": {
+    "CFBundleDisplayName": "いまどこ",
+    "CFBundleName": "いまどこ"
+  },
+  "android": {
+    "app_name": "いまどこ"
+  }
+}

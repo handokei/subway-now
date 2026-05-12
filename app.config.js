@@ -12,6 +12,8 @@ module.exports = {
     locales: {
       ko: './locales/ko.json',
       en: './locales/en.json',
+      ja: './locales/ja.json',
+      zh: './locales/zh.json',
     },
     splash: {
       image: './assets/splash/splash-ko-1284x2778.png',
@@ -22,7 +24,7 @@ module.exports = {
       supportsTablet: false,
       bundleIdentifier: 'com.subwaynow.app',
       appleTeamId: '4755N5H4T4',
-      buildNumber: '38',
+      buildNumber: '39',
       infoPlist: {
         NSAppTransportSecurity: {
           NSExceptionDomains: {

@@ -3,6 +3,7 @@ import type { JourneyDisplay } from './stationRoute';
 import type { ArrivalInfo } from '../api/arrivalApi';
 import type { NearestStationResult, LineNumber, Station } from '../types/station';
 import { getStationDisplayName, getStationDisplayNameByName } from './stationDisplay';
+import { parseTrainLineDirection } from './trainLineDirection';
 import stationsData from '../data/stations.json';
 
 const allStations = stationsData as Station[];
@@ -78,12 +79,11 @@ export function arrivalInfoToArrivalTrain(
   line: LineNumber,
 ): ArrivalTrain[] {
   const now = Date.now();
-  // item.destination은 서울 열린데이터 API의 trainLineNm 기반으로 "소요산행", "내선순환" 같은
-  // 방면 표현이 포함되어 순수 역명 lookup이 실패할 수 있다. 매칭 실패 시 한글 원본 그대로 fallback.
-  // 영문 모드에서 방면 표현 자체 번역은 별도 이슈(서울 API 응답 후처리 i18n)로 추적.
+  // item.destination은 서울 열린데이터 API의 trainLineNm 기반("소요산행", "내선순환" 등 방면 표현).
+  // parseTrainLineDirection이 패턴(역명+행, 내선/외선순환)을 인식해 현재 언어로 표시한다.
   return items.map((item) => ({
     direction: item.destination
-      ? i18next.t('route.directionToward', { name: getStationDisplayNameByName(item.destination, allStations) })
+      ? parseTrainLineDirection(item.destination, allStations)
       : direction,
     line,
     arrivalAtMs: now + item.arrivalSeconds * 1000,

@@ -1,9 +1,11 @@
 import { useEffect } from 'react';
-import { Alert, Pressable, StyleSheet, Switch, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
+import { useRouter } from 'expo-router';
 import { useAppStore, type ThemeMode, type LocalePreference } from '../../src/store/useAppStore';
 import { ROUTE_CATEGORIES } from '../../src/utils/stationRoute';
+import { LANGUAGE_REGISTRY } from '../../src/i18n/types';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 
@@ -12,12 +14,6 @@ const THEME_OPTIONS = [
   { value: 'light', labelKey: 'settings.themeLight' },
   { value: 'dark', labelKey: 'settings.themeDark' },
 ] as const satisfies readonly { value: ThemeMode; labelKey: string }[];
-
-const LOCALE_OPTIONS = [
-  { value: 'auto', labelKey: 'settings.languageAuto' },
-  { value: 'ko', labelKey: 'settings.languageKorean' },
-  { value: 'en', labelKey: 'settings.languageEnglish' },
-] as const satisfies readonly { value: LocalePreference; labelKey: string }[];
 
 export default function SettingsScreen() {
   const sleepMode = useAppStore((s) => s.sleepMode);
@@ -32,9 +28,9 @@ export default function SettingsScreen() {
   const setRoutePreference = useAppStore((s) => s.setRoutePreference);
   const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
   const localePreference = useAppStore((s) => s.localePreference);
-  const setLocalePreference = useAppStore((s) => s.setLocalePreference);
   const { colors } = useTheme();
   const { t } = useTranslation();
+  const router = useRouter();
   const showSleepModeGuide = useSleepModeGuide();
 
   useEffect(() => {
@@ -45,94 +41,150 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
-      <Text style={[styles.header, { color: colors.muted }]}>{t('settings.title')}</Text>
+      <ScrollView contentContainerStyle={styles.scroll}>
+        <Text style={[styles.header, { color: colors.muted }]}>{t('settings.title')}</Text>
 
-      <SegmentSetting
-        sectionTitle={t('settings.languageSection')}
-        label={t('settings.languageLabel')}
-        description={t('settings.languageDescription')}
-        testIDPrefix="locale"
-        value={localePreference}
-        onChange={setLocalePreference}
-        options={LOCALE_OPTIONS.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
-      />
+        <LocaleNavSetting
+          sectionTitle={t('settings.languageSection')}
+          label={t('settings.languageLabel')}
+          description={t('settings.languageDescription')}
+          autoLabel={t('settings.languageAuto')}
+          value={localePreference}
+          onPress={() => router.push('/language')}
+        />
 
-      <SegmentSetting
-        sectionTitle={t('settings.themeSection')}
-        label={t('settings.themeLabel')}
-        description={t('settings.themeDescription')}
-        testIDPrefix="theme"
-        value={themeMode}
-        onChange={setThemeMode}
-        options={THEME_OPTIONS.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
-      />
+        <SegmentSetting
+          sectionTitle={t('settings.themeSection')}
+          label={t('settings.themeLabel')}
+          description={t('settings.themeDescription')}
+          testIDPrefix="theme"
+          value={themeMode}
+          onChange={setThemeMode}
+          options={THEME_OPTIONS.map(({ value, labelKey }) => ({ value, label: t(labelKey) }))}
+        />
 
-      <SegmentSetting
-        sectionTitle={t('settings.routeSection')}
-        label={t('settings.routePreferenceLabel')}
-        description={t('settings.routePreferenceDescription')}
-        testIDPrefix="route"
-        value={routePreference}
-        onChange={setRoutePreference}
-        options={ROUTE_CATEGORIES.map((c) => ({ value: c.key, label: t(`routes.${c.key}`) }))}
-      />
+        <SegmentSetting
+          sectionTitle={t('settings.routeSection')}
+          label={t('settings.routePreferenceLabel')}
+          description={t('settings.routePreferenceDescription')}
+          testIDPrefix="route"
+          value={routePreference}
+          onChange={setRoutePreference}
+          options={ROUTE_CATEGORIES.map((c) => ({ value: c.key, label: t(`routes.${c.key}`) }))}
+        />
 
-      {/* 알람 */}
-      <View style={[styles.card, { backgroundColor: colors.card }]}>
-        <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.alarmSection')}</Text>
+        {/* 알람 */}
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
+          <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.alarmSection')}</Text>
 
-        <View style={styles.settingRow}>
-          <View style={styles.settingInfo}>
-            <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.sleepModeLabel')}</Text>
-            <Text style={[styles.settingDesc, { color: colors.muted }]}>
-              {t('settings.sleepModeDescription')}
-            </Text>
+          <View style={styles.settingRow}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.sleepModeLabel')}</Text>
+              <Text style={[styles.settingDesc, { color: colors.muted }]}>
+                {t('settings.sleepModeDescription')}
+              </Text>
+            </View>
+            <Switch
+              value={sleepMode}
+              onValueChange={(value) => {
+                if (value) {
+                  showSleepModeGuide(() => setSleepMode(true));
+                } else {
+                  setSleepMode(false);
+                }
+              }}
+              trackColor={{ false: colors.hair, true: colors.accent }}
+              thumbColor={sleepMode ? colors.onAccent : colors.subtle}
+              testID="sleep-mode-switch"
+            />
           </View>
-          <Switch
-            value={sleepMode}
-            onValueChange={(value) => {
-              if (value) {
-                showSleepModeGuide(() => setSleepMode(true));
-              } else {
-                setSleepMode(false);
-              }
-            }}
-            trackColor={{ false: colors.hair, true: colors.accent }}
-            thumbColor={sleepMode ? colors.onAccent : colors.subtle}
-            testID="sleep-mode-switch"
-          />
+
+          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: colors.hair }]}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.speakerOutputLabel')}</Text>
+              <Text style={[styles.settingDesc, { color: colors.muted }]}>
+                {t('settings.speakerOutputDescription')}
+              </Text>
+            </View>
+            <Switch
+              value={allowSpeaker}
+              onValueChange={(value) => {
+                if (!value) {
+                  Alert.alert(
+                    t('settings.speakerOffTitle'),
+                    t('settings.speakerOffMessage'),
+                    [
+                      { text: t('common.cancel'), style: 'cancel' },
+                      { text: t('settings.speakerOffConfirm'), style: 'destructive', onPress: () => setAllowSpeaker(false) },
+                    ],
+                  );
+                } else {
+                  setAllowSpeaker(true);
+                }
+              }}
+              trackColor={{ false: colors.hair, true: colors.accent }}
+              thumbColor={allowSpeaker ? colors.onAccent : colors.subtle}
+              testID="allow-speaker-switch"
+            />
+          </View>
         </View>
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
 
-        <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: colors.hair }]}>
-          <View style={styles.settingInfo}>
-            <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.speakerOutputLabel')}</Text>
-            <Text style={[styles.settingDesc, { color: colors.muted }]}>
-              {t('settings.speakerOutputDescription')}
-            </Text>
-          </View>
-          <Switch
-            value={allowSpeaker}
-            onValueChange={(value) => {
-              if (!value) {
-                Alert.alert(
-                  t('settings.speakerOffTitle'),
-                  t('settings.speakerOffMessage'),
-                  [
-                    { text: t('common.cancel'), style: 'cancel' },
-                    { text: t('settings.speakerOffConfirm'), style: 'destructive', onPress: () => setAllowSpeaker(false) },
-                  ],
-                );
-              } else {
-                setAllowSpeaker(true);
-              }
-            }}
-            trackColor={{ false: colors.hair, true: colors.accent }}
-            thumbColor={allowSpeaker ? colors.onAccent : colors.subtle}
-            testID="allow-speaker-switch"
-          />
+interface LocaleNavSettingProps {
+  readonly sectionTitle: string;
+  readonly label: string;
+  readonly description: string;
+  readonly autoLabel: string;
+  readonly value: LocalePreference;
+  readonly onPress: () => void;
+}
+
+function LocaleNavSetting({
+  sectionTitle,
+  label,
+  description,
+  autoLabel,
+  value,
+  onPress,
+}: LocaleNavSettingProps) {
+  const { colors } = useTheme();
+  const { i18n } = useTranslation();
+
+  const resolvedCode = i18n.language?.split('-')[0];
+  const resolvedNativeName = LANGUAGE_REGISTRY.find((l) => l.code === resolvedCode)?.nativeName;
+  const selectedNativeName = LANGUAGE_REGISTRY.find((l) => l.code === value)?.nativeName;
+  const triggerText =
+    value === 'auto'
+      ? resolvedNativeName
+        ? `${autoLabel} (${resolvedNativeName})`
+        : autoLabel
+      : (selectedNativeName ?? autoLabel);
+
+  return (
+    <View style={[styles.card, { backgroundColor: colors.card }]}>
+      <Text style={[styles.sectionTitle, { color: colors.muted }]}>{sectionTitle}</Text>
+
+      <View style={styles.settingRow}>
+        <View style={styles.settingInfo}>
+          <Text style={[styles.settingLabel, { color: colors.ink }]}>{label}</Text>
+          <Text style={[styles.settingDesc, { color: colors.muted }]}>{description}</Text>
         </View>
       </View>
-    </SafeAreaView>
+
+      <Pressable
+        style={[styles.localeTrigger, { borderTopColor: colors.hair }]}
+        onPress={onPress}
+        testID="locale-trigger"
+        accessibilityRole="button"
+        accessibilityLabel={`${label}: ${triggerText}`}
+      >
+        <Text style={[styles.localeTriggerValue, { color: colors.ink }]}>{triggerText}</Text>
+        <Text style={[styles.localeChevron, { color: colors.muted }]}>›</Text>
+      </Pressable>
+    </View>
   );
 }
 
@@ -192,6 +244,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  scroll: {
+    paddingBottom: 80,
+  },
   header: {
     fontSize: 14,
     letterSpacing: 2,
@@ -244,5 +299,22 @@ const styles = StyleSheet.create({
   segmentText: {
     fontSize: 13,
     fontWeight: '600',
+  },
+  localeTrigger: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 44,
+    paddingVertical: spacing.sm,
+    marginTop: spacing.md,
+    borderTopWidth: 1,
+  },
+  localeTriggerValue: {
+    fontSize: 15,
+    fontWeight: '500',
+  },
+  localeChevron: {
+    fontSize: 20,
+    marginLeft: spacing.sm,
   },
 });

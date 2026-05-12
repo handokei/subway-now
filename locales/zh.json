@@ -1,0 +1,9 @@
+{
+  "ios": {
+    "CFBundleDisplayName": "现在在哪",
+    "CFBundleName": "现在在哪"
+  },
+  "android": {
+    "app_name": "现在在哪"
+  }
+}

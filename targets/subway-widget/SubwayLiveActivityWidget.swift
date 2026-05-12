@@ -27,17 +27,16 @@ struct SubwayLiveActivityWidget: Widget {
                             .fontWeight(.bold)
                             .foregroundColor(.white)
                         if let alarmType = context.state.alarmType,
-                           let alarmName = context.state.alarmStationName {
-                            Text(alarmType == "transfer"
-                                 ? "다음 역 \(alarmName)에서 환승하세요!"
-                                 : "다음 역 \(alarmName)에서 내리세요!")
+                           let alarmBody = context.state.alarmBody {
+                            Text(alarmBody)
                                 .font(.caption)
                                 .fontWeight(.semibold)
                                 .foregroundColor(alarmType == "destination" ? .red : .orange)
-                        } else if let dest = context.state.destinationName {
-                            ExpandedRouteView(dest: dest, state: context.state)
+                        } else if context.state.destinationName != nil {
+                            ExpandedRouteView(state: context.state)
                         } else {
-                            Text("\(context.state.lineName) · \(context.state.distanceM)m")
+                            Text(context.state.distanceText.map { "\(context.state.lineName) · \($0)" }
+                                 ?? "\(context.state.lineName) · \(context.state.distanceM)m")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -84,10 +83,7 @@ private struct LockScreenView: View {
     }
 
     var urgentText: String {
-        guard let name = state.alarmStationName, let type = state.alarmType else { return "" }
-        return type == "transfer"
-            ? "다음 역 \(name)에서 환승하세요!"
-            : "다음 역 \(name)에서 내리세요!"
+        return state.alarmBody ?? ""
     }
 
     var body: some View {
@@ -121,7 +117,7 @@ private struct LockScreenView: View {
 
                 Spacer()
 
-                Text(state.alarmType == "transfer" ? "환승" : "하차")
+                Text(state.alarmShortLabel ?? "")
                     .font(.title3)
                     .fontWeight(.black)
                     .foregroundColor(.white)
@@ -158,10 +154,10 @@ private struct LockScreenView: View {
                         .foregroundColor(.white)
 
                     // 목적지 / 거리
-                    if let dest = state.destinationName {
-                        LockScreenRouteView(dest: dest, state: state)
+                    if state.destinationName != nil {
+                        LockScreenRouteView(state: state)
                     } else {
-                        Text("약 \(state.distanceM)m")
+                        Text(state.distanceText ?? "\(state.distanceM)m")
                             .font(.subheadline)
                             .foregroundColor(lineColor)
                     }
@@ -169,13 +165,13 @@ private struct LockScreenView: View {
 
                 Spacer()
 
-                if let eta = state.etaMinutes {
+                if let etaText = state.etaText {
                     VStack(spacing: 2) {
-                        Text("약 \(eta)분")
+                        Text(etaText)
                             .font(.title3)
                             .fontWeight(.bold)
                             .foregroundColor(.white)
-                        Text(state.isMock == true ? "예상" : "소요")
+                        Text(state.etaSubtext ?? "")
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
@@ -190,56 +186,32 @@ private struct LockScreenView: View {
 
 @available(iOS 16.1, *)
 private struct LockScreenRouteView: View {
-    let dest: String
     let state: SubwayActivityAttributes.ContentState
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("→ \(dest)")
+            Text("→ \(state.destinationName ?? "")")
                 .font(.subheadline)
                 .fontWeight(.semibold)
                 .foregroundColor(.white)
 
-            if let stops = state.stopsRemaining {
-                Text("\(stops)역 후 \(dest) 도착")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            } else if let toFirst = state.stopsToTransfer,
-                      let firstName = state.transferStationName {
-                Text("\(toFirst)역 후 \(firstName) 환승")
+            if let subtext = state.routeSubtext {
+                Text(subtext)
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
-
         }
     }
 }
 
 @available(iOS 16.1, *)
 private struct ExpandedRouteView: View {
-    let dest: String
     let state: SubwayActivityAttributes.ContentState
 
-    private var etaSuffix: String {
-        guard let eta = state.etaMinutes else { return "" }
-        return " · 약 \(eta)분"
-    }
-
     var body: some View {
-        if let stops = state.stopsRemaining {
-            Text("→ \(dest) · \(stops)역 후 도착\(etaSuffix)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        } else if let toFirst = state.stopsToTransfer,
-                  let firstName = state.transferStationName {
-            Text("→ \(dest) · \(toFirst)역 후 \(firstName) 환승\(etaSuffix)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        } else {
-            Text("→ \(dest)\(etaSuffix)")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
+        Text(state.routeSummary ?? "→ \(state.destinationName ?? "")")
+            .font(.caption)
+            .foregroundColor(.secondary)
     }
 }
 #endif

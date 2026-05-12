@@ -32,6 +32,12 @@ jest.mock('../../utils/stationAlarm', () => ({
   alarmKey: (...args: unknown[]) => mockAlarmKey(...args),
 }));
 
+// ── alarmLog 모킹 ──
+const mockLogSuppressedGate = jest.fn();
+jest.mock('../../utils/alarmLog', () => ({
+  logSuppressedGate: (...args: unknown[]) => mockLogSuppressedGate(...args),
+}));
+
 // ── logger 모킹 ──
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({
@@ -47,6 +53,7 @@ import type { AlarmEvent } from '../../utils/stationAlarm';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
 import '../../tasks/backgroundLocationTask';
 import { BACKGROUND_LOCATION_TASK } from '../../tasks/backgroundLocationTask';
+import { MAX_ACCURACY_M, MAX_LOCATION_AGE_MS } from '../../constants/location';
 
 // ── 픽스처 ──
 
@@ -94,13 +101,13 @@ function getTaskCallback(): TaskCallback {
   return (global as any).__bgTaskCallback as TaskCallback;
 }
 
-/** AsyncStorage.getItem 6개를 순서대로 모킹한다 (dest, sleep, fired, route, lastNotified, allowSpeaker) */
+/** AsyncStorage.getItem 5개를 순서대로 모킹한다 (dest, sleep, fired, route, allowSpeaker)
+ *  lastNotifiedStationId는 stationPipeline 내부에서 notificationState 모듈로 read/write 한다. */
 function mockStorageValues(
   dest: string | null,
   sleep: string | null = null,
   fired: string | null = null,
   route: string | null = null,
-  lastNotified: string | null = null,
   allowSpeaker: string | null = null,
 ): void {
   (AsyncStorage.getItem as jest.Mock)
@@ -108,7 +115,6 @@ function mockStorageValues(
     .mockResolvedValueOnce(sleep)
     .mockResolvedValueOnce(fired)
     .mockResolvedValueOnce(route)
-    .mockResolvedValueOnce(lastNotified)
     .mockResolvedValueOnce(allowSpeaker);
 }
 
@@ -129,7 +135,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     jest.clearAllMocks();
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
     (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -183,7 +189,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockProcessLocationUpdate.mockResolvedValue({
       alarmEvent: null,
       nearest: { station: mockStation, distanceKm: 0.1 },
-      lastNotifiedStationId: null,
     });
 
     await taskCallback({
@@ -199,7 +204,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       sleepMode: false,
       allowSpeaker: true,
       storedRoute: null,
-      lastNotifiedStationId: null,
     }));
     expect(AsyncStorage.setItem).not.toHaveBeenCalled();
   });
@@ -209,7 +213,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   it("sleepJson이 'true'이면 sleepMode=true로 processLocationUpdate를 호출한다", async () => {
     mockStorageValues(JSON.stringify(mockDestination), 'true');
 
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028)] },
@@ -224,7 +228,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   it("sleepJson이 'false'이면 sleepMode=false로 processLocationUpdate를 호출한다", async () => {
     mockStorageValues(JSON.stringify(mockDestination), 'false');
 
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028)] },
@@ -239,9 +243,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   // ── allowSpeaker 파싱 ──
 
   it("allowSpeakerJson이 'false'이면 allowSpeaker=false로 processLocationUpdate를 호출한다", async () => {
-    mockStorageValues(JSON.stringify(mockDestination), null, null, null, null, 'false');
+    mockStorageValues(JSON.stringify(mockDestination), null, null, null, 'false');
 
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028)] },
@@ -254,9 +258,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   });
 
   it("allowSpeakerJson이 'true'이면 allowSpeaker=true로 processLocationUpdate를 호출한다", async () => {
-    mockStorageValues(JSON.stringify(mockDestination), null, null, null, null, 'true');
+    mockStorageValues(JSON.stringify(mockDestination), null, null, null, 'true');
 
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028)] },
@@ -274,7 +278,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     const fired = ['destination:강남', 'transfer:시청'];
     mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(fired));
 
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028)] },
@@ -291,7 +295,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   it('ROUTE_KEY를 AsyncStorage에서 읽는다', async () => {
     mockStorageValues(JSON.stringify(mockDestination));
 
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028)] },
@@ -302,10 +306,10 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   });
 
   it('routeJson이 있으면 파싱한 route를 processLocationUpdate에 전달한다', async () => {
-    const storedRoute = { type: 'direct', stops: 3 };
+    const storedRoute = { type: 'direct', stops: 3, line: '2' };
     mockStorageValues(JSON.stringify(mockDestination), null, null, JSON.stringify(storedRoute));
 
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028)] },
@@ -320,7 +324,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   it('routeJson이 null이면 null storedRoute를 processLocationUpdate에 전달한다', async () => {
     mockStorageValues(JSON.stringify(mockDestination));
 
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028)] },
@@ -341,7 +345,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockProcessLocationUpdate.mockResolvedValue({
       alarmEvent,
       nearest: { station: mockStation, distanceKm: 0.1 },
-      lastNotifiedStationId: null,
     });
     mockAlarmKey.mockReturnValue('destination:시청');
 
@@ -369,7 +372,6 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockProcessLocationUpdate.mockResolvedValue({
       alarmEvent,
       nearest: { station: mockStation, distanceKm: 0.1 },
-      lastNotifiedStationId: null,
     });
     mockAlarmKey.mockReturnValue('transfer:강남');
 
@@ -405,7 +407,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   it('locations 배열의 마지막 요소를 사용한다', async () => {
     mockStorageValues(JSON.stringify(mockDestination));
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
     const loc1 = makeLocation(37.1, 127.1);
     const loc2 = makeLocation(37.9, 127.9); // 마지막
@@ -426,13 +428,25 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   const runWithLocation = (location: unknown) =>
     taskCallback({ data: { locations: [location] }, error: null });
 
+  // 게이트 drop 시 destination/sleep/route 등 도메인 키는 절대 읽지 않는다.
+  // (ALARM_LOG_KEY는 적재용으로 정상 read/write 됨 — B2 인프라)
+  const DOMAIN_KEYS = [
+    'subway-now:destination',
+    'subway-now:sleep-mode',
+    'subway-now:fired-alarms',
+    'subway-now:route',
+    'subway-now:allow-speaker',
+  ];
   const expectGateBlocked = () => {
-    expect(AsyncStorage.getItem).not.toHaveBeenCalled();
+    const getItemKeys = (AsyncStorage.getItem as jest.Mock).mock.calls.map(([k]) => k);
+    for (const key of DOMAIN_KEYS) {
+      expect(getItemKeys).not.toContain(key);
+    }
     expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
   };
 
-  it('stale 위치(timestamp 30초 초과)는 무시한다', async () => {
-    await runWithLocation(makeLocation(37.498, 127.028, { ageMs: 60_000 }));
+  it('stale 위치(timestamp MAX_LOCATION_AGE_MS 초과)는 무시한다', async () => {
+    await runWithLocation(makeLocation(37.498, 127.028, { ageMs: MAX_LOCATION_AGE_MS + 1 }));
     expectGateBlocked();
   });
 
@@ -453,16 +467,38 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     expectGateBlocked();
   });
 
-  it('저정확도 위치(accuracy 150m 초과)는 무시한다', async () => {
-    await runWithLocation(makeLocation(37.498, 127.028, { accuracy: 200 }));
+  it('저정확도 위치(accuracy MAX_ACCURACY_M 초과)는 무시한다', async () => {
+    await runWithLocation(makeLocation(37.498, 127.028, { accuracy: MAX_ACCURACY_M + 1 }));
     expectGateBlocked();
   });
 
-  it('accuracy가 임계값(150m) 이내면 통과한다', async () => {
+  // ── 알람 로그 적재 (B2 인프라) ──
+
+  it('stale 위치 게이트 drop 시 logSuppressedGate(gate-age, location)을 호출한다', async () => {
+    const ageMs = MAX_LOCATION_AGE_MS + 1_000;
+    await runWithLocation(makeLocation(37.498, 127.028, { ageMs }));
+
+    expect(mockLogSuppressedGate).toHaveBeenCalledWith(
+      'gate-age',
+      expect.objectContaining({ lat: 37.498, lng: 127.028 }),
+    );
+  });
+
+  it('저정확도 게이트 drop 시 logSuppressedGate(gate-accuracy, location)을 호출한다', async () => {
+    const accuracy = MAX_ACCURACY_M + 50;
+    await runWithLocation(makeLocation(37.498, 127.028, { accuracy }));
+
+    expect(mockLogSuppressedGate).toHaveBeenCalledWith(
+      'gate-accuracy',
+      expect.objectContaining({ accuracy }),
+    );
+  });
+
+  it('accuracy가 임계값(MAX_ACCURACY_M) 이내면 통과한다', async () => {
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
 
     await taskCallback({
-      data: { locations: [makeLocation(37.498, 127.028, { accuracy: 100 })] },
+      data: { locations: [makeLocation(37.498, 127.028, { accuracy: MAX_ACCURACY_M - 50 })] },
       error: null,
     });
 
@@ -484,64 +520,30 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     ).resolves.toBeUndefined();
   });
 
-  // ── LAST_NOTIFIED_STATION_KEY 관련 테스트 ──
+  // LAST_NOTIFIED_STATION_KEY 직접 read/write는 stationPipeline 내부 notificationState 모듈로 이관됨.
+  // 백그라운드 태스크는 더 이상 이 키를 직접 다루지 않으며, 관련 동작 검증은
+  // - stationPipeline.test.ts (read/write 시점)
+  // - notificationState.test.ts (실제 AsyncStorage I/O)
+  // 에서 커버한다.
 
-  it('LAST_NOTIFIED_STATION_KEY를 AsyncStorage에서 읽어 processLocationUpdate에 전달한다', async () => {
-    mockStorageValues(JSON.stringify(mockDestination), null, null, null, 'station-1');
-
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: 'station-1' });
-
-    await taskCallback({
-      data: { locations: [makeLocation(37.498, 127.028)] },
-      error: null,
-    });
-
-    expect(AsyncStorage.getItem).toHaveBeenCalledWith('subway-now:last-notified-station');
-    expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      lastNotifiedStationId: 'station-1',
-    }));
-  });
-
-  it('lastNotifiedStationId가 변경되면 AsyncStorage에 저장한다', async () => {
-    mockStorageValues(JSON.stringify(mockDestination), null, null, null, 'station-1');
-
-    mockProcessLocationUpdate.mockResolvedValue({
-      alarmEvent: null,
-      nearest: null,
-      lastNotifiedStationId: 'station-2',
-    });
+  it('백그라운드 태스크는 LAST_NOTIFIED_STATION_KEY를 직접 read/write 하지 않는다', async () => {
+    mockStorageValues(JSON.stringify(mockDestination));
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028)] },
       error: null,
     });
 
-    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
-      'subway-now:last-notified-station',
-      'station-2',
-    );
-  });
-
-  it('lastNotifiedStationId가 변경되지 않으면 저장하지 않는다', async () => {
-    mockStorageValues(JSON.stringify(mockDestination), null, null, null, 'station-1');
-
-    mockProcessLocationUpdate.mockResolvedValue({
-      alarmEvent: null,
-      nearest: null,
-      lastNotifiedStationId: 'station-1',
-    });
-
-    await taskCallback({
-      data: { locations: [makeLocation(37.498, 127.028)] },
-      error: null,
-    });
-
-    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    expect(AsyncStorage.getItem).not.toHaveBeenCalledWith('subway-now:last-notified-station');
+    const setItemCalls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+    for (const [key] of setItemCalls) {
+      expect(key).not.toBe('subway-now:last-notified-station');
+    }
   });
 
   it('GPS speed가 양수이면 speedMps로 processLocationUpdate에 전달한다', async () => {
     mockStorageValues(JSON.stringify(mockDestination));
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028, { speed: 12.5 })] },
@@ -553,7 +555,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   it('GPS speed가 음수이면 speedMps를 null로 정규화한다', async () => {
     mockStorageValues(JSON.stringify(mockDestination));
-    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null, lastNotifiedStationId: null });
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
     await taskCallback({
       data: { locations: [makeLocation(37.498, 127.028, { speed: -1 })] },
@@ -563,20 +565,4 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({ speedMps: null }));
   });
 
-  it('lastNotifiedStationId가 null이면 저장하지 않는다', async () => {
-    mockStorageValues(JSON.stringify(mockDestination));
-
-    mockProcessLocationUpdate.mockResolvedValue({
-      alarmEvent: null,
-      nearest: null,
-      lastNotifiedStationId: null,
-    });
-
-    await taskCallback({
-      data: { locations: [makeLocation(37.498, 127.028)] },
-      error: null,
-    });
-
-    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
-  });
 });

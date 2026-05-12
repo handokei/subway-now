@@ -12,7 +12,7 @@ const allStations = stations as Station[];
 const stationById = new Map<string, Station>(allStations.map((s) => [s.id, s]));
 const lineStationsCache = new Map<string, Station[]>();
 
-function getLineStationsCached(line: string): Station[] {
+function getLineStationsCached(line: LineNumber): Station[] {
   let cached = lineStationsCache.get(line);
   if (!cached) {
     cached = allStations.filter((s) => s.line === line).sort((a, b) => a.id.localeCompare(b.id));
@@ -24,7 +24,7 @@ function getLineStationsCached(line: string): Station[] {
 // 노선별 name→index 캐시 (성능 최적화: buildNameIndex 중복 호출 제거)
 const lineNameIndexCache = new Map<string, Map<string, number>>();
 
-function getLineNameIndexCached(line: string): Map<string, number> {
+function getLineNameIndexCached(line: LineNumber): Map<string, number> {
   let cached = lineNameIndexCache.get(line);
   if (!cached) {
     cached = buildNameIndex(getLineStationsCached(line));
@@ -36,21 +36,22 @@ function getLineNameIndexCached(line: string): Map<string, number> {
 export interface DirectRoute {
   type: 'direct';
   stops: number;
+  line: LineNumber;
 }
 
 export interface TransferRoute {
   type: 'transfer';
   transferName: string;
-  fromLine: string;
-  toLine: string;
+  fromLine: LineNumber;
+  toLine: LineNumber;
   stopsToTransfer: number;
   stopsFromTransfer: number;
 }
 
 export interface TransferSegment {
   transferName: string;
-  fromLine: string;
-  toLine: string;
+  fromLine: LineNumber;
+  toLine: LineNumber;
   stopsToTransfer: number;
 }
 
@@ -98,7 +99,7 @@ export const ROUTE_CATEGORIES: readonly RouteCategory[] = [
 ];
 
 export interface JourneySegment {
-  line: string;
+  line: LineNumber;
   lineColor: string;
   fromName: string;
   toName: string;
@@ -111,10 +112,10 @@ export interface JourneyDisplay {
 }
 
 // 환승 그래프: fromLine → toLine → 환승역 이름 목록
-const transferGraph = new Map<string, Map<string, string[]>>();
+const transferGraph = new Map<LineNumber, Map<LineNumber, string[]>>();
 
 function buildTransferGraph(): void {
-  const nameToLines = new Map<string, Set<string>>();
+  const nameToLines = new Map<string, Set<LineNumber>>();
   for (const s of allStations) {
     let lines = nameToLines.get(s.name);
     if (!lines) {
@@ -148,11 +149,11 @@ function buildTransferGraph(): void {
 
 buildTransferGraph();
 
-export function getStationsOnLine(line: string): Station[] {
+export function getStationsOnLine(line: LineNumber): Station[] {
   return getLineStationsCached(line);
 }
 
-export function findStationByNameAndLine(name: string, line: string): Station | undefined {
+export function findStationByNameAndLine(name: string, line: LineNumber): Station | undefined {
   return getLineStationsCached(line).find((s) => s.name === name);
 }
 
@@ -166,7 +167,10 @@ export function updateRouteFromPosition(
     const dest = stationById.get(destinationId);
     if (!dest || nearestStation.line !== dest.line) return null;
     const remaining = getRemainingStops(nearestStation.id, destinationId);
-    return remaining !== null ? { type: 'direct', stops: remaining } : null;
+    // dest.line을 채택해 stored가 invariant를 깨고 들어와도 자가 치유되도록 한다.
+    return remaining !== null
+      ? { type: 'direct', stops: remaining, line: dest.line }
+      : null;
   }
 
   if (storedRoute.type === 'transfer') {
@@ -216,13 +220,13 @@ export function updateRouteFromPosition(
 
 export function isStationOnRoute(station: Station, route: NonNullable<Route>): boolean {
   if (route.type === 'direct') {
-    // direct는 fromLine 정보가 없어서 노선 검증이 불가능 — 통과
-    return true;
+    return station.line === route.line;
   }
   if (route.type === 'transfer') {
     return station.line === route.fromLine || station.line === route.toLine;
   }
-  // multi-transfer
+  // multi-transfer: transfers[i].toLine === transfers[i+1].fromLine 이므로
+  // fromLine+toLine 합집합 검사로 중간 노선까지 누락 없이 모두 커버한다.
   for (const t of route.transfers) {
     if (station.line === t.fromLine || station.line === t.toLine) return true;
   }
@@ -280,7 +284,7 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
     const lineStations = getLineStationsCached(current.line);
     const cIdx = lineStations.findIndex((s) => s.id === currentId);
     const dIdx = lineStations.findIndex((s) => s.id === destinationId);
-    const direct: DirectRoute = { type: 'direct', stops: Math.abs(dIdx - cIdx) };
+    const direct: DirectRoute = { type: 'direct', stops: Math.abs(dIdx - cIdx), line: current.line };
     const duration = performance.now() - start;
     logger.debug(`findRoutes(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms`);
     return [toCandidate(direct)];
@@ -470,14 +474,14 @@ export function buildJourneyDisplay(
       segments: [
         {
           line: route.fromLine,
-          lineColor: LINE_COLORS[route.fromLine as LineNumber] ?? current.lineColor,
+          lineColor: LINE_COLORS[route.fromLine] ?? current.lineColor,
           fromName: current.name,
           toName: route.transferName,
           stops: route.stopsToTransfer,
         },
         {
           line: route.toLine,
-          lineColor: LINE_COLORS[route.toLine as LineNumber] ?? destination.lineColor,
+          lineColor: LINE_COLORS[route.toLine] ?? destination.lineColor,
           fromName: route.transferName,
           toName: destination.name,
           stops: route.stopsFromTransfer,
@@ -494,7 +498,7 @@ export function buildJourneyDisplay(
     const fallbackColor = i === 0 ? current.lineColor : '#888888';
     return {
       line: t.fromLine,
-      lineColor: LINE_COLORS[t.fromLine as LineNumber] ?? fallbackColor,
+      lineColor: LINE_COLORS[t.fromLine] ?? fallbackColor,
       fromName: prevName,
       toName: t.transferName,
       stops: t.stopsToTransfer,
@@ -503,7 +507,7 @@ export function buildJourneyDisplay(
   const lastTransfer = transfers[transfers.length - 1];
   segments.push({
     line: lastTransfer.toLine,
-    lineColor: LINE_COLORS[lastTransfer.toLine as LineNumber] ?? destination.lineColor,
+    lineColor: LINE_COLORS[lastTransfer.toLine] ?? destination.lineColor,
     fromName: lastTransfer.transferName,
     toName: destination.name,
     stops: route.stopsAfterLastTransfer,
@@ -540,7 +544,7 @@ export function calculateETA(nextTrainMinutes: number, route: Route): number {
 }
 
 function getNextStationOnLine(
-  line: string,
+  line: LineNumber,
   currentName: string,
   targetName: string,
 ): string | null {

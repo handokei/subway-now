@@ -1,12 +1,13 @@
 import { alarmKey, evaluateAlarmPhase, resolveAllTargets, type AlarmEvent, type AlarmSource } from '../stationAlarm';
 import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
+import type { LineNumber } from '../../types/station';
 
 function makeTransferRoute(
   stopsToTransfer: number,
   stopsFromTransfer: number,
   transferName = '시청',
-  fromLine = '1',
-  toLine = '2',
+  fromLine: LineNumber = '1',
+  toLine: LineNumber = '2',
 ): TransferRoute {
   return { type: 'transfer', transferName, fromLine, toLine, stopsToTransfer, stopsFromTransfer };
 }
@@ -48,7 +49,7 @@ describe('alarmKey', () => {
 
 describe('resolveAllTargets', () => {
   it('returns single destination for DirectRoute', () => {
-    const route: DirectRoute = { type: 'direct', stops: 5 };
+    const route: DirectRoute = { type: 'direct', stops: 5, line: '2' };
     expect(resolveAllTargets(route, '강남')).toEqual([
       { name: '강남', stops: 5, alarmType: 'destination' },
     ]);
@@ -100,7 +101,7 @@ describe('evaluateAlarmPhase', () => {
 
   describe('DirectRoute — early phase', () => {
     it('fires early at stops === 1', () => {
-      const route: DirectRoute = { type: 'direct', stops: 1 };
+      const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
       expect(evaluateAlarmPhase(source({ route, destinationName }), new Set())).toEqual({
         phaseId: 'early',
         type: 'destination',
@@ -109,12 +110,12 @@ describe('evaluateAlarmPhase', () => {
     });
 
     it('does not fire when stops > 1', () => {
-      const route: DirectRoute = { type: 'direct', stops: 2 };
+      const route: DirectRoute = { type: 'direct', stops: 2, line: '2' };
       expect(evaluateAlarmPhase(source({ route, destinationName }), new Set())).toBeNull();
     });
 
     it('skips early when already fired', () => {
-      const route: DirectRoute = { type: 'direct', stops: 1 };
+      const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
       const fired = new Set(['early:강남']);
       expect(evaluateAlarmPhase(source({ route, destinationName }), fired)).toBeNull();
     });
@@ -122,7 +123,7 @@ describe('evaluateAlarmPhase', () => {
 
   describe('DirectRoute — imminent phase', () => {
     it('fires imminent after early when eta within 10s', () => {
-      const route: DirectRoute = { type: 'direct', stops: 1 };
+      const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
       const fired = new Set(['early:강남']);
       expect(evaluateAlarmPhase(source({ route, destinationName, etaSeconds: 8 }), fired)).toEqual({
         phaseId: 'imminent',
@@ -132,13 +133,13 @@ describe('evaluateAlarmPhase', () => {
     });
 
     it('does not fire imminent when eta exceeds 10s', () => {
-      const route: DirectRoute = { type: 'direct', stops: 1 };
+      const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
       const fired = new Set(['early:강남']);
       expect(evaluateAlarmPhase(source({ route, destinationName, etaSeconds: 30 }), fired)).toBeNull();
     });
 
     it('prefers early over imminent when both qualify and neither fired', () => {
-      const route: DirectRoute = { type: 'direct', stops: 1 };
+      const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
       expect(evaluateAlarmPhase(source({ route, destinationName, etaSeconds: 5 }), new Set())).toEqual({
         phaseId: 'early',
         type: 'destination',
@@ -147,13 +148,13 @@ describe('evaluateAlarmPhase', () => {
     });
 
     it('skips imminent when already fired', () => {
-      const route: DirectRoute = { type: 'direct', stops: 1 };
+      const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
       const fired = new Set(['early:강남', 'imminent:강남']);
       expect(evaluateAlarmPhase(source({ route, destinationName, etaSeconds: 5 }), fired)).toBeNull();
     });
 
     it('does not fire imminent at stops 0 if remainingStops gate fails — gate allows 0 so it does fire', () => {
-      const route: DirectRoute = { type: 'direct', stops: 0 };
+      const route: DirectRoute = { type: 'direct', stops: 0, line: '2' };
       expect(evaluateAlarmPhase(source({ route, destinationName }), new Set())).toEqual({
         phaseId: 'early',
         type: 'destination',
@@ -266,7 +267,7 @@ describe('evaluateAlarmPhase', () => {
 
   describe('custom phases', () => {
     it('accepts a custom phase array', () => {
-      const route: DirectRoute = { type: 'direct', stops: 3 };
+      const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
       const customPhases = [
         {
           id: 'early' as const,

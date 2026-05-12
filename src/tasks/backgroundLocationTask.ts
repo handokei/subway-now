@@ -4,8 +4,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { processLocationUpdate } from '../utils/stationPipeline';
 import { alarmKey } from '../utils/stationAlarm';
 import { createLogger } from '../utils/logger';
-import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
+import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
 import { isAccuracyAcceptable, isLocationFresh } from '../utils/locationGates';
+import { logSuppressedGate } from '../utils/alarmLog';
 import type { Route } from '../utils/stationRoute';
 
 const logger = createLogger('BackgroundLocation');
@@ -23,20 +24,28 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const latest = locations[locations.length - 1];
   if (!latest) return;
 
-  // iOS deferred 위치 배치에서 stale/저정확도 좌표가 섞여 들어올 수 있음 — 차단
-  if (!isLocationFresh(latest.timestamp)) return;
-  if (!isAccuracyAcceptable(latest.coords.accuracy)) return;
+  // iOS deferred 위치 배치에서 stale/저정확도 좌표가 섞여 들어올 수 있음 — 차단.
+  // 측정용으로 게이트 drop을 알람 로그에 fire-and-forget 적재 (B2 인프라).
+  const { latitude: lat, longitude: lng, accuracy } = latest.coords;
+  const ageMs = Date.now() - (latest.timestamp ?? 0);
+  if (!isLocationFresh(latest.timestamp)) {
+    logSuppressedGate('gate-age', { lat, lng, accuracy, ageMs });
+    return;
+  }
+  if (!isAccuracyAcceptable(accuracy)) {
+    logSuppressedGate('gate-accuracy', { lat, lng, accuracy, ageMs });
+    return;
+  }
 
-  const { latitude, longitude, speed } = latest.coords;
+  const { speed } = latest.coords;
   const speedMps = speed != null && speed >= 0 ? speed : null;
 
   try {
-    const [destJson, sleepJson, firedJson, routeJson, lastNotifiedJson, allowSpeakerJson] = await Promise.all([
+    const [destJson, sleepJson, firedJson, routeJson, allowSpeakerJson] = await Promise.all([
       AsyncStorage.getItem(DESTINATION_KEY),
       AsyncStorage.getItem(SLEEP_MODE_KEY),
       AsyncStorage.getItem(FIRED_ALARMS_KEY),
       AsyncStorage.getItem(ROUTE_KEY),
-      AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY),
       AsyncStorage.getItem(ALLOW_SPEAKER_KEY),
     ]);
 
@@ -55,34 +64,29 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     const firedAlarms = new Set<string>(firedJson ? JSON.parse(firedJson) : []);
     const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;
 
-    const { alarmEvent, lastNotifiedStationId: newLastId } = await processLocationUpdate({
-      lat: latitude,
-      lng: longitude,
+    // lastNotifiedStationId는 stationPipeline 내부에서 notificationState 모듈을 통해
+    // AsyncStorage에 직접 read/write 한다 (Foreground 훅과 단일 출처 공유).
+    const { alarmEvent } = await processLocationUpdate({
+      lat,
+      lng,
       destination,
       firedAlarms,
       sleepMode,
       allowSpeaker,
       storedRoute,
-      lastNotifiedStationId: lastNotifiedJson,
       speedMps,
+      source: 'bg',
     });
 
-    const writes: Promise<void>[] = [];
     if (alarmEvent) {
       firedAlarms.add(alarmKey(alarmEvent));
-      writes.push(
+      await Promise.all([
         AsyncStorage.setItem(FIRED_ALARMS_KEY, JSON.stringify([...firedAlarms])),
         AsyncStorage.setItem(ALARM_EVENT_KEY, JSON.stringify(alarmEvent)),
-      );
-    }
-    if (newLastId && newLastId !== lastNotifiedJson) {
-      writes.push(AsyncStorage.setItem(LAST_NOTIFIED_STATION_KEY, newLastId));
-    }
-    if (writes.length > 0) {
-      await Promise.all(writes);
+      ]);
     }
 
-    logger.info('백그라운드 위치 업데이트 완료:', latitude.toFixed(4), longitude.toFixed(4));
+    logger.info('백그라운드 위치 업데이트 완료:', lat.toFixed(4), lng.toFixed(4));
   } catch (e) {
     logger.error('백그라운드 태스크 실패:', e);
   }

@@ -3,6 +3,7 @@ import {
   arrivalInfoToArrivalTrain,
   nearestResultToNearest,
 } from '../journeyAdapter';
+import type { JourneyDisplay } from '../stationRoute';
 import { MOCK_JOURNEYS, makeNearestResult, makeArrivalInfo } from '../../testUtils/fixtures';
 
 describe('journeyDisplayToStops', () => {
@@ -24,7 +25,7 @@ describe('journeyDisplayToStops', () => {
   });
 
   it('should convert a multi-transfer route (three segments)', () => {
-    const journey = {
+    const journey: JourneyDisplay = {
       segments: [
         { line: '1', lineColor: '#0052A4', fromName: '서울역', toName: '시청', stops: 1 },
         { line: '2', lineColor: '#009D3E', fromName: '시청', toName: '을지로3가', stops: 2 },
@@ -41,7 +42,7 @@ describe('journeyDisplayToStops', () => {
   });
 
   it('should handle special line numbers', () => {
-    const journey = {
+    const journey: JourneyDisplay = {
       segments: [
         { line: 'airport', lineColor: '#4B81BF', fromName: '서울역', toName: '인천공항', stops: 5 },
       ],
@@ -62,10 +63,10 @@ describe('arrivalInfoToArrivalTrain', () => {
   afterEach(() => { jest.restoreAllMocks(); });
 
   it('should convert arrival info with destination', () => {
-    const items = [makeArrivalInfo({ destination: '봉화산', arrivalSeconds: 134 })];
+    const items = [makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134 })];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
     expect(result).toEqual([
-      { direction: '봉화산 방면', line: '6', arrivalAtMs: 1000000 + 134 * 1000, subtext: undefined },
+      { direction: '봉화산행', line: '6', arrivalAtMs: 1000000 + 134 * 1000, subtext: undefined },
     ]);
   });
 
@@ -76,15 +77,15 @@ describe('arrivalInfoToArrivalTrain', () => {
   });
 
   it('should include statusMessage as subtext when present', () => {
-    const items = [makeArrivalInfo({ destination: '응암', arrivalSeconds: 271, statusMessage: '전역 출발' })];
+    const items = [makeArrivalInfo({ destination: '응암행', arrivalSeconds: 271, statusMessage: '전역 출발' })];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
     expect(result[0].subtext).toBe('전역 출발');
   });
 
   it('should handle multiple items', () => {
     const items = [
-      makeArrivalInfo({ destination: '봉화산', arrivalSeconds: 134 }),
-      makeArrivalInfo({ destination: '응암', arrivalSeconds: 271, statusMessage: '진입 중', trainCode: 'T002' }),
+      makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134 }),
+      makeArrivalInfo({ destination: '응암행', arrivalSeconds: 271, statusMessage: '진입 중', trainCode: 'T002' }),
     ];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
     expect(result).toHaveLength(2);
@@ -93,7 +94,7 @@ describe('arrivalInfoToArrivalTrain', () => {
   });
 
   it('should handle special line number', () => {
-    const items = [makeArrivalInfo({ destination: '인천공항', arrivalSeconds: 600, trainCode: 'A001' })];
+    const items = [makeArrivalInfo({ destination: '인천공항행', arrivalSeconds: 600, trainCode: 'A001' })];
     const result = arrivalInfoToArrivalTrain(items, '상행', 'airport');
     expect(result[0].line).toBe('airport');
   });

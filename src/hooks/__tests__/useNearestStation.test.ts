@@ -3,6 +3,7 @@ import * as Location from 'expo-location';
 import { AppState } from 'react-native';
 import { useNearestStation } from '../useNearestStation';
 import * as findNearestStationModule from '../../utils/findNearestStation';
+import { MAX_ACCURACY_M, MAX_LOCATION_AGE_MS } from '../../constants/location';
 
 jest.mock('expo-location');
 
@@ -428,9 +429,9 @@ describe('useNearestStation', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2);
   });
 
-  it('stale 캐시 위치(30초 초과)는 무시하고 watch만 시작한다', async () => {
+  it('stale 캐시 위치(MAX_LOCATION_AGE_MS 초과)는 무시하고 watch만 시작한다', async () => {
     mockGranted();
-    mockLastKnownLocation(37.4980, 127.0277, { ageMs: 60_000 });
+    mockLastKnownLocation(37.4980, 127.0277, { ageMs: MAX_LOCATION_AGE_MS + 1 });
 
     const { result } = renderHook(() => useNearestStation());
 
@@ -440,9 +441,9 @@ describe('useNearestStation', () => {
     expect(result.current.result).toBeNull();
   });
 
-  it('저정확도 캐시 위치(150m 초과)는 무시한다', async () => {
+  it('저정확도 캐시 위치(MAX_ACCURACY_M 초과)는 무시한다', async () => {
     mockGranted();
-    mockLastKnownLocation(37.4980, 127.0277, { accuracy: 200 });
+    mockLastKnownLocation(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M + 1 });
 
     const { result } = renderHook(() => useNearestStation());
 
@@ -461,14 +462,14 @@ describe('useNearestStation', () => {
     expect(result.current.result?.station.name).toBe('강남');
   });
 
-  it('watch 콜백 저정확도(150m 초과) 좌표는 setState하지 않는다', async () => {
+  it('watch 콜백 저정확도(MAX_ACCURACY_M 초과) 좌표는 setState하지 않는다', async () => {
     mockGranted();
 
     const { result } = renderHook(() => useNearestStation());
 
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
-    simulateGps(37.4980, 127.0277, { accuracy: 200 });
+    simulateGps(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M + 1 });
 
     // 저정확도라 result 갱신 안 됨
     expect(result.current.result).toBeNull();
@@ -490,7 +491,7 @@ describe('useNearestStation', () => {
 
   it('refresh 시 저정확도 좌표는 setState하지 않는다', async () => {
     mockGranted();
-    mockLocation(37.4980, 127.0277, { accuracy: 200 });
+    mockLocation(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M + 1 });
 
     const { result } = renderHook(() => useNearestStation());
 
