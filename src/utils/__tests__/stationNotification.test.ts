@@ -96,6 +96,7 @@ describe('stationNotification', () => {
     jest.clearAllMocks();
     (Notifications.setNotificationHandler as jest.Mock).mockReturnValue(undefined);
     (Notifications.requestPermissionsAsync as jest.Mock).mockResolvedValue({ status: 'granted' });
+    (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValue({ status: 'granted' });
     (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
     (Notifications.scheduleNotificationAsync as jest.Mock).mockResolvedValue('current-station');
     (Notifications.setNotificationChannelAsync as jest.Mock).mockResolvedValue(undefined);

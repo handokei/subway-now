@@ -337,6 +337,9 @@ export async function sendStationPassedNotification(
   destinationName: string,
   target: NextTarget | null,
 ): Promise<void> {
+  // #275 진단: 함수 진입 자체를 기록. 트레일 로그(역 통과 알림:...)와 함께
+  // 페어로 보면 scheduleNotification 단계에서 멈췄는지 분리 가능.
+  notifLogger.info('STATION PASSED ENTER', stationName);
   // 사용자 노출 텍스트이므로 현재 언어로 변환. caller는 한글 역명을 그대로 전달.
   const displayStation = getStationDisplayNameByName(stationName, allStations);
   const displayDestination = getStationDisplayNameByName(destinationName, allStations);
@@ -394,6 +397,10 @@ export async function sendAlarmNotification(
   sleepMode: boolean = false,
   allowSpeaker: boolean = true,
 ): Promise<void> {
+  // #275 진단: 함수 진입 시점 기록. 권한 스냅샷 동반 기록으로
+  // OS 단 차단 가설(C)을 트레일 로그와 함께 격리.
+  const perms = await Notifications.getPermissionsAsync();
+  notifLogger.info('ALARM ENTER', event.phaseId, event.type, 'perm:', perms.status);
   const { title, body } = buildAlarmContent(event);
 
   await scheduleNotification(ALARM_NOTIFICATION_ID, {

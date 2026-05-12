@@ -24,6 +24,10 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const latest = locations[locations.length - 1];
   if (!latest) return;
 
+  // #275 진단: TaskManager가 백그라운드에서 실제로 깨어나 유효 데이터를 받았는지 확인.
+  // 이 로그가 안 찍히면 JS runtime이 깨어나지 못하는 가설 A.
+  logger.info('TASK FIRED', new Date().toISOString(), 'locations:', locations.length);
+
   // iOS deferred 위치 배치에서 stale/저정확도 좌표가 섞여 들어올 수 있음 — 차단.
   // 측정용으로 게이트 drop을 알람 로그에 fire-and-forget 적재 (B2 인프라).
   const { latitude: lat, longitude: lng, accuracy } = latest.coords;
@@ -36,6 +40,9 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     logSuppressedGate('gate-accuracy', { lat, lng, accuracy, ageMs });
     return;
   }
+
+  // #275 진단: 게이트 통과 직후 마커. 이후 destJson 없음 등의 조기 리턴은 별도로 식별.
+  logger.info('PIPELINE ENTER', lat.toFixed(4), lng.toFixed(4), 'acc:', accuracy);
 
   const { speed } = latest.coords;
   const speedMps = speed != null && speed >= 0 ? speed : null;
@@ -50,7 +57,10 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     ]);
 
     // 경로(목적지) 없으면 백그라운드에서도 실시간 현황 알림을 띄우지 않는다.
-    if (!destJson) return;
+    if (!destJson) {
+      logger.info('PIPELINE EXIT no-destination');
+      return;
+    }
 
     let destination;
     try {
