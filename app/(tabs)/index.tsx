@@ -11,11 +11,13 @@ import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route, type CategorizedRoute, type RoutePreference } from '../../src/utils/stationRoute';
+import type { Station } from '../../src/types/station';
 import { EditorialTimeline } from '../../src/components/EditorialTimeline';
 import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/journeyAdapter';
 import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
+import { useTripOrigin } from '../../src/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../../src/hooks/useBackgroundLocation';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ROUTE_KEY } from '../../src/constants/storageKeys';
@@ -30,12 +32,9 @@ const logger = createLogger('HomeScreen');
 export default function HomeScreen() {
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, refresh, confidence } = useFusedNearestStation();
   const customOrigin = useAppStore((s) => s.customOrigin);
   const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
-  const isCustomOrigin = customOrigin !== null;
-  const effectiveOrigin = customOrigin ?? result?.station ?? null;
   const addFavorite = useAppStore((s) => s.addFavorite);
   const removeFavorite = useAppStore((s) => s.removeFavorite);
   const favorites = useAppStore((s) => s.favorites);
@@ -63,6 +62,20 @@ export default function HomeScreen() {
   const [selectedKey, setSelectedKey] = useState<RoutePreference>(routePreference);
   const route: Route =
     categorized.find((r) => r.category.key === selectedKey)?.candidate.route ?? null;
+
+  // 트립 origin은 destination 설정 시점에 캡처되어 trip 동안 고정 (useTripOrigin 참조).
+  // useFusedNearestStation 첫 호출 시점엔 routeContext=undefined로 GPS fusion fallback,
+  // 다음 렌더에서 useTripOrigin이 effectiveOrigin을 캡처해 setTripOrigin을 호출하면
+  // routeContext가 채워지고 useRouteProgress(1D map matching)가 활성화된다.
+  const [tripOrigin, setTripOrigin] = useState<Station | null>(null);
+  const routeContext = useMemo(
+    () => (route && tripOrigin && destination ? { route, origin: tripOrigin, destination } : undefined),
+    [route, tripOrigin, destination],
+  );
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, refresh, confidence } = useFusedNearestStation(undefined, undefined, routeContext);
+  const isCustomOrigin = customOrigin !== null;
+  const effectiveOrigin = customOrigin ?? result?.station ?? null;
+  useTripOrigin(destination, effectiveOrigin, setTripOrigin);
   const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(
     route ? (effectiveOrigin?.name ?? null) : null,
   );
