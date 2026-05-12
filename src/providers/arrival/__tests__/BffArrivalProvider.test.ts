@@ -8,8 +8,8 @@ describe('BffArrivalProvider', () => {
   let provider: BffArrivalProvider;
 
   const VALID_DATA: StationArrival = {
-    up: [{ destination: '서울역', arrivalMinutes: 3, arrivalSeconds: 180, statusMessage: '', trainCode: 'UP-001' }],
-    down: [{ destination: '인천역', arrivalMinutes: 5, arrivalSeconds: 300, statusMessage: '', trainCode: 'DN-001' }],
+    up: [{ destination: '서울역', arrivalMinutes: 3, arrivalSeconds: 180, statusMessage: '', trainCode: 'UP-001', receivedAtMs: 0 }],
+    down: [{ destination: '인천역', arrivalMinutes: 5, arrivalSeconds: 300, statusMessage: '', trainCode: 'DN-001', receivedAtMs: 0 }],
   };
 
   function mockFetchOk(data: StationArrival) {

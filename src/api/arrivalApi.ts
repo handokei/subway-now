@@ -8,6 +8,8 @@ export interface ArrivalInfo {
   arrivalSeconds: number;
   statusMessage: string;
   trainCode: string;
+  /** 데이터 생성 시각(epoch ms). 0이면 알 수 없음(mock 또는 누락). Stage 2 fusion 신호 신선도 판정용. */
+  receivedAtMs: number;
 }
 
 export interface StationArrival {
@@ -18,18 +20,34 @@ export interface StationArrival {
 
 export const MOCK_ARRIVALS: Readonly<StationArrival> = Object.freeze({
   up: [
-    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001' },
-    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002' },
+    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001', receivedAtMs: 0 },
+    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002', receivedAtMs: 0 },
   ],
   down: [
-    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001' },
-    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002' },
+    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001', receivedAtMs: 0 },
+    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002', receivedAtMs: 0 },
   ],
   isMock: true,
 });
 
 /** 서울 열린데이터 API updnLine 응답값 — 상행/내선이면 up 방향 */
 const UP_DIRECTION_VALUES = ['상행', '내선'] as const;
+
+/** 서울 열린데이터 API recptnDt 타임존(KST 고정). */
+const SEOUL_API_TZ_OFFSET = '+09:00';
+
+/** recptnDt가 너무 오래된 경우 보정량이 비현실적이므로 stale로 강등한다. */
+const MAX_RECPTN_DRIFT_SEC = 120;
+
+/**
+ * recptnDt("YYYY-MM-DD HH:mm:ss", KST)를 epoch ms로 변환한다.
+ * 파싱 실패/누락 시 0(=알 수 없음)을 반환한다.
+ */
+export function parseRecptnDt(recptnDt: unknown): number {
+  if (typeof recptnDt !== 'string' || recptnDt.length === 0) return 0;
+  const ms = Date.parse(recptnDt.replace(' ', 'T') + SEOUL_API_TZ_OFFSET);
+  return Number.isFinite(ms) ? ms : 0;
+}
 
 export interface FetchArrivalOptions {
   timeoutMs?: number;
@@ -65,14 +83,24 @@ export async function fetchArrivalInfo(
     const up: ArrivalInfo[] = [];
     const down: ArrivalInfo[] = [];
 
+    const now = Date.now();
     for (const item of items) {
-      const seconds = Math.max(0, item.barvlDt ?? 0);
+      const rawSeconds = Math.max(0, item.barvlDt ?? 0);
+      // recptnDt(데이터 생성시각)와 현재시각의 차이만큼 열차가 더 진행한 것으로 보정.
+      // xls 스펙 주의사항에 명시된 처리. recptnDt 누락 또는 비정상 drift는 stale로 강등.
+      const parsedRecvMs = parseRecptnDt(item.recptnDt);
+      const rawDriftSec = parsedRecvMs > 0 ? (now - parsedRecvMs) / 1000 : 0;
+      const isStale = parsedRecvMs > 0 && rawDriftSec > MAX_RECPTN_DRIFT_SEC;
+      const receivedAtMs = isStale ? 0 : parsedRecvMs;
+      const driftSec = isStale ? 0 : Math.max(0, rawDriftSec);
+      const seconds = Math.max(0, Math.round(rawSeconds - driftSec));
       const info: ArrivalInfo = {
         destination: item.trainLineNm ?? '',
         arrivalMinutes: Math.floor(seconds / 60),
         arrivalSeconds: seconds,
         statusMessage: item.arvlMsg2 ?? '',
         trainCode: item.btrainNo ?? '',
+        receivedAtMs,
       };
       if (UP_DIRECTION_VALUES.includes(item.updnLine)) {
         up.push(info);
