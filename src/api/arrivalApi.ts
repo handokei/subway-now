@@ -10,6 +10,11 @@ export interface ArrivalInfo {
   trainCode: string;
   /** 데이터 생성 시각(epoch ms). 0이면 알 수 없음(mock 또는 누락). Stage 2 fusion 신호 신선도 판정용. */
   receivedAtMs: number;
+  /**
+   * arvlCd 응답값 — 0:진입, 1:도착, 2:출발, 3:전역출발, 4:전역진입, 5:전역도착, 99:운행중.
+   * 누락/비숫자는 -1. fusion 우선순위 판정에 사용 (constants/arrivalCodes.ts).
+   */
+  arrivalCode: number;
 }
 
 export interface StationArrival {
@@ -20,12 +25,12 @@ export interface StationArrival {
 
 export const MOCK_ARRIVALS: Readonly<StationArrival> = Object.freeze({
   up: [
-    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001', receivedAtMs: 0 },
-    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002', receivedAtMs: 0 },
+    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001', receivedAtMs: 0, arrivalCode: -1 },
+    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002', receivedAtMs: 0, arrivalCode: -1 },
   ],
   down: [
-    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001', receivedAtMs: 0 },
-    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002', receivedAtMs: 0 },
+    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001', receivedAtMs: 0, arrivalCode: -1 },
+    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002', receivedAtMs: 0, arrivalCode: -1 },
   ],
   isMock: true,
 });
@@ -94,6 +99,12 @@ export async function fetchArrivalInfo(
       const receivedAtMs = isStale ? 0 : parsedRecvMs;
       const driftSec = isStale ? 0 : Math.max(0, rawDriftSec);
       const seconds = Math.max(0, Math.round(rawSeconds - driftSec));
+      const parsedCode =
+        typeof item.arvlCd === 'number'
+          ? item.arvlCd
+          : typeof item.arvlCd === 'string'
+            ? Number.parseInt(item.arvlCd, 10)
+            : NaN;
       const info: ArrivalInfo = {
         destination: item.trainLineNm ?? '',
         arrivalMinutes: Math.floor(seconds / 60),
@@ -101,6 +112,7 @@ export async function fetchArrivalInfo(
         statusMessage: item.arvlMsg2 ?? '',
         trainCode: item.btrainNo ?? '',
         receivedAtMs,
+        arrivalCode: Number.isFinite(parsedCode) ? parsedCode : -1,
       };
       if (UP_DIRECTION_VALUES.includes(item.updnLine)) {
         up.push(info);

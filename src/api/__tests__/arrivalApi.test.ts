@@ -306,6 +306,35 @@ describe('fetchArrivalInfo', () => {
       expect(parseRecptnDt('')).toBe(0);
       expect(parseRecptnDt('not-a-date')).toBe(0);
     });
+
+    it('arvlCd: number / 숫자문자열 / 누락 / 비숫자 매핑', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', arvlCd: 1 },
+            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', arvlCd: '0' },
+            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행' },
+            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행', arvlCd: 'abc' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남', { maxPerDirection: 4 });
+      expect(result.up.map((i) => i.arrivalCode)).toEqual([1, 0, -1, -1]);
+    });
+
+    it('realtimeArrivalList가 빈 배열이면 Mock으로 fallback', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ realtimeArrivalList: [] }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남');
+      expect(result.isMock).toBe(true);
+    });
   });
 
   it('trainLineNm, barvlDt, btrainNo가 undefined이면 기본값을 사용한다', async () => {

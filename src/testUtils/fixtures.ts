@@ -21,6 +21,7 @@ export function makeArrivalInfo(overrides: Partial<ArrivalInfo> & { destination:
     statusMessage: '',
     trainCode: 'T001',
     receivedAtMs: 0,
+    arrivalCode: -1,
     ...overrides,
   };
 }

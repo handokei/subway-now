@@ -1,4 +1,4 @@
-import { findNearestStation, findNearestStations } from '../findNearestStation';
+import { findNearestStation, findNearestStations, findTopNearestStations } from '../findNearestStation';
 
 // haversine을 모킹하여 어떤 역이 가장 가깝게 계산되는지 완전히 제어한다.
 // stations.json 데이터가 크므로 haversine 결과를 고정하여 루프 분기를 독립적으로 검증한다.
@@ -184,5 +184,45 @@ describe('findNearestStations', () => {
     expect(result).not.toBeNull();
     expect(result!.distanceKm).toBe(0.2);
     expect(result!.variants.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('findTopNearestStations', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('limit=0이면 빈 배열을 반환한다', () => {
+    mockHaversine.mockReturnValue(0.1);
+    expect(findTopNearestStations(37.5, 127.0, 0)).toEqual([]);
+  });
+
+  it('거리순 상위 N개를 반환하되 같은 이름 환승역은 한 번만 포함된다', () => {
+    // 모든 호출에 distance를 호출 인덱스 비례로 할당해 정렬 검증.
+    let calls = 0;
+    mockHaversine.mockImplementation(() => {
+      calls += 1;
+      return calls * 0.01;
+    });
+
+    const result = findTopNearestStations(37.5, 127.0, 3);
+
+    expect(result.length).toBe(3);
+    expect(result[0].distanceKm).toBeLessThanOrEqual(result[1].distanceKm);
+    expect(result[1].distanceKm).toBeLessThanOrEqual(result[2].distanceKm);
+    const names = result.map((r) => r.station.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('maxDistanceKm 초과 항목은 제외된다', () => {
+    mockHaversine.mockReturnValue(5);
+    expect(findTopNearestStations(37.5, 127.0, 3, 1.0)).toEqual([]);
+  });
+
+  it('실데이터 528개보다 limit가 크면 가능한 만큼만 반환된다', () => {
+    mockHaversine.mockReturnValue(0.1);
+    const result = findTopNearestStations(37.5, 127.0, 9999, 1.0);
+    expect(result.length).toBeGreaterThan(0);
+    expect(result.length).toBeLessThan(9999);
   });
 });
