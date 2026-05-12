@@ -6,16 +6,18 @@ import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
+import { MAX_ACTIVE_LINES } from '../constants/realtime';
 import type { LinePositions } from '../api/positionApi';
 import type { NearestStationResult, Station } from '../types/station';
 import type { ArrivalProvider, PositionProvider } from '../providers/types';
 
 /**
- * fusion 후보 개수. K=3 고정 — Rules of Hooks로 useArrivalInfo를 동적 개수로 호출할 수 없어
- * 명시적으로 풀어 쓴다(c0/c1/c2). 변경 시 본 파일의 hook 호출 라인도 함께 수정 필요.
- * 호출 비용은 useArrivalInfo의 모듈 스코프 캐시(arrivalCache)가 station name 단위로 dedup.
+ * fusion 후보 개수. MAX_ACTIVE_LINES와 동기화 — Rules of Hooks로 useArrivalInfo/useTrainPositions를
+ * 동적 개수로 호출할 수 없어 본 파일의 hook 호출 라인(c0/c1/c2, l0/l1/l2)도 같이 풀어 쓴다.
+ * 상수 변경 시 hook 호출도 함께 수정해야 한다(컴파일러가 catch 못함).
+ * 호출 비용은 모듈 스코프 캐시(arrivalCache/positionCache)가 station name·line 단위로 dedup.
  */
-const FUSION_CANDIDATE_LIMIT = 3;
+const FUSION_CANDIDATE_LIMIT = MAX_ACTIVE_LINES;
 
 interface UseFusedNearestStationReturn {
   /** GPS+arrival+position fusion으로 결정된 현재역. */
