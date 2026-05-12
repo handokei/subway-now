@@ -5,14 +5,14 @@ import type { Station } from '../types/station';
 
 type StationLabelFields = Pick<Station, 'name' | 'nameEn' | 'nameJa' | 'nameHanja'>;
 
-// 언어별 표시 우선순위. 첫 번째 후보가 비어 있으면 다음 후보로 폴백.
-// 마지막은 항상 한글 `name`(필수 필드)이지만, 비한국어 사용자에겐 가장 보편적인 영문이
-// 우선되도록 `nameEn`을 그 앞에 둔다. 새 언어 추가 시 이 배열에 한 줄만 추가.
+// 언어별 표시 우선순위. 빈 배열이면 곧장 한글 `name`을 쓴다(한국어 기본).
+// 그 외 언어는 자국 표기 → 영문(`nameEn`) 순으로 시도하고, 모두 누락이면 마지막에 한글로
+// 떨어진다(실운영에선 영문이 528/528이라 거의 발생하지 않음). 새 언어 추가 시 한 줄만 추가.
 const PRIORITY_BY_LANGUAGE = {
-  ko: ['name'],
-  en: ['nameEn', 'name'],
-  ja: ['nameJa', 'nameEn', 'name'],
-  zh: ['nameHanja', 'nameEn', 'name'],
+  ko: [],
+  en: ['nameEn'],
+  ja: ['nameJa', 'nameEn'],
+  zh: ['nameHanja', 'nameEn'],
 } as const satisfies Record<SupportedLanguage, ReadonlyArray<keyof StationLabelFields>>;
 
 function pickLabel(station: StationLabelFields, lang: SupportedLanguage): string {
