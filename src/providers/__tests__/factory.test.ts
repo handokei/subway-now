@@ -101,5 +101,16 @@ describe('providers/index re-exports', () => {
     expect(providersIndex.SeoulOpenApiProvider).toBeDefined();
     expect(providersIndex.BffArrivalProvider).toBeDefined();
     expect(providersIndex.MockArrivalProvider).toBeDefined();
+    expect(providersIndex.createPositionProvider).toBeDefined();
+    expect(providersIndex.SeoulOpenPositionProvider).toBeDefined();
+    expect(providersIndex.MockPositionProvider).toBeDefined();
+  });
+});
+
+describe('createPositionProvider', () => {
+  it('SeoulOpenPositionProvider 인스턴스를 반환한다', () => {
+    const { createPositionProvider } = require('../factory');
+    const { SeoulOpenPositionProvider } = require('../position/SeoulOpenPositionProvider');
+    expect(createPositionProvider()).toBeInstanceOf(SeoulOpenPositionProvider);
   });
 });

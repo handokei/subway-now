@@ -114,4 +114,80 @@ describe('pickFusedStation', () => {
     const result = pickFusedStation([{ candidate: cand('gangnam', 0.1), arrival: mixed }]);
     expect(result?.confidence).toBe('arrival-confirmed');
   });
+
+  describe('position 신호 (Phase 3)', () => {
+    const train = (trainStatus: number, receivedAtMs = NOW) => ({
+      statnId: 'X',
+      statnNm: 'X',
+      trainNo: 'T',
+      trainStatus,
+      updnLine: 0,
+      terminalStationId: '',
+      terminalStationName: '',
+      trainType: 'normal' as const,
+      isLastTrain: false,
+      receivedAtMs,
+    });
+
+    it('positionMatches에 ARRIVED(1) 트레인 → arrival-confirmed + source=position', () => {
+      const result = pickFusedStation([
+        { candidate: cand('gangnam', 0.1), positionMatches: [train(1)] },
+      ]);
+      expect(result?.confidence).toBe('arrival-confirmed');
+      expect(result?.source).toBe('position');
+    });
+
+    it('positionMatches에 ENTERING(0) → arrival-arriving + source=position', () => {
+      const result = pickFusedStation([
+        { candidate: cand('gangnam', 0.1), positionMatches: [train(0)] },
+      ]);
+      expect(result?.confidence).toBe('arrival-arriving');
+      expect(result?.source).toBe('position');
+    });
+
+    it('arrival과 position 동시 ARRIVED → source=position 우선', () => {
+      const result = pickFusedStation([
+        {
+          candidate: cand('gangnam', 0.1),
+          arrival: arrival(ARRIVAL_CODE.ARRIVED),
+          positionMatches: [train(1)],
+        },
+      ]);
+      expect(result?.source).toBe('position');
+    });
+
+    it('positionMatches stale(receivedAtMs<=0)는 무시', () => {
+      const result = pickFusedStation([
+        { candidate: cand('gangnam', 0.1), positionMatches: [train(1, 0)] },
+      ]);
+      expect(result?.source).toBe('gps');
+    });
+
+    it('positionMatches 빈 배열/null → 신호 없음', () => {
+      const r1 = pickFusedStation([{ candidate: cand('gangnam', 0.1), positionMatches: [] }]);
+      const r2 = pickFusedStation([{ candidate: cand('gangnam', 0.1), positionMatches: null }]);
+      expect(r1?.source).toBe('gps');
+      expect(r2?.source).toBe('gps');
+    });
+
+    it('positionMatches에 여러 트레인 있으면 가장 강한 신호 채택', () => {
+      const result = pickFusedStation([
+        {
+          candidate: cand('gangnam', 0.1),
+          // ARRIVED → ENTERING 순서: 첫 번째 트레인이 더 강해 두 번째는 무시되는 분기 커버
+          positionMatches: [train(1), train(0)],
+        },
+      ]);
+      expect(result?.confidence).toBe('arrival-confirmed');
+    });
+
+    it('두 후보 중 position 신호가 있는 후보로 fusion 전환', () => {
+      const result = pickFusedStation([
+        { candidate: cand('gangnam', 0.1) }, // 신호 없음
+        { candidate: cand('chungmuro', 0.3), positionMatches: [train(1)] },
+      ]);
+      expect(result?.result.station.id).toBe(MOCK_STATIONS.chungmuro.id);
+      expect(result?.source).toBe('position');
+    });
+  });
 });
