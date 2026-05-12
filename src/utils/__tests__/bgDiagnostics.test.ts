@@ -16,24 +16,10 @@ function makeSnapshot(overrides: Partial<BgDiagnostics> = {}): BgDiagnostics {
   return { ...zeros, lastTaskFiredTs: null, ...overrides };
 }
 
-jest.mock('@react-native-async-storage/async-storage', () => ({
-  getItem: jest.fn(),
-  setItem: jest.fn(),
-  removeItem: jest.fn(),
-}));
+jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(), setItem: jest.fn(), removeItem: jest.fn() }));
+jest.mock('../logger', () => ({ createLogger: () => ({ debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() }) }));
 
-jest.mock('../logger', () => ({
-  createLogger: () => ({
-    debug: jest.fn(),
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-  }),
-}));
-
-function flushPromises(): Promise<void> {
-  return new Promise((resolve) => setImmediate(resolve));
-}
+const flushPromises = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
 describe('bgDiagnostics', () => {
   beforeEach(() => {
