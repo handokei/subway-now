@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -8,12 +8,6 @@ import { ROUTE_CATEGORIES } from '../../src/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../../src/i18n/types';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
-import {
-  BG_DIAGNOSTIC_ROWS,
-  clearBgDiagnostics,
-  getBgDiagnostics,
-  type BgDiagnostics,
-} from '../../src/utils/bgDiagnostics';
 
 const THEME_OPTIONS = [
   { value: 'auto', labelKey: 'settings.themeAuto' },
@@ -135,82 +129,8 @@ export default function SettingsScreen() {
           </View>
         </View>
 
-        <BgDiagnosticsCard />
       </ScrollView>
     </SafeAreaView>
-  );
-}
-
-// #275 진단 패널. 가설 격리 완료 후 제거 예정 — i18n 생략(임시 surface).
-function BgDiagnosticsCard() {
-  const { colors } = useTheme();
-  const [snapshot, setSnapshot] = useState<BgDiagnostics | null>(null);
-
-  const refresh = useCallback(async () => {
-    setSnapshot(await getBgDiagnostics());
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  const handleClear = useCallback(() => {
-    Alert.alert('진단 카운터 초기화', '카운터를 모두 0으로 되돌립니다.', [
-      { text: '취소', style: 'cancel' },
-      {
-        text: '초기화',
-        style: 'destructive',
-        onPress: async () => {
-          await clearBgDiagnostics();
-          await refresh();
-        },
-      },
-    ]);
-  }, [refresh]);
-
-  if (!snapshot) return null;
-
-  const lastTs = snapshot.lastTaskFiredTs;
-  const lastLabel = lastTs ? new Date(lastTs).toLocaleString() : '없음';
-
-  return (
-    <View style={[styles.card, { backgroundColor: colors.card }]}>
-      <Text style={[styles.sectionTitle, { color: colors.muted }]}>진단 (#275)</Text>
-      {BG_DIAGNOSTIC_ROWS.map(({ key, label }) => (
-        <DiagRow key={key} label={label} value={String(snapshot[key])} colors={colors} />
-      ))}
-      <View style={[styles.diagRow, { borderTopWidth: 1, borderTopColor: colors.hair, marginTop: spacing.sm, paddingTop: spacing.sm }]}>
-        <Text style={[styles.diagLabel, { color: colors.muted }]}>마지막 TASK FIRED</Text>
-        <Text style={[styles.diagValue, { color: colors.muted }]}>{lastLabel}</Text>
-      </View>
-      <View style={styles.diagActions}>
-        <DiagButton label="새로고침" onPress={() => void refresh()} colors={colors} />
-        <DiagButton label="초기화" onPress={handleClear} colors={colors} />
-      </View>
-    </View>
-  );
-}
-
-type DiagColors = { readonly ink: string; readonly muted: string; readonly hair: string };
-
-function DiagRow({ label, value, colors }: { readonly label: string; readonly value: string; readonly colors: DiagColors }) {
-  return (
-    <View style={styles.diagRow}>
-      <Text style={[styles.diagLabel, { color: colors.ink }]}>{label}</Text>
-      <Text style={[styles.diagValue, { color: colors.muted }]}>{value}</Text>
-    </View>
-  );
-}
-
-function DiagButton({ label, onPress, colors }: { readonly label: string; readonly onPress: () => void; readonly colors: DiagColors }) {
-  return (
-    <Pressable
-      style={[styles.diagButton, { borderColor: colors.hair }]}
-      onPress={onPress}
-      accessibilityRole="button"
-    >
-      <Text style={[styles.diagButtonText, { color: colors.ink }]}>{label}</Text>
-    </Pressable>
   );
 }
 
@@ -397,37 +317,5 @@ const styles = StyleSheet.create({
   localeChevron: {
     fontSize: 20,
     marginLeft: spacing.sm,
-  },
-  diagRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 4,
-  },
-  diagLabel: {
-    fontSize: 13,
-    flex: 1,
-    marginRight: spacing.sm,
-  },
-  diagValue: {
-    fontSize: 13,
-    fontVariant: ['tabular-nums'],
-    fontWeight: '600',
-  },
-  diagActions: {
-    flexDirection: 'row',
-    gap: spacing.sm,
-    marginTop: spacing.md,
-  },
-  diagButton: {
-    flex: 1,
-    paddingVertical: 10,
-    borderWidth: 1,
-    borderRadius: radius.sm,
-    alignItems: 'center',
-  },
-  diagButtonText: {
-    fontSize: 13,
-    fontWeight: '600',
   },
 });
