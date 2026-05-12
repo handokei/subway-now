@@ -89,6 +89,6 @@ describe('findTrainCoordinates', () => {
     ];
     const result = findTrainCoordinates(lps, buildStationIndex(stations));
     expect(result).toHaveLength(2);
-    expect(result.map((t) => t.statnNm).sort()).toEqual(['강남', '충무로']);
+    expect(result.map((t) => t.statnNm).sort((a, b) => a.localeCompare(b))).toEqual(['강남', '충무로']);
   });
 });
