@@ -3,7 +3,7 @@ import * as Location from 'expo-location';
 import { AppState } from 'react-native';
 import { useNearestStation } from '../useNearestStation';
 import * as findNearestStationModule from '../../utils/findNearestStation';
-import { MAX_ACCURACY_M, MAX_LOCATION_AGE_MS } from '../../constants/location';
+import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY, MAX_LOCATION_AGE_MS } from '../../constants/location';
 
 jest.mock('expo-location');
 
@@ -201,7 +201,7 @@ describe('useNearestStation', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2);
   });
 
-  it('watchPositionAsync에 accuracy: High, distanceInterval: 10을 전달한다', async () => {
+  it('watchPositionAsync에 BestForNavigation·distanceInterval:0·timeInterval:2000을 전달한다', async () => {
     mockGranted();
 
     renderHook(() => useNearestStation());
@@ -209,7 +209,11 @@ describe('useNearestStation', () => {
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
     expect(Location.watchPositionAsync).toHaveBeenCalledWith(
-      { accuracy: Location.Accuracy.High, distanceInterval: 10 },
+      {
+        accuracy: Location.Accuracy.BestForNavigation,
+        distanceInterval: 0,
+        timeInterval: 2000,
+      },
       expect.any(Function),
     );
   });
@@ -462,7 +466,21 @@ describe('useNearestStation', () => {
     expect(result.current.result?.station.name).toBe('강남');
   });
 
-  it('watch 콜백 저정확도(MAX_ACCURACY_M 초과) 좌표는 setState하지 않는다', async () => {
+  it('watch 콜백 표시 게이트 초과(MAX_ACCURACY_M_DISPLAY 초과) 좌표는 setState하지 않는다', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M_DISPLAY + 1 });
+
+    // 표시 게이트 초과 → setState 차단
+    expect(result.current.result).toBeNull();
+    expect(result.current.userLocation).toBeNull();
+  });
+
+  it('watch 콜백 알람 게이트 초과지만 표시 게이트 통과 좌표는 setState한다 (지하 구간 가정)', async () => {
     mockGranted();
 
     const { result } = renderHook(() => useNearestStation());
@@ -471,9 +489,9 @@ describe('useNearestStation', () => {
 
     simulateGps(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M + 1 });
 
-    // 저정확도라 result 갱신 안 됨
-    expect(result.current.result).toBeNull();
-    expect(result.current.userLocation).toBeNull();
+    await waitFor(() => expect(result.current.result).not.toBeNull());
+    expect(result.current.result?.station.name).toBe('강남');
+    expect(result.current.accuracyMeters).toBe(MAX_ACCURACY_M + 1);
   });
 
   it('watch 콜백 accuracy가 null이면 통과한다', async () => {
@@ -489,9 +507,9 @@ describe('useNearestStation', () => {
     expect(result.current.result?.station.name).toBe('강남');
   });
 
-  it('refresh 시 저정확도 좌표는 setState하지 않는다', async () => {
+  it('refresh 시 표시 게이트 초과 좌표는 setState하지 않는다', async () => {
     mockGranted();
-    mockLocation(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M + 1 });
+    mockLocation(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M_DISPLAY + 1 });
 
     const { result } = renderHook(() => useNearestStation());
 
@@ -502,7 +520,7 @@ describe('useNearestStation', () => {
     });
 
     expect(Location.getCurrentPositionAsync).toHaveBeenCalled();
-    // 저정확도라 result 갱신 안 됨
+    // 표시 게이트 초과 → result 갱신 안 됨
     expect(result.current.result).toBeNull();
   });
 

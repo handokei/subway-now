@@ -30,7 +30,7 @@ const logger = createLogger('HomeScreen');
 export default function HomeScreen() {
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
-  const { result, variants, userLocation, speedMps, loading, error, permissionDenied, refresh } = useNearestStation();
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, refresh } = useNearestStation();
   const customOrigin = useAppStore((s) => s.customOrigin);
   const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
@@ -130,6 +130,7 @@ export default function HomeScreen() {
     nearestStation: result?.station ?? null,
     userLocation,
     speedMps,
+    accuracyMeters,
   });
   useBackgroundLocation(destination);
 

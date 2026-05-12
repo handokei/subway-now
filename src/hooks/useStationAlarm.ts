@@ -14,6 +14,7 @@ import {
 } from '../utils/alarmLog';
 import { useAppStore } from '../store/useAppStore';
 import { createLogger } from '../utils/logger';
+import { isAccuracyAcceptable } from '../utils/locationGates';
 
 const logger = createLogger('StationAlarm');
 
@@ -23,6 +24,7 @@ export interface UseStationAlarmInputs {
   nearestStation: Station | null;
   userLocation: { lat: number; lng: number } | null;
   speedMps: number | null;
+  accuracyMeters: number | null;
 }
 
 export function useStationAlarm({
@@ -31,6 +33,7 @@ export function useStationAlarm({
   nearestStation,
   userLocation,
   speedMps,
+  accuracyMeters,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
   const prevDestRef = useRef<string | null>(null);
@@ -57,6 +60,11 @@ export function useStationAlarm({
     }
 
     if (!route || !destination) return;
+
+    // 알람 경로는 표시 경로보다 엄격한 정확도 게이트(MAX_ACCURACY_M=200m)를 적용한다.
+    // useNearestStation은 지하 구간에서 정확도 1500m까지 표시용으로 수용하므로,
+    // 그대로 알람을 울리면 잘못된 역에서 false alarm이 발생한다.
+    if (!isAccuracyAcceptable(accuracyMeters)) return;
 
     let etaSeconds: number | null = null;
     if (userLocation) {
@@ -131,5 +139,6 @@ export function useStationAlarm({
     userLocation?.lat,
     userLocation?.lng,
     speedMps,
+    accuracyMeters,
   ]);
 }

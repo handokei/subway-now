@@ -32,6 +32,9 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     logSuppressedGate('gate-age', { lat, lng, accuracy, ageMs });
     return;
   }
+  // BG task는 알람 발화 경로이므로 알람 엄격 게이트(MAX_ACCURACY_M=200m)를 유지한다.
+  // foreground watch의 표시용 완화 게이트(MAX_ACCURACY_M_DISPLAY=1500m)는 여기서 적용 금지.
+  // 여기서 게이트를 풀면 지하 구간 노이즈 좌표로 알람이 잘못 발화될 수 있다.
   if (!isAccuracyAcceptable(accuracy)) {
     logSuppressedGate('gate-accuracy', { lat, lng, accuracy, ageMs });
     return;

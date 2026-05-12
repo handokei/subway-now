@@ -79,6 +79,7 @@ function defaultInputs(overrides: Partial<UseStationAlarmInputs> = {}): UseStati
     nearestStation: null,
     userLocation: null,
     speedMps: null,
+    accuracyMeters: null,
     ...overrides,
   };
 }
@@ -102,6 +103,38 @@ describe('useStationAlarm', () => {
     const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     renderHook(() => useStationAlarm(defaultInputs({ route })));
     expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+  });
+
+  it('does not evaluate when accuracy exceeds the alarm gate (MAX_ACCURACY_M)', () => {
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({
+          route,
+          destination,
+          userLocation: { lat: 37.4, lng: 127.0 },
+          speedMps: 10,
+          accuracyMeters: 500,
+        }),
+      ),
+    );
+    expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+  });
+
+  it('evaluates when accuracy is exactly the alarm gate (boundary inclusive)', () => {
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({
+          route,
+          destination,
+          userLocation: { lat: 37.4, lng: 127.0 },
+          speedMps: 10,
+          accuracyMeters: 200,
+        }),
+      ),
+    );
+    expect(mockEvaluateAlarmPhase).toHaveBeenCalled();
   });
 
   it('builds AlarmSource and calls evaluator', () => {
