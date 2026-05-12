@@ -79,6 +79,7 @@ function defaultInputs(overrides: Partial<UseStationAlarmInputs> = {}): UseStati
     nearestStation: null,
     userLocation: null,
     speedMps: null,
+    accuracyMeters: null,
     ...overrides,
   };
 }
@@ -102,6 +103,128 @@ describe('useStationAlarm', () => {
     const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     renderHook(() => useStationAlarm(defaultInputs({ route })));
     expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+  });
+
+  it('does not evaluate when accuracy exceeds the alarm gate (MAX_ACCURACY_M)', () => {
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({
+          route,
+          destination,
+          userLocation: { lat: 37.4, lng: 127.0 },
+          speedMps: 10,
+          accuracyMeters: 500,
+        }),
+      ),
+    );
+    expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+  });
+
+  it('evaluates when accuracy is exactly the alarm gate (boundary inclusive)', () => {
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({
+          route,
+          destination,
+          userLocation: { lat: 37.4, lng: 127.0 },
+          speedMps: 10,
+          accuracyMeters: 200,
+        }),
+      ),
+    );
+    expect(mockEvaluateAlarmPhase).toHaveBeenCalled();
+  });
+
+  describe('arrival fusion 보조 트리거 (Stage 3)', () => {
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
+    const onRouteStation = makeStation('S2-DST', '강남'); // route+dest 매칭
+
+    it('GPS 게이트 차단 + arrivalConfidence=arrival-confirmed → station-passed 알람 발화', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 500, // GPS 게이트 차단
+            arrivalConfidence: 'arrival-confirmed',
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      // Phase 알람은 GPS 필요하므로 호출 안 됨
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+
+    it('GPS 게이트 차단 + arrivalConfidence=arrival-arriving → 발화 안 함 (확정 아님)', () => {
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 500,
+            arrivalConfidence: 'arrival-arriving',
+          }),
+        ),
+      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+
+    it('GPS 게이트 차단 + arrivalConfidence=gps-only → 발화 안 함 (회귀 안전)', () => {
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 500,
+            arrivalConfidence: 'gps-only',
+          }),
+        ),
+      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('GPS 통과 + arrivalConfidence 없음(undefined) → Phase + station-passed 모두 평가 (backward compat)', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 100,
+            // arrivalConfidence 미전달
+          }),
+        ),
+      );
+      expect(mockEvaluateAlarmPhase).toHaveBeenCalled();
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+    });
+
+    it('arrival-confirmed 트리거도 lastNotifiedStationId dedup 적용 (GPS와 중복 발화 방지)', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 500,
+            arrivalConfidence: 'arrival-confirmed',
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockLogSuppressedDedupStation).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
   });
 
   it('builds AlarmSource and calls evaluator', () => {

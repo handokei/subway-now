@@ -13,6 +13,9 @@ import { Station } from '../../types/station';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
 
 jest.mock('expo-notifications');
+jest.mock('../bgDiagnostics', () => ({
+  incrementBgDiagnostic: jest.fn(),
+}));
 jest.mock('../logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -29,6 +32,11 @@ jest.mock('../alarmSound', () => ({
   stopVibration: () => mockStopVibration(),
 }));
 
+const mockSpeakAlarm = jest.fn();
+jest.mock('../tts', () => ({
+  speakAlarm: (...args: unknown[]) => mockSpeakAlarm(...args),
+}));
+
 const mockStartLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockUpdateLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockEndLiveActivity = jest.fn().mockResolvedValue(undefined);
@@ -39,6 +47,13 @@ jest.mock('../../../modules/live-activity', () => ({
   updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
   endLiveActivity: () => mockEndLiveActivity(),
   isLiveActivityEnabled: () => mockIsLiveActivityEnabled(),
+}));
+
+const mockSaveStationToWidget = jest.fn().mockResolvedValue(undefined);
+const mockClearWidgetStation = jest.fn().mockResolvedValue(undefined);
+jest.mock('../widgetStorage', () => ({
+  saveStationToWidget: (...args: unknown[]) => mockSaveStationToWidget(...args),
+  clearWidgetStation: () => mockClearWidgetStation(),
 }));
 
 const mockStation: Station = {
@@ -96,6 +111,7 @@ describe('stationNotification', () => {
     jest.clearAllMocks();
     (Notifications.setNotificationHandler as jest.Mock).mockReturnValue(undefined);
     (Notifications.requestPermissionsAsync as jest.Mock).mockResolvedValue({ status: 'granted' });
+    (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValue({ status: 'granted' });
     (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
     (Notifications.scheduleNotificationAsync as jest.Mock).mockResolvedValue('current-station');
     (Notifications.setNotificationChannelAsync as jest.Mock).mockResolvedValue(undefined);
@@ -567,6 +583,31 @@ describe('stationNotification', () => {
         trigger: null,
       });
     });
+
+    it('#275 진단: 권한이 granted가 아니면 알림은 스케줄하되 진단 카운터를 알 수 있다', async () => {
+      (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValueOnce({ status: 'denied' });
+      await sendAlarmNotification(earlyDest);
+      // 권한 거부여도 호출은 시도 (silent fail은 OS 단에서 발생)
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
+    });
+
+    it('TTS는 알람 body를 sleepMode/allowSpeaker와 함께 호출한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification(earlyDest, false, true);
+      expect(mockSpeakAlarm).toHaveBeenCalledWith('다음 역 강남에서 내리세요!', {
+        sleepMode: false,
+        allowSpeaker: true,
+      });
+    });
+
+    it('TTS는 silent 게이트(sleepMode/allowSpeaker)를 그대로 전달한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification(earlyDest, true, false);
+      expect(mockSpeakAlarm).toHaveBeenCalledWith('다음 역 강남에서 내리세요!', {
+        sleepMode: true,
+        allowSpeaker: false,
+      });
+    });
   });
 
   describe('sendStationPassedNotification', () => {
@@ -644,6 +685,36 @@ describe('stationNotification', () => {
     it('dismiss 실패해도 에러를 던지지 않는다', async () => {
       (Notifications.dismissNotificationAsync as jest.Mock).mockRejectedValueOnce(new Error('없음'));
       await expect(clearAlarmNotification()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('widget storage 연동', () => {
+    beforeEach(() => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      mockSaveStationToWidget.mockResolvedValue(undefined);
+      mockClearWidgetStation.mockResolvedValue(undefined);
+    });
+
+    it('updateStationNotification은 saveStationToWidget을 km 단위로 호출한다', async () => {
+      await updateStationNotification(mockStation, 250);
+      expect(mockSaveStationToWidget).toHaveBeenCalledWith(mockStation, 0.25);
+    });
+
+    it('saveStationToWidget이 실패해도 updateLiveActivity는 호출된다', async () => {
+      mockSaveStationToWidget.mockRejectedValueOnce(new Error('group missing'));
+      await updateStationNotification(mockStation, 100);
+      expect(mockUpdateLiveActivity).toHaveBeenCalled();
+    });
+
+    it('clearStationNotification은 clearWidgetStation을 호출한다', async () => {
+      await clearStationNotification();
+      expect(mockClearWidgetStation).toHaveBeenCalled();
+    });
+
+    it('clearWidgetStation이 실패해도 endLiveActivity는 호출된다', async () => {
+      mockClearWidgetStation.mockRejectedValueOnce(new Error('group missing'));
+      await clearStationNotification();
+      expect(mockEndLiveActivity).toHaveBeenCalled();
     });
   });
 });

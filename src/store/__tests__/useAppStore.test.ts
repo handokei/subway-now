@@ -26,7 +26,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null, debugVisible: false });
     jest.clearAllMocks();
   });
 
@@ -586,5 +586,18 @@ describe('useAppStore', () => {
     useAppStore.setState({ localePreference: 'auto' });
     await useAppStore.getState().loadLocalePreference();
     expect(useAppStore.getState().localePreference).toBe('auto');
+  });
+
+  // ── debugVisible ──
+
+  it('초기 debugVisible은 false이다', () => {
+    expect(useAppStore.getState().debugVisible).toBe(false);
+  });
+
+  it('setDebugVisible: 상태를 토글한다', () => {
+    useAppStore.getState().setDebugVisible(true);
+    expect(useAppStore.getState().debugVisible).toBe(true);
+    useAppStore.getState().setDebugVisible(false);
+    expect(useAppStore.getState().debugVisible).toBe(false);
   });
 });

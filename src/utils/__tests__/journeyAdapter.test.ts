@@ -56,6 +56,22 @@ describe('journeyDisplayToStops', () => {
   it('should return empty array for empty segments', () => {
     expect(journeyDisplayToStops({ segments: [], totalStops: 0 })).toEqual([]);
   });
+
+  it('환승역이 곧 목적지이면 도착 노드를 환승 노드에 흡수한다', () => {
+    const journey: JourneyDisplay = {
+      segments: [
+        { line: '2', lineColor: '#009D3E', fromName: '삼성', toName: '건대입구', stops: 7 },
+        { line: '7', lineColor: '#747F00', fromName: '건대입구', toName: '군자', stops: 2 },
+        { line: '5', lineColor: '#996CAC', fromName: '군자', toName: '군자', stops: 0 },
+      ],
+      totalStops: 9,
+    };
+    const stops = journeyDisplayToStops(journey);
+    expect(stops).toHaveLength(3);
+    expect(stops[0]).toEqual({ station: '삼성', line: '2', mark: 'filled' });
+    expect(stops[1]).toEqual({ station: '건대입구', line: '7', stopsFromPrev: '7정거장', mark: 'transfer', note: '환승' });
+    expect(stops[2]).toEqual({ station: '군자', line: '5', stopsFromPrev: '2정거장', mark: 'dest', note: '환승 → 도착' });
+  });
 });
 
 describe('arrivalInfoToArrivalTrain', () => {
@@ -66,8 +82,32 @@ describe('arrivalInfoToArrivalTrain', () => {
     const items = [makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134 })];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
     expect(result).toEqual([
-      { direction: '봉화산행', line: '6', arrivalAtMs: 1000000 + 134 * 1000, subtext: undefined },
+      {
+        direction: '봉화산행',
+        line: '6',
+        arrivalAtMs: 1000000 + 134 * 1000,
+        subtext: undefined,
+        isLastTrain: false,
+        trainType: 'normal',
+        arrivalCode: -1,
+      },
     ]);
+  });
+
+  it('should pass through meta fields (isLastTrain/trainType/arrivalCode)', () => {
+    const items = [
+      makeArrivalInfo({
+        destination: '봉화산행',
+        arrivalSeconds: 60,
+        isLastTrain: true,
+        trainType: 'express',
+        arrivalCode: 1,
+      }),
+    ];
+    const result = arrivalInfoToArrivalTrain(items, '상행', '6');
+    expect(result[0].isLastTrain).toBe(true);
+    expect(result[0].trainType).toBe('express');
+    expect(result[0].arrivalCode).toBe(1);
   });
 
   it('should use direction fallback when destination is empty', () => {

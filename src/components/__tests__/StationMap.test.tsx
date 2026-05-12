@@ -82,6 +82,38 @@ describe('StationMap', () => {
     expect(getByTestId('station-map').props.showsUserLocation).toBe(true);
   });
 
+  it('마커 dot이 흰색 테두리와 확대된 크기(14)를 가진다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    const dot = getByTestId('dot-2-023');
+    expect(dot.props.style).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          width: 14,
+          height: 14,
+          borderRadius: 7,
+          borderWidth: 2,
+          borderColor: '#ffffff',
+        }),
+      ]),
+    );
+  });
+
+  it('마커 라벨이 흰 pill 위에 검정 텍스트(#111, 12px)로 표시된다', () => {
+    const { getByText, getByTestId } = render(<StationMap {...baseProps} />);
+    const label = getByText('강남');
+    expect(label.props.style).toEqual(
+      expect.objectContaining({
+        fontSize: 12,
+        color: '#111111',
+      }),
+    );
+    expect(getByTestId('label-pill-2-022').props.style).toEqual(
+      expect.objectContaining({
+        backgroundColor: 'rgba(255,255,255,0.92)',
+      }),
+    );
+  });
+
   it('customOriginId와 일치하는 마커는 accent 색상 dot을 사용한다', () => {
     const { getByTestId } = render(
       <StationMap {...baseProps} customOriginId="2-023" />,
@@ -139,5 +171,67 @@ describe('StationMap', () => {
     });
     expect(result.stations[0].isNearest).toBe(true);
     expect(result.stations[1].isNearest).toBe(false);
+  });
+
+  describe('trainMarkers (Phase 3 Stage 3)', () => {
+    const mkTrain = (trainNo: string, status: number) => ({
+      trainNo,
+      line: '2' as const,
+      lineColor: '#009D3E',
+      lat: 37.498,
+      lng: 127.028,
+      statnNm: '강남',
+      trainStatus: status,
+      updnLine: 0,
+      terminalStationName: '성수',
+    });
+
+    it('trainMarkers 미전달 시 train 마커 0개', () => {
+      const { queryAllByTestId } = render(<StationMap {...baseProps} />);
+      expect(queryAllByTestId(/^train-marker-/)).toHaveLength(0);
+    });
+
+    it('trainMarkers 전달 시 trainNo로 마커 렌더', () => {
+      const { getByTestId } = render(
+        <StationMap {...baseProps} trainMarkers={[mkTrain('T001', 1), mkTrain('T002', 0)]} />,
+      );
+      expect(getByTestId('train-marker-T001')).toBeTruthy();
+      expect(getByTestId('train-marker-T002')).toBeTruthy();
+    });
+
+    it('도착(1) description에 "도착"', () => {
+      const { getByTestId } = render(
+        <StationMap {...baseProps} trainMarkers={[mkTrain('T001', 1)]} />,
+      );
+      expect(getByTestId('train-marker-T001').props.description).toContain('도착');
+    });
+
+    it('진입(0) description에 "진입"', () => {
+      const { getByTestId } = render(
+        <StationMap {...baseProps} trainMarkers={[mkTrain('T001', 0)]} />,
+      );
+      expect(getByTestId('train-marker-T001').props.description).toContain('진입');
+    });
+
+    it('출발(2) description에 "출발"', () => {
+      const { getByTestId } = render(
+        <StationMap {...baseProps} trainMarkers={[mkTrain('T001', 2)]} />,
+      );
+      expect(getByTestId('train-marker-T001').props.description).toContain('출발');
+    });
+
+    it('전역 출발(3) → "전역 출발"', () => {
+      const { getByTestId } = render(
+        <StationMap {...baseProps} trainMarkers={[mkTrain('T001', 3)]} />,
+      );
+      expect(getByTestId('train-marker-T001').props.description).toContain('전역 출발');
+    });
+
+    it('알 수 없는 status → "운행 중"', () => {
+      const { getByTestId } = render(
+        <StationMap {...baseProps} trainMarkers={[mkTrain('T001', 99)]} />,
+      );
+      expect(getByTestId('train-marker-T001').props.description).toContain('운행 중');
+    });
   });
 });

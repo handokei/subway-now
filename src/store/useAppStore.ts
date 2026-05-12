@@ -27,6 +27,8 @@ interface AppState {
   routePreference: RoutePreference;
   localePreference: LocalePreference;
   alarmEvent: AlarmEvent | null;
+  debugVisible: boolean;
+  setDebugVisible: (visible: boolean) => void;
   addFavorite: (station: Station) => Promise<void>;
   removeFavorite: (stationId: string) => Promise<void>;
   loadFavorites: () => Promise<void>;
@@ -60,6 +62,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   routePreference: 'optimal' as RoutePreference,
   localePreference: 'auto' as LocalePreference,
   alarmEvent: null,
+  debugVisible: false,
+
+  setDebugVisible: (visible: boolean) => {
+    set({ debugVisible: visible });
+  },
 
   loadFavorites: async () => {
     try {

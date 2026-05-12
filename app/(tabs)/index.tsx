@@ -3,7 +3,7 @@ import { AppState, InteractionManager, Pressable, ScrollView, StyleSheet, Switch
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useTranslation } from 'react-i18next';
-import { useNearestStation } from '../../src/hooks/useNearestStation';
+import { useFusedNearestStation } from '../../src/hooks/useFusedNearestStation';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../../src/utils/formatTime';
@@ -30,7 +30,7 @@ const logger = createLogger('HomeScreen');
 export default function HomeScreen() {
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
-  const { result, variants, userLocation, speedMps, loading, error, permissionDenied, refresh } = useNearestStation();
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, refresh, confidence } = useFusedNearestStation();
   const customOrigin = useAppStore((s) => s.customOrigin);
   const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
@@ -130,6 +130,8 @@ export default function HomeScreen() {
     nearestStation: result?.station ?? null,
     userLocation,
     speedMps,
+    accuracyMeters,
+    arrivalConfidence: confidence,
   });
   useBackgroundLocation(destination);
 
@@ -272,9 +274,15 @@ export default function HomeScreen() {
           <>
             {/* Top meta */}
             <View style={styles.topMeta}>
-              <Text style={[typography.mono, { color: colors.subtle }]}>
-                {new Date().toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}
-              </Text>
+              <Pressable
+                onLongPress={__DEV__ ? () => useAppStore.getState().setDebugVisible(true) : undefined}
+                delayLongPress={700}
+                testID="home-clock"
+              >
+                <Text style={[typography.mono, { color: colors.subtle }]}>
+                  {new Date().toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}
+                </Text>
+              </Pressable>
               <Text style={[typography.label, { color: colors.subtle }]}>{isCustomOrigin ? t('home.manual') : t('home.live')}</Text>
             </View>
 

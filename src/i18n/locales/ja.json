@@ -72,7 +72,18 @@
     "setAsOrigin": "出発駅に設定",
     "setAsDestination": "目的地に設定",
     "nearbyStationsHeader": "周辺の地下鉄駅 (1km以内)",
-    "noNearbyStations": "1km以内に地下鉄駅がありません。"
+    "noNearbyStations": "1km以内に地下鉄駅がありません。",
+    "train": {
+      "terminalSuffix": "{{name}}行",
+      "descriptionTemplate": "列車 {{trainNo}} · {{status}}",
+      "status": {
+        "arrived": "到着",
+        "entering": "進入",
+        "departed": "発車",
+        "prevDeparted": "前駅発車",
+        "running": "運行中"
+      }
+    }
   },
   "favorites": {
     "title": "お気に入り",
@@ -119,7 +130,8 @@
   },
   "journey": {
     "transferNote": "乗換",
-    "arrivalNote": "到着"
+    "arrivalNote": "到着",
+    "transferArrivalNote": "乗換 → 到着"
   },
   "routes": {
     "optimal": "最速",

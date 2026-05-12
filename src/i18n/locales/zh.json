@@ -72,7 +72,18 @@
     "setAsOrigin": "设为出发站",
     "setAsDestination": "设为目的地",
     "nearbyStationsHeader": "附近地铁站(1km以内)",
-    "noNearbyStations": "1km内没有地铁站。"
+    "noNearbyStations": "1km内没有地铁站。",
+    "train": {
+      "terminalSuffix": "开往{{name}}",
+      "descriptionTemplate": "列车 {{trainNo}} · {{status}}",
+      "status": {
+        "arrived": "到达",
+        "entering": "进站",
+        "departed": "发车",
+        "prevDeparted": "前站发车",
+        "running": "运行中"
+      }
+    }
   },
   "favorites": {
     "title": "收藏",
@@ -119,7 +130,8 @@
   },
   "journey": {
     "transferNote": "换乘",
-    "arrivalNote": "到达"
+    "arrivalNote": "到达",
+    "transferArrivalNote": "换乘 → 到达"
   },
   "routes": {
     "optimal": "最快",

@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { DevSettings } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
@@ -9,6 +10,7 @@ import { setMinLevel, createLogger } from '../src/utils/logger';
 import { i18n } from '../src/i18n';
 import { useApplyLocale } from '../src/hooks/useApplyLocale';
 import { useAppStore } from '../src/store/useAppStore';
+import { DebugModal } from '../src/components/DebugModal';
 import '../src/tasks/backgroundLocationTask';
 
 const layoutLogger = createLogger('RootLayout');
@@ -19,11 +21,22 @@ setupNotificationHandler();
 // 프로덕션 빌드에서는 warn 이상만 출력
 if (!__DEV__) {
   setMinLevel('warn');
+} else {
+  // Fast Refresh 시 모듈 톱레벨이 재실행되며 menu item이 중복 등록되는 것을 방지.
+  const g = globalThis as { __SUBWAY_DEV_MENU_REGISTERED__?: boolean };
+  if (!g.__SUBWAY_DEV_MENU_REGISTERED__) {
+    g.__SUBWAY_DEV_MENU_REGISTERED__ = true;
+    DevSettings.addMenuItem('Subway debug', () => {
+      useAppStore.getState().setDebugVisible(true);
+    });
+  }
 }
 
 function RootContent() {
   const { isDark } = useTheme();
   const loadLocalePreference = useAppStore((s) => s.loadLocalePreference);
+  const debugVisible = useAppStore((s) => s.debugVisible);
+  const setDebugVisible = useAppStore((s) => s.setDebugVisible);
   const { i18n: i18nInstance } = useTranslation();
 
   useEffect(() => {
@@ -41,6 +54,9 @@ function RootContent() {
     <>
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <Stack screenOptions={{ headerShown: false }} />
+      {__DEV__ && debugVisible && (
+        <DebugModal onClose={() => setDebugVisible(false)} />
+      )}
     </>
   );
 }
