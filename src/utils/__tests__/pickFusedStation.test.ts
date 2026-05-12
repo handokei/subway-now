@@ -15,6 +15,8 @@ function info(arrivalCode: number, overrides?: Partial<ArrivalInfo>): ArrivalInf
     trainCode: 'T1',
     receivedAtMs: NOW,
     arrivalCode,
+    isLastTrain: false,
+    trainType: 'normal',
     ...overrides,
   };
 }

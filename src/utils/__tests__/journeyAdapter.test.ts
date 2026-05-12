@@ -82,8 +82,32 @@ describe('arrivalInfoToArrivalTrain', () => {
     const items = [makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134 })];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
     expect(result).toEqual([
-      { direction: '봉화산행', line: '6', arrivalAtMs: 1000000 + 134 * 1000, subtext: undefined },
+      {
+        direction: '봉화산행',
+        line: '6',
+        arrivalAtMs: 1000000 + 134 * 1000,
+        subtext: undefined,
+        isLastTrain: false,
+        trainType: 'normal',
+        arrivalCode: -1,
+      },
     ]);
+  });
+
+  it('should pass through meta fields (isLastTrain/trainType/arrivalCode)', () => {
+    const items = [
+      makeArrivalInfo({
+        destination: '봉화산행',
+        arrivalSeconds: 60,
+        isLastTrain: true,
+        trainType: 'express',
+        arrivalCode: 1,
+      }),
+    ];
+    const result = arrivalInfoToArrivalTrain(items, '상행', '6');
+    expect(result[0].isLastTrain).toBe(true);
+    expect(result[0].trainType).toBe('express');
+    expect(result[0].arrivalCode).toBe(1);
   });
 
   it('should use direction fallback when destination is empty', () => {
