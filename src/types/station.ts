@@ -17,6 +17,8 @@ export interface Station {
   id: string;
   name: string;
   nameEn?: string;
+  nameJa?: string;
+  nameHanja?: string;
   line: LineNumber;
   lineColor: string;
   lat: number;
