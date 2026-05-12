@@ -8,10 +8,10 @@ import zh from './locales/zh.json';
 // 자동으로 따라온다. nativeName은 화면 언어와 무관하게 그 언어 사용자가 자기 언어를
 // 알아볼 수 있도록 native name으로 표기한다 (예: ja → 日本語).
 export const LANGUAGE_REGISTRY = [
-  { code: 'ko', nativeName: '한국어', translation: ko },
-  { code: 'en', nativeName: 'English', translation: en },
-  { code: 'ja', nativeName: '日本語', translation: ja },
-  { code: 'zh', nativeName: '中文', translation: zh },
+  { code: 'ko', nativeName: '한국어', translation: ko, ttsLocale: 'ko-KR' },
+  { code: 'en', nativeName: 'English', translation: en, ttsLocale: 'en-US' },
+  { code: 'ja', nativeName: '日本語', translation: ja, ttsLocale: 'ja-JP' },
+  { code: 'zh', nativeName: '中文', translation: zh, ttsLocale: 'zh-CN' },
 ] as const;
 
 export const SUPPORTED_LANGUAGES = LANGUAGE_REGISTRY.map(
