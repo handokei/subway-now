@@ -7,6 +7,7 @@ import { createLogger } from '../utils/logger';
 import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
 import { isAccuracyAcceptable, isLocationFresh } from '../utils/locationGates';
 import { logSuppressedGate } from '../utils/alarmLog';
+import { incrementBgDiagnostic } from '../utils/bgDiagnostics';
 import type { Route } from '../utils/stationRoute';
 
 const logger = createLogger('BackgroundLocation');
@@ -25,8 +26,9 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   if (!latest) return;
 
   // #275 진단: TaskManager가 백그라운드에서 실제로 깨어나 유효 데이터를 받았는지 확인.
-  // 이 로그가 안 찍히면 JS runtime이 깨어나지 못하는 가설 A.
+  // 이 로그/카운터가 0이면 JS runtime이 깨어나지 못하는 가설 A.
   logger.info('TASK FIRED', new Date().toISOString(), 'locations:', locations.length);
+  incrementBgDiagnostic('taskFired', { stampTaskFired: true });
 
   // iOS deferred 위치 배치에서 stale/저정확도 좌표가 섞여 들어올 수 있음 — 차단.
   // 측정용으로 게이트 drop을 알람 로그에 fire-and-forget 적재 (B2 인프라).
@@ -34,15 +36,18 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const ageMs = Date.now() - (latest.timestamp ?? 0);
   if (!isLocationFresh(latest.timestamp)) {
     logSuppressedGate('gate-age', { lat, lng, accuracy, ageMs });
+    incrementBgDiagnostic('gateAge');
     return;
   }
   if (!isAccuracyAcceptable(accuracy)) {
     logSuppressedGate('gate-accuracy', { lat, lng, accuracy, ageMs });
+    incrementBgDiagnostic('gateAccuracy');
     return;
   }
 
   // #275 진단: 게이트 통과 직후 마커. 이후 destJson 없음 등의 조기 리턴은 별도로 식별.
   logger.info('PIPELINE ENTER', lat.toFixed(4), lng.toFixed(4), 'acc:', accuracy);
+  incrementBgDiagnostic('pipelineEnter');
 
   const { speed } = latest.coords;
   const speedMps = speed != null && speed >= 0 ? speed : null;
@@ -59,6 +64,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     // 경로(목적지) 없으면 백그라운드에서도 실시간 현황 알림을 띄우지 않는다.
     if (!destJson) {
       logger.info('PIPELINE EXIT no-destination');
+      incrementBgDiagnostic('pipelineExitNoDestination');
       return;
     }
 
