@@ -22,3 +22,23 @@ export const TRAIN_TYPE_LABEL: Record<TrainType, string> = {
   rapid: '특급',
   normal: '',
 };
+
+/**
+ * realtimePosition API의 `directAt` 응답값(숫자) → 같은 TrainType enum으로 통합.
+ * 스펙: 1:급행, 0:아님, 7:특급 (ITX는 directAt에 없음 — btrainSttus 텍스트로만 옴)
+ */
+const DIRECT_AT_TO_TYPE: Record<number, TrainType> = {
+  1: 'express',
+  7: 'rapid',
+};
+
+export function parseTrainTypeFromDirectAt(directAt: unknown): TrainType {
+  const n =
+    typeof directAt === 'number'
+      ? directAt
+      : typeof directAt === 'string'
+        ? Number.parseInt(directAt, 10)
+        : NaN;
+  if (!Number.isFinite(n)) return 'normal';
+  return DIRECT_AT_TO_TYPE[n] ?? 'normal';
+}

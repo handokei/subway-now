@@ -1,4 +1,4 @@
-import { parseTrainType, TRAIN_TYPE_LABEL } from '../trainTypes';
+import { parseTrainType, parseTrainTypeFromDirectAt, TRAIN_TYPE_LABEL } from '../trainTypes';
 
 describe('parseTrainType', () => {
   it('급행/ITX/특급 정확히 매핑', () => {
@@ -26,5 +26,25 @@ describe('TRAIN_TYPE_LABEL', () => {
     expect(TRAIN_TYPE_LABEL.itx).toBe('ITX');
     expect(TRAIN_TYPE_LABEL.rapid).toBe('특급');
     expect(TRAIN_TYPE_LABEL.normal).toBe('');
+  });
+});
+
+describe('parseTrainTypeFromDirectAt (realtimePosition API)', () => {
+  it('1=express, 7=rapid, 0=normal', () => {
+    expect(parseTrainTypeFromDirectAt(1)).toBe('express');
+    expect(parseTrainTypeFromDirectAt(7)).toBe('rapid');
+    expect(parseTrainTypeFromDirectAt(0)).toBe('normal');
+  });
+
+  it('숫자 문자열도 파싱', () => {
+    expect(parseTrainTypeFromDirectAt('1')).toBe('express');
+    expect(parseTrainTypeFromDirectAt('7')).toBe('rapid');
+  });
+
+  it('비숫자/누락은 normal', () => {
+    expect(parseTrainTypeFromDirectAt(undefined)).toBe('normal');
+    expect(parseTrainTypeFromDirectAt(null)).toBe('normal');
+    expect(parseTrainTypeFromDirectAt('abc')).toBe('normal');
+    expect(parseTrainTypeFromDirectAt(99)).toBe('normal');
   });
 });
