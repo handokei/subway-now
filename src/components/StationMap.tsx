@@ -86,18 +86,17 @@ export function StationMap({
             >
               <View style={styles.markerContainer}>
                 <View
-                  style={[
-                    styles.markerDot,
-                    { backgroundColor: dotColor, borderColor: colors.card },
-                  ]}
+                  style={[styles.markerDot, { backgroundColor: dotColor }]}
                   testID={`dot-${station.id}`}
                 />
-                <Text
-                  style={[styles.markerLabel, { color: colors.ink }]}
-                  numberOfLines={1}
+                <View
+                  style={styles.markerLabelPill}
+                  testID={`label-pill-${station.id}`}
                 >
-                  {getStationDisplayName(station)}
-                </Text>
+                  <Text style={styles.markerLabel} numberOfLines={1}>
+                    {getStationDisplayName(station)}
+                  </Text>
+                </View>
               </View>
             </Marker>
           );
@@ -160,15 +159,28 @@ const styles = StyleSheet.create({
     maxWidth: 60,
   },
   markerDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    borderWidth: 1,
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    borderWidth: 2,
+    borderColor: '#ffffff',
+  },
+  markerLabelPill: {
+    marginTop: 3,
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.92)',
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 1,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
   },
   markerLabel: {
-    fontSize: 9,
+    fontSize: 12,
     fontWeight: '600',
-    marginTop: 2,
+    color: '#111111',
     textAlign: 'center',
   },
   trainMarker: {

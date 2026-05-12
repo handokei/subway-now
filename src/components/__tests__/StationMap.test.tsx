@@ -82,6 +82,38 @@ describe('StationMap', () => {
     expect(getByTestId('station-map').props.showsUserLocation).toBe(true);
   });
 
+  it('마커 dot이 흰색 테두리와 확대된 크기(14)를 가진다', () => {
+    const { getByTestId } = render(<StationMap {...baseProps} />);
+    const dot = getByTestId('dot-2-023');
+    expect(dot.props.style).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          width: 14,
+          height: 14,
+          borderRadius: 7,
+          borderWidth: 2,
+          borderColor: '#ffffff',
+        }),
+      ]),
+    );
+  });
+
+  it('마커 라벨이 흰 pill 위에 검정 텍스트(#111, 12px)로 표시된다', () => {
+    const { getByText, getByTestId } = render(<StationMap {...baseProps} />);
+    const label = getByText('강남');
+    expect(label.props.style).toEqual(
+      expect.objectContaining({
+        fontSize: 12,
+        color: '#111111',
+      }),
+    );
+    expect(getByTestId('label-pill-2-022').props.style).toEqual(
+      expect.objectContaining({
+        backgroundColor: 'rgba(255,255,255,0.92)',
+      }),
+    );
+  });
+
   it('customOriginId와 일치하는 마커는 accent 색상 dot을 사용한다', () => {
     const { getByTestId } = render(
       <StationMap {...baseProps} customOriginId="2-023" />,
