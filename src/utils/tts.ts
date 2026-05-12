@@ -24,6 +24,7 @@ export function speakAlarm(text: string, gate: TtsGate): void {
     return;
   }
   try {
+    Speech.stop();
     Speech.speak(text, { language: resolveTtsLocale(i18next.language) });
   } catch (e) {
     logger.error('speak failed:', e);

@@ -4,6 +4,7 @@ import { speakAlarm } from '../tts';
 
 jest.mock('expo-speech', () => ({
   speak: jest.fn(),
+  stop: jest.fn(),
 }));
 
 jest.mock('i18next', () => ({
@@ -22,10 +23,12 @@ jest.mock('../logger', () => ({
 
 describe('speakAlarm', () => {
   const mockSpeak = Speech.speak as jest.Mock;
+  const mockStop = Speech.stop as jest.Mock;
   const i18n = i18next as unknown as { language: string };
 
   beforeEach(() => {
     mockSpeak.mockReset();
+    mockStop.mockReset();
     i18n.language = 'ko';
   });
 
@@ -65,5 +68,20 @@ describe('speakAlarm', () => {
       throw new Error('tts engine failed');
     });
     expect(() => speakAlarm('x', { sleepMode: false, allowSpeaker: true })).not.toThrow();
+  });
+
+  it('발화 직전 이전 발화를 중단해 최신 알람만 남긴다', () => {
+    speakAlarm('first', { sleepMode: false, allowSpeaker: true });
+    speakAlarm('second', { sleepMode: false, allowSpeaker: true });
+    expect(mockStop).toHaveBeenCalledTimes(2);
+    const stopOrder = mockStop.mock.invocationCallOrder[1];
+    const speakOrder = mockSpeak.mock.invocationCallOrder[1];
+    expect(stopOrder).toBeLessThan(speakOrder);
+  });
+
+  it('silent 게이트일 때는 stop도 호출하지 않는다', () => {
+    speakAlarm('x', { sleepMode: true, allowSpeaker: true });
+    speakAlarm('x', { sleepMode: false, allowSpeaker: false });
+    expect(mockStop).not.toHaveBeenCalled();
   });
 });
