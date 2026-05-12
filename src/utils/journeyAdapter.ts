@@ -21,6 +21,12 @@ export interface ArrivalTrain {
   line: string;
   arrivalAtMs: number;
   subtext?: string;
+  /** 막차 여부 — UI 안전성 배지. */
+  isLastTrain?: boolean;
+  /** 열차 타입 — 'normal'은 배지 미표시. */
+  trainType?: import('../constants/trainTypes').TrainType;
+  /** arvlCd — 0:진입, 1:도착, 2:출발 등. UI 진입/도착 배지용. */
+  arrivalCode?: number;
 }
 
 export interface HandoffNearest {
@@ -60,13 +66,23 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
         note: i18next.t('journey.transferNote'),
       });
     } else {
-      stops.push({
-        station: getStationDisplayNameByName(seg.toName, allStations),
-        line: seg.line,
-        stopsFromPrev: i18next.t('route.stops', { count: seg.stops }),
-        mark: 'dest',
-        note: i18next.t('journey.arrivalNote'),
-      });
+      // 환승역이 곧 목적지인 케이스(0정거장 도착 노드 잉여)는 직전 환승 노드를 도착으로 흡수.
+      // 언어 독립성을 위해 표시명이 아닌 원본 역명(toName)으로 비교한다.
+      // stopsFromPrev는 환승 노드의 기존 값(직전 segment의 정거장 수)을 그대로 유지.
+      const prevSeg = segments[i - 1];
+      const prev = stops[stops.length - 1];
+      if (seg.stops === 0 && prev?.mark === 'transfer' && prevSeg?.toName === seg.toName) {
+        prev.mark = 'dest';
+        prev.note = i18next.t('journey.transferArrivalNote');
+      } else {
+        stops.push({
+          station: getStationDisplayNameByName(seg.toName, allStations),
+          line: seg.line,
+          stopsFromPrev: i18next.t('route.stops', { count: seg.stops }),
+          mark: 'dest',
+          note: i18next.t('journey.arrivalNote'),
+        });
+      }
     }
   }
 
@@ -88,6 +104,9 @@ export function arrivalInfoToArrivalTrain(
     line,
     arrivalAtMs: now + item.arrivalSeconds * 1000,
     subtext: item.statusMessage || undefined,
+    isLastTrain: item.isLastTrain,
+    trainType: item.trainType,
+    arrivalCode: item.arrivalCode,
   }));
 }
 

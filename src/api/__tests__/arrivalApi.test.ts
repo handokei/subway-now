@@ -1,4 +1,4 @@
-import { fetchArrivalInfo, MOCK_ARRIVALS } from '../arrivalApi';
+import { fetchArrivalInfo, MOCK_ARRIVALS, parseRecptnDt } from '../arrivalApi';
 
 describe('fetchArrivalInfo', () => {
   beforeEach(() => {
@@ -230,6 +230,147 @@ describe('fetchArrivalInfo', () => {
     expect(result.up[0].arrivalMinutes).toBe(1);
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+  });
+
+  describe('recptnDt 시차 보정', () => {
+    const mockArrivalAt = (
+      barvlDt: number,
+      recptnDt?: string,
+      nowIso?: string,
+    ) => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      if (nowIso) jest.useFakeTimers().setSystemTime(new Date(nowIso));
+      const item: Record<string, unknown> = {
+        trainLineNm: '소요산행',
+        barvlDt,
+        btrainNo: 'T001',
+        updnLine: '상행',
+      };
+      if (recptnDt !== undefined) item.recptnDt = recptnDt;
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ realtimeArrivalList: [item] }),
+      } as Response);
+    };
+
+    afterEach(() => {
+      jest.useRealTimers();
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+    });
+
+    it('recptnDt가 30초 전이면 barvlDt에서 30초가 차감된다', async () => {
+      mockArrivalAt(120, '2026-05-12 12:00:00', '2026-05-12T03:00:30Z');
+      const result = await fetchArrivalInfo('강남');
+      expect(result.up[0].arrivalSeconds).toBe(90);
+      expect(result.up[0].arrivalMinutes).toBe(1);
+      expect(result.up[0].receivedAtMs).toBe(Date.parse('2026-05-12T03:00:00Z'));
+    });
+
+    it('recptnDt가 누락되면 보정 없이 raw barvlDt를 사용한다', async () => {
+      mockArrivalAt(120);
+      const result = await fetchArrivalInfo('강남');
+      expect(result.up[0].arrivalSeconds).toBe(120);
+      expect(result.up[0].receivedAtMs).toBe(0);
+    });
+
+    it('보정량이 barvlDt를 초과하면 0으로 클램프된다', async () => {
+      // 90초 전(cap 이내) + barvlDt=60 → 음수 → 0
+      mockArrivalAt(60, '2026-05-12 12:00:00', '2026-05-12T03:01:30Z');
+      const result = await fetchArrivalInfo('강남');
+      expect(result.up[0].arrivalSeconds).toBe(0);
+      expect(result.up[0].arrivalMinutes).toBe(0);
+    });
+
+    it('recptnDt가 미래 시각(시계 어긋남)이면 보정 없이 raw 값을 사용한다', async () => {
+      mockArrivalAt(120, '2026-05-12 12:00:10', '2026-05-12T03:00:00Z');
+      const result = await fetchArrivalInfo('강남');
+      expect(result.up[0].arrivalSeconds).toBe(120);
+    });
+
+    it('drift가 MAX_RECPTN_DRIFT_SEC(120s) 초과면 stale로 강등(보정 없음, receivedAtMs=0)', async () => {
+      // 5분(300s) 전 — cap 초과
+      mockArrivalAt(600, '2026-05-12 12:00:00', '2026-05-12T03:05:00Z');
+      const result = await fetchArrivalInfo('강남');
+      expect(result.up[0].arrivalSeconds).toBe(600);
+      expect(result.up[0].receivedAtMs).toBe(0);
+    });
+
+    it('parseRecptnDt: 정상 KST 문자열을 epoch ms로 변환한다', () => {
+      expect(parseRecptnDt('2026-05-12 12:00:00')).toBe(Date.parse('2026-05-12T03:00:00Z'));
+    });
+
+    it('parseRecptnDt: 비문자열·빈 문자열·잘못된 포맷은 0을 반환한다', () => {
+      expect(parseRecptnDt(undefined)).toBe(0);
+      expect(parseRecptnDt(null)).toBe(0);
+      expect(parseRecptnDt(12345)).toBe(0);
+      expect(parseRecptnDt('')).toBe(0);
+      expect(parseRecptnDt('not-a-date')).toBe(0);
+    });
+
+    it('arvlCd: number / 숫자문자열 / 누락 / 비숫자 매핑', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', arvlCd: 1 },
+            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', arvlCd: '0' },
+            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행' },
+            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행', arvlCd: 'abc' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남', { maxPerDirection: 4 });
+      expect(result.up.map((i) => i.arrivalCode)).toEqual([1, 0, -1, -1]);
+    });
+
+    it('lstcarAt: "1" 또는 1 → isLastTrain true, 그외 false', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', lstcarAt: '1' },
+            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', lstcarAt: 1 },
+            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행', lstcarAt: '0' },
+            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남', { maxPerDirection: 4 });
+      expect(result.up.map((i) => i.isLastTrain)).toEqual([true, true, false, false]);
+    });
+
+    it('btrainSttus → trainType 매핑', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', btrainSttus: '급행' },
+            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', btrainSttus: 'ITX' },
+            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행', btrainSttus: '특급' },
+            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남', { maxPerDirection: 4 });
+      expect(result.up.map((i) => i.trainType)).toEqual(['express', 'itx', 'rapid', 'normal']);
+    });
+
+    it('realtimeArrivalList가 빈 배열이면 Mock으로 fallback', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ realtimeArrivalList: [] }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남');
+      expect(result.isMock).toBe(true);
+    });
   });
 
   it('trainLineNm, barvlDt, btrainNo가 undefined이면 기본값을 사용한다', async () => {

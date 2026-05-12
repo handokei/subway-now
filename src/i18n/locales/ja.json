@@ -119,7 +119,8 @@
   },
   "journey": {
     "transferNote": "乗換",
-    "arrivalNote": "到着"
+    "arrivalNote": "到着",
+    "transferArrivalNote": "乗換 → 到着"
   },
   "routes": {
     "optimal": "最速",

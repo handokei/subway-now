@@ -4,6 +4,7 @@ import { useTheme, typography, spacing } from '../theme';
 import { useCountdown } from '../hooks/useCountdown';
 import type { ArrivalTrain } from '../utils/journeyAdapter';
 import { LineBadge, getLineColor } from './LineBadge';
+import { ArrivalStatusBadge } from './ArrivalStatusBadge';
 
 interface Props {
   train: ArrivalTrain;
@@ -32,6 +33,11 @@ export function EditorialArrivalRow({ train }: Props) {
             {train.subtext}
           </Text>
         )}
+        <ArrivalStatusBadge
+          isLastTrain={train.isLastTrain}
+          trainType={train.trainType}
+          arrivalCode={train.arrivalCode}
+        />
       </View>
       <LineBadge line={train.line} color={lineC} />
     </View>
