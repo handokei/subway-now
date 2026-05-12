@@ -233,126 +233,66 @@ describe('fetchArrivalInfo', () => {
   });
 
   describe('recptnDt 시차 보정', () => {
+    const mockArrivalAt = (
+      barvlDt: number,
+      recptnDt?: string,
+      nowIso?: string,
+    ) => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      if (nowIso) jest.useFakeTimers().setSystemTime(new Date(nowIso));
+      const item: Record<string, unknown> = {
+        trainLineNm: '소요산행',
+        barvlDt,
+        btrainNo: 'T001',
+        updnLine: '상행',
+      };
+      if (recptnDt !== undefined) item.recptnDt = recptnDt;
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ realtimeArrivalList: [item] }),
+      } as Response);
+    };
+
     afterEach(() => {
       jest.useRealTimers();
       delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
     });
 
     it('recptnDt가 30초 전이면 barvlDt에서 30초가 차감된다', async () => {
-      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
-      // KST 2026-05-12 12:00:30 = UTC 2026-05-12 03:00:30
-      jest.useFakeTimers().setSystemTime(new Date('2026-05-12T03:00:30Z'));
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          realtimeArrivalList: [
-            {
-              trainLineNm: '소요산행',
-              barvlDt: 120,
-              btrainNo: 'T001',
-              updnLine: '상행',
-              recptnDt: '2026-05-12 12:00:00',
-            },
-          ],
-        }),
-      } as Response);
-
+      mockArrivalAt(120, '2026-05-12 12:00:00', '2026-05-12T03:00:30Z');
       const result = await fetchArrivalInfo('강남');
-      expect(result.up[0].arrivalSeconds).toBe(90); // 120 - 30
+      expect(result.up[0].arrivalSeconds).toBe(90);
       expect(result.up[0].arrivalMinutes).toBe(1);
       expect(result.up[0].receivedAtMs).toBe(Date.parse('2026-05-12T03:00:00Z'));
     });
 
     it('recptnDt가 누락되면 보정 없이 raw barvlDt를 사용한다', async () => {
-      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          realtimeArrivalList: [
-            { trainLineNm: '소요산행', barvlDt: 120, btrainNo: 'T001', updnLine: '상행' },
-          ],
-        }),
-      } as Response);
-
+      mockArrivalAt(120);
       const result = await fetchArrivalInfo('강남');
       expect(result.up[0].arrivalSeconds).toBe(120);
       expect(result.up[0].receivedAtMs).toBe(0);
     });
 
     it('보정량이 barvlDt를 초과하면 0으로 클램프된다', async () => {
-      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
-      // 90초 전 데이터(=cap 이내) + barvlDt=60초 → -30으로 음수 → 0
-      jest.useFakeTimers().setSystemTime(new Date('2026-05-12T03:01:30Z'));
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          realtimeArrivalList: [
-            {
-              trainLineNm: '소요산행',
-              barvlDt: 60,
-              btrainNo: 'T001',
-              updnLine: '상행',
-              recptnDt: '2026-05-12 12:00:00',
-            },
-          ],
-        }),
-      } as Response);
-
+      // 90초 전(cap 이내) + barvlDt=60 → 음수 → 0
+      mockArrivalAt(60, '2026-05-12 12:00:00', '2026-05-12T03:01:30Z');
       const result = await fetchArrivalInfo('강남');
       expect(result.up[0].arrivalSeconds).toBe(0);
       expect(result.up[0].arrivalMinutes).toBe(0);
     });
 
     it('recptnDt가 미래 시각(시계 어긋남)이면 보정 없이 raw 값을 사용한다', async () => {
-      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
-      // recptnDt가 현재보다 10초 미래 — driftSec 음수 → max(0, _)로 0 → 보정 없음
-      jest.useFakeTimers().setSystemTime(new Date('2026-05-12T03:00:00Z'));
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          realtimeArrivalList: [
-            {
-              trainLineNm: '소요산행',
-              barvlDt: 120,
-              btrainNo: 'T001',
-              updnLine: '상행',
-              recptnDt: '2026-05-12 12:00:10',
-            },
-          ],
-        }),
-      } as Response);
-
+      mockArrivalAt(120, '2026-05-12 12:00:10', '2026-05-12T03:00:00Z');
       const result = await fetchArrivalInfo('강남');
       expect(result.up[0].arrivalSeconds).toBe(120);
     });
 
     it('drift가 MAX_RECPTN_DRIFT_SEC(120s) 초과면 stale로 강등(보정 없음, receivedAtMs=0)', async () => {
-      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
-      // recptnDt가 5분(300s) 전 — 비정상 drift → stale 처리
-      jest.useFakeTimers().setSystemTime(new Date('2026-05-12T03:05:00Z'));
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          realtimeArrivalList: [
-            {
-              trainLineNm: '소요산행',
-              barvlDt: 600,
-              btrainNo: 'T001',
-              updnLine: '상행',
-              recptnDt: '2026-05-12 12:00:00',
-            },
-          ],
-        }),
-      } as Response);
-
+      // 5분(300s) 전 — cap 초과
+      mockArrivalAt(600, '2026-05-12 12:00:00', '2026-05-12T03:05:00Z');
       const result = await fetchArrivalInfo('강남');
-      expect(result.up[0].arrivalSeconds).toBe(600); // 보정 없음
-      expect(result.up[0].receivedAtMs).toBe(0); // stale 강등
+      expect(result.up[0].arrivalSeconds).toBe(600);
+      expect(result.up[0].receivedAtMs).toBe(0);
     });
 
     it('parseRecptnDt: 정상 KST 문자열을 epoch ms로 변환한다', () => {
