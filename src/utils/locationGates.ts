@@ -1,4 +1,4 @@
-import { MAX_ACCURACY_M, MAX_LOCATION_AGE_MS } from '../constants/location';
+import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY, MAX_LOCATION_AGE_MS } from '../constants/location';
 
 export function isLocationFresh(timestamp: number | undefined): boolean {
   // expo-location 타입상 timestamp는 non-nullable이지만, 네이티브 deferred batch에서
@@ -9,4 +9,8 @@ export function isLocationFresh(timestamp: number | undefined): boolean {
 
 export function isAccuracyAcceptable(accuracy: number | null | undefined): boolean {
   return accuracy == null || accuracy <= MAX_ACCURACY_M;
+}
+
+export function isAccuracyAcceptableForDisplay(accuracy: number | null | undefined): boolean {
+  return accuracy == null || accuracy <= MAX_ACCURACY_M_DISPLAY;
 }
