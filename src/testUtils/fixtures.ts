@@ -20,6 +20,7 @@ export function makeArrivalInfo(overrides: Partial<ArrivalInfo> & { destination:
     arrivalMinutes: Math.floor(overrides.arrivalSeconds / 60),
     statusMessage: '',
     trainCode: 'T001',
+    receivedAtMs: 0,
     ...overrides,
   };
 }
