@@ -3,30 +3,26 @@ import { BG_DIAGNOSTICS_KEY } from '../constants/storageKeys';
 import { createLogger } from './logger';
 
 // #275 진단 카운터. Console.app 접근 없이 앱 내에서 BG 동작 격리를 위해 사용.
-// 카운터 키는 closed union으로 고정해 오타로 인한 noise 카운터가 생기지 않게 한다.
-export type BgDiagnosticCounter =
-  | 'taskFired'
-  | 'pipelineEnter'
-  | 'pipelineExitNoDestination'
-  | 'gateAge'
-  | 'gateAccuracy'
-  | 'alarmEnter'
-  | 'alarmPermDenied'
-  | 'stationPassedEnter';
+// 카운터 키 + 사용자 노출 라벨을 한 곳에 두어 추가/제거 시 단일 지점만 갱신.
+export const BG_DIAGNOSTIC_ROWS = [
+  { key: 'taskFired', label: 'TASK FIRED' },
+  { key: 'gateAge', label: '게이트 컷 (오래된 좌표)' },
+  { key: 'gateAccuracy', label: '게이트 컷 (저정확도)' },
+  { key: 'pipelineEnter', label: 'PIPELINE ENTER' },
+  { key: 'pipelineExitNoDestination', label: 'PIPELINE EXIT (목적지 없음)' },
+  { key: 'alarmEnter', label: 'ALARM ENTER' },
+  { key: 'alarmPermDenied', label: 'ALARM 권한 거부 관찰' },
+  { key: 'stationPassedEnter', label: 'STATION PASSED ENTER' },
+] as const;
+
+export type BgDiagnosticCounter = (typeof BG_DIAGNOSTIC_ROWS)[number]['key'];
 
 export type BgDiagnostics = Record<BgDiagnosticCounter, number> & { lastTaskFiredTs: number | null };
 
 const EMPTY: BgDiagnostics = {
-  taskFired: 0,
-  pipelineEnter: 0,
-  pipelineExitNoDestination: 0,
-  gateAge: 0,
-  gateAccuracy: 0,
-  alarmEnter: 0,
-  alarmPermDenied: 0,
-  stationPassedEnter: 0,
+  ...Object.fromEntries(BG_DIAGNOSTIC_ROWS.map(({ key }) => [key, 0])),
   lastTaskFiredTs: null,
-};
+} as BgDiagnostics;
 
 const logger = createLogger('BgDiagnostics');
 

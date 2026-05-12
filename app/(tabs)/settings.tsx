@@ -8,7 +8,12 @@ import { ROUTE_CATEGORIES } from '../../src/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../../src/i18n/types';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
-import { clearBgDiagnostics, getBgDiagnostics, type BgDiagnostics } from '../../src/utils/bgDiagnostics';
+import {
+  BG_DIAGNOSTIC_ROWS,
+  clearBgDiagnostics,
+  getBgDiagnostics,
+  type BgDiagnostics,
+} from '../../src/utils/bgDiagnostics';
 
 const THEME_OPTIONS = [
   { value: 'auto', labelKey: 'settings.themeAuto' },
@@ -137,17 +142,6 @@ export default function SettingsScreen() {
 }
 
 // #275 진단 패널. 가설 격리 완료 후 제거 예정 — i18n 생략(임시 surface).
-const DIAGNOSTIC_ROWS: readonly { key: keyof BgDiagnostics; label: string }[] = [
-  { key: 'taskFired', label: 'TASK FIRED' },
-  { key: 'gateAge', label: '게이트 컷 (오래된 좌표)' },
-  { key: 'gateAccuracy', label: '게이트 컷 (저정확도)' },
-  { key: 'pipelineEnter', label: 'PIPELINE ENTER' },
-  { key: 'pipelineExitNoDestination', label: 'PIPELINE EXIT (목적지 없음)' },
-  { key: 'alarmEnter', label: 'ALARM ENTER' },
-  { key: 'alarmPermDenied', label: 'ALARM 권한 거부 관찰' },
-  { key: 'stationPassedEnter', label: 'STATION PASSED ENTER' },
-];
-
 function BgDiagnosticsCard() {
   const { colors } = useTheme();
   const [snapshot, setSnapshot] = useState<BgDiagnostics | null>(null);
@@ -182,33 +176,41 @@ function BgDiagnosticsCard() {
   return (
     <View style={[styles.card, { backgroundColor: colors.card }]}>
       <Text style={[styles.sectionTitle, { color: colors.muted }]}>진단 (#275)</Text>
-      {DIAGNOSTIC_ROWS.map(({ key, label }) => (
-        <View key={key} style={styles.diagRow}>
-          <Text style={[styles.diagLabel, { color: colors.ink }]}>{label}</Text>
-          <Text style={[styles.diagValue, { color: colors.muted }]}>{String(snapshot[key])}</Text>
-        </View>
+      {BG_DIAGNOSTIC_ROWS.map(({ key, label }) => (
+        <DiagRow key={key} label={label} value={String(snapshot[key])} colors={colors} />
       ))}
       <View style={[styles.diagRow, { borderTopWidth: 1, borderTopColor: colors.hair, marginTop: spacing.sm, paddingTop: spacing.sm }]}>
         <Text style={[styles.diagLabel, { color: colors.muted }]}>마지막 TASK FIRED</Text>
         <Text style={[styles.diagValue, { color: colors.muted }]}>{lastLabel}</Text>
       </View>
       <View style={styles.diagActions}>
-        <Pressable
-          style={[styles.diagButton, { borderColor: colors.hair }]}
-          onPress={() => void refresh()}
-          accessibilityRole="button"
-        >
-          <Text style={[styles.diagButtonText, { color: colors.ink }]}>새로고침</Text>
-        </Pressable>
-        <Pressable
-          style={[styles.diagButton, { borderColor: colors.hair }]}
-          onPress={handleClear}
-          accessibilityRole="button"
-        >
-          <Text style={[styles.diagButtonText, { color: colors.ink }]}>초기화</Text>
-        </Pressable>
+        <DiagButton label="새로고침" onPress={() => void refresh()} colors={colors} />
+        <DiagButton label="초기화" onPress={handleClear} colors={colors} />
       </View>
     </View>
+  );
+}
+
+type DiagColors = { readonly ink: string; readonly muted: string; readonly hair: string };
+
+function DiagRow({ label, value, colors }: { readonly label: string; readonly value: string; readonly colors: DiagColors }) {
+  return (
+    <View style={styles.diagRow}>
+      <Text style={[styles.diagLabel, { color: colors.ink }]}>{label}</Text>
+      <Text style={[styles.diagValue, { color: colors.muted }]}>{value}</Text>
+    </View>
+  );
+}
+
+function DiagButton({ label, onPress, colors }: { readonly label: string; readonly onPress: () => void; readonly colors: DiagColors }) {
+  return (
+    <Pressable
+      style={[styles.diagButton, { borderColor: colors.hair }]}
+      onPress={onPress}
+      accessibilityRole="button"
+    >
+      <Text style={[styles.diagButtonText, { color: colors.ink }]}>{label}</Text>
+    </Pressable>
   );
 }
 
