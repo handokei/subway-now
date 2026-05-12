@@ -1,5 +1,10 @@
 import { findTrainCoordinates, buildStationIndex } from '../findTrainCoordinates';
 import type { LinePositions, TrainPosition } from '../../api/positionApi';
+import {
+  TRAIN_MARKER_OFFSET_DEG,
+  UPDN_DOWN_OUTER,
+  UPDN_UP_INNER,
+} from '../../constants/trainMarkerOffset';
 import type { Station } from '../../types/station';
 
 const NOW = 1_700_000_000_000;
@@ -32,15 +37,40 @@ describe('findTrainCoordinates', () => {
     expect(findTrainCoordinates([null], buildStationIndex(stations))).toEqual([]);
   });
 
-  it('LinePositions의 train을 (line, statnNm) 매칭으로 좌표 부여', () => {
+  it('LinePositions의 train을 (line, statnNm) 매칭으로 좌표 부여 (상행 → 서쪽 오프셋)', () => {
     const lp: LinePositions = { line: '2', trains: [train('강남', 1, { trainNo: 'X' })] };
     const result = findTrainCoordinates([lp], buildStationIndex(stations));
     expect(result).toHaveLength(1);
     expect(result[0].lat).toBe(37.498);
-    expect(result[0].lng).toBe(127.028);
+    expect(result[0].lng).toBeCloseTo(127.028 - TRAIN_MARKER_OFFSET_DEG, 10);
     expect(result[0].lineColor).toBe('#33A23D');
     expect(result[0].trainNo).toBe('X');
     expect(result[0].trainStatus).toBe(1);
+  });
+
+  it('같은 역에 상행+하행 동시 매칭 → 경도 오프셋으로 좌우 분리', () => {
+    const lp: LinePositions = {
+      line: '2',
+      trains: [
+        train('강남', 1, { trainNo: 'UP', updnLine: UPDN_UP_INNER }),
+        train('강남', 1, { trainNo: 'DOWN', updnLine: UPDN_DOWN_OUTER }),
+      ],
+    };
+    const result = findTrainCoordinates([lp], buildStationIndex(stations));
+    const up = result.find((t) => t.trainNo === 'UP')!;
+    const down = result.find((t) => t.trainNo === 'DOWN')!;
+    expect(up.lat).toBe(37.498);
+    expect(down.lat).toBe(37.498);
+    expect(up.lng).toBeCloseTo(127.028 - TRAIN_MARKER_OFFSET_DEG, 10);
+    expect(down.lng).toBeCloseTo(127.028 + TRAIN_MARKER_OFFSET_DEG, 10);
+    expect(down.lng - up.lng).toBeCloseTo(2 * TRAIN_MARKER_OFFSET_DEG, 10);
+  });
+
+  it('updnLine이 매핑에 없는 값(예: 2) → 오프셋 0', () => {
+    const lp: LinePositions = { line: '2', trains: [train('강남', 1, { updnLine: 2 })] };
+    const result = findTrainCoordinates([lp], buildStationIndex(stations));
+    expect(result[0].lat).toBe(37.498);
+    expect(result[0].lng).toBe(127.028);
   });
 
   it('mock LinePositions는 통째로 무시', () => {

@@ -1,4 +1,5 @@
 import type { LinePositions, TrainPosition } from '../api/positionApi';
+import { getMarkerOffset } from '../constants/trainMarkerOffset';
 import type { LineNumber, Station } from '../types/station';
 
 /** 지도 마커로 표시할 열차 정보 — TrainPosition + 좌표 + lineColor. */
@@ -62,12 +63,13 @@ export function findTrainCoordinates(
 }
 
 function toMarker(t: TrainPosition, s: Station): TrainMarker {
+  const { dLat, dLng } = getMarkerOffset(t.updnLine);
   return {
     trainNo: t.trainNo,
     line: s.line,
     lineColor: s.lineColor,
-    lat: s.lat,
-    lng: s.lng,
+    lat: s.lat + dLat,
+    lng: s.lng + dLng,
     statnNm: t.statnNm,
     trainStatus: t.trainStatus,
     updnLine: t.updnLine,
