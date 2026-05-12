@@ -11,7 +11,7 @@ Pod::Spec.new do |s|
   s.author         = 'subway-now'
   s.platform       = :ios, '15.1'
   s.source         = { path: '.' }
-  s.source_files   = 'ios/**/*.swift'
+  s.source_files   = ['ios/**/*.swift', '../../targets/subway-widget/_shared/*.swift']
   s.dependency 'ExpoModulesCore'
   s.weak_frameworks = ['ActivityKit']
 end
