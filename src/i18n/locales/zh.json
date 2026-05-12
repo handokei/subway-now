@@ -119,7 +119,8 @@
   },
   "journey": {
     "transferNote": "换乘",
-    "arrivalNote": "到达"
+    "arrivalNote": "到达",
+    "transferArrivalNote": "换乘 → 到达"
   },
   "routes": {
     "optimal": "最快",
