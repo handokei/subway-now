@@ -2,6 +2,7 @@ import { useMemo } from 'react';
 import { useNearestStation } from './useNearestStation';
 import { useArrivalInfo } from './useArrivalInfo';
 import { useTrainPositions } from './useTrainPositions';
+import { useRouteProgress } from './useRouteProgress';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
@@ -10,6 +11,7 @@ import { MAX_ACTIVE_LINES } from '../constants/realtime';
 import type { LinePositions } from '../api/positionApi';
 import type { NearestStationResult, Station } from '../types/station';
 import type { ArrivalProvider, PositionProvider } from '../providers/types';
+import type { Route } from '../utils/stationRoute';
 
 /**
  * fusion 후보 개수. MAX_ACTIVE_LINES와 동기화 — Rules of Hooks로 useArrivalInfo/useTrainPositions를
@@ -67,11 +69,34 @@ function matchPositionsForCandidate(
   return [];
 }
 
+/**
+ * 경로 컨텍스트가 제공되면 useRouteProgress(1D map matching)를 기본으로 사용해
+ * 단일 GPS 점프로 화면이 흔들리는 문제를 막는다. 경로가 없으면 기존 GPS+arrival fusion 유지.
+ */
+export interface FusedRouteContext {
+  route: Route;
+  origin: Station | null;
+  destination: Station | null;
+}
+
 export function useFusedNearestStation(
   arrivalProvider?: ArrivalProvider,
   positionProvider?: PositionProvider,
+  routeContext?: FusedRouteContext,
 ): UseFusedNearestStationReturn {
   const gps = useNearestStation();
+
+  // Phase A: 경로가 설정되면 진행도 기반 현재역으로 GPS 결과를 덮어쓴다.
+  // origin/destination이 빠지면 useRouteProgress가 arc를 만들지 못하고 null을 반환,
+  // 기존 GPS fusion이 자연 fallback으로 살아난다.
+  const progress = useRouteProgress({
+    route: routeContext?.route ?? null,
+    origin: routeContext?.origin ?? null,
+    destination: routeContext?.destination ?? null,
+    userLocation: gps.userLocation,
+    speedMps: gps.speedMps,
+    accuracyMeters: gps.accuracyMeters,
+  });
 
   // GPS 좌표 → 거리순 후보 N개. 좌표 갱신 시에만 재계산.
   const candidates = useMemo<NearestStationResult[]>(() => {
@@ -115,11 +140,18 @@ export function useFusedNearestStation(
     );
   }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions]);
 
+  const routeResult: NearestStationResult | null = progress.position
+    ? {
+        station: progress.position.current,
+        distanceKm: progress.position.distanceToCurrentM / 1000,
+      }
+    : null;
+
   return {
-    result: fused?.result ?? gps.result,
+    result: routeResult ?? fused?.result ?? gps.result,
     gpsResult: gps.result,
-    confidence: fused?.confidence ?? 'gps-only',
-    source: fused?.source ?? 'gps',
+    confidence: routeResult ? 'route-progress' : fused?.confidence ?? 'gps-only',
+    source: routeResult ? 'route-progress' : fused?.source ?? 'gps',
     variants: gps.variants,
     userLocation: gps.userLocation,
     speedMps: gps.speedMps,

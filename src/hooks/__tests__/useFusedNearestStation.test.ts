@@ -4,11 +4,13 @@ import { useNearestStation } from '../useNearestStation';
 import { useArrivalInfo } from '../useArrivalInfo';
 import { useTrainPositions } from '../useTrainPositions';
 import { findTopNearestStations } from '../../utils/findNearestStation';
+import { findStationByNameAndLine } from '../../utils/stationRoute';
 import { ARRIVAL_CODE } from '../../constants/arrivalCodes';
 import { TRAIN_STATUS } from '../../constants/trainStatus';
 import { MOCK_STATIONS } from '../../testUtils/fixtures';
 import type { StationArrival, ArrivalInfo } from '../../api/arrivalApi';
 import type { LinePositions, TrainPosition } from '../../api/positionApi';
+import type { DirectRoute } from '../../utils/stationRoute';
 
 jest.mock('../useNearestStation');
 jest.mock('../useArrivalInfo');
@@ -204,5 +206,74 @@ describe('useFusedNearestStation', () => {
     expect(result.current.userLocation).toEqual({ lat: 37.5, lng: 127.0 });
     expect(result.current.speedMps).toBe(1);
     expect(result.current.accuracyMeters).toBe(50);
+  });
+
+  describe('routeContext (Phase A — Route-Locked Map Matching)', () => {
+    const sagajeong = findStationByNameAndLine('사가정', '7')!;
+    const childrenPark = findStationByNameAndLine('어린이대공원', '7')!;
+    const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+
+    it('경로 컨텍스트 + userLocation 있으면 진행도 기반 현재역으로 result 덮어쓴다', () => {
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+          result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
+        }),
+      );
+      mockFindTop.mockReturnValue([]);
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, {
+          route,
+          origin: sagajeong,
+          destination: childrenPark,
+        }),
+      );
+
+      expect(result.current.result?.station.id).toBe(sagajeong.id);
+      expect(result.current.gpsResult?.station.id).toBe(MOCK_STATIONS.gangnam.id);
+      expect(result.current.confidence).toBe('route-progress');
+      expect(result.current.source).toBe('route-progress');
+    });
+
+    it('경로 컨텍스트 있어도 userLocation null이면 진행도 미초기화 → GPS fusion fallback', () => {
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: null,
+          result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
+        }),
+      );
+      mockFindTop.mockReturnValue([]);
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, {
+          route,
+          origin: sagajeong,
+          destination: childrenPark,
+        }),
+      );
+
+      expect(result.current.result?.station.id).toBe(MOCK_STATIONS.gangnam.id);
+    });
+
+    it('경로 컨텍스트 origin/destination 누락이면 GPS fusion fallback', () => {
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+          result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
+        }),
+      );
+      mockFindTop.mockReturnValue([]);
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, {
+          route,
+          origin: null,
+          destination: null,
+        }),
+      );
+
+      expect(result.current.result?.station.id).toBe(MOCK_STATIONS.gangnam.id);
+    });
   });
 });
