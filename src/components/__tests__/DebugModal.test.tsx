@@ -46,9 +46,15 @@ const variantStation: Station = {
 };
 
 const baseResult: NearestStationResult = { station, distanceKm: 0.123 };
+const arrivalDefaults = {
+  receivedAtMs: 0,
+  arrivalCode: -1,
+  isLastTrain: false,
+  trainType: 'normal' as const,
+};
 const baseArrival: StationArrival = {
-  up: [{ destination: '청량리', arrivalSeconds: 90, statusMessage: '진입', trainCode: 'U1', arrivalMinutes: 1 }],
-  down: [{ destination: '인천', arrivalSeconds: 240, statusMessage: '', trainCode: 'D1', arrivalMinutes: 4 }],
+  up: [{ destination: '청량리', arrivalSeconds: 90, statusMessage: '진입', trainCode: 'U1', arrivalMinutes: 1, ...arrivalDefaults }],
+  down: [{ destination: '인천', arrivalSeconds: 240, statusMessage: '', trainCode: 'D1', arrivalMinutes: 4, ...arrivalDefaults }],
   isMock: false,
 };
 
@@ -359,8 +365,8 @@ describe('DebugModal arrival edge cases', () => {
   it('up.statusMessage가 빈 문자열이면 괄호를 붙이지 않는다', () => {
     mockUseArrivalInfo.mockReturnValue({
       arrival: {
-        up: [{ destination: '청량리', arrivalSeconds: 60, statusMessage: '', trainCode: 'U', arrivalMinutes: 1 }],
-        down: [{ destination: '인천', arrivalSeconds: 120, statusMessage: '도착', trainCode: 'D', arrivalMinutes: 2 }],
+        up: [{ destination: '청량리', arrivalSeconds: 60, statusMessage: '', trainCode: 'U', arrivalMinutes: 1, ...arrivalDefaults }],
+        down: [{ destination: '인천', arrivalSeconds: 120, statusMessage: '도착', trainCode: 'D', arrivalMinutes: 2, ...arrivalDefaults }],
         isMock: false,
       },
       loading: false,
