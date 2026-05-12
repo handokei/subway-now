@@ -32,6 +32,11 @@ jest.mock('../alarmSound', () => ({
   stopVibration: () => mockStopVibration(),
 }));
 
+const mockSpeakAlarm = jest.fn();
+jest.mock('../tts', () => ({
+  speakAlarm: (...args: unknown[]) => mockSpeakAlarm(...args),
+}));
+
 const mockStartLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockUpdateLiveActivity = jest.fn().mockResolvedValue(undefined);
 const mockEndLiveActivity = jest.fn().mockResolvedValue(undefined);
@@ -584,6 +589,24 @@ describe('stationNotification', () => {
       await sendAlarmNotification(earlyDest);
       // 권한 거부여도 호출은 시도 (silent fail은 OS 단에서 발생)
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
+    });
+
+    it('TTS는 알람 body를 sleepMode/allowSpeaker와 함께 호출한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification(earlyDest, false, true);
+      expect(mockSpeakAlarm).toHaveBeenCalledWith('다음 역 강남에서 내리세요!', {
+        sleepMode: false,
+        allowSpeaker: true,
+      });
+    });
+
+    it('TTS는 silent 게이트(sleepMode/allowSpeaker)를 그대로 전달한다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification(earlyDest, true, false);
+      expect(mockSpeakAlarm).toHaveBeenCalledWith('다음 역 강남에서 내리세요!', {
+        sleepMode: true,
+        allowSpeaker: false,
+      });
     });
   });
 

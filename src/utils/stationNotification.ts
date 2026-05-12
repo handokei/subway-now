@@ -8,6 +8,7 @@ import type { AlarmEvent } from './stationAlarm';
 import type { NextTarget } from './stationPipeline';
 import * as LiveActivity from 'live-activity';
 import { vibrateAlarm, stopVibration } from './alarmSound';
+import { speakAlarm } from './tts';
 import { createLogger } from './logger';
 import { incrementBgDiagnostic } from './bgDiagnostics';
 import { getStationDisplayName, getStationDisplayNameByName } from './stationDisplay';
@@ -429,6 +430,7 @@ export async function sendAlarmNotification(
     ...(Platform.OS === 'ios' && { interruptionLevel: 'timeSensitive' as const }),
   });
   vibrateAlarm(sleepMode);
+  speakAlarm(body, { sleepMode, allowSpeaker });
   notifLogger.info('알람 알림:', title, body);
 }
 
