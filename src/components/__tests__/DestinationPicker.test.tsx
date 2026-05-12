@@ -7,6 +7,8 @@ const mockStation: Station = {
   id: '2-022',
   name: '강남',
   nameEn: 'Gangnam',
+  nameJa: 'カンナム',
+  nameHanja: '江南',
   line: '2',
   lineColor: '#009D3E',
   lat: 37.49799,
