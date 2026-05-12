@@ -72,7 +72,18 @@
     "setAsOrigin": "Set as origin",
     "setAsDestination": "Set as destination",
     "nearbyStationsHeader": "Nearby stations (within 1km)",
-    "noNearbyStations": "No subway stations within 1km."
+    "noNearbyStations": "No subway stations within 1km.",
+    "train": {
+      "terminalSuffix": "To {{name}}",
+      "descriptionTemplate": "Train {{trainNo}} · {{status}}",
+      "status": {
+        "arrived": "Arrived",
+        "entering": "Entering",
+        "departed": "Departed",
+        "prevDeparted": "Departed prev. station",
+        "running": "In service"
+      }
+    }
   },
   "favorites": {
     "title": "Favorites",

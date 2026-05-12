@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
+import { useActiveLinePositions } from '../../src/hooks/useActiveLinePositions';
 import { StationMap } from '../../src/components/StationMap';
 import { LocationStateView } from '../../src/components/LocationStateView';
 import { StatusChip } from '../../src/components/StatusChip';
@@ -11,6 +12,11 @@ import { useTheme, spacing, radius } from '../../src/theme';
 import { useAppStore } from '../../src/store/useAppStore';
 import { LineBadge } from '../../src/components/LineBadge';
 import { getStationDisplayName } from '../../src/utils/stationDisplay';
+import { findTopNearestStations } from '../../src/utils/findNearestStation';
+import { findActiveLines } from '../../src/utils/findActiveLines';
+import { findTrainCoordinates, buildStationIndex } from '../../src/utils/findTrainCoordinates';
+import { MAX_STATION_DISTANCE_KM } from '../../src/constants/location';
+import { MAX_ACTIVE_LINES } from '../../src/constants/realtime';
 import type { Station } from '../../src/types/station';
 
 export default function MapScreen() {
@@ -26,6 +32,26 @@ export default function MapScreen() {
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
   const insets = useSafeAreaInsets();
   const { t } = useTranslation();
+
+  // Phase 3 Stage 3: 활성 호선의 실시간 열차 위치 → 지도 마커.
+  // 사용자 좌표 기준 후보 역들의 호선만 dedup해 K=3 폴링.
+  const activeLines = useMemo(() => {
+    if (!userLocation) return [];
+    const candidates = findTopNearestStations(
+      userLocation.lat,
+      userLocation.lng,
+      MAX_ACTIVE_LINES,
+      MAX_STATION_DISTANCE_KM,
+    );
+    return findActiveLines(candidates);
+  }, [userLocation?.lat, userLocation?.lng]);
+  const linePositions = useActiveLinePositions(activeLines);
+  // 528개 역 인덱스는 빌드 타임 고정 → 한 번만 만들고 폴링마다 재사용.
+  const stationIndex = useMemo(() => buildStationIndex(allStations), [allStations]);
+  const trainMarkers = useMemo(
+    () => findTrainCoordinates(linePositions, stationIndex),
+    [linePositions, stationIndex],
+  );
 
   if (permissionDenied || loading || !userLocation || error) {
     return (
@@ -59,6 +85,7 @@ export default function MapScreen() {
         nearbyStations={allStations}
         customOriginId={customOrigin?.id}
         onStationPress={(station) => setSelectedStation(station)}
+        trainMarkers={trainMarkers}
       />
 
       {/* 하단 역 선택 카드 */}
