@@ -1,10 +1,20 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  BG_DIAGNOSTIC_ROWS,
   incrementBgDiagnostic,
   getBgDiagnostics,
   clearBgDiagnostics,
+  type BgDiagnosticCounter,
+  type BgDiagnostics,
 } from '../bgDiagnostics';
 import { BG_DIAGNOSTICS_KEY } from '../../constants/storageKeys';
+
+function makeSnapshot(overrides: Partial<BgDiagnostics> = {}): BgDiagnostics {
+  const zeros = Object.fromEntries(
+    BG_DIAGNOSTIC_ROWS.map(({ key }) => [key, 0]),
+  ) as Record<BgDiagnosticCounter, number>;
+  return { ...zeros, lastTaskFiredTs: null, ...overrides };
+}
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
@@ -38,31 +48,16 @@ describe('bgDiagnostics', () => {
 
       const result = await getBgDiagnostics();
 
-      expect(result).toEqual({
-        taskFired: 0,
-        pipelineEnter: 0,
-        pipelineExitNoDestination: 0,
-        gateAge: 0,
-        gateAccuracy: 0,
-        alarmEnter: 0,
-        alarmPermDenied: 0,
-        stationPassedEnter: 0,
-        lastTaskFiredTs: null,
-      });
+      expect(result).toEqual(makeSnapshot());
     });
 
     it('저장값이 있으면 그대로 돌려준다', async () => {
-      const stored = {
+      const stored = makeSnapshot({
         taskFired: 3,
         pipelineEnter: 2,
-        pipelineExitNoDestination: 0,
         gateAge: 1,
-        gateAccuracy: 0,
-        alarmEnter: 0,
-        alarmPermDenied: 0,
-        stationPassedEnter: 0,
         lastTaskFiredTs: 1_700_000_000_000,
-      };
+      });
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(stored));
 
       const result = await getBgDiagnostics();
