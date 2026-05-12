@@ -47,3 +47,18 @@ export function endLiveActivity(): Promise<void> {
 export function isLiveActivityEnabled(): boolean {
   return LiveActivityModule?.isLiveActivityEnabled() ?? false;
 }
+
+export function saveWidgetStation(
+  stationName: string,
+  lineColor: string,
+  distanceM: number,
+): Promise<void> {
+  return (
+    LiveActivityModule?.saveWidgetStation(stationName, lineColor, distanceM) ??
+    Promise.resolve()
+  );
+}
+
+export function clearWidgetStation(): Promise<void> {
+  return LiveActivityModule?.clearWidgetStation() ?? Promise.resolve();
+}

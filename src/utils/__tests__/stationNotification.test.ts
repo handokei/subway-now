@@ -44,6 +44,13 @@ jest.mock('../../../modules/live-activity', () => ({
   isLiveActivityEnabled: () => mockIsLiveActivityEnabled(),
 }));
 
+const mockSaveStationToWidget = jest.fn().mockResolvedValue(undefined);
+const mockClearWidgetStation = jest.fn().mockResolvedValue(undefined);
+jest.mock('../widgetStorage', () => ({
+  saveStationToWidget: (...args: unknown[]) => mockSaveStationToWidget(...args),
+  clearWidgetStation: () => mockClearWidgetStation(),
+}));
+
 const mockStation: Station = {
   id: 'si-cheong-1',
   name: '시청',
@@ -655,6 +662,36 @@ describe('stationNotification', () => {
     it('dismiss 실패해도 에러를 던지지 않는다', async () => {
       (Notifications.dismissNotificationAsync as jest.Mock).mockRejectedValueOnce(new Error('없음'));
       await expect(clearAlarmNotification()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('widget storage 연동', () => {
+    beforeEach(() => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      mockSaveStationToWidget.mockResolvedValue(undefined);
+      mockClearWidgetStation.mockResolvedValue(undefined);
+    });
+
+    it('updateStationNotification은 saveStationToWidget을 km 단위로 호출한다', async () => {
+      await updateStationNotification(mockStation, 250);
+      expect(mockSaveStationToWidget).toHaveBeenCalledWith(mockStation, 0.25);
+    });
+
+    it('saveStationToWidget이 실패해도 updateLiveActivity는 호출된다', async () => {
+      mockSaveStationToWidget.mockRejectedValueOnce(new Error('group missing'));
+      await updateStationNotification(mockStation, 100);
+      expect(mockUpdateLiveActivity).toHaveBeenCalled();
+    });
+
+    it('clearStationNotification은 clearWidgetStation을 호출한다', async () => {
+      await clearStationNotification();
+      expect(mockClearWidgetStation).toHaveBeenCalled();
+    });
+
+    it('clearWidgetStation이 실패해도 endLiveActivity는 호출된다', async () => {
+      mockClearWidgetStation.mockRejectedValueOnce(new Error('group missing'));
+      await clearStationNotification();
+      expect(mockEndLiveActivity).toHaveBeenCalled();
     });
   });
 });

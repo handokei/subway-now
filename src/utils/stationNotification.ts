@@ -11,6 +11,7 @@ import { vibrateAlarm, stopVibration } from './alarmSound';
 import { createLogger } from './logger';
 import { incrementBgDiagnostic } from './bgDiagnostics';
 import { getStationDisplayName, getStationDisplayNameByName } from './stationDisplay';
+import { saveStationToWidget, clearWidgetStation } from './widgetStorage';
 import stationsData from '../data/stations.json';
 
 const allStations = stationsData as Station[];
@@ -274,6 +275,10 @@ export async function updateStationNotification(
 ): Promise<void> {
   notifLogger.info('updateStation:', currentStation.name, `${distanceM}m`, destination ? `→ ${destination.name}` : '');
 
+  await saveStationToWidget(currentStation, distanceM / 1000).catch((e) =>
+    notifLogger.error('위젯 저장 실패:', e),
+  );
+
   if (Platform.OS === 'ios') {
     const liveActivityEnabled = LiveActivity.isLiveActivityEnabled();
     liveActivityLogger.info('isLiveActivityEnabled:', liveActivityEnabled);
@@ -311,6 +316,9 @@ async function dismissStationPassedNotification(): Promise<void> {
 }
 
 export async function clearStationNotification(): Promise<void> {
+  await clearWidgetStation().catch((e) =>
+    notifLogger.error('위젯 해제 실패:', e),
+  );
   if (Platform.OS === 'ios') {
     if (!LiveActivity.isLiveActivityEnabled()) {
       notifLogger.info('알림 해제 (Live Activity 비활성)');
