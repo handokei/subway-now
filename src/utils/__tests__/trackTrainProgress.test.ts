@@ -1,6 +1,6 @@
 import type { CandidateTrain } from '../pickCandidateTrains';
 import type { LineNumber } from '../../types/station';
-import { trackTrainProgress } from '../trackTrainProgress';
+import { trackTrainProgress, type TrackTrainProgressInput } from '../trackTrainProgress';
 
 const LINE: LineNumber = '2';
 
@@ -21,6 +21,18 @@ function makeCandidate(overrides: Partial<CandidateTrain>): CandidateTrain {
 const NEAR_SICHEONG = { lat: 37.5636, lng: 126.9754 };
 const NEAR_EULJIRO_3GA = { lat: 37.5663, lng: 126.9917 };
 
+function pick(
+  pairs: Array<[string, string]>,
+  opts: Omit<TrackTrainProgressInput, 'candidates'> = {},
+) {
+  return trackTrainProgress({
+    candidates: pairs.map(([trainNo, currentStationName]) =>
+      makeCandidate({ trainNo, currentStationName }),
+    ),
+    ...opts,
+  });
+}
+
 describe('trackTrainProgress', () => {
   it('returns null for empty candidates', () => {
     expect(trackTrainProgress({ candidates: [] })).toBeNull();
@@ -39,130 +51,80 @@ describe('trackTrainProgress', () => {
   });
 
   it('returns null when single candidate station name is not on the line', () => {
-    const result = trackTrainProgress({
-      candidates: [makeCandidate({ currentStationName: '없는역' })],
-    });
-    expect(result).toBeNull();
+    expect(pick([['A', '없는역']])).toBeNull();
   });
 
   it('returns null when all multiple candidates fail station resolution', () => {
-    const result = trackTrainProgress({
-      candidates: [
-        makeCandidate({ trainNo: 'A', currentStationName: '없는역1' }),
-        makeCandidate({ trainNo: 'B', currentStationName: '없는역2' }),
-      ],
-    });
-    expect(result).toBeNull();
+    expect(pick([['A', '없는역1'], ['B', '없는역2']])).toBeNull();
   });
 
   it('drops to single when only one of many candidates resolves to a station', () => {
-    const result = trackTrainProgress({
-      candidates: [
-        makeCandidate({ trainNo: 'A', currentStationName: '없는역' }),
-        makeCandidate({ trainNo: 'B', currentStationName: '을지로입구' }),
-      ],
-    });
+    const result = pick([['A', '없는역'], ['B', '을지로입구']]);
     expect(result?.trainNo).toBe('B');
     expect(result?.confidence).toBe('single');
   });
 
   it('picks sticky when lastConfirmedTrainNo matches a resolved candidate', () => {
-    const result = trackTrainProgress({
-      candidates: [
-        makeCandidate({ trainNo: 'A', currentStationName: '시청' }),
-        makeCandidate({ trainNo: 'B', currentStationName: '을지로입구' }),
-      ],
-      lastConfirmedTrainNo: 'B',
-      userLocation: NEAR_SICHEONG,
-    });
+    const result = pick(
+      [['A', '시청'], ['B', '을지로입구']],
+      { lastConfirmedTrainNo: 'B', userLocation: NEAR_SICHEONG },
+    );
     expect(result?.trainNo).toBe('B');
     expect(result?.confidence).toBe('sticky');
   });
 
   it('falls through to GPS when lastConfirmedTrainNo is not in candidates', () => {
-    const result = trackTrainProgress({
-      candidates: [
-        makeCandidate({ trainNo: 'A', currentStationName: '시청' }),
-        makeCandidate({ trainNo: 'B', currentStationName: '을지로3가' }),
-      ],
-      lastConfirmedTrainNo: 'Z',
-      userLocation: NEAR_EULJIRO_3GA,
-    });
+    const result = pick(
+      [['A', '시청'], ['B', '을지로3가']],
+      { lastConfirmedTrainNo: 'Z', userLocation: NEAR_EULJIRO_3GA },
+    );
     expect(result?.trainNo).toBe('B');
     expect(result?.confidence).toBe('gps-disambiguated');
   });
 
   it('falls through to GPS when sticky candidate fails station resolution', () => {
-    const result = trackTrainProgress({
-      candidates: [
-        makeCandidate({ trainNo: 'A', currentStationName: '시청' }),
-        makeCandidate({ trainNo: 'STICKY', currentStationName: '없는역' }),
-        makeCandidate({ trainNo: 'C', currentStationName: '을지로3가' }),
-      ],
-      lastConfirmedTrainNo: 'STICKY',
-      userLocation: NEAR_EULJIRO_3GA,
-    });
+    const result = pick(
+      [['A', '시청'], ['STICKY', '없는역'], ['C', '을지로3가']],
+      { lastConfirmedTrainNo: 'STICKY', userLocation: NEAR_EULJIRO_3GA },
+    );
     expect(result?.trainNo).toBe('C');
     expect(result?.confidence).toBe('gps-disambiguated');
   });
 
   it('picks closest candidate by haversine when only GPS is available', () => {
-    const result = trackTrainProgress({
-      candidates: [
-        makeCandidate({ trainNo: 'A', currentStationName: '을지로4가' }),
-        makeCandidate({ trainNo: 'B', currentStationName: '시청' }),
-      ],
-      userLocation: NEAR_SICHEONG,
-    });
+    const result = pick(
+      [['A', '을지로4가'], ['B', '시청']],
+      { userLocation: NEAR_SICHEONG },
+    );
     expect(result?.trainNo).toBe('B');
     expect(result?.confidence).toBe('gps-disambiguated');
   });
 
   it('breaks GPS ties by trainNo ascending (later candidate wins)', () => {
-    const result = trackTrainProgress({
-      candidates: [
-        makeCandidate({ trainNo: 'Z', currentStationName: '시청' }),
-        makeCandidate({ trainNo: 'A', currentStationName: '시청' }),
-      ],
-      userLocation: NEAR_SICHEONG,
-    });
+    const result = pick(
+      [['Z', '시청'], ['A', '시청']],
+      { userLocation: NEAR_SICHEONG },
+    );
     expect(result?.trainNo).toBe('A');
     expect(result?.confidence).toBe('gps-disambiguated');
   });
 
   it('keeps closer candidate when later candidate is farther (or worse tie-break)', () => {
-    const result = trackTrainProgress({
-      candidates: [
-        makeCandidate({ trainNo: 'A', currentStationName: '시청' }),
-        makeCandidate({ trainNo: 'B', currentStationName: '을지로4가' }),
-        makeCandidate({ trainNo: 'Z', currentStationName: '시청' }),
-      ],
-      userLocation: NEAR_SICHEONG,
-    });
+    const result = pick(
+      [['A', '시청'], ['B', '을지로4가'], ['Z', '시청']],
+      { userLocation: NEAR_SICHEONG },
+    );
     expect(result?.trainNo).toBe('A');
     expect(result?.confidence).toBe('gps-disambiguated');
   });
 
   it('returns null when multiple candidates remain and no sticky/GPS hint exists', () => {
-    expect(
-      trackTrainProgress({
-        candidates: [
-          makeCandidate({ trainNo: 'A', currentStationName: '시청' }),
-          makeCandidate({ trainNo: 'B', currentStationName: '을지로입구' }),
-        ],
-      }),
-    ).toBeNull();
+    expect(pick([['A', '시청'], ['B', '을지로입구']])).toBeNull();
   });
 
   it('treats userLocation === null the same as undefined', () => {
     expect(
-      trackTrainProgress({
-        candidates: [
-          makeCandidate({ trainNo: 'A', currentStationName: '시청' }),
-          makeCandidate({ trainNo: 'B', currentStationName: '을지로입구' }),
-        ],
-        userLocation: null,
-      }),
+      pick([['A', '시청'], ['B', '을지로입구']], { userLocation: null }),
     ).toBeNull();
   });
 });

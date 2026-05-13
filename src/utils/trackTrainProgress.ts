@@ -66,7 +66,8 @@ export function trackTrainProgress(
         r.station.lng,
       ),
     }));
-    const nearest = scored.reduce((min, cur) => {
+    const [first, ...rest] = scored;
+    const nearest = rest.reduce((min, cur) => {
       if (cur.distance < min.distance) return cur;
       if (
         cur.distance === min.distance &&
@@ -75,7 +76,7 @@ export function trackTrainProgress(
         return cur;
       }
       return min;
-    });
+    }, first);
     return toResult(nearest.resolved, 'gps-disambiguated');
   }
 
