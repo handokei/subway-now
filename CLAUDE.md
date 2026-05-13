@@ -47,10 +47,50 @@ npx jest --testNamePattern="should return nearest station"
 
 **빌드 & 배포:**
 ```bash
-eas build --profile production --platform ios    # 프로덕션 빌드
+eas build --profile production --platform ios    # 프로덕션 빌드 (buildNumber 자동 +1)
 eas build --profile development --platform ios   # 개발 빌드 (실기기 테스트)
 eas submit --platform ios --latest               # TestFlight 업로드
 ```
+
+### 버전/빌드 번호 관리 정책
+
+| 값 | 의미 | 출처 (SSOT) | 변경 방법 |
+| --- | --- | --- | --- |
+| `version` (CFBundleShortVersionString) | 마케팅 버전 (예: 1.2.2) | `package.json` | 새 chore 이슈 → `npm version patch/minor/major` |
+| `ios.buildNumber` (CFBundleVersion) | iOS 빌드 번호 | **EAS Remote** | production 빌드 시 자동 +1 |
+| `android.versionCode` | Android 빌드 번호 | **EAS Remote** | production 빌드 시 자동 +1 |
+
+- `eas.json`: `appVersionSource: "remote"` + production 프로파일 `autoIncrement: true`.
+- `development` / `preview` 프로파일은 autoIncrement 미적용 → remote 마지막 값 재사용 (테스트 빌드가 production 카운터를 소진하지 않음).
+- `app.config.js`에는 `buildNumber` / `versionCode`를 두지 않는다. (remote 모드에서 무시되며 혼란만 유발)
+
+### EAS Remote Version 운영 명령
+
+```bash
+eas build:version:get --platform ios       # 현재 remote 값 확인
+eas build:version:set --platform ios       # 값 강제 지정 (예외 상황)
+eas build:version:sync                     # 로컬 → remote 동기화
+```
+
+### 1회성 마이그레이션 절차 (`appVersionSource: "local"` → `"remote"` 전환 시점)
+
+**중요: 이 절차는 PR `chore/#363` 머지 직후 단 한 번만 실행.**
+
+```bash
+# 1) 현재 remote 상태 확인
+eas build:version:get --platform ios
+eas build:version:get --platform android
+
+# 2) remote가 비어 있거나 직전 출시값(iOS 43, Android 1) 이하라면 baseline 명시 지정
+#    autoIncrement는 (remote 값) + 1 부터 발급하므로 안전치로 +1 해서 set
+eas build:version:set --platform ios       # 값: 44
+eas build:version:set --platform android   # 값: 2
+
+# 3) 첫 production 빌드로 검증 (buildNumber가 45, versionCode가 3으로 찍혀야 정상)
+eas build --profile production --platform ios
+```
+
+이 절차를 건너뛰면 autoIncrement 결과가 App Store 기존 빌드 번호 이하로 떨어져 다시 거부될 수 있다.
 
 ---
 
