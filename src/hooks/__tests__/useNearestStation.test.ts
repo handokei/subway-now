@@ -350,7 +350,7 @@ describe('useNearestStation', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalled();
   });
 
-  it('같은 역 좌표 반복 시 setState는 최초 1회만 호출된다', async () => {
+  it('같은 역 좌표 반복 시 result/variants는 throttle되어 동일 reference를 유지한다', async () => {
     mockGranted();
 
     const { result } = renderHook(() => useNearestStation());
@@ -361,13 +361,38 @@ describe('useNearestStation', () => {
 
     await waitFor(() => expect(result.current.result?.station.name).toBe('강남'));
 
-    const firstLocation = result.current.userLocation;
+    const firstResult = result.current.result;
+    const firstVariants = result.current.variants;
 
-    // 같은 좌표로 다시 콜백 (거리 변화 <10m)
+    // 같은 좌표로 다시 콜백 (거리 변화 <3m) — 표시값은 throttle
     simulateGps(37.4980, 127.0277);
 
-    // userLocation이 변경되지 않아야 함
-    expect(result.current.userLocation).toBe(firstLocation);
+    expect(result.current.result).toBe(firstResult);
+    expect(result.current.variants).toBe(firstVariants);
+  });
+
+  it('3m 미만 이동이어도 userLocation/speedMps/accuracyMeters는 매 fix마다 갱신된다', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, { speed: 1.2, accuracy: 15 });
+
+    await waitFor(() => expect(result.current.userLocation).not.toBeNull());
+
+    const firstResult = result.current.result;
+
+    // 1m 미만 이동 — throttle 안으로 떨어지는 변화
+    simulateGps(37.49801, 127.02771, { speed: 1.5, accuracy: 18 });
+
+    // raw 신호는 갱신
+    expect(result.current.userLocation).toEqual({ lat: 37.49801, lng: 127.02771 });
+    expect(result.current.speedMps).toBe(1.5);
+    expect(result.current.accuracyMeters).toBe(18);
+    // 표시값은 throttle 유지
+    expect(result.current.result).toBe(firstResult);
   });
 
   it('findNearestStations가 null을 반환하면 result가 null이 된다', async () => {
