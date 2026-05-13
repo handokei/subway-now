@@ -2,10 +2,11 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import ClusteredMapView from 'react-native-map-clustering';
-import { Marker, PROVIDER_DEFAULT } from 'react-native-maps';
+import { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 import type MapView from 'react-native-maps';
 import type { Station } from '../types/station';
 import type { TrainMarker as TrainMarkerData } from '../utils/findTrainCoordinates';
+import type { RouteCoordinatePath, RouteStationRole } from '../utils/routeToCoordinates';
 import { buildMapConfig } from '../utils/buildMapConfig';
 import { useTheme } from '../theme';
 import { LINE_NAMES } from '../constants/lineColors';
@@ -42,10 +43,19 @@ interface StationMapProps {
   focusNonce?: number;
   /** 값이 변할 때마다 사용자 좌표(userLat/userLng)로 카메라를 다시 이동시킨다. */
   recenterNonce?: number;
+  /** 선택된 경로의 폴리라인 좌표 + 강조 마커. 있으면 지도에 오버레이로 표시. */
+  routeCoords?: RouteCoordinatePath | null;
 }
 
 const FOCUS_REGION_DELTA = 0.01;
 const FOCUS_ANIMATION_MS = 400;
+const ROUTE_POLYLINE_WIDTH = 5;
+const ROUTE_FIT_EDGE_PADDING = { top: 40, bottom: 40, left: 40, right: 40 };
+const ROUTE_MARKER_SIZE: Record<RouteStationRole, number> = {
+  origin: 18,
+  transfer: 16,
+  destination: 18,
+};
 
 export function StationMap({
   userLat,
@@ -58,6 +68,7 @@ export function StationMap({
   focusStation,
   focusNonce,
   recenterNonce,
+  routeCoords,
 }: StationMapProps) {
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
@@ -92,6 +103,14 @@ export function StationMap({
       FOCUS_ANIMATION_MS,
     );
   }, [recenterNonce]);
+
+  useEffect(() => {
+    if (!mapReady || !routeCoords || routeCoords.path.length === 0) return;
+    mapRef.current?.fitToCoordinates(routeCoords.path, {
+      edgePadding: ROUTE_FIT_EDGE_PADDING,
+      animated: true,
+    });
+  }, [mapReady, routeCoords]);
 
   const mapConfig = useMemo(
     () => buildMapConfig({ userLat, userLng, nearestStation, nearbyStations }),
@@ -179,6 +198,42 @@ export function StationMap({
             </Marker>
           );
         })}
+        {routeCoords && routeCoords.path.length > 0 && (
+          <Polyline
+            coordinates={routeCoords.path}
+            strokeColor={colors.accent}
+            strokeWidth={ROUTE_POLYLINE_WIDTH}
+            testID="route-polyline"
+          />
+        )}
+        {routeCoords?.keyStations.map(({ station, role }) => {
+          const size = ROUTE_MARKER_SIZE[role];
+          const bg = role === 'transfer' ? station.lineColor : colors.accent;
+          return (
+            <Marker
+              key={`route-${role}-${station.id}`}
+              coordinate={{ latitude: station.lat, longitude: station.lng }}
+              title={getStationDisplayName(station)}
+              tracksViewChanges={false}
+              anchor={{ x: 0.5, y: 0.5 }}
+              testID={`route-marker-${role}-${station.id}`}
+            >
+              <View
+                style={[
+                  styles.routeMarkerDot,
+                  {
+                    width: size,
+                    height: size,
+                    borderRadius: size / 2,
+                    backgroundColor: bg,
+                    borderColor: colors.bg,
+                  },
+                ]}
+                testID={`route-marker-dot-${role}-${station.id}`}
+              />
+            </Marker>
+          );
+        })}
       </ClusteredMapView>
       {!mapReady && (
         <View style={styles.loading} testID="map-loading">
@@ -232,6 +287,9 @@ const styles = StyleSheet.create({
     height: 14,
     borderRadius: 7,
     borderWidth: 2,
+  },
+  routeMarkerDot: {
+    borderWidth: 3,
   },
 });
 

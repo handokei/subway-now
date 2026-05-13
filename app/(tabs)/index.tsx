@@ -13,8 +13,8 @@ import { DestinationPicker } from '../../src/components/DestinationPicker';
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route, type CategorizedRoute, type RoutePreference } from '../../src/utils/stationRoute';
 import type { Station } from '../../src/types/station';
 import { EditorialTimeline } from '../../src/components/EditorialTimeline';
-import { RouteMap } from '../../src/components/RouteMap';
 import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/journeyAdapter';
+import { useRouter } from 'expo-router';
 import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
@@ -36,6 +36,7 @@ const logger = createLogger('HomeScreen');
 export default function HomeScreen() {
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
+  const router = useRouter();
   const customOrigin = useAppStore((s) => s.customOrigin);
   const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
@@ -420,9 +421,15 @@ export default function HomeScreen() {
                     <EditorialTimeline stops={journeyDisplayToStops(journey)} />
                   )}
                   {route && effectiveOrigin && destination && (
-                    <View style={{ marginTop: spacing.xl, borderRadius: radius.md, overflow: 'hidden' }} testID="route-map-wrapper">
-                      <RouteMap route={route} origin={effectiveOrigin} destination={destination} />
-                    </View>
+                    <Pressable
+                      style={[styles.viewOnMapButton, { borderColor: colors.accent }]}
+                      onPress={() => router.push('/(tabs)/map')}
+                      testID="view-route-on-map-button"
+                    >
+                      <Text style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}>
+                        {t('home.viewRouteOnMap')}
+                      </Text>
+                    </Pressable>
                   )}
                 </View>
 
@@ -668,6 +675,13 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
   },
   vHair: { width: 1, height: 12 },
+  viewOnMapButton: {
+    marginTop: spacing.xl,
+    paddingVertical: spacing.md,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    alignItems: 'center',
+  },
   sleepRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
