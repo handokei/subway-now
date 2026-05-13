@@ -1,7 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { ALARM_PHASES, type AlarmPhaseId } from './alarmPhases';
-import { resolveAllTargets, type AlarmEvent } from './stationAlarm';
+import { alarmKey, resolveAllTargets, type AlarmEvent } from './stationAlarm';
 import { calculateStaticETA, type Route } from './stationRoute';
 import { buildAlarmContent } from './stationNotification';
 import { createLogger } from './logger';
@@ -19,7 +19,7 @@ const PHASE_LEAD_SECONDS: Record<AlarmPhaseId, number> = {
 };
 
 export function scheduledAlarmIdentifier(event: Pick<AlarmEvent, 'phaseId' | 'stationName'>): string {
-  return `${SCHEDULED_ALARM_PREFIX}${event.phaseId}:${event.stationName}`;
+  return `${SCHEDULED_ALARM_PREFIX}${alarmKey(event)}`;
 }
 
 export interface ScheduledAlarm {
@@ -31,8 +31,11 @@ export interface ScheduledAlarm {
 export interface ScheduleAlarmsParams {
   route: NonNullable<Route>;
   destinationName: string;
-  /** Seoul Arrival API 첫 결과(초). null이면 calculateStaticETA로 fallback. */
-  arrivalEtaSeconds: number | null;
+  /**
+   * Seoul Arrival API 첫 결과 — 다음 도착역까지 ETA(초).
+   * null이면 calculateStaticETA로 목적지 ETA를 fallback 계산한다.
+   */
+  nextStationEtaSeconds: number | null;
   /** 테스트에서 시각 주입용. 기본값은 Date.now(). */
   now?: number;
 }
@@ -47,13 +50,13 @@ export interface ScheduleAlarmsParams {
 export async function scheduleAlarmsForRoute(
   params: ScheduleAlarmsParams,
 ): Promise<ScheduledAlarm[]> {
-  const { route, destinationName, arrivalEtaSeconds, now = Date.now() } = params;
+  const { route, destinationName, nextStationEtaSeconds, now = Date.now() } = params;
 
   const targets = resolveAllTargets(route, destinationName);
   const totalStops = targets.reduce((sum, t) => sum + t.stops, 0);
   if (totalStops === 0) return [];
 
-  const finalEtaSeconds = resolveFinalEtaSeconds(arrivalEtaSeconds, route);
+  const finalEtaSeconds = resolveFinalEtaSeconds(nextStationEtaSeconds, totalStops, route);
 
   const scheduled: ScheduledAlarm[] = [];
   let cumulativeStops = 0;
@@ -113,12 +116,19 @@ export async function cancelScheduledAlarms(): Promise<void> {
   logger.info(`cancelled ${cancelled} scheduled alarms`);
 }
 
+/**
+ * 첫 도착역까지의 ETA로부터 최종 목적지 ETA를 추정한다.
+ * API 값이 있으면: nextStation ETA + (남은 정거장 - 1) × 90s.
+ * 환승 페널티는 무시한다 — Phase 1 baseline. 정확도는 reschedule(#335)이 보정.
+ * 없으면 calculateStaticETA(분)로 fallback.
+ */
 function resolveFinalEtaSeconds(
-  arrivalEtaSeconds: number | null,
+  nextStationEtaSeconds: number | null,
+  totalStops: number,
   route: NonNullable<Route>,
 ): number {
-  if (arrivalEtaSeconds != null && arrivalEtaSeconds > 0) {
-    return arrivalEtaSeconds;
+  if (nextStationEtaSeconds != null && nextStationEtaSeconds > 0) {
+    return nextStationEtaSeconds + (totalStops - 1) * ONE_STOP_SECONDS;
   }
   // calculateStaticETA는 NonNullable Route에 대해 항상 number를 반환한다.
   return (calculateStaticETA(route) as number) * 60;
