@@ -4,12 +4,13 @@ import { StationMap } from '../StationMap';
 import type { Station } from '../../types/station';
 import { installLanguageRestoreHook, setLang } from '../../testUtils/i18nLanguageOverride';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { __animateToRegionMock } = require('react-native-map-clustering');
+const { __animateToRegionMock, __fitToCoordinatesMock } = require('react-native-map-clustering');
 
 installLanguageRestoreHook();
 
 beforeEach(() => {
   __animateToRegionMock.mockClear();
+  __fitToCoordinatesMock.mockClear();
 });
 
 const mockStation: Station = {
@@ -345,6 +346,97 @@ describe('StationMap', () => {
         <StationMap {...baseProps} trainMarkers={[mkTrain('T001', 99)]} />,
       );
       expect(getByTestId('train-marker-T001').props.description).toContain('운행 중');
+    });
+  });
+
+  describe('routeCoords (경로 오버레이)', () => {
+    const transferStation: Station = {
+      id: '3-329',
+      name: '교대',
+      nameEn: 'Seoul Nat\'l Univ. of Education',
+      line: '3',
+      lineColor: '#EF7C1C',
+      lat: 37.4933,
+      lng: 127.0146,
+    };
+    const destStation: Station = {
+      id: '3-330',
+      name: '남부터미널',
+      nameEn: 'Express Bus Terminal',
+      line: '3',
+      lineColor: '#EF7C1C',
+      lat: 37.4847,
+      lng: 127.0156,
+    };
+
+    const path = [
+      { latitude: mockStation.lat, longitude: mockStation.lng },
+      { latitude: transferStation.lat, longitude: transferStation.lng },
+      { latitude: destStation.lat, longitude: destStation.lng },
+    ];
+    const routeCoords = {
+      path,
+      keyStations: [
+        { station: mockStation, role: 'origin' as const },
+        { station: transferStation, role: 'transfer' as const },
+        { station: destStation, role: 'destination' as const },
+      ],
+    };
+
+    it('routeCoords 미전달 시 polyline / 강조 마커가 없다', () => {
+      const { queryByTestId } = render(<StationMap {...baseProps} />);
+      expect(queryByTestId('route-polyline')).toBeNull();
+      expect(queryByTestId(`route-marker-origin-${mockStation.id}`)).toBeNull();
+    });
+
+    it('routeCoords 전달 시 polyline + 출발/환승/도착 마커 렌더', () => {
+      const { getByTestId } = render(
+        <StationMap {...baseProps} routeCoords={routeCoords} />,
+      );
+      expect(getByTestId('route-polyline')).toBeTruthy();
+      expect(getByTestId(`route-marker-origin-${mockStation.id}`)).toBeTruthy();
+      expect(getByTestId(`route-marker-transfer-${transferStation.id}`)).toBeTruthy();
+      expect(getByTestId(`route-marker-destination-${destStation.id}`)).toBeTruthy();
+    });
+
+    it('routeCoords 전달 시 fitToCoordinates 호출', async () => {
+      render(<StationMap {...baseProps} routeCoords={routeCoords} />);
+      await waitFor(() => {
+        expect(__fitToCoordinatesMock).toHaveBeenCalledWith(
+          routeCoords.path,
+          expect.objectContaining({ animated: true }),
+        );
+      });
+    });
+
+    it('routeCoords.path가 비어 있으면 fitToCoordinates 호출 안 함', async () => {
+      render(
+        <StationMap
+          {...baseProps}
+          routeCoords={{ path: [], keyStations: [] }}
+        />,
+      );
+      await waitFor(() => {
+        // map ready effect 트리거를 위해 한 차례 flush
+        expect(__animateToRegionMock).not.toHaveBeenCalled();
+      });
+      expect(__fitToCoordinatesMock).not.toHaveBeenCalled();
+    });
+
+    it('환승 마커는 노선 색, 출발/도착 마커는 accent 색을 사용', () => {
+      const { getByTestId } = render(
+        <StationMap {...baseProps} routeCoords={routeCoords} />,
+      );
+      const transferDot = getByTestId(`route-marker-dot-transfer-${transferStation.id}`);
+      expect(transferDot.props.style).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ backgroundColor: transferStation.lineColor }),
+        ]),
+      );
+      const originDot = getByTestId(`route-marker-dot-origin-${mockStation.id}`);
+      expect(originDot.props.style).toEqual(
+        expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
+      );
     });
   });
 });
