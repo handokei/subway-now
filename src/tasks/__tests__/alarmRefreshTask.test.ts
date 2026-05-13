@@ -65,6 +65,35 @@ function getCallback(): () => Promise<number> {
   return (global as any).__bgRefreshCallback;
 }
 
+function mockStorage(values: {
+  destination?: unknown;
+  route?: unknown;
+  lastStation?: string | null;
+}) {
+  const map: Record<string, string | null> = {
+    'subway-now:destination':
+      values.destination === undefined
+        ? null
+        : typeof values.destination === 'string'
+          ? values.destination
+          : JSON.stringify(values.destination),
+    'subway-now:route':
+      values.route === undefined ? null : JSON.stringify(values.route),
+    'subway-now:last-notified-station': values.lastStation ?? null,
+  };
+  (AsyncStorage.getItem as jest.Mock).mockImplementation((key: string) =>
+    Promise.resolve(key in map ? map[key] : null),
+  );
+}
+
+function expectSchedulerCalledWith(nextStationEtaSeconds: number | null) {
+  expect(mockScheduleAlarmsForRoute).toHaveBeenCalledWith({
+    route,
+    destinationName: '시청',
+    nextStationEtaSeconds,
+  });
+}
+
 describe('alarmRefreshTask', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -85,132 +114,72 @@ describe('alarmRefreshTask', () => {
     });
 
     it('route가 없으면 스케줄러를 호출하지 않는다', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockImplementation((key) => {
-        if (key === 'subway-now:destination') return Promise.resolve(JSON.stringify(destination));
-        return Promise.resolve(null);
-      });
+      mockStorage({ destination });
       const result = await getCallback()();
       expect(result).toBe(BackgroundTask.BackgroundTaskResult.Success);
       expect(mockScheduleAlarmsForRoute).not.toHaveBeenCalled();
     });
 
     it('destination JSON 파싱 실패 시 Success(no-op) 반환', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockImplementation((key) => {
-        if (key === 'subway-now:destination') return Promise.resolve('not-json{');
-        if (key === 'subway-now:route') return Promise.resolve(JSON.stringify(route));
-        return Promise.resolve(null);
-      });
+      mockStorage({ destination: 'not-json{', route });
       const result = await getCallback()();
       expect(result).toBe(BackgroundTask.BackgroundTaskResult.Success);
       expect(mockScheduleAlarmsForRoute).not.toHaveBeenCalled();
     });
 
     it('destination.name이 비어 있으면 스킵한다', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockImplementation((key) => {
-        if (key === 'subway-now:destination') return Promise.resolve(JSON.stringify({ id: 'x' }));
-        if (key === 'subway-now:route') return Promise.resolve(JSON.stringify(route));
-        return Promise.resolve(null);
-      });
+      mockStorage({ destination: { id: 'x' }, route });
       const result = await getCallback()();
       expect(result).toBe(BackgroundTask.BackgroundTaskResult.Success);
       expect(mockScheduleAlarmsForRoute).not.toHaveBeenCalled();
     });
 
     it('활성 트립이 있고 현재역이 없으면 nextStationEtaSeconds=null로 스케줄러 호출', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockImplementation((key) => {
-        if (key === 'subway-now:destination') return Promise.resolve(JSON.stringify(destination));
-        if (key === 'subway-now:route') return Promise.resolve(JSON.stringify(route));
-        if (key === 'subway-now:last-notified-station') return Promise.resolve(null);
-        return Promise.resolve(null);
-      });
+      mockStorage({ destination, route, lastStation: null });
       const result = await getCallback()();
       expect(result).toBe(BackgroundTask.BackgroundTaskResult.Success);
       expect(mockFetchArrivalInfo).not.toHaveBeenCalled();
-      expect(mockScheduleAlarmsForRoute).toHaveBeenCalledWith({
-        route,
-        destinationName: '시청',
-        nextStationEtaSeconds: null,
-      });
+      expectSchedulerCalledWith(null);
     });
 
     it('현재역이 있으면 Arrival API의 up/down 중 가장 짧은 양수 ETA를 사용한다', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockImplementation((key) => {
-        if (key === 'subway-now:destination') return Promise.resolve(JSON.stringify(destination));
-        if (key === 'subway-now:route') return Promise.resolve(JSON.stringify(route));
-        if (key === 'subway-now:last-notified-station') return Promise.resolve('station-1');
-        return Promise.resolve(null);
-      });
+      mockStorage({ destination, route, lastStation: 'station-1' });
       mockFetchArrivalInfo.mockResolvedValue({
         up: [{ arrivalSeconds: 600 }, { arrivalSeconds: 1200 }],
         down: [{ arrivalSeconds: 300 }],
       });
       await getCallback()();
       expect(mockFetchArrivalInfo).toHaveBeenCalledWith('강남');
-      expect(mockScheduleAlarmsForRoute).toHaveBeenCalledWith({
-        route,
-        destinationName: '시청',
-        nextStationEtaSeconds: 300,
-      });
+      expectSchedulerCalledWith(300);
     });
 
     it('Arrival API가 모두 0/음수면 nextStationEtaSeconds=null', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockImplementation((key) => {
-        if (key === 'subway-now:destination') return Promise.resolve(JSON.stringify(destination));
-        if (key === 'subway-now:route') return Promise.resolve(JSON.stringify(route));
-        if (key === 'subway-now:last-notified-station') return Promise.resolve('station-1');
-        return Promise.resolve(null);
-      });
+      mockStorage({ destination, route, lastStation: 'station-1' });
       mockFetchArrivalInfo.mockResolvedValue({
         up: [{ arrivalSeconds: 0 }],
         down: [{ arrivalSeconds: -1 }],
       });
       await getCallback()();
-      expect(mockScheduleAlarmsForRoute).toHaveBeenCalledWith({
-        route,
-        destinationName: '시청',
-        nextStationEtaSeconds: null,
-      });
+      expectSchedulerCalledWith(null);
     });
 
     it('LAST_NOTIFIED_STATION id가 stations.json에 없으면 currentStation은 null', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockImplementation((key) => {
-        if (key === 'subway-now:destination') return Promise.resolve(JSON.stringify(destination));
-        if (key === 'subway-now:route') return Promise.resolve(JSON.stringify(route));
-        if (key === 'subway-now:last-notified-station') return Promise.resolve('unknown-id');
-        return Promise.resolve(null);
-      });
+      mockStorage({ destination, route, lastStation: 'unknown-id' });
       await getCallback()();
       expect(mockFetchArrivalInfo).not.toHaveBeenCalled();
-      expect(mockScheduleAlarmsForRoute).toHaveBeenCalledWith({
-        route,
-        destinationName: '시청',
-        nextStationEtaSeconds: null,
-      });
+      expectSchedulerCalledWith(null);
     });
 
     it('Arrival API 호출이 실패해도 static fallback으로 스케줄러를 호출한다', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockImplementation((key) => {
-        if (key === 'subway-now:destination') return Promise.resolve(JSON.stringify(destination));
-        if (key === 'subway-now:route') return Promise.resolve(JSON.stringify(route));
-        if (key === 'subway-now:last-notified-station') return Promise.resolve('station-1');
-        return Promise.resolve(null);
-      });
+      mockStorage({ destination, route, lastStation: 'station-1' });
       mockFetchArrivalInfo.mockRejectedValue(new Error('network'));
       const result = await getCallback()();
       expect(result).toBe(BackgroundTask.BackgroundTaskResult.Success);
-      expect(mockScheduleAlarmsForRoute).toHaveBeenCalledWith({
-        route,
-        destinationName: '시청',
-        nextStationEtaSeconds: null,
-      });
+      expectSchedulerCalledWith(null);
     });
 
     it('스케줄러가 throw 하면 Failed를 반환한다', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockImplementation((key) => {
-        if (key === 'subway-now:destination') return Promise.resolve(JSON.stringify(destination));
-        if (key === 'subway-now:route') return Promise.resolve(JSON.stringify(route));
-        return Promise.resolve(null);
-      });
+      mockStorage({ destination, route });
       mockScheduleAlarmsForRoute.mockRejectedValueOnce(new Error('boom'));
       const result = await getCallback()();
       expect(result).toBe(BackgroundTask.BackgroundTaskResult.Failed);
