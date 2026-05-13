@@ -11,16 +11,24 @@ import { getTrainStatusPriority } from '../constants/trainStatus';
  * 도착/위치 API와 달리 자체 검증 신호가 아니라 별도 confidence로 둔다.
  */
 export type FusionConfidence =
+  | 'position-train'
   | 'arrival-confirmed'
   | 'arrival-arriving'
   | 'route-progress'
   | 'gps-only';
 
 /**
- * fusion 신호 출처. position이 가장 정확(실제 좌표), arrival은 추정(곧 도착),
- * route-progress는 트랙 1D 진행도, gps는 거리 기반. 알람 dedup·로깅에서 source별 정책 분기에 사용.
+ * fusion 신호 출처. position-train이 가장 정확(특정 trainNo 추적 → 현재역),
+ * position은 station 단위 trainSttus 직접 매칭, arrival은 추정(곧 도착),
+ * route-progress는 트랙 1D 진행도, gps는 거리 기반.
+ * 알람 dedup·로깅에서 source별 정책 분기에 사용.
  */
-export type FusionSource = 'position' | 'arrival' | 'route-progress' | 'gps';
+export type FusionSource =
+  | 'position-train'
+  | 'position'
+  | 'arrival'
+  | 'route-progress'
+  | 'gps';
 
 export interface FusedStationResult {
   result: NearestStationResult;

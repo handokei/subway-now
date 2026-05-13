@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useNearestStation } from './useNearestStation';
 import { useArrivalInfo } from './useArrivalInfo';
 import { useTrainPositions } from './useTrainPositions';
@@ -6,6 +6,9 @@ import { useRouteProgress } from './useRouteProgress';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
+import { pickCandidateTrains, type CandidateTrain } from '../utils/pickCandidateTrains';
+import { trackTrainProgress } from '../utils/trackTrainProgress';
+import { haversine } from '../utils/haversine';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import { MAX_ACTIVE_LINES } from '../constants/realtime';
 import type { LinePositions } from '../api/positionApi';
@@ -140,6 +143,52 @@ export function useFusedNearestStation(
     );
   }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions]);
 
+  // Phase 1C: Position-first fusion.
+  // 후보 trainNo들(pickCandidateTrains) → trackTrainProgress로 단일 trainNo·현재역 결정.
+  // anchor = 각 호선의 GPS 최근접 후보. 후보 1개로 단정되거나 GPS로 disambiguation되면 채택.
+  const lastConfirmedTrainNoRef = useRef<string | undefined>(undefined);
+  const candidateTrains = useMemo<CandidateTrain[]>(() => {
+    const lps: (LinePositions | null)[] = [p0.positions, p1.positions, p2.positions];
+    const out: CandidateTrain[] = [];
+    for (const lp of lps) {
+      if (!lp) continue;
+      const anchor = candidates.find((c) => c.station.line === lp.line)?.station.name;
+      out.push(
+        ...pickCandidateTrains({
+          positions: [lp],
+          line: lp.line,
+          anchorStationName: anchor,
+        }),
+      );
+    }
+    return out;
+  }, [candidates, p0.positions, p1.positions, p2.positions]);
+
+  const trainProgress = useMemo(
+    () =>
+      trackTrainProgress({
+        candidates: candidateTrains,
+        userLocation: gps.userLocation,
+        lastConfirmedTrainNo: lastConfirmedTrainNoRef.current,
+      }),
+    [candidateTrains, gps.userLocation],
+  );
+
+  useEffect(() => {
+    if (trainProgress) lastConfirmedTrainNoRef.current = trainProgress.trainNo;
+  }, [trainProgress]);
+
+  const positionTrainResult: NearestStationResult | null = useMemo(() => {
+    if (!trainProgress) return null;
+    const station = trainProgress.currentStation;
+    // userLocation 부재(sticky 케이스 등) 시 placeholder 0. 신뢰도 보조 신호로 사용 금지 —
+    // distanceKm은 화면 표시용이며 알람/정확도 판단은 source=='position-train'으로만 분기.
+    const distanceKm = gps.userLocation
+      ? haversine(gps.userLocation.lat, gps.userLocation.lng, station.lat, station.lng)
+      : 0;
+    return { station, distanceKm };
+  }, [trainProgress, gps.userLocation]);
+
   const routeResult: NearestStationResult | null = progress.position
     ? {
         station: progress.position.current,
@@ -147,11 +196,34 @@ export function useFusedNearestStation(
       }
     : null;
 
+  // 우선순위(Phase 1C 역전): position-train > position/arrival(fused) > route-progress > gps.
+  // 기존: route-progress가 fused를 덮어쓰고 있었음.
+  let result: NearestStationResult | null;
+  let confidence: FusionConfidence;
+  let source: FusionSource;
+  if (positionTrainResult) {
+    result = positionTrainResult;
+    confidence = 'position-train';
+    source = 'position-train';
+  } else if (fused) {
+    result = fused.result;
+    confidence = fused.confidence;
+    source = fused.source;
+  } else if (routeResult) {
+    result = routeResult;
+    confidence = 'route-progress';
+    source = 'route-progress';
+  } else {
+    result = gps.result;
+    confidence = 'gps-only';
+    source = 'gps';
+  }
+
   return {
-    result: routeResult ?? fused?.result ?? gps.result,
+    result,
     gpsResult: gps.result,
-    confidence: routeResult ? 'route-progress' : fused?.confidence ?? 'gps-only',
-    source: routeResult ? 'route-progress' : fused?.source ?? 'gps',
+    confidence,
+    source,
     variants: gps.variants,
     userLocation: gps.userLocation,
     speedMps: gps.speedMps,
