@@ -169,6 +169,37 @@ async function runBgTaskAt(station: typeof fakeStation, opts: BgRunOptions = {})
   });
 }
 
+interface BgBatchEntry {
+  station: typeof fakeStation;
+  ageMs?: number;
+  accuracy?: number | null;
+}
+
+async function runBgTaskBatch(entries: BgBatchEntry[]) {
+  // BG는 entries[length-1]만 처리하므로 findNearestStation mock도 한 번만 소비.
+  mockFindNearestStation.mockReturnValueOnce({
+    station: entries[entries.length - 1].station,
+    distanceKm: NEAR_STATION_KM,
+  });
+  return bgTask()({
+    data: {
+      locations: entries.map((entry) => ({
+        coords: {
+          latitude: entry.station.lat,
+          longitude: entry.station.lng,
+          altitude: null,
+          accuracy: entry.accuracy ?? null,
+          altitudeAccuracy: null,
+          heading: null,
+          speed: null,
+        },
+        timestamp: Date.now() - (entry.ageMs ?? 0),
+      })),
+    },
+    error: null,
+  });
+}
+
 beforeEach(() => {
   mockStorage.clear();
   mockFindNearestStation.mockReset();
@@ -287,5 +318,66 @@ describe('FG↔BG 통합: 게이트 비대칭 (BG timeInterval 30s × age 15s, a
     expect(mockFindNearestStation).not.toHaveBeenCalled();
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBeUndefined();
+  });
+
+  // iOS deferred 배치에 stale + fresh 좌표가 섞여 들어올 때, BG task는 locations[length-1]만
+  // 처리한다. 마지막 좌표가 fresh면 통과해 알림, stale이면 drop — 이 계약을 회귀 가드한다.
+  it('multi-location 배치의 마지막 좌표가 fresh면 통과해 알림으로 이어진다', async () => {
+    await runBgTaskBatch([
+      { station: fakeStation, ageMs: MAX_LOCATION_AGE_MS + STALE_MARGIN_MS },
+      { station: fakeStation, ageMs: MAX_LOCATION_AGE_MS - FRESH_MARGIN_MS },
+    ]);
+
+    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+  });
+
+  it('multi-location 배치의 마지막 좌표가 stale이면 drop된다 (앞쪽 fresh 무시)', async () => {
+    await runBgTaskBatch([
+      { station: fakeStation, ageMs: MAX_LOCATION_AGE_MS - FRESH_MARGIN_MS },
+      { station: fakeStation, ageMs: MAX_LOCATION_AGE_MS + STALE_MARGIN_MS },
+    ]);
+
+    expect(mockFindNearestStation).not.toHaveBeenCalled();
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+  });
+});
+
+// notificationState는 in-process 캐시 없이 매번 AsyncStorage를 읽으므로,
+// "BG 알림 발사 → 프로세스 종료(swipe-kill) → 재진입한 FG가 같은 역 받음"은
+// AsyncStorage 영속성만으로 dedup이 보장된다. 이 describe는 그 계약을 명시 회귀 가드한다.
+// (모듈 in-memory state로 dedup이 새어 들어가면 이 테스트가 깨진다.)
+describe('FG↔BG 통합: swipe-kill 후 재진입 (AsyncStorage 영속성)', () => {
+  beforeEach(() => {
+    mockStorage.set(DESTINATION_KEY, JSON.stringify(fakeDestination));
+  });
+
+  it('BG가 lastNotifiedStationId 기록 후 모듈 상태가 전부 리셋돼도 FG 재진입 시 중복 알림 없음', async () => {
+    await runBgTaskAt(fakeStation);
+    expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
+    const persistedId = mockStorage.get(LAST_NOTIFIED_STATION_KEY);
+    expect(persistedId).toBe(fakeStation.id);
+
+    // swipe-kill 시뮬레이션: AsyncStorage는 보존, send mock 만 리셋해 "재진입 후 새 send" 검증.
+    mockSendStationPassedNotification.mockClear();
+    expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(persistedId);
+
+    await runFgPipelineAt(fakeStation);
+
+    expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+  });
+
+  it('BG 알람 발사 후 swipe-kill을 거쳐 FG 재진입해도 firedAlarms는 영속 dedup된다', async () => {
+    mockFindRoute.mockReturnValue({ type: 'direct', stops: 1, line: '2' });
+    await runBgTaskAt(fakeStation);
+    expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+    const firedJson = mockStorage.get(FIRED_ALARMS_KEY);
+    expect(firedJson).toBeDefined();
+
+    mockSendAlarmNotification.mockClear();
+    expect(mockStorage.get(FIRED_ALARMS_KEY)).toBe(firedJson);
+
+    await runFgPipelineAt(fakeStation);
+
+    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
   });
 });
