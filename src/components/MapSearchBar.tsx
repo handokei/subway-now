@@ -1,11 +1,11 @@
 import React, { useMemo, useState } from 'react';
-import { StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, TextInput, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import stationsData from '../data/stations.json';
 import type { Station } from '../types/station';
-import { LINE_NAMES } from '../constants/lineColors';
-import { getStationDisplayName, matchesStationQuery } from '../utils/stationDisplay';
+import { matchesStationQuery } from '../utils/stationDisplay';
 import { useTheme, spacing, radius } from '../theme';
+import { StationSuggestionList } from './StationSuggestionList';
 
 const allStations = stationsData as Station[];
 const MAX_SUGGESTIONS = 8;
@@ -24,9 +24,7 @@ export function MapSearchBar({ onSelect }: Props) {
     const q = query.trim();
     if (!q) return [];
     const qLower = q.toLowerCase();
-    return allStations
-      .filter((s) => matchesStationQuery(s, q, qLower))
-      .slice(0, MAX_SUGGESTIONS);
+    return allStations.filter((s) => matchesStationQuery(s, q, qLower)).slice(0, MAX_SUGGESTIONS);
   }, [query]);
 
   function handleSelect(station: Station) {
@@ -52,26 +50,14 @@ export function MapSearchBar({ onSelect }: Props) {
         onFocus={() => setShowDropdown(true)}
         testID="map-search-input"
       />
-      {showDropdown && suggestions.length > 0 && (
-        <View
-          style={[styles.dropdown, { backgroundColor: colors.card, borderColor: colors.hair }]}
-          testID="map-search-suggestions"
-        >
-          {suggestions.map((s) => (
-            <TouchableOpacity
-              key={s.id}
-              style={[styles.suggestionItem, { borderBottomColor: colors.hair }]}
-              onPress={() => handleSelect(s)}
-              testID={`map-search-suggestion-${s.id}`}
-            >
-              <Text style={[styles.suggestionName, { color: colors.ink }]}>
-                {getStationDisplayName(s)}
-              </Text>
-              <View style={[styles.lineBadge, { backgroundColor: s.lineColor }]}>
-                <Text style={styles.lineText}>{LINE_NAMES[s.line]}</Text>
-              </View>
-            </TouchableOpacity>
-          ))}
+      {showDropdown && (
+        <View style={styles.dropdownWrap}>
+          <StationSuggestionList
+            suggestions={suggestions}
+            onSelect={handleSelect}
+            listTestID="map-search-suggestions"
+            itemTestIDPrefix="map-search-suggestion-"
+          />
         </View>
       )}
     </View>
@@ -91,31 +77,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     borderWidth: 1,
   },
-  dropdown: {
+  dropdownWrap: {
     marginTop: 4,
-    borderRadius: radius.sm,
-    overflow: 'hidden',
-    borderWidth: 1,
-  },
-  suggestionItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-  },
-  suggestionName: {
-    fontSize: 15,
-  },
-  lineBadge: {
-    borderRadius: 4,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 2,
-  },
-  lineText: {
-    color: '#ffffff',
-    fontSize: 12,
-    fontWeight: 'bold',
   },
 });
