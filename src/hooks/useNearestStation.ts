@@ -62,13 +62,16 @@ export function useNearestStation(): UseNearestStationReturn {
     const distanceDelta = Math.abs(newDistance - lastDistanceRef.current);
     const noStation = !stationsResult && lastStationIdRef.current !== null;
 
+    // raw 신호는 매 fix 즉시 갱신. useFusedNearestStation의 candidates 메모가
+    // userLocation 변화에 의존하므로 throttle 안에 두면 천천히 이동할 때 후보가 잠긴다.
     setSpeedMps(speed != null && speed >= 0 ? speed : null);
     setAccuracyMeters(accuracy ?? null);
+    setUserLocation({ lat: latitude, lng: longitude });
 
+    // 표시값(result/variants)은 3m throttle 유지 — 잦은 리렌더 방지.
     if (stationChanged || distanceDelta > MIN_DISTANCE_CHANGE_KM || noStation) {
       lastStationIdRef.current = newId;
       lastDistanceRef.current = newDistance;
-      setUserLocation({ lat: latitude, lng: longitude });
       applyNearestResult(stationsResult, setResult, setVariants);
     }
   }, []);
