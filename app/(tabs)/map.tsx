@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
+import { router } from 'expo-router';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useActiveLinePositions } from '../../src/hooks/useActiveLinePositions';
 import { StationMap } from '../../src/components/StationMap';
@@ -153,6 +154,7 @@ export default function MapScreen() {
                 setRecentDestination(selectedStation);
                 setDestination(selectedStation);
                 setSelectedStation(null);
+                router.navigate('/(tabs)');
               }}
               testID="set-destination-button"
             >
