@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { LAST_NOTIFIED_STATION_KEY } from '../constants/storageKeys';
+import { LAST_NOTIFIED_STATION_KEY, FIRED_ALARMS_KEY } from '../constants/storageKeys';
 import { createLogger } from './logger';
 
 // Foreground/Background 양쪽에서 호출되는 알림 상태 저장소.
@@ -45,4 +45,27 @@ export function setLastNotifiedStationId(id: string): Promise<void> {
 
 export function clearLastNotifiedStationId(): Promise<void> {
   return safeRemoveItem(LAST_NOTIFIED_STATION_KEY);
+}
+
+// firedAlarms: 알람 phase 중복 발화 dedup 단일 출처.
+// Foreground 훅(useStationAlarm)과 Background task(backgroundLocationTask)가
+// 같은 키를 공유해, BG fired 알람이 FG 복귀 후 재발화되지 않도록 한다.
+export async function getFiredAlarms(): Promise<Set<string>> {
+  const raw = await safeGetItem(FIRED_ALARMS_KEY);
+  if (!raw) return new Set();
+  try {
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch (e) {
+    logger.error(`${FIRED_ALARMS_KEY} 파싱 실패:`, e);
+    return new Set();
+  }
+}
+
+export function setFiredAlarms(keys: Set<string>): Promise<void> {
+  return safeSetItem(FIRED_ALARMS_KEY, JSON.stringify([...keys]));
+}
+
+export function clearFiredAlarms(): Promise<void> {
+  return safeRemoveItem(FIRED_ALARMS_KEY);
 }
