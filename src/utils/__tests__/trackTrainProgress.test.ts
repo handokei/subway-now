@@ -73,48 +73,45 @@ describe('trackTrainProgress', () => {
     expect(result?.confidence).toBe('sticky');
   });
 
-  it('falls through to GPS when lastConfirmedTrainNo is not in candidates', () => {
-    const result = pick(
-      [['A', '시청'], ['B', '을지로3가']],
-      { lastConfirmedTrainNo: 'Z', userLocation: NEAR_EULJIRO_3GA },
-    );
-    expect(result?.trainNo).toBe('B');
-    expect(result?.confidence).toBe('gps-disambiguated');
-  });
-
-  it('falls through to GPS when sticky candidate fails station resolution', () => {
-    const result = pick(
-      [['A', '시청'], ['STICKY', '없는역'], ['C', '을지로3가']],
-      { lastConfirmedTrainNo: 'STICKY', userLocation: NEAR_EULJIRO_3GA },
-    );
-    expect(result?.trainNo).toBe('C');
-    expect(result?.confidence).toBe('gps-disambiguated');
-  });
-
-  it('picks closest candidate by haversine when only GPS is available', () => {
-    const result = pick(
-      [['A', '을지로4가'], ['B', '시청']],
-      { userLocation: NEAR_SICHEONG },
-    );
-    expect(result?.trainNo).toBe('B');
-    expect(result?.confidence).toBe('gps-disambiguated');
-  });
-
-  it('breaks GPS ties by trainNo ascending (later candidate wins)', () => {
-    const result = pick(
-      [['Z', '시청'], ['A', '시청']],
-      { userLocation: NEAR_SICHEONG },
-    );
-    expect(result?.trainNo).toBe('A');
-    expect(result?.confidence).toBe('gps-disambiguated');
-  });
-
-  it('keeps closer candidate when later candidate is farther (or worse tie-break)', () => {
-    const result = pick(
-      [['A', '시청'], ['B', '을지로4가'], ['Z', '시청']],
-      { userLocation: NEAR_SICHEONG },
-    );
-    expect(result?.trainNo).toBe('A');
+  it.each<{
+    name: string;
+    pairs: Array<[string, string]>;
+    opts: Omit<TrackTrainProgressInput, 'candidates'>;
+    expected: string;
+  }>([
+    {
+      name: 'lastConfirmedTrainNo not in candidates → GPS',
+      pairs: [['A', '시청'], ['B', '을지로3가']],
+      opts: { lastConfirmedTrainNo: 'Z', userLocation: NEAR_EULJIRO_3GA },
+      expected: 'B',
+    },
+    {
+      name: 'sticky candidate fails station resolution → GPS',
+      pairs: [['A', '시청'], ['STICKY', '없는역'], ['C', '을지로3가']],
+      opts: { lastConfirmedTrainNo: 'STICKY', userLocation: NEAR_EULJIRO_3GA },
+      expected: 'C',
+    },
+    {
+      name: 'picks closest by haversine',
+      pairs: [['A', '을지로4가'], ['B', '시청']],
+      opts: { userLocation: NEAR_SICHEONG },
+      expected: 'B',
+    },
+    {
+      name: 'tie-break by trainNo ascending (later wins)',
+      pairs: [['Z', '시청'], ['A', '시청']],
+      opts: { userLocation: NEAR_SICHEONG },
+      expected: 'A',
+    },
+    {
+      name: 'keeps closer when later is farther (or worse tie-break)',
+      pairs: [['A', '시청'], ['B', '을지로4가'], ['Z', '시청']],
+      opts: { userLocation: NEAR_SICHEONG },
+      expected: 'A',
+    },
+  ])('gps-disambiguated: $name', ({ pairs, opts, expected }) => {
+    const result = pick(pairs, opts);
+    expect(result?.trainNo).toBe(expected);
     expect(result?.confidence).toBe('gps-disambiguated');
   });
 
