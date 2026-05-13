@@ -394,7 +394,7 @@ const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTrans
   }),
 };
 
-function buildAlarmContent(event: AlarmEvent): { title: string; body: string } {
+export function buildAlarmContent(event: AlarmEvent): { title: string; body: string } {
   return ALARM_MESSAGE_BUILDERS[event.phaseId](event.stationName, event.type === 'transfer');
 }
 
