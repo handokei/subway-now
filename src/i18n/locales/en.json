@@ -20,12 +20,9 @@
   },
   "home": {
     "arrived": "Arrived!",
-    "live": "LIVE",
-    "manual": "MANUAL",
     "originManual": "Origin (manual)",
     "originCurrent": "Current station",
     "originNearest": "Nearest station",
-    "switchToGps": "Switch to GPS mode",
     "routeTo": "Route to",
     "estimatedSuffix": "EST",
     "destinationChange": "Change destination →",

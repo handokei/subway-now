@@ -20,12 +20,9 @@
   },
   "home": {
     "arrived": "已到达!",
-    "live": "LIVE",
-    "manual": "MANUAL",
     "originManual": "出发站(手动)",
     "originCurrent": "当前站",
     "originNearest": "最近站",
-    "switchToGps": "切换到GPS模式",
     "routeTo": "前往",
     "estimatedSuffix": "预计",
     "destinationChange": "更改目的地 →",
