@@ -1,7 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
+import { router, useFocusEffect } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useActiveLinePositions } from '../../src/hooks/useActiveLinePositions';
 import { StationMap } from '../../src/components/StationMap';
@@ -16,6 +18,9 @@ import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import { findTopNearestStations } from '../../src/utils/findNearestStation';
 import { findActiveLines } from '../../src/utils/findActiveLines';
 import { findTrainCoordinates, buildStationIndex } from '../../src/utils/findTrainCoordinates';
+import { routeToCoordinates, type RouteCoordinatePath } from '../../src/utils/routeToCoordinates';
+import type { Route } from '../../src/utils/stationRoute';
+import { ROUTE_KEY } from '../../src/constants/storageKeys';
 import { MAX_STATION_DISTANCE_KM } from '../../src/constants/location';
 import { MAX_ACTIVE_LINES } from '../../src/constants/realtime';
 import type { Station } from '../../src/types/station';
@@ -35,6 +40,7 @@ export default function MapScreen() {
   const [focusNonce, setFocusNonce] = useState(0);
   const [recenterNonce, setRecenterNonce] = useState(0);
   const [selectionCardHeight, setSelectionCardHeight] = useState(0);
+  const [storedRoute, setStoredRoute] = useState<Route>(null);
   const insets = useSafeAreaInsets();
   const { t } = useTranslation();
 
@@ -57,6 +63,39 @@ export default function MapScreen() {
     () => findTrainCoordinates(linePositions, stationIndex),
     [linePositions, stationIndex],
   );
+
+  // 홈 탭이 ROUTE_KEY에 저장한 경로를 화면 포커스 시 읽어 폴리라인 오버레이로 표시.
+  // destination/customOrigin이 바뀌면 홈 탭이 ROUTE_KEY를 갱신하므로 deps에 포함해 재로딩.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      AsyncStorage.getItem(ROUTE_KEY)
+        .then((raw) => {
+          if (cancelled) return;
+          if (!raw) {
+            setStoredRoute(null);
+            return;
+          }
+          try {
+            setStoredRoute(JSON.parse(raw) as Route);
+          } catch {
+            setStoredRoute(null);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setStoredRoute(null);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }, [destination?.id, customOrigin?.id]),
+  );
+
+  const routeOrigin = customOrigin ?? result?.station ?? null;
+  const routeCoords = useMemo<RouteCoordinatePath | null>(() => {
+    if (!storedRoute || !routeOrigin || !destination) return null;
+    return routeToCoordinates(storedRoute, routeOrigin, destination);
+  }, [storedRoute, routeOrigin?.id, destination?.id]);
 
   if (permissionDenied || loading || !userLocation || error) {
     return (
@@ -102,6 +141,7 @@ export default function MapScreen() {
         focusStation={focusStation}
         focusNonce={focusNonce}
         recenterNonce={recenterNonce}
+        routeCoords={routeCoords}
       />
 
       <TouchableOpacity
@@ -153,6 +193,7 @@ export default function MapScreen() {
                 setRecentDestination(selectedStation);
                 setDestination(selectedStation);
                 setSelectedStation(null);
+                router.navigate('/(tabs)');
               }}
               testID="set-destination-button"
             >

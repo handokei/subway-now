@@ -1,4 +1,5 @@
 import React from 'react';
+import { Keyboard } from 'react-native';
 import { fireEvent, render } from '@testing-library/react-native';
 import { MapSearchBar } from '../MapSearchBar';
 
@@ -44,6 +45,18 @@ describe('MapSearchBar', () => {
       expect.objectContaining({ name: expect.any(String), id: expect.any(String) }),
     );
     expect(queryByTestId('map-search-suggestions')).toBeNull();
+  });
+
+  it('추천 항목 탭 시 키보드를 닫는다', () => {
+    const dismissSpy = jest.spyOn(Keyboard, 'dismiss');
+    const { getByTestId, getAllByTestId } = render(
+      <MapSearchBar onSelect={jest.fn()} />,
+    );
+    fireEvent.changeText(getByTestId('map-search-input'), '강남');
+    const items = getAllByTestId(/^map-search-suggestion-/);
+    fireEvent.press(items[0]);
+    expect(dismissSpy).toHaveBeenCalledTimes(1);
+    dismissSpy.mockRestore();
   });
 
   it('일치하지 않는 검색어는 추천을 보여주지 않는다', () => {

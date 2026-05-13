@@ -24,7 +24,6 @@ module.exports = {
       supportsTablet: false,
       bundleIdentifier: 'com.subwaynow.app',
       appleTeamId: '4755N5H4T4',
-      buildNumber: '43',
       infoPlist: {
         NSAppTransportSecurity: {
           NSExceptionDomains: {
@@ -51,7 +50,6 @@ module.exports = {
       edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,
       package: 'com.subwaynow.app',
-      versionCode: 1,
     },
     web: {
       favicon: './assets/favicon.png',

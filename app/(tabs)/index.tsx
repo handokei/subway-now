@@ -13,8 +13,8 @@ import { DestinationPicker } from '../../src/components/DestinationPicker';
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route, type CategorizedRoute, type RoutePreference } from '../../src/utils/stationRoute';
 import type { Station } from '../../src/types/station';
 import { EditorialTimeline } from '../../src/components/EditorialTimeline';
-import { RouteMap } from '../../src/components/RouteMap';
 import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/journeyAdapter';
+import { useRouter } from 'expo-router';
 import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
@@ -35,9 +35,9 @@ const logger = createLogger('HomeScreen');
 
 export default function HomeScreen() {
   const { colors } = useTheme();
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
+  const router = useRouter();
   const customOrigin = useAppStore((s) => s.customOrigin);
-  const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
   const addFavorite = useAppStore((s) => s.addFavorite);
   const removeFavorite = useAppStore((s) => s.removeFavorite);
@@ -297,20 +297,6 @@ export default function HomeScreen() {
       <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
         {effectiveOrigin ? (
           <>
-            {/* Top meta */}
-            <View style={styles.topMeta}>
-              <Pressable
-                onLongPress={__DEV__ ? () => useAppStore.getState().setDebugVisible(true) : undefined}
-                delayLongPress={700}
-                testID="home-clock"
-              >
-                <Text style={[typography.mono, { color: colors.subtle }]}>
-                  {new Date().toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}
-                </Text>
-              </Pressable>
-              <Text style={[typography.label, { color: colors.subtle }]}>{isCustomOrigin ? t('home.manual') : t('home.live')}</Text>
-            </View>
-
             {/* Hero: origin station */}
             <View style={{ paddingHorizontal: spacing.xxl, paddingTop: spacing.xxxl - 4 }}>
               <Text style={[typography.label, { color: colors.muted, marginBottom: 10 }]}>
@@ -351,15 +337,6 @@ export default function HomeScreen() {
                   </>
                 )}
               </View>
-              {isCustomOrigin && (
-                <TouchableOpacity
-                  style={[styles.gpsResetButton, { borderColor: colors.accent }]}
-                  onPress={() => setCustomOrigin(null)}
-                  testID="gps-reset-button"
-                >
-                  <Text style={[styles.gpsResetText, { color: colors.accent }]}>{t('home.switchToGps')}</Text>
-                </TouchableOpacity>
-              )}
             </View>
 
             <Hr />
@@ -420,9 +397,15 @@ export default function HomeScreen() {
                     <EditorialTimeline stops={journeyDisplayToStops(journey)} />
                   )}
                   {route && effectiveOrigin && destination && (
-                    <View style={{ marginTop: spacing.xl, borderRadius: radius.md, overflow: 'hidden' }} testID="route-map-wrapper">
-                      <RouteMap route={route} origin={effectiveOrigin} destination={destination} />
-                    </View>
+                    <Pressable
+                      style={[styles.viewOnMapButton, { borderColor: colors.accent }]}
+                      onPress={() => router.push('/(tabs)/map')}
+                      testID="view-route-on-map-button"
+                    >
+                      <Text style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}>
+                        {t('home.viewRouteOnMap')}
+                      </Text>
+                    </Pressable>
                   )}
                 </View>
 
@@ -611,13 +594,6 @@ const styles = StyleSheet.create({
     padding: spacing.xxl,
     minHeight: 400,
   },
-  topMeta: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: spacing.xxl,
-    paddingTop: spacing.lg,
-  },
   heroRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -648,18 +624,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     marginTop: 2,
   },
-  gpsResetButton: {
-    marginTop: spacing.md,
-    borderWidth: 1,
-    borderRadius: radius.sm,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.xs,
-    alignSelf: 'flex-start',
-  },
-  gpsResetText: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
   actionsRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -668,6 +632,13 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
   },
   vHair: { width: 1, height: 12 },
+  viewOnMapButton: {
+    marginTop: spacing.xl,
+    paddingVertical: spacing.md,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    alignItems: 'center',
+  },
   sleepRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

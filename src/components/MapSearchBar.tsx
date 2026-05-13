@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { StyleSheet, TextInput, View } from 'react-native';
+import { Keyboard, StyleSheet, TextInput, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import stationsData from '../data/stations.json';
 import type { Station } from '../types/station';
@@ -28,6 +28,7 @@ export function MapSearchBar({ onSelect }: Props) {
   }, [query]);
 
   function handleSelect(station: Station) {
+    Keyboard.dismiss();
     setQuery('');
     setShowDropdown(false);
     onSelect(station);
