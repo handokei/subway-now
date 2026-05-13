@@ -13,6 +13,7 @@ import { DestinationPicker } from '../../src/components/DestinationPicker';
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route, type CategorizedRoute, type RoutePreference } from '../../src/utils/stationRoute';
 import type { Station } from '../../src/types/station';
 import { EditorialTimeline } from '../../src/components/EditorialTimeline';
+import { RouteMap } from '../../src/components/RouteMap';
 import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/journeyAdapter';
 import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
@@ -417,6 +418,11 @@ export default function HomeScreen() {
                   )}
                   {journey && (
                     <EditorialTimeline stops={journeyDisplayToStops(journey)} />
+                  )}
+                  {route && effectiveOrigin && destination && (
+                    <View style={{ marginTop: spacing.xl, borderRadius: radius.md, overflow: 'hidden' }} testID="route-map-wrapper">
+                      <RouteMap route={route} origin={effectiveOrigin} destination={destination} />
+                    </View>
                   )}
                 </View>
 
