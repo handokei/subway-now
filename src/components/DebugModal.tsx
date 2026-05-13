@@ -11,9 +11,11 @@ import {
   View,
 } from 'react-native';
 import { useAppStore } from '../store/useAppStore';
-import { useNearestStation } from '../hooks/useNearestStation';
+import { useFusedNearestStation } from '../hooks/useFusedNearestStation';
 import { useArrivalInfo } from '../hooks/useArrivalInfo';
 import { clearAlarmLog, getAlarmLog, type AlarmLogEntry } from '../utils/alarmLog';
+import type { FusionConfidence, FusionSource } from '../utils/pickFusedStation';
+import type { NearestStationResult } from '../types/station';
 import { useTheme, spacing, radius, typography } from '../theme';
 
 function formatTime(ts: number): string {
@@ -39,12 +41,34 @@ function formatLogLine(entry: AlarmLogEntry): string {
   return parts.join(' | ');
 }
 
+function formatStationLabel(res: NearestStationResult | null): string {
+  if (!res) return '-';
+  return `${res.station.name}(${res.station.line}) · ${Math.round(res.distanceKm * 1000)}m`;
+}
+
+function fusedDiffersFromGps(
+  fused: NearestStationResult | null,
+  gps: NearestStationResult | null,
+): boolean {
+  if (!fused || !gps) return false;
+  return fused.station.id !== gps.station.id;
+}
+
 function buildDumpText(args: {
   userLocation: { lat: number; lng: number } | null;
   speedMps: number | null;
+  accuracyMeters: number | null;
   nearestName: string | null;
   nearestDistanceM: number | null;
   variants: string[];
+  fusion: {
+    confidence: FusionConfidence;
+    source: FusionSource;
+    fusedLabel: string;
+    gpsLabel: string;
+    differs: boolean;
+    candidateTrains: string[] | null;
+  };
   arrivalSummary: string;
   isMock: boolean;
   logs: AlarmLogEntry[];
@@ -55,7 +79,7 @@ function buildDumpText(args: {
   lines.push('## GPS');
   lines.push(
     args.userLocation
-      ? `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}, speed=${args.speedMps ?? '-'} m/s`
+      ? `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}, speed=${args.speedMps ?? '-'} m/s, accuracy=${args.accuracyMeters ?? '-'} m`
       : '(no location)',
   );
   lines.push('');
@@ -67,6 +91,17 @@ function buildDumpText(args: {
   );
   if (args.variants.length > 0) {
     lines.push(`variants: ${args.variants.join(', ')}`);
+  }
+  lines.push('');
+  lines.push('## Fusion');
+  lines.push(`confidence=${args.fusion.confidence}, source=${args.fusion.source}`);
+  lines.push(`fused: ${args.fusion.fusedLabel}`);
+  lines.push(`gps:   ${args.fusion.gpsLabel}`);
+  if (args.fusion.differs) lines.push('(fused != gps)');
+  if (args.fusion.candidateTrains) {
+    lines.push(
+      `candidateTrains(${args.fusion.candidateTrains.length}): ${args.fusion.candidateTrains.join(', ') || '-'}`,
+    );
   }
   lines.push('');
   lines.push('## Arrival');
@@ -82,22 +117,40 @@ function buildDumpText(args: {
 
 interface DebugModalProps {
   onClose: () => void;
+  /**
+   * Phase 1 (Position-first fusion) 결정 신호. 후보 trainNo 목록.
+   * 현재는 useFusedNearestStation이 노출하지 않아 호출부가 명시적으로 전달.
+   * 미전달이면 섹션에서 "(n/a)"로 표기.
+   */
+  candidateTrains?: string[];
 }
 
 // 디버그 모달은 측정 인프라 — 관찰자 효과를 피하려고 모달이 열린 동안에만 마운트한다.
 // useNearestStation이 별도 Location.watch 구독을 띄우므로, 닫혔을 땐 컴포넌트 자체를
 // 마운트하지 않아 GPS·Arrival 폴링이 2배가 되지 않도록 한다. 호출부(_layout)에서
 // `debugVisible &&` 조건부 렌더를 보장한다.
-export function DebugModal({ onClose }: DebugModalProps) {
+export function DebugModal(props: DebugModalProps) {
   if (!__DEV__) return null;
-  return <DebugModalInner onClose={onClose} />;
+  return <DebugModalInner {...props} />;
 }
 
-function DebugModalInner({ onClose }: DebugModalProps) {
+function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
   const { colors } = useTheme();
-  const { result, variants, userLocation, speedMps } = useNearestStation();
+  const {
+    result,
+    gpsResult,
+    confidence,
+    source,
+    variants,
+    userLocation,
+    speedMps,
+    accuracyMeters,
+  } = useFusedNearestStation();
   const stationName = result?.station.name ?? null;
   const { arrival, isMock } = useArrivalInfo(stationName);
+  const fusedLabel = formatStationLabel(result);
+  const gpsLabel = formatStationLabel(gpsResult);
+  const differs = fusedDiffersFromGps(result, gpsResult);
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
 
   const refreshLogs = useCallback(async () => {
@@ -137,15 +190,40 @@ function DebugModalInner({ onClose }: DebugModalProps) {
     const message = buildDumpText({
       userLocation,
       speedMps,
+      accuracyMeters,
       nearestName: result?.station.name ?? null,
       nearestDistanceM,
       variants: variantNames,
+      fusion: {
+        confidence,
+        source,
+        fusedLabel,
+        gpsLabel,
+        differs,
+        candidateTrains: candidateTrains ?? null,
+      },
       arrivalSummary,
       isMock,
       logs,
     });
     void Share.share({ message });
-  }, [userLocation, speedMps, result, nearestDistanceM, variantNames, arrivalSummary, isMock, logs]);
+  }, [
+    userLocation,
+    speedMps,
+    accuracyMeters,
+    result,
+    nearestDistanceM,
+    variantNames,
+    confidence,
+    source,
+    fusedLabel,
+    gpsLabel,
+    differs,
+    candidateTrains,
+    arrivalSummary,
+    isMock,
+    logs,
+  ]);
 
   return (
     <Modal visible animationType="slide" onRequestClose={onClose} testID="debug-modal">
@@ -172,10 +250,39 @@ function DebugModalInner({ onClose }: DebugModalProps) {
                   value={speedMps != null ? `${speedMps.toFixed(2)} m/s` : '-'}
                   colors={colors}
                 />
+                <KeyValue
+                  label="accuracy"
+                  value={accuracyMeters != null ? `${accuracyMeters.toFixed(0)} m` : '-'}
+                  colors={colors}
+                />
               </>
             ) : (
               <Text style={[typography.mono, { color: colors.muted }]}>(no location)</Text>
             )}
+          </Section>
+
+          <Section title="Fusion" colors={colors}>
+            <KeyValue label="confidence" value={confidence} colors={colors} />
+            <KeyValue label="source" value={source} colors={colors} />
+            <KeyValue label="fused" value={fusedLabel} colors={colors} />
+            <KeyValue label="gps" value={gpsLabel} colors={colors} />
+            {differs && (
+              <Text
+                style={[typography.mono, { color: colors.warn, marginTop: spacing.xs }]}
+                testID="debug-fusion-diff"
+              >
+                fused != gps
+              </Text>
+            )}
+            <KeyValue
+              label="candidates"
+              value={
+                candidateTrains
+                  ? `${candidateTrains.length}: ${candidateTrains.join(', ') || '-'}`
+                  : '(n/a)'
+              }
+              colors={colors}
+            />
           </Section>
 
           <Section title="Nearest station" colors={colors}>
