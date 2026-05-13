@@ -38,12 +38,6 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedGate: (...args: unknown[]) => mockLogSuppressedGate(...args),
 }));
 
-// ── bgDiagnostics 모킹 ──
-const mockIncrementBgDiagnostic = jest.fn();
-jest.mock('../../utils/bgDiagnostics', () => ({
-  incrementBgDiagnostic: (...args: unknown[]) => mockIncrementBgDiagnostic(...args),
-}));
-
 // ── logger 모킹 ──
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({
