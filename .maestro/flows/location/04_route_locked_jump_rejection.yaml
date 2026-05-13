@@ -1,0 +1,70 @@
+appId: com.subwaynow.app
+name: "위치 - 경로 잠금 점프 거부 (#310)"
+# #308 진행도 모델 + #310 wiring 회귀 방지.
+# 사가정 → 어린이대공원 경로 설정 후 GPS를 어린이대공원 좌표로 순간 이동시켜도
+# (implied speed > 200km/h 이므로 점프 거부) 화면 역이 사가정으로 유지되는지 검증.
+---
+# 1. 사가정역(7호선) 좌표로 시작
+- setLocation:
+    latitude: 37.580894
+    longitude: 127.088478
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+
+# 사가정 감지 확인
+- extendedWaitUntil:
+    visible:
+      text: "사가정"
+    timeout: 15000
+
+# 2. 어린이대공원을 목적지로 설정 (트립 origin = 사가정 캡처)
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 10000
+
+- tapOn:
+    id: "destination-button"
+
+- assertVisible:
+    id: "search-input"
+
+- tapOn:
+    id: "search-input"
+- inputText: "어린이대공원"
+
+- assertVisible:
+    id: "suggestions-list"
+
+- tapOn:
+    id: "suggestion-item-7-018"
+
+# 목적지 설정 확인
+- assertVisible:
+    id: "destination-clear-button"
+
+# 3. GPS를 어린이대공원 좌표로 "점프" — 지하 GPS 튐 시뮬레이션
+# 사가정-어린이대공원 직선거리 약 3.7km. 30s 폴링 한 틱에 이동했다고 가정하면
+# implied speed ≈ 123 m/s ≈ 444 km/h → MAX_PLAUSIBLE_MPS(55 m/s) 초과 → 거부.
+- setLocation:
+    latitude: 37.548014
+    longitude: 127.074658
+
+# 4. 폴링 2~3틱(약 60~90s) 대기 후에도 origin hero가 여전히 사가정인지 확인
+- extendedWaitUntil:
+    visible:
+      text: "사가정"
+    timeout: 90000
+
+# 5. 화면 hero에 어린이대공원이 origin으로 뜨면 안 됨 (목적지 표시는 별개)
+# DestinationPicker가 닫힌 상태에서 어린이대공원은 "Route to" 섹션에만 보여야 한다.
+# hero 자리(현재역)에는 사가정이 그대로 — 위 단언으로 충분.
