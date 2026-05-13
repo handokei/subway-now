@@ -782,15 +782,14 @@ describe('useStationAlarm', () => {
   describe('firedAlarms BG↔FG 단일 출처 (#336)', () => {
     const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
 
-    it('BG가 발화한 phase를 마운트 시 hydrate해 FG에서 재발화하지 않는다', async () => {
+    const renderWithBgFired = () => {
       // BG가 이미 발화: storage에 alarmKey가 있음.
       mockGetFiredAlarms.mockResolvedValueOnce(new Set([`early:${destination.name}`]));
       // evaluator가 동일 키 firedAlarms를 받으면 null 반환하는 실제 dedup 의미를 흉내.
       mockEvaluateAlarmPhase.mockImplementation((_src: unknown, fired: Set<string>) =>
         fired.has(`early:${destination.name}`) ? null : earlyDest,
       );
-
-      renderHook(() =>
+      return renderHook(() =>
         useStationAlarm(
           defaultInputs({
             route,
@@ -801,6 +800,10 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
+    };
+
+    it('BG가 발화한 phase를 마운트 시 hydrate해 FG에서 재발화하지 않는다', async () => {
+      renderWithBgFired();
 
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       // hydrated 이후 evaluator가 호출되더라도 동일 키가 들어있어 null 반환 → 미발화.
@@ -841,23 +844,7 @@ describe('useStationAlarm', () => {
     });
 
     it('초기 바인드 시 BG가 적재한 firedAlarms를 보존한다 (storage clear 없음)', async () => {
-      // BG가 발화한 phase가 storage에 있는 상태로 FG가 destination을 가진 채 마운트.
-      mockGetFiredAlarms.mockResolvedValueOnce(new Set([`early:${destination.name}`]));
-      mockEvaluateAlarmPhase.mockImplementation((_src: unknown, fired: Set<string>) =>
-        fired.has(`early:${destination.name}`) ? null : earlyDest,
-      );
-
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            userLocation: { lat: 37.4, lng: 127.0 },
-            speedMps: 10,
-            accuracyMeters: 100,
-          }),
-        ),
-      );
+      renderWithBgFired();
 
       await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
       // BG 적재로 인해 evaluator가 null 반환 → 미발화. storage도 clear되지 않음.
