@@ -12,11 +12,15 @@ import { useApplyLocale } from '../src/hooks/useApplyLocale';
 import { useAppStore } from '../src/store/useAppStore';
 import { DebugModal } from '../src/components/DebugModal';
 import '../src/tasks/backgroundLocationTask';
+import { registerSilentPushTask } from '../src/tasks/silentPushTask';
 
 const layoutLogger = createLogger('RootLayout');
 
 SplashScreen.preventAutoHideAsync();
 setupNotificationHandler();
+// iOS silent push BG task 등록 — APNs reschedule trigger 수신용.
+// 권한/플랫폼 미지원 시 내부에서 graceful no-op.
+registerSilentPushTask().catch((e) => layoutLogger.warn('silent push task 등록 실패:', e));
 
 // 프로덕션 빌드에서는 warn 이상만 출력
 if (!__DEV__) {

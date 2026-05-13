@@ -19,6 +19,8 @@ import { initStationNotification, updateStationNotification, clearStationNotific
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
 import { useTripOrigin } from '../../src/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../../src/hooks/useBackgroundLocation';
+import { useApnsTripRegistration } from '../../src/hooks/useApnsTripRegistration';
+import { registerSilentPushTask } from '../../src/tasks/silentPushTask';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ROUTE_KEY } from '../../src/constants/storageKeys';
 import { AlarmOverlay } from '../../src/components/AlarmOverlay';
@@ -147,6 +149,12 @@ export default function HomeScreen() {
     arrivalConfidence: confidence,
   });
   useBackgroundLocation(destination);
+  useApnsTripRegistration({
+    route,
+    destination,
+    nextStationEtaSeconds:
+      nextTrainMinutes != null && nextTrainMinutes !== Infinity ? nextTrainMinutes * 60 : null,
+  });
 
   useEffect(() => {
     if (!loading) {
@@ -162,6 +170,7 @@ export default function HomeScreen() {
     loadRoutePreference();
     loadAlarmEvent();
     initStationNotification().catch((e) => logger.error('알림 초기화 실패:', e));
+    registerSilentPushTask().catch((e) => logger.error('silent push task 등록 실패:', e));
     const subscription = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         loadAlarmEvent();
