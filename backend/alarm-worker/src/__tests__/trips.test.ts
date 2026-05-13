@@ -98,7 +98,7 @@ describe('trips KV CRUD', () => {
     for await (const t of listTrips(kv as unknown as KVNamespace)) {
       tokens.push(t.token);
     }
-    expect(tokens.sort()).toEqual(['a', 'b']);
+    expect(tokens.sort((a, b) => a.localeCompare(b))).toEqual(['a', 'b']);
   });
 
   it('listTrips skips malformed entries', async () => {
