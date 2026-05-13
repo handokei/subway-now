@@ -1,8 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import ClusteredMapView from 'react-native-map-clustering';
 import { Marker, PROVIDER_DEFAULT } from 'react-native-maps';
+import type MapView from 'react-native-maps';
 import type { Station } from '../types/station';
 import type { TrainMarker as TrainMarkerData } from '../utils/findTrainCoordinates';
 import { buildMapConfig } from '../utils/buildMapConfig';
@@ -35,7 +36,14 @@ interface StationMapProps {
   onStationPress?: (station: Station) => void;
   /** Phase 3 Stage 3: 활성 호선의 실시간 열차 위치. 없으면 표시 안 함. */
   trainMarkers?: TrainMarkerData[];
+  /** 검색 결과 선택 시 지도 카메라를 이동시킬 역. focusNonce가 변할 때마다 재이동한다. */
+  focusStation?: Station | null;
+  /** 같은 역을 다시 선택해도 카메라가 다시 움직이도록 매 선택마다 변경되는 값. */
+  focusNonce?: number;
 }
+
+const FOCUS_REGION_DELTA = 0.01;
+const FOCUS_ANIMATION_MS = 400;
 
 export function StationMap({
   userLat,
@@ -45,10 +53,26 @@ export function StationMap({
   customOriginId,
   onStationPress,
   trainMarkers,
+  focusStation,
+  focusNonce,
 }: StationMapProps) {
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
   const [mapReady, setMapReady] = useState(false);
+  const mapRef = useRef<MapView | null>(null);
+
+  useEffect(() => {
+    if (!focusStation) return;
+    mapRef.current?.animateToRegion(
+      {
+        latitude: focusStation.lat,
+        longitude: focusStation.lng,
+        latitudeDelta: FOCUS_REGION_DELTA,
+        longitudeDelta: FOCUS_REGION_DELTA,
+      },
+      FOCUS_ANIMATION_MS,
+    );
+  }, [focusStation?.id, focusNonce]);
 
   const mapConfig = useMemo(
     () => buildMapConfig({ userLat, userLng, nearestStation, nearbyStations }),
@@ -58,6 +82,7 @@ export function StationMap({
   return (
     <View style={styles.map}>
       <ClusteredMapView
+        ref={mapRef}
         provider={PROVIDER_DEFAULT}
         style={styles.map}
         initialRegion={{

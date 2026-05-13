@@ -73,6 +73,9 @@
     "setAsDestination": "도착역으로 설정",
     "nearbyStationsHeader": "주변 지하철역 (1km 이내)",
     "noNearbyStations": "주변 1km 내 지하철역이 없습니다.",
+    "search": {
+      "placeholder": "역 이름 검색"
+    },
     "train": {
       "terminalSuffix": "{{name}}행",
       "descriptionTemplate": "열차 {{trainNo}} · {{status}}",
