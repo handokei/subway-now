@@ -73,6 +73,7 @@
     "setAsDestination": "设为目的地",
     "nearbyStationsHeader": "附近地铁站(1km以内)",
     "noNearbyStations": "1km内没有地铁站。",
+    "recenter": "返回当前位置",
     "search": {
       "placeholder": "搜索车站"
     },

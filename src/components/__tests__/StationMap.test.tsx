@@ -236,6 +236,56 @@ describe('StationMap', () => {
     });
   });
 
+  describe('recenterNonce', () => {
+    it('recenterNonce 미전달 시 animateToRegion 호출 안 함', () => {
+      render(<StationMap {...baseProps} />);
+      expect(__animateToRegionMock).not.toHaveBeenCalled();
+    });
+
+    it('recenterNonce 전달 시 사용자 좌표로 animateToRegion 호출', () => {
+      render(<StationMap {...baseProps} recenterNonce={1} />);
+      expect(__animateToRegionMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          latitude: baseProps.userLat,
+          longitude: baseProps.userLng,
+        }),
+        expect.any(Number),
+      );
+    });
+
+    it('recenterNonce 변경 시 사용자 좌표로 재호출', () => {
+      const { rerender } = render(
+        <StationMap {...baseProps} recenterNonce={1} />,
+      );
+      __animateToRegionMock.mockClear();
+      rerender(<StationMap {...baseProps} recenterNonce={2} />);
+      expect(__animateToRegionMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          latitude: baseProps.userLat,
+          longitude: baseProps.userLng,
+        }),
+        expect.any(Number),
+      );
+    });
+
+    it('GPS 좌표가 갱신된 뒤 nonce 변경 시 최신 좌표로 이동 (no stale closure)', () => {
+      const { rerender } = render(
+        <StationMap {...baseProps} recenterNonce={1} />,
+      );
+      rerender(
+        <StationMap {...baseProps} userLat={37.6} userLng={127.1} recenterNonce={1} />,
+      );
+      __animateToRegionMock.mockClear();
+      rerender(
+        <StationMap {...baseProps} userLat={37.6} userLng={127.1} recenterNonce={2} />,
+      );
+      expect(__animateToRegionMock).toHaveBeenCalledWith(
+        expect.objectContaining({ latitude: 37.6, longitude: 127.1 }),
+        expect.any(Number),
+      );
+    });
+  });
+
   describe('trainMarkers (Phase 3 Stage 3)', () => {
     const mkTrain = (trainNo: string, status: number) => ({
       trainNo,

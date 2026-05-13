@@ -40,6 +40,8 @@ interface StationMapProps {
   focusStation?: Station | null;
   /** 같은 역을 다시 선택해도 카메라가 다시 움직이도록 매 선택마다 변경되는 값. */
   focusNonce?: number;
+  /** 값이 변할 때마다 사용자 좌표(userLat/userLng)로 카메라를 다시 이동시킨다. */
+  recenterNonce?: number;
 }
 
 const FOCUS_REGION_DELTA = 0.01;
@@ -55,11 +57,15 @@ export function StationMap({
   trainMarkers,
   focusStation,
   focusNonce,
+  recenterNonce,
 }: StationMapProps) {
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
   const [mapReady, setMapReady] = useState(false);
   const mapRef = useRef<MapView | null>(null);
+  // nonce 트리거 effect에서 stale closure 없이 항상 최신 좌표를 쓰기 위한 ref.
+  const userPosRef = useRef({ lat: userLat, lng: userLng });
+  userPosRef.current = { lat: userLat, lng: userLng };
 
   useEffect(() => {
     if (!focusStation) return;
@@ -73,6 +79,19 @@ export function StationMap({
       FOCUS_ANIMATION_MS,
     );
   }, [focusStation?.id, focusNonce]);
+
+  useEffect(() => {
+    if (recenterNonce === undefined) return;
+    mapRef.current?.animateToRegion(
+      {
+        latitude: userPosRef.current.lat,
+        longitude: userPosRef.current.lng,
+        latitudeDelta: FOCUS_REGION_DELTA,
+        longitudeDelta: FOCUS_REGION_DELTA,
+      },
+      FOCUS_ANIMATION_MS,
+    );
+  }, [recenterNonce]);
 
   const mapConfig = useMemo(
     () => buildMapConfig({ userLat, userLng, nearestStation, nearbyStations }),
