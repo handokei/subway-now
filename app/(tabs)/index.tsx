@@ -35,10 +35,9 @@ const logger = createLogger('HomeScreen');
 
 export default function HomeScreen() {
   const { colors } = useTheme();
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   const router = useRouter();
   const customOrigin = useAppStore((s) => s.customOrigin);
-  const setCustomOrigin = useAppStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
   const addFavorite = useAppStore((s) => s.addFavorite);
   const removeFavorite = useAppStore((s) => s.removeFavorite);
@@ -298,20 +297,6 @@ export default function HomeScreen() {
       <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
         {effectiveOrigin ? (
           <>
-            {/* Top meta */}
-            <View style={styles.topMeta}>
-              <Pressable
-                onLongPress={__DEV__ ? () => useAppStore.getState().setDebugVisible(true) : undefined}
-                delayLongPress={700}
-                testID="home-clock"
-              >
-                <Text style={[typography.mono, { color: colors.subtle }]}>
-                  {new Date().toLocaleTimeString(i18n.language, { hour: '2-digit', minute: '2-digit' })}
-                </Text>
-              </Pressable>
-              <Text style={[typography.label, { color: colors.subtle }]}>{isCustomOrigin ? t('home.manual') : t('home.live')}</Text>
-            </View>
-
             {/* Hero: origin station */}
             <View style={{ paddingHorizontal: spacing.xxl, paddingTop: spacing.xxxl - 4 }}>
               <Text style={[typography.label, { color: colors.muted, marginBottom: 10 }]}>
@@ -352,15 +337,6 @@ export default function HomeScreen() {
                   </>
                 )}
               </View>
-              {isCustomOrigin && (
-                <TouchableOpacity
-                  style={[styles.gpsResetButton, { borderColor: colors.accent }]}
-                  onPress={() => setCustomOrigin(null)}
-                  testID="gps-reset-button"
-                >
-                  <Text style={[styles.gpsResetText, { color: colors.accent }]}>{t('home.switchToGps')}</Text>
-                </TouchableOpacity>
-              )}
             </View>
 
             <Hr />
@@ -618,13 +594,6 @@ const styles = StyleSheet.create({
     padding: spacing.xxl,
     minHeight: 400,
   },
-  topMeta: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: spacing.xxl,
-    paddingTop: spacing.lg,
-  },
   heroRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -654,18 +623,6 @@ const styles = StyleSheet.create({
   routePillSub: {
     fontSize: 11,
     marginTop: 2,
-  },
-  gpsResetButton: {
-    marginTop: spacing.md,
-    borderWidth: 1,
-    borderRadius: radius.sm,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.xs,
-    alignSelf: 'flex-start',
-  },
-  gpsResetText: {
-    fontSize: 13,
-    fontWeight: '600',
   },
   actionsRow: {
     flexDirection: 'row',
