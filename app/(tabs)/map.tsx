@@ -2,7 +2,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import { useFocusEffect } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useActiveLinePositions } from '../../src/hooks/useActiveLinePositions';
@@ -193,6 +193,7 @@ export default function MapScreen() {
                 setRecentDestination(selectedStation);
                 setDestination(selectedStation);
                 setSelectedStation(null);
+                router.navigate('/(tabs)');
               }}
               testID="set-destination-button"
             >
