@@ -17,6 +17,7 @@ import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/j
 import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
+import { useScheduledAlarms } from '../../src/hooks/useScheduledAlarms';
 import { useTripOrigin } from '../../src/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../../src/hooks/useBackgroundLocation';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -146,6 +147,7 @@ export default function HomeScreen() {
     accuracyMeters,
     arrivalConfidence: confidence,
   });
+  useScheduledAlarms({ route, destination, arrival: rawArrival });
   useBackgroundLocation(destination);
 
   useEffect(() => {
