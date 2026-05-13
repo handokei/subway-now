@@ -3,8 +3,14 @@ import { render, act, waitFor, fireEvent } from '@testing-library/react-native';
 import { StationMap } from '../StationMap';
 import type { Station } from '../../types/station';
 import { installLanguageRestoreHook, setLang } from '../../testUtils/i18nLanguageOverride';
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { __animateToRegionMock } = require('react-native-map-clustering');
 
 installLanguageRestoreHook();
+
+beforeEach(() => {
+  __animateToRegionMock.mockClear();
+});
 
 const mockStation: Station = {
   id: '2-022',
@@ -171,6 +177,63 @@ describe('StationMap', () => {
     });
     expect(result.stations[0].isNearest).toBe(true);
     expect(result.stations[1].isNearest).toBe(false);
+  });
+
+  describe('focusStation', () => {
+    it('focusStation 미전달 시 animateToRegion 호출 안 함', () => {
+      render(<StationMap {...baseProps} />);
+      expect(__animateToRegionMock).not.toHaveBeenCalled();
+    });
+
+    it('focusStation 전달 시 해당 좌표로 animateToRegion 호출', () => {
+      render(<StationMap {...baseProps} focusStation={anotherStation} />);
+      expect(__animateToRegionMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          latitude: anotherStation.lat,
+          longitude: anotherStation.lng,
+        }),
+        expect.any(Number),
+      );
+    });
+
+    it('focusStation 변경 시 새 좌표로 재호출', () => {
+      const { rerender } = render(
+        <StationMap {...baseProps} focusStation={mockStation} />,
+      );
+      __animateToRegionMock.mockClear();
+      rerender(<StationMap {...baseProps} focusStation={anotherStation} />);
+      expect(__animateToRegionMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          latitude: anotherStation.lat,
+          longitude: anotherStation.lng,
+        }),
+        expect.any(Number),
+      );
+    });
+
+    it('같은 역을 다시 선택해도 focusNonce 변경 시 재이동', () => {
+      const { rerender } = render(
+        <StationMap {...baseProps} focusStation={mockStation} focusNonce={1} />,
+      );
+      __animateToRegionMock.mockClear();
+      rerender(<StationMap {...baseProps} focusStation={mockStation} focusNonce={2} />);
+      expect(__animateToRegionMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          latitude: mockStation.lat,
+          longitude: mockStation.lng,
+        }),
+        expect.any(Number),
+      );
+    });
+
+    it('focusStation을 null로 바꾸면 추가 호출 없음', () => {
+      const { rerender } = render(
+        <StationMap {...baseProps} focusStation={mockStation} />,
+      );
+      __animateToRegionMock.mockClear();
+      rerender(<StationMap {...baseProps} focusStation={null} />);
+      expect(__animateToRegionMock).not.toHaveBeenCalled();
+    });
   });
 
   describe('trainMarkers (Phase 3 Stage 3)', () => {

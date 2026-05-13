@@ -10,10 +10,10 @@ import {
 import { useTranslation } from 'react-i18next';
 import stations from '../data/stations.json';
 import type { Station } from '../types/station';
-import { LINE_NAMES } from '../constants/lineColors';
 import { StationMap } from './StationMap';
+import { StationSuggestionList } from './StationSuggestionList';
 import { createLogger } from '../utils/logger';
-import { getStationDisplayName, matchesStationQuery } from '../utils/stationDisplay';
+import { matchesStationQuery } from '../utils/stationDisplay';
 import { useTheme, spacing, radius } from '../theme';
 
 const logger = createLogger('DestinationPicker');
@@ -121,21 +121,14 @@ export function DestinationPicker({
             onFocus={() => setShowDropdown(true)}
             testID="search-input"
           />
-          {showDropdown && suggestions.length > 0 && (
-            <View style={[styles.dropdown, { backgroundColor: colors.card, borderColor: colors.hair }]} testID="suggestions-list">
-              {suggestions.map((s) => (
-                <TouchableOpacity
-                  key={s.id}
-                  style={[styles.suggestionItem, { borderBottomColor: colors.hair }]}
-                  onPress={() => handleSelect(s)}
-                  testID={`suggestion-item-${s.id}`}
-                >
-                  <Text style={[styles.suggestionName, { color: colors.ink }]}>{getStationDisplayName(s)}</Text>
-                  <View style={[styles.lineBadge, { backgroundColor: s.lineColor }]}>
-                    <Text style={styles.lineText}>{LINE_NAMES[s.line]}</Text>
-                  </View>
-                </TouchableOpacity>
-              ))}
+          {showDropdown && (
+            <View style={styles.dropdownWrap}>
+              <StationSuggestionList
+                suggestions={suggestions}
+                onSelect={handleSelect}
+                listTestID="suggestions-list"
+                itemTestIDPrefix="suggestion-item-"
+              />
             </View>
           )}
         </View>
@@ -187,32 +180,8 @@ const styles = StyleSheet.create({
     fontSize: 16,
     borderWidth: 1,
   },
-  dropdown: {
+  dropdownWrap: {
     marginHorizontal: spacing.xl,
     marginTop: 4,
-    borderRadius: radius.sm,
-    overflow: 'hidden',
-    borderWidth: 1,
-  },
-  suggestionItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-    borderBottomWidth: 1,
-  },
-  suggestionName: {
-    fontSize: 15,
-  },
-  lineBadge: {
-    borderRadius: 4,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 2,
-  },
-  lineText: {
-    color: '#ffffff', // 노선색 배경 위 텍스트 — 항상 흰색 유지
-    fontSize: 12,
-    fontWeight: 'bold',
   },
 });

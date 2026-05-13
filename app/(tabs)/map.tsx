@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useActiveLinePositions } from '../../src/hooks/useActiveLinePositions';
 import { StationMap } from '../../src/components/StationMap';
+import { MapSearchBar } from '../../src/components/MapSearchBar';
 import { LocationStateView } from '../../src/components/LocationStateView';
 import { StatusChip } from '../../src/components/StatusChip';
 import stationsData from '../../src/data/stations.json';
@@ -30,6 +31,8 @@ export default function MapScreen() {
   const setDestination = useAppStore((s) => s.setDestination);
   const setRecentDestination = useAppStore((s) => s.setRecentDestination);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
+  const [focusStation, setFocusStation] = useState<Station | null>(null);
+  const [focusNonce, setFocusNonce] = useState(0);
   const insets = useSafeAreaInsets();
   const { t } = useTranslation();
 
@@ -78,6 +81,14 @@ export default function MapScreen() {
         </View>
       )}
 
+      <MapSearchBar
+        onSelect={(station) => {
+          setFocusStation(station);
+          setFocusNonce((n) => n + 1);
+          setSelectedStation(station);
+        }}
+      />
+
       <StationMap
         userLat={userLocation!.lat}
         userLng={userLocation!.lng}
@@ -86,6 +97,8 @@ export default function MapScreen() {
         customOriginId={customOrigin?.id}
         onStationPress={(station) => setSelectedStation(station)}
         trainMarkers={trainMarkers}
+        focusStation={focusStation}
+        focusNonce={focusNonce}
       />
 
       {/* 하단 역 선택 카드 */}

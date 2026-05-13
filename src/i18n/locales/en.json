@@ -73,6 +73,9 @@
     "setAsDestination": "Set as destination",
     "nearbyStationsHeader": "Nearby stations (within 1km)",
     "noNearbyStations": "No subway stations within 1km.",
+    "search": {
+      "placeholder": "Search stations"
+    },
     "train": {
       "terminalSuffix": "To {{name}}",
       "descriptionTemplate": "Train {{trainNo}} · {{status}}",
