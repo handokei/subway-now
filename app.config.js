@@ -73,6 +73,7 @@ module.exports = {
       ],
       'expo-router',
       'expo-localization',
+      'expo-background-task',
       './modules/live-activity/app.plugin.js',
       '@bacons/apple-targets',
     ],
