@@ -13,9 +13,6 @@ import { Station } from '../../types/station';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
 
 jest.mock('expo-notifications');
-jest.mock('../bgDiagnostics', () => ({
-  incrementBgDiagnostic: jest.fn(),
-}));
 jest.mock('../logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -582,13 +579,6 @@ describe('stationNotification', () => {
         content: { title: '하차 알림', body: '다음 역 강남에서 내리세요!', sound: false, channelId: 'station-alarm-silent', priority: 'max' },
         trigger: null,
       });
-    });
-
-    it('#275 진단: 권한이 granted가 아니면 알림은 스케줄하되 진단 카운터를 알 수 있다', async () => {
-      (Notifications.getPermissionsAsync as jest.Mock).mockResolvedValueOnce({ status: 'denied' });
-      await sendAlarmNotification(earlyDest);
-      // 권한 거부여도 호출은 시도 (silent fail은 OS 단에서 발생)
-      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalled();
     });
 
     it('TTS는 알람 body를 sleepMode/allowSpeaker와 함께 호출한다', async () => {

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useNearestStation } from '../../src/hooks/useNearestStation';
 import { useActiveLinePositions } from '../../src/hooks/useActiveLinePositions';
 import { StationMap } from '../../src/components/StationMap';
+import { MapSearchBar } from '../../src/components/MapSearchBar';
 import { LocationStateView } from '../../src/components/LocationStateView';
 import { StatusChip } from '../../src/components/StatusChip';
 import stationsData from '../../src/data/stations.json';
@@ -30,6 +31,10 @@ export default function MapScreen() {
   const setDestination = useAppStore((s) => s.setDestination);
   const setRecentDestination = useAppStore((s) => s.setRecentDestination);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
+  const [focusStation, setFocusStation] = useState<Station | null>(null);
+  const [focusNonce, setFocusNonce] = useState(0);
+  const [recenterNonce, setRecenterNonce] = useState(0);
+  const [selectionCardHeight, setSelectionCardHeight] = useState(0);
   const insets = useSafeAreaInsets();
   const { t } = useTranslation();
 
@@ -78,6 +83,14 @@ export default function MapScreen() {
         </View>
       )}
 
+      <MapSearchBar
+        onSelect={(station) => {
+          setFocusStation(station);
+          setFocusNonce((n) => n + 1);
+          setSelectedStation(station);
+        }}
+      />
+
       <StationMap
         userLat={userLocation!.lat}
         userLng={userLocation!.lng}
@@ -86,11 +99,34 @@ export default function MapScreen() {
         customOriginId={customOrigin?.id}
         onStationPress={(station) => setSelectedStation(station)}
         trainMarkers={trainMarkers}
+        focusStation={focusStation}
+        focusNonce={focusNonce}
+        recenterNonce={recenterNonce}
       />
+
+      <TouchableOpacity
+        style={[
+          styles.recenterButton,
+          {
+            backgroundColor: colors.card,
+            borderColor: colors.hair,
+            bottom: spacing.xl + (selectedStation ? selectionCardHeight : insets.bottom),
+          },
+        ]}
+        onPress={() => setRecenterNonce((n) => n + 1)}
+        accessibilityLabel={t('map.recenter')}
+        testID="recenter-button"
+      >
+        <Text style={[styles.recenterIcon, { color: colors.ink }]}>◎</Text>
+      </TouchableOpacity>
 
       {/* 하단 역 선택 카드 */}
       {selectedStation && (
-        <View style={[styles.selectionCard, { backgroundColor: colors.card, borderColor: colors.hair, paddingBottom: spacing.xl + insets.bottom }]} testID="selection-card">
+        <View
+          style={[styles.selectionCard, { backgroundColor: colors.card, borderColor: colors.hair, paddingBottom: spacing.xl + insets.bottom }]}
+          onLayout={(e) => setSelectionCardHeight(e.nativeEvent.layout.height)}
+          testID="selection-card"
+        >
           <View style={styles.selectionHeader}>
             <View style={{ flex: 1 }}>
               <Text style={[styles.selectionName, { color: colors.ink }]}>{getStationDisplayName(selectedStation)}</Text>
@@ -178,5 +214,24 @@ const styles = StyleSheet.create({
   selectionButtonText: {
     fontSize: 15,
     fontWeight: '700',
+  },
+  recenterButton: {
+    position: 'absolute',
+    right: spacing.lg,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  recenterIcon: {
+    fontSize: 22,
+    lineHeight: 24,
   },
 });

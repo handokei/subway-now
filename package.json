@@ -1,6 +1,6 @@
 {
   "name": "subway-now",
-  "version": "1.2.0",
+  "version": "1.2.2",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
@@ -52,6 +52,13 @@
     ],
     "transformIgnorePatterns": [
       "node_modules/(?!((jest-)?react-native|@react-native(-community)?)|expo(nent)?|@expo(nent)?/.*|react-navigation|@react-navigation/.*|@unimodules/.*|unimodules|sentry-expo|native-base|react-native-svg|react-native-maps|react-native-map-clustering)"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/backend/"
+    ],
+    "modulePathIgnorePatterns": [
+      "<rootDir>/backend/"
     ]
   },
   "dependencies": {
@@ -59,6 +66,7 @@
     "audio-route": "file:./modules/audio-route",
     "expo": "~54.0.33",
     "expo-av": "~16.0.8",
+    "expo-background-task": "~1.0.10",
     "expo-constants": "~18.0.13",
     "expo-dev-client": "~6.0.20",
     "expo-linking": "~8.0.11",

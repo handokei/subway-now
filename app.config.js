@@ -24,7 +24,7 @@ module.exports = {
       supportsTablet: false,
       bundleIdentifier: 'com.subwaynow.app',
       appleTeamId: '4755N5H4T4',
-      buildNumber: '39',
+      buildNumber: '43',
       infoPlist: {
         NSAppTransportSecurity: {
           NSExceptionDomains: {
@@ -73,6 +73,7 @@ module.exports = {
       ],
       'expo-router',
       'expo-localization',
+      'expo-background-task',
       './modules/live-activity/app.plugin.js',
       '@bacons/apple-targets',
     ],

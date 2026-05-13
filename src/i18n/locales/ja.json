@@ -73,6 +73,10 @@
     "setAsDestination": "目的地に設定",
     "nearbyStationsHeader": "周辺の地下鉄駅 (1km以内)",
     "noNearbyStations": "1km以内に地下鉄駅がありません。",
+    "recenter": "現在地に戻る",
+    "search": {
+      "placeholder": "駅名を検索"
+    },
     "train": {
       "terminalSuffix": "{{name}}行",
       "descriptionTemplate": "列車 {{trainNo}} · {{status}}",

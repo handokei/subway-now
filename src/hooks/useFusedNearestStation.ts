@@ -1,15 +1,20 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { useNearestStation } from './useNearestStation';
 import { useArrivalInfo } from './useArrivalInfo';
 import { useTrainPositions } from './useTrainPositions';
+import { useRouteProgress } from './useRouteProgress';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
+import { pickCandidateTrains, type CandidateTrain } from '../utils/pickCandidateTrains';
+import { trackTrainProgress } from '../utils/trackTrainProgress';
+import { haversine } from '../utils/haversine';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import { MAX_ACTIVE_LINES } from '../constants/realtime';
 import type { LinePositions } from '../api/positionApi';
 import type { NearestStationResult, Station } from '../types/station';
 import type { ArrivalProvider, PositionProvider } from '../providers/types';
+import type { Route } from '../utils/stationRoute';
 
 /**
  * fusion 후보 개수. MAX_ACTIVE_LINES와 동기화 — Rules of Hooks로 useArrivalInfo/useTrainPositions를
@@ -67,11 +72,34 @@ function matchPositionsForCandidate(
   return [];
 }
 
+/**
+ * 경로 컨텍스트가 제공되면 useRouteProgress(1D map matching)를 기본으로 사용해
+ * 단일 GPS 점프로 화면이 흔들리는 문제를 막는다. 경로가 없으면 기존 GPS+arrival fusion 유지.
+ */
+export interface FusedRouteContext {
+  route: Route;
+  origin: Station | null;
+  destination: Station | null;
+}
+
 export function useFusedNearestStation(
   arrivalProvider?: ArrivalProvider,
   positionProvider?: PositionProvider,
+  routeContext?: FusedRouteContext,
 ): UseFusedNearestStationReturn {
   const gps = useNearestStation();
+
+  // Phase A: 경로가 설정되면 진행도 기반 현재역으로 GPS 결과를 덮어쓴다.
+  // origin/destination이 빠지면 useRouteProgress가 arc를 만들지 못하고 null을 반환,
+  // 기존 GPS fusion이 자연 fallback으로 살아난다.
+  const progress = useRouteProgress({
+    route: routeContext?.route ?? null,
+    origin: routeContext?.origin ?? null,
+    destination: routeContext?.destination ?? null,
+    userLocation: gps.userLocation,
+    speedMps: gps.speedMps,
+    accuracyMeters: gps.accuracyMeters,
+  });
 
   // GPS 좌표 → 거리순 후보 N개. 좌표 갱신 시에만 재계산.
   const candidates = useMemo<NearestStationResult[]>(() => {
@@ -115,11 +143,87 @@ export function useFusedNearestStation(
     );
   }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions]);
 
+  // Phase 1C: Position-first fusion.
+  // 후보 trainNo들(pickCandidateTrains) → trackTrainProgress로 단일 trainNo·현재역 결정.
+  // anchor = 각 호선의 GPS 최근접 후보. 후보 1개로 단정되거나 GPS로 disambiguation되면 채택.
+  const lastConfirmedTrainNoRef = useRef<string | undefined>(undefined);
+  const candidateTrains = useMemo<CandidateTrain[]>(() => {
+    const lps: (LinePositions | null)[] = [p0.positions, p1.positions, p2.positions];
+    const out: CandidateTrain[] = [];
+    for (const lp of lps) {
+      if (!lp) continue;
+      const anchor = candidates.find((c) => c.station.line === lp.line)?.station.name;
+      out.push(
+        ...pickCandidateTrains({
+          positions: [lp],
+          line: lp.line,
+          anchorStationName: anchor,
+        }),
+      );
+    }
+    return out;
+  }, [candidates, p0.positions, p1.positions, p2.positions]);
+
+  const trainProgress = useMemo(
+    () =>
+      trackTrainProgress({
+        candidates: candidateTrains,
+        userLocation: gps.userLocation,
+        lastConfirmedTrainNo: lastConfirmedTrainNoRef.current,
+      }),
+    [candidateTrains, gps.userLocation],
+  );
+
+  useEffect(() => {
+    if (trainProgress) lastConfirmedTrainNoRef.current = trainProgress.trainNo;
+  }, [trainProgress]);
+
+  const positionTrainResult: NearestStationResult | null = useMemo(() => {
+    if (!trainProgress) return null;
+    const station = trainProgress.currentStation;
+    // userLocation 부재(sticky 케이스 등) 시 placeholder 0. 신뢰도 보조 신호로 사용 금지 —
+    // distanceKm은 화면 표시용이며 알람/정확도 판단은 source=='position-train'으로만 분기.
+    const distanceKm = gps.userLocation
+      ? haversine(gps.userLocation.lat, gps.userLocation.lng, station.lat, station.lng)
+      : 0;
+    return { station, distanceKm };
+  }, [trainProgress, gps.userLocation]);
+
+  const routeResult: NearestStationResult | null = progress.position
+    ? {
+        station: progress.position.current,
+        distanceKm: progress.position.distanceToCurrentM / 1000,
+      }
+    : null;
+
+  // 우선순위(Phase 1C 역전): position-train > position/arrival(fused) > route-progress > gps.
+  // 기존: route-progress가 fused를 덮어쓰고 있었음.
+  let result: NearestStationResult | null;
+  let confidence: FusionConfidence;
+  let source: FusionSource;
+  if (positionTrainResult) {
+    result = positionTrainResult;
+    confidence = 'position-train';
+    source = 'position-train';
+  } else if (fused) {
+    result = fused.result;
+    confidence = fused.confidence;
+    source = fused.source;
+  } else if (routeResult) {
+    result = routeResult;
+    confidence = 'route-progress';
+    source = 'route-progress';
+  } else {
+    result = gps.result;
+    confidence = 'gps-only';
+    source = 'gps';
+  }
+
   return {
-    result: fused?.result ?? gps.result,
+    result,
     gpsResult: gps.result,
-    confidence: fused?.confidence ?? 'gps-only',
-    source: fused?.source ?? 'gps',
+    confidence,
+    source,
     variants: gps.variants,
     userLocation: gps.userLocation,
     speedMps: gps.speedMps,

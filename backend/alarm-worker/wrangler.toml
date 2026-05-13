@@ -1,0 +1,25 @@
+name = "subway-now-alarm-worker"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+compatibility_flags = ["nodejs_compat"]
+
+# KV: active trips
+# 생성: wrangler kv:namespace create TRIPS
+[[kv_namespaces]]
+binding = "TRIPS"
+id = "REPLACE_WITH_PRODUCTION_KV_ID"
+preview_id = "REPLACE_WITH_PREVIEW_KV_ID"
+
+# 1분마다 활성 트립 폴링
+[triggers]
+crons = ["*/1 * * * *"]
+
+# 공개 환경변수 (시크릿은 `wrangler secret put` 사용)
+# - SEOUL_API_KEY          : 서울 열린데이터 API 키
+# - APNS_KEY_ID            : APNs 인증키 KeyID
+# - APNS_TEAM_ID           : Apple Developer Team ID
+# - APNS_PRIVATE_KEY       : .p8 PEM 본문 (BEGIN/END 라인 포함)
+# - APNS_BUNDLE_ID         : 앱 번들 ID (예: com.handokei.subwaynow)
+[vars]
+APNS_HOST = "api.push.apple.com"
+SEOUL_API_HOST = "swopenapi.seoul.go.kr"

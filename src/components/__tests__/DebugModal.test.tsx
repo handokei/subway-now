@@ -7,13 +7,13 @@ import type { AlarmLogEntry } from '../../utils/alarmLog';
 import type { Station, NearestStationResult } from '../../types/station';
 import type { StationArrival } from '../../api/arrivalApi';
 
-const mockUseNearestStation = jest.fn();
+const mockUseFusedNearestStation = jest.fn();
 const mockUseArrivalInfo = jest.fn();
 const mockGetAlarmLog = jest.fn();
 const mockClearAlarmLog = jest.fn();
 
-jest.mock('../../hooks/useNearestStation', () => ({
-  useNearestStation: () => mockUseNearestStation(),
+jest.mock('../../hooks/useFusedNearestStation', () => ({
+  useFusedNearestStation: () => mockUseFusedNearestStation(),
 }));
 jest.mock('../../hooks/useArrivalInfo', () => ({
   useArrivalInfo: (name: string | null) => mockUseArrivalInfo(name),
@@ -59,11 +59,15 @@ const baseArrival: StationArrival = {
 };
 
 const setupHookDefaults = () => {
-  mockUseNearestStation.mockReturnValue({
+  mockUseFusedNearestStation.mockReturnValue({
     result: baseResult,
+    gpsResult: baseResult,
+    confidence: 'gps-only',
+    source: 'gps',
     variants: [station, variantStation],
     userLocation: { lat: 37.5, lng: 127.0 },
     speedMps: 1.5,
+    accuracyMeters: 20,
     loading: false,
     error: null,
     permissionDenied: false,
@@ -117,11 +121,15 @@ describe('DebugModal', () => {
   });
 
   it('userLocation이 null이면 "no location"을 표시한다', () => {
-    mockUseNearestStation.mockReturnValue({
+    mockUseFusedNearestStation.mockReturnValue({
       result: null,
+      gpsResult: null,
+      confidence: 'gps-only',
+      source: 'gps',
       variants: [],
       userLocation: null,
       speedMps: null,
+      accuracyMeters: null,
       loading: false,
       error: null,
       permissionDenied: false,
@@ -159,18 +167,22 @@ describe('DebugModal', () => {
   });
 
   it('speedMps가 null이면 "-"를 표시한다', () => {
-    mockUseNearestStation.mockReturnValue({
+    mockUseFusedNearestStation.mockReturnValue({
       result: baseResult,
+      gpsResult: baseResult,
+      confidence: 'gps-only',
+      source: 'gps',
       variants: [],
       userLocation: { lat: 37.5, lng: 127.0 },
       speedMps: null,
+      accuracyMeters: null,
       loading: false,
       error: null,
       permissionDenied: false,
       refresh: jest.fn(),
     });
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
-    expect(screen.getByText('-')).toBeTruthy();
+    expect(screen.getAllByText('-').length).toBeGreaterThan(0);
   });
 
   it('알람 로그 비어있으면 (empty) 표시', async () => {
@@ -233,6 +245,60 @@ describe('DebugModal', () => {
     expect(mockGetAlarmLog).toHaveBeenCalledTimes(1);
   });
 
+  it('Fusion 섹션에 confidence/source/accuracy를 표시한다', async () => {
+    mockUseFusedNearestStation.mockReturnValue({
+      result: baseResult,
+      gpsResult: baseResult,
+      confidence: 'arrival-confirmed',
+      source: 'arrival',
+      variants: [],
+      userLocation: { lat: 37.5, lng: 127.0 },
+      speedMps: 1,
+      accuracyMeters: 12,
+      loading: false,
+      error: null,
+      permissionDenied: false,
+      refresh: jest.fn(),
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('Fusion')).toBeTruthy();
+    expect(screen.getByText('arrival-confirmed')).toBeTruthy();
+    expect(screen.getByText('arrival')).toBeTruthy();
+    expect(screen.getByText('12 m')).toBeTruthy();
+    expect(screen.queryByTestId('debug-fusion-diff')).toBeNull();
+    expect(screen.getByText('(n/a)')).toBeTruthy();
+  });
+
+  it('fused와 gps station id가 다르면 diff 라인을 표시한다', () => {
+    const otherStation: Station = { ...station, id: '2-099', name: '역삼' };
+    mockUseFusedNearestStation.mockReturnValue({
+      result: { station, distanceKm: 0.05 },
+      gpsResult: { station: otherStation, distanceKm: 0.18 },
+      confidence: 'arrival-arriving',
+      source: 'arrival',
+      variants: [],
+      userLocation: { lat: 37.5, lng: 127.0 },
+      speedMps: 1,
+      accuracyMeters: 10,
+      loading: false,
+      error: null,
+      permissionDenied: false,
+      refresh: jest.fn(),
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByTestId('debug-fusion-diff')).toBeTruthy();
+  });
+
+  it('candidateTrains prop을 받으면 개수와 목록을 표시한다', () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} candidateTrains={['T1', 'T2']} />);
+    expect(screen.getByText('2: T1, T2')).toBeTruthy();
+  });
+
+  it('candidateTrains가 빈 배열이면 "0: -"으로 표시한다', () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} candidateTrains={[]} />);
+    expect(screen.getByText('0: -')).toBeTruthy();
+  });
+
   it('unmount 시 AppState listener를 정리한다', async () => {
     const { unmount } = renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
@@ -280,32 +346,97 @@ describe('DebugModal helpers', () => {
     expect(__test__.formatLogLine(entry)).toContain('acc=-');
   });
 
+  const baseFusion = {
+    confidence: 'gps-only' as const,
+    source: 'gps' as const,
+    fusedLabel: '강남(2) · 123m',
+    gpsLabel: '강남(2) · 123m',
+    differs: false,
+    candidateTrains: null as string[] | null,
+  };
+
   it('buildDumpText: 모든 섹션 포함', () => {
     const dump = __test__.buildDumpText({
       userLocation: { lat: 37.5, lng: 127.0 },
       speedMps: 2,
+      accuracyMeters: 30,
       nearestName: '강남',
       nearestDistanceM: 123,
       variants: ['강남(2)'],
+      fusion: baseFusion,
       arrivalSummary: 'up: 청량리 · 90s',
       isMock: true,
       logs: [{ ts: Date.now(), source: 'fg', outcome: 'fired', stationName: '강남' }],
     });
     expect(dump).toContain('## GPS');
+    expect(dump).toContain('accuracy=30 m');
     expect(dump).toContain('## Nearest');
     expect(dump).toContain('variants: 강남(2)');
+    expect(dump).toContain('## Fusion');
+    expect(dump).toContain('confidence=gps-only');
+    expect(dump).toContain('source=gps');
     expect(dump).toContain('## Arrival');
     expect(dump).toContain('(MOCK)');
     expect(dump).toContain('## Alarm log (1)');
+  });
+
+  it('buildDumpText: fused != gps이면 diff 라인을 추가한다', () => {
+    const dump = __test__.buildDumpText({
+      userLocation: { lat: 37.5, lng: 127.0 },
+      speedMps: 2,
+      accuracyMeters: 30,
+      nearestName: '강남',
+      nearestDistanceM: 123,
+      variants: [],
+      fusion: { ...baseFusion, fusedLabel: '역삼(2) · 200m', differs: true },
+      arrivalSummary: 'x',
+      isMock: false,
+      logs: [],
+    });
+    expect(dump).toContain('(fused != gps)');
+  });
+
+  it('buildDumpText: candidateTrains를 받으면 개수와 목록을 표기한다', () => {
+    const dump = __test__.buildDumpText({
+      userLocation: null,
+      speedMps: null,
+      accuracyMeters: null,
+      nearestName: null,
+      nearestDistanceM: null,
+      variants: [],
+      fusion: { ...baseFusion, candidateTrains: ['T101', 'T202'] },
+      arrivalSummary: 'x',
+      isMock: false,
+      logs: [],
+    });
+    expect(dump).toContain('candidateTrains(2): T101, T202');
+  });
+
+  it('buildDumpText: candidateTrains가 빈 배열이면 "-"로 표기', () => {
+    const dump = __test__.buildDumpText({
+      userLocation: null,
+      speedMps: null,
+      accuracyMeters: null,
+      nearestName: null,
+      nearestDistanceM: null,
+      variants: [],
+      fusion: { ...baseFusion, candidateTrains: [] },
+      arrivalSummary: 'x',
+      isMock: false,
+      logs: [],
+    });
+    expect(dump).toContain('candidateTrains(0): -');
   });
 
   it('buildDumpText: 빈 상태 표기', () => {
     const dump = __test__.buildDumpText({
       userLocation: null,
       speedMps: null,
+      accuracyMeters: null,
       nearestName: null,
       nearestDistanceM: null,
       variants: [],
+      fusion: baseFusion,
       arrivalSummary: '(no arrival data)',
       isMock: false,
       logs: [],
@@ -314,21 +445,25 @@ describe('DebugModal helpers', () => {
     expect(dump).toContain('(no nearest station)');
     expect(dump).not.toContain('variants:');
     expect(dump).not.toContain('(MOCK)');
+    expect(dump).not.toContain('candidateTrains');
     expect(dump).toContain('## Alarm log (0)');
   });
 
-  it('buildDumpText: userLocation은 있고 speedMps만 null이면 "-" 표기', () => {
+  it('buildDumpText: userLocation은 있고 speedMps/accuracy만 null이면 "-" 표기', () => {
     const dump = __test__.buildDumpText({
       userLocation: { lat: 37.5, lng: 127.0 },
       speedMps: null,
+      accuracyMeters: null,
       nearestName: '강남',
       nearestDistanceM: null,
       variants: [],
+      fusion: baseFusion,
       arrivalSummary: 'x',
       isMock: false,
       logs: [],
     });
     expect(dump).toContain('speed=- m/s');
+    expect(dump).toContain('accuracy=- m');
     expect(dump).toContain('강남 · - m');
   });
 
@@ -347,9 +482,13 @@ describe('DebugModal helpers', () => {
 describe('DebugModal arrival edge cases', () => {
   const baseHooks = {
     result: baseResult,
+    gpsResult: baseResult,
+    confidence: 'gps-only' as const,
+    source: 'gps' as const,
     variants: [],
     userLocation: { lat: 37.5, lng: 127.0 },
     speedMps: 1,
+    accuracyMeters: 15,
     loading: false,
     error: null,
     permissionDenied: false,
@@ -359,7 +498,7 @@ describe('DebugModal arrival edge cases', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetAlarmLog.mockResolvedValue([]);
-    mockUseNearestStation.mockReturnValue(baseHooks);
+    mockUseFusedNearestStation.mockReturnValue(baseHooks);
   });
 
   it('up.statusMessage가 빈 문자열이면 괄호를 붙이지 않는다', () => {
@@ -383,11 +522,15 @@ describe('DebugModal share with null nearest', () => {
     jest.clearAllMocks();
     mockGetAlarmLog.mockResolvedValue([]);
     mockClearAlarmLog.mockResolvedValue(undefined);
-    mockUseNearestStation.mockReturnValue({
+    mockUseFusedNearestStation.mockReturnValue({
       result: null,
+      gpsResult: null,
+      confidence: 'gps-only',
+      source: 'gps',
       variants: [],
       userLocation: null,
       speedMps: null,
+      accuracyMeters: null,
       loading: false,
       error: null,
       permissionDenied: false,

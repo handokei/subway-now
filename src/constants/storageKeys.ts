@@ -12,4 +12,5 @@ export const ALLOW_SPEAKER_KEY = 'subway-now:allow-speaker';
 export const SLEEP_MODE_GUIDE_SHOWN_KEY = 'subway-now:sleep-mode-guide-shown';
 export const LOCALE_PREFERENCE_KEY = 'subway-now:locale-preference';
 export const ALARM_LOG_KEY = 'subway-now:alarm-log';
-export const BG_DIAGNOSTICS_KEY = 'subway-now:bg-diagnostics';
+export const APNS_TOKEN_KEY = 'subway-now:apns-token';
+export const ACTIVE_TRIP_KEY = 'subway-now:active-trip';
