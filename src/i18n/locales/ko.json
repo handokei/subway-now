@@ -73,6 +73,7 @@
     "setAsDestination": "도착역으로 설정",
     "nearbyStationsHeader": "주변 지하철역 (1km 이내)",
     "noNearbyStations": "주변 1km 내 지하철역이 없습니다.",
+    "recenter": "내 위치로 이동",
     "search": {
       "placeholder": "역 이름 검색"
     },
