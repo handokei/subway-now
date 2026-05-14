@@ -12,9 +12,22 @@ name: "탭 내비게이션 순회"
       location: always
       notifications: allow
 
+# Expo dev-client URL 선택 화면 (개발 빌드에서만 등장)
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+
+- tapOn:
+    text: "Continue"
+    optional: true
+
 - tapOn:
     text: ".*허용.*"
     optional: true
+
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
 
 # 홈 탭 로드 (testID는 즉시 노출)
 - extendedWaitUntil:
