@@ -38,6 +38,14 @@ function formatLogLine(entry: AlarmLogEntry): string {
       `acc=${entry.location.accuracy ?? '-'} age=${entry.location.ageMs}ms`,
     );
   }
+  // #372 stamp — bg-scheduled 엔트리 진단용. 값이 있을 때만 노출(짧은 라인 우선).
+  if (entry.direction) parts.push(`dir=${entry.direction}`);
+  if (entry.usedTrainCode) parts.push(`train=${entry.usedTrainCode}`);
+  if (entry.selectedArrivalSeconds != null) {
+    parts.push(`eta=${entry.selectedArrivalSeconds}s`);
+  }
+  if (entry.expectedStationAtFire) parts.push(`exp=${entry.expectedStationAtFire}`);
+  if (entry.actualLastNotifiedStation) parts.push(`last=${entry.actualLastNotifiedStation}`);
   return parts.join(' | ');
 }
 

@@ -335,6 +335,52 @@ describe('DebugModal helpers', () => {
     expect(line).toContain('fired');
   });
 
+  function bgScheduledEntry(extra: Partial<AlarmLogEntry>): AlarmLogEntry {
+    return { ts: Date.now(), source: 'bg-scheduled', outcome: 'fired', ...extra };
+  }
+
+  it('formatLogLine: #372 stamp 필드가 채워지면 dir/train/eta/exp/last를 표기한다', () => {
+    const line = __test__.formatLogLine(
+      bgScheduledEntry({
+        phaseId: 'early',
+        kind: 'destination',
+        stationName: '강남',
+        direction: 'up',
+        usedTrainCode: 'T-42',
+        selectedArrivalSeconds: 600,
+        expectedStationAtFire: '강남',
+        actualLastNotifiedStation: '시청',
+      }),
+    );
+    expect(line).toContain('bg-scheduled');
+    expect(line).toContain('dir=up');
+    expect(line).toContain('train=T-42');
+    expect(line).toContain('eta=600s');
+    expect(line).toContain('exp=강남');
+    expect(line).toContain('last=시청');
+  });
+
+  it('formatLogLine: stamp 필드가 null/미존재면 추가 토큰이 붙지 않는다', () => {
+    const line = __test__.formatLogLine(
+      bgScheduledEntry({
+        direction: null,
+        usedTrainCode: null,
+        selectedArrivalSeconds: null,
+        expectedStationAtFire: null,
+        actualLastNotifiedStation: null,
+      }),
+    );
+    for (const token of ['dir=', 'train=', 'eta=', 'exp=', 'last=']) {
+      expect(line).not.toContain(token);
+    }
+  });
+
+  it('formatLogLine: selectedArrivalSeconds=0이어도 eta=0s로 표기 (0과 null 구분)', () => {
+    expect(
+      __test__.formatLogLine(bgScheduledEntry({ selectedArrivalSeconds: 0 })),
+    ).toContain('eta=0s');
+  });
+
   it('formatLogLine: accuracy null이면 "-"로 표기', () => {
     const entry: AlarmLogEntry = {
       ts: Date.now(),

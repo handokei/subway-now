@@ -4,10 +4,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DESTINATION_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY } from '../constants/storageKeys';
 import { getLastFiredAlarmStationName } from '../utils/notificationState';
 import { scheduleAlarmsForRoute } from '../utils/alarmScheduler';
-import { fetchArrivalInfo, type ArrivalInfo } from '../api/arrivalApi';
+import { fetchArrivalInfo } from '../api/arrivalApi';
+import { pickNextArrival, type NextArrivalPick } from '../utils/nextArrivalPick';
 import stationsData from '../data/stations.json';
 import type { Station } from '../types/station';
 import type { Route } from '../utils/stationRoute';
+import { resolveTripDirection } from '../utils/tripDirection';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('AlarmRefreshTask');
@@ -22,18 +24,6 @@ export const ALARM_REFRESH_TASK = 'alarm-refresh-task';
  */
 const allStations = stationsData as Station[];
 const stationById = new Map<string, Station>(allStations.map((s) => [s.id, s]));
-
-function pickNextStationEtaSeconds(arrivals: { up: ArrivalInfo[]; down: ArrivalInfo[] }): number | null {
-  // 방향 정보 없이 BG에서 가장 신뢰할 수 있는 신호는 "임박한 도착". up/down 합산해
-  // 양수 중 최소값을 다음 도착 ETA로 사용한다. 정확도는 reschedule(#335)이 보정.
-  let min: number | null = null;
-  for (const info of [...arrivals.up, ...arrivals.down]) {
-    if (info.arrivalSeconds > 0 && (min === null || info.arrivalSeconds < min)) {
-      min = info.arrivalSeconds;
-    }
-  }
-  return min;
-}
 
 async function readActiveTrip(): Promise<{ destination: Station; route: NonNullable<Route> } | null> {
   const [destJson, routeJson] = await Promise.all([
@@ -52,14 +42,19 @@ async function readActiveTrip(): Promise<{ destination: Station; route: NonNulla
   }
 }
 
-async function resolveCurrentStationName(): Promise<string | null> {
-  // 사전 예약 알람 발화 기록을 1순위로 사용한다 — GPS 기반 LAST_NOTIFIED_STATION_KEY는
-  // BG에서 위치 업데이트가 끊긴 동안 stale일 수 있다. 알람이 한 번도 안 울렸으면 GPS 기록으로 fallback.
+async function resolveCurrentStation(): Promise<Station | null> {
+  // 1순위: 사전 예약 알람 발화 이름(#371) — GPS LAST_NOTIFIED는 BG 위치 업데이트 끊긴 동안 stale.
+  // 동명이역은 첫 매칭 Station을 반환. 노선이 어긋나면 하류의 resolveTripDirection(#370)이
+  // direction=null로 안전 폴백 → 양방향 합산 ETA로 그레이스풀 다운그레이드.
   const firedName = await getLastFiredAlarmStationName();
-  if (firedName) return firedName;
+  if (firedName) {
+    const byName = allStations.find((s) => s.name === firedName);
+    if (byName) return byName;
+  }
+  // 2순위: GPS LAST_NOTIFIED id.
   const id = await AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY);
   if (!id) return null;
-  return stationById.get(id)?.name ?? null;
+  return stationById.get(id) ?? null;
 }
 
 TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
@@ -70,12 +65,16 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
       return BackgroundTask.BackgroundTaskResult.Success;
     }
 
-    const currentStationName = await resolveCurrentStationName();
-    let nextStationEtaSeconds: number | null = null;
-    if (currentStationName) {
+    // 진행 방향은 route + 현재역 ordinal로 판정(#370). null이면 양방향 fallback.
+    const currentStation = await resolveCurrentStation();
+    const direction = currentStation
+      ? resolveTripDirection(active.route, active.destination.name, currentStation.id)
+      : null;
+    let pick: NextArrivalPick = { etaSeconds: null, direction: null, trainCode: null };
+    if (currentStation) {
       try {
-        const arrivals = await fetchArrivalInfo(currentStationName);
-        nextStationEtaSeconds = pickNextStationEtaSeconds(arrivals);
+        const arrivals = await fetchArrivalInfo(currentStation.name);
+        pick = pickNextArrival(arrivals, direction);
       } catch (e) {
         logger.warn('Arrival API 호출 실패 — static ETA fallback:', e);
       }
@@ -84,7 +83,9 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
     await scheduleAlarmsForRoute({
       route: active.route,
       destinationName: active.destination.name,
-      nextStationEtaSeconds,
+      currentStationApproachEtaSeconds: pick.etaSeconds,
+      // stamp.direction은 의도(filter)를 기록 — pick.direction(추론된 list)이 아닌 route-resolved.
+      stamp: { direction, usedTrainCode: pick.trainCode },
     });
     logger.info('알람 사전 예약 갱신 완료');
     return BackgroundTask.BackgroundTaskResult.Success;

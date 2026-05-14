@@ -12,18 +12,42 @@ import type { Station } from '../types/station';
 // Buffer 크기는 ALARM_LOG_BUFFER_SIZE 상수로 분리 — 늘리려면 한 곳만 수정.
 export const ALARM_LOG_BUFFER_SIZE = 200;
 
-export type AlarmLogSource = 'fg' | 'bg';
+// 'fg' / 'bg'는 v1 (FG GPS 평가 / BG location task gate). 'fg-evaluated' / 'bg-scheduled'는
+// v2 (#372)로 의미 명확화. 두 값 모두 union에 유지해 과거 저장 데이터를 손실 없이 읽는다.
+export type AlarmLogSource = 'fg' | 'bg' | 'fg-evaluated' | 'bg-scheduled';
 export type AlarmLogOutcome = 'fired' | 'suppressed';
 // 'dedup-alarm'(evaluateAlarmPhase의 firedAlarms 적중 케이스)은 후속 이슈에서 추가.
 // 그때까지 union에 선언하지 않아 "구현됐다"는 거짓 시그널을 피한다.
 export type AlarmLogReason = 'dedup-station' | 'gate-age' | 'gate-accuracy';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
+export type AlarmLogDirection = 'up' | 'down';
 
 export interface AlarmLogLocation {
   lat: number;
   lng: number;
   accuracy: number | null;
   ageMs: number;
+}
+
+/**
+ * 사전 예약 알람에 첨부되는 컨텍스트 stamp (#372).
+ * "이 알람이 어떤 입력값으로 산출됐는가?"를 발사 시점 진단 없이도 알 수 있게 한다.
+ *
+ * 모든 필드는 null 허용 — caller가 모르면 그대로 null. (예: silent push BG는
+ * 방향/trainCode를 모른다.)
+ *
+ * 시점 주의:
+ *   - 사전 예약 알람은 expo-notifications OS 레벨로 발사되므로 fire-time hook이 없다.
+ *   - 따라서 `actualLastNotifiedStation`은 발사 시점 값이 아닌 **예약 시점 스냅샷**이다.
+ *   - 이름은 이슈 #372 스펙(`actualLastNotifiedStation`)을 유지하지만, 진단 시
+ *     "예약 직후 알고 있던 가장 최신 위치"로 해석해야 한다.
+ */
+export interface AlarmLogStamp {
+  direction: AlarmLogDirection | null;
+  usedTrainCode: string | null;
+  selectedArrivalSeconds: number | null;
+  expectedStationAtFire: string | null;
+  actualLastNotifiedStation: string | null;
 }
 
 export interface AlarmLogEntry {
@@ -35,6 +59,12 @@ export interface AlarmLogEntry {
   kind?: AlarmLogKind;
   phaseId?: AlarmPhaseId;
   location?: AlarmLogLocation;
+  // #372 — 사전 예약 알람 stamp. 모두 optional (구버전/일부 caller 호환).
+  direction?: AlarmLogDirection | null;
+  usedTrainCode?: string | null;
+  selectedArrivalSeconds?: number | null;
+  expectedStationAtFire?: string | null;
+  actualLastNotifiedStation?: string | null;
 }
 
 const logger = createLogger('AlarmLog');
@@ -52,6 +82,27 @@ export function logFiredAlarm(source: AlarmLogSource, event: AlarmEvent): void {
     stationName: event.stationName,
     kind: event.type,
     phaseId: event.phaseId,
+  });
+}
+
+/**
+ * 사전 예약(BG) 알람 1건의 stamp 컨텍스트를 적재한다 (#372).
+ * source는 항상 'bg-scheduled', outcome은 'fired'(사전 예약된 발사 예정 기록).
+ * 발사 자체는 expo-notifications가 처리하므로 별도 fire-time 로그는 없다.
+ */
+export function logScheduledAlarm(event: AlarmEvent, stamp: AlarmLogStamp): void {
+  void appendAlarmLog({
+    ts: Date.now(),
+    source: 'bg-scheduled',
+    outcome: 'fired',
+    stationName: event.stationName,
+    kind: event.type,
+    phaseId: event.phaseId,
+    direction: stamp.direction,
+    usedTrainCode: stamp.usedTrainCode,
+    selectedArrivalSeconds: stamp.selectedArrivalSeconds,
+    expectedStationAtFire: stamp.expectedStationAtFire,
+    actualLastNotifiedStation: stamp.actualLastNotifiedStation,
   });
 }
 

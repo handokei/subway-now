@@ -104,7 +104,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     const scheduled = await scheduleAlarmsForRoute({
       route,
       destinationName: destination.name,
-      nextStationEtaSeconds: payload.etaSeconds,
+      currentStationApproachEtaSeconds: payload.etaSeconds,
     });
     logger.info(`rescheduled ${scheduled.length} alarms via silent push`);
   } catch (e) {
