@@ -5,7 +5,11 @@ export const MAX_LOCATION_AGE_MS = 15_000;
 // 200m: 알람 트리거용 엄격 게이트. 역간 평균 거리(800m+) 대비 안전 마진.
 // false alarm 방지 위해 그대로 유지 — 알람 경로(useStationAlarm)에서만 사용.
 export const MAX_ACCURACY_M = 200;
-// 1500m: UI 표시용 완화 게이트. 지하 플랫폼/터널의 horizontalAccuracy(300~1500m)도
-// 일단 수용해 "추정 현재역"을 끊김 없이 보여준다. 알람은 별도 엄격 게이트로 차단.
-export const MAX_ACCURACY_M_DISPLAY = 1500;
+// 250m: UI 표시용 게이트. Apple Core Location 가이드(100m 초과는 통상 필터링)와
+// 역간 평균 거리(800m+)를 함께 고려한 보수 값. 부정확 fix(±1.5km)로 엉뚱한 역을
+// 단정하는 사고를 방지. 이 게이트로 drop된 동안은 useNearestStation이 result를
+// 갱신하지 않고 locationUncertain=true로 노출해 호출자가 "위치 확인 중" 상태로 표시한다.
+// Position-first fusion(useFusedNearestStation)이 활성화되면 realtimePosition이 우선이므로
+// GPS 게이트의 영향 범위는 fallback 경로에 한정된다.
+export const MAX_ACCURACY_M_DISPLAY = 250;
 export const MAX_STATION_DISTANCE_KM = 1.0;

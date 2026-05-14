@@ -1,5 +1,5 @@
 // 경로 밖 1.5km 이상 떨어진 GPS는 off-route로 간주해 진행도 보정에 사용하지 않는다.
-// 표시용 accuracy 게이트(MAX_ACCURACY_M_DISPLAY)와 동일. 큰 변경 시 location.ts와 함께 조정.
+// MAX_ACCURACY_M_DISPLAY와는 별개 개념(이쪽은 사영 perpendicular 거리, 저쪽은 단일 fix accuracy).
 export const MAX_PERP_M = 1500;
 
 // 지하철 운행 가능 최대 속도 + 여유. 200 km/h = 55.6 m/s.

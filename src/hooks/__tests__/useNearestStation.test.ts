@@ -491,7 +491,23 @@ describe('useNearestStation', () => {
     expect(result.current.result?.station.name).toBe('강남');
   });
 
-  it('watch 콜백 표시 게이트 초과(MAX_ACCURACY_M_DISPLAY 초과) 좌표는 setState하지 않는다', async () => {
+  it('watch 콜백 표시 게이트 초과(MAX_ACCURACY_M_DISPLAY 초과) 좌표는 setState하지 않고 locationUncertain=true', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    expect(result.current.locationUncertain).toBe(false);
+    simulateGps(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M_DISPLAY + 1 });
+
+    // 표시 게이트 초과 → setState 차단 + uncertain 노출
+    expect(result.current.result).toBeNull();
+    expect(result.current.userLocation).toBeNull();
+    expect(result.current.locationUncertain).toBe(true);
+  });
+
+  it('uncertain 상태에서 정확한 좌표가 들어오면 locationUncertain=false로 복귀한다', async () => {
     mockGranted();
 
     const { result } = renderHook(() => useNearestStation());
@@ -499,10 +515,11 @@ describe('useNearestStation', () => {
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
     simulateGps(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M_DISPLAY + 1 });
+    expect(result.current.locationUncertain).toBe(true);
 
-    // 표시 게이트 초과 → setState 차단
-    expect(result.current.result).toBeNull();
-    expect(result.current.userLocation).toBeNull();
+    simulateGps(37.4980, 127.0277, { accuracy: 30 });
+    await waitFor(() => expect(result.current.locationUncertain).toBe(false));
+    expect(result.current.result?.station.name).toBe('강남');
   });
 
   it('watch 콜백 알람 게이트 초과지만 표시 게이트 통과 좌표는 setState한다 (지하 구간 가정)', async () => {
@@ -532,7 +549,7 @@ describe('useNearestStation', () => {
     expect(result.current.result?.station.name).toBe('강남');
   });
 
-  it('refresh 시 표시 게이트 초과 좌표는 setState하지 않는다', async () => {
+  it('refresh 시 표시 게이트 초과 좌표는 setState하지 않고 locationUncertain=true', async () => {
     mockGranted();
     mockLocation(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M_DISPLAY + 1 });
 
@@ -545,8 +562,28 @@ describe('useNearestStation', () => {
     });
 
     expect(Location.getCurrentPositionAsync).toHaveBeenCalled();
-    // 표시 게이트 초과 → result 갱신 안 됨
+    // 표시 게이트 초과 → result 갱신 안 됨 + uncertain 노출
     expect(result.current.result).toBeNull();
+    expect(result.current.locationUncertain).toBe(true);
+  });
+
+  it('refresh 시 정확한 좌표가 들어오면 locationUncertain=false로 복귀한다', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M_DISPLAY + 1 });
+    expect(result.current.locationUncertain).toBe(true);
+
+    mockLocation(37.4980, 127.0277, { accuracy: 30 });
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(result.current.locationUncertain).toBe(false);
+    expect(result.current.result?.station.name).toBe('강남');
   });
 
   it('timestamp가 없는 캐시 위치는 무시한다', async () => {

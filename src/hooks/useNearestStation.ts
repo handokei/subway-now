@@ -22,6 +22,9 @@ interface UseNearestStationReturn {
   loading: boolean;
   error: string | null;
   permissionDenied: boolean;
+  // true: 직전 좌표가 표시 게이트(MAX_ACCURACY_M_DISPLAY)에 의해 drop되어 result가
+  // 마지막 신뢰 fix로 정지된 상태. 호출자는 "위치 확인 중" 상태로 표시한다.
+  locationUncertain: boolean;
   refresh: () => Promise<void>;
 }
 
@@ -48,6 +51,7 @@ export function useNearestStation(): UseNearestStationReturn {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
+  const [locationUncertain, setLocationUncertain] = useState(false);
   const subscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const lastStationIdRef = useRef<string | null>(null);
   const lastDistanceRef = useRef<number>(0);
@@ -115,7 +119,11 @@ export function useNearestStation(): UseNearestStationReturn {
           timeInterval: 2000,
         },
         (location) => {
-          if (!isAccuracyAcceptableForDisplay(location.coords.accuracy)) return;
+          if (!isAccuracyAcceptableForDisplay(location.coords.accuracy)) {
+            setLocationUncertain(true);
+            return;
+          }
+          setLocationUncertain(false);
           applyLocation(location.coords);
         },
       );
@@ -141,7 +149,10 @@ export function useNearestStation(): UseNearestStationReturn {
       setPermissionDenied(false);
       const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
       if (isAccuracyAcceptableForDisplay(location.coords.accuracy)) {
+        setLocationUncertain(false);
         applyLocation(location.coords);
+      } else {
+        setLocationUncertain(true);
       }
     } catch {
       setError('위치를 가져오는 데 실패했습니다.');
@@ -168,5 +179,5 @@ export function useNearestStation(): UseNearestStationReturn {
     };
   }, [startWatch, stopWatch]);
 
-  return { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, refresh };
+  return { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh };
 }

@@ -76,7 +76,7 @@ export default function HomeScreen() {
     () => (route && tripOrigin && destination ? { route, origin: tripOrigin, destination } : undefined),
     [route, tripOrigin, destination],
   );
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, refresh, confidence } = useFusedNearestStation(undefined, undefined, routeContext);
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh, confidence } = useFusedNearestStation(undefined, undefined, routeContext);
   const isCustomOrigin = customOrigin !== null;
   const effectiveOrigin = customOrigin ?? result?.station ?? null;
   useTripOrigin(destination, effectiveOrigin, setTripOrigin);
@@ -505,6 +505,15 @@ export default function HomeScreen() {
               </View>
             )}
           </>
+        ) : locationUncertain ? (
+          <View style={styles.center} testID="location-uncertain">
+            <Text style={styles.icon}>📍</Text>
+            <Text style={[styles.title, { color: colors.ink }]}>{t('home.locationUncertainTitle')}</Text>
+            <Text style={[styles.subtitle, { color: colors.muted }]}>{t('home.locationUncertainDescription')}</Text>
+            <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
+              <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
+            </TouchableOpacity>
+          </View>
         ) : (
           <View style={styles.center}>
             <Text style={styles.icon}>🚶</Text>
