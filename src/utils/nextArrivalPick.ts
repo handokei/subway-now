@@ -1,4 +1,7 @@
-import type { ArrivalInfo, StationArrival } from '../api/arrivalApi';
+import type { ArrivalInfo } from '../api/arrivalApi';
+
+// StationArrival을 caller가 함께 import할 수 있도록 re-export.
+export type { StationArrival } from '../api/arrivalApi';
 
 export interface NextArrivalPick {
   etaSeconds: number | null;
@@ -29,12 +32,7 @@ export function pickNextArrival(
   filterDirection: 'up' | 'down' | null = null,
 ): NextArrivalPick {
   if (!arrival || arrival.isMock) return EMPTY_PICK;
-  const directions: Array<'up' | 'down'> =
-    filterDirection === 'up'
-      ? ['up']
-      : filterDirection === 'down'
-        ? ['down']
-        : ['up', 'down'];
+  const directions = directionsToSearch(filterDirection);
   let pick: { info: ArrivalInfo; direction: 'up' | 'down' } | null = null;
   for (const direction of directions) {
     for (const info of arrival[direction]) {
@@ -52,5 +50,8 @@ export function pickNextArrival(
   };
 }
 
-// 타입 export — caller가 StationArrival을 직접 다루지 않을 때 사용.
-export type { StationArrival };
+function directionsToSearch(filter: 'up' | 'down' | null): Array<'up' | 'down'> {
+  if (filter === 'up') return ['up'];
+  if (filter === 'down') return ['down'];
+  return ['up', 'down'];
+}

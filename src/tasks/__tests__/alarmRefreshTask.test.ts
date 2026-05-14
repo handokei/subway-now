@@ -89,12 +89,14 @@ function mockStorage(values: {
   );
 }
 
+const EMPTY_STAMP = {
+  direction: null,
+  usedTrainCode: null,
+} as const;
+
 function expectSchedulerCalledWith(
   currentStationApproachEtaSeconds: number | null,
-  stamp: { direction: 'up' | 'down' | null; usedTrainCode: string | null } = {
-    direction: null,
-    usedTrainCode: null,
-  },
+  stamp: { direction: 'up' | 'down' | null; usedTrainCode: string | null } = EMPTY_STAMP,
 ) {
   expect(mockScheduleAlarmsForRoute).toHaveBeenCalledWith({
     route,
