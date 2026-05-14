@@ -209,9 +209,10 @@ export default function HomeScreen() {
     const destinationChanged = prevDestId != null && prevDestId !== currDestId;
     const update = async () => {
       if (destinationChanged) {
-        logger.info('목적지 변경 → 이전 알림 교체');
+        logger.info('목적지 변경 → 알람 알림 해제');
         await clearAlarmNotification();
-        await clearStationNotification();
+        // Live Activity는 end→start race로 "Target is not foreground" 실패를 유발하므로
+        // 종료하지 않고 updateStationNotification 내부의 update() 경로로만 갱신한다.
       }
       logger.info('알림 업데이트:', effectiveOrigin.name, `→ ${destination.name}`);
       await updateStationNotification(
