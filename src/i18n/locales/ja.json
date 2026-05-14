@@ -38,6 +38,8 @@
     "noArrivalInfo": "到着情報なし",
     "notNearStationTitle": "地下鉄駅の近くではありません",
     "notNearStationDescription": "地下鉄駅から500m以内にいるとき、現在駅が表示されます。\n地図タブで出発駅を手動で設定することもできます。",
+    "locationUncertainTitle": "位置確認中",
+    "locationUncertainDescription": "GPSの精度が低いため、\n現在地を特定できません。\nしばらくしてから自動で再試行します。",
     "refresh": "更新"
   },
   "settings": {

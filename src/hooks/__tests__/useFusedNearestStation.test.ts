@@ -34,6 +34,7 @@ function gpsBase(overrides?: Record<string, unknown>) {
     loading: false,
     error: null,
     permissionDenied: false,
+    locationUncertain: false,
     refresh: jest.fn(),
     ...overrides,
   };
@@ -215,10 +216,16 @@ describe('useFusedNearestStation', () => {
     expect(result.current.result?.station.name).toBe(MOCK_STATIONS.gangnam.name);
   });
 
-  it('GPS pass-through 필드들(loading/error/permissionDenied/refresh 등)이 보존된다', () => {
+  it('GPS pass-through 필드들(loading/error/permissionDenied/locationUncertain/refresh 등)이 보존된다', () => {
     const refresh = jest.fn();
     mockUseNearest.mockReturnValue(
-      gpsBase({ loading: true, error: 'GPS err', permissionDenied: true, refresh }),
+      gpsBase({
+        loading: true,
+        error: 'GPS err',
+        permissionDenied: true,
+        locationUncertain: true,
+        refresh,
+      }),
     );
     mockFindTop.mockReturnValue([]);
 
@@ -227,6 +234,7 @@ describe('useFusedNearestStation', () => {
     expect(result.current.loading).toBe(true);
     expect(result.current.error).toBe('GPS err');
     expect(result.current.permissionDenied).toBe(true);
+    expect(result.current.locationUncertain).toBe(true);
     expect(result.current.refresh).toBe(refresh);
     expect(result.current.variants).toEqual([MOCK_STATIONS.gangnam]);
     expect(result.current.userLocation).toEqual({ lat: 37.5, lng: 127.0 });

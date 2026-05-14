@@ -41,6 +41,9 @@ interface UseFusedNearestStationReturn {
   loading: boolean;
   error: string | null;
   permissionDenied: boolean;
+  /** GPS 표시 게이트 drop으로 좌표가 정지된 상태. fusion에서 position/arrival 신호가 살아있어도
+   *  GPS fallback 경로에 의존하는 호출자(예: 표시부)는 이 값으로 "위치 확인 중" UX를 띄울 수 있다. */
+  locationUncertain: boolean;
   refresh: () => Promise<void>;
 }
 
@@ -231,6 +234,7 @@ export function useFusedNearestStation(
     loading: gps.loading,
     error: gps.error,
     permissionDenied: gps.permissionDenied,
+    locationUncertain: gps.locationUncertain,
     refresh: gps.refresh,
   };
 }
