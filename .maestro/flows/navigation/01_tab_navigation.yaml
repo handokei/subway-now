@@ -41,28 +41,32 @@ name: "탭 내비게이션 순회"
       text: "강남"
     timeout: 60000
 
-# 지도 탭
+# 4-탭 레이아웃 (현재 역 / 지도 / 즐겨찾기 / 설정)을 좌표 기반으로 탭한다.
+# iOS의 탭 라벨이 maestro 접근성 트리에 안정적으로 노출되지 않아 text 매칭이 깨진다.
+# settings flow도 같은 이유로 settings 탭을 point: "87%,95%"로 탭함.
+
+# 지도 탭 (4탭 중 2번째 중심: 37.5%)
 - tapOn:
-    text: "지도"
+    point: "37%,95%"
 - extendedWaitUntil:
     visible:
       text: "네이버 지도에서 보기"
     timeout: 10000
 
-# 즐겨찾기 탭
+# 즐겨찾기 탭 (3번째: 62.5%)
 - tapOn:
-    text: "즐겨찾기"
+    point: "62%,95%"
 - assertVisible:
     id: "favorites-search-input"
 
-# 설정 탭
+# 설정 탭 (4번째: 87.5%)
 - tapOn:
-    text: "설정"
+    point: "87%,95%"
 - assertVisible:
     id: "sleep-mode-switch"
 
-# 홈 탭으로 복귀
+# 홈 탭으로 복귀 (1번째: 12.5%)
 - tapOn:
-    text: "현재 역"
+    point: "12%,95%"
 - assertVisible:
     text: "강남"

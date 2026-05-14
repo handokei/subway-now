@@ -41,9 +41,9 @@ name: "지도 탭 - 역 검색 후 키보드 자동 해제"
       text: "강남"
     timeout: 60000
 
-# 지도 탭으로 이동
+# 지도 탭으로 이동 (좌표 기반 — iOS 탭 라벨 접근성 트리 불안정)
 - tapOn:
-    text: "지도"
+    point: "37%,95%"
 
 - extendedWaitUntil:
     visible:
