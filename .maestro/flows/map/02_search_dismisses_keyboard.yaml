@@ -16,9 +16,10 @@ name: "지도 탭 - 역 검색 후 키보드 자동 해제"
     text: ".*허용.*"
     optional: true
 
+# 홈 로드 확인 (강남역 감지)
 - extendedWaitUntil:
     visible:
-      text: "LIVE"
+      text: "강남"
     timeout: 15000
 
 # 지도 탭으로 이동
@@ -59,8 +60,5 @@ name: "지도 탭 - 역 검색 후 키보드 자동 해제"
 # 도착역 설정이 정상 동작 → 홈 탭으로 자동 전환됨을 확인
 - extendedWaitUntil:
     visible:
-      text: "LIVE"
+      id: "destination-clear-button"
     timeout: 10000
-
-- assertVisible:
-    id: "destination-clear-button"

@@ -16,10 +16,10 @@ name: "탭 내비게이션 순회"
     text: ".*허용.*"
     optional: true
 
-# 홈 탭 확인
+# 홈 탭 로드 확인 (강남역 감지)
 - extendedWaitUntil:
     visible:
-      text: "LIVE"
+      text: "강남"
     timeout: 15000
 
 # 지도 탭
@@ -46,4 +46,4 @@ name: "탭 내비게이션 순회"
 - tapOn:
     text: "현재 역"
 - assertVisible:
-    text: "LIVE"
+    text: "강남"

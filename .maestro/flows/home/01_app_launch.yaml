@@ -16,17 +16,11 @@ name: "홈 화면 - 앱 실행 및 역 감지"
     text: ".*허용.*"
     optional: true
 
-# 홈 화면 로드 확인 (LIVE 라벨)
-- extendedWaitUntil:
-    visible:
-      text: "LIVE"
-    timeout: 15000
-
-# 강남역 감지 확인
+# 홈 화면 로드 + 강남역 감지 확인
 - extendedWaitUntil:
     visible:
       text: "강남"
-    timeout: 10000
+    timeout: 15000
 
 # 목적지 설정 버튼
 - assertVisible:

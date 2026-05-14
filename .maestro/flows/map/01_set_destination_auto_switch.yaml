@@ -16,9 +16,10 @@ name: "지도 탭 - 도착역 설정 후 홈 탭 자동 전환"
     text: ".*허용.*"
     optional: true
 
+# 홈 로드 확인 (강남역 감지)
 - extendedWaitUntil:
     visible:
-      text: "LIVE"
+      text: "강남"
     timeout: 15000
 
 # 지도 탭으로 이동
@@ -43,11 +44,8 @@ name: "지도 탭 - 도착역 설정 후 홈 탭 자동 전환"
 - tapOn:
     id: "set-destination-button"
 
-# 홈 탭(현재 역) UI가 보이는지 확인
+# 홈 탭(현재 역) 으로 자동 전환되었고 도착역 설정이 반영되었는지 확인
 - extendedWaitUntil:
     visible:
-      text: "LIVE"
+      id: "destination-clear-button"
     timeout: 10000
-
-- assertVisible:
-    id: "destination-clear-button"

@@ -1,6 +1,11 @@
 appId: com.subwaynow.app
 name: "설정 - 다크모드 재시작 후 즉시 적용"
 ---
+# 홈 로드 신호로 강남역 감지를 사용하기 위해 좌표 고정 (테스트 결정성 확보)
+- setLocation:
+    latitude: 37.49799
+    longitude: 127.027912
+
 # Step 1: 초기 실행 (clearState로 AsyncStorage 초기화)
 - launchApp:
     appId: com.subwaynow.app
@@ -30,7 +35,7 @@ name: "설정 - 다크모드 재시작 후 즉시 적용"
 # 홈 로드 대기
 - extendedWaitUntil:
     visible:
-      text: "LIVE"
+      text: "강남"
     timeout: 30000
 
 - takeScreenshot: .maestro/screenshots/01_initial_home_light
@@ -71,7 +76,7 @@ name: "설정 - 다크모드 재시작 후 즉시 적용"
 # 핵심 검증: 재시작 직후 홈 탭이 즉시 다크 테마로 보여야 함
 - extendedWaitUntil:
     visible:
-      text: "LIVE"
+      text: "강남"
     timeout: 30000
 
 - takeScreenshot: .maestro/screenshots/03_home_after_restart_should_be_dark
