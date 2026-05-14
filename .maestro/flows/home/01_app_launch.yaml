@@ -16,11 +16,17 @@ name: "홈 화면 - 앱 실행 및 역 감지"
     text: ".*허용.*"
     optional: true
 
-# 홈 화면 로드 + 강남역 감지 확인
+# 홈 화면 로드 (testID는 accessibility 트리에 즉시 노출)
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 역 감지 확인 (GPS → useNearestStation 30s 폴링 cold start까지 grace)
 - extendedWaitUntil:
     visible:
       text: "강남"
-    timeout: 15000
+    timeout: 60000
 
 # 목적지 설정 버튼
 - assertVisible:

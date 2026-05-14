@@ -16,11 +16,17 @@ name: "지도 탭 - 역 검색 후 키보드 자동 해제"
     text: ".*허용.*"
     optional: true
 
-# 홈 로드 확인 (강남역 감지)
+# 홈 로드 (testID는 즉시 노출)
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+# 역 감지 확인
 - extendedWaitUntil:
     visible:
       text: "강남"
-    timeout: 15000
+    timeout: 60000
 
 # 지도 탭으로 이동
 - tapOn:
