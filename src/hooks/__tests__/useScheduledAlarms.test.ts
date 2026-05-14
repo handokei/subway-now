@@ -103,14 +103,18 @@ describe('useScheduledAlarms', () => {
     await AsyncStorage.removeItem(TRIP_TRAIN_CODE_KEY);
   });
 
-  it('마운트 시 active 상태면 cancel만 호출되고 schedule은 호출되지 않는다', async () => {
+  it('마운트 시 active 상태에서도 schedule을 호출한다 (#383)', async () => {
+    // #383: AppState='active'에서 schedule을 skip하던 정책 제거.
+    // FG에서도 사전 예약을 등록해 BG 진입 race를 차단한다.
     renderHook(() =>
       useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
 
     expect(mockedCancel).toHaveBeenCalled();
-    expect(mockedSchedule).not.toHaveBeenCalled();
+    expect(mockedSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ currentStationApproachEtaSeconds: 300 }),
+    );
   });
 
   it('background 전환 시 마지막 ETA로 재예약한다', async () => {
@@ -137,7 +141,9 @@ describe('useScheduledAlarms', () => {
     });
   });
 
-  it('active 복귀 시 예약을 모두 취소하고 재예약하지 않는다', async () => {
+  it('active 복귀 전환은 schedule/cancel을 트리거하지 않는다 (#383)', async () => {
+    // #383: 'active' 진입 시 cancel하던 정책 제거. 이미 예약된 알람은 FG에서도 유지되며,
+    // FG GPS firing과의 중복은 scheduledAlarmReceiver의 FIRED_ALARMS dedup으로 처리.
     renderHook(() =>
       useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
@@ -156,7 +162,7 @@ describe('useScheduledAlarms', () => {
       await Promise.resolve();
     });
 
-    expect(mockedCancel).toHaveBeenCalledTimes(1);
+    expect(mockedCancel).not.toHaveBeenCalled();
     expect(mockedSchedule).not.toHaveBeenCalled();
   });
 
@@ -378,28 +384,6 @@ describe('useScheduledAlarms', () => {
     expect(true).toBe(true);
   });
 
-  it('cancelScheduledAlarms 실패는 active 전환 경로에서도 throw하지 않는다', async () => {
-    renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
-    );
-    await flush();
-    await act(async () => {
-      appStateCallback?.('background');
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    // 다음 cancel 호출(=active 전환)만 실패시킨다.
-    mockedCancel.mockRejectedValueOnce(new Error('active cancel fail'));
-    await act(async () => {
-      appStateCallback?.('active');
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(true).toBe(true);
-  });
-
   it('진행 방향이 "down"으로 판정되면 arrival.down ETA만 schedule에 전달한다 (반대방향 ETA 폐기)', async () => {
     // 회귀: 반대방향 열차가 빨라도 사용자 방향 ETA를 채택해야 한다.
     const WRONG_FAST_RIGHT_SLOW: StationArrival = {
@@ -513,8 +497,8 @@ describe('useScheduledAlarms', () => {
     expect(await AsyncStorage.getItem(TRIP_TRAIN_CODE_KEY)).toBe('1-034:D1');
   });
 
-  it('lock-in: FG(active) 상태에서도 lock-in을 캡처한다 — schedule만 skip', async () => {
-    // 초기 AppState = active. background 전환 없이 마운트 → 입력 변동 effect 1회만 작동.
+  it('lock-in: FG(active) 상태에서도 lock-in 캡처 + schedule을 함께 수행한다 (#383)', async () => {
+    // 초기 AppState = active. #383 이후로 FG에서도 schedule이 호출된다.
     renderHook(() =>
       useScheduledAlarms({
         route: LINE_1_ROUTE,
@@ -526,7 +510,7 @@ describe('useScheduledAlarms', () => {
     await flush();
 
     expect(await AsyncStorage.getItem(TRIP_TRAIN_CODE_KEY)).toBe('1-034:D1');
-    expect(mockedSchedule).not.toHaveBeenCalled(); // active 상태 → schedule은 skip
+    expect(mockedSchedule).toHaveBeenCalled();
   });
 
   it('lock-in: 다음 reschedule은 저장된 trainCode를 사용해 결정론적 ETA 채택', async () => {
@@ -592,11 +576,13 @@ describe('useScheduledAlarms', () => {
   });
 
   it('scheduleAlarmsForRoute 실패는 background 전환 경로에서 throw하지 않는다', async () => {
-    mockedSchedule.mockRejectedValueOnce(new Error('schedule fail'));
+    // 마운트 시 input-change effect의 schedule 호출(첫 1회)은 성공시키고,
+    // 그 다음의 background 전환 schedule 호출만 실패시켜 background catch를 검증한다.
     renderHook(() =>
       useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
+    mockedSchedule.mockRejectedValueOnce(new Error('schedule fail'));
     await act(async () => {
       appStateCallback?.('background');
       await Promise.resolve();

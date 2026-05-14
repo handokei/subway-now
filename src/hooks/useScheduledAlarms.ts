@@ -26,12 +26,15 @@ export interface UseScheduledAlarmsInputs {
 }
 
 /**
- * BG/포그라운드 전환과 ETA 변동에 맞춰 사전 예약 알람을 재예약한다.
+ * 입력 변동(ETA/경로/현재역) 또는 AppState 전환 시 사전 예약 알람을 재예약한다.
  *
- * 정책:
- * - 포그라운드(`active`): 예약 모두 취소. FG는 useStationAlarm이 GPS 기반 발화를 담당.
- * - 백그라운드(`background`): 마지막 route/destination/arrival 기준으로 재예약.
- * - 백그라운드 중 입력 변동: 즉시 cancel → reschedule.
+ * 정책 (#383 — AppState와 무관하게 항상 예약):
+ * - route + destination이 유효하면 AppState와 관계없이 즉시 예약.
+ *   FG에서 OS가 알람을 발사해도 scheduledAlarmReceiver의 FIRED_ALARMS dedup으로
+ *   useStationAlarm GPS 기반 발화와 충돌하지 않는다.
+ * - 'background' 전환 시: 사용자가 FG에서 빠르게 잠금화면으로 갈 때 input-change
+ *   effect가 미처 완료되지 못한 race를 차단하기 위한 idempotent safety net으로
+ *   reschedule 한 번 더 호출.
  * - route/destination이 null이면 항상 cancel만 수행 (route 종료).
  * - 언마운트: 모두 취소.
  *
@@ -69,7 +72,12 @@ export function useScheduledAlarms({
 
     await cancelScheduledAlarms();
     const currentRoute = routeRef.current;
-    if (!currentRoute || !currentDestination) return;
+    if (!currentRoute || !currentDestination) {
+      logger.info(
+        `skip reschedule appState=${appStateRef.current} reason=${!currentRoute ? 'no-route' : 'no-destination'}`,
+      );
+      return;
+    }
 
     // 진행 방향은 route + 현재역 ordinal로 결정한다 (#370). null이면 알 수 없음.
     // pickNextArrival에 filter로 전달해 반대방향 열차 ETA 오인을 차단.
@@ -86,13 +94,11 @@ export function useScheduledAlarms({
       direction,
     );
 
-    if (appStateRef.current === 'active') return;
-
     const pick = pickNextArrival(arrivalRef.current, direction, {
       preferTrainCode: trainCode,
     });
-    logger.debug(
-      `reschedule eta=${pick.etaSeconds} trainCode=${trainCode ?? 'none'} matched=${pick.matchedByTrainCode}`,
+    logger.info(
+      `reschedule appState=${appStateRef.current} eta=${pick.etaSeconds} trainCode=${trainCode ?? 'none'} matched=${pick.matchedByTrainCode}`,
     );
 
     await scheduleAlarmsForRoute({
@@ -105,16 +111,14 @@ export function useScheduledAlarms({
     });
   };
 
-  // AppState 전환 listener — 자체 등록 (중복 방지를 위해 다른 listener와 통합하지 않음).
+  // AppState 전환 listener — 'background' 진입 시 idempotent re-sync.
+  // FG에서 input-change effect가 비동기 reschedule을 채 완료하기 전에 OS가
+  // suspend되는 race를 차단하는 safety net 역할.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (state) => {
       const prev = appStateRef.current;
       appStateRef.current = state;
       if (state === prev) return;
-      if (state === 'active') {
-        cancelScheduledAlarms().catch((e) => logger.error('active 전환 취소 실패:', e));
-        return;
-      }
       if (state === 'background') {
         reschedule().catch((e) => logger.error('background 전환 재예약 실패:', e));
       }
@@ -125,7 +129,7 @@ export function useScheduledAlarms({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 입력 변동 시 재예약 — BG 상태에서만 의미가 있다. active면 reschedule이 내부에서 no-op.
+  // 입력 변동 시 재예약 — AppState와 무관하게 항상 schedule.
   // route/destination이 null이면 cancel만 발생.
   useEffect(() => {
     reschedule().catch((e) => logger.error('입력 변동 재예약 실패:', e));
