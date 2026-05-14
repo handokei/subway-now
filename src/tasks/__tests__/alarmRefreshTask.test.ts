@@ -31,6 +31,9 @@ jest.mock('../../api/arrivalApi', () => ({
 jest.mock('../../data/stations.json', () => [
   { id: 'station-1', name: '강남', line: '2', lineColor: '#009246', lat: 0, lng: 0 },
   { id: 'station-2', name: '시청', line: '1', lineColor: '#0052A4', lat: 0, lng: 0 },
+  // 방향 판정용 line '1' 추가 stations (id 정렬상 station-2 < station-3 < station-4)
+  { id: 'station-3', name: '종각', line: '1', lineColor: '#0052A4', lat: 0, lng: 0 },
+  { id: 'station-4', name: '종로3가', line: '1', lineColor: '#0052A4', lat: 0, lng: 0 },
 ]);
 
 jest.mock('../../utils/logger', () => ({
@@ -87,7 +90,7 @@ function mockStorage(values: {
 }
 
 function expectSchedulerCalledWith(
-  nextStationEtaSeconds: number | null,
+  currentStationApproachEtaSeconds: number | null,
   stamp: { direction: 'up' | 'down' | null; usedTrainCode: string | null } = {
     direction: null,
     usedTrainCode: null,
@@ -96,7 +99,7 @@ function expectSchedulerCalledWith(
   expect(mockScheduleAlarmsForRoute).toHaveBeenCalledWith({
     route,
     destinationName: '시청',
-    nextStationEtaSeconds,
+    currentStationApproachEtaSeconds,
     stamp,
   });
 }
@@ -141,7 +144,7 @@ describe('alarmRefreshTask', () => {
       expect(mockScheduleAlarmsForRoute).not.toHaveBeenCalled();
     });
 
-    it('활성 트립이 있고 현재역이 없으면 nextStationEtaSeconds=null로 스케줄러 호출', async () => {
+    it('활성 트립이 있고 현재역이 없으면 currentStationApproachEtaSeconds=null로 스케줄러 호출', async () => {
       mockStorage({ destination, route, lastStation: null });
       const result = await getCallback()();
       expect(result).toBe(BackgroundTask.BackgroundTaskResult.Success);
@@ -149,7 +152,8 @@ describe('alarmRefreshTask', () => {
       expectSchedulerCalledWith(null);
     });
 
-    it('현재역이 있으면 Arrival API의 up/down 중 가장 짧은 양수 ETA를 사용한다', async () => {
+    it('현재역이 다른 노선(line 2)이면 direction null로 양방향 fallback ETA를 사용한다', async () => {
+      // station-1(강남, line 2)은 route(line 1)에 없음 → resolveTripDirection=null → 양방향 합산.
       mockStorage({ destination, route, lastStation: 'station-1' });
       mockFetchArrivalInfo.mockResolvedValue({
         up: [{ arrivalSeconds: 600 }, { arrivalSeconds: 1200 }],
@@ -157,11 +161,11 @@ describe('alarmRefreshTask', () => {
       });
       await getCallback()();
       expect(mockFetchArrivalInfo).toHaveBeenCalledWith('강남');
-      // 가장 짧은 양수는 down[0]=300 → direction='down', trainCode 누락(mock) → null
-      expectSchedulerCalledWith(300, { direction: 'down', usedTrainCode: null });
+      // direction=null filter → up/down 합산 best-effort. stamp.direction은 의도(null) 그대로.
+      expectSchedulerCalledWith(300, { direction: null, usedTrainCode: null });
     });
 
-    it('Arrival API가 모두 0/음수면 nextStationEtaSeconds=null', async () => {
+    it('Arrival API가 모두 0/음수면 currentStationApproachEtaSeconds=null', async () => {
       mockStorage({ destination, route, lastStation: 'station-1' });
       mockFetchArrivalInfo.mockResolvedValue({
         up: [{ arrivalSeconds: 0 }],
@@ -184,6 +188,39 @@ describe('alarmRefreshTask', () => {
       const result = await getCallback()();
       expect(result).toBe(BackgroundTask.BackgroundTaskResult.Success);
       expectSchedulerCalledWith(null);
+    });
+
+    it('진행 방향이 판정되면 해당 방향의 ETA만 사용한다 (반대방향 ETA 폐기)', async () => {
+      // 현재역 종로3가(station-4, idx 2) → 시청(station-2, idx 0): up 방향
+      mockStorage({ destination, route, lastStation: 'station-4' });
+      mockFetchArrivalInfo.mockResolvedValue({
+        up: [{ arrivalSeconds: 240 }], // 진행 방향
+        down: [{ arrivalSeconds: 30 }], // 반대 방향 — 더 빠르지만 무시되어야 함
+      });
+      await getCallback()();
+      expect(mockFetchArrivalInfo).toHaveBeenCalledWith('종로3가');
+      expectSchedulerCalledWith(240, { direction: 'up', usedTrainCode: null });
+    });
+
+    it('진행 방향이 "down"이면 arrival.down ETA만 사용한다', async () => {
+      // destination 종로3가(station-4, idx 2) 사용 — 현재 시청(idx 0) → 종로3가 = down 방향
+      const destDown = { ...destination, id: 'station-4', name: '종로3가' };
+      mockStorage({
+        destination: destDown,
+        route,
+        lastStation: 'station-2',
+      });
+      mockFetchArrivalInfo.mockResolvedValue({
+        up: [{ arrivalSeconds: 30 }], // 반대 방향
+        down: [{ arrivalSeconds: 180 }], // 진행 방향
+      });
+      await getCallback()();
+      expect(mockScheduleAlarmsForRoute).toHaveBeenCalledWith({
+        route,
+        destinationName: '종로3가',
+        currentStationApproachEtaSeconds: 180,
+        stamp: { direction: 'down', usedTrainCode: null },
+      });
     });
 
     it('스케줄러가 throw 하면 Failed를 반환한다', async () => {

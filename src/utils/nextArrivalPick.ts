@@ -13,20 +13,30 @@ const EMPTY_PICK: NextArrivalPick = {
 };
 
 /**
- * up/down 양방향에서 가장 빠른 양수 arrivalSeconds를 선택하고, 함께 방향/trainCode를
- * 반환한다. 사전 예약 알람의 stamp(#372) 산출에 공통 사용된다.
+ * 진행 방향 열차의 가장 빠른 양수 arrivalSeconds를 선택하고, 함께 방향/trainCode를 반환한다.
+ * 사전 예약 알람의 ETA 선택(#370) + stamp(#372)에 공통 사용된다.
+ *
+ * `filterDirection`이 주어지면 그 방향 list만 검색한다 — 반대방향 열차 ETA 오인 회피(#370).
+ * null이면 양방향 best-effort fallback (환상선/노선 이탈 등 방향 미판정 경계 케이스).
  *
  * isMock arrival은 명시적으로 null을 반환 — alarmScheduler의 staticETA fallback으로 위임.
  *
- * 입력 형태가 두 가지 (StationArrival, 또는 fetch 결과 {up, down})를 모두 수용하기 위해
+ * 입력 형태가 두 가지(StationArrival, 또는 fetch 결과 {up, down})를 모두 수용하기 위해
  * isMock을 optional로 둔다.
  */
 export function pickNextArrival(
   arrival: { up: ArrivalInfo[]; down: ArrivalInfo[]; isMock?: boolean } | null,
+  filterDirection: 'up' | 'down' | null = null,
 ): NextArrivalPick {
   if (!arrival || arrival.isMock) return EMPTY_PICK;
+  const directions: Array<'up' | 'down'> =
+    filterDirection === 'up'
+      ? ['up']
+      : filterDirection === 'down'
+        ? ['down']
+        : ['up', 'down'];
   let pick: { info: ArrivalInfo; direction: 'up' | 'down' } | null = null;
-  for (const direction of ['up', 'down'] as const) {
+  for (const direction of directions) {
     for (const info of arrival[direction]) {
       if (info.arrivalSeconds <= 0) continue;
       if (pick === null || info.arrivalSeconds < pick.info.arrivalSeconds) {

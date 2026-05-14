@@ -8,6 +8,7 @@ import { pickNextArrival, type NextArrivalPick } from '../utils/nextArrivalPick'
 import stationsData from '../data/stations.json';
 import type { Station } from '../types/station';
 import type { Route } from '../utils/stationRoute';
+import { resolveTripDirection } from '../utils/tripDirection';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('AlarmRefreshTask');
@@ -40,10 +41,10 @@ async function readActiveTrip(): Promise<{ destination: Station; route: NonNulla
   }
 }
 
-async function resolveCurrentStationName(): Promise<string | null> {
+async function resolveCurrentStation(): Promise<Station | null> {
   const id = await AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY);
   if (!id) return null;
-  return stationById.get(id)?.name ?? null;
+  return stationById.get(id) ?? null;
 }
 
 TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
@@ -54,12 +55,16 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
       return BackgroundTask.BackgroundTaskResult.Success;
     }
 
-    const currentStationName = await resolveCurrentStationName();
+    // 진행 방향은 route + 현재역 ordinal로 판정(#370). null이면 양방향 fallback.
+    const currentStation = await resolveCurrentStation();
+    const direction = currentStation
+      ? resolveTripDirection(active.route, active.destination.name, currentStation.id)
+      : null;
     let pick: NextArrivalPick = { etaSeconds: null, direction: null, trainCode: null };
-    if (currentStationName) {
+    if (currentStation) {
       try {
-        const arrivals = await fetchArrivalInfo(currentStationName);
-        pick = pickNextArrival(arrivals);
+        const arrivals = await fetchArrivalInfo(currentStation.name);
+        pick = pickNextArrival(arrivals, direction);
       } catch (e) {
         logger.warn('Arrival API 호출 실패 — static ETA fallback:', e);
       }
@@ -68,8 +73,9 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
     await scheduleAlarmsForRoute({
       route: active.route,
       destinationName: active.destination.name,
-      nextStationEtaSeconds: pick.etaSeconds,
-      stamp: { direction: pick.direction, usedTrainCode: pick.trainCode },
+      currentStationApproachEtaSeconds: pick.etaSeconds,
+      // stamp.direction은 의도(filter)를 기록 — pick.direction(추론된 list)이 아닌 route-resolved.
+      stamp: { direction, usedTrainCode: pick.trainCode },
     });
     logger.info('알람 사전 예약 갱신 완료');
     return BackgroundTask.BackgroundTaskResult.Success;

@@ -92,7 +92,7 @@ describe('useScheduledAlarms', () => {
 
   it('마운트 시 active 상태면 cancel만 호출되고 schedule은 호출되지 않는다', async () => {
     renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: ARRIVAL }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
 
@@ -102,7 +102,7 @@ describe('useScheduledAlarms', () => {
 
   it('background 전환 시 마지막 ETA로 재예약한다', async () => {
     renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: ARRIVAL }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
     mockedCancel.mockClear();
@@ -117,14 +117,16 @@ describe('useScheduledAlarms', () => {
     expect(mockedSchedule).toHaveBeenCalledWith({
       route: ROUTE,
       destinationName: '강남',
-      nextStationEtaSeconds: 300, // min(300, 420)
-      stamp: { direction: 'up', usedTrainCode: 'U1' },
+      currentStationApproachEtaSeconds: 300, // min(300, 420), currentStation=null → 양방향 fallback
+      // stamp.direction은 route-resolved intent — currentStation=null이므로 null로 기록.
+      // trainCode는 fallback에서 pick된 up arrival(300 < 420)의 'U1'.
+      stamp: { direction: null, usedTrainCode: 'U1' },
     });
   });
 
   it('active 복귀 시 예약을 모두 취소하고 재예약하지 않는다', async () => {
     renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: ARRIVAL }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
 
@@ -147,7 +149,7 @@ describe('useScheduledAlarms', () => {
 
   it('동일 AppState 이벤트가 연속되면 무시한다', async () => {
     renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: ARRIVAL }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
 
@@ -170,7 +172,7 @@ describe('useScheduledAlarms', () => {
 
   it('inactive 전환은 schedule/cancel을 트리거하지 않는다', async () => {
     renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: ARRIVAL }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
     mockedSchedule.mockClear();
@@ -191,6 +193,7 @@ describe('useScheduledAlarms', () => {
         useScheduledAlarms({
           route: ROUTE,
           destination: DESTINATION,
+          currentStation: null,
           arrival: props.arrival,
         }),
       { initialProps: { arrival: ARRIVAL } },
@@ -213,7 +216,7 @@ describe('useScheduledAlarms', () => {
 
     expect(mockedCancel).toHaveBeenCalled();
     expect(mockedSchedule).toHaveBeenCalledWith(
-      expect.objectContaining({ nextStationEtaSeconds: 150 }),
+      expect.objectContaining({ currentStationApproachEtaSeconds: 150 }),
     );
   });
 
@@ -223,6 +226,7 @@ describe('useScheduledAlarms', () => {
         useScheduledAlarms({
           route: ROUTE,
           destination: props.destination,
+          currentStation: null,
           arrival: ARRIVAL,
         }),
       { initialProps: { destination: DESTINATION as Station | null } },
@@ -243,9 +247,9 @@ describe('useScheduledAlarms', () => {
     expect(mockedSchedule).not.toHaveBeenCalled();
   });
 
-  it('arrival이 null이면 nextStationEtaSeconds=null로 위임한다', async () => {
+  it('arrival이 null이면 currentStationApproachEtaSeconds=null로 위임한다', async () => {
     renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: null }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: null }),
     );
     await flush();
     await act(async () => {
@@ -255,14 +259,14 @@ describe('useScheduledAlarms', () => {
     });
 
     expect(mockedSchedule).toHaveBeenCalledWith(
-      expect.objectContaining({ nextStationEtaSeconds: null }),
+      expect.objectContaining({ currentStationApproachEtaSeconds: null }),
     );
   });
 
-  it('arrival이 mock이면 nextStationEtaSeconds=null로 위임한다', async () => {
+  it('arrival이 mock이면 currentStationApproachEtaSeconds=null로 위임한다', async () => {
     const mockArrival: StationArrival = { ...ARRIVAL, isMock: true };
     renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: mockArrival }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: mockArrival }),
     );
     await flush();
     await act(async () => {
@@ -272,7 +276,7 @@ describe('useScheduledAlarms', () => {
     });
 
     expect(mockedSchedule).toHaveBeenCalledWith(
-      expect.objectContaining({ nextStationEtaSeconds: null }),
+      expect.objectContaining({ currentStationApproachEtaSeconds: null }),
     );
   });
 
@@ -283,7 +287,7 @@ describe('useScheduledAlarms', () => {
       down: [],
     };
     renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: noTrainCode }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: noTrainCode }),
     );
     await flush();
     await act(async () => {
@@ -294,7 +298,8 @@ describe('useScheduledAlarms', () => {
 
     expect(mockedSchedule).toHaveBeenCalledWith(
       expect.objectContaining({
-        stamp: { direction: 'up', usedTrainCode: null },
+        // currentStation=null → route-resolved direction=null. trainCode=''는 null로 정규화.
+        stamp: { direction: null, usedTrainCode: null },
       }),
     );
   });
@@ -305,7 +310,7 @@ describe('useScheduledAlarms', () => {
       down: [{ ...ARRIVAL.down[0], arrivalSeconds: -10 }],
     };
     renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: stale }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: stale }),
     );
     await flush();
     await act(async () => {
@@ -315,13 +320,13 @@ describe('useScheduledAlarms', () => {
     });
 
     expect(mockedSchedule).toHaveBeenCalledWith(
-      expect.objectContaining({ nextStationEtaSeconds: null }),
+      expect.objectContaining({ currentStationApproachEtaSeconds: null }),
     );
   });
 
   it('언마운트 시 예약을 모두 취소하고 AppState listener를 제거한다', async () => {
     const { unmount } = renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: ARRIVAL }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
     mockedCancel.mockClear();
@@ -334,7 +339,7 @@ describe('useScheduledAlarms', () => {
 
   it('route가 null이면 background에서도 schedule을 호출하지 않는다', async () => {
     renderHook(() =>
-      useScheduledAlarms({ route: null, destination: DESTINATION, arrival: ARRIVAL }),
+      useScheduledAlarms({ route: null, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
     mockedCancel.mockClear();
@@ -352,7 +357,7 @@ describe('useScheduledAlarms', () => {
   it('cancelScheduledAlarms 실패는 hook을 throw시키지 않는다 (입력 변동/언마운트 경로)', async () => {
     mockedCancel.mockRejectedValue(new Error('cancel fail'));
     const { unmount } = renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: ARRIVAL }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
     unmount();
@@ -362,7 +367,7 @@ describe('useScheduledAlarms', () => {
 
   it('cancelScheduledAlarms 실패는 active 전환 경로에서도 throw하지 않는다', async () => {
     renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: ARRIVAL }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
     await act(async () => {
@@ -382,10 +387,104 @@ describe('useScheduledAlarms', () => {
     expect(true).toBe(true);
   });
 
+  it('진행 방향이 "down"으로 판정되면 arrival.down ETA만 schedule에 전달한다 (반대방향 ETA 폐기)', async () => {
+    // 회귀: 반대방향 열차가 빨라도 사용자 방향 ETA를 채택해야 한다.
+    const WRONG_FAST_RIGHT_SLOW: StationArrival = {
+      up: [{ ...ARRIVAL.up[0], arrivalSeconds: 30 }], // 반대방향(서쪽), 30초 후
+      down: [{ ...ARRIVAL.down[0], arrivalSeconds: 240 }], // 진행방향(동쪽), 240초 후
+    };
+    const ROUTE_L1: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const DEST_L1: Station = {
+      id: '1-034', name: '서울역', line: '1', lat: 37.55, lng: 126.97, lineColor: '#0052A4',
+    };
+    const CURRENT_L1: Station = {
+      id: '1-001', name: '소요산', line: '1', lat: 37.95, lng: 127.06, lineColor: '#0052A4',
+    };
+    renderHook(() =>
+      useScheduledAlarms({
+        route: ROUTE_L1,
+        destination: DEST_L1,
+        currentStation: CURRENT_L1,
+        arrival: WRONG_FAST_RIGHT_SLOW,
+      }),
+    );
+    await flush();
+    await act(async () => {
+      appStateCallback?.('background');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockedSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ currentStationApproachEtaSeconds: 240 }),
+    );
+  });
+
+  it('진행 방향이 "up"이면 arrival.up ETA만 schedule에 전달한다', async () => {
+    const RIGHT_UP: StationArrival = {
+      up: [{ ...ARRIVAL.up[0], arrivalSeconds: 180 }],
+      down: [{ ...ARRIVAL.down[0], arrivalSeconds: 60 }],
+    };
+    const ROUTE_L1: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const DEST_L1: Station = {
+      id: '1-001', name: '소요산', line: '1', lat: 37.95, lng: 127.06, lineColor: '#0052A4',
+    };
+    const CURRENT_L1: Station = {
+      id: '1-034', name: '서울역', line: '1', lat: 37.55, lng: 126.97, lineColor: '#0052A4',
+    };
+    renderHook(() =>
+      useScheduledAlarms({
+        route: ROUTE_L1,
+        destination: DEST_L1,
+        currentStation: CURRENT_L1,
+        arrival: RIGHT_UP,
+      }),
+    );
+    await flush();
+    await act(async () => {
+      appStateCallback?.('background');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockedSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ currentStationApproachEtaSeconds: 180 }),
+    );
+  });
+
+  it('currentStation이 노선 외(direction null)면 양방향 합산 fallback으로 위임한다', async () => {
+    const ROUTE_L1: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const DEST_L1: Station = {
+      id: '1-034', name: '서울역', line: '1', lat: 37.55, lng: 126.97, lineColor: '#0052A4',
+    };
+    // 다른 노선 station을 current로 → direction null
+    const OFF_LINE: Station = {
+      id: '7-015', name: '용마산', line: '7', lat: 37.57, lng: 127.08, lineColor: '#747F00',
+    };
+    renderHook(() =>
+      useScheduledAlarms({
+        route: ROUTE_L1,
+        destination: DEST_L1,
+        currentStation: OFF_LINE,
+        arrival: ARRIVAL, // up=300, down=420
+      }),
+    );
+    await flush();
+    await act(async () => {
+      appStateCallback?.('background');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockedSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ currentStationApproachEtaSeconds: 300 }),
+    );
+  });
+
   it('scheduleAlarmsForRoute 실패는 background 전환 경로에서 throw하지 않는다', async () => {
     mockedSchedule.mockRejectedValueOnce(new Error('schedule fail'));
     renderHook(() =>
-      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: ARRIVAL }),
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: ARRIVAL }),
     );
     await flush();
     await act(async () => {

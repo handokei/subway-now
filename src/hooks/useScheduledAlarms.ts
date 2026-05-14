@@ -8,6 +8,7 @@ import {
   scheduleAlarmsForRoute,
 } from '../utils/alarmScheduler';
 import { pickNextArrival } from '../utils/nextArrivalPick';
+import { resolveTripDirection } from '../utils/tripDirection';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('useScheduledAlarms');
@@ -15,6 +16,8 @@ const logger = createLogger('useScheduledAlarms');
 export interface UseScheduledAlarmsInputs {
   route: Route;
   destination: Station | null;
+  /** 사용자의 현재 위치 station — 진행 방향 산출에 필요. null이면 양방향 fallback. */
+  currentStation: Station | null;
   arrival: StationArrival | null;
 }
 
@@ -31,15 +34,18 @@ export interface UseScheduledAlarmsInputs {
 export function useScheduledAlarms({
   route,
   destination,
+  currentStation,
   arrival,
 }: UseScheduledAlarmsInputs): void {
   const routeRef = useRef<Route>(route);
   const destinationRef = useRef<Station | null>(destination);
+  const currentStationRef = useRef<Station | null>(currentStation);
   const arrivalRef = useRef<StationArrival | null>(arrival);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   routeRef.current = route;
   destinationRef.current = destination;
+  currentStationRef.current = currentStation;
   arrivalRef.current = arrival;
 
   const reschedule = async (): Promise<void> => {
@@ -48,12 +54,20 @@ export function useScheduledAlarms({
     const currentDestination = destinationRef.current;
     if (!currentRoute || !currentDestination) return;
     if (appStateRef.current === 'active') return;
-    const { etaSeconds, direction, trainCode } = pickNextArrival(arrivalRef.current);
+    // 진행 방향은 route + 현재역 ordinal로 결정한다 (#370). null이면 알 수 없음.
+    // pickNextArrival에 filter로 전달해 반대방향 열차 ETA 오인을 차단.
+    const here = currentStationRef.current;
+    const direction = here
+      ? resolveTripDirection(currentRoute, currentDestination.name, here.id)
+      : null;
+    const pick = pickNextArrival(arrivalRef.current, direction);
     await scheduleAlarmsForRoute({
       route: currentRoute,
       destinationName: currentDestination.name,
-      nextStationEtaSeconds: etaSeconds,
-      stamp: { direction, usedTrainCode: trainCode },
+      currentStationApproachEtaSeconds: pick.etaSeconds,
+      // stamp.direction은 filter intent(=null이면 "방향 미판정")를 그대로 기록한다.
+      // pick.direction(추론된 list)과 다를 수 있으나, 진단 시 의도와 fallback을 구분하기 위함.
+      stamp: { direction, usedTrainCode: pick.trainCode },
     });
   };
 
@@ -82,7 +96,7 @@ export function useScheduledAlarms({
   useEffect(() => {
     reschedule().catch((e) => logger.error('입력 변동 재예약 실패:', e));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route, destination?.id, arrival]);
+  }, [route, destination?.id, currentStation?.id, arrival]);
 
   // 언마운트 — 모두 취소.
   useEffect(() => {
