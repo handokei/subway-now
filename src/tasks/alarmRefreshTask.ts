@@ -3,10 +3,11 @@ import * as BackgroundTask from 'expo-background-task';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DESTINATION_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY } from '../constants/storageKeys';
 import { scheduleAlarmsForRoute } from '../utils/alarmScheduler';
-import { fetchArrivalInfo, type ArrivalInfo } from '../api/arrivalApi';
+import { fetchArrivalInfo, type ArrivalInfo, type StationArrival } from '../api/arrivalApi';
 import stationsData from '../data/stations.json';
 import type { Station } from '../types/station';
 import type { Route } from '../utils/stationRoute';
+import { resolveTripDirection, type TripDirection } from '../utils/tripDirection';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('AlarmRefreshTask');
@@ -22,11 +23,20 @@ export const ALARM_REFRESH_TASK = 'alarm-refresh-task';
 const allStations = stationsData as Station[];
 const stationById = new Map<string, Station>(allStations.map((s) => [s.id, s]));
 
-function pickNextStationEtaSeconds(arrivals: { up: ArrivalInfo[]; down: ArrivalInfo[] }): number | null {
-  // 방향 정보 없이 BG에서 가장 신뢰할 수 있는 신호는 "임박한 도착". up/down 합산해
-  // 양수 중 최소값을 다음 도착 ETA로 사용한다. 정확도는 reschedule(#335)이 보정.
+function pickCurrentStationApproachEtaSeconds(
+  arrivals: { up: ArrivalInfo[]; down: ArrivalInfo[] },
+  direction: TripDirection | null,
+): number | null {
+  // 진행 방향이 정해지면 한쪽 list만 사용한다. 정해지지 않은 경계 케이스(환상선/노선 이탈)는
+  // 안전을 위해 양방향 합산 best-effort로 폴백한다.
+  const trains: ArrivalInfo[] =
+    direction === 'up'
+      ? arrivals.up
+      : direction === 'down'
+        ? arrivals.down
+        : [...arrivals.up, ...arrivals.down];
   let min: number | null = null;
-  for (const info of [...arrivals.up, ...arrivals.down]) {
+  for (const info of trains) {
     if (info.arrivalSeconds > 0 && (min === null || info.arrivalSeconds < min)) {
       min = info.arrivalSeconds;
     }
@@ -51,10 +61,10 @@ async function readActiveTrip(): Promise<{ destination: Station; route: NonNulla
   }
 }
 
-async function resolveCurrentStationName(): Promise<string | null> {
+async function resolveCurrentStation(): Promise<Station | null> {
   const id = await AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY);
   if (!id) return null;
-  return stationById.get(id)?.name ?? null;
+  return stationById.get(id) ?? null;
 }
 
 TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
@@ -65,12 +75,18 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
       return BackgroundTask.BackgroundTaskResult.Success;
     }
 
-    const currentStationName = await resolveCurrentStationName();
-    let nextStationEtaSeconds: number | null = null;
-    if (currentStationName) {
+    const currentStation = await resolveCurrentStation();
+    const direction = currentStation
+      ? resolveTripDirection(active.route, active.destination.name, currentStation.id)
+      : null;
+    let currentStationApproachEtaSeconds: number | null = null;
+    if (currentStation) {
       try {
-        const arrivals = await fetchArrivalInfo(currentStationName);
-        nextStationEtaSeconds = pickNextStationEtaSeconds(arrivals);
+        const arrivals: StationArrival = await fetchArrivalInfo(currentStation.name);
+        currentStationApproachEtaSeconds = pickCurrentStationApproachEtaSeconds(
+          arrivals,
+          direction,
+        );
       } catch (e) {
         logger.warn('Arrival API 호출 실패 — static ETA fallback:', e);
       }
@@ -79,7 +95,7 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
     await scheduleAlarmsForRoute({
       route: active.route,
       destinationName: active.destination.name,
-      nextStationEtaSeconds,
+      currentStationApproachEtaSeconds,
     });
     logger.info('알람 사전 예약 갱신 완료');
     return BackgroundTask.BackgroundTaskResult.Success;

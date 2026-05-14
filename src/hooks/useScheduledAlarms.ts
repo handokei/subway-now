@@ -7,6 +7,7 @@ import {
   cancelScheduledAlarms,
   scheduleAlarmsForRoute,
 } from '../utils/alarmScheduler';
+import { resolveTripDirection, type TripDirection } from '../utils/tripDirection';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('useScheduledAlarms');
@@ -14,19 +15,28 @@ const logger = createLogger('useScheduledAlarms');
 export interface UseScheduledAlarmsInputs {
   route: Route;
   destination: Station | null;
+  /** 사용자의 현재 위치 station — 진행 방향 산출에 필요. null이면 양방향 fallback. */
+  currentStation: Station | null;
   arrival: StationArrival | null;
 }
 
 /**
- * 다음 도착역까지의 ETA(초)를 arrival 데이터에서 추출한다.
- * up/down 양방향에서 가장 빠른 양수 arrivalSeconds를 선택한다.
+ * 진행 방향 열차의 "현재역 도착까지 남은 ETA"(초)를 추출한다.
+ * direction이 null이면 양방향을 합산한 best-effort fallback을 반환한다(반대방향 오인 위험 있음).
  * 데이터가 없거나 mock이면 null을 반환해 alarmScheduler의 static fallback으로 위임한다.
  */
-function pickNextStationEtaSeconds(arrival: StationArrival | null): number | null {
+function pickCurrentStationApproachEtaSeconds(
+  arrival: StationArrival | null,
+  direction: TripDirection | null,
+): number | null {
   if (!arrival || arrival.isMock) return null;
-  const candidates = [...arrival.up, ...arrival.down]
-    .map((info) => info.arrivalSeconds)
-    .filter((sec) => sec > 0);
+  const trains =
+    direction === 'up'
+      ? arrival.up
+      : direction === 'down'
+        ? arrival.down
+        : [...arrival.up, ...arrival.down];
+  const candidates = trains.map((info) => info.arrivalSeconds).filter((sec) => sec > 0);
   if (candidates.length === 0) return null;
   return Math.min(...candidates);
 }
@@ -44,15 +54,18 @@ function pickNextStationEtaSeconds(arrival: StationArrival | null): number | nul
 export function useScheduledAlarms({
   route,
   destination,
+  currentStation,
   arrival,
 }: UseScheduledAlarmsInputs): void {
   const routeRef = useRef<Route>(route);
   const destinationRef = useRef<Station | null>(destination);
+  const currentStationRef = useRef<Station | null>(currentStation);
   const arrivalRef = useRef<StationArrival | null>(arrival);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
 
   routeRef.current = route;
   destinationRef.current = destination;
+  currentStationRef.current = currentStation;
   arrivalRef.current = arrival;
 
   const reschedule = async (): Promise<void> => {
@@ -61,11 +74,15 @@ export function useScheduledAlarms({
     const currentDestination = destinationRef.current;
     if (!currentRoute || !currentDestination) return;
     if (appStateRef.current === 'active') return;
-    const etaSeconds = pickNextStationEtaSeconds(arrivalRef.current);
+    const here = currentStationRef.current;
+    const direction = here
+      ? resolveTripDirection(currentRoute, currentDestination.name, here.id)
+      : null;
+    const approachEtaSeconds = pickCurrentStationApproachEtaSeconds(arrivalRef.current, direction);
     await scheduleAlarmsForRoute({
       route: currentRoute,
       destinationName: currentDestination.name,
-      nextStationEtaSeconds: etaSeconds,
+      currentStationApproachEtaSeconds: approachEtaSeconds,
     });
   };
 
@@ -94,7 +111,7 @@ export function useScheduledAlarms({
   useEffect(() => {
     reschedule().catch((e) => logger.error('입력 변동 재예약 실패:', e));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route, destination?.id, arrival]);
+  }, [route, destination?.id, currentStation?.id, arrival]);
 
   // 언마운트 — 모두 취소.
   useEffect(() => {

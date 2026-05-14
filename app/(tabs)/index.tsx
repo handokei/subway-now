@@ -150,7 +150,12 @@ export default function HomeScreen() {
     accuracyMeters,
     arrivalConfidence: confidence,
   });
-  useScheduledAlarms({ route, destination, arrival: rawArrival });
+  useScheduledAlarms({
+    route,
+    destination,
+    currentStation: result?.station ?? null,
+    arrival: rawArrival,
+  });
   useBackgroundLocation(destination);
   useApnsTripRegistration({
     route,
