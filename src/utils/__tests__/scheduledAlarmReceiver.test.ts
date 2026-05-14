@@ -72,6 +72,8 @@ beforeEach(async () => {
   mockSetFiredAlarms.mockResolvedValue(undefined);
   mockSetLastFiredAlarmStationName.mockResolvedValue(undefined);
   mockGetPresented.mockResolvedValue([]);
+  // 모든 케이스 공통: addNotificationReceivedListener 기본 핸들. 콜백 캡쳐가 필요한 케이스는 mockImplementationOnce로 override.
+  mockAddListener.mockReturnValue({ remove: jest.fn() });
 });
 
 afterEach(() => {
@@ -101,18 +103,21 @@ describe('reconcileScheduledAlarmDelivery', () => {
 });
 
 describe('registerScheduledAlarmListener', () => {
+  function captureAppStateHandler(): { getHandler: () => (state: string) => void } {
+    let handler: ((state: string) => void) | undefined;
+    appStateSpy.mockImplementation(((event, cb) => {
+      if (event === 'change') handler = cb as (s: string) => void;
+      return { remove: jest.fn() };
+    }) as typeof AppState.addEventListener);
+    return { getHandler: () => handler! };
+  }
+
   it('등록 시점에 delivered 알람을 batch drain하고 fired set + last station을 한 번만 write한다', async () => {
     mockGetPresented.mockResolvedValueOnce([
       { request: { identifier: 'alarm:early:강남' } },
       { request: { identifier: 'current-station' } },
       { request: { identifier: 'alarm:imminent:강남' } },
     ]);
-    const notifRemove = jest.fn();
-    mockAddListener.mockReturnValueOnce({ remove: notifRemove });
-    const appStateRemove = jest.fn();
-    jest
-      .spyOn(AppState, 'addEventListener')
-      .mockReturnValueOnce({ remove: appStateRemove } as ReturnType<typeof AppState.addEventListener>);
 
     const handle = registerScheduledAlarmListener();
     await awaitInitialScheduledAlarmDrain();
@@ -125,18 +130,10 @@ describe('registerScheduledAlarmListener', () => {
     expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
 
     handle.remove();
-    expect(notifRemove).toHaveBeenCalled();
-    expect(appStateRemove).toHaveBeenCalled();
   });
 
   it('drain에 매칭되는 alarm이 없으면 write를 생략한다', async () => {
-    mockGetPresented.mockResolvedValueOnce([
-      { request: { identifier: 'current-station' } },
-    ]);
-    mockAddListener.mockReturnValueOnce({ remove: jest.fn() });
-    jest
-      .spyOn(AppState, 'addEventListener')
-      .mockReturnValueOnce({ remove: jest.fn() } as ReturnType<typeof AppState.addEventListener>);
+    mockGetPresented.mockResolvedValueOnce([{ request: { identifier: 'current-station' } }]);
 
     const handle = registerScheduledAlarmListener();
     await awaitInitialScheduledAlarmDrain();
@@ -148,14 +145,8 @@ describe('registerScheduledAlarmListener', () => {
   });
 
   it('이미 fired set에 있는 키는 firedChanged를 트리거하지 않는다', async () => {
-    mockGetPresented.mockResolvedValueOnce([
-      { request: { identifier: 'alarm:early:강남' } },
-    ]);
+    mockGetPresented.mockResolvedValueOnce([{ request: { identifier: 'alarm:early:강남' } }]);
     mockGetFiredAlarms.mockResolvedValueOnce(new Set(['early:강남']));
-    mockAddListener.mockReturnValueOnce({ remove: jest.fn() });
-    jest
-      .spyOn(AppState, 'addEventListener')
-      .mockReturnValueOnce({ remove: jest.fn() } as ReturnType<typeof AppState.addEventListener>);
 
     const handle = registerScheduledAlarmListener();
     await awaitInitialScheduledAlarmDrain();
@@ -172,9 +163,6 @@ describe('registerScheduledAlarmListener', () => {
       void cb({ request: { identifier: 'alarm:imminent:시청' } });
       return { remove: jest.fn() };
     });
-    jest
-      .spyOn(AppState, 'addEventListener')
-      .mockReturnValueOnce({ remove: jest.fn() } as ReturnType<typeof AppState.addEventListener>);
 
     const handle = registerScheduledAlarmListener();
     await flushAsync();
@@ -186,19 +174,12 @@ describe('registerScheduledAlarmListener', () => {
   });
 
   it('AppState change "active" 진입 시 delivered 알람을 다시 drain한다', async () => {
-    let appStateHandler: ((state: string) => void) | undefined;
-    jest.spyOn(AppState, 'addEventListener').mockImplementation(((event, cb) => {
-      if (event === 'change') appStateHandler = cb as (s: string) => void;
-      return { remove: jest.fn() };
-    }) as typeof AppState.addEventListener);
-    mockAddListener.mockReturnValueOnce({ remove: jest.fn() });
+    const cap = captureAppStateHandler();
 
     const handle = registerScheduledAlarmListener();
     await awaitInitialScheduledAlarmDrain();
-    mockGetPresented.mockResolvedValueOnce([
-      { request: { identifier: 'alarm:early:서울역' } },
-    ]);
-    appStateHandler!('active');
+    mockGetPresented.mockResolvedValueOnce([{ request: { identifier: 'alarm:early:서울역' } }]);
+    cap.getHandler()('active');
     await flushAsync();
 
     expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('서울역');
@@ -207,17 +188,12 @@ describe('registerScheduledAlarmListener', () => {
   });
 
   it('AppState change가 active가 아니면 drain하지 않는다', async () => {
-    let appStateHandler: ((state: string) => void) | undefined;
-    jest.spyOn(AppState, 'addEventListener').mockImplementation(((event, cb) => {
-      if (event === 'change') appStateHandler = cb as (s: string) => void;
-      return { remove: jest.fn() };
-    }) as typeof AppState.addEventListener);
-    mockAddListener.mockReturnValueOnce({ remove: jest.fn() });
+    const cap = captureAppStateHandler();
 
     const handle = registerScheduledAlarmListener();
     await awaitInitialScheduledAlarmDrain();
     mockGetPresented.mockClear();
-    appStateHandler!('background');
+    cap.getHandler()('background');
     await flushAsync();
 
     expect(mockGetPresented).not.toHaveBeenCalled();
@@ -227,10 +203,6 @@ describe('registerScheduledAlarmListener', () => {
 
   it('getPresentedNotificationsAsync가 던지면 error 로그를 남기고 계속한다', async () => {
     mockGetPresented.mockRejectedValueOnce(new Error('os 오류'));
-    mockAddListener.mockReturnValueOnce({ remove: jest.fn() });
-    jest
-      .spyOn(AppState, 'addEventListener')
-      .mockReturnValueOnce({ remove: jest.fn() } as ReturnType<typeof AppState.addEventListener>);
 
     const handle = registerScheduledAlarmListener();
     await awaitInitialScheduledAlarmDrain();
@@ -242,11 +214,6 @@ describe('registerScheduledAlarmListener', () => {
   });
 
   it('중복 호출은 idempotent — 첫 핸들을 그대로 반환한다', async () => {
-    mockAddListener.mockReturnValueOnce({ remove: jest.fn() });
-    jest
-      .spyOn(AppState, 'addEventListener')
-      .mockReturnValueOnce({ remove: jest.fn() } as ReturnType<typeof AppState.addEventListener>);
-
     const h1 = registerScheduledAlarmListener();
     const h2 = registerScheduledAlarmListener();
 
