@@ -51,4 +51,4 @@ name: "홈 화면 - 앱 실행 및 역 감지"
 
 # 도착 정보 섹션
 - assertVisible:
-    text: "Next trains"
+    text: "열차 도착 정보"
