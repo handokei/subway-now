@@ -16,6 +16,8 @@ jest.mock('expo-background-task', () => ({
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
+  setItem: jest.fn(),
+  removeItem: jest.fn(),
 }));
 
 const mockScheduleAlarmsForRoute = jest.fn();
@@ -77,7 +79,12 @@ function mockStorage(values: {
   destination?: unknown;
   route?: unknown;
   lastStation?: string | null;
+  tripTrainCode?: string | null;
 }) {
+  const destId =
+    typeof values.destination === 'object' && values.destination && 'id' in values.destination
+      ? (values.destination as { id: string }).id
+      : 'station-2';
   const map: Record<string, string | null> = {
     'subway-now:destination':
       values.destination === undefined
@@ -88,10 +95,16 @@ function mockStorage(values: {
     'subway-now:route':
       values.route === undefined ? null : JSON.stringify(values.route),
     'subway-now:last-notified-station': values.lastStation ?? null,
+    // tripTrainCode는 destinationId:code 형식으로 저장됨
+    'subway-now:trip-train-code': values.tripTrainCode
+      ? `${destId}:${values.tripTrainCode}`
+      : null,
   };
   (AsyncStorage.getItem as jest.Mock).mockImplementation((key: string) =>
     Promise.resolve(key in map ? map[key] : null),
   );
+  (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+  (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
 }
 
 const EMPTY_STAMP = {
@@ -250,6 +263,68 @@ describe('alarmRefreshTask', () => {
       await getCallback()();
       expect(mockFetchArrivalInfo).toHaveBeenCalledWith('시청');
       expectSchedulerCalledWith(500);
+    });
+
+    it('lock-in: trainCode가 저장되어 있지 않으면 첫 arrival의 방향-필터 trainCode를 저장한다', async () => {
+      // 종로3가(idx 2) → 시청(idx 0): up 방향
+      mockStorage({ destination, route, lastStation: 'station-4', tripTrainCode: null });
+      mockFetchArrivalInfo.mockResolvedValue({
+        up: [{ arrivalSeconds: 240, trainCode: 'T-UP-1' }],
+        down: [{ arrivalSeconds: 30, trainCode: 'T-DN-1' }],
+      });
+      await getCallback()();
+      // destination(station-2)의 id를 prefix로 저장. up 방향 min ETA의 trainCode 채택.
+      expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+        'subway-now:trip-train-code',
+        'station-2:T-UP-1',
+      );
+    });
+
+    it('lock-in: 저장된 trainCode가 있으면 같은 코드의 ETA를 결정론적으로 채택한다', async () => {
+      mockStorage({
+        destination,
+        route,
+        lastStation: 'station-4',
+        tripTrainCode: 'T-UP-1',
+      });
+      // 새 응답: T-UP-1은 180초, 같은 방향에 더 빠른 T-UP-2(50초) 도착 — T-UP-1 채택
+      mockFetchArrivalInfo.mockResolvedValue({
+        up: [
+          { arrivalSeconds: 180, trainCode: 'T-UP-1' },
+          { arrivalSeconds: 50, trainCode: 'T-UP-2' },
+        ],
+        down: [{ arrivalSeconds: 30, trainCode: 'T-DN-1' }],
+      });
+      await getCallback()();
+      expectSchedulerCalledWith(180, { direction: 'up', usedTrainCode: 'T-UP-1' });
+      // 이미 저장된 코드라 trip-train-code key로 다시 setItem 호출하지 않는다
+      expect(AsyncStorage.setItem).not.toHaveBeenCalledWith(
+        'subway-now:trip-train-code',
+        expect.anything(),
+      );
+    });
+
+    it('lock-in: 저장된 trainCode가 응답에 없으면 방향 fallback ETA 사용', async () => {
+      mockStorage({
+        destination,
+        route,
+        lastStation: 'station-4',
+        tripTrainCode: 'T-MISSING',
+      });
+      mockFetchArrivalInfo.mockResolvedValue({
+        up: [{ arrivalSeconds: 240, trainCode: 'T-UP-1' }],
+        down: [{ arrivalSeconds: 30, trainCode: 'T-DN-1' }],
+      });
+      await getCallback()();
+      // T-MISSING은 매치 실패 → up 방향 min = 240, trainCode=T-UP-1로 stamp
+      expectSchedulerCalledWith(240, { direction: 'up', usedTrainCode: 'T-UP-1' });
+    });
+
+    it('활성 트립이 없으면 저장된 trainCode를 클리어한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+      await getCallback()();
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:trip-train-code');
     });
 
     it('스케줄러가 throw 하면 Failed를 반환한다', async () => {

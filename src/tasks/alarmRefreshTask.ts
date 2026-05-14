@@ -6,6 +6,10 @@ import { getLastFiredAlarmStationName } from '../utils/notificationState';
 import { scheduleAlarmsForRoute } from '../utils/alarmScheduler';
 import { fetchArrivalInfo } from '../api/arrivalApi';
 import { pickNextArrival, type NextArrivalPick } from '../utils/nextArrivalPick';
+import {
+  captureTripTrainCodeIfAbsent,
+  clearTripTrainCode,
+} from '../utils/tripTrainCode';
 import stationsData from '../data/stations.json';
 import type { Station } from '../types/station';
 import type { Route } from '../utils/stationRoute';
@@ -61,6 +65,8 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
   try {
     const active = await readActiveTrip();
     if (!active) {
+      // 활성 트립이 없으면 lock-in된 trainCode도 의미 없음 — 정리.
+      await clearTripTrainCode();
       logger.info('활성 트립 없음 — 스킵');
       return BackgroundTask.BackgroundTaskResult.Success;
     }
@@ -70,11 +76,22 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
     const direction = currentStation
       ? resolveTripDirection(active.route, active.destination.name, currentStation.id)
       : null;
-    let pick: NextArrivalPick = { etaSeconds: null, direction: null, trainCode: null };
+    let pick: NextArrivalPick = {
+      etaSeconds: null,
+      direction: null,
+      trainCode: null,
+      matchedByTrainCode: false,
+    };
     if (currentStation) {
       try {
         const arrivals = await fetchArrivalInfo(currentStation.name);
-        pick = pickNextArrival(arrivals, direction);
+        // trainCode lock-in: 저장된 코드가 없으면 첫 valid arrival의 방향-필터 picker로 캡처.
+        const trainCode = await captureTripTrainCodeIfAbsent(
+          active.destination.id,
+          arrivals,
+          direction,
+        );
+        pick = pickNextArrival(arrivals, direction, { preferTrainCode: trainCode });
       } catch (e) {
         logger.warn('Arrival API 호출 실패 — static ETA fallback:', e);
       }
@@ -87,7 +104,9 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
       // stamp.direction은 의도(filter)를 기록 — pick.direction(추론된 list)이 아닌 route-resolved.
       stamp: { direction, usedTrainCode: pick.trainCode },
     });
-    logger.info('알람 사전 예약 갱신 완료');
+    logger.info(
+      `알람 사전 예약 갱신 완료 — eta=${pick.etaSeconds} matched=${pick.matchedByTrainCode}`,
+    );
     return BackgroundTask.BackgroundTaskResult.Success;
   } catch (e) {
     logger.error('알람 갱신 태스크 실패:', e);
