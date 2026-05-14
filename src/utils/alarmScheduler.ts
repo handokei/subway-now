@@ -32,10 +32,11 @@ export interface ScheduleAlarmsParams {
   route: NonNullable<Route>;
   destinationName: string;
   /**
-   * Seoul Arrival API 첫 결과 — 다음 도착역까지 ETA(초).
+   * Seoul Arrival API 첫 결과 — 사용자 진행 방향의 열차가 **현재역에 도착하기까지** 남은 ETA(초).
+   * 호출자는 방향을 한쪽만 골라 넘겨야 한다 (반대방향 열차 ETA가 섞이면 안 됨).
    * null이면 calculateStaticETA로 목적지 ETA를 fallback 계산한다.
    */
-  nextStationEtaSeconds: number | null;
+  currentStationApproachEtaSeconds: number | null;
   /** 테스트에서 시각 주입용. 기본값은 Date.now(). */
   now?: number;
 }
@@ -50,13 +51,13 @@ export interface ScheduleAlarmsParams {
 export async function scheduleAlarmsForRoute(
   params: ScheduleAlarmsParams,
 ): Promise<ScheduledAlarm[]> {
-  const { route, destinationName, nextStationEtaSeconds, now = Date.now() } = params;
+  const { route, destinationName, currentStationApproachEtaSeconds, now = Date.now() } = params;
 
   const targets = resolveAllTargets(route, destinationName);
   const totalStops = targets.reduce((sum, t) => sum + t.stops, 0);
   if (totalStops === 0) return [];
 
-  const finalEtaSeconds = resolveFinalEtaSeconds(nextStationEtaSeconds, totalStops, route);
+  const finalEtaSeconds = resolveFinalEtaSeconds(currentStationApproachEtaSeconds, totalStops, route);
 
   const scheduled: ScheduledAlarm[] = [];
   let cumulativeStops = 0;
@@ -117,18 +118,23 @@ export async function cancelScheduledAlarms(): Promise<void> {
 }
 
 /**
- * 첫 도착역까지의 ETA로부터 최종 목적지 ETA를 추정한다.
- * API 값이 있으면: nextStation ETA + (남은 정거장 - 1) × 90s.
+ * "현재역에 열차가 도착하기까지 남은 시간"을 받아 최종 목적지 ETA를 추정한다.
+ *
+ * 의미: 사용자는 현재역 플랫폼에서 진행 방향 열차를 기다리는 중이라고 가정한다.
+ *   - approachEta(T)초 후 열차 도착 → 탑승
+ *   - 이후 totalStops 정거장 이동 × ONE_STOP_SECONDS
+ *   - 최종 ETA = T + totalStops × ONE_STOP_SECONDS
+ *
  * 환승 페널티는 무시한다 — Phase 1 baseline. 정확도는 reschedule(#335)이 보정.
- * 없으면 calculateStaticETA(분)로 fallback.
+ * approachEta가 없거나 0 이하이면 calculateStaticETA(분)로 fallback.
  */
 function resolveFinalEtaSeconds(
-  nextStationEtaSeconds: number | null,
+  currentStationApproachEtaSeconds: number | null,
   totalStops: number,
   route: NonNullable<Route>,
 ): number {
-  if (nextStationEtaSeconds != null && nextStationEtaSeconds > 0) {
-    return nextStationEtaSeconds + (totalStops - 1) * ONE_STOP_SECONDS;
+  if (currentStationApproachEtaSeconds != null && currentStationApproachEtaSeconds > 0) {
+    return currentStationApproachEtaSeconds + totalStops * ONE_STOP_SECONDS;
   }
   // calculateStaticETA는 NonNullable Route에 대해 항상 number를 반환한다.
   return (calculateStaticETA(route) as number) * 60;

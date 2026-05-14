@@ -46,24 +46,24 @@ describe('scheduleAlarmsForRoute', () => {
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
-      nextStationEtaSeconds: 600,
+      currentStationApproachEtaSeconds: 600,
       now: NOW,
     });
 
     expect(result).toHaveLength(2);
     expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledTimes(2);
 
-    // finalEta = 600 + (10-1)*90 = 1410s, destination ETA = 1410s
-    // early: 1410 - 90 = 1320s, imminent: 1410 - 10 = 1400s
+    // finalEta = 600 + 10*90 = 1500s, destination ETA = 1500s
+    // early: 1500 - 90 = 1410s, imminent: 1500 - 10 = 1490s
     expect(result[0]).toMatchObject({
       identifier: 'alarm:early:강남',
       event: { phaseId: 'early', type: 'destination', stationName: '강남' },
-      fireDate: new Date(NOW + 1_320_000),
+      fireDate: new Date(NOW + 1_410_000),
     });
     expect(result[1]).toMatchObject({
       identifier: 'alarm:imminent:강남',
       event: { phaseId: 'imminent', type: 'destination', stationName: '강남' },
-      fireDate: new Date(NOW + 1_400_000),
+      fireDate: new Date(NOW + 1_490_000),
     });
   });
 
@@ -79,32 +79,32 @@ describe('scheduleAlarmsForRoute', () => {
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
-      nextStationEtaSeconds: 1000,
+      currentStationApproachEtaSeconds: 1000,
       now: NOW,
     });
 
     expect(result).toHaveLength(4);
 
-    // finalEta = 1000 + (10-1)*90 = 1810s
-    // 환승역 ETA = (4/10) * 1810 = 724s
+    // finalEta = 1000 + 10*90 = 1900s
+    // 환승역 ETA = (4/10) * 1900 = 760s
     expect(result[0]).toMatchObject({
       identifier: 'alarm:early:동대문',
       event: { phaseId: 'early', type: 'transfer', stationName: '동대문' },
-      fireDate: new Date(NOW + (724 - 90) * 1000),
+      fireDate: new Date(NOW + (760 - 90) * 1000),
     });
     expect(result[1]).toMatchObject({
       identifier: 'alarm:imminent:동대문',
-      fireDate: new Date(NOW + (724 - 10) * 1000),
+      fireDate: new Date(NOW + (760 - 10) * 1000),
     });
-    // 도착역 ETA = 1810s
+    // 도착역 ETA = 1900s
     expect(result[2]).toMatchObject({
       identifier: 'alarm:early:강남',
       event: { phaseId: 'early', type: 'destination', stationName: '강남' },
-      fireDate: new Date(NOW + (1810 - 90) * 1000),
+      fireDate: new Date(NOW + (1900 - 90) * 1000),
     });
     expect(result[3]).toMatchObject({
       identifier: 'alarm:imminent:강남',
-      fireDate: new Date(NOW + (1810 - 10) * 1000),
+      fireDate: new Date(NOW + (1900 - 10) * 1000),
     });
   });
 
@@ -120,7 +120,7 @@ describe('scheduleAlarmsForRoute', () => {
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
-      nextStationEtaSeconds: 1000,
+      currentStationApproachEtaSeconds: 1000,
       now: NOW,
     });
 
@@ -135,13 +135,13 @@ describe('scheduleAlarmsForRoute', () => {
     ]);
   });
 
-  it('nextStationEtaSeconds가 null이면 calculateStaticETA로 fallback한다', async () => {
+  it('currentStationApproachEtaSeconds가 null이면 calculateStaticETA로 fallback한다', async () => {
     const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
     // calculateStaticETA(direct stops=10) = 3 wait + 10*2 = 23 min = 1380s
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
-      nextStationEtaSeconds: null,
+      currentStationApproachEtaSeconds: null,
       now: NOW,
     });
 
@@ -150,12 +150,12 @@ describe('scheduleAlarmsForRoute', () => {
     expect(result[1].fireDate).toEqual(new Date(NOW + (1380 - 10) * 1000));
   });
 
-  it('nextStationEtaSeconds가 0 이하면 fallback을 사용한다', async () => {
+  it('currentStationApproachEtaSeconds가 0 이하면 fallback을 사용한다', async () => {
     const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
-      nextStationEtaSeconds: 0,
+      currentStationApproachEtaSeconds: 0,
       now: NOW,
     });
     // staticETA fallback 적용 → 1380s
@@ -167,7 +167,7 @@ describe('scheduleAlarmsForRoute', () => {
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
-      nextStationEtaSeconds: 600,
+      currentStationApproachEtaSeconds: 600,
       now: NOW,
     });
 
@@ -175,32 +175,32 @@ describe('scheduleAlarmsForRoute', () => {
     expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
   });
 
-  it('phase 시각이 과거(now 이전)면 해당 알람은 건너뛴다', async () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '1' };
-    // stops=1 → finalEta = 5 + 0*90 = 5s → early(5-90<0 skip), imminent(5-10<0 skip) → 0개
+  it('stops=0 waypoint(이미 도착한 환승역 등)는 두 phase 모두 건너뛰고 다음 waypoint만 예약한다', async () => {
+    // 환승역에 이미 도착해 stopsToTransfer=0인 trip — transfer는 waypointEta=0이라 fire<=0으로 모두 skip.
+    const route: TransferRoute = {
+      type: 'transfer',
+      transferName: '동대문',
+      fromLine: '1',
+      toLine: '4',
+      stopsToTransfer: 0,
+      stopsFromTransfer: 5,
+    };
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
-      nextStationEtaSeconds: 5,
+      currentStationApproachEtaSeconds: 60,
       now: NOW,
     });
 
-    expect(result).toEqual([]);
-  });
-
-  it('early만 미래이고 imminent가 과거면 한쪽만 예약한다', async () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '1' };
-    // stops=1, ETA 50 → finalEta = 50s
-    // early: 50-90 = -40 skip, imminent: 50-10 = 40, 예약
-    const result = await scheduleAlarmsForRoute({
-      route,
-      destinationName: '강남',
-      nextStationEtaSeconds: 50,
-      now: NOW,
-    });
-
-    expect(result).toHaveLength(1);
-    expect(result[0].identifier).toBe('alarm:imminent:강남');
+    // totalStops=5, finalEta = 60 + 5*90 = 510s
+    // 동대문 cumulative=0 → waypointEta=0 → 두 phase 모두 skip
+    // 강남 cumulative=5 → waypointEta=510s → early(420), imminent(500) 모두 예약
+    expect(result.map((r) => r.identifier)).toEqual([
+      'alarm:early:강남',
+      'alarm:imminent:강남',
+    ]);
+    expect(result[0].fireDate).toEqual(new Date(NOW + 420_000));
+    expect(result[1].fireDate).toEqual(new Date(NOW + 500_000));
   });
 
   it('iOS에서는 interruptionLevel: timeSensitive를 포함한다', async () => {
@@ -208,7 +208,7 @@ describe('scheduleAlarmsForRoute', () => {
     await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
-      nextStationEtaSeconds: 600,
+      currentStationApproachEtaSeconds: 600,
       now: NOW,
     });
 
@@ -228,7 +228,7 @@ describe('scheduleAlarmsForRoute', () => {
     await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
-      nextStationEtaSeconds: 600,
+      currentStationApproachEtaSeconds: 600,
       now: NOW,
     });
 
@@ -246,14 +246,14 @@ describe('scheduleAlarmsForRoute', () => {
     await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
-      nextStationEtaSeconds: 600,
+      currentStationApproachEtaSeconds: 600,
       now: NOW,
     });
 
     expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
       expect.objectContaining({
         identifier: 'alarm:early:강남',
-        trigger: { type: 'date', date: new Date(NOW + 1_320_000) },
+        trigger: { type: 'date', date: new Date(NOW + 1_410_000) },
       }),
     );
   });
@@ -264,14 +264,14 @@ describe('scheduleAlarmsForRoute', () => {
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
-      nextStationEtaSeconds: 600,
+      currentStationApproachEtaSeconds: 600,
     });
     const after = Date.now();
 
-    // early fireDate ≈ now + 1320s
+    // early fireDate ≈ now + 1410s
     const fire = result[0].fireDate.getTime();
-    expect(fire).toBeGreaterThanOrEqual(before + 1_320_000);
-    expect(fire).toBeLessThanOrEqual(after + 1_320_000);
+    expect(fire).toBeGreaterThanOrEqual(before + 1_410_000);
+    expect(fire).toBeLessThanOrEqual(after + 1_410_000);
   });
 });
 

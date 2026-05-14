@@ -182,7 +182,7 @@ describe('silentPushTask', () => {
       expect(mockSchedule).toHaveBeenCalledWith({
         route,
         destinationName: '강남',
-        nextStationEtaSeconds: 420,
+        currentStationApproachEtaSeconds: 420,
       });
     });
 
