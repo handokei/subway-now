@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
+import { Alert, Linking } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { useTranslation } from 'react-i18next';
@@ -14,6 +15,9 @@ const noop = () => {};
 
 export function useBackgroundLocation(destination: Station | null): void {
   const { t } = useTranslation();
+  // 같은 hook 라이프타임에서 destination이 여러 번 바뀌어도 권한 안내 모달은 한 번만 노출한다.
+  // 매번 띄우면 스팸성이 강하고, 사용자는 이미 첫 알림으로 결정한 상태다.
+  const deniedAlertShownRef = useRef(false);
 
   useEffect(() => {
     if (!destination) {
@@ -27,6 +31,17 @@ export function useBackgroundLocation(destination: Station | null): void {
       const { status } = await Location.requestBackgroundPermissionsAsync();
       if (status !== 'granted' || cancelled) {
         logger.info('백그라운드 위치 권한 거부 또는 취소됨');
+        if (status !== 'granted' && !cancelled && !deniedAlertShownRef.current) {
+          deniedAlertShownRef.current = true;
+          Alert.alert(
+            t('permissions.backgroundDeniedTitle'),
+            t('permissions.backgroundDeniedBody'),
+            [
+              { text: t('common.close'), style: 'cancel' },
+              { text: t('permissions.openSettings'), onPress: () => Linking.openSettings() },
+            ],
+          );
+        }
         return;
       }
 

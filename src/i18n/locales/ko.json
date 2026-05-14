@@ -16,7 +16,10 @@
     "locationRequiredShort": "위치 권한이 필요합니다.",
     "locationRequiredDescription": "설정에서 위치 권한을 허용해 주세요.\n현재 탑승 중인 역을 감지하려면\n위치 권한이 필요합니다.",
     "request": "권한 요청",
-    "locating": "위치 확인 중..."
+    "locating": "위치 확인 중...",
+    "backgroundDeniedTitle": "백그라운드 위치 권한 필요",
+    "backgroundDeniedBody": "백그라운드에서 알람을 받으려면 설정에서 위치 권한을 '항상 허용'으로 설정해 주세요.",
+    "openSettings": "설정 열기"
   },
   "home": {
     "arrived": "도착!",

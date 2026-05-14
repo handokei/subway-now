@@ -1,5 +1,10 @@
 import { renderHook, act, waitFor } from '@testing-library/react-native';
+import { Alert, Linking } from 'react-native';
 import type { Station } from '../../types/station';
+
+// ── Alert.alert / Linking.openSettings 모킹 ──
+const mockAlertAlert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+const mockOpenSettings = jest.spyOn(Linking, 'openSettings').mockResolvedValue();
 
 // ── expo-location 모킹 ──
 const mockRequestBackgroundPermissionsAsync = jest.fn();
@@ -140,6 +145,62 @@ describe('useBackgroundLocation', () => {
     });
 
     expect(mockStartLocationUpdatesAsync).not.toHaveBeenCalled();
+  });
+
+  it('권한이 denied이면 안내 Alert를 띄우고 "설정 열기" 탭 시 Linking.openSettings를 호출한다 (#387)', async () => {
+    mockRequestBackgroundPermissionsAsync.mockResolvedValueOnce({ status: 'denied' });
+
+    renderHook(() => useBackgroundLocation(mockDestination));
+
+    await waitFor(() => {
+      expect(mockAlertAlert).toHaveBeenCalled();
+    });
+
+    const [, , buttons] = mockAlertAlert.mock.calls[0]!;
+    expect(buttons).toHaveLength(2);
+    // 첫 번째 버튼은 닫기(cancel), 두 번째 버튼은 설정 열기.
+    const openSettingsBtn = (buttons as Array<{ onPress?: () => void }>)[1];
+    openSettingsBtn?.onPress?.();
+    expect(mockOpenSettings).toHaveBeenCalled();
+  });
+
+  it('같은 hook 라이프타임에서 denied가 반복돼도 Alert는 한 번만 노출한다 (#387)', async () => {
+    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+
+    const { rerender } = renderHook(
+      ({ dest }: { dest: Station | null }) => useBackgroundLocation(dest),
+      { initialProps: { dest: mockDestination as Station | null } },
+    );
+
+    await waitFor(() => {
+      expect(mockAlertAlert).toHaveBeenCalledTimes(1);
+    });
+
+    rerender({ dest: mockDestination2 });
+
+    await waitFor(() => {
+      expect(mockRequestBackgroundPermissionsAsync).toHaveBeenCalledTimes(2);
+    });
+
+    expect(mockAlertAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancelled(unmount race) 상태에서는 denied여도 Alert를 띄우지 않는다 (#387)', async () => {
+    let resolvePermission!: (value: { status: string }) => void;
+    mockRequestBackgroundPermissionsAsync.mockReturnValueOnce(
+      new Promise<{ status: string }>((resolve) => {
+        resolvePermission = resolve;
+      }),
+    );
+
+    const { unmount } = renderHook(() => useBackgroundLocation(mockDestination));
+    unmount();
+    resolvePermission({ status: 'denied' });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockAlertAlert).not.toHaveBeenCalled();
   });
 
   // ── 태스크가 이미 등록된 경우: GPS 추적 공백 방지를 위해 재시작하지 않음 ──
