@@ -8,7 +8,7 @@ import UIKit
 // 자동 링크된다.
 
 @available(iOS 16.2, *)
-class LiveActivityManager {
+actor LiveActivityManager {
     static let shared = LiveActivityManager()
     private var currentActivity: Activity<SubwayActivityAttributes>?
 
@@ -18,12 +18,27 @@ class LiveActivityManager {
         return ActivityAuthorizationInfo().areActivitiesEnabled
     }
 
-    /// 현재 추적 중인 Activity + 이전 세션에서 남은 고아 Activity 일괄 종료
+    /// 현재 추적 중인 Activity + 이전 세션에서 남은 고아 Activity 일괄 종료.
+    /// ActivityKit의 `.activities` 목록 반영 지연으로 1회 enumerate 후에도 잔여가 남는 경우가
+    /// 있어 잔여가 없거나 안전 상한에 도달할 때까지 반복한다.
     private func endAllActivities() async {
         currentActivity = nil
-        for activity in Activity<SubwayActivityAttributes>.activities {
-            await activity.end(dismissalPolicy: .immediate)
+        var attempts = 0
+        while !Activity<SubwayActivityAttributes>.activities.isEmpty && attempts < 3 {
+            for activity in Activity<SubwayActivityAttributes>.activities {
+                await activity.end(dismissalPolicy: .immediate)
+            }
+            attempts += 1
         }
+    }
+
+    /// 앱 재기동 등으로 currentActivity가 nil이지만 시스템에 살아있는 Activity가 남아 있다면 채택.
+    /// 채택하지 않으면 update()가 start() 경로로 빠져 새 Activity가 추가 생성된다.
+    /// `.stale`도 표시 중일 수 있으므로 채택 후 update로 freshen 한다.
+    private func adoptExistingActivityIfNeeded() {
+        guard currentActivity == nil else { return }
+        currentActivity = Activity<SubwayActivityAttributes>.activities
+            .first(where: { $0.activityState == .active || $0.activityState == .stale })
     }
 
     func start(data: [String: Any]) async throws {
@@ -66,6 +81,9 @@ class LiveActivityManager {
                 userInfo: [NSLocalizedDescriptionKey: "iPad에서는 Live Activity를 지원하지 않습니다"]
             )
         }
+
+        // 앱 재기동 시 시스템에 남아 있는 Activity를 채택해 새 request로 중복 생성하지 않음
+        adoptExistingActivityIfNeeded()
 
         // Activity 상태 검증: ended/dismissed면 재시작
         if let activity = currentActivity {
