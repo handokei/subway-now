@@ -16,7 +16,10 @@
     "locationRequiredShort": "位置情報の許可が必要です。",
     "locationRequiredDescription": "設定で位置情報の利用を許可してください。\n現在の駅を検出するために位置情報が必要です。",
     "request": "許可する",
-    "locating": "位置情報を取得中..."
+    "locating": "位置情報を取得中...",
+    "backgroundDeniedTitle": "バックグラウンド位置情報の許可が必要です",
+    "backgroundDeniedBody": "バックグラウンドでアラームを受け取るには、設定で位置情報を「常に許可」にしてください。",
+    "openSettings": "設定を開く"
   },
   "home": {
     "arrived": "到着!",

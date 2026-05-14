@@ -16,7 +16,10 @@
     "locationRequiredShort": "需要位置权限。",
     "locationRequiredDescription": "请在设置中允许位置权限。\n要检测您当前的车站，需要位置权限。",
     "request": "授予权限",
-    "locating": "正在定位..."
+    "locating": "正在定位...",
+    "backgroundDeniedTitle": "需要后台位置权限",
+    "backgroundDeniedBody": "要在后台接收闹钟，请在设置中将位置访问设为\"始终允许\"。",
+    "openSettings": "打开设置"
   },
   "home": {
     "arrived": "已到达!",
