@@ -12,21 +12,35 @@ name: "홈 화면 - 앱 실행 및 역 감지"
       location: always
       notifications: allow
 
+# Expo dev-client URL 선택 화면 (개발 빌드에서만 등장 — 프로덕션은 optional로 skip)
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+
+- tapOn:
+    text: "Continue"
+    optional: true
+
 - tapOn:
     text: ".*허용.*"
     optional: true
 
-# 홈 화면 로드 확인 (LIVE 라벨)
+# Dev Menu가 떠 있으면 swipe down으로 닫음
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+# 홈 화면 로드 (testID는 accessibility 트리에 즉시 노출)
 - extendedWaitUntil:
     visible:
-      text: "LIVE"
+      id: "destination-button"
     timeout: 15000
 
-# 강남역 감지 확인
+# 역 감지 확인 (GPS → useNearestStation 30s 폴링 cold start까지 grace)
 - extendedWaitUntil:
     visible:
       text: "강남"
-    timeout: 10000
+    timeout: 60000
 
 # 목적지 설정 버튼
 - assertVisible:
@@ -35,6 +49,4 @@ name: "홈 화면 - 앱 실행 및 역 감지"
 - assertVisible:
     text: "목적지 설정"
 
-# 도착 정보 섹션
-- assertVisible:
-    text: "Next trains"
+# 도착 정보 섹션은 destination이 설정된 후에만 렌더되므로 본 flow(fresh launch)에서는 검증 대상이 아님.

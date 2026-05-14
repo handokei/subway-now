@@ -12,18 +12,38 @@ name: "지도 탭 - 도착역 설정 후 홈 탭 자동 전환"
       location: always
       notifications: allow
 
+# Expo dev-client URL 선택 화면 (개발 빌드에서만 등장)
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+
+- tapOn:
+    text: "Continue"
+    optional: true
+
 - tapOn:
     text: ".*허용.*"
     optional: true
 
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+# 홈 로드 (testID는 즉시 노출)
 - extendedWaitUntil:
     visible:
-      text: "LIVE"
+      id: "destination-button"
     timeout: 15000
 
-# 지도 탭으로 이동
+# 역 감지 확인
+- extendedWaitUntil:
+    visible:
+      text: "강남"
+    timeout: 60000
+
+# 지도 탭으로 이동 (좌표 기반 — iOS 탭 라벨 접근성 트리 불안정)
 - tapOn:
-    text: "지도"
+    point: "37%,95%"
 
 - extendedWaitUntil:
     visible:
@@ -43,11 +63,8 @@ name: "지도 탭 - 도착역 설정 후 홈 탭 자동 전환"
 - tapOn:
     id: "set-destination-button"
 
-# 홈 탭(현재 역) UI가 보이는지 확인
+# 홈 탭(현재 역) 으로 자동 전환되었고 도착역 설정이 반영되었는지 확인
 - extendedWaitUntil:
     visible:
-      text: "LIVE"
+      id: "destination-clear-button"
     timeout: 10000
-
-- assertVisible:
-    id: "destination-clear-button"
