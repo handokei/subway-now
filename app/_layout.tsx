@@ -13,6 +13,7 @@ import { useAppStore } from '../src/store/useAppStore';
 import { DebugModal } from '../src/components/DebugModal';
 import '../src/tasks/backgroundLocationTask';
 import { registerSilentPushTask } from '../src/tasks/silentPushTask';
+import { registerScheduledAlarmListener } from '../src/utils/scheduledAlarmReceiver';
 
 const layoutLogger = createLogger('RootLayout');
 
@@ -21,6 +22,8 @@ setupNotificationHandler();
 // iOS silent push BG task 등록 — APNs reschedule trigger 수신용.
 // 권한/플랫폼 미지원 시 내부에서 graceful no-op.
 registerSilentPushTask().catch((e) => layoutLogger.warn('silent push task 등록 실패:', e));
+// 사전 예약 alarm: 알림 발화 시 FIRED_ALARMS/LAST_NOTIFIED_STATION 갱신 → FG 복귀 후 중복 발화 방지.
+registerScheduledAlarmListener();
 
 // 프로덕션 빌드에서는 warn 이상만 출력
 if (!__DEV__) {

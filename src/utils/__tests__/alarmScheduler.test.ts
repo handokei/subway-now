@@ -4,6 +4,7 @@ import {
   scheduleAlarmsForRoute,
   cancelScheduledAlarms,
   scheduledAlarmIdentifier,
+  parseScheduledAlarmIdentifier,
 } from '../alarmScheduler';
 import { logScheduledAlarm } from '../alarmLog';
 import { getLastNotifiedStationId } from '../notificationState';
@@ -45,6 +46,27 @@ describe('scheduledAlarmIdentifier', () => {
     expect(scheduledAlarmIdentifier({ phaseId: 'imminent', stationName: '시청' })).toBe(
       'alarm:imminent:시청',
     );
+  });
+});
+
+describe('parseScheduledAlarmIdentifier', () => {
+  it('alarm: prefix가 없으면 null', () => {
+    expect(parseScheduledAlarmIdentifier('current-station')).toBeNull();
+  });
+  it('phaseId가 빈 문자열이면 null', () => {
+    expect(parseScheduledAlarmIdentifier('alarm::강남')).toBeNull();
+  });
+  it('콜론이 없으면 null', () => {
+    expect(parseScheduledAlarmIdentifier('alarm:onlyphase')).toBeNull();
+  });
+  it('stationName이 비어 있으면 null', () => {
+    expect(parseScheduledAlarmIdentifier('alarm:early:')).toBeNull();
+  });
+  it('유효한 identifier를 파싱한다', () => {
+    expect(parseScheduledAlarmIdentifier('alarm:early:강남')).toEqual({
+      phaseId: 'early',
+      stationName: '강남',
+    });
   });
 });
 

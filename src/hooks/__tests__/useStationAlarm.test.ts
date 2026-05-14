@@ -62,6 +62,10 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedDedupStation: (...args: unknown[]) => mockLogSuppressedDedupStation(...args),
 }));
 
+jest.mock('../../utils/scheduledAlarmReceiver', () => ({
+  awaitInitialScheduledAlarmDrain: jest.fn().mockResolvedValue(undefined),
+}));
+
 const makeStation = (id: string, name: string, lat = 37.5, lng = 127.0): Station => ({
   id,
   name,

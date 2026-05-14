@@ -6,8 +6,14 @@ import {
   getFiredAlarms,
   setFiredAlarms,
   clearFiredAlarms,
+  getLastFiredAlarmStationName,
+  setLastFiredAlarmStationName,
 } from '../notificationState';
-import { LAST_NOTIFIED_STATION_KEY, FIRED_ALARMS_KEY } from '../../constants/storageKeys';
+import {
+  LAST_NOTIFIED_STATION_KEY,
+  FIRED_ALARMS_KEY,
+  LAST_FIRED_ALARM_STATION_NAME_KEY,
+} from '../../constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
@@ -149,6 +155,23 @@ describe('notificationState', () => {
       (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('storage 오류'));
 
       await expect(setFiredAlarms(new Set(['a:X']))).resolves.toBeUndefined();
+    });
+  });
+
+  describe('getLastFiredAlarmStationName', () => {
+    it('AsyncStorage에서 LAST_FIRED_ALARM_STATION_NAME_KEY 값을 반환한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce('강남');
+      const result = await getLastFiredAlarmStationName();
+      expect(AsyncStorage.getItem).toHaveBeenCalledWith(LAST_FIRED_ALARM_STATION_NAME_KEY);
+      expect(result).toBe('강남');
+    });
+  });
+
+  describe('setLastFiredAlarmStationName', () => {
+    it('AsyncStorage에 LAST_FIRED_ALARM_STATION_NAME_KEY로 값을 저장한다', async () => {
+      (AsyncStorage.setItem as jest.Mock).mockResolvedValueOnce(undefined);
+      await setLastFiredAlarmStationName('시청');
+      expect(AsyncStorage.setItem).toHaveBeenCalledWith(LAST_FIRED_ALARM_STATION_NAME_KEY, '시청');
     });
   });
 

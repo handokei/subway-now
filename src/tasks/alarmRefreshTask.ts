@@ -2,6 +2,7 @@ import * as TaskManager from 'expo-task-manager';
 import * as BackgroundTask from 'expo-background-task';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DESTINATION_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY } from '../constants/storageKeys';
+import { getLastFiredAlarmStationName } from '../utils/notificationState';
 import { scheduleAlarmsForRoute } from '../utils/alarmScheduler';
 import { fetchArrivalInfo } from '../api/arrivalApi';
 import { pickNextArrival, type NextArrivalPick } from '../utils/nextArrivalPick';
@@ -42,6 +43,15 @@ async function readActiveTrip(): Promise<{ destination: Station; route: NonNulla
 }
 
 async function resolveCurrentStation(): Promise<Station | null> {
+  // 1순위: 사전 예약 알람 발화 이름(#371) — GPS LAST_NOTIFIED는 BG 위치 업데이트 끊긴 동안 stale.
+  // 동명이역은 첫 매칭 Station을 반환. 노선이 어긋나면 하류의 resolveTripDirection(#370)이
+  // direction=null로 안전 폴백 → 양방향 합산 ETA로 그레이스풀 다운그레이드.
+  const firedName = await getLastFiredAlarmStationName();
+  if (firedName) {
+    const byName = allStations.find((s) => s.name === firedName);
+    if (byName) return byName;
+  }
+  // 2순위: GPS LAST_NOTIFIED id.
   const id = await AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY);
   if (!id) return null;
   return stationById.get(id) ?? null;
