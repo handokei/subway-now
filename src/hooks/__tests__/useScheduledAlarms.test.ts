@@ -117,7 +117,10 @@ describe('useScheduledAlarms', () => {
     expect(mockedSchedule).toHaveBeenCalledWith({
       route: ROUTE,
       destinationName: '강남',
-      currentStationApproachEtaSeconds: 300, // min(300, 420)
+      currentStationApproachEtaSeconds: 300, // min(300, 420), currentStation=null → 양방향 fallback
+      // stamp.direction은 route-resolved intent — currentStation=null이므로 null로 기록.
+      // trainCode는 fallback에서 pick된 up arrival(300 < 420)의 'U1'.
+      stamp: { direction: null, usedTrainCode: 'U1' },
     });
   });
 
@@ -274,6 +277,30 @@ describe('useScheduledAlarms', () => {
 
     expect(mockedSchedule).toHaveBeenCalledWith(
       expect.objectContaining({ currentStationApproachEtaSeconds: null }),
+    );
+  });
+
+  it('trainCode가 빈 문자열이면 stamp.usedTrainCode는 null로 위임한다', async () => {
+    const noTrainCode: StationArrival = {
+      ...ARRIVAL,
+      up: [{ ...ARRIVAL.up[0], trainCode: '' }],
+      down: [],
+    };
+    renderHook(() =>
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, currentStation: null, arrival: noTrainCode }),
+    );
+    await flush();
+    await act(async () => {
+      appStateCallback?.('background');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockedSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // currentStation=null → route-resolved direction=null. trainCode=''는 null로 정규화.
+        stamp: { direction: null, usedTrainCode: null },
+      }),
     );
   });
 

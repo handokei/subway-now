@@ -89,11 +89,20 @@ function mockStorage(values: {
   );
 }
 
-function expectSchedulerCalledWith(currentStationApproachEtaSeconds: number | null) {
+const EMPTY_STAMP = {
+  direction: null,
+  usedTrainCode: null,
+} as const;
+
+function expectSchedulerCalledWith(
+  currentStationApproachEtaSeconds: number | null,
+  stamp: { direction: 'up' | 'down' | null; usedTrainCode: string | null } = EMPTY_STAMP,
+) {
   expect(mockScheduleAlarmsForRoute).toHaveBeenCalledWith({
     route,
     destinationName: '시청',
     currentStationApproachEtaSeconds,
+    stamp,
   });
 }
 
@@ -145,7 +154,8 @@ describe('alarmRefreshTask', () => {
       expectSchedulerCalledWith(null);
     });
 
-    it('현재역이 있으면 Arrival API의 up/down 중 가장 짧은 양수 ETA를 사용한다', async () => {
+    it('현재역이 다른 노선(line 2)이면 direction null로 양방향 fallback ETA를 사용한다', async () => {
+      // station-1(강남, line 2)은 route(line 1)에 없음 → resolveTripDirection=null → 양방향 합산.
       mockStorage({ destination, route, lastStation: 'station-1' });
       mockFetchArrivalInfo.mockResolvedValue({
         up: [{ arrivalSeconds: 600 }, { arrivalSeconds: 1200 }],
@@ -153,7 +163,8 @@ describe('alarmRefreshTask', () => {
       });
       await getCallback()();
       expect(mockFetchArrivalInfo).toHaveBeenCalledWith('강남');
-      expectSchedulerCalledWith(300);
+      // direction=null filter → up/down 합산 best-effort. stamp.direction은 의도(null) 그대로.
+      expectSchedulerCalledWith(300, { direction: null, usedTrainCode: null });
     });
 
     it('Arrival API가 모두 0/음수면 currentStationApproachEtaSeconds=null', async () => {
@@ -190,7 +201,7 @@ describe('alarmRefreshTask', () => {
       });
       await getCallback()();
       expect(mockFetchArrivalInfo).toHaveBeenCalledWith('종로3가');
-      expectSchedulerCalledWith(240);
+      expectSchedulerCalledWith(240, { direction: 'up', usedTrainCode: null });
     });
 
     it('진행 방향이 "down"이면 arrival.down ETA만 사용한다', async () => {
@@ -210,6 +221,7 @@ describe('alarmRefreshTask', () => {
         route,
         destinationName: '종로3가',
         currentStationApproachEtaSeconds: 180,
+        stamp: { direction: 'down', usedTrainCode: null },
       });
     });
 

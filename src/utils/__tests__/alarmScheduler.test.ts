@@ -5,6 +5,8 @@ import {
   cancelScheduledAlarms,
   scheduledAlarmIdentifier,
 } from '../alarmScheduler';
+import { logScheduledAlarm } from '../alarmLog';
+import { getLastNotifiedStationId } from '../notificationState';
 import type {
   DirectRoute,
   TransferRoute,
@@ -20,6 +22,18 @@ jest.mock('../logger', () => ({
     error: jest.fn(),
   }),
 }));
+
+jest.mock('../alarmLog', () => ({
+  logScheduledAlarm: jest.fn(),
+}));
+jest.mock('../notificationState', () => ({
+  getLastNotifiedStationId: jest.fn(),
+}));
+
+const mockedLogScheduled = logScheduledAlarm as jest.MockedFunction<typeof logScheduledAlarm>;
+const mockedGetLastNotified = getLastNotifiedStationId as jest.MockedFunction<
+  typeof getLastNotifiedStationId
+>;
 
 const NOW = new Date('2026-05-13T12:00:00Z').getTime();
 
@@ -38,6 +52,7 @@ describe('scheduleAlarmsForRoute', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     (Notifications.scheduleNotificationAsync as jest.Mock).mockResolvedValue('id');
+    mockedGetLastNotified.mockResolvedValue(null);
     jest.replaceProperty(Platform, 'OS', 'ios');
   });
 
@@ -272,6 +287,87 @@ describe('scheduleAlarmsForRoute', () => {
     const fire = result[0].fireDate.getTime();
     expect(fire).toBeGreaterThanOrEqual(before + 1_410_000);
     expect(fire).toBeLessThanOrEqual(after + 1_410_000);
+  });
+
+  // ── #372 stamp ──
+  it('stamp + last-notified를 각 예약 알람에 함께 적재한다', async () => {
+    const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    mockedGetLastNotified.mockResolvedValueOnce('S-prev');
+
+    await scheduleAlarmsForRoute({
+      route,
+      destinationName: '강남',
+      currentStationApproachEtaSeconds: 600,
+      now: NOW,
+      stamp: { direction: 'up', usedTrainCode: 'T-99' },
+    });
+
+    expect(mockedLogScheduled).toHaveBeenCalledTimes(2);
+    expect(mockedLogScheduled).toHaveBeenNthCalledWith(
+      1,
+      { phaseId: 'early', type: 'destination', stationName: '강남' },
+      {
+        direction: 'up',
+        usedTrainCode: 'T-99',
+        selectedArrivalSeconds: 600,
+        expectedStationAtFire: '강남',
+        actualLastNotifiedStation: 'S-prev',
+      },
+    );
+    expect(mockedLogScheduled).toHaveBeenNthCalledWith(
+      2,
+      { phaseId: 'imminent', type: 'destination', stationName: '강남' },
+      expect.objectContaining({
+        direction: 'up',
+        usedTrainCode: 'T-99',
+        actualLastNotifiedStation: 'S-prev',
+      }),
+    );
+  });
+
+  it('stamp 미지정이면 direction/usedTrainCode가 null로 기록된다', async () => {
+    const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+
+    await scheduleAlarmsForRoute({
+      route,
+      destinationName: '강남',
+      currentStationApproachEtaSeconds: null,
+      now: NOW,
+    });
+
+    expect(mockedLogScheduled).toHaveBeenCalled();
+    expect(mockedLogScheduled).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        direction: null,
+        usedTrainCode: null,
+        selectedArrivalSeconds: null,
+        actualLastNotifiedStation: null,
+      }),
+    );
+  });
+
+  it('skip된 phase(예: stops=0 waypoint)는 logScheduledAlarm을 호출하지 않는다', async () => {
+    // stopsToTransfer=0이면 환승역 waypoint는 fireSeconds<=0으로 두 phase 모두 skip되어
+    // log도 남기지 않는다. 도착역 phase 2회만 stamp된다.
+    const route: TransferRoute = {
+      type: 'transfer',
+      transferName: '동대문',
+      fromLine: '1',
+      toLine: '4',
+      stopsToTransfer: 0,
+      stopsFromTransfer: 5,
+    };
+    await scheduleAlarmsForRoute({
+      route,
+      destinationName: '강남',
+      currentStationApproachEtaSeconds: 60,
+      now: NOW,
+    });
+    expect(mockedLogScheduled).toHaveBeenCalledTimes(2);
+    expect(mockedLogScheduled.mock.calls.every(([event]) => event.stationName === '강남')).toBe(
+      true,
+    );
   });
 });
 

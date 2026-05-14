@@ -7,7 +7,8 @@ import {
   cancelScheduledAlarms,
   scheduleAlarmsForRoute,
 } from '../utils/alarmScheduler';
-import { resolveTripDirection, type TripDirection } from '../utils/tripDirection';
+import { pickNextArrival } from '../utils/nextArrivalPick';
+import { resolveTripDirection } from '../utils/tripDirection';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('useScheduledAlarms');
@@ -18,27 +19,6 @@ export interface UseScheduledAlarmsInputs {
   /** 사용자의 현재 위치 station — 진행 방향 산출에 필요. null이면 양방향 fallback. */
   currentStation: Station | null;
   arrival: StationArrival | null;
-}
-
-/**
- * 진행 방향 열차의 "현재역 도착까지 남은 ETA"(초)를 추출한다.
- * direction이 null이면 양방향을 합산한 best-effort fallback을 반환한다(반대방향 오인 위험 있음).
- * 데이터가 없거나 mock이면 null을 반환해 alarmScheduler의 static fallback으로 위임한다.
- */
-function pickCurrentStationApproachEtaSeconds(
-  arrival: StationArrival | null,
-  direction: TripDirection | null,
-): number | null {
-  if (!arrival || arrival.isMock) return null;
-  const trains =
-    direction === 'up'
-      ? arrival.up
-      : direction === 'down'
-        ? arrival.down
-        : [...arrival.up, ...arrival.down];
-  const candidates = trains.map((info) => info.arrivalSeconds).filter((sec) => sec > 0);
-  if (candidates.length === 0) return null;
-  return Math.min(...candidates);
 }
 
 /**
@@ -74,15 +54,20 @@ export function useScheduledAlarms({
     const currentDestination = destinationRef.current;
     if (!currentRoute || !currentDestination) return;
     if (appStateRef.current === 'active') return;
+    // 진행 방향은 route + 현재역 ordinal로 결정한다 (#370). null이면 알 수 없음.
+    // pickNextArrival에 filter로 전달해 반대방향 열차 ETA 오인을 차단.
     const here = currentStationRef.current;
     const direction = here
       ? resolveTripDirection(currentRoute, currentDestination.name, here.id)
       : null;
-    const approachEtaSeconds = pickCurrentStationApproachEtaSeconds(arrivalRef.current, direction);
+    const pick = pickNextArrival(arrivalRef.current, direction);
     await scheduleAlarmsForRoute({
       route: currentRoute,
       destinationName: currentDestination.name,
-      currentStationApproachEtaSeconds: approachEtaSeconds,
+      currentStationApproachEtaSeconds: pick.etaSeconds,
+      // stamp.direction은 filter intent(=null이면 "방향 미판정")를 그대로 기록한다.
+      // pick.direction(추론된 list)과 다를 수 있으나, 진단 시 의도와 fallback을 구분하기 위함.
+      stamp: { direction, usedTrainCode: pick.trainCode },
     });
   };
 

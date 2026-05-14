@@ -3,11 +3,12 @@ import * as BackgroundTask from 'expo-background-task';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DESTINATION_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY } from '../constants/storageKeys';
 import { scheduleAlarmsForRoute } from '../utils/alarmScheduler';
-import { fetchArrivalInfo, type ArrivalInfo, type StationArrival } from '../api/arrivalApi';
+import { fetchArrivalInfo } from '../api/arrivalApi';
+import { pickNextArrival, type NextArrivalPick } from '../utils/nextArrivalPick';
 import stationsData from '../data/stations.json';
 import type { Station } from '../types/station';
 import type { Route } from '../utils/stationRoute';
-import { resolveTripDirection, type TripDirection } from '../utils/tripDirection';
+import { resolveTripDirection } from '../utils/tripDirection';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('AlarmRefreshTask');
@@ -22,27 +23,6 @@ export const ALARM_REFRESH_TASK = 'alarm-refresh-task';
  */
 const allStations = stationsData as Station[];
 const stationById = new Map<string, Station>(allStations.map((s) => [s.id, s]));
-
-function pickCurrentStationApproachEtaSeconds(
-  arrivals: { up: ArrivalInfo[]; down: ArrivalInfo[] },
-  direction: TripDirection | null,
-): number | null {
-  // 진행 방향이 정해지면 한쪽 list만 사용한다. 정해지지 않은 경계 케이스(환상선/노선 이탈)는
-  // 안전을 위해 양방향 합산 best-effort로 폴백한다.
-  const trains: ArrivalInfo[] =
-    direction === 'up'
-      ? arrivals.up
-      : direction === 'down'
-        ? arrivals.down
-        : [...arrivals.up, ...arrivals.down];
-  let min: number | null = null;
-  for (const info of trains) {
-    if (info.arrivalSeconds > 0 && (min === null || info.arrivalSeconds < min)) {
-      min = info.arrivalSeconds;
-    }
-  }
-  return min;
-}
 
 async function readActiveTrip(): Promise<{ destination: Station; route: NonNullable<Route> } | null> {
   const [destJson, routeJson] = await Promise.all([
@@ -75,18 +55,16 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
       return BackgroundTask.BackgroundTaskResult.Success;
     }
 
+    // 진행 방향은 route + 현재역 ordinal로 판정(#370). null이면 양방향 fallback.
     const currentStation = await resolveCurrentStation();
     const direction = currentStation
       ? resolveTripDirection(active.route, active.destination.name, currentStation.id)
       : null;
-    let currentStationApproachEtaSeconds: number | null = null;
+    let pick: NextArrivalPick = { etaSeconds: null, direction: null, trainCode: null };
     if (currentStation) {
       try {
-        const arrivals: StationArrival = await fetchArrivalInfo(currentStation.name);
-        currentStationApproachEtaSeconds = pickCurrentStationApproachEtaSeconds(
-          arrivals,
-          direction,
-        );
+        const arrivals = await fetchArrivalInfo(currentStation.name);
+        pick = pickNextArrival(arrivals, direction);
       } catch (e) {
         logger.warn('Arrival API 호출 실패 — static ETA fallback:', e);
       }
@@ -95,7 +73,9 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
     await scheduleAlarmsForRoute({
       route: active.route,
       destinationName: active.destination.name,
-      currentStationApproachEtaSeconds,
+      currentStationApproachEtaSeconds: pick.etaSeconds,
+      // stamp.direction은 의도(filter)를 기록 — pick.direction(추론된 list)이 아닌 route-resolved.
+      stamp: { direction, usedTrainCode: pick.trainCode },
     });
     logger.info('알람 사전 예약 갱신 완료');
     return BackgroundTask.BackgroundTaskResult.Success;
