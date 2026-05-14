@@ -28,6 +28,11 @@ jest.mock('../../api/arrivalApi', () => ({
   fetchArrivalInfo: (...args: unknown[]) => mockFetchArrivalInfo(...args),
 }));
 
+const mockGetLastFiredAlarmStationName = jest.fn();
+jest.mock('../../utils/notificationState', () => ({
+  getLastFiredAlarmStationName: (...args: unknown[]) => mockGetLastFiredAlarmStationName(...args),
+}));
+
 jest.mock('../../data/stations.json', () => [
   { id: 'station-1', name: '강남', line: '2', lineColor: '#009246', lat: 0, lng: 0 },
   { id: 'station-2', name: '시청', line: '1', lineColor: '#0052A4', lat: 0, lng: 0 },
@@ -97,6 +102,7 @@ function expectSchedulerCalledWith(nextStationEtaSeconds: number | null) {
 describe('alarmRefreshTask', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetLastFiredAlarmStationName.mockResolvedValue(null);
   });
 
   it('defineTask가 ALARM_REFRESH_TASK 이름으로 호출된다', () => {
@@ -176,6 +182,15 @@ describe('alarmRefreshTask', () => {
       const result = await getCallback()();
       expect(result).toBe(BackgroundTask.BackgroundTaskResult.Success);
       expectSchedulerCalledWith(null);
+    });
+
+    it('사전 예약 알람 발화 이름이 있으면 GPS id를 무시하고 그 이름으로 Arrival API를 호출한다', async () => {
+      mockStorage({ destination, route, lastStation: 'station-1' });
+      mockGetLastFiredAlarmStationName.mockResolvedValueOnce('시청');
+      mockFetchArrivalInfo.mockResolvedValue({ up: [{ arrivalSeconds: 500 }], down: [] });
+      await getCallback()();
+      expect(mockFetchArrivalInfo).toHaveBeenCalledWith('시청');
+      expectSchedulerCalledWith(500);
     });
 
     it('스케줄러가 throw 하면 Failed를 반환한다', async () => {

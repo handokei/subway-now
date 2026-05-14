@@ -1,5 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { LAST_NOTIFIED_STATION_KEY, FIRED_ALARMS_KEY } from '../constants/storageKeys';
+import {
+  LAST_NOTIFIED_STATION_KEY,
+  FIRED_ALARMS_KEY,
+  LAST_FIRED_ALARM_STATION_NAME_KEY,
+} from '../constants/storageKeys';
 import { createLogger } from './logger';
 
 // Foreground/Background 양쪽에서 호출되는 알림 상태 저장소.
@@ -68,4 +72,14 @@ export function setFiredAlarms(keys: Set<string>): Promise<void> {
 
 export function clearFiredAlarms(): Promise<void> {
   return safeRemoveItem(FIRED_ALARMS_KEY);
+}
+
+// 사전 예약 alarm: 발화 시 갱신되는 마지막 발화 역 이름.
+// id 기반 LAST_NOTIFIED_STATION_KEY와 분리한다(storageKeys.ts 주석 참고).
+export function getLastFiredAlarmStationName(): Promise<string | null> {
+  return safeGetItem(LAST_FIRED_ALARM_STATION_NAME_KEY);
+}
+
+export function setLastFiredAlarmStationName(name: string): Promise<void> {
+  return safeSetItem(LAST_FIRED_ALARM_STATION_NAME_KEY, name);
 }

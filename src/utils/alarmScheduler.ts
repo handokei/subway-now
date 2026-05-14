@@ -22,6 +22,27 @@ export function scheduledAlarmIdentifier(event: Pick<AlarmEvent, 'phaseId' | 'st
   return `${SCHEDULED_ALARM_PREFIX}${alarmKey(event)}`;
 }
 
+export interface ParsedScheduledAlarmIdentifier {
+  phaseId: string;
+  stationName: string;
+}
+
+/**
+ * scheduledAlarmIdentifier()의 역연산. prefix가 다르거나 phaseId/stationName이 비어 있으면 null.
+ * 사전 예약 알람을 OS에서 수신했을 때 phase/역 정보를 복원하는 유일한 경로다.
+ */
+export function parseScheduledAlarmIdentifier(
+  identifier: string,
+): ParsedScheduledAlarmIdentifier | null {
+  if (!identifier.startsWith(SCHEDULED_ALARM_PREFIX)) return null;
+  const rest = identifier.slice(SCHEDULED_ALARM_PREFIX.length);
+  const colon = rest.indexOf(':');
+  if (colon <= 0) return null;
+  const stationName = rest.slice(colon + 1);
+  if (!stationName) return null;
+  return { phaseId: rest.slice(0, colon), stationName };
+}
+
 export interface ScheduledAlarm {
   identifier: string;
   event: AlarmEvent;

@@ -13,6 +13,7 @@ import {
   setFiredAlarms,
   clearFiredAlarms,
 } from '../utils/notificationState';
+import { awaitInitialScheduledAlarmDrain } from '../utils/scheduledAlarmReceiver';
 import {
   logFiredAlarm,
   logFiredStationPassed,
@@ -74,6 +75,9 @@ export function useStationAlarm({
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      // 사전 예약 알람의 첫 drain이 완료된 후 read해야 cold start 직후
+      // BG-fired 알람이 dedup set에 반영된 상태로 hydrate된다.
+      await awaitInitialScheduledAlarmDrain();
       const stored = await getFiredAlarms();
       if (cancelled) return;
       firedAlarmsRef.current = stored;

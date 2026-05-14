@@ -2,6 +2,7 @@ import * as TaskManager from 'expo-task-manager';
 import * as BackgroundTask from 'expo-background-task';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DESTINATION_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY } from '../constants/storageKeys';
+import { getLastFiredAlarmStationName } from '../utils/notificationState';
 import { scheduleAlarmsForRoute } from '../utils/alarmScheduler';
 import { fetchArrivalInfo, type ArrivalInfo } from '../api/arrivalApi';
 import stationsData from '../data/stations.json';
@@ -52,6 +53,10 @@ async function readActiveTrip(): Promise<{ destination: Station; route: NonNulla
 }
 
 async function resolveCurrentStationName(): Promise<string | null> {
+  // 사전 예약 알람 발화 기록을 1순위로 사용한다 — GPS 기반 LAST_NOTIFIED_STATION_KEY는
+  // BG에서 위치 업데이트가 끊긴 동안 stale일 수 있다. 알람이 한 번도 안 울렸으면 GPS 기록으로 fallback.
+  const firedName = await getLastFiredAlarmStationName();
+  if (firedName) return firedName;
   const id = await AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY);
   if (!id) return null;
   return stationById.get(id)?.name ?? null;
