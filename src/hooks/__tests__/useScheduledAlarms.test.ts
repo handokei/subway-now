@@ -1,11 +1,13 @@
 import { renderHook } from '@testing-library/react-native';
 import { act } from 'react';
 import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useScheduledAlarms } from '../useScheduledAlarms';
 import {
   scheduleAlarmsForRoute,
   cancelScheduledAlarms,
 } from '../../utils/alarmScheduler';
+import { TRIP_TRAIN_CODE_KEY } from '../../constants/storageKeys';
 import type { DirectRoute } from '../../utils/stationRoute';
 import type { Station } from '../../types/station';
 import type { StationArrival } from '../../api/arrivalApi';
@@ -42,6 +44,15 @@ const DESTINATION: Station = {
   lat: 37.5,
   lng: 127.0,
   lineColor: '#000',
+};
+
+// Line 1 fixtures — 방향 판정 테스트 공유. 같은 stations.json ordinal 위에서 up/down을 모두 표현.
+const LINE_1_ROUTE: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+const SEOUL_STATION: Station = {
+  id: '1-034', name: '서울역', line: '1', lat: 37.55, lng: 126.97, lineColor: '#0052A4',
+};
+const SOYOSAN: Station = {
+  id: '1-001', name: '소요산', line: '1', lat: 37.95, lng: 127.06, lineColor: '#0052A4',
 };
 const ARRIVAL: StationArrival = {
   up: [
@@ -81,13 +92,15 @@ async function flush(): Promise<void> {
 }
 
 describe('useScheduledAlarms', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
     appStateCallback = null;
     mockedSchedule.mockResolvedValue([]);
     mockedCancel.mockResolvedValue();
     // 초기 AppState는 active로 가정 — RN 기본값.
     (AppState as { currentState: string }).currentState = 'active';
+    // trainCode lock-in 잔여 상태가 다음 테스트로 누수되지 않도록 정리.
+    await AsyncStorage.removeItem(TRIP_TRAIN_CODE_KEY);
   });
 
   it('마운트 시 active 상태면 cancel만 호출되고 schedule은 호출되지 않는다', async () => {
@@ -479,6 +492,103 @@ describe('useScheduledAlarms', () => {
     expect(mockedSchedule).toHaveBeenCalledWith(
       expect.objectContaining({ currentStationApproachEtaSeconds: 300 }),
     );
+  });
+
+  it('lock-in: 첫 reschedule에서 destinationId + 사용자 방향 첫 trainCode를 저장한다', async () => {
+    renderHook(() =>
+      useScheduledAlarms({
+        route: LINE_1_ROUTE,
+        destination: SEOUL_STATION,
+        currentStation: SOYOSAN,
+        arrival: ARRIVAL,
+      }),
+    );
+    await flush();
+    await act(async () => {
+      appStateCallback?.('background');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(await AsyncStorage.getItem(TRIP_TRAIN_CODE_KEY)).toBe('1-034:D1');
+  });
+
+  it('lock-in: FG(active) 상태에서도 lock-in을 캡처한다 — schedule만 skip', async () => {
+    // 초기 AppState = active. background 전환 없이 마운트 → 입력 변동 effect 1회만 작동.
+    renderHook(() =>
+      useScheduledAlarms({
+        route: LINE_1_ROUTE,
+        destination: SEOUL_STATION,
+        currentStation: SOYOSAN,
+        arrival: ARRIVAL,
+      }),
+    );
+    await flush();
+
+    expect(await AsyncStorage.getItem(TRIP_TRAIN_CODE_KEY)).toBe('1-034:D1');
+    expect(mockedSchedule).not.toHaveBeenCalled(); // active 상태 → schedule은 skip
+  });
+
+  it('lock-in: 다음 reschedule은 저장된 trainCode를 사용해 결정론적 ETA 채택', async () => {
+    // 미리 lock-in된 trainCode가 있는 상태에서 시작 (같은 destinationId)
+    await AsyncStorage.setItem(TRIP_TRAIN_CODE_KEY, '1-034:D1');
+
+    // 새 arrival에서 D1은 99초, 같은 방향에 더 빠른 D2(50초) 등장 — D1을 채택해야 함
+    const NEXT: StationArrival = {
+      up: [{ ...ARRIVAL.up[0], trainCode: 'U2', arrivalSeconds: 30 }],
+      down: [
+        { ...ARRIVAL.down[0], trainCode: 'D1', arrivalSeconds: 99 },
+        { ...ARRIVAL.down[0], trainCode: 'D2', arrivalSeconds: 50 },
+      ],
+    };
+
+    renderHook(() =>
+      useScheduledAlarms({
+        route: LINE_1_ROUTE,
+        destination: SEOUL_STATION,
+        currentStation: SOYOSAN,
+        arrival: NEXT,
+      }),
+    );
+    await flush();
+    await act(async () => {
+      appStateCallback?.('background');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockedSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ currentStationApproachEtaSeconds: 99 }),
+    );
+  });
+
+  it('destination이 변하면 trainCode lock을 클리어한다', async () => {
+    await AsyncStorage.setItem(TRIP_TRAIN_CODE_KEY, 'dest-1:OLD');
+    const OTHER_DEST: Station = { ...DESTINATION, id: 'dest-2', name: '잠실' };
+
+    const { rerender } = renderHook(
+      (props: { destination: Station }) =>
+        useScheduledAlarms({
+          route: ROUTE,
+          destination: props.destination,
+          currentStation: null,
+          arrival: ARRIVAL,
+        }),
+      { initialProps: { destination: DESTINATION } },
+    );
+    await flush();
+
+    // 처음 마운트에서 prevDest === initial dest 이므로 클리어되지 않음 — OLD 유지
+    expect(await AsyncStorage.getItem(TRIP_TRAIN_CODE_KEY)).toBe('dest-1:OLD');
+
+    // destination 변경 → 다음 reschedule에서 OLD 클리어. 이어서 새 트립의 lock-in 캡처가
+    // 같은 사이클에서 일어날 수 있으므로 raw 값을 null로 단정하지 말고, OLD 코드가
+    // 더 이상 dest-1로 접근되지 않는지를 검증한다.
+    rerender({ destination: OTHER_DEST });
+    await flush();
+
+    const raw = await AsyncStorage.getItem(TRIP_TRAIN_CODE_KEY);
+    expect(raw?.startsWith('dest-1:')).not.toBe(true);
   });
 
   it('scheduleAlarmsForRoute 실패는 background 전환 경로에서 throw하지 않는다', async () => {

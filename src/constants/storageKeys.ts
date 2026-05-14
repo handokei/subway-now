@@ -19,3 +19,4 @@ export const LOCALE_PREFERENCE_KEY = 'subway-now:locale-preference';
 export const ALARM_LOG_KEY = 'subway-now:alarm-log';
 export const APNS_TOKEN_KEY = 'subway-now:apns-token';
 export const ACTIVE_TRIP_KEY = 'subway-now:active-trip';
+export const TRIP_TRAIN_CODE_KEY = 'subway-now:trip-train-code';

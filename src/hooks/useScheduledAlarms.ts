@@ -9,6 +9,10 @@ import {
 } from '../utils/alarmScheduler';
 import { pickNextArrival } from '../utils/nextArrivalPick';
 import { resolveTripDirection } from '../utils/tripDirection';
+import {
+  captureTripTrainCodeIfAbsent,
+  clearTripTrainCode,
+} from '../utils/tripTrainCode';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('useScheduledAlarms');
@@ -30,6 +34,10 @@ export interface UseScheduledAlarmsInputs {
  * - 백그라운드 중 입력 변동: 즉시 cancel → reschedule.
  * - route/destination이 null이면 항상 cancel만 수행 (route 종료).
  * - 언마운트: 모두 취소.
+ *
+ * trainCode lock-in(#373 PoC): 트립 시작 후 첫 valid arrival에서 사용자 방향
+ * 첫 trainCode를 저장. 이후 reschedule마다 같은 trainCode의 ETA를 우선 채택.
+ * 매칭 실패 시 방향별 min ETA fallback. destination 변경/제거 시 lock 클리어.
  */
 export function useScheduledAlarms({
   route,
@@ -42,6 +50,7 @@ export function useScheduledAlarms({
   const currentStationRef = useRef<Station | null>(currentStation);
   const arrivalRef = useRef<StationArrival | null>(arrival);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const prevDestinationIdRef = useRef<string | null>(destination?.id ?? null);
 
   routeRef.current = route;
   destinationRef.current = destination;
@@ -49,18 +58,43 @@ export function useScheduledAlarms({
   arrivalRef.current = arrival;
 
   const reschedule = async (): Promise<void> => {
+    // destination 변경(또는 null화) 감지 → trainCode lock 클리어 후 진행.
+    // reschedule 내부에서 처리해 별도 effect와의 race 조건을 차단한다.
+    const currentDestination = destinationRef.current;
+    const currDestId = currentDestination?.id ?? null;
+    if (prevDestinationIdRef.current !== currDestId) {
+      prevDestinationIdRef.current = currDestId;
+      await clearTripTrainCode();
+    }
+
     await cancelScheduledAlarms();
     const currentRoute = routeRef.current;
-    const currentDestination = destinationRef.current;
     if (!currentRoute || !currentDestination) return;
-    if (appStateRef.current === 'active') return;
+
     // 진행 방향은 route + 현재역 ordinal로 결정한다 (#370). null이면 알 수 없음.
     // pickNextArrival에 filter로 전달해 반대방향 열차 ETA 오인을 차단.
     const here = currentStationRef.current;
     const direction = here
       ? resolveTripDirection(currentRoute, currentDestination.name, here.id)
       : null;
-    const pick = pickNextArrival(arrivalRef.current, direction);
+
+    // trainCode lock-in 캡처는 active/background와 무관하게 실행한다 — FG 첫 valid arrival에서도
+    // lock이 걸려야 BG 갱신이 결정론적 ETA를 사용한다.
+    const trainCode = await captureTripTrainCodeIfAbsent(
+      currentDestination.id,
+      arrivalRef.current,
+      direction,
+    );
+
+    if (appStateRef.current === 'active') return;
+
+    const pick = pickNextArrival(arrivalRef.current, direction, {
+      preferTrainCode: trainCode,
+    });
+    logger.debug(
+      `reschedule eta=${pick.etaSeconds} trainCode=${trainCode ?? 'none'} matched=${pick.matchedByTrainCode}`,
+    );
+
     await scheduleAlarmsForRoute({
       route: currentRoute,
       destinationName: currentDestination.name,
