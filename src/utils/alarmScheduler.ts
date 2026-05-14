@@ -5,6 +5,8 @@ import { alarmKey, resolveAllTargets, type AlarmEvent } from './stationAlarm';
 import { calculateStaticETA, type Route } from './stationRoute';
 import { buildAlarmContent } from './stationNotification';
 import { createLogger } from './logger';
+import { logScheduledAlarm, type AlarmLogDirection } from './alarmLog';
+import { getLastNotifiedStationId } from './notificationState';
 
 const logger = createLogger('AlarmScheduler');
 
@@ -36,6 +38,14 @@ export interface ScheduleAlarmsParams {
    * null이면 calculateStaticETA로 목적지 ETA를 fallback 계산한다.
    */
   nextStationEtaSeconds: number | null;
+  /**
+   * 관찰용 컨텍스트 stamp (#372). 발사 시점 진단을 위해 alarmLog에 함께 적재한다.
+   * 정책에는 영향을 주지 않으며, 모르는 caller는 생략하면 모든 필드 null로 기록된다.
+   */
+  stamp?: {
+    direction: AlarmLogDirection | null;
+    usedTrainCode: string | null;
+  };
   /** 테스트에서 시각 주입용. 기본값은 Date.now(). */
   now?: number;
 }
@@ -50,13 +60,19 @@ export interface ScheduleAlarmsParams {
 export async function scheduleAlarmsForRoute(
   params: ScheduleAlarmsParams,
 ): Promise<ScheduledAlarm[]> {
-  const { route, destinationName, nextStationEtaSeconds, now = Date.now() } = params;
+  const { route, destinationName, nextStationEtaSeconds, stamp, now = Date.now() } = params;
 
   const targets = resolveAllTargets(route, destinationName);
   const totalStops = targets.reduce((sum, t) => sum + t.stops, 0);
   if (totalStops === 0) return [];
 
   const finalEtaSeconds = resolveFinalEtaSeconds(nextStationEtaSeconds, totalStops, route);
+
+  // 발사 시점 비교용으로, 예약 직전 LAST_NOTIFIED_STATION을 한 번만 읽는다.
+  // 발사 시 실제 값과 다르면 "예상한 위치와 실제 위치가 어긋났다"는 진단 신호.
+  const actualLastNotifiedStation = await getLastNotifiedStationId();
+  const stampDirection = stamp?.direction ?? null;
+  const stampTrainCode = stamp?.usedTrainCode ?? null;
 
   const scheduled: ScheduledAlarm[] = [];
   let cumulativeStops = 0;
@@ -94,6 +110,17 @@ export async function scheduleAlarmsForRoute(
       });
 
       scheduled.push({ identifier, event, fireDate });
+
+      logScheduledAlarm(event, {
+        direction: stampDirection,
+        usedTrainCode: stampTrainCode,
+        selectedArrivalSeconds: nextStationEtaSeconds,
+        // 발사 시 사용자가 도착해 있어야 하는 역 = 알람 대상 역 직전.
+        // 현재 스케줄러는 station ordinal 정보를 갖지 않아 target.name으로 기록한다.
+        // 진단 시 stationName과 함께 보면 "어느 알람이었나"가 명확해진다.
+        expectedStationAtFire: target.name,
+        actualLastNotifiedStation,
+      });
     }
   }
 

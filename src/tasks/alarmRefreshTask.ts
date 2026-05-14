@@ -3,7 +3,8 @@ import * as BackgroundTask from 'expo-background-task';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DESTINATION_KEY, ROUTE_KEY, LAST_NOTIFIED_STATION_KEY } from '../constants/storageKeys';
 import { scheduleAlarmsForRoute } from '../utils/alarmScheduler';
-import { fetchArrivalInfo, type ArrivalInfo } from '../api/arrivalApi';
+import { fetchArrivalInfo } from '../api/arrivalApi';
+import { pickNextArrival, type NextArrivalPick } from '../utils/nextArrivalPick';
 import stationsData from '../data/stations.json';
 import type { Station } from '../types/station';
 import type { Route } from '../utils/stationRoute';
@@ -21,18 +22,6 @@ export const ALARM_REFRESH_TASK = 'alarm-refresh-task';
  */
 const allStations = stationsData as Station[];
 const stationById = new Map<string, Station>(allStations.map((s) => [s.id, s]));
-
-function pickNextStationEtaSeconds(arrivals: { up: ArrivalInfo[]; down: ArrivalInfo[] }): number | null {
-  // 방향 정보 없이 BG에서 가장 신뢰할 수 있는 신호는 "임박한 도착". up/down 합산해
-  // 양수 중 최소값을 다음 도착 ETA로 사용한다. 정확도는 reschedule(#335)이 보정.
-  let min: number | null = null;
-  for (const info of [...arrivals.up, ...arrivals.down]) {
-    if (info.arrivalSeconds > 0 && (min === null || info.arrivalSeconds < min)) {
-      min = info.arrivalSeconds;
-    }
-  }
-  return min;
-}
 
 async function readActiveTrip(): Promise<{ destination: Station; route: NonNullable<Route> } | null> {
   const [destJson, routeJson] = await Promise.all([
@@ -66,11 +55,11 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
     }
 
     const currentStationName = await resolveCurrentStationName();
-    let nextStationEtaSeconds: number | null = null;
+    let pick: NextArrivalPick = { etaSeconds: null, direction: null, trainCode: null };
     if (currentStationName) {
       try {
         const arrivals = await fetchArrivalInfo(currentStationName);
-        nextStationEtaSeconds = pickNextStationEtaSeconds(arrivals);
+        pick = pickNextArrival(arrivals);
       } catch (e) {
         logger.warn('Arrival API 호출 실패 — static ETA fallback:', e);
       }
@@ -79,7 +68,8 @@ TaskManager.defineTask(ALARM_REFRESH_TASK, async () => {
     await scheduleAlarmsForRoute({
       route: active.route,
       destinationName: active.destination.name,
-      nextStationEtaSeconds,
+      nextStationEtaSeconds: pick.etaSeconds,
+      stamp: { direction: pick.direction, usedTrainCode: pick.trainCode },
     });
     logger.info('알람 사전 예약 갱신 완료');
     return BackgroundTask.BackgroundTaskResult.Success;

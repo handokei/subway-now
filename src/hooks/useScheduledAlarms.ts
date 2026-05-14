@@ -7,6 +7,7 @@ import {
   cancelScheduledAlarms,
   scheduleAlarmsForRoute,
 } from '../utils/alarmScheduler';
+import { pickNextArrival } from '../utils/nextArrivalPick';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('useScheduledAlarms');
@@ -15,20 +16,6 @@ export interface UseScheduledAlarmsInputs {
   route: Route;
   destination: Station | null;
   arrival: StationArrival | null;
-}
-
-/**
- * 다음 도착역까지의 ETA(초)를 arrival 데이터에서 추출한다.
- * up/down 양방향에서 가장 빠른 양수 arrivalSeconds를 선택한다.
- * 데이터가 없거나 mock이면 null을 반환해 alarmScheduler의 static fallback으로 위임한다.
- */
-function pickNextStationEtaSeconds(arrival: StationArrival | null): number | null {
-  if (!arrival || arrival.isMock) return null;
-  const candidates = [...arrival.up, ...arrival.down]
-    .map((info) => info.arrivalSeconds)
-    .filter((sec) => sec > 0);
-  if (candidates.length === 0) return null;
-  return Math.min(...candidates);
 }
 
 /**
@@ -61,11 +48,12 @@ export function useScheduledAlarms({
     const currentDestination = destinationRef.current;
     if (!currentRoute || !currentDestination) return;
     if (appStateRef.current === 'active') return;
-    const etaSeconds = pickNextStationEtaSeconds(arrivalRef.current);
+    const { etaSeconds, direction, trainCode } = pickNextArrival(arrivalRef.current);
     await scheduleAlarmsForRoute({
       route: currentRoute,
       destinationName: currentDestination.name,
       nextStationEtaSeconds: etaSeconds,
+      stamp: { direction, usedTrainCode: trainCode },
     });
   };
 

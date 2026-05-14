@@ -118,6 +118,7 @@ describe('useScheduledAlarms', () => {
       route: ROUTE,
       destinationName: '강남',
       nextStationEtaSeconds: 300, // min(300, 420)
+      stamp: { direction: 'up', usedTrainCode: 'U1' },
     });
   });
 
@@ -272,6 +273,29 @@ describe('useScheduledAlarms', () => {
 
     expect(mockedSchedule).toHaveBeenCalledWith(
       expect.objectContaining({ nextStationEtaSeconds: null }),
+    );
+  });
+
+  it('trainCode가 빈 문자열이면 stamp.usedTrainCode는 null로 위임한다', async () => {
+    const noTrainCode: StationArrival = {
+      ...ARRIVAL,
+      up: [{ ...ARRIVAL.up[0], trainCode: '' }],
+      down: [],
+    };
+    renderHook(() =>
+      useScheduledAlarms({ route: ROUTE, destination: DESTINATION, arrival: noTrainCode }),
+    );
+    await flush();
+    await act(async () => {
+      appStateCallback?.('background');
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockedSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stamp: { direction: 'up', usedTrainCode: null },
+      }),
     );
   });
 

@@ -5,10 +5,12 @@ import {
   clearAlarmLog,
   logFiredAlarm,
   logFiredStationPassed,
+  logScheduledAlarm,
   logSuppressedDedupStation,
   logSuppressedGate,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
+  type AlarmLogStamp,
 } from '../alarmLog';
 import { ALARM_LOG_KEY } from '../../constants/storageKeys';
 import type { AlarmEvent } from '../stationAlarm';
@@ -218,6 +220,56 @@ describe('alarmLog', () => {
         reason: 'dedup-station',
         stationName: station.name,
         kind: 'station-passed',
+      });
+    });
+
+    it('logScheduledAlarm: source=bg-scheduled, outcome=fired + stamp 필드 전부 적재한다', async () => {
+      const stamp: AlarmLogStamp = {
+        direction: 'up',
+        usedTrainCode: 'T-42',
+        selectedArrivalSeconds: 600,
+        expectedStationAtFire: '강남',
+        actualLastNotifiedStation: 'S-7',
+      };
+      logScheduledAlarm(event, stamp);
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg-scheduled',
+        outcome: 'fired',
+        stationName: event.stationName,
+        kind: event.type,
+        phaseId: event.phaseId,
+        direction: 'up',
+        usedTrainCode: 'T-42',
+        selectedArrivalSeconds: 600,
+        expectedStationAtFire: '강남',
+        actualLastNotifiedStation: 'S-7',
+      });
+    });
+
+    it('logScheduledAlarm: stamp 필드가 null이면 null로 그대로 적재한다', async () => {
+      const stamp: AlarmLogStamp = {
+        direction: null,
+        usedTrainCode: null,
+        selectedArrivalSeconds: null,
+        expectedStationAtFire: null,
+        actualLastNotifiedStation: null,
+      };
+      logScheduledAlarm(event, stamp);
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg-scheduled',
+        direction: null,
+        usedTrainCode: null,
+        selectedArrivalSeconds: null,
+        expectedStationAtFire: null,
+        actualLastNotifiedStation: null,
       });
     });
 

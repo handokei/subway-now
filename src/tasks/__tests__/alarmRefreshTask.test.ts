@@ -86,11 +86,18 @@ function mockStorage(values: {
   );
 }
 
-function expectSchedulerCalledWith(nextStationEtaSeconds: number | null) {
+function expectSchedulerCalledWith(
+  nextStationEtaSeconds: number | null,
+  stamp: { direction: 'up' | 'down' | null; usedTrainCode: string | null } = {
+    direction: null,
+    usedTrainCode: null,
+  },
+) {
   expect(mockScheduleAlarmsForRoute).toHaveBeenCalledWith({
     route,
     destinationName: '시청',
     nextStationEtaSeconds,
+    stamp,
   });
 }
 
@@ -150,7 +157,8 @@ describe('alarmRefreshTask', () => {
       });
       await getCallback()();
       expect(mockFetchArrivalInfo).toHaveBeenCalledWith('강남');
-      expectSchedulerCalledWith(300);
+      // 가장 짧은 양수는 down[0]=300 → direction='down', trainCode 누락(mock) → null
+      expectSchedulerCalledWith(300, { direction: 'down', usedTrainCode: null });
     });
 
     it('Arrival API가 모두 0/음수면 nextStationEtaSeconds=null', async () => {
