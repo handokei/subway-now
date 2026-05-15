@@ -100,8 +100,8 @@ jobs:
             build
 
       - name: JS 번들에 mock fixture가 inline되었는지 검증
-        # IS_E2E_MOCK이 true 상수로 inline되면 E2E_MOCK_LOCATION의 위도(37.49799)도 번들에 포함됨.
-        # mock=false라면 dead-code-elimination으로 좌표가 빠지므로 grep 실패.
+        # IS_E2E_MOCK이 true 상수로 inline되면 E2E_MOCK_LOCATION 값도 번들에 포함됨.
+        # 검증 좌표는 src/constants/e2e.ts에서 동적으로 읽어 SSOT 유지.
         run: |
           BUNDLE=$(find ios/build -path '*/Build/Products/Debug-iphonesimulator/*.app/main.jsbundle' -type f | head -1)
           if [ -z "$BUNDLE" ]; then
@@ -109,11 +109,17 @@ jobs:
             find ios/build -name "*.app" -type d
             exit 1
           fi
-          if ! grep -q "37.49799" "$BUNDLE"; then
-            echo "::error::E2E mock fixture가 번들에 inline되지 않음. EXPO_PUBLIC_E2E_MOCK 환경변수가 Metro 번들링에 전파되지 않은 것."
+          LAT=$(node -e "console.log(require('./src/constants/e2e').E2E_MOCK_LOCATION.latitude)" 2>/dev/null \
+                || node -e "const m=require('fs').readFileSync('src/constants/e2e.ts','utf8'); const r=m.match(/latitude:\s*([0-9.]+)/); if(!r){process.exit(1)} console.log(r[1])")
+          if [ -z "$LAT" ]; then
+            echo "::error::src/constants/e2e.ts에서 latitude를 추출하지 못함"
             exit 1
           fi
-          echo "Mock fixture inline 확인됨 ($BUNDLE)"
+          if ! grep -q "$LAT" "$BUNDLE"; then
+            echo "::error::E2E mock fixture($LAT)가 번들에 inline되지 않음. EXPO_PUBLIC_E2E_MOCK 전파 실패."
+            exit 1
+          fi
+          echo "Mock fixture inline 확인됨 (lat=$LAT, $BUNDLE)"
 
       - name: 시뮬레이터 부팅
         run: |
