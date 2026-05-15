@@ -29,3 +29,102 @@ jobs:
 
       - name: 단위 테스트 실행 (커버리지 100% 검증)
         run: npm test -- --ci --forceExit
+
+  e2e-smoke:
+    name: E2E Smoke (mock mode)
+    # PR 머지 게이트. EXPO_PUBLIC_E2E_MOCK=1로 useNearestStation을 강남 고정 fixture로 단락 → 5분 내 결정성.
+    needs: test
+    runs-on: macos-14
+    timeout-minutes: 25
+    env:
+      EXPO_PUBLIC_E2E_MOCK: 'true'
+      SIM_NAME: 'iPhone 16'
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Xcode 버전 고정
+        uses: maxim-lobanov/setup-xcode@1242409711ff5721add51979e9e11e23ebb7e5a4 # v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 의존성 설치
+        run: npm ci --legacy-peer-deps
+
+      - name: Maestro CLI 설치
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+
+      - name: iOS Prebuild
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: CocoaPods 캐시
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: pods-${{ runner.os }}-
+
+      - name: CocoaPods 설치
+        run: cd ios && pod install
+
+      - name: DerivedData 캐시
+        uses: actions/cache@v4
+        with:
+          path: ios/build
+          key: deriveddata-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'package-lock.json', 'modules/**', 'targets/**', 'app.config.js', 'src/**/*.ts', 'src/**/*.tsx') }}
+          restore-keys: deriveddata-${{ runner.os }}-
+
+      - name: iOS 빌드 (Debug, mock mode)
+        env:
+          EXPO_PUBLIC_E2E_MOCK: 'true'
+        run: |
+          cd ios
+          xcodebuild -workspace subwaynow.xcworkspace \
+            -scheme subwaynow \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,name=${SIM_NAME}" \
+            -derivedDataPath build \
+            build
+
+      - name: JS 번들에 mock fixture가 inline되었는지 검증
+        # IS_E2E_MOCK이 빌드 타임에 true 상수로 dead-code-elimination되었는지 확인.
+        # 검증 기준: E2E_MOCK_LOCATION의 위도(37.49799)가 번들에 포함되어야 함.
+        run: |
+          BUNDLE=$(find ios/build -name "main.jsbundle" -type f | head -1)
+          if [ -z "$BUNDLE" ]; then echo "ERROR: main.jsbundle not found"; exit 1; fi
+          if ! grep -q "37.49799" "$BUNDLE"; then
+            echo "::error::E2E mock fixture가 번들에 inline되지 않음. EXPO_PUBLIC_E2E_MOCK 환경변수가 Metro 번들링에 전파되지 않은 것."
+            exit 1
+          fi
+          echo "Mock fixture inline 확인됨"
+
+      - name: 시뮬레이터 부팅
+        run: |
+          xcrun simctl boot "${SIM_NAME}" || true
+          xcrun simctl bootstatus "${SIM_NAME}" -b
+
+      - name: 앱 설치
+        run: |
+          APP_PATH=$(find ios/build -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then echo "ERROR: .app not found"; exit 1; fi
+          xcrun simctl install booted "$APP_PATH"
+
+      - name: Maestro Smoke 실행
+        run: maestro test .maestro/flows/smoke/ --retry 1 --format junit --output maestro-smoke.xml
+
+      - name: 결과 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-smoke-results
+          path: maestro-smoke.xml

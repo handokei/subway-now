@@ -65,25 +65,34 @@ Phase 2A (#326 머지, dev에 포함) 이후 `useFusedNearestStation`은 `locati
 
 **산출물**: 시뮬레이터 cold launch → 5초 내 destination-button 가시.
 
-### Phase 2 — flow 디렉토리 재편 (별도 이슈)
+### Phase 2 — flow 디렉토리 재편 (#394)
 ```
 .maestro/flows/
-  smoke/        # GPS 비의존, 5분 이내, 머지 게이트
+  smoke/        # mock mode, PR 게이트, 5분 이내
     01_app_launch.yaml
     02_destination_set_clear.yaml
     03_tab_navigation.yaml
     04_favorites_add_remove.yaml
-  gps/          # setLocation 의존, nightly만
+    05_sleep_mode_toggle.yaml
+  gps/          # 실 GPS setLocation, nightly
     01_near_station.yaml
     02_station_change.yaml
-    03_route_locked_jump_rejection.yaml
-  scenario/     # 알람·취침 등 시나리오
-    01_alarm_overlay.yaml
-    02_sleep_mode.yaml
+    03_jump_rejection.yaml
+    04_no_station_nearby.yaml
+  scenario/     # 알람·지도·테마 시나리오, nightly
+    01_alarm_foreground_arrival.yaml
+    02_alarm_overlay_resume.yaml
+    03_map_set_destination_auto_switch.yaml
+    04_map_search_dismisses_keyboard.yaml
+    05_dark_mode_persists.yaml
+.maestro/manual/  # 자동 flow와 분리 (Maestro CLI 디스커버리 회피)
+  bg_alarm.md
+  silent_push.md
+  widget_refresh.md
+  audio_route.md
 ```
-기존 flow 4개 중 home/* 다수는 smoke로 이전(mock mode 전제).
 
-### Phase 3 — CI workflow 재작성 (별도 이슈)
+### Phase 3 — CI workflow 재작성 (#394)
 ```yaml
 jobs:
   test:                # 현행 유지, required

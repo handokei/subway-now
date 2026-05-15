@@ -1,7 +1,7 @@
 appId: com.subwaynow.app
-name: "위치 - 역 근처 (강남역)"
+name: "gps - 역 근처 (강남역)"
+# nightly 전용. 실제 useNearestStation 흐름을 검증하므로 mock 빌드 아님.
 ---
-# 강남역 바로 앞 (50m 이내)
 - setLocation:
     latitude: 37.49799
     longitude: 127.027912
@@ -17,21 +17,15 @@ name: "위치 - 역 근처 (강남역)"
     text: ".*허용.*"
     optional: true
 
-# 현재역 라벨 표시 확인 (500m 이내)
 - extendedWaitUntil:
     visible:
       text: "현재역"
     timeout: 15000
 
-# 강남역 이름 표시
 - assertVisible:
     text: "강남"
-
-# 도착 정보 섹션 표시
 - assertVisible:
     text: "Next trains"
-
-# 상행/하행 표시
 - assertVisible:
     text: "상행"
 - assertVisible:

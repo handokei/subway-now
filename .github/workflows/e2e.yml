@@ -1,17 +1,20 @@
-name: E2E (Maestro)
+name: E2E Nightly (Maestro gps + scenario)
 
-# Phase 0 (#390): PR trigger에서 제외. 수동 실행 및 nightly로만 동작.
-# PR 머지 게이트로의 복귀는 docs/ci/e2e-revival-plan.md Phase 4에서.
+# nightly cron + 수동 실행 전용. PR 게이트는 ci.yml의 e2e-smoke가 담당.
+# 본 워크플로는 실제 GPS / 알람 / 지도 / 다크모드 등 시뮬레이터 의존 시나리오를 회귀 검증.
 on:
   workflow_dispatch:
   schedule:
-    # 매일 KST 04:00 (UTC 19:00) — 인프라/회귀 확인용
+    # 매일 KST 04:00 (UTC 19:00)
     - cron: '0 19 * * *'
 
 jobs:
   e2e:
-    name: E2E Tests (Maestro)
-    runs-on: macos-latest
+    name: E2E Nightly
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      SIM_NAME: 'iPhone 16'
 
     steps:
       - name: 코드 체크아웃
@@ -21,65 +24,6 @@ jobs:
         uses: maxim-lobanov/setup-xcode@1242409711ff5721add51979e9e11e23ebb7e5a4 # v1
         with:
           xcode-version: latest-stable
-
-      - name: iOS 시뮬레이터 환경 확인 및 준비
-        id: sim
-        run: |
-          echo "=== Xcode version ==="
-          xcodebuild -version
-          echo "=== Available runtimes ==="
-          xcrun simctl list runtimes
-          echo "=== Available devices ==="
-          xcrun simctl list devices available | grep -i iphone || echo "No iPhone devices found"
-
-          SIM_NAME=$(xcrun simctl list devices available -j | python3 -c "
-          import json, sys
-          data = json.load(sys.stdin)
-          for runtime, devices in data['devices'].items():
-            if 'iOS' in runtime or 'iphone' in runtime.lower():
-              for d in devices:
-                if 'iPhone' in d['name'] and d['isAvailable']:
-                  print(d['name']); sys.exit(0)
-          " 2>/dev/null || echo "")
-
-          if [ -z "$SIM_NAME" ]; then
-            echo "No available iPhone simulator. Listing all runtimes and device types..."
-            xcrun simctl list runtimes -j
-            xcrun simctl list devicetypes | grep -i iphone | tail -5
-
-            RUNTIME=$(xcrun simctl list runtimes -j | python3 -c "
-            import json, sys
-            for r in json.load(sys.stdin)['runtimes']:
-              if r['isAvailable']:
-                print(r['identifier']); sys.exit(0)
-            print('')
-            " 2>/dev/null || echo "")
-
-            if [ -n "$RUNTIME" ]; then
-              DEVICE_TYPE=$(xcrun simctl list devicetypes -j | python3 -c "
-              import json, sys
-              last = None
-              for d in json.load(sys.stdin)['devicetypes']:
-                if 'iPhone' in d['name']:
-                  last = d['identifier']
-              if last: print(last)
-              " 2>/dev/null || echo "")
-
-              if [ -n "$DEVICE_TYPE" ]; then
-                echo "Creating simulator: $DEVICE_TYPE with $RUNTIME"
-                xcrun simctl create "CI-iPhone" "$DEVICE_TYPE" "$RUNTIME"
-                SIM_NAME="CI-iPhone"
-              fi
-            fi
-          fi
-
-          if [ -z "$SIM_NAME" ]; then
-            echo "::error::No iPhone simulator available"
-            exit 1
-          fi
-
-          echo "simulator=$SIM_NAME" >> "$GITHUB_OUTPUT"
-          echo "Selected simulator: $SIM_NAME"
 
       - name: Node.js 20 설정
         uses: actions/setup-node@v4
@@ -96,26 +40,40 @@ jobs:
           echo "$HOME/.maestro/bin" >> $GITHUB_PATH
 
       - name: iOS Prebuild
-        run: npx expo prebuild --platform ios --clean
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: CocoaPods 캐시
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: pods-${{ runner.os }}-
 
       - name: CocoaPods 설치
         run: cd ios && pod install
 
-      - name: iOS 빌드 (Debug)
+      - name: DerivedData 캐시
+        uses: actions/cache@v4
+        with:
+          path: ios/build
+          key: deriveddata-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'package-lock.json', 'modules/**', 'targets/**', 'app.config.js', 'src/**/*.ts', 'src/**/*.tsx') }}
+          restore-keys: deriveddata-${{ runner.os }}-
+
+      - name: iOS 빌드 (Debug, 실 GPS)
         run: |
           cd ios
           xcodebuild -workspace subwaynow.xcworkspace \
             -scheme subwaynow \
             -configuration Debug \
             -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=${{ steps.sim.outputs.simulator }}' \
+            -destination "platform=iOS Simulator,name=${SIM_NAME}" \
             -derivedDataPath build \
             build
 
-      - name: 시뮬레이터 부팅 및 준비 대기
+      - name: 시뮬레이터 부팅
         run: |
-          xcrun simctl boot "${{ steps.sim.outputs.simulator }}" || true
-          xcrun simctl bootstatus "${{ steps.sim.outputs.simulator }}" -b
+          xcrun simctl boot "${SIM_NAME}" || true
+          xcrun simctl bootstatus "${SIM_NAME}" -b
 
       - name: 앱 설치
         run: |
@@ -123,18 +81,29 @@ jobs:
           if [ -z "$APP_PATH" ]; then echo "ERROR: .app not found"; exit 1; fi
           xcrun simctl install booted "$APP_PATH"
 
-      - name: Maestro E2E 테스트 실행
+      # nightly는 두 트랙을 독립 신호로 본다. 한쪽이 깨져도 다른 쪽 결과는 보존하되,
+      # job 자체는 fail로 끝나 cron 알림이 동작하도록 한다.
+      - name: Maestro gps 실행
+        id: gps
         continue-on-error: true
-        run: |
-          maestro test .maestro/flows/home/ --format junit --output maestro-home.xml
-          maestro test .maestro/flows/favorites/ --format junit --output maestro-favorites.xml
-          maestro test .maestro/flows/location/ --format junit --output maestro-location.xml
-          maestro test .maestro/flows/navigation/ --format junit --output maestro-navigation.xml
-          maestro test .maestro/flows/alarm/ --format junit --output maestro-alarm.xml
+        run: maestro test .maestro/flows/gps/ --format junit --output maestro-gps.xml
 
-      - name: E2E 결과 업로드
+      - name: Maestro scenario 실행
+        id: scenario
+        continue-on-error: true
+        run: maestro test .maestro/flows/scenario/ --format junit --output maestro-scenario.xml
+
+      - name: 최종 결과 집계
+        if: always()
+        run: |
+          if [ "${{ steps.gps.outcome }}" != "success" ] || [ "${{ steps.scenario.outcome }}" != "success" ]; then
+            echo "::error::nightly e2e fail (gps=${{ steps.gps.outcome }}, scenario=${{ steps.scenario.outcome }})"
+            exit 1
+          fi
+
+      - name: 결과 업로드
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: maestro-results
+          name: maestro-nightly-results
           path: maestro-*.xml

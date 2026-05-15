@@ -1,7 +1,6 @@
 appId: com.subwaynow.app
-name: "위치 - 역에서 먼 곳"
+name: "gps - 역에서 먼 곳"
 ---
-# 서울 외곽 (역에서 500m 이상 떨어진 곳)
 - setLocation:
     latitude: 37.40
     longitude: 127.10
@@ -17,12 +16,10 @@ name: "위치 - 역에서 먼 곳"
     text: ".*허용.*"
     optional: true
 
-# 역 없음 상태 메시지 확인
 - extendedWaitUntil:
     visible:
       text: "지하철역 근처가 아닙니다"
     timeout: 15000
 
-# 새로고침 버튼 표시
 - assertVisible:
     text: "새로고침"

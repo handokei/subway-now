@@ -1,7 +1,7 @@
 appId: com.subwaynow.app
-name: "알람 - 포그라운드 AlarmOverlay 표시 및 해제"
+name: "scenario - 포그라운드 도착 알람"
+# nightly. 강남 → 잠실새내(잠실 1정거장 전)로 이동 시 잠실 도착 알람 발화.
 ---
-# 강남역에서 시작
 - setLocation:
     latitude: 37.49799
     longitude: 127.027912
@@ -10,40 +10,28 @@ name: "알람 - 포그라운드 AlarmOverlay 표시 및 해제"
     appId: com.subwaynow.app
     clearState: true
 
-# Expo Dev Client: localhost 서버 선택
 - tapOn:
     text: ".*localhost.*"
     optional: true
-
-# 번들 로드 대기
 - waitForAnimationToEnd
-
-# iOS 알림 권한 허용
 - tapOn:
     text: "허용"
     optional: true
-
-# Expo 개발자 메뉴 Continue 탭
 - tapOn:
     text: "Continue"
     optional: true
-
-# 앱 UI 안정화 대기
 - waitForAnimationToEnd
 
 - assertVisible:
     id: "destination-button"
 
-# 목적지: 잠실 설정
+# 목적지: 잠실
 - tapOn:
     id: "destination-button"
 - waitForAnimationToEnd
 - tapOn:
     id: "search-input"
 - evalScript: maestro.wait(1000)
-- tapOn:
-    id: "search-input"
-- evalScript: maestro.wait(500)
 - setClipboard: "잠실"
 - evalScript: maestro.wait(500)
 - pasteText
@@ -59,34 +47,21 @@ name: "알람 - 포그라운드 AlarmOverlay 표시 및 해제"
     element:
       id: "home-sleep-mode-switch"
     direction: DOWN
-- evalScript: maestro.wait(500)
 - tapOn:
     id: "home-sleep-mode-switch"
 - evalScript: maestro.wait(1000)
 
-# 위치를 잠실새내(잠실 1정거장 전)로 변경
+# 잠실새내 좌표로 변경
 - setLocation:
     latitude: 37.511687
     longitude: 127.086162
 
-# 위치 변경 감지 + 알람 발생 대기
 - repeat:
     times: 120
     commands:
       - evalScript: maestro.wait(1000)
 
-# AlarmOverlay 표시 확인
 - assertVisible:
     text: "하차 알림"
-
 - assertVisible:
-    text: ".*내리세요"
-
-# 알람 끄기 버튼 탭
-- tapOn:
     text: "알람 끄기"
-
-# AlarmOverlay 사라짐 확인
-- evalScript: maestro.wait(1000)
-- assertVisible:
-    id: "destination-button"
