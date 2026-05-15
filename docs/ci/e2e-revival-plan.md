@@ -55,11 +55,13 @@ Phase 2A (#326 머지, dev에 포함) 이후 `useFusedNearestStation`은 `locati
 
 **완료 기준**: PR이 빨강불 노이즈 없이 머지 가능. dev/main은 그대로.
 
-### Phase 1 — E2E mock mode (별도 이슈)
-앱에 `EXPO_PUBLIC_E2E_MOCK=1` 플래그 도입:
-- `useFusedNearestStation`이 환경 변수 감지 시 고정 fixture (예: 강남역, accuracy=10m, confidence=high)로 단락.
-- `permissionDenied`/`locationUncertain` 분기를 우회.
-- 프로덕션 번들에는 dead-code-eliminate (env 비교가 빌드 시점 상수가 되도록).
+### Phase 1 — E2E mock mode (#393)
+앱에 `EXPO_PUBLIC_E2E_MOCK=true` 플래그 도입:
+- [x] `src/constants/e2e.ts` 신규 — `IS_E2E_MOCK` 빌드타임 상수 + 강남역 고정 fixture.
+- [x] `useNearestStation`이 mock 활성 시 권한/watch 흐름 우회 → 강남역(37.4980, 127.0277, accuracy 10m) 즉시 노출. 다운스트림 `useFusedNearestStation` / `useStationAlarm` / `useRouteProgress`는 자연 deterministic.
+- [x] `permissionDenied`/`locationUncertain` false 고정 → 홈 화면 게이트 통과.
+- [x] 프로덕션 번들에는 dead-code-eliminate (`process.env.EXPO_PUBLIC_E2E_MOCK === 'true'` 빌드 시점 상수).
+- [x] 테스트 1350 통과, 커버리지 100% 유지.
 
 **산출물**: 시뮬레이터 cold launch → 5초 내 destination-button 가시.
 
