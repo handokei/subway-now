@@ -83,9 +83,12 @@ jobs:
           key: deriveddata-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'package-lock.json', 'modules/**', 'targets/**', 'app.config.js', 'src/**/*.ts', 'src/**/*.tsx') }}
           restore-keys: deriveddata-${{ runner.os }}-
 
-      - name: iOS 빌드 (Debug, mock mode)
+      - name: iOS 빌드 (Debug, mock mode + forced bundle)
+        # CI에는 Metro dev server가 없으므로 Debug에서도 JS 번들을 강제로 임베드(FORCE_BUNDLING=1).
+        # 이 단계에서 react-native bundle이 EXPO_PUBLIC_E2E_MOCK을 inline한다.
         env:
           EXPO_PUBLIC_E2E_MOCK: 'true'
+          FORCE_BUNDLING: '1'
         run: |
           cd ios
           xcodebuild -workspace subwaynow.xcworkspace \
@@ -97,16 +100,20 @@ jobs:
             build
 
       - name: JS 번들에 mock fixture가 inline되었는지 검증
-        # IS_E2E_MOCK이 빌드 타임에 true 상수로 dead-code-elimination되었는지 확인.
-        # 검증 기준: E2E_MOCK_LOCATION의 위도(37.49799)가 번들에 포함되어야 함.
+        # IS_E2E_MOCK이 true 상수로 inline되면 E2E_MOCK_LOCATION의 위도(37.49799)도 번들에 포함됨.
+        # mock=false라면 dead-code-elimination으로 좌표가 빠지므로 grep 실패.
         run: |
-          BUNDLE=$(find ios/build -name "main.jsbundle" -type f | head -1)
-          if [ -z "$BUNDLE" ]; then echo "ERROR: main.jsbundle not found"; exit 1; fi
+          BUNDLE=$(find ios/build -path '*/Build/Products/Debug-iphonesimulator/*.app/main.jsbundle' -type f | head -1)
+          if [ -z "$BUNDLE" ]; then
+            echo "::error::main.jsbundle을 .app에서 찾지 못함. FORCE_BUNDLING이 적용되지 않음."
+            find ios/build -name "*.app" -type d
+            exit 1
+          fi
           if ! grep -q "37.49799" "$BUNDLE"; then
             echo "::error::E2E mock fixture가 번들에 inline되지 않음. EXPO_PUBLIC_E2E_MOCK 환경변수가 Metro 번들링에 전파되지 않은 것."
             exit 1
           fi
-          echo "Mock fixture inline 확인됨"
+          echo "Mock fixture inline 확인됨 ($BUNDLE)"
 
       - name: 시뮬레이터 부팅
         run: |
