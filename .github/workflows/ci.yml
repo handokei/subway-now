@@ -83,6 +83,13 @@ jobs:
           key: deriveddata-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'package-lock.json', 'modules/**', 'targets/**', 'app.config.js', 'src/**/*.ts', 'src/**/*.tsx') }}
           restore-keys: deriveddata-${{ runner.os }}-
 
+      - name: Mock env를 Xcode build phase로 주입
+        # xcodebuild → build phase → Metro 체인의 env 전파 누락에 대비.
+        # Expo의 with-environment.sh가 .xcode.env.local을 소싱하므로 여기 export 추가.
+        run: |
+          echo 'export EXPO_PUBLIC_E2E_MOCK=true' >> ios/.xcode.env.local
+          cat ios/.xcode.env.local
+
       - name: iOS 빌드 (Release, mock mode)
         # CI에는 Metro dev server가 없으므로 JS 번들이 임베드된 Release 빌드를 사용.
         # Expo SDK 54의 Debug+simulator build phase는 FORCE_BUNDLING을 무시해 번들이 .app에 안 들어감.
@@ -100,9 +107,10 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
-      - name: JS 번들에 mock fixture가 inline되었는지 검증
-        # IS_E2E_MOCK이 true 상수로 inline되면 E2E_MOCK_LOCATION 값도 번들에 포함됨.
-        # 검증 좌표는 src/constants/e2e.ts에서 동적으로 읽어 SSOT 유지.
+      - name: JS 번들에 mock sentinel이 inline되었는지 검증
+        # Hermes bytecode는 숫자 리터럴을 보존하지 않으므로 좌표 grep 불가.
+        # 대신 src/constants/e2e.ts의 문자열 sentinel을 사용. Hermes는 UTF-8 문자열 테이블을 유지함.
+        # IS_E2E_MOCK이 babel-time에 true 상수로 inline되면 활성 sentinel만 번들에 남는다.
         run: |
           BUNDLE=$(find ios/build -path '*/Build/Products/Release-iphonesimulator/*.app/main.jsbundle' -type f | head -1)
           if [ -z "$BUNDLE" ]; then
@@ -110,17 +118,22 @@ jobs:
             find ios/build -name "*.app" -type d
             exit 1
           fi
-          LAT=$(node -e "console.log(require('./src/constants/e2e').E2E_MOCK_LOCATION.latitude)" 2>/dev/null \
-                || node -e "const m=require('fs').readFileSync('src/constants/e2e.ts','utf8'); const r=m.match(/latitude:\s*([0-9.]+)/); if(!r){process.exit(1)} console.log(r[1])")
-          if [ -z "$LAT" ]; then
-            echo "::error::src/constants/e2e.ts에서 latitude를 추출하지 못함"
+          # sentinel 문자열을 src/constants/e2e.ts에서 동적 추출 (SSOT)
+          ACTIVE=$(node -e "const m=require('fs').readFileSync('src/constants/e2e.ts','utf8'); const r=m.match(/'(__E2E_MOCK_ACTIVE_[^']+)'/); if(!r){process.exit(1)} console.log(r[1])")
+          INACTIVE=$(node -e "const m=require('fs').readFileSync('src/constants/e2e.ts','utf8'); const r=m.match(/'(__E2E_MOCK_INACTIVE[^']*)'/); if(!r){process.exit(1)} console.log(r[1])")
+          if [ -z "$ACTIVE" ] || [ -z "$INACTIVE" ]; then
+            echo "::error::src/constants/e2e.ts에서 sentinel 문자열 추출 실패"
             exit 1
           fi
-          if ! grep -q "$LAT" "$BUNDLE"; then
-            echo "::error::E2E mock fixture($LAT)가 번들에 inline되지 않음. EXPO_PUBLIC_E2E_MOCK 전파 실패."
+          if grep -q "$ACTIVE" "$BUNDLE"; then
+            echo "Mock fixture inline 확인됨 (sentinel=$ACTIVE, $BUNDLE)"
+          elif grep -q "$INACTIVE" "$BUNDLE"; then
+            echo "::error::mock 비활성 sentinel($INACTIVE)이 들어감. EXPO_PUBLIC_E2E_MOCK이 Metro 번들링에 전파되지 않음."
+            exit 1
+          else
+            echo "::error::어떤 sentinel도 번들에 없음. babel-preset-expo의 EXPO_PUBLIC_* inlining이 작동 안 한 것으로 보임."
             exit 1
           fi
-          echo "Mock fixture inline 확인됨 (lat=$LAT, $BUNDLE)"
 
       - name: 시뮬레이터 부팅
         run: |

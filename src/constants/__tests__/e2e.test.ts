@@ -37,4 +37,20 @@ describe('constants/e2e', () => {
       });
     });
   });
+
+  it('mock 비활성 시 E2E_MOCK_SENTINEL은 비활성 문자열', () => {
+    delete process.env.EXPO_PUBLIC_E2E_MOCK;
+    jest.isolateModules(() => {
+      const { E2E_MOCK_SENTINEL } = require('../e2e');
+      expect(E2E_MOCK_SENTINEL).toBe('__E2E_MOCK_INACTIVE__');
+    });
+  });
+
+  it('mock 활성 시 E2E_MOCK_SENTINEL은 활성 문자열', () => {
+    process.env.EXPO_PUBLIC_E2E_MOCK = 'true';
+    jest.isolateModules(() => {
+      const { E2E_MOCK_SENTINEL } = require('../e2e');
+      expect(E2E_MOCK_SENTINEL).toBe('__E2E_MOCK_ACTIVE_v1__');
+    });
+  });
 });
