@@ -39,6 +39,22 @@ jobs:
           curl -Ls "https://get.maestro.mobile.dev" | bash
           echo "$HOME/.maestro/bin" >> $GITHUB_PATH
 
+      - name: Maestro flow 문법 검증
+        # iOS 빌드 전에 deprecated/invalid 명령어를 즉시 fail시킨다.
+        run: |
+          set -e
+          if "$HOME/.maestro/bin/maestro" test --help 2>&1 | grep -q -- '--dry-run'; then
+            for d in .maestro/flows/gps .maestro/flows/scenario; do
+              "$HOME/.maestro/bin/maestro" test "$d" --dry-run || exit 1
+            done
+          fi
+          DEPRECATED='^\s*-\s*(clearText)\b'
+          if grep -rnE "$DEPRECATED" .maestro/flows/; then
+            echo "::error::Deprecated Maestro 명령어 발견. 위 위치를 최신 명령어로 변경하라."
+            echo "Hint: clearText → eraseText"
+            exit 1
+          fi
+
       - name: iOS Prebuild
         run: npx expo prebuild --platform ios --no-install
 
