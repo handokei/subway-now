@@ -5,6 +5,7 @@ import { NearestStationResult, Station } from '../types/station';
 import { findNearestStations } from '../utils/findNearestStation';
 import { isAccuracyAcceptable, isAccuracyAcceptableForDisplay, isLocationFresh } from '../utils/locationGates';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
+import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../constants/e2e';
 
 const MIN_DISTANCE_CHANGE_KM = 0.003; // 3m — UI 갱신을 자주 흘려보낸다.
 
@@ -88,6 +89,22 @@ export function useNearestStation(): UseNearestStationReturn {
   const startWatch = useCallback(async () => {
     subscriptionRef.current?.remove();
     subscriptionRef.current = null;
+    if (IS_E2E_MOCK) {
+      setError(null);
+      setPermissionDenied(false);
+      setLocationUncertain(false);
+      applyLocation({
+        latitude: E2E_MOCK_LOCATION.latitude,
+        longitude: E2E_MOCK_LOCATION.longitude,
+        accuracy: E2E_MOCK_LOCATION.accuracyMeters,
+        speed: E2E_MOCK_LOCATION.speedMps,
+        altitude: null,
+        altitudeAccuracy: null,
+        heading: null,
+      });
+      setLoading(false);
+      return;
+    }
     try {
       setError(null);
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -137,6 +154,10 @@ export function useNearestStation(): UseNearestStationReturn {
   // 수동 새로고침: watch 중지 → one-shot → watch 재시작
   const refresh = useCallback(async () => {
     stopWatch();
+    if (IS_E2E_MOCK) {
+      await startWatch();
+      return;
+    }
     let shouldRestart = true;
     try {
       setError(null);

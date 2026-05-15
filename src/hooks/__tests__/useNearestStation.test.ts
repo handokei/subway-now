@@ -7,6 +7,19 @@ import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY, MAX_LOCATION_AGE_MS } from '../
 
 jest.mock('expo-location');
 
+const e2eState = { isMock: false };
+jest.mock('../../constants/e2e', () => ({
+  get IS_E2E_MOCK() {
+    return e2eState.isMock;
+  },
+  E2E_MOCK_LOCATION: {
+    latitude: 37.49799,
+    longitude: 127.027912,
+    accuracyMeters: 10,
+    speedMps: 0,
+  },
+}));
+
 const mockRemove = jest.fn();
 let appStateCallback: ((state: string) => void) | null = null;
 jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) => {
@@ -612,5 +625,49 @@ describe('useNearestStation', () => {
 
     // MAX_STATION_DISTANCE_KM(1.0) 초과 → null
     expect(result.current.result).toBeNull();
+  });
+});
+
+describe('useNearestStation — E2E mock mode', () => {
+  beforeEach(() => {
+    e2eState.isMock = true;
+    jest.clearAllMocks();
+  });
+
+  afterEach(() => {
+    e2eState.isMock = false;
+  });
+
+  it('권한 API를 호출하지 않고 즉시 강남역 fixture를 노출한다', async () => {
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(Location.requestForegroundPermissionsAsync).not.toHaveBeenCalled();
+    expect(Location.watchPositionAsync).not.toHaveBeenCalled();
+    expect(Location.getLastKnownPositionAsync).not.toHaveBeenCalled();
+    expect(result.current.permissionDenied).toBe(false);
+    expect(result.current.locationUncertain).toBe(false);
+    expect(result.current.error).toBeNull();
+    expect(result.current.userLocation).toEqual({ lat: 37.49799, lng: 127.027912 });
+    expect(result.current.accuracyMeters).toBe(10);
+    expect(result.current.speedMps).toBe(0);
+    expect(result.current.result?.station.name).toBe('강남');
+  });
+
+  it('refresh 호출 시에도 권한 API를 호출하지 않고 fixture 상태를 유지한다', async () => {
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(Location.requestForegroundPermissionsAsync).not.toHaveBeenCalled();
+    expect(Location.getCurrentPositionAsync).not.toHaveBeenCalled();
+    expect(result.current.result?.station.name).toBe('강남');
+    expect(result.current.locationUncertain).toBe(false);
+    expect(result.current.permissionDenied).toBe(false);
   });
 });
