@@ -165,12 +165,19 @@ jobs:
 
       - name: Maestro Smoke 실행
         # mock mode는 deterministic 설계 → retry 없이 한 번에 통과해야 정상.
-        # 최신 Maestro CLI는 --retry 옵션을 제거했음.
-        run: maestro test .maestro/flows/smoke/ --format junit --output maestro-smoke.xml
+        # --debug-output: 실패 시점의 screenshot/view hierarchy/commands.json을 dump.
+        # 실패 원인을 추측 대신 실제 픽셀로 확인하기 위함.
+        run: |
+          maestro test .maestro/flows/smoke/ \
+            --format junit \
+            --output maestro-smoke.xml \
+            --debug-output ./maestro-debug
 
       - name: 결과 업로드
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: maestro-smoke-results
-          path: maestro-smoke.xml
+          path: |
+            maestro-smoke.xml
+            maestro-debug/
