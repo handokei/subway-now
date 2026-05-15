@@ -60,7 +60,9 @@ coverage-temp/
 *.zip
 
 # Project docs & data (별도 이슈로 관리)
-docs/
+docs/*
+!docs/ci/
+!docs/decisions/
 handoff/
 img/
 subway/

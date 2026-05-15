@@ -177,7 +177,7 @@ perf/#이슈번호-대상         예: perf/#139-map-clustering
 
 ### PR 머지 규칙
 - **CI 통과 필수 확인** — `gh pr checks <PR번호>`로 Type Check & Test pass 확인 후 머지
-- E2E Tests (Maestro)는 CI 환경 제약으로 실패할 수 있음 — Type Check & Test만 필수
+- E2E (Maestro)는 별도 워크플로(`.github/workflows/e2e.yml`)에서 수동/nightly만 실행. PR 게이트 아님. 재활성화 로드맵은 `docs/ci/e2e-revival-plan.md` 참고
 
 ---
 
