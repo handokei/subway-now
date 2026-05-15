@@ -147,7 +147,9 @@ jobs:
           xcrun simctl install booted "$APP_PATH"
 
       - name: Maestro Smoke 실행
-        run: maestro test .maestro/flows/smoke/ --retry 1 --format junit --output maestro-smoke.xml
+        # mock mode는 deterministic 설계 → retry 없이 한 번에 통과해야 정상.
+        # 최신 Maestro CLI는 --retry 옵션을 제거했음.
+        run: maestro test .maestro/flows/smoke/ --format junit --output maestro-smoke.xml
 
       - name: 결과 업로드
         if: always()
