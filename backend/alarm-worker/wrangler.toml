@@ -7,8 +7,8 @@ compatibility_flags = ["nodejs_compat"]
 # 생성: wrangler kv:namespace create TRIPS
 [[kv_namespaces]]
 binding = "TRIPS"
-id = "REPLACE_WITH_PRODUCTION_KV_ID"
-preview_id = "REPLACE_WITH_PREVIEW_KV_ID"
+id = "8d10a57ffe4c46e28a6df33ef0c86b68"
+preview_id = "7e67683c147349ed90c16a28ae232e34"
 
 # 1분마다 활성 트립 폴링
 [triggers]
