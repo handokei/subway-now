@@ -37,7 +37,7 @@ name: "smoke - 목적지 설정 & 초기화"
     id: "suggestion-item-2-016"
 
 - assertVisible:
-    text: "잠실"
+    text: "잠실|Jamsil"
 - assertVisible:
     id: "destination-clear-button"
 
@@ -45,4 +45,4 @@ name: "smoke - 목적지 설정 & 초기화"
 - tapOn:
     id: "destination-clear-button"
 - assertVisible:
-    text: "목적지 설정"
+    text: "목적지 설정|Set destination"

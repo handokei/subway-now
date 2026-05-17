@@ -41,6 +41,12 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
 - tapOn:
     id: "home-sleep-mode-switch"
 
+# clearState로 useSleepModeGuide의 노출 플래그가 매번 리셋되어 첫 토글 시 Alert가 뜸.
+# OK 버튼으로 닫아야 다음 탭 이동이 가능. optional로 두 번째 실행 안전.
+- tapOn:
+    text: "OK|확인"
+    optional: true
+
 # 설정 탭 동기화 확인
 - tapOn:
     point: "87%,95%"

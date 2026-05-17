@@ -41,7 +41,7 @@ name: "smoke - 즐겨찾기 추가 & 삭제"
 - hideKeyboard
 
 - assertVisible:
-    text: "강남"
+    text: "강남|Gangnam"
 
 # 삭제
 - tapOn:

@@ -28,7 +28,9 @@ name: "smoke - 앱 실행 및 홈 화면 노출"
       id: "destination-button"
     timeout: 10000
 
+# CI 시뮬레이터 locale은 영어라 station이 nameEn("Gangnam")으로 표시됨.
+# 한/영 둘 다 매칭되는 정규식으로 로컬 KO 환경과도 호환.
 - assertVisible:
-    text: "강남"
+    text: "강남|Gangnam"
 - assertVisible:
-    text: "목적지 설정"
+    text: "목적지 설정|Set destination"
