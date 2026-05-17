@@ -8,6 +8,7 @@ name: "smoke - 앱 실행 및 홈 화면 노출"
     clearState: true
     permissions:
       notifications: allow
+      location: always
 
 # Expo dev-client(개발 빌드 한정) 화면 — release 빌드에서는 없음
 - tapOn:

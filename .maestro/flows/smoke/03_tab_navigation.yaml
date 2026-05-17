@@ -7,6 +7,7 @@ name: "smoke - 탭 내비게이션 순회"
     clearState: true
     permissions:
       notifications: allow
+      location: always
 
 - tapOn:
     text: ".*localhost.*"

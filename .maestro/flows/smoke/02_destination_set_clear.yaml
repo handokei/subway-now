@@ -6,6 +6,7 @@ name: "smoke - 목적지 설정 & 초기화"
     clearState: true
     permissions:
       notifications: allow
+      location: always
 
 - tapOn:
     text: ".*localhost.*"
