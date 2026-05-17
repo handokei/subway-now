@@ -176,8 +176,9 @@ perf/#이슈번호-대상         예: perf/#139-map-clustering
 6. GitHub Actions `CI / Type Check & Test` 체크 통과 확인 후 머지
 
 ### PR 머지 규칙
-- **CI 통과 필수 확인** — `gh pr checks <PR번호>`로 Type Check & Test pass 확인 후 머지
-- E2E (Maestro)는 별도 워크플로(`.github/workflows/e2e.yml`)에서 수동/nightly만 실행. PR 게이트 아님. 재활성화 로드맵은 `docs/ci/e2e-revival-plan.md` 참고
+- **CI 통과 필수 확인** — `gh pr checks <PR번호>`로 `Type Check & Test` pass 확인 후 머지
+- `E2E Smoke (mock mode)`는 ci.yml에서 PR마다 실행되며 안정화(연속 20회 green) 후 branch protection required로 승격 예정 (Phase 4)
+- nightly의 gps/scenario(`e2e.yml`)는 PR 게이트 아님. 실기기 수동 회귀는 `.maestro/manual/`
 
 ---
 

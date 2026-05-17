@@ -29,3 +29,189 @@ jobs:
 
       - name: 단위 테스트 실행 (커버리지 100% 검증)
         run: npm test -- --ci --forceExit
+
+  e2e-smoke:
+    name: E2E Smoke (mock mode)
+    # PR 머지 게이트. EXPO_PUBLIC_E2E_MOCK=1로 useNearestStation을 강남 고정 fixture로 단락 → 5분 내 결정성.
+    needs: test
+    runs-on: macos-14
+    timeout-minutes: 45
+    env:
+      EXPO_PUBLIC_E2E_MOCK: 'true'
+      SIM_NAME: 'iPhone 16'
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Xcode 버전 고정
+        uses: maxim-lobanov/setup-xcode@1242409711ff5721add51979e9e11e23ebb7e5a4 # v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 의존성 설치
+        run: npm ci --legacy-peer-deps
+
+      - name: Maestro CLI 설치
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+
+      - name: Maestro flow 문법 검증
+        # iOS 빌드(~8분) 전에 deprecated/invalid 명령어를 즉시 fail시킨다.
+        # 새 deprecation 발견 시 아래 DEPRECATED 정규식에 추가만 하면 영구 차단.
+        run: |
+          set -e
+          if "$HOME/.maestro/bin/maestro" test --help 2>&1 | grep -q -- '--dry-run'; then
+            for d in .maestro/flows/smoke .maestro/flows/gps .maestro/flows/scenario; do
+              "$HOME/.maestro/bin/maestro" test "$d" --dry-run || exit 1
+            done
+          fi
+          DEPRECATED='^\s*-\s*(clearText)\b'
+          if grep -rnE "$DEPRECATED" .maestro/flows/; then
+            echo "::error::Deprecated Maestro 명령어 발견. 위 위치를 최신 명령어로 변경하라."
+            echo "Hint: clearText → eraseText"
+            exit 1
+          fi
+
+      - name: iOS Prebuild
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: CocoaPods 캐시
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: pods-${{ runner.os }}-
+
+      - name: CocoaPods 설치
+        run: cd ios && pod install
+
+      - name: DerivedData 캐시
+        uses: actions/cache@v4
+        with:
+          path: ios/build
+          key: deriveddata-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'package-lock.json', 'modules/**', 'targets/**', 'app.config.js', 'src/**/*.ts', 'src/**/*.tsx') }}
+          restore-keys: deriveddata-${{ runner.os }}-
+
+      - name: Mock env를 Xcode build phase로 주입
+        # xcodebuild → build phase → Metro 체인의 env 전파 누락에 대비.
+        # Expo의 with-environment.sh가 .xcode.env.local을 소싱하므로 여기 export 추가.
+        run: |
+          echo 'export EXPO_PUBLIC_E2E_MOCK=true' >> ios/.xcode.env.local
+          cat ios/.xcode.env.local
+
+      - name: iOS 빌드 (Release, mock mode)
+        # CI에는 Metro dev server가 없으므로 JS 번들이 임베드된 Release 빌드를 사용.
+        # Expo SDK 54의 Debug+simulator build phase는 FORCE_BUNDLING을 무시해 번들이 .app에 안 들어감.
+        # Release는 항상 번들을 임베드하고 prod 동작과도 일치.
+        env:
+          EXPO_PUBLIC_E2E_MOCK: 'true'
+        run: |
+          cd ios
+          xcodebuild -workspace subwaynow.xcworkspace \
+            -scheme subwaynow \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,name=${SIM_NAME}" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: JS 번들에 mock sentinel이 inline되었는지 검증
+        # Hermes bytecode는 숫자 리터럴을 보존하지 않으므로 좌표 grep 불가.
+        # 대신 src/constants/e2e.ts의 문자열 sentinel을 사용. Hermes는 UTF-8 문자열 테이블을 유지함.
+        # IS_E2E_MOCK이 babel-time에 true 상수로 inline되면 활성 sentinel만 번들에 남는다.
+        run: |
+          BUNDLE=$(find ios/build -path '*/Build/Products/Release-iphonesimulator/*.app/main.jsbundle' -type f | head -1)
+          if [ -z "$BUNDLE" ]; then
+            echo "::error::main.jsbundle을 .app에서 찾지 못함."
+            find ios/build -name "*.app" -type d
+            exit 1
+          fi
+          # sentinel 문자열을 src/constants/e2e.ts에서 동적 추출 (SSOT)
+          ACTIVE=$(node -e "const m=require('fs').readFileSync('src/constants/e2e.ts','utf8'); const r=m.match(/'(__E2E_MOCK_ACTIVE_[^']+)'/); if(!r){process.exit(1)} console.log(r[1])")
+          INACTIVE=$(node -e "const m=require('fs').readFileSync('src/constants/e2e.ts','utf8'); const r=m.match(/'(__E2E_MOCK_INACTIVE[^']*)'/); if(!r){process.exit(1)} console.log(r[1])")
+          if [ -z "$ACTIVE" ] || [ -z "$INACTIVE" ]; then
+            echo "::error::src/constants/e2e.ts에서 sentinel 문자열 추출 실패"
+            exit 1
+          fi
+          HAS_ACTIVE=0
+          HAS_INACTIVE=0
+          grep -q "$ACTIVE" "$BUNDLE" && HAS_ACTIVE=1
+          grep -q "$INACTIVE" "$BUNDLE" && HAS_INACTIVE=1
+          echo "ACTIVE=$HAS_ACTIVE INACTIVE=$HAS_INACTIVE"
+          if [ "$HAS_ACTIVE" = "1" ] && [ "$HAS_INACTIVE" = "0" ]; then
+            echo "Mock fixture inline 확인됨 (sentinel=$ACTIVE, $BUNDLE)"
+          elif [ "$HAS_ACTIVE" = "1" ] && [ "$HAS_INACTIVE" = "1" ]; then
+            echo "::error::두 sentinel이 모두 번들에 존재. babel-preset-expo가 EXPO_PUBLIC_E2E_MOCK을 빌드 타임에 inline하지 않아 삼항식이 fold되지 않은 상태. 런타임에 process.env가 false로 평가되어 mock 분기가 안 탐."
+            exit 1
+          elif [ "$HAS_ACTIVE" = "0" ] && [ "$HAS_INACTIVE" = "1" ]; then
+            echo "::error::mock 비활성 sentinel($INACTIVE)만 들어감. EXPO_PUBLIC_E2E_MOCK이 Metro 번들링 시점에 전파되지 않음."
+            exit 1
+          else
+            echo "::error::어떤 sentinel도 번들에 없음. babel-preset-expo의 EXPO_PUBLIC_* 처리가 작동 안 한 것으로 보임."
+            exit 1
+          fi
+
+      - name: 시뮬레이터 부팅
+        run: |
+          xcrun simctl boot "${SIM_NAME}" || true
+          xcrun simctl bootstatus "${SIM_NAME}" -b
+
+      - name: 앱 설치
+        run: |
+          APP_PATH=$(find ios/build -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then echo "ERROR: .app not found"; exit 1; fi
+          xcrun simctl install booted "$APP_PATH"
+
+      - name: Maestro Smoke 실행
+        id: maestro_smoke
+        # 실패해도 후속 진단 step이 돌도록 continue-on-error.
+        # 최종 job 결과는 마지막 step("Maestro 결과 판정")이 결정.
+        continue-on-error: true
+        run: |
+          maestro --version || true
+          maestro test --help 2>&1 | head -40 || true
+          maestro test .maestro/flows/smoke/ \
+            --format junit \
+            --output maestro-smoke.xml \
+            --debug-output ./maestro-debug
+
+      - name: 시뮬레이터 마지막 화면 캡처
+        if: always()
+        run: |
+          mkdir -p ./diag
+          xcrun simctl io booted screenshot ./diag/last-screen.png || echo "screenshot failed"
+          xcrun simctl spawn booted log show --last 2m --predicate 'process == "subwaynow"' --style compact > ./diag/app.log 2>&1 || true
+          # maestro가 자체적으로 저장하는 debug 디렉토리도 함께 수집 (위치는 버전마다 다름)
+          if [ -d "$HOME/.maestro/tests" ]; then
+            cp -R "$HOME/.maestro/tests" ./diag/maestro-tests || true
+          fi
+          ls -la ./diag/ || true
+          ls -la ./maestro-debug/ 2>/dev/null || echo "maestro-debug/ not created"
+
+      - name: 결과 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-smoke-results
+          path: |
+            maestro-smoke.xml
+            maestro-debug/
+            diag/
+
+      - name: Maestro 결과 판정
+        # continue-on-error의 outcome으로 job 최종 결과 결정.
+        if: always()
+        run: |
+          if [ "${{ steps.maestro_smoke.outcome }}" != "success" ]; then
+            echo "::error::Maestro smoke 실패. artifact의 diag/last-screen.png를 확인하세요."
+            exit 1
+          fi

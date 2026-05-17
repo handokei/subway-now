@@ -16,3 +16,13 @@ export const E2E_MOCK_LOCATION = {
   accuracyMeters: 10,
   speedMps: 0,
 } as const;
+
+/**
+ * CI 검증용 sentinel. Hermes bytecode 번들에서도 UTF-8 문자열 테이블에 보존되므로
+ * Release 빌드 산출물에 mock mode가 실제 inline됐는지 grep 한 번으로 확인 가능.
+ * IS_E2E_MOCK이 babel-time에 true/false 상수로 인라인되면 삼항식도 단일 문자열로
+ * fold되어 한 쪽 sentinel만 번들에 남는다.
+ */
+export const E2E_MOCK_SENTINEL = IS_E2E_MOCK
+  ? '__E2E_MOCK_ACTIVE_v1__'
+  : '__E2E_MOCK_INACTIVE__';
