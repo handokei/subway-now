@@ -129,7 +129,7 @@
     "channelStation": "Current station",
     "channelTransferAlarm": "Transfer/arrival alert",
     "channelTransferAlarmSilent": "Transfer/arrival alert (silent)",
-    "channelStationPass": "Station pass alert",
+    "channelStationPass": "Station arrival alert",
     "transferEarlyTitle": "Transfer alert",
     "arrivalEarlyTitle": "Arrival alert",
     "transferImminentTitle": "Transfer imminent",
@@ -163,7 +163,7 @@
     "currentStation": "{{name}}",
     "atCurrentStation": "Currently at {{name}}",
     "approximateDistance": "~{{m}}m",
-    "stationPassed": "Passed {{name}}",
+    "stationPassed": "Arrived at {{name}}",
     "stopsRemainingToDestination_one": "{{count}} stop to {{destination}}",
     "stopsRemainingToDestination_other": "{{count}} stops to {{destination}}",
     "stopsRemainingViaTransfer": "{{transferStops}} stops to {{transfer}} transfer · {{totalStops}} stops to {{destination}}"

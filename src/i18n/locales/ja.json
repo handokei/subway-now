@@ -129,7 +129,7 @@
     "channelStation": "現在駅",
     "channelTransferAlarm": "乗換・到着アラーム",
     "channelTransferAlarmSilent": "乗換・到着アラーム (無音)",
-    "channelStationPass": "通過駅アラーム",
+    "channelStationPass": "到着駅アラーム",
     "transferEarlyTitle": "乗換アラーム",
     "arrivalEarlyTitle": "到着アラーム",
     "transferImminentTitle": "まもなく乗換",
@@ -163,7 +163,7 @@
     "currentStation": "{{name}}",
     "atCurrentStation": "現在 {{name}}",
     "approximateDistance": "約{{m}}m",
-    "stationPassed": "{{name}}を通過",
+    "stationPassed": "{{name}}駅に到着",
     "stopsRemainingToDestination_one": "{{destination}}まで残り{{count}}駅",
     "stopsRemainingToDestination_other": "{{destination}}まで残り{{count}}駅",
     "stopsRemainingViaTransfer": "{{transfer}}乗換まで{{transferStops}}駅 · {{destination}}まで{{totalStops}}駅"

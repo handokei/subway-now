@@ -181,7 +181,7 @@ describe('stationNotification', () => {
         bypassDnd: true,
       });
       expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-passed', {
-        name: '역 통과 알림',
+        name: '역 도착 알림',
         importance: Notifications.AndroidImportance.DEFAULT,
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
       });
@@ -611,7 +611,7 @@ describe('stationNotification', () => {
       });
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-passed',
-        content: { title: '역삼역 통과', body: '강남까지 3정거장 남음' },
+        content: { title: '역삼역 도착', body: '강남까지 3정거장 남음' },
         trigger: null,
       });
     });
@@ -627,7 +627,7 @@ describe('stationNotification', () => {
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-passed',
         content: {
-          title: '용마산역 통과',
+          title: '용마산역 도착',
           body: '군자 환승까지 2정거장 · 이대까지 11정거장',
         },
         trigger: null,
@@ -639,7 +639,7 @@ describe('stationNotification', () => {
       await sendStationPassedNotification('역삼', '강남', null);
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-passed',
-        content: { title: '역삼역 통과', body: '현재 역삼역' },
+        content: { title: '역삼역 도착', body: '현재 역삼역' },
         trigger: null,
       });
     });
@@ -655,7 +655,7 @@ describe('stationNotification', () => {
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-passed',
         content: {
-          title: '역삼역 통과',
+          title: '역삼역 도착',
           body: '강남까지 3정거장 남음',
           channelId: 'station-passed',
           priority: 'default',
