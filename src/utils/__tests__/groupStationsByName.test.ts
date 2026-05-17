@@ -67,6 +67,18 @@ describe('groupStationsByName', () => {
     expect(groups).toHaveLength(2);
   });
 
+  it('이름이 닫는 괄호로 끝나지 않으면 정규화하지 않는다', () => {
+    const s = make({ id: 'x', name: '강남', line: '2' });
+    expect(groupStationsByName([s])[0].key).toBe('강남');
+  });
+
+  it('이름에 여는 괄호가 없으면 정규화하지 않는다 (방어적 케이스)', () => {
+    // 닫는 괄호로 끝나지만 여는 괄호가 없는 비정상 이름 — 그대로 유지
+    const s = make({ id: 'x', name: '이상한이름)', line: '2' });
+    const groups = groupStationsByName([s]);
+    expect(groups[0].key).toBe('이상한이름)');
+  });
+
   it('단일 호선 + 괄호 부제만 있는 역(예: 광교(경기대))은 representativeName이 원본 그대로', () => {
     const s = make({ id: 'sinbundang-001', name: '광교(경기대)', line: 'sinbundang' });
     const groups = groupStationsByName([s]);

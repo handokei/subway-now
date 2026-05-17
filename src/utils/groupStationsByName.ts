@@ -11,8 +11,13 @@ export interface StationGroup {
 
 // 후행 괄호 부제 제거 ("상봉(시외버스터미널)" → "상봉").
 // #401과 동일 로직. #401 머지 후 stationRoute.normalizeStationName으로 교체 가능.
+// regex 대신 string 연산 — Sonar S5852 (super-linear backtracking 회피).
 function normalize(name: string): string {
-  return name.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const trimmed = name.trim();
+  if (!trimmed.endsWith(')')) return trimmed;
+  const open = trimmed.lastIndexOf('(');
+  if (open === -1) return trimmed;
+  return trimmed.slice(0, open).trimEnd();
 }
 
 const LINE_ORDER: Record<LineNumber, number> = Object.keys(LINE_COLORS).reduce(
