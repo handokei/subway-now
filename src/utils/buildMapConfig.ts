@@ -1,9 +1,14 @@
 import type { Station } from '../types/station';
+import { groupStationsByName, type StationGroup } from './groupStationsByName';
+
+export interface MapStationGroup extends StationGroup {
+  isNearest: boolean;
+}
 
 export interface MapConfig {
   userLat: number;
   userLng: number;
-  stations: (Station & { isNearest: boolean })[];
+  groups: MapStationGroup[];
 }
 
 export function buildMapConfig({
@@ -17,12 +22,9 @@ export function buildMapConfig({
   nearestStation: Station | null;
   nearbyStations: Station[];
 }): MapConfig {
-  return {
-    userLat,
-    userLng,
-    stations: nearbyStations.map((s) => ({
-      ...s,
-      isNearest: nearestStation?.id === s.id,
-    })),
-  };
+  const groups = groupStationsByName(nearbyStations).map((g) => ({
+    ...g,
+    isNearest: nearestStation ? g.stations.some((s) => s.id === nearestStation.id) : false,
+  }));
+  return { userLat, userLng, groups };
 }

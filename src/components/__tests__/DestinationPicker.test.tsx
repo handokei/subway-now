@@ -103,7 +103,7 @@ describe('DestinationPicker', () => {
   it('지도 마커 탭으로 onSelect가 호출된다', () => {
     const onSelect = jest.fn();
     const { getByTestId } = render(<DestinationPicker {...mapProps} onSelect={onSelect} />);
-    fireEvent.press(getByTestId('marker-2-022'));
+    fireEvent.press(getByTestId('marker-강남'));
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ id: '2-022', name: '강남' }),
     );

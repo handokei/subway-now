@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, act, waitFor, fireEvent } from '@testing-library/react-native';
+import { render, waitFor, fireEvent } from '@testing-library/react-native';
 import { StationMap } from '../StationMap';
 import type { Station } from '../../types/station';
 import { installLanguageRestoreHook, setLang } from '../../testUtils/i18nLanguageOverride';
@@ -33,6 +33,26 @@ const anotherStation: Station = {
   lng: 127.0491,
 };
 
+const cheongguL5: Station = {
+  id: '5-540',
+  name: '청구',
+  nameEn: 'Cheonggu',
+  line: '5',
+  lineColor: '#996CAC',
+  lat: 37.5605,
+  lng: 127.0136,
+};
+
+const cheongguL6: Station = {
+  id: '6-636',
+  name: '청구',
+  nameEn: 'Cheonggu',
+  line: '6',
+  lineColor: '#CD7C2F',
+  lat: 37.5605,
+  lng: 127.0136,
+};
+
 const baseProps = {
   userLat: 37.498,
   userLng: 127.027,
@@ -53,18 +73,33 @@ describe('StationMap', () => {
     });
   });
 
-  it('nearbyStations 수만큼 마커를 렌더링한다', () => {
+  it('각 역마다 그룹 마커를 1개 렌더링한다 (단일 호선)', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(getByTestId('marker-2-022')).toBeTruthy();
-    expect(getByTestId('marker-2-023')).toBeTruthy();
+    expect(getByTestId('marker-강남')).toBeTruthy();
+    expect(getByTestId('marker-선릉')).toBeTruthy();
   });
 
-  it('마커 press 시 onStationPress를 호출한다', () => {
+  it('환승역은 1개 마커에 호선 수만큼 배지를 그린다', () => {
+    const { getByTestId, queryAllByTestId } = render(
+      <StationMap
+        {...baseProps}
+        nearestStation={null}
+        nearbyStations={[cheongguL5, cheongguL6]}
+      />,
+    );
+    expect(getByTestId('marker-청구')).toBeTruthy();
+    expect(getByTestId('badge-5-540')).toBeTruthy();
+    expect(getByTestId('badge-6-636')).toBeTruthy();
+    // 라벨 pill은 그룹당 1개
+    expect(queryAllByTestId('label-pill-청구')).toHaveLength(1);
+  });
+
+  it('마커 press 시 onStationPress에 대표 station을 전달한다', () => {
     const onStationPress = jest.fn();
     const { getByTestId } = render(
       <StationMap {...baseProps} onStationPress={onStationPress} />,
     );
-    fireEvent.press(getByTestId('marker-2-022'));
+    fireEvent.press(getByTestId('marker-강남'));
     expect(onStationPress).toHaveBeenCalledWith(
       expect.objectContaining({ id: '2-022', name: '강남' }),
     );
@@ -73,15 +108,13 @@ describe('StationMap', () => {
   it('onStationPress가 없을 때 마커 press해도 에러가 없다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
     expect(() => {
-      fireEvent.press(getByTestId('marker-2-022'));
+      fireEvent.press(getByTestId('marker-강남'));
     }).not.toThrow();
   });
 
   it('nearbyStations가 빈 배열이면 마커가 없다', () => {
-    const { queryByTestId } = render(
-      <StationMap {...baseProps} nearbyStations={[]} />,
-    );
-    expect(queryByTestId('marker-2-022')).toBeNull();
+    const { queryByTestId } = render(<StationMap {...baseProps} nearbyStations={[]} />);
+    expect(queryByTestId('marker-강남')).toBeNull();
   });
 
   it('showsUserLocation이 true이다', () => {
@@ -89,19 +122,72 @@ describe('StationMap', () => {
     expect(getByTestId('station-map').props.showsUserLocation).toBe(true);
   });
 
-  it('마커 dot이 흰색 테두리와 확대된 크기(14)를 가진다', () => {
+  it('배지는 노선 색을 배경으로 사용한다', () => {
+    const { getByTestId } = render(
+      <StationMap
+        {...baseProps}
+        nearestStation={null}
+        nearbyStations={[anotherStation]}
+      />,
+    );
+    const badge = getByTestId('badge-2-023');
+    expect(badge.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#009D3E' })]),
+    );
+  });
+
+  it('nearestStation이 속한 그룹의 모든 배지를 accent 색으로 강조', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
-    const dot = getByTestId('dot-2-023');
-    expect(dot.props.style).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          width: 14,
-          height: 14,
-          borderRadius: 7,
-          borderWidth: 2,
-          borderColor: '#ffffff',
-        }),
-      ]),
+    const badge = getByTestId('badge-2-022');
+    expect(badge.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
+    );
+  });
+
+  it('customOriginId가 속한 그룹의 모든 배지를 accent 색으로 강조', () => {
+    const { getByTestId } = render(
+      <StationMap {...baseProps} customOriginId="2-023" />,
+    );
+    const badge = getByTestId('badge-2-023');
+    expect(badge.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
+    );
+  });
+
+  it('환승역 그룹에서 customOriginId와 매칭된 호선 배지만 accent, 다른 호선 배지는 노선 색 유지', () => {
+    const { getByTestId } = render(
+      <StationMap
+        {...baseProps}
+        nearestStation={null}
+        nearbyStations={[cheongguL5, cheongguL6]}
+        customOriginId="5-540"
+      />,
+    );
+    const highlighted = getByTestId('badge-5-540');
+    const other = getByTestId('badge-6-636');
+    expect(highlighted.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
+    );
+    expect(other.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#CD7C2F' })]),
+    );
+  });
+
+  it('환승역 그룹에서 nearestStation과 매칭된 호선 배지만 accent', () => {
+    const { getByTestId } = render(
+      <StationMap
+        {...baseProps}
+        nearestStation={cheongguL6}
+        nearbyStations={[cheongguL5, cheongguL6]}
+      />,
+    );
+    const highlighted = getByTestId('badge-6-636');
+    const other = getByTestId('badge-5-540');
+    expect(highlighted.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
+    );
+    expect(other.props.style).toEqual(
+      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#996CAC' })]),
     );
   });
 
@@ -109,37 +195,10 @@ describe('StationMap', () => {
     const { getByText, getByTestId } = render(<StationMap {...baseProps} />);
     const label = getByText('강남');
     expect(label.props.style).toEqual(
-      expect.objectContaining({
-        fontSize: 12,
-        color: '#111111',
-      }),
+      expect.objectContaining({ fontSize: 12, color: '#111111' }),
     );
-    expect(getByTestId('label-pill-2-022').props.style).toEqual(
-      expect.objectContaining({
-        backgroundColor: 'rgba(255,255,255,0.92)',
-      }),
-    );
-  });
-
-  it('customOriginId와 일치하는 마커는 accent 색상 dot을 사용한다', () => {
-    const { getByTestId } = render(
-      <StationMap {...baseProps} customOriginId="2-023" />,
-    );
-    const dot = getByTestId('dot-2-023');
-    expect(dot.props.style).toEqual(
-      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
-    );
-  });
-
-  it('customOriginId가 없으면 기존 색상 로직을 따른다', () => {
-    const { getByTestId } = render(<StationMap {...baseProps} />);
-    const nearestDot = getByTestId('dot-2-022');
-    expect(nearestDot.props.style).toEqual(
-      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
-    );
-    const otherDot = getByTestId('dot-2-023');
-    expect(otherDot.props.style).toEqual(
-      expect.arrayContaining([expect.objectContaining({ backgroundColor: '#009D3E' })]),
+    expect(getByTestId('label-pill-강남').props.style).toEqual(
+      expect.objectContaining({ backgroundColor: 'rgba(255,255,255,0.92)' }),
     );
   });
 
@@ -151,8 +210,8 @@ describe('StationMap', () => {
 
   it('모든 마커에 tracksViewChanges={false}가 설정된다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(getByTestId('marker-2-022').props.tracksViewChanges).toBe(false);
-    expect(getByTestId('marker-2-023').props.tracksViewChanges).toBe(false);
+    expect(getByTestId('marker-강남').props.tracksViewChanges).toBe(false);
+    expect(getByTestId('marker-선릉').props.tracksViewChanges).toBe(false);
   });
 
   it('영어 모드에서 마커 라벨이 nameEn으로 표시된다', () => {
@@ -165,7 +224,7 @@ describe('StationMap', () => {
   it('영어 모드에서 마커 title이 nameEn으로 설정된다', () => {
     setLang('en');
     const { getByTestId } = render(<StationMap {...baseProps} />);
-    expect(getByTestId('marker-2-022').props.title).toBe('Gangnam');
+    expect(getByTestId('marker-강남').props.title).toBe('Gangnam');
   });
 
   it('buildMapConfig에 올바른 파라미터를 전달한다', () => {
@@ -176,8 +235,10 @@ describe('StationMap', () => {
       nearestStation: mockStation,
       nearbyStations: [mockStation, anotherStation],
     });
-    expect(result.stations[0].isNearest).toBe(true);
-    expect(result.stations[1].isNearest).toBe(false);
+    const nearestGroup = result.groups.find((g: { stations: Station[] }) =>
+      g.stations.some((s: Station) => s.id === mockStation.id),
+    );
+    expect(nearestGroup.isNearest).toBe(true);
   });
 
   describe('focusStation', () => {
@@ -255,9 +316,7 @@ describe('StationMap', () => {
     });
 
     it('recenterNonce 변경 시 사용자 좌표로 재호출', () => {
-      const { rerender } = render(
-        <StationMap {...baseProps} recenterNonce={1} />,
-      );
+      const { rerender } = render(<StationMap {...baseProps} recenterNonce={1} />);
       __animateToRegionMock.mockClear();
       rerender(<StationMap {...baseProps} recenterNonce={2} />);
       expect(__animateToRegionMock).toHaveBeenCalledWith(
@@ -270,9 +329,7 @@ describe('StationMap', () => {
     });
 
     it('GPS 좌표가 갱신된 뒤 nonce 변경 시 최신 좌표로 이동 (no stale closure)', () => {
-      const { rerender } = render(
-        <StationMap {...baseProps} recenterNonce={1} />,
-      );
+      const { rerender } = render(<StationMap {...baseProps} recenterNonce={1} />);
       rerender(
         <StationMap {...baseProps} userLat={37.6} userLng={127.1} recenterNonce={1} />,
       );
@@ -410,14 +467,8 @@ describe('StationMap', () => {
     });
 
     it('routeCoords.path가 비어 있으면 fitToCoordinates 호출 안 함', async () => {
-      render(
-        <StationMap
-          {...baseProps}
-          routeCoords={{ path: [], keyStations: [] }}
-        />,
-      );
+      render(<StationMap {...baseProps} routeCoords={{ path: [], keyStations: [] }} />);
       await waitFor(() => {
-        // map ready effect 트리거를 위해 한 차례 flush
         expect(__animateToRegionMock).not.toHaveBeenCalled();
       });
       expect(__fitToCoordinatesMock).not.toHaveBeenCalled();

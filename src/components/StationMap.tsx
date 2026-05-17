@@ -9,7 +9,7 @@ import type { TrainMarker as TrainMarkerData } from '../utils/findTrainCoordinat
 import type { RouteCoordinatePath, RouteStationRole } from '../utils/routeToCoordinates';
 import { buildMapConfig } from '../utils/buildMapConfig';
 import { useTheme } from '../theme';
-import { LINE_NAMES } from '../constants/lineColors';
+import { LINE_BADGE_LABEL } from '../constants/lineColors';
 import { getStationDisplayName } from '../utils/stationDisplay';
 import { TRAIN_STATUS } from '../constants/trainStatus';
 
@@ -134,30 +134,56 @@ export function StationMap({
         clusterColor={colors.accent}
         testID="station-map"
       >
-        {mapConfig.stations.map((station) => {
-          const isHighlighted = station.id === customOriginId || station.isNearest;
-          const dotColor = isHighlighted ? colors.accent : station.lineColor;
+        {mapConfig.groups.map((group) => {
+          // 대표 station = representativeName과 동일한 name을 가진 멤버.
+          // representativeName은 멤버 중에서 뽑은 값이므로 find는 항상 매치.
+          const representative = group.stations.find(
+            (s) => s.name === group.representativeName,
+          ) as typeof group.stations[number];
+          const label = getStationDisplayName(representative);
           return (
             <Marker
-              key={`${station.id}-${i18n.language}`}
-              coordinate={{ latitude: station.lat, longitude: station.lng }}
-              title={getStationDisplayName(station)}
-              description={LINE_NAMES[station.line]}
-              onPress={() => onStationPress?.(station)}
+              key={`${group.key}-${i18n.language}`}
+              coordinate={{ latitude: group.lat, longitude: group.lng }}
+              title={label}
+              onPress={() => onStationPress?.(representative)}
               tracksViewChanges={false}
-              testID={`marker-${station.id}`}
+              testID={`marker-${group.key}`}
             >
               <View style={styles.markerContainer}>
-                <View
-                  style={[styles.markerDot, { backgroundColor: dotColor }]}
-                  testID={`dot-${station.id}`}
-                />
+                <View style={styles.badgeRow} testID={`badge-row-${group.key}`}>
+                  {group.stations.map((s) => {
+                    // 배지별 강조: 환승역 그룹에서도 실제 매칭된 호선만 accent.
+                    // customOriginId/nearestStation은 (역, 호선) 단위 식별자라 멤버 단위로 비교.
+                    const isThisBadgeHighlighted =
+                      s.id === customOriginId ||
+                      (group.isNearest && nearestStation?.id === s.id);
+                    return (
+                      <View
+                        key={s.id}
+                        style={[
+                          styles.badge,
+                          {
+                            backgroundColor: isThisBadgeHighlighted
+                              ? colors.accent
+                              : s.lineColor,
+                          },
+                        ]}
+                        testID={`badge-${s.id}`}
+                      >
+                        <Text style={styles.badgeText} numberOfLines={1}>
+                          {LINE_BADGE_LABEL[s.line]}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                </View>
                 <View
                   style={styles.markerLabelPill}
-                  testID={`label-pill-${station.id}`}
+                  testID={`label-pill-${group.key}`}
                 >
                   <Text style={styles.markerLabel} numberOfLines={1}>
-                    {getStationDisplayName(station)}
+                    {label}
                   </Text>
                 </View>
               </View>
@@ -255,14 +281,27 @@ const styles = StyleSheet.create({
   },
   markerContainer: {
     alignItems: 'center',
-    maxWidth: 60,
+    maxWidth: 120,
   },
-  markerDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    borderWidth: 2,
+  badgeRow: {
+    flexDirection: 'row',
+    gap: 2,
+  },
+  badge: {
+    minWidth: 16,
+    height: 16,
+    paddingHorizontal: 3,
+    borderRadius: 8,
+    borderWidth: 1.5,
     borderColor: '#ffffff',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '700',
+    lineHeight: 12,
   },
   markerLabelPill: {
     marginTop: 3,
