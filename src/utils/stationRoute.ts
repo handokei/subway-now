@@ -33,6 +33,14 @@ function getLineNameIndexCached(line: LineNumber): Map<string, number> {
   return cached;
 }
 
+// 노선별 표기 불일치를 흡수하는 인덱스 조회 헬퍼.
+// 1차 정확 일치, 실패 시 정규화 후 재시도.
+function lookupNameIdx(idx: Map<string, number>, name: string): number | undefined {
+  const hit = idx.get(name);
+  if (hit !== undefined) return hit;
+  return idx.get(normalizeStationName(name));
+}
+
 export interface DirectRoute {
   type: 'direct';
   stops: number;
@@ -111,37 +119,53 @@ export interface JourneyDisplay {
   totalStops: number;
 }
 
-// 환승 그래프: fromLine → toLine → 환승역 이름 목록
+// 후행 괄호 부제(예: "상봉(시외버스터미널)" → "상봉")를 제거해
+// 동일 환승역이 노선별로 다른 표기로 등록되어도 매칭이 성립하도록 한다.
+export function normalizeStationName(name: string): string {
+  return name.replace(/\s*\([^)]*\)\s*$/, '').trim();
+}
+
+// 노선별 표기 차이를 흡수한 역 이름 동일성 비교.
+// 예: "상봉" === "상봉(시외버스터미널)" (각각 7호선/경의중앙선 등록명)
+export function isSameStationName(a: string, b: string): boolean {
+  if (a === b) return true;
+  return normalizeStationName(a) === normalizeStationName(b);
+}
+
+// 환승 그래프: fromLine → toLine → 환승역 이름 목록 (fromLine 쪽 실제 station.name)
 const transferGraph = new Map<LineNumber, Map<LineNumber, string[]>>();
 
 function buildTransferGraph(): void {
-  const nameToLines = new Map<string, Set<LineNumber>>();
+  const normalizedToStations = new Map<string, Station[]>();
   for (const s of allStations) {
-    let lines = nameToLines.get(s.name);
-    if (!lines) {
-      lines = new Set();
-      nameToLines.set(s.name, lines);
+    const key = normalizeStationName(s.name);
+    let group = normalizedToStations.get(key);
+    if (!group) {
+      group = [];
+      normalizedToStations.set(key, group);
     }
-    lines.add(s.line);
+    group.push(s);
   }
 
-  for (const [name, lines] of nameToLines) {
-    if (lines.size < 2) continue;
-    const lineArr = Array.from(lines);
-    for (let i = 0; i < lineArr.length; i++) {
-      for (let j = 0; j < lineArr.length; j++) {
-        if (i === j) continue;
-        let toMap = transferGraph.get(lineArr[i]);
+  for (const group of normalizedToStations.values()) {
+    const distinctLines = new Set(group.map((s) => s.line));
+    if (distinctLines.size < 2) continue;
+    for (const from of group) {
+      for (const to of group) {
+        if (from.line === to.line) continue;
+        let toMap = transferGraph.get(from.line);
         if (!toMap) {
           toMap = new Map();
-          transferGraph.set(lineArr[i], toMap);
+          transferGraph.set(from.line, toMap);
         }
-        let names = toMap.get(lineArr[j]);
+        let names = toMap.get(to.line);
         if (!names) {
           names = [];
-          toMap.set(lineArr[j], names);
+          toMap.set(to.line, names);
         }
-        names.push(name);
+        // fromLine 쪽 실제 이름을 저장 → findRoutes가 fromLine에서 candidate를 찾을 때 그대로 매칭.
+        // 반대편 toLine 쪽 조회는 findStationByNameAndLine의 정규화 fallback이 처리.
+        names.push(from.name);
       }
     }
   }
@@ -154,7 +178,12 @@ export function getStationsOnLine(line: LineNumber): Station[] {
 }
 
 export function findStationByNameAndLine(name: string, line: LineNumber): Station | undefined {
-  return getLineStationsCached(line).find((s) => s.name === name);
+  const stations = getLineStationsCached(line);
+  const exact = stations.find((s) => s.name === name);
+  if (exact) return exact;
+  // 정규화 fallback: 노선별 표기 불일치(예: "상봉" vs "상봉(시외버스터미널)") 흡수.
+  const normalized = normalizeStationName(name);
+  return stations.find((s) => normalizeStationName(s.name) === normalized);
 }
 
 export function updateRouteFromPosition(
@@ -253,7 +282,12 @@ export function getRemainingStops(
 function buildNameIndex(stations: Station[]): Map<string, number> {
   const index = new Map<string, number>();
   for (let i = 0; i < stations.length; i++) {
-    index.set(stations[i].name, i);
+    const { name } = stations[i];
+    index.set(name, i);
+    // 정규화 키도 함께 등록 → 노선별 표기 불일치 흡수.
+    // 한 노선 내 동일 정규화 이름 충돌은 데이터 특성상 없음 (역명은 노선 내 유일).
+    const normalized = normalizeStationName(name);
+    if (normalized !== name) index.set(normalized, i);
   }
   return index;
 }
@@ -303,7 +337,7 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
 
   for (let i = 0; i < currentLineStations.length; i++) {
     const candidate = currentLineStations[i];
-    const transferDestIdx = destNameIndex.get(candidate.name);
+    const transferDestIdx = lookupNameIdx(destNameIndex, candidate.name);
     if (transferDestIdx === undefined) continue;
 
     const stopsToTransfer = Math.abs(i - currentIdx);
@@ -408,8 +442,8 @@ function findMultiTransferRoute(
 
     // 첫 번째 환승: 현재노선 → 중간노선
     for (const t1Name of transfer1Names) {
-      const t1CurrentIdx = currentNameIndex.get(t1Name);
-      const t1MidIdx = midNameIndex.get(t1Name);
+      const t1CurrentIdx = lookupNameIdx(currentNameIndex, t1Name);
+      const t1MidIdx = lookupNameIdx(midNameIndex, t1Name);
       /* istanbul ignore next -- 환승 그래프가 같은 데이터에서 빌드되므로 undefined 불가 */
       if (t1CurrentIdx === undefined || t1MidIdx === undefined) continue;
 
@@ -417,8 +451,8 @@ function findMultiTransferRoute(
 
       // 두 번째 환승: 중간노선 → 목적지노선
       for (const t2Name of transfer2Names) {
-        const t2MidIdx = midNameIndex.get(t2Name);
-        const t2DestIdx = destNameIndex.get(t2Name);
+        const t2MidIdx = lookupNameIdx(midNameIndex, t2Name);
+        const t2DestIdx = lookupNameIdx(destNameIndex, t2Name);
         /* istanbul ignore next */
         if (t2MidIdx === undefined || t2DestIdx === undefined) continue;
 
@@ -549,8 +583,8 @@ function getNextStationOnLine(
   targetName: string,
 ): string | null {
   const nameIndex = getLineNameIndexCached(line);
-  const currentIdx = nameIndex.get(currentName);
-  const targetIdx = nameIndex.get(targetName);
+  const currentIdx = lookupNameIdx(nameIndex, currentName);
+  const targetIdx = lookupNameIdx(nameIndex, targetName);
   if (currentIdx === undefined || targetIdx === undefined) return null;
   if (currentIdx === targetIdx) return null;
 

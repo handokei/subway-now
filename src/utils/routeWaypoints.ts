@@ -6,6 +6,7 @@
  */
 
 import type { Route } from './stationRoute';
+import { isSameStationName } from './stationRoute';
 import type { AlarmWaypoint } from '../api/alarmBackend';
 
 /**
@@ -21,7 +22,7 @@ export function routeToWaypoints(
   }
 
   if (route.type === 'transfer') {
-    if (route.transferName === destinationName) {
+    if (isSameStationName(route.transferName, destinationName)) {
       return [{ stationName: destinationName, line: route.fromLine, kind: 'destination' }];
     }
     return [
@@ -31,7 +32,7 @@ export function routeToWaypoints(
   }
 
   const waypoints: AlarmWaypoint[] = route.transfers.map((seg) => {
-    const isDestination = seg.transferName === destinationName;
+    const isDestination = isSameStationName(seg.transferName, destinationName);
     return {
       stationName: isDestination ? destinationName : seg.transferName,
       line: seg.fromLine,

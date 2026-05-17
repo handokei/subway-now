@@ -90,6 +90,22 @@ describe('resolveAllTargets', () => {
       { name: '강남', stops: 3, alarmType: 'destination' },
     ]);
   });
+
+  // 노선별 표기 차이를 정규화 흡수해서 단일 destination으로 축약 (#401 회귀 방지).
+  it('transferName과 destinationName이 노선별 표기 차이만 있으면 단일 destination으로 축약', () => {
+    expect(
+      resolveAllTargets(makeTransferRoute(3, 0, '상봉', 'gyeongui', '7'), '상봉(시외버스터미널)'),
+    ).toEqual([{ name: '상봉(시외버스터미널)', stops: 3, alarmType: 'destination' }]);
+  });
+
+  it('multi-transfer 마지막 환승역 표기 차이도 동일하게 축약', () => {
+    expect(
+      resolveAllTargets(makeMultiRoute(5, 3, 0, '시청', '왕십리'), '왕십리(성동구청)'),
+    ).toEqual([
+      { name: '시청', stops: 5, alarmType: 'transfer' },
+      { name: '왕십리(성동구청)', stops: 3, alarmType: 'destination' },
+    ]);
+  });
 });
 
 describe('evaluateAlarmPhase', () => {
