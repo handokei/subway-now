@@ -40,8 +40,10 @@ name: "smoke - 즐겨찾기 추가 & 삭제"
 - eraseText
 - hideKeyboard
 
+# FavoriteCard는 TouchableOpacity가 여러 Text를 감싸 a11y aggregation으로
+# 단독 station 이름 텍스트가 매처에 안 잡힘. testID로 검증해 a11y 구조 무관하게 결정적.
 - assertVisible:
-    text: "강남|Gangnam"
+    id: "favorite-remove-2-022"
 
 # 삭제
 - tapOn:
