@@ -9,6 +9,7 @@ import {
   shouldFire,
 } from './alarm';
 import { sendSilentPush, type ApnsConfig } from './apns';
+import { matchLine } from './lineAlias';
 import { SeoulArrivalClient, type ArrivalEntry } from './seoul';
 import { deleteTrip, listTrips, putTrip } from './trips';
 import type { Env, Trip, Waypoint } from './types';
@@ -21,6 +22,8 @@ export interface ScheduledStats {
   polled: number;
   pushed: number;
   errors: number;
+  /** Seoul API 응답이 비어 ETA를 산출하지 못한 트립 수 (운영 가시성용). */
+  etaMissing: number;
 }
 
 export interface ScheduledDeps {
@@ -34,7 +37,13 @@ export interface ScheduledDeps {
 export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
   const now = deps.now?.() ?? Date.now();
   const log = deps.log ?? (() => undefined);
-  const stats: ScheduledStats = { scanned: 0, polled: 0, pushed: 0, errors: 0 };
+  const stats: ScheduledStats = {
+    scanned: 0,
+    polled: 0,
+    pushed: 0,
+    errors: 0,
+    etaMissing: 0,
+  };
 
   for await (const trip of listTrips(env.TRIPS)) {
     stats.scanned += 1;
@@ -56,7 +65,15 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     try {
       const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
       const eta = pickBestEtaSeconds(arrivals, waypoint);
-      if (eta === null) continue;
+      if (eta === null) {
+        stats.etaMissing += 1;
+        log('empty arrivals — skip cycle', {
+          token: trip.token.slice(0, 8),
+          station: waypoint.stationName,
+          line: waypoint.line,
+        });
+        continue;
+      }
 
       const phase = evaluatePhase(eta);
       const etaChanged = isSignificantEtaChange(trip.lastEtaSeconds, eta);
@@ -70,9 +87,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       }
 
       // Push 발사 조건:
-      // (1) 새 phase 도달 (phaseFires)
+      // (1) 새 phase 도달 (phaseFires) — phaseFires는 phase !== null을 이미 포함
       // (2) phase 미도달이지만 ETA 변동이 의미있게 발생 & 5분 이내 (사용자에게 정보 갱신)
-      const shouldPushPhase = phaseFires && phase !== null;
+      const shouldPushPhase = phaseFires;
       const shouldPushEtaUpdate =
         !shouldPushPhase && etaChanged && eta <= EARLY_THRESHOLD_SEC * 2;
 
@@ -92,9 +109,28 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
             trip.lastFiredPhase = phase!;
             dirty = true;
             if (phase === 'imminent') {
-              await deleteTrip(env.TRIPS, trip.token);
-              log('trip completed after imminent push', { token: trip.token.slice(0, 8) });
-              continue;
+              if (waypoint.kind === 'destination') {
+                await deleteTrip(env.TRIPS, trip.token);
+                log('trip completed after destination imminent push', {
+                  token: trip.token.slice(0, 8),
+                });
+                continue;
+              }
+              // 환승역 imminent: 트립 유지하고 다음 waypoint로 진행.
+              // dirty는 위(lastFiredPhase 갱신)에서 이미 true로 설정됨 → putTrip에서 shift된 상태가 저장된다.
+              const completedStation = waypoint.stationName;
+              trip.waypoints.shift();
+              trip.lastFiredPhase = undefined;
+              trip.lastEtaSeconds = undefined;
+              log('waypoint completed, advancing to next', {
+                token: trip.token.slice(0, 8),
+                completed: completedStation,
+                remaining: trip.waypoints.length,
+              });
+              if (trip.waypoints.length === 0) {
+                await deleteTrip(env.TRIPS, trip.token);
+                continue;
+              }
             }
           }
         } else {
@@ -145,23 +181,13 @@ export function pickBestEtaSeconds(
   waypoint: Waypoint,
 ): number | null {
   if (arrivals.length === 0) return null;
-  const matchingLine = arrivals.filter((a) => isLineMatch(a.subwayNm, waypoint.line));
+  const matchingLine = arrivals.filter((a) => matchLine(a.subwayNm, waypoint.line));
   const pool = matchingLine.length > 0 ? matchingLine : arrivals;
   const min = pool.reduce(
     (acc, cur) => (cur.arrivalSeconds < acc ? cur.arrivalSeconds : acc),
     Number.POSITIVE_INFINITY,
   );
   return Number.isFinite(min) ? min : null;
-}
-
-/**
- * 노선 매칭 — Seoul API는 "지하철1호선", "수도권2호선" 같은 형식.
- * waypoint.line은 "1", "2" 또는 "수인분당" 등의 키.
- * 둘 중 하나가 다른 쪽 문자열에 포함되면 매칭으로 간주한다.
- */
-function isLineMatch(subwayNm: string, line: string): boolean {
-  if (!subwayNm || !line) return false;
-  return subwayNm.includes(line) || line.includes(subwayNm);
 }
 
 function isUnrecoverableApnsError(status: number, reason: string | undefined): boolean {
