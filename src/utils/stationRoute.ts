@@ -121,8 +121,13 @@ export interface JourneyDisplay {
 
 // 후행 괄호 부제(예: "상봉(시외버스터미널)" → "상봉")를 제거해
 // 동일 환승역이 노선별로 다른 표기로 등록되어도 매칭이 성립하도록 한다.
+// 정규식 대신 lastIndexOf로 구현 (ReDoS 회피 + 의도 명시).
 export function normalizeStationName(name: string): string {
-  return name.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  const trimmed = name.trim();
+  if (!trimmed.endsWith(')')) return trimmed;
+  const open = trimmed.lastIndexOf('(');
+  if (open <= 0) return trimmed;
+  return trimmed.slice(0, open).trimEnd();
 }
 
 // 노선별 표기 차이를 흡수한 역 이름 동일성 비교.

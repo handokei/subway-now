@@ -76,16 +76,11 @@ describe('routeToWaypoints', () => {
   // 환승역 표기가 노선별로 다른 경우(예: 7호선 "상봉" vs 경의중앙 "상봉(시외버스터미널)").
   // 같은 역이므로 destination 단일화로 축약되어야 한다 (== 비교는 거짓 → 분리되는 회귀 방지).
   it('transfer: transferName과 destinationName의 노선별 표기가 달라도 같은 역으로 축약', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
-      transferName: '상봉',
-      fromLine: '7',
-      toLine: 'gyeongui',
-      stopsToTransfer: 3,
-      stopsFromTransfer: 0,
-    };
-    expect(routeToWaypoints(route, '상봉(시외버스터미널)')).toEqual([
-      { stationName: '상봉(시외버스터미널)', line: '7', kind: 'destination' },
-    ]);
+    const result = routeToWaypoints(
+      { type: 'transfer', transferName: '상봉', fromLine: '7', toLine: 'gyeongui', stopsToTransfer: 3, stopsFromTransfer: 0 },
+      '상봉(시외버스터미널)',
+    );
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ kind: 'destination', stationName: '상봉(시외버스터미널)', line: '7' });
   });
 });

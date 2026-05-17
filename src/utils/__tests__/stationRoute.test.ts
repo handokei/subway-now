@@ -1055,6 +1055,10 @@ describe('normalizeStationName', () => {
   it('괄호 앞 공백도 함께 제거한다', () => {
     expect(normalizeStationName('테스트 (부제)')).toBe('테스트');
   });
+
+  it('역명이 모두 괄호로 시작하면 원본을 반환한다 (방어)', () => {
+    expect(normalizeStationName('(부제)')).toBe('(부제)');
+  });
 });
 
 describe('isSameStationName', () => {

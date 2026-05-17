@@ -51,7 +51,7 @@ export function resolveAllTargets(
     };
   });
   // MultiTransferRoute는 최소 2개 transfer로 구성되므로 targets는 항상 비어있지 않음.
-  const lastName = targets[targets.length - 1].name;
+  const lastName = targets.at(-1)!.name;
   const lastTransferIsDestination = isSameStationName(lastName, destinationName);
   if (!lastTransferIsDestination) {
     targets.push({ name: destinationName, stops: route.stopsAfterLastTransfer, alarmType: 'destination' });
