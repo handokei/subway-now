@@ -16,7 +16,10 @@
     "locationRequiredShort": "Location permission required.",
     "locationRequiredDescription": "Please allow location permission in Settings.\nLocation permission is required to detect your current station.",
     "request": "Grant permission",
-    "locating": "Locating..."
+    "locating": "Locating...",
+    "backgroundDeniedTitle": "Background location required",
+    "backgroundDeniedBody": "To receive background alarms, set location access to \"Always\" in Settings.",
+    "openSettings": "Open Settings"
   },
   "home": {
     "arrived": "Arrived!",

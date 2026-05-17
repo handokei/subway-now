@@ -32,7 +32,7 @@ module.exports = {
             },
           },
         },
-        UIBackgroundModes: ['location'],
+        UIBackgroundModes: ['location', 'fetch', 'remote-notification'],
         ITSAppUsesNonExemptEncryption: false,
       },
     },
@@ -67,6 +67,7 @@ module.exports = {
         'expo-notifications',
         {
           sounds: ['./assets/sounds/alarm.wav'],
+          enableBackgroundRemoteNotifications: true,
         },
       ],
       'expo-router',
