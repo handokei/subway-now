@@ -163,22 +163,20 @@ function FavoriteCard({
   const { t } = useTranslation();
   return (
     <View style={[styles.card, { backgroundColor: colors.card, borderLeftColor: station.lineColor }]}>
-      {/* Remove 버튼을 onToggle TouchableOpacity 밖 sibling으로 배치.
-          중첩 TouchableOpacity는 iOS에서 부모 a11y 흡수로 자식 testID가 maestro에서 안 잡혔다. */}
-      <View style={styles.cardRow}>
-        <TouchableOpacity style={styles.cardMain} onPress={onToggle} activeOpacity={0.7}>
-          <View style={styles.cardInfo}>
-            <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
-              <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
-            </View>
-            <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayName(station)}</Text>
+      <TouchableOpacity style={styles.cardMain} onPress={onToggle} activeOpacity={0.7}>
+        <View style={styles.cardInfo}>
+          <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
+            <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
           </View>
+          <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayName(station)}</Text>
+        </View>
+        <View style={styles.cardActions}>
           <Text style={[styles.expandIcon, { color: colors.muted }]}>{isExpanded ? '▲' : '▼'}</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.removeButton, { backgroundColor: colors.card }]} onPress={onRemove} testID={`favorite-remove-${station.id}`}>
-          <Text style={[styles.removeText, { color: colors.danger }]}>{t('favorites.remove')}</Text>
-        </TouchableOpacity>
-      </View>
+          <TouchableOpacity style={[styles.removeButton, { backgroundColor: colors.card }]} onPress={onRemove} testID={`favorite-remove-${station.id}`}>
+            <Text style={[styles.removeText, { color: colors.danger }]}>{t('favorites.remove')}</Text>
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
 
       {isExpanded && (
         <View style={[styles.arrivalSection, { borderTopColor: colors.hair }]}>
@@ -280,20 +278,19 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     overflow: 'hidden',
   },
-  cardRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    gap: 12,
-  },
   cardMain: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    padding: 16,
   },
   cardInfo: {
     flex: 1,
+  },
+  cardActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
   },
   expandIcon: {
     fontSize: 12,
