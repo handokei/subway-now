@@ -12,9 +12,10 @@ describe('evaluatePhase', () => {
     expect(evaluatePhase(IMMINENT_THRESHOLD_SEC)).toBe('imminent');
     expect(evaluatePhase(0)).toBe('imminent');
   });
-  it('early between 31s and 180s', () => {
+  it('early between 31s and EARLY_THRESHOLD_SEC', () => {
     expect(evaluatePhase(IMMINENT_THRESHOLD_SEC + 1)).toBe('early');
     expect(evaluatePhase(EARLY_THRESHOLD_SEC)).toBe('early');
+    expect(evaluatePhase(240)).toBe('early');
   });
   it('null above early threshold', () => {
     expect(evaluatePhase(EARLY_THRESHOLD_SEC + 1)).toBeNull();

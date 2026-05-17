@@ -123,6 +123,14 @@ describe('pickBestEtaSeconds', () => {
     ];
     expect(pickBestEtaSeconds(arrivals, wp)).toBe(100);
   });
+  it('matches gyeongui line against 경의중앙선 subwayNm via alias map', () => {
+    const arrivals: ArrivalEntry[] = [
+      { destination: '용문', arrivalSeconds: 90, trainCode: 'G', isUp: true, subwayNm: '경의중앙선' },
+      { destination: '용문', arrivalSeconds: 200, trainCode: 'H', isUp: true, subwayNm: '지하철1호선' },
+    ];
+    const gyeonguiWp = { stationName: '회기', line: 'gyeongui', kind: 'destination' as const };
+    expect(pickBestEtaSeconds(arrivals, gyeonguiWp)).toBe(90);
+  });
 });
 
 describe('runScheduled', () => {
@@ -157,7 +165,7 @@ describe('runScheduled', () => {
     expect(kv.store.size).toBe(0);
   });
 
-  it('fires imminent push and removes trip', async () => {
+  it('fires imminent push and removes trip when waypoint kind is destination', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeTrip());
     const seoul = makeSeoul([
@@ -172,7 +180,74 @@ describe('runScheduled', () => {
     });
     expect(stats.pushed).toBe(1);
     expect(apnsFetch).toHaveBeenCalledTimes(1);
-    expect(kv.store.size).toBe(0); // imminent → 트립 종료
+    expect(kv.store.size).toBe(0); // destination imminent → 트립 종료
+  });
+
+  it('keeps trip and advances waypoint when transfer waypoint reaches imminent', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        waypoints: [
+          { stationName: '신도림', line: '2', kind: 'transfer' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+      }),
+    );
+    const seoul = makeSeoul([
+      { destination: '신도림', arrivalSeconds: 20, trainCode: 'T', isUp: true, subwayNm: '지하철2호선' },
+    ]);
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.pushed).toBe(1);
+    expect(kv.store.size).toBe(1); // trip retained
+    const stored = JSON.parse(kv.store.get('trip:tok')!.value) as Trip;
+    expect(stored.waypoints).toHaveLength(1);
+    expect(stored.waypoints[0].stationName).toBe('강남');
+    expect(stored.lastFiredPhase).toBeUndefined();
+    expect(stored.lastEtaSeconds).toBeUndefined();
+  });
+
+  it('deletes trip when last waypoint (after shift) is empty', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        // 비정상 케이스: transfer만 있고 destination 없음. shift 후 비면 trip 삭제.
+        waypoints: [{ stationName: '신도림', line: '2', kind: 'transfer' }],
+      }),
+    );
+    const seoul = makeSeoul([
+      { destination: '신도림', arrivalSeconds: 20, trainCode: 'T', isUp: true, subwayNm: '지하철2호선' },
+    ]);
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.pushed).toBe(1);
+    expect(kv.store.size).toBe(0);
+  });
+
+  it('counts ETA-missing cycles separately from errors', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip());
+    const seoul = makeSeoul([]); // 빈 응답
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      now: () => NOW,
+    });
+    expect(stats.etaMissing).toBe(1);
+    expect(stats.pushed).toBe(0);
+    expect(stats.errors).toBe(0);
   });
 
   it('fires early then upgrades to imminent', async () => {
