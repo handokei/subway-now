@@ -72,6 +72,31 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
   };
 }
 
+function makeImminentArrival(stationName: string): ArrivalEntry {
+  return {
+    destination: stationName,
+    arrivalSeconds: 20,
+    trainCode: 'T',
+    isUp: true,
+    subwayNm: '지하철2호선',
+  };
+}
+
+async function runWithImminent(
+  kv: InMemoryKV,
+  stationName: string,
+): Promise<{ stats: Awaited<ReturnType<typeof runScheduled>>; apnsFetch: ReturnType<typeof vi.fn> }> {
+  const seoul = makeSeoul([makeImminentArrival(stationName)]);
+  const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+  const stats = await runScheduled(makeEnv(kv), {
+    seoul,
+    apnsConfig,
+    fetchImpl: apnsFetch as unknown as typeof fetch,
+    now: () => NOW,
+  });
+  return { stats, apnsFetch };
+}
+
 function makeSeoul(arrivals: ArrivalEntry[]): SeoulArrivalClient {
   return new SeoulArrivalClient({
     apiKey: 'K',
@@ -168,16 +193,7 @@ describe('runScheduled', () => {
   it('fires imminent push and removes trip when waypoint kind is destination', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeTrip());
-    const seoul = makeSeoul([
-      { destination: '강남', arrivalSeconds: 20, trainCode: 'T', isUp: true, subwayNm: '지하철2호선' },
-    ]);
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul,
-      apnsConfig,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-    });
+    const { stats, apnsFetch } = await runWithImminent(kv, '강남');
     expect(stats.pushed).toBe(1);
     expect(apnsFetch).toHaveBeenCalledTimes(1);
     expect(kv.store.size).toBe(0); // destination imminent → 트립 종료
@@ -194,16 +210,7 @@ describe('runScheduled', () => {
         ],
       }),
     );
-    const seoul = makeSeoul([
-      { destination: '신도림', arrivalSeconds: 20, trainCode: 'T', isUp: true, subwayNm: '지하철2호선' },
-    ]);
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul,
-      apnsConfig,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-    });
+    const { stats } = await runWithImminent(kv, '신도림');
     expect(stats.pushed).toBe(1);
     expect(kv.store.size).toBe(1); // trip retained
     const stored = JSON.parse(kv.store.get('trip:tok')!.value) as Trip;
@@ -222,16 +229,7 @@ describe('runScheduled', () => {
         waypoints: [{ stationName: '신도림', line: '2', kind: 'transfer' }],
       }),
     );
-    const seoul = makeSeoul([
-      { destination: '신도림', arrivalSeconds: 20, trainCode: 'T', isUp: true, subwayNm: '지하철2호선' },
-    ]);
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul,
-      apnsConfig,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-    });
+    const { stats } = await runWithImminent(kv, '신도림');
     expect(stats.pushed).toBe(1);
     expect(kv.store.size).toBe(0);
   });
