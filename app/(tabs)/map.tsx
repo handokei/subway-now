@@ -153,7 +153,11 @@ export default function MapScreen() {
             bottom: spacing.xl + (selectedStation ? selectionCardHeight : insets.bottom),
           },
         ]}
-        onPress={() => setRecenterNonce((n) => n + 1)}
+        onPress={() => {
+          // 카메라 이동만으로는 stale userLocation에서 벗어날 수 없으므로 fresh GPS fix를 함께 요청.
+          void refresh();
+          setRecenterNonce((n) => n + 1);
+        }}
         accessibilityLabel={t('map.recenter')}
         testID="recenter-button"
       >

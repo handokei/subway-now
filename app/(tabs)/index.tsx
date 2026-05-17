@@ -77,6 +77,10 @@ export default function HomeScreen() {
     [route, tripOrigin, destination],
   );
   const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh, confidence } = useFusedNearestStation(undefined, undefined, routeContext);
+  // AppState listener는 단일-바인딩 패턴이라 deps에 refresh를 추가할 수 없다.
+  // 최신 refresh 함수를 ref에 보관해 listener에서 호출한다.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
   const isCustomOrigin = customOrigin !== null;
   const effectiveOrigin = customOrigin ?? result?.station ?? null;
   useTripOrigin(destination, effectiveOrigin, setTripOrigin);
@@ -182,6 +186,10 @@ export default function HomeScreen() {
     const subscription = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
         loadAlarmEvent();
+        // BG에서 watchPositionAsync가 멈춘 동안 캐시된 stale 위치가 화면에 남는 것을
+        // 방지하기 위해 FG 복귀 즉시 fresh GPS fix를 요청한다. WhileInUse 권한 환경에서
+        // 특히 중요 — BG GPS가 없으므로 FG 복귀가 위치 갱신의 유일한 트리거다.
+        void refreshRef.current();
       }
     });
     return () => subscription.remove();
