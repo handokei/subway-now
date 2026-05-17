@@ -117,11 +117,11 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
                 continue;
               }
               // 환승역 imminent: 트립 유지하고 다음 waypoint로 진행.
+              // dirty는 위(lastFiredPhase 갱신)에서 이미 true로 설정됨 → putTrip에서 shift된 상태가 저장된다.
               const completedStation = waypoint.stationName;
               trip.waypoints.shift();
               trip.lastFiredPhase = undefined;
               trip.lastEtaSeconds = undefined;
-              dirty = true;
               log('waypoint completed, advancing to next', {
                 token: trip.token.slice(0, 8),
                 completed: completedStation,
