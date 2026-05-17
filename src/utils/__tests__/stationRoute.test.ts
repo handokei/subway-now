@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 
@@ -170,9 +170,13 @@ describe('findRoute', () => {
     const gyeongui = getStationsOnLine('gyeongui');
     const line2 = getStationsOnLine('2');
     const gyeonguiHongdae = gyeongui.find((s) => s.name === '홍대입구');
-    const line2First = line2[0];
+    // 합정(2-038)은 홍대입구(2-039) 바로 옆 → 홍대입구 환승이 명확히 최단.
+    // line2[0](시청)은 정규화 fallback 적용 후 왕십리 환승이 더 짧아 후보 다양화로 인해
+    // 단일 환승역 단정 의미가 사라짐. 테스트 의도(경의중앙↔2호선 환승) 유지하면서 결정성 확보.
+    const hapjeong = line2.find((s) => s.name === '합정');
     expect(gyeonguiHongdae).toBeDefined();
-    const route = findRoute(gyeonguiHongdae!.id, line2First.id);
+    expect(hapjeong).toBeDefined();
+    const route = findRoute(gyeonguiHongdae!.id, hapjeong!.id);
     expect(route?.type).toBe('transfer');
     if (route?.type === 'transfer') {
       expect(route.transferName).toBe('홍대입구');
@@ -1033,5 +1037,93 @@ describe('isStationOnRoute', () => {
 
   it('multi-transfer route — 어느 환승 구간에도 없으면 false', () => {
     expect(isStationOnRoute(makeStation('7'), multiTransferRoute)).toBe(false);
+  });
+});
+
+describe('normalizeStationName', () => {
+  it('후행 괄호 부제를 제거한다', () => {
+    expect(normalizeStationName('상봉(시외버스터미널)')).toBe('상봉');
+    expect(normalizeStationName('왕십리(성동구청)')).toBe('왕십리');
+    expect(normalizeStationName('청량리(서울시립대입구)')).toBe('청량리');
+  });
+
+  it('괄호 없는 이름은 그대로 반환한다', () => {
+    expect(normalizeStationName('용마산')).toBe('용마산');
+    expect(normalizeStationName('상봉')).toBe('상봉');
+  });
+
+  it('괄호 앞 공백도 함께 제거한다', () => {
+    expect(normalizeStationName('테스트 (부제)')).toBe('테스트');
+  });
+
+  it('역명이 모두 괄호로 시작하면 원본을 반환한다 (방어)', () => {
+    expect(normalizeStationName('(부제)')).toBe('(부제)');
+  });
+});
+
+describe('isSameStationName', () => {
+  it('정확 일치', () => {
+    expect(isSameStationName('상봉', '상봉')).toBe(true);
+  });
+  it('정규화 후 일치', () => {
+    expect(isSameStationName('상봉', '상봉(시외버스터미널)')).toBe(true);
+    expect(isSameStationName('왕십리(성동구청)', '왕십리')).toBe(true);
+  });
+  it('다른 역은 false', () => {
+    expect(isSameStationName('상봉', '용마산')).toBe(false);
+  });
+});
+
+describe('findStationByNameAndLine — 정규화 fallback', () => {
+  it('정확 이름이 없으면 정규화 비교로 매칭한다', () => {
+    // 경의중앙 상봉은 "상봉(시외버스터미널)"로 등록되어 있음
+    const station = findStationByNameAndLine('상봉', 'gyeongui');
+    expect(station).toBeDefined();
+    expect(station?.id).toBe('gyeongui-039');
+  });
+
+  it('정확 이름이 있으면 그대로 반환한다', () => {
+    expect(findStationByNameAndLine('상봉', '7')?.id).toBe('7-012');
+  });
+
+  it('정규화 후에도 매칭이 없으면 undefined', () => {
+    expect(findStationByNameAndLine('존재하지않는역', '1')).toBeUndefined();
+  });
+});
+
+describe('환승역 이름 표기 불일치 회귀 — #401', () => {
+  it('용마산(7) → 중랑(경의중앙): 상봉 1회 환승 후보가 포함된다', () => {
+    const candidates = findRoutes('7-015', 'gyeongui-038');
+    const single = candidates.find((c) => c.transferCount === 1);
+    expect(single).toBeDefined();
+    expect((single!.route as TransferRoute).type).toBe('transfer');
+    expect(normalizeStationName((single!.route as TransferRoute).transferName)).toBe('상봉');
+  });
+
+  it('용마산 → 중랑: 1회 환승이 2회 환승보다 빠르다 (또는 동등)', () => {
+    const candidates = findRoutes('7-015', 'gyeongui-038');
+    const single = candidates.find((c) => c.transferCount === 1);
+    const multi = candidates.find((c) => c.transferCount === 2);
+    expect(single).toBeDefined();
+    if (multi) {
+      expect(single!.travelMinutes).toBeLessThanOrEqual(multi.travelMinutes);
+    }
+  });
+
+  // 괄호 부제가 붙은 다중 노선 환승역들 — 양방향 모두 1회 환승 후보가 잡혀야 함
+  // (한쪽 노선만 정규화 키가 등록되는 비대칭 인덱스 문제 회귀 방지)
+  it.each<[string, string, string]>([
+    // [from id, to id, expected normalized transfer name]
+    ['7-015', 'gyeongui-038', '상봉'],       // 7 → 경의중앙 (상봉 환승)
+    ['gyeongui-038', '7-015', '상봉'],       // 역방향: 경의중앙 → 7
+    ['3-034', 'sinbundang-012', '양재'],      // 3 → 신분당 자기환승은 candidate.line 비교에 의존
+    ['sinbundang-012', '3-034', '양재'],      // 역방향
+    ['4-022', 'gyeongui-029', '이촌'],        // 4 → 경의중앙
+    ['gyeongui-029', '4-022', '이촌'],        // 역방향
+  ])('정규화 환승 매칭 (양방향): %s → %s 는 %s 환승 후보를 갖는다', (fromId, toId, expectedName) => {
+    const candidates = findRoutes(fromId, toId);
+    const single = candidates.find((c) => c.transferCount === 1);
+    expect(single).toBeDefined();
+    expect(normalizeStationName((single!.route as TransferRoute).transferName)).toBe(expectedName);
   });
 });

@@ -1,4 +1,5 @@
 import type { Route } from './stationRoute';
+import { isSameStationName } from './stationRoute';
 import { ALARM_PHASES, type AlarmContext, type AlarmPhase, type AlarmPhaseId } from './alarmPhases';
 
 export type AlarmType = 'destination' | 'transfer';
@@ -32,7 +33,7 @@ export function resolveAllTargets(
   }
 
   if (route.type === 'transfer') {
-    if (route.transferName === destinationName) {
+    if (isSameStationName(route.transferName, destinationName)) {
       return [{ name: destinationName, stops: route.stopsToTransfer, alarmType: 'destination' }];
     }
     return [
@@ -42,14 +43,16 @@ export function resolveAllTargets(
   }
 
   const targets: CurrentTarget[] = route.transfers.map((t) => {
-    const isDestination = t.transferName === destinationName;
+    const isDestination = isSameStationName(t.transferName, destinationName);
     return {
       name: isDestination ? destinationName : t.transferName,
       stops: t.stopsToTransfer,
       alarmType: isDestination ? 'destination' : 'transfer',
     };
   });
-  const lastTransferIsDestination = targets[targets.length - 1]?.name === destinationName;
+  // MultiTransferRoute는 최소 2개 transfer로 구성되므로 targets는 항상 비어있지 않음.
+  const lastName = targets.at(-1)!.name;
+  const lastTransferIsDestination = isSameStationName(lastName, destinationName);
   if (!lastTransferIsDestination) {
     targets.push({ name: destinationName, stops: route.stopsAfterLastTransfer, alarmType: 'destination' });
   }
