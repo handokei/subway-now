@@ -126,7 +126,7 @@
     "channelStation": "当前车站",
     "channelTransferAlarm": "换乘/到达提醒",
     "channelTransferAlarmSilent": "换乘/到达提醒(静音)",
-    "channelStationPass": "经过车站提醒",
+    "channelStationPass": "到达车站提醒",
     "transferEarlyTitle": "换乘提醒",
     "arrivalEarlyTitle": "到达提醒",
     "transferImminentTitle": "即将换乘",
@@ -160,7 +160,7 @@
     "currentStation": "{{name}}",
     "atCurrentStation": "当前 {{name}}",
     "approximateDistance": "约{{m}}m",
-    "stationPassed": "已通过{{name}}",
+    "stationPassed": "已到达{{name}}",
     "stopsRemainingToDestination_one": "距{{destination}}还有{{count}}站",
     "stopsRemainingToDestination_other": "距{{destination}}还有{{count}}站",
     "stopsRemainingViaTransfer": "距{{transfer}}换乘{{transferStops}}站 · 距{{destination}}{{totalStops}}站"

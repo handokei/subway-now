@@ -126,7 +126,7 @@
     "channelStation": "현재 역",
     "channelTransferAlarm": "하차/환승 알림",
     "channelTransferAlarmSilent": "하차/환승 알림 (무음)",
-    "channelStationPass": "역 통과 알림",
+    "channelStationPass": "역 도착 알림",
     "transferEarlyTitle": "환승 알림",
     "arrivalEarlyTitle": "하차 알림",
     "transferImminentTitle": "환승 임박",
@@ -160,7 +160,7 @@
     "currentStation": "{{name}}역",
     "atCurrentStation": "현재 {{name}}역",
     "approximateDistance": "약 {{m}}m",
-    "stationPassed": "{{name}}역 통과",
+    "stationPassed": "{{name}}역 도착",
     "stopsRemainingToDestination_one": "{{destination}}까지 {{count}}정거장 남음",
     "stopsRemainingToDestination_other": "{{destination}}까지 {{count}}정거장 남음",
     "stopsRemainingViaTransfer": "{{transfer}} 환승까지 {{transferStops}}정거장 · {{destination}}까지 {{totalStops}}정거장"
