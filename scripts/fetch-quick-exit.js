@@ -195,4 +195,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { extractRows, extractTotal, classifyFacility, mapRow, FIELD_CANDIDATES };
+module.exports = { extractRows, extractTotal, classifyFacility, classifyDirection, mapRow };
