@@ -18,7 +18,7 @@ name: "gps - 역 변경 (강남 → 잠실)"
 
 - extendedWaitUntil:
     visible:
-      text: "강남"
+      text: "강남|Gangnam"
     timeout: 15000
 
 - setLocation:
@@ -27,5 +27,5 @@ name: "gps - 역 변경 (강남 → 잠실)"
 
 - extendedWaitUntil:
     visible:
-      text: "잠실"
+      text: "잠실|Jamsil"
     timeout: 70000

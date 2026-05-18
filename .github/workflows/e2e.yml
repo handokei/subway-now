@@ -102,12 +102,26 @@ jobs:
       - name: Maestro gps 실행
         id: gps
         continue-on-error: true
-        run: maestro test .maestro/flows/gps/ --format junit --output maestro-gps.xml
+        run: maestro test .maestro/flows/gps/ --format junit --output maestro-gps.xml --debug-output ./maestro-debug-gps
+
+      - name: gps 시뮬레이터 화면 캡처
+        if: always()
+        run: |
+          mkdir -p ./diag-gps
+          xcrun simctl io booted screenshot ./diag-gps/last-screen.png || true
+          xcrun simctl spawn booted log show --last 2m --predicate 'process == "subwaynow"' --style compact > ./diag-gps/app.log 2>&1 || true
 
       - name: Maestro scenario 실행
         id: scenario
         continue-on-error: true
-        run: maestro test .maestro/flows/scenario/ --format junit --output maestro-scenario.xml
+        run: maestro test .maestro/flows/scenario/ --format junit --output maestro-scenario.xml --debug-output ./maestro-debug-scenario
+
+      - name: scenario 시뮬레이터 화면 캡처
+        if: always()
+        run: |
+          mkdir -p ./diag-scenario
+          xcrun simctl io booted screenshot ./diag-scenario/last-screen.png || true
+          xcrun simctl spawn booted log show --last 2m --predicate 'process == "subwaynow"' --style compact > ./diag-scenario/app.log 2>&1 || true
 
       - name: 최종 결과 집계
         if: always()
@@ -122,4 +136,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: maestro-nightly-results
-          path: maestro-*.xml
+          path: |
+            maestro-*.xml
+            maestro-debug-gps/
+            maestro-debug-scenario/
+            diag-gps/
+            diag-scenario/

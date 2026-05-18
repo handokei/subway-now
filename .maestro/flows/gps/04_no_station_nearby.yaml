@@ -18,8 +18,8 @@ name: "gps - 역에서 먼 곳"
 
 - extendedWaitUntil:
     visible:
-      text: "지하철역 근처가 아닙니다"
+      text: "지하철역 근처가 아닙니다|Not near a subway station"
     timeout: 15000
 
 - assertVisible:
-    text: "새로고침"
+    text: "새로고침|Refresh"

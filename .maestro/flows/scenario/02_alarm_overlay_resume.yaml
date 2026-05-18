@@ -8,6 +8,9 @@ name: "scenario - AlarmOverlay 해제"
 - launchApp:
     appId: com.subwaynow.app
     clearState: true
+    permissions:
+      location: always
+      notifications: allow
 
 - tapOn:
     text: ".*localhost.*"

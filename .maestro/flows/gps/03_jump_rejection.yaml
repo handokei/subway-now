@@ -19,7 +19,7 @@ name: "gps - 경로 잠금 점프 거부 (#310)"
 
 - extendedWaitUntil:
     visible:
-      text: "사가정"
+      text: "사가정|Sagajeong"
     timeout: 15000
 
 - extendedWaitUntil:
@@ -54,4 +54,4 @@ name: "gps - 경로 잠금 점프 거부 (#310)"
       - evalScript: maestro.wait(1000)
 
 - assertVisible:
-    text: "사가정"
+    text: "사가정|Sagajeong"
