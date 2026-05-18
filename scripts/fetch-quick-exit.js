@@ -120,7 +120,22 @@ async function fetchPage(start, end) {
   const url = `http://openapi.seoul.go.kr:8088/${API_KEY}/json/${SERVICE}/${start}/${end}/`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${start}-${end}`);
-  return res.json();
+  const text = await res.text();
+  // 서울 OpenAPI는 인증 실패/SERVICE 명 오류 시 200 + XML(<RESULT><CODE>...) 형태로 회신.
+  // JSON 파싱 전에 감지해 사용자에게 구체적 안내를 한다.
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith('<')) {
+    const codeMatch = trimmed.match(/<CODE>([^<]+)<\/CODE>/);
+    const msgMatch = trimmed.match(/<MESSAGE>([^<]+)<\/MESSAGE>/);
+    const code = codeMatch?.[1] ?? 'UNKNOWN';
+    const message = msgMatch?.[1] ?? trimmed.slice(0, 200);
+    throw new Error(
+      `서울 OpenAPI가 XML 에러를 반환했습니다 (code=${code}): ${message}\n` +
+      `  - EXPO_PUBLIC_SEOUL_DATA_API_KEY 가 실제 발급키인지 확인하세요 ('xxxx' 등 더미 금지).\n` +
+      `  - SERVICE=${SERVICE} 가 OA-22749 의 실제 endpoint 명인지 data.seoul.go.kr 명세에서 재확인.`,
+    );
+  }
+  return JSON.parse(text);
 }
 
 async function main() {

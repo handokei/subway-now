@@ -105,10 +105,6 @@ async function processStation(station) {
   if (!page) return { status: 'no_page', station };
   const matches = extractMatches(page.html);
   if (matches.length === 0) return { status: 'no_match', station, url: page.url };
-  if (INSPECT && INSPECT === station.name) {
-    console.log(JSON.stringify({ url: page.url, matches }, null, 2));
-    process.exit(0);
-  }
   const entry = reduceToEntry(matches, station.line);
   if (!entry) return { status: 'no_direction', station, url: page.url, matchCount: matches.length };
   return { status: 'ok', station, entry, matchCount: matches.length };
@@ -119,6 +115,23 @@ function sleep(ms) {
 }
 
 async function main() {
+  // --inspect <역명> 은 단일 역만 fast-path 로 처리한 뒤 raw 매칭을 출력하고 종료한다.
+  if (INSPECT) {
+    const target = STATIONS.find((s) => s.name === INSPECT);
+    if (!target) {
+      console.error(`[fetch-exit-side] inspect 대상 "${INSPECT}"을 stations.json에서 못 찾았습니다.`);
+      process.exit(1);
+    }
+    const page = await fetchPage(target.name);
+    if (!page) {
+      console.error(`[fetch-exit-side] inspect: 페이지 fetch 실패 (Cloudflare/403 가능성).`);
+      process.exit(1);
+    }
+    const matches = extractMatches(page.html);
+    console.log(JSON.stringify({ url: page.url, matchCount: matches.length, matches }, null, 2));
+    return;
+  }
+
   const targets = ONLY
     ? STATIONS.filter((s) => ONLY.includes(s.name))
     : STATIONS;
