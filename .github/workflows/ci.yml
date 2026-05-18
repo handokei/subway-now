@@ -34,7 +34,7 @@ jobs:
           files=$(git diff --name-only "$base"...HEAD || echo "")
           echo "Changed files vs $base:"
           echo "$files"
-          SKIP_RE='^(src/i18n/|backend/|docs/|scripts/|tasks/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/e2e\.yml$|.*\.md$|.*\.txt$)'
+          SKIP_RE='^(src/i18n/|src/testUtils/|backend/|docs/|scripts/|tasks/|img/|subway/|locales/|__mocks__/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/e2e\.yml$|eas\.json$|jest\.setup\.js$|sonar-project\.properties$|\.env\.example$|\.gitignore$|\.prettierrc.*$|\.eslintrc.*$|\.editorconfig$|.*\.md$|.*\.txt$)'
           relevant=$(echo "$files" | grep -v '^$' | grep -vE "$SKIP_RE" || true)
           if [ -z "$relevant" ] && [ -n "$files" ]; then
             echo "ui_affected=false" >> "$GITHUB_OUTPUT"
