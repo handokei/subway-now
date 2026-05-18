@@ -13,6 +13,8 @@ import { createLogger } from './logger';
 import { getStationDisplayName, getStationDisplayNameByName } from './stationDisplay';
 import { saveStationToWidget, clearWidgetStation } from './widgetStorage';
 import stationsData from '../data/stations.json';
+import type { ExitSide } from '../types/exitSide';
+import { lookupExitSide } from './exitSide';
 
 const allStations = stationsData as Station[];
 
@@ -109,6 +111,24 @@ export async function initStationNotification(): Promise<void> {
     },
   });
   notifLogger.info('권한 상태:', status);
+}
+
+// 좌/우 데이터는 모든 역에 존재하지 않을 수 있다(나무위키 수집 누락 등).
+// side가 주어지지 않으면 본문에 라인이 추가되지 않는다 — 잘못된 안내를 피한다.
+function exitSideText(side: ExitSide): string {
+  if (side === 'left') return i18next.t('alarms.exitSideLeft');
+  if (side === 'right') return i18next.t('alarms.exitSideRight');
+  return i18next.t('alarms.exitSideBoth');
+}
+
+function appendExitSide(body: string, side?: ExitSide | null): string {
+  if (!side) return body;
+  return `${body}\n${exitSideText(side)}`;
+}
+
+function resolveExitSide(event: AlarmEvent): ExitSide | null {
+  if (!event.direction) return null;
+  return lookupExitSide(event.stationName, event.direction);
 }
 
 function buildContent(
@@ -211,9 +231,14 @@ function buildLiveActivityData(
     data.alarmType = alarmEvent.type;
     data.alarmStationName = getStationDisplayNameByName(alarmEvent.stationName, allStations);
     const isTransferAlarm = alarmEvent.type === 'transfer';
-    data.alarmBody = i18next.t(isTransferAlarm ? 'alarms.earlyTransferBody' : 'alarms.earlyArrivalBody', {
+    const rawBody = i18next.t(isTransferAlarm ? 'alarms.earlyTransferBody' : 'alarms.earlyArrivalBody', {
       station: data.alarmStationName,
     });
+    const side = resolveExitSide(alarmEvent);
+    data.alarmBody = appendExitSide(rawBody, side);
+    if (side) {
+      data.alarmExitSide = side;
+    }
     data.alarmShortLabel = i18next.t(
       isTransferAlarm ? 'liveActivity.alarmShortTransfer' : 'liveActivity.alarmShortArrival',
     );
@@ -395,7 +420,8 @@ const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTrans
 };
 
 export function buildAlarmContent(event: AlarmEvent): { title: string; body: string } {
-  return ALARM_MESSAGE_BUILDERS[event.phaseId](event.stationName, event.type === 'transfer');
+  const { title, body } = ALARM_MESSAGE_BUILDERS[event.phaseId](event.stationName, event.type === 'transfer');
+  return { title, body: appendExitSide(body, resolveExitSide(event)) };
 }
 
 export async function sendAlarmNotification(

@@ -187,7 +187,10 @@
     "earlyTransferBody": "下一站 {{station}} 请换乘!",
     "earlyArrivalBody": "下一站 {{station}} 请下车!",
     "imminentTransferBody": "即将到达{{station}}。请准备换乘!",
-    "imminentArrivalBody": "即将到达{{station}}。请准备下车!"
+    "imminentArrivalBody": "即将到达{{station}}。请准备下车!",
+    "exitSideLeft": "请从左侧车门下车",
+    "exitSideRight": "请从右侧车门下车",
+    "exitSideBoth": "两侧车门都会开启"
   },
   "liveActivity": {
     "alarmShortTransfer": "换乘",

@@ -187,7 +187,10 @@
     "earlyTransferBody": "次の駅 {{station}}で乗り換えてください!",
     "earlyArrivalBody": "次の駅 {{station}}で下車してください!",
     "imminentTransferBody": "まもなく{{station}}に到着します。乗換の準備をしてください!",
-    "imminentArrivalBody": "まもなく{{station}}に到着します。下車の準備をしてください!"
+    "imminentArrivalBody": "まもなく{{station}}に到着します。下車の準備をしてください!",
+    "exitSideLeft": "左側のドアから降りてください",
+    "exitSideRight": "右側のドアから降りてください",
+    "exitSideBoth": "両側のドアが開きます"
   },
   "liveActivity": {
     "alarmShortTransfer": "乗換",

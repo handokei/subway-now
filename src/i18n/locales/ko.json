@@ -187,7 +187,10 @@
     "earlyTransferBody": "다음 역 {{station}}에서 환승하세요!",
     "earlyArrivalBody": "다음 역 {{station}}에서 내리세요!",
     "imminentTransferBody": "곧 {{station}}에 도착합니다. 환승 준비하세요!",
-    "imminentArrivalBody": "곧 {{station}}에 도착합니다. 하차 준비하세요!"
+    "imminentArrivalBody": "곧 {{station}}에 도착합니다. 하차 준비하세요!",
+    "exitSideLeft": "왼쪽 문으로 내리세요",
+    "exitSideRight": "오른쪽 문으로 내리세요",
+    "exitSideBoth": "양쪽 문이 열립니다"
   },
   "liveActivity": {
     "alarmShortTransfer": "환승",

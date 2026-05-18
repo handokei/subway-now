@@ -53,6 +53,12 @@ jest.mock('../widgetStorage', () => ({
   clearWidgetStation: () => mockClearWidgetStation(),
 }));
 
+// 좌/우 알람 본문 분기 테스트용 픽스처. 강남=상행 left/하행 right, 시청=상행 both만 등록.
+jest.mock('../../data/exitSide.json', () => ({
+  강남: { up: 'left', down: 'right' },
+  시청: { up: 'both' },
+}));
+
 const mockStation: Station = {
   id: 'si-cheong-1',
   name: '시청',
@@ -348,6 +354,23 @@ describe('stationNotification', () => {
       );
     });
 
+    it('alarmEvent에 direction이 있으면 alarmBody에 좌/우 라인이 포함되고 alarmExitSide 필드가 채워진다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '강남', direction: 'up' });
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({
+          alarmBody: '다음 역 강남에서 내리세요!\n왼쪽 문으로 내리세요',
+          alarmExitSide: 'left',
+        })
+      );
+    });
+
+    it('alarmEvent에 direction이 있어도 데이터가 없으면 alarmExitSide가 빠진다', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '미등록역', direction: 'up' });
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.not.objectContaining({ alarmExitSide: expect.anything() })
+      );
+    });
+
     it('direct route + ETA가 있으면 routeSubtext/routeSummary/etaText/distanceText가 빌드된다', async () => {
       await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false);
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
@@ -596,6 +619,38 @@ describe('stationNotification', () => {
       expect(mockSpeakAlarm).toHaveBeenCalledWith('다음 역 강남에서 내리세요!', {
         sleepMode: true,
         allowSpeaker: false,
+      });
+    });
+
+    describe('좌/우 하차 라인 (exitSide)', () => {
+      it('event.direction이 없으면 본문에 좌/우 라인을 추가하지 않는다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        await sendAlarmNotification(earlyDest);
+        expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { interruptionLevel: 'timeSensitive' });
+      });
+
+      it('event.direction이 있고 데이터가 매칭되면 좌측 라인이 추가된다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        await sendAlarmNotification({ ...earlyDest, direction: 'up' });
+        expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!\n왼쪽 문으로 내리세요', { interruptionLevel: 'timeSensitive' });
+      });
+
+      it('하행이면 오른쪽 라인이 추가된다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        await sendAlarmNotification({ ...earlyDest, direction: 'down' });
+        expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!\n오른쪽 문으로 내리세요', { interruptionLevel: 'timeSensitive' });
+      });
+
+      it('섬식(both)이면 양쪽 라인이 추가된다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        await sendAlarmNotification({ ...earlyTransfer, direction: 'up' });
+        expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!\n양쪽 문이 열립니다', { interruptionLevel: 'timeSensitive' });
+      });
+
+      it('데이터에 없는 방향이면 본문에 좌/우 라인을 추가하지 않는다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        await sendAlarmNotification({ ...earlyTransfer, direction: 'down' });
+        expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!', { interruptionLevel: 'timeSensitive' });
       });
     });
   });
