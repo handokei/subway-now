@@ -1,18 +1,12 @@
 import type { LineNumber } from '../types/station';
 import type { TravelDirection } from '../types/exitSide';
 import { getStationsOnLine, normalizeStationName } from './stationRoute';
+import lineTopology from '../data/lineTopology.json';
 
-// stations.json이 단조(상행 종점 → 하행 종점)로 정렬된 노선만 인덱스 비교로 방향을 결정한다.
-// 다음 노선들은 단조 배열로 표현이 불가능해 false direction 위험이 있다 — 명시적으로 제외:
-//   - 1호선: 다중 종착/지선(병점·신창·광운대 등)
-//   - 2호선: 순환선 (내선/외선 개념, up/down 단일 축 부족)
-//   - 5호선: 답십리 이후 마천/상일동 분기
-//   - 6호선: 응암 루프
-//   - 경의중앙선: 다중 갈래 (DMC-운천 / 문산 / 지평)
-// 위 노선들은 좌/우 안내를 생략한다. inner/outer/지선 표현은 별도 모델링이 결정된 뒤 확장.
-const MONOTONIC_LINES = new Set<LineNumber>([
-  '3', '4', '7', '8', '9', 'airport', 'bundang', 'sinbundang',
-]);
+// 단조(상행 종점 → 하행 종점)로 stations.json에 표현 가능한 노선만 인덱스 비교로 방향을 결정한다.
+// 화이트리스트는 src/data/lineTopology.json 단일 출처에서 가져온다 — 데이터 수집 스크립트
+// (scripts/fetch-exit-side.js)도 동일 JSON을 참조해 좌/우 라벨 채택 정책을 공유한다.
+const MONOTONIC_LINES = new Set<LineNumber>(lineTopology.monotonicLines as LineNumber[]);
 
 export function resolveTravelDirection(
   line: LineNumber,

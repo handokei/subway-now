@@ -11,6 +11,8 @@
     "test:watch": "jest --watch",
     "type-check": "tsc --noEmit",
     "data:merge": "node scripts/merge-station-names-en.js && node scripts/merge-station-names-multilang.js",
+    "data:fetch-exit-side": "node scripts/fetch-exit-side.js",
+    "data:fetch-quick-exit": "node scripts/fetch-quick-exit.js",
     "e2e": "maestro test .maestro/flows/",
     "e2e:home": "maestro test .maestro/flows/home/",
     "e2e:favorites": "maestro test .maestro/flows/favorites/",
