@@ -471,7 +471,8 @@ describe('useNearestStation', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2);
   });
 
-  it('stale 캐시 위치(MAX_LOCATION_AGE_MS 초과)는 무시하고 watch만 시작한다', async () => {
+  it('stale 캐시 위치(MAX_LOCATION_AGE_MS 초과)는 무시하고 진단 로그를 남긴다', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     mockGranted();
     mockLastKnownLocation(37.4980, 127.0277, { ageMs: MAX_LOCATION_AGE_MS + 1 });
 
@@ -481,9 +482,16 @@ describe('useNearestStation', () => {
 
     // stale 캐시는 무시 → result는 null 유지 (watch 콜백 전까지)
     expect(result.current.result).toBeNull();
+    expect(logSpy).toHaveBeenCalledWith(
+      '[useNearestStation]',
+      'lastKnown rejected: stale',
+      expect.objectContaining({ cumulativeStale: 1 }),
+    );
+    logSpy.mockRestore();
   });
 
-  it('저정확도 캐시 위치(MAX_ACCURACY_M 초과)는 무시한다', async () => {
+  it('저정확도 캐시 위치(MAX_ACCURACY_M 초과)는 무시하고 진단 로그를 남긴다', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     mockGranted();
     mockLastKnownLocation(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M + 1 });
 
@@ -492,6 +500,40 @@ describe('useNearestStation', () => {
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
     expect(result.current.result).toBeNull();
+    expect(logSpy).toHaveBeenCalledWith(
+      '[useNearestStation]',
+      'lastKnown rejected: lowAccuracy',
+      expect.objectContaining({
+        accuracyMeters: MAX_ACCURACY_M + 1,
+        cumulativeLowAccuracy: 1,
+      }),
+    );
+    logSpy.mockRestore();
+  });
+
+  it('lastKnown 거부 카운터는 FG 재진입마다 누적된다', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    mockGranted();
+    mockLastKnownLocation(37.4980, 127.0277, { ageMs: MAX_LOCATION_AGE_MS + 1 });
+
+    renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    // AppState 'active' 재진입으로 startWatch 재호출
+    await act(async () => {
+      appStateCallback?.('background');
+      appStateCallback?.('active');
+    });
+    await waitFor(() =>
+      expect(Location.getLastKnownPositionAsync).toHaveBeenCalledTimes(2),
+    );
+
+    expect(logSpy).toHaveBeenLastCalledWith(
+      '[useNearestStation]',
+      'lastKnown rejected: stale',
+      expect.objectContaining({ cumulativeStale: 2 }),
+    );
+    logSpy.mockRestore();
   });
 
   it('신선하고 정확한 캐시 위치는 사용한다', async () => {
