@@ -20,15 +20,15 @@ export function resolveAlarmDirection(
 ): TravelDirection | undefined {
   if (route.type === 'direct') {
     if (!isSameStationName(event.stationName, destinationName)) return undefined;
-    return resolveTravelDirection(route.line, sourceStationName, destinationName) ?? undefined;
+    return resolveTravelDirection(route.line, sourceStationName, destinationName)?.direction;
   }
 
   if (route.type === 'transfer') {
     if (isSameStationName(event.stationName, route.transferName)) {
-      return resolveTravelDirection(route.fromLine, sourceStationName, route.transferName) ?? undefined;
+      return resolveTravelDirection(route.fromLine, sourceStationName, route.transferName)?.direction;
     }
     if (isSameStationName(event.stationName, destinationName)) {
-      return resolveTravelDirection(route.toLine, route.transferName, destinationName) ?? undefined;
+      return resolveTravelDirection(route.toLine, route.transferName, destinationName)?.direction;
     }
     return undefined;
   }
@@ -39,11 +39,11 @@ export function resolveAlarmDirection(
     const segment = transfers[i];
     if (!isSameStationName(event.stationName, segment.transferName)) continue;
     const prevAnchor = i === 0 ? sourceStationName : transfers[i - 1].transferName;
-    return resolveTravelDirection(segment.fromLine, prevAnchor, segment.transferName) ?? undefined;
+    return resolveTravelDirection(segment.fromLine, prevAnchor, segment.transferName)?.direction;
   }
   if (isSameStationName(event.stationName, destinationName)) {
     const last = transfers[transfers.length - 1];
-    return resolveTravelDirection(last.toLine, last.transferName, destinationName) ?? undefined;
+    return resolveTravelDirection(last.toLine, last.transferName, destinationName)?.direction;
   }
   return undefined;
 }

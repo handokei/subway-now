@@ -26,7 +26,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null, debugVisible: false });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null, debugVisible: false, accessibilityMode: false });
     jest.clearAllMocks();
   });
 
@@ -495,6 +495,37 @@ describe('useAppStore', () => {
 
     const { allowSpeaker } = useAppStore.getState();
     expect(allowSpeaker).toBe(true);
+  });
+
+  it('초기 accessibilityMode는 false다', () => {
+    expect(useAppStore.getState().accessibilityMode).toBe(false);
+  });
+
+  it('setAccessibilityMode: 상태를 업데이트하고 AsyncStorage에 저장한다', async () => {
+    await useAppStore.getState().setAccessibilityMode(true);
+    expect(useAppStore.getState().accessibilityMode).toBe(true);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:accessibility-mode',
+      JSON.stringify(true),
+    );
+  });
+
+  it('loadAccessibilityMode: AsyncStorage에서 true를 복원한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(true));
+    await useAppStore.getState().loadAccessibilityMode();
+    expect(useAppStore.getState().accessibilityMode).toBe(true);
+  });
+
+  it('loadAccessibilityMode: AsyncStorage가 비어있으면 false를 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+    await useAppStore.getState().loadAccessibilityMode();
+    expect(useAppStore.getState().accessibilityMode).toBe(false);
+  });
+
+  it('loadAccessibilityMode: AsyncStorage 오류 시 false를 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
+    await useAppStore.getState().loadAccessibilityMode();
+    expect(useAppStore.getState().accessibilityMode).toBe(false);
   });
 
   it('초기 alarmEvent는 null이다', () => {

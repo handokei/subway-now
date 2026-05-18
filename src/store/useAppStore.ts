@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY } from '../constants/storageKeys';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../i18n/types';
 
@@ -46,6 +46,9 @@ interface AppState {
   loadSleepMode: () => Promise<void>;
   setAllowSpeaker: (enabled: boolean) => Promise<void>;
   loadAllowSpeaker: () => Promise<void>;
+  accessibilityMode: boolean;
+  setAccessibilityMode: (enabled: boolean) => Promise<void>;
+  loadAccessibilityMode: () => Promise<void>;
   setAlarmEvent: (event: AlarmEvent) => void;
   clearAlarmEvent: () => void;
   loadAlarmEvent: () => Promise<void>;
@@ -63,6 +66,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   localePreference: 'auto' as LocalePreference,
   alarmEvent: null,
   debugVisible: false,
+  accessibilityMode: false,
 
   setDebugVisible: (visible: boolean) => {
     set({ debugVisible: visible });
@@ -203,6 +207,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
     } catch {
       // 저장된 데이터 없음 — true 유지
+    }
+  },
+
+  setAccessibilityMode: async (enabled: boolean) => {
+    set({ accessibilityMode: enabled });
+    await AsyncStorage.setItem(ACCESSIBILITY_MODE_KEY, JSON.stringify(enabled));
+  },
+
+  loadAccessibilityMode: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(ACCESSIBILITY_MODE_KEY);
+      if (raw) {
+        set({ accessibilityMode: JSON.parse(raw) === true });
+      }
+    } catch {
+      // 저장된 데이터 없음 — false 유지
     }
   },
 

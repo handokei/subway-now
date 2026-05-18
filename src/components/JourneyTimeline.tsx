@@ -3,8 +3,11 @@ import { useTranslation } from 'react-i18next';
 import { LINE_NAMES } from '../constants/lineColors';
 import type { JourneyDisplay } from '../utils/stationRoute';
 import type { LineNumber, Station } from '../types/station';
-import { useTheme, typography, spacing, radius } from '../theme';
+import { useTheme, spacing, radius } from '../theme';
 import { getStationDisplayNameByName } from '../utils/stationDisplay';
+import { resolveTravelDirection } from '../utils/travelDirection';
+import { resolveQuickExit } from '../utils/quickExit';
+import { useAppStore } from '../store/useAppStore';
 import stationsData from '../data/stations.json';
 
 interface JourneyTimelineProps {
@@ -13,10 +16,28 @@ interface JourneyTimelineProps {
 
 const STATIONS = stationsData as Station[];
 
+// 한 세그먼트의 도착역 기준으로 진행방향 + 빠른하차 출입문 라벨을 결정한다.
+// 단조 노선이 아니거나 도착역 매칭 실패/데이터 부재면 null — 라벨 미표시(graceful).
+function resolveSegmentQuickExitLabel(
+  line: LineNumber,
+  fromName: string,
+  toName: string,
+  accessibilityMode: boolean,
+): string | null {
+  const resolution = resolveTravelDirection(line, fromName, toName);
+  if (!resolution) return null;
+  const result = resolveQuickExit(resolution.toStation.id, {
+    accessibilityMode,
+    direction: resolution.direction,
+  });
+  return result ? result.entry.doorNumber : null;
+}
+
 export function JourneyTimeline({ journey }: JourneyTimelineProps) {
   const { segments } = journey;
   const { colors } = useTheme();
   const { t } = useTranslation();
+  const accessibilityMode = useAppStore((s) => s.accessibilityMode);
 
   return (
     <View style={styles.container}>
@@ -24,6 +45,12 @@ export function JourneyTimeline({ journey }: JourneyTimelineProps) {
         const isFirst = idx === 0;
         const isLast = idx === segments.length - 1;
         const lineName = LINE_NAMES[segment.line as LineNumber] ?? segment.line;
+        const quickExitDoor = resolveSegmentQuickExitLabel(
+          segment.line,
+          segment.fromName,
+          segment.toName,
+          accessibilityMode,
+        );
 
         return (
           <View key={idx}>
@@ -40,7 +67,10 @@ export function JourneyTimeline({ journey }: JourneyTimelineProps) {
                 <View style={[styles.lineBadge, { backgroundColor: segment.lineColor }]}>
                   <Text style={styles.lineBadgeText}>{lineName}</Text>
                 </View>
-                <Text style={[styles.stopsText, { color: colors.muted }]}>{t('route.stops', { count: segment.stops })}</Text>
+                <Text style={[styles.stopsText, { color: colors.muted }]}>
+                  {t('route.stops', { count: segment.stops })}
+                  {quickExitDoor ? ` · ${t('route.quickExitDoor', { door: quickExitDoor })}` : ''}
+                </Text>
               </View>
             </View>
 

@@ -2,12 +2,12 @@ import { resolveAlarmDirection } from '../alarmDirection';
 import type { Route } from '../stationRoute';
 
 jest.mock('../travelDirection', () => ({
-  // 간단한 mock: from→to 쌍에 따라 미리 정한 결과를 반환.
+  // 간단한 mock: from→to 쌍에 따라 미리 정한 결과를 반환. 시그니처는 { direction, fromStation, toStation }.
   resolveTravelDirection: (line: string, from: string, to: string) => {
     if (from === '없는역' || to === '없는역') return null;
-    if (line === '1') return 'down';
-    if (line === '2') return 'up';
-    return null;
+    const direction = line === '1' ? 'down' : line === '2' ? 'up' : null;
+    if (!direction) return null;
+    return { direction, fromStation: { name: from }, toStation: { name: to } };
   },
 }));
 

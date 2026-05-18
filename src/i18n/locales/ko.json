@@ -56,6 +56,9 @@
     "routeSection": "경로",
     "routePreferenceLabel": "경로 설정",
     "routePreferenceDescription": "기본 경로 탐색 방식을 선택합니다",
+    "accessibilitySection": "접근성",
+    "accessibilityModeLabel": "거동 불편자 모드",
+    "accessibilityModeDescription": "경로 화면의 빠른 하차 위치를 엘리베이터 기준으로 안내합니다 (알람 본문에는 적용되지 않음)",
     "alarmSection": "알람",
     "sleepModeLabel": "취침 모드",
     "sleepModeDescription": "이어폰 연결 시 기상 알람음으로 울립니다",
@@ -166,7 +169,8 @@
     "stationPassed": "{{name}}역 도착",
     "stopsRemainingToDestination_one": "{{destination}}까지 {{count}}정거장 남음",
     "stopsRemainingToDestination_other": "{{destination}}까지 {{count}}정거장 남음",
-    "stopsRemainingViaTransfer": "{{transfer}} 환승까지 {{transferStops}}정거장 · {{destination}}까지 {{totalStops}}정거장"
+    "stopsRemainingViaTransfer": "{{transfer}} 환승까지 {{transferStops}}정거장 · {{destination}}까지 {{totalStops}}정거장",
+    "quickExitDoor": "{{door}}번 문"
   },
   "lines": {
     "1": "1호선",

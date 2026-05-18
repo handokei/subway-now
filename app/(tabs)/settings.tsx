@@ -22,6 +22,9 @@ export default function SettingsScreen() {
   const allowSpeaker = useAppStore((s) => s.allowSpeaker);
   const setAllowSpeaker = useAppStore((s) => s.setAllowSpeaker);
   const loadAllowSpeaker = useAppStore((s) => s.loadAllowSpeaker);
+  const accessibilityMode = useAppStore((s) => s.accessibilityMode);
+  const setAccessibilityMode = useAppStore((s) => s.setAccessibilityMode);
+  const loadAccessibilityMode = useAppStore((s) => s.loadAccessibilityMode);
   const themeMode = useAppStore((s) => s.themeMode);
   const setThemeMode = useAppStore((s) => s.setThemeMode);
   const routePreference = useAppStore((s) => s.routePreference);
@@ -36,6 +39,7 @@ export default function SettingsScreen() {
   useEffect(() => {
     loadSleepMode();
     loadAllowSpeaker();
+    loadAccessibilityMode();
     loadRoutePreference();
   }, []);
 
@@ -72,6 +76,27 @@ export default function SettingsScreen() {
           onChange={setRoutePreference}
           options={ROUTE_CATEGORIES.map((c) => ({ value: c.key, label: t(`routes.${c.key}`) }))}
         />
+
+        {/* 접근성 */}
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
+          <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.accessibilitySection')}</Text>
+
+          <View style={styles.settingRow}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.accessibilityModeLabel')}</Text>
+              <Text style={[styles.settingDesc, { color: colors.muted }]}>
+                {t('settings.accessibilityModeDescription')}
+              </Text>
+            </View>
+            <Switch
+              value={accessibilityMode}
+              onValueChange={setAccessibilityMode}
+              trackColor={{ false: colors.hair, true: colors.accent }}
+              thumbColor={accessibilityMode ? colors.onAccent : colors.subtle}
+              testID="accessibility-mode-switch"
+            />
+          </View>
+        </View>
 
         {/* 알람 */}
         <View style={[styles.card, { backgroundColor: colors.card }]}>

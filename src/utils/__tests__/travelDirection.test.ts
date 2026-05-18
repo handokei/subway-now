@@ -5,11 +5,11 @@ jest.mock('../stationRoute', () => ({
   getStationsOnLine: (line: string) => {
     if (line === '3') {
       return [
-        { name: '대화' },
-        { name: '주엽' },
-        { name: '연신내' },
-        { name: '종로3가' },
-        { name: '오금' },
+        { id: '3-0', name: '대화', line: '3' },
+        { id: '3-1', name: '주엽', line: '3' },
+        { id: '3-2', name: '연신내', line: '3' },
+        { id: '3-3', name: '종로3가', line: '3' },
+        { id: '3-4', name: '오금', line: '3' },
       ];
     }
     if (line === '8') return []; // 단조이지만 노선 목록 비어있는 경계 케이스
@@ -25,12 +25,15 @@ jest.mock('../stationRoute', () => ({
 }));
 
 describe('resolveTravelDirection', () => {
-  it('단조 노선에서 도착역 인덱스가 출발역보다 작으면 up', () => {
-    expect(resolveTravelDirection('3', '오금', '종로3가')).toBe('up');
+  it('단조 노선에서 도착역 인덱스가 출발역보다 작으면 up + station 객체 반환', () => {
+    const r = resolveTravelDirection('3', '오금', '종로3가');
+    expect(r?.direction).toBe('up');
+    expect(r?.fromStation.name).toBe('오금');
+    expect(r?.toStation.name).toBe('종로3가');
   });
 
   it('단조 노선에서 도착역 인덱스가 출발역보다 크면 down', () => {
-    expect(resolveTravelDirection('3', '주엽', '종로3가')).toBe('down');
+    expect(resolveTravelDirection('3', '주엽', '종로3가')?.direction).toBe('down');
   });
 
   it('같은 역이면 null', () => {
@@ -50,7 +53,7 @@ describe('resolveTravelDirection', () => {
   });
 
   it('괄호 부제가 붙은 이름은 정규화로 매칭한다', () => {
-    expect(resolveTravelDirection('3', '종로3가(서울)', '오금')).toBe('down');
+    expect(resolveTravelDirection('3', '종로3가(서울)', '오금')?.direction).toBe('down');
   });
 
   it('순환선(2호선)은 단조 가정이 깨지므로 항상 null', () => {
