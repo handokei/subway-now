@@ -6,6 +6,9 @@ import { findNearestStations } from '../utils/findNearestStation';
 import { isAccuracyAcceptable, isAccuracyAcceptableForDisplay, isLocationFresh } from '../utils/locationGates';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../constants/e2e';
+import { createLogger } from '../utils/logger';
+
+const logger = createLogger('useNearestStation');
 
 const MIN_DISTANCE_CHANGE_KM = 0.003; // 3m — UI 갱신을 자주 흘려보낸다.
 
@@ -56,6 +59,10 @@ export function useNearestStation(): UseNearestStationReturn {
   const subscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const lastStationIdRef = useRef<string | null>(null);
   const lastDistanceRef = useRef<number>(0);
+  // 진단용 누적 카운터: lastKnown 캐시 fix가 freshness/accuracy 게이트에서 거부된 횟수.
+  // BG→FG 전환마다 startWatch가 호출되므로 stale 위치 의심 시 운영 로그로 추적한다.
+  const lastKnownStaleCountRef = useRef<number>(0);
+  const lastKnownLowAccuracyCountRef = useRef<number>(0);
 
   const applyLocation = useCallback((coords: Location.LocationObjectCoords) => {
     const { latitude, longitude, speed, accuracy } = coords;
@@ -118,9 +125,25 @@ export function useNearestStation(): UseNearestStationReturn {
       // 캐시된 위치는 신선하고 알람 엄격 게이트(200m)를 통과하는 경우만 즉시 표시.
       // 콜드 스타트 시 부정확한 fix로 사용자에게 오정보를 주는 것을 방지.
       const lastKnown = await Location.getLastKnownPositionAsync();
-      if (lastKnown && isLocationFresh(lastKnown.timestamp) && isAccuracyAcceptable(lastKnown.coords.accuracy)) {
-        applyLocation(lastKnown.coords);
-        setLoading(false);
+      if (lastKnown) {
+        const fresh = isLocationFresh(lastKnown.timestamp);
+        const acceptable = isAccuracyAcceptable(lastKnown.coords.accuracy);
+        if (fresh && acceptable) {
+          applyLocation(lastKnown.coords);
+          setLoading(false);
+        } else if (!fresh) {
+          lastKnownStaleCountRef.current += 1;
+          logger.info('lastKnown rejected: stale', {
+            ageMs: Date.now() - lastKnown.timestamp,
+            cumulativeStale: lastKnownStaleCountRef.current,
+          });
+        } else {
+          lastKnownLowAccuracyCountRef.current += 1;
+          logger.info('lastKnown rejected: lowAccuracy', {
+            accuracyMeters: lastKnown.coords.accuracy,
+            cumulativeLowAccuracy: lastKnownLowAccuracyCountRef.current,
+          });
+        }
       }
 
       // 연속 GPS 스트리밍 — 지하 구간 horizontalAccuracy(300~1500m)도 표시용으로는 수용.
