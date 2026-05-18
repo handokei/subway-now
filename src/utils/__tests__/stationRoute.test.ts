@@ -238,6 +238,29 @@ describe('buildJourneyDisplay', () => {
     expect(result!.totalStops).toBe(3);
   });
 
+  it('DirectRoute 표시는 current.line이 아닌 route.line을 따른다 (환승역 출발)', () => {
+    // 시나리오: 건대입구(2/7 환승)에서 GPS가 2호선 entry를 current로 잡았으나
+    // findRouteCandidatesByCategory 결과는 7호선 direct(같은 line) 경로가 우승.
+    // 이전 버그: 표시가 current.line='2'를 그대로 사용해 "2호선 직통"으로 잘못 표기.
+    const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+    const current = mockStation({ id: '2-012', name: '건대입구', line: '2', lineColor: '#009D3E' });
+    const dest = mockStation({ id: '7-015', name: '용마산', line: '7', lineColor: '#747F00' });
+
+    const result = buildJourneyDisplay(route, current, dest);
+    expect(result!.segments[0].line).toBe('7');
+    expect(result!.segments[0].lineColor).toBe('#747F00');
+  });
+
+  it('DirectRoute에서 LINE_COLORS에 없는 line이면 current.lineColor로 fallback', () => {
+    const unknownLine = 'unknown-line' as unknown as LineNumber;
+    const route: DirectRoute = { type: 'direct', stops: 2, line: unknownLine };
+    const current = mockStation({ name: 'A', line: unknownLine, lineColor: '#ABCDEF' });
+    const dest = mockStation({ name: 'B', line: unknownLine });
+
+    const result = buildJourneyDisplay(route, current, dest);
+    expect(result!.segments[0].lineColor).toBe('#ABCDEF');
+  });
+
   it('MultiTransferRoute이면 세그먼트 3개를 반환한다', () => {
     const route: MultiTransferRoute = {
       type: 'multi-transfer',

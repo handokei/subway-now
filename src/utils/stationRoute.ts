@@ -494,11 +494,13 @@ export function buildJourneyDisplay(
   if (!route) return null;
 
   if (route.type === 'direct') {
+    // 환승역에서 출발할 경우 GPS가 가까운 호선 entry를 current로 잡지만,
+    // 실제 우승 경로는 다른 호선 entry에서 시작할 수 있다. 표시 호선은 route.line이 정답.
     return {
       segments: [
         {
-          line: current.line,
-          lineColor: current.lineColor,
+          line: route.line,
+          lineColor: LINE_COLORS[route.line] ?? current.lineColor,
           fromName: current.name,
           toName: destination.name,
           stops: route.stops,
