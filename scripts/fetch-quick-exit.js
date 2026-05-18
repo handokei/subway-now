@@ -23,7 +23,7 @@ const OUT = path.join(ROOT, 'src', 'data', 'quickExit.json');
 const STATIONS = require(path.join(ROOT, 'src', 'data', 'stations.json'));
 
 const API_KEY = process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
-const SERVICE = process.env.SERVICE ?? 'tbTraficElvtr';
+const SERVICE = process.env.SERVICE ?? 'getFstExit';
 const PAGE = 1000;
 const INSPECT = process.argv.includes('--inspect');
 
@@ -50,12 +50,12 @@ function extractTotal(payload) {
   return typeof total === 'number' ? total : null;
 }
 
-// 시설 종류 명칭 → 내부 카테고리 매핑.
-// 실 응답이 한글 명칭으로 오므로 substring 매칭으로 안전하게 분류.
+// 시설 종류 명칭(plfmCmgFac) → 내부 카테고리 매핑.
+// 에스컬레이터는 "걸어서 이동" 성격이라 stairs 카테고리에 합친다 (접근성 우선순위에서 EV 우선이 됨).
 const FACILITY_PATTERNS = [
-  { pattern: /엘리베이터|EV|elevator/i, category: 'elevator' },
+  { pattern: /엘리베이터|EV|elevator|승강기/i, category: 'elevator' },
   { pattern: /환승|transfer/i, category: 'transfer' },
-  { pattern: /계단|stairs/i, category: 'stairs' },
+  { pattern: /계단|에스컬레이터|escalator|stairs/i, category: 'stairs' },
 ];
 
 function classifyFacility(label) {
@@ -66,52 +66,52 @@ function classifyFacility(label) {
   return null;
 }
 
-// 후보 필드 이름들 — 응답 명세가 확정되면 정확한 키 하나로 좁힐 것 (후속 이슈).
-// 1글자/모호한 한국어 키('칸'·'문' 등)는 다른 필드와 silent 충돌 위험이 있어 제외.
-const FIELD_CANDIDATES = {
-  stationName: ['STATN_NM', 'STATION_NM', 'STATION_NAME', '역명'],
-  lineNumber: ['LINE_NUM', 'LINE_NO', 'LINE', '호선'],
-  carNumber: ['CAR_NO', 'CAR_NUM', 'TRAIN_NO', '차량번호'],
-  doorNumber: ['DOOR_NO', 'DOOR_NUM', 'EXIT_NO', '출입문번호'],
-  facility: ['FCLTY_NM', 'MV_FCLTY_NM', 'EXIT_FCLTY_NM', 'FCLTY_TY', '시설명', '이동설비명'],
-  targetLine: ['TRSF_LINE_NUM', 'TRANSFER_LINE', '환승호선'],
-};
+// 서울 OpenAPI `getFstExit` (OA-22749) 응답 필드 (data.seoul.go.kr 명세 기준).
+// upbdnbSe 값 '상행'/'하행'/'내선'/'외선' 등 한글 그대로 옴 — TravelDirection 매핑.
+const UP_DIRECTION_VALUES = new Set(['상행', '내선']);
+const DOWN_DIRECTION_VALUES = new Set(['하행', '외선']);
 
-function pick(row, candidates) {
-  for (const key of candidates) {
-    if (row[key] != null && row[key] !== '') return row[key];
-  }
+function classifyDirection(value) {
+  if (!value) return null;
+  if (UP_DIRECTION_VALUES.has(value)) return 'up';
+  if (DOWN_DIRECTION_VALUES.has(value)) return 'down';
   return null;
+}
+
+function stringOrNull(value) {
+  if (value == null || value === '') return null;
+  return String(value);
 }
 
 // 한 행을 stations.json id 기준의 시설별 엔트리로 변환.
 // 매핑 실패 시 (역 매칭 불가, 시설 분류 불가, 문번호 누락) null 반환.
-// transfer 분류는 라벨 기반이지만, targetLine 필드 존재 여부로 cross-check해서 silent
-// 오분류(예: "환승통로 계단"이 transfer로 잘못 묶이는 케이스)를 stairs로 강등시킨다.
+// 응답 필드:
+//   - stnNm: 역명, lineNm: 호선명 (참고)
+//   - plfmCmgFac: 승강장출입설비 (시설 분류 소스)
+//   - qckgffVhclDoorNo: 빠른하차차량출입문번호 (사용자 노출용 핵심)
+//   - upbdnbSe: 상하행구분 → TravelDirection
+//   - drtnInfo: 방면정보 (예: "○○방면")
+//   - fwkPstnNm/facPstnNm: 기능위치명/설비위치명 (보조)
 function mapRow(row) {
-  const stationName = pick(row, FIELD_CANDIDATES.stationName);
-  const doorNumber = pick(row, FIELD_CANDIDATES.doorNumber);
-  const carNumber = pick(row, FIELD_CANDIDATES.carNumber);
-  const facilityLabel = pick(row, FIELD_CANDIDATES.facility);
-  let category = classifyFacility(facilityLabel);
-  const targetLine = pick(row, FIELD_CANDIDATES.targetLine);
+  const stationName = stringOrNull(row.stnNm);
+  const doorNumber = stringOrNull(row.qckgffVhclDoorNo);
+  const category = classifyFacility(row.plfmCmgFac);
 
   if (!stationName || !doorNumber || !category) return null;
-  if (category === 'transfer' && !targetLine) {
-    // transfer로 분류됐지만 환승 대상 노선이 비어 있으면 transfer 의미 성립 안 됨 → stairs 강등.
-    category = 'stairs';
-  }
 
   const station = STATIONS.find((s) => s.name === stationName);
   if (!station) return null;
+
+  const direction = classifyDirection(row.upbdnbSe);
+  const towardLabel = stringOrNull(row.drtnInfo);
 
   return {
     stationId: station.id,
     category,
     entry: {
-      doorNumber: String(doorNumber),
-      ...(carNumber != null && { carNumber: String(carNumber) }),
-      ...(category === 'transfer' && { targetLine: String(targetLine) }),
+      doorNumber,
+      ...(direction && { direction }),
+      ...(towardLabel && { towardLabel }),
     },
   };
 }
