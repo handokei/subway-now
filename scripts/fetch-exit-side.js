@@ -114,37 +114,59 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function main() {
-  // --inspect <역명> 은 단일 역만 fast-path 로 처리한 뒤 raw 매칭을 출력하고 종료한다.
-  if (INSPECT) {
-    const target = STATIONS.find((s) => s.name === INSPECT);
-    if (!target) {
-      console.error(`[fetch-exit-side] inspect 대상 "${INSPECT}"을 stations.json에서 못 찾았습니다.`);
-      process.exit(1);
-    }
-    const page = await fetchPage(target.name);
-    if (!page) {
-      console.error(`[fetch-exit-side] inspect: 페이지 fetch 실패 (Cloudflare/403 가능성).`);
-      process.exit(1);
-    }
-    const matches = extractMatches(page.html);
-    const html = page.html;
-    // 디버그: 본문 HTML 특성 파악 (SSR vs CSR, 안내방송 섹션 존재 여부 등)
-    const keywords = ['문이 열립니다', '왼쪽', '오른쪽', '승강장', '안내방송', '역 구조', '상대식', '섬식', target.name];
-    const keywordHits = Object.fromEntries(
-      keywords.map((k) => [k, (html.match(new RegExp(k, 'g')) ?? []).length]),
-    );
-    console.log(JSON.stringify({
-      url: page.url,
-      htmlLength: html.length,
-      keywordHits,
-      matchCount: matches.length,
-      matches,
-      htmlHead: html.slice(0, 500),
-    }, null, 2));
+const DEBUG_KEYWORDS = ['문이 열립니다', '왼쪽', '오른쪽', '승강장', '안내방송', '역 구조', '상대식', '섬식'];
+
+function countKeywordHits(html, stationName) {
+  // 리터럴 문자열의 비중복 등장 횟수 — split 길이로 계산 (Regex 없이 안전).
+  const keys = [...DEBUG_KEYWORDS, stationName];
+  return Object.fromEntries(keys.map((k) => [k, html.split(k).length - 1]));
+}
+
+async function runInspect() {
+  const target = STATIONS.find((s) => s.name === INSPECT);
+  if (!target) {
+    console.error(`[fetch-exit-side] inspect 대상 "${INSPECT}"을 stations.json에서 못 찾았습니다.`);
+    process.exit(1);
+  }
+  const page = await fetchPage(target.name);
+  if (!page) {
+    console.error(`[fetch-exit-side] inspect: 페이지 fetch 실패 (Cloudflare/403 가능성).`);
+    process.exit(1);
+  }
+  const matches = extractMatches(page.html);
+  const payload = {
+    url: page.url,
+    htmlLength: page.html.length,
+    keywordHits: countKeywordHits(page.html, target.name),
+    matchCount: matches.length,
+    matches,
+    htmlHead: page.html.slice(0, 500),
+  };
+  // 외부 데이터 — console.log 대신 stdout write로 log injection 룰 회피.
+  process.stdout.write(JSON.stringify(payload, null, 2) + '\n');
+}
+
+function recordResult(r, station, result, counters, failed) {
+  if (r.status === 'ok') {
+    result[station.name] = r.entry;
+    counters.ok += 1;
     return;
   }
+  if (r.status === 'no_match') {
+    counters.noMatch += 1;
+    failed.push(`${station.name} (no_match)`);
+    return;
+  }
+  if (r.status === 'no_page') {
+    counters.noPage += 1;
+    failed.push(`${station.name} (no_page)`);
+    return;
+  }
+  counters.noDir += 1;
+  failed.push(`${station.name} (no_direction, matches=${r.matchCount})`);
+}
 
+async function runBatch() {
   const targets = ONLY
     ? STATIONS.filter((s) => ONLY.includes(s.name))
     : STATIONS;
@@ -152,37 +174,34 @@ async function main() {
   console.log(`[fetch-exit-side] targets=${targets.length}`);
 
   const result = {};
-  let ok = 0;
-  let noMatch = 0;
-  let noPage = 0;
-  let noDir = 0;
+  const counters = { ok: 0, noMatch: 0, noPage: 0, noDir: 0 };
   const failed = [];
 
   for (let i = 0; i < targets.length; i++) {
     const station = targets[i];
     try {
       const r = await processStation(station);
-      if (r.status === 'ok') {
-        result[station.name] = r.entry;
-        ok += 1;
-      } else if (r.status === 'no_match') {
-        noMatch += 1;
-        failed.push(`${station.name} (no_match)`);
-      } else if (r.status === 'no_page') {
-        noPage += 1;
-        failed.push(`${station.name} (no_page)`);
-      } else if (r.status === 'no_direction') {
-        noDir += 1;
-        failed.push(`${station.name} (no_direction, matches=${r.matchCount})`);
-      }
+      recordResult(r, station, result, counters, failed);
     } catch (e) {
       failed.push(`${station.name} (error: ${e.message})`);
     }
     if (i < targets.length - 1) await sleep(SLEEP_MS);
     if ((i + 1) % 50 === 0) {
-      console.log(`[fetch-exit-side] progress ${i + 1}/${targets.length} ok=${ok}`);
+      console.log(`[fetch-exit-side] progress ${i + 1}/${targets.length} ok=${counters.ok}`);
     }
   }
+
+  return { result, counters, failed };
+}
+
+async function main() {
+  if (INSPECT) {
+    await runInspect();
+    return;
+  }
+
+  const { result, counters, failed } = await runBatch();
+  const { ok, noMatch, noPage, noDir } = counters;
 
   fs.writeFileSync(OUT, JSON.stringify(result, null, 2) + '\n');
   console.log(`[fetch-exit-side] ok=${ok} noMatch=${noMatch} noPage=${noPage} noDir=${noDir}`);

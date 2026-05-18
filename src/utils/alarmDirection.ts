@@ -42,7 +42,7 @@ export function resolveAlarmDirection(
     return resolveTravelDirection(segment.fromLine, prevAnchor, segment.transferName)?.direction;
   }
   if (isSameStationName(event.stationName, destinationName)) {
-    const last = transfers[transfers.length - 1];
+    const last = transfers.at(-1)!;
     return resolveTravelDirection(last.toLine, last.transferName, destinationName)?.direction;
   }
   return undefined;

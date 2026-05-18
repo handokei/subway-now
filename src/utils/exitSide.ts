@@ -2,7 +2,7 @@ import exitSideData from '../data/exitSide.json';
 import type { ExitSide, ExitSideMap, TravelDirection } from '../types/exitSide';
 import { normalizeStationName } from './stationRoute';
 
-const EXIT_SIDE_MAP = exitSideData as ExitSideMap;
+const EXIT_SIDE_MAP: ExitSideMap = exitSideData;
 
 // 진행방향별로 등록된 좌/우 정보를 조회한다. 데이터가 없으면 null을 반환해
 // caller가 graceful fallback(좌/우 라인 생략) 할 수 있게 한다.

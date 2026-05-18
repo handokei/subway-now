@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import i18next from 'i18next';
 import { Station } from '../types/station';
 import { LINE_COLORS, LINE_NAMES } from '../constants/lineColors';
-import { DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
+import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName } from './stationRoute';
 import type { AlarmEvent } from './stationAlarm';
 import type { NextTarget } from './stationPipeline';
 import * as LiveActivity from 'live-activity';
@@ -16,7 +16,6 @@ import stationsData from '../data/stations.json';
 import type { ExitSide } from '../types/exitSide';
 import { lookupExitSide } from './exitSide';
 import { hasQuickExitData } from './quickExit';
-import { normalizeStationName } from './stationRoute';
 
 const allStations = stationsData as Station[];
 

@@ -155,8 +155,8 @@ async function fetchPage(start, end) {
   // JSON 파싱 전에 감지해 사용자에게 구체적 안내를 한다.
   const trimmed = text.trimStart();
   if (trimmed.startsWith('<')) {
-    const codeMatch = trimmed.match(/<CODE>([^<]+)<\/CODE>/);
-    const msgMatch = trimmed.match(/<MESSAGE>([^<]+)<\/MESSAGE>/);
+    const codeMatch = /<CODE>([^<]+)<\/CODE>/.exec(trimmed);
+    const msgMatch = /<MESSAGE>([^<]+)<\/MESSAGE>/.exec(trimmed);
     const code = codeMatch?.[1] ?? 'UNKNOWN';
     const message = msgMatch?.[1] ?? trimmed.slice(0, 200);
     throw new Error(
@@ -174,7 +174,8 @@ async function main() {
   const first = await fetchPage(1, PAGE);
   if (INSPECT) {
     const rows = extractRows(first) ?? [];
-    console.log(JSON.stringify(rows[0] ?? first, null, 2));
+    // 외부 데이터를 console.log로 흘리지 않기 위해 stdout에 직접 write (개발용 diagnostic).
+    process.stdout.write(JSON.stringify(rows[0] ?? first, null, 2) + '\n');
     process.exit(0);
   }
 
