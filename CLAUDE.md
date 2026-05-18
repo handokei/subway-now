@@ -177,7 +177,8 @@ perf/#이슈번호-대상         예: perf/#139-map-clustering
 
 ### PR 머지 규칙
 - **CI 통과 필수 확인** — `gh pr checks <PR번호>`로 `Type Check & Test` pass 확인 후 머지
-- `E2E Smoke (mock mode)`는 ci.yml에서 PR마다 실행되며 안정화(연속 20회 green) 후 branch protection required로 승격 예정 (Phase 4)
+- `E2E Smoke (mock mode)`는 ci.yml의 `changes` job이 UI 영향 경로 변경을 감지한 PR에서만 실행 (i18n/백엔드/문서 PR은 자동 스킵). 안정화 후 branch protection required로 승격 예정 (Phase 4)
+- E2E 스킵 기준 경로 (변경되어도 smoke 미실행): `src/i18n/`, `src/testUtils/`, `backend/`, `docs/`, `scripts/`, `tasks/`, `img/`, `subway/`, `locales/`(top), `__mocks__/`, `.maestro/manual/`, `.maestro/flows/{gps,scenario}/`, `.github/workflows/e2e.yml`, `eas.json`, `jest.setup.js`, `sonar-project.properties`, `.env.example`, `.gitignore`, `.prettierrc*`, `.eslintrc*`, `.editorconfig`, `*.md`, `*.txt`
 - nightly의 gps/scenario(`e2e.yml`)는 PR 게이트 아님. 실기기 수동 회귀는 `.maestro/manual/`
 
 ---
