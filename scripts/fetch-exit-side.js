@@ -128,7 +128,20 @@ async function main() {
       process.exit(1);
     }
     const matches = extractMatches(page.html);
-    console.log(JSON.stringify({ url: page.url, matchCount: matches.length, matches }, null, 2));
+    const html = page.html;
+    // 디버그: 본문 HTML 특성 파악 (SSR vs CSR, 안내방송 섹션 존재 여부 등)
+    const keywords = ['문이 열립니다', '왼쪽', '오른쪽', '승강장', '안내방송', '역 구조', '상대식', '섬식', target.name];
+    const keywordHits = Object.fromEntries(
+      keywords.map((k) => [k, (html.match(new RegExp(k, 'g')) ?? []).length]),
+    );
+    console.log(JSON.stringify({
+      url: page.url,
+      htmlLength: html.length,
+      keywordHits,
+      matchCount: matches.length,
+      matches,
+      htmlHead: html.slice(0, 500),
+    }, null, 2));
     return;
   }
 

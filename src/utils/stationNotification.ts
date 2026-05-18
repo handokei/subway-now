@@ -15,6 +15,8 @@ import { saveStationToWidget, clearWidgetStation } from './widgetStorage';
 import stationsData from '../data/stations.json';
 import type { ExitSide } from '../types/exitSide';
 import { lookupExitSide } from './exitSide';
+import { hasQuickExitData } from './quickExit';
+import { normalizeStationName } from './stationRoute';
 
 const allStations = stationsData as Station[];
 
@@ -131,6 +133,24 @@ function resolveExitSide(event: AlarmEvent): ExitSide | null {
   return lookupExitSide(event.stationName, event.direction);
 }
 
+// 알람 본문에 추상적 빠른하차 힌트를 붙일지 결정. 해당 역의 빠른하차 데이터가 있을 때만 표시한다.
+// 알람 타입에 따라 transfer/arrival 두 가지 카피로 분기.
+function resolveQuickHint(event: AlarmEvent): string | null {
+  const station =
+    allStations.find((s) => s.name === event.stationName) ??
+    allStations.find((s) => normalizeStationName(s.name) === normalizeStationName(event.stationName));
+  if (!station) return null;
+  if (!hasQuickExitData(station.id)) return null;
+  return event.type === 'transfer'
+    ? i18next.t('alarms.quickHintTransfer')
+    : i18next.t('alarms.quickHintArrival');
+}
+
+function appendQuickHint(body: string, hint: string | null): string {
+  if (!hint) return body;
+  return `${body}\n${hint}`;
+}
+
 function buildContent(
   currentStation: Station,
   distanceM: number,
@@ -235,7 +255,9 @@ function buildLiveActivityData(
       station: data.alarmStationName,
     });
     const side = resolveExitSide(alarmEvent);
-    data.alarmBody = appendExitSide(rawBody, side);
+    const withSide = appendExitSide(rawBody, side);
+    const hint = resolveQuickHint(alarmEvent);
+    data.alarmBody = appendQuickHint(withSide, hint);
     if (side) {
       data.alarmExitSide = side;
     }
@@ -421,7 +443,9 @@ const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTrans
 
 export function buildAlarmContent(event: AlarmEvent): { title: string; body: string } {
   const { title, body } = ALARM_MESSAGE_BUILDERS[event.phaseId](event.stationName, event.type === 'transfer');
-  return { title, body: appendExitSide(body, resolveExitSide(event)) };
+  const withSide = appendExitSide(body, resolveExitSide(event));
+  const withHint = appendQuickHint(withSide, resolveQuickHint(event));
+  return { title, body: withHint };
 }
 
 export async function sendAlarmNotification(

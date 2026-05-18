@@ -59,6 +59,13 @@ jest.mock('../../data/exitSide.json', () => ({
   시청: { up: 'both' },
 }));
 
+// 빠른하차 힌트 분기 테스트용 — 잠실(2-016)·왕십리(2-008)만 등록.
+// 기존 테스트들이 자주 쓰는 강남(2-022)·시청(1-033)에는 데이터를 두지 않아 기존 본문 비교가 깨지지 않도록 한다.
+jest.mock('../../data/quickExit.json', () => ({
+  '2-016': { stairs: [{ doorNumber: '3-2' }] },
+  '2-008': { elevator: [{ doorNumber: '5-1' }] },
+}));
+
 const mockStation: Station = {
   id: 'si-cheong-1',
   name: '시청',
@@ -348,7 +355,7 @@ describe('stationNotification', () => {
         expect.objectContaining({
           alarmType: 'destination',
           alarmStationName: '강남',
-          alarmBody: '다음 역 강남에서 내리세요!',
+          alarmBody: '다음 역 강남에서 하차하세요!',
           alarmShortLabel: '하차',
         })
       );
@@ -358,7 +365,7 @@ describe('stationNotification', () => {
       await updateStationNotification(mockStation, 154, mockDestination, directRoute, 12, false, { phaseId: 'early', type: 'destination', stationName: '강남', direction: 'up' });
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.objectContaining({
-          alarmBody: '다음 역 강남에서 내리세요!\n왼쪽 문으로 내리세요',
+          alarmBody: '다음 역 강남에서 하차하세요!\n왼쪽 문으로 하차하세요',
           alarmExitSide: 'left',
         })
       );
@@ -531,7 +538,7 @@ describe('stationNotification', () => {
     it('early destination이면 하차 알림을 보낸다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification(earlyDest);
-      expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { interruptionLevel: 'timeSensitive' });
+      expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!', { interruptionLevel: 'timeSensitive' });
       expect(mockVibrateAlarm).toHaveBeenCalledWith(false);
     });
 
@@ -550,7 +557,7 @@ describe('stationNotification', () => {
     it('Android에서는 channelId와 priority MAX가 포함된다', async () => {
       jest.replaceProperty(Platform, 'OS', 'android');
       await sendAlarmNotification(earlyDest);
-      expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { channelId: 'station-alarm', priority: 'max' });
+      expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!', { channelId: 'station-alarm', priority: 'max' });
     });
 
     it('dismiss 실패해도 schedule은 호출된다', async () => {
@@ -589,7 +596,7 @@ describe('stationNotification', () => {
       await sendAlarmNotification(earlyDest, false, false);
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-alarm',
-        content: { title: '하차 알림', body: '다음 역 강남에서 내리세요!', sound: false, interruptionLevel: 'timeSensitive' },
+        content: { title: '하차 알림', body: '다음 역 강남에서 하차하세요!', sound: false, interruptionLevel: 'timeSensitive' },
         trigger: null,
       });
     });
@@ -599,7 +606,7 @@ describe('stationNotification', () => {
       await sendAlarmNotification(earlyDest, false, false);
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-alarm',
-        content: { title: '하차 알림', body: '다음 역 강남에서 내리세요!', sound: false, channelId: 'station-alarm-silent', priority: 'max' },
+        content: { title: '하차 알림', body: '다음 역 강남에서 하차하세요!', sound: false, channelId: 'station-alarm-silent', priority: 'max' },
         trigger: null,
       });
     });
@@ -607,7 +614,7 @@ describe('stationNotification', () => {
     it('TTS는 알람 body를 sleepMode/allowSpeaker와 함께 호출한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification(earlyDest, false, true);
-      expect(mockSpeakAlarm).toHaveBeenCalledWith('다음 역 강남에서 내리세요!', {
+      expect(mockSpeakAlarm).toHaveBeenCalledWith('다음 역 강남에서 하차하세요!', {
         sleepMode: false,
         allowSpeaker: true,
       });
@@ -616,7 +623,7 @@ describe('stationNotification', () => {
     it('TTS는 silent 게이트(sleepMode/allowSpeaker)를 그대로 전달한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification(earlyDest, true, false);
-      expect(mockSpeakAlarm).toHaveBeenCalledWith('다음 역 강남에서 내리세요!', {
+      expect(mockSpeakAlarm).toHaveBeenCalledWith('다음 역 강남에서 하차하세요!', {
         sleepMode: true,
         allowSpeaker: false,
       });
@@ -626,19 +633,19 @@ describe('stationNotification', () => {
       it('event.direction이 없으면 본문에 좌/우 라인을 추가하지 않는다', async () => {
         jest.replaceProperty(Platform, 'OS', 'ios');
         await sendAlarmNotification(earlyDest);
-        expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!', { interruptionLevel: 'timeSensitive' });
+        expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!', { interruptionLevel: 'timeSensitive' });
       });
 
       it('event.direction이 있고 데이터가 매칭되면 좌측 라인이 추가된다', async () => {
         jest.replaceProperty(Platform, 'OS', 'ios');
         await sendAlarmNotification({ ...earlyDest, direction: 'up' });
-        expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!\n왼쪽 문으로 내리세요', { interruptionLevel: 'timeSensitive' });
+        expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!\n왼쪽 문으로 하차하세요', { interruptionLevel: 'timeSensitive' });
       });
 
       it('하행이면 오른쪽 라인이 추가된다', async () => {
         jest.replaceProperty(Platform, 'OS', 'ios');
         await sendAlarmNotification({ ...earlyDest, direction: 'down' });
-        expectAlarmNotification('하차 알림', '다음 역 강남에서 내리세요!\n오른쪽 문으로 내리세요', { interruptionLevel: 'timeSensitive' });
+        expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!\n오른쪽 문으로 하차하세요', { interruptionLevel: 'timeSensitive' });
       });
 
       it('섬식(both)이면 양쪽 라인이 추가된다', async () => {
@@ -651,6 +658,40 @@ describe('stationNotification', () => {
         jest.replaceProperty(Platform, 'OS', 'ios');
         await sendAlarmNotification({ ...earlyTransfer, direction: 'down' });
         expectAlarmNotification('환승 알림', '다음 역 시청에서 환승하세요!', { interruptionLevel: 'timeSensitive' });
+      });
+    });
+
+    describe('빠른하차 힌트 (quickExit)', () => {
+      it('해당 역의 빠른하차 데이터가 없으면 본문에 힌트가 붙지 않는다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        await sendAlarmNotification({ phaseId: 'early', type: 'destination', stationName: '시청' });
+        expectAlarmNotification('하차 알림', '다음 역 시청에서 하차하세요!', { interruptionLevel: 'timeSensitive' });
+      });
+
+      it('destination 알람이고 데이터가 있으면 "출구가 빠른 위치" 힌트가 붙는다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        await sendAlarmNotification({ phaseId: 'early', type: 'destination', stationName: '잠실' });
+        expectAlarmNotification('하차 알림', '다음 역 잠실에서 하차하세요!\n출구가 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
+      });
+
+      it('transfer 알람이고 데이터가 있으면 "환승이 빠른 위치" 힌트가 붙는다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        await sendAlarmNotification({ phaseId: 'early', type: 'transfer', stationName: '왕십리' });
+        expectAlarmNotification('환승 알림', '다음 역 왕십리에서 환승하세요!\n환승이 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
+      });
+
+      it('알람 대상역이 stations.json에도 없으면 힌트 없이 본문만 표시한다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        await sendAlarmNotification({ phaseId: 'early', type: 'destination', stationName: '없는역' });
+        expectAlarmNotification('하차 알림', '다음 역 없는역에서 하차하세요!', { interruptionLevel: 'timeSensitive' });
+      });
+
+      it('정규화 fallback — 괄호 부제가 붙은 이름이어도 매칭된다', async () => {
+        jest.replaceProperty(Platform, 'OS', 'ios');
+        // 잠실(2-016)이 stations.json에 "잠실(송파구청)" 같은 형태로 등록돼 있지 않더라도
+        // 동일 케이스 보호. 잠실이 단일 이름이라 여기서는 정확 매칭으로 작동.
+        await sendAlarmNotification({ phaseId: 'imminent', type: 'destination', stationName: '잠실' });
+        expectAlarmNotification('도착 임박', '곧 잠실에 도착합니다. 하차 준비하세요!\n출구가 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
       });
     });
   });

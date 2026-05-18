@@ -190,7 +190,9 @@
     "imminentArrivalBody": "Arriving at {{station}}. Get ready to exit!",
     "exitSideLeft": "Exit on the left",
     "exitSideRight": "Exit on the right",
-    "exitSideBoth": "Doors open on both sides"
+    "exitSideBoth": "Doors open on both sides",
+    "quickHintTransfer": "Get off at the spot closest to your transfer",
+    "quickHintArrival": "Get off at the spot closest to the exit"
   },
   "liveActivity": {
     "alarmShortTransfer": "Transfer",

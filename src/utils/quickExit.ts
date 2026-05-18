@@ -13,6 +13,17 @@ import type { TravelDirection } from '../types/exitSide';
 
 const QUICK_EXIT_MAP = quickExitData as QuickExitMap;
 
+// 한 역에 빠른하차 데이터가 존재하는지(어떤 카테고리든) — 알람 본문의 추상 힌트 표시 여부 판단.
+export function hasQuickExitData(stationId: string): boolean {
+  const station = QUICK_EXIT_MAP[stationId];
+  if (!station) return false;
+  return Boolean(
+    (station.stairs && station.stairs.length > 0) ||
+      (station.elevator && station.elevator.length > 0) ||
+      (station.transfer && station.transfer.length > 0),
+  );
+}
+
 interface ResolveOptions {
   // 거동 불편자 모드 ON 일 때 EV 우선 — FACILITY_PRIORITY_ACCESSIBILITY를 사용한다.
   accessibilityMode?: boolean;

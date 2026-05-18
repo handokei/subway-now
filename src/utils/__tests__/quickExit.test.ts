@@ -1,4 +1,4 @@
-import { resolveQuickExit } from '../quickExit';
+import { hasQuickExitData, resolveQuickExit } from '../quickExit';
 
 jest.mock('../../data/quickExit.json', () => ({
   'gangnam-2': {
@@ -10,6 +10,9 @@ jest.mock('../../data/quickExit.json', () => ({
   },
   'only-elevator': {
     elevator: [{ doorNumber: '5-2', direction: 'up' }],
+  },
+  'only-transfer': {
+    transfer: [{ doorNumber: '7-1' }],
   },
   'empty-buckets': {
     stairs: [],
@@ -56,6 +59,22 @@ describe('resolveQuickExit', () => {
 
   it('모든 카테고리가 비어 있으면 null', () => {
     expect(resolveQuickExit('empty-buckets')).toBeNull();
+  });
+
+  describe('hasQuickExitData', () => {
+    it('등록되지 않은 역은 false', () => {
+      expect(hasQuickExitData('unknown')).toBe(false);
+    });
+
+    it('어떤 카테고리든 엔트리가 하나라도 있으면 true', () => {
+      expect(hasQuickExitData('gangnam-2')).toBe(true);
+      expect(hasQuickExitData('only-elevator')).toBe(true);
+      expect(hasQuickExitData('only-transfer')).toBe(true);
+    });
+
+    it('모든 카테고리가 빈 배열이면 false', () => {
+      expect(hasQuickExitData('empty-buckets')).toBe(false);
+    });
   });
 
   it('accessibilityMode + direction 조합도 동작한다', () => {
