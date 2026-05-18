@@ -7,6 +7,43 @@ on:
     branches: [main, dev]
 
 jobs:
+  changes:
+    name: 변경 경로 판정 (e2e 게이팅)
+    runs-on: ubuntu-latest
+    outputs:
+      ui_affected: ${{ steps.detect.outputs.ui_affected }}
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: UI 영향 경로 판정
+        id: detect
+        # 변경 파일이 모두 SKIP_RE에만 매칭되면 e2e-smoke를 스킵한다.
+        # 기준: smoke flow가 검증하지 못하는 영역(백엔드/i18n/문서/nightly-only flow 등)은 25분 macOS runner를 낭비하지 않는다.
+        # 의심스러우면 트리거(보수적).
+        run: |
+          set -e
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git fetch --depth=1 origin "${{ github.base_ref }}"
+            base="origin/${{ github.base_ref }}"
+          else
+            base="HEAD^"
+          fi
+          files=$(git diff --name-only "$base"...HEAD || echo "")
+          echo "Changed files vs $base:"
+          echo "$files"
+          SKIP_RE='^(src/i18n/|backend/|docs/|scripts/|tasks/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/e2e\.yml$|.*\.md$|.*\.txt$)'
+          relevant=$(echo "$files" | grep -v '^$' | grep -vE "$SKIP_RE" || true)
+          if [ -z "$relevant" ] && [ -n "$files" ]; then
+            echo "ui_affected=false" >> "$GITHUB_OUTPUT"
+            echo "→ e2e-smoke SKIPPED (UI-무관 경로만 변경)"
+          else
+            echo "ui_affected=true" >> "$GITHUB_OUTPUT"
+            echo "→ e2e-smoke 실행"
+          fi
+
   test:
     name: Type Check & Test
     runs-on: ubuntu-latest
@@ -33,7 +70,9 @@ jobs:
   e2e-smoke:
     name: E2E Smoke (mock mode)
     # PR 머지 게이트. EXPO_PUBLIC_E2E_MOCK=1로 useNearestStation을 강남 고정 fixture로 단락 → 5분 내 결정성.
-    needs: test
+    # changes.ui_affected=false면 자동 스킵 (i18n/백엔드/문서 PR은 smoke가 검증할 게 없음 → 25분 낭비 방지).
+    needs: [test, changes]
+    if: needs.changes.outputs.ui_affected == 'true'
     runs-on: macos-14
     timeout-minutes: 45
     env:
