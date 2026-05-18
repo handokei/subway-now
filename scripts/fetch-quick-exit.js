@@ -32,22 +32,52 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-// 서울 OpenAPI 공통 envelope에서 row 배열을 찾는다.
-// 응답이 { <SERVICE>: { RESULT, list_total_count, row: [...] } } 형태인 경우와
-// 행 자체가 최상위에 있는 경우 모두 대응.
+// 서울 OpenAPI / data.go.kr 양쪽 envelope을 모두 처리.
+// 관찰된 실제 응답 구조 (getFstExit): { <wrapper>: { items: { item: [...] }, totalCount, pageNo, numOfRows } }
+// 서울 OpenAPI 클래식: { <SERVICE>: { row: [...], list_total_count } }
+// 가능한 후보 경로를 순회해 첫 매칭을 채택.
+function dig(obj, path) {
+  return path.reduce((cur, key) => (cur == null ? cur : cur[key]), obj);
+}
+
+const ROW_PATHS = [
+  ['items', 'item'],
+  [SERVICE, 'items', 'item'],
+  ['response', 'body', 'items', 'item'],
+  ['body', 'items', 'item'],
+  [SERVICE, 'row'],
+  ['row'],
+];
+
+const TOTAL_PATHS = [
+  ['totalCount'],
+  [SERVICE, 'totalCount'],
+  ['response', 'body', 'totalCount'],
+  ['body', 'totalCount'],
+  [SERVICE, 'list_total_count'],
+  ['list_total_count'],
+];
+
 function extractRows(payload) {
   if (!payload || typeof payload !== 'object') return null;
-  const container = payload[SERVICE] ?? payload;
-  if (Array.isArray(container)) return container;
-  if (Array.isArray(container?.row)) return container.row;
+  for (const path of ROW_PATHS) {
+    const v = dig(payload, path);
+    if (Array.isArray(v)) return v;
+    if (v && typeof v === 'object') return [v];
+  }
+  // 행이 최상위 배열인 경우
+  if (Array.isArray(payload)) return payload;
   return null;
 }
 
 function extractTotal(payload) {
   if (!payload || typeof payload !== 'object') return null;
-  const container = payload[SERVICE] ?? payload;
-  const total = container?.list_total_count;
-  return typeof total === 'number' ? total : null;
+  for (const path of TOTAL_PATHS) {
+    const v = dig(payload, path);
+    if (typeof v === 'number') return v;
+    if (typeof v === 'string' && /^\d+$/.test(v)) return Number(v);
+  }
+  return null;
 }
 
 // 시설 종류 명칭(plfmCmgFac) → 내부 카테고리 매핑.
