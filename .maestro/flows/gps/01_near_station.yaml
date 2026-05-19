@@ -19,14 +19,14 @@ name: "gps - 역 근처 (강남역)"
 
 - extendedWaitUntil:
     visible:
-      text: "현재역"
+      text: "현재역|Current station"
     timeout: 15000
 
 - assertVisible:
-    text: "강남"
+    text: "강남|Gangnam"
 - assertVisible:
     text: "Next trains"
 - assertVisible:
-    text: "상행"
+    text: "상행|Upbound"
 - assertVisible:
-    text: "하행"
+    text: "하행|Downbound"
