@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import i18next from 'i18next';
 import { Station } from '../types/station';
 import { LINE_COLORS, LINE_NAMES } from '../constants/lineColors';
-import { DirectRoute, TransferRoute, MultiTransferRoute } from './stationRoute';
+import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName } from './stationRoute';
 import type { AlarmEvent } from './stationAlarm';
 import type { NextTarget } from './stationPipeline';
 import * as LiveActivity from 'live-activity';
@@ -13,6 +13,9 @@ import { createLogger } from './logger';
 import { getStationDisplayName, getStationDisplayNameByName } from './stationDisplay';
 import { saveStationToWidget, clearWidgetStation } from './widgetStorage';
 import stationsData from '../data/stations.json';
+import type { ExitSide } from '../types/exitSide';
+import { lookupExitSide } from './exitSide';
+import { hasQuickExitData } from './quickExit';
 
 const allStations = stationsData as Station[];
 
@@ -109,6 +112,42 @@ export async function initStationNotification(): Promise<void> {
     },
   });
   notifLogger.info('권한 상태:', status);
+}
+
+// 좌/우 데이터는 모든 역에 존재하지 않을 수 있다(나무위키 수집 누락 등).
+// side가 주어지지 않으면 본문에 라인이 추가되지 않는다 — 잘못된 안내를 피한다.
+function exitSideText(side: ExitSide): string {
+  if (side === 'left') return i18next.t('alarms.exitSideLeft');
+  if (side === 'right') return i18next.t('alarms.exitSideRight');
+  return i18next.t('alarms.exitSideBoth');
+}
+
+function appendExitSide(body: string, side?: ExitSide | null): string {
+  if (!side) return body;
+  return `${body}\n${exitSideText(side)}`;
+}
+
+function resolveExitSide(event: AlarmEvent): ExitSide | null {
+  if (!event.direction) return null;
+  return lookupExitSide(event.stationName, event.direction);
+}
+
+// 알람 본문에 추상적 빠른하차 힌트를 붙일지 결정. 해당 역의 빠른하차 데이터가 있을 때만 표시한다.
+// 알람 타입에 따라 transfer/arrival 두 가지 카피로 분기.
+function resolveQuickHint(event: AlarmEvent): string | null {
+  const station =
+    allStations.find((s) => s.name === event.stationName) ??
+    allStations.find((s) => normalizeStationName(s.name) === normalizeStationName(event.stationName));
+  if (!station) return null;
+  if (!hasQuickExitData(station.id)) return null;
+  return event.type === 'transfer'
+    ? i18next.t('alarms.quickHintTransfer')
+    : i18next.t('alarms.quickHintArrival');
+}
+
+function appendQuickHint(body: string, hint: string | null): string {
+  if (!hint) return body;
+  return `${body}\n${hint}`;
 }
 
 function buildContent(
@@ -211,9 +250,16 @@ function buildLiveActivityData(
     data.alarmType = alarmEvent.type;
     data.alarmStationName = getStationDisplayNameByName(alarmEvent.stationName, allStations);
     const isTransferAlarm = alarmEvent.type === 'transfer';
-    data.alarmBody = i18next.t(isTransferAlarm ? 'alarms.earlyTransferBody' : 'alarms.earlyArrivalBody', {
+    const rawBody = i18next.t(isTransferAlarm ? 'alarms.earlyTransferBody' : 'alarms.earlyArrivalBody', {
       station: data.alarmStationName,
     });
+    const side = resolveExitSide(alarmEvent);
+    const withSide = appendExitSide(rawBody, side);
+    const hint = resolveQuickHint(alarmEvent);
+    data.alarmBody = appendQuickHint(withSide, hint);
+    if (side) {
+      data.alarmExitSide = side;
+    }
     data.alarmShortLabel = i18next.t(
       isTransferAlarm ? 'liveActivity.alarmShortTransfer' : 'liveActivity.alarmShortArrival',
     );
@@ -395,7 +441,10 @@ const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTrans
 };
 
 export function buildAlarmContent(event: AlarmEvent): { title: string; body: string } {
-  return ALARM_MESSAGE_BUILDERS[event.phaseId](event.stationName, event.type === 'transfer');
+  const { title, body } = ALARM_MESSAGE_BUILDERS[event.phaseId](event.stationName, event.type === 'transfer');
+  const withSide = appendExitSide(body, resolveExitSide(event));
+  const withHint = appendQuickHint(withSide, resolveQuickHint(event));
+  return { title, body: withHint };
 }
 
 export async function sendAlarmNotification(

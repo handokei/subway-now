@@ -56,6 +56,9 @@
     "routeSection": "Route",
     "routePreferenceLabel": "Route preference",
     "routePreferenceDescription": "Choose the default route search method",
+    "accessibilitySection": "Accessibility",
+    "accessibilityModeLabel": "Mobility-accessible mode",
+    "accessibilityModeDescription": "Route screen shows elevator-side quick exits (alarm copy unchanged)",
     "alarmSection": "Alarm",
     "sleepModeLabel": "Sleep mode",
     "sleepModeDescription": "Plays the wake-up alarm sound when earphones are connected",
@@ -166,7 +169,8 @@
     "stationPassed": "Arrived at {{name}}",
     "stopsRemainingToDestination_one": "{{count}} stop to {{destination}}",
     "stopsRemainingToDestination_other": "{{count}} stops to {{destination}}",
-    "stopsRemainingViaTransfer": "{{transferStops}} stops to {{transfer}} transfer · {{totalStops}} stops to {{destination}}"
+    "stopsRemainingViaTransfer": "{{transferStops}} stops to {{transfer}} transfer · {{totalStops}} stops to {{destination}}",
+    "quickExitDoor": "Door {{door}}"
   },
   "lines": {
     "1": "Line 1",
@@ -187,7 +191,12 @@
     "earlyTransferBody": "Transfer at {{station}} (next stop)!",
     "earlyArrivalBody": "Exit at {{station}} (next stop)!",
     "imminentTransferBody": "Arriving at {{station}}. Get ready to transfer!",
-    "imminentArrivalBody": "Arriving at {{station}}. Get ready to exit!"
+    "imminentArrivalBody": "Arriving at {{station}}. Get ready to exit!",
+    "exitSideLeft": "Exit on the left",
+    "exitSideRight": "Exit on the right",
+    "exitSideBoth": "Doors open on both sides",
+    "quickHintTransfer": "Get off at the spot closest to your transfer",
+    "quickHintArrival": "Get off at the spot closest to the exit"
   },
   "liveActivity": {
     "alarmShortTransfer": "Transfer",

@@ -3,6 +3,7 @@ import { isStationOnRoute } from '../utils/stationRoute';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
 import { alarmKey, evaluateAlarmPhase } from '../utils/stationAlarm';
+import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateEtaSeconds } from '../utils/stationEta';
 import { resolveNextTarget } from '../utils/stationPipeline';
 import { sendAlarmNotification, sendStationPassedNotification } from '../utils/stationNotification';
@@ -128,11 +129,21 @@ export function useStationAlarm({
       etaSeconds = estimateEtaSeconds(distM, speedMps);
     }
 
-    const event = evaluateAlarmPhase(
+    const rawEvent = evaluateAlarmPhase(
       { route, destinationName: destination.name, etaSeconds },
       firedAlarmsRef.current,
     );
-    if (event) {
+    if (rawEvent) {
+      // 좌/우 안내를 위한 진행방향. 출발 anchor가 없거나(nearestStation 미정) 결정 불가하면
+      // direction은 undefined로 남고, 본문에 좌/우 라인이 추가되지 않는다.
+      const direction = nearestStation
+        ? resolveAlarmDirection(rawEvent, {
+            route,
+            destinationName: destination.name,
+            sourceStationName: nearestStation.name,
+          })
+        : undefined;
+      const event = direction ? { ...rawEvent, direction } : rawEvent;
       firedAlarmsRef.current.add(alarmKey(event));
       // AsyncStorage에도 즉시 반영 — FG/BG 단일 출처 유지.
       void setFiredAlarms(firedAlarmsRef.current);
@@ -156,6 +167,7 @@ export function useStationAlarm({
     accuracyMeters,
     firedHydrated,
     setAlarmEvent,
+    nearestStation?.id,
   ]);
 
   // Station-passed 알림 효과: 경로상 역 변경 시 dedup된 per-station 알림.

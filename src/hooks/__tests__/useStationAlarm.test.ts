@@ -22,6 +22,11 @@ jest.mock('../../utils/stationAlarm', () => {
   };
 });
 
+const mockResolveAlarmDirection = jest.fn();
+jest.mock('../../utils/alarmDirection', () => ({
+  resolveAlarmDirection: (...args: unknown[]) => mockResolveAlarmDirection(...args),
+}));
+
 const mockResolveNextTarget = jest.fn();
 jest.mock('../../utils/stationPipeline', () => ({
   resolveNextTarget: (...args: unknown[]) => mockResolveNextTarget(...args),
@@ -99,6 +104,7 @@ describe('useStationAlarm', () => {
     jest.clearAllMocks();
     useAppStore.setState({ sleepMode: false, allowSpeaker: true, alarmEvent: null });
     mockEvaluateAlarmPhase.mockReturnValue(null);
+    mockResolveAlarmDirection.mockReturnValue(undefined);
     mockResolveNextTarget.mockReturnValue(null);
     mockGetLastNotifiedStationId.mockResolvedValue(null);
     mockSetLastNotifiedStationId.mockResolvedValue(undefined);
@@ -296,6 +302,21 @@ describe('useStationAlarm', () => {
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     await waitFor(() =>
       expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, true),
+    );
+  });
+
+  it('attaches direction to the alarm event when nearestStation is set and direction resolves', async () => {
+    const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
+    const station = makeStation('S1', '역삼');
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    mockResolveAlarmDirection.mockReturnValue('up');
+    renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
+    await waitFor(() =>
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith(
+        { ...earlyDest, direction: 'up' },
+        false,
+        true,
+      ),
     );
   });
 

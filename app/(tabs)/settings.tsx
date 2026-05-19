@@ -22,6 +22,9 @@ export default function SettingsScreen() {
   const allowSpeaker = useAppStore((s) => s.allowSpeaker);
   const setAllowSpeaker = useAppStore((s) => s.setAllowSpeaker);
   const loadAllowSpeaker = useAppStore((s) => s.loadAllowSpeaker);
+  const accessibilityMode = useAppStore((s) => s.accessibilityMode);
+  const setAccessibilityMode = useAppStore((s) => s.setAccessibilityMode);
+  const loadAccessibilityMode = useAppStore((s) => s.loadAccessibilityMode);
   const themeMode = useAppStore((s) => s.themeMode);
   const setThemeMode = useAppStore((s) => s.setThemeMode);
   const routePreference = useAppStore((s) => s.routePreference);
@@ -36,6 +39,7 @@ export default function SettingsScreen() {
   useEffect(() => {
     loadSleepMode();
     loadAllowSpeaker();
+    loadAccessibilityMode();
     loadRoutePreference();
   }, []);
 
@@ -125,6 +129,27 @@ export default function SettingsScreen() {
               trackColor={{ false: colors.hair, true: colors.accent }}
               thumbColor={allowSpeaker ? colors.onAccent : colors.subtle}
               testID="allow-speaker-switch"
+            />
+          </View>
+        </View>
+
+        {/* 접근성 — 알람 카드 아래에 배치. E2E smoke flow의 sleep-mode-switch 가시성을 깨지 않기 위함. */}
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
+          <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.accessibilitySection')}</Text>
+
+          <View style={styles.settingRow}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.accessibilityModeLabel')}</Text>
+              <Text style={[styles.settingDesc, { color: colors.muted }]}>
+                {t('settings.accessibilityModeDescription')}
+              </Text>
+            </View>
+            <Switch
+              value={accessibilityMode}
+              onValueChange={setAccessibilityMode}
+              trackColor={{ false: colors.hair, true: colors.accent }}
+              thumbColor={accessibilityMode ? colors.onAccent : colors.subtle}
+              testID="accessibility-mode-switch"
             />
           </View>
         </View>

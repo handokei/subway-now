@@ -14,6 +14,7 @@ export const LAST_NOTIFIED_STATION_KEY = 'subway-now:last-notified-station';
 // 좌표/메타로 후속 소비자가 오작동할 수 있다. name만 단일 출처로 둔다.
 export const LAST_FIRED_ALARM_STATION_NAME_KEY = 'subway-now:last-fired-alarm-station-name';
 export const ALLOW_SPEAKER_KEY = 'subway-now:allow-speaker';
+export const ACCESSIBILITY_MODE_KEY = 'subway-now:accessibility-mode';
 export const SLEEP_MODE_GUIDE_SHOWN_KEY = 'subway-now:sleep-mode-guide-shown';
 export const LOCALE_PREFERENCE_KEY = 'subway-now:locale-preference';
 export const ALARM_LOG_KEY = 'subway-now:alarm-log';

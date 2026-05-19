@@ -56,6 +56,9 @@
     "routeSection": "経路",
     "routePreferenceLabel": "経路設定",
     "routePreferenceDescription": "デフォルトの経路探索方法を選択します",
+    "accessibilitySection": "アクセシビリティ",
+    "accessibilityModeLabel": "移動弱者モード",
+    "accessibilityModeDescription": "経路画面の早降り位置をエレベーター優先で表示します（アラーム本文には反映されません）",
     "alarmSection": "アラーム",
     "sleepModeLabel": "おやすみモード",
     "sleepModeDescription": "イヤホン接続時は起床アラーム音を鳴らします",
@@ -166,7 +169,8 @@
     "stationPassed": "{{name}}駅に到着",
     "stopsRemainingToDestination_one": "{{destination}}まで残り{{count}}駅",
     "stopsRemainingToDestination_other": "{{destination}}まで残り{{count}}駅",
-    "stopsRemainingViaTransfer": "{{transfer}}乗換まで{{transferStops}}駅 · {{destination}}まで{{totalStops}}駅"
+    "stopsRemainingViaTransfer": "{{transfer}}乗換まで{{transferStops}}駅 · {{destination}}まで{{totalStops}}駅",
+    "quickExitDoor": "{{door}}番ドア"
   },
   "lines": {
     "1": "1号線",
@@ -187,7 +191,12 @@
     "earlyTransferBody": "次の駅 {{station}}で乗り換えてください!",
     "earlyArrivalBody": "次の駅 {{station}}で下車してください!",
     "imminentTransferBody": "まもなく{{station}}に到着します。乗換の準備をしてください!",
-    "imminentArrivalBody": "まもなく{{station}}に到着します。下車の準備をしてください!"
+    "imminentArrivalBody": "まもなく{{station}}に到着します。下車の準備をしてください!",
+    "exitSideLeft": "左側のドアから降りてください",
+    "exitSideRight": "右側のドアから降りてください",
+    "exitSideBoth": "両側のドアが開きます",
+    "quickHintTransfer": "乗り換えに近い位置で降りてください",
+    "quickHintArrival": "出口に近い位置で降りてください"
   },
   "liveActivity": {
     "alarmShortTransfer": "乗換",
