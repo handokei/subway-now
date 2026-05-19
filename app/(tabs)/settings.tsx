@@ -77,27 +77,6 @@ export default function SettingsScreen() {
           options={ROUTE_CATEGORIES.map((c) => ({ value: c.key, label: t(`routes.${c.key}`) }))}
         />
 
-        {/* 접근성 */}
-        <View style={[styles.card, { backgroundColor: colors.card }]}>
-          <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.accessibilitySection')}</Text>
-
-          <View style={styles.settingRow}>
-            <View style={styles.settingInfo}>
-              <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.accessibilityModeLabel')}</Text>
-              <Text style={[styles.settingDesc, { color: colors.muted }]}>
-                {t('settings.accessibilityModeDescription')}
-              </Text>
-            </View>
-            <Switch
-              value={accessibilityMode}
-              onValueChange={setAccessibilityMode}
-              trackColor={{ false: colors.hair, true: colors.accent }}
-              thumbColor={accessibilityMode ? colors.onAccent : colors.subtle}
-              testID="accessibility-mode-switch"
-            />
-          </View>
-        </View>
-
         {/* 알람 */}
         <View style={[styles.card, { backgroundColor: colors.card }]}>
           <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.alarmSection')}</Text>
@@ -150,6 +129,27 @@ export default function SettingsScreen() {
               trackColor={{ false: colors.hair, true: colors.accent }}
               thumbColor={allowSpeaker ? colors.onAccent : colors.subtle}
               testID="allow-speaker-switch"
+            />
+          </View>
+        </View>
+
+        {/* 접근성 — 알람 카드 아래에 배치. E2E smoke flow의 sleep-mode-switch 가시성을 깨지 않기 위함. */}
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
+          <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('settings.accessibilitySection')}</Text>
+
+          <View style={styles.settingRow}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.accessibilityModeLabel')}</Text>
+              <Text style={[styles.settingDesc, { color: colors.muted }]}>
+                {t('settings.accessibilityModeDescription')}
+              </Text>
+            </View>
+            <Switch
+              value={accessibilityMode}
+              onValueChange={setAccessibilityMode}
+              trackColor={{ false: colors.hair, true: colors.accent }}
+              thumbColor={accessibilityMode ? colors.onAccent : colors.subtle}
+              testID="accessibility-mode-switch"
             />
           </View>
         </View>
