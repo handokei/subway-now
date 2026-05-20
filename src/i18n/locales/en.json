@@ -82,17 +82,6 @@
     "recenter": "Recenter on my location",
     "search": {
       "placeholder": "Search stations"
-    },
-    "train": {
-      "terminalSuffix": "To {{name}}",
-      "descriptionTemplate": "Train {{trainNo}} · {{status}}",
-      "status": {
-        "arrived": "Arrived",
-        "entering": "Entering",
-        "departed": "Departed",
-        "prevDeparted": "Departed prev. station",
-        "running": "In service"
-      }
     }
   },
   "favorites": {

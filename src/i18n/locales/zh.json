@@ -82,17 +82,6 @@
     "recenter": "返回当前位置",
     "search": {
       "placeholder": "搜索车站"
-    },
-    "train": {
-      "terminalSuffix": "开往{{name}}",
-      "descriptionTemplate": "列车 {{trainNo}} · {{status}}",
-      "status": {
-        "arrived": "到达",
-        "entering": "进站",
-        "departed": "发车",
-        "prevDeparted": "前站发车",
-        "running": "运行中"
-      }
     }
   },
   "favorites": {

@@ -82,17 +82,6 @@
     "recenter": "現在地に戻る",
     "search": {
       "placeholder": "駅名を検索"
-    },
-    "train": {
-      "terminalSuffix": "{{name}}行",
-      "descriptionTemplate": "列車 {{trainNo}} · {{status}}",
-      "status": {
-        "arrived": "到着",
-        "entering": "進入",
-        "departed": "発車",
-        "prevDeparted": "前駅発車",
-        "running": "運行中"
-      }
     }
   },
   "favorites": {
