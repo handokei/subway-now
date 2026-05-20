@@ -5,13 +5,11 @@ import ClusteredMapView from 'react-native-map-clustering';
 import { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 import type MapView from 'react-native-maps';
 import type { Station } from '../types/station';
-import type { TrainMarker as TrainMarkerData } from '../utils/findTrainCoordinates';
 import type { RouteCoordinatePath, RouteStationRole } from '../utils/routeToCoordinates';
 import { buildMapConfig } from '../utils/buildMapConfig';
 import { useTheme } from '../theme';
 import { LINE_BADGE_LABEL } from '../constants/lineColors';
 import { getStationDisplayName } from '../utils/stationDisplay';
-import { TrainMarkerAnimated } from './TrainMarkerAnimated';
 
 interface StationMapProps {
   userLat: number;
@@ -20,8 +18,6 @@ interface StationMapProps {
   nearbyStations: Station[];
   customOriginId?: string;
   onStationPress?: (station: Station) => void;
-  /** Phase 3 Stage 3: 활성 호선의 실시간 열차 위치. 없으면 표시 안 함. */
-  trainMarkers?: TrainMarkerData[];
   /** 검색 결과 선택 시 지도 카메라를 이동시킬 역. focusNonce가 변할 때마다 재이동한다. */
   focusStation?: Station | null;
   /** 같은 역을 다시 선택해도 카메라가 다시 움직이도록 매 선택마다 변경되는 값. */
@@ -49,7 +45,6 @@ export function StationMap({
   nearbyStations,
   customOriginId,
   onStationPress,
-  trainMarkers,
   focusStation,
   focusNonce,
   recenterNonce,
@@ -175,9 +170,6 @@ export function StationMap({
             </Marker>
           );
         })}
-        {trainMarkers?.map((tm) => (
-          <TrainMarkerAnimated key={`train-${tm.line}-${tm.trainNo}`} train={tm} />
-        ))}
         {routeCoords && routeCoords.path.length > 0 && (
           <Polyline
             coordinates={routeCoords.path}
