@@ -34,7 +34,11 @@ jobs:
           files=$(git diff --name-only "$base"...HEAD || echo "")
           echo "Changed files vs $base:"
           echo "$files"
-          SKIP_RE='^(src/i18n/|src/testUtils/|backend/|docs/|scripts/|tasks/|img/|subway/|locales/|__mocks__/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/e2e\.yml$|eas\.json$|jest\.setup\.js$|sonar-project\.properties$|\.env\.example$|\.gitignore$|\.prettierrc.*$|\.eslintrc.*$|\.editorconfig$|.*\.md$|.*\.txt$)'
+          # 추가 스킵 후보:
+          # - src/types/      : 타입 전용, 런타임 영향 없음 (tsc로 type 체크에서 잡힘)
+          # - src/data/       : 정적 데이터. mock smoke는 stations.json을 우회 (강남 fixture 단락)
+          # - src/__tests__/, src/**/__tests__/ : 테스트 코드는 앱 번들 미포함, jest로 별도 검증
+          SKIP_RE='^(src/i18n/|src/testUtils/|src/types/|src/data/|src/(.+/)?__tests__/|backend/|docs/|scripts/|tasks/|img/|subway/|locales/|__mocks__/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/e2e\.yml$|eas\.json$|jest\.setup\.js$|sonar-project\.properties$|\.env\.example$|\.gitignore$|\.prettierrc.*$|\.eslintrc.*$|\.editorconfig$|.*\.md$|.*\.txt$)'
           relevant=$(echo "$files" | grep -v '^$' | grep -vE "$SKIP_RE" || true)
           if [ -z "$relevant" ] && [ -n "$files" ]; then
             echo "ui_affected=false" >> "$GITHUB_OUTPUT"
@@ -133,10 +137,14 @@ jobs:
         run: cd ios && pod install
 
       - name: DerivedData 캐시
+        # 캐시 key에는 native binary에 영향 주는 파일만 포함한다.
+        # JS/TS 변경(src/**)은 xcodebuild build phase의 Metro 번들링(~30s)만 다시 돌면 되므로
+        # native 빌드 산출물(Pods, DerivedData)은 그대로 재사용 가능. src/**를 hash에 넣으면
+        # JS 한 줄 변경에도 풀 빌드(~15-20분)가 돌아 매우 비효율적이었음.
         uses: actions/cache@v4
         with:
           path: ios/build
-          key: deriveddata-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'package-lock.json', 'modules/**', 'targets/**', 'app.config.js', 'src/**/*.ts', 'src/**/*.tsx') }}
+          key: deriveddata-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'package-lock.json', 'modules/**', 'targets/**', 'app.config.js') }}
           restore-keys: deriveddata-${{ runner.os }}-
 
       - name: Mock env를 Xcode build phase로 주입
