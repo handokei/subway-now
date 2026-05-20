@@ -7,6 +7,7 @@ import { isAccuracyAcceptable, isAccuracyAcceptableForDisplay, isLocationFresh }
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../constants/e2e';
 import { createLogger } from '../utils/logger';
+import { pushFusionDebugEntry } from '../utils/fusionDebugBuffer';
 
 const logger = createLogger('useNearestStation');
 
@@ -86,6 +87,22 @@ export function useNearestStation(): UseNearestStationReturn {
       lastDistanceRef.current = newDistance;
       applyNearestResult(stationsResult, setResult, setVariants);
     }
+    // 측정(#443): station 변화 시에만 push. 매 fix는 너무 자주 — 점프 시퀀스
+    // (사가정→을지로4가→용마산) 재구성엔 station 단위면 충분.
+    if (stationChanged || noStation) {
+      pushFusionDebugEntry({
+        kind: 'gps',
+        event: 'gps-fix',
+        ts: Date.now(),
+        lat: latitude,
+        lng: longitude,
+        accuracyMeters: accuracy ?? null,
+        speedMps: speed != null && speed >= 0 ? speed : null,
+        nearestStation: stationsResult?.primary.name ?? null,
+        nearestLine: stationsResult?.primary.line ?? null,
+        nearestDistanceKm: stationsResult?.distanceKm ?? null,
+      });
+    }
   }, []);
 
   const stopWatch = useCallback(() => {
@@ -161,6 +178,22 @@ export function useNearestStation(): UseNearestStationReturn {
         (location) => {
           if (!isAccuracyAcceptableForDisplay(location.coords.accuracy)) {
             setLocationUncertain(true);
+            // #443: 표시 게이트에 drop된 fix도 사후 진단에 필요(사가정 같은 부정확 fix로
+            // 락된 의심 시점을 식별). 이 분기는 accuracy가 non-null 임계 초과인 경우만.
+            const dropSpeed = location.coords.speed;
+            pushFusionDebugEntry({
+              kind: 'gps',
+              event: 'gps-drop',
+              ts: Date.now(),
+              lat: location.coords.latitude,
+              lng: location.coords.longitude,
+              accuracyMeters: location.coords.accuracy,
+              speedMps: dropSpeed != null && dropSpeed >= 0 ? dropSpeed : null,
+              nearestStation: null,
+              nearestLine: null,
+              nearestDistanceKm: null,
+              dropReason: 'low-accuracy-display',
+            });
             return;
           }
           setLocationUncertain(false);

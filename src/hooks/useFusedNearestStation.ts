@@ -1,4 +1,8 @@
 import { useEffect, useMemo, useRef } from 'react';
+import {
+  pushFusionDebugEntry,
+  type FusionCandidateMini,
+} from '../utils/fusionDebugBuffer';
 import { useNearestStation } from './useNearestStation';
 import { useArrivalInfo } from './useArrivalInfo';
 import { useTrainPositions } from './useTrainPositions';
@@ -221,6 +225,49 @@ export function useFusedNearestStation(
     confidence = 'gps-only';
     source = 'gps';
   }
+
+  // 측정(#443): 결정 변화(source/stationId/confidence) 시에만 push.
+  // render 중 side-effect 회피 + 의존성 누락 은폐 회피를 위해 결정 key를 ref로 비교.
+  const lastDecisionKeyRef = useRef<string | null>(null);
+  const resultStationId = result?.station.id ?? null;
+  const decisionKey = `${source}|${confidence}|${resultStationId}`;
+  useEffect(() => {
+    if (lastDecisionKeyRef.current === decisionKey) return;
+    lastDecisionKeyRef.current = decisionKey;
+    const candidates: FusionCandidateMini[] = [];
+    if (positionTrainResult) {
+      const { name, line } = positionTrainResult.station;
+      candidates.push({ key: 'positionTrain', stationName: name, line });
+    }
+    if (fused) {
+      const { name, line } = fused.result.station;
+      candidates.push({ key: 'fused', stationName: name, line, extra: { source: fused.source } });
+    }
+    if (routeResult) {
+      const { name, line } = routeResult.station;
+      candidates.push({ key: 'route', stationName: name, line });
+    }
+    if (gps.result) {
+      const { name, line } = gps.result.station;
+      candidates.push({
+        key: 'gps',
+        stationName: name,
+        line,
+        extra: { distanceKm: gps.result.distanceKm },
+      });
+    }
+    pushFusionDebugEntry({
+      kind: 'fusion',
+      ts: Date.now(),
+      source,
+      confidence,
+      stationName: result?.station.name ?? null,
+      line: result?.station.line ?? null,
+      distanceKm: result?.distanceKm ?? null,
+      gpsAccuracyAtPushMeters: gps.accuracyMeters,
+      candidates,
+    });
+  }, [decisionKey, source, confidence, result, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters]);
 
   return {
     result,

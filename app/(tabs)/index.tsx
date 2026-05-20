@@ -76,7 +76,7 @@ export default function HomeScreen() {
     () => (route && tripOrigin && destination ? { route, origin: tripOrigin, destination } : undefined),
     [route, tripOrigin, destination],
   );
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh, confidence } = useFusedNearestStation(undefined, undefined, routeContext);
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext);
   // AppState listener는 단일-바인딩 패턴이라 deps에 refresh를 추가할 수 없다.
   // 최신 refresh 함수를 ref에 보관해 listener에서 호출한다.
   const refreshRef = useRef(refresh);
@@ -348,6 +348,17 @@ export default function HomeScreen() {
                     <Dot />
                     <Text style={[typography.bodySm, { color: colors.muted }]}>
                       {nearest.walkMin} min walk
+                    </Text>
+                  </>
+                )}
+                {__DEV__ && (
+                  <>
+                    <Dot />
+                    <Text
+                      style={[typography.bodySm, { color: colors.warn, fontWeight: '700' }]}
+                      testID="home-fusion-source-badge"
+                    >
+                      {source}·{confidence}
                     </Text>
                   </>
                 )}

@@ -562,6 +562,29 @@ describe('useNearestStation', () => {
     expect(result.current.locationUncertain).toBe(true);
   });
 
+  it('표시 게이트 drop 시 fusion debug buffer에 gps-drop 엔트리를 push (speed 양수 분기)', async () => {
+    const { pushFusionDebugEntry: _p, clearFusionDebugEntries, getFusionDebugEntries } =
+      jest.requireActual('../../utils/fusionDebugBuffer');
+    void _p;
+    clearFusionDebugEntries();
+    mockGranted();
+    renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.4980, 127.0277, {
+      accuracy: MAX_ACCURACY_M_DISPLAY + 1,
+      speed: 1.5,
+    });
+
+    const entries = getFusionDebugEntries();
+    const drop = entries.find(
+      (e: { kind: string; event?: string }) => e.kind === 'gps' && e.event === 'gps-drop',
+    );
+    expect(drop).toBeDefined();
+    expect(drop.speedMps).toBe(1.5);
+    expect(drop.dropReason).toBe('low-accuracy-display');
+  });
+
   it('uncertain 상태에서 정확한 좌표가 들어오면 locationUncertain=false로 복귀한다', async () => {
     mockGranted();
 

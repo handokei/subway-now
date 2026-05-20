@@ -188,7 +188,8 @@ describe('DebugModal', () => {
   it('알람 로그 비어있으면 (empty) 표시', async () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-    expect(screen.getByText('(empty)')).toBeTruthy();
+    // Fusion log + Alarm log 두 섹션이 비어있을 때 (empty)가 둘.
+    expect(screen.getAllByText('(empty)').length).toBeGreaterThanOrEqual(1);
   });
 
   it('Refresh 버튼이 로그를 다시 불러온다', async () => {
@@ -593,5 +594,213 @@ describe('DebugModal share with null nearest', () => {
     expect(shareSpy).toHaveBeenCalled();
     expect(shareSpy.mock.calls[0][0].message).toContain('(no nearest station)');
     shareSpy.mockRestore();
+  });
+});
+
+describe('DebugModal fusion log section', () => {
+  const { pushFusionDebugEntry, clearFusionDebugEntries } =
+    jest.requireActual('../../utils/fusionDebugBuffer');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearFusionDebugEntries();
+    setupHookDefaults();
+  });
+
+  it('비어있으면 (empty) 표시, 엔트리 push 시 라인을 노출한다', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Fusion log (0)')).toBeTruthy();
+    act(() => {
+      pushFusionDebugEntry({
+        kind: 'fusion',
+        ts: new Date('2026-05-20T14:30:00Z').getTime(),
+        source: 'position-train',
+        confidence: 'position-train',
+        stationName: '사가정',
+        line: '7',
+        distanceKm: 0.817,
+        gpsAccuracyAtPushMeters: 25,
+        candidates: [
+          { key: 'positionTrain', stationName: '사가정', line: '7' },
+          { key: 'gps', stationName: '용마산', line: '7', extra: { distanceKm: 0.04 } },
+        ],
+      });
+    });
+    expect(screen.getByText('Fusion log (1)')).toBeTruthy();
+    const entries = screen.getAllByTestId('debug-fusion-log-entry');
+    expect(entries[0].props.children).toContain('src=position-train');
+    expect(entries[0].props.children).toContain('pt=사가정');
+    expect(entries[0].props.children).toContain('gp=용마산');
+  });
+
+  it('Clear 버튼이 fusion 로그를 비운다', async () => {
+    pushFusionDebugEntry({
+      kind: 'gps',
+      event: 'gps-fix',
+      ts: Date.now(),
+      lat: 37.5,
+      lng: 127.0,
+      accuracyMeters: 20,
+      speedMps: 0,
+      nearestStation: '용마산',
+      nearestLine: '7',
+      nearestDistanceKm: 0.05,
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(screen.getByText('Fusion log (1)')).toBeTruthy());
+    act(() => {
+      fireEvent.press(screen.getByTestId('debug-fusion-log-clear'));
+    });
+    expect(screen.getByText('Fusion log (0)')).toBeTruthy();
+  });
+});
+
+describe('formatFusionDebugLine', () => {
+  const { formatFusionDebugLine } = __test__;
+
+  it('gps-fix 엔트리: station/distance/accuracy 포함', () => {
+    const line = formatFusionDebugLine({
+      kind: 'gps',
+      event: 'gps-fix',
+      ts: new Date('2026-05-20T14:30:00Z').getTime(),
+      lat: 37.5,
+      lng: 127.0,
+      accuracyMeters: 25,
+      speedMps: 0,
+      nearestStation: '용마산',
+      nearestLine: '7',
+      nearestDistanceKm: 0.04,
+    });
+    expect(line).toContain('gps-fix');
+    expect(line).toContain('용마산(7)');
+    expect(line).toContain('d=40m');
+    expect(line).toContain('acc=25m');
+    expect(line).not.toContain('reason=');
+  });
+
+  it('gps-drop 엔트리: 이벤트와 reason 표기', () => {
+    const line = formatFusionDebugLine({
+      kind: 'gps',
+      event: 'gps-drop',
+      ts: 0,
+      lat: 0,
+      lng: 0,
+      accuracyMeters: 1500,
+      speedMps: null,
+      nearestStation: null,
+      nearestLine: null,
+      nearestDistanceKm: null,
+      dropReason: 'low-accuracy-display',
+    });
+    expect(line).toContain('gps-drop');
+    expect(line).toContain('reason=low-accuracy-display');
+  });
+
+  it('gps 엔트리: nearestStation/distance/accuracy 누락 시 "-" 표기', () => {
+    const line = formatFusionDebugLine({
+      kind: 'gps',
+      event: 'gps-fix',
+      ts: 0,
+      lat: 0,
+      lng: 0,
+      accuracyMeters: null,
+      speedMps: null,
+      nearestStation: null,
+      nearestLine: null,
+      nearestDistanceKm: null,
+    });
+    expect(line).toContain('| - d=- acc=-');
+  });
+
+  it('fusion 엔트리: source/conf/station/cands 포함', () => {
+    const line = formatFusionDebugLine({
+      kind: 'fusion',
+      ts: 0,
+      source: 'gps',
+      confidence: 'gps-only',
+      stationName: '용마산',
+      line: '7',
+      distanceKm: 0.04,
+      gpsAccuracyAtPushMeters: 30,
+      candidates: [
+        { key: 'fused', stationName: '사가정', line: '7', extra: { source: 'arrival' } },
+        { key: 'route', stationName: '건대입구', line: '7' },
+        { key: 'gps', stationName: '용마산', line: '7', extra: { distanceKm: 0.04 } },
+      ],
+    });
+    expect(line).toContain('src=gps conf=gps-only');
+    expect(line).toContain('용마산(7)');
+    expect(line).toContain('fu=사가정');
+    expect(line).toContain('rt=건대입구');
+    expect(line).toContain('gp=용마산');
+  });
+
+  it('fusion 엔트리: 알 수 없는 candidate key는 raw key 그대로 표기', () => {
+    const line = formatFusionDebugLine({
+      kind: 'fusion',
+      ts: 0,
+      source: 'gps',
+      confidence: 'gps-only',
+      stationName: '용마산',
+      line: '7',
+      distanceKm: 0.04,
+      gpsAccuracyAtPushMeters: 30,
+      // @ts-expect-error — 미래 신호 추가를 가정한 unknown key
+      candidates: [{ key: 'future', stationName: 'X', line: '?' }],
+    });
+    expect(line).toContain('future=X');
+  });
+
+  it('gps 엔트리: nearestStation 있고 nearestLine 없으면 "-" 표기', () => {
+    const line = formatFusionDebugLine({
+      kind: 'gps',
+      event: 'gps-fix',
+      ts: 0,
+      lat: 0,
+      lng: 0,
+      accuracyMeters: 30,
+      speedMps: null,
+      nearestStation: '용마산',
+      nearestLine: null,
+      nearestDistanceKm: 0.04,
+    });
+    expect(line).toContain('용마산(-)');
+  });
+
+  it('fusion 엔트리: stationName 있고 line 없으면 "-" 표기', () => {
+    const line = formatFusionDebugLine({
+      kind: 'fusion',
+      ts: 0,
+      source: 'gps',
+      confidence: 'gps-only',
+      stationName: '용마산',
+      line: null,
+      distanceKm: 0.04,
+      gpsAccuracyAtPushMeters: 30,
+      candidates: [],
+    });
+    expect(line).toContain('용마산(-)');
+  });
+
+  it('fusion 엔트리: candidates 빈 배열이면 "-" placeholder, 다른 필드 null이면 "-"만', () => {
+    const line = formatFusionDebugLine({
+      kind: 'fusion',
+      ts: 0,
+      source: 'gps',
+      confidence: 'gps-only',
+      stationName: null,
+      line: null,
+      distanceKm: null,
+      gpsAccuracyAtPushMeters: null,
+      candidates: [],
+    });
+    expect(line).toContain('- d=- acc=-');
+    // 의미 단위: 후보 섹션은 "-" placeholder, 후보 접두어는 없음.
+    expect(line).toContain('| -');
+    expect(line).not.toContain('pt=');
+    expect(line).not.toContain('fu=');
+    expect(line).not.toContain('rt=');
+    expect(line).not.toContain('gp=');
   });
 });
