@@ -14,6 +14,12 @@ import { useAppStore } from '../store/useAppStore';
 import { useFusedNearestStation } from '../hooks/useFusedNearestStation';
 import { useArrivalInfo } from '../hooks/useArrivalInfo';
 import { clearAlarmLog, getAlarmLog, type AlarmLogEntry } from '../utils/alarmLog';
+import {
+  clearFusionDebugEntries,
+  getFusionDebugEntries,
+  subscribeFusionDebug,
+  type FusionDebugEntry,
+} from '../utils/fusionDebugBuffer';
 import type { FusionConfidence, FusionSource } from '../utils/pickFusedStation';
 import type { NearestStationResult } from '../types/station';
 import { useTheme, spacing, radius, typography } from '../theme';
@@ -47,6 +53,36 @@ function formatLogLine(entry: AlarmLogEntry): string {
   if (entry.expectedStationAtFire) parts.push(`exp=${entry.expectedStationAtFire}`);
   if (entry.actualLastNotifiedStation) parts.push(`last=${entry.actualLastNotifiedStation}`);
   return parts.join(' | ');
+}
+
+/** candidates key → 짧은 접두어. 새 key가 늘면 여기 한 줄만 추가하면 됨. */
+const CANDIDATE_SHORT: Record<string, string> = {
+  positionTrain: 'pt',
+  fused: 'fu',
+  route: 'rt',
+  gps: 'gp',
+};
+
+function formatFusionDebugLine(entry: FusionDebugEntry): string {
+  const time = formatTime(entry.ts);
+  if (entry.kind === 'gps') {
+    const station = entry.nearestStation
+      ? `${entry.nearestStation}(${entry.nearestLine ?? '-'})`
+      : '-';
+    const d = entry.nearestDistanceKm != null ? `${Math.round(entry.nearestDistanceKm * 1000)}m` : '-';
+    const acc = entry.accuracyMeters != null ? `${Math.round(entry.accuracyMeters)}m` : '-';
+    const reason = entry.dropReason ? ` reason=${entry.dropReason}` : '';
+    return `${time} | ${entry.event} | ${station} d=${d} acc=${acc}${reason}`;
+  }
+  const station = entry.stationName ? `${entry.stationName}(${entry.line ?? '-'})` : '-';
+  const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';
+  const acc =
+    entry.gpsAccuracyAtPushMeters != null ? `${Math.round(entry.gpsAccuracyAtPushMeters)}m` : '-';
+  const cand = entry.candidates
+    .map((c) => `${CANDIDATE_SHORT[c.key] ?? c.key}=${c.stationName}`)
+    .join(' ');
+  const candPart = cand.length > 0 ? cand : '-';
+  return `${time} | src=${entry.source} conf=${entry.confidence} | ${station} d=${d} acc=${acc} | ${candPart}`;
 }
 
 function formatStationLabel(res: NearestStationResult | null): string {
@@ -160,6 +196,13 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
   const gpsLabel = formatStationLabel(gpsResult);
   const differs = fusedDiffersFromGps(result, gpsResult);
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
+  const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
+    getFusionDebugEntries(),
+  );
+
+  useEffect(() => {
+    return subscribeFusionDebug(() => setFusionLogs([...getFusionDebugEntries()]));
+  }, []);
 
   const refreshLogs = useCallback(async () => {
     setLogs(await getAlarmLog());
@@ -328,6 +371,37 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
           </Section>
 
           <Section
+            title={`Fusion log (${fusionLogs.length})`}
+            colors={colors}
+            action={
+              <Pressable
+                onPress={() => {
+                  clearFusionDebugEntries();
+                  setFusionLogs([]);
+                }}
+                testID="debug-fusion-log-clear"
+              >
+                <Text style={[typography.bodySm, { color: colors.accent }]}>Clear</Text>
+              </Pressable>
+            }
+          >
+            {fusionLogs.length === 0 ? (
+              <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
+            ) : (
+              [...fusionLogs].reverse().map((entry, idx) => (
+                <Text
+                  key={`${entry.ts}-${idx}`}
+                  style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
+                  selectable
+                  testID="debug-fusion-log-entry"
+                >
+                  {formatFusionDebugLine(entry)}
+                </Text>
+              ))
+            )}
+          </Section>
+
+          <Section
             title={`Alarm log (${logs.length})`}
             colors={colors}
             action={
@@ -412,7 +486,7 @@ function KeyValue({
 }
 
 // Internal exports for tests — DO NOT use from app code.
-export const __test__ = { formatLogLine, buildDumpText };
+export const __test__ = { formatLogLine, buildDumpText, formatFusionDebugLine };
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
