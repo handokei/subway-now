@@ -78,6 +78,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       const phase = evaluatePhase(eta);
       const etaChanged = isSignificantEtaChange(trip.lastEtaSeconds, eta);
       const phaseFires = phase !== null && shouldFire(phase, trip.lastFiredPhase);
+      // 중간역(intermediate)은 통과 시점(imminent)에만 발사. early phase / 정보 갱신용 push는 노이즈로 간주해 스킵.
+      const isIntermediate = waypoint.kind === 'intermediate';
 
       // 메모리 갱신: ETA가 의미있게 변하거나 phase가 발사된 경우만
       let dirty = false;
@@ -87,17 +89,29 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       }
 
       // Push 발사 조건:
-      // (1) 새 phase 도달 (phaseFires) — phaseFires는 phase !== null을 이미 포함
-      // (2) phase 미도달이지만 ETA 변동이 의미있게 발생 & 5분 이내 (사용자에게 정보 갱신)
-      const shouldPushPhase = phaseFires;
+      // (1) 새 phase 도달 — intermediate는 imminent에서만 허용
+      // (2) phase 미도달이지만 ETA 변동이 의미있게 발생 & 5분 이내 (intermediate는 제외)
+      const shouldPushPhase = phaseFires && (!isIntermediate || phase === 'imminent');
       const shouldPushEtaUpdate =
-        !shouldPushPhase && etaChanged && eta <= EARLY_THRESHOLD_SEC * 2;
+        !shouldPushPhase && !isIntermediate && etaChanged && eta <= EARLY_THRESHOLD_SEC * 2;
 
       if (shouldPushPhase || shouldPushEtaUpdate) {
         const pushPhase = phase ?? 'early';
+        log('push fired', {
+          token: trip.token.slice(0, 8),
+          kind: waypoint.kind,
+          phase: pushPhase,
+          station: waypoint.stationName,
+          etaSeconds: eta,
+        });
         const result = await sendSilentPush({
           deviceToken: trip.token,
-          payload: { nextWaypoint: waypoint.stationName, etaSeconds: eta, phase: pushPhase },
+          payload: {
+            nextWaypoint: waypoint.stationName,
+            etaSeconds: eta,
+            phase: pushPhase,
+            kind: waypoint.kind,
+          },
           config: deps.apnsConfig,
           fetchImpl: deps.fetchImpl,
           now,
@@ -116,15 +130,17 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
                 });
                 continue;
               }
-              // 환승역 imminent: 트립 유지하고 다음 waypoint로 진행.
+              // 환승역/중간역 imminent: 트립 유지하고 다음 waypoint로 진행.
               // dirty는 위(lastFiredPhase 갱신)에서 이미 true로 설정됨 → putTrip에서 shift된 상태가 저장된다.
               const completedStation = waypoint.stationName;
+              const completedKind = waypoint.kind;
               trip.waypoints.shift();
               trip.lastFiredPhase = undefined;
               trip.lastEtaSeconds = undefined;
               log('waypoint completed, advancing to next', {
                 token: trip.token.slice(0, 8),
                 completed: completedStation,
+                kind: completedKind,
                 remaining: trip.waypoints.length,
               });
               if (trip.waypoints.length === 0) {

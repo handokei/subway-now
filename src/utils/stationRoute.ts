@@ -284,6 +284,32 @@ export function getRemainingStops(
   return Math.abs(destIdx - currentIdx);
 }
 
+// 같은 노선 위 두 역 사이의 중간역 이름 배열을 진행 방향대로 반환.
+// 양 끝점은 제외. 인접 역 또는 같은 역이면 빈 배열. 다른 노선/미존재 id면 null.
+export function getIntermediateStationNames(
+  fromId: string,
+  toId: string,
+): string[] | null {
+  const from = stationById.get(fromId);
+  const to = stationById.get(toId);
+  if (!from || !to) return null;
+  if (from.line !== to.line) return null;
+
+  const lineStations = getLineStationsCached(from.line);
+  const fromIdx = lineStations.findIndex((s) => s.id === fromId);
+  const toIdx = lineStations.findIndex((s) => s.id === toId);
+  /* istanbul ignore next -- stationById에 존재하면 같은 line의 lineStations에도 존재한다는 invariant */
+  if (fromIdx === -1 || toIdx === -1) return null;
+  if (fromIdx === toIdx) return [];
+
+  const step = fromIdx < toIdx ? 1 : -1;
+  const names: string[] = [];
+  for (let i = fromIdx + step; i !== toIdx; i += step) {
+    names.push(lineStations[i].name);
+  }
+  return names;
+}
+
 function buildNameIndex(stations: Station[]): Map<string, number> {
   const index = new Map<string, number>();
   for (let i = 0; i < stations.length; i++) {

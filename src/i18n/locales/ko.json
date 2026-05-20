@@ -167,6 +167,8 @@
     "atCurrentStation": "현재 {{name}}역",
     "approximateDistance": "약 {{m}}m",
     "stationPassed": "{{name}}역 도착",
+    "intermediatePassedTitle": "역 통과",
+    "intermediatePassedBody": "{{name}}역을 지나고 있어요",
     "stopsRemainingToDestination_one": "{{destination}}까지 {{count}}정거장 남음",
     "stopsRemainingToDestination_other": "{{destination}}까지 {{count}}정거장 남음",
     "stopsRemainingViaTransfer": "{{transfer}} 환승까지 {{transferStops}}정거장 · {{destination}}까지 {{totalStops}}정거장",

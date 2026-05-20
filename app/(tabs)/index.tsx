@@ -166,6 +166,7 @@ export default function HomeScreen() {
     destination,
     nextStationEtaSeconds:
       nextTrainMinutes != null && nextTrainMinutes !== Infinity ? nextTrainMinutes * 60 : null,
+    currentStation: result?.station ?? null,
   });
 
   useEffect(() => {

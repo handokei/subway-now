@@ -6,8 +6,10 @@ jest.mock('expo-task-manager', () => ({
 }));
 
 const mockRegisterTaskAsync = jest.fn();
+const mockScheduleNotificationAsync = jest.fn();
 jest.mock('expo-notifications', () => ({
   registerTaskAsync: (...args: unknown[]) => mockRegisterTaskAsync(...args),
+  scheduleNotificationAsync: (...args: unknown[]) => mockScheduleNotificationAsync(...args),
 }));
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -148,6 +150,29 @@ describe('silentPushTask', () => {
         }),
       ).toBeNull();
     });
+
+    it('kind=transfer/destination/intermediate면 그대로 전달', () => {
+      const variants: ReadonlyArray<'transfer' | 'destination' | 'intermediate'> = [
+        'transfer',
+        'destination',
+        'intermediate',
+      ];
+      for (const kind of variants) {
+        expect(
+          extractPayload({
+            notification: { data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind } },
+          }),
+        ).toEqual({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind });
+      }
+    });
+
+    it('kind가 알 수 없는 값이면 undefined로 정리 (legacy 호환)', () => {
+      expect(
+        extractPayload({
+          notification: { data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind: 'foo' } },
+        }),
+      ).toEqual({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind: undefined });
+    });
   });
 
   describe('handleSilentPush', () => {
@@ -209,6 +234,31 @@ describe('silentPushTask', () => {
     it('schedule 내부 throw 시 graceful (throw 안 함)', async () => {
       mockSchedule.mockRejectedValue(new Error('boom'));
       await expect(handleSilentPush(reschedulePayload())).resolves.toBeUndefined();
+    });
+
+    it('kind=intermediate + phase=imminent → 즉시 알림 + reschedule 둘 다 호출 (#416)', async () => {
+      mockScheduleNotificationAsync.mockResolvedValue('id');
+      await handleSilentPush(
+        reschedulePayload({ kind: 'intermediate', phase: 'imminent', nextWaypoint: '중곡' }),
+      );
+      expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
+      const call = mockScheduleNotificationAsync.mock.calls[0][0];
+      // i18next mock가 기본 fallback으로 key 반환 또는 ko 로드 — 어느 쪽이든 station name이 body에 포함되어야 한다.
+      expect(JSON.stringify(call.content.body)).toContain('중곡');
+      expect(call.trigger).toBeNull();
+      expect(mockSchedule).toHaveBeenCalled();
+    });
+
+    it('kind=intermediate + phase=early → 즉시 알림 안 함, reschedule만', async () => {
+      await handleSilentPush(reschedulePayload({ kind: 'intermediate', phase: 'early' }));
+      expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      expect(mockSchedule).toHaveBeenCalled();
+    });
+
+    it('kind=destination + phase=imminent → 즉시 알림 안 함 (intermediate만 발사)', async () => {
+      await handleSilentPush(reschedulePayload({ kind: 'destination', phase: 'imminent' }));
+      expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      expect(mockSchedule).toHaveBeenCalled();
     });
   });
 

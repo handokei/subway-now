@@ -18,6 +18,7 @@
 import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import i18next from 'i18next';
 import type { Station } from '../types/station';
 import type { Route } from '../utils/stationRoute';
 import { scheduleAlarmsForRoute, cancelScheduledAlarms } from '../utils/alarmScheduler';
@@ -32,6 +33,8 @@ export interface SilentPushPayload {
   nextWaypoint: string;
   etaSeconds: number;
   phase: 'early' | 'imminent';
+  /** Waypoint 종류 (#416). intermediate면 통과 즉시 알림, 그 외는 reschedule만. 구 백엔드 호환을 위해 optional. */
+  kind?: 'transfer' | 'destination' | 'intermediate';
 }
 
 interface NotificationBackgroundTaskData {
@@ -57,11 +60,13 @@ export function extractPayload(
   const raw = notif.data ?? notif.request?.content?.data;
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
-  const { nextWaypoint, etaSeconds, phase } = obj;
+  const { nextWaypoint, etaSeconds, phase, kind } = obj;
   if (typeof nextWaypoint !== 'string' || nextWaypoint.length === 0) return null;
   if (typeof etaSeconds !== 'number' || !Number.isFinite(etaSeconds)) return null;
   if (phase !== 'early' && phase !== 'imminent') return null;
-  return { nextWaypoint, etaSeconds, phase };
+  const validKind =
+    kind === 'transfer' || kind === 'destination' || kind === 'intermediate' ? kind : undefined;
+  return { nextWaypoint, etaSeconds, phase, kind: validKind };
 }
 
 /**
@@ -78,6 +83,9 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     logger.info('payload missing or invalid — skip');
     return;
   }
+  logger.info(
+    `received: kind=${payload.kind ?? 'unknown'} phase=${payload.phase} station=${payload.nextWaypoint} eta=${payload.etaSeconds}`,
+  );
 
   try {
     const [destJson, routeJson] = await Promise.all([
@@ -99,6 +107,19 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       return;
     }
     if (!route || !destination) return;
+
+    // 중간역 통과(intermediate + imminent)는 통과 시점에 즉시 사용자 알림 표시 (#416).
+    // reschedule은 그대로 진행 — 다음 waypoint용 사전 예약을 갱신.
+    if (payload.kind === 'intermediate' && payload.phase === 'imminent') {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: i18next.t('route.intermediatePassedTitle'),
+          body: i18next.t('route.intermediatePassedBody', { name: payload.nextWaypoint }),
+        },
+        trigger: null,
+      });
+      logger.info(`intermediate passed: ${payload.nextWaypoint}`);
+    }
 
     await cancelScheduledAlarms();
     const scheduled = await scheduleAlarmsForRoute({

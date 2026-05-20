@@ -1,9 +1,25 @@
 import { routeToWaypoints } from '../routeWaypoints';
 import type {
   DirectRoute,
+  Route,
   TransferRoute,
   MultiTransferRoute,
 } from '../stationRoute';
+import { getStationsOnLine } from '../stationRoute';
+import type { AlarmWaypoint } from '../../api/alarmBackend';
+import type { LineNumber, Station } from '../../types/station';
+
+function stationById(line: LineNumber, id: string): Station {
+  const found = getStationsOnLine(line).find((s) => s.id === id);
+  if (!found) throw new Error(`fixture station missing: ${id}`);
+  return found;
+}
+
+const wp = (
+  stationName: string,
+  line: LineNumber,
+  kind: AlarmWaypoint['kind'],
+): AlarmWaypoint => ({ stationName, line, kind });
 
 describe('routeToWaypoints', () => {
   it('direct: 도착역 단일 waypoint (route.line)', () => {
@@ -82,5 +98,112 @@ describe('routeToWaypoints', () => {
     );
     expect(result).toHaveLength(1);
     expect(result[0]).toMatchObject({ kind: 'destination', stationName: '상봉(시외버스터미널)', line: '7' });
+  });
+
+  // #416: currentStation이 주어지면 중간역을 intermediate waypoint로 포함시킨다.
+  describe('#416 intermediate 펼침', () => {
+    interface ExpandCase {
+      name: string;
+      route: NonNullable<Route>;
+      destinationName: string;
+      origin: { line: LineNumber; id: string };
+      expected: AlarmWaypoint[];
+    }
+
+    const cases: ExpandCase[] = [
+      {
+        name: 'direct: 출발→도착 사이 중간역을 intermediate로 포함',
+        // 1-001(소요산) → 1-005(지행): 사이에 동두천/보산/동두천중앙
+        route: { type: 'direct', stops: 4, line: '1' } satisfies DirectRoute,
+        destinationName: '지행',
+        origin: { line: '1', id: '1-001' },
+        expected: [
+          wp('동두천', '1', 'intermediate'),
+          wp('보산', '1', 'intermediate'),
+          wp('동두천중앙', '1', 'intermediate'),
+          wp('지행', '1', 'destination'),
+        ],
+      },
+      {
+        name: 'transfer: 환승 전/후 중간역을 모두 펼친다',
+        // 1-038(대방) → 신도림(1↔2 환승) → 2-035(문래)
+        route: {
+          type: 'transfer',
+          transferName: '신도림',
+          fromLine: '1',
+          toLine: '2',
+          stopsToTransfer: 3,
+          stopsFromTransfer: 1,
+        } satisfies TransferRoute,
+        destinationName: '문래',
+        origin: { line: '1', id: '1-038' },
+        expected: [
+          wp('신길', '1', 'intermediate'),
+          wp('영등포', '1', 'intermediate'),
+          wp('신도림', '1', 'transfer'),
+          wp('문래', '2', 'destination'),
+        ],
+      },
+      {
+        name: 'transfer 환승역=목적지: 출발→환승 중간역만 펼치고 destination 1개로 축약',
+        route: {
+          type: 'transfer',
+          transferName: '신도림',
+          fromLine: '1',
+          toLine: '2',
+          stopsToTransfer: 3,
+          stopsFromTransfer: 0,
+        } satisfies TransferRoute,
+        destinationName: '신도림',
+        origin: { line: '1', id: '1-038' },
+        expected: [
+          wp('신길', '1', 'intermediate'),
+          wp('영등포', '1', 'intermediate'),
+          wp('신도림', '1', 'destination'),
+        ],
+      },
+      {
+        name: 'currentStation의 line이 route와 안 맞으면 intermediates 펼침 없이 기존 동작',
+        route: { type: 'direct', stops: 5, line: '2' } satisfies DirectRoute,
+        destinationName: '강남',
+        origin: { line: '1', id: '1-001' },
+        expected: [wp('강남', '2', 'destination')],
+      },
+    ];
+
+    it.each(cases)('$name', ({ route, destinationName, origin, expected }) => {
+      const station = stationById(origin.line, origin.id);
+      expect(routeToWaypoints(route, destinationName, station)).toEqual(expected);
+    });
+
+    it('multi-transfer: 각 segment 사이의 중간역을 모두 펼친다', () => {
+      // origin=1-039(신길) → 신도림(1→2) → 교대 (마지막 환승이 목적지)
+      const route: MultiTransferRoute = {
+        type: 'multi-transfer',
+        transfers: [
+          { transferName: '신도림', fromLine: '1', toLine: '2', stopsToTransfer: 2 },
+          { transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 11 },
+        ],
+        stopsAfterLastTransfer: 0,
+      };
+      const result = routeToWaypoints(route, '교대', stationById('1', '1-039'));
+      // 1호선 pre intermediates [영등포] + transfer 신도림 + ... + destination 교대
+      expect(result[0]).toEqual(wp('영등포', '1', 'intermediate'));
+      expect(result[1]).toEqual(wp('신도림', '1', 'transfer'));
+      expect(result[result.length - 1]).toEqual(wp('교대', '2', 'destination'));
+      expect(result.filter((w) => w.kind === 'intermediate').length).toBeGreaterThan(0);
+    });
+
+    it('currentStation=null은 기존 동작과 동일 (하위 호환)', () => {
+      const route: TransferRoute = {
+        type: 'transfer',
+        transferName: '신도림',
+        fromLine: '1',
+        toLine: '2',
+        stopsToTransfer: 3,
+        stopsFromTransfer: 4,
+      };
+      expect(routeToWaypoints(route, '강남', null)).toEqual(routeToWaypoints(route, '강남'));
+    });
   });
 });

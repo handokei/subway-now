@@ -30,6 +30,8 @@ export interface SilentPushPayload {
   nextWaypoint: string;
   etaSeconds: number;
   phase: AlarmPhase;
+  /** Waypoint 종류. 클라가 intermediate일 때만 즉시 알림 발사하도록 분기 (#416). */
+  kind: 'transfer' | 'destination' | 'intermediate';
 }
 
 export async function buildApnsJwt(config: ApnsConfig, now: number = Date.now()): Promise<string> {
@@ -77,6 +79,7 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
       nextWaypoint: options.payload.nextWaypoint,
       etaSeconds: options.payload.etaSeconds,
       phase: options.payload.phase,
+      kind: options.payload.kind,
     },
   });
 

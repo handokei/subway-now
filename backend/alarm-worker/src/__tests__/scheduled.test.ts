@@ -320,6 +320,71 @@ describe('runScheduled', () => {
     expect(kv.store.size).toBe(0);
   });
 
+  // #416: 중간역(intermediate) 처리 — early phase 스킵, imminent에서만 push + shift.
+  it('intermediate waypoint: early ETA에서는 push 안 함', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        waypoints: [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+      }),
+    );
+    const seoul = makeSeoul([
+      { destination: '중곡', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '7호선' },
+    ]);
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.pushed).toBe(0);
+    // trip은 유지 (다음 사이클에 imminent까지 폴링)
+    expect(kv.store.size).toBe(1);
+    const stored = JSON.parse(kv.store.get('trip:tok')!.value) as Trip;
+    expect(stored.waypoints).toHaveLength(2);
+  });
+
+  it('intermediate waypoint: imminent에서 push + shift', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        waypoints: [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+      }),
+    );
+    const seoul = makeSeoul([
+      { destination: '중곡', arrivalSeconds: 20, trainCode: 'T', isUp: true, subwayNm: '7호선' },
+    ]);
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.pushed).toBe(1);
+    // body에 kind=intermediate 포함 검증
+    const call = apnsFetch.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.kind).toBe('intermediate');
+    expect(body.data.phase).toBe('imminent');
+    // shift 후 destination만 남음
+    expect(kv.store.size).toBe(1);
+    const stored = JSON.parse(kv.store.get('trip:tok')!.value) as Trip;
+    expect(stored.waypoints).toHaveLength(1);
+    expect(stored.waypoints[0].kind).toBe('destination');
+    expect(stored.lastFiredPhase).toBeUndefined();
+    expect(stored.lastEtaSeconds).toBeUndefined();
+  });
+
   it('counts seoul errors as poll errors', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeTrip());
