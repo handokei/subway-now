@@ -77,7 +77,11 @@ jobs:
     # changes.ui_affected=false면 자동 스킵 (i18n/백엔드/문서 PR은 smoke가 검증할 게 없음 → 25분 낭비 방지).
     needs: [test, changes]
     if: needs.changes.outputs.ui_affected == 'true'
-    runs-on: macos-14
+    # Apple Silicon(M1) 러너로 변경 — macos-14(Intel) 대비 iOS 빌드 2~3배 빠름.
+    # PR #432의 ccache는 Xcode 16 modules와 호환 안 됨(99.7% uncacheable). DerivedData 캐시+mtime
+    # 보정도 incremental build session 차이로 효과 없음(로컬 검증: 1986개 컴파일 = 풀빌드).
+    # 결론: 캐시 무리하지 말고 러너 자체를 빠르게. 17분 → ~6-9분 목표.
+    runs-on: macos-14-xlarge
     timeout-minutes: 45
     env:
       EXPO_PUBLIC_E2E_MOCK: 'true'
@@ -144,18 +148,33 @@ jobs:
             pod install
           fi
 
-      - name: ccache 설치
-        # DerivedData 캐시는 mtime/fingerprint mismatch로 incremental build에 활용되지 못한다.
-        # ccache는 컴파일러 wrapper로 source content hash 기반 .o 캐싱 → mtime 무관, 풀 컴파일이
-        # 돌아도 캐시된 .o를 즉시 반환. RN 프로젝트의 1600+ 파일 컴파일을 3-5분 수준으로 단축.
-        run: brew install ccache
-
-      - name: ccache 캐시
+      - name: DerivedData 캐시
+        # 캐시 key에는 native binary에 영향 주는 파일만 포함.
+        # JS/TS 변경(src/**)은 Metro 번들링(~30s)만 다시 돌면 native 빌드 산출물은 재사용 가능.
+        # PR #432의 ccache 시도는 Xcode 16의 modules 미지원으로 99.7% uncacheable → 무용.
+        # 다시 DerivedData 통째 캐싱으로 회귀하되, 아래 mtime 보정으로 Xcode incremental build가
+        # 캐시된 산출물을 실제 재사용하도록 한다.
         uses: actions/cache@v4
         with:
-          path: ~/Library/Caches/ccache
-          key: ccache-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'package-lock.json') }}
-          restore-keys: ccache-${{ runner.os }}-
+          path: ios/build
+          key: deriveddata-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock', 'package-lock.json', 'modules/**', 'targets/**', 'app.config.js') }}
+          restore-keys: deriveddata-${{ runner.os }}-
+
+      - name: mtime 보정
+        # Xcode 의존성 그래프는 소스 파일 mtime이 산출물(.o, .swiftmodule) mtime보다 늦으면 재컴파일.
+        # actions/checkout/cache는 모든 파일을 "지금" mtime으로 복원하므로 캐시된 산출물보다 새것 취급
+        # → 풀 컴파일. 소스 파일들의 mtime을 과거로 강제 설정해 산출물이 최신으로 인식되도록 한다.
+        # 실제 변경된 파일은 git의 mtime이 아닌 hashFiles 캐시 key로 invalidate되므로 안전.
+        run: |
+          PAST=202001010000
+          for d in ios/Pods modules targets node_modules/react-native node_modules/expo node_modules/@expo node_modules/react-native-*; do
+            [ -d "$d" ] && find "$d" -type f \( \
+              -name "*.swift" -o -name "*.m" -o -name "*.mm" -o -name "*.c" \
+              -o -name "*.cpp" -o -name "*.cc" -o -name "*.h" -o -name "*.hpp" \
+              -o -name "*.modulemap" -o -name "*.pch" \
+            \) -exec touch -t "$PAST" {} + 2>/dev/null || true
+          done
+          echo "mtime 보정 완료 (PAST=$PAST)"
 
       - name: Mock env를 Xcode build phase로 주입
         # xcodebuild → build phase → Metro 체인의 env 전파 누락에 대비.
@@ -168,17 +187,8 @@ jobs:
         # CI에는 Metro dev server가 없으므로 JS 번들이 임베드된 Release 빌드를 사용.
         # Expo SDK 54의 Debug+simulator build phase는 FORCE_BUNDLING을 무시해 번들이 .app에 안 들어감.
         # Release는 항상 번들을 임베드하고 prod 동작과도 일치.
-        # ccache: Xcode 16의 explicit modules는 CC="ccache clang" 같은 비표준 wrapper를 거부한다.
-        # 정식 launcher 메커니즘(C_COMPILER_LAUNCHER + CLANG_ENABLE_EXPLICIT_MODULES_WITH_COMPILER_LAUNCHER)
-        # 을 사용해 explicit modules와 ccache를 동시 활용한다.
-        # ENABLE_USER_SCRIPT_SANDBOXING=NO는 Pods build phase 스크립트의 sandbox가 ccache 캐시 디렉터리
-        # 접근을 차단하지 않도록 (Expo 권장값과 일치).
         env:
           EXPO_PUBLIC_E2E_MOCK: 'true'
-          CCACHE_SLOPPINESS: 'clang_index_store,file_macro,time_macros,include_file_mtime,include_file_ctime,ivfsoverlay'
-          CCACHE_FILECLONE: 'true'
-          CCACHE_DEPEND: 'true'
-          CCACHE_MAXSIZE: '5G'
         run: |
           cd ios
           xcodebuild -workspace subwaynow.xcworkspace \
@@ -188,15 +198,7 @@ jobs:
             -destination "platform=iOS Simulator,name=${SIM_NAME}" \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
-            ENABLE_USER_SCRIPT_SANDBOXING=NO \
-            C_COMPILER_LAUNCHER=ccache \
-            CLANG_ENABLE_EXPLICIT_MODULES_WITH_COMPILER_LAUNCHER=YES \
             build
-
-      - name: ccache 통계 출력
-        # hit ratio 모니터링용. 첫 실행은 0%, 이후 80%+ 기대.
-        if: always()
-        run: ccache --show-stats || true
 
       - name: JS 번들에 mock sentinel이 inline되었는지 검증
         # Hermes bytecode는 숫자 리터럴을 보존하지 않으므로 좌표 grep 불가.
