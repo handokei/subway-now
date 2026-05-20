@@ -41,6 +41,25 @@ function deriveAlarmAtEpochMs(nextStationEtaSeconds: number | null, now: number)
   return now;
 }
 
+interface RegisterCallInputs {
+  token: string;
+  route: NonNullable<Route>;
+  destination: Station;
+  nextStationEtaSeconds: number | null;
+  currentStation: Station | null;
+}
+
+/** 두 호출처(token refresh / main effect)의 register 페이로드 빌드를 단일화. */
+async function callRegister(input: RegisterCallInputs) {
+  return registerActiveTrip({
+    token: input.token,
+    route: input.route,
+    destination: input.destination.id,
+    waypoints: routeToWaypoints(input.route, input.destination.name, input.currentStation),
+    alarmAtEpochMs: deriveAlarmAtEpochMs(input.nextStationEtaSeconds, Date.now()),
+  });
+}
+
 export function useApnsTripRegistration({
   route,
   destination,
@@ -91,12 +110,12 @@ export function useApnsTripRegistration({
           currentStation: cs,
         } = latestInputsRef.current;
         if (!r || !d) return;
-        await registerActiveTrip({
+        await callRegister({
           token,
           route: r,
-          destination: d.id,
-          waypoints: routeToWaypoints(r, d.name, cs),
-          alarmAtEpochMs: deriveAlarmAtEpochMs(eta, Date.now()),
+          destination: d,
+          nextStationEtaSeconds: eta,
+          currentStation: cs,
         });
       })();
     });
@@ -132,12 +151,12 @@ export function useApnsTripRegistration({
         return;
       }
 
-      const result = await registerActiveTrip({
+      const result = await callRegister({
         token,
         route,
-        destination: destination.id,
-        waypoints: routeToWaypoints(route, destination.name, currentStation),
-        alarmAtEpochMs: deriveAlarmAtEpochMs(nextStationEtaSeconds, Date.now()),
+        destination,
+        nextStationEtaSeconds,
+        currentStation,
       });
       if (cancelled) return;
       if (result.ok) {
