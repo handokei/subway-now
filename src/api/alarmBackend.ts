@@ -17,7 +17,7 @@ const log = createLogger('alarmBackend');
 export interface AlarmWaypoint {
   stationName: string;
   line: string;
-  kind: 'transfer' | 'destination';
+  kind: 'transfer' | 'destination' | 'intermediate';
 }
 
 export interface RegisterTripPayload {

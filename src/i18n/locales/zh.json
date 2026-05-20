@@ -167,6 +167,8 @@
     "atCurrentStation": "当前 {{name}}",
     "approximateDistance": "约{{m}}m",
     "stationPassed": "已到达{{name}}",
+    "intermediatePassedTitle": "经过站点",
+    "intermediatePassedBody": "正在经过{{name}}站",
     "stopsRemainingToDestination_one": "距{{destination}}还有{{count}}站",
     "stopsRemainingToDestination_other": "距{{destination}}还有{{count}}站",
     "stopsRemainingViaTransfer": "距{{transfer}}换乘{{transferStops}}站 · 距{{destination}}{{totalStops}}站",

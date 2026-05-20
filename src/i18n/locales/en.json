@@ -167,6 +167,8 @@
     "atCurrentStation": "Currently at {{name}}",
     "approximateDistance": "~{{m}}m",
     "stationPassed": "Arrived at {{name}}",
+    "intermediatePassedTitle": "Passing station",
+    "intermediatePassedBody": "Passing through {{name}}",
     "stopsRemainingToDestination_one": "{{count}} stop to {{destination}}",
     "stopsRemainingToDestination_other": "{{count}} stops to {{destination}}",
     "stopsRemainingViaTransfer": "{{transferStops}} stops to {{transfer}} transfer · {{totalStops}} stops to {{destination}}",

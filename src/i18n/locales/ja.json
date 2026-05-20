@@ -167,6 +167,8 @@
     "atCurrentStation": "現在 {{name}}",
     "approximateDistance": "約{{m}}m",
     "stationPassed": "{{name}}駅に到着",
+    "intermediatePassedTitle": "駅通過",
+    "intermediatePassedBody": "{{name}}駅を通過しています",
     "stopsRemainingToDestination_one": "{{destination}}まで残り{{count}}駅",
     "stopsRemainingToDestination_other": "{{destination}}まで残り{{count}}駅",
     "stopsRemainingViaTransfer": "{{transfer}}乗換まで{{transferStops}}駅 · {{destination}}まで{{totalStops}}駅",

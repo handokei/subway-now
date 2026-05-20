@@ -48,6 +48,18 @@ describe('validateTrip', () => {
     ).toBeNull();
   });
 
+  it('accepts intermediate waypoint kind (#416)', () => {
+    const trip = validateTrip({
+      ...base(),
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate' },
+        { stationName: '강남', line: '2', kind: 'destination' },
+      ],
+    });
+    expect(trip).not.toBeNull();
+    expect(trip?.waypoints[0].kind).toBe('intermediate');
+  });
+
   it('rejects malformed waypoint', () => {
     expect(validateTrip({ ...base(), waypoints: [null] })).toBeNull();
     expect(

@@ -43,8 +43,8 @@ export interface Waypoint {
   stationName: string;
   /** 노선 키 (정확히 어느 호선에서 도착을 봐야 하는지) */
   line: LineNumber;
-  /** "transfer" — 환승 안내 / "destination" — 최종 도착 */
-  kind: 'transfer' | 'destination';
+  /** "transfer" — 환승 안내 / "destination" — 최종 도착 / "intermediate" — 중간역 통과 */
+  kind: 'transfer' | 'destination' | 'intermediate';
 }
 
 export interface Trip {

@@ -25,6 +25,8 @@ export interface UseApnsTripRegistrationInputs {
   destination: Station | null;
   /** 첫 도착역까지 ETA(초). null이면 alarm scheduler와 동일하게 static fallback이 백엔드에서 진행. */
   nextStationEtaSeconds: number | null;
+  /** 현재 추정 출발역. 중간역(intermediate) 펼침에 사용 (#416). 미제공 또는 null이면 legacy 모드. */
+  currentStation?: Station | null;
 }
 
 /**
@@ -43,11 +45,12 @@ export function useApnsTripRegistration({
   route,
   destination,
   nextStationEtaSeconds,
+  currentStation = null,
 }: UseApnsTripRegistrationInputs): void {
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
-  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds });
+  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation });
   useEffect(() => {
-    latestInputsRef.current = { route, destination, nextStationEtaSeconds };
+    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation };
   });
 
   // ── 토큰 발급 + 리스너 등록 (mount-once) ──
@@ -81,13 +84,18 @@ export function useApnsTripRegistration({
           logger.warn('persist refreshed token failed:', e);
         }
         // 활성 트립이 있으면 새 토큰으로 재등록한다.
-        const { route: r, destination: d, nextStationEtaSeconds: eta } = latestInputsRef.current;
+        const {
+          route: r,
+          destination: d,
+          nextStationEtaSeconds: eta,
+          currentStation: cs,
+        } = latestInputsRef.current;
         if (!r || !d) return;
         await registerActiveTrip({
           token,
           route: r,
           destination: d.id,
-          waypoints: routeToWaypoints(r, d.name),
+          waypoints: routeToWaypoints(r, d.name, cs),
           alarmAtEpochMs: deriveAlarmAtEpochMs(eta, Date.now()),
         });
       })();
@@ -128,7 +136,7 @@ export function useApnsTripRegistration({
         token,
         route,
         destination: destination.id,
-        waypoints: routeToWaypoints(route, destination.name),
+        waypoints: routeToWaypoints(route, destination.name, currentStation),
         alarmAtEpochMs: deriveAlarmAtEpochMs(nextStationEtaSeconds, Date.now()),
       });
       if (cancelled) return;
@@ -141,5 +149,7 @@ export function useApnsTripRegistration({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [route, destination?.id, nextStationEtaSeconds]);
+    // TODO(#416 follow-up): currentStation 변경 시 register 매번 호출되어 백엔드 trip 진행 상태(waypoints shift)가 reset될 수 있다.
+    // 멱등성 처리는 클라/백엔드 어디서 보장할지 실기기 검증 결과 보고 결정한다.
+  }, [route, destination?.id, nextStationEtaSeconds, currentStation?.id]);
 }

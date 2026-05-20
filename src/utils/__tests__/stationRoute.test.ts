@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 
@@ -1148,5 +1148,45 @@ describe('환승역 이름 표기 불일치 회귀 — #401', () => {
     const single = candidates.find((c) => c.transferCount === 1);
     expect(single).toBeDefined();
     expect(normalizeStationName((single!.route as TransferRoute).transferName)).toBe(expectedName);
+  });
+});
+
+describe('getIntermediateStationNames', () => {
+  it('returns empty array when current and destination are the same', () => {
+    expect(getIntermediateStationNames('1-001', '1-001')).toEqual([]);
+  });
+
+  it('returns empty array for adjacent stations', () => {
+    // 1-001(소요산) → 1-002(동두천): 사이에 역 없음
+    expect(getIntermediateStationNames('1-001', '1-002')).toEqual([]);
+  });
+
+  it('returns intermediate station names in forward direction', () => {
+    // 1-001(소요산) → 1-005(지행): 동두천, 보산, 동두천중앙
+    expect(getIntermediateStationNames('1-001', '1-005')).toEqual([
+      '동두천',
+      '보산',
+      '동두천중앙',
+    ]);
+  });
+
+  it('returns intermediate station names in reverse direction', () => {
+    // 1-005(지행) → 1-001(소요산): 동두천중앙, 보산, 동두천 (역순)
+    expect(getIntermediateStationNames('1-005', '1-001')).toEqual([
+      '동두천중앙',
+      '보산',
+      '동두천',
+    ]);
+  });
+
+  it('returns null when stations are on different lines', () => {
+    const line1 = getStationsOnLine('1')[0];
+    const line2 = getStationsOnLine('2')[0];
+    expect(getIntermediateStationNames(line1.id, line2.id)).toBeNull();
+  });
+
+  it('returns null for unknown station id', () => {
+    expect(getIntermediateStationNames('1-001', 'unknown-id')).toBeNull();
+    expect(getIntermediateStationNames('unknown-id', '1-001')).toBeNull();
   });
 });

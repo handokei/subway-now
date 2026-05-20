@@ -61,7 +61,7 @@ export function validateTrip(input: unknown): Trip | null {
     const wp = w as Record<string, unknown>;
     if (typeof wp.stationName !== 'string') return null;
     if (typeof wp.line !== 'string') return null;
-    if (wp.kind !== 'transfer' && wp.kind !== 'destination') return null;
+    if (wp.kind !== 'transfer' && wp.kind !== 'destination' && wp.kind !== 'intermediate') return null;
   }
 
   return {
