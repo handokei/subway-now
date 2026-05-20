@@ -20,7 +20,8 @@ describe('findNextStationOnLine', () => {
     expect(next?.name).toBe('을지로입구');
   });
 
-  it('역방향 다음 역을 반환한다', () => {
+  it('역방향(강남→시청)일 때 강남 직전 역인 을지로3가를 반환한다', () => {
+    // 픽스처상 강남 직전(idx=2)이 을지로3가 — 실제 노선에선 사이에 더 많지만 테스트 단순화.
     const next = findNextStationOnLine('2', '강남', '시청', line2);
     expect(next?.name).toBe('을지로3가');
   });

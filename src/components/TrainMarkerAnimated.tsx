@@ -42,17 +42,18 @@ export function TrainMarkerAnimated({ train }: Props) {
   ).current;
 
   useEffect(() => {
-    // AnimatedRegion.timing은 toValue 없이 lat/lng 직접 머지하지만 TS 타입은
-    // 기본 TimingAnimationConfig를 inherit해 toValue를 요구한다 (라이브러리 타입 보정 누락).
-    const config = {
-      latitude: train.lat,
-      longitude: train.lng,
-      latitudeDelta: 0,
-      longitudeDelta: 0,
-      duration: TRAIN_TRANSITION_DURATION_MS,
-      useNativeDriver: false,
-    } as unknown as Parameters<typeof coord.timing>[0];
-    coord.timing(config).start();
+    // toValue는 라이브러리가 사용하지 않지만 TS 타입(TimingAnimationConfig)이 요구해 더미로 둔다.
+    coord
+      .timing({
+        latitude: train.lat,
+        longitude: train.lng,
+        latitudeDelta: 0,
+        longitudeDelta: 0,
+        duration: TRAIN_TRANSITION_DURATION_MS,
+        useNativeDriver: false,
+        toValue: 0,
+      })
+      .start();
   }, [train.lat, train.lng, coord]);
 
   const isArrived = train.trainStatus === TRAIN_STATUS.ARRIVED;
