@@ -928,5 +928,55 @@ describe('useStationAlarm', () => {
       });
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
+
+    // #452: deps에 raw accuracyMeters가 들어가면 GPS 노이즈로 매 fix 재실행되어
+    // dedup-suppressed 로그가 1초당 1줄씩 쌓여 alarm log ring buffer를 점령했다.
+    // 게이트 통과 영역 내부에서 accuracyMeters만 바뀔 때 effect가 추가 실행되지 않아야 한다.
+    it('#452: 같은 station에서 accuracyMeters만 바뀌어도 dedup-suppressed 로그가 추가되지 않는다', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+      mockGetLastNotifiedStationId.mockResolvedValue(station.id);
+
+      const { rerender } = renderHook(
+        (props: UseStationAlarmInputs) => useStationAlarm(props),
+        {
+          initialProps: defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            accuracyMeters: 10,
+          }),
+        },
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedDedupStation).toHaveBeenCalledTimes(1);
+      });
+
+      // GPS 노이즈처럼 정확도만 게이트 통과 범위 내에서 변경.
+      rerender(
+        defaultInputs({
+          route,
+          destination,
+          nearestStation: station,
+          accuracyMeters: 25,
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      rerender(
+        defaultInputs({
+          route,
+          destination,
+          nearestStation: station,
+          accuracyMeters: 50,
+        }),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // 추가 호출 없음 — 게이트 boolean이 바뀌지 않는 한 effect가 재실행되지 않음.
+      // (await 후 검증으로 비동기 IIFE의 carryover 호출 가능성도 차단)
+      expect(mockLogSuppressedDedupStation).toHaveBeenCalledTimes(1);
+    });
   });
 });
