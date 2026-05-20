@@ -24,6 +24,20 @@ export const TRAIN_TYPE_LABEL: Record<TrainType, string> = {
 };
 
 /**
+ * 배지 시각 variant. 급행/특급/ITX는 사용자가 잘못된 열차에 타지 않도록
+ * 안전성 직결 정보 → filled로 가장 두드러지게 표시한다.
+ * normal은 라벨 자체가 없어 사용되지 않는다.
+ */
+export type BadgeVariant = 'filled' | 'outline';
+
+export const TRAIN_TYPE_VARIANT: Record<TrainType, BadgeVariant> = {
+  express: 'filled',
+  itx: 'filled',
+  rapid: 'filled',
+  normal: 'outline',
+};
+
+/**
  * realtimePosition API의 `directAt` 응답값(숫자) → 같은 TrainType enum으로 통합.
  * 스펙: 1:급행, 0:아님, 7:특급 (ITX는 directAt에 없음 — btrainSttus 텍스트로만 옴)
  */
