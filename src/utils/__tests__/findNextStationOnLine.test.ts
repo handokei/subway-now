@@ -53,11 +53,4 @@ describe('findNextStationOnLine', () => {
     expect(next?.line).toBe('7');
   });
 
-  it('호선 시작점에서 역방향이면 null (boundary)', () => {
-    // 시청(0)에서 종착이 시청 자신이면 위에서 잡힘. 진짜 boundary는 nextIdx < 0 케이스.
-    // 단일 호선 길이가 2개일 때 1번 역에서 0번을 향하면 0번 반환 → boundary 아님.
-    // 실제 boundary: 호선이 1개 역만 있을 때
-    const single: Station[] = [line2[0]];
-    expect(findNextStationOnLine('2', '시청', '시청', single)).toBeNull();
-  });
 });

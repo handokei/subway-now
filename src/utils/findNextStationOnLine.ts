@@ -27,6 +27,8 @@ export function findNextStationOnLine(
 
   const step = terminalIdx > currentIdx ? 1 : -1;
   const nextIdx = currentIdx + step;
+  /* istanbul ignore next -- currentIdx/terminalIdx 모두 findIndex 성공 + 서로 다름이 보장돼
+     step 방향으로 한 칸은 항상 호선 범위 내. boundary 가드는 방어용. */
   if (nextIdx < 0 || nextIdx >= lineStations.length) return null;
   return lineStations[nextIdx];
 }
