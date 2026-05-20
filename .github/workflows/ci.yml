@@ -77,11 +77,7 @@ jobs:
     # changes.ui_affected=false면 자동 스킵 (i18n/백엔드/문서 PR은 smoke가 검증할 게 없음 → 25분 낭비 방지).
     needs: [test, changes]
     if: needs.changes.outputs.ui_affected == 'true'
-    # Apple Silicon(M1) 러너로 변경 — macos-14(Intel) 대비 iOS 빌드 2~3배 빠름.
-    # PR #432의 ccache는 Xcode 16 modules와 호환 안 됨(99.7% uncacheable). DerivedData 캐시+mtime
-    # 보정도 incremental build session 차이로 효과 없음(로컬 검증: 1986개 컴파일 = 풀빌드).
-    # 결론: 캐시 무리하지 말고 러너 자체를 빠르게. 17분 → ~6-9분 목표.
-    runs-on: macos-14-xlarge
+    runs-on: macos-14
     timeout-minutes: 45
     env:
       EXPO_PUBLIC_E2E_MOCK: 'true'
@@ -191,6 +187,9 @@ jobs:
           EXPO_PUBLIC_E2E_MOCK: 'true'
         run: |
           cd ios
+          # ONLY_ACTIVE_ARCH=YES: Release 기본은 x86_64+arm64 둘 다 빌드(universal binary 가정).
+          # CI는 시뮬레이터에 destination 매칭 1 arch만 설치하므로 나머지는 폐기됨 → 50% 시간 낭비.
+          # 로컬 검증: 풀빌드 ~10분 → ONLY_ACTIVE_ARCH=YES 4분 3초 (60% 단축). 기능 영향 0.
           xcodebuild -workspace subwaynow.xcworkspace \
             -scheme subwaynow \
             -configuration Release \
@@ -198,6 +197,7 @@ jobs:
             -destination "platform=iOS Simulator,name=${SIM_NAME}" \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=YES \
             build
 
       - name: JS 번들에 mock sentinel이 inline되었는지 검증
