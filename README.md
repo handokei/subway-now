@@ -105,3 +105,9 @@ docs/
 ## 관련 저장소
 
 - **[subway-now-bff](https://github.com/handokei/subway-now-bff)** — BFF 서버 (API 프록시 + 캐싱)
+
+## 데이터 출처
+
+`src/data/lineGeometry.json` (서울 지하철 1~9호선 노선 폴리라인 좌표):
+Map data © [OpenStreetMap](https://www.openstreetmap.org/) contributors, available under the [Open Database License](https://opendatacommons.org/licenses/odbl/).
+재생성: `node scripts/fetch-line-geometry.js`
