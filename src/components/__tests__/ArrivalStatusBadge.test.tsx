@@ -1,4 +1,5 @@
 import React from 'react';
+import { StyleSheet } from 'react-native';
 import { screen } from '@testing-library/react-native';
 import { ArrivalStatusBadge } from '../ArrivalStatusBadge';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
@@ -59,5 +60,53 @@ describe('ArrivalStatusBadge', () => {
     expect(screen.getByText('막차')).toBeTruthy();
     expect(screen.getByText('도착')).toBeTruthy();
     expect(screen.getByText('급행')).toBeTruthy();
+  });
+
+  it('급행 + 막차 동시 시 급행이 가장 먼저 표시 (안전성 직결 정보 우선)', () => {
+    renderWithTheme(<ArrivalStatusBadge isLastTrain trainType="express" />);
+    const row = screen.getByTestId('arrival-status-badge');
+    const labels = row.children
+      .map((c: unknown) => {
+        if (typeof c !== 'object' || c === null) return undefined;
+        const node = c as { props?: { testID?: string } };
+        return node.props?.testID;
+      })
+      .filter((id: string | undefined): id is string => typeof id === 'string');
+    expect(labels[0]).toBe('arrival-status-badge-급행');
+    expect(labels[1]).toBe('arrival-status-badge-막차');
+  });
+
+  describe('variant 스타일', () => {
+    it('급행 배지는 filled (배경색 채움)', () => {
+      renderWithTheme(<ArrivalStatusBadge trainType="express" />);
+      const badge = screen.getByTestId('arrival-status-badge-급행');
+      const style = StyleSheet.flatten(badge.props.style);
+      expect(style.backgroundColor).toBeDefined();
+      expect(style.backgroundColor).toBe(style.borderColor);
+    });
+
+    it('ITX/특급도 filled', () => {
+      renderWithTheme(<ArrivalStatusBadge trainType="itx" />);
+      const itx = screen.getByTestId('arrival-status-badge-ITX');
+      const itxStyle = Array.isArray(itx.props.style)
+        ? Object.assign({}, ...itx.props.style)
+        : itx.props.style;
+      expect(itxStyle.backgroundColor).toBeDefined();
+    });
+
+    it('막차 배지는 outline (배경색 없음)', () => {
+      renderWithTheme(<ArrivalStatusBadge isLastTrain />);
+      const badge = screen.getByTestId('arrival-status-badge-막차');
+      const style = StyleSheet.flatten(badge.props.style);
+      expect(style.backgroundColor).toBeUndefined();
+      expect(style.borderColor).toBeDefined();
+    });
+
+    it('도착/진입 배지는 outline', () => {
+      renderWithTheme(<ArrivalStatusBadge arrivalCode={ARRIVAL_CODE.ENTERING} />);
+      const badge = screen.getByTestId('arrival-status-badge-진입');
+      const style = StyleSheet.flatten(badge.props.style);
+      expect(style.backgroundColor).toBeUndefined();
+    });
   });
 });

@@ -1,4 +1,9 @@
-import { parseTrainType, parseTrainTypeFromDirectAt, TRAIN_TYPE_LABEL } from '../trainTypes';
+import {
+  parseTrainType,
+  parseTrainTypeFromDirectAt,
+  TRAIN_TYPE_LABEL,
+  TRAIN_TYPE_VARIANT,
+} from '../trainTypes';
 
 describe('parseTrainType', () => {
   it('급행/ITX/특급 정확히 매핑', () => {
@@ -26,6 +31,18 @@ describe('TRAIN_TYPE_LABEL', () => {
     expect(TRAIN_TYPE_LABEL.itx).toBe('ITX');
     expect(TRAIN_TYPE_LABEL.rapid).toBe('특급');
     expect(TRAIN_TYPE_LABEL.normal).toBe('');
+  });
+});
+
+describe('TRAIN_TYPE_VARIANT', () => {
+  it('급행/특급/ITX는 filled (안전성 직결 정보 강조)', () => {
+    expect(TRAIN_TYPE_VARIANT.express).toBe('filled');
+    expect(TRAIN_TYPE_VARIANT.itx).toBe('filled');
+    expect(TRAIN_TYPE_VARIANT.rapid).toBe('filled');
+  });
+
+  it('normal은 outline (사용되지 않지만 타입 완전성 확보)', () => {
+    expect(TRAIN_TYPE_VARIANT.normal).toBe('outline');
   });
 });
 
