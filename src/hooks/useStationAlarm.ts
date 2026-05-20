@@ -174,12 +174,15 @@ export function useStationAlarm({
   // dedup은 AsyncStorage(lastNotifiedStationId)를 단일 출처로 사용 — Foreground/Background
   // 양쪽에서 동일하게 적용된다. firedHydrated에 의존하지 않으므로 하이드레이션 완료가
   // station-passed를 재발사시키지 않는다.
+  // #452: deps에 raw accuracyMeters를 두면 GPS 노이즈로 매 fix 재실행 → dedup-suppressed
+  // 로그가 cap까지 차서 다른 진단을 밀어낸다. 게이트 통과 여부(boolean)만 dep로 둔다.
+  const accuracyOk = isAccuracyAcceptable(accuracyMeters);
+  const arrivalConfirmed = arrivalConfidence === 'arrival-confirmed';
+
   useEffect(() => {
     let cancelled = false;
     if (!route || !destination) return;
 
-    const accuracyOk = isAccuracyAcceptable(accuracyMeters);
-    const arrivalConfirmed = arrivalConfidence === 'arrival-confirmed';
     if (!accuracyOk && !arrivalConfirmed) return;
 
     // cancellation: 효과 cleanup이 cancelled를 true로 만들어 stale IIFE를 중단시킨다.
@@ -221,7 +224,7 @@ export function useStationAlarm({
     destination?.id,
     destination?.name,
     nearestStation?.id,
-    accuracyMeters,
-    arrivalConfidence,
+    accuracyOk,
+    arrivalConfirmed,
   ]);
 }
