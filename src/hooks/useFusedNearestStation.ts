@@ -13,11 +13,12 @@ import { pickFusedStation, type FusionConfidence, type FusionSource } from '../u
 import { pickCandidateTrains, type CandidateTrain } from '../utils/pickCandidateTrains';
 import { trackTrainProgress } from '../utils/trackTrainProgress';
 import { haversine } from '../utils/haversine';
-import { MAX_ACCURACY_M, MAX_STATION_DISTANCE_KM } from '../constants/location';
+import { passesFusionDistanceGate } from '../utils/fusionDistanceGate';
+import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import {
   MAX_ACTIVE_LINES,
-  MAX_POSITION_TRAIN_DELTA_KM,
-  MAX_POSITION_TRAIN_DISTANCE_KM,
+  MAX_FUSION_DELTA_KM,
+  MAX_FUSION_DISTANCE_KM,
   POSITION_TRAIN_TTL_MS,
 } from '../constants/realtime';
 import type { LinePositions } from '../api/positionApi';
@@ -212,11 +213,7 @@ export function useFusedNearestStation(
       ? haversine(gps.userLocation.lat, gps.userLocation.lng, station.lat, station.lng)
       : 0;
 
-    // #445 게이트: positionTrain 락이 사용자 실위치와 동떨어진 경우 강등.
-    // (1) TTL: trainProgress가 신선해야 함. stale하면 강등.
-    // (2) 거리 sanity: accuracy 양호(≤MAX_ACCURACY_M)할 때만 적용 — 지하 fix는 면제.
-    //   2a) 절대 거리 > MAX_POSITION_TRAIN_DISTANCE_KM
-    //   2b) GPS-nearest와 비교해 margin 초과
+    // #445 TTL: trainProgress가 신선해야 함. stale하면 강등.
     // ref가 0이면 effect가 첫 ts를 commit하기 전 — useMemo는 pure하게 두기 위해 면제.
     if (
       lastProgressTsRef.current !== 0 &&
@@ -224,22 +221,21 @@ export function useFusedNearestStation(
     ) {
       return null;
     }
+    // #444 거리 sanity — fused/route와 공통 헬퍼 재사용.
+    const candidate = { station, distanceKm };
     if (
-      gps.userLocation &&
-      gps.accuracyMeters != null &&
-      gps.accuracyMeters <= MAX_ACCURACY_M
+      !passesFusionDistanceGate({
+        candidate,
+        userLocation: gps.userLocation,
+        accuracyMeters: gps.accuracyMeters,
+        gpsNearest: candidates[0],
+        maxAbsoluteKm: MAX_FUSION_DISTANCE_KM,
+        maxDeltaKm: MAX_FUSION_DELTA_KM,
+      })
     ) {
-      if (distanceKm > MAX_POSITION_TRAIN_DISTANCE_KM) return null;
-      const gpsNearest = candidates[0];
-      if (
-        gpsNearest &&
-        gpsNearest.station.id !== station.id &&
-        distanceKm > gpsNearest.distanceKm + MAX_POSITION_TRAIN_DELTA_KM
-      ) {
-        return null;
-      }
+      return null;
     }
-    return { station, distanceKm };
+    return candidate;
   }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates]);
 
   const routeResult: NearestStationResult | null = progress.position
@@ -251,6 +247,19 @@ export function useFusedNearestStation(
 
   // 우선순위(Phase 1C 역전): position-train > position/arrival(fused) > route-progress > gps.
   // 기존: route-progress가 fused를 덮어쓰고 있었음.
+  // #444: fused/route도 채택 직전 거리 sanity 통과 검사 — 미통과 시 다음 우선순위로.
+  const gateOpts = {
+    userLocation: gps.userLocation,
+    accuracyMeters: gps.accuracyMeters,
+    gpsNearest: candidates[0],
+    maxAbsoluteKm: MAX_FUSION_DISTANCE_KM,
+    maxDeltaKm: MAX_FUSION_DELTA_KM,
+  };
+  const fusedPasses =
+    fused != null && passesFusionDistanceGate({ ...gateOpts, candidate: fused.result });
+  const routePasses =
+    routeResult != null && passesFusionDistanceGate({ ...gateOpts, candidate: routeResult });
+
   let result: NearestStationResult | null;
   let confidence: FusionConfidence;
   let source: FusionSource;
@@ -258,11 +267,11 @@ export function useFusedNearestStation(
     result = positionTrainResult;
     confidence = 'position-train';
     source = 'position-train';
-  } else if (fused) {
+  } else if (fused && fusedPasses) {
     result = fused.result;
     confidence = fused.confidence;
     source = fused.source;
-  } else if (routeResult) {
+  } else if (routeResult && routePasses) {
     result = routeResult;
     confidence = 'route-progress';
     source = 'route-progress';

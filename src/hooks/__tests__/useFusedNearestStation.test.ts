@@ -420,6 +420,65 @@ describe('useFusedNearestStation', () => {
     });
   });
 
+  describe('#444 fused/route 거리 sanity gate', () => {
+    const yongmasan = findStationByNameAndLine('용마산', '7')!;
+
+    it('재현된 사고: GPS=용마산 / fused가 사가정 0s arrival로 채택 → fused 강등 → gps로 떨어짐', () => {
+      // mockFindTop으로 후보 직접 주입. trackTrainProgress 경로엔 positions가 없어
+      // findStationByNameAndLine 호출이 없으므로 스파이 불필요.
+      const fakeSagajeong = {
+        id: 'SAGA-FAKE',
+        name: '사가정',
+        line: '7' as const,
+        lineColor: '#747F00',
+        // user(용마산)에서 약 0.6km 떨어진 좌표 — 절대 게이트 경계.
+        lat: yongmasan.lat + 0.0054,
+        lng: yongmasan.lng,
+      };
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
+          accuracyMeters: 6,
+          result: { station: yongmasan, distanceKm: 0 },
+        }),
+      );
+      mockFindTop.mockReturnValue([
+        { station: yongmasan, distanceKm: 0 },
+        { station: fakeSagajeong, distanceKm: 0.6 },
+      ]);
+      mockUseArrival
+        .mockReturnValueOnce(arrivalRet(null))
+        .mockReturnValueOnce(arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }))
+        .mockReturnValueOnce(arrivalRet(null));
+      mockUsePositions.mockReturnValue(positionRet(null));
+
+      const { result } = renderHook(() => useFusedNearestStation());
+      // fused는 사가정을 채택하지만, #444 게이트가 강등 → gps로 폴백 → 용마산.
+      expect(result.current.source).toBe('gps');
+      expect(result.current.result?.station.id).toBe(yongmasan.id);
+    });
+
+    it('fused가 통과 가능한 거리(GPS-nearest와 동일 station)면 그대로 채택', () => {
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
+          accuracyMeters: 10,
+          result: { station: yongmasan, distanceKm: 0 },
+        }),
+      );
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+      mockUseArrival
+        .mockReturnValueOnce(arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }))
+        .mockReturnValueOnce(arrivalRet(null))
+        .mockReturnValueOnce(arrivalRet(null));
+      mockUsePositions.mockReturnValue(positionRet(null));
+
+      const { result } = renderHook(() => useFusedNearestStation());
+      expect(result.current.source).toBe('arrival');
+      expect(result.current.result?.station.id).toBe(yongmasan.id);
+    });
+  });
+
   describe('routeContext (Phase A — Route-Locked Map Matching)', () => {
     const sagajeong = findStationByNameAndLine('사가정', '7')!;
     const childrenPark = findStationByNameAndLine('어린이대공원', '7')!;
