@@ -94,6 +94,74 @@ describe('StationMap', () => {
     expect(queryAllByTestId('label-pill-청구')).toHaveLength(1);
   });
 
+  // #433: 데이터상 좌표 중복 그룹 9개 환승역이 모두 단일 그룹 마커로 렌더되는지 검증.
+  // 본문 가설("모바일에 그룹화 미적용")이 사실이면 이 테스트는 멤버 수(21)만큼 마커가 떠 실패한다.
+  it('#433 회귀: 9개 환승역 모두 단일 그룹 마커로 렌더된다', () => {
+    const transferStations: Station[] = [
+      // 창동 1/4
+      { id: '1-017', name: '창동', nameEn: 'Chang-dong', line: '1', lineColor: '#0052A4', lat: 37.65309, lng: 127.04727 },
+      { id: '4-004', name: '창동', nameEn: 'Chang-dong', line: '4', lineColor: '#00A5DE', lat: 37.65309, lng: 127.04727 },
+      // 외대앞 1/경의
+      { id: '1-023', name: '외대앞', nameEn: 'HUFS', line: '1', lineColor: '#0052A4', lat: 37.59607, lng: 127.06355 },
+      { id: 'gyeongui-036', name: '외대앞', nameEn: 'HUFS', line: 'gyeongui', lineColor: '#77C4A3', lat: 37.59607, lng: 127.06355 },
+      // 회기 1/경의
+      { id: '1-024', name: '회기', nameEn: 'Hoegi', line: '1', lineColor: '#0052A4', lat: 37.58946, lng: 127.05758 },
+      { id: 'gyeongui-037', name: '회기', nameEn: 'Hoegi', line: 'gyeongui', lineColor: '#77C4A3', lat: 37.58946, lng: 127.05758 },
+      // 청량리 1/경의(서울시립대입구)/분당
+      { id: '1-025', name: '청량리', nameEn: 'Cheongnyangni', line: '1', lineColor: '#0052A4', lat: 37.58076, lng: 127.04830 },
+      { id: 'gyeongui-035', name: '청량리(서울시립대입구)', nameEn: 'Cheongnyangni', line: 'gyeongui', lineColor: '#77C4A3', lat: 37.58076, lng: 127.04830 },
+      { id: 'bundang-054', name: '청량리', nameEn: 'Cheongnyangni', line: 'bundang', lineColor: '#FABE00', lat: 37.58076, lng: 127.04830 },
+      // 용산 1/경의
+      { id: '1-036', name: '용산', nameEn: 'Yongsan', line: '1', lineColor: '#0052A4', lat: 37.52985, lng: 126.96456 },
+      { id: 'gyeongui-028', name: '용산', nameEn: 'Yongsan', line: 'gyeongui', lineColor: '#77C4A3', lat: 37.52985, lng: 126.96456 },
+      // 신사 3/신분당
+      { id: '3-029', name: '신사', nameEn: 'Sinsa', line: '3', lineColor: '#EF7C1C', lat: 37.51633, lng: 127.02011 },
+      { id: 'sinbundang-016', name: '신사', nameEn: 'Sinsa', line: 'sinbundang', lineColor: '#D31145', lat: 37.51633, lng: 127.02011 },
+      // 논현 7/신분당
+      { id: '7-024', name: '논현', nameEn: 'Nonhyeon', line: '7', lineColor: '#747F00', lat: 37.51109, lng: 127.02142 },
+      { id: 'sinbundang-015', name: '논현', nameEn: 'Nonhyeon', line: 'sinbundang', lineColor: '#D31145', lat: 37.51109, lng: 127.02142 },
+      // 신논현 9/신분당
+      { id: '9-025', name: '신논현', nameEn: 'Sinnonhyeon', line: '9', lineColor: '#BDB092', lat: 37.50460, lng: 127.02506 },
+      { id: 'sinbundang-014', name: '신논현', nameEn: 'Sinnonhyeon', line: 'sinbundang', lineColor: '#D31145', lat: 37.50460, lng: 127.02506 },
+      // 왕십리 2/5/경의(성동구청)/분당
+      { id: '2-008', name: '왕십리', nameEn: 'Wangsimni', line: '2', lineColor: '#009D3E', lat: 37.56124, lng: 127.03695 },
+      { id: '5-031', name: '왕십리', nameEn: 'Wangsimni', line: '5', lineColor: '#996CAC', lat: 37.56184, lng: 127.03706 },
+      { id: 'gyeongui-034', name: '왕십리(성동구청)', nameEn: 'Wangsimni', line: 'gyeongui', lineColor: '#77C4A3', lat: 37.56183, lng: 127.03835 },
+      { id: 'bundang-053', name: '왕십리', nameEn: 'Wangsimni', line: 'bundang', lineColor: '#FABE00', lat: 37.56183, lng: 127.03835 },
+    ];
+
+    const expectedGroups: Array<{ key: string; memberIds: string[] }> = [
+      { key: '창동', memberIds: ['1-017', '4-004'] },
+      { key: '외대앞', memberIds: ['1-023', 'gyeongui-036'] },
+      { key: '회기', memberIds: ['1-024', 'gyeongui-037'] },
+      { key: '청량리', memberIds: ['1-025', 'gyeongui-035', 'bundang-054'] },
+      { key: '용산', memberIds: ['1-036', 'gyeongui-028'] },
+      { key: '신사', memberIds: ['3-029', 'sinbundang-016'] },
+      { key: '논현', memberIds: ['7-024', 'sinbundang-015'] },
+      { key: '신논현', memberIds: ['9-025', 'sinbundang-014'] },
+      { key: '왕십리', memberIds: ['2-008', '5-031', 'gyeongui-034', 'bundang-053'] },
+    ];
+
+    const { getByTestId, queryAllByTestId } = render(
+      <StationMap
+        {...baseProps}
+        nearestStation={null}
+        nearbyStations={transferStations}
+      />,
+    );
+
+    for (const { key, memberIds } of expectedGroups) {
+      // 그룹당 마커 1개
+      expect(getByTestId(`marker-${key}`)).toBeTruthy();
+      // 라벨 pill도 그룹당 1개 (멤버 수와 무관)
+      expect(queryAllByTestId(`label-pill-${key}`)).toHaveLength(1);
+      // 배지는 멤버 수만큼
+      for (const id of memberIds) {
+        expect(getByTestId(`badge-${id}`)).toBeTruthy();
+      }
+    }
+  });
+
   it('마커 press 시 onStationPress에 대표 station을 전달한다', () => {
     const onStationPress = jest.fn();
     const { getByTestId } = render(
