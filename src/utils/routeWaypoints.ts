@@ -24,6 +24,14 @@ interface Context {
   enabled: boolean;
 }
 
+function makeWaypoint(
+  stationName: string,
+  line: LineNumber,
+  kind: AlarmWaypoint['kind'],
+): AlarmWaypoint {
+  return { stationName, line, kind };
+}
+
 function intermediateWaypoints(
   ctx: Context,
   line: LineNumber,
@@ -33,7 +41,7 @@ function intermediateWaypoints(
   if (!ctx.enabled || !fromId || !toId) return [];
   const names = getIntermediateStationNames(fromId, toId);
   if (!names) return [];
-  return names.map((stationName) => ({ stationName, line, kind: 'intermediate' as const }));
+  return names.map((stationName) => makeWaypoint(stationName, line, 'intermediate'));
 }
 
 function buildDirect(route: DirectRoute, ctx: Context): AlarmWaypoint[] {
@@ -44,10 +52,7 @@ function buildDirect(route: DirectRoute, ctx: Context): AlarmWaypoint[] {
     ctx.currentStation?.id,
     destStation?.id,
   );
-  return [
-    ...intermediates,
-    { stationName: ctx.destinationName, line: route.line, kind: 'destination' },
-  ];
+  return [...intermediates, makeWaypoint(ctx.destinationName, route.line, 'destination')];
 }
 
 function buildTransfer(route: TransferRoute, ctx: Context): AlarmWaypoint[] {
@@ -60,19 +65,16 @@ function buildTransfer(route: TransferRoute, ctx: Context): AlarmWaypoint[] {
       ctx.currentStation?.id,
       destFromLine?.id,
     );
-    return [
-      ...intermediates,
-      { stationName: ctx.destinationName, line: route.fromLine, kind: 'destination' },
-    ];
+    return [...intermediates, makeWaypoint(ctx.destinationName, route.fromLine, 'destination')];
   }
   const transferFromLine = findStationByNameAndLine(route.transferName, route.fromLine);
   const transferToLine = findStationByNameAndLine(route.transferName, route.toLine);
   const destToLine = findStationByNameAndLine(ctx.destinationName, route.toLine);
   return [
     ...intermediateWaypoints(ctx, route.fromLine, ctx.currentStation?.id, transferFromLine?.id),
-    { stationName: route.transferName, line: route.fromLine, kind: 'transfer' },
+    makeWaypoint(route.transferName, route.fromLine, 'transfer'),
     ...intermediateWaypoints(ctx, route.toLine, transferToLine?.id, destToLine?.id),
-    { stationName: ctx.destinationName, line: route.toLine, kind: 'destination' },
+    makeWaypoint(ctx.destinationName, route.toLine, 'destination'),
   ];
 }
 
@@ -88,11 +90,13 @@ function buildMultiTransfer(route: MultiTransferRoute, ctx: Context): AlarmWaypo
     result.push(
       ...intermediateWaypoints(ctx, seg.fromLine, segmentStart?.id, transferFromLine?.id),
     );
-    result.push({
-      stationName: isDestination ? ctx.destinationName : seg.transferName,
-      line: seg.fromLine,
-      kind: isDestination ? 'destination' : 'transfer',
-    });
+    result.push(
+      makeWaypoint(
+        isDestination ? ctx.destinationName : seg.transferName,
+        seg.fromLine,
+        isDestination ? 'destination' : 'transfer',
+      ),
+    );
     if (isDestination) return result;
     segmentStart = findStationByNameAndLine(seg.transferName, seg.toLine);
   }
@@ -102,11 +106,7 @@ function buildMultiTransfer(route: MultiTransferRoute, ctx: Context): AlarmWaypo
   result.push(
     ...intermediateWaypoints(ctx, lastSegment.toLine, segmentStart?.id, destToLine?.id),
   );
-  result.push({
-    stationName: ctx.destinationName,
-    line: lastSegment.toLine,
-    kind: 'destination',
-  });
+  result.push(makeWaypoint(ctx.destinationName, lastSegment.toLine, 'destination'));
   return result;
 }
 
