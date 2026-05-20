@@ -144,7 +144,9 @@ describe('useFusedNearestStation', () => {
   });
 
   it('position-train: 단일 후보 trainNo → trackTrainProgress 채택 (source=position-train)', () => {
-    mockUseNearest.mockReturnValue(gpsBase());
+    // MOCK_STATIONS 좌표가 (37.5,127.0)으로 동일하고 trackTrainProgress는 stations.json의
+    // 실좌표를 조회한다. #445 거리 게이트와 충돌을 피하려고 accuracy를 게이트 면제 영역으로.
+    mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
     mockFindTop.mockReturnValue([
       { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }, // line='2'
       { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 }, // line='3'
@@ -184,7 +186,8 @@ describe('useFusedNearestStation', () => {
   });
 
   it('position-train 다중 후보: lastConfirmedTrainNo 우선(sticky) — 이전 결과 유지', () => {
-    mockUseNearest.mockReturnValue(gpsBase());
+    // #445 거리 게이트 우회 — MOCK 좌표와 stations.json 실좌표가 다르므로.
+    mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
     mockFindTop.mockReturnValue([
       { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
     ]);
@@ -240,6 +243,181 @@ describe('useFusedNearestStation', () => {
     expect(result.current.userLocation).toEqual({ lat: 37.5, lng: 127.0 });
     expect(result.current.speedMps).toBe(1);
     expect(result.current.accuracyMeters).toBe(50);
+  });
+
+  describe('#445 positionTrainResult 거리/TTL sanity gate', () => {
+    const yongmasan = findStationByNameAndLine('용마산', '7')!;
+    const sagajeong = findStationByNameAndLine('사가정', '7')!;
+
+    function setup용마산GpsSagajeongTrain(opts: { accuracyMeters: number | null }) {
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
+          accuracyMeters: opts.accuracyMeters,
+          result: { station: yongmasan, distanceKm: 0 },
+        }),
+      );
+      // GPS-nearest = 용마산. fusion 후보는 용마산만 (단순화) — line=7.
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      // line=7 positions에 사가정에 도착한 단일 열차.
+      mockUsePositions
+        .mockReturnValueOnce(
+          positionRet({
+            line: '7',
+            trains: [train(sagajeong.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-사가정' })],
+          }),
+        )
+        .mockReturnValueOnce(positionRet(null))
+        .mockReturnValueOnce(positionRet(null));
+    }
+
+    it('재현된 사고: GPS=용마산(정확도 양호) + positionTrain=사가정(>0.6km) → fusion 강등', () => {
+      setup용마산GpsSagajeongTrain({ accuracyMeters: 7 });
+      const { result } = renderHook(() => useFusedNearestStation());
+      // positionTrainResult가 null로 강등되고 fusion 우선순위가 다음으로 떨어진다.
+      expect(result.current.source).not.toBe('position-train');
+      // arrival/route 없으니 결국 gps 폴백 → 용마산.
+      expect(result.current.result?.station.name).toBe('용마산');
+    });
+
+    it('정확도 양호 + 절대 거리 OK + GPS-nearest 다른 station: 상대 margin 초과면 강등', () => {
+      // 절대 거리는 0.6km 이내(통과)지만 GPS-nearest와 비교했을 때 margin 초과로 강등하는 경로 검증.
+      // trackTrainProgress가 findStationByNameAndLine(stations.json 실좌표)을 쓰므로,
+      // 실좌표에서 0.3~0.6km 범위 안 동일선상 두 역이 필요. 7호선 사가정/면목 사용 가정 어렵 →
+      // findStationByNameAndLine을 한 번만 가로채 합성 좌표를 돌려준다.
+      const fakeStation = {
+        id: 'SAGA-FAKE',
+        name: '사가정',
+        line: '7' as const,
+        lineColor: '#747F00',
+        // user(용마산)에서 약 0.4km 떨어진 합성 좌표.
+        lat: yongmasan.lat + 0.0036,
+        lng: yongmasan.lng,
+      };
+      const here = { ...yongmasan, id: 'YHERE' };
+      const stationRouteModule = jest.requireActual('../../utils/stationRoute');
+      const spy = jest
+        .spyOn(stationRouteModule, 'findStationByNameAndLine')
+        .mockImplementation((...args) => {
+          const [name, line] = args as [string, string];
+          if (name === '사가정' && line === '7') return fakeStation;
+          return null;
+        });
+
+      try {
+        mockUseNearest.mockReturnValue(
+          gpsBase({
+            userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
+            accuracyMeters: 10,
+            result: { station: here, distanceKm: 0 },
+          }),
+        );
+        // GPS-nearest = here(거리 0). positionTrain station = fake사가정(~0.4km).
+        // 0.4 > 0 + 0.2 → 상대 margin 초과 → 강등(line 232 hit).
+        mockFindTop.mockReturnValue([{ station: here, distanceKm: 0 }]);
+        mockUseArrival.mockReturnValue(arrivalRet(null));
+        mockUsePositions
+          .mockReturnValueOnce(
+            positionRet({
+              line: '7',
+              trains: [train('사가정', TRAIN_STATUS.ARRIVED, { trainNo: 'T-NEAR' })],
+            }),
+          )
+          .mockReturnValueOnce(positionRet(null))
+          .mockReturnValueOnce(positionRet(null));
+
+        const { result } = renderHook(() => useFusedNearestStation());
+        expect(result.current.source).not.toBe('position-train');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('지하 fix(accuracy > MAX_ACCURACY_M)면 거리 게이트 면제 → positionTrain 유지', () => {
+      setup용마산GpsSagajeongTrain({ accuracyMeters: 1500 });
+      const { result } = renderHook(() => useFusedNearestStation());
+      // 지하 가정. positionTrain이 살아서 사가정을 그대로 채택.
+      expect(result.current.source).toBe('position-train');
+      expect(result.current.result?.station.name).toBe('사가정');
+    });
+
+    it('accuracy null도 거리 게이트 면제 → positionTrain 유지', () => {
+      setup용마산GpsSagajeongTrain({ accuracyMeters: null });
+      const { result } = renderHook(() => useFusedNearestStation());
+      expect(result.current.source).toBe('position-train');
+    });
+
+    it('정상 mid-ride(user가 정확도 양호 + 절대 거리 ≤0.6km + margin OK): positionTrain 유지', () => {
+      // user는 사가정 근처(약 0.3km) — 절대 거리 통과, GPS-nearest도 사가정.
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: sagajeong.lat - 0.0027, lng: sagajeong.lng }, // ~300m 남쪽
+          accuracyMeters: 10,
+          result: { station: sagajeong, distanceKm: 0.3 },
+        }),
+      );
+      mockFindTop.mockReturnValue([{ station: sagajeong, distanceKm: 0.3 }]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions
+        .mockReturnValueOnce(
+          positionRet({
+            line: '7',
+            trains: [train(sagajeong.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-OK' })],
+          }),
+        )
+        .mockReturnValueOnce(positionRet(null))
+        .mockReturnValueOnce(positionRet(null));
+
+      const { result } = renderHook(() => useFusedNearestStation());
+      expect(result.current.source).toBe('position-train');
+      expect(result.current.result?.station.name).toBe('사가정');
+    });
+
+    it('TTL: trainProgress가 갱신된 지 60s 초과면 fusion 강등 + sticky 락 해제', () => {
+      jest.useFakeTimers();
+      try {
+        // mockImplementation으로 안정 — 매 호출마다 동일한 positions 반환.
+        mockUseNearest.mockReturnValue(
+          gpsBase({
+            userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
+            accuracyMeters: 1500, // 거리 게이트 면제 → TTL만 검사
+            result: { station: yongmasan, distanceKm: 0 },
+          }),
+        );
+        mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+        mockUseArrival.mockReturnValue(arrivalRet(null));
+        mockUsePositions.mockImplementation((line: string | null) => {
+          if (line === '7') {
+            return positionRet({
+              line: '7',
+              trains: [train(sagajeong.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-TTL' })],
+            });
+          }
+          return positionRet(null);
+        });
+
+        const { result, rerender } = renderHook(() => useFusedNearestStation());
+        expect(result.current.source).toBe('position-train');
+
+        // 시계만 진행. userLocation을 미세 변경해 useMemo 재계산 트리거.
+        jest.advanceTimersByTime(61_000);
+        mockUseNearest.mockReturnValue(
+          gpsBase({
+            userLocation: { lat: yongmasan.lat + 0.00001, lng: yongmasan.lng },
+            accuracyMeters: 1500,
+            result: { station: yongmasan, distanceKm: 0 },
+          }),
+        );
+        rerender(undefined);
+
+        // TTL 발동 → positionTrainResult=null → source는 다른 fallback.
+        expect(result.current.source).not.toBe('position-train');
+      } finally {
+        jest.useRealTimers();
+        mockUsePositions.mockReset();
+      }
+    });
   });
 
   describe('routeContext (Phase A — Route-Locked Map Matching)', () => {

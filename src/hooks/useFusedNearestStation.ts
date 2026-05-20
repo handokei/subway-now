@@ -13,8 +13,13 @@ import { pickFusedStation, type FusionConfidence, type FusionSource } from '../u
 import { pickCandidateTrains, type CandidateTrain } from '../utils/pickCandidateTrains';
 import { trackTrainProgress } from '../utils/trackTrainProgress';
 import { haversine } from '../utils/haversine';
-import { MAX_STATION_DISTANCE_KM } from '../constants/location';
-import { MAX_ACTIVE_LINES } from '../constants/realtime';
+import { MAX_ACCURACY_M, MAX_STATION_DISTANCE_KM } from '../constants/location';
+import {
+  MAX_ACTIVE_LINES,
+  MAX_POSITION_TRAIN_DELTA_KM,
+  MAX_POSITION_TRAIN_DISTANCE_KM,
+  POSITION_TRAIN_TTL_MS,
+} from '../constants/realtime';
 import type { LinePositions } from '../api/positionApi';
 import type { NearestStationResult, Station } from '../types/station';
 import type { ArrivalProvider, PositionProvider } from '../providers/types';
@@ -181,8 +186,21 @@ export function useFusedNearestStation(
     [candidateTrains, gps.userLocation],
   );
 
+  // #445: trainProgress 갱신 시각 추적 + TTL 만료 후 첫 갱신에서 sticky 락 해제.
+  // 폴링 정지로 TTL이 지난 뒤 재개되면 trackTrainProgress가 stale sticky를 다시 픽업해
+  // 잘못된 락이 반복되는 사이클을 끊는다 — 다음 사이클은 새 후보로 정상 disambiguation.
+  const lastProgressTsRef = useRef<number>(0);
   useEffect(() => {
-    if (trainProgress) lastConfirmedTrainNoRef.current = trainProgress.trainNo;
+    if (!trainProgress) return;
+    const now = Date.now();
+    const prev = lastProgressTsRef.current;
+    const ttlExpired = prev !== 0 && now - prev > POSITION_TRAIN_TTL_MS;
+    if (ttlExpired) {
+      lastConfirmedTrainNoRef.current = undefined;
+    } else {
+      lastConfirmedTrainNoRef.current = trainProgress.trainNo;
+    }
+    lastProgressTsRef.current = now;
   }, [trainProgress]);
 
   const positionTrainResult: NearestStationResult | null = useMemo(() => {
@@ -193,8 +211,36 @@ export function useFusedNearestStation(
     const distanceKm = gps.userLocation
       ? haversine(gps.userLocation.lat, gps.userLocation.lng, station.lat, station.lng)
       : 0;
+
+    // #445 게이트: positionTrain 락이 사용자 실위치와 동떨어진 경우 강등.
+    // (1) TTL: trainProgress가 신선해야 함. stale하면 강등.
+    // (2) 거리 sanity: accuracy 양호(≤MAX_ACCURACY_M)할 때만 적용 — 지하 fix는 면제.
+    //   2a) 절대 거리 > MAX_POSITION_TRAIN_DISTANCE_KM
+    //   2b) GPS-nearest와 비교해 margin 초과
+    // ref가 0이면 effect가 첫 ts를 commit하기 전 — useMemo는 pure하게 두기 위해 면제.
+    if (
+      lastProgressTsRef.current !== 0 &&
+      Date.now() - lastProgressTsRef.current > POSITION_TRAIN_TTL_MS
+    ) {
+      return null;
+    }
+    if (
+      gps.userLocation &&
+      gps.accuracyMeters != null &&
+      gps.accuracyMeters <= MAX_ACCURACY_M
+    ) {
+      if (distanceKm > MAX_POSITION_TRAIN_DISTANCE_KM) return null;
+      const gpsNearest = candidates[0];
+      if (
+        gpsNearest &&
+        gpsNearest.station.id !== station.id &&
+        distanceKm > gpsNearest.distanceKm + MAX_POSITION_TRAIN_DELTA_KM
+      ) {
+        return null;
+      }
+    }
     return { station, distanceKm };
-  }, [trainProgress, gps.userLocation]);
+  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates]);
 
   const routeResult: NearestStationResult | null = progress.position
     ? {
