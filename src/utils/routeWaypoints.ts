@@ -10,7 +10,7 @@
  */
 
 import type { LineNumber, Station } from '../types/station';
-import type { Route } from './stationRoute';
+import type { DirectRoute, MultiTransferRoute, Route, TransferRoute } from './stationRoute';
 import {
   findStationByNameAndLine,
   getIntermediateStationNames,
@@ -18,16 +18,96 @@ import {
 } from './stationRoute';
 import type { AlarmWaypoint } from '../api/alarmBackend';
 
+interface Context {
+  destinationName: string;
+  currentStation: Station | null;
+  enabled: boolean;
+}
+
 function intermediateWaypoints(
-  enabled: boolean,
+  ctx: Context,
   line: LineNumber,
   fromId: string | undefined,
   toId: string | undefined,
 ): AlarmWaypoint[] {
-  if (!enabled || !fromId || !toId) return [];
+  if (!ctx.enabled || !fromId || !toId) return [];
   const names = getIntermediateStationNames(fromId, toId);
   if (!names) return [];
   return names.map((stationName) => ({ stationName, line, kind: 'intermediate' as const }));
+}
+
+function buildDirect(route: DirectRoute, ctx: Context): AlarmWaypoint[] {
+  const destStation = findStationByNameAndLine(ctx.destinationName, route.line);
+  const intermediates = intermediateWaypoints(
+    ctx,
+    route.line,
+    ctx.currentStation?.id,
+    destStation?.id,
+  );
+  return [
+    ...intermediates,
+    { stationName: ctx.destinationName, line: route.line, kind: 'destination' },
+  ];
+}
+
+function buildTransfer(route: TransferRoute, ctx: Context): AlarmWaypoint[] {
+  // 환승역 == 목적지 → fromLine으로 도착 처리.
+  if (isSameStationName(route.transferName, ctx.destinationName)) {
+    const destFromLine = findStationByNameAndLine(route.transferName, route.fromLine);
+    const intermediates = intermediateWaypoints(
+      ctx,
+      route.fromLine,
+      ctx.currentStation?.id,
+      destFromLine?.id,
+    );
+    return [
+      ...intermediates,
+      { stationName: ctx.destinationName, line: route.fromLine, kind: 'destination' },
+    ];
+  }
+  const transferFromLine = findStationByNameAndLine(route.transferName, route.fromLine);
+  const transferToLine = findStationByNameAndLine(route.transferName, route.toLine);
+  const destToLine = findStationByNameAndLine(ctx.destinationName, route.toLine);
+  return [
+    ...intermediateWaypoints(ctx, route.fromLine, ctx.currentStation?.id, transferFromLine?.id),
+    { stationName: route.transferName, line: route.fromLine, kind: 'transfer' },
+    ...intermediateWaypoints(ctx, route.toLine, transferToLine?.id, destToLine?.id),
+    { stationName: ctx.destinationName, line: route.toLine, kind: 'destination' },
+  ];
+}
+
+function buildMultiTransfer(route: MultiTransferRoute, ctx: Context): AlarmWaypoint[] {
+  // segment마다 진행하며 각 사이의 intermediate를 펼친다.
+  // segment.transferName === destinationName이면 그 segment에서 destination 마킹 후 조기 return.
+  const result: AlarmWaypoint[] = [];
+  let segmentStart: Station | undefined = ctx.currentStation ?? undefined;
+
+  for (const seg of route.transfers) {
+    const isDestination = isSameStationName(seg.transferName, ctx.destinationName);
+    const transferFromLine = findStationByNameAndLine(seg.transferName, seg.fromLine);
+    result.push(
+      ...intermediateWaypoints(ctx, seg.fromLine, segmentStart?.id, transferFromLine?.id),
+    );
+    result.push({
+      stationName: isDestination ? ctx.destinationName : seg.transferName,
+      line: seg.fromLine,
+      kind: isDestination ? 'destination' : 'transfer',
+    });
+    if (isDestination) return result;
+    segmentStart = findStationByNameAndLine(seg.transferName, seg.toLine);
+  }
+
+  const lastSegment = route.transfers[route.transfers.length - 1];
+  const destToLine = findStationByNameAndLine(ctx.destinationName, lastSegment.toLine);
+  result.push(
+    ...intermediateWaypoints(ctx, lastSegment.toLine, segmentStart?.id, destToLine?.id),
+  );
+  result.push({
+    stationName: ctx.destinationName,
+    line: lastSegment.toLine,
+    kind: 'destination',
+  });
+  return result;
 }
 
 export function routeToWaypoints(
@@ -36,79 +116,12 @@ export function routeToWaypoints(
   currentStation: Station | null = null,
 ): AlarmWaypoint[] {
   // currentStation이 없으면 legacy 동작(transfer/destination만) — 하위 호환.
-  const enabled = currentStation !== null;
-  if (route.type === 'direct') {
-    const destStation = findStationByNameAndLine(destinationName, route.line);
-    const intermediates = intermediateWaypoints(enabled, route.line, currentStation?.id, destStation?.id);
-    return [
-      ...intermediates,
-      { stationName: destinationName, line: route.line, kind: 'destination' },
-    ];
-  }
-
-  if (route.type === 'transfer') {
-    if (isSameStationName(route.transferName, destinationName)) {
-      const destFromLine = findStationByNameAndLine(route.transferName, route.fromLine);
-      const intermediates = intermediateWaypoints(
-        enabled,
-        route.fromLine,
-        currentStation?.id,
-        destFromLine?.id,
-      );
-      return [
-        ...intermediates,
-        { stationName: destinationName, line: route.fromLine, kind: 'destination' },
-      ];
-    }
-    const transferFromLine = findStationByNameAndLine(route.transferName, route.fromLine);
-    const transferToLine = findStationByNameAndLine(route.transferName, route.toLine);
-    const destToLine = findStationByNameAndLine(destinationName, route.toLine);
-    const preIntermediates = intermediateWaypoints(
-      enabled,
-      route.fromLine,
-      currentStation?.id,
-      transferFromLine?.id,
-    );
-    const postIntermediates = intermediateWaypoints(
-      enabled,
-      route.toLine,
-      transferToLine?.id,
-      destToLine?.id,
-    );
-    return [
-      ...preIntermediates,
-      { stationName: route.transferName, line: route.fromLine, kind: 'transfer' },
-      ...postIntermediates,
-      { stationName: destinationName, line: route.toLine, kind: 'destination' },
-    ];
-  }
-
-  // multi-transfer: segment마다 진행하며 각 사이의 intermediate를 펼친다.
-  // segment의 transferName이 destinationName과 같으면 그 segment에서 destination으로 마킹 후 조기 return —
-  // 이후 segment는 의미가 없으므로 (도착했으니 환승할 일도, post-intermediate도 없다).
-  const result: AlarmWaypoint[] = [];
-  let segmentStartStation: Station | undefined = currentStation ?? undefined;
-
-  for (const seg of route.transfers) {
-    const isDestination = isSameStationName(seg.transferName, destinationName);
-    const transferFromLine = findStationByNameAndLine(seg.transferName, seg.fromLine);
-    result.push(
-      ...intermediateWaypoints(enabled, seg.fromLine, segmentStartStation?.id, transferFromLine?.id),
-    );
-    result.push({
-      stationName: isDestination ? destinationName : seg.transferName,
-      line: seg.fromLine,
-      kind: isDestination ? 'destination' : 'transfer',
-    });
-    if (isDestination) return result;
-    segmentStartStation = findStationByNameAndLine(seg.transferName, seg.toLine);
-  }
-
-  const lastSegment = route.transfers[route.transfers.length - 1];
-  const destToLine = findStationByNameAndLine(destinationName, lastSegment.toLine);
-  result.push(
-    ...intermediateWaypoints(enabled, lastSegment.toLine, segmentStartStation?.id, destToLine?.id),
-  );
-  result.push({ stationName: destinationName, line: lastSegment.toLine, kind: 'destination' });
-  return result;
+  const ctx: Context = {
+    destinationName,
+    currentStation,
+    enabled: currentStation !== null,
+  };
+  if (route.type === 'direct') return buildDirect(route, ctx);
+  if (route.type === 'transfer') return buildTransfer(route, ctx);
+  return buildMultiTransfer(route, ctx);
 }
