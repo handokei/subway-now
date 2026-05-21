@@ -28,6 +28,7 @@ interface Props {
   readonly recentDestination?: Station | null;
   readonly userLat?: number | null;
   readonly userLng?: number | null;
+  readonly onRecenter?: () => void;
 }
 
 export function DestinationPicker({
@@ -37,9 +38,11 @@ export function DestinationPicker({
   userLat,
   userLng,
   recentDestination,
+  onRecenter,
 }: Props) {
   const [query, setQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
+  const [recenterNonce, setRecenterNonce] = useState(0);
   const openTimeRef = useRef<number | null>(null);
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -93,6 +96,7 @@ export function DestinationPicker({
             nearestStation={null}
             nearbyStations={mapStations}
             onStationPress={handleSelect}
+            recenterNonce={recenterNonce}
           />
         ) : (
           <View style={styles.mapFallback} testID="map-fallback">
@@ -132,6 +136,23 @@ export function DestinationPicker({
             </View>
           )}
         </View>
+
+        {mapAvailable && (
+          <TouchableOpacity
+            style={[
+              styles.recenterButton,
+              { backgroundColor: colors.card, borderColor: colors.hair },
+            ]}
+            onPress={() => {
+              onRecenter?.();
+              setRecenterNonce((n) => n + 1);
+            }}
+            accessibilityLabel={t('map.recenter')}
+            testID="recenter-button"
+          >
+            <Text style={[styles.recenterIcon, { color: colors.ink }]}>◎</Text>
+          </TouchableOpacity>
+        )}
       </View>
     </Modal>
   );
@@ -183,5 +204,25 @@ const styles = StyleSheet.create({
   dropdownWrap: {
     marginHorizontal: spacing.xl,
     marginTop: 4,
+  },
+  recenterButton: {
+    position: 'absolute',
+    right: spacing.lg,
+    bottom: spacing.xl,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 3,
+  },
+  recenterIcon: {
+    fontSize: 22,
+    lineHeight: 24,
   },
 });
