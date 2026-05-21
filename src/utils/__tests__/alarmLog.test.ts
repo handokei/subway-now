@@ -9,6 +9,8 @@ import {
   logSuppressedDedupStation,
   logSuppressedGate,
   logSilentPushReceived,
+  logSilentPushFired,
+  logSilentPushSkipped,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -344,6 +346,77 @@ describe('alarmLog', () => {
       expect(saved[0].kind).toBeUndefined();
       expect(saved[0].sentAt).toBeUndefined();
       expect(saved[0].receivedAt).toBe(1_700_000_001_000);
+    });
+
+    it('logSilentPushFired: 게이트 통과 후 발사 1건 적재 (#478 PR 1-2)', async () => {
+      logSilentPushFired({
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'imminent',
+        distanceM: 150,
+        thresholdM: 400,
+        locationSource: 'cache',
+        locationAgeMs: 12_000,
+      });
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'silent-push-fired',
+        outcome: 'fired',
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'imminent',
+        distanceM: 150,
+        thresholdM: 400,
+        locationSource: 'cache',
+        locationAgeMs: 12_000,
+      });
+    });
+
+    it('logSilentPushSkipped: reason + 거리/임계값 적재 (#478 PR 1-2)', async () => {
+      logSilentPushSkipped({
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'imminent',
+        reason: 'gate-out-of-range',
+        distanceM: 5_000,
+        thresholdM: 400,
+        locationSource: 'cache',
+        locationAgeMs: 10_000,
+      });
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'silent-push-skipped',
+        outcome: 'suppressed',
+        reason: 'gate-out-of-range',
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'imminent',
+        distanceM: 5_000,
+        thresholdM: 400,
+      });
+    });
+
+    it('logSilentPushSkipped: kind 미상 + 거리 정보 없을 때도 적재', async () => {
+      logSilentPushSkipped({
+        stationName: '강남',
+        kind: undefined,
+        phaseId: 'early',
+        reason: 'gate-unknown-station',
+      });
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0].source).toBe('silent-push-skipped');
+      expect(saved[0].reason).toBe('gate-unknown-station');
+      expect(saved[0].kind).toBeUndefined();
+      expect(saved[0].distanceM).toBeUndefined();
     });
 
     it('helper는 fire-and-forget: void 반환 + AsyncStorage 실패 시 throw 안 함', async () => {
