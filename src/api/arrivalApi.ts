@@ -1,5 +1,7 @@
 import { createLogger } from '../utils/logger';
 import { parseTrainType, type TrainType } from '../constants/trainTypes';
+import { findLineByStationName } from '../utils/stationLookup';
+import { buildScheduleArrival, hasHeadwayData } from '../utils/scheduleFallback';
 
 const log = createLogger('arrivalApi');
 
@@ -22,10 +24,14 @@ export interface ArrivalInfo {
   trainType: TrainType;
 }
 
+export type ArrivalSource = 'realtime' | 'schedule' | 'closed';
+
 export interface StationArrival {
   up: ArrivalInfo[];
   down: ArrivalInfo[];
   isMock?: boolean;
+  /** 데이터 출처. UI 라벨 분기(시간표 기준 / 운행 종료)에 사용. */
+  source?: ArrivalSource;
 }
 
 export const MOCK_ARRIVALS: Readonly<StationArrival> = Object.freeze({
@@ -59,6 +65,27 @@ export function parseRecptnDt(recptnDt: unknown): number {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+/**
+ * 실시간 API 실패 시 시간표 기반 fallback을 만든다.
+ * 역명으로 호선을 찾지 못하면(드문 케이스) 최후 수단으로 하드코딩 MOCK_ARRIVALS 반환.
+ * fallback 발생은 항상 로깅한다 — 후속 Option B(시간표 ETL) 필요성을 데이터로 판단하기 위함.
+ */
+function getFallbackArrival(stationName: string, reason: string): StationArrival {
+  const line = findLineByStationName(stationName);
+  if (!line || !hasHeadwayData(line)) {
+    log.warn('schedule_fallback_unavailable', { station: stationName, line, reason });
+    return MOCK_ARRIVALS;
+  }
+  const result = buildScheduleArrival(line, new Date());
+  log.info('schedule_fallback_fired', {
+    station: stationName,
+    line,
+    reason,
+    source: result.source,
+  });
+  return result;
+}
+
 export interface FetchArrivalOptions {
   timeoutMs?: number;
   maxPerDirection?: number;
@@ -73,7 +100,7 @@ export async function fetchArrivalInfo(
 
   if (!apiKey) {
     log.warn('API key not set (EXPO_PUBLIC_SEOUL_DATA_API_KEY)');
-    return MOCK_ARRIVALS;
+    return getFallbackArrival(stationName, 'no_api_key');
   }
 
   const controller = new AbortController();
@@ -84,7 +111,7 @@ export async function fetchArrivalInfo(
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
       log.warn(`HTTP ${response.status} for station "${stationName}"`);
-      return MOCK_ARRIVALS;
+      return getFallbackArrival(stationName, `http_${response.status}`);
     }
 
     const data = await response.json();
@@ -128,15 +155,19 @@ export async function fetchArrivalInfo(
       }
     }
 
-    const sliced = { up: up.slice(0, maxPerDirection), down: down.slice(0, maxPerDirection) };
+    const sliced: StationArrival = {
+      up: up.slice(0, maxPerDirection),
+      down: down.slice(0, maxPerDirection),
+      source: 'realtime',
+    };
     if (sliced.up.length === 0 && sliced.down.length === 0) {
       log.warn(`No arrivals for station "${stationName}"`);
-      return MOCK_ARRIVALS;
+      return getFallbackArrival(stationName, 'empty_response');
     }
     return sliced;
   } catch (e) {
     log.error(`Fetch failed for station "${stationName}":`, e);
-    return MOCK_ARRIVALS;
+    return getFallbackArrival(stationName, 'fetch_error');
   } finally {
     clearTimeout(timeout);
   }

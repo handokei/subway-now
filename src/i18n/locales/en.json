@@ -39,6 +39,8 @@
     "arrivalInfoTitle": "Train arrivals",
     "loading": "Loading...",
     "mockNotice": "Showing estimated data — real-time unavailable",
+    "scheduleNotice": "Schedule-based · loading real-time",
+    "closedNotice": "Service hours have ended",
     "noArrivalInfo": "No arrival info",
     "notNearStationTitle": "Not near a subway station",
     "notNearStationDescription": "Your current station appears when you are within 500m of a subway station.\nYou can also set the origin manually from the Map tab.",
