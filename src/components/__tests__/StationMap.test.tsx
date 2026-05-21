@@ -1,4 +1,5 @@
 import React from 'react';
+import { Platform } from 'react-native';
 import { render, waitFor, fireEvent } from '@testing-library/react-native';
 import { StationMap } from '../StationMap';
 import type { Station } from '../../types/station';
@@ -64,6 +65,28 @@ describe('StationMap', () => {
   it('지도뷰를 렌더링한다', () => {
     const { getByTestId } = render(<StationMap {...baseProps} />);
     expect(getByTestId('station-map')).toBeTruthy();
+  });
+
+  it('iOS에서는 Apple Maps의 기본 POI(역명 등)를 끈다 — 경로 강조 마커와 중첩 방지', () => {
+    const originalOS = Platform.OS;
+    (Platform as { OS: typeof Platform.OS }).OS = 'ios';
+    try {
+      const { getByTestId } = render(<StationMap {...baseProps} />);
+      expect(getByTestId('station-map').props.showsPointsOfInterest).toBe(false);
+    } finally {
+      (Platform as { OS: typeof Platform.OS }).OS = originalOS;
+    }
+  });
+
+  it('Android에서는 POI 토글을 건드리지 않는다 (일반 POI 손실 방지)', () => {
+    const originalOS = Platform.OS;
+    (Platform as { OS: typeof Platform.OS }).OS = 'android';
+    try {
+      const { getByTestId } = render(<StationMap {...baseProps} />);
+      expect(getByTestId('station-map').props.showsPointsOfInterest).toBeUndefined();
+    } finally {
+      (Platform as { OS: typeof Platform.OS }).OS = originalOS;
+    }
   });
 
   it('onMapReady 후 로딩 인디케이터를 숨긴다', async () => {
