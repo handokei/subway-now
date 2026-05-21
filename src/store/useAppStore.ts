@@ -2,7 +2,8 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Station } from '../types/station';
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY } from '../constants/storageKeys';
+import { clearFiredAlarms } from '../utils/notificationState';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../i18n/types';
 
@@ -103,7 +104,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       AsyncStorage.setItem(DESTINATION_KEY, JSON.stringify(station)).catch(noop);
     } else {
       AsyncStorage.removeItem(DESTINATION_KEY).catch(noop);
-      AsyncStorage.removeItem(FIRED_ALARMS_KEY).catch(noop);
+      clearFiredAlarms().catch(noop);
       AsyncStorage.removeItem(ROUTE_KEY).catch(noop);
     }
   },

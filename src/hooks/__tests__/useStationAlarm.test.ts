@@ -36,13 +36,11 @@ const mockGetLastNotifiedStationId = jest.fn();
 const mockSetLastNotifiedStationId = jest.fn();
 const mockGetFiredAlarms = jest.fn();
 const mockSetFiredAlarms = jest.fn();
-const mockClearFiredAlarms = jest.fn();
 jest.mock('../../utils/notificationState', () => ({
   getLastNotifiedStationId: (...args: unknown[]) => mockGetLastNotifiedStationId(...args),
   setLastNotifiedStationId: (...args: unknown[]) => mockSetLastNotifiedStationId(...args),
   getFiredAlarms: (...args: unknown[]) => mockGetFiredAlarms(...args),
   setFiredAlarms: (...args: unknown[]) => mockSetFiredAlarms(...args),
-  clearFiredAlarms: (...args: unknown[]) => mockClearFiredAlarms(...args),
 }));
 
 jest.mock('../../utils/logger', () => ({
@@ -110,7 +108,6 @@ describe('useStationAlarm', () => {
     mockSetLastNotifiedStationId.mockResolvedValue(undefined);
     mockGetFiredAlarms.mockResolvedValue(new Set<string>());
     mockSetFiredAlarms.mockResolvedValue(undefined);
-    mockClearFiredAlarms.mockResolvedValue(undefined);
   });
 
   it('does not evaluate when route is null', () => {
@@ -386,7 +383,7 @@ describe('useStationAlarm', () => {
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(2);
   });
 
-  it('resets fired alarms when destination changes', async () => {
+  it('destination 변경 시 새 destinationId로 re-hydrate 한다 (#462 destination scoped)', async () => {
     const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     const { rerender } = renderHook(
@@ -394,14 +391,15 @@ describe('useStationAlarm', () => {
       { initialProps: { dest: destination } },
     );
     await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+    expect(mockGetFiredAlarms).toHaveBeenCalledWith(destination.id);
 
     const altEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '잠실' };
     mockEvaluateAlarmPhase.mockReturnValue(altEvent);
     rerender({ dest: altDestination });
     await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(2));
     expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(altEvent, false, true);
-    // destination 변경 시 AsyncStorage의 firedAlarms도 클리어해 BG와 단일 출처를 유지한다.
-    expect(mockClearFiredAlarms).toHaveBeenCalled();
+    // destination 변경 → 새 id로 storage 재읽기 (저장된 entry는 옛 destinationId라 빈 set 반환 → 자동 isolation).
+    expect(mockGetFiredAlarms).toHaveBeenCalledWith(altDestination.id);
   });
 
   it('passes sleepMode to sendAlarmNotification', async () => {
@@ -836,45 +834,44 @@ describe('useStationAlarm', () => {
       expect(mockSendAlarmNotification).not.toHaveBeenCalled();
     });
 
-    it('FG에서 phase 발화 시 AsyncStorage에 setFiredAlarms로 동기화한다', async () => {
+    it('FG에서 phase 발화 시 setFiredAlarms(destinationId, set)로 동기화한다 (#462)', async () => {
       mockGetFiredAlarms.mockResolvedValueOnce(new Set());
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
 
       renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
 
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
-      expect(mockSetFiredAlarms).toHaveBeenCalledWith(
-        expect.any(Set),
-      );
+      expect(mockSetFiredAlarms).toHaveBeenCalledWith(destination.id, expect.any(Set));
       // 발화된 alarmKey가 storage로 흘러갔는지 확인.
-      const lastCallArg = mockSetFiredAlarms.mock.calls.at(-1)?.[0] as Set<string>;
-      expect(lastCallArg.has(`early:${destination.name}`)).toBe(true);
-    });
-
-    it('destination 변경 시 AsyncStorage의 firedAlarms도 clear한다 (초기 바인드는 보존)', async () => {
-      // 첫 마운트 시 hydrate한 storage를 보존하기 위해 initial bind는 clear하지 않는다.
-      mockGetFiredAlarms.mockResolvedValueOnce(new Set([`early:${destination.name}`]));
-      const { rerender } = renderHook(
-        ({ dest }: { dest: Station }) =>
-          useStationAlarm(defaultInputs({ route, destination: dest })),
-        { initialProps: { dest: destination } },
-      );
-      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
-      // 초기 바인드는 clear 하지 않음 — BG 적재 firedAlarms 보존
-      expect(mockClearFiredAlarms).not.toHaveBeenCalled();
-
-      // 실제 변경(다른 destination)은 clear 한다
-      rerender({ dest: altDestination });
-      await waitFor(() => expect(mockClearFiredAlarms).toHaveBeenCalledTimes(1));
+      const lastCall = mockSetFiredAlarms.mock.calls.at(-1)!;
+      const lastSet = lastCall[1] as Set<string>;
+      expect(lastSet.has(`early:${destination.name}`)).toBe(true);
     });
 
     it('초기 바인드 시 BG가 적재한 firedAlarms를 보존한다 (storage clear 없음)', async () => {
       renderWithBgFired();
 
       await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
-      // BG 적재로 인해 evaluator가 null 반환 → 미발화. storage도 clear되지 않음.
+      // BG 적재로 인해 evaluator가 null 반환 → 미발화.
       expect(mockSendAlarmNotification).not.toHaveBeenCalled();
-      expect(mockClearFiredAlarms).not.toHaveBeenCalled();
+    });
+
+    it('destination 변경 직후 hydration 완료 전에는 evaluator가 호출되지 않는다 (race guard, #462)', async () => {
+      // hydration await 동안 effect가 phase 평가를 보류해야 한다.
+      let releaseHydration: (() => void) | undefined;
+      mockGetFiredAlarms.mockReturnValueOnce(
+        new Promise<Set<string>>((resolve) => {
+          releaseHydration = () => resolve(new Set());
+        }),
+      );
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      // hydration 미완료 상태에서 evaluator가 호출되면 안 됨.
+      await new Promise((r) => setImmediate(r));
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+
+      releaseHydration!();
+      await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
     });
   });
 

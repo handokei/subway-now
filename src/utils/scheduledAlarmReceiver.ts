@@ -1,4 +1,5 @@
 import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, type AppStateStatus } from 'react-native';
 import { parseScheduledAlarmIdentifier } from './alarmScheduler';
 import {
@@ -6,9 +7,25 @@ import {
   setFiredAlarms,
   setLastFiredAlarmStationName,
 } from './notificationState';
+import { DESTINATION_KEY } from '../constants/storageKeys';
 import { createLogger } from './logger';
 
 const logger = createLogger('ScheduledAlarmReceiver');
+
+/**
+ * 현재 trip의 destinationId를 AsyncStorage에서 읽는다. firedAlarms를 destinationId로
+ * 격리하기 위해(#462) 발화 reconcile 시점에 필요하다. 파싱 실패 또는 미설정이면 null.
+ */
+async function getCurrentDestinationId(): Promise<string | null> {
+  const raw = await AsyncStorage.getItem(DESTINATION_KEY);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.id === 'string' ? parsed.id : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 사전 예약된 `alarm:` 알림이 OS에 의해 발사된 직후 클라이언트 상태를 갱신한다.
@@ -24,9 +41,14 @@ export async function reconcileScheduledAlarmDelivery(identifier: string): Promi
   const parsed = parseScheduledAlarmIdentifier(identifier);
   if (!parsed) return;
 
-  const fired = await getFiredAlarms();
-  fired.add(`${parsed.phaseId}:${parsed.stationName}`);
-  await setFiredAlarms(fired);
+  const destinationId = await getCurrentDestinationId();
+  // destinationId가 없으면 이미 trip이 종료/변경된 알람의 잔여 발화 — 상태 갱신 스킵.
+  // setLastFiredAlarmStationName은 trip 종속성이 약하므로 유지한다(다음 사이클 기준역 갱신용).
+  if (destinationId) {
+    const fired = await getFiredAlarms(destinationId);
+    fired.add(`${parsed.phaseId}:${parsed.stationName}`);
+    await setFiredAlarms(destinationId, fired);
+  }
   await setLastFiredAlarmStationName(parsed.stationName);
 }
 
@@ -43,20 +65,29 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
     return;
   }
 
-  const fired = await getFiredAlarms();
+  const destinationId = await getCurrentDestinationId();
   let lastStationName: string | null = null;
-  let firedChanged = false;
-  for (const n of presented) {
-    const parsed = parseScheduledAlarmIdentifier(n.request.identifier);
-    if (!parsed) continue;
-    const key = `${parsed.phaseId}:${parsed.stationName}`;
-    if (!fired.has(key)) {
-      fired.add(key);
-      firedChanged = true;
+  if (destinationId) {
+    const fired = await getFiredAlarms(destinationId);
+    let firedChanged = false;
+    for (const n of presented) {
+      const parsed = parseScheduledAlarmIdentifier(n.request.identifier);
+      if (!parsed) continue;
+      const key = `${parsed.phaseId}:${parsed.stationName}`;
+      if (!fired.has(key)) {
+        fired.add(key);
+        firedChanged = true;
+      }
+      lastStationName = parsed.stationName;
     }
-    lastStationName = parsed.stationName;
+    if (firedChanged) await setFiredAlarms(destinationId, fired);
+  } else {
+    // destinationId 미설정 — fired set 갱신은 스킵하고 lastStationName만 추출.
+    for (const n of presented) {
+      const parsed = parseScheduledAlarmIdentifier(n.request.identifier);
+      if (parsed) lastStationName = parsed.stationName;
+    }
   }
-  if (firedChanged) await setFiredAlarms(fired);
   if (lastStationName) await setLastFiredAlarmStationName(lastStationName);
 }
 

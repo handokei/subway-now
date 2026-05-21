@@ -4,10 +4,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { processLocationUpdate } from '../utils/stationPipeline';
 import { alarmKey } from '../utils/stationAlarm';
 import { createLogger } from '../utils/logger';
-import { DESTINATION_KEY, SLEEP_MODE_KEY, FIRED_ALARMS_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
+import { DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
+import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 import { isAccuracyAcceptable, isLocationFresh } from '../utils/locationGates';
 import { logSuppressedGate } from '../utils/alarmLog';
 import type { Route } from '../utils/stationRoute';
+import type { Station } from '../types/station';
 
 const logger = createLogger('BackgroundLocation');
 
@@ -44,10 +46,9 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   const speedMps = speed != null && speed >= 0 ? speed : null;
 
   try {
-    const [destJson, sleepJson, firedJson, routeJson, allowSpeakerJson] = await Promise.all([
+    const [destJson, sleepJson, routeJson, allowSpeakerJson] = await Promise.all([
       AsyncStorage.getItem(DESTINATION_KEY),
       AsyncStorage.getItem(SLEEP_MODE_KEY),
-      AsyncStorage.getItem(FIRED_ALARMS_KEY),
       AsyncStorage.getItem(ROUTE_KEY),
       AsyncStorage.getItem(ALLOW_SPEAKER_KEY),
     ]);
@@ -57,16 +58,28 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       return;
     }
 
-    let destination;
+    let destinationRaw: unknown;
     try {
-      destination = JSON.parse(destJson);
+      destinationRaw = JSON.parse(destJson);
     } catch {
       logger.error('목적지 JSON 파싱 실패');
       return;
     }
+    // destinationId 누락 시 trip 식별 불가 → 처리 중단. 정상 trip은 항상 id를 갖는다.
+    if (
+      !destinationRaw ||
+      typeof destinationRaw !== 'object' ||
+      typeof (destinationRaw as { id?: unknown }).id !== 'string'
+    ) {
+      logger.error('목적지에 id가 없음');
+      return;
+    }
+    // 런타임 검증은 id 존재만 확인. Station 나머지 필드는 production write 시점에서 보장된다.
+    const destination = destinationRaw as Station;
     const sleepMode = sleepJson ? JSON.parse(sleepJson) === true : false;
     const allowSpeaker = allowSpeakerJson ? JSON.parse(allowSpeakerJson) === true : true;
-    const firedAlarms = new Set<string>(firedJson ? JSON.parse(firedJson) : []);
+    // destinationId scoped — 이전 trip의 stale entry는 빈 set으로 반환된다(#462).
+    const firedAlarms = await getFiredAlarms(destination.id);
     const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;
 
     // lastNotifiedStationId는 stationPipeline 내부에서 notificationState 모듈을 통해
@@ -86,7 +99,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     if (alarmEvent) {
       firedAlarms.add(alarmKey(alarmEvent));
       await Promise.all([
-        AsyncStorage.setItem(FIRED_ALARMS_KEY, JSON.stringify([...firedAlarms])),
+        setFiredAlarms(destination.id, firedAlarms),
         AsyncStorage.setItem(ALARM_EVENT_KEY, JSON.stringify(alarmEvent)),
       ]);
     }

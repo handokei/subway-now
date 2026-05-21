@@ -32,6 +32,14 @@ jest.mock('../../utils/stationAlarm', () => ({
   alarmKey: (...args: unknown[]) => mockAlarmKey(...args),
 }));
 
+// ── notificationState 모킹 (firedAlarms는 destination scoped, #462) ──
+const mockGetFiredAlarms = jest.fn();
+const mockSetFiredAlarms = jest.fn();
+jest.mock('../../utils/notificationState', () => ({
+  getFiredAlarms: (...args: unknown[]) => mockGetFiredAlarms(...args),
+  setFiredAlarms: (...args: unknown[]) => mockSetFiredAlarms(...args),
+}));
+
 // ── alarmLog 모킹 ──
 const mockLogSuppressedGate = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
@@ -101,19 +109,18 @@ function getTaskCallback(): TaskCallback {
   return (global as any).__bgTaskCallback as TaskCallback;
 }
 
-/** AsyncStorage.getItem 5개를 순서대로 모킹한다 (dest, sleep, fired, route, allowSpeaker)
+/** AsyncStorage.getItem 4개를 순서대로 모킹한다 (dest, sleep, route, allowSpeaker)
+ *  firedAlarms는 notificationState helper로 분리되어 별도 mockGetFiredAlarms로 제어한다.
  *  lastNotifiedStationId는 stationPipeline 내부에서 notificationState 모듈로 read/write 한다. */
 function mockStorageValues(
   dest: string | null,
   sleep: string | null = null,
-  fired: string | null = null,
   route: string | null = null,
   allowSpeaker: string | null = null,
 ): void {
   (AsyncStorage.getItem as jest.Mock)
     .mockResolvedValueOnce(dest)
     .mockResolvedValueOnce(sleep)
-    .mockResolvedValueOnce(fired)
     .mockResolvedValueOnce(route)
     .mockResolvedValueOnce(allowSpeaker);
 }
@@ -135,6 +142,8 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     jest.clearAllMocks();
     (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
     (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+    mockGetFiredAlarms.mockResolvedValue(new Set());
+    mockSetFiredAlarms.mockResolvedValue(undefined);
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
   });
 
@@ -243,7 +252,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   // ── allowSpeaker 파싱 ──
 
   it("allowSpeakerJson이 'false'이면 allowSpeaker=false로 processLocationUpdate를 호출한다", async () => {
-    mockStorageValues(JSON.stringify(mockDestination), null, null, null, 'false');
+    mockStorageValues(JSON.stringify(mockDestination), null, null, 'false');
 
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
@@ -258,7 +267,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   });
 
   it("allowSpeakerJson이 'true'이면 allowSpeaker=true로 processLocationUpdate를 호출한다", async () => {
-    mockStorageValues(JSON.stringify(mockDestination), null, null, null, 'true');
+    mockStorageValues(JSON.stringify(mockDestination), null, null, 'true');
 
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
@@ -274,9 +283,10 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   // ── firedAlarms 파싱 ──
 
-  it('firedJson이 있으면 파싱한 Set을 processLocationUpdate에 전달한다', async () => {
+  it('notificationState.getFiredAlarms(destinationId)로 읽어 processLocationUpdate에 전달한다 (#462)', async () => {
     const fired = ['destination:강남', 'transfer:시청'];
-    mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(fired));
+    mockStorageValues(JSON.stringify(mockDestination));
+    mockGetFiredAlarms.mockResolvedValueOnce(new Set(fired));
 
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
@@ -285,6 +295,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
+    expect(mockGetFiredAlarms).toHaveBeenCalledWith(mockDestination.id);
     expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({
       firedAlarms: new Set(fired),
     }));
@@ -307,7 +318,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   it('routeJson이 있으면 파싱한 route를 processLocationUpdate에 전달한다', async () => {
     const storedRoute = { type: 'direct', stops: 3, line: '2' };
-    mockStorageValues(JSON.stringify(mockDestination), null, null, JSON.stringify(storedRoute));
+    mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(storedRoute));
 
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
 
@@ -338,7 +349,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   // ── alarmEvent 있음: firedAlarms 저장 ──
 
-  it('alarmEvent가 있으면 alarmKey를 추가하고 AsyncStorage.setItem을 호출한다', async () => {
+  it('alarmEvent가 있으면 alarmKey를 추가하고 setFiredAlarms(destId, set)를 호출한다 (#462)', async () => {
     const alarmEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청' };
     mockStorageValues(JSON.stringify(mockDestination));
 
@@ -354,9 +365,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     });
 
     expect(mockAlarmKey).toHaveBeenCalledWith(alarmEvent);
-    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
-      'subway-now:fired-alarms',
-      JSON.stringify(['destination:시청']),
+    expect(mockSetFiredAlarms).toHaveBeenCalledWith(
+      mockDestination.id,
+      new Set(['destination:시청']),
     );
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
       'subway-now:alarm-event',
@@ -366,8 +377,8 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   it('기존 firedAlarms에 alarmEvent 키를 추가하여 저장한다', async () => {
     const alarmEvent: AlarmEvent = { phaseId: 'early', type: 'transfer', stationName: '강남' };
-    const existingFired = ['destination:시청'];
-    mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(existingFired));
+    mockStorageValues(JSON.stringify(mockDestination));
+    mockGetFiredAlarms.mockResolvedValueOnce(new Set(['destination:시청']));
 
     mockProcessLocationUpdate.mockResolvedValue({
       alarmEvent,
@@ -380,9 +391,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       error: null,
     });
 
-    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
-      'subway-now:fired-alarms',
-      JSON.stringify(['destination:시청', 'transfer:강남']),
+    expect(mockSetFiredAlarms).toHaveBeenCalledWith(
+      mockDestination.id,
+      new Set(['destination:시청', 'transfer:강남']),
     );
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
       'subway-now:alarm-event',
@@ -401,6 +412,18 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     });
 
     expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+  });
+
+  it('destination에 id가 없으면 즉시 return한다 (#462)', async () => {
+    mockStorageValues(JSON.stringify({ name: '시청' }));
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    expect(mockGetFiredAlarms).not.toHaveBeenCalled();
   });
 
   // ── 마지막 location 선택 ──
@@ -430,10 +453,10 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   // 게이트 drop 시 destination/sleep/route 등 도메인 키는 절대 읽지 않는다.
   // (ALARM_LOG_KEY는 적재용으로 정상 read/write 됨 — B2 인프라)
+  // firedAlarms는 notificationState helper로 분리됐으므로 mockGetFiredAlarms 호출 여부로 검증.
   const DOMAIN_KEYS = [
     'subway-now:destination',
     'subway-now:sleep-mode',
-    'subway-now:fired-alarms',
     'subway-now:route',
     'subway-now:allow-speaker',
   ];

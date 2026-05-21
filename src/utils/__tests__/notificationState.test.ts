@@ -94,20 +94,39 @@ describe('notificationState', () => {
     });
   });
 
-  describe('getFiredAlarms', () => {
-    it('AsyncStorage에서 FIRED_ALARMS_KEY를 JSON 배열로 읽어 Set으로 반환한다', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(['a:X', 'b:Y']));
+  describe('getFiredAlarms (destination scoped, #462)', () => {
+    it('저장된 destinationId와 일치하면 alarms를 Set으로 반환한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
+        JSON.stringify({ destinationId: 'dest-1', alarms: ['a:X', 'b:Y'] }),
+      );
 
-      const result = await getFiredAlarms();
+      const result = await getFiredAlarms('dest-1');
 
       expect(AsyncStorage.getItem).toHaveBeenCalledWith(FIRED_ALARMS_KEY);
       expect(result).toEqual(new Set(['a:X', 'b:Y']));
     });
 
+    it('저장된 destinationId와 다르면 stale로 간주하고 빈 Set을 반환한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
+        JSON.stringify({ destinationId: 'dest-1', alarms: ['a:X'] }),
+      );
+
+      const result = await getFiredAlarms('dest-2');
+
+      expect(result).toEqual(new Set());
+    });
+
+    it('destinationId가 null이면 빈 Set을 반환한다 (storage read 스킵)', async () => {
+      const result = await getFiredAlarms(null);
+
+      expect(result).toEqual(new Set());
+      expect(AsyncStorage.getItem).not.toHaveBeenCalled();
+    });
+
     it('null 저장소면 빈 Set을 반환한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
 
-      const result = await getFiredAlarms();
+      const result = await getFiredAlarms('dest-1');
 
       expect(result).toEqual(new Set());
     });
@@ -115,15 +134,15 @@ describe('notificationState', () => {
     it('JSON 파싱 실패 시 빈 Set을 반환한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce('not-json');
 
-      const result = await getFiredAlarms();
+      const result = await getFiredAlarms('dest-1');
 
       expect(result).toEqual(new Set());
     });
 
-    it('파싱은 됐지만 배열이 아니면 빈 Set을 반환한다', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify({ foo: 'bar' }));
+    it('옛 포맷(배열)은 stale로 간주하고 빈 Set을 반환한다 (자동 migration)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(['a:X', 'b:Y']));
 
-      const result = await getFiredAlarms();
+      const result = await getFiredAlarms('dest-1');
 
       expect(result).toEqual(new Set());
     });
@@ -131,30 +150,31 @@ describe('notificationState', () => {
     it('AsyncStorage가 에러를 던지면 빈 Set을 반환한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage 오류'));
 
-      const result = await getFiredAlarms();
+      const result = await getFiredAlarms('dest-1');
 
       expect(result).toEqual(new Set());
     });
   });
 
-  describe('setFiredAlarms', () => {
-    it('Set을 JSON 배열로 직렬화해 FIRED_ALARMS_KEY로 저장한다', async () => {
+  describe('setFiredAlarms (destination scoped, #462)', () => {
+    it('destinationId와 alarms를 객체로 직렬화해 저장한다', async () => {
       (AsyncStorage.setItem as jest.Mock).mockResolvedValueOnce(undefined);
 
-      await setFiredAlarms(new Set(['a:X', 'b:Y']));
+      await setFiredAlarms('dest-1', new Set(['a:X', 'b:Y']));
 
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         FIRED_ALARMS_KEY,
         expect.any(String),
       );
       const written = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
-      expect(new Set(written)).toEqual(new Set(['a:X', 'b:Y']));
+      expect(written.destinationId).toBe('dest-1');
+      expect(new Set(written.alarms)).toEqual(new Set(['a:X', 'b:Y']));
     });
 
     it('AsyncStorage가 에러를 던져도 throw하지 않는다', async () => {
       (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('storage 오류'));
 
-      await expect(setFiredAlarms(new Set(['a:X']))).resolves.toBeUndefined();
+      await expect(setFiredAlarms('dest-1', new Set(['a:X']))).resolves.toBeUndefined();
     });
   });
 

@@ -12,7 +12,6 @@ import {
   setLastNotifiedStationId,
   getFiredAlarms,
   setFiredAlarms,
-  clearFiredAlarms,
 } from '../utils/notificationState';
 import { awaitInitialScheduledAlarmDrain } from '../utils/scheduledAlarmReceiver';
 import {
@@ -52,11 +51,11 @@ export function useStationAlarm({
   arrivalConfidence,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
-  const prevDestRef = useRef<string | null>(null);
   // firedAlarms hydration: BG가 AsyncStorage(FIRED_ALARMS_KEY)에 쓴 dedup 상태를
-  // FG 마운트 시 ref에 복원한다. hydrated=false인 동안 phase 평가를 보류해
+  // destination별로 격리해 복원한다(#462). hydrated=false인 동안 phase 평가를 보류해
   // 빈 ref로 false re-fire가 발생하지 않도록 가드한다.
   const [firedHydrated, setFiredHydrated] = useState(false);
+  const destinationId = destination?.id ?? null;
   const sleepMode = useAppStore((s) => s.sleepMode);
   const allowSpeaker = useAppStore((s) => s.allowSpeaker);
   const setAlarmEvent = useAppStore((s) => s.setAlarmEvent);
@@ -71,15 +70,17 @@ export function useStationAlarm({
     allowSpeakerRef.current = allowSpeaker;
   }, [allowSpeaker]);
 
-  // 마운트 시 한 번 — AsyncStorage에서 firedAlarms를 읽어 ref에 채운다.
-  // 이후 갱신은 destination 변경(클리어) / 발화(추가) 경로에서 동기적으로 처리.
+  // destination별 firedAlarms 하이드레이션 (#462).
+  // destination이 바뀌면 storage의 destinationId와 일치하지 않는 entry는 자동 빈 set 반환.
+  // → cross-trip stale state가 새 trip의 evaluator를 오염시키지 않는다.
   useEffect(() => {
     let cancelled = false;
+    setFiredHydrated(false);
     void (async () => {
       // 사전 예약 알람의 첫 drain이 완료된 후 read해야 cold start 직후
       // BG-fired 알람이 dedup set에 반영된 상태로 hydrate된다.
       await awaitInitialScheduledAlarmDrain();
-      const stored = await getFiredAlarms();
+      const stored = await getFiredAlarms(destinationId);
       if (cancelled) return;
       firedAlarmsRef.current = stored;
       setFiredHydrated(true);
@@ -87,28 +88,14 @@ export function useStationAlarm({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [destinationId]);
 
   // Phase 알람 효과: ETA 기반 phase 평가 + firedAlarms 갱신.
   // firedHydrated=false인 동안에는 보류 — BG가 이미 발화한 phase를 빈 ref로 재발화하는 것을 막는다.
   // station-passed와 분리: 하이드레이션 완료로 인한 effect 재실행이 station-passed 중복 발사를
   // 일으키지 않도록 한다(station-passed는 자체 lastNotifiedStationId dedup만 사용).
   useEffect(() => {
-    // 하이드레이션 전에는 destination 변경 감지를 건너뛴다 — 첫 마운트 시
-    // prevDestRef가 비어 있어 모든 destination이 "변경"으로 보이지만, 그때 storage를
-    // 클리어하면 BG가 써둔 firedAlarms hydration이 무의미해진다.
     if (!firedHydrated) return;
-
-    const destinationName = destination?.name ?? null;
-    if (destinationName !== prevDestRef.current) {
-      const isInitialBind = prevDestRef.current === null;
-      prevDestRef.current = destinationName;
-      if (!isInitialBind) {
-        firedAlarmsRef.current = new Set();
-        // AsyncStorage도 함께 비워 BG/FG 단일 출처를 유지한다.
-        void clearFiredAlarms();
-      }
-    }
 
     if (!route || !destination) return;
 
@@ -145,8 +132,8 @@ export function useStationAlarm({
         : undefined;
       const event = direction ? { ...rawEvent, direction } : rawEvent;
       firedAlarmsRef.current.add(alarmKey(event));
-      // AsyncStorage에도 즉시 반영 — FG/BG 단일 출처 유지.
-      void setFiredAlarms(firedAlarmsRef.current);
+      // AsyncStorage에도 즉시 반영 — FG/BG 단일 출처 유지. destinationId scoped.
+      void setFiredAlarms(destination.id, firedAlarmsRef.current);
       if (sleepModeRef.current) {
         setAlarmEvent(event);
       }
