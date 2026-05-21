@@ -567,6 +567,9 @@ export default function HomeScreen() {
         recentDestination={recentDestination}
         userLat={userLocation?.lat ?? null}
         userLng={userLocation?.lng ?? null}
+        onRecenter={() => {
+          void refreshRef.current();
+        }}
       />
     </SafeAreaView>
   );

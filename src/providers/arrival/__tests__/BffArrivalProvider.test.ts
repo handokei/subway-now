@@ -83,8 +83,9 @@ describe('BffArrivalProvider', () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 503 });
     const result = await callGetArrival('서울역', { lineHint: '4' });
     expect(result.source).toBe('schedule');
-    // 4호선 평일 offPeak headway 360s → 첫 차 180s
-    expect(result.up[0].arrivalSeconds).toBe(180);
+    // 4호선 평일 offPeak headway 360s → wall-clock anchor 기반이라 (0, 360] 범위
+    expect(result.up[0].arrivalSeconds).toBeGreaterThan(0);
+    expect(result.up[0].arrivalSeconds).toBeLessThanOrEqual(360);
   });
 
   it.each([

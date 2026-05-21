@@ -51,6 +51,30 @@ describe('SeoulArrivalClient', () => {
     expect(arrivals[0].arrivalSeconds).toBe(120);
   });
 
+  it('arvlCd 파싱 — number / numeric string / 누락 (#409)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      makeResponse({
+        realtimeArrivalList: [
+          makeItem({ arvlCd: 0 }),
+          makeItem({ arvlCd: '1' }),
+          makeItem({ arvlCd: 'invalid' }),
+          makeItem(), // arvlCd 누락
+        ],
+      }),
+    );
+    const client = new SeoulArrivalClient({
+      apiKey: 'KEY',
+      host: 'example.com',
+      now: () => FIXED_NOW,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const arrivals = await client.fetchArrivals('서울역');
+    expect(arrivals[0].arvlCd).toBe(0);
+    expect(arrivals[1].arvlCd).toBe(1);
+    expect(arrivals[2].arvlCd).toBeNull();
+    expect(arrivals[3].arvlCd).toBeNull();
+  });
+
   it('caches within TTL', async () => {
     const fetchImpl = vi.fn(async () => makeResponse({ realtimeArrivalList: [makeItem()] }));
     let now = FIXED_NOW;

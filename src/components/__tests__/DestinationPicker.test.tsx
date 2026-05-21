@@ -136,6 +136,30 @@ describe('DestinationPicker', () => {
     debugSpy.mockRestore();
   });
 
+  it('좌표가 있으면 recenter 버튼을 렌더링한다', () => {
+    const { getByTestId } = render(<DestinationPicker {...mapProps} />);
+    expect(getByTestId('recenter-button')).toBeTruthy();
+  });
+
+  it('좌표가 없으면 recenter 버튼을 렌더링하지 않는다', () => {
+    const { queryByTestId } = render(<DestinationPicker {...defaultProps} />);
+    expect(queryByTestId('recenter-button')).toBeNull();
+  });
+
+  it('recenter 버튼 클릭 시 onRecenter 콜백을 호출한다', () => {
+    const onRecenter = jest.fn();
+    const { getByTestId } = render(
+      <DestinationPicker {...mapProps} onRecenter={onRecenter} />,
+    );
+    fireEvent.press(getByTestId('recenter-button'));
+    expect(onRecenter).toHaveBeenCalledTimes(1);
+  });
+
+  it('onRecenter 미제공 상태에서 recenter 버튼을 눌러도 오류가 없다', () => {
+    const { getByTestId } = render(<DestinationPicker {...mapProps} />);
+    expect(() => fireEvent.press(getByTestId('recenter-button'))).not.toThrow();
+  });
+
   it('검색창 포커스 시 드롭다운 표시 상태가 활성화된다', () => {
     const { getByTestId, queryByTestId } = render(<DestinationPicker {...defaultProps} />);
     fireEvent.changeText(getByTestId('search-input'), '강남');

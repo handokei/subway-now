@@ -20,6 +20,12 @@ export interface ArrivalEntry {
   isUp: boolean;
   /** 노선명 (예: "지하철1호선") — Seoul API의 subwayNm */
   subwayNm: string;
+  /**
+   * 도착 코드 (Seoul API arvlCd, #409): 0:진입, 1:도착, 2:출발, 3:전역출발,
+   * 4:전역진입, 5:전역도착, 99:운행중. 누락/파싱 실패 시 null.
+   * ETA 예측 대신 실측 신호로 phase 판정하기 위한 핵심 필드.
+   */
+  arvlCd: number | null;
 }
 
 export interface FetchSeoulOptions {
@@ -93,7 +99,18 @@ function parseEntry(raw: unknown, now: number): ArrivalEntry | null {
     trainCode: typeof item.btrainNo === 'string' ? item.btrainNo : '',
     isUp,
     subwayNm: typeof item.subwayNm === 'string' ? item.subwayNm : '',
+    arvlCd: parseArvlCd(item.arvlCd),
   };
+}
+
+/** Seoul API는 arvlCd를 number 또는 numeric string으로 반환 — 둘 다 수용. */
+function parseArvlCd(raw: unknown): number | null {
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string') {
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 export function parseRecptnDt(recptnDt: unknown): number {

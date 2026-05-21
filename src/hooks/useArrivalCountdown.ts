@@ -24,11 +24,12 @@ export function useArrivalCountdown(arrival: StationArrival | null): StationArri
     setDisplay(arrival);
   }, [arrival]);
 
-  // Countdown every second for non-mock data
-  const isMock = arrival?.isMock === true;
-  const hasArrival = arrival != null;
+  // 실시간 응답뿐 아니라 schedule fallback도 1초 카운트다운 진행 (이슈 #468).
+  // schedule은 isMock=true지만 wall-clock anchor 기반이라 폴링마다 연속 감소한다.
+  // 하드코딩 MOCK_ARRIVALS(source 없음)는 데모용 정적값이므로 종전대로 tick 제외.
+  const isCountable = arrival != null && (arrival.isMock !== true || arrival.source === 'schedule');
   useEffect(() => {
-    if (!hasArrival || isMock) return;
+    if (!isCountable) return;
 
     const id = setInterval(() => {
       const current = arrivalRef.current!;
@@ -42,7 +43,7 @@ export function useArrivalCountdown(arrival: StationArrival | null): StationArri
     }, COUNTDOWN_INTERVAL_MS);
 
     return () => clearInterval(id);
-  }, [hasArrival, isMock]);
+  }, [isCountable]);
 
   return display;
 }

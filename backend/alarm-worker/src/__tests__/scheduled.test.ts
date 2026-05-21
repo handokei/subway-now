@@ -1,7 +1,12 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { pickActiveWaypoint, pickApnsHost, pickBestEtaSeconds, runScheduled } from '../scheduled';
+import {
+  pickActiveWaypoint,
+  pickApnsHost,
+  pickBestArrivalSignal,
+  runScheduled,
+} from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
 import { putTrip } from '../trips';
 import type { Env, Trip } from '../types';
@@ -84,6 +89,7 @@ function makeImminentArrival(stationName: string): ArrivalEntry {
     trainCode: 'T',
     isUp: true,
     subwayNm: '지하철2호선',
+    arvlCd: null,
   };
 }
 
@@ -118,6 +124,7 @@ function makeSeoul(arrivals: ArrivalEntry[]): SeoulArrivalClient {
             trainLineNm: a.destination,
             btrainNo: a.trainCode,
             subwayNm: a.subwayNm,
+            arvlCd: a.arvlCd,
           })),
         }),
         { status: 200 },
@@ -135,32 +142,60 @@ describe('pickActiveWaypoint', () => {
   });
 });
 
-describe('pickBestEtaSeconds', () => {
+describe('pickBestArrivalSignal (#409)', () => {
   const wp = { stationName: '강남', line: '2', kind: 'destination' as const };
   it('returns null when no arrivals', () => {
-    expect(pickBestEtaSeconds([], wp)).toBeNull();
+    expect(pickBestArrivalSignal([], wp)).toBeNull();
   });
-  it('matches by subwayNm and picks min', () => {
+  it('arvlCd 신호 없으면 min ETA fallback (라인 매칭 후)', () => {
     const arrivals: ArrivalEntry[] = [
-      { destination: 'A', arrivalSeconds: 200, trainCode: '1', isUp: true, subwayNm: '지하철2호선' },
-      { destination: 'B', arrivalSeconds: 60, trainCode: '2', isUp: true, subwayNm: '지하철2호선' },
-      { destination: 'C', arrivalSeconds: 30, trainCode: '3', isUp: true, subwayNm: '지하철9호선' },
+      { destination: 'A', arrivalSeconds: 200, trainCode: '1', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
+      { destination: 'B', arrivalSeconds: 60, trainCode: '2', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
+      { destination: 'C', arrivalSeconds: 30, trainCode: '3', isUp: true, subwayNm: '지하철9호선', arvlCd: null },
     ];
-    expect(pickBestEtaSeconds(arrivals, wp)).toBe(60);
+    expect(pickBestArrivalSignal(arrivals, wp)).toEqual({ etaSeconds: 60, arvlCd: null });
   });
-  it('falls back to all arrivals when no line match', () => {
+  it('라인 매칭 실패 시 전체 arrivals로 fallback', () => {
     const arrivals: ArrivalEntry[] = [
-      { destination: 'A', arrivalSeconds: 100, trainCode: '1', isUp: true, subwayNm: '지하철9호선' },
+      { destination: 'A', arrivalSeconds: 100, trainCode: '1', isUp: true, subwayNm: '지하철9호선', arvlCd: null },
     ];
-    expect(pickBestEtaSeconds(arrivals, wp)).toBe(100);
+    expect(pickBestArrivalSignal(arrivals, wp)).toEqual({ etaSeconds: 100, arvlCd: null });
   });
-  it('matches gyeongui line against 경의중앙선 subwayNm via alias map', () => {
+  it('gyeongui line은 경의중앙선 alias로 매칭', () => {
     const arrivals: ArrivalEntry[] = [
-      { destination: '용문', arrivalSeconds: 90, trainCode: 'G', isUp: true, subwayNm: '경의중앙선' },
-      { destination: '용문', arrivalSeconds: 200, trainCode: 'H', isUp: true, subwayNm: '지하철1호선' },
+      { destination: '용문', arrivalSeconds: 90, trainCode: 'G', isUp: true, subwayNm: '경의중앙선', arvlCd: null },
+      { destination: '용문', arrivalSeconds: 200, trainCode: 'H', isUp: true, subwayNm: '지하철1호선', arvlCd: null },
     ];
     const gyeonguiWp = { stationName: '회기', line: 'gyeongui', kind: 'destination' as const };
-    expect(pickBestEtaSeconds(arrivals, gyeonguiWp)).toBe(90);
+    expect(pickBestArrivalSignal(arrivals, gyeonguiWp)).toEqual({ etaSeconds: 90, arvlCd: null });
+  });
+  it('arvlCd=0 (ENTERING)이 있으면 ETA가 더 큰 train이라도 우선 선택 (imminent 실측)', () => {
+    const arrivals: ArrivalEntry[] = [
+      { destination: 'A', arrivalSeconds: 30, trainCode: '1', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
+      { destination: 'B', arrivalSeconds: 120, trainCode: '2', isUp: true, subwayNm: '지하철2호선', arvlCd: 0 },
+    ];
+    expect(pickBestArrivalSignal(arrivals, wp)).toEqual({ etaSeconds: 120, arvlCd: 0 });
+  });
+  it('arvlCd=1 (ARRIVED)이 있으면 ETA가 더 빠른 비-신호 train보다 우선', () => {
+    const arrivals: ArrivalEntry[] = [
+      { destination: 'A', arrivalSeconds: 50, trainCode: '1', isUp: true, subwayNm: '지하철2호선', arvlCd: 99 },
+      { destination: 'B', arrivalSeconds: 80, trainCode: '2', isUp: true, subwayNm: '지하철2호선', arvlCd: 1 },
+    ];
+    expect(pickBestArrivalSignal(arrivals, wp)).toEqual({ etaSeconds: 80, arvlCd: 1 });
+  });
+  it('arvlCd=4/5 (PREV_*)는 early 신호로 선택, imminent 신호 없을 때만', () => {
+    const arrivals: ArrivalEntry[] = [
+      { destination: 'A', arrivalSeconds: 300, trainCode: '1', isUp: true, subwayNm: '지하철2호선', arvlCd: 4 },
+      { destination: 'B', arrivalSeconds: 60, trainCode: '2', isUp: true, subwayNm: '지하철2호선', arvlCd: 99 },
+    ];
+    expect(pickBestArrivalSignal(arrivals, wp)).toEqual({ etaSeconds: 300, arvlCd: 4 });
+  });
+  it('imminent 신호가 있으면 early 신호보다 우선', () => {
+    const arrivals: ArrivalEntry[] = [
+      { destination: 'A', arrivalSeconds: 200, trainCode: '1', isUp: true, subwayNm: '지하철2호선', arvlCd: 5 },
+      { destination: 'B', arrivalSeconds: 100, trainCode: '2', isUp: true, subwayNm: '지하철2호선', arvlCd: 0 },
+    ];
+    expect(pickBestArrivalSignal(arrivals, wp)).toEqual({ etaSeconds: 100, arvlCd: 0 });
   });
 });
 
@@ -275,7 +310,7 @@ describe('runScheduled', () => {
 
     // 1st cycle: early (eta=120s)
     const seoul1 = makeSeoul([
-      { destination: '강남', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '지하철2호선' },
+      { destination: '강남', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
     ]);
     const fetchEarly = vi.fn(async () => new Response('', { status: 200 }));
     const stats1 = await runScheduled(makeEnv(kv), {
@@ -290,7 +325,7 @@ describe('runScheduled', () => {
 
     // 2nd cycle: imminent (eta=20s)
     const seoul2 = makeSeoul([
-      { destination: '강남', arrivalSeconds: 20, trainCode: 'T', isUp: true, subwayNm: '지하철2호선' },
+      { destination: '강남', arrivalSeconds: 20, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
     ]);
     const fetchImminent = vi.fn(async () => new Response('', { status: 200 }));
     const stats2 = await runScheduled(makeEnv(kv), {
@@ -311,7 +346,7 @@ describe('runScheduled', () => {
       makeTrip({ lastFiredPhase: 'early', lastEtaSeconds: 150 }),
     );
     const seoul = makeSeoul([
-      { destination: '강남', arrivalSeconds: 140, trainCode: 'T', isUp: true, subwayNm: '지하철2호선' },
+      { destination: '강남', arrivalSeconds: 140, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
     ]);
     const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runScheduled(makeEnv(kv), {
@@ -329,7 +364,7 @@ describe('runScheduled', () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeTrip());
     const seoul = makeSeoul([
-      { destination: '강남', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '지하철2호선' },
+      { destination: '강남', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
     ]);
     const apnsFetch = vi.fn(async () =>
       new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
@@ -358,7 +393,7 @@ describe('runScheduled', () => {
       }),
     );
     const seoul = makeSeoul([
-      { destination: '중곡', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '7호선' },
+      { destination: '중곡', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '7호선', arvlCd: null },
     ]);
     const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runScheduled(makeEnv(kv), {
@@ -387,7 +422,7 @@ describe('runScheduled', () => {
       }),
     );
     const seoul = makeSeoul([
-      { destination: '중곡', arrivalSeconds: 20, trainCode: 'T', isUp: true, subwayNm: '7호선' },
+      { destination: '중곡', arrivalSeconds: 20, trainCode: 'T', isUp: true, subwayNm: '7호선', arvlCd: null },
     ]);
     const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runScheduled(makeEnv(kv), {
