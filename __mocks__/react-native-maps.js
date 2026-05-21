@@ -2,12 +2,14 @@ const React = require('react');
 const { View } = require('react-native');
 
 const fitToCoordinatesMock = jest.fn();
+const animateToRegionMock = jest.fn();
 const animatedRegionTimingStartMock = jest.fn();
 const animatedRegionTimingMock = jest.fn(() => ({ start: animatedRegionTimingStartMock }));
 
 const MapView = React.forwardRef(({ children, testID, onMapReady, ...props }, ref) => {
   React.useImperativeHandle(ref, () => ({
     fitToCoordinates: fitToCoordinatesMock,
+    animateToRegion: animateToRegionMock,
   }));
   React.useEffect(() => { onMapReady?.(); }, []);
   return React.createElement(View, { testID, ...props }, children);
@@ -41,6 +43,7 @@ module.exports = {
   AnimatedRegion,
   PROVIDER_DEFAULT: null,
   __fitToCoordinatesMock: fitToCoordinatesMock,
+  __animateToRegionMock: animateToRegionMock,
   __animatedRegionTimingMock: animatedRegionTimingMock,
   __animatedRegionTimingStartMock: animatedRegionTimingStartMock,
 };
