@@ -5,7 +5,7 @@ import ClusteredMapView from 'react-native-map-clustering';
 import { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 import type MapView from 'react-native-maps';
 import type { Station } from '../types/station';
-import type { RouteCoordinatePath, RouteStationRole } from '../utils/routeToCoordinates';
+import type { RouteCoordinatePath } from '../utils/routeToCoordinates';
 import { buildMapConfig } from '../utils/buildMapConfig';
 import { useTheme } from '../theme';
 import { LINE_BADGE_LABEL } from '../constants/lineColors';
@@ -17,6 +17,8 @@ interface StationMapProps {
   nearestStation: Station | null;
   nearbyStations: Station[];
   customOriginId?: string;
+  /** 경로 도착역 id. 베이스 마커에서 accent 강조를 적용한다. */
+  destinationId?: string;
   onStationPress?: (station: Station) => void;
   /** 검색 결과 선택 시 지도 카메라를 이동시킬 역. focusNonce가 변할 때마다 재이동한다. */
   focusStation?: Station | null;
@@ -32,11 +34,7 @@ const FOCUS_REGION_DELTA = 0.01;
 const FOCUS_ANIMATION_MS = 400;
 const ROUTE_POLYLINE_WIDTH = 5;
 const ROUTE_FIT_EDGE_PADDING = { top: 40, bottom: 40, left: 40, right: 40 };
-const ROUTE_MARKER_SIZE: Record<RouteStationRole, number> = {
-  origin: 18,
-  transfer: 16,
-  destination: 18,
-};
+const ROUTE_TRANSFER_MARKER_SIZE = 16;
 
 export function StationMap({
   userLat,
@@ -44,6 +42,7 @@ export function StationMap({
   nearestStation,
   nearbyStations,
   customOriginId,
+  destinationId,
   onStationPress,
   focusStation,
   focusNonce,
@@ -137,6 +136,7 @@ export function StationMap({
                     // customOriginId/nearestStation은 (역, 호선) 단위 식별자라 멤버 단위로 비교.
                     const isThisBadgeHighlighted =
                       s.id === customOriginId ||
+                      s.id === destinationId ||
                       (group.isNearest && nearestStation?.id === s.id);
                     return (
                       <View
@@ -178,10 +178,11 @@ export function StationMap({
             testID="route-polyline"
           />
         )}
-        {routeCoords?.keyStations.map(({ station, role }) => {
-          const size = ROUTE_MARKER_SIZE[role];
-          const bg = role === 'transfer' ? station.lineColor : colors.accent;
-          return (
+        {/* 출발/도착역은 베이스 역 마커에서 customOriginId/destinationId로 강조 표시하므로
+            같은 좌표에 마커를 중복 렌더해서 클러스터링되지 않도록 환승역만 오버레이. */}
+        {routeCoords?.keyStations
+          .filter(({ role }) => role === 'transfer')
+          .map(({ station, role }) => (
             <Marker
               key={`route-${role}-${station.id}`}
               coordinate={{ latitude: station.lat, longitude: station.lng }}
@@ -194,18 +195,17 @@ export function StationMap({
                 style={[
                   styles.routeMarkerDot,
                   {
-                    width: size,
-                    height: size,
-                    borderRadius: size / 2,
-                    backgroundColor: bg,
+                    width: ROUTE_TRANSFER_MARKER_SIZE,
+                    height: ROUTE_TRANSFER_MARKER_SIZE,
+                    borderRadius: ROUTE_TRANSFER_MARKER_SIZE / 2,
+                    backgroundColor: station.lineColor,
                     borderColor: colors.bg,
                   },
                 ]}
                 testID={`route-marker-dot-${role}-${station.id}`}
               />
             </Marker>
-          );
-        })}
+          ))}
       </ClusteredMapView>
       {!mapReady && (
         <View style={styles.loading} testID="map-loading">
