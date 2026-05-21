@@ -34,7 +34,6 @@ const FOCUS_REGION_DELTA = 0.01;
 const FOCUS_ANIMATION_MS = 400;
 const ROUTE_POLYLINE_WIDTH = 5;
 const ROUTE_FIT_EDGE_PADDING = { top: 40, bottom: 40, left: 40, right: 40 };
-const ROUTE_TRANSFER_MARKER_SIZE = 16;
 
 export function StationMap({
   userLat,
@@ -96,6 +95,15 @@ export function StationMap({
     [userLat, userLng, nearestStation?.id, nearbyStations],
   );
 
+  // 경로상 환승역 id 집합. 베이스 마커에서 출발/도착과 동일하게 accent 강조한다.
+  const routeTransferIds = useMemo(() => {
+    const ids = new Set<string>();
+    routeCoords?.keyStations.forEach(({ station, role }) => {
+      if (role === 'transfer') ids.add(station.id);
+    });
+    return ids;
+  }, [routeCoords]);
+
   return (
     <View style={styles.map}>
       <ClusteredMapView
@@ -137,6 +145,7 @@ export function StationMap({
                     const isThisBadgeHighlighted =
                       s.id === customOriginId ||
                       s.id === destinationId ||
+                      routeTransferIds.has(s.id) ||
                       (group.isNearest && nearestStation?.id === s.id);
                     return (
                       <View
@@ -178,34 +187,6 @@ export function StationMap({
             testID="route-polyline"
           />
         )}
-        {/* 출발/도착역은 베이스 역 마커에서 customOriginId/destinationId로 강조 표시하므로
-            같은 좌표에 마커를 중복 렌더해서 클러스터링되지 않도록 환승역만 오버레이. */}
-        {routeCoords?.keyStations
-          .filter(({ role }) => role === 'transfer')
-          .map(({ station, role }) => (
-            <Marker
-              key={`route-${role}-${station.id}`}
-              coordinate={{ latitude: station.lat, longitude: station.lng }}
-              title={getStationDisplayName(station)}
-              tracksViewChanges={false}
-              anchor={{ x: 0.5, y: 0.5 }}
-              testID={`route-marker-${role}-${station.id}`}
-            >
-              <View
-                style={[
-                  styles.routeMarkerDot,
-                  {
-                    width: ROUTE_TRANSFER_MARKER_SIZE,
-                    height: ROUTE_TRANSFER_MARKER_SIZE,
-                    borderRadius: ROUTE_TRANSFER_MARKER_SIZE / 2,
-                    backgroundColor: station.lineColor,
-                    borderColor: colors.bg,
-                  },
-                ]}
-                testID={`route-marker-dot-${role}-${station.id}`}
-              />
-            </Marker>
-          ))}
       </ClusteredMapView>
       {!mapReady && (
         <View style={styles.loading} testID="map-loading">
@@ -266,9 +247,6 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#111111',
     textAlign: 'center',
-  },
-  routeMarkerDot: {
-    borderWidth: 3,
   },
 });
 
