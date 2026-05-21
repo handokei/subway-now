@@ -15,10 +15,11 @@ describe('classifyDayType', () => {
 });
 
 describe('classifyPeriod', () => {
+  // KST 절대시각을 ISO 문자열로 만들어 호스트 타임존에 의존하지 않게 한다 (CI는 UTC).
   const make = (h: number, m: number) => {
-    const d = new Date('2026-05-18T00:00:00+09:00');
-    d.setHours(h, m, 0, 0);
-    return d;
+    const hh = String(h).padStart(2, '0');
+    const mm = String(m).padStart(2, '0');
+    return new Date(`2026-05-18T${hh}:${mm}:00+09:00`);
   };
 
   it('returns closed between 01:00 and 05:30', () => {
