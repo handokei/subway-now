@@ -2,6 +2,7 @@ import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
 import {
+  flipApnsEnv,
   pickActiveWaypoint,
   pickApnsHost,
   pickBestArrivalSignal,
@@ -199,6 +200,19 @@ describe('pickBestArrivalSignal (#409)', () => {
   });
 });
 
+describe('flipApnsEnv (#482 self-heal)', () => {
+  it('sandbox → production', () => {
+    expect(flipApnsEnv('sandbox')).toBe('production');
+  });
+  it('production → sandbox', () => {
+    expect(flipApnsEnv('production')).toBe('sandbox');
+  });
+  it('undefined → production (sandbox default 짝)', () => {
+    // pickApnsHost가 undefined를 sandbox로 시작하므로, flip은 production이 되어야 한다.
+    expect(flipApnsEnv(undefined)).toBe('production');
+  });
+});
+
 describe('pickApnsHost', () => {
   it('returns sandbox host when apnsEnv is sandbox', () => {
     expect(pickApnsHost('sandbox', APNS_HOSTS)).toBe(APNS_HOSTS.sandbox);
@@ -360,9 +374,68 @@ describe('runScheduled', () => {
     expect(stats.pushed).toBe(0);
   });
 
-  it('removes trip on BadDeviceToken', async () => {
+  // #482 self-heal (D안): BadDeviceToken은 토큰 자체 무효가 아니라 host 환경 불일치인 경우가
+  // 압도적. 반대 host로 1회 재시도해 성공하면 trip.apnsEnv를 정정하고, 재시도도 실패하면
+  // 그제서야 진짜 unrecoverable로 분류해 trip을 삭제한다.
+  it('self-heal: 1차 sandbox 실패(BadDeviceToken) → 2차 production 성공 → apnsEnv 정정', async () => {
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeTrip());
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ apnsEnv: 'sandbox' }));
+    const seoul = makeSeoul([
+      { destination: '강남', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
+    ]);
+    const apnsFetch = vi
+      .fn(async (url: string) => {
+        if (url.includes('sandbox')) {
+          return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 });
+        }
+        return new Response('', { status: 200 });
+      });
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.pushed).toBe(1);
+    expect(stats.errors).toBe(0);
+    expect(stats.envCorrected).toBe(1);
+    expect(apnsFetch).toHaveBeenCalledTimes(2);
+    // KV 정정 저장 확인 — 다음 cycle은 1-shot으로 production host 사용
+    expect(kv.store.size).toBe(1);
+    const stored = JSON.parse(kv.store.get('trip:tok')!.value) as Trip;
+    expect(stored.apnsEnv).toBe('production');
+  });
+
+  it('self-heal: 1차 production 실패 → 2차 sandbox 성공 → apnsEnv=sandbox 정정', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ apnsEnv: 'production' }));
+    const seoul = makeSeoul([
+      { destination: '강남', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
+    ]);
+    const apnsFetch = vi
+      .fn(async (url: string) => {
+        if (url.includes('sandbox')) {
+          return new Response('', { status: 200 });
+        }
+        return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 });
+      });
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.pushed).toBe(1);
+    expect(stats.envCorrected).toBe(1);
+    const stored = JSON.parse(kv.store.get('trip:tok')!.value) as Trip;
+    expect(stored.apnsEnv).toBe('sandbox');
+  });
+
+  it('self-heal: 1차/2차 모두 BadDeviceToken → 진짜 unrecoverable, trip 삭제', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ apnsEnv: 'sandbox' }));
     const seoul = makeSeoul([
       { destination: '강남', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
     ]);
@@ -376,8 +449,111 @@ describe('runScheduled', () => {
       fetchImpl: apnsFetch as unknown as typeof fetch,
       now: () => NOW,
     });
+    expect(apnsFetch).toHaveBeenCalledTimes(2);
     expect(stats.errors).toBe(1);
+    expect(stats.envCorrected).toBe(0);
     expect(kv.store.size).toBe(0);
+  });
+
+  it('self-heal: apnsEnv=undefined trip(구버전 클라이언트) → sandbox로 시작 → production 정정', async () => {
+    const kv = new InMemoryKV();
+    // apnsEnv 필드 자체를 보내지 않은 구버전 클라이언트 trip
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ apnsEnv: undefined }));
+    const seoul = makeSeoul([
+      { destination: '강남', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
+    ]);
+    const apnsFetch = vi
+      .fn(async (url: string) => {
+        // 1차: sandbox host (pickApnsHost fallback) → 실패. 2차: production → 성공.
+        if (url.includes('sandbox')) {
+          return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 });
+        }
+        return new Response('', { status: 200 });
+      });
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.envCorrected).toBe(1);
+    expect(stats.pushed).toBe(1);
+    const stored = JSON.parse(kv.store.get('trip:tok')!.value) as Trip;
+    expect(stored.apnsEnv).toBe('production');
+  });
+
+  it('self-heal retry가 다른 종류 에러(non-mismatch 400)면 trip 유지, exhausted 아님', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ apnsEnv: 'sandbox' }));
+    const seoul = makeSeoul([
+      { destination: '강남', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
+    ]);
+    // 1차 sandbox BadDeviceToken → 2차 production은 PayloadTooLarge (env 문제는 아님)
+    const apnsFetch = vi
+      .fn(async (url: string) => {
+        if (url.includes('sandbox')) {
+          return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 });
+        }
+        return new Response(JSON.stringify({ reason: 'PayloadTooLarge' }), { status: 400 });
+      });
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.errors).toBe(1);
+    expect(stats.envCorrected).toBe(0);
+    // PayloadTooLarge는 unrecoverable 아니고 exhausted도 아님 → trip 유지
+    expect(kv.store.size).toBe(1);
+  });
+
+  it('410 Unregistered → self-heal 우회, 즉시 trip 삭제 (회귀 방지)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ apnsEnv: 'production' }));
+    const seoul = makeSeoul([
+      { destination: '강남', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
+    ]);
+    const apnsFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'Unregistered' }), { status: 410 }),
+    );
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    // 410은 retry 안 함 — 1번만 호출
+    expect(apnsFetch).toHaveBeenCalledTimes(1);
+    expect(stats.errors).toBe(1);
+    expect(stats.envCorrected).toBe(0);
+    expect(kv.store.size).toBe(0);
+  });
+
+  it('400 그 외 reason은 self-heal 안 함, trip 유지 (recoverable error)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ apnsEnv: 'production' }));
+    const seoul = makeSeoul([
+      { destination: '강남', arrivalSeconds: 120, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
+    ]);
+    const apnsFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'PayloadTooLarge' }), { status: 400 }),
+    );
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(apnsFetch).toHaveBeenCalledTimes(1);
+    expect(stats.errors).toBe(1);
+    expect(stats.envCorrected).toBe(0);
+    // 400 PayloadTooLarge는 unrecoverable이 아니므로 trip 유지
+    expect(kv.store.size).toBe(1);
   });
 
   // #416: 중간역(intermediate) 처리 — early phase 스킵, imminent에서만 push + shift.

@@ -113,7 +113,9 @@ describe('sendSilentPush', () => {
   });
 
   it('uses sandbox host when provided', async () => {
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response('', { status: 200 }),
+    );
     await sendSilentPush({
       deviceToken: 'tok',
       payload: { nextWaypoint: 'X', etaSeconds: 10, phase: 'early', kind: 'destination' },

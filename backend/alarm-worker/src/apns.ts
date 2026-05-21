@@ -8,7 +8,11 @@
 import { importPKCS8, SignJWT } from 'jose';
 import type { AlarmPhase } from './alarm';
 
-/** APNs JWT는 1시간 이내 재사용 가능. Worker 인스턴스 메모리에 캐시한다. */
+/**
+ * APNs JWT는 1시간 이내 재사용 가능. Worker 인스턴스 메모리에 캐시한다.
+ * JWT는 host와 독립적(keyId/teamId 만으로 서명)이므로 self-heal에서
+ * sandbox↔production host를 바꿔도 동일 JWT를 재사용한다.
+ */
 interface JwtCache {
   token: string;
   expiresAt: number;
