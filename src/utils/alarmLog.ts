@@ -14,13 +14,31 @@ export const ALARM_LOG_BUFFER_SIZE = 200;
 
 // 'fg' / 'bg'는 v1 (FG GPS 평가 / BG location task gate). 'fg-evaluated' / 'bg-scheduled'는
 // v2 (#372)로 의미 명확화. 두 값 모두 union에 유지해 과거 저장 데이터를 손실 없이 읽는다.
-// 'silent-push-received'는 #478 측정 인프라 — silent push 도달 시점 기록 (outcome은 항상
-// 'received', 동작 변경 없음).
-export type AlarmLogSource = 'fg' | 'bg' | 'fg-evaluated' | 'bg-scheduled' | 'silent-push-received';
+// 'silent-push-received'는 #478 측정 인프라 — silent push 도달 시점 기록.
+// 'silent-push-fired'/'silent-push-skipped'는 #478 PR 1-2 — 위치 게이트 통과/실패 발사.
+export type AlarmLogSource =
+  | 'fg'
+  | 'bg'
+  | 'fg-evaluated'
+  | 'bg-scheduled'
+  | 'silent-push-received'
+  | 'silent-push-fired'
+  | 'silent-push-skipped';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(evaluateAlarmPhase의 firedAlarms 적중 케이스)은 후속 이슈에서 추가.
 // 그때까지 union에 선언하지 않아 "구현됐다"는 거짓 시그널을 피한다.
-export type AlarmLogReason = 'dedup-station' | 'gate-age' | 'gate-accuracy';
+// 'gate-unknown-station' / 'gate-no-location' / 'gate-stale-location' / 'gate-out-of-range'는
+// #478 PR 1-2 silent push 위치 게이트 skip 사유.
+// 'payload-missing-kind'는 구 백엔드 payload에 kind 필드가 없어 발사 본문 결정 불가 → skip.
+export type AlarmLogReason =
+  | 'dedup-station'
+  | 'gate-age'
+  | 'gate-accuracy'
+  | 'gate-unknown-station'
+  | 'gate-no-location'
+  | 'gate-stale-location'
+  | 'gate-out-of-range'
+  | 'payload-missing-kind';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -77,6 +95,12 @@ export interface AlarmLogEntry {
   receivedAt?: number;
   // #396 — imminent phase 발사 trigger 출처. 미설정은 트리거 무관(early 등) 또는 구버전 로그.
   trigger?: AlarmLogTrigger;
+  // #478 PR 1-2 — silent push 위치 게이트 결과.
+  // silent-push-fired / silent-push-skipped 엔트리에서 사용.
+  distanceM?: number;
+  thresholdM?: number;
+  locationSource?: 'cache' | 'fresh';
+  locationAgeMs?: number;
 }
 
 const logger = createLogger('AlarmLog');
@@ -170,6 +194,62 @@ export function logSilentPushReceived(input: {
     phaseId: input.phaseId,
     sentAt: input.sentAt,
     receivedAt: input.receivedAt,
+  });
+}
+
+/**
+ * silent push가 위치 게이트 통과 → 즉시 발사한 1건 (#478 PR 1-2).
+ */
+export function logSilentPushFired(input: {
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId: AlarmPhaseId;
+  distanceM: number;
+  thresholdM: number;
+  locationSource: 'cache' | 'fresh';
+  locationAgeMs: number;
+}): void {
+  void appendAlarmLog({
+    ts: Date.now(),
+    source: 'silent-push-fired',
+    outcome: 'fired',
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
+    distanceM: input.distanceM,
+    thresholdM: input.thresholdM,
+    locationSource: input.locationSource,
+    locationAgeMs: input.locationAgeMs,
+  });
+}
+
+/**
+ * silent push 위치 게이트 실패 → 발사 skip 한 1건 (#478 PR 1-2).
+ * reason은 게이트 사유: gate-unknown-station / gate-no-location /
+ * gate-stale-location / gate-out-of-range.
+ */
+export function logSilentPushSkipped(input: {
+  stationName: string;
+  kind: AlarmLogKind | undefined;
+  phaseId: AlarmPhaseId;
+  reason: AlarmLogReason;
+  distanceM?: number;
+  thresholdM?: number;
+  locationSource?: 'cache' | 'fresh';
+  locationAgeMs?: number;
+}): void {
+  void appendAlarmLog({
+    ts: Date.now(),
+    source: 'silent-push-skipped',
+    outcome: 'suppressed',
+    reason: input.reason,
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
+    distanceM: input.distanceM,
+    thresholdM: input.thresholdM,
+    locationSource: input.locationSource,
+    locationAgeMs: input.locationAgeMs,
   });
 }
 

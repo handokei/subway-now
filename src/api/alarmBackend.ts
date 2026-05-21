@@ -9,6 +9,7 @@
  */
 
 import type { Route } from '../utils/stationRoute';
+import type { ApnsEnv } from '../utils/apnsEnv';
 import { createLogger } from '../utils/logger';
 
 const log = createLogger('alarmBackend');
@@ -33,6 +34,8 @@ export interface RegisterTripPayload {
   expiresAt?: number;
   /** epoch ms — 알람 발사 예상 시각 (5분 윈도우 진입 판정용) */
   alarmAtEpochMs: number;
+  /** APNs 토큰 환경 — backend가 sandbox/production host를 선택. */
+  apnsEnv: ApnsEnv;
 }
 
 export interface AlarmBackendResult {
@@ -86,6 +89,7 @@ export async function registerActiveTrip(
     createdAt,
     expiresAt,
     alarmAtEpochMs: payload.alarmAtEpochMs,
+    apnsEnv: payload.apnsEnv,
   };
 
   try {

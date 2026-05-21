@@ -8,7 +8,11 @@
 import { importPKCS8, SignJWT } from 'jose';
 import type { AlarmPhase } from './alarm';
 
-/** APNs JWT는 1시간 이내 재사용 가능. Worker 인스턴스 메모리에 캐시한다. */
+/**
+ * APNs JWT는 1시간 이내 재사용 가능. Worker 인스턴스 메모리에 캐시한다.
+ * JWT는 host와 독립적(keyId/teamId 만으로 서명)이므로 self-heal에서
+ * sandbox↔production host를 바꿔도 동일 JWT를 재사용한다.
+ */
 interface JwtCache {
   token: string;
   expiresAt: number;
@@ -19,7 +23,6 @@ const JWT_TTL_MS = 50 * 60 * 1000; // 50분 (APNs는 1시간이지만 여유)
 let jwtCache: JwtCache | null = null;
 
 export interface ApnsConfig {
-  host: string;
   keyId: string;
   teamId: string;
   privateKeyPem: string;
@@ -63,6 +66,8 @@ export interface SendPushOptions {
   deviceToken: string;
   payload: SilentPushPayload;
   config: ApnsConfig;
+  /** APNs 엔드포인트 host. trip의 apnsEnv에 따라 sandbox/production 중 선택해 전달. */
+  host: string;
   fetchImpl?: typeof fetch;
   now?: number;
 }
@@ -76,7 +81,7 @@ export interface SendPushResult {
 export async function sendSilentPush(options: SendPushOptions): Promise<SendPushResult> {
   const jwt = await buildApnsJwt(options.config, options.now);
   const fetchImpl = options.fetchImpl ?? fetch;
-  const url = `https://${options.config.host}/3/device/${options.deviceToken}`;
+  const url = `https://${options.host}/3/device/${options.deviceToken}`;
 
   const body = JSON.stringify({
     aps: { 'content-available': 1 },

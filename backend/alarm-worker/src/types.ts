@@ -64,11 +64,24 @@ export interface Trip {
   lastFiredPhase?: 'early' | 'imminent';
   /** 마지막 폴링 시 관측 ETA(seconds). 변동 감지용. */
   lastEtaSeconds?: number;
+  /**
+   * APNs 토큰의 환경(sandbox / production). 클라이언트가 빌드 환경에 맞춰 전달.
+   * 누락 시 sandbox로 간주 — 구버전 클라이언트(dev/preview)가 필드를 안 보내는 경우
+   * production host로 잘못 가지 않도록 안전한 기본값. App Store/TestFlight 빌드는
+   * 반드시 `apnsEnv: 'production'`을 명시한다.
+   */
+  apnsEnv?: ApnsEnv;
 }
+
+/** APNs 토큰 환경. sandbox는 dev/preview/internal 빌드, production은 App Store/TestFlight. */
+export type ApnsEnv = 'sandbox' | 'production';
 
 export interface Env {
   TRIPS: KVNamespace;
+  /** Production APNs host (예: api.push.apple.com) */
   APNS_HOST: string;
+  /** Sandbox APNs host (예: api.sandbox.push.apple.com) — dev/preview 빌드 토큰용 */
+  APNS_HOST_SANDBOX: string;
   SEOUL_API_HOST: string;
   SEOUL_API_KEY: string;
   APNS_KEY_ID: string;

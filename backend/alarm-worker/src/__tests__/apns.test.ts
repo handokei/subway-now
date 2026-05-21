@@ -16,9 +16,10 @@ beforeAll(async () => {
   privateKeyPem = await exportPKCS8(privateKey);
 });
 
+const TEST_HOST = 'api.push.apple.com';
+
 function makeConfig(): ApnsConfig {
   return {
-    host: 'api.push.apple.com',
     keyId: 'KEY123',
     teamId: 'TEAM456',
     privateKeyPem,
@@ -69,12 +70,13 @@ describe('sendSilentPush', () => {
         sentAt: 1_700_000_000_000,
       },
       config: makeConfig(),
+      host: TEST_HOST,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     expect(result.ok).toBe(true);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0];
-    expect(url).toContain('/3/device/devicetoken-hex');
+    expect(url).toBe(`https://${TEST_HOST}/3/device/devicetoken-hex`);
     const headers = (init as RequestInit).headers as Record<string, string>;
     expect(headers['apns-topic']).toBe('com.example.app');
     expect(headers['apns-push-type']).toBe('background');
@@ -102,6 +104,7 @@ describe('sendSilentPush', () => {
         sentAt: 1_700_000_000_000,
       },
       config: makeConfig(),
+      host: TEST_HOST,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     expect(result.ok).toBe(false);
@@ -121,9 +124,25 @@ describe('sendSilentPush', () => {
         sentAt: 1_700_000_000_000,
       },
       config: makeConfig(),
+      host: TEST_HOST,
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     expect(result.ok).toBe(false);
     expect(result.reason).toBeUndefined();
+  });
+
+  it('uses sandbox host when provided', async () => {
+    const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
+      new Response('', { status: 200 }),
+    );
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: { nextWaypoint: 'X', etaSeconds: 10, phase: 'early', kind: 'destination', sentAt: 0 },
+      config: makeConfig(),
+      host: 'api.sandbox.push.apple.com',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://api.sandbox.push.apple.com/3/device/tok');
   });
 });

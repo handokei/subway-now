@@ -76,6 +76,7 @@ export function validateTrip(input: unknown): Trip | null {
       ? obj.lastFiredPhase
       : undefined,
     lastEtaSeconds: typeof obj.lastEtaSeconds === 'number' ? obj.lastEtaSeconds : undefined,
+    apnsEnv: obj.apnsEnv === 'sandbox' || obj.apnsEnv === 'production' ? obj.apnsEnv : undefined,
   };
 }
 
@@ -89,11 +90,14 @@ export default {
     await runScheduled(env, {
       seoul,
       apnsConfig: {
-        host: env.APNS_HOST,
         keyId: env.APNS_KEY_ID,
         teamId: env.APNS_TEAM_ID,
         privateKeyPem: env.APNS_PRIVATE_KEY,
         bundleId: env.APNS_BUNDLE_ID,
+      },
+      apnsHosts: {
+        production: env.APNS_HOST,
+        sandbox: env.APNS_HOST_SANDBOX,
       },
       log: (msg, meta) => console.log(JSON.stringify({ msg, ...meta })),
     });
