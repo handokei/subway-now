@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { isStationOnRoute } from '../utils/stationRoute';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
-import { alarmKey, evaluateAlarmPhase } from '../utils/stationAlarm';
+import { alarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateEtaSeconds } from '../utils/stationEta';
 import { resolveNextTarget } from '../utils/stationPipeline';
@@ -120,6 +120,32 @@ export function useStationAlarm({
     };
   }, [destinationId]);
 
+  // 알람 발사 + 로깅 헬퍼. ETA effect와 API 신호 effect가 동일 시퀀스를 수행하므로 통합.
+  // 호출자가 route/destination 가드를 통과한 뒤 호출하는 전제. 내부에서 한 번 더 가드해
+  // 타입 좁히기와 안전 양쪽을 확보.
+  function fireAndLog(rawEvent: AlarmEvent, trigger: 'api' | 'eta'): void {
+    if (!route || !destination) return;
+    // 좌/우 안내 방향. nearestStation 미정이면 direction 미부착(본문에 좌/우 라인 생략).
+    const direction = nearestStation
+      ? resolveAlarmDirection(rawEvent, {
+          route,
+          destinationName: destination.name,
+          sourceStationName: nearestStation.name,
+        })
+      : undefined;
+    const event = direction ? { ...rawEvent, direction } : rawEvent;
+    firedAlarmsRef.current.add(alarmKey(event));
+    // AsyncStorage에도 즉시 반영 — FG/BG 단일 출처 유지. destinationId scoped.
+    void setFiredAlarms(destination.id, firedAlarmsRef.current);
+    if (sleepModeRef.current) {
+      setAlarmEvent(event);
+    }
+    sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current).catch((e) =>
+      logger.error('알람 알림 실패:', e),
+    );
+    logFiredAlarm('fg', event, trigger);
+  }
+
   // Phase 알람 효과: ETA 기반 phase 평가 + firedAlarms 갱신.
   // firedHydrated=false인 동안에는 보류 — BG가 이미 발화한 phase를 빈 ref로 재발화하는 것을 막는다.
   // station-passed와 분리: 하이드레이션 완료로 인한 effect 재실행이 station-passed 중복 발사를
@@ -150,28 +176,7 @@ export function useStationAlarm({
       { route, destinationName: destination.name, etaSeconds },
       firedAlarmsRef.current,
     );
-    if (rawEvent) {
-      // 좌/우 안내를 위한 진행방향. 출발 anchor가 없거나(nearestStation 미정) 결정 불가하면
-      // direction은 undefined로 남고, 본문에 좌/우 라인이 추가되지 않는다.
-      const direction = nearestStation
-        ? resolveAlarmDirection(rawEvent, {
-            route,
-            destinationName: destination.name,
-            sourceStationName: nearestStation.name,
-          })
-        : undefined;
-      const event = direction ? { ...rawEvent, direction } : rawEvent;
-      firedAlarmsRef.current.add(alarmKey(event));
-      // AsyncStorage에도 즉시 반영 — FG/BG 단일 출처 유지. destinationId scoped.
-      void setFiredAlarms(destination.id, firedAlarmsRef.current);
-      if (sleepModeRef.current) {
-        setAlarmEvent(event);
-      }
-      sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current).catch((e) =>
-        logger.error('알람 알림 실패:', e),
-      );
-      logFiredAlarm('fg', event, 'eta');
-    }
+    if (rawEvent) fireAndLog(rawEvent, 'eta');
   }, [
     route,
     destination?.id,
@@ -199,24 +204,8 @@ export function useStationAlarm({
     const imminentKey = `imminent:${destination.name}`;
     if (firedAlarmsRef.current.has(imminentKey)) return;
 
-    const rawEvent = { phaseId: 'imminent' as const, type: 'destination' as const, stationName: destination.name };
-    const direction = nearestStation
-      ? resolveAlarmDirection(rawEvent, {
-          route,
-          destinationName: destination.name,
-          sourceStationName: nearestStation.name,
-        })
-      : undefined;
-    const event = direction ? { ...rawEvent, direction } : rawEvent;
-    firedAlarmsRef.current.add(alarmKey(event));
-    void setFiredAlarms(destination.id, firedAlarmsRef.current);
-    if (sleepModeRef.current) {
-      setAlarmEvent(event);
-    }
-    sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current).catch((e) =>
-      logger.error('알람 알림 실패:', e),
-    );
-    logFiredAlarm('fg', event, 'api');
+    const rawEvent: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: destination.name };
+    fireAndLog(rawEvent, 'api');
   }, [
     firedHydrated,
     route,
