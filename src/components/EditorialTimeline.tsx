@@ -1,15 +1,37 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing } from '../theme';
-import type { Stop } from '../utils/journeyAdapter';
+import type { Stop, StopArrivalContext } from '../utils/journeyAdapter';
 import { LineBadge, getLineColor } from './LineBadge';
+import { useAppStore } from '../store/useAppStore';
+import { resolveQuickExit } from '../utils/quickExit';
+import { resolveTravelDirection } from '../utils/travelDirection';
 
 interface Props {
   stops: Stop[];
 }
 
+// 한 도착/환승 지점의 빠른하차 문번호 라벨을 결정한다.
+// 단조 노선 외이거나 데이터 부재 시 null — caller(UI)는 라벨을 생략한다.
+// accessibilityMode가 true면 elevator를 우선해 stairs 대신 EV 위치를 안내한다.
+function resolveStopQuickExitDoor(
+  ctx: StopArrivalContext,
+  accessibilityMode: boolean,
+): string | null {
+  const resolution = resolveTravelDirection(ctx.line, ctx.fromName, ctx.toName);
+  if (!resolution) return null;
+  const result = resolveQuickExit(resolution.toStation.id, {
+    accessibilityMode,
+    direction: resolution.direction,
+  });
+  return result ? result.entry.doorNumber : null;
+}
+
 export function EditorialTimeline({ stops }: Props) {
   const { colors } = useTheme();
+  const { t } = useTranslation();
+  const accessibilityMode = useAppStore((s) => s.accessibilityMode);
   return (
     <View>
       {stops.map((s, i) => {
@@ -18,6 +40,9 @@ export function EditorialTimeline({ stops }: Props) {
         const nextLineC = !isLast
           ? (stops[i + 1].line != null ? getLineColor(stops[i + 1].line!) : colors.accent)
           : lineC;
+        const quickExitDoor = s.arrivalContext != null
+          ? resolveStopQuickExitDoor(s.arrivalContext, accessibilityMode)
+          : null;
 
         return (
           <View key={i} style={[styles.row, isLast && { minHeight: 36 }]} testID={`timeline-stop-${i}`}>
@@ -58,6 +83,14 @@ export function EditorialTimeline({ stops }: Props) {
               {s.stopsFromPrev != null && (
                 <Text style={[typography.mono, { color: colors.subtle, marginTop: 2 }]}>
                   {s.stopsFromPrev}
+                </Text>
+              )}
+              {quickExitDoor != null && (
+                <Text
+                  style={[typography.label, { color: colors.subtle, marginTop: 2 }]}
+                  testID={`quick-exit-door-${i}`}
+                >
+                  {t('route.quickExitDoor', { door: quickExitDoor })}
                 </Text>
               )}
             </View>
