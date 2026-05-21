@@ -21,6 +21,7 @@ const SAMPLE_PAYLOAD: RegisterTripPayload = {
   alarmAtEpochMs: NOW + 60000,
   createdAt: NOW,
   expiresAt: NOW + 1000,
+  apnsEnv: 'sandbox',
 };
 
 describe('alarmBackend', () => {
@@ -65,6 +66,7 @@ describe('alarmBackend', () => {
         alarmAtEpochMs: NOW + 60000,
         createdAt: NOW,
         expiresAt: NOW + 1000,
+        apnsEnv: 'sandbox',
       });
     });
 
@@ -78,6 +80,7 @@ describe('alarmBackend', () => {
         destination: '0228',
         waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
         alarmAtEpochMs: NOW,
+        apnsEnv: 'sandbox',
       };
       await registerActiveTrip(payload);
       const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);

@@ -17,6 +17,7 @@ import { registerActiveTrip, clearActiveTrip } from '../api/alarmBackend';
 import { routeToWaypoints } from '../utils/routeWaypoints';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../constants/storageKeys';
 import { createLogger } from '../utils/logger';
+import { resolveApnsEnv } from '../utils/apnsEnv';
 
 const logger = createLogger('ApnsTripRegistration');
 
@@ -57,6 +58,7 @@ async function callRegister(input: RegisterCallInputs) {
     destination: input.destination.id,
     waypoints: routeToWaypoints(input.route, input.destination.name, input.currentStation),
     alarmAtEpochMs: deriveAlarmAtEpochMs(input.nextStationEtaSeconds, Date.now()),
+    apnsEnv: resolveApnsEnv(),
   });
 }
 
