@@ -10,7 +10,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/useAppStore';
 import { isDebugModalEnabled } from '../constants/debugFlags';
 import { useFusedNearestStation } from '../hooks/useFusedNearestStation';
@@ -183,6 +183,9 @@ export function DebugModal(props: DebugModalProps) {
 
 function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
   const { colors } = useTheme();
+  // #458: RN Modal 안에서는 SafeAreaView가 안 먹는다(portal로 inset 컨텍스트 분리).
+  // 루트 SafeAreaProvider의 insets를 hook으로 직접 받아 헤더에 manual padding.
+  const insets = useSafeAreaInsets();
   const {
     result,
     gpsResult,
@@ -281,12 +284,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
 
   return (
     <Modal visible animationType="slide" onRequestClose={onClose} testID="debug-modal">
-      {/* #458: Modal은 safe area를 자동 처리하지 않아 헤더가 노치 아래로 침범 → Close 터치 불가.
-          SafeAreaView로 top/left/right edge만 보호. bottom은 ScrollView contentContainer가 처리. */}
-      <SafeAreaView
-        edges={['top', 'left', 'right']}
-        style={[styles.container, { backgroundColor: colors.bg }]}
-      >
+      <View style={[styles.container, { backgroundColor: colors.bg, paddingTop: insets.top }]}>
         <View style={[styles.header, { borderBottomColor: colors.hair }]}>
           <Text style={[typography.bodySm, { color: colors.ink, fontWeight: '700' }]}>
             Subway debug
@@ -450,7 +448,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
             </TouchableOpacity>
           </View>
         </ScrollView>
-      </SafeAreaView>
+      </View>
     </Modal>
   );
 }
