@@ -126,12 +126,17 @@ export function useFusedNearestStation(
   }, [gps.userLocation]);
 
   // arrival 폴링: 후보 역명 단위 K=3 고정.
+  // 각 후보의 호선을 lineHint로 함께 전달해 schedule fallback이 환승역에서 정확한
+  // 호선을 사용하도록 한다 (#469).
   const c0 = candidates[0]?.station.name ?? null;
   const c1 = candidates[1]?.station.name ?? null;
   const c2 = candidates[2]?.station.name ?? null;
-  const a0 = useArrivalInfo(c0, arrivalProvider);
-  const a1 = useArrivalInfo(c1, arrivalProvider);
-  const a2 = useArrivalInfo(c2, arrivalProvider);
+  const h0 = candidates[0]?.station.line ?? null;
+  const h1 = candidates[1]?.station.line ?? null;
+  const h2 = candidates[2]?.station.line ?? null;
+  const a0 = useArrivalInfo(c0, h0, arrivalProvider);
+  const a1 = useArrivalInfo(c1, h1, arrivalProvider);
+  const a2 = useArrivalInfo(c2, h2, arrivalProvider);
 
   // position 폴링: 후보 역들의 호선만 dedup 후 K=3 고정 슬롯.
   // (대부분 1~2개 호선이지만 환승 인근에서 3개까지 가능)

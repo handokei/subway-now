@@ -86,6 +86,7 @@ export default function HomeScreen() {
   useTripOrigin(destination, effectiveOrigin, setTripOrigin);
   const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(
     effectiveOrigin?.name ?? null,
+    effectiveOrigin?.line ?? null,
   );
   const arrival = useArrivalCountdown(rawArrival);
   const isFav = effectiveOrigin ? favorites.some((f) => f.id === effectiveOrigin.id) : false;
