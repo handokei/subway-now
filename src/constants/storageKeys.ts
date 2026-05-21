@@ -21,3 +21,6 @@ export const ALARM_LOG_KEY = 'subway-now:alarm-log';
 export const APNS_TOKEN_KEY = 'subway-now:apns-token';
 export const ACTIVE_TRIP_KEY = 'subway-now:active-trip';
 export const TRIP_TRAIN_CODE_KEY = 'subway-now:trip-train-code';
+// #498 — silent push 게이트 outcome 텔레메트리. 마지막 flush 시각(epoch ms).
+// 다음 flush는 이 시점 이후의 alarmLog 엔트리만 집계 → 중복 방지.
+export const TELEMETRY_LAST_FLUSH_KEY = 'subway-now:telemetry-last-flush';

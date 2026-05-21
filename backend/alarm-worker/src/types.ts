@@ -76,8 +76,26 @@ export interface Trip {
 /** APNs 토큰 환경. sandbox는 dev/preview/internal 빌드, production은 App Store/TestFlight. */
 export type ApnsEnv = 'sandbox' | 'production';
 
+/**
+ * Cloudflare Analytics Engine writer. Minimal surface — Worker types에 의존하지 않게 별도 선언.
+ * 실제 binding은 wrangler.toml의 `[[analytics_engine_datasets]]`로 주입.
+ */
+export interface AnalyticsEngineWriter {
+  writeDataPoint(point: {
+    blobs?: string[];
+    doubles?: number[];
+    indexes?: string[];
+  }): void;
+}
+
 export interface Env {
   TRIPS: KVNamespace;
+  /**
+   * silent push 게이트 outcome 텔레메트리 (#498).
+   * 클라가 30분 주기로 upload하는 카운터를 Analytics Engine에 적재.
+   * 미바인딩 시 endpoint는 graceful no-op (개발 환경 호환).
+   */
+  TELEMETRY?: AnalyticsEngineWriter;
   /** Production APNs host (예: api.push.apple.com) */
   APNS_HOST: string;
   /** Sandbox APNs host (예: api.sandbox.push.apple.com) — dev/preview 빌드 토큰용 */
