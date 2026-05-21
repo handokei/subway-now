@@ -49,10 +49,15 @@ name: "smoke - 거동 불편자 모드가 경로 화면 문번호 라벨에 반�
     timeout: 10000
 
 # 설정 탭으로 이동해 거동 불편자 모드 ON
+# accessibility 섹션은 알람 카드 아래에 있어 스크롤이 필요하다 (settings.tsx:142 코멘트 참조).
+# scrollUntilVisible은 ScrollView를 위로 끌어올려 대상 ID가 보일 때까지 반복한다.
 - tapOn:
     point: "87%,95%"
-- assertVisible:
-    id: "accessibility-mode-switch"
+- scrollUntilVisible:
+    element:
+      id: "accessibility-mode-switch"
+    direction: DOWN
+    timeout: 10000
 - tapOn:
     id: "accessibility-mode-switch"
 
