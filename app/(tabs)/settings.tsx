@@ -1,13 +1,19 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'expo-router';
+import Constants from 'expo-constants';
 import { useAppStore, type ThemeMode, type LocalePreference } from '../../src/store/useAppStore';
 import { ROUTE_CATEGORIES } from '../../src/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../../src/i18n/types';
 import { useTheme, spacing, radius } from '../../src/theme';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
+import {
+  DEBUG_MODAL_TRIGGER_RESET_MS,
+  DEBUG_MODAL_TRIGGER_TAP_COUNT,
+  isDebugModalEnabled,
+} from '../../src/constants/debugFlags';
 
 const THEME_OPTIONS = [
   { value: 'auto', labelKey: 'settings.themeAuto' },
@@ -154,8 +160,42 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        <VersionFooter />
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function VersionFooter() {
+  const { colors } = useTheme();
+  const tapCountRef = useRef(0);
+  const lastTapAtRef = useRef(0);
+  const setDebugVisible = useAppStore((s) => s.setDebugVisible);
+  const version = Constants.expoConfig?.version ?? '-';
+
+  const handlePress = () => {
+    if (!isDebugModalEnabled()) return;
+    const now = Date.now();
+    // 탭 간격 RESET_MS 초과 시 새 시퀀스 — 우발 누적 트리거 방지(Android 컨벤션).
+    tapCountRef.current =
+      now - lastTapAtRef.current > DEBUG_MODAL_TRIGGER_RESET_MS
+        ? 1
+        : tapCountRef.current + 1;
+    lastTapAtRef.current = now;
+    if (tapCountRef.current >= DEBUG_MODAL_TRIGGER_TAP_COUNT) {
+      tapCountRef.current = 0;
+      setDebugVisible(true);
+    }
+  };
+
+  return (
+    <Pressable
+      onPress={handlePress}
+      style={styles.versionFooter}
+      testID="settings-version-footer"
+    >
+      <Text style={[styles.versionText, { color: colors.muted }]}>v{version}</Text>
+    </Pressable>
   );
 }
 
@@ -342,5 +382,14 @@ const styles = StyleSheet.create({
   localeChevron: {
     fontSize: 20,
     marginLeft: spacing.sm,
+  },
+  versionFooter: {
+    alignItems: 'center',
+    paddingVertical: spacing.lg,
+    marginTop: spacing.md,
+  },
+  versionText: {
+    fontSize: 12,
+    letterSpacing: 0.5,
   },
 });
