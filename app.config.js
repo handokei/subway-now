@@ -74,6 +74,7 @@ module.exports = {
       'expo-localization',
       'expo-background-task',
       './modules/live-activity/app.plugin.js',
+      './plugins/with-fmt-consteval-patch.js',
       '@bacons/apple-targets',
     ],
     extra: {
