@@ -10,6 +10,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/useAppStore';
 import { isDebugModalEnabled } from '../constants/debugFlags';
 import { useFusedNearestStation } from '../hooks/useFusedNearestStation';
@@ -280,7 +281,12 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
 
   return (
     <Modal visible animationType="slide" onRequestClose={onClose} testID="debug-modal">
-      <View style={[styles.container, { backgroundColor: colors.bg }]}>
+      {/* #458: Modal은 safe area를 자동 처리하지 않아 헤더가 노치 아래로 침범 → Close 터치 불가.
+          SafeAreaView로 top/left/right edge만 보호. bottom은 ScrollView contentContainer가 처리. */}
+      <SafeAreaView
+        edges={['top', 'left', 'right']}
+        style={[styles.container, { backgroundColor: colors.bg }]}
+      >
         <View style={[styles.header, { borderBottomColor: colors.hair }]}>
           <Text style={[typography.bodySm, { color: colors.ink, fontWeight: '700' }]}>
             Subway debug
@@ -444,7 +450,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
             </TouchableOpacity>
           </View>
         </ScrollView>
-      </View>
+      </SafeAreaView>
     </Modal>
   );
 }
