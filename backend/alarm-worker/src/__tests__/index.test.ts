@@ -78,6 +78,16 @@ describe('validateTrip', () => {
     expect(trip?.lastFiredPhase).toBeUndefined();
   });
 
+  it('preserves valid apnsEnv', () => {
+    expect(validateTrip({ ...base(), apnsEnv: 'sandbox' })?.apnsEnv).toBe('sandbox');
+    expect(validateTrip({ ...base(), apnsEnv: 'production' })?.apnsEnv).toBe('production');
+  });
+
+  it('drops invalid apnsEnv', () => {
+    expect(validateTrip({ ...base(), apnsEnv: 'bogus' })?.apnsEnv).toBeUndefined();
+    expect(validateTrip(base())?.apnsEnv).toBeUndefined();
+  });
+
   it('rejects missing alarmAtEpochMs', () => {
     const b = base();
     delete b.alarmAtEpochMs;

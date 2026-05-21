@@ -1,7 +1,7 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { pickActiveWaypoint, pickBestEtaSeconds, runScheduled } from '../scheduled';
+import { pickActiveWaypoint, pickApnsHost, pickBestEtaSeconds, runScheduled } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
 import { putTrip } from '../trips';
 import type { Env, Trip } from '../types';
@@ -34,7 +34,6 @@ beforeAll(async () => {
   const { privateKey } = await generateKeyPair('ES256');
   const pem = await exportPKCS8(privateKey);
   apnsConfig = {
-    host: 'api.push.apple.com',
     keyId: 'K',
     teamId: 'T',
     privateKeyPem: pem,
@@ -46,10 +45,16 @@ beforeEach(() => resetApnsJwtCache());
 
 const NOW = 1_700_000_000_000;
 
+const APNS_HOSTS = {
+  production: 'api.push.apple.com',
+  sandbox: 'api.sandbox.push.apple.com',
+} as const;
+
 function makeEnv(kv: InMemoryKV): Env {
   return {
     TRIPS: kv as unknown as KVNamespace,
-    APNS_HOST: 'api.push.apple.com',
+    APNS_HOST: APNS_HOSTS.production,
+    APNS_HOST_SANDBOX: APNS_HOSTS.sandbox,
     SEOUL_API_HOST: 'seoul.api',
     SEOUL_API_KEY: 'KEY',
     APNS_KEY_ID: 'K',
@@ -91,6 +96,7 @@ async function runWithImminent(
   const stats = await runScheduled(makeEnv(kv), {
     seoul,
     apnsConfig,
+    apnsHosts: APNS_HOSTS,
     fetchImpl: apnsFetch as unknown as typeof fetch,
     now: () => NOW,
   });
@@ -158,6 +164,18 @@ describe('pickBestEtaSeconds', () => {
   });
 });
 
+describe('pickApnsHost', () => {
+  it('returns sandbox host when apnsEnv is sandbox', () => {
+    expect(pickApnsHost('sandbox', APNS_HOSTS)).toBe(APNS_HOSTS.sandbox);
+  });
+  it('returns production host when apnsEnv is production', () => {
+    expect(pickApnsHost('production', APNS_HOSTS)).toBe(APNS_HOSTS.production);
+  });
+  it('returns production host when apnsEnv is undefined (backward compat)', () => {
+    expect(pickApnsHost(undefined, APNS_HOSTS)).toBe(APNS_HOSTS.production);
+  });
+});
+
 describe('runScheduled', () => {
   it('skips trips outside polling window', async () => {
     const kv = new InMemoryKV();
@@ -167,6 +185,7 @@ describe('runScheduled', () => {
     const stats = await runScheduled(makeEnv(kv), {
       seoul,
       apnsConfig,
+      apnsHosts: APNS_HOSTS,
       fetchImpl: fetchSpy as unknown as typeof fetch,
       now: () => NOW,
     });
@@ -184,6 +203,7 @@ describe('runScheduled', () => {
     const stats = await runScheduled(makeEnv(kv), {
       seoul: makeSeoul([]),
       apnsConfig,
+      apnsHosts: APNS_HOSTS,
       now: () => NOW + 10_000,
     });
     expect(stats.polled).toBe(0);
@@ -241,6 +261,7 @@ describe('runScheduled', () => {
     const stats = await runScheduled(makeEnv(kv), {
       seoul,
       apnsConfig,
+      apnsHosts: APNS_HOSTS,
       now: () => NOW,
     });
     expect(stats.etaMissing).toBe(1);
@@ -260,6 +281,7 @@ describe('runScheduled', () => {
     const stats1 = await runScheduled(makeEnv(kv), {
       seoul: seoul1,
       apnsConfig,
+      apnsHosts: APNS_HOSTS,
       fetchImpl: fetchEarly as unknown as typeof fetch,
       now: () => NOW,
     });
@@ -274,6 +296,7 @@ describe('runScheduled', () => {
     const stats2 = await runScheduled(makeEnv(kv), {
       seoul: seoul2,
       apnsConfig,
+      apnsHosts: APNS_HOSTS,
       fetchImpl: fetchImminent as unknown as typeof fetch,
       now: () => NOW + 30_000,
     });
@@ -294,6 +317,7 @@ describe('runScheduled', () => {
     const stats = await runScheduled(makeEnv(kv), {
       seoul,
       apnsConfig,
+      apnsHosts: APNS_HOSTS,
       fetchImpl: apnsFetch as unknown as typeof fetch,
       now: () => NOW,
     });
@@ -313,6 +337,7 @@ describe('runScheduled', () => {
     const stats = await runScheduled(makeEnv(kv), {
       seoul,
       apnsConfig,
+      apnsHosts: APNS_HOSTS,
       fetchImpl: apnsFetch as unknown as typeof fetch,
       now: () => NOW,
     });
@@ -339,6 +364,7 @@ describe('runScheduled', () => {
     const stats = await runScheduled(makeEnv(kv), {
       seoul,
       apnsConfig,
+      apnsHosts: APNS_HOSTS,
       fetchImpl: apnsFetch as unknown as typeof fetch,
       now: () => NOW,
     });
@@ -367,6 +393,7 @@ describe('runScheduled', () => {
     const stats = await runScheduled(makeEnv(kv), {
       seoul,
       apnsConfig,
+      apnsHosts: APNS_HOSTS,
       fetchImpl: apnsFetch as unknown as typeof fetch,
       now: () => NOW,
     });
@@ -399,6 +426,7 @@ describe('runScheduled', () => {
     const stats = await runScheduled(makeEnv(kv), {
       seoul: failingSeoul,
       apnsConfig,
+      apnsHosts: APNS_HOSTS,
       now: () => NOW,
     });
     expect(stats.errors).toBe(1);
