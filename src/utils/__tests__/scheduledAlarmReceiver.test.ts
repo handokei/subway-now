@@ -1,9 +1,14 @@
 import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState } from 'react-native';
 
 jest.mock('expo-notifications', () => ({
   addNotificationReceivedListener: jest.fn(),
   getPresentedNotificationsAsync: jest.fn(),
+}));
+
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(),
 }));
 
 jest.mock('../notificationState', () => ({
@@ -38,6 +43,9 @@ const mockSetFiredAlarms = setFiredAlarms as jest.Mock;
 const mockSetLastFiredAlarmStationName = setLastFiredAlarmStationName as jest.Mock;
 const mockAddListener = Notifications.addNotificationReceivedListener as jest.Mock;
 const mockGetPresented = Notifications.getPresentedNotificationsAsync as jest.Mock;
+const mockAsyncGetItem = AsyncStorage.getItem as jest.Mock;
+
+const DEST_JSON = JSON.stringify({ id: 'dest-1', name: '강남' });
 
 function flushAsync(): Promise<void> {
   return new Promise((r) => setImmediate(r));
@@ -52,6 +60,7 @@ beforeEach(async () => {
   mockSetFiredAlarms.mockResolvedValue(undefined);
   mockSetLastFiredAlarmStationName.mockResolvedValue(undefined);
   mockGetPresented.mockResolvedValue([]);
+  mockAsyncGetItem.mockResolvedValue(DEST_JSON);
   // 기본 AppState 스파이 — 각 테스트는 mockImplementationOnce로 추가 override 가능.
   appStateSpy = jest
     .spyOn(AppState, 'addEventListener')
@@ -72,6 +81,7 @@ beforeEach(async () => {
   mockSetFiredAlarms.mockResolvedValue(undefined);
   mockSetLastFiredAlarmStationName.mockResolvedValue(undefined);
   mockGetPresented.mockResolvedValue([]);
+  mockAsyncGetItem.mockResolvedValue(DEST_JSON);
   // 모든 케이스 공통: addNotificationReceivedListener 기본 핸들. 콜백 캡쳐가 필요한 케이스는 mockImplementationOnce로 override.
   mockAddListener.mockReturnValue({ remove: jest.fn() });
 });
@@ -97,7 +107,36 @@ describe('reconcileScheduledAlarmDelivery', () => {
 
     await reconcileScheduledAlarmDelivery('alarm:early:강남');
 
-    expect(mockSetFiredAlarms).toHaveBeenCalledWith(new Set(['early:시청', 'early:강남']));
+    expect(mockGetFiredAlarms).toHaveBeenCalledWith('dest-1');
+    expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:시청', 'early:강남']));
+    expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
+  });
+
+  it('destination 미설정(trip 종료)이면 firedAlarms는 갱신하지 않고 lastStationName만 갱신한다 (#462)', async () => {
+    mockAsyncGetItem.mockResolvedValueOnce(null);
+
+    await reconcileScheduledAlarmDelivery('alarm:early:강남');
+
+    expect(mockGetFiredAlarms).not.toHaveBeenCalled();
+    expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+    expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
+  });
+
+  it('destination JSON 파싱 실패도 firedAlarms 갱신 스킵 처리한다', async () => {
+    mockAsyncGetItem.mockResolvedValueOnce('not-json');
+
+    await reconcileScheduledAlarmDelivery('alarm:early:강남');
+
+    expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+    expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
+  });
+
+  it('destination JSON에 id 필드가 없으면 firedAlarms 갱신 스킵', async () => {
+    mockAsyncGetItem.mockResolvedValueOnce(JSON.stringify({ name: '강남' }));
+
+    await reconcileScheduledAlarmDelivery('alarm:early:강남');
+
+    expect(mockSetFiredAlarms).not.toHaveBeenCalled();
     expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
   });
 });
@@ -123,9 +162,9 @@ describe('registerScheduledAlarmListener', () => {
     await awaitInitialScheduledAlarmDrain();
     await flushAsync();
 
-    expect(mockGetFiredAlarms).toHaveBeenCalledTimes(1);
+    expect(mockGetFiredAlarms).toHaveBeenCalledWith('dest-1');
     expect(mockSetFiredAlarms).toHaveBeenCalledTimes(1);
-    expect(mockSetFiredAlarms).toHaveBeenCalledWith(new Set(['early:강남', 'imminent:강남']));
+    expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:강남', 'imminent:강남']));
     expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledTimes(1);
     expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
 
@@ -167,7 +206,25 @@ describe('registerScheduledAlarmListener', () => {
     const handle = registerScheduledAlarmListener();
     await flushAsync();
 
-    expect(mockSetFiredAlarms).toHaveBeenCalledWith(new Set(['imminent:시청']));
+    expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['imminent:시청']));
+    expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('시청');
+
+    handle.remove();
+  });
+
+  it('destinationId 미설정이면 drain은 fired set 갱신을 스킵하고 lastStationName만 갱신한다 (#462)', async () => {
+    mockAsyncGetItem.mockResolvedValue(null);
+    mockGetPresented.mockResolvedValueOnce([
+      { request: { identifier: 'current-station' } },
+      { request: { identifier: 'alarm:early:강남' } },
+      { request: { identifier: 'alarm:imminent:시청' } },
+    ]);
+
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+
+    expect(mockGetFiredAlarms).not.toHaveBeenCalled();
+    expect(mockSetFiredAlarms).not.toHaveBeenCalled();
     expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('시청');
 
     handle.remove();

@@ -54,20 +54,42 @@ export function clearLastNotifiedStationId(): Promise<void> {
 // firedAlarms: 알람 phase 중복 발화 dedup 단일 출처.
 // Foreground 훅(useStationAlarm)과 Background task(backgroundLocationTask)가
 // 같은 키를 공유해, BG fired 알람이 FG 복귀 후 재발화되지 않도록 한다.
-export async function getFiredAlarms(): Promise<Set<string>> {
+//
+// #462: destinationId로 entry를 격리해 cross-trip leak을 차단한다. 저장 포맷은
+// `{ destinationId, alarms }` 객체. read 시점 destinationId가 저장된 것과 다르면
+// stale로 간주하고 빈 set을 반환한다. destinationId가 null이면 항상 빈 set.
+interface FiredAlarmsRecord {
+  destinationId: string;
+  alarms: string[];
+}
+
+function isFiredAlarmsRecord(value: unknown): value is FiredAlarmsRecord {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    typeof (value as FiredAlarmsRecord).destinationId === 'string' &&
+    Array.isArray((value as FiredAlarmsRecord).alarms)
+  );
+}
+
+export async function getFiredAlarms(destinationId: string | null): Promise<Set<string>> {
+  if (!destinationId) return new Set();
   const raw = await safeGetItem(FIRED_ALARMS_KEY);
   if (!raw) return new Set();
   try {
-    const parsed = JSON.parse(raw);
-    return new Set(Array.isArray(parsed) ? parsed : []);
+    const parsed: unknown = JSON.parse(raw);
+    if (!isFiredAlarmsRecord(parsed)) return new Set();
+    if (parsed.destinationId !== destinationId) return new Set();
+    return new Set(parsed.alarms);
   } catch (e) {
     logger.error(`${FIRED_ALARMS_KEY} 파싱 실패:`, e);
     return new Set();
   }
 }
 
-export function setFiredAlarms(keys: Set<string>): Promise<void> {
-  return safeSetItem(FIRED_ALARMS_KEY, JSON.stringify([...keys]));
+export function setFiredAlarms(destinationId: string, keys: Set<string>): Promise<void> {
+  const record: FiredAlarmsRecord = { destinationId, alarms: [...keys] };
+  return safeSetItem(FIRED_ALARMS_KEY, JSON.stringify(record));
 }
 
 export function clearFiredAlarms(): Promise<void> {

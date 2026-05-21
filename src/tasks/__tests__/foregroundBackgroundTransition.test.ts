@@ -125,10 +125,29 @@ interface BgRunOptions {
   accuracy?: number | null;
 }
 
+// firedAlarms 저장 포맷(#462): { destinationId, alarms } — destination scoped.
+// 다른 destinationId가 저장돼 있으면 빈 set으로 간주하는 헬퍼 — 실제 production read 동작과 일치.
+function readFiredForDestination(destinationId: string): Set<string> {
+  const raw = mockStorage.get(FIRED_ALARMS_KEY);
+  if (!raw) return new Set();
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.destinationId === destinationId && Array.isArray(parsed.alarms)) {
+      return new Set(parsed.alarms);
+    }
+  } catch {
+    // ignore
+  }
+  return new Set();
+}
+
+function writeFiredForDestination(destinationId: string, alarms: Set<string>): void {
+  mockStorage.set(FIRED_ALARMS_KEY, JSON.stringify({ destinationId, alarms: [...alarms] }));
+}
+
 async function runFgPipelineAt(station: typeof fakeStation) {
   mockFindNearestStation.mockReturnValueOnce({ station, distanceKm: NEAR_STATION_KM });
-  const firedJson = mockStorage.get(FIRED_ALARMS_KEY);
-  const firedAlarms = new Set<string>(firedJson ? JSON.parse(firedJson) : []);
+  const firedAlarms = readFiredForDestination(fakeDestination.id);
   const result = await processLocationUpdate({
     lat: station.lat,
     lng: station.lng,
@@ -141,7 +160,7 @@ async function runFgPipelineAt(station: typeof fakeStation) {
   // 이 round-trip이 BG와의 dedup 단일 출처가 된다.
   if (result.alarmEvent) {
     firedAlarms.add(alarmKey(result.alarmEvent));
-    mockStorage.set(FIRED_ALARMS_KEY, JSON.stringify([...firedAlarms]));
+    writeFiredForDestination(fakeDestination.id, firedAlarms);
   }
   return result;
 }
