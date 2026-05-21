@@ -12,8 +12,8 @@ const logger = createLogger('useAlarmRefreshTask');
  * 활성 트립(destination set)에 한해 BGAppRefreshTask 등록.
  * 트립 종료 / 언마운트 시 해제.
  *
- * Phase 1 fallback: silent push(Phase 2)를 받지 못하는 사용자도 OS가 앱을 깨워주는
- * 시점에 사전 예약 알람이 갱신된다.
+ * #505: 핸들러는 no-op(즉시 self-unregister). 등록은 호환을 위해 유지하나
+ * OS가 깨워도 알람 발사 없음. 훅 자체는 #411에서 일괄 제거 예정 (호출처 없음).
  */
 export function useAlarmRefreshTask(destination: Station | null): void {
   useEffect(() => {
