@@ -110,6 +110,7 @@ export default function MapScreen() {
         nearestStation={result?.station ?? null}
         nearbyStations={allStations}
         customOriginId={customOrigin?.id}
+        destinationId={destination?.id}
         onStationPress={(station) => setSelectedStation(station)}
         focusStation={focusStation}
         focusNonce={focusNonce}

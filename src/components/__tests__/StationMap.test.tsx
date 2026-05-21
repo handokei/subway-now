@@ -452,14 +452,14 @@ describe('StationMap', () => {
       expect(queryByTestId(`route-marker-origin-${mockStation.id}`)).toBeNull();
     });
 
-    it('routeCoords 전달 시 polyline + 출발/환승/도착 마커 렌더', () => {
-      const { getByTestId } = render(
+    it('routeCoords 전달 시 polyline + 환승 마커만 오버레이 (출발/도착은 베이스 마커 재사용)', () => {
+      const { getByTestId, queryByTestId } = render(
         <StationMap {...baseProps} routeCoords={routeCoords} />,
       );
       expect(getByTestId('route-polyline')).toBeTruthy();
-      expect(getByTestId(`route-marker-origin-${mockStation.id}`)).toBeTruthy();
       expect(getByTestId(`route-marker-transfer-${transferStation.id}`)).toBeTruthy();
-      expect(getByTestId(`route-marker-destination-${destStation.id}`)).toBeTruthy();
+      expect(queryByTestId(`route-marker-origin-${mockStation.id}`)).toBeNull();
+      expect(queryByTestId(`route-marker-destination-${destStation.id}`)).toBeNull();
     });
 
     it('routeCoords 전달 시 fitToCoordinates 호출', async () => {
@@ -480,7 +480,7 @@ describe('StationMap', () => {
       expect(__fitToCoordinatesMock).not.toHaveBeenCalled();
     });
 
-    it('환승 마커는 노선 색, 출발/도착 마커는 accent 색을 사용', () => {
+    it('환승 마커는 노선 색을 사용', () => {
       const { getByTestId } = render(
         <StationMap {...baseProps} routeCoords={routeCoords} />,
       );
@@ -490,9 +490,21 @@ describe('StationMap', () => {
           expect.objectContaining({ backgroundColor: transferStation.lineColor }),
         ]),
       );
-      const originDot = getByTestId(`route-marker-dot-origin-${mockStation.id}`);
-      expect(originDot.props.style).toEqual(
-        expect.arrayContaining([expect.objectContaining({ backgroundColor: '#C8553D' })]),
+    });
+
+    it('destinationId 전달 시 베이스 마커의 도착역 배지가 accent 색으로 강조', () => {
+      const { getByTestId } = render(
+        <StationMap
+          {...baseProps}
+          nearbyStations={[mockStation, destStation]}
+          destinationId={destStation.id}
+        />,
+      );
+      const destBadge = getByTestId(`badge-${destStation.id}`);
+      expect(destBadge.props.style).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ backgroundColor: '#C8553D' }),
+        ]),
       );
     });
   });
