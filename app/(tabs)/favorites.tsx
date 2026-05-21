@@ -18,6 +18,8 @@ import { formatArrivalTime } from '../../src/utils/formatTime';
 import { getStationDisplayName, matchesStationQuery } from '../../src/utils/stationDisplay';
 import { useTheme, type ThemeColors } from '../../src/theme';
 import stationsData from '../../src/data/stations.json';
+import { ArrivalSourceNotice } from '../../src/components/ArrivalSourceNotice';
+import type { StationArrival } from '../../src/api/arrivalApi';
 
 const allStations = stationsData as Station[];
 
@@ -39,7 +41,10 @@ export default function FavoritesScreen() {
     () => favorites.find((f) => f.id === selectedId) ?? null,
     [favorites, selectedId],
   );
-  const { arrival: rawArrival } = useArrivalInfo(selectedStation?.name ?? null);
+  const { arrival: rawArrival } = useArrivalInfo(
+    selectedStation?.name ?? null,
+    selectedStation?.line ?? null,
+  );
   const arrival = useArrivalCountdown(rawArrival);
 
   const searchResults = useMemo(() => {
@@ -155,12 +160,15 @@ function FavoriteCard({
 }: {
   station: Station;
   isExpanded: boolean;
-  arrival: { up: { destination: string; arrivalSeconds: number; statusMessage: string }[]; down: { destination: string; arrivalSeconds: number; statusMessage: string }[] } | null;
+  arrival: StationArrival | null;
   onToggle: () => void;
   onRemove: () => void;
   colors: ThemeColors;
 }) {
   const { t } = useTranslation();
+  const showRows = arrival != null && arrival.source !== 'closed';
+  const emptyArrival =
+    showRows && arrival.up.length === 0 && arrival.down.length === 0;
   return (
     <View style={[styles.card, { backgroundColor: colors.card, borderLeftColor: station.lineColor }]}>
       {/* Remove 버튼을 onToggle TouchableOpacity 밖 sibling으로 배치.
@@ -182,20 +190,18 @@ function FavoriteCard({
 
       {isExpanded && (
         <View style={[styles.arrivalSection, { borderTopColor: colors.hair }]}>
-          {arrival ? (
-            <>
-              {arrival.up.length > 0 && (
-                <ArrivalRow label={t('arrival.upbound')} items={arrival.up} colors={colors} />
-              )}
-              {arrival.down.length > 0 && (
-                <ArrivalRow label={t('arrival.downbound')} items={arrival.down} colors={colors} />
-              )}
-              {arrival.up.length === 0 && arrival.down.length === 0 && (
-                <Text style={[styles.noArrival, { color: colors.muted }]}>{t('home.noArrivalInfo')}</Text>
-              )}
-            </>
-          ) : (
+          {arrival == null && (
             <Text style={[styles.noArrival, { color: colors.muted }]}>{t('home.loading')}</Text>
+          )}
+          <ArrivalSourceNotice arrival={arrival} />
+          {showRows && arrival.up.length > 0 && (
+            <ArrivalRow label={t('arrival.upbound')} items={arrival.up} colors={colors} />
+          )}
+          {showRows && arrival.down.length > 0 && (
+            <ArrivalRow label={t('arrival.downbound')} items={arrival.down} colors={colors} />
+          )}
+          {emptyArrival && (
+            <Text style={[styles.noArrival, { color: colors.muted }]}>{t('home.noArrivalInfo')}</Text>
           )}
         </View>
       )}
