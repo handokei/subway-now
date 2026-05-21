@@ -24,6 +24,7 @@ import type { Route } from '../utils/stationRoute';
 import { scheduleAlarmsForRoute, cancelScheduledAlarms } from '../utils/alarmScheduler';
 import { DESTINATION_KEY, ROUTE_KEY } from '../constants/storageKeys';
 import { createLogger } from '../utils/logger';
+import { logSilentPushReceived } from '../utils/alarmLog';
 
 const logger = createLogger('SilentPushTask');
 
@@ -35,6 +36,12 @@ export interface SilentPushPayload {
   phase: 'early' | 'imminent';
   /** Waypoint 종류 (#416). intermediate면 통과 즉시 알림, 그 외는 reschedule만. 구 백엔드 호환을 위해 optional. */
   kind?: 'transfer' | 'destination' | 'intermediate';
+  /**
+   * 백엔드 발사 시점 epoch ms (#478 측정 인프라).
+   * 클라 수신 시각과 비교해 silent push 도달 지연 측정. 구 백엔드 호환 위해 optional.
+   * 종료 조건: #478 PR 1-2(silent push 단독 발화) 머지 + 신 백엔드 배포 후 required로 승격.
+   */
+  sentAt?: number;
 }
 
 interface NotificationBackgroundTaskData {
@@ -60,13 +67,15 @@ export function extractPayload(
   const raw = notif.data ?? notif.request?.content?.data;
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
-  const { nextWaypoint, etaSeconds, phase, kind } = obj;
+  const { nextWaypoint, etaSeconds, phase, kind, sentAt } = obj;
   if (typeof nextWaypoint !== 'string' || nextWaypoint.length === 0) return null;
   if (typeof etaSeconds !== 'number' || !Number.isFinite(etaSeconds)) return null;
   if (phase !== 'early' && phase !== 'imminent') return null;
   const validKind =
     kind === 'transfer' || kind === 'destination' || kind === 'intermediate' ? kind : undefined;
-  return { nextWaypoint, etaSeconds, phase, kind: validKind };
+  const validSentAt =
+    typeof sentAt === 'number' && Number.isFinite(sentAt) ? sentAt : undefined;
+  return { nextWaypoint, etaSeconds, phase, kind: validKind, sentAt: validSentAt };
 }
 
 /**
@@ -83,9 +92,19 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     logger.info('payload missing or invalid — skip');
     return;
   }
+  const receivedAt = Date.now();
   logger.info(
-    `received: kind=${payload.kind ?? 'unknown'} phase=${payload.phase} station=${payload.nextWaypoint} eta=${payload.etaSeconds}`,
+    `received: kind=${payload.kind ?? 'unknown'} phase=${payload.phase} station=${payload.nextWaypoint} eta=${payload.etaSeconds} sentAt=${payload.sentAt ?? 'unknown'}`,
   );
+
+  // #478 측정 인프라 — 도달 지연 측정용 적재. 동작 변경 없음.
+  logSilentPushReceived({
+    stationName: payload.nextWaypoint,
+    kind: payload.kind,
+    phaseId: payload.phase,
+    sentAt: payload.sentAt,
+    receivedAt,
+  });
 
   try {
     const [destJson, routeJson] = await Promise.all([

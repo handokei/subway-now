@@ -8,6 +8,7 @@ import {
   logScheduledAlarm,
   logSuppressedDedupStation,
   logSuppressedGate,
+  logSilentPushReceived,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -286,6 +287,63 @@ describe('alarmLog', () => {
         reason: 'gate-accuracy',
         location,
       });
+    });
+
+    it('logSilentPushReceived: source=silent-push-received, outcome=received, sentAt/receivedAt 적재 (#478)', async () => {
+      logSilentPushReceived({
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'early',
+        sentAt: 1_700_000_000_000,
+        receivedAt: 1_700_000_001_500,
+      });
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        ts: 1_700_000_001_500,
+        source: 'silent-push-received',
+        outcome: 'received',
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'early',
+        sentAt: 1_700_000_000_000,
+        receivedAt: 1_700_000_001_500,
+      });
+    });
+
+    it('logSilentPushReceived: intermediate → station-passed로 매핑 (#478/#416)', async () => {
+      logSilentPushReceived({
+        stationName: '중곡',
+        kind: 'intermediate',
+        phaseId: 'imminent',
+        sentAt: 1_700_000_000_000,
+        receivedAt: 1_700_000_001_000,
+      });
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0].kind).toBe('station-passed');
+    });
+
+    it('logSilentPushReceived: kind/sentAt 미상이면 kind 미포함 + sentAt undefined (#478 구 백엔드 호환)', async () => {
+      logSilentPushReceived({
+        stationName: '강남',
+        kind: undefined,
+        phaseId: 'early',
+        sentAt: undefined,
+        receivedAt: 1_700_000_001_000,
+      });
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0].source).toBe('silent-push-received');
+      expect(saved[0].kind).toBeUndefined();
+      expect(saved[0].sentAt).toBeUndefined();
+      expect(saved[0].receivedAt).toBe(1_700_000_001_000);
     });
 
     it('helper는 fire-and-forget: void 반환 + AsyncStorage 실패 시 throw 안 함', async () => {

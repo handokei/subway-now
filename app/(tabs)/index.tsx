@@ -127,14 +127,14 @@ export default function HomeScreen() {
     [route, effectiveOrigin?.id, destination?.id],
   );
   const nextTrainMinutes = useMemo(() => {
-    if (!arrival) return null;
+    if (!arrival || arrivalIsMock) return null;
     const directions = [arrival.up, arrival.down];
     const minutes = directions.map((trains) => {
       const first = trains[0];
       return first?.arrivalSeconds != null ? Math.floor(first.arrivalSeconds / 60) : Infinity;
     });
     return Math.min(...minutes);
-  }, [arrival]);
+  }, [arrival, arrivalIsMock]);
   const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
     ? calculateETA(nextTrainMinutes, route)
     : null;

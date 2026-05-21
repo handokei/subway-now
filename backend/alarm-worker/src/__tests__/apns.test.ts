@@ -62,7 +62,13 @@ describe('sendSilentPush', () => {
     );
     const result = await sendSilentPush({
       deviceToken: 'devicetoken-hex',
-      payload: { nextWaypoint: '강남', etaSeconds: 60, phase: 'early', kind: 'destination' },
+      payload: {
+        nextWaypoint: '강남',
+        etaSeconds: 60,
+        phase: 'early',
+        kind: 'destination',
+        sentAt: 1_700_000_000_000,
+      },
       config: makeConfig(),
       host: TEST_HOST,
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -81,6 +87,7 @@ describe('sendSilentPush', () => {
     expect(body.data.etaSeconds).toBe(60);
     expect(body.data.phase).toBe('early');
     expect(body.data.kind).toBe('destination');
+    expect(body.data.sentAt).toBe(1_700_000_000_000);
   });
 
   it('returns failure with reason', async () => {
@@ -89,7 +96,13 @@ describe('sendSilentPush', () => {
     );
     const result = await sendSilentPush({
       deviceToken: 'tok',
-      payload: { nextWaypoint: 'X', etaSeconds: 10, phase: 'imminent', kind: 'destination' },
+      payload: {
+        nextWaypoint: 'X',
+        etaSeconds: 10,
+        phase: 'imminent',
+        kind: 'destination',
+        sentAt: 1_700_000_000_000,
+      },
       config: makeConfig(),
       host: TEST_HOST,
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -103,7 +116,13 @@ describe('sendSilentPush', () => {
     const fetchImpl = vi.fn(async () => new Response('plain text', { status: 500 }));
     const result = await sendSilentPush({
       deviceToken: 'tok',
-      payload: { nextWaypoint: 'X', etaSeconds: 10, phase: 'imminent', kind: 'destination' },
+      payload: {
+        nextWaypoint: 'X',
+        etaSeconds: 10,
+        phase: 'imminent',
+        kind: 'destination',
+        sentAt: 1_700_000_000_000,
+      },
       config: makeConfig(),
       host: TEST_HOST,
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -118,7 +137,7 @@ describe('sendSilentPush', () => {
     );
     await sendSilentPush({
       deviceToken: 'tok',
-      payload: { nextWaypoint: 'X', etaSeconds: 10, phase: 'early', kind: 'destination' },
+      payload: { nextWaypoint: 'X', etaSeconds: 10, phase: 'early', kind: 'destination', sentAt: 0 },
       config: makeConfig(),
       host: 'api.sandbox.push.apple.com',
       fetchImpl: fetchImpl as unknown as typeof fetch,

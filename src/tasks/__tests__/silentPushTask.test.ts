@@ -25,6 +25,11 @@ jest.mock('../../utils/alarmScheduler', () => ({
   cancelScheduledAlarms: (...args: unknown[]) => mockCancel(...args),
 }));
 
+const mockLogSilentPushReceived = jest.fn();
+jest.mock('../../utils/alarmLog', () => ({
+  logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
+}));
+
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -173,6 +178,51 @@ describe('silentPushTask', () => {
         }),
       ).toEqual({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind: undefined });
     });
+
+    it('sentAt이 number면 그대로 전달 (#478)', () => {
+      expect(
+        extractPayload({
+          notification: {
+            data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', sentAt: 1_700_000_000_000 },
+          },
+        }),
+      ).toEqual({
+        nextWaypoint: 'A',
+        etaSeconds: 1,
+        phase: 'early',
+        kind: undefined,
+        sentAt: 1_700_000_000_000,
+      });
+    });
+
+    it('sentAt이 비숫자/Infinity이면 undefined (구 백엔드 호환)', () => {
+      expect(
+        extractPayload({
+          notification: {
+            data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', sentAt: 'now' },
+          },
+        }),
+      ).toEqual({
+        nextWaypoint: 'A',
+        etaSeconds: 1,
+        phase: 'early',
+        kind: undefined,
+        sentAt: undefined,
+      });
+      expect(
+        extractPayload({
+          notification: {
+            data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', sentAt: Infinity },
+          },
+        }),
+      ).toEqual({
+        nextWaypoint: 'A',
+        etaSeconds: 1,
+        phase: 'early',
+        kind: undefined,
+        sentAt: undefined,
+      });
+    });
   });
 
   describe('handleSilentPush', () => {
@@ -259,6 +309,32 @@ describe('silentPushTask', () => {
       await handleSilentPush(reschedulePayload({ kind: 'destination', phase: 'imminent' }));
       expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
       expect(mockSchedule).toHaveBeenCalled();
+    });
+
+    it('수신 시 logSilentPushReceived 호출 — sentAt 포함 (#478)', async () => {
+      await handleSilentPush(
+        reschedulePayload({
+          kind: 'transfer',
+          phase: 'early',
+          nextWaypoint: '건대입구',
+          sentAt: 1_700_000_000_000,
+        }),
+      );
+      expect(mockLogSilentPushReceived).toHaveBeenCalledTimes(1);
+      const arg = mockLogSilentPushReceived.mock.calls[0][0];
+      expect(arg.stationName).toBe('건대입구');
+      expect(arg.kind).toBe('transfer');
+      expect(arg.phaseId).toBe('early');
+      expect(arg.sentAt).toBe(1_700_000_000_000);
+      expect(typeof arg.receivedAt).toBe('number');
+    });
+
+    it('수신 시 logSilentPushReceived — 구 백엔드(sentAt 없음)도 호출, sentAt undefined', async () => {
+      await handleSilentPush(reschedulePayload({ kind: 'destination', phase: 'imminent' }));
+      expect(mockLogSilentPushReceived).toHaveBeenCalledTimes(1);
+      const arg = mockLogSilentPushReceived.mock.calls[0][0];
+      expect(arg.sentAt).toBeUndefined();
+      expect(typeof arg.receivedAt).toBe('number');
     });
   });
 
