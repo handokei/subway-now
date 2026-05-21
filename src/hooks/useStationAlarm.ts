@@ -2,11 +2,14 @@ import { useEffect, useRef, useState } from 'react';
 import { isStationOnRoute } from '../utils/stationRoute';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
-import { alarmKey, evaluateAlarmPhase } from '../utils/stationAlarm';
+import { alarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateEtaSeconds } from '../utils/stationEta';
 import { resolveNextTarget } from '../utils/stationPipeline';
 import { sendAlarmNotification, sendStationPassedNotification } from '../utils/stationNotification';
+import { isImminentByArrivalCode } from '../utils/imminentArrivalSignal';
+import { getStoredTripTrainCode } from '../utils/tripTrainCode';
+import { useArrivalInfo } from './useArrivalInfo';
 import {
   getLastNotifiedStationId,
   setLastNotifiedStationId,
@@ -56,6 +59,15 @@ export function useStationAlarm({
   // 빈 ref로 false re-fire가 발생하지 않도록 가드한다.
   const [firedHydrated, setFiredHydrated] = useState(false);
   const destinationId = destination?.id ?? null;
+  // #396: 목적지 역의 도착정보를 별도로 폴링. arrivalCode가 ENTERING/ARRIVED가 되는 순간
+  // imminent 신호로 사용. useArrivalInfo는 모듈 스코프 TtlCache를 공유해 추가 호출 비용이 적다.
+  const { arrival: destinationArrival } = useArrivalInfo(
+    destination?.name ?? null,
+    destination?.line ?? null,
+  );
+  // 트립에 lock된 사용자 열차 코드. AsyncStorage에서 비동기 로드. lock 실패 상태(null)면
+  // API 신호 평가는 보수적으로 false 반환 — 잘못된 train으로 imminent 오발사 방지.
+  const [trackedTrainCode, setTrackedTrainCode] = useState<string | null>(null);
   const sleepMode = useAppStore((s) => s.sleepMode);
   const allowSpeaker = useAppStore((s) => s.allowSpeaker);
   const setAlarmEvent = useAppStore((s) => s.setAlarmEvent);
@@ -69,6 +81,24 @@ export function useStationAlarm({
   useEffect(() => {
     allowSpeakerRef.current = allowSpeaker;
   }, [allowSpeaker]);
+
+  // #396: 트립 trainCode lock-in 상태를 destination 도착정보 갱신마다 재로드.
+  // lock-in은 첫 valid arrival 캡처 시점에 일어나므로, arrival이 들어올 때마다 확인하면
+  // lock 직후 곧바로 API 신호 평가에 반영된다. destinationId가 없으면 null.
+  useEffect(() => {
+    if (!destinationId) {
+      setTrackedTrainCode(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const code = await getStoredTripTrainCode(destinationId);
+      if (!cancelled) setTrackedTrainCode(code);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [destinationId, destinationArrival]);
 
   // destination별 firedAlarms 하이드레이션 (#462).
   // destination이 바뀌면 storage의 destinationId와 일치하지 않는 entry는 자동 빈 set 반환.
@@ -89,6 +119,35 @@ export function useStationAlarm({
       cancelled = true;
     };
   }, [destinationId]);
+
+  // 알람 발사 + 로깅 헬퍼. ETA effect와 API 신호 effect가 동일 시퀀스를 수행하므로 통합.
+  // route/destination은 호출자가 가드 후 non-null로 전달 — 함수 내부 가드 중복 제거.
+  function fireAndLog(
+    rawEvent: AlarmEvent,
+    trigger: 'api' | 'eta',
+    activeRoute: NonNullable<Route>,
+    activeDestination: Station,
+  ): void {
+    // 좌/우 안내 방향. nearestStation 미정이면 direction 미부착(본문에 좌/우 라인 생략).
+    const direction = nearestStation
+      ? resolveAlarmDirection(rawEvent, {
+          route: activeRoute,
+          destinationName: activeDestination.name,
+          sourceStationName: nearestStation.name,
+        })
+      : undefined;
+    const event = direction ? { ...rawEvent, direction } : rawEvent;
+    firedAlarmsRef.current.add(alarmKey(event));
+    // AsyncStorage에도 즉시 반영 — FG/BG 단일 출처 유지. destinationId scoped.
+    void setFiredAlarms(activeDestination.id, firedAlarmsRef.current);
+    if (sleepModeRef.current) {
+      setAlarmEvent(event);
+    }
+    sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current).catch((e) =>
+      logger.error('알람 알림 실패:', e),
+    );
+    logFiredAlarm('fg', event, trigger);
+  }
 
   // Phase 알람 효과: ETA 기반 phase 평가 + firedAlarms 갱신.
   // firedHydrated=false인 동안에는 보류 — BG가 이미 발화한 phase를 빈 ref로 재발화하는 것을 막는다.
@@ -120,28 +179,7 @@ export function useStationAlarm({
       { route, destinationName: destination.name, etaSeconds },
       firedAlarmsRef.current,
     );
-    if (rawEvent) {
-      // 좌/우 안내를 위한 진행방향. 출발 anchor가 없거나(nearestStation 미정) 결정 불가하면
-      // direction은 undefined로 남고, 본문에 좌/우 라인이 추가되지 않는다.
-      const direction = nearestStation
-        ? resolveAlarmDirection(rawEvent, {
-            route,
-            destinationName: destination.name,
-            sourceStationName: nearestStation.name,
-          })
-        : undefined;
-      const event = direction ? { ...rawEvent, direction } : rawEvent;
-      firedAlarmsRef.current.add(alarmKey(event));
-      // AsyncStorage에도 즉시 반영 — FG/BG 단일 출처 유지. destinationId scoped.
-      void setFiredAlarms(destination.id, firedAlarmsRef.current);
-      if (sleepModeRef.current) {
-        setAlarmEvent(event);
-      }
-      sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current).catch((e) =>
-        logger.error('알람 알림 실패:', e),
-      );
-      logFiredAlarm('fg', event);
-    }
+    if (rawEvent) fireAndLog(rawEvent, 'eta', route, destination);
   }, [
     route,
     destination?.id,
@@ -153,6 +191,31 @@ export function useStationAlarm({
     speedMps,
     accuracyMeters,
     firedHydrated,
+    setAlarmEvent,
+    nearestStation?.id,
+  ]);
+
+  // #396: 도착정보 API 신호로 imminent 발사.
+  // lock된 trainCode가 목적지 역에 진입/도착하면 즉시 발사 — speedMps/accuracy 무관.
+  // 기존 ETA 기반 effect와 firedAlarms를 공유하므로 한쪽이 먼저 발사하면 다른 쪽은 dedup된다.
+  // silent push(#478) 핸들러도 동일 isImminentByArrivalCode를 사용해 BG에서 같은 판정.
+  useEffect(() => {
+    if (!firedHydrated) return;
+    if (!route || !destination) return;
+    if (!isImminentByArrivalCode(destinationArrival, trackedTrainCode)) return;
+
+    const imminentKey = `imminent:${destination.name}`;
+    if (firedAlarmsRef.current.has(imminentKey)) return;
+
+    const rawEvent: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: destination.name };
+    fireAndLog(rawEvent, 'api', route, destination);
+  }, [
+    firedHydrated,
+    route,
+    destination?.id,
+    destination?.name,
+    destinationArrival,
+    trackedTrainCode,
     setAlarmEvent,
     nearestStation?.id,
   ]);
