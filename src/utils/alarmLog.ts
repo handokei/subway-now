@@ -14,8 +14,10 @@ export const ALARM_LOG_BUFFER_SIZE = 200;
 
 // 'fg' / 'bg'는 v1 (FG GPS 평가 / BG location task gate). 'fg-evaluated' / 'bg-scheduled'는
 // v2 (#372)로 의미 명확화. 두 값 모두 union에 유지해 과거 저장 데이터를 손실 없이 읽는다.
-export type AlarmLogSource = 'fg' | 'bg' | 'fg-evaluated' | 'bg-scheduled';
-export type AlarmLogOutcome = 'fired' | 'suppressed';
+// 'silent-push-received'는 #478 측정 인프라 — silent push 도달 시점 기록 (outcome은 항상
+// 'received', 동작 변경 없음).
+export type AlarmLogSource = 'fg' | 'bg' | 'fg-evaluated' | 'bg-scheduled' | 'silent-push-received';
+export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(evaluateAlarmPhase의 firedAlarms 적중 케이스)은 후속 이슈에서 추가.
 // 그때까지 union에 선언하지 않아 "구현됐다"는 거짓 시그널을 피한다.
 export type AlarmLogReason = 'dedup-station' | 'gate-age' | 'gate-accuracy';
@@ -65,6 +67,11 @@ export interface AlarmLogEntry {
   selectedArrivalSeconds?: number | null;
   expectedStationAtFire?: string | null;
   actualLastNotifiedStation?: string | null;
+  // #478 — silent push 측정 인프라. silent-push-received 엔트리에서만 사용.
+  // sentAt: 백엔드 발사 시점(payload), receivedAt: 클라 수신 시점.
+  // 두 시각 차로 도달 지연 분포 측정.
+  sentAt?: number;
+  receivedAt?: number;
 }
 
 const logger = createLogger('AlarmLog');
@@ -124,6 +131,35 @@ export function logSuppressedDedupStation(source: AlarmLogSource, station: Stati
     reason: 'dedup-station',
     stationName: station.name,
     kind: 'station-passed',
+  });
+}
+
+/**
+ * silent push 수신 1건 적재 (#478 측정 인프라).
+ * sentAt(백엔드 payload)와 receivedAt(클라 수신 시점) 차로 도달 지연 측정.
+ * sentAt이 없으면(구 백엔드) undefined로 기록 — 추후 백엔드 배포 전후 분리 분석 가능.
+ * 동작 변경 없음 — 데이터만 모은다.
+ */
+export function logSilentPushReceived(input: {
+  stationName: string;
+  kind: AlarmLogKind | 'intermediate' | undefined;
+  phaseId: AlarmPhaseId;
+  sentAt: number | undefined;
+  receivedAt: number;
+}): void {
+  // 'intermediate'는 station-passed에 매핑 (#416 silent push intermediate 흐름).
+  // kind 미상(구 백엔드)이면 kind 필드 자체를 비워둔다.
+  const mappedKind: AlarmLogKind | undefined =
+    input.kind === 'intermediate' ? 'station-passed' : input.kind;
+  void appendAlarmLog({
+    ts: input.receivedAt,
+    source: 'silent-push-received',
+    outcome: 'received',
+    stationName: input.stationName,
+    kind: mappedKind,
+    phaseId: input.phaseId,
+    sentAt: input.sentAt,
+    receivedAt: input.receivedAt,
   });
 }
 

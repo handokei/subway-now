@@ -32,6 +32,11 @@ export interface SilentPushPayload {
   phase: AlarmPhase;
   /** Waypoint 종류. 클라가 intermediate일 때만 즉시 알림 발사하도록 분기 (#416). */
   kind: 'transfer' | 'destination' | 'intermediate';
+  /**
+   * 백엔드 발사 시점 epoch ms (#478 측정 인프라).
+   * 클라 수신 시각과 비교해 silent push 도달 지연 분포 측정용.
+   */
+  sentAt: number;
 }
 
 export async function buildApnsJwt(config: ApnsConfig, now: number = Date.now()): Promise<string> {
@@ -80,6 +85,7 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
       etaSeconds: options.payload.etaSeconds,
       phase: options.payload.phase,
       kind: options.payload.kind,
+      sentAt: options.payload.sentAt,
     },
   });
 

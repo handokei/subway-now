@@ -111,6 +111,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
             etaSeconds: eta,
             phase: pushPhase,
             kind: waypoint.kind,
+            sentAt: now,
           },
           config: deps.apnsConfig,
           fetchImpl: deps.fetchImpl,
