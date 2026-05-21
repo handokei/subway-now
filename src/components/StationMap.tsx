@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import ClusteredMapView from 'react-native-map-clustering';
 import { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
@@ -118,6 +118,7 @@ export function StationMap({
         }}
         onMapReady={() => setMapReady(true)}
         showsUserLocation
+        showsPointsOfInterest={Platform.OS === 'ios' ? false : undefined}
         clusterColor={colors.accent}
         testID="station-map"
       >
