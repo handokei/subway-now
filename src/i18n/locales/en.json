@@ -26,6 +26,7 @@
     "originManual": "Origin (manual)",
     "originCurrent": "Current station",
     "originNearest": "Nearest station",
+    "originEstimated": "Estimated current station",
     "routeTo": "Route to",
     "estimatedSuffix": "EST",
     "destinationChange": "Change destination →",

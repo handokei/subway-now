@@ -317,6 +317,8 @@ export default function HomeScreen() {
               <Text style={[typography.label, { color: colors.muted, marginBottom: 10 }]}>
                 {isCustomOrigin
                   ? t('home.originManual')
+                  : source !== 'gps'
+                  ? t('home.originEstimated')
                   : result && result.distanceKm <= 0.5
                   ? t('home.originCurrent')
                   : t('home.originNearest')}
@@ -339,7 +341,10 @@ export default function HomeScreen() {
               </View>
               <View style={styles.metaRow}>
                 <LineBadge line={effectiveOrigin.line} />
-                {!isCustomOrigin && nearest && (
+                {/* #446: source==='gps'일 때만 user↔station 거리/도보시간이 의미 있음.
+                    fusion 추정(positionTrain/arrival/route) 결과의 거리는 user↔추정역
+                    직선거리라 도보 안내로 표시하면 잘못된 정보가 됨 → 숨김. */}
+                {!isCustomOrigin && nearest && source === 'gps' && (
                   <>
                     <Dot />
                     <Text style={[typography.bodySm, { color: colors.muted }]}>
