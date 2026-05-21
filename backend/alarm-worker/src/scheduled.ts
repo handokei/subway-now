@@ -13,7 +13,7 @@ import { sendSilentPush, type ApnsConfig } from './apns';
 import { matchLine } from './lineAlias';
 import { SeoulArrivalClient, type ArrivalEntry } from './seoul';
 import { deleteTrip, listTrips, putTrip } from './trips';
-import type { Env, Trip, Waypoint } from './types';
+import type { ApnsEnv, Env, Trip, Waypoint } from './types';
 
 /** 알람 윈도우: 알람 예상 시각 5분 이내인 트립만 폴링한다. */
 const POLLING_WINDOW_MS = 5 * 60 * 1000;
@@ -31,18 +31,20 @@ export interface ScheduledDeps {
   seoul: SeoulArrivalClient;
   apnsConfig: ApnsConfig;
   /** APNs host 매핑. trip.apnsEnv에 따라 선택. */
-  apnsHosts: { production: string; sandbox: string };
+  apnsHosts: Record<ApnsEnv, string>;
   fetchImpl?: typeof fetch;
   now?: () => number;
   log?: (message: string, meta?: Record<string, unknown>) => void;
 }
 
-/** trip의 apnsEnv → APNs host 선택. 누락 시 production fallback (이전 클라이언트 호환). */
-export function pickApnsHost(
-  apnsEnv: Trip['apnsEnv'],
-  hosts: { production: string; sandbox: string },
-): string {
-  return apnsEnv === 'sandbox' ? hosts.sandbox : hosts.production;
+/**
+ * trip의 apnsEnv → APNs host 선택. 누락 시 sandbox fallback —
+ * 구버전 클라이언트가 필드를 안 보낼 때 production host로 잘못 전송되어
+ * `BadDeviceToken`을 받던 #482 회귀를 막기 위함. App Store/TestFlight 빌드는
+ * 반드시 명시적으로 'production'을 보내야 한다.
+ */
+export function pickApnsHost(apnsEnv: ApnsEnv | undefined, hosts: Record<ApnsEnv, string>): string {
+  return hosts[apnsEnv ?? 'sandbox'];
 }
 
 export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {

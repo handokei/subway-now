@@ -206,8 +206,8 @@ describe('pickApnsHost', () => {
   it('returns production host when apnsEnv is production', () => {
     expect(pickApnsHost('production', APNS_HOSTS)).toBe(APNS_HOSTS.production);
   });
-  it('returns production host when apnsEnv is undefined (backward compat)', () => {
-    expect(pickApnsHost(undefined, APNS_HOSTS)).toBe(APNS_HOSTS.production);
+  it('falls back to sandbox host when apnsEnv is undefined (#482 safe default)', () => {
+    expect(pickApnsHost(undefined, APNS_HOSTS)).toBe(APNS_HOSTS.sandbox);
   });
 });
 
