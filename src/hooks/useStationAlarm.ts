@@ -121,22 +121,25 @@ export function useStationAlarm({
   }, [destinationId]);
 
   // 알람 발사 + 로깅 헬퍼. ETA effect와 API 신호 effect가 동일 시퀀스를 수행하므로 통합.
-  // 호출자가 route/destination 가드를 통과한 뒤 호출하는 전제. 내부에서 한 번 더 가드해
-  // 타입 좁히기와 안전 양쪽을 확보.
-  function fireAndLog(rawEvent: AlarmEvent, trigger: 'api' | 'eta'): void {
-    if (!route || !destination) return;
+  // route/destination은 호출자가 가드 후 non-null로 전달 — 함수 내부 가드 중복 제거.
+  function fireAndLog(
+    rawEvent: AlarmEvent,
+    trigger: 'api' | 'eta',
+    activeRoute: NonNullable<Route>,
+    activeDestination: Station,
+  ): void {
     // 좌/우 안내 방향. nearestStation 미정이면 direction 미부착(본문에 좌/우 라인 생략).
     const direction = nearestStation
       ? resolveAlarmDirection(rawEvent, {
-          route,
-          destinationName: destination.name,
+          route: activeRoute,
+          destinationName: activeDestination.name,
           sourceStationName: nearestStation.name,
         })
       : undefined;
     const event = direction ? { ...rawEvent, direction } : rawEvent;
     firedAlarmsRef.current.add(alarmKey(event));
     // AsyncStorage에도 즉시 반영 — FG/BG 단일 출처 유지. destinationId scoped.
-    void setFiredAlarms(destination.id, firedAlarmsRef.current);
+    void setFiredAlarms(activeDestination.id, firedAlarmsRef.current);
     if (sleepModeRef.current) {
       setAlarmEvent(event);
     }
@@ -176,7 +179,7 @@ export function useStationAlarm({
       { route, destinationName: destination.name, etaSeconds },
       firedAlarmsRef.current,
     );
-    if (rawEvent) fireAndLog(rawEvent, 'eta');
+    if (rawEvent) fireAndLog(rawEvent, 'eta', route, destination);
   }, [
     route,
     destination?.id,
@@ -205,7 +208,7 @@ export function useStationAlarm({
     if (firedAlarmsRef.current.has(imminentKey)) return;
 
     const rawEvent: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: destination.name };
-    fireAndLog(rawEvent, 'api');
+    fireAndLog(rawEvent, 'api', route, destination);
   }, [
     firedHydrated,
     route,
