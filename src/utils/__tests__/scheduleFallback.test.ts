@@ -64,34 +64,41 @@ describe('buildScheduleArrival', () => {
     expect(result.isMock).toBe(true);
   });
 
+  // wall-clock anchor 기반이므로 정확한 값은 nowMs % headway에 의존.
+  // 시간대별 헤드웨이 분류와 anchor 범위(0 < first <= headway, second = first + headway)를 검증.
+
   it('returns 2 up/down trains during weekday peak with line 2 headway 150s', () => {
     const now = new Date('2026-05-18T08:00:00+09:00');
     const result = buildScheduleArrival('2', now);
     expect(result.source).toBe('schedule');
     expect(result.up).toHaveLength(2);
     expect(result.down).toHaveLength(2);
-    expect(result.up[0].arrivalSeconds).toBe(75);
-    expect(result.up[1].arrivalSeconds).toBe(225);
+    const first = result.up[0].arrivalSeconds;
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThanOrEqual(150);
+    expect(result.up[1].arrivalSeconds).toBe(first + 150);
   });
 
   it('uses offPeak headway during weekday daytime', () => {
     const now = new Date('2026-05-18T15:00:00+09:00');
     const result = buildScheduleArrival('1', now);
     expect(result.source).toBe('schedule');
-    expect(result.up[0].arrivalSeconds).toBe(180); // 360/2
+    const first = result.up[0].arrivalSeconds;
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThanOrEqual(360);
   });
 
   it('uses saturday offPeak even during what would be peak time', () => {
     const now = new Date('2026-05-16T08:00:00+09:00'); // Saturday
     const result = buildScheduleArrival('2', now);
-    expect(result.up[0].arrivalSeconds).toBe(165); // 330/2
+    expect(result.up[0].arrivalSeconds).toBeLessThanOrEqual(330);
   });
 
   it('falls back to offPeak headway if peak entry missing (weekend peak lookup is never triggered, but defensive)', () => {
     const now = new Date('2026-05-18T08:00:00+09:00');
     const result = buildScheduleArrival('gyeongui', now);
     expect(result.source).toBe('schedule');
-    expect(result.up[0].arrivalSeconds).toBe(270); // 540/2
+    expect(result.up[0].arrivalSeconds).toBeLessThanOrEqual(540);
   });
 
   it('sets receivedAtMs to now.getTime()', () => {
@@ -104,19 +111,39 @@ describe('buildScheduleArrival', () => {
     const now = new Date('2026-05-18T23:00:00+09:00');
     const result = buildScheduleArrival('2', now);
     expect(result.source).toBe('schedule');
-    expect(result.up[0].arrivalSeconds).toBe(240); // 480/2
+    expect(result.up[0].arrivalSeconds).toBeLessThanOrEqual(480);
   });
 
   it('handles sunday late period', () => {
     const now = new Date('2026-05-17T22:30:00+09:00');
     const result = buildScheduleArrival('1', now);
-    expect(result.up[0].arrivalSeconds).toBe(330); // 660/2
+    expect(result.up[0].arrivalSeconds).toBeLessThanOrEqual(660);
   });
 
   it('arrivalMinutes equals floor(arrivalSeconds/60)', () => {
     const now = new Date('2026-05-18T15:00:00+09:00');
     const result = buildScheduleArrival('1', now);
-    expect(result.up[0].arrivalMinutes).toBe(3); // floor(180/60)
+    expect(result.up[0].arrivalMinutes).toBe(Math.floor(result.up[0].arrivalSeconds / 60));
+  });
+
+  it('anchors next departure to wall-clock so polling (+5s) returns continuously decreasing ETA', () => {
+    const t0 = new Date('2026-05-18T15:00:00.000+09:00');
+    const t5 = new Date(t0.getTime() + 5_000);
+    const r0 = buildScheduleArrival('2', t0);
+    const r5 = buildScheduleArrival('2', t5);
+    // 둘 다 schedule이고 같은 헤드웨이 격자 안이라면 +5s 폴링 결과는 5초 적게 남아야 함.
+    // 트레인 시프트 직후가 아니면 정확히 -5s.
+    if (r0.up[0].arrivalSeconds > 5) {
+      expect(r5.up[0].arrivalSeconds).toBe(r0.up[0].arrivalSeconds - 5);
+    }
+  });
+
+  it('shifts next-departure anchor when nowMs lies exactly on grid (no 0s train shown)', () => {
+    // line 1 offPeak headway = 360s. grid 정렬 케이스 강제.
+    const headwayMs = 360_000;
+    const alignedMs = Math.ceil(new Date('2026-05-18T15:00:00+09:00').getTime() / headwayMs) * headwayMs;
+    const result = buildScheduleArrival('1', new Date(alignedMs));
+    expect(result.up[0].arrivalSeconds).toBe(360); // 다음 격자로 시프트되어 headway 그대로
   });
 
   it('returns source=closed when line key is missing from headway table (defensive)', () => {

@@ -65,12 +65,26 @@ describe('useArrivalCountdown', () => {
     expect(result.current!.up[0].arrivalMinutes).toBe(0);
   });
 
-  it('isMock인 데이터는 카운트다운하지 않는다', () => {
+  it('source 없는 isMock 데이터(하드코딩 MOCK)는 카운트다운하지 않는다', () => {
     const { result } = renderHook(() => useArrivalCountdown(mockArrivalMock));
 
     act(() => { jest.advanceTimersByTime(3_000); });
 
     expect(result.current).toEqual(mockArrivalMock);
+  });
+
+  it('source=schedule fallback은 isMock=true여도 카운트다운한다 (이슈 #468)', () => {
+    const scheduleArrival: StationArrival = {
+      ...mockArrival,
+      isMock: true,
+      source: 'schedule',
+    };
+    const { result } = renderHook(() => useArrivalCountdown(scheduleArrival));
+
+    act(() => { jest.advanceTimersByTime(3_000); });
+
+    expect(result.current!.up[0].arrivalSeconds).toBe(117);
+    expect(result.current!.down[0].arrivalSeconds).toBe(87);
   });
 
   it('새 arrival 데이터가 들어오면 값이 리셋된다', () => {
