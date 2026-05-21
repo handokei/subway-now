@@ -29,6 +29,7 @@ import { AlarmOverlay } from '../../src/components/AlarmOverlay';
 import { createLogger } from '../../src/utils/logger';
 import { useTheme, typography, spacing, radius } from '../../src/theme';
 import { LineBadge } from '../../src/components/LineBadge';
+import { ArrivalSourceNotice } from '../../src/components/ArrivalSourceNotice';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 
 const logger = createLogger('HomeScreen');
@@ -520,15 +521,7 @@ export default function HomeScreen() {
                 {arrivalLoading && !arrival && (
                   <Text style={[styles.arrivalItem, { color: colors.ink }]}>{t('home.loading')}</Text>
                 )}
-                {arrival?.source === 'closed' ? (
-                  <Text style={[styles.mockNotice, { color: colors.muted }]}>{t('home.closedNotice')}</Text>
-                ) : arrival?.source === 'schedule' ? (
-                  <Text style={[styles.mockNotice, { color: colors.warn }]} testID="arrival-schedule-notice">
-                    {t('home.scheduleNotice')}
-                  </Text>
-                ) : arrivalIsMock ? (
-                  <Text style={[styles.mockNotice, { color: colors.warn }]}>{t('home.mockNotice')}</Text>
-                ) : null}
+                <ArrivalSourceNotice arrival={arrival} />
                 {arrival && arrival.source !== 'closed' && (
                   <>
                     <ArrivalRow label={t('arrival.upbound')} items={arrival.up} />
@@ -769,10 +762,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: 'right',
     marginTop: 2,
-  },
-  mockNotice: {
-    fontSize: 12,
-    marginBottom: 8,
   },
   icon: {
     fontSize: 48,
