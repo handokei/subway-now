@@ -3,15 +3,32 @@ import {
   arrivalInfoToArrivalTrain,
   nearestResultToNearest,
 } from '../journeyAdapter';
+import type { Stop, StopArrivalContext } from '../journeyAdapter';
 import type { JourneyDisplay } from '../stationRoute';
+import type { LineNumber } from '../../types/station';
 import { MOCK_JOURNEYS, makeNearestResult, makeArrivalInfo } from '../../testUtils/fixtures';
+
+// Stop 기대값 빌더 — 중복 리터럴을 줄이고 의도(transfer/dest + arrivalContext)를 한 줄로 표현한다.
+function expectedStop(
+  mark: 'transfer' | 'dest',
+  station: string,
+  line: string,
+  stopsFromPrev: string,
+  note: string,
+  arrivalContext: StopArrivalContext,
+): Stop {
+  return { station, line, stopsFromPrev, mark, note, arrivalContext };
+}
+function ctx(line: LineNumber, fromName: string, toName: string): StopArrivalContext {
+  return { line, fromName, toName };
+}
 
 describe('journeyDisplayToStops', () => {
   it('should convert a direct route (single segment)', () => {
     const stops = journeyDisplayToStops(MOCK_JOURNEYS.direct);
     expect(stops).toEqual([
       { station: '강남', line: '2', mark: 'filled' },
-      { station: '역삼', line: '2', stopsFromPrev: '1정거장', mark: 'dest', note: '도착' },
+      expectedStop('dest', '역삼', '2', '1정거장', '도착', ctx('2', '강남', '역삼')),
     ]);
   });
 
@@ -19,8 +36,8 @@ describe('journeyDisplayToStops', () => {
     const stops = journeyDisplayToStops(MOCK_JOURNEYS.transfer);
     expect(stops).toEqual([
       { station: '효창공원앞', line: '6', mark: 'filled' },
-      { station: '공덕', line: '5', stopsFromPrev: '2정거장', mark: 'transfer', note: '환승' },
-      { station: '여의나루', line: '5', stopsFromPrev: '3정거장', mark: 'dest', note: '도착' },
+      expectedStop('transfer', '공덕', '5', '2정거장', '환승', ctx('6', '효창공원앞', '공덕')),
+      expectedStop('dest', '여의나루', '5', '3정거장', '도착', ctx('5', '공덕', '여의나루')),
     ]);
   });
 
@@ -36,9 +53,15 @@ describe('journeyDisplayToStops', () => {
     const stops = journeyDisplayToStops(journey);
     expect(stops).toHaveLength(4);
     expect(stops[0]).toEqual({ station: '서울역', line: '1', mark: 'filled' });
-    expect(stops[1]).toEqual({ station: '시청', line: '2', stopsFromPrev: '1정거장', mark: 'transfer', note: '환승' });
-    expect(stops[2]).toEqual({ station: '을지로3가', line: '3', stopsFromPrev: '2정거장', mark: 'transfer', note: '환승' });
-    expect(stops[3]).toEqual({ station: '경복궁', line: '3', stopsFromPrev: '4정거장', mark: 'dest', note: '도착' });
+    expect(stops[1]).toEqual(
+      expectedStop('transfer', '시청', '2', '1정거장', '환승', ctx('1', '서울역', '시청')),
+    );
+    expect(stops[2]).toEqual(
+      expectedStop('transfer', '을지로3가', '3', '2정거장', '환승', ctx('2', '시청', '을지로3가')),
+    );
+    expect(stops[3]).toEqual(
+      expectedStop('dest', '경복궁', '3', '4정거장', '도착', ctx('3', '을지로3가', '경복궁')),
+    );
   });
 
   it('should handle special line numbers', () => {
@@ -69,8 +92,14 @@ describe('journeyDisplayToStops', () => {
     const stops = journeyDisplayToStops(journey);
     expect(stops).toHaveLength(3);
     expect(stops[0]).toEqual({ station: '삼성', line: '2', mark: 'filled' });
-    expect(stops[1]).toEqual({ station: '건대입구', line: '7', stopsFromPrev: '7정거장', mark: 'transfer', note: '환승' });
-    expect(stops[2]).toEqual({ station: '군자', line: '5', stopsFromPrev: '2정거장', mark: 'dest', note: '환승 → 도착' });
+    expect(stops[1]).toEqual(
+      expectedStop('transfer', '건대입구', '7', '7정거장', '환승', ctx('2', '삼성', '건대입구')),
+    );
+    // 흡수 케이스: 마지막 0정거장 segment가 직전 transfer를 dest로 승격.
+    // arrivalContext는 직전 segment(7호선 건대입구→군자) — 사용자가 실제로 그 노선으로 내림.
+    expect(stops[2]).toEqual(
+      expectedStop('dest', '군자', '5', '2정거장', '환승 → 도착', ctx('7', '건대입구', '군자')),
+    );
   });
 });
 

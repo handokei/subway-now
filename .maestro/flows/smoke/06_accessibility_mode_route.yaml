@@ -1,0 +1,72 @@
+appId: com.subwaynow.app
+name: "smoke - 거동 불편자 모드가 경로 화면 문번호 라벨에 반영된다"
+# 전제: EXPO_PUBLIC_E2E_MOCK=true 빌드. origin이 강남(2호선) fixture로 고정.
+# 경복궁(3호선)을 목적지로 잡으면 2호선 → 3호선 환승 경로가 잡히고,
+# 마지막 segment(3호선 단조, 상행 up)의 도착 stop에 quickExit 문번호 라벨이 뜬다.
+# - 기본(OFF): stairs 우선 → "8-3번 문"
+# - ON: elevator 우선 → "6-2번 문"
+# 라벨 값은 src/data/quickExit.json의 경복궁(3-019) up 방향 첫 엔트리에서 결정된다.
+---
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      notifications: allow
+      location: always
+
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 10000
+
+# 경복궁 목적지 지정 → 강남(2)→교대(2)→[환승]→경복궁(3) 경로 표시
+- tapOn:
+    id: "destination-button"
+- assertVisible:
+    id: "search-input"
+- tapOn:
+    id: "search-input"
+- inputText: "경복궁"
+- assertVisible:
+    id: "suggestions-list"
+- tapOn:
+    id: "suggestion-item-3-019"
+
+# 기본 모드: stairs 우선 — 도착역(경복궁) 라벨에 "8-3번 문" 표시
+- extendedWaitUntil:
+    visible:
+      text: "8-3번 문|Door 8-3"
+    timeout: 10000
+
+# 설정 탭으로 이동해 거동 불편자 모드 ON
+# accessibility 섹션은 알람 카드 아래에 있어 스크롤이 필요하다 (settings.tsx:142 코멘트 참조).
+# scrollUntilVisible은 ScrollView를 위로 끌어올려 대상 ID가 보일 때까지 반복한다.
+- tapOn:
+    point: "87%,95%"
+- scrollUntilVisible:
+    element:
+      id: "accessibility-mode-switch"
+    direction: DOWN
+    timeout: 10000
+- tapOn:
+    id: "accessibility-mode-switch"
+
+# 홈 탭 복귀 후 라벨이 elevator 우선("6-2번 문")으로 바뀌었는지 확인
+- tapOn:
+    point: "12%,95%"
+- extendedWaitUntil:
+    visible:
+      text: "6-2번 문|Door 6-2"
+    timeout: 10000
+- assertNotVisible:
+    text: "8-3번 문"

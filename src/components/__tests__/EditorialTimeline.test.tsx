@@ -3,6 +3,17 @@ import { render, screen } from '@testing-library/react-native';
 import { EditorialTimeline, mix, hex } from '../EditorialTimeline';
 import { MOCK_STOPS } from '../../testUtils/fixtures';
 import type { Stop } from '../../utils/journeyAdapter';
+import type { LineNumber } from '../../types/station';
+import { useAppStore } from '../../store/useAppStore';
+
+// 결정적 빠른하차 픽스처 — quickExit 라벨/모드 분기 검증용.
+// 3호선 경복궁(id 3-019)에만 상행 stairs/엘리베이터 엔트리 등록.
+jest.mock('../../data/quickExit.json', () => ({
+  '3-019': {
+    stairs: [{ doorNumber: '3-2', direction: 'up' }],
+    elevator: [{ doorNumber: '5-1', direction: 'up' }],
+  },
+}));
 
 describe('EditorialTimeline', () => {
   it('should render all stops', () => {
@@ -78,6 +89,66 @@ describe('EditorialTimeline', () => {
   it('should render empty for no stops', () => {
     const { toJSON } = render(<EditorialTimeline stops={[]} />);
     expect(toJSON()).toBeTruthy();
+  });
+});
+
+describe('EditorialTimeline quickExit door label', () => {
+  beforeEach(() => {
+    useAppStore.setState({ accessibilityMode: false });
+  });
+
+  // 단조노선(3호선) + 경복궁 데이터 보유 + 상행 매칭(교대→경복궁) → stairs 우선으로 3-2 표시.
+  const stopsWithQuickExit: Stop[] = [
+    { station: '교대', line: '3', mark: 'filled' },
+    {
+      station: '경복궁',
+      line: '3',
+      stopsFromPrev: '5정거장',
+      mark: 'dest',
+      note: '도착',
+      arrivalContext: { line: '3', fromName: '교대', toName: '경복궁' },
+    },
+  ];
+
+  it('단조 노선 + quickExit 데이터 있으면 stairs 우선(기본 모드)으로 문번호 라벨이 뜬다', () => {
+    render(<EditorialTimeline stops={stopsWithQuickExit} />);
+    expect(screen.getByText('3-2번 문')).toBeTruthy();
+  });
+
+  it('accessibilityMode ON 이면 elevator 우선으로 다른 문번호가 뜬다', () => {
+    useAppStore.setState({ accessibilityMode: true });
+    render(<EditorialTimeline stops={stopsWithQuickExit} />);
+    expect(screen.getByText('5-1번 문')).toBeTruthy();
+    expect(screen.queryByText('3-2번 문')).toBeNull();
+  });
+
+  it('arrivalContext 없는 stop(filled)에는 라벨이 안 뜬다', () => {
+    render(<EditorialTimeline stops={[{ station: '교대', line: '3', mark: 'filled' }]} />);
+    expect(screen.queryByText(/번 문/)).toBeNull();
+  });
+
+  // 라벨 미표시 케이스 — fromName→toName 단일 segment fixture.
+  // 각 케이스의 의도는 setup이 아니라 it 설명에 둔다.
+  function makeDestOnlyStops(line: LineNumber, fromName: string, toName: string): Stop[] {
+    return [
+      { station: fromName, line, mark: 'filled' },
+      {
+        station: toName,
+        line,
+        stopsFromPrev: '3정거장',
+        mark: 'dest',
+        note: '도착',
+        arrivalContext: { line, fromName, toName },
+      },
+    ];
+  }
+
+  it.each<[string, LineNumber, string, string]>([
+    ['비단조 노선(2호선) — 데이터 있어도 라벨 미표시', '2', '강남', '경복궁'],
+    ['단조 노선 + 도착역 데이터 없음 — 라벨 미표시', '3', '경복궁', '오금'],
+  ])('%s', (_label, line, from, to) => {
+    render(<EditorialTimeline stops={makeDestOnlyStops(line, from, to)} />);
+    expect(screen.queryByText(/번 문/)).toBeNull();
   });
 });
 

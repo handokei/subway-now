@@ -8,12 +8,21 @@ import stationsData from '../data/stations.json';
 
 const allStations = stationsData as Station[];
 
+// 빠른하차 라벨 결정에 필요한 컨텍스트.
+// 출발역(filled)은 도착 시점이 없으므로 미지정 — caller는 undefined를 라벨 미표시로 해석한다.
+export interface StopArrivalContext {
+  line: LineNumber;
+  fromName: string;
+  toName: string;
+}
+
 export interface Stop {
   station: string;
   line: string | null;
   stopsFromPrev?: string;
   mark: 'filled' | 'transfer' | 'dest';
   note?: string;
+  arrivalContext?: StopArrivalContext;
 }
 
 export interface ArrivalTrain {
@@ -57,6 +66,12 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
       });
     }
 
+    const arrivalContext: StopArrivalContext = {
+      line: seg.line,
+      fromName: seg.fromName,
+      toName: seg.toName,
+    };
+
     if (!isLast) {
       stops.push({
         station: getStationDisplayNameByName(seg.toName, allStations),
@@ -64,16 +79,20 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
         stopsFromPrev: i18next.t('route.stops', { count: seg.stops }),
         mark: 'transfer',
         note: i18next.t('journey.transferNote'),
+        arrivalContext,
       });
     } else {
       // 환승역이 곧 목적지인 케이스(0정거장 도착 노드 잉여)는 직전 환승 노드를 도착으로 흡수.
       // 언어 독립성을 위해 표시명이 아닌 원본 역명(toName)으로 비교한다.
       // stopsFromPrev는 환승 노드의 기존 값(직전 segment의 정거장 수)을 그대로 유지.
+      // arrivalContext도 prev(이전 segment의 도착)로 유지 — 사용자가 실제로 그 역에 내릴 때
+      // 탑승 중이던 노선은 prevSeg 노선이기 때문.
       const prevSeg = segments[i - 1];
       const prev = stops[stops.length - 1];
       if (seg.stops === 0 && prev?.mark === 'transfer' && prevSeg?.toName === seg.toName) {
         prev.mark = 'dest';
         prev.note = i18next.t('journey.transferArrivalNote');
+        // prev.arrivalContext는 이미 seg[i-1]의 값(사용자가 실제 탑승한 노선) — 덮어쓰지 않는다.
       } else {
         stops.push({
           station: getStationDisplayNameByName(seg.toName, allStations),
@@ -81,6 +100,7 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
           stopsFromPrev: i18next.t('route.stops', { count: seg.stops }),
           mark: 'dest',
           note: i18next.t('journey.arrivalNote'),
+          arrivalContext,
         });
       }
     }
