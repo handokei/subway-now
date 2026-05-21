@@ -605,6 +605,44 @@ export function calculateStaticETA(route: Route): number | null {
   return DEFAULT_WAIT_MINUTES + getTravelMinutes(route);
 }
 
+// ASCII Unit Separator(0x1F) — 사용자 데이터(역명/노선명)에 절대 등장하지 않는
+// 제어문자라 transferName 안에 구분자가 섞여도 signature 충돌이 구조적으로 불가능.
+const SIG_SEP = '\x1f';
+
+/**
+ * route의 내용 동일성을 비교하기 위한 stable signature.
+ * categorized recompute 등으로 route 객체 reference가 바뀌어도 내용이 같으면
+ * 동일 문자열을 반환 — useEffect deps/dedup key에 사용해 불필요한 재발사를 막는다.
+ */
+export function routeSignature(route: Route): string {
+  if (!route) return '';
+  switch (route.type) {
+    case 'direct':
+      return ['d', route.line, route.stops].join(SIG_SEP);
+    case 'transfer':
+      return [
+        't',
+        route.fromLine,
+        route.toLine,
+        route.transferName,
+        route.stopsToTransfer,
+        route.stopsFromTransfer,
+      ].join(SIG_SEP);
+    case 'multi-transfer': {
+      const segs = route.transfers
+        .map((s) => [s.fromLine, s.toLine, s.transferName, s.stopsToTransfer].join(SIG_SEP))
+        .join(SIG_SEP);
+      return ['m', segs, route.stopsAfterLastTransfer].join(SIG_SEP);
+    }
+    /* istanbul ignore next -- exhaustiveness guard: Route 유니온에 새 variant 추가 시
+       컴파일 타임 에러로 잡힘. 런타임 도달 불가. */
+    default: {
+      const _exhaustive: never = route;
+      return _exhaustive;
+    }
+  }
+}
+
 export function calculateETA(nextTrainMinutes: number, route: Route): number {
   if (!route) return nextTrainMinutes;
   return nextTrainMinutes + getTravelMinutes(route);
