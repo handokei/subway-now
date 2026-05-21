@@ -23,6 +23,9 @@ export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 export type AlarmLogReason = 'dedup-station' | 'gate-age' | 'gate-accuracy';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
+// #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
+// early phase 등 imminent 외 발사에선 미설정.
+export type AlarmLogTrigger = 'api' | 'eta';
 
 export interface AlarmLogLocation {
   lat: number;
@@ -72,6 +75,8 @@ export interface AlarmLogEntry {
   // 두 시각 차로 도달 지연 분포 측정.
   sentAt?: number;
   receivedAt?: number;
+  // #396 — imminent phase 발사 trigger 출처. 미설정은 트리거 무관(early 등) 또는 구버전 로그.
+  trigger?: AlarmLogTrigger;
 }
 
 const logger = createLogger('AlarmLog');
@@ -81,7 +86,11 @@ const logger = createLogger('AlarmLog');
 // helper가 채운다 — 호출부에서 누락하거나 잘못 채우는 사고를 차단.
 // 모든 helper는 fire-and-forget: 실패해도 후속 정합성에 영향 없음(이미 swallow).
 
-export function logFiredAlarm(source: AlarmLogSource, event: AlarmEvent): void {
+export function logFiredAlarm(
+  source: AlarmLogSource,
+  event: AlarmEvent,
+  trigger?: AlarmLogTrigger,
+): void {
   void appendAlarmLog({
     ts: Date.now(),
     source,
@@ -89,6 +98,7 @@ export function logFiredAlarm(source: AlarmLogSource, event: AlarmEvent): void {
     stationName: event.stationName,
     kind: event.type,
     phaseId: event.phaseId,
+    trigger,
   });
 }
 

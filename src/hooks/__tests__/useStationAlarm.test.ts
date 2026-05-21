@@ -69,6 +69,21 @@ jest.mock('../../utils/scheduledAlarmReceiver', () => ({
   awaitInitialScheduledAlarmDrain: jest.fn().mockResolvedValue(undefined),
 }));
 
+const mockIsImminentByArrivalCode = jest.fn();
+jest.mock('../../utils/imminentArrivalSignal', () => ({
+  isImminentByArrivalCode: (...args: unknown[]) => mockIsImminentByArrivalCode(...args),
+}));
+
+const mockGetStoredTripTrainCode = jest.fn();
+jest.mock('../../utils/tripTrainCode', () => ({
+  getStoredTripTrainCode: (...args: unknown[]) => mockGetStoredTripTrainCode(...args),
+}));
+
+const mockUseArrivalInfo = jest.fn();
+jest.mock('../useArrivalInfo', () => ({
+  useArrivalInfo: (...args: unknown[]) => mockUseArrivalInfo(...args),
+}));
+
 const makeStation = (id: string, name: string, lat = 37.5, lng = 127.0): Station => ({
   id,
   name,
@@ -108,6 +123,9 @@ describe('useStationAlarm', () => {
     mockSetLastNotifiedStationId.mockResolvedValue(undefined);
     mockGetFiredAlarms.mockResolvedValue(new Set<string>());
     mockSetFiredAlarms.mockResolvedValue(undefined);
+    mockIsImminentByArrivalCode.mockReturnValue(false);
+    mockGetStoredTripTrainCode.mockResolvedValue(null);
+    mockUseArrivalInfo.mockReturnValue({ arrival: null, loading: false, isMock: false });
   });
 
   it('does not evaluate when route is null', () => {
@@ -880,7 +898,7 @@ describe('useStationAlarm', () => {
     const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
     const station = makeStation('S1', '강남', 37.498, 127.028);
 
-    it('알람 발사 시 logFiredAlarm(fg, event)를 호출한다', async () => {
+    it('알람 발사 시 logFiredAlarm(fg, event, "eta")를 호출한다', async () => {
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
 
       renderHook(() =>
@@ -888,7 +906,7 @@ describe('useStationAlarm', () => {
       );
 
       await waitFor(() => {
-        expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest);
+        expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, 'eta');
       });
     });
 
@@ -974,6 +992,180 @@ describe('useStationAlarm', () => {
       // 추가 호출 없음 — 게이트 boolean이 바뀌지 않는 한 effect가 재실행되지 않음.
       // (await 후 검증으로 비동기 IIFE의 carryover 호출 가능성도 차단)
       expect(mockLogSuppressedDedupStation).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('#396 API 신호 기반 imminent', () => {
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+    const station = makeStation('S1', '시청');
+
+    it('isImminentByArrivalCode가 true이고 미발사 상태면 imminent 알람 발사 + logFiredAlarm("fg", _, "api")', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockUseArrivalInfo.mockReturnValue({
+        arrival: { up: [], down: [], isMock: false },
+        loading: false,
+        isMock: false,
+      });
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      await waitFor(() => {
+        expect(mockLogFiredAlarm).toHaveBeenCalledWith(
+          'fg',
+          expect.objectContaining({ phaseId: 'imminent', stationName: '강남', type: 'destination' }),
+          'api',
+        );
+      });
+      expect(mockSendAlarmNotification).toHaveBeenCalled();
+    });
+
+    it('API 신호 false면 발사하지 않는다', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(false);
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      // hydration 완료 대기
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      await Promise.resolve();
+
+      const apiCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'api');
+      expect(apiCalls).toHaveLength(0);
+    });
+
+    it('이미 imminent가 firedAlarms에 있으면 dedup으로 재발사하지 않는다', async () => {
+      mockGetFiredAlarms.mockResolvedValue(new Set(['imminent:강남']));
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      await Promise.resolve();
+
+      const apiCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'api');
+      expect(apiCalls).toHaveLength(0);
+    });
+
+    it('hydration 완료 전에는 API 신호 평가를 보류한다', () => {
+      // getFiredAlarms를 영원히 pending 상태로 두면 firedHydrated가 false 유지
+      mockGetFiredAlarms.mockReturnValue(new Promise(() => {}));
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('sleepMode면 setAlarmEvent도 함께 호출', async () => {
+      useAppStore.setState({ sleepMode: true });
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+      const setAlarmEventSpy = jest.spyOn(useAppStore.getState(), 'setAlarmEvent');
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      await waitFor(() => {
+        expect(setAlarmEventSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ phaseId: 'imminent', stationName: '강남' }),
+        );
+      });
+      setAlarmEventSpy.mockRestore();
+    });
+
+    it('resolveAlarmDirection 결과가 있으면 event에 direction 포함', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+      mockResolveAlarmDirection.mockReturnValue('up');
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      await waitFor(() => {
+        expect(mockSendAlarmNotification).toHaveBeenCalledWith(
+          expect.objectContaining({ direction: 'up' }),
+          expect.anything(),
+          expect.anything(),
+        );
+      });
+    });
+
+    it('destination이 없으면 평가하지 않는다', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() => useStationAlarm(defaultInputs({ route })));
+
+      await Promise.resolve();
+      const apiCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'api');
+      expect(apiCalls).toHaveLength(0);
+    });
+
+    it('nearestStation이 null이면 direction 미부착 (resolveAlarmDirection 호출 안 함)', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: null })),
+      );
+
+      await waitFor(() => {
+        expect(mockSendAlarmNotification).toHaveBeenCalled();
+      });
+      // nearestStation null이면 direction 분기를 거치지 않음
+      const apiSendCall = mockSendAlarmNotification.mock.calls[0];
+      expect(apiSendCall[0]).not.toHaveProperty('direction');
+    });
+
+    it('sendAlarmNotification rejection은 logger.error로 swallowed (회귀 가드)', async () => {
+      mockSendAlarmNotification.mockRejectedValueOnce(new Error('boom'));
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+      );
+
+      await waitFor(() => {
+        expect(mockSendAlarmNotification).toHaveBeenCalled();
+      });
+      // rejection이 swallow돼 후속 로깅이 정상 호출되는지 확인
+      await waitFor(() => {
+        const apiCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'api');
+        expect(apiCalls.length).toBeGreaterThan(0);
+      });
+    });
+
+    it('destinationId 없으면 trackedTrainCode를 null로 리셋한다', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+
+      const { rerender } = renderHook(
+        ({ inputs }: { inputs: UseStationAlarmInputs }) => useStationAlarm(inputs),
+        { initialProps: { inputs: defaultInputs({ route, destination }) } },
+      );
+
+      await waitFor(() => expect(mockGetStoredTripTrainCode).toHaveBeenCalledWith('D1'));
+
+      rerender({ inputs: defaultInputs({ route, destination: null }) });
+
+      // destination null이면 effect는 setTrackedTrainCode(null) 호출 후 종료
+      // getStoredTripTrainCode 추가 호출 없음
+      const callCountBefore = mockGetStoredTripTrainCode.mock.calls.length;
+      await Promise.resolve();
+      expect(mockGetStoredTripTrainCode.mock.calls.length).toBe(callCountBefore);
     });
   });
 });
