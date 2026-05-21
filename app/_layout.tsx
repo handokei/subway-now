@@ -11,6 +11,7 @@ import { i18n } from '../src/i18n';
 import { useApplyLocale } from '../src/hooks/useApplyLocale';
 import { useAppStore } from '../src/store/useAppStore';
 import { DebugModal } from '../src/components/DebugModal';
+import { isDebugModalEnabled } from '../src/constants/debugFlags';
 import '../src/tasks/backgroundLocationTask';
 import { registerSilentPushTask } from '../src/tasks/silentPushTask';
 import { registerScheduledAlarmListener } from '../src/utils/scheduledAlarmReceiver';
@@ -61,7 +62,7 @@ function RootContent() {
     <>
       <StatusBar style={isDark ? 'light' : 'dark'} />
       <Stack screenOptions={{ headerShown: false }} />
-      {__DEV__ && debugVisible && (
+      {isDebugModalEnabled() && debugVisible && (
         <DebugModal onClose={() => setDebugVisible(false)} />
       )}
     </>

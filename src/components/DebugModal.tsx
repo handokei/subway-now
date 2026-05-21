@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { useAppStore } from '../store/useAppStore';
+import { isDebugModalEnabled } from '../constants/debugFlags';
 import { useFusedNearestStation } from '../hooks/useFusedNearestStation';
 import { useArrivalInfo } from '../hooks/useArrivalInfo';
 import { clearAlarmLog, getAlarmLog, type AlarmLogEntry } from '../utils/alarmLog';
@@ -174,7 +175,8 @@ interface DebugModalProps {
 // 마운트하지 않아 GPS·Arrival 폴링이 2배가 되지 않도록 한다. 호출부(_layout)에서
 // `debugVisible &&` 조건부 렌더를 보장한다.
 export function DebugModal(props: DebugModalProps) {
-  if (!__DEV__) return null;
+  // #456: dev 빌드 외에 EXPO_PUBLIC_DEBUG_MODAL=true 빌드도 노출 — 일반 release 빌드는 자동 차단.
+  if (!isDebugModalEnabled()) return null;
   return <DebugModalInner {...props} />;
 }
 
