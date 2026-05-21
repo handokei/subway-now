@@ -10,6 +10,7 @@ import { buildMapConfig } from '../utils/buildMapConfig';
 import { useTheme } from '../theme';
 import { LINE_BADGE_LABEL } from '../constants/lineColors';
 import { getStationDisplayName } from '../utils/stationDisplay';
+import { isMajorGroup, MAJOR_ONLY_LATITUDE_DELTA } from '../utils/majorStation';
 
 interface StationMapProps {
   userLat: number;
@@ -34,6 +35,7 @@ const FOCUS_REGION_DELTA = 0.01;
 const FOCUS_ANIMATION_MS = 400;
 const ROUTE_POLYLINE_WIDTH = 5;
 const ROUTE_FIT_EDGE_PADDING = { top: 40, bottom: 40, left: 40, right: 40 };
+const INITIAL_LATITUDE_DELTA = 0.05;
 
 export function StationMap({
   userLat,
@@ -51,6 +53,7 @@ export function StationMap({
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
   const [mapReady, setMapReady] = useState(false);
+  const [latitudeDelta, setLatitudeDelta] = useState(INITIAL_LATITUDE_DELTA);
   const mapRef = useRef<MapView | null>(null);
   // nonce 트리거 effect에서 stale closure 없이 항상 최신 좌표를 쓰기 위한 ref.
   const userPosRef = useRef({ lat: userLat, lng: userLng });
@@ -104,6 +107,24 @@ export function StationMap({
     return ids;
   }, [routeCoords]);
 
+  // 줌아웃 상태에서는 작은 클러스터 동그라미(2~3개) 방지를 위해 주요 역만 노출.
+  // 사용자 맥락 보존: 최근접 역, 출발/도착 지정, 경로 환승역은 줌과 무관하게 표시.
+  const isZoomedOut = latitudeDelta > MAJOR_ONLY_LATITUDE_DELTA;
+  const visibleGroups = useMemo(() => {
+    if (!isZoomedOut) return mapConfig.groups;
+    return mapConfig.groups.filter((group) => {
+      if (group.isNearest) return true;
+      const pinned = group.stations.some(
+        (s) =>
+          s.id === customOriginId ||
+          s.id === destinationId ||
+          routeTransferIds.has(s.id),
+      );
+      if (pinned) return true;
+      return isMajorGroup(group);
+    });
+  }, [isZoomedOut, mapConfig.groups, customOriginId, destinationId, routeTransferIds]);
+
   return (
     <View style={styles.map}>
       <ClusteredMapView
@@ -113,15 +134,16 @@ export function StationMap({
         initialRegion={{
           latitude: userLat,
           longitude: userLng,
-          latitudeDelta: 0.05,
-          longitudeDelta: 0.05,
+          latitudeDelta: INITIAL_LATITUDE_DELTA,
+          longitudeDelta: INITIAL_LATITUDE_DELTA,
         }}
         onMapReady={() => setMapReady(true)}
+        onRegionChangeComplete={(region) => setLatitudeDelta(region.latitudeDelta)}
         showsUserLocation
         clusterColor={colors.accent}
         testID="station-map"
       >
-        {mapConfig.groups.map((group) => {
+        {visibleGroups.map((group) => {
           // 대표 station = representativeName과 동일한 name을 가진 멤버.
           // representativeName은 멤버 중에서 뽑은 값이므로 find는 항상 매치.
           const representative = group.stations.find(
