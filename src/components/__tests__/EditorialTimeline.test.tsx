@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react-native';
 import { EditorialTimeline, mix, hex } from '../EditorialTimeline';
 import { MOCK_STOPS } from '../../testUtils/fixtures';
 import type { Stop } from '../../utils/journeyAdapter';
+import type { LineNumber } from '../../types/station';
 import { useAppStore } from '../../store/useAppStore';
 
 // 결정적 빠른하차 픽스처 — quickExit 라벨/모드 분기 검증용.
@@ -126,35 +127,27 @@ describe('EditorialTimeline quickExit door label', () => {
     expect(screen.queryByText(/번 문/)).toBeNull();
   });
 
-  it('비단조 노선(2호선)이면 quickExit 데이터가 있어도 라벨 미표시', () => {
-    const stops: Stop[] = [
-      { station: '강남', line: '2', mark: 'filled' },
+  // 라벨 미표시 케이스 — fromName→toName 단일 segment fixture.
+  // 각 케이스의 의도는 setup이 아니라 it 설명에 둔다.
+  function makeDestOnlyStops(line: LineNumber, fromName: string, toName: string): Stop[] {
+    return [
+      { station: fromName, line, mark: 'filled' },
       {
-        station: '경복궁',
-        line: '2',
-        stopsFromPrev: '5정거장',
-        mark: 'dest',
-        note: '도착',
-        arrivalContext: { line: '2', fromName: '강남', toName: '경복궁' },
-      },
-    ];
-    render(<EditorialTimeline stops={stops} />);
-    expect(screen.queryByText(/번 문/)).toBeNull();
-  });
-
-  it('단조 노선이지만 도착역에 데이터가 없으면 라벨 미표시', () => {
-    const stops: Stop[] = [
-      { station: '경복궁', line: '3', mark: 'filled' },
-      {
-        station: '오금',
-        line: '3',
+        station: toName,
+        line,
         stopsFromPrev: '3정거장',
         mark: 'dest',
         note: '도착',
-        arrivalContext: { line: '3', fromName: '경복궁', toName: '오금' },
+        arrivalContext: { line, fromName, toName },
       },
     ];
-    render(<EditorialTimeline stops={stops} />);
+  }
+
+  it.each<[string, LineNumber, string, string]>([
+    ['비단조 노선(2호선) — 데이터 있어도 라벨 미표시', '2', '강남', '경복궁'],
+    ['단조 노선 + 도착역 데이터 없음 — 라벨 미표시', '3', '경복궁', '오금'],
+  ])('%s', (_label, line, from, to) => {
+    render(<EditorialTimeline stops={makeDestOnlyStops(line, from, to)} />);
     expect(screen.queryByText(/번 문/)).toBeNull();
   });
 });
