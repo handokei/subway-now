@@ -85,7 +85,7 @@ export default function HomeScreen() {
   const effectiveOrigin = customOrigin ?? result?.station ?? null;
   useTripOrigin(destination, effectiveOrigin, setTripOrigin);
   const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(
-    route ? (effectiveOrigin?.name ?? null) : null,
+    effectiveOrigin?.name ?? null,
   );
   const arrival = useArrivalCountdown(rawArrival);
   const isFav = effectiveOrigin ? favorites.some((f) => f.id === effectiveOrigin.id) : false;
@@ -512,17 +512,23 @@ export default function HomeScreen() {
               </View>
             )}
 
-            {/* Arrivals — 경로 선택된 경우에만 노출 */}
-            {route && (
+            {/* Arrivals — 현재역(effectiveOrigin)이 확정되면 trip 유무와 무관하게 노출 */}
+            {effectiveOrigin && (
               <View style={[styles.arrivalSection, { backgroundColor: colors.card }]}>
                 <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('home.arrivalInfoTitle')}</Text>
                 {arrivalLoading && !arrival && (
                   <Text style={[styles.arrivalItem, { color: colors.ink }]}>{t('home.loading')}</Text>
                 )}
-                {arrivalIsMock && (
+                {arrival?.source === 'closed' ? (
+                  <Text style={[styles.mockNotice, { color: colors.muted }]}>{t('home.closedNotice')}</Text>
+                ) : arrival?.source === 'schedule' ? (
+                  <Text style={[styles.mockNotice, { color: colors.warn }]} testID="arrival-schedule-notice">
+                    {t('home.scheduleNotice')}
+                  </Text>
+                ) : arrivalIsMock ? (
                   <Text style={[styles.mockNotice, { color: colors.warn }]}>{t('home.mockNotice')}</Text>
-                )}
-                {arrival && (
+                ) : null}
+                {arrival && arrival.source !== 'closed' && (
                   <>
                     <ArrivalRow label={t('arrival.upbound')} items={arrival.up} />
                     <ArrivalRow label={t('arrival.downbound')} items={arrival.down} />

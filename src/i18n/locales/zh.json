@@ -39,6 +39,8 @@
     "arrivalInfoTitle": "列车到达信息",
     "loading": "加载中...",
     "mockNotice": "无法获取实时数据,显示预测数据",
+    "scheduleNotice": "时刻表基准 · 正在加载实时信息",
+    "closedNotice": "已结束运营时段",
     "noArrivalInfo": "无到达信息",
     "notNearStationTitle": "附近没有地铁站",
     "notNearStationDescription": "当您距离地铁站500m以内时,会显示当前站。\n您也可以在地图标签页手动设置出发站。",

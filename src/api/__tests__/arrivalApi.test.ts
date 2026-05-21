@@ -5,9 +5,14 @@ describe('fetchArrivalInfo', () => {
     jest.clearAllMocks();
     jest.spyOn(console, 'warn').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(console, 'info').mockImplementation(() => {});
+    // schedule fallback이 closed 시간대에 빈 배열을 반환하지 않도록 KST 15:00 평일로 고정.
+    // 내부 describe가 자신만의 setSystemTime을 호출하면 그게 우선한다.
+    jest.useFakeTimers().setSystemTime(new Date('2026-05-18T06:00:00Z'));
   });
 
   afterEach(() => {
+    jest.useRealTimers();
     jest.restoreAllMocks();
   });
 
@@ -370,6 +375,92 @@ describe('fetchArrivalInfo', () => {
 
       const result = await fetchArrivalInfo('강남');
       expect(result.isMock).toBe(true);
+    });
+  });
+
+  describe('schedule fallback', () => {
+    it('realtime 성공 시 source는 "realtime"', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행' },
+          ],
+        }),
+      } as Response);
+      const result = await fetchArrivalInfo('강남');
+      expect(result.source).toBe('realtime');
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+    });
+
+    it('API 키 없음 + 알려진 역명이면 schedule fallback (source="schedule")', async () => {
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+      const result = await fetchArrivalInfo('강남');
+      expect(result.source).toBe('schedule');
+      expect(result.isMock).toBe(true);
+      expect(result.up.length).toBeGreaterThan(0);
+    });
+
+    it('HTTP 5xx + 알려진 역명이면 schedule fallback', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 500 } as Response);
+      const result = await fetchArrivalInfo('강남');
+      expect(result.source).toBe('schedule');
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+    });
+
+    it('네트워크 에러 + 알려진 역명이면 schedule fallback', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockRejectedValue(new Error('net'));
+      const result = await fetchArrivalInfo('강남');
+      expect(result.source).toBe('schedule');
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+    });
+
+    it('빈 응답 + 알려진 역명이면 schedule fallback', async () => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ realtimeArrivalList: [] }),
+      } as Response);
+      const result = await fetchArrivalInfo('강남');
+      expect(result.source).toBe('schedule');
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+    });
+
+    it('알 수 없는 역명이면 MOCK_ARRIVALS 최후 fallback (source 없음)', async () => {
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+      const result = await fetchArrivalInfo('존재하지않는역명12345');
+      expect(result.source).toBeUndefined();
+      expect(result.isMock).toBe(true);
+      expect(result.up).toEqual(MOCK_ARRIVALS.up);
+    });
+
+    it('역명은 알지만 headway 데이터 없는 노선이면 MOCK_ARRIVALS 최후 fallback', async () => {
+      // stations.json mocking 없이는 강제 케이스 만들기 어려우므로
+      // hasHeadwayData를 모킹해 line은 찾았지만 headway가 없는 분기를 검증.
+      jest.isolateModules(() => {
+        jest.doMock('../../utils/scheduleFallback', () => {
+          const actual = jest.requireActual('../../utils/scheduleFallback');
+          return { ...actual, hasHeadwayData: () => false };
+        });
+        const { fetchArrivalInfo: fn, MOCK_ARRIVALS: mock } = require('../arrivalApi');
+        delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+        return fn('강남').then((r: typeof mock) => {
+          expect(r.source).toBeUndefined();
+          expect(r.up).toEqual(mock.up);
+        });
+      });
+    });
+
+    it('closed 시간대(KST 03:00)에는 source="closed" + 빈 배열', async () => {
+      jest.setSystemTime(new Date('2026-05-18T18:00:00Z')); // KST 03:00 = 다음날 새벽
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+      const result = await fetchArrivalInfo('강남');
+      expect(result.source).toBe('closed');
+      expect(result.up).toEqual([]);
+      expect(result.down).toEqual([]);
     });
   });
 
