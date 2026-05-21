@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { StationArrival } from '../api/arrivalApi';
 import type { ArrivalProvider } from '../providers/types';
+import type { LineNumber } from '../types/station';
 import { createArrivalProvider } from '../providers/factory';
 import { TtlCache } from '../utils/ttlCache';
 import { usePolling } from './usePolling';
@@ -31,6 +32,7 @@ interface UseArrivalInfoReturn {
 
 export function useArrivalInfo(
   stationName: string | null,
+  lineHint?: LineNumber | null,
   provider?: ArrivalProvider,
 ): UseArrivalInfoReturn {
   const [arrival, setArrival] = useState<StationArrival | null>(null);
@@ -39,6 +41,10 @@ export function useArrivalInfo(
   const arrivalRef = useRef<StationArrival | null>(null);
   const stationNameRef = useRef(stationName);
   stationNameRef.current = stationName;
+  // lineHint는 환승역 schedule fallback의 정확도용. 캐시 키에는 포함하지 않는다
+  // (같은 역의 실시간 응답은 호선 무관 동일하므로 캐시 공유가 더 효율적).
+  const lineHintRef = useRef(lineHint);
+  lineHintRef.current = lineHint;
 
   const updateArrival = useCallback((data: StationArrival) => {
     if (!arrivalEqual(arrivalRef.current, data)) {
@@ -73,7 +79,9 @@ export function useArrivalInfo(
 
     const poll = async () => {
       try {
-        const data = await providerRef.current.getArrival(stationName);
+        const data = await providerRef.current.getArrival(stationName, {
+          lineHint: lineHint ?? undefined,
+        });
         if (cancelled) return;
         if (!data.isMock) {
           arrivalCache.set(stationName, data);
@@ -91,13 +99,16 @@ export function useArrivalInfo(
     return () => {
       cancelled = true;
     };
-  }, [stationName]);
+    // lineHint가 바뀌면 즉시 refetch — stale hint로 5초간 잘못된 호선 schedule이 보이는 것 방지.
+  }, [stationName, lineHint]);
 
   usePolling(
     () => {
       const name = stationNameRef.current;
       if (!name) return;
-      providerRef.current.getArrival(name).then((data) => {
+      providerRef.current.getArrival(name, {
+        lineHint: lineHintRef.current ?? undefined,
+      }).then((data) => {
         if (name !== stationNameRef.current) return;
         if (!data.isMock) {
           arrivalCache.set(name, data);

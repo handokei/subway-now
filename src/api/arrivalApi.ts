@@ -2,6 +2,7 @@ import { createLogger } from '../utils/logger';
 import { parseTrainType, type TrainType } from '../constants/trainTypes';
 import { findLineByStationName } from '../utils/stationLookup';
 import { buildScheduleArrival, hasHeadwayData } from '../utils/scheduleFallback';
+import type { LineNumber } from '../types/station';
 
 const log = createLogger('arrivalApi');
 
@@ -70,8 +71,17 @@ export function parseRecptnDt(recptnDt: unknown): number {
  * 역명으로 호선을 찾지 못하면(드문 케이스) 최후 수단으로 하드코딩 MOCK_ARRIVALS 반환.
  * fallback 발생은 항상 로깅한다 — 후속 Option B(시간표 ETL) 필요성을 데이터로 판단하기 위함.
  */
-function getFallbackArrival(stationName: string, reason: string): StationArrival {
-  const line = findLineByStationName(stationName);
+/**
+ * 실시간 응답을 얻지 못한 caller가 schedule fallback을 동일한 정책으로 사용하기 위한 진입점.
+ * (SeoulOpenApiProvider 외에 BffArrivalProvider도 공유 — provider 간 fallback 정책 일관성.)
+ */
+export function getFallbackArrival(
+  stationName: string,
+  reason: string,
+  lineHint?: LineNumber,
+): StationArrival {
+  // lineHint가 있으면 환승역에서 정확한 호선의 schedule을 사용. 없으면 역명으로 lookup.
+  const line = lineHint ?? findLineByStationName(stationName);
   if (!line || !hasHeadwayData(line)) {
     log.warn('schedule_fallback_unavailable', { station: stationName, line, reason });
     return MOCK_ARRIVALS;
@@ -82,6 +92,7 @@ function getFallbackArrival(stationName: string, reason: string): StationArrival
     line,
     reason,
     source: result.source,
+    fromHint: lineHint != null,
   });
   return result;
 }
@@ -89,18 +100,19 @@ function getFallbackArrival(stationName: string, reason: string): StationArrival
 export interface FetchArrivalOptions {
   timeoutMs?: number;
   maxPerDirection?: number;
+  lineHint?: LineNumber;
 }
 
 export async function fetchArrivalInfo(
   stationName: string,
   options?: FetchArrivalOptions,
 ): Promise<StationArrival> {
-  const { timeoutMs = 5000, maxPerDirection = 2 } = options ?? {};
+  const { timeoutMs = 5000, maxPerDirection = 2, lineHint } = options ?? {};
   const apiKey = process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
 
   if (!apiKey) {
     log.warn('API key not set (EXPO_PUBLIC_SEOUL_DATA_API_KEY)');
-    return getFallbackArrival(stationName, 'no_api_key');
+    return getFallbackArrival(stationName, 'no_api_key', lineHint);
   }
 
   const controller = new AbortController();
@@ -111,7 +123,7 @@ export async function fetchArrivalInfo(
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) {
       log.warn(`HTTP ${response.status} for station "${stationName}"`);
-      return getFallbackArrival(stationName, `http_${response.status}`);
+      return getFallbackArrival(stationName, `http_${response.status}`, lineHint);
     }
 
     const data = await response.json();
@@ -162,12 +174,12 @@ export async function fetchArrivalInfo(
     };
     if (sliced.up.length === 0 && sliced.down.length === 0) {
       log.warn(`No arrivals for station "${stationName}"`);
-      return getFallbackArrival(stationName, 'empty_response');
+      return getFallbackArrival(stationName, 'empty_response', lineHint);
     }
     return sliced;
   } catch (e) {
     log.error(`Fetch failed for station "${stationName}":`, e);
-    return getFallbackArrival(stationName, 'fetch_error');
+    return getFallbackArrival(stationName, 'fetch_error', lineHint);
   } finally {
     clearTimeout(timeout);
   }

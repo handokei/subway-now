@@ -1,5 +1,4 @@
 import { BffArrivalProvider } from '../BffArrivalProvider';
-import { MOCK_ARRIVALS } from '../../../api/arrivalApi';
 import type { StationArrival } from '../../../api/arrivalApi';
 import type { ArrivalOptions } from '../../types';
 
@@ -29,6 +28,11 @@ describe('BffArrivalProvider', () => {
     provider = new BffArrivalProvider(BASE_URL);
     global.fetch = jest.fn();
     jest.useFakeTimers();
+    // schedule fallback이 closed 시간대에 빈 배열을 반환하지 않도록 KST 15:00 weekday 고정.
+    jest.setSystemTime(new Date('2026-05-18T06:00:00Z'));
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+    jest.spyOn(console, 'info').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -36,10 +40,10 @@ describe('BffArrivalProvider', () => {
     jest.restoreAllMocks();
   });
 
-  it('정상 응답 시 도착 데이터를 반환한다', async () => {
+  it('정상 응답 시 도착 데이터를 source=realtime과 함께 반환한다', async () => {
     mockFetchOk(VALID_DATA);
     const result = await callGetArrival();
-    expect(result).toEqual(VALID_DATA);
+    expect(result).toEqual({ ...VALID_DATA, source: 'realtime' });
   });
 
   it('기본 옵션으로 올바른 URL을 호출한다', async () => {
@@ -62,34 +66,45 @@ describe('BffArrivalProvider', () => {
     );
   });
 
-  it('응답이 ok가 아니면 MOCK_ARRIVALS를 반환한다', async () => {
+  it('응답이 ok가 아니면 schedule fallback으로 전환한다', async () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 500 });
     const result = await callGetArrival();
-    expect(result).toBe(MOCK_ARRIVALS);
+    expect(result.source).toBe('schedule');
+    expect(result.isMock).toBe(true);
   });
 
-  it('up/down 모두 빈 배열이면 MOCK_ARRIVALS를 반환한다', async () => {
+  it('up/down 모두 빈 배열이면 schedule fallback으로 전환한다', async () => {
     mockFetchOk({ up: [], down: [] });
     const result = await callGetArrival();
-    expect(result).toBe(MOCK_ARRIVALS);
+    expect(result.source).toBe('schedule');
+  });
+
+  it('lineHint를 schedule fallback에 전달한다', async () => {
+    (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 503 });
+    const result = await callGetArrival('서울역', { lineHint: '4' });
+    expect(result.source).toBe('schedule');
+    // 4호선 평일 offPeak headway 360s → 첫 차 180s
+    expect(result.up[0].arrivalSeconds).toBe(180);
   });
 
   it.each([
     { label: 'up만 있을 때', data: { up: VALID_DATA.up, down: [] } },
     { label: 'down만 있을 때', data: { up: [], down: VALID_DATA.down } },
-  ])('한 방향($label)에만 데이터가 있으면 그대로 반환한다', async ({ data }) => {
+  ])('한 방향($label)에만 데이터가 있으면 source=realtime으로 표시', async ({ data }) => {
     mockFetchOk(data);
     const result = await callGetArrival();
-    expect(result).toEqual(data);
+    expect(result.up).toEqual(data.up);
+    expect(result.down).toEqual(data.down);
+    expect(result.source).toBe('realtime');
   });
 
-  it('fetch 에러 시 MOCK_ARRIVALS를 반환한다', async () => {
+  it('fetch 에러 시 schedule fallback으로 전환한다', async () => {
     (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
     const result = await callGetArrival();
-    expect(result).toBe(MOCK_ARRIVALS);
+    expect(result.source).toBe('schedule');
   });
 
-  it('타임아웃 abort 시 MOCK_ARRIVALS를 반환한다', async () => {
+  it('타임아웃 abort 시 schedule fallback으로 전환한다', async () => {
     (global.fetch as jest.Mock).mockImplementationOnce(
       () => new Promise((_, reject) => {
         setTimeout(() => reject(new DOMException('Aborted', 'AbortError')), 6000);
@@ -100,7 +115,7 @@ describe('BffArrivalProvider', () => {
     jest.runAllTimers();
     const result = await resultPromise;
 
-    expect(result).toBe(MOCK_ARRIVALS);
+    expect(result.source).toBe('schedule');
   });
 
   it('특수 문자가 포함된 역명을 URL 인코딩한다', async () => {

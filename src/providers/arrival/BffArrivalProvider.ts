@@ -1,6 +1,6 @@
 import type { ArrivalProvider, ArrivalOptions } from '../types';
 import type { StationArrival } from '../../api/arrivalApi';
-import { MOCK_ARRIVALS } from '../../api/arrivalApi';
+import { getFallbackArrival } from '../../api/arrivalApi';
 
 export class BffArrivalProvider implements ArrivalProvider {
   constructor(private readonly baseUrl: string) {}
@@ -9,7 +9,7 @@ export class BffArrivalProvider implements ArrivalProvider {
     stationName: string,
     options?: ArrivalOptions,
   ): Promise<StationArrival> {
-    const { timeoutMs = 5000, maxPerDirection = 2 } = options ?? {};
+    const { timeoutMs = 5000, maxPerDirection = 2, lineHint } = options ?? {};
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -19,18 +19,18 @@ export class BffArrivalProvider implements ArrivalProvider {
       const response = await fetch(url, { signal: controller.signal });
 
       if (!response.ok) {
-        return MOCK_ARRIVALS;
+        return getFallbackArrival(stationName, `bff_http_${response.status}`, lineHint);
       }
 
       const data: StationArrival = await response.json();
 
       if (data.up.length === 0 && data.down.length === 0) {
-        return MOCK_ARRIVALS;
+        return getFallbackArrival(stationName, 'bff_empty_response', lineHint);
       }
 
-      return data;
+      return { ...data, source: data.source ?? 'realtime' };
     } catch {
-      return MOCK_ARRIVALS;
+      return getFallbackArrival(stationName, 'bff_fetch_error', lineHint);
     } finally {
       clearTimeout(timeout);
     }

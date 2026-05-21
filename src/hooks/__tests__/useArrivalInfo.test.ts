@@ -84,6 +84,26 @@ describe('useArrivalInfo', () => {
     );
   });
 
+  it('lineHint가 주어지면 provider에 그대로 전달한다 (환승역 fallback 정확도)', async () => {
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    renderHook(() => useArrivalInfo('서울역', '4'));
+
+    await waitFor(() =>
+      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('서울역', { lineHint: '4' })
+    );
+  });
+
+  it('lineHint가 null이면 undefined로 전달한다', async () => {
+    (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+    renderHook(() => useArrivalInfo('강남', null));
+
+    await waitFor(() =>
+      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('강남', { lineHint: undefined })
+    );
+  });
+
   it('stationName이 변경되면 새로운 역의 데이터를 가져온다', async () => {
     (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
 
@@ -93,13 +113,13 @@ describe('useArrivalInfo', () => {
     );
 
     await waitFor(() =>
-      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('강남', undefined)
+      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('강남', { lineHint: undefined })
     );
 
     rerender({ name: '역삼' });
 
     await waitFor(() =>
-      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('역삼', undefined)
+      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('역삼', { lineHint: undefined })
     );
   });
 
