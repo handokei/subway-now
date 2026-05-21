@@ -99,7 +99,13 @@ export function buildScheduleArrival(line: LineNumber, now: Date): StationArriva
     return { up: [], down: [], isMock: true, source: 'closed' };
   }
 
-  const first = Math.round(headway / 2);
+  // 다음 발차를 wall-clock 헤드웨이 격자에 정렬한다.
+  // 폴링 사이클(5s)마다 같은 anchor를 산출해 ETA가 연속적으로 감소 (이슈 #468).
+  // 정확히 격자 위(remainder=0)면 첫 차는 다음 격자(headway초 뒤)로 보내 0초 트레인 표시를 방지.
+  const headwayMs = headway * 1000;
+  const remainder = nowMs % headwayMs;
+  const msUntilFirst = remainder === 0 ? headwayMs : headwayMs - remainder;
+  const first = Math.round(msUntilFirst / 1000);
   const second = first + headway;
   const up = [makeTrain(first, 'UP-1', nowMs), makeTrain(second, 'UP-2', nowMs)];
   const down = [makeTrain(first, 'DN-1', nowMs), makeTrain(second, 'DN-2', nowMs)];
