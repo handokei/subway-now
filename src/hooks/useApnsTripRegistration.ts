@@ -8,11 +8,12 @@
  * 권한 거부/토큰 실패 시 graceful skip — 사전 예약(#334)만으로 baseline 동작.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Station } from '../types/station';
 import type { Route } from '../utils/stationRoute';
+import { routeSignature } from '../utils/stationRoute';
 import { registerActiveTrip, clearActiveTrip } from '../api/alarmBackend';
 import { routeToWaypoints } from '../utils/routeWaypoints';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../constants/storageKeys';
@@ -68,6 +69,9 @@ export function useApnsTripRegistration({
   nextStationEtaSeconds,
   currentStation = null,
 }: UseApnsTripRegistrationInputs): void {
+  // route 객체 reference가 categorized recompute로 자주 바뀌므로 내용 기반 signature로
+  // 메모화 — register useEffect deps에 사용해 동일 경로 재등록(POST /trips 폭주) 방지.
+  const routeSig = useMemo(() => routeSignature(route), [route]);
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
   const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation });
   useEffect(() => {
@@ -169,8 +173,9 @@ export function useApnsTripRegistration({
     return () => {
       cancelled = true;
     };
+    // route는 routeSig(내용 기반)로 비교 — 동일 경로 재등록으로 백엔드 trip
+    // state(waypoints shift)가 reset되거나 워커 POST /trips가 분당 폭주하는 것을 방지.
+    // route 자체는 closure 안에서만 사용되므로 deps에 넣지 않는다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    // TODO(#416 follow-up): currentStation 변경 시 register 매번 호출되어 백엔드 trip 진행 상태(waypoints shift)가 reset될 수 있다.
-    // 멱등성 처리는 클라/백엔드 어디서 보장할지 실기기 검증 결과 보고 결정한다.
-  }, [route, destination?.id, nextStationEtaSeconds, currentStation?.id]);
+  }, [routeSig, destination?.id, nextStationEtaSeconds, currentStation?.id]);
 }

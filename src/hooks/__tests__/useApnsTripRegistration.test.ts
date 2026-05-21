@@ -370,4 +370,30 @@ describe('useApnsTripRegistration', () => {
     expect(mockRegister.mock.calls[0][0].alarmAtEpochMs).toBe(fixed + 300 * 1000);
     (Date.now as jest.Mock).mockRestore();
   });
+
+  it('route 객체 reference만 바뀌고 내용이 같으면 register 재호출하지 않는다', async () => {
+    const { rerender } = renderHook(
+      ({ route }: { route: Route }) =>
+        useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
+      { initialProps: { route: { type: 'direct', stops: 5, line: '2' } as Route } },
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    // 내용 동일, reference만 신규
+    rerender({ route: { type: 'direct', stops: 5, line: '2' } as Route });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockRegister).toHaveBeenCalledTimes(1);
+  });
+
+  it('route 내용이 바뀌면 register 재호출한다 (signature 변경)', async () => {
+    const { rerender } = renderHook(
+      ({ route }: { route: Route }) =>
+        useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
+      { initialProps: { route: { type: 'direct', stops: 5, line: '2' } as Route } },
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    rerender({ route: { type: 'direct', stops: 6, line: '2' } as Route });
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+  });
 });

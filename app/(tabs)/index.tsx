@@ -10,7 +10,7 @@ import { formatArrivalTime } from '../../src/utils/formatTime';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
-import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, type Route, type CategorizedRoute, type RoutePreference } from '../../src/utils/stationRoute';
+import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../../src/utils/stationRoute';
 import type { Station } from '../../src/types/station';
 import { EditorialTimeline } from '../../src/components/EditorialTimeline';
 import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/journeyAdapter';
@@ -64,8 +64,13 @@ export default function HomeScreen() {
   const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
   const [categorized, setCategorized] = useState<CategorizedRoute[]>([]);
   const [selectedKey, setSelectedKey] = useState<RoutePreference>(routePreference);
-  const route: Route =
-    categorized.find((r) => r.category.key === selectedKey)?.candidate.route ?? null;
+  // categorized/selectedKey가 동일하면 같은 reference를 유지해 하위 훅(LiveActivity,
+  // useApnsTripRegistration)의 useEffect가 매 렌더 재발사되는 churn을 막는다.
+  const route: Route = useMemo(
+    () => categorized.find((r) => r.category.key === selectedKey)?.candidate.route ?? null,
+    [categorized, selectedKey],
+  );
+  const routeSig = useMemo(() => routeSignature(route), [route]);
 
   // 트립 origin은 destination 설정 시점에 캡처되어 trip 동안 고정 (useTripOrigin 참조).
   // useFusedNearestStation 첫 호출 시점엔 routeContext=undefined로 GPS fusion fallback,
@@ -206,7 +211,14 @@ export default function HomeScreen() {
       }
       return;
     }
-    const key = `${effectiveOrigin.id}__${destination.id}__${displayEta ?? ''}__${arrivalIsMock}__${alarmEvent?.type ?? ''}`;
+    // route가 아직 계산되지 않은 짧은 윈도우(콜드 스타트, categorized async fill 중)에
+    // 정상 payload를 한 번 송출한 뒤라면 destination-only로 덮어쓰지 말고 이전 payload를
+    // 유지한다. 단 첫 송출 전(아직 LiveActivity 미시작)이면 차라리 destination-only라도
+    // 띄워야 사용자 가시성이 확보된다 — 경로 산출이 영구 실패하는 케이스 대비.
+    if (!route && prevNotifKeyRef.current !== undefined && prevNotifKeyRef.current !== 'none') {
+      return;
+    }
+    const key = `${effectiveOrigin.id}__${destination.id}__${routeSig}__${displayEta ?? ''}__${arrivalIsMock}__${alarmEvent?.type ?? ''}`;
     if (key === prevNotifKeyRef.current) return;
     prevNotifKeyRef.current = key;
 
@@ -230,7 +242,7 @@ export default function HomeScreen() {
       );
     };
     update().catch((e) => logger.error('알림 업데이트 실패:', e));
-  }, [effectiveOrigin?.id, destination?.id, displayEta, arrivalIsMock, route, alarmEvent]);
+  }, [effectiveOrigin?.id, destination?.id, displayEta, arrivalIsMock, routeSig, alarmEvent]);
 
   useEffect(() => {
     if (arrivedBanner) {

@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 
@@ -398,6 +398,52 @@ describe('calculateStaticETA', () => {
 
   it('route가 null이면 null을 반환한다', () => {
     expect(calculateStaticETA(null)).toBeNull();
+  });
+});
+
+describe('routeSignature', () => {
+  const SEP = '\x1f';
+
+  it('null이면 빈 문자열을 반환한다', () => {
+    expect(routeSignature(null)).toBe('');
+  });
+
+  it('DirectRoute의 내용이 같으면 같은 signature를 반환한다 (reference 무관)', () => {
+    const a: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+    const b: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+    expect(routeSignature(a)).toBe(routeSignature(b));
+    expect(routeSignature(a)).toBe(['d', '2', 5].join(SEP));
+  });
+
+  it('DirectRoute의 stops가 다르면 다른 signature를 반환한다', () => {
+    const a: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+    const b: DirectRoute = { type: 'direct', stops: 6, line: '2' };
+    expect(routeSignature(a)).not.toBe(routeSignature(b));
+  });
+
+  it('TransferRoute는 transferName/노선/정거장수를 모두 반영한다', () => {
+    const route: TransferRoute = {
+      type: 'transfer',
+      transferName: '교대',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 1,
+      stopsFromTransfer: 5,
+    };
+    expect(routeSignature(route)).toBe(['t', '2', '3', '교대', 1, 5].join(SEP));
+  });
+
+  it('MultiTransferRoute는 모든 환승 segment + 마지막 정거장수를 반영한다', () => {
+    const route: MultiTransferRoute = {
+      type: 'multi-transfer',
+      transfers: [
+        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+      ],
+      stopsAfterLastTransfer: 4,
+    };
+    const segs = ['8', '2', '잠실', 3].join(SEP) + SEP + ['2', '1', '시청', 5].join(SEP);
+    expect(routeSignature(route)).toBe(['m', segs, 4].join(SEP));
   });
 });
 
