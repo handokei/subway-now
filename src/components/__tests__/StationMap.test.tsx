@@ -446,18 +446,22 @@ describe('StationMap', () => {
       ],
     };
 
-    it('routeCoords 미전달 시 polyline / 강조 마커가 없다', () => {
+    it('routeCoords 미전달 시 polyline / 점 오버레이가 없다', () => {
       const { queryByTestId } = render(<StationMap {...baseProps} />);
       expect(queryByTestId('route-polyline')).toBeNull();
-      expect(queryByTestId(`route-marker-origin-${mockStation.id}`)).toBeNull();
+      expect(queryByTestId(`route-marker-transfer-${transferStation.id}`)).toBeNull();
     });
 
-    it('routeCoords 전달 시 polyline + 환승 마커만 오버레이 (출발/도착은 베이스 마커 재사용)', () => {
+    it('routeCoords 전달 시 polyline만 오버레이하고 모든 키 역은 베이스 마커에서 재사용', () => {
       const { getByTestId, queryByTestId } = render(
-        <StationMap {...baseProps} routeCoords={routeCoords} />,
+        <StationMap
+          {...baseProps}
+          nearbyStations={[mockStation, transferStation, destStation]}
+          routeCoords={routeCoords}
+        />,
       );
       expect(getByTestId('route-polyline')).toBeTruthy();
-      expect(getByTestId(`route-marker-transfer-${transferStation.id}`)).toBeTruthy();
+      expect(queryByTestId(`route-marker-transfer-${transferStation.id}`)).toBeNull();
       expect(queryByTestId(`route-marker-origin-${mockStation.id}`)).toBeNull();
       expect(queryByTestId(`route-marker-destination-${destStation.id}`)).toBeNull();
     });
@@ -480,14 +484,50 @@ describe('StationMap', () => {
       expect(__fitToCoordinatesMock).not.toHaveBeenCalled();
     });
 
-    it('환승 마커는 노선 색을 사용', () => {
+    it('환승역 배지는 베이스 마커에서 accent 색으로 강조된다', () => {
       const { getByTestId } = render(
-        <StationMap {...baseProps} routeCoords={routeCoords} />,
+        <StationMap
+          {...baseProps}
+          nearbyStations={[mockStation, transferStation, destStation]}
+          routeCoords={routeCoords}
+        />,
       );
-      const transferDot = getByTestId(`route-marker-dot-transfer-${transferStation.id}`);
-      expect(transferDot.props.style).toEqual(
+      const transferBadge = getByTestId(`badge-${transferStation.id}`);
+      expect(transferBadge.props.style).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({ backgroundColor: transferStation.lineColor }),
+          expect.objectContaining({ backgroundColor: '#C8553D' }),
+        ]),
+      );
+    });
+
+    it('환승역 그룹에서 route가 통과하는 호선의 배지만 accent로 강조', () => {
+      // (역, 호선) 단위 강조: 같은 물리역의 다른 호선은 노선 색 유지.
+      const transferOtherLine: Station = {
+        id: '2-329',
+        name: transferStation.name,
+        nameEn: transferStation.nameEn,
+        line: '2',
+        lineColor: '#00A84D',
+        lat: transferStation.lat,
+        lng: transferStation.lng,
+      };
+      const { getByTestId } = render(
+        <StationMap
+          {...baseProps}
+          nearbyStations={[mockStation, transferStation, transferOtherLine, destStation]}
+          routeCoords={routeCoords}
+        />,
+      );
+      const routedBadge = getByTestId(`badge-${transferStation.id}`);
+      const otherBadge = getByTestId(`badge-${transferOtherLine.id}`);
+      expect(routedBadge.props.style).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ backgroundColor: '#C8553D' }),
+        ]),
+      );
+      expect(otherBadge.props.style).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ backgroundColor: transferOtherLine.lineColor }),
         ]),
       );
     });
