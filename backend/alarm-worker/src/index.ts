@@ -13,10 +13,15 @@
 import { Hono } from 'hono';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
+import {
+  tokenPrefix,
+  validateTelemetryUpload,
+  writeTelemetryDataPoints,
+} from './telemetry';
 import { deleteTrip, getTrip, putTrip } from './trips';
 import type { Env, Trip } from './types';
 
-const app = new Hono<{ Bindings: Env }>();
+export const app = new Hono<{ Bindings: Env }>();
 
 app.get('/health', (c) => c.json({ ok: true }));
 
@@ -33,6 +38,39 @@ app.post('/trips', async (c) => {
 
   await putTrip(c.env.TRIPS, trip);
   return c.json({ ok: true, token: trip.token });
+});
+
+/**
+ * silent push 게이트 outcome 텔레메트리 (#498).
+ * 클라가 30분 주기로 alarmLog 카운트를 누적 upload한다.
+ * Trip 존재 여부는 확인하지 않는다 — 만료된 trip의 텔레메트리도 보존(데이터 완전성).
+ */
+app.post('/telemetry/silent-push', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const payload = validateTelemetryUpload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const writer = c.env.TELEMETRY;
+  if (writer) {
+    writeTelemetryDataPoints(writer, payload);
+  }
+  console.log(
+    JSON.stringify({
+      msg: 'telemetry uploaded',
+      tokenPrefix: tokenPrefix(payload.token),
+      received: payload.received,
+      fired: payload.fired,
+      skipped: payload.skipped,
+      sink: writer ? 'ae' : 'none',
+    }),
+  );
+  return c.json({ ok: true });
 });
 
 app.delete('/trips/:token', async (c) => {

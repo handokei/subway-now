@@ -9,6 +9,7 @@ import { setupNotificationHandler, refreshNotificationChannels } from '../src/ut
 import { setMinLevel, createLogger } from '../src/utils/logger';
 import { i18n } from '../src/i18n';
 import { useApplyLocale } from '../src/hooks/useApplyLocale';
+import { useSilentPushTelemetry } from '../src/hooks/useSilentPushTelemetry';
 import { useAppStore } from '../src/store/useAppStore';
 import { DebugModal } from '../src/components/DebugModal';
 import { isDebugModalEnabled } from '../src/constants/debugFlags';
