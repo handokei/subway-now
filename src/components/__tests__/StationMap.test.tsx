@@ -1,11 +1,11 @@
 import React from 'react';
 import { Platform } from 'react-native';
-import { render, waitFor, fireEvent } from '@testing-library/react-native';
+import { render, waitFor, fireEvent, act } from '@testing-library/react-native';
 import { StationMap } from '../StationMap';
 import type { Station } from '../../types/station';
 import { installLanguageRestoreHook, setLang } from '../../testUtils/i18nLanguageOverride';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
-const { __animateToRegionMock, __fitToCoordinatesMock } = require('react-native-map-clustering');
+const { __animateToRegionMock, __fitToCoordinatesMock } = require('react-native-maps');
 
 installLanguageRestoreHook();
 
@@ -330,6 +330,135 @@ describe('StationMap', () => {
       g.stations.some((s: Station) => s.id === mockStation.id),
     );
     expect(nearestGroup.isNearest).toBe(true);
+  });
+
+  describe('줌아웃 시 역 마커 숨김 (#509)', () => {
+    function triggerZoom(
+      node: {
+        props: {
+          onRegionChangeComplete?: (r: {
+            latitudeDelta: number;
+            longitudeDelta: number;
+          }) => void;
+        };
+      },
+      delta: number,
+    ) {
+      act(() => {
+        node.props.onRegionChangeComplete?.({
+          latitudeDelta: delta,
+          longitudeDelta: delta,
+        });
+      });
+    }
+
+    it('초기 줌(0.05)에서는 모든 그룹 마커 표시', () => {
+      const { getByTestId } = render(<StationMap {...baseProps} />);
+      expect(getByTestId('marker-강남')).toBeTruthy();
+      expect(getByTestId('marker-선릉')).toBeTruthy();
+    });
+
+    it('가로 모드/태블릿: longitudeDelta만 임계값 초과해도 줌아웃 판정', () => {
+      const { getByTestId, queryByTestId } = render(
+        <StationMap
+          {...baseProps}
+          nearestStation={null}
+          nearbyStations={[mockStation, anotherStation]}
+        />,
+      );
+      // longitudeDelta가 임계값 초과지만 latitudeDelta는 임계값 이하
+      act(() => {
+        getByTestId('station-map').props.onRegionChangeComplete?.({
+          latitudeDelta: 0.03,
+          longitudeDelta: 0.2,
+        });
+      });
+      expect(queryByTestId('marker-강남')).toBeNull();
+    });
+
+    it('줌아웃(latitudeDelta > 임계값) 시 일반 그룹 마커 숨김', () => {
+      const { getByTestId, queryByTestId } = render(
+        <StationMap
+          {...baseProps}
+          nearestStation={null}
+          nearbyStations={[mockStation, anotherStation]}
+        />,
+      );
+      triggerZoom(getByTestId('station-map'), 0.2);
+      expect(queryByTestId('marker-강남')).toBeNull();
+      expect(queryByTestId('marker-선릉')).toBeNull();
+    });
+
+    it('줌아웃 후 다시 줌인하면 마커 복원', () => {
+      const { getByTestId, queryByTestId } = render(
+        <StationMap
+          {...baseProps}
+          nearestStation={null}
+          nearbyStations={[mockStation, anotherStation]}
+        />,
+      );
+      triggerZoom(getByTestId('station-map'), 0.2);
+      expect(queryByTestId('marker-강남')).toBeNull();
+      triggerZoom(getByTestId('station-map'), 0.03);
+      expect(getByTestId('marker-강남')).toBeTruthy();
+      expect(getByTestId('marker-선릉')).toBeTruthy();
+    });
+
+    it('줌아웃 상태에서도 nearestStation 그룹은 유지', () => {
+      const { getByTestId } = render(<StationMap {...baseProps} />);
+      triggerZoom(getByTestId('station-map'), 0.2);
+      expect(getByTestId('marker-강남')).toBeTruthy();
+    });
+
+    it('줌아웃 상태에서도 customOriginId 그룹은 유지', () => {
+      const { getByTestId } = render(
+        <StationMap
+          {...baseProps}
+          nearestStation={null}
+          customOriginId="2-023"
+        />,
+      );
+      triggerZoom(getByTestId('station-map'), 0.2);
+      expect(getByTestId('marker-선릉')).toBeTruthy();
+    });
+
+    it('줌아웃 상태에서도 destinationId 그룹은 유지', () => {
+      const { getByTestId } = render(
+        <StationMap
+          {...baseProps}
+          nearestStation={null}
+          destinationId="2-023"
+        />,
+      );
+      triggerZoom(getByTestId('station-map'), 0.2);
+      expect(getByTestId('marker-선릉')).toBeTruthy();
+    });
+
+    it('줌아웃 상태에서도 경로 환승역 그룹은 유지', () => {
+      const transferStation: Station = {
+        id: '3-329',
+        name: '교대',
+        nameEn: "Seoul Nat'l Univ. of Education",
+        line: '3',
+        lineColor: '#EF7C1C',
+        lat: 37.4933,
+        lng: 127.0146,
+      };
+      const routeCoords = {
+        path: [{ latitude: transferStation.lat, longitude: transferStation.lng }],
+        keyStations: [{ station: transferStation, role: 'transfer' as const }],
+      };
+      const { getByTestId } = render(
+        <StationMap
+          {...baseProps}
+          nearestStation={null}
+          nearbyStations={[mockStation, anotherStation, transferStation]}
+          routeCoords={routeCoords}
+        />,
+      );
+      triggerZoom(getByTestId('station-map'), 0.2);
+      expect(getByTestId('marker-교대')).toBeTruthy();
+    });
   });
 
   describe('focusStation', () => {
