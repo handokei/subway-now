@@ -18,7 +18,6 @@ import { useRouter } from 'expo-router';
 import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
-import { useScheduledAlarms } from '../../src/hooks/useScheduledAlarms';
 import { useTripOrigin } from '../../src/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../../src/hooks/useBackgroundLocation';
 import { useApnsTripRegistration } from '../../src/hooks/useApnsTripRegistration';
@@ -155,12 +154,6 @@ export default function HomeScreen() {
     speedMps,
     accuracyMeters,
     arrivalConfidence: confidence,
-  });
-  useScheduledAlarms({
-    route,
-    destination,
-    currentStation: result?.station ?? null,
-    arrival: rawArrival,
   });
   useBackgroundLocation(destination);
   useApnsTripRegistration({

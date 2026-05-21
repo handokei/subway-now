@@ -1,18 +1,18 @@
 /**
- * iOS silent push(BG) 핸들러 — alarm-worker(#338)가 보내는 reschedule 트리거.
+ * iOS silent push(BG) 핸들러 — alarm-worker 백엔드가 보내는 발사 신호.
  *
  * payload (백엔드 apns.ts SilentPushPayload와 1:1):
  * ```
  * aps: { 'content-available': 1 }
- * data: { nextWaypoint: "강남", etaSeconds: 420, phase: "early" }
+ * data: { nextWaypoint, etaSeconds, phase, kind, sentAt }
  * ```
  *
- * 동작:
- *   1. AsyncStorage에서 현재 route/destination 복원
- *   2. payload의 etaSeconds(다음 도착역까지)로 `scheduleAlarmsForRoute` 재호출
- *   3. 기존 예약을 cancelScheduledAlarms로 정리한 뒤 새 시각으로 다시 예약
- *
- * payload 형식이 맞지 않거나 route/destination이 없으면 graceful no-op.
+ * 동작 (#478 PR 1-2 — 사전예약 완전 폐기):
+ *   1. payload 검증 + 수신 로그 적재 (#478 측정 인프라)
+ *   2. 위치 게이트(`silentPushLocationGate`) 통과 여부 확인
+ *      - 통과: trigger:null 즉시 알림 발사 + FIRED_ALARMS dedup 갱신 + logSilentPushFired
+ *      - 실패: logSilentPushSkipped(reason)
+ *   3. 사전예약(scheduleAlarmsForRoute) 호출 없음
  */
 
 import * as Notifications from 'expo-notifications';
@@ -20,11 +20,21 @@ import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
 import type { Station } from '../types/station';
-import type { Route } from '../utils/stationRoute';
-import { scheduleAlarmsForRoute, cancelScheduledAlarms } from '../utils/alarmScheduler';
-import { DESTINATION_KEY, ROUTE_KEY } from '../constants/storageKeys';
+import { DESTINATION_KEY } from '../constants/storageKeys';
 import { createLogger } from '../utils/logger';
-import { logSilentPushReceived } from '../utils/alarmLog';
+import {
+  logSilentPushReceived,
+  logSilentPushFired,
+  logSilentPushSkipped,
+  type AlarmLogReason,
+} from '../utils/alarmLog';
+import {
+  checkSilentPushLocationGate,
+  type GateSkipReason,
+} from '../utils/silentPushLocationGate';
+import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
+import { buildAlarmContent } from '../utils/stationNotification';
+import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 
 const logger = createLogger('SilentPushTask');
 
@@ -34,12 +44,11 @@ export interface SilentPushPayload {
   nextWaypoint: string;
   etaSeconds: number;
   phase: 'early' | 'imminent';
-  /** Waypoint 종류 (#416). intermediate면 통과 즉시 알림, 그 외는 reschedule만. 구 백엔드 호환을 위해 optional. */
+  /** Waypoint 종류 (#416). transfer/destination/intermediate. 구 백엔드 호환 위해 optional. */
   kind?: 'transfer' | 'destination' | 'intermediate';
   /**
    * 백엔드 발사 시점 epoch ms (#478 측정 인프라).
-   * 클라 수신 시각과 비교해 silent push 도달 지연 측정. 구 백엔드 호환 위해 optional.
-   * 종료 조건: #478 PR 1-2(silent push 단독 발화) 머지 + 신 백엔드 배포 후 required로 승격.
+   * 종료 조건: 신 백엔드 배포 후 required로 승격.
    */
   sentAt?: number;
 }
@@ -56,8 +65,6 @@ interface NotificationBackgroundTaskData {
 
 /**
  * 알림 raw payload → 검증된 SilentPushPayload.
- * iOS expo-notifications BG는 APNs JSON의 `data` 필드를 그대로 전달한다.
- * 어디에 들어있든 nextWaypoint/etaSeconds/phase 세 필드 모두 형이 맞아야 통과한다.
  */
 export function extractPayload(
   data: NotificationBackgroundTaskData['data'],
@@ -79,6 +86,34 @@ export function extractPayload(
 }
 
 /**
+ * 게이트 skip reason → alarmLog reason 매핑.
+ * 1:1 매핑 — 다른 곳에서 재사용하지 않으므로 silentPushTask 내부에 둔다.
+ */
+function mapGateReason(reason: GateSkipReason): AlarmLogReason {
+  switch (reason) {
+    case 'unknown-station':
+      return 'gate-unknown-station';
+    case 'no-location':
+      return 'gate-no-location';
+    case 'stale-location':
+      return 'gate-stale-location';
+    case 'out-of-range':
+      return 'gate-out-of-range';
+  }
+}
+
+/**
+ * intermediate(중간역 통과) 알림 content. AlarmEvent 모델에 없는 종류라
+ * buildAlarmContent를 못 쓰고 별도 i18n 키로 빌드한다.
+ */
+function buildIntermediateContent(stationName: string): { title: string; body: string } {
+  return {
+    title: i18next.t('route.intermediatePassedTitle'),
+    body: i18next.t('route.intermediatePassedBody', { name: stationName }),
+  };
+}
+
+/**
  * Task 콜백 본체 — 단위 테스트가 직접 호출할 수 있도록 export.
  */
 export async function handleSilentPush(input: NotificationBackgroundTaskData): Promise<void> {
@@ -97,7 +132,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     `received: kind=${payload.kind ?? 'unknown'} phase=${payload.phase} station=${payload.nextWaypoint} eta=${payload.etaSeconds} sentAt=${payload.sentAt ?? 'unknown'}`,
   );
 
-  // #478 측정 인프라 — 도달 지연 측정용 적재. 동작 변경 없음.
+  // 측정 인프라 — 수신 시점 무조건 적재 (#478 PR 1-1).
   logSilentPushReceived({
     stationName: payload.nextWaypoint,
     kind: payload.kind,
@@ -106,49 +141,111 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     receivedAt,
   });
 
-  try {
-    const [destJson, routeJson] = await Promise.all([
-      AsyncStorage.getItem(DESTINATION_KEY),
-      AsyncStorage.getItem(ROUTE_KEY),
-    ]);
-    if (!destJson || !routeJson) {
-      logger.info('no active destination/route — skip reschedule');
-      return;
-    }
-
-    let destination: Station;
-    let route: Route;
-    try {
-      destination = JSON.parse(destJson) as Station;
-      route = JSON.parse(routeJson) as Route;
-    } catch (e) {
-      logger.error('failed to parse stored destination/route:', e);
-      return;
-    }
-    if (!route || !destination) return;
-
-    // 중간역 통과(intermediate + imminent)는 통과 시점에 즉시 사용자 알림 표시 (#416).
-    // reschedule은 그대로 진행 — 다음 waypoint용 사전 예약을 갱신.
-    if (payload.kind === 'intermediate' && payload.phase === 'imminent') {
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: i18next.t('route.intermediatePassedTitle'),
-          body: i18next.t('route.intermediatePassedBody', { name: payload.nextWaypoint }),
-        },
-        trigger: null,
-      });
-      logger.info(`intermediate passed: ${payload.nextWaypoint}`);
-    }
-
-    await cancelScheduledAlarms();
-    const scheduled = await scheduleAlarmsForRoute({
-      route,
-      destinationName: destination.name,
-      currentStationApproachEtaSeconds: payload.etaSeconds,
+  // kind 미상은 발사 불가 — 알림 본문/dedup 키 결정 불가. 구 백엔드 호환은 received 로그에만.
+  if (!payload.kind) {
+    logSilentPushSkipped({
+      stationName: payload.nextWaypoint,
+      kind: undefined,
+      phaseId: payload.phase,
+      reason: 'payload-missing-kind',
     });
-    logger.info(`rescheduled ${scheduled.length} alarms via silent push`);
+    logger.info('kind missing — skip fire');
+    return;
+  }
+
+  try {
+    await fireWithGate(payload as Required<Pick<SilentPushPayload, 'kind'>> & SilentPushPayload);
   } catch (e) {
-    logger.error('silent push handling failed:', e);
+    logger.error('silent push fire 실패:', e);
+  }
+}
+
+/**
+ * 위치 게이트 통과 시 즉시 발사, 실패 시 logSilentPushSkipped.
+ * kind/dedup/i18n을 한 곳에서 처리.
+ */
+async function fireWithGate(
+  payload: SilentPushPayload & { kind: NonNullable<SilentPushPayload['kind']> },
+): Promise<void> {
+  const gate = await checkSilentPushLocationGate({
+    stationName: payload.nextWaypoint,
+    kind: payload.kind,
+    phase: payload.phase,
+  });
+
+  if (!gate.pass) {
+    logSilentPushSkipped({
+      stationName: payload.nextWaypoint,
+      kind: payload.kind === 'intermediate' ? 'station-passed' : payload.kind,
+      phaseId: payload.phase,
+      reason: mapGateReason(gate.reason!),
+      distanceM: gate.distanceM,
+      thresholdM: gate.thresholdM,
+      locationSource: gate.locationSource,
+      locationAgeMs: gate.locationAgeMs,
+    });
+    logger.info(`gate skip reason=${gate.reason} distance=${gate.distanceM ?? '-'}`);
+    return;
+  }
+
+  // FIRED_ALARMS dedup — destination scope. intermediate는 dedup 대상 아님(통과는 1회성).
+  // dedup 키는 alarmKey({phaseId, stationName}) — FG GPS 발화와 동일 출처 공유.
+  const destinationId = await loadDestinationId();
+  const dedupKey =
+    payload.kind === 'intermediate'
+      ? null
+      : alarmKey({ phaseId: payload.phase, stationName: payload.nextWaypoint });
+
+  if (dedupKey && destinationId) {
+    const fired = await getFiredAlarms(destinationId);
+    if (fired.has(dedupKey)) {
+      logger.info(`dedup: ${dedupKey} already fired — skip`);
+      return;
+    }
+    fired.add(dedupKey);
+    await setFiredAlarms(destinationId, fired);
+  }
+
+  const content =
+    payload.kind === 'intermediate'
+      ? buildIntermediateContent(payload.nextWaypoint)
+      : buildAlarmContent({
+          phaseId: payload.phase,
+          type: payload.kind,
+          stationName: payload.nextWaypoint,
+        } as AlarmEvent);
+
+  await Notifications.scheduleNotificationAsync({
+    content: { title: content.title, body: content.body },
+    trigger: null,
+  });
+
+  logSilentPushFired({
+    stationName: payload.nextWaypoint,
+    kind: payload.kind === 'intermediate' ? 'station-passed' : payload.kind,
+    phaseId: payload.phase,
+    distanceM: gate.distanceM!,
+    thresholdM: gate.thresholdM!,
+    locationSource: gate.locationSource!,
+    locationAgeMs: gate.locationAgeMs!,
+  });
+  logger.info(
+    `fired: kind=${payload.kind} phase=${payload.phase} station=${payload.nextWaypoint} distance=${gate.distanceM}m`,
+  );
+}
+
+/**
+ * AsyncStorage에서 destination.id만 안전하게 꺼낸다.
+ * 파싱 실패/구조 손상 시 null — dedup 건너뜀(발사는 진행).
+ */
+async function loadDestinationId(): Promise<string | null> {
+  try {
+    const json = await AsyncStorage.getItem(DESTINATION_KEY);
+    if (!json) return null;
+    const parsed = JSON.parse(json) as Partial<Station> | null;
+    return parsed && typeof parsed.id === 'string' ? parsed.id : null;
+  } catch {
+    return null;
   }
 }
 
@@ -157,7 +254,6 @@ TaskManager.defineTask(SILENT_PUSH_TASK, handleSilentPush);
 
 /**
  * 앱 초기화 시 호출 — Notifications가 BG payload를 이 task로 라우팅하도록 등록한다.
- * 이미 등록된 경우 no-op.
  */
 export async function registerSilentPushTask(): Promise<void> {
   try {
