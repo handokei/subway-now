@@ -3,8 +3,9 @@
  */
 
 import {
+  ARRIVAL_CODE,
   EARLY_THRESHOLD_SEC,
-  evaluatePhase,
+  evaluatePhaseFromSignal,
   isSignificantEtaChange,
   shouldFire,
 } from './alarm';
@@ -64,8 +65,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
 
     try {
       const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
-      const eta = pickBestEtaSeconds(arrivals, waypoint);
-      if (eta === null) {
+      const signal = pickBestArrivalSignal(arrivals, waypoint);
+      if (signal === null) {
         stats.etaMissing += 1;
         log('empty arrivals — skip cycle', {
           token: trip.token.slice(0, 8),
@@ -74,8 +75,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         });
         continue;
       }
+      const { etaSeconds: eta, arvlCd } = signal;
 
-      const phase = evaluatePhase(eta);
+      const phase = evaluatePhaseFromSignal(eta, arvlCd);
       const etaChanged = isSignificantEtaChange(trip.lastEtaSeconds, eta);
       const phaseFires = phase !== null && shouldFire(phase, trip.lastFiredPhase);
       // 중간역(intermediate)은 통과 시점(imminent)에만 발사. early phase / 정보 갱신용 push는 노이즈로 간주해 스킵.
@@ -103,6 +105,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           phase: pushPhase,
           station: waypoint.stationName,
           etaSeconds: eta,
+          arvlCd,
         });
         const result = await sendSilentPush({
           deviceToken: trip.token,
@@ -188,22 +191,49 @@ export function pickActiveWaypoint(trip: Trip): Waypoint | null {
   return trip.waypoints[0];
 }
 
+export interface ArrivalSignal {
+  etaSeconds: number;
+  arvlCd: number | null;
+}
+
 /**
- * arrivals 중 waypoint의 line과 매칭되는 가장 빠른 ETA(seconds)를 반환.
- * 매칭 실패 시 가장 빠른 도착으로 fallback. 모두 없으면 null.
+ * arrivals 중 waypoint의 line과 매칭되는 trains에서 phase trigger에 가장 적합한 신호를 선택 (#409).
+ *
+ * 선택 순서:
+ *   1. arvlCd ∈ {0, 1} (해당 역 진입/도착) — imminent phase 직결, 즉시 채택
+ *   2. arvlCd ∈ {4, 5} (전역 진입/도착) — early phase 직결, 즉시 채택
+ *   3. 위 둘 모두 없으면 min ETA의 train을 채택 (ETA fallback 경로)
+ *
+ * 라인 매칭 실패 시 전체 arrivals로 fallback. 모두 없으면 null.
  */
-export function pickBestEtaSeconds(
+export function pickBestArrivalSignal(
   arrivals: readonly ArrivalEntry[],
   waypoint: Waypoint,
-): number | null {
+): ArrivalSignal | null {
   if (arrivals.length === 0) return null;
   const matchingLine = arrivals.filter((a) => matchLine(a.subwayNm, waypoint.line));
   const pool = matchingLine.length > 0 ? matchingLine : arrivals;
-  const min = pool.reduce(
-    (acc, cur) => (cur.arrivalSeconds < acc ? cur.arrivalSeconds : acc),
-    Number.POSITIVE_INFINITY,
+
+  // 1순위: imminent 실측 신호 (해당 역 진입/도착).
+  const imminentTrain = pool.find(
+    (a) => a.arvlCd === ARRIVAL_CODE.ENTERING || a.arvlCd === ARRIVAL_CODE.ARRIVED,
   );
-  return Number.isFinite(min) ? min : null;
+  if (imminentTrain) {
+    return { etaSeconds: imminentTrain.arrivalSeconds, arvlCd: imminentTrain.arvlCd };
+  }
+  // 2순위: early 실측 신호 (전역 진입/도착).
+  const earlyTrain = pool.find(
+    (a) => a.arvlCd === ARRIVAL_CODE.PREV_ENTERING || a.arvlCd === ARRIVAL_CODE.PREV_ARRIVED,
+  );
+  if (earlyTrain) {
+    return { etaSeconds: earlyTrain.arrivalSeconds, arvlCd: earlyTrain.arvlCd };
+  }
+  // 3순위: 실측 신호 없음 → min ETA fallback (기존 동작 유지).
+  let best = pool[0];
+  for (const cur of pool) {
+    if (cur.arrivalSeconds < best.arrivalSeconds) best = cur;
+  }
+  return { etaSeconds: best.arrivalSeconds, arvlCd: best.arvlCd };
 }
 
 function isUnrecoverableApnsError(status: number, reason: string | undefined): boolean {
