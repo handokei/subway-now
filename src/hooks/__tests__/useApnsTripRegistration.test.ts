@@ -107,6 +107,7 @@ describe('useApnsTripRegistration', () => {
         token: 'token-abc',
         destination: '0228',
         waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+        apnsEnv: expect.stringMatching(/^(sandbox|production)$/) as unknown as 'sandbox' | 'production',
       }),
     );
     await waitFor(() =>

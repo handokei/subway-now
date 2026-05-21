@@ -13,7 +13,7 @@ import { sendSilentPush, type ApnsConfig } from './apns';
 import { matchLine } from './lineAlias';
 import { SeoulArrivalClient, type ArrivalEntry } from './seoul';
 import { deleteTrip, listTrips, putTrip } from './trips';
-import type { Env, Trip, Waypoint } from './types';
+import type { ApnsEnv, Env, Trip, Waypoint } from './types';
 
 /** 알람 윈도우: 알람 예상 시각 5분 이내인 트립만 폴링한다. */
 const POLLING_WINDOW_MS = 5 * 60 * 1000;
@@ -25,14 +25,41 @@ export interface ScheduledStats {
   errors: number;
   /** Seoul API 응답이 비어 ETA를 산출하지 못한 트립 수 (운영 가시성용). */
   etaMissing: number;
+  /**
+   * BadDeviceToken으로 1차 host에서 거부됐다가 반대 host로 self-heal 성공해
+   * `trip.apnsEnv`를 정정한 카운트. 운영 메트릭 — 이 값이 0이 아니면
+   * 클라이언트 hint가 빌드 환경과 어긋나고 있다는 신호 (#482).
+   */
+  envCorrected: number;
 }
 
 export interface ScheduledDeps {
   seoul: SeoulArrivalClient;
   apnsConfig: ApnsConfig;
+  /** APNs host 매핑. trip.apnsEnv에 따라 선택. */
+  apnsHosts: Record<ApnsEnv, string>;
   fetchImpl?: typeof fetch;
   now?: () => number;
   log?: (message: string, meta?: Record<string, unknown>) => void;
+}
+
+/**
+ * trip의 apnsEnv → APNs host 선택. 누락 시 sandbox fallback —
+ * 구버전 클라이언트가 필드를 안 보낼 때 production host로 잘못 전송되어
+ * `BadDeviceToken`을 받던 #482 회귀를 막기 위함. App Store/TestFlight 빌드는
+ * 반드시 명시적으로 'production'을 보내야 한다.
+ */
+export function pickApnsHost(apnsEnv: ApnsEnv | undefined, hosts: Record<ApnsEnv, string>): string {
+  return hosts[apnsEnv ?? 'sandbox'];
+}
+
+/**
+ * APNs env를 반대편으로 뒤집는다. BadDeviceToken self-heal에서 1차 시도 host와
+ * 반대 host로 재시도할 때 사용 (#482 D안). 누락(undefined)은 sandbox로 시작했으므로
+ * production으로 뒤집는다 — `pickApnsHost`의 sandbox fallback과 짝.
+ */
+export function flipApnsEnv(env: ApnsEnv | undefined): ApnsEnv {
+  return (env ?? 'sandbox') === 'sandbox' ? 'production' : 'sandbox';
 }
 
 export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
@@ -44,6 +71,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     pushed: 0,
     errors: 0,
     etaMissing: 0,
+    envCorrected: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
@@ -107,19 +135,57 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           etaSeconds: eta,
           arvlCd,
         });
-        const result = await sendSilentPush({
+        const pushPayload = {
+          nextWaypoint: waypoint.stationName,
+          etaSeconds: eta,
+          phase: pushPhase,
+          kind: waypoint.kind,
+          sentAt: now,
+        };
+        let result = await sendSilentPush({
           deviceToken: trip.token,
-          payload: {
-            nextWaypoint: waypoint.stationName,
-            etaSeconds: eta,
-            phase: pushPhase,
-            kind: waypoint.kind,
-            sentAt: now,
-          },
+          payload: pushPayload,
           config: deps.apnsConfig,
+          host: pickApnsHost(trip.apnsEnv, deps.apnsHosts),
           fetchImpl: deps.fetchImpl,
           now,
         });
+
+        // self-heal (#482): BadDeviceToken은 토큰 자체 무효가 아니라 host 환경 불일치인 경우가
+        // 압도적이다. 반대 host로 1회 재시도하고, 성공하면 trip.apnsEnv를 정정 저장한다.
+        // 양쪽 host 모두 BadDeviceToken을 내면 그제야 진짜 토큰 무효로 보고 trip을 삭제한다.
+        let envMismatchExhausted = false;
+        if (!result.ok && isApnsEnvMismatch(result.status, result.reason)) {
+          const correctedEnv = flipApnsEnv(trip.apnsEnv);
+          log('apns env mismatch — retry with opposite host', {
+            token: trip.token.slice(0, 8),
+            from: trip.apnsEnv ?? 'sandbox',
+            to: correctedEnv,
+          });
+          const retryResult = await sendSilentPush({
+            deviceToken: trip.token,
+            payload: pushPayload,
+            config: deps.apnsConfig,
+            host: deps.apnsHosts[correctedEnv],
+            fetchImpl: deps.fetchImpl,
+            now,
+          });
+          if (retryResult.ok) {
+            trip.apnsEnv = correctedEnv;
+            dirty = true;
+            stats.envCorrected += 1;
+            log('apns env corrected', {
+              token: trip.token.slice(0, 8),
+              to: correctedEnv,
+            });
+          } else if (isApnsEnvMismatch(retryResult.status, retryResult.reason)) {
+            // 양쪽 모두 BadDeviceToken — 토큰 자체가 무효
+            envMismatchExhausted = true;
+          }
+          // retry 결과를 최종 result로 승격 — 하단 success/error 분기가 일관되게 동작.
+          // retry가 다른 종류 에러(예: 410, PayloadTooLarge)면 그대로 그 경로에서 처리됨.
+          result = retryResult;
+        }
 
         if (result.ok) {
           stats.pushed += 1;
@@ -160,7 +226,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
             reason: result.reason,
             token: trip.token.slice(0, 8),
           });
-          if (isUnrecoverableApnsError(result.status, result.reason)) {
+          if (isUnrecoverableApnsError(result.status, result.reason) || envMismatchExhausted) {
             await deleteTrip(env.TRIPS, trip.token);
             continue;
           }
@@ -237,8 +303,19 @@ export function pickBestArrivalSignal(
   return { etaSeconds: best.arrivalSeconds, arvlCd: best.arvlCd };
 }
 
-function isUnrecoverableApnsError(status: number, reason: string | undefined): boolean {
+/**
+ * BadDeviceToken은 self-heal 분기에서 처리한다 (#482 D안).
+ * unrecoverable로 분류되는 것은 토큰 자체가 만료/취소된 경우뿐.
+ */
+function isUnrecoverableApnsError(status: number, _reason: string | undefined): boolean {
   if (status === 410) return true; // Unregistered
-  if (status === 400 && reason === 'BadDeviceToken') return true;
   return false;
+}
+
+/**
+ * APNs 토큰 환경(sandbox/production)과 host가 어긋났을 때 Apple이 내는 시그널.
+ * 이 조건에 한해서만 self-heal retry를 시도한다.
+ */
+function isApnsEnvMismatch(status: number, reason: string | undefined): boolean {
+  return status === 400 && reason === 'BadDeviceToken';
 }

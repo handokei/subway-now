@@ -22,4 +22,5 @@ crons = ["*/1 * * * *"]
 # - APNS_BUNDLE_ID         : 앱 번들 ID (예: com.handokei.subwaynow)
 [vars]
 APNS_HOST = "api.push.apple.com"
+APNS_HOST_SANDBOX = "api.sandbox.push.apple.com"
 SEOUL_API_HOST = "swopenapi.seoul.go.kr"
