@@ -29,9 +29,19 @@ export interface ScheduledStats {
 export interface ScheduledDeps {
   seoul: SeoulArrivalClient;
   apnsConfig: ApnsConfig;
+  /** APNs host 매핑. trip.apnsEnv에 따라 선택. */
+  apnsHosts: { production: string; sandbox: string };
   fetchImpl?: typeof fetch;
   now?: () => number;
   log?: (message: string, meta?: Record<string, unknown>) => void;
+}
+
+/** trip의 apnsEnv → APNs host 선택. 누락 시 production fallback (이전 클라이언트 호환). */
+export function pickApnsHost(
+  apnsEnv: Trip['apnsEnv'],
+  hosts: { production: string; sandbox: string },
+): string {
+  return apnsEnv === 'sandbox' ? hosts.sandbox : hosts.production;
 }
 
 export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
@@ -113,6 +123,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
             kind: waypoint.kind,
           },
           config: deps.apnsConfig,
+          host: pickApnsHost(trip.apnsEnv, deps.apnsHosts),
           fetchImpl: deps.fetchImpl,
           now,
         });
