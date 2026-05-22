@@ -9,6 +9,7 @@ import type { StationArrival } from '../../api/arrivalApi';
 
 const mockUseFusedNearestStation = jest.fn();
 const mockUseArrivalInfo = jest.fn();
+const mockUseSilentPushDiagnostics = jest.fn();
 const mockGetAlarmLog = jest.fn();
 const mockClearAlarmLog = jest.fn();
 
@@ -17,6 +18,10 @@ jest.mock('../../hooks/useFusedNearestStation', () => ({
 }));
 jest.mock('../../hooks/useArrivalInfo', () => ({
   useArrivalInfo: (name: string | null) => mockUseArrivalInfo(name),
+}));
+// silentPushTask는 expo-task-manager native module이 필요 — jest 환경에서 chain break.
+jest.mock('../../hooks/useSilentPushDiagnostics', () => ({
+  useSilentPushDiagnostics: () => mockUseSilentPushDiagnostics(),
 }));
 jest.mock('../../utils/alarmLog', () => {
   const actual = jest.requireActual('../../utils/alarmLog');
@@ -74,6 +79,16 @@ const setupHookDefaults = () => {
     refresh: jest.fn(),
   });
   mockUseArrivalInfo.mockReturnValue({ arrival: baseArrival, loading: false, isMock: false });
+  mockUseSilentPushDiagnostics.mockReturnValue({
+    apnsToken: null,
+    activeTripToken: null,
+    apnsEnv: 'sandbox',
+    taskRegistrationState: 'unknown',
+    taskRegistrationError: null,
+    lastReceivedAt: null,
+    lastFiredAt: null,
+    lastSkippedAt: null,
+  });
   mockGetAlarmLog.mockResolvedValue([]);
   mockClearAlarmLog.mockResolvedValue(undefined);
 };
@@ -154,6 +169,21 @@ describe('DebugModal', () => {
     });
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByText('MOCK')).toBeTruthy();
+  });
+
+  it('Silent Push 섹션이 taskRegistrationError를 표시한다', () => {
+    mockUseSilentPushDiagnostics.mockReturnValue({
+      apnsToken: 'abcdef1234567890',
+      activeTripToken: null,
+      apnsEnv: 'production',
+      taskRegistrationState: 'failed',
+      taskRegistrationError: 'not supported',
+      lastReceivedAt: null,
+      lastFiredAt: null,
+      lastSkippedAt: null,
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('failed (not supported)')).toBeTruthy();
   });
 
   it('arrival up/down이 비어있어도 렌더링한다', () => {
@@ -309,6 +339,19 @@ describe('DebugModal', () => {
 });
 
 describe('DebugModal helpers', () => {
+  it('formatTokenTail: null/짧은 토큰/긴 토큰', () => {
+    expect(__test__.formatTokenTail(null)).toBe('(none)');
+    expect(__test__.formatTokenTail('abc')).toBe('abc');
+    expect(__test__.formatTokenTail('abcdefgh')).toBe('abcdefgh');
+    expect(__test__.formatTokenTail('1234567890abcdef')).toBe('…90abcdef');
+  });
+
+  it('formatAt: null이면 (never), 아니면 시각 포맷', () => {
+    expect(__test__.formatAt(null)).toBe('(never)');
+    const ts = new Date('2026-05-12T10:00:00Z').getTime();
+    expect(__test__.formatAt(ts)).toMatch(/\d{2}:\d{2}:\d{2}/);
+  });
+
   it('formatLogLine: location 포함 suppressed 엔트리', () => {
     const entry: AlarmLogEntry = {
       ts: new Date('2026-05-12T10:00:00Z').getTime(),
@@ -402,6 +445,17 @@ describe('DebugModal helpers', () => {
     candidateTrains: null as string[] | null,
   };
 
+  const baseSilentPush = {
+    apnsToken: null,
+    activeTripToken: null,
+    apnsEnv: 'sandbox' as const,
+    taskRegistrationState: 'unknown' as const,
+    taskRegistrationError: null,
+    lastReceivedAt: null,
+    lastFiredAt: null,
+    lastSkippedAt: null,
+  };
+
   it('buildDumpText: 모든 섹션 포함', () => {
     const dump = __test__.buildDumpText({
       userLocation: { lat: 37.5, lng: 127.0 },
@@ -413,6 +467,7 @@ describe('DebugModal helpers', () => {
       fusion: baseFusion,
       arrivalSummary: 'up: 청량리 · 90s',
       isMock: true,
+      silentPush: baseSilentPush,
       logs: [{ ts: Date.now(), source: 'fg', outcome: 'fired', stationName: '강남' }],
     });
     expect(dump).toContain('## GPS');
@@ -438,6 +493,7 @@ describe('DebugModal helpers', () => {
       fusion: { ...baseFusion, fusedLabel: '역삼(2) · 200m', differs: true },
       arrivalSummary: 'x',
       isMock: false,
+      silentPush: baseSilentPush,
       logs: [],
     });
     expect(dump).toContain('(fused != gps)');
@@ -454,6 +510,7 @@ describe('DebugModal helpers', () => {
       fusion: { ...baseFusion, candidateTrains: ['T101', 'T202'] },
       arrivalSummary: 'x',
       isMock: false,
+      silentPush: baseSilentPush,
       logs: [],
     });
     expect(dump).toContain('candidateTrains(2): T101, T202');
@@ -470,6 +527,7 @@ describe('DebugModal helpers', () => {
       fusion: { ...baseFusion, candidateTrains: [] },
       arrivalSummary: 'x',
       isMock: false,
+      silentPush: baseSilentPush,
       logs: [],
     });
     expect(dump).toContain('candidateTrains(0): -');
@@ -486,6 +544,7 @@ describe('DebugModal helpers', () => {
       fusion: baseFusion,
       arrivalSummary: '(no arrival data)',
       isMock: false,
+      silentPush: baseSilentPush,
       logs: [],
     });
     expect(dump).toContain('(no location)');
@@ -507,6 +566,7 @@ describe('DebugModal helpers', () => {
       fusion: baseFusion,
       arrivalSummary: 'x',
       isMock: false,
+      silentPush: baseSilentPush,
       logs: [],
     });
     expect(dump).toContain('speed=- m/s');
@@ -802,5 +862,143 @@ describe('formatFusionDebugLine', () => {
     expect(line).not.toContain('fu=');
     expect(line).not.toContain('rt=');
     expect(line).not.toContain('gp=');
+  });
+});
+
+describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
+  const baseSilentPushFull = {
+    apnsToken: '0123456789abcdef0123456789abcdef',
+    activeTripToken: 'abcd1234ef567890',
+    apnsEnv: 'sandbox' as const,
+    taskRegistrationState: 'success' as const,
+    taskRegistrationError: null,
+    lastReceivedAt: new Date('2026-05-22T01:23:45Z').getTime(),
+    lastFiredAt: new Date('2026-05-22T01:24:00Z').getTime(),
+    lastSkippedAt: new Date('2026-05-22T01:22:00Z').getTime(),
+  };
+
+  it('buildDumpText: Silent Push 섹션을 모든 필드와 함께 포함', () => {
+    const dump = __test__.buildDumpText({
+      userLocation: null,
+      speedMps: null,
+      accuracyMeters: null,
+      nearestName: null,
+      nearestDistanceM: null,
+      variants: [],
+      fusion: {
+        confidence: 'gps-only',
+        source: 'gps',
+        fusedLabel: '-',
+        gpsLabel: '-',
+        differs: false,
+        candidateTrains: null,
+      },
+      arrivalSummary: '-',
+      isMock: false,
+      silentPush: baseSilentPushFull,
+      logs: [],
+    });
+    expect(dump).toContain('## Silent Push');
+    expect(dump).toContain('apnsToken=…89abcdef'); // 끝 8자만
+    expect(dump).toContain('activeTrip=…ef567890');
+    expect(dump).toContain('apnsEnv=sandbox');
+    expect(dump).toContain('taskRegistration=success');
+    expect(dump).toContain('lastReceived=');
+    expect(dump).toContain('lastFired=');
+    expect(dump).toContain('lastSkipped=');
+  });
+
+  it('buildDumpText: token 없으면 (none), 시각 null이면 (never)', () => {
+    const dump = __test__.buildDumpText({
+      userLocation: null,
+      speedMps: null,
+      accuracyMeters: null,
+      nearestName: null,
+      nearestDistanceM: null,
+      variants: [],
+      fusion: {
+        confidence: 'gps-only',
+        source: 'gps',
+        fusedLabel: '-',
+        gpsLabel: '-',
+        differs: false,
+        candidateTrains: null,
+      },
+      arrivalSummary: '-',
+      isMock: false,
+      silentPush: {
+        apnsToken: null,
+        activeTripToken: null,
+        apnsEnv: 'production',
+        taskRegistrationState: 'unknown',
+        taskRegistrationError: null,
+        lastReceivedAt: null,
+        lastFiredAt: null,
+        lastSkippedAt: null,
+      },
+      logs: [],
+    });
+    expect(dump).toContain('apnsToken=(none)');
+    expect(dump).toContain('activeTrip=(none)');
+    expect(dump).toContain('apnsEnv=production');
+    expect(dump).toContain('taskRegistration=unknown');
+    expect(dump).toContain('lastReceived=(never)');
+    expect(dump).toContain('lastFired=(never)');
+    expect(dump).toContain('lastSkipped=(never)');
+  });
+
+  it('buildDumpText: 짧은 토큰(8자 이하)은 그대로 노출', () => {
+    const dump = __test__.buildDumpText({
+      userLocation: null,
+      speedMps: null,
+      accuracyMeters: null,
+      nearestName: null,
+      nearestDistanceM: null,
+      variants: [],
+      fusion: {
+        confidence: 'gps-only',
+        source: 'gps',
+        fusedLabel: '-',
+        gpsLabel: '-',
+        differs: false,
+        candidateTrains: null,
+      },
+      arrivalSummary: '-',
+      isMock: false,
+      silentPush: {
+        ...baseSilentPushFull,
+        apnsToken: 'short12',
+      },
+      logs: [],
+    });
+    expect(dump).toContain('apnsToken=short12');
+  });
+
+  it('buildDumpText: taskRegistrationError 있으면 괄호 안에 메시지 표기', () => {
+    const dump = __test__.buildDumpText({
+      userLocation: null,
+      speedMps: null,
+      accuracyMeters: null,
+      nearestName: null,
+      nearestDistanceM: null,
+      variants: [],
+      fusion: {
+        confidence: 'gps-only',
+        source: 'gps',
+        fusedLabel: '-',
+        gpsLabel: '-',
+        differs: false,
+        candidateTrains: null,
+      },
+      arrivalSummary: '-',
+      isMock: false,
+      silentPush: {
+        ...baseSilentPushFull,
+        taskRegistrationState: 'failed',
+        taskRegistrationError: 'not supported',
+      },
+      logs: [],
+    });
+    expect(dump).toContain('taskRegistration=failed (not supported)');
   });
 });

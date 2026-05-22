@@ -69,6 +69,7 @@ jest.mock('i18next', () => ({
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   extractPayload,
+  getSilentPushRegistrationStatus,
   handleSilentPush,
   registerSilentPushTask,
   SILENT_PUSH_TASK,
@@ -424,6 +425,34 @@ describe('silentPushTask', () => {
     it('register 실패 시 throw 안 함', async () => {
       mockRegisterTaskAsync.mockRejectedValue(new Error('not supported'));
       await expect(registerSilentPushTask()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('getSilentPushRegistrationStatus', () => {
+    // 등록 상태는 모듈 전역이므로 success → failed 순으로 검증 (역순이면 한 번 success로 덮인 뒤
+    // failed로 전이되는 정상 경로만 보고 unknown→failed 첫 케이스를 못 짚는다)
+    it('등록 성공 시 success', async () => {
+      mockRegisterTaskAsync.mockResolvedValue(undefined);
+      await registerSilentPushTask();
+      const status = getSilentPushRegistrationStatus();
+      expect(status.state).toBe('success');
+      expect(status.error).toBeNull();
+    });
+
+    it('등록 실패 시 failed + error 메시지', async () => {
+      mockRegisterTaskAsync.mockRejectedValue(new Error('not supported'));
+      await registerSilentPushTask();
+      const status = getSilentPushRegistrationStatus();
+      expect(status.state).toBe('failed');
+      expect(status.error).toBe('not supported');
+    });
+
+    it('Error 아닌 throw도 문자열로 보존', async () => {
+      mockRegisterTaskAsync.mockRejectedValue('string-rejection');
+      await registerSilentPushTask();
+      const status = getSilentPushRegistrationStatus();
+      expect(status.state).toBe('failed');
+      expect(status.error).toBe('string-rejection');
     });
   });
 });

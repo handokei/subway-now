@@ -15,6 +15,10 @@ import { useAppStore } from '../store/useAppStore';
 import { isDebugModalEnabled } from '../constants/debugFlags';
 import { useFusedNearestStation } from '../hooks/useFusedNearestStation';
 import { useArrivalInfo } from '../hooks/useArrivalInfo';
+import {
+  useSilentPushDiagnostics,
+  type SilentPushDiagnostics,
+} from '../hooks/useSilentPushDiagnostics';
 import { clearAlarmLog, getAlarmLog, type AlarmLogEntry } from '../utils/alarmLog';
 import {
   clearFusionDebugEntries,
@@ -87,6 +91,21 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
   return `${time} | src=${entry.source} conf=${entry.confidence} | ${station} d=${d} acc=${acc} | ${candPart}`;
 }
 
+/**
+ * APNs token은 32~64자 hex라 그대로 노출하면 라인이 길어진다.
+ * 끝 8자만 표시 — 동일성 비교에 충분하고 공유 시에도 부담이 적다.
+ */
+function formatTokenTail(token: string | null): string {
+  if (!token) return '(none)';
+  if (token.length <= 8) return token;
+  return `…${token.slice(-8)}`;
+}
+
+function formatAt(ts: number | null): string {
+  if (ts == null) return '(never)';
+  return formatTime(ts);
+}
+
 function formatStationLabel(res: NearestStationResult | null): string {
   if (!res) return '-';
   return `${res.station.name}(${res.station.line}) · ${Math.round(res.distanceKm * 1000)}m`;
@@ -117,6 +136,7 @@ function buildDumpText(args: {
   };
   arrivalSummary: string;
   isMock: boolean;
+  silentPush: SilentPushDiagnostics;
   logs: AlarmLogEntry[];
 }): string {
   const lines: string[] = [];
@@ -153,6 +173,17 @@ function buildDumpText(args: {
   lines.push('## Arrival');
   lines.push(args.arrivalSummary);
   if (args.isMock) lines.push('(MOCK)');
+  lines.push('');
+  lines.push('## Silent Push');
+  lines.push(`apnsToken=${formatTokenTail(args.silentPush.apnsToken)}`);
+  lines.push(`activeTrip=${formatTokenTail(args.silentPush.activeTripToken)}`);
+  lines.push(`apnsEnv=${args.silentPush.apnsEnv}`);
+  lines.push(
+    `taskRegistration=${args.silentPush.taskRegistrationState}${args.silentPush.taskRegistrationError ? ` (${args.silentPush.taskRegistrationError})` : ''}`,
+  );
+  lines.push(`lastReceived=${formatAt(args.silentPush.lastReceivedAt)}`);
+  lines.push(`lastFired=${formatAt(args.silentPush.lastFiredAt)}`);
+  lines.push(`lastSkipped=${formatAt(args.silentPush.lastSkippedAt)}`);
   lines.push('');
   lines.push(`## Alarm log (${args.logs.length})`);
   for (const entry of [...args.logs].reverse()) {
@@ -198,6 +229,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
   } = useFusedNearestStation();
   const stationName = result?.station.name ?? null;
   const { arrival, isMock } = useArrivalInfo(stationName);
+  const silentPush = useSilentPushDiagnostics();
   const fusedLabel = formatStationLabel(result);
   const gpsLabel = formatStationLabel(gpsResult);
   const differs = fusedDiffersFromGps(result, gpsResult);
@@ -261,6 +293,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
       },
       arrivalSummary,
       isMock,
+      silentPush,
       logs,
     });
     void Share.share({ message });
@@ -279,6 +312,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
     candidateTrains,
     arrivalSummary,
     isMock,
+    silentPush,
     logs,
   ]);
 
@@ -374,6 +408,44 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
                 MOCK
               </Text>
             )}
+          </Section>
+
+          <Section title="Silent Push" colors={colors}>
+            <KeyValue
+              label="apnsToken"
+              value={formatTokenTail(silentPush.apnsToken)}
+              colors={colors}
+            />
+            <KeyValue
+              label="activeTrip"
+              value={formatTokenTail(silentPush.activeTripToken)}
+              colors={colors}
+            />
+            <KeyValue label="apnsEnv" value={silentPush.apnsEnv} colors={colors} />
+            <KeyValue
+              label="task"
+              value={
+                silentPush.taskRegistrationError
+                  ? `${silentPush.taskRegistrationState} (${silentPush.taskRegistrationError})`
+                  : silentPush.taskRegistrationState
+              }
+              colors={colors}
+            />
+            <KeyValue
+              label="lastRecv"
+              value={formatAt(silentPush.lastReceivedAt)}
+              colors={colors}
+            />
+            <KeyValue
+              label="lastFired"
+              value={formatAt(silentPush.lastFiredAt)}
+              colors={colors}
+            />
+            <KeyValue
+              label="lastSkip"
+              value={formatAt(silentPush.lastSkippedAt)}
+              colors={colors}
+            />
           </Section>
 
           <Section
@@ -492,7 +564,7 @@ function KeyValue({
 }
 
 // Internal exports for tests — DO NOT use from app code.
-export const __test__ = { formatLogLine, buildDumpText, formatFusionDebugLine };
+export const __test__ = { formatLogLine, buildDumpText, formatFusionDebugLine, formatTokenTail, formatAt };
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
