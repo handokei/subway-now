@@ -352,7 +352,11 @@ export default function HomeScreen() {
                 </TouchableOpacity>
               </View>
               <View style={styles.metaRow}>
-                <LineBadge line={effectiveOrigin.line} />
+                {originVariants.length > 0 ? (
+                  originVariants.map((v) => <LineBadge key={v.id} line={v.line} />)
+                ) : (
+                  <LineBadge line={effectiveOrigin.line} />
+                )}
                 {/* #446: source==='gps'일 때만 user↔station 거리/도보시간이 의미 있음.
                     fusion 추정(positionTrain/arrival/route) 결과의 거리는 user↔추정역
                     직선거리라 도보 안내로 표시하면 잘못된 정보가 됨 → 숨김. */}
