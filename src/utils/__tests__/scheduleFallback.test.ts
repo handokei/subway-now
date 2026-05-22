@@ -1,4 +1,10 @@
-import { classifyDayType, classifyPeriod, buildScheduleArrival, hasHeadwayData } from '../scheduleFallback';
+import {
+  classifyDayType,
+  classifyPeriod,
+  buildScheduleArrival,
+  hasHeadwayData,
+  hasTerminalData,
+} from '../scheduleFallback';
 import type { LineNumber } from '../../types/station';
 
 describe('classifyDayType', () => {
@@ -153,6 +159,36 @@ describe('buildScheduleArrival', () => {
     expect(result.source).toBe('closed');
     expect(result.up).toEqual([]);
   });
+
+  it('up 트레인은 up 종착역으로, down 트레인은 down 종착역으로 destination을 채운다 (#471)', () => {
+    const now = new Date('2026-05-18T15:00:00+09:00');
+    const result = buildScheduleArrival('1', now);
+    expect(result.up.every((t) => t.destination === '소요산')).toBe(true);
+    expect(result.down.every((t) => t.destination === '인천')).toBe(true);
+  });
+
+  it('2호선(순환선)은 내선/외선순환을 행선지로 사용한다 (#471)', () => {
+    const now = new Date('2026-05-18T15:00:00+09:00');
+    const result = buildScheduleArrival('2', now);
+    expect(result.up[0].destination).toBe('내선순환');
+    expect(result.down[0].destination).toBe('외선순환');
+  });
+
+  it('terminal 데이터가 누락된 노선은 destination이 빈 문자열 (#471 fallback)', () => {
+    // headway는 있지만 terminal은 없는 가상 케이스. lineTerminals.json을 비워 분기 강제.
+    jest.isolateModules(() => {
+      jest.doMock('../../data/lineTerminals.json', () => ({}));
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { buildScheduleArrival: build } = require('../scheduleFallback');
+      const now = new Date('2026-05-18T15:00:00+09:00');
+      const result = build('1', now);
+      expect(result.source).toBe('schedule');
+      expect(result.up[0].destination).toBe('');
+      expect(result.down[0].destination).toBe('');
+    });
+    // isolateModules는 자체 레지스트리를 사용하지만 doMock 잔존 방지를 위해 명시적 reset.
+    jest.resetModules();
+  });
 });
 
 describe('hasHeadwayData', () => {
@@ -168,5 +204,21 @@ describe('hasHeadwayData', () => {
 
   it('returns false for an unknown line', () => {
     expect(hasHeadwayData('gtx-a' as LineNumber)).toBe(false);
+  });
+});
+
+describe('hasTerminalData', () => {
+  it('returns true for all current LineNumber values', () => {
+    const lines: LineNumber[] = [
+      '1', '2', '3', '4', '5', '6', '7', '8', '9',
+      'airport', 'gyeongui', 'bundang', 'sinbundang',
+    ];
+    for (const line of lines) {
+      expect(hasTerminalData(line)).toBe(true);
+    }
+  });
+
+  it('returns false for an unknown line', () => {
+    expect(hasTerminalData('gtx-a' as LineNumber)).toBe(false);
   });
 });
