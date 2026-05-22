@@ -201,6 +201,11 @@ export default function HomeScreen() {
     const currDestId = destination?.id ?? null;
     prevDestIdRef.current = currDestId;
 
+    // 도착 배너가 떠 있는 동안에는 LA가 막 종료된 직후 displayEta/alarmEvent 갱신으로
+    // updateStationNotification이 호출되어 LA가 부활하는 race를 막는다. arrivedBanner는
+    // 2초 후 setDestination(null)과 함께 false로 풀린다.
+    if (arrivedBanner) return;
+
     // 실시간 현황(Live Activity/알림)은 경로 진행 중일 때만 노출한다.
     if (!effectiveOrigin || !destination) {
       if (prevNotifKeyRef.current !== 'none') {
@@ -242,7 +247,7 @@ export default function HomeScreen() {
       );
     };
     update().catch((e) => logger.error('알림 업데이트 실패:', e));
-  }, [effectiveOrigin?.id, destination?.id, displayEta, arrivalIsMock, routeSig, alarmEvent]);
+  }, [effectiveOrigin?.id, destination?.id, displayEta, arrivalIsMock, routeSig, alarmEvent, arrivedBanner]);
 
   useEffect(() => {
     if (arrivedBanner) {
