@@ -27,7 +27,13 @@ jest.mock('expo-notifications', () => ({
 }));
 
 import { useSilentPushDiagnostics } from '../useSilentPushDiagnostics';
-import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../constants/storageKeys';
+import {
+  APNS_TOKEN_KEY,
+  ACTIVE_TRIP_KEY,
+  ROUTE_KEY,
+  DESTINATION_KEY,
+  LAST_NOTIFIED_STATION_KEY,
+} from '../../constants/storageKeys';
 
 const flushPromises = () => new Promise((resolve) => setImmediate(resolve));
 
@@ -39,6 +45,14 @@ describe('useSilentPushDiagnostics', () => {
     mockGetAlarmLog.mockResolvedValue([]);
     mockGetItem.mockResolvedValue(null);
     mockGetPermissionsAsync.mockResolvedValue({ status: 'granted' });
+    // 기본 AppState mock — 일부 테스트는 listener를 spyOn으로 덮어쓴다.
+    jest.spyOn(AppState, 'addEventListener').mockReturnValue({
+      remove: jest.fn(),
+    } as ReturnType<typeof AppState.addEventListener>);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it('permission 조회 실패 시 permissionStatus는 null', async () => {
@@ -129,6 +143,50 @@ describe('useSilentPushDiagnostics', () => {
     expect(mockGetAlarmLog).toHaveBeenCalledTimes(2);
 
     addSpy.mockRestore();
+  });
+
+  it('trip 입력 진단: route/destination/currentStation을 storage에서 읽어 노출한다 (#506)', async () => {
+    mockGetItem.mockImplementation((key: string) =>
+      Promise.resolve(
+        key === ROUTE_KEY
+          ? '{"type":"direct","stops":5,"line":"7"}'
+          : key === DESTINATION_KEY
+            ? JSON.stringify({ id: '7-013', name: '건대입구' })
+            : key === LAST_NOTIFIED_STATION_KEY
+              ? '7-015'
+              : null,
+      ),
+    );
+    const { result } = renderHook(() => useSilentPushDiagnostics());
+    await waitFor(() => expect(result.current.hasRoute).toBe(true));
+    expect(result.current.destinationId).toBe('7-013');
+    expect(result.current.lastNotifiedStationId).toBe('7-015');
+  });
+
+  it('trip 입력 진단: storage가 비었으면 false/null로 graceful (#506)', async () => {
+    const { result } = renderHook(() => useSilentPushDiagnostics());
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(result.current.hasRoute).toBe(false);
+    expect(result.current.destinationId).toBeNull();
+    expect(result.current.lastNotifiedStationId).toBeNull();
+  });
+
+  it('trip 입력 진단: destination JSON 손상 시 destinationId=null로 무시 (#506)', async () => {
+    mockGetItem.mockImplementation((key: string) =>
+      Promise.resolve(key === DESTINATION_KEY ? 'not-json{' : null),
+    );
+    const { result } = renderHook(() => useSilentPushDiagnostics());
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(result.current.destinationId).toBeNull();
+  });
+
+  it('trip 입력 진단: destination JSON에 id가 없거나 string이 아니면 null (#506)', async () => {
+    mockGetItem.mockImplementation((key: string) =>
+      Promise.resolve(key === DESTINATION_KEY ? JSON.stringify({ id: 42 }) : null),
+    );
+    const { result } = renderHook(() => useSilentPushDiagnostics());
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(result.current.destinationId).toBeNull();
   });
 
   it('unmount 시 listener 해제', () => {

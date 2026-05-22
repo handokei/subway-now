@@ -89,6 +89,9 @@ const setupHookDefaults = () => {
     lastReceivedAt: null,
     lastFiredAt: null,
     lastSkippedAt: null,
+    hasRoute: false,
+    destinationId: null,
+    lastNotifiedStationId: null,
   });
   mockGetAlarmLog.mockResolvedValue([]);
   mockClearAlarmLog.mockResolvedValue(undefined);
@@ -183,9 +186,33 @@ describe('DebugModal', () => {
       lastReceivedAt: null,
       lastFiredAt: null,
       lastSkippedAt: null,
+      hasRoute: false,
+      destinationId: null,
+      lastNotifiedStationId: null,
     });
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByText('failed (not supported)')).toBeTruthy();
+  });
+
+  it('Silent Push 섹션: trip 입력이 모두 있으면 set/destination id/currStn id 노출 (#506)', () => {
+    mockUseSilentPushDiagnostics.mockReturnValue({
+      apnsToken: null,
+      activeTripToken: null,
+      apnsEnv: 'sandbox',
+      permissionStatus: null,
+      taskRegistrationState: 'success',
+      taskRegistrationError: null,
+      lastReceivedAt: null,
+      lastFiredAt: null,
+      lastSkippedAt: null,
+      hasRoute: true,
+      destinationId: '7-013',
+      lastNotifiedStationId: '7-015',
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('set')).toBeTruthy();
+    expect(screen.getByText('7-013')).toBeTruthy();
+    expect(screen.getByText('7-015')).toBeTruthy();
   });
 
   it('arrival up/down이 비어있어도 렌더링한다', () => {
@@ -457,6 +484,9 @@ describe('DebugModal helpers', () => {
     lastReceivedAt: null,
     lastFiredAt: null,
     lastSkippedAt: null,
+    hasRoute: false,
+    destinationId: null,
+    lastNotifiedStationId: null,
   };
 
   it('buildDumpText: 모든 섹션 포함', () => {
@@ -879,6 +909,9 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
     lastReceivedAt: new Date('2026-05-22T01:23:45Z').getTime(),
     lastFiredAt: new Date('2026-05-22T01:24:00Z').getTime(),
     lastSkippedAt: new Date('2026-05-22T01:22:00Z').getTime(),
+    hasRoute: true,
+    destinationId: '7-013',
+    lastNotifiedStationId: '7-015',
   };
 
   it('buildDumpText: Silent Push 섹션을 모든 필드와 함께 포함', () => {
@@ -940,6 +973,9 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
         lastReceivedAt: null,
         lastFiredAt: null,
         lastSkippedAt: null,
+        hasRoute: false,
+        destinationId: null,
+        lastNotifiedStationId: null,
       },
       logs: [],
     });
