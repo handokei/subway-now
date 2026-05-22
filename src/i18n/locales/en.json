@@ -39,7 +39,7 @@
     "arrivalInfoTitle": "Train arrivals",
     "loading": "Loading...",
     "mockNotice": "Showing estimated data — real-time unavailable",
-    "scheduleNotice": "Schedule-based · loading real-time",
+    "scheduleNotice": "Showing schedule · loading real-time",
     "closedNotice": "Service hours have ended",
     "noArrivalInfo": "No arrival info",
     "notNearStationTitle": "Not near a subway station",
