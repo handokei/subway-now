@@ -15,6 +15,10 @@ import { useAppStore } from '../store/useAppStore';
 import { isDebugModalEnabled } from '../constants/debugFlags';
 import { useFusedNearestStation } from '../hooks/useFusedNearestStation';
 import { useArrivalInfo } from '../hooks/useArrivalInfo';
+import {
+  useSilentPushDiagnostics,
+  type SilentPushDiagnostics,
+} from '../hooks/useSilentPushDiagnostics';
 import { clearAlarmLog, getAlarmLog, type AlarmLogEntry } from '../utils/alarmLog';
 import {
   clearFusionDebugEntries,
@@ -87,6 +91,45 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
   return `${time} | src=${entry.source} conf=${entry.confidence} | ${station} d=${d} acc=${acc} | ${candPart}`;
 }
 
+/**
+ * APNs token은 32~64자 hex라 그대로 노출하면 라인이 길어진다.
+ * 끝 8자만 표시 — 동일성 비교에 충분하고 공유 시에도 부담이 적다.
+ */
+function formatTokenTail(token: string | null): string {
+  if (!token) return '(none)';
+  if (token.length <= 8) return token;
+  return `…${token.slice(-8)}`;
+}
+
+function formatAt(ts: number | null): string {
+  if (ts == null) return '(never)';
+  return formatTime(ts);
+}
+
+/**
+ * Silent push 진단 섹션을 dump/UI 양쪽에서 공유하기 위한 row 목록.
+ * - uiLabel: KeyValue 좌측 (좁은 폭 — 약어)
+ * - dumpKey: 텍스트 dump의 헤더 (전체 단어)
+ * 새 필드는 여기와 hook 타입만 손대면 dump/UI가 동시에 갱신된다.
+ */
+function silentPushDiagRows(
+  d: SilentPushDiagnostics,
+): { uiLabel: string; dumpKey: string; value: string }[] {
+  const task = d.taskRegistrationError
+    ? `${d.taskRegistrationState} (${d.taskRegistrationError})`
+    : d.taskRegistrationState;
+  return [
+    { uiLabel: 'permission', dumpKey: 'permission', value: d.permissionStatus ?? '(unknown)' },
+    { uiLabel: 'apnsToken', dumpKey: 'apnsToken', value: formatTokenTail(d.apnsToken) },
+    { uiLabel: 'activeTrip', dumpKey: 'activeTrip', value: formatTokenTail(d.activeTripToken) },
+    { uiLabel: 'apnsEnv', dumpKey: 'apnsEnv', value: d.apnsEnv },
+    { uiLabel: 'task', dumpKey: 'taskRegistration', value: task },
+    { uiLabel: 'lastRecv', dumpKey: 'lastReceived', value: formatAt(d.lastReceivedAt) },
+    { uiLabel: 'lastFired', dumpKey: 'lastFired', value: formatAt(d.lastFiredAt) },
+    { uiLabel: 'lastSkip', dumpKey: 'lastSkipped', value: formatAt(d.lastSkippedAt) },
+  ];
+}
+
 function formatStationLabel(res: NearestStationResult | null): string {
   if (!res) return '-';
   return `${res.station.name}(${res.station.line}) · ${Math.round(res.distanceKm * 1000)}m`;
@@ -117,6 +160,7 @@ function buildDumpText(args: {
   };
   arrivalSummary: string;
   isMock: boolean;
+  silentPush: SilentPushDiagnostics;
   logs: AlarmLogEntry[];
 }): string {
   const lines: string[] = [];
@@ -153,6 +197,11 @@ function buildDumpText(args: {
   lines.push('## Arrival');
   lines.push(args.arrivalSummary);
   if (args.isMock) lines.push('(MOCK)');
+  lines.push('');
+  lines.push('## Silent Push');
+  for (const { dumpKey, value } of silentPushDiagRows(args.silentPush)) {
+    lines.push(`${dumpKey}=${value}`);
+  }
   lines.push('');
   lines.push(`## Alarm log (${args.logs.length})`);
   for (const entry of [...args.logs].reverse()) {
@@ -198,6 +247,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
   } = useFusedNearestStation();
   const stationName = result?.station.name ?? null;
   const { arrival, isMock } = useArrivalInfo(stationName);
+  const silentPush = useSilentPushDiagnostics();
   const fusedLabel = formatStationLabel(result);
   const gpsLabel = formatStationLabel(gpsResult);
   const differs = fusedDiffersFromGps(result, gpsResult);
@@ -261,6 +311,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
       },
       arrivalSummary,
       isMock,
+      silentPush,
       logs,
     });
     void Share.share({ message });
@@ -279,6 +330,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
     candidateTrains,
     arrivalSummary,
     isMock,
+    silentPush,
     logs,
   ]);
 
@@ -374,6 +426,12 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
                 MOCK
               </Text>
             )}
+          </Section>
+
+          <Section title="Silent Push" colors={colors}>
+            {silentPushDiagRows(silentPush).map(({ uiLabel, value }) => (
+              <KeyValue key={uiLabel} label={uiLabel} value={value} colors={colors} />
+            ))}
           </Section>
 
           <Section
@@ -492,7 +550,7 @@ function KeyValue({
 }
 
 // Internal exports for tests — DO NOT use from app code.
-export const __test__ = { formatLogLine, buildDumpText, formatFusionDebugLine };
+export const __test__ = { formatLogLine, buildDumpText, formatFusionDebugLine, formatTokenTail, formatAt };
 
 const styles = StyleSheet.create({
   container: { flex: 1 },

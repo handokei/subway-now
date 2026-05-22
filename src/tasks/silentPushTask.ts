@@ -252,14 +252,31 @@ async function loadDestinationId(): Promise<string | null> {
 /** Task 등록 — 모듈 로드 시점에 한 번 실행. */
 TaskManager.defineTask(SILENT_PUSH_TASK, handleSilentPush);
 
+// 등록 상태 추적 — DebugModal의 silent push 진단 섹션(#506)이 읽는다.
+// 'unknown'은 registerSilentPushTask가 아직 호출되지 않은 상태.
+export type SilentPushRegistrationState = 'unknown' | 'success' | 'failed';
+interface RegistrationStatus {
+  state: SilentPushRegistrationState;
+  error: string | null;
+}
+let registrationStatus: RegistrationStatus = { state: 'unknown', error: null };
+
+/** DebugModal/진단용 — 현재 silent push task 등록 결과를 읽는다(#506). */
+export function getSilentPushRegistrationStatus(): RegistrationStatus {
+  return registrationStatus;
+}
+
 /**
  * 앱 초기화 시 호출 — Notifications가 BG payload를 이 task로 라우팅하도록 등록한다.
  */
 export async function registerSilentPushTask(): Promise<void> {
   try {
     await Notifications.registerTaskAsync(SILENT_PUSH_TASK);
+    registrationStatus = { state: 'success', error: null };
     logger.info('silent push task registered');
   } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    registrationStatus = { state: 'failed', error: message };
     logger.warn('failed to register silent push task:', e);
   }
 }
