@@ -16,6 +16,12 @@ export interface StopArrivalContext {
   toName: string;
 }
 
+// 환승 stop에서 "갈아탈 다음 노선" — UI(EditorialTimeline)가 transferExit lookup에 사용.
+// 환승역이 곧 목적지로 흡수되는 경우(0정거장 종착)에는 설정되지 않는다.
+export interface StopTransferTarget {
+  toLine: LineNumber;
+}
+
 export interface Stop {
   station: string;
   line: string | null;
@@ -23,6 +29,7 @@ export interface Stop {
   mark: 'filled' | 'transfer' | 'dest';
   note?: string;
   arrivalContext?: StopArrivalContext;
+  transferTarget?: StopTransferTarget;
 }
 
 export interface ArrivalTrain {
@@ -73,13 +80,15 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
     };
 
     if (!isLast) {
+      const nextSeg = segments[i + 1];
       stops.push({
         station: getStationDisplayNameByName(seg.toName, allStations),
-        line: segments[i + 1].line,
+        line: nextSeg.line,
         stopsFromPrev: i18next.t('route.stops', { count: seg.stops }),
         mark: 'transfer',
         note: i18next.t('journey.transferNote'),
         arrivalContext,
+        transferTarget: { toLine: nextSeg.line },
       });
     } else {
       // 환승역이 곧 목적지인 케이스(0정거장 도착 노드 잉여)는 직전 환승 노드를 도착으로 흡수.
@@ -93,6 +102,8 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
         prev.mark = 'dest';
         prev.note = i18next.t('journey.transferArrivalNote');
         // prev.arrivalContext는 이미 seg[i-1]의 값(사용자가 실제 탑승한 노선) — 덮어쓰지 않는다.
+        // transferTarget은 그대로 둔다 — UI(EditorialTimeline)가 mark==='transfer'에만 적용하므로
+        // 도착 stop으로 흡수된 후에는 자동으로 무시된다.
       } else {
         stops.push({
           station: getStationDisplayNameByName(seg.toName, allStations),

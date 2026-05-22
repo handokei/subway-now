@@ -7,18 +7,30 @@ import { LineBadge, getLineColor } from './LineBadge';
 import { useAppStore } from '../store/useAppStore';
 import { resolveQuickExit } from '../utils/quickExit';
 import { resolveTravelDirection } from '../utils/travelDirection';
+import { resolveTransferDoor } from '../utils/transferExit';
+import type { LineNumber } from '../types/station';
 
 interface Props {
   stops: Stop[];
 }
 
-// 한 도착/환승 지점의 빠른하차 문번호 라벨을 결정한다.
-// 단조 노선 외이거나 데이터 부재 시 null — caller(UI)는 라벨을 생략한다.
-// accessibilityMode가 true면 elevator를 우선해 stairs 대신 EV 위치를 안내한다.
-function resolveStopQuickExitDoor(
+// 한 stop의 도어번호 라벨을 결정한다.
+// - 환승 stop이면 fromLine→toLine 빠른 환승 도어를 우선 사용 (transferExit.json).
+// - 매칭 없으면 단조 노선 + quickExit 데이터로 fallback (계단/EV 가까운 도어).
+// - 둘 다 없으면 null — 라벨 미표시.
+function resolveStopDoor(
   ctx: StopArrivalContext,
+  transferToLine: LineNumber | null,
   accessibilityMode: boolean,
 ): string | null {
+  if (transferToLine) {
+    const transfer = resolveTransferDoor({
+      stationName: ctx.toName,
+      fromLine: ctx.line,
+      toLine: transferToLine,
+    });
+    if (transfer) return transfer.doorNumber;
+  }
   const resolution = resolveTravelDirection(ctx.line, ctx.fromName, ctx.toName);
   if (!resolution) return null;
   const result = resolveQuickExit(resolution.toStation.id, {
@@ -40,8 +52,11 @@ export function EditorialTimeline({ stops }: Props) {
         const nextLineC = !isLast
           ? (stops[i + 1].line != null ? getLineColor(stops[i + 1].line!) : colors.accent)
           : lineC;
+        // transferTarget은 mark === 'transfer'에만 의미가 있다. 환승→도착 흡수된 stop(mark='dest')은
+        // transferTarget이 남아 있을 수 있어도 도착 fallback(quickExit)만 적용한다.
+        const transferToLine = s.mark === 'transfer' ? s.transferTarget?.toLine ?? null : null;
         const quickExitDoor = s.arrivalContext != null
-          ? resolveStopQuickExitDoor(s.arrivalContext, accessibilityMode)
+          ? resolveStopDoor(s.arrivalContext, transferToLine, accessibilityMode)
           : null;
 
         return (
