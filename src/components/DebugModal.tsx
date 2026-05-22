@@ -106,6 +106,30 @@ function formatAt(ts: number | null): string {
   return formatTime(ts);
 }
 
+/**
+ * Silent push 진단 섹션을 dump/UI 양쪽에서 공유하기 위한 row 목록.
+ * - uiLabel: KeyValue 좌측 (좁은 폭 — 약어)
+ * - dumpKey: 텍스트 dump의 헤더 (전체 단어)
+ * 새 필드는 여기와 hook 타입만 손대면 dump/UI가 동시에 갱신된다.
+ */
+function silentPushDiagRows(
+  d: SilentPushDiagnostics,
+): { uiLabel: string; dumpKey: string; value: string }[] {
+  const task = d.taskRegistrationError
+    ? `${d.taskRegistrationState} (${d.taskRegistrationError})`
+    : d.taskRegistrationState;
+  return [
+    { uiLabel: 'permission', dumpKey: 'permission', value: d.permissionStatus ?? '(unknown)' },
+    { uiLabel: 'apnsToken', dumpKey: 'apnsToken', value: formatTokenTail(d.apnsToken) },
+    { uiLabel: 'activeTrip', dumpKey: 'activeTrip', value: formatTokenTail(d.activeTripToken) },
+    { uiLabel: 'apnsEnv', dumpKey: 'apnsEnv', value: d.apnsEnv },
+    { uiLabel: 'task', dumpKey: 'taskRegistration', value: task },
+    { uiLabel: 'lastRecv', dumpKey: 'lastReceived', value: formatAt(d.lastReceivedAt) },
+    { uiLabel: 'lastFired', dumpKey: 'lastFired', value: formatAt(d.lastFiredAt) },
+    { uiLabel: 'lastSkip', dumpKey: 'lastSkipped', value: formatAt(d.lastSkippedAt) },
+  ];
+}
+
 function formatStationLabel(res: NearestStationResult | null): string {
   if (!res) return '-';
   return `${res.station.name}(${res.station.line}) · ${Math.round(res.distanceKm * 1000)}m`;
@@ -175,15 +199,9 @@ function buildDumpText(args: {
   if (args.isMock) lines.push('(MOCK)');
   lines.push('');
   lines.push('## Silent Push');
-  lines.push(`apnsToken=${formatTokenTail(args.silentPush.apnsToken)}`);
-  lines.push(`activeTrip=${formatTokenTail(args.silentPush.activeTripToken)}`);
-  lines.push(`apnsEnv=${args.silentPush.apnsEnv}`);
-  lines.push(
-    `taskRegistration=${args.silentPush.taskRegistrationState}${args.silentPush.taskRegistrationError ? ` (${args.silentPush.taskRegistrationError})` : ''}`,
-  );
-  lines.push(`lastReceived=${formatAt(args.silentPush.lastReceivedAt)}`);
-  lines.push(`lastFired=${formatAt(args.silentPush.lastFiredAt)}`);
-  lines.push(`lastSkipped=${formatAt(args.silentPush.lastSkippedAt)}`);
+  for (const { dumpKey, value } of silentPushDiagRows(args.silentPush)) {
+    lines.push(`${dumpKey}=${value}`);
+  }
   lines.push('');
   lines.push(`## Alarm log (${args.logs.length})`);
   for (const entry of [...args.logs].reverse()) {
@@ -411,41 +429,9 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
           </Section>
 
           <Section title="Silent Push" colors={colors}>
-            <KeyValue
-              label="apnsToken"
-              value={formatTokenTail(silentPush.apnsToken)}
-              colors={colors}
-            />
-            <KeyValue
-              label="activeTrip"
-              value={formatTokenTail(silentPush.activeTripToken)}
-              colors={colors}
-            />
-            <KeyValue label="apnsEnv" value={silentPush.apnsEnv} colors={colors} />
-            <KeyValue
-              label="task"
-              value={
-                silentPush.taskRegistrationError
-                  ? `${silentPush.taskRegistrationState} (${silentPush.taskRegistrationError})`
-                  : silentPush.taskRegistrationState
-              }
-              colors={colors}
-            />
-            <KeyValue
-              label="lastRecv"
-              value={formatAt(silentPush.lastReceivedAt)}
-              colors={colors}
-            />
-            <KeyValue
-              label="lastFired"
-              value={formatAt(silentPush.lastFiredAt)}
-              colors={colors}
-            />
-            <KeyValue
-              label="lastSkip"
-              value={formatAt(silentPush.lastSkippedAt)}
-              colors={colors}
-            />
+            {silentPushDiagRows(silentPush).map(({ uiLabel, value }) => (
+              <KeyValue key={uiLabel} label={uiLabel} value={value} colors={colors} />
+            ))}
           </Section>
 
           <Section

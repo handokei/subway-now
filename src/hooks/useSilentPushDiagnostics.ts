@@ -5,7 +5,8 @@
  * release 빌드에서도 어디서 끊겼는지 좁힐 수 있다.
  *
  * 끊긴 위치 추정:
- *   - apnsToken=null            → getDevicePushTokenAsync 실패 (권한 미동의 등)
+ *   - permissionStatus='denied'/'undetermined' → iOS 알림 권한 차단 (silent push도 차단)
+ *   - apnsToken=null            → getDevicePushTokenAsync 실패 (entitlement/프로비저닝 등)
  *   - activeTripToken=null      → backend register 실패 또는 미시도
  *   - taskRegistration='failed' → registerTaskAsync 실패 (OS가 BG 콜백 안 함)
  *   - lastReceivedAt=null       → 토큰/등록 OK인데 클라가 push를 한 번도 못 받음
@@ -17,9 +18,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../constants/storageKeys';
 import { resolveApnsEnv, type ApnsEnv } from '../utils/apnsEnv';
-import { getAlarmLog } from '../utils/alarmLog';
+import { getAlarmLog, type AlarmLogSource } from '../utils/alarmLog';
 import {
   getSilentPushRegistrationStatus,
   type SilentPushRegistrationState,
@@ -29,6 +31,8 @@ export interface SilentPushDiagnostics {
   apnsToken: string | null;
   activeTripToken: string | null;
   apnsEnv: ApnsEnv;
+  /** iOS 알림 권한 상태 — 'undetermined'는 권한 요청 자체가 안 됐다는 신호. */
+  permissionStatus: Notifications.PermissionStatus | null;
   taskRegistrationState: SilentPushRegistrationState;
   taskRegistrationError: string | null;
   lastReceivedAt: number | null;
@@ -40,6 +44,7 @@ const EMPTY: SilentPushDiagnostics = {
   apnsToken: null,
   activeTripToken: null,
   apnsEnv: 'sandbox',
+  permissionStatus: null,
   taskRegistrationState: 'unknown',
   taskRegistrationError: null,
   lastReceivedAt: null,
@@ -47,38 +52,44 @@ const EMPTY: SilentPushDiagnostics = {
   lastSkippedAt: null,
 };
 
+// silent-push-* source → SilentPushDiagnostics 필드 매핑. 새 source 추가 시 여기 한 줄만.
+type LastTsField = 'lastReceivedAt' | 'lastFiredAt' | 'lastSkippedAt';
+const SOURCE_TO_FIELD: Partial<Record<AlarmLogSource, LastTsField>> = {
+  'silent-push-received': 'lastReceivedAt',
+  'silent-push-fired': 'lastFiredAt',
+  'silent-push-skipped': 'lastSkippedAt',
+};
+
 export function useSilentPushDiagnostics(): SilentPushDiagnostics {
   const [diag, setDiag] = useState<SilentPushDiagnostics>(EMPTY);
 
   const refresh = useCallback(async () => {
-    const [apnsToken, activeTripToken, logs] = await Promise.all([
+    const [apnsToken, activeTripToken, logs, permission] = await Promise.all([
       AsyncStorage.getItem(APNS_TOKEN_KEY),
       AsyncStorage.getItem(ACTIVE_TRIP_KEY),
       getAlarmLog(),
+      Notifications.getPermissionsAsync().catch(() => null),
     ]);
     const reg = getSilentPushRegistrationStatus();
-    // alarmLog는 최신순이 보장되지 않으므로 source별 최신 ts를 따로 골라낸다.
-    let lastReceivedAt: number | null = null;
-    let lastFiredAt: number | null = null;
-    let lastSkippedAt: number | null = null;
+    // alarmLog는 최신순이 보장되지 않으므로 source별 최신 ts를 데이터 주도로 골라낸다.
+    const latest: Record<LastTsField, number | null> = {
+      lastReceivedAt: null,
+      lastFiredAt: null,
+      lastSkippedAt: null,
+    };
     for (const entry of logs) {
-      if (entry.source === 'silent-push-received' && (lastReceivedAt == null || entry.ts > lastReceivedAt)) {
-        lastReceivedAt = entry.ts;
-      } else if (entry.source === 'silent-push-fired' && (lastFiredAt == null || entry.ts > lastFiredAt)) {
-        lastFiredAt = entry.ts;
-      } else if (entry.source === 'silent-push-skipped' && (lastSkippedAt == null || entry.ts > lastSkippedAt)) {
-        lastSkippedAt = entry.ts;
-      }
+      const field = SOURCE_TO_FIELD[entry.source];
+      if (!field) continue;
+      if (latest[field] == null || entry.ts > latest[field]!) latest[field] = entry.ts;
     }
     setDiag({
       apnsToken,
       activeTripToken,
       apnsEnv: resolveApnsEnv(),
+      permissionStatus: permission?.status ?? null,
       taskRegistrationState: reg.state,
       taskRegistrationError: reg.error,
-      lastReceivedAt,
-      lastFiredAt,
-      lastSkippedAt,
+      ...latest,
     });
   }, []);
 

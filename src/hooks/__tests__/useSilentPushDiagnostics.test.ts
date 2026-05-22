@@ -21,6 +21,11 @@ jest.mock('../../tasks/silentPushTask', () => ({
   getSilentPushRegistrationStatus: () => mockGetRegistrationStatus(),
 }));
 
+const mockGetPermissionsAsync = jest.fn();
+jest.mock('expo-notifications', () => ({
+  getPermissionsAsync: () => mockGetPermissionsAsync(),
+}));
+
 import { useSilentPushDiagnostics } from '../useSilentPushDiagnostics';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../constants/storageKeys';
 
@@ -33,6 +38,20 @@ describe('useSilentPushDiagnostics', () => {
     mockGetRegistrationStatus.mockReturnValue({ state: 'unknown', error: null });
     mockGetAlarmLog.mockResolvedValue([]);
     mockGetItem.mockResolvedValue(null);
+    mockGetPermissionsAsync.mockResolvedValue({ status: 'granted' });
+  });
+
+  it('permission 조회 실패 시 permissionStatus는 null', async () => {
+    mockGetPermissionsAsync.mockRejectedValue(new Error('no permission api'));
+    const { result } = renderHook(() => useSilentPushDiagnostics());
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(result.current.permissionStatus).toBeNull();
+  });
+
+  it('permission 조회 성공 시 status 반영', async () => {
+    mockGetPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    const { result } = renderHook(() => useSilentPushDiagnostics());
+    await waitFor(() => expect(result.current.permissionStatus).toBe('denied'));
   });
 
   it('초기 mount 시 storage/log/등록상태를 한 번 로드', async () => {
