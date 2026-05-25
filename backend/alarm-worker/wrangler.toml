@@ -12,9 +12,15 @@ preview_id = "7e67683c147349ed90c16a28ae232e34"
 
 # #498 — silent push 게이트 outcome 텔레메트리. 클라가 누적한 카운터를 일별 query 가능하게 적재.
 # Privacy: 카운트만, token은 8자 prefix만. 개별 push 내용/좌표 미저장.
-[[analytics_engine_datasets]]
-binding = "TELEMETRY"
-dataset = "silent_push_telemetry"
+#
+# 임시 비활성화 (#506): Analytics Engine은 Workers Paid 전용. 현재 Free plan에서는
+# binding 선언만으로도 deploy가 실패한다(Cloudflare API 10089). 코드는 `if (writer)` 분기로
+# graceful — binding 없으면 런타임에 datapoint 적재만 skip하고 ok 응답한다.
+# 운영 통계(stop-rate / push→ack 비율) 수집 보류. silent push 본 기능엔 영향 없음.
+# 복원: Paid 전환 시 아래 3줄 주석 해제 후 `npx wrangler deploy`.
+# [[analytics_engine_datasets]]
+# binding = "TELEMETRY"
+# dataset = "silent_push_telemetry"
 
 # 1분마다 활성 트립 폴링
 [triggers]
