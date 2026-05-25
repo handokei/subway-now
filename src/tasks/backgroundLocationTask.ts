@@ -6,14 +6,35 @@ import { alarmKey } from '../utils/stationAlarm';
 import { createLogger } from '../utils/logger';
 import { DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
-import { isAccuracyAcceptable, isLocationFresh } from '../utils/locationGates';
+import { isAccuracyAcceptable, isLocationFresh, isPlausibleJump, type FixSample } from '../utils/locationGates';
 import { logSuppressedGate } from '../utils/alarmLog';
+import { BG_LAST_FIX_KEY } from '../constants/storageKeys';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
 
 const logger = createLogger('BackgroundLocation');
 
 export const BACKGROUND_LOCATION_TASK = 'background-location-task';
+
+async function readBgLastFix(): Promise<FixSample | null> {
+  try {
+    const raw = await AsyncStorage.getItem(BG_LAST_FIX_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      typeof (parsed as FixSample).lat === 'number' &&
+      typeof (parsed as FixSample).lng === 'number' &&
+      typeof (parsed as FixSample).timestamp === 'number'
+    ) {
+      return parsed as FixSample;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   if (error) {
@@ -78,6 +99,17 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     const destination = destinationRaw as Station;
     const sleepMode = sleepJson ? JSON.parse(sleepJson) === true : false;
     const allowSpeaker = allowSpeakerJson ? JSON.parse(allowSpeakerJson) === true : true;
+
+    // #527: BG task 호출 간 직전 수용 fix를 AsyncStorage로 들고 시공간 일관성을 검증한다.
+    // iOS deferred batch에서 stale 좌표가 섞여 들어오거나 OS가 부정확 fix를 보낼 때 발생하는
+    // 비현실 점프(예: 25km/8s)를 drop. trip이 없을 땐 의미가 없어 destJson 통과 이후로 미룬다.
+    const currFix: FixSample = { lat, lng, timestamp: latest.timestamp };
+    const prevFix = await readBgLastFix();
+    if (!isPlausibleJump(prevFix, currFix)) {
+      logSuppressedGate('gate-jump', { lat, lng, accuracy, ageMs });
+      return;
+    }
+    await AsyncStorage.setItem(BG_LAST_FIX_KEY, JSON.stringify(currFix));
     // destinationId scoped — 이전 trip의 stale entry는 빈 set으로 반환된다(#462).
     const firedAlarms = await getFiredAlarms(destination.id);
     const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;

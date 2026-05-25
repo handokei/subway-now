@@ -13,3 +13,10 @@ export const MAX_ACCURACY_M = 200;
 // GPS 게이트의 영향 범위는 fallback 경로에 한정된다.
 export const MAX_ACCURACY_M_DISPLAY = 250;
 export const MAX_STATION_DISTANCE_KM = 1.0;
+// GPS jump gate (#527): 이전 fix 대비 물리적으로 불가능한 좌표 점프 차단.
+// 50 m/s: 지하철 최고 속도(~22 m/s) + 안전 마진. 표준 운행에선 절대 초과 불가.
+export const MAX_PLAUSIBLE_SPEED_MPS = 50;
+// 100m 미만 이동은 GPS 노이즈 범위로 간주하고 속도 검사를 면제.
+// 짧은 간격(< 1s) 두 fix가 거의 같은 위치일 때 d/dt가 비정상적으로 부풀어 false-positive
+// 차단이 발생하는 것을 막는다. 21:29 사고(25km)는 이 임계값보다 한참 위라 영향 없음.
+export const MIN_JUMP_DISTANCE_M = 100;

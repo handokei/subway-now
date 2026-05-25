@@ -34,6 +34,7 @@ export type AlarmLogReason =
   | 'dedup-station'
   | 'gate-age'
   | 'gate-accuracy'
+  | 'gate-jump'
   | 'gate-unknown-station'
   | 'gate-no-location'
   | 'gate-stale-location'
@@ -254,7 +255,7 @@ export function logSilentPushSkipped(input: {
 }
 
 export function logSuppressedGate(
-  reason: 'gate-age' | 'gate-accuracy',
+  reason: 'gate-age' | 'gate-accuracy' | 'gate-jump',
   location: AlarmLogLocation,
 ): void {
   void appendAlarmLog({

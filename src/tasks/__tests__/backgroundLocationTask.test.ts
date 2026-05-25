@@ -62,6 +62,7 @@ import type { AlarmEvent } from '../../utils/stationAlarm';
 import '../../tasks/backgroundLocationTask';
 import { BACKGROUND_LOCATION_TASK } from '../../tasks/backgroundLocationTask';
 import { MAX_ACCURACY_M, MAX_LOCATION_AGE_MS } from '../../constants/location';
+import { ALARM_EVENT_KEY } from '../../constants/storageKeys';
 
 // ── 픽스처 ──
 
@@ -192,7 +193,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
   // ── 목적지 설정 + alarmEvent 없음 ──
 
-  it('destJson이 있고 alarmEvent가 null이면 AsyncStorage.setItem을 호출하지 않는다', async () => {
+  it('destJson이 있고 alarmEvent가 null이면 ALARM_EVENT_KEY는 쓰지 않는다', async () => {
     mockStorageValues(JSON.stringify(mockDestination));
 
     mockProcessLocationUpdate.mockResolvedValue({
@@ -214,7 +215,10 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       allowSpeaker: true,
       storedRoute: null,
     }));
-    expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    // alarmEvent가 없으므로 ALARM_EVENT_KEY는 기록되지 않는다.
+    // BG_LAST_FIX_KEY(#527 jump gate)는 fix 수용 시 항상 기록되므로 별도 검증.
+    const setItemCalls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+    expect(setItemCalls.every(([key]) => key !== ALARM_EVENT_KEY)).toBe(true);
   });
 
   // ── sleepMode 파싱 ──
@@ -515,6 +519,97 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       'gate-accuracy',
       expect.objectContaining({ accuracy }),
     );
+  });
+
+  // ── #527 jump gate: trip 컨텍스트(destJson 통과) 이후에만 동작 ──
+
+  it('비현실 점프(25km/8s)면 logSuppressedGate(gate-jump)를 호출하고 processLocationUpdate를 건너뛴다', async () => {
+    const prevTs = Date.now() - 8_000;
+    const prevFix = { lat: 37.5390, lng: 126.9610, timestamp: prevTs };
+    // dest, sleep, route, allowSpeaker, BG_LAST_FIX_KEY (readBgLastFix 5번째 호출)
+    (AsyncStorage.getItem as jest.Mock)
+      .mockResolvedValueOnce(JSON.stringify(mockDestination))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(JSON.stringify(prevFix));
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.6128, 127.0966)] }, // 신내 ≈ 25km 떨어짐
+      error: null,
+    });
+
+    expect(mockLogSuppressedGate).toHaveBeenCalledWith(
+      'gate-jump',
+      expect.objectContaining({ lat: 37.6128, lng: 127.0966 }),
+    );
+    expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+  });
+
+  it('정상 이동이면 jump 게이트를 통과하고 BG_LAST_FIX_KEY를 갱신한다', async () => {
+    const prevTs = Date.now() - 30_000;
+    const prevFix = { lat: 37.498, lng: 127.027, timestamp: prevTs };
+    (AsyncStorage.getItem as jest.Mock)
+      .mockResolvedValueOnce(JSON.stringify(mockDestination))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(JSON.stringify(prevFix));
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.499, 127.028)] }, // ≈ 130m 이동, 4.3 m/s
+      error: null,
+    });
+
+    expect(mockLogSuppressedGate).not.toHaveBeenCalled();
+    expect(mockProcessLocationUpdate).toHaveBeenCalled();
+    const setItemCalls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+    expect(setItemCalls.some(([key]) => key === 'subway-now:bg-last-fix')).toBe(true);
+  });
+
+  it('BG_LAST_FIX_KEY가 없으면(콜드스타트) jump 게이트를 통과한다', async () => {
+    mockStorageValues(JSON.stringify(mockDestination));
+    // mockStorageValues는 4개만 mockOnce → 5번째 호출은 default(null)
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    expect(mockLogSuppressedGate).not.toHaveBeenCalled();
+    expect(mockProcessLocationUpdate).toHaveBeenCalled();
+  });
+
+  it('BG_LAST_FIX_KEY가 손상된 JSON이면 prev=null로 처리하여 통과한다', async () => {
+    (AsyncStorage.getItem as jest.Mock)
+      .mockResolvedValueOnce(JSON.stringify(mockDestination))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce('not-json');
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    expect(mockProcessLocationUpdate).toHaveBeenCalled();
+  });
+
+  it('BG_LAST_FIX_KEY가 형식 불일치 객체면 prev=null로 처리하여 통과한다', async () => {
+    (AsyncStorage.getItem as jest.Mock)
+      .mockResolvedValueOnce(JSON.stringify(mockDestination))
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(JSON.stringify({ foo: 'bar' }));
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    expect(mockProcessLocationUpdate).toHaveBeenCalled();
   });
 
   it('accuracy가 임계값(MAX_ACCURACY_M) 이내면 통과한다', async () => {

@@ -24,3 +24,6 @@ export const TRIP_TRAIN_CODE_KEY = 'subway-now:trip-train-code';
 // #498 — silent push 게이트 outcome 텔레메트리. 마지막 flush 시각(epoch ms).
 // 다음 flush는 이 시점 이후의 alarmLog 엔트리만 집계 → 중복 방지.
 export const TELEMETRY_LAST_FLUSH_KEY = 'subway-now:telemetry-last-flush';
+// #527 — BG 위치 task의 jump gate가 참조하는 직전 수용 fix.
+// 형식: {"lat":number,"lng":number,"timestamp":number} JSON.
+export const BG_LAST_FIX_KEY = 'subway-now:bg-last-fix';
