@@ -3,7 +3,13 @@ import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import { NearestStationResult, Station } from '../types/station';
 import { findNearestStations } from '../utils/findNearestStation';
-import { isAccuracyAcceptable, isAccuracyAcceptableForDisplay, isLocationFresh } from '../utils/locationGates';
+import {
+  isAccuracyAcceptable,
+  isAccuracyAcceptableForDisplay,
+  isLocationFresh,
+  isPlausibleJump,
+  type FixSample,
+} from '../utils/locationGates';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../constants/e2e';
 import { createLogger } from '../utils/logger';
@@ -64,9 +70,23 @@ export function useNearestStation(): UseNearestStationReturn {
   // BG→FG 전환마다 startWatch가 호출되므로 stale 위치 의심 시 운영 로그로 추적한다.
   const lastKnownStaleCountRef = useRef<number>(0);
   const lastKnownLowAccuracyCountRef = useRef<number>(0);
+  // #527: jump gate가 참조하는 직전 수용 fix. accuracy 게이트는 fix 단위 절대값만 보고
+  // 이전 좌표와의 시공간 일관성은 확인하지 못한다 — 21:29 효창공원앞↔신내 25km/8s
+  // 텔레포트 사고를 차단하기 위해 useRef로 prev를 들고 비교한다.
+  const lastFixRef = useRef<FixSample | null>(null);
 
-  const applyLocation = useCallback((coords: Location.LocationObjectCoords) => {
+  const applyLocation = useCallback((coords: Location.LocationObjectCoords, timestamp: number) => {
     const { latitude, longitude, speed, accuracy } = coords;
+    const fix: FixSample = { lat: latitude, lng: longitude, timestamp };
+    if (!isPlausibleJump(lastFixRef.current, fix)) {
+      setLocationUncertain(true);
+      return;
+    }
+    lastFixRef.current = fix;
+    // jump/accuracy 게이트 모두 통과한 신뢰 fix — uncertain 상태에서 자동 복귀시킨다.
+    // (호출자 측 setLocationUncertain(false)에 의존하면 jump drop 직후 정상 fix가 들어와도
+    //  복귀 호출 경로가 없어 uncertain이 고착되는 결함 발생 — P1 회피.)
+    setLocationUncertain(false);
     const stationsResult = findNearestStations(latitude, longitude, MAX_STATION_DISTANCE_KM);
 
     const newId = stationsResult?.primary.id ?? null;
@@ -117,15 +137,18 @@ export function useNearestStation(): UseNearestStationReturn {
       setError(null);
       setPermissionDenied(false);
       setLocationUncertain(false);
-      applyLocation({
-        latitude: E2E_MOCK_LOCATION.latitude,
-        longitude: E2E_MOCK_LOCATION.longitude,
-        accuracy: E2E_MOCK_LOCATION.accuracyMeters,
-        speed: E2E_MOCK_LOCATION.speedMps,
-        altitude: null,
-        altitudeAccuracy: null,
-        heading: null,
-      });
+      applyLocation(
+        {
+          latitude: E2E_MOCK_LOCATION.latitude,
+          longitude: E2E_MOCK_LOCATION.longitude,
+          accuracy: E2E_MOCK_LOCATION.accuracyMeters,
+          speed: E2E_MOCK_LOCATION.speedMps,
+          altitude: null,
+          altitudeAccuracy: null,
+          heading: null,
+        },
+        Date.now(),
+      );
       setLoading(false);
       return;
     }
@@ -146,7 +169,7 @@ export function useNearestStation(): UseNearestStationReturn {
         const fresh = isLocationFresh(lastKnown.timestamp);
         const acceptable = isAccuracyAcceptable(lastKnown.coords.accuracy);
         if (fresh && acceptable) {
-          applyLocation(lastKnown.coords);
+          applyLocation(lastKnown.coords, lastKnown.timestamp);
           setLoading(false);
         } else if (!fresh) {
           lastKnownStaleCountRef.current += 1;
@@ -197,7 +220,7 @@ export function useNearestStation(): UseNearestStationReturn {
             return;
           }
           setLocationUncertain(false);
-          applyLocation(location.coords);
+          applyLocation(location.coords, location.timestamp);
         },
       );
       setLoading(false);
@@ -227,7 +250,7 @@ export function useNearestStation(): UseNearestStationReturn {
       const location = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
       if (isAccuracyAcceptableForDisplay(location.coords.accuracy)) {
         setLocationUncertain(false);
-        applyLocation(location.coords);
+        applyLocation(location.coords, location.timestamp);
       } else {
         setLocationUncertain(true);
       }

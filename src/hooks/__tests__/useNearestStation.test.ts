@@ -71,7 +71,7 @@ const mockLocation = (lat: number, lng: number, opts: { accuracy?: number | null
 const simulateGps = (
   lat: number,
   lng: number,
-  opts: { speed?: number | null; accuracy?: number | null } = {},
+  opts: { speed?: number | null; accuracy?: number | null; timestamp?: number } = {},
 ) => {
   act(() => {
     watchCallback?.({
@@ -81,7 +81,7 @@ const simulateGps = (
         speed: opts.speed ?? null,
         accuracy: opts.accuracy ?? null,
       },
-      timestamp: Date.now(),
+      timestamp: opts.timestamp ?? Date.now(),
     });
   });
 };
@@ -419,14 +419,16 @@ describe('useNearestStation', () => {
     simulateGps(37.4980, 127.0277);
     await waitFor(() => expect(result.current.result).not.toBeNull());
 
-    // 이후 null 반환
+    // 이후 null 반환. 두 번째 좌표는 직전 fix와 100m 이내(노이즈 범위)로 두어
+    // jump gate(#527) 차단 없이 findNearestStations 분기를 검증한다.
     const spy = jest.spyOn(findNearestStationModule, 'findNearestStations').mockReturnValue(null);
-    simulateGps(37.0, 127.0);
-
-    await waitFor(() => expect(result.current.result).toBeNull());
-    expect(result.current.variants).toEqual([]);
-
-    spy.mockRestore();
+    try {
+      simulateGps(37.4981, 127.0278);
+      await waitFor(() => expect(result.current.result).toBeNull());
+      expect(result.current.variants).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('refresh 중 권한 거부 시 watch를 재시작하지 않는다', async () => {
@@ -583,6 +585,45 @@ describe('useNearestStation', () => {
     expect(drop).toBeDefined();
     expect(drop.speedMps).toBe(1.5);
     expect(drop.dropReason).toBe('low-accuracy-display');
+  });
+
+  it('jump gate(#527): 직전 fix 대비 비현실 점프는 setState 차단 + locationUncertain=true', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    // 첫 fix: 효창공원앞 — 명시적 timestamp로 prev 고정
+    const t0 = 1_700_000_000_000;
+    simulateGps(37.5390, 126.9610, { accuracy: 30, timestamp: t0 });
+    await waitFor(() => expect(result.current.userLocation).not.toBeNull());
+    const initialLoc = result.current.userLocation;
+
+    // 두 번째 fix: 25km 떨어진 신내 — 8s 후 → 3125 m/s, 50 m/s 임계 초과
+    simulateGps(37.6128, 127.0966, { accuracy: 30, timestamp: t0 + 8_000 });
+
+    expect(result.current.userLocation).toEqual(initialLoc);
+    expect(result.current.locationUncertain).toBe(true);
+  });
+
+  it('jump gate(#527): jump drop 후 정상 fix가 들어오면 locationUncertain=false로 복귀한다 (P1 회귀)', async () => {
+    mockGranted();
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    const t0 = 1_700_000_000_000;
+    simulateGps(37.5390, 126.9610, { accuracy: 30, timestamp: t0 });
+    await waitFor(() => expect(result.current.locationUncertain).toBe(false));
+
+    simulateGps(37.6128, 127.0966, { accuracy: 30, timestamp: t0 + 8_000 });
+    expect(result.current.locationUncertain).toBe(true);
+
+    // 다음 정상 fix(직전 효창공원앞 근처)는 jump 통과 → uncertain 복귀
+    simulateGps(37.5391, 126.9611, { accuracy: 30, timestamp: t0 + 16_000 });
+    await waitFor(() => expect(result.current.locationUncertain).toBe(false));
   });
 
   it('uncertain 상태에서 정확한 좌표가 들어오면 locationUncertain=false로 복귀한다', async () => {

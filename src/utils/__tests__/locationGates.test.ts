@@ -1,5 +1,10 @@
 import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY, MAX_LOCATION_AGE_MS } from '../../constants/location';
-import { isAccuracyAcceptable, isAccuracyAcceptableForDisplay, isLocationFresh } from '../locationGates';
+import {
+  isAccuracyAcceptable,
+  isAccuracyAcceptableForDisplay,
+  isLocationFresh,
+  isPlausibleJump,
+} from '../locationGates';
 
 describe('isLocationFresh', () => {
   const NOW = 1_700_000_000_000;
@@ -71,5 +76,43 @@ describe('isAccuracyAcceptableForDisplay', () => {
 
   it('알람 임계값을 초과해도 표시 임계값 이내면 true (지하 구간 가정)', () => {
     expect(isAccuracyAcceptableForDisplay(MAX_ACCURACY_M + 1)).toBe(true);
+  });
+});
+
+describe('isPlausibleJump', () => {
+  // 효창공원앞 ≈ (37.5390, 126.9610), 신내 ≈ (37.6128, 127.0966) — 대략 25km 떨어진 두 점
+  const HYOCHANG = { lat: 37.5390, lng: 126.9610 };
+  const SINNAE = { lat: 37.6128, lng: 127.0966 };
+
+  it('prev가 null이면 true (콜드 스타트)', () => {
+    expect(isPlausibleJump(null, { ...HYOCHANG, timestamp: 1_700_000_000_000 })).toBe(true);
+  });
+
+  it('정상 도보/주행: 30s 동안 200m → true', () => {
+    const prev = { lat: 37.5390, lng: 126.9610, timestamp: 1_700_000_000_000 };
+    // 약 200m 북쪽 (0.0018° lat ≈ 200m)
+    const curr = { lat: 37.5408, lng: 126.9610, timestamp: 1_700_000_030_000 };
+    expect(isPlausibleJump(prev, curr)).toBe(true);
+  });
+
+  it('비현실 점프: 8s 동안 25km → false (21:29 사고)', () => {
+    const prev = { ...HYOCHANG, timestamp: 1_700_000_000_000 };
+    const curr = { ...SINNAE, timestamp: 1_700_000_008_000 };
+    expect(isPlausibleJump(prev, curr)).toBe(false);
+  });
+
+  it('정지 시 GPS 노이즈: 5s 동안 5m → true', () => {
+    const prev = { lat: 37.5390, lng: 126.9610, timestamp: 1_700_000_000_000 };
+    // 약 5m 변동 (0.00005° lat ≈ 5.5m)
+    const curr = { lat: 37.53905, lng: 126.9610, timestamp: 1_700_000_005_000 };
+    expect(isPlausibleJump(prev, curr)).toBe(true);
+  });
+
+  it('timestamp 동일/역행: true (중복 fix 보호)', () => {
+    const prev = { ...HYOCHANG, timestamp: 1_700_000_000_000 };
+    const sameTs = { ...SINNAE, timestamp: 1_700_000_000_000 };
+    const earlier = { ...SINNAE, timestamp: 1_699_999_999_000 };
+    expect(isPlausibleJump(prev, sameTs)).toBe(true);
+    expect(isPlausibleJump(prev, earlier)).toBe(true);
   });
 });
