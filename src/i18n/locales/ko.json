@@ -212,5 +212,11 @@
     "boundFor": "{{name}}행",
     "innerLoop": "내선순환",
     "outerLoop": "외선순환"
+  },
+  "source": {
+    "positionTrain": "열차 데이터",
+    "routeProgress": "경로 추정",
+    "gpsOnly": "GPS 추정",
+    "uncertain": "위치 확인 중"
   }
 }
