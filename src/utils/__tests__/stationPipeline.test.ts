@@ -147,7 +147,7 @@ describe('processLocationUpdate', () => {
 
     await call();
 
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith(mockAlarmEvent, false, true);
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith(mockAlarmEvent, false, true, undefined);
   });
 
   it('passes sleepMode and allowSpeaker to sendAlarmNotification', async () => {
@@ -157,7 +157,7 @@ describe('processLocationUpdate', () => {
 
     await call({ sleepMode: true, allowSpeaker: false });
 
-    expect(mockSendAlarmNotification).toHaveBeenCalledWith(mockAlarmEvent, true, false);
+    expect(mockSendAlarmNotification).toHaveBeenCalledWith(mockAlarmEvent, true, false, undefined);
   });
 
   it('does not call sendAlarmNotification when no alarm', async () => {
@@ -291,7 +291,7 @@ describe('processLocationUpdate', () => {
       stopsToNextStation: 3,
       isTransfer: false,
       stopsToDestination: 3,
-    });
+    }, undefined);
     expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith('station-1');
   });
 
@@ -318,7 +318,7 @@ describe('processLocationUpdate', () => {
       stopsToNextStation: 3,
       isTransfer: false,
       stopsToDestination: 3,
-    });
+    }, undefined);
     expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith('station-1');
   });
 
@@ -434,6 +434,83 @@ describe('processLocationUpdate', () => {
       await call({ source: 'fg' });
 
       expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', mockAlarmEvent);
+    });
+  });
+
+  describe('fusionSource 라벨 전파 (#327)', () => {
+    it('fusionSource=gps → sendAlarmNotification에 gpsOnly 전달', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+      await call({ fusionSource: 'gps' });
+
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith(
+        mockAlarmEvent,
+        false,
+        true,
+        'gpsOnly',
+      );
+    });
+
+    it('fusionSource=position-train → positionTrain 전달', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+      await call({ fusionSource: 'position-train' });
+
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith(
+        mockAlarmEvent,
+        false,
+        true,
+        'positionTrain',
+      );
+    });
+
+    it('locationUncertain=true → source 무시하고 uncertain 전달', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+      await call({ fusionSource: 'position-train', locationUncertain: true });
+
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith(
+        mockAlarmEvent,
+        false,
+        true,
+        'uncertain',
+      );
+    });
+
+    it('fusionSource 미지정 → sendAlarmNotification에 source 전달 안 함 (4번째 인자 undefined)', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+
+      await call();
+
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith(
+        mockAlarmEvent,
+        false,
+        true,
+        undefined,
+      );
+    });
+
+    it('역 통과 알림에도 notificationSource가 전달된다', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+
+      await call({ fusionSource: 'route-progress' });
+
+      expect(mockSendStationPassedNotification).toHaveBeenCalledWith(
+        mockStation.name,
+        mockDestination.name,
+        expect.any(Object),
+        'routeProgress',
+      );
     });
   });
 });

@@ -14,6 +14,8 @@ import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import type { NearestStationResult, Station } from '../types/station';
 import type { Route } from './stationRoute';
 import type { AlarmEvent } from './stationAlarm';
+import type { FusionSource } from './pickFusedStation';
+import { resolveNotificationSource } from './notificationSource';
 
 export interface NextTarget {
   nextStationName: string;
@@ -97,6 +99,12 @@ export interface ProcessLocationInputs {
   // 알람 로그 적재 시 발사 컨텍스트 — 호출자가 명시한다.
   // 기본값을 두지 않아 컴파일러가 컨텍스트 분류 누락을 잡도록 한다.
   source: AlarmLogSource;
+  /** 사용자 노출 알람 본문에 부착할 데이터 출처 (#327).
+   *  FG는 useFusedNearestStation의 source, BG는 'gps', silent push는 'position-train'.
+   *  미지정 시 라벨 부착 안 함 — 점진 적용 안전. */
+  fusionSource?: FusionSource;
+  /** GPS 게이트 실패 등으로 위치가 불확실한 상태. true면 source를 무시하고 'uncertain' 라벨. */
+  locationUncertain?: boolean;
 }
 
 export async function processLocationUpdate(inputs: ProcessLocationInputs): Promise<PipelineResult> {
@@ -110,7 +118,13 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     storedRoute = null,
     speedMps = null,
     source,
+    fusionSource,
+    locationUncertain = false,
   } = inputs;
+
+  const notificationSource = fusionSource
+    ? resolveNotificationSource(fusionSource, locationUncertain)
+    : undefined;
 
   const nearest = findNearestStation(lat, lng, MAX_STATION_DISTANCE_KM);
   if (!nearest) return { alarmEvent: null, nearest: null };
@@ -132,7 +146,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   );
 
   if (alarmEvent) {
-    await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker);
+    await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker, notificationSource);
     logFiredAlarm(source, alarmEvent);
   }
 
@@ -149,6 +163,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
           nearest.station.name,
           destination.name,
           target,
+          notificationSource,
         );
         await setLastNotifiedStationId(nearest.station.id);
         logFiredStationPassed(source, nearest.station);
