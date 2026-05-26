@@ -34,6 +34,10 @@ import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 
 const logger = createLogger('HomeScreen');
 
+// #534: 첫 LA 송출 시 route 계산 완료를 기다리는 최대 시간. 이 시간을 넘기면 ETA 없이
+// destination-only로 송출해 경로 산출이 영구 실패하는 케이스에서도 LA가 뜨도록 한다.
+const FIRST_SEND_ROUTE_WAIT_MS = 1500;
+
 export default function HomeScreen() {
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -61,6 +65,12 @@ export default function HomeScreen() {
   const arrivedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const prevDestIdRef = useRef<string | null>(null);
+  // #534: route 비동기 계산이 끝나기 전 첫 LA 송출이 일어나면 ETA-less 카드가 잠금화면에
+  // 박힌다. route 도착까지 첫 송출을 지연시키되, FIRST_SEND_ROUTE_WAIT_MS 내에 route가
+  // 안 오면 destination-only로 송출 (경로 산출 영구 실패 폴백 보존).
+  const firstSendWaitStartRef = useRef<number | null>(null);
+  const firstSendFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [firstSendFallbackTick, setFirstSendFallbackTick] = useState(0);
   const routePreference = useAppStore((s) => s.routePreference);
   const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
   const [categorized, setCategorized] = useState<CategorizedRoute[]>([]);
@@ -194,7 +204,13 @@ export default function HomeScreen() {
         void refreshRef.current();
       }
     });
-    return () => subscription.remove();
+    return () => {
+      subscription.remove();
+      if (firstSendFallbackTimerRef.current) {
+        clearTimeout(firstSendFallbackTimerRef.current);
+        firstSendFallbackTimerRef.current = null;
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -215,14 +231,42 @@ export default function HomeScreen() {
         clearAlarmNotification().catch((e) => logger.error('알림 해제 실패:', e));
         clearStationNotification().catch((e) => logger.error('알림 해제 실패:', e));
       }
+      firstSendWaitStartRef.current = null;
+      if (firstSendFallbackTimerRef.current) {
+        clearTimeout(firstSendFallbackTimerRef.current);
+        firstSendFallbackTimerRef.current = null;
+      }
       return;
     }
+    const isFirstSend = prevNotifKeyRef.current === undefined || prevNotifKeyRef.current === 'none';
     // route가 아직 계산되지 않은 짧은 윈도우(콜드 스타트, categorized async fill 중)에
     // 정상 payload를 한 번 송출한 뒤라면 destination-only로 덮어쓰지 말고 이전 payload를
-    // 유지한다. 단 첫 송출 전(아직 LiveActivity 미시작)이면 차라리 destination-only라도
-    // 띄워야 사용자 가시성이 확보된다 — 경로 산출이 영구 실패하는 케이스 대비.
-    if (!route && prevNotifKeyRef.current !== undefined && prevNotifKeyRef.current !== 'none') {
+    // 유지한다.
+    if (!route && !isFirstSend) {
       return;
+    }
+    // #534: 첫 송출이고 route가 아직 없으면 staticEta 계산 불가 → ETA-less LA가 박힌다.
+    // FIRST_SEND_ROUTE_WAIT_MS 내에 route가 도착하면 routeSig deps 변화로 자연 재발화되어
+    // ETA 포함 송출. 타임아웃 만료 시 setFirstSendFallbackTick으로 재발화시켜 폴백 송출.
+    if (!route && isFirstSend) {
+      if (firstSendWaitStartRef.current === null) {
+        firstSendWaitStartRef.current = Date.now();
+      }
+      const elapsed = Date.now() - firstSendWaitStartRef.current;
+      if (elapsed < FIRST_SEND_ROUTE_WAIT_MS) {
+        if (!firstSendFallbackTimerRef.current) {
+          firstSendFallbackTimerRef.current = setTimeout(() => {
+            firstSendFallbackTimerRef.current = null;
+            setFirstSendFallbackTick((n) => n + 1);
+          }, FIRST_SEND_ROUTE_WAIT_MS - elapsed);
+        }
+        return;
+      }
+    }
+    firstSendWaitStartRef.current = null;
+    if (firstSendFallbackTimerRef.current) {
+      clearTimeout(firstSendFallbackTimerRef.current);
+      firstSendFallbackTimerRef.current = null;
     }
     const key = `${effectiveOrigin.id}__${destination.id}__${routeSig}__${displayEta ?? ''}__${arrivalIsMock}__${alarmEvent?.type ?? ''}`;
     if (key === prevNotifKeyRef.current) return;
@@ -248,7 +292,7 @@ export default function HomeScreen() {
       );
     };
     update().catch((e) => logger.error('알림 업데이트 실패:', e));
-  }, [effectiveOrigin?.id, destination?.id, displayEta, arrivalIsMock, routeSig, alarmEvent, arrivedBanner]);
+  }, [effectiveOrigin?.id, destination?.id, displayEta, arrivalIsMock, routeSig, alarmEvent, arrivedBanner, firstSendFallbackTick]);
 
   useEffect(() => {
     if (arrivedBanner) {
@@ -256,6 +300,12 @@ export default function HomeScreen() {
       clearAlarmNotification().catch(console.error);
       clearAlarmEvent();
       prevNotifKeyRef.current = undefined;
+      // #534: arrived→재트립 진입 시 이전 트립의 대기 윈도우/타이머가 잔존하지 않도록 정리.
+      firstSendWaitStartRef.current = null;
+      if (firstSendFallbackTimerRef.current) {
+        clearTimeout(firstSendFallbackTimerRef.current);
+        firstSendFallbackTimerRef.current = null;
+      }
     }
   }, [arrivedBanner]);
 
