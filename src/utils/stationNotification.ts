@@ -213,6 +213,7 @@ function buildLiveActivityData(
   etaMinutes?: number | null,
   isMock?: boolean,
   alarmEvent?: AlarmEvent | null,
+  source?: NotificationSource,
 ): LiveActivity.LiveActivityData {
   // station layer: 항상 포함. Live Activity는 사용자 노출이므로 현재 언어로 표시.
   const data: LiveActivity.LiveActivityData = {
@@ -273,6 +274,12 @@ function buildLiveActivityData(
     );
   }
 
+  // source 라벨도 JS에서 i18n으로 빌드해 native로 전달 (#327).
+  // alarmBody 등 다른 사용자 노출 텍스트와 동일 패턴.
+  if (source) {
+    data.sourceLabel = i18next.t(notificationSourceI18nKey(source));
+  }
+
   // 사용자 노출 텍스트 빌드 — Widget이 직접 조립하지 않도록 JS에서 미리 i18n.
   data.distanceText = i18next.t('route.approximateDistance', { m: distanceM });
   if (etaMinutes != null) {
@@ -326,6 +333,7 @@ export async function updateStationNotification(
   etaMinutes?: number | null,
   isMock?: boolean,
   alarmEvent?: AlarmEvent | null,
+  source?: NotificationSource,
 ): Promise<void> {
   notifLogger.info('updateStation:', currentStation.name, `${distanceM}m`, destination ? `→ ${destination.name}` : '');
 
@@ -344,7 +352,7 @@ export async function updateStationNotification(
       notifLogger.info('알림 예약 완료:', title, body);
       return;
     }
-    const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock, alarmEvent);
+    const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock, alarmEvent, source);
     try {
       liveActivityLogger.info('업데이트 요청');
       await LiveActivity.updateLiveActivity(data);

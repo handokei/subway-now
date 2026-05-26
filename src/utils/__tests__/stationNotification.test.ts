@@ -424,6 +424,29 @@ describe('stationNotification', () => {
         expect.not.objectContaining({ alarmType: expect.anything() })
       );
     });
+
+    it('source 인자 전달 시 sourceLabel을 i18n 빌드해 LA 데이터에 포함 (#327)', async () => {
+      await updateStationNotification(
+        mockStation,
+        154,
+        mockDestination,
+        directRoute,
+        12,
+        false,
+        null,
+        'gpsOnly',
+      );
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceLabel: 'GPS 추정' }),
+      );
+    });
+
+    it('source 미지정 시 sourceLabel은 포함되지 않음 (호환 안전)', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.not.objectContaining({ sourceLabel: expect.anything() }),
+      );
+    });
   });
 
   describe('updateStationNotification (Android - expo-notifications)', () => {

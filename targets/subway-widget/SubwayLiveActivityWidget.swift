@@ -161,6 +161,13 @@ private struct LockScreenView: View {
                             .font(.subheadline)
                             .foregroundColor(lineColor)
                     }
+
+                    // 데이터 출처 자백 (#327). 없으면 표시 생략.
+                    if let sourceLabel = state.sourceLabel {
+                        Text(sourceLabel)
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 Spacer()

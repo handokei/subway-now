@@ -182,6 +182,7 @@ describe('processLocationUpdate', () => {
       12,
       undefined,
       null,
+      undefined,
     );
   });
 
@@ -194,7 +195,7 @@ describe('processLocationUpdate', () => {
     await call({ sleepMode: true });
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
-      mockStation, 150, mockDestination, mockRoute, 10, undefined, mockAlarmEvent,
+      mockStation, 150, mockDestination, mockRoute, 10, undefined, mockAlarmEvent, undefined,
     );
   });
 
@@ -206,7 +207,7 @@ describe('processLocationUpdate', () => {
     await call();
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
-      mockStation, 150, mockDestination, mockRoute, 10, undefined, null,
+      mockStation, 150, mockDestination, mockRoute, 10, undefined, null, undefined,
     );
   });
 
@@ -239,7 +240,7 @@ describe('processLocationUpdate', () => {
     await call();
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
-      mockStation, 457, mockDestination, mockRoute, 5, undefined, null,
+      mockStation, 457, mockDestination, mockRoute, 5, undefined, null, undefined,
     );
   });
 
@@ -342,7 +343,7 @@ describe('processLocationUpdate', () => {
     const result = await call();
 
     expect(mockUpdateStationNotification).toHaveBeenCalledWith(
-      mockStation, 150, mockDestination, null, null, undefined, null,
+      mockStation, 150, mockDestination, null, null, undefined, null, undefined,
     );
     expect(result.nearest).toBe(mockNearestResult);
   });

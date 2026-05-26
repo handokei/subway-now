@@ -182,6 +182,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     eta,
     undefined,
     sleepMode ? alarmEvent : null,
+    notificationSource,
   );
 
   return { alarmEvent, nearest };
