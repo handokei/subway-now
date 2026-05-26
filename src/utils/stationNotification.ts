@@ -16,12 +16,17 @@ import stationsData from '../data/stations.json';
 import type { ExitSide } from '../types/exitSide';
 import { lookupExitSide } from './exitSide';
 import { hasQuickExitData } from './quickExit';
-import { notificationSourceI18nKey, type NotificationSource } from './notificationSource';
+import {
+  notificationSourceI18nKey,
+  shouldDiscloseNotificationSource,
+  type NotificationSource,
+} from './notificationSource';
 
 /** 알람/통과 본문 끝에 데이터 출처를 자백하는 라벨을 부착한다.
- *  source 미지정 시 라벨 생략 — 기존 caller 회귀 안전. */
+ *  - source 미지정 → 라벨 생략 (기존 caller 회귀 안전)
+ *  - positionTrain/routeProgress → 라벨 생략 (정상 신뢰 케이스는 노이즈, #327 UX 정책) */
 function appendNotificationSource(body: string, source?: NotificationSource): string {
-  if (!source) return body;
+  if (!source || !shouldDiscloseNotificationSource(source)) return body;
   return `${body} · ${i18next.t(notificationSourceI18nKey(source))}`;
 }
 
@@ -278,7 +283,8 @@ function buildLiveActivityData(
 
   // source 라벨도 JS에서 i18n으로 빌드해 native로 전달 (#327).
   // alarmBody 등 다른 사용자 노출 텍스트와 동일 패턴.
-  if (source) {
+  // positionTrain/routeProgress는 정상 신뢰 케이스라 자백 생략 — UX 노이즈 회피.
+  if (source && shouldDiscloseNotificationSource(source)) {
     data.sourceLabel = i18next.t(notificationSourceI18nKey(source));
   }
 

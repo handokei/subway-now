@@ -1,6 +1,7 @@
 import {
   resolveNotificationSource,
   notificationSourceI18nKey,
+  shouldDiscloseNotificationSource,
   type NotificationSource,
 } from '../notificationSource';
 import type { FusionSource } from '../pickFusedStation';
@@ -35,4 +36,15 @@ describe('notificationSourceI18nKey', () => {
       expect(notificationSourceI18nKey(key)).toBe(`source.${key}`);
     },
   );
+});
+
+describe('shouldDiscloseNotificationSource', () => {
+  it.each<[NotificationSource, boolean]>([
+    ['gpsOnly', true],
+    ['uncertain', true],
+    ['positionTrain', false],
+    ['routeProgress', false],
+  ])('%s → %s (사용자 자백 대상 여부)', (key, expected) => {
+    expect(shouldDiscloseNotificationSource(key)).toBe(expected);
+  });
 });

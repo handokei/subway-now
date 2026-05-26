@@ -34,7 +34,7 @@ import {
 } from '../utils/silentPushLocationGate';
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
 import { buildAlarmContent } from '../utils/stationNotification';
-import { notificationSourceI18nKey, type NotificationSource } from '../utils/notificationSource';
+import { type NotificationSource } from '../utils/notificationSource';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 
 // silent push는 서버가 train data 기반으로 발사하므로 라벨도 'positionTrain'으로 고정.
@@ -112,10 +112,11 @@ function mapGateReason(reason: GateSkipReason): AlarmLogReason {
  * buildAlarmContent를 못 쓰고 별도 i18n 키로 빌드한다.
  */
 function buildIntermediateContent(stationName: string): { title: string; body: string } {
-  const body = i18next.t('route.intermediatePassedBody', { name: stationName });
+  // SILENT_PUSH_SOURCE=positionTrain은 #327 UX 정책상 자백 대상이 아님 → suffix 미부착.
+  // shouldDiscloseNotificationSource이 false라 라벨 노이즈 회피.
   return {
     title: i18next.t('route.intermediatePassedTitle'),
-    body: `${body} · ${i18next.t(notificationSourceI18nKey(SILENT_PUSH_SOURCE))}`,
+    body: i18next.t('route.intermediatePassedBody', { name: stationName }),
   };
 }
 

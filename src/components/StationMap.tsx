@@ -33,9 +33,13 @@ interface StationMapProps {
 }
 
 // 도심 GPS 정확도 5~50m 구간에서 점으로 수렴하는 것을 막는 최소 반경.
-const ACCURACY_MIN_RADIUS_M = 30;
+// 50m로 키워 사용자가 정확도 원의 존재를 바로 인지할 수 있게 함.
+const ACCURACY_MIN_RADIUS_M = 50;
 // stroke 1px은 retina 디스플레이에서 거의 안 보여 2로 상향.
 const ACCURACY_STROKE_WIDTH = 2;
+// iOS 시스템 블루 — Apple Maps의 사용자 위치 파란 점과 자연스럽게 통일.
+// 카카오/네이버 지도의 정확도 원도 동일 톤.
+const ACCURACY_BLUE = '#007AFF';
 
 const FOCUS_REGION_DELTA = 0.01;
 const FOCUS_ANIMATION_MS = 400;
@@ -163,12 +167,12 @@ export function StationMap({
             center={{ latitude: userLat, longitude: userLng }}
             radius={Math.max(accuracyMeters, ACCURACY_MIN_RADIUS_M)}
             strokeColor={
-              locationUncertain ? colors.muted : withAlpha(colors.accent, 0.9)
+              locationUncertain ? colors.muted : withAlpha(ACCURACY_BLUE, 0.6)
             }
             strokeWidth={ACCURACY_STROKE_WIDTH}
             fillColor={withAlpha(
-              locationUncertain ? colors.muted : colors.accent,
-              locationUncertain ? 0.1 : 0.2,
+              locationUncertain ? colors.muted : ACCURACY_BLUE,
+              locationUncertain ? 0.1 : 0.15,
             )}
             testID="accuracy-circle"
           />

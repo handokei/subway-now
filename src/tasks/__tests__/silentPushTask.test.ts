@@ -326,7 +326,8 @@ describe('silentPushTask', () => {
 
       const call = mockScheduleNotificationAsync.mock.calls[0][0];
       expect(call.content.title).toBe('route.intermediatePassedTitle');
-      expect(call.content.body).toBe('route.intermediatePassedBody:중곡 · source.positionTrain');
+      // positionTrain은 #327 UX 정책상 자백 대상이 아니라 suffix 미부착.
+      expect(call.content.body).toBe('route.intermediatePassedBody:중곡');
       expect(mockGetFiredAlarms).not.toHaveBeenCalled();
       expect(mockSetFiredAlarms).not.toHaveBeenCalled();
       expect(mockLogSilentPushFired).toHaveBeenCalledWith(

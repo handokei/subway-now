@@ -50,3 +50,14 @@ export type SourceI18nKey = `source.${NotificationSource}`;
 export function notificationSourceI18nKey(key: NotificationSource): SourceI18nKey {
   return `source.${key}`;
 }
+
+/**
+ * 사용자에게 자백이 의미 있는 source만 true (#327 UX 정책).
+ * positionTrain/routeProgress는 일상적 정상 상태라 라벨이 노이즈 → 표시 생략.
+ * gpsOnly/uncertain은 신뢰도가 낮아 사용자가 의심해야 하므로 표시.
+ *
+ * 모든 표면(SourceBadge / 알람 본문 suffix / LA sourceLabel)에서 이 룰을 공유한다.
+ */
+export function shouldDiscloseNotificationSource(key: NotificationSource): boolean {
+  return key === 'gpsOnly' || key === 'uncertain';
+}
