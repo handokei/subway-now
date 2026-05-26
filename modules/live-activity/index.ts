@@ -30,6 +30,9 @@ export interface LiveActivityData {
   etaText?: string;
   etaSubtext?: string;
   distanceText?: string;
+  // 데이터 출처 자백 라벨 (#327). JS에서 i18n으로 빌드해 전달.
+  // 누락 시 위젯/LA는 라벨 표시 생략 — 기존 인스턴스 호환 안전.
+  sourceLabel?: string;
 }
 
 const LiveActivityModule =

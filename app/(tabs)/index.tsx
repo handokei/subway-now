@@ -29,6 +29,7 @@ import { createLogger } from '../../src/utils/logger';
 import { useTheme, typography, spacing, radius } from '../../src/theme';
 import { LineBadge } from '../../src/components/LineBadge';
 import { SourceBadge } from '../../src/components/SourceBadge';
+import { resolveNotificationSource } from '../../src/utils/notificationSource';
 import { ArrivalSourceNotice } from '../../src/components/ArrivalSourceNotice';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 
@@ -160,6 +161,8 @@ export default function HomeScreen() {
     speedMps,
     accuracyMeters,
     arrivalConfidence: confidence,
+    fusionSource: source,
+    locationUncertain,
   });
   useBackgroundLocation(destination);
   useApnsTripRegistration({
@@ -245,6 +248,9 @@ export default function HomeScreen() {
         displayEta,
         arrivalIsMock,
         alarmEvent,
+        // FG fusion 결과 source를 LA에 전달 (#327). FusionSource → NotificationSource로 매핑.
+        // customOrigin 사용자가 직접 출발지 설정한 경우엔 라벨 부착 안 함.
+        isCustomOrigin ? undefined : resolveNotificationSource(source, locationUncertain),
       );
     };
     update().catch((e) => logger.error('알림 업데이트 실패:', e));

@@ -39,11 +39,12 @@ jest.mock('../../utils/notificationState', () => ({
   setFiredAlarms: (...args: unknown[]) => mockSetFiredAlarms(...args),
 }));
 
+const mockBuildAlarmContent = jest.fn((event: { stationName: string; type: string; phaseId: string }, _source?: string) => ({
+  title: `[${event.type}/${event.phaseId}]`,
+  body: `${event.stationName} 알람`,
+}));
 jest.mock('../../utils/stationNotification', () => ({
-  buildAlarmContent: (event: { stationName: string; type: string; phaseId: string }) => ({
-    title: `[${event.type}/${event.phaseId}]`,
-    body: `${event.stationName} 알람`,
-  }),
+  buildAlarmContent: (...args: unknown[]) => mockBuildAlarmContent(...(args as Parameters<typeof mockBuildAlarmContent>)),
 }));
 
 jest.mock('../../utils/logger', () => ({
@@ -312,11 +313,20 @@ describe('silentPushTask', () => {
       expect(Array.from(savedSet as Set<string>)).toEqual(['imminent:강남']);
     });
 
+    it('alarm 경로(destination/transfer)는 buildAlarmContent에 positionTrain source 전달 (#327)', async () => {
+      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+      expect(mockBuildAlarmContent).toHaveBeenCalledWith(
+        expect.objectContaining({ phaseId: 'imminent', type: 'destination' }),
+        'positionTrain',
+      );
+    });
+
     it('intermediate는 i18n key로 본문 생성 + FIRED_ALARMS dedup 안 씀', async () => {
       await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent', nextWaypoint: '중곡' }));
 
       const call = mockScheduleNotificationAsync.mock.calls[0][0];
       expect(call.content.title).toBe('route.intermediatePassedTitle');
+      // positionTrain은 #327 UX 정책상 자백 대상이 아니라 suffix 미부착.
       expect(call.content.body).toBe('route.intermediatePassedBody:중곡');
       expect(mockGetFiredAlarms).not.toHaveBeenCalled();
       expect(mockSetFiredAlarms).not.toHaveBeenCalled();

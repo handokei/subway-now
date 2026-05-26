@@ -34,7 +34,12 @@ import {
 } from '../utils/silentPushLocationGate';
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
 import { buildAlarmContent } from '../utils/stationNotification';
+import { type NotificationSource } from '../utils/notificationSource';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
+
+// silent push는 서버가 train data 기반으로 발사하므로 라벨도 'positionTrain'으로 고정.
+// 향후 GPS 게이트 경로 등 다른 출처가 생기면 인자화 한다.
+const SILENT_PUSH_SOURCE: NotificationSource = 'positionTrain';
 
 const logger = createLogger('SilentPushTask');
 
@@ -107,6 +112,8 @@ function mapGateReason(reason: GateSkipReason): AlarmLogReason {
  * buildAlarmContent를 못 쓰고 별도 i18n 키로 빌드한다.
  */
 function buildIntermediateContent(stationName: string): { title: string; body: string } {
+  // SILENT_PUSH_SOURCE=positionTrain은 #327 UX 정책상 자백 대상이 아님 → suffix 미부착.
+  // shouldDiscloseNotificationSource이 false라 라벨 노이즈 회피.
   return {
     title: i18next.t('route.intermediatePassedTitle'),
     body: i18next.t('route.intermediatePassedBody', { name: stationName }),
@@ -209,11 +216,14 @@ async function fireWithGate(
   const content =
     payload.kind === 'intermediate'
       ? buildIntermediateContent(payload.nextWaypoint)
-      : buildAlarmContent({
-          phaseId: payload.phase,
-          type: payload.kind,
-          stationName: payload.nextWaypoint,
-        } as AlarmEvent);
+      : buildAlarmContent(
+          {
+            phaseId: payload.phase,
+            type: payload.kind,
+            stationName: payload.nextWaypoint,
+          } as AlarmEvent,
+          SILENT_PUSH_SOURCE,
+        );
 
   await Notifications.scheduleNotificationAsync({
     content: { title: content.title, body: content.body },

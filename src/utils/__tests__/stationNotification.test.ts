@@ -8,6 +8,7 @@ import {
   sendAlarmNotification,
   clearAlarmNotification,
   sendStationPassedNotification,
+  buildAlarmContent,
 } from '../stationNotification';
 import { Station } from '../../types/station';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
@@ -423,6 +424,29 @@ describe('stationNotification', () => {
         expect.not.objectContaining({ alarmType: expect.anything() })
       );
     });
+
+    it('source 인자 전달 시 sourceLabel을 i18n 빌드해 LA 데이터에 포함 (#327)', async () => {
+      await updateStationNotification(
+        mockStation,
+        154,
+        mockDestination,
+        directRoute,
+        12,
+        false,
+        null,
+        'gpsOnly',
+      );
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceLabel: 'GPS 추정' }),
+      );
+    });
+
+    it('source 미지정 시 sourceLabel은 포함되지 않음 (호환 안전)', async () => {
+      await updateStationNotification(mockStation, 154, mockDestination, directRoute);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+        expect.not.objectContaining({ sourceLabel: expect.anything() }),
+      );
+    });
   });
 
   describe('updateStationNotification (Android - expo-notifications)', () => {
@@ -801,6 +825,54 @@ describe('stationNotification', () => {
       mockClearWidgetStation.mockRejectedValueOnce(new Error('group missing'));
       await clearStationNotification();
       expect(mockEndLiveActivity).toHaveBeenCalled();
+    });
+  });
+
+  describe('source 라벨 자백 (#327)', () => {
+    const earlyDest = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남' };
+    const baseBody = '다음 역 강남에서 하차하세요!';
+
+    // 자백 대상(gpsOnly/uncertain)만 라벨 부착. positionTrain/routeProgress는 정상 신뢰 케이스라 생략.
+    it.each([
+      ['gpsOnly', 'GPS 추정'],
+      ['uncertain', '위치 확인 중'],
+    ] as const)('sendAlarmNotification source=%s → body 끝에 "%s" 부착 (자백 대상)', async (source, label) => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification(earlyDest, false, true, source);
+      expectAlarmNotification('하차 알림', `${baseBody} · ${label}`, { interruptionLevel: 'timeSensitive' });
+    });
+
+    it.each<['positionTrain' | 'routeProgress' | undefined]>([
+      ['positionTrain'],
+      ['routeProgress'],
+      [undefined],
+    ])('sendAlarmNotification source=%s → 라벨 부착 안 함 (정상 케이스 노이즈 회피)', async (source) => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification(earlyDest, false, true, source);
+      expectAlarmNotification('하차 알림', baseBody, { interruptionLevel: 'timeSensitive' });
+    });
+
+    it.each([
+      ['gpsOnly' as const, '현재 역삼역 · GPS 추정'],
+      ['positionTrain' as const, '현재 역삼역'],
+      [undefined, '현재 역삼역'],
+    ])('sendStationPassedNotification source=%s → body=%s', async (source, expectedBody) => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendStationPassedNotification('역삼', '강남', null, source);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'station-passed',
+        content: { title: '역삼역 도착', body: expectedBody },
+        trigger: null,
+      });
+    });
+
+    it.each([
+      ['uncertain' as const, `${baseBody} · 위치 확인 중`],
+      ['routeProgress' as const, baseBody],
+      [undefined, baseBody],
+    ])('buildAlarmContent source=%s → body=%s', (source, expectedBody) => {
+      const { body } = buildAlarmContent(earlyDest, source);
+      expect(body).toBe(expectedBody);
     });
   });
 });

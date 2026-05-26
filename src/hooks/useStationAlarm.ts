@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { isStationOnRoute } from '../utils/stationRoute';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
@@ -25,7 +25,8 @@ import {
 import { useAppStore } from '../store/useAppStore';
 import { createLogger } from '../utils/logger';
 import { isAccuracyAcceptable } from '../utils/locationGates';
-import type { FusionConfidence } from '../utils/pickFusedStation';
+import type { FusionConfidence, FusionSource } from '../utils/pickFusedStation';
+import { resolveNotificationSource } from '../utils/notificationSource';
 
 const logger = createLogger('StationAlarm');
 
@@ -42,6 +43,11 @@ export interface UseStationAlarmInputs {
    * (accuracy > 200m) 알람 누락 해소. ETA 기반 phase 알람은 거리 계산이 필요해 GPS 게이트 유지.
    */
   arrivalConfidence?: FusionConfidence;
+  /** 사용자 노출 알람 본문에 부착할 데이터 출처 (#327).
+   *  useFusedNearestStation의 source를 그대로 전달. 미지정 시 라벨 부착 안 함. */
+  fusionSource?: FusionSource;
+  /** GPS 게이트 실패 등으로 위치 불확실. true면 source 무시하고 'uncertain' 라벨. */
+  locationUncertain?: boolean;
 }
 
 export function useStationAlarm({
@@ -52,6 +58,8 @@ export function useStationAlarm({
   speedMps,
   accuracyMeters,
   arrivalConfidence,
+  fusionSource,
+  locationUncertain = false,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
   // firedAlarms hydration: BG가 AsyncStorage(FIRED_ALARMS_KEY)에 쓴 dedup 상태를
@@ -68,6 +76,11 @@ export function useStationAlarm({
   // 트립에 lock된 사용자 열차 코드. AsyncStorage에서 비동기 로드. lock 실패 상태(null)면
   // API 신호 평가는 보수적으로 false 반환 — 잘못된 train으로 imminent 오발사 방지.
   const [trackedTrainCode, setTrackedTrainCode] = useState<string | null>(null);
+  // fusion source → 알람 본문 라벨. 두 effect(phase / station-passed)가 공유.
+  const notificationSource = useMemo(
+    () => (fusionSource ? resolveNotificationSource(fusionSource, locationUncertain) : undefined),
+    [fusionSource, locationUncertain],
+  );
   const sleepMode = useAppStore((s) => s.sleepMode);
   const allowSpeaker = useAppStore((s) => s.allowSpeaker);
   const setAlarmEvent = useAppStore((s) => s.setAlarmEvent);
@@ -143,7 +156,7 @@ export function useStationAlarm({
     if (sleepModeRef.current) {
       setAlarmEvent(event);
     }
-    sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current).catch((e) =>
+    sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current, notificationSource).catch((e) =>
       logger.error('알람 알림 실패:', e),
     );
     logFiredAlarm('fg', event, trigger);
@@ -256,6 +269,7 @@ export function useStationAlarm({
             candidateStation.name,
             capturedDestinationName,
             target,
+            notificationSource,
           );
           if (cancelled) return;
           await setLastNotifiedStationId(candidateStation.id);

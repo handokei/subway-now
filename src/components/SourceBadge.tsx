@@ -3,6 +3,12 @@ import { StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { useTheme, spacing, radius, withAlpha } from '../theme';
 import type { FusionSource } from '../utils/pickFusedStation';
+import {
+  resolveNotificationSource,
+  notificationSourceI18nKey,
+  shouldDiscloseNotificationSource,
+  type NotificationSource,
+} from '../utils/notificationSource';
 
 interface SourceBadgeProps {
   source: FusionSource;
@@ -10,45 +16,28 @@ interface SourceBadgeProps {
   testID?: string;
 }
 
-type BadgeKey = 'positionTrain' | 'routeProgress' | 'gpsOnly' | 'uncertain';
-
-// position/arrival은 모두 열차 데이터 기반이라 동일 그룹으로 묶는다.
-// 사용자에겐 "데이터 출처의 신뢰도"가 의미 있고, 내부 fusion 알고리즘 구분은 의미 없음.
-function resolveBadgeKey(source: FusionSource, locationUncertain: boolean): BadgeKey {
-  if (locationUncertain) return 'uncertain';
-  switch (source) {
-    case 'position-train':
-    case 'position':
-    case 'arrival':
-      return 'positionTrain';
-    case 'route-progress':
-      return 'routeProgress';
-    case 'gps':
-      return 'gpsOnly';
-    /* istanbul ignore next -- FusionSource 유니온이 위 case와 동기화되므로 도달 불가. 새 값 추가 시 컴파일 타임에 잡힘 */
-    default: {
-      const _exhaustive: never = source;
-      return _exhaustive;
-    }
-  }
-}
+// 자백 대상 source만 팔레트 정의 — positionTrain/routeProgress는 표시 안 함.
+type DiscloseKey = Extract<NotificationSource, 'gpsOnly' | 'uncertain'>;
 
 export function SourceBadge({ source, locationUncertain = false, testID }: SourceBadgeProps) {
   const { colors } = useTheme();
   const { t } = useTranslation();
-  const key = resolveBadgeKey(source, locationUncertain);
+  const key = resolveNotificationSource(source, locationUncertain);
 
-  const palette: Record<BadgeKey, { bg: string; fg: string }> = {
-    positionTrain: { bg: withAlpha(colors.success, 0.13), fg: colors.success },
-    routeProgress: { bg: colors.hair, fg: colors.ink },
+  // 정상 신뢰 케이스(positionTrain/routeProgress)는 라벨이 사용자에게 노이즈 → 표시 안 함.
+  if (!shouldDiscloseNotificationSource(key)) return null;
+  // shouldDiscloseNotificationSource 가드 통과 후엔 key가 DiscloseKey로 좁혀짐.
+  const discloseKey = key as DiscloseKey;
+
+  const palette: Record<DiscloseKey, { bg: string; fg: string }> = {
     gpsOnly: { bg: withAlpha(colors.warn, 0.13), fg: colors.warn },
     uncertain: { bg: colors.hair, fg: colors.muted },
   };
-  const { bg, fg } = palette[key];
+  const { bg, fg } = palette[discloseKey];
 
   return (
     <View style={[styles.badge, { backgroundColor: bg }]} testID={testID}>
-      <Text style={[styles.label, { color: fg }]}>{t(`source.${key}`)}</Text>
+      <Text style={[styles.label, { color: fg }]}>{t(notificationSourceI18nKey(key))}</Text>
     </View>
   );
 }
