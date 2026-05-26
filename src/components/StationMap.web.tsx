@@ -12,6 +12,10 @@ interface StationMapProps {
   userLng: number;
   nearestStation: Station | null;
   nearbyStations: Station[];
+  // 네이티브 StationMap과 props 인터페이스 호환을 위해 선언만 미러한다.
+  // web fallback은 리스트 UI라 정확도 원/uncertain 시각 변경 없음.
+  accuracyMeters?: number | null;
+  locationUncertain?: boolean;
 }
 
 export function StationMap({ userLat, userLng, nearestStation, nearbyStations }: StationMapProps) {

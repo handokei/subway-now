@@ -20,7 +20,7 @@ import { ROUTE_KEY } from '../../src/constants/storageKeys';
 import type { Station } from '../../src/types/station';
 
 export default function MapScreen() {
-  const { userLocation, result, loading, error, permissionDenied, refresh } =
+  const { userLocation, result, loading, error, permissionDenied, refresh, accuracyMeters, locationUncertain } =
     useNearestStation();
   const allStations = stationsData as Station[];
   const { colors } = useTheme();
@@ -116,6 +116,8 @@ export default function MapScreen() {
         focusNonce={focusNonce}
         recenterNonce={recenterNonce}
         routeCoords={routeCoords}
+        accuracyMeters={accuracyMeters}
+        locationUncertain={locationUncertain}
       />
 
       <TouchableOpacity
