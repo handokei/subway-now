@@ -131,17 +131,23 @@ export function buildScheduleArrival(line: LineNumber, now: Date): StationArriva
   const downTerminal = terminal?.down ?? '';
 
   const headwayMs = headway * 1000;
-  const remainder = nowMs % headwayMs;
-  const msUntilFirst = remainder === 0 ? headwayMs : headwayMs - remainder;
-  const first = Math.round(msUntilFirst / 1000);
-  const second = first + headway;
+  const nextDepartureSeconds = (anchorMs: number): number => {
+    const remainder = anchorMs % headwayMs;
+    const msUntilFirst = remainder === 0 ? headwayMs : headwayMs - remainder;
+    return Math.round(msUntilFirst / 1000);
+  };
+  const upFirst = nextDepartureSeconds(nowMs);
+  // #517: up과 down이 동일 격자에 정렬돼 같은 ETA로 표시되는 회귀를 막기 위해
+  // down 방향은 half-headway 만큼 위상을 어긋나게 한다. 실제 운영도 양방향이
+  // 정확히 동기화되어 있지 않으며, 디버그 시 dir 분기 검증을 가능하게 한다.
+  const downFirst = nextDepartureSeconds(nowMs + Math.floor(headwayMs / 2));
   const up = [
-    makeTrain(first, 'UP-1', nowMs, upTerminal),
-    makeTrain(second, 'UP-2', nowMs, upTerminal),
+    makeTrain(upFirst, 'UP-1', nowMs, upTerminal),
+    makeTrain(upFirst + headway, 'UP-2', nowMs, upTerminal),
   ];
   const down = [
-    makeTrain(first, 'DN-1', nowMs, downTerminal),
-    makeTrain(second, 'DN-2', nowMs, downTerminal),
+    makeTrain(downFirst, 'DN-1', nowMs, downTerminal),
+    makeTrain(downFirst + headway, 'DN-2', nowMs, downTerminal),
   ];
 
   return { up, down, isMock: true, source: 'schedule' };

@@ -167,6 +167,28 @@ describe('buildScheduleArrival', () => {
     expect(result.down.every((t) => t.destination === '인천')).toBe(true);
   });
 
+  it('up과 down은 서로 다른 ETA를 가진다 — half-headway 위상 분리 (#517)', () => {
+    // line 2 peak 헤드웨이 150s. 이 시각은 nowMs % 150_000 === 0 (격자 정렬 케이스).
+    // up=150s, down=75s로 분리되어야 한다. up/down이 같은 격자에 정렬되면 동일 ETA로
+    // 표시되어 디버그/UX에 혼란을 유발한다.
+    const now = new Date('2026-05-18T08:00:00+09:00');
+    const result = buildScheduleArrival('2', now);
+    expect(result.up[0].arrivalSeconds).not.toBe(result.down[0].arrivalSeconds);
+    // 각 방향 두 번째 트레인은 first + headway 관계 유지
+    expect(result.up[1].arrivalSeconds).toBe(result.up[0].arrivalSeconds + 150);
+    expect(result.down[1].arrivalSeconds).toBe(result.down[0].arrivalSeconds + 150);
+  });
+
+  it('down 트레인도 wall-clock 폴링(+5s)에서 연속 감소한다 (#517)', () => {
+    const t0 = new Date('2026-05-18T15:00:00.000+09:00');
+    const t5 = new Date(t0.getTime() + 5_000);
+    const r0 = buildScheduleArrival('2', t0);
+    const r5 = buildScheduleArrival('2', t5);
+    if (r0.down[0].arrivalSeconds > 5) {
+      expect(r5.down[0].arrivalSeconds).toBe(r0.down[0].arrivalSeconds - 5);
+    }
+  });
+
   it('2호선(순환선)은 내선/외선순환을 행선지로 사용한다 (#471)', () => {
     const now = new Date('2026-05-18T15:00:00+09:00');
     const result = buildScheduleArrival('2', now);
