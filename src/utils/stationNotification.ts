@@ -265,7 +265,9 @@ function buildLiveActivityData(
     const side = resolveExitSide(alarmEvent);
     const withSide = appendExitSide(rawBody, side);
     const hint = resolveQuickHint(alarmEvent);
-    data.alarmBody = appendQuickHint(withSide, hint);
+    // alarmBody에도 source suffix 부착 — Dynamic Island expanded 등 sourceLabel을
+    // 별도 표시하지 않는 표면에서도 출처를 자백한다 (sourceLabel은 비알람 상태용).
+    data.alarmBody = appendNotificationSource(appendQuickHint(withSide, hint), source);
     if (side) {
       data.alarmExitSide = side;
     }

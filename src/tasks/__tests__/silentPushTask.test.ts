@@ -39,11 +39,12 @@ jest.mock('../../utils/notificationState', () => ({
   setFiredAlarms: (...args: unknown[]) => mockSetFiredAlarms(...args),
 }));
 
+const mockBuildAlarmContent = jest.fn((event: { stationName: string; type: string; phaseId: string }, _source?: string) => ({
+  title: `[${event.type}/${event.phaseId}]`,
+  body: `${event.stationName} 알람`,
+}));
 jest.mock('../../utils/stationNotification', () => ({
-  buildAlarmContent: (event: { stationName: string; type: string; phaseId: string }) => ({
-    title: `[${event.type}/${event.phaseId}]`,
-    body: `${event.stationName} 알람`,
-  }),
+  buildAlarmContent: (...args: unknown[]) => mockBuildAlarmContent(...(args as Parameters<typeof mockBuildAlarmContent>)),
 }));
 
 jest.mock('../../utils/logger', () => ({
@@ -310,6 +311,14 @@ describe('silentPushTask', () => {
       expect(mockSetFiredAlarms).toHaveBeenCalledTimes(1);
       const [, savedSet] = mockSetFiredAlarms.mock.calls[0];
       expect(Array.from(savedSet as Set<string>)).toEqual(['imminent:강남']);
+    });
+
+    it('alarm 경로(destination/transfer)는 buildAlarmContent에 positionTrain source 전달 (#327)', async () => {
+      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+      expect(mockBuildAlarmContent).toHaveBeenCalledWith(
+        expect.objectContaining({ phaseId: 'imminent', type: 'destination' }),
+        'positionTrain',
+      );
     });
 
     it('intermediate는 i18n key로 본문 생성 + FIRED_ALARMS dedup 안 씀', async () => {

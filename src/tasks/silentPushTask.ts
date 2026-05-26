@@ -35,11 +35,11 @@ import {
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
 import { buildAlarmContent } from '../utils/stationNotification';
 import { notificationSourceI18nKey, type NotificationSource } from '../utils/notificationSource';
+import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 
 // silent push는 서버가 train data 기반으로 발사하므로 라벨도 'positionTrain'으로 고정.
 // 향후 GPS 게이트 경로 등 다른 출처가 생기면 인자화 한다.
 const SILENT_PUSH_SOURCE: NotificationSource = 'positionTrain';
-import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 
 const logger = createLogger('SilentPushTask');
 

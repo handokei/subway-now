@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { isStationOnRoute } from '../utils/stationRoute';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
@@ -76,6 +76,11 @@ export function useStationAlarm({
   // 트립에 lock된 사용자 열차 코드. AsyncStorage에서 비동기 로드. lock 실패 상태(null)면
   // API 신호 평가는 보수적으로 false 반환 — 잘못된 train으로 imminent 오발사 방지.
   const [trackedTrainCode, setTrackedTrainCode] = useState<string | null>(null);
+  // fusion source → 알람 본문 라벨. 두 effect(phase / station-passed)가 공유.
+  const notificationSource = useMemo(
+    () => (fusionSource ? resolveNotificationSource(fusionSource, locationUncertain) : undefined),
+    [fusionSource, locationUncertain],
+  );
   const sleepMode = useAppStore((s) => s.sleepMode);
   const allowSpeaker = useAppStore((s) => s.allowSpeaker);
   const setAlarmEvent = useAppStore((s) => s.setAlarmEvent);
@@ -151,9 +156,6 @@ export function useStationAlarm({
     if (sleepModeRef.current) {
       setAlarmEvent(event);
     }
-    const notificationSource = fusionSource
-      ? resolveNotificationSource(fusionSource, locationUncertain)
-      : undefined;
     sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current, notificationSource).catch((e) =>
       logger.error('알람 알림 실패:', e),
     );
@@ -262,9 +264,6 @@ export function useStationAlarm({
             return;
           }
           const target = resolveNextTarget(capturedRoute, capturedDestinationName);
-          const notificationSource = fusionSource
-            ? resolveNotificationSource(fusionSource, locationUncertain)
-            : undefined;
           // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
           await sendStationPassedNotification(
             candidateStation.name,
