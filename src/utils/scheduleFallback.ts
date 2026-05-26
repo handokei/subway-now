@@ -67,6 +67,7 @@ interface KstParts {
   weekday: string;
   hour: number;
   minute: number;
+  second: number;
 }
 
 function getKstParts(date: Date): KstParts {
@@ -75,6 +76,7 @@ function getKstParts(date: Date): KstParts {
     weekday: 'short',
     hour: '2-digit',
     minute: '2-digit',
+    second: '2-digit',
     hour12: false,
   }).formatToParts(date);
   // Intl.DateTimeFormat은 요청한 옵션에 해당하는 part를 반드시 반환하므로 non-null 단언.
@@ -83,7 +85,8 @@ function getKstParts(date: Date): KstParts {
   // Safari가 자정에 'hour'를 '24'로 주는 경우를 % 24로 정규화.
   const hour = Number.parseInt(lookup('hour'), 10) % 24;
   const minute = Number.parseInt(lookup('minute'), 10);
-  return { weekday: lookup('weekday'), hour, minute };
+  const second = Number.parseInt(lookup('second'), 10);
+  return { weekday: lookup('weekday'), hour, minute, second };
 }
 
 export function classifyDayType(date: Date): DayType {
@@ -217,28 +220,6 @@ function lookupTimetable(
   return { upSeconds, downSeconds };
 }
 
-/**
- * 현재 시각의 KST 시/분/초/요일을 동시 추출. classifyPeriod 및 시간표 lookup에서 사용.
- */
-function getKstHms(date: Date): { hour: number; minute: number; second: number; weekday: string } {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: SUBWAY_TIMEZONE,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    weekday: 'short',
-    hour12: false,
-  }).formatToParts(date);
-  const lookup = (type: Intl.DateTimeFormatPartTypes): string =>
-    parts.find((p) => p.type === type)!.value;
-  return {
-    hour: Number.parseInt(lookup('hour'), 10) % 24,
-    minute: Number.parseInt(lookup('minute'), 10),
-    second: Number.parseInt(lookup('second'), 10),
-    weekday: lookup('weekday'),
-  };
-}
-
 export function buildScheduleArrival(
   line: LineNumber,
   stationName: string,
@@ -252,7 +233,7 @@ export function buildScheduleArrival(
 
   // Phase 3 (#473): 시간표 lookup이 가능한 노선/역이면 실제 시간표 기반 ETA를 우선 반환.
   // 시간표 적중 시 isMock=false, source='schedule' 유지 (Phase 4에서 'timetable' 신규 source 검토).
-  const { hour: kstHour, minute: kstMinute, second: kstSecond, weekday: kstWeekday } = getKstHms(now);
+  const { hour: kstHour, minute: kstMinute, second: kstSecond, weekday: kstWeekday } = getKstParts(now);
   const timetableHit = lookupTimetable(line, stationName, dayType, kstWeekday, kstHour, kstMinute, kstSecond);
   if (timetableHit) {
     const up = timetableHit.upSeconds.map((sec, i) => makeTrain(sec, `UP-${i + 1}`, nowMs, upTerminal));
