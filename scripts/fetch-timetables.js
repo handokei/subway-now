@@ -27,8 +27,8 @@
  *   }
  */
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const API_KEY = process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
 if (!API_KEY) {
@@ -36,7 +36,7 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-const TARGET_LINE = process.env.LINE ? parseInt(process.env.LINE, 10) : 1;
+const TARGET_LINE = process.env.LINE ? Number.parseInt(process.env.LINE, 10) : 1;
 const SLEEP_MS = 800;
 const FR_CODE_START = TARGET_LINE * 100;
 const FR_CODE_END = FR_CODE_START + 99;
@@ -71,9 +71,10 @@ async function fetchOne(frCode, weekTag, inoutTag) {
 
 // "HH:MM:SS" → "HHMM"(2자리×2). 24시간 초과 표기("24:09:30")는 익일 시각으로 보존
 // (정렬은 문자열 비교로 가능, 24+ 시각이 23대보다 큰 값).
+const ARRIVE_TIME_RE = /^(\d{2}):(\d{2}):/;
 function compactTime(arriveTime) {
   if (typeof arriveTime !== 'string') return null;
-  const m = arriveTime.match(/^(\d{2}):(\d{2}):/);
+  const m = ARRIVE_TIME_RE.exec(arriveTime);
   if (!m) return null;
   return `${m[1]}${m[2]}`;
 }
@@ -118,6 +119,7 @@ async function main() {
     try {
       ({ stationName, timetable } = await fetchStation(code3));
     } catch (e) {
+      // NOSONAR: build script progress log — FR_CODE/error는 iterator + API response로 user input 아님
       console.error(`  ERROR FR_CODE=${code3}: ${e.message}`);
       continue;
     }
@@ -127,6 +129,7 @@ async function main() {
     }
     stations[stationName] = timetable;
     stationCount++;
+    // NOSONAR: build script progress log — STATION_NM은 서울교통공사 API 응답, user input 아님
     console.log(`\n  ${code3} ${stationName} ✓ (weekday up=${timetable.weekday?.up?.length ?? 0})`);
   }
   console.log(`\n# 총 ${stationCount}개 역 수집`);
