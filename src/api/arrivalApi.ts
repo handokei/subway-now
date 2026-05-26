@@ -86,7 +86,7 @@ export function getFallbackArrival(
     log.warn('schedule_fallback_unavailable', { station: stationName, line, reason });
     return MOCK_ARRIVALS;
   }
-  const result = buildScheduleArrival(line, new Date());
+  const result = buildScheduleArrival(line, stationName, new Date());
   log.info('schedule_fallback_fired', {
     station: stationName,
     line,
