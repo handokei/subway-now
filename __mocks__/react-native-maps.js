@@ -24,6 +24,9 @@ const MarkerAnimated = ({ testID, onPress, children, ...props }) =>
 const Polyline = ({ testID, ...props }) =>
   React.createElement(View, { testID, ...props });
 
+const Circle = ({ testID, ...props }) =>
+  React.createElement(View, { testID, ...props });
+
 class AnimatedRegion {
   constructor(region) {
     this._region = region;
@@ -40,6 +43,7 @@ module.exports = {
   Marker,
   MarkerAnimated,
   Polyline,
+  Circle,
   AnimatedRegion,
   PROVIDER_DEFAULT: null,
   __fitToCoordinatesMock: fitToCoordinatesMock,

@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import MapView, { Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
+import MapView, { Circle, Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
 import type { Station } from '../types/station';
 import type { RouteCoordinatePath } from '../utils/routeToCoordinates';
 import { buildMapConfig } from '../utils/buildMapConfig';
-import { useTheme } from '../theme';
+import { useTheme, withAlpha } from '../theme';
 import { LINE_BADGE_LABEL } from '../constants/lineColors';
 import { getStationDisplayName } from '../utils/stationDisplay';
 
@@ -26,7 +26,14 @@ interface StationMapProps {
   recenterNonce?: number;
   /** 선택된 경로의 폴리라인 좌표 + 강조 마커. 있으면 지도에 오버레이로 표시. */
   routeCoords?: RouteCoordinatePath | null;
+  /** GPS 정확도 반경(m). 있으면 사용자 좌표 위에 신뢰도 원으로 표시. */
+  accuracyMeters?: number | null;
+  /** GPS 게이트 실패로 위치가 불확실한 상태. true면 원을 회색/투명도↓로 자백. */
+  locationUncertain?: boolean;
 }
+
+const ACCURACY_MIN_RADIUS_M = 10;
+const ACCURACY_STROKE_WIDTH = 1;
 
 const FOCUS_REGION_DELTA = 0.01;
 const FOCUS_ANIMATION_MS = 400;
@@ -50,6 +57,8 @@ export function StationMap({
   focusNonce,
   recenterNonce,
   routeCoords,
+  accuracyMeters,
+  locationUncertain = false,
 }: StationMapProps) {
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
@@ -144,6 +153,24 @@ export function StationMap({
         showsPointsOfInterest={Platform.OS === 'ios' ? false : undefined}
         testID="station-map"
       >
+        {/* 정확도 원을 마커보다 먼저 렌더 — 큰 반경에서 마커 탭 인식을 가리지 않도록.
+            accuracyMeters는 useNearestStation에서 마지막 정상 fix 기준 값을 유지하므로
+            locationUncertain일 때도 직전 반경을 muted 색으로 표시해 자백 효과를 낸다. */}
+        {accuracyMeters != null && accuracyMeters > 0 && (
+          <Circle
+            center={{ latitude: userLat, longitude: userLng }}
+            radius={Math.max(accuracyMeters, ACCURACY_MIN_RADIUS_M)}
+            strokeColor={
+              locationUncertain ? colors.muted : withAlpha(colors.accent, 0.6)
+            }
+            strokeWidth={ACCURACY_STROKE_WIDTH}
+            fillColor={withAlpha(
+              locationUncertain ? colors.muted : colors.accent,
+              locationUncertain ? 0.06 : 0.12,
+            )}
+            testID="accuracy-circle"
+          />
+        )}
         {visibleGroups.map((group) => {
           // 대표 station = representativeName과 동일한 name을 가진 멤버.
           // representativeName은 멤버 중에서 뽑은 값이므로 find는 항상 매치.

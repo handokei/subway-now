@@ -700,4 +700,67 @@ describe('StationMap', () => {
       );
     });
   });
+
+  describe('accuracy circle (#327)', () => {
+    it('accuracyMeters 미전달 시 정확도 원 렌더 안 함', () => {
+      const { queryByTestId } = render(<StationMap {...baseProps} />);
+      expect(queryByTestId('accuracy-circle')).toBeNull();
+    });
+
+    it('accuracyMeters=null 시 정확도 원 렌더 안 함', () => {
+      const { queryByTestId } = render(
+        <StationMap {...baseProps} accuracyMeters={null} />,
+      );
+      expect(queryByTestId('accuracy-circle')).toBeNull();
+    });
+
+    it('accuracyMeters=0 시 정확도 원 렌더 안 함', () => {
+      const { queryByTestId } = render(
+        <StationMap {...baseProps} accuracyMeters={0} />,
+      );
+      expect(queryByTestId('accuracy-circle')).toBeNull();
+    });
+
+    it('accuracyMeters>0 시 사용자 좌표에 원을 그린다', () => {
+      const { getByTestId } = render(
+        <StationMap {...baseProps} accuracyMeters={50} />,
+      );
+      const circle = getByTestId('accuracy-circle');
+      expect(circle.props.center).toEqual({
+        latitude: baseProps.userLat,
+        longitude: baseProps.userLng,
+      });
+      expect(circle.props.radius).toBe(50);
+    });
+
+    it('accuracyMeters<10 일 때 최소 반경 10m로 클램프', () => {
+      const { getByTestId } = render(
+        <StationMap {...baseProps} accuracyMeters={3} />,
+      );
+      expect(getByTestId('accuracy-circle').props.radius).toBe(10);
+    });
+
+    it('기본(locationUncertain=false) 시 accent 톤으로 표시', () => {
+      const { getByTestId } = render(
+        <StationMap {...baseProps} accuracyMeters={100} />,
+      );
+      const circle = getByTestId('accuracy-circle');
+      expect(circle.props.strokeColor).toBe('rgba(200, 85, 61, 0.6)');
+      expect(circle.props.fillColor).toBe('rgba(200, 85, 61, 0.12)');
+    });
+
+    it('locationUncertain=true 시 muted 회색 + 더 옅은 fill로 자백', () => {
+      const { getByTestId } = render(
+        <StationMap
+          {...baseProps}
+          accuracyMeters={100}
+          locationUncertain={true}
+        />,
+      );
+      const circle = getByTestId('accuracy-circle');
+      expect(circle.props.strokeColor).toBe('#6B6459');
+      expect(circle.props.fillColor).toBe('rgba(107, 100, 89, 0.06)');
+    });
+
+  });
 });
