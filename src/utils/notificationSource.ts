@@ -1,0 +1,50 @@
+import type { FusionSource } from './pickFusedStation';
+
+/**
+ * 사용자에게 노출되는 데이터 출처 그룹 (#327 Phase B).
+ * FusionSource 5종을 4그룹으로 묶어 라벨/색에 일관되게 사용한다.
+ *
+ * - positionTrain: 열차 데이터 기반 (position-train / position / arrival)
+ * - routeProgress: 경로 진행 추정
+ * - gpsOnly: GPS 거리 기반 추정
+ * - uncertain: 위치 확인 중 (locationUncertain 우선)
+ */
+export type NotificationSource =
+  | 'positionTrain'
+  | 'routeProgress'
+  | 'gpsOnly'
+  | 'uncertain';
+
+/**
+ * FusionSource + locationUncertain → 사용자 노출 그룹 매핑.
+ * locationUncertain은 source를 덮어쓴다(가장 약한 신뢰도가 우선).
+ */
+export function resolveNotificationSource(
+  source: FusionSource,
+  locationUncertain: boolean = false,
+): NotificationSource {
+  if (locationUncertain) return 'uncertain';
+  switch (source) {
+    case 'position-train':
+    case 'position':
+    case 'arrival':
+      return 'positionTrain';
+    case 'route-progress':
+      return 'routeProgress';
+    case 'gps':
+      return 'gpsOnly';
+    /* istanbul ignore next -- FusionSource 유니온이 위 case와 동기화되므로 도달 불가. 새 값 추가 시 컴파일 타임에 잡힘 */
+    default: {
+      const _exhaustive: never = source;
+      return _exhaustive;
+    }
+  }
+}
+
+/**
+ * i18n 키 prefix. caller가 t('source.' + key) 형태로 사용.
+ * 예: i18next.t(`source.${key}`).
+ */
+export function notificationSourceI18nKey(key: NotificationSource): string {
+  return `source.${key}`;
+}
