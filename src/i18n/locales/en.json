@@ -184,13 +184,13 @@
   "alarms": {
     "earlyTransferBody": "Transfer at {{station}} (next stop)!",
     "earlyArrivalBody": "Exit at {{station}} (next stop)!",
-    "imminentTransferBody": "Arriving at {{station}}. Get ready to transfer!",
-    "imminentArrivalBody": "Arriving at {{station}}. Get ready to exit!",
+    "imminentTransferBody": "Arriving at {{station}} — transfer soon!",
+    "imminentArrivalBody": "Arriving at {{station}} — exit soon!",
     "exitSideLeft": "Exit on the left",
     "exitSideRight": "Exit on the right",
     "exitSideBoth": "Doors open on both sides",
-    "quickHintTransfer": "Get off at the spot closest to your transfer",
-    "quickHintArrival": "Get off at the spot closest to the exit"
+    "quickHintTransfer": "Stand near transfer exit",
+    "quickHintArrival": "Stand near station exit"
   },
   "liveActivity": {
     "alarmShortTransfer": "Transfer",
