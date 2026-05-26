@@ -8,6 +8,7 @@ import {
   sendAlarmNotification,
   clearAlarmNotification,
   sendStationPassedNotification,
+  buildAlarmContent,
 } from '../stationNotification';
 import { Station } from '../../types/station';
 import { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
@@ -801,6 +802,76 @@ describe('stationNotification', () => {
       mockClearWidgetStation.mockRejectedValueOnce(new Error('group missing'));
       await clearStationNotification();
       expect(mockEndLiveActivity).toHaveBeenCalled();
+    });
+  });
+
+  describe('source 라벨 자백 (#327)', () => {
+    const earlyDest = { phaseId: 'early' as const, type: 'destination' as const, stationName: '강남' };
+
+    it('sendAlarmNotification source=positionTrain → body 끝에 "열차 데이터" 부착', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification(earlyDest, false, true, 'positionTrain');
+      expectAlarmNotification(
+        '하차 알림',
+        '다음 역 강남에서 하차하세요! · 열차 데이터',
+        { interruptionLevel: 'timeSensitive' },
+      );
+    });
+
+    it('sendAlarmNotification source=gpsOnly → "GPS 추정" 부착', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification(earlyDest, false, true, 'gpsOnly');
+      expectAlarmNotification(
+        '하차 알림',
+        '다음 역 강남에서 하차하세요! · GPS 추정',
+        { interruptionLevel: 'timeSensitive' },
+      );
+    });
+
+    it('sendAlarmNotification source=uncertain → "위치 확인 중" 부착', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification(earlyDest, false, true, 'uncertain');
+      expectAlarmNotification(
+        '하차 알림',
+        '다음 역 강남에서 하차하세요! · 위치 확인 중',
+        { interruptionLevel: 'timeSensitive' },
+      );
+    });
+
+    it('sendAlarmNotification source 미지정 → 라벨 부착 안 함 (회귀 안전)', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification(earlyDest);
+      expectAlarmNotification('하차 알림', '다음 역 강남에서 하차하세요!', { interruptionLevel: 'timeSensitive' });
+    });
+
+    it('sendStationPassedNotification source=gpsOnly → body 끝에 라벨 부착', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendStationPassedNotification('역삼', '강남', null, 'gpsOnly');
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'station-passed',
+        content: { title: '역삼역 도착', body: '현재 역삼역 · GPS 추정' },
+        trigger: null,
+      });
+    });
+
+    it('sendStationPassedNotification source 미지정 → 라벨 부착 안 함', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendStationPassedNotification('역삼', '강남', null);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'station-passed',
+        content: { title: '역삼역 도착', body: '현재 역삼역' },
+        trigger: null,
+      });
+    });
+
+    it('buildAlarmContent도 source 인자를 받아 body suffix 부착', () => {
+      const { body } = buildAlarmContent(earlyDest, 'routeProgress');
+      expect(body).toBe('다음 역 강남에서 하차하세요! · 경로 추정');
+    });
+
+    it('buildAlarmContent source 미지정 → suffix 없음', () => {
+      const { body } = buildAlarmContent(earlyDest);
+      expect(body).toBe('다음 역 강남에서 하차하세요!');
     });
   });
 });

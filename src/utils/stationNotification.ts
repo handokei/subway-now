@@ -16,6 +16,14 @@ import stationsData from '../data/stations.json';
 import type { ExitSide } from '../types/exitSide';
 import { lookupExitSide } from './exitSide';
 import { hasQuickExitData } from './quickExit';
+import { notificationSourceI18nKey, type NotificationSource } from './notificationSource';
+
+/** 알람/통과 본문 끝에 데이터 출처를 자백하는 라벨을 부착한다.
+ *  source 미지정 시 라벨 생략 — 기존 caller 회귀 안전. */
+function appendNotificationSource(body: string, source?: NotificationSource): string {
+  if (!source) return body;
+  return `${body} · ${i18next.t(notificationSourceI18nKey(source))}`;
+}
 
 const allStations = stationsData as Station[];
 
@@ -391,6 +399,7 @@ export async function sendStationPassedNotification(
   stationName: string,
   destinationName: string,
   target: NextTarget | null,
+  source?: NotificationSource,
 ): Promise<void> {
   // 사용자 노출 텍스트이므로 현재 언어로 변환. caller는 한글 역명을 그대로 전달.
   const displayStation = getStationDisplayNameByName(stationName, allStations);
@@ -411,6 +420,7 @@ export async function sendStationPassedNotification(
       count: target.stopsToDestination,
     });
   }
+  body = appendNotificationSource(body, source);
 
   await scheduleNotification(STATION_PASSED_NOTIFICATION_ID, {
     title: i18next.t('route.stationPassed', { name: displayStation }),
@@ -440,19 +450,24 @@ const ALARM_MESSAGE_BUILDERS: Record<AlarmPhaseId, (stationName: string, isTrans
   }),
 };
 
-export function buildAlarmContent(event: AlarmEvent): { title: string; body: string } {
+export function buildAlarmContent(
+  event: AlarmEvent,
+  source?: NotificationSource,
+): { title: string; body: string } {
   const { title, body } = ALARM_MESSAGE_BUILDERS[event.phaseId](event.stationName, event.type === 'transfer');
   const withSide = appendExitSide(body, resolveExitSide(event));
   const withHint = appendQuickHint(withSide, resolveQuickHint(event));
-  return { title, body: withHint };
+  const withSource = appendNotificationSource(withHint, source);
+  return { title, body: withSource };
 }
 
 export async function sendAlarmNotification(
   event: AlarmEvent,
   sleepMode: boolean = false,
   allowSpeaker: boolean = true,
+  source?: NotificationSource,
 ): Promise<void> {
-  const { title, body } = buildAlarmContent(event);
+  const { title, body } = buildAlarmContent(event, source);
 
   await scheduleNotification(ALARM_NOTIFICATION_ID, {
     title,
