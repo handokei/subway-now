@@ -1,34 +1,27 @@
 import {
   resolveNotificationSource,
   notificationSourceI18nKey,
+  type NotificationSource,
 } from '../notificationSource';
+import type { FusionSource } from '../pickFusedStation';
 
 describe('resolveNotificationSource', () => {
-  it('position-train → positionTrain', () => {
-    expect(resolveNotificationSource('position-train')).toBe('positionTrain');
+  it.each<[FusionSource, NotificationSource]>([
+    ['position-train', 'positionTrain'],
+    ['position', 'positionTrain'],
+    ['arrival', 'positionTrain'],
+    ['route-progress', 'routeProgress'],
+    ['gps', 'gpsOnly'],
+  ])('%s → %s', (source, expected) => {
+    expect(resolveNotificationSource(source)).toBe(expected);
   });
 
-  it('position(fused) → positionTrain 그룹', () => {
-    expect(resolveNotificationSource('position')).toBe('positionTrain');
-  });
-
-  it('arrival(fused) → positionTrain 그룹', () => {
-    expect(resolveNotificationSource('arrival')).toBe('positionTrain');
-  });
-
-  it('route-progress → routeProgress', () => {
-    expect(resolveNotificationSource('route-progress')).toBe('routeProgress');
-  });
-
-  it('gps → gpsOnly', () => {
-    expect(resolveNotificationSource('gps')).toBe('gpsOnly');
-  });
-
-  it('locationUncertain=true → source와 무관하게 uncertain', () => {
-    expect(resolveNotificationSource('position-train', true)).toBe('uncertain');
-    expect(resolveNotificationSource('gps', true)).toBe('uncertain');
-    expect(resolveNotificationSource('route-progress', true)).toBe('uncertain');
-  });
+  it.each<FusionSource>(['position-train', 'gps', 'route-progress'])(
+    'locationUncertain=true → %s와 무관하게 uncertain',
+    (source) => {
+      expect(resolveNotificationSource(source, true)).toBe('uncertain');
+    },
+  );
 
   it('locationUncertain 기본값 false', () => {
     expect(resolveNotificationSource('gps')).toBe('gpsOnly');
@@ -36,10 +29,10 @@ describe('resolveNotificationSource', () => {
 });
 
 describe('notificationSourceI18nKey', () => {
-  it('source. prefix 부착', () => {
-    expect(notificationSourceI18nKey('positionTrain')).toBe('source.positionTrain');
-    expect(notificationSourceI18nKey('routeProgress')).toBe('source.routeProgress');
-    expect(notificationSourceI18nKey('gpsOnly')).toBe('source.gpsOnly');
-    expect(notificationSourceI18nKey('uncertain')).toBe('source.uncertain');
-  });
+  it.each<NotificationSource>(['positionTrain', 'routeProgress', 'gpsOnly', 'uncertain'])(
+    '%s → source.%s prefix 부착',
+    (key) => {
+      expect(notificationSourceI18nKey(key)).toBe(`source.${key}`);
+    },
+  );
 });
