@@ -282,26 +282,15 @@ describe('buildScheduleArrival — 시간표 lookup (#473 Phase 3)', () => {
     expect(result.down).toEqual([]);
   });
 
-  it('Monday 02:00 KST는 sunday 시간표 lookup (전 영업일 = 일요일)', () => {
-    // 2026-05-25은 월요일. KST 02:00 = UTC 17:00 전날(2026-05-24 일요일 17:00 UTC).
-    const now = new Date('2026-05-24T17:00:00Z'); // KST Mon 02:00
-    const result = buildScheduleArrival('1', '서울역', now);
-    // sunday 시간표 데이터가 02:00(=2600 nowKey)에는 거의 없을 것 → 헤드웨이 폴백 closed.
-    // 분기 진입 자체가 핵심 (line 191).
-    expect(['schedule', 'closed']).toContain(result.source);
-  });
-
-  it('Saturday 02:00 KST는 weekday 시간표 lookup (전 영업일 = 금요일)', () => {
-    // 2026-05-23 토요일 02:00 KST.
-    const now = new Date('2026-05-22T17:00:00Z'); // KST Sat 02:00
-    const result = buildScheduleArrival('1', '서울역', now);
-    expect(['schedule', 'closed']).toContain(result.source);
-  });
-
-  it('Sunday 02:00 KST는 saturday 시간표 lookup (전 영업일 = 토요일)', () => {
-    // 2026-05-24 일요일 02:00 KST. previousBusinessDay('Sun') → 'saturday'.
-    const now = new Date('2026-05-23T17:00:00Z'); // KST Sun 02:00
-    const result = buildScheduleArrival('1', '서울역', now);
+  // KST 02:00 ~ previousBusinessDay shift 분기 커버 (Mon→Sun, Sat→weekday, Sun→Sat).
+  // 02:00 nowKey="2600"으로 시간표가 거의 매칭 안 되어 헤드웨이 폴백→closed가 일반적.
+  // 각 요일 분기 자체가 lookupTimetable 진입 후 evaluated되는 게 핵심.
+  it.each([
+    ['Monday', '2026-05-24T17:00:00Z'],
+    ['Saturday', '2026-05-22T17:00:00Z'],
+    ['Sunday', '2026-05-23T17:00:00Z'],
+  ])('KST %s 02:00은 previousBusinessDay 시간표 lookup 분기 진입', (_label, iso) => {
+    const result = buildScheduleArrival('1', '서울역', new Date(iso));
     expect(['schedule', 'closed']).toContain(result.source);
   });
 
