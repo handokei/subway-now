@@ -49,15 +49,15 @@ interface LineTimetable {
 
 // LineNumber에 시간표 데이터가 매핑된 노선만. 분당/신분당/경의중앙/공항은 다른 API 사용.
 const TIMETABLES: Partial<Record<LineNumber, LineTimetable>> = {
-  '1': line1Timetable as LineTimetable,
-  '2': line2Timetable as LineTimetable,
-  '3': line3Timetable as LineTimetable,
-  '4': line4Timetable as LineTimetable,
-  '5': line5Timetable as LineTimetable,
-  '6': line6Timetable as LineTimetable,
-  '7': line7Timetable as LineTimetable,
-  '8': line8Timetable as LineTimetable,
-  '9': line9Timetable as LineTimetable,
+  '1': line1Timetable,
+  '2': line2Timetable,
+  '3': line3Timetable,
+  '4': line4Timetable,
+  '5': line5Timetable,
+  '6': line6Timetable,
+  '7': line7Timetable,
+  '8': line8Timetable,
+  '9': line9Timetable,
 };
 
 /** 서울 지하철 운행시간 분류는 KST 고정. arrivalApi의 recptnDt 처리와 동일한 관례. */
