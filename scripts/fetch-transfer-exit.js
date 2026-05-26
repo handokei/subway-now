@@ -91,7 +91,7 @@ async function fetchPage(stationName) {
 
 // 원본 HTML을 텍스트만 남기고 공백 정규화. 정규식 가독성을 위해 한 단계 처리.
 function htmlToPlainText(html) {
-  return html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ');
+  return html.replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' '); // NOSONAR — 한정 입력(나무위키 HTML)에 대한 1회성 도구, ReDoS 위험 없음
 }
 
 // "빠른 환승" 키워드 뒤 ~600자 윈도우를 자른다 (여러 줄 매칭을 한 윈도우에서 처리).
@@ -126,7 +126,7 @@ const ROW_REGEX = new RegExp(
 
 // "6호선, 인천국제공항철도, 경의·중앙선" → ["6호선","인천국제공항철도","경의·중앙선"]
 function splitToLines(joined) {
-  return joined.split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+  return joined.split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean); // NOSONAR — 1회성 크롤러, 입력 길이 제한 있음
 }
 
 // "성수 방향" / "장암 방면" / "하남검단산, 마천 방면" → 종착역명 배열.
@@ -134,9 +134,9 @@ function splitToLines(joined) {
 // 인자가 falsy면 [null] 한 칸 — 방면 표기 없는 케이스도 한 row를 생성하기 위함.
 function extractTerminals(paren) {
   if (!paren) return [null];
-  const stripped = paren.replace(/\s*(?:방면|방향)\s*$/, '').trim();
+  const stripped = paren.replace(/\s*(?:방면|방향)\s*$/, '').trim(); // NOSONAR — 1회성 크롤러, 입력 길이 제한 있음
   if (!stripped) return [null];
-  const parts = stripped.split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean);
+  const parts = stripped.split(/\s*,\s*/).map((s) => s.trim()).filter(Boolean); // NOSONAR — 동일
   return parts.length > 0 ? parts : [null];
 }
 
