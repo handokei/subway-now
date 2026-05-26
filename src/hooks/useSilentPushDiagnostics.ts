@@ -19,7 +19,13 @@ import { useCallback, useEffect, useState } from 'react';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../constants/storageKeys';
+import {
+  APNS_TOKEN_KEY,
+  ACTIVE_TRIP_KEY,
+  ROUTE_KEY,
+  DESTINATION_KEY,
+  LAST_NOTIFIED_STATION_KEY,
+} from '../constants/storageKeys';
 import { resolveApnsEnv, type ApnsEnv } from '../utils/apnsEnv';
 import { getAlarmLog, type AlarmLogSource } from '../utils/alarmLog';
 import {
@@ -38,6 +44,14 @@ export interface SilentPushDiagnostics {
   lastReceivedAt: number | null;
   lastFiredAt: number | null;
   lastSkippedAt: number | null;
+  /**
+   * useApnsTripRegistration의 register effect 입력 진단용 (#506).
+   * register는 route + destination 둘 다 있을 때만 호출되므로 어느 쪽이 null인지로
+   * "register 미호출" 원인을 좁힐 수 있다.
+   */
+  hasRoute: boolean;
+  destinationId: string | null;
+  lastNotifiedStationId: string | null;
 }
 
 const EMPTY: SilentPushDiagnostics = {
@@ -50,6 +64,9 @@ const EMPTY: SilentPushDiagnostics = {
   lastReceivedAt: null,
   lastFiredAt: null,
   lastSkippedAt: null,
+  hasRoute: false,
+  destinationId: null,
+  lastNotifiedStationId: null,
 };
 
 // silent-push-* source → SilentPushDiagnostics 필드 매핑. 새 source 추가 시 여기 한 줄만.
@@ -64,11 +81,22 @@ export function useSilentPushDiagnostics(): SilentPushDiagnostics {
   const [diag, setDiag] = useState<SilentPushDiagnostics>(EMPTY);
 
   const refresh = useCallback(async () => {
-    const [apnsToken, activeTripToken, logs, permission] = await Promise.all([
+    const [
+      apnsToken,
+      activeTripToken,
+      logs,
+      permission,
+      routeJson,
+      destinationJson,
+      lastNotifiedStationId,
+    ] = await Promise.all([
       AsyncStorage.getItem(APNS_TOKEN_KEY),
       AsyncStorage.getItem(ACTIVE_TRIP_KEY),
       getAlarmLog(),
       Notifications.getPermissionsAsync().catch(() => null),
+      AsyncStorage.getItem(ROUTE_KEY),
+      AsyncStorage.getItem(DESTINATION_KEY),
+      AsyncStorage.getItem(LAST_NOTIFIED_STATION_KEY),
     ]);
     const reg = getSilentPushRegistrationStatus();
     // alarmLog는 최신순이 보장되지 않으므로 source별 최신 ts를 데이터 주도로 골라낸다.
@@ -82,6 +110,16 @@ export function useSilentPushDiagnostics(): SilentPushDiagnostics {
       if (!field) continue;
       if (latest[field] == null || entry.ts > latest[field]!) latest[field] = entry.ts;
     }
+    // destination은 JSON.stringify(Station). id 추출 실패 시 null로 graceful degrade.
+    let destinationId: string | null = null;
+    if (destinationJson) {
+      try {
+        const parsed = JSON.parse(destinationJson) as { id?: unknown };
+        if (typeof parsed?.id === 'string') destinationId = parsed.id;
+      } catch {
+        // 깨진 entry는 무시 — 진단 표시만 빈 값.
+      }
+    }
     setDiag({
       apnsToken,
       activeTripToken,
@@ -90,6 +128,9 @@ export function useSilentPushDiagnostics(): SilentPushDiagnostics {
       taskRegistrationState: reg.state,
       taskRegistrationError: reg.error,
       ...latest,
+      hasRoute: routeJson != null && routeJson.length > 0,
+      destinationId,
+      lastNotifiedStationId,
     });
   }, []);
 

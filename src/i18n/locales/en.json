@@ -212,5 +212,11 @@
     "boundFor": "Bound for {{name}}",
     "innerLoop": "Inner Loop",
     "outerLoop": "Outer Loop"
+  },
+  "source": {
+    "positionTrain": "Train data",
+    "routeProgress": "Route est.",
+    "gpsOnly": "GPS est.",
+    "uncertain": "Locating…"
   }
 }

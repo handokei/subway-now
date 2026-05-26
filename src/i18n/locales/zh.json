@@ -212,5 +212,11 @@
     "boundFor": "开往{{name}}",
     "innerLoop": "内环",
     "outerLoop": "外环"
+  },
+  "source": {
+    "positionTrain": "列车数据",
+    "routeProgress": "路径推算",
+    "gpsOnly": "GPS推算",
+    "uncertain": "定位中"
   }
 }
