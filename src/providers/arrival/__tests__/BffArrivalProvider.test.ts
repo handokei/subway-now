@@ -70,7 +70,7 @@ describe('BffArrivalProvider', () => {
     (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: false, status: 500 });
     const result = await callGetArrival();
     expect(result.source).toBe('schedule');
-    expect(result.isMock).toBe(true);
+    // #473 Phase 3: 강남(2호선)은 시간표 hit으로 isMock=false. fallback 작동은 source='schedule'로 검증.
   });
 
   it('up/down 모두 빈 배열이면 schedule fallback으로 전환한다', async () => {

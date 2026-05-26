@@ -28,7 +28,7 @@ describe('fetchArrivalInfo', () => {
     expect(result.up[0]).toHaveProperty('arrivalSeconds');
     expect(result.up[0]).toHaveProperty('statusMessage');
     expect(result.up[0]).toHaveProperty('trainCode');
-    expect(result.isMock).toBe(true);
+    expect(result.source).not.toBe('realtime'); // #473 Phase 3: fallback이 timetable이면 isMock=false, 헤드웨이면 true — wall clock 의존이라 source로 검증
   });
 
   it('API 키가 있으면 fetch를 호출한다', async () => {
@@ -73,7 +73,7 @@ describe('fetchArrivalInfo', () => {
 
     expect(result.up.length).toBeGreaterThan(0);
     expect(result.down.length).toBeGreaterThan(0);
-    expect(result.isMock).toBe(true);
+    expect(result.source).not.toBe('realtime'); // #473 Phase 3: fallback이 timetable이면 isMock=false, 헤드웨이면 true — wall clock 의존이라 source로 검증
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
   });
@@ -87,7 +87,7 @@ describe('fetchArrivalInfo', () => {
 
     expect(result.up.length).toBeGreaterThan(0);
     expect(result.down.length).toBeGreaterThan(0);
-    expect(result.isMock).toBe(true);
+    expect(result.source).not.toBe('realtime'); // #473 Phase 3: fallback이 timetable이면 isMock=false, 헤드웨이면 true — wall clock 의존이라 source로 검증
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
   });
@@ -104,7 +104,7 @@ describe('fetchArrivalInfo', () => {
 
     expect(result.up.length).toBeGreaterThan(0);
     expect(result.down.length).toBeGreaterThan(0);
-    expect(result.isMock).toBe(true);
+    expect(result.source).not.toBe('realtime'); // #473 Phase 3: fallback이 timetable이면 isMock=false, 헤드웨이면 true — wall clock 의존이라 source로 검증
 
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
   });
@@ -189,7 +189,7 @@ describe('fetchArrivalInfo', () => {
     jest.advanceTimersByTime(5000);
     const result = await promise;
 
-    expect(result.isMock).toBe(true);
+    expect(result.source).not.toBe('realtime'); // #473 Phase 3: fallback이 timetable이면 isMock=false, 헤드웨이면 true — wall clock 의존이라 source로 검증
 
     jest.useRealTimers();
     delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
@@ -374,7 +374,7 @@ describe('fetchArrivalInfo', () => {
       } as Response);
 
       const result = await fetchArrivalInfo('강남');
-      expect(result.isMock).toBe(true);
+      expect(result.source).not.toBe('realtime'); // #473 Phase 3: fallback이 timetable이면 isMock=false, 헤드웨이면 true — wall clock 의존이라 source로 검증
     });
   });
 
@@ -398,7 +398,7 @@ describe('fetchArrivalInfo', () => {
       delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
       const result = await fetchArrivalInfo('강남');
       expect(result.source).toBe('schedule');
-      expect(result.isMock).toBe(true);
+      expect(result.source).not.toBe('realtime'); // #473 Phase 3: fallback이 timetable이면 isMock=false, 헤드웨이면 true — wall clock 의존이라 source로 검증
       expect(result.up.length).toBeGreaterThan(0);
     });
 
