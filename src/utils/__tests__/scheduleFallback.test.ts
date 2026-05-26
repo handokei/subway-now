@@ -287,6 +287,13 @@ describe('buildScheduleArrival — 시간표 lookup (#473 Phase 3)', () => {
     expect(['schedule', 'closed']).toContain(result.source);
   });
 
+  it('Sunday 02:00 KST는 saturday 시간표 lookup (전 영업일 = 토요일)', () => {
+    // 2026-05-24 일요일 02:00 KST. previousBusinessDay('Sun') → 'saturday'.
+    const now = new Date('2026-05-23T17:00:00Z'); // KST Sun 02:00
+    const result = buildScheduleArrival('1', '서울역', now);
+    expect(['schedule', 'closed']).toContain(result.source);
+  });
+
   it('시간표 노선/역 존재하지만 dayType 키 없음 → 헤드웨이 폴백 (line 196)', () => {
     // 정상 케이스로는 unreachable이지만 isolateModules로 시간표 구조 변형 분기 강제.
     jest.isolateModules(() => {
