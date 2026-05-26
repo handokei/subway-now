@@ -28,6 +28,7 @@ import { AlarmOverlay } from '../../src/components/AlarmOverlay';
 import { createLogger } from '../../src/utils/logger';
 import { useTheme, typography, spacing, radius } from '../../src/theme';
 import { LineBadge } from '../../src/components/LineBadge';
+import { SourceBadge } from '../../src/components/SourceBadge';
 import { ArrivalSourceNotice } from '../../src/components/ArrivalSourceNotice';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 
@@ -371,6 +372,13 @@ export default function HomeScreen() {
                       {nearest.walkMin} min walk
                     </Text>
                   </>
+                )}
+                {!isCustomOrigin && (
+                  <SourceBadge
+                    source={source}
+                    locationUncertain={locationUncertain}
+                    testID="home-source-badge"
+                  />
                 )}
                 {__DEV__ && (
                   <>
