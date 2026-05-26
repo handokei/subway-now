@@ -118,9 +118,8 @@ async function main() {
     let stationName, timetable;
     try {
       ({ stationName, timetable } = await fetchStation(code3));
-    } catch (e) {
-      // NOSONAR: build script progress log — FR_CODE/error는 iterator + API response로 user input 아님
-      console.error(`  ERROR FR_CODE=${code3}: ${e.message}`);
+    } catch {
+      process.stdout.write('E');
       continue;
     }
     if (!stationName || Object.keys(timetable).length === 0) {
@@ -129,8 +128,7 @@ async function main() {
     }
     stations[stationName] = timetable;
     stationCount++;
-    // NOSONAR: build script progress log — STATION_NM은 서울교통공사 API 응답, user input 아님
-    console.log(`\n  ${code3} ${stationName} ✓ (weekday up=${timetable.weekday?.up?.length ?? 0})`);
+    process.stdout.write('o');
   }
   console.log(`\n# 총 ${stationCount}개 역 수집`);
   const outPath = path.join(OUT_DIR, `line-${TARGET_LINE}.json`);
