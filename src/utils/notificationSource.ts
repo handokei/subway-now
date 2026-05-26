@@ -41,10 +41,12 @@ export function resolveNotificationSource(
   }
 }
 
+export type SourceI18nKey = `source.${NotificationSource}`;
+
 /**
- * i18n 키 prefix. caller가 t('source.' + key) 형태로 사용.
- * 예: i18next.t(`source.${key}`).
+ * i18n 키 prefix. caller가 t(notificationSourceI18nKey(key)) 형태로 사용.
+ * 반환 타입을 template literal union으로 좁혀 i18next strict 타입에 통과시킨다.
  */
-export function notificationSourceI18nKey(key: NotificationSource): string {
+export function notificationSourceI18nKey(key: NotificationSource): SourceI18nKey {
   return `source.${key}`;
 }

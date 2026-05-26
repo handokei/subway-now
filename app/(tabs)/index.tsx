@@ -160,6 +160,8 @@ export default function HomeScreen() {
     speedMps,
     accuracyMeters,
     arrivalConfidence: confidence,
+    fusionSource: source,
+    locationUncertain,
   });
   useBackgroundLocation(destination);
   useApnsTripRegistration({

@@ -126,6 +126,9 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       storedRoute,
       speedMps,
       source: 'bg',
+      // BG task는 fusion을 쓰지 않고 raw GPS만 처리 → 사용자에게 'GPS 추정'을 자백.
+      // 실제 BG에서 train data를 쓰게 되면 caller에서 'position-train'으로 바꾼다.
+      fusionSource: 'gps',
     });
 
     if (alarmEvent) {

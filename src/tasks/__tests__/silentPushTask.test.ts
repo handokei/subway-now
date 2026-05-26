@@ -317,7 +317,7 @@ describe('silentPushTask', () => {
 
       const call = mockScheduleNotificationAsync.mock.calls[0][0];
       expect(call.content.title).toBe('route.intermediatePassedTitle');
-      expect(call.content.body).toBe('route.intermediatePassedBody:중곡');
+      expect(call.content.body).toBe('route.intermediatePassedBody:중곡 · source.positionTrain');
       expect(mockGetFiredAlarms).not.toHaveBeenCalled();
       expect(mockSetFiredAlarms).not.toHaveBeenCalled();
       expect(mockLogSilentPushFired).toHaveBeenCalledWith(

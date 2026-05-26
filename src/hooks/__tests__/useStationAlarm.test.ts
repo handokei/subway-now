@@ -316,7 +316,7 @@ describe('useStationAlarm', () => {
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, true),
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, true, undefined),
     );
   });
 
@@ -331,6 +331,7 @@ describe('useStationAlarm', () => {
         { ...earlyDest, direction: 'up' },
         false,
         true,
+        undefined,
       ),
     );
   });
@@ -347,7 +348,7 @@ describe('useStationAlarm', () => {
     mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyTransfer, false, true),
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyTransfer, false, true, undefined),
     );
   });
 
@@ -363,7 +364,7 @@ describe('useStationAlarm', () => {
     mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyTransfer, false, true),
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyTransfer, false, true, undefined),
     );
   });
 
@@ -388,7 +389,7 @@ describe('useStationAlarm', () => {
       },
     );
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(earlyDest, false, true),
+      expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(earlyDest, false, true, undefined),
     );
 
     mockEvaluateAlarmPhase.mockReturnValueOnce(imminentDest);
@@ -396,7 +397,7 @@ describe('useStationAlarm', () => {
       inputs: defaultInputs({ route, destination, userLocation: { lat: 37.49, lng: 127.025 }, speedMps: 20 }),
     });
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(imminentDest, false, true),
+      expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(imminentDest, false, true, undefined),
     );
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(2);
   });
@@ -415,7 +416,7 @@ describe('useStationAlarm', () => {
     mockEvaluateAlarmPhase.mockReturnValue(altEvent);
     rerender({ dest: altDestination });
     await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(2));
-    expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(altEvent, false, true);
+    expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(altEvent, false, true, undefined);
     // destination 변경 → 새 id로 storage 재읽기 (저장된 entry는 옛 destinationId라 빈 set 반환 → 자동 isolation).
     expect(mockGetFiredAlarms).toHaveBeenCalledWith(altDestination.id);
   });
@@ -426,7 +427,7 @@ describe('useStationAlarm', () => {
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, true, true),
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, true, true, undefined),
     );
   });
 
@@ -453,7 +454,7 @@ describe('useStationAlarm', () => {
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     await waitFor(() =>
-      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, false),
+      expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, false, undefined),
     );
   });
 
@@ -490,7 +491,7 @@ describe('useStationAlarm', () => {
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
 
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', directTarget);
+        expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', directTarget, undefined);
       });
       expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith('S1');
     });
@@ -535,7 +536,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => {
         expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(2);
       });
-      expect(mockSendStationPassedNotification).toHaveBeenLastCalledWith('선릉', '강남', nextTarget);
+      expect(mockSendStationPassedNotification).toHaveBeenLastCalledWith('선릉', '강남', nextTarget, undefined);
     });
 
     it('does not fire when nearestStation is null', () => {
@@ -566,7 +567,7 @@ describe('useStationAlarm', () => {
       mockResolveNextTarget.mockReturnValue(null);
       renderHook(() => useStationAlarm(defaultInputs({ route, destination, nearestStation: station })));
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', null);
+        expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', null, undefined);
       });
     });
 
@@ -686,7 +687,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => {
         expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
       });
-      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('서울', '강남', transferTarget);
+      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('서울', '강남', transferTarget, undefined);
     });
 
     it('알림 발송 후에만 notificationState에 저장한다 (실패 시 재시도 가능)', async () => {
@@ -764,7 +765,7 @@ describe('useStationAlarm', () => {
         expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
       });
       // 처음 두 IIFE는 cancelled 가드에 막혀 마지막(A) 한 번만 알림 발사
-      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남A', '강남', directTarget);
+      expect(mockSendStationPassedNotification).toHaveBeenCalledWith('강남A', '강남', directTarget, undefined);
     });
 
     it('cancel 플래그: read 완료 전 언마운트되면 알림을 발송하지 않는다', async () => {
@@ -1099,6 +1100,7 @@ describe('useStationAlarm', () => {
           expect.objectContaining({ direction: 'up' }),
           expect.anything(),
           expect.anything(),
+          undefined,
         );
       });
     });
@@ -1166,6 +1168,65 @@ describe('useStationAlarm', () => {
       const callCountBefore = mockGetStoredTripTrainCode.mock.calls.length;
       await Promise.resolve();
       expect(mockGetStoredTripTrainCode.mock.calls.length).toBe(callCountBefore);
+    });
+  });
+
+  describe('fusionSource 라벨 전파 (#327)', () => {
+    it('fusionSource=gps 전달 시 sendAlarmNotification에 gpsOnly가 4번째 인자로 전달된다', async () => {
+      const route: DirectRoute = { type: 'direct', line: '2', stops: 5 };
+      const destination = makeStation('D1', '강남');
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(defaultInputs({ route, destination, fusionSource: 'gps' })),
+      );
+      await waitFor(() =>
+        expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, true, 'gpsOnly'),
+      );
+    });
+
+    it('locationUncertain=true 전달 시 source 무시하고 uncertain 전달', async () => {
+      const route: DirectRoute = { type: 'direct', line: '2', stops: 5 };
+      const destination = makeStation('D1', '강남');
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({ route, destination, fusionSource: 'position-train', locationUncertain: true }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockSendAlarmNotification).toHaveBeenCalledWith(earlyDest, false, true, 'uncertain'),
+      );
+    });
+
+    it('역 통과 알림에도 notificationSource가 전달된다', async () => {
+      const route: DirectRoute = { type: 'direct', line: '2', stops: 5 };
+      const destination = makeStation('D1', '강남');
+      const station = makeStation('S1', '역삼');
+      const directTarget = {
+        nextStationName: '강남',
+        stopsToNextStation: 5,
+        isTransfer: false,
+        stopsToDestination: 5,
+      };
+      mockResolveNextTarget.mockReturnValue(directTarget);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            fusionSource: 'route-progress',
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockSendStationPassedNotification).toHaveBeenCalledWith(
+          '역삼',
+          '강남',
+          directTarget,
+          'routeProgress',
+        ),
+      );
     });
   });
 });

@@ -25,7 +25,8 @@ import {
 import { useAppStore } from '../store/useAppStore';
 import { createLogger } from '../utils/logger';
 import { isAccuracyAcceptable } from '../utils/locationGates';
-import type { FusionConfidence } from '../utils/pickFusedStation';
+import type { FusionConfidence, FusionSource } from '../utils/pickFusedStation';
+import { resolveNotificationSource } from '../utils/notificationSource';
 
 const logger = createLogger('StationAlarm');
 
@@ -42,6 +43,11 @@ export interface UseStationAlarmInputs {
    * (accuracy > 200m) 알람 누락 해소. ETA 기반 phase 알람은 거리 계산이 필요해 GPS 게이트 유지.
    */
   arrivalConfidence?: FusionConfidence;
+  /** 사용자 노출 알람 본문에 부착할 데이터 출처 (#327).
+   *  useFusedNearestStation의 source를 그대로 전달. 미지정 시 라벨 부착 안 함. */
+  fusionSource?: FusionSource;
+  /** GPS 게이트 실패 등으로 위치 불확실. true면 source 무시하고 'uncertain' 라벨. */
+  locationUncertain?: boolean;
 }
 
 export function useStationAlarm({
@@ -52,6 +58,8 @@ export function useStationAlarm({
   speedMps,
   accuracyMeters,
   arrivalConfidence,
+  fusionSource,
+  locationUncertain = false,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
   // firedAlarms hydration: BG가 AsyncStorage(FIRED_ALARMS_KEY)에 쓴 dedup 상태를
@@ -143,7 +151,10 @@ export function useStationAlarm({
     if (sleepModeRef.current) {
       setAlarmEvent(event);
     }
-    sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current).catch((e) =>
+    const notificationSource = fusionSource
+      ? resolveNotificationSource(fusionSource, locationUncertain)
+      : undefined;
+    sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current, notificationSource).catch((e) =>
       logger.error('알람 알림 실패:', e),
     );
     logFiredAlarm('fg', event, trigger);
@@ -251,11 +262,15 @@ export function useStationAlarm({
             return;
           }
           const target = resolveNextTarget(capturedRoute, capturedDestinationName);
+          const notificationSource = fusionSource
+            ? resolveNotificationSource(fusionSource, locationUncertain)
+            : undefined;
           // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
           await sendStationPassedNotification(
             candidateStation.name,
             capturedDestinationName,
             target,
+            notificationSource,
           );
           if (cancelled) return;
           await setLastNotifiedStationId(candidateStation.id);
