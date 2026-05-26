@@ -9,6 +9,7 @@ import type { LineNumber } from '../../types/station';
 import { MOCK_JOURNEYS, makeNearestResult, makeArrivalInfo } from '../../testUtils/fixtures';
 
 // Stop 기대값 빌더 — 중복 리터럴을 줄이고 의도(transfer/dest + arrivalContext)를 한 줄로 표현한다.
+// transferTargetToLine은 'transfer' mark에서 자동으로 set되는 필드를 검증할 때 사용.
 function expectedStop(
   mark: 'transfer' | 'dest',
   station: string,
@@ -16,8 +17,17 @@ function expectedStop(
   stopsFromPrev: string,
   note: string,
   arrivalContext: StopArrivalContext,
+  transferTargetToLine?: LineNumber,
 ): Stop {
-  return { station, line, stopsFromPrev, mark, note, arrivalContext };
+  return {
+    station,
+    line,
+    stopsFromPrev,
+    mark,
+    note,
+    arrivalContext,
+    ...(transferTargetToLine && { transferTarget: { toLine: transferTargetToLine } }),
+  };
 }
 function ctx(line: LineNumber, fromName: string, toName: string): StopArrivalContext {
   return { line, fromName, toName };
@@ -36,7 +46,7 @@ describe('journeyDisplayToStops', () => {
     const stops = journeyDisplayToStops(MOCK_JOURNEYS.transfer);
     expect(stops).toEqual([
       { station: '효창공원앞', line: '6', mark: 'filled' },
-      expectedStop('transfer', '공덕', '5', '2정거장', '환승', ctx('6', '효창공원앞', '공덕')),
+      expectedStop('transfer', '공덕', '5', '2정거장', '환승', ctx('6', '효창공원앞', '공덕'), '5'),
       expectedStop('dest', '여의나루', '5', '3정거장', '도착', ctx('5', '공덕', '여의나루')),
     ]);
   });
@@ -54,10 +64,10 @@ describe('journeyDisplayToStops', () => {
     expect(stops).toHaveLength(4);
     expect(stops[0]).toEqual({ station: '서울역', line: '1', mark: 'filled' });
     expect(stops[1]).toEqual(
-      expectedStop('transfer', '시청', '2', '1정거장', '환승', ctx('1', '서울역', '시청')),
+      expectedStop('transfer', '시청', '2', '1정거장', '환승', ctx('1', '서울역', '시청'), '2'),
     );
     expect(stops[2]).toEqual(
-      expectedStop('transfer', '을지로3가', '3', '2정거장', '환승', ctx('2', '시청', '을지로3가')),
+      expectedStop('transfer', '을지로3가', '3', '2정거장', '환승', ctx('2', '시청', '을지로3가'), '3'),
     );
     expect(stops[3]).toEqual(
       expectedStop('dest', '경복궁', '3', '4정거장', '도착', ctx('3', '을지로3가', '경복궁')),
@@ -93,12 +103,13 @@ describe('journeyDisplayToStops', () => {
     expect(stops).toHaveLength(3);
     expect(stops[0]).toEqual({ station: '삼성', line: '2', mark: 'filled' });
     expect(stops[1]).toEqual(
-      expectedStop('transfer', '건대입구', '7', '7정거장', '환승', ctx('2', '삼성', '건대입구')),
+      expectedStop('transfer', '건대입구', '7', '7정거장', '환승', ctx('2', '삼성', '건대입구'), '7'),
     );
     // 흡수 케이스: 마지막 0정거장 segment가 직전 transfer를 dest로 승격.
     // arrivalContext는 직전 segment(7호선 건대입구→군자) — 사용자가 실제로 그 노선으로 내림.
+    // transferTarget은 흡수 시에도 보존된다 — UI가 mark==='transfer'에만 적용하므로 무해.
     expect(stops[2]).toEqual(
-      expectedStop('dest', '군자', '5', '2정거장', '환승 → 도착', ctx('7', '건대입구', '군자')),
+      expectedStop('dest', '군자', '5', '2정거장', '환승 → 도착', ctx('7', '건대입구', '군자'), '5'),
     );
   });
 });

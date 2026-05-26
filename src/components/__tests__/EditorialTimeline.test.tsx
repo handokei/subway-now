@@ -15,6 +15,14 @@ jest.mock('../../data/quickExit.json', () => ({
   },
 }));
 
+// 빠른 환승 도어 — 군자(5↔7) 단순 fixture.
+jest.mock('../../data/transferExit.json', () => ({
+  군자: [
+    { fromLine: '5', toLine: '7', doorNumber: '1-1' },
+    { fromLine: '7', toLine: '5', doorNumber: '5-1' },
+  ],
+}));
+
 describe('EditorialTimeline', () => {
   it('should render all stops', () => {
     render(<EditorialTimeline stops={MOCK_STOPS.threeStops} />);
@@ -149,6 +157,50 @@ describe('EditorialTimeline quickExit door label', () => {
   ])('%s', (_label, line, from, to) => {
     render(<EditorialTimeline stops={makeDestOnlyStops(line, from, to)} />);
     expect(screen.queryByText(/번 문/)).toBeNull();
+  });
+
+  it('환승 stop이고 transferExit 매칭이 있으면 transferDoor가 quickExit보다 우선 표시', () => {
+    // transferExit fixture는 군자 5→7=1-1. quickExit fixture엔 군자 없음.
+    const stops: Stop[] = [
+      { station: '방화', line: '5', mark: 'filled' },
+      {
+        station: '군자',
+        line: '7',
+        stopsFromPrev: '20정거장',
+        mark: 'transfer',
+        note: '환승',
+        arrivalContext: { line: '5', fromName: '방화', toName: '군자' },
+        transferTarget: { toLine: '7' },
+      },
+      {
+        station: '도봉산',
+        line: '7',
+        stopsFromPrev: '15정거장',
+        mark: 'dest',
+        note: '도착',
+        arrivalContext: { line: '7', fromName: '군자', toName: '도봉산' },
+      },
+    ];
+    render(<EditorialTimeline stops={stops} />);
+    expect(screen.getByText('1-1번 문')).toBeTruthy();
+  });
+
+  it('환승 stop이지만 transferExit 매칭이 없으면 quickExit fallback', () => {
+    // 3호선 경복궁 quickExit 데이터 있음, transferExit엔 경복궁 없음 → fallback 3-2.
+    const stops: Stop[] = [
+      { station: '교대', line: '3', mark: 'filled' },
+      {
+        station: '경복궁',
+        line: 'unknown',
+        stopsFromPrev: '5정거장',
+        mark: 'transfer',
+        note: '환승',
+        arrivalContext: { line: '3', fromName: '교대', toName: '경복궁' },
+        transferTarget: { toLine: 'sinbundang' },
+      },
+    ];
+    render(<EditorialTimeline stops={stops} />);
+    expect(screen.getByText('3-2번 문')).toBeTruthy();
   });
 });
 
