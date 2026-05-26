@@ -733,11 +733,11 @@ describe('StationMap', () => {
       expect(circle.props.radius).toBe(50);
     });
 
-    it('accuracyMeters<10 일 때 최소 반경 10m로 클램프', () => {
+    it('accuracyMeters<30 일 때 최소 반경 30m로 클램프 — 도심 GPS 5~50m 점 수렴 방지', () => {
       const { getByTestId } = render(
         <StationMap {...baseProps} accuracyMeters={3} />,
       );
-      expect(getByTestId('accuracy-circle').props.radius).toBe(10);
+      expect(getByTestId('accuracy-circle').props.radius).toBe(30);
     });
 
     it('기본(locationUncertain=false) 시 accent 톤으로 표시', () => {
@@ -745,8 +745,8 @@ describe('StationMap', () => {
         <StationMap {...baseProps} accuracyMeters={100} />,
       );
       const circle = getByTestId('accuracy-circle');
-      expect(circle.props.strokeColor).toBe('rgba(200, 85, 61, 0.6)');
-      expect(circle.props.fillColor).toBe('rgba(200, 85, 61, 0.12)');
+      expect(circle.props.strokeColor).toBe('rgba(200, 85, 61, 0.9)');
+      expect(circle.props.fillColor).toBe('rgba(200, 85, 61, 0.2)');
     });
 
     it('locationUncertain=true 시 muted 회색 + 더 옅은 fill로 자백', () => {
@@ -759,7 +759,7 @@ describe('StationMap', () => {
       );
       const circle = getByTestId('accuracy-circle');
       expect(circle.props.strokeColor).toBe('#6B6459');
-      expect(circle.props.fillColor).toBe('rgba(107, 100, 89, 0.06)');
+      expect(circle.props.fillColor).toBe('rgba(107, 100, 89, 0.1)');
     });
 
   });

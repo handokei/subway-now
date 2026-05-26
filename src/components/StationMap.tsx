@@ -32,8 +32,10 @@ interface StationMapProps {
   locationUncertain?: boolean;
 }
 
-const ACCURACY_MIN_RADIUS_M = 10;
-const ACCURACY_STROKE_WIDTH = 1;
+// 도심 GPS 정확도 5~50m 구간에서 점으로 수렴하는 것을 막는 최소 반경.
+const ACCURACY_MIN_RADIUS_M = 30;
+// stroke 1px은 retina 디스플레이에서 거의 안 보여 2로 상향.
+const ACCURACY_STROKE_WIDTH = 2;
 
 const FOCUS_REGION_DELTA = 0.01;
 const FOCUS_ANIMATION_MS = 400;
@@ -161,12 +163,12 @@ export function StationMap({
             center={{ latitude: userLat, longitude: userLng }}
             radius={Math.max(accuracyMeters, ACCURACY_MIN_RADIUS_M)}
             strokeColor={
-              locationUncertain ? colors.muted : withAlpha(colors.accent, 0.6)
+              locationUncertain ? colors.muted : withAlpha(colors.accent, 0.9)
             }
             strokeWidth={ACCURACY_STROKE_WIDTH}
             fillColor={withAlpha(
               locationUncertain ? colors.muted : colors.accent,
-              locationUncertain ? 0.06 : 0.12,
+              locationUncertain ? 0.1 : 0.2,
             )}
             testID="accuracy-circle"
           />
