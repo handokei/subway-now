@@ -6,6 +6,27 @@ import {
   hasTerminalData,
 } from '../scheduleFallback';
 import type { LineNumber } from '../../types/station';
+import type { StationArrival } from '../../api/arrivalApi';
+
+/**
+ * 시간표 JSON을 mock해 buildScheduleArrival을 호출. mockPath 기본값은 line-1.
+ * isolateModules + doMock + resetModules 패턴 중복 제거용.
+ */
+function withMockedTimetable(
+  mockData: unknown,
+  call: (build: typeof buildScheduleArrival) => StationArrival,
+  mockPath: string = '../../data/timetables/line-1.json',
+): StationArrival {
+  let captured: StationArrival | undefined;
+  jest.isolateModules(() => {
+    jest.doMock(mockPath, () => mockData);
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { buildScheduleArrival: build } = require('../scheduleFallback');
+    captured = call(build);
+  });
+  jest.resetModules();
+  return captured!;
+}
 
 describe('classifyDayType', () => {
   it('returns sunday for Sunday', () => {
@@ -247,28 +268,18 @@ describe('buildScheduleArrival — 시간표 lookup (#473 Phase 3)', () => {
   });
 
   it('막차 후(시간표 entry 모두 nowKey 미만)는 헤드웨이 폴백 → closed', () => {
-    // 모든 timetable entry가 nowKey보다 작은 mock 데이터로 결정적 검증.
-    jest.isolateModules(() => {
-      jest.doMock('../../data/timetables/line-1.json', () => ({
+    // 평일 02:00 KST: 시간표 매칭 실패 + classifyPeriod=closed → 빈 배열 반환.
+    const result = withMockedTimetable(
+      {
         stations: {
-          '__last_train_done__': {
-            // 평일 시간표: 23:30 막차 끝, 24h+ 엔트리 없음.
-            weekday: { up: ['0530', '2330'], down: ['0530', '2330'] },
-          },
+          '__last_train_done__': { weekday: { up: ['0530', '2330'], down: ['0530', '2330'] } },
         },
-      }));
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { buildScheduleArrival: build } = require('../scheduleFallback');
-      // KST 평일 02:00 → effectiveDay='sunday' (Tuesday → 이전 영업일 = weekday이지만
-      // previousBusinessDay(Tue)=weekday이므로 weekday 매칭. 그러나 nowKey="2600"인데
-      // weekday 시간표 max="2330" → 매칭 실패. classifyPeriod=closed → 빈 배열.
-      const now = new Date('2026-05-19T02:00:00+09:00'); // Tuesday 02:00 KST
-      const result = build('1', '__last_train_done__', now);
-      expect(result.source).toBe('closed');
-      expect(result.up).toEqual([]);
-      expect(result.down).toEqual([]);
-    });
-    jest.resetModules();
+      },
+      (build) => build('1', '__last_train_done__', new Date('2026-05-19T02:00:00+09:00')),
+    );
+    expect(result.source).toBe('closed');
+    expect(result.up).toEqual([]);
+    expect(result.down).toEqual([]);
   });
 
   it('Monday 02:00 KST는 sunday 시간표 lookup (전 영업일 = 일요일)', () => {
@@ -295,60 +306,31 @@ describe('buildScheduleArrival — 시간표 lookup (#473 Phase 3)', () => {
   });
 
   it('시간표 노선/역 존재하지만 dayType 키 없음 → 헤드웨이 폴백 (line 196)', () => {
-    // 정상 케이스로는 unreachable이지만 isolateModules로 시간표 구조 변형 분기 강제.
-    jest.isolateModules(() => {
-      jest.doMock('../../data/timetables/line-1.json', () => ({
-        stations: { '__test_station__': {} }, // weekday/saturday/sunday 모두 없음
-      }));
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { buildScheduleArrival: build } = require('../scheduleFallback');
-      const now = new Date('2026-05-18T15:00:00+09:00');
-      const result = build('1', '__test_station__', now);
-      expect(result.isMock).toBe(true); // 헤드웨이 폴백
-    });
-    jest.resetModules();
+    const result = withMockedTimetable(
+      { stations: { '__test_station__': {} } }, // weekday/saturday/sunday 모두 없음
+      (build) => build('1', '__test_station__', new Date('2026-05-18T15:00:00+09:00')),
+    );
+    expect(result.isMock).toBe(true);
   });
 
   it('hour<5 + 24h+ 시간표 entry 매칭 시 hhmmToFutureSeconds nowHour shift 적용 (line 168)', () => {
     // KST Monday 02:30 (= UTC Sun 17:30). 사용자 시간 시간표 비교 키 "2630".
     // 이전 영업일(Sunday)의 24h+ 엔트리가 "2700" 이상이면 매치.
-    jest.isolateModules(() => {
-      jest.doMock('../../data/timetables/line-1.json', () => ({
-        stations: {
-          '__late_night__': {
-            sunday: { up: ['2700', '2730'], down: ['2715'] }, // 익일 03:00, 03:30
-          },
-        },
-      }));
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { buildScheduleArrival: build } = require('../scheduleFallback');
-      const now = new Date('2026-05-24T17:30:00Z'); // KST Mon 02:30
-      const result = build('1', '__late_night__', now);
-      // 시간표 hit → isMock=false, hhmmToFutureSeconds nowHour<5 분기 진입.
-      expect(result.isMock).toBe(false);
-      expect(result.up.length).toBe(2);
-      // 02:30 → 03:00 = 30분 = 1800초
-      expect(result.up[0].arrivalSeconds).toBe(30 * 60);
-    });
-    jest.resetModules();
+    const result = withMockedTimetable(
+      { stations: { '__late_night__': { sunday: { up: ['2700', '2730'], down: ['2715'] } } } },
+      (build) => build('1', '__late_night__', new Date('2026-05-24T17:30:00Z')),
+    );
+    expect(result.isMock).toBe(false);
+    expect(result.up.length).toBe(2);
+    expect(result.up[0].arrivalSeconds).toBe(30 * 60);
   });
 
   it('시간표 day.up/down 빈 배열 → 폴백 (line 199)', () => {
-    jest.isolateModules(() => {
-      jest.doMock('../../data/timetables/line-1.json', () => ({
-        stations: {
-          '__test_empty__': {
-            weekday: { up: [], down: [] }, // 빈 배열
-          },
-        },
-      }));
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { buildScheduleArrival: build } = require('../scheduleFallback');
-      const now = new Date('2026-05-18T15:00:00+09:00');
-      const result = build('1', '__test_empty__', now);
-      expect(result.isMock).toBe(true); // 헤드웨이 폴백
-    });
-    jest.resetModules();
+    const result = withMockedTimetable(
+      { stations: { '__test_empty__': { weekday: { up: [], down: [] } } } },
+      (build) => build('1', '__test_empty__', new Date('2026-05-18T15:00:00+09:00')),
+    );
+    expect(result.isMock).toBe(true);
   });
 
   it('hhmmToFutureSeconds 자정 wrap — 23:30에 "2421" 시각은 약 51분 후', () => {
