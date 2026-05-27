@@ -27,3 +27,6 @@ export const TELEMETRY_LAST_FLUSH_KEY = 'subway-now:telemetry-last-flush';
 // #527 — BG 위치 task의 jump gate가 참조하는 직전 수용 fix.
 // 형식: {"lat":number,"lng":number,"timestamp":number} JSON.
 export const BG_LAST_FIX_KEY = 'subway-now:bg-last-fix';
+// #574 P2e — 디바이스가 fire한 silent push의 pushId 집합. alert fallback race 시 중복 표시 차단.
+// 형식: {"[pushId]": timestamp} JSON. 5분 이상 된 항목은 add/read 시 cleanup.
+export const FIRED_PUSH_IDS_KEY = 'subway-now:fired-push-ids';

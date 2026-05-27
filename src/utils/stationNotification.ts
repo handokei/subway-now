@@ -12,6 +12,7 @@ import { speakAlarm } from './tts';
 import { createLogger } from './logger';
 import { getStationDisplayName, getStationDisplayNameByName } from './stationDisplay';
 import { saveStationToWidget, clearWidgetStation } from './widgetStorage';
+import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../data/stations.json';
 import type { ExitSide } from '../types/exitSide';
 import { lookupExitSide } from './exitSide';
@@ -64,6 +65,17 @@ export function setupNotificationHandler(): void {
     handleNotification: async (notification) => {
       const isAlarm = notification.request.identifier === ALARM_NOTIFICATION_ID;
       const hasSound = notification.request.content.sound != null;
+      // #574 P2e — silent push가 이미 fired한 pushId의 alert fallback이 race로 도달했을 때
+      // FG에서 중복 표시 차단. BG에선 iOS가 직접 표시해 JS 개입 불가(P2e 한계 명시).
+      if (await isFallbackDuplicate(notification)) {
+        return {
+          shouldShowAlert: false,
+          shouldShowBanner: false,
+          shouldShowList: false,
+          shouldPlaySound: false,
+          shouldSetBadge: false,
+        };
+      }
       return {
         shouldShowAlert: true,
         shouldShowBanner: true,
@@ -73,6 +85,19 @@ export function setupNotificationHandler(): void {
       };
     },
   });
+}
+
+/**
+ * notification.request.content.data.pushId가 silent에서 이미 처리한 pushId면 true.
+ * APNs alert payload data 형식: `{ pushId: string }` (#572 sendAlertPush).
+ */
+async function isFallbackDuplicate(
+  notification: Notifications.Notification,
+): Promise<boolean> {
+  const data = notification.request.content.data as { pushId?: unknown } | undefined;
+  const pushId = data?.pushId;
+  if (typeof pushId !== 'string' || pushId.length === 0) return false;
+  return hasFiredPushId(pushId);
 }
 
 const STATION_CHANNEL_ID = 'station';

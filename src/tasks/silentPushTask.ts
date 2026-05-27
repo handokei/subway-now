@@ -29,6 +29,7 @@ import {
   logSilentPushSkipped,
   type AlarmLogReason,
 } from '../utils/alarmLog';
+import { addFiredPushId } from '../utils/firedPushIds';
 import {
   checkSilentPushLocationGate,
   type GateSkipReason,
@@ -256,6 +257,8 @@ async function fireWithGate(
     if (fired.has(dedupKey)) {
       // 다른 채널(FG GPS 등)이 이미 발사 — backend 입장에선 fallback 불필요. ACK로 정리.
       ackOutcome(payload.pushId, apnsToken, 'skipped', 'dedup-already-fired');
+      // P2e — 동일 pushId의 alert가 race로 도달하면 FG에서 중복 표시 차단되도록 기록.
+      if (payload.pushId) void addFiredPushId(payload.pushId);
       logger.info(`dedup: ${dedupKey} already fired — skip`);
       return;
     }
@@ -290,6 +293,8 @@ async function fireWithGate(
     locationAgeMs: gate.locationAgeMs!,
   });
   ackOutcome(payload.pushId, apnsToken, 'fired');
+  // P2e — alert fallback이 race로 도달해도 FG에서 중복 표시 차단되도록 기록.
+  if (payload.pushId) void addFiredPushId(payload.pushId);
   logger.info(
     `fired: kind=${payload.kind} phase=${payload.phase} station=${payload.nextWaypoint} distance=${gate.distanceM}m`,
   );
