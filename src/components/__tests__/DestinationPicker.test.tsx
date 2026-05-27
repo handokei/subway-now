@@ -272,6 +272,109 @@ describe('DestinationPicker', () => {
     expect(chips[2].props.testID).toBe(`favorite-chip-${general.id}`);
   });
 
+  it('미설정 슬롯이 있고 onAssignSlot이 제공되면 placeholder chip을 노출한다', () => {
+    const { getByTestId } = render(
+      <DestinationPicker {...defaultProps} favorites={[]} onAssignSlot={jest.fn()} />,
+    );
+    expect(getByTestId('slot-placeholder-chip-home')).toBeTruthy();
+    expect(getByTestId('slot-placeholder-chip-work')).toBeTruthy();
+  });
+
+  it('favorites prop이 없어도 onAssignSlot만 있으면 placeholder chip을 노출한다', () => {
+    const { getByTestId } = render(
+      <DestinationPicker {...defaultProps} onAssignSlot={jest.fn()} />,
+    );
+    expect(getByTestId('slot-placeholder-chip-home')).toBeTruthy();
+  });
+
+  it('onAssignSlot이 없으면 placeholder chip을 노출하지 않는다', () => {
+    const { queryByTestId } = render(
+      <DestinationPicker {...defaultProps} favorites={[]} />,
+    );
+    expect(queryByTestId('slot-placeholder-chip-home')).toBeNull();
+    expect(queryByTestId('slot-placeholder-chip-work')).toBeNull();
+  });
+
+  it('placeholder chip 탭 → 다음 선택 역이 onAssignSlot으로 전달되고 chip이 갱신된다', () => {
+    const onAssignSlot = jest.fn();
+    const onSelect = jest.fn();
+    const { getByTestId, queryByTestId } = render(
+      <DestinationPicker
+        {...defaultProps}
+        favorites={[]}
+        onAssignSlot={onAssignSlot}
+        onSelect={onSelect}
+      />,
+    );
+    fireEvent.press(getByTestId('slot-placeholder-chip-home'));
+    expect(getByTestId('pending-slot-banner')).toBeTruthy();
+    // 검색 결과 선택 → onAssignSlot이 호출되고 onSelect는 호출되지 않음
+    fireEvent.changeText(getByTestId('search-input'), '강남');
+    fireEvent.press(getByTestId(`suggestion-item-${mockStation.id}`));
+    expect(onAssignSlot).toHaveBeenCalledWith('home', mockStation);
+    expect(onSelect).not.toHaveBeenCalled();
+    // 배너는 사라짐
+    expect(queryByTestId('pending-slot-banner')).toBeNull();
+  });
+
+  it('placeholder chip을 다시 누르면 pending 모드가 해제된다', () => {
+    const { getByTestId, queryByTestId } = render(
+      <DestinationPicker {...defaultProps} favorites={[]} onAssignSlot={jest.fn()} />,
+    );
+    fireEvent.press(getByTestId('slot-placeholder-chip-home'));
+    expect(getByTestId('pending-slot-banner')).toBeTruthy();
+    fireEvent.press(getByTestId('slot-placeholder-chip-home'));
+    expect(queryByTestId('pending-slot-banner')).toBeNull();
+  });
+
+  it('pending banner의 취소 버튼이 모드를 해제한다', () => {
+    const { getByTestId, queryByTestId } = render(
+      <DestinationPicker {...defaultProps} favorites={[]} onAssignSlot={jest.fn()} />,
+    );
+    fireEvent.press(getByTestId('slot-placeholder-chip-home'));
+    fireEvent.press(getByTestId('pending-slot-cancel'));
+    expect(queryByTestId('pending-slot-banner')).toBeNull();
+  });
+
+  it('모달 닫기 시 pending 모드가 초기화된다', () => {
+    const onClose = jest.fn();
+    const { getByTestId, queryByTestId, rerender } = render(
+      <DestinationPicker {...defaultProps} favorites={[]} onAssignSlot={jest.fn()} onClose={onClose} />,
+    );
+    fireEvent.press(getByTestId('slot-placeholder-chip-home'));
+    fireEvent.press(getByTestId('close-button'));
+    expect(onClose).toHaveBeenCalled();
+    rerender(<DestinationPicker {...defaultProps} visible={true} favorites={[]} onAssignSlot={jest.fn()} onClose={onClose} />);
+    expect(queryByTestId('pending-slot-banner')).toBeNull();
+  });
+
+  it('이미 home/work가 모두 지정되어 있으면 placeholder chip을 노출하지 않는다', () => {
+    const home: Station = { ...mockStation };
+    const work: Station = { id: '2-021', name: '역삼', line: '2', lineColor: '#009D3E', lat: 37.5, lng: 127 };
+    const { queryByTestId } = render(
+      <DestinationPicker
+        {...defaultProps}
+        favorites={[
+          { station: home, role: 'home' },
+          { station: work, role: 'work' },
+        ]}
+        onAssignSlot={jest.fn()}
+      />,
+    );
+    expect(queryByTestId('slot-placeholder-chip-home')).toBeNull();
+    expect(queryByTestId('slot-placeholder-chip-work')).toBeNull();
+  });
+
+  it('지도 마커 탭으로도 슬롯 지정이 동작한다', () => {
+    const onAssignSlot = jest.fn();
+    const { getByTestId } = render(
+      <DestinationPicker {...mapProps} favorites={[]} onAssignSlot={onAssignSlot} />,
+    );
+    fireEvent.press(getByTestId('slot-placeholder-chip-work'));
+    fireEvent.press(getByTestId('marker-강남'));
+    expect(onAssignSlot).toHaveBeenCalledWith('work', expect.objectContaining({ id: '2-022' }));
+  });
+
   it('검색창 포커스 시 드롭다운 표시 상태가 활성화된다', () => {
     const { getByTestId, queryByTestId } = render(<DestinationPicker {...defaultProps} />);
     fireEvent.changeText(getByTestId('search-input'), '강남');

@@ -82,6 +82,8 @@
     "destinationBadge": "Destination",
     "setAsOrigin": "Set as origin",
     "setAsDestination": "Set as destination",
+    "assignAsSlot": "Save as {{label}}",
+    "slotAlreadyAssigned": "{{label}} ✓",
     "nearbyStationsHeader": "Nearby stations (within 1km)",
     "noNearbyStations": "No subway stations within 1km.",
     "recenter": "Recenter on my location",
@@ -115,7 +117,9 @@
   "destinationPicker": {
     "noLocation": "Location info unavailable.",
     "title": "Set destination",
-    "searchPlaceholder": "Search station name"
+    "searchPlaceholder": "Search station name",
+    "assignSlot": "Add {{label}}",
+    "pendingSlot": "The next station you pick will be saved as {{label}}"
   },
   "sleepModeGuide": {
     "title": "Sleep mode notice",

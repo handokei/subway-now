@@ -17,7 +17,12 @@ import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import { routeToCoordinates, type RouteCoordinatePath } from '../../src/utils/routeToCoordinates';
 import type { Route } from '../../src/utils/stationRoute';
 import { ROUTE_KEY } from '../../src/constants/storageKeys';
-import type { Station } from '../../src/types/station';
+import {
+  FAVORITE_SLOT_ICONS,
+  FAVORITE_SLOT_ROLES,
+  type FavoriteSlotRole,
+  type Station,
+} from '../../src/types/station';
 
 export default function MapScreen() {
   const { userLocation, result, loading, error, permissionDenied, refresh, accuracyMeters, locationUncertain } =
@@ -29,6 +34,8 @@ export default function MapScreen() {
   const destination = useAppStore((s) => s.destination);
   const setDestination = useAppStore((s) => s.setDestination);
   const setRecentDestination = useAppStore((s) => s.setRecentDestination);
+  const favorites = useAppStore((s) => s.favorites);
+  const setSlotFavorite = useAppStore((s) => s.setSlotFavorite);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
   const [focusStation, setFocusStation] = useState<Station | null>(null);
   const [focusNonce, setFocusNonce] = useState(0);
@@ -180,6 +187,29 @@ export default function MapScreen() {
               <Text style={[styles.selectionButtonText, { color: colors.accent }]}>{t('map.setAsDestination')}</Text>
             </TouchableOpacity>
           </View>
+          <View style={styles.slotButtons}>
+            {FAVORITE_SLOT_ROLES.map((role) => {
+              const { station: slotStation } = favorites.find((f) => f.role === role) ?? {};
+              const isCurrent = slotStation?.id === selectedStation.id;
+              return (
+                <TouchableOpacity
+                  key={role}
+                  style={[styles.slotButton, { borderColor: colors.hair, backgroundColor: isCurrent ? colors.accent : colors.bg }]}
+                  onPress={() => {
+                    if (isCurrent) return;
+                    setSlotFavorite(role, selectedStation);
+                  }}
+                  disabled={isCurrent}
+                  testID={`assign-slot-${role}`}
+                >
+                  <Text style={styles.slotButtonIcon}>{FAVORITE_SLOT_ICONS[role]}</Text>
+                  <Text style={[styles.slotButtonText, { color: isCurrent ? colors.onAccent : colors.ink }]}>
+                    {isCurrent ? t('map.slotAlreadyAssigned', { label: t(`favorites.${role}`) }) : t('map.assignAsSlot', { label: t(`favorites.${role}`) })}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         </View>
       )}
 
@@ -235,6 +265,28 @@ const styles = StyleSheet.create({
   selectionButtonText: {
     fontSize: 15,
     fontWeight: '700',
+  },
+  slotButtons: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    marginTop: spacing.md,
+  },
+  slotButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    borderWidth: 1,
+  },
+  slotButtonIcon: {
+    fontSize: 14,
+  },
+  slotButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   recenterButton: {
     position: 'absolute',

@@ -48,6 +48,7 @@ export default function HomeScreen() {
   const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
   const addFavorite = useAppStore((s) => s.addFavorite);
   const removeFavorite = useAppStore((s) => s.removeFavorite);
+  const setSlotFavorite = useAppStore((s) => s.setSlotFavorite);
   const favorites = useAppStore((s) => s.favorites);
   const loadFavorites = useAppStore((s) => s.loadFavorites);
   const destination = useAppStore((s) => s.destination);
@@ -657,6 +658,7 @@ export default function HomeScreen() {
         }}
         onClose={() => setPickerVisible(false)}
         favorites={favorites}
+        onAssignSlot={setSlotFavorite}
         userLat={userLocation?.lat ?? null}
         userLng={userLocation?.lng ?? null}
         onRecenter={() => {

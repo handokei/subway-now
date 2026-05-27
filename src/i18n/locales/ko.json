@@ -82,6 +82,8 @@
     "destinationBadge": "도착",
     "setAsOrigin": "출발역으로 설정",
     "setAsDestination": "도착역으로 설정",
+    "assignAsSlot": "{{label}}으로 저장",
+    "slotAlreadyAssigned": "{{label}} ✓",
     "nearbyStationsHeader": "주변 지하철역 (1km 이내)",
     "noNearbyStations": "주변 1km 내 지하철역이 없습니다.",
     "recenter": "내 위치로 이동",
@@ -115,7 +117,9 @@
   "destinationPicker": {
     "noLocation": "위치 정보가 없습니다.",
     "title": "목적지 설정",
-    "searchPlaceholder": "역 이름 검색"
+    "searchPlaceholder": "역 이름 검색",
+    "assignSlot": "{{label}} 추가",
+    "pendingSlot": "다음에 선택하는 역을 {{label}}로 저장합니다"
   },
   "sleepModeGuide": {
     "title": "취침 모드 안내",

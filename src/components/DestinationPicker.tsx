@@ -10,7 +10,14 @@ import {
 } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import stations from '../data/stations.json';
-import { FAVORITE_SLOT_ICONS, isFavoriteSlotRole, type FavoriteEntry, type Station } from '../types/station';
+import {
+  FAVORITE_SLOT_ICONS,
+  FAVORITE_SLOT_ROLES,
+  isFavoriteSlotRole,
+  type FavoriteEntry,
+  type FavoriteSlotRole,
+  type Station,
+} from '../types/station';
 import { StationMap } from './StationMap';
 import { StationSuggestionList } from './StationSuggestionList';
 import { createLogger } from '../utils/logger';
@@ -30,6 +37,7 @@ interface Props {
   readonly userLat?: number | null;
   readonly userLng?: number | null;
   readonly onRecenter?: () => void;
+  readonly onAssignSlot?: (role: FavoriteSlotRole, station: Station) => void;
 }
 
 export function DestinationPicker({
@@ -40,10 +48,12 @@ export function DestinationPicker({
   userLng,
   favorites,
   onRecenter,
+  onAssignSlot,
 }: Props) {
   const [query, setQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
   const [recenterNonce, setRecenterNonce] = useState(0);
+  const [pendingSlot, setPendingSlot] = useState<FavoriteSlotRole | null>(null);
   const openTimeRef = useRef<number | null>(null);
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -73,6 +83,13 @@ export function DestinationPicker({
     return [...favorites].sort((a, b) => order[a.role] - order[b.role]);
   }, [favorites]);
 
+  // #559: 미설정 슬롯에 placeholder chip 노출 — 누르면 다음 선택 역을 슬롯에 저장하는 모드 진입.
+  const unassignedSlotRoles = useMemo(() => {
+    if (!onAssignSlot) return [];
+    const assigned = new Set((favorites ?? []).map((f) => f.role));
+    return FAVORITE_SLOT_ROLES.filter((role) => !assigned.has(role));
+  }, [favorites, onAssignSlot]);
+
   const suggestions = useMemo(() => {
     const q = query.trim();
     if (!q) return [];
@@ -86,12 +103,18 @@ export function DestinationPicker({
   function handleSelect(station: Station) {
     setQuery('');
     setShowDropdown(false);
+    if (pendingSlot && onAssignSlot) {
+      onAssignSlot(pendingSlot, station);
+      setPendingSlot(null);
+      return;
+    }
     onSelect(station);
   }
 
   function handleClose() {
     setQuery('');
     setShowDropdown(false);
+    setPendingSlot(null);
     onClose();
   }
 
@@ -122,6 +145,16 @@ export function DestinationPicker({
               <Text style={[styles.closeText, { color: colors.accent }]}>{t('common.close')}</Text>
             </TouchableOpacity>
           </View>
+          {pendingSlot && (
+            <View style={[styles.pendingBanner, { backgroundColor: colors.accent }]} testID="pending-slot-banner">
+              <Text style={[styles.pendingText, { color: colors.onAccent }]}>
+                {t('destinationPicker.pendingSlot', { label: t(`favorites.${pendingSlot}`) })}
+              </Text>
+              <TouchableOpacity onPress={() => setPendingSlot(null)} testID="pending-slot-cancel">
+                <Text style={[styles.pendingCancel, { color: colors.onAccent }]}>{t('common.cancel')}</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           <TextInput
             style={[styles.input, { backgroundColor: colors.card, color: colors.ink, borderColor: colors.hair }]}
             placeholder={t('destinationPicker.searchPlaceholder')}
@@ -134,7 +167,7 @@ export function DestinationPicker({
             onFocus={() => setShowDropdown(true)}
             testID="search-input"
           />
-          {favoriteChips.length > 0 && !showDropdown && (
+          {(favoriteChips.length > 0 || unassignedSlotRoles.length > 0) && !showDropdown && (
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -142,6 +175,26 @@ export function DestinationPicker({
               contentContainerStyle={styles.chipRow}
               testID="favorites-chip-row"
             >
+              {unassignedSlotRoles.map((role) => (
+                <TouchableOpacity
+                  key={`slot-placeholder-${role}`}
+                  style={[
+                    styles.chip,
+                    styles.chipPlaceholder,
+                    {
+                      backgroundColor: colors.card,
+                      borderColor: pendingSlot === role ? colors.accent : colors.hair,
+                    },
+                  ]}
+                  onPress={() => setPendingSlot(pendingSlot === role ? null : role)}
+                  testID={`slot-placeholder-chip-${role}`}
+                >
+                  <Text style={styles.chipIcon}>{FAVORITE_SLOT_ICONS[role]}</Text>
+                  <Text style={[styles.chipText, { color: colors.ink }]}>
+                    {t('destinationPicker.assignSlot', { label: t(`favorites.${role}`) })}
+                  </Text>
+                </TouchableOpacity>
+              ))}
               {favoriteChips.map(({ station, role, label }) => {
                 const isSlot = isFavoriteSlotRole(role);
                 const chipText = isSlot
@@ -263,6 +316,29 @@ const styles = StyleSheet.create({
   chipText: {
     fontSize: 14,
     fontWeight: '600',
+  },
+  chipPlaceholder: {
+    borderStyle: 'dashed',
+  },
+  pendingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: spacing.xl,
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.sm,
+  },
+  pendingText: {
+    fontSize: 14,
+    fontWeight: '600',
+    flex: 1,
+  },
+  pendingCancel: {
+    fontSize: 14,
+    fontWeight: '700',
+    paddingHorizontal: spacing.sm,
   },
   recenterButton: {
     position: 'absolute',

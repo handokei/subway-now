@@ -82,6 +82,8 @@
     "destinationBadge": "目的地",
     "setAsOrigin": "设为出发站",
     "setAsDestination": "设为目的地",
+    "assignAsSlot": "保存为{{label}}",
+    "slotAlreadyAssigned": "{{label}} ✓",
     "nearbyStationsHeader": "附近地铁站(1km以内)",
     "noNearbyStations": "1km内没有地铁站。",
     "recenter": "返回当前位置",
@@ -115,7 +117,9 @@
   "destinationPicker": {
     "noLocation": "无位置信息。",
     "title": "设置目的地",
-    "searchPlaceholder": "搜索车站名称"
+    "searchPlaceholder": "搜索车站名称",
+    "assignSlot": "添加{{label}}",
+    "pendingSlot": "下次选择的车站将保存为{{label}}"
   },
   "sleepModeGuide": {
     "title": "睡眠模式提示",
