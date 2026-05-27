@@ -277,41 +277,38 @@ describe('useAppStore', () => {
     expect(favorites[0].role).toBe('general');
   });
 
-  it('loadFavorites: home/work role이 정상 보존된다', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
-      JSON.stringify([
-        { station: mockStation, role: 'home' },
-        { station: mockStation2, role: 'work' },
-      ]),
-    );
+  it.each([
+    {
+      label: 'home/work role 보존',
+      stored: [
+        { station: '2-022', role: 'home' as const },
+        { station: '2-021', role: 'work' as const },
+      ],
+      expectedRoles: ['home', 'work'],
+    },
+    {
+      label: '잘못된 role은 general로 정규화',
+      stored: [{ station: '2-022', role: 'invalid' as unknown as 'general' }],
+      expectedRoles: ['general'],
+    },
+    {
+      label: '동일 슬롯 중복은 first-wins (나머지는 general 강등)',
+      stored: [
+        { station: '2-022', role: 'home' as const },
+        { station: '2-021', role: 'home' as const },
+      ],
+      expectedRoles: ['home', 'general'],
+    },
+  ])('loadFavorites: $label', async ({ stored, expectedRoles }) => {
+    const stationsById: Record<string, typeof mockStation> = {
+      '2-022': mockStation,
+      '2-021': mockStation2,
+    };
+    const payload = stored.map(({ station, role }) => ({ station: stationsById[station], role }));
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(payload));
 
     await useAppStore.getState().loadFavorites();
-    const { favorites } = useAppStore.getState();
-    expect(favorites[0].role).toBe('home');
-    expect(favorites[1].role).toBe('work');
-  });
-
-  it('loadFavorites: 잘못된 role 값은 general로 정규화된다', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
-      JSON.stringify([{ station: mockStation, role: 'invalid' }]),
-    );
-
-    await useAppStore.getState().loadFavorites();
-    expect(useAppStore.getState().favorites[0].role).toBe('general');
-  });
-
-  it('loadFavorites: 동일 슬롯이 여러 entry에 중복되면 첫 항목만 유지하고 나머지는 general로 강등된다', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
-      JSON.stringify([
-        { station: mockStation, role: 'home' },
-        { station: mockStation2, role: 'home' },
-      ]),
-    );
-
-    await useAppStore.getState().loadFavorites();
-    const { favorites } = useAppStore.getState();
-    expect(favorites[0].role).toBe('home');
-    expect(favorites[1].role).toBe('general');
+    expect(useAppStore.getState().favorites.map((f) => f.role)).toEqual(expectedRoles);
   });
 
   it('loadFavorites: AsyncStorage가 비어있으면 빈 배열을 유지한다', async () => {
