@@ -25,6 +25,11 @@ export interface Station {
   lng: number;
 }
 
+export interface FavoriteEntry {
+  station: Station;
+  label?: string;
+}
+
 export interface NearestStationResult {
   station: Station;
   distanceKm: number;

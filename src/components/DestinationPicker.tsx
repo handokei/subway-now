@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import stations from '../data/stations.json';
-import type { Station } from '../types/station';
+import type { Station, FavoriteEntry } from '../types/station';
 import { StationMap } from './StationMap';
 import { StationSuggestionList } from './StationSuggestionList';
 import { createLogger } from '../utils/logger';
@@ -27,7 +27,7 @@ interface Props {
   readonly onSelect: (station: Station) => void;
   readonly onClose: () => void;
   readonly recentDestination?: Station | null;
-  readonly favorites?: readonly Station[];
+  readonly favorites?: readonly FavoriteEntry[];
   readonly userLat?: number | null;
   readonly userLng?: number | null;
   readonly onRecenter?: () => void;
@@ -67,11 +67,13 @@ export function DestinationPicker({
     return allStations;
   }, [userLat, userLng]);
 
-  // 즐겨찾기 chip — 빠른 선택용. recentDestination이 favorites에 포함되면 중복 제거.
+  // 즐겨찾기 chip — 빠른 선택용. label 없는 항목만 recentDestination과 dedup.
+  // label 있는 chip("집"/"회사")은 직전 목적지여도 의미가 있어 항상 표시.
   const favoriteChips = useMemo(() => {
     if (!favorites || favorites.length === 0) return [];
     const recentId = recentDestination?.id;
-    return recentId ? favorites.filter((f) => f.id !== recentId) : favorites;
+    if (!recentId) return favorites;
+    return favorites.filter(({ station, label }) => label != null || station.id !== recentId);
   }, [favorites, recentDestination]);
 
   const suggestions = useMemo(() => {
@@ -143,15 +145,15 @@ export function DestinationPicker({
               contentContainerStyle={styles.chipRow}
               testID="favorites-chip-row"
             >
-              {favoriteChips.map((fav) => (
+              {favoriteChips.map(({ station, label }) => (
                 <TouchableOpacity
-                  key={fav.id}
+                  key={station.id}
                   style={[styles.chip, { backgroundColor: colors.card, borderColor: colors.hair }]}
-                  onPress={() => handleSelect(fav)}
-                  testID={`favorite-chip-${fav.id}`}
+                  onPress={() => handleSelect(station)}
+                  testID={`favorite-chip-${station.id}`}
                 >
                   <Text style={[styles.chipText, { color: colors.ink }]}>
-                    {getStationDisplayName(fav)}
+                    {label ?? getStationDisplayName(station)}
                   </Text>
                 </TouchableOpacity>
               ))}

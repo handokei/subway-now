@@ -95,7 +95,11 @@
     "noSearchResults": "検索結果がありません",
     "empty": "お気に入りはまだありません",
     "emptyDescription": "上の検索窓で駅を検索して\nお気に入りに追加できます。",
-    "remove": "削除"
+    "remove": "削除",
+    "addLabel": "ラベル追加",
+    "editLabel": "ラベル編集",
+    "saveLabel": "保存",
+    "labelPlaceholder": "自宅、会社など"
   },
   "alarmOverlay": {
     "transferTitle": "乗換アラーム",

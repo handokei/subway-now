@@ -95,7 +95,11 @@
     "noSearchResults": "검색 결과가 없습니다",
     "empty": "즐겨찾기가 없습니다",
     "emptyDescription": "위 검색창에서 역을 검색해 즐겨찾기에\n추가할 수 있습니다.",
-    "remove": "삭제"
+    "remove": "삭제",
+    "addLabel": "별칭 추가",
+    "editLabel": "별칭 편집",
+    "saveLabel": "저장",
+    "labelPlaceholder": "집, 회사 등"
   },
   "alarmOverlay": {
     "transferTitle": "환승 알림",

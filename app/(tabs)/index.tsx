@@ -116,7 +116,7 @@ export default function HomeScreen() {
     effectiveOrigin?.line ?? null,
   );
   const arrival = useArrivalCountdown(rawArrival);
-  const isFav = effectiveOrigin ? favorites.some((f) => f.id === effectiveOrigin.id) : false;
+  const isFav = effectiveOrigin ? favorites.some((f) => f.station.id === effectiveOrigin.id) : false;
 
   // 환승역이면 모든 호선 변형에서 경로 계산 → 출발역 환승 없는 최적 경로 자동 선택
   const originVariants = !isCustomOrigin && variants.length > 1 ? variants : effectiveOrigin ? [effectiveOrigin] : [];

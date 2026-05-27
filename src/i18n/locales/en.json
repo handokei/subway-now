@@ -95,7 +95,11 @@
     "noSearchResults": "No search results",
     "empty": "No favorites yet",
     "emptyDescription": "Search stations above and add\nthem to your favorites.",
-    "remove": "Remove"
+    "remove": "Remove",
+    "addLabel": "Add label",
+    "editLabel": "Edit label",
+    "saveLabel": "Save",
+    "labelPlaceholder": "Home, Work, etc."
   },
   "alarmOverlay": {
     "transferTitle": "Transfer alert",
