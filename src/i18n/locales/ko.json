@@ -32,6 +32,8 @@
     "destinationChange": "목적지 변경 →",
     "destinationReset": "초기화",
     "viewRouteOnMap": "지도에서 경로 보기",
+    "routeExpand": "전체 역 보기",
+    "routeCollapse": "주요 역만 보기",
     "destinationSet": "목적지 설정",
     "previousDestination": "이전 목적지",
     "sleepMode": "취침 모드",

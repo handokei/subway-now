@@ -1,5 +1,6 @@
 import i18next from 'i18next';
-import type { JourneyDisplay } from './stationRoute';
+import type { JourneyDisplay, JourneySegment } from './stationRoute';
+import { getStationsOnLine, isSameStationName } from './stationRoute';
 import type { ArrivalInfo } from '../api/arrivalApi';
 import type { NearestStationResult, LineNumber, Station } from '../types/station';
 import { getStationDisplayName, getStationDisplayNameByName } from './stationDisplay';
@@ -26,7 +27,7 @@ export interface Stop {
   station: string;
   line: string | null;
   stopsFromPrev?: string;
-  mark: 'filled' | 'transfer' | 'dest';
+  mark: 'filled' | 'transfer' | 'dest' | 'intermediate';
   note?: string;
   arrivalContext?: StopArrivalContext;
   transferTarget?: StopTransferTarget;
@@ -54,7 +55,28 @@ export interface HandoffNearest {
 
 const WALK_SPEED_M_PER_MIN = 80;
 
-export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
+// segment의 from/to 사이 중간 정거장을 노선 데이터에서 슬라이스한다.
+// id 정렬 순서가 곧 노선 순서라는 데이터 invariant에 의존한다 (stationRoute.ts).
+// stationRoute의 getIntermediateStationNames(fromId, toId)와 유사하지만 JourneySegment에는
+// id가 없어 name 기반 lookup이 필요하므로 별도 구현 유지.
+function intermediateStationsForSegment(seg: JourneySegment): Station[] {
+  const lineStations = getStationsOnLine(seg.line);
+  const fromIdx = lineStations.findIndex((s) => isSameStationName(s.name, seg.fromName));
+  const toIdx = lineStations.findIndex((s) => isSameStationName(s.name, seg.toName));
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return [];
+  const [lo, hi] = fromIdx < toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
+  const slice = lineStations.slice(lo + 1, hi);
+  // 경로 탐색의 stops 카운트와 중간역 수가 불일치하면 invariant 위반(예: 향후 순환선
+  // wrap-around 최단경로 탐색이 도입될 때 stops=1인데 41개 역이 슬라이스되는 케이스).
+  // 안전하게 빈 배열 fallback.
+  if (slice.length !== seg.stops - 1) return [];
+  return fromIdx < toIdx ? slice : slice.slice().reverse();
+}
+
+export function journeyDisplayToStops(
+  journey: JourneyDisplay,
+  options: { readonly expanded?: boolean } = {},
+): Stop[] {
   const { segments } = journey;
   if (segments.length === 0) return [];
 
@@ -71,6 +93,16 @@ export function journeyDisplayToStops(journey: JourneyDisplay): Stop[] {
         line: seg.line,
         mark: 'filled',
       });
+    }
+
+    if (options.expanded) {
+      for (const mid of intermediateStationsForSegment(seg)) {
+        stops.push({
+          station: getStationDisplayName(mid),
+          line: seg.line,
+          mark: 'intermediate',
+        });
+      }
     }
 
     const arrivalContext: StopArrivalContext = {

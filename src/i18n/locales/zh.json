@@ -32,6 +32,8 @@
     "destinationChange": "更改目的地 →",
     "destinationReset": "重置",
     "viewRouteOnMap": "在地图上查看路线",
+    "routeExpand": "显示所有车站",
+    "routeCollapse": "仅显示主要车站",
     "destinationSet": "设置目的地",
     "previousDestination": "上次目的地",
     "sleepMode": "睡眠模式",

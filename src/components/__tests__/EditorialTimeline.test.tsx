@@ -204,6 +204,30 @@ describe('EditorialTimeline quickExit door label', () => {
   });
 });
 
+describe('intermediate stop 렌더링', () => {
+  it('intermediate mark는 intermediate-dot을 렌더링한다', () => {
+    const stops: Stop[] = [
+      { station: '강남', line: '2', mark: 'filled' },
+      { station: '교대', line: '2', mark: 'intermediate' },
+      { station: '서초', line: '2', stopsFromPrev: '2정거장', mark: 'dest', note: '도착' },
+    ];
+    render(<EditorialTimeline stops={stops} />);
+    expect(screen.getByTestId('intermediate-dot')).toBeTruthy();
+    expect(screen.getByText('교대')).toBeTruthy();
+  });
+
+  it('intermediate stop은 LineBadge를 렌더링하지 않는다', () => {
+    const stops: Stop[] = [
+      { station: '강남', line: '2', mark: 'filled' },
+      { station: '교대', line: '2', mark: 'intermediate' },
+      { station: '서초', line: '2', stopsFromPrev: '2정거장', mark: 'dest', note: '도착' },
+    ];
+    render(<EditorialTimeline stops={stops} />);
+    // 2호선 라벨은 출발/도착 stop 2개에서만 노출 (intermediate에서는 미노출)
+    expect(screen.getAllByText('2호선').length).toBe(2);
+  });
+});
+
 describe('mix', () => {
   it('should blend two colors at 50%', () => {
     expect(mix('#FF0000', '#0000FF', 0.5)).toBe('rgb(128,0,128)');
