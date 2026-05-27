@@ -47,6 +47,11 @@ jest.mock('../../../modules/live-activity', () => ({
   isLiveActivityEnabled: () => mockIsLiveActivityEnabled(),
 }));
 
+const mockHasFiredPushId = jest.fn();
+jest.mock('../firedPushIds', () => ({
+  hasFiredPushId: (...args: unknown[]) => mockHasFiredPushId(...args),
+}));
+
 const mockSaveStationToWidget = jest.fn().mockResolvedValue(undefined);
 const mockClearWidgetStation = jest.fn().mockResolvedValue(undefined);
 jest.mock('../widgetStorage', () => ({
@@ -148,6 +153,52 @@ describe('stationNotification', () => {
 
       const silentAlarmResult = await handleNotification({ request: { identifier: 'station-alarm', content: { sound: null } } });
       expect(silentAlarmResult).toEqual({ shouldShowAlert: true, shouldShowBanner: true, shouldShowList: true, shouldPlaySound: false, shouldSetBadge: false });
+    });
+
+    it('#574 P2e — pushId가 firedPushIds에 있으면 모든 show 플래그 false로 suppress', async () => {
+      mockHasFiredPushId.mockResolvedValueOnce(true);
+      setupNotificationHandler();
+      const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+      const result = await handleNotification({
+        request: { identifier: 'station-alarm', content: { sound: 'alarm.wav', data: { pushId: 'p1' } } },
+      });
+      expect(mockHasFiredPushId).toHaveBeenCalledWith('p1');
+      expect(result).toEqual({
+        shouldShowAlert: false,
+        shouldShowBanner: false,
+        shouldShowList: false,
+        shouldPlaySound: false,
+        shouldSetBadge: false,
+      });
+    });
+
+    it('#574 P2e — pushId가 fired set에 없으면 정상 표시', async () => {
+      mockHasFiredPushId.mockResolvedValueOnce(false);
+      setupNotificationHandler();
+      const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+      const result = await handleNotification({
+        request: { identifier: 'station-alarm', content: { sound: 'alarm.wav', data: { pushId: 'fresh' } } },
+      });
+      expect(result.shouldShowAlert).toBe(true);
+      expect(result.shouldPlaySound).toBe(true);
+    });
+
+    it('#574 P2e — data 없거나 pushId 누락이면 정상 표시 (hasFiredPushId 호출 안 함)', async () => {
+      setupNotificationHandler();
+      const { handleNotification } = (Notifications.setNotificationHandler as jest.Mock).mock.calls[0][0];
+      const noData = await handleNotification({
+        request: { identifier: 'station-alarm', content: { sound: null } },
+      });
+      expect(noData.shouldShowAlert).toBe(true);
+      const dataNoPushId = await handleNotification({
+        request: { identifier: 'station-alarm', content: { sound: null, data: { other: 'x' } } },
+      });
+      expect(dataNoPushId.shouldShowAlert).toBe(true);
+      const emptyPushId = await handleNotification({
+        request: { identifier: 'station-alarm', content: { sound: null, data: { pushId: '' } } },
+      });
+      expect(emptyPushId.shouldShowAlert).toBe(true);
+      expect(mockHasFiredPushId).not.toHaveBeenCalled();
     });
   });
 

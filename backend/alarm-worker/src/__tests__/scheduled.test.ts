@@ -11,28 +11,7 @@ import {
 import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
 import { putTrip } from '../trips';
 import type { Env, Trip } from '../types';
-
-class InMemoryKV {
-  store = new Map<string, { value: string }>();
-  async get(key: string): Promise<string | null> {
-    return this.store.get(key)?.value ?? null;
-  }
-  async put(key: string, value: string): Promise<void> {
-    this.store.set(key, { value });
-  }
-  async delete(key: string): Promise<void> {
-    this.store.delete(key);
-  }
-  async list(options?: { prefix?: string }): Promise<{
-    keys: { name: string }[];
-    list_complete: boolean;
-    cursor: string;
-  }> {
-    const prefix = options?.prefix ?? '';
-    const keys = [...this.store.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-    return { keys, list_complete: true, cursor: '' };
-  }
-}
+import { InMemoryKV } from './inMemoryKv';
 
 let apnsConfig: ApnsConfig;
 
@@ -56,7 +35,7 @@ const APNS_HOSTS = {
   sandbox: 'api.sandbox.push.apple.com',
 } as const;
 
-function makeEnv(kv: InMemoryKV): Env {
+function makeEnv(kv: InMemoryKV, pending?: InMemoryKV): Env {
   return {
     TRIPS: kv as unknown as KVNamespace,
     APNS_HOST: APNS_HOSTS.production,
@@ -67,6 +46,7 @@ function makeEnv(kv: InMemoryKV): Env {
     APNS_TEAM_ID: 'T',
     APNS_PRIVATE_KEY: apnsConfig.privateKeyPem,
     APNS_BUNDLE_ID: 'com.example.app',
+    PENDING_PUSHES: pending ? (pending as unknown as KVNamespace) : undefined,
   };
 }
 
@@ -560,5 +540,70 @@ describe('runScheduled', () => {
       now: () => NOW,
     });
     expect(stats.errors).toBe(1);
+  });
+
+  describe('#566 P2a — pending push 기록', () => {
+    it('성공한 silent push마다 pending:<pushId> entry를 PENDING_PUSHES에 적재', async () => {
+      const kv = new InMemoryKV();
+      const pending = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeTrip());
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv, pending), {
+        seoul: makeSeoul([makeImminentArrival('강남')]),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'fixed-push-id',
+      });
+      expect(stats.pushed).toBe(1);
+      const entryRaw = pending.store.get('pending:fixed-push-id');
+      expect(entryRaw).toBeDefined();
+      const entry = JSON.parse(entryRaw!.value);
+      expect(entry.pushId).toBe('fixed-push-id');
+      expect(entry.token).toBe('tok');
+      expect(entry.alarmKey).toBe('imminent:강남');
+      expect(entry.sentAt).toBe(NOW);
+      expect(entry.kind).toBe('destination');
+      expect(entry.phase).toBe('imminent');
+      expect(entry.apnsEnv).toBe('sandbox'); // makeTrip default
+
+      // payload에도 pushId가 들어갔는지 검증.
+      const call = apnsFetch.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect(body.data.pushId).toBe('fixed-push-id');
+    });
+
+    it('PENDING_PUSHES 미바인딩이어도 push는 정상 발사 (graceful)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeTrip());
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoul([makeImminentArrival('강남')]),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(stats.pushed).toBe(1);
+    });
+
+    it('push 실패 시 pending entry를 기록하지 않는다', async () => {
+      const kv = new InMemoryKV();
+      const pending = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeTrip());
+      const apnsFetch = vi.fn(async () =>
+        new Response(JSON.stringify({ reason: 'PayloadTooLarge' }), { status: 413 }),
+      );
+      await runScheduled(makeEnv(kv, pending), {
+        seoul: makeSeoul([makeImminentArrival('강남')]),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'fixed-push-id',
+      });
+      expect(pending.store.size).toBe(0);
+    });
   });
 });

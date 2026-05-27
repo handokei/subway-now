@@ -11,6 +11,7 @@ import {
 } from './alarm';
 import { sendSilentPush, type ApnsConfig } from './apns';
 import { matchLine } from './lineAlias';
+import { buildAlarmKey, putPending } from './pendingPushes';
 import { SeoulArrivalClient, type ArrivalEntry } from './seoul';
 import { deleteTrip, listTrips, putTrip } from './trips';
 import type { ApnsEnv, Env, Trip, Waypoint } from './types';
@@ -41,6 +42,8 @@ export interface ScheduledDeps {
   fetchImpl?: typeof fetch;
   now?: () => number;
   log?: (message: string, meta?: Record<string, unknown>) => void;
+  /** pushId 발급 — 테스트에선 결정적 값을 주입한다. 기본은 crypto.randomUUID. */
+  generatePushId?: () => string;
 }
 
 /**
@@ -65,6 +68,7 @@ export function flipApnsEnv(env: ApnsEnv | undefined): ApnsEnv {
 export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
   const now = deps.now?.() ?? Date.now();
   const log = deps.log ?? (() => undefined);
+  const generatePushId = deps.generatePushId ?? (() => crypto.randomUUID());
   const stats: ScheduledStats = {
     scanned: 0,
     polled: 0,
@@ -135,12 +139,14 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           etaSeconds: eta,
           arvlCd,
         });
+        const pushId = generatePushId();
         const pushPayload = {
           nextWaypoint: waypoint.stationName,
           etaSeconds: eta,
           phase: pushPhase,
           kind: waypoint.kind,
           sentAt: now,
+          pushId,
         };
         let result = await sendSilentPush({
           deviceToken: trip.token,
@@ -189,6 +195,21 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
 
         if (result.ok) {
           stats.pushed += 1;
+          // #566 P2a — silent push 발사 성공 시 pending entry 기록. ACK 또는 P2c fallback이 정리한다.
+          // PENDING_PUSHES 미바인딩 시 putPending은 graceful no-op.
+          await putPending(env.PENDING_PUSHES, {
+            pushId,
+            token: trip.token,
+            alarmKey: buildAlarmKey(waypoint.stationName, pushPhase),
+            sentAt: now,
+            stationName: waypoint.stationName,
+            kind: waypoint.kind,
+            phase: pushPhase,
+            etaSeconds: eta,
+            // self-heal로 정정된 apnsEnv가 dirty에 반영되었더라도 현재 변수는 정정된 값.
+            // 누락 시 sandbox fallback과 일관 — pickApnsHost 동등 처리.
+            apnsEnv: trip.apnsEnv ?? 'sandbox',
+          });
           if (shouldPushPhase) {
             trip.lastFiredPhase = phase!;
             dirty = true;

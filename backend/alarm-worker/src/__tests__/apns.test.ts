@@ -1,6 +1,12 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { buildApnsJwt, resetApnsJwtCache, sendSilentPush, type ApnsConfig } from '../apns';
+import {
+  buildApnsJwt,
+  resetApnsJwtCache,
+  sendAlertPush,
+  sendSilentPush,
+  type ApnsConfig,
+} from '../apns';
 
 let privateKeyPem = '';
 
@@ -68,6 +74,7 @@ describe('sendSilentPush', () => {
         phase: 'early',
         kind: 'destination',
         sentAt: 1_700_000_000_000,
+        pushId: 'push-uuid-1',
       },
       config: makeConfig(),
       host: TEST_HOST,
@@ -88,6 +95,7 @@ describe('sendSilentPush', () => {
     expect(body.data.phase).toBe('early');
     expect(body.data.kind).toBe('destination');
     expect(body.data.sentAt).toBe(1_700_000_000_000);
+    expect(body.data.pushId).toBe('push-uuid-1');
   });
 
   it('returns failure with reason', async () => {
@@ -102,6 +110,7 @@ describe('sendSilentPush', () => {
         phase: 'imminent',
         kind: 'destination',
         sentAt: 1_700_000_000_000,
+        pushId: 'p',
       },
       config: makeConfig(),
       host: TEST_HOST,
@@ -122,6 +131,7 @@ describe('sendSilentPush', () => {
         phase: 'imminent',
         kind: 'destination',
         sentAt: 1_700_000_000_000,
+        pushId: 'p',
       },
       config: makeConfig(),
       host: TEST_HOST,
@@ -137,12 +147,73 @@ describe('sendSilentPush', () => {
     );
     await sendSilentPush({
       deviceToken: 'tok',
-      payload: { nextWaypoint: 'X', etaSeconds: 10, phase: 'early', kind: 'destination', sentAt: 0 },
+      payload: { nextWaypoint: 'X', etaSeconds: 10, phase: 'early', kind: 'destination', sentAt: 0, pushId: 'p' },
       config: makeConfig(),
       host: 'api.sandbox.push.apple.com',
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     const [url] = fetchImpl.mock.calls[0];
     expect(url).toBe('https://api.sandbox.push.apple.com/3/device/tok');
+  });
+});
+
+const TEST_HOST_2 = 'api.push.apple.com';
+
+describe('sendAlertPush (#572 P2c)', () => {
+  beforeEach(() => resetApnsJwtCache());
+
+  it('posts with alert-type headers + aps.alert + data.pushId', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const result = await sendAlertPush({
+      deviceToken: 'devicetoken-hex',
+      title: '도착 임박',
+      body: '곧 강남에 도착합니다.',
+      pushId: 'p-alert-1',
+      config: makeConfig(),
+      host: TEST_HOST_2,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result.ok).toBe(true);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe(`https://${TEST_HOST_2}/3/device/devicetoken-hex`);
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-topic']).toBe('com.example.app');
+    expect(headers['apns-push-type']).toBe('alert');
+    expect(headers['apns-priority']).toBe('10');
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.alert).toEqual({ title: '도착 임박', body: '곧 강남에 도착합니다.' });
+    expect(body.aps.sound).toBe('default');
+    expect(body.data.pushId).toBe('p-alert-1');
+  });
+
+  it('returns failure with reason on non-2xx', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+    );
+    const result = await sendAlertPush({
+      deviceToken: 't',
+      title: 'T',
+      body: 'B',
+      pushId: 'p',
+      config: makeConfig(),
+      host: TEST_HOST_2,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ ok: false, status: 400, reason: 'BadDeviceToken' });
+  });
+
+  it('handles non-json error body', async () => {
+    const fetchImpl = vi.fn(async () => new Response('plain text', { status: 500 }));
+    const result = await sendAlertPush({
+      deviceToken: 't',
+      title: 'T',
+      body: 'B',
+      pushId: 'p',
+      config: makeConfig(),
+      host: TEST_HOST_2,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBeUndefined();
   });
 });

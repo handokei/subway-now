@@ -20,7 +20,8 @@ import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
 import type { Station } from '../types/station';
-import { DESTINATION_KEY } from '../constants/storageKeys';
+import { APNS_TOKEN_KEY, DESTINATION_KEY } from '../constants/storageKeys';
+import { sendPushAck } from '../api/alarmBackend';
 import { createLogger } from '../utils/logger';
 import {
   logSilentPushReceived,
@@ -28,6 +29,7 @@ import {
   logSilentPushSkipped,
   type AlarmLogReason,
 } from '../utils/alarmLog';
+import { addFiredPushId } from '../utils/firedPushIds';
 import {
   checkSilentPushLocationGate,
   type GateSkipReason,
@@ -56,6 +58,11 @@ export interface SilentPushPayload {
    * 종료 조건: 신 백엔드 배포 후 required로 승격.
    */
   sentAt?: number;
+  /**
+   * Push 1건의 unique 식별자 (#566 P2a). 디바이스는 이 값을 `/push/ack`로 echo한다.
+   * 구 백엔드 호환 위해 optional — 누락 시 ACK skip(P2c fallback이 발사할 가능성 감수).
+   */
+  pushId?: string;
 }
 
 interface NotificationBackgroundTaskData {
@@ -79,7 +86,7 @@ export function extractPayload(
   const raw = notif.data ?? notif.request?.content?.data;
   if (!raw || typeof raw !== 'object') return null;
   const obj = raw as Record<string, unknown>;
-  const { nextWaypoint, etaSeconds, phase, kind, sentAt } = obj;
+  const { nextWaypoint, etaSeconds, phase, kind, sentAt, pushId } = obj;
   if (typeof nextWaypoint !== 'string' || nextWaypoint.length === 0) return null;
   if (typeof etaSeconds !== 'number' || !Number.isFinite(etaSeconds)) return null;
   if (phase !== 'early' && phase !== 'imminent') return null;
@@ -87,7 +94,15 @@ export function extractPayload(
     kind === 'transfer' || kind === 'destination' || kind === 'intermediate' ? kind : undefined;
   const validSentAt =
     typeof sentAt === 'number' && Number.isFinite(sentAt) ? sentAt : undefined;
-  return { nextWaypoint, etaSeconds, phase, kind: validKind, sentAt: validSentAt };
+  const validPushId = typeof pushId === 'string' && pushId.length > 0 ? pushId : undefined;
+  return {
+    nextWaypoint,
+    etaSeconds,
+    phase,
+    kind: validKind,
+    sentAt: validSentAt,
+    pushId: validPushId,
+  };
 }
 
 /**
@@ -121,6 +136,31 @@ function buildIntermediateContent(stationName: string): { title: string; body: s
 }
 
 /**
+ * 백엔드 P2c fallback에서 이 push가 alert로 재발사되지 않도록 처리 결과를 통보한다 (#568 P2b).
+ * fire-and-forget — 실패해도 silent push 본 처리 흐름에는 영향 없음.
+ * 누락 입력(pushId/token 중 하나라도 null/undefined)은 그대로 skip한다:
+ *   - pushId 누락 = 구 백엔드 호환 경로
+ *   - token 누락 = APNs 권한 미부여/저장 실패
+ */
+function ackOutcome(
+  pushId: string | undefined,
+  token: string | null,
+  outcome: 'fired' | 'skipped',
+  reason?: string,
+): void {
+  if (!pushId || !token) return;
+  void sendPushAck({ pushId, token, outcome, reason });
+}
+
+async function loadApnsToken(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(APNS_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Task 콜백 본체 — 단위 테스트가 직접 호출할 수 있도록 export.
  */
 export async function handleSilentPush(input: NotificationBackgroundTaskData): Promise<void> {
@@ -136,7 +176,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
   }
   const receivedAt = Date.now();
   logger.info(
-    `received: kind=${payload.kind ?? 'unknown'} phase=${payload.phase} station=${payload.nextWaypoint} eta=${payload.etaSeconds} sentAt=${payload.sentAt ?? 'unknown'}`,
+    `received: kind=${payload.kind ?? 'unknown'} phase=${payload.phase} station=${payload.nextWaypoint} eta=${payload.etaSeconds} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
   );
 
   // 측정 인프라 — 수신 시점 무조건 적재 (#478 PR 1-1).
@@ -148,6 +188,8 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     receivedAt,
   });
 
+  const apnsToken = await loadApnsToken();
+
   // kind 미상은 발사 불가 — 알림 본문/dedup 키 결정 불가. 구 백엔드 호환은 received 로그에만.
   if (!payload.kind) {
     logSilentPushSkipped({
@@ -156,12 +198,16 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       phaseId: payload.phase,
       reason: 'payload-missing-kind',
     });
+    ackOutcome(payload.pushId, apnsToken, 'skipped', 'payload-missing-kind');
     logger.info('kind missing — skip fire');
     return;
   }
 
   try {
-    await fireWithGate(payload as Required<Pick<SilentPushPayload, 'kind'>> & SilentPushPayload);
+    await fireWithGate(
+      payload as Required<Pick<SilentPushPayload, 'kind'>> & SilentPushPayload,
+      apnsToken,
+    );
   } catch (e) {
     logger.error('silent push fire 실패:', e);
   }
@@ -173,6 +219,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
  */
 async function fireWithGate(
   payload: SilentPushPayload & { kind: NonNullable<SilentPushPayload['kind']> },
+  apnsToken: string | null,
 ): Promise<void> {
   const gate = await checkSilentPushLocationGate({
     stationName: payload.nextWaypoint,
@@ -181,16 +228,18 @@ async function fireWithGate(
   });
 
   if (!gate.pass) {
+    const reason = mapGateReason(gate.reason!);
     logSilentPushSkipped({
       stationName: payload.nextWaypoint,
       kind: payload.kind === 'intermediate' ? 'station-passed' : payload.kind,
       phaseId: payload.phase,
-      reason: mapGateReason(gate.reason!),
+      reason,
       distanceM: gate.distanceM,
       thresholdM: gate.thresholdM,
       locationSource: gate.locationSource,
       locationAgeMs: gate.locationAgeMs,
     });
+    ackOutcome(payload.pushId, apnsToken, 'skipped', reason);
     logger.info(`gate skip reason=${gate.reason} distance=${gate.distanceM ?? '-'}`);
     return;
   }
@@ -206,6 +255,10 @@ async function fireWithGate(
   if (dedupKey && destinationId) {
     const fired = await getFiredAlarms(destinationId);
     if (fired.has(dedupKey)) {
+      // 다른 채널(FG GPS 등)이 이미 발사 — backend 입장에선 fallback 불필요. ACK로 정리.
+      ackOutcome(payload.pushId, apnsToken, 'skipped', 'dedup-already-fired');
+      // P2e — 동일 pushId의 alert가 race로 도달하면 FG에서 중복 표시 차단되도록 기록.
+      if (payload.pushId) void addFiredPushId(payload.pushId);
       logger.info(`dedup: ${dedupKey} already fired — skip`);
       return;
     }
@@ -239,6 +292,9 @@ async function fireWithGate(
     locationSource: gate.locationSource!,
     locationAgeMs: gate.locationAgeMs!,
   });
+  ackOutcome(payload.pushId, apnsToken, 'fired');
+  // P2e — alert fallback이 race로 도달해도 FG에서 중복 표시 차단되도록 기록.
+  if (payload.pushId) void addFiredPushId(payload.pushId);
   logger.info(
     `fired: kind=${payload.kind} phase=${payload.phase} station=${payload.nextWaypoint} distance=${gate.distanceM}m`,
   );

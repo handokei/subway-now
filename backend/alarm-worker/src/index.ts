@@ -4,6 +4,7 @@
  * Routes:
  *   POST   /trips            트립 등록 (body: Trip 일부)
  *   DELETE /trips/:token     트립 해제
+ *   POST   /push/ack         silent push 처리 결과 ACK (#566 P2a)
  *   GET    /health           헬스체크
  *
  * scheduled():
@@ -11,6 +12,8 @@
  */
 
 import { Hono } from 'hono';
+import { runFallbackPushes } from './fallback';
+import { ackPending } from './pendingPushes';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
 import {
@@ -73,6 +76,49 @@ app.post('/telemetry/silent-push', async (c) => {
   return c.json({ ok: true });
 });
 
+/**
+ * silent push 처리 결과 ACK (#566 P2a).
+ * 디바이스가 push를 받고 처리(fired 또는 skipped)하면 pushId + 자신의 device token을 함께 보낸다.
+ * 백엔드는 KV에 저장된 pending.token과 비교 후 매칭 시에만 entry를 삭제 — 임의 echo로 인한
+ * fallback 무력화 차단.
+ *
+ * Body: { pushId, token, outcome: 'fired'|'skipped', reason? }
+ * Response: { ok: true, deleted: boolean, reason?: 'not-found'|'token-mismatch' }
+ *
+ * deleted=false는 정상 — push가 이미 만료(60s 초과)되거나 token 매칭 실패. 클라는 재전송 불필요.
+ */
+app.post('/push/ack', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  const ack = validatePushAck(body);
+  if (!ack) return c.json({ error: 'invalid_payload' }, 400);
+
+  const result = await ackPending(c.env.PENDING_PUSHES, ack.pushId, ack.token);
+  return c.json({ ok: true, ...result });
+});
+
+interface PushAckPayload {
+  pushId: string;
+  token: string;
+  outcome: 'fired' | 'skipped';
+  reason?: string;
+}
+
+export function validatePushAck(input: unknown): PushAckPayload | null {
+  if (!input || typeof input !== 'object') return null;
+  const obj = input as Record<string, unknown>;
+  if (typeof obj.pushId !== 'string' || obj.pushId.length === 0) return null;
+  if (typeof obj.token !== 'string' || obj.token.length === 0) return null;
+  if (obj.outcome !== 'fired' && obj.outcome !== 'skipped') return null;
+  const out: PushAckPayload = { pushId: obj.pushId, token: obj.token, outcome: obj.outcome };
+  if (typeof obj.reason === 'string') out.reason = obj.reason;
+  return out;
+}
+
 app.delete('/trips/:token', async (c) => {
   const token = c.req.param('token');
   if (!token) return c.json({ error: 'missing_token' }, 400);
@@ -125,19 +171,18 @@ export default {
       apiKey: env.SEOUL_API_KEY,
       host: env.SEOUL_API_HOST,
     });
-    await runScheduled(env, {
-      seoul,
-      apnsConfig: {
-        keyId: env.APNS_KEY_ID,
-        teamId: env.APNS_TEAM_ID,
-        privateKeyPem: env.APNS_PRIVATE_KEY,
-        bundleId: env.APNS_BUNDLE_ID,
-      },
-      apnsHosts: {
-        production: env.APNS_HOST,
-        sandbox: env.APNS_HOST_SANDBOX,
-      },
-      log: (msg, meta) => console.log(JSON.stringify({ msg, ...meta })),
-    });
+    const apnsConfig = {
+      keyId: env.APNS_KEY_ID,
+      teamId: env.APNS_TEAM_ID,
+      privateKeyPem: env.APNS_PRIVATE_KEY,
+      bundleId: env.APNS_BUNDLE_ID,
+    };
+    const apnsHosts = { production: env.APNS_HOST, sandbox: env.APNS_HOST_SANDBOX };
+    const log = (msg: string, meta?: Record<string, unknown>) =>
+      console.log(JSON.stringify({ msg, ...meta }));
+
+    await runScheduled(env, { seoul, apnsConfig, apnsHosts, log });
+    // #572 P2c — silent push 30s 미ACK entry를 alert로 fallback. 같은 cron 사이클에서 실행.
+    await runFallbackPushes(env, { apnsConfig, apnsHosts, log });
   },
 };

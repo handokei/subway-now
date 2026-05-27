@@ -96,6 +96,13 @@ export interface Env {
    * 미바인딩 시 endpoint는 graceful no-op (개발 환경 호환).
    */
   TELEMETRY?: AnalyticsEngineWriter;
+  /**
+   * 발사한 silent push의 pending 추적 (#566 P2a).
+   * P2c에서 30s 미ACK push를 alert로 fallback 발사하기 위한 그릇.
+   * 미바인딩 시 모든 pending 경로는 graceful no-op (개발 환경 호환).
+   * 생성: `wrangler kv:namespace create PENDING_PUSHES`
+   */
+  PENDING_PUSHES?: KVNamespace;
   /** Production APNs host (예: api.push.apple.com) */
   APNS_HOST: string;
   /** Sandbox APNs host (예: api.sandbox.push.apple.com) — dev/preview 빌드 토큰용 */
