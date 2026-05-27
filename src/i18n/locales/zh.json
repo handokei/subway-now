@@ -99,7 +99,11 @@
     "addLabel": "添加别名",
     "editLabel": "编辑别名",
     "saveLabel": "保存",
-    "labelPlaceholder": "家、公司等"
+    "labelPlaceholder": "别名",
+    "home": "家",
+    "work": "公司",
+    "slotAssignHint": "点击设置",
+    "slotPickerTitle": "设置{{label}}"
   },
   "alarmOverlay": {
     "transferTitle": "换乘提醒",

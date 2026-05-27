@@ -99,7 +99,11 @@
     "addLabel": "별칭 추가",
     "editLabel": "별칭 편집",
     "saveLabel": "저장",
-    "labelPlaceholder": "집, 회사 등"
+    "labelPlaceholder": "별칭 입력",
+    "home": "집",
+    "work": "회사",
+    "slotAssignHint": "탭하여 지정",
+    "slotPickerTitle": "{{label}} 지정"
   },
   "alarmOverlay": {
     "transferTitle": "환승 알림",

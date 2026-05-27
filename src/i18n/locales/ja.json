@@ -99,7 +99,11 @@
     "addLabel": "ラベル追加",
     "editLabel": "ラベル編集",
     "saveLabel": "保存",
-    "labelPlaceholder": "自宅、会社など"
+    "labelPlaceholder": "ラベル",
+    "home": "自宅",
+    "work": "会社",
+    "slotAssignHint": "タップして設定",
+    "slotPickerTitle": "{{label}}を設定"
   },
   "alarmOverlay": {
     "transferTitle": "乗換アラーム",

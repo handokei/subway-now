@@ -47,7 +47,7 @@ describe('useAppStore', () => {
 
   it('addFavorite: label과 함께 추가하면 entry에 label이 저장된다', async () => {
     const { addFavorite } = useAppStore.getState();
-    await addFavorite(mockStation, '집');
+    await addFavorite(mockStation, { label: '집' });
 
     const { favorites } = useAppStore.getState();
     expect(favorites[0].label).toBe('집');
@@ -55,7 +55,7 @@ describe('useAppStore', () => {
 
   it('addFavorite: 빈 문자열 label은 무시한다', async () => {
     const { addFavorite } = useAppStore.getState();
-    await addFavorite(mockStation, '');
+    await addFavorite(mockStation, { label: '' });
 
     const { favorites } = useAppStore.getState();
     expect(favorites[0].label).toBeUndefined();
@@ -94,7 +94,7 @@ describe('useAppStore', () => {
 
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
       'subway-now:favorites',
-      JSON.stringify([{ station: mockStation }])
+      JSON.stringify([{ station: mockStation, role: 'general' }])
     );
   });
 
@@ -106,7 +106,7 @@ describe('useAppStore', () => {
 
     expect(AsyncStorage.setItem).toHaveBeenLastCalledWith(
       'subway-now:favorites',
-      JSON.stringify([{ station: mockStation2 }])
+      JSON.stringify([{ station: mockStation2, role: 'general' }])
     );
   });
 
@@ -119,13 +119,13 @@ describe('useAppStore', () => {
     expect(favorites[0].label).toBe('회사');
     expect(AsyncStorage.setItem).toHaveBeenLastCalledWith(
       'subway-now:favorites',
-      JSON.stringify([{ station: mockStation, label: '회사' }])
+      JSON.stringify([{ station: mockStation, role: 'general', label: '회사' }])
     );
   });
 
   it('setFavoriteLabel: 빈 문자열/공백/undefined 입력 시 label을 제거한다', async () => {
     const { addFavorite, setFavoriteLabel } = useAppStore.getState();
-    await addFavorite(mockStation, '집');
+    await addFavorite(mockStation, { label: '집' });
     await setFavoriteLabel(mockStation.id, '   ');
 
     let { favorites } = useAppStore.getState();
@@ -142,7 +142,7 @@ describe('useAppStore', () => {
 
   it('setFavoriteLabel: 매칭되지 않는 stationId는 무시한다', async () => {
     const { addFavorite, setFavoriteLabel } = useAppStore.getState();
-    await addFavorite(mockStation, '집');
+    await addFavorite(mockStation, { label: '집' });
     await setFavoriteLabel('non-existent', '회사');
 
     const { favorites } = useAppStore.getState();
@@ -205,6 +205,110 @@ describe('useAppStore', () => {
     expect(favorites[0].label).toBe('집');
     expect(favorites[1].station.id).toBe('2-021');
     expect(favorites[1].label).toBeUndefined();
+  });
+
+  it('addFavorite: role=home 옵션을 지정하면 home 슬롯으로 추가된다', async () => {
+    const { addFavorite } = useAppStore.getState();
+    await addFavorite(mockStation, { role: 'home' });
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites[0].role).toBe('home');
+  });
+
+  it('addFavorite: role=home 추가 시 기존 general entry는 그대로 유지된다', async () => {
+    const { addFavorite } = useAppStore.getState();
+    await addFavorite(mockStation);
+    await addFavorite(mockStation2, { role: 'home' });
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites.find((f) => f.station.id === mockStation.id)?.role).toBe('general');
+    expect(favorites.find((f) => f.station.id === mockStation2.id)?.role).toBe('home');
+  });
+
+  it('addFavorite: 같은 슬롯에 다른 역을 지정하면 기존 슬롯은 general로 강등된다', async () => {
+    const { addFavorite } = useAppStore.getState();
+    await addFavorite(mockStation, { role: 'home' });
+    await addFavorite(mockStation2, { role: 'home' });
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites.find((f) => f.station.id === mockStation.id)?.role).toBe('general');
+    expect(favorites.find((f) => f.station.id === mockStation2.id)?.role).toBe('home');
+  });
+
+  it('setSlotFavorite: 처음 home 슬롯 지정 시 새 entry로 추가된다', async () => {
+    const { setSlotFavorite } = useAppStore.getState();
+    await setSlotFavorite('home', mockStation);
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites).toHaveLength(1);
+    expect(favorites[0].role).toBe('home');
+    expect(favorites[0].station.id).toBe('2-022');
+  });
+
+  it('setSlotFavorite: 이미 즐겨찾기에 있는 역을 슬롯에 지정하면 role만 변경된다', async () => {
+    const { addFavorite, setSlotFavorite } = useAppStore.getState();
+    await addFavorite(mockStation, { label: '집' });
+    await setSlotFavorite('work', mockStation);
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites).toHaveLength(1);
+    expect(favorites[0].role).toBe('work');
+    expect(favorites[0].label).toBe('집');
+  });
+
+  it('setSlotFavorite: 다른 역이 이미 슬롯에 있으면 기존 entry는 general로 강등된다', async () => {
+    const { setSlotFavorite } = useAppStore.getState();
+    await setSlotFavorite('home', mockStation);
+    await setSlotFavorite('home', mockStation2);
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites).toHaveLength(2);
+    expect(favorites.find((f) => f.station.id === mockStation.id)?.role).toBe('general');
+    expect(favorites.find((f) => f.station.id === mockStation2.id)?.role).toBe('home');
+  });
+
+  it('setSlotFavorite: null 전달 시 슬롯이 비워지고 기존 entry는 general로 남는다', async () => {
+    const { setSlotFavorite } = useAppStore.getState();
+    await setSlotFavorite('home', mockStation);
+    await setSlotFavorite('home', null);
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites).toHaveLength(1);
+    expect(favorites[0].role).toBe('general');
+  });
+
+  it.each([
+    {
+      label: 'home/work role 보존',
+      stored: [
+        { station: '2-022', role: 'home' as const },
+        { station: '2-021', role: 'work' as const },
+      ],
+      expectedRoles: ['home', 'work'],
+    },
+    {
+      label: '잘못된 role은 general로 정규화',
+      stored: [{ station: '2-022', role: 'invalid' as unknown as 'general' }],
+      expectedRoles: ['general'],
+    },
+    {
+      label: '동일 슬롯 중복은 first-wins (나머지는 general 강등)',
+      stored: [
+        { station: '2-022', role: 'home' as const },
+        { station: '2-021', role: 'home' as const },
+      ],
+      expectedRoles: ['home', 'general'],
+    },
+  ])('loadFavorites: $label', async ({ stored, expectedRoles }) => {
+    const stationsById: Record<string, typeof mockStation> = {
+      '2-022': mockStation,
+      '2-021': mockStation2,
+    };
+    const payload = stored.map(({ station, role }) => ({ station: stationsById[station], role }));
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(payload));
+
+    await useAppStore.getState().loadFavorites();
+    expect(useAppStore.getState().favorites.map((f) => f.role)).toEqual(expectedRoles);
   });
 
   it('loadFavorites: AsyncStorage가 비어있으면 빈 배열을 유지한다', async () => {

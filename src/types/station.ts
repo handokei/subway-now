@@ -25,8 +25,23 @@ export interface Station {
   lng: number;
 }
 
+export type FavoriteRole = 'home' | 'work' | 'general';
+
+export const FAVORITE_SLOT_ROLES = ['home', 'work'] as const;
+export type FavoriteSlotRole = (typeof FAVORITE_SLOT_ROLES)[number];
+
+export const FAVORITE_SLOT_ICONS: Record<FavoriteSlotRole, string> = {
+  home: '🏠',
+  work: '🏢',
+};
+
+export function isFavoriteSlotRole(role: FavoriteRole): role is FavoriteSlotRole {
+  return (FAVORITE_SLOT_ROLES as readonly FavoriteRole[]).includes(role);
+}
+
 export interface FavoriteEntry {
   station: Station;
+  role: FavoriteRole;
   label?: string;
 }
 

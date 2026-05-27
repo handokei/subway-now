@@ -181,7 +181,7 @@ describe('DestinationPicker', () => {
     const { getByTestId } = render(
       <DestinationPicker
         {...defaultProps}
-        favorites={[{ station: favStation }]}
+        favorites={[{ station: favStation, role: 'general' }]}
         onSelect={onSelect}
       />,
     );
@@ -200,7 +200,7 @@ describe('DestinationPicker', () => {
       lng: 127.0365,
     };
     const { getByTestId, queryByTestId } = render(
-      <DestinationPicker {...defaultProps} favorites={[{ station: favStation }]} />,
+      <DestinationPicker {...defaultProps} favorites={[{ station: favStation, role: 'general' }]} />,
     );
     expect(getByTestId('favorites-chip-row')).toBeTruthy();
     fireEvent.changeText(getByTestId('search-input'), '강남');
@@ -219,11 +219,57 @@ describe('DestinationPicker', () => {
     const { getByTestId, getByText } = render(
       <DestinationPicker
         {...defaultProps}
-        favorites={[{ station: home, label: '집' }]}
+        favorites={[{ station: home, role: 'general', label: '집' }]}
       />,
     );
     expect(getByTestId(`favorite-chip-${home.id}`)).toBeTruthy();
     expect(getByText('집')).toBeTruthy();
+  });
+
+  it('home/work 슬롯 chip은 아이콘과 i18n 라벨(집/회사)을 노출하며 general 앞에 정렬된다', () => {
+    const home: Station = {
+      id: '2-022',
+      name: '강남',
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.498,
+      lng: 127.0279,
+    };
+    const work: Station = {
+      id: '2-021',
+      name: '역삼',
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.5006,
+      lng: 127.0365,
+    };
+    const general: Station = {
+      id: '2-020',
+      name: '선릉',
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.5045,
+      lng: 127.0489,
+    };
+    const { getByText, getAllByTestId } = render(
+      <DestinationPicker
+        {...defaultProps}
+        favorites={[
+          { station: general, role: 'general' },
+          { station: home, role: 'home' },
+          { station: work, role: 'work' },
+        ]}
+      />,
+    );
+    expect(getByText('집')).toBeTruthy();
+    expect(getByText('회사')).toBeTruthy();
+    expect(getByText('🏠')).toBeTruthy();
+    expect(getByText('🏢')).toBeTruthy();
+    // 첫 chip은 home, 두 번째는 work, 세 번째는 general
+    const chips = getAllByTestId(/^favorite-chip-/);
+    expect(chips[0].props.testID).toBe(`favorite-chip-${home.id}`);
+    expect(chips[1].props.testID).toBe(`favorite-chip-${work.id}`);
+    expect(chips[2].props.testID).toBe(`favorite-chip-${general.id}`);
   });
 
   it('검색창 포커스 시 드롭다운 표시 상태가 활성화된다', () => {
