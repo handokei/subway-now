@@ -56,6 +56,11 @@ jest.mock('../../utils/logger', () => ({
   }),
 }));
 
+const mockSendPushAck = jest.fn();
+jest.mock('../../api/alarmBackend', () => ({
+  sendPushAck: (...args: unknown[]) => mockSendPushAck(...args),
+}));
+
 // i18next는 키 그대로 반환 (intermediate 본문 빌더 검증용).
 jest.mock('i18next', () => ({
   __esModule: true,
@@ -75,7 +80,9 @@ import {
   registerSilentPushTask,
   SILENT_PUSH_TASK,
 } from '../silentPushTask';
-import { DESTINATION_KEY } from '../../constants/storageKeys';
+import { APNS_TOKEN_KEY, DESTINATION_KEY } from '../../constants/storageKeys';
+
+const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
 
 const destStation = { id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 };
 
@@ -112,8 +119,10 @@ describe('silentPushTask', () => {
     mockSetFiredAlarms.mockResolvedValue(undefined);
     (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
       if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+      if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
       return null;
     });
+    mockSendPushAck.mockResolvedValue({ ok: true });
   });
 
   it('defineTask가 SILENT_PUSH_TASK 이름으로 콜백을 등록한다', () => {
@@ -236,6 +245,29 @@ describe('silentPushTask', () => {
           },
         }),
       ).toMatchObject({ sentAt: undefined });
+    });
+
+    it('pushId가 non-empty string이면 그대로 전달 (#566)', () => {
+      expect(
+        extractPayload({
+          notification: {
+            data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', pushId: 'uuid-x' },
+          },
+        }),
+      ).toMatchObject({ pushId: 'uuid-x' });
+    });
+
+    it('pushId가 빈 문자열/비문자열이면 undefined (구 백엔드 호환)', () => {
+      expect(
+        extractPayload({
+          notification: { data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', pushId: '' } },
+        }),
+      ).toMatchObject({ pushId: undefined });
+      expect(
+        extractPayload({
+          notification: { data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', pushId: 42 } },
+        }),
+      ).toMatchObject({ pushId: undefined });
     });
   });
 
@@ -422,6 +454,96 @@ describe('silentPushTask', () => {
       expect(mockScheduleNotificationAsync).toHaveBeenCalled();
       // 사전예약은 import도 안 함 — 호출 검증은 import 부재로 충분하나, 추가 안전망:
       // alarmScheduler 모듈을 jest.mock하지 않았기 때문에 호출 시 ReferenceError가 났을 것.
+    });
+
+    describe('#568 P2b — push ACK', () => {
+      it('fire 성공 시 sendPushAck(outcome=fired) 호출, reason 없음', async () => {
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-fire' }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-fire',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'fired',
+        });
+      });
+
+      it('게이트 fail 시 sendPushAck(outcome=skipped, reason=게이트사유)', async () => {
+        mockCheckGate.mockResolvedValue({
+          pass: false,
+          reason: 'out-of-range',
+          distanceM: 5_000,
+          thresholdM: 400,
+        });
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-gate' }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-gate',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'gate-out-of-range',
+        });
+      });
+
+      it('FIRED_ALARMS dedup 시 sendPushAck(outcome=skipped, reason=dedup-already-fired)', async () => {
+        mockGetFiredAlarms.mockResolvedValue(new Set(['imminent:강남']));
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-dedup' }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-dedup',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'dedup-already-fired',
+        });
+      });
+
+      it('payload-missing-kind 시 sendPushAck(outcome=skipped, reason=payload-missing-kind)', async () => {
+        await handleSilentPush({
+          data: {
+            notification: {
+              data: { nextWaypoint: '강남', etaSeconds: 10, phase: 'imminent', pushId: 'p-kind' },
+            },
+          },
+        });
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-kind',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'payload-missing-kind',
+        });
+      });
+
+      it('pushId 누락(구 백엔드)이면 ACK skip', async () => {
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockSendPushAck).not.toHaveBeenCalled();
+      });
+
+      it('APNs token 없으면 ACK skip (token 인증 불가)', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return null;
+          return null;
+        });
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-no-token' }),
+        );
+        expect(mockSendPushAck).not.toHaveBeenCalled();
+      });
+
+      it('APNS_TOKEN_KEY 읽기 throw해도 ACK 단순 skip — 본 처리는 정상 진행', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) throw new Error('storage boom');
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          return null;
+        });
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-throw' }),
+        );
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockSendPushAck).not.toHaveBeenCalled();
+      });
     });
   });
 

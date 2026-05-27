@@ -1,4 +1,4 @@
-import { registerActiveTrip, clearActiveTrip } from '../alarmBackend';
+import { registerActiveTrip, clearActiveTrip, sendPushAck } from '../alarmBackend';
 import type { RegisterTripPayload } from '../alarmBackend';
 
 jest.mock('../../utils/logger', () => ({
@@ -152,6 +152,58 @@ describe('alarmBackend', () => {
       (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
       const result = await clearActiveTrip('t');
       expect(result).toEqual({ ok: false });
+    });
+  });
+
+  describe('sendPushAck (#568 P2b)', () => {
+    const ACK = {
+      pushId: 'push-1',
+      token: 'devicetoken-hex',
+      outcome: 'fired' as const,
+    };
+
+    it('URL 미설정 시 skipped=true 반환, fetch 미호출', async () => {
+      const result = await sendPushAck(ACK);
+      expect(result.skipped).toBe(true);
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('정상 응답 시 ok=true + POST /push/ack에 payload 그대로 전달', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      const result = await sendPushAck({ ...ACK, outcome: 'skipped', reason: 'gate-out-of-range' });
+      expect(result.ok).toBe(true);
+      const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('https://api.test.dev/push/ack');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body)).toEqual({
+        pushId: 'push-1',
+        token: 'devicetoken-hex',
+        outcome: 'skipped',
+        reason: 'gate-out-of-range',
+      });
+    });
+
+    it('non-2xx 응답 시 ok=false + status', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 400 } as Response);
+      const result = await sendPushAck(ACK);
+      expect(result).toEqual({ ok: false, status: 400 });
+    });
+
+    it('fetch throw 시 ok=false (throw 안 함)', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
+      const result = await sendPushAck(ACK);
+      expect(result).toEqual({ ok: false });
+    });
+
+    it('trailing slash가 URL에 있어도 정상 처리', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      await sendPushAck(ACK);
+      const [url] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('https://api.test.dev/push/ack');
     });
   });
 });
