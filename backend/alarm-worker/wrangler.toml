@@ -10,6 +10,15 @@ binding = "TRIPS"
 id = "8d10a57ffe4c46e28a6df33ef0c86b68"
 preview_id = "7e67683c147349ed90c16a28ae232e34"
 
+# KV: pending silent pushes (#566 P2a)
+# 발사한 silent push 1건마다 pushId entry를 기록. P2c가 30s 미ACK push를 alert fallback으로 재발사.
+# 코드는 `if (env.PENDING_PUSHES)` 분기로 graceful — binding 없으면 모든 pending 경로가 no-op.
+# 활성화: `wrangler kv:namespace create PENDING_PUSHES` 후 아래 4줄 주석 해제 + id/preview_id 채움.
+# [[kv_namespaces]]
+# binding = "PENDING_PUSHES"
+# id = "<wrangler create 결과>"
+# preview_id = "<wrangler create --preview 결과>"
+
 # #498 — silent push 게이트 outcome 텔레메트리. 클라가 누적한 카운터를 일별 query 가능하게 적재.
 # Privacy: 카운트만, token은 8자 prefix만. 개별 push 내용/좌표 미저장.
 #

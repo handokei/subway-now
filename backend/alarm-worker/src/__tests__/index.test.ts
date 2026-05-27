@@ -1,6 +1,23 @@
-import { describe, expect, it, vi } from 'vitest';
-import { app, validateTrip } from '../index';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { app, validatePushAck, validateTrip } from '../index';
+import { pendingKey } from '../pendingPushes';
 import type { AnalyticsEngineWriter, Env } from '../types';
+
+class InMemoryKV {
+  store = new Map<string, { value: string; expiresAt?: number }>();
+  async get(key: string): Promise<string | null> {
+    return this.store.get(key)?.value ?? null;
+  }
+  async put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void> {
+    const expiresAt = options?.expirationTtl
+      ? Date.now() + options.expirationTtl * 1000
+      : undefined;
+    this.store.set(key, { value, expiresAt });
+  }
+  async delete(key: string): Promise<void> {
+    this.store.delete(key);
+  }
+}
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -167,5 +184,126 @@ describe('POST /telemetry/silent-push', () => {
     const res = await post('/telemetry/silent-push', validBody, env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
+  });
+});
+
+describe('validatePushAck (#566 P2a)', () => {
+  it('accepts valid fired ack', () => {
+    expect(validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'fired' })).toEqual({
+      pushId: 'p1',
+      token: 'tok',
+      outcome: 'fired',
+    });
+  });
+
+  it('accepts valid skipped ack with reason', () => {
+    expect(
+      validatePushAck({
+        pushId: 'p1',
+        token: 'tok',
+        outcome: 'skipped',
+        reason: 'gate-out-of-range',
+      }),
+    ).toEqual({
+      pushId: 'p1',
+      token: 'tok',
+      outcome: 'skipped',
+      reason: 'gate-out-of-range',
+    });
+  });
+
+  it('rejects non-object', () => {
+    expect(validatePushAck(null)).toBeNull();
+    expect(validatePushAck('string')).toBeNull();
+  });
+
+  it('rejects missing pushId', () => {
+    expect(validatePushAck({ token: 'tok', outcome: 'fired' })).toBeNull();
+  });
+
+  it('rejects empty pushId', () => {
+    expect(validatePushAck({ pushId: '', token: 'tok', outcome: 'fired' })).toBeNull();
+  });
+
+  it('rejects missing token', () => {
+    expect(validatePushAck({ pushId: 'p1', outcome: 'fired' })).toBeNull();
+  });
+
+  it('rejects empty token', () => {
+    expect(validatePushAck({ pushId: 'p1', token: '', outcome: 'fired' })).toBeNull();
+  });
+
+  it('rejects invalid outcome', () => {
+    expect(validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'bogus' })).toBeNull();
+  });
+
+  it('ignores non-string reason', () => {
+    const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'skipped', reason: 123 });
+    expect(ack).toEqual({ pushId: 'p1', token: 'tok', outcome: 'skipped' });
+  });
+});
+
+describe('POST /push/ack (#566 P2a)', () => {
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  it('returns 400 on invalid JSON', async () => {
+    const env = makeEnv({ PENDING_PUSHES: kv as unknown as KVNamespace });
+    const res = await post('/push/ack', 'not-json{', env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_json' });
+  });
+
+  it('returns 400 on invalid payload (missing token)', async () => {
+    const env = makeEnv({ PENDING_PUSHES: kv as unknown as KVNamespace });
+    const res = await post('/push/ack', { pushId: 'p1', outcome: 'fired' }, env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_payload' });
+  });
+
+  it('token 매칭 시 deleted=true로 entry 삭제', async () => {
+    await kv.put(pendingKey('p1'), JSON.stringify({ pushId: 'p1', token: 'real-token' }));
+    const env = makeEnv({ PENDING_PUSHES: kv as unknown as KVNamespace });
+    const res = await post(
+      '/push/ack',
+      { pushId: 'p1', token: 'real-token', outcome: 'fired' },
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: true });
+    expect(kv.store.has(pendingKey('p1'))).toBe(false);
+  });
+
+  it('token 불일치 시 reason=token-mismatch로 삭제 안 함 (인증 차단)', async () => {
+    await kv.put(pendingKey('p1'), JSON.stringify({ pushId: 'p1', token: 'real-token' }));
+    const env = makeEnv({ PENDING_PUSHES: kv as unknown as KVNamespace });
+    const res = await post(
+      '/push/ack',
+      { pushId: 'p1', token: 'attacker', outcome: 'fired' },
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: false, reason: 'token-mismatch' });
+    expect(kv.store.has(pendingKey('p1'))).toBe(true);
+  });
+
+  it('entry 만료/미존재 시 reason=not-found (idempotent)', async () => {
+    const env = makeEnv({ PENDING_PUSHES: kv as unknown as KVNamespace });
+    const res = await post(
+      '/push/ack',
+      { pushId: 'missing', token: 'tok', outcome: 'skipped' },
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: false, reason: 'not-found' });
+  });
+
+  it('PENDING_PUSHES 미바인딩 시 reason=not-found (graceful)', async () => {
+    const env = makeEnv();
+    const res = await post('/push/ack', { pushId: 'p1', token: 'tok', outcome: 'fired' }, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: false, reason: 'not-found' });
   });
 });

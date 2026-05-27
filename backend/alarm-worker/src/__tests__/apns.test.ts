@@ -68,6 +68,7 @@ describe('sendSilentPush', () => {
         phase: 'early',
         kind: 'destination',
         sentAt: 1_700_000_000_000,
+        pushId: 'push-uuid-1',
       },
       config: makeConfig(),
       host: TEST_HOST,
@@ -88,6 +89,7 @@ describe('sendSilentPush', () => {
     expect(body.data.phase).toBe('early');
     expect(body.data.kind).toBe('destination');
     expect(body.data.sentAt).toBe(1_700_000_000_000);
+    expect(body.data.pushId).toBe('push-uuid-1');
   });
 
   it('returns failure with reason', async () => {
@@ -102,6 +104,7 @@ describe('sendSilentPush', () => {
         phase: 'imminent',
         kind: 'destination',
         sentAt: 1_700_000_000_000,
+        pushId: 'p',
       },
       config: makeConfig(),
       host: TEST_HOST,
@@ -122,6 +125,7 @@ describe('sendSilentPush', () => {
         phase: 'imminent',
         kind: 'destination',
         sentAt: 1_700_000_000_000,
+        pushId: 'p',
       },
       config: makeConfig(),
       host: TEST_HOST,
@@ -137,7 +141,7 @@ describe('sendSilentPush', () => {
     );
     await sendSilentPush({
       deviceToken: 'tok',
-      payload: { nextWaypoint: 'X', etaSeconds: 10, phase: 'early', kind: 'destination', sentAt: 0 },
+      payload: { nextWaypoint: 'X', etaSeconds: 10, phase: 'early', kind: 'destination', sentAt: 0, pushId: 'p' },
       config: makeConfig(),
       host: 'api.sandbox.push.apple.com',
       fetchImpl: fetchImpl as unknown as typeof fetch,
