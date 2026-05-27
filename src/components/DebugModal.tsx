@@ -227,7 +227,7 @@ function buildDumpText(args: {
  */
 function formatSourceCountsLine(logs: readonly AlarmLogEntry[]): string {
   const counts = summarizeAlarmLogBySource(logs);
-  const keys = Object.keys(counts).sort();
+  const keys = Object.keys(counts).sort((a, b) => a.localeCompare(b));
   if (keys.length === 0) return '';
   return keys.map((k) => `${k}=${counts[k]}`).join(', ');
 }
