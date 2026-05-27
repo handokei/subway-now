@@ -32,6 +32,8 @@
     "destinationChange": "Change destination →",
     "destinationReset": "Reset",
     "viewRouteOnMap": "View route on map",
+    "routeExpand": "Show all stops",
+    "routeCollapse": "Show key stops only",
     "destinationSet": "Set destination",
     "previousDestination": "Previous destination",
     "sleepMode": "Sleep mode",

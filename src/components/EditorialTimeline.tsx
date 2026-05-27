@@ -59,8 +59,13 @@ export function EditorialTimeline({ stops }: Props) {
           ? resolveStopDoor(s.arrivalContext, transferToLine, accessibilityMode)
           : null;
 
+        const isIntermediate = s.mark === 'intermediate';
         return (
-          <View key={i} style={[styles.row, isLast && { minHeight: 36 }]} testID={`timeline-stop-${i}`}>
+          <View
+            key={i}
+            style={[styles.row, isLast && { minHeight: 36 }, isIntermediate && styles.rowIntermediate]}
+            testID={`timeline-stop-${i}`}
+          >
             {!isLast && (
               <View
                 style={[
@@ -80,10 +85,21 @@ export function EditorialTimeline({ stops }: Props) {
               {s.mark === 'dest' && (
                 <View style={[styles.dotDest, { backgroundColor: lineC }]} testID="dest-dot" />
               )}
+              {s.mark === 'intermediate' && (
+                <View
+                  style={[styles.dotIntermediate, { borderColor: lineC, backgroundColor: colors.bg }]}
+                  testID="intermediate-dot"
+                />
+              )}
             </View>
 
             <View style={{ flex: 1 }}>
-              <Text style={[typography.body, { fontWeight: '600', color: colors.ink }]}>
+              <Text
+                style={[
+                  isIntermediate ? typography.bodySm : typography.body,
+                  { fontWeight: isIntermediate ? '400' : '600', color: isIntermediate ? colors.subtle : colors.ink },
+                ]}
+              >
                 {s.station}
               </Text>
               {s.note != null && (
@@ -94,7 +110,7 @@ export function EditorialTimeline({ stops }: Props) {
             </View>
 
             <View style={{ alignItems: 'flex-end' }}>
-              {s.line != null && <LineBadge line={s.line} color={lineC} />}
+              {!isIntermediate && s.line != null && <LineBadge line={s.line} color={lineC} />}
               {s.stopsFromPrev != null && (
                 <Text style={[typography.mono, { color: colors.subtle, marginTop: 2 }]}>
                   {s.stopsFromPrev}
@@ -150,4 +166,6 @@ const styles = StyleSheet.create({
   dot:     { width: 10, height: 10, borderRadius: 5 },
   dotRing: { width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
   dotDest: { width: 12, height: 12, borderRadius: 6 },
+  dotIntermediate: { width: 7, height: 7, borderRadius: 4, borderWidth: 1, marginLeft: 1.5 },
+  rowIntermediate: { minHeight: 30 },
 });

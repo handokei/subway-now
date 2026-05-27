@@ -77,6 +77,9 @@ export default function HomeScreen() {
   const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
   const [categorized, setCategorized] = useState<CategorizedRoute[]>([]);
   const [selectedKey, setSelectedKey] = useState<RoutePreference>(routePreference);
+  // #546: 경로 timeline을 출발/환승/도착 마커만 보일지(false), 모든 정거장을 펼쳐 보일지(true)
+  // 사용자가 토글한다. 세션 in-memory — 재기동 시 compact 기본.
+  const [routeExpanded, setRouteExpanded] = useState(false);
   // categorized/selectedKey가 동일하면 같은 reference를 유지해 하위 훅(LiveActivity,
   // useApnsTripRegistration)의 useEffect가 매 렌더 재발사되는 churn을 막는다.
   const route: Route = useMemo(
@@ -509,7 +512,22 @@ export default function HomeScreen() {
                     </View>
                   )}
                   {journey && (
-                    <EditorialTimeline stops={journeyDisplayToStops(journey)} />
+                    <>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
+                        onPress={() => setRouteExpanded((v) => !v)}
+                        style={styles.expandToggle}
+                        testID="route-expand-toggle"
+                      >
+                        <Text style={[typography.label, { color: colors.accent, fontWeight: '600' }]}>
+                          {routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
+                        </Text>
+                      </Pressable>
+                      <EditorialTimeline
+                        stops={journeyDisplayToStops(journey, { expanded: routeExpanded })}
+                      />
+                    </>
                   )}
                   {route && effectiveOrigin && destination && (
                     <Pressable
@@ -764,6 +782,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderRadius: radius.md,
     alignItems: 'center',
+  },
+  expandToggle: {
+    alignSelf: 'flex-end',
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+    marginBottom: spacing.xs,
   },
   sleepRow: {
     flexDirection: 'row',

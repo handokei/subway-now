@@ -112,6 +112,75 @@ describe('journeyDisplayToStops', () => {
       expectedStop('dest', '군자', '5', '2정거장', '환승 → 도착', ctx('7', '건대입구', '군자'), '5'),
     );
   });
+
+  describe('expanded option', () => {
+    it('expanded: false (기본)이면 intermediate stop이 없다', () => {
+      const stops = journeyDisplayToStops(MOCK_JOURNEYS.direct);
+      expect(stops.some((s) => s.mark === 'intermediate')).toBe(false);
+    });
+
+    it('expanded: true이면 segment 사이의 중간 정거장이 intermediate로 삽입된다', () => {
+      // 강남(2-022) → 역삼(2-021): 인접 역이므로 중간역이 없다.
+      const adjacent = journeyDisplayToStops(MOCK_JOURNEYS.direct, { expanded: true });
+      expect(adjacent.filter((s) => s.mark === 'intermediate')).toHaveLength(0);
+
+      // 강남 → 서초(2-024)는 2호선에서 강남(2-022)→교대(2-023)→서초(2-024) 순서.
+      // 중간역 교대 1개가 intermediate로 삽입돼야 한다.
+      const journey: JourneyDisplay = {
+        segments: [{ line: '2', lineColor: '#009D3E', fromName: '강남', toName: '서초', stops: 2 }],
+        totalStops: 2,
+      };
+      const stops = journeyDisplayToStops(journey, { expanded: true });
+      const intermediates = stops.filter((s) => s.mark === 'intermediate');
+      expect(intermediates).toHaveLength(1);
+      expect(intermediates[0].station).toBe('교대');
+      expect(intermediates[0].line).toBe('2');
+      // intermediate는 stopsFromPrev/note/arrivalContext가 없는 슬림 형태
+      expect(intermediates[0].stopsFromPrev).toBeUndefined();
+      expect(intermediates[0].note).toBeUndefined();
+      expect(intermediates[0].arrivalContext).toBeUndefined();
+    });
+
+    it('expanded: 출발/intermediate/도착 순서가 보장된다', () => {
+      const journey: JourneyDisplay = {
+        segments: [{ line: '2', lineColor: '#009D3E', fromName: '강남', toName: '서초', stops: 2 }],
+        totalStops: 2,
+      };
+      const stops = journeyDisplayToStops(journey, { expanded: true });
+      expect(stops.map((s) => s.mark)).toEqual(['filled', 'intermediate', 'dest']);
+    });
+
+    it('expanded: 역방향(toName이 fromName보다 인덱스가 작음)에서도 from→to 순서로 중간역이 나열된다', () => {
+      // 역삼(2-021) → 강남(2-022)은 인접이라 중간역 없음. 더 긴 예: 서초(2-024) → 강남(2-022) (역방향).
+      // 정답 중간역: 교대(2-023).
+      const journey: JourneyDisplay = {
+        segments: [{ line: '2', lineColor: '#009D3E', fromName: '서초', toName: '강남', stops: 2 }],
+        totalStops: 2,
+      };
+      const stops = journeyDisplayToStops(journey, { expanded: true });
+      const intermediates = stops.filter((s) => s.mark === 'intermediate');
+      expect(intermediates.map((s) => s.station)).toEqual(['교대']);
+    });
+
+    it('expanded: seg.stops가 실제 중간역 수와 불일치하면 fallback (invariant guard)', () => {
+      // 강남(2-022) → 서초(2-024) 실제 중간역 = 1개(교대). seg.stops=99(허위)면 guard 발동 → 빈 배열.
+      const journey: JourneyDisplay = {
+        segments: [{ line: '2', lineColor: '#009D3E', fromName: '강남', toName: '서초', stops: 99 }],
+        totalStops: 99,
+      };
+      const stops = journeyDisplayToStops(journey, { expanded: true });
+      expect(stops.some((s) => s.mark === 'intermediate')).toBe(false);
+    });
+
+    it('expanded: 알 수 없는 역명은 중간역 없이 fallback (안전)', () => {
+      const journey: JourneyDisplay = {
+        segments: [{ line: '2', lineColor: '#009D3E', fromName: '없는역A', toName: '없는역B', stops: 0 }],
+        totalStops: 0,
+      };
+      const stops = journeyDisplayToStops(journey, { expanded: true });
+      expect(stops.some((s) => s.mark === 'intermediate')).toBe(false);
+    });
+  });
 });
 
 describe('arrivalInfoToArrivalTrain', () => {
