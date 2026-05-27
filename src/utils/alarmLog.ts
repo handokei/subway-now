@@ -16,6 +16,8 @@ export const ALARM_LOG_BUFFER_SIZE = 200;
 // v2 (#372)로 의미 명확화. 두 값 모두 union에 유지해 과거 저장 데이터를 손실 없이 읽는다.
 // 'silent-push-received'는 #478 측정 인프라 — silent push 도달 시점 기록.
 // 'silent-push-fired'/'silent-push-skipped'는 #478 PR 1-2 — 위치 게이트 통과/실패 발사.
+// 'alert-fallback-fired'/'region-entry-*'는 #564 — 다중 채널 BG 알람(채널 2 alert fallback /
+// 채널 3 Region Monitoring) 도달률 측정용. 발사 동작은 후속 PR에서 추가, 본 PR은 source 슬롯만.
 export type AlarmLogSource =
   | 'fg'
   | 'bg'
@@ -23,7 +25,10 @@ export type AlarmLogSource =
   | 'bg-scheduled'
   | 'silent-push-received'
   | 'silent-push-fired'
-  | 'silent-push-skipped';
+  | 'silent-push-skipped'
+  | 'alert-fallback-fired'
+  | 'region-entry-fired'
+  | 'region-entry-skipped';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(evaluateAlarmPhase의 firedAlarms 적중 케이스)은 후속 이슈에서 추가.
 // 그때까지 union에 선언하지 않아 "구현됐다"는 거짓 시그널을 피한다.
@@ -252,6 +257,82 @@ export function logSilentPushSkipped(input: {
     locationSource: input.locationSource,
     locationAgeMs: input.locationAgeMs,
   });
+}
+
+/**
+ * 채널 2 alert fallback 발사 1건 적재 (#564).
+ * 백엔드 ACK 타임아웃 후 alert push가 전달돼 발사된 경우. silent push와 다르게
+ * 클라 위치 게이트 없이 OS가 즉시 표시하므로 distance/threshold는 기록하지 않는다.
+ */
+export function logAlertFallbackFired(input: {
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId: AlarmPhaseId;
+}): void {
+  void appendAlarmLog({
+    ts: Date.now(),
+    source: 'alert-fallback-fired',
+    outcome: 'fired',
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
+  });
+}
+
+/**
+ * 채널 3 Region Monitoring 진입 wake 발사 1건 적재 (#564).
+ */
+export function logRegionEntryFired(input: {
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId: AlarmPhaseId;
+}): void {
+  void appendAlarmLog({
+    ts: Date.now(),
+    source: 'region-entry-fired',
+    outcome: 'fired',
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
+  });
+}
+
+/**
+ * 채널 3 Region Monitoring 진입 wake — 스킵된 1건 적재 (#564).
+ * reason은 caller가 주입(dedup-station / gate-unknown-station / ...).
+ * logSilentPushSkipped와 동일한 패턴: 향후 dedup 외 사유가 늘어나도 helper 분기 없이 호환.
+ */
+export function logRegionEntrySkipped(input: {
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId: AlarmPhaseId;
+  reason: AlarmLogReason;
+}): void {
+  void appendAlarmLog({
+    ts: Date.now(),
+    source: 'region-entry-skipped',
+    outcome: 'suppressed',
+    reason: input.reason,
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
+  });
+}
+
+/**
+ * 로그 엔트리들을 source별로 카운트한다 (#564).
+ * DebugModal 헤더/dump에 채널별 도달률 요약을 표기하기 위한 측정 인프라.
+ * 결과는 카운트가 0이 아닌 source만 포함 — 노이즈 줄이고 새 source가 추가돼도
+ * 코드 수정 없이 자동 반영된다 (UI는 데이터 주도).
+ */
+export function summarizeAlarmLogBySource(
+  entries: readonly AlarmLogEntry[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const entry of entries) {
+    counts[entry.source] = (counts[entry.source] ?? 0) + 1;
+  }
+  return counts;
 }
 
 export function logSuppressedGate(

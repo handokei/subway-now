@@ -19,7 +19,12 @@ import {
   useSilentPushDiagnostics,
   type SilentPushDiagnostics,
 } from '../hooks/useSilentPushDiagnostics';
-import { clearAlarmLog, getAlarmLog, type AlarmLogEntry } from '../utils/alarmLog';
+import {
+  clearAlarmLog,
+  getAlarmLog,
+  summarizeAlarmLogBySource,
+  type AlarmLogEntry,
+} from '../utils/alarmLog';
 import {
   clearFusionDebugEntries,
   getFusionDebugEntries,
@@ -207,10 +212,24 @@ function buildDumpText(args: {
   }
   lines.push('');
   lines.push(`## Alarm log (${args.logs.length})`);
+  // #564 — source별 카운트 헤더(UI와 동일 포매터 공유). 빈 문자열이면 헤더 생략.
+  const sourcesLine = formatSourceCountsLine(args.logs);
+  if (sourcesLine) lines.push(`sources: ${sourcesLine}`);
   for (const entry of [...args.logs].reverse()) {
     lines.push(formatLogLine(entry));
   }
   return lines.join('\n');
+}
+
+/**
+ * Alarm log section header / dump 헤더에서 공유되는 source별 카운트 요약 문자열 (#564).
+ * 비어있으면 빈 문자열을 반환 → 호출부에서 falsy로 분기 가능.
+ */
+function formatSourceCountsLine(logs: readonly AlarmLogEntry[]): string {
+  const counts = summarizeAlarmLogBySource(logs);
+  const keys = Object.keys(counts).sort();
+  if (keys.length === 0) return '';
+  return keys.map((k) => `${k}=${counts[k]}`).join(', ');
 }
 
 interface DebugModalProps {
@@ -480,15 +499,24 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
             {logs.length === 0 ? (
               <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
             ) : (
-              [...logs].reverse().map((entry, idx) => (
+              <>
                 <Text
-                  key={`${entry.ts}-${idx}`}
-                  style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
+                  style={[typography.mono, { color: colors.subtle, marginBottom: spacing.xs }]}
                   selectable
+                  testID="debug-log-source-counts"
                 >
-                  {formatLogLine(entry)}
+                  {formatSourceCountsLine(logs)}
                 </Text>
-              ))
+                {[...logs].reverse().map((entry, idx) => (
+                  <Text
+                    key={`${entry.ts}-${idx}`}
+                    style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
+                    selectable
+                  >
+                    {formatLogLine(entry)}
+                  </Text>
+                ))}
+              </>
             )}
           </Section>
 
@@ -553,7 +581,14 @@ function KeyValue({
 }
 
 // Internal exports for tests — DO NOT use from app code.
-export const __test__ = { formatLogLine, buildDumpText, formatFusionDebugLine, formatTokenTail, formatAt };
+export const __test__ = {
+  formatLogLine,
+  buildDumpText,
+  formatFusionDebugLine,
+  formatTokenTail,
+  formatAt,
+  formatSourceCountsLine,
+};
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
