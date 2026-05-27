@@ -587,6 +587,8 @@ describe('runScheduled', () => {
       expect(entry.sentAt).toBe(NOW);
       expect(entry.kind).toBe('destination');
       expect(entry.phase).toBe('imminent');
+      expect(entry.apnsEnv).toBe('sandbox'); // makeTrip default
+
       // payload에도 pushId가 들어갔는지 검증.
       const call = apnsFetch.mock.calls[0] as unknown as [string, RequestInit];
       const body = JSON.parse(call[1].body as string);

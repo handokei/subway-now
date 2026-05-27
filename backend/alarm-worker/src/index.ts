@@ -12,6 +12,7 @@
  */
 
 import { Hono } from 'hono';
+import { runFallbackPushes } from './fallback';
 import { ackPending } from './pendingPushes';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
@@ -170,19 +171,18 @@ export default {
       apiKey: env.SEOUL_API_KEY,
       host: env.SEOUL_API_HOST,
     });
-    await runScheduled(env, {
-      seoul,
-      apnsConfig: {
-        keyId: env.APNS_KEY_ID,
-        teamId: env.APNS_TEAM_ID,
-        privateKeyPem: env.APNS_PRIVATE_KEY,
-        bundleId: env.APNS_BUNDLE_ID,
-      },
-      apnsHosts: {
-        production: env.APNS_HOST,
-        sandbox: env.APNS_HOST_SANDBOX,
-      },
-      log: (msg, meta) => console.log(JSON.stringify({ msg, ...meta })),
-    });
+    const apnsConfig = {
+      keyId: env.APNS_KEY_ID,
+      teamId: env.APNS_TEAM_ID,
+      privateKeyPem: env.APNS_PRIVATE_KEY,
+      bundleId: env.APNS_BUNDLE_ID,
+    };
+    const apnsHosts = { production: env.APNS_HOST, sandbox: env.APNS_HOST_SANDBOX };
+    const log = (msg: string, meta?: Record<string, unknown>) =>
+      console.log(JSON.stringify({ msg, ...meta }));
+
+    await runScheduled(env, { seoul, apnsConfig, apnsHosts, log });
+    // #572 P2c — silent push 30s 미ACK entry를 alert로 fallback. 같은 cron 사이클에서 실행.
+    await runFallbackPushes(env, { apnsConfig, apnsHosts, log });
   },
 };

@@ -3,9 +3,11 @@ import {
   ackPending,
   buildAlarmKey,
   getPending,
+  listPending,
   pendingKey,
   PENDING_TTL_SEC,
   putPending,
+  removePending,
   type PendingPush,
 } from '../pendingPushes';
 
@@ -32,18 +34,31 @@ class InMemoryKV {
   async delete(key: string): Promise<void> {
     this.store.delete(key);
   }
+
+  async list(options?: { prefix?: string; cursor?: string }): Promise<{
+    keys: { name: string }[];
+    list_complete: boolean;
+    cursor: string;
+  }> {
+    const prefix = options?.prefix ?? '';
+    const keys = [...this.store.keys()]
+      .filter((k) => k.startsWith(prefix))
+      .map((name) => ({ name }));
+    return { keys, list_complete: true, cursor: '' };
+  }
 }
 
 function makeEntry(overrides: Partial<PendingPush> = {}): PendingPush {
   return {
     pushId: 'push-1',
     token: 'devicetoken-hex',
-    alarmKey: '강남:destination:early',
+    alarmKey: 'early:강남',
     sentAt: 1_700_000_000_000,
     stationName: '강남',
     kind: 'destination',
     phase: 'early',
     etaSeconds: 60,
+    apnsEnv: 'sandbox',
     ...overrides,
   };
 }
@@ -104,6 +119,43 @@ describe('pendingPushes (#566 P2a)', () => {
 
     it('kv === undefined면 graceful null', async () => {
       expect(await getPending(undefined, 'p1')).toBeNull();
+    });
+  });
+
+  describe('listPending / removePending (#572 P2c)', () => {
+    it('listPending: prefix scan으로 모든 pending entry를 yield', async () => {
+      await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'a' }));
+      await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'b' }));
+      await kv.put('other:c', 'unrelated');
+      const out: string[] = [];
+      for await (const entry of listPending(kv as unknown as KVNamespace)) {
+        out.push(entry.pushId);
+      }
+      expect(out.sort()).toEqual(['a', 'b']);
+    });
+
+    it('listPending: kv === undefined면 빈 generator', async () => {
+      const out: string[] = [];
+      for await (const e of listPending(undefined)) out.push(e.pushId);
+      expect(out).toEqual([]);
+    });
+
+    it('listPending: 손상된 JSON entry는 skip', async () => {
+      await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'good' }));
+      await kv.put(pendingKey('bad'), 'not-json{');
+      const out: string[] = [];
+      for await (const e of listPending(kv as unknown as KVNamespace)) out.push(e.pushId);
+      expect(out).toEqual(['good']);
+    });
+
+    it('removePending: 무조건 삭제 (token 인증 없음)', async () => {
+      await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'p1' }));
+      await removePending(kv as unknown as KVNamespace, 'p1');
+      expect(kv.store.has(pendingKey('p1'))).toBe(false);
+    });
+
+    it('removePending: kv === undefined면 no-op', async () => {
+      await expect(removePending(undefined, 'p1')).resolves.toBeUndefined();
     });
   });
 
