@@ -51,6 +51,7 @@ export default function HomeScreen() {
   const loadFavorites = useAppStore((s) => s.loadFavorites);
   const destination = useAppStore((s) => s.destination);
   const setDestination = useAppStore((s) => s.setDestination);
+  const loadDestination = useAppStore((s) => s.loadDestination);
   const recentDestination = useAppStore((s) => s.recentDestination);
   const setRecentDestination = useAppStore((s) => s.setRecentDestination);
   const sleepMode = useAppStore((s) => s.sleepMode);
@@ -196,6 +197,9 @@ export default function HomeScreen() {
     loadCustomOrigin();
     loadRoutePreference();
     loadAlarmEvent();
+    // iOS가 BG에서 앱을 메모리 압박으로 종료하면 Zustand 상태는 휘발되지만
+    // DESTINATION_KEY는 디스크에 남는다. 콜드/웜 부팅 시 복원해 trip을 이어간다 (#541).
+    loadDestination();
     initStationNotification().catch((e) => logger.error('알림 초기화 실패:', e));
     registerSilentPushTask().catch((e) => logger.error('silent push task 등록 실패:', e));
     const subscription = AppState.addEventListener('change', (state) => {

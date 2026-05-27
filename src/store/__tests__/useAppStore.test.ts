@@ -178,6 +178,34 @@ describe('useAppStore', () => {
     // 에러 없이 완료
   });
 
+  it('loadDestination: AsyncStorage에 저장된 목적지를 상태로 복원한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(mockStation));
+
+    const { loadDestination } = useAppStore.getState();
+    await loadDestination();
+
+    expect(AsyncStorage.getItem).toHaveBeenCalledWith('subway-now:destination');
+    expect(useAppStore.getState().destination?.id).toBe('2-022');
+  });
+
+  it('loadDestination: 저장된 값이 없으면 destination이 null로 유지된다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+
+    const { loadDestination } = useAppStore.getState();
+    await loadDestination();
+
+    expect(useAppStore.getState().destination).toBeNull();
+  });
+
+  it('loadDestination: AsyncStorage 실패 시 destination이 null로 유지된다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('읽기 실패'));
+
+    const { loadDestination } = useAppStore.getState();
+    await loadDestination();
+
+    expect(useAppStore.getState().destination).toBeNull();
+  });
+
   it('초기 recentDestination은 null이다', () => {
     const { recentDestination } = useAppStore.getState();
     expect(recentDestination).toBeNull();

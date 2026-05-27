@@ -34,6 +34,7 @@ interface AppState {
   removeFavorite: (stationId: string) => Promise<void>;
   loadFavorites: () => Promise<void>;
   setDestination: (station: Station | null) => void;
+  loadDestination: () => Promise<void>;
   setRecentDestination: (station: Station | null) => void;
   setCustomOrigin: (station: Station | null) => void;
   loadCustomOrigin: () => Promise<void>;
@@ -106,6 +107,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       AsyncStorage.removeItem(DESTINATION_KEY).catch(noop);
       clearFiredAlarms().catch(noop);
       AsyncStorage.removeItem(ROUTE_KEY).catch(noop);
+    }
+  },
+
+  loadDestination: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(DESTINATION_KEY);
+      if (raw) {
+        set({ destination: JSON.parse(raw) });
+      }
+    } catch {
+      // 저장된 데이터 없음 — null 유지
     }
   },
 
