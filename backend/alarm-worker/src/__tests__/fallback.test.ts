@@ -3,34 +3,13 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FALLBACK_THRESHOLD_MS, runFallbackPushes } from '../fallback';
 import { pendingKey, putPending, type PendingPush } from '../pendingPushes';
 import type { Env } from '../types';
+import { InMemoryKV } from './inMemoryKv';
 
 let privateKeyPem = '';
 beforeAll(async () => {
   const { privateKey } = await generateKeyPair('ES256', { extractable: true });
   privateKeyPem = await exportPKCS8(privateKey);
 });
-
-class InMemoryKV {
-  store = new Map<string, { value: string; expiresAt?: number }>();
-  async get(key: string): Promise<string | null> {
-    return this.store.get(key)?.value ?? null;
-  }
-  async put(key: string, value: string): Promise<void> {
-    this.store.set(key, { value });
-  }
-  async delete(key: string): Promise<void> {
-    this.store.delete(key);
-  }
-  async list(options?: { prefix?: string }): Promise<{
-    keys: { name: string }[];
-    list_complete: boolean;
-    cursor: string;
-  }> {
-    const prefix = options?.prefix ?? '';
-    const keys = [...this.store.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-    return { keys, list_complete: true, cursor: '' };
-  }
-}
 
 const NOW = 1_700_000_000_000;
 const APNS_HOSTS = {

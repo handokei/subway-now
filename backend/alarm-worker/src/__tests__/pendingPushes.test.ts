@@ -11,42 +11,7 @@ import {
   type PendingPush,
 } from '../pendingPushes';
 
-class InMemoryKV {
-  store = new Map<string, { value: string; expiresAt?: number }>();
-
-  async get(key: string): Promise<string | null> {
-    const entry = this.store.get(key);
-    if (!entry) return null;
-    if (entry.expiresAt && entry.expiresAt < Date.now()) {
-      this.store.delete(key);
-      return null;
-    }
-    return entry.value;
-  }
-
-  async put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void> {
-    const expiresAt = options?.expirationTtl
-      ? Date.now() + options.expirationTtl * 1000
-      : undefined;
-    this.store.set(key, { value, expiresAt });
-  }
-
-  async delete(key: string): Promise<void> {
-    this.store.delete(key);
-  }
-
-  async list(options?: { prefix?: string; cursor?: string }): Promise<{
-    keys: { name: string }[];
-    list_complete: boolean;
-    cursor: string;
-  }> {
-    const prefix = options?.prefix ?? '';
-    const keys = [...this.store.keys()]
-      .filter((k) => k.startsWith(prefix))
-      .map((name) => ({ name }));
-    return { keys, list_complete: true, cursor: '' };
-  }
-}
+import { InMemoryKV } from './inMemoryKv';
 
 function makeEntry(overrides: Partial<PendingPush> = {}): PendingPush {
   return {
@@ -131,7 +96,7 @@ describe('pendingPushes (#566 P2a)', () => {
       for await (const entry of listPending(kv as unknown as KVNamespace)) {
         out.push(entry.pushId);
       }
-      expect(out.sort()).toEqual(['a', 'b']);
+      expect(out.sort((a, b) => a.localeCompare(b))).toEqual(['a', 'b']);
     });
 
     it('listPending: kv === undefined면 빈 generator', async () => {
