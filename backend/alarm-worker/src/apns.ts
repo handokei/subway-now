@@ -40,6 +40,12 @@ export interface SilentPushPayload {
    * 클라 수신 시각과 비교해 silent push 도달 지연 분포 측정용.
    */
   sentAt: number;
+  /**
+   * push 1건의 unique 식별자 (#566 P2a).
+   * 디바이스는 처리 결과를 `POST /push/ack`로 보낼 때 이 id를 echo한다.
+   * P2c가 30s 미ACK push를 alert fallback으로 재발사할 때 dedup 키로도 사용.
+   */
+  pushId: string;
 }
 
 export async function buildApnsJwt(config: ApnsConfig, now: number = Date.now()): Promise<string> {
@@ -91,6 +97,7 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
       phase: options.payload.phase,
       kind: options.payload.kind,
       sentAt: options.payload.sentAt,
+      pushId: options.payload.pushId,
     },
   });
 
