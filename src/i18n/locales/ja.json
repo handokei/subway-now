@@ -82,6 +82,8 @@
     "destinationBadge": "目的地",
     "setAsOrigin": "出発駅に設定",
     "setAsDestination": "目的地に設定",
+    "assignAsSlot": "{{label}}として保存",
+    "slotAlreadyAssigned": "{{label}} ✓",
     "nearbyStationsHeader": "周辺の地下鉄駅 (1km以内)",
     "noNearbyStations": "1km以内に地下鉄駅がありません。",
     "recenter": "現在地に戻る",
@@ -115,7 +117,9 @@
   "destinationPicker": {
     "noLocation": "位置情報がありません。",
     "title": "目的地を設定",
-    "searchPlaceholder": "駅名を検索"
+    "searchPlaceholder": "駅名を検索",
+    "assignSlot": "{{label}}を追加",
+    "pendingSlot": "次に選ぶ駅を{{label}}として保存します"
   },
   "sleepModeGuide": {
     "title": "おやすみモードのご案内",
