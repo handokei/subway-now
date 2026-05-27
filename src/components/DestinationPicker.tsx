@@ -5,6 +5,7 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  ScrollView,
   StyleSheet,
 } from 'react-native';
 import { useTranslation } from 'react-i18next';
@@ -13,7 +14,7 @@ import type { Station } from '../types/station';
 import { StationMap } from './StationMap';
 import { StationSuggestionList } from './StationSuggestionList';
 import { createLogger } from '../utils/logger';
-import { matchesStationQuery } from '../utils/stationDisplay';
+import { matchesStationQuery, getStationDisplayName } from '../utils/stationDisplay';
 import { useTheme, spacing, radius } from '../theme';
 
 const logger = createLogger('DestinationPicker');
@@ -26,6 +27,7 @@ interface Props {
   readonly onSelect: (station: Station) => void;
   readonly onClose: () => void;
   readonly recentDestination?: Station | null;
+  readonly favorites?: readonly Station[];
   readonly userLat?: number | null;
   readonly userLng?: number | null;
   readonly onRecenter?: () => void;
@@ -38,6 +40,7 @@ export function DestinationPicker({
   userLat,
   userLng,
   recentDestination,
+  favorites,
   onRecenter,
 }: Props) {
   const [query, setQuery] = useState('');
@@ -63,6 +66,13 @@ export function DestinationPicker({
     if (!userLat || !userLng) return [];
     return allStations;
   }, [userLat, userLng]);
+
+  // 즐겨찾기 chip — 빠른 선택용. recentDestination이 favorites에 포함되면 중복 제거.
+  const favoriteChips = useMemo(() => {
+    if (!favorites || favorites.length === 0) return [];
+    const recentId = recentDestination?.id;
+    return recentId ? favorites.filter((f) => f.id !== recentId) : favorites;
+  }, [favorites, recentDestination]);
 
   const suggestions = useMemo(() => {
     const q = query.trim();
@@ -125,6 +135,28 @@ export function DestinationPicker({
             onFocus={() => setShowDropdown(true)}
             testID="search-input"
           />
+          {favoriteChips.length > 0 && !showDropdown && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.chipScroll}
+              contentContainerStyle={styles.chipRow}
+              testID="favorites-chip-row"
+            >
+              {favoriteChips.map((fav) => (
+                <TouchableOpacity
+                  key={fav.id}
+                  style={[styles.chip, { backgroundColor: colors.card, borderColor: colors.hair }]}
+                  onPress={() => handleSelect(fav)}
+                  testID={`favorite-chip-${fav.id}`}
+                >
+                  <Text style={[styles.chipText, { color: colors.ink }]}>
+                    {getStationDisplayName(fav)}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
           {showDropdown && (
             <View style={styles.dropdownWrap}>
               <StationSuggestionList
@@ -204,6 +236,23 @@ const styles = StyleSheet.create({
   dropdownWrap: {
     marginHorizontal: spacing.xl,
     marginTop: 4,
+  },
+  chipScroll: {
+    marginTop: spacing.sm,
+  },
+  chipRow: {
+    paddingHorizontal: spacing.xl,
+    gap: spacing.sm,
+  },
+  chip: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+  },
+  chipText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   recenterButton: {
     position: 'absolute',

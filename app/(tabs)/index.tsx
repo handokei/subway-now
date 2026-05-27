@@ -647,6 +647,7 @@ export default function HomeScreen() {
         }}
         onClose={() => setPickerVisible(false)}
         recentDestination={recentDestination}
+        favorites={favorites}
         userLat={userLocation?.lat ?? null}
         userLng={userLocation?.lng ?? null}
         onRecenter={() => {
