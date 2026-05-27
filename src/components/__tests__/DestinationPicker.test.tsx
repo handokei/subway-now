@@ -160,6 +160,77 @@ describe('DestinationPicker', () => {
     expect(() => fireEvent.press(getByTestId('recenter-button'))).not.toThrow();
   });
 
+  it('favorites가 비어있거나 미제공이면 chip 영역을 렌더링하지 않는다', () => {
+    const { queryByTestId, rerender } = render(<DestinationPicker {...defaultProps} />);
+    expect(queryByTestId('favorites-chip-row')).toBeNull();
+
+    rerender(<DestinationPicker {...defaultProps} favorites={[]} />);
+    expect(queryByTestId('favorites-chip-row')).toBeNull();
+  });
+
+  it('favorites가 있으면 chip을 렌더링하고 탭 시 onSelect를 호출한다', () => {
+    const onSelect = jest.fn();
+    const fav: Station = {
+      id: '2-021',
+      name: '역삼',
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.5006,
+      lng: 127.0365,
+    };
+    const { getByTestId } = render(
+      <DestinationPicker {...defaultProps} favorites={[fav]} onSelect={onSelect} />,
+    );
+    expect(getByTestId('favorites-chip-row')).toBeTruthy();
+    fireEvent.press(getByTestId(`favorite-chip-${fav.id}`));
+    expect(onSelect).toHaveBeenCalledWith(fav);
+  });
+
+  it('검색어를 입력해 드롭다운이 열리면 favorites chip을 숨긴다', () => {
+    const fav: Station = {
+      id: '2-021',
+      name: '역삼',
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.5006,
+      lng: 127.0365,
+    };
+    const { getByTestId, queryByTestId } = render(
+      <DestinationPicker {...defaultProps} favorites={[fav]} />,
+    );
+    expect(getByTestId('favorites-chip-row')).toBeTruthy();
+    fireEvent.changeText(getByTestId('search-input'), '강남');
+    expect(queryByTestId('favorites-chip-row')).toBeNull();
+  });
+
+  it('recentDestination과 중복되는 즐겨찾기는 chip에서 제외한다', () => {
+    const recent: Station = {
+      id: '2-022',
+      name: '강남',
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.498,
+      lng: 127.0279,
+    };
+    const other: Station = {
+      id: '2-021',
+      name: '역삼',
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.5006,
+      lng: 127.0365,
+    };
+    const { queryByTestId, getByTestId } = render(
+      <DestinationPicker
+        {...defaultProps}
+        favorites={[recent, other]}
+        recentDestination={recent}
+      />,
+    );
+    expect(queryByTestId(`favorite-chip-${recent.id}`)).toBeNull();
+    expect(getByTestId(`favorite-chip-${other.id}`)).toBeTruthy();
+  });
+
   it('검색창 포커스 시 드롭다운 표시 상태가 활성화된다', () => {
     const { getByTestId, queryByTestId } = render(<DestinationPicker {...defaultProps} />);
     fireEvent.changeText(getByTestId('search-input'), '강남');
