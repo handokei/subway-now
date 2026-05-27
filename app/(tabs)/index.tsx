@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, InteractionManager, Pressable, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
@@ -32,6 +32,7 @@ import { SourceBadge } from '../../src/components/SourceBadge';
 import { resolveNotificationSource } from '../../src/utils/notificationSource';
 import { ArrivalSourceNotice } from '../../src/components/ArrivalSourceNotice';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
+import { useArrivalAutoClear } from '../../src/hooks/useArrivalAutoClear';
 
 const logger = createLogger('HomeScreen');
 
@@ -63,8 +64,6 @@ export default function HomeScreen() {
   const clearAlarmEvent = useAppStore((s) => s.clearAlarmEvent);
   const loadAlarmEvent = useAppStore((s) => s.loadAlarmEvent);
   const [pickerVisible, setPickerVisible] = useState(false);
-  const [arrivedBanner, setArrivedBanner] = useState(false);
-  const arrivedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const prevDestIdRef = useRef<string | null>(null);
   // #534: route 비동기 계산이 끝나기 전 첫 LA 송출이 일어나면 ETA-less 카드가 잠금화면에
@@ -98,6 +97,13 @@ export default function HomeScreen() {
     [route, tripOrigin, destination],
   );
   const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext);
+  const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
+  const { arrivedBanner } = useArrivalAutoClear({
+    currentStationName: result?.station.name,
+    distanceKm: result?.distanceKm,
+    destinationName: destination?.name,
+    onClear: handleArrivalClear,
+  });
   // AppState listener는 단일-바인딩 패턴이라 deps에 refresh를 추가할 수 없다.
   // 최신 refresh 함수를 ref에 보관해 listener에서 호출한다.
   const refreshRef = useRef(refresh);
@@ -321,20 +327,6 @@ export default function HomeScreen() {
       }
     }
   }, [arrivedBanner]);
-
-  useEffect(() => {
-    if (arrivedBanner) return;
-    if (result && destination && result.station.name === destination.name && result.distanceKm <= 0.5) {
-      setArrivedBanner(true);
-      arrivedTimeoutRef.current = setTimeout(() => {
-        setDestination(null);
-        setArrivedBanner(false);
-      }, 2000);
-    }
-    return () => {
-      if (arrivedTimeoutRef.current) clearTimeout(arrivedTimeoutRef.current);
-    };
-  }, [result?.station.name, destination?.name, result?.distanceKm]);
 
   if (permissionDenied) {
     return (
