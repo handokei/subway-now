@@ -139,6 +139,24 @@ describe('DebugModal', () => {
     expect(screen.getByTestId('debug-arrival-summary').props.children).toContain('청량리');
   });
 
+  it('Alarm log 섹션에 source별 카운트 라인을 표시한다 (#564)', async () => {
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: 1, source: 'fg', outcome: 'fired' },
+      { ts: 2, source: 'region-entry-fired', outcome: 'fired' },
+      { ts: 3, source: 'region-entry-fired', outcome: 'fired' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    const counts = screen.getByTestId('debug-log-source-counts');
+    expect(counts.props.children).toBe('fg=1, region-entry-fired=2');
+  });
+
+  it('로그가 비어있으면 source 카운트 라인을 렌더링하지 않는다 (#564)', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.queryByTestId('debug-log-source-counts')).toBeNull();
+  });
+
   it('userLocation이 null이면 "no location"을 표시한다', () => {
     mockUseFusedNearestStation.mockReturnValue({
       result: null,
@@ -605,6 +623,58 @@ describe('DebugModal helpers', () => {
     expect(dump).toContain('speed=- m/s');
     expect(dump).toContain('accuracy=- m');
     expect(dump).toContain('강남 · - m');
+  });
+
+  it('formatSourceCountsLine: 빈 로그면 빈 문자열을 반환한다 (#564)', () => {
+    expect(__test__.formatSourceCountsLine([])).toBe('');
+  });
+
+  it('formatSourceCountsLine: source별 카운트를 정렬해 표기한다 (#564)', () => {
+    const logs: AlarmLogEntry[] = [
+      { ts: 1, source: 'fg', outcome: 'fired' },
+      { ts: 2, source: 'fg', outcome: 'fired' },
+      { ts: 3, source: 'region-entry-fired', outcome: 'fired' },
+      { ts: 4, source: 'alert-fallback-fired', outcome: 'fired' },
+    ];
+    const line = __test__.formatSourceCountsLine(logs);
+    expect(line).toBe('alert-fallback-fired=1, fg=2, region-entry-fired=1');
+  });
+
+  it('buildDumpText: 로그가 있으면 sources 헤더에 source별 카운트를 표기한다 (#564)', () => {
+    const dump = __test__.buildDumpText({
+      userLocation: null,
+      speedMps: null,
+      accuracyMeters: null,
+      nearestName: null,
+      nearestDistanceM: null,
+      variants: [],
+      fusion: baseFusion,
+      arrivalSummary: '-',
+      isMock: false,
+      silentPush: baseSilentPush,
+      logs: [
+        { ts: 1, source: 'region-entry-fired', outcome: 'fired' },
+        { ts: 2, source: 'alert-fallback-fired', outcome: 'fired' },
+      ],
+    });
+    expect(dump).toContain('sources: alert-fallback-fired=1, region-entry-fired=1');
+  });
+
+  it('buildDumpText: 로그가 없으면 sources 헤더를 추가하지 않는다 (#564)', () => {
+    const dump = __test__.buildDumpText({
+      userLocation: null,
+      speedMps: null,
+      accuracyMeters: null,
+      nearestName: null,
+      nearestDistanceM: null,
+      variants: [],
+      fusion: baseFusion,
+      arrivalSummary: '-',
+      isMock: false,
+      silentPush: baseSilentPush,
+      logs: [],
+    });
+    expect(dump).not.toContain('sources:');
   });
 
   it('formatLogLine: location 없는 fired 엔트리는 acc/age를 포함하지 않는다', () => {
