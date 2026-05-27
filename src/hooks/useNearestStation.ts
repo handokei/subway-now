@@ -266,7 +266,11 @@ export function useNearestStation(): UseNearestStationReturn {
 
     const appStateSub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
-        startWatch();
+        // FG 복귀 시 result는 BG 진입 시점의 stale 위치 — 사용자가 그 사이 이동했을 수 있다 (#543).
+        // 명시적으로 uncertain 상태로 전환해 UI가 "위치 확인 중"을 표시하게 하고,
+        // refresh()로 즉시 fresh fix를 요청한다. fresh fix가 들어오면 applyLocation이 uncertain을 해제.
+        setLocationUncertain(true);
+        void refresh();
       } else if (state === 'background') {
         stopWatch();
       }
@@ -277,7 +281,7 @@ export function useNearestStation(): UseNearestStationReturn {
       stopWatch();
       appStateSub.remove();
     };
-  }, [startWatch, stopWatch]);
+  }, [startWatch, stopWatch, refresh]);
 
   return { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh };
 }

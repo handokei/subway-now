@@ -282,6 +282,52 @@ describe('useNearestStation', () => {
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2));
   });
 
+  it('포그라운드 복귀 시 fresh fix를 요청하고 locationUncertain을 true로 전환한다 (#543)', async () => {
+    mockGranted();
+    // 초기 mount에서는 refresh가 호출되지 않으므로 mockLocation은 FG 복귀 후의 fresh fix에 사용.
+    mockLocation(37.498, 127.028, { accuracy: 10 });
+
+    const { result } = renderHook(() => useNearestStation());
+
+    // 초기 fresh fix 들어오면 uncertain은 false로 시작
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+    simulateGps(37.498, 127.028, { accuracy: 10 });
+    await waitFor(() => expect(result.current.userLocation).not.toBeNull());
+    expect(result.current.locationUncertain).toBe(false);
+
+    // BG → FG 전환. active 핸들러가 동기적으로 setLocationUncertain(true)을 호출하므로
+    // refresh()의 await getCurrentPositionAsync 시점에 uncertain=true가 관측된다.
+    act(() => { appStateCallback?.('background'); });
+
+    // active 이벤트 직후 getCurrentPositionAsync 호출이 들어가야 한다 (refresh 경로).
+    const callsBeforeResume = (Location.getCurrentPositionAsync as jest.Mock).mock.calls.length;
+    // getCurrentPositionAsync을 deferred로 만들어 uncertain=true 구간을 관측한다.
+    let resolveFresh: ((value: unknown) => void) | null = null;
+    (Location.getCurrentPositionAsync as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFresh = (v) => resolve(v);
+        }),
+    );
+
+    await act(async () => { appStateCallback?.('active'); });
+
+    // 1) uncertain이 true로 즉시 전환됨
+    expect(result.current.locationUncertain).toBe(true);
+    // 2) refresh가 getCurrentPositionAsync를 호출했음
+    expect((Location.getCurrentPositionAsync as jest.Mock).mock.calls.length).toBe(callsBeforeResume + 1);
+
+    // 3) fresh fix가 들어오면 applyLocation이 uncertain=false로 복귀.
+    //    jump gate를 피하기 위해 직전 fix와 동일 좌표 사용 (테스트 의도: uncertain 복귀만 검증).
+    await act(async () => {
+      resolveFresh?.({
+        coords: { latitude: 37.498, longitude: 127.028, accuracy: 10 },
+        timestamp: Date.now(),
+      });
+    });
+    await waitFor(() => expect(result.current.locationUncertain).toBe(false));
+  });
+
   it('언마운트 시 AppState 리스너를 해제한다', async () => {
     mockGranted();
 
@@ -517,6 +563,9 @@ describe('useNearestStation', () => {
     const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     mockGranted();
     mockLastKnownLocation(37.4980, 127.0277, { ageMs: MAX_LOCATION_AGE_MS + 1 });
+    // FG 복귀 시 refresh()가 호출되어 getCurrentPositionAsync 정상 경로를 타도록 mock 설정.
+    // 미설정 시 catch 분기로 우회되어 카운터 누적 로직 검증이 무의미해진다 (#543 리뷰).
+    mockLocation(37.4980, 127.0277, { accuracy: 30 });
 
     renderHook(() => useNearestStation());
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
