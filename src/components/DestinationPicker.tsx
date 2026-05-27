@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import stations from '../data/stations.json';
-import type { Station, FavoriteEntry } from '../types/station';
+import { FAVORITE_SLOT_ICONS, isFavoriteSlotRole, type FavoriteEntry, type Station } from '../types/station';
 import { StationMap } from './StationMap';
 import { StationSuggestionList } from './StationSuggestionList';
 import { createLogger } from '../utils/logger';
@@ -66,7 +66,12 @@ export function DestinationPicker({
   }, [userLat, userLng]);
 
   // 즐겨찾기 chip — 항상 노출. trip 종료 후에도 다시 누를 수 있어야 한다 (#555).
-  const favoriteChips = favorites ?? [];
+  // home → work → general 순으로 정렬. home/work는 아이콘+라벨로 표시 (#557).
+  const favoriteChips = useMemo(() => {
+    if (!favorites || favorites.length === 0) return [];
+    const order: Record<string, number> = { home: 0, work: 1, general: 2 };
+    return [...favorites].sort((a, b) => order[a.role] - order[b.role]);
+  }, [favorites]);
 
   const suggestions = useMemo(() => {
     const q = query.trim();
@@ -137,18 +142,23 @@ export function DestinationPicker({
               contentContainerStyle={styles.chipRow}
               testID="favorites-chip-row"
             >
-              {favoriteChips.map(({ station, label }) => (
-                <TouchableOpacity
-                  key={station.id}
-                  style={[styles.chip, { backgroundColor: colors.card, borderColor: colors.hair }]}
-                  onPress={() => handleSelect(station)}
-                  testID={`favorite-chip-${station.id}`}
-                >
-                  <Text style={[styles.chipText, { color: colors.ink }]}>
-                    {label ?? getStationDisplayName(station)}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+              {favoriteChips.map(({ station, role, label }) => {
+                const isSlot = isFavoriteSlotRole(role);
+                const chipText = isSlot
+                  ? t(`favorites.${role}`)
+                  : label ?? getStationDisplayName(station);
+                return (
+                  <TouchableOpacity
+                    key={station.id}
+                    style={[styles.chip, { backgroundColor: colors.card, borderColor: colors.hair }]}
+                    onPress={() => handleSelect(station)}
+                    testID={`favorite-chip-${station.id}`}
+                  >
+                    {isSlot && <Text style={styles.chipIcon}>{FAVORITE_SLOT_ICONS[role]}</Text>}
+                    <Text style={[styles.chipText, { color: colors.ink }]}>{chipText}</Text>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
           )}
           {showDropdown && (
@@ -239,10 +249,16 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
     borderRadius: radius.pill,
     borderWidth: 1,
+    gap: 6,
+  },
+  chipIcon: {
+    fontSize: 14,
   },
   chipText: {
     fontSize: 14,

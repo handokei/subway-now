@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,7 +12,14 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../src/store/useAppStore';
 import { LINE_NAMES } from '../../src/constants/lineColors';
-import type { FavoriteEntry, Station } from '../../src/types/station';
+import {
+  FAVORITE_SLOT_ICONS,
+  FAVORITE_SLOT_ROLES,
+  isFavoriteSlotRole,
+  type FavoriteEntry,
+  type FavoriteSlotRole,
+  type Station,
+} from '../../src/types/station';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../../src/utils/formatTime';
@@ -28,9 +36,11 @@ export default function FavoritesScreen() {
   const addFavorite = useAppStore((s) => s.addFavorite);
   const removeFavorite = useAppStore((s) => s.removeFavorite);
   const setFavoriteLabel = useAppStore((s) => s.setFavoriteLabel);
+  const setSlotFavorite = useAppStore((s) => s.setSlotFavorite);
   const loadFavorites = useAppStore((s) => s.loadFavorites);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [slotPicker, setSlotPicker] = useState<FavoriteSlotRole | null>(null);
   const { colors } = useTheme();
   const { t } = useTranslation();
 
@@ -41,6 +51,19 @@ export default function FavoritesScreen() {
   const selectedStation = useMemo(
     () => favorites.find(({ station }) => station.id === selectedId)?.station ?? null,
     [favorites, selectedId],
+  );
+  const slotByRole = useMemo(() => {
+    const map = new Map<FavoriteSlotRole, FavoriteEntry>();
+    favorites.forEach((entry) => {
+      if (isFavoriteSlotRole(entry.role)) {
+        map.set(entry.role, entry);
+      }
+    });
+    return map;
+  }, [favorites]);
+  const generalFavorites = useMemo(
+    () => favorites.filter((entry) => entry.role === 'general'),
+    [favorites],
   );
   const { arrival: rawArrival } = useArrivalInfo(
     selectedStation?.name ?? null,
@@ -91,35 +114,62 @@ export default function FavoritesScreen() {
               />
             ))
           )
-        ) : favorites.length === 0 ? (
-          <View style={styles.empty} testID="favorites-empty">
-            <Text style={styles.emptyIcon}>⭐</Text>
-            <Text style={[styles.emptyTitle, { color: colors.ink }]}>{t('favorites.empty')}</Text>
-            <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
-              {t('favorites.emptyDescription')}
-            </Text>
-          </View>
         ) : (
-          favorites.map((entry: FavoriteEntry) => {
-            const { id } = entry.station;
-            return (
-              <FavoriteCard
-                key={id}
-                entry={entry}
-                isExpanded={id === selectedId}
-                arrival={id === selectedId ? arrival : null}
-                onToggle={() => handleToggleSelect(id)}
-                onRemove={() => {
-                  if (selectedId === id) setSelectedId(null);
-                  removeFavorite(id);
-                }}
-                onSaveLabel={(label) => setFavoriteLabel(id, label)}
-                colors={colors}
-              />
-            );
-          })
+          <>
+            <View style={styles.slotRow}>
+              {FAVORITE_SLOT_ROLES.map((role) => (
+                <SlotCard
+                  key={role}
+                  role={role}
+                  entry={slotByRole.get(role) ?? null}
+                  onAssign={() => setSlotPicker(role)}
+                  onClear={() => setSlotFavorite(role, null)}
+                  colors={colors}
+                />
+              ))}
+            </View>
+            {generalFavorites.length === 0 ? (
+              <View style={styles.empty} testID="favorites-empty">
+                <Text style={styles.emptyIcon}>⭐</Text>
+                <Text style={[styles.emptyTitle, { color: colors.ink }]}>{t('favorites.empty')}</Text>
+                <Text style={[styles.emptySubtitle, { color: colors.muted }]}>
+                  {t('favorites.emptyDescription')}
+                </Text>
+              </View>
+            ) : (
+              generalFavorites.map((entry: FavoriteEntry) => {
+                const { id } = entry.station;
+                return (
+                  <FavoriteCard
+                    key={id}
+                    entry={entry}
+                    isExpanded={id === selectedId}
+                    arrival={id === selectedId ? arrival : null}
+                    onToggle={() => handleToggleSelect(id)}
+                    onRemove={() => {
+                      if (selectedId === id) setSelectedId(null);
+                      removeFavorite(id);
+                    }}
+                    onSaveLabel={(label) => setFavoriteLabel(id, label)}
+                    colors={colors}
+                  />
+                );
+              })
+            )}
+          </>
         )}
       </ScrollView>
+      <SlotPickerModal
+        role={slotPicker}
+        onClose={() => setSlotPicker(null)}
+        onPick={(station) => {
+          if (slotPicker) {
+            setSlotFavorite(slotPicker, station);
+          }
+          setSlotPicker(null);
+        }}
+        colors={colors}
+      />
     </SafeAreaView>
   );
 }
@@ -273,6 +323,120 @@ function FavoriteCard({
         </View>
       )}
     </View>
+  );
+}
+
+function SlotCard({
+  role,
+  entry,
+  onAssign,
+  onClear,
+  colors,
+}: {
+  role: FavoriteSlotRole;
+  entry: FavoriteEntry | null;
+  onAssign: () => void;
+  onClear: () => void;
+  colors: ThemeColors;
+}) {
+  const { t } = useTranslation();
+  const label = t(`favorites.${role}`);
+  if (!entry) {
+    return (
+      <TouchableOpacity
+        style={[styles.slotCard, { backgroundColor: colors.card, borderColor: colors.hair }]}
+        onPress={onAssign}
+        testID={`slot-assign-${role}`}
+      >
+        <Text style={styles.slotIcon}>{FAVORITE_SLOT_ICONS[role]}</Text>
+        <Text style={[styles.slotLabel, { color: colors.ink }]}>{label}</Text>
+        <Text style={[styles.slotHint, { color: colors.muted }]}>{t('favorites.slotAssignHint')}</Text>
+      </TouchableOpacity>
+    );
+  }
+  const { station } = entry;
+  return (
+    <View style={[styles.slotCard, { backgroundColor: colors.card, borderColor: colors.hair, borderLeftColor: station.lineColor, borderLeftWidth: 4 }]}>
+      <TouchableOpacity style={styles.slotMain} onPress={onAssign} testID={`slot-change-${role}`}>
+        <Text style={styles.slotIcon}>{FAVORITE_SLOT_ICONS[role]}</Text>
+        <Text style={[styles.slotLabel, { color: colors.ink }]}>{label}</Text>
+        <Text style={[styles.slotStation, { color: colors.muted }]} numberOfLines={1}>
+          {getStationDisplayName(station)}
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity onPress={onClear} testID={`slot-clear-${role}`} style={styles.slotClear}>
+        <Text style={[styles.slotClearText, { color: colors.danger }]}>×</Text>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
+function SlotPickerModal({
+  role,
+  onClose,
+  onPick,
+  colors,
+}: {
+  role: FavoriteSlotRole | null;
+  onClose: () => void;
+  onPick: (station: Station) => void;
+  colors: ThemeColors;
+}) {
+  const { t } = useTranslation();
+  const [query, setQuery] = useState('');
+  useEffect(() => {
+    if (role == null) setQuery('');
+  }, [role]);
+  const results = useMemo(() => {
+    const trimmed = query.trim();
+    if (!trimmed) return [];
+    const lower = trimmed.toLowerCase();
+    return allStations.filter((s) => matchesStationQuery(s, trimmed, lower)).slice(0, 20);
+  }, [query]);
+  const visible = role != null;
+  return (
+    <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
+      <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+        <View style={styles.slotModalHeader}>
+          <Text style={[styles.slotModalTitle, { color: colors.ink }]}>
+            {role ? t('favorites.slotPickerTitle', { label: t(`favorites.${role}`) }) : ''}
+          </Text>
+          <TouchableOpacity onPress={onClose} testID="slot-picker-close">
+            <Text style={[styles.slotModalClose, { color: colors.accent }]}>{t('common.close')}</Text>
+          </TouchableOpacity>
+        </View>
+        <TextInput
+          style={[styles.searchInput, { backgroundColor: colors.card, color: colors.ink, borderColor: colors.hair, marginHorizontal: 24 }]}
+          placeholder={t('favorites.searchPlaceholder')}
+          placeholderTextColor={colors.muted}
+          value={query}
+          onChangeText={setQuery}
+          autoFocus
+          testID="slot-picker-search"
+        />
+        <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ padding: 24 }}>
+          {results.map((station) => (
+            <TouchableOpacity
+              key={station.id}
+              style={[styles.card, { backgroundColor: colors.card, borderLeftColor: station.lineColor }]}
+              onPress={() => onPick(station)}
+              testID={`slot-picker-result-${station.id}`}
+            >
+              <View style={styles.cardRow}>
+                <View style={styles.cardInfo}>
+                  <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
+                    <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
+                  </View>
+                  <Text style={[styles.stationName, { color: colors.ink }]}>
+                    {getStationDisplayName(station)}
+                  </Text>
+                </View>
+              </View>
+            </TouchableOpacity>
+          ))}
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
   );
 }
 
@@ -465,5 +629,64 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: 'center',
     paddingVertical: 4,
+  },
+  slotRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+  },
+  slotCard: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  slotMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  slotIcon: {
+    fontSize: 18,
+  },
+  slotLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  slotHint: {
+    fontSize: 12,
+    flexShrink: 1,
+  },
+  slotStation: {
+    fontSize: 13,
+    flexShrink: 1,
+  },
+  slotClear: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  slotClearText: {
+    fontSize: 22,
+    fontWeight: '700',
+    lineHeight: 24,
+  },
+  slotModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+  },
+  slotModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  slotModalClose: {
+    fontSize: 16,
   },
 });

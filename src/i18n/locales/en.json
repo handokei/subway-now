@@ -99,7 +99,11 @@
     "addLabel": "Add label",
     "editLabel": "Edit label",
     "saveLabel": "Save",
-    "labelPlaceholder": "Home, Work, etc."
+    "labelPlaceholder": "Label",
+    "home": "Home",
+    "work": "Work",
+    "slotAssignHint": "Tap to assign",
+    "slotPickerTitle": "Set {{label}}"
   },
   "alarmOverlay": {
     "transferTitle": "Transfer alert",
