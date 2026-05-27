@@ -207,35 +207,7 @@ describe('DestinationPicker', () => {
     expect(queryByTestId('favorites-chip-row')).toBeNull();
   });
 
-  it('recentDestination과 중복되는 label 없는 즐겨찾기는 chip에서 제외한다', () => {
-    const recent: Station = {
-      id: '2-022',
-      name: '강남',
-      line: '2',
-      lineColor: '#009D3E',
-      lat: 37.498,
-      lng: 127.0279,
-    };
-    const other: Station = {
-      id: '2-021',
-      name: '역삼',
-      line: '2',
-      lineColor: '#009D3E',
-      lat: 37.5006,
-      lng: 127.0365,
-    };
-    const { queryByTestId, getByTestId } = render(
-      <DestinationPicker
-        {...defaultProps}
-        favorites={[{ station: recent }, { station: other }]}
-        recentDestination={recent}
-      />,
-    );
-    expect(queryByTestId(`favorite-chip-${recent.id}`)).toBeNull();
-    expect(getByTestId(`favorite-chip-${other.id}`)).toBeTruthy();
-  });
-
-  it('label 있는 즐겨찾기는 recentDestination과 중복돼도 chip을 표시하고 label을 노출한다', () => {
+  it('label 있는 즐겨찾기 chip은 label을 노출한다', () => {
     const home: Station = {
       id: '2-022',
       name: '강남',
@@ -248,7 +220,6 @@ describe('DestinationPicker', () => {
       <DestinationPicker
         {...defaultProps}
         favorites={[{ station: home, label: '집' }]}
-        recentDestination={home}
       />,
     );
     expect(getByTestId(`favorite-chip-${home.id}`)).toBeTruthy();
