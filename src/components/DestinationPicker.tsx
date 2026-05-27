@@ -26,7 +26,6 @@ interface Props {
   readonly visible: boolean;
   readonly onSelect: (station: Station) => void;
   readonly onClose: () => void;
-  readonly recentDestination?: Station | null;
   readonly favorites?: readonly FavoriteEntry[];
   readonly userLat?: number | null;
   readonly userLng?: number | null;
@@ -39,7 +38,6 @@ export function DestinationPicker({
   onClose,
   userLat,
   userLng,
-  recentDestination,
   favorites,
   onRecenter,
 }: Props) {
@@ -67,14 +65,8 @@ export function DestinationPicker({
     return allStations;
   }, [userLat, userLng]);
 
-  // 즐겨찾기 chip — 빠른 선택용. label 없는 항목만 recentDestination과 dedup.
-  // label 있는 chip("집"/"회사")은 직전 목적지여도 의미가 있어 항상 표시.
-  const favoriteChips = useMemo(() => {
-    if (!favorites || favorites.length === 0) return [];
-    const recentId = recentDestination?.id;
-    if (!recentId) return favorites;
-    return favorites.filter(({ station, label }) => label != null || station.id !== recentId);
-  }, [favorites, recentDestination]);
+  // 즐겨찾기 chip — 항상 노출. trip 종료 후에도 다시 누를 수 있어야 한다 (#555).
+  const favoriteChips = favorites ?? [];
 
   const suggestions = useMemo(() => {
     const q = query.trim();
