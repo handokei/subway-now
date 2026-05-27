@@ -11,28 +11,7 @@ import {
 import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
 import { putTrip } from '../trips';
 import type { Env, Trip } from '../types';
-
-class InMemoryKV {
-  store = new Map<string, { value: string }>();
-  async get(key: string): Promise<string | null> {
-    return this.store.get(key)?.value ?? null;
-  }
-  async put(key: string, value: string): Promise<void> {
-    this.store.set(key, { value });
-  }
-  async delete(key: string): Promise<void> {
-    this.store.delete(key);
-  }
-  async list(options?: { prefix?: string }): Promise<{
-    keys: { name: string }[];
-    list_complete: boolean;
-    cursor: string;
-  }> {
-    const prefix = options?.prefix ?? '';
-    const keys = [...this.store.keys()].filter((k) => k.startsWith(prefix)).map((name) => ({ name }));
-    return { keys, list_complete: true, cursor: '' };
-  }
-}
+import { InMemoryKV } from './inMemoryKv';
 
 let apnsConfig: ApnsConfig;
 
@@ -587,6 +566,8 @@ describe('runScheduled', () => {
       expect(entry.sentAt).toBe(NOW);
       expect(entry.kind).toBe('destination');
       expect(entry.phase).toBe('imminent');
+      expect(entry.apnsEnv).toBe('sandbox'); // makeTrip default
+
       // payload에도 pushId가 들어갔는지 검증.
       const call = apnsFetch.mock.calls[0] as unknown as [string, RequestInit];
       const body = JSON.parse(call[1].body as string);

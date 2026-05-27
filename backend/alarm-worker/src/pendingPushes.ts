@@ -12,6 +12,7 @@
  */
 
 import type { AlarmPhase } from './alarm';
+import type { ApnsEnv } from './types';
 
 const PENDING_PREFIX = 'pending:';
 export const PENDING_TTL_SEC = 60;
@@ -30,6 +31,8 @@ export interface PendingPush {
   kind: 'transfer' | 'destination' | 'intermediate';
   phase: AlarmPhase;
   etaSeconds: number;
+  /** APNs host 선택 (sandbox/production). silent push가 self-heal로 정정된 경우 정정된 값을 보관. */
+  apnsEnv: ApnsEnv;
 }
 
 export function pendingKey(pushId: string): string {
@@ -79,6 +82,43 @@ export async function getPending(
 export interface AckResult {
   deleted: boolean;
   reason?: 'not-found' | 'token-mismatch';
+}
+
+/**
+ * P2c fallback 발사 경로용 — KV의 pending entry를 enumerate한다.
+ * trips.ts의 listTrips와 동일 패턴: prefix scan + cursor 페이지네이션.
+ * 손상된 JSON entry는 스킵 (TTL로 자동 정리됨).
+ */
+export async function* listPending(
+  kv: KVNamespace | undefined,
+): AsyncGenerator<PendingPush> {
+  if (!kv) return;
+  let cursor: string | undefined;
+  do {
+    const result = await kv.list({ prefix: PENDING_PREFIX, cursor });
+    for (const key of result.keys) {
+      const raw = await kv.get(key.name);
+      if (!raw) continue;
+      try {
+        yield JSON.parse(raw) as PendingPush;
+      } catch {
+        // 손상된 entry는 스킵.
+      }
+    }
+    cursor = result.list_complete ? undefined : result.cursor;
+  } while (cursor);
+}
+
+/**
+ * P2c가 alert fallback 발사 후 호출 — entry 삭제로 다음 cron에서 재발사 방지.
+ * ackPending과 달리 token 인증 없이 무조건 삭제 (caller가 백엔드 cron이므로 인증 불필요).
+ */
+export async function removePending(
+  kv: KVNamespace | undefined,
+  pushId: string,
+): Promise<void> {
+  if (!kv) return;
+  await kv.delete(pendingKey(pushId));
 }
 
 /**

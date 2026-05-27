@@ -3,47 +3,27 @@ import {
   ackPending,
   buildAlarmKey,
   getPending,
+  listPending,
   pendingKey,
   PENDING_TTL_SEC,
   putPending,
+  removePending,
   type PendingPush,
 } from '../pendingPushes';
 
-class InMemoryKV {
-  store = new Map<string, { value: string; expiresAt?: number }>();
-
-  async get(key: string): Promise<string | null> {
-    const entry = this.store.get(key);
-    if (!entry) return null;
-    if (entry.expiresAt && entry.expiresAt < Date.now()) {
-      this.store.delete(key);
-      return null;
-    }
-    return entry.value;
-  }
-
-  async put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void> {
-    const expiresAt = options?.expirationTtl
-      ? Date.now() + options.expirationTtl * 1000
-      : undefined;
-    this.store.set(key, { value, expiresAt });
-  }
-
-  async delete(key: string): Promise<void> {
-    this.store.delete(key);
-  }
-}
+import { InMemoryKV } from './inMemoryKv';
 
 function makeEntry(overrides: Partial<PendingPush> = {}): PendingPush {
   return {
     pushId: 'push-1',
     token: 'devicetoken-hex',
-    alarmKey: '강남:destination:early',
+    alarmKey: 'early:강남',
     sentAt: 1_700_000_000_000,
     stationName: '강남',
     kind: 'destination',
     phase: 'early',
     etaSeconds: 60,
+    apnsEnv: 'sandbox',
     ...overrides,
   };
 }
@@ -104,6 +84,43 @@ describe('pendingPushes (#566 P2a)', () => {
 
     it('kv === undefined면 graceful null', async () => {
       expect(await getPending(undefined, 'p1')).toBeNull();
+    });
+  });
+
+  describe('listPending / removePending (#572 P2c)', () => {
+    it('listPending: prefix scan으로 모든 pending entry를 yield', async () => {
+      await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'a' }));
+      await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'b' }));
+      await kv.put('other:c', 'unrelated');
+      const out: string[] = [];
+      for await (const entry of listPending(kv as unknown as KVNamespace)) {
+        out.push(entry.pushId);
+      }
+      expect(out.sort((a, b) => a.localeCompare(b))).toEqual(['a', 'b']);
+    });
+
+    it('listPending: kv === undefined면 빈 generator', async () => {
+      const out: string[] = [];
+      for await (const e of listPending(undefined)) out.push(e.pushId);
+      expect(out).toEqual([]);
+    });
+
+    it('listPending: 손상된 JSON entry는 skip', async () => {
+      await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'good' }));
+      await kv.put(pendingKey('bad'), 'not-json{');
+      const out: string[] = [];
+      for await (const e of listPending(kv as unknown as KVNamespace)) out.push(e.pushId);
+      expect(out).toEqual(['good']);
+    });
+
+    it('removePending: 무조건 삭제 (token 인증 없음)', async () => {
+      await putPending(kv as unknown as KVNamespace, makeEntry({ pushId: 'p1' }));
+      await removePending(kv as unknown as KVNamespace, 'p1');
+      expect(kv.store.has(pendingKey('p1'))).toBe(false);
+    });
+
+    it('removePending: kv === undefined면 no-op', async () => {
+      await expect(removePending(undefined, 'p1')).resolves.toBeUndefined();
     });
   });
 

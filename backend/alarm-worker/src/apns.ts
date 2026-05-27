@@ -114,6 +114,59 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
   });
 
   if (response.ok) return { ok: true, status: response.status };
+  return parseApnsError(response);
+}
+
+/**
+ * Alert push 발사 (#572 P2c). silent push와 헤더/payload가 다르다:
+ *   - apns-push-type: alert (silent은 background)
+ *   - apns-priority: 10 (silent은 5)
+ *   - aps.alert: { title, body } (silent은 content-available)
+ *   - aps.sound: default
+ *
+ * data.pushId는 silent과 동일 — 디바이스 P2e가 dedup에 사용.
+ */
+export interface SendAlertPushOptions {
+  deviceToken: string;
+  title: string;
+  body: string;
+  pushId: string;
+  config: ApnsConfig;
+  host: string;
+  fetchImpl?: typeof fetch;
+  now?: number;
+}
+
+export async function sendAlertPush(options: SendAlertPushOptions): Promise<SendPushResult> {
+  const jwt = await buildApnsJwt(options.config, options.now);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const url = `https://${options.host}/3/device/${options.deviceToken}`;
+
+  const body = JSON.stringify({
+    aps: {
+      alert: { title: options.title, body: options.body },
+      sound: 'default',
+    },
+    data: { pushId: options.pushId },
+  });
+
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      authorization: `bearer ${jwt}`,
+      'apns-topic': options.config.bundleId,
+      'apns-push-type': 'alert',
+      'apns-priority': '10',
+      'content-type': 'application/json',
+    },
+    body,
+  });
+
+  if (response.ok) return { ok: true, status: response.status };
+  return parseApnsError(response);
+}
+
+async function parseApnsError(response: Response): Promise<SendPushResult> {
   let reason: string | undefined;
   try {
     const data = (await response.json()) as { reason?: string };

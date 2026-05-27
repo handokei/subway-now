@@ -206,6 +206,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
             kind: waypoint.kind,
             phase: pushPhase,
             etaSeconds: eta,
+            // self-heal로 정정된 apnsEnv가 dirty에 반영되었더라도 현재 변수는 정정된 값.
+            // 누락 시 sandbox fallback과 일관 — pickApnsHost 동등 처리.
+            apnsEnv: trip.apnsEnv ?? 'sandbox',
           });
           if (shouldPushPhase) {
             trip.lastFiredPhase = phase!;

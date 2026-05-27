@@ -2,22 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { app, validatePushAck, validateTrip } from '../index';
 import { pendingKey } from '../pendingPushes';
 import type { AnalyticsEngineWriter, Env } from '../types';
-
-class InMemoryKV {
-  store = new Map<string, { value: string; expiresAt?: number }>();
-  async get(key: string): Promise<string | null> {
-    return this.store.get(key)?.value ?? null;
-  }
-  async put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void> {
-    const expiresAt = options?.expirationTtl
-      ? Date.now() + options.expirationTtl * 1000
-      : undefined;
-    this.store.set(key, { value, expiresAt });
-  }
-  async delete(key: string): Promise<void> {
-    this.store.delete(key);
-  }
-}
+import { InMemoryKV } from './inMemoryKv';
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
