@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Station } from '../types/station';
+import { Station, FavoriteEntry } from '../types/station';
 import type { AlarmEvent } from '../utils/stationAlarm';
 import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY } from '../constants/storageKeys';
 import { clearFiredAlarms } from '../utils/notificationState';
@@ -18,7 +18,7 @@ export type { AlarmEvent };
 const noop = () => {};
 
 interface AppState {
-  favorites: Station[];
+  favorites: FavoriteEntry[];
   destination: Station | null;
   recentDestination: Station | null;
   sleepMode: boolean;
@@ -30,8 +30,9 @@ interface AppState {
   alarmEvent: AlarmEvent | null;
   debugVisible: boolean;
   setDebugVisible: (visible: boolean) => void;
-  addFavorite: (station: Station) => Promise<void>;
+  addFavorite: (station: Station, label?: string) => Promise<void>;
   removeFavorite: (stationId: string) => Promise<void>;
+  setFavoriteLabel: (stationId: string, label?: string) => Promise<void>;
   loadFavorites: () => Promise<void>;
   setDestination: (station: Station | null) => void;
   loadDestination: () => Promise<void>;
@@ -78,23 +79,52 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const raw = await AsyncStorage.getItem(FAVORITES_KEY);
       if (raw) {
-        set({ favorites: JSON.parse(raw) });
+        const parsed: unknown = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          // 마이그레이션: 기존 Station[] 포맷도 허용. entry.station 없으면 Station 원본으로 간주.
+          const migrated: FavoriteEntry[] = parsed
+            .map((item): FavoriteEntry | null => {
+              if (!item || typeof item !== 'object') return null;
+              if ('station' in item) {
+                const { station, label } = item as FavoriteEntry;
+                if (!station || typeof station.id !== 'string') return null;
+                return label != null ? { station, label } : { station };
+              }
+              if ('id' in item && typeof (item as Station).id === 'string') {
+                return { station: item as Station };
+              }
+              return null;
+            })
+            .filter((entry): entry is FavoriteEntry => entry !== null);
+          set({ favorites: migrated });
+        }
       }
     } catch {
       // 저장된 데이터 없음 — 빈 배열 유지
     }
   },
 
-  addFavorite: async (station: Station) => {
+  addFavorite: async (station: Station, label?: string) => {
     const current = get().favorites;
-    if (current.some((s) => s.id === station.id)) return;
-    const updated = [...current, station];
+    if (current.some((f) => f.station.id === station.id)) return;
+    const entry: FavoriteEntry = label != null && label !== '' ? { station, label } : { station };
+    const updated = [...current, entry];
     set({ favorites: updated });
     await AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(updated));
   },
 
   removeFavorite: async (stationId: string) => {
-    const updated = get().favorites.filter((s) => s.id !== stationId);
+    const updated = get().favorites.filter((f) => f.station.id !== stationId);
+    set({ favorites: updated });
+    await AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(updated));
+  },
+
+  setFavoriteLabel: async (stationId: string, label?: string) => {
+    const trimmed = label?.trim();
+    const updated = get().favorites.map((f) => {
+      if (f.station.id !== stationId) return f;
+      return trimmed ? { station: f.station, label: trimmed } : { station: f.station };
+    });
     set({ favorites: updated });
     await AsyncStorage.setItem(FAVORITES_KEY, JSON.stringify(updated));
   },

@@ -168,9 +168,9 @@ describe('DestinationPicker', () => {
     expect(queryByTestId('favorites-chip-row')).toBeNull();
   });
 
-  it('favorites가 있으면 chip을 렌더링하고 탭 시 onSelect를 호출한다', () => {
+  it('favorites가 있으면 chip을 렌더링하고 탭 시 onSelect를 Station으로 호출한다', () => {
     const onSelect = jest.fn();
-    const fav: Station = {
+    const favStation: Station = {
       id: '2-021',
       name: '역삼',
       line: '2',
@@ -179,15 +179,19 @@ describe('DestinationPicker', () => {
       lng: 127.0365,
     };
     const { getByTestId } = render(
-      <DestinationPicker {...defaultProps} favorites={[fav]} onSelect={onSelect} />,
+      <DestinationPicker
+        {...defaultProps}
+        favorites={[{ station: favStation }]}
+        onSelect={onSelect}
+      />,
     );
     expect(getByTestId('favorites-chip-row')).toBeTruthy();
-    fireEvent.press(getByTestId(`favorite-chip-${fav.id}`));
-    expect(onSelect).toHaveBeenCalledWith(fav);
+    fireEvent.press(getByTestId(`favorite-chip-${favStation.id}`));
+    expect(onSelect).toHaveBeenCalledWith(favStation);
   });
 
   it('검색어를 입력해 드롭다운이 열리면 favorites chip을 숨긴다', () => {
-    const fav: Station = {
+    const favStation: Station = {
       id: '2-021',
       name: '역삼',
       line: '2',
@@ -196,14 +200,14 @@ describe('DestinationPicker', () => {
       lng: 127.0365,
     };
     const { getByTestId, queryByTestId } = render(
-      <DestinationPicker {...defaultProps} favorites={[fav]} />,
+      <DestinationPicker {...defaultProps} favorites={[{ station: favStation }]} />,
     );
     expect(getByTestId('favorites-chip-row')).toBeTruthy();
     fireEvent.changeText(getByTestId('search-input'), '강남');
     expect(queryByTestId('favorites-chip-row')).toBeNull();
   });
 
-  it('recentDestination과 중복되는 즐겨찾기는 chip에서 제외한다', () => {
+  it('recentDestination과 중복되는 label 없는 즐겨찾기는 chip에서 제외한다', () => {
     const recent: Station = {
       id: '2-022',
       name: '강남',
@@ -223,12 +227,32 @@ describe('DestinationPicker', () => {
     const { queryByTestId, getByTestId } = render(
       <DestinationPicker
         {...defaultProps}
-        favorites={[recent, other]}
+        favorites={[{ station: recent }, { station: other }]}
         recentDestination={recent}
       />,
     );
     expect(queryByTestId(`favorite-chip-${recent.id}`)).toBeNull();
     expect(getByTestId(`favorite-chip-${other.id}`)).toBeTruthy();
+  });
+
+  it('label 있는 즐겨찾기는 recentDestination과 중복돼도 chip을 표시하고 label을 노출한다', () => {
+    const home: Station = {
+      id: '2-022',
+      name: '강남',
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.498,
+      lng: 127.0279,
+    };
+    const { getByTestId, getByText } = render(
+      <DestinationPicker
+        {...defaultProps}
+        favorites={[{ station: home, label: '집' }]}
+        recentDestination={home}
+      />,
+    );
+    expect(getByTestId(`favorite-chip-${home.id}`)).toBeTruthy();
+    expect(getByText('집')).toBeTruthy();
   });
 
   it('검색창 포커스 시 드롭다운 표시 상태가 활성화된다', () => {

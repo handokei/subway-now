@@ -11,7 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../src/store/useAppStore';
 import { LINE_NAMES } from '../../src/constants/lineColors';
-import { Station } from '../../src/types/station';
+import type { FavoriteEntry, Station } from '../../src/types/station';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../../src/utils/formatTime';
@@ -27,6 +27,7 @@ export default function FavoritesScreen() {
   const favorites = useAppStore((s) => s.favorites);
   const addFavorite = useAppStore((s) => s.addFavorite);
   const removeFavorite = useAppStore((s) => s.removeFavorite);
+  const setFavoriteLabel = useAppStore((s) => s.setFavoriteLabel);
   const loadFavorites = useAppStore((s) => s.loadFavorites);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -38,7 +39,7 @@ export default function FavoritesScreen() {
   }, []);
 
   const selectedStation = useMemo(
-    () => favorites.find((f) => f.id === selectedId) ?? null,
+    () => favorites.find(({ station }) => station.id === selectedId)?.station ?? null,
     [favorites, selectedId],
   );
   const { arrival: rawArrival } = useArrivalInfo(
@@ -84,7 +85,7 @@ export default function FavoritesScreen() {
               <SearchResultCard
                 key={station.id}
                 station={station}
-                already={favorites.some((f) => f.id === station.id)}
+                already={favorites.some((f) => f.station.id === station.id)}
                 onAdd={() => addFavorite(station)}
                 colors={colors}
               />
@@ -99,20 +100,24 @@ export default function FavoritesScreen() {
             </Text>
           </View>
         ) : (
-          favorites.map((station: Station) => (
-            <FavoriteCard
-              key={station.id}
-              station={station}
-              isExpanded={station.id === selectedId}
-              arrival={station.id === selectedId ? arrival : null}
-              onToggle={() => handleToggleSelect(station.id)}
-              onRemove={() => {
-                if (selectedId === station.id) setSelectedId(null);
-                removeFavorite(station.id);
-              }}
-              colors={colors}
-            />
-          ))
+          favorites.map((entry: FavoriteEntry) => {
+            const { id } = entry.station;
+            return (
+              <FavoriteCard
+                key={id}
+                entry={entry}
+                isExpanded={id === selectedId}
+                arrival={id === selectedId ? arrival : null}
+                onToggle={() => handleToggleSelect(id)}
+                onRemove={() => {
+                  if (selectedId === id) setSelectedId(null);
+                  removeFavorite(id);
+                }}
+                onSaveLabel={(label) => setFavoriteLabel(id, label)}
+                colors={colors}
+              />
+            );
+          })
         )}
       </ScrollView>
     </SafeAreaView>
@@ -151,24 +156,39 @@ function SearchResultCard({
 }
 
 function FavoriteCard({
-  station,
+  entry,
   isExpanded,
   arrival,
   onToggle,
   onRemove,
+  onSaveLabel,
   colors,
 }: {
-  station: Station;
+  entry: FavoriteEntry;
   isExpanded: boolean;
   arrival: StationArrival | null;
   onToggle: () => void;
   onRemove: () => void;
+  onSaveLabel: (label?: string) => void;
   colors: ThemeColors;
 }) {
   const { t } = useTranslation();
+  const { station, label } = entry;
+  const [editing, setEditing] = useState(false);
+  const [draftLabel, setDraftLabel] = useState(label ?? '');
   const showRows = arrival != null && arrival.source !== 'closed';
   const emptyArrival =
     showRows && arrival.up.length === 0 && arrival.down.length === 0;
+  const stationDisplay = getStationDisplayName(station);
+  const handleSave = () => {
+    const trimmed = draftLabel.trim();
+    onSaveLabel(trimmed === '' ? undefined : trimmed);
+    setEditing(false);
+  };
+  const handleCancel = () => {
+    setDraftLabel(label ?? '');
+    setEditing(false);
+  };
   return (
     <View style={[styles.card, { backgroundColor: colors.card, borderLeftColor: station.lineColor }]}>
       {/* Remove 버튼을 onToggle TouchableOpacity 밖 sibling으로 배치.
@@ -179,7 +199,12 @@ function FavoriteCard({
             <View style={[styles.badge, { backgroundColor: station.lineColor }]}>
               <Text style={styles.badgeText}>{LINE_NAMES[station.line]}</Text>
             </View>
-            <Text style={[styles.stationName, { color: colors.ink }]}>{getStationDisplayName(station)}</Text>
+            <Text style={[styles.stationName, { color: colors.ink }]}>
+              {label ?? stationDisplay}
+            </Text>
+            {label != null && (
+              <Text style={[styles.subStationName, { color: colors.muted }]}>{stationDisplay}</Text>
+            )}
           </View>
           <Text style={[styles.expandIcon, { color: colors.muted }]}>{isExpanded ? '▲' : '▼'}</Text>
         </TouchableOpacity>
@@ -190,6 +215,48 @@ function FavoriteCard({
 
       {isExpanded && (
         <View style={[styles.arrivalSection, { borderTopColor: colors.hair }]}>
+          <View style={styles.labelEditor}>
+            {editing ? (
+              <>
+                <TextInput
+                  style={[styles.labelInput, { backgroundColor: colors.bg, color: colors.ink, borderColor: colors.hair }]}
+                  value={draftLabel}
+                  onChangeText={setDraftLabel}
+                  placeholder={t('favorites.labelPlaceholder')}
+                  placeholderTextColor={colors.muted}
+                  autoFocus
+                  testID={`favorite-label-input-${station.id}`}
+                />
+                <TouchableOpacity
+                  style={[styles.labelButton, { backgroundColor: colors.accent }]}
+                  onPress={handleSave}
+                  testID={`favorite-label-save-${station.id}`}
+                >
+                  <Text style={[styles.labelButtonText, { color: colors.onAccent }]}>{t('favorites.saveLabel')}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.labelButton, { backgroundColor: colors.card, borderColor: colors.hair, borderWidth: 1 }]}
+                  onPress={handleCancel}
+                  testID={`favorite-label-cancel-${station.id}`}
+                >
+                  <Text style={[styles.labelButtonText, { color: colors.ink }]}>{t('common.cancel')}</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <TouchableOpacity
+                style={[styles.labelButton, { backgroundColor: colors.card, borderColor: colors.hair, borderWidth: 1 }]}
+                onPress={() => {
+                  setDraftLabel(label ?? '');
+                  setEditing(true);
+                }}
+                testID={`favorite-label-edit-${station.id}`}
+              >
+                <Text style={[styles.labelButtonText, { color: colors.ink }]}>
+                  {label != null ? t('favorites.editLabel') : t('favorites.addLabel')}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
           {arrival == null && (
             <Text style={[styles.noArrival, { color: colors.muted }]}>{t('home.loading')}</Text>
           )}
@@ -319,6 +386,35 @@ const styles = StyleSheet.create({
   stationName: {
     fontSize: 20,
     fontWeight: '700',
+  },
+  subStationName: {
+    fontSize: 13,
+    marginTop: 2,
+  },
+  labelEditor: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 12,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  },
+  labelInput: {
+    flex: 1,
+    minWidth: 120,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 14,
+    borderWidth: 1,
+  },
+  labelButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  labelButtonText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
   removeButton: {
     paddingHorizontal: 14,

@@ -41,7 +41,24 @@ describe('useAppStore', () => {
 
     const { favorites } = useAppStore.getState();
     expect(favorites).toHaveLength(1);
-    expect(favorites[0].id).toBe('2-022');
+    expect(favorites[0].station.id).toBe('2-022');
+    expect(favorites[0].label).toBeUndefined();
+  });
+
+  it('addFavorite: label과 함께 추가하면 entry에 label이 저장된다', async () => {
+    const { addFavorite } = useAppStore.getState();
+    await addFavorite(mockStation, '집');
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites[0].label).toBe('집');
+  });
+
+  it('addFavorite: 빈 문자열 label은 무시한다', async () => {
+    const { addFavorite } = useAppStore.getState();
+    await addFavorite(mockStation, '');
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites[0].label).toBeUndefined();
   });
 
   it('동일한 역을 중복 추가해도 한 번만 저장된다', async () => {
@@ -71,13 +88,13 @@ describe('useAppStore', () => {
     expect(favorites).toHaveLength(1);
   });
 
-  it('addFavorite 호출 시 AsyncStorage에 저장한다', async () => {
+  it('addFavorite 호출 시 AsyncStorage에 FavoriteEntry로 저장한다', async () => {
     const { addFavorite } = useAppStore.getState();
     await addFavorite(mockStation);
 
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
       'subway-now:favorites',
-      JSON.stringify([mockStation])
+      JSON.stringify([{ station: mockStation }])
     );
   });
 
@@ -89,13 +106,53 @@ describe('useAppStore', () => {
 
     expect(AsyncStorage.setItem).toHaveBeenLastCalledWith(
       'subway-now:favorites',
-      JSON.stringify([mockStation2])
+      JSON.stringify([{ station: mockStation2 }])
     );
   });
 
-  it('loadFavorites: AsyncStorage에서 데이터를 복원한다', async () => {
+  it('setFavoriteLabel: label 설정 시 entry가 업데이트되고 저장된다', async () => {
+    const { addFavorite, setFavoriteLabel } = useAppStore.getState();
+    await addFavorite(mockStation);
+    await setFavoriteLabel(mockStation.id, '회사');
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites[0].label).toBe('회사');
+    expect(AsyncStorage.setItem).toHaveBeenLastCalledWith(
+      'subway-now:favorites',
+      JSON.stringify([{ station: mockStation, label: '회사' }])
+    );
+  });
+
+  it('setFavoriteLabel: 빈 문자열/공백/undefined 입력 시 label을 제거한다', async () => {
+    const { addFavorite, setFavoriteLabel } = useAppStore.getState();
+    await addFavorite(mockStation, '집');
+    await setFavoriteLabel(mockStation.id, '   ');
+
+    let { favorites } = useAppStore.getState();
+    expect(favorites[0].label).toBeUndefined();
+
+    await setFavoriteLabel(mockStation.id, '집');
+    favorites = useAppStore.getState().favorites;
+    expect(favorites[0].label).toBe('집');
+
+    await setFavoriteLabel(mockStation.id, undefined);
+    favorites = useAppStore.getState().favorites;
+    expect(favorites[0].label).toBeUndefined();
+  });
+
+  it('setFavoriteLabel: 매칭되지 않는 stationId는 무시한다', async () => {
+    const { addFavorite, setFavoriteLabel } = useAppStore.getState();
+    await addFavorite(mockStation, '집');
+    await setFavoriteLabel('non-existent', '회사');
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites).toHaveLength(1);
+    expect(favorites[0].label).toBe('집');
+  });
+
+  it('loadFavorites: AsyncStorage에서 FavoriteEntry[] 데이터를 복원한다', async () => {
     (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
-      JSON.stringify([mockStation])
+      JSON.stringify([{ station: mockStation, label: '집' }])
     );
 
     const { loadFavorites } = useAppStore.getState();
@@ -103,7 +160,51 @@ describe('useAppStore', () => {
 
     const { favorites } = useAppStore.getState();
     expect(favorites).toHaveLength(1);
-    expect(favorites[0].id).toBe('2-022');
+    expect(favorites[0].station.id).toBe('2-022');
+    expect(favorites[0].label).toBe('집');
+  });
+
+  it('loadFavorites: 기존 Station[] 포맷을 FavoriteEntry[]로 마이그레이션한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
+      JSON.stringify([mockStation, mockStation2])
+    );
+
+    const { loadFavorites } = useAppStore.getState();
+    await loadFavorites();
+
+    const { favorites } = useAppStore.getState();
+    expect(favorites).toHaveLength(2);
+    expect(favorites[0].station.id).toBe('2-022');
+    expect(favorites[0].label).toBeUndefined();
+    expect(favorites[1].station.id).toBe('2-021');
+  });
+
+  it('loadFavorites: 배열이 아니거나 잘못된 항목은 건너뛴다', async () => {
+    (AsyncStorage.getItem as jest.Mock)
+      .mockResolvedValueOnce(JSON.stringify({ not: 'array' }))
+      .mockResolvedValueOnce(
+        JSON.stringify([
+          null,
+          { random: 'object' },
+          { station: null },
+          { station: { lat: 1, lng: 2 } }, // id 없음
+          { id: 42 }, // 잘못된 id 타입
+          { station: mockStation, label: '집' },
+          { station: mockStation2 }, // label 없는 FavoriteEntry
+        ]),
+      );
+
+    const { loadFavorites } = useAppStore.getState();
+    await loadFavorites();
+    expect(useAppStore.getState().favorites).toHaveLength(0);
+
+    await loadFavorites();
+    const { favorites } = useAppStore.getState();
+    expect(favorites).toHaveLength(2);
+    expect(favorites[0].station.id).toBe('2-022');
+    expect(favorites[0].label).toBe('집');
+    expect(favorites[1].station.id).toBe('2-021');
+    expect(favorites[1].label).toBeUndefined();
   });
 
   it('loadFavorites: AsyncStorage가 비어있으면 빈 배열을 유지한다', async () => {

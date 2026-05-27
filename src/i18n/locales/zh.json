@@ -95,7 +95,11 @@
     "noSearchResults": "无搜索结果",
     "empty": "还没有收藏",
     "emptyDescription": "在上方搜索车站\n添加到收藏。",
-    "remove": "删除"
+    "remove": "删除",
+    "addLabel": "添加别名",
+    "editLabel": "编辑别名",
+    "saveLabel": "保存",
+    "labelPlaceholder": "家、公司等"
   },
   "alarmOverlay": {
     "transferTitle": "换乘提醒",
