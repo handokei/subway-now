@@ -1,4 +1,9 @@
-import { registerActiveTrip, clearActiveTrip, sendPushAck } from '../alarmBackend';
+import {
+  registerActiveTrip,
+  clearActiveTrip,
+  sendPushAck,
+  __resetAlarmBackendDedup,
+} from '../alarmBackend';
 import type { RegisterTripPayload } from '../alarmBackend';
 
 jest.mock('../../utils/logger', () => ({
@@ -29,6 +34,7 @@ describe('alarmBackend', () => {
     jest.useFakeTimers().setSystemTime(NOW);
     delete process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
     global.fetch = jest.fn();
+    __resetAlarmBackendDedup();
   });
 
   afterEach(() => {
@@ -100,6 +106,80 @@ describe('alarmBackend', () => {
       (global.fetch as jest.Mock).mockRejectedValue(new Error('network'));
       const result = await registerActiveTrip(SAMPLE_PAYLOAD);
       expect(result).toEqual({ ok: false });
+    });
+
+    describe('dedup (#581)', () => {
+      beforeEach(() => {
+        process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+        (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      });
+
+      it('동일 페이로드 두 번 호출 시 두 번째는 fetch 안 함 + skipped=true', async () => {
+        const first = await registerActiveTrip(SAMPLE_PAYLOAD);
+        const second = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(first).toEqual({ ok: true, status: 200 });
+        expect(second).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
+      it('alarmAtEpochMs가 60초 버킷 내 jitter 면 dedup된다', async () => {
+        await registerActiveTrip(SAMPLE_PAYLOAD);
+        const jitter = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          alarmAtEpochMs: SAMPLE_PAYLOAD.alarmAtEpochMs + 30_000,
+        });
+        expect(jitter.skipped).toBe(true);
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
+      it('alarmAtEpochMs가 다른 버킷으로 넘어가면 재등록된다', async () => {
+        await registerActiveTrip(SAMPLE_PAYLOAD);
+        const next = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          alarmAtEpochMs: SAMPLE_PAYLOAD.alarmAtEpochMs + 120_000,
+        });
+        expect(next).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+      });
+
+      it('destination 변경 시 재등록된다', async () => {
+        await registerActiveTrip(SAMPLE_PAYLOAD);
+        const next = await registerActiveTrip({ ...SAMPLE_PAYLOAD, destination: '0229' });
+        expect(next.ok).toBe(true);
+        expect(next.skipped).toBeUndefined();
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+      });
+
+      it('등록 실패(non-2xx)는 해시를 저장하지 않아 다음 호출에서 재시도된다', async () => {
+        (global.fetch as jest.Mock)
+          .mockResolvedValueOnce({ ok: false, status: 500 } as Response)
+          .mockResolvedValueOnce({ ok: true, status: 200 } as Response);
+        const first = await registerActiveTrip(SAMPLE_PAYLOAD);
+        const retry = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(first).toEqual({ ok: false, status: 500 });
+        expect(retry).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+      });
+
+      it('clearActiveTrip 호출 후엔 같은 페이로드도 다시 등록된다', async () => {
+        await registerActiveTrip(SAMPLE_PAYLOAD);
+        await clearActiveTrip('token-hex');
+        (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+        const reregister = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(reregister).toEqual({ ok: true, status: 200 });
+      });
+
+      it('URL 미설정 → 설정 사이클에서도 dedup이 stale state를 남기지 않는다', async () => {
+        // URL 미설정으로 skip된 호출은 lastRegisteredHash를 건드리지 않아야 한다.
+        delete process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
+        const skipped = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(skipped.skipped).toBe(true);
+
+        process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+        const real = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(real).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('타임아웃 시 AbortController가 abort를 호출한다', async () => {
