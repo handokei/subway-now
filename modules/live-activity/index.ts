@@ -1,4 +1,7 @@
-import { requireOptionalNativeModule } from 'expo-modules-core';
+import {
+  type EventSubscription,
+  requireOptionalNativeModule,
+} from 'expo-modules-core';
 import { Platform } from 'react-native';
 
 export interface LiveActivityData {
@@ -67,4 +70,30 @@ export function saveWidgetStation(
 
 export function clearWidgetStation(): Promise<void> {
   return LiveActivityModule?.clearWidgetStation() ?? Promise.resolve();
+}
+
+const NOOP_SUBSCRIPTION: EventSubscription = { remove: () => undefined };
+
+export interface PushTokenEvent {
+  token: string;
+}
+
+/**
+ * iOS 16.2+ Live Activity push token (hex string) 갱신 구독.
+ * 비 iOS / 모듈 미설치 환경에서는 no-op subscription 반환.
+ */
+export function addPushTokenListener(
+  listener: (event: PushTokenEvent) => void,
+): EventSubscription {
+  return LiveActivityModule?.addListener('onPushToken', listener) ?? NOOP_SUBSCRIPTION;
+}
+
+/**
+ * Activity가 `.ended` / `.dismissed`로 전이된 시점 구독.
+ * backend에서 token deregister 트리거로 사용 (이슈 #609 후속 PR B).
+ */
+export function addActivityEndedListener(
+  listener: () => void,
+): EventSubscription {
+  return LiveActivityModule?.addListener('onActivityEnded', listener) ?? NOOP_SUBSCRIPTION;
 }
