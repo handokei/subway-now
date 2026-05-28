@@ -32,6 +32,19 @@ export const ARRIVAL_CODE = {
   PREV_ARRIVED: 5,
 } as const;
 
+/**
+ * Seoul API `realtimePosition.trainSttus` 값 (#585).
+ * `ARRIVAL_CODE`(arvlCd)와 **다른 코드 체계** — 우연히 숫자가 일부 겹친다고 재사용 금지.
+ *   0: 진입 (approaching)
+ *   1: 도착 (arrived)
+ *   2: 출발 (departed)
+ */
+export const TRAIN_STATUS = {
+  APPROACHING: 0,
+  ARRIVED: 1,
+  DEPARTED: 2,
+} as const;
+
 const IMMINENT_CODES: readonly number[] = [ARRIVAL_CODE.ENTERING, ARRIVAL_CODE.ARRIVED];
 const EARLY_CODES: readonly number[] = [ARRIVAL_CODE.PREV_ENTERING, ARRIVAL_CODE.PREV_ARRIVED];
 

@@ -2,15 +2,17 @@ import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
 import {
+  RESCHEDULE_THRESHOLD_MS,
+  estimateArrivalFromPosition,
   flipApnsEnv,
   pickActiveWaypoint,
   pickApnsHost,
   pickBestArrivalSignal,
   runScheduled,
 } from '../scheduled';
-import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
+import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
-import type { Env, Trip } from '../types';
+import type { BoardingLockMeta, Env, Trip } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
 let apnsConfig: ApnsConfig;
@@ -605,5 +607,437 @@ describe('runScheduled', () => {
       });
       expect(pending.store.size).toBe(0);
     });
+  });
+});
+
+describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
+  function makeLock(overrides: Partial<BoardingLockMeta> = {}): BoardingLockMeta {
+    return {
+      trainCode: '7246',
+      line: '7',
+      subwayId: '1007',
+      selectedDepartureTime: NOW,
+      segmentStations: ['용마산', '중곡', '군자'],
+      expiresAt: NOW + 60 * 60_000,
+      ...overrides,
+    };
+  }
+
+  function makeLockTrip(overrides: Partial<Trip> = {}): Trip {
+    return makeTrip({
+      token: 'lock-tok',
+      route: { type: 'direct', line: '7', stops: 2 },
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate' },
+        { stationName: '군자', line: '7', kind: 'destination' },
+      ],
+      boardingLock: makeLock(),
+      ...overrides,
+    });
+  }
+
+  /** Seoul API 응답 — arrivals와 positions를 URL 경로로 분기. */
+  function makeSeoulCombo(
+    arrivals: ArrivalEntry[],
+    positions: Array<Partial<PositionEntry> & { trainCode: string }>,
+  ): SeoulArrivalClient {
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async (url: string) => {
+        if (url.includes('/realtimePosition/')) {
+          return new Response(
+            JSON.stringify({
+              realtimePositionList: positions.map((p) => ({
+                trainNo: p.trainCode,
+                statnNm: p.stationName ?? '',
+                trainSttus: p.trainSttus ?? 0,
+                updnLine: p.isUp === false ? '하행' : '상행',
+                lastRecptnDt: '',
+              })),
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            realtimeArrivalList: arrivals.map((a) => ({
+              barvlDt: String(a.arrivalSeconds),
+              recptnDt: '',
+              updnLine: a.isUp ? '상행' : '하행',
+              trainLineNm: a.destination,
+              btrainNo: a.trainCode,
+              subwayNm: a.subwayNm,
+              arvlCd: a.arvlCd,
+            })),
+          }),
+          { status: 200 },
+        );
+      }) as unknown as typeof fetch,
+    });
+  }
+
+  function arrivalForLock(stationName: string, seconds: number, arvlCd: number | null = null, trainCode = '7246'): ArrivalEntry {
+    return { destination: stationName, arrivalSeconds: seconds, trainCode, isUp: true, subwayNm: '지하철7호선', arvlCd };
+  }
+
+  it('fires reschedule push when trainCode matched in arrivals (no prior baseline)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 120)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p1',
+    });
+    expect(stats.pushed).toBe(1);
+    expect(apnsFetch).toHaveBeenCalledTimes(1);
+    const call = apnsFetch.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.kind).toBe('reschedule');
+    expect(body.data.trainCode).toBe('7246');
+    expect(body.data.nextStation).toBe('중곡');
+    expect(body.data.newArrivalTimeEpoch).toBe(NOW + 120_000);
+    // baseline 저장 확인
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.lastTrackedArrivalEpoch).toBe(NOW + 120_000);
+  });
+
+  it('does not push when delta < threshold', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({ lastTrackedArrivalEpoch: NOW + 120_000 }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 125)], []), // +5s delta
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p1',
+    });
+    expect(stats.pushed).toBe(0);
+    expect(apnsFetch).not.toHaveBeenCalled();
+  });
+
+  it('pushes again when delta >= threshold', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({ lastTrackedArrivalEpoch: NOW + 120_000 }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 140)], []), // +20s delta
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p2',
+    });
+    expect(stats.pushed).toBe(1);
+  });
+
+  it('falls back to realtimePosition when trainCode not in arrivals', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo(
+        [arrivalForLock('중곡', 60, null, 'other-train')], // 다른 trainCode만 있음
+        [{ trainCode: '7246', stationName: '용마산', trainSttus: 0 }], // segmentStations[0]
+      ),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p3',
+    });
+    expect(stats.pushed).toBe(1);
+    // segmentStations idx 0(용마산) → 1(중곡), 1 hop × 90s
+    const call = apnsFetch.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.newArrivalTimeEpoch).toBe(NOW + 90_000);
+  });
+
+  it('etaMissing when trainCode found nowhere', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p4',
+    });
+    expect(stats.etaMissing).toBe(1);
+    expect(stats.pushed).toBe(0);
+  });
+
+  it('advances waypoint and resets baseline when trainCode arrived (arvlCd=1)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({ lastTrackedArrivalEpoch: NOW + 5000 }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p5',
+    });
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.waypoints).toHaveLength(1);
+    expect(stored.waypoints[0].stationName).toBe('군자');
+    expect(stored.lastTrackedArrivalEpoch).toBeUndefined();
+  });
+
+  it('deletes trip when destination arrived', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
+      }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p6',
+    });
+    expect(await kv.get('trip:lock-tok')).toBeNull();
+  });
+
+  it('deletes trip when last intermediate waypoint advanced beyond list', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
+      }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p7',
+    });
+    expect(await kv.get('trip:lock-tok')).toBeNull();
+  });
+
+  it('skips boardingLock branch when lock expired (falls through to phase polling)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        boardingLock: makeLock({ expiresAt: NOW - 1 }),
+        waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([makeImminentArrival('강남')]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p8',
+    });
+    // 일반 phase 경로로 처리되어 imminent push가 발사되어야 함
+    expect(stats.pushed).toBe(1);
+    const call = apnsFetch.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.phase).toBeDefined();
+    expect(body.data.kind).not.toBe('reschedule');
+  });
+
+  it('counts error when reschedule push fails (apns 400)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadFoo' }), { status: 400 }),
+    );
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 60)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p9',
+    });
+    expect(stats.errors).toBe(1);
+    expect(stats.pushed).toBe(0);
+  });
+
+  it('handles tracking exception (e.g. seoul throws)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const throwingSeoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () => {
+        throw new Error('boom');
+      }) as unknown as typeof fetch,
+    });
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: throwingSeoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.errors).toBe(1);
+  });
+
+  it('self-heals apns env mismatch (#482) — flips host + corrects trip.apnsEnv', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({ apnsEnv: 'sandbox' }),
+    );
+    const apnsFetch = vi.fn();
+    apnsFetch
+      .mockImplementationOnce(async () =>
+        new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+      )
+      .mockImplementationOnce(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 120)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-heal',
+    });
+    expect(stats.pushed).toBe(1);
+    expect(stats.envCorrected).toBe(1);
+    expect(apnsFetch).toHaveBeenCalledTimes(2);
+    // 1차: sandbox host, 2차: production host
+    const url1 = (apnsFetch.mock.calls[0] as unknown as [string])[0];
+    const url2 = (apnsFetch.mock.calls[1] as unknown as [string])[0];
+    expect(url1).toContain(APNS_HOSTS.sandbox);
+    expect(url2).toContain(APNS_HOSTS.production);
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.apnsEnv).toBe('production');
+  });
+
+  it('deletes trip when both hosts return BadDeviceToken (envMismatchExhausted)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip({ apnsEnv: 'sandbox' }));
+    const apnsFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+    );
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 120)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-exhaust',
+    });
+    expect(await kv.get('trip:lock-tok')).toBeNull();
+  });
+
+  it('deletes trip on Unregistered (410)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'Unregistered' }), { status: 410 }),
+    );
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 120)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-410',
+    });
+    expect(await kv.get('trip:lock-tok')).toBeNull();
+  });
+
+  it('skips push (no API call to APNs) when trainCode arrived at non-target station via position fallback (arrived=false)', async () => {
+    // segmentStations idx 0(용마산) → target 1(중곡), 1 hop. arrived=false (sttus=0 이동중).
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({ lastTrackedArrivalEpoch: NOW + 90_000 }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo(
+        [],
+        [{ trainCode: '7246', stationName: '용마산', trainSttus: 0 }],
+      ),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.pushed).toBe(0);
+  });
+});
+
+describe('estimateArrivalFromPosition (#585)', () => {
+  const lock: BoardingLockMeta = {
+    trainCode: '7246',
+    line: '7',
+    subwayId: '1007',
+    selectedDepartureTime: NOW,
+    segmentStations: ['용마산', '중곡', '군자', '어린이대공원'],
+    expiresAt: NOW + 60 * 60_000,
+  };
+
+  it('returns null epoch when current station not in segment', () => {
+    const train: PositionEntry = { trainCode: '7246', stationName: '아예다른역', trainSttus: 0, isUp: true, recptnMs: 0 };
+    expect(estimateArrivalFromPosition(train, '군자', lock, NOW)).toEqual({ epoch: null, arrived: false });
+  });
+
+  it('returns null epoch when target station not in segment', () => {
+    const train: PositionEntry = { trainCode: '7246', stationName: '용마산', trainSttus: 0, isUp: true, recptnMs: 0 };
+    expect(estimateArrivalFromPosition(train, '아예다른역', lock, NOW)).toEqual({ epoch: null, arrived: false });
+  });
+
+  it('estimates epoch by hop count × 90s', () => {
+    const train: PositionEntry = { trainCode: '7246', stationName: '용마산', trainSttus: 0, isUp: true, recptnMs: 0 };
+    // 용마산(0) → 어린이대공원(3) = 3 hops × 90_000ms
+    expect(estimateArrivalFromPosition(train, '어린이대공원', lock, NOW)).toEqual({ epoch: NOW + 270_000, arrived: false });
+  });
+
+  it('treats currentIdx >= targetIdx as already at/past target', () => {
+    const train: PositionEntry = { trainCode: '7246', stationName: '군자', trainSttus: 0, isUp: true, recptnMs: 0 };
+    const r = estimateArrivalFromPosition(train, '중곡', lock, NOW);
+    expect(r.epoch).toBe(NOW);
+    expect(r.arrived).toBe(false); // sttus가 ARRIVED 아니고 stationName도 target과 다름
+  });
+
+  it('reports arrived=true when sttus=ARRIVED at target station', () => {
+    const train: PositionEntry = { trainCode: '7246', stationName: '군자', trainSttus: 1, isUp: true, recptnMs: 0 };
+    expect(estimateArrivalFromPosition(train, '군자', lock, NOW)).toEqual({ epoch: NOW, arrived: true });
+  });
+});
+
+describe('RESCHEDULE_THRESHOLD_MS (#585)', () => {
+  it('is 15 seconds', () => {
+    expect(RESCHEDULE_THRESHOLD_MS).toBe(15_000);
   });
 });

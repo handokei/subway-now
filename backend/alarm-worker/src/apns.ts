@@ -7,6 +7,7 @@
 
 import { importPKCS8, SignJWT } from 'jose';
 import type { AlarmPhase } from './alarm';
+import type { ReschedulePushPayload } from './types';
 
 /**
  * APNs JWT는 1시간 이내 재사용 가능. Worker 인스턴스 메모리에 캐시한다.
@@ -157,6 +158,61 @@ export async function sendAlertPush(options: SendAlertPushOptions): Promise<Send
       'apns-topic': options.config.bundleId,
       'apns-push-type': 'alert',
       'apns-priority': '10',
+      'content-type': 'application/json',
+    },
+    body,
+  });
+
+  if (response.ok) return { ok: true, status: response.status };
+  return parseApnsError(response);
+}
+
+/**
+ * Reschedule silent push (#585). 디바이스 사전 예약 알람(#584)의 도착 시각이 backend 관측과
+ * 어긋났을 때 발사. 디바이스는 받아서 기존 예약 cancel + newArrivalTimeEpoch로 재예약한다.
+ *
+ * silent push와 동일 헤더(background, priority 5)지만 payload의 `kind: 'reschedule'`로 구분.
+ * 일반 phase silent push와 달리 alert fallback 대상이 아니다 — 정정 신호 미도달 시 디바이스의
+ * 사전 예약이 SLA를 보장하므로 graceful.
+ */
+export interface SendReschedulePushOptions {
+  deviceToken: string;
+  pushId: string;
+  trainCode: string;
+  nextStation: string;
+  newArrivalTimeEpoch: number;
+  sentAt: number;
+  config: ApnsConfig;
+  host: string;
+  fetchImpl?: typeof fetch;
+  now?: number;
+}
+
+export async function sendReschedulePush(
+  options: SendReschedulePushOptions,
+): Promise<SendPushResult> {
+  const jwt = await buildApnsJwt(options.config, options.now);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const url = `https://${options.host}/3/device/${options.deviceToken}`;
+
+  const payload: ReschedulePushPayload = {
+    pushId: options.pushId,
+    kind: 'reschedule',
+    trainCode: options.trainCode,
+    nextStation: options.nextStation,
+    newArrivalTimeEpoch: options.newArrivalTimeEpoch,
+    sentAt: options.sentAt,
+  };
+
+  const body = JSON.stringify({ aps: { 'content-available': 1 }, data: payload });
+
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      authorization: `bearer ${jwt}`,
+      'apns-topic': options.config.bundleId,
+      'apns-push-type': 'background',
+      'apns-priority': '5',
       'content-type': 'application/json',
     },
     body,

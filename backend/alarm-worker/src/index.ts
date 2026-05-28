@@ -22,7 +22,7 @@ import {
   writeTelemetryDataPoints,
 } from './telemetry';
 import { deleteTrip, getTrip, putTrip } from './trips';
-import type { Env, Trip } from './types';
+import type { BoardingLockMeta, Env, Trip } from './types';
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -51,6 +51,14 @@ app.post('/trips', async (c) => {
         lastFiredPhase: existing.lastFiredPhase,
         lastEtaSeconds: existing.lastEtaSeconds,
         apnsEnv: existing.apnsEnv ?? incoming.apnsEnv,
+        // boardingLock이 바뀌면(예: 환승 후 새 trainCode) 추적 baseline도 리셋.
+        // 양쪽 모두 boardingLock이 있고 trainCode가 같을 때만 baseline 유지 — 둘 다 undefined인
+        // 경우 비교가 true로 평가돼 stale epoch이 살아남는 회귀를 막는다.
+        lastTrackedArrivalEpoch:
+          incoming.boardingLock &&
+          existing.boardingLock?.trainCode === incoming.boardingLock.trainCode
+            ? existing.lastTrackedArrivalEpoch
+            : undefined,
       }
     : incoming;
 
@@ -176,6 +184,34 @@ export function validateTrip(input: unknown): Trip | null {
       : undefined,
     lastEtaSeconds: typeof obj.lastEtaSeconds === 'number' ? obj.lastEtaSeconds : undefined,
     apnsEnv: obj.apnsEnv === 'sandbox' || obj.apnsEnv === 'production' ? obj.apnsEnv : undefined,
+    boardingLock: parseBoardingLock(obj.boardingLock),
+    lastTrackedArrivalEpoch:
+      typeof obj.lastTrackedArrivalEpoch === 'number' ? obj.lastTrackedArrivalEpoch : undefined,
+  };
+}
+
+/**
+ * BoardingLock metadata 파싱 (#585).
+ * 한 필드라도 어긋나면 boardingLock만 drop하고 trip은 살린다 — backend는 기존 anchor 폴링으로
+ * graceful fallback. 디바이스 schema 불일치로 trip 자체를 reject하면 알람이 통째로 죽으므로.
+ */
+function parseBoardingLock(raw: unknown): BoardingLockMeta | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.trainCode !== 'string' || o.trainCode.length === 0) return undefined;
+  if (typeof o.line !== 'string' || o.line.length === 0) return undefined;
+  if (typeof o.subwayId !== 'string' || o.subwayId.length === 0) return undefined;
+  if (typeof o.selectedDepartureTime !== 'number') return undefined;
+  if (!Array.isArray(o.segmentStations) || o.segmentStations.length === 0) return undefined;
+  if (!o.segmentStations.every((s) => typeof s === 'string' && s.length > 0)) return undefined;
+  if (typeof o.expiresAt !== 'number') return undefined;
+  return {
+    trainCode: o.trainCode,
+    line: o.line,
+    subwayId: o.subwayId,
+    selectedDepartureTime: o.selectedDepartureTime,
+    segmentStations: o.segmentStations as string[],
+    expiresAt: o.expiresAt,
   };
 }
 
