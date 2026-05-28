@@ -140,6 +140,131 @@ describe('SeoulArrivalClient', () => {
     expect(arrivals[0].arrivalSeconds).toBe(120);
   });
 
+  describe('fetchPositions (#585)', () => {
+    function makePositionItem(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+      return {
+        trainNo: '7246',
+        statnNm: '중곡',
+        trainSttus: 1,
+        updnLine: '상행',
+        lastRecptnDt: '2025-01-15 10:30:00',
+        ...overrides,
+      };
+    }
+
+    it('parses position list for known line', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({ realtimePositionList: [makePositionItem(), makePositionItem({ trainNo: '7248', updnLine: '하행' })] }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('7');
+      expect(positions).toHaveLength(2);
+      expect(positions[0].trainCode).toBe('7246');
+      expect(positions[0].stationName).toBe('중곡');
+      expect(positions[0].trainSttus).toBe(1);
+      expect(positions[0].isUp).toBe(true);
+      expect(positions[1].isUp).toBe(false);
+      expect(positions[0].recptnMs).toBe(FIXED_NOW);
+    });
+
+    it('returns empty array for unmapped line (no API call)', async () => {
+      const fetchImpl = vi.fn();
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('unknown-line');
+      expect(positions).toEqual([]);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it('caches positions within TTL', async () => {
+      const fetchImpl = vi.fn(async () => makeResponse({ realtimePositionList: [makePositionItem()] }));
+      let now = FIXED_NOW;
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => now,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      await client.fetchPositions('7');
+      await client.fetchPositions('7');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      now += 16_000;
+      await client.fetchPositions('7');
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    });
+
+    it('returns empty + short-caches on http error', async () => {
+      const fetchImpl = vi.fn(async () => makeResponse({}, false, 500));
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      expect(await client.fetchPositions('7')).toEqual([]);
+      await client.fetchPositions('7');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    });
+
+    it('skips malformed items (null, no trainNo, non-object)', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({
+          realtimePositionList: [
+            null,
+            'string-item',
+            { statnNm: '중곡' }, // missing trainNo
+            { trainNo: 123 }, // wrong type
+            makePositionItem(),
+          ],
+        }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('7');
+      expect(positions).toHaveLength(1);
+    });
+
+    it('handles missing realtimePositionList field', async () => {
+      const fetchImpl = vi.fn(async () => makeResponse({}));
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      expect(await client.fetchPositions('7')).toEqual([]);
+    });
+
+    it('defaults trainSttus / stationName when missing', async () => {
+      const fetchImpl = vi.fn(async () =>
+        makeResponse({ realtimePositionList: [{ trainNo: '7246' }] }),
+      );
+      const client = new SeoulArrivalClient({
+        apiKey: 'KEY',
+        host: 'example.com',
+        now: () => FIXED_NOW,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const positions = await client.fetchPositions('7');
+      expect(positions[0].stationName).toBe('');
+      expect(positions[0].trainSttus).toBeNull();
+      expect(positions[0].recptnMs).toBe(0);
+    });
+  });
+
   it('tracks call count', async () => {
     const fetchImpl = vi.fn(async () => makeResponse({ realtimeArrivalList: [] }));
     const client = new SeoulArrivalClient({

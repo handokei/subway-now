@@ -5,19 +5,77 @@
 import {
   ARRIVAL_CODE,
   EARLY_THRESHOLD_SEC,
+  TRAIN_STATUS,
   evaluatePhaseFromSignal,
   isSignificantEtaChange,
   shouldFire,
 } from './alarm';
-import { sendSilentPush, type ApnsConfig } from './apns';
+import { sendReschedulePush, sendSilentPush, type ApnsConfig, type SendPushResult } from './apns';
 import { matchLine } from './lineAlias';
 import { buildAlarmKey, putPending } from './pendingPushes';
-import { SeoulArrivalClient, type ArrivalEntry } from './seoul';
+import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import { deleteTrip, listTrips, putTrip } from './trips';
-import type { ApnsEnv, Env, Trip, Waypoint } from './types';
+import type { ApnsEnv, BoardingLockMeta, Env, Trip, Waypoint } from './types';
 
 /** 알람 윈도우: 알람 예상 시각 5분 이내인 트립만 폴링한다. */
 const POLLING_WINDOW_MS = 5 * 60 * 1000;
+
+/**
+ * boardingLock 추적에서 reschedule push를 발사할 변동 임계치 (#585).
+ * 새 도착 예측이 마지막으로 디바이스에 통지한 값과 이 이상 어긋날 때만 push.
+ * 15s = Seoul API barvlDt 단위(60s)의 1/4 — 노이즈는 줄이고 의미있는 변동은 잡는다.
+ */
+export const RESCHEDULE_THRESHOLD_MS = 15_000;
+
+/** boardingLock fallback에서 hop당 기본 소요(90s). 환승역 등 실제 hop은 후속 데이터로 정밀화. */
+const FALLBACK_HOP_SEC = 90;
+
+export interface EnvHealResult {
+  result: SendPushResult;
+  /** retry로 정정된 새 env. 정정 발생 시에만 set. */
+  correctedEnv?: ApnsEnv;
+  /** 양쪽 host 모두 BadDeviceToken — 토큰 자체 무효 신호. */
+  envMismatchExhausted: boolean;
+}
+
+/**
+ * APNs env mismatch self-heal (#482). 1차 호출 → BadDeviceToken이면 opposite host로 1회 retry.
+ * `sender`는 host를 받아 push를 보내는 클로저 — phase push / reschedule push 양쪽에서 재사용.
+ *
+ * 호출자 책임:
+ *   - correctedEnv set → trip.apnsEnv 갱신 + envCorrected stat 카운트
+ *   - envMismatchExhausted true → trip 삭제
+ *   - result.ok / !ok 분기는 각 경로별 후처리에 맡김
+ */
+export async function sendWithEnvHeal(
+  sender: (host: string) => Promise<SendPushResult>,
+  currentEnv: ApnsEnv | undefined,
+  apnsHosts: Record<ApnsEnv, string>,
+  log: Logger,
+  tokenForLog: string,
+): Promise<EnvHealResult> {
+  const initial = await sender(pickApnsHost(currentEnv, apnsHosts));
+  if (initial.ok || !isApnsEnvMismatch(initial.status, initial.reason)) {
+    return { result: initial, envMismatchExhausted: false };
+  }
+  const corrected = flipApnsEnv(currentEnv);
+  log('apns env mismatch — retry with opposite host', {
+    token: tokenForLog,
+    from: currentEnv ?? 'sandbox',
+    to: corrected,
+  });
+  const retry = await sender(apnsHosts[corrected]);
+  if (retry.ok) {
+    log('apns env corrected', { token: tokenForLog, to: corrected });
+    return { result: retry, correctedEnv: corrected, envMismatchExhausted: false };
+  }
+  return {
+    result: retry,
+    envMismatchExhausted: isApnsEnvMismatch(retry.status, retry.reason),
+  };
+}
+
+type Logger = (message: string, meta?: Record<string, unknown>) => void;
 
 export interface ScheduledStats {
   scanned: number;
@@ -95,6 +153,28 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     const waypoint = pickActiveWaypoint(trip);
     if (!waypoint) continue;
 
+    // #585 — boardingLock 활성 trip은 trainCode 단위 추적 + reschedule push 경로로 분기.
+    // 디바이스는 사전 예약 알람(#584)으로 SLA를 보장하므로 phase-based silent push는 보내지 않는다.
+    if (trip.boardingLock && trip.boardingLock.expiresAt > now) {
+      try {
+        await runTrainCodeTracking(
+          trip,
+          waypoint,
+          trip.boardingLock,
+          env,
+          deps,
+          stats,
+          now,
+          log,
+          generatePushId,
+        );
+      } catch (e) {
+        stats.errors += 1;
+        log('boarding-lock poll error', { error: String(e), token: trip.token.slice(0, 8) });
+      }
+      continue;
+    }
+
     try {
       const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
       const signal = pickBestArrivalSignal(arrivals, waypoint);
@@ -148,50 +228,28 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           sentAt: now,
           pushId,
         };
-        let result = await sendSilentPush({
-          deviceToken: trip.token,
-          payload: pushPayload,
-          config: deps.apnsConfig,
-          host: pickApnsHost(trip.apnsEnv, deps.apnsHosts),
-          fetchImpl: deps.fetchImpl,
-          now,
-        });
-
-        // self-heal (#482): BadDeviceToken은 토큰 자체 무효가 아니라 host 환경 불일치인 경우가
-        // 압도적이다. 반대 host로 1회 재시도하고, 성공하면 trip.apnsEnv를 정정 저장한다.
-        // 양쪽 host 모두 BadDeviceToken을 내면 그제야 진짜 토큰 무효로 보고 trip을 삭제한다.
-        let envMismatchExhausted = false;
-        if (!result.ok && isApnsEnvMismatch(result.status, result.reason)) {
-          const correctedEnv = flipApnsEnv(trip.apnsEnv);
-          log('apns env mismatch — retry with opposite host', {
-            token: trip.token.slice(0, 8),
-            from: trip.apnsEnv ?? 'sandbox',
-            to: correctedEnv,
-          });
-          const retryResult = await sendSilentPush({
-            deviceToken: trip.token,
-            payload: pushPayload,
-            config: deps.apnsConfig,
-            host: deps.apnsHosts[correctedEnv],
-            fetchImpl: deps.fetchImpl,
-            now,
-          });
-          if (retryResult.ok) {
-            trip.apnsEnv = correctedEnv;
-            dirty = true;
-            stats.envCorrected += 1;
-            log('apns env corrected', {
-              token: trip.token.slice(0, 8),
-              to: correctedEnv,
-            });
-          } else if (isApnsEnvMismatch(retryResult.status, retryResult.reason)) {
-            // 양쪽 모두 BadDeviceToken — 토큰 자체가 무효
-            envMismatchExhausted = true;
-          }
-          // retry 결과를 최종 result로 승격 — 하단 success/error 분기가 일관되게 동작.
-          // retry가 다른 종류 에러(예: 410, PayloadTooLarge)면 그대로 그 경로에서 처리됨.
-          result = retryResult;
+        const heal = await sendWithEnvHeal(
+          (host) =>
+            sendSilentPush({
+              deviceToken: trip.token,
+              payload: pushPayload,
+              config: deps.apnsConfig,
+              host,
+              fetchImpl: deps.fetchImpl,
+              now,
+            }),
+          trip.apnsEnv,
+          deps.apnsHosts,
+          log,
+          trip.token.slice(0, 8),
+        );
+        if (heal.correctedEnv) {
+          trip.apnsEnv = heal.correctedEnv;
+          dirty = true;
+          stats.envCorrected += 1;
         }
+        const envMismatchExhausted = heal.envMismatchExhausted;
+        const result = heal.result;
 
         if (result.ok) {
           stats.pushed += 1;
@@ -268,6 +326,216 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     seoulCalls: deps.seoul.stats.callCount,
   });
   return stats;
+}
+
+/**
+ * boardingLock trip 추적 (#585).
+ *
+ * 3단계로 분리: estimate → arrival 시 waypoint 진행(early return) → 아니면 reschedule push.
+ * push가 trip 도착 시점에 의미 없으므로 도착 케이스를 먼저 처리해 dirty write를 단일화.
+ */
+export async function runTrainCodeTracking(
+  trip: Trip,
+  waypoint: Waypoint,
+  lock: BoardingLockMeta,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  const estimate = await estimateBoardingLockArrival(deps, lock, waypoint, now);
+  if (estimate === null) {
+    stats.etaMissing += 1;
+    log('boarding-lock: trainCode not found in arrivals or positions', {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+    });
+    return;
+  }
+
+  if (estimate.arrived) {
+    await advanceBoardingLockWaypoint(trip, waypoint, env, log);
+    return;
+  }
+
+  await maybeReschedulePush(trip, waypoint, lock, estimate.epoch, env, deps, stats, now, log, generatePushId);
+}
+
+/**
+ * 다음 waypoint에 trainCode가 도착할 시각을 추정.
+ *   1순위: arrivals에서 trainCode 매칭 → barvlDt
+ *   2순위: positions에서 trainCode 위치 → segmentStations 인덱스 차이 기반
+ *   3순위: 둘 다 없음 → null
+ *
+ * arrived 판정: arrivals 경로는 arvlCd가 ENTERING(0, 진입) 또는 ARRIVED(1, 도착)인 경우.
+ * positions 경로는 estimateArrivalFromPosition이 sttus와 station 매치로 결정.
+ */
+export async function estimateBoardingLockArrival(
+  deps: ScheduledDeps,
+  lock: BoardingLockMeta,
+  waypoint: Waypoint,
+  now: number,
+): Promise<{ epoch: number; arrived: boolean } | null> {
+  const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
+  const matched = arrivals.find((a) => a.trainCode === lock.trainCode);
+  if (matched) {
+    return {
+      epoch: now + matched.arrivalSeconds * 1000,
+      arrived:
+        matched.arvlCd === ARRIVAL_CODE.ARRIVED || matched.arvlCd === ARRIVAL_CODE.ENTERING,
+    };
+  }
+  const positions = await deps.seoul.fetchPositions(lock.line);
+  const train = positions.find((p) => p.trainCode === lock.trainCode);
+  if (!train) return null;
+  const fallback = estimateArrivalFromPosition(train, waypoint.stationName, lock, now);
+  if (fallback.epoch === null) return null;
+  return { epoch: fallback.epoch, arrived: fallback.arrived };
+}
+
+/**
+ * waypoint 진행 처리. destination 도착 또는 last intermediate 통과 시 trip 삭제.
+ * baseline(lastTrackedArrivalEpoch)도 함께 리셋해 새 waypoint의 첫 push를 보장.
+ */
+export async function advanceBoardingLockWaypoint(
+  trip: Trip,
+  waypoint: Waypoint,
+  env: Env,
+  log: Logger,
+): Promise<void> {
+  if (waypoint.kind === 'destination') {
+    await deleteTrip(env.TRIPS, trip.token);
+    log('boarding-lock: destination arrived, trip cleared', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+    });
+    return;
+  }
+  trip.waypoints.shift();
+  trip.lastTrackedArrivalEpoch = undefined;
+  log('boarding-lock: waypoint advanced', {
+    token: trip.token.slice(0, 8),
+    completed: waypoint.stationName,
+    kind: waypoint.kind,
+    remaining: trip.waypoints.length,
+  });
+  if (trip.waypoints.length === 0) {
+    await deleteTrip(env.TRIPS, trip.token);
+    return;
+  }
+  await putTrip(env.TRIPS, trip);
+}
+
+/**
+ * 임계치 이상 변동 시 reschedule silent push 발사. APNs env mismatch(#482) self-heal 포함.
+ * reschedule push는 alert fallback 대상이 아니므로 PENDING_PUSHES 미등록.
+ */
+export async function maybeReschedulePush(
+  trip: Trip,
+  waypoint: Waypoint,
+  lock: BoardingLockMeta,
+  newArrivalEpoch: number,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  const lastEpoch = trip.lastTrackedArrivalEpoch;
+  if (
+    lastEpoch !== undefined &&
+    Math.abs(newArrivalEpoch - lastEpoch) < RESCHEDULE_THRESHOLD_MS
+  ) {
+    return;
+  }
+
+  const pushId = generatePushId();
+  log('reschedule push', {
+    token: trip.token.slice(0, 8),
+    trainCode: lock.trainCode,
+    nextStation: waypoint.stationName,
+    newArrivalTimeEpoch: newArrivalEpoch,
+    previousEpoch: lastEpoch,
+  });
+
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendReschedulePush({
+        deviceToken: trip.token,
+        pushId,
+        trainCode: lock.trainCode,
+        nextStation: waypoint.stationName,
+        newArrivalTimeEpoch: newArrivalEpoch,
+        sentAt: now,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+  );
+  let dirty = false;
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    dirty = true;
+    stats.envCorrected += 1;
+  }
+  const envMismatchExhausted = heal.envMismatchExhausted;
+  const result = heal.result;
+
+  if (result.ok) {
+    stats.pushed += 1;
+    trip.lastTrackedArrivalEpoch = newArrivalEpoch;
+    dirty = true;
+  } else {
+    stats.errors += 1;
+    log('reschedule push failed', {
+      status: result.status,
+      reason: result.reason,
+      token: trip.token.slice(0, 8),
+    });
+    if (isUnrecoverableApnsError(result.status, result.reason) || envMismatchExhausted) {
+      await deleteTrip(env.TRIPS, trip.token);
+      return;
+    }
+  }
+
+  if (dirty) {
+    await putTrip(env.TRIPS, trip);
+  }
+}
+
+/**
+ * realtimePosition에서 trainCode 위치를 찾았을 때 다음 waypoint 도착 epoch을 추정한다.
+ * segmentStations에서 현재 위치 인덱스와 목표 인덱스의 차이 × hop time(90s default).
+ * 매핑 안 되면 epoch null — 호출자가 etaMissing 처리.
+ * 이미 도착(sttus=ARRIVED) + 목표역 일치이면 arrived=true.
+ */
+export function estimateArrivalFromPosition(
+  train: PositionEntry,
+  targetStation: string,
+  lock: BoardingLockMeta,
+  now: number,
+): { epoch: number | null; arrived: boolean } {
+  const currentIdx = lock.segmentStations.indexOf(train.stationName);
+  const targetIdx = lock.segmentStations.indexOf(targetStation);
+  if (currentIdx < 0 || targetIdx < 0) return { epoch: null, arrived: false };
+  // 이미 목표역에 도착했거나 지나친 경우
+  if (currentIdx >= targetIdx) {
+    return {
+      epoch: now,
+      arrived: train.trainSttus === TRAIN_STATUS.ARRIVED && train.stationName === targetStation,
+    };
+  }
+  const hops = targetIdx - currentIdx;
+  return { epoch: now + hops * FALLBACK_HOP_SEC * 1000, arrived: false };
 }
 
 /**

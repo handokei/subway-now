@@ -7,10 +7,13 @@
  *   동일 사이클 내 중복 호출 차단이 주 목적)
  */
 
+import { canonicalLineName } from './lineAlias';
+
 const UP_DIRECTION_VALUES = ['상행', '내선'] as const;
 const SEOUL_API_TZ_OFFSET = '+09:00';
 const MAX_RECPTN_DRIFT_SEC = 120;
 const CACHE_TTL_MS = 15_000;
+const ERROR_CACHE_TTL_MS = 5_000;
 
 export interface ArrivalEntry {
   destination: string;
@@ -40,14 +43,67 @@ interface CacheEntry {
   data: ArrivalEntry[];
 }
 
+/** realtimePosition API의 1 train 항목 (#585 trainCode tracking). */
+export interface PositionEntry {
+  /** Seoul API trainNo / btrainNo (예: "7246") */
+  trainCode: string;
+  /** 현재 위치한 역명 */
+  stationName: string;
+  /** Seoul API trainSttus: 0:진입, 1:도착, 2:출발. `TRAIN_STATUS` 상수로 비교한다. 누락 시 null. */
+  trainSttus: number | null;
+  /** "상행"/"내선" 여부 */
+  isUp: boolean;
+  /** API 수신 시각 (epoch ms) — staleness 판정용. 누락 시 0. */
+  recptnMs: number;
+}
+
+interface PositionCacheEntry {
+  expiresAt: number;
+  data: PositionEntry[];
+}
+
 export class SeoulArrivalClient {
   private readonly cache = new Map<string, CacheEntry>();
+  private readonly positionCache = new Map<string, PositionCacheEntry>();
   private callCount = 0;
 
   constructor(private readonly options: FetchSeoulOptions) {}
 
   get stats(): { callCount: number; cacheSize: number } {
     return { callCount: this.callCount, cacheSize: this.cache.size };
+  }
+
+  /**
+   * realtimePosition(line) — 노선에 운행 중인 모든 열차 위치 (#585).
+   * 노선당 1 call로 trainCode 단위 추적이 가능하다.
+   * 캐시: 노선명 단위 15s (사이클 내 중복 호출 차단). 매핑 없는 line은 빈 배열.
+   */
+  async fetchPositions(line: string): Promise<PositionEntry[]> {
+    const lineName = canonicalLineName(line);
+    if (!lineName) return [];
+
+    const now = this.options.now?.() ?? Date.now();
+    const cached = this.positionCache.get(lineName);
+    if (cached && cached.expiresAt > now) return cached.data;
+
+    const fetchImpl = this.options.fetchImpl ?? fetch;
+    const url = `http://${this.options.host}/api/subway/${this.options.apiKey}/json/realtimePosition/0/100/${encodeURIComponent(lineName)}`;
+
+    this.callCount += 1;
+    const response = await fetchImpl(url);
+    if (!response.ok) {
+      this.positionCache.set(lineName, { expiresAt: now + ERROR_CACHE_TTL_MS, data: [] });
+      return [];
+    }
+
+    const data = (await response.json()) as { realtimePositionList?: unknown[] };
+    const items = Array.isArray(data.realtimePositionList) ? data.realtimePositionList : [];
+    const parsed = items
+      .map(parsePositionEntry)
+      .filter((e): e is PositionEntry => e !== null);
+
+    this.positionCache.set(lineName, { expiresAt: now + CACHE_TTL_MS, data: parsed });
+    return parsed;
   }
 
   async fetchArrivals(stationName: string): Promise<ArrivalEntry[]> {
@@ -64,7 +120,7 @@ export class SeoulArrivalClient {
     const response = await fetchImpl(url);
     if (!response.ok) {
       // 실패 시 빈 배열을 짧게 캐시해 폭주 방지
-      this.cache.set(stationName, { expiresAt: now + 5_000, data: [] });
+      this.cache.set(stationName, { expiresAt: now + ERROR_CACHE_TTL_MS, data: [] });
       return [];
     }
 
@@ -100,6 +156,22 @@ function parseEntry(raw: unknown, now: number): ArrivalEntry | null {
     isUp,
     subwayNm: typeof item.subwayNm === 'string' ? item.subwayNm : '',
     arvlCd: parseArvlCd(item.arvlCd),
+  };
+}
+
+function parsePositionEntry(raw: unknown): PositionEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const item = raw as Record<string, unknown>;
+  const trainCode = typeof item.trainNo === 'string' ? item.trainNo : '';
+  if (!trainCode) return null;
+  const stationName = typeof item.statnNm === 'string' ? item.statnNm : '';
+  const updnLine = typeof item.updnLine === 'string' ? item.updnLine : '';
+  return {
+    trainCode,
+    stationName,
+    trainSttus: parseArvlCd(item.trainSttus),
+    isUp: (UP_DIRECTION_VALUES as readonly string[]).includes(updnLine),
+    recptnMs: parseRecptnDt(item.lastRecptnDt),
   };
 }
 

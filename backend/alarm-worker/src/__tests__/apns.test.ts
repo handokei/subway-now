@@ -4,6 +4,7 @@ import {
   buildApnsJwt,
   resetApnsJwtCache,
   sendAlertPush,
+  sendReschedulePush,
   sendSilentPush,
   type ApnsConfig,
 } from '../apns';
@@ -215,5 +216,58 @@ describe('sendAlertPush (#572 P2c)', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.reason).toBeUndefined();
+  });
+});
+
+describe('sendReschedulePush (#585)', () => {
+  beforeEach(() => resetApnsJwtCache());
+
+  it('posts background push with reschedule payload', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const result = await sendReschedulePush({
+      deviceToken: 'devicetoken-hex',
+      pushId: 'rsch-1',
+      trainCode: '7246',
+      nextStation: '중곡',
+      newArrivalTimeEpoch: 1_700_000_120_000,
+      sentAt: 1_700_000_000_000,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result.ok).toBe(true);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe(`https://${TEST_HOST}/3/device/devicetoken-hex`);
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-push-type']).toBe('background');
+    expect(headers['apns-priority']).toBe('5');
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps['content-available']).toBe(1);
+    expect(body.data).toEqual({
+      pushId: 'rsch-1',
+      kind: 'reschedule',
+      trainCode: '7246',
+      nextStation: '중곡',
+      newArrivalTimeEpoch: 1_700_000_120_000,
+      sentAt: 1_700_000_000_000,
+    });
+  });
+
+  it('returns failure with reason on non-2xx', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+    );
+    const result = await sendReschedulePush({
+      deviceToken: 't',
+      pushId: 'p',
+      trainCode: '7',
+      nextStation: 'x',
+      newArrivalTimeEpoch: 0,
+      sentAt: 0,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ ok: false, status: 400, reason: 'BadDeviceToken' });
   });
 });

@@ -1,5 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { LINE_ALIAS_MAP, matchLine } from '../lineAlias';
+import { LINE_ALIAS_MAP, canonicalLineName, matchLine } from '../lineAlias';
+
+describe('canonicalLineName (#585)', () => {
+  it.each([
+    ['1', '1호선'],
+    ['7', '7호선'],
+    ['gyeongui', '경의중앙선'],
+    ['bundang', '수인분당선'],
+    ['sinbundang', '신분당선'],
+    ['airport', '공항철도'],
+  ])('maps line="%s" → "%s"', (line, expected) => {
+    expect(canonicalLineName(line)).toBe(expected);
+  });
+
+  it('returns null for unknown line', () => {
+    expect(canonicalLineName('unknown')).toBeNull();
+  });
+});
 
 describe('matchLine', () => {
   it('returns false when subwayNm or line is empty', () => {

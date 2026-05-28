@@ -71,6 +71,47 @@ export interface Trip {
    * 반드시 `apnsEnv: 'production'`을 명시한다.
    */
   apnsEnv?: ApnsEnv;
+  /**
+   * BoardingLock metadata (#584/#585). 디바이스가 사용자에게 탑승 열차를 확정받으면 보냄.
+   * 존재 시 backend는 trainCode 단위로 다음 hop 도착 시각을 추적하고, 변동 시 reschedule
+   * silent push로 디바이스 사전 예약을 정정한다. 없으면 기존 anchor waypoint 폴링으로 동작.
+   */
+  boardingLock?: BoardingLockMeta;
+  /**
+   * 마지막으로 디바이스에 reschedule push로 통지한 도착 시각 (epoch ms) — boardingLock 추적용.
+   * 새 관측이 이 값과 의미있게 어긋날 때만 push를 발사해 노이즈를 줄인다.
+   */
+  lastTrackedArrivalEpoch?: number;
+}
+
+/** Device가 확정한 탑승 열차 정보 (#584). */
+export interface BoardingLockMeta {
+  /** Seoul API btrainNo (예: "7246") */
+  trainCode: string;
+  /** 노선 (Waypoint.line과 동일 표기) */
+  line: LineNumber;
+  /** Seoul API subwayId (예: "1007") — 환승 노선 구분용 */
+  subwayId: string;
+  /** 사용자가 선택한 열차 출발 시각 (epoch ms) */
+  selectedDepartureTime: number;
+  /** 현 BoardingLock 구간 내 정차역 시퀀스 (출발역 → 구간 끝) */
+  segmentStations: string[];
+  /** Lock 자동 만료 시각 (epoch ms) */
+  expiresAt: number;
+}
+
+/**
+ * Reschedule silent push payload (#585).
+ * 디바이스가 사전 예약한 알람의 도착 시각이 backend 관측과 어긋날 때 발사.
+ * 디바이스는 이 push를 받아 기존 예약을 cancel하고 newArrivalTimeEpoch로 재예약한다.
+ */
+export interface ReschedulePushPayload {
+  pushId: string;
+  kind: 'reschedule';
+  trainCode: string;
+  nextStation: string;
+  newArrivalTimeEpoch: number;
+  sentAt: number;
 }
 
 /** APNs 토큰 환경. sandbox는 dev/preview/internal 빌드, production은 App Store/TestFlight. */

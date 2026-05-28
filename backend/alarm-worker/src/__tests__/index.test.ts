@@ -130,6 +130,137 @@ describe('validateTrip', () => {
   });
 });
 
+describe('validateTrip — boardingLock (#585)', () => {
+  function validLock(): Record<string, unknown> {
+    return {
+      trainCode: '7246',
+      line: '7',
+      subwayId: '1007',
+      selectedDepartureTime: 1_700_000_000_000,
+      segmentStations: ['용마산', '중곡', '군자'],
+      expiresAt: FUTURE,
+    };
+  }
+
+  it('accepts valid boardingLock', () => {
+    const trip = validateTrip({ ...base(), boardingLock: validLock() });
+    expect(trip?.boardingLock?.trainCode).toBe('7246');
+    expect(trip?.boardingLock?.segmentStations).toEqual(['용마산', '중곡', '군자']);
+  });
+
+  it('omits boardingLock when absent', () => {
+    expect(validateTrip(base())?.boardingLock).toBeUndefined();
+  });
+
+  it('drops boardingLock when non-object (trip survives)', () => {
+    const trip = validateTrip({ ...base(), boardingLock: 'bogus' });
+    expect(trip).not.toBeNull();
+    expect(trip?.boardingLock).toBeUndefined();
+  });
+
+  it.each([
+    ['trainCode missing', { trainCode: undefined }],
+    ['trainCode empty', { trainCode: '' }],
+    ['line missing', { line: undefined }],
+    ['line empty', { line: '' }],
+    ['subwayId missing', { subwayId: undefined }],
+    ['subwayId empty', { subwayId: '' }],
+    ['selectedDepartureTime not number', { selectedDepartureTime: 'now' }],
+    ['segmentStations not array', { segmentStations: 'A,B' }],
+    ['segmentStations empty', { segmentStations: [] }],
+    ['segmentStations contains non-string', { segmentStations: ['A', 1] }],
+    ['segmentStations contains empty string', { segmentStations: ['A', ''] }],
+    ['expiresAt not number', { expiresAt: 'soon' }],
+  ])('drops boardingLock when %s', (_label, override) => {
+    const trip = validateTrip({ ...base(), boardingLock: { ...validLock(), ...override } });
+    expect(trip).not.toBeNull();
+    expect(trip?.boardingLock).toBeUndefined();
+  });
+});
+
+describe('POST /trips — boardingLock merge (#585)', () => {
+  const CREATED = 1_700_000_000_000;
+  function makeKvEnv(): Env {
+    return makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'] });
+  }
+  function lockBody(lockOverride?: Record<string, unknown> | null): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      ...base(),
+      token: 'tok-585',
+      createdAt: CREATED,
+    };
+    if (lockOverride !== null) {
+      body.boardingLock = {
+        trainCode: '7246',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: CREATED,
+        segmentStations: ['용마산', '중곡', '군자'],
+        expiresAt: FUTURE,
+        ...lockOverride,
+      };
+    }
+    return body;
+  }
+
+  it('persists boardingLock on first register', async () => {
+    const env = makeKvEnv();
+    await post('/trips', lockBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-585')) as string);
+    expect(stored.boardingLock?.trainCode).toBe('7246');
+  });
+
+  it('incoming boardingLock wins on same-session re-register (transfer updates trainCode)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', lockBody({ trainCode: '7246' }), env);
+    await post('/trips', lockBody({ trainCode: '2317' }), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-585')) as string);
+    expect(stored.boardingLock?.trainCode).toBe('2317');
+  });
+
+  it('omitted boardingLock clears existing lock (lock released)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', lockBody(), env);
+    await post('/trips', lockBody(null), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-585')) as string);
+    expect(stored.boardingLock).toBeUndefined();
+  });
+
+  it('clears stale lastTrackedArrivalEpoch when both sides have no boardingLock (P3-3 회귀 방지)', async () => {
+    const env = makeKvEnv();
+    // 외부에서 lastTrackedArrivalEpoch가 남은 trip 직접 주입 (예: 잔여 backend 상태)
+    const seeded = { ...lockBody(null), lastTrackedArrivalEpoch: 1_234 };
+    await env.TRIPS.put('trip:tok-585', JSON.stringify(seeded));
+    await post('/trips', lockBody(null), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-585')) as string);
+    expect(stored.lastTrackedArrivalEpoch).toBeUndefined();
+  });
+
+  it('preserves lastTrackedArrivalEpoch when same trainCode re-registered', async () => {
+    const env = makeKvEnv();
+    await post('/trips', lockBody(), env);
+    // backend 측에서 epoch을 갱신했다고 가정
+    const advanced = JSON.parse((await env.TRIPS.get('trip:tok-585')) as string);
+    advanced.lastTrackedArrivalEpoch = 9_999;
+    await env.TRIPS.put('trip:tok-585', JSON.stringify(advanced));
+    // 같은 trainCode로 재등록
+    await post('/trips', lockBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-585')) as string);
+    expect(stored.lastTrackedArrivalEpoch).toBe(9_999);
+  });
+
+  it('resets lastTrackedArrivalEpoch when trainCode changed (transfer)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', lockBody({ trainCode: '7246' }), env);
+    const advanced = JSON.parse((await env.TRIPS.get('trip:tok-585')) as string);
+    advanced.lastTrackedArrivalEpoch = 9_999;
+    await env.TRIPS.put('trip:tok-585', JSON.stringify(advanced));
+    await post('/trips', lockBody({ trainCode: '2317' }), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-585')) as string);
+    expect(stored.lastTrackedArrivalEpoch).toBeUndefined();
+  });
+});
+
 describe('POST /trips (#578 — preserve advance progress on re-register)', () => {
   const CREATED = 1_700_000_000_000;
   function makeKvEnv(): Env {
