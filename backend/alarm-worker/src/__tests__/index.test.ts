@@ -535,6 +535,32 @@ describe('validateLiveActivityRegister (#586 C)', () => {
   });
 });
 
+describe('DELETE /trips/:token — LA dismissal (#586 D)', () => {
+  const CREATED = 1_700_000_000_000;
+  function makeKvEnv(): Env {
+    return makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'] });
+  }
+  async function del(path: string, env: Env): Promise<Response> {
+    return app.fetch(new Request(`http://example.com${path}`, { method: 'DELETE' }), env);
+  }
+
+  it('returns 200 deleted=false when trip missing (no LA fire)', async () => {
+    const env = makeKvEnv();
+    const res = await del('/trips/nope', env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: false });
+  });
+
+  it('deletes the trip from KV when no LA token attached', async () => {
+    const env = makeKvEnv();
+    await post('/trips', { ...base(), token: 'tok-d', createdAt: CREATED }, env);
+    const res = await del('/trips/tok-d', env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: true });
+    expect(await env.TRIPS.get('trip:tok-d')).toBeNull();
+  });
+});
+
 describe('Live Activity endpoints (#586 C)', () => {
   const CREATED = 1_700_000_000_000;
   function makeKvEnv(): Env {

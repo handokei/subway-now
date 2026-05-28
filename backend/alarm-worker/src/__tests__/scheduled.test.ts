@@ -1022,3 +1022,233 @@ describe('RESCHEDULE_THRESHOLD_MS (#585)', () => {
     expect(RESCHEDULE_THRESHOLD_MS).toBe(15_000);
   });
 });
+
+describe('runScheduled — Live Activity push integration (#586 D)', () => {
+  function tripWithLa(overrides: Partial<Trip> = {}): Trip {
+    return makeTrip({
+      activityPushToken: 'la-token',
+      activityState: 'live',
+      apnsEnv: 'sandbox',
+      ...overrides,
+    });
+  }
+
+  function makeArrival(stationName: string, eta: number, arvlCd: number | null = null): ArrivalEntry {
+    return {
+      destination: stationName,
+      arrivalSeconds: eta,
+      trainCode: 'T',
+      isUp: true,
+      subwayNm: '지하철2호선',
+      arvlCd,
+    };
+  }
+
+  // APNs LA push는 host topic으로 식별: ${bundleId}.push-type.liveactivity
+  function isLaCall(_url: string, init: RequestInit | undefined): boolean {
+    const headers = (init?.headers ?? {}) as Record<string, string>;
+    return headers['apns-push-type'] === 'liveactivity';
+  }
+
+  it('fires LA update when ETA changes significantly and trip has LA token', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      tripWithLa({ lastEtaSeconds: 200, lastFiredPhase: 'early' }),
+    );
+    // ETA 200 → 100 (Δ100 ≥ 60s). 100s는 여전히 early phase (≤240s) — phase 비전이.
+    // LA gate: etaChanged || phaseFires → true. silent push도 함께 발사되지만 imminent가 아니라 trip 유지.
+    const seoul = makeSeoul([makeArrival('강남', 100)]);
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.laPushSent).toBeGreaterThanOrEqual(1);
+    const laCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
+      isLaCall(c[0], c[1]),
+    );
+    expect(laCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not fire LA when trip has no activity token', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({ lastEtaSeconds: 200, lastFiredPhase: 'early' }),
+    );
+    const seoul = makeSeoul([makeArrival('강남', 100)]);
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.laPushSent).toBe(0);
+    const laCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
+      isLaCall(c[0], c[1]),
+    );
+    expect(laCalls.length).toBe(0);
+  });
+
+  it('skips LA when waypoint is intermediate', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      tripWithLa({
+        waypoints: [
+          { stationName: '중곡', line: '2', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+        lastEtaSeconds: 200,
+      }),
+    );
+    const seoul = makeSeoul([makeArrival('중곡', 60)]);
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.laPushSent).toBe(0);
+  });
+
+  it('fires LA dismissal on destination imminent and clears trip', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, tripWithLa());
+    const seoul = makeSeoul([makeArrival('강남', 20, 1)]); // ARRIVED
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.pushed).toBeGreaterThanOrEqual(1);
+    // dismissal call: event='end'
+    const laCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
+      isLaCall(c[0], c[1]),
+    );
+    expect(laCalls.length).toBeGreaterThanOrEqual(1);
+    const lastCall = laCalls[laCalls.length - 1];
+    const lastBody = JSON.parse(lastCall[1].body as string);
+    expect(lastBody.aps.event).toBe('end');
+    expect(await kv.get('trip:tok')).toBeNull();
+  });
+
+  it('fires LA dismissal on trip expiry', async () => {
+    const kv = new InMemoryKV();
+    await kv.put(
+      'trip:tok',
+      JSON.stringify(
+        tripWithLa({ expiresAt: NOW + 5_000, alarmAtEpochMs: NOW - 1 }),
+      ),
+    );
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW + 10_000, // past expiry
+    });
+    expect(stats.laPushSent).toBe(1);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.event).toBe('end');
+    expect(await kv.get('trip:tok')).toBeNull();
+  });
+
+  it('410 on LA update clears activityPushToken and persists to KV', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      tripWithLa({ lastEtaSeconds: 200, lastFiredPhase: 'early' }),
+    );
+    // ETA 100s (early 유지) — trip 삭제되지 않으므로 KV에 LA token clear 결과를 검증할 수 있다.
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (isLaCall(url, init)) {
+        return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 410 });
+      }
+      return new Response('', { status: 200 });
+    });
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([makeArrival('강남', 100)]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.laTokenCleared).toBe(1);
+    const stored = JSON.parse((await kv.get('trip:tok')) as string) as Trip;
+    expect(stored.activityPushToken).toBeUndefined();
+    expect(stored.activityState).toBe('ended');
+  });
+});
+
+describe('runScheduled — boardingLock LA integration (#586 D)', () => {
+  function lockedTripWithLa(): Trip {
+    return makeTrip({
+      activityPushToken: 'la-token',
+      activityState: 'live',
+      apnsEnv: 'sandbox',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      boardingLock: {
+        trainCode: 'T',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: NOW,
+        segmentStations: ['역삼', '강남'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+    });
+  }
+
+  it('fires LA dismissal when destination arrived under boardingLock', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, lockedTripWithLa());
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            realtimeArrivalList: [
+              {
+                barvlDt: '0',
+                recptnDt: '',
+                updnLine: '상행',
+                trainLineNm: '강남',
+                btrainNo: 'T',
+                subwayNm: '지하철2호선',
+                arvlCd: 1, // ARRIVED
+              },
+            ],
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.laPushSent).toBe(1);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.event).toBe('end');
+    expect(await kv.get('trip:tok')).toBeNull();
+  });
+});

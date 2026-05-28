@@ -13,6 +13,11 @@
 
 import { Hono } from 'hono';
 import { runFallbackPushes } from './fallback';
+import {
+  cleanupTripWithLa,
+  type LiveActivityDeps,
+  type LiveActivityStats,
+} from './liveActivity';
 import { ackPending } from './pendingPushes';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
@@ -21,8 +26,29 @@ import {
   validateTelemetryUpload,
   writeTelemetryDataPoints,
 } from './telemetry';
-import { deleteTrip, getTrip, putTrip } from './trips';
+import { getTrip, putTrip } from './trips';
 import type { BoardingLockMeta, Env, Trip } from './types';
+
+/**
+ * HTTP DELETE 같은 단일 trip 정리 진입점에서 LA dismissal 발사하기 위한 deps.
+ * scheduled.ts와 동일 ApnsConfig/hosts를 env에서 재구성한다.
+ */
+function buildLaDeps(env: Env): LiveActivityDeps {
+  return {
+    apnsConfig: {
+      keyId: env.APNS_KEY_ID,
+      teamId: env.APNS_TEAM_ID,
+      privateKeyPem: env.APNS_PRIVATE_KEY,
+      bundleId: env.APNS_BUNDLE_ID,
+    },
+    apnsHosts: { production: env.APNS_HOST, sandbox: env.APNS_HOST_SANDBOX },
+  };
+}
+
+/** scheduled cycle 통계와 분리된, 단일 HTTP 정리용 throwaway stats. */
+function makeLaStats(): LiveActivityStats {
+  return { laPushSent: 0, laPushFailed: 0, laTokenCleared: 0 };
+}
 
 export const app = new Hono<{ Bindings: Env }>();
 
@@ -221,7 +247,17 @@ app.delete('/trips/:token', async (c) => {
   if (!token) return c.json({ error: 'missing_token' }, 400);
   const existing = await getTrip(c.env.TRIPS, token);
   if (!existing) return c.json({ ok: true, deleted: false });
-  await deleteTrip(c.env.TRIPS, token);
+  // 활성 LA가 있으면 dismissal push 발사 후 KV 삭제. cleanupTripWithLa가 두 동작을 묶는다.
+  // logger는 worker console.log로 직결 — HTTP-driven cleanup의 dismissal 실패가 silent loss로
+  // 사라지지 않게 운영 가시성 확보.
+  await cleanupTripWithLa(
+    existing,
+    c.env,
+    buildLaDeps(c.env),
+    makeLaStats(),
+    Date.now(),
+    (msg, meta) => console.log(JSON.stringify({ msg, ...meta })),
+  );
   return c.json({ ok: true, deleted: true });
 });
 
