@@ -99,6 +99,12 @@ export function useFusedNearestStation(
   arrivalProvider?: ArrivalProvider,
   positionProvider?: PositionProvider,
   routeContext?: FusedRouteContext,
+  /**
+   * 활성 BoardingLock의 trainCode. 사용자가 탭한 열차가 position-train으로 확인되면
+   * source/confidence를 'boarding-lock'으로 승격 — UI/알람 dedup에서 최고 신뢰 신호로 식별.
+   * null/undefined면 기존 우선순위 그대로.
+   */
+  lockedTrainCode?: string | null,
 ): UseFusedNearestStationReturn {
   const gps = useNearestStation();
 
@@ -270,8 +276,13 @@ export function useFusedNearestStation(
   let source: FusionSource;
   if (positionTrainResult) {
     result = positionTrainResult;
-    confidence = 'position-train';
-    source = 'position-train';
+    // #584 PR D2: position-train의 trainNo가 BoardingLock.trainCode와 일치하면 'boarding-lock'으로 승격.
+    // 사용자가 탭한 바로 그 열차가 실시간 위치 API에 잡힌 상태 — 최고 신뢰 신호.
+    // positionTrainResult가 non-null이면 trainProgress도 non-null (line 219 guard).
+    const lockMatch =
+      lockedTrainCode != null && trainProgress!.trainNo === lockedTrainCode;
+    confidence = lockMatch ? 'boarding-lock' : 'position-train';
+    source = lockMatch ? 'boarding-lock' : 'position-train';
   } else if (fused && fusedPasses) {
     result = fused.result;
     confidence = fused.confidence;

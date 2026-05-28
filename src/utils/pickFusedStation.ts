@@ -11,6 +11,7 @@ import { getTrainStatusPriority } from '../constants/trainStatus';
  * 도착/위치 API와 달리 자체 검증 신호가 아니라 별도 confidence로 둔다.
  */
 export type FusionConfidence =
+  | 'boarding-lock'
   | 'position-train'
   | 'arrival-confirmed'
   | 'arrival-arriving'
@@ -24,6 +25,7 @@ export type FusionConfidence =
  * 알람 dedup·로깅에서 source별 정책 분기에 사용.
  */
 export type FusionSource =
+  | 'boarding-lock'
   | 'position-train'
   | 'position'
   | 'arrival'
