@@ -33,3 +33,7 @@ export const FIRED_PUSH_IDS_KEY = 'subway-now:fired-push-ids';
 // #584 PR A — 사용자가 명시적으로 확정한 탑승 열차/노선/시각. trip 종료 또는 자동 만료까지 유지.
 // 형식: BoardingLock JSON (src/types/boardingLock.ts).
 export const BOARDING_LOCK_KEY = 'subway-now:boarding-lock';
+// #584 PR C — boardingLockScheduler가 OS에 사전 예약한 알림 identifier 목록.
+// release/expiry 또는 새 Lock 시점에 일괄 cancel하기 위한 추적 큐.
+// 형식: string[] JSON.
+export const SCHEDULED_NOTIFICATIONS_KEY = 'subway-now:scheduled-notifications';
