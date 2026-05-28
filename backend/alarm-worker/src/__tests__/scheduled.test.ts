@@ -803,42 +803,23 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(stored.lastTrackedArrivalEpoch).toBeUndefined();
   });
 
-  it('deletes trip when destination arrived', async () => {
+  it.each([
+    ['destination 도착 시 trip 삭제', '군자', 'destination'] as const,
+    ['마지막 intermediate 통과 후 빈 리스트면 trip 삭제', '중곡', 'intermediate'] as const,
+  ])('%s', async (_label, station, kind) => {
     const kv = new InMemoryKV();
     await putTrip(
       kv as unknown as KVNamespace,
-      makeLockTrip({
-        waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
-      }),
+      makeLockTrip({ waypoints: [{ stationName: station, line: '7', kind }] }),
     );
     const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
     await runScheduled(makeEnv(kv), {
-      seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+      seoul: makeSeoulCombo([arrivalForLock(station, 0, 1)], []),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       fetchImpl: apnsFetch as unknown as typeof fetch,
       now: () => NOW,
-      generatePushId: () => 'p6',
-    });
-    expect(await kv.get('trip:lock-tok')).toBeNull();
-  });
-
-  it('deletes trip when last intermediate waypoint advanced beyond list', async () => {
-    const kv = new InMemoryKV();
-    await putTrip(
-      kv as unknown as KVNamespace,
-      makeLockTrip({
-        waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
-      }),
-    );
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    await runScheduled(makeEnv(kv), {
-      seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p7',
+      generatePushId: () => 'p-arrive',
     });
     expect(await kv.get('trip:lock-tok')).toBeNull();
   });
