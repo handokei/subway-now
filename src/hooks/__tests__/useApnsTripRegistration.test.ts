@@ -386,6 +386,100 @@ describe('useApnsTripRegistration', () => {
     expect(mockRegister).toHaveBeenCalledTimes(1);
   });
 
+  it('#589 — 같은 (token, route, destination)으로 재호출 시 동일 createdAt 전달', async () => {
+    let now = 1_700_000_000_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const { rerender } = renderHook(
+      ({ eta }: { eta: number }) =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: eta,
+        }),
+      { initialProps: { eta: 120 } },
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    const firstCreatedAt = mockRegister.mock.calls[0][0].createdAt as number;
+    expect(firstCreatedAt).toBe(1_700_000_000_000);
+
+    // eta만 바뀌어 register effect 재실행 (같은 세션)
+    now = 1_700_000_999_999;
+    rerender({ eta: 60 });
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+    expect(mockRegister.mock.calls[1][0].createdAt).toBe(firstCreatedAt);
+    (Date.now as jest.Mock).mockRestore();
+  });
+
+  it('#589 — route 내용 변경 시 새 createdAt 발급', async () => {
+    let now = 1_700_000_000_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const { rerender } = renderHook(
+      ({ route }: { route: Route }) =>
+        useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
+      { initialProps: { route: { type: 'direct', stops: 5, line: '2' } as Route } },
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    const first = mockRegister.mock.calls[0][0].createdAt as number;
+
+    now = 1_700_000_500_000;
+    rerender({ route: { type: 'direct', stops: 6, line: '2' } as Route });
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+    expect(mockRegister.mock.calls[1][0].createdAt).toBe(1_700_000_500_000);
+    expect(mockRegister.mock.calls[1][0].createdAt).not.toBe(first);
+    (Date.now as jest.Mock).mockRestore();
+  });
+
+  it('#589 — destination 변경 시 새 createdAt 발급', async () => {
+    let now = 1_700_000_000_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const altStation: Station = { ...station, id: '0229', name: '역삼' };
+    const { rerender } = renderHook(
+      ({ d }: { d: Station }) =>
+        useApnsTripRegistration({ route: directRoute, destination: d, nextStationEtaSeconds: 120 }),
+      { initialProps: { d: station } },
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    const first = mockRegister.mock.calls[0][0].createdAt as number;
+
+    now = 1_700_000_777_777;
+    rerender({ d: altStation });
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+    expect(mockRegister.mock.calls[1][0].createdAt).toBe(1_700_000_777_777);
+    expect(mockRegister.mock.calls[1][0].createdAt).not.toBe(first);
+    (Date.now as jest.Mock).mockRestore();
+  });
+
+  it('#589 — token refresh 시 새 createdAt 발급 (새 세션 키)', async () => {
+    let now = 1_700_000_000_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    renderHook(() =>
+      useApnsTripRegistration({
+        route: directRoute,
+        destination: station,
+        nextStationEtaSeconds: 120,
+      }),
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    const first = mockRegister.mock.calls[0][0].createdAt as number;
+    const listener = mockAddPushTokenListener.mock.calls[0][0];
+
+    now = 1_700_000_333_333;
+    await act(async () => {
+      listener({ data: 'token-NEW' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(mockRegister).toHaveBeenCalledWith(expect.objectContaining({ token: 'token-NEW' })),
+    );
+    const refreshed = mockRegister.mock.calls.find(
+      (c) => (c[0] as { token: string }).token === 'token-NEW',
+    );
+    expect(refreshed?.[0].createdAt).toBe(1_700_000_333_333);
+    expect(refreshed?.[0].createdAt).not.toBe(first);
+    (Date.now as jest.Mock).mockRestore();
+  });
+
   it('route 내용이 바뀌면 register 재호출한다 (signature 변경)', async () => {
     const { rerender } = renderHook(
       ({ route }: { route: Route }) =>
