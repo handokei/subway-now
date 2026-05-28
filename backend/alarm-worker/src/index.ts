@@ -36,8 +36,23 @@ app.post('/trips', async (c) => {
     return c.json({ error: 'invalid_json' }, 400);
   }
 
-  const trip = validateTrip(body);
-  if (!trip) return c.json({ error: 'invalid_trip' }, 400);
+  const incoming = validateTrip(body);
+  if (!incoming) return c.json({ error: 'invalid_trip' }, 400);
+
+  // #578: 디바이스가 동일 trip을 반복 POST해도(예: GPS update마다 register) backend가 이미
+  // advance한 waypoints / lastFiredPhase / lastEtaSeconds를 덮어쓰지 않는다.
+  // 동일 세션 판별: 같은 token + 같은 createdAt. createdAt이 다르면 새 trip 세션이므로 전면 교체.
+  const existing = await getTrip(c.env.TRIPS, incoming.token);
+  const isSameSession = existing !== null && existing.createdAt === incoming.createdAt;
+  const trip = isSameSession
+    ? {
+        ...incoming,
+        waypoints: existing.waypoints,
+        lastFiredPhase: existing.lastFiredPhase,
+        lastEtaSeconds: existing.lastEtaSeconds,
+        apnsEnv: existing.apnsEnv ?? incoming.apnsEnv,
+      }
+    : incoming;
 
   await putTrip(c.env.TRIPS, trip);
   return c.json({ ok: true, token: trip.token });
