@@ -125,6 +125,8 @@ describe('processLocationUpdate', () => {
         etaSeconds: expect.any(Number),
       }),
       expect.any(Set),
+      undefined,
+      expect.any(Array),
     );
   });
 
@@ -137,6 +139,8 @@ describe('processLocationUpdate', () => {
     expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
       expect.objectContaining({ etaSeconds: null }),
       expect.any(Set),
+      undefined,
+      expect.any(Array),
     );
   });
 

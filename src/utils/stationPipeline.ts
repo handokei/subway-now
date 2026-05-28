@@ -7,6 +7,7 @@ import { getLastNotifiedStationId, setLastNotifiedStationId } from './notificati
 import {
   logFiredAlarm,
   logFiredStationPassed,
+  logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   type AlarmLogSource,
 } from './alarmLog';
@@ -140,6 +141,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   const distanceToDestM = distanceMetersBetween(lat, lng, destination.lat, destination.lng);
   const etaSeconds = estimateEtaSeconds(distanceToDestM, speedMps);
 
+  const suppressed: AlarmEvent[] = [];
   const alarmEvent = evaluateAlarmPhase(
     {
       route,
@@ -148,7 +150,11 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
       currentLine: nearest.station.line,
     },
     firedAlarms,
+    undefined,
+    suppressed,
   );
+
+  for (const event of suppressed) logSuppressedDedupAlarm(source, event);
 
   if (alarmEvent) {
     await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker, notificationSource);

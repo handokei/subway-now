@@ -28,15 +28,19 @@ export type AlarmLogSource =
   | 'silent-push-skipped'
   | 'alert-fallback-fired'
   | 'region-entry-fired'
-  | 'region-entry-skipped';
+  | 'region-entry-skipped'
+  // #580: useStationAlarm 하이드레이션 1회당 1엔트리. destinationId + 복원된 fired set 크기 기록.
+  // 두 번째 fire 직전에 ref가 비워졌는지 직접 관찰 — race 가설 확인용.
+  | 'fg-hydrate';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
-// 'dedup-alarm'(evaluateAlarmPhase의 firedAlarms 적중 케이스)은 후속 이슈에서 추가.
-// 그때까지 union에 선언하지 않아 "구현됐다"는 거짓 시그널을 피한다.
+// 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
+// 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
 // 'gate-unknown-station' / 'gate-no-location' / 'gate-stale-location' / 'gate-out-of-range'는
 // #478 PR 1-2 silent push 위치 게이트 skip 사유.
 // 'payload-missing-kind'는 구 백엔드 payload에 kind 필드가 없어 발사 본문 결정 불가 → skip.
 export type AlarmLogReason =
   | 'dedup-station'
+  | 'dedup-alarm'
   | 'gate-age'
   | 'gate-accuracy'
   | 'gate-jump'
@@ -107,6 +111,9 @@ export interface AlarmLogEntry {
   thresholdM?: number;
   locationSource?: 'cache' | 'fresh';
   locationAgeMs?: number;
+  // #580: fg-hydrate 엔트리 — destinationId + 복원된 fired set 크기.
+  destinationId?: string | null;
+  firedAlarmsCount?: number;
 }
 
 const logger = createLogger('AlarmLog');
@@ -171,6 +178,43 @@ export function logSuppressedDedupStation(source: AlarmLogSource, station: Stati
     reason: 'dedup-station',
     stationName: station.name,
     kind: 'station-passed',
+  });
+}
+
+/**
+ * #580: useStationAlarm 하이드레이션 1회당 1엔트리. dedup race 진단용.
+ *
+ * 두 번째 fire 발생 시점 직전에 ref가 비워졌는지(=fired set이 비어있었는지) 직접 관찰한다.
+ * 정상 동작: 하이드레이션 후 firedAlarmsCount는 이전 trip의 fired 누적치(>0)이거나 0(새 trip).
+ * 회귀 패턴: fire 이후 destinationId 변동 없이 다시 0이 찍히면 storage write 손실/race 정황.
+ */
+export function logFiredAlarmsHydrate(destinationId: string | null, firedAlarmsCount: number): void {
+  void appendAlarmLog({
+    ts: Date.now(),
+    source: 'fg-hydrate',
+    outcome: 'received',
+    destinationId,
+    firedAlarmsCount,
+  });
+}
+
+/**
+ * #580: phase alarm dedup 적중 1건 적재. destination/transfer phase가 firedAlarms로
+ * 이미 발화된 것을 evaluateAlarmPhase가 인지해 재발화하지 않을 때 호출.
+ * 발사 횟수 vs dedup 횟수 비율로 dedup이 정상 동작 중인지 운영 데이터로 확인 가능.
+ */
+export function logSuppressedDedupAlarm(
+  source: AlarmLogSource,
+  event: Pick<AlarmEvent, 'phaseId' | 'type' | 'stationName'>,
+): void {
+  void appendAlarmLog({
+    ts: Date.now(),
+    source,
+    outcome: 'suppressed',
+    reason: 'dedup-alarm',
+    stationName: event.stationName,
+    kind: event.type,
+    phaseId: event.phaseId,
   });
 }
 
