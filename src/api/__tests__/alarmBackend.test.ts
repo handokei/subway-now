@@ -2,6 +2,8 @@ import {
   registerActiveTrip,
   clearActiveTrip,
   sendPushAck,
+  registerLiveActivityToken,
+  clearLiveActivityToken,
   __resetAlarmBackendDedup,
 } from '../alarmBackend';
 import type { RegisterTripPayload } from '../alarmBackend';
@@ -284,6 +286,80 @@ describe('alarmBackend', () => {
       await sendPushAck(ACK);
       const [url] = (global.fetch as jest.Mock).mock.calls[0];
       expect(url).toBe('https://api.test.dev/push/ack');
+    });
+  });
+
+  describe('registerLiveActivityToken (#586 B)', () => {
+    it('URL 미설정 시 skipped=true 반환', async () => {
+      const result = await registerLiveActivityToken('trip-1', 'la-tok');
+      expect(result).toEqual({ ok: false, skipped: true });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('정상 응답 시 POST /live-activity/register body 직렬화', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      const result = await registerLiveActivityToken('trip-1', 'la-tok');
+      expect(result).toEqual({ ok: true, status: 200 });
+      const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('https://api.test.dev/live-activity/register');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body)).toEqual({
+        tripToken: 'trip-1',
+        activityPushToken: 'la-tok',
+      });
+    });
+
+    it('non-2xx 응답 시 ok=false + status', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 404 } as Response);
+      const result = await registerLiveActivityToken('trip-1', 'la-tok');
+      expect(result).toEqual({ ok: false, status: 404 });
+    });
+
+    it('fetch throw 시 ok=false', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
+      const result = await registerLiveActivityToken('trip-1', 'la-tok');
+      expect(result).toEqual({ ok: false });
+    });
+  });
+
+  describe('clearLiveActivityToken (#586 B)', () => {
+    it('URL 미설정 시 skipped=true 반환', async () => {
+      const result = await clearLiveActivityToken('trip-1');
+      expect(result).toEqual({ ok: false, skipped: true });
+    });
+
+    it('빈 tripToken은 ok=false (no fetch)', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      const result = await clearLiveActivityToken('');
+      expect(result).toEqual({ ok: false });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('정상 응답 시 DELETE /live-activity/:tripToken (encoded)', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      const result = await clearLiveActivityToken('trip/with space');
+      expect(result).toEqual({ ok: true, status: 200 });
+      const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('https://api.test.dev/live-activity/trip%2Fwith%20space');
+      expect(init.method).toBe('DELETE');
+    });
+
+    it('non-2xx 응답 시 ok=false + status', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 } as Response);
+      const result = await clearLiveActivityToken('trip-1');
+      expect(result).toEqual({ ok: false, status: 500 });
+    });
+
+    it('fetch throw 시 ok=false', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
+      const result = await clearLiveActivityToken('trip-1');
+      expect(result).toEqual({ ok: false });
     });
   });
 });

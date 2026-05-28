@@ -231,3 +231,63 @@ export async function clearActiveTrip(token: string): Promise<AlarmBackendResult
     return { ok: false };
   }
 }
+
+/**
+ * Live Activity push token 등록 (#586 B/C).
+ * native가 emit한 push token hex를 backend의 trip 레코드에 보관한다.
+ * URL 미설정/네트워크 실패는 throw 없이 `{ok:false}` — LA 자체는 정상 동작한다.
+ */
+export async function registerLiveActivityToken(
+  tripToken: string,
+  activityPushToken: string,
+): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip LA register');
+    return { ok: false, skipped: true };
+  }
+  try {
+    const res = await fetchWithTimeout(`${base}/live-activity/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tripToken, activityPushToken }),
+    });
+    if (!res.ok) {
+      log.warn(`LA register failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('LA register error', e);
+    return { ok: false };
+  }
+}
+
+/**
+ * Live Activity push token 해제 (#586 B/C).
+ * trip이 끝났거나 사용자가 LA를 dismiss했을 때 호출.
+ */
+export async function clearLiveActivityToken(
+  tripToken: string,
+): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip LA clear');
+    return { ok: false, skipped: true };
+  }
+  if (!tripToken) return { ok: false };
+  try {
+    const res = await fetchWithTimeout(
+      `${base}/live-activity/${encodeURIComponent(tripToken)}`,
+      { method: 'DELETE' },
+    );
+    if (!res.ok) {
+      log.warn(`LA clear failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('LA clear error', e);
+    return { ok: false };
+  }
+}
