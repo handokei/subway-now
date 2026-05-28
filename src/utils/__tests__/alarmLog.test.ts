@@ -14,8 +14,6 @@ import {
   logSilentPushFired,
   logSilentPushSkipped,
   logAlertFallbackFired,
-  logRegionEntryFired,
-  logRegionEntrySkipped,
   summarizeAlarmLogBySource,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
@@ -483,56 +481,6 @@ describe('alarmLog', () => {
       });
     });
 
-    it('logRegionEntryFired: source=region-entry-fired, outcome=fired 적재 (#564)', async () => {
-      logRegionEntryFired({ stationName: '시청', kind: 'transfer', phaseId: 'early' });
-      await flushPromises();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
-        source: 'region-entry-fired',
-        outcome: 'fired',
-        stationName: '시청',
-        kind: 'transfer',
-        phaseId: 'early',
-      });
-    });
-
-    it('logRegionEntrySkipped: caller가 reason을 주입한다 (#564)', async () => {
-      logRegionEntrySkipped({
-        stationName: '시청',
-        kind: 'destination',
-        phaseId: 'imminent',
-        reason: 'dedup-station',
-      });
-      await flushPromises();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
-        source: 'region-entry-skipped',
-        outcome: 'suppressed',
-        reason: 'dedup-station',
-        stationName: '시청',
-        kind: 'destination',
-        phaseId: 'imminent',
-      });
-    });
-
-    it('logRegionEntrySkipped: dedup 외 reason도 그대로 적재 (#564)', async () => {
-      logRegionEntrySkipped({
-        stationName: '시청',
-        kind: 'destination',
-        phaseId: 'imminent',
-        reason: 'gate-unknown-station',
-      });
-      await flushPromises();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0].reason).toBe('gate-unknown-station');
-    });
-
     it('helper는 fire-and-forget: void 반환 + AsyncStorage 실패 시 throw 안 함', async () => {
       (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage 오류'));
 
@@ -553,16 +501,12 @@ describe('alarmLog', () => {
         makeEntry({ source: 'fg' }),
         makeEntry({ source: 'bg-scheduled' }),
         makeEntry({ source: 'alert-fallback-fired' }),
-        makeEntry({ source: 'region-entry-fired' }),
-        makeEntry({ source: 'region-entry-skipped' }),
-        makeEntry({ source: 'region-entry-fired' }),
+        makeEntry({ source: 'alert-fallback-fired' }),
       ];
       expect(summarizeAlarmLogBySource(entries)).toEqual({
         fg: 2,
         'bg-scheduled': 1,
-        'alert-fallback-fired': 1,
-        'region-entry-fired': 2,
-        'region-entry-skipped': 1,
+        'alert-fallback-fired': 2,
       });
     });
 
