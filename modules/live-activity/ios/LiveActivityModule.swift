@@ -11,6 +11,23 @@ public class LiveActivityModule: Module {
     public func definition() -> ModuleDefinition {
         Name("LiveActivity")
 
+        Events("onPushToken", "onActivityEnded")
+
+        OnCreate {
+            if #available(iOS 16.2, *) {
+                Task { [weak self] in
+                    await LiveActivityManager.shared.setEventHandlers(
+                        onPushTokenHex: { [weak self] hex in
+                            self?.sendEvent("onPushToken", ["token": hex])
+                        },
+                        onActivityEnded: { [weak self] in
+                            self?.sendEvent("onActivityEnded", [:])
+                        }
+                    )
+                }
+            }
+        }
+
         AsyncFunction("startLiveActivity") { (data: [String: Any]) in
             if #available(iOS 16.2, *) {
                 try await LiveActivityManager.shared.start(data: data)
