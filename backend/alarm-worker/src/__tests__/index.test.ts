@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { app, validatePushAck, validateTrip } from '../index';
+import { app, validateLiveActivityRegister, validatePushAck, validateTrip } from '../index';
 import { pendingKey } from '../pendingPushes';
 import type { AnalyticsEngineWriter, Env } from '../types';
 import { InMemoryKV } from './inMemoryKv';
@@ -505,5 +505,143 @@ describe('POST /push/ack (#566 P2a)', () => {
     const res = await post('/push/ack', { pushId: 'p1', token: 'tok', outcome: 'fired' }, env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, deleted: false, reason: 'not-found' });
+  });
+});
+
+describe('validateLiveActivityRegister (#586 C)', () => {
+  it('accepts valid payload', () => {
+    expect(
+      validateLiveActivityRegister({ tripToken: 'tt', activityPushToken: 'at' }),
+    ).toEqual({ tripToken: 'tt', activityPushToken: 'at' });
+  });
+
+  it('rejects non-object', () => {
+    expect(validateLiveActivityRegister(null)).toBeNull();
+    expect(validateLiveActivityRegister('x')).toBeNull();
+  });
+
+  it('rejects missing/empty tripToken', () => {
+    expect(validateLiveActivityRegister({ activityPushToken: 'at' })).toBeNull();
+    expect(
+      validateLiveActivityRegister({ tripToken: '', activityPushToken: 'at' }),
+    ).toBeNull();
+  });
+
+  it('rejects missing/empty activityPushToken', () => {
+    expect(validateLiveActivityRegister({ tripToken: 'tt' })).toBeNull();
+    expect(
+      validateLiveActivityRegister({ tripToken: 'tt', activityPushToken: '' }),
+    ).toBeNull();
+  });
+});
+
+describe('Live Activity endpoints (#586 C)', () => {
+  const CREATED = 1_700_000_000_000;
+  function makeKvEnv(): Env {
+    return makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'] });
+  }
+  function tripBody(): Record<string, unknown> {
+    return { ...base(), token: 'tok-611', createdAt: CREATED };
+  }
+  async function del(path: string, env: Env): Promise<Response> {
+    return app.fetch(new Request(`http://example.com${path}`, { method: 'DELETE' }), env);
+  }
+
+  describe('POST /live-activity/register', () => {
+    it('returns 400 on invalid JSON', async () => {
+      const env = makeKvEnv();
+      const res = await post('/live-activity/register', 'not-json{', env);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid_json' });
+    });
+
+    it('returns 400 on invalid payload', async () => {
+      const env = makeKvEnv();
+      const res = await post('/live-activity/register', { tripToken: '' }, env);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'invalid_payload' });
+    });
+
+    it('returns 404 when trip does not exist', async () => {
+      const env = makeKvEnv();
+      const res = await post(
+        '/live-activity/register',
+        { tripToken: 'nope', activityPushToken: 'at' },
+        env,
+      );
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'trip_not_found' });
+    });
+
+    it('persists activityPushToken and sets activityState=live', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripBody(), env);
+      const res = await post(
+        '/live-activity/register',
+        { tripToken: 'tok-611', activityPushToken: 'la-token' },
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true });
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-611')) as string);
+      expect(stored.activityPushToken).toBe('la-token');
+      expect(stored.activityState).toBe('live');
+    });
+  });
+
+  describe('DELETE /live-activity/:tripToken', () => {
+    it('returns 200 deleted=false when trip does not exist (idempotent)', async () => {
+      const env = makeKvEnv();
+      const res = await del('/live-activity/nope', env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, deleted: false });
+    });
+
+    it('clears activityPushToken and sets activityState=ended', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripBody(), env);
+      await post(
+        '/live-activity/register',
+        { tripToken: 'tok-611', activityPushToken: 'la-token' },
+        env,
+      );
+      const res = await del('/live-activity/tok-611', env);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, deleted: true });
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-611')) as string);
+      expect(stored.activityPushToken).toBeUndefined();
+      expect(stored.activityState).toBe('ended');
+    });
+  });
+
+  describe('POST /trips merge preserves LA fields (same session)', () => {
+    it('preserves activityPushToken and activityState across re-register', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripBody(), env);
+      await post(
+        '/live-activity/register',
+        { tripToken: 'tok-611', activityPushToken: 'la-token' },
+        env,
+      );
+      // device re-POSTs trip (without LA fields) — must not erase them
+      await post('/trips', tripBody(), env);
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-611')) as string);
+      expect(stored.activityPushToken).toBe('la-token');
+      expect(stored.activityState).toBe('live');
+    });
+
+    it('does not carry LA fields across new session (different createdAt)', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripBody(), env);
+      await post(
+        '/live-activity/register',
+        { tripToken: 'tok-611', activityPushToken: 'la-token' },
+        env,
+      );
+      await post('/trips', { ...tripBody(), createdAt: CREATED + 10_000 }, env);
+      const stored = JSON.parse((await env.TRIPS.get('trip:tok-611')) as string);
+      expect(stored.activityPushToken).toBeUndefined();
+      expect(stored.activityState).toBeUndefined();
+    });
   });
 });

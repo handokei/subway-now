@@ -4,6 +4,7 @@ import {
   buildApnsJwt,
   resetApnsJwtCache,
   sendAlertPush,
+  sendLiveActivityUpdate,
   sendReschedulePush,
   sendSilentPush,
   type ApnsConfig,
@@ -269,5 +270,89 @@ describe('sendReschedulePush (#585)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     expect(result).toEqual({ ok: false, status: 400, reason: 'BadDeviceToken' });
+  });
+});
+
+describe('sendLiveActivityUpdate (#586 C)', () => {
+  beforeEach(() => resetApnsJwtCache());
+
+  it('posts with LA headers + aps event/content-state (update default priority 10)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const result = await sendLiveActivityUpdate({
+      activityToken: 'activity-token-hex',
+      contentState: { nextStation: '강남', etaSeconds: 90 },
+      event: 'update',
+      timestamp: 1_700_000_000,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result.ok).toBe(true);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe(`https://${TEST_HOST}/3/device/activity-token-hex`);
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-topic']).toBe('com.example.app.push-type.liveactivity');
+    expect(headers['apns-push-type']).toBe('liveactivity');
+    expect(headers['apns-priority']).toBe('10');
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.event).toBe('update');
+    expect(body.aps.timestamp).toBe(1_700_000_000);
+    expect(body.aps['content-state']).toEqual({ nextStation: '강남', etaSeconds: 90 });
+    expect(body.aps['stale-date']).toBeUndefined();
+    expect(body.aps['dismissal-date']).toBeUndefined();
+  });
+
+  it('includes stale-date and dismissal-date for end event with priority 5', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendLiveActivityUpdate({
+      activityToken: 'tok',
+      contentState: {},
+      event: 'end',
+      timestamp: 100,
+      staleDate: 200,
+      dismissalDate: 300,
+      priority: 5,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-priority']).toBe('5');
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.event).toBe('end');
+    expect(body.aps['stale-date']).toBe(200);
+    expect(body.aps['dismissal-date']).toBe(300);
+  });
+
+  it('defaults timestamp to now/1000 when omitted', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendLiveActivityUpdate({
+      activityToken: 'tok',
+      contentState: {},
+      event: 'update',
+      config: makeConfig(),
+      host: TEST_HOST,
+      now: 1_700_000_123_456,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.timestamp).toBe(1_700_000_123);
+  });
+
+  it('returns failure with reason on 410 (token invalid)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 410 }),
+    );
+    const result = await sendLiveActivityUpdate({
+      activityToken: 't',
+      contentState: {},
+      event: 'update',
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ ok: false, status: 410, reason: 'BadDeviceToken' });
   });
 });

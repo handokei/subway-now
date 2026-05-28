@@ -59,6 +59,10 @@ app.post('/trips', async (c) => {
           existing.boardingLock?.trainCode === incoming.boardingLock.trainCode
             ? existing.lastTrackedArrivalEpoch
             : undefined,
+        // #586 C: Live Activity token/state는 별도 endpoint(`/live-activity/register`)로 관리.
+        // 디바이스가 trip을 re-POST해도 register/deregister로 채워둔 값을 유지한다.
+        activityPushToken: existing.activityPushToken,
+        activityState: existing.activityState,
       }
     : incoming;
 
@@ -140,6 +144,76 @@ export function validatePushAck(input: unknown): PushAckPayload | null {
   const out: PushAckPayload = { pushId: obj.pushId, token: obj.token, outcome: obj.outcome };
   if (typeof obj.reason === 'string') out.reason = obj.reason;
   return out;
+}
+
+/**
+ * Live Activity push token 등록 (#586 C).
+ * 디바이스가 ActivityKit로 Live Activity를 시작하고 update token을 발급받으면 호출.
+ *
+ * Body: { tripToken, activityPushToken }
+ * Responses:
+ *   200 { ok: true } — 등록 성공
+ *   400 { error: 'invalid_json' | 'invalid_payload' }
+ *   404 { error: 'trip_not_found' } — 디바이스가 trip 등록 없이 호출
+ */
+app.post('/live-activity/register', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  const payload = validateLiveActivityRegister(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const existing = await getTrip(c.env.TRIPS, payload.tripToken);
+  if (!existing) return c.json({ error: 'trip_not_found' }, 404);
+
+  const updated: Trip = {
+    ...existing,
+    activityPushToken: payload.activityPushToken,
+    activityState: 'live',
+  };
+  await putTrip(c.env.TRIPS, updated);
+  return c.json({ ok: true });
+});
+
+/**
+ * Live Activity 종료 — push token clear (#586 C).
+ * 디바이스가 Live Activity를 end하거나 사용자가 dismiss하면 호출.
+ * activityPushToken은 비우고 activityState='ended'를 남겨 D PR에서 dismissal push 재발사 dedup에 사용.
+ * 없는 trip은 idempotent — 200 deleted:false.
+ */
+app.delete('/live-activity/:tripToken', async (c) => {
+  const tripToken = c.req.param('tripToken');
+  if (!tripToken) return c.json({ error: 'missing_token' }, 400);
+  const existing = await getTrip(c.env.TRIPS, tripToken);
+  if (!existing) return c.json({ ok: true, deleted: false });
+
+  const updated: Trip = {
+    ...existing,
+    activityPushToken: undefined,
+    activityState: 'ended',
+  };
+  await putTrip(c.env.TRIPS, updated);
+  return c.json({ ok: true, deleted: true });
+});
+
+interface LiveActivityRegisterPayload {
+  tripToken: string;
+  activityPushToken: string;
+}
+
+export function validateLiveActivityRegister(
+  input: unknown,
+): LiveActivityRegisterPayload | null {
+  if (!input || typeof input !== 'object') return null;
+  const obj = input as Record<string, unknown>;
+  if (typeof obj.tripToken !== 'string' || obj.tripToken.length === 0) return null;
+  if (typeof obj.activityPushToken !== 'string' || obj.activityPushToken.length === 0) {
+    return null;
+  }
+  return { tripToken: obj.tripToken, activityPushToken: obj.activityPushToken };
 }
 
 app.delete('/trips/:token', async (c) => {

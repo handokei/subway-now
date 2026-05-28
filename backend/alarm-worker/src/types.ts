@@ -82,6 +82,18 @@ export interface Trip {
    * 새 관측이 이 값과 의미있게 어긋날 때만 push를 발사해 노이즈를 줄인다.
    */
   lastTrackedArrivalEpoch?: number;
+  /**
+   * Live Activity push token (#586 C). ActivityKit가 발급하는 update token (hex).
+   * `POST /live-activity/register`로 등록되며, APNs LA push 발사 시 device token 자리에 사용한다.
+   * APNs 410(BadDeviceToken) 응답 시 발사 path에서 clear된다.
+   */
+  activityPushToken?: string;
+  /**
+   * Live Activity 수명 상태 (#586 C).
+   *   - 'live'  — register 시점. 정상적으로 update push를 보낼 수 있음.
+   *   - 'ended' — deregister 시점. dismissal payload 재발사 idempotency용 dedup 키.
+   */
+  activityState?: 'live' | 'ended';
 }
 
 /** Device가 확정한 탑승 열차 정보 (#584). */
