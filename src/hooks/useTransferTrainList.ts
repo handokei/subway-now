@@ -3,6 +3,7 @@ import { useArrivalInfo } from './useArrivalInfo';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { findActiveTransferContext } from '../utils/findActiveTransferContext';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../constants/boardingLock';
+import { calculateRemainingLegETA } from '../utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../api/arrivalApi';
 import type { BoardingLock } from '../types/boardingLock';
 import type { Station } from '../types/station';
@@ -15,8 +16,6 @@ export interface UseTransferTrainListInputs {
   route: Route;
   destinationName: string | null;
   currentStation: Station | null;
-  /** 환승 후 새 lock의 expectedDurationMs 산출용. null이면 fallback 30분. */
-  expectedDurationMinutes: number | null;
   arrivalProvider?: ArrivalProvider;
 }
 
@@ -42,7 +41,6 @@ export function useTransferTrainList({
   route,
   destinationName,
   currentStation,
-  expectedDurationMinutes,
   arrivalProvider,
 }: UseTransferTrainListInputs): UseTransferTrainListResult {
   const context = useMemo(
@@ -63,11 +61,14 @@ export function useTransferTrainList({
   const createTransferLock = useCallback(
     (train: ArrivalInfo) => {
       if (!context || !lock) return;
-      // TODO(#584-followup): expectedDurationMinutes는 출발역 기준 전체 trip 시간이라 환승 후 lock
-      // 만료 타이머가 과대 추정됨. 잔여 leg(stopsFromTransfer 등) 기준 calculateTransferLegETA 도입 필요.
-      // 현재는 보수적(=과만료) 측으로 안전 — BOARDING_LOCK_EXPIRY_FACTOR(=1.5)로도 충분히 길어 알람은
-      // 정상 발사된 후 만료된다. 정밀화는 후속 PR.
-      const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
+      // #604: 잔여 leg 기준 ETA로 lock의 expectedDurationMs를 정밀화. 전체 trip 시간으로 잡으면
+      // BOARDING_LOCK_EXPIRY_FACTOR(=1.5)와 곱해져 만료 타이머가 도착 후에도 한참 활성 상태로 남는다.
+      // calculateRemainingLegETA가 null이면(=route가 직접/idx 불일치 등 예기치 못한 상태) fallback.
+      const remainingMin = calculateRemainingLegETA(route, context.completedTransferIdx);
+      /* istanbul ignore next -- context가 있으면 route는 transfer/multi-transfer이고
+         completedTransferIdx는 resolveAllTargets로 산출된 유효 인덱스라 calculateRemainingLegETA는
+         항상 숫자를 반환한다. FALLBACK은 정합성 깨진 상태에 대한 방어 코드. */
+      const durationMin = remainingMin ?? FALLBACK_BOARDING_DURATION_MINUTES;
       void createLock({
         destinationId: lock.destinationId,
         trainCode: train.trainCode,
@@ -77,7 +78,7 @@ export function useTransferTrainList({
         expectedDurationMs: durationMin * 60_000,
       });
     },
-    [context, lock, expectedDurationMinutes, createLock],
+    [context, lock, route, createLock],
   );
 
   return { context, arrivals, createTransferLock };

@@ -14,6 +14,14 @@ export interface ActiveTransferContext {
   nextWaypointName: string;
   /** toLine 기준 새 진행방향. 좌표/index 비교 실패 시 null — 양방향 합산 fallback. */
   direction: TripDirection | null;
+  /**
+   * 사용자가 방금 도달해서 환승을 끝낸 transfer의 인덱스 (#604).
+   * - transfer 라우트: 항상 0
+   * - multi-transfer 라우트: route.transfers 배열의 인덱스와 1:1 (resolveAllTargets가 같은 순서로 매핑)
+   * createTransferLock이 calculateRemainingLegETA(route, completedTransferIdx)로 잔여 ride time을
+   * 산출하는 데 사용. 잔여 leg는 idx+1번째 transfer부터 시작.
+   */
+  completedTransferIdx: number;
 }
 
 /**
@@ -65,6 +73,7 @@ export function findActiveTransferContext(
     nextLine,
     nextWaypointName: next.name,
     direction,
+    completedTransferIdx: matchedIdx,
   };
 }
 

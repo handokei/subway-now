@@ -605,6 +605,52 @@ export function calculateStaticETA(route: Route): number | null {
   return DEFAULT_WAIT_MINUTES + getTravelMinutes(route);
 }
 
+/**
+ * 환승 직후 잔여 ride time(분). #584 PR E 후속(#604).
+ *
+ * completedTransferIdx 번째 환승을 막 끝내고 새 열차에 탑승한 시점부터 도착역까지의 잔여 시간.
+ * BoardingLock의 expectedDurationMs는 boardedAt 이후 ride 시간을 의미하므로, 사용자가 list에서
+ * 열차를 탭하는 순간(=새 boardedAt)부터의 시간이 산출 대상. 따라서 첫 열차 대기(DEFAULT_WAIT)는
+ * 포함하지 않는다. 잔여 환승의 대기는 TRANSFER_MINUTES로 포함.
+ *
+ * - direct: 환승 없음 → null
+ * - transfer/multi-transfer: 0..transfers.length-1 범위만 유효
+ *
+ * 산식: 잔여 stops × MINUTES_PER_STOP + 잔여 환승 × TRANSFER_MINUTES
+ */
+export function calculateRemainingLegETA(
+  route: Route,
+  completedTransferIdx: number,
+): number | null {
+  if (!route) return null;
+  if (route.type === 'direct') return null;
+  const legs = getTransferLegs(route);
+  if (completedTransferIdx < 0 || completedTransferIdx >= legs.transferCount) return null;
+  const remainingTransferStops = legs.afterTransferStops
+    .slice(completedTransferIdx + 1)
+    .reduce((s, n) => s + n, 0);
+  const totalRemainingStops = legs.afterTransferStops[completedTransferIdx] + remainingTransferStops;
+  const remainingTransferEvents = legs.transferCount - 1 - completedTransferIdx;
+  return totalRemainingStops * MINUTES_PER_STOP + remainingTransferEvents * TRANSFER_MINUTES;
+}
+
+/**
+ * transfer/multi-transfer 라우트를 통일된 leg 표현으로 정규화. transferCount는 환승 횟수,
+ * afterTransferStops[i]는 i번째 환승을 끝낸 후 다음 waypoint(=다음 환승 또는 도착역)까지의 stops.
+ */
+function getTransferLegs(
+  route: Exclude<NonNullable<Route>, DirectRoute>,
+): { transferCount: number; afterTransferStops: number[] } {
+  if (route.type === 'transfer') {
+    return { transferCount: 1, afterTransferStops: [route.stopsFromTransfer] };
+  }
+  const after = route.transfers
+    .slice(1)
+    .map((t) => t.stopsToTransfer);
+  after.push(route.stopsAfterLastTransfer);
+  return { transferCount: route.transfers.length, afterTransferStops: after };
+}
+
 // ASCII Unit Separator(0x1F) — 사용자 데이터(역명/노선명)에 절대 등장하지 않는
 // 제어문자라 transferName 안에 구분자가 섞여도 signature 충돌이 구조적으로 불가능.
 const SIG_SEP = '\x1f';

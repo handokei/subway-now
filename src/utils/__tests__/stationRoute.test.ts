@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 
@@ -398,6 +398,98 @@ describe('calculateStaticETA', () => {
 
   it('route가 null이면 null을 반환한다', () => {
     expect(calculateStaticETA(null)).toBeNull();
+  });
+});
+
+describe('calculateRemainingLegETA', () => {
+  it('route가 null이면 null', () => {
+    expect(calculateRemainingLegETA(null, 0)).toBeNull();
+  });
+
+  it('DirectRoute는 환승이 없어 null', () => {
+    const route: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+    expect(calculateRemainingLegETA(route, 0)).toBeNull();
+  });
+
+  it('TransferRoute completedTransferIdx=0: 잔여 ride만 (stopsFromTransfer*2, wait 미포함)', () => {
+    const route: TransferRoute = {
+      type: 'transfer',
+      transferName: '교대',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 1,
+      stopsFromTransfer: 5,
+    };
+    // 5*2 = 10 (DEFAULT_WAIT 미포함 — 탭 시점부터의 ride time)
+    expect(calculateRemainingLegETA(route, 0)).toBe(10);
+  });
+
+  it('TransferRoute에서 completedTransferIdx가 범위 밖이면 null', () => {
+    const route: TransferRoute = {
+      type: 'transfer',
+      transferName: '교대',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 1,
+      stopsFromTransfer: 5,
+    };
+    expect(calculateRemainingLegETA(route, 1)).toBeNull();
+    expect(calculateRemainingLegETA(route, -1)).toBeNull();
+  });
+
+  it('MultiTransferRoute 첫 환승 직후(idx=0): 잔여 환승 1회 + 잔여 stops', () => {
+    const route: MultiTransferRoute = {
+      type: 'multi-transfer',
+      transfers: [
+        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+      ],
+      stopsAfterLastTransfer: 4,
+    };
+    // (5+4)*2 + 1*3 = 18 + 3 = 21
+    expect(calculateRemainingLegETA(route, 0)).toBe(21);
+  });
+
+  it('MultiTransferRoute 마지막 환승 직후: 환승 0회 + stopsAfterLastTransfer만', () => {
+    const route: MultiTransferRoute = {
+      type: 'multi-transfer',
+      transfers: [
+        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+      ],
+      stopsAfterLastTransfer: 4,
+    };
+    // 4*2 = 8
+    expect(calculateRemainingLegETA(route, 1)).toBe(8);
+  });
+
+  it('MultiTransferRoute 환승 3회 중 첫 환승 직후: 잔여 환승 2회 산식 검증', () => {
+    const route: MultiTransferRoute = {
+      type: 'multi-transfer',
+      transfers: [
+        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+        { transferName: '서울역', fromLine: '1', toLine: '4', stopsToTransfer: 2 },
+      ],
+      stopsAfterLastTransfer: 6,
+    };
+    // (5+2+6)*2 + 2*3 = 26 + 6 = 32
+    expect(calculateRemainingLegETA(route, 0)).toBe(32);
+    // 두 번째 환승 직후: (2+6)*2 + 1*3 = 19
+    expect(calculateRemainingLegETA(route, 1)).toBe(19);
+  });
+
+  it('MultiTransferRoute에서 범위 밖 인덱스는 null', () => {
+    const route: MultiTransferRoute = {
+      type: 'multi-transfer',
+      transfers: [
+        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+      ],
+      stopsAfterLastTransfer: 4,
+    };
+    expect(calculateRemainingLegETA(route, -1)).toBeNull();
+    expect(calculateRemainingLegETA(route, 2)).toBeNull();
   });
 });
 
