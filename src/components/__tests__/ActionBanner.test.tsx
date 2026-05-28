@@ -39,7 +39,10 @@ describe('ActionBanner', () => {
     expect(onActionPress).toHaveBeenCalledTimes(1);
   });
 
-  it('marginBottom 미전달 시 0 적용', () => {
+  it.each<[number | undefined, number]>([
+    [undefined, 0],
+    [12, 12],
+  ])('marginBottom prop=%s → 컨테이너 marginBottom=%s', (prop, expected) => {
     const { getByTestId } = renderWithTheme(
       <ActionBanner
         accent="#000"
@@ -47,6 +50,7 @@ describe('ActionBanner', () => {
         actionLabel="실행"
         actionTestID="banner-action"
         onActionPress={() => {}}
+        marginBottom={prop}
       >
         <Text>info</Text>
       </ActionBanner>,
@@ -57,28 +61,6 @@ describe('ActionBanner', () => {
       .filter((s: unknown): s is { marginBottom?: number } => typeof s === 'object' && s !== null)
       .map((s: { marginBottom?: number }) => s.marginBottom)
       .find((m: number | undefined) => m !== undefined);
-    expect(marginBottom).toBe(0);
-  });
-
-  it('marginBottom prop 적용', () => {
-    const { getByTestId } = renderWithTheme(
-      <ActionBanner
-        accent="#000"
-        testID="banner"
-        actionLabel="실행"
-        actionTestID="banner-action"
-        onActionPress={() => {}}
-        marginBottom={12}
-      >
-        <Text>info</Text>
-      </ActionBanner>,
-    );
-    const view = getByTestId('banner');
-    const flat = Array.isArray(view.props.style) ? view.props.style.flat() : [view.props.style];
-    const marginBottom = flat
-      .filter((s: unknown): s is { marginBottom?: number } => typeof s === 'object' && s !== null)
-      .map((s: { marginBottom?: number }) => s.marginBottom)
-      .find((m: number | undefined) => m !== undefined);
-    expect(marginBottom).toBe(12);
+    expect(marginBottom).toBe(expected);
   });
 });
