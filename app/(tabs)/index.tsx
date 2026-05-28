@@ -41,6 +41,8 @@ import { BoardingLockBanner } from '../../src/components/BoardingLockBanner';
 import { MisBoardingBanner } from '../../src/components/MisBoardingBanner';
 import { useMisBoardingDetector } from '../../src/hooks/useMisBoardingDetector';
 import { useTrainPositions } from '../../src/hooks/useTrainPositions';
+import { useTransferTrainList } from '../../src/hooks/useTransferTrainList';
+import { TRANSFER_WALKING_BUFFER_SECONDS } from '../../src/constants/boardingLock';
 import { BoardingTrainList } from '../../src/components/BoardingTrainList';
 
 const logger = createLogger('HomeScreen');
@@ -230,6 +232,18 @@ export default function HomeScreen() {
   const { detected: misBoardingDetected } = useMisBoardingDetector({
     lock: boardingLock,
     positions: lockLinePositions,
+  });
+  // #584 PR E: 활성 lock이 현재 leg의 transfer waypoint에 도달하면 다음 노선 도착 list 노출.
+  const {
+    context: transferContext,
+    arrivals: transferArrivals,
+    createTransferLock,
+  } = useTransferTrainList({
+    lock: boardingLock,
+    route,
+    destinationName: destination?.name ?? null,
+    currentStation: result?.station ?? null,
+    expectedDurationMinutes: staticEtaMinutes,
   });
   useBackgroundLocation(destination);
   useApnsTripRegistration({
@@ -666,6 +680,16 @@ export default function HomeScreen() {
                 arrivals={directionalArrivals}
                 line={effectiveOrigin.line}
                 onSelect={createLockFromTrain}
+              />
+            )}
+            {/* PR E: 환승 waypoint 도달 시 다음 노선 list. context 비어있으면 노출 안 됨. */}
+            {transferContext && (
+              <BoardingTrainList
+                arrivals={transferArrivals}
+                line={transferContext.nextLine}
+                onSelect={createTransferLock}
+                walkingBufferSeconds={TRANSFER_WALKING_BUFFER_SECONDS}
+                title="환승 열차 선택"
               />
             )}
             {effectiveOrigin && (
