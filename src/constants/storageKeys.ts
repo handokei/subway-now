@@ -30,3 +30,6 @@ export const BG_LAST_FIX_KEY = 'subway-now:bg-last-fix';
 // #574 P2e — 디바이스가 fire한 silent push의 pushId 집합. alert fallback race 시 중복 표시 차단.
 // 형식: {"[pushId]": timestamp} JSON. 5분 이상 된 항목은 add/read 시 cleanup.
 export const FIRED_PUSH_IDS_KEY = 'subway-now:fired-push-ids';
+// #584 PR A — 사용자가 명시적으로 확정한 탑승 열차/노선/시각. trip 종료 또는 자동 만료까지 유지.
+// 형식: BoardingLock JSON (src/types/boardingLock.ts).
+export const BOARDING_LOCK_KEY = 'subway-now:boarding-lock';
