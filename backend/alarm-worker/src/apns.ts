@@ -222,6 +222,77 @@ export async function sendReschedulePush(
   return parseApnsError(response);
 }
 
+/**
+ * Live Activity update/end push (#586 C). ActivityKit Live Activity의 content-state를
+ * 갱신하거나 종료한다. 일반 silent/alert push와 헤더가 다르다:
+ *   - apns-topic: ${bundleId}.push-type.liveactivity
+ *   - apns-push-type: liveactivity
+ *   - apns-priority: 10 (기본) — 호출자가 5로 낮춰 비중요 update를 발사할 수 있음
+ *
+ * payload:
+ *   { aps: { timestamp, event: 'update'|'end', 'content-state': {...},
+ *            'stale-date'?, 'dismissal-date'? } }
+ *
+ * deviceToken 자리에는 `Trip.activityPushToken`을 넣는다. 410 응답은 caller가 trip의
+ * activityPushToken을 clear하는 신호 (실제 clear는 PR D에서 발사 path와 함께 구현).
+ */
+export interface LiveActivityContentState {
+  [key: string]: unknown;
+}
+
+export interface SendLiveActivityUpdateOptions {
+  activityToken: string;
+  contentState: LiveActivityContentState;
+  event: 'update' | 'end';
+  /** epoch seconds — APNs가 dedup/순서 보장에 사용. 누락 시 now. */
+  timestamp?: number;
+  /** epoch seconds — 이 시각 이후 content-state는 stale 표시. */
+  staleDate?: number;
+  /** epoch seconds — end 이벤트와 함께 보내면 Live Activity가 이 시각에 자동 dismiss. */
+  dismissalDate?: number;
+  /** APNs priority. 기본 10 (즉시 전송). 5로 보내면 throttle 대상이 됨. */
+  priority?: 5 | 10;
+  config: ApnsConfig;
+  host: string;
+  fetchImpl?: typeof fetch;
+  now?: number;
+}
+
+export async function sendLiveActivityUpdate(
+  options: SendLiveActivityUpdateOptions,
+): Promise<SendPushResult> {
+  const jwt = await buildApnsJwt(options.config, options.now);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const url = `https://${options.host}/3/device/${options.activityToken}`;
+  const nowSec = Math.floor((options.now ?? Date.now()) / 1000);
+
+  const aps: Record<string, unknown> = {
+    timestamp: options.timestamp ?? nowSec,
+    event: options.event,
+    'content-state': options.contentState,
+  };
+  if (options.staleDate !== undefined) aps['stale-date'] = options.staleDate;
+  if (options.dismissalDate !== undefined) aps['dismissal-date'] = options.dismissalDate;
+
+  const body = JSON.stringify({ aps });
+  const priority = options.priority ?? 10;
+
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      authorization: `bearer ${jwt}`,
+      'apns-topic': `${options.config.bundleId}.push-type.liveactivity`,
+      'apns-push-type': 'liveactivity',
+      'apns-priority': String(priority),
+      'content-type': 'application/json',
+    },
+    body,
+  });
+
+  if (response.ok) return { ok: true, status: response.status };
+  return parseApnsError(response);
+}
+
 async function parseApnsError(response: Response): Promise<SendPushResult> {
   let reason: string | undefined;
   try {
