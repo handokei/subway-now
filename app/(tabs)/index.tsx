@@ -243,7 +243,6 @@ export default function HomeScreen() {
     route,
     destinationName: destination?.name ?? null,
     currentStation: result?.station ?? null,
-    expectedDurationMinutes: staticEtaMinutes,
   });
   useBackgroundLocation(destination);
   useApnsTripRegistration({
