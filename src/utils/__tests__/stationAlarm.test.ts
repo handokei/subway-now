@@ -351,6 +351,40 @@ describe('evaluateAlarmPhase', () => {
     });
   });
 
+  describe('suppressedOut out-param (#580)', () => {
+    it('phase 조건은 만족했지만 firedAlarms로 dedup된 이벤트를 suppressedOut에 push', () => {
+      const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
+      const fired = new Set(['early:강남']);
+      const suppressed: AlarmEvent[] = [];
+      const event = evaluateAlarmPhase(
+        source({ route, destinationName: '강남' }),
+        fired,
+        undefined,
+        suppressed,
+      );
+      expect(event).toBeNull();
+      expect(suppressed).toEqual([
+        { phaseId: 'early', type: 'destination', stationName: '강남' },
+      ]);
+    });
+
+    it('phase 조건 미충족이면 dedup이어도 suppressedOut에 적재하지 않음 (노이즈 제거)', () => {
+      // stops=2 → early(stops<=1) 미충족. firedAlarms에 있어도 phase가 조건 미만이라 적재 안 함.
+      const route: DirectRoute = { type: 'direct', stops: 2, line: '2' };
+      const fired = new Set(['early:강남']);
+      const suppressed: AlarmEvent[] = [];
+      evaluateAlarmPhase(source({ route, destinationName: '강남' }), fired, undefined, suppressed);
+      expect(suppressed).toEqual([]);
+    });
+
+    it('suppressedOut 미전달 시 dedup은 silent (이전 동작)', () => {
+      const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
+      const fired = new Set(['early:강남']);
+      // suppressedOut 인자 생략 — 예외 없이 null 반환.
+      expect(evaluateAlarmPhase(source({ route, destinationName: '강남' }), fired)).toBeNull();
+    });
+  });
+
   describe('custom phases', () => {
     it('accepts a custom phase array', () => {
       const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };

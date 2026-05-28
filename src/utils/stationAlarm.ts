@@ -96,11 +96,15 @@ export interface AlarmSource {
  *   환승 전 도착역 알람이 먼저 울리는 회귀(#152)를 동시에 차단한다.
  * - currentLine이 null이거나 어느 leg와도 일치하지 않으면 알람을 발사하지 않는다 (silent skip).
  *   다음 GPS fix에서 leg가 일치하면 그때 발사된다.
+ * - #580 옵셔널 out-param `suppressedOut`: phase 조건은 만족했으나 firedAlarms로 dedup된 이벤트를
+ *   배열에 push. caller가 alarmLog에 'dedup-alarm' 엔트리를 적재해 dedup 동작을 관찰 가능하게 한다.
+ *   미전달이면 dedup은 silent (이전 동작 유지).
  */
 export function evaluateAlarmPhase(
   source: AlarmSource,
   firedAlarms: Set<string>,
   phases: AlarmPhase[] = ALARM_PHASES,
+  suppressedOut?: AlarmEvent[],
 ): AlarmEvent | null {
   if (!source.route) return null;
   const { currentLine } = source;
@@ -120,7 +124,14 @@ export function evaluateAlarmPhase(
 
     for (const phase of phases) {
       const key = `${phase.id}:${target.name}`;
-      if (firedAlarms.has(key)) continue;
+      if (firedAlarms.has(key)) {
+        // dedup hit. phase 조건도 만족했을 때만 suppressed로 적재 — "조건 미충족이지만 dedup된"
+        // 케이스(예: imminent eta>10s)는 노이즈라 기록하지 않는다.
+        if (suppressedOut && phase.evaluate(context)) {
+          suppressedOut.push({ phaseId: phase.id, type: target.alarmType, stationName: target.name });
+        }
+        continue;
+      }
       if (!phase.evaluate(context)) continue;
       return { phaseId: phase.id, type: target.alarmType, stationName: target.name };
     }

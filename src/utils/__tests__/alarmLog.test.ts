@@ -6,6 +6,8 @@ import {
   logFiredAlarm,
   logFiredStationPassed,
   logScheduledAlarm,
+  logFiredAlarmsHydrate,
+  logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedGate,
   logSilentPushReceived,
@@ -227,6 +229,49 @@ describe('alarmLog', () => {
         reason: 'dedup-station',
         stationName: station.name,
         kind: 'station-passed',
+      });
+    });
+
+    it('logSuppressedDedupAlarm: reason=dedup-alarm, phase+type+stationName 적재 (#580)', async () => {
+      logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'dedup-alarm',
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'early',
+      });
+    });
+
+    it('logFiredAlarmsHydrate: destinationId + firedAlarmsCount 적재 (#580 race 진단)', async () => {
+      logFiredAlarmsHydrate('dest-1', 2);
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg-hydrate',
+        outcome: 'received',
+        destinationId: 'dest-1',
+        firedAlarmsCount: 2,
+      });
+    });
+
+    it('logFiredAlarmsHydrate: destinationId=null도 그대로 기록', async () => {
+      logFiredAlarmsHydrate(null, 0);
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg-hydrate',
+        destinationId: null,
+        firedAlarmsCount: 0,
       });
     });
 

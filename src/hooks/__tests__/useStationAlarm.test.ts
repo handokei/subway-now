@@ -57,11 +57,15 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 );
 
 const mockLogFiredAlarm = jest.fn();
+const mockLogFiredAlarmsHydrate = jest.fn();
 const mockLogFiredStationPassed = jest.fn();
+const mockLogSuppressedDedupAlarm = jest.fn();
 const mockLogSuppressedDedupStation = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
+  logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
+  logSuppressedDedupAlarm: (...args: unknown[]) => mockLogSuppressedDedupAlarm(...args),
   logSuppressedDedupStation: (...args: unknown[]) => mockLogSuppressedDedupStation(...args),
 }));
 
@@ -281,6 +285,8 @@ describe('useStationAlarm', () => {
           etaSeconds: expect.any(Number),
         }),
         expect.any(Set),
+        undefined,
+        expect.any(Array),
       ),
     );
   });
@@ -296,6 +302,8 @@ describe('useStationAlarm', () => {
       expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
         expect.objectContaining({ etaSeconds: null }),
         expect.any(Set),
+        undefined,
+        expect.any(Array),
       ),
     );
   });
@@ -307,6 +315,8 @@ describe('useStationAlarm', () => {
       expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
         expect.objectContaining({ etaSeconds: null }),
         expect.any(Set),
+        undefined,
+        expect.any(Array),
       ),
     );
   });
@@ -1227,6 +1237,46 @@ describe('useStationAlarm', () => {
           'routeProgress',
         ),
       );
+    });
+  });
+
+  describe('phase alarm dedup 로깅 (#580)', () => {
+    it('하이드레이션 완료 시 destinationId + size로 logFiredAlarmsHydrate 호출', async () => {
+      const stored = new Set(['early:강남']);
+      mockGetFiredAlarms.mockResolvedValueOnce(stored);
+      renderHook(() => useStationAlarm(defaultInputs({ destination })));
+      await waitFor(() =>
+        expect(mockLogFiredAlarmsHydrate).toHaveBeenCalledWith(destination.id, 1),
+      );
+    });
+
+    it('evaluateAlarmPhase가 suppressedOut에 push한 이벤트마다 logSuppressedDedupAlarm 호출', async () => {
+      const route: DirectRoute = { type: 'direct', stops: 1, line: '2' };
+      const suppressedEvent: AlarmEvent = {
+        phaseId: 'early',
+        type: 'destination',
+        stationName: '강남',
+      };
+      mockEvaluateAlarmPhase.mockImplementation(
+        (_src: unknown, _fired: unknown, _phases: unknown, suppressed: AlarmEvent[]) => {
+          suppressed.push(suppressedEvent);
+          return null;
+        },
+      );
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockLogSuppressedDedupAlarm).toHaveBeenCalledWith('fg', suppressedEvent),
+      );
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
   });
 });

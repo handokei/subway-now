@@ -19,7 +19,9 @@ import {
 import { awaitInitialScheduledAlarmDrain } from '../utils/scheduledAlarmReceiver';
 import {
   logFiredAlarm,
+  logFiredAlarmsHydrate,
   logFiredStationPassed,
+  logSuppressedDedupAlarm,
   logSuppressedDedupStation,
 } from '../utils/alarmLog';
 import { useAppStore } from '../store/useAppStore';
@@ -126,6 +128,8 @@ export function useStationAlarm({
       const stored = await getFiredAlarms(destinationId);
       if (cancelled) return;
       firedAlarmsRef.current = stored;
+      // #580: hydration 시점 진단 — 같은 destinationId에서 size가 다시 0으로 떨어지면 storage race.
+      logFiredAlarmsHydrate(destinationId, stored.size);
       setFiredHydrated(true);
     })();
     return () => {
@@ -188,6 +192,7 @@ export function useStationAlarm({
       etaSeconds = estimateEtaSeconds(distM, speedMps);
     }
 
+    const suppressed: AlarmEvent[] = [];
     const rawEvent = evaluateAlarmPhase(
       {
         route,
@@ -196,7 +201,10 @@ export function useStationAlarm({
         currentLine: nearestStation?.line ?? null,
       },
       firedAlarmsRef.current,
+      undefined,
+      suppressed,
     );
+    for (const event of suppressed) logSuppressedDedupAlarm('fg', event);
     if (rawEvent) fireAndLog(rawEvent, 'eta', route, destination);
   }, [
     route,
