@@ -214,7 +214,7 @@ describe('useNearestStation', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2);
   });
 
-  it('watchPositionAsync에 BestForNavigation·distanceInterval:0·timeInterval:2000을 전달한다', async () => {
+  it('watchPositionAsync에 High·distanceInterval:0·timeInterval:2000을 전달한다', async () => {
     mockGranted();
 
     renderHook(() => useNearestStation());
@@ -223,7 +223,7 @@ describe('useNearestStation', () => {
 
     expect(Location.watchPositionAsync).toHaveBeenCalledWith(
       {
-        accuracy: Location.Accuracy.BestForNavigation,
+        accuracy: Location.Accuracy.High,
         distanceInterval: 0,
         timeInterval: 2000,
       },

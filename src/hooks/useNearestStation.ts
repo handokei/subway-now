@@ -188,13 +188,15 @@ export function useNearestStation(): UseNearestStationReturn {
 
       // 연속 GPS 스트리밍 — 지하 구간 horizontalAccuracy(300~1500m)도 표시용으로는 수용.
       // 알람은 useStationAlarm에서 accuracyMeters로 별도 엄격 게이트.
-      // BestForNavigation + distanceInterval:0 + timeInterval:2000:
-      //  좌표를 최대한 자주 흘려보낸다 (foreground 한정, 화면 켜진 동안만 GPS 풀파워).
+      // High + distanceInterval:0 + timeInterval:2000:
+      //  좌표를 최대한 자주 흘려보낸다 (foreground 한정, 화면 켜진 동안만).
+      //  High는 GPS hardware fix가 없으면 WiFi BSSID / Cell tower triangulation으로 fallback
+      //  → 지하 구간에서도 ~50~100m 위치가 들어옴 (BestForNavigation은 fallback 없이 stale).
       // 참고: pausesUpdatesAutomatically / activityType은 expo-location foreground 옵션에
       //  노출되지 않아 적용 불가. background task 옵션에서만 사용 가능.
       subscriptionRef.current = await Location.watchPositionAsync(
         {
-          accuracy: Location.Accuracy.BestForNavigation,
+          accuracy: Location.Accuracy.High,
           distanceInterval: 0,
           timeInterval: 2000,
         },
