@@ -12,6 +12,10 @@ const mockUseArrivalInfo = jest.fn();
 const mockUseSilentPushDiagnostics = jest.fn();
 const mockGetAlarmLog = jest.fn();
 const mockClearAlarmLog = jest.fn();
+const mockStartRegionPoc = jest.fn();
+const mockStopRegionPoc = jest.fn();
+const mockGetRegionPocStatus = jest.fn();
+const mockFindTopNearestStations = jest.fn();
 
 jest.mock('../../hooks/useFusedNearestStation', () => ({
   useFusedNearestStation: () => mockUseFusedNearestStation(),
@@ -31,6 +35,16 @@ jest.mock('../../utils/alarmLog', () => {
     clearAlarmLog: () => mockClearAlarmLog(),
   };
 });
+// #563 PoC — regionMonitoringPocTask는 모듈 import 시 TaskManager.defineTask를 호출하므로
+// 통째로 mock해 native dep 의존을 차단한다.
+jest.mock('../../tasks/regionMonitoringPocTask', () => ({
+  startRegionMonitoringPoc: (...args: unknown[]) => mockStartRegionPoc(...args),
+  stopRegionMonitoringPoc: () => mockStopRegionPoc(),
+  getRegionPocStatus: () => mockGetRegionPocStatus(),
+}));
+jest.mock('../../utils/findNearestStation', () => ({
+  findTopNearestStations: (...args: unknown[]) => mockFindTopNearestStations(...args),
+}));
 
 const station: Station = {
   id: '2-022',
@@ -95,6 +109,10 @@ const setupHookDefaults = () => {
   });
   mockGetAlarmLog.mockResolvedValue([]);
   mockClearAlarmLog.mockResolvedValue(undefined);
+  mockGetRegionPocStatus.mockReturnValue({ state: 'unknown', error: null, monitoredCount: 0 });
+  mockStartRegionPoc.mockResolvedValue(undefined);
+  mockStopRegionPoc.mockResolvedValue(undefined);
+  mockFindTopNearestStations.mockReturnValue([]);
 };
 
 describe('DebugModal', () => {
@@ -375,6 +393,88 @@ describe('DebugModal', () => {
   it('candidateTrains가 빈 배열이면 "0: -"으로 표시한다', () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} candidateTrains={[]} />);
     expect(screen.getByText('0: -')).toBeTruthy();
+  });
+
+  describe('Region PoC (#563)', () => {
+    it('초기 status는 unknown, count 0, error는 노출되지 않음', () => {
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      expect(screen.getByText('Region PoC (#563)')).toBeTruthy();
+      expect(screen.getByTestId('debug-region-poc-state').props.children).toBe('unknown');
+      expect(screen.getByTestId('debug-region-poc-count').props.children).toBe(0);
+      expect(screen.queryByTestId('debug-region-poc-error')).toBeNull();
+    });
+
+    it('Start 버튼: nearest 5개를 PocRegion으로 변환해 startRegionMonitoringPoc 호출, status 갱신', async () => {
+      mockFindTopNearestStations.mockReturnValue([
+        { station: { ...station, name: 'A', lat: 1, lng: 2 }, distanceKm: 0.1 },
+        { station: { ...station, name: 'B', lat: 3, lng: 4 }, distanceKm: 0.2 },
+      ]);
+      // 마운트 시 1회 + 핸들러 1회 호출. 두 시점 모두 success를 반환.
+      mockGetRegionPocStatus.mockReturnValue({
+        state: 'success',
+        error: null,
+        monitoredCount: 2,
+      });
+
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await act(async () => {
+        fireEvent.press(screen.getByTestId('debug-region-poc-start'));
+      });
+      expect(mockFindTopNearestStations).toHaveBeenCalledWith(37.5, 127.0, 5);
+      expect(mockStartRegionPoc).toHaveBeenCalledWith([
+        { identifier: 'A', latitude: 1, longitude: 2, radius: 150 },
+        { identifier: 'B', latitude: 3, longitude: 4, radius: 150 },
+      ]);
+      expect(screen.getByTestId('debug-region-poc-state').props.children).toBe('success');
+      expect(screen.getByTestId('debug-region-poc-count').props.children).toBe(2);
+    });
+
+    it('Start 버튼: userLocation 없으면 press해도 early-return — startRegionMonitoringPoc 미호출', async () => {
+      mockUseFusedNearestStation.mockReturnValue({
+        result: null,
+        gpsResult: null,
+        confidence: 'gps-only',
+        source: 'gps',
+        variants: [],
+        userLocation: null,
+        speedMps: null,
+        accuracyMeters: null,
+        loading: false,
+        error: null,
+        permissionDenied: false,
+        refresh: jest.fn(),
+      });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await act(async () => {
+        fireEvent.press(screen.getByTestId('debug-region-poc-start'));
+      });
+      expect(mockStartRegionPoc).not.toHaveBeenCalled();
+      expect(mockFindTopNearestStations).not.toHaveBeenCalled();
+    });
+
+    it('Stop 버튼: stopRegionMonitoringPoc 호출 + status 갱신', async () => {
+      // 마운트 시 success 노출 → stop 후 unknown으로 전환.
+      mockGetRegionPocStatus
+        .mockReturnValueOnce({ state: 'success', error: null, monitoredCount: 5 })
+        .mockReturnValue({ state: 'unknown', error: null, monitoredCount: 0 });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      expect(screen.getByTestId('debug-region-poc-state').props.children).toBe('success');
+      await act(async () => {
+        fireEvent.press(screen.getByTestId('debug-region-poc-stop'));
+      });
+      expect(mockStopRegionPoc).toHaveBeenCalled();
+      expect(screen.getByTestId('debug-region-poc-state').props.children).toBe('unknown');
+    });
+
+    it('error가 있으면 error 라벨이 노출된다', () => {
+      mockGetRegionPocStatus.mockReturnValue({
+        state: 'failed',
+        error: 'denied',
+        monitoredCount: 0,
+      });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      expect(screen.getByTestId('debug-region-poc-error').props.children).toBe('denied');
+    });
   });
 
   it('unmount 시 AppState listener를 정리한다', async () => {
