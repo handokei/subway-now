@@ -58,7 +58,7 @@ expo-location SDK (= iOS CoreLocation `startMonitoring(for:)`) 가 region 등록
 
 - `tasks/bg-alarm-multi-channel-plan.md` 채널 3 섹션 strike-through + Phase 3 폐기 명시 (로컬 워킹 노트, 본 ADR이 최종 SoT).
 - `tasks/region-monitoring-poc-result.md` 본 결정의 원본 실측 데이터 (로컬).
-- PoC 코드(`src/tasks/regionMonitoringPocTask.ts`, `DebugModal` Region PoC 섹션) 정리는 별도 chore 이슈로 분리. 현재 상태에선 dead code이지만, 추후 채널 신뢰도 비교 측정이 필요해질 경우 참고가 될 수 있어 일괄 삭제는 보류.
+- PoC 코드(`src/tasks/regionMonitoringPocTask.ts`, `DebugModal` Region PoC 섹션)는 #618에서 일괄 삭제 완료. 추후 채널 신뢰도 비교 측정이 필요해질 경우 본 PR diff(`chore/#618-region-poc-cleanup`)와 `tasks/region-monitoring-poc-result.md`를 참고.
 
 ## Limitations
 

@@ -16,8 +16,8 @@ export const ALARM_LOG_BUFFER_SIZE = 200;
 // v2 (#372)로 의미 명확화. 두 값 모두 union에 유지해 과거 저장 데이터를 손실 없이 읽는다.
 // 'silent-push-received'는 #478 측정 인프라 — silent push 도달 시점 기록.
 // 'silent-push-fired'/'silent-push-skipped'는 #478 PR 1-2 — 위치 게이트 통과/실패 발사.
-// 'alert-fallback-fired'/'region-entry-*'는 #564 — 다중 채널 BG 알람(채널 2 alert fallback /
-// 채널 3 Region Monitoring) 도달률 측정용. 발사 동작은 후속 PR에서 추가, 본 PR은 source 슬롯만.
+// 'alert-fallback-fired'는 #564 — 채널 2 alert fallback 도달률 측정용.
+// (채널 3 Region Monitoring 슬롯은 #593/ADR-007 폐기 → #618에서 제거)
 export type AlarmLogSource =
   | 'fg'
   | 'bg'
@@ -27,8 +27,6 @@ export type AlarmLogSource =
   | 'silent-push-fired'
   | 'silent-push-skipped'
   | 'alert-fallback-fired'
-  | 'region-entry-fired'
-  | 'region-entry-skipped'
   // #580: useStationAlarm 하이드레이션 1회당 1엔트리. destinationId + 복원된 fired set 크기 기록.
   // 두 번째 fire 직전에 ref가 비워졌는지 직접 관찰 — race 가설 확인용.
   | 'fg-hydrate';
@@ -317,46 +315,6 @@ export function logAlertFallbackFired(input: {
     ts: Date.now(),
     source: 'alert-fallback-fired',
     outcome: 'fired',
-    stationName: input.stationName,
-    kind: input.kind,
-    phaseId: input.phaseId,
-  });
-}
-
-/**
- * 채널 3 Region Monitoring 진입 wake 발사 1건 적재 (#564).
- */
-export function logRegionEntryFired(input: {
-  stationName: string;
-  kind: AlarmLogKind;
-  phaseId: AlarmPhaseId;
-}): void {
-  void appendAlarmLog({
-    ts: Date.now(),
-    source: 'region-entry-fired',
-    outcome: 'fired',
-    stationName: input.stationName,
-    kind: input.kind,
-    phaseId: input.phaseId,
-  });
-}
-
-/**
- * 채널 3 Region Monitoring 진입 wake — 스킵된 1건 적재 (#564).
- * reason은 caller가 주입(dedup-station / gate-unknown-station / ...).
- * logSilentPushSkipped와 동일한 패턴: 향후 dedup 외 사유가 늘어나도 helper 분기 없이 호환.
- */
-export function logRegionEntrySkipped(input: {
-  stationName: string;
-  kind: AlarmLogKind;
-  phaseId: AlarmPhaseId;
-  reason: AlarmLogReason;
-}): void {
-  void appendAlarmLog({
-    ts: Date.now(),
-    source: 'region-entry-skipped',
-    outcome: 'suppressed',
-    reason: input.reason,
     stationName: input.stationName,
     kind: input.kind,
     phaseId: input.phaseId,

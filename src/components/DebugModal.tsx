@@ -34,18 +34,6 @@ import {
 import type { FusionConfidence, FusionSource } from '../utils/pickFusedStation';
 import type { NearestStationResult } from '../types/station';
 import { useTheme, spacing, radius, typography } from '../theme';
-import {
-  startRegionMonitoringPoc,
-  stopRegionMonitoringPoc,
-  getRegionPocStatus,
-  type PocRegion,
-} from '../tasks/regionMonitoringPocTask';
-import { findTopNearestStations } from '../utils/findNearestStation';
-
-// #563 PoC — 모니터링할 region 개수와 반경. Apple 권장 최소 100m, 앱당 한계 20개.
-// 5개는 실측 시 환승 1-2회 커버하면서 한계 대비 여유 보유.
-const REGION_POC_COUNT = 5;
-const REGION_POC_RADIUS_M = 150;
 
 function formatTime(ts: number): string {
   const d = new Date(ts);
@@ -293,27 +281,6 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
   const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
     getFusionDebugEntries(),
   );
-  // #563 PoC — region 모니터링 상태. start/stop 직후만 갱신(폴링 없음).
-  // 단일 객체 — getRegionPocStatus() 호출 1회로 정렬.
-  const [pocStatus, setPocStatus] = useState(() => getRegionPocStatus());
-
-  const handleRegionPocStart = useCallback(async () => {
-    if (!userLocation) return;
-    const nearest = findTopNearestStations(userLocation.lat, userLocation.lng, REGION_POC_COUNT);
-    const regions: PocRegion[] = nearest.map((r) => ({
-      identifier: r.station.name,
-      latitude: r.station.lat,
-      longitude: r.station.lng,
-      radius: REGION_POC_RADIUS_M,
-    }));
-    await startRegionMonitoringPoc(regions);
-    setPocStatus(getRegionPocStatus());
-  }, [userLocation]);
-
-  const handleRegionPocStop = useCallback(async () => {
-    await stopRegionMonitoringPoc();
-    setPocStatus(getRegionPocStatus());
-  }, []);
 
   useEffect(() => {
     return subscribeFusionDebug(() => setFusionLogs([...getFusionDebugEntries()]));
@@ -491,71 +458,6 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
             {silentPushDiagRows(silentPush).map(({ uiLabel, value }) => (
               <KeyValue key={uiLabel} label={uiLabel} value={value} colors={colors} />
             ))}
-          </Section>
-
-          <Section title="Region PoC (#563)" colors={colors}>
-            <View style={styles.kvRow}>
-              <Text style={[typography.mono, { color: colors.subtle, width: 80 }]}>state</Text>
-              <Text
-                style={[typography.mono, { color: colors.ink, flex: 1 }]}
-                selectable
-                testID="debug-region-poc-state"
-              >
-                {pocStatus.state}
-              </Text>
-            </View>
-            <View style={styles.kvRow}>
-              <Text style={[typography.mono, { color: colors.subtle, width: 80 }]}>count</Text>
-              <Text
-                style={[typography.mono, { color: colors.ink, flex: 1 }]}
-                selectable
-                testID="debug-region-poc-count"
-              >
-                {pocStatus.monitoredCount}
-              </Text>
-            </View>
-            {pocStatus.error && (
-              <View style={styles.kvRow}>
-                <Text style={[typography.mono, { color: colors.subtle, width: 80 }]}>error</Text>
-                <Text
-                  style={[typography.mono, { color: colors.ink, flex: 1 }]}
-                  selectable
-                  testID="debug-region-poc-error"
-                >
-                  {pocStatus.error}
-                </Text>
-              </View>
-            )}
-            <View style={[styles.actions, { marginTop: spacing.sm }]}>
-              <TouchableOpacity
-                style={[
-                  styles.actionButton,
-                  {
-                    borderColor: colors.accent,
-                    opacity: userLocation ? 1 : 0.4,
-                  },
-                ]}
-                onPress={handleRegionPocStart}
-                testID="debug-region-poc-start"
-              >
-                <Text style={[styles.actionText, { color: colors.accent }]}>
-                  Start ({REGION_POC_COUNT} nearest)
-                </Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.actionButton, { borderColor: colors.accent }]}
-                onPress={handleRegionPocStop}
-                testID="debug-region-poc-stop"
-              >
-                <Text style={[styles.actionText, { color: colors.accent }]}>Stop</Text>
-              </TouchableOpacity>
-            </View>
-            <Text
-              style={[typography.mono, { color: colors.subtle, marginTop: spacing.sm }]}
-            >
-              iOS Settings에서 BG App Refresh · 저전력 모드를 토글하며 region 진입 wake를 측정.
-              결과는 tasks/region-monitoring-poc-result.md에 누적.
-            </Text>
           </Section>
 
           <Section
