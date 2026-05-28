@@ -10,7 +10,7 @@ import {
   isSignificantEtaChange,
   shouldFire,
 } from './alarm';
-import { sendReschedulePush, sendSilentPush, type ApnsConfig } from './apns';
+import { sendReschedulePush, sendSilentPush, type ApnsConfig, type SendPushResult } from './apns';
 import { matchLine } from './lineAlias';
 import { buildAlarmKey, putPending } from './pendingPushes';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
@@ -29,6 +29,53 @@ export const RESCHEDULE_THRESHOLD_MS = 15_000;
 
 /** boardingLock fallback에서 hop당 기본 소요(90s). 환승역 등 실제 hop은 후속 데이터로 정밀화. */
 const FALLBACK_HOP_SEC = 90;
+
+export interface EnvHealResult {
+  result: SendPushResult;
+  /** retry로 정정된 새 env. 정정 발생 시에만 set. */
+  correctedEnv?: ApnsEnv;
+  /** 양쪽 host 모두 BadDeviceToken — 토큰 자체 무효 신호. */
+  envMismatchExhausted: boolean;
+}
+
+/**
+ * APNs env mismatch self-heal (#482). 1차 호출 → BadDeviceToken이면 opposite host로 1회 retry.
+ * `sender`는 host를 받아 push를 보내는 클로저 — phase push / reschedule push 양쪽에서 재사용.
+ *
+ * 호출자 책임:
+ *   - correctedEnv set → trip.apnsEnv 갱신 + envCorrected stat 카운트
+ *   - envMismatchExhausted true → trip 삭제
+ *   - result.ok / !ok 분기는 각 경로별 후처리에 맡김
+ */
+export async function sendWithEnvHeal(
+  sender: (host: string) => Promise<SendPushResult>,
+  currentEnv: ApnsEnv | undefined,
+  apnsHosts: Record<ApnsEnv, string>,
+  log: Logger,
+  tokenForLog: string,
+): Promise<EnvHealResult> {
+  const initial = await sender(pickApnsHost(currentEnv, apnsHosts));
+  if (initial.ok || !isApnsEnvMismatch(initial.status, initial.reason)) {
+    return { result: initial, envMismatchExhausted: false };
+  }
+  const corrected = flipApnsEnv(currentEnv);
+  log('apns env mismatch — retry with opposite host', {
+    token: tokenForLog,
+    from: currentEnv ?? 'sandbox',
+    to: corrected,
+  });
+  const retry = await sender(apnsHosts[corrected]);
+  if (retry.ok) {
+    log('apns env corrected', { token: tokenForLog, to: corrected });
+    return { result: retry, correctedEnv: corrected, envMismatchExhausted: false };
+  }
+  return {
+    result: retry,
+    envMismatchExhausted: isApnsEnvMismatch(retry.status, retry.reason),
+  };
+}
+
+type Logger = (message: string, meta?: Record<string, unknown>) => void;
 
 export interface ScheduledStats {
   scanned: number;
@@ -181,50 +228,28 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
           sentAt: now,
           pushId,
         };
-        let result = await sendSilentPush({
-          deviceToken: trip.token,
-          payload: pushPayload,
-          config: deps.apnsConfig,
-          host: pickApnsHost(trip.apnsEnv, deps.apnsHosts),
-          fetchImpl: deps.fetchImpl,
-          now,
-        });
-
-        // self-heal (#482): BadDeviceToken은 토큰 자체 무효가 아니라 host 환경 불일치인 경우가
-        // 압도적이다. 반대 host로 1회 재시도하고, 성공하면 trip.apnsEnv를 정정 저장한다.
-        // 양쪽 host 모두 BadDeviceToken을 내면 그제야 진짜 토큰 무효로 보고 trip을 삭제한다.
-        let envMismatchExhausted = false;
-        if (!result.ok && isApnsEnvMismatch(result.status, result.reason)) {
-          const correctedEnv = flipApnsEnv(trip.apnsEnv);
-          log('apns env mismatch — retry with opposite host', {
-            token: trip.token.slice(0, 8),
-            from: trip.apnsEnv ?? 'sandbox',
-            to: correctedEnv,
-          });
-          const retryResult = await sendSilentPush({
-            deviceToken: trip.token,
-            payload: pushPayload,
-            config: deps.apnsConfig,
-            host: deps.apnsHosts[correctedEnv],
-            fetchImpl: deps.fetchImpl,
-            now,
-          });
-          if (retryResult.ok) {
-            trip.apnsEnv = correctedEnv;
-            dirty = true;
-            stats.envCorrected += 1;
-            log('apns env corrected', {
-              token: trip.token.slice(0, 8),
-              to: correctedEnv,
-            });
-          } else if (isApnsEnvMismatch(retryResult.status, retryResult.reason)) {
-            // 양쪽 모두 BadDeviceToken — 토큰 자체가 무효
-            envMismatchExhausted = true;
-          }
-          // retry 결과를 최종 result로 승격 — 하단 success/error 분기가 일관되게 동작.
-          // retry가 다른 종류 에러(예: 410, PayloadTooLarge)면 그대로 그 경로에서 처리됨.
-          result = retryResult;
+        const heal = await sendWithEnvHeal(
+          (host) =>
+            sendSilentPush({
+              deviceToken: trip.token,
+              payload: pushPayload,
+              config: deps.apnsConfig,
+              host,
+              fetchImpl: deps.fetchImpl,
+              now,
+            }),
+          trip.apnsEnv,
+          deps.apnsHosts,
+          log,
+          trip.token.slice(0, 8),
+        );
+        if (heal.correctedEnv) {
+          trip.apnsEnv = heal.correctedEnv;
+          dirty = true;
+          stats.envCorrected += 1;
         }
+        const envMismatchExhausted = heal.envMismatchExhausted;
+        const result = heal.result;
 
         if (result.ok) {
           stats.pushed += 1;
@@ -339,8 +364,6 @@ export async function runTrainCodeTracking(
   await maybeReschedulePush(trip, waypoint, lock, estimate.epoch, env, deps, stats, now, log, generatePushId);
 }
 
-type Logger = (message: string, meta?: Record<string, unknown>) => void;
-
 /**
  * 다음 waypoint에 trainCode가 도착할 시각을 추정.
  *   1순위: arrivals에서 trainCode 매칭 → barvlDt
@@ -439,43 +462,33 @@ export async function maybeReschedulePush(
     previousEpoch: lastEpoch,
   });
 
-  const send = (host: string) =>
-    sendReschedulePush({
-      deviceToken: trip.token,
-      pushId,
-      trainCode: lock.trainCode,
-      nextStation: waypoint.stationName,
-      newArrivalTimeEpoch: newArrivalEpoch,
-      sentAt: now,
-      config: deps.apnsConfig,
-      host,
-      fetchImpl: deps.fetchImpl,
-      now,
-    });
-
-  let result = await send(pickApnsHost(trip.apnsEnv, deps.apnsHosts));
-  let envMismatchExhausted = false;
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendReschedulePush({
+        deviceToken: trip.token,
+        pushId,
+        trainCode: lock.trainCode,
+        nextStation: waypoint.stationName,
+        newArrivalTimeEpoch: newArrivalEpoch,
+        sentAt: now,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+  );
   let dirty = false;
-
-  // self-heal (#482): phase push 경로와 동일 정책. 양쪽 host 모두 BadDeviceToken이면 토큰 무효 판정.
-  if (!result.ok && isApnsEnvMismatch(result.status, result.reason)) {
-    const corrected = flipApnsEnv(trip.apnsEnv);
-    log('apns env mismatch — retry with opposite host', {
-      token: trip.token.slice(0, 8),
-      from: trip.apnsEnv ?? 'sandbox',
-      to: corrected,
-    });
-    const retry = await send(deps.apnsHosts[corrected]);
-    if (retry.ok) {
-      trip.apnsEnv = corrected;
-      dirty = true;
-      stats.envCorrected += 1;
-      log('apns env corrected', { token: trip.token.slice(0, 8), to: corrected });
-    } else if (isApnsEnvMismatch(retry.status, retry.reason)) {
-      envMismatchExhausted = true;
-    }
-    result = retry;
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    dirty = true;
+    stats.envCorrected += 1;
   }
+  const envMismatchExhausted = heal.envMismatchExhausted;
+  const result = heal.result;
 
   if (result.ok) {
     stats.pushed += 1;
