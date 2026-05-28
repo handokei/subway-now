@@ -189,7 +189,12 @@ export function useStationAlarm({
     }
 
     const rawEvent = evaluateAlarmPhase(
-      { route, destinationName: destination.name, etaSeconds },
+      {
+        route,
+        destinationName: destination.name,
+        etaSeconds,
+        currentLine: nearestStation?.line ?? null,
+      },
       firedAlarmsRef.current,
     );
     if (rawEvent) fireAndLog(rawEvent, 'eta', route, destination);
@@ -206,6 +211,7 @@ export function useStationAlarm({
     firedHydrated,
     setAlarmEvent,
     nearestStation?.id,
+    nearestStation?.line,
   ]);
 
   // #396: 도착정보 API 신호로 imminent 발사.
