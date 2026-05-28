@@ -11,10 +11,17 @@ import {
   shouldFire,
 } from './alarm';
 import { sendReschedulePush, sendSilentPush, type ApnsConfig, type SendPushResult } from './apns';
+import { flipApnsEnv, pickApnsHost } from './apnsHost';
 import { matchLine } from './lineAlias';
 import { buildAlarmKey, putPending } from './pendingPushes';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
-import { deleteTrip, listTrips, putTrip } from './trips';
+import { listTrips, putTrip } from './trips';
+import {
+  buildLiveActivityContentState,
+  cleanupTripWithLa,
+  fireLiveActivityUpdate,
+  type LiveActivityStats,
+} from './liveActivity';
 import type { ApnsEnv, BoardingLockMeta, Env, Trip, Waypoint } from './types';
 
 /** 알람 윈도우: 알람 예상 시각 5분 이내인 트립만 폴링한다. */
@@ -77,7 +84,7 @@ export async function sendWithEnvHeal(
 
 type Logger = (message: string, meta?: Record<string, unknown>) => void;
 
-export interface ScheduledStats {
+export interface ScheduledStats extends LiveActivityStats {
   scanned: number;
   polled: number;
   pushed: number;
@@ -104,24 +111,9 @@ export interface ScheduledDeps {
   generatePushId?: () => string;
 }
 
-/**
- * trip의 apnsEnv → APNs host 선택. 누락 시 sandbox fallback —
- * 구버전 클라이언트가 필드를 안 보낼 때 production host로 잘못 전송되어
- * `BadDeviceToken`을 받던 #482 회귀를 막기 위함. App Store/TestFlight 빌드는
- * 반드시 명시적으로 'production'을 보내야 한다.
- */
-export function pickApnsHost(apnsEnv: ApnsEnv | undefined, hosts: Record<ApnsEnv, string>): string {
-  return hosts[apnsEnv ?? 'sandbox'];
-}
-
-/**
- * APNs env를 반대편으로 뒤집는다. BadDeviceToken self-heal에서 1차 시도 host와
- * 반대 host로 재시도할 때 사용 (#482 D안). 누락(undefined)은 sandbox로 시작했으므로
- * production으로 뒤집는다 — `pickApnsHost`의 sandbox fallback과 짝.
- */
-export function flipApnsEnv(env: ApnsEnv | undefined): ApnsEnv {
-  return (env ?? 'sandbox') === 'sandbox' ? 'production' : 'sandbox';
-}
+// pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
+// 기존 import 호환을 위해 re-export.
+export { flipApnsEnv, pickApnsHost };
 
 export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
   const now = deps.now?.() ?? Date.now();
@@ -134,13 +126,16 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     errors: 0,
     etaMissing: 0,
     envCorrected: 0,
+    laPushSent: 0,
+    laPushFailed: 0,
+    laTokenCleared: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
     stats.scanned += 1;
 
     if (trip.expiresAt <= now) {
-      await deleteTrip(env.TRIPS, trip.token);
+      await cleanupTripWithLa(trip, env, deps, stats, now, log);
       continue;
     }
 
@@ -273,7 +268,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
             dirty = true;
             if (phase === 'imminent') {
               if (waypoint.kind === 'destination') {
-                await deleteTrip(env.TRIPS, trip.token);
+                await cleanupTripWithLa(trip, env, deps, stats, now, log);
                 log('trip completed after destination imminent push', {
                   token: trip.token.slice(0, 8),
                 });
@@ -293,7 +288,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
                 remaining: trip.waypoints.length,
               });
               if (trip.waypoints.length === 0) {
-                await deleteTrip(env.TRIPS, trip.token);
+                await cleanupTripWithLa(trip, env, deps, stats, now, log);
                 continue;
               }
             }
@@ -306,10 +301,32 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
             token: trip.token.slice(0, 8),
           });
           if (isUnrecoverableApnsError(result.status, result.reason) || envMismatchExhausted) {
-            await deleteTrip(env.TRIPS, trip.token);
+            await cleanupTripWithLa(trip, env, deps, stats, now, log);
             continue;
           }
         }
+      }
+
+      // LA update: silent push와 동일 gating(phase 전이 또는 ETA 60s+ 변동). intermediate는 LA에서 의미 없으므로 스킵.
+      // 발사가 안 일어났어도 ETA가 의미있게 변하면 LA는 갱신해야 함 — silent push와 독립적인 채널.
+      if (
+        trip.activityPushToken &&
+        trip.activityState === 'live' &&
+        !isIntermediate &&
+        (etaChanged || phaseFires)
+      ) {
+        // laPhase 우선순위: 이번 tick의 신호 → 직전 발사 기억 → 초기값 early.
+        // 신호 없는 cycle에서도 LA content-state는 마지막으로 알려진 phase를 유지해야 한다.
+        const laPhase = phase ?? trip.lastFiredPhase ?? 'early';
+        const contentState = buildLiveActivityContentState(
+          waypoint,
+          eta,
+          laPhase,
+          trip.waypoints.length,
+          now,
+        );
+        const la = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log);
+        if (la.dirty) dirty = true;
       }
 
       if (dirty) {
@@ -357,7 +374,7 @@ export async function runTrainCodeTracking(
   }
 
   if (estimate.arrived) {
-    await advanceBoardingLockWaypoint(trip, waypoint, env, log);
+    await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log);
     return;
   }
 
@@ -404,10 +421,13 @@ export async function advanceBoardingLockWaypoint(
   trip: Trip,
   waypoint: Waypoint,
   env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
   log: Logger,
 ): Promise<void> {
   if (waypoint.kind === 'destination') {
-    await deleteTrip(env.TRIPS, trip.token);
+    await cleanupTripWithLa(trip, env, deps, stats, now, log);
     log('boarding-lock: destination arrived, trip cleared', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
@@ -423,7 +443,7 @@ export async function advanceBoardingLockWaypoint(
     remaining: trip.waypoints.length,
   });
   if (trip.waypoints.length === 0) {
-    await deleteTrip(env.TRIPS, trip.token);
+    await cleanupTripWithLa(trip, env, deps, stats, now, log);
     return;
   }
   await putTrip(env.TRIPS, trip);
@@ -502,7 +522,7 @@ export async function maybeReschedulePush(
       token: trip.token.slice(0, 8),
     });
     if (isUnrecoverableApnsError(result.status, result.reason) || envMismatchExhausted) {
-      await deleteTrip(env.TRIPS, trip.token);
+      await cleanupTripWithLa(trip, env, deps, stats, now, log);
       return;
     }
   }
