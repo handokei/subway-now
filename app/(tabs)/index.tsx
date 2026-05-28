@@ -5,6 +5,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useTranslation } from 'react-i18next';
 import { useFusedNearestStation } from '../../src/hooks/useFusedNearestStation';
 import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
+import type { ArrivalInfo } from '../../src/api/arrivalApi';
 import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../../src/utils/formatTime';
 import { LINE_NAMES } from '../../src/constants/lineColors';
@@ -39,6 +40,8 @@ import { useBoardingLockScheduler } from '../../src/hooks/useBoardingLockSchedul
 import { useBoardingLockAdvancer } from '../../src/hooks/useBoardingLockAdvancer';
 import { BoardingLockBanner } from '../../src/components/BoardingLockBanner';
 import { MisBoardingBanner } from '../../src/components/MisBoardingBanner';
+import { MisBoardingReselectModal } from '../../src/components/MisBoardingReselectModal';
+import { Toast } from '../../src/components/Toast';
 import { useMisBoardingDetector } from '../../src/hooks/useMisBoardingDetector';
 import { useTrainPositions } from '../../src/hooks/useTrainPositions';
 import { useTransferTrainList } from '../../src/hooks/useTransferTrainList';
@@ -233,6 +236,30 @@ export default function HomeScreen() {
     lock: boardingLock,
     positions: lockLinePositions,
   });
+  // #603: detected false→true 전환 시점에 토스트 + 모달 1회 발사. true가 유지되어도 중복 발사 X.
+  // banner는 그대로 노출되어 사용자가 닫은 뒤에도 잘못 탑승 상태를 알 수 있다.
+  const [misBoardingToastVisible, setMisBoardingToastVisible] = useState(false);
+  const [misBoardingModalVisible, setMisBoardingModalVisible] = useState(false);
+  const prevMisBoardingRef = useRef(false);
+  useEffect(() => {
+    if (misBoardingDetected && !prevMisBoardingRef.current) {
+      setMisBoardingToastVisible(true);
+      setMisBoardingModalVisible(true);
+    }
+    prevMisBoardingRef.current = misBoardingDetected;
+  }, [misBoardingDetected]);
+  const handleMisBoardingReselect = useCallback(
+    (train: ArrivalInfo) => {
+      createLockFromTrain(train);
+      setMisBoardingModalVisible(false);
+      setMisBoardingToastVisible(false);
+    },
+    [createLockFromTrain],
+  );
+  // setState setter는 stable 참조지만 인라인 화살표를 prop으로 넘기면 매 렌더 새 함수가 되어
+  // Toast의 5초 타이머 effect가 재설정된다(역 폴링 30s, 도착 갱신 등으로 리렌더 잦음).
+  const handleMisBoardingToastDismiss = useCallback(() => setMisBoardingToastVisible(false), []);
+  const handleMisBoardingModalClose = useCallback(() => setMisBoardingModalVisible(false), []);
   // #584 PR E: 활성 lock이 현재 leg의 transfer waypoint에 도달하면 다음 노선 도착 list 노출.
   const {
     context: transferContext,
@@ -438,6 +465,22 @@ export default function HomeScreen() {
           <Text style={styles.arrivedBannerText}>{t('home.arrived')}</Text>
         </View>
       )}
+      <Toast
+        visible={misBoardingToastVisible}
+        message="탑승 열차를 찾을 수 없어요. 다시 선택해주세요."
+        onDismiss={handleMisBoardingToastDismiss}
+        accent={colors.warn}
+        testID="mis-boarding-toast"
+      />
+      {/* line이 정해져야 list를 렌더 가능 — line null이면 모달 자체를 띄우지 않음 (빈 sheet 회피). */}
+      <MisBoardingReselectModal
+        visible={misBoardingModalVisible && effectiveOrigin?.line != null}
+        arrivals={directionalArrivals}
+        line={effectiveOrigin?.line ?? null}
+        onSelect={handleMisBoardingReselect}
+        onClose={handleMisBoardingModalClose}
+      />
+
       <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
         {effectiveOrigin ? (
           <>
