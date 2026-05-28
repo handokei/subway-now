@@ -34,6 +34,7 @@ import { ArrivalSourceNotice } from '../../src/components/ArrivalSourceNotice';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 import { useArrivalAutoClear } from '../../src/hooks/useArrivalAutoClear';
 import { useBoardingLockController } from '../../src/hooks/useBoardingLockController';
+import { useBoardingLockScheduler } from '../../src/hooks/useBoardingLockScheduler';
 import { BoardingLockBanner } from '../../src/components/BoardingLockBanner';
 import { BoardingTrainList } from '../../src/components/BoardingTrainList';
 
@@ -203,6 +204,11 @@ export default function HomeScreen() {
     arrival,
     currentStation: result?.station ?? null,
     expectedDurationMinutes: staticEtaMinutes,
+  });
+  useBoardingLockScheduler({
+    lock: boardingLock,
+    route,
+    destinationName: destination?.name ?? null,
   });
   useBackgroundLocation(destination);
   useApnsTripRegistration({
