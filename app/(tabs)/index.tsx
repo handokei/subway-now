@@ -9,6 +9,7 @@ import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../../src/utils/formatTime';
 import { LINE_NAMES } from '../../src/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
+import { useBoardingLockStore } from '../../src/store/useBoardingLockStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../../src/utils/stationRoute';
 import type { Station } from '../../src/types/station';
@@ -102,7 +103,10 @@ export default function HomeScreen() {
     () => (route && tripOrigin && destination ? { route, origin: tripOrigin, destination } : undefined),
     [route, tripOrigin, destination],
   );
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext);
+  // #584 PR D2: lock.trainCode를 fusion에 전달 — position-train이 같은 trainCode면 'boarding-lock' 승격.
+  // useBoardingLockController가 동일 store를 소비하지만 selector로 trainCode만 추출해 churn 최소화.
+  const lockedTrainCode = useBoardingLockStore((s) => s.lock?.trainCode ?? null);
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode);
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,

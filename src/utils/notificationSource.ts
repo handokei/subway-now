@@ -25,6 +25,7 @@ export function resolveNotificationSource(
 ): NotificationSource {
   if (locationUncertain) return 'uncertain';
   switch (source) {
+    case 'boarding-lock':
     case 'position-train':
     case 'position':
     case 'arrival':

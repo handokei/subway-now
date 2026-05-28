@@ -8,6 +8,7 @@ import type { FusionSource } from '../pickFusedStation';
 
 describe('resolveNotificationSource', () => {
   it.each<[FusionSource, NotificationSource]>([
+    ['boarding-lock', 'positionTrain'],
     ['position-train', 'positionTrain'],
     ['position', 'positionTrain'],
     ['arrival', 'positionTrain'],

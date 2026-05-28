@@ -173,6 +173,72 @@ describe('useFusedNearestStation', () => {
     expect(result.current.source).toBe('position-train');
   });
 
+  describe('#584 PR D2: boarding-lock 라벨', () => {
+    // 공통 setup: position-train 채택 시나리오. lockedTrainCode 인자만 바꿔가며 라벨 검증.
+    const setupPositionTrain = (overrideTrainNo: string) => {
+      mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
+      mockFindTop.mockReturnValue([
+        { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
+        { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 },
+      ]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions
+        .mockReturnValueOnce(positionRet({ line: '2', trains: [] }))
+        .mockReturnValueOnce(
+          positionRet({
+            line: '3',
+            trains: [
+              train(MOCK_STATIONS.chungmuro.name, TRAIN_STATUS.ARRIVED, {
+                trainNo: overrideTrainNo,
+              }),
+            ],
+          }),
+        )
+        .mockReturnValueOnce(positionRet(null));
+    };
+
+    it('lockedTrainCode가 position-train의 trainNo와 일치하면 boarding-lock으로 승격', () => {
+      setupPositionTrain('T-LOCKED');
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, 'T-LOCKED'),
+      );
+      expect(result.current.confidence).toBe('boarding-lock');
+      expect(result.current.source).toBe('boarding-lock');
+    });
+
+    it('lockedTrainCode가 다르면 position-train 유지', () => {
+      setupPositionTrain('T-ACTUAL');
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, 'T-OTHER'),
+      );
+      expect(result.current.confidence).toBe('position-train');
+      expect(result.current.source).toBe('position-train');
+    });
+
+    it('lockedTrainCode=null이면 position-train 유지', () => {
+      setupPositionTrain('T-ANY');
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, null),
+      );
+      expect(result.current.confidence).toBe('position-train');
+      expect(result.current.source).toBe('position-train');
+    });
+
+    it('lockedTrainCode 있어도 position-train 신호 없으면 승격 안 됨 (arrival/gps 분기 유지)', () => {
+      // arrival만 있는 케이스 — boarding-lock은 position-train 채택 전제
+      mockUseNearest.mockReturnValue(gpsBase());
+      mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
+      mockUseArrival.mockReturnValue(arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }));
+      mockUsePositions.mockReturnValue(positionRet(null));
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, 'T-LOCKED'),
+      );
+      expect(result.current.confidence).toBe('arrival-confirmed');
+      expect(result.current.source).toBe('arrival');
+    });
+  });
+
   it('arrival 있고 position-train 후보 없으면 fused arrival 채택', () => {
     mockUseNearest.mockReturnValue(gpsBase());
     mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);

@@ -197,6 +197,22 @@ describe('useStationAlarm', () => {
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
     });
 
+    it('GPS 게이트 차단 + arrivalConfidence=boarding-lock → station-passed 알람 발화 (#584 PR D2)', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 500,
+            arrivalConfidence: 'boarding-lock',
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+    });
+
     it('GPS 게이트 차단 + arrivalConfidence=arrival-arriving → 발화 안 함 (확정 아님)', () => {
       renderHook(() =>
         useStationAlarm(

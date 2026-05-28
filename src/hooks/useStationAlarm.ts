@@ -254,7 +254,10 @@ export function useStationAlarm({
   // #452: deps에 raw accuracyMeters를 두면 GPS 노이즈로 매 fix 재실행 → dedup-suppressed
   // 로그가 cap까지 차서 다른 진단을 밀어낸다. 게이트 통과 여부(boolean)만 dep로 둔다.
   const accuracyOk = isAccuracyAcceptable(accuracyMeters);
-  const arrivalConfirmed = arrivalConfidence === 'arrival-confirmed';
+  // #584 PR D2: boarding-lock(사용자가 탭한 열차를 실시간 위치 API로 확인)은 arrival-confirmed보다
+  // 더 강한 신호 — GPS 정확도 게이트도 같은 등급으로 통과시킨다.
+  const arrivalConfirmed =
+    arrivalConfidence === 'arrival-confirmed' || arrivalConfidence === 'boarding-lock';
 
   useEffect(() => {
     let cancelled = false;
