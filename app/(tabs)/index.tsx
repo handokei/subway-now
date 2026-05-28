@@ -38,6 +38,9 @@ import { useBoardingLockController } from '../../src/hooks/useBoardingLockContro
 import { useBoardingLockScheduler } from '../../src/hooks/useBoardingLockScheduler';
 import { useBoardingLockAdvancer } from '../../src/hooks/useBoardingLockAdvancer';
 import { BoardingLockBanner } from '../../src/components/BoardingLockBanner';
+import { MisBoardingBanner } from '../../src/components/MisBoardingBanner';
+import { useMisBoardingDetector } from '../../src/hooks/useMisBoardingDetector';
+import { useTrainPositions } from '../../src/hooks/useTrainPositions';
 import { BoardingTrainList } from '../../src/components/BoardingTrainList';
 
 const logger = createLogger('HomeScreen');
@@ -220,6 +223,13 @@ export default function HomeScreen() {
     route,
     destinationName: destination?.name ?? null,
     currentStationName: result?.station.name ?? null,
+  });
+  // #584 PR D3: lock.boardingLine 위치 데이터를 별도 구독 — fusion 캐시와 dedup되어 추가 비용 없음.
+  // lock 없으면 line=null로 호출되어 polling이 자동 정지된다.
+  const { positions: lockLinePositions } = useTrainPositions(boardingLock?.boardingLine ?? null);
+  const { detected: misBoardingDetected } = useMisBoardingDetector({
+    lock: boardingLock,
+    positions: lockLinePositions,
   });
   useBackgroundLocation(destination);
   useApnsTripRegistration({
@@ -645,6 +655,9 @@ export default function HomeScreen() {
 
             {/* Arrivals — 현재역(effectiveOrigin)이 확정되면 trip 유무와 무관하게 노출 */}
             {/* #584 PR B — BoardingLock 진입점. 활성 시 banner, 비활성 + destination 설정 시 train list. */}
+            {destination && boardingLock && misBoardingDetected && (
+              <MisBoardingBanner onReselect={releaseBoardingLock} />
+            )}
             {destination && boardingLock && (
               <BoardingLockBanner lock={boardingLock} onRelease={releaseBoardingLock} />
             )}
