@@ -49,6 +49,8 @@ interface RegisterCallInputs {
   destination: Station;
   nextStationEtaSeconds: number | null;
   currentStation: Station | null;
+  /** 같은 trip 세션 동안 고정되는 epoch ms. backend `isSameSession` 판정 키(#589). */
+  createdAt: number;
 }
 
 /** 두 호출처(token refresh / main effect)의 register 페이로드 빌드를 단일화. */
@@ -60,6 +62,7 @@ async function callRegister(input: RegisterCallInputs) {
     waypoints: routeToWaypoints(input.route, input.destination.name, input.currentStation),
     alarmAtEpochMs: deriveAlarmAtEpochMs(input.nextStationEtaSeconds, Date.now()),
     apnsEnv: resolveApnsEnv(),
+    createdAt: input.createdAt,
   });
 }
 
@@ -77,6 +80,19 @@ export function useApnsTripRegistration({
   useEffect(() => {
     latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation };
   });
+
+  // #589 — backend `isSameSession`(token+createdAt) 판정용. 같은 trip(같은
+  // token+routeSig+destinationId)이 register를 여러 번 호출해도 동일 createdAt을
+  // 전달해야 backend의 waypoint advance 보존(#578)이 실제 가동된다.
+  const lastSessionKeyRef = useRef<string | null>(null);
+  const tripCreatedAtRef = useRef<number>(0);
+  const resolveTripCreatedAt = (sessionKey: string): number => {
+    if (lastSessionKeyRef.current !== sessionKey) {
+      lastSessionKeyRef.current = sessionKey;
+      tripCreatedAtRef.current = Date.now();
+    }
+    return tripCreatedAtRef.current;
+  };
 
   // ── 토큰 발급 + 리스너 등록 (mount-once) ──
   useEffect(() => {
@@ -116,12 +132,14 @@ export function useApnsTripRegistration({
           currentStation: cs,
         } = latestInputsRef.current;
         if (!r || !d) return;
+        const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
         await callRegister({
           token,
           route: r,
           destination: d,
           nextStationEtaSeconds: eta,
           currentStation: cs,
+          createdAt: resolveTripCreatedAt(sessionKey),
         });
       })();
     });
@@ -157,12 +175,14 @@ export function useApnsTripRegistration({
         return;
       }
 
+      const sessionKey = `${token}:${routeSig}:${destination.id}`;
       const result = await callRegister({
         token,
         route,
         destination,
         nextStationEtaSeconds,
         currentStation,
+        createdAt: resolveTripCreatedAt(sessionKey),
       });
       if (cancelled) return;
       if (result.ok) {
