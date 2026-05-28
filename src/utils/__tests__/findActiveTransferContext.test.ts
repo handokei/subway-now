@@ -1,5 +1,5 @@
-import { findActiveTransferContext } from '../findActiveTransferContext';
-import { findStationByNameAndLine } from '../stationRoute';
+import { findActiveTransferContext, resolveDirectionInLine } from '../findActiveTransferContext';
+import { findStationByNameAndLine, getStationsOnLine } from '../stationRoute';
 import type { BoardingLock } from '../../types/boardingLock';
 import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
 import type { Station } from '../../types/station';
@@ -163,6 +163,21 @@ describe('findActiveTransferContext', () => {
     expect(
       findActiveTransferContext(transferredLock, route, '여의나루', gondeokOnLine6),
     ).toBeNull();
+  });
+
+  describe('resolveDirectionInLine (직접 호출)', () => {
+    // 5호선 stations.json에서 첫 2개 역의 id/이름으로 양 방향 케이스 강제.
+    const line5 = getStationsOnLine('5');
+    const early = line5[0];
+    const late = line5[line5.length - 1];
+
+    it('nextIdx > currIdx → down', () => {
+      expect(resolveDirectionInLine('5', early.id, late.name)).toBe('down');
+    });
+
+    it('nextIdx < currIdx → up', () => {
+      expect(resolveDirectionInLine('5', late.id, early.name)).toBe('up');
+    });
   });
 
   it('toLine 측 환승역 station을 못 찾으면 null', () => {

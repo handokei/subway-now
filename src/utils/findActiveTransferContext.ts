@@ -71,8 +71,9 @@ export function findActiveTransferContext(
 /**
  * 한 노선 내에서 from station id ↔ to station name의 index 비교로 방향 산출.
  * tripDirection.ts의 resolveTripDirection은 route의 첫 leg만 보므로 환승 후 leg에는 쓸 수 없음 — 별도 유틸.
+ * 테스트 노출용 export — 실데이터 의존이라 정/역방향 양쪽 분기 강제하기 위해 직접 호출.
  */
-function resolveDirectionInLine(
+export function resolveDirectionInLine(
   line: LineNumber,
   fromStationId: string,
   toStationName: string,
