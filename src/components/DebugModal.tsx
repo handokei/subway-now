@@ -102,7 +102,11 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
   const acc =
     entry.gpsAccuracyAtPushMeters != null ? `${Math.round(entry.gpsAccuracyAtPushMeters)}m` : '-';
   const cand = entry.candidates
-    .map((c) => `${CANDIDATE_SHORT[c.key] ?? c.key}=${c.stationName}`)
+    .map((c) => {
+      const base = `${CANDIDATE_SHORT[c.key] ?? c.key}=${c.stationName}`;
+      // boarding-lock 매칭 표기 — positionTrain candidate에 lockMatch=true가 찍히면 한눈에 식별.
+      return c.extra?.lockMatch === true ? `${base}[LOCK]` : base;
+    })
     .join(' ');
   const candPart = cand.length > 0 ? cand : '-';
   return `${time} | src=${entry.source} conf=${entry.confidence} | ${station} d=${d} acc=${acc} | ${candPart}`;

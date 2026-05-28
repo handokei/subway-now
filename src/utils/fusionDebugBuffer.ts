@@ -12,8 +12,9 @@ export interface FusionCandidateMini {
   key: 'positionTrain' | 'fused' | 'route' | 'gps';
   stationName: string;
   line: string;
-  /** 추가 정보 — 출처별 의미가 다를 수 있어 자유형으로 둠. */
-  extra?: Record<string, string | number>;
+  /** 추가 정보 — 출처별 의미가 다를 수 있어 자유형으로 둠.
+   *  null은 "값이 없는 컨텍스트"를 명시 (예: positionTrain의 lockedTrainCode=null = lock 비활성). */
+  extra?: Record<string, string | number | boolean | null>;
 }
 
 export interface FusionDecisionEntry {
