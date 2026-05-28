@@ -130,6 +130,90 @@ describe('validateTrip', () => {
   });
 });
 
+describe('POST /trips (#578 — preserve advance progress on re-register)', () => {
+  const CREATED = 1_700_000_000_000;
+  function makeKvEnv(): Env {
+    return makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'] });
+  }
+
+  function tripBody(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    return {
+      ...base(),
+      token: 'tok-578',
+      createdAt: CREATED,
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate' },
+        { stationName: '군자', line: '7', kind: 'intermediate' },
+        { stationName: '강남', line: '2', kind: 'destination' },
+      ],
+      ...overrides,
+    };
+  }
+
+  it('persists incoming trip on first register', async () => {
+    const env = makeKvEnv();
+    const res = await post('/trips', tripBody(), env);
+    expect(res.status).toBe(200);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(stored.waypoints).toHaveLength(3);
+  });
+
+  it('preserves advanced waypoints when same session re-registers (same createdAt)', async () => {
+    const env = makeKvEnv();
+    // 1) initial register
+    await post('/trips', tripBody(), env);
+    // 2) backend advance: shift first waypoint + set lastFiredPhase=undefined (mimics scheduled.ts)
+    const advanced = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    advanced.waypoints.shift();
+    advanced.lastFiredPhase = undefined;
+    advanced.lastEtaSeconds = 42;
+    await env.TRIPS.put('trip:tok-578', JSON.stringify(advanced));
+    // 3) device re-POSTs original payload (same createdAt)
+    const res = await post('/trips', tripBody(), env);
+    expect(res.status).toBe(200);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    // advance progress preserved
+    expect(finalTrip.waypoints).toHaveLength(2);
+    expect(finalTrip.waypoints[0].stationName).toBe('군자');
+    expect(finalTrip.lastEtaSeconds).toBe(42);
+  });
+
+  it('replaces trip entirely when createdAt differs (new session)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    const advanced = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    advanced.waypoints.shift();
+    await env.TRIPS.put('trip:tok-578', JSON.stringify(advanced));
+    // new trip session with different createdAt
+    await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(finalTrip.waypoints).toHaveLength(3);
+    expect(finalTrip.waypoints[0].stationName).toBe('중곡');
+  });
+
+  it('preserves existing apnsEnv when incoming omits it', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody({ apnsEnv: 'production' }), env);
+    await post('/trips', tripBody(), env); // no apnsEnv
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(finalTrip.apnsEnv).toBe('production');
+  });
+
+  it('returns 400 on invalid JSON', async () => {
+    const env = makeKvEnv();
+    const res = await post('/trips', 'not-json{', env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_json' });
+  });
+
+  it('returns 400 on invalid trip body', async () => {
+    const env = makeKvEnv();
+    const res = await post('/trips', { token: '' }, env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_trip' });
+  });
+});
+
 describe('POST /telemetry/silent-push', () => {
   const validBody = {
     token: 'aabbccdd11223344',
