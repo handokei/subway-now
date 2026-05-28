@@ -1,0 +1,283 @@
+import { act, renderHook, waitFor } from '@testing-library/react-native';
+import { AppState } from 'react-native';
+import {
+  useBoardingLockController,
+  type UseBoardingLockControllerInputs,
+} from '../useBoardingLockController';
+import { useBoardingLockStore } from '../../store/useBoardingLockStore';
+import type { ArrivalInfo, StationArrival } from '../../api/arrivalApi';
+import type { Station } from '../../types/station';
+import type { DirectRoute } from '../../utils/stationRoute';
+import type { BoardingLock } from '../../types/boardingLock';
+
+const mockGetBoardingLock = jest.fn();
+const mockSetBoardingLock = jest.fn();
+const mockClearBoardingLock = jest.fn();
+
+jest.mock('../../utils/boardingLockStorage', () => ({
+  getBoardingLock: (...args: unknown[]) => mockGetBoardingLock(...args),
+  setBoardingLock: (...args: unknown[]) => mockSetBoardingLock(...args),
+  clearBoardingLock: (...args: unknown[]) => mockClearBoardingLock(...args),
+}));
+
+const mockResolveTripDirection = jest.fn();
+jest.mock('../../utils/tripDirection', () => ({
+  resolveTripDirection: (...args: unknown[]) => mockResolveTripDirection(...args),
+}));
+
+function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
+  return {
+    destination: '종착',
+    arrivalMinutes: 3,
+    arrivalSeconds: 180,
+    statusMessage: '',
+    trainCode: 'T-1',
+    receivedAtMs: 0,
+    arrivalCode: -1,
+    isLastTrain: false,
+    trainType: 'normal',
+    ...overrides,
+  };
+}
+
+const stationA: Station = {
+  id: 'stn-A',
+  name: '강남',
+  line: '2',
+  lineColor: '#000',
+  lat: 37.5,
+  lng: 127.0,
+};
+
+const route: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+
+const upTrain = makeTrain({ trainCode: 'UP-1' });
+const downTrain = makeTrain({ trainCode: 'DN-1' });
+const arrival: StationArrival = { up: [upTrain], down: [downTrain] };
+
+const defaultInputs: UseBoardingLockControllerInputs = {
+  destinationId: 'dest-1',
+  destinationName: '성수',
+  route,
+  arrival,
+  currentStation: stationA,
+  expectedDurationMinutes: 20,
+};
+
+describe('useBoardingLockController', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetBoardingLock.mockResolvedValue(null);
+    mockSetBoardingLock.mockResolvedValue(undefined);
+    mockClearBoardingLock.mockResolvedValue(undefined);
+    mockResolveTripDirection.mockReturnValue(null);
+    useBoardingLockStore.setState({ lock: null });
+  });
+
+  it('마운트 시 loadLock 호출 → storage에서 복원', async () => {
+    const stored: BoardingLock = {
+      destinationId: 'dest-1',
+      trainCode: 'T-100',
+      boardingStationId: 'stn-A',
+      boardingLine: '2',
+      boardedAt: Date.now(),
+      expectedDurationMs: 600_000,
+    };
+    mockGetBoardingLock.mockResolvedValueOnce(stored);
+    const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+    await waitFor(() => expect(result.current.lock).toEqual(stored));
+  });
+
+  describe('directionalArrivals', () => {
+    it("direction='up'이면 arrival.up만", () => {
+      mockResolveTripDirection.mockReturnValue('up');
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      expect(result.current.directionalArrivals).toEqual([upTrain]);
+    });
+
+    it("direction='down'이면 arrival.down만", () => {
+      mockResolveTripDirection.mockReturnValue('down');
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      expect(result.current.directionalArrivals).toEqual([downTrain]);
+    });
+
+    it('direction 미정이면 up+down 합집합', () => {
+      mockResolveTripDirection.mockReturnValue(null);
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      expect(result.current.directionalArrivals).toEqual([upTrain, downTrain]);
+    });
+
+    it('arrival null이면 빈 배열', () => {
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: null }),
+      );
+      expect(result.current.directionalArrivals).toEqual([]);
+    });
+
+    it('route/destinationName/currentStation 누락이면 direction null로 폴백 → 합집합', () => {
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, route: null }),
+      );
+      expect(mockResolveTripDirection).not.toHaveBeenCalled();
+      expect(result.current.directionalArrivals).toEqual([upTrain, downTrain]);
+    });
+  });
+
+  describe('createLockFromTrain', () => {
+    beforeEach(() => {
+      jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    });
+    afterEach(() => {
+      (Date.now as jest.Mock).mockRestore();
+    });
+
+    it('expectedDurationMinutes를 ms로 변환해 lock 생성', async () => {
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: 'T-X' }));
+      });
+      expect(mockSetBoardingLock).toHaveBeenCalledWith({
+        destinationId: 'dest-1',
+        trainCode: 'T-X',
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: 1_700_000_000_000,
+        expectedDurationMs: 20 * 60_000,
+      });
+    });
+
+    it('expectedDurationMinutes null이면 fallback 30분', async () => {
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, expectedDurationMinutes: null }),
+      );
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain());
+      });
+      expect(mockSetBoardingLock).toHaveBeenCalledWith(
+        expect.objectContaining({ expectedDurationMs: 30 * 60_000 }),
+      );
+    });
+
+    it('destinationId 또는 currentStation 누락이면 no-op', async () => {
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, destinationId: null }),
+      );
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain());
+      });
+      expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('currentStation null이어도 no-op', async () => {
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, currentStation: null }),
+      );
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain());
+      });
+      expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('releaseLock', () => {
+    it('store releaseLock으로 위임 — storage clear', async () => {
+      useBoardingLockStore.setState({
+        lock: {
+          destinationId: 'dest-1',
+          trainCode: 'T-1',
+          boardingStationId: 'stn-A',
+          boardingLine: '2',
+          boardedAt: Date.now(),
+          expectedDurationMs: 600_000,
+        },
+      });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.releaseLock();
+      });
+      await waitFor(() => expect(mockClearBoardingLock).toHaveBeenCalled());
+    });
+  });
+
+  describe('destination 변경 자동 release', () => {
+    it('현재 lock의 destinationId가 input.destinationId와 다르면 자동 release', async () => {
+      const stale: BoardingLock = {
+        destinationId: 'dest-old',
+        trainCode: 'T-1',
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: Date.now(),
+        expectedDurationMs: 600_000,
+      };
+      mockGetBoardingLock.mockResolvedValueOnce(stale);
+      renderHook(() => useBoardingLockController(defaultInputs));
+      await waitFor(() => expect(mockClearBoardingLock).toHaveBeenCalled());
+    });
+
+    it('같은 destinationId면 release 안 함', async () => {
+      const matching: BoardingLock = {
+        destinationId: 'dest-1',
+        trainCode: 'T-1',
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: Date.now(),
+        expectedDurationMs: 600_000,
+      };
+      mockGetBoardingLock.mockResolvedValueOnce(matching);
+      renderHook(() => useBoardingLockController(defaultInputs));
+      await waitFor(() => expect(useBoardingLockStore.getState().lock).toEqual(matching));
+      expect(mockClearBoardingLock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('AppState 만료 검사', () => {
+    it("AppState 'active' 진입 시 checkExpiry 트리거 → 만료된 lock 정리", async () => {
+      const expiredLock: BoardingLock = {
+        destinationId: 'dest-1',
+        trainCode: 'T-1',
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: 1, // 매우 과거 → 항상 만료
+        expectedDurationMs: 1,
+      };
+      useBoardingLockStore.setState({ lock: expiredLock });
+      const listeners: Array<(s: 'active' | 'background') => void> = [];
+      jest.spyOn(AppState, 'addEventListener').mockImplementation(((event: string, h: (s: 'active' | 'background') => void) => {
+        listeners.push(h);
+        return { remove: jest.fn() };
+      }) as never);
+
+      renderHook(() => useBoardingLockController(defaultInputs));
+      await waitFor(() => expect(listeners.length).toBeGreaterThan(0));
+      await act(async () => {
+        listeners[0]('active');
+      });
+      await waitFor(() => expect(mockClearBoardingLock).toHaveBeenCalled());
+    });
+
+    it("'background' 진입은 checkExpiry 트리거 안 함", async () => {
+      const listeners: Array<(s: 'active' | 'background') => void> = [];
+      jest.spyOn(AppState, 'addEventListener').mockImplementation(((event: string, h: (s: 'active' | 'background') => void) => {
+        listeners.push(h);
+        return { remove: jest.fn() };
+      }) as never);
+
+      useBoardingLockStore.setState({ lock: null });
+      renderHook(() => useBoardingLockController(defaultInputs));
+      await waitFor(() => expect(listeners.length).toBeGreaterThan(0));
+      mockClearBoardingLock.mockClear();
+      await act(async () => {
+        listeners[0]('background');
+      });
+      expect(mockClearBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('unmount 시 AppState listener remove', async () => {
+      const remove = jest.fn();
+      jest.spyOn(AppState, 'addEventListener').mockReturnValue({ remove } as never);
+      const { unmount } = renderHook(() => useBoardingLockController(defaultInputs));
+      unmount();
+      expect(remove).toHaveBeenCalled();
+    });
+  });
+});
