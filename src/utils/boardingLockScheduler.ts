@@ -243,7 +243,13 @@ export interface AdvanceHopWindowParams {
   lock: BoardingLock;
   route: NonNullable<Route>;
   destinationName: string;
-  /** 통과한 waypoint 이름. resolveAllTargets에 등록된 이름과 일치해야 한다. */
+  /**
+   * 통과한 waypoint 이름.
+   * 내부에서 `t.name === passedStationName` strict equality로 매칭하므로 호출자는 반드시
+   * `resolveAllTargets`가 반환한 `target.name`(canonical)을 그대로 넘겨야 한다.
+   * 즉, `isSameStationName`으로 currentStation을 매칭한 다음 매칭된 target의 name을 전달한다 —
+   * raw `currentStationName`을 직접 전달하면 노선별 부제 등으로 silent miss(no-op)된다.
+   */
   passedStationName: string;
   now?: number;
   windowSize?: number;
