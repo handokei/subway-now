@@ -33,6 +33,9 @@ import { resolveNotificationSource } from '../../src/utils/notificationSource';
 import { ArrivalSourceNotice } from '../../src/components/ArrivalSourceNotice';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 import { useArrivalAutoClear } from '../../src/hooks/useArrivalAutoClear';
+import { useBoardingLockController } from '../../src/hooks/useBoardingLockController';
+import { BoardingLockBanner } from '../../src/components/BoardingLockBanner';
+import { BoardingTrainList } from '../../src/components/BoardingTrainList';
 
 const logger = createLogger('HomeScreen');
 
@@ -184,6 +187,22 @@ export default function HomeScreen() {
     arrivalConfidence: confidence,
     fusionSource: source,
     locationUncertain,
+  });
+
+  // #584 PR B — BoardingLock 진입점. UI 렌더링/lock 생성만 담당하며,
+  // alarm/Fusion과의 wiring은 후속 PR C/D에서 활성화된다.
+  const {
+    lock: boardingLock,
+    directionalArrivals,
+    createLockFromTrain,
+    releaseLock: releaseBoardingLock,
+  } = useBoardingLockController({
+    destinationId: destination?.id ?? null,
+    destinationName: destination?.name ?? null,
+    route,
+    arrival,
+    currentStation: result?.station ?? null,
+    expectedDurationMinutes: staticEtaMinutes,
   });
   useBackgroundLocation(destination);
   useApnsTripRegistration({
@@ -608,6 +627,17 @@ export default function HomeScreen() {
             )}
 
             {/* Arrivals — 현재역(effectiveOrigin)이 확정되면 trip 유무와 무관하게 노출 */}
+            {/* #584 PR B — BoardingLock 진입점. 활성 시 banner, 비활성 + destination 설정 시 train list. */}
+            {destination && boardingLock && (
+              <BoardingLockBanner lock={boardingLock} onRelease={releaseBoardingLock} />
+            )}
+            {destination && !boardingLock && effectiveOrigin && (
+              <BoardingTrainList
+                arrivals={directionalArrivals}
+                line={effectiveOrigin.line}
+                onSelect={createLockFromTrain}
+              />
+            )}
             {effectiveOrigin && (
               <View style={[styles.arrivalSection, { backgroundColor: colors.card }]}>
                 <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('home.arrivalInfoTitle')}</Text>

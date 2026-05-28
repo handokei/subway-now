@@ -1,0 +1,120 @@
+import { useCallback, useEffect, useMemo } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
+import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { resolveTripDirection } from '../utils/tripDirection';
+import type { ArrivalInfo, StationArrival } from '../api/arrivalApi';
+import type { Route } from '../utils/stationRoute';
+import type { Station } from '../types/station';
+import type { BoardingLock } from '../types/boardingLock';
+import { FALLBACK_BOARDING_DURATION_MINUTES } from '../constants/boardingLock';
+
+export interface UseBoardingLockControllerInputs {
+  destinationId: string | null;
+  destinationName: string | null;
+  route: Route;
+  arrival: StationArrival | null;
+  currentStation: Station | null;
+  /**
+   * 정적 ETA(분). createLock 시 expectedDurationMs 계산에 사용된다.
+   * null이면 fallback 30분 — 잘못된 Lock이라도 자동 만료(× 1.5)가 작동한다.
+   */
+  expectedDurationMinutes: number | null;
+}
+
+export interface UseBoardingLockControllerResult {
+  lock: BoardingLock | null;
+  /** route 진행 방향으로 필터된 도착 list. 방향 미상이면 up+down 합집합. */
+  directionalArrivals: ArrivalInfo[];
+  /** 사용자가 도착 list에서 열차 탭 시 호출. lock 생성을 위한 컨텍스트가 부족하면 no-op. */
+  createLockFromTrain: (train: ArrivalInfo) => void;
+  /** 명시 하차. lock 없는 상태에서 호출돼도 안전. */
+  releaseLock: () => void;
+}
+
+/**
+ * BoardingLock 제어 hook (#584 PR B).
+ *
+ * 책임:
+ *  - 마운트 시 storage에서 lock 복원
+ *  - destination 변경 시 stale lock 자동 release (다른 trip의 lock이 남는 것 차단)
+ *  - AppState 'active' 진입 시 만료 검사
+ *  - route 진행 방향으로 도착 list 필터링 — UI에 전달
+ *  - 열차 탭 → BoardingLock 생성 (current station + line + 정적 ETA × 60_000 ms)
+ *
+ * 이번 PR 범위: UI 진입점 wiring. Fusion/scheduler 통합은 PR C/D.
+ */
+export function useBoardingLockController({
+  destinationId,
+  destinationName,
+  route,
+  arrival,
+  currentStation,
+  expectedDurationMinutes,
+}: UseBoardingLockControllerInputs): UseBoardingLockControllerResult {
+  const lock = useBoardingLockStore((s) => s.lock);
+  const loadLock = useBoardingLockStore((s) => s.loadLock);
+  const createLock = useBoardingLockStore((s) => s.createLock);
+  const releaseLock = useBoardingLockStore((s) => s.releaseLock);
+  const checkExpiry = useBoardingLockStore((s) => s.checkExpiry);
+
+  // 마운트 시 storage hydrate.
+  useEffect(() => {
+    void loadLock();
+  }, [loadLock]);
+
+  // destination 변경 → stale lock release. 같은 destination이면 그대로 유지(앱 재시작 등).
+  useEffect(() => {
+    if (lock && lock.destinationId !== destinationId) {
+      void releaseLock();
+    }
+  }, [lock, destinationId, releaseLock]);
+
+  // AppState active 진입 시 만료 검사 + 마운트 직후 1회.
+  useEffect(() => {
+    void checkExpiry();
+    const handler = (state: AppStateStatus): void => {
+      if (state === 'active') void checkExpiry();
+    };
+    const sub = AppState.addEventListener('change', handler);
+    return () => sub.remove();
+  }, [checkExpiry]);
+
+  const direction = useMemo(() => {
+    if (!route || !destinationName || !currentStation) return null;
+    return resolveTripDirection(route, destinationName, currentStation.id);
+  }, [route, destinationName, currentStation]);
+
+  const directionalArrivals = useMemo<ArrivalInfo[]>(() => {
+    if (!arrival) return [];
+    if (direction === 'up') return arrival.up;
+    if (direction === 'down') return arrival.down;
+    return [...arrival.up, ...arrival.down];
+  }, [arrival, direction]);
+
+  const createLockFromTrain = useCallback(
+    (train: ArrivalInfo) => {
+      if (!destinationId || !currentStation) return;
+      const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
+      void createLock({
+        destinationId,
+        trainCode: train.trainCode,
+        boardingStationId: currentStation.id,
+        boardingLine: currentStation.line,
+        boardedAt: Date.now(),
+        expectedDurationMs: durationMin * 60_000,
+      });
+    },
+    [destinationId, currentStation, expectedDurationMinutes, createLock],
+  );
+
+  const release = useCallback(() => {
+    void releaseLock();
+  }, [releaseLock]);
+
+  return {
+    lock,
+    directionalArrivals,
+    createLockFromTrain,
+    releaseLock: release,
+  };
+}
