@@ -306,9 +306,21 @@ export function useFusedNearestStation(
     if (lastDecisionKeyRef.current === decisionKey) return;
     lastDecisionKeyRef.current = decisionKey;
     const candidates: FusionCandidateMini[] = [];
-    if (positionTrainResult) {
+    if (positionTrainResult && trainProgress) {
       const { name, line } = positionTrainResult.station;
-      candidates.push({ key: 'positionTrain', stationName: name, line });
+      // boarding-lock 매칭 근거: 어느 trainNo가 어떤 lock과 비교됐는지 사후 재구성.
+      const { trainNo } = trainProgress;
+      const lockMatch = lockedTrainCode != null && trainNo === lockedTrainCode;
+      candidates.push({
+        key: 'positionTrain',
+        stationName: name,
+        line,
+        extra: {
+          trainNo,
+          lockedTrainCode: lockedTrainCode ?? null,
+          lockMatch,
+        },
+      });
     }
     if (fused) {
       const { name, line } = fused.result.station;
@@ -338,7 +350,7 @@ export function useFusedNearestStation(
       gpsAccuracyAtPushMeters: gps.accuracyMeters,
       candidates,
     });
-  }, [decisionKey, source, confidence, result, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters]);
+  }, [decisionKey, source, confidence, result, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, trainProgress, lockedTrainCode]);
 
   return {
     result,

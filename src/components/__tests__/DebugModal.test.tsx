@@ -999,6 +999,51 @@ describe('formatFusionDebugLine', () => {
     expect(line).toContain('gp=용마산');
   });
 
+  it('fusion 엔트리: positionTrain candidate에 lockMatch=true면 [LOCK] 뱃지', () => {
+    const line = formatFusionDebugLine({
+      kind: 'fusion',
+      ts: 0,
+      source: 'boarding-lock',
+      confidence: 'boarding-lock',
+      stationName: '사가정',
+      line: '7',
+      distanceKm: 0.1,
+      gpsAccuracyAtPushMeters: 30,
+      candidates: [
+        {
+          key: 'positionTrain',
+          stationName: '사가정',
+          line: '7',
+          extra: { trainNo: 'T-LOCKED', lockedTrainCode: 'T-LOCKED', lockMatch: true },
+        },
+      ],
+    });
+    expect(line).toContain('pt=사가정[LOCK]');
+  });
+
+  it('fusion 엔트리: positionTrain lockMatch=false면 [LOCK] 뱃지 없음', () => {
+    const line = formatFusionDebugLine({
+      kind: 'fusion',
+      ts: 0,
+      source: 'position-train',
+      confidence: 'position-train',
+      stationName: '사가정',
+      line: '7',
+      distanceKm: 0.1,
+      gpsAccuracyAtPushMeters: 30,
+      candidates: [
+        {
+          key: 'positionTrain',
+          stationName: '사가정',
+          line: '7',
+          extra: { trainNo: 'T-OTHER', lockedTrainCode: 'T-LOCKED', lockMatch: false },
+        },
+      ],
+    });
+    expect(line).toContain('pt=사가정');
+    expect(line).not.toContain('[LOCK]');
+  });
+
   it('fusion 엔트리: 알 수 없는 candidate key는 raw key 그대로 표기', () => {
     const line = formatFusionDebugLine({
       kind: 'fusion',

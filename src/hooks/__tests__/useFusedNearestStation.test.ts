@@ -224,6 +224,64 @@ describe('useFusedNearestStation', () => {
       expect(result.current.source).toBe('position-train');
     });
 
+    it('#605: positionTrain candidate.extra에 trainNo + lockedTrainCode + lockMatch 기록', () => {
+      const {
+        clearFusionDebugEntries,
+        getFusionDebugEntries,
+      } = jest.requireActual('../../utils/fusionDebugBuffer') as typeof import('../../utils/fusionDebugBuffer');
+      clearFusionDebugEntries();
+      setupPositionTrain('T-LOCKED');
+      renderHook(() => useFusedNearestStation(undefined, undefined, undefined, 'T-LOCKED'));
+      const entries = getFusionDebugEntries();
+      const last = entries[entries.length - 1];
+      expect(last.kind).toBe('fusion');
+      if (last.kind !== 'fusion') throw new Error('expected fusion entry');
+      const pt = last.candidates.find((c) => c.key === 'positionTrain');
+      expect(pt?.extra).toEqual({
+        trainNo: 'T-LOCKED',
+        lockedTrainCode: 'T-LOCKED',
+        lockMatch: true,
+      });
+    });
+
+    it('#605: lockedTrainCode 불일치 시 lockMatch=false 기록', () => {
+      const {
+        clearFusionDebugEntries,
+        getFusionDebugEntries,
+      } = jest.requireActual('../../utils/fusionDebugBuffer') as typeof import('../../utils/fusionDebugBuffer');
+      clearFusionDebugEntries();
+      setupPositionTrain('T-ACTUAL');
+      renderHook(() => useFusedNearestStation(undefined, undefined, undefined, 'T-OTHER'));
+      const entries = getFusionDebugEntries();
+      const last = entries[entries.length - 1];
+      if (last.kind !== 'fusion') throw new Error('expected fusion entry');
+      const pt = last.candidates.find((c) => c.key === 'positionTrain');
+      expect(pt?.extra).toEqual({
+        trainNo: 'T-ACTUAL',
+        lockedTrainCode: 'T-OTHER',
+        lockMatch: false,
+      });
+    });
+
+    it('#605: lockedTrainCode=null이면 extra.lockedTrainCode=null + lockMatch=false', () => {
+      const {
+        clearFusionDebugEntries,
+        getFusionDebugEntries,
+      } = jest.requireActual('../../utils/fusionDebugBuffer') as typeof import('../../utils/fusionDebugBuffer');
+      clearFusionDebugEntries();
+      setupPositionTrain('T-ANY');
+      renderHook(() => useFusedNearestStation(undefined, undefined, undefined, null));
+      const entries = getFusionDebugEntries();
+      const last = entries[entries.length - 1];
+      if (last.kind !== 'fusion') throw new Error('expected fusion entry');
+      const pt = last.candidates.find((c) => c.key === 'positionTrain');
+      expect(pt?.extra).toEqual({
+        trainNo: 'T-ANY',
+        lockedTrainCode: null,
+        lockMatch: false,
+      });
+    });
+
     it('lockedTrainCode 있어도 position-train 신호 없으면 승격 안 됨 (arrival/gps 분기 유지)', () => {
       // arrival만 있는 케이스 — boarding-lock은 position-train 채택 전제
       mockUseNearest.mockReturnValue(gpsBase());
