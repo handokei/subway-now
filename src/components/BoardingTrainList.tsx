@@ -8,6 +8,13 @@ interface Props {
   arrivals: ArrivalInfo[];
   line: LineNumber;
   onSelect: (train: ArrivalInfo) => void;
+  /**
+   * 도착 시각이 이 값보다 빠른 열차는 disabled로 렌더 (#584 PR E). 단위: 초.
+   * 환승 list에서 도보 buffer 표현용. 미전달 시 모든 열차 활성.
+   */
+  walkingBufferSeconds?: number;
+  /** 헤더 라벨 커스텀 (환승 list 등). 미전달 시 기본 "탑승할 열차 선택". */
+  title?: string;
 }
 
 /**
@@ -17,8 +24,16 @@ interface Props {
  * 각 row를 탭하면 onSelect 콜백이 발화 → 호출자가 BoardingLock 생성.
  * 빈 list면 placeholder 안내 텍스트.
  */
-export function BoardingTrainList({ arrivals, line, onSelect }: Props) {
+export function BoardingTrainList({
+  arrivals,
+  line,
+  onSelect,
+  walkingBufferSeconds,
+  title = '탑승할 열차 선택',
+}: Props) {
   const { colors } = useTheme();
+  const isUnreachable = (train: ArrivalInfo): boolean =>
+    walkingBufferSeconds != null && train.arrivalSeconds < walkingBufferSeconds;
 
   if (arrivals.length === 0) {
     return (
@@ -32,24 +47,28 @@ export function BoardingTrainList({ arrivals, line, onSelect }: Props) {
     <View style={styles.container} testID="boarding-train-list">
       <View style={styles.header}>
         <LineBadge line={line} />
-        <Text style={[typography.label, { color: colors.muted }]}>탑승할 열차 선택</Text>
+        <Text style={[typography.label, { color: colors.muted }]}>{title}</Text>
       </View>
-      {arrivals.map((train) => (
-        <Pressable
-          key={train.trainCode}
-          onPress={() => onSelect(train)}
-          style={[styles.row, { backgroundColor: colors.card }]}
-          testID={`boarding-train-row-${train.trainCode}`}
-        >
-          <View style={styles.rowInfo}>
-            <Text style={[typography.body, { color: colors.ink }]}>{train.destination} 행</Text>
-            <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
-          </View>
-          <Text style={[typography.body, { color: colors.accent, fontWeight: '600' }]}>
-            {train.arrivalMinutes}분
-          </Text>
-        </Pressable>
-      ))}
+      {arrivals.map((train) => {
+        const unreachable = isUnreachable(train);
+        return (
+          <Pressable
+            key={train.trainCode}
+            onPress={() => onSelect(train)}
+            disabled={unreachable}
+            style={[styles.row, { backgroundColor: colors.card, opacity: unreachable ? 0.4 : 1 }]}
+            testID={`boarding-train-row-${train.trainCode}`}
+          >
+            <View style={styles.rowInfo}>
+              <Text style={[typography.body, { color: colors.ink }]}>{train.destination} 행</Text>
+              <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
+            </View>
+            <Text style={[typography.body, { color: colors.accent, fontWeight: '600' }]}>
+              {train.arrivalMinutes}분
+            </Text>
+          </Pressable>
+        );
+      })}
     </View>
   );
 }

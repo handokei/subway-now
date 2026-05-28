@@ -55,4 +55,38 @@ describe('BoardingTrainList', () => {
     expect(getByText('탑승할 열차 선택')).toBeTruthy();
   });
 
+  it('title prop으로 헤더 커스텀 (환승 list 등)', () => {
+    const { getByText } = renderWithTheme(
+      <BoardingTrainList arrivals={[makeTrain()]} line="2" onSelect={() => {}} title="환승 열차 선택" />,
+    );
+    expect(getByText('환승 열차 선택')).toBeTruthy();
+  });
+
+  it('walkingBufferSeconds 미만 도착 train은 disabled — onSelect 호출 안 됨', () => {
+    const tooSoon = makeTrain({ trainCode: 'T-EARLY', arrivalSeconds: 60 });
+    const reachable = makeTrain({ trainCode: 'T-OK', arrivalSeconds: 240 });
+    const onSelect = jest.fn();
+    const { getByTestId } = renderWithTheme(
+      <BoardingTrainList
+        arrivals={[tooSoon, reachable]}
+        line="2"
+        onSelect={onSelect}
+        walkingBufferSeconds={180}
+      />,
+    );
+    fireEvent.press(getByTestId('boarding-train-row-T-EARLY'));
+    expect(onSelect).not.toHaveBeenCalled();
+    fireEvent.press(getByTestId('boarding-train-row-T-OK'));
+    expect(onSelect).toHaveBeenCalledWith(reachable);
+  });
+
+  it('walkingBufferSeconds 미전달이면 모든 train 활성', () => {
+    const tooSoon = makeTrain({ trainCode: 'T-EARLY', arrivalSeconds: 60 });
+    const onSelect = jest.fn();
+    const { getByTestId } = renderWithTheme(
+      <BoardingTrainList arrivals={[tooSoon]} line="2" onSelect={onSelect} />,
+    );
+    fireEvent.press(getByTestId('boarding-train-row-T-EARLY'));
+    expect(onSelect).toHaveBeenCalled();
+  });
 });
