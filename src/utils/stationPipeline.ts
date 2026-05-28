@@ -141,7 +141,12 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   const etaSeconds = estimateEtaSeconds(distanceToDestM, speedMps);
 
   const alarmEvent = evaluateAlarmPhase(
-    { route, destinationName: destination.name, etaSeconds },
+    {
+      route,
+      destinationName: destination.name,
+      etaSeconds,
+      currentLine: nearest.station.line,
+    },
     firedAlarms,
   );
 
