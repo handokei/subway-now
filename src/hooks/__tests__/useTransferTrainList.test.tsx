@@ -71,7 +71,6 @@ describe('useTransferTrainList', () => {
         route,
         destinationName: '여의나루',
         currentStation: null,
-        expectedDurationMinutes: 20,
       }),
     );
     expect(result.current.context).toBeNull();
@@ -88,7 +87,6 @@ describe('useTransferTrainList', () => {
         route,
         destinationName: '여의나루',
         currentStation: gondeokOn6,
-        expectedDurationMinutes: 20,
       }),
     );
     expect(result.current.context).not.toBeNull();
@@ -105,13 +103,12 @@ describe('useTransferTrainList', () => {
         route,
         destinationName: '여의나루',
         currentStation: gondeokOn6,
-        expectedDurationMinutes: 20,
       }),
     );
     expect(result.current.arrivals).toEqual([]);
   });
 
-  it('createTransferLock 호출 → toLine 환승역 기준 새 lock 생성', () => {
+  it('createTransferLock 호출 → toLine 환승역 + 잔여 leg 기준 ETA로 새 lock 생성 (#604)', () => {
     mockUseArrival.mockReturnValue(arrivalRet({ up: [makeTrain({ trainCode: 'NEW' })], down: [] }));
     const { result } = renderHook(() =>
       useTransferTrainList({
@@ -119,35 +116,18 @@ describe('useTransferTrainList', () => {
         route,
         destinationName: '여의나루',
         currentStation: gondeokOn6,
-        expectedDurationMinutes: 20,
       }),
     );
     act(() => result.current.createTransferLock(makeTrain({ trainCode: 'NEW' })));
+    // calculateRemainingLegETA(route, 0) = stopsFromTransfer(3)*MINUTES_PER_STOP(2) = 6분
     expect(mockCreateLock).toHaveBeenCalledWith(
       expect.objectContaining({
         destinationId: 'dest-X',
         trainCode: 'NEW',
         boardingLine: '5',
         boardingStationId: (findStationByNameAndLine('공덕', '5') as Station).id,
-        expectedDurationMs: 20 * 60_000,
+        expectedDurationMs: 6 * 60_000,
       }),
-    );
-  });
-
-  it('expectedDurationMinutes=null이면 fallback 30분 적용', () => {
-    mockUseArrival.mockReturnValue(arrivalRet({ up: [makeTrain({})], down: [] }));
-    const { result } = renderHook(() =>
-      useTransferTrainList({
-        lock,
-        route,
-        destinationName: '여의나루',
-        currentStation: gondeokOn6,
-        expectedDurationMinutes: null,
-      }),
-    );
-    act(() => result.current.createTransferLock(makeTrain({ trainCode: 'X' })));
-    expect(mockCreateLock).toHaveBeenCalledWith(
-      expect.objectContaining({ expectedDurationMs: 30 * 60_000 }),
     );
   });
 
@@ -158,7 +138,6 @@ describe('useTransferTrainList', () => {
         route,
         destinationName: '여의나루',
         currentStation: null,
-        expectedDurationMinutes: 20,
       }),
     );
     act(() => result.current.createTransferLock(makeTrain({})));

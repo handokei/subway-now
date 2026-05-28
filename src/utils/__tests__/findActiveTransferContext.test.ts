@@ -58,6 +58,8 @@ describe('findActiveTransferContext', () => {
     expect(ctx!.nextWaypointName).toBe('여의나루');
     // direction은 5호선 index 비교 결과 — 동작 검증만 (down/up/null 중 하나).
     expect(['up', 'down', null]).toContain(ctx!.direction);
+    // transfer 라우트: completedTransferIdx는 항상 0
+    expect(ctx!.completedTransferIdx).toBe(0);
   });
 
   it('transfer route + 환승역=목적지이면 alarmType=destination → null', () => {
@@ -118,6 +120,24 @@ describe('findActiveTransferContext', () => {
     expect(ctx).not.toBeNull();
     expect(ctx!.nextLine).toBe('5');
     expect(ctx!.nextWaypointName).toBe('여의나루');
+    // multi-transfer 첫 환승: completedTransferIdx=0
+    expect(ctx!.completedTransferIdx).toBe(0);
+  });
+
+  it('multi-transfer route + 두 번째 환승역 도달 시 completedTransferIdx=1', () => {
+    const route: MultiTransferRoute = {
+      type: 'multi-transfer',
+      transfers: [
+        { transferName: '충무로', fromLine: '4', toLine: '3', stopsToTransfer: 3 },
+        { transferName: '종로3가', fromLine: '3', toLine: '1', stopsToTransfer: 1 },
+      ],
+      stopsAfterLastTransfer: 1,
+    };
+    const jongno3 = findStationByNameAndLine('종로3가', '3') as Station;
+    const ctx = findActiveTransferContext(lock, route, '서울역', jongno3);
+    expect(ctx).not.toBeNull();
+    expect(ctx!.completedTransferIdx).toBe(1);
+    expect(ctx!.nextLine).toBe('1');
   });
 
   it('currentStation이 어떤 waypoint와도 매칭되지 않으면 null (matchedIdx=-1)', () => {
