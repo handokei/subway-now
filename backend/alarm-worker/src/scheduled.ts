@@ -2,17 +2,9 @@
  * Cron 핸들러 — 활성 트립 enumerate → 알람 윈도우(5분 이내) 트립만 폴링 → ETA 평가 → push 발사.
  */
 
-import {
-  ARRIVAL_CODE,
-  EARLY_THRESHOLD_SEC,
-  TRAIN_STATUS,
-  evaluatePhaseFromSignal,
-  isSignificantEtaChange,
-  shouldFire,
-} from './alarm';
-import { sendReschedulePush, sendSilentPush, type ApnsConfig, type SendPushResult } from './apns';
+import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
+import { sendReschedulePush, type ApnsConfig, type SendPushResult } from './apns';
 import { matchLine } from './lineAlias';
-import { buildAlarmKey, putPending } from './pendingPushes';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import { deleteTrip, listTrips, putTrip } from './trips';
 import type { ApnsEnv, BoardingLockMeta, Env, Trip, Waypoint } from './types';
@@ -90,6 +82,23 @@ export interface ScheduledStats {
    * 클라이언트 hint가 빌드 환경과 어긋나고 있다는 신호 (#482).
    */
   envCorrected: number;
+  /**
+   * BoardingLock 부재/만료로 발사 게이트에서 스킵된 트립 수 (#640).
+   * 사용자가 열차 미선택 상태에서 noise push가 발사되지 않도록 차단된 결과.
+   */
+  lockMissing: number;
+}
+
+/**
+ * BoardingLock이 활성 상태인지 (#640 게이트).
+ * 부재거나 만료된 경우 false — push 발사 경로를 모두 차단한다.
+ * type predicate로 선언해 호출부에서 `trip.boardingLock` non-null narrowing이 자동 적용된다.
+ */
+export function isBoardingLockActive(
+  trip: Trip,
+  now: number,
+): trip is Trip & { boardingLock: BoardingLockMeta } {
+  return trip.boardingLock !== undefined && trip.boardingLock.expiresAt > now;
 }
 
 export interface ScheduledDeps {
@@ -134,6 +143,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     errors: 0,
     etaMissing: 0,
     envCorrected: 0,
+    lockMissing: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
@@ -149,175 +159,40 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       continue;
     }
 
-    stats.polled += 1;
     const waypoint = pickActiveWaypoint(trip);
     if (!waypoint) continue;
 
-    // #585 — boardingLock 활성 trip은 trainCode 단위 추적 + reschedule push 경로로 분기.
-    // 디바이스는 사전 예약 알람(#584)으로 SLA를 보장하므로 phase-based silent push는 보내지 않는다.
-    if (trip.boardingLock && trip.boardingLock.expiresAt > now) {
-      try {
-        await runTrainCodeTracking(
-          trip,
-          waypoint,
-          trip.boardingLock,
-          env,
-          deps,
-          stats,
-          now,
-          log,
-          generatePushId,
-        );
-      } catch (e) {
-        stats.errors += 1;
-        log('boarding-lock poll error', { error: String(e), token: trip.token.slice(0, 8) });
-      }
+    // #640 — BoardingLock 게이트. 사용자가 열차를 아직 선택하지 않았거나 lock이 만료된 trip은
+    // Seoul polling/push 모두 skip. 디바이스는 lock 등록 후 train-code 단위로 정확히 추적하며,
+    // lock 부재 상태에서의 phase-based push는 "탑승 전 노이즈"였다.
+    if (!isBoardingLockActive(trip, now)) {
+      stats.lockMissing += 1;
+      log('boarding-lock: skip cycle (lock missing or expired)', {
+        token: trip.token.slice(0, 8),
+        station: waypoint.stationName,
+      });
       continue;
     }
 
+    // `polled`는 lock-active trip의 실제 Seoul polling 사이클 수만 카운트 — lockMissing은 별도 stat.
+    stats.polled += 1;
+    // #585 — boardingLock 활성 trip은 trainCode 단위 추적 + reschedule push 경로로 분기.
+    // 디바이스는 사전 예약 알람(#584)으로 SLA를 보장하므로 phase-based silent push는 보내지 않는다.
     try {
-      const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
-      const signal = pickBestArrivalSignal(arrivals, waypoint);
-      if (signal === null) {
-        stats.etaMissing += 1;
-        log('empty arrivals — skip cycle', {
-          token: trip.token.slice(0, 8),
-          station: waypoint.stationName,
-          line: waypoint.line,
-        });
-        continue;
-      }
-      const { etaSeconds: eta, arvlCd } = signal;
-
-      const phase = evaluatePhaseFromSignal(eta, arvlCd);
-      const etaChanged = isSignificantEtaChange(trip.lastEtaSeconds, eta);
-      const phaseFires = phase !== null && shouldFire(phase, trip.lastFiredPhase);
-      // 중간역(intermediate)은 통과 시점(imminent)에만 발사. early phase / 정보 갱신용 push는 노이즈로 간주해 스킵.
-      const isIntermediate = waypoint.kind === 'intermediate';
-
-      // 메모리 갱신: ETA가 의미있게 변하거나 phase가 발사된 경우만
-      let dirty = false;
-      if (etaChanged) {
-        trip.lastEtaSeconds = eta;
-        dirty = true;
-      }
-
-      // Push 발사 조건:
-      // (1) 새 phase 도달 — intermediate는 imminent에서만 허용
-      // (2) phase 미도달이지만 ETA 변동이 의미있게 발생 & 5분 이내 (intermediate는 제외)
-      const shouldPushPhase = phaseFires && (!isIntermediate || phase === 'imminent');
-      const shouldPushEtaUpdate =
-        !shouldPushPhase && !isIntermediate && etaChanged && eta <= EARLY_THRESHOLD_SEC * 2;
-
-      if (shouldPushPhase || shouldPushEtaUpdate) {
-        const pushPhase = phase ?? 'early';
-        log('push fired', {
-          token: trip.token.slice(0, 8),
-          kind: waypoint.kind,
-          phase: pushPhase,
-          station: waypoint.stationName,
-          etaSeconds: eta,
-          arvlCd,
-        });
-        const pushId = generatePushId();
-        const pushPayload = {
-          nextWaypoint: waypoint.stationName,
-          etaSeconds: eta,
-          phase: pushPhase,
-          kind: waypoint.kind,
-          sentAt: now,
-          pushId,
-        };
-        const heal = await sendWithEnvHeal(
-          (host) =>
-            sendSilentPush({
-              deviceToken: trip.token,
-              payload: pushPayload,
-              config: deps.apnsConfig,
-              host,
-              fetchImpl: deps.fetchImpl,
-              now,
-            }),
-          trip.apnsEnv,
-          deps.apnsHosts,
-          log,
-          trip.token.slice(0, 8),
-        );
-        if (heal.correctedEnv) {
-          trip.apnsEnv = heal.correctedEnv;
-          dirty = true;
-          stats.envCorrected += 1;
-        }
-        const envMismatchExhausted = heal.envMismatchExhausted;
-        const result = heal.result;
-
-        if (result.ok) {
-          stats.pushed += 1;
-          // #566 P2a — silent push 발사 성공 시 pending entry 기록. ACK 또는 P2c fallback이 정리한다.
-          // PENDING_PUSHES 미바인딩 시 putPending은 graceful no-op.
-          await putPending(env.PENDING_PUSHES, {
-            pushId,
-            token: trip.token,
-            alarmKey: buildAlarmKey(waypoint.stationName, pushPhase),
-            sentAt: now,
-            stationName: waypoint.stationName,
-            kind: waypoint.kind,
-            phase: pushPhase,
-            etaSeconds: eta,
-            // self-heal로 정정된 apnsEnv가 dirty에 반영되었더라도 현재 변수는 정정된 값.
-            // 누락 시 sandbox fallback과 일관 — pickApnsHost 동등 처리.
-            apnsEnv: trip.apnsEnv ?? 'sandbox',
-          });
-          if (shouldPushPhase) {
-            trip.lastFiredPhase = phase!;
-            dirty = true;
-            if (phase === 'imminent') {
-              if (waypoint.kind === 'destination') {
-                await deleteTrip(env.TRIPS, trip.token);
-                log('trip completed after destination imminent push', {
-                  token: trip.token.slice(0, 8),
-                });
-                continue;
-              }
-              // 환승역/중간역 imminent: 트립 유지하고 다음 waypoint로 진행.
-              // dirty는 위(lastFiredPhase 갱신)에서 이미 true로 설정됨 → putTrip에서 shift된 상태가 저장된다.
-              const completedStation = waypoint.stationName;
-              const completedKind = waypoint.kind;
-              trip.waypoints.shift();
-              trip.lastFiredPhase = undefined;
-              trip.lastEtaSeconds = undefined;
-              log('waypoint completed, advancing to next', {
-                token: trip.token.slice(0, 8),
-                completed: completedStation,
-                kind: completedKind,
-                remaining: trip.waypoints.length,
-              });
-              if (trip.waypoints.length === 0) {
-                await deleteTrip(env.TRIPS, trip.token);
-                continue;
-              }
-            }
-          }
-        } else {
-          stats.errors += 1;
-          log('apns push failed', {
-            status: result.status,
-            reason: result.reason,
-            token: trip.token.slice(0, 8),
-          });
-          if (isUnrecoverableApnsError(result.status, result.reason) || envMismatchExhausted) {
-            await deleteTrip(env.TRIPS, trip.token);
-            continue;
-          }
-        }
-      }
-
-      if (dirty) {
-        await putTrip(env.TRIPS, trip);
-      }
+      await runTrainCodeTracking(
+        trip,
+        waypoint,
+        trip.boardingLock,
+        env,
+        deps,
+        stats,
+        now,
+        log,
+        generatePushId,
+      );
     } catch (e) {
       stats.errors += 1;
-      log('poll error', { error: String(e), token: trip.token.slice(0, 8) });
+      log('boarding-lock: poll error', { error: String(e), token: trip.token.slice(0, 8) });
     }
   }
 
