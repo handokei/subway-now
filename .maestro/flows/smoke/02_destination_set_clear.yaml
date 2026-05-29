@@ -41,8 +41,12 @@ name: "smoke - 목적지 설정 & 초기화"
 - assertVisible:
     id: "destination-clear-button"
 
-# 초기화
+# 초기화 — clear 후 ScrollView contentOffset이 즉시 클램프되지 않아
+# "목적지 설정" 버튼이 viewport 위쪽 밖에 머무를 수 있어 scrollUntilVisible 필요.
 - tapOn:
     id: "destination-clear-button"
-- assertVisible:
-    text: "목적지 설정|Set destination"
+- scrollUntilVisible:
+    element:
+      text: "목적지 설정|Set destination"
+    direction: UP
+    timeout: 5000

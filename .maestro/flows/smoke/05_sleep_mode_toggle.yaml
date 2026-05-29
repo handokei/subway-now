@@ -36,8 +36,14 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
 - tapOn:
     id: "suggestion-item-2-016"
 
-- assertVisible:
-    id: "home-sleep-mode-switch"
+# #634/#625 머지 후 destination 박스 안에 BoardingTrainList/BoardingLockBanner가
+# 들어와 박스 높이가 크게 증가 → 가장 하단의 sleep-mode-switch가 viewport 밖.
+# assertVisible은 자동 스크롤하지 않으므로 scrollUntilVisible 사용.
+- scrollUntilVisible:
+    element:
+      id: "home-sleep-mode-switch"
+    direction: DOWN
+    timeout: 5000
 - tapOn:
     id: "home-sleep-mode-switch"
 
@@ -55,8 +61,11 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
 - tapOn:
     id: "sleep-mode-switch"
 
-# 홈 탭 복귀
+# 홈 탭 복귀 — 동일 사유로 scroll 필요
 - tapOn:
     point: "12%,95%"
-- assertVisible:
-    id: "home-sleep-mode-switch"
+- scrollUntilVisible:
+    element:
+      id: "home-sleep-mode-switch"
+    direction: DOWN
+    timeout: 5000
