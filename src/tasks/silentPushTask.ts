@@ -65,29 +65,70 @@ export interface SilentPushPayload {
   pushId?: string;
 }
 
+/**
+ * expo-notifications iOS의 `BackgroundEventTransformer.swift`가 APNs payload를
+ * 다음과 같이 변환해 task 콜백에 전달한다:
+ *   { data: { ...non-aps fields, dataString }, notification: <aps.alert | null>, aps: {...} }
+ *
+ * 우리 백엔드(alarm-worker)는 `{ aps: {...}, data: { <fields> } }`로 발사하므로
+ * 변환 결과는 `taskData.data.data.<field>`에 우리 fields가 위치한다.
+ * (#641 — silent push BG handler 회귀: 과거에는 `notification.data` 경로를 읽다 보니
+ *  silent push가 alert를 동반하지 않아 `notification`이 null인 production payload에서
+ *  항상 null로 떨어졌다.)
+ */
 interface NotificationBackgroundTaskData {
-  data?: {
-    notification?: {
-      data?: Record<string, unknown>;
-      request?: { content?: { data?: Record<string, unknown> } };
-    };
-  };
+  data?: Record<string, unknown>;
   error?: { message: string } | null;
 }
 
 /**
+ * payload 안에서 fields 레이어를 찾는다.
+ *   - `taskData.data.data` (production: backend가 `data: { fields }` 발사 → Swift 변환 후 한 단계 더 nested)
+ *   - `taskData.data` (backend가 flat payload 발사 시)
+ *   - `taskData` (legacy / 일부 테스트 호환)
+ * nextWaypoint가 string인 첫 후보를 반환.
+ */
+function asPlainObject(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
+}
+
+function findFieldsLayer(
+  taskData: NotificationBackgroundTaskData['data'],
+): Record<string, unknown> | null {
+  const candidates: Array<Record<string, unknown>> = [];
+  const root = asPlainObject(taskData);
+  if (root) {
+    const level1 = asPlainObject(root.data);
+    if (level1) {
+      const level2 = asPlainObject(level1.data);
+      if (level2) candidates.push(level2);
+      candidates.push(level1);
+    }
+    candidates.push(root);
+  }
+  for (const rec of candidates) {
+    if (typeof rec.nextWaypoint === 'string' && rec.nextWaypoint.length > 0) return rec;
+  }
+  return null;
+}
+
+/**
  * 알림 raw payload → 검증된 SilentPushPayload.
+ *
+ * 입력은 expo-notifications BG task가 전달하는 `NotificationTaskPayload`이다.
+ * 우리 backend가 `{ aps, data: { fields } }` 형태로 발사하므로 fields는
+ * `root.data.<field>` 위치에 있다. flat payload 호환을 위해 root 직접도 fallback.
  */
 export function extractPayload(
-  data: NotificationBackgroundTaskData['data'],
+  taskData: NotificationBackgroundTaskData['data'],
 ): SilentPushPayload | null {
-  const notif = data?.notification;
-  if (!notif) return null;
-  const raw = notif.data ?? notif.request?.content?.data;
-  if (!raw || typeof raw !== 'object') return null;
-  const obj = raw as Record<string, unknown>;
-  const { nextWaypoint, etaSeconds, phase, kind, sentAt, pushId } = obj;
-  if (typeof nextWaypoint !== 'string' || nextWaypoint.length === 0) return null;
+  const obj = findFieldsLayer(taskData);
+  if (!obj) return null;
+  // findFieldsLayer guarantees nextWaypoint is non-empty string.
+  const { nextWaypoint, etaSeconds, phase, kind, sentAt, pushId } = obj as {
+    nextWaypoint: string;
+  } & Record<string, unknown>;
   if (typeof etaSeconds !== 'number' || !Number.isFinite(etaSeconds)) return null;
   if (phase !== 'early' && phase !== 'imminent') return null;
   const validKind =

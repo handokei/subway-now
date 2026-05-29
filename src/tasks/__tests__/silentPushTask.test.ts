@@ -86,19 +86,35 @@ const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
 
 const destStation = { id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 };
 
+/**
+ * expo-notifications iOS BG task payload 모양을 그대로 재현 (#641).
+ * Swift `BackgroundEventTransformer`가 `{aps, data:{fields}}` → `{data:{data:{fields}, dataString}, notification:null, aps}`
+ * 로 변환하므로 실기기에서는 fields가 `taskData.data.data.<field>`에 위치한다.
+ */
+function bgFields(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    nextWaypoint: '강남',
+    etaSeconds: 300,
+    phase: 'early',
+    kind: 'destination',
+    ...extra,
+  };
+}
 function payload(extra: Record<string, unknown> = {}) {
   return {
     data: {
-      notification: {
-        data: {
-          nextWaypoint: '강남',
-          etaSeconds: 300,
-          phase: 'early',
-          kind: 'destination',
-          ...extra,
-        },
-      },
+      data: { data: bgFields(extra), dataString: null },
+      notification: null,
+      aps: { 'content-available': 1 },
     },
+  };
+}
+/** extractPayload 단위 테스트용 — handleSilentPush input 전체가 아니라 taskData만 빌드. */
+function bgTaskData(fields: Record<string, unknown>) {
+  return {
+    data: { data: fields, dataString: null },
+    notification: null,
+    aps: { 'content-available': 1 },
   };
 }
 
@@ -135,65 +151,60 @@ describe('silentPushTask', () => {
       expect(extractPayload(undefined)).toBeNull();
     });
 
-    it('notification 없으면 null', () => {
+    it('비어 있는 객체면 null', () => {
       expect(extractPayload({})).toBeNull();
     });
 
-    it('data 위치(notification.data) 우선', () => {
+    // #641 — production iOS BG task payload (Swift `BackgroundEventTransformer` 출력).
+    it('production 모양(taskData.data.data.fields) → 필드 추출', () => {
       expect(
-        extractPayload({
-          notification: { data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early' } },
-        }),
+        extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early' })),
       ).toMatchObject({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early' });
     });
 
-    it('data 없을 때 request.content.data 폴백', () => {
+    // backend가 flat payload(`{aps, ...flat}`)를 보내는 경우 — Swift 변환 후 `taskData.data.flat`.
+    it('flat payload 모양(taskData.data.fields) → 필드 추출', () => {
       expect(
         extractPayload({
-          notification: {
-            request: { content: { data: { nextWaypoint: 'B', etaSeconds: 2, phase: 'imminent' } } },
-          },
+          data: { nextWaypoint: 'B', etaSeconds: 2, phase: 'imminent' },
+          notification: null,
+          aps: { 'content-available': 1 },
         }),
       ).toMatchObject({ nextWaypoint: 'B', etaSeconds: 2, phase: 'imminent' });
     });
 
-    it('raw가 객체가 아니면 null', () => {
+    // legacy/방어 — 일부 호출처가 fields를 root로 직접 줄 수도 있다.
+    it('root 직접 모양(taskData.fields)도 fallback으로 처리', () => {
       expect(
-        extractPayload({ notification: { data: 'string' as unknown as Record<string, unknown> } }),
+        extractPayload({ nextWaypoint: 'C', etaSeconds: 3, phase: 'early' }),
+      ).toMatchObject({ nextWaypoint: 'C', etaSeconds: 3, phase: 'early' });
+    });
+
+    it('nextWaypoint 없거나 빈 문자열이면 null', () => {
+      expect(extractPayload(bgTaskData({ etaSeconds: 1, phase: 'early' }))).toBeNull();
+      expect(
+        extractPayload(bgTaskData({ nextWaypoint: '', etaSeconds: 1, phase: 'early' })),
       ).toBeNull();
     });
 
-    it('nextWaypoint 누락/비문자열/빈문자열이면 null', () => {
+    it('data가 string 등 비객체면 null', () => {
       expect(
-        extractPayload({
-          notification: { data: { etaSeconds: 1, phase: 'early' } as Record<string, unknown> },
-        }),
-      ).toBeNull();
-      expect(
-        extractPayload({
-          notification: { data: { nextWaypoint: '', etaSeconds: 1, phase: 'early' } },
-        }),
+        extractPayload({ data: 'string' } as unknown as Record<string, unknown>),
       ).toBeNull();
     });
 
     it('etaSeconds 비숫자/Infinity이면 null', () => {
       expect(
-        extractPayload({
-          notification: { data: { nextWaypoint: 'A', etaSeconds: '10', phase: 'early' } },
-        }),
+        extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: '10', phase: 'early' })),
       ).toBeNull();
       expect(
-        extractPayload({
-          notification: { data: { nextWaypoint: 'A', etaSeconds: Infinity, phase: 'early' } },
-        }),
+        extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: Infinity, phase: 'early' })),
       ).toBeNull();
     });
 
     it('phase가 early/imminent가 아니면 null', () => {
       expect(
-        extractPayload({
-          notification: { data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'late' } },
-        }),
+        extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'late' })),
       ).toBeNull();
     });
 
@@ -205,68 +216,56 @@ describe('silentPushTask', () => {
       ];
       for (const kind of variants) {
         expect(
-          extractPayload({
-            notification: { data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind } },
-          }),
+          extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind })),
         ).toMatchObject({ kind });
       }
     });
 
     it('kind가 알 수 없는 값이면 undefined로 정리 (legacy 호환)', () => {
       expect(
-        extractPayload({
-          notification: { data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind: 'foo' } },
-        }),
+        extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', kind: 'foo' })),
       ).toMatchObject({ kind: undefined });
     });
 
     it('sentAt이 number면 그대로 전달 (#478)', () => {
       expect(
-        extractPayload({
-          notification: {
-            data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', sentAt: 1_700_000_000_000 },
-          },
-        }),
+        extractPayload(
+          bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', sentAt: 1_700_000_000_000 }),
+        ),
       ).toMatchObject({ sentAt: 1_700_000_000_000 });
     });
 
     it('sentAt이 비숫자/Infinity이면 undefined (구 백엔드 호환)', () => {
       expect(
-        extractPayload({
-          notification: {
-            data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', sentAt: 'now' },
-          },
-        }),
+        extractPayload(
+          bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', sentAt: 'now' }),
+        ),
       ).toMatchObject({ sentAt: undefined });
       expect(
-        extractPayload({
-          notification: {
-            data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', sentAt: Infinity },
-          },
-        }),
+        extractPayload(
+          bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', sentAt: Infinity }),
+        ),
       ).toMatchObject({ sentAt: undefined });
     });
 
     it('pushId가 non-empty string이면 그대로 전달 (#566)', () => {
       expect(
-        extractPayload({
-          notification: {
-            data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', pushId: 'uuid-x' },
-          },
-        }),
+        extractPayload(
+          bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', pushId: 'uuid-x' }),
+        ),
       ).toMatchObject({ pushId: 'uuid-x' });
     });
 
     it('pushId가 빈 문자열/비문자열이면 undefined (구 백엔드 호환)', () => {
       expect(
-        extractPayload({
-          notification: { data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', pushId: '' } },
-        }),
+        extractPayload(
+          bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', pushId: '' }),
+        ),
       ).toMatchObject({ pushId: undefined });
       expect(
-        extractPayload({
-          notification: { data: { nextWaypoint: 'A', etaSeconds: 1, phase: 'early', pushId: 42 } },
-        }),
+        extractPayload(
+          bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', pushId: 42 }),
+        ),
       ).toMatchObject({ pushId: undefined });
     });
   });
@@ -286,7 +285,7 @@ describe('silentPushTask', () => {
 
     it('invalid payload면 skip', async () => {
       await handleSilentPush({
-        data: { notification: { data: { trigger: 'other' } } },
+        data: bgTaskData({ trigger: 'other' }),
       });
       expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
     });
@@ -303,11 +302,7 @@ describe('silentPushTask', () => {
 
     it('kind 미상(구 백엔드)이면 received 적재 후 skip 적재 + 발사 안 함', async () => {
       await handleSilentPush({
-        data: {
-          notification: {
-            data: { nextWaypoint: '강남', etaSeconds: 10, phase: 'imminent' },
-          },
-        },
+        data: bgTaskData({ nextWaypoint: '강남', etaSeconds: 10, phase: 'imminent' }),
       });
       expect(mockLogSilentPushReceived).toHaveBeenCalled();
       expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
@@ -501,11 +496,12 @@ describe('silentPushTask', () => {
 
       it('payload-missing-kind 시 sendPushAck(outcome=skipped, reason=payload-missing-kind)', async () => {
         await handleSilentPush({
-          data: {
-            notification: {
-              data: { nextWaypoint: '강남', etaSeconds: 10, phase: 'imminent', pushId: 'p-kind' },
-            },
-          },
+          data: bgTaskData({
+            nextWaypoint: '강남',
+            etaSeconds: 10,
+            phase: 'imminent',
+            pushId: 'p-kind',
+          }),
         });
         expect(mockSendPushAck).toHaveBeenCalledWith({
           pushId: 'p-kind',
