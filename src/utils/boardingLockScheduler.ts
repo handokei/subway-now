@@ -152,6 +152,18 @@ function arrivalMsForHop(
   return lock.boardedAt + cumulativeStops * HOP_TIME_SECONDS * 1000;
 }
 
+/**
+ * 탑승/환승 직후 새 leg의 첫 hop이 transfer일 때 sleep ON이면 알람 skip(#632).
+ * scheduleHopsForLock / advanceHopWindow가 공유하는 동일 조건 — 중복 제거.
+ */
+function shouldSkipFirstTransferForSleep(
+  isFirstNewHop: boolean,
+  sleepMode: boolean,
+  hop: { alarmType: string },
+): boolean {
+  return isFirstNewHop && sleepMode && hop.alarmType === 'transfer';
+}
+
 async function cancelAndDismiss(ids: string[]): Promise<void> {
   for (const id of ids) {
     await Notifications.cancelScheduledNotificationAsync(id);
@@ -195,7 +207,7 @@ export async function scheduleHopsForLock(params: ScheduleHopsParams): Promise<s
 
   const scheduledIds: string[] = [];
   for (let hopIndex = 0; hopIndex < lastIdx; hopIndex++) {
-    if (hopIndex === 0 && sleepMode && allTargets[0].alarmType === 'transfer') {
+    if (shouldSkipFirstTransferForSleep(hopIndex === 0, sleepMode, allTargets[hopIndex])) {
       // 탑승 직후 첫 hop이 환승이고 sleep ON → 사용자가 노이즈로 느낀다(#632). 둘째 hop부터 정상 예약.
       continue;
     }
@@ -319,9 +331,11 @@ export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<
   for (let hopIndex = passedIndex + 1; hopIndex <= windowEnd; hopIndex++) {
     if (existingHopIndexes.has(hopIndex)) continue;
     if (
-      hopIndex === passedIndex + 1 &&
-      sleepMode &&
-      allTargets[hopIndex].alarmType === 'transfer'
+      shouldSkipFirstTransferForSleep(
+        hopIndex === passedIndex + 1,
+        sleepMode,
+        allTargets[hopIndex],
+      )
     ) {
       // "방금 진입한 새 leg의 첫 hop"이 transfer면 skip(#632). out-of-order advance(0→2 등 GPS 점프)에서도
       // 큐 채우기 시작점이 passedIndex+1이므로 의미가 일관 — 사용자에게 가장 가까운 새 transfer만 차단한다.

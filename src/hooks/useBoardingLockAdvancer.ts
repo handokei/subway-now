@@ -5,7 +5,7 @@ import { isSameStationName } from '../utils/stationRoute';
 import { resolveAllTargets } from '../utils/stationAlarm';
 import { advanceHopWindow } from '../utils/boardingLockScheduler';
 import { createLogger } from '../utils/logger';
-import { useAppStore } from '../store/useAppStore';
+import { useSleepModeRef } from './useSleepModeRef';
 
 const logger = createLogger('useBoardingLockAdvancer');
 
@@ -33,11 +33,8 @@ export function useBoardingLockAdvancer({
 }: UseBoardingLockAdvancerInputs): void {
   const lastAdvancedRef = useRef<string | null>(null);
   const lastTrainCodeRef = useRef<string | null>(null);
-  // advance 호출 시점의 sleepMode를 ref로 캡처(#632) — sleepMode 변경이 advance effect를
-  // 재실행시키지 않도록(역 통과 신호에만 반응) 의도적으로 deps에서 제외한다.
-  const sleepMode = useAppStore((s) => s.sleepMode);
-  const sleepModeRef = useRef(sleepMode);
-  sleepModeRef.current = sleepMode;
+  // 역 통과 신호에만 effect가 반응하도록 sleepMode는 ref로 캡처(#632).
+  const sleepModeRef = useSleepModeRef();
 
   useEffect(() => {
     const trainCode = lock?.trainCode ?? null;

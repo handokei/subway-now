@@ -6,7 +6,7 @@ import {
   scheduleHopsForLock,
 } from '../utils/boardingLockScheduler';
 import { createLogger } from '../utils/logger';
-import { useAppStore } from '../store/useAppStore';
+import { useSleepModeRef } from './useSleepModeRef';
 
 const logger = createLogger('useBoardingLockScheduler');
 
@@ -33,12 +33,8 @@ export function useBoardingLockScheduler({
   destinationName,
 }: UseBoardingLockSchedulerInputs): void {
   const prevLockRef = useRef<BoardingLock | null>(null);
-  // schedule 호출 시점의 sleepMode를 캡처해 #632 가드에 사용. ref로 읽어 sleepMode 토글이
-  // 본 effect를 재실행시키지 않게 한다. 탑승 후 사용자가 sleep을 토글해도 이미 예약된 알람은
-  // 그대로 유지되는 trade-off — 토글 기반 재예약이 요구되면 별도 이슈로 분리한다.
-  const sleepMode = useAppStore((s) => s.sleepMode);
-  const sleepModeRef = useRef(sleepMode);
-  sleepModeRef.current = sleepMode;
+  // 이미 예약된 알람은 sleep 토글에 영향받지 않는 trade-off — 토글 기반 재예약이 요구되면 별도 이슈.
+  const sleepModeRef = useSleepModeRef();
 
   useEffect(() => {
     const prev = prevLockRef.current;
