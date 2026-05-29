@@ -228,6 +228,41 @@ describe('scheduleHopsForLock', () => {
     expect(call.content.interruptionLevel).toBeUndefined();
   });
 
+  describe('#632 sleepMode 가드', () => {
+    async function scheduleAndGetIds(
+      route: DirectRoute | TransferRoute,
+      dest: string,
+      sleepMode: boolean,
+    ): Promise<string[]> {
+      await scheduleHopsForLock({ lock, route, destinationName: dest, sleepMode });
+      return mockedSchedule.mock.calls.map((c) => c[0].identifier ?? '');
+    }
+
+    it('sleepMode=true + 첫 hop이 transfer면 그 hop skip, 둘째 hop은 정상', async () => {
+      const ids = await scheduleAndGetIds(transferRoute, '오금', true);
+      expect(ids).not.toContain('bl:T-100:0:early:교대');
+      expect(ids).not.toContain('bl:T-100:0:imminent:교대');
+      expect(ids).toContain('bl:T-100:1:early:오금');
+      expect(ids).toContain('bl:T-100:1:imminent:오금');
+      expect(mockedAdd).toHaveBeenCalledWith([
+        'bl:T-100:1:early:오금',
+        'bl:T-100:1:imminent:오금',
+      ]);
+    });
+
+    it('sleepMode=true + 첫 hop이 destination이면 정상 schedule', async () => {
+      const ids = await scheduleAndGetIds(directRoute, '강남', true);
+      expect(mockedSchedule).toHaveBeenCalledTimes(2);
+      expect(ids).toContain('bl:T-100:0:early:강남');
+      expect(ids).toContain('bl:T-100:0:imminent:강남');
+    });
+
+    it('sleepMode=false + 첫 hop이 transfer여도 정상 schedule', async () => {
+      await scheduleAndGetIds(transferRoute, '오금', false);
+      expect(mockedSchedule).toHaveBeenCalledTimes(4);
+    });
+  });
+
   it('빈 targets은 storage write도 빈 배열', async () => {
     // direct stops=0 → totalStops=0, but resolveAllTargets returns 1 entry with stops=0.
     // waypointEta=0 → 모든 phase에서 fireSeconds <= 0 → 예약 안 됨.
@@ -422,5 +457,40 @@ describe('advanceHopWindow', () => {
         passedStationName: '교대',
       }),
     ).resolves.toBeUndefined();
+  });
+
+  describe('#632 sleepMode 가드', () => {
+    async function advanceAndGetIds(
+      route: TransferRoute | MultiTransferRoute,
+      dest: string,
+      passed: string,
+      sleepMode: boolean,
+    ): Promise<string[]> {
+      mockedGet.mockResolvedValueOnce([]);
+      await advanceHopWindow({ lock, route, destinationName: dest, passedStationName: passed, sleepMode });
+      return mockedSchedule.mock.calls.map((c) => c[0].identifier ?? '');
+    }
+
+    it('sleepMode=true + passedIndex+1 hop이 transfer면 그 hop만 skip', async () => {
+      // multiRoute: 교대(0,t), 약수(1,t), 한강진(2,t), 온수(3,d). 교대 통과 후 새 첫 hop=약수(transfer).
+      const ids = await advanceAndGetIds(multiRoute, '온수', '교대', true);
+      expect(ids.some((id) => id.startsWith('bl:T-100:1:'))).toBe(false);
+      expect(ids.some((id) => id.startsWith('bl:T-100:2:'))).toBe(true);
+      expect(ids.some((id) => id.startsWith('bl:T-100:3:'))).toBe(true);
+    });
+
+    it('sleepMode=true + out-of-order advance: 새 첫 hop(=passedIndex+1)만 skip 대상', async () => {
+      // GPS 점프로 약수(1)를 건너뛰고 한강진(2) 직전에 advance — 새 hop 시작점=2(한강진, transfer) skip.
+      const ids = await advanceAndGetIds(multiRoute, '온수', '약수', true);
+      expect(ids.some((id) => id.startsWith('bl:T-100:2:'))).toBe(false);
+      expect(ids.some((id) => id.startsWith('bl:T-100:3:'))).toBe(true);
+    });
+
+    it('sleepMode=true + passedIndex+1 hop이 destination이면 정상 schedule', async () => {
+      // transferRoute: 교대(0,t), 오금(1,d). 새 첫 hop=오금(destination) → skip 안 함.
+      const ids = await advanceAndGetIds(transferRoute, '오금', '교대', true);
+      expect(ids).toContain('bl:T-100:1:early:오금');
+      expect(ids).toContain('bl:T-100:1:imminent:오금');
+    });
   });
 });

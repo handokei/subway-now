@@ -152,6 +152,18 @@ function arrivalMsForHop(
   return lock.boardedAt + cumulativeStops * HOP_TIME_SECONDS * 1000;
 }
 
+/**
+ * 탑승/환승 직후 새 leg의 첫 hop이 transfer일 때 sleep ON이면 알람 skip(#632).
+ * scheduleHopsForLock / advanceHopWindow가 공유하는 동일 조건 — 중복 제거.
+ */
+function shouldSkipFirstTransferForSleep(
+  isFirstNewHop: boolean,
+  sleepMode: boolean,
+  hop: { alarmType: string },
+): boolean {
+  return isFirstNewHop && sleepMode && hop.alarmType === 'transfer';
+}
+
 async function cancelAndDismiss(ids: string[]): Promise<void> {
   for (const id of ids) {
     await Notifications.cancelScheduledNotificationAsync(id);
@@ -171,6 +183,11 @@ export interface ScheduleHopsParams {
   now?: number;
   /** 큐에 둘 waypoint 개수. 기본 3. */
   windowSize?: number;
+  /**
+   * 취침모드 ON 여부. true이고 batch의 첫 hop이 transfer면 그 hop의 alarm은 schedule skip.
+   * [[project-alarm-sla-architecture]] "1정거장 전 + 탑승 직후 환승 알람 skip" 요구사항(#632).
+   */
+  sleepMode?: boolean;
 }
 
 /**
@@ -182,13 +199,18 @@ export interface ScheduleHopsParams {
  * 과거 시각으로 산출되는 알람은 skip. waypoint stops=0(이미 도착)인 경우도 skip된다 (lead 차감 후 ≤0).
  */
 export async function scheduleHopsForLock(params: ScheduleHopsParams): Promise<string[]> {
-  const { lock, route, destinationName, now, windowSize = DEFAULT_WINDOW_SIZE } = params;
+  const { lock, route, destinationName, now, windowSize = DEFAULT_WINDOW_SIZE, sleepMode = false } =
+    params;
   const observedMs = now ?? lock.boardedAt;
   const allTargets = resolveAllTargets(route, destinationName);
   const lastIdx = Math.min(windowSize, allTargets.length);
 
   const scheduledIds: string[] = [];
   for (let hopIndex = 0; hopIndex < lastIdx; hopIndex++) {
+    if (shouldSkipFirstTransferForSleep(hopIndex === 0, sleepMode, allTargets[hopIndex])) {
+      // 탑승 직후 첫 hop이 환승이고 sleep ON → 사용자가 노이즈로 느낀다(#632). 둘째 hop부터 정상 예약.
+      continue;
+    }
     const ids = await scheduleSingleHop({
       lock,
       target: allTargets[hopIndex],
@@ -250,6 +272,11 @@ export interface AdvanceHopWindowParams {
   passedStationName: string;
   now?: number;
   windowSize?: number;
+  /**
+   * 취침모드 ON 여부. true이고 advance 직후의 첫 새 hop(=passedIndex+1)이 transfer면 그 hop은 skip.
+   * 환승 직후 새 leg 시작 시점에도 같은 노이즈가 반복되지 않도록 한다(#632).
+   */
+  sleepMode?: boolean;
 }
 
 /**
@@ -263,8 +290,15 @@ export interface AdvanceHopWindowParams {
  * PR C에서는 정의만 — 호출자(Fusion station-pass)는 PR D에서 연결.
  */
 export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<void> {
-  const { lock, route, destinationName, passedStationName, now, windowSize = DEFAULT_WINDOW_SIZE } =
-    params;
+  const {
+    lock,
+    route,
+    destinationName,
+    passedStationName,
+    now,
+    windowSize = DEFAULT_WINDOW_SIZE,
+    sleepMode = false,
+  } = params;
 
   const allTargets = resolveAllTargets(route, destinationName);
   const passedIndex = allTargets.findIndex((t) => t.name === passedStationName);
@@ -296,6 +330,17 @@ export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<
   const windowEnd = Math.min(passedIndex + windowSize, allTargets.length - 1);
   for (let hopIndex = passedIndex + 1; hopIndex <= windowEnd; hopIndex++) {
     if (existingHopIndexes.has(hopIndex)) continue;
+    if (
+      shouldSkipFirstTransferForSleep(
+        hopIndex === passedIndex + 1,
+        sleepMode,
+        allTargets[hopIndex],
+      )
+    ) {
+      // "방금 진입한 새 leg의 첫 hop"이 transfer면 skip(#632). out-of-order advance(0→2 등 GPS 점프)에서도
+      // 큐 채우기 시작점이 passedIndex+1이므로 의미가 일관 — 사용자에게 가장 가까운 새 transfer만 차단한다.
+      continue;
+    }
     const ids = await scheduleSingleHop({
       lock,
       target: allTargets[hopIndex],

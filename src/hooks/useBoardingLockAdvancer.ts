@@ -5,6 +5,7 @@ import { isSameStationName } from '../utils/stationRoute';
 import { resolveAllTargets } from '../utils/stationAlarm';
 import { advanceHopWindow } from '../utils/boardingLockScheduler';
 import { createLogger } from '../utils/logger';
+import { useSleepModeRef } from './useSleepModeRef';
 
 const logger = createLogger('useBoardingLockAdvancer');
 
@@ -32,6 +33,8 @@ export function useBoardingLockAdvancer({
 }: UseBoardingLockAdvancerInputs): void {
   const lastAdvancedRef = useRef<string | null>(null);
   const lastTrainCodeRef = useRef<string | null>(null);
+  // 역 통과 신호에만 effect가 반응하도록 sleepMode는 ref로 캡처(#632).
+  const sleepModeRef = useSleepModeRef();
 
   useEffect(() => {
     const trainCode = lock?.trainCode ?? null;
@@ -53,6 +56,7 @@ export function useBoardingLockAdvancer({
       route,
       destinationName,
       passedStationName: matched.name,
+      sleepMode: sleepModeRef.current,
     }).catch((e: unknown) => {
       logger.error('advanceHopWindow 실패:', e);
     });

@@ -197,6 +197,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
               route,
               destinationName: destination.name,
               passedStationName: matched.name,
+              sleepMode,
             });
           }
         }

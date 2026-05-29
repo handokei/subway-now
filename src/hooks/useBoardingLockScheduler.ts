@@ -6,6 +6,7 @@ import {
   scheduleHopsForLock,
 } from '../utils/boardingLockScheduler';
 import { createLogger } from '../utils/logger';
+import { useSleepModeRef } from './useSleepModeRef';
 
 const logger = createLogger('useBoardingLockScheduler');
 
@@ -32,6 +33,8 @@ export function useBoardingLockScheduler({
   destinationName,
 }: UseBoardingLockSchedulerInputs): void {
   const prevLockRef = useRef<BoardingLock | null>(null);
+  // 이미 예약된 알람은 sleep 토글에 영향받지 않는 trade-off — 토글 기반 재예약이 요구되면 별도 이슈.
+  const sleepModeRef = useSleepModeRef();
 
   useEffect(() => {
     const prev = prevLockRef.current;
@@ -49,7 +52,12 @@ export function useBoardingLockScheduler({
         await cancelAllHopsForLock(prev);
       }
       if (lock && route && destinationName) {
-        await scheduleHopsForLock({ lock, route, destinationName });
+        await scheduleHopsForLock({
+          lock,
+          route,
+          destinationName,
+          sleepMode: sleepModeRef.current,
+        });
       }
     };
     handleTransition().catch((e: unknown) => {
