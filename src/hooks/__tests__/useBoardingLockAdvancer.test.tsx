@@ -3,6 +3,7 @@ import { useBoardingLockAdvancer } from '../useBoardingLockAdvancer';
 import { advanceHopWindow } from '../../utils/boardingLockScheduler';
 import type { BoardingLock } from '../../types/boardingLock';
 import type { DirectRoute, TransferRoute } from '../../utils/stationRoute';
+import { useAppStore } from '../../store/useAppStore';
 
 jest.mock('../../utils/boardingLockScheduler', () => ({
   advanceHopWindow: jest.fn(),
@@ -44,6 +45,7 @@ type Props = Parameters<typeof useBoardingLockAdvancer>[0];
 beforeEach(() => {
   jest.clearAllMocks();
   mockedAdvance.mockResolvedValue(undefined);
+  useAppStore.setState({ sleepMode: false });
 });
 
 describe('useBoardingLockAdvancer', () => {
@@ -127,6 +129,7 @@ describe('useBoardingLockAdvancer', () => {
         route: directRoute,
         destinationName: '강남',
         passedStationName: '강남',
+        sleepMode: false,
       });
     });
   });
@@ -146,6 +149,7 @@ describe('useBoardingLockAdvancer', () => {
         route: transferRoute,
         destinationName: '명동',
         passedStationName: '사당',
+        sleepMode: false,
       });
     });
   });
@@ -200,6 +204,7 @@ describe('useBoardingLockAdvancer', () => {
       route: transferRoute,
       destinationName: '명동',
       passedStationName: '명동',
+      sleepMode: false,
     });
   });
 
@@ -228,6 +233,7 @@ describe('useBoardingLockAdvancer', () => {
       route: directRoute,
       destinationName: '강남',
       passedStationName: '강남',
+      sleepMode: false,
     });
   });
 
@@ -248,6 +254,28 @@ describe('useBoardingLockAdvancer', () => {
         destinationName: '상봉',
         // resolveAllTargets가 보유한 정식 이름(=destinationName 그대로)을 전달.
         passedStationName: '상봉',
+        sleepMode: false,
+      });
+    });
+  });
+
+  it('#632 sleepMode=true 상태에서 advance 호출에 sleepMode=true 전달', async () => {
+    useAppStore.setState({ sleepMode: true });
+    renderHook(() =>
+      useBoardingLockAdvancer({
+        lock: lockA,
+        route: transferRoute,
+        destinationName: '명동',
+        currentStationName: '사당',
+      }),
+    );
+    await waitFor(() => {
+      expect(mockedAdvance).toHaveBeenCalledWith({
+        lock: lockA,
+        route: transferRoute,
+        destinationName: '명동',
+        passedStationName: '사당',
+        sleepMode: true,
       });
     });
   });

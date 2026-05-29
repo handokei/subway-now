@@ -6,6 +6,7 @@ import {
 } from '../../utils/boardingLockScheduler';
 import type { BoardingLock } from '../../types/boardingLock';
 import type { DirectRoute } from '../../utils/stationRoute';
+import { useAppStore } from '../../store/useAppStore';
 
 jest.mock('../../utils/boardingLockScheduler', () => ({
   scheduleHopsForLock: jest.fn(),
@@ -39,6 +40,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockedSchedule.mockResolvedValue([]);
   mockedCancel.mockResolvedValue(undefined);
+  useAppStore.setState({ sleepMode: false });
 });
 
 describe('useBoardingLockScheduler', () => {
@@ -61,6 +63,7 @@ describe('useBoardingLockScheduler', () => {
         lock: lockA,
         route,
         destinationName: '강남',
+        sleepMode: false,
       });
       expect(mockedCancel).not.toHaveBeenCalled();
     });
@@ -94,6 +97,7 @@ describe('useBoardingLockScheduler', () => {
         lock: lockB,
         route,
         destinationName: '강남',
+        sleepMode: false,
       });
     });
   });
@@ -154,5 +158,33 @@ describe('useBoardingLockScheduler', () => {
     );
     await new Promise((r) => setTimeout(r, 0));
     expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('#632 sleepMode=true 상태에서 schedule에 sleepMode=true 전달', async () => {
+    useAppStore.setState({ sleepMode: true });
+    renderHook(() =>
+      useBoardingLockScheduler({ lock: lockA, route, destinationName: '강남' }),
+    );
+    await waitFor(() => {
+      expect(mockedSchedule).toHaveBeenCalledWith({
+        lock: lockA,
+        route,
+        destinationName: '강남',
+        sleepMode: true,
+      });
+    });
+  });
+
+  it('#632 sleepMode 토글은 effect를 재실행시키지 않는다 (ref capture)', async () => {
+    const { rerender } = renderHook(
+      (props: Parameters<typeof useBoardingLockScheduler>[0]) =>
+        useBoardingLockScheduler(props),
+      { initialProps: { lock: lockA, route, destinationName: '강남' } },
+    );
+    await waitFor(() => expect(mockedSchedule).toHaveBeenCalledTimes(1));
+    useAppStore.setState({ sleepMode: true });
+    rerender({ lock: lockA, route, destinationName: '강남' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedSchedule).toHaveBeenCalledTimes(1);
   });
 });

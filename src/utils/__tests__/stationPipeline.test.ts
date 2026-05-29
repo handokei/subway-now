@@ -415,6 +415,7 @@ describe('processLocationUpdate', () => {
         route: mockRoute,
         destinationName: '시청',
         passedStationName: '강남',
+        sleepMode: false,
       });
     });
 
