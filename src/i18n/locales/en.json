@@ -178,7 +178,8 @@
     "stopsRemainingToDestination_one": "{{count}} stop to {{destination}}",
     "stopsRemainingToDestination_other": "{{count}} stops to {{destination}}",
     "stopsRemainingViaTransfer": "{{transferStops}} stops to {{transfer}} transfer · {{totalStops}} stops to {{destination}}",
-    "quickExitDoor": "Door {{door}}"
+    "quickExitDoor": "Door {{door}}",
+    "boardingDoor": "Board at door {{door}}"
   },
   "lines": {
     "1": "Line 1",

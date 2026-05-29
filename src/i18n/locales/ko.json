@@ -178,7 +178,8 @@
     "stopsRemainingToDestination_one": "{{destination}}까지 {{count}}정거장 남음",
     "stopsRemainingToDestination_other": "{{destination}}까지 {{count}}정거장 남음",
     "stopsRemainingViaTransfer": "{{transfer}} 환승까지 {{transferStops}}정거장 · {{destination}}까지 {{totalStops}}정거장",
-    "quickExitDoor": "{{door}}번 문"
+    "quickExitDoor": "{{door}}번 문",
+    "boardingDoor": "탑승 {{door}}번 문"
   },
   "lines": {
     "1": "1호선",
