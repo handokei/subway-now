@@ -36,17 +36,25 @@ name: "smoke - 목적지 설정 & 초기화"
 - tapOn:
     id: "suggestion-item-2-016"
 
-- assertVisible:
-    text: "잠실|Jamsil"
-- assertVisible:
-    id: "destination-clear-button"
+- extendedWaitUntil:
+    visible:
+      text: "잠실|Jamsil"
+    timeout: 10000
 
-# 초기화 — clear 후 ScrollView contentOffset이 즉시 클램프되지 않아
-# "목적지 설정" 버튼이 viewport 위쪽 밖에 머무를 수 있어 scrollUntilVisible 필요.
+# #634/#625 머지 후 route 박스 안에 BoardingTrainList/BoardingLockBanner가 들어와
+# 박스 높이가 크게 증가 → actionsRow(destination-clear-button)가 viewport 밖.
+# scrollUntilVisible로 실제 화면에 끌어올린 뒤 탭.
+- scrollUntilVisible:
+    element:
+      id: "destination-clear-button"
+    direction: DOWN
+    timeout: 15000
+
+# 초기화 — clear 후 ScrollView contentOffset이 남아 "목적지 설정"이 위쪽에 숨을 수 있음.
 - tapOn:
     id: "destination-clear-button"
 - scrollUntilVisible:
     element:
       text: "목적지 설정|Set destination"
     direction: UP
-    timeout: 5000
+    timeout: 10000

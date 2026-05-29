@@ -36,6 +36,12 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
 - tapOn:
     id: "suggestion-item-2-016"
 
+# 목적지 설정 확정 대기 (route 박스가 렌더되어야 sleep-mode-switch가 트리에 들어옴)
+- extendedWaitUntil:
+    visible:
+      text: "잠실|Jamsil"
+    timeout: 10000
+
 # #634/#625 머지 후 destination 박스 안에 BoardingTrainList/BoardingLockBanner가
 # 들어와 박스 높이가 크게 증가 → 가장 하단의 sleep-mode-switch가 viewport 밖.
 # assertVisible은 자동 스크롤하지 않으므로 scrollUntilVisible 사용.
@@ -43,7 +49,7 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
     element:
       id: "home-sleep-mode-switch"
     direction: DOWN
-    timeout: 5000
+    timeout: 15000
 - tapOn:
     id: "home-sleep-mode-switch"
 
@@ -68,4 +74,4 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
     element:
       id: "home-sleep-mode-switch"
     direction: DOWN
-    timeout: 5000
+    timeout: 15000
