@@ -3,6 +3,7 @@ import { useTheme, typography, spacing, radius } from '../theme';
 import { LineBadge } from './LineBadge';
 import type { ArrivalInfo } from '../api/arrivalApi';
 import type { LineNumber } from '../types/station';
+import { formatClockTime } from '../utils/formatTime';
 
 interface Props {
   arrivals: ArrivalInfo[];
@@ -23,6 +24,8 @@ interface Props {
  * 호출자는 이미 route 방향으로 필터링된 arrivals를 전달한다 — 이 컴포넌트는 디스플레이/탭 처리만 담당.
  * 각 row를 탭하면 onSelect 콜백이 발화 → 호출자가 BoardingLock 생성.
  * 빈 list면 placeholder 안내 텍스트.
+ *
+ * #634: 도착 시각을 "분" 상대 표기 → "HH:mm" 절대 표기로 전환. 사용자 시계와 직접 매칭.
  */
 export function BoardingTrainList({
   arrivals,
@@ -63,14 +66,27 @@ export function BoardingTrainList({
               <Text style={[typography.body, { color: colors.ink }]}>{train.destination} 행</Text>
               <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
             </View>
-            <Text style={[typography.body, { color: colors.accent, fontWeight: '600' }]}>
-              {train.arrivalMinutes}분
+            <Text
+              style={[typography.body, { color: colors.accent, fontWeight: '600' }]}
+              testID={`boarding-train-arrival-${train.trainCode}`}
+            >
+              {formatArrivalClock(train)}
             </Text>
           </Pressable>
         );
       })}
     </View>
   );
+}
+
+/**
+ * 도착 시각 절대 표기(HH:mm) — #634.
+ * receivedAtMs(API fetch 시점) + arrivalSeconds로 절대 도착 시각 산출.
+ * receivedAtMs 0(mock/stale)이면 현재 시각 기준 fallback — 한 사이클 내에서는 결정적.
+ */
+function formatArrivalClock(train: ArrivalInfo): string {
+  const baseMs = train.receivedAtMs > 0 ? train.receivedAtMs : Date.now();
+  return formatClockTime(baseMs + train.arrivalSeconds * 1000);
 }
 
 const styles = StyleSheet.create({

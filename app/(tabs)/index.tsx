@@ -647,6 +647,25 @@ export default function HomeScreen() {
                   {boardingLock && (
                     <BoardingLockBanner lock={boardingLock} onRelease={releaseBoardingLock} />
                   )}
+                  {/* #634 — 탑승 전 열차 선택 list도 route 컨텍스트 안에서 노출.
+                       이전엔 하단 별도 섹션이라 사용자가 경로와 분리된 카드로 인지. */}
+                  {!boardingLock && effectiveOrigin && (
+                    <BoardingTrainList
+                      arrivals={directionalArrivals}
+                      line={effectiveOrigin.line}
+                      onSelect={createLockFromTrain}
+                    />
+                  )}
+                  {/* PR E: 환승 waypoint 도달 시 다음 노선 list. context 비어있으면 노출 안 됨. */}
+                  {transferContext && (
+                    <BoardingTrainList
+                      arrivals={transferArrivals}
+                      line={transferContext.nextLine}
+                      onSelect={createTransferLock}
+                      walkingBufferSeconds={TRANSFER_WALKING_BUFFER_SECONDS}
+                      title="환승 열차 선택"
+                    />
+                  )}
                 </View>
 
                 {/* Actions */}
@@ -721,26 +740,7 @@ export default function HomeScreen() {
               </View>
             )}
 
-            {/* Arrivals — 현재역(effectiveOrigin)이 확정되면 trip 유무와 무관하게 노출 */}
-            {/* #584 PR B — BoardingLock 진입점. #625에서 banner는 route 컨텍스트로 이동.
-                활성 lock 시 train list는 노출 안 함. */}
-            {destination && !boardingLock && effectiveOrigin && (
-              <BoardingTrainList
-                arrivals={directionalArrivals}
-                line={effectiveOrigin.line}
-                onSelect={createLockFromTrain}
-              />
-            )}
-            {/* PR E: 환승 waypoint 도달 시 다음 노선 list. context 비어있으면 노출 안 됨. */}
-            {transferContext && (
-              <BoardingTrainList
-                arrivals={transferArrivals}
-                line={transferContext.nextLine}
-                onSelect={createTransferLock}
-                walkingBufferSeconds={TRANSFER_WALKING_BUFFER_SECONDS}
-                title="환승 열차 선택"
-              />
-            )}
+            {/* #634: BoardingTrainList 두 인스턴스(현재역/환승)는 route 박스 안으로 이동됨. */}
             {effectiveOrigin && (
               <View style={[styles.arrivalSection, { backgroundColor: colors.card }]}>
                 <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('home.arrivalInfoTitle')}</Text>
