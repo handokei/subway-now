@@ -40,6 +40,16 @@ function resolveStopDoor(
   return result ? result.entry.doorNumber : null;
 }
 
+/**
+ * 한 stop의 도어 라벨(arrivalContext + transfer target 종합). 공통 래퍼 — boardingDoor/quickExitDoor
+ * 양쪽 결정 시 transferToLine 분기 중복을 제거 (#635 review P2-1).
+ */
+function doorFor(stop: Stop | null, accessibilityMode: boolean): string | null {
+  if (!stop?.arrivalContext) return null;
+  const toLine = stop.mark === 'transfer' ? stop.transferTarget?.toLine ?? null : null;
+  return resolveStopDoor(stop.arrivalContext, toLine, accessibilityMode);
+}
+
 export function EditorialTimeline({ stops }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -52,12 +62,17 @@ export function EditorialTimeline({ stops }: Props) {
         const nextLineC = !isLast
           ? (stops[i + 1].line != null ? getLineColor(stops[i + 1].line!) : colors.accent)
           : lineC;
-        // transferTarget은 mark === 'transfer'에만 의미가 있다. 환승→도착 흡수된 stop(mark='dest')은
-        // transferTarget이 남아 있을 수 있어도 도착 fallback(quickExit)만 적용한다.
-        const transferToLine = s.mark === 'transfer' ? s.transferTarget?.toLine ?? null : null;
-        const quickExitDoor = s.arrivalContext != null
-          ? resolveStopDoor(s.arrivalContext, transferToLine, accessibilityMode)
+        const quickExitDoor = doorFor(s, accessibilityMode);
+        // #635 — 출발역(첫 mark='filled')에서 탑승 시 어느 칸·문에 타야 다음 hop(환승/도착)에서
+        // 빠르게 내릴 수 있는지 표시. 같은 열차 = 같은 문 번호이므로 다음 hop stop의 도어를 그대로 재사용.
+        // 의미만 다름: 다음 stop에선 "내리는 위치", 출발역에선 "타는 위치".
+        // expanded 모드에선 origin과 첫 hop 사이에 intermediate stop들이 끼므로 인접 [i+1] 대신
+        // arrivalContext가 있는 첫 후속 stop을 찾는다 (review P1-1).
+        const isOrigin = i === 0 && s.mark === 'filled';
+        const nextHopStop = isOrigin
+          ? stops.slice(i + 1).find((st) => st.arrivalContext != null) ?? null
           : null;
+        const boardingDoor = doorFor(nextHopStop, accessibilityMode);
 
         const isIntermediate = s.mark === 'intermediate';
         return (
@@ -122,6 +137,14 @@ export function EditorialTimeline({ stops }: Props) {
                   testID={`quick-exit-door-${i}`}
                 >
                   {t('route.quickExitDoor', { door: quickExitDoor })}
+                </Text>
+              )}
+              {boardingDoor != null && (
+                <Text
+                  style={[typography.label, { color: colors.subtle, marginTop: 2 }]}
+                  testID={`boarding-door-${i}`}
+                >
+                  {t('route.boardingDoor', { door: boardingDoor })}
                 </Text>
               )}
             </View>
