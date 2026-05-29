@@ -38,8 +38,6 @@
     "previousDestination": "Previous destination",
     "sleepMode": "Sleep mode",
     "sleepModeDescription": "Vibrate and notify 1 stop before transfer or arrival",
-    "alarmsKill": "Disable alarms",
-    "alarmsKillDescription": "When ON, vibration, sound, and pending alerts are instantly blocked",
     "arrivalInfoTitle": "Train arrivals",
     "loading": "Loading...",
     "mockNotice": "Showing estimated data — real-time unavailable",

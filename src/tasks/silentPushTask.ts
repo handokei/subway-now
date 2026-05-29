@@ -34,7 +34,6 @@ import {
   checkSilentPushLocationGate,
   type GateSkipReason,
 } from '../utils/silentPushLocationGate';
-import { isAlarmsKilled } from '../utils/alarmKill';
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
 import { buildAlarmContent } from '../utils/stationNotification';
 import { type NotificationSource } from '../utils/notificationSource';
@@ -167,10 +166,6 @@ async function loadApnsToken(): Promise<string | null> {
 export async function handleSilentPush(input: NotificationBackgroundTaskData): Promise<void> {
   if (input.error) {
     logger.error('silent push task error:', input.error.message);
-    return;
-  }
-  if (await isAlarmsKilled()) {
-    logger.info('알람 차단됨 (alarmsKilled) — silent push skip');
     return;
   }
 

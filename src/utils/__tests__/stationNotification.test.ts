@@ -48,9 +48,6 @@ jest.mock('../../../modules/live-activity', () => ({
 }));
 
 const mockHasFiredPushId = jest.fn();
-jest.mock('../alarmKill', () => ({
-  isAlarmsKilled: jest.fn().mockResolvedValue(false),
-}));
 jest.mock('../firedPushIds', () => ({
   hasFiredPushId: (...args: unknown[]) => mockHasFiredPushId(...args),
 }));
@@ -661,15 +658,6 @@ describe('stationNotification', () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       await sendAlarmNotification(imminentDest, true);
       expect(mockVibrateAlarm).toHaveBeenCalledWith(true);
-    });
-
-    it('#623 alarmsKilled=true면 schedule/vibrate 모두 skip', async () => {
-      jest.replaceProperty(Platform, 'OS', 'ios');
-      const { isAlarmsKilled } = jest.requireMock('../alarmKill');
-      isAlarmsKilled.mockResolvedValueOnce(true);
-      await sendAlarmNotification(earlyDest);
-      expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
-      expect(mockVibrateAlarm).not.toHaveBeenCalled();
     });
 
     it('imminent + Android에서는 channelId와 priority MAX가 포함된다', async () => {

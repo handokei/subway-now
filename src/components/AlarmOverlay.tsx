@@ -2,6 +2,7 @@ import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import type { AlarmEvent } from '../store/useAppStore';
 import { clearAlarmNotification } from '../utils/stationNotification';
+import { killAllAlarms } from '../utils/alarmKill';
 import { getStationDisplayNameByName } from '../utils/stationDisplay';
 import stationsData from '../data/stations.json';
 import type { Station } from '../types/station';
@@ -12,9 +13,14 @@ const allStations = stationsData as Station[];
 interface AlarmOverlayProps {
   event: AlarmEvent;
   onDismiss: () => void;
+  /**
+   * 도착 알람 dismiss 시 호출 — trip 종료 처리(lock release + destination clear).
+   * 환승 알람 dismiss는 trip 유지이므로 호출 안 함.
+   */
+  onEndTrip: () => void;
 }
 
-export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
+export function AlarmOverlay({ event, onDismiss, onEndTrip }: AlarmOverlayProps) {
   const isTransfer = event.type === 'transfer';
   const { t } = useTranslation();
   const title = t(isTransfer ? 'alarmOverlay.transferTitle' : 'alarmOverlay.arrivalTitle');
@@ -23,8 +29,17 @@ export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
   });
   const { colors } = useTheme();
 
+  // #633: dismiss 동작이 알람 종류별로 분기.
+  //  - transfer: trip 유지. 진동/사운드 + 이 알람만 정지. 후속 도착 알람은 계속.
+  //  - destination: trip 종료. killAllAlarms로 진동/사운드/예약 전부 청소 + onEndTrip으로
+  //    BoardingLock release + destination clear까지 위임 (호출자 책임).
   const handleDismiss = async () => {
-    await clearAlarmNotification();
+    if (isTransfer) {
+      await clearAlarmNotification();
+    } else {
+      await killAllAlarms();
+      onEndTrip();
+    }
     onDismiss();
   };
 
