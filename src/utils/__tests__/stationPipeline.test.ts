@@ -11,18 +11,32 @@ const mockFindRoute = jest.fn();
 const mockCalculateStaticETA = jest.fn();
 const mockUpdateRouteFromPosition = jest.fn();
 const mockIsStationOnRoute = jest.fn();
+const mockIsSameStationName = jest.fn((a: string, b: string) => a === b);
 jest.mock('../stationRoute', () => ({
   findRoute: (...args: unknown[]) => mockFindRoute(...args),
   calculateStaticETA: (...args: unknown[]) => mockCalculateStaticETA(...args),
   updateRouteFromPosition: (...args: unknown[]) => mockUpdateRouteFromPosition(...args),
   isStationOnRoute: (...args: unknown[]) => mockIsStationOnRoute(...args),
+  isSameStationName: (a: string, b: string) => mockIsSameStationName(a, b),
 }));
 
 const mockEvaluateAlarmPhase = jest.fn();
 const mockAlarmKey = jest.fn();
+const mockResolveAllTargets = jest.fn((..._args: unknown[]) => [] as Array<{ name: string; stops: number; alarmType: 'destination' | 'transfer'; approachLine: string }>);
 jest.mock('../stationAlarm', () => ({
   evaluateAlarmPhase: (...args: unknown[]) => mockEvaluateAlarmPhase(...args),
   alarmKey: (...args: unknown[]) => mockAlarmKey(...args),
+  resolveAllTargets: (...args: unknown[]) => mockResolveAllTargets(...args),
+}));
+
+const mockGetBoardingLock = jest.fn();
+jest.mock('../boardingLockStorage', () => ({
+  getBoardingLock: () => mockGetBoardingLock(),
+}));
+
+const mockAdvanceHopWindow = jest.fn().mockResolvedValue(undefined);
+jest.mock('../boardingLockScheduler', () => ({
+  advanceHopWindow: (...args: unknown[]) => mockAdvanceHopWindow(...args),
 }));
 
 const mockSendAlarmNotification = jest.fn();
@@ -373,6 +387,61 @@ describe('processLocationUpdate', () => {
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     expect(mockGetLastNotifiedStationId).not.toHaveBeenCalled();
+  });
+
+  describe('#624 BG-safe stale alarm cancel (BoardingLock advance)', () => {
+    const mockLock = {
+      destinationId: 'station-2',
+      trainCode: 'T-100',
+      boardingStationId: 'station-0',
+      boardingLine: '2',
+      boardedAt: 1_700_000_000_000,
+      expectedDurationMs: 600_000,
+    };
+
+    it('lock 있고 nearest station이 waypoint이면 advanceHopWindow 호출', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetLastNotifiedStationId.mockResolvedValue('other-station');
+      mockGetBoardingLock.mockResolvedValue(mockLock);
+      mockResolveAllTargets.mockReturnValue([
+        { name: '강남', stops: 1, alarmType: 'destination', approachLine: '2' },
+      ]);
+
+      await call();
+
+      expect(mockAdvanceHopWindow).toHaveBeenCalledWith({
+        lock: mockLock,
+        route: mockRoute,
+        destinationName: '시청',
+        passedStationName: '강남',
+      });
+    });
+
+    it('lock 있고 nearest가 waypoint가 아니면 advanceHopWindow 호출 안 함 (no-op)', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetLastNotifiedStationId.mockResolvedValue('other-station');
+      mockGetBoardingLock.mockResolvedValue(mockLock);
+      mockResolveAllTargets.mockReturnValue([
+        { name: '다른역', stops: 1, alarmType: 'destination', approachLine: '2' },
+      ]);
+
+      await call();
+
+      expect(mockAdvanceHopWindow).not.toHaveBeenCalled();
+    });
+
+    it('lock 없으면 advanceHopWindow 호출 안 함', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetLastNotifiedStationId.mockResolvedValue('other-station');
+      mockGetBoardingLock.mockResolvedValue(null);
+
+      await call();
+
+      expect(mockAdvanceHopWindow).not.toHaveBeenCalled();
+    });
   });
 
   it('findNearestStation을 MAX_STATION_DISTANCE_KM(1.0)와 함께 호출한다', async () => {

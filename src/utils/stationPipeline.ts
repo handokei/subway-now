@@ -1,8 +1,10 @@
 import { findNearestStation } from './findNearestStation';
-import { findRoute, calculateStaticETA, isStationOnRoute, updateRouteFromPosition } from './stationRoute';
-import { evaluateAlarmPhase } from './stationAlarm';
+import { findRoute, calculateStaticETA, isSameStationName, isStationOnRoute, updateRouteFromPosition } from './stationRoute';
+import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
 import { sendAlarmNotification, sendStationPassedNotification, updateStationNotification } from './stationNotification';
 import { distanceMetersBetween, estimateEtaSeconds } from './stationEta';
+import { advanceHopWindow } from './boardingLockScheduler';
+import { getBoardingLock } from './boardingLockStorage';
 import { getLastNotifiedStationId, setLastNotifiedStationId } from './notificationState';
 import {
   logFiredAlarm,
@@ -178,6 +180,26 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
         );
         await setLastNotifiedStationId(nearest.station.id);
         logFiredStationPassed(source, nearest.station);
+
+        // #624 BG-safe stale alarm 차단 — 통과한 waypoint의 pre-scheduled bl:* 알람을
+        // 능동 cancel. useBoardingLockAdvancer는 FG only(React hook)지만 stationPipeline은
+        // backgroundLocationTask에서도 호출되어 BG에서도 동일 청소가 일어난다.
+        // advanceHopWindow는 idempotent — FG advancer와 중복 호출돼도 안전.
+        // dedup 가드(lastNotifiedStationId) 안쪽에 위치 — 동일 station 재보고 시
+        // reentrant advance 방지. dedup 구조 리팩터 시 advance가 silent하게 사라지지 않게 주의.
+        const lock = await getBoardingLock();
+        if (lock && route) {
+          const targets = resolveAllTargets(route, destination.name);
+          const matched = targets.find((t) => isSameStationName(t.name, nearest.station.name));
+          if (matched) {
+            await advanceHopWindow({
+              lock,
+              route,
+              destinationName: destination.name,
+              passedStationName: matched.name,
+            });
+          }
+        }
       }
     } else {
       logSuppressedDedupStation(source, nearest.station);
