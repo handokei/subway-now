@@ -73,6 +73,8 @@ export default function HomeScreen() {
   const sleepMode = useAppStore((s) => s.sleepMode);
   const setSleepMode = useAppStore((s) => s.setSleepMode);
   const loadSleepMode = useAppStore((s) => s.loadSleepMode);
+  const alarmsKilled = useAppStore((s) => s.alarmsKilled);
+  const setAlarmsKilled = useAppStore((s) => s.setAlarmsKilled);
   const loadAllowSpeaker = useAppStore((s) => s.loadAllowSpeaker);
   const showSleepModeGuide = useSleepModeGuide();
   const alarmEvent = useAppStore((s) => s.alarmEvent);
@@ -650,6 +652,27 @@ export default function HomeScreen() {
                   <Pressable onPress={() => setDestination(null)} testID="destination-clear-button">
                     <Text style={[typography.bodySm, { color: colors.muted }]}>{t('home.destinationReset')}</Text>
                   </Pressable>
+                </View>
+
+                <Hr />
+
+                {/* Alarms kill switch (#623) */}
+                <View style={styles.sleepRow} testID="alarms-kill-row">
+                  <View>
+                    <Text style={[typography.bodySm, { color: alarmsKilled ? colors.danger : colors.ink, fontWeight: '700' }]}>
+                      {t('home.alarmsKill')}
+                    </Text>
+                    <Text style={[typography.mono, { color: colors.muted, marginTop: 2 }]}>
+                      {t('home.alarmsKillDescription')}
+                    </Text>
+                  </View>
+                  <Switch
+                    value={alarmsKilled}
+                    onValueChange={(value) => setAlarmsKilled(value)}
+                    trackColor={{ false: colors.hair, true: colors.danger }}
+                    thumbColor={colors.bg}
+                    testID="home-alarms-kill-switch"
+                  />
                 </View>
 
                 <Hr />

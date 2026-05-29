@@ -28,6 +28,9 @@ jest.mock('../../utils/alarmLog', () => ({
 }));
 
 const mockCheckGate = jest.fn();
+jest.mock('../../utils/alarmKill', () => ({
+  isAlarmsKilled: jest.fn().mockResolvedValue(false),
+}));
 jest.mock('../../utils/silentPushLocationGate', () => ({
   checkSilentPushLocationGate: (...args: unknown[]) => mockCheckGate(...args),
 }));
@@ -276,6 +279,16 @@ describe('silentPushTask', () => {
       await handleSilentPush({ error: { message: 'boom' } });
       expect(mockCheckGate).not.toHaveBeenCalled();
       expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
+    });
+
+    it('#623 alarmsKilled=true면 즉시 종료 (payload extract 전)', async () => {
+      const { isAlarmsKilled } = jest.requireMock('../../utils/alarmKill');
+      isAlarmsKilled.mockResolvedValueOnce(true);
+      await handleSilentPush({
+        data: { notification: { data: { nextWaypoint: 'X', etaSeconds: 30, phase: 'early', kind: 'destination' } } },
+      });
+      expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
+      expect(mockCheckGate).not.toHaveBeenCalled();
     });
 
     it('payload 없으면 skip', async () => {

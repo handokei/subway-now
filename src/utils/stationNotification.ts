@@ -13,6 +13,7 @@ import { createLogger } from './logger';
 import { getStationDisplayName, getStationDisplayNameByName } from './stationDisplay';
 import { saveStationToWidget, clearWidgetStation } from './widgetStorage';
 import { hasFiredPushId } from './firedPushIds';
+import { isAlarmsKilled } from './alarmKill';
 import stationsData from '../data/stations.json';
 import type { ExitSide } from '../types/exitSide';
 import { lookupExitSide } from './exitSide';
@@ -508,6 +509,10 @@ export async function sendAlarmNotification(
   allowSpeaker: boolean = true,
   source?: NotificationSource,
 ): Promise<void> {
+  if (await isAlarmsKilled()) {
+    notifLogger.info('알람 차단됨 (alarmsKilled) — 발사 skip');
+    return;
+  }
   const { title, body } = buildAlarmContent(event, source);
 
   await scheduleNotification(ALARM_NOTIFICATION_ID, {

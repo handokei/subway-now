@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { DevSettings } from 'react-native';
+import * as Notifications from 'expo-notifications';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
@@ -18,6 +19,7 @@ import { registerSilentPushTask } from '../src/tasks/silentPushTask';
 import { registerScheduledAlarmListener } from '../src/utils/scheduledAlarmReceiver';
 import { cancelScheduledAlarms } from '../src/utils/alarmScheduler';
 import { unregisterAlarmRefreshTask } from '../src/tasks/alarmRefreshTask';
+import { stopVibration } from '../src/utils/alarmSound';
 
 const layoutLogger = createLogger('RootLayout');
 
@@ -58,12 +60,23 @@ if (!__DEV__) {
 function RootContent() {
   const { isDark } = useTheme();
   const loadLocalePreference = useAppStore((s) => s.loadLocalePreference);
+  const loadAlarmsKilled = useAppStore((s) => s.loadAlarmsKilled);
   const debugVisible = useAppStore((s) => s.debugVisible);
   const setDebugVisible = useAppStore((s) => s.setDebugVisible);
   const { i18n: i18nInstance } = useTranslation();
 
   useEffect(() => {
     loadLocalePreference();
+    loadAlarmsKilled();
+  }, []);
+
+  // #623 — 사용자가 잠금화면에서 노티 tap/dismiss할 때 진동이 안 멈추는 문제 해결.
+  // FG AlarmOverlay 외 경로(잠금화면 swipe)는 ResponseReceivedListener로만 잡힌다.
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener(() => {
+      stopVibration();
+    });
+    return () => sub.remove();
   }, []);
 
   useApplyLocale();

@@ -6,6 +6,13 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
 );
 
+jest.mock('../../utils/alarmKill', () => ({
+  killAllAlarms: jest.fn().mockResolvedValue(undefined),
+}));
+
+import { killAllAlarms } from '../../utils/alarmKill';
+const mockKillAllAlarms = killAllAlarms as jest.Mock;
+
 const mockStation: Station = {
   id: '2-022',
   name: '강남',
@@ -26,7 +33,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null, debugVisible: false, accessibilityMode: false });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null, debugVisible: false, accessibilityMode: false, alarmsKilled: false });
     jest.clearAllMocks();
   });
 
@@ -484,6 +491,45 @@ describe('useAppStore', () => {
 
     const { sleepMode } = useAppStore.getState();
     expect(sleepMode).toBe(false);
+  });
+
+  describe('alarmsKilled (#623 kill switch)', () => {
+    it('초기 alarmsKilled는 false', () => {
+      expect(useAppStore.getState().alarmsKilled).toBe(false);
+    });
+
+    it('setAlarmsKilled(true): 상태 + AsyncStorage 저장 + killAllAlarms 호출', async () => {
+      const { setAlarmsKilled } = useAppStore.getState();
+      await setAlarmsKilled(true);
+      expect(useAppStore.getState().alarmsKilled).toBe(true);
+      expect(AsyncStorage.setItem).toHaveBeenCalledWith('subway-now:alarms-killed', JSON.stringify(true));
+      expect(mockKillAllAlarms).toHaveBeenCalledTimes(1);
+    });
+
+    it('setAlarmsKilled(false): killAllAlarms 호출 안 함 (해제는 즉시 청소 불필요)', async () => {
+      const { setAlarmsKilled } = useAppStore.getState();
+      await setAlarmsKilled(false);
+      expect(useAppStore.getState().alarmsKilled).toBe(false);
+      expect(mockKillAllAlarms).not.toHaveBeenCalled();
+    });
+
+    it('loadAlarmsKilled: AsyncStorage true → 복원', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(true));
+      await useAppStore.getState().loadAlarmsKilled();
+      expect(useAppStore.getState().alarmsKilled).toBe(true);
+    });
+
+    it('loadAlarmsKilled: AsyncStorage 비어있으면 false 유지', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      await useAppStore.getState().loadAlarmsKilled();
+      expect(useAppStore.getState().alarmsKilled).toBe(false);
+    });
+
+    it('loadAlarmsKilled: AsyncStorage 오류 시 false 유지', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
+      await useAppStore.getState().loadAlarmsKilled();
+      expect(useAppStore.getState().alarmsKilled).toBe(false);
+    });
   });
 
   it('초기 customOrigin은 null이다', () => {

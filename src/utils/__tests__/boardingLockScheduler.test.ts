@@ -38,6 +38,9 @@ jest.mock('../stationNotification', () => ({
     body: `B:${event.stationName}`,
   }),
 }));
+jest.mock('../alarmKill', () => ({
+  isAlarmsKilled: jest.fn().mockResolvedValue(false),
+}));
 
 const mockedSchedule = Notifications.scheduleNotificationAsync as jest.MockedFunction<
   typeof Notifications.scheduleNotificationAsync
@@ -153,6 +156,27 @@ describe('boardingLockAlarmIdentifier / parse', () => {
 });
 
 describe('scheduleHopsForLock', () => {
+  it('#623 alarmsKilled=true면 schedule skip + 빈 배열 반환', async () => {
+    const { isAlarmsKilled } = jest.requireMock('../alarmKill');
+    isAlarmsKilled.mockResolvedValueOnce(true);
+    const ids = await scheduleHopsForLock({ lock, route: directRoute, destinationName: '강남' });
+    expect(ids).toEqual([]);
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('#623 루프 중간에 alarmsKilled 토글되면 더 이상 예약 안 함', async () => {
+    const { isAlarmsKilled } = jest.requireMock('../alarmKill');
+    // 1) 진입 가드 통과 → 2) 첫 hop 직전 가드 통과 → 3) 두 번째 hop 직전 ON으로 break.
+    isAlarmsKilled
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    // transferRoute = 2 hops; 첫 hop만 schedule되고 두 번째는 break
+    await scheduleHopsForLock({ lock, route: transferRoute, destinationName: '오금' });
+    // early + imminent 2개만 등록 (첫 hop만)
+    expect(mockedSchedule).toHaveBeenCalledTimes(2);
+  });
+
   it('direct route: destination waypoint 1개를 예약, early+imminent 모두 발사', async () => {
     await scheduleHopsForLock({ lock, route: directRoute, destinationName: '강남' });
 
@@ -291,6 +315,37 @@ describe('purgeBoardingLockSchedulerQueue', () => {
 });
 
 describe('advanceHopWindow', () => {
+  it('#623 alarmsKilled=true면 no-op', async () => {
+    const { isAlarmsKilled } = jest.requireMock('../alarmKill');
+    isAlarmsKilled.mockResolvedValueOnce(true);
+    await advanceHopWindow({
+      lock,
+      route: multiRoute,
+      destinationName: '온수',
+      passedStationName: '교대',
+    });
+    expect(mockedCancel).not.toHaveBeenCalled();
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('#623 advance 루프 중간 토글: 첫 hop만 예약 후 break', async () => {
+    const { isAlarmsKilled } = jest.requireMock('../alarmKill');
+    // 진입 가드 false → 첫 iter false(schedule) → 둘째 iter true(break)
+    isAlarmsKilled
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    mockedGet.mockResolvedValueOnce([]);
+    await advanceHopWindow({
+      lock,
+      route: multiRoute,
+      destinationName: '온수',
+      passedStationName: '교대',
+    });
+    // passedIndex=0 → window [1..3]. 첫 hop(1) early+imminent 2건만
+    expect(mockedSchedule).toHaveBeenCalledTimes(2);
+  });
+
   it('passedStationName이 route에 없으면 no-op', async () => {
     await advanceHopWindow({
       lock,
