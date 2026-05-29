@@ -8,6 +8,8 @@ import {
   logScheduledAlarm,
   logFiredAlarmsHydrate,
   logSuppressedDedupAlarm,
+  _resetDedupAlarmWindowForTests,
+  DEDUP_LOG_WINDOW_MS,
   logSuppressedDedupStation,
   logSuppressedGate,
   logSilentPushReceived,
@@ -58,6 +60,7 @@ describe('alarmLog', () => {
     jest.clearAllMocks();
     (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
     (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+    _resetDedupAlarmWindowForTests();
   });
 
   describe('appendAlarmLog', () => {
@@ -244,6 +247,69 @@ describe('alarmLog', () => {
         kind: 'destination',
         phaseId: 'early',
       });
+    });
+
+    it('#626 같은 키 윈도우 내 재호출은 drop (FG polling 매초 평가 스팸 차단)', async () => {
+      const baseTs = 1_700_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      try {
+        logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
+        await flushPromises();
+        const callsAfterFirst = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
+
+        // 윈도우 내 재호출 — drop
+        nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS - 1);
+        logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
+        await flushPromises();
+        expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsAfterFirst);
+
+        // 윈도우 경계 통과 — 통과
+        nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS + 1);
+        logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
+        await flushPromises();
+        expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsAfterFirst + 1);
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+
+    it('#626 다른 키(source/type/phase/station)는 별개 윈도우 — 모두 통과', async () => {
+      logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
+      logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'transfer', stationName: '강남' });
+      logSuppressedDedupAlarm('fg', { phaseId: 'imminent', type: 'destination', stationName: '강남' });
+      logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '역삼' });
+      logSuppressedDedupAlarm('bg', { phaseId: 'early', type: 'destination', stationName: '강남' });
+      await flushPromises();
+      expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(5);
+    });
+
+    it('#626 Map cap 초과 시 만료된 엔트리 sweep — 무한 성장 방지', async () => {
+      const baseTs = 1_700_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      try {
+        // cap(64)보다 많은 고유 키 적재 — 모두 첫 호출이므로 통과.
+        for (let i = 0; i < 70; i++) {
+          logSuppressedDedupAlarm('fg', {
+            phaseId: 'early',
+            type: 'destination',
+            stationName: `s${i}`,
+          });
+        }
+        await flushPromises();
+        const callsBefore = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
+
+        // 윈도우 충분히 넘긴 후 새 키 1개 → sweep 발동, 기존 만료 엔트리 정리.
+        nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS * 2);
+        logSuppressedDedupAlarm('fg', {
+          phaseId: 'early',
+          type: 'destination',
+          stationName: 's-after',
+        });
+        await flushPromises();
+        expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsBefore + 1);
+      } finally {
+        nowSpy.mockRestore();
+      }
     });
 
     it('logFiredAlarmsHydrate: destinationId + firedAlarmsCount 적재 (#580 race 진단)', async () => {

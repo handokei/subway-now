@@ -200,13 +200,42 @@ export function logFiredAlarmsHydrate(destinationId: string | null, firedAlarmsC
  * #580: phase alarm dedup 적중 1건 적재. destination/transfer phase가 firedAlarms로
  * 이미 발화된 것을 evaluateAlarmPhase가 인지해 재발화하지 않을 때 호출.
  * 발사 횟수 vs dedup 횟수 비율로 dedup이 정상 동작 중인지 운영 데이터로 확인 가능.
+ *
+ * #626: in-memory time-window dedup. FG polling cycle이 매초 같은 phase를 평가해
+ * dedup-alarm 로그가 alarmLog 버퍼를 채우는 회귀 차단 (alarmLog 46개 중 41개가 같은
+ * 이벤트인 케이스 관측). 같은 (source/type/phaseId/stationName)이 DEDUP_LOG_WINDOW_MS
+ * 안에 재호출되면 drop — dedup이 동작 중인지 운영 신호는 첫 1건으로 충분.
+ *
+ * 키에 type 포함 — 환승역에서 같은 phaseId가 destination/transfer 두 type으로 동시
+ * 평가될 때 한쪽이 다른 쪽을 silence하지 않게 (실제 firedAlarms도 type까지 구분함).
  */
+export const DEDUP_LOG_WINDOW_MS = 5_000;
+const lastDedupLogTs = new Map<string, number>();
+
+/**
+ * Map 무한 성장 방지. size가 cap을 넘으면 윈도우 만료된 엔트리 일괄 정리.
+ * 정상 trip(소스 × type × phase × 역 ~수십)에선 트리거 안 됨 — 비정상 입력 안전망.
+ */
+const DEDUP_LOG_MAP_CAP = 64;
+function sweepExpiredDedupEntries(now: number): void {
+  if (lastDedupLogTs.size <= DEDUP_LOG_MAP_CAP) return;
+  for (const [k, ts] of lastDedupLogTs) {
+    if (now - ts >= DEDUP_LOG_WINDOW_MS) lastDedupLogTs.delete(k);
+  }
+}
+
 export function logSuppressedDedupAlarm(
   source: AlarmLogSource,
   event: Pick<AlarmEvent, 'phaseId' | 'type' | 'stationName'>,
 ): void {
+  const now = Date.now();
+  const key = `${source}|${event.type}|${event.phaseId}|${event.stationName}`;
+  const last = lastDedupLogTs.get(key);
+  if (last !== undefined && now - last < DEDUP_LOG_WINDOW_MS) return;
+  lastDedupLogTs.set(key, now);
+  sweepExpiredDedupEntries(now);
   void appendAlarmLog({
-    ts: Date.now(),
+    ts: now,
     source,
     outcome: 'suppressed',
     reason: 'dedup-alarm',
@@ -214,6 +243,11 @@ export function logSuppressedDedupAlarm(
     kind: event.type,
     phaseId: event.phaseId,
   });
+}
+
+/** 테스트용 — 윈도우 캐시 리셋. */
+export function _resetDedupAlarmWindowForTests(): void {
+  lastDedupLogTs.clear();
 }
 
 /**
