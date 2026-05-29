@@ -22,7 +22,7 @@ jest.mock('../stationRoute', () => ({
 
 const mockEvaluateAlarmPhase = jest.fn();
 const mockAlarmKey = jest.fn();
-const mockResolveAllTargets = jest.fn(() => []);
+const mockResolveAllTargets = jest.fn((..._args: unknown[]) => [] as Array<{ name: string; stops: number; alarmType: 'destination' | 'transfer'; approachLine: string }>);
 jest.mock('../stationAlarm', () => ({
   evaluateAlarmPhase: (...args: unknown[]) => mockEvaluateAlarmPhase(...args),
   alarmKey: (...args: unknown[]) => mockAlarmKey(...args),
