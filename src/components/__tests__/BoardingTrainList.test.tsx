@@ -27,7 +27,7 @@ describe('BoardingTrainList', () => {
     expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
   });
 
-  it('각 train마다 trainCode + destination + arrivalMinutes 렌더', () => {
+  it('각 train마다 trainCode + destination 렌더', () => {
     const trains = [makeTrain({ trainCode: 'T-A', destination: '강남', arrivalMinutes: 2 })];
     const { getByText, getByTestId } = renderWithTheme(
       <BoardingTrainList arrivals={trains} line="2" onSelect={() => {}} />,
@@ -35,7 +35,29 @@ describe('BoardingTrainList', () => {
     expect(getByTestId('boarding-train-row-T-A')).toBeTruthy();
     expect(getByText('강남 행')).toBeTruthy();
     expect(getByText('T-A')).toBeTruthy();
-    expect(getByText('2분')).toBeTruthy();
+  });
+
+  it('#634 도착 시각을 receivedAtMs + arrivalSeconds 기반 HH:mm으로 표시', () => {
+    // 2026-01-01 03:05 + 180s = 2026-01-01 03:08
+    const base = new Date(2026, 0, 1, 3, 5).getTime();
+    const train = makeTrain({ trainCode: 'T-CLOCK', receivedAtMs: base, arrivalSeconds: 180 });
+    const { getByTestId } = renderWithTheme(
+      <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+    );
+    expect(getByTestId('boarding-train-arrival-T-CLOCK').props.children).toBe('03:08');
+  });
+
+  it('#634 receivedAtMs=0(mock/stale)이면 현재 시각 기준 HH:mm 계산', () => {
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(new Date(2026, 0, 1, 10, 0).getTime());
+    try {
+      const train = makeTrain({ trainCode: 'T-NOW', receivedAtMs: 0, arrivalSeconds: 120 });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      expect(getByTestId('boarding-train-arrival-T-NOW').props.children).toBe('10:02');
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('train row 탭 시 onSelect에 해당 train 전달', () => {
