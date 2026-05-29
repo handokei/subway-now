@@ -639,6 +639,16 @@ export default function HomeScreen() {
                       </Text>
                     </Pressable>
                   )}
+                  {/* #625 — BoardingLock/MisBoarding 배너는 route 컨텍스트 안에서 노출.
+                       종전에는 sleep mode toggle 아래라 사용자가 route와 별도 카드로 인지하지
+                       못함 + 너무 멀리 떨어져 있었음. 이제 경로 표시 직후로 이동.
+                       외곽 {destination && ...} 가드 안쪽이라 destination 재가드 불필요. */}
+                  {boardingLock && misBoardingDetected && (
+                    <MisBoardingBanner onReselect={releaseBoardingLock} />
+                  )}
+                  {boardingLock && (
+                    <BoardingLockBanner lock={boardingLock} onRelease={releaseBoardingLock} />
+                  )}
                 </View>
 
                 {/* Actions */}
@@ -735,13 +745,8 @@ export default function HomeScreen() {
             )}
 
             {/* Arrivals — 현재역(effectiveOrigin)이 확정되면 trip 유무와 무관하게 노출 */}
-            {/* #584 PR B — BoardingLock 진입점. 활성 시 banner, 비활성 + destination 설정 시 train list. */}
-            {destination && boardingLock && misBoardingDetected && (
-              <MisBoardingBanner onReselect={releaseBoardingLock} />
-            )}
-            {destination && boardingLock && (
-              <BoardingLockBanner lock={boardingLock} onRelease={releaseBoardingLock} />
-            )}
+            {/* #584 PR B — BoardingLock 진입점. #625에서 banner는 route 컨텍스트로 이동.
+                활성 lock 시 train list는 노출 안 함. */}
             {destination && !boardingLock && effectiveOrigin && (
               <BoardingTrainList
                 arrivals={directionalArrivals}
