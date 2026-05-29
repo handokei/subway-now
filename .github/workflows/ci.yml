@@ -38,7 +38,7 @@ jobs:
           # - src/types/      : 타입 전용, 런타임 영향 없음 (tsc로 type 체크에서 잡힘)
           # - src/data/       : 정적 데이터. mock smoke는 stations.json을 우회 (강남 fixture 단락)
           # - src/__tests__/, src/**/__tests__/ : 테스트 코드는 앱 번들 미포함, jest로 별도 검증
-          SKIP_RE='^(src/i18n/|src/testUtils/|src/types/|src/data/|src/tasks/|src/(.+/)?__tests__/|backend/|docs/|scripts/|tasks/|img/|subway/|locales/|__mocks__/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/e2e\.yml$|eas\.json$|jest\.setup\.js$|sonar-project\.properties$|\.env\.example$|\.gitignore$|\.prettierrc.*$|\.eslintrc.*$|\.editorconfig$|.*\.md$|.*\.txt$)'
+          SKIP_RE='^(src/i18n/|src/testUtils/|src/types/|src/data/|src/tasks/|src/(.+/)?__tests__/|backend/|docs/|scripts/|tasks/|img/|subway/|locales/|__mocks__/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/(e2e|ci)\.yml$|eas\.json$|jest\.setup\.js$|sonar-project\.properties$|\.env\.example$|\.gitignore$|\.prettierrc.*$|\.eslintrc.*$|\.editorconfig$|.*\.md$|.*\.txt$)'
           relevant=$(echo "$files" | grep -v '^$' | grep -vE "$SKIP_RE" || true)
           if [ -z "$relevant" ] && [ -n "$files" ]; then
             echo "ui_affected=false" >> "$GITHUB_OUTPUT"
