@@ -671,4 +671,212 @@ describe('useFusedNearestStation', () => {
       expect(result.current.result?.station.id).toBe(MOCK_STATIONS.gangnam.id);
     });
   });
+
+  describe('#621 BoardingLock 시간 interpolation (지하 GPS stale ratchet forward)', () => {
+    const yongmasan = findStationByNameAndLine('용마산', '7')!;
+    const junggok = findStationByNameAndLine('중곡', '7')!;
+    const gunja = findStationByNameAndLine('군자', '7')!;
+    const oolinidae = findStationByNameAndLine('어린이대공원', '7')!;
+    const konkuk = findStationByNameAndLine('건대입구', '7')!;
+    const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+    const routeContext = { route, origin: yongmasan, destination: konkuk };
+    const T0 = 1_700_000_000_000;
+    const lock = {
+      destinationId: konkuk.id,
+      trainCode: '7093',
+      boardingStationId: yongmasan.id,
+      boardingLine: '7' as const,
+      boardedAt: T0,
+      expectedDurationMs: 30 * 60_000,
+    };
+
+    function setupGpsAt(station: typeof yongmasan) {
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: station.lat, lng: station.lng },
+          result: { station, distanceKm: 0 },
+        }),
+      );
+      mockFindTop.mockReturnValue([{ station, distanceKm: 0 }]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions.mockReturnValue(positionRet(null));
+    }
+
+    it('GPS stale(용마산) + 3 hop 경과 → interp(어린이대공원)이 ratchet forward로 승격', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 3 * 90_000);
+        setupGpsAt(yongmasan);
+        const { result } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        expect(result.current.source).toBe('boarding-lock-interp');
+        expect(result.current.confidence).toBe('boarding-lock-interp');
+        expect(result.current.result?.station.id).toBe(oolinidae.id);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('GPS가 interp보다 앞(건대입구) → GPS 유지(역행 방지)', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 90_000);
+        setupGpsAt(konkuk);
+        const { result } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+        expect(result.current.result?.station.id).toBe(konkuk.id);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('GPS=중곡(idx 1) + interp=중곡(idx 1) → tied. 채택 결과 유지(우회 안 함)', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 90_000);
+        setupGpsAt(junggok);
+        const { result } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        // tied → GPS 그대로 (boarding-lock 승격 X)
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+        expect(result.current.result?.station.id).toBe(junggok.id);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('lock 없으면 기존 fusion 그대로', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 3 * 90_000);
+        setupGpsAt(yongmasan);
+        const { result } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, null, null),
+        );
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+        expect(result.current.result?.station.id).toBe(yongmasan.id);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('routeContext 없으면 interp 비활성', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 3 * 90_000);
+        setupGpsAt(yongmasan);
+        const { result } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, undefined, '7093', lock),
+        );
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('GPS가 arc 밖(서울역 공항철도) + lock 활성 → interp가 채택됨', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 2 * 90_000);
+        // 7호선 arc와 무관한 역
+        setupGpsAt({ ...MOCK_STATIONS.seoulStation, line: 'airport' });
+        const { result } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        expect(result.current.source).toBe('boarding-lock-interp');
+        expect(result.current.result?.station.id).toBe(gunja.id);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('routeContext.origin null → arcStations 비어 interp 비활성', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 3 * 90_000);
+        setupGpsAt(yongmasan);
+        const { result } = renderHook(() =>
+          useFusedNearestStation(
+            undefined,
+            undefined,
+            { route, origin: null, destination: konkuk },
+            '7093',
+            lock,
+          ),
+        );
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('computeRouteArc null (origin/destination이 route.line에 없음) → interp 비활성', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 3 * 90_000);
+        setupGpsAt(yongmasan);
+        // route.line=7이지만 origin은 2호선 강남. stationsBetween이 null 반환 → arc null.
+        const { result } = renderHook(() =>
+          useFusedNearestStation(
+            undefined,
+            undefined,
+            { route, origin: MOCK_STATIONS.gangnam, destination: konkuk },
+            '7093',
+            lock,
+          ),
+        );
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('시간만 흐르면(부모 리렌더 없이) interp가 다음 hop으로 전진 — useMemo 캐시 회귀 가드', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0);
+        setupGpsAt(yongmasan);
+        const { result, rerender } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        // 탑승 직후: interp=용마산(idx 0), GPS=용마산 → tied. GPS 유지.
+        expect(result.current.result?.station.id).toBe(yongmasan.id);
+
+        // 시계만 진행. boardingLock/arcStations/GPS는 그대로 — 의존성이 안 바뀌어도
+        // interp이 새 now를 반영해야 한다. 부모 리렌더(rerender)는 한 번 발생시켜
+        // hook이 다시 호출되는 정상 사이클을 시뮬레이션.
+        jest.setSystemTime(T0 + 3 * 90_000);
+        rerender(undefined);
+        expect(result.current.source).toBe('boarding-lock-interp');
+        expect(result.current.result?.station.id).toBe(oolinidae.id);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('userLocation null + GPS result null → interp 단독 채택 (distanceKm=0)', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 90_000);
+        mockUseNearest.mockReturnValue(
+          gpsBase({ userLocation: null, result: null }),
+        );
+        mockFindTop.mockReturnValue([]);
+        mockUseArrival.mockReturnValue(arrivalRet(null));
+        mockUsePositions.mockReturnValue(positionRet(null));
+        const { result } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        expect(result.current.source).toBe('boarding-lock-interp');
+        expect(result.current.result?.station.id).toBe(junggok.id);
+        expect(result.current.result?.distanceKm).toBe(0);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+  });
 });

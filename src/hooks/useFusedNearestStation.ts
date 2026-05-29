@@ -14,6 +14,11 @@ import { pickCandidateTrains, type CandidateTrain } from '../utils/pickCandidate
 import { trackTrainProgress } from '../utils/trackTrainProgress';
 import { haversine } from '../utils/haversine';
 import { passesFusionDistanceGate } from '../utils/fusionDistanceGate';
+import { computeRouteArc } from '../utils/routeProgress';
+import {
+  arcIndexOfStation,
+  interpolateBoardingLockStation,
+} from '../utils/boardingLockInterpolation';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import {
   MAX_ACTIVE_LINES,
@@ -22,6 +27,7 @@ import {
   POSITION_TRAIN_TTL_MS,
 } from '../constants/realtime';
 import type { LinePositions } from '../api/positionApi';
+import type { BoardingLock } from '../types/boardingLock';
 import type { NearestStationResult, Station } from '../types/station';
 import type { ArrivalProvider, PositionProvider } from '../providers/types';
 import type { Route } from '../utils/stationRoute';
@@ -105,6 +111,12 @@ export function useFusedNearestStation(
    * null/undefined면 기존 우선순위 그대로.
    */
   lockedTrainCode?: string | null,
+  /**
+   * 활성 BoardingLock 전체 객체 (#621). 지하 GPS dead zone에서 GPS/realtimePosition API가
+   * stale일 때 경과 시간 기반 interpolation으로 현재역을 ratchet forward 한다.
+   * routeContext + boardingLock 둘 다 있어야 동작 — 한쪽이라도 없으면 기존 fusion 그대로.
+   */
+  boardingLock?: BoardingLock | null,
 ): UseFusedNearestStationReturn {
   const gps = useNearestStation();
 
@@ -295,6 +307,46 @@ export function useFusedNearestStation(
     result = gps.result;
     confidence = 'gps-only';
     source = 'gps';
+  }
+
+  // #621 BoardingLock 시간 interpolation — 지하 GPS stale ratchet forward.
+  // arc상 시간 interp 위치가 현 채택된 결과보다 앞이거나, 채택 결과가 arc 밖이면 override.
+  // 채택 결과가 더 앞이면 그대로(실제 신호 우선) — 역행 방지(monotone forward).
+  // confidence/source는 #584 PR D2의 'boarding-lock'(position-train + trainCode 매칭)과
+  // 구분하기 위해 'boarding-lock-interp' 별도 라벨 사용 — 측정·디버그 인프라에서 구분 가능.
+  const arcStations = useMemo<Station[]>(() => {
+    if (!routeContext || !routeContext.origin || !routeContext.destination) return [];
+    const arc = computeRouteArc(
+      routeContext.route,
+      routeContext.origin,
+      routeContext.destination,
+    );
+    return arc?.stations ?? [];
+  }, [routeContext]);
+
+  // useMemo로 감싸면 deps가 시간을 포함하지 않아 부모 리렌더가 없는 동안 stale.
+  // interp는 findIndex 1회 + 정수 산술 — render마다 직접 계산해도 무비용.
+  const interpResult = interpolateBoardingLockStation({
+    lock: boardingLock ?? null,
+    arcStations,
+    now: Date.now(),
+  });
+
+  if (interpResult && arcStations.length > 0) {
+    const chosenIdx = arcIndexOfStation(arcStations, result?.station ?? null);
+    if (chosenIdx === -1 || interpResult.index > chosenIdx) {
+      const distanceKm = gps.userLocation
+        ? haversine(
+            gps.userLocation.lat,
+            gps.userLocation.lng,
+            interpResult.station.lat,
+            interpResult.station.lng,
+          )
+        : 0;
+      result = { station: interpResult.station, distanceKm };
+      confidence = 'boarding-lock-interp';
+      source = 'boarding-lock-interp';
+    }
   }
 
   // 측정(#443): 결정 변화(source/stationId/confidence) 시에만 push.
