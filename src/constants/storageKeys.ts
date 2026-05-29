@@ -37,6 +37,3 @@ export const BOARDING_LOCK_KEY = 'subway-now:boarding-lock';
 // release/expiry 또는 새 Lock 시점에 일괄 cancel하기 위한 추적 큐.
 // 형식: string[] JSON.
 export const SCHEDULED_NOTIFICATIONS_KEY = 'subway-now:scheduled-notifications';
-// #623 — 글로벌 알람 kill switch. ON일 동안 모든 alarm fire/schedule 경로 차단.
-// 사용자가 잠금화면 dismiss로도 진동이 안 멈춰 100% 차단 토글 요청.
-export const ALARMS_KILLED_KEY = 'subway-now:alarms-killed';

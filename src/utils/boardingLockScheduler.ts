@@ -13,7 +13,6 @@ import {
 } from './scheduledNotificationsStorage';
 import { createLogger } from './logger';
 import { HOP_TIME_MS } from '../constants/boardingLock';
-import { isAlarmsKilled } from './alarmKill';
 
 const logger = createLogger('BoardingLockScheduler');
 
@@ -183,10 +182,6 @@ export interface ScheduleHopsParams {
  * 과거 시각으로 산출되는 알람은 skip. waypoint stops=0(이미 도착)인 경우도 skip된다 (lead 차감 후 ≤0).
  */
 export async function scheduleHopsForLock(params: ScheduleHopsParams): Promise<string[]> {
-  if (await isAlarmsKilled()) {
-    logger.info('알람 차단됨 (alarmsKilled) — schedule skip');
-    return [];
-  }
   const { lock, route, destinationName, now, windowSize = DEFAULT_WINDOW_SIZE } = params;
   const observedMs = now ?? lock.boardedAt;
   const allTargets = resolveAllTargets(route, destinationName);
@@ -194,8 +189,6 @@ export async function scheduleHopsForLock(params: ScheduleHopsParams): Promise<s
 
   const scheduledIds: string[] = [];
   for (let hopIndex = 0; hopIndex < lastIdx; hopIndex++) {
-    // 루프 도중 사용자가 kill switch ON 했을 수 있다 — 매 iteration마다 재확인.
-    if (await isAlarmsKilled()) break;
     const ids = await scheduleSingleHop({
       lock,
       target: allTargets[hopIndex],
@@ -270,10 +263,6 @@ export interface AdvanceHopWindowParams {
  * PR C에서는 정의만 — 호출자(Fusion station-pass)는 PR D에서 연결.
  */
 export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<void> {
-  if (await isAlarmsKilled()) {
-    logger.info('알람 차단됨 (alarmsKilled) — advance skip');
-    return;
-  }
   const { lock, route, destinationName, passedStationName, now, windowSize = DEFAULT_WINDOW_SIZE } =
     params;
 
@@ -307,7 +296,6 @@ export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<
   const windowEnd = Math.min(passedIndex + windowSize, allTargets.length - 1);
   for (let hopIndex = passedIndex + 1; hopIndex <= windowEnd; hopIndex++) {
     if (existingHopIndexes.has(hopIndex)) continue;
-    if (await isAlarmsKilled()) break;
     const ids = await scheduleSingleHop({
       lock,
       target: allTargets[hopIndex],
