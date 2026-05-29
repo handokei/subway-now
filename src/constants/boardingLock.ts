@@ -15,3 +15,9 @@ export const FALLBACK_BOARDING_DURATION_MINUTES = 30;
  * 평균 환승 도보 시간 — 정밀화는 후속.
  */
 export const TRANSFER_WALKING_BUFFER_SECONDS = 180;
+
+/**
+ * 정거장당 추정 이동 시간 (ms). #584 PR C scheduler + #621 fusion interpolation 공유 상수.
+ * uniform 90s — 노선별/시간대별 정밀화는 후속(#624 hopTime lookup).
+ */
+export const HOP_TIME_MS = 90_000;

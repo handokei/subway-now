@@ -12,6 +12,7 @@ import {
   removeScheduledNotificationIds,
 } from './scheduledNotificationsStorage';
 import { createLogger } from './logger';
+import { HOP_TIME_MS } from '../constants/boardingLock';
 
 const logger = createLogger('BoardingLockScheduler');
 
@@ -20,11 +21,7 @@ export const BOARDING_LOCK_ALARM_PREFIX = 'bl:';
 // 생기면 src/constants/로 일괄 추출 — 현재는 surgical change 원칙상 PR D 진입 전 유지.
 const ALARM_CHANNEL_ID = 'station-alarm';
 
-/**
- * 정거장당 추정 이동 시간(초). PR C v1은 uniform 90s — 노선별/시간대별 정밀화는 후속.
- * 기존 alarmScheduler와 동일 값으로 두어 동시 동작 시 일관성 유지.
- */
-const HOP_TIME_SECONDS = 90;
+const HOP_TIME_SECONDS = HOP_TIME_MS / 1000;
 
 /**
  * Phase별 lead time. #584 SLA 설계(2026-05-28):

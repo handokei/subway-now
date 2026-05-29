@@ -112,9 +112,11 @@ export default function HomeScreen() {
     [route, tripOrigin, destination],
   );
   // #584 PR D2: lock.trainCode를 fusion에 전달 — position-train이 같은 trainCode면 'boarding-lock' 승격.
-  // useBoardingLockController가 동일 store를 소비하지만 selector로 trainCode만 추출해 churn 최소화.
-  const lockedTrainCode = useBoardingLockStore((s) => s.lock?.trainCode ?? null);
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode);
+  // #621: lock 전체도 전달 — 지하 GPS stale 시 시간 interpolation으로 ratchet forward.
+  // 동일 store의 lock을 useBoardingLockController가 아래서 다시 소비하지만 selector라 churn 없음.
+  const fusionBoardingLock = useBoardingLockStore((s) => s.lock);
+  const lockedTrainCode = fusionBoardingLock?.trainCode ?? null;
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock);
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,

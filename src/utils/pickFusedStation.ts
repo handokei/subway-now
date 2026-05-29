@@ -12,6 +12,7 @@ import { getTrainStatusPriority } from '../constants/trainStatus';
  */
 export type FusionConfidence =
   | 'boarding-lock'
+  | 'boarding-lock-interp'
   | 'position-train'
   | 'arrival-confirmed'
   | 'arrival-arriving'
@@ -26,6 +27,7 @@ export type FusionConfidence =
  */
 export type FusionSource =
   | 'boarding-lock'
+  | 'boarding-lock-interp'
   | 'position-train'
   | 'position'
   | 'arrival'
