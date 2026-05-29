@@ -38,6 +38,8 @@
     "previousDestination": "上次目的地",
     "sleepMode": "睡眠模式",
     "sleepModeDescription": "在换乘或到达前1站时震动并通知",
+    "alarmsKill": "关闭闹钟",
+    "alarmsKillDescription": "开启时立即阻止震动、声音和已安排的通知",
     "arrivalInfoTitle": "列车到达信息",
     "loading": "加载中...",
     "mockNotice": "无法获取实时数据,显示预测数据",

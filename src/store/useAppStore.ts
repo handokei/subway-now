@@ -7,7 +7,8 @@ function demoteSlotEntries(entries: FavoriteEntry[], role: FavoriteSlotRole): Fa
   return entries.map((f) => (f.role === role ? { ...f, role: 'general' as FavoriteRole } : f));
 }
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, ALARMS_KILLED_KEY } from '../constants/storageKeys';
+import { killAllAlarms } from '../utils/alarmKill';
 import { clearFiredAlarms } from '../utils/notificationState';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../i18n/types';
@@ -53,6 +54,9 @@ interface AppState {
   loadLocalePreference: () => Promise<void>;
   setSleepMode: (enabled: boolean) => Promise<void>;
   loadSleepMode: () => Promise<void>;
+  alarmsKilled: boolean;
+  setAlarmsKilled: (enabled: boolean) => Promise<void>;
+  loadAlarmsKilled: () => Promise<void>;
   setAllowSpeaker: (enabled: boolean) => Promise<void>;
   loadAllowSpeaker: () => Promise<void>;
   accessibilityMode: boolean;
@@ -68,6 +72,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   destination: null,
   recentDestination: null,
   sleepMode: false,
+  alarmsKilled: false,
   allowSpeaker: true,
   customOrigin: null,
   themeMode: 'auto' as ThemeMode,
@@ -343,6 +348,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       const raw = await AsyncStorage.getItem(SLEEP_MODE_KEY);
       if (raw) {
         set({ sleepMode: JSON.parse(raw) });
+      }
+    } catch {
+      // 저장된 데이터 없음 — false 유지
+    }
+  },
+
+  setAlarmsKilled: async (enabled: boolean) => {
+    set({ alarmsKilled: enabled });
+    await AsyncStorage.setItem(ALARMS_KILLED_KEY, JSON.stringify(enabled));
+    if (enabled) {
+      // 100% 차단 약속의 핵심 — 토글 즉시 진동/발사/예약 전부 청소.
+      await killAllAlarms();
+    }
+  },
+
+  loadAlarmsKilled: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(ALARMS_KILLED_KEY);
+      if (raw) {
+        set({ alarmsKilled: JSON.parse(raw) === true });
       }
     } catch {
       // 저장된 데이터 없음 — false 유지
