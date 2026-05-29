@@ -19,7 +19,16 @@ describe('BoardingLockBanner', () => {
     );
     expect(getByTestId('boarding-lock-banner')).toBeTruthy();
     expect(getByText('T-100')).toBeTruthy();
-    expect(getByText('탑승 중')).toBeTruthy();
+    expect(getByText('탑승')).toBeTruthy();
+  });
+
+  it('#625 탑승 시각(boardedAt)을 HH:mm 절대 시각으로 표시', () => {
+    const { getByTestId } = renderWithTheme(
+      <BoardingLockBanner lock={lock} onRelease={() => {}} />,
+    );
+    const d = new Date(1_700_000_000_000);
+    const expected = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    expect(getByTestId('boarding-lock-time').props.children).toBe(expected);
   });
 
   it('하차 버튼 탭 시 onRelease 호출', () => {

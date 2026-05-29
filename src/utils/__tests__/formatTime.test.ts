@@ -1,4 +1,4 @@
-import { formatArrivalTime } from '../formatTime';
+import { formatArrivalTime, formatClockTime } from '../formatTime';
 
 describe('formatArrivalTime', () => {
   it('0초 이하이면 "곧 도착"을 반환한다', () => {
@@ -17,5 +17,21 @@ describe('formatArrivalTime', () => {
     expect(formatArrivalTime(90)).toBe('1분 30초');
     expect(formatArrivalTime(150)).toBe('2분 30초');
     expect(formatArrivalTime(300)).toBe('5분 0초');
+  });
+});
+
+describe('formatClockTime (#625)', () => {
+  it('HH:mm 24h 포맷, zero-padded', () => {
+    // 디바이스 timezone에 의존하므로 같은 epoch ms를 Date()로 환산해 비교.
+    const epoch = 1_700_000_000_000;
+    const d = new Date(epoch);
+    const expected = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+    expect(formatClockTime(epoch)).toBe(expected);
+  });
+
+  it('한 자리 시/분도 두 자리로 패딩', () => {
+    // 2026-01-01T03:05:00 UTC 같은 시각을 timezone-agnostic하게 검증.
+    const d = new Date(2026, 0, 1, 3, 5);
+    expect(formatClockTime(d.getTime())).toBe('03:05');
   });
 });
