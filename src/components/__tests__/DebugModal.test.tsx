@@ -130,11 +130,12 @@ describe('DebugModal', () => {
     };
     mockGetAlarmLog.mockResolvedValue([logEntry]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
-    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    // setLogs(await getAlarmLog())의 await→setState→re-render race를 피하려면
+    // mock 호출 시점이 아니라 logs 의존 UI(Alarm log 카운트)가 나타날 때까지 대기.
+    expect(await screen.findByText('Alarm log (1)')).toBeTruthy();
     expect(screen.getByText('GPS')).toBeTruthy();
     expect(screen.getByText('Nearest station')).toBeTruthy();
     expect(screen.getByText('Arrival')).toBeTruthy();
-    expect(screen.getByText('Alarm log (1)')).toBeTruthy();
     expect(screen.getByTestId('debug-arrival-summary').props.children).toContain('청량리');
   });
 
@@ -145,8 +146,7 @@ describe('DebugModal', () => {
       { ts: 3, source: 'alert-fallback-fired', outcome: 'fired' },
     ]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
-    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-    const counts = screen.getByTestId('debug-log-source-counts');
+    const counts = await screen.findByTestId('debug-log-source-counts');
     expect(counts.props.children).toBe('alert-fallback-fired=2, fg=1');
   });
 
