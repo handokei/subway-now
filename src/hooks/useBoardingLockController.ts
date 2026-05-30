@@ -86,9 +86,11 @@ export function useBoardingLockController({
 
   const directionalArrivals = useMemo<ArrivalInfo[]>(() => {
     if (!arrival) return [];
-    if (direction === 'up') return arrival.up;
-    if (direction === 'down') return arrival.down;
-    return [...arrival.up, ...arrival.down];
+    // #666 이미 지나간 열차(arrivalSeconds <= 0) 제외 — 사용자가 탭하면 lock 오발화.
+    const reachable = (t: ArrivalInfo): boolean => t.arrivalSeconds > 0;
+    if (direction === 'up') return arrival.up.filter(reachable);
+    if (direction === 'down') return arrival.down.filter(reachable);
+    return [...arrival.up, ...arrival.down].filter(reachable);
   }, [arrival, direction]);
 
   const createLockFromTrain = useCallback(

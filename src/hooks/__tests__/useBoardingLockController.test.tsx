@@ -122,6 +122,16 @@ describe('useBoardingLockController', () => {
       expect(mockResolveTripDirection).not.toHaveBeenCalled();
       expect(result.current.directionalArrivals).toEqual([upTrain, downTrain]);
     });
+
+    it('#666 arrivalSeconds <= 0 (지나간 열차)는 directionalArrivals에서 제외', () => {
+      const passed = makeTrain({ trainCode: 'PASSED', arrivalSeconds: 0 });
+      const future = makeTrain({ trainCode: 'FUTURE', arrivalSeconds: 180 });
+      const arrivalWithPast: StationArrival = { up: [passed, future], down: [] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: arrivalWithPast }),
+      );
+      expect(result.current.directionalArrivals).toEqual([future]);
+    });
   });
 
   describe('createLockFromTrain', () => {

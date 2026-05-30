@@ -167,4 +167,14 @@ describe('filterArrivalsByDirection', () => {
   it('direction=null → up+down 합산', () => {
     expect(filterArrivalsByDirection(arr, null)).toEqual([up, down]);
   });
+
+  it('#666 arrivalSeconds <= 0 (지나간 열차) 제외', () => {
+    const past = makeTrain({ trainCode: 'PAST', arrivalSeconds: 0 });
+    const negative = makeTrain({ trainCode: 'NEG', arrivalSeconds: -30 });
+    const future = makeTrain({ trainCode: 'OK', arrivalSeconds: 120 });
+    const mixed: StationArrival = { up: [past, future], down: [negative] };
+    expect(filterArrivalsByDirection(mixed, 'up')).toEqual([future]);
+    expect(filterArrivalsByDirection(mixed, 'down')).toEqual([]);
+    expect(filterArrivalsByDirection(mixed, null)).toEqual([future]);
+  });
 });
