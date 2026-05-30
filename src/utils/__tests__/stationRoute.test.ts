@@ -332,7 +332,7 @@ describe('calculateETA', () => {
     expect(calculateETA(3, route)).toBe(13);
   });
 
-  it('TransferRoute일 때 대기시간 + 정거장*2분 + 환승3분을 반환한다', () => {
+  it('TransferRoute일 때 대기시간 + 정거장*2분 + 실측 환승시간을 반환한다', () => {
     const route: TransferRoute = {
       type: 'transfer',
       transferName: '교대',
@@ -341,11 +341,11 @@ describe('calculateETA', () => {
       stopsToTransfer: 1,
       stopsFromTransfer: 5,
     };
-    // 2분 대기 + 6*2분 + 3분 환승 = 17분
-    expect(calculateETA(2, route)).toBe(17);
+    // 2분 대기 + 6*2분 + 교대(2↔3) 환승 63초 → round(13.05)=13분 → 총 15분
+    expect(calculateETA(2, route)).toBe(15);
   });
 
-  it('MultiTransferRoute일 때 대기시간 + 정거장*2분 + 환승3분*2를 반환한다', () => {
+  it('MultiTransferRoute일 때 환승별 실측 시간 합산을 반환한다', () => {
     const route: MultiTransferRoute = {
       type: 'multi-transfer',
       transfers: [
@@ -354,8 +354,8 @@ describe('calculateETA', () => {
       ],
       stopsAfterLastTransfer: 4,
     };
-    // 2분 대기 + 12*2분 + 3분*2 환승 = 32분
-    expect(calculateETA(2, route)).toBe(32);
+    // 2분 대기 + 12*2분 + (잠실 158초 + 시청 84초) → round(28.0333)=28분 → 총 30분
+    expect(calculateETA(2, route)).toBe(30);
   });
 
   it('route가 null이면 대기시간만 반환한다', () => {
@@ -370,7 +370,7 @@ describe('calculateStaticETA', () => {
     expect(calculateStaticETA(route)).toBe(13);
   });
 
-  it('TransferRoute일 때 기본대기3분 + 정거장*2분 + 환승3분을 반환한다', () => {
+  it('TransferRoute일 때 기본대기3분 + 정거장*2분 + 실측 환승시간을 반환한다', () => {
     const route: TransferRoute = {
       type: 'transfer',
       transferName: '교대',
@@ -379,11 +379,11 @@ describe('calculateStaticETA', () => {
       stopsToTransfer: 1,
       stopsFromTransfer: 5,
     };
-    // 3분 대기 + 6*2분 + 3분 환승 = 18분
-    expect(calculateStaticETA(route)).toBe(18);
+    // 3분 대기 + round(12 + 63/60) = 3 + 13 = 16분
+    expect(calculateStaticETA(route)).toBe(16);
   });
 
-  it('MultiTransferRoute일 때 기본대기3분 + 정거장*2분 + 환승3분*2를 반환한다', () => {
+  it('MultiTransferRoute일 때 기본대기3분 + 환승별 실측 시간 합산을 반환한다', () => {
     const route: MultiTransferRoute = {
       type: 'multi-transfer',
       transfers: [
@@ -392,12 +392,52 @@ describe('calculateStaticETA', () => {
       ],
       stopsAfterLastTransfer: 4,
     };
-    // 3분 대기 + 12*2분 + 3분*2 환승 = 33분
-    expect(calculateStaticETA(route)).toBe(33);
+    // 3분 대기 + round(24 + 242/60) = 3 + 28 = 31분
+    expect(calculateStaticETA(route)).toBe(31);
   });
 
   it('route가 null이면 null을 반환한다', () => {
     expect(calculateStaticETA(null)).toBeNull();
+  });
+});
+
+describe('환승역별 실측 환승시간 반영', () => {
+  // CSV 출처: 공공데이터포털 15044419 (보행속도 1.2 m/s 기준)
+  // 교대(2↔3) 63초 vs 잠실(8↔2) 158초 — 같은 stops여도 travelMinutes 차이 발생
+  it('동일 stops·다른 환승역이면 환승시간 차이가 travelMinutes에 반영된다', () => {
+    const fast: TransferRoute = {
+      type: 'transfer', transferName: '교대', fromLine: '2', toLine: '3',
+      stopsToTransfer: 2, stopsFromTransfer: 2,
+    };
+    const slow: TransferRoute = {
+      type: 'transfer', transferName: '잠실', fromLine: '8', toLine: '2',
+      stopsToTransfer: 2, stopsFromTransfer: 2,
+    };
+    // 둘 다 4 stops 동일. 교대 63초 round(9.05)=9, 잠실 158초 round(10.6333)=11. 차이 2분.
+    expect(calculateETA(0, slow) - calculateETA(0, fast)).toBe(2);
+  });
+
+  it('테이블 미등록 환승역은 fallback 180초(3분)를 적용한다', () => {
+    // CSV에 없는 가상의 환승역명. 정규화 후에도 매칭 실패해야 fallback이 적용된다.
+    const route: TransferRoute = {
+      type: 'transfer', transferName: '존재하지않는환승역', fromLine: '2', toLine: '3',
+      stopsToTransfer: 1, stopsFromTransfer: 4,
+    };
+    // 0분 대기 + round(5*2 + 180/60) = 13분
+    expect(calculateETA(0, route)).toBe(13);
+  });
+
+  it('multi-transfer는 환승역별 실측 시간을 누적 합산한다', () => {
+    const route: MultiTransferRoute = {
+      type: 'multi-transfer',
+      transfers: [
+        { transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 1 },
+        { transferName: '서울역', fromLine: '1', toLine: '4', stopsToTransfer: 2 },
+      ],
+      stopsAfterLastTransfer: 3,
+    };
+    // 3분 대기 + round((1+2+3)*2 + (63+133)/60) = 3 + round(15.2667) = 3 + 15 = 18분
+    expect(calculateStaticETA(route)).toBe(18);
   });
 });
 
@@ -437,7 +477,7 @@ describe('calculateRemainingLegETA', () => {
     expect(calculateRemainingLegETA(route, -1)).toBeNull();
   });
 
-  it('MultiTransferRoute 첫 환승 직후(idx=0): 잔여 환승 1회 + 잔여 stops', () => {
+  it('MultiTransferRoute 첫 환승 직후(idx=0): 잔여 시청 환승 + 잔여 stops', () => {
     const route: MultiTransferRoute = {
       type: 'multi-transfer',
       transfers: [
@@ -446,8 +486,8 @@ describe('calculateRemainingLegETA', () => {
       ],
       stopsAfterLastTransfer: 4,
     };
-    // (5+4)*2 + 1*3 = 18 + 3 = 21
-    expect(calculateRemainingLegETA(route, 0)).toBe(21);
+    // round((5+4)*2 + 시청 84초/60) = round(19.4) = 19
+    expect(calculateRemainingLegETA(route, 0)).toBe(19);
   });
 
   it('MultiTransferRoute 마지막 환승 직후: 환승 0회 + stopsAfterLastTransfer만', () => {
@@ -473,10 +513,10 @@ describe('calculateRemainingLegETA', () => {
       ],
       stopsAfterLastTransfer: 6,
     };
-    // (5+2+6)*2 + 2*3 = 26 + 6 = 32
-    expect(calculateRemainingLegETA(route, 0)).toBe(32);
-    // 두 번째 환승 직후: (2+6)*2 + 1*3 = 19
-    expect(calculateRemainingLegETA(route, 1)).toBe(19);
+    // round((5+2+6)*2 + (시청 84초 + 서울역 133초)/60) = round(29.6167) = 30
+    expect(calculateRemainingLegETA(route, 0)).toBe(30);
+    // 두 번째 환승 직후: round((2+6)*2 + 서울역 133초/60) = round(18.2167) = 18
+    expect(calculateRemainingLegETA(route, 1)).toBe(18);
   });
 
   it('MultiTransferRoute에서 범위 밖 인덱스는 null', () => {
