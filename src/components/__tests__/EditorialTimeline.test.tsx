@@ -7,11 +7,17 @@ import type { LineNumber } from '../../types/station';
 import { useAppStore } from '../../store/useAppStore';
 
 // 결정적 빠른하차 픽스처 — quickExit 라벨/모드 분기 검증용.
-// 3호선 경복궁(id 3-019)에만 상행 stairs/엘리베이터 엔트리 등록.
+// - 3호선 경복궁(id 3-019): 단조 노선 + direction 필터 케이스.
+// - 1호선 회기(id 1-024): #676 비단조 노선 fallback (direction 없이 도어 노출) 검증용.
+//   direction 미지정 엔트리도 섞어 — 비단조 fallback이 모든 엔트리를 그대로 채택하는지 확인.
 jest.mock('../../data/quickExit.json', () => ({
   '3-019': {
     stairs: [{ doorNumber: '3-2', direction: 'up' }],
     elevator: [{ doorNumber: '5-1', direction: 'up' }],
+  },
+  '1-024': {
+    stairs: [{ doorNumber: '7-3' }],
+    elevator: [{ doorNumber: '4-2' }],
   },
 }));
 
@@ -228,11 +234,27 @@ describe('EditorialTimeline quickExit door label', () => {
   }
 
   it.each<[string, LineNumber, string, string]>([
-    ['비단조 노선(2호선) — 데이터 있어도 라벨 미표시', '2', '강남', '경복궁'],
+    ['비단조 노선 + 도착역 quickExit 데이터 없음 — 라벨 미표시', '2', '강남', '시청'],
+    // '경복궁'은 3호선 역. getStationsOnLine('2')에 포함되지 않아 findStationByNameAndLine이 undefined →
+    // station_id를 얻지 못해 fallback도 라벨 미표시. (데이터 부재와 별개의 분기 — 결과만 동일)
+    ['비단조 노선 + 도착역이 해당 노선에 없음 — 라벨 미표시', '2', '강남', '경복궁'],
     ['단조 노선 + 도착역 데이터 없음 — 라벨 미표시', '3', '경복궁', '오금'],
   ])('%s', (_label, line, from, to) => {
     render(<EditorialTimeline stops={makeDestOnlyStops(line, from, to)} />);
     expect(screen.queryByText(/번 문/)).toBeNull();
+  });
+
+  // #676 — 비단조 노선이라도 도착역 station_id에 quickExit 데이터가 있으면 도어 라벨 표시.
+  it('#676 비단조 노선(1호선) + quickExit 데이터 있으면 direction 없이도 stairs 도어 라벨이 뜬다', () => {
+    render(<EditorialTimeline stops={makeDestOnlyStops('1', '시청', '회기')} />);
+    expect(screen.getByText('7-3번 문')).toBeTruthy();
+  });
+
+  it('#676 비단조 노선 fallback도 accessibilityMode ON 시 elevator 우선', () => {
+    useAppStore.setState({ accessibilityMode: true });
+    render(<EditorialTimeline stops={makeDestOnlyStops('1', '시청', '회기')} />);
+    expect(screen.getByText('4-2번 문')).toBeTruthy();
+    expect(screen.queryByText('7-3번 문')).toBeNull();
   });
 
   it('환승 stop이고 transferExit 매칭이 있으면 transferDoor가 quickExit보다 우선 표시', () => {
