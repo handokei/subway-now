@@ -218,7 +218,9 @@ export function useApnsTripRegistration({
         boardingLock,
         createdAt: resolveTripCreatedAt(sessionKey),
       });
-      if (cancelled) return;
+      // #669: cancelled 가드 밖에서 setItem — backend register 성공이면 UI cleanup 여부와 무관하게
+      // ACTIVE_TRIP_KEY를 동기화. 가드 안에 두면 nextStationEtaSeconds·currentStation 변경으로
+      // useEffect cleanup이 자주 일어나 setItem이 skip되고 DebugModal activeTrip이 (none)으로 표시됨.
       if (result.ok) {
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
       }
