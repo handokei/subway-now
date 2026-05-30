@@ -112,6 +112,9 @@ function defaultInputs(overrides: Partial<UseStationAlarmInputs> = {}): UseStati
     userLocation: null,
     speedMps: null,
     accuracyMeters: null,
+    // 기본은 warmup 가드 우회 — 대부분 단위 테스트는 mount 직후 evaluate 검증.
+    // warmup 자체 동작은 별도 describe('#670/#672 warmup guard')에서 검증.
+    skipWarmupGuard: true,
     ...overrides,
   };
 }
@@ -1293,6 +1296,40 @@ describe('useStationAlarm', () => {
         expect(mockLogSuppressedDedupAlarm).toHaveBeenCalledWith('fg', suppressedEvent),
       );
       expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('#670/#672 첫 evaluation suppress 가드', () => {
+    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+    // skipWarmupGuard 미전달 → production default(false) 적용. 첫 evaluation 보류 동작 확인.
+    function inputsWithGuardDefault(loc: { lat: number; lng: number }): UseStationAlarmInputs {
+      return {
+        route,
+        destination,
+        nearestStation: null,
+        userLocation: loc,
+        speedMps: 10,
+        accuracyMeters: 100,
+      };
+    }
+
+    it('mount 직후 첫 evaluation trigger는 suppress (default skipWarmupGuard=false)', async () => {
+      renderHook(() => useStationAlarm(inputsWithGuardDefault({ lat: 37.4, lng: 127.0 })));
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+
+    it('다음 deps 변경(좌표 갱신) 후 evaluate 호출됨', async () => {
+      const { rerender } = renderHook(
+        ({ loc }: { loc: { lat: number; lng: number } }) =>
+          useStationAlarm(inputsWithGuardDefault(loc)),
+        { initialProps: { loc: { lat: 37.4, lng: 127.0 } } },
+      );
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+      // 첫 suppress 이후 좌표가 한 번 더 갱신되면 evaluate 진입.
+      rerender({ loc: { lat: 37.41, lng: 127.01 } });
+      await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
     });
   });
 });
