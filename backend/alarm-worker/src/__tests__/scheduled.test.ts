@@ -656,62 +656,62 @@ describe('RESCHEDULE_THRESHOLD_MS (#585)', () => {
   });
 });
 
+// APNs LA push는 push-type 헤더로 식별: liveactivity
+function isLaCall(_url: string, init: RequestInit | undefined): boolean {
+  const headers = (init?.headers ?? {}) as Record<string, string>;
+  return headers['apns-push-type'] === 'liveactivity';
+}
+
+/**
+ * boardingLock 활성 + LA token이 있는 trip — LA 통합 시나리오의 표준 fixture.
+ * trip은 #640 게이트 통과(boardingLock 활성) + #586 D LA 발사 대상(activityState=live).
+ */
+function makeLockedLaTrip(overrides: Partial<Trip> = {}): Trip {
+  return makeTrip({
+    token: 'la-tok',
+    route: { type: 'direct', line: '2', stops: 1 },
+    waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+    activityPushToken: 'la-token',
+    activityState: 'live',
+    apnsEnv: 'sandbox',
+    boardingLock: {
+      trainCode: 'T',
+      line: '2',
+      subwayId: '1002',
+      selectedDepartureTime: NOW,
+      segmentStations: ['역삼', '강남'],
+      expiresAt: NOW + 60 * 60_000,
+    },
+    ...overrides,
+  });
+}
+
+function makeLockedSeoul(arrivalSeconds: number, arvlCd: number | null = null): SeoulArrivalClient {
+  return new SeoulArrivalClient({
+    apiKey: 'K',
+    host: 'h',
+    now: () => NOW,
+    fetchImpl: (async () =>
+      new Response(
+        JSON.stringify({
+          realtimeArrivalList: [
+            {
+              barvlDt: String(arrivalSeconds),
+              recptnDt: '',
+              updnLine: '상행',
+              trainLineNm: '강남',
+              btrainNo: 'T',
+              subwayNm: '지하철2호선',
+              arvlCd,
+            },
+          ],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch,
+  });
+}
+
 describe('runScheduled — Live Activity push integration (#586 D / #612)', () => {
-  // APNs LA push는 push-type 헤더로 식별: liveactivity
-  function isLaCall(_url: string, init: RequestInit | undefined): boolean {
-    const headers = (init?.headers ?? {}) as Record<string, string>;
-    return headers['apns-push-type'] === 'liveactivity';
-  }
-
-  /**
-   * boardingLock 활성 + LA token이 있는 trip — LA 통합 시나리오의 표준 fixture.
-   * trip은 #640 게이트 통과(boardingLock 활성) + #586 D LA 발사 대상(activityState=live).
-   */
-  function makeLockedLaTrip(overrides: Partial<Trip> = {}): Trip {
-    return makeTrip({
-      token: 'la-tok',
-      route: { type: 'direct', line: '2', stops: 1 },
-      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
-      activityPushToken: 'la-token',
-      activityState: 'live',
-      apnsEnv: 'sandbox',
-      boardingLock: {
-        trainCode: 'T',
-        line: '2',
-        subwayId: '1002',
-        selectedDepartureTime: NOW,
-        segmentStations: ['역삼', '강남'],
-        expiresAt: NOW + 60 * 60_000,
-      },
-      ...overrides,
-    });
-  }
-
-  function makeLockedSeoul(arrivalSeconds: number, arvlCd: number | null = null): SeoulArrivalClient {
-    return new SeoulArrivalClient({
-      apiKey: 'K',
-      host: 'h',
-      now: () => NOW,
-      fetchImpl: (async () =>
-        new Response(
-          JSON.stringify({
-            realtimeArrivalList: [
-              {
-                barvlDt: String(arrivalSeconds),
-                recptnDt: '',
-                updnLine: '상행',
-                trainLineNm: '강남',
-                btrainNo: 'T',
-                subwayNm: '지하철2호선',
-                arvlCd,
-              },
-            ],
-          }),
-          { status: 200 },
-        )) as unknown as typeof fetch,
-    });
-  }
-
   it('fires LA update when estimate epoch delta >= 30s (no prior baseline)', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
