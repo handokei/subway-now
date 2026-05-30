@@ -1220,6 +1220,11 @@ describe('normalizeStationName', () => {
   it('역명이 모두 괄호로 시작하면 원본을 반환한다 (방어)', () => {
     expect(normalizeStationName('(부제)')).toBe('(부제)');
   });
+
+  it('별칭 테이블로 노선별 공식 표기 차이를 흡수한다 (이수 → 총신대입구)', () => {
+    expect(normalizeStationName('이수')).toBe('총신대입구');
+    expect(normalizeStationName('총신대입구')).toBe('총신대입구');
+  });
 });
 
 describe('isSameStationName', () => {
@@ -1281,6 +1286,9 @@ describe('환승역 이름 표기 불일치 회귀 — #401', () => {
     ['sinbundang-012', '3-034', '양재'],      // 역방향
     ['4-022', 'gyeongui-029', '이촌'],        // 4 → 경의중앙
     ['gyeongui-029', '4-022', '이촌'],        // 역방향
+    // #653: 4호선 "총신대입구" ↔ 7호선 "이수" — 별칭 테이블로 매칭
+    ['4-020', '7-030', '총신대입구'],         // 4 삼각지 → 7 숭실대입구
+    ['7-030', '4-020', '총신대입구'],         // 역방향
   ])('정규화 환승 매칭 (양방향): %s → %s 는 %s 환승 후보를 갖는다', (fromId, toId, expectedName) => {
     const candidates = findRoutes(fromId, toId);
     const single = candidates.find((c) => c.transferCount === 1);

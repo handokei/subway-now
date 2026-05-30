@@ -2,6 +2,7 @@ import stations from '../data/stations.json';
 import type { Station } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
 import type { LineNumber } from '../types/station';
+import { applyStationAlias } from '../data/stationAliases';
 import { createLogger } from './logger';
 
 const logger = createLogger('StationRoute');
@@ -119,15 +120,21 @@ export interface JourneyDisplay {
   totalStops: number;
 }
 
-// 후행 괄호 부제(예: "상봉(시외버스터미널)" → "상봉")를 제거해
-// 동일 환승역이 노선별로 다른 표기로 등록되어도 매칭이 성립하도록 한다.
+// 후행 괄호 부제(예: "상봉(시외버스터미널)" → "상봉")를 제거하고
+// 별칭 테이블로 노선별 공식 표기 차이(예: "이수" ↔ "총신대입구")까지 흡수해
+// 동일 환승역이 서로 다른 표기로 등록되어도 매칭이 성립하도록 한다.
 // 정규식 대신 lastIndexOf로 구현 (ReDoS 회피 + 의도 명시).
 export function normalizeStationName(name: string): string {
   const trimmed = name.trim();
-  if (!trimmed.endsWith(')')) return trimmed;
-  const open = trimmed.lastIndexOf('(');
-  if (open <= 0) return trimmed;
-  return trimmed.slice(0, open).trimEnd();
+  const stripped = stripTrailingParen(trimmed);
+  return applyStationAlias(stripped);
+}
+
+function stripTrailingParen(name: string): string {
+  if (!name.endsWith(')')) return name;
+  const open = name.lastIndexOf('(');
+  if (open <= 0) return name;
+  return name.slice(0, open).trimEnd();
 }
 
 // 노선별 표기 차이를 흡수한 역 이름 동일성 비교.
