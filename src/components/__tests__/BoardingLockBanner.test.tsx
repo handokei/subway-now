@@ -13,13 +13,13 @@ const lock: BoardingLock = {
 };
 
 describe('BoardingLockBanner', () => {
-  it('trainCode + line label을 렌더', () => {
-    const { getByText, getByTestId } = renderWithTheme(
+  it('탑승 라벨 + 노선 배지 렌더 (trainCode raw 식별자는 노출 안 함 — #667)', () => {
+    const { getByText, getByTestId, queryByText } = renderWithTheme(
       <BoardingLockBanner lock={lock} onRelease={() => {}} />,
     );
     expect(getByTestId('boarding-lock-banner')).toBeTruthy();
-    expect(getByText('T-100')).toBeTruthy();
     expect(getByText('탑승')).toBeTruthy();
+    expect(queryByText('T-100')).toBeNull();
   });
 
   it('#625 탑승 시각(boardedAt)을 HH:mm 절대 시각으로 표시', () => {
