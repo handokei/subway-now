@@ -36,6 +36,11 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
 - tapOn:
     id: "suggestion-item-2-016"
 
+# 잠실 설정 직후 destination 박스 높이가 커져 home-sleep-mode-switch가 viewport 밖 — scroll로 보정.
+- scrollUntilVisible:
+    element:
+      id: "home-sleep-mode-switch"
+    timeout: 5000
 - assertVisible:
     id: "home-sleep-mode-switch"
 - tapOn:
@@ -58,5 +63,9 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
 # 홈 탭 복귀
 - tapOn:
     point: "12%,95%"
+- scrollUntilVisible:
+    element:
+      id: "home-sleep-mode-switch"
+    timeout: 5000
 - assertVisible:
     id: "home-sleep-mode-switch"
