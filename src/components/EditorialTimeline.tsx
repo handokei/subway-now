@@ -8,6 +8,7 @@ import { useAppStore } from '../store/useAppStore';
 import { resolveQuickExit } from '../utils/quickExit';
 import { resolveTravelDirection } from '../utils/travelDirection';
 import { resolveTransferDoor } from '../utils/transferExit';
+import { findStationByNameAndLine } from '../utils/stationRoute';
 import type { LineNumber } from '../types/station';
 
 interface Props {
@@ -21,7 +22,10 @@ interface Props {
 
 // 한 stop의 도어번호 라벨을 결정한다.
 // - 환승 stop이면 fromLine→toLine 빠른 환승 도어를 우선 사용 (transferExit.json).
-// - 매칭 없으면 단조 노선 + quickExit 데이터로 fallback (계단/EV 가까운 도어).
+// - 매칭 없으면 quickExit 데이터로 fallback (계단/EV 가까운 도어).
+//   · 단조 노선(MONOTONIC_LINES): direction 필터로 방면별 정확한 도어 선택.
+//   · 비단조 노선(1·2·5·6호선, 경의중앙선 등 — #676): direction 없이 station_id만으로 조회.
+//     좌/우 안내는 정확성 보장 불가라 생략되지만 도어 번호는 노선 무관 표시 가능.
 // - 둘 다 없으면 null — 라벨 미표시.
 function resolveStopDoor(
   ctx: StopArrivalContext,
@@ -37,11 +41,17 @@ function resolveStopDoor(
     if (transfer) return transfer.doorNumber;
   }
   const resolution = resolveTravelDirection(ctx.line, ctx.fromName, ctx.toName);
-  if (!resolution) return null;
-  const result = resolveQuickExit(resolution.toStation.id, {
-    accessibilityMode,
-    direction: resolution.direction,
-  });
+  if (resolution) {
+    const result = resolveQuickExit(resolution.toStation.id, {
+      accessibilityMode,
+      direction: resolution.direction,
+    });
+    return result ? result.entry.doorNumber : null;
+  }
+  // 비단조 노선 fallback: line + toName으로 station 직접 매칭 (stationRoute의 SSOT helper 재사용).
+  const station = findStationByNameAndLine(ctx.toName, ctx.line);
+  if (!station) return null;
+  const result = resolveQuickExit(station.id, { accessibilityMode });
   return result ? result.entry.doorNumber : null;
 }
 
