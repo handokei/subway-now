@@ -1,5 +1,6 @@
 import { createLogger } from '../utils/logger';
 import { parseTrainType, type TrainType } from '../constants/trainTypes';
+import { subwayIdToLine } from '../constants/lineApiNames';
 import { findLineByStationName } from '../utils/stationLookup';
 import { buildScheduleArrival, hasHeadwayData } from '../utils/scheduleFallback';
 import type { LineNumber } from '../types/station';
@@ -12,6 +13,11 @@ export interface ArrivalInfo {
   arrivalSeconds: number;
   statusMessage: string;
   trainCode: string;
+  /**
+   * 이 열차가 속한 호선. 실시간 API는 subwayId로 매핑, 어느 경로로도 결정 못 하면 lineHint로 fallback.
+   * 환승역에서 같은 statnNm으로 두 노선 응답이 섞여도 라인 단위 필터·BoardingLock 생성에 정확한 호선 사용 가능.
+   */
+  line: LineNumber;
   /** 데이터 생성 시각(epoch ms). 0이면 알 수 없음(mock 또는 누락). Stage 2 fusion 신호 신선도 판정용. */
   receivedAtMs: number;
   /**
@@ -37,12 +43,12 @@ export interface StationArrival {
 
 export const MOCK_ARRIVALS: Readonly<StationArrival> = Object.freeze({
   up: [
-    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
-    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
+    { destination: '상행 종착역', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'UP-001', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
+    { destination: '상행 종착역', arrivalMinutes: 8, arrivalSeconds: 480, statusMessage: '', trainCode: 'UP-002', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
   ],
   down: [
-    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
-    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
+    { destination: '하행 종착역', arrivalMinutes: 4, arrivalSeconds: 240, statusMessage: '', trainCode: 'DN-001', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
+    { destination: '하행 종착역', arrivalMinutes: 11, arrivalSeconds: 660, statusMessage: '', trainCode: 'DN-002', line: '2' as const, receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' as const },
   ],
   isMock: true,
 });
@@ -134,6 +140,19 @@ export async function fetchArrivalInfo(
 
     const now = Date.now();
     for (const item of items) {
+      // line 결정: subwayId 매핑 우선, 매핑 실패 시 lineHint(호출자가 알려준 후보 역의 호선)로 fallback.
+      // 환승역 응답에서는 두 호선 row가 함께 오므로 lineHint만으로 일괄 채우면 안 됨 — subwayId가 정답.
+      // 둘 다 없으면 row 드롭 + 로깅(드문 케이스, 어느 호선인지 식별 불가하면 lock·필터링 모두 위험).
+      const lineFromApi = subwayIdToLine(item.subwayId);
+      const line = lineFromApi ?? lineHint ?? null;
+      if (!line) {
+        log.warn('arrival_row_dropped_no_line', {
+          station: stationName,
+          subwayId: item.subwayId,
+          trainCode: item.btrainNo,
+        });
+        continue;
+      }
       const rawSeconds = Math.max(0, item.barvlDt ?? 0);
       // recptnDt(데이터 생성시각)와 현재시각의 차이만큼 열차가 더 진행한 것으로 보정.
       // xls 스펙 주의사항에 명시된 처리. recptnDt 누락 또는 비정상 drift는 stale로 강등.
@@ -155,6 +174,7 @@ export async function fetchArrivalInfo(
         arrivalSeconds: seconds,
         statusMessage: item.arvlMsg2 ?? '',
         trainCode: item.btrainNo ?? '',
+        line,
         receivedAtMs,
         arrivalCode: Number.isFinite(parsedCode) ? parsedCode : -1,
         isLastTrain: item.lstcarAt === '1' || item.lstcarAt === 1,

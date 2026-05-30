@@ -51,6 +51,7 @@ const variantStation: Station = {
 
 const baseResult: NearestStationResult = { station, distanceKm: 0.123 };
 const arrivalDefaults = {
+  line: '1' as const,
   receivedAtMs: 0,
   arrivalCode: -1,
   isLastTrain: false,

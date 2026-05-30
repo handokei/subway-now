@@ -32,6 +32,7 @@ function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
     arrivalSeconds: 180,
     statusMessage: '',
     trainCode: 'T-1',
+    line: '2',
     receivedAtMs: 0,
     arrivalCode: -1,
     isLastTrain: false,
@@ -176,6 +177,17 @@ describe('useBoardingLockController', () => {
         result.current.createLockFromTrain(makeTrain());
       });
       expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('boardingLine은 train.line을 사용한다 (currentStation.line이 fusion 잘못 잠금 상태여도 lock은 정확) — #663', async () => {
+      // currentStation.line='2'(fusion이 옆 노선으로 잘못 잠긴 상태), train.line='7'(사용자가 탭한 실제 열차)
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: 'T-7', line: '7' }));
+      });
+      expect(mockSetBoardingLock).toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: 'T-7', boardingLine: '7' }),
+      );
     });
   });
 

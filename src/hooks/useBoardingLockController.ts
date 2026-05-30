@@ -95,11 +95,14 @@ export function useBoardingLockController({
     (train: ArrivalInfo) => {
       if (!destinationId || !currentStation) return;
       const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
+      // #663: boardingLine은 사용자가 실제로 탭한 train의 line을 사용. currentStation.line은 fusion
+      // 추정이라 환승역에서 옆 노선으로 잘못 잠긴 상태일 수 있다 (#662). train.line은 어댑터가 subwayId로
+      // 결정해 row마다 정확. fusion이 잘못돼 있어도 lock만은 정답을 유지 — backend sync(#622) 정확도 보장.
       void createLock({
         destinationId,
         trainCode: train.trainCode,
         boardingStationId: currentStation.id,
-        boardingLine: currentStation.line,
+        boardingLine: train.line,
         boardedAt: Date.now(),
         expectedDurationMs: durationMin * 60_000,
       });
