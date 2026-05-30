@@ -298,6 +298,84 @@ describe('useFusedNearestStation', () => {
     });
   });
 
+  describe('#662 환승역 fusion 강등 가드 (BoardingLock 기준)', () => {
+    // setupPositionTrain와 동일 구조 — positionTrain이 chungmuro(line=3)로 잠긴 상태에서
+    // boardingLock.boardingLine을 바꿔가며 강등 여부 확인. arrival/position 신호 없는 fallback은
+    // gps 후보(gangnam, line=2)로 떨어진다.
+    const setupTransferScenario = () => {
+      mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
+      mockFindTop.mockReturnValue([
+        { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
+        { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 },
+      ]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions
+        .mockReturnValueOnce(positionRet({ line: '2', trains: [] }))
+        .mockReturnValueOnce(
+          positionRet({
+            line: '3',
+            trains: [
+              train(MOCK_STATIONS.chungmuro.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-3' }),
+            ],
+          }),
+        )
+        .mockReturnValueOnce(positionRet(null));
+    };
+    const lockOnLine = (line: '2' | '3'): import('../../types/boardingLock').BoardingLock => ({
+      destinationId: 'dest-1',
+      trainCode: 'T-3',
+      boardingStationId: MOCK_STATIONS.gangnam.id,
+      boardingLine: line,
+      boardedAt: Date.now(),
+      expectedDurationMs: 600_000,
+    });
+
+    it('lock.boardingLine과 positionTrain.line이 다르면 positionTrain 강등 → GPS로 fallthrough', () => {
+      setupTransferScenario();
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, null, lockOnLine('2')),
+      );
+      expect(result.current.source).toBe('gps');
+      expect(result.current.result?.station.name).toBe(MOCK_STATIONS.gangnam.name);
+    });
+
+    it('lock.boardingLine과 positionTrain.line이 같으면 positionTrain 유지', () => {
+      setupTransferScenario();
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, null, lockOnLine('3')),
+      );
+      expect(result.current.source).toBe('position-train');
+      expect(result.current.result?.station.name).toBe(MOCK_STATIONS.chungmuro.name);
+    });
+
+    it('boardingLock 없으면 가드 미작동 (기존 동작 유지)', () => {
+      setupTransferScenario();
+      const { result } = renderHook(() => useFusedNearestStation());
+      expect(result.current.source).toBe('position-train');
+    });
+
+    it('fused 경로도 lock.boardingLine과 다른 노선이면 강등 → GPS로 fallthrough', () => {
+      // positionTrain 신호 없는 환승역 시나리오: arrival의 ARRIVED 신호로 fused가 chungmuro(line=3)
+      // 채택되는 상황에서 lock=line2면 fused 강등 → gangnam(line=2, GPS) 채택.
+      mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
+      mockFindTop.mockReturnValue([
+        { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
+        { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 },
+      ]);
+      mockUseArrival
+        .mockReturnValueOnce(arrivalRet(null))
+        .mockReturnValueOnce(arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }))
+        .mockReturnValueOnce(arrivalRet(null));
+      mockUsePositions.mockReturnValue(positionRet(null));
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, null, lockOnLine('2')),
+      );
+      expect(result.current.source).toBe('gps');
+      expect(result.current.result?.station.name).toBe(MOCK_STATIONS.gangnam.name);
+    });
+  });
+
   it('arrival 있고 position-train 후보 없으면 fused arrival 채택', () => {
     mockUseNearest.mockReturnValue(gpsBase());
     mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
