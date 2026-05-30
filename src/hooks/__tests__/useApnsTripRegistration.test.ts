@@ -335,7 +335,7 @@ describe('useApnsTripRegistration', () => {
     expect(mockClear).not.toHaveBeenCalled();
   });
 
-  it('unmount 직후 register resolve해도 ACTIVE_TRIP_KEY 저장 안 함', async () => {
+  it('#669 unmount/deps 변경 후 register resolve도 ACTIVE_TRIP_KEY 저장 — race로 잃지 않음', async () => {
     let resolveReg!: (v: { ok: boolean }) => void;
     mockRegister.mockImplementation(
       () => new Promise((res) => { resolveReg = res; }),
@@ -354,7 +354,8 @@ describe('useApnsTripRegistration', () => {
       resolveReg({ ok: true });
       await Promise.resolve();
     });
-    expect(AsyncStorage.setItem).not.toHaveBeenCalledWith(ACTIVE_TRIP_KEY, 'token-abc');
+    // backend register 성공 → cleanup 후에도 ACTIVE_TRIP_KEY 동기화 (DebugModal activeTrip 정확도).
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(ACTIVE_TRIP_KEY, 'token-abc');
   });
 
   it('nextStationEtaSeconds > 0 이면 alarmAt = now + eta*1000', async () => {
