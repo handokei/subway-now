@@ -95,8 +95,9 @@ function main() {
     stats.ok++;
   }
 
+  // 키에 한글이 섞여 있어 로케일 기반 정렬로 안정적 출력 보장 (sonar S2871).
   const sorted = Object.keys(out)
-    .sort()
+    .sort((a, b) => a.localeCompare(b))
     .reduce((acc, k) => {
       acc[k] = out[k];
       return acc;
