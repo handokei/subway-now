@@ -112,7 +112,9 @@
     "arrivalTitle": "到达提醒",
     "transferMessage": "在{{station}}\n换乘",
     "arrivalMessage": "在{{station}}\n下车",
-    "dismiss": "关闭提醒"
+    "dismiss": "关闭提醒",
+    "dismissAndEnd": "下车（结束行程）",
+    "keepTripOnly": "仅关闭此提醒（保留行程）"
   },
   "destinationPicker": {
     "noLocation": "无位置信息。",
@@ -178,7 +180,8 @@
     "stopsRemainingToDestination_one": "距{{destination}}还有{{count}}站",
     "stopsRemainingToDestination_other": "距{{destination}}还有{{count}}站",
     "stopsRemainingViaTransfer": "距{{transfer}}换乘{{transferStops}}站 · 距{{destination}}{{totalStops}}站",
-    "quickExitDoor": "{{door}}号门"
+    "quickExitDoor": "{{door}}号门",
+    "boardingDoor": "{{door}}号门上车"
   },
   "lines": {
     "1": "1号线",

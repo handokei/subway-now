@@ -16,8 +16,8 @@ export const ALARM_LOG_BUFFER_SIZE = 200;
 // v2 (#372)로 의미 명확화. 두 값 모두 union에 유지해 과거 저장 데이터를 손실 없이 읽는다.
 // 'silent-push-received'는 #478 측정 인프라 — silent push 도달 시점 기록.
 // 'silent-push-fired'/'silent-push-skipped'는 #478 PR 1-2 — 위치 게이트 통과/실패 발사.
-// 'alert-fallback-fired'/'region-entry-*'는 #564 — 다중 채널 BG 알람(채널 2 alert fallback /
-// 채널 3 Region Monitoring) 도달률 측정용. 발사 동작은 후속 PR에서 추가, 본 PR은 source 슬롯만.
+// 'alert-fallback-fired'는 #564 — 채널 2 alert fallback 도달률 측정용.
+// (채널 3 Region Monitoring 슬롯은 #593/ADR-007 폐기 → #618에서 제거)
 export type AlarmLogSource =
   | 'fg'
   | 'bg'
@@ -27,8 +27,6 @@ export type AlarmLogSource =
   | 'silent-push-fired'
   | 'silent-push-skipped'
   | 'alert-fallback-fired'
-  | 'region-entry-fired'
-  | 'region-entry-skipped'
   // #580: useStationAlarm 하이드레이션 1회당 1엔트리. destinationId + 복원된 fired set 크기 기록.
   // 두 번째 fire 직전에 ref가 비워졌는지 직접 관찰 — race 가설 확인용.
   | 'fg-hydrate';
@@ -202,13 +200,42 @@ export function logFiredAlarmsHydrate(destinationId: string | null, firedAlarmsC
  * #580: phase alarm dedup 적중 1건 적재. destination/transfer phase가 firedAlarms로
  * 이미 발화된 것을 evaluateAlarmPhase가 인지해 재발화하지 않을 때 호출.
  * 발사 횟수 vs dedup 횟수 비율로 dedup이 정상 동작 중인지 운영 데이터로 확인 가능.
+ *
+ * #626: in-memory time-window dedup. FG polling cycle이 매초 같은 phase를 평가해
+ * dedup-alarm 로그가 alarmLog 버퍼를 채우는 회귀 차단 (alarmLog 46개 중 41개가 같은
+ * 이벤트인 케이스 관측). 같은 (source/type/phaseId/stationName)이 DEDUP_LOG_WINDOW_MS
+ * 안에 재호출되면 drop — dedup이 동작 중인지 운영 신호는 첫 1건으로 충분.
+ *
+ * 키에 type 포함 — 환승역에서 같은 phaseId가 destination/transfer 두 type으로 동시
+ * 평가될 때 한쪽이 다른 쪽을 silence하지 않게 (실제 firedAlarms도 type까지 구분함).
  */
+export const DEDUP_LOG_WINDOW_MS = 5_000;
+const lastDedupLogTs = new Map<string, number>();
+
+/**
+ * Map 무한 성장 방지. size가 cap을 넘으면 윈도우 만료된 엔트리 일괄 정리.
+ * 정상 trip(소스 × type × phase × 역 ~수십)에선 트리거 안 됨 — 비정상 입력 안전망.
+ */
+const DEDUP_LOG_MAP_CAP = 64;
+function sweepExpiredDedupEntries(now: number): void {
+  if (lastDedupLogTs.size <= DEDUP_LOG_MAP_CAP) return;
+  for (const [k, ts] of lastDedupLogTs) {
+    if (now - ts >= DEDUP_LOG_WINDOW_MS) lastDedupLogTs.delete(k);
+  }
+}
+
 export function logSuppressedDedupAlarm(
   source: AlarmLogSource,
   event: Pick<AlarmEvent, 'phaseId' | 'type' | 'stationName'>,
 ): void {
+  const now = Date.now();
+  const key = `${source}|${event.type}|${event.phaseId}|${event.stationName}`;
+  const last = lastDedupLogTs.get(key);
+  if (last !== undefined && now - last < DEDUP_LOG_WINDOW_MS) return;
+  lastDedupLogTs.set(key, now);
+  sweepExpiredDedupEntries(now);
   void appendAlarmLog({
-    ts: Date.now(),
+    ts: now,
     source,
     outcome: 'suppressed',
     reason: 'dedup-alarm',
@@ -216,6 +243,11 @@ export function logSuppressedDedupAlarm(
     kind: event.type,
     phaseId: event.phaseId,
   });
+}
+
+/** 테스트용 — 윈도우 캐시 리셋. */
+export function _resetDedupAlarmWindowForTests(): void {
+  lastDedupLogTs.clear();
 }
 
 /**
@@ -317,46 +349,6 @@ export function logAlertFallbackFired(input: {
     ts: Date.now(),
     source: 'alert-fallback-fired',
     outcome: 'fired',
-    stationName: input.stationName,
-    kind: input.kind,
-    phaseId: input.phaseId,
-  });
-}
-
-/**
- * 채널 3 Region Monitoring 진입 wake 발사 1건 적재 (#564).
- */
-export function logRegionEntryFired(input: {
-  stationName: string;
-  kind: AlarmLogKind;
-  phaseId: AlarmPhaseId;
-}): void {
-  void appendAlarmLog({
-    ts: Date.now(),
-    source: 'region-entry-fired',
-    outcome: 'fired',
-    stationName: input.stationName,
-    kind: input.kind,
-    phaseId: input.phaseId,
-  });
-}
-
-/**
- * 채널 3 Region Monitoring 진입 wake — 스킵된 1건 적재 (#564).
- * reason은 caller가 주입(dedup-station / gate-unknown-station / ...).
- * logSilentPushSkipped와 동일한 패턴: 향후 dedup 외 사유가 늘어나도 helper 분기 없이 호환.
- */
-export function logRegionEntrySkipped(input: {
-  stationName: string;
-  kind: AlarmLogKind;
-  phaseId: AlarmPhaseId;
-  reason: AlarmLogReason;
-}): void {
-  void appendAlarmLog({
-    ts: Date.now(),
-    source: 'region-entry-skipped',
-    outcome: 'suppressed',
-    reason: input.reason,
     stationName: input.stationName,
     kind: input.kind,
     phaseId: input.phaseId,

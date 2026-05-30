@@ -5,8 +5,8 @@ import { useBoardingLockStore } from '../../store/useBoardingLockStore';
 import { findStationByNameAndLine } from '../../utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../../api/arrivalApi';
 import type { BoardingLock } from '../../types/boardingLock';
-import type { TransferRoute } from '../../utils/stationRoute';
 import type { Station } from '../../types/station';
+import { makeTransferRoute } from '../../testUtils/routeFixtures';
 
 jest.mock('../useArrivalInfo');
 const mockUseArrival = useArrivalInfo as jest.Mock;
@@ -29,14 +29,13 @@ const lock: BoardingLock = {
   boardedAt: 0,
   expectedDurationMs: 1_000_000,
 };
-const route: TransferRoute = {
-  type: 'transfer',
+const route = makeTransferRoute({
   transferName: '공덕',
   fromLine: '6',
   toLine: '5',
   stopsToTransfer: 2,
   stopsFromTransfer: 3,
-};
+});
 const gondeokOn6 = findStationByNameAndLine('공덕', '6') as Station;
 
 function arrivalRet(arrival: StationArrival | null) {
@@ -50,6 +49,7 @@ function makeTrain(overrides: Partial<ArrivalInfo>): ArrivalInfo {
     arrivalSeconds: 300,
     statusMessage: '',
     trainCode: 'T-NEW',
+    line: '5',
     receivedAtMs: 0,
     arrivalCode: -1,
     isLastTrain: false,
@@ -165,5 +165,15 @@ describe('filterArrivalsByDirection', () => {
 
   it('direction=null → up+down 합산', () => {
     expect(filterArrivalsByDirection(arr, null)).toEqual([up, down]);
+  });
+
+  it('#666 arrivalSeconds <= 0 (지나간 열차) 제외', () => {
+    const past = makeTrain({ trainCode: 'PAST', arrivalSeconds: 0 });
+    const negative = makeTrain({ trainCode: 'NEG', arrivalSeconds: -30 });
+    const future = makeTrain({ trainCode: 'OK', arrivalSeconds: 120 });
+    const mixed: StationArrival = { up: [past, future], down: [negative] };
+    expect(filterArrivalsByDirection(mixed, 'up')).toEqual([future]);
+    expect(filterArrivalsByDirection(mixed, 'down')).toEqual([]);
+    expect(filterArrivalsByDirection(mixed, null)).toEqual([future]);
   });
 });

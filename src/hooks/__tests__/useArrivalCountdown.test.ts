@@ -3,8 +3,8 @@ import { useArrivalCountdown } from '../useArrivalCountdown';
 import type { StationArrival } from '../../api/arrivalApi';
 
 const mockArrival: StationArrival = {
-  up: [{ destination: '소요산행', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '전역 출발', trainCode: 'T001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
-  down: [{ destination: '인천행', arrivalMinutes: 1, arrivalSeconds: 90, statusMessage: '', trainCode: 'T002', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+  up: [{ destination: '소요산행', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '전역 출발', trainCode: 'T001', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+  down: [{ destination: '인천행', arrivalMinutes: 1, arrivalSeconds: 90, statusMessage: '', trainCode: 'T002', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
 };
 
 const mockArrivalMock: StationArrival = {
@@ -53,7 +53,7 @@ describe('useArrivalCountdown', () => {
 
   it('arrivalSeconds가 0 이하로 내려가지 않는다', () => {
     const nearArrival: StationArrival = {
-      up: [{ destination: '소요산행', arrivalMinutes: 0, arrivalSeconds: 2, statusMessage: '곧 도착', trainCode: 'T001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      up: [{ destination: '소요산행', arrivalMinutes: 0, arrivalSeconds: 2, statusMessage: '곧 도착', trainCode: 'T001', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
       down: [],
     };
 
@@ -98,8 +98,8 @@ describe('useArrivalCountdown', () => {
 
     // 새 API 데이터 도착
     const newArrival: StationArrival = {
-      up: [{ destination: '소요산행', arrivalMinutes: 3, arrivalSeconds: 200, statusMessage: '', trainCode: 'T001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
-      down: [{ destination: '인천행', arrivalMinutes: 2, arrivalSeconds: 150, statusMessage: '', trainCode: 'T002', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      up: [{ destination: '소요산행', arrivalMinutes: 3, arrivalSeconds: 200, statusMessage: '', trainCode: 'T001', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      down: [{ destination: '인천행', arrivalMinutes: 2, arrivalSeconds: 150, statusMessage: '', trainCode: 'T002', line: '1', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
     };
 
     rerender({ arrival: newArrival });

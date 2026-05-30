@@ -112,7 +112,9 @@
     "arrivalTitle": "到着アラーム",
     "transferMessage": "{{station}}で\n乗り換え",
     "arrivalMessage": "{{station}}で\n下車",
-    "dismiss": "アラームを止める"
+    "dismiss": "アラームを止める",
+    "dismissAndEnd": "下車（旅程終了）",
+    "keepTripOnly": "このアラームのみ停止（旅程は維持）"
   },
   "destinationPicker": {
     "noLocation": "位置情報がありません。",
@@ -178,7 +180,8 @@
     "stopsRemainingToDestination_one": "{{destination}}まで残り{{count}}駅",
     "stopsRemainingToDestination_other": "{{destination}}まで残り{{count}}駅",
     "stopsRemainingViaTransfer": "{{transfer}}乗換まで{{transferStops}}駅 · {{destination}}まで{{totalStops}}駅",
-    "quickExitDoor": "{{door}}番ドア"
+    "quickExitDoor": "{{door}}番ドア",
+    "boardingDoor": "{{door}}番ドアから乗車"
   },
   "lines": {
     "1": "1号線",

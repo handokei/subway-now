@@ -38,18 +38,21 @@ export interface LiveActivityDeps {
 
 /**
  * content-state 페이로드 빌더.
+ *
+ * phase 필드는 보내지 않는다 — dev에서 phase 개념은 제거되었고(boardingLock 단일 경로),
+ * widget(SubwayActivityAttributes)도 phase에 의존하지 않는다. 텍스트는 디바이스 측 init 값을
+ * 유지하므로 숫자/enum/epoch만 채운다.
+ *
  * @param stopsRemaining 다음 hop까지 남은 정거장 수 — 호출자가 계산해 전달(폴링 전/후 시점에 따라 다름).
  */
 export function buildLiveActivityContentState(
   waypoint: Waypoint,
   etaSeconds: number,
-  phase: 'early' | 'imminent',
   stopsRemaining: number,
   nowMs: number,
 ): LiveActivityContentState {
   return {
     etaSeconds,
-    phase,
     kind: waypoint.kind,
     stopsRemaining,
     arrivalAtSec: Math.floor(nowMs / 1000) + etaSeconds,

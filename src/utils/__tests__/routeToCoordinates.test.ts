@@ -2,6 +2,11 @@ import { routeToCoordinates } from '../routeToCoordinates';
 import { findRoute } from '../stationRoute';
 import stationsData from '../../data/stations.json';
 import type { Station } from '../../types/station';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../testUtils/routeFixtures';
 
 const allStations = stationsData as Station[];
 const byId = (id: string) => allStations.find((s) => s.id === id)!;
@@ -82,14 +87,13 @@ describe('routeToCoordinates', () => {
 
   describe('multi-transfer route (2회 환승)', () => {
     it('transfers 배열의 각 환승역이 keyStations에 순서대로 포함된다', () => {
-      const route = {
-        type: 'multi-transfer' as const,
+      const route = makeMultiTransferRoute({
         transfers: [
-          { transferName: '사당', fromLine: '2' as const, toLine: '4' as const, stopsToTransfer: 4 },
-          { transferName: '동대문역사문화공원', fromLine: '4' as const, toLine: '5' as const, stopsToTransfer: 4 },
+          { transferName: '사당', fromLine: '2', toLine: '4', stopsToTransfer: 4 },
+          { transferName: '동대문역사문화공원', fromLine: '4', toLine: '5', stopsToTransfer: 4 },
         ],
         stopsAfterLastTransfer: 3,
-      };
+      });
       const origin = byId('2-022'); // 강남
       // 5호선에서 임의의 역
       const destination = allStations.find((s) => s.line === '5' && s.name === '광화문')!;
@@ -104,35 +108,33 @@ describe('routeToCoordinates', () => {
 
   describe('잘못된 입력으로 인한 null 반환', () => {
     it('transfer 환승역 이름을 찾을 수 없으면 null', () => {
-      const route = {
-        type: 'transfer' as const,
+      const route = makeTransferRoute({
         transferName: '존재하지않는역',
-        fromLine: '2' as const,
-        toLine: '6' as const,
+        fromLine: '2',
+        toLine: '6',
         stopsToTransfer: 1,
         stopsFromTransfer: 1,
-      };
+      });
       const origin = byId('2-022');
       const destination = byId('6-020');
       expect(routeToCoordinates(route, origin, destination)).toBeNull();
     });
 
     it('multi-transfer 환승역 이름을 찾을 수 없으면 null', () => {
-      const route = {
-        type: 'multi-transfer' as const,
+      const route = makeMultiTransferRoute({
         transfers: [
-          { transferName: '존재하지않는역', fromLine: '2' as const, toLine: '4' as const, stopsToTransfer: 1 },
-          { transferName: '동대문역사문화공원', fromLine: '4' as const, toLine: '5' as const, stopsToTransfer: 1 },
+          { transferName: '존재하지않는역', fromLine: '2', toLine: '4', stopsToTransfer: 1 },
+          { transferName: '동대문역사문화공원', fromLine: '4', toLine: '5', stopsToTransfer: 1 },
         ],
         stopsAfterLastTransfer: 1,
-      };
+      });
       const origin = byId('2-022');
       const destination = allStations.find((s) => s.line === '5' && s.name === '광화문')!;
       expect(routeToCoordinates(route, origin, destination)).toBeNull();
     });
 
     it('direct route인데 origin이 노선과 불일치하여 슬라이스 실패 시 null', () => {
-      const route = { type: 'direct' as const, line: '2' as const, stops: 1 };
+      const route = makeDirectRoute(1, '2');
       const origin = byId('6-020'); // 6호선 역을 2호선 direct에 넣음 → name이 2호선에 없음
       const destination = byId('2-022');
       expect(routeToCoordinates(route, origin, destination)).toBeNull();

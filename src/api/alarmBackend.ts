@@ -21,6 +21,26 @@ export interface AlarmWaypoint {
   kind: 'transfer' | 'destination' | 'intermediate';
 }
 
+/**
+ * 백엔드 Trip.boardingLock과 동일 구조 (#622). backend/alarm-worker/src/types.ts의
+ * `BoardingLockMeta`와 schema 동기화 — backend parseBoardingLock(index.ts:272)이 모든 필드를 검증한다.
+ * 한 필드라도 어긋나면 backend가 boardingLock만 drop하고 trip은 살린다.
+ */
+export interface AlarmBoardingLock {
+  /** Seoul API btrainNo (예: "7246") — 사용자가 탭한 열차. */
+  trainCode: string;
+  /** 현재 leg의 노선 (Waypoint.line과 동일 표기). */
+  line: string;
+  /** Seoul API subwayId (예: "1007") — 환승 노선 구분용. */
+  subwayId: string;
+  /** 사용자가 선택한 열차 출발 시각 (epoch ms) — 보통 client BoardingLock.boardedAt. */
+  selectedDepartureTime: number;
+  /** 현 BoardingLock 구간 내 정차역 시퀀스 (출발역 → 구간 끝). backend가 indexOf로 위치 계산. */
+  segmentStations: string[];
+  /** Lock 자동 만료 시각 (epoch ms). */
+  expiresAt: number;
+}
+
 export interface RegisterTripPayload {
   /** APNs device token (hex) */
   token: string;
@@ -36,6 +56,11 @@ export interface RegisterTripPayload {
   alarmAtEpochMs: number;
   /** APNs 토큰 환경 — backend가 sandbox/production host를 선택. */
   apnsEnv: ApnsEnv;
+  /**
+   * BoardingLock metadata (#622). 사용자가 탑승 열차를 확정한 경우 함께 보내 backend가 trainCode
+   * 기준으로 추적·reschedule 가능. 없으면 backend는 기존 anchor waypoint 폴링으로 fallback.
+   */
+  boardingLock?: AlarmBoardingLock;
 }
 
 export interface AlarmBackendResult {
@@ -76,6 +101,7 @@ function buildRegisterHash(body: {
   waypoints: AlarmWaypoint[];
   alarmAtEpochMs: number;
   apnsEnv: ApnsEnv;
+  boardingLock?: AlarmBoardingLock;
 }): string {
   return JSON.stringify({
     token: body.token,
@@ -84,6 +110,11 @@ function buildRegisterHash(body: {
     waypoints: body.waypoints,
     alarmBucket: Math.floor(body.alarmAtEpochMs / ALARM_TIME_BUCKET_MS),
     apnsEnv: body.apnsEnv,
+    // boardingLock 변경 — trainCode/line 또는 segmentStations 갱신 시 즉시 재등록 보장.
+    // expiresAt은 dedup 대상 아님 (시간 흐름으로 자연 변동).
+    boardingLockKey: body.boardingLock
+      ? `${body.boardingLock.trainCode}|${body.boardingLock.line}|${body.boardingLock.subwayId}|${body.boardingLock.segmentStations.join(',')}`
+      : null,
   });
 }
 
@@ -128,6 +159,7 @@ export async function registerActiveTrip(
     waypoints: payload.waypoints,
     alarmAtEpochMs: payload.alarmAtEpochMs,
     apnsEnv: payload.apnsEnv,
+    boardingLock: payload.boardingLock,
   });
   if (hash === lastRegisteredHash) {
     return { ok: true, skipped: true };
@@ -144,6 +176,8 @@ export async function registerActiveTrip(
     expiresAt,
     alarmAtEpochMs: payload.alarmAtEpochMs,
     apnsEnv: payload.apnsEnv,
+    // boardingLock은 있을 때만 송신 (없으면 backend는 기존 anchor 폴링).
+    ...(payload.boardingLock ? { boardingLock: payload.boardingLock } : {}),
   };
 
   try {
@@ -228,6 +262,66 @@ export async function clearActiveTrip(token: string): Promise<AlarmBackendResult
     return { ok: true, status: res.status };
   } catch (e) {
     log.warn('clear error', e);
+    return { ok: false };
+  }
+}
+
+/**
+ * Live Activity push token 등록 (#586 B/C).
+ * native가 emit한 push token hex를 backend의 trip 레코드에 보관한다.
+ * URL 미설정/네트워크 실패는 throw 없이 `{ok:false}` — LA 자체는 정상 동작한다.
+ */
+export async function registerLiveActivityToken(
+  tripToken: string,
+  activityPushToken: string,
+): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip LA register');
+    return { ok: false, skipped: true };
+  }
+  try {
+    const res = await fetchWithTimeout(`${base}/live-activity/register`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ tripToken, activityPushToken }),
+    });
+    if (!res.ok) {
+      log.warn(`LA register failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('LA register error', e);
+    return { ok: false };
+  }
+}
+
+/**
+ * Live Activity push token 해제 (#586 B/C).
+ * trip이 끝났거나 사용자가 LA를 dismiss했을 때 호출.
+ */
+export async function clearLiveActivityToken(
+  tripToken: string,
+): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip LA clear');
+    return { ok: false, skipped: true };
+  }
+  if (!tripToken) return { ok: false };
+  try {
+    const res = await fetchWithTimeout(
+      `${base}/live-activity/${encodeURIComponent(tripToken)}`,
+      { method: 'DELETE' },
+    );
+    if (!res.ok) {
+      log.warn(`LA clear failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('LA clear error', e);
     return { ok: false };
   }
 }

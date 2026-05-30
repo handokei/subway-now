@@ -129,18 +129,31 @@ function lookupHeadwaySeconds(line: LineNumber, dayType: DayType, period: Period
   return Number.isFinite(value) ? value : null;
 }
 
+/**
+ * 시간표 fallback이 생성한 가상 trainCode prefix. 실시간 API가 빈약한 시간대에 사용되며,
+ * BoardingTrainList 등 UI에서 사용자에게 노출하지 않기 위한 식별자(#648).
+ */
+export const SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX = 'SCHED-';
+
+/** trainCode가 시간표 fallback에서 만들어진 가상 코드인지 판별(#648). */
+export function isScheduleFallbackTrainCode(trainCode: string): boolean {
+  return trainCode.startsWith(SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX);
+}
+
 function makeTrain(
   secondsFromNow: number,
   suffix: string,
   nowMs: number,
   destination: string,
+  line: LineNumber,
 ): ArrivalInfo {
   return {
     destination,
     arrivalMinutes: Math.max(0, Math.floor(secondsFromNow / 60)),
     arrivalSeconds: secondsFromNow,
     statusMessage: '',
-    trainCode: `SCHED-${suffix}`,
+    trainCode: `${SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX}${suffix}`,
+    line,
     receivedAtMs: nowMs,
     arrivalCode: -1,
     isLastTrain: false,
@@ -236,9 +249,9 @@ export function buildScheduleArrival(
   const { hour: kstHour, minute: kstMinute, second: kstSecond, weekday: kstWeekday } = getKstParts(now);
   const timetableHit = lookupTimetable(line, stationName, dayType, kstWeekday, kstHour, kstMinute, kstSecond);
   if (timetableHit) {
-    const up = timetableHit.upSeconds.map((sec, i) => makeTrain(sec, `UP-${i + 1}`, nowMs, upTerminal));
+    const up = timetableHit.upSeconds.map((sec, i) => makeTrain(sec, `UP-${i + 1}`, nowMs, upTerminal, line));
     const down = timetableHit.downSeconds.map((sec, i) =>
-      makeTrain(sec, `DN-${i + 1}`, nowMs, downTerminal),
+      makeTrain(sec, `DN-${i + 1}`, nowMs, downTerminal, line),
     );
     return { up, down, isMock: false, source: 'schedule' };
   }
@@ -269,12 +282,12 @@ export function buildScheduleArrival(
   // 정확히 동기화되어 있지 않으며, 디버그 시 dir 분기 검증을 가능하게 한다.
   const downFirst = nextDepartureSeconds(nowMs + Math.floor(headwayMs / 2));
   const up = [
-    makeTrain(upFirst, 'UP-1', nowMs, upTerminal),
-    makeTrain(upFirst + headway, 'UP-2', nowMs, upTerminal),
+    makeTrain(upFirst, 'UP-1', nowMs, upTerminal, line),
+    makeTrain(upFirst + headway, 'UP-2', nowMs, upTerminal, line),
   ];
   const down = [
-    makeTrain(downFirst, 'DN-1', nowMs, downTerminal),
-    makeTrain(downFirst + headway, 'DN-2', nowMs, downTerminal),
+    makeTrain(downFirst, 'DN-1', nowMs, downTerminal, line),
+    makeTrain(downFirst + headway, 'DN-2', nowMs, downTerminal, line),
   ];
 
   return { up, down, isMock: true, source: 'schedule' };

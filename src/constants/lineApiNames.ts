@@ -27,3 +27,50 @@ export const LINE_API_NAMES: Record<LineNumber, string> = {
 export function getLineApiName(line: LineNumber): string {
   return LINE_API_NAMES[line];
 }
+
+/**
+ * 서울 열린데이터 `realtimeStationArrival` 응답 `subwayId`(예: "1001") → LineNumber 역매핑.
+ * 환승역에서 같은 statnNm으로 두 노선 열차가 함께 응답되므로, 각 row의 정확한 호선 식별에 필요.
+ * LINE_API_NAMES 추가 시 이 매핑도 함께 확장 — 호선 누락 시 어댑터에서 row 식별 실패.
+ */
+const SUBWAY_ID_TO_LINE: Record<string, LineNumber> = {
+  '1001': '1',
+  '1002': '2',
+  '1003': '3',
+  '1004': '4',
+  '1005': '5',
+  '1006': '6',
+  '1007': '7',
+  '1008': '8',
+  '1009': '9',
+  '1063': 'gyeongui',
+  '1065': 'airport',
+  '1075': 'bundang',
+  '1077': 'sinbundang',
+};
+
+/**
+ * subwayId → LineNumber. 매핑 실패 시 null.
+ * value는 unknown — 서울 API raw 응답에서 string·number·undefined 모두 가능하기 때문.
+ * object/array는 의미 없는 stringification("[object Object]") 방지를 위해 거부.
+ */
+export function subwayIdToLine(value: unknown): LineNumber | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  return SUBWAY_ID_TO_LINE[String(value)] ?? null;
+}
+
+/**
+ * LineNumber → subwayId 역방향. backend BoardingLockMeta.subwayId 송신용 (#622).
+ * 매핑 누락 시 null — 호출자가 송신 차단 또는 graceful skip.
+ */
+const LINE_TO_SUBWAY_ID: Record<LineNumber, string> = Object.entries(SUBWAY_ID_TO_LINE).reduce(
+  (acc, [id, line]) => {
+    acc[line] = id;
+    return acc;
+  },
+  {} as Record<LineNumber, string>,
+);
+
+export function lineToSubwayId(line: LineNumber): string | null {
+  return LINE_TO_SUBWAY_ID[line] ?? null;
+}

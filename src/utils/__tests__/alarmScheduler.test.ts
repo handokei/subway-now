@@ -8,11 +8,11 @@ import {
 } from '../alarmScheduler';
 import { logScheduledAlarm } from '../alarmLog';
 import { getLastNotifiedStationId } from '../notificationState';
-import type {
-  DirectRoute,
-  TransferRoute,
-  MultiTransferRoute,
-} from '../stationRoute';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../testUtils/routeFixtures';
 
 jest.mock('expo-notifications');
 jest.mock('../logger', () => ({
@@ -79,7 +79,7 @@ describe('scheduleAlarmsForRoute', () => {
   });
 
   it('direct 경로는 도착역 1 waypoint × 2 phase = 2개 알람을 예약한다', async () => {
-    const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const route = makeDirectRoute(10, '1');
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
@@ -105,14 +105,13 @@ describe('scheduleAlarmsForRoute', () => {
   });
 
   it('transfer 경로는 환승 + 도착 = 2 waypoint × 2 phase = 4개 알람을 예약한다 (2(N+1), N=1)', async () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '동대문',
       fromLine: '1',
       toLine: '4',
       stopsToTransfer: 4,
       stopsFromTransfer: 6,
-    };
+    });
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
@@ -146,14 +145,13 @@ describe('scheduleAlarmsForRoute', () => {
   });
 
   it('multi-transfer 경로는 3 waypoint × 2 phase = 6개 알람을 예약한다 (N=2)', async () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '동대문', fromLine: '1', toLine: '4', stopsToTransfer: 3 },
         { transferName: '서울역', fromLine: '4', toLine: '2', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 2,
-    };
+    });
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
@@ -173,7 +171,7 @@ describe('scheduleAlarmsForRoute', () => {
   });
 
   it('currentStationApproachEtaSeconds가 null이면 calculateStaticETA로 fallback한다', async () => {
-    const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const route = makeDirectRoute(10, '1');
     // calculateStaticETA(direct stops=10) = 3 wait + 10*2 = 23 min = 1380s
     const result = await scheduleAlarmsForRoute({
       route,
@@ -188,7 +186,7 @@ describe('scheduleAlarmsForRoute', () => {
   });
 
   it('currentStationApproachEtaSeconds가 0 이하면 fallback을 사용한다', async () => {
-    const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const route = makeDirectRoute(10, '1');
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
@@ -200,7 +198,7 @@ describe('scheduleAlarmsForRoute', () => {
   });
 
   it('totalStops가 0이면 빈 배열을 반환한다 (이미 목적지)', async () => {
-    const route: DirectRoute = { type: 'direct', stops: 0, line: '1' };
+    const route = makeDirectRoute(0, '1');
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
@@ -214,14 +212,13 @@ describe('scheduleAlarmsForRoute', () => {
 
   it('stops=0 waypoint(이미 도착한 환승역 등)는 두 phase 모두 건너뛰고 다음 waypoint만 예약한다', async () => {
     // 환승역에 이미 도착해 stopsToTransfer=0인 trip — transfer는 waypointEta=0이라 fire<=0으로 모두 skip.
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '동대문',
       fromLine: '1',
       toLine: '4',
       stopsToTransfer: 0,
       stopsFromTransfer: 5,
-    };
+    });
     const result = await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
@@ -241,7 +238,7 @@ describe('scheduleAlarmsForRoute', () => {
   });
 
   it('iOS에서는 interruptionLevel: timeSensitive를 포함한다', async () => {
-    const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const route = makeDirectRoute(10, '1');
     await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
@@ -261,7 +258,7 @@ describe('scheduleAlarmsForRoute', () => {
 
   it('Android에서는 channelId와 priority MAX를 포함한다', async () => {
     jest.replaceProperty(Platform, 'OS', 'android');
-    const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const route = makeDirectRoute(10, '1');
     await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
@@ -279,7 +276,7 @@ describe('scheduleAlarmsForRoute', () => {
   });
 
   it('scheduleNotificationAsync 호출 시 trigger.date에 fireDate가 전달된다', async () => {
-    const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const route = makeDirectRoute(10, '1');
     await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',
@@ -296,7 +293,7 @@ describe('scheduleAlarmsForRoute', () => {
   });
 
   it('now를 생략하면 Date.now()를 사용한다', async () => {
-    const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const route = makeDirectRoute(10, '1');
     const before = Date.now();
     const result = await scheduleAlarmsForRoute({
       route,
@@ -313,7 +310,7 @@ describe('scheduleAlarmsForRoute', () => {
 
   // ── #372 stamp ──
   it('stamp + last-notified를 각 예약 알람에 함께 적재한다', async () => {
-    const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const route = makeDirectRoute(10, '1');
     mockedGetLastNotified.mockResolvedValueOnce('S-prev');
 
     await scheduleAlarmsForRoute({
@@ -348,7 +345,7 @@ describe('scheduleAlarmsForRoute', () => {
   });
 
   it('stamp 미지정이면 direction/usedTrainCode가 null로 기록된다', async () => {
-    const route: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const route = makeDirectRoute(10, '1');
 
     await scheduleAlarmsForRoute({
       route,
@@ -372,14 +369,13 @@ describe('scheduleAlarmsForRoute', () => {
   it('skip된 phase(예: stops=0 waypoint)는 logScheduledAlarm을 호출하지 않는다', async () => {
     // stopsToTransfer=0이면 환승역 waypoint는 fireSeconds<=0으로 두 phase 모두 skip되어
     // log도 남기지 않는다. 도착역 phase 2회만 stamp된다.
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '동대문',
       fromLine: '1',
       toLine: '4',
       stopsToTransfer: 0,
       stopsFromTransfer: 5,
-    };
+    });
     await scheduleAlarmsForRoute({
       route,
       destinationName: '강남',

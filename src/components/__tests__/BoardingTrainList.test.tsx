@@ -1,6 +1,7 @@
 import { fireEvent } from '@testing-library/react-native';
 import { BoardingTrainList } from '../BoardingTrainList';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
+import { LINE_COLORS } from '../../constants/lineColors';
 import type { ArrivalInfo } from '../../api/arrivalApi';
 
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
@@ -10,6 +11,7 @@ function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
     arrivalSeconds: 180,
     statusMessage: '',
     trainCode: 'T-1',
+    line: '2',
     receivedAtMs: 0,
     arrivalCode: -1,
     isLastTrain: false,
@@ -27,7 +29,7 @@ describe('BoardingTrainList', () => {
     expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
   });
 
-  it('각 train마다 trainCode + destination + arrivalMinutes 렌더', () => {
+  it('각 train마다 trainCode + destination 렌더', () => {
     const trains = [makeTrain({ trainCode: 'T-A', destination: '강남', arrivalMinutes: 2 })];
     const { getByText, getByTestId } = renderWithTheme(
       <BoardingTrainList arrivals={trains} line="2" onSelect={() => {}} />,
@@ -35,7 +37,29 @@ describe('BoardingTrainList', () => {
     expect(getByTestId('boarding-train-row-T-A')).toBeTruthy();
     expect(getByText('강남 행')).toBeTruthy();
     expect(getByText('T-A')).toBeTruthy();
-    expect(getByText('2분')).toBeTruthy();
+  });
+
+  it('#634 도착 시각을 receivedAtMs + arrivalSeconds 기반 HH:mm으로 표시', () => {
+    // 2026-01-01 03:05 + 180s = 2026-01-01 03:08
+    const base = new Date(2026, 0, 1, 3, 5).getTime();
+    const train = makeTrain({ trainCode: 'T-CLOCK', receivedAtMs: base, arrivalSeconds: 180 });
+    const { getByTestId } = renderWithTheme(
+      <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+    );
+    expect(getByTestId('boarding-train-arrival-T-CLOCK').props.children).toBe('03:08');
+  });
+
+  it('#634 receivedAtMs=0(mock/stale)이면 현재 시각 기준 HH:mm 계산', () => {
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(new Date(2026, 0, 1, 10, 0).getTime());
+    try {
+      const train = makeTrain({ trainCode: 'T-NOW', receivedAtMs: 0, arrivalSeconds: 120 });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      expect(getByTestId('boarding-train-arrival-T-NOW').props.children).toBe('10:02');
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('train row 탭 시 onSelect에 해당 train 전달', () => {
@@ -80,6 +104,16 @@ describe('BoardingTrainList', () => {
     expect(onSelect).toHaveBeenCalledWith(reachable);
   });
 
+  it('#648 SCHED-* trainCode는 사용자에게 숨기고 "시간표" 라벨로 대체', () => {
+    const fallback = makeTrain({ trainCode: 'SCHED-DN-1', destination: '석남', line: '7' });
+    const { getByText, queryByText } = renderWithTheme(
+      <BoardingTrainList arrivals={[fallback]} line="7" onSelect={() => {}} />,
+    );
+    expect(queryByText('SCHED-DN-1')).toBeNull();
+    expect(getByText('시간표')).toBeTruthy();
+    expect(getByText('석남 행')).toBeTruthy();
+  });
+
   it('walkingBufferSeconds 미전달이면 모든 train 활성', () => {
     const tooSoon = makeTrain({ trainCode: 'T-EARLY', arrivalSeconds: 60 });
     const onSelect = jest.fn();
@@ -88,5 +122,91 @@ describe('BoardingTrainList', () => {
     );
     fireEvent.press(getByTestId('boarding-train-row-T-EARLY'));
     expect(onSelect).toHaveBeenCalled();
+  });
+
+  it('#649 nextStationLabel 전달 시 "{label} 방면" 으로 표기 (destination 행 대체)', () => {
+    const train = makeTrain({ trainCode: 'T-NEXT', destination: '석남', line: '7' });
+    const { getByText, queryByText } = renderWithTheme(
+      <BoardingTrainList
+        arrivals={[train]}
+        line="7"
+        onSelect={() => {}}
+        nextStationLabel="중곡"
+      />,
+    );
+    expect(getByText('중곡 방면')).toBeTruthy();
+    expect(queryByText('석남 행')).toBeNull();
+  });
+
+  it('#649 compact 모드: 헤더/trainCode 라인 생략, 단일 row 라벨만', () => {
+    const train = makeTrain({ trainCode: 'T-COMPACT', destination: '석남', line: '7' });
+    const { getByTestId, queryByText } = renderWithTheme(
+      <BoardingTrainList
+        arrivals={[train]}
+        line="7"
+        onSelect={() => {}}
+        compact
+        nextStationLabel="중곡"
+      />,
+    );
+    expect(getByTestId('boarding-train-label-T-COMPACT').props.children).toBe('중곡 방면');
+    expect(queryByText('탑승할 열차 선택')).toBeNull();
+    expect(queryByText('T-COMPACT')).toBeNull();
+  });
+
+  it('#649 compact + 빈 arrivals 도 동일 placeholder', () => {
+    const { getByTestId, getByText } = renderWithTheme(
+      <BoardingTrainList arrivals={[]} line="7" onSelect={() => {}} compact />,
+    );
+    expect(getByTestId('boarding-train-list-empty')).toBeTruthy();
+    expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
+  });
+
+  describe('#664 환승역 line 필터 + 호선 색 stripe', () => {
+    function flattenStyle(style: unknown): Record<string, unknown> {
+      if (Array.isArray(style)) return Object.assign({}, ...style.map(flattenStyle));
+      return (style ?? {}) as Record<string, unknown>;
+    }
+
+    it('train.line이 헤더 line과 다른 row는 표시되지 않는다 (환승역 같은 statnNm 다른 노선)', () => {
+      const trains = [
+        makeTrain({ trainCode: 'T-7', line: '7' }),
+        makeTrain({ trainCode: 'T-G', line: 'gyeongui' }),
+      ];
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={trains} line="7" onSelect={() => {}} />,
+      );
+      expect(getByTestId('boarding-train-row-T-7')).toBeTruthy();
+      expect(queryByTestId('boarding-train-row-T-G')).toBeNull();
+    });
+
+    it('모든 row가 헤더 line과 불일치하면 empty placeholder', () => {
+      const trains = [makeTrain({ trainCode: 'T-G', line: 'gyeongui' })];
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={trains} line="7" onSelect={() => {}} />,
+      );
+      expect(getByTestId('boarding-train-list-empty')).toBeTruthy();
+    });
+
+    it('row 좌측에 호선 색 stripe (borderLeftColor = LINE_COLORS[train.line])', () => {
+      const train = makeTrain({ trainCode: 'T-7', line: '7' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="7" onSelect={() => {}} />,
+      );
+      const row = getByTestId('boarding-train-row-T-7');
+      const style = flattenStyle(row.props.style);
+      expect(style.borderLeftColor).toBe(LINE_COLORS['7']);
+      expect(style.borderLeftWidth).toBeGreaterThan(0);
+    });
+
+    it('compact 모드에서도 stripe 적용', () => {
+      const train = makeTrain({ trainCode: 'T-COMPACT-7', line: '7' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="7" onSelect={() => {}} compact />,
+      );
+      const row = getByTestId('boarding-train-row-T-COMPACT-7');
+      const style = flattenStyle(row.props.style);
+      expect(style.borderLeftColor).toBe(LINE_COLORS['7']);
+    });
   });
 });

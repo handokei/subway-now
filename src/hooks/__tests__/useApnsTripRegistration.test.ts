@@ -35,9 +35,11 @@ import { useApnsTripRegistration } from '../useApnsTripRegistration';
 import type { Station } from '../../types/station';
 import type { Route } from '../../utils/stationRoute';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../constants/storageKeys';
+import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 const station: Station = {
-  id: '0228',
+  // stations.json 강남(2호선)과 id 일치 — #622 buildBoardingLockMeta가 boardingStationId로 조회.
+  id: '2-022',
   name: '강남',
   line: '2',
   lat: 37.5,
@@ -45,7 +47,7 @@ const station: Station = {
   lineColor: '#00A84D',
 };
 
-const directRoute: Route = { type: 'direct', stops: 5, line: '2' };
+const directRoute: Route = makeDirectRoute(5, '2');
 
 describe('useApnsTripRegistration', () => {
   let listenerRemove: jest.Mock;
@@ -105,7 +107,7 @@ describe('useApnsTripRegistration', () => {
     expect(mockRegister).toHaveBeenCalledWith(
       expect.objectContaining({
         token: 'token-abc',
-        destination: '0228',
+        destination: '2-022',
         waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
         apnsEnv: expect.stringMatching(/^(sandbox|production)$/) as unknown as 'sandbox' | 'production',
       }),
@@ -334,7 +336,7 @@ describe('useApnsTripRegistration', () => {
     expect(mockClear).not.toHaveBeenCalled();
   });
 
-  it('unmount 직후 register resolve해도 ACTIVE_TRIP_KEY 저장 안 함', async () => {
+  it('#669 unmount/deps 변경 후 register resolve도 ACTIVE_TRIP_KEY 저장 — race로 잃지 않음', async () => {
     let resolveReg!: (v: { ok: boolean }) => void;
     mockRegister.mockImplementation(
       () => new Promise((res) => { resolveReg = res; }),
@@ -353,7 +355,8 @@ describe('useApnsTripRegistration', () => {
       resolveReg({ ok: true });
       await Promise.resolve();
     });
-    expect(AsyncStorage.setItem).not.toHaveBeenCalledWith(ACTIVE_TRIP_KEY, 'token-abc');
+    // backend register 성공 → cleanup 후에도 ACTIVE_TRIP_KEY 동기화 (DebugModal activeTrip 정확도).
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(ACTIVE_TRIP_KEY, 'token-abc');
   });
 
   it('nextStationEtaSeconds > 0 이면 alarmAt = now + eta*1000', async () => {
@@ -375,11 +378,11 @@ describe('useApnsTripRegistration', () => {
     const { rerender } = renderHook(
       ({ route }: { route: Route }) =>
         useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
-      { initialProps: { route: { type: 'direct', stops: 5, line: '2' } as Route } },
+      { initialProps: { route: makeDirectRoute(5, '2') as Route } },
     );
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
     // 내용 동일, reference만 신규
-    rerender({ route: { type: 'direct', stops: 5, line: '2' } as Route });
+    rerender({ route: makeDirectRoute(5, '2') as Route });
     await act(async () => {
       await Promise.resolve();
     });
@@ -416,13 +419,13 @@ describe('useApnsTripRegistration', () => {
     const { rerender } = renderHook(
       ({ route }: { route: Route }) =>
         useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
-      { initialProps: { route: { type: 'direct', stops: 5, line: '2' } as Route } },
+      { initialProps: { route: makeDirectRoute(5, '2') as Route } },
     );
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
     const first = mockRegister.mock.calls[0][0].createdAt as number;
 
     now = 1_700_000_500_000;
-    rerender({ route: { type: 'direct', stops: 6, line: '2' } as Route });
+    rerender({ route: makeDirectRoute(6, '2') as Route });
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
     expect(mockRegister.mock.calls[1][0].createdAt).toBe(1_700_000_500_000);
     expect(mockRegister.mock.calls[1][0].createdAt).not.toBe(first);
@@ -484,10 +487,112 @@ describe('useApnsTripRegistration', () => {
     const { rerender } = renderHook(
       ({ route }: { route: Route }) =>
         useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
-      { initialProps: { route: { type: 'direct', stops: 5, line: '2' } as Route } },
+      { initialProps: { route: makeDirectRoute(5, '2') as Route } },
     );
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-    rerender({ route: { type: 'direct', stops: 6, line: '2' } as Route });
+    rerender({ route: makeDirectRoute(6, '2') as Route });
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+  });
+
+  describe('#622 boardingLock 송신', () => {
+    // 강남(2-022)이 stations.json에 실제 존재해야 segmentStations 추론 성공.
+    // buildBoardingLockMeta는 boardingStationId('2-022')로 lookup 후 segment를 만든다.
+    const lockFor7 = {
+      destinationId: station.id,
+      trainCode: '7246',
+      boardingStationId: station.id, // 강남 (2호선) — boardingLine=2와 일치
+      boardingLine: '2' as const,
+      boardedAt: 1_700_000_000_000,
+      expectedDurationMs: 600_000,
+    };
+
+    it('boardingLock 전달 시 callRegister payload.boardingLock에 schema 변환된 객체 포함', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+          boardingLock: lockFor7,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
+      const args = mockRegister.mock.calls[0][0];
+      expect(args.boardingLock).toBeDefined();
+      expect(args.boardingLock).toMatchObject({
+        trainCode: '7246',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: lockFor7.boardedAt,
+      });
+      expect(args.boardingLock.segmentStations.length).toBeGreaterThan(0);
+    });
+
+    it('boardingLock null이면 payload.boardingLock 누락', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+          boardingLock: null,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
+      const args = mockRegister.mock.calls[0][0];
+      expect(args.boardingLock).toBeUndefined();
+    });
+
+    it('boardingLock 내용이 같으면 reference만 달라도 재등록 안 함 (sig 기반 deps)', async () => {
+      const sameContent = { ...lockFor7 };
+      const { rerender } = renderHook(
+        ({ lock }: { lock: typeof lockFor7 }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            currentStation: station,
+            boardingLock: lock,
+          }),
+        { initialProps: { lock: lockFor7 } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      rerender({ lock: sameContent }); // 새 object reference, 같은 내용
+      // 한 틱 대기해도 추가 호출 없어야 함
+      await new Promise((r) => setTimeout(r, 50));
+      expect(mockRegister).toHaveBeenCalledTimes(1);
+    });
+
+    it('boardingLock 변경 시 재등록 (deps 포함 확인)', async () => {
+      const { rerender } = renderHook(
+        ({ lock }: { lock: typeof lockFor7 | null }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            currentStation: station,
+            boardingLock: lock,
+          }),
+        { initialProps: { lock: null as typeof lockFor7 | null } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      rerender({ lock: lockFor7 });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+    });
+
+    it('boardingLock 있지만 boardingStationId가 stations.json에 없으면 meta 없이 송신', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+          boardingLock: { ...lockFor7, boardingStationId: '__no_such_id__' },
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
+      const args = mockRegister.mock.calls[0][0];
+      expect(args.boardingLock).toBeUndefined();
+    });
   });
 });

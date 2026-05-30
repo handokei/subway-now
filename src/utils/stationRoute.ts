@@ -1,12 +1,50 @@
 import stations from '../data/stations.json';
+import stationTravelTimesJson from '../data/stationTravelTimes.json';
+import transferTimes from '../data/transferTimes.json';
 import type { Station } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
 import type { LineNumber } from '../types/station';
+import { applyStationAlias } from '../data/stationAliases';
 import { createLogger } from './logger';
+import { normalizeStationName as baseNormalizeStationName } from './normalizeStationName';
 
 const logger = createLogger('StationRoute');
 
 const allStations = stations as Station[];
+const stationTravelTimes = stationTravelTimesJson as Record<string, number>;
+
+// 실측 운행시간이 누락된 hop의 fallback (예: 9호선/공항철도 등 #655 미커버 노선).
+const STOP_FALLBACK_SECONDS = 120;
+
+/**
+ * line의 fromId → toId 단일 hop 운행 시간(초). #655.
+ * 실제 데이터는 서울 열린데이터 StationDstncReqreTimeHm을 양방향으로 저장하므로
+ * 양 방향이 동일한 값을 돌려준다. lookup 실패 시 STOP_FALLBACK_SECONDS(=120, 2분).
+ * miss는 logger.debug로 노출해 향후 데이터 보강(9호선/공항철도/경의중앙선 등) 추적에 사용.
+ */
+export function getStopSeconds(line: LineNumber, fromId: string, toId: string): number {
+  const key = `${line}|${fromId}|${toId}`;
+  const hit = stationTravelTimes[key];
+  if (hit !== undefined) return hit;
+  logger.debug(`getStopSeconds miss: ${key} → fallback ${STOP_FALLBACK_SECONDS}s`);
+  return STOP_FALLBACK_SECONDS;
+}
+
+// line 위 fromIdx → toIdx 구간을 한 hop씩 누적한 운행 시간(초). 환승 대기 미포함.
+function computeSegmentSeconds(
+  line: LineNumber,
+  fromIdx: number,
+  toIdx: number,
+  lineStations: Station[],
+): number {
+  if (fromIdx === toIdx) return 0;
+  const step = fromIdx < toIdx ? 1 : -1;
+  let total = 0;
+  for (let i = fromIdx; i !== toIdx; i += step) {
+    total += getStopSeconds(line, lineStations[i].id, lineStations[i + step].id);
+  }
+  return total;
+}
 
 // O(1) 룩업 테이블 (성능 최적화)
 const stationById = new Map<string, Station>(allStations.map((s) => [s.id, s]));
@@ -45,6 +83,8 @@ export interface DirectRoute {
   type: 'direct';
   stops: number;
   line: LineNumber;
+  /** #655: 실측 운행 시간(초). findRoutes/updateRouteFromPosition가 lookup으로 채운다. */
+  travelSeconds: number;
 }
 
 export interface TransferRoute {
@@ -54,6 +94,10 @@ export interface TransferRoute {
   toLine: LineNumber;
   stopsToTransfer: number;
   stopsFromTransfer: number;
+  /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
+  secondsToTransfer: number;
+  /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
+  secondsFromTransfer: number;
 }
 
 export interface TransferSegment {
@@ -61,12 +105,16 @@ export interface TransferSegment {
   fromLine: LineNumber;
   toLine: LineNumber;
   stopsToTransfer: number;
+  /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
+  secondsToTransfer: number;
 }
 
 export interface MultiTransferRoute {
   type: 'multi-transfer';
   transfers: TransferSegment[];
   stopsAfterLastTransfer: number;
+  /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
+  secondsAfterLastTransfer: number;
 }
 
 export type Route = DirectRoute | TransferRoute | MultiTransferRoute | null;
@@ -119,15 +167,11 @@ export interface JourneyDisplay {
   totalStops: number;
 }
 
-// 후행 괄호 부제(예: "상봉(시외버스터미널)" → "상봉")를 제거해
-// 동일 환승역이 노선별로 다른 표기로 등록되어도 매칭이 성립하도록 한다.
-// 정규식 대신 lastIndexOf로 구현 (ReDoS 회피 + 의도 명시).
+// 괄호 부제 제거는 ./normalizeStationName.js (SSOT — 빌드 스크립트와 공유)에 위임하고,
+// 그 위에 노선별 공식 표기 차이(예: "이수" ↔ "총신대입구")를 흡수하는 별칭을 한 번 더 적용한다.
+// Alias는 transferGraph 매칭 전용 — CSV 원본을 다루는 build-transfer-times.js는 적용 대상 아님.
 export function normalizeStationName(name: string): string {
-  const trimmed = name.trim();
-  if (!trimmed.endsWith(')')) return trimmed;
-  const open = trimmed.lastIndexOf('(');
-  if (open <= 0) return trimmed;
-  return trimmed.slice(0, open).trimEnd();
+  return applyStationAlias(baseNormalizeStationName(name));
 }
 
 // 노선별 표기 차이를 흡수한 역 이름 동일성 비교.
@@ -182,6 +226,11 @@ export function getStationsOnLine(line: LineNumber): Station[] {
   return getLineStationsCached(line);
 }
 
+/** stations.json id로 단일 Station 조회. 미존재 시 undefined. */
+export function getStationById(id: string): Station | undefined {
+  return stationById.get(id);
+}
+
 export function findStationByNameAndLine(name: string, line: LineNumber): Station | undefined {
   const stations = getLineStationsCached(line);
   const exact = stations.find((s) => s.name === name);
@@ -201,10 +250,17 @@ export function updateRouteFromPosition(
     const dest = stationById.get(destinationId);
     if (!dest || nearestStation.line !== dest.line) return null;
     const remaining = getRemainingStops(nearestStation.id, destinationId);
+    if (remaining === null) return null;
     // dest.line을 채택해 stored가 invariant를 깨고 들어와도 자가 치유되도록 한다.
-    return remaining !== null
-      ? { type: 'direct', stops: remaining, line: dest.line }
-      : null;
+    const lineStations = getLineStationsCached(dest.line);
+    const nIdx = lineStations.findIndex((s) => s.id === nearestStation.id);
+    const dIdx = lineStations.findIndex((s) => s.id === destinationId);
+    return {
+      type: 'direct',
+      stops: remaining,
+      line: dest.line,
+      travelSeconds: computeSegmentSeconds(dest.line, nIdx, dIdx, lineStations),
+    };
   }
 
   if (storedRoute.type === 'transfer') {
@@ -212,13 +268,29 @@ export function updateRouteFromPosition(
       const transfer = findStationByNameAndLine(storedRoute.transferName, storedRoute.fromLine);
       if (!transfer) return null;
       const stopsToTransfer = getRemainingStops(nearestStation.id, transfer.id);
-      return stopsToTransfer !== null ? { ...storedRoute, stopsToTransfer } : null;
+      if (stopsToTransfer === null) return null;
+      const lineStations = getLineStationsCached(storedRoute.fromLine);
+      const nIdx = lineStations.findIndex((s) => s.id === nearestStation.id);
+      const tIdx = lineStations.findIndex((s) => s.id === transfer.id);
+      return {
+        ...storedRoute,
+        stopsToTransfer,
+        secondsToTransfer: computeSegmentSeconds(storedRoute.fromLine, nIdx, tIdx, lineStations),
+      };
     }
     if (nearestStation.line === storedRoute.toLine) {
       const stopsFromTransfer = getRemainingStops(nearestStation.id, destinationId);
-      return stopsFromTransfer !== null
-        ? { ...storedRoute, stopsToTransfer: 0, stopsFromTransfer }
-        : null;
+      if (stopsFromTransfer === null) return null;
+      const lineStations = getLineStationsCached(storedRoute.toLine);
+      const nIdx = lineStations.findIndex((s) => s.id === nearestStation.id);
+      const dIdx = lineStations.findIndex((s) => s.id === destinationId);
+      return {
+        ...storedRoute,
+        stopsToTransfer: 0,
+        stopsFromTransfer,
+        secondsToTransfer: 0,
+        secondsFromTransfer: computeSegmentSeconds(storedRoute.toLine, nIdx, dIdx, lineStations),
+      };
     }
     return null;
   }
@@ -233,8 +305,16 @@ export function updateRouteFromPosition(
       if (!station) return null;
       const stops = getRemainingStops(nearestStation.id, station.id);
       if (stops === null) return null;
+      const lineStations = getLineStationsCached(segment.fromLine);
+      const nIdx = lineStations.findIndex((s) => s.id === nearestStation.id);
+      const tIdx = lineStations.findIndex((s) => s.id === station.id);
+      const secondsToCurrent = computeSegmentSeconds(segment.fromLine, nIdx, tIdx, lineStations);
       const updatedTransfers = transfers.map((t, j) =>
-        j < i ? { ...t, stopsToTransfer: 0 } : j === i ? { ...t, stopsToTransfer: stops } : t,
+        j < i
+          ? { ...t, stopsToTransfer: 0, secondsToTransfer: 0 }
+          : j === i
+            ? { ...t, stopsToTransfer: stops, secondsToTransfer: secondsToCurrent }
+            : t,
       );
       return { ...storedRoute, transfers: updatedTransfers };
     }
@@ -245,8 +325,21 @@ export function updateRouteFromPosition(
   if (lastTransfer && nearestStation.line === lastTransfer.toLine) {
     const stops = getRemainingStops(nearestStation.id, destinationId);
     if (stops === null) return null;
-    const updatedTransfers = transfers.map((t) => ({ ...t, stopsToTransfer: 0 }));
-    return { ...storedRoute, transfers: updatedTransfers, stopsAfterLastTransfer: stops };
+    const lineStations = getLineStationsCached(lastTransfer.toLine);
+    const nIdx = lineStations.findIndex((s) => s.id === nearestStation.id);
+    const dIdx = lineStations.findIndex((s) => s.id === destinationId);
+    const lastSegSeconds = computeSegmentSeconds(lastTransfer.toLine, nIdx, dIdx, lineStations);
+    const updatedTransfers = transfers.map((t) => ({
+      ...t,
+      stopsToTransfer: 0,
+      secondsToTransfer: 0,
+    }));
+    return {
+      ...storedRoute,
+      transfers: updatedTransfers,
+      stopsAfterLastTransfer: stops,
+      secondsAfterLastTransfer: lastSegSeconds,
+    };
   }
 
   return null;
@@ -349,7 +442,12 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
     const lineStations = getLineStationsCached(current.line);
     const cIdx = lineStations.findIndex((s) => s.id === currentId);
     const dIdx = lineStations.findIndex((s) => s.id === destinationId);
-    const direct: DirectRoute = { type: 'direct', stops: Math.abs(dIdx - cIdx), line: current.line };
+    const direct: DirectRoute = {
+      type: 'direct',
+      stops: Math.abs(dIdx - cIdx),
+      line: current.line,
+      travelSeconds: computeSegmentSeconds(current.line, cIdx, dIdx, lineStations),
+    };
     const duration = performance.now() - start;
     logger.debug(`findRoutes(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms`);
     return [toCandidate(direct)];
@@ -384,6 +482,8 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
         toLine: destination.line,
         stopsToTransfer,
         stopsFromTransfer,
+        secondsToTransfer: computeSegmentSeconds(current.line, currentIdx, i, currentLineStations),
+        secondsFromTransfer: computeSegmentSeconds(destination.line, transferDestIdx, destIdx, destLineStations),
       };
     }
   }
@@ -470,6 +570,7 @@ function findMultiTransferRoute(
     if (!transfer2Names) continue;
 
     const midNameIndex = getLineNameIndexCached(midLine);
+    const midLineStations = getLineStationsCached(midLine);
 
     // 첫 번째 환승: 현재노선 → 중간노선
     for (const t1Name of transfer1Names) {
@@ -496,10 +597,23 @@ function findMultiTransferRoute(
           best = {
             type: 'multi-transfer',
             transfers: [
-              { transferName: t1Name, fromLine, toLine: midLine, stopsToTransfer: stopsToFirst },
-              { transferName: t2Name, fromLine: midLine, toLine, stopsToTransfer: stopsToSecond },
+              {
+                transferName: t1Name,
+                fromLine,
+                toLine: midLine,
+                stopsToTransfer: stopsToFirst,
+                secondsToTransfer: computeSegmentSeconds(fromLine, currentIdx, t1CurrentIdx, currentLineStations),
+              },
+              {
+                transferName: t2Name,
+                fromLine: midLine,
+                toLine,
+                stopsToTransfer: stopsToSecond,
+                secondsToTransfer: computeSegmentSeconds(midLine, t1MidIdx, t2MidIdx, midLineStations),
+              },
             ],
             stopsAfterLastTransfer: stopsAfter,
+            secondsAfterLastTransfer: computeSegmentSeconds(toLine, t2DestIdx, destIdx, destLineStations),
           };
         }
       }
@@ -509,8 +623,22 @@ function findMultiTransferRoute(
   return best;
 }
 
-const MINUTES_PER_STOP = 2;
-const TRANSFER_MINUTES = 3;
+// 환승역별 실제 소요시간 데이터(공공데이터포털 15044419, 보행속도 1.2 m/s 기준)에
+// 미등록된 환승역에 적용하는 fallback. 기존 균일 가정값 3분(=180초)을 유지.
+const FALLBACK_TRANSFER_SECONDS = 180;
+
+const transferTimeTable = transferTimes as Record<string, number>;
+
+// (fromLine, toLine, 환승역명) 조합에 대응하는 실제 환승 소요시간(초).
+// 미등록 시 FALLBACK_TRANSFER_SECONDS.
+function getTransferSeconds(
+  fromLine: LineNumber,
+  toLine: LineNumber,
+  stationName: string,
+): number {
+  const key = `${fromLine}|${toLine}|${normalizeStationName(stationName)}`;
+  return transferTimeTable[key] ?? FALLBACK_TRANSFER_SECONDS;
+}
 
 export function buildJourneyDisplay(
   route: Route,
@@ -585,19 +713,33 @@ export function buildJourneyDisplay(
 
 const DEFAULT_WAIT_MINUTES = 3;
 
+// 반환값은 항상 정수 분. 호출처(메인 ETA 카운터/알림 body/Live Activity etaMinutes Swift Int? 디코딩)가
+// 정수 분 contract에 의존하므로, 구간별 실측 운행시간(초)과 환승역별 실측 환승시간(초)을 합산해
+// 분으로 환산한 결과를 마지막에 반올림한다. 환승 시간은 getTransferSeconds.
 function getTravelMinutes(route: NonNullable<Route>): number {
   if (route.type === 'direct') {
-    return route.stops * MINUTES_PER_STOP;
+    return Math.round(route.travelSeconds / 60);
   }
 
   if (route.type === 'transfer') {
-    const totalStops = route.stopsToTransfer + route.stopsFromTransfer;
-    return totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES;
+    const totalSeconds =
+      route.secondsToTransfer +
+      route.secondsFromTransfer +
+      getTransferSeconds(route.fromLine, route.toLine, route.transferName);
+    return Math.round(totalSeconds / 60);
   }
 
-  const transferStops = route.transfers.reduce((sum, t) => sum + t.stopsToTransfer, 0);
-  const totalStops = transferStops + route.stopsAfterLastTransfer;
-  return totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES * route.transfers.length;
+  const segmentSecondsSum = route.transfers.reduce(
+    (sum, t) => sum + t.secondsToTransfer,
+    0,
+  );
+  const transferSecSum = route.transfers.reduce(
+    (sum, t) => sum + getTransferSeconds(t.fromLine, t.toLine, t.transferName),
+    0,
+  );
+  const totalSeconds =
+    segmentSecondsSum + route.secondsAfterLastTransfer + transferSecSum;
+  return Math.round(totalSeconds / 60);
 }
 
 export function calculateStaticETA(route: Route): number | null {
@@ -611,12 +753,12 @@ export function calculateStaticETA(route: Route): number | null {
  * completedTransferIdx 번째 환승을 막 끝내고 새 열차에 탑승한 시점부터 도착역까지의 잔여 시간.
  * BoardingLock의 expectedDurationMs는 boardedAt 이후 ride 시간을 의미하므로, 사용자가 list에서
  * 열차를 탭하는 순간(=새 boardedAt)부터의 시간이 산출 대상. 따라서 첫 열차 대기(DEFAULT_WAIT)는
- * 포함하지 않는다. 잔여 환승의 대기는 TRANSFER_MINUTES로 포함.
+ * 포함하지 않는다. 잔여 환승의 대기는 환승역별 실측 시간으로 포함.
  *
  * - direct: 환승 없음 → null
  * - transfer/multi-transfer: 0..transfers.length-1 범위만 유효
  *
- * 산식: 잔여 stops × MINUTES_PER_STOP + 잔여 환승 × TRANSFER_MINUTES
+ * 산식: 잔여 구간 운행시간(초) 합 + Σ(잔여 환승역의 실측 환승시간) → 분으로 round.
  */
 export function calculateRemainingLegETA(
   route: Route,
@@ -626,29 +768,39 @@ export function calculateRemainingLegETA(
   if (route.type === 'direct') return null;
   const legs = getTransferLegs(route);
   if (completedTransferIdx < 0 || completedTransferIdx >= legs.transferCount) return null;
-  const remainingTransferStops = legs.afterTransferStops
+  const remainingSegmentSeconds = legs.afterTransferSeconds
     .slice(completedTransferIdx + 1)
     .reduce((s, n) => s + n, 0);
-  const totalRemainingStops = legs.afterTransferStops[completedTransferIdx] + remainingTransferStops;
-  const remainingTransferEvents = legs.transferCount - 1 - completedTransferIdx;
-  return totalRemainingStops * MINUTES_PER_STOP + remainingTransferEvents * TRANSFER_MINUTES;
+  const totalRemainingSeconds =
+    legs.afterTransferSeconds[completedTransferIdx] + remainingSegmentSeconds;
+  // 잔여 환승 시간 합산: completedTransferIdx 다음 환승부터. transfer 타입은 환승 1회뿐이라 잔여 0.
+  let remainingTransferSec = 0;
+  if (route.type === 'multi-transfer') {
+    for (let i = completedTransferIdx + 1; i < route.transfers.length; i++) {
+      const t = route.transfers[i];
+      remainingTransferSec += getTransferSeconds(t.fromLine, t.toLine, t.transferName);
+    }
+  }
+  // 반환값은 정수 분 — BoardingLock expectedDurationMs(ms 단위 정수 변환)와 호출처가 정수를 전제로 함.
+  return Math.round((totalRemainingSeconds + remainingTransferSec) / 60);
 }
 
 /**
  * transfer/multi-transfer 라우트를 통일된 leg 표현으로 정규화. transferCount는 환승 횟수,
- * afterTransferStops[i]는 i번째 환승을 끝낸 후 다음 waypoint(=다음 환승 또는 도착역)까지의 stops.
+ * afterTransferSeconds[i]는 i번째 환승을 끝낸 후 다음 waypoint(=다음 환승 또는 도착역)까지의 운행 시간(초).
  */
 function getTransferLegs(
   route: Exclude<NonNullable<Route>, DirectRoute>,
-): { transferCount: number; afterTransferStops: number[] } {
+): { transferCount: number; afterTransferSeconds: number[] } {
   if (route.type === 'transfer') {
-    return { transferCount: 1, afterTransferStops: [route.stopsFromTransfer] };
+    return {
+      transferCount: 1,
+      afterTransferSeconds: [route.secondsFromTransfer],
+    };
   }
-  const after = route.transfers
-    .slice(1)
-    .map((t) => t.stopsToTransfer);
-  after.push(route.stopsAfterLastTransfer);
-  return { transferCount: route.transfers.length, afterTransferStops: after };
+  const after = route.transfers.slice(1).map((t) => t.secondsToTransfer);
+  after.push(route.secondsAfterLastTransfer);
+  return { transferCount: route.transfers.length, afterTransferSeconds: after };
 }
 
 // ASCII Unit Separator(0x1F) — 사용자 데이터(역명/노선명)에 절대 등장하지 않는

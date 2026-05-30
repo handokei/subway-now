@@ -7,8 +7,8 @@ import {
 import { useBoardingLockStore } from '../../store/useBoardingLockStore';
 import type { ArrivalInfo, StationArrival } from '../../api/arrivalApi';
 import type { Station } from '../../types/station';
-import type { DirectRoute } from '../../utils/stationRoute';
 import type { BoardingLock } from '../../types/boardingLock';
+import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 const mockGetBoardingLock = jest.fn();
 const mockSetBoardingLock = jest.fn();
@@ -32,6 +32,7 @@ function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
     arrivalSeconds: 180,
     statusMessage: '',
     trainCode: 'T-1',
+    line: '2',
     receivedAtMs: 0,
     arrivalCode: -1,
     isLastTrain: false,
@@ -49,7 +50,7 @@ const stationA: Station = {
   lng: 127.0,
 };
 
-const route: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+const route = makeDirectRoute(5, '2');
 
 const upTrain = makeTrain({ trainCode: 'UP-1' });
 const downTrain = makeTrain({ trainCode: 'DN-1' });
@@ -121,6 +122,16 @@ describe('useBoardingLockController', () => {
       expect(mockResolveTripDirection).not.toHaveBeenCalled();
       expect(result.current.directionalArrivals).toEqual([upTrain, downTrain]);
     });
+
+    it('#666 arrivalSeconds <= 0 (지나간 열차)는 directionalArrivals에서 제외', () => {
+      const passed = makeTrain({ trainCode: 'PASSED', arrivalSeconds: 0 });
+      const future = makeTrain({ trainCode: 'FUTURE', arrivalSeconds: 180 });
+      const arrivalWithPast: StationArrival = { up: [passed, future], down: [] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: arrivalWithPast }),
+      );
+      expect(result.current.directionalArrivals).toEqual([future]);
+    });
   });
 
   describe('createLockFromTrain', () => {
@@ -176,6 +187,17 @@ describe('useBoardingLockController', () => {
         result.current.createLockFromTrain(makeTrain());
       });
       expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('boardingLine은 train.line을 사용한다 (currentStation.line이 fusion 잘못 잠금 상태여도 lock은 정확) — #663', async () => {
+      // currentStation.line='2'(fusion이 옆 노선으로 잘못 잠긴 상태), train.line='7'(사용자가 탭한 실제 열차)
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: 'T-7', line: '7' }));
+      });
+      expect(mockSetBoardingLock).toHaveBeenCalledWith(
+        expect.objectContaining({ trainCode: 'T-7', boardingLine: '7' }),
+      );
     });
   });
 

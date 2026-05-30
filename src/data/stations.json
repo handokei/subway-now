@@ -633,6 +633,17 @@
     "nameJa": "インチョン"
   },
   {
+    "id": "1-100",
+    "name": "가산디지털단지",
+    "line": "1",
+    "lineColor": "#0052A4",
+    "lat": 37.480338,
+    "lng": 126.882656,
+    "nameEn": "Gasan Digital Complex",
+    "nameJa": "カサン·デジタルダンジ",
+    "nameHanja": "加山디지털團地"
+  },
+  {
     "id": "2-001",
     "name": "시청",
     "line": "2",
@@ -1090,6 +1101,28 @@
     "lng": 126.964378,
     "nameEn": "Chungjeongno",
     "nameJa": "チュンジョンノ"
+  },
+  {
+    "id": "2-105",
+    "name": "까치산",
+    "line": "2",
+    "lineColor": "#009D3E",
+    "lat": 37.531768,
+    "lng": 126.846683,
+    "nameEn": "Kkachisan",
+    "nameJa": "カチサン",
+    "nameHanja": "까치山"
+  },
+  {
+    "id": "2-205",
+    "name": "신설동",
+    "line": "2",
+    "lineColor": "#009D3E",
+    "lat": 37.576048,
+    "lng": 127.024634,
+    "nameEn": "Sinseol-dong",
+    "nameJa": "シンソルトン",
+    "nameHanja": "新設洞"
   },
   {
     "id": "3-001",
@@ -3476,6 +3509,16 @@
     "nameJa": "チュンアンボフンビョンウォン"
   },
   {
+    "id": "9-038",
+    "name": "올림픽공원",
+    "line": "9",
+    "lineColor": "#BDB092",
+    "lat": 37.516201,
+    "lng": 127.130923,
+    "nameEn": "Olympic Park",
+    "nameJa": "オリンピックゴンウォン"
+  },
+  {
     "id": "6-001",
     "name": "응암",
     "line": "6",
@@ -5342,6 +5385,17 @@
     "lng": 127.0483,
     "nameEn": "Cheongnyangni",
     "nameJa": "チョンニャンニ"
+  },
+  {
+    "id": "bundang-041a",
+    "name": "복정",
+    "line": "bundang",
+    "lineColor": "#F5A200",
+    "lat": 37.471052,
+    "lng": 127.126732,
+    "nameEn": "Bokjeong",
+    "nameJa": "ポクチョン",
+    "nameHanja": "福井"
   },
   {
     "id": "sinbundang-001",

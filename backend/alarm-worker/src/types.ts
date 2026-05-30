@@ -94,6 +94,12 @@ export interface Trip {
    *   - 'ended' — deregister 시점. dismissal payload 재발사 idempotency용 dedup 키.
    */
   activityState?: 'live' | 'ended';
+  /**
+   * 마지막으로 LA update push로 통지한 도착 epoch(ms) — #586 D.
+   * 30s+ 변동 시점에만 다음 발사해 APNs LA budget을 절감한다 (reschedule push의 15s 임계와 별개).
+   * waypoint shift 시 reset(undefined) — 새 hop의 첫 update를 보장한다.
+   */
+  lastLaPushEpoch?: number;
 }
 
 /** Device가 확정한 탑승 열차 정보 (#584). */

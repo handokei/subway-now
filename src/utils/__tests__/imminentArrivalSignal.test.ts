@@ -9,6 +9,7 @@ function makeTrain(trainCode: string, arrivalCode: number): ArrivalInfo {
     arrivalSeconds: 0,
     statusMessage: '',
     trainCode,
+    line: '2',
     receivedAtMs: 0,
     arrivalCode,
     isLastTrain: false,

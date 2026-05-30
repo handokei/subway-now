@@ -348,4 +348,5 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 저장된 데이터 없음 — false 유지
     }
   },
+
 }));

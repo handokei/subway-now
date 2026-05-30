@@ -61,11 +61,10 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
 const WAYPOINT: Waypoint = { stationName: '강남', line: '2', kind: 'destination' };
 
 describe('buildLiveActivityContentState', () => {
-  it('includes numeric/enum fields only (no text)', () => {
-    const cs = buildLiveActivityContentState(WAYPOINT, 90, 'early', 3, NOW);
+  it('includes numeric/enum fields only (no text, no phase)', () => {
+    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3, NOW);
     expect(cs).toEqual({
       etaSeconds: 90,
-      phase: 'early',
       kind: 'destination',
       stopsRemaining: 3,
       arrivalAtSec: Math.floor(NOW / 1000) + 90,

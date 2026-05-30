@@ -113,6 +113,38 @@ describe('journeyDisplayToStops', () => {
     );
   });
 
+  it('#665 출발=첫 환승역(stops=0)이면 transfer 노드를 출발에 흡수 + line은 다음 segment line', () => {
+    // 상봉(7) → 상봉(경의중앙) → 용산. 출발과 환승역이 같은 케이스.
+    const journey: JourneyDisplay = {
+      segments: [
+        { line: '7', lineColor: '#747F00', fromName: '상봉', toName: '상봉', stops: 0 },
+        { line: 'gyeongui', lineColor: '#77C4A3', fromName: '상봉', toName: '용산', stops: 7 },
+      ],
+      totalStops: 7,
+    };
+    const stops = journeyDisplayToStops(journey);
+    // 출발 노드 1개 + 도착 노드 1개 = 2개. transfer 노드는 출발에 흡수되어 별도 노드 없음.
+    expect(stops).toHaveLength(2);
+    // 출발 line이 첫 seg('7') 아니라 다음 seg('gyeongui') — 환승 후 노선 시각 표시.
+    expect(stops[0]).toEqual({ station: '상봉', line: 'gyeongui', mark: 'filled' });
+    expect(stops[1].mark).toBe('dest');
+    expect(stops[1].station).toBe('용산');
+  });
+
+  it('#665 출발역과 환승역 이름이 다르면 흡수하지 않음 (기존 동작 유지)', () => {
+    const journey: JourneyDisplay = {
+      segments: [
+        { line: '7', lineColor: '#747F00', fromName: '면목', toName: '상봉', stops: 1 },
+        { line: 'gyeongui', lineColor: '#77C4A3', fromName: '상봉', toName: '용산', stops: 7 },
+      ],
+      totalStops: 8,
+    };
+    const stops = journeyDisplayToStops(journey);
+    expect(stops).toHaveLength(3);
+    expect(stops[0].station).toBe('면목');
+    expect(stops[1].mark).toBe('transfer');
+  });
+
   describe('expanded option', () => {
     it('expanded: false (기본)이면 intermediate stop이 없다', () => {
       const stops = journeyDisplayToStops(MOCK_JOURNEYS.direct);

@@ -6,6 +6,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
 );
 
+
 const mockStation: Station = {
   id: '2-022',
   name: '강남',

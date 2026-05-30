@@ -14,7 +14,7 @@ describe('findNearestStation', () => {
 
   it('should return the station with minimum haversine distance', () => {
     // 모든 역에 대해 큰 값을 반환하다가 특정 호출에서만 작은 값을 반환
-    // stations.json 에는 528개 역이 있으므로 첫 번째 역만 0.1 km로 설정
+    // stations.json 에는 533개 역이 있으므로 첫 번째 역만 0.1 km로 설정
     mockHaversine.mockReturnValue(5); // 기본값: 모든 역 5km
     // 첫 번째 호출만 0.1km — 소요산(1-001)
     mockHaversine.mockReturnValueOnce(0.1);
@@ -58,13 +58,13 @@ describe('findNearestStation', () => {
 
   it('should return the last station if it is the closest', () => {
     // 마지막 역에 가장 작은 거리를 배정
-    // 528개 역 중 마지막 역(sinbundang-016: 광교)이 가장 가깝도록 설정
+    // 533개 역 중 마지막 역(sinbundang-016: 광교)이 가장 가깝도록 설정
     mockHaversine.mockReturnValue(10); // 기본값: 10km
-    // 마지막 호출(528번째)만 0.05km
+    // 마지막 호출(533번째)만 0.05km
     let callCount = 0;
     mockHaversine.mockImplementation(() => {
       callCount++;
-      return callCount === 528 ? 0.05 : 10;
+      return callCount === 533 ? 0.05 : 10;
     });
 
     const result = findNearestStation(37.28, 127.04);
@@ -97,8 +97,8 @@ describe('findNearestStation', () => {
 
     // 첫 호출에 lat/lng가 정확히 전달됐는지 확인
     expect(mockHaversine).toHaveBeenCalledWith(lat, lng, expect.any(Number), expect.any(Number));
-    // 528개 역 전체 순회
-    expect(mockHaversine).toHaveBeenCalledTimes(528);
+    // 533개 역 전체 순회
+    expect(mockHaversine).toHaveBeenCalledTimes(533);
   });
 
   it('should not update nearest when later station distance equals current minimum (strict less-than)', () => {
@@ -219,7 +219,7 @@ describe('findTopNearestStations', () => {
     expect(findTopNearestStations(37.5, 127.0, 3, 1.0)).toEqual([]);
   });
 
-  it('실데이터 528개보다 limit가 크면 가능한 만큼만 반환된다', () => {
+  it('실데이터 533개보다 limit가 크면 가능한 만큼만 반환된다', () => {
     mockHaversine.mockReturnValue(0.1);
     const result = findTopNearestStations(37.5, 127.0, 9999, 1.0);
     expect(result.length).toBeGreaterThan(0);

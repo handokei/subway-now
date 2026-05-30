@@ -8,15 +8,24 @@ import { useAppStore } from '../store/useAppStore';
 import { resolveQuickExit } from '../utils/quickExit';
 import { resolveTravelDirection } from '../utils/travelDirection';
 import { resolveTransferDoor } from '../utils/transferExit';
+import { findStationByNameAndLine } from '../utils/stationRoute';
 import type { LineNumber } from '../types/station';
 
 interface Props {
   stops: Stop[];
+  /**
+   * 각 hop row 직후에 inline 노드를 끼울 수 있는 slot 콜백(#649). null 반환 시 slot 미렌더.
+   * BoardingTrainList 등 hop별 보조 정보를 timeline 흐름 안쪽에 배치할 때 사용.
+   */
+  renderHopSlot?: (stop: Stop, index: number) => React.ReactNode;
 }
 
 // 한 stop의 도어번호 라벨을 결정한다.
 // - 환승 stop이면 fromLine→toLine 빠른 환승 도어를 우선 사용 (transferExit.json).
-// - 매칭 없으면 단조 노선 + quickExit 데이터로 fallback (계단/EV 가까운 도어).
+// - 매칭 없으면 quickExit 데이터로 fallback (계단/EV 가까운 도어).
+//   · 단조 노선(MONOTONIC_LINES): direction 필터로 방면별 정확한 도어 선택.
+//   · 비단조 노선(1·2·5·6호선, 경의중앙선 등 — #676): direction 없이 station_id만으로 조회.
+//     좌/우 안내는 정확성 보장 불가라 생략되지만 도어 번호는 노선 무관 표시 가능.
 // - 둘 다 없으면 null — 라벨 미표시.
 function resolveStopDoor(
   ctx: StopArrivalContext,
@@ -32,15 +41,31 @@ function resolveStopDoor(
     if (transfer) return transfer.doorNumber;
   }
   const resolution = resolveTravelDirection(ctx.line, ctx.fromName, ctx.toName);
-  if (!resolution) return null;
-  const result = resolveQuickExit(resolution.toStation.id, {
-    accessibilityMode,
-    direction: resolution.direction,
-  });
+  if (resolution) {
+    const result = resolveQuickExit(resolution.toStation.id, {
+      accessibilityMode,
+      direction: resolution.direction,
+    });
+    return result ? result.entry.doorNumber : null;
+  }
+  // 비단조 노선 fallback: line + toName으로 station 직접 매칭 (stationRoute의 SSOT helper 재사용).
+  const station = findStationByNameAndLine(ctx.toName, ctx.line);
+  if (!station) return null;
+  const result = resolveQuickExit(station.id, { accessibilityMode });
   return result ? result.entry.doorNumber : null;
 }
 
-export function EditorialTimeline({ stops }: Props) {
+/**
+ * 한 stop의 도어 라벨(arrivalContext + transfer target 종합). 공통 래퍼 — boardingDoor/quickExitDoor
+ * 양쪽 결정 시 transferToLine 분기 중복을 제거 (#635 review P2-1).
+ */
+function doorFor(stop: Stop | null, accessibilityMode: boolean): string | null {
+  if (!stop?.arrivalContext) return null;
+  const toLine = stop.mark === 'transfer' ? stop.transferTarget?.toLine ?? null : null;
+  return resolveStopDoor(stop.arrivalContext, toLine, accessibilityMode);
+}
+
+export function EditorialTimeline({ stops, renderHopSlot }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const accessibilityMode = useAppStore((s) => s.accessibilityMode);
@@ -52,17 +77,23 @@ export function EditorialTimeline({ stops }: Props) {
         const nextLineC = !isLast
           ? (stops[i + 1].line != null ? getLineColor(stops[i + 1].line!) : colors.accent)
           : lineC;
-        // transferTarget은 mark === 'transfer'에만 의미가 있다. 환승→도착 흡수된 stop(mark='dest')은
-        // transferTarget이 남아 있을 수 있어도 도착 fallback(quickExit)만 적용한다.
-        const transferToLine = s.mark === 'transfer' ? s.transferTarget?.toLine ?? null : null;
-        const quickExitDoor = s.arrivalContext != null
-          ? resolveStopDoor(s.arrivalContext, transferToLine, accessibilityMode)
+        const quickExitDoor = doorFor(s, accessibilityMode);
+        // #635 — 출발역(첫 mark='filled')에서 탑승 시 어느 칸·문에 타야 다음 hop(환승/도착)에서
+        // 빠르게 내릴 수 있는지 표시. 같은 열차 = 같은 문 번호이므로 다음 hop stop의 도어를 그대로 재사용.
+        // 의미만 다름: 다음 stop에선 "내리는 위치", 출발역에선 "타는 위치".
+        // expanded 모드에선 origin과 첫 hop 사이에 intermediate stop들이 끼므로 인접 [i+1] 대신
+        // arrivalContext가 있는 첫 후속 stop을 찾는다 (review P1-1).
+        const isOrigin = i === 0 && s.mark === 'filled';
+        const nextHopStop = isOrigin
+          ? stops.slice(i + 1).find((st) => st.arrivalContext != null) ?? null
           : null;
+        const boardingDoor = doorFor(nextHopStop, accessibilityMode);
 
         const isIntermediate = s.mark === 'intermediate';
+        const slot = renderHopSlot ? renderHopSlot(s, i) : null;
         return (
+          <React.Fragment key={i}>
           <View
-            key={i}
             style={[styles.row, isLast && { minHeight: 36 }, isIntermediate && styles.rowIntermediate]}
             testID={`timeline-stop-${i}`}
           >
@@ -124,8 +155,22 @@ export function EditorialTimeline({ stops }: Props) {
                   {t('route.quickExitDoor', { door: quickExitDoor })}
                 </Text>
               )}
+              {boardingDoor != null && (
+                <Text
+                  style={[typography.label, { color: colors.subtle, marginTop: 2 }]}
+                  testID={`boarding-door-${i}`}
+                >
+                  {t('route.boardingDoor', { door: boardingDoor })}
+                </Text>
+              )}
             </View>
           </View>
+          {slot != null && (
+            <View testID={`timeline-hop-slot-${i}`} style={styles.hopSlot}>
+              {slot}
+            </View>
+          )}
+          </React.Fragment>
         );
       })}
     </View>
@@ -168,4 +213,8 @@ const styles = StyleSheet.create({
   dotDest: { width: 12, height: 12, borderRadius: 6 },
   dotIntermediate: { width: 7, height: 7, borderRadius: 4, borderWidth: 1, marginLeft: 1.5 },
   rowIntermediate: { minHeight: 30 },
+  hopSlot: {
+    paddingLeft: 28 + spacing.md, // markerCol 폭 + 행 gap — slot이 station label과 좌측 정렬되도록
+    paddingBottom: spacing.xs,
+  },
 });

@@ -4,6 +4,8 @@ import {
   buildScheduleArrival,
   hasHeadwayData,
   hasTerminalData,
+  isScheduleFallbackTrainCode,
+  SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX,
 } from '../scheduleFallback';
 import type { LineNumber } from '../../types/station';
 import type { StationArrival } from '../../api/arrivalApi';
@@ -132,6 +134,13 @@ describe('buildScheduleArrival', () => {
     const now = new Date('2026-05-18T15:00:00+09:00');
     const result = buildScheduleArrival('2', '__missing__', now);
     expect(result.up[0].receivedAtMs).toBe(now.getTime());
+  });
+
+  it('makeTrain은 line 인자를 ArrivalInfo.line으로 전달한다 (#663)', () => {
+    const now = new Date('2026-05-18T15:00:00+09:00');
+    const result = buildScheduleArrival('7', '__missing__', now);
+    expect(result.up[0].line).toBe('7');
+    expect(result.down[0].line).toBe('7');
   });
 
   it('marks late period for 23:00 with late headway', () => {
@@ -365,5 +374,18 @@ describe('hasTerminalData', () => {
 
   it('returns false for an unknown line', () => {
     expect(hasTerminalData('gtx-a' as LineNumber)).toBe(false);
+  });
+});
+
+describe('isScheduleFallbackTrainCode', () => {
+  it('SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX 로 시작하는 코드만 true', () => {
+    expect(isScheduleFallbackTrainCode(`${SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX}DN-1`)).toBe(true);
+    expect(isScheduleFallbackTrainCode(`${SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX}UP-2`)).toBe(true);
+  });
+
+  it('실시간 trainCode(숫자 등)는 false', () => {
+    expect(isScheduleFallbackTrainCode('7273')).toBe(false);
+    expect(isScheduleFallbackTrainCode('')).toBe(false);
+    expect(isScheduleFallbackTrainCode('SC')).toBe(false);
   });
 });

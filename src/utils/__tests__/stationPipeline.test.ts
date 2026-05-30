@@ -1,5 +1,10 @@
 import type { Station, NearestStationResult } from '../../types/station';
-import type { Route, DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
+import type { Route, DirectRoute } from '../stationRoute';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../testUtils/routeFixtures';
 import type { AlarmEvent } from '../stationAlarm';
 
 const mockFindNearestStation = jest.fn();
@@ -11,18 +16,32 @@ const mockFindRoute = jest.fn();
 const mockCalculateStaticETA = jest.fn();
 const mockUpdateRouteFromPosition = jest.fn();
 const mockIsStationOnRoute = jest.fn();
+const mockIsSameStationName = jest.fn((a: string, b: string) => a === b);
 jest.mock('../stationRoute', () => ({
   findRoute: (...args: unknown[]) => mockFindRoute(...args),
   calculateStaticETA: (...args: unknown[]) => mockCalculateStaticETA(...args),
   updateRouteFromPosition: (...args: unknown[]) => mockUpdateRouteFromPosition(...args),
   isStationOnRoute: (...args: unknown[]) => mockIsStationOnRoute(...args),
+  isSameStationName: (a: string, b: string) => mockIsSameStationName(a, b),
 }));
 
 const mockEvaluateAlarmPhase = jest.fn();
 const mockAlarmKey = jest.fn();
+const mockResolveAllTargets = jest.fn((..._args: unknown[]) => [] as Array<{ name: string; stops: number; alarmType: 'destination' | 'transfer'; approachLine: string }>);
 jest.mock('../stationAlarm', () => ({
   evaluateAlarmPhase: (...args: unknown[]) => mockEvaluateAlarmPhase(...args),
   alarmKey: (...args: unknown[]) => mockAlarmKey(...args),
+  resolveAllTargets: (...args: unknown[]) => mockResolveAllTargets(...args),
+}));
+
+const mockGetBoardingLock = jest.fn();
+jest.mock('../boardingLockStorage', () => ({
+  getBoardingLock: () => mockGetBoardingLock(),
+}));
+
+const mockAdvanceHopWindow = jest.fn().mockResolvedValue(undefined);
+jest.mock('../boardingLockScheduler', () => ({
+  advanceHopWindow: (...args: unknown[]) => mockAdvanceHopWindow(...args),
 }));
 
 const mockSendAlarmNotification = jest.fn();
@@ -75,7 +94,7 @@ const mockNearestResult: NearestStationResult = {
   distanceKm: 0.15,
 };
 
-const mockRoute: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+const mockRoute = makeDirectRoute(3, '2');
 const mockAlarmEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청' };
 
 function call(overrides: Partial<Parameters<typeof processLocationUpdate>[0]> = {}) {
@@ -249,7 +268,7 @@ describe('processLocationUpdate', () => {
   });
 
   it('falls back to findRoute when storedRoute exists but updateRouteFromPosition returns null', async () => {
-    const storedRoute: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+    const storedRoute = makeDirectRoute(5, '2');
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockUpdateRouteFromPosition.mockReturnValue(null);
     mockFindRoute.mockReturnValue(mockRoute);
@@ -261,8 +280,8 @@ describe('processLocationUpdate', () => {
   });
 
   it('uses updateRouteFromPosition result when storedRoute is provided and succeeds', async () => {
-    const storedRoute: DirectRoute = { type: 'direct', stops: 5, line: '2' };
-    const updatedRoute: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+    const storedRoute = makeDirectRoute(5, '2');
+    const updatedRoute = makeDirectRoute(3, '2');
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockUpdateRouteFromPosition.mockReturnValue(updatedRoute);
     mockCalculateStaticETA.mockReturnValue(6);
@@ -373,6 +392,62 @@ describe('processLocationUpdate', () => {
     expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
     expect(mockGetLastNotifiedStationId).not.toHaveBeenCalled();
+  });
+
+  describe('#624 BG-safe stale alarm cancel (BoardingLock advance)', () => {
+    const mockLock = {
+      destinationId: 'station-2',
+      trainCode: 'T-100',
+      boardingStationId: 'station-0',
+      boardingLine: '2',
+      boardedAt: 1_700_000_000_000,
+      expectedDurationMs: 600_000,
+    };
+
+    it('lock 있고 nearest station이 waypoint이면 advanceHopWindow 호출', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetLastNotifiedStationId.mockResolvedValue('other-station');
+      mockGetBoardingLock.mockResolvedValue(mockLock);
+      mockResolveAllTargets.mockReturnValue([
+        { name: '강남', stops: 1, alarmType: 'destination', approachLine: '2' },
+      ]);
+
+      await call();
+
+      expect(mockAdvanceHopWindow).toHaveBeenCalledWith({
+        lock: mockLock,
+        route: mockRoute,
+        destinationName: '시청',
+        passedStationName: '강남',
+        sleepMode: false,
+      });
+    });
+
+    it('lock 있고 nearest가 waypoint가 아니면 advanceHopWindow 호출 안 함 (no-op)', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetLastNotifiedStationId.mockResolvedValue('other-station');
+      mockGetBoardingLock.mockResolvedValue(mockLock);
+      mockResolveAllTargets.mockReturnValue([
+        { name: '다른역', stops: 1, alarmType: 'destination', approachLine: '2' },
+      ]);
+
+      await call();
+
+      expect(mockAdvanceHopWindow).not.toHaveBeenCalled();
+    });
+
+    it('lock 없으면 advanceHopWindow 호출 안 함', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetLastNotifiedStationId.mockResolvedValue('other-station');
+      mockGetBoardingLock.mockResolvedValue(null);
+
+      await call();
+
+      expect(mockAdvanceHopWindow).not.toHaveBeenCalled();
+    });
   });
 
   it('findNearestStation을 MAX_STATION_DISTANCE_KM(1.0)와 함께 호출한다', async () => {
@@ -526,7 +601,7 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns destination and stops for direct route', () => {
-    const route: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+    const route = makeDirectRoute(5, '2');
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '강남',
       stopsToNextStation: 5,
@@ -536,10 +611,10 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns transfer station for transfer route with stopsToTransfer > 0', () => {
-    const route: TransferRoute = {
-      type: 'transfer', transferName: '동대문', fromLine: '1', toLine: '4',
+    const route = makeTransferRoute({
+      transferName: '동대문', fromLine: '1', toLine: '4',
       stopsToTransfer: 3, stopsFromTransfer: 2,
-    };
+    });
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '동대문',
       stopsToNextStation: 3,
@@ -549,10 +624,10 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns destination for transfer route with stopsToTransfer = 0', () => {
-    const route: TransferRoute = {
-      type: 'transfer', transferName: '동대문', fromLine: '1', toLine: '4',
+    const route = makeTransferRoute({
+      transferName: '동대문', fromLine: '1', toLine: '4',
       stopsToTransfer: 0, stopsFromTransfer: 2,
-    };
+    });
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '강남',
       stopsToNextStation: 2,
@@ -562,14 +637,13 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns first transfer for multi-transfer route with stopsToTransfer > 0', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
-    };
+    });
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '잠실',
       stopsToNextStation: 3,
@@ -579,14 +653,13 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns second transfer when first has stopsToTransfer = 0', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 0 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
-    };
+    });
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '시청',
       stopsToNextStation: 5,
@@ -601,14 +674,13 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns destination when all transfers have stopsToTransfer = 0', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 0 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 0 },
       ],
       stopsAfterLastTransfer: 4,
-    };
+    });
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '강남',
       stopsToNextStation: 4,
@@ -619,10 +691,10 @@ describe('resolveNextTarget', () => {
 
   it('회귀(#214): 환승 전 구간에서 stopsToDestination은 환승 후 구간을 포함한 총합이다', () => {
     // 용마산 → 군자(환승) → 이대 시나리오: 환승까지 2정거장, 환승 후 9정거장 → 총 11
-    const route: TransferRoute = {
-      type: 'transfer', transferName: '군자', fromLine: '7', toLine: '5',
+    const route = makeTransferRoute({
+      transferName: '군자', fromLine: '7', toLine: '5',
       stopsToTransfer: 2, stopsFromTransfer: 9,
-    };
+    });
     expect(resolveNextTarget(route, '이대')).toEqual({
       nextStationName: '군자',
       stopsToNextStation: 2,
