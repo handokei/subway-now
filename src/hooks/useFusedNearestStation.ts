@@ -258,8 +258,15 @@ export function useFusedNearestStation(
     ) {
       return null;
     }
+    // #662: BoardingLock 활성 시 trainProgress가 lock의 노선과 다르면 강등.
+    // 환승역 정지(speed≈0)에서 trackTrainProgress가 옆 노선 통과 열차에 잠기는 케이스 방어 —
+    // 사용자가 명시적으로 탭한 열차(lock.boardingLine, #663으로 정확)를 source of truth로 신뢰.
+    // lock 없으면 (lock 생성 전 일반 trip) 기존 동작 유지.
+    if (boardingLock && station.line !== boardingLock.boardingLine) {
+      return null;
+    }
     return candidate;
-  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates]);
+  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock]);
 
   const routeResult: NearestStationResult | null = progress.position
     ? {
@@ -278,8 +285,15 @@ export function useFusedNearestStation(
     maxAbsoluteKm: MAX_FUSION_DISTANCE_KM,
     maxDeltaKm: MAX_FUSION_DELTA_KM,
   };
+  // #662: BoardingLock 활성 시 fused도 lock.boardingLine과 다른 노선이면 강등 — positionTrain과
+  // 동일 정신. 환승역에서 GPS 후보가 두 노선 모두 잡아 fused가 옆 노선으로 fusion되는 케이스 방어.
+  // race: createTransferLock으로 lock이 새 leg로 교체되는 순간 1 render cycle 동안 옛 lock 기준
+  // 강등이 일어나 source가 한 번 gps로 flash 가능 — UX 임팩트 미미해 현재는 수용.
   const fusedPasses =
-    fused != null && passesFusionDistanceGate({ ...gateOpts, candidate: fused.result });
+    fused != null &&
+    passesFusionDistanceGate({ ...gateOpts, candidate: fused.result }) &&
+    (!boardingLock || fused.result.station.line === boardingLock.boardingLine);
+  // routeResult는 route arc(단일 노선 segment) 위 진행도라 옆 노선 station이 들어올 수 없음 → 가드 불필요.
   const routePasses =
     routeResult != null && passesFusionDistanceGate({ ...gateOpts, candidate: routeResult });
 
@@ -332,6 +346,8 @@ export function useFusedNearestStation(
     now: Date.now(),
   });
 
+  // #662 invariant: interp가 boardingLock이 active일 때만 만들어지고 arcStations(route segment)
+  // 위로만 전진하므로 lock.boardingLine 외 노선이 들어올 수 없음 — #662 가드 별도 적용 불필요.
   if (interpResult && arcStations.length > 0) {
     const chosenIdx = arcIndexOfStation(arcStations, result?.station ?? null);
     if (chosenIdx === -1 || interpResult.index > chosenIdx) {
