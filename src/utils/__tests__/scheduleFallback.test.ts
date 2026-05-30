@@ -4,6 +4,8 @@ import {
   buildScheduleArrival,
   hasHeadwayData,
   hasTerminalData,
+  isScheduleFallbackTrainCode,
+  SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX,
 } from '../scheduleFallback';
 import type { LineNumber } from '../../types/station';
 import type { StationArrival } from '../../api/arrivalApi';
@@ -365,5 +367,18 @@ describe('hasTerminalData', () => {
 
   it('returns false for an unknown line', () => {
     expect(hasTerminalData('gtx-a' as LineNumber)).toBe(false);
+  });
+});
+
+describe('isScheduleFallbackTrainCode', () => {
+  it('SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX 로 시작하는 코드만 true', () => {
+    expect(isScheduleFallbackTrainCode(`${SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX}DN-1`)).toBe(true);
+    expect(isScheduleFallbackTrainCode(`${SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX}UP-2`)).toBe(true);
+  });
+
+  it('실시간 trainCode(숫자 등)는 false', () => {
+    expect(isScheduleFallbackTrainCode('7273')).toBe(false);
+    expect(isScheduleFallbackTrainCode('')).toBe(false);
+    expect(isScheduleFallbackTrainCode('SC')).toBe(false);
   });
 });

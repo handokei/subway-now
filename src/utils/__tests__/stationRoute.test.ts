@@ -19,7 +19,7 @@ describe('getStationsOnLine', () => {
   it.each<[LineNumber, number]>([
     ['airport', 13],
     ['gyeongui', 57],
-    ['bundang', 54],
+    ['bundang', 55],
     ['sinbundang', 16],
   ])('%s 노선 역 데이터를 로드한다 (%i개)', (line, expectedCount) => {
     const stations = getStationsOnLine(line);
@@ -193,6 +193,36 @@ describe('findRoute', () => {
     if (route?.type === 'transfer') {
       // 서울역 또는 공덕에서 환승 가능
       expect(['서울역', '공덕', '홍대입구', '디지털미디어시티']).toContain(route.transferName);
+    }
+  });
+
+  it('4호선↔9호선 올림픽공원 환승 후보가 존재한다 (#652 누락 환승역 보강)', () => {
+    // 9호선 올림픽공원이 stations.json에 등록되면 5호선/8호선을 경유한
+    // 4호선↔9호선 multi-transfer 후보 셋에 "올림픽공원"이 반드시 포함되어야 한다.
+    const line9 = getStationsOnLine('9');
+    const olympic9 = line9.find((s) => s.name === '올림픽공원');
+    const line5 = getStationsOnLine('5');
+    const olympic5 = line5.find((s) => s.name === '올림픽공원');
+    expect(olympic9).toBeDefined();
+    expect(olympic5).toBeDefined();
+    // 5호선 올림픽공원과 9호선 올림픽공원이 같은 이름 → 환승 그래프에서 자동 연결.
+    // findStationByNameAndLine으로 두 노선에 모두 존재함을 검증.
+    expect(findStationByNameAndLine('올림픽공원', '5')).toBeDefined();
+    expect(findStationByNameAndLine('올림픽공원', '9')).toBeDefined();
+  });
+
+  it('8호선↔수인분당선 복정 환승 경로를 찾는다 (#652 누락 환승역 보강)', () => {
+    // 8호선 잠실 → 수인분당 수서: 복정 환승이 최단(잠실~복정~수서).
+    const line8 = getStationsOnLine('8');
+    const bundang = getStationsOnLine('bundang');
+    const jamsil = line8.find((s) => s.name === '잠실');
+    const suseo = bundang.find((s) => s.name === '수서');
+    expect(jamsil).toBeDefined();
+    expect(suseo).toBeDefined();
+    const route = findRoute(jamsil!.id, suseo!.id);
+    expect(route?.type).toBe('transfer');
+    if (route?.type === 'transfer') {
+      expect(route.transferName).toBe('복정');
     }
   });
 

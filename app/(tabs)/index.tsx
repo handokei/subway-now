@@ -47,6 +47,8 @@ import { useTrainPositions } from '../../src/hooks/useTrainPositions';
 import { useTransferTrainList } from '../../src/hooks/useTransferTrainList';
 import { TRANSFER_WALKING_BUFFER_SECONDS } from '../../src/constants/boardingLock';
 import { BoardingTrainList } from '../../src/components/BoardingTrainList';
+import { resolveNextAdjacentStationName } from '../../src/utils/nextAdjacentStation';
+import type { Stop } from '../../src/utils/journeyAdapter';
 
 const logger = createLogger('HomeScreen');
 
@@ -608,24 +610,73 @@ export default function HomeScreen() {
                       })}
                     </View>
                   )}
-                  {journey && (
-                    <>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
-                        onPress={() => setRouteExpanded((v) => !v)}
-                        style={styles.expandToggle}
-                        testID="route-expand-toggle"
-                      >
-                        <Text style={[typography.label, { color: colors.accent, fontWeight: '600' }]}>
-                          {routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
-                        </Text>
-                      </Pressable>
-                      <EditorialTimeline
-                        stops={journeyDisplayToStops(journey, { expanded: routeExpanded })}
-                      />
-                    </>
-                  )}
+                  {journey && (() => {
+                    const stops = journeyDisplayToStops(journey, { expanded: routeExpanded });
+                    return (
+                      <>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
+                          onPress={() => setRouteExpanded((v) => !v)}
+                          style={styles.expandToggle}
+                          testID="route-expand-toggle"
+                        >
+                          <Text style={[typography.label, { color: colors.accent, fontWeight: '600' }]}>
+                            {routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
+                          </Text>
+                        </Pressable>
+                        <EditorialTimeline
+                          stops={stops}
+                          renderHopSlot={(stop, i) => {
+                            // #649 — origin hop slot: 현재역에서 다음 인접역 방면 boarding list
+                            if (i === 0 && stop.mark === 'filled' && !boardingLock && effectiveOrigin) {
+                              const towardName = findNextWaypointName(stops, i);
+                              const label = towardName
+                                ? resolveNextAdjacentStationName(
+                                    effectiveOrigin.line,
+                                    effectiveOrigin.name,
+                                    towardName,
+                                  )
+                                : null;
+                              return (
+                                <BoardingTrainList
+                                  arrivals={directionalArrivals}
+                                  line={effectiveOrigin.line}
+                                  onSelect={createLockFromTrain}
+                                  compact
+                                  nextStationLabel={label}
+                                />
+                              );
+                            }
+                            // #649 — transfer hop slot: 현재 활성 transfer 시점에만 노출.
+                            // multi-transfer 라우트에서도 transferContext가 가리키는 단일 transfer만 매칭.
+                            if (
+                              stop.mark === 'transfer' &&
+                              transferContext &&
+                              stop.station === transferContext.transferStationInToLine.name
+                            ) {
+                              const label = resolveNextAdjacentStationName(
+                                transferContext.nextLine,
+                                transferContext.transferStationInToLine.name,
+                                transferContext.nextWaypointName,
+                              );
+                              return (
+                                <BoardingTrainList
+                                  arrivals={transferArrivals}
+                                  line={transferContext.nextLine}
+                                  onSelect={createTransferLock}
+                                  walkingBufferSeconds={TRANSFER_WALKING_BUFFER_SECONDS}
+                                  compact
+                                  nextStationLabel={label}
+                                />
+                              );
+                            }
+                            return null;
+                          }}
+                        />
+                      </>
+                    );
+                  })()}
                   {route && effectiveOrigin && destination && (
                     <Pressable
                       style={[styles.viewOnMapButton, { borderColor: colors.accent }]}
@@ -647,25 +698,8 @@ export default function HomeScreen() {
                   {boardingLock && (
                     <BoardingLockBanner lock={boardingLock} onRelease={releaseBoardingLock} />
                   )}
-                  {/* #634 — 탑승 전 열차 선택 list도 route 컨텍스트 안에서 노출.
-                       이전엔 하단 별도 섹션이라 사용자가 경로와 분리된 카드로 인지. */}
-                  {!boardingLock && effectiveOrigin && (
-                    <BoardingTrainList
-                      arrivals={directionalArrivals}
-                      line={effectiveOrigin.line}
-                      onSelect={createLockFromTrain}
-                    />
-                  )}
-                  {/* PR E: 환승 waypoint 도달 시 다음 노선 list. context 비어있으면 노출 안 됨. */}
-                  {transferContext && (
-                    <BoardingTrainList
-                      arrivals={transferArrivals}
-                      line={transferContext.nextLine}
-                      onSelect={createTransferLock}
-                      walkingBufferSeconds={TRANSFER_WALKING_BUFFER_SECONDS}
-                      title="환승 열차 선택"
-                    />
-                  )}
+                  {/* #649 — BoardingTrainList 두 인스턴스(현재역/환승)는 EditorialTimeline의
+                       renderHopSlot으로 이동: timeline hop 사이에 inline compact 표기. */}
                 </View>
 
                 {/* Actions */}
@@ -809,6 +843,17 @@ export default function HomeScreen() {
       />
     </SafeAreaView>
   );
+}
+
+/**
+ * stops 배열에서 fromIdx 다음의 waypoint(intermediate 아닌 stop) 이름을 찾는다(#649).
+ * 종착까지 도달 못 하면 null — slot에서 라벨 계산 fallback에 사용.
+ */
+function findNextWaypointName(stops: Stop[], fromIdx: number): string | null {
+  for (let i = fromIdx + 1; i < stops.length; i++) {
+    if (stops[i].mark !== 'intermediate') return stops[i].station;
+  }
+  return null;
 }
 
 function ArrivalRow({
