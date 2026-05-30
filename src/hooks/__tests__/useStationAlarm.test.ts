@@ -1301,26 +1301,28 @@ describe('useStationAlarm', () => {
 
   describe('#670/#672 첫 evaluation suppress 가드', () => {
     const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
-    const baseInputs = {
-      route,
-      destination,
-      userLocation: { lat: 37.4, lng: 127.0 },
-      speedMps: 10,
-      accuracyMeters: 100,
-      // production 가드 동작 검증을 위해 활성화.
-      skipWarmupGuard: false,
-    };
+    // skipWarmupGuard 미전달 → production default(false) 적용. 첫 evaluation 보류 동작 확인.
+    function inputsWithGuardDefault(loc: { lat: number; lng: number }): UseStationAlarmInputs {
+      return {
+        route,
+        destination,
+        nearestStation: null,
+        userLocation: loc,
+        speedMps: 10,
+        accuracyMeters: 100,
+      };
+    }
 
-    it('mount 직후 첫 evaluation trigger는 suppress', async () => {
-      renderHook(() => useStationAlarm(defaultInputs(baseInputs)));
+    it('mount 직후 첫 evaluation trigger는 suppress (default skipWarmupGuard=false)', async () => {
+      renderHook(() => useStationAlarm(inputsWithGuardDefault({ lat: 37.4, lng: 127.0 })));
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
     });
 
     it('다음 deps 변경(좌표 갱신) 후 evaluate 호출됨', async () => {
       const { rerender } = renderHook(
-        ({ loc }: { loc: { lat: number; lng: number } | null }) =>
-          useStationAlarm(defaultInputs({ ...baseInputs, userLocation: loc })),
+        ({ loc }: { loc: { lat: number; lng: number } }) =>
+          useStationAlarm(inputsWithGuardDefault(loc)),
         { initialProps: { loc: { lat: 37.4, lng: 127.0 } } },
       );
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
