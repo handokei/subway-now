@@ -15,8 +15,18 @@ interface Props {
    * 환승 list에서 도보 buffer 표현용. 미전달 시 모든 열차 활성.
    */
   walkingBufferSeconds?: number;
-  /** 헤더 라벨 커스텀 (환승 list 등). 미전달 시 기본 "탑승할 열차 선택". */
+  /** 헤더 라벨 커스텀 (환승 list 등). 미전달 시 기본 "탑승할 열차 선택". compact=true면 무시. */
   title?: string;
+  /**
+   * 트레인 destination(종착) 대신 표시할 다음 인접역 라벨(#649). "{label} 방면" 형태로 노출.
+   * 호출자가 resolveNextAdjacentStationName으로 계산해 전달. null/미전달이면 destination 표기.
+   */
+  nextStationLabel?: string | null;
+  /**
+   * Timeline hop slot 안 inline 배치용 컴팩트 모드(#649). 헤더/카드 배경 제거,
+   * row padding 축소, 폰트 한 단계 다운, trainCode 라인 생략.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -24,9 +34,9 @@ interface Props {
  *
  * 호출자는 이미 route 방향으로 필터링된 arrivals를 전달한다 — 이 컴포넌트는 디스플레이/탭 처리만 담당.
  * 각 row를 탭하면 onSelect 콜백이 발화 → 호출자가 BoardingLock 생성.
- * 빈 list면 placeholder 안내 텍스트.
  *
- * #634: 도착 시각을 "분" 상대 표기 → "HH:mm" 절대 표기로 전환. 사용자 시계와 직접 매칭.
+ * #634: 도착 시각을 "분" 상대 표기 → "HH:mm" 절대 표기.
+ * #649: compact + nextStationLabel — Timeline hop slot 안에 inline 배치되는 형태 지원.
  */
 export function BoardingTrainList({
   arrivals,
@@ -34,6 +44,8 @@ export function BoardingTrainList({
   onSelect,
   walkingBufferSeconds,
   title = '탑승할 열차 선택',
+  nextStationLabel = null,
+  compact = false,
 }: Props) {
   const { colors } = useTheme();
   const isUnreachable = (train: ArrivalInfo): boolean =>
@@ -41,40 +53,66 @@ export function BoardingTrainList({
 
   if (arrivals.length === 0) {
     return (
-      <View style={styles.empty} testID="boarding-train-list-empty">
+      <View
+        style={compact ? styles.emptyCompact : styles.empty}
+        testID="boarding-train-list-empty"
+      >
         <Text style={[typography.bodySm, { color: colors.muted }]}>도착 예정 열차가 없습니다.</Text>
       </View>
     );
   }
 
   return (
-    <View style={styles.container} testID="boarding-train-list">
-      <View style={styles.header}>
-        <LineBadge line={line} />
-        <Text style={[typography.label, { color: colors.muted }]}>{title}</Text>
-      </View>
+    <View
+      style={compact ? styles.containerCompact : styles.container}
+      testID="boarding-train-list"
+    >
+      {!compact && (
+        <View style={styles.header}>
+          <LineBadge line={line} />
+          <Text style={[typography.label, { color: colors.muted }]}>{title}</Text>
+        </View>
+      )}
       {arrivals.map((train) => {
         const unreachable = isUnreachable(train);
+        const labelText = nextStationLabel
+          ? `${nextStationLabel} 방면`
+          : `${train.destination} 행`;
         return (
           <Pressable
             key={train.trainCode}
             onPress={() => onSelect(train)}
             disabled={unreachable}
-            style={[styles.row, { backgroundColor: colors.card, opacity: unreachable ? 0.4 : 1 }]}
+            style={[
+              compact ? styles.rowCompact : styles.row,
+              compact ? null : { backgroundColor: colors.card },
+              { opacity: unreachable ? 0.4 : 1 },
+            ]}
             testID={`boarding-train-row-${train.trainCode}`}
           >
-            <View style={styles.rowInfo}>
-              <Text style={[typography.body, { color: colors.ink }]}>{train.destination} 행</Text>
-              {/* #648: 시간표 fallback의 가상 trainCode(SCHED-*)는 사용자에게 무의미하므로 숨김.
-                  실시간 trainCode는 그대로 노출. */}
-              {isScheduleFallbackTrainCode(train.trainCode) ? (
-                <Text style={[typography.mono, { color: colors.subtle }]}>시간표</Text>
-              ) : (
-                <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
-              )}
-            </View>
+            {compact ? (
+              <Text
+                style={[typography.bodySm, { color: colors.ink, flex: 1 }]}
+                testID={`boarding-train-label-${train.trainCode}`}
+              >
+                {labelText}
+              </Text>
+            ) : (
+              <View style={styles.rowInfo}>
+                <Text style={[typography.body, { color: colors.ink }]}>{labelText}</Text>
+                {/* #648: 시간표 fallback의 가상 trainCode(SCHED-*)는 무의미하므로 "시간표" 라벨로 대체. */}
+                {isScheduleFallbackTrainCode(train.trainCode) ? (
+                  <Text style={[typography.mono, { color: colors.subtle }]}>시간표</Text>
+                ) : (
+                  <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
+                )}
+              </View>
+            )}
             <Text
-              style={[typography.body, { color: colors.accent, fontWeight: '600' }]}
+              style={[
+                compact ? typography.bodySm : typography.body,
+                { color: colors.accent, fontWeight: '600' },
+              ]}
               testID={`boarding-train-arrival-${train.trainCode}`}
             >
               {formatArrivalClock(train)}
@@ -100,6 +138,9 @@ const styles = StyleSheet.create({
   container: {
     gap: spacing.sm,
   },
+  containerCompact: {
+    gap: spacing.xs,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -112,11 +153,22 @@ const styles = StyleSheet.create({
     padding: spacing.lg,
     borderRadius: radius.md,
   },
+  rowCompact: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
+  },
   rowInfo: {
     gap: spacing.xs,
   },
   empty: {
     padding: spacing.lg,
     alignItems: 'center',
+  },
+  emptyCompact: {
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
   },
 });
