@@ -102,6 +102,16 @@ describe('BoardingTrainList', () => {
     expect(onSelect).toHaveBeenCalledWith(reachable);
   });
 
+  it('#648 SCHED-* trainCode는 사용자에게 숨기고 "시간표" 라벨로 대체', () => {
+    const fallback = makeTrain({ trainCode: 'SCHED-DN-1', destination: '석남' });
+    const { getByText, queryByText } = renderWithTheme(
+      <BoardingTrainList arrivals={[fallback]} line="7" onSelect={() => {}} />,
+    );
+    expect(queryByText('SCHED-DN-1')).toBeNull();
+    expect(getByText('시간표')).toBeTruthy();
+    expect(getByText('석남 행')).toBeTruthy();
+  });
+
   it('walkingBufferSeconds 미전달이면 모든 train 활성', () => {
     const tooSoon = makeTrain({ trainCode: 'T-EARLY', arrivalSeconds: 60 });
     const onSelect = jest.fn();

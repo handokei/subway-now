@@ -4,6 +4,7 @@ import { LineBadge } from './LineBadge';
 import type { ArrivalInfo } from '../api/arrivalApi';
 import type { LineNumber } from '../types/station';
 import { formatClockTime } from '../utils/formatTime';
+import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
 
 interface Props {
   arrivals: ArrivalInfo[];
@@ -64,7 +65,13 @@ export function BoardingTrainList({
           >
             <View style={styles.rowInfo}>
               <Text style={[typography.body, { color: colors.ink }]}>{train.destination} 행</Text>
-              <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
+              {/* #648: 시간표 fallback의 가상 trainCode(SCHED-*)는 사용자에게 무의미하므로 숨김.
+                  실시간 trainCode는 그대로 노출. */}
+              {isScheduleFallbackTrainCode(train.trainCode) ? (
+                <Text style={[typography.mono, { color: colors.subtle }]}>시간표</Text>
+              ) : (
+                <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
+              )}
             </View>
             <Text
               style={[typography.body, { color: colors.accent, fontWeight: '600' }]}
