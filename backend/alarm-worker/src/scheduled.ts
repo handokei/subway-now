@@ -240,6 +240,20 @@ export async function runTrainCodeTracking(
   }
 
   await maybeReschedulePush(trip, waypoint, lock, estimate.epoch, env, deps, stats, now, log, generatePushId);
+  // LA는 reschedule와 독립 평가 — reschedule 임계(15s) 미달이거나 push가 실패해도 LA 임계(30s)는 별도 게이트.
+  // maybeReschedulePush가 trip을 cleanup했다면 trip.activityPushToken이 undefined라 fireLiveActivityUpdate가 no-op.
+  const laDirty = await maybeFireLiveActivityUpdate(
+    trip,
+    waypoint,
+    estimate.epoch,
+    deps,
+    stats,
+    now,
+    log,
+  );
+  if (laDirty) {
+    await putTrip(env.TRIPS, trip);
+  }
 }
 
 /**
@@ -444,21 +458,6 @@ export async function maybeReschedulePush(
       await cleanupTripWithLa(trip, env, deps, stats, now, log);
       return;
     }
-  }
-
-  // #586 D — reschedule push 성공 시 동일 사이클에서 LA update도 함께 발사한다.
-  // 디바이스의 사전 예약은 reschedule push로 정정되고, LA 콘텐츠는 별도 임계(30s)로 갱신.
-  if (result.ok) {
-    const laDirty = await maybeFireLiveActivityUpdate(
-      trip,
-      waypoint,
-      newArrivalEpoch,
-      deps,
-      stats,
-      now,
-      log,
-    );
-    if (laDirty) dirty = true;
   }
 
   if (dirty) {
