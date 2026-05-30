@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopSeconds } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 
@@ -1356,5 +1356,32 @@ describe('getIntermediateStationNames', () => {
   it('returns null for unknown station id', () => {
     expect(getIntermediateStationNames('1-001', 'unknown-id')).toBeNull();
     expect(getIntermediateStationNames('unknown-id', '1-001')).toBeNull();
+  });
+});
+
+// #655: 역간 실측 운행시간(StationDstncReqreTimeHm) 도입
+describe('getStopSeconds — #655', () => {
+  it('실측 데이터가 있는 hop은 그대로 반환한다 (양방향 동일)', () => {
+    // 1호선 동대문(1-029) ↔ 신설동(1-028) — stationTravelTimes.json 기준 60초
+    expect(getStopSeconds('1', '1-029', '1-028')).toBe(60);
+    expect(getStopSeconds('1', '1-028', '1-029')).toBe(60);
+  });
+
+  it('실측 데이터가 없는 hop은 fallback 120초를 반환한다', () => {
+    // 9호선/공항철도 등 API 미커버 노선
+    expect(getStopSeconds('9', '9-001', '9-002')).toBe(120);
+    expect(getStopSeconds('airport', 'unknown-a', 'unknown-b')).toBe(120);
+  });
+});
+
+describe('실측 운행시간 기반 travelMinutes — #655', () => {
+  it('같은 stops 수라도 hop의 실측 시간이 다르면 travelMinutes도 다르다', () => {
+    // 두 후보 모두 stops=1이지만 hop 실측 차이로 travelMinutes 차이가 발생.
+    // - 1-029(동대문) → 1-028(신설동): 60초 → 1분
+    // - 1-028(신설동) → 1-027(제기동): 90초 → 2분 (Math.round(1.5))
+    const fast = findRoutes('1-029', '1-028');
+    const slow = findRoutes('1-028', '1-027');
+    expect(fast[0].totalStops).toBe(slow[0].totalStops);
+    expect(slow[0].travelMinutes).toBeGreaterThan(fast[0].travelMinutes);
   });
 });

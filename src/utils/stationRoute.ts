@@ -1,4 +1,5 @@
 import stations from '../data/stations.json';
+import stationTravelTimesJson from '../data/stationTravelTimes.json';
 import type { Station } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
 import type { LineNumber } from '../types/station';
@@ -7,6 +8,42 @@ import { createLogger } from './logger';
 const logger = createLogger('StationRoute');
 
 const allStations = stations as Station[];
+const stationTravelTimes = stationTravelTimesJson as Record<string, number>;
+
+// 실측 운행시간이 누락된 hop의 fallback (예: 9호선/공항철도 등 #655 미커버 노선).
+const STOP_FALLBACK_SECONDS = 120;
+const TRANSFER_SECONDS = 180;
+const DEFAULT_WAIT_SECONDS = 180;
+
+/**
+ * line의 fromId → toId 단일 hop 운행 시간(초). #655.
+ * 실제 데이터는 서울 열린데이터 StationDstncReqreTimeHm을 양방향으로 저장하므로
+ * 양 방향이 동일한 값을 돌려준다. lookup 실패 시 STOP_FALLBACK_SECONDS(=120, 2분).
+ * miss는 logger.debug로 노출해 향후 데이터 보강(9호선/공항철도/경의중앙선 등) 추적에 사용.
+ */
+export function getStopSeconds(line: LineNumber, fromId: string, toId: string): number {
+  const key = `${line}|${fromId}|${toId}`;
+  const hit = stationTravelTimes[key];
+  if (hit !== undefined) return hit;
+  logger.debug(`getStopSeconds miss: ${key} → fallback ${STOP_FALLBACK_SECONDS}s`);
+  return STOP_FALLBACK_SECONDS;
+}
+
+// line 위 fromIdx → toIdx 구간을 한 hop씩 누적한 운행 시간(초). 환승 대기 미포함.
+function computeSegmentSeconds(
+  line: LineNumber,
+  fromIdx: number,
+  toIdx: number,
+  lineStations: Station[],
+): number {
+  if (fromIdx === toIdx) return 0;
+  const step = fromIdx < toIdx ? 1 : -1;
+  let total = 0;
+  for (let i = fromIdx; i !== toIdx; i += step) {
+    total += getStopSeconds(line, lineStations[i].id, lineStations[i + step].id);
+  }
+  return total;
+}
 
 // O(1) 룩업 테이블 (성능 최적화)
 const stationById = new Map<string, Station>(allStations.map((s) => [s.id, s]));
@@ -45,6 +82,12 @@ export interface DirectRoute {
   type: 'direct';
   stops: number;
   line: LineNumber;
+  /**
+   * #655: 실측 운행 시간(초). findRoutes/updateRouteFromPosition가 lookup으로 채운다.
+   * 외부에서 stops만 채워 만든 route(테스트 fixture)도 허용 — getTravelMinutes에서
+   * stops × STOP_FALLBACK_SECONDS로 fallback. 후속 정리는 follow-up 이슈에서 required로 승격.
+   */
+  travelSeconds?: number;
 }
 
 export interface TransferRoute {
@@ -54,6 +97,10 @@ export interface TransferRoute {
   toLine: LineNumber;
   stopsToTransfer: number;
   stopsFromTransfer: number;
+  /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
+  secondsToTransfer?: number;
+  /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
+  secondsFromTransfer?: number;
 }
 
 export interface TransferSegment {
@@ -61,12 +108,16 @@ export interface TransferSegment {
   fromLine: LineNumber;
   toLine: LineNumber;
   stopsToTransfer: number;
+  /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
+  secondsToTransfer?: number;
 }
 
 export interface MultiTransferRoute {
   type: 'multi-transfer';
   transfers: TransferSegment[];
   stopsAfterLastTransfer: number;
+  /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
+  secondsAfterLastTransfer?: number;
 }
 
 export type Route = DirectRoute | TransferRoute | MultiTransferRoute | null;
@@ -201,10 +252,17 @@ export function updateRouteFromPosition(
     const dest = stationById.get(destinationId);
     if (!dest || nearestStation.line !== dest.line) return null;
     const remaining = getRemainingStops(nearestStation.id, destinationId);
+    if (remaining === null) return null;
     // dest.line을 채택해 stored가 invariant를 깨고 들어와도 자가 치유되도록 한다.
-    return remaining !== null
-      ? { type: 'direct', stops: remaining, line: dest.line }
-      : null;
+    const lineStations = getLineStationsCached(dest.line);
+    const nIdx = lineStations.findIndex((s) => s.id === nearestStation.id);
+    const dIdx = lineStations.findIndex((s) => s.id === destinationId);
+    return {
+      type: 'direct',
+      stops: remaining,
+      line: dest.line,
+      travelSeconds: computeSegmentSeconds(dest.line, nIdx, dIdx, lineStations),
+    };
   }
 
   if (storedRoute.type === 'transfer') {
@@ -212,13 +270,29 @@ export function updateRouteFromPosition(
       const transfer = findStationByNameAndLine(storedRoute.transferName, storedRoute.fromLine);
       if (!transfer) return null;
       const stopsToTransfer = getRemainingStops(nearestStation.id, transfer.id);
-      return stopsToTransfer !== null ? { ...storedRoute, stopsToTransfer } : null;
+      if (stopsToTransfer === null) return null;
+      const lineStations = getLineStationsCached(storedRoute.fromLine);
+      const nIdx = lineStations.findIndex((s) => s.id === nearestStation.id);
+      const tIdx = lineStations.findIndex((s) => s.id === transfer.id);
+      return {
+        ...storedRoute,
+        stopsToTransfer,
+        secondsToTransfer: computeSegmentSeconds(storedRoute.fromLine, nIdx, tIdx, lineStations),
+      };
     }
     if (nearestStation.line === storedRoute.toLine) {
       const stopsFromTransfer = getRemainingStops(nearestStation.id, destinationId);
-      return stopsFromTransfer !== null
-        ? { ...storedRoute, stopsToTransfer: 0, stopsFromTransfer }
-        : null;
+      if (stopsFromTransfer === null) return null;
+      const lineStations = getLineStationsCached(storedRoute.toLine);
+      const nIdx = lineStations.findIndex((s) => s.id === nearestStation.id);
+      const dIdx = lineStations.findIndex((s) => s.id === destinationId);
+      return {
+        ...storedRoute,
+        stopsToTransfer: 0,
+        stopsFromTransfer,
+        secondsToTransfer: 0,
+        secondsFromTransfer: computeSegmentSeconds(storedRoute.toLine, nIdx, dIdx, lineStations),
+      };
     }
     return null;
   }
@@ -233,8 +307,16 @@ export function updateRouteFromPosition(
       if (!station) return null;
       const stops = getRemainingStops(nearestStation.id, station.id);
       if (stops === null) return null;
+      const lineStations = getLineStationsCached(segment.fromLine);
+      const nIdx = lineStations.findIndex((s) => s.id === nearestStation.id);
+      const tIdx = lineStations.findIndex((s) => s.id === station.id);
+      const secondsToCurrent = computeSegmentSeconds(segment.fromLine, nIdx, tIdx, lineStations);
       const updatedTransfers = transfers.map((t, j) =>
-        j < i ? { ...t, stopsToTransfer: 0 } : j === i ? { ...t, stopsToTransfer: stops } : t,
+        j < i
+          ? { ...t, stopsToTransfer: 0, secondsToTransfer: 0 }
+          : j === i
+            ? { ...t, stopsToTransfer: stops, secondsToTransfer: secondsToCurrent }
+            : t,
       );
       return { ...storedRoute, transfers: updatedTransfers };
     }
@@ -245,8 +327,21 @@ export function updateRouteFromPosition(
   if (lastTransfer && nearestStation.line === lastTransfer.toLine) {
     const stops = getRemainingStops(nearestStation.id, destinationId);
     if (stops === null) return null;
-    const updatedTransfers = transfers.map((t) => ({ ...t, stopsToTransfer: 0 }));
-    return { ...storedRoute, transfers: updatedTransfers, stopsAfterLastTransfer: stops };
+    const lineStations = getLineStationsCached(lastTransfer.toLine);
+    const nIdx = lineStations.findIndex((s) => s.id === nearestStation.id);
+    const dIdx = lineStations.findIndex((s) => s.id === destinationId);
+    const lastSegSeconds = computeSegmentSeconds(lastTransfer.toLine, nIdx, dIdx, lineStations);
+    const updatedTransfers = transfers.map((t) => ({
+      ...t,
+      stopsToTransfer: 0,
+      secondsToTransfer: 0,
+    }));
+    return {
+      ...storedRoute,
+      transfers: updatedTransfers,
+      stopsAfterLastTransfer: stops,
+      secondsAfterLastTransfer: lastSegSeconds,
+    };
   }
 
   return null;
@@ -349,7 +444,12 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
     const lineStations = getLineStationsCached(current.line);
     const cIdx = lineStations.findIndex((s) => s.id === currentId);
     const dIdx = lineStations.findIndex((s) => s.id === destinationId);
-    const direct: DirectRoute = { type: 'direct', stops: Math.abs(dIdx - cIdx), line: current.line };
+    const direct: DirectRoute = {
+      type: 'direct',
+      stops: Math.abs(dIdx - cIdx),
+      line: current.line,
+      travelSeconds: computeSegmentSeconds(current.line, cIdx, dIdx, lineStations),
+    };
     const duration = performance.now() - start;
     logger.debug(`findRoutes(${currentId} → ${destinationId}): ${duration.toFixed(2)}ms`);
     return [toCandidate(direct)];
@@ -384,6 +484,8 @@ export function findRoutes(currentId: string, destinationId: string): RouteCandi
         toLine: destination.line,
         stopsToTransfer,
         stopsFromTransfer,
+        secondsToTransfer: computeSegmentSeconds(current.line, currentIdx, i, currentLineStations),
+        secondsFromTransfer: computeSegmentSeconds(destination.line, transferDestIdx, destIdx, destLineStations),
       };
     }
   }
@@ -470,6 +572,7 @@ function findMultiTransferRoute(
     if (!transfer2Names) continue;
 
     const midNameIndex = getLineNameIndexCached(midLine);
+    const midLineStations = getLineStationsCached(midLine);
 
     // 첫 번째 환승: 현재노선 → 중간노선
     for (const t1Name of transfer1Names) {
@@ -496,10 +599,23 @@ function findMultiTransferRoute(
           best = {
             type: 'multi-transfer',
             transfers: [
-              { transferName: t1Name, fromLine, toLine: midLine, stopsToTransfer: stopsToFirst },
-              { transferName: t2Name, fromLine: midLine, toLine, stopsToTransfer: stopsToSecond },
+              {
+                transferName: t1Name,
+                fromLine,
+                toLine: midLine,
+                stopsToTransfer: stopsToFirst,
+                secondsToTransfer: computeSegmentSeconds(fromLine, currentIdx, t1CurrentIdx, currentLineStations),
+              },
+              {
+                transferName: t2Name,
+                fromLine: midLine,
+                toLine,
+                stopsToTransfer: stopsToSecond,
+                secondsToTransfer: computeSegmentSeconds(midLine, t1MidIdx, t2MidIdx, midLineStations),
+              },
             ],
             stopsAfterLastTransfer: stopsAfter,
+            secondsAfterLastTransfer: computeSegmentSeconds(toLine, t2DestIdx, destIdx, destLineStations),
           };
         }
       }
@@ -508,9 +624,6 @@ function findMultiTransferRoute(
 
   return best;
 }
-
-const MINUTES_PER_STOP = 2;
-const TRANSFER_MINUTES = 3;
 
 export function buildJourneyDisplay(
   route: Route,
@@ -583,26 +696,37 @@ export function buildJourneyDisplay(
   return { segments, totalStops };
 }
 
-const DEFAULT_WAIT_MINUTES = 3;
+// secondsXxx가 채워져 있으면 그대로, 없으면 stops × fallback(=120초). #655.
+// optional은 follow-up 이슈에서 required로 승격 예정.
+function segSeconds(seconds: number | undefined, stops: number): number {
+  return seconds ?? stops * STOP_FALLBACK_SECONDS;
+}
 
 function getTravelMinutes(route: NonNullable<Route>): number {
   if (route.type === 'direct') {
-    return route.stops * MINUTES_PER_STOP;
+    return Math.round(segSeconds(route.travelSeconds, route.stops) / 60);
   }
-
   if (route.type === 'transfer') {
-    const totalStops = route.stopsToTransfer + route.stopsFromTransfer;
-    return totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES;
+    const totalSeconds =
+      segSeconds(route.secondsToTransfer, route.stopsToTransfer) +
+      segSeconds(route.secondsFromTransfer, route.stopsFromTransfer) +
+      TRANSFER_SECONDS;
+    return Math.round(totalSeconds / 60);
   }
-
-  const transferStops = route.transfers.reduce((sum, t) => sum + t.stopsToTransfer, 0);
-  const totalStops = transferStops + route.stopsAfterLastTransfer;
-  return totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES * route.transfers.length;
+  const transferSecondsSum = route.transfers.reduce(
+    (s, t) => s + segSeconds(t.secondsToTransfer, t.stopsToTransfer),
+    0,
+  );
+  const totalSeconds =
+    transferSecondsSum +
+    segSeconds(route.secondsAfterLastTransfer, route.stopsAfterLastTransfer) +
+    TRANSFER_SECONDS * route.transfers.length;
+  return Math.round(totalSeconds / 60);
 }
 
 export function calculateStaticETA(route: Route): number | null {
   if (!route) return null;
-  return DEFAULT_WAIT_MINUTES + getTravelMinutes(route);
+  return Math.round(DEFAULT_WAIT_SECONDS / 60) + getTravelMinutes(route);
 }
 
 /**
@@ -611,12 +735,12 @@ export function calculateStaticETA(route: Route): number | null {
  * completedTransferIdx 번째 환승을 막 끝내고 새 열차에 탑승한 시점부터 도착역까지의 잔여 시간.
  * BoardingLock의 expectedDurationMs는 boardedAt 이후 ride 시간을 의미하므로, 사용자가 list에서
  * 열차를 탭하는 순간(=새 boardedAt)부터의 시간이 산출 대상. 따라서 첫 열차 대기(DEFAULT_WAIT)는
- * 포함하지 않는다. 잔여 환승의 대기는 TRANSFER_MINUTES로 포함.
+ * 포함하지 않는다. 잔여 환승의 대기는 TRANSFER_SECONDS로 포함.
  *
  * - direct: 환승 없음 → null
  * - transfer/multi-transfer: 0..transfers.length-1 범위만 유효
  *
- * 산식: 잔여 stops × MINUTES_PER_STOP + 잔여 환승 × TRANSFER_MINUTES
+ * 산식: 잔여 segment seconds 합 + 잔여 환승 × TRANSFER_SECONDS → 분으로 round.
  */
 export function calculateRemainingLegETA(
   route: Route,
@@ -626,29 +750,33 @@ export function calculateRemainingLegETA(
   if (route.type === 'direct') return null;
   const legs = getTransferLegs(route);
   if (completedTransferIdx < 0 || completedTransferIdx >= legs.transferCount) return null;
-  const remainingTransferStops = legs.afterTransferStops
+  const remainingSegmentSeconds = legs.afterTransferSeconds
     .slice(completedTransferIdx + 1)
     .reduce((s, n) => s + n, 0);
-  const totalRemainingStops = legs.afterTransferStops[completedTransferIdx] + remainingTransferStops;
+  const totalRemainingSeconds =
+    legs.afterTransferSeconds[completedTransferIdx] + remainingSegmentSeconds;
   const remainingTransferEvents = legs.transferCount - 1 - completedTransferIdx;
-  return totalRemainingStops * MINUTES_PER_STOP + remainingTransferEvents * TRANSFER_MINUTES;
+  return Math.round((totalRemainingSeconds + TRANSFER_SECONDS * remainingTransferEvents) / 60);
 }
 
 /**
  * transfer/multi-transfer 라우트를 통일된 leg 표현으로 정규화. transferCount는 환승 횟수,
- * afterTransferStops[i]는 i번째 환승을 끝낸 후 다음 waypoint(=다음 환승 또는 도착역)까지의 stops.
+ * afterTransferSeconds[i]는 i번째 환승을 끝낸 후 다음 waypoint(=다음 환승 또는 도착역)까지의 운행 시간(초).
  */
 function getTransferLegs(
   route: Exclude<NonNullable<Route>, DirectRoute>,
-): { transferCount: number; afterTransferStops: number[] } {
+): { transferCount: number; afterTransferSeconds: number[] } {
   if (route.type === 'transfer') {
-    return { transferCount: 1, afterTransferStops: [route.stopsFromTransfer] };
+    return {
+      transferCount: 1,
+      afterTransferSeconds: [segSeconds(route.secondsFromTransfer, route.stopsFromTransfer)],
+    };
   }
   const after = route.transfers
     .slice(1)
-    .map((t) => t.stopsToTransfer);
-  after.push(route.stopsAfterLastTransfer);
-  return { transferCount: route.transfers.length, afterTransferStops: after };
+    .map((t) => segSeconds(t.secondsToTransfer, t.stopsToTransfer));
+  after.push(segSeconds(route.secondsAfterLastTransfer, route.stopsAfterLastTransfer));
+  return { transferCount: route.transfers.length, afterTransferSeconds: after };
 }
 
 // ASCII Unit Separator(0x1F) — 사용자 데이터(역명/노선명)에 절대 등장하지 않는
