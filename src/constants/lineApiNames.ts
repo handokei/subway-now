@@ -52,9 +52,9 @@ const SUBWAY_ID_TO_LINE: Record<string, LineNumber> = {
 /**
  * subwayId → LineNumber. 매핑 실패 시 null.
  * value는 unknown — 서울 API raw 응답에서 string·number·undefined 모두 가능하기 때문.
+ * object/array는 의미 없는 stringification("[object Object]") 방지를 위해 거부.
  */
 export function subwayIdToLine(value: unknown): LineNumber | null {
-  if (value == null) return null;
-  const key = String(value);
-  return SUBWAY_ID_TO_LINE[key] ?? null;
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  return SUBWAY_ID_TO_LINE[String(value)] ?? null;
 }

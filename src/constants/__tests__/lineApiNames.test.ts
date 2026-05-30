@@ -45,6 +45,12 @@ describe('lineApiNames', () => {
       expect(subwayIdToLine('')).toBeNull();
     });
 
+    it('object·array·boolean 등 비-string/number 입력은 null (의미 없는 stringification 방지)', () => {
+      expect(subwayIdToLine({})).toBeNull();
+      expect(subwayIdToLine([])).toBeNull();
+      expect(subwayIdToLine(true)).toBeNull();
+    });
+
     it('SUBWAY_ID_TO_LINE 값 집합이 LINE_API_NAMES 키 집합(모든 LineNumber)을 완전 커버한다 — 신규 노선 추가 시 동기화 누락 방지', () => {
       const mappedLines = new Set<string>();
       for (const id of ['1001', '1002', '1003', '1004', '1005', '1006', '1007', '1008', '1009', '1063', '1065', '1075', '1077']) {
