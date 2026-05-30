@@ -82,7 +82,7 @@ describe('expressStops dataset integrity vs stations.json', () => {
 
   it('노선별 급행 정차역 수 고정 (실수로 추가/삭제 시 회귀 알림)', () => {
     expect(getExpressStopsOnLine('1', 'express').size).toBe(16);
-    expect(getExpressStopsOnLine('9', 'express').size).toBe(19);
+    expect(getExpressStopsOnLine('9', 'express').size).toBe(20);
     expect(getExpressStopsOnLine('bundang', 'express').size).toBe(15);
     expect(getExpressStopsOnLine('gyeongui', 'express').size).toBe(24);
     expect(getExpressStopsOnLine('airport', 'rapid').size).toBe(3);

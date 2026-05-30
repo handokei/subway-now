@@ -1,9 +1,11 @@
 import stations from '../data/stations.json';
+import transferTimes from '../data/transferTimes.json';
 import type { Station } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
 import type { LineNumber } from '../types/station';
 import { applyStationAlias } from '../data/stationAliases';
 import { createLogger } from './logger';
+import { normalizeStationName as baseNormalizeStationName } from './normalizeStationName';
 
 const logger = createLogger('StationRoute');
 
@@ -120,21 +122,11 @@ export interface JourneyDisplay {
   totalStops: number;
 }
 
-// 후행 괄호 부제(예: "상봉(시외버스터미널)" → "상봉")를 제거하고
-// 별칭 테이블로 노선별 공식 표기 차이(예: "이수" ↔ "총신대입구")까지 흡수해
-// 동일 환승역이 서로 다른 표기로 등록되어도 매칭이 성립하도록 한다.
-// 정규식 대신 lastIndexOf로 구현 (ReDoS 회피 + 의도 명시).
+// 괄호 부제 제거는 ./normalizeStationName.js (SSOT — 빌드 스크립트와 공유)에 위임하고,
+// 그 위에 노선별 공식 표기 차이(예: "이수" ↔ "총신대입구")를 흡수하는 별칭을 한 번 더 적용한다.
+// Alias는 transferGraph 매칭 전용 — CSV 원본을 다루는 build-transfer-times.js는 적용 대상 아님.
 export function normalizeStationName(name: string): string {
-  const trimmed = name.trim();
-  const stripped = stripTrailingParen(trimmed);
-  return applyStationAlias(stripped);
-}
-
-function stripTrailingParen(name: string): string {
-  if (!name.endsWith(')')) return name;
-  const open = name.lastIndexOf('(');
-  if (open <= 0) return name;
-  return name.slice(0, open).trimEnd();
+  return applyStationAlias(baseNormalizeStationName(name));
 }
 
 // 노선별 표기 차이를 흡수한 역 이름 동일성 비교.
@@ -517,7 +509,22 @@ function findMultiTransferRoute(
 }
 
 const MINUTES_PER_STOP = 2;
-const TRANSFER_MINUTES = 3;
+// 환승역별 실제 소요시간 데이터(공공데이터포털 15044419, 보행속도 1.2 m/s 기준)에
+// 미등록된 환승역에 적용하는 fallback. 기존 균일 가정값 3분(=180초)을 유지.
+const FALLBACK_TRANSFER_SECONDS = 180;
+
+const transferTimeTable = transferTimes as Record<string, number>;
+
+// (fromLine, toLine, 환승역명) 조합에 대응하는 실제 환승 소요시간(초).
+// 미등록 시 FALLBACK_TRANSFER_SECONDS.
+function getTransferSeconds(
+  fromLine: LineNumber,
+  toLine: LineNumber,
+  stationName: string,
+): number {
+  const key = `${fromLine}|${toLine}|${normalizeStationName(stationName)}`;
+  return transferTimeTable[key] ?? FALLBACK_TRANSFER_SECONDS;
+}
 
 export function buildJourneyDisplay(
   route: Route,
@@ -592,6 +599,8 @@ export function buildJourneyDisplay(
 
 const DEFAULT_WAIT_MINUTES = 3;
 
+// 반환값은 항상 정수 분. 호출처(메인 ETA 카운터/알림 body/Live Activity etaMinutes Swift Int? 디코딩)가
+// 정수 분 contract에 의존하므로, 환승역별 초 단위 실측치를 분으로 환산한 결과를 마지막에 반올림한다.
 function getTravelMinutes(route: NonNullable<Route>): number {
   if (route.type === 'direct') {
     return route.stops * MINUTES_PER_STOP;
@@ -599,12 +608,17 @@ function getTravelMinutes(route: NonNullable<Route>): number {
 
   if (route.type === 'transfer') {
     const totalStops = route.stopsToTransfer + route.stopsFromTransfer;
-    return totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES;
+    const transferSec = getTransferSeconds(route.fromLine, route.toLine, route.transferName);
+    return Math.round(totalStops * MINUTES_PER_STOP + transferSec / 60);
   }
 
   const transferStops = route.transfers.reduce((sum, t) => sum + t.stopsToTransfer, 0);
   const totalStops = transferStops + route.stopsAfterLastTransfer;
-  return totalStops * MINUTES_PER_STOP + TRANSFER_MINUTES * route.transfers.length;
+  const transferSecSum = route.transfers.reduce(
+    (sum, t) => sum + getTransferSeconds(t.fromLine, t.toLine, t.transferName),
+    0,
+  );
+  return Math.round(totalStops * MINUTES_PER_STOP + transferSecSum / 60);
 }
 
 export function calculateStaticETA(route: Route): number | null {
@@ -618,12 +632,12 @@ export function calculateStaticETA(route: Route): number | null {
  * completedTransferIdx 번째 환승을 막 끝내고 새 열차에 탑승한 시점부터 도착역까지의 잔여 시간.
  * BoardingLock의 expectedDurationMs는 boardedAt 이후 ride 시간을 의미하므로, 사용자가 list에서
  * 열차를 탭하는 순간(=새 boardedAt)부터의 시간이 산출 대상. 따라서 첫 열차 대기(DEFAULT_WAIT)는
- * 포함하지 않는다. 잔여 환승의 대기는 TRANSFER_MINUTES로 포함.
+ * 포함하지 않는다. 잔여 환승의 대기는 환승역별 실측 시간으로 포함.
  *
  * - direct: 환승 없음 → null
  * - transfer/multi-transfer: 0..transfers.length-1 범위만 유효
  *
- * 산식: 잔여 stops × MINUTES_PER_STOP + 잔여 환승 × TRANSFER_MINUTES
+ * 산식: 잔여 stops × MINUTES_PER_STOP + Σ(잔여 환승역의 실측 환승시간 ÷ 60)
  */
 export function calculateRemainingLegETA(
   route: Route,
@@ -637,8 +651,16 @@ export function calculateRemainingLegETA(
     .slice(completedTransferIdx + 1)
     .reduce((s, n) => s + n, 0);
   const totalRemainingStops = legs.afterTransferStops[completedTransferIdx] + remainingTransferStops;
-  const remainingTransferEvents = legs.transferCount - 1 - completedTransferIdx;
-  return totalRemainingStops * MINUTES_PER_STOP + remainingTransferEvents * TRANSFER_MINUTES;
+  // 잔여 환승 시간 합산: completedTransferIdx 다음 환승부터. transfer 타입은 환승 1회뿐이라 잔여 0.
+  let remainingTransferSec = 0;
+  if (route.type === 'multi-transfer') {
+    for (let i = completedTransferIdx + 1; i < route.transfers.length; i++) {
+      const t = route.transfers[i];
+      remainingTransferSec += getTransferSeconds(t.fromLine, t.toLine, t.transferName);
+    }
+  }
+  // 반환값은 정수 분 — BoardingLock expectedDurationMs(ms 단위 정수 변환)와 호출처가 정수를 전제로 함.
+  return Math.round(totalRemainingStops * MINUTES_PER_STOP + remainingTransferSec / 60);
 }
 
 /**

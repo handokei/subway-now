@@ -12,6 +12,11 @@ import type { LineNumber } from '../types/station';
 
 interface Props {
   stops: Stop[];
+  /**
+   * 각 hop row 직후에 inline 노드를 끼울 수 있는 slot 콜백(#649). null 반환 시 slot 미렌더.
+   * BoardingTrainList 등 hop별 보조 정보를 timeline 흐름 안쪽에 배치할 때 사용.
+   */
+  renderHopSlot?: (stop: Stop, index: number) => React.ReactNode;
 }
 
 // 한 stop의 도어번호 라벨을 결정한다.
@@ -50,7 +55,7 @@ function doorFor(stop: Stop | null, accessibilityMode: boolean): string | null {
   return resolveStopDoor(stop.arrivalContext, toLine, accessibilityMode);
 }
 
-export function EditorialTimeline({ stops }: Props) {
+export function EditorialTimeline({ stops, renderHopSlot }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const accessibilityMode = useAppStore((s) => s.accessibilityMode);
@@ -75,9 +80,10 @@ export function EditorialTimeline({ stops }: Props) {
         const boardingDoor = doorFor(nextHopStop, accessibilityMode);
 
         const isIntermediate = s.mark === 'intermediate';
+        const slot = renderHopSlot ? renderHopSlot(s, i) : null;
         return (
+          <React.Fragment key={i}>
           <View
-            key={i}
             style={[styles.row, isLast && { minHeight: 36 }, isIntermediate && styles.rowIntermediate]}
             testID={`timeline-stop-${i}`}
           >
@@ -149,6 +155,12 @@ export function EditorialTimeline({ stops }: Props) {
               )}
             </View>
           </View>
+          {slot != null && (
+            <View testID={`timeline-hop-slot-${i}`} style={styles.hopSlot}>
+              {slot}
+            </View>
+          )}
+          </React.Fragment>
         );
       })}
     </View>
@@ -191,4 +203,8 @@ const styles = StyleSheet.create({
   dotDest: { width: 12, height: 12, borderRadius: 6 },
   dotIntermediate: { width: 7, height: 7, borderRadius: 4, borderWidth: 1, marginLeft: 1.5 },
   rowIntermediate: { minHeight: 30 },
+  hopSlot: {
+    paddingLeft: 28 + spacing.md, // markerCol 폭 + 행 gap — slot이 station label과 좌측 정렬되도록
+    paddingBottom: spacing.xs,
+  },
 });

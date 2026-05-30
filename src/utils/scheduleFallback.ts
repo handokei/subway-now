@@ -129,6 +129,17 @@ function lookupHeadwaySeconds(line: LineNumber, dayType: DayType, period: Period
   return Number.isFinite(value) ? value : null;
 }
 
+/**
+ * 시간표 fallback이 생성한 가상 trainCode prefix. 실시간 API가 빈약한 시간대에 사용되며,
+ * BoardingTrainList 등 UI에서 사용자에게 노출하지 않기 위한 식별자(#648).
+ */
+export const SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX = 'SCHED-';
+
+/** trainCode가 시간표 fallback에서 만들어진 가상 코드인지 판별(#648). */
+export function isScheduleFallbackTrainCode(trainCode: string): boolean {
+  return trainCode.startsWith(SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX);
+}
+
 function makeTrain(
   secondsFromNow: number,
   suffix: string,
@@ -140,7 +151,7 @@ function makeTrain(
     arrivalMinutes: Math.max(0, Math.floor(secondsFromNow / 60)),
     arrivalSeconds: secondsFromNow,
     statusMessage: '',
-    trainCode: `SCHED-${suffix}`,
+    trainCode: `${SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX}${suffix}`,
     receivedAtMs: nowMs,
     arrivalCode: -1,
     isLastTrain: false,
