@@ -58,3 +58,19 @@ export function subwayIdToLine(value: unknown): LineNumber | null {
   if (typeof value !== 'string' && typeof value !== 'number') return null;
   return SUBWAY_ID_TO_LINE[String(value)] ?? null;
 }
+
+/**
+ * LineNumber → subwayId 역방향. backend BoardingLockMeta.subwayId 송신용 (#622).
+ * 매핑 누락 시 null — 호출자가 송신 차단 또는 graceful skip.
+ */
+const LINE_TO_SUBWAY_ID: Record<LineNumber, string> = Object.entries(SUBWAY_ID_TO_LINE).reduce(
+  (acc, [id, line]) => {
+    acc[line] = id;
+    return acc;
+  },
+  {} as Record<LineNumber, string>,
+);
+
+export function lineToSubwayId(line: LineNumber): string | null {
+  return LINE_TO_SUBWAY_ID[line] ?? null;
+}

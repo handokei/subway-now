@@ -282,6 +282,7 @@ export default function HomeScreen() {
     nextStationEtaSeconds:
       nextTrainMinutes != null && nextTrainMinutes !== Infinity ? nextTrainMinutes * 60 : null,
     currentStation: result?.station ?? null,
+    boardingLock,
   });
 
   useEffect(() => {
