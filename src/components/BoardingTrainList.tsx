@@ -5,6 +5,10 @@ import type { ArrivalInfo } from '../api/arrivalApi';
 import type { LineNumber } from '../types/station';
 import { formatClockTime } from '../utils/formatTime';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
+import { LINE_COLORS } from '../constants/lineColors';
+
+/** row 좌측 호선 색 stripe 두께(#664). 시각적 구분을 헤더 외에도 row마다 즉시 인지 가능하게. */
+const LINE_STRIPE_WIDTH = 3;
 
 interface Props {
   arrivals: ArrivalInfo[];
@@ -32,11 +36,16 @@ interface Props {
 /**
  * 현재역 도착 list — 사용자가 탑승할 열차를 명시적으로 선택하는 진입점 (#584 PR B).
  *
- * 호출자는 이미 route 방향으로 필터링된 arrivals를 전달한다 — 이 컴포넌트는 디스플레이/탭 처리만 담당.
+ * 호출자는 route 방향으로 필터링된 arrivals를 전달한다. 노선(line) 필터는 컴포넌트가 내부에서 수행
+ * (#664): 환승역 statnNm 응답이 다른 노선 열차를 섞어 보내므로 헤더 line 기준으로 한 번 더 걸러
+ * caller 세 곳(index/MisBoardingReselectModal/useTransferTrainList)이 동일 보호를 받는다.
+ *
  * 각 row를 탭하면 onSelect 콜백이 발화 → 호출자가 BoardingLock 생성.
  *
  * #634: 도착 시각을 "분" 상대 표기 → "HH:mm" 절대 표기.
  * #649: compact + nextStationLabel — Timeline hop slot 안에 inline 배치되는 형태 지원.
+ *       compact 모드는 hop slot 안 inline이라 row borderRadius 없음(직각). stripe도 같은 정신으로
+ *       직각 유지 — 일반 모드는 카드 radius와 어울리는 둥근 코너 stripe로 자연스럽게 처리됨.
  */
 export function BoardingTrainList({
   arrivals,
@@ -51,7 +60,11 @@ export function BoardingTrainList({
   const isUnreachable = (train: ArrivalInfo): boolean =>
     walkingBufferSeconds != null && train.arrivalSeconds < walkingBufferSeconds;
 
-  if (arrivals.length === 0) {
+  // #664: 환승역 statnNm 응답에 같은 이름 다른 노선 열차가 섞여 들어오므로 헤더 line 기준 필터.
+  // train.line은 어댑터가 subwayId로 row마다 정확히 결정한 값(#663). 일치하는 row만 표시.
+  const filteredArrivals = arrivals.filter((train) => train.line === line);
+
+  if (filteredArrivals.length === 0) {
     return (
       <View
         style={compact ? styles.emptyCompact : styles.empty}
@@ -73,7 +86,7 @@ export function BoardingTrainList({
           <Text style={[typography.label, { color: colors.muted }]}>{title}</Text>
         </View>
       )}
-      {arrivals.map((train) => {
+      {filteredArrivals.map((train) => {
         const unreachable = isUnreachable(train);
         const labelText = nextStationLabel
           ? `${nextStationLabel} 방면`
@@ -86,6 +99,7 @@ export function BoardingTrainList({
             style={[
               compact ? styles.rowCompact : styles.row,
               compact ? null : { backgroundColor: colors.card },
+              { borderLeftWidth: LINE_STRIPE_WIDTH, borderLeftColor: LINE_COLORS[train.line] },
               { opacity: unreachable ? 0.4 : 1 },
             ]}
             testID={`boarding-train-row-${train.trainCode}`}
