@@ -471,6 +471,24 @@ describe('환승역별 실측 환승시간 반영', () => {
   });
 });
 
+describe('구간별 실측 운행시간 반영 (#655)', () => {
+  // 종로5가(1-030)→종각(1-032): 두 hop 모두 실측 90초 → 2 stops지만 180초.
+  // 균일 fallback(stops*120=240초)보다 1분 짧게 산출되어 실측 데이터 사용을 검증한다.
+  it('findRoute가 만든 direct route는 실측 hop 합을 travelSeconds로 채운다', () => {
+    const route = findRoute('1-030', '1-032');
+    expect(route).not.toBeNull();
+    expect(route!.type).toBe('direct');
+    const direct = route as DirectRoute;
+    expect(direct.stops).toBe(2);
+    expect(direct.travelSeconds).toBe(180);
+  });
+
+  it('실측 hop가 fallback보다 짧으면 calculateStaticETA도 짧아진다', () => {
+    // 3분 대기 + round(180/60) = 3 + 3 = 6분 (fallback이면 3 + round(240/60) = 7분).
+    expect(calculateStaticETA(findRoute('1-030', '1-032'))).toBe(6);
+  });
+});
+
 describe('calculateRemainingLegETA', () => {
   it('route가 null이면 null', () => {
     expect(calculateRemainingLegETA(null, 0)).toBeNull();
