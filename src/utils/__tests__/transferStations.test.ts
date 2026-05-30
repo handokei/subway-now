@@ -33,26 +33,26 @@ describe('enumerateTransferStations', () => {
   it('variant 쌍 거리가 maxPairDistanceKm를 초과하면 동명이역으로 제외', () => {
     // 1도 위경도 ≈ 111km — 명백히 임계 초과
     const groups = enumerateTransferStations([
-      stn('a', 'X', '1', 37.0, 127.0),
-      stn('b', 'X', '2', 38.0, 127.0),
+      stn('a', 'X', '1', 37, 127),
+      stn('b', 'X', '2', 38, 127),
     ]);
     expect(groups).toEqual([]);
   });
 
   it('maxPairDistanceKm 옵션으로 임계 조정', () => {
     const stations = [
-      stn('a', 'X', '1', 37.0, 127.0),
-      stn('b', 'X', '2', 37.005, 127.0), // 약 555m
+      stn('a', 'X', '1', 37, 127),
+      stn('b', 'X', '2', 37.005, 127), // 약 555m
     ];
     expect(enumerateTransferStations(stations, { maxPairDistanceKm: 0.3 })).toEqual([]);
-    expect(enumerateTransferStations(stations, { maxPairDistanceKm: 1.0 })).toHaveLength(1);
+    expect(enumerateTransferStations(stations, { maxPairDistanceKm: 1 })).toHaveLength(1);
   });
 
   it('3개 이상 variants도 모두 임계 내면 포함', () => {
     const groups = enumerateTransferStations([
-      stn('a', 'X', '1', 37.0, 127.0),
-      stn('b', 'X', '2', 37.0001, 127.0),
-      stn('c', 'X', '3', 37.0002, 127.0),
+      stn('a', 'X', '1', 37, 127),
+      stn('b', 'X', '2', 37.0001, 127),
+      stn('c', 'X', '3', 37.0002, 127),
     ]);
     expect(groups).toHaveLength(1);
     expect(groups[0].variants).toHaveLength(3);
@@ -60,9 +60,9 @@ describe('enumerateTransferStations', () => {
 
   it('3개 variants 중 한 쌍만 임계 초과해도 그룹 제외', () => {
     const groups = enumerateTransferStations([
-      stn('a', 'X', '1', 37.0, 127.0),
-      stn('b', 'X', '2', 37.0001, 127.0),
-      stn('c', 'X', '3', 38.0, 127.0), // a와 ~111km
+      stn('a', 'X', '1', 37, 127),
+      stn('b', 'X', '2', 37.0001, 127),
+      stn('c', 'X', '3', 38, 127), // a와 ~111km
     ]);
     expect(groups).toEqual([]);
   });

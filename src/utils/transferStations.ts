@@ -13,7 +13,7 @@ export interface EnumerateTransferStationsOptions {
 
 const ALL_STATIONS = stationsData as Station[];
 
-const DEFAULT_MAX_PAIR_DISTANCE_KM = 1.0;
+const DEFAULT_MAX_PAIR_DISTANCE_KM = 1;
 
 /**
  * 같은 이름을 공유하는 다른 노선 station을 환승역 단위로 묶어 반환.
