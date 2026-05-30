@@ -112,7 +112,9 @@
     "arrivalTitle": "到着アラーム",
     "transferMessage": "{{station}}で\n乗り換え",
     "arrivalMessage": "{{station}}で\n下車",
-    "dismiss": "アラームを止める"
+    "dismiss": "アラームを止める",
+    "dismissAndEnd": "下車（旅程終了）",
+    "keepTripOnly": "このアラームのみ停止（旅程は維持）"
   },
   "destinationPicker": {
     "noLocation": "位置情報がありません。",
