@@ -1,5 +1,10 @@
 import type { Station, NearestStationResult } from '../../types/station';
-import type { Route, DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
+import type { Route, DirectRoute } from '../stationRoute';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../testUtils/routeFixtures';
 import type { AlarmEvent } from '../stationAlarm';
 
 const mockFindNearestStation = jest.fn();
@@ -89,7 +94,7 @@ const mockNearestResult: NearestStationResult = {
   distanceKm: 0.15,
 };
 
-const mockRoute: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+const mockRoute = makeDirectRoute(3, '2');
 const mockAlarmEvent: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '시청' };
 
 function call(overrides: Partial<Parameters<typeof processLocationUpdate>[0]> = {}) {
@@ -263,7 +268,7 @@ describe('processLocationUpdate', () => {
   });
 
   it('falls back to findRoute when storedRoute exists but updateRouteFromPosition returns null', async () => {
-    const storedRoute: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+    const storedRoute = makeDirectRoute(5, '2');
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockUpdateRouteFromPosition.mockReturnValue(null);
     mockFindRoute.mockReturnValue(mockRoute);
@@ -275,8 +280,8 @@ describe('processLocationUpdate', () => {
   });
 
   it('uses updateRouteFromPosition result when storedRoute is provided and succeeds', async () => {
-    const storedRoute: DirectRoute = { type: 'direct', stops: 5, line: '2' };
-    const updatedRoute: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+    const storedRoute = makeDirectRoute(5, '2');
+    const updatedRoute = makeDirectRoute(3, '2');
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockUpdateRouteFromPosition.mockReturnValue(updatedRoute);
     mockCalculateStaticETA.mockReturnValue(6);
@@ -596,7 +601,7 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns destination and stops for direct route', () => {
-    const route: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+    const route = makeDirectRoute(5, '2');
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '강남',
       stopsToNextStation: 5,
@@ -606,10 +611,10 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns transfer station for transfer route with stopsToTransfer > 0', () => {
-    const route: TransferRoute = {
-      type: 'transfer', transferName: '동대문', fromLine: '1', toLine: '4',
+    const route = makeTransferRoute({
+      transferName: '동대문', fromLine: '1', toLine: '4',
       stopsToTransfer: 3, stopsFromTransfer: 2,
-    };
+    });
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '동대문',
       stopsToNextStation: 3,
@@ -619,10 +624,10 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns destination for transfer route with stopsToTransfer = 0', () => {
-    const route: TransferRoute = {
-      type: 'transfer', transferName: '동대문', fromLine: '1', toLine: '4',
+    const route = makeTransferRoute({
+      transferName: '동대문', fromLine: '1', toLine: '4',
       stopsToTransfer: 0, stopsFromTransfer: 2,
-    };
+    });
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '강남',
       stopsToNextStation: 2,
@@ -632,14 +637,13 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns first transfer for multi-transfer route with stopsToTransfer > 0', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
-    };
+    });
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '잠실',
       stopsToNextStation: 3,
@@ -649,14 +653,13 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns second transfer when first has stopsToTransfer = 0', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 0 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
-    };
+    });
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '시청',
       stopsToNextStation: 5,
@@ -671,14 +674,13 @@ describe('resolveNextTarget', () => {
   });
 
   it('returns destination when all transfers have stopsToTransfer = 0', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 0 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 0 },
       ],
       stopsAfterLastTransfer: 4,
-    };
+    });
     expect(resolveNextTarget(route, '강남')).toEqual({
       nextStationName: '강남',
       stopsToNextStation: 4,
@@ -689,10 +691,10 @@ describe('resolveNextTarget', () => {
 
   it('회귀(#214): 환승 전 구간에서 stopsToDestination은 환승 후 구간을 포함한 총합이다', () => {
     // 용마산 → 군자(환승) → 이대 시나리오: 환승까지 2정거장, 환승 후 9정거장 → 총 11
-    const route: TransferRoute = {
-      type: 'transfer', transferName: '군자', fromLine: '7', toLine: '5',
+    const route = makeTransferRoute({
+      transferName: '군자', fromLine: '7', toLine: '5',
       stopsToTransfer: 2, stopsFromTransfer: 9,
-    };
+    });
     expect(resolveNextTarget(route, '이대')).toEqual({
       nextStationName: '군자',
       stopsToNextStation: 2,

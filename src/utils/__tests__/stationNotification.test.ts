@@ -11,7 +11,11 @@ import {
   buildAlarmContent,
 } from '../stationNotification';
 import { Station } from '../../types/station';
-import { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../testUtils/routeFixtures';
 
 jest.mock('expo-notifications');
 jest.mock('../logger', () => ({
@@ -90,23 +94,21 @@ const mockDestination: Station = {
   lng: 127.0163,
 };
 
-const directRoute: DirectRoute = { type: 'direct', stops: 4, line: '1' };
-const transferRoute: TransferRoute = {
-  type: 'transfer',
+const directRoute = makeDirectRoute(4, '1');
+const transferRoute = makeTransferRoute({
   transferName: '동대문',
   fromLine: '1',
   toLine: '4',
   stopsToTransfer: 3,
   stopsFromTransfer: 2,
-};
-const multiTransferRoute: MultiTransferRoute = {
-  type: 'multi-transfer',
+});
+const multiTransferRoute = makeMultiTransferRoute({
   transfers: [
     { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
     { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
   ],
   stopsAfterLastTransfer: 4,
-};
+});
 
 function expectNotificationContent(title: string, body: string) {
   expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(

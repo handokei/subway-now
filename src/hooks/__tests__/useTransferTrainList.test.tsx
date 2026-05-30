@@ -5,8 +5,8 @@ import { useBoardingLockStore } from '../../store/useBoardingLockStore';
 import { findStationByNameAndLine } from '../../utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../../api/arrivalApi';
 import type { BoardingLock } from '../../types/boardingLock';
-import type { TransferRoute } from '../../utils/stationRoute';
 import type { Station } from '../../types/station';
+import { makeTransferRoute } from '../../testUtils/routeFixtures';
 
 jest.mock('../useArrivalInfo');
 const mockUseArrival = useArrivalInfo as jest.Mock;
@@ -29,14 +29,13 @@ const lock: BoardingLock = {
   boardedAt: 0,
   expectedDurationMs: 1_000_000,
 };
-const route: TransferRoute = {
-  type: 'transfer',
+const route = makeTransferRoute({
   transferName: '공덕',
   fromLine: '6',
   toLine: '5',
   stopsToTransfer: 2,
   stopsFromTransfer: 3,
-};
+});
 const gondeokOn6 = findStationByNameAndLine('공덕', '6') as Station;
 
 function arrivalRet(arrival: StationArrival | null) {

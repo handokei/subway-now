@@ -1,52 +1,49 @@
 import { buildBoardingLockMeta, findSegmentEndStationName } from '../buildBoardingLockMeta';
 import { BOARDING_LOCK_EXPIRY_FACTOR } from '../../types/boardingLock';
 import type { BoardingLock } from '../../types/boardingLock';
-import type {
-  DirectRoute,
-  TransferRoute,
-  MultiTransferRoute,
-} from '../stationRoute';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../testUtils/routeFixtures';
 
 describe('findSegmentEndStationName', () => {
   it('direct route → destination', () => {
-    const route: DirectRoute = { type: 'direct', stops: 3, line: '2' };
+    const route = makeDirectRoute(3, '2');
     expect(findSegmentEndStationName(route, '2', '강남')).toBe('강남');
   });
 
   it('transfer fromLine → transferName, toLine → destination', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '교대',
       fromLine: '3',
       toLine: '2',
       stopsToTransfer: 5,
       stopsFromTransfer: 2,
-    };
+    });
     expect(findSegmentEndStationName(route, '3', '강남')).toBe('교대');
     expect(findSegmentEndStationName(route, '2', '강남')).toBe('강남');
   });
 
   it('transfer 노선 어느 segment에도 일치 안 하면 null', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '교대',
       fromLine: '3',
       toLine: '2',
       stopsToTransfer: 5,
       stopsFromTransfer: 2,
-    };
+    });
     expect(findSegmentEndStationName(route, '7', '강남')).toBeNull();
   });
 
   it('multi-transfer: segment.fromLine 일치 → transferName, 마지막 toLine → destination', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '시청', fromLine: '1', toLine: '2', stopsToTransfer: 3 },
         { transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 4 },
       ],
       stopsAfterLastTransfer: 5,
-    };
+    });
     expect(findSegmentEndStationName(route, '1', '대치')).toBe('시청');
     expect(findSegmentEndStationName(route, '2', '대치')).toBe('교대');
     expect(findSegmentEndStationName(route, '3', '대치')).toBe('대치');
@@ -54,11 +51,10 @@ describe('findSegmentEndStationName', () => {
   });
 
   it('multi-transfer transfers 비어있고 line 매칭 없으면 null', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [],
       stopsAfterLastTransfer: 5,
-    };
+    });
     expect(findSegmentEndStationName(route, '1', '대치')).toBeNull();
   });
 });
@@ -74,7 +70,7 @@ describe('buildBoardingLockMeta', () => {
   };
 
   it('subwayId 매핑 실패면 null (line이 알 수 없음)', () => {
-    const route: DirectRoute = { type: 'direct', stops: 3, line: '7' };
+    const route = makeDirectRoute(3, '7');
     const result = buildBoardingLockMeta({
       lock: { ...baseLock, boardingLine: 'unknown' as never },
       route,
@@ -85,14 +81,13 @@ describe('buildBoardingLockMeta', () => {
   });
 
   it('segmentStations 추론 불가하면 (boardingLine ≠ route segment) null', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '교대',
       fromLine: '3',
       toLine: '2',
       stopsToTransfer: 5,
       stopsFromTransfer: 2,
-    };
+    });
     const result = buildBoardingLockMeta({
       lock: { ...baseLock, boardingLine: '7' },
       route,
@@ -104,7 +99,7 @@ describe('buildBoardingLockMeta', () => {
 
   it('id 역순(startIdx > endIdx)이면 boarding→destination 순서로 reverse한다 — backend indexOf 의존', () => {
     // 7호선에서 사가정(상위 id) → 면목(하위 id)으로 이동 (위→아래 진행 가정).
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '7' };
+    const route = makeDirectRoute(1, '7');
     const result = buildBoardingLockMeta({
       lock: { ...baseLock, boardingLine: '7' },
       route,
@@ -118,7 +113,7 @@ describe('buildBoardingLockMeta', () => {
   });
 
   it('boarding == destination이면 segmentStations 길이 1', () => {
-    const route: DirectRoute = { type: 'direct', stops: 0, line: '7' };
+    const route = makeDirectRoute(0, '7');
     const result = buildBoardingLockMeta({
       lock: { ...baseLock, boardingLine: '7' },
       route,
@@ -131,7 +126,7 @@ describe('buildBoardingLockMeta', () => {
 
   it('direct route + 같은 line: segmentStations에 출발/도착 포함된 station 시퀀스', () => {
     // 면목(7호선) → 용마산(7호선), 7호선에서 인접한 두 역.
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '7' };
+    const route = makeDirectRoute(1, '7');
     const result = buildBoardingLockMeta({
       lock: { ...baseLock, boardingLine: '7' },
       route,
@@ -150,7 +145,7 @@ describe('buildBoardingLockMeta', () => {
   });
 
   it('알 수 없는 boardingStation/endStation이면 null', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '7' };
+    const route = makeDirectRoute(1, '7');
     const result = buildBoardingLockMeta({
       lock: { ...baseLock, boardingLine: '7' },
       route,

@@ -5,12 +5,12 @@ import {
   type RouteArc,
 } from '../routeProgress';
 import { findStationByNameAndLine } from '../stationRoute';
-import type {
-  DirectRoute,
-  MultiTransferRoute,
-  TransferRoute,
-} from '../stationRoute';
 import type { Station } from '../../types/station';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../testUtils/routeFixtures';
 
 const childrenPark = findStationByNameAndLine('어린이대공원', '7')!;
 const sagajeong = findStationByNameAndLine('사가정', '7')!;
@@ -28,7 +28,7 @@ describe('computeRouteArc', () => {
   });
 
   it('builds arc for direct route (forward — id ascending)', () => {
-    const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+    const route = makeDirectRoute(4, '7');
     const arc = computeRouteArc(route, sagajeong, childrenPark);
     expect(arc).not.toBeNull();
     expect(arc!.stations[0].id).toBe(sagajeong.id);
@@ -39,7 +39,7 @@ describe('computeRouteArc', () => {
   });
 
   it('builds arc for direct route (reverse — id descending)', () => {
-    const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+    const route = makeDirectRoute(4, '7');
     const arc = computeRouteArc(route, childrenPark, sagajeong);
     expect(arc).not.toBeNull();
     expect(arc!.stations[0].id).toBe(childrenPark.id);
@@ -47,7 +47,7 @@ describe('computeRouteArc', () => {
   });
 
   it('builds arc for direct route (origin === destination)', () => {
-    const route: DirectRoute = { type: 'direct', stops: 0, line: '7' };
+    const route = makeDirectRoute(0, '7');
     const arc = computeRouteArc(route, gunja, gunja);
     expect(arc).not.toBeNull();
     expect(arc!.stations).toHaveLength(1);
@@ -56,26 +56,25 @@ describe('computeRouteArc', () => {
   });
 
   it('returns null when direct route origin id is not on the line', () => {
-    const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+    const route = makeDirectRoute(4, '7');
     const fake: Station = { ...gunja, id: 'nonexistent' };
     expect(computeRouteArc(route, fake, sagajeong)).toBeNull();
   });
 
   it('returns null when direct route destination id is not on the line', () => {
-    const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+    const route = makeDirectRoute(4, '7');
     const fake: Station = { ...sagajeong, id: 'nonexistent' };
     expect(computeRouteArc(route, gunja, fake)).toBeNull();
   });
 
   it('builds arc for transfer route', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '건대입구',
       fromLine: '7',
       toLine: '2',
       stopsToTransfer: 1,
       stopsFromTransfer: 4,
-    };
+    });
     const arc = computeRouteArc(route, childrenPark, jamsil2);
     expect(arc).not.toBeNull();
     expect(arc!.stations[0].id).toBe(childrenPark.id);
@@ -86,52 +85,48 @@ describe('computeRouteArc', () => {
   });
 
   it('returns null when transfer route has unknown transferName', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '존재하지않는역',
       fromLine: '7',
       toLine: '2',
       stopsToTransfer: 1,
       stopsFromTransfer: 4,
-    };
+    });
     expect(computeRouteArc(route, childrenPark, jamsil2)).toBeNull();
   });
 
   it('returns null when transfer route origin id is invalid', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '건대입구',
       fromLine: '7',
       toLine: '2',
       stopsToTransfer: 1,
       stopsFromTransfer: 4,
-    };
+    });
     const fakeOrigin: Station = { ...childrenPark, id: 'nonexistent' };
     expect(computeRouteArc(route, fakeOrigin, jamsil2)).toBeNull();
   });
 
   it('returns null when transfer route destination id is invalid', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '건대입구',
       fromLine: '7',
       toLine: '2',
       stopsToTransfer: 1,
       stopsFromTransfer: 4,
-    };
+    });
     const fakeDest: Station = { ...jamsil2, id: 'nonexistent' };
     expect(computeRouteArc(route, childrenPark, fakeDest)).toBeNull();
   });
 
   it('builds arc for multi-transfer route', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 5 },
         { transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 7 },
       ],
       stopsAfterLastTransfer: 1,
-    };
+    });
     const arc = computeRouteArc(route, sagajeong, expressBus3);
     expect(arc).not.toBeNull();
     expect(arc!.stations[0].id).toBe(sagajeong.id);
@@ -146,26 +141,24 @@ describe('computeRouteArc', () => {
   });
 
   it('returns null when multi-transfer route has unknown transferName', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '존재하지않는역', fromLine: '7', toLine: '2', stopsToTransfer: 5 },
         { transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 7 },
       ],
       stopsAfterLastTransfer: 1,
-    };
+    });
     expect(computeRouteArc(route, sagajeong, expressBus3)).toBeNull();
   });
 
   it('returns null when multi-transfer route origin id is invalid', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 5 },
         { transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 7 },
       ],
       stopsAfterLastTransfer: 1,
-    };
+    });
     const fakeOrigin: Station = { ...sagajeong, id: 'nonexistent' };
     expect(computeRouteArc(route, fakeOrigin, expressBus3)).toBeNull();
   });
@@ -179,20 +172,19 @@ describe('computeRouteArc', () => {
     const { findStationByNameAndLine: fsbnl } = require('../stationRoute');
     const ori = fsbnl('사가정', '7');
     const dst = fsbnl('어린이대공원', '7');
-    const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+    const route = makeDirectRoute(4, '7');
     expect(cra(route, ori, dst)).toBeNull();
     jest.resetModules();
   });
 
   it('returns null when multi-transfer route destination id is invalid', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '건대입구', fromLine: '7', toLine: '2', stopsToTransfer: 5 },
         { transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 7 },
       ],
       stopsAfterLastTransfer: 1,
-    };
+    });
     const fakeDest: Station = { ...expressBus3, id: 'nonexistent' };
     expect(computeRouteArc(route, sagajeong, fakeDest)).toBeNull();
   });
@@ -200,7 +192,7 @@ describe('computeRouteArc', () => {
 
 describe('nearestArcPoint', () => {
   it('returns haversine distance for single-station arc', () => {
-    const arc = computeRouteArc({ type: 'direct', stops: 0, line: '7' }, gunja, gunja)!;
+    const arc = computeRouteArc(makeDirectRoute(0, '7'), gunja, gunja)!;
     const proj = nearestArcPoint(arc, gunja.lat + 0.001, gunja.lng);
     expect(proj.arcM).toBe(0);
     expect(proj.segmentIndex).toBe(0);
@@ -208,7 +200,7 @@ describe('nearestArcPoint', () => {
   });
 
   it('projects exactly at first station for a 2-station arc', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '7' };
+    const route = makeDirectRoute(1, '7');
     const arc = computeRouteArc(route, gunja, childrenPark)!;
     const proj = nearestArcPoint(arc, gunja.lat, gunja.lng);
     expect(proj.arcM).toBeCloseTo(0, 1);
@@ -217,7 +209,7 @@ describe('nearestArcPoint', () => {
   });
 
   it('projects exactly at last station for a 2-station arc', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '7' };
+    const route = makeDirectRoute(1, '7');
     const arc = computeRouteArc(route, gunja, childrenPark)!;
     const proj = nearestArcPoint(arc, childrenPark.lat, childrenPark.lng);
     // 등각도 평면 사영 segLenM과 haversine arcM 누적 사이 작은 오차 허용(<5m).
@@ -226,7 +218,7 @@ describe('nearestArcPoint', () => {
   });
 
   it('clamps to t=0 when point is behind first station', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '7' };
+    const route = makeDirectRoute(1, '7');
     const arc = computeRouteArc(route, gunja, childrenPark)!;
     // 군자보다 더 북쪽(어린이대공원 반대 방향)으로 멀리 떨어진 점
     const dLat = gunja.lat - childrenPark.lat;
@@ -237,7 +229,7 @@ describe('nearestArcPoint', () => {
   });
 
   it('clamps to t=1 when point is past last station', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '7' };
+    const route = makeDirectRoute(1, '7');
     const arc = computeRouteArc(route, gunja, childrenPark)!;
     const dLat = childrenPark.lat - gunja.lat;
     const dLng = childrenPark.lng - gunja.lng;
@@ -248,7 +240,7 @@ describe('nearestArcPoint', () => {
   });
 
   it('picks the closer segment for multi-segment arc', () => {
-    const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+    const route = makeDirectRoute(4, '7');
     const arc = computeRouteArc(route, sagajeong, childrenPark)!;
     // 어린이대공원 좌표 입력 → 마지막 segment에 사영되어야 함
     const proj = nearestArcPoint(arc, childrenPark.lat, childrenPark.lng);
@@ -273,11 +265,11 @@ describe('nearestArcPoint', () => {
 });
 
 describe('stationAtProgress', () => {
-  const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+  const route = makeDirectRoute(4, '7');
   const arc = computeRouteArc(route, sagajeong, childrenPark)!;
 
   it('returns single station when arc has only one station', () => {
-    const single = computeRouteArc({ type: 'direct', stops: 0, line: '7' }, gunja, gunja)!;
+    const single = computeRouteArc(makeDirectRoute(0, '7'), gunja, gunja)!;
     const info = stationAtProgress(single, 0);
     expect(info.current.id).toBe(gunja.id);
     expect(info.next).toBeNull();

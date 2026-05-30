@@ -7,6 +7,7 @@ import {
   __resetAlarmBackendDedup,
 } from '../alarmBackend';
 import type { RegisterTripPayload } from '../alarmBackend';
+import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({
@@ -22,7 +23,7 @@ const NOW = new Date('2026-05-13T12:00:00Z').getTime();
 
 const SAMPLE_PAYLOAD: RegisterTripPayload = {
   token: 'token-hex',
-  route: { type: 'direct', stops: 5, line: '2' },
+  route: makeDirectRoute(5, '2'),
   destination: '0228',
   waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
   alarmAtEpochMs: NOW + 60000,
@@ -84,7 +85,7 @@ describe('alarmBackend', () => {
 
       const payload: RegisterTripPayload = {
         token: 't',
-        route: { type: 'direct', stops: 1, line: '2' },
+        route: makeDirectRoute(1, '2'),
         destination: '0228',
         waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
         alarmAtEpochMs: NOW,

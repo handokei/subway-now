@@ -1,8 +1,12 @@
 import { findActiveTransferContext, resolveDirectionInLine } from '../findActiveTransferContext';
 import { findStationByNameAndLine, getStationsOnLine } from '../stationRoute';
 import type { BoardingLock } from '../../types/boardingLock';
-import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
 import type { Station } from '../../types/station';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../testUtils/routeFixtures';
 
 const lock: BoardingLock = {
   destinationId: 'd',
@@ -28,29 +32,28 @@ describe('findActiveTransferContext', () => {
   });
 
   it('destinationName=null이면 null', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '6' };
+    const route = makeDirectRoute(1, '6');
     expect(findActiveTransferContext(lock, route, null, gondeokOnLine6)).toBeNull();
   });
 
   it('currentStation=null이면 null', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '6' };
+    const route = makeDirectRoute(1, '6');
     expect(findActiveTransferContext(lock, route, '강남', null)).toBeNull();
   });
 
   it('direct route(환승 없음)는 항상 null', () => {
-    const route: DirectRoute = { type: 'direct', stops: 1, line: '6' };
+    const route = makeDirectRoute(1, '6');
     expect(findActiveTransferContext(lock, route, '공덕', gondeokOnLine6)).toBeNull();
   });
 
   it('transfer route + 현재역이 환승역이면 toLine 컨텍스트 반환', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '공덕',
       fromLine: '6',
       toLine: '5',
       stopsToTransfer: 2,
       stopsFromTransfer: 3,
-    };
+    });
     const ctx = findActiveTransferContext(lock, route, '여의나루', gondeokOnLine6);
     expect(ctx).not.toBeNull();
     expect(ctx!.nextLine).toBe('5');
@@ -64,40 +67,37 @@ describe('findActiveTransferContext', () => {
 
   it('transfer route + 환승역=목적지이면 alarmType=destination → null', () => {
     // transferName === destinationName 케이스는 resolveAllTargets가 destination으로 처리.
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '공덕',
       fromLine: '6',
       toLine: '5',
       stopsToTransfer: 2,
       stopsFromTransfer: 0,
-    };
+    });
     expect(findActiveTransferContext(lock, route, '공덕', gondeokOnLine6)).toBeNull();
   });
 
   it('transfer route + 현재역이 환승역이 아니면 null', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '공덕',
       fromLine: '6',
       toLine: '5',
       stopsToTransfer: 2,
       stopsFromTransfer: 3,
-    };
+    });
     expect(findActiveTransferContext(lock, route, '여의나루', yeouinaru)).toBeNull();
   });
 
   it('환승 후 방향이 up인 케이스 (toLine 인덱스 역전)', () => {
     // 충무로(4→3 환승) → 종로3가(line 3 → line 1 환승). 3호선에서 충무로 인덱스 > 종로3가 인덱스
     // → resolveDirectionInLine은 'up' 반환.
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '충무로', fromLine: '4', toLine: '3', stopsToTransfer: 3 },
         { transferName: '종로3가', fromLine: '3', toLine: '1', stopsToTransfer: 1 },
       ],
       stopsAfterLastTransfer: 1,
-    };
+    });
     const chungmuroOn4 = findStationByNameAndLine('충무로', '4') as Station;
     const ctx = findActiveTransferContext(lock, route, '서울역', chungmuroOn4);
     // direction이 'up' 또는 'down' — toLine 인덱스 검증. 실데이터 의존이라 둘 다 허용해
@@ -107,15 +107,14 @@ describe('findActiveTransferContext', () => {
   });
 
   it('multi-transfer route + 첫 환승역 도달 시 두 번째 leg 컨텍스트', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '공덕', fromLine: '6', toLine: '5', stopsToTransfer: 2 },
         // 두 번째 transfer는 임의 — 첫 번째만 검증 대상
         { transferName: '여의나루', fromLine: '5', toLine: '5', stopsToTransfer: 3 },
       ],
       stopsAfterLastTransfer: 1,
-    };
+    });
     const ctx = findActiveTransferContext(lock, route, '아무목적지', gondeokOnLine6);
     expect(ctx).not.toBeNull();
     expect(ctx!.nextLine).toBe('5');
@@ -125,14 +124,13 @@ describe('findActiveTransferContext', () => {
   });
 
   it('multi-transfer route + 두 번째 환승역 도달 시 completedTransferIdx=1', () => {
-    const route: MultiTransferRoute = {
-      type: 'multi-transfer',
+    const route = makeMultiTransferRoute({
       transfers: [
         { transferName: '충무로', fromLine: '4', toLine: '3', stopsToTransfer: 3 },
         { transferName: '종로3가', fromLine: '3', toLine: '1', stopsToTransfer: 1 },
       ],
       stopsAfterLastTransfer: 1,
-    };
+    });
     const jongno3 = findStationByNameAndLine('종로3가', '3') as Station;
     const ctx = findActiveTransferContext(lock, route, '서울역', jongno3);
     expect(ctx).not.toBeNull();
@@ -141,28 +139,26 @@ describe('findActiveTransferContext', () => {
   });
 
   it('currentStation이 어떤 waypoint와도 매칭되지 않으면 null (matchedIdx=-1)', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '공덕',
       fromLine: '6',
       toLine: '5',
       stopsToTransfer: 2,
       stopsFromTransfer: 3,
-    };
+    });
     // 현재역은 효창공원앞(6호선) — route 어느 waypoint와도 매칭 안 됨
     const hyochang = findStationByNameAndLine('효창공원앞', '6') as Station;
     expect(findActiveTransferContext(lock, route, '여의나루', hyochang)).toBeNull();
   });
 
   it('환승 시 direction이 명시적으로 산출됨 (resolveDirectionInLine 성공 경로)', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '공덕',
       fromLine: '6',
       toLine: '5',
       stopsToTransfer: 2,
       stopsFromTransfer: 3,
-    };
+    });
     const ctx = findActiveTransferContext(lock, route, '여의나루', gondeokOnLine6);
     expect(ctx).not.toBeNull();
     // 5호선 공덕→여의나루는 stations.json index가 다르므로 direction은 non-null
@@ -170,14 +166,13 @@ describe('findActiveTransferContext', () => {
   });
 
   it('lock.boardingLine이 이미 nextLine이면 null (환승 lock 교체 직후 재노출 방지)', () => {
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '공덕',
       fromLine: '6',
       toLine: '5',
       stopsToTransfer: 2,
       stopsFromTransfer: 3,
-    };
+    });
     // lock이 이미 5호선으로 교체된 상태 (createTransferLock 직후)
     const transferredLock = { ...lock, boardingLine: '5' as const };
     expect(
@@ -202,14 +197,13 @@ describe('findActiveTransferContext', () => {
 
   it('toLine 측 환승역 station을 못 찾으면 null', () => {
     // 존재하지 않는 가짜 노선 매칭 — findStationByNameAndLine이 undefined 반환하는 경로 커버
-    const route: TransferRoute = {
-      type: 'transfer',
+    const route = makeTransferRoute({
       transferName: '존재하지않는역X',
       fromLine: '6',
       toLine: '5',
       stopsToTransfer: 2,
       stopsFromTransfer: 3,
-    };
+    });
     const fakeCurrent: Station = { ...gondeokOnLine6, name: '존재하지않는역X' };
     expect(findActiveTransferContext(lock, route, '여의나루', fakeCurrent)).toBeNull();
   });

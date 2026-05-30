@@ -83,12 +83,8 @@ export interface DirectRoute {
   type: 'direct';
   stops: number;
   line: LineNumber;
-  /**
-   * #655: 실측 운행 시간(초). findRoutes/updateRouteFromPosition가 lookup으로 채운다.
-   * 외부에서 stops만 채워 만든 route(테스트 fixture)도 허용 — getTravelMinutes에서
-   * stops × STOP_FALLBACK_SECONDS로 fallback. 후속 정리는 follow-up 이슈에서 required로 승격.
-   */
-  travelSeconds?: number;
+  /** #655: 실측 운행 시간(초). findRoutes/updateRouteFromPosition가 lookup으로 채운다. */
+  travelSeconds: number;
 }
 
 export interface TransferRoute {
@@ -99,9 +95,9 @@ export interface TransferRoute {
   stopsToTransfer: number;
   stopsFromTransfer: number;
   /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
-  secondsToTransfer?: number;
+  secondsToTransfer: number;
   /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
-  secondsFromTransfer?: number;
+  secondsFromTransfer: number;
 }
 
 export interface TransferSegment {
@@ -110,7 +106,7 @@ export interface TransferSegment {
   toLine: LineNumber;
   stopsToTransfer: number;
   /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
-  secondsToTransfer?: number;
+  secondsToTransfer: number;
 }
 
 export interface MultiTransferRoute {
@@ -118,7 +114,7 @@ export interface MultiTransferRoute {
   transfers: TransferSegment[];
   stopsAfterLastTransfer: number;
   /** #655: 실측 운행 시간(초). 의미는 {@link DirectRoute.travelSeconds} 참고. */
-  secondsAfterLastTransfer?: number;
+  secondsAfterLastTransfer: number;
 }
 
 export type Route = DirectRoute | TransferRoute | MultiTransferRoute | null;
@@ -717,30 +713,24 @@ export function buildJourneyDisplay(
 
 const DEFAULT_WAIT_MINUTES = 3;
 
-// secondsXxx가 채워져 있으면 그대로, 없으면 stops × fallback(=120초). #655.
-// optional은 follow-up 이슈에서 required로 승격 예정.
-function segSeconds(seconds: number | undefined, stops: number): number {
-  return seconds ?? stops * STOP_FALLBACK_SECONDS;
-}
-
 // 반환값은 항상 정수 분. 호출처(메인 ETA 카운터/알림 body/Live Activity etaMinutes Swift Int? 디코딩)가
 // 정수 분 contract에 의존하므로, 구간별 실측 운행시간(초)과 환승역별 실측 환승시간(초)을 합산해
-// 분으로 환산한 결과를 마지막에 반올림한다. 구간 시간은 segSeconds, 환승 시간은 getTransferSeconds.
+// 분으로 환산한 결과를 마지막에 반올림한다. 환승 시간은 getTransferSeconds.
 function getTravelMinutes(route: NonNullable<Route>): number {
   if (route.type === 'direct') {
-    return Math.round(segSeconds(route.travelSeconds, route.stops) / 60);
+    return Math.round(route.travelSeconds / 60);
   }
 
   if (route.type === 'transfer') {
     const totalSeconds =
-      segSeconds(route.secondsToTransfer, route.stopsToTransfer) +
-      segSeconds(route.secondsFromTransfer, route.stopsFromTransfer) +
+      route.secondsToTransfer +
+      route.secondsFromTransfer +
       getTransferSeconds(route.fromLine, route.toLine, route.transferName);
     return Math.round(totalSeconds / 60);
   }
 
   const segmentSecondsSum = route.transfers.reduce(
-    (sum, t) => sum + segSeconds(t.secondsToTransfer, t.stopsToTransfer),
+    (sum, t) => sum + t.secondsToTransfer,
     0,
   );
   const transferSecSum = route.transfers.reduce(
@@ -748,9 +738,7 @@ function getTravelMinutes(route: NonNullable<Route>): number {
     0,
   );
   const totalSeconds =
-    segmentSecondsSum +
-    segSeconds(route.secondsAfterLastTransfer, route.stopsAfterLastTransfer) +
-    transferSecSum;
+    segmentSecondsSum + route.secondsAfterLastTransfer + transferSecSum;
   return Math.round(totalSeconds / 60);
 }
 
@@ -807,13 +795,11 @@ function getTransferLegs(
   if (route.type === 'transfer') {
     return {
       transferCount: 1,
-      afterTransferSeconds: [segSeconds(route.secondsFromTransfer, route.stopsFromTransfer)],
+      afterTransferSeconds: [route.secondsFromTransfer],
     };
   }
-  const after = route.transfers
-    .slice(1)
-    .map((t) => segSeconds(t.secondsToTransfer, t.stopsToTransfer));
-  after.push(segSeconds(route.secondsAfterLastTransfer, route.stopsAfterLastTransfer));
+  const after = route.transfers.slice(1).map((t) => t.secondsToTransfer);
+  after.push(route.secondsAfterLastTransfer);
   return { transferCount: route.transfers.length, afterTransferSeconds: after };
 }
 

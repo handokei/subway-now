@@ -7,8 +7,8 @@ import {
 import { useBoardingLockStore } from '../../store/useBoardingLockStore';
 import type { ArrivalInfo, StationArrival } from '../../api/arrivalApi';
 import type { Station } from '../../types/station';
-import type { DirectRoute } from '../../utils/stationRoute';
 import type { BoardingLock } from '../../types/boardingLock';
+import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 const mockGetBoardingLock = jest.fn();
 const mockSetBoardingLock = jest.fn();
@@ -50,7 +50,7 @@ const stationA: Station = {
   lng: 127.0,
 };
 
-const route: DirectRoute = { type: 'direct', stops: 5, line: '2' };
+const route = makeDirectRoute(5, '2');
 
 const upTrain = makeTrain({ trainCode: 'UP-1' });
 const downTrain = makeTrain({ trainCode: 'DN-1' });

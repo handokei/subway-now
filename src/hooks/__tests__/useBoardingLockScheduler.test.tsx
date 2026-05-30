@@ -5,8 +5,8 @@ import {
   scheduleHopsForLock,
 } from '../../utils/boardingLockScheduler';
 import type { BoardingLock } from '../../types/boardingLock';
-import type { DirectRoute } from '../../utils/stationRoute';
 import { useAppStore } from '../../store/useAppStore';
+import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 jest.mock('../../utils/boardingLockScheduler', () => ({
   scheduleHopsForLock: jest.fn(),
@@ -34,7 +34,7 @@ const lockA: BoardingLock = {
   expectedDurationMs: 1000,
 };
 const lockB: BoardingLock = { ...lockA, trainCode: 'B' };
-const route: DirectRoute = { type: 'direct', stops: 2, line: '2' };
+const route = makeDirectRoute(2, '2');
 
 beforeEach(() => {
   jest.clearAllMocks();
