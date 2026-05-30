@@ -97,7 +97,9 @@ function filterByDirection(
   direction: 'up' | 'down' | null,
 ): ArrivalInfo[] {
   if (!arrival) return [];
-  if (direction === 'up') return arrival.up;
-  if (direction === 'down') return arrival.down;
-  return [...arrival.up, ...arrival.down];
+  // #666 이미 지나간 열차(arrivalSeconds <= 0) 제외 — 환승 list에서도 동일 정책.
+  const reachable = (t: ArrivalInfo): boolean => t.arrivalSeconds > 0;
+  if (direction === 'up') return arrival.up.filter(reachable);
+  if (direction === 'down') return arrival.down.filter(reachable);
+  return [...arrival.up, ...arrival.down].filter(reachable);
 }
