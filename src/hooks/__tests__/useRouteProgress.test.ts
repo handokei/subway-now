@@ -1,13 +1,14 @@
 import { renderHook, act } from '@testing-library/react-native';
 import { useRouteProgress, type UseRouteProgressInputs } from '../useRouteProgress';
 import { findStationByNameAndLine } from '../../utils/stationRoute';
-import type { DirectRoute, Route } from '../../utils/stationRoute';
+import type { Route } from '../../utils/stationRoute';
 import type { Station } from '../../types/station';
+import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 const sagajeong = findStationByNameAndLine('사가정', '7')!;
 const childrenPark = findStationByNameAndLine('어린이대공원', '7')!;
 const gunja = findStationByNameAndLine('군자', '7')!;
-const directRoute: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+const directRoute = makeDirectRoute(4, '7');
 
 function makeProps(overrides: Partial<UseRouteProgressInputs> = {}): UseRouteProgressInputs {
   return {
@@ -276,7 +277,7 @@ describe('useRouteProgress', () => {
     );
     expect(result.current.progressM).not.toBeNull();
 
-    const otherRoute: Route = { type: 'direct', stops: 1, line: '7' };
+    const otherRoute: Route = makeDirectRoute(1, '7');
     act(() => {
       rerender(
         makeProps({

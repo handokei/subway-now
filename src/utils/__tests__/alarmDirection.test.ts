@@ -1,5 +1,10 @@
 import { resolveAlarmDirection } from '../alarmDirection';
 import type { Route } from '../stationRoute';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../testUtils/routeFixtures';
 
 jest.mock('../travelDirection', () => ({
   // 간단한 mock: from→to 쌍에 따라 미리 정한 결과를 반환. 시그니처는 { direction, fromStation, toStation }.
@@ -18,7 +23,7 @@ jest.mock('../stationRoute', () => ({
 
 describe('resolveAlarmDirection', () => {
   describe('direct route', () => {
-    const route: NonNullable<Route> = { type: 'direct', stops: 3, line: '1' };
+    const route: NonNullable<Route> = makeDirectRoute(3, '1');
 
     it('대상역이 목적지이면 source→destination 방향을 반환한다', () => {
       const dir = resolveAlarmDirection(
@@ -46,14 +51,13 @@ describe('resolveAlarmDirection', () => {
   });
 
   describe('transfer route', () => {
-    const route: NonNullable<Route> = {
-      type: 'transfer',
+    const route: NonNullable<Route> = makeTransferRoute({
       transferName: '동대문',
       fromLine: '1',
       toLine: '2',
       stopsToTransfer: 2,
       stopsFromTransfer: 4,
-    };
+    });
 
     it('대상역이 환승역이면 fromLine 기준 방향', () => {
       const dir = resolveAlarmDirection(
@@ -97,14 +101,13 @@ describe('resolveAlarmDirection', () => {
   });
 
   describe('multi-transfer route', () => {
-    const route: NonNullable<Route> = {
-      type: 'multi-transfer',
+    const route: NonNullable<Route> = makeMultiTransferRoute({
       transfers: [
         { transferName: '왕십리', fromLine: '1', toLine: '2', stopsToTransfer: 3 },
         { transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
-    };
+    });
 
     it('첫 번째 환승은 sourceStationName 기준', () => {
       const dir = resolveAlarmDirection(
@@ -140,14 +143,13 @@ describe('resolveAlarmDirection', () => {
     });
 
     it('환승 매칭은 됐지만 방향 lookup이 null이면 undefined', () => {
-      const routeWithNullableLine: NonNullable<Route> = {
-        type: 'multi-transfer',
+      const routeWithNullableLine: NonNullable<Route> = makeMultiTransferRoute({
         transfers: [
           { transferName: '왕십리', fromLine: '3', toLine: '2', stopsToTransfer: 3 },
           { transferName: '교대', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
         ],
         stopsAfterLastTransfer: 4,
-      };
+      });
       const dir = resolveAlarmDirection(
         { type: 'transfer', stationName: '왕십리' },
         { route: routeWithNullableLine, destinationName: '강남', sourceStationName: '시청' },

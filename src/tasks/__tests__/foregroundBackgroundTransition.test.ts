@@ -109,6 +109,7 @@ import {
   FIRED_ALARMS_KEY,
 } from '../../constants/storageKeys';
 import { MAX_LOCATION_AGE_MS, MAX_ACCURACY_M } from '../../constants/location';
+import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 // ── 테스트 버퍼 상수: 임계값 안쪽/바깥쪽임을 이름으로 드러낸다 ──
 const FRESH_MARGIN_MS = 1_000;
@@ -224,7 +225,7 @@ beforeEach(() => {
   mockFindNearestStation.mockReset();
   mockFindRoute.mockReset();
   // 기본: 'early' phase가 트리거되지 않는 multi-stop direct route — 알림 발사만 검증
-  mockFindRoute.mockReturnValue({ type: 'direct', stops: 3, line: '2' });
+  mockFindRoute.mockReturnValue(makeDirectRoute(3, '2'));
   mockSendStationPassedNotification.mockClear();
   mockSendAlarmNotification.mockClear();
   mockUpdateStationNotification.mockClear();
@@ -279,7 +280,7 @@ describe('FG↔BG 통합: 알람 dedup (FIRED_ALARMS_KEY 단일 출처)', () => 
   beforeEach(() => {
     mockStorage.set(DESTINATION_KEY, JSON.stringify(fakeDestination));
     // 'early' phase 트리거: 도착역까지 1 정거장 (APPROACH_STOPS=1)
-    mockFindRoute.mockReturnValue({ type: 'direct', stops: 1, line: '2' });
+    mockFindRoute.mockReturnValue(makeDirectRoute(1, '2'));
   });
 
   it('FG에서 알람 발사 후 BG가 같은 phase 조건을 받으면 evaluateAlarmPhase가 dedup한다', async () => {
@@ -386,7 +387,7 @@ describe('FG↔BG 통합: swipe-kill 후 재진입 (AsyncStorage 영속성)', ()
   });
 
   it('BG 알람 발사 후 swipe-kill을 거쳐 FG 재진입해도 firedAlarms는 영속 dedup된다', async () => {
-    mockFindRoute.mockReturnValue({ type: 'direct', stops: 1, line: '2' });
+    mockFindRoute.mockReturnValue(makeDirectRoute(1, '2'));
     await runBgTaskAt(fakeStation);
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
     const firedJson = mockStorage.get(FIRED_ALARMS_KEY);

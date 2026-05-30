@@ -8,9 +8,9 @@ import {
   cancelScheduledAlarms,
 } from '../../utils/alarmScheduler';
 import { TRIP_TRAIN_CODE_KEY } from '../../constants/storageKeys';
-import type { DirectRoute } from '../../utils/stationRoute';
 import type { Station } from '../../types/station';
 import type { StationArrival } from '../../api/arrivalApi';
+import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 jest.mock('../../utils/alarmScheduler');
 jest.mock('../../utils/logger', () => ({
@@ -36,7 +36,7 @@ jest.spyOn(AppState, 'addEventListener').mockImplementation((_type, listener) =>
   return { remove: mockRemove } as unknown as ReturnType<typeof AppState.addEventListener>;
 });
 
-const ROUTE: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+const ROUTE = makeDirectRoute(10, '1');
 const DESTINATION: Station = {
   id: 'dest-1',
   name: '강남',
@@ -47,7 +47,7 @@ const DESTINATION: Station = {
 };
 
 // Line 1 fixtures — 방향 판정 테스트 공유. 같은 stations.json ordinal 위에서 up/down을 모두 표현.
-const LINE_1_ROUTE: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+const LINE_1_ROUTE = makeDirectRoute(10, '1');
 const SEOUL_STATION: Station = {
   id: '1-034', name: '서울역', line: '1', lat: 37.55, lng: 126.97, lineColor: '#0052A4',
 };
@@ -392,7 +392,7 @@ describe('useScheduledAlarms', () => {
       up: [{ ...ARRIVAL.up[0], arrivalSeconds: 30 }], // 반대방향(서쪽), 30초 후
       down: [{ ...ARRIVAL.down[0], arrivalSeconds: 240 }], // 진행방향(동쪽), 240초 후
     };
-    const ROUTE_L1: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const ROUTE_L1 = makeDirectRoute(10, '1');
     const DEST_L1: Station = {
       id: '1-034', name: '서울역', line: '1', lat: 37.55, lng: 126.97, lineColor: '#0052A4',
     };
@@ -424,7 +424,7 @@ describe('useScheduledAlarms', () => {
       up: [{ ...ARRIVAL.up[0], arrivalSeconds: 180 }],
       down: [{ ...ARRIVAL.down[0], arrivalSeconds: 60 }],
     };
-    const ROUTE_L1: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const ROUTE_L1 = makeDirectRoute(10, '1');
     const DEST_L1: Station = {
       id: '1-001', name: '소요산', line: '1', lat: 37.95, lng: 127.06, lineColor: '#0052A4',
     };
@@ -452,7 +452,7 @@ describe('useScheduledAlarms', () => {
   });
 
   it('currentStation이 노선 외(direction null)면 양방향 합산 fallback으로 위임한다', async () => {
-    const ROUTE_L1: DirectRoute = { type: 'direct', stops: 10, line: '1' };
+    const ROUTE_L1 = makeDirectRoute(10, '1');
     const DEST_L1: Station = {
       id: '1-034', name: '서울역', line: '1', lat: 37.55, lng: 126.97, lineColor: '#0052A4',
     };

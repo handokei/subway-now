@@ -2,8 +2,8 @@ import { renderHook, waitFor } from '@testing-library/react-native';
 import { useBoardingLockAdvancer } from '../useBoardingLockAdvancer';
 import { advanceHopWindow } from '../../utils/boardingLockScheduler';
 import type { BoardingLock } from '../../types/boardingLock';
-import type { DirectRoute, TransferRoute } from '../../utils/stationRoute';
 import { useAppStore } from '../../store/useAppStore';
+import { makeDirectRoute, makeTransferRoute } from '../../testUtils/routeFixtures';
 
 jest.mock('../../utils/boardingLockScheduler', () => ({
   advanceHopWindow: jest.fn(),
@@ -30,15 +30,14 @@ const lockA: BoardingLock = {
 };
 const lockB: BoardingLock = { ...lockA, trainCode: 'B' };
 
-const directRoute: DirectRoute = { type: 'direct', stops: 2, line: '2' };
-const transferRoute: TransferRoute = {
-  type: 'transfer',
+const directRoute = makeDirectRoute(2, '2');
+const transferRoute = makeTransferRoute({
   transferName: '사당',
   fromLine: '2',
   toLine: '4',
   stopsToTransfer: 3,
   stopsFromTransfer: 4,
-};
+});
 
 type Props = Parameters<typeof useBoardingLockAdvancer>[0];
 

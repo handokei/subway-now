@@ -63,6 +63,7 @@ import '../../tasks/backgroundLocationTask';
 import { BACKGROUND_LOCATION_TASK } from '../../tasks/backgroundLocationTask';
 import { MAX_ACCURACY_M, MAX_LOCATION_AGE_MS } from '../../constants/location';
 import { ALARM_EVENT_KEY } from '../../constants/storageKeys';
+import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 // ── 픽스처 ──
 
@@ -321,7 +322,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
   });
 
   it('routeJson이 있으면 파싱한 route를 processLocationUpdate에 전달한다', async () => {
-    const storedRoute = { type: 'direct', stops: 3, line: '2' };
+    const storedRoute = makeDirectRoute(3, '2');
     mockStorageValues(JSON.stringify(mockDestination), null, JSON.stringify(storedRoute));
 
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });

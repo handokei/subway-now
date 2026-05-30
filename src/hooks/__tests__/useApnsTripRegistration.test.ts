@@ -35,6 +35,7 @@ import { useApnsTripRegistration } from '../useApnsTripRegistration';
 import type { Station } from '../../types/station';
 import type { Route } from '../../utils/stationRoute';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../constants/storageKeys';
+import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 const station: Station = {
   // stations.json 강남(2호선)과 id 일치 — #622 buildBoardingLockMeta가 boardingStationId로 조회.
@@ -46,7 +47,7 @@ const station: Station = {
   lineColor: '#00A84D',
 };
 
-const directRoute: Route = { type: 'direct', stops: 5, line: '2' };
+const directRoute: Route = makeDirectRoute(5, '2');
 
 describe('useApnsTripRegistration', () => {
   let listenerRemove: jest.Mock;
@@ -377,11 +378,11 @@ describe('useApnsTripRegistration', () => {
     const { rerender } = renderHook(
       ({ route }: { route: Route }) =>
         useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
-      { initialProps: { route: { type: 'direct', stops: 5, line: '2' } as Route } },
+      { initialProps: { route: makeDirectRoute(5, '2') as Route } },
     );
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
     // 내용 동일, reference만 신규
-    rerender({ route: { type: 'direct', stops: 5, line: '2' } as Route });
+    rerender({ route: makeDirectRoute(5, '2') as Route });
     await act(async () => {
       await Promise.resolve();
     });
@@ -418,13 +419,13 @@ describe('useApnsTripRegistration', () => {
     const { rerender } = renderHook(
       ({ route }: { route: Route }) =>
         useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
-      { initialProps: { route: { type: 'direct', stops: 5, line: '2' } as Route } },
+      { initialProps: { route: makeDirectRoute(5, '2') as Route } },
     );
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
     const first = mockRegister.mock.calls[0][0].createdAt as number;
 
     now = 1_700_000_500_000;
-    rerender({ route: { type: 'direct', stops: 6, line: '2' } as Route });
+    rerender({ route: makeDirectRoute(6, '2') as Route });
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
     expect(mockRegister.mock.calls[1][0].createdAt).toBe(1_700_000_500_000);
     expect(mockRegister.mock.calls[1][0].createdAt).not.toBe(first);
@@ -486,10 +487,10 @@ describe('useApnsTripRegistration', () => {
     const { rerender } = renderHook(
       ({ route }: { route: Route }) =>
         useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
-      { initialProps: { route: { type: 'direct', stops: 5, line: '2' } as Route } },
+      { initialProps: { route: makeDirectRoute(5, '2') as Route } },
     );
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-    rerender({ route: { type: 'direct', stops: 6, line: '2' } as Route });
+    rerender({ route: makeDirectRoute(6, '2') as Route });
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
   });
 

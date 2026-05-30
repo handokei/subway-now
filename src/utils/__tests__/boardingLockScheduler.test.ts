@@ -16,6 +16,11 @@ import {
 } from '../scheduledNotificationsStorage';
 import type { BoardingLock } from '../../types/boardingLock';
 import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../stationRoute';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../testUtils/routeFixtures';
 
 jest.mock('expo-notifications');
 jest.mock('../scheduledNotificationsStorage', () => ({
@@ -72,24 +77,22 @@ const lock: BoardingLock = {
   expectedDurationMs: 600_000,
 };
 
-const directRoute: DirectRoute = { type: 'direct', stops: 2, line: '2' };
-const transferRoute: TransferRoute = {
-  type: 'transfer',
+const directRoute: DirectRoute = makeDirectRoute(2, '2');
+const transferRoute: TransferRoute = makeTransferRoute({
   transferName: '교대',
   fromLine: '2',
   toLine: '3',
   stopsToTransfer: 2,
   stopsFromTransfer: 3,
-};
-const multiRoute: MultiTransferRoute = {
-  type: 'multi-transfer',
+});
+const multiRoute: MultiTransferRoute = makeMultiTransferRoute({
   transfers: [
     { transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 2 },
     { transferName: '약수', fromLine: '3', toLine: '6', stopsToTransfer: 2 },
     { transferName: '한강진', fromLine: '6', toLine: '7', stopsToTransfer: 1 },
   ],
   stopsAfterLastTransfer: 2,
-};
+});
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -266,7 +269,7 @@ describe('scheduleHopsForLock', () => {
   it('빈 targets은 storage write도 빈 배열', async () => {
     // direct stops=0 → totalStops=0, but resolveAllTargets returns 1 entry with stops=0.
     // waypointEta=0 → 모든 phase에서 fireSeconds <= 0 → 예약 안 됨.
-    const zeroRoute: DirectRoute = { type: 'direct', stops: 0, line: '2' };
+    const zeroRoute: DirectRoute = makeDirectRoute(0, '2');
     await scheduleHopsForLock({ lock, route: zeroRoute, destinationName: '강남' });
     expect(mockedSchedule).not.toHaveBeenCalled();
   });

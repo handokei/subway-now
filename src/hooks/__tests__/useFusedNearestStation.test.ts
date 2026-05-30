@@ -10,7 +10,7 @@ import { TRAIN_STATUS } from '../../constants/trainStatus';
 import { MOCK_STATIONS } from '../../testUtils/fixtures';
 import type { StationArrival, ArrivalInfo } from '../../api/arrivalApi';
 import type { LinePositions, TrainPosition } from '../../api/positionApi';
-import type { DirectRoute } from '../../utils/stationRoute';
+import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 jest.mock('../useNearestStation');
 jest.mock('../useArrivalInfo');
@@ -665,7 +665,7 @@ describe('useFusedNearestStation', () => {
   describe('routeContext (Phase A — Route-Locked Map Matching)', () => {
     const sagajeong = findStationByNameAndLine('사가정', '7')!;
     const childrenPark = findStationByNameAndLine('어린이대공원', '7')!;
-    const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+    const route = makeDirectRoute(4, '7');
 
     it('경로 컨텍스트 + userLocation 있으면 진행도 기반 현재역으로 result 덮어쓴다', () => {
       mockUseNearest.mockReturnValue(
@@ -737,7 +737,7 @@ describe('useFusedNearestStation', () => {
     const gunja = findStationByNameAndLine('군자', '7')!;
     const oolinidae = findStationByNameAndLine('어린이대공원', '7')!;
     const konkuk = findStationByNameAndLine('건대입구', '7')!;
-    const route: DirectRoute = { type: 'direct', stops: 4, line: '7' };
+    const route = makeDirectRoute(4, '7');
     const routeContext = { route, origin: yongmasan, destination: konkuk };
     const T0 = 1_700_000_000_000;
     const lock = {
