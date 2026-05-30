@@ -10,6 +10,7 @@ function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
     arrivalSeconds: 180,
     statusMessage: '',
     trainCode: 'T-1',
+    line: '2',
     receivedAtMs: 0,
     arrivalCode: -1,
     isLastTrain: false,

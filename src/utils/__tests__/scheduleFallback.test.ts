@@ -136,6 +136,13 @@ describe('buildScheduleArrival', () => {
     expect(result.up[0].receivedAtMs).toBe(now.getTime());
   });
 
+  it('makeTrain은 line 인자를 ArrivalInfo.line으로 전달한다 (#663)', () => {
+    const now = new Date('2026-05-18T15:00:00+09:00');
+    const result = buildScheduleArrival('7', '__missing__', now);
+    expect(result.up[0].line).toBe('7');
+    expect(result.down[0].line).toBe('7');
+  });
+
   it('marks late period for 23:00 with late headway', () => {
     const now = new Date('2026-05-18T23:00:00+09:00');
     const result = buildScheduleArrival('2', '__missing__', now);

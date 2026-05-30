@@ -7,8 +7,8 @@ describe('BffArrivalProvider', () => {
   let provider: BffArrivalProvider;
 
   const VALID_DATA: StationArrival = {
-    up: [{ destination: '서울역', arrivalMinutes: 3, arrivalSeconds: 180, statusMessage: '', trainCode: 'UP-001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
-    down: [{ destination: '인천역', arrivalMinutes: 5, arrivalSeconds: 300, statusMessage: '', trainCode: 'DN-001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+    up: [{ destination: '서울역', arrivalMinutes: 3, arrivalSeconds: 180, statusMessage: '', trainCode: 'UP-001', line: '2', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+    down: [{ destination: '인천역', arrivalMinutes: 5, arrivalSeconds: 300, statusMessage: '', trainCode: 'DN-001', line: '2', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
   };
 
   function mockFetchOk(data: StationArrival) {
@@ -97,6 +97,16 @@ describe('BffArrivalProvider', () => {
     expect(result.up).toEqual(data.up);
     expect(result.down).toEqual(data.down);
     expect(result.source).toBe('realtime');
+  });
+
+  it('BFF 응답에 line 누락된 row가 있으면 schedule fallback으로 전환한다 (#663)', async () => {
+    const missingLineData = {
+      up: [{ destination: '서울역', arrivalMinutes: 3, arrivalSeconds: 180, statusMessage: '', trainCode: 'UP-001', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+      down: [],
+    } as unknown as StationArrival;
+    mockFetchOk(missingLineData);
+    const result = await callGetArrival();
+    expect(result.source).toBe('schedule');
   });
 
   it('fetch 에러 시 schedule fallback으로 전환한다', async () => {

@@ -145,6 +145,7 @@ function makeTrain(
   suffix: string,
   nowMs: number,
   destination: string,
+  line: LineNumber,
 ): ArrivalInfo {
   return {
     destination,
@@ -152,6 +153,7 @@ function makeTrain(
     arrivalSeconds: secondsFromNow,
     statusMessage: '',
     trainCode: `${SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX}${suffix}`,
+    line,
     receivedAtMs: nowMs,
     arrivalCode: -1,
     isLastTrain: false,
@@ -247,9 +249,9 @@ export function buildScheduleArrival(
   const { hour: kstHour, minute: kstMinute, second: kstSecond, weekday: kstWeekday } = getKstParts(now);
   const timetableHit = lookupTimetable(line, stationName, dayType, kstWeekday, kstHour, kstMinute, kstSecond);
   if (timetableHit) {
-    const up = timetableHit.upSeconds.map((sec, i) => makeTrain(sec, `UP-${i + 1}`, nowMs, upTerminal));
+    const up = timetableHit.upSeconds.map((sec, i) => makeTrain(sec, `UP-${i + 1}`, nowMs, upTerminal, line));
     const down = timetableHit.downSeconds.map((sec, i) =>
-      makeTrain(sec, `DN-${i + 1}`, nowMs, downTerminal),
+      makeTrain(sec, `DN-${i + 1}`, nowMs, downTerminal, line),
     );
     return { up, down, isMock: false, source: 'schedule' };
   }
@@ -280,12 +282,12 @@ export function buildScheduleArrival(
   // 정확히 동기화되어 있지 않으며, 디버그 시 dir 분기 검증을 가능하게 한다.
   const downFirst = nextDepartureSeconds(nowMs + Math.floor(headwayMs / 2));
   const up = [
-    makeTrain(upFirst, 'UP-1', nowMs, upTerminal),
-    makeTrain(upFirst + headway, 'UP-2', nowMs, upTerminal),
+    makeTrain(upFirst, 'UP-1', nowMs, upTerminal, line),
+    makeTrain(upFirst + headway, 'UP-2', nowMs, upTerminal, line),
   ];
   const down = [
-    makeTrain(downFirst, 'DN-1', nowMs, downTerminal),
-    makeTrain(downFirst + headway, 'DN-2', nowMs, downTerminal),
+    makeTrain(downFirst, 'DN-1', nowMs, downTerminal, line),
+    makeTrain(downFirst + headway, 'DN-2', nowMs, downTerminal, line),
   ];
 
   return { up, down, isMock: true, source: 'schedule' };

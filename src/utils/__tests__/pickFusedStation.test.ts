@@ -13,6 +13,7 @@ function info(arrivalCode: number, overrides?: Partial<ArrivalInfo>): ArrivalInf
     arrivalSeconds: 0,
     statusMessage: '',
     trainCode: 'T1',
+    line: '2',
     receivedAtMs: NOW,
     arrivalCode,
     isLastTrain: false,

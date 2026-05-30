@@ -36,10 +36,10 @@ describe('fetchArrivalInfo', () => {
 
     const mockApiResponse = {
       realtimeArrivalList: [
-        { trainLineNm: '소요산행', barvlDt: 120, btrainNo: 'T001', updnLine: '상행' },
-        { trainLineNm: '인천행', barvlDt: 240, btrainNo: 'T002', updnLine: '하행' },
-        { trainLineNm: '소요산행', barvlDt: 360, btrainNo: 'T003', updnLine: '상행' },
-        { trainLineNm: '인천행', barvlDt: 480, btrainNo: 'T004', updnLine: '하행' },
+        { trainLineNm: '소요산행', barvlDt: 120, btrainNo: 'T001', updnLine: '상행', subwayId: '1001' },
+        { trainLineNm: '인천행', barvlDt: 240, btrainNo: 'T002', updnLine: '하행', subwayId: '1001' },
+        { trainLineNm: '소요산행', barvlDt: 360, btrainNo: 'T003', updnLine: '상행', subwayId: '1001' },
+        { trainLineNm: '인천행', barvlDt: 480, btrainNo: 'T004', updnLine: '하행', subwayId: '1001' },
       ],
     };
 
@@ -122,7 +122,7 @@ describe('fetchArrivalInfo', () => {
       ok: true,
       json: async () => ({
         realtimeArrivalList: [
-          { trainLineNm: '소요산행', barvlDt: 0, btrainNo: 'T001', updnLine: '상행' },
+          { trainLineNm: '소요산행', barvlDt: 0, btrainNo: 'T001', updnLine: '상행', subwayId: '1001' },
         ],
       }),
     } as Response);
@@ -141,7 +141,7 @@ describe('fetchArrivalInfo', () => {
       ok: true,
       json: async () => ({
         realtimeArrivalList: [
-          { trainLineNm: '내선순환', barvlDt: 60, btrainNo: 'T001', updnLine: '내선' },
+          { trainLineNm: '내선순환', barvlDt: 60, btrainNo: 'T001', updnLine: '내선', subwayId: '1002' },
         ],
       }),
     } as Response);
@@ -160,7 +160,7 @@ describe('fetchArrivalInfo', () => {
       ok: true,
       json: async () => ({
         realtimeArrivalList: [
-          { trainLineNm: '소요산행', barvlDt: 120, btrainNo: 'T001', updnLine: '상행' },
+          { trainLineNm: '소요산행', barvlDt: 120, btrainNo: 'T001', updnLine: '상행', subwayId: '1001' },
         ],
       }),
     } as Response);
@@ -202,7 +202,7 @@ describe('fetchArrivalInfo', () => {
       ok: true,
       json: async () => ({
         realtimeArrivalList: [
-          { trainLineNm: '소요산행', barvlDt: 120, btrainNo: 'T001', updnLine: '상행' },
+          { trainLineNm: '소요산행', barvlDt: 120, btrainNo: 'T001', updnLine: '상행', subwayId: '1002' },
         ],
       }),
     } as Response);
@@ -224,7 +224,7 @@ describe('fetchArrivalInfo', () => {
       ok: true,
       json: async () => ({
         realtimeArrivalList: [
-          { trainLineNm: '소요산행', barvlDt: 90, btrainNo: 'T001', updnLine: '상행', arvlMsg2: '전역 출발' },
+          { trainLineNm: '소요산행', barvlDt: 90, btrainNo: 'T001', updnLine: '상행', arvlMsg2: '전역 출발', subwayId: '1002' },
         ],
       }),
     } as Response);
@@ -250,6 +250,7 @@ describe('fetchArrivalInfo', () => {
         barvlDt,
         btrainNo: 'T001',
         updnLine: '상행',
+        subwayId: '1002',
       };
       if (recptnDt !== undefined) item.recptnDt = recptnDt;
       global.fetch = jest.fn().mockResolvedValue({
@@ -318,10 +319,10 @@ describe('fetchArrivalInfo', () => {
         ok: true,
         json: async () => ({
           realtimeArrivalList: [
-            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', arvlCd: 1 },
-            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', arvlCd: '0' },
-            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행' },
-            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행', arvlCd: 'abc' },
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', arvlCd: 1, subwayId: '1002' },
+            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', arvlCd: '0', subwayId: '1002' },
+            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행', subwayId: '1002' },
+            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행', arvlCd: 'abc', subwayId: '1002' },
           ],
         }),
       } as Response);
@@ -336,10 +337,10 @@ describe('fetchArrivalInfo', () => {
         ok: true,
         json: async () => ({
           realtimeArrivalList: [
-            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', lstcarAt: '1' },
-            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', lstcarAt: 1 },
-            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행', lstcarAt: '0' },
-            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행' },
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', lstcarAt: '1', subwayId: '1002' },
+            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', lstcarAt: 1, subwayId: '1002' },
+            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행', lstcarAt: '0', subwayId: '1002' },
+            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행', subwayId: '1002' },
           ],
         }),
       } as Response);
@@ -354,10 +355,10 @@ describe('fetchArrivalInfo', () => {
         ok: true,
         json: async () => ({
           realtimeArrivalList: [
-            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', btrainSttus: '급행' },
-            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', btrainSttus: 'ITX' },
-            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행', btrainSttus: '특급' },
-            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행' },
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', btrainSttus: '급행', subwayId: '1002' },
+            { trainLineNm: 'B', barvlDt: 60, btrainNo: 'T2', updnLine: '상행', btrainSttus: 'ITX', subwayId: '1002' },
+            { trainLineNm: 'C', barvlDt: 60, btrainNo: 'T3', updnLine: '상행', btrainSttus: '특급', subwayId: '1002' },
+            { trainLineNm: 'D', barvlDt: 60, btrainNo: 'T4', updnLine: '상행', subwayId: '1002' },
           ],
         }),
       } as Response);
@@ -385,7 +386,7 @@ describe('fetchArrivalInfo', () => {
         ok: true,
         json: async () => ({
           realtimeArrivalList: [
-            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행' },
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', subwayId: '1002' },
           ],
         }),
       } as Response);
@@ -464,6 +465,110 @@ describe('fetchArrivalInfo', () => {
     });
   });
 
+  describe('line 매핑 (#663)', () => {
+    beforeEach(() => {
+      process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
+    });
+    afterEach(() => {
+      delete process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY;
+    });
+
+    it('subwayId가 응답마다 다르면 같은 statnNm 환승역 응답을 row별로 정확히 분리한다', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: '7호선행', barvlDt: 60, btrainNo: 'T-7', updnLine: '상행', subwayId: '1007' },
+            { trainLineNm: '경의중앙행', barvlDt: 90, btrainNo: 'T-G', updnLine: '상행', subwayId: '1063' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('상봉');
+      expect(result.up).toHaveLength(2);
+      expect(result.up[0].line).toBe('7');
+      expect(result.up[1].line).toBe('gyeongui');
+    });
+
+    it('subwayId 누락 + lineHint 주어지면 lineHint로 채워진다', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: '강남행', barvlDt: 60, btrainNo: 'T1', updnLine: '상행' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남', { lineHint: '2' });
+      expect(result.up).toHaveLength(1);
+      expect(result.up[0].line).toBe('2');
+    });
+
+    it('subwayId 매핑 실패 + lineHint 주어지면 lineHint로 채워진다', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: '강남행', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', subwayId: '9999' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남', { lineHint: '2' });
+      expect(result.up).toHaveLength(1);
+      expect(result.up[0].line).toBe('2');
+    });
+
+    it('subwayId 누락 + lineHint 없으면 row가 drop된다 (line 식별 불가)', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: '소요산행', barvlDt: 60, btrainNo: 'T1', updnLine: '상행' },
+            { trainLineNm: '소요산행', barvlDt: 90, btrainNo: 'T2', updnLine: '상행', subwayId: '1001' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남');
+      expect(result.up).toHaveLength(1);
+      expect(result.up[0].trainCode).toBe('T2');
+      expect(result.up[0].line).toBe('1');
+    });
+
+    it('subwayId가 있으면 lineHint보다 우선 (환승역 row별 정확성 보장)', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: '7호선행', barvlDt: 60, btrainNo: 'T-7', updnLine: '상행', subwayId: '1007' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('상봉', { lineHint: '2' });
+      expect(result.up).toHaveLength(1);
+      expect(result.up[0].line).toBe('7');
+    });
+
+    it('모든 row가 line 식별 실패로 drop되면 schedule fallback으로 분기', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          realtimeArrivalList: [
+            { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행' },
+            { trainLineNm: 'B', barvlDt: 90, btrainNo: 'T2', updnLine: '하행' },
+          ],
+        }),
+      } as Response);
+
+      const result = await fetchArrivalInfo('강남');
+      expect(result.source).not.toBe('realtime');
+      expect(result.source).toBe('schedule');
+    });
+  });
+
   it('trainLineNm, barvlDt, btrainNo가 undefined이면 기본값을 사용한다', async () => {
     process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
 
@@ -471,7 +576,7 @@ describe('fetchArrivalInfo', () => {
       ok: true,
       json: async () => ({
         realtimeArrivalList: [
-          { updnLine: '상행' }, // 모든 선택 필드 누락
+          { updnLine: '상행', subwayId: '1002' }, // 모든 선택 필드 누락 (subwayId만 줘 row가 drop되지 않도록)
         ],
       }),
     } as Response);
