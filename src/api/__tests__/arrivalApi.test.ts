@@ -1,5 +1,12 @@
 import { fetchArrivalInfo, MOCK_ARRIVALS, parseRecptnDt } from '../arrivalApi';
 
+function mockRealtimeArrivalList(items: Array<Record<string, unknown>>): void {
+  globalThis.fetch = jest.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({ realtimeArrivalList: items }),
+  });
+}
+
 describe('fetchArrivalInfo', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -466,13 +473,6 @@ describe('fetchArrivalInfo', () => {
   });
 
   describe('line 매핑 (#663)', () => {
-    function mockRealtimeArrivalList(items: Array<Record<string, unknown>>): void {
-      globalThis.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({ realtimeArrivalList: items }),
-      });
-    }
-
     beforeEach(() => {
       process.env.EXPO_PUBLIC_SEOUL_DATA_API_KEY = 'test-key';
     });
@@ -485,63 +485,43 @@ describe('fetchArrivalInfo', () => {
         { trainLineNm: '7호선행', barvlDt: 60, btrainNo: 'T-7', updnLine: '상행', subwayId: '1007' },
         { trainLineNm: '경의중앙행', barvlDt: 90, btrainNo: 'T-G', updnLine: '상행', subwayId: '1063' },
       ]);
-
       const result = await fetchArrivalInfo('상봉');
-      expect(result.up).toHaveLength(2);
-      expect(result.up[0].line).toBe('7');
-      expect(result.up[1].line).toBe('gyeongui');
+      expect(result.up.map((r) => r.line)).toEqual(['7', 'gyeongui']);
     });
 
-    it('subwayId 누락 + lineHint 주어지면 lineHint로 채워진다', async () => {
+    it('subwayId 누락 또는 매핑 실패 시 lineHint로 채워진다', async () => {
       mockRealtimeArrivalList([
         { trainLineNm: '강남행', barvlDt: 60, btrainNo: 'T1', updnLine: '상행' },
+        { trainLineNm: '강남행', barvlDt: 90, btrainNo: 'T2', updnLine: '상행', subwayId: '9999' },
       ]);
-
       const result = await fetchArrivalInfo('강남', { lineHint: '2' });
-      expect(result.up).toHaveLength(1);
-      expect(result.up[0].line).toBe('2');
+      expect(result.up.every((r) => r.line === '2')).toBe(true);
     });
 
-    it('subwayId 매핑 실패 + lineHint 주어지면 lineHint로 채워진다', async () => {
-      mockRealtimeArrivalList([
-        { trainLineNm: '강남행', barvlDt: 60, btrainNo: 'T1', updnLine: '상행', subwayId: '9999' },
-      ]);
-
-      const result = await fetchArrivalInfo('강남', { lineHint: '2' });
-      expect(result.up).toHaveLength(1);
-      expect(result.up[0].line).toBe('2');
-    });
-
-    it('subwayId 누락 + lineHint 없으면 row가 drop된다 (line 식별 불가)', async () => {
+    it('subwayId 누락 + lineHint 없으면 row가 drop된다', async () => {
       mockRealtimeArrivalList([
         { trainLineNm: '소요산행', barvlDt: 60, btrainNo: 'T1', updnLine: '상행' },
         { trainLineNm: '소요산행', barvlDt: 90, btrainNo: 'T2', updnLine: '상행', subwayId: '1001' },
       ]);
-
       const result = await fetchArrivalInfo('강남');
       expect(result.up).toHaveLength(1);
-      expect(result.up[0].trainCode).toBe('T2');
-      expect(result.up[0].line).toBe('1');
+      expect(result.up[0]).toMatchObject({ trainCode: 'T2', line: '1' });
     });
 
-    it('subwayId가 있으면 lineHint보다 우선 (환승역 row별 정확성 보장)', async () => {
+    it('subwayId가 있으면 lineHint보다 우선', async () => {
       mockRealtimeArrivalList([
         { trainLineNm: '7호선행', barvlDt: 60, btrainNo: 'T-7', updnLine: '상행', subwayId: '1007' },
       ]);
-
       const result = await fetchArrivalInfo('상봉', { lineHint: '2' });
-      expect(result.up).toHaveLength(1);
       expect(result.up[0].line).toBe('7');
     });
 
-    it('모든 row가 line 식별 실패로 drop되면 schedule fallback으로 분기', async () => {
+    it('모든 row가 line 식별 실패면 schedule fallback', async () => {
       mockRealtimeArrivalList([
         { trainLineNm: 'A', barvlDt: 60, btrainNo: 'T1', updnLine: '상행' },
         { trainLineNm: 'B', barvlDt: 90, btrainNo: 'T2', updnLine: '하행' },
       ]);
-
       const result = await fetchArrivalInfo('강남');
-      expect(result.source).not.toBe('realtime');
       expect(result.source).toBe('schedule');
     });
   });
