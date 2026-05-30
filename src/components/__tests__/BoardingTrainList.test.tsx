@@ -121,4 +121,42 @@ describe('BoardingTrainList', () => {
     fireEvent.press(getByTestId('boarding-train-row-T-EARLY'));
     expect(onSelect).toHaveBeenCalled();
   });
+
+  it('#649 nextStationLabel 전달 시 "{label} 방면" 으로 표기 (destination 행 대체)', () => {
+    const train = makeTrain({ trainCode: 'T-NEXT', destination: '석남' });
+    const { getByText, queryByText } = renderWithTheme(
+      <BoardingTrainList
+        arrivals={[train]}
+        line="7"
+        onSelect={() => {}}
+        nextStationLabel="중곡"
+      />,
+    );
+    expect(getByText('중곡 방면')).toBeTruthy();
+    expect(queryByText('석남 행')).toBeNull();
+  });
+
+  it('#649 compact 모드: 헤더/trainCode 라인 생략, 단일 row 라벨만', () => {
+    const train = makeTrain({ trainCode: 'T-COMPACT', destination: '석남' });
+    const { getByTestId, queryByText } = renderWithTheme(
+      <BoardingTrainList
+        arrivals={[train]}
+        line="7"
+        onSelect={() => {}}
+        compact
+        nextStationLabel="중곡"
+      />,
+    );
+    expect(getByTestId('boarding-train-label-T-COMPACT').props.children).toBe('중곡 방면');
+    expect(queryByText('탑승할 열차 선택')).toBeNull();
+    expect(queryByText('T-COMPACT')).toBeNull();
+  });
+
+  it('#649 compact + 빈 arrivals 도 동일 placeholder', () => {
+    const { getByTestId, getByText } = renderWithTheme(
+      <BoardingTrainList arrivals={[]} line="7" onSelect={() => {}} compact />,
+    );
+    expect(getByTestId('boarding-train-list-empty')).toBeTruthy();
+    expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
+  });
 });

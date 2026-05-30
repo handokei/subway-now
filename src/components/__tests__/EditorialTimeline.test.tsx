@@ -98,6 +98,28 @@ describe('EditorialTimeline', () => {
     const { toJSON } = render(<EditorialTimeline stops={[]} />);
     expect(toJSON()).toBeTruthy();
   });
+
+  it('#649 renderHopSlot — 각 hop 직후 slot 노드가 렌더된다 (non-null 반환에만)', () => {
+    const { Text } = require('react-native');
+    render(
+      <EditorialTimeline
+        stops={MOCK_STOPS.threeStops}
+        renderHopSlot={(stop, i) =>
+          i === 0 ? <Text testID="slot-content-0">slot0</Text> : null
+        }
+      />,
+    );
+    expect(screen.getByTestId('timeline-hop-slot-0')).toBeTruthy();
+    expect(screen.getByTestId('slot-content-0')).toBeTruthy();
+    // i=1,2는 null 반환 — slot 컨테이너 자체도 없음
+    expect(screen.queryByTestId('timeline-hop-slot-1')).toBeNull();
+    expect(screen.queryByTestId('timeline-hop-slot-2')).toBeNull();
+  });
+
+  it('#649 renderHopSlot 미전달이면 slot 컨테이너 없음 (기존 호출자 영향 0)', () => {
+    render(<EditorialTimeline stops={MOCK_STOPS.threeStops} />);
+    expect(screen.queryByTestId('timeline-hop-slot-0')).toBeNull();
+  });
 });
 
 describe('EditorialTimeline quickExit door label', () => {
