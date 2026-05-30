@@ -50,6 +50,11 @@ export interface UseStationAlarmInputs {
   fusionSource?: FusionSource;
   /** GPS 게이트 실패 등으로 위치 불확실. true면 source 무시하고 'uncertain' 라벨. */
   locationUncertain?: boolean;
+  /**
+   * 테스트 전용 — #670/#672 좌표 warmup 가드 비활성화.
+   * production 호출자는 미설정으로 둠. 단위 테스트에서 mount 직후 alarm 평가 검증 시 사용.
+   */
+  skipWarmupGuard?: boolean;
 }
 
 export function useStationAlarm({
@@ -62,8 +67,14 @@ export function useStationAlarm({
   arrivalConfidence,
   fusionSource,
   locationUncertain = false,
+  skipWarmupGuard = false,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
+  // #670/#672: ETA 평가 effect의 첫 trigger를 suppress.
+  // fg-hydrate 직후 hydrate된 stale firedAlarms·nearestStation과 새 GPS 좌표가 동기화되기 전
+  // 즉시 평가 분기로 진입하면 잘못된 phase 알람이 발사됨. 한 cycle 보류로 다음 deps 변경(좌표/
+  // hydrate state 갱신) 시 안정된 입력으로 평가.
+  const isFirstAlarmEvalRef = useRef(true);
   // firedAlarms hydration: BG가 AsyncStorage(FIRED_ALARMS_KEY)에 쓴 dedup 상태를
   // destination별로 격리해 복원한다(#462). hydrated=false인 동안 phase 평가를 보류해
   // 빈 ref로 false re-fire가 발생하지 않도록 가드한다.
@@ -181,6 +192,12 @@ export function useStationAlarm({
     // Phase 알람은 ETA 거리 계산이 필요해 GPS 게이트가 통과한 경우에만 평가한다.
     if (!isAccuracyAcceptable(accuracyMeters)) return;
 
+    // #670/#672: 첫 trigger suppress — fg-hydrate 직후 stale state 발사 차단.
+    if (!skipWarmupGuard && isFirstAlarmEvalRef.current) {
+      isFirstAlarmEvalRef.current = false;
+      return;
+    }
+
     let etaSeconds: number | null = null;
     if (userLocation) {
       const distM = distanceMetersBetween(
@@ -220,6 +237,7 @@ export function useStationAlarm({
     setAlarmEvent,
     nearestStation?.id,
     nearestStation?.line,
+    skipWarmupGuard,
   ]);
 
   // #396: 도착정보 API 신호로 imminent 발사.
