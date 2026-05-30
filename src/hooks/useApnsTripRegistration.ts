@@ -13,12 +13,14 @@ import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Station } from '../types/station';
 import type { Route } from '../utils/stationRoute';
-import { routeSignature } from '../utils/stationRoute';
-import { registerActiveTrip, clearActiveTrip } from '../api/alarmBackend';
+import { routeSignature, getStationById } from '../utils/stationRoute';
+import { registerActiveTrip, clearActiveTrip, type AlarmBoardingLock } from '../api/alarmBackend';
 import { routeToWaypoints } from '../utils/routeWaypoints';
+import { buildBoardingLockMeta } from '../utils/buildBoardingLockMeta';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../constants/storageKeys';
 import { createLogger } from '../utils/logger';
 import { resolveApnsEnv } from '../utils/apnsEnv';
+import type { BoardingLock } from '../types/boardingLock';
 
 const logger = createLogger('ApnsTripRegistration');
 
@@ -29,6 +31,12 @@ export interface UseApnsTripRegistrationInputs {
   nextStationEtaSeconds: number | null;
   /** 현재 추정 출발역. 중간역(intermediate) 펼침에 사용 (#416). 미제공 또는 null이면 legacy 모드. */
   currentStation?: Station | null;
+  /**
+   * 활성 BoardingLock (#622). 사용자가 탑승 열차를 확정하면 backend가 trainCode 단위로 추적·
+   * reschedule할 수 있게 schema 변환 후 register payload에 포함한다. null이면 backend는 기존
+   * anchor waypoint 폴링으로 fallback.
+   */
+  boardingLock?: BoardingLock | null;
 }
 
 /**
@@ -49,12 +57,28 @@ interface RegisterCallInputs {
   destination: Station;
   nextStationEtaSeconds: number | null;
   currentStation: Station | null;
+  boardingLock: BoardingLock | null;
   /** 같은 trip 세션 동안 고정되는 epoch ms. backend `isSameSession` 판정 키(#589). */
   createdAt: number;
 }
 
 /** 두 호출처(token refresh / main effect)의 register 페이로드 빌드를 단일화. */
 async function callRegister(input: RegisterCallInputs) {
+  // #622: BoardingLock metadata 빌드. lock의 boardingStationId로 station name 조회 후 schema 변환.
+  // 조회/추론 실패 시 null → backend는 anchor waypoint 폴링으로 fallback (기존 동작).
+  let boardingLockMeta: AlarmBoardingLock | null = null;
+  if (input.boardingLock) {
+    const boardingStation = getStationById(input.boardingLock.boardingStationId);
+    if (boardingStation) {
+      boardingLockMeta = buildBoardingLockMeta({
+        lock: input.boardingLock,
+        route: input.route,
+        destinationName: input.destination.name,
+        boardingStationName: boardingStation.name,
+      });
+    }
+  }
+
   return registerActiveTrip({
     token: input.token,
     route: input.route,
@@ -63,6 +87,7 @@ async function callRegister(input: RegisterCallInputs) {
     alarmAtEpochMs: deriveAlarmAtEpochMs(input.nextStationEtaSeconds, Date.now()),
     apnsEnv: resolveApnsEnv(),
     createdAt: input.createdAt,
+    ...(boardingLockMeta ? { boardingLock: boardingLockMeta } : {}),
   });
 }
 
@@ -71,14 +96,20 @@ export function useApnsTripRegistration({
   destination,
   nextStationEtaSeconds,
   currentStation = null,
+  boardingLock = null,
 }: UseApnsTripRegistrationInputs): void {
   // route 객체 reference가 categorized recompute로 자주 바뀌므로 내용 기반 signature로
   // 메모화 — register useEffect deps에 사용해 동일 경로 재등록(POST /trips 폭주) 방지.
   const routeSig = useMemo(() => routeSignature(route), [route]);
+  // boardingLock도 reference가 아닌 내용 기반 key로 deps — 상위가 매 렌더 새 객체를 내려도 안전.
+  // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
+  const boardingLockSig = boardingLock
+    ? `${boardingLock.trainCode}|${boardingLock.boardingLine}|${boardingLock.boardedAt}`
+    : null;
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
-  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation });
+  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock });
   useEffect(() => {
-    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation };
+    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock };
   });
 
   // #589 — backend `isSameSession`(token+createdAt) 판정용. 같은 trip(같은
@@ -130,6 +161,7 @@ export function useApnsTripRegistration({
           destination: d,
           nextStationEtaSeconds: eta,
           currentStation: cs,
+          boardingLock: bl,
         } = latestInputsRef.current;
         if (!r || !d) return;
         const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
@@ -139,6 +171,7 @@ export function useApnsTripRegistration({
           destination: d,
           nextStationEtaSeconds: eta,
           currentStation: cs,
+          boardingLock: bl,
           createdAt: resolveTripCreatedAt(sessionKey),
         });
       })();
@@ -182,6 +215,7 @@ export function useApnsTripRegistration({
         destination,
         nextStationEtaSeconds,
         currentStation,
+        boardingLock,
         createdAt: resolveTripCreatedAt(sessionKey),
       });
       if (cancelled) return;
@@ -196,6 +230,8 @@ export function useApnsTripRegistration({
     // route는 routeSig(내용 기반)로 비교 — 동일 경로 재등록으로 백엔드 trip
     // state(waypoints shift)가 reset되거나 워커 POST /trips가 분당 폭주하는 것을 방지.
     // route 자체는 closure 안에서만 사용되므로 deps에 넣지 않는다.
+    // boardingLock은 boardingLockSig(내용 기반)로 deps — 상위 컴포넌트가 새 object reference를
+    // 내려도 같은 lock 내용이면 재등록 안 함. closure 안 actual boardingLock object 사용.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeSig, destination?.id, nextStationEtaSeconds, currentStation?.id]);
+  }, [routeSig, destination?.id, nextStationEtaSeconds, currentStation?.id, boardingLockSig]);
 }

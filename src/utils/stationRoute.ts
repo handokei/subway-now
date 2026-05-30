@@ -230,6 +230,11 @@ export function getStationsOnLine(line: LineNumber): Station[] {
   return getLineStationsCached(line);
 }
 
+/** stations.json id로 단일 Station 조회. 미존재 시 undefined. */
+export function getStationById(id: string): Station | undefined {
+  return stationById.get(id);
+}
+
 export function findStationByNameAndLine(name: string, line: LineNumber): Station | undefined {
   const stations = getLineStationsCached(line);
   const exact = stations.find((s) => s.name === name);

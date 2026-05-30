@@ -1,4 +1,4 @@
-import { LINE_API_NAMES, getLineApiName, subwayIdToLine } from '../lineApiNames';
+import { LINE_API_NAMES, getLineApiName, subwayIdToLine, lineToSubwayId } from '../lineApiNames';
 
 describe('lineApiNames', () => {
   it('1~9호선 매핑 + 특수 노선', () => {
@@ -49,6 +49,18 @@ describe('lineApiNames', () => {
       expect(subwayIdToLine({})).toBeNull();
       expect(subwayIdToLine([])).toBeNull();
       expect(subwayIdToLine(true)).toBeNull();
+    });
+
+    it('lineToSubwayId는 subwayIdToLine의 round-trip을 만족한다', () => {
+      for (const id of ['1001', '1002', '1009', '1063', '1077']) {
+        const line = subwayIdToLine(id);
+        expect(line).not.toBeNull();
+        expect(lineToSubwayId(line!)).toBe(id);
+      }
+    });
+
+    it('lineToSubwayId: 매핑 없는 line은 null', () => {
+      expect(lineToSubwayId('unknown' as never)).toBeNull();
     });
 
     it('SUBWAY_ID_TO_LINE 값 집합이 LINE_API_NAMES 키 집합(모든 LineNumber)을 완전 커버한다 — 신규 노선 추가 시 동기화 누락 방지', () => {
