@@ -87,12 +87,23 @@ export function journeyDisplayToStops(
     const isFirst = i === 0;
     const isLast = i === segments.length - 1;
 
+    // #665: 출발=첫 환승역(stops=0)인 경우 transfer 노드를 출발 노드에 흡수.
+    // 출발 마크의 line을 다음 segment의 line으로 두면 환승 후 노선이 시각적으로 그대로 표시되고
+    // "0정거장" 표기가 사라진다. 흡수 후에는 아래 transfer push 분기를 skip.
+    const isCollapsedZeroFirstHop =
+      isFirst && !isLast && seg.stops === 0 && isSameStationName(seg.fromName, seg.toName);
+
     if (isFirst) {
+      const nextSeg = segments[i + 1];
       stops.push({
         station: getStationDisplayNameByName(seg.fromName, allStations),
-        line: seg.line,
+        line: isCollapsedZeroFirstHop ? nextSeg.line : seg.line,
         mark: 'filled',
       });
+    }
+
+    if (isCollapsedZeroFirstHop) {
+      continue;
     }
 
     if (options.expanded) {
