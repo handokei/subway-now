@@ -3,8 +3,9 @@ import transferTimes from '../data/transferTimes.json';
 import type { Station } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
 import type { LineNumber } from '../types/station';
+import { applyStationAlias } from '../data/stationAliases';
 import { createLogger } from './logger';
-import { normalizeStationName } from './normalizeStationName';
+import { normalizeStationName as baseNormalizeStationName } from './normalizeStationName';
 
 const logger = createLogger('StationRoute');
 
@@ -121,9 +122,12 @@ export interface JourneyDisplay {
   totalStops: number;
 }
 
-// 단일 SSOT는 ./normalizeStationName.js — 빌드 스크립트(build-transfer-times.js)와 공유.
-// 기존 호출처(travelDirection/exitSide/transferExit/외부)와의 호환을 위해 re-export.
-export { normalizeStationName };
+// 괄호 부제 제거는 ./normalizeStationName.js (SSOT — 빌드 스크립트와 공유)에 위임하고,
+// 그 위에 노선별 공식 표기 차이(예: "이수" ↔ "총신대입구")를 흡수하는 별칭을 한 번 더 적용한다.
+// Alias는 transferGraph 매칭 전용 — CSV 원본을 다루는 build-transfer-times.js는 적용 대상 아님.
+export function normalizeStationName(name: string): string {
+  return applyStationAlias(baseNormalizeStationName(name));
+}
 
 // 노선별 표기 차이를 흡수한 역 이름 동일성 비교.
 // 예: "상봉" === "상봉(시외버스터미널)" (각각 7호선/경의중앙선 등록명)
