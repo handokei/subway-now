@@ -101,6 +101,22 @@ function lockFor(lockSide: Station): BoardingLock {
 
 const transfers = enumerateTransferStations();
 
+function runTransferScenario(
+  lockSide: Station,
+  otherSide: Station,
+  arrivedOn: 'lockSide' | 'otherSide',
+) {
+  mockUseNearest.mockReturnValue(gpsAt(lockSide));
+  mockFindTop.mockReturnValue([
+    { station: lockSide, distanceKm: 0.05 },
+    { station: otherSide, distanceKm: 0.2 },
+  ]);
+  mockPositionsForCandidates(lockSide, otherSide, arrivedOn);
+  return renderHook(() =>
+    useFusedNearestStation(undefined, undefined, undefined, null, lockFor(lockSide)),
+  );
+}
+
 describe('#671 환승역 fusion line 잠금 회귀 가드', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -113,33 +129,13 @@ describe('#671 환승역 fusion line 잠금 회귀 가드', () => {
     const [lockSide, otherSide] = variants;
 
     it('lock.boardingLine과 다른 line이 position-train 잠금 시도 → 강등 → GPS fallback (lockSide)', () => {
-      mockUseNearest.mockReturnValue(gpsAt(lockSide));
-      mockFindTop.mockReturnValue([
-        { station: lockSide, distanceKm: 0.05 },
-        { station: otherSide, distanceKm: 0.2 },
-      ]);
-      mockPositionsForCandidates(lockSide, otherSide, 'otherSide');
-
-      const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, undefined, null, lockFor(lockSide)),
-      );
-
+      const { result } = runTransferScenario(lockSide, otherSide, 'otherSide');
       expect(result.current.source).toBe('gps');
       expect(result.current.result?.station.line).toBe(lockSide.line);
     });
 
     it('lock.boardingLine과 같은 line이 position-train 잠금 → 유지', () => {
-      mockUseNearest.mockReturnValue(gpsAt(lockSide));
-      mockFindTop.mockReturnValue([
-        { station: lockSide, distanceKm: 0.05 },
-        { station: otherSide, distanceKm: 0.2 },
-      ]);
-      mockPositionsForCandidates(lockSide, otherSide, 'lockSide');
-
-      const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, undefined, null, lockFor(lockSide)),
-      );
-
+      const { result } = runTransferScenario(lockSide, otherSide, 'lockSide');
       expect(result.current.source).toBe('position-train');
       expect(result.current.result?.station.line).toBe(lockSide.line);
     });
