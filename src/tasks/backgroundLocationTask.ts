@@ -8,7 +8,7 @@ import { DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEA
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 import { isAccuracyAcceptable, isLocationFresh, isPlausibleJump, type FixSample } from '../utils/locationGates';
 import { logSuppressedGate } from '../utils/alarmLog';
-import { BG_LAST_FIX_KEY } from '../constants/storageKeys';
+import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY } from '../constants/storageKeys';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
 
@@ -116,7 +116,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
     // lastNotifiedStationId는 stationPipeline 내부에서 notificationState 모듈을 통해
     // AsyncStorage에 직접 read/write 한다 (Foreground 훅과 단일 출처 공유).
-    const { alarmEvent } = await processLocationUpdate({
+    const { alarmEvent, nearest } = await processLocationUpdate({
       lat,
       lng,
       destination,
@@ -137,6 +137,20 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         setFiredAlarms(destination.id, firedAlarms),
         AsyncStorage.setItem(ALARM_EVENT_KEY, JSON.stringify(alarmEvent)),
       ]);
+    }
+
+    // #711: BG task가 평가한 nearest를 BG_LAST_STATION_KEY에 적재.
+    // FG 복귀 시 useNearestStation이 fresh fix 도착 전 임시 hydrate에 사용한다.
+    // null nearest(역 1km 밖)도 동일 정책으로 처리할 필요는 없다 — 메모리 상 result도 null로 보존됨이 자연스러움.
+    if (nearest) {
+      await AsyncStorage.setItem(
+        BG_LAST_STATION_KEY,
+        JSON.stringify({
+          station: nearest.station,
+          distanceKm: nearest.distanceKm,
+          timestamp: latest.timestamp,
+        }),
+      );
     }
 
     logger.info('백그라운드 위치 업데이트 완료:', lat.toFixed(4), lng.toFixed(4));

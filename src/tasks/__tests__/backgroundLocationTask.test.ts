@@ -684,4 +684,40 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     expect(mockProcessLocationUpdate).toHaveBeenCalledWith(expect.objectContaining({ speedMps: null }));
   });
 
+  // ── #711: BG_LAST_STATION_KEY write ──
+
+  it('#711: nearest가 있으면 BG_LAST_STATION_KEY에 station/distanceKm/timestamp를 적재한다', async () => {
+    mockStorageValues(JSON.stringify(mockDestination));
+    mockProcessLocationUpdate.mockResolvedValue({
+      alarmEvent: null,
+      nearest: { station: mockStation, distanceKm: 0.42 },
+    });
+
+    const fixTs = Date.now();
+    const loc = makeLocation(37.498, 127.028);
+    loc.timestamp = fixTs;
+
+    await taskCallback({ data: { locations: [loc] }, error: null });
+
+    const setItemCalls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+    const bgLastCall = setItemCalls.find(([key]) => key === 'subway-now:bg-last-station');
+    expect(bgLastCall).toBeDefined();
+    const payload = JSON.parse(bgLastCall![1]);
+    expect(payload.station.id).toBe(mockStation.id);
+    expect(payload.distanceKm).toBe(0.42);
+    expect(payload.timestamp).toBe(fixTs);
+  });
+
+  it('#711: nearest가 null이면 BG_LAST_STATION_KEY를 쓰지 않는다', async () => {
+    mockStorageValues(JSON.stringify(mockDestination));
+    mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
+
+    await taskCallback({
+      data: { locations: [makeLocation(37.498, 127.028)] },
+      error: null,
+    });
+
+    const setItemCalls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+    expect(setItemCalls.every(([key]) => key !== 'subway-now:bg-last-station')).toBe(true);
+  });
 });
