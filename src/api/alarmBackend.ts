@@ -94,6 +94,17 @@ const ALARM_TIME_BUCKET_MS = 60 * 1000;
  */
 let lastRegisteredHash: string | null = null;
 
+/**
+ * In-flight register Promise dedup (#701).
+ *
+ * `lastRegisteredHash`만으로는 hash check ↔ fetch resolve 사이 round-trip 동안
+ * 동일 hash의 register가 동시 발사되면 모두 hash 미일치로 통과해 POST /trips가
+ * race로 폭주한다 (Cloudflare 로그: 같은 ms에 3개 도착). 모듈 레벨 Map에 hash →
+ * in-flight Promise를 보관해 같은 hash의 동시 호출은 첫 Promise를 공유한다.
+ * 완료 시 entry는 제거되고 결과는 `lastRegisteredHash`에 기록된다.
+ */
+const inFlightRegisters = new Map<string, Promise<AlarmBackendResult>>();
+
 function buildRegisterHash(body: {
   token: string;
   route: NonNullable<Route>;
@@ -118,9 +129,10 @@ function buildRegisterHash(body: {
   });
 }
 
-/** 테스트용 — 모듈 dedup 상태 초기화. */
+/** 테스트용 — 모듈 dedup 상태 초기화 (완료 캐시 + in-flight Map). */
 export function __resetAlarmBackendDedup(): void {
   lastRegisteredHash = null;
+  inFlightRegisters.clear();
 }
 
 function getBackendUrl(): string | null {
@@ -139,32 +151,11 @@ async function fetchWithTimeout(input: string, init: RequestInit): Promise<Respo
   }
 }
 
-/**
- * 활성 트립을 등록한다. 백엔드 URL이 없거나 호출이 실패해도 throw하지 않고
- * `{ok:false}`를 반환 — 알람 사전 예약(#334)은 그대로 동작한다.
- */
-export async function registerActiveTrip(
+async function performRegisterFetch(
+  base: string,
   payload: RegisterTripPayload,
+  hash: string,
 ): Promise<AlarmBackendResult> {
-  const base = getBackendUrl();
-  if (!base) {
-    log.info('ALARM_BACKEND_URL not set — skip register');
-    return { ok: false, skipped: true };
-  }
-
-  const hash = buildRegisterHash({
-    token: payload.token,
-    route: payload.route,
-    destination: payload.destination,
-    waypoints: payload.waypoints,
-    alarmAtEpochMs: payload.alarmAtEpochMs,
-    apnsEnv: payload.apnsEnv,
-    boardingLock: payload.boardingLock,
-  });
-  if (hash === lastRegisteredHash) {
-    return { ok: true, skipped: true };
-  }
-
   const createdAt = payload.createdAt ?? Date.now();
   const expiresAt = payload.expiresAt ?? createdAt + DEFAULT_TRIP_TTL_MS;
   const body = {
@@ -196,6 +187,50 @@ export async function registerActiveTrip(
     log.warn('register error', e);
     return { ok: false };
   }
+}
+
+/**
+ * 활성 트립을 등록한다. 백엔드 URL이 없거나 호출이 실패해도 throw하지 않고
+ * `{ok:false}`를 반환 — 알람 사전 예약(#334)은 그대로 동작한다.
+ *
+ * Dedup 2-layer (#581, #701):
+ *   1) `lastRegisteredHash` — 직전 성공 register의 hash와 동일하면 즉시 skip.
+ *   2) `inFlightRegisters` — 같은 hash로 이미 fetch 중이면 그 Promise를 공유 (race 차단).
+ */
+export function registerActiveTrip(
+  payload: RegisterTripPayload,
+): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip register');
+    return Promise.resolve({ ok: false, skipped: true });
+  }
+
+  const hash = buildRegisterHash({
+    token: payload.token,
+    route: payload.route,
+    destination: payload.destination,
+    waypoints: payload.waypoints,
+    alarmAtEpochMs: payload.alarmAtEpochMs,
+    apnsEnv: payload.apnsEnv,
+    boardingLock: payload.boardingLock,
+  });
+  if (hash === lastRegisteredHash) {
+    return Promise.resolve({ ok: true, skipped: true });
+  }
+
+  // 같은 hash로 이미 in-flight fetch가 있으면 그 Promise를 그대로 반환 — TOCTOU race
+  // (hash check ↔ fetch resolve 사이 동시 호출)로 POST /trips가 동시 발사되는 것을 차단.
+  const pending = inFlightRegisters.get(hash);
+  if (pending) {
+    return pending;
+  }
+
+  const promise = performRegisterFetch(base, payload, hash).finally(() => {
+    inFlightRegisters.delete(hash);
+  });
+  inFlightRegisters.set(hash, promise);
+  return promise;
 }
 
 /**
@@ -241,8 +276,10 @@ export async function sendPushAck(payload: PushAckPayload): Promise<AlarmBackend
 export async function clearActiveTrip(token: string): Promise<AlarmBackendResult> {
   // 트립 종료 후 동일 트립을 다시 시작할 수 있도록 dedup 캐시를 초기화한다.
   // URL 미설정/네트워크 실패 경로에서도 초기화해야 클라이언트가 register dedup에
-  // 의도치 않게 갇히지 않는다.
+  // 의도치 않게 갇히지 않는다. in-flight Promise까지 비워야 clear 직후 register가
+  // 이전 Promise를 재사용하지 않는다.
   lastRegisteredHash = null;
+  inFlightRegisters.clear();
 
   const base = getBackendUrl();
   if (!base) {

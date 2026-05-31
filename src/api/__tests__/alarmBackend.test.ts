@@ -203,6 +203,81 @@ describe('alarmBackend', () => {
         expect(body.boardingLock).toBeUndefined();
       });
 
+      it('#701 in-flight dedup: 동일 페이로드 동시 호출 시 fetch는 1번만 발사된다', async () => {
+        let resolveFetch: ((v: Response) => void) | null = null;
+        (global.fetch as jest.Mock).mockImplementationOnce(
+          () =>
+            new Promise<Response>((resolve) => {
+              resolveFetch = resolve;
+            }),
+        );
+
+        // 같은 ms에 3개 발사 (await 없이 Promise만 받기) — Cloudflare 로그 시나리오 재현.
+        const p1 = registerActiveTrip(SAMPLE_PAYLOAD);
+        const p2 = registerActiveTrip(SAMPLE_PAYLOAD);
+        const p3 = registerActiveTrip(SAMPLE_PAYLOAD);
+
+        // 첫 fetch 미해결 상태에서도 모두 동일 Promise를 공유해야 함.
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+
+        resolveFetch!({ ok: true, status: 200 } as Response);
+        const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+
+        expect(r1).toEqual({ ok: true, status: 200 });
+        expect(r2).toEqual({ ok: true, status: 200 });
+        expect(r3).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
+      it('#701 in-flight 완료 후 lastRegisteredHash가 정상 set되어 후속 호출은 skipped', async () => {
+        await registerActiveTrip(SAMPLE_PAYLOAD);
+        const followup = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(followup).toEqual({ ok: true, skipped: true });
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+      });
+
+      it('#701 다른 sessionKey 동시 호출은 병렬로 진행된다', async () => {
+        (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+        const p1 = registerActiveTrip(SAMPLE_PAYLOAD);
+        const p2 = registerActiveTrip({ ...SAMPLE_PAYLOAD, destination: '0229' });
+        const [r1, r2] = await Promise.all([p1, p2]);
+        expect(r1.ok).toBe(true);
+        expect(r2.ok).toBe(true);
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+      });
+
+      it('#701 in-flight 실패 시 후속 호출은 재시도 가능 (in-flight Map 정리)', async () => {
+        (global.fetch as jest.Mock)
+          .mockRejectedValueOnce(new Error('network'))
+          .mockResolvedValueOnce({ ok: true, status: 200 } as Response);
+        const first = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(first).toEqual({ ok: false });
+        const retry = await registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(retry).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+      });
+
+      it('#701 clearActiveTrip 호출 시 in-flight Map까지 비워진다', async () => {
+        let resolveFetch: ((v: Response) => void) | null = null;
+        (global.fetch as jest.Mock).mockImplementationOnce(
+          () =>
+            new Promise<Response>((resolve) => {
+              resolveFetch = resolve;
+            }),
+        );
+        const p1 = registerActiveTrip(SAMPLE_PAYLOAD);
+        // clear 도중에도 in-flight Map은 비워져야 한다.
+        (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, status: 200 } as Response);
+        await clearActiveTrip('token-hex');
+        // pending register는 stale로 남지만 새 register 호출은 새 Promise를 만들어야 함.
+        (global.fetch as jest.Mock).mockResolvedValueOnce({ ok: true, status: 200 } as Response);
+        const p2 = registerActiveTrip(SAMPLE_PAYLOAD);
+        expect(p1).not.toBe(p2);
+        // resolve 원래 fetch
+        resolveFetch!({ ok: true, status: 200 } as Response);
+        await Promise.all([p1, p2]);
+      });
+
       it('URL 미설정 → 설정 사이클에서도 dedup이 stale state를 남기지 않는다', async () => {
         // URL 미설정으로 skip된 호출은 lastRegisteredHash를 건드리지 않아야 한다.
         delete process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
