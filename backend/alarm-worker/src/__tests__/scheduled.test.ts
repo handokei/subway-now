@@ -655,3 +655,273 @@ describe('RESCHEDULE_THRESHOLD_MS (#585)', () => {
     expect(RESCHEDULE_THRESHOLD_MS).toBe(15_000);
   });
 });
+
+// APNs LA push는 push-type 헤더로 식별: liveactivity
+function isLaCall(_url: string, init: RequestInit | undefined): boolean {
+  const headers = (init?.headers ?? {}) as Record<string, string>;
+  return headers['apns-push-type'] === 'liveactivity';
+}
+
+/**
+ * boardingLock 활성 + LA token이 있는 trip — LA 통합 시나리오의 표준 fixture.
+ * trip은 #640 게이트 통과(boardingLock 활성) + #586 D LA 발사 대상(activityState=live).
+ */
+function makeLockedLaTrip(overrides: Partial<Trip> = {}): Trip {
+  return makeTrip({
+    token: 'la-tok',
+    route: { type: 'direct', line: '2', stops: 1 },
+    waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+    activityPushToken: 'la-token',
+    activityState: 'live',
+    apnsEnv: 'sandbox',
+    boardingLock: {
+      trainCode: 'T',
+      line: '2',
+      subwayId: '1002',
+      selectedDepartureTime: NOW,
+      segmentStations: ['역삼', '강남'],
+      expiresAt: NOW + 60 * 60_000,
+    },
+    ...overrides,
+  });
+}
+
+function makeLockedSeoul(arrivalSeconds: number, arvlCd: number | null = null): SeoulArrivalClient {
+  return new SeoulArrivalClient({
+    apiKey: 'K',
+    host: 'h',
+    now: () => NOW,
+    fetchImpl: (async () =>
+      new Response(
+        JSON.stringify({
+          realtimeArrivalList: [
+            {
+              barvlDt: String(arrivalSeconds),
+              recptnDt: '',
+              updnLine: '상행',
+              trainLineNm: '강남',
+              btrainNo: 'T',
+              subwayNm: '지하철2호선',
+              arvlCd,
+            },
+          ],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch,
+  });
+}
+
+/** APNs 200 OK 항상 응답하는 fetch mock. LA 통합 테스트의 표준 fetch impl. */
+function makeOkFetch() {
+  return vi.fn(async () => new Response('', { status: 200 }));
+}
+
+/**
+ * LA 통합 시나리오 표준 runner.
+ * runScheduled 호출의 `{ seoul, apnsConfig, apnsHosts, fetchImpl, now }` boilerplate를 압축한다.
+ * 추가 옵션(now override 등)은 overrides로 받는다.
+ */
+function runLaScheduled(
+  kv: InMemoryKV,
+  args: {
+    seoul: SeoulArrivalClient;
+    fetchImpl: ReturnType<typeof vi.fn>;
+    now?: () => number;
+  },
+) {
+  return runScheduled(makeEnv(kv), {
+    seoul: args.seoul,
+    apnsConfig,
+    apnsHosts: APNS_HOSTS,
+    fetchImpl: args.fetchImpl as unknown as typeof fetch,
+    now: args.now ?? (() => NOW),
+  });
+}
+
+/** fetch mock에서 LA push 호출만 추출. */
+function getLaCalls(fetchImpl: ReturnType<typeof vi.fn>): [string, RequestInit][] {
+  return (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
+    isLaCall(c[0], c[1]),
+  );
+}
+
+/** LA call의 APNs body(JSON) 파싱. */
+function parseLaBody(call: [string, RequestInit]): {
+  aps: { event: string; 'content-state'?: Record<string, unknown> };
+} {
+  return JSON.parse(call[1].body as string);
+}
+
+describe('runScheduled — Live Activity push integration (#586 D / #612)', () => {
+  it('fires LA update when estimate epoch delta >= 30s (no prior baseline)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    // reschedule push 1건 + LA update 1건 (baseline 없으므로 임계 무시)
+    expect(stats.pushed).toBe(1);
+    expect(stats.laPushSent).toBe(1);
+    const laCalls = getLaCalls(fetchImpl);
+    expect(laCalls).toHaveLength(1);
+    const body = parseLaBody(laCalls[0]);
+    const contentState = body.aps['content-state'] as Record<string, unknown>;
+    expect(body.aps.event).toBe('update');
+    expect(contentState.etaSeconds).toBe(120);
+    expect(contentState.kind).toBe('destination');
+    expect(contentState.stopsRemaining).toBe(1);
+    // phase 필드 비포함
+    expect(contentState.phase).toBeUndefined();
+    const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
+    expect(stored.lastLaPushEpoch).toBe(NOW + 120_000);
+  });
+
+  it('does not fire LA when delta < 30s (LA threshold separate from reschedule 15s)', async () => {
+    const kv = new InMemoryKV();
+    // 직전 LA push baseline은 lastLaPushEpoch. reschedule baseline은 별개로 lastTrackedArrivalEpoch.
+    // reschedule baseline은 일부러 어긋나게(50s 전) 두어 reschedule push는 발사되도록 한다 — 이 케이스의
+    // 의도는 "LA 임계는 reschedule 임계와 독립"이라는 단언.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({
+        lastTrackedArrivalEpoch: NOW + 70_000,
+        lastLaPushEpoch: NOW + 100_000,
+      }),
+    );
+    const fetchImpl = makeOkFetch();
+    // seoul: +20s vs LA baseline → 임계 미달
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    expect(stats.pushed).toBe(1); // reschedule push는 발사 (delta=50s >= 15s)
+    expect(stats.laPushSent).toBe(0);
+    expect(getLaCalls(fetchImpl)).toHaveLength(0);
+  });
+
+  it('does not fire LA when activityPushToken is missing', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({ activityPushToken: undefined }),
+    );
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    expect(stats.laPushSent).toBe(0);
+    expect(getLaCalls(fetchImpl)).toHaveLength(0);
+  });
+
+  it('does not fire LA when activityState is ended (already dismissed)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({ activityState: 'ended' }),
+    );
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    expect(stats.laPushSent).toBe(0);
+    expect(getLaCalls(fetchImpl)).toHaveLength(0);
+  });
+
+  it('fires LA dismissal when destination arrived under boardingLock and clears trip', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
+    const fetchImpl = makeOkFetch();
+    // seoul: ARRIVED
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(0, 1), fetchImpl });
+    expect(stats.laPushSent).toBe(1);
+    const laCalls = getLaCalls(fetchImpl);
+    expect(laCalls).toHaveLength(1);
+    expect(parseLaBody(laCalls[0]).aps.event).toBe('end');
+    expect(await kv.get('trip:la-tok')).toBeNull();
+  });
+
+  it('fires LA dismissal on trip expiry', async () => {
+    const kv = new InMemoryKV();
+    await kv.put(
+      'trip:la-tok',
+      JSON.stringify(
+        makeLockedLaTrip({ expiresAt: NOW + 5_000, alarmAtEpochMs: NOW - 1 }),
+      ),
+    );
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, {
+      seoul: makeLockedSeoul(0),
+      fetchImpl,
+      now: () => NOW + 10_000, // past expiry
+    });
+    expect(stats.laPushSent).toBe(1);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(parseLaBody(call).aps.event).toBe('end');
+    expect(await kv.get('trip:la-tok')).toBeNull();
+  });
+
+  it('410 on LA update clears activityPushToken and persists to KV', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (isLaCall(url, init)) {
+        return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 410 });
+      }
+      return new Response('', { status: 200 });
+    });
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    expect(stats.laTokenCleared).toBe(1);
+    const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
+    expect(stored.activityPushToken).toBeUndefined();
+    expect(stored.activityState).toBe('ended');
+    // 410 분기 — token clear가 dirty이므로 lastLaPushEpoch는 갱신 안 함
+    expect(stored.lastLaPushEpoch).toBeUndefined();
+  });
+
+  it('fires LA dismissal on unrecoverable reschedule push failure (410 Unregistered)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      // reschedule push만 410 Unregistered, LA push는 성공 처리.
+      if (isLaCall(url, init)) return new Response('', { status: 200 });
+      return new Response(JSON.stringify({ reason: 'Unregistered' }), { status: 410 });
+    });
+    await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    // trip 삭제 + LA dismissal end push 발사
+    expect(await kv.get('trip:la-tok')).toBeNull();
+    const laCalls = getLaCalls(fetchImpl);
+    expect(laCalls).toHaveLength(1);
+    expect(parseLaBody(laCalls[0]).aps.event).toBe('end');
+  });
+
+  it('fires LA update immediately after waypoint shift (stopsRemaining changed)', async () => {
+    // intermediate(중곡) 통과 → 다음 hop(강남)에 즉시 LA update 발사 (ETA 임계 무시).
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({
+        waypoints: [
+          { stationName: '중곡', line: '2', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+        boardingLock: {
+          trainCode: 'T',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW,
+          segmentStations: ['역삼', '중곡', '강남'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+        // baseline 충분히 가까워야 LA push가 '진행 trigger'로 발사된 것을 검증할 수 있음.
+        lastLaPushEpoch: NOW + 1000,
+      }),
+    );
+    // 중곡에 ARRIVED → advanceBoardingLockWaypoint 진입 → shift 후 강남이 next
+    const fetchImpl = makeOkFetch();
+    await runLaScheduled(kv, { seoul: makeLockedSeoul(0, 1), fetchImpl });
+    const laCalls = getLaCalls(fetchImpl);
+    // 1건의 LA update(다음 waypoint=강남, stopsRemaining=1, ETA=0)가 발사돼야 한다.
+    expect(laCalls).toHaveLength(1);
+    const body = parseLaBody(laCalls[0]);
+    const contentState = body.aps['content-state'] as Record<string, unknown>;
+    expect(body.aps.event).toBe('update');
+    expect(contentState.kind).toBe('destination');
+    expect(contentState.stopsRemaining).toBe(1);
+    expect(contentState.etaSeconds).toBe(0);
+    // shift 시 lastLaPushEpoch는 reset되어 다음 polling cycle의 첫 estimate가 임계 검사 없이 push되도록 보장.
+    const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
+    expect(stored.lastLaPushEpoch).toBeUndefined();
+  });
+});

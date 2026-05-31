@@ -4,10 +4,21 @@
 
 import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
 import { sendReschedulePush, type ApnsConfig, type SendPushResult } from './apns';
+import { flipApnsEnv, pickApnsHost } from './apnsHost';
+import {
+  buildLiveActivityContentState,
+  cleanupTripWithLa,
+  fireLiveActivityUpdate,
+  type LiveActivityStats,
+} from './liveActivity';
 import { matchLine } from './lineAlias';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
-import { deleteTrip, listTrips, putTrip } from './trips';
+import { listTrips, putTrip } from './trips';
 import type { ApnsEnv, BoardingLockMeta, Env, Trip, Waypoint } from './types';
+
+// pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
+// 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
+export { flipApnsEnv, pickApnsHost };
 
 /** 알람 윈도우: 알람 예상 시각 5분 이내인 트립만 폴링한다. */
 const POLLING_WINDOW_MS = 5 * 60 * 1000;
@@ -21,6 +32,13 @@ export const RESCHEDULE_THRESHOLD_MS = 15_000;
 
 /** boardingLock fallback에서 hop당 기본 소요(90s). 환승역 등 실제 hop은 후속 데이터로 정밀화. */
 const FALLBACK_HOP_SEC = 90;
+
+/**
+ * LA update push 발사 임계치 (#586 D). reschedule push의 15s 임계와는 별개 — LA는 화면 표시용이라
+ * 더 듬성듬성 보내도 사용자가 인지하지 못하고, APNs LA budget(앱당 분당 ~60건)이 빠듯하다.
+ * 새 추정 도착 epoch이 lastLaPushEpoch와 30s 이상 차이날 때만 발사.
+ */
+export const LA_PUSH_THRESHOLD_MS = 30_000;
 
 export interface EnvHealResult {
   result: SendPushResult;
@@ -69,7 +87,7 @@ export async function sendWithEnvHeal(
 
 type Logger = (message: string, meta?: Record<string, unknown>) => void;
 
-export interface ScheduledStats {
+export interface ScheduledStats extends LiveActivityStats {
   scanned: number;
   polled: number;
   pushed: number;
@@ -113,25 +131,6 @@ export interface ScheduledDeps {
   generatePushId?: () => string;
 }
 
-/**
- * trip의 apnsEnv → APNs host 선택. 누락 시 sandbox fallback —
- * 구버전 클라이언트가 필드를 안 보낼 때 production host로 잘못 전송되어
- * `BadDeviceToken`을 받던 #482 회귀를 막기 위함. App Store/TestFlight 빌드는
- * 반드시 명시적으로 'production'을 보내야 한다.
- */
-export function pickApnsHost(apnsEnv: ApnsEnv | undefined, hosts: Record<ApnsEnv, string>): string {
-  return hosts[apnsEnv ?? 'sandbox'];
-}
-
-/**
- * APNs env를 반대편으로 뒤집는다. BadDeviceToken self-heal에서 1차 시도 host와
- * 반대 host로 재시도할 때 사용 (#482 D안). 누락(undefined)은 sandbox로 시작했으므로
- * production으로 뒤집는다 — `pickApnsHost`의 sandbox fallback과 짝.
- */
-export function flipApnsEnv(env: ApnsEnv | undefined): ApnsEnv {
-  return (env ?? 'sandbox') === 'sandbox' ? 'production' : 'sandbox';
-}
-
 export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
   const now = deps.now?.() ?? Date.now();
   const log = deps.log ?? (() => undefined);
@@ -144,13 +143,17 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     etaMissing: 0,
     envCorrected: 0,
     lockMissing: 0,
+    laPushSent: 0,
+    laPushFailed: 0,
+    laTokenCleared: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
     stats.scanned += 1;
 
     if (trip.expiresAt <= now) {
-      await deleteTrip(env.TRIPS, trip.token);
+      // #586 D — trip 만료 시 활성 LA가 남아 있으면 dismissal push로 정리하고 KV에서 제거.
+      await cleanupTripWithLa(trip, env, deps, stats, now, log);
       continue;
     }
 
@@ -232,11 +235,25 @@ export async function runTrainCodeTracking(
   }
 
   if (estimate.arrived) {
-    await advanceBoardingLockWaypoint(trip, waypoint, env, log);
+    await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log);
     return;
   }
 
   await maybeReschedulePush(trip, waypoint, lock, estimate.epoch, env, deps, stats, now, log, generatePushId);
+  // LA는 reschedule와 독립 평가 — reschedule 임계(15s) 미달이거나 push가 실패해도 LA 임계(30s)는 별도 게이트.
+  // maybeReschedulePush가 trip을 cleanup했다면 trip.activityPushToken이 undefined라 fireLiveActivityUpdate가 no-op.
+  const laDirty = await maybeFireLiveActivityUpdate(
+    trip,
+    waypoint,
+    estimate.epoch,
+    deps,
+    stats,
+    now,
+    log,
+  );
+  if (laDirty) {
+    await putTrip(env.TRIPS, trip);
+  }
 }
 
 /**
@@ -273,16 +290,24 @@ export async function estimateBoardingLockArrival(
 
 /**
  * waypoint 진행 처리. destination 도착 또는 last intermediate 통과 시 trip 삭제.
- * baseline(lastTrackedArrivalEpoch)도 함께 리셋해 새 waypoint의 첫 push를 보장.
+ * baseline(lastTrackedArrivalEpoch / lastLaPushEpoch)도 함께 리셋해 새 waypoint의 첫 push를 보장.
+ *
+ * #586 D — stopsRemaining이 바뀌는 시점은 사용자가 즉시 보아야 할 변동(다음 hop 표시)이므로
+ * ETA 임계와 무관하게 새 waypoint로 LA update를 동기 발사한다. ETA는 모르므로 0으로 보내고
+ * lastLaPushEpoch는 reset 상태(undefined)로 두어 다음 폴링에서 첫 estimate가 들어오면
+ * 임계 검사 없이 발사되도록 한다.
  */
 export async function advanceBoardingLockWaypoint(
   trip: Trip,
   waypoint: Waypoint,
   env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
   log: Logger,
 ): Promise<void> {
   if (waypoint.kind === 'destination') {
-    await deleteTrip(env.TRIPS, trip.token);
+    await cleanupTripWithLa(trip, env, deps, stats, now, log);
     log('boarding-lock: destination arrived, trip cleared', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
@@ -291,6 +316,7 @@ export async function advanceBoardingLockWaypoint(
   }
   trip.waypoints.shift();
   trip.lastTrackedArrivalEpoch = undefined;
+  trip.lastLaPushEpoch = undefined;
   log('boarding-lock: waypoint advanced', {
     token: trip.token.slice(0, 8),
     completed: waypoint.stationName,
@@ -298,10 +324,61 @@ export async function advanceBoardingLockWaypoint(
     remaining: trip.waypoints.length,
   });
   if (trip.waypoints.length === 0) {
-    await deleteTrip(env.TRIPS, trip.token);
+    await cleanupTripWithLa(trip, env, deps, stats, now, log);
     return;
   }
+  // stopsRemaining 변동 즉시 LA 발사 — 사용자에게 새 hop 정보를 즉시 노출.
+  const nextWaypoint = trip.waypoints[0];
+  if (trip.activityPushToken && trip.activityState === 'live') {
+    const contentState = buildLiveActivityContentState(
+      nextWaypoint,
+      0,
+      trip.waypoints.length,
+      now,
+    );
+    await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log);
+  }
   await putTrip(env.TRIPS, trip);
+}
+
+/**
+ * Live Activity update push 발사 헬퍼 (#586 D).
+ *
+ * - 새 추정 도착 epoch이 trip.lastLaPushEpoch와 LA_PUSH_THRESHOLD_MS(30s) 이상 차이날 때만 발사.
+ * - activityPushToken 부재 / activityState !== 'live' / threshold 미달 시 no-op.
+ * - 발사 후 trip.lastLaPushEpoch 갱신 + 410 응답 시 token clear (fireLiveActivityUpdate 내부).
+ *
+ * 반환 dirty=true는 호출자가 putTrip을 호출해야 함을 의미한다.
+ * (lastLaPushEpoch 갱신 또는 410 token clear 둘 다 dirty)
+ */
+export async function maybeFireLiveActivityUpdate(
+  trip: Trip,
+  waypoint: Waypoint,
+  newArrivalEpoch: number,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+): Promise<boolean> {
+  if (!trip.activityPushToken || trip.activityState !== 'live') return false;
+  const last = trip.lastLaPushEpoch;
+  if (last !== undefined && Math.abs(newArrivalEpoch - last) < LA_PUSH_THRESHOLD_MS) {
+    return false;
+  }
+  const etaSeconds = Math.max(0, Math.round((newArrivalEpoch - now) / 1000));
+  const contentState = buildLiveActivityContentState(
+    waypoint,
+    etaSeconds,
+    trip.waypoints.length,
+    now,
+  );
+  const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log);
+  if (result.dirty) {
+    // 410 분기 — token이 비워졌으므로 lastLaPushEpoch는 갱신하지 않는다.
+    return true;
+  }
+  trip.lastLaPushEpoch = newArrivalEpoch;
+  return true;
 }
 
 /**
@@ -377,7 +454,8 @@ export async function maybeReschedulePush(
       token: trip.token.slice(0, 8),
     });
     if (isUnrecoverableApnsError(result.status, result.reason) || envMismatchExhausted) {
-      await deleteTrip(env.TRIPS, trip.token);
+      // #586 D — trip이 unrecoverable로 폐기되는 경로에서도 LA가 살아있으면 dismissal로 정리.
+      await cleanupTripWithLa(trip, env, deps, stats, now, log);
       return;
     }
   }

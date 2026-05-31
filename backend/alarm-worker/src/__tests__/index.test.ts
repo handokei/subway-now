@@ -30,6 +30,14 @@ async function post(path: string, body: unknown, env: Env): Promise<Response> {
   );
 }
 
+async function del(path: string, env: Env): Promise<Response> {
+  return app.fetch(new Request(`http://example.com${path}`, { method: 'DELETE' }), env);
+}
+
+function makeKvEnv(): Env {
+  return makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'] });
+}
+
 const FUTURE = Date.now() + 60 * 60 * 1000;
 
 function base(): Record<string, unknown> {
@@ -180,9 +188,6 @@ describe('validateTrip — boardingLock (#585)', () => {
 
 describe('POST /trips — boardingLock merge (#585)', () => {
   const CREATED = 1_700_000_000_000;
-  function makeKvEnv(): Env {
-    return makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'] });
-  }
   function lockBody(lockOverride?: Record<string, unknown> | null): Record<string, unknown> {
     const body: Record<string, unknown> = {
       ...base(),
@@ -263,9 +268,6 @@ describe('POST /trips — boardingLock merge (#585)', () => {
 
 describe('POST /trips (#578 — preserve advance progress on re-register)', () => {
   const CREATED = 1_700_000_000_000;
-  function makeKvEnv(): Env {
-    return makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'] });
-  }
 
   function tripBody(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
     return {
@@ -535,16 +537,30 @@ describe('validateLiveActivityRegister (#586 C)', () => {
   });
 });
 
+describe('DELETE /trips/:token — LA dismissal (#586 D)', () => {
+  const CREATED = 1_700_000_000_000;
+
+  it('returns 200 deleted=false when trip missing (no LA fire)', async () => {
+    const env = makeKvEnv();
+    const res = await del('/trips/nope', env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: false });
+  });
+
+  it('deletes the trip from KV when no LA token attached', async () => {
+    const env = makeKvEnv();
+    await post('/trips', { ...base(), token: 'tok-d', createdAt: CREATED }, env);
+    const res = await del('/trips/tok-d', env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, deleted: true });
+    expect(await env.TRIPS.get('trip:tok-d')).toBeNull();
+  });
+});
+
 describe('Live Activity endpoints (#586 C)', () => {
   const CREATED = 1_700_000_000_000;
-  function makeKvEnv(): Env {
-    return makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'] });
-  }
   function tripBody(): Record<string, unknown> {
     return { ...base(), token: 'tok-611', createdAt: CREATED };
-  }
-  async function del(path: string, env: Env): Promise<Response> {
-    return app.fetch(new Request(`http://example.com${path}`, { method: 'DELETE' }), env);
   }
 
   describe('POST /live-activity/register', () => {
