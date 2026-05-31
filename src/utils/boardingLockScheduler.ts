@@ -2,7 +2,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { ALARM_PHASES, type AlarmPhaseId } from './alarmPhases';
 import { resolveAllTargets, type AlarmEvent, type CurrentTarget } from './stationAlarm';
-import type { Route } from './stationRoute';
+import { isSameStationName, type Route } from './stationRoute';
 import { buildAlarmContent } from './stationNotification';
 import type { BoardingLock } from '../types/boardingLock';
 import {
@@ -301,7 +301,10 @@ export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<
   } = params;
 
   const allTargets = resolveAllTargets(route, destinationName);
-  const passedIndex = allTargets.findIndex((t) => t.name === passedStationName);
+  // #710: 호출자가 raw GPS station.name(노선별 부제 포함)을 전달해도 silent miss(no-op)되지
+  // 않도록 정규화 비교한다. resolveAllTargets는 canonical name을 반환하므로 매칭만 안전하게
+  // 흡수하면 된다 — 이후 schedule/identifier는 그대로 canonical name을 사용한다.
+  const passedIndex = allTargets.findIndex((t) => isSameStationName(t.name, passedStationName));
   if (passedIndex === -1) return;
 
   const current = await getScheduledNotificationIds();
@@ -356,4 +359,20 @@ export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<
   logger.info(
     `advanced lock ${lock.trainCode}: cancelled ${toCancel.length}, scheduled ${scheduledIds.length}`,
   );
+}
+
+/**
+ * #708: route + destinationName이 만드는 hop 시퀀스의 구조적 signature.
+ *
+ * 같은 trainCode 안에서도 환승 경로 재산정/목적지 변경/노선 갈아탐으로 waypoint가 달라지면
+ * 사전 예약된 알람은 stale이 되어 잘못된 역에서 발사된다. signature가 바뀌면 호출자(scheduler
+ * hook)는 cancel→reschedule을 수행해야 한다.
+ *
+ * waypoint(name + stops)만 직렬화 — phase lead 등 schedule 결정값은 동일 코드라 영향 없다.
+ * route=null이거나 destinationName 미상이면 null (scheduler가 미준비로 다룬다).
+ */
+export function routeSignature(route: Route, destinationName: string | null): string | null {
+  if (!route || !destinationName) return null;
+  const targets = resolveAllTargets(route, destinationName);
+  return targets.map((t) => `${t.name}:${t.stops}`).join('|');
 }

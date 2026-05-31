@@ -6,6 +6,7 @@ import {
   cancelAllHopsForLock,
   parseBoardingLockAlarmIdentifier,
   purgeBoardingLockSchedulerQueue,
+  routeSignature,
   scheduleHopsForLock,
 } from '../boardingLockScheduler';
 import {
@@ -495,5 +496,53 @@ describe('advanceHopWindow', () => {
       expect(ids).toContain('bl:T-100:1:early:오금');
       expect(ids).toContain('bl:T-100:1:imminent:오금');
     });
+  });
+
+  // #710: 호출자가 raw GPS station.name(노선별 부제 포함)을 넘겨도 canonical resolve.
+  it('#710 passedStationName이 노선별 부제 포함이어도 정규화 매칭으로 advance', async () => {
+    // multiRoute targets[0].name = '교대'. raw GPS가 '교대(법원·검찰청)' 등으로 들어오는 케이스.
+    mockedGet.mockResolvedValueOnce(['bl:T-100:0:early:교대']);
+    await advanceHopWindow({
+      lock,
+      route: multiRoute,
+      destinationName: '온수',
+      passedStationName: '교대(법원·검찰청)',
+    });
+    // 매칭됐다면 hopIndex=0 cancel이 발생한다 — 매칭 실패였다면 no-op.
+    expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:early:교대');
+  });
+});
+
+describe('routeSignature', () => {
+  it('route=null이면 null', () => {
+    expect(routeSignature(null, '강남')).toBeNull();
+  });
+
+  it('destinationName=null이면 null', () => {
+    expect(routeSignature(directRoute, null)).toBeNull();
+  });
+
+  it('같은 구조의 다른 객체는 동일 signature', () => {
+    const a = makeDirectRoute(2, '2');
+    const b = makeDirectRoute(2, '2');
+    expect(routeSignature(a, '강남')).toBe(routeSignature(b, '강남'));
+  });
+
+  it('stops가 다르면 signature 다름', () => {
+    const a = makeDirectRoute(2, '2');
+    const b = makeDirectRoute(3, '2');
+    expect(routeSignature(a, '강남')).not.toBe(routeSignature(b, '강남'));
+  });
+
+  it('환승 추가되면 signature 다름', () => {
+    expect(routeSignature(directRoute, '강남')).not.toBe(
+      routeSignature(transferRoute, '오금'),
+    );
+  });
+
+  it('destinationName이 다르면 signature 다름', () => {
+    expect(routeSignature(directRoute, '강남')).not.toBe(
+      routeSignature(directRoute, '잠실'),
+    );
   });
 });

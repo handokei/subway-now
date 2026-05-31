@@ -3,6 +3,7 @@ import type { BoardingLock } from '../types/boardingLock';
 import type { Route } from '../utils/stationRoute';
 import {
   cancelAllHopsForLock,
+  routeSignature,
   scheduleHopsForLock,
 } from '../utils/boardingLockScheduler';
 import { createLogger } from '../utils/logger';
@@ -37,6 +38,10 @@ export function useBoardingLockScheduler({
   // 늦게 로드되는 케이스에서, 같은 trainCode라도 schedule이 아직 안 일어났다면 한 번은 보장.
   // trainCode를 기록해 release 후 같은 trainCode 재진입 시 다시 schedule할 수 있게 한다.
   const scheduledTrainCodeRef = useRef<string | null>(null);
+  // #708 같은 trainCode 안에서도 route/destination이 바뀌면 사전 예약된 hop이 stale이 되어
+  // 잘못된 역에서 알람이 발사된다. scheduled 시점의 signature를 기억해 차이가 생기면
+  // cancel → reschedule 한다.
+  const scheduledRouteSigRef = useRef<string | null>(null);
   // 이미 예약된 알람은 sleep 토글에 영향받지 않는 trade-off — 토글 기반 재예약이 요구되면 별도 이슈.
   const sleepModeRef = useSleepModeRef();
 
@@ -45,20 +50,35 @@ export function useBoardingLockScheduler({
     const prevTrain = prev?.trainCode ?? null;
     const nextTrain = lock?.trainCode ?? null;
     const canSchedule = lock !== null && route !== null && destinationName !== null;
+    const nextSig = routeSignature(route, destinationName);
     // 같은 trainCode인데도 schedule을 보장해야 하는 cold-restart 케이스:
     // 직전 effect에서 route/destination이 미완비라 schedule을 건너뛰었고, 지금은 ready.
     const needsColdRestartSchedule =
       canSchedule && scheduledTrainCodeRef.current !== nextTrain;
+    // #708 trainCode는 동일하지만 route/destination 구조가 변해 hop 시퀀스가 달라졌다.
+    // 사전 예약을 한 번 비우고 새 signature로 다시 예약한다.
+    const needsRouteChangeReschedule =
+      canSchedule &&
+      scheduledTrainCodeRef.current === nextTrain &&
+      scheduledRouteSigRef.current !== null &&
+      scheduledRouteSigRef.current !== nextSig;
 
-    if (prevTrain === nextTrain && !needsColdRestartSchedule) {
-      // 같은 trainCode(또는 둘 다 null)이고 이미 해당 trainCode로 schedule 완료 — 재예약 없음.
+    if (
+      prevTrain === nextTrain &&
+      !needsColdRestartSchedule &&
+      !needsRouteChangeReschedule
+    ) {
+      // 같은 trainCode이고 schedule도 최신 — 재예약 없음.
       prevLockRef.current = lock;
       return;
     }
 
     const handleTransition = async (): Promise<void> => {
-      // prev가 있고 trainCode가 실제로 바뀐 경우에만 cancel (cold-restart 보강 시엔 cancel 불필요).
-      if (prev && prevTrain !== nextTrain) {
+      // prev가 있고 (trainCode 변경 OR route signature 변경)인 경우에만 cancel.
+      // cold-restart(같은 trainCode + 이전엔 미예약)는 cancel할 게 없으므로 skip.
+      const shouldCancelPrev =
+        prev !== null && (prevTrain !== nextTrain || needsRouteChangeReschedule);
+      if (shouldCancelPrev && prev) {
         await cancelAllHopsForLock(prev);
       }
       if (canSchedule) {
@@ -69,9 +89,11 @@ export function useBoardingLockScheduler({
           sleepMode: sleepModeRef.current,
         });
         scheduledTrainCodeRef.current = nextTrain;
+        scheduledRouteSigRef.current = nextSig;
       } else if (nextTrain === null) {
         // lock release — 다음 lock 진입 시 같은 trainCode라도 다시 schedule 가능하도록 reset.
         scheduledTrainCodeRef.current = null;
+        scheduledRouteSigRef.current = null;
       }
     };
     handleTransition().catch((e: unknown) => {
