@@ -187,4 +187,69 @@ describe('useBoardingLockScheduler', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(mockedSchedule).toHaveBeenCalledTimes(1);
   });
+
+  // #709 cold restart 회귀: lock 복원이 route보다 먼저 들어오면 같은 trainCode로 두 번째
+  // effect가 돌면서 early-return 되어 영구히 schedule 되지 않는 문제. 사전 예약 알람이
+  // 살아 있지 않으면 잠금화면/Focus 발사가 통째로 누락된다.
+  it('#709 cold restart: lock 먼저 복원되고 route 늦게 로드돼도 schedule 1회 보장', async () => {
+    const { rerender } = renderHook(
+      (props: Parameters<typeof useBoardingLockScheduler>[0]) =>
+        useBoardingLockScheduler(props),
+      { initialProps: { lock: lockA, route: null, destinationName: '강남' } },
+    );
+    // 1차: lock 있지만 route=null → schedule 호출 안 됨이 정상
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedSchedule).not.toHaveBeenCalled();
+    // 2차: route 로드 (같은 trainCode 유지) → 이제는 schedule 1회 호출되어야 함
+    rerender({ lock: lockA, route, destinationName: '강남' });
+    await waitFor(() => {
+      expect(mockedSchedule).toHaveBeenCalledTimes(1);
+      expect(mockedSchedule).toHaveBeenCalledWith({
+        lock: lockA,
+        route,
+        destinationName: '강남',
+        sleepMode: false,
+      });
+    });
+    expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
+  it('#709 cold restart: destinationName 늦게 들어와도 schedule 1회 보장', async () => {
+    const { rerender } = renderHook(
+      (props: Parameters<typeof useBoardingLockScheduler>[0]) =>
+        useBoardingLockScheduler(props),
+      { initialProps: { lock: lockA, route, destinationName: null as string | null } },
+    );
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedSchedule).not.toHaveBeenCalled();
+    rerender({ lock: lockA, route, destinationName: '강남' });
+    await waitFor(() => {
+      expect(mockedSchedule).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('#709 schedule 성공 후 동일 props 재렌더는 중복 호출 없음', async () => {
+    const { rerender } = renderHook(
+      (props: Parameters<typeof useBoardingLockScheduler>[0]) =>
+        useBoardingLockScheduler(props),
+      { initialProps: { lock: lockA, route, destinationName: '강남' } },
+    );
+    await waitFor(() => expect(mockedSchedule).toHaveBeenCalledTimes(1));
+    rerender({ lock: lockA, route, destinationName: '강남' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('#709 lock release 후 같은 trainCode로 재진입하면 다시 schedule 한다', async () => {
+    const { rerender } = renderHook(
+      (props: Parameters<typeof useBoardingLockScheduler>[0]) =>
+        useBoardingLockScheduler(props),
+      { initialProps: { lock: lockA, route, destinationName: '강남' } },
+    );
+    await waitFor(() => expect(mockedSchedule).toHaveBeenCalledTimes(1));
+    rerender({ lock: null, route, destinationName: '강남' });
+    await waitFor(() => expect(mockedCancel).toHaveBeenCalledWith(lockA));
+    rerender({ lock: lockA, route, destinationName: '강남' });
+    await waitFor(() => expect(mockedSchedule).toHaveBeenCalledTimes(2));
+  });
 });

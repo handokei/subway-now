@@ -33,6 +33,10 @@ export function useBoardingLockScheduler({
   destinationName,
 }: UseBoardingLockSchedulerInputs): void {
   const prevLockRef = useRef<BoardingLock | null>(null);
+  // #709 cold restart 보장: lock이 storage에서 먼저 hydrate되고 route/destination이
+  // 늦게 로드되는 케이스에서, 같은 trainCode라도 schedule이 아직 안 일어났다면 한 번은 보장.
+  // trainCode를 기록해 release 후 같은 trainCode 재진입 시 다시 schedule할 수 있게 한다.
+  const scheduledTrainCodeRef = useRef<string | null>(null);
   // 이미 예약된 알람은 sleep 토글에 영향받지 않는 trade-off — 토글 기반 재예약이 요구되면 별도 이슈.
   const sleepModeRef = useSleepModeRef();
 
@@ -40,24 +44,34 @@ export function useBoardingLockScheduler({
     const prev = prevLockRef.current;
     const prevTrain = prev?.trainCode ?? null;
     const nextTrain = lock?.trainCode ?? null;
+    const canSchedule = lock !== null && route !== null && destinationName !== null;
+    // 같은 trainCode인데도 schedule을 보장해야 하는 cold-restart 케이스:
+    // 직전 effect에서 route/destination이 미완비라 schedule을 건너뛰었고, 지금은 ready.
+    const needsColdRestartSchedule =
+      canSchedule && scheduledTrainCodeRef.current !== nextTrain;
 
-    if (prevTrain === nextTrain) {
-      // 같은 trainCode(또는 둘 다 null) — 재예약 없음. ref만 최신화하여 다음 비교 정확성 유지.
+    if (prevTrain === nextTrain && !needsColdRestartSchedule) {
+      // 같은 trainCode(또는 둘 다 null)이고 이미 해당 trainCode로 schedule 완료 — 재예약 없음.
       prevLockRef.current = lock;
       return;
     }
 
     const handleTransition = async (): Promise<void> => {
-      if (prev) {
+      // prev가 있고 trainCode가 실제로 바뀐 경우에만 cancel (cold-restart 보강 시엔 cancel 불필요).
+      if (prev && prevTrain !== nextTrain) {
         await cancelAllHopsForLock(prev);
       }
-      if (lock && route && destinationName) {
+      if (canSchedule) {
         await scheduleHopsForLock({
           lock,
           route,
           destinationName,
           sleepMode: sleepModeRef.current,
         });
+        scheduledTrainCodeRef.current = nextTrain;
+      } else if (nextTrain === null) {
+        // lock release — 다음 lock 진입 시 같은 trainCode라도 다시 schedule 가능하도록 reset.
+        scheduledTrainCodeRef.current = null;
       }
     };
     handleTransition().catch((e: unknown) => {
