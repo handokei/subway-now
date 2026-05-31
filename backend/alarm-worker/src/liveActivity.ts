@@ -47,28 +47,24 @@ export interface LiveActivityDeps {
  * update 시 content-state 전체를 교체하므로, 키 불일치는 widget decode 실패 또는 UI 누락으로
  * 직결). distanceM은 backend가 모르므로 widget에서 optional로 두고 여기서는 채우지 않는다.
  *
- * phase 필드는 보내지 않는다 — dev에서 phase 개념은 제거됨(boardingLock 단일 경로).
- *
- * @param stopsRemaining 다음 hop까지 남은 정거장 수 — 호출자가 계산해 전달(폴링 전/후 시점에 따라 다름).
- * @param _nowMs 현재 시각(epoch ms) — 시그니처 호환용. 현재 schema는 사용하지 않음.
+ * alarmType은 채우지 않는다 — backend는 알람을 트리거하지 않고(디바이스 사전 예약, #584) 정보 갱신만 함.
+ * widget의 긴급 모드(LockScreenView.isUrgent)는 alarmType 존재로 판정하므로, polling 정정마다
+ * 긴급 UI가 강제되지 않도록 omit. 알람 트리거 시점의 별도 텍스트 push에서 채우는 것이 정상 경로.
  */
 export function buildLiveActivityContentState(
   waypoint: Waypoint,
   etaSeconds: number,
   stopsRemaining: number,
-  _nowMs: number,
 ): LiveActivityContentState {
   const meta = LINE_META[waypoint.line];
   return {
     stationName: waypoint.stationName,
-    alarmStationName: waypoint.stationName,
     // LINE_META는 13개 노선을 모두 커버하지만, stations.json에 없는 신규 line code가 들어와도
     // widget의 non-optional 필드가 비지 않도록 raw line code를 fallback으로 사용한다.
     lineName: meta?.canonical ?? waypoint.line,
     lineColorHex: meta?.color ?? '#888888',
     stopsRemaining,
     etaMinutes: Math.max(0, Math.round(etaSeconds / 60)),
-    alarmType: waypoint.kind,
   };
 }
 

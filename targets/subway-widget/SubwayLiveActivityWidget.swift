@@ -27,7 +27,7 @@ struct SubwayLiveActivityWidget: Widget {
                             .fontWeight(.bold)
                             .foregroundColor(.white)
                         if let alarmType = context.state.alarmType,
-                           let alarmBody = context.state.resolvedAlarmBody {
+                           let alarmBody = context.state.alarmBody {
                             Text(alarmBody)
                                 .font(.caption)
                                 .fontWeight(.semibold)
@@ -84,7 +84,7 @@ private struct LockScreenView: View {
     }
 
     var urgentText: String {
-        return state.resolvedAlarmBody ?? ""
+        return state.alarmBody ?? ""
     }
 
     var body: some View {
@@ -118,7 +118,7 @@ private struct LockScreenView: View {
 
                 Spacer()
 
-                Text(state.resolvedAlarmShortLabel ?? "")
+                Text(state.alarmShortLabel ?? "")
                     .font(.title3)
                     .fontWeight(.black)
                     .foregroundColor(.white)
@@ -173,7 +173,7 @@ private struct LockScreenView: View {
 
                 Spacer()
 
-                if let etaText = state.resolvedEtaText {
+                if let etaText = state.etaText {
                     VStack(spacing: 2) {
                         Text(etaText)
                             .font(.title3)
@@ -203,7 +203,7 @@ private struct LockScreenRouteView: View {
                 .fontWeight(.semibold)
                 .foregroundColor(.white)
 
-            if let subtext = state.resolvedRouteSubtext {
+            if let subtext = state.routeSubtext {
                 Text(subtext)
                     .font(.caption)
                     .foregroundColor(.secondary)

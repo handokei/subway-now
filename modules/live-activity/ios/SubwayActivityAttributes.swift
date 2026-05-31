@@ -40,49 +40,18 @@ struct SubwayActivityAttributes: ActivityAttributes {
     }
 }
 
-// #613: backend LA push update가 raw 필드(etaMinutes/distanceM/alarmType 등)만 보내는 경우의
-// 텍스트 폴백. 텍스트 필드가 채워져 있으면 그대로 쓰고, 비어 있으면 raw에서 derive한다.
-// 새 필드를 추가할 때는 여기 한 곳만 갱신하면 widget UI 전체가 같은 정책을 공유한다.
+// #613: backend LA push update는 텍스트 i18n 필드를 채우지 않는다 (한국어 강제 회피).
+// 위젯의 i18n-안전한 폴백은 universal unit ("m") 표시에만 한정한다. 다른 텍스트(alarmBody, etaText,
+// routeSubtext, alarmShortLabel)는 JS init에서 i18n으로 채워진 값을 유지하고, 누락 시 UI에서
+// 자연 hide — backend가 텍스트를 채우려면 Localizable.strings(ko/en/ja/zh) 인프라가 선행되어야 한다.
 @available(iOS 16.1, *)
 extension SubwayActivityAttributes.ContentState {
-    var resolvedAlarmBody: String? {
-        if let body = alarmBody { return body }
-        guard let type = alarmType else { return nil }
-        let station = alarmStationName ?? stationName
-        switch type {
-        case "destination": return "\(station) 곧 도착"
-        case "transfer": return "\(station) 환승"
-        case "intermediate": return "\(station) 통과"
-        default: return nil
-        }
-    }
-
-    var resolvedEtaText: String? {
-        if let text = etaText { return text }
-        guard let m = etaMinutes else { return nil }
-        return "\(m)분"
-    }
-
+    /// 거리 표시. distanceText(i18n) 우선, 없으면 raw distanceM에 universal "m" 단위.
+    /// 단위 "m"은 모든 로캘 공통이라 한국어 강제 위험이 없다.
     var resolvedDistanceText: String? {
         if let text = distanceText { return text }
-        guard let m = distanceM else { return nil }
-        return "\(m)m"
-    }
-
-    var resolvedRouteSubtext: String? {
-        if let text = routeSubtext { return text }
-        if let stops = stopsToTransfer, let name = transferStationName {
-            return "\(stops)정거장 후 \(name) 환승"
-        }
-        if let stops = stopsRemaining {
-            return "\(stops)정거장 남음"
-        }
+        if let m = distanceM { return "\(m)m" }
         return nil
-    }
-
-    var resolvedAlarmShortLabel: String? {
-        if let label = alarmShortLabel { return label }
-        return resolvedEtaText
     }
 }
 #endif
