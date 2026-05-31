@@ -25,6 +25,11 @@ jest.mock('../../utils/tripDirection', () => ({
   resolveTripDirection: (...args: unknown[]) => mockResolveTripDirection(...args),
 }));
 
+const mockFindStationByNameAndLine = jest.fn();
+jest.mock('../../utils/stationLookup', () => ({
+  findStationByNameAndLine: (...args: unknown[]) => mockFindStationByNameAndLine(...args),
+}));
+
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
     destination: '종착',
@@ -72,6 +77,8 @@ describe('useBoardingLockController', () => {
     mockSetBoardingLock.mockResolvedValue(undefined);
     mockClearBoardingLock.mockResolvedValue(undefined);
     mockResolveTripDirection.mockReturnValue(null);
+    // Default: lookup miss — controller falls back to currentStation.id (이전 동작 유지).
+    mockFindStationByNameAndLine.mockReturnValue(null);
     useBoardingLockStore.setState({ lock: null });
   });
 
@@ -197,6 +204,37 @@ describe('useBoardingLockController', () => {
       });
       expect(mockSetBoardingLock).toHaveBeenCalledWith(
         expect.objectContaining({ trainCode: 'T-7', boardingLine: '7' }),
+      );
+    });
+
+    it('boardingStationId는 train.line 기준 정정 (#707) — 환승역에서 fusion 오인식된 옆 노선 id 제거', async () => {
+      // currentStation은 fusion이 line 2(id=stn-A)로 잘못 잠금. train.line='7' → 같은 역명에서 line 7 stop id로 교정.
+      mockFindStationByNameAndLine.mockReturnValue({
+        id: 'stn-A-line7',
+        name: '강남',
+        line: '7',
+        lineColor: '#000',
+        lat: 37.5,
+        lng: 127.0,
+      });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: 'T-7', line: '7' }));
+      });
+      expect(mockFindStationByNameAndLine).toHaveBeenCalledWith('강남', '7');
+      expect(mockSetBoardingLock).toHaveBeenCalledWith(
+        expect.objectContaining({ boardingStationId: 'stn-A-line7', boardingLine: '7' }),
+      );
+    });
+
+    it('정정 lookup 실패 시 currentStation.id로 폴백 (#707) — stations.json에 매칭 없는 가상 케이스도 안전', async () => {
+      mockFindStationByNameAndLine.mockReturnValue(null);
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.createLockFromTrain(makeTrain({ trainCode: 'T-X', line: '7' }));
+      });
+      expect(mockSetBoardingLock).toHaveBeenCalledWith(
+        expect.objectContaining({ boardingStationId: 'stn-A' }),
       );
     });
   });

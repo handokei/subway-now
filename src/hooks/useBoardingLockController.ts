@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { resolveTripDirection } from '../utils/tripDirection';
+import { findStationByNameAndLine } from '../utils/stationLookup';
 import type { ArrivalInfo, StationArrival } from '../api/arrivalApi';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
@@ -100,10 +101,15 @@ export function useBoardingLockController({
       // #663: boardingLine은 사용자가 실제로 탭한 train의 line을 사용. currentStation.line은 fusion
       // 추정이라 환승역에서 옆 노선으로 잘못 잠긴 상태일 수 있다 (#662). train.line은 어댑터가 subwayId로
       // 결정해 row마다 정확. fusion이 잘못돼 있어도 lock만은 정답을 유지 — backend sync(#622) 정확도 보장.
+      // #707: boardingStationId도 같은 이유로 정정. 환승역에서 fusion이 옆 노선 stop id로 잠긴 상태면
+      // backend가 그 id로 reschedule 계산해 잘못된 leg 알람을 보낼 수 있다. 같은 역명에서 train.line으로
+      // 정확 매칭되는 stop id를 사용. 매칭 실패(데이터 누락 가상 케이스)는 currentStation.id로 안전 폴백.
+      const correctedStation = findStationByNameAndLine(currentStation.name, train.line);
+      const boardingStationId = correctedStation?.id ?? currentStation.id;
       void createLock({
         destinationId,
         trainCode: train.trainCode,
-        boardingStationId: currentStation.id,
+        boardingStationId,
         boardingLine: train.line,
         boardedAt: Date.now(),
         expectedDurationMs: durationMin * 60_000,

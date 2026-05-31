@@ -120,6 +120,8 @@ describe('processLocationUpdate', () => {
     mockIsStationOnRoute.mockReturnValue(true);
     mockGetLastNotifiedStationId.mockResolvedValue(null);
     mockSetLastNotifiedStationId.mockResolvedValue(undefined);
+    // 기본: lock 없음 — BG path가 GPS line을 그대로 사용 (기존 동작).
+    mockGetBoardingLock.mockResolvedValue(null);
   });
 
   it('returns null nearest and null alarm when findNearestStation returns null', async () => {
@@ -147,6 +149,48 @@ describe('processLocationUpdate', () => {
       undefined,
       expect.any(Array),
     );
+  });
+
+  describe('#707 BoardingLock line 가드 (BG path)', () => {
+    const lockOnLine7 = {
+      destinationId: 'station-2',
+      trainCode: 'T-7',
+      boardingStationId: 'station-0',
+      boardingLine: '7' as const,
+      boardedAt: 1_700_000_000_000,
+      expectedDurationMs: 600_000,
+    };
+
+    it('lock 활성이면 currentLine은 lock.boardingLine으로 강등 (raw GPS line 무시)', async () => {
+      // GPS는 환승역에서 옆 노선(line 2)으로 잘못 잠긴 상태이지만 사용자는 line 7 탑승 중.
+      mockFindNearestStation.mockReturnValue(mockNearestResult); // station.line = '2'
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetBoardingLock.mockResolvedValue(lockOnLine7);
+
+      await call();
+
+      expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+        expect.objectContaining({ currentLine: '7' }),
+        expect.any(Set),
+        undefined,
+        expect.any(Array),
+      );
+    });
+
+    it('lock 없으면 currentLine은 nearest.station.line 사용 (기존 동작 유지)', async () => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult); // station.line = '2'
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockGetBoardingLock.mockResolvedValue(null);
+
+      await call();
+
+      expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+        expect.objectContaining({ currentLine: '2' }),
+        expect.any(Set),
+        undefined,
+        expect.any(Array),
+      );
+    });
   });
 
   it('passes null etaSeconds when speedMps is not provided', async () => {

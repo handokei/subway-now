@@ -1,4 +1,8 @@
-import { findLineByStationName, findStationByName } from '../stationLookup';
+import {
+  findLineByStationName,
+  findStationByName,
+  findStationByNameAndLine,
+} from '../stationLookup';
 
 jest.mock('../../data/stations.json', () => [
   { id: '1-001', name: '서울역', line: '1', lineColor: '#0052A4', lat: 37.5547, lng: 126.9706 },
@@ -33,5 +37,21 @@ describe('findStationByName', () => {
 
   it('없는 역명은 null', () => {
     expect(findStationByName('없는역')).toBeNull();
+  });
+});
+
+describe('findStationByNameAndLine (#707)', () => {
+  it('환승역에서 line 일치하는 Station 반환', () => {
+    expect(findStationByNameAndLine('서울역', '1')).toMatchObject({ id: '1-001', line: '1' });
+    expect(findStationByNameAndLine('서울역', '4')).toMatchObject({ id: '4-001', line: '4' });
+  });
+
+  it('역명은 있지만 해당 line에는 정차하지 않으면 null', () => {
+    // 강남은 line 2에만 등록 — line 1로 조회하면 null.
+    expect(findStationByNameAndLine('강남', '1')).toBeNull();
+  });
+
+  it('없는 역명은 null', () => {
+    expect(findStationByNameAndLine('없는역', '2')).toBeNull();
   });
 });

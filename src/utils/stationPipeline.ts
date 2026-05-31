@@ -143,13 +143,21 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   const distanceToDestM = distanceMetersBetween(lat, lng, destination.lat, destination.lng);
   const etaSeconds = estimateEtaSeconds(distanceToDestM, speedMps);
 
+  // #707: BoardingLock 활성 시 currentLine을 lock.boardingLine으로 강등.
+  // BG path는 fusion이 없어 nearest.station.line(raw GPS 최근접)이 환승역에서 옆 노선으로
+  // 잘못 잡힐 수 있다. 사용자가 명시 탭한 lock.boardingLine을 source of truth로 신뢰 —
+  // evaluateAlarmPhase의 approachLine 게이트(#579)와 맞물려 잘못된 leg 알람 발사를 차단.
+  // lock 없으면 기존 동작(GPS line) 유지.
+  const lockForLineGuard = await getBoardingLock();
+  const currentLine = lockForLineGuard?.boardingLine ?? nearest.station.line;
+
   const suppressed: AlarmEvent[] = [];
   const alarmEvent = evaluateAlarmPhase(
     {
       route,
       destinationName: destination.name,
       etaSeconds,
-      currentLine: nearest.station.line,
+      currentLine,
     },
     firedAlarms,
     undefined,
