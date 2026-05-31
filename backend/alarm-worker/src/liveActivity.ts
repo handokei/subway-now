@@ -16,6 +16,7 @@
 import { sendLiveActivityUpdate, type LiveActivityContentState } from './apns';
 import { pickApnsHost } from './apnsHost';
 import { LINE_META } from './lineAlias';
+import { deleteProgress } from './progress';
 import { deleteTrip } from './trips';
 import type { ApnsEnv, Env, Trip, Waypoint } from './types';
 
@@ -181,5 +182,8 @@ export async function cleanupTripWithLa(
 ): Promise<void> {
   await fireLiveActivityDismissal(trip, deps, stats, now, log);
   await deleteTrip(env.TRIPS, trip.token);
+  // #705 — trip을 폐기할 때 progress entry도 함께 제거. TTL이 자연 만료를 보장하지만
+  // 즉시 cleanup해야 새 동일 token trip 등록 시 stale shiftedCount가 끼지 않는다.
+  await deleteProgress(env.TRIPS, trip.token);
 }
 
