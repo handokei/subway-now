@@ -70,6 +70,12 @@ export function useStationAlarm({
   skipWarmupGuard = false,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
+  // #699: firedAlarmsRef의 내용이 어느 destinationId에 속하는지 추적.
+  // destination 변경 직후엔 hydrate effect가 setFiredHydrated(false)를 호출하지만,
+  // 같은 render cycle의 ETA/API effect는 React state 전파 전이라 firedHydrated=true(stale)
+  // 클로저로 진입한다. ref id가 현재 destinationId와 다르면 stale state — phase 평가를 보류해
+  // 옛 ref로 새 destination에 잘못된 알람을 발사하는 race를 차단한다.
+  const firedAlarmsRefDestIdRef = useRef<string | null>(null);
   // #670/#672: ETA 평가 effect의 첫 trigger를 suppress.
   // fg-hydrate 직후 hydrate된 stale firedAlarms·nearestStation과 새 GPS 좌표가 동기화되기 전
   // 즉시 평가 분기로 진입하면 잘못된 phase 알람이 발사됨. 한 cycle 보류로 다음 deps 변경(좌표/
@@ -139,6 +145,7 @@ export function useStationAlarm({
       const stored = await getFiredAlarms(destinationId);
       if (cancelled) return;
       firedAlarmsRef.current = stored;
+      firedAlarmsRefDestIdRef.current = destinationId;
       // #580: hydration 시점 진단 — 같은 destinationId에서 size가 다시 0으로 떨어지면 storage race.
       logFiredAlarmsHydrate(destinationId, stored.size);
       setFiredHydrated(true);
@@ -150,12 +157,17 @@ export function useStationAlarm({
 
   // 알람 발사 + 로깅 헬퍼. ETA effect와 API 신호 effect가 동일 시퀀스를 수행하므로 통합.
   // route/destination은 호출자가 가드 후 non-null로 전달 — 함수 내부 가드 중복 제거.
-  function fireAndLog(
+  //
+  // #699: setFiredAlarms를 await — fire-and-forget이면 다음 evaluation(또는 destination
+  // 변경에 의한 re-hydrate, BG silent push의 storage read)이 stale state를 보고 같은
+  // phase를 재발사함(2분 간격 destination 더블 fire 회귀). sync ref add 직후 storage
+  // write 완료까지 기다려 FG/BG 단일 출처 일관성을 보장한다.
+  async function fireAndLog(
     rawEvent: AlarmEvent,
     trigger: 'api' | 'eta',
     activeRoute: NonNullable<Route>,
     activeDestination: Station,
-  ): void {
+  ): Promise<void> {
     // 좌/우 안내 방향. nearestStation 미정이면 direction 미부착(본문에 좌/우 라인 생략).
     const direction = nearestStation
       ? resolveAlarmDirection(rawEvent, {
@@ -165,15 +177,27 @@ export function useStationAlarm({
         })
       : undefined;
     const event = direction ? { ...rawEvent, direction } : rawEvent;
+    // sync ref add — 같은 hook 인스턴스의 다음 evaluation은 즉시 dedup됨.
     firedAlarmsRef.current.add(alarmKey(event));
-    // AsyncStorage에도 즉시 반영 — FG/BG 단일 출처 유지. destinationId scoped.
-    void setFiredAlarms(activeDestination.id, firedAlarmsRef.current);
+    // AsyncStorage write 완료까지 await — BG/재하이드레이션 race 차단(#699).
+    try {
+      await setFiredAlarms(activeDestination.id, firedAlarmsRef.current);
+    } catch (e) {
+      logger.error('firedAlarms 영속화 실패:', e);
+    }
     if (sleepModeRef.current) {
       setAlarmEvent(event);
     }
-    sendAlarmNotification(event, sleepModeRef.current, allowSpeakerRef.current, notificationSource).catch((e) =>
-      logger.error('알람 알림 실패:', e),
-    );
+    try {
+      await sendAlarmNotification(
+        event,
+        sleepModeRef.current,
+        allowSpeakerRef.current,
+        notificationSource,
+      );
+    } catch (e) {
+      logger.error('알람 알림 실패:', e);
+    }
     logFiredAlarm('fg', event, trigger);
   }
 
@@ -185,6 +209,10 @@ export function useStationAlarm({
     if (!firedHydrated) return;
 
     if (!route || !destination) return;
+
+    // #699: destination 변경 직후 firedAlarmsRef가 옛 destination 내용일 수 있다.
+    // hydrate가 완료되어 ref id가 현재 destinationId와 일치할 때까지 평가 보류.
+    if (firedAlarmsRefDestIdRef.current !== destination.id) return;
 
     // 알람 경로는 표시 경로보다 엄격한 정확도 게이트(MAX_ACCURACY_M=200m)를 적용한다.
     // useNearestStation은 지하 구간에서 정확도 1500m까지 표시용으로 수용하므로,
@@ -222,7 +250,10 @@ export function useStationAlarm({
       suppressed,
     );
     for (const event of suppressed) logSuppressedDedupAlarm('fg', event);
-    if (rawEvent) fireAndLog(rawEvent, 'eta', route, destination);
+    // #699: fireAndLog가 setFiredAlarms를 await하므로 promise를 명시적으로 흘려보낸다.
+    // sync firedAlarmsRef.current.add는 fireAndLog 내부 첫 동작이라 같은 hook 인스턴스
+    // 다음 evaluation은 await 중에도 dedup된다.
+    if (rawEvent) void fireAndLog(rawEvent, 'eta', route, destination);
   }, [
     route,
     destination?.id,
@@ -247,13 +278,18 @@ export function useStationAlarm({
   useEffect(() => {
     if (!firedHydrated) return;
     if (!route || !destination) return;
+    // #699: ETA effect와 동일 guard — destination 전환 race로 stale ref가 imminent를
+    // 잘못 발사하는 것을 차단한다.
+    if (firedAlarmsRefDestIdRef.current !== destination.id) return;
     if (!isImminentByArrivalCode(destinationArrival, trackedTrainCode)) return;
 
     const imminentKey = `imminent:${destination.name}`;
     if (firedAlarmsRef.current.has(imminentKey)) return;
 
     const rawEvent: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: destination.name };
-    fireAndLog(rawEvent, 'api', route, destination);
+    // #699: setFiredAlarms 영속화 완료를 await — silent push BG 핸들러가 같은 imminent를
+    // 재발사하지 않도록 storage가 sync된 후 다음 cycle 진입.
+    void fireAndLog(rawEvent, 'api', route, destination);
   }, [
     firedHydrated,
     route,

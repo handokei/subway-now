@@ -7,7 +7,7 @@ function demoteSlotEntries(entries: FavoriteEntry[], role: FavoriteSlotRole): Fa
   return entries.map((f) => (f.role === role ? { ...f, role: 'general' as FavoriteRole } : f));
 }
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, BOARDING_LOCK_KEY, SCHEDULED_NOTIFICATIONS_KEY, ACTIVE_TRIP_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, BOARDING_LOCK_KEY, SCHEDULED_NOTIFICATIONS_KEY, ACTIVE_TRIP_KEY, TRIP_ORIGIN_KEY } from '../constants/storageKeys';
 import { clearFiredAlarms } from '../utils/notificationState';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../i18n/types';
@@ -29,6 +29,9 @@ interface AppState {
   sleepMode: boolean;
   allowSpeaker: boolean;
   customOrigin: Station | null;
+  // #700 — useTripOrigin이 destination set 시점에 캡처한 origin. cold restart 시
+  // 첫 GPS fix가 진짜 출발역과 다른 회귀를 막기 위해 영속화한다 (TRIP_ORIGIN_KEY).
+  tripOrigin: Station | null;
   themeMode: ThemeMode;
   routePreference: RoutePreference;
   localePreference: LocalePreference;
@@ -45,6 +48,8 @@ interface AppState {
   setRecentDestination: (station: Station | null) => void;
   setCustomOrigin: (station: Station | null) => void;
   loadCustomOrigin: () => Promise<void>;
+  setTripOrigin: (station: Station | null) => void;
+  loadTripOrigin: () => Promise<void>;
   setThemeMode: (mode: ThemeMode) => Promise<void>;
   loadThemeMode: () => Promise<void>;
   setRoutePreference: (pref: RoutePreference) => Promise<void>;
@@ -70,6 +75,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   sleepMode: false,
   allowSpeaker: true,
   customOrigin: null,
+  tripOrigin: null,
   themeMode: 'auto' as ThemeMode,
   routePreference: 'optimal' as RoutePreference,
   localePreference: 'auto' as LocalePreference,
@@ -184,6 +190,9 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (station) {
       AsyncStorage.setItem(DESTINATION_KEY, JSON.stringify(station)).catch(noop);
     } else {
+      // #700 — trip 종료 시 tripOrigin도 atomic하게 클리어. destination만 남기면
+      // 다음 trip 시작 시 stale origin이 잠깐 노출돼 route 계산이 흔들린다.
+      set({ tripOrigin: null });
       AsyncStorage.removeItem(DESTINATION_KEY).catch(noop);
     }
     // destination switch(목적지 자체가 바뀌었을 때) — 부수 상태/storage 자동 클리어.
@@ -197,6 +206,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       AsyncStorage.removeItem(BOARDING_LOCK_KEY).catch(noop);
       AsyncStorage.removeItem(SCHEDULED_NOTIFICATIONS_KEY).catch(noop);
       AsyncStorage.removeItem(ACTIVE_TRIP_KEY).catch(noop);
+      AsyncStorage.removeItem(TRIP_ORIGIN_KEY).catch(noop);
       // customOrigin 메모리 상태도 동기화. (loadCustomOrigin은 hydration용이므로 영향 없음)
       if (get().customOrigin !== null) {
         set({ customOrigin: null });
@@ -233,6 +243,30 @@ export const useAppStore = create<AppState>((set, get) => ({
       const raw = await AsyncStorage.getItem(CUSTOM_ORIGIN_KEY);
       if (raw) {
         set({ customOrigin: JSON.parse(raw) });
+      }
+    } catch {
+      // 저장된 데이터 없음 — null 유지
+    }
+  },
+
+  // #700 — useTripOrigin이 캡처/클리어한 trip origin을 영속화.
+  // setDestination(null)은 자체적으로 tripOrigin도 클리어하므로 trip 종료 경로는
+  // 단일 진입점이지만, destination이 살아있는 동안 origin만 갱신되는 경우
+  // (캡처 / 재캡처 / lazy 캡처)는 이 액션이 단일 진입점.
+  setTripOrigin: (station: Station | null) => {
+    set({ tripOrigin: station });
+    if (station) {
+      AsyncStorage.setItem(TRIP_ORIGIN_KEY, JSON.stringify(station)).catch(noop);
+    } else {
+      AsyncStorage.removeItem(TRIP_ORIGIN_KEY).catch(noop);
+    }
+  },
+
+  loadTripOrigin: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(TRIP_ORIGIN_KEY);
+      if (raw) {
+        set({ tripOrigin: JSON.parse(raw) });
       }
     } catch {
       // 저장된 데이터 없음 — null 유지
