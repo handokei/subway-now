@@ -61,6 +61,18 @@ jest.mock('../../api/alarmBackend', () => ({
   sendPushAck: (...args: unknown[]) => mockSendPushAck(...args),
 }));
 
+const mockGetBoardingLock = jest.fn();
+jest.mock('../../utils/boardingLockStorage', () => ({
+  getBoardingLock: (...args: unknown[]) => mockGetBoardingLock(...args),
+}));
+
+const mockFindStationByNameAndLine = jest.fn();
+const mockFindStationByName = jest.fn();
+jest.mock('../../utils/stationLookup', () => ({
+  findStationByNameAndLine: (...args: unknown[]) => mockFindStationByNameAndLine(...args),
+  findStationByName: (...args: unknown[]) => mockFindStationByName(...args),
+}));
+
 // i18next는 키 그대로 반환 (intermediate 본문 빌더 검증용).
 jest.mock('i18next', () => ({
   __esModule: true,
@@ -139,6 +151,11 @@ describe('silentPushTask', () => {
       return null;
     });
     mockSendPushAck.mockResolvedValue({ ok: true });
+    // 기본: lock 없음 → line 가드 미적용 (기존 동작).
+    mockGetBoardingLock.mockResolvedValue(null);
+    // 기본: stationLookup miss는 가드에 영향 없음(lock 없을 때 호출되지 않음).
+    mockFindStationByNameAndLine.mockReturnValue(null);
+    mockFindStationByName.mockReturnValue(null);
   });
 
   it('defineTask가 SILENT_PUSH_TASK 이름으로 콜백을 등록한다', () => {
@@ -449,6 +466,99 @@ describe('silentPushTask', () => {
       expect(mockScheduleNotificationAsync).toHaveBeenCalled();
       // 사전예약은 import도 안 함 — 호출 검증은 import 부재로 충분하나, 추가 안전망:
       // alarmScheduler 모듈을 jest.mock하지 않았기 때문에 호출 시 ReferenceError가 났을 것.
+    });
+
+    describe('#707 BoardingLock line 가드', () => {
+      const lockOnLine7 = {
+        destinationId: '0228',
+        trainCode: 'T-7',
+        boardingStationId: 'station-on-7',
+        boardingLine: '7' as const,
+        boardedAt: 1_700_000_000_000,
+        expectedDurationMs: 600_000,
+      };
+
+      it('lock 활성 + nextWaypoint가 lock.boardingLine에 정차 안 함 → skip + ack(lock-line-mismatch)', async () => {
+        mockGetBoardingLock.mockResolvedValue(lockOnLine7);
+        // line 7에는 없음, 다른 line에는 존재 → 라인 mismatch.
+        mockFindStationByNameAndLine.mockReturnValue(null);
+        mockFindStationByName.mockReturnValue({ id: 'other-line-stop', name: '강남', line: '2' });
+
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-mismatch' }),
+        );
+
+        expect(mockFindStationByNameAndLine).toHaveBeenCalledWith('강남', '7');
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'lock-line-mismatch', kind: 'destination' }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-mismatch',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'lock-line-mismatch',
+        });
+      });
+
+      it('lock 활성 + nextWaypoint가 lock.boardingLine에 정차(환승역 양쪽 호선 stop 존재) → 통과 후 발사', async () => {
+        mockGetBoardingLock.mockResolvedValue(lockOnLine7);
+        // line 7 stop이 존재 → 환승역에서 line 7로도 정차하는 정상 케이스(transfer 등).
+        mockFindStationByNameAndLine.mockReturnValue({
+          id: 'stop-on-7',
+          name: '강남',
+          line: '7',
+        });
+
+        await handleSilentPush(payload({ kind: 'transfer', phase: 'early' }));
+
+        expect(mockFindStationByNameAndLine).toHaveBeenCalledWith('강남', '7');
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+
+      it('lock 활성 + nextWaypoint가 stations.json 어디에도 없으면 line 가드는 통과시키고 일반 게이트가 unknown-station으로 처리', async () => {
+        mockGetBoardingLock.mockResolvedValue(lockOnLine7);
+        mockFindStationByNameAndLine.mockReturnValue(null);
+        mockFindStationByName.mockReturnValue(null);
+        // 일반 게이트가 unknown-station 반환 가정.
+        mockCheckGate.mockResolvedValue({ pass: false, reason: 'unknown-station' });
+
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-unknown' }),
+        );
+
+        // line 가드의 skip 사유가 아닌, 기존 게이트 사유로 분류돼야 한다.
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'gate-unknown-station' }),
+        );
+        expect(mockLogSilentPushSkipped).not.toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'lock-line-mismatch' }),
+        );
+      });
+
+      it('lock 없음 → line 가드 skip (lookup 호출 안 됨, 기존 게이트 흐름)', async () => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockFindStationByNameAndLine).not.toHaveBeenCalled();
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+      });
+
+      it('intermediate kind도 lock line mismatch 시 station-passed로 skip 적재', async () => {
+        mockGetBoardingLock.mockResolvedValue(lockOnLine7);
+        mockFindStationByNameAndLine.mockReturnValue(null);
+        mockFindStationByName.mockReturnValue({ id: 'x', name: '중곡', line: '5' });
+
+        await handleSilentPush(
+          payload({ kind: 'intermediate', phase: 'imminent', nextWaypoint: '중곡' }),
+        );
+
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ kind: 'station-passed', reason: 'lock-line-mismatch' }),
+        );
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      });
     });
 
     describe('#568 P2b — push ACK', () => {

@@ -36,6 +36,8 @@ export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'gate-unknown-station' / 'gate-no-location' / 'gate-stale-location' / 'gate-out-of-range'는
 // #478 PR 1-2 silent push 위치 게이트 skip 사유.
 // 'payload-missing-kind'는 구 백엔드 payload에 kind 필드가 없어 발사 본문 결정 불가 → skip.
+// 'lock-line-mismatch'는 BoardingLock 활성 시 nextWaypoint가 lock.boardingLine에 정차하지
+// 않는 다른 leg/노선의 silent push로 판정돼 차단된 케이스 (#707).
 export type AlarmLogReason =
   | 'dedup-station'
   | 'dedup-alarm'
@@ -46,6 +48,7 @@ export type AlarmLogReason =
   | 'gate-no-location'
   | 'gate-stale-location'
   | 'gate-out-of-range'
+  | 'lock-line-mismatch'
   | 'payload-missing-kind';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';

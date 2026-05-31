@@ -38,6 +38,8 @@ import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
 import { buildAlarmContent } from '../utils/stationNotification';
 import { type NotificationSource } from '../utils/notificationSource';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
+import { getBoardingLock } from '../utils/boardingLockStorage';
+import { findStationByName, findStationByNameAndLine } from '../utils/stationLookup';
 
 // silent push는 서버가 train data 기반으로 발사하므로 라벨도 'positionTrain'으로 고정.
 // 향후 GPS 게이트 경로 등 다른 출처가 생기면 인자화 한다.
@@ -262,6 +264,30 @@ async function fireWithGate(
   payload: SilentPushPayload & { kind: NonNullable<SilentPushPayload['kind']> },
   apnsToken: string | null,
 ): Promise<void> {
+  // #707: BoardingLock 활성 시 nextWaypoint가 lock.boardingLine에 정차하는지 검증.
+  // 백엔드 SilentPushPayload(alarm-worker/src/apns.ts)는 line/expectedLine 필드를 보내지 않으므로
+  // 환승역 등에서 같은 nextWaypoint name이 여러 line stop을 가질 수 있다 — stations.json 매칭으로
+  // 다른 line stop만 존재하면 다른 leg/노선의 silent push로 판정해 차단.
+  // station name 자체가 stations.json에 없으면 line 가드는 통과시키고 일반 게이트의 unknown-station로 위임.
+  const lock = await getBoardingLock();
+  if (lock) {
+    const onBoardingLine = findStationByNameAndLine(payload.nextWaypoint, lock.boardingLine);
+    if (!onBoardingLine && findStationByName(payload.nextWaypoint)) {
+      const logKind = payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
+      logSilentPushSkipped({
+        stationName: payload.nextWaypoint,
+        kind: logKind,
+        phaseId: payload.phase,
+        reason: 'lock-line-mismatch',
+      });
+      ackOutcome(payload.pushId, apnsToken, 'skipped', 'lock-line-mismatch');
+      logger.info(
+        `lock line mismatch skip: nextWaypoint=${payload.nextWaypoint} boardingLine=${lock.boardingLine}`,
+      );
+      return;
+    }
+  }
+
   const gate = await checkSilentPushLocationGate({
     stationName: payload.nextWaypoint,
     kind: payload.kind,
