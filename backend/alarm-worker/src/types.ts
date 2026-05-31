@@ -100,6 +100,14 @@ export interface Trip {
    * waypoint shift 시 reset(undefined) — 새 hop의 첫 update를 보장한다.
    */
   lastLaPushEpoch?: number;
+  /**
+   * 연속 etaMissing 카운트 (#706). 운행 시간대 외(새벽 등)에 trainCode가 Seoul API에서
+   * 사라져도 trip이 자동 종료되지 않아 무한 폴링하던 회귀(8h × 1/min) 방지용.
+   * runTrainCodeTracking이 estimate=null 받을 때마다 +1, 성공 시 0 reset.
+   * MAX_CONSECUTIVE_ETA_MISSING 초과 시 trip을 cleanup한다.
+   * 기존 trip(필드 부재)은 0으로 fallback (backward compat).
+   */
+  consecutiveEtaMissing?: number;
 }
 
 /** Device가 확정한 탑승 열차 정보 (#584). */

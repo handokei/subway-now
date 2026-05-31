@@ -2,6 +2,7 @@ import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
 import {
+  MAX_CONSECUTIVE_ETA_MISSING,
   RESCHEDULE_THRESHOLD_MS,
   estimateArrivalFromPosition,
   flipApnsEnv,
@@ -415,6 +416,149 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     });
     expect(stats.etaMissing).toBe(1);
     expect(stats.pushed).toBe(0);
+  });
+
+  // #706 — 운행 시간대 외(새벽 등)에 trainCode가 사라지면 trip이 무한 폴링됐던 회귀 방지.
+  // 연속 etaMissing 카운트 + 임계 초과 시 cleanupTripWithLa로 자동 종료.
+  describe('#706 consecutiveEtaMissing auto-end', () => {
+    it('increments counter and persists on etaMissing (no cleanup yet)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p706a',
+      });
+      const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+      expect(stored.consecutiveEtaMissing).toBe(1);
+    });
+
+    it('accumulates counter across cycles when etaMissing persists', async () => {
+      const kv = new InMemoryKV();
+      // 이미 3회 연속 miss 상태로 시작 → 한 번 더 miss → 4
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({ consecutiveEtaMissing: 3 }),
+      );
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p706b',
+      });
+      const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+      expect(stored.consecutiveEtaMissing).toBe(4);
+    });
+
+    it('auto-ends trip when consecutiveEtaMissing reaches threshold', async () => {
+      const kv = new InMemoryKV();
+      // 임계치 -1 상태 → 한 번 더 miss → threshold 도달 → cleanup
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({ consecutiveEtaMissing: MAX_CONSECUTIVE_ETA_MISSING - 1 }),
+      );
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p706c',
+      });
+      expect(await kv.get('trip:lock-tok')).toBeNull();
+    });
+
+    it('resets counter to 0 when arrival estimate succeeds', async () => {
+      const kv = new InMemoryKV();
+      // 4회 miss 누적 상태에서 정상 estimate 들어옴 → reset
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({ consecutiveEtaMissing: 4 }),
+      );
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([arrivalForLock('중곡', 120)], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p706d',
+      });
+      const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+      expect(stored.consecutiveEtaMissing).toBe(0);
+    });
+
+    it('resets counter when waypoint advances on arrival', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({ consecutiveEtaMissing: 2 }),
+      );
+      // arvlCd=1 → arrived → waypoint advance
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p706e',
+      });
+      const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+      expect(stored.consecutiveEtaMissing).toBe(0);
+    });
+
+    it('does not resurrect trip when reschedule push hits 410 with prior miss accumulation', async () => {
+      // 회귀 가드: hadMissCount=true 상태에서 cleanupTripWithLa가 호출된 직후 reset persistance
+      // 경로가 putTrip을 다시 호출하면 삭제된 trip이 KV에 부활한다. cleanedUp 시그널로 차단.
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({ consecutiveEtaMissing: 2 }),
+      );
+      const apnsFetch = vi.fn(async () =>
+        new Response(JSON.stringify({ reason: 'Unregistered' }), { status: 410 }),
+      );
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([arrivalForLock('중곡', 120)], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p706g',
+      });
+      expect(await kv.get('trip:lock-tok')).toBeNull();
+    });
+
+    it('treats missing field as 0 (backward compat with existing trips)', async () => {
+      const kv = new InMemoryKV();
+      // consecutiveEtaMissing 미설정 (구버전 trip) → miss 1회 → 1
+      const trip = makeLockTrip();
+      delete (trip as unknown as Record<string, unknown>).consecutiveEtaMissing;
+      await putTrip(kv as unknown as KVNamespace, trip);
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p706f',
+      });
+      const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+      expect(stored.consecutiveEtaMissing).toBe(1);
+    });
+  });
+
+  describe('MAX_CONSECUTIVE_ETA_MISSING (#706)', () => {
+    it('is 5', () => {
+      expect(MAX_CONSECUTIVE_ETA_MISSING).toBe(5);
+    });
   });
 
   it('advances waypoint and resets baseline when trainCode arrived (arvlCd=1)', async () => {
