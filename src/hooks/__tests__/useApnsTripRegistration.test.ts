@@ -390,8 +390,41 @@ describe('useApnsTripRegistration', () => {
   });
 
   it('#589 — 같은 (token, route, destination)으로 재호출 시 동일 createdAt 전달', async () => {
+    // #703: eta 변경은 더 이상 재등록을 유발하지 않는다. 같은 세션 재등록은
+    // boardingLock 토글로 트리거 (session key = token+routeSig+destinationId, lock은 미포함).
+    const lock = {
+      destinationId: station.id,
+      trainCode: '7246',
+      boardingStationId: station.id,
+      boardingLine: '2' as const,
+      boardedAt: 1_700_000_000_000,
+      expectedDurationMs: 600_000,
+    };
     let now = 1_700_000_000_000;
     jest.spyOn(Date, 'now').mockImplementation(() => now);
+    const { rerender } = renderHook(
+      ({ bl }: { bl: typeof lock | null }) =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          boardingLock: bl,
+        }),
+      { initialProps: { bl: null as typeof lock | null } },
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    const firstCreatedAt = mockRegister.mock.calls[0][0].createdAt as number;
+    expect(firstCreatedAt).toBe(1_700_000_000_000);
+
+    // boardingLock 추가 → 같은 session key 재등록
+    now = 1_700_000_999_999;
+    rerender({ bl: lock });
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+    expect(mockRegister.mock.calls[1][0].createdAt).toBe(firstCreatedAt);
+    (Date.now as jest.Mock).mockRestore();
+  });
+
+  it('#703 — nextStationEtaSeconds만 바뀌면 register 재호출 안 함 (30s polling churn 차단)', async () => {
     const { rerender } = renderHook(
       ({ eta }: { eta: number }) =>
         useApnsTripRegistration({
@@ -402,15 +435,34 @@ describe('useApnsTripRegistration', () => {
       { initialProps: { eta: 120 } },
     );
     await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
-    const firstCreatedAt = mockRegister.mock.calls[0][0].createdAt as number;
-    expect(firstCreatedAt).toBe(1_700_000_000_000);
-
-    // eta만 바뀌어 register effect 재실행 (같은 세션)
-    now = 1_700_000_999_999;
     rerender({ eta: 60 });
-    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
-    expect(mockRegister.mock.calls[1][0].createdAt).toBe(firstCreatedAt);
-    (Date.now as jest.Mock).mockRestore();
+    rerender({ eta: 30 });
+    rerender({ eta: null as unknown as number });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockRegister).toHaveBeenCalledTimes(1);
+  });
+
+  it('#703 — currentStation만 바뀌면 register 재호출 안 함', async () => {
+    const altStation: Station = { ...station, id: '2-023', name: '역삼' };
+    const { rerender } = renderHook(
+      ({ cs }: { cs: Station | null }) =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: cs,
+        }),
+      { initialProps: { cs: null as Station | null } },
+    );
+    await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+    rerender({ cs: station });
+    rerender({ cs: altStation });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockRegister).toHaveBeenCalledTimes(1);
   });
 
   it('#589 — route 내용 변경 시 새 createdAt 발급', async () => {
