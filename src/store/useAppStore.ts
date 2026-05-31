@@ -7,7 +7,7 @@ function demoteSlotEntries(entries: FavoriteEntry[], role: FavoriteSlotRole): Fa
   return entries.map((f) => (f.role === role ? { ...f, role: 'general' as FavoriteRole } : f));
 }
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, TRIP_ORIGIN_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, BOARDING_LOCK_KEY, SCHEDULED_NOTIFICATIONS_KEY, ACTIVE_TRIP_KEY, TRIP_ORIGIN_KEY } from '../constants/storageKeys';
 import { clearFiredAlarms } from '../utils/notificationState';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../i18n/types';
@@ -184,6 +184,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setDestination: (station: Station | null) => {
+    const prev = get().destination;
+    const isSwitch = (prev?.id ?? null) !== (station?.id ?? null);
     set({ destination: station });
     if (station) {
       AsyncStorage.setItem(DESTINATION_KEY, JSON.stringify(station)).catch(noop);
@@ -192,9 +194,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 다음 trip 시작 시 stale origin이 잠깐 노출돼 route 계산이 흔들린다.
       set({ tripOrigin: null });
       AsyncStorage.removeItem(DESTINATION_KEY).catch(noop);
-      AsyncStorage.removeItem(TRIP_ORIGIN_KEY).catch(noop);
+    }
+    // destination switch(목적지 자체가 바뀌었을 때) — 부수 상태/storage 자동 클리어.
+    // 같은 destination 재설정 시에는 진행 중인 trip/lock/스케줄을 유지한다.
+    // 주의: 여기서는 storage만 정리한다. BoardingLock 메모리 release 및 예약 알림 cancel은
+    // useBoardingLockController가 destinationId 변경 감지로 처리한다 (store 분리 유지).
+    if (isSwitch) {
       clearFiredAlarms().catch(noop);
       AsyncStorage.removeItem(ROUTE_KEY).catch(noop);
+      AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY).catch(noop);
+      AsyncStorage.removeItem(BOARDING_LOCK_KEY).catch(noop);
+      AsyncStorage.removeItem(SCHEDULED_NOTIFICATIONS_KEY).catch(noop);
+      AsyncStorage.removeItem(ACTIVE_TRIP_KEY).catch(noop);
+      AsyncStorage.removeItem(TRIP_ORIGIN_KEY).catch(noop);
+      // customOrigin 메모리 상태도 동기화. (loadCustomOrigin은 hydration용이므로 영향 없음)
+      if (get().customOrigin !== null) {
+        set({ customOrigin: null });
+      }
     }
   },
 
