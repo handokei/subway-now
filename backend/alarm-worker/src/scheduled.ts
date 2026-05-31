@@ -40,6 +40,13 @@ const FALLBACK_HOP_SEC = 90;
  */
 export const LA_PUSH_THRESHOLD_MS = 30_000;
 
+/**
+ * 연속 etaMissing 임계치 (#706). 한 trip이 N회 연속 trainCode 매칭 실패면 자동 종료.
+ * 운행 시간대 외(새벽)에 trainCode가 Seoul API에서 사라지면 무한 폴링하던 회귀(8h × 1/min) 방지.
+ * cron 주기 60s × 5회 = 5분 — 일시적 API 누락은 흡수하고 운행 종료/탈선 신호는 잡는다.
+ */
+export const MAX_CONSECUTIVE_ETA_MISSING = 5;
+
 export interface EnvHealResult {
   result: SendPushResult;
   /** retry로 정정된 새 env. 정정 발생 시에만 set. */
@@ -226,12 +233,34 @@ export async function runTrainCodeTracking(
   const estimate = await estimateBoardingLockArrival(deps, lock, waypoint, now);
   if (estimate === null) {
     stats.etaMissing += 1;
+    const previousMissCount = trip.consecutiveEtaMissing ?? 0;
+    const nextMissCount = previousMissCount + 1;
     log('boarding-lock: trainCode not found in arrivals or positions', {
       token: trip.token.slice(0, 8),
       trainCode: lock.trainCode,
       station: waypoint.stationName,
+      consecutiveEtaMissing: nextMissCount,
     });
+    if (nextMissCount >= MAX_CONSECUTIVE_ETA_MISSING) {
+      // #706 — 운행 시간대 외 무한 폴링 차단. cleanupTripWithLa가 LA dismissal + deleteTrip을 묶어 정리.
+      log('boarding-lock: trip auto-ended (consecutiveEtaMissing exceeded)', {
+        token: trip.token.slice(0, 8),
+        trainCode: lock.trainCode,
+        station: waypoint.stationName,
+        threshold: MAX_CONSECUTIVE_ETA_MISSING,
+      });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log);
+      return;
+    }
+    trip.consecutiveEtaMissing = nextMissCount;
+    await putTrip(env.TRIPS, trip);
     return;
+  }
+
+  // 성공 사이클 — 카운터가 누적된 상태였다면 reset하고 persist. 0이면 dirty write 회피.
+  const hadMissCount = (trip.consecutiveEtaMissing ?? 0) > 0;
+  if (hadMissCount) {
+    trip.consecutiveEtaMissing = 0;
   }
 
   if (estimate.arrived) {
@@ -239,9 +268,21 @@ export async function runTrainCodeTracking(
     return;
   }
 
-  await maybeReschedulePush(trip, waypoint, lock, estimate.epoch, env, deps, stats, now, log, generatePushId);
+  const { cleanedUp } = await maybeReschedulePush(
+    trip,
+    waypoint,
+    lock,
+    estimate.epoch,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+  );
+  // trip이 KV에서 삭제됐다면 후속 putTrip은 resurrection이 되므로 즉시 종료.
+  if (cleanedUp) return;
   // LA는 reschedule와 독립 평가 — reschedule 임계(15s) 미달이거나 push가 실패해도 LA 임계(30s)는 별도 게이트.
-  // maybeReschedulePush가 trip을 cleanup했다면 trip.activityPushToken이 undefined라 fireLiveActivityUpdate가 no-op.
   const laDirty = await maybeFireLiveActivityUpdate(
     trip,
     waypoint,
@@ -251,7 +292,7 @@ export async function runTrainCodeTracking(
     now,
     log,
   );
-  if (laDirty) {
+  if (laDirty || hadMissCount) {
     await putTrip(env.TRIPS, trip);
   }
 }
@@ -382,6 +423,9 @@ export async function maybeFireLiveActivityUpdate(
 /**
  * 임계치 이상 변동 시 reschedule silent push 발사. APNs env mismatch(#482) self-heal 포함.
  * reschedule push는 alert fallback 대상이 아니므로 PENDING_PUSHES 미등록.
+ *
+ * 반환값 `cleanedUp=true`는 trip이 KV에서 삭제됐음을 의미 — 호출자는 이후 putTrip을 호출하면 안 된다
+ * (삭제된 trip을 in-memory 상태로 resurrect하는 것을 방지). #706에서 counter reset과 충돌하지 않게 도입.
  */
 export async function maybeReschedulePush(
   trip: Trip,
@@ -394,13 +438,13 @@ export async function maybeReschedulePush(
   now: number,
   log: Logger,
   generatePushId: () => string,
-): Promise<void> {
+): Promise<{ cleanedUp: boolean }> {
   const lastEpoch = trip.lastTrackedArrivalEpoch;
   if (
     lastEpoch !== undefined &&
     Math.abs(newArrivalEpoch - lastEpoch) < RESCHEDULE_THRESHOLD_MS
   ) {
-    return;
+    return { cleanedUp: false };
   }
 
   const pushId = generatePushId();
@@ -454,13 +498,14 @@ export async function maybeReschedulePush(
     if (isUnrecoverableApnsError(result.status, result.reason) || envMismatchExhausted) {
       // #586 D — trip이 unrecoverable로 폐기되는 경로에서도 LA가 살아있으면 dismissal로 정리.
       await cleanupTripWithLa(trip, env, deps, stats, now, log);
-      return;
+      return { cleanedUp: true };
     }
   }
 
   if (dirty) {
     await putTrip(env.TRIPS, trip);
   }
+  return { cleanedUp: false };
 }
 
 /**

@@ -136,6 +136,17 @@ describe('validateTrip', () => {
     delete b.route;
     expect(validateTrip(b)).toBeNull();
   });
+
+  // #706
+  it('preserves numeric consecutiveEtaMissing', () => {
+    expect(validateTrip({ ...base(), consecutiveEtaMissing: 3 })?.consecutiveEtaMissing).toBe(3);
+  });
+
+  it('drops non-number consecutiveEtaMissing (defaults to undefined → 0 at runtime)', () => {
+    expect(validateTrip({ ...base(), consecutiveEtaMissing: 'lots' })?.consecutiveEtaMissing).toBeUndefined();
+    // 필드 자체가 부재인 경우(구버전 trip): undefined로 보존, scheduled.ts가 ?? 0으로 fallback.
+    expect(validateTrip(base())?.consecutiveEtaMissing).toBeUndefined();
+  });
 });
 
 describe('validateTrip — boardingLock (#585)', () => {
@@ -330,6 +341,18 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     await post('/trips', tripBody(), env); // no apnsEnv
     const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
     expect(finalTrip.apnsEnv).toBe('production');
+  });
+
+  // #706 — re-register가 누적된 consecutiveEtaMissing을 0으로 지우면 자동 종료가 영원히 못 발동.
+  it('preserves backend-accumulated consecutiveEtaMissing on same-session re-register', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    const advanced = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    advanced.consecutiveEtaMissing = 4;
+    await env.TRIPS.put('trip:tok-578', JSON.stringify(advanced));
+    await post('/trips', tripBody(), env); // device sends payload w/o counter
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(finalTrip.consecutiveEtaMissing).toBe(4);
   });
 
   it('returns 400 on invalid JSON', async () => {

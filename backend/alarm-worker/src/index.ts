@@ -89,6 +89,9 @@ app.post('/trips', async (c) => {
         // 디바이스가 trip을 re-POST해도 register/deregister로 채워둔 값을 유지한다.
         activityPushToken: existing.activityPushToken,
         activityState: existing.activityState,
+        // #706: 연속 etaMissing 카운터는 backend-only state — 디바이스가 같은 세션으로 re-register해도
+        // 누적치를 보존해야 자동 종료가 정상 동작 (re-register마다 0으로 초기화되면 무한 폴링 회귀).
+        consecutiveEtaMissing: existing.consecutiveEtaMissing,
       }
     : incoming;
 
@@ -297,6 +300,10 @@ export function validateTrip(input: unknown): Trip | null {
     boardingLock: parseBoardingLock(obj.boardingLock),
     lastTrackedArrivalEpoch:
       typeof obj.lastTrackedArrivalEpoch === 'number' ? obj.lastTrackedArrivalEpoch : undefined,
+    // #706: 디바이스는 이 필드를 보내지 않지만 기존 trip에서 같은 세션으로 re-register 될 때
+    // POST /trips merge 단계에서 existing 값을 보존한다 (consecutiveEtaMissing 누적이 유지되어야 자동 종료가 정상 동작).
+    consecutiveEtaMissing:
+      typeof obj.consecutiveEtaMissing === 'number' ? obj.consecutiveEtaMissing : undefined,
   };
 }
 
