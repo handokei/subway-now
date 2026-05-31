@@ -21,6 +21,11 @@ export const ALARM_LOG_KEY = 'subway-now:alarm-log';
 export const APNS_TOKEN_KEY = 'subway-now:apns-token';
 export const ACTIVE_TRIP_KEY = 'subway-now:active-trip';
 export const TRIP_TRAIN_CODE_KEY = 'subway-now:trip-train-code';
+// #700 — useTripOrigin이 destination set 순간 캡처하는 trip origin Station.
+// cold restart(앱 강제종료 후 재실행) 시 첫 GPS fix가 진짜 출발역과 다를 수 있어
+// route 계산이 잘못된 origin으로 일어나는 회귀를 막기 위해 영속화한다.
+// 형식: Station JSON. destination null 또는 새 destination set 시 클리어/재캡처.
+export const TRIP_ORIGIN_KEY = 'subway-now:trip-origin';
 // #498 — silent push 게이트 outcome 텔레메트리. 마지막 flush 시각(epoch ms).
 // 다음 flush는 이 시점 이후의 alarmLog 엔트리만 집계 → 중복 방지.
 export const TELEMETRY_LAST_FLUSH_KEY = 'subway-now:telemetry-last-flush';
