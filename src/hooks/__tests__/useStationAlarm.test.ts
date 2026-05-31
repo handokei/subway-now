@@ -1299,6 +1299,109 @@ describe('useStationAlarm', () => {
     });
   });
 
+  // #699: setFiredAlarms를 fire-and-forget으로 두면 다음 cycle(또는 BG silent push)이
+  // stale storage를 읽어 같은 phase를 재발사함 (실기기에서 destination 2분 차 더블 fire 캡처).
+  // fireAndLog가 setFiredAlarms를 await하는지, 그리고 같은 evaluator cycle 내에서 같은
+  // phase가 두 번 발사되지 않는지 회귀 가드한다.
+  describe('#699 setFiredAlarms await dedup', () => {
+    const route = makeDirectRoute(1, '2');
+
+    it('phase 발사 시 setFiredAlarms write 완료를 기다린 후 logFiredAlarm을 호출한다', async () => {
+      // storage write 지연을 시뮬레이션: 외부에서 release할 때까지 pending.
+      let releaseSetFired: (() => void) | undefined;
+      mockSetFiredAlarms.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseSetFired = () => resolve();
+        }),
+      );
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      // setFiredAlarms는 호출되지만 아직 resolve 안 됨 → logFiredAlarm 미호출.
+      await waitFor(() => expect(mockSetFiredAlarms).toHaveBeenCalled());
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+
+      // storage write가 완료되면 그제서야 logFiredAlarm 진행.
+      releaseSetFired!();
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, 'eta'));
+    });
+
+    it('storage write 대기 중 두 번째 evaluation이 들어와도 같은 phase는 한 번만 발사된다', async () => {
+      let releaseSetFired: (() => void) | undefined;
+      mockSetFiredAlarms.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            releaseSetFired = () => resolve();
+          }),
+      );
+      // 실제 evaluator 의미를 흉내: firedAlarms에 이미 키가 있으면 null.
+      mockEvaluateAlarmPhase.mockImplementation((_src: unknown, fired: Set<string>) =>
+        fired.has(`early:${destination.name}`) ? null : earlyDest,
+      );
+
+      const { rerender } = renderHook(
+        ({ loc }: { loc: { lat: number; lng: number } }) =>
+          useStationAlarm(
+            defaultInputs({
+              route,
+              destination,
+              userLocation: loc,
+              speedMps: 10,
+              accuracyMeters: 100,
+            }),
+          ),
+        { initialProps: { loc: { lat: 37.4, lng: 127.0 } } },
+      );
+
+      // 첫 evaluation: 발사 — setFiredAlarms 호출되었지만 pending.
+      await waitFor(() => expect(mockSetFiredAlarms).toHaveBeenCalledTimes(1));
+
+      // storage write가 아직 끝나지 않은 사이에 다음 evaluation 발생(GPS 좌표 갱신).
+      rerender({ loc: { lat: 37.401, lng: 127.001 } });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // sync firedAlarmsRef.current.add 덕분에 두 번째 evaluator는 dedup → 추가 발사 없음.
+      releaseSetFired!();
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalled());
+      const etaCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'eta');
+      expect(etaCalls).toHaveLength(1);
+      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('setFiredAlarms가 reject되어도 notification은 발사된다 (영속화 실패 graceful)', async () => {
+      mockSetFiredAlarms.mockRejectedValueOnce(new Error('storage 실패'));
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, 'eta'));
+    });
+
+    it('imminent API 신호도 setFiredAlarms write 완료를 기다린 후 logFiredAlarm을 호출한다', async () => {
+      let releaseSetFired: (() => void) | undefined;
+      mockSetFiredAlarms.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          releaseSetFired = () => resolve();
+        }),
+      );
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      await waitFor(() => expect(mockSetFiredAlarms).toHaveBeenCalled());
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+
+      releaseSetFired!();
+      await waitFor(() =>
+        expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', imminentDest, 'api'),
+      );
+    });
+  });
+
   describe('#670/#672 첫 evaluation suppress 가드', () => {
     const route = makeDirectRoute(3, '2');
     // skipWarmupGuard 미전달 → production default(false) 적용. 첫 evaluation 보류 동작 확인.
