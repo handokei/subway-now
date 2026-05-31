@@ -711,32 +711,66 @@ function makeLockedSeoul(arrivalSeconds: number, arvlCd: number | null = null): 
   });
 }
 
+/** APNs 200 OK 항상 응답하는 fetch mock. LA 통합 테스트의 표준 fetch impl. */
+function makeOkFetch() {
+  return vi.fn(async () => new Response('', { status: 200 }));
+}
+
+/**
+ * LA 통합 시나리오 표준 runner.
+ * runScheduled 호출의 `{ seoul, apnsConfig, apnsHosts, fetchImpl, now }` boilerplate를 압축한다.
+ * 추가 옵션(now override 등)은 overrides로 받는다.
+ */
+function runLaScheduled(
+  kv: InMemoryKV,
+  args: {
+    seoul: SeoulArrivalClient;
+    fetchImpl: ReturnType<typeof vi.fn>;
+    now?: () => number;
+  },
+) {
+  return runScheduled(makeEnv(kv), {
+    seoul: args.seoul,
+    apnsConfig,
+    apnsHosts: APNS_HOSTS,
+    fetchImpl: args.fetchImpl as unknown as typeof fetch,
+    now: args.now ?? (() => NOW),
+  });
+}
+
+/** fetch mock에서 LA push 호출만 추출. */
+function getLaCalls(fetchImpl: ReturnType<typeof vi.fn>): [string, RequestInit][] {
+  return (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
+    isLaCall(c[0], c[1]),
+  );
+}
+
+/** LA call의 APNs body(JSON) 파싱. */
+function parseLaBody(call: [string, RequestInit]): {
+  aps: { event: string; 'content-state'?: Record<string, unknown> };
+} {
+  return JSON.parse(call[1].body as string);
+}
+
 describe('runScheduled — Live Activity push integration (#586 D / #612)', () => {
   it('fires LA update when estimate epoch delta >= 30s (no prior baseline)', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeLockedSeoul(120),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      now: () => NOW,
-    });
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
     // reschedule push 1건 + LA update 1건 (baseline 없으므로 임계 무시)
     expect(stats.pushed).toBe(1);
     expect(stats.laPushSent).toBe(1);
-    const laCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
-      isLaCall(c[0], c[1]),
-    );
+    const laCalls = getLaCalls(fetchImpl);
     expect(laCalls).toHaveLength(1);
-    const body = JSON.parse(laCalls[0][1].body as string);
+    const body = parseLaBody(laCalls[0]);
+    const contentState = body.aps['content-state'] as Record<string, unknown>;
     expect(body.aps.event).toBe('update');
-    expect(body.aps['content-state'].etaSeconds).toBe(120);
-    expect(body.aps['content-state'].kind).toBe('destination');
-    expect(body.aps['content-state'].stopsRemaining).toBe(1);
+    expect(contentState.etaSeconds).toBe(120);
+    expect(contentState.kind).toBe('destination');
+    expect(contentState.stopsRemaining).toBe(1);
     // phase 필드 비포함
-    expect(body.aps['content-state'].phase).toBeUndefined();
+    expect(contentState.phase).toBeUndefined();
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBe(NOW + 120_000);
   });
@@ -753,20 +787,12 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
         lastLaPushEpoch: NOW + 100_000,
       }),
     );
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeLockedSeoul(120), // +20s vs LA baseline → 임계 미달
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      now: () => NOW,
-    });
+    const fetchImpl = makeOkFetch();
+    // seoul: +20s vs LA baseline → 임계 미달
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
     expect(stats.pushed).toBe(1); // reschedule push는 발사 (delta=50s >= 15s)
     expect(stats.laPushSent).toBe(0);
-    const laCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
-      isLaCall(c[0], c[1]),
-    );
-    expect(laCalls).toHaveLength(0);
+    expect(getLaCalls(fetchImpl)).toHaveLength(0);
   });
 
   it('does not fire LA when activityPushToken is missing', async () => {
@@ -775,19 +801,10 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       kv as unknown as KVNamespace,
       makeLockedLaTrip({ activityPushToken: undefined }),
     );
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeLockedSeoul(120),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      now: () => NOW,
-    });
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
     expect(stats.laPushSent).toBe(0);
-    const laCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
-      isLaCall(c[0], c[1]),
-    );
-    expect(laCalls).toHaveLength(0);
+    expect(getLaCalls(fetchImpl)).toHaveLength(0);
   });
 
   it('does not fire LA when activityState is ended (already dismissed)', async () => {
@@ -796,39 +813,22 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       kv as unknown as KVNamespace,
       makeLockedLaTrip({ activityState: 'ended' }),
     );
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeLockedSeoul(120),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      now: () => NOW,
-    });
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
     expect(stats.laPushSent).toBe(0);
-    const laCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
-      isLaCall(c[0], c[1]),
-    );
-    expect(laCalls).toHaveLength(0);
+    expect(getLaCalls(fetchImpl)).toHaveLength(0);
   });
 
   it('fires LA dismissal when destination arrived under boardingLock and clears trip', async () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeLockedSeoul(0, 1), // ARRIVED
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      now: () => NOW,
-    });
+    const fetchImpl = makeOkFetch();
+    // seoul: ARRIVED
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(0, 1), fetchImpl });
     expect(stats.laPushSent).toBe(1);
-    const laCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
-      isLaCall(c[0], c[1]),
-    );
+    const laCalls = getLaCalls(fetchImpl);
     expect(laCalls).toHaveLength(1);
-    const body = JSON.parse(laCalls[0][1].body as string);
-    expect(body.aps.event).toBe('end');
+    expect(parseLaBody(laCalls[0]).aps.event).toBe('end');
     expect(await kv.get('trip:la-tok')).toBeNull();
   });
 
@@ -840,18 +840,15 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
         makeLockedLaTrip({ expiresAt: NOW + 5_000, alarmAtEpochMs: NOW - 1 }),
       ),
     );
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, {
       seoul: makeLockedSeoul(0),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
+      fetchImpl,
       now: () => NOW + 10_000, // past expiry
     });
     expect(stats.laPushSent).toBe(1);
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    const body = JSON.parse(call[1].body as string);
-    expect(body.aps.event).toBe('end');
+    expect(parseLaBody(call).aps.event).toBe('end');
     expect(await kv.get('trip:la-tok')).toBeNull();
   });
 
@@ -864,13 +861,7 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       }
       return new Response('', { status: 200 });
     });
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeLockedSeoul(120),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      now: () => NOW,
-    });
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
     expect(stats.laTokenCleared).toBe(1);
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.activityPushToken).toBeUndefined();
@@ -887,21 +878,12 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       if (isLaCall(url, init)) return new Response('', { status: 200 });
       return new Response(JSON.stringify({ reason: 'Unregistered' }), { status: 410 });
     });
-    await runScheduled(makeEnv(kv), {
-      seoul: makeLockedSeoul(120),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      now: () => NOW,
-    });
+    await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
     // trip 삭제 + LA dismissal end push 발사
     expect(await kv.get('trip:la-tok')).toBeNull();
-    const laCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
-      isLaCall(c[0], c[1]),
-    );
+    const laCalls = getLaCalls(fetchImpl);
     expect(laCalls).toHaveLength(1);
-    const body = JSON.parse(laCalls[0][1].body as string);
-    expect(body.aps.event).toBe('end');
+    expect(parseLaBody(laCalls[0]).aps.event).toBe('end');
   });
 
   it('fires LA update immediately after waypoint shift (stopsRemaining changed)', async () => {
@@ -927,24 +909,17 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
       }),
     );
     // 중곡에 ARRIVED → advanceBoardingLockWaypoint 진입 → shift 후 강남이 next
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    await runScheduled(makeEnv(kv), {
-      seoul: makeLockedSeoul(0, 1),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-      now: () => NOW,
-    });
-    const laCalls = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) =>
-      isLaCall(c[0], c[1]),
-    );
+    const fetchImpl = makeOkFetch();
+    await runLaScheduled(kv, { seoul: makeLockedSeoul(0, 1), fetchImpl });
+    const laCalls = getLaCalls(fetchImpl);
     // 1건의 LA update(다음 waypoint=강남, stopsRemaining=1, ETA=0)가 발사돼야 한다.
     expect(laCalls).toHaveLength(1);
-    const body = JSON.parse(laCalls[0][1].body as string);
+    const body = parseLaBody(laCalls[0]);
+    const contentState = body.aps['content-state'] as Record<string, unknown>;
     expect(body.aps.event).toBe('update');
-    expect(body.aps['content-state'].kind).toBe('destination');
-    expect(body.aps['content-state'].stopsRemaining).toBe(1);
-    expect(body.aps['content-state'].etaSeconds).toBe(0);
+    expect(contentState.kind).toBe('destination');
+    expect(contentState.stopsRemaining).toBe(1);
+    expect(contentState.etaSeconds).toBe(0);
     // shift 시 lastLaPushEpoch는 reset되어 다음 polling cycle의 첫 estimate가 임계 검사 없이 push되도록 보장.
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBeUndefined();
