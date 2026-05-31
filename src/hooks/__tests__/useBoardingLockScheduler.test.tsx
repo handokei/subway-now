@@ -6,12 +6,18 @@ import {
 } from '../../utils/boardingLockScheduler';
 import type { BoardingLock } from '../../types/boardingLock';
 import { useAppStore } from '../../store/useAppStore';
-import { makeDirectRoute } from '../../testUtils/routeFixtures';
+import { makeDirectRoute, makeTransferRoute } from '../../testUtils/routeFixtures';
 
-jest.mock('../../utils/boardingLockScheduler', () => ({
-  scheduleHopsForLock: jest.fn(),
-  cancelAllHopsForLock: jest.fn(),
-}));
+jest.mock('../../utils/boardingLockScheduler', () => {
+  const actual = jest.requireActual('../../utils/boardingLockScheduler');
+  return {
+    scheduleHopsForLock: jest.fn(),
+    cancelAllHopsForLock: jest.fn(),
+    // routeSignature는 실제 구현을 그대로 사용 — hook이 이 결과로 변경 감지를 하므로
+    // mocking하면 트레이드가 의미를 잃는다.
+    routeSignature: actual.routeSignature,
+  };
+});
 const mockLoggerError = jest.fn();
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({
@@ -238,6 +244,63 @@ describe('useBoardingLockScheduler', () => {
     rerender({ lock: lockA, route, destinationName: '강남' });
     await new Promise((r) => setTimeout(r, 0));
     expect(mockedSchedule).toHaveBeenCalledTimes(1);
+  });
+
+  // #708 같은 trainCode 안에서 route/destination이 바뀌면 사전 예약된 hop이 stale 상태가 된다.
+  // signature 비교로 cancel → reschedule을 강제한다.
+  it('#708 같은 trainCode + route 구조 변경 시 cancel 후 reschedule', async () => {
+    const altRoute = makeTransferRoute({
+      transferName: '교대',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 2,
+      stopsFromTransfer: 3,
+    });
+    const { rerender } = renderHook(
+      (props: Parameters<typeof useBoardingLockScheduler>[0]) =>
+        useBoardingLockScheduler(props),
+      { initialProps: { lock: lockA, route, destinationName: '강남' } },
+    );
+    await waitFor(() => expect(mockedSchedule).toHaveBeenCalledTimes(1));
+    rerender({ lock: lockA, route: altRoute, destinationName: '강남' });
+    await waitFor(() => {
+      expect(mockedCancel).toHaveBeenCalledWith(lockA);
+      expect(mockedSchedule).toHaveBeenCalledTimes(2);
+      expect(mockedSchedule).toHaveBeenLastCalledWith({
+        lock: lockA,
+        route: altRoute,
+        destinationName: '강남',
+        sleepMode: false,
+      });
+    });
+  });
+
+  it('#708 같은 trainCode + destinationName 변경 시 cancel 후 reschedule', async () => {
+    const { rerender } = renderHook(
+      (props: Parameters<typeof useBoardingLockScheduler>[0]) =>
+        useBoardingLockScheduler(props),
+      { initialProps: { lock: lockA, route, destinationName: '강남' } },
+    );
+    await waitFor(() => expect(mockedSchedule).toHaveBeenCalledTimes(1));
+    rerender({ lock: lockA, route, destinationName: '잠실' });
+    await waitFor(() => {
+      expect(mockedCancel).toHaveBeenCalledWith(lockA);
+      expect(mockedSchedule).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it('#708 route signature 동일 (객체만 새로 생성) → 재예약 없음', async () => {
+    const sameShape = makeDirectRoute(2, '2');
+    const { rerender } = renderHook(
+      (props: Parameters<typeof useBoardingLockScheduler>[0]) =>
+        useBoardingLockScheduler(props),
+      { initialProps: { lock: lockA, route, destinationName: '강남' } },
+    );
+    await waitFor(() => expect(mockedSchedule).toHaveBeenCalledTimes(1));
+    rerender({ lock: lockA, route: sameShape, destinationName: '강남' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedSchedule).toHaveBeenCalledTimes(1);
+    expect(mockedCancel).not.toHaveBeenCalled();
   });
 
   it('#709 lock release 후 같은 trainCode로 재진입하면 다시 schedule 한다', async () => {
