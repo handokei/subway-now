@@ -13,7 +13,6 @@ import { useAppStore } from '../../src/store/useAppStore';
 import { useBoardingLockStore } from '../../src/store/useBoardingLockStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../../src/utils/stationRoute';
-import type { Station } from '../../src/types/station';
 import { EditorialTimeline } from '../../src/components/EditorialTimeline';
 import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/journeyAdapter';
 import { useRouter } from 'expo-router';
@@ -108,7 +107,11 @@ export default function HomeScreen() {
   // useFusedNearestStation 첫 호출 시점엔 routeContext=undefined로 GPS fusion fallback,
   // 다음 렌더에서 useTripOrigin이 effectiveOrigin을 캡처해 setTripOrigin을 호출하면
   // routeContext가 채워지고 useRouteProgress(1D map matching)가 활성화된다.
-  const [tripOrigin, setTripOrigin] = useState<Station | null>(null);
+  // #700 — store SSOT로 이전. cold restart 시 loadTripOrigin이 영속값을 복원해
+  // 첫 GPS fix가 진짜 출발역과 다른 회귀를 차단한다.
+  const tripOrigin = useAppStore((s) => s.tripOrigin);
+  const setTripOrigin = useAppStore((s) => s.setTripOrigin);
+  const loadTripOrigin = useAppStore((s) => s.loadTripOrigin);
   const routeContext = useMemo(
     () => (route && tripOrigin && destination ? { route, origin: tripOrigin, destination } : undefined),
     [route, tripOrigin, destination],
@@ -132,7 +135,7 @@ export default function HomeScreen() {
   refreshRef.current = refresh;
   const isCustomOrigin = customOrigin !== null;
   const effectiveOrigin = customOrigin ?? result?.station ?? null;
-  useTripOrigin(destination, effectiveOrigin, setTripOrigin);
+  useTripOrigin(destination, effectiveOrigin, setTripOrigin, tripOrigin);
   const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(
     effectiveOrigin?.name ?? null,
     effectiveOrigin?.line ?? null,
@@ -300,7 +303,14 @@ export default function HomeScreen() {
     loadAlarmEvent();
     // iOS가 BG에서 앱을 메모리 압박으로 종료하면 Zustand 상태는 휘발되지만
     // DESTINATION_KEY는 디스크에 남는다. 콜드/웜 부팅 시 복원해 trip을 이어간다 (#541).
-    loadDestination();
+    // #700 — tripOrigin을 먼저 await으로 hydrate한 다음 destination을 set한다.
+    // 순서를 뒤집으면 destination이 먼저 truthy로 set되는 commit에서 effectiveOrigin이
+    // 캐시된 GPS로 이미 truthy → useTripOrigin capture effect가 잘못된 origin으로
+    // setter 호출 → 영속값(진짜 출발역) 덮어쓰기. 직렬화로 race를 차단한다.
+    void (async () => {
+      await loadTripOrigin();
+      await loadDestination();
+    })();
     initStationNotification().catch((e) => logger.error('알림 초기화 실패:', e));
     registerSilentPushTask().catch((e) => logger.error('silent push task 등록 실패:', e));
     const subscription = AppState.addEventListener('change', (state) => {

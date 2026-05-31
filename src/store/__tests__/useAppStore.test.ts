@@ -27,7 +27,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null, debugVisible: false, accessibilityMode: false });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, tripOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null, debugVisible: false, accessibilityMode: false });
     jest.clearAllMocks();
   });
 
@@ -367,10 +367,13 @@ describe('useAppStore', () => {
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:destination');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:fired-alarms');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:route');
+    // #700 — trip 종료 시 tripOrigin도 atomic하게 클리어
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:trip-origin');
   });
 
   it('setDestination: AsyncStorage 실패 시에도 에러를 던지지 않는다', async () => {
     (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('저장 실패'));
+    (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('삭제 실패'));
     (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('삭제 실패'));
     (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('삭제 실패'));
 
@@ -382,6 +385,17 @@ describe('useAppStore', () => {
     setDestination(null);
     await new Promise((r) => setTimeout(r, 0));
     // 에러 없이 완료
+  });
+
+  it('setDestination(null): tripOrigin도 함께 클리어된다 (#700)', () => {
+    // tripOrigin이 trip 도중 캡처된 상태에서 trip 종료 시 stale origin이 남으면
+    // 다음 trip 시작 시 잘못된 route가 잠깐 노출된다.
+    const { setDestination, setTripOrigin } = useAppStore.getState();
+    setDestination(mockStation);
+    setTripOrigin(mockStation2);
+    expect(useAppStore.getState().tripOrigin?.id).toBe('2-021');
+    setDestination(null);
+    expect(useAppStore.getState().tripOrigin).toBeNull();
   });
 
   it('loadDestination: AsyncStorage에 저장된 목적지를 상태로 복원한다', async () => {
@@ -562,6 +576,73 @@ describe('useAppStore', () => {
 
     const { customOrigin } = useAppStore.getState();
     expect(customOrigin).toBeNull();
+  });
+
+  // #700 — tripOrigin 영속화 (cold restart 시 첫 GPS fix 회귀 차단)
+  it('초기 tripOrigin은 null이다', () => {
+    const { tripOrigin } = useAppStore.getState();
+    expect(tripOrigin).toBeNull();
+  });
+
+  it('setTripOrigin: 역을 설정하면 상태가 업데이트된다', () => {
+    const { setTripOrigin } = useAppStore.getState();
+    setTripOrigin(mockStation);
+
+    const { tripOrigin } = useAppStore.getState();
+    expect(tripOrigin?.id).toBe('2-022');
+  });
+
+  it('setTripOrigin: 역 설정 시 AsyncStorage에 저장하고 null 시 삭제한다', () => {
+    const { setTripOrigin } = useAppStore.getState();
+    setTripOrigin(mockStation);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:trip-origin',
+      JSON.stringify(mockStation),
+    );
+
+    jest.clearAllMocks();
+    setTripOrigin(null);
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:trip-origin');
+  });
+
+  it('setTripOrigin: AsyncStorage 실패 시에도 에러를 던지지 않는다', async () => {
+    (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('저장 실패'));
+    (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('삭제 실패'));
+
+    const { setTripOrigin } = useAppStore.getState();
+    setTripOrigin(mockStation);
+    await new Promise((r) => setTimeout(r, 0));
+
+    setTripOrigin(null);
+    await new Promise((r) => setTimeout(r, 0));
+  });
+
+  it('loadTripOrigin: AsyncStorage에서 영속화된 origin을 복원한다 (cold restart 회복)', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(mockStation));
+
+    const { loadTripOrigin } = useAppStore.getState();
+    await loadTripOrigin();
+
+    expect(AsyncStorage.getItem).toHaveBeenCalledWith('subway-now:trip-origin');
+    expect(useAppStore.getState().tripOrigin?.id).toBe('2-022');
+  });
+
+  it('loadTripOrigin: AsyncStorage가 비어있으면 null을 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+
+    const { loadTripOrigin } = useAppStore.getState();
+    await loadTripOrigin();
+
+    expect(useAppStore.getState().tripOrigin).toBeNull();
+  });
+
+  it('loadTripOrigin: AsyncStorage 오류 시 null을 유지한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
+
+    const { loadTripOrigin } = useAppStore.getState();
+    await loadTripOrigin();
+
+    expect(useAppStore.getState().tripOrigin).toBeNull();
   });
 
   it('초기 themeMode는 auto이다', () => {
