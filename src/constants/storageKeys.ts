@@ -42,3 +42,9 @@ export const BOARDING_LOCK_KEY = 'subway-now:boarding-lock';
 // release/expiry 또는 새 Lock 시점에 일괄 cancel하기 위한 추적 큐.
 // 형식: string[] JSON.
 export const SCHEDULED_NOTIFICATIONS_KEY = 'subway-now:scheduled-notifications';
+// #711 — BG task가 마지막으로 평가한 nearest station + 평가 시각.
+// FG 복귀 직후 fresh fix가 들어오기 전 일시 공백을 메우기 위한 임시 hydrate 용도.
+// hydrate 시 locationUncertain=true는 유지 — fresh fix(applyLocation) 도착 시점에 해제된다.
+// 형식: {"station": Station, "distanceKm": number, "timestamp": number} JSON.
+// WhileInUse 권한 사용자에게는 BG task 자체가 동작하지 않으므로 graceful no-op (key 없음).
+export const BG_LAST_STATION_KEY = 'subway-now:bg-last-station';

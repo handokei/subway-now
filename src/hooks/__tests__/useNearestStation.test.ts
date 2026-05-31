@@ -1,9 +1,11 @@
 import { renderHook, act, waitFor } from '@testing-library/react-native';
 import * as Location from 'expo-location';
 import { AppState } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNearestStation } from '../useNearestStation';
 import * as findNearestStationModule from '../../utils/findNearestStation';
 import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY, MAX_LOCATION_AGE_MS } from '../../constants/location';
+import { BG_LAST_STATION_KEY } from '../../constants/storageKeys';
 
 jest.mock('expo-location');
 
@@ -780,6 +782,145 @@ describe('useNearestStation', () => {
 
     // MAX_STATION_DISTANCE_KM(1.0) 초과 → null
     expect(result.current.result).toBeNull();
+  });
+});
+
+describe('useNearestStation — #711 BG_LAST_STATION hydrate', () => {
+  // 공통 setup: granted + watch 마운트 — helper로 추출해 중복 ≤3% 유지 (SonarCloud)
+  async function mountAndWaitWatch() {
+    mockGranted();
+    const view = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+    return view;
+  }
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    // clearAllMocks는 implementation을 리셋하지 않는다 — 이전 describe의 mockLocation 잔류로
+    // refresh()가 강남역 좌표를 흘려보내 result가 오염되는 회귀를 방지.
+    (Location.getCurrentPositionAsync as jest.Mock).mockReset();
+    (Location.getCurrentPositionAsync as jest.Mock).mockRejectedValue(new Error('no-fix'));
+    appStateCallback = null;
+    watchCallback = null;
+    mockNoLastKnownLocation();
+    mockSubscription.remove.mockClear();
+    (Location.watchPositionAsync as jest.Mock).mockImplementation(
+      async (_options: unknown, callback: typeof watchCallback) => {
+        watchCallback = callback;
+        return mockSubscription;
+      },
+    );
+    await AsyncStorage.clear();
+  });
+
+  it('FG 복귀 시 BG_LAST_STATION이 있으면 result를 임시 hydrate한다 (uncertain=true 유지)', async () => {
+    // BG task가 적재한 가짜 데이터 — 강남역 fixture
+    const bgPayload = {
+      station: {
+        id: 'gangnam-2',
+        name: '강남',
+        line: '2',
+        lineColor: '#009246',
+        lat: 37.498,
+        lng: 127.028,
+      },
+      distanceKm: 0.1,
+      timestamp: Date.now() - 10_000,
+    };
+    await AsyncStorage.setItem(BG_LAST_STATION_KEY, JSON.stringify(bgPayload));
+
+    const { result } = await mountAndWaitWatch();
+    // 초기 result는 null (fresh fix 아직 없음)
+    expect(result.current.result).toBeNull();
+
+    // FG 복귀 — refresh getCurrentPositionAsync는 deferred로 두어 hydrate가 먼저 관측되게 한다
+    let resolveFresh: ((v: unknown) => void) | null = null;
+    (Location.getCurrentPositionAsync as jest.Mock).mockImplementationOnce(
+      () => new Promise((resolve) => { resolveFresh = (v) => resolve(v); }),
+    );
+
+    act(() => { appStateCallback?.('background'); });
+    await act(async () => { appStateCallback?.('active'); });
+
+    // hydrate 적용 대기
+    await waitFor(() => expect(result.current.result).not.toBeNull());
+    expect(result.current.result?.station.name).toBe('강남');
+    // fresh fix 미도착 — uncertain 유지
+    expect(result.current.locationUncertain).toBe(true);
+
+    // fresh fix가 들어오면 applyLocation이 uncertain=false로 복귀 + result는 fresh로 교체
+    await act(async () => {
+      resolveFresh?.({
+        coords: { latitude: 37.498, longitude: 127.028, accuracy: 10 },
+        timestamp: Date.now(),
+      });
+    });
+    await waitFor(() => expect(result.current.locationUncertain).toBe(false));
+    expect(result.current.result?.station.name).toBe('강남');
+  });
+
+  it('FG 복귀 시 BG_LAST_STATION이 없으면 (WhileInUse 사용자) 조용히 no-op', async () => {
+    // key 없음 — graceful no-op
+    const { result } = await mountAndWaitWatch();
+
+    act(() => { appStateCallback?.('background'); });
+    await act(async () => { appStateCallback?.('active'); });
+
+    // hydrate되지 않음
+    expect(result.current.result).toBeNull();
+  });
+
+  it('FG 복귀 시 손상된 BG_LAST_STATION JSON은 graceful no-op', async () => {
+    await AsyncStorage.setItem(BG_LAST_STATION_KEY, 'not-json{{{');
+
+    const { result } = await mountAndWaitWatch();
+    act(() => { appStateCallback?.('background'); });
+    await act(async () => { appStateCallback?.('active'); });
+
+    // catch 분기로 흘러 result는 null 유지
+    expect(result.current.result).toBeNull();
+  });
+
+  it('FG 복귀 시 BG_LAST_STATION 스키마가 잘못되면 graceful no-op', async () => {
+    // station.id 누락 → 검증 실패
+    await AsyncStorage.setItem(
+      BG_LAST_STATION_KEY,
+      JSON.stringify({ station: { name: '?' }, distanceKm: 0.1 }),
+    );
+
+    const { result } = await mountAndWaitWatch();
+    act(() => { appStateCallback?.('background'); });
+    await act(async () => { appStateCallback?.('active'); });
+
+    expect(result.current.result).toBeNull();
+  });
+
+  it('FG 복귀 시 result가 이미 있으면 hydrate가 덮어쓰지 않는다 (race 가드)', async () => {
+    const bgPayload = {
+      station: {
+        id: 'other',
+        name: '시청',
+        line: '1',
+        lineColor: '#0052A4',
+        lat: 37.565,
+        lng: 126.977,
+      },
+      distanceKm: 0.5,
+      timestamp: Date.now() - 10_000,
+    };
+    await AsyncStorage.setItem(BG_LAST_STATION_KEY, JSON.stringify(bgPayload));
+
+    const { result } = await mountAndWaitWatch();
+    // 먼저 fresh fix로 강남역 채워둠
+    simulateGps(37.498, 127.028, { accuracy: 10 });
+    await waitFor(() => expect(result.current.result?.station.name).toBe('강남'));
+
+    act(() => { appStateCallback?.('background'); });
+    await act(async () => { appStateCallback?.('active'); });
+
+    // hydrate가 흘러도 prev ?? bg → 강남 유지
+    await waitFor(() => expect(Location.getCurrentPositionAsync).toHaveBeenCalled());
+    expect(result.current.result?.station.name).toBe('강남');
   });
 });
 

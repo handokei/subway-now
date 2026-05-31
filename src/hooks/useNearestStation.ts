@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import * as Location from 'expo-location';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NearestStationResult, Station } from '../types/station';
+import { BG_LAST_STATION_KEY } from '../constants/storageKeys';
 import { findNearestStations } from '../utils/findNearestStation';
 import {
   isAccuracyAcceptable,
@@ -37,6 +39,29 @@ interface UseNearestStationReturn {
   // 마지막 신뢰 fix로 정지된 상태. 호출자는 "위치 확인 중" 상태로 표시한다.
   locationUncertain: boolean;
   refresh: () => Promise<void>;
+}
+
+// #711: BG task가 최근 평가한 nearest station. FG 복귀 직후 fresh fix 도착 전 임시 hydrate에 사용.
+// WhileInUse 사용자는 BG task 미동작 → key 없음(null) → graceful no-op.
+async function readBgLastStation(): Promise<NearestStationResult | null> {
+  try {
+    const raw = await AsyncStorage.getItem(BG_LAST_STATION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      typeof (parsed as { distanceKm?: unknown }).distanceKm === 'number' &&
+      (parsed as { station?: unknown }).station &&
+      typeof ((parsed as { station: { id?: unknown } }).station.id) === 'string'
+    ) {
+      const { station, distanceKm } = parsed as { station: Station; distanceKm: number };
+      return { station, distanceKm };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 function applyNearestResult(
@@ -272,6 +297,16 @@ export function useNearestStation(): UseNearestStationReturn {
         // 명시적으로 uncertain 상태로 전환해 UI가 "위치 확인 중"을 표시하게 하고,
         // refresh()로 즉시 fresh fix를 요청한다. fresh fix가 들어오면 applyLocation이 uncertain을 해제.
         setLocationUncertain(true);
+        // #711: BG task가 최근 평가한 nearest를 임시 hydrate. fresh fix(refresh→applyLocation) 도착 전
+        // UI 공백을 메운다. uncertain=true는 유지 → "위치 확인 중" 표시 + hydrate된 역 정보 노출.
+        // race: hydrate가 applyLocation 후에 resolve되면 신선 fix를 덮어쓸 수 있어,
+        // result가 비어있을 때만 채운다 (prev ?? bg).
+        // WhileInUse 사용자는 key 부재 → readBgLastStation null → no-op.
+        void readBgLastStation().then((bg) => {
+          if (bg) {
+            setResult((prev) => prev ?? bg);
+          }
+        });
         void refresh();
       } else if (state === 'background') {
         stopWatch();
