@@ -44,5 +44,10 @@ name: "smoke - 목적지 설정 & 초기화"
 # 초기화
 - tapOn:
     id: "destination-clear-button"
+# destination 박스 축소 직후 ScrollView contentOffset이 즉시 클램프되지 않아 viewport 밖 가능 — scroll로 보정.
+- scrollUntilVisible:
+    element:
+      text: "목적지 설정|Set destination"
+    timeout: 5000
 - assertVisible:
     text: "목적지 설정|Set destination"
