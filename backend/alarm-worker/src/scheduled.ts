@@ -12,6 +12,7 @@ import {
   type LiveActivityStats,
 } from './liveActivity';
 import { matchLine } from './lineAlias';
+import { getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import { listTrips, putTrip } from './trips';
 import type { ApnsEnv, BoardingLockMeta, Env, Trip, Waypoint } from './types';
@@ -214,6 +215,30 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
 }
 
 /**
+ * #705 — trip의 baseline/진행 상태를 progress KV에도 mirror해 POST /trips race에 무관하게 유지.
+ * trainCode가 없는 호출(lock 없음)은 no-op — progress KV는 trainCode가 stamp되어야 의미가 있다.
+ */
+async function mirrorProgress(
+  kv: KVNamespace,
+  trip: Trip,
+  shiftedCountDelta: number,
+): Promise<void> {
+  const trainCode = trip.boardingLock?.trainCode;
+  if (!trainCode) return;
+  const existing = await getProgress(kv, trip.token);
+  const prevShifted = existing?.trainCode === trainCode ? existing.shiftedCount : 0;
+  const next: TripProgress = {
+    trainCode,
+    shiftedCount: prevShifted + shiftedCountDelta,
+    lastTrackedArrivalEpoch: trip.lastTrackedArrivalEpoch,
+    lastLaPushEpoch: trip.lastLaPushEpoch,
+    consecutiveEtaMissing: trip.consecutiveEtaMissing,
+  };
+  const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
+  await putProgress(kv, trip.token, next, ttlSec);
+}
+
+/**
  * boardingLock trip 추적 (#585).
  *
  * 3단계로 분리: estimate → arrival 시 waypoint 진행(early return) → 아니면 reschedule push.
@@ -254,6 +279,7 @@ export async function runTrainCodeTracking(
     }
     trip.consecutiveEtaMissing = nextMissCount;
     await putTrip(env.TRIPS, trip);
+    await mirrorProgress(env.TRIPS, trip, 0);
     return;
   }
 
@@ -295,6 +321,9 @@ export async function runTrainCodeTracking(
   if (laDirty || hadMissCount) {
     await putTrip(env.TRIPS, trip);
   }
+  // #705 — reschedule push 성공/LA dirty/카운터 reset 어느 경로든 baseline이 바뀔 수 있으므로
+  // 항상 progress 미러링. 함수 자체는 lock 없는 trip에 no-op이라 추가 비용 미미.
+  await mirrorProgress(env.TRIPS, trip, 0);
 }
 
 /**
@@ -379,6 +408,9 @@ export async function advanceBoardingLockWaypoint(
     await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log);
   }
   await putTrip(env.TRIPS, trip);
+  // #705 — shift된 진행분을 progress KV에 +1 누적. 이후 POST /trips race가 trip.waypoints를
+  // 다시 wipe해도 progress 기반 slice로 복원된다.
+  await mirrorProgress(env.TRIPS, trip, 1);
 }
 
 /**

@@ -1045,3 +1045,124 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     expect(stored.lastLaPushEpoch).toBeUndefined();
   });
 });
+
+// #705 — scheduled.ts의 advance/baseline 변경이 progress KV에도 mirror되는지.
+// 시나리오는 LA 시나리오와 동일한 makeLockedLaTrip + makeLockedSeoul fixture로 압축.
+describe('#705 scheduled.ts progress KV mirroring', () => {
+  it('advanceBoardingLockWaypoint writes progress with shiftedCount=1 and trainCode stamp', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({
+        waypoints: [
+          { stationName: '중곡', line: '2', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+        boardingLock: {
+          trainCode: 'T',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW,
+          segmentStations: ['역삼', '중곡', '강남'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+        lastLaPushEpoch: NOW + 1000,
+      }),
+    );
+    const fetchImpl = makeOkFetch();
+    // 중곡 ARRIVED → advanceBoardingLockWaypoint 트리거
+    await runLaScheduled(kv, { seoul: makeLockedSeoul(0, 1), fetchImpl });
+    const progressRaw = await kv.get('progress:la-tok');
+    expect(progressRaw).not.toBeNull();
+    const progress = JSON.parse(progressRaw as string);
+    expect(progress.trainCode).toBe('T');
+    expect(progress.shiftedCount).toBe(1);
+  });
+
+  it('mirrorProgress accumulates shiftedCount across multiple advances', async () => {
+    const kv = new InMemoryKV();
+    // 이전 advance가 이미 progress에 있는 상태에서 다시 advance.
+    await kv.put(
+      'progress:la-tok',
+      JSON.stringify({ trainCode: 'T', shiftedCount: 1 }),
+    );
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({
+        waypoints: [
+          { stationName: '중곡', line: '2', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+        boardingLock: {
+          trainCode: 'T',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW,
+          segmentStations: ['역삼', '중곡', '강남'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+      }),
+    );
+    await runLaScheduled(kv, { seoul: makeLockedSeoul(0, 1), fetchImpl: makeOkFetch() });
+    const progress = JSON.parse((await kv.get('progress:la-tok')) as string);
+    expect(progress.shiftedCount).toBe(2); // 1 + 1
+  });
+
+  it('mirrorProgress resets shiftedCount when stored progress has different trainCode', async () => {
+    const kv = new InMemoryKV();
+    await kv.put(
+      'progress:la-tok',
+      JSON.stringify({ trainCode: 'OLD', shiftedCount: 5 }),
+    );
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({
+        waypoints: [
+          { stationName: '중곡', line: '2', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+        boardingLock: {
+          trainCode: 'T',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: NOW,
+          segmentStations: ['역삼', '중곡', '강남'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+      }),
+    );
+    await runLaScheduled(kv, { seoul: makeLockedSeoul(0, 1), fetchImpl: makeOkFetch() });
+    const progress = JSON.parse((await kv.get('progress:la-tok')) as string);
+    expect(progress.trainCode).toBe('T');
+    expect(progress.shiftedCount).toBe(1); // old(OLD) 폐기 + 새 advance 1
+  });
+
+  it('runTrainCodeTracking mirrors baseline (consecutiveEtaMissing) into progress on etaMissing', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
+    // arrivals 비어 있고 positions도 매칭 안 됨 → etaMissing 누적
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+    });
+    await runLaScheduled(kv, { seoul, fetchImpl: makeOkFetch() });
+    const progress = JSON.parse((await kv.get('progress:la-tok')) as string);
+    expect(progress.consecutiveEtaMissing).toBe(1);
+    expect(progress.shiftedCount).toBe(0);
+  });
+
+  it('cleanupTripWithLa removes progress entry alongside trip', async () => {
+    const kv = new InMemoryKV();
+    await kv.put('progress:la-tok', JSON.stringify({ trainCode: 'T', shiftedCount: 1 }));
+    // expired trip → cleanup 경로 진입
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({ expiresAt: NOW - 1 }),
+    );
+    await runLaScheduled(kv, { seoul: makeLockedSeoul(60), fetchImpl: makeOkFetch() });
+    expect(await kv.get('progress:la-tok')).toBeNull();
+  });
+});

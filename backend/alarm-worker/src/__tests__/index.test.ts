@@ -370,6 +370,206 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
   });
 });
 
+// #704 / #705 — isSameSession trainCode 기반 강화 + waypoint progress KV 분리.
+//
+// session 시나리오는 createdAt strict 비교를 폐기하고 trainCode가 일치하면 cold restart 후
+// createdAt이 변해도 advance를 유지해야 한다. trainCode가 어긋나면 새 세션으로 reset.
+// progress KV는 POST race (createdAt 동일성과 무관)에서도 shiftedCount/baseline을 보존한다.
+describe('POST /trips — #704 isSameSession (trainCode 기반 + drift window)', () => {
+  const CREATED = 1_700_000_000_000;
+  const LOCK = {
+    trainCode: 'T1',
+    line: '7',
+    subwayId: '1007',
+    selectedDepartureTime: CREATED,
+    segmentStations: ['중곡', '군자', '강남'],
+    expiresAt: CREATED + 60 * 60 * 1000,
+  };
+
+  function tripBody(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    return {
+      ...base(),
+      token: 'tok-704',
+      createdAt: CREATED,
+      boardingLock: LOCK,
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate' },
+        { stationName: '군자', line: '7', kind: 'intermediate' },
+        { stationName: '강남', line: '2', kind: 'destination' },
+      ],
+      ...overrides,
+    };
+  }
+
+  async function seedAndShift(env: Env, body = tripBody()): Promise<void> {
+    await post('/trips', body, env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-704')) as string);
+    stored.waypoints.shift();
+    await env.TRIPS.put('trip:tok-704', JSON.stringify(stored));
+  }
+
+  it('preserves advance when same trainCode + same createdAt', async () => {
+    const env = makeKvEnv();
+    await seedAndShift(env);
+    await post('/trips', tripBody(), env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-704')) as string);
+    expect(finalTrip.waypoints).toHaveLength(2);
+    expect(finalTrip.waypoints[0].stationName).toBe('군자');
+  });
+
+  it('preserves advance when same trainCode + createdAt drift 3s (still in window)', async () => {
+    const env = makeKvEnv();
+    await seedAndShift(env);
+    await post('/trips', tripBody({ createdAt: CREATED + 3_000 }), env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-704')) as string);
+    expect(finalTrip.waypoints).toHaveLength(2);
+    expect(finalTrip.waypoints[0].stationName).toBe('군자');
+  });
+
+  it('preserves advance when same trainCode + createdAt drift 100s (out of window)', async () => {
+    // trainCode 일치만으로도 same session — drift 무관.
+    const env = makeKvEnv();
+    await seedAndShift(env);
+    await post('/trips', tripBody({ createdAt: CREATED + 100_000 }), env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-704')) as string);
+    expect(finalTrip.waypoints).toHaveLength(2);
+  });
+
+  it('resets when trainCode differs (new train → new session)', async () => {
+    const env = makeKvEnv();
+    await seedAndShift(env);
+    const newLock = { ...LOCK, trainCode: 'T2' };
+    await post('/trips', tripBody({ boardingLock: newLock }), env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-704')) as string);
+    expect(finalTrip.waypoints).toHaveLength(3);
+    expect(finalTrip.waypoints[0].stationName).toBe('중곡');
+  });
+
+  it('drift window allows same session when boardingLock not yet set on either side', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody({ boardingLock: undefined }), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-704')) as string);
+    stored.lastEtaSeconds = 99;
+    await env.TRIPS.put('trip:tok-704', JSON.stringify(stored));
+    await post(
+      '/trips',
+      tripBody({ boardingLock: undefined, createdAt: CREATED + 2_000 }),
+      env,
+    );
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-704')) as string);
+    expect(finalTrip.lastEtaSeconds).toBe(99);
+  });
+
+  it('drift window rejects when boardingLock missing on both sides and drift exceeds window', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody({ boardingLock: undefined }), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-704')) as string);
+    stored.lastEtaSeconds = 99;
+    await env.TRIPS.put('trip:tok-704', JSON.stringify(stored));
+    await post(
+      '/trips',
+      tripBody({ boardingLock: undefined, createdAt: CREATED + 60_000 }),
+      env,
+    );
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-704')) as string);
+    expect(finalTrip.lastEtaSeconds).toBeUndefined();
+  });
+});
+
+describe('POST /trips — #705 progress KV preserves advance across POST race', () => {
+  const CREATED = 1_700_000_000_000;
+  const LOCK = {
+    trainCode: 'TP',
+    line: '7',
+    subwayId: '1007',
+    selectedDepartureTime: CREATED,
+    segmentStations: ['중곡', '군자', '강남'],
+    expiresAt: CREATED + 60 * 60 * 1000,
+  };
+  function tripBody(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    return {
+      ...base(),
+      token: 'tok-705',
+      createdAt: CREATED,
+      boardingLock: LOCK,
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate' },
+        { stationName: '군자', line: '7', kind: 'intermediate' },
+        { stationName: '강남', line: '2', kind: 'destination' },
+      ],
+      ...overrides,
+    };
+  }
+
+  async function seedProgress(env: Env, shiftedCount: number, trainCode = 'TP'): Promise<void> {
+    await env.TRIPS.put(
+      'progress:tok-705',
+      JSON.stringify({
+        trainCode,
+        shiftedCount,
+        lastTrackedArrivalEpoch: 12345,
+        lastLaPushEpoch: 67890,
+        consecutiveEtaMissing: 2,
+      }),
+    );
+  }
+
+  it('restores advance from progress KV even when trip object is freshly POSTed (race)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    // 시뮬레이션: scheduled.ts가 advance → progress 기록 (외부 race가 trip object를 reset해도 progress는 남아 있음)
+    await seedProgress(env, 1);
+    // race: 디바이스가 동일 trip을 cold restart로 다시 POST. trip.waypoints는 origin 3건.
+    await post('/trips', tripBody({ createdAt: CREATED + 50_000 }), env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-705')) as string);
+    // progress.shiftedCount=1 → 중곡(첫 waypoint)이 잘려나가야 함
+    expect(finalTrip.waypoints).toHaveLength(2);
+    expect(finalTrip.waypoints[0].stationName).toBe('군자');
+    expect(finalTrip.lastTrackedArrivalEpoch).toBe(12345);
+    expect(finalTrip.consecutiveEtaMissing).toBe(2);
+  });
+
+  it('drops progress when incoming trainCode differs (new train → reset)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    await seedProgress(env, 2);
+    // 다른 trainCode로 POST → progress 폐기 + 전체 waypoints 복원
+    const newLock = { ...LOCK, trainCode: 'OTHER' };
+    await post('/trips', tripBody({ boardingLock: newLock }), env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-705')) as string);
+    expect(finalTrip.waypoints).toHaveLength(3);
+    expect(await env.TRIPS.get('progress:tok-705')).toBeNull();
+  });
+
+  it('drops progress when incoming has no boardingLock', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    await seedProgress(env, 1);
+    await post('/trips', tripBody({ boardingLock: undefined }), env);
+    expect(await env.TRIPS.get('progress:tok-705')).toBeNull();
+  });
+
+  it('ignores corrupted progress entry (graceful)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    await env.TRIPS.put('progress:tok-705', 'not-json{');
+    await post('/trips', tripBody(), env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-705')) as string);
+    // progress null → progressApplies false → 일반 same-session 경로로 trip 복원
+    expect(finalTrip.waypoints).toHaveLength(3);
+  });
+
+  it('falls back to base waypoints when shiftedCount exceeds incoming.waypoints length', async () => {
+    // 보호: progress가 incoming보다 더 많이 잘릴 경우 빈 배열 회귀 방지 — base.waypoints 유지.
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    await seedProgress(env, 10);
+    await post('/trips', tripBody(), env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-705')) as string);
+    expect(finalTrip.waypoints.length).toBeGreaterThan(0);
+  });
+});
+
 describe('POST /telemetry/silent-push', () => {
   const validBody = {
     token: 'aabbccdd11223344',

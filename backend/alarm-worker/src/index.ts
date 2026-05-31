@@ -19,6 +19,7 @@ import {
   type LiveActivityStats,
 } from './liveActivity';
 import { ackPending } from './pendingPushes';
+import { deleteProgress, getProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
 import {
@@ -65,12 +66,26 @@ app.post('/trips', async (c) => {
   const incoming = validateTrip(body);
   if (!incoming) return c.json({ error: 'invalid_trip' }, 400);
 
-  // #578: 디바이스가 동일 trip을 반복 POST해도(예: GPS update마다 register) backend가 이미
-  // advance한 waypoints / lastFiredPhase / lastEtaSeconds를 덮어쓰지 않는다.
-  // 동일 세션 판별: 같은 token + 같은 createdAt. createdAt이 다르면 새 trip 세션이므로 전면 교체.
+  // #578/#704: 디바이스가 동일 trip을 반복 POST해도(예: GPS update마다 register, 또는 cold restart
+  // 후 같은 trip 재등록) backend가 이미 advance한 waypoints / 추적 baseline을 덮어쓰지 않는다.
+  //
+  // #704 same-session 판별 (createdAt strict 비교 폐기):
+  //   1) boardingLock.trainCode가 양쪽 모두 같으면 같은 세션 (cold restart 후 createdAt이 바뀌어도 OK)
+  //   2) trainCode가 한쪽이라도 없으면 createdAt drift 5s 이내일 때만 같은 세션 (lock 등록 전 단계)
+  //   3) 그 외 (다른 trainCode 또는 큰 drift) → 새 세션, 전면 교체
   const existing = await getTrip(c.env.TRIPS, incoming.token);
-  const isSameSession = existing !== null && existing.createdAt === incoming.createdAt;
-  const trip = isSameSession
+  const isSameSession = existing !== null && evaluateSameSession(existing, incoming);
+  // #705: progress KV 우선 참조. 같은 trainCode면 shift된 waypoints를 incoming에 적용.
+  // 다른 trainCode/none이면 progress 폐기.
+  const progress = existing !== null ? await getProgress(c.env.TRIPS, incoming.token) : null;
+  const progressApplies =
+    progress !== null &&
+    incoming.boardingLock !== undefined &&
+    progress.trainCode === incoming.boardingLock.trainCode;
+  if (progress !== null && !progressApplies) {
+    await deleteProgress(c.env.TRIPS, incoming.token);
+  }
+  const baseTrip = isSameSession
     ? {
         ...incoming,
         waypoints: existing.waypoints,
@@ -94,6 +109,12 @@ app.post('/trips', async (c) => {
         consecutiveEtaMissing: existing.consecutiveEtaMissing,
       }
     : incoming;
+
+  // #705 — progress KV가 우선. 같은 trainCode면 incoming.waypoints에서 shift된 만큼 잘라낸다.
+  // existing trip이 사라졌더라도(KV TTL 만료 등) progress가 살아 있으면 진행분을 그대로 복원.
+  const trip = progressApplies
+    ? applyProgress(baseTrip, incoming, progress)
+    : baseTrip;
 
   await putTrip(c.env.TRIPS, trip);
   return c.json({ ok: true, token: trip.token });
@@ -263,6 +284,52 @@ app.delete('/trips/:token', async (c) => {
   );
   return c.json({ ok: true, deleted: true });
 });
+
+/**
+ * #704: 동일 세션 판별 — strict createdAt 동일성에서 trainCode 기반 + drift 허용으로 완화.
+ *
+ * 같은 세션 조건 (OR):
+ *   1) 양쪽 boardingLock.trainCode가 일치 — cold restart로 createdAt이 바뀌어도 같은 열차면 진행 유지
+ *   2) trainCode 미사용 단계라면 createdAt drift가 SESSION_DRIFT_WINDOW_MS 이내
+ *
+ * trainCode가 다르면 명백히 다른 열차로 새 세션 → false. lock이 한쪽만 있어도(이행 단계)
+ * createdAt drift만으로 판정.
+ */
+export const SESSION_DRIFT_WINDOW_MS = 5_000;
+
+export function evaluateSameSession(existing: Trip, incoming: Trip): boolean {
+  const existingCode = existing.boardingLock?.trainCode;
+  const incomingCode = incoming.boardingLock?.trainCode;
+  if (existingCode && incomingCode) {
+    return existingCode === incomingCode;
+  }
+  return Math.abs(existing.createdAt - incoming.createdAt) <= SESSION_DRIFT_WINDOW_MS;
+}
+
+/**
+ * #705: progress KV에 기록된 shiftedCount/baseline을 incoming trip에 적용.
+ *
+ * - waypoints: `incoming.waypoints.slice(shiftedCount)`로 잘라 backend 진행분 반영
+ *   (전부 소진된 경우는 호출부가 isSameSession 분기로 trip.waypoints를 보존하므로
+ *    여기서 빈 배열로 깎이는 회귀가 발생하지 않음)
+ * - baseline (lastTrackedArrivalEpoch, lastLaPushEpoch, consecutiveEtaMissing):
+ *   progress가 더 최신 — POST race에 무관한 source of truth.
+ */
+export function applyProgress(
+  base: Trip,
+  incoming: Trip,
+  progress: TripProgress,
+): Trip {
+  const sliced = incoming.waypoints.slice(progress.shiftedCount);
+  const waypoints = sliced.length > 0 ? sliced : base.waypoints;
+  return {
+    ...base,
+    waypoints,
+    lastTrackedArrivalEpoch: progress.lastTrackedArrivalEpoch,
+    lastLaPushEpoch: progress.lastLaPushEpoch,
+    consecutiveEtaMissing: progress.consecutiveEtaMissing,
+  };
+}
 
 export function validateTrip(input: unknown): Trip | null {
   if (!input || typeof input !== 'object') return null;
