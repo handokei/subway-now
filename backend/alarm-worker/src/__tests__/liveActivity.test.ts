@@ -60,15 +60,46 @@ function makeTrip(overrides: Partial<Trip> = {}): Trip {
 
 const WAYPOINT: Waypoint = { stationName: '강남', line: '2', kind: 'destination' };
 
-describe('buildLiveActivityContentState', () => {
-  it('includes numeric/enum fields only (no text, no phase)', () => {
-    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3, NOW);
+describe('buildLiveActivityContentState (#613)', () => {
+  it('emits widget-aligned schema (stationName/lineName/lineColorHex/stopsRemaining/etaMinutes)', () => {
+    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3);
     expect(cs).toEqual({
-      etaSeconds: 90,
-      kind: 'destination',
+      stationName: '강남',
+      lineName: '2호선',
+      lineColorHex: '#009D3E',
       stopsRemaining: 3,
-      arrivalAtSec: Math.floor(NOW / 1000) + 90,
+      etaMinutes: 2, // round(90/60) = 2
     });
+  });
+
+  it('rounds etaSeconds to minutes and clamps negative to 0', () => {
+    expect(buildLiveActivityContentState(WAYPOINT, 29, 1).etaMinutes).toBe(0);
+    expect(buildLiveActivityContentState(WAYPOINT, 30, 1).etaMinutes).toBe(1);
+    expect(buildLiveActivityContentState(WAYPOINT, -5, 1).etaMinutes).toBe(0);
+  });
+
+  it('maps known line code to canonical name and color', () => {
+    const wp: Waypoint = { stationName: '서울', line: '1', kind: 'transfer' };
+    const cs = buildLiveActivityContentState(wp, 60, 2);
+    expect(cs.lineName).toBe('1호선');
+    expect(cs.lineColorHex).toBe('#0052A4');
+  });
+
+  it('falls back to raw line code and neutral color for unknown line', () => {
+    const wp: Waypoint = { stationName: '미지역', line: 'unknown', kind: 'intermediate' };
+    const cs = buildLiveActivityContentState(wp, 60, 2);
+    expect(cs.lineName).toBe('unknown');
+    expect(cs.lineColorHex).toBe('#888888');
+  });
+
+  it('does not include phase / etaSeconds / arrivalAtSec / alarmType (omitted to avoid forcing widget urgent UI)', () => {
+    const cs = buildLiveActivityContentState(WAYPOINT, 90, 3);
+    expect(cs).not.toHaveProperty('phase');
+    expect(cs).not.toHaveProperty('etaSeconds');
+    expect(cs).not.toHaveProperty('kind');
+    expect(cs).not.toHaveProperty('arrivalAtSec');
+    expect(cs).not.toHaveProperty('alarmType');
+    expect(cs).not.toHaveProperty('alarmStationName');
   });
 });
 

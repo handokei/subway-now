@@ -35,8 +35,9 @@ struct SubwayLiveActivityWidget: Widget {
                         } else if context.state.destinationName != nil {
                             ExpandedRouteView(state: context.state)
                         } else {
-                            Text(context.state.distanceText.map { "\(context.state.lineName) · \($0)" }
-                                 ?? "\(context.state.lineName) · \(context.state.distanceM)m")
+                            let distance = context.state.resolvedDistanceText
+                            Text(distance.map { "\(context.state.lineName) · \($0)" }
+                                 ?? context.state.lineName)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -157,7 +158,7 @@ private struct LockScreenView: View {
                     if state.destinationName != nil {
                         LockScreenRouteView(state: state)
                     } else {
-                        Text(state.distanceText ?? "\(state.distanceM)m")
+                        Text(state.resolvedDistanceText ?? "")
                             .font(.subheadline)
                             .foregroundColor(lineColor)
                     }
