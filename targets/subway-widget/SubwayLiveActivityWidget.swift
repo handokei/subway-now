@@ -27,7 +27,7 @@ struct SubwayLiveActivityWidget: Widget {
                             .fontWeight(.bold)
                             .foregroundColor(.white)
                         if let alarmType = context.state.alarmType,
-                           let alarmBody = context.state.alarmBody {
+                           let alarmBody = context.state.resolvedAlarmBody {
                             Text(alarmBody)
                                 .font(.caption)
                                 .fontWeight(.semibold)
@@ -35,8 +35,9 @@ struct SubwayLiveActivityWidget: Widget {
                         } else if context.state.destinationName != nil {
                             ExpandedRouteView(state: context.state)
                         } else {
-                            Text(context.state.distanceText.map { "\(context.state.lineName) · \($0)" }
-                                 ?? "\(context.state.lineName) · \(context.state.distanceM)m")
+                            let distance = context.state.resolvedDistanceText
+                            Text(distance.map { "\(context.state.lineName) · \($0)" }
+                                 ?? context.state.lineName)
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -83,7 +84,7 @@ private struct LockScreenView: View {
     }
 
     var urgentText: String {
-        return state.alarmBody ?? ""
+        return state.resolvedAlarmBody ?? ""
     }
 
     var body: some View {
@@ -117,7 +118,7 @@ private struct LockScreenView: View {
 
                 Spacer()
 
-                Text(state.alarmShortLabel ?? "")
+                Text(state.resolvedAlarmShortLabel ?? "")
                     .font(.title3)
                     .fontWeight(.black)
                     .foregroundColor(.white)
@@ -157,7 +158,7 @@ private struct LockScreenView: View {
                     if state.destinationName != nil {
                         LockScreenRouteView(state: state)
                     } else {
-                        Text(state.distanceText ?? "\(state.distanceM)m")
+                        Text(state.resolvedDistanceText ?? "")
                             .font(.subheadline)
                             .foregroundColor(lineColor)
                     }
@@ -172,7 +173,7 @@ private struct LockScreenView: View {
 
                 Spacer()
 
-                if let etaText = state.etaText {
+                if let etaText = state.resolvedEtaText {
                     VStack(spacing: 2) {
                         Text(etaText)
                             .font(.title3)
@@ -202,7 +203,7 @@ private struct LockScreenRouteView: View {
                 .fontWeight(.semibold)
                 .foregroundColor(.white)
 
-            if let subtext = state.routeSubtext {
+            if let subtext = state.resolvedRouteSubtext {
                 Text(subtext)
                     .font(.caption)
                     .foregroundColor(.secondary)

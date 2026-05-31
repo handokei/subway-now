@@ -766,11 +766,19 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     const body = parseLaBody(laCalls[0]);
     const contentState = body.aps['content-state'] as Record<string, unknown>;
     expect(body.aps.event).toBe('update');
-    expect(contentState.etaSeconds).toBe(120);
-    expect(contentState.kind).toBe('destination');
+    // #613: widget-aligned schema. etaSeconds → etaMinutes, kind → alarmType,
+    // stationName/lineName/lineColorHex은 widget non-optional 보장.
+    expect(contentState.stationName).toBe('강남');
+    expect(contentState.lineName).toBe('2호선');
+    expect(contentState.lineColorHex).toBe('#009D3E');
+    expect(contentState.alarmType).toBe('destination');
     expect(contentState.stopsRemaining).toBe(1);
-    // phase 필드 비포함
+    expect(contentState.etaMinutes).toBe(2); // round(120/60) = 2
+    // phase / etaSeconds / kind / arrivalAtSec은 제거됨
     expect(contentState.phase).toBeUndefined();
+    expect(contentState.etaSeconds).toBeUndefined();
+    expect(contentState.kind).toBeUndefined();
+    expect(contentState.arrivalAtSec).toBeUndefined();
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBe(NOW + 120_000);
   });
@@ -917,9 +925,11 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     const body = parseLaBody(laCalls[0]);
     const contentState = body.aps['content-state'] as Record<string, unknown>;
     expect(body.aps.event).toBe('update');
-    expect(contentState.kind).toBe('destination');
+    // #613: widget-aligned schema.
+    expect(contentState.stationName).toBe('강남');
+    expect(contentState.alarmType).toBe('destination');
     expect(contentState.stopsRemaining).toBe(1);
-    expect(contentState.etaSeconds).toBe(0);
+    expect(contentState.etaMinutes).toBe(0); // shift 시점은 ETA 0
     // shift 시 lastLaPushEpoch는 reset되어 다음 polling cycle의 첫 estimate가 임계 검사 없이 push되도록 보장.
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBeUndefined();

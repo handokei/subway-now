@@ -1,17 +1,21 @@
 /**
- * Live Activity push 발사 헬퍼 (#586 D).
+ * Live Activity push 발사 헬퍼 (#586 D / #613).
  *
  * scheduled.ts와 HTTP DELETE handler 양쪽이 공유하는 LA 발사/종료/cleanup 로직.
  * - update: 의미있는 변화 시점에 content-state 갱신
  * - end:    trip 종료(만료/도착/취소) 시 dismissal
  * - 410 BadDeviceToken은 토큰 자체 무효 — trip.activityPushToken을 비우고 state='ended'로 전이
  *
- * content-state는 숫자/enum/epoch만 채운다 — 텍스트(stationName 등)는 디바이스 측 JS init 값 유지
- * (PR E의 widget이 누락 시 raw 필드 폴백). 이는 APNs LA payload 사이즈 절감 + 텍스트 i18n 의존 회피.
+ * content-state schema (#613)는 widget의 `SubwayActivityAttributes.ContentState`에 1:1 정렬.
+ * ActivityKit의 update는 content-state 전체 교체이므로, widget의 non-optional 필드
+ * (stationName, lineName, lineColorHex)는 backend가 반드시 채워야 decode 실패가 없다.
+ * 그 외 텍스트 필드(alarmBody/etaText/distanceText 등)는 비워 두고, widget이 `resolvedXxx`
+ * 폴백 helper로 raw 필드(etaMinutes, distanceM, alarmType 등)에서 derive 한다.
  */
 
 import { sendLiveActivityUpdate, type LiveActivityContentState } from './apns';
 import { pickApnsHost } from './apnsHost';
+import { LINE_META } from './lineAlias';
 import { deleteTrip } from './trips';
 import type { ApnsEnv, Env, Trip, Waypoint } from './types';
 
@@ -37,25 +41,34 @@ export interface LiveActivityDeps {
 }
 
 /**
- * content-state 페이로드 빌더.
+ * content-state 페이로드 빌더 (#613).
  *
- * phase 필드는 보내지 않는다 — dev에서 phase 개념은 제거되었고(boardingLock 단일 경로),
- * widget(SubwayActivityAttributes)도 phase에 의존하지 않는다. 텍스트는 디바이스 측 init 값을
- * 유지하므로 숫자/enum/epoch만 채운다.
+ * widget `SubwayActivityAttributes.ContentState`와 키가 정렬되어야 한다 (ActivityKit이
+ * update 시 content-state 전체를 교체하므로, 키 불일치는 widget decode 실패 또는 UI 누락으로
+ * 직결). distanceM은 backend가 모르므로 widget에서 optional로 두고 여기서는 채우지 않는다.
+ *
+ * phase 필드는 보내지 않는다 — dev에서 phase 개념은 제거됨(boardingLock 단일 경로).
  *
  * @param stopsRemaining 다음 hop까지 남은 정거장 수 — 호출자가 계산해 전달(폴링 전/후 시점에 따라 다름).
+ * @param _nowMs 현재 시각(epoch ms) — 시그니처 호환용. 현재 schema는 사용하지 않음.
  */
 export function buildLiveActivityContentState(
   waypoint: Waypoint,
   etaSeconds: number,
   stopsRemaining: number,
-  nowMs: number,
+  _nowMs: number,
 ): LiveActivityContentState {
+  const meta = LINE_META[waypoint.line];
   return {
-    etaSeconds,
-    kind: waypoint.kind,
+    stationName: waypoint.stationName,
+    alarmStationName: waypoint.stationName,
+    // LINE_META는 13개 노선을 모두 커버하지만, stations.json에 없는 신규 line code가 들어와도
+    // widget의 non-optional 필드가 비지 않도록 raw line code를 fallback으로 사용한다.
+    lineName: meta?.canonical ?? waypoint.line,
+    lineColorHex: meta?.color ?? '#888888',
     stopsRemaining,
-    arrivalAtSec: Math.floor(nowMs / 1000) + etaSeconds,
+    etaMinutes: Math.max(0, Math.round(etaSeconds / 60)),
+    alarmType: waypoint.kind,
   };
 }
 
