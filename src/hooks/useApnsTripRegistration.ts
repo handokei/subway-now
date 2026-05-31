@@ -234,6 +234,10 @@ export function useApnsTripRegistration({
     // route 자체는 closure 안에서만 사용되므로 deps에 넣지 않는다.
     // boardingLock은 boardingLockSig(내용 기반)로 deps — 상위 컴포넌트가 새 object reference를
     // 내려도 같은 lock 내용이면 재등록 안 함. closure 안 actual boardingLock object 사용.
+    // #703: nextStationEtaSeconds / currentStation은 30s GPS·arrival polling으로 매번 바뀌므로
+    // deps에서 제외한다. 첫 register 후 backend cron(#704/#705)이 자체 progress KV로
+    // station-by-station advance를 영속화하므로 client 재등록이 불필요하다. latestInputsRef로
+    // token-refresh 경로는 여전히 최신값을 사용한다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeSig, destination?.id, nextStationEtaSeconds, currentStation?.id, boardingLockSig]);
+  }, [routeSig, destination?.id, boardingLockSig]);
 }
