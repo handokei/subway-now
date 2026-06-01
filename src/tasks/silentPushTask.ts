@@ -25,6 +25,7 @@ import { sendPushAck } from '../api/alarmBackend';
 import { createLogger } from '../utils/logger';
 import {
   logSilentPushReceived,
+  logSilentPushRescheduleReceived,
   logSilentPushFired,
   logSilentPushSkipped,
   type AlarmLogReason,
@@ -69,6 +70,23 @@ export interface SilentPushPayload {
 }
 
 /**
+ * Reschedule silent push payload (#725). 백엔드 `sendReschedulePush`가 일반 silent push와
+ * 다른 schema(`nextStation` / `newArrivalTimeEpoch` / `trainCode`)를 보낸다 — 별도 인터페이스로
+ * 모델링하고 `kind: 'reschedule'`을 discriminator로 사용해 union narrowing.
+ */
+export interface RescheduleSilentPushPayload {
+  kind: 'reschedule';
+  nextStation: string;
+  newArrivalTimeEpoch: number;
+  trainCode: string;
+  sentAt?: number;
+  pushId?: string;
+}
+
+/** extractPayload 결과 — standard silent push 또는 reschedule push. */
+export type ExtractedPayload = SilentPushPayload | RescheduleSilentPushPayload;
+
+/**
  * expo-notifications iOS의 `BackgroundEventTransformer.swift`가 APNs payload를
  * 다음과 같이 변환해 task 콜백에 전달한다:
  *   { data: { ...non-aps fields, dataString }, notification: <aps.alert | null>, aps: {...} }
@@ -89,11 +107,21 @@ interface NotificationBackgroundTaskData {
  *   - `taskData.data.data` (production: backend가 `data: { fields }` 발사 → Swift 변환 후 한 단계 더 nested)
  *   - `taskData.data` (backend가 flat payload 발사 시)
  *   - `taskData` (legacy / 일부 테스트 호환)
- * nextWaypoint가 string인 첫 후보를 반환.
+ *
+ * standard silent push는 `nextWaypoint` 필드로 식별, reschedule push(#725)는 `kind: 'reschedule'`
+ * 로 식별 (nextStation을 쓰므로 nextWaypoint가 없다).
  */
 function asPlainObject(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function isStandardCandidate(rec: Record<string, unknown>): boolean {
+  return typeof rec.nextWaypoint === 'string' && (rec.nextWaypoint as string).length > 0;
+}
+
+function isRescheduleCandidate(rec: Record<string, unknown>): boolean {
+  return rec.kind === 'reschedule';
 }
 
 function findFieldsLayer(
@@ -111,7 +139,7 @@ function findFieldsLayer(
     candidates.push(root);
   }
   for (const rec of candidates) {
-    if (typeof rec.nextWaypoint === 'string' && rec.nextWaypoint.length > 0) return rec;
+    if (isStandardCandidate(rec) || isRescheduleCandidate(rec)) return rec;
   }
   return null;
 }
@@ -125,10 +153,19 @@ function findFieldsLayer(
  */
 export function extractPayload(
   taskData: NotificationBackgroundTaskData['data'],
-): SilentPushPayload | null {
+): ExtractedPayload | null {
   const obj = findFieldsLayer(taskData);
   if (!obj) return null;
-  // findFieldsLayer guarantees nextWaypoint is non-empty string.
+  // reschedule 분기 (#725) — schema가 standard와 다름. discriminator는 kind === 'reschedule'.
+  if (obj.kind === 'reschedule') return extractReschedulePayload(obj);
+  return extractStandardPayload(obj);
+}
+
+function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload | null {
+  // extractPayload가 obj.kind === 'reschedule' 분기를 먼저 처리하므로 여기 도달했다는 것은
+  // standard 경로. findFieldsLayer는 isStandardCandidate(nextWaypoint non-empty) 또는
+  // isRescheduleCandidate(kind='reschedule') 중 하나로 통과시키지만, kind='reschedule'
+  // 케이스는 위 분기에서 잡혔으므로 잔여 케이스는 isStandardCandidate가 보증한 것 — nextWaypoint 보장.
   const { nextWaypoint, etaSeconds, phase, kind, sentAt, pushId } = obj as {
     nextWaypoint: string;
   } & Record<string, unknown>;
@@ -136,17 +173,39 @@ export function extractPayload(
   if (phase !== 'early' && phase !== 'imminent') return null;
   const validKind =
     kind === 'transfer' || kind === 'destination' || kind === 'intermediate' ? kind : undefined;
-  const validSentAt =
-    typeof sentAt === 'number' && Number.isFinite(sentAt) ? sentAt : undefined;
-  const validPushId = typeof pushId === 'string' && pushId.length > 0 ? pushId : undefined;
   return {
     nextWaypoint,
     etaSeconds,
     phase,
     kind: validKind,
-    sentAt: validSentAt,
-    pushId: validPushId,
+    sentAt: validSentAt(sentAt),
+    pushId: validPushId(pushId),
   };
+}
+
+function extractReschedulePayload(
+  obj: Record<string, unknown>,
+): RescheduleSilentPushPayload | null {
+  const { nextStation, newArrivalTimeEpoch, trainCode, sentAt, pushId } = obj;
+  if (typeof nextStation !== 'string' || nextStation.length === 0) return null;
+  if (typeof newArrivalTimeEpoch !== 'number' || !Number.isFinite(newArrivalTimeEpoch)) return null;
+  if (typeof trainCode !== 'string' || trainCode.length === 0) return null;
+  return {
+    kind: 'reschedule',
+    nextStation,
+    newArrivalTimeEpoch,
+    trainCode,
+    sentAt: validSentAt(sentAt),
+    pushId: validPushId(pushId),
+  };
+}
+
+function validSentAt(sentAt: unknown): number | undefined {
+  return typeof sentAt === 'number' && Number.isFinite(sentAt) ? sentAt : undefined;
+}
+
+function validPushId(pushId: unknown): string | undefined {
+  return typeof pushId === 'string' && pushId.length > 0 ? pushId : undefined;
 }
 
 /**
@@ -219,6 +278,32 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     return;
   }
   const receivedAt = Date.now();
+  const apnsToken = await loadApnsToken();
+
+  // reschedule 분기 (#725). 백엔드는 사전 예약 알람(#584) 시각을 정정하려고 이 push를 보낸다.
+  // - 수신 신호는 받았다 알리고(`lastReceivedAt` 갱신)
+  // - ack로 P2c alert fallback을 차단한다.
+  //
+  // ackOutcome 3번째 인자는 'fired'를 보내지만, 사용자에게 알림이 실제 발사된 것은 아니다 —
+  // 백엔드 ackPending(`pendingPushes.ts`)이 outcome을 통계로 쓰지 않고 KV entry 삭제 신호로만
+  // 사용하므로 안전 (`outcome=fired` = "이 push는 처리 완료, alert fallback 발사 마라").
+  // reason 'reschedule-received'로 의도가 디버그 로그에 보존된다.
+  //
+  // 사전 예약 자체의 시각 조정은 별도 follow-up에서 다룬다 — 본 PR은 schema mismatch로 drop되던
+  // 수신을 회복시키는 것이 범위.
+  if (payload.kind === 'reschedule') {
+    logger.info(
+      `reschedule received: trainCode=${payload.trainCode} nextStation=${payload.nextStation} newEpoch=${payload.newArrivalTimeEpoch} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
+    );
+    logSilentPushRescheduleReceived({
+      nextStation: payload.nextStation,
+      sentAt: payload.sentAt,
+      receivedAt,
+    });
+    ackOutcome(payload.pushId, apnsToken, 'fired', 'reschedule-received');
+    return;
+  }
+
   logger.info(
     `received: kind=${payload.kind ?? 'unknown'} phase=${payload.phase} station=${payload.nextWaypoint} eta=${payload.etaSeconds} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
   );
@@ -231,8 +316,6 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     sentAt: payload.sentAt,
     receivedAt,
   });
-
-  const apnsToken = await loadApnsToken();
 
   // kind 미상은 발사 불가 — 알림 본문/dedup 키 결정 불가. 구 백엔드 호환은 received 로그에만.
   if (!payload.kind) {

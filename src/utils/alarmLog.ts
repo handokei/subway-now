@@ -288,6 +288,31 @@ export function logSilentPushReceived(input: {
 }
 
 /**
+ * Reschedule silent push 수신 1건 적재 (#725).
+ *
+ * 일반 silent push와 source가 같지만(`silent-push-received` — DebugModal `lastReceivedAt`이
+ * 자동 갱신되도록), kind/phaseId는 reschedule 의미상 미적용. 추적은 stationName(=nextStation)과
+ * sentAt/receivedAt 지연 측정으로 충분.
+ *
+ * 별도 helper로 분리한 이유: AlarmLogKind/AlarmPhaseId 타입에 'reschedule'을 끼워 넣으면
+ * 호출자(다른 logSilentPush*)에 cascade 영향이 발생. 분리하면 reschedule만 isolated 경로.
+ */
+export function logSilentPushRescheduleReceived(input: {
+  nextStation: string;
+  sentAt: number | undefined;
+  receivedAt: number;
+}): void {
+  void appendAlarmLog({
+    ts: input.receivedAt,
+    source: 'silent-push-received',
+    outcome: 'received',
+    stationName: input.nextStation,
+    sentAt: input.sentAt,
+    receivedAt: input.receivedAt,
+  });
+}
+
+/**
  * silent push가 위치 게이트 통과 → 즉시 발사한 1건 (#478 PR 1-2).
  */
 export function logSilentPushFired(input: {
