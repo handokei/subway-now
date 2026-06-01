@@ -82,43 +82,38 @@ describe('useFusedNearestStation — #727 fusion downgrade', () => {
     });
   });
 
-  it('position-train + speed=0 + accuracy 정상이면 gps-only로 강등', () => {
+  // 강등 동작은 confidence/source 한 쌍 결과만 본다. result 검증(gangnam으로 복원)은 첫 케이스만.
+  it.each([
+    ['speed=0 + accuracy 정상 → 강등', 0, 50, null, 'gps-only', 'gps'],
+    ['speed=0.1 + accuracy 정상 + boarding-lock → 강등', 0.1, 30, 'T-1', 'gps-only', 'gps'],
+    ['speed=2 이동 중 → 유지', 2, 50, null, 'position-train', 'position-train'],
+    ['speed=0 + accuracy>100m 지하 noise → 유지', 0, 1500, null, 'position-train', 'position-train'],
+  ])(
+    '%s',
+    (
+      _label,
+      speed: number,
+      accuracy: number,
+      lockedTrainCode: string | null,
+      expectedConfidence: string,
+      expectedSource: string,
+    ) => {
+      mockUseNearest.mockReturnValue(gpsBase(speed, accuracy));
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, lockedTrainCode),
+      );
+
+      expect(result.current.confidence).toBe(expectedConfidence);
+      expect(result.current.source).toBe(expectedSource);
+    },
+  );
+
+  it('강등 시 result도 GPS 원본(강남)으로 복원', () => {
     mockUseNearest.mockReturnValue(gpsBase(0, 50));
 
     const { result } = renderHook(() => useFusedNearestStation());
 
-    expect(result.current.confidence).toBe('gps-only');
-    expect(result.current.source).toBe('gps');
-    // result도 GPS 원본(강남)으로 되돌아감 — fusion 채택했던 chungmuro 폐기
     expect(result.current.result?.station.name).toBe(MOCK_STATIONS.gangnam.name);
-  });
-
-  it('boarding-lock + speed=0.1 + accuracy 정상이면 gps-only로 강등', () => {
-    mockUseNearest.mockReturnValue(gpsBase(0.1, 30));
-
-    const { result } = renderHook(() =>
-      useFusedNearestStation(undefined, undefined, undefined, 'T-1'),
-    );
-
-    expect(result.current.confidence).toBe('gps-only');
-    expect(result.current.source).toBe('gps');
-  });
-
-  it('position-train + speed=2.0(이동 중)이면 강등 안 됨', () => {
-    mockUseNearest.mockReturnValue(gpsBase(2, 50));
-
-    const { result } = renderHook(() => useFusedNearestStation());
-
-    expect(result.current.confidence).toBe('position-train');
-    expect(result.current.source).toBe('position-train');
-  });
-
-  it('position-train + speed=0 + accuracy>100m(지하 noise)이면 강등 안 됨', () => {
-    mockUseNearest.mockReturnValue(gpsBase(0, 1500));
-
-    const { result } = renderHook(() => useFusedNearestStation());
-
-    expect(result.current.confidence).toBe('position-train');
-    expect(result.current.source).toBe('position-train');
   });
 });
