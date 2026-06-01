@@ -114,11 +114,12 @@ describe('movementGate', () => {
   });
 
   describe('MOVEMENT_TO_ALARM_LOG_REASON', () => {
-    it('4개 MovementReason 모두 매핑', () => {
+    it('5개 MovementReason 모두 매핑', () => {
       expect(MOVEMENT_TO_ALARM_LOG_REASON['no-location']).toBe('movement-no-location');
       expect(MOVEMENT_TO_ALARM_LOG_REASON['stale-timestamp']).toBe('movement-stale-timestamp');
       expect(MOVEMENT_TO_ALARM_LOG_REASON['low-accuracy']).toBe('movement-low-accuracy');
       expect(MOVEMENT_TO_ALARM_LOG_REASON['static-speed']).toBe('movement-static-speed');
+      expect(MOVEMENT_TO_ALARM_LOG_REASON['static-position']).toBe('movement-static-position');
     });
   });
 
@@ -139,7 +140,7 @@ describe('movementGate', () => {
       expect(isStaticSpeedSignal(10, 50)).toBe(false);
     });
 
-    it('null/undefined면 false (보수적 — 신호 부재 시 fusion 유지)', () => {
+    it('speed=null + positionStability 없으면 false (보수적 — 신호 부재 시 fusion 유지)', () => {
       expect(isStaticSpeedSignal(null)).toBe(false);
       expect(isStaticSpeedSignal(undefined)).toBe(false);
     });
@@ -152,13 +153,38 @@ describe('movementGate', () => {
     it('accuracy 경계값(MAX_ACCURACY_M)이면 speed=0이어도 true (지하 추정 X)', () => {
       expect(isStaticSpeedSignal(0, MAX_ACCURACY_M)).toBe(true);
     });
+
+    it('#733 — speed=null + positionStability=static이면 true (fallback)', () => {
+      expect(isStaticSpeedSignal(null, 50, 'static')).toBe(true);
+      expect(isStaticSpeedSignal(undefined, 50, 'static')).toBe(true);
+    });
+
+    it('#733 — speed=null + positionStability=moving이면 false', () => {
+      expect(isStaticSpeedSignal(null, 50, 'moving')).toBe(false);
+    });
+
+    it('#733 — speed=null + positionStability=unknown이면 false (보수적)', () => {
+      expect(isStaticSpeedSignal(null, 50, 'unknown')).toBe(false);
+    });
+
+    it('#733 — speed 측정값이 있으면 positionStability 무시 (speed가 우선)', () => {
+      // speed=2 → moving이지만 positionStability=static
+      expect(isStaticSpeedSignal(2, 50, 'static')).toBe(false);
+      // speed=0 → static + positionStability=moving
+      expect(isStaticSpeedSignal(0, 50, 'moving')).toBe(true);
+    });
+
+    it('#733 — accuracy noise는 positionStability fallback에도 적용', () => {
+      expect(isStaticSpeedSignal(null, MAX_ACCURACY_M + 1, 'static')).toBe(false);
+    });
   });
 
   describe('isFusionDowngradeTarget', () => {
-    it('fusion 승격 라벨 3종 모두 true', () => {
+    it('fusion 승격 라벨 4종 모두 true (#733: arrival-arriving 추가)', () => {
       expect(isFusionDowngradeTarget('position-train')).toBe(true);
       expect(isFusionDowngradeTarget('boarding-lock')).toBe(true);
       expect(isFusionDowngradeTarget('boarding-lock-interp')).toBe(true);
+      expect(isFusionDowngradeTarget('arrival-arriving')).toBe(true);
     });
 
     it('그 외 라벨은 false', () => {
@@ -186,6 +212,27 @@ describe('movementGate', () => {
       ).toBe(true);
     });
 
+    it('#733 — arrival-arriving + 정적 신호면 true (snapshot 2 회귀 fix)', () => {
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'arrival-arriving',
+          speedMps: 0,
+          accuracyM: 50,
+        }),
+      ).toBe(true);
+    });
+
+    it('#733 — arrival-arriving + speed=null + positionStability=static이면 true', () => {
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'arrival-arriving',
+          speedMps: null,
+          accuracyM: 50,
+          positionStability: 'static',
+        }),
+      ).toBe(true);
+    });
+
     it('승격 라벨이지만 정적 신호 아니면 false', () => {
       expect(
         shouldDowngradeFusion({ confidence: 'position-train', speedMps: 5, accuracyM: 50 }),
@@ -203,6 +250,59 @@ describe('movementGate', () => {
       expect(
         shouldDowngradeFusion({ confidence: 'arrival-confirmed', speedMps: 0, accuracyM: 50 }),
       ).toBe(false);
+    });
+
+    it('#733 — 승격 라벨 + speed=null + positionStability 없으면 false (보수)', () => {
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'position-train',
+          speedMps: null,
+          accuracyM: 50,
+        }),
+      ).toBe(false);
+    });
+
+    it('#733 — 승격 라벨 + speed=null + positionStability=moving이면 false', () => {
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'position-train',
+          speedMps: null,
+          accuracyM: 50,
+          positionStability: 'moving',
+        }),
+      ).toBe(false);
+    });
+  });
+
+  describe('#733 — evaluateMovement positionStability fallback', () => {
+    it('speed 없음 + positionStability=static이면 reliable=false reason=static-position', () => {
+      const m = evaluateMovement({ accuracyM: 50 }, undefined, 'static');
+      expect(m.reliable).toBe(false);
+      expect(m.reason).toBe('static-position');
+    });
+
+    it('speed 없음 + positionStability=moving이면 reliable=true', () => {
+      const m = evaluateMovement({ accuracyM: 50 }, undefined, 'moving');
+      expect(m.reliable).toBe(true);
+    });
+
+    it('speed 없음 + positionStability=unknown이면 reliable=true (보수)', () => {
+      const m = evaluateMovement({ accuracyM: 50 }, undefined, 'unknown');
+      expect(m.reliable).toBe(true);
+    });
+
+    it('speed 없음 + positionStability 미전달이면 reliable=true (기존 동작 유지)', () => {
+      const m = evaluateMovement({ accuracyM: 50 });
+      expect(m.reliable).toBe(true);
+    });
+
+    it('speed 측정값 있으면 positionStability 무시 — speed가 우선', () => {
+      // speed 정적 → static-speed (positionStability=moving이어도)
+      const m1 = evaluateMovement({ speedMps: 0, accuracyM: 50 }, undefined, 'moving');
+      expect(m1.reason).toBe('static-speed');
+      // speed 이동 → reliable (positionStability=static이어도)
+      const m2 = evaluateMovement({ speedMps: 5, accuracyM: 50 }, undefined, 'static');
+      expect(m2.reliable).toBe(true);
     });
   });
 });
