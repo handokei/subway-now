@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { AppState, type AppStateStatus } from 'react-native';
 import { ALARM_LOG_KEY } from '../constants/storageKeys';
 import { createLogger } from './logger';
 import type { AlarmEvent } from './stationAlarm';
@@ -11,6 +12,19 @@ import type { Station } from '../types/station';
 //
 // Buffer 크기는 ALARM_LOG_BUFFER_SIZE 상수로 분리 — 늘리려면 한 곳만 수정.
 export const ALARM_LOG_BUFFER_SIZE = 200;
+
+// #735 — appendAlarmLog 배치 정책.
+// 기존: 매 호출마다 AsyncStorage RMW(get → parse → push → stringify → set) → JS thread 점유 (10-50ms × N).
+// 변경: in-memory pending에 push 후 debounce + max-delay로 1회 RMW 일괄 처리.
+//
+// FLUSH_DEBOUNCE_MS: 마지막 push로부터 이 시간 동안 추가 push가 없으면 flush.
+// FLUSH_MAX_DELAY_MS: 가장 오래된 pending이 이 시간에 도달하면 즉시 flush — 정상 종료가 아닌
+//   경로(앱 강제종료, BG task 만료)에서 손실 cap.
+//
+// AppState 'background'/'inactive' 진입 시 즉시 flush — OS suspend 전 적재 보장.
+// silentPushTask는 종료 직전 명시적으로 await flushAlarmLog() 호출 (BG task 시간 제약).
+export const FLUSH_DEBOUNCE_MS = 1_000;
+export const FLUSH_MAX_DELAY_MS = 5_000;
 
 // 'fg' / 'bg'는 v1 (FG GPS 평가 / BG location task gate). 'fg-evaluated' / 'bg-scheduled'는
 // v2 (#372)로 의미 명확화. 두 값 모두 union에 유지해 과거 저장 데이터를 손실 없이 읽는다.
@@ -444,11 +458,92 @@ export function logSuppressedMovement(input: {
 
 // ── CRUD ──
 
-export async function appendAlarmLog(entry: AlarmLogEntry): Promise<void> {
+// 모듈 스코프 mutable state (#735 batched write).
+// 단일 프로세스 단일 인스턴스 가정 — React Native 앱 1 process.
+//
+// 동시성: JS는 single-thread지만 *await 사이*에 다른 microtask가 끼어든다 → RMW race 가능.
+// flushInFlight Promise mutex로 두 개 이상의 flush가 동시에 getItem/setItem 사이클을 돌지 않도록
+// 직렬화한다. 단순 single-thread 가정만으론 lost-update가 발생한다 (review #1 발견).
+let pendingEntries: AlarmLogEntry[] = [];
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+let oldestPendingTs: number | null = null;
+let flushInFlight: Promise<void> | null = null;
+
+/**
+ * 알람 로그 1건 적재 (#735 — 동기 in-memory push).
+ *
+ * 기존 RMW 동작에서 변경: 즉시 storage write 안 함. 메모리 pending에 push하고 debounce/max-delay
+ * 정책에 따라 일괄 flush. UI(DebugModal)는 getAlarmLog()가 pending 병합해 반환하므로 즉시 가시.
+ *
+ * 호출자는 await 불필요 (void). 손실 cap을 더 줄여야 하는 critical 경로(silent push BG task 종료
+ * 직전 등)에서는 await flushAlarmLog() 명시 호출.
+ */
+export function appendAlarmLog(entry: AlarmLogEntry): void {
+  pendingEntries.push(entry);
+  if (oldestPendingTs == null) oldestPendingTs = Date.now();
+  scheduleFlush();
+}
+
+function scheduleFlush(): void {
+  // 가장 오래된 pending이 MAX_DELAY 도달했으면 즉시 flush.
+  // 기존 flushTimer는 doFlushOnce에서 클리어 — 본 위치에서 중복 클리어 불필요.
+  if (oldestPendingTs != null && Date.now() - oldestPendingTs >= FLUSH_MAX_DELAY_MS) {
+    void flushAlarmLog();
+    return;
+  }
+  if (flushTimer != null) clearTimeout(flushTimer);
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    void flushAlarmLog();
+  }, FLUSH_DEBOUNCE_MS);
+}
+
+/**
+ * 메모리 pending을 storage에 1회 RMW로 일괄 적재 (#735).
+ *
+ * 호출 시점:
+ *   1) scheduleFlush의 debounce timer 만료
+ *   2) MAX_DELAY 즉시 flush
+ *   3) AppState 'background'/'inactive' 진입 (모듈 스코프 listener)
+ *   4) silentPushTask 종료 직전 명시 호출 (BG task 시간 만료 직전 손실 방지)
+ *   5) 테스트
+ *
+ * 동시성 안전 (review P1 fix):
+ *   - 첫 호출자만 doFlushOnce()를 실제 실행하고, 그 promise를 flushInFlight에 저장.
+ *   - 중첩 호출자(다른 트리거가 동시에 flush 요청)는 같은 flushInFlight를 await한 뒤,
+ *     자신이 추가한 pending이 남아있으면 재귀 호출로 다음 RMW 사이클을 보장.
+ *   - JS single-thread는 동기 구간만 보호 — await 사이엔 다른 microtask가 끼어들어
+ *     두 doFlushOnce가 같은 storage 상태를 보고 서로의 write를 덮는 lost-update가 발생.
+ *     본 mutex 패턴이 RMW를 직렬화.
+ */
+export async function flushAlarmLog(): Promise<void> {
+  if (flushInFlight) {
+    await flushInFlight;
+    // 직전 flush 중에 우리(다른 caller)가 추가한 entry가 남아있으면 다음 cycle로 적재 보장.
+    if (pendingEntries.length > 0) await flushAlarmLog();
+    return;
+  }
+  if (pendingEntries.length === 0) return;
+  flushInFlight = doFlushOnce();
+  try {
+    await flushInFlight;
+  } finally {
+    flushInFlight = null;
+  }
+}
+
+async function doFlushOnce(): Promise<void> {
+  const toFlush = pendingEntries;
+  pendingEntries = [];
+  oldestPendingTs = null;
+  if (flushTimer != null) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
   try {
     const raw = await AsyncStorage.getItem(ALARM_LOG_KEY);
     const existing: AlarmLogEntry[] = raw ? safeParse(raw) : [];
-    const next = [...existing, entry];
+    const next = [...existing, ...toFlush];
     // FIFO: 가장 오래된 것부터 drop
     const trimmed = next.length > ALARM_LOG_BUFFER_SIZE
       ? next.slice(next.length - ALARM_LOG_BUFFER_SIZE)
@@ -462,19 +557,49 @@ export async function appendAlarmLog(entry: AlarmLogEntry): Promise<void> {
 export async function getAlarmLog(): Promise<AlarmLogEntry[]> {
   try {
     const raw = await AsyncStorage.getItem(ALARM_LOG_KEY);
-    return raw ? safeParse(raw) : [];
+    const persisted: AlarmLogEntry[] = raw ? safeParse(raw) : [];
+    // #735 — pending 병합. UI는 최신 상태를 즉시 봐야 한다(flush 전 적재 entry 포함).
+    // pending은 시간순으로 push되므로 persisted 뒤에 concat.
+    if (pendingEntries.length === 0) return persisted;
+    const merged = [...persisted, ...pendingEntries];
+    return merged.length > ALARM_LOG_BUFFER_SIZE
+      ? merged.slice(merged.length - ALARM_LOG_BUFFER_SIZE)
+      : merged;
   } catch (e) {
     logger.error('알람 로그 읽기 실패:', e);
-    return [];
+    // storage 실패해도 pending은 노출 — 진단 가시성 유지.
+    return [...pendingEntries];
   }
 }
 
 export async function clearAlarmLog(): Promise<void> {
+  // #735 — pending도 초기화. flush race로 storage 비운 후 pending이 다시 적재되지 않도록.
+  pendingEntries = [];
+  oldestPendingTs = null;
+  if (flushTimer != null) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
   try {
     await AsyncStorage.removeItem(ALARM_LOG_KEY);
   } catch (e) {
     logger.error('알람 로그 삭제 실패:', e);
   }
+}
+
+/**
+ * 테스트 전용 — 모듈 스코프 상태 초기화 (#735).
+ * pendingEntries / flushTimer / oldestPendingTs를 reset해 테스트 간 격리.
+ * production 호출 금지.
+ */
+export function resetAlarmLogForTest(): void {
+  pendingEntries = [];
+  oldestPendingTs = null;
+  if (flushTimer != null) {
+    clearTimeout(flushTimer);
+    flushTimer = null;
+  }
+  flushInFlight = null;
 }
 
 function safeParse(raw: string): AlarmLogEntry[] {
@@ -489,4 +614,23 @@ function safeParse(raw: string): AlarmLogEntry[] {
     logger.error('알람 로그 JSON 손상 — 빈 로그로 초기화');
     return [];
   }
+}
+
+// #735 — AppState 'background'/'inactive' 진입 시 자동 flush. OS suspend 전 pending 손실 방지.
+// 모듈 로드 시 1회 등록 (singleton). subscription.remove는 production에서 불필요 (앱 lifetime 동일).
+function handleAppStateChange(state: AppStateStatus): void {
+  if (state === 'background' || state === 'inactive') {
+    void flushAlarmLog();
+  }
+}
+AppState.addEventListener('change', handleAppStateChange);
+
+/**
+ * 테스트 전용 — AppState 전환 시뮬레이트 (#735).
+ * 모듈 스코프 listener 등록은 jest.mock 호이스팅과 race 발생하기 쉬워, 캡처된 listener를
+ * 외부에서 호출하기 어렵다. 테스트는 본 helper로 handleAppStateChange를 직접 트리거.
+ * production 호출 금지.
+ */
+export function _simulateAppStateForTest(state: AppStateStatus): void {
+  handleAppStateChange(state);
 }
