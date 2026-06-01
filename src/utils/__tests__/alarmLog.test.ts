@@ -13,6 +13,7 @@ import {
   logSuppressedDedupStation,
   logSuppressedGate,
   logSilentPushReceived,
+  logSilentPushRescheduleReceived,
   logSilentPushFired,
   logSilentPushSkipped,
   logAlertFallbackFired,
@@ -459,6 +460,43 @@ describe('alarmLog', () => {
       expect(saved[0].kind).toBeUndefined();
       expect(saved[0].sentAt).toBeUndefined();
       expect(saved[0].receivedAt).toBe(1_700_000_001_000);
+    });
+
+    // #725 — reschedule silent push 수신 적재. source는 동일(silent-push-received)이라
+    // DebugModal `lastReceivedAt`이 자동 갱신. kind/phaseId는 reschedule 의미상 미적용.
+    it('logSilentPushRescheduleReceived: source=silent-push-received, kind/phaseId 미포함, sentAt/receivedAt 적재 (#725)', async () => {
+      logSilentPushRescheduleReceived({
+        nextStation: '사가정',
+        sentAt: 1_780_000_000_000,
+        receivedAt: 1_780_000_001_500,
+      });
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        ts: 1_780_000_001_500,
+        source: 'silent-push-received',
+        outcome: 'received',
+        stationName: '사가정',
+        sentAt: 1_780_000_000_000,
+        receivedAt: 1_780_000_001_500,
+      });
+      expect(saved[0].kind).toBeUndefined();
+      expect(saved[0].phaseId).toBeUndefined();
+    });
+
+    it('logSilentPushRescheduleReceived: sentAt 누락이면 undefined로 적재 (#725)', async () => {
+      logSilentPushRescheduleReceived({
+        nextStation: '사가정',
+        sentAt: undefined,
+        receivedAt: 1_780_000_001_500,
+      });
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0].sentAt).toBeUndefined();
     });
 
     it('logSilentPushFired: 게이트 통과 후 발사 1건 적재 (#478 PR 1-2)', async () => {

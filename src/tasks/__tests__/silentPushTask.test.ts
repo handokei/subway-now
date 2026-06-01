@@ -19,10 +19,13 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 const mockLogSilentPushReceived = jest.fn();
+const mockLogSilentPushRescheduleReceived = jest.fn();
 const mockLogSilentPushFired = jest.fn();
 const mockLogSilentPushSkipped = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
+  logSilentPushRescheduleReceived: (...args: unknown[]) =>
+    mockLogSilentPushRescheduleReceived(...args),
   logSilentPushFired: (...args: unknown[]) => mockLogSilentPushFired(...args),
   logSilentPushSkipped: (...args: unknown[]) => mockLogSilentPushSkipped(...args),
 }));
@@ -284,6 +287,103 @@ describe('silentPushTask', () => {
           bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', pushId: 42 }),
         ),
       ).toMatchObject({ pushId: undefined });
+    });
+
+    // #725 — reschedule schema는 standard와 다르므로 별도 분기 검증.
+    describe('reschedule kind (#725)', () => {
+      it('정상 reschedule payload → RescheduleSilentPushPayload', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'reschedule',
+              nextStation: '사가정',
+              newArrivalTimeEpoch: 1_780_000_000_000,
+              trainCode: '7610',
+              sentAt: 1_780_000_000_000,
+              pushId: 'uuid-rs',
+            }),
+          ),
+        ).toEqual({
+          kind: 'reschedule',
+          nextStation: '사가정',
+          newArrivalTimeEpoch: 1_780_000_000_000,
+          trainCode: '7610',
+          sentAt: 1_780_000_000_000,
+          pushId: 'uuid-rs',
+        });
+      });
+
+      it('nextStation 누락/빈 문자열이면 null', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ kind: 'reschedule', newArrivalTimeEpoch: 1, trainCode: 'X' }),
+          ),
+        ).toBeNull();
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'reschedule',
+              nextStation: '',
+              newArrivalTimeEpoch: 1,
+              trainCode: 'X',
+            }),
+          ),
+        ).toBeNull();
+      });
+
+      it('newArrivalTimeEpoch 비숫자/Infinity이면 null', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'reschedule',
+              nextStation: 'A',
+              newArrivalTimeEpoch: 'now',
+              trainCode: 'X',
+            }),
+          ),
+        ).toBeNull();
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'reschedule',
+              nextStation: 'A',
+              newArrivalTimeEpoch: Infinity,
+              trainCode: 'X',
+            }),
+          ),
+        ).toBeNull();
+      });
+
+      it('trainCode 누락/빈 문자열이면 null', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ kind: 'reschedule', nextStation: 'A', newArrivalTimeEpoch: 1 }),
+          ),
+        ).toBeNull();
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'reschedule',
+              nextStation: 'A',
+              newArrivalTimeEpoch: 1,
+              trainCode: '',
+            }),
+          ),
+        ).toBeNull();
+      });
+
+      it('sentAt/pushId 옵션 — 누락 시 undefined로 정리', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'reschedule',
+              nextStation: 'A',
+              newArrivalTimeEpoch: 1,
+              trainCode: 'X',
+            }),
+          ),
+        ).toMatchObject({ sentAt: undefined, pushId: undefined });
+      });
     });
   });
 
@@ -649,6 +749,69 @@ describe('silentPushTask', () => {
         );
         expect(mockScheduleNotificationAsync).toHaveBeenCalled();
         expect(mockSendPushAck).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('reschedule kind (#725)', () => {
+      function reschedulePayload(extra: Record<string, unknown> = {}) {
+        return {
+          data: {
+            data: {
+              data: {
+                kind: 'reschedule',
+                nextStation: '사가정',
+                newArrivalTimeEpoch: 1_780_000_000_000,
+                trainCode: '7610',
+                ...extra,
+              },
+              dataString: null,
+            },
+            notification: null,
+            aps: { 'content-available': 1 },
+          },
+        };
+      }
+
+      it('reschedule 수신 시 logSilentPushRescheduleReceived 호출 + standard 발사 경로 미진입', async () => {
+        await handleSilentPush(reschedulePayload({ sentAt: 1_780_000_000_000 }));
+        expect(mockLogSilentPushRescheduleReceived).toHaveBeenCalledTimes(1);
+        const arg = mockLogSilentPushRescheduleReceived.mock.calls[0][0];
+        expect(arg.nextStation).toBe('사가정');
+        expect(arg.sentAt).toBe(1_780_000_000_000);
+        expect(typeof arg.receivedAt).toBe('number');
+        // standard 발사 경로는 호출되지 않아야 함.
+        expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
+        expect(mockCheckGate).not.toHaveBeenCalled();
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).not.toHaveBeenCalled();
+      });
+
+      it('pushId 있으면 ack(fired, reschedule-received) 전송', async () => {
+        await handleSilentPush(reschedulePayload({ pushId: 'rs-uuid' }));
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'rs-uuid',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'fired',
+          reason: 'reschedule-received',
+        });
+      });
+
+      it('pushId 없으면 ack 호출 안 함 — 수신 통계는 그대로 적재', async () => {
+        await handleSilentPush(reschedulePayload());
+        expect(mockSendPushAck).not.toHaveBeenCalled();
+        expect(mockLogSilentPushRescheduleReceived).toHaveBeenCalledTimes(1);
+      });
+
+      it('apnsToken null이면 pushId 있어도 ack skip — 수신 통계는 적재', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) return null;
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          return null;
+        });
+        await handleSilentPush(reschedulePayload({ pushId: 'rs-uuid' }));
+        expect(mockSendPushAck).not.toHaveBeenCalled();
+        expect(mockLogSilentPushRescheduleReceived).toHaveBeenCalledTimes(1);
       });
     });
   });
