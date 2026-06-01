@@ -22,12 +22,14 @@ const mockLogSilentPushReceived = jest.fn();
 const mockLogSilentPushRescheduleReceived = jest.fn();
 const mockLogSilentPushFired = jest.fn();
 const mockLogSilentPushSkipped = jest.fn();
+const mockFlushAlarmLog = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/alarmLog', () => ({
   logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
   logSilentPushRescheduleReceived: (...args: unknown[]) =>
     mockLogSilentPushRescheduleReceived(...args),
   logSilentPushFired: (...args: unknown[]) => mockLogSilentPushFired(...args),
   logSilentPushSkipped: (...args: unknown[]) => mockLogSilentPushSkipped(...args),
+  flushAlarmLog: () => mockFlushAlarmLog(),
 }));
 
 const mockCheckGate = jest.fn();

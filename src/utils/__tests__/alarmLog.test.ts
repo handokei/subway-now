@@ -1,6 +1,18 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+// #735 — react-native AppState 모킹 (alarmLog가 모듈 스코프에서 listener 등록).
+// jest.mock 팩토리는 hoist되어 import 이전에 적용 — 모듈 로드 시 등록되는 listener 호출이 안전하게 no-op.
+// 실제 AppState 전환 시뮬레이트는 alarmLog._simulateAppStateForTest()로 직접 트리거.
+jest.mock('react-native', () => ({
+  AppState: {
+    addEventListener: jest.fn().mockReturnValue({ remove: jest.fn() }),
+  },
+}));
+
 import {
   appendAlarmLog,
+  flushAlarmLog,
+  resetAlarmLogForTest,
   getAlarmLog,
   clearAlarmLog,
   logFiredAlarm,
@@ -9,7 +21,10 @@ import {
   logFiredAlarmsHydrate,
   logSuppressedDedupAlarm,
   _resetDedupAlarmWindowForTests,
+  _simulateAppStateForTest,
   DEDUP_LOG_WINDOW_MS,
+  FLUSH_DEBOUNCE_MS,
+  FLUSH_MAX_DELAY_MS,
   logSuppressedDedupStation,
   logSuppressedGate,
   logSuppressedMovement,
@@ -60,17 +75,25 @@ function makeEntry(overrides: Partial<AlarmLogEntry> = {}): AlarmLogEntry {
 describe('alarmLog', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
-    (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+    // #735 — 이전 테스트가 큐에 남긴 mockResolvedValueOnce/mockResolvedValue가 다음 테스트의
+    // getItem 호출을 오염시키지 않도록 명시 reset. clearAllMocks는 implementation을 안 지움.
+    (AsyncStorage.getItem as jest.Mock).mockReset();
+    (AsyncStorage.setItem as jest.Mock).mockReset().mockResolvedValue(undefined);
+    (AsyncStorage.removeItem as jest.Mock).mockReset().mockResolvedValue(undefined);
     _resetDedupAlarmWindowForTests();
+    // #735 — 모듈 스코프 pending/timer 격리.
+    resetAlarmLogForTest();
   });
 
-  describe('appendAlarmLog', () => {
-    it('기존 로그가 없으면 단일 엔트리로 저장한다', async () => {
+  describe('appendAlarmLog + flushAlarmLog (#735 batched write)', () => {
+    it('flush 전엔 storage write 안 함, flush 호출 후 단일 엔트리로 저장한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
       const entry = makeEntry();
 
-      await appendAlarmLog(entry);
+      appendAlarmLog(entry);
+      expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+
+      await flushAlarmLog();
 
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         ALARM_LOG_KEY,
@@ -83,12 +106,28 @@ describe('alarmLog', () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(existing));
       const entry = makeEntry({ stationName: '강남' });
 
-      await appendAlarmLog(entry);
+      appendAlarmLog(entry);
+      await flushAlarmLog();
 
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         ALARM_LOG_KEY,
         JSON.stringify([...existing, entry]),
       );
+    });
+
+    it('여러 entry를 push 후 한 번에 flush — RMW 1회로 batch', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      appendAlarmLog(makeEntry({ stationName: 'A' }));
+      appendAlarmLog(makeEntry({ stationName: 'B' }));
+      appendAlarmLog(makeEntry({ stationName: 'C' }));
+
+      await flushAlarmLog();
+
+      expect(AsyncStorage.getItem).toHaveBeenCalledTimes(1);
+      expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1);
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved.map((e) => e.stationName)).toEqual(['A', 'B', 'C']);
     });
 
     it('BUFFER 크기 초과 시 가장 오래된 엔트리부터 drop한다 (FIFO)', async () => {
@@ -98,21 +137,23 @@ describe('alarmLog', () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(existing));
       const entry = makeEntry({ ts: 9999, stationName: '신규' });
 
-      await appendAlarmLog(entry);
+      appendAlarmLog(entry);
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       expect(saved).toHaveLength(ALARM_LOG_BUFFER_SIZE);
       // 가장 오래된 ts=0이 drop되고 새 엔트리가 마지막
       expect(saved[0].ts).toBe(1);
-      expect(saved[saved.length - 1].stationName).toBe('신규');
+      expect(saved.at(-1)?.stationName).toBe('신규');
     });
 
     it('손상된 JSON이 저장돼 있어도 빈 배열로 초기화 후 append한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce('not-json{{{');
       const entry = makeEntry();
 
-      await appendAlarmLog(entry);
+      appendAlarmLog(entry);
+      await flushAlarmLog();
 
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         ALARM_LOG_KEY,
@@ -124,7 +165,8 @@ describe('alarmLog', () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify({ foo: 'bar' }));
       const entry = makeEntry();
 
-      await appendAlarmLog(entry);
+      appendAlarmLog(entry);
+      await flushAlarmLog();
 
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(
         ALARM_LOG_KEY,
@@ -135,7 +177,144 @@ describe('alarmLog', () => {
     it('AsyncStorage가 에러를 던져도 throw하지 않는다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage 오류'));
 
-      await expect(appendAlarmLog(makeEntry())).resolves.toBeUndefined();
+      appendAlarmLog(makeEntry());
+      await expect(flushAlarmLog()).resolves.toBeUndefined();
+    });
+
+    it('pending 없을 때 flush 호출은 no-op (storage 미접근)', async () => {
+      await flushAlarmLog();
+      expect(AsyncStorage.getItem).not.toHaveBeenCalled();
+      expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    });
+
+    it('debounce: timer 만료까지 기다리면 자동 flush (FLUSH_DEBOUNCE_MS)', async () => {
+      jest.useFakeTimers();
+      try {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+        appendAlarmLog(makeEntry({ stationName: 'A' }));
+        expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+
+        await jest.advanceTimersByTimeAsync(FLUSH_DEBOUNCE_MS);
+
+        expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('debounce: 새 push가 들어오면 timer reset', async () => {
+      jest.useFakeTimers();
+      try {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+        appendAlarmLog(makeEntry({ stationName: 'A' }));
+        await jest.advanceTimersByTimeAsync(FLUSH_DEBOUNCE_MS - 100);
+        appendAlarmLog(makeEntry({ stationName: 'B' }));
+        await jest.advanceTimersByTimeAsync(FLUSH_DEBOUNCE_MS - 100);
+        expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+
+        await jest.advanceTimersByTimeAsync(200);
+
+        expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1);
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved.map((e) => e.stationName)).toEqual(['A', 'B']);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('max-delay: 가장 오래된 pending이 FLUSH_MAX_DELAY_MS 도달하면 다음 append에서 즉시 flush', async () => {
+      const startTime = 1_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(startTime);
+      try {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+
+        appendAlarmLog(makeEntry({ stationName: 'first' }));
+        // FLUSH_MAX_DELAY_MS 경과 시뮬레이트
+        (Date.now as jest.Mock).mockReturnValue(startTime + FLUSH_MAX_DELAY_MS);
+        appendAlarmLog(makeEntry({ stationName: 'second' }));
+
+        // void flushAlarmLog() 마이크로태스크 chain 모두 drain
+        await flushPromises();
+        await flushPromises();
+
+        expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1);
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved.map((e) => e.stationName)).toEqual(['first', 'second']);
+      } finally {
+        (Date.now as jest.Mock).mockRestore();
+      }
+    });
+
+    it('AppState background 전환 시 자동 flush', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      appendAlarmLog(makeEntry({ stationName: 'A' }));
+      expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+
+      _simulateAppStateForTest('background');
+      await flushPromises();
+      await flushPromises();
+
+      expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1);
+    });
+
+    it('AppState inactive 전환 시 자동 flush', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      appendAlarmLog(makeEntry({ stationName: 'A' }));
+
+      _simulateAppStateForTest('inactive');
+      await flushPromises();
+      await flushPromises();
+
+      expect(AsyncStorage.setItem).toHaveBeenCalledTimes(1);
+    });
+
+    it('AppState active 전환은 flush 안 함', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      appendAlarmLog(makeEntry({ stationName: 'A' }));
+
+      _simulateAppStateForTest('active');
+      await flushPromises();
+
+      expect(AsyncStorage.setItem).not.toHaveBeenCalled();
+    });
+
+    // #735 review P1 fix: 동시 flush race로 lost-update 발생하지 않는지 검증.
+    // mutex 없으면 두 flush가 같은 storage 상태를 읽고 서로의 write를 덮어 E1이 사라진다.
+    it('동시 flushAlarmLog 호출 시 lost-update 없음 (mutex 직렬화)', async () => {
+      // getItem이 호출될 때마다 현재 setItem된 값을 reflect — 실제 storage 시뮬레이션.
+      let storage: string | null = null;
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async () => storage);
+      (AsyncStorage.setItem as jest.Mock).mockImplementation(async (_key: string, value: string) => {
+        storage = value;
+      });
+
+      appendAlarmLog(makeEntry({ stationName: 'E1' }));
+      const p1 = flushAlarmLog();
+      appendAlarmLog(makeEntry({ stationName: 'E2' }));
+      const p2 = flushAlarmLog();
+      await Promise.all([p1, p2]);
+
+      const finalSaved: AlarmLogEntry[] = storage ? JSON.parse(storage) : [];
+      const names = finalSaved.map((e) => e.stationName ?? '');
+      expect(names.sort((a, b) => a.localeCompare(b))).toEqual(['E1', 'E2']);
+    });
+
+    it('인플라이트 flush 중에 추가 push가 없으면 recursive 재호출 안 함 (no-op)', async () => {
+      let storage: string | null = null;
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async () => storage);
+      (AsyncStorage.setItem as jest.Mock).mockImplementation(async (_key: string, value: string) => {
+        storage = value;
+      });
+
+      appendAlarmLog(makeEntry({ stationName: 'E1' }));
+      const p1 = flushAlarmLog();
+      const p2 = flushAlarmLog(); // 추가 append 없이 즉시 두 번째 flush
+      await Promise.all([p1, p2]);
+
+      // setItem은 1회만 (E1 1건 write). p2는 재귀 호출 skip.
+      expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(1);
     });
   });
 
@@ -173,7 +352,60 @@ describe('alarmLog', () => {
 
       expect(result).toEqual([]);
     });
+
+    it('#735 pending이 있으면 persisted + pending 병합 반환 (UI 즉시 가시)', async () => {
+      const persisted = [makeEntry({ stationName: 'P1' })];
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(persisted));
+      appendAlarmLog(makeEntry({ stationName: 'Pend1' }));
+      appendAlarmLog(makeEntry({ stationName: 'Pend2' }));
+
+      const result = await getAlarmLog();
+
+      expect(result.map((e) => e.stationName)).toEqual(['P1', 'Pend1', 'Pend2']);
+    });
+
+    it('#735 병합 결과가 BUFFER 초과면 가장 오래된 것부터 drop', async () => {
+      const persisted = Array.from({ length: ALARM_LOG_BUFFER_SIZE }, (_, i) =>
+        makeEntry({ ts: i, stationName: `P-${i}` }),
+      );
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(persisted));
+      appendAlarmLog(makeEntry({ ts: 9999, stationName: 'NEW' }));
+
+      const result = await getAlarmLog();
+
+      expect(result).toHaveLength(ALARM_LOG_BUFFER_SIZE);
+      expect(result[0].ts).toBe(1);
+      expect(result.at(-1)?.stationName).toBe('NEW');
+    });
+
+    it('#735 AsyncStorage 실패 시에도 pending은 반환', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage'));
+      appendAlarmLog(makeEntry({ stationName: 'Pend1' }));
+
+      const result = await getAlarmLog();
+
+      expect(result.map((e) => e.stationName)).toEqual(['Pend1']);
+    });
   });
+
+  describe('clearAlarmLog (#735 pending도 초기화)', () => {
+    it('removeItem 호출 + pending 비움', async () => {
+      appendAlarmLog(makeEntry({ stationName: 'A' }));
+      await clearAlarmLog();
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith(ALARM_LOG_KEY);
+
+      // 직후 getAlarmLog는 pending 0 (storage empty)
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      const result = await getAlarmLog();
+      expect(result).toEqual([]);
+    });
+
+    it('AsyncStorage removeItem 실패해도 throw하지 않음', async () => {
+      (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('remove fail'));
+      await expect(clearAlarmLog()).resolves.toBeUndefined();
+    });
+  });
+
 
   describe('helpers', () => {
     const station: Station = {
@@ -192,7 +424,7 @@ describe('alarmLog', () => {
 
     it('logFiredAlarm: source + event를 outcome=fired로 적재한다', async () => {
       logFiredAlarm('fg', event);
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -208,7 +440,7 @@ describe('alarmLog', () => {
 
     it('logFiredStationPassed: station.name과 kind=station-passed로 적재한다', async () => {
       logFiredStationPassed('bg', station);
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -222,7 +454,7 @@ describe('alarmLog', () => {
 
     it('logSuppressedDedupStation: reason=dedup-station, kind=station-passed로 적재한다', async () => {
       logSuppressedDedupStation('fg', station);
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -237,7 +469,7 @@ describe('alarmLog', () => {
 
     it('logSuppressedDedupAlarm: reason=dedup-alarm, phase+type+stationName 적재 (#580)', async () => {
       logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -256,19 +488,19 @@ describe('alarmLog', () => {
       const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
       try {
         logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
-        await flushPromises();
+        await flushAlarmLog();
         const callsAfterFirst = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
 
         // 윈도우 내 재호출 — drop
         nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS - 1);
         logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
-        await flushPromises();
+        await flushAlarmLog();
         expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsAfterFirst);
 
         // 윈도우 경계 통과 — 통과
         nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS + 1);
         logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
-        await flushPromises();
+        await flushAlarmLog();
         expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsAfterFirst + 1);
       } finally {
         nowSpy.mockRestore();
@@ -281,8 +513,12 @@ describe('alarmLog', () => {
       logSuppressedDedupAlarm('fg', { phaseId: 'imminent', type: 'destination', stationName: '강남' });
       logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '역삼' });
       logSuppressedDedupAlarm('bg', { phaseId: 'early', type: 'destination', stationName: '강남' });
-      await flushPromises();
-      expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(5);
+      await flushAlarmLog();
+      // #735 — 모든 호출이 1회 batch RMW로 적재. setItem 1번, payload에 5건 모두 포함.
+      expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(1);
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved).toHaveLength(5);
     });
 
     it('#626 Map cap 초과 시 만료된 엔트리 sweep — 무한 성장 방지', async () => {
@@ -297,7 +533,7 @@ describe('alarmLog', () => {
             stationName: `s${i}`,
           });
         }
-        await flushPromises();
+        await flushAlarmLog();
         const callsBefore = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
 
         // 윈도우 충분히 넘긴 후 새 키 1개 → sweep 발동, 기존 만료 엔트리 정리.
@@ -307,7 +543,7 @@ describe('alarmLog', () => {
           type: 'destination',
           stationName: 's-after',
         });
-        await flushPromises();
+        await flushAlarmLog();
         expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsBefore + 1);
       } finally {
         nowSpy.mockRestore();
@@ -316,7 +552,7 @@ describe('alarmLog', () => {
 
     it('logFiredAlarmsHydrate: destinationId + firedAlarmsCount 적재 (#580 race 진단)', async () => {
       logFiredAlarmsHydrate('dest-1', 2);
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -330,7 +566,7 @@ describe('alarmLog', () => {
 
     it('logFiredAlarmsHydrate: destinationId=null도 그대로 기록', async () => {
       logFiredAlarmsHydrate(null, 0);
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -350,7 +586,7 @@ describe('alarmLog', () => {
         actualLastNotifiedStation: 'S-7',
       };
       logScheduledAlarm(event, stamp);
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -377,7 +613,7 @@ describe('alarmLog', () => {
         actualLastNotifiedStation: null,
       };
       logScheduledAlarm(event, stamp);
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -394,7 +630,7 @@ describe('alarmLog', () => {
     it('logSuppressedGate: reason + location, source=bg 고정으로 적재한다', async () => {
       const location = { lat: 37.5, lng: 127.0, accuracy: 250, ageMs: 30_000 };
       logSuppressedGate('gate-accuracy', location);
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -415,7 +651,7 @@ describe('alarmLog', () => {
         phaseId: 'imminent',
         reason: 'movement-static-speed',
       });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -435,7 +671,7 @@ describe('alarmLog', () => {
         stationName: '사가정',
         reason: 'movement-low-accuracy',
       });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -457,7 +693,7 @@ describe('alarmLog', () => {
         sentAt: 1_700_000_000_000,
         receivedAt: 1_700_000_001_500,
       });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -481,7 +717,7 @@ describe('alarmLog', () => {
         sentAt: 1_700_000_000_000,
         receivedAt: 1_700_000_001_000,
       });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -496,7 +732,7 @@ describe('alarmLog', () => {
         sentAt: undefined,
         receivedAt: 1_700_000_001_000,
       });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -514,7 +750,7 @@ describe('alarmLog', () => {
         sentAt: 1_780_000_000_000,
         receivedAt: 1_780_000_001_500,
       });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -536,7 +772,7 @@ describe('alarmLog', () => {
         sentAt: undefined,
         receivedAt: 1_780_000_001_500,
       });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -553,7 +789,7 @@ describe('alarmLog', () => {
         locationSource: 'cache',
         locationAgeMs: 12_000,
       });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -581,7 +817,7 @@ describe('alarmLog', () => {
         locationSource: 'cache',
         locationAgeMs: 10_000,
       });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -604,7 +840,7 @@ describe('alarmLog', () => {
         phaseId: 'early',
         reason: 'gate-unknown-station',
       });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -616,7 +852,7 @@ describe('alarmLog', () => {
 
     it('logAlertFallbackFired: source=alert-fallback-fired, outcome=fired 적재 (#564)', async () => {
       logAlertFallbackFired({ stationName: '강남', kind: 'destination', phaseId: 'imminent' });
-      await flushPromises();
+      await flushAlarmLog();
 
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -634,7 +870,7 @@ describe('alarmLog', () => {
 
       // 호출 자체가 throw하면 안 됨 (void)
       expect(() => logFiredAlarm('fg', event)).not.toThrow();
-      await flushPromises();
+      await flushAlarmLog();
     });
   });
 

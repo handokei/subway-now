@@ -24,6 +24,7 @@ import { APNS_TOKEN_KEY, DESTINATION_KEY } from '../constants/storageKeys';
 import { sendPushAck } from '../api/alarmBackend';
 import { createLogger } from '../utils/logger';
 import {
+  flushAlarmLog,
   logSilentPushReceived,
   logSilentPushRescheduleReceived,
   logSilentPushFired,
@@ -267,76 +268,83 @@ async function loadApnsToken(): Promise<string | null> {
  * Task 콜백 본체 — 단위 테스트가 직접 호출할 수 있도록 export.
  */
 export async function handleSilentPush(input: NotificationBackgroundTaskData): Promise<void> {
-  if (input.error) {
-    logger.error('silent push task error:', input.error.message);
-    return;
-  }
+  // #735 — BG task 시간 제약. 모든 종료 경로(early return, fire-with-gate, error)에서 적재된
+  // alarmLog pending이 OS suspend로 손실되지 않도록 try/finally로 명시 flush.
+  try {
+    if (input.error) {
+      logger.error('silent push task error:', input.error.message);
+      return;
+    }
 
-  const payload = extractPayload(input.data);
-  if (!payload) {
-    logger.info('payload missing or invalid — skip');
-    return;
-  }
-  const receivedAt = Date.now();
-  const apnsToken = await loadApnsToken();
+    const payload = extractPayload(input.data);
+    if (!payload) {
+      logger.info('payload missing or invalid — skip');
+      return;
+    }
+    const receivedAt = Date.now();
+    const apnsToken = await loadApnsToken();
 
-  // reschedule 분기 (#725). 백엔드는 사전 예약 알람(#584) 시각을 정정하려고 이 push를 보낸다.
-  // - 수신 신호는 받았다 알리고(`lastReceivedAt` 갱신)
-  // - ack로 P2c alert fallback을 차단한다.
-  //
-  // ackOutcome 3번째 인자는 'fired'를 보내지만, 사용자에게 알림이 실제 발사된 것은 아니다 —
-  // 백엔드 ackPending(`pendingPushes.ts`)이 outcome을 통계로 쓰지 않고 KV entry 삭제 신호로만
-  // 사용하므로 안전 (`outcome=fired` = "이 push는 처리 완료, alert fallback 발사 마라").
-  // reason 'reschedule-received'로 의도가 디버그 로그에 보존된다.
-  //
-  // 사전 예약 자체의 시각 조정은 별도 follow-up에서 다룬다 — 본 PR은 schema mismatch로 drop되던
-  // 수신을 회복시키는 것이 범위.
-  if (payload.kind === 'reschedule') {
+    // reschedule 분기 (#725). 백엔드는 사전 예약 알람(#584) 시각을 정정하려고 이 push를 보낸다.
+    // - 수신 신호는 받았다 알리고(`lastReceivedAt` 갱신)
+    // - ack로 P2c alert fallback을 차단한다.
+    //
+    // ackOutcome 3번째 인자는 'fired'를 보내지만, 사용자에게 알림이 실제 발사된 것은 아니다 —
+    // 백엔드 ackPending(`pendingPushes.ts`)이 outcome을 통계로 쓰지 않고 KV entry 삭제 신호로만
+    // 사용하므로 안전 (`outcome=fired` = "이 push는 처리 완료, alert fallback 발사 마라").
+    // reason 'reschedule-received'로 의도가 디버그 로그에 보존된다.
+    //
+    // 사전 예약 자체의 시각 조정은 별도 follow-up에서 다룬다 — 본 PR은 schema mismatch로 drop되던
+    // 수신을 회복시키는 것이 범위.
+    if (payload.kind === 'reschedule') {
+      logger.info(
+        `reschedule received: trainCode=${payload.trainCode} nextStation=${payload.nextStation} newEpoch=${payload.newArrivalTimeEpoch} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
+      );
+      logSilentPushRescheduleReceived({
+        nextStation: payload.nextStation,
+        sentAt: payload.sentAt,
+        receivedAt,
+      });
+      ackOutcome(payload.pushId, apnsToken, 'fired', 'reschedule-received');
+      return;
+    }
+
     logger.info(
-      `reschedule received: trainCode=${payload.trainCode} nextStation=${payload.nextStation} newEpoch=${payload.newArrivalTimeEpoch} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
+      `received: kind=${payload.kind ?? 'unknown'} phase=${payload.phase} station=${payload.nextWaypoint} eta=${payload.etaSeconds} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
     );
-    logSilentPushRescheduleReceived({
-      nextStation: payload.nextStation,
+
+    // 측정 인프라 — 수신 시점 무조건 적재 (#478 PR 1-1).
+    logSilentPushReceived({
+      stationName: payload.nextWaypoint,
+      kind: payload.kind,
+      phaseId: payload.phase,
       sentAt: payload.sentAt,
       receivedAt,
     });
-    ackOutcome(payload.pushId, apnsToken, 'fired', 'reschedule-received');
-    return;
-  }
 
-  logger.info(
-    `received: kind=${payload.kind ?? 'unknown'} phase=${payload.phase} station=${payload.nextWaypoint} eta=${payload.etaSeconds} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
-  );
+    // kind 미상은 발사 불가 — 알림 본문/dedup 키 결정 불가. 구 백엔드 호환은 received 로그에만.
+    if (!payload.kind) {
+      logSilentPushSkipped({
+        stationName: payload.nextWaypoint,
+        kind: undefined,
+        phaseId: payload.phase,
+        reason: 'payload-missing-kind',
+      });
+      ackOutcome(payload.pushId, apnsToken, 'skipped', 'payload-missing-kind');
+      logger.info('kind missing — skip fire');
+      return;
+    }
 
-  // 측정 인프라 — 수신 시점 무조건 적재 (#478 PR 1-1).
-  logSilentPushReceived({
-    stationName: payload.nextWaypoint,
-    kind: payload.kind,
-    phaseId: payload.phase,
-    sentAt: payload.sentAt,
-    receivedAt,
-  });
-
-  // kind 미상은 발사 불가 — 알림 본문/dedup 키 결정 불가. 구 백엔드 호환은 received 로그에만.
-  if (!payload.kind) {
-    logSilentPushSkipped({
-      stationName: payload.nextWaypoint,
-      kind: undefined,
-      phaseId: payload.phase,
-      reason: 'payload-missing-kind',
-    });
-    ackOutcome(payload.pushId, apnsToken, 'skipped', 'payload-missing-kind');
-    logger.info('kind missing — skip fire');
-    return;
-  }
-
-  try {
-    await fireWithGate(
-      payload as Required<Pick<SilentPushPayload, 'kind'>> & SilentPushPayload,
-      apnsToken,
-    );
-  } catch (e) {
-    logger.error('silent push fire 실패:', e);
+    try {
+      await fireWithGate(
+        payload as Required<Pick<SilentPushPayload, 'kind'>> & SilentPushPayload,
+        apnsToken,
+      );
+    } catch (e) {
+      logger.error('silent push fire 실패:', e);
+    }
+  } finally {
+    // pending 강제 flush — debounce timer 만료를 기다리면 BG task 종료 후라 손실.
+    await flushAlarmLog();
   }
 }
 
