@@ -121,7 +121,7 @@ export default function HomeScreen() {
   // 동일 store의 lock을 useBoardingLockController가 아래서 다시 소비하지만 selector라 churn 없음.
   const fusionBoardingLock = useBoardingLockStore((s) => s.lock);
   const lockedTrainCode = fusionBoardingLock?.trainCode ?? null;
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock);
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock);
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,
@@ -208,6 +208,7 @@ export default function HomeScreen() {
     arrivalConfidence: confidence,
     fusionSource: source,
     locationUncertain,
+    positionStability,
   });
 
   // #584 PR B — BoardingLock 진입점. UI 렌더링/lock 생성만 담당하며,

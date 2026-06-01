@@ -7,10 +7,12 @@ import { useNearestStation } from './useNearestStation';
 import { useArrivalInfo } from './useArrivalInfo';
 import { useTrainPositions } from './useTrainPositions';
 import { useRouteProgress } from './useRouteProgress';
+import { usePositionStability } from './usePositionStability';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
 import { shouldDowngradeFusion } from '../utils/movementGate';
+import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../utils/pickCandidateTrains';
 import { trackTrainProgress } from '../utils/trackTrainProgress';
 import { haversine } from '../utils/haversine';
@@ -61,6 +63,12 @@ interface UseFusedNearestStationReturn {
   /** GPS 표시 게이트 drop으로 좌표가 정지된 상태. fusion에서 position/arrival 신호가 살아있어도
    *  GPS fallback 경로에 의존하는 호출자(예: 표시부)는 이 값으로 "위치 확인 중" UX를 띄울 수 있다. */
   locationUncertain: boolean;
+  /**
+   * #733 — 위치 이력 기반 정적/이동/판정불가. iOS가 speed=-1(미측정)을 보고하는 정적 케이스에서
+   * movementGate fallback 신호로 사용. 호출자(useStationAlarm 등)가 evaluateMovement에 전달해
+   * speed 부재 시에도 정적 misfire 차단을 가능하게 한다.
+   */
+  positionStability: PositionStability;
   refresh: () => Promise<void>;
 }
 
@@ -120,6 +128,9 @@ export function useFusedNearestStation(
   boardingLock?: BoardingLock | null,
 ): UseFusedNearestStationReturn {
   const gps = useNearestStation();
+  // #733 — 위치 이력 기반 정적 판정. shouldDowngradeFusion이 speed=null일 때 fallback으로 사용.
+  // useNearestStation의 userLocation 변경마다 자동 누적/판정.
+  const positionStability = usePositionStability(gps.userLocation);
 
   // Phase A: 경로가 설정되면 진행도 기반 현재역으로 GPS 결과를 덮어쓴다.
   // origin/destination이 빠지면 useRouteProgress가 arc를 만들지 못하고 null을 반환,
@@ -367,13 +378,16 @@ export function useFusedNearestStation(
   }
 
   // #727 정적 misfire 가드 — shouldDowngradeFusion이 isStaticSpeedSignal + confidence가 fusion
-  // 승격 라벨(position-train / boarding-lock / boarding-lock-interp)인지 한 번에 평가.
+  // 승격 라벨(position-train / boarding-lock / boarding-lock-interp / arrival-arriving #733)인지 한 번에 평가.
   // 정적+accuracy 정상이면 gps-only로 강등 + result/source도 GPS 원본으로 되돌림.
+  //
+  // #733 — speedMps=null인 정적 사용자(iOS Core Location 미보고) 케이스에 positionStability 신호 fallback.
   if (
     shouldDowngradeFusion({
       confidence,
       speedMps: gps.speedMps,
       accuracyM: gps.accuracyMeters,
+      positionStability,
     })
   ) {
     confidence = 'gps-only';
@@ -449,6 +463,7 @@ export function useFusedNearestStation(
     error: gps.error,
     permissionDenied: gps.permissionDenied,
     locationUncertain: gps.locationUncertain,
+    positionStability,
     refresh: gps.refresh,
   };
 }

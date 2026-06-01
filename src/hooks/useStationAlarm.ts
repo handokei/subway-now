@@ -26,6 +26,7 @@ import {
   logSuppressedMovement,
 } from '../utils/alarmLog';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../utils/movementGate';
+import type { PositionStability } from '../utils/positionStaticDetector';
 import { useAppStore } from '../store/useAppStore';
 import { createLogger } from '../utils/logger';
 import { isAccuracyAcceptable } from '../utils/locationGates';
@@ -53,6 +54,12 @@ export interface UseStationAlarmInputs {
   /** GPS 게이트 실패 등으로 위치 불확실. true면 source 무시하고 'uncertain' 라벨. */
   locationUncertain?: boolean;
   /**
+   * #733 — useFusedNearestStation.positionStability 결과. iOS가 speed=-1(미측정)을 보고하는
+   * 정적 케이스에서 evaluateMovement가 'static-position' reason으로 차단할 수 있게 한다.
+   * 미전달이면 기존 동작 유지 (speed 신호만 사용).
+   */
+  positionStability?: PositionStability;
+  /**
    * 테스트 전용 — #670/#672 좌표 warmup 가드 비활성화.
    * production 호출자는 미설정으로 둠. 단위 테스트에서 mount 직후 alarm 평가 검증 시 사용.
    */
@@ -69,6 +76,7 @@ export function useStationAlarm({
   arrivalConfidence,
   fusionSource,
   locationUncertain = false,
+  positionStability,
   skipWarmupGuard = false,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
@@ -255,7 +263,30 @@ export function useStationAlarm({
     // #699: fireAndLog가 setFiredAlarms를 await하므로 promise를 명시적으로 흘려보낸다.
     // sync firedAlarmsRef.current.add는 fireAndLog 내부 첫 동작이라 같은 hook 인스턴스
     // 다음 evaluation은 await 중에도 dedup된다.
-    if (rawEvent) void fireAndLog(rawEvent, 'eta', route, destination);
+    if (rawEvent) {
+      // #733 — Phase ETA path movement gate. early phase는 etaSeconds 무관, remainingStops<=1만
+      // 검사하므로 fusion이 인접역으로 jitter하면 즉시 발사. snapshot 1/2에서 관측된 20:07:48 등
+      // 정적 transfer-early 회귀 차단.
+      const movement = evaluateMovement(
+        {
+          speedMps: speedMps ?? undefined,
+          accuracyM: accuracyMeters ?? undefined,
+        },
+        undefined,
+        positionStability,
+      );
+      if (!movement.reliable && movement.reason) {
+        logSuppressedMovement({
+          source: 'fg',
+          stationName: rawEvent.stationName,
+          kind: rawEvent.type,
+          phaseId: rawEvent.phaseId,
+          reason: MOVEMENT_TO_ALARM_LOG_REASON[movement.reason],
+        });
+        return;
+      }
+      void fireAndLog(rawEvent, 'eta', route, destination);
+    }
   }, [
     route,
     destination?.id,
@@ -270,6 +301,7 @@ export function useStationAlarm({
     setAlarmEvent,
     nearestStation?.id,
     nearestStation?.line,
+    positionStability,
     skipWarmupGuard,
   ]);
 
@@ -294,10 +326,15 @@ export function useStationAlarm({
     if (firedAlarmsRef.current.has(imminentKey)) return;
 
     // #727 정적 misfire 가드 — useStationAlarm은 timestamp 입력이 없으므로 speed/accuracy만 평가.
-    const movement = evaluateMovement({
-      speedMps: speedMps ?? undefined,
-      accuracyM: accuracyMeters ?? undefined,
-    });
+    // #733 — speed=null 시 positionStability fallback 사용.
+    const movement = evaluateMovement(
+      {
+        speedMps: speedMps ?? undefined,
+        accuracyM: accuracyMeters ?? undefined,
+      },
+      undefined,
+      positionStability,
+    );
     if (!movement.reliable && movement.reason) {
       logSuppressedMovement({
         source: 'fg',
@@ -324,6 +361,7 @@ export function useStationAlarm({
     nearestStation?.id,
     speedMps,
     accuracyMeters,
+    positionStability,
   ]);
 
   // Station-passed 알림 효과: 경로상 역 변경 시 dedup된 per-station 알림.
@@ -337,6 +375,22 @@ export function useStationAlarm({
   // 더 강한 신호 — GPS 정확도 게이트도 같은 등급으로 통과시킨다.
   const arrivalConfirmed =
     arrivalConfidence === 'arrival-confirmed' || arrivalConfidence === 'boarding-lock';
+  // #733 — station-passed effect용 movement 차단 사유.
+  // 메모이즈된 string|null만 deps에 두어 #452 회귀(accuracyMeters 노이즈로 매 fix 재실행) 회피.
+  // 같은 reason 문자열은 Object.is로 동일하게 비교되어 동일 분류 안에선 effect 재실행 안 함.
+  // 타입은 MOVEMENT_TO_ALARM_LOG_REASON 추론에 위임 — SSOT가 movementGate.ts (새 reason 추가 시
+  // 본 위치 수정 불필요, 컴파일러가 자동 cascade).
+  const movementSuppressionReason = useMemo(() => {
+    const m = evaluateMovement(
+      {
+        speedMps: speedMps ?? undefined,
+        accuracyM: accuracyMeters ?? undefined,
+      },
+      undefined,
+      positionStability,
+    );
+    return m.reliable ? null : MOVEMENT_TO_ALARM_LOG_REASON[m.reason];
+  }, [speedMps, accuracyMeters, positionStability]);
 
   useEffect(() => {
     let cancelled = false;
@@ -350,6 +404,22 @@ export function useStationAlarm({
       const candidateStation = nearestStation;
       const capturedRoute = route;
       const capturedDestinationName = destination.name;
+
+      // #733 — station-passed movement gate (S4 fix).
+      // 기존엔 accuracyOk/arrivalConfirmed만 검사 → fusion이 인접역으로 jitter하면 매번 발사.
+      // snapshot 2의 20:16:52 면목 알람(사용자 정적, backend trip 없음) 같은 회귀 차단.
+      // arrivalConfirmed(arrival-confirmed/boarding-lock) 강한 신호 시에는 movement gate skip —
+      // 지하 GPS 끊김 등에서 arrival API가 단독 신호일 때 알람 누락을 막기 위한 기존 정책 보존.
+      // deps에는 movementSuppressionReason(memoized string|null)만 사용해 #452 회귀 회피.
+      if (!arrivalConfirmed && movementSuppressionReason) {
+        logSuppressedMovement({
+          source: 'fg',
+          stationName: candidateStation.name,
+          kind: 'station-passed',
+          reason: movementSuppressionReason,
+        });
+        return;
+      }
 
       void (async () => {
         try {
@@ -386,5 +456,6 @@ export function useStationAlarm({
     nearestStation?.id,
     accuracyOk,
     arrivalConfirmed,
+    movementSuppressionReason,
   ]);
 }

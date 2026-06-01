@@ -1528,4 +1528,182 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
     });
   });
+
+  describe('#733 Phase ETA path movement gate', () => {
+    const route = makeDirectRoute(1, '2');
+    const station = makeStation('S1', '역삼');
+
+    it('Phase rawEvent 있음 + speed=null + positionStability=static이면 차단 + movement-static-position 적재', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: null,
+            accuracyMeters: 50,
+            positionStability: 'static',
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: '시청',
+            kind: 'transfer',
+            phaseId: 'early',
+            reason: 'movement-static-position',
+          }),
+        );
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('Phase rawEvent 있음 + speed=0이면 차단 + movement-static-speed 적재', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 0,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            stationName: '강남',
+            kind: 'destination',
+            phaseId: 'early',
+            reason: 'movement-static-speed',
+          }),
+        );
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('Phase rawEvent 있음 + speed>=0.5(이동)이면 정상 발사 (positionStability=static 무시)', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 5,
+            accuracyMeters: 50,
+            positionStability: 'static',
+          }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockSendAlarmNotification).toHaveBeenCalled(),
+      );
+    });
+  });
+
+  describe('#733 station-passed movement gate', () => {
+    const route = makeDirectRoute(1, '2');
+    const onRouteStation = makeStation('S2-DST', '강남');
+
+    it('station-passed + 정적 신호(speed=0) + 약한 arrival이면 차단 + movement-static-speed 적재', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: 0,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: '강남',
+            kind: 'station-passed',
+            reason: 'movement-static-speed',
+          }),
+        );
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('station-passed + speed=null + positionStability=static이면 차단 + movement-static-position 적재', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: null,
+            positionStability: 'static',
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            stationName: '강남',
+            kind: 'station-passed',
+            reason: 'movement-static-position',
+          }),
+        );
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('station-passed + 정적 신호 + arrivalConfirmed면 movement gate skip → 정상 발사', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: 0,
+            arrivalConfidence: 'arrival-confirmed',
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+    });
+
+    it('station-passed + 이동 신호(speed=5)면 정상 발사', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 50,
+            speedMps: 5,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+    });
+  });
 });
