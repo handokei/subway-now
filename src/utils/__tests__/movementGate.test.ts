@@ -45,7 +45,7 @@ describe('movementGate', () => {
     it('accuracyM이 경계값이면 통과', () => {
       const now = 1_000_000;
       const m = evaluateMovement(
-        { timestamp: now, accuracyM: MAX_ACCURACY_M, speedMps: 1.0 },
+        { timestamp: now, accuracyM: MAX_ACCURACY_M, speedMps: 1 },
         now,
       );
       expect(m.reliable).toBe(true);
@@ -72,13 +72,13 @@ describe('movementGate', () => {
     it('timestamp/accuracy/speed 모두 정상이면 reliable + 신호 보존', () => {
       const now = 1_000_000;
       const m = evaluateMovement(
-        { timestamp: now - 5_000, accuracyM: 50, speedMps: 3.0 },
+        { timestamp: now - 5_000, accuracyM: 50, speedMps: 3 },
         now,
       );
       expect(m.reliable).toBe(true);
       expect(m.ageMs).toBe(5_000);
       expect(m.accuracyM).toBe(50);
-      expect(m.speedMps).toBe(3.0);
+      expect(m.speedMps).toBe(3);
     });
 
     it('평가 순서 우선순위: stale > accuracy > speed', () => {
@@ -131,12 +131,11 @@ describe('movementGate', () => {
     it('speed < 임계값 + accuracy 미측정이면 true (보조 검증 skip)', () => {
       expect(isStaticSpeedSignal(0)).toBe(true);
       expect(isStaticSpeedSignal(0, null)).toBe(true);
-      expect(isStaticSpeedSignal(0, undefined)).toBe(true);
     });
 
     it('speed >= 임계값이면 false', () => {
       expect(isStaticSpeedSignal(STATIC_SPEED_THRESHOLD_MPS)).toBe(false);
-      expect(isStaticSpeedSignal(1.0)).toBe(false);
+      expect(isStaticSpeedSignal(1)).toBe(false);
       expect(isStaticSpeedSignal(10, 50)).toBe(false);
     });
 

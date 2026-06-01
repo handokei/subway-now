@@ -388,7 +388,7 @@ describe('useFusedNearestStation', () => {
     });
 
     it('position-train + speed=1.0(정상)이면 강등 안 됨', () => {
-      mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500, speedMps: 1.0 }));
+      mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500, speedMps: 1 }));
       mockFindTop.mockReturnValue([
         { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
         { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 },

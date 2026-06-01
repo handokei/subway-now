@@ -679,7 +679,7 @@ describe('silentPushTask', () => {
       it('gate가 accuracy=999 노출하면 movement-low-accuracy로 skip', async () => {
         mockCheckGate.mockResolvedValue({
           ...PASSING_GATE,
-          speedMps: 2.0,
+          speedMps: 2,
           accuracyM: 999,
         });
 

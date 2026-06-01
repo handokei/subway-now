@@ -169,7 +169,7 @@ export async function checkSilentPushLocationGate(input: {
     thresholdM,
     locationSource: pos.source,
     locationAgeMs: pos.ageMs,
-    ...(pos.speedMps != null ? { speedMps: pos.speedMps } : {}),
-    ...(pos.accuracyM != null ? { accuracyM: pos.accuracyM } : {}),
+    ...(pos.speedMps == null ? {} : { speedMps: pos.speedMps }),
+    ...(pos.accuracyM == null ? {} : { accuracyM: pos.accuracyM }),
   };
 }

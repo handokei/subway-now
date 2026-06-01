@@ -51,7 +51,7 @@ function gpsBase(speedMps: number | null, accuracyMeters: number | null) {
   return {
     result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
     variants: [MOCK_STATIONS.gangnam],
-    userLocation: { lat: 37.5, lng: 127.0 },
+    userLocation: { lat: 37.5, lng: 127 },
     speedMps,
     accuracyMeters,
     loading: false,
@@ -71,7 +71,7 @@ describe('useFusedNearestStation — #727 fusion downgrade', () => {
     mockUsePositions.mockReturnValue({ positions: null, loading: false, isMock: false });
     // pickCandidateTrains 1개 후보 — trackTrainProgress 진입
     mockPickCandidates.mockReturnValue([
-      { line: '3', trainNo: 'T-1', station: MOCK_STATIONS.chungmuro, distanceKm: 0.0 },
+      { line: '3', trainNo: 'T-1', station: MOCK_STATIONS.chungmuro, distanceKm: 0 },
     ]);
     // trackTrainProgress가 chungmuro를 position-train 채택
     mockTrackProgress.mockReturnValue({
@@ -105,7 +105,7 @@ describe('useFusedNearestStation — #727 fusion downgrade', () => {
   });
 
   it('position-train + speed=2.0(이동 중)이면 강등 안 됨', () => {
-    mockUseNearest.mockReturnValue(gpsBase(2.0, 50));
+    mockUseNearest.mockReturnValue(gpsBase(2, 50));
 
     const { result } = renderHook(() => useFusedNearestStation());
 

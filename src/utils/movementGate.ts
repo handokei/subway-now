@@ -42,7 +42,7 @@ interface MovementSignalShared {
  * 호출자가 가드 없이 reason에 접근하면 컴파일 에러 — 신규 호출자 safety 보장.
  */
 export type MovementSignal =
-  | ({ reliable: true; reason?: undefined } & MovementSignalShared)
+  | ({ reliable: true; reason?: never } & MovementSignalShared)
   | ({ reliable: false; reason: MovementReason } & MovementSignalShared);
 
 /**
