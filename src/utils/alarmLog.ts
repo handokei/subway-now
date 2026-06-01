@@ -150,7 +150,7 @@ export function logFiredAlarm(
   event: AlarmEvent,
   trigger?: AlarmLogTrigger,
 ): void {
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: Date.now(),
     source,
     outcome: 'fired',
@@ -167,7 +167,7 @@ export function logFiredAlarm(
  * 발사 자체는 expo-notifications가 처리하므로 별도 fire-time 로그는 없다.
  */
 export function logScheduledAlarm(event: AlarmEvent, stamp: AlarmLogStamp): void {
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: Date.now(),
     source: 'bg-scheduled',
     outcome: 'fired',
@@ -183,7 +183,7 @@ export function logScheduledAlarm(event: AlarmEvent, stamp: AlarmLogStamp): void
 }
 
 export function logFiredStationPassed(source: AlarmLogSource, station: Station): void {
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: Date.now(),
     source,
     outcome: 'fired',
@@ -193,7 +193,7 @@ export function logFiredStationPassed(source: AlarmLogSource, station: Station):
 }
 
 export function logSuppressedDedupStation(source: AlarmLogSource, station: Station): void {
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: Date.now(),
     source,
     outcome: 'suppressed',
@@ -211,7 +211,7 @@ export function logSuppressedDedupStation(source: AlarmLogSource, station: Stati
  * 회귀 패턴: fire 이후 destinationId 변동 없이 다시 0이 찍히면 storage write 손실/race 정황.
  */
 export function logFiredAlarmsHydrate(destinationId: string | null, firedAlarmsCount: number): void {
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: Date.now(),
     source: 'fg-hydrate',
     outcome: 'received',
@@ -258,7 +258,7 @@ export function logSuppressedDedupAlarm(
   if (last !== undefined && now - last < DEDUP_LOG_WINDOW_MS) return;
   lastDedupLogTs.set(key, now);
   sweepExpiredDedupEntries(now);
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: now,
     source,
     outcome: 'suppressed',
@@ -291,7 +291,7 @@ export function logSilentPushReceived(input: {
   // kind 미상(구 백엔드)이면 kind 필드 자체를 비워둔다.
   const mappedKind: AlarmLogKind | undefined =
     input.kind === 'intermediate' ? 'station-passed' : input.kind;
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: input.receivedAt,
     source: 'silent-push-received',
     outcome: 'received',
@@ -318,7 +318,7 @@ export function logSilentPushRescheduleReceived(input: {
   sentAt: number | undefined;
   receivedAt: number;
 }): void {
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: input.receivedAt,
     source: 'silent-push-received',
     outcome: 'received',
@@ -340,7 +340,7 @@ export function logSilentPushFired(input: {
   locationSource: 'cache' | 'fresh';
   locationAgeMs: number;
 }): void {
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: Date.now(),
     source: 'silent-push-fired',
     outcome: 'fired',
@@ -369,7 +369,7 @@ export function logSilentPushSkipped(input: {
   locationSource?: 'cache' | 'fresh';
   locationAgeMs?: number;
 }): void {
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: Date.now(),
     source: 'silent-push-skipped',
     outcome: 'suppressed',
@@ -394,7 +394,7 @@ export function logAlertFallbackFired(input: {
   kind: AlarmLogKind;
   phaseId: AlarmPhaseId;
 }): void {
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: Date.now(),
     source: 'alert-fallback-fired',
     outcome: 'fired',
@@ -424,7 +424,7 @@ export function logSuppressedGate(
   reason: 'gate-age' | 'gate-accuracy' | 'gate-jump',
   location: AlarmLogLocation,
 ): void {
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: Date.now(),
     source: 'bg',
     outcome: 'suppressed',
@@ -445,7 +445,7 @@ export function logSuppressedMovement(input: {
   phaseId?: AlarmPhaseId;
   reason: Extract<AlarmLogReason, `movement-${string}`>;
 }): void {
-  void appendAlarmLog({
+  appendAlarmLog({
     ts: Date.now(),
     source: input.source,
     outcome: 'suppressed',
@@ -480,21 +480,26 @@ let flushInFlight: Promise<void> | null = null;
  */
 export function appendAlarmLog(entry: AlarmLogEntry): void {
   pendingEntries.push(entry);
-  if (oldestPendingTs == null) oldestPendingTs = Date.now();
+  oldestPendingTs ??= Date.now();
   scheduleFlush();
+}
+
+function fireAndForgetFlush(): void {
+  // logger가 doFlushOnce 내부에서 에러를 swallow하지만, 미처리 rejection은 catch로 차단.
+  flushAlarmLog().catch(() => {});
 }
 
 function scheduleFlush(): void {
   // 가장 오래된 pending이 MAX_DELAY 도달했으면 즉시 flush.
   // 기존 flushTimer는 doFlushOnce에서 클리어 — 본 위치에서 중복 클리어 불필요.
   if (oldestPendingTs != null && Date.now() - oldestPendingTs >= FLUSH_MAX_DELAY_MS) {
-    void flushAlarmLog();
+    fireAndForgetFlush();
     return;
   }
   if (flushTimer != null) clearTimeout(flushTimer);
   flushTimer = setTimeout(() => {
     flushTimer = null;
-    void flushAlarmLog();
+    fireAndForgetFlush();
   }, FLUSH_DEBOUNCE_MS);
 }
 
@@ -620,7 +625,7 @@ function safeParse(raw: string): AlarmLogEntry[] {
 // 모듈 로드 시 1회 등록 (singleton). subscription.remove는 production에서 불필요 (앱 lifetime 동일).
 function handleAppStateChange(state: AppStateStatus): void {
   if (state === 'background' || state === 'inactive') {
-    void flushAlarmLog();
+    fireAndForgetFlush();
   }
 }
 AppState.addEventListener('change', handleAppStateChange);

@@ -145,7 +145,7 @@ describe('alarmLog', () => {
       expect(saved).toHaveLength(ALARM_LOG_BUFFER_SIZE);
       // 가장 오래된 ts=0이 drop되고 새 엔트리가 마지막
       expect(saved[0].ts).toBe(1);
-      expect(saved[saved.length - 1].stationName).toBe('신규');
+      expect(saved.at(-1)?.stationName).toBe('신규');
     });
 
     it('손상된 JSON이 저장돼 있어도 빈 배열로 초기화 후 append한다', async () => {
@@ -297,7 +297,8 @@ describe('alarmLog', () => {
       await Promise.all([p1, p2]);
 
       const finalSaved: AlarmLogEntry[] = storage ? JSON.parse(storage) : [];
-      expect(finalSaved.map((e) => e.stationName).sort()).toEqual(['E1', 'E2']);
+      const names = finalSaved.map((e) => e.stationName ?? '');
+      expect(names.sort((a, b) => a.localeCompare(b))).toEqual(['E1', 'E2']);
     });
 
     it('인플라이트 flush 중에 추가 push가 없으면 recursive 재호출 안 함 (no-op)', async () => {
@@ -374,7 +375,7 @@ describe('alarmLog', () => {
 
       expect(result).toHaveLength(ALARM_LOG_BUFFER_SIZE);
       expect(result[0].ts).toBe(1);
-      expect(result[result.length - 1].stationName).toBe('NEW');
+      expect(result.at(-1)?.stationName).toBe('NEW');
     });
 
     it('#735 AsyncStorage 실패 시에도 pending은 반환', async () => {
