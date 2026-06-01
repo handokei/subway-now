@@ -485,8 +485,9 @@ export function appendAlarmLog(entry: AlarmLogEntry): void {
 }
 
 function fireAndForgetFlush(): void {
-  // logger가 doFlushOnce 내부에서 에러를 swallow하지만, 미처리 rejection은 catch로 차단.
-  flushAlarmLog().catch(() => {});
+  // flushAlarmLog는 doFlushOnce 내부 try/catch로 모든 storage 에러를 swallow하므로 reject 안 함.
+  // 따라서 별도 .catch가 dead branch라 생략 — Promise floating은 의도된 fire-and-forget.
+  flushAlarmLog();
 }
 
 function scheduleFlush(): void {
