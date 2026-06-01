@@ -29,6 +29,7 @@ import {
   logSilentPushSkipped,
   type AlarmLogReason,
 } from '../utils/alarmLog';
+import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../utils/movementGate';
 import { addFiredPushId } from '../utils/firedPushIds';
 import {
   checkSilentPushLocationGate,
@@ -308,6 +309,32 @@ async function fireWithGate(
     });
     ackOutcome(payload.pushId, apnsToken, 'skipped', reason);
     logger.info(`gate skip reason=${gate.reason} distance=${gate.distanceM ?? '-'}`);
+    return;
+  }
+
+  // #727 — 정적 misfire 가드. gate는 거리/freshness만 검증하지만 사용자가 정적이면 잘못된
+  // trainCode/fusion lock으로 잘못 발사될 수 있다. expo-location LocationObject의 speed/
+  // accuracy가 있으면 평가 — 미측정(`speed === -1` 등)이면 skip하고 graceful pass.
+  const movement = evaluateMovement({
+    speedMps: gate.speedMps,
+    accuracyM: gate.accuracyM,
+  });
+  if (!movement.reliable && movement.reason) {
+    const movementReason = MOVEMENT_TO_ALARM_LOG_REASON[movement.reason];
+    logSilentPushSkipped({
+      stationName: payload.nextWaypoint,
+      kind: payload.kind === 'intermediate' ? 'station-passed' : payload.kind,
+      phaseId: payload.phase,
+      reason: movementReason,
+      distanceM: gate.distanceM,
+      thresholdM: gate.thresholdM,
+      locationSource: gate.locationSource,
+      locationAgeMs: gate.locationAgeMs,
+    });
+    ackOutcome(payload.pushId, apnsToken, 'skipped', movementReason);
+    logger.info(
+      `movement skip: reason=${movementReason} speed=${gate.speedMps ?? '-'} accuracy=${gate.accuracyM ?? '-'}`,
+    );
     return;
   }
 

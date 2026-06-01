@@ -65,12 +65,14 @@ const mockLogFiredAlarmsHydrate = jest.fn();
 const mockLogFiredStationPassed = jest.fn();
 const mockLogSuppressedDedupAlarm = jest.fn();
 const mockLogSuppressedDedupStation = jest.fn();
+const mockLogSuppressedMovement = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
   logSuppressedDedupAlarm: (...args: unknown[]) => mockLogSuppressedDedupAlarm(...args),
   logSuppressedDedupStation: (...args: unknown[]) => mockLogSuppressedDedupStation(...args),
+  logSuppressedMovement: (...args: unknown[]) => mockLogSuppressedMovement(...args),
 }));
 
 jest.mock('../../utils/scheduledAlarmReceiver', () => ({
@@ -1039,7 +1041,16 @@ describe('useStationAlarm', () => {
       mockIsImminentByArrivalCode.mockReturnValue(true);
 
       renderHook(() =>
-        useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
+        useStationAlarm(
+          // #727 — speed=2.0, accuracy=50으로 명시해 movement 가드 통과
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            speedMps: 2.0,
+            accuracyMeters: 50,
+          }),
+        ),
       );
 
       await waitFor(() => {
@@ -1050,6 +1061,88 @@ describe('useStationAlarm', () => {
         );
       });
       expect(mockSendAlarmNotification).toHaveBeenCalled();
+    });
+
+    // #727 — speed/accuracy 가드. 정적 사용자의 잘못된 trainCode/fusion 신호로 인한 misfire 차단.
+    it('#727 speed=0(정적)이면 API imminent 발사 차단 + movement-static-speed 적재', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            speedMps: 0,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: '강남',
+            kind: 'destination',
+            phaseId: 'imminent',
+            reason: 'movement-static-speed',
+          }),
+        );
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      const apiCalls = mockLogFiredAlarm.mock.calls.filter((c) => c[2] === 'api');
+      expect(apiCalls).toHaveLength(0);
+    });
+
+    it('#727 accuracy>100m(저신뢰)이면 API imminent 발사 차단 + movement-low-accuracy 적재', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            speedMps: 2.0,
+            accuracyMeters: 1500,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'movement-low-accuracy' }),
+        );
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('#727 speed/accuracy 모두 누락(null)이어도 API imminent 발사 (graceful pass)', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            speedMps: null,
+            accuracyMeters: null,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogFiredAlarm).toHaveBeenCalledWith(
+          'fg',
+          expect.objectContaining({ phaseId: 'imminent' }),
+          'api',
+        );
+      });
     });
 
     it('API 신호 false면 발사하지 않는다', async () => {

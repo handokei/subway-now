@@ -12,6 +12,7 @@ import {
   DEDUP_LOG_WINDOW_MS,
   logSuppressedDedupStation,
   logSuppressedGate,
+  logSuppressedMovement,
   logSilentPushReceived,
   logSilentPushFired,
   logSilentPushSkipped,
@@ -402,6 +403,49 @@ describe('alarmLog', () => {
         reason: 'gate-accuracy',
         location,
       });
+    });
+
+    // #727 — 정적 misfire 가드(movementGate.ts)가 차단한 발사. source/stationName/kind/phaseId 보존.
+    it('logSuppressedMovement: 모든 필드 지정 시 그대로 적재', async () => {
+      logSuppressedMovement({
+        source: 'fg',
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'imminent',
+        reason: 'movement-static-speed',
+      });
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'movement-static-speed',
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'imminent',
+      });
+    });
+
+    it('logSuppressedMovement: kind/phaseId 미지정도 허용 (silent push 등)', async () => {
+      logSuppressedMovement({
+        source: 'silent-push-skipped',
+        stationName: '사가정',
+        reason: 'movement-low-accuracy',
+      });
+      await flushPromises();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'silent-push-skipped',
+        outcome: 'suppressed',
+        reason: 'movement-low-accuracy',
+        stationName: '사가정',
+      });
+      expect(saved[0].kind).toBeUndefined();
+      expect(saved[0].phaseId).toBeUndefined();
     });
 
     it('logSilentPushReceived: source=silent-push-received, outcome=received, sentAt/receivedAt 적재 (#478)', async () => {

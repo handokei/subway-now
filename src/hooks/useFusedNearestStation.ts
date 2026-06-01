@@ -10,6 +10,7 @@ import { useRouteProgress } from './useRouteProgress';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
+import { shouldDowngradeFusion } from '../utils/movementGate';
 import { pickCandidateTrains, type CandidateTrain } from '../utils/pickCandidateTrains';
 import { trackTrainProgress } from '../utils/trackTrainProgress';
 import { haversine } from '../utils/haversine';
@@ -363,6 +364,21 @@ export function useFusedNearestStation(
       confidence = 'boarding-lock-interp';
       source = 'boarding-lock-interp';
     }
+  }
+
+  // #727 정적 misfire 가드 — shouldDowngradeFusion이 isStaticSpeedSignal + confidence가 fusion
+  // 승격 라벨(position-train / boarding-lock / boarding-lock-interp)인지 한 번에 평가.
+  // 정적+accuracy 정상이면 gps-only로 강등 + result/source도 GPS 원본으로 되돌림.
+  if (
+    shouldDowngradeFusion({
+      confidence,
+      speedMps: gps.speedMps,
+      accuracyM: gps.accuracyMeters,
+    })
+  ) {
+    confidence = 'gps-only';
+    source = 'gps';
+    result = gps.result;
   }
 
   // 측정(#443): 결정 변화(source/stationId/confidence) 시에만 push.
