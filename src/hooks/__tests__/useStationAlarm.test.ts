@@ -1533,21 +1533,24 @@ describe('useStationAlarm', () => {
     const route = makeDirectRoute(1, '2');
     const station = makeStation('S1', '역삼');
 
-    it('Phase rawEvent 있음 + speed=null + positionStability=static이면 차단 + movement-static-position 적재', async () => {
-      mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+    function renderPhaseHook(props: Partial<UseStationAlarmInputs>): void {
       renderHook(() =>
         useStationAlarm(
           defaultInputs({
             route,
             destination,
             nearestStation: station,
-            userLocation: { lat: 37.4, lng: 127.0 },
-            speedMps: null,
+            userLocation: { lat: 37.4, lng: 127 },
             accuracyMeters: 50,
-            positionStability: 'static',
+            ...props,
           }),
         ),
       );
+    }
+
+    it('Phase rawEvent 있음 + speed=null + positionStability=static이면 차단 + movement-static-position 적재', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+      renderPhaseHook({ speedMps: null, positionStability: 'static' });
 
       await waitFor(() => {
         expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
@@ -1565,18 +1568,7 @@ describe('useStationAlarm', () => {
 
     it('Phase rawEvent 있음 + speed=0이면 차단 + movement-static-speed 적재', async () => {
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: station,
-            userLocation: { lat: 37.4, lng: 127.0 },
-            speedMps: 0,
-            accuracyMeters: 50,
-          }),
-        ),
-      );
+      renderPhaseHook({ speedMps: 0 });
 
       await waitFor(() => {
         expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
@@ -1593,23 +1585,9 @@ describe('useStationAlarm', () => {
 
     it('Phase rawEvent 있음 + speed>=0.5(이동)이면 정상 발사 (positionStability=static 무시)', async () => {
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: station,
-            userLocation: { lat: 37.4, lng: 127.0 },
-            speedMps: 5,
-            accuracyMeters: 50,
-            positionStability: 'static',
-          }),
-        ),
-      );
+      renderPhaseHook({ speedMps: 5, positionStability: 'static' });
 
-      await waitFor(() =>
-        expect(mockSendAlarmNotification).toHaveBeenCalled(),
-      );
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
     });
   });
 
@@ -1617,7 +1595,7 @@ describe('useStationAlarm', () => {
     const route = makeDirectRoute(1, '2');
     const onRouteStation = makeStation('S2-DST', '강남');
 
-    it('station-passed + 정적 신호(speed=0) + 약한 arrival이면 차단 + movement-static-speed 적재', async () => {
+    function renderStationPassedHook(props: Partial<UseStationAlarmInputs>): void {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       renderHook(() =>
         useStationAlarm(
@@ -1626,10 +1604,14 @@ describe('useStationAlarm', () => {
             destination,
             nearestStation: onRouteStation,
             accuracyMeters: 50,
-            speedMps: 0,
+            ...props,
           }),
         ),
       );
+    }
+
+    it('station-passed + 정적 신호(speed=0) + 약한 arrival이면 차단 + movement-static-speed 적재', async () => {
+      renderStationPassedHook({ speedMps: 0 });
 
       await waitFor(() => {
         expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
@@ -1645,19 +1627,7 @@ describe('useStationAlarm', () => {
     });
 
     it('station-passed + speed=null + positionStability=static이면 차단 + movement-static-position 적재', async () => {
-      mockGetLastNotifiedStationId.mockResolvedValue(null);
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: onRouteStation,
-            accuracyMeters: 50,
-            speedMps: null,
-            positionStability: 'static',
-          }),
-        ),
-      );
+      renderStationPassedHook({ speedMps: null, positionStability: 'static' });
 
       await waitFor(() => {
         expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
@@ -1672,36 +1642,13 @@ describe('useStationAlarm', () => {
     });
 
     it('station-passed + 정적 신호 + arrivalConfirmed면 movement gate skip → 정상 발사', async () => {
-      mockGetLastNotifiedStationId.mockResolvedValue(null);
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: onRouteStation,
-            accuracyMeters: 50,
-            speedMps: 0,
-            arrivalConfidence: 'arrival-confirmed',
-          }),
-        ),
-      );
+      renderStationPassedHook({ speedMps: 0, arrivalConfidence: 'arrival-confirmed' });
 
       await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
     });
 
     it('station-passed + 이동 신호(speed=5)면 정상 발사', async () => {
-      mockGetLastNotifiedStationId.mockResolvedValue(null);
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: onRouteStation,
-            accuracyMeters: 50,
-            speedMps: 5,
-          }),
-        ),
-      );
+      renderStationPassedHook({ speedMps: 5 });
 
       await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
     });
