@@ -23,7 +23,9 @@ import {
   logFiredStationPassed,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
+  logSuppressedMovement,
 } from '../utils/alarmLog';
+import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../utils/movementGate';
 import { useAppStore } from '../store/useAppStore';
 import { createLogger } from '../utils/logger';
 import { isAccuracyAcceptable } from '../utils/locationGates';
@@ -275,6 +277,11 @@ export function useStationAlarm({
   // lock된 trainCode가 목적지 역에 진입/도착하면 즉시 발사 — speedMps/accuracy 무관.
   // 기존 ETA 기반 effect와 firedAlarms를 공유하므로 한쪽이 먼저 발사하면 다른 쪽은 dedup된다.
   // silent push(#478) 핸들러도 동일 isImminentByArrivalCode를 사용해 BG에서 같은 판정.
+  //
+  // #727: 정적 misfire 가드 — speedMps/accuracy 무관 정책은 *trackedTrainCode가 잘못 lock된*
+  // 케이스에서 잘못된 발사를 막지 못한다 (정적 사용자 근처 통과 열차를 fusion이 momentary
+  // adoption → 그 trainCode가 목적지역 도착하면 ENTERED → 알람 발사). evaluateMovement로
+  // 정적/저신호 거부.
   useEffect(() => {
     if (!firedHydrated) return;
     if (!route || !destination) return;
@@ -285,6 +292,22 @@ export function useStationAlarm({
 
     const imminentKey = `imminent:${destination.name}`;
     if (firedAlarmsRef.current.has(imminentKey)) return;
+
+    // #727 정적 misfire 가드 — useStationAlarm은 timestamp 입력이 없으므로 speed/accuracy만 평가.
+    const movement = evaluateMovement({
+      speedMps: speedMps ?? undefined,
+      accuracyM: accuracyMeters ?? undefined,
+    });
+    if (!movement.reliable && movement.reason) {
+      logSuppressedMovement({
+        source: 'fg',
+        stationName: destination.name,
+        kind: 'destination',
+        phaseId: 'imminent',
+        reason: MOVEMENT_TO_ALARM_LOG_REASON[movement.reason],
+      });
+      return;
+    }
 
     const rawEvent: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: destination.name };
     // #699: setFiredAlarms 영속화 완료를 await — silent push BG 핸들러가 같은 imminent를
@@ -299,6 +322,8 @@ export function useStationAlarm({
     trackedTrainCode,
     setAlarmEvent,
     nearestStation?.id,
+    speedMps,
+    accuracyMeters,
   ]);
 
   // Station-passed 알림 효과: 경로상 역 변경 시 dedup된 per-station 알림.

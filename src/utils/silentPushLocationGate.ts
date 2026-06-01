@@ -39,6 +39,9 @@ export interface GateResult {
   thresholdM?: number;
   locationSource?: GateLocationSource;
   locationAgeMs?: number;
+  // #727 — movementGate가 후속 정적 misfire 평가에 사용. expo-location 응답에 있을 때만 노출.
+  speedMps?: number;
+  accuracyM?: number;
 }
 
 interface UserPosition {
@@ -46,6 +49,9 @@ interface UserPosition {
   lng: number;
   ageMs: number;
   source: GateLocationSource;
+  // #727 — expo-location LocationObject.coords의 speed/accuracy를 위로 전달.
+  speedMps?: number;
+  accuracyM?: number;
 }
 
 /**
@@ -73,6 +79,16 @@ async function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
  * 1순위: OS-level 마지막 알려진 위치 (즉답, 무비용)
  * 2순위: 콜드 GPS fetch (TIMEOUT 3s, 실패 시 null)
  */
+function extractMotionFields(
+  coords: Location.LocationObject['coords'],
+): { speedMps?: number; accuracyM?: number } {
+  const out: { speedMps?: number; accuracyM?: number } = {};
+  // expo-location speed/accuracy는 측정 불가 시 -1 또는 null. 음수/null은 미적용으로 정리.
+  if (typeof coords.speed === 'number' && coords.speed >= 0) out.speedMps = coords.speed;
+  if (typeof coords.accuracy === 'number' && coords.accuracy >= 0) out.accuracyM = coords.accuracy;
+  return out;
+}
+
 async function resolveUserPosition(): Promise<UserPosition | null> {
   try {
     const last = await Location.getLastKnownPositionAsync({ maxAge: LOCATION_CACHE_TTL_MS });
@@ -83,6 +99,7 @@ async function resolveUserPosition(): Promise<UserPosition | null> {
         lng: last.coords.longitude,
         ageMs,
         source: 'cache',
+        ...extractMotionFields(last.coords),
       };
     }
   } catch (e) {
@@ -98,6 +115,7 @@ async function resolveUserPosition(): Promise<UserPosition | null> {
       lng: fresh.coords.longitude,
       ageMs: 0,
       source: 'fresh',
+      ...extractMotionFields(fresh.coords),
     };
   } catch (e) {
     logger.warn('getCurrentPositionAsync 실패/타임아웃:', e);
@@ -151,5 +169,7 @@ export async function checkSilentPushLocationGate(input: {
     thresholdM,
     locationSource: pos.source,
     locationAgeMs: pos.ageMs,
+    ...(pos.speedMps == null ? {} : { speedMps: pos.speedMps }),
+    ...(pos.accuracyM == null ? {} : { accuracyM: pos.accuracyM }),
   };
 }

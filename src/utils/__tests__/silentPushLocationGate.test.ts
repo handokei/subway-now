@@ -266,4 +266,100 @@ describe('checkSilentPushLocationGate', () => {
     // timestamp=0이면 ageMs는 Date.now()와 같은 거대값 → stale
     expect(result.reason).toBe('stale-location');
   });
+
+  // #727 — movementGate가 후속 정적 misfire 평가에 사용할 speed/accuracy를 노출.
+  describe('movementGate 신호 노출 (#727)', () => {
+    it('expo-location speed/accuracy가 정상이면 GateResult에 노출 (cache)', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue({
+        coords: {
+          latitude: NEAR_GANGNAM.lat,
+          longitude: NEAR_GANGNAM.lng,
+          accuracy: 25,
+          altitude: null,
+          heading: null,
+          speed: 2.5,
+          altitudeAccuracy: null,
+        },
+        timestamp: Date.now() - 5_000,
+      });
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'destination',
+        phase: 'imminent',
+      });
+      expect(result.pass).toBe(true);
+      expect(result.speedMps).toBe(2.5);
+      expect(result.accuracyM).toBe(25);
+    });
+
+    it('expo-location speed/accuracy가 음수(-1: 측정 불가)면 미노출', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue({
+        coords: {
+          latitude: NEAR_GANGNAM.lat,
+          longitude: NEAR_GANGNAM.lng,
+          accuracy: -1,
+          altitude: null,
+          heading: null,
+          speed: -1,
+          altitudeAccuracy: null,
+        },
+        timestamp: Date.now() - 5_000,
+      });
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'destination',
+        phase: 'imminent',
+      });
+      expect(result.pass).toBe(true);
+      expect(result.speedMps).toBeUndefined();
+      expect(result.accuracyM).toBeUndefined();
+    });
+
+    it('expo-location speed/accuracy가 null이면 미노출', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue({
+        coords: {
+          latitude: NEAR_GANGNAM.lat,
+          longitude: NEAR_GANGNAM.lng,
+          accuracy: null,
+          altitude: null,
+          heading: null,
+          speed: null,
+          altitudeAccuracy: null,
+        },
+        timestamp: Date.now() - 5_000,
+      });
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'destination',
+        phase: 'imminent',
+      });
+      expect(result.pass).toBe(true);
+      expect(result.speedMps).toBeUndefined();
+      expect(result.accuracyM).toBeUndefined();
+    });
+
+    it('fresh fetch 경로에서도 speed/accuracy 노출', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(null);
+      mockGetCurrentPositionAsync.mockResolvedValue({
+        coords: {
+          latitude: NEAR_GANGNAM.lat,
+          longitude: NEAR_GANGNAM.lng,
+          accuracy: 15,
+          altitude: null,
+          heading: null,
+          speed: 3.2,
+          altitudeAccuracy: null,
+        },
+        timestamp: Date.now(),
+      });
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'destination',
+        phase: 'imminent',
+      });
+      expect(result.locationSource).toBe('fresh');
+      expect(result.speedMps).toBe(3.2);
+      expect(result.accuracyM).toBe(15);
+    });
+  });
 });

@@ -356,6 +356,63 @@ describe('useFusedNearestStation', () => {
     });
   });
 
+  describe('#727 정적 misfire 가드 (fusion downgrade)', () => {
+    // 가드 *작동* 케이스(speed=0 + accuracy 정상에서 fusion 채택)는 trackTrainProgress가
+    // stations.json 실좌표를 봐 통합 mock 셋업이 까다롭다 — shouldDowngradeFusion helper
+    // 단위 테스트(movementGate.test.ts)가 그 분기를 cover.
+    // 본 describe는 *가드 통과* 케이스(transferRegression 셋업 변형)만 검증.
+    // 강등이 *작동하지 않는* 케이스만 본 describe에서 검증.
+    // 강등 *작동* 케이스는 useFusedNearestStation.movementGuard.test.ts가 fusionDistanceGate
+    // mock으로 직접 검증 — 본 통합 mock으로는 stations.json 실좌표 충돌이 있어 셋업 불가.
+    function setupPositionTrainScenario(
+      accuracyMeters: number,
+      speedMps: number,
+      trainNo: string,
+    ): void {
+      mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters, speedMps }));
+      mockFindTop.mockReturnValue([
+        { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
+        { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 },
+      ]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions
+        .mockReturnValueOnce(positionRet({ line: '2', trains: [] }))
+        .mockReturnValueOnce(
+          positionRet({
+            line: '3',
+            trains: [
+              train(MOCK_STATIONS.chungmuro.name, TRAIN_STATUS.ARRIVED, { trainNo }),
+            ],
+          }),
+        )
+        .mockReturnValueOnce(positionRet(null));
+    }
+
+    it.each([
+      ['accuracy>100m 지하 noise + speed=0', 1500, 0, 'T-SUB'],
+      ['accuracy>100m 지하 + speed=1 이동 중', 1500, 1, 'T-FAST'],
+    ])('position-train + %s → 강등 안 됨', (_label, accuracy: number, speed: number, no: string) => {
+      setupPositionTrainScenario(accuracy, speed, no);
+
+      const { result } = renderHook(() => useFusedNearestStation());
+
+      expect(result.current.confidence).toBe('position-train');
+      expect(result.current.source).toBe('position-train');
+    });
+
+    it('gps-only(승격된 fusion 없음) + speed=0이어도 라벨 그대로 (강등 대상 아님)', () => {
+      mockUseNearest.mockReturnValue(gpsBase({ speedMps: 0 }));
+      mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions.mockReturnValue(positionRet(null));
+
+      const { result } = renderHook(() => useFusedNearestStation());
+
+      expect(result.current.confidence).toBe('gps-only');
+      expect(result.current.source).toBe('gps');
+    });
+  });
+
   it('arrival 있고 position-train 후보 없으면 fused arrival 채택', () => {
     mockUseNearest.mockReturnValue(gpsBase());
     mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);

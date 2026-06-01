@@ -752,6 +752,106 @@ describe('silentPushTask', () => {
       });
     });
 
+    describe('#727 정적 misfire 가드 (movement)', () => {
+      it('gate가 speed=0 노출하면 movement-static-speed로 skip + 발사 안 함', async () => {
+        mockCheckGate.mockResolvedValue({
+          ...PASSING_GATE,
+          speedMps: 0,
+          accuracyM: 30,
+        });
+
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({
+            reason: 'movement-static-speed',
+            stationName: '강남',
+            kind: 'destination',
+            phaseId: 'imminent',
+            distanceM: 150,
+            thresholdM: 800,
+          }),
+        );
+      });
+
+      it('gate가 accuracy=999 노출하면 movement-low-accuracy로 skip', async () => {
+        mockCheckGate.mockResolvedValue({
+          ...PASSING_GATE,
+          speedMps: 2,
+          accuracyM: 999,
+        });
+
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'movement-low-accuracy' }),
+        );
+      });
+
+      it('speed 미노출 + accuracy=999만 노출돼도 movement-low-accuracy로 skip', async () => {
+        // speedMps undefined → log line의 ?? '-' fallback 분기 커버
+        mockCheckGate.mockResolvedValue({
+          ...PASSING_GATE,
+          accuracyM: 999,
+        });
+
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'movement-low-accuracy' }),
+        );
+      });
+
+      it('movement skip은 pushId 있으면 ACK 전송', async () => {
+        mockCheckGate.mockResolvedValue({
+          ...PASSING_GATE,
+          speedMps: 0,
+        });
+
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'movement-skip' }),
+        );
+
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'movement-skip',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'movement-static-speed',
+        });
+      });
+
+      it('gate가 speed/accuracy 미노출(undefined)이면 movement 가드 통과해 정상 발사', async () => {
+        mockCheckGate.mockResolvedValue(PASSING_GATE); // speed/accuracy 없음
+
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+
+      it('intermediate도 movement-static-speed 시 kind=station-passed로 매핑되어 skip', async () => {
+        mockCheckGate.mockResolvedValue({
+          ...PASSING_GATE,
+          speedMps: 0.1,
+        });
+
+        await handleSilentPush(
+          payload({ kind: 'intermediate', phase: 'imminent', nextWaypoint: '중곡' }),
+        );
+
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({
+            kind: 'station-passed',
+            reason: 'movement-static-speed',
+          }),
+        );
+      });
+    });
+
     describe('reschedule kind (#725)', () => {
       function reschedulePayload(extra: Record<string, unknown> = {}) {
         return {

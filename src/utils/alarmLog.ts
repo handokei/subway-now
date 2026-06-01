@@ -49,7 +49,12 @@ export type AlarmLogReason =
   | 'gate-stale-location'
   | 'gate-out-of-range'
   | 'lock-line-mismatch'
-  | 'payload-missing-kind';
+  | 'payload-missing-kind'
+  // #727 — 정적 misfire 가드(movementGate.ts)가 차단한 발사.
+  | 'movement-no-location'
+  | 'movement-stale-timestamp'
+  | 'movement-low-accuracy'
+  | 'movement-static-speed';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -409,6 +414,29 @@ export function logSuppressedGate(
     outcome: 'suppressed',
     reason,
     location,
+  });
+}
+
+/**
+ * 정적 misfire 가드(movementGate.ts)가 차단한 발사 1건 적재 (#727).
+ * source는 호출자에 따라 fg/silent-push-skipped/bg-scheduled 등 — 정적 회귀의 출처를 좁히기 위해.
+ * stationName/kind/phaseId는 차단된 알람 컨텍스트. reason은 'movement-*' 4종 중 하나.
+ */
+export function logSuppressedMovement(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  kind?: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+  reason: Extract<AlarmLogReason, `movement-${string}`>;
+}): void {
+  void appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: input.reason,
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
   });
 }
 
