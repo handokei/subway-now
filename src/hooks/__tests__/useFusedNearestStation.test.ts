@@ -9,6 +9,7 @@ import { ARRIVAL_CODE } from '../../constants/arrivalCodes';
 import { TRAIN_STATUS } from '../../constants/trainStatus';
 import { MOCK_STATIONS } from '../../testUtils/fixtures';
 import type { StationArrival, ArrivalInfo } from '../../api/arrivalApi';
+import type { Station } from '../../types/station';
 import type { LinePositions, TrainPosition } from '../../api/positionApi';
 import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
@@ -1049,6 +1050,217 @@ describe('useFusedNearestStation', () => {
         expect(result.current.result?.distanceKm).toBe(0);
       } finally {
         jest.useRealTimers();
+      }
+    });
+  });
+
+  describe('#745 Strategy ② ArrivalEta 통합', () => {
+    const yongmasan = findStationByNameAndLine('용마산', '7')!;
+    const junggok = findStationByNameAndLine('중곡', '7')!;
+    const konkuk = findStationByNameAndLine('건대입구', '7')!;
+    const route = makeDirectRoute(4, '7');
+    const routeContext = { route, origin: yongmasan, destination: konkuk };
+    const T0_745 = 1_700_000_000_000;
+    const lock = {
+      destinationId: konkuk.id,
+      trainCode: '7093',
+      boardingStationId: yongmasan.id,
+      boardingLine: '7' as const,
+      boardedAt: T0_745,
+      expectedDurationMs: 30 * 60_000,
+    };
+
+    function setupLooseAccuracyAt(station: typeof yongmasan): void {
+      // accuracyMeters=1500 → fusionDistanceGate 면제 (지하 가정)
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: station.lat, lng: station.lng },
+          result: { station, distanceKm: 0 },
+          accuracyMeters: 1500,
+        }),
+      );
+    }
+
+    it('LivePosition stale + 다음 역 arrival 신선 → 결과 station이 다음 역(중곡)으로 전진 (drift=0)', () => {
+      jest.useFakeTimers();
+      try {
+        // 1단계: LivePosition 신선(t7093 at 용마산) → lastObservedRef seed
+        // Effect 1(LivePosition tracker)이 ref를 시드한 후 Effect 2(lock-key reset)가 첫 렌더에
+        // null→key 전환을 잡아 ref를 한 번 wipe 한다(#621 reset 의도). 두 번째 렌더로 Effect 1을
+        // 다시 트리거하면 ref가 안정적으로 idx=0에 박힌다 — 이 시점부터 Strategy ②가 활성.
+        jest.setSystemTime(T0_745);
+        setupLooseAccuracyAt(yongmasan);
+        mockFindTop.mockReturnValue([
+          { station: yongmasan, distanceKm: 0 },
+          { station: junggok, distanceKm: 0.5 },
+        ]);
+        const arrivalAtJunggok: StationArrival = {
+          up: [
+            info(ARRIVAL_CODE.ENTERING, {
+              trainCode: '7093',
+              line: '7',
+              receivedAtMs: T0_745 + 10_000,
+              arrivalSeconds: 14,
+            }),
+          ],
+          down: [],
+        };
+        // stationName 기반 mock — Strict Mode/effect 재호출에도 안정적으로 같은 값 반환.
+        mockUseArrival.mockImplementation((name: string | null) => {
+          if (name === junggok.name) return arrivalRet(arrivalAtJunggok);
+          return arrivalRet(null);
+        });
+        // 렌더마다 다른 reference로 positions 반환 — Effect 1(freshTrainProgress 변경) 재실행 유도.
+        mockUsePositions.mockImplementation(() => ({
+          positions: {
+            line: '7' as const,
+            trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: '7093' })],
+          },
+          loading: false,
+          isMock: false,
+        }));
+
+        const { result, rerender } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        expect(result.current.result?.station.id).toBe(yongmasan.id);
+
+        // 두 번째 LivePosition fresh 렌더 — Effect 2의 lock-key 리셋이 이미 정착했으므로
+        // Effect 1이 idx=0를 ref에 안정적으로 박는다.
+        jest.setSystemTime(T0_745 + 5_000);
+        rerender(undefined);
+
+        // 3단계: LivePosition 끊김. ref={arcIndex:0}이 보존된 상태에서 ② 활성 — 다음 역(중곡)
+        // arrival의 trainCode/ENTERING 매칭으로 결과가 junggok으로 전진.
+        mockUsePositions.mockImplementation(() => ({
+          positions: { line: '7' as const, trains: [] },
+          loading: false,
+          isMock: false,
+        }));
+        jest.setSystemTime(T0_745 + 15_000);
+        rerender(undefined);
+
+        // drift=0 — 결과 역이 lagged 용마산이 아니라 실제 위치(중곡).
+        expect(result.current.result?.station.id).toBe(junggok.id);
+      } finally {
+        jest.useRealTimers();
+        mockUseArrival.mockReset();
+        mockUsePositions.mockReset();
+      }
+    });
+
+    // ② skip 시나리오 공통 헬퍼 — 두 테스트가 동일한 시드 패턴(LivePosition 신선 → 끊김 → ③ fallback)을
+    // 공유하지만 후보 슬롯/arrival 데이터/시간 진행만 다르므로 중복 setup을 helper로 추출 (SonarCloud CPD).
+    function runArrivalEtaSkipScenario(opts: {
+      candidates: Array<{ station: Station; distanceKm: number }>;
+      arrivalMock: (name: string | null) => ReturnType<typeof arrivalRet>;
+      disconnectAtMs: number;
+    }) {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0_745);
+        setupLooseAccuracyAt(yongmasan);
+        mockFindTop.mockReturnValue(opts.candidates);
+        mockUseArrival.mockImplementation(opts.arrivalMock);
+        mockUsePositions.mockImplementation(() => ({
+          positions: {
+            line: '7' as const,
+            trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: '7093' })],
+          },
+          loading: false,
+          isMock: false,
+        }));
+        const { result, rerender } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        jest.setSystemTime(T0_745 + 5_000);
+        rerender(undefined);
+        // LivePosition 끊김 → ② skip 분기 평가 후 ③ ReanchoredHop fallback 확인용.
+        mockUsePositions.mockImplementation(() => ({
+          positions: { line: '7' as const, trains: [] },
+          loading: false,
+          isMock: false,
+        }));
+        jest.setSystemTime(opts.disconnectAtMs);
+        rerender(undefined);
+        expect(result.current.source).toBe('boarding-lock-interp');
+      } finally {
+        jest.useRealTimers();
+        mockUseArrival.mockReset();
+        mockUsePositions.mockReset();
+      }
+    }
+
+    it('다음 역이 GPS 후보가 아니면 ② skip → ③(ReanchoredHop)으로 fallback (line 133 return [])', () => {
+      // 후보에 다음 역(중곡) 없음 — 슬롯 stationName=용마산 vs station.name=중곡 → 모두 continue.
+      // 슬롯에 arrival 데이터를 주입(line 127 '!arrival' continue가 아닌 line 128 stationName 불일치 분기 cover).
+      const arrivalAtYongmasan: StationArrival = {
+        up: [info(ARRIVAL_CODE.RUNNING, { trainCode: 'OTHER', line: '7' })],
+        down: [],
+      };
+      runArrivalEtaSkipScenario({
+        candidates: [{ station: yongmasan, distanceKm: 0 }],
+        arrivalMock: (name) =>
+          name === yongmasan.name ? arrivalRet(arrivalAtYongmasan) : arrivalRet(null),
+        disconnectAtMs: T0_745 + 2 * 90_000,
+      });
+    });
+
+    it('다음 역 슬롯이 있어도 row.line이 모두 다른 호선이면 ② skip (matched.length=0 branch, line 131)', () => {
+      // 중곡 슬롯 arrival의 row.line='2', junggok.line='7' 불일치 → filter 빈 배열. RUNNING(99)으로 fused 픽업 차단.
+      const arrivalAtJunggokWrongLine: StationArrival = {
+        up: [info(ARRIVAL_CODE.RUNNING, { trainCode: '7093', line: '2' })],
+        down: [],
+      };
+      runArrivalEtaSkipScenario({
+        candidates: [
+          { station: yongmasan, distanceKm: 0 },
+          { station: junggok, distanceKm: 0.5 },
+        ],
+        arrivalMock: (name) =>
+          name === junggok.name ? arrivalRet(arrivalAtJunggokWrongLine) : arrivalRet(null),
+        disconnectAtMs: T0_745 + 5_000 + 3 * 90_000,
+      });
+    });
+
+    it('신규 폴링 없음 회귀 — 단일 렌더에서 useArrivalInfo 호출 횟수는 후보 슬롯 수(K=3)와 같다', () => {
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0_745);
+        setupLooseAccuracyAt(yongmasan);
+        mockFindTop.mockReturnValue([
+          { station: yongmasan, distanceKm: 0 },
+          { station: junggok, distanceKm: 0.5 },
+        ]);
+        const arrivalAtJunggok: StationArrival = {
+          up: [
+            info(ARRIVAL_CODE.ENTERING, {
+              trainCode: '7093',
+              line: '7',
+              receivedAtMs: T0_745,
+              arrivalSeconds: 14,
+            }),
+          ],
+          down: [],
+        };
+        mockUseArrival.mockImplementation((name: string | null) => {
+          if (name === junggok.name) return arrivalRet(arrivalAtJunggok);
+          return arrivalRet(null);
+        });
+        mockUsePositions.mockReturnValue(positionRet(null));
+
+        // 호출 횟수만 검증 — Strategy ②가 도입돼도 hook slot 증설(=신규 폴링) 없음을 회귀로 고정.
+        // renderHook은 effect 적용을 위해 React가 2회 commit phase를 실행할 수 있어 단순 등호 대신
+        // (calls % K === 0) 형태로 검증해 K=3 슬롯 가정만 고정한다.
+        renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        const calls = mockUseArrival.mock.calls.length;
+        expect(calls % 3).toBe(0);
+        expect(calls).toBeLessThanOrEqual(6); // 정상 1~2회 commit (StrictMode 등).
+      } finally {
+        jest.useRealTimers();
+        mockUseArrival.mockReset();
       }
     });
   });

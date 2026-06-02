@@ -1,6 +1,8 @@
 import { isBoardingLockExpired, type BoardingLock } from '../types/boardingLock';
+import type { ArrivalInfo } from '../api/arrivalApi';
 import type { Station } from '../types/station';
 import type { TrainProgressResult } from './trackTrainProgress';
+import { projectArrivalEtaStation } from './arrivalEtaProjection';
 
 /**
  * ADR-008 — 탑승 진행 추정(BoardingLock 활성 trip 중 현재역) 합성기.
@@ -11,8 +13,8 @@ import type { TrainProgressResult } from './trackTrainProgress';
  *  ③ ReanchoredHop  — ①②가 마지막으로 본 (역, 시각)에 재앵커 — 최대 1 hop만 적분
  *  ④ DefaultHop     — 노선/세그먼트 hop time 테이블 (Stage 3/#624)
  *
- * Stage 1(#739)은 ①③만 실구현. ②④는 명시적 TODO 스텁(null 반환)으로 자리만 잡는다 — 인터페이스가
- * 안정화되면 후속 stage에서 채우면 그대로 합성 우선순위에 끼어든다(OCP).
+ * Stage 1(#739)은 ①③. Stage 2(#745)에서 ②(projectArrivalEtaStation 합성) 도입. ④는 Stage 3까지
+ * 명시적 빈 스텁으로 자리만 잡는다 — 후속 stage에서 채우면 그대로 합성 우선순위에 끼어든다(OCP).
  *
  * 핵심 변경: 기존 `interpolateBoardingLockStation`은 `lock.boardedAt`을 시작 앵커로 N hop을 통째로
  * 적분 → 보간이 메꾸는 구간이 trip 전체였다. ReanchoredHop은 마지막 실관측 `(arcIndex, observedAtMs)`에
@@ -43,6 +45,25 @@ export interface StationProgressEstimatorInput {
   lastObserved: { arcIndex: number; observedAtMs: number } | null;
   /** Strategy ③④에서 사용할 hop 시간(ms). Stage 1은 HOP_TIME_MS 패스스루, Stage 3에서 lookup. */
   hopTimeMs: number;
+  /**
+   * Strategy ② 입력 (#745) — `arcStations[currentIdxHint + 1]` 역의 ArrivalInfo 목록.
+   * `projectArrivalEtaStation`이 row별로 trainCode 매칭 + 신선도 필터링을 수행하므로 호출자는
+   * raw 배열을 그대로 전달한다 (호선/방향 사전 필터링은 호출자 책임). null/빈배열이면 ② skip.
+   */
+  nextStationArrivals: readonly ArrivalInfo[];
+  /**
+   * Strategy ②의 신선도 TTL(ms). row의 `nowMs - receivedAtMs > ttlMs`면 stale로 스킵.
+   * Stage 2 기준값은 `POSITION_TRAIN_TTL_MS`(60s)와 동일 — Strategy ①(LivePosition) 신선도
+   * 기준과 정렬해 채택 경계가 자연스럽게 ①→②→③로 흐르도록 한다(통합된 신선도 게이트).
+   * 후속 stage에서 측정 데이터 기반으로 별도 임계 사용 가능.
+   */
+  arrivalEtaTtlMs: number;
+  /**
+   * Strategy ② 진입점 인덱스 — 호출자가 직전 사이클의 채택 idx 또는 lastObserved.arcIndex로 전달.
+   * null이면 ② skip(다음 역을 가리킬 기준점 없음). null이 아니어도 `currentIdx + 1`이 arc 밖이면
+   * `projectArrivalEtaStation`이 종착 cap 처리로 마지막 인덱스를 반환한다.
+   */
+  currentIdxHint: number | null;
 }
 
 export type StationProgressStrategy =
@@ -77,12 +98,41 @@ function tryLivePosition(
   return { station: arcStations[idx], index: idx, strategy: 'live-position' };
 }
 
-/** Strategy ② — TODO Stage 2/#740. 다음 역 arrival의 trainCode 매칭으로 ETA 투영. */
+/**
+ * Strategy ② — 다음 역 arrival의 `trainCode` 매칭 row를 `projectArrivalEtaStation`으로 투영.
+ *
+ * lockedTrainCode 없거나 currentIdxHint 없으면 매칭 기준점 부재로 skip.
+ * `projectArrivalEtaStation`이 내부에서 (1) trainCode 매칭, (2) receivedAtMs 신선도, (3) arrivalCode
+ * 디코딩(5/0/1)을 처리해 적격 row가 없으면 null — 그대로 다음 전략으로 흐른다.
+ */
 function tryArrivalEta(
-  _input: StationProgressEstimatorInput,
+  input: StationProgressEstimatorInput,
 ): StationProgressEstimate | null {
-  // TODO Stage 2/#740 — 다음 역 arrival의 arrivalSeconds로 ETA 투영.
-  return null;
+  const {
+    nextStationArrivals,
+    lockedTrainCode,
+    currentIdxHint,
+    arcStations,
+    now,
+    arrivalEtaTtlMs,
+  } = input;
+  if (lockedTrainCode == null) return null;
+  if (currentIdxHint == null) return null;
+  if (nextStationArrivals.length === 0) return null;
+  const projected = projectArrivalEtaStation({
+    arrivals: nextStationArrivals,
+    trainCode: lockedTrainCode,
+    currentIdx: currentIdxHint,
+    arcStations,
+    nowMs: now,
+    ttlMs: arrivalEtaTtlMs,
+  });
+  if (!projected) return null;
+  return {
+    station: projected.station,
+    index: projected.index,
+    strategy: 'arrival-eta',
+  };
 }
 
 /**
@@ -128,11 +178,11 @@ function tryReanchoredHop(
   return { station: arcStations[idx], index: idx, strategy: 'reanchored-hop' };
 }
 
-/** Strategy ④ — TODO Stage 3/#624. line/segment별 hop time 데이터 테이블 fallback. */
+/** Strategy ④ — Stage 3/#624에서 채울 예정. line/segment별 hop time 데이터 테이블 fallback. */
 function tryDefaultHop(
   _input: StationProgressEstimatorInput,
 ): StationProgressEstimate | null {
-  // TODO Stage 3/#624 — HOP_TIME_TABLE lookup으로 line/segment별 정밀 hop time 대체.
+  // Stage 3/#624 — HOP_TIME_TABLE lookup으로 line/segment별 정밀 hop time 대체.
   return null;
 }
 
@@ -151,8 +201,8 @@ export function arcIndexOfStation(
 /**
  * 4단 전략을 우선순위대로 시도. 처음 채택된 전략의 결과를 반환.
  *
- * Stage 1은 ①(LivePosition) → ②(스텁) → ③(ReanchoredHop) → ④(스텁) 순. ②④가 자리만 잡혀 있어
- * 후속 stage가 그대로 끼어들 수 있다.
+ * Stage 2(#745) 기준 ①(LivePosition) → ②(ArrivalEta) → ③(ReanchoredHop) → ④(스텁) 순.
+ * ④는 후속 stage에서 채워지면 자연스레 끼어든다(OCP).
  */
 export function estimateStationProgress(
   input: StationProgressEstimatorInput,
