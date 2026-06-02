@@ -67,6 +67,7 @@
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
     "audio-route": "file:./modules/audio-route",
+    "motion-activity": "file:./modules/motion-activity",
     "expo": "~54.0.33",
     "expo-av": "~16.0.8",
     "expo-background-task": "~1.0.10",

@@ -1,0 +1,10 @@
+{
+  "platforms": ["ios", "android"],
+  "ios": {
+    "modules": ["MotionActivityModule"],
+    "podspecPath": "MotionActivity.podspec"
+  },
+  "android": {
+    "modules": ["com.subwaynow.motionactivity.MotionActivityModule"]
+  }
+}

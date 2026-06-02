@@ -114,12 +114,13 @@ describe('movementGate', () => {
   });
 
   describe('MOVEMENT_TO_ALARM_LOG_REASON', () => {
-    it('5개 MovementReason 모두 매핑', () => {
+    it('6개 MovementReason 모두 매핑 (#728: motion-stationary 추가)', () => {
       expect(MOVEMENT_TO_ALARM_LOG_REASON['no-location']).toBe('movement-no-location');
       expect(MOVEMENT_TO_ALARM_LOG_REASON['stale-timestamp']).toBe('movement-stale-timestamp');
       expect(MOVEMENT_TO_ALARM_LOG_REASON['low-accuracy']).toBe('movement-low-accuracy');
       expect(MOVEMENT_TO_ALARM_LOG_REASON['static-speed']).toBe('movement-static-speed');
       expect(MOVEMENT_TO_ALARM_LOG_REASON['static-position']).toBe('movement-static-position');
+      expect(MOVEMENT_TO_ALARM_LOG_REASON['motion-stationary']).toBe('movement-motion-stationary');
     });
   });
 
@@ -303,6 +304,156 @@ describe('movementGate', () => {
       // speed 이동 → reliable (positionStability=static이어도)
       const m2 = evaluateMovement({ speedMps: 5, accuracyM: 50 }, undefined, 'static');
       expect(m2.reliable).toBe(true);
+    });
+  });
+
+  // #728 — CMMotionActivity motion=stationary 신호 가드.
+  // 핵심 동기: 16:14:22 디바이스 로그의 station-passed | 용마산 회귀.
+  // snapshot speed=0.69 m/s (느린 도보)로 STATIC_SPEED_THRESHOLD_MPS=0.5 우회 → 잘못 발사.
+  // motion=stationary 신호로 임계값 우회 케이스를 잡는다. 또한 destination/transfer 카테고리도 보호.
+  describe('#728 — evaluateMovement motionStationary 가드', () => {
+    it('motionStationary=true이면 reliable=false reason=motion-stationary (다른 신호 정상)', () => {
+      const now = 1_000_000;
+      const m = evaluateMovement(
+        { timestamp: now, accuracyM: 50, speedMps: 1.5 },
+        now,
+        undefined,
+        true,
+      );
+      expect(m.reliable).toBe(false);
+      expect(m.reason).toBe('motion-stationary');
+    });
+
+    it('motionStationary=true 임계 우회 케이스 (16:14:22 회귀) — speed=0.69 m/s 차단', () => {
+      const now = 1_000_000;
+      const m = evaluateMovement(
+        { timestamp: now, accuracyM: 50, speedMps: 0.69 },
+        now,
+        undefined,
+        true,
+      );
+      expect(m.reliable).toBe(false);
+      expect(m.reason).toBe('motion-stationary');
+    });
+
+    it('motionStationary=false면 차단 안 함 (다른 신호 정상)', () => {
+      const now = 1_000_000;
+      const m = evaluateMovement(
+        { timestamp: now, accuracyM: 50, speedMps: 1.5 },
+        now,
+        undefined,
+        false,
+      );
+      expect(m.reliable).toBe(true);
+    });
+
+    it('motionStationary=undefined면 기존 동작 유지 (미전달 graceful fallback)', () => {
+      const now = 1_000_000;
+      const m = evaluateMovement(
+        { timestamp: now, accuracyM: 50, speedMps: 1.5 },
+        now,
+      );
+      expect(m.reliable).toBe(true);
+    });
+
+    it('평가 순서: stale > accuracy > motion-stationary > speed > position', () => {
+      const now = 1_000_000;
+      // stale 위반 + motionStationary=true → stale이 먼저 잡혀야 함
+      const m1 = evaluateMovement(
+        { timestamp: now - STALE_AGE_MS - 1, accuracyM: 50, speedMps: 5 },
+        now,
+        undefined,
+        true,
+      );
+      expect(m1.reason).toBe('stale-timestamp');
+
+      // accuracy 위반 + motionStationary=true → accuracy가 먼저
+      const m2 = evaluateMovement(
+        { timestamp: now, accuracyM: 999, speedMps: 5 },
+        now,
+        undefined,
+        true,
+      );
+      expect(m2.reason).toBe('low-accuracy');
+
+      // stale/accuracy 정상 + motionStationary=true + speed=0(static-speed도 위반) → motion이 먼저
+      // (motion이 speed보다 우선 — 임계 우회 회귀 차단이 핵심 동기)
+      const m3 = evaluateMovement(
+        { timestamp: now, accuracyM: 50, speedMps: 0 },
+        now,
+        undefined,
+        true,
+      );
+      expect(m3.reason).toBe('motion-stationary');
+
+      // motionStationary=true + speed=null + positionStability=static → motion이 먼저
+      const m4 = evaluateMovement(
+        { timestamp: now, accuracyM: 50 },
+        now,
+        'static',
+        true,
+      );
+      expect(m4.reason).toBe('motion-stationary');
+    });
+  });
+
+  describe('#728 — isStaticSpeedSignal motionStationary fallback', () => {
+    it('motionStationary=true이면 speed=null이어도 true (positionStability 없이)', () => {
+      expect(isStaticSpeedSignal(null, 50, undefined, true)).toBe(true);
+      expect(isStaticSpeedSignal(undefined, 50, undefined, true)).toBe(true);
+    });
+
+    it('motionStationary=true는 speed 정상값보다 약함 (speed가 우선)', () => {
+      // speed=5 정상이면 motionStationary=true여도 false (fusion downgrade는 명확한 정적만)
+      expect(isStaticSpeedSignal(5, 50, undefined, true)).toBe(false);
+    });
+
+    it('motionStationary=false + speed=null이면 false (보수)', () => {
+      expect(isStaticSpeedSignal(null, 50, undefined, false)).toBe(false);
+    });
+
+    it('motionStationary=true이지만 accuracy noise면 false (지하 GPS 노이즈 보호)', () => {
+      expect(isStaticSpeedSignal(null, MAX_ACCURACY_M + 1, undefined, true)).toBe(false);
+    });
+
+    it('motionStationary=true + positionStability=moving이면 true (motion이 우선)', () => {
+      // speed 미측정인 경우 motion이 positionStability보다 우선 — OS 가속도계가 더 신뢰성 있음
+      expect(isStaticSpeedSignal(null, 50, 'moving', true)).toBe(true);
+    });
+  });
+
+  describe('#728 — shouldDowngradeFusion motionStationary', () => {
+    it('승격 라벨 + motionStationary=true (speed=null) → true', () => {
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'position-train',
+          speedMps: null,
+          accuracyM: 50,
+          motionStationary: true,
+        }),
+      ).toBe(true);
+    });
+
+    it('승격 라벨 아니면 motionStationary=true여도 false', () => {
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'gps-only',
+          speedMps: null,
+          accuracyM: 50,
+          motionStationary: true,
+        }),
+      ).toBe(false);
+    });
+
+    it('승격 라벨 + motionStationary=false (다른 신호도 정상) → false', () => {
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'position-train',
+          speedMps: 5,
+          accuracyM: 50,
+          motionStationary: false,
+        }),
+      ).toBe(false);
     });
   });
 });

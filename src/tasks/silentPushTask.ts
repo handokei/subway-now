@@ -32,6 +32,7 @@ import {
   type AlarmLogReason,
 } from '../utils/alarmLog';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../utils/movementGate';
+import { getCurrentMotionStationary } from '../utils/motionActivity';
 import { addFiredPushId } from '../utils/firedPushIds';
 import {
   checkSilentPushLocationGate,
@@ -406,10 +407,19 @@ async function fireWithGate(
   // #727 — 정적 misfire 가드. gate는 거리/freshness만 검증하지만 사용자가 정적이면 잘못된
   // trainCode/fusion lock으로 잘못 발사될 수 있다. expo-location LocationObject의 speed/
   // accuracy가 있으면 평가 — 미측정(`speed === -1` 등)이면 skip하고 graceful pass.
-  const movement = evaluateMovement({
-    speedMps: gate.speedMps,
-    accuracyM: gate.accuracyM,
-  });
+  // #728 — CMMotionActivity motion=stationary 신호 동시 적용. BG에선 hook 못쓰니 직접 호출 — native
+  // module이 startUpdates된 상태(FG에서 useMotionActivity가 시작)에서 latest cache된 값을 반환.
+  // 권한 미부여/미지원/native fault 시 false → 기존 가드만 동작 (graceful fallback).
+  const motionStationary = getCurrentMotionStationary();
+  const movement = evaluateMovement(
+    {
+      speedMps: gate.speedMps,
+      accuracyM: gate.accuracyM,
+    },
+    undefined,
+    undefined,
+    motionStationary,
+  );
   if (!movement.reliable && movement.reason) {
     const movementReason = MOVEMENT_TO_ALARM_LOG_REASON[movement.reason];
     logSilentPushSkipped({

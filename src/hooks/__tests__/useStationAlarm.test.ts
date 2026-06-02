@@ -1653,4 +1653,157 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
     });
   });
+
+  // #728 — CMMotionActivity motionStationary 신호. 3개 effect(Phase ETA / API imminent / station-passed)
+  // 전부 동일 가드 적용. speed=0.69(임계 우회) phantom과 destination/transfer 카테고리 무방비 회귀를 잡는다.
+  describe('#728 motionStationary gate', () => {
+    const route = makeDirectRoute(1, '2');
+    const onRouteStation = makeStation('S2-DST', '강남');
+
+    it('API imminent + motionStationary=true (speed=0.69 임계 우회) → 차단 + movement-motion-stationary 적재', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            speedMps: 0.69, // 임계값 0.5 우회
+            accuracyMeters: 50,
+            motionStationary: true,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: '강남',
+            kind: 'destination',
+            phaseId: 'imminent',
+            reason: 'movement-motion-stationary',
+          }),
+        );
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('Phase rawEvent (early destination) + motionStationary=true → 차단 + movement-motion-stationary 적재', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'early',
+        type: 'destination',
+        stationName: '강남',
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            userLocation: { lat: 37.4, lng: 127 },
+            speedMps: 1.5, // 이동으로 보이는 speed지만 motion=stationary
+            accuracyMeters: 50,
+            motionStationary: true,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            stationName: '강남',
+            kind: 'destination',
+            phaseId: 'early',
+            reason: 'movement-motion-stationary',
+          }),
+        );
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('station-passed + motionStationary=true → 차단 + movement-motion-stationary 적재', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            speedMps: 0.69, // 임계 우회 phantom
+            accuracyMeters: 50,
+            motionStationary: true,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            stationName: '강남',
+            kind: 'station-passed',
+            reason: 'movement-motion-stationary',
+          }),
+        );
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('motionStationary=false면 차단 안 함 (이동 신호 정상)', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            speedMps: 5,
+            accuracyMeters: 50,
+            motionStationary: false,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+    });
+
+    it('motionStationary 미전달 — 기존 동작 유지 (graceful fallback)', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            speedMps: 5,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+    });
+
+    it('station-passed + motionStationary=true + arrivalConfirmed면 motion gate skip → 정상 발사', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      // arrivalConfirmed는 motion gate 자체를 우회 (기존 정책 — arrival API 단독 신호 보호).
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            speedMps: 0,
+            accuracyMeters: 50,
+            motionStationary: true,
+            arrivalConfidence: 'arrival-confirmed',
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+    });
+  });
 });

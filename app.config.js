@@ -34,6 +34,10 @@ module.exports = {
         },
         UIBackgroundModes: ['location', 'fetch', 'remote-notification'],
         ITSAppUsesNonExemptEncryption: false,
+        // #728 — CMMotionActivity 권한 사용 설명. 정적 misfire 가드(motionStationary 신호)로
+        // 정지 상태에서의 잘못된 알람 발사를 차단.
+        NSMotionUsageDescription:
+          '정지 상태에서 잘못된 알람이 울리지 않도록 움직임 감지를 사용합니다.',
       },
     },
     android: {
