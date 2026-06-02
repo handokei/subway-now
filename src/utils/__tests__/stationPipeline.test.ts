@@ -63,10 +63,15 @@ jest.mock('../notificationState', () => ({
 const mockLogFiredAlarm = jest.fn();
 const mockLogFiredStationPassed = jest.fn();
 const mockLogSuppressedDedupStation = jest.fn();
+const mockLogSuppressedDedupAlarm = jest.fn();
+const mockLogSuppressedSleepFirstTransfer = jest.fn();
 jest.mock('../alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
   logSuppressedDedupStation: (...args: unknown[]) => mockLogSuppressedDedupStation(...args),
+  logSuppressedDedupAlarm: (...args: unknown[]) => mockLogSuppressedDedupAlarm(...args),
+  logSuppressedSleepFirstTransfer: (...args: unknown[]) =>
+    mockLogSuppressedSleepFirstTransfer(...args),
 }));
 
 import { processLocationUpdate, resolveNextTarget } from '../stationPipeline';
@@ -122,6 +127,12 @@ describe('processLocationUpdate', () => {
     mockSetLastNotifiedStationId.mockResolvedValue(undefined);
     // 기본: lock 없음 — BG path가 GPS line을 그대로 사용 (기존 동작).
     mockGetBoardingLock.mockResolvedValue(null);
+    // #750: 알람 발사 분기는 resolveAllTargets를 호출해 첫 hop을 산출한다.
+    // 기존 테스트에서 빈 배열을 반환하면 `[0].name`이 깨지므로 destination 매칭 default를 둔다.
+    // sleep 게이트 describe는 자체 beforeEach로 transfer-first 매핑을 덮어쓴다.
+    mockResolveAllTargets.mockReturnValue([
+      { name: '시청', stops: 3, alarmType: 'destination', approachLine: '2' },
+    ]);
   });
 
   it('returns null nearest and null alarm when findNearestStation returns null', async () => {
@@ -635,6 +646,109 @@ describe('processLocationUpdate', () => {
         expect.any(Object),
         'routeProgress',
       );
+    });
+  });
+
+  // #750 — BG 즉시 발사 path도 공통 sleep 룰 게이트를 통과해야 한다.
+  // scheduler가 사전 예약을 skip한 transfer를 BG silent push 등이 우회 발사하던 회귀.
+  describe('#750 sleep first-transfer 게이트', () => {
+    const lock = {
+      destinationId: 'station-2',
+      trainCode: 'T-1',
+      boardingStationId: 'station-1',
+      boardingLine: '2' as const,
+      boardedAt: Date.now(),
+      expectedDurationMs: 60_000,
+    };
+    const transferAlarm: AlarmEvent = {
+      phaseId: 'early',
+      type: 'transfer',
+      stationName: '교대',
+    };
+
+    beforeEach(() => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockEvaluateAlarmPhase.mockReturnValue(transferAlarm);
+      // 첫 hop 매칭용 — resolveAllTargets는 호출 순서에 따라 호출됨. transfer 알람 매칭 케이스에서
+      // alarmEvent 분기와 station-passed 분기 둘 다 사용 — 둘 다 같은 targets 반환하도록 통일.
+      mockResolveAllTargets.mockReturnValue([
+        { name: '교대', stops: 1, alarmType: 'transfer', approachLine: '2' },
+        { name: '시청', stops: 3, alarmType: 'destination', approachLine: '1' },
+      ]);
+    });
+
+    it('sleep ON + lock 활성 + 첫 hop transfer → sendAlarmNotification 호출 X, suppression 로그', async () => {
+      mockGetBoardingLock.mockResolvedValue(lock);
+      await call({ sleepMode: true });
+      expect(mockLogSuppressedSleepFirstTransfer).toHaveBeenCalledWith({
+        source: 'bg',
+        stationName: '교대',
+        phaseId: 'early',
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+    });
+
+    it('sleep OFF + lock 활성 + 첫 hop transfer → 정상 발사', async () => {
+      mockGetBoardingLock.mockResolvedValue(lock);
+      await call({ sleepMode: false });
+      expect(mockSendAlarmNotification).toHaveBeenCalled();
+      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
+
+    it('sleep ON + lock null → 게이트 비활성, 정상 발사', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      await call({ sleepMode: true });
+      expect(mockSendAlarmNotification).toHaveBeenCalled();
+      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
+
+    it('sleep ON + lock 활성 + alarmEvent의 stationName이 첫 hop과 불일치 → 정상 발사 (둘째 hop은 영향 없음)', async () => {
+      mockGetBoardingLock.mockResolvedValue(lock);
+      // 둘째 hop transfer가 발사 시점에 trigger됐다고 가정 (자주 일어나지 않지만 회귀 가드).
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'early',
+        type: 'transfer',
+        stationName: '시청', // 둘째 hop
+      });
+      await call({ sleepMode: true });
+      expect(mockSendAlarmNotification).toHaveBeenCalled();
+      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
+
+    it('sleep ON + lock 활성 + destination 카테고리 → 정상 발사 (transfer 외 영향 없음)', async () => {
+      mockGetBoardingLock.mockResolvedValue(lock);
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'early',
+        type: 'destination',
+        stationName: '교대',
+      });
+      await call({ sleepMode: true });
+      expect(mockSendAlarmNotification).toHaveBeenCalled();
+      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
+
+    it('route=null → 게이트 비활성, alarmEvent도 null이라 발사 자체 없음 (회귀 가드)', async () => {
+      // route 미존재 시 evaluateAlarmPhase가 null을 반환하므로 게이트 분기에 들어가지 않는다.
+      // 본 케이스는 alarmEvent=null path에서 sleep 게이트가 우발 동작하지 않는지 가드.
+      mockGetBoardingLock.mockResolvedValue(lock);
+      mockFindRoute.mockReturnValue(null);
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+      await call({ sleepMode: true });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
+
+    it('route=null인데 evaluator가 alarmEvent 반환(비정상) → 게이트 분기 진입 안 함, 발사 안 함 (defensive guard)', async () => {
+      // evaluateAlarmPhase 계약상 route=null이면 null이지만, mock으로 비정상 케이스를 시뮬레이트해
+      // 발사 분기의 `alarmEvent && route` 가드 양쪽을 branch coverage로 확정한다.
+      mockGetBoardingLock.mockResolvedValue(lock);
+      mockFindRoute.mockReturnValue(null);
+      mockEvaluateAlarmPhase.mockReturnValue(transferAlarm);
+      await call({ sleepMode: true });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
     });
   });
 });

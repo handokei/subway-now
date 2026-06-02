@@ -11,8 +11,10 @@ import {
   logFiredStationPassed,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
+  logSuppressedSleepFirstTransfer,
   type AlarmLogSource,
 } from './alarmLog';
+import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import type { NearestStationResult, Station } from '../types/station';
 import type { Route } from './stationRoute';
@@ -166,9 +168,31 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
 
   for (const event of suppressed) logSuppressedDedupAlarm(source, event);
 
-  if (alarmEvent) {
-    await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker, notificationSource);
-    logFiredAlarm(source, alarmEvent);
+  // alarmEvent && route 두 조건이 동시에 참일 때만 발사 분기 진입.
+  // evaluateAlarmPhase는 route=null이면 항상 null이라 사실상 alarmEvent != null이면 route != null.
+  // 명시 가드로 type narrowing 후 resolveAllTargets 호출 — non-null assertion 회피.
+  if (alarmEvent && route) {
+    // #750: 공통 sleep 룰 게이트. scheduler 사전 예약이 skip한 transfer를 BG 즉시 발사 path가
+    // 우회 발사하던 회귀 차단. 첫 hop 판정은 route의 첫 waypoint와 stationName 일치로 — lock
+    // 활성 동안 leg가 갱신되면 lock도 갱신되므로 route.targets[0]이 곧 현재 leg의 첫 hop.
+    const firstHopName = resolveAllTargets(route, destination.name)[0].name;
+    const isFirstHop = isSameStationName(firstHopName, alarmEvent.stationName);
+    const suppressBySleep = shouldSuppressBySleepRule({
+      lock: lockForLineGuard,
+      event: { type: alarmEvent.type, stationName: alarmEvent.stationName },
+      sleepMode,
+      isFirstHop,
+    });
+    if (suppressBySleep) {
+      logSuppressedSleepFirstTransfer({
+        source,
+        stationName: alarmEvent.stationName,
+        phaseId: alarmEvent.phaseId,
+      });
+    } else {
+      await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker, notificationSource);
+      logFiredAlarm(source, alarmEvent);
+    }
   }
 
   // 역 변경 감지 → per-station 알림. 단, 경로상 노선의 역만 (false alarm 방지)

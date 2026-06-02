@@ -13,6 +13,8 @@ import {
 } from './scheduledNotificationsStorage';
 import { createLogger } from './logger';
 import { HOP_TIME_MS } from '../constants/boardingLock';
+import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
+import { logSuppressedSleepFirstTransfer } from './alarmLog';
 
 const logger = createLogger('BoardingLockScheduler');
 
@@ -154,14 +156,27 @@ function arrivalMsForHop(
 
 /**
  * 탑승/환승 직후 새 leg의 첫 hop이 transfer일 때 sleep ON이면 알람 skip(#632).
- * scheduleHopsForLock / advanceHopWindow가 공유하는 동일 조건 — 중복 제거.
+ * scheduleHopsForLock / advanceHopWindow가 공유하는 동일 조건 — 정책은 공통 게이트 위임.
+ *
+ * #750: 즉시 발사 path(FG/BG)도 동일 게이트를 사용하도록 `shouldSuppressBySleepRule`로 일원화.
+ * 본 helper는 scheduler 내부 호출부 단순화용 wrapper — 차단 시 alarmLog suppression entry도 기록.
  */
 function shouldSkipFirstTransferForSleep(
   isFirstNewHop: boolean,
   sleepMode: boolean,
-  hop: { alarmType: string },
+  hop: CurrentTarget,
+  lock: BoardingLock,
 ): boolean {
-  return isFirstNewHop && sleepMode && hop.alarmType === 'transfer';
+  const suppress = shouldSuppressBySleepRule({
+    lock,
+    event: { type: hop.alarmType, stationName: hop.name },
+    sleepMode,
+    isFirstHop: isFirstNewHop,
+  });
+  if (suppress) {
+    logSuppressedSleepFirstTransfer({ source: 'bg-scheduled', stationName: hop.name });
+  }
+  return suppress;
 }
 
 async function cancelAndDismiss(ids: string[]): Promise<void> {
@@ -207,7 +222,7 @@ export async function scheduleHopsForLock(params: ScheduleHopsParams): Promise<s
 
   const scheduledIds: string[] = [];
   for (let hopIndex = 0; hopIndex < lastIdx; hopIndex++) {
-    if (shouldSkipFirstTransferForSleep(hopIndex === 0, sleepMode, allTargets[hopIndex])) {
+    if (shouldSkipFirstTransferForSleep(hopIndex === 0, sleepMode, allTargets[hopIndex], lock)) {
       // 탑승 직후 첫 hop이 환승이고 sleep ON → 사용자가 노이즈로 느낀다(#632). 둘째 hop부터 정상 예약.
       continue;
     }
@@ -338,6 +353,7 @@ export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<
         hopIndex === passedIndex + 1,
         sleepMode,
         allTargets[hopIndex],
+        lock,
       )
     ) {
       // "방금 진입한 새 leg의 첫 hop"이 transfer면 skip(#632). out-of-order advance(0→2 등 GPS 점프)에서도

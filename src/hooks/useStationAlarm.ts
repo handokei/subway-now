@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { isStationOnRoute } from '../utils/stationRoute';
+import { isStationOnRoute, isSameStationName } from '../utils/stationRoute';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
-import { alarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
+import { alarmKey, evaluateAlarmPhase, resolveAllTargets, type AlarmEvent } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateEtaSeconds } from '../utils/stationEta';
 import { resolveNextTarget } from '../utils/stationPipeline';
@@ -24,7 +24,10 @@ import {
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedMovement,
+  logSuppressedSleepFirstTransfer,
 } from '../utils/alarmLog';
+import { getBoardingLock } from '../utils/boardingLockStorage';
+import { shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../utils/movementGate';
 import type { PositionStability } from '../utils/positionStaticDetector';
 import { useAppStore } from '../store/useAppStore';
@@ -185,6 +188,28 @@ export function useStationAlarm({
     activeRoute: NonNullable<Route>,
     activeDestination: Station,
   ): Promise<void> {
+    // #750: 공통 sleep 룰 게이트. scheduler가 사전 예약을 skip한 transfer를 FG polling이
+    // 우회 발사하던 회귀 차단. firedAlarms에 추가하지 않고 그냥 return — 다음 폴링이 다시 같은
+    // 게이트를 통과하지 못하므로 안전 (sleep OFF로 토글되면 그때 정상 발사 경로 진입).
+    // resolveAllTargets는 route가 활성이면 최소 1개 waypoint를 반환한다 — empty 분기 가드 불필요.
+    const firstHopName = resolveAllTargets(activeRoute, activeDestination.name)[0].name;
+    const isFirstHop = isSameStationName(firstHopName, rawEvent.stationName);
+    const lock = await getBoardingLock();
+    if (
+      shouldSuppressBySleepRule({
+        lock,
+        event: { type: rawEvent.type, stationName: rawEvent.stationName },
+        sleepMode: sleepModeRef.current,
+        isFirstHop,
+      })
+    ) {
+      logSuppressedSleepFirstTransfer({
+        source: 'fg',
+        stationName: rawEvent.stationName,
+        phaseId: rawEvent.phaseId,
+      });
+      return;
+    }
     // 좌/우 안내 방향. nearestStation 미정이면 direction 미부착(본문에 좌/우 라인 생략).
     const direction = nearestStation
       ? resolveAlarmDirection(rawEvent, {
