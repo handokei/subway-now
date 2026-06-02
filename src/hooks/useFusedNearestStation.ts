@@ -31,6 +31,7 @@ import {
   POSITION_TRAIN_TTL_MS,
 } from '../constants/realtime';
 import type { LinePositions } from '../api/positionApi';
+import type { ArrivalInfo, StationArrival } from '../api/arrivalApi';
 import type { BoardingLock } from '../types/boardingLock';
 import type { NearestStationResult, Station } from '../types/station';
 import type { ArrivalProvider, PositionProvider } from '../providers/types';
@@ -97,6 +98,37 @@ function matchPositionsForCandidate(
   for (const lp of positions) {
     if (!lp || lp.line !== candidate.station.line) continue;
     return lp.trains.filter((t) => t.statnNm === candidate.station.name);
+  }
+  return [];
+}
+
+interface CandidateArrivalSlot {
+  /** 폴링 시 사용한 후보 역명 — `useArrivalInfo`의 첫 인자와 동일. */
+  stationName: string | null;
+  arrival: StationArrival | null;
+}
+
+/**
+ * 다음 역(`arcStations[currentIdx+1]`)에 해당하는 ArrivalInfo 목록을 기존 `useArrivalInfo` 결과에서 추출.
+ *
+ * ADR-008 ② ArrivalEtaStrategy 입력(#745). 신규 폴링을 신설하지 않고 GPS 후보 슬롯(a0/a1/a2)에
+ * 이미 받아둔 `StationArrival`에서 `(stationName, line)` 매칭으로 한 슬롯만 골라 `up + down`을 concat한다.
+ *
+ * 다음 역이 GPS 후보가 아니면(사용자가 다음 역에 충분히 가깝지 않은 dead zone) 빈 배열 반환 — 그
+ * 사이클은 ② skip, ③(ReanchoredHop)이 자연 fallback. fusion 캐시 재사용만으로 ② 효과가 트립의
+ * 마지막 ~500m 구간에 집중되도록 설계된 의도(추가 폴링 없이 정확도 ↑).
+ */
+function pickArrivalsForStation(
+  station: Station | null,
+  slots: readonly CandidateArrivalSlot[],
+): readonly ArrivalInfo[] {
+  if (!station) return [];
+  for (const { stationName, arrival } of slots) {
+    if (!arrival) continue;
+    if (stationName !== station.name) continue;
+    // 같은 역명이라도 환승역이면 두 호선 응답이 섞일 수 있어 row.line으로 한 번 더 좁힌다.
+    const matched = [...arrival.up, ...arrival.down].filter((row) => row.line === station.line);
+    if (matched.length > 0) return matched;
   }
   return [];
 }
@@ -384,6 +416,21 @@ export function useFusedNearestStation(
     }
   }, [boardingLock]);
 
+  // Strategy ②(ArrivalEta) 입력 — 신규 폴링 신설 금지(#745). currentIdxHint는 마지막 LivePosition
+  // 관측(lastObservedRef) 또는 채택된 estimate의 직전 idx로 자연스럽게 흐른다. 본 hook은
+  // lastObservedRef를 진입점으로 사용 — ①이 마지막에 본 위치를 기준으로 "다음 역"을 산정.
+  // null이면 ② skip(estimator 내부 처리).
+  const currentIdxHint = lastObservedRef.current?.arcIndex ?? null;
+  const nextStationOnArc =
+    currentIdxHint != null && currentIdxHint + 1 < arcStations.length
+      ? arcStations[currentIdxHint + 1]
+      : null;
+  const nextStationArrivals = pickArrivalsForStation(nextStationOnArc, [
+    { stationName: c0, arrival: a0.arrival },
+    { stationName: c1, arrival: a1.arrival },
+    { stationName: c2, arrival: a2.arrival },
+  ]);
+
   // useMemo로 감싸면 deps가 시간을 포함하지 않아 부모 리렌더가 없는 동안 stale.
   // estimator는 분기·정수 산술 위주 — render마다 직접 계산해도 무비용.
   const estimate = estimateStationProgress({
@@ -394,6 +441,9 @@ export function useFusedNearestStation(
     lockedTrainCode: lockedTrainCode ?? null,
     lastObserved: lastObservedRef.current,
     hopTimeMs: HOP_TIME_MS,
+    nextStationArrivals,
+    arrivalEtaTtlMs: POSITION_TRAIN_TTL_MS,
+    currentIdxHint,
   });
 
   // #662 invariant: estimate가 boardingLock이 active일 때만 만들어지고 arcStations(route segment)
