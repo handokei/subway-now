@@ -31,6 +31,11 @@ import {
   subscribeFusionDebug,
   type FusionDebugEntry,
 } from '../utils/fusionDebugBuffer';
+import {
+  dumpScheduledNotifications,
+  formatScheduledNotificationLine,
+  type ScheduledNotificationDumpEntry,
+} from '../utils/scheduledNotificationsDump';
 import type { FusionConfidence, FusionSource } from '../utils/pickFusedStation';
 import type { NearestStationResult } from '../types/station';
 import { useTheme, spacing, radius, typography } from '../theme';
@@ -174,6 +179,8 @@ function buildDumpText(args: {
   isMock: boolean;
   silentPush: SilentPushDiagnostics;
   logs: AlarmLogEntry[];
+  // #756: OS 큐 dump. 미전달/null = DebugModal에서 한 번도 Refresh 안 한 상태.
+  scheduledDump?: ScheduledNotificationDumpEntry[] | null;
 }): string {
   const lines: string[] = [];
   lines.push(`[Subway debug] ${new Date().toISOString()}`);
@@ -213,6 +220,19 @@ function buildDumpText(args: {
   lines.push('## Silent Push');
   for (const { dumpKey, value } of silentPushDiagRows(args.silentPush)) {
     lines.push(`${dumpKey}=${value}`);
+  }
+  lines.push('');
+  // #756: 사용자가 Refresh 안 했으면 dump 섹션 자체를 "(not loaded)"로 명시해
+  // "비어있음"과 "load 안 함"을 dump 텍스트만 보고도 구분 가능하게.
+  // optional 필드 — undefined 도 null 과 동일 처리.
+  if (args.scheduledDump == null) {
+    lines.push('## Scheduled queue');
+    lines.push('(not loaded)');
+  } else {
+    lines.push(`## Scheduled queue (${args.scheduledDump.length})`);
+    for (const entry of args.scheduledDump) {
+      lines.push(formatScheduledNotificationLine(entry));
+    }
   }
   lines.push('');
   lines.push(`## Alarm log (${args.logs.length})`);
@@ -281,6 +301,13 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
   const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
     getFusionDebugEntries(),
   );
+  // #756: OS 큐 ground-truth dump. 호출 직후 한 번 비동기로 채워진다.
+  // null = 아직 한 번도 dump 안 한 상태 → "Tap Refresh" placeholder 노출.
+  const [scheduledDump, setScheduledDump] = useState<ScheduledNotificationDumpEntry[] | null>(null);
+
+  const refreshScheduledDump = useCallback(async () => {
+    setScheduledDump(await dumpScheduledNotifications());
+  }, []);
 
   useEffect(() => {
     return subscribeFusionDebug(() => setFusionLogs([...getFusionDebugEntries()]));
@@ -339,6 +366,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
       isMock,
       silentPush,
       logs,
+      scheduledDump,
     });
     void Share.share({ message });
   }, [
@@ -358,6 +386,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
     isMock,
     silentPush,
     logs,
+    scheduledDump,
   ]);
 
   return (
@@ -486,6 +515,39 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
                   testID="debug-fusion-log-entry"
                 >
                   {formatFusionDebugLine(entry)}
+                </Text>
+              ))
+            )}
+          </Section>
+
+          <Section
+            title={
+              scheduledDump
+                ? `Scheduled queue (${scheduledDump.length})`
+                : 'Scheduled queue'
+            }
+            colors={colors}
+            action={
+              <Pressable onPress={refreshScheduledDump} testID="debug-scheduled-dump-refresh">
+                <Text style={[typography.bodySm, { color: colors.accent }]}>Refresh</Text>
+              </Pressable>
+            }
+          >
+            {scheduledDump === null ? (
+              <Text style={[typography.mono, { color: colors.muted }]}>
+                (tap Refresh to load)
+              </Text>
+            ) : scheduledDump.length === 0 ? (
+              <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
+            ) : (
+              scheduledDump.map((entry) => (
+                <Text
+                  key={entry.identifier}
+                  style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
+                  selectable
+                  testID="debug-scheduled-dump-entry"
+                >
+                  {formatScheduledNotificationLine(entry)}
                 </Text>
               ))
             )}

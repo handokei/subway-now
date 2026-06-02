@@ -19,11 +19,12 @@ jest.mock('../../utils/boardingLockScheduler', () => {
   };
 });
 const mockLoggerError = jest.fn();
+const mockLoggerWarn = jest.fn();
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),
-    warn: jest.fn(),
+    warn: (...args: unknown[]) => mockLoggerWarn(...args),
     error: (...args: unknown[]) => mockLoggerError(...args),
   }),
 }));
@@ -272,5 +273,83 @@ describe('useBoardingLockScheduler', () => {
     await waitFor(() => expect(mockedCancel).toHaveBeenCalledWith(lockA));
     rerender({ lock: lockA, route, destinationName: '강남' });
     await waitFor(() => expect(mockedSchedule).toHaveBeenCalledTimes(2));
+  });
+
+  // #756 transition trace log — stale `bl:` 알람 누수 진단. effect 진입부에서 prev/next
+  // trainCode + sigPrev/sigNext + decision flags를 한 줄 logger.info로 노출.
+  // USB Console.app으로 trip 전환 시퀀스를 실시간 추적 가능.
+  describe('#756 transition trace log', () => {
+    it('lock=null 초기 마운트 — prev/next/scheduledTrain 모두 null, schedule 결정 없음', async () => {
+      renderHook(() =>
+        useBoardingLockScheduler({ lock: null, route, destinationName: '강남' }),
+      );
+      await waitFor(() => expect(mockLoggerWarn).toHaveBeenCalled());
+      const traceCall = mockLoggerWarn.mock.calls.find((c) =>
+        String(c[0]).startsWith('transition '),
+      );
+      expect(traceCall).toBeDefined();
+      const line = String(traceCall![0]);
+      expect(line).toContain('prevTrain=null');
+      expect(line).toContain('nextTrain=null');
+      expect(line).toContain('scheduledTrain=null');
+      expect(line).toContain('canSchedule=false');
+      expect(line).toContain('coldRestart=false');
+      expect(line).toContain('routeChange=false');
+    });
+
+    it('lock A 신규 — scheduledTrain=null (아직 schedule 안 됨), coldRestart=true', async () => {
+      renderHook(() =>
+        useBoardingLockScheduler({ lock: lockA, route, destinationName: '강남' }),
+      );
+      await waitFor(() => expect(mockLoggerWarn).toHaveBeenCalled());
+      const traceCall = mockLoggerWarn.mock.calls.find((c) =>
+        String(c[0]).startsWith('transition '),
+      );
+      const line = String(traceCall![0]);
+      expect(line).toContain('prevTrain=null');
+      expect(line).toContain('nextTrain=A');
+      // scheduledTrainCodeRef은 schedule 완료 후에야 갱신 — 첫 cycle에선 아직 null.
+      expect(line).toContain('scheduledTrain=null');
+      expect(line).toContain('coldRestart=true');
+      expect(line).toContain('routeChange=false');
+    });
+
+    it('lock A → B 교체 — prev=A, next=B, scheduledTrain=A (직전 schedule 성공 흔적)', async () => {
+      const { rerender } = renderScheduler({ lock: lockA, route, destinationName: '강남' });
+      await awaitFirstSchedule();
+      mockLoggerWarn.mockClear();
+      rerender({ lock: lockB, route, destinationName: '강남' });
+      await waitFor(() => expect(mockLoggerWarn).toHaveBeenCalled());
+      const traceCall = mockLoggerWarn.mock.calls.find((c) =>
+        String(c[0]).startsWith('transition '),
+      );
+      const line = String(traceCall![0]);
+      expect(line).toContain('prevTrain=A');
+      expect(line).toContain('nextTrain=B');
+      // schedule 완료된 직후의 cycle이므로 scheduledTrainCodeRef = 'A'.
+      expect(line).toContain('scheduledTrain=A');
+    });
+
+    it('#708 같은 trainCode + route 변경 — routeChange=true 노출', async () => {
+      const transferRoute = makeTransferRoute({
+        transferName: '시청',
+        fromLine: '2',
+        toLine: '1',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      const { rerender } = renderScheduler({ lock: lockA, route, destinationName: '강남' });
+      await awaitFirstSchedule();
+      mockLoggerWarn.mockClear();
+      rerender({ lock: lockA, route: transferRoute, destinationName: '강남' });
+      await waitFor(() => expect(mockLoggerWarn).toHaveBeenCalled());
+      const traceCall = mockLoggerWarn.mock.calls.find((c) =>
+        String(c[0]).startsWith('transition '),
+      );
+      const line = String(traceCall![0]);
+      expect(line).toContain('prevTrain=A');
+      expect(line).toContain('nextTrain=A');
+      expect(line).toContain('routeChange=true');
+    });
   });
 });
