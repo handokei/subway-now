@@ -39,15 +39,15 @@ import { useBoardingLockController } from '../../src/hooks/useBoardingLockContro
 import { useBoardingLockScheduler } from '../../src/hooks/useBoardingLockScheduler';
 import { useBoardingLockAdvancer } from '../../src/hooks/useBoardingLockAdvancer';
 import { useBoardingLockAutoRelease } from '../../src/hooks/useBoardingLockAutoRelease';
-import { BoardingLockBanner } from '../../src/components/BoardingLockBanner';
 import { MisBoardingBanner } from '../../src/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../../src/components/MisBoardingReselectModal';
 import { Toast } from '../../src/components/Toast';
 import { useMisBoardingDetector } from '../../src/hooks/useMisBoardingDetector';
 import { useTrainPositions } from '../../src/hooks/useTrainPositions';
 import { useTransferTrainList } from '../../src/hooks/useTransferTrainList';
-import { TRANSFER_WALKING_BUFFER_SECONDS } from '../../src/constants/boardingLock';
+import { TRANSFER_WALKING_BUFFER_SECONDS, BOARDING_PROXIMITY_THRESHOLD_M } from '../../src/constants/boardingLock';
 import { BoardingTrainList } from '../../src/components/BoardingTrainList';
+import { BoardingLockHopCard } from '../../src/components/BoardingLockHopCard';
 import { resolveNextAdjacentStationName } from '../../src/utils/nextAdjacentStation';
 import type { Stop } from '../../src/utils/journeyAdapter';
 
@@ -656,8 +656,35 @@ export default function HomeScreen() {
                         <EditorialTimeline
                           stops={stops}
                           renderHopSlot={(stop, i) => {
-                            // #649 — origin hop slot: 현재역에서 다음 인접역 방면 boarding list
+                            // #758 — origin hop slot에 BoardingLock 활성 상태 카드 렌더.
+                            // BoardingLockBanner 별도 카드는 제거되고 timeline 안 hop으로 통합.
+                            if (i === 0 && stop.mark === 'filled' && boardingLock) {
+                              return (
+                                <BoardingLockHopCard
+                                  lock={boardingLock}
+                                  onRelease={releaseBoardingLock}
+                                />
+                              );
+                            }
+                            // #649 — origin hop slot: 현재역에서 다음 인접역 방면 boarding list.
+                            // #758 — 탑승역 GPS 근접 게이트(BOARDING_PROXIMITY_THRESHOLD_M). custom origin은
+                            //  사용자 명시 설정이라 게이트 면제. 게이트 미통과 시 list 비노출 + 안내 텍스트.
                             if (i === 0 && stop.mark === 'filled' && !boardingLock && effectiveOrigin) {
+                              const distanceToCurrentM = (result?.distanceKm ?? Infinity) * 1000;
+                              const nearBoardingStation =
+                                isCustomOrigin || distanceToCurrentM < BOARDING_PROXIMITY_THRESHOLD_M;
+                              if (!nearBoardingStation) {
+                                return (
+                                  <View
+                                    style={styles.boardingProximityHint}
+                                    testID="boarding-proximity-hint"
+                                  >
+                                    <Text style={[typography.bodySm, { color: colors.muted }]}>
+                                      {t('home.boardingProximityHint')}
+                                    </Text>
+                                  </View>
+                                );
+                              }
                               const towardName = findNextWaypointName(stops, i);
                               const label = towardName
                                 ? resolveNextAdjacentStationName(
@@ -716,18 +743,15 @@ export default function HomeScreen() {
                       </Text>
                     </Pressable>
                   )}
-                  {/* #625 — BoardingLock/MisBoarding 배너는 route 컨텍스트 안에서 노출.
-                       종전에는 sleep mode toggle 아래라 사용자가 route와 별도 카드로 인지하지
-                       못함 + 너무 멀리 떨어져 있었음. 이제 경로 표시 직후로 이동.
-                       외곽 {destination && ...} 가드 안쪽이라 destination 재가드 불필요. */}
+                  {/* #625 — MisBoarding 배너는 route 컨텍스트 안에서 노출.
+                       외곽 {destination && ...} 가드 안쪽이라 destination 재가드 불필요.
+                       #758: BoardingLockBanner는 hop slot 안 BoardingLockHopCard로 통합 이전 — 별도 노출 제거. */}
                   {boardingLock && misBoardingDetected && (
                     <MisBoardingBanner onReselect={releaseBoardingLock} />
                   )}
-                  {boardingLock && (
-                    <BoardingLockBanner lock={boardingLock} onRelease={releaseBoardingLock} />
-                  )}
                   {/* #649 — BoardingTrainList 두 인스턴스(현재역/환승)는 EditorialTimeline의
-                       renderHopSlot으로 이동: timeline hop 사이에 inline compact 표기. */}
+                       renderHopSlot으로 이동: timeline hop 사이에 inline compact 표기.
+                       #758 — BoardingLockHopCard도 같은 origin hop slot으로 통합. */}
                 </View>
 
                 {/* Actions */}
@@ -996,6 +1020,10 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.sm,
     marginBottom: spacing.xs,
+  },
+  boardingProximityHint: {
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.sm,
   },
   sleepRow: {
     flexDirection: 'row',

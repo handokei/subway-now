@@ -48,7 +48,8 @@
     "notNearStationDescription": "当您距离地铁站500m以内时,会显示当前站。\n您也可以在地图标签页手动设置出发站。",
     "locationUncertainTitle": "正在定位",
     "locationUncertainDescription": "GPS精度较低,\n暂时无法确定您的位置。\n稍后将自动重试。",
-    "refresh": "刷新"
+    "refresh": "刷新",
+    "boardingProximityHint": "靠近乘车站后可以选择列车"
   },
   "settings": {
     "title": "设置",

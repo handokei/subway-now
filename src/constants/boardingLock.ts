@@ -23,6 +23,16 @@ export const TRANSFER_WALKING_BUFFER_SECONDS = 180;
 export const HOP_TIME_MS = 90_000;
 
 /**
+ * 탑승역 근접 게이트 임계값 (미터, #758).
+ * BoardingTrainList(현재역 도착 list)를 노출할 GPS 거리 한계.
+ *
+ * 정당화: 서울 지하철 역사 출구의 일반적인 도보 반경(~300m) + GPS 도심 정확도 여유(~200m).
+ * 사용자가 역에서 멀리 떨어진 곳에서 list만 미리 보고 잘못 탭하는 케이스 차단 — 거리 게이트는
+ * fusion 신호와 무관(미터 단위)이므로 지하/지상 신호 변동에 영향받지 않음.
+ */
+export const BOARDING_PROXIMITY_THRESHOLD_M = 500;
+
+/**
  * #759 — 도착 자동 release 트리거 임계값(m). 사용자가 목적지역과 같은 정거장으로 매칭되고
  * fusion distance가 이 값 미만이면 "도착"으로 간주.
  *
