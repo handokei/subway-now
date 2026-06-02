@@ -20,8 +20,9 @@ import { passesFusionDistanceGate } from '../utils/fusionDistanceGate';
 import { computeRouteArc } from '../utils/routeProgress';
 import {
   arcIndexOfStation,
-  interpolateBoardingLockStation,
-} from '../utils/boardingLockInterpolation';
+  estimateStationProgress,
+} from '../utils/stationProgressEstimator';
+import { HOP_TIME_MS } from '../constants/boardingLock';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import {
   MAX_ACTIVE_LINES,
@@ -335,8 +336,8 @@ export function useFusedNearestStation(
     source = 'gps';
   }
 
-  // #621 BoardingLock 시간 interpolation — 지하 GPS stale ratchet forward.
-  // arc상 시간 interp 위치가 현 채택된 결과보다 앞이거나, 채택 결과가 arc 밖이면 override.
+  // ADR-008 stationProgressEstimator — 시간 적분 → 관측 구동 전환 (#739).
+  // arc상 추정 위치가 현 채택된 결과보다 앞이거나, 채택 결과가 arc 밖이면 override.
   // 채택 결과가 더 앞이면 그대로(실제 신호 우선) — 역행 방지(monotone forward).
   // confidence/source는 #584 PR D2의 'boarding-lock'(position-train + trainCode 매칭)과
   // 구분하기 위해 'boarding-lock-interp' 별도 라벨 사용 — 측정·디버그 인프라에서 구분 가능.
@@ -350,28 +351,72 @@ export function useFusedNearestStation(
     return arc?.stations ?? [];
   }, [routeContext]);
 
+  // estimator/anchor에 넘기는 trainProgress는 fusion 게이트(TTL + distance)를 통과한 것만 신선 신호로 인정.
+  // positionTrainResult가 null이면 trainProgress는 stale이거나 게이트 탈락 — Strategy ①(LivePosition)이
+  // stale 좌표를 신선 관측으로 채택해 lastObserved 앵커를 과거 위치로 박는 사고 방지(#739 P1).
+  const freshTrainProgress = positionTrainResult != null ? trainProgress : null;
+
+  // ReanchoredHop 앵커 — LivePosition이 lock.trainCode와 매칭되며 arc 위에 있을 때마다 갱신.
+  // 폴링 1회마다 앵커가 새로 찍히므로 LivePosition이 끊긴 dead zone에서도 보간 구간이 최대 1 hop.
+  // ref로 보존 — LivePosition 끊긴 후에도 마지막 실관측을 estimator에 전달.
+  const lastObservedRef = useRef<{ arcIndex: number; observedAtMs: number } | null>(null);
+  useEffect(() => {
+    if (!freshTrainProgress) return;
+    if (lockedTrainCode == null) return;
+    if (freshTrainProgress.trainNo !== lockedTrainCode) return;
+    if (arcStations.length === 0) return;
+    const idx = arcIndexOfStation(arcStations, freshTrainProgress.currentStation);
+    if (idx === -1) return;
+    lastObservedRef.current = { arcIndex: idx, observedAtMs: Date.now() };
+  }, [freshTrainProgress, lockedTrainCode, arcStations]);
+
+  // boardingLock이 release/교체되면 앵커도 리셋 — 이전 trip 관측이 새 trip에 흘러가는 것 방지.
+  // race: createTransferLock으로 lock이 새 leg로 교체되는 순간 1 cycle 옛 앵커가 새 arc에 매칭될
+  // 위험이 있으나, lock 자체 변화로 effect가 트리거되며 다음 render에서 새 앵커로 갱신된다.
+  const prevLockKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = boardingLock
+      ? `${boardingLock.trainCode}|${boardingLock.boardedAt}`
+      : null;
+    if (prevLockKeyRef.current !== key) {
+      lastObservedRef.current = null;
+      prevLockKeyRef.current = key;
+    }
+  }, [boardingLock]);
+
   // useMemo로 감싸면 deps가 시간을 포함하지 않아 부모 리렌더가 없는 동안 stale.
-  // interp는 findIndex 1회 + 정수 산술 — render마다 직접 계산해도 무비용.
-  const interpResult = interpolateBoardingLockStation({
+  // estimator는 분기·정수 산술 위주 — render마다 직접 계산해도 무비용.
+  const estimate = estimateStationProgress({
     lock: boardingLock ?? null,
     arcStations,
     now: Date.now(),
+    trainProgress: freshTrainProgress,
+    lockedTrainCode: lockedTrainCode ?? null,
+    lastObserved: lastObservedRef.current,
+    hopTimeMs: HOP_TIME_MS,
   });
 
-  // #662 invariant: interp가 boardingLock이 active일 때만 만들어지고 arcStations(route segment)
+  // #662 invariant: estimate가 boardingLock이 active일 때만 만들어지고 arcStations(route segment)
   // 위로만 전진하므로 lock.boardingLine 외 노선이 들어올 수 없음 — #662 가드 별도 적용 불필요.
-  if (interpResult && arcStations.length > 0) {
+  //
+  // ADR-008 #739 — monotone forward 가드 유지.
+  // 'station-passed' 알람은 lastNotifiedStationId로 dedup하나, 통과한 역 id가 바뀌면 새 알람을 발사한다.
+  // backward 정정 허용 시 이미 통과한 역의 알람이 재발사되어 사용자 혼란. ReanchoredHop이 적분을 1 hop으로
+  // 제한해 잘못된 forward를 구조적으로 막으므로 forward 가드만으로도 ADR §원인 ③의 누적 drift는 해소된다.
+  // LivePosition으로 fusion 자체가 이미 정정되는 경우(positionTrainResult branch)에는 estimator override
+  // 자체가 일어나지 않으므로 backward 정정 손실 없음.
+  if (estimate && arcStations.length > 0) {
     const chosenIdx = arcIndexOfStation(arcStations, result?.station ?? null);
-    if (chosenIdx === -1 || interpResult.index > chosenIdx) {
+    if (chosenIdx === -1 || estimate.index > chosenIdx) {
       const distanceKm = gps.userLocation
         ? haversine(
             gps.userLocation.lat,
             gps.userLocation.lng,
-            interpResult.station.lat,
-            interpResult.station.lng,
+            estimate.station.lat,
+            estimate.station.lng,
           )
         : 0;
-      result = { station: interpResult.station, distanceKm };
+      result = { station: estimate.station, distanceKm };
       confidence = 'boarding-lock-interp';
       source = 'boarding-lock-interp';
     }
