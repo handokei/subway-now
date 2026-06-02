@@ -226,13 +226,12 @@ function buildDumpText(args: {
   // "비어있음"과 "load 안 함"을 dump 텍스트만 보고도 구분 가능하게.
   // optional 필드 — undefined 도 null 과 동일 처리.
   if (args.scheduledDump == null) {
-    lines.push('## Scheduled queue');
-    lines.push('(not loaded)');
+    lines.push('## Scheduled queue', '(not loaded)');
   } else {
-    lines.push(`## Scheduled queue (${args.scheduledDump.length})`);
-    for (const entry of args.scheduledDump) {
-      lines.push(formatScheduledNotificationLine(entry));
-    }
+    lines.push(
+      `## Scheduled queue (${args.scheduledDump.length})`,
+      ...args.scheduledDump.map(formatScheduledNotificationLine),
+    );
   }
   lines.push('');
   lines.push(`## Alarm log (${args.logs.length})`);
@@ -533,24 +532,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
               </Pressable>
             }
           >
-            {scheduledDump === null ? (
-              <Text style={[typography.mono, { color: colors.muted }]}>
-                (tap Refresh to load)
-              </Text>
-            ) : scheduledDump.length === 0 ? (
-              <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
-            ) : (
-              scheduledDump.map((entry) => (
-                <Text
-                  key={entry.identifier}
-                  style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
-                  selectable
-                  testID="debug-scheduled-dump-entry"
-                >
-                  {formatScheduledNotificationLine(entry)}
-                </Text>
-              ))
-            )}
+            <ScheduledQueueBody dump={scheduledDump} colors={colors} />
           </Section>
 
           <Section
@@ -605,6 +587,39 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
         </ScrollView>
       </View>
     </Modal>
+  );
+}
+
+// #756: Scheduled queue 섹션 본문 — null/empty/non-empty 3가지 상태를 별도 컴포넌트로
+// 분리해 nested ternary를 피한다. dump 배열은 fire 시각 기준 정렬된 상태로 들어온다.
+function ScheduledQueueBody({
+  dump,
+  colors,
+}: {
+  dump: ScheduledNotificationDumpEntry[] | null;
+  colors: ReturnType<typeof useTheme>['colors'];
+}) {
+  if (dump === null) {
+    return (
+      <Text style={[typography.mono, { color: colors.muted }]}>(tap Refresh to load)</Text>
+    );
+  }
+  if (dump.length === 0) {
+    return <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>;
+  }
+  return (
+    <>
+      {dump.map((entry) => (
+        <Text
+          key={entry.identifier}
+          style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
+          selectable
+          testID="debug-scheduled-dump-entry"
+        >
+          {formatScheduledNotificationLine(entry)}
+        </Text>
+      ))}
+    </>
   );
 }
 
