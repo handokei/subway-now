@@ -131,6 +131,23 @@ app.post('/trips', async (c) => {
     : baseTrip;
 
   await putTrip(c.env.TRIPS, trip);
+
+  // #764/#622 — putTrip 직후 trip 상태 진단 (root cause sub-step 좁힘용, 확정 후 제거).
+  // scheduled.ts의 `cron loaded trip` 로그와 cross-check해 KV 쓰기/읽기 사이에서
+  // boardingLock.trainCode가 어떻게 보이는지 확정한다. existing/incoming/final을 한 줄에 모아
+  // merge 분기(isSameSession / progressApplied)가 새 lock을 유지하는지 즉시 확인.
+  console.log(
+    JSON.stringify({
+      msg: 'PUT trip after merge',
+      tokenPrefix: tokenPrefix(trip.token),
+      isSameSession,
+      progressApplied: progressApplies,
+      incomingHasLock: incoming.boardingLock !== undefined,
+      existingHasLock: existing?.boardingLock !== undefined,
+      finalTrainCode: trip.boardingLock?.trainCode,
+    }),
+  );
+
   return c.json({ ok: true, token: trip.token });
 });
 
