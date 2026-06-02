@@ -63,6 +63,28 @@ export function useBoardingLockScheduler({
       scheduledRouteSigRef.current !== null &&
       scheduledRouteSigRef.current !== nextSig;
 
+    // #756 transition trace — stale `bl:` 알람 누수 진단용.
+    //
+    // logger.warn으로 출력하는 이유: production TestFlight 빌드는 `app/_layout.tsx:48`에서
+    // `setMinLevel('warn')`이 적용돼 `info`가 출력 자체 차단된다. 진단 표적은 실기기 production
+    // 회귀이므로 warn으로 승격해 USB Console.app에서도 보이게 한다. trip 전환은 분당 0~1회 빈도라
+    // noise 영향 미미.
+    //
+    // 노출 키:
+    //  - prevTrain  : 직전 effect cycle의 lock.trainCode
+    //  - nextTrain  : 이번 cycle의 lock.trainCode
+    //  - scheduledTrain : 마지막 성공한 schedule의 trainCode (`scheduledTrainCodeRef.current`)
+    //                   prev와 다르면 H1 race(직전 cycle scheduling 실패) 신호.
+    //  - sigPrev/sigNext : 마지막 성공한 schedule의 routeSig vs 이번 cycle 계산값.
+    //  - canSchedule / coldRestart / routeChange : 이 cycle의 결정 flag.
+    logger.warn(
+      `transition prevTrain=${prevTrain ?? 'null'} nextTrain=${nextTrain ?? 'null'} scheduledTrain=${
+        scheduledTrainCodeRef.current ?? 'null'
+      } sigPrev=${scheduledRouteSigRef.current ?? 'null'} sigNext=${
+        nextSig ?? 'null'
+      } canSchedule=${canSchedule} coldRestart=${needsColdRestartSchedule} routeChange=${needsRouteChangeReschedule}`,
+    );
+
     if (
       prevTrain === nextTrain &&
       !needsColdRestartSchedule &&

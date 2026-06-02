@@ -31,6 +31,15 @@ jest.mock('../../utils/alarmLog', () => {
     clearAlarmLog: () => mockClearAlarmLog(),
   };
 });
+
+const mockDumpScheduledNotifications = jest.fn();
+jest.mock('../../utils/scheduledNotificationsDump', () => {
+  const actual = jest.requireActual('../../utils/scheduledNotificationsDump');
+  return {
+    ...actual,
+    dumpScheduledNotifications: () => mockDumpScheduledNotifications(),
+  };
+});
 const station: Station = {
   id: '2-022',
   name: '강남',
@@ -95,6 +104,7 @@ const setupHookDefaults = () => {
   });
   mockGetAlarmLog.mockResolvedValue([]);
   mockClearAlarmLog.mockResolvedValue(undefined);
+  mockDumpScheduledNotifications.mockResolvedValue([]);
 };
 
 describe('DebugModal', () => {
@@ -1157,5 +1167,152 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
       logs: [],
     });
     expect(dump).toContain('taskRegistration=failed (not supported)');
+  });
+
+  // #756: 사전예약 큐 dump — stale `bl:` 알람 진단용 새 섹션.
+  // 3개 테스트가 동일 baseline args를 공유 — CPD 중복 회피용 helper.
+  type DumpArgs = Parameters<typeof __test__.buildDumpText>[0];
+  function scheduledDumpArgs(scheduledDump?: DumpArgs['scheduledDump']): DumpArgs {
+    return {
+      userLocation: null,
+      speedMps: null,
+      accuracyMeters: null,
+      nearestName: null,
+      nearestDistanceM: null,
+      variants: [],
+      fusion: {
+        confidence: 'gps-only',
+        source: 'gps',
+        fusedLabel: '-',
+        gpsLabel: '-',
+        differs: false,
+        candidateTrains: null,
+      },
+      arrivalSummary: '-',
+      isMock: false,
+      silentPush: baseSilentPushFull,
+      logs: [],
+      ...(scheduledDump !== undefined ? { scheduledDump } : {}),
+    };
+  }
+
+  it('buildDumpText: scheduledDump null이면 "(not loaded)" 노출', () => {
+    const dump = __test__.buildDumpText(scheduledDumpArgs(null));
+    expect(dump).toContain('## Scheduled queue');
+    expect(dump).toContain('(not loaded)');
+    expect(dump).not.toMatch(/## Scheduled queue \(\d+\)/);
+  });
+
+  it('buildDumpText: scheduledDump optional 미전달 시에도 "(not loaded)" 노출', () => {
+    const dump = __test__.buildDumpText(scheduledDumpArgs());
+    expect(dump).toContain('## Scheduled queue');
+    expect(dump).toContain('(not loaded)');
+  });
+
+  it('buildDumpText: scheduledDump 엔트리가 있으면 카운트와 라인 노출', () => {
+    const dump = __test__.buildDumpText(
+      scheduledDumpArgs([
+        {
+          identifier: 'bl:T:1:early:군자',
+          fireAtMs: new Date('2026-06-02T11:30:00Z').getTime(),
+          title: '환승 알림',
+          body: '...',
+        },
+        {
+          identifier: 'bl:T:1:imminent:군자',
+          fireAtMs: null,
+          title: '환승 임박',
+          body: '',
+        },
+      ]),
+    );
+    expect(dump).toContain('## Scheduled queue (2)');
+    expect(dump).toContain('bl:T:1:early:군자');
+    expect(dump).toContain('bl:T:1:imminent:군자');
+    expect(dump).not.toContain('(not loaded)');
+  });
+});
+
+describe('DebugModal — Scheduled queue UI (#756)', () => {
+  let appStateListener: ((state: string) => void) | null = null;
+  const appStateRemove = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    appStateListener = null;
+    jest.spyOn(AppState, 'addEventListener').mockImplementation((_t, l) => {
+      appStateListener = l as (state: string) => void;
+      return { remove: appStateRemove } as unknown as ReturnType<typeof AppState.addEventListener>;
+    });
+    setupHookDefaults();
+  });
+
+  it('초기 마운트 상태에서는 "(tap Refresh to load)" placeholder', () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('(tap Refresh to load)')).toBeTruthy();
+    expect(screen.getByText('Scheduled queue')).toBeTruthy();
+  });
+
+  it('Refresh 누르면 dumpScheduledNotifications 호출 + 빈 결과면 "(empty)" 표시', async () => {
+    mockDumpScheduledNotifications.mockResolvedValue([]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('debug-scheduled-dump-refresh'));
+    });
+
+    await waitFor(() => expect(screen.getByText('Scheduled queue (0)')).toBeTruthy());
+    // "(empty)"는 Alarm log 섹션에도 등장 (logs=[])하므로 getByText 다중매칭 회피 — 카운트만 검증.
+    expect(screen.getAllByText('(empty)').length).toBeGreaterThanOrEqual(1);
+    expect(mockDumpScheduledNotifications).toHaveBeenCalledTimes(1);
+    expect(appStateListener).toBeTruthy();
+  });
+
+  it('Refresh 누르면 엔트리 라인이 렌더링된다', async () => {
+    mockDumpScheduledNotifications.mockResolvedValue([
+      {
+        identifier: 'bl:T:1:early:군자',
+        fireAtMs: new Date('2026-06-02T11:30:00Z').getTime(),
+        title: '환승 알림',
+        body: '...',
+      },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('debug-scheduled-dump-refresh'));
+    });
+
+    await waitFor(() => expect(screen.getByText('Scheduled queue (1)')).toBeTruthy());
+    const entries = screen.getAllByTestId('debug-scheduled-dump-entry');
+    expect(entries).toHaveLength(1);
+    expect(entries[0].props.children).toContain('bl:T:1:early:군자');
+  });
+
+  it('Refresh 후 Share dump 라인에 Scheduled queue 섹션 포함', async () => {
+    mockDumpScheduledNotifications.mockResolvedValue([
+      {
+        identifier: 'bl:T:0:imminent:장한평',
+        fireAtMs: 1000,
+        title: '목적지 임박',
+        body: '',
+      },
+    ]);
+    const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('debug-scheduled-dump-refresh'));
+    });
+    await waitFor(() => expect(screen.getByText('Scheduled queue (1)')).toBeTruthy());
+
+    await act(async () => {
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+    });
+
+    expect(shareSpy).toHaveBeenCalled();
+    const sharedMessage = shareSpy.mock.calls[0][0].message;
+    expect(sharedMessage).toContain('## Scheduled queue (1)');
+    expect(sharedMessage).toContain('bl:T:0:imminent:장한평');
   });
 });
