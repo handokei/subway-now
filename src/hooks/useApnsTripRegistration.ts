@@ -18,6 +18,7 @@ import { registerActiveTrip, clearActiveTrip, type AlarmBoardingLock } from '../
 import { routeToWaypoints } from '../utils/routeWaypoints';
 import { buildBoardingLockMeta } from '../utils/buildBoardingLockMeta';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../constants/storageKeys';
+import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../constants/boardingLock';
 import { createLogger } from '../utils/logger';
 import { resolveApnsEnv } from '../utils/apnsEnv';
 import type { BoardingLock } from '../types/boardingLock';
@@ -62,6 +63,14 @@ interface RegisterCallInputs {
   createdAt: number;
 }
 
+/**
+ * BoardingLock의 내용 기반 dedup signature. main effect의 deps key와 token-refresh 경로의
+ * `lastSentLockSigRef` 갱신에 동일 포맷을 사용해야 #767 release 판정이 일관 — 한 곳에서 빌드.
+ */
+function lockSig(lock: BoardingLock | null): string | null {
+  return lock ? `${lock.trainCode}|${lock.boardingLine}|${lock.boardedAt}` : null;
+}
+
 /** 두 호출처(token refresh / main effect)의 register 페이로드 빌드를 단일화. */
 async function callRegister(input: RegisterCallInputs) {
   // #622: BoardingLock metadata 빌드. lock의 boardingStationId로 station name 조회 후 schema 변환.
@@ -103,9 +112,7 @@ export function useApnsTripRegistration({
   const routeSig = useMemo(() => routeSignature(route), [route]);
   // boardingLock도 reference가 아닌 내용 기반 key로 deps — 상위가 매 렌더 새 객체를 내려도 안전.
   // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
-  const boardingLockSig = boardingLock
-    ? `${boardingLock.trainCode}|${boardingLock.boardingLine}|${boardingLock.boardedAt}`
-    : null;
+  const boardingLockSig = lockSig(boardingLock);
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
   const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock });
   useEffect(() => {
@@ -124,6 +131,10 @@ export function useApnsTripRegistration({
     }
     return tripCreatedAtRef.current;
   };
+
+  // #767 — 직전 effect cycle이 backend로 송신한 boardingLockSig. lock 해제 race
+  // (non-null → null → 새 lock 3 POST) 판정에 사용. 첫 register 시 null로 시작.
+  const lastSentLockSigRef = useRef<string | null>(null);
 
   // ── 토큰 발급 + 리스너 등록 (mount-once) ──
   useEffect(() => {
@@ -174,6 +185,9 @@ export function useApnsTripRegistration({
           boardingLock: bl,
           createdAt: resolveTripCreatedAt(sessionKey),
         });
+        // #767 — main effect와 동일 기준으로 lock sig를 추적해야 다음 cycle의 release 판정 정확도
+        // 유지. token-refresh는 deps cycle을 거치지 않는 별경로지만 backend엔 동일 POST를 보내므로.
+        lastSentLockSigRef.current = lockSig(bl);
       })();
     });
 
@@ -186,8 +200,10 @@ export function useApnsTripRegistration({
   // ── 활성 트립 register / clear ──
   useEffect(() => {
     let cancelled = false;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-    (async () => {
+    // 실제 register/clear 작업 — debounce 분기와 즉시 분기에서 공유.
+    const run = async () => {
       const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
       if (cancelled) return;
 
@@ -199,6 +215,9 @@ export function useApnsTripRegistration({
           await clearActiveTrip(prevTokenRaw);
           await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
         }
+        // 트립 없음 분기에서도 lock 시그를 reset — 다음 trip이 새로 등록될 때 첫 cycle은
+        // 즉시 발사(debounce 미적용) 보장.
+        lastSentLockSigRef.current = null;
         return;
       }
 
@@ -218,16 +237,37 @@ export function useApnsTripRegistration({
         boardingLock,
         createdAt: resolveTripCreatedAt(sessionKey),
       });
+      // POST 발사 직후(성공/실패 무관) 송신된 lock sig를 기록 — 다음 cycle이 "직전 송신 = lock,
+      // 신규 = null" 패턴인지 판정해 race 차단.
+      lastSentLockSigRef.current = boardingLockSig;
       // #669: cancelled 가드 밖에서 setItem — backend register 성공이면 UI cleanup 여부와 무관하게
       // ACTIVE_TRIP_KEY를 동기화. 가드 안에 두면 nextStationEtaSeconds·currentStation 변경으로
       // useEffect cleanup이 자주 일어나 setItem이 skip되고 DebugModal activeTrip이 (none)으로 표시됨.
       if (result.ok) {
         await AsyncStorage.setItem(ACTIVE_TRIP_KEY, token);
       }
-    })();
+    };
+
+    // #767 — lock 해제(non-null → null) 전환만 debounce. 다음 cycle이 새 lock을 들고 오면
+    // cleanup이 timer를 clearTimeout으로 cancel해 발사 자체를 차단. 다른 전환(route/destination
+    // 변경, lock 신규 부여, lock 내용 갱신, 트립 종료)은 즉시 발사 — 기존 동작 보존.
+    // 안전: 만약 cleanup의 clearTimeout이 race로 늦어 timer가 발사돼도 run() 내부 cancelled
+    // 가드가 AsyncStorage.getItem 직후 추가 작업을 차단한다 (이중 방어).
+    const isLockReleaseTransition =
+      lastSentLockSigRef.current !== null && boardingLockSig === null && route !== null && destination !== null;
+    if (isLockReleaseTransition) {
+      debounceTimer = setTimeout(() => {
+        void run();
+      }, BOARDING_LOCK_RELEASE_DEBOUNCE_MS);
+    } else {
+      void run();
+    }
 
     return () => {
       cancelled = true;
+      if (debounceTimer !== null) {
+        clearTimeout(debounceTimer);
+      }
     };
     // route는 routeSig(내용 기반)로 비교 — 동일 경로 재등록으로 백엔드 trip
     // state(waypoints shift)가 reset되거나 워커 POST /trips가 분당 폭주하는 것을 방지.
