@@ -1,5 +1,5 @@
 /**
- * 정적 misfire 가드 (#727 PR A → #733 PR D 확장) — 모든 알람 발사 경로의 SSOT.
+ * 정적 misfire 가드 (#727 PR A → #733 PR D → #728 PR B 확장) — 모든 알람 발사 경로의 SSOT.
  *
  * 알람 발사 4개 채널(useStationAlarm ETA / API imminent / silent push / 사전 예약) 가운데
  * ETA phase만 speed+accuracy 게이트를 갖고 있던 회귀를 보완. 사용자가 정적인데 다음의
@@ -17,6 +17,13 @@
  *     positionStability(usePositionStability) 신호로 fallback. 위치 이력이 정적이면 'static-position'으로 차단.
  *   - FUSION_DOWNGRADE_TARGETS에 'arrival-arriving' 추가 — arrival ENTERING 신호로 fusion이
  *     elevated 되어도 정적이면 강등 대상.
+ *
+ * #728 (PR B) 확장:
+ *   - CMMotionActivity(iOS) motion=stationary 신호 추가. OS 가속도계 기반 정적 판정.
+ *   - 평가 순서: stale > accuracy > **motion-stationary** > speed > position.
+ *     motion이 speed보다 우선 — 16:14:22 회귀에서 snapshot speed=0.69 m/s가 STATIC_SPEED_THRESHOLD_MPS=0.5를
+ *     우회한 phantom 케이스를 잡기 위함. destination/transfer 카테고리도 같은 가드로 보호.
+ *   - 권한 거절/미지원: motionStationary 미전달 → 기존 가드만 동작 (graceful fallback).
  *
  * 입력 필드는 모두 옵션 — 호출자가 측정 가능한 신호만 전달하면 된다. 누락된 신호는
  * 해당 분기 검증을 skip (false negative보다 false positive 차단 우선).
@@ -39,7 +46,10 @@ export type MovementReason =
   | 'low-accuracy'
   | 'static-speed'
   // #733 — speed 미측정 시 위치 이력(usePositionStability)으로 정적 확정.
-  | 'static-position';
+  | 'static-position'
+  // #728 — CMMotionActivity(iOS) motion=stationary 신호. OS 가속도계 기반 정적 판정.
+  // speed=0.69 m/s 같은 임계 우회 phantom과 destination/transfer 카테고리 무방비 회귀를 동시에 차단.
+  | 'motion-stationary';
 
 interface MovementSignalShared {
   speedMps?: number;
@@ -65,6 +75,7 @@ export const MOVEMENT_TO_ALARM_LOG_REASON = {
   'low-accuracy': 'movement-low-accuracy',
   'static-speed': 'movement-static-speed',
   'static-position': 'movement-static-position',
+  'motion-stationary': 'movement-motion-stationary',
 } as const satisfies Record<MovementReason, string>;
 
 /**
@@ -84,16 +95,24 @@ export const MOVEMENT_TO_ALARM_LOG_REASON = {
  * #733 — speedMps가 null/undefined인 경우 `positionStability` fallback. iOS 정적 사용자에게서
  * speed=-1(미측정)이 자주 발생하는 케이스 보강. positionStability='static'이면 정적 확정,
  * 'moving'/'unknown'이면 보수적 false. accuracy 가드(MAX_ACCURACY_M)는 fallback 경로에도 적용.
+ *
+ * #728 — speedMps가 null/undefined인 경우 motionStationary(CMMotionActivity) 신호를 positionStability보다
+ * 우선 적용. motion=true면 즉시 정적 확정. motion 신호는 OS 가속도계 기반이라 GPS 좌표 이력보다
+ * 신뢰성 있다. accuracy 가드는 motion fallback 경로에도 동일 적용 (지하 GPS 노이즈 보호).
  */
 export function isStaticSpeedSignal(
   speedMps: number | null | undefined,
   accuracyM?: number | null,
   positionStability?: PositionStability,
+  motionStationary?: boolean,
 ): boolean {
   if (accuracyM != null && accuracyM > MAX_ACCURACY_M) return false;
   if (speedMps != null) {
     return speedMps < STATIC_SPEED_THRESHOLD_MPS;
   }
+  // #728 — speed 미측정 시 motion 신호(OS 가속도계)가 위치 이력보다 우선.
+  // CMMotionActivity는 직접 측정값이라 noisy한 GPS 좌표 이력보다 신뢰 가능.
+  if (motionStationary === true) return true;
   return positionStability === 'static';
 }
 
@@ -125,9 +144,16 @@ export function shouldDowngradeFusion(input: {
   speedMps: number | null | undefined;
   accuracyM: number | null | undefined;
   positionStability?: PositionStability;
+  /** #728 — CMMotionActivity stationary 신호. speed=null 경로에서 positionStability보다 우선. */
+  motionStationary?: boolean;
 }): boolean {
   if (!isFusionDowngradeTarget(input.confidence)) return false;
-  return isStaticSpeedSignal(input.speedMps, input.accuracyM, input.positionStability);
+  return isStaticSpeedSignal(
+    input.speedMps,
+    input.accuracyM,
+    input.positionStability,
+    input.motionStationary,
+  );
 }
 
 export interface LocationSignalInput {
@@ -146,9 +172,12 @@ export interface LocationSignalInput {
  *   1. loc === null → 'no-location'
  *   2. timestamp 있으면서 (now - timestamp) > STALE_AGE_MS → 'stale-timestamp'
  *   3. accuracyM 있으면서 > MAX_ACCURACY_M → 'low-accuracy'
- *   4. speedMps 있으면서 < STATIC_SPEED_THRESHOLD_MPS → 'static-speed'
- *   5. (#733) speedMps 없고 positionStability='static' → 'static-position'
- *   6. 그 외 → reliable=true
+ *   4. (#728) motionStationary === true → 'motion-stationary'
+ *      - speed/position 신호보다 우선. 16:14:22 회귀(speed=0.69 임계 우회)와
+ *        destination/transfer 카테고리 무방비를 동시 차단하는 핵심 신호.
+ *   5. speedMps 있으면서 < STATIC_SPEED_THRESHOLD_MPS → 'static-speed'
+ *   6. (#733) speedMps 없고 positionStability='static' → 'static-position'
+ *   7. 그 외 → reliable=true
  *
  * 호출자는 결과의 reason으로 logSuppressedGate/logSilentPushSkipped 등 적재.
  */
@@ -156,6 +185,7 @@ export function evaluateMovement(
   loc: LocationSignalInput | null,
   now: number = Date.now(),
   positionStability?: PositionStability,
+  motionStationary?: boolean,
 ): MovementSignal {
   if (!loc) return { reliable: false, reason: 'no-location' };
 
@@ -168,6 +198,13 @@ export function evaluateMovement(
 
   if (loc.accuracyM != null && loc.accuracyM > MAX_ACCURACY_M) {
     return { reliable: false, reason: 'low-accuracy', accuracyM: loc.accuracyM };
+  }
+
+  // #728 — CMMotionActivity 정적 신호. speed/position보다 우선.
+  // 핵심 동기: speed=0.69 m/s (임계값 0.5 우회 phantom) 같은 회귀를 잡고,
+  // destination/transfer 카테고리도 같은 가드로 보호.
+  if (motionStationary === true) {
+    return { reliable: false, reason: 'motion-stationary' };
   }
 
   if (loc.speedMps != null && loc.speedMps < STATIC_SPEED_THRESHOLD_MPS) {

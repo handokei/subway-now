@@ -116,4 +116,33 @@ describe('useFusedNearestStation — #727 fusion downgrade', () => {
 
     expect(result.current.result?.station.name).toBe(MOCK_STATIONS.gangnam.name);
   });
+
+  // #728 — motionStationary 신호로 speed=null 경로의 강등.
+  // useFusedNearestStation 6번째 positional 인자: motionStationary.
+  describe('#728 motionStationary downgrade', () => {
+    it('speed=null + motionStationary=true → 강등 (positionStability 없이)', () => {
+      mockUseNearest.mockReturnValue(gpsBase(null, 50));
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, null, null, true),
+      );
+      expect(result.current.confidence).toBe('gps-only');
+      expect(result.current.source).toBe('gps');
+    });
+
+    it('speed=null + motionStationary=false → 유지', () => {
+      mockUseNearest.mockReturnValue(gpsBase(null, 50));
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, null, null, false),
+      );
+      expect(result.current.confidence).toBe('position-train');
+    });
+
+    it('speed=null + motionStationary=true + accuracy noise(>100m) → 유지 (지하 GPS 보호)', () => {
+      mockUseNearest.mockReturnValue(gpsBase(null, 1500));
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, null, null, true),
+      );
+      expect(result.current.confidence).toBe('position-train');
+    });
+  });
 });

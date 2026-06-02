@@ -127,6 +127,11 @@ export function useFusedNearestStation(
    * routeContext + boardingLock 둘 다 있어야 동작 — 한쪽이라도 없으면 기존 fusion 그대로.
    */
   boardingLock?: BoardingLock | null,
+  /**
+   * #728 — CMMotionActivity(iOS) motion=stationary 신호. shouldDowngradeFusion이 speed=null인
+   * 정적 사용자 케이스에서 positionStability보다 우선 적용. 미전달이면 기존 동작 유지.
+   */
+  motionStationary?: boolean,
 ): UseFusedNearestStationReturn {
   const gps = useNearestStation();
   // #733 — 위치 이력 기반 정적 판정. shouldDowngradeFusion이 speed=null일 때 fallback으로 사용.
@@ -433,6 +438,7 @@ export function useFusedNearestStation(
       speedMps: gps.speedMps,
       accuracyM: gps.accuracyMeters,
       positionStability,
+      motionStationary,
     })
   ) {
     confidence = 'gps-only';

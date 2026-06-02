@@ -66,11 +66,13 @@ export type AlarmLogReason =
   | 'payload-missing-kind'
   // #727 — 정적 misfire 가드(movementGate.ts)가 차단한 발사.
   // #733 — 'movement-static-position'은 speed 미측정 시 위치 이력(usePositionStability) 기반 정적 차단.
+  // #728 — 'movement-motion-stationary'는 CMMotionActivity(iOS) motion=stationary 신호 기반.
   | 'movement-no-location'
   | 'movement-stale-timestamp'
   | 'movement-low-accuracy'
   | 'movement-static-speed'
-  | 'movement-static-position';
+  | 'movement-static-position'
+  | 'movement-motion-stationary';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.

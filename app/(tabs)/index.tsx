@@ -19,6 +19,7 @@ import { useRouter } from 'expo-router';
 import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/utils/stationNotification';
 import { useStationAlarm } from '../../src/hooks/useStationAlarm';
+import { useMotionActivity } from '../../src/hooks/useMotionActivity';
 import { useTripOrigin } from '../../src/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../../src/hooks/useBackgroundLocation';
 import { useApnsTripRegistration } from '../../src/hooks/useApnsTripRegistration';
@@ -121,7 +122,10 @@ export default function HomeScreen() {
   // 동일 store의 lock을 useBoardingLockController가 아래서 다시 소비하지만 selector라 churn 없음.
   const fusionBoardingLock = useBoardingLockStore((s) => s.lock);
   const lockedTrainCode = fusionBoardingLock?.trainCode ?? null;
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock);
+  // #728 — CMMotionActivity 신호. 권한 요청/폴링은 hook 내부에서 lifecycle 관리.
+  // 미지원/거절 시 false로 고정되어 기존 가드만 동작 (graceful fallback).
+  const motionStationary = useMotionActivity();
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary);
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,
@@ -209,6 +213,7 @@ export default function HomeScreen() {
     fusionSource: source,
     locationUncertain,
     positionStability,
+    motionStationary,
   });
 
   // #584 PR B — BoardingLock 진입점. UI 렌더링/lock 생성만 담당하며,

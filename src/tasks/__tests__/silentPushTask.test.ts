@@ -66,6 +66,12 @@ jest.mock('../../api/alarmBackend', () => ({
   sendPushAck: (...args: unknown[]) => mockSendPushAck(...args),
 }));
 
+// #728 — motionActivity 신호. 기본 false (=== "stationary 아님"), 특정 테스트에서만 true로 override.
+const mockGetMotionStationary = jest.fn(() => false);
+jest.mock('../../utils/motionActivity', () => ({
+  getCurrentMotionStationary: () => mockGetMotionStationary(),
+}));
+
 const mockGetBoardingLock = jest.fn();
 jest.mock('../../utils/boardingLockStorage', () => ({
   getBoardingLock: (...args: unknown[]) => mockGetBoardingLock(...args),
@@ -850,6 +856,72 @@ describe('silentPushTask', () => {
             kind: 'station-passed',
             reason: 'movement-static-speed',
           }),
+        );
+      });
+    });
+
+    // #728 — CMMotionActivity motion=stationary가 BG silent push 발사도 차단.
+    // FG에서 useMotionActivity가 startUpdates를 호출했다면 native cache에 최신 activity가 있고,
+    // BG handleSilentPush 진입 시 getCurrentMotionStationary가 그 값을 보고한다.
+    describe('#728 motion-stationary 가드 (CMMotionActivity)', () => {
+      it('motionStationary=true + speed=0.69 (임계 우회) → movement-motion-stationary로 skip', async () => {
+        mockGetMotionStationary.mockReturnValue(true);
+        mockCheckGate.mockResolvedValue({
+          ...PASSING_GATE,
+          speedMps: 0.69, // STATIC_SPEED_THRESHOLD_MPS=0.5 우회
+          accuracyM: 30,
+        });
+
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'motion-skip' }),
+        );
+
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({
+            reason: 'movement-motion-stationary',
+            stationName: '강남',
+            kind: 'destination',
+            phaseId: 'imminent',
+          }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'motion-skip',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'movement-motion-stationary',
+        });
+      });
+
+      it('motionStationary=false (default) — 기존 speed/accuracy 가드만 동작', async () => {
+        // 명시적으로 false 설정 — speed/accuracy 정상이면 정상 발사
+        mockGetMotionStationary.mockReturnValue(false);
+        mockCheckGate.mockResolvedValue({
+          ...PASSING_GATE,
+          speedMps: 5,
+          accuracyM: 30,
+        });
+
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+
+      it('motionStationary=true는 speed 정상값보다 우선 — 차단', async () => {
+        mockGetMotionStationary.mockReturnValue(true);
+        mockCheckGate.mockResolvedValue({
+          ...PASSING_GATE,
+          speedMps: 5, // 명백한 이동 신호인데 motion=stationary
+          accuracyM: 30,
+        });
+
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'movement-motion-stationary' }),
         );
       });
     });

@@ -60,6 +60,12 @@ export interface UseStationAlarmInputs {
    */
   positionStability?: PositionStability;
   /**
+   * #728 — CMMotionActivity(iOS) motion=stationary 신호. true면 OS 가속도계가 사용자 정적으로 판정.
+   * evaluateMovement가 'motion-stationary' reason으로 모든 카테고리(destination/transfer/station-passed)
+   * 알람을 차단. 미전달/false면 기존 가드만 동작 (graceful fallback).
+   */
+  motionStationary?: boolean;
+  /**
    * 테스트 전용 — #670/#672 좌표 warmup 가드 비활성화.
    * production 호출자는 미설정으로 둠. 단위 테스트에서 mount 직후 alarm 평가 검증 시 사용.
    */
@@ -77,6 +83,7 @@ export function useStationAlarm({
   fusionSource,
   locationUncertain = false,
   positionStability,
+  motionStationary,
   skipWarmupGuard = false,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
@@ -267,6 +274,7 @@ export function useStationAlarm({
       // #733 — Phase ETA path movement gate. early phase는 etaSeconds 무관, remainingStops<=1만
       // 검사하므로 fusion이 인접역으로 jitter하면 즉시 발사. snapshot 1/2에서 관측된 20:07:48 등
       // 정적 transfer-early 회귀 차단.
+      // #728 — motionStationary 추가. speed=0.69 m/s 임계 우회 phantom과 destination/transfer 카테고리 보호.
       const movement = evaluateMovement(
         {
           speedMps: speedMps ?? undefined,
@@ -274,6 +282,7 @@ export function useStationAlarm({
         },
         undefined,
         positionStability,
+        motionStationary,
       );
       if (!movement.reliable && movement.reason) {
         logSuppressedMovement({
@@ -302,6 +311,7 @@ export function useStationAlarm({
     nearestStation?.id,
     nearestStation?.line,
     positionStability,
+    motionStationary,
     skipWarmupGuard,
   ]);
 
@@ -327,6 +337,7 @@ export function useStationAlarm({
 
     // #727 정적 misfire 가드 — useStationAlarm은 timestamp 입력이 없으므로 speed/accuracy만 평가.
     // #733 — speed=null 시 positionStability fallback 사용.
+    // #728 — motionStationary 추가. API imminent 경로의 destination 카테고리 보호 (13:53:53 회귀).
     const movement = evaluateMovement(
       {
         speedMps: speedMps ?? undefined,
@@ -334,6 +345,7 @@ export function useStationAlarm({
       },
       undefined,
       positionStability,
+      motionStationary,
     );
     if (!movement.reliable && movement.reason) {
       logSuppressedMovement({
@@ -362,6 +374,7 @@ export function useStationAlarm({
     speedMps,
     accuracyMeters,
     positionStability,
+    motionStationary,
   ]);
 
   // Station-passed 알림 효과: 경로상 역 변경 시 dedup된 per-station 알림.
@@ -388,9 +401,10 @@ export function useStationAlarm({
       },
       undefined,
       positionStability,
+      motionStationary,
     );
     return m.reliable ? null : MOVEMENT_TO_ALARM_LOG_REASON[m.reason];
-  }, [speedMps, accuracyMeters, positionStability]);
+  }, [speedMps, accuracyMeters, positionStability, motionStationary]);
 
   useEffect(() => {
     let cancelled = false;
