@@ -48,7 +48,8 @@
     "notNearStationDescription": "Your current station appears when you are within 500m of a subway station.\nYou can also set the origin manually from the Map tab.",
     "locationUncertainTitle": "Locating",
     "locationUncertainDescription": "GPS accuracy is low,\nso we can't pinpoint your location.\nWe'll retry automatically.",
-    "refresh": "Refresh"
+    "refresh": "Refresh",
+    "boardingProximityHint": "Move closer to the boarding station to pick a train"
   },
   "settings": {
     "title": "Settings",
