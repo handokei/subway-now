@@ -14,7 +14,7 @@ import { projectArrivalEtaStation } from './arrivalEtaProjection';
  *  ④ DefaultHop     — 노선/세그먼트 hop time 테이블 (Stage 3/#624)
  *
  * Stage 1(#739)은 ①③. Stage 2(#745)에서 ②(projectArrivalEtaStation 합성) 도입. ④는 Stage 3까지
- * 명시적 TODO 스텁으로 자리만 잡는다 — 후속 stage에서 채우면 그대로 합성 우선순위에 끼어든다(OCP).
+ * 명시적 빈 스텁으로 자리만 잡는다 — 후속 stage에서 채우면 그대로 합성 우선순위에 끼어든다(OCP).
  *
  * 핵심 변경: 기존 `interpolateBoardingLockStation`은 `lock.boardedAt`을 시작 앵커로 N hop을 통째로
  * 적분 → 보간이 메꾸는 구간이 trip 전체였다. ReanchoredHop은 마지막 실관측 `(arcIndex, observedAtMs)`에
@@ -178,11 +178,11 @@ function tryReanchoredHop(
   return { station: arcStations[idx], index: idx, strategy: 'reanchored-hop' };
 }
 
-/** Strategy ④ — TODO Stage 3/#624. line/segment별 hop time 데이터 테이블 fallback. */
+/** Strategy ④ — Stage 3/#624에서 채울 예정. line/segment별 hop time 데이터 테이블 fallback. */
 function tryDefaultHop(
   _input: StationProgressEstimatorInput,
 ): StationProgressEstimate | null {
-  // TODO Stage 3/#624 — HOP_TIME_TABLE lookup으로 line/segment별 정밀 hop time 대체.
+  // Stage 3/#624 — HOP_TIME_TABLE lookup으로 line/segment별 정밀 hop time 대체.
   return null;
 }
 
