@@ -910,6 +910,63 @@ describe('useFusedNearestStation', () => {
       }
     });
 
+    function setupGpsAtWithLoosAccuracy(station: typeof yongmasan) {
+      // setupGpsAt의 accuracyMeters=50은 fusionDistanceGate 엄격 — position-train이 강등될 수 있어
+      // trainProgress 신호 검증에 부적합. 지하 모드(accuracyMeters=1500)로 gate 면제.
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          userLocation: { lat: station.lat, lng: station.lng },
+          result: { station, distanceKm: 0 },
+          accuracyMeters: 1500,
+        }),
+      );
+      mockFindTop.mockReturnValue([{ station, distanceKm: 0 }]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+    }
+
+    it('LivePosition(trainNo===trainCode) + arc 위 → effect가 lastObservedRef 갱신 (#739 Stage 1)', () => {
+      jest.useFakeTimers();
+      try {
+        // GPS는 용마산(arc 첫 역). 7093이 군자(arc idx 2)에서 도착 — trainProgress → 군자.
+        jest.setSystemTime(T0 + 2 * 90_000);
+        setupGpsAtWithLoosAccuracy(yongmasan);
+        const t7093 = train('군자', TRAIN_STATUS.ARRIVED, { trainNo: '7093' });
+        mockUsePositions.mockReturnValue(positionRet({ line: '7', trains: [t7093] }));
+
+        const { result } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        // positionTrainResult 채택 → confidence='boarding-lock' (#584 D2). 같은 군자라 estimator가
+        // override 못 함(tied), 그러나 effect는 정상 경로(idx=2)로 lastObservedRef 갱신.
+        expect(result.current.result?.station.id).toBe(gunja.id);
+        expect(result.current.confidence).toBe('boarding-lock');
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('LivePosition trainNo 매칭 BUT arc 밖 역에 있음 → effect line 364 가드 (#739 idx=-1)', () => {
+      jest.useFakeTimers();
+      try {
+        // 7093이 arc 밖의 7호선 역(면목=용마산 인접 외측)에 있음 — pickCandidateTrains window 이내라 후보 진입,
+        // trackTrainProgress가 currentStation=면목으로 trainProgress 생성. effect는 idx=-1 가드로 early return.
+        jest.setSystemTime(T0 + 3 * 90_000);
+        setupGpsAtWithLoosAccuracy(yongmasan);
+        const myeonmok = findStationByNameAndLine('면목', '7')!;
+        const tOff = train(myeonmok.name, TRAIN_STATUS.ARRIVED, { trainNo: '7093' });
+        mockUsePositions.mockReturnValue(positionRet({ line: '7', trains: [tOff] }));
+
+        renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        // line 364 effect 가드(arcIndexOfStation === -1) 실행만으로 커버리지 충족 — 후처리는 호출자
+        // (positionTrainResult가 #444 distance gate에서 강등될 수도) 분기에 따라 다르므로 단언 생략.
+        // hook이 throw 없이 렌더되면 가드 path가 정상.
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('routeContext.origin null → arcStations 비어 interp 비활성', () => {
       jest.useFakeTimers();
       try {

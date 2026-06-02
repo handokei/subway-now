@@ -20,9 +20,9 @@ jest.mock('../../utils/trackTrainProgress', () => ({
 jest.mock('../../utils/pickCandidateTrains', () => ({
   pickCandidateTrains: jest.fn(),
 }));
-jest.mock('../../utils/boardingLockInterpolation', () => ({
+jest.mock('../../utils/stationProgressEstimator', () => ({
   arcIndexOfStation: () => -1,
-  interpolateBoardingLockStation: () => null,
+  estimateStationProgress: () => null,
 }));
 jest.mock('../../utils/routeProgress', () => ({
   computeRouteArc: () => null,
