@@ -38,8 +38,21 @@ export function progressKey(token: string): string {
   return `${PROGRESS_PREFIX}${token}`;
 }
 
-export async function getProgress(kv: KVNamespace, token: string): Promise<TripProgress | null> {
-  const raw = await kv.get(progressKey(token));
+/**
+ * caller가 KV `cacheTtl`을 지정하기 위한 옵션.
+ * cron path는 cacheTtl=10s를 명시해 PUT 직후 stale read를 방지한다 (#766).
+ * POST handler는 인자 없이 호출 — 기본 cacheTtl(60s)이 적용된다.
+ */
+export interface GetProgressOptions {
+  cacheTtl?: number;
+}
+
+export async function getProgress(
+  kv: KVNamespace,
+  token: string,
+  options?: GetProgressOptions,
+): Promise<TripProgress | null> {
+  const raw = await kv.get(progressKey(token), options);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as TripProgress;

@@ -17,6 +17,13 @@ import type { ApnsEnv } from './types';
 const PENDING_PREFIX = 'pending:';
 export const PENDING_TTL_SEC = 60;
 
+/**
+ * cron read의 KV cacheTtl (#766). trips.ts와 같은 이유 — silent push 발사 직후 putPending된
+ * entry를 같은 cron 사이클(또는 다음)의 fallback이 못 보는 stale read를 방지.
+ * 기본 60s는 fallback이 막 발사된 push의 sentAt을 못 봐 임계 평가가 어긋날 위험이 있다.
+ */
+const CRON_READ_CACHE_TTL_SEC = 10;
+
 /** silent push 발사 1건의 추적 정보. P2c가 alert fallback 결정에 사용. */
 export interface PendingPush {
   pushId: string;
@@ -97,7 +104,9 @@ export async function* listPending(
   do {
     const result = await kv.list({ prefix: PENDING_PREFIX, cursor });
     for (const key of result.keys) {
-      const raw = await kv.get(key.name);
+      // #766 — cacheTtl=10s로 putPending 직후 옛 캐시 read 차단. cron 전용 enumerate라
+      // POST 경로 영향 없음.
+      const raw = await kv.get(key.name, { cacheTtl: CRON_READ_CACHE_TTL_SEC });
       if (!raw) continue;
       try {
         yield JSON.parse(raw) as PendingPush;
