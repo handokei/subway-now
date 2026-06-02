@@ -112,9 +112,7 @@
     "arrivalTitle": "하차 알림",
     "transferMessage": "{{station}}에서\n환승하세요",
     "arrivalMessage": "{{station}}에서\n내리세요",
-    "dismiss": "알람 끄기",
-    "dismissAndEnd": "내림 (트립 종료)",
-    "keepTripOnly": "이 알람만 끄기 (트립 유지)"
+    "dismiss": "알람 끄기"
   },
   "destinationPicker": {
     "noLocation": "위치 정보가 없습니다.",

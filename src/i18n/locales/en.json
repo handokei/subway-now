@@ -112,9 +112,7 @@
     "arrivalTitle": "Arrival alert",
     "transferMessage": "Transfer at\n{{station}}",
     "arrivalMessage": "Exit at\n{{station}}",
-    "dismiss": "Dismiss alarm",
-    "dismissAndEnd": "Exit (end trip)",
-    "keepTripOnly": "Dismiss only (keep trip)"
+    "dismiss": "Dismiss alarm"
   },
   "destinationPicker": {
     "noLocation": "Location info unavailable.",

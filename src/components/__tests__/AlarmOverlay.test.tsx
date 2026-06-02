@@ -68,41 +68,31 @@ describe('AlarmOverlay', () => {
     });
   });
 
-  it('환승 알람의 메인 버튼은 "알람 끄기" 텍스트', () => {
+  it('#741 환승 알람의 메인 버튼은 "알람 끄기" 텍스트', () => {
     expect(renderAlarm('transfer', '시청').getByText('알람 끄기')).toBeTruthy();
   });
 
-  it('도착 알람의 메인 버튼은 "내림 (트립 종료)" 텍스트 — UX 의도 명확화', () => {
-    expect(renderAlarm('destination', '강남').getByText('내림 (트립 종료)')).toBeTruthy();
+  it('#741 도착 알람의 메인 버튼도 "알람 끄기" 텍스트 — 라벨 통일', () => {
+    expect(renderAlarm('destination', '강남').getByText('알람 끄기')).toBeTruthy();
   });
 
-  describe('#673 destination 알람 dismiss 분리', () => {
-    it('도착 알람에서 보조 액션 "이 알람만 끄기" 버튼이 노출', () => {
-      expect(renderAlarm('destination', '강남').getByTestId('alarm-keep-trip-button')).toBeTruthy();
+  describe('#741 보조 버튼 제거 — 단일 액션 UX', () => {
+    it('도착 알람에서 보조 버튼이 노출되지 않는다 (회귀 가드)', () => {
+      expect(renderAlarm('destination', '강남').queryByTestId('alarm-keep-trip-button')).toBeNull();
     });
 
-    it('환승 알람에서는 보조 액션 미노출', () => {
+    it('환승 알람에서도 보조 버튼이 노출되지 않는다', () => {
       expect(renderAlarm('transfer', '시청').queryByTestId('alarm-keep-trip-button')).toBeNull();
     });
 
-    it('도착 알람 보조 액션 → clearAlarmNotification만, killAllAlarms·onEndTrip 호출 안 함', async () => {
-      const { getByTestId } = renderAlarm('destination', '강남');
-      fireEvent.press(getByTestId('alarm-keep-trip-button'));
-      await waitFor(() => {
-        expect(mockClearAlarmNotification).toHaveBeenCalled();
-        expect(mockKillAllAlarms).not.toHaveBeenCalled();
-        expect(mockEndTrip).not.toHaveBeenCalled();
-        expect(mockDismiss).toHaveBeenCalled();
-      });
-    });
-
-    it('도착 알람 onRequestClose(Android 백 버튼)는 trip 유지 동작 (보조 액션과 동일)', async () => {
+    it('도착 알람 onRequestClose(Android 백 버튼/스와이프)도 trip 종료 동작 — handleDismiss로 통일', async () => {
       const rendered = renderAlarm('destination', '강남');
       await triggerModalClose(rendered);
       await waitFor(() => {
-        expect(mockClearAlarmNotification).toHaveBeenCalled();
-        expect(mockKillAllAlarms).not.toHaveBeenCalled();
-        expect(mockEndTrip).not.toHaveBeenCalled();
+        expect(mockKillAllAlarms).toHaveBeenCalled();
+        expect(mockEndTrip).toHaveBeenCalled();
+        expect(mockClearAlarmNotification).not.toHaveBeenCalled();
+        expect(mockDismiss).toHaveBeenCalled();
       });
     });
 
@@ -111,7 +101,9 @@ describe('AlarmOverlay', () => {
       await triggerModalClose(rendered);
       await waitFor(() => {
         expect(mockClearAlarmNotification).toHaveBeenCalled();
+        expect(mockKillAllAlarms).not.toHaveBeenCalled();
         expect(mockEndTrip).not.toHaveBeenCalled();
+        expect(mockDismiss).toHaveBeenCalled();
       });
     });
   });
