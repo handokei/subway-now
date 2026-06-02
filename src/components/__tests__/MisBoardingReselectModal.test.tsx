@@ -78,4 +78,19 @@ describe('MisBoardingReselectModal', () => {
     fireEvent.press(getByTestId('mis-boarding-reselect-close'));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it('#749 nextStationLabel을 BoardingTrainList로 forward — "○○행 · ○○방면" 표기', () => {
+    const train = makeTrain({ trainCode: 'C', destination: '도봉산', line: '7' });
+    const { getByTestId } = renderWithTheme(
+      <MisBoardingReselectModal
+        visible
+        arrivals={[train]}
+        line="7"
+        onSelect={() => {}}
+        onClose={() => {}}
+        nextStationLabel="사가정"
+      />,
+    );
+    expect(getByTestId('boarding-train-meta-C').props.children).toBe('도봉산행 · 사가정방면');
+  });
 });

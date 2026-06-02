@@ -499,6 +499,7 @@ export default function HomeScreen() {
         line={effectiveOrigin?.line ?? null}
         onSelect={handleMisBoardingReselect}
         onClose={handleMisBoardingModalClose}
+        nextStationLabel={nextStationName}
       />
 
       <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>

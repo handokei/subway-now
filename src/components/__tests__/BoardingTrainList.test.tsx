@@ -29,14 +29,14 @@ describe('BoardingTrainList', () => {
     expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
   });
 
-  it('각 train마다 trainCode + destination 렌더', () => {
+  it('#749 각 train마다 종착(○○행) 표기 + 카운터 + 시각', () => {
     const trains = [makeTrain({ trainCode: 'T-A', destination: '강남', arrivalMinutes: 2 })];
-    const { getByText, getByTestId } = renderWithTheme(
+    const { getByTestId } = renderWithTheme(
       <BoardingTrainList arrivals={trains} line="2" onSelect={() => {}} />,
     );
     expect(getByTestId('boarding-train-row-T-A')).toBeTruthy();
-    expect(getByText('강남 행')).toBeTruthy();
-    expect(getByText('T-A')).toBeTruthy();
+    expect(getByTestId('boarding-train-meta-T-A').props.children).toBe('강남행');
+    expect(getByTestId('boarding-train-sequence-T-A').props.children).toBe('1번째 전');
   });
 
   it('#634 도착 시각을 receivedAtMs + arrivalSeconds 기반 HH:mm으로 표시', () => {
@@ -46,7 +46,7 @@ describe('BoardingTrainList', () => {
     const { getByTestId } = renderWithTheme(
       <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
     );
-    expect(getByTestId('boarding-train-arrival-T-CLOCK').props.children).toBe('03:08');
+    expect(getByTestId('boarding-train-arrival-T-CLOCK').props.children).toBe('03:08 도착 예정');
   });
 
   it('#634 receivedAtMs=0(mock/stale)이면 현재 시각 기준 HH:mm 계산', () => {
@@ -56,7 +56,7 @@ describe('BoardingTrainList', () => {
       const { getByTestId } = renderWithTheme(
         <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
       );
-      expect(getByTestId('boarding-train-arrival-T-NOW').props.children).toBe('10:02');
+      expect(getByTestId('boarding-train-arrival-T-NOW').props.children).toBe('10:02 도착 예정');
     } finally {
       nowSpy.mockRestore();
     }
@@ -106,12 +106,12 @@ describe('BoardingTrainList', () => {
 
   it('#648 SCHED-* trainCode는 사용자에게 숨기고 "시간표" 라벨로 대체', () => {
     const fallback = makeTrain({ trainCode: 'SCHED-DN-1', destination: '석남', line: '7' });
-    const { getByText, queryByText } = renderWithTheme(
+    const { getByText, queryByText, getByTestId } = renderWithTheme(
       <BoardingTrainList arrivals={[fallback]} line="7" onSelect={() => {}} />,
     );
     expect(queryByText('SCHED-DN-1')).toBeNull();
     expect(getByText('시간표')).toBeTruthy();
-    expect(getByText('석남 행')).toBeTruthy();
+    expect(getByTestId('boarding-train-meta-SCHED-DN-1').props.children).toBe('석남행');
   });
 
   it('walkingBufferSeconds 미전달이면 모든 train 활성', () => {
@@ -124,9 +124,9 @@ describe('BoardingTrainList', () => {
     expect(onSelect).toHaveBeenCalled();
   });
 
-  it('#649 nextStationLabel 전달 시 "{label} 방면" 으로 표기 (destination 행 대체)', () => {
+  it('#749 nextStationLabel 전달 시 종착 + 방면 동시 표시 ("○○행 · ○○방면")', () => {
     const train = makeTrain({ trainCode: 'T-NEXT', destination: '석남', line: '7' });
-    const { getByText, queryByText } = renderWithTheme(
+    const { getByTestId } = renderWithTheme(
       <BoardingTrainList
         arrivals={[train]}
         line="7"
@@ -134,11 +134,39 @@ describe('BoardingTrainList', () => {
         nextStationLabel="중곡"
       />,
     );
-    expect(getByText('중곡 방면')).toBeTruthy();
-    expect(queryByText('석남 행')).toBeNull();
+    expect(getByTestId('boarding-train-meta-T-NEXT').props.children).toBe('석남행 · 중곡방면');
   });
 
-  it('#649 compact 모드: 헤더/trainCode 라인 생략, 단일 row 라벨만', () => {
+  it('#749 nextStationLabel null이면 종착만 표시 (방면 생략)', () => {
+    const train = makeTrain({ trainCode: 'T-NO-NEXT', destination: '석남', line: '7' });
+    const { getByTestId } = renderWithTheme(
+      <BoardingTrainList
+        arrivals={[train]}
+        line="7"
+        onSelect={() => {}}
+        nextStationLabel={null}
+      />,
+    );
+    expect(getByTestId('boarding-train-meta-T-NO-NEXT').props.children).toBe('석남행');
+  });
+
+  it('#749 시퀀스 카운터는 arrivalSeconds 오름차순 정렬 후 1-indexed', () => {
+    // arrivals 입력 순서가 정렬 순서가 아니어도 카운터는 도착 시간 빠른 순부터.
+    // 정렬은 호출자 책임이라 동일 순서로 전달되었을 때의 카운터 매핑을 검증한다.
+    const trains = [
+      makeTrain({ trainCode: 'T-1ST', arrivalSeconds: 60 }),
+      makeTrain({ trainCode: 'T-2ND', arrivalSeconds: 180 }),
+      makeTrain({ trainCode: 'T-3RD', arrivalSeconds: 300 }),
+    ];
+    const { getByTestId } = renderWithTheme(
+      <BoardingTrainList arrivals={trains} line="2" onSelect={() => {}} />,
+    );
+    expect(getByTestId('boarding-train-sequence-T-1ST').props.children).toBe('1번째 전');
+    expect(getByTestId('boarding-train-sequence-T-2ND').props.children).toBe('2번째 전');
+    expect(getByTestId('boarding-train-sequence-T-3RD').props.children).toBe('3번째 전');
+  });
+
+  it('#749 compact 모드: 헤더/trainCode 라인 생략, 단일 row 종착·방면 라벨', () => {
     const train = makeTrain({ trainCode: 'T-COMPACT', destination: '석남', line: '7' });
     const { getByTestId, queryByText } = renderWithTheme(
       <BoardingTrainList
@@ -149,9 +177,24 @@ describe('BoardingTrainList', () => {
         nextStationLabel="중곡"
       />,
     );
-    expect(getByTestId('boarding-train-label-T-COMPACT').props.children).toBe('중곡 방면');
+    expect(getByTestId('boarding-train-meta-T-COMPACT').props.children).toBe('석남행 · 중곡방면');
     expect(queryByText('탑승할 열차 선택')).toBeNull();
     expect(queryByText('T-COMPACT')).toBeNull();
+  });
+
+  it('#749 compact 모드에서도 카운터 + 시각 표기', () => {
+    const train = makeTrain({ trainCode: 'T-CO-SEQ', destination: '석남', line: '7' });
+    const { getByTestId } = renderWithTheme(
+      <BoardingTrainList
+        arrivals={[train]}
+        line="7"
+        onSelect={() => {}}
+        compact
+        nextStationLabel="중곡"
+      />,
+    );
+    expect(getByTestId('boarding-train-sequence-T-CO-SEQ').props.children).toBe('1번째 전');
+    expect(getByTestId('boarding-train-arrival-T-CO-SEQ')).toBeTruthy();
   });
 
   it('#649 compact + 빈 arrivals 도 동일 placeholder', () => {
