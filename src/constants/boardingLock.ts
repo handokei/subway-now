@@ -54,3 +54,26 @@ export const ARRIVAL_PROXIMITY_THRESHOLD_M = 300;
  *  - 너무 길면(예: 90s) 사용자가 이미 하차해 다른 곳으로 이동 중인데 lock이 남는 시간이 길어짐.
  */
 export const AUTO_RELEASE_GRACE_MS = 45_000;
+
+/**
+ * #767 — boardingLock 해제(non-null → null) 시 register POST를 지연하는 debounce(ms).
+ *
+ * 배경(PR #765 evidence): 사용자가 옛 lock을 release하고 즉시 새 lock을 잡는 swap 흐름에서
+ * 짧은 시간 안에 3 POST가 발사된다(boardingLock=null → null → 새 lock). 첫 POST(null)가
+ * backend KV의 기존 lock을 unset해 새 lock POST가 `existingHasLock=false`로 들어오는 회귀가
+ * 관측되었다 (정상은 새 lock으로 직접 교체).
+ *
+ * 해제 → 새 lock 전환을 흡수하기 위해 lock release POST만 debounce — 다음 effect cycle이
+ * 새 lock을 들고 오면 옛 null POST는 cleanup으로 cancel되어 backend KV 상의 lock unset
+ * 사이드이펙트를 차단한다. 새 lock POST는 즉시 발사(debounce 미적용)되어 사용자 경험 영향 없음.
+ *
+ * 1500ms로 둔 이유:
+ *  - PR #765 evidence: 3 POST가 25초 안에 분포(~12.5s 간격), 사용자 swap 의도가 같은 effect
+ *    cycle 안에 들어오기엔 짧지 않다. 그러나 race window 자체는 React effect 재실행 + GPS/arrival
+ *    polling 사이의 1초 이내 발생 — 1.5s면 GPS 1 tick 이상 흡수.
+ *  - 너무 짧으면(예: 300ms) lock 해제 후 즉시 새 lock을 못 잡으면 null POST가 그대로 backend로
+ *    가서 race 미차단.
+ *  - 너무 길면(예: 5000ms) 진짜 trip 종료(사용자가 의도적으로 lock 해제) 시 backend KV 갱신이
+ *    지연돼 BG cron이 옛 lock으로 한 사이클 더 폴링 가능.
+ */
+export const BOARDING_LOCK_RELEASE_DEBOUNCE_MS = 1500;
