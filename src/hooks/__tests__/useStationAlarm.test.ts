@@ -1930,4 +1930,89 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
     });
   });
+
+  // #754 — fireAndLog dedup race: await getBoardingLock() 동안 effect가 재실행돼
+  // 같은 rawEvent로 in-flight fireAndLog가 다수 누적되어도 사용자에게는 1회만 노출.
+  describe('#754 fireAndLog dedup race', () => {
+    it('진입 시 firedAlarmsRef에 키가 이미 있으면 즉시 return (in-flight entry dedup)', async () => {
+      // race 시뮬레이션: evaluateAlarmPhase mock이 firedAlarms를 honor 안 함으로써 같은
+      // rawEvent를 매 evaluation마다 반환 (production race에서 in-flight fireAndLog가 add 전에
+      // 다음 evaluation이 들어오는 상황과 동치). fireAndLog 진입 가드가 차단해야 한다.
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      mockGetBoardingLock.mockResolvedValue(null);
+      const route = makeDirectRoute(1, '2');
+
+      const { rerender } = renderHook(
+        ({ lat }: { lat: number }) =>
+          useStationAlarm(
+            defaultInputs({
+              route,
+              destination,
+              userLocation: { lat, lng: 127.0 },
+            }),
+          ),
+        { initialProps: { lat: 37.5 } },
+      );
+
+      // 첫 fire 완료까지 대기 — firedAlarmsRef에 'early:강남' 적재.
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+      expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
+
+      // mock이 firedAlarms를 무시하므로 evaluateAlarmPhase는 다시 같은 rawEvent 반환 → fireAndLog 호출.
+      // 진입 가드(has(key)=true)가 catch하지 않으면 88회 burst 회귀 — 추가 발사 없어야 한다.
+      rerender({ lat: 37.50001 });
+      rerender({ lat: 37.50002 });
+      rerender({ lat: 37.50003 });
+
+      // microtask + effect 사이클 flush. setTimeout(0)으로 macrotask queue까지 비운다.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+      expect(mockLogFiredAlarm).toHaveBeenCalledTimes(1);
+    });
+
+    it('sleep-rule suppress 분기에서 firedAlarms.delete로 복구 → sleep 해제 후 다음 evaluation은 정상 발사', async () => {
+      const lock = {
+        destinationId: destination.id,
+        trainCode: 'T-1',
+        boardingStationId: 'S-BOARD',
+        boardingLine: '2' as const,
+        boardedAt: Date.now(),
+        expectedDurationMs: 60_000,
+      };
+      useAppStore.setState({ sleepMode: true });
+      mockGetBoardingLock.mockResolvedValue(lock);
+
+      const route = makeTransferRoute({
+        transferName: '시청',
+        fromLine: '2',
+        toLine: '1',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+
+      const { rerender } = renderHook(
+        ({ lat }: { lat: number }) =>
+          useStationAlarm(
+            defaultInputs({
+              route,
+              destination,
+              userLocation: { lat, lng: 127.0 },
+            }),
+          ),
+        { initialProps: { lat: 37.5 } },
+      );
+
+      await waitFor(() => expect(mockLogSuppressedSleepFirstTransfer).toHaveBeenCalled());
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+
+      // sleep OFF 토글 → firedAlarms.delete가 sync 적용됐다면 다음 evaluation은 정상 발사.
+      // delete가 빠지면 같은 키가 firedAlarms에 남아 진입 가드가 영구 봉쇄 → 회귀.
+      useAppStore.setState({ sleepMode: false });
+      rerender({ lat: 37.50001 });
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+    });
+  });
 });
