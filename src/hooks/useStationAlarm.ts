@@ -188,9 +188,18 @@ export function useStationAlarm({
     activeRoute: NonNullable<Route>,
     activeDestination: Station,
   ): Promise<void> {
+    // #754 — in-flight dedup. 진입 즉시 firedAlarmsRef에 추가해 await 동안 effect가
+    // 재실행돼도 같은 키가 evaluateAlarmPhase에서 dedup된다. 같은 키가 이미 있으면
+    // 즉시 return — sync 입구에서 race window를 닫는다 (88회 burst 회귀 차단).
+    // sleep-rule suppress 분기에선 아래에서 delete로 복구해 sleep 토글 후 재발사 가능.
+    // alarmKey는 phaseId/stationName만 사용하므로 direction 조정 전후로 동일 키.
+    const key = alarmKey(rawEvent);
+    if (firedAlarmsRef.current.has(key)) return;
+    firedAlarmsRef.current.add(key);
+
     // #750: 공통 sleep 룰 게이트. scheduler가 사전 예약을 skip한 transfer를 FG polling이
-    // 우회 발사하던 회귀 차단. firedAlarms에 추가하지 않고 그냥 return — 다음 폴링이 다시 같은
-    // 게이트를 통과하지 못하므로 안전 (sleep OFF로 토글되면 그때 정상 발사 경로 진입).
+    // 우회 발사하던 회귀 차단. sleep으로 suppress된 키는 firedAlarmsRef에서 제거해 sleep OFF
+    // 토글 시 다음 evaluation이 정상 발사 경로로 진입할 수 있게 한다.
     // resolveAllTargets는 route가 활성이면 최소 1개 waypoint를 반환한다 — empty 분기 가드 불필요.
     const firstHopName = resolveAllTargets(activeRoute, activeDestination.name)[0].name;
     const isFirstHop = isSameStationName(firstHopName, rawEvent.stationName);
@@ -203,6 +212,9 @@ export function useStationAlarm({
         isFirstHop,
       })
     ) {
+      // delete는 ref만 갱신 — setFiredAlarms 호출 없음. 진입부 add도 ref만 갱신했으므로
+      // 같은 분기 내 add → delete는 storage 관점에서 net-zero (BG가 읽는 영속 상태 불변).
+      firedAlarmsRef.current.delete(key);
       logSuppressedSleepFirstTransfer({
         source: 'fg',
         stationName: rawEvent.stationName,
@@ -219,8 +231,6 @@ export function useStationAlarm({
         })
       : undefined;
     const event = direction ? { ...rawEvent, direction } : rawEvent;
-    // sync ref add — 같은 hook 인스턴스의 다음 evaluation은 즉시 dedup됨.
-    firedAlarmsRef.current.add(alarmKey(event));
     // AsyncStorage write 완료까지 await — BG/재하이드레이션 race 차단(#699).
     try {
       await setFiredAlarms(activeDestination.id, firedAlarmsRef.current);
@@ -293,8 +303,8 @@ export function useStationAlarm({
     );
     for (const event of suppressed) logSuppressedDedupAlarm('fg', event);
     // #699: fireAndLog가 setFiredAlarms를 await하므로 promise를 명시적으로 흘려보낸다.
-    // sync firedAlarmsRef.current.add는 fireAndLog 내부 첫 동작이라 같은 hook 인스턴스
-    // 다음 evaluation은 await 중에도 dedup된다.
+    // #754: in-flight dedup은 fireAndLog 진입부의 sync firedAlarmsRef.current.add(key) 가
+    // 보장한다 (await getBoardingLock 전에 set에 들어가므로 같은 키의 동시 호출은 즉시 return).
     if (rawEvent) {
       // #733 — Phase ETA path movement gate. early phase는 etaSeconds 무관, remainingStops<=1만
       // 검사하므로 fusion이 인접역으로 jitter하면 즉시 발사. snapshot 1/2에서 관측된 20:07:48 등
