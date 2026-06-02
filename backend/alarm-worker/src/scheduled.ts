@@ -49,11 +49,12 @@ export const LA_PUSH_THRESHOLD_MS = 30_000;
 export const MAX_CONSECUTIVE_ETA_MISSING = 5;
 
 /**
- * cron이 progress KV를 read할 때의 cacheTtl (#766).
- * POST `/trips`가 putProgress 직후 같은 cron 사이클에서 옛 값을 읽지 않도록 10s까지 단축.
- * trips.ts/pendingPushes.ts의 cron read와 동일 정책.
+ * cron이 progress KV를 read할 때의 cacheTtl (#766/#770).
+ * POST `/trips`가 putProgress 직후 같은 cron 사이클에서 옛 값을 읽지 않도록 30s까지 단축.
+ * trips.ts/pendingPushes.ts의 cron read와 동일 정책. Cloudflare KV는 cacheTtl<30s 시
+ * 런타임에서 `Invalid cache_ttl` 던짐(#770 hotfix).
  */
-const CRON_PROGRESS_CACHE_TTL_SEC = 10;
+const CRON_PROGRESS_CACHE_TTL_SEC = 30;
 
 export interface EnvHealResult {
   result: SendPushResult;
