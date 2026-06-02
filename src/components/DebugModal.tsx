@@ -595,10 +595,10 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
 function ScheduledQueueBody({
   dump,
   colors,
-}: {
+}: Readonly<{
   dump: ScheduledNotificationDumpEntry[] | null;
   colors: ReturnType<typeof useTheme>['colors'];
-}) {
+}>) {
   if (dump === null) {
     return (
       <Text style={[typography.mono, { color: colors.muted }]}>(tap Refresh to load)</Text>
