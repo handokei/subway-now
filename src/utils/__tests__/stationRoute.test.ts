@@ -430,6 +430,102 @@ describe('calculateStaticETA', () => {
   });
 });
 
+describe('calculateStaticETA — 도보 시간 합산 (#776)', () => {
+  // 0.0009도 차이 ≈ 100m, 도보 1.2 m/s 기준 83.3초 ≈ 1.4분 → round(1.4)=1분
+  const userNearOrigin = { lat: 37.5, lng: 127.0 };
+  const originStationCoords = { lat: 37.5009, lng: 127.0 };
+  // 0.0065도 차이 ≈ 723m, 도보 1.2 m/s 기준 602초 ≈ 10.04분 → round(10.04)=10분
+  const destinationStationCoords = { lat: 37.6, lng: 127.0 };
+  const userFarFromDestStation = { lat: 37.6065, lng: 127.0 };
+
+  it('options 미지정 시 기존 동작 그대로 (도보 0분)', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    expect(calculateStaticETA(route)).toBe(13); // 3 + 10 + 0
+  });
+
+  it('currentLocation + originStation 페어로 출발 도보 시간을 합산한다', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    // 13(기존) + round(1.4)=1 → 14분
+    expect(
+      calculateStaticETA(route, {
+        currentLocation: userNearOrigin,
+        originStation: originStationCoords,
+      }),
+    ).toBe(14);
+  });
+
+  it('destination + destinationStation 페어로 하차 도보 시간을 합산한다', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    // 13(기존) + round(10.04)=10 → 23분
+    expect(
+      calculateStaticETA(route, {
+        destinationStation: destinationStationCoords,
+        destination: userFarFromDestStation,
+      }),
+    ).toBe(23);
+  });
+
+  it('출발 + 하차 도보 시간을 모두 합산한다', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    // 13 + 1(출발) + 10(하차) = 24분
+    expect(
+      calculateStaticETA(route, {
+        currentLocation: userNearOrigin,
+        originStation: originStationCoords,
+        destinationStation: destinationStationCoords,
+        destination: userFarFromDestStation,
+      }),
+    ).toBe(24);
+  });
+
+  it('currentLocation만 있고 originStation 누락이면 출발 도보=0 (graceful fallback)', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    expect(
+      calculateStaticETA(route, { currentLocation: userNearOrigin }),
+    ).toBe(13);
+  });
+
+  it('originStation만 있고 currentLocation 누락이면 출발 도보=0 (graceful fallback)', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    expect(
+      calculateStaticETA(route, { originStation: originStationCoords }),
+    ).toBe(13);
+  });
+
+  it('destination만 있고 destinationStation 누락이면 하차 도보=0 (graceful fallback)', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    expect(
+      calculateStaticETA(route, { destination: userFarFromDestStation }),
+    ).toBe(13);
+  });
+
+  it('destinationStation만 있고 destination 누락이면 하차 도보=0 (graceful fallback)', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    expect(
+      calculateStaticETA(route, { destinationStation: destinationStationCoords }),
+    ).toBe(13);
+  });
+
+  it('동일 좌표면 도보=0 (현위치가 출발역과 같은 점)', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    expect(
+      calculateStaticETA(route, {
+        currentLocation: originStationCoords,
+        originStation: originStationCoords,
+      }),
+    ).toBe(13);
+  });
+
+  it('route가 null이면 options 있어도 null 반환', () => {
+    expect(
+      calculateStaticETA(null, {
+        currentLocation: userNearOrigin,
+        originStation: originStationCoords,
+      }),
+    ).toBeNull();
+  });
+});
+
 describe('환승역별 실측 환승시간 반영', () => {
   // CSV 출처: 공공데이터포털 15044419 (보행속도 1.2 m/s 기준)
   // 교대(2↔3) 63초 vs 잠실(8↔2) 158초 — 같은 stops여도 travelMinutes 차이 발생

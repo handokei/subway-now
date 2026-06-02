@@ -239,7 +239,13 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     }
   }
 
-  const eta = calculateStaticETA(route);
+  // #776: 도보 시간 합산. nearest.station을 출발역으로, 사용자 GPS(lat/lng)를 currentLocation으로.
+  // 하차 도보는 미적용 — 현 시점 데이터 모델은 destination이 Station(=하차역)으로 사용자 최종 좌표와
+  // 일치하므로 도보 0이 자명. 사용자 좌표를 별도로 보유하게 되면 destination/destinationStation 추가.
+  const eta = calculateStaticETA(route, {
+    currentLocation: { lat, lng },
+    originStation: { lat: nearest.station.lat, lng: nearest.station.lng },
+  });
   await updateStationNotification(
     nearest.station,
     Math.round(nearest.distanceKm * 1000),
