@@ -66,20 +66,6 @@ app.post('/trips', async (c) => {
   const incoming = validateTrip(body);
   if (!incoming) return c.json({ error: 'invalid_trip' }, 400);
 
-  // #762/#622 — transfer-leg sync 가설 확정용 진단 로그 (root cause 확정 후 제거).
-  // wrangler tail에서 hasBoardingLock=false면 client 누락(가설 A),
-  // true인데 cron이 lockMissing이면 backend merge drop(가설 C).
-  console.log(
-    JSON.stringify({
-      msg: 'POST /trips incoming',
-      tokenPrefix: tokenPrefix(incoming.token),
-      hasBoardingLock: incoming.boardingLock !== undefined,
-      trainCode: incoming.boardingLock?.trainCode,
-      line: incoming.boardingLock?.line,
-      segmentLen: incoming.boardingLock?.segmentStations.length,
-    }),
-  );
-
   // #578/#704: 디바이스가 동일 trip을 반복 POST해도(예: GPS update마다 register, 또는 cold restart
   // 후 같은 trip 재등록) backend가 이미 advance한 waypoints / 추적 baseline을 덮어쓰지 않는다.
   //
@@ -131,22 +117,6 @@ app.post('/trips', async (c) => {
     : baseTrip;
 
   await putTrip(c.env.TRIPS, trip);
-
-  // #764/#622 — putTrip 직후 trip 상태 진단 (root cause sub-step 좁힘용, 확정 후 제거).
-  // scheduled.ts의 `cron loaded trip` 로그와 cross-check해 KV 쓰기/읽기 사이에서
-  // boardingLock.trainCode가 어떻게 보이는지 확정한다. existing/incoming/final을 한 줄에 모아
-  // merge 분기(isSameSession / progressApplied)가 새 lock을 유지하는지 즉시 확인.
-  console.log(
-    JSON.stringify({
-      msg: 'PUT trip after merge',
-      tokenPrefix: tokenPrefix(trip.token),
-      isSameSession,
-      progressApplied: progressApplies,
-      incomingHasLock: incoming.boardingLock !== undefined,
-      existingHasLock: existing?.boardingLock !== undefined,
-      finalTrainCode: trip.boardingLock?.trainCode,
-    }),
-  );
 
   return c.json({ ok: true, token: trip.token });
 });

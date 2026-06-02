@@ -180,15 +180,6 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     const waypoint = pickActiveWaypoint(trip);
     if (!waypoint) continue;
 
-    // #764/#622 — cron이 KV에서 읽은 trip의 boardingLock 추적 (root cause sub-step 좁힘용,
-    // 확정 후 제거). POST /trips의 `PUT trip after merge` 로그와 cross-check해 KV 쓰기/
-    // 읽기 사이에 trainCode가 어떻게 보이는지 한 사이클 단위로 확정한다.
-    log('cron loaded trip', {
-      token: trip.token.slice(0, 8),
-      loadedTrainCode: trip.boardingLock?.trainCode,
-      waypointStation: waypoint.stationName,
-    });
-
     // #640 — BoardingLock 게이트. 사용자가 열차를 아직 선택하지 않았거나 lock이 만료된 trip은
     // Seoul polling/push 모두 skip. 디바이스는 lock 등록 후 train-code 단위로 정확히 추적하며,
     // lock 부재 상태에서의 phase-based push는 "탑승 전 노이즈"였다.
