@@ -9,6 +9,7 @@ import { ARRIVAL_CODE } from '../../constants/arrivalCodes';
 import { TRAIN_STATUS } from '../../constants/trainStatus';
 import { MOCK_STATIONS } from '../../testUtils/fixtures';
 import type { StationArrival, ArrivalInfo } from '../../api/arrivalApi';
+import type { Station } from '../../types/station';
 import type { LinePositions, TrainPosition } from '../../api/positionApi';
 import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
@@ -1148,25 +1149,19 @@ describe('useFusedNearestStation', () => {
       }
     });
 
-    it('다음 역이 GPS 후보가 아니면 ② skip → ③(ReanchoredHop)으로 fallback (line 133 return [])', () => {
+    // ② skip 시나리오 공통 헬퍼 — 두 테스트가 동일한 시드 패턴(LivePosition 신선 → 끊김 → ③ fallback)을
+    // 공유하지만 후보 슬롯/arrival 데이터/시간 진행만 다르므로 중복 setup을 helper로 추출 (SonarCloud CPD).
+    function runArrivalEtaSkipScenario(opts: {
+      candidates: Array<{ station: Station; distanceKm: number }>;
+      arrivalMock: (name: string | null) => ReturnType<typeof arrivalRet>;
+      disconnectAtMs: number;
+    }) {
       jest.useFakeTimers();
       try {
-        // 1+2단계: LivePosition 신선 두 번 (Effect 2의 lock-key race 우회) → lastObservedRef=idx 0
         jest.setSystemTime(T0_745);
         setupLooseAccuracyAt(yongmasan);
-        // 후보에 다음 역(중곡) 없음 — 그러나 pickArrivalsForStation 루프는 진입.
-        // 슬롯 stationName=용마산 vs station.name=중곡 → 모두 continue → 루프 종료 후 return [] (line 133).
-        mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-        // 슬롯에 arrival 데이터를 주입(중곡 외 다른 역) — line 127('!arrival') continue 분기가 아닌
-        // line 128(stationName !== station.name) continue 분기를 타도록 한다. 이 차이로 line 133 도달 후 branch 분기 모두 cover.
-        const arrivalAtYongmasan: StationArrival = {
-          up: [info(ARRIVAL_CODE.RUNNING, { trainCode: 'OTHER', line: '7' })],
-          down: [],
-        };
-        mockUseArrival.mockImplementation((name: string | null) => {
-          if (name === yongmasan.name) return arrivalRet(arrivalAtYongmasan);
-          return arrivalRet(null);
-        });
+        mockFindTop.mockReturnValue(opts.candidates);
+        mockUseArrival.mockImplementation(opts.arrivalMock);
         mockUsePositions.mockImplementation(() => ({
           positions: {
             line: '7' as const,
@@ -1180,74 +1175,52 @@ describe('useFusedNearestStation', () => {
         );
         jest.setSystemTime(T0_745 + 5_000);
         rerender(undefined);
-
-        // 3단계: LivePosition 끊김. ref={arcIndex:0} 보존. nextStationOnArc=junggok이지만 슬롯에 없음.
-        // pickArrivalsForStation 루프 → 모두 continue → return [] (line 133).
-        // ② skip → ③ ReanchoredHop이 idx 0+(elapsed/hopTime)으로 전진.
+        // LivePosition 끊김 → ② skip 분기 평가 후 ③ ReanchoredHop fallback 확인용.
         mockUsePositions.mockImplementation(() => ({
           positions: { line: '7' as const, trains: [] },
           loading: false,
           isMock: false,
         }));
-        jest.setSystemTime(T0_745 + 2 * 90_000);
+        jest.setSystemTime(opts.disconnectAtMs);
         rerender(undefined);
-
-        // ③ → boarding-lock-interp로 라벨.
         expect(result.current.source).toBe('boarding-lock-interp');
       } finally {
         jest.useRealTimers();
         mockUseArrival.mockReset();
         mockUsePositions.mockReset();
       }
+    }
+
+    it('다음 역이 GPS 후보가 아니면 ② skip → ③(ReanchoredHop)으로 fallback (line 133 return [])', () => {
+      // 후보에 다음 역(중곡) 없음 — 슬롯 stationName=용마산 vs station.name=중곡 → 모두 continue.
+      // 슬롯에 arrival 데이터를 주입(line 127 '!arrival' continue가 아닌 line 128 stationName 불일치 분기 cover).
+      const arrivalAtYongmasan: StationArrival = {
+        up: [info(ARRIVAL_CODE.RUNNING, { trainCode: 'OTHER', line: '7' })],
+        down: [],
+      };
+      runArrivalEtaSkipScenario({
+        candidates: [{ station: yongmasan, distanceKm: 0 }],
+        arrivalMock: (name) =>
+          name === yongmasan.name ? arrivalRet(arrivalAtYongmasan) : arrivalRet(null),
+        disconnectAtMs: T0_745 + 2 * 90_000,
+      });
     });
 
     it('다음 역 슬롯이 있어도 row.line이 모두 다른 호선이면 ② skip (matched.length=0 branch, line 131)', () => {
-      jest.useFakeTimers();
-      try {
-        // ref 시드(2 fresh render)
-        jest.setSystemTime(T0_745);
-        setupLooseAccuracyAt(yongmasan);
-        mockFindTop.mockReturnValue([
+      // 중곡 슬롯 arrival의 row.line='2', junggok.line='7' 불일치 → filter 빈 배열. RUNNING(99)으로 fused 픽업 차단.
+      const arrivalAtJunggokWrongLine: StationArrival = {
+        up: [info(ARRIVAL_CODE.RUNNING, { trainCode: '7093', line: '2' })],
+        down: [],
+      };
+      runArrivalEtaSkipScenario({
+        candidates: [
           { station: yongmasan, distanceKm: 0 },
           { station: junggok, distanceKm: 0.5 },
-        ]);
-        // 중곡 슬롯에 있는 arrival의 row.line이 모두 '2' — junggok.line='7'과 불일치 → filter 빈 배열.
-        // arrivalCode는 RUNNING(99)으로 priority 0 — fused가 이 row를 픽업하지 않도록 차단.
-        const arrivalAtJunggokWrongLine: StationArrival = {
-          up: [info(ARRIVAL_CODE.RUNNING, { trainCode: '7093', line: '2' })],
-          down: [],
-        };
-        mockUseArrival.mockImplementation((name: string | null) => {
-          if (name === junggok.name) return arrivalRet(arrivalAtJunggokWrongLine);
-          return arrivalRet(null);
-        });
-        mockUsePositions.mockImplementation(() => ({
-          positions: {
-            line: '7' as const,
-            trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: '7093' })],
-          },
-          loading: false,
-          isMock: false,
-        }));
-        const { result, rerender } = renderHook(() =>
-          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
-        );
-        jest.setSystemTime(T0_745 + 5_000);
-        rerender(undefined);
-        // 3단계: LivePosition 끊김. ② skip(matched=[]) → ③ ReanchoredHop이 idx 0+2=2(군자) 반환.
-        mockUsePositions.mockImplementation(() => ({
-          positions: { line: '7' as const, trains: [] },
-          loading: false,
-          isMock: false,
-        }));
-        jest.setSystemTime(T0_745 + 5_000 + 3 * 90_000);
-        rerender(undefined);
-        expect(result.current.source).toBe('boarding-lock-interp');
-      } finally {
-        jest.useRealTimers();
-        mockUseArrival.mockReset();
-        mockUsePositions.mockReset();
-      }
+        ],
+        arrivalMock: (name) =>
+          name === junggok.name ? arrivalRet(arrivalAtJunggokWrongLine) : arrivalRet(null),
+        disconnectAtMs: T0_745 + 5_000 + 3 * 90_000,
+      });
     });
 
     it('신규 폴링 없음 회귀 — 단일 렌더에서 useArrivalInfo 호출 횟수는 후보 슬롯 수(K=3)와 같다', () => {
