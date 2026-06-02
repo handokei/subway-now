@@ -66,6 +66,20 @@ app.post('/trips', async (c) => {
   const incoming = validateTrip(body);
   if (!incoming) return c.json({ error: 'invalid_trip' }, 400);
 
+  // #762/#622 — transfer-leg sync 가설 확정용 진단 로그 (root cause 확정 후 제거).
+  // wrangler tail에서 hasBoardingLock=false면 client 누락(가설 A),
+  // true인데 cron이 lockMissing이면 backend merge drop(가설 C).
+  console.log(
+    JSON.stringify({
+      msg: 'POST /trips incoming',
+      tokenPrefix: tokenPrefix(incoming.token),
+      hasBoardingLock: incoming.boardingLock !== undefined,
+      trainCode: incoming.boardingLock?.trainCode,
+      line: incoming.boardingLock?.line,
+      segmentLen: incoming.boardingLock?.segmentStations.length,
+    }),
+  );
+
   // #578/#704: 디바이스가 동일 trip을 반복 POST해도(예: GPS update마다 register, 또는 cold restart
   // 후 같은 trip 재등록) backend가 이미 advance한 waypoints / 추적 baseline을 덮어쓰지 않는다.
   //
