@@ -663,6 +663,33 @@ describe('useApnsTripRegistration', () => {
       expectedDurationMs: 600_000,
     };
     const lockB = { ...lockA, trainCode: '7415', boardedAt: 1_700_000_500_000 };
+    type Lock = typeof lockA;
+
+    // CPD 해소: 8 케이스가 공유하는 (lock prop 기반 mount + microtask flush + 첫 register 발사)
+    // 셋업을 helper로 묶어 한 줄로 표현. PR #760의 mountAtT0 정신.
+    const mountWithLock = (initialLock: Lock | null) =>
+      renderHook(
+        ({ lock }: { lock: Lock | null }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            currentStation: station,
+            boardingLock: lock,
+          }),
+        { initialProps: { lock: initialLock } },
+      );
+    const flushMicrotasks = async () => {
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+    };
+    const flushOnce = async () => {
+      await act(async () => {
+        await Promise.resolve();
+      });
+    };
 
     beforeEach(() => {
       jest.useFakeTimers();
@@ -673,30 +700,14 @@ describe('useApnsTripRegistration', () => {
     });
 
     it('lock → null 전환은 debounce window 안에 POST 발사 안 함', async () => {
-      const { rerender } = renderHook(
-        ({ lock }: { lock: typeof lockA | null }) =>
-          useApnsTripRegistration({
-            route: directRoute,
-            destination: station,
-            nextStationEtaSeconds: 120,
-            currentStation: station,
-            boardingLock: lock,
-          }),
-        { initialProps: { lock: lockA as typeof lockA | null } },
-      );
+      const { rerender } = mountWithLock(lockA);
       // 첫 register (lock A) 발사
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
       // lock 해제 — debounce window 안엔 POST 안 보내야 함
       rerender({ lock: null });
-      // microtask flush
-      await act(async () => {
-        await Promise.resolve();
-      });
+      await flushOnce();
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
       // window 미만 advance (안전 마진)
@@ -705,41 +716,25 @@ describe('useApnsTripRegistration', () => {
     });
 
     it('lock → null 후 debounce 안에 새 lock 들어오면 null POST는 cancel되고 새 lock POST만 발사', async () => {
-      const { rerender } = renderHook(
-        ({ lock }: { lock: typeof lockA | null }) =>
-          useApnsTripRegistration({
-            route: directRoute,
-            destination: station,
-            nextStationEtaSeconds: 120,
-            currentStation: station,
-            boardingLock: lock,
-          }),
-        { initialProps: { lock: lockA as typeof lockA | null } },
-      );
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      const { rerender } = mountWithLock(lockA);
+      await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(1);
       expect(mockRegister.mock.calls[0][0].boardingLock.trainCode).toBe('7246');
 
       // 옛 lock release
       rerender({ lock: null });
-      await act(async () => { await Promise.resolve(); });
+      await flushOnce();
       // window 미만 진행
       act(() => { jest.advanceTimersByTime(500); });
       expect(mockRegister).toHaveBeenCalledTimes(1); // 아직 null POST 안 나감
 
       // 새 lock 잡힘 — 옛 null POST는 useEffect cleanup으로 cancel
       rerender({ lock: lockB });
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      await flushMicrotasks();
 
       // 잔여 timer 모두 flush — 옛 null POST가 살아있다면 여기서 발사됨
       act(() => { jest.advanceTimersByTime(BOARDING_LOCK_RELEASE_DEBOUNCE_MS * 2); });
-      await act(async () => { await Promise.resolve(); });
+      await flushOnce();
 
       // 총 2회만 호출 (lock A + lock B). null POST는 발사 안 됨.
       expect(mockRegister).toHaveBeenCalledTimes(2);
@@ -751,89 +746,41 @@ describe('useApnsTripRegistration', () => {
     });
 
     it('lock → null 후 debounce window 경과하면 null POST 발사 (true release 의도)', async () => {
-      const { rerender } = renderHook(
-        ({ lock }: { lock: typeof lockA | null }) =>
-          useApnsTripRegistration({
-            route: directRoute,
-            destination: station,
-            nextStationEtaSeconds: 120,
-            currentStation: station,
-            boardingLock: lock,
-          }),
-        { initialProps: { lock: lockA as typeof lockA | null } },
-      );
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      const { rerender } = mountWithLock(lockA);
+      await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
       // 옛 lock release — debounce window 경과 후 null POST 발사
       rerender({ lock: null });
-      await act(async () => { await Promise.resolve(); });
+      await flushOnce();
       act(() => { jest.advanceTimersByTime(BOARDING_LOCK_RELEASE_DEBOUNCE_MS + 100); });
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      await flushMicrotasks();
 
       expect(mockRegister).toHaveBeenCalledTimes(2);
       expect(mockRegister.mock.calls[1][0].boardingLock).toBeUndefined();
     });
 
     it('null → lock 전환(초기 lock 부여)은 debounce 미적용 — 즉시 발사', async () => {
-      const { rerender } = renderHook(
-        ({ lock }: { lock: typeof lockA | null }) =>
-          useApnsTripRegistration({
-            route: directRoute,
-            destination: station,
-            nextStationEtaSeconds: 120,
-            currentStation: station,
-            boardingLock: lock,
-          }),
-        { initialProps: { lock: null as typeof lockA | null } },
-      );
+      const { rerender } = mountWithLock(null);
       // 첫 register (lock 없음) — 즉시 발사
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
       // lock 잡힘 — debounce 없이 즉시 발사
       rerender({ lock: lockA });
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(2);
       expect(mockRegister.mock.calls[1][0].boardingLock.trainCode).toBe('7246');
     });
 
     it('lock → 다른 lock 직접 교체(swap)는 debounce 미적용 — 즉시 발사', async () => {
-      const { rerender } = renderHook(
-        ({ lock }: { lock: typeof lockA | null }) =>
-          useApnsTripRegistration({
-            route: directRoute,
-            destination: station,
-            nextStationEtaSeconds: 120,
-            currentStation: station,
-            boardingLock: lock,
-          }),
-        { initialProps: { lock: lockA as typeof lockA | null } },
-      );
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      const { rerender } = mountWithLock(lockA);
+      await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
       // 옛 lock → 새 lock 직접 교체 (null 거치지 않음) — 즉시 발사
       rerender({ lock: lockB });
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(2);
       expect(mockRegister.mock.calls[1][0].boardingLock.trainCode).toBe('7415');
     });
@@ -844,8 +791,9 @@ describe('useApnsTripRegistration', () => {
         if (key === ACTIVE_TRIP_KEY) return 'token-abc';
         return null;
       });
+      // 본 케이스만 route/destination도 같이 바꿔야 해서 mountWithLock 대신 인라인 유지.
       const { rerender } = renderHook(
-        ({ r, d, lock }: { r: Route; d: Station | null; lock: typeof lockA | null }) =>
+        ({ r, d, lock }: { r: Route; d: Station | null; lock: Lock | null }) =>
           useApnsTripRegistration({
             route: r,
             destination: d,
@@ -857,60 +805,42 @@ describe('useApnsTripRegistration', () => {
           initialProps: {
             r: directRoute as Route,
             d: station as Station | null,
-            lock: lockA as typeof lockA | null,
+            lock: lockA as Lock | null,
           },
         },
       );
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
       // 트립 종료 — route/destination 모두 null + lock도 null
       mockClear.mockClear();
       rerender({ r: null, d: null, lock: null });
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      await flushMicrotasks();
 
       // clear 즉시 호출 (debounce 안 걸림)
       expect(mockClear).toHaveBeenCalledWith('token-abc');
     });
 
     it('debounce window 안에 unmount되면 옛 null POST도 cancel — 누수 없음', async () => {
-      const { rerender, unmount } = renderHook(
-        ({ lock }: { lock: typeof lockA | null }) =>
-          useApnsTripRegistration({
-            route: directRoute,
-            destination: station,
-            nextStationEtaSeconds: 120,
-            currentStation: station,
-            boardingLock: lock,
-          }),
-        { initialProps: { lock: lockA as typeof lockA | null } },
-      );
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      const { rerender, unmount } = mountWithLock(lockA);
+      await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
       // 옛 lock release → debounce 시작
       rerender({ lock: null });
-      await act(async () => { await Promise.resolve(); });
+      await flushOnce();
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
       // window 미만에서 unmount — cleanup이 clearTimeout으로 timer 제거 + run()의 cancelled 가드
       unmount();
       act(() => { jest.advanceTimersByTime(BOARDING_LOCK_RELEASE_DEBOUNCE_MS * 2); });
-      await act(async () => { await Promise.resolve(); });
+      await flushOnce();
       expect(mockRegister).toHaveBeenCalledTimes(1);
     });
 
     it('token refresh 경로도 lastSentLockSig 추적 — 다음 main effect cycle의 release 판정에 일관', async () => {
       // 초기엔 lock A 들고 시작 — 첫 register는 main effect 경로.
+      // 본 케이스는 rerender 불필요 — props 고정 mount면 충분.
       renderHook(() =>
         useApnsTripRegistration({
           route: directRoute,
@@ -920,10 +850,7 @@ describe('useApnsTripRegistration', () => {
           boardingLock: lockA,
         }),
       );
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
+      await flushMicrotasks();
       expect(mockRegister).toHaveBeenCalledTimes(1);
 
       // token refresh — listener가 자체적으로 register 발사 + lastSentLockSig 갱신
