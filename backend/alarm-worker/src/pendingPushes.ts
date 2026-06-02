@@ -18,11 +18,12 @@ const PENDING_PREFIX = 'pending:';
 export const PENDING_TTL_SEC = 60;
 
 /**
- * cron read의 KV cacheTtl (#766). trips.ts와 같은 이유 — silent push 발사 직후 putPending된
+ * cron read의 KV cacheTtl (#766/#770). trips.ts와 같은 이유 — silent push 발사 직후 putPending된
  * entry를 같은 cron 사이클(또는 다음)의 fallback이 못 보는 stale read를 방지.
  * 기본 60s는 fallback이 막 발사된 push의 sentAt을 못 봐 임계 평가가 어긋날 위험이 있다.
+ * Cloudflare KV cacheTtl 최소값은 30s(#770 hotfix) — 그보다 작으면 런타임에서 `Invalid cache_ttl` 던짐.
  */
-const CRON_READ_CACHE_TTL_SEC = 10;
+const CRON_READ_CACHE_TTL_SEC = 30;
 
 /** silent push 발사 1건의 추적 정보. P2c가 alert fallback 결정에 사용. */
 export interface PendingPush {

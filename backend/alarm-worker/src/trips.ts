@@ -10,11 +10,12 @@ import type { Trip } from './types';
 const TRIP_PREFIX = 'trip:';
 
 /**
- * cron read의 KV cacheTtl (#766). Workers KV의 기본 cacheTtl=60s에 의해 PUT 직후 옛 캐시가
+ * cron read의 KV cacheTtl (#766/#770). Workers KV의 기본 cacheTtl=60s에 의해 PUT 직후 옛 캐시가
  * 60s까지 유지되는 stale read가 cron의 boardingLock 누락 회귀 root cause였다 (#765 진단 로그).
- * cron 주기 자체가 60s이므로 10s까지는 사용자 영향이 미미하고, origin 비용은 60→6 reads/min/trip로 절감.
+ * Cloudflare Workers KV의 cacheTtl 최소값은 30s — 그보다 작으면 런타임에서 `Invalid cache_ttl` 던짐(#770).
+ * cron 주기 자체가 60s이므로 30s 단축으로도 첫 cron 사이클의 stale window가 사라진다.
  */
-const CRON_READ_CACHE_TTL_SEC = 10;
+const CRON_READ_CACHE_TTL_SEC = 30;
 
 export function tripKey(token: string): string {
   return `${TRIP_PREFIX}${token}`;
