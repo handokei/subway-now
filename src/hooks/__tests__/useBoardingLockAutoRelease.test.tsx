@@ -73,6 +73,16 @@ function baseInputs(overrides: Partial<Inputs> = {}): Inputs {
   };
 }
 
+/**
+ * rerender 지원 테스트의 공통 setup — T0에 hook을 마운트하고 rerender 함수를 돌려준다.
+ * SonarCloud CPD가 잡는 동일 4줄 renderHook 호출을 한 곳에 두어 중복을 제거한다.
+ */
+function mountAtT0(initial: Inputs) {
+  return withDateNow(T0, () =>
+    renderHook((p: Inputs) => useBoardingLockAutoRelease(p), { initialProps: initial }),
+  );
+}
+
 describe('useBoardingLockAutoRelease', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -138,11 +148,7 @@ describe('useBoardingLockAutoRelease', () => {
 
   it('도착 지속 시간이 grace 미만이면 release 안 함', () => {
     const releaseLock = jest.fn();
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: Inputs) => useBoardingLockAutoRelease(p), {
-        initialProps: baseInputs({ releaseLock }),
-      }),
-    );
+    const { rerender } = mountAtT0(baseInputs({ releaseLock }));
     // grace 미만 시점에 fusion update — distanceKm을 살짝 바꿔 effect 재실행 트리거.
     withDateNow(T0 + AUTO_RELEASE_GRACE_MS - 1, () => {
       rerender(baseInputs({ releaseLock, distanceKm: proximityKm - 0.01 }));
@@ -152,11 +158,7 @@ describe('useBoardingLockAutoRelease', () => {
 
   it('도착 지속 시간이 grace 이상이면 release 호출', () => {
     const releaseLock = jest.fn();
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: Inputs) => useBoardingLockAutoRelease(p), {
-        initialProps: baseInputs({ releaseLock }),
-      }),
-    );
+    const { rerender } = mountAtT0(baseInputs({ releaseLock }));
     withDateNow(T0 + AUTO_RELEASE_GRACE_MS, () => {
       rerender(baseInputs({ releaseLock, distanceKm: proximityKm - 0.01 }));
     });
@@ -166,11 +168,7 @@ describe('useBoardingLockAutoRelease', () => {
 
   it('grace 만료 후 같은 조건 유지되어도 중복 release 안 함 (ref 리셋되어 새 카운트)', () => {
     const releaseLock = jest.fn();
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: Inputs) => useBoardingLockAutoRelease(p), {
-        initialProps: baseInputs({ releaseLock }),
-      }),
-    );
+    const { rerender } = mountAtT0(baseInputs({ releaseLock }));
     withDateNow(T0 + AUTO_RELEASE_GRACE_MS, () => {
       rerender(baseInputs({ releaseLock, distanceKm: proximityKm - 0.01 }));
     });
@@ -185,11 +183,7 @@ describe('useBoardingLockAutoRelease', () => {
 
   it('도착 후 거리 이탈하면 카운터 리셋 — 재진입 시 grace 새로 대기', () => {
     const releaseLock = jest.fn();
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: Inputs) => useBoardingLockAutoRelease(p), {
-        initialProps: baseInputs({ releaseLock }),
-      }),
-    );
+    const { rerender } = mountAtT0(baseInputs({ releaseLock }));
     // grace 절반 시점에 이탈
     withDateNow(T0 + AUTO_RELEASE_GRACE_MS / 2, () => {
       rerender(baseInputs({ releaseLock, distanceKm: farKm }));
@@ -213,11 +207,7 @@ describe('useBoardingLockAutoRelease', () => {
 
   it('도착 후 다른 역으로 변경되면 카운터 리셋', () => {
     const releaseLock = jest.fn();
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: Inputs) => useBoardingLockAutoRelease(p), {
-        initialProps: baseInputs({ releaseLock }),
-      }),
-    );
+    const { rerender } = mountAtT0(baseInputs({ releaseLock }));
     withDateNow(T0 + AUTO_RELEASE_GRACE_MS / 2, () => {
       rerender(baseInputs({ releaseLock, currentStation: otherStation }));
     });
@@ -230,11 +220,7 @@ describe('useBoardingLockAutoRelease', () => {
 
   it('trainCode 변경(새 trip/leg) 시 카운터 리셋 — 이전 trip ts 누수 차단', () => {
     const releaseLock = jest.fn();
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: Inputs) => useBoardingLockAutoRelease(p), {
-        initialProps: baseInputs({ releaseLock }),
-      }),
-    );
+    const { rerender } = mountAtT0(baseInputs({ releaseLock }));
     // 새 lock으로 교체
     withDateNow(T0 + AUTO_RELEASE_GRACE_MS / 2, () => {
       rerender(baseInputs({ releaseLock, lock: lockB }));
@@ -253,11 +239,7 @@ describe('useBoardingLockAutoRelease', () => {
 
   it('lock null → 활성으로 전환되어도 첫 활성 진입에서 ts만 기록 (즉시 release X)', () => {
     const releaseLock = jest.fn();
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: Inputs) => useBoardingLockAutoRelease(p), {
-        initialProps: baseInputs({ releaseLock, lock: null }),
-      }),
-    );
+    const { rerender } = mountAtT0(baseInputs({ releaseLock, lock: null }));
     // 사용자가 막 탑승 — 도착 조건 충족하나 첫 진입
     withDateNow(T0 + 100, () => {
       rerender(baseInputs({ releaseLock }));
@@ -267,11 +249,7 @@ describe('useBoardingLockAutoRelease', () => {
 
   it('lock 활성 → null로 전환 시 ref 리셋 (재활성 시 다시 grace 대기)', () => {
     const releaseLock = jest.fn();
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: Inputs) => useBoardingLockAutoRelease(p), {
-        initialProps: baseInputs({ releaseLock }),
-      }),
-    );
+    const { rerender } = mountAtT0(baseInputs({ releaseLock }));
     // 사용자가 명시 하차로 lock 해제
     withDateNow(T0 + AUTO_RELEASE_GRACE_MS / 2, () => {
       rerender(baseInputs({ releaseLock, lock: null }));
