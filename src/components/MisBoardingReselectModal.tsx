@@ -15,6 +15,11 @@ interface Props {
   onSelect: (train: ArrivalInfo) => void;
   /** 모달 자체 닫기 (취소 등). */
   onClose: () => void;
+  /**
+   * 다음 인접역 라벨(#749). BoardingTrainList에 forward — "{destination}행 · {label}방면" 표기.
+   * 호출자가 resolveNextAdjacentStationName으로 도출해 전달. null/미전달이면 종착만 노출.
+   */
+  nextStationLabel?: string | null;
 }
 
 /**
@@ -24,7 +29,14 @@ interface Props {
  * onSelect 콜백 → caller가 createLockFromTrain 호출 + 모달 close 처리.
  * 모달 자체 dismiss는 헤더의 [닫기] 버튼.
  */
-export function MisBoardingReselectModal({ visible, arrivals, line, onSelect, onClose }: Props) {
+export function MisBoardingReselectModal({
+  visible,
+  arrivals,
+  line,
+  onSelect,
+  onClose,
+  nextStationLabel = null,
+}: Props) {
   const { colors } = useTheme();
   const insets = useSafeAreaInsets();
 
@@ -52,7 +64,14 @@ export function MisBoardingReselectModal({ visible, arrivals, line, onSelect, on
           <Text style={[typography.bodySm, styles.help, { color: colors.muted }]}>
             현재역의 도착 list에서 실제 탑승한 열차를 선택해주세요.
           </Text>
-          {line && <BoardingTrainList arrivals={arrivals} line={line} onSelect={onSelect} />}
+          {line && (
+            <BoardingTrainList
+              arrivals={arrivals}
+              line={line}
+              onSelect={onSelect}
+              nextStationLabel={nextStationLabel}
+            />
+          )}
         </View>
       </View>
     </Modal>

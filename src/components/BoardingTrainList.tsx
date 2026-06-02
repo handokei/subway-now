@@ -22,8 +22,8 @@ interface Props {
   /** 헤더 라벨 커스텀 (환승 list 등). 미전달 시 기본 "탑승할 열차 선택". compact=true면 무시. */
   title?: string;
   /**
-   * 트레인 destination(종착) 대신 표시할 다음 인접역 라벨(#649). "{label} 방면" 형태로 노출.
-   * 호출자가 resolveNextAdjacentStationName으로 계산해 전달. null/미전달이면 destination 표기.
+   * 다음 인접역 라벨(#649, #749). 종착과 같이 "{destination}행 · {label}방면" 형태로 노출.
+   * 호출자가 resolveNextAdjacentStationName으로 계산해 전달. null/미전달이면 종착만 표기.
    */
   nextStationLabel?: string | null;
   /**
@@ -46,6 +46,9 @@ interface Props {
  * #649: compact + nextStationLabel — Timeline hop slot 안에 inline 배치되는 형태 지원.
  *       compact 모드는 hop slot 안 inline이라 row borderRadius 없음(직각). stripe도 같은 정신으로
  *       직각 유지 — 일반 모드는 카드 radius와 어울리는 둥근 코너 stripe로 자연스럽게 처리됨.
+ * #749: 2줄 row 레이아웃 — 첫째 줄 "{destination}행 · {nextStation}방면" (방면은 옵셔널),
+ *       둘째 줄 "{index+1}번째 전 · {HH:mm} 도착 예정". 카운터는 호출자가 전달한 배열 순서를
+ *       1-indexed로 변환. 같은 trainCode가 유지되는 동안 카운터 안정 → "같은 열차 지연" 신호.
  */
 export function BoardingTrainList({
   arrivals,
@@ -86,11 +89,13 @@ export function BoardingTrainList({
           <Text style={[typography.label, { color: colors.muted }]}>{title}</Text>
         </View>
       )}
-      {filteredArrivals.map((train) => {
+      {filteredArrivals.map((train, index) => {
         const unreachable = isUnreachable(train);
-        const labelText = nextStationLabel
-          ? `${nextStationLabel} 방면`
-          : `${train.destination} 행`;
+        const metaText = nextStationLabel
+          ? `${train.destination}행 · ${nextStationLabel}방면`
+          : `${train.destination}행`;
+        const sequenceText = `${index + 1}번째 전`;
+        const arrivalText = `${formatArrivalClock(train)} 도착 예정`;
         return (
           <Pressable
             key={train.trainCode}
@@ -104,33 +109,41 @@ export function BoardingTrainList({
             ]}
             testID={`boarding-train-row-${train.trainCode}`}
           >
-            {compact ? (
-              <Text
-                style={[typography.bodySm, { color: colors.ink, flex: 1 }]}
-                testID={`boarding-train-label-${train.trainCode}`}
-              >
-                {labelText}
-              </Text>
-            ) : (
-              <View style={styles.rowInfo}>
-                <Text style={[typography.body, { color: colors.ink }]}>{labelText}</Text>
-                {/* #648: 시간표 fallback의 가상 trainCode(SCHED-*)는 무의미하므로 "시간표" 라벨로 대체. */}
-                {isScheduleFallbackTrainCode(train.trainCode) ? (
-                  <Text style={[typography.mono, { color: colors.subtle }]}>시간표</Text>
-                ) : (
-                  <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
-                )}
+            <View style={styles.rowContent}>
+              <View style={styles.rowMetaLine}>
+                <Text
+                  style={[
+                    compact ? typography.bodySm : typography.body,
+                    { color: colors.ink, flex: 1 },
+                  ]}
+                  testID={`boarding-train-meta-${train.trainCode}`}
+                >
+                  {metaText}
+                </Text>
+                {/* trainCode/시간표 배지는 일반 모드에서만 노출. compact는 timeline hop slot 안 inline이라 정보 밀도 최소화. */}
+                {!compact &&
+                  (isScheduleFallbackTrainCode(train.trainCode) ? (
+                    <Text style={[typography.mono, { color: colors.subtle }]}>시간표</Text>
+                  ) : (
+                    <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
+                  ))}
               </View>
-            )}
-            <Text
-              style={[
-                compact ? typography.bodySm : typography.body,
-                { color: colors.accent, fontWeight: '600' },
-              ]}
-              testID={`boarding-train-arrival-${train.trainCode}`}
-            >
-              {formatArrivalClock(train)}
-            </Text>
+              <View style={styles.rowDetailLine}>
+                <Text
+                  style={[typography.bodySm, { color: colors.muted }]}
+                  testID={`boarding-train-sequence-${train.trainCode}`}
+                >
+                  {sequenceText}
+                </Text>
+                <Text style={[typography.bodySm, { color: colors.subtle }]}>·</Text>
+                <Text
+                  style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}
+                  testID={`boarding-train-arrival-${train.trainCode}`}
+                >
+                  {arrivalText}
+                </Text>
+              </View>
+            </View>
           </Pressable>
         );
       })}
@@ -163,18 +176,27 @@ const styles = StyleSheet.create({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     padding: spacing.lg,
     borderRadius: radius.md,
   },
   rowCompact: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.sm,
   },
-  rowInfo: {
+  rowContent: {
+    flex: 1,
+    gap: spacing.xs,
+  },
+  rowMetaLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  rowDetailLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: spacing.xs,
   },
   empty: {
