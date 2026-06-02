@@ -1170,8 +1170,10 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
   });
 
   // #756: 사전예약 큐 dump — stale `bl:` 알람 진단용 새 섹션.
-  it('buildDumpText: scheduledDump null이면 "(not loaded)" 노출', () => {
-    const dump = __test__.buildDumpText({
+  // 3개 테스트가 동일 baseline args를 공유 — CPD 중복 회피용 helper.
+  type DumpArgs = Parameters<typeof __test__.buildDumpText>[0];
+  function scheduledDumpArgs(scheduledDump?: DumpArgs['scheduledDump']): DumpArgs {
+    return {
       userLocation: null,
       speedMps: null,
       accuracyMeters: null,
@@ -1190,59 +1192,26 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
       isMock: false,
       silentPush: baseSilentPushFull,
       logs: [],
-      scheduledDump: null,
-    });
+      ...(scheduledDump !== undefined ? { scheduledDump } : {}),
+    };
+  }
+
+  it('buildDumpText: scheduledDump null이면 "(not loaded)" 노출', () => {
+    const dump = __test__.buildDumpText(scheduledDumpArgs(null));
     expect(dump).toContain('## Scheduled queue');
     expect(dump).toContain('(not loaded)');
     expect(dump).not.toMatch(/## Scheduled queue \(\d+\)/);
   });
 
   it('buildDumpText: scheduledDump optional 미전달 시에도 "(not loaded)" 노출', () => {
-    const dump = __test__.buildDumpText({
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      nearestName: null,
-      nearestDistanceM: null,
-      variants: [],
-      fusion: {
-        confidence: 'gps-only',
-        source: 'gps',
-        fusedLabel: '-',
-        gpsLabel: '-',
-        differs: false,
-        candidateTrains: null,
-      },
-      arrivalSummary: '-',
-      isMock: false,
-      silentPush: baseSilentPushFull,
-      logs: [],
-    });
+    const dump = __test__.buildDumpText(scheduledDumpArgs());
     expect(dump).toContain('## Scheduled queue');
     expect(dump).toContain('(not loaded)');
   });
 
   it('buildDumpText: scheduledDump 엔트리가 있으면 카운트와 라인 노출', () => {
-    const dump = __test__.buildDumpText({
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      nearestName: null,
-      nearestDistanceM: null,
-      variants: [],
-      fusion: {
-        confidence: 'gps-only',
-        source: 'gps',
-        fusedLabel: '-',
-        gpsLabel: '-',
-        differs: false,
-        candidateTrains: null,
-      },
-      arrivalSummary: '-',
-      isMock: false,
-      silentPush: baseSilentPushFull,
-      logs: [],
-      scheduledDump: [
+    const dump = __test__.buildDumpText(
+      scheduledDumpArgs([
         {
           identifier: 'bl:T:1:early:군자',
           fireAtMs: new Date('2026-06-02T11:30:00Z').getTime(),
@@ -1255,8 +1224,8 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
           title: '환승 임박',
           body: '',
         },
-      ],
-    });
+      ]),
+    );
     expect(dump).toContain('## Scheduled queue (2)');
     expect(dump).toContain('bl:T:1:early:군자');
     expect(dump).toContain('bl:T:1:imminent:군자');
