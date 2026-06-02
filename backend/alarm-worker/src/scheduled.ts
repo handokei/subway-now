@@ -48,6 +48,13 @@ export const LA_PUSH_THRESHOLD_MS = 30_000;
  */
 export const MAX_CONSECUTIVE_ETA_MISSING = 5;
 
+/**
+ * cron이 progress KV를 read할 때의 cacheTtl (#766).
+ * POST `/trips`가 putProgress 직후 같은 cron 사이클에서 옛 값을 읽지 않도록 10s까지 단축.
+ * trips.ts/pendingPushes.ts의 cron read와 동일 정책.
+ */
+const CRON_PROGRESS_CACHE_TTL_SEC = 10;
+
 export interface EnvHealResult {
   result: SendPushResult;
   /** retry로 정정된 새 env. 정정 발생 시에만 set. */
@@ -234,7 +241,8 @@ async function mirrorProgress(
 ): Promise<void> {
   const trainCode = trip.boardingLock?.trainCode;
   if (!trainCode) return;
-  const existing = await getProgress(kv, trip.token);
+  // #766 — cron path는 cacheTtl=10s로 PUT 직후 stale read 방지.
+  const existing = await getProgress(kv, trip.token, { cacheTtl: CRON_PROGRESS_CACHE_TTL_SEC });
   const prevShifted = existing?.trainCode === trainCode ? existing.shiftedCount : 0;
   const next: TripProgress = {
     trainCode,

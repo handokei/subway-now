@@ -8,7 +8,12 @@
 export class InMemoryKV {
   store = new Map<string, { value: string; expiresAt?: number }>();
 
-  async get(key: string): Promise<string | null> {
+  /**
+   * 실제 KV.get(key, options) 시그니처 호환 — 옵션은 cacheTtl 등 캐시 hint이고
+   * in-memory store는 캐싱 자체가 없어 무시한다. #766에서 cron paths가 cacheTtl을 전달하기
+   * 시작해 호환 인자가 필요해졌다.
+   */
+  async get(key: string, _options?: { cacheTtl?: number }): Promise<string | null> {
     const entry = this.store.get(key);
     if (!entry) return null;
     if (entry.expiresAt && entry.expiresAt < Date.now()) {
