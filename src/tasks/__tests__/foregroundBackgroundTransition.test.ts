@@ -79,6 +79,9 @@ jest.mock('../../utils/stationRoute', () => ({
   calculateStaticETA: jest.fn(() => 10),
   updateRouteFromPosition: jest.fn(() => null),
   isStationOnRoute: jest.fn(() => true),
+  // #750 — stationPipeline의 sleep 게이트가 isSameStationName으로 첫 hop을 매칭.
+  // 결정적 fake: strict equality로 충분 (테스트는 동일 한국어 이름 사용).
+  isSameStationName: (a: string, b: string) => a === b,
 }));
 
 const mockSendAlarmNotification = jest.fn((..._args: unknown[]) => Promise.resolve());

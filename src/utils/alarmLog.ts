@@ -72,7 +72,10 @@ export type AlarmLogReason =
   | 'movement-low-accuracy'
   | 'movement-static-speed'
   | 'movement-static-position'
-  | 'movement-motion-stationary';
+  | 'movement-motion-stationary'
+  // #750 — 공통 sleep 룰 게이트(shouldSuppressBySleepRule)가 차단한 발사.
+  // scheduler/FG/BG 3개 path 어디서든 같은 reason으로 적재 — 정책 단일 출처.
+  | 'sleep-first-transfer';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -454,6 +457,28 @@ export function logSuppressedMovement(input: {
     reason: input.reason,
     stationName: input.stationName,
     kind: input.kind,
+    phaseId: input.phaseId,
+  });
+}
+
+/**
+ * 취침모드 첫 환승 알람 누수 차단 1건 적재 (#750).
+ * source는 호출 path를 식별: scheduler 사전예약은 'bg-scheduled', FG polling은 'fg',
+ * BG silent push 등은 'bg' / 'silent-push-skipped' 중 호출자가 결정.
+ * 알람 유형은 항상 transfer이므로 kind 고정 — 호출자가 다시 채울 필요 없음.
+ */
+export function logSuppressedSleepFirstTransfer(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  phaseId?: AlarmPhaseId;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'sleep-first-transfer',
+    stationName: input.stationName,
+    kind: 'transfer',
     phaseId: input.phaseId,
   });
 }

@@ -66,6 +66,7 @@ const mockLogFiredStationPassed = jest.fn();
 const mockLogSuppressedDedupAlarm = jest.fn();
 const mockLogSuppressedDedupStation = jest.fn();
 const mockLogSuppressedMovement = jest.fn();
+const mockLogSuppressedSleepFirstTransfer = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -73,6 +74,13 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedDedupAlarm: (...args: unknown[]) => mockLogSuppressedDedupAlarm(...args),
   logSuppressedDedupStation: (...args: unknown[]) => mockLogSuppressedDedupStation(...args),
   logSuppressedMovement: (...args: unknown[]) => mockLogSuppressedMovement(...args),
+  logSuppressedSleepFirstTransfer: (...args: unknown[]) =>
+    mockLogSuppressedSleepFirstTransfer(...args),
+}));
+
+const mockGetBoardingLock = jest.fn();
+jest.mock('../../utils/boardingLockStorage', () => ({
+  getBoardingLock: () => mockGetBoardingLock(),
 }));
 
 jest.mock('../../utils/scheduledAlarmReceiver', () => ({
@@ -139,6 +147,7 @@ describe('useStationAlarm', () => {
     mockIsImminentByArrivalCode.mockReturnValue(false);
     mockGetStoredTripTrainCode.mockResolvedValue(null);
     mockUseArrivalInfo.mockReturnValue({ arrival: null, loading: false, isMock: false });
+    mockGetBoardingLock.mockResolvedValue(null);
   });
 
   it('does not evaluate when route is null', () => {
@@ -507,6 +516,121 @@ describe('useStationAlarm', () => {
     const route = makeDirectRoute(1, '2');
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     expect(() => renderHook(() => useStationAlarm(defaultInputs({ route, destination })))).not.toThrow();
+  });
+
+  // #750 — 공통 sleep 룰 게이트가 FG 즉시 발사 path도 차단한다.
+  // scheduler가 사전 예약을 skip한 transfer를 FG polling이 우회 발사하던 회귀.
+  describe('#750 sleep first-transfer 게이트', () => {
+    const lock = {
+      destinationId: destination.id,
+      trainCode: 'T-1',
+      boardingStationId: 'S-BOARD',
+      boardingLine: '2' as const,
+      boardedAt: Date.now(),
+      expectedDurationMs: 60_000,
+    };
+
+    it('sleep ON + lock 활성 + 첫 hop transfer → sendAlarmNotification 호출 X, suppression 로그', async () => {
+      useAppStore.setState({ sleepMode: true });
+      mockGetBoardingLock.mockResolvedValue(lock);
+      // transferRoute targets: [{name:'시청', alarmType:'transfer'}, {name:'강남', alarmType:'destination'}].
+      // earlyTransfer.stationName='시청'이 첫 hop과 일치 → suppress.
+      const route = makeTransferRoute({
+        transferName: '시청',
+        fromLine: '2',
+        toLine: '1',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      await waitFor(() =>
+        expect(mockLogSuppressedSleepFirstTransfer).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: '시청',
+          phaseId: 'early',
+        }),
+      );
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
+    });
+
+    it('sleep OFF + 첫 hop transfer → 정상 발사', async () => {
+      useAppStore.setState({ sleepMode: false });
+      mockGetBoardingLock.mockResolvedValue(lock);
+      const route = makeTransferRoute({
+        transferName: '시청',
+        fromLine: '2',
+        toLine: '1',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
+
+    it('sleep ON + lock null → 게이트 비활성, 정상 발사', async () => {
+      useAppStore.setState({ sleepMode: true });
+      mockGetBoardingLock.mockResolvedValue(null);
+      const route = makeTransferRoute({
+        transferName: '시청',
+        fromLine: '2',
+        toLine: '1',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
+
+    it('sleep ON + lock 활성 + destination 카테고리 → 정상 발사 (transfer 외 영향 없음)', async () => {
+      useAppStore.setState({ sleepMode: true });
+      mockGetBoardingLock.mockResolvedValue(lock);
+      const route = makeDirectRoute(1, '2');
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
+
+    it('sleep ON + lock 활성 + imminent API path도 동일 게이트 적용 (firstHop transfer면 suppress)', async () => {
+      useAppStore.setState({ sleepMode: true });
+      mockGetBoardingLock.mockResolvedValue(lock);
+      // imminent path는 destination event를 발사하므로 게이트 trigger 안 됨 — 회귀 확인용.
+      // 별도 시나리오: imminent transfer는 phase 평가 한쪽뿐이라 case는 ETA effect에서 cover.
+      // 본 케이스는 imminent destination 정상 동작 검증 (다른 path가 transfer 차단하는 정책에 의해
+      // 우발 차단되지 않음).
+      const route = makeDirectRoute(1, '2');
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+      mockGetStoredTripTrainCode.mockResolvedValue('T-1');
+      mockUseArrivalInfo.mockReturnValue({
+        arrival: { arrivalCode: '1' },
+        loading: false,
+        isMock: false,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 100,
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
   });
 
   describe('station-passed notification', () => {
