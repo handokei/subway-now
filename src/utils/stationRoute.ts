@@ -779,6 +779,14 @@ export interface StaticEtaOptions {
    * 누락 또는 stale 시 DEFAULT_WAIT_MINUTES fallback (회귀 없음).
    */
   arrivalAtOrigin?: { arrivalSeconds: number; receivedAtMs: number };
+  /**
+   * #778 — 각 환승역의 다음 열차 도착 정보 (transfer 순서, 0 = 첫 환승).
+   * - transfer route: [0] 한 개
+   * - multi-transfer route: [0..transfers.length-1]
+   * - 누락된 element나 stale은 leg당 DEFAULT_WAIT_MINUTES fallback (회귀 없음)
+   * `transferTimes.json`은 도보만 포함 — 환승 후 다음 열차 대기는 본 필드로만 합산
+   */
+  arrivalsAtTransfers?: ReadonlyArray<{ arrivalSeconds: number; receivedAtMs: number } | null>;
   /** freshness 계산용 현재 시각(ms). 미지정 시 Date.now() — 테스트에서 monkeypatch. */
   nowMs?: number;
 }
@@ -809,28 +817,68 @@ function resolveWaitMinutes(
   return arrivalSeconds / 60;
 }
 
+// transfer 횟수: direct=0, transfer=1, multi-transfer=transfers.length.
+// exhaustive switch — 새 Route variant 추가 시 컴파일 시점에 누락 차단.
+function getTransferCount(route: NonNullable<Route>): number {
+  switch (route.type) {
+    case 'direct':
+      return 0;
+    case 'transfer':
+      return 1;
+    case 'multi-transfer':
+      return route.transfers.length;
+    /* istanbul ignore next — Route union이 exhaustive하므로 도달 불가, 새 variant 추가 시 컴파일 차단 */
+    default: {
+      const _exhaustive: never = route;
+      return _exhaustive;
+    }
+  }
+}
+
+// 환승 leg마다 fresh arrival이면 동적, 아니면 DEFAULT_WAIT_MINUTES — 합산해서 분으로 반환.
+// transferCount=0 (direct)이면 0. 누락 element는 fallback.
+function resolveTransferWaitMinutes(
+  arrivalsAtTransfers: StaticEtaOptions['arrivalsAtTransfers'],
+  transferCount: number,
+  nowMs: number,
+): number {
+  let total = 0;
+  for (let i = 0; i < transferCount; i++) {
+    total += resolveWaitMinutes(arrivalsAtTransfers?.[i] ?? undefined, nowMs);
+  }
+  return total;
+}
+
 /**
- * 경로 정적 ETA(분). 다음 열차 대기 + 지하철 운행/환승 + (옵션) 출발/도착 도보 시간.
+ * 경로 정적 ETA(분). 다음 열차 대기 + 지하철 운행/환승 + (옵션) 출발/도착 도보 + 환승 후 대기.
  *
  * - route=null이면 null
- * - options 미지정 시 기존 동작과 동치 (도보 0, 대기 DEFAULT_WAIT_MINUTES) — 회귀 없음
+ * - options 미지정 시 기존 동작 동치 (도보 0, 출발 대기 DEFAULT_WAIT_MINUTES, 환승 대기 leg당 DEFAULT_WAIT_MINUTES)
  * - 페어가 부분적으로 누락되면 해당 도보 시간만 0 (예: currentLocation은 있는데 originStation이 없으면
  *   출발 도보 0 — 사용자 위치 권한 미확보 등 부분 정보 상황에서 graceful fallback)
  * - arrivalAtOrigin fresh → arrivalSeconds 동적 사용, 없거나 stale → DEFAULT_WAIT_MINUTES
+ * - #778: arrivalsAtTransfers[i] fresh → 해당 환승 leg wait 동적, 없거나 stale → leg당 DEFAULT_WAIT_MINUTES
  *
  * 반환은 분 단위 정수 — 호출처(메인 ETA 카운터/알림 body 등)가 정수를 전제로 한다.
- * 지하철 시간은 getTravelMinutes에서 이미 분 단위 정수, 대기/도보 합은 여기서 한 번 round 해 더한다.
+ * 지하철 시간은 getTravelMinutes에서 이미 분 단위 정수, 대기(출발+환승)는 합산해 한 번 round.
  */
 export function calculateStaticETA(
   route: Route,
   options: StaticEtaOptions = {},
 ): number | null {
   if (!route) return null;
+  const nowMs = options.nowMs ?? Date.now();
   const walkingMinutes =
     calculateWalkingMinutes(options.currentLocation, options.originStation) +
     calculateWalkingMinutes(options.destinationStation, options.destination);
-  const waitMinutes = resolveWaitMinutes(options.arrivalAtOrigin, options.nowMs ?? Date.now());
-  return Math.round(waitMinutes) + getTravelMinutes(route) + Math.round(walkingMinutes);
+  const originWaitMinutes = resolveWaitMinutes(options.arrivalAtOrigin, nowMs);
+  const transferWaitMinutes = resolveTransferWaitMinutes(
+    options.arrivalsAtTransfers,
+    getTransferCount(route),
+    nowMs,
+  );
+  const totalWaitMinutes = originWaitMinutes + transferWaitMinutes;
+  return Math.round(totalWaitMinutes) + getTravelMinutes(route) + Math.round(walkingMinutes);
 }
 
 /**
