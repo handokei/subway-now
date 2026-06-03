@@ -162,6 +162,195 @@ describe('evaluateWindow', () => {
   });
 });
 
+describe('evaluateWindow — mapMatchedKmh (#828 Phase 1+2 wire)', () => {
+  // arc 시작점/끝점 1km 차이를 30초에 → 120 km/h. 평균속도 산식이 맞는지 확인용.
+  const lineCode = '2';
+
+  it('양 끝 sample이 같은 line + arcM → mapMatchedKmh 산출', () => {
+    const now = 60_000;
+    const series = [
+      point({
+        ts: 30_000,
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 5,
+        mapMatchedLine: lineCode,
+        mapMatchedArcM: 0,
+      }),
+      point({
+        ts: 60_000,
+        lat: 37.502,
+        lng: 127.0,
+        accuracy: 5,
+        mapMatchedLine: lineCode,
+        mapMatchedArcM: 1000,
+      }),
+    ];
+    const m = evaluateWindow(series, now);
+    // |1000 - 0| / 30s = 33.33 m/s → 120 km/h
+    expect(m.mapMatchedKmh).toBeCloseTo(120, 0);
+  });
+
+  it('한쪽 sample에 mapMatchedLine 없으면 mapMatchedKmh=null (Phase 1 회귀 없음)', () => {
+    const now = 60_000;
+    const series = [
+      point({ ts: 30_000, lat: 37.5, lng: 127.0, accuracy: 5 }),
+      point({
+        ts: 60_000,
+        lat: 37.502,
+        lng: 127.0,
+        accuracy: 5,
+        mapMatchedLine: lineCode,
+        mapMatchedArcM: 1000,
+      }),
+    ];
+    expect(evaluateWindow(series, now).mapMatchedKmh).toBeNull();
+  });
+
+  it('환승역 disambiguate — 두 sample line이 다르면 null (다른 노선 점프 차단)', () => {
+    const now = 60_000;
+    const series = [
+      point({
+        ts: 30_000,
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 5,
+        mapMatchedLine: '2',
+        mapMatchedArcM: 100,
+      }),
+      point({
+        ts: 60_000,
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 5,
+        mapMatchedLine: '3',
+        mapMatchedArcM: 200,
+      }),
+    ];
+    expect(evaluateWindow(series, now).mapMatchedKmh).toBeNull();
+  });
+
+  it('역방향 진행(end.arcM < start.arcM)도 |Δarc|로 산출', () => {
+    const now = 60_000;
+    const series = [
+      point({
+        ts: 30_000,
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 5,
+        mapMatchedLine: lineCode,
+        mapMatchedArcM: 1000,
+      }),
+      point({
+        ts: 60_000,
+        lat: 37.498,
+        lng: 127.0,
+        accuracy: 5,
+        mapMatchedLine: lineCode,
+        mapMatchedArcM: 0,
+      }),
+    ];
+    const m = evaluateWindow(series, now);
+    expect(m.mapMatchedKmh).toBeCloseTo(120, 0);
+  });
+
+  it('Δarc=0 → null (정지 sample은 mapMatched 신호 없음)', () => {
+    const now = 60_000;
+    const series = [
+      point({
+        ts: 30_000,
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 5,
+        mapMatchedLine: lineCode,
+        mapMatchedArcM: 500,
+      }),
+      point({
+        ts: 60_000,
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 5,
+        mapMatchedLine: lineCode,
+        mapMatchedArcM: 500,
+      }),
+    ];
+    expect(evaluateWindow(series, now).mapMatchedKmh).toBeNull();
+  });
+
+  it('빈 윈도우 → mapMatchedKmh=null', () => {
+    expect(evaluateWindow([], 0).mapMatchedKmh).toBeNull();
+  });
+});
+
+describe('positionSeries — readSeries map matching field validation', () => {
+  it('mapMatchedLine + arcM 짝이 있는 sample은 정상 복원', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const valid: PositionPoint = {
+      lat: 37.5,
+      lng: 127.0,
+      accuracy: 5,
+      ts: 1000,
+      motion: 'automotive',
+      mapMatchedLine: '2',
+      mapMatchedArcM: 1234,
+    };
+    await appendPositionPoint(kv, 'tok', valid);
+    const series = await readSeries(kv, 'tok');
+    expect(series).toEqual([valid]);
+  });
+
+  it('mapMatchedLine만 있고 arcM 누락된 sample은 filter됨 (짝 정책)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const bad = JSON.stringify([
+      {
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 5,
+        ts: 1000,
+        motion: 'walking',
+        mapMatchedLine: '2',
+        // arcM 누락
+      },
+    ]);
+    await kv.put('pos:tok', bad);
+    expect(await readSeries(kv, 'tok')).toEqual([]);
+  });
+
+  it('mapMatchedArcM 타입 잘못된 sample은 filter됨', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const bad = JSON.stringify([
+      {
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 5,
+        ts: 1000,
+        motion: 'walking',
+        mapMatchedLine: '2',
+        mapMatchedArcM: 'nope',
+      },
+    ]);
+    await kv.put('pos:tok', bad);
+    expect(await readSeries(kv, 'tok')).toEqual([]);
+  });
+
+  it('mapMatchedLine 타입 잘못된 sample은 filter됨', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const bad = JSON.stringify([
+      {
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 5,
+        ts: 1000,
+        motion: 'walking',
+        mapMatchedLine: 99,
+        mapMatchedArcM: 100,
+      },
+    ]);
+    await kv.put('pos:tok', bad);
+    expect(await readSeries(kv, 'tok')).toEqual([]);
+  });
+});
+
 describe('cosineDirection', () => {
   it('같은 방향 → 1', () => {
     // 동→서 두 vector 동일 방향
