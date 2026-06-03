@@ -60,6 +60,10 @@ describe('getTerminalStationName (#792)', () => {
     ['외선순환'],
     // 빈 문자열
     [''],
+    // 접미사 단독 입력 — 역명 0길이라 null fallback
+    ['방면'],
+    ['(별칭)방면'],
+    ['행'],
   ])('null 반환: "%s"', (input) => {
     expect(getTerminalStationName(input)).toBeNull();
   });
