@@ -407,34 +407,28 @@ describe('useAppStore', () => {
     await Promise.resolve();
   }
 
-  it('setDestination(#799): switch 시 silent push/알람 state도 정리 (last-notified, last-fired-name, fired-push-ids, trip-train-code, alarm-event)', async () => {
+  // #799: switch와 null 두 경로가 동일한 trip-bound cleanup을 트리거하므로 it.each로 통합
+  // (SonarCloud CPD duplication 차단; #788/#795와 동일한 접근).
+  it.each<[string, 'switch' | 'null']>([
+    ['switch', 'switch'],
+    ['null clear', 'null'],
+  ])('setDestination(#799): %s 시 silent push/알람 trip-bound state 정리', async (_, transition) => {
     const { setDestination } = useAppStore.getState();
     setDestination(mockStation);
     jest.clearAllMocks();
 
-    setDestination(mockStation2);
+    setDestination(transition === 'switch' ? mockStation2 : null);
     await flushMicrotasks();
 
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:last-notified-station');
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:last-fired-alarm-station-name');
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:fired-push-ids');
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:trip-train-code');
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:alarm-event');
-  });
-
-  it('setDestination(#799): null로 클리어 시에도 silent push/알람 state 정리', async () => {
-    const { setDestination } = useAppStore.getState();
-    setDestination(mockStation);
-    jest.clearAllMocks();
-
-    setDestination(null);
-    await flushMicrotasks();
-
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:last-notified-station');
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:last-fired-alarm-station-name');
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:fired-push-ids');
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:trip-train-code');
-    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:alarm-event');
+    for (const key of [
+      'subway-now:last-notified-station',
+      'subway-now:last-fired-alarm-station-name',
+      'subway-now:fired-push-ids',
+      'subway-now:trip-train-code',
+      'subway-now:alarm-event',
+    ]) {
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith(key);
+    }
   });
 
   it('setDestination(#799): switch 시 alarmEvent 메모리 state도 null로 동기화', () => {
