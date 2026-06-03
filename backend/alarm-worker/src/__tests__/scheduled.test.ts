@@ -1955,42 +1955,43 @@ describe('ScheduledStats 초기값 (#826 E4)', () => {
 // #826 — drift telemetry
 // ---------------------------------------------------------------------------
 
+/**
+ * series 헬퍼 (#826 drift telemetry): 유효한 positionSeries를 KV에 심는다.
+ * gpsAvgKmh가 `targetKmh` 근방이 되도록 두 지점을 배치한다.
+ * 두 포인트의 haversine 거리 / Δt = gpsAvg.
+ *
+ * sonar S7721 — 함수를 describe 외부 module scope에 두어 매 describe call 시 재정의 회피.
+ */
+async function seedSeriesWithGpsAvg(
+  kv: InMemoryKV,
+  token: string,
+  targetGpsKmh: number,
+): Promise<void> {
+  // Δt = 10s, lng 차이로 동서 이동 시뮬. 위도 0 기준 1도 ≈ 111.32 km.
+  const dtMs = 10_000;
+  const distKm = (targetGpsKmh * dtMs) / 3_600_000;
+  const lngDelta = distKm / 111.32;
+  const series = [
+    { lat: 0, lng: 0, accuracy: 10, ts: NOW - dtMs, motion: 'automotive' },
+    { lat: 0, lng: lngDelta, accuracy: 10, ts: NOW, motion: 'automotive' },
+  ];
+  await kv.put(`pos:${token}`, JSON.stringify(series));
+}
+
+function makeDriftTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+  return makeTrip({
+    token,
+    promptGeoContext: {
+      origin: { lat: 0, lng: 0 },
+      nextStation: { lat: 0, lng: 0.01 },
+      direction: 'up',
+    },
+    promptDisplay: { originStation: '강남', line: '2' },
+    ...overrides,
+  });
+}
+
 describe('runScheduled — #826 drift telemetry (kalmanDriftWarning)', () => {
-  /**
-   * series 헬퍼: 유효한 positionSeries를 KV에 심는다.
-   * gpsAvgKmh가 `targetKmh` 근방이 되도록 두 지점을 배치한다.
-   * 두 포인트의 haversine 거리 / Δt = gpsAvg.
-   */
-  async function seedSeriesWithGpsAvg(
-    kv: InMemoryKV,
-    token: string,
-    targetGpsKmh: number,
-  ): Promise<void> {
-    // Δt = 10s, 목표 거리 = targetGpsKmh * 10 / 3600 km
-    // lng 차이로 동서 이동 시뮬레이션. 위도 0 기준 1도 ≈ 111.32 km
-    const dtMs = 10_000;
-    const distKm = (targetGpsKmh * dtMs) / 3_600_000;
-    const lngDelta = distKm / 111.32;
-    const series = [
-      { lat: 0, lng: 0, accuracy: 10, ts: NOW - dtMs, motion: 'automotive' },
-      { lat: 0, lng: lngDelta, accuracy: 10, ts: NOW, motion: 'automotive' },
-    ];
-    await kv.put(`pos:${token}`, JSON.stringify(series));
-  }
-
-  function makeDriftTrip(token: string, overrides: Partial<Trip> = {}): Trip {
-    return makeTrip({
-      token,
-      promptGeoContext: {
-        origin: { lat: 0, lng: 0 },
-        nextStation: { lat: 0, lng: 0.01 },
-        direction: 'up',
-      },
-      promptDisplay: { originStation: '강남', line: '2' },
-      ...overrides,
-    });
-  }
-
   it('prior=null 첫 cycle → kalmanDriftWarning 0 (drift 검사 건너뜀)', async () => {
     // prior가 없으면 detectKalmanDrift 호출 자체를 skip — delta=0이 아닌 호출 미발생
     const kv = new InMemoryKV();
@@ -2057,30 +2058,30 @@ describe('runScheduled — #826 drift telemetry (kalmanDriftWarning)', () => {
 // #826 — lockless ARRIVED/ENTERING → Kalman reset
 // ---------------------------------------------------------------------------
 
+function makeLocklessKalmanTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+  return makeTrip({
+    token,
+    waypoints: [
+      { stationName: '강남', line: '2', kind: 'intermediate' },
+      { stationName: '역삼', line: '2', kind: 'destination' },
+    ],
+    locklessStationPassed: true,
+    ...overrides,
+  });
+}
+
+function makeArrivedSignal(arvlCd: number): ArrivalEntry {
+  return {
+    destination: '강남행',
+    arrivalSeconds: 10,
+    trainCode: '9999',
+    isUp: true,
+    subwayNm: '지하철2호선',
+    arvlCd,
+  };
+}
+
 describe('runScheduled — #826 lockless intermediate Kalman reset', () => {
-  function makeLocklessKalmanTrip(token: string, overrides: Partial<Trip> = {}): Trip {
-    return makeTrip({
-      token,
-      waypoints: [
-        { stationName: '강남', line: '2', kind: 'intermediate' },
-        { stationName: '역삼', line: '2', kind: 'destination' },
-      ],
-      locklessStationPassed: true,
-      ...overrides,
-    });
-  }
-
-  function makeArrivedSignal(arvlCd: number): ArrivalEntry {
-    return {
-      destination: '강남행',
-      arrivalSeconds: 10,
-      trainCode: '9999',
-      isUp: true,
-      subwayNm: '지하철2호선',
-      arvlCd,
-    };
-  }
-
   it('arvlCd=ARRIVED(1) → fires=true → kalman:<token>이 v=0/P=4로 reset + stats.kalmanReset=1', async () => {
     const kv = new InMemoryKV();
     const token = 'lock-kalman-1';
@@ -2193,52 +2194,52 @@ describe('runScheduled — #826 lockless intermediate Kalman reset', () => {
 // #826 — runTrainCodeTracking → Kalman reset on arrived
 // ---------------------------------------------------------------------------
 
+function makeLockWithKalmanTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+  return makeTrip({
+    token,
+    route: { type: 'direct', line: '7', stops: 2 },
+    waypoints: [
+      { stationName: '중곡', line: '7', kind: 'intermediate' },
+      { stationName: '군자', line: '7', kind: 'destination' },
+    ],
+    boardingLock: {
+      trainCode: '7246',
+      line: '7',
+      subwayId: '1007',
+      selectedDepartureTime: NOW,
+      segmentStations: ['용마산', '중곡', '군자'],
+      expiresAt: NOW + 60 * 60_000,
+    },
+    ...overrides,
+  });
+}
+
+function makeSeoulWithArvl(stationName: string, seconds: number, arvlCd: number | null): SeoulArrivalClient {
+  return new SeoulArrivalClient({
+    apiKey: 'K',
+    host: 'h',
+    now: () => NOW,
+    fetchImpl: (async () =>
+      new Response(
+        JSON.stringify({
+          realtimeArrivalList: [
+            {
+              barvlDt: String(seconds),
+              recptnDt: '',
+              updnLine: '상행',
+              trainLineNm: stationName,
+              btrainNo: '7246',
+              subwayNm: '지하철7호선',
+              arvlCd,
+            },
+          ],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch,
+  });
+}
+
 describe('runScheduled — #826 runTrainCodeTracking Kalman reset', () => {
-  function makeLockWithKalmanTrip(token: string, overrides: Partial<Trip> = {}): Trip {
-    return makeTrip({
-      token,
-      route: { type: 'direct', line: '7', stops: 2 },
-      waypoints: [
-        { stationName: '중곡', line: '7', kind: 'intermediate' },
-        { stationName: '군자', line: '7', kind: 'destination' },
-      ],
-      boardingLock: {
-        trainCode: '7246',
-        line: '7',
-        subwayId: '1007',
-        selectedDepartureTime: NOW,
-        segmentStations: ['용마산', '중곡', '군자'],
-        expiresAt: NOW + 60 * 60_000,
-      },
-      ...overrides,
-    });
-  }
-
-  function makeSeoulWithArvl(stationName: string, seconds: number, arvlCd: number | null): SeoulArrivalClient {
-    return new SeoulArrivalClient({
-      apiKey: 'K',
-      host: 'h',
-      now: () => NOW,
-      fetchImpl: (async () =>
-        new Response(
-          JSON.stringify({
-            realtimeArrivalList: [
-              {
-                barvlDt: String(seconds),
-                recptnDt: '',
-                updnLine: '상행',
-                trainLineNm: stationName,
-                btrainNo: '7246',
-                subwayNm: '지하철7호선',
-                arvlCd,
-              },
-            ],
-          }),
-          { status: 200 },
-        )) as unknown as typeof fetch,
-    });
-  }
-
   it('boardingLock 활성 + estimate.arrived=true(arvlCd=1) → reset + stats.kalmanReset=1', async () => {
     const kv = new InMemoryKV();
     const token = 'tc-kalman-1';
