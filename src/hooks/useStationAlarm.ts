@@ -40,6 +40,39 @@ import { resolveNotificationSource } from '../utils/notificationSource';
 
 const logger = createLogger('StationAlarm');
 
+/**
+ * #746 — dismiss silence 게이트 판정 + 만료 시 store clear 호출.
+ * 3개 effect(phase / imminent / station-passed)에서 evaluate→expired 분기를 반복하던 것을 추출.
+ * 호출부는 반환값의 silenced만 보고 log + return을 직접 처리한다(콜백 미사용 → 익명 함수
+ * 추가 카운팅 방지).
+ *
+ * - silenced=true: 호출부가 logSuppressedDismissSilence 후 즉시 return.
+ * - expired=true:  헬퍼가 clear action을 fire-and-forget으로 호출(실패 무시, 다음 사이클 재시도).
+ *
+ * SonarCloud S3776(cognitive complexity) 해소 — phase effect의 silence 분기 4개를
+ * 단일 호출로 압축. 동시에 S3735(void 연산자)도 Promise chain으로 대체.
+ */
+function applySilenceGate(
+  silence: import('../utils/dismissSilenceStorage').DismissSilenceState | null,
+  now: number,
+  userLocation: { lat: number; lng: number } | null,
+  clearAction: () => Promise<void>,
+): { silenced: boolean } {
+  const decision = evaluateDismissSilence(silence, now, userLocation);
+  if (decision.silenced) return { silenced: true };
+  if (decision.expired) {
+    // expired → store/storage cleanup. test spy 환경에서 undefined 반환 가능성을
+    // Promise.resolve로 정규화하고, 실패는 logger.warn으로 흡수해 익명 catch 핸들러를
+    // 만들지 않는다(커버리지 안정).
+    Promise.resolve(clearAction()).then(undefined, logClearFailure);
+  }
+  return { silenced: false };
+}
+
+function logClearFailure(e: unknown): void {
+  logger.warn('clearDismissSilence 실패 — 다음 사이클 재시도', e);
+}
+
 export interface UseStationAlarmInputs {
   route: Route;
   destination: Station | null;
@@ -314,12 +347,13 @@ export function useStationAlarm({
     if (rawEvent) {
       // #746 — dismiss silence 게이트. 사용자 dismiss 후 5분/200m 이내라면 모든 카테고리 차단.
       // movement/dedup보다 위 — 사용자 명시 정책이 데이터 정확성보다 우선.
-      const silenceDecision = evaluateDismissSilence(
+      const silenceGate = applySilenceGate(
         dismissSilence,
         Date.now(),
         userLocation,
+        clearDismissSilenceAction,
       );
-      if (silenceDecision.silenced) {
+      if (silenceGate.silenced) {
         logSuppressedDismissSilence({
           source: 'fg',
           stationName: rawEvent.stationName,
@@ -327,9 +361,6 @@ export function useStationAlarm({
           phaseId: rawEvent.phaseId,
         });
         return;
-      }
-      if (silenceDecision.expired) {
-        void clearDismissSilenceAction();
       }
       // #733 — Phase ETA path movement gate. early phase는 etaSeconds 무관, remainingStops<=1만
       // 검사하므로 fusion이 인접역으로 jitter하면 즉시 발사. snapshot 1/2에서 관측된 20:07:48 등
@@ -398,12 +429,13 @@ export function useStationAlarm({
     if (firedAlarmsRef.current.has(imminentKey)) return;
 
     // #746 — dismiss silence 게이트. dismiss 후 5분/200m 이내라면 imminent도 차단.
-    const silenceDecision = evaluateDismissSilence(
+    const silenceGate = applySilenceGate(
       dismissSilence,
       Date.now(),
       userLocation,
+      clearDismissSilenceAction,
     );
-    if (silenceDecision.silenced) {
+    if (silenceGate.silenced) {
       logSuppressedDismissSilence({
         source: 'fg',
         stationName: destination.name,
@@ -411,9 +443,6 @@ export function useStationAlarm({
         phaseId: 'imminent',
       });
       return;
-    }
-    if (silenceDecision.expired) {
-      void clearDismissSilenceAction();
     }
 
     // #727 정적 misfire 가드 — useStationAlarm은 timestamp 입력이 없으므로 speed/accuracy만 평가.
@@ -522,21 +551,19 @@ export function useStationAlarm({
 
       // #746 — dismiss silence 게이트. station-passed 카테고리도 동일 정책으로 차단.
       // userLocation 없이도 시간 조건만 평가 가능 — null 좌표 그대로 전달.
-      const silenceDecision = evaluateDismissSilence(
+      const silenceGate = applySilenceGate(
         dismissSilence,
         Date.now(),
         userLocation,
+        clearDismissSilenceAction,
       );
-      if (silenceDecision.silenced) {
+      if (silenceGate.silenced) {
         logSuppressedDismissSilence({
           source: 'fg',
           stationName: candidateStation.name,
           kind: 'station-passed',
         });
         return;
-      }
-      if (silenceDecision.expired) {
-        void clearDismissSilenceAction();
       }
 
       void (async () => {

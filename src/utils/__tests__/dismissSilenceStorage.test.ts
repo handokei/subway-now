@@ -12,7 +12,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   removeItem: jest.fn(),
 }));
 
-const sample = { sinceTs: 1_700_000_000_000, sinceLat: 37.5, sinceLng: 127.0 };
+const sample = { sinceTs: 1_700_000_000_000, sinceLat: 37.5, sinceLng: 127 };
 
 describe('dismissSilenceStorage', () => {
   beforeEach(() => {

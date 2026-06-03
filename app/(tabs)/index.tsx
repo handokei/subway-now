@@ -902,10 +902,10 @@ export default function HomeScreen() {
         <AlarmOverlay
           event={alarmEvent}
           onDismiss={() => {
-            void setDismissSilence(
+            setDismissSilence(
               Date.now(),
               userLocation ? { lat: userLocation.lat, lng: userLocation.lng } : null,
-            );
+            ).catch(() => {});
             clearAlarmEvent();
           }}
         />

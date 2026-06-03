@@ -2225,5 +2225,36 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
       expect(mockLogSuppressedDismissSilence).not.toHaveBeenCalled();
     });
+
+    it('silence 만료 시 clearAction이 reject되어도 정상 발사 + warn 로그', async () => {
+      // applySilenceGate의 logClearFailure 분기 커버.
+      const clearSpy = jest
+        .spyOn(useAppStore.getState(), 'clearDismissSilence')
+        .mockRejectedValueOnce(new Error('storage write failed'));
+      useAppStore.setState({
+        dismissSilence: {
+          sinceTs: Date.now() - 10 * 60_000,
+          sinceLat: null,
+          sinceLng: null,
+        },
+      });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation,
+            speedMps: 10,
+            accuracyMeters: 50,
+            nearestStation: makeStation('S1', '시청', 37.498, 127.028),
+          }),
+        ),
+      );
+      // reject되어도 silence는 통과되어 알람 정상 발사.
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(clearSpy).toHaveBeenCalled();
+      clearSpy.mockRestore();
+    });
   });
 });

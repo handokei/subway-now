@@ -13,7 +13,7 @@ const mockStation: Station = {
   line: '2',
   lineColor: '#009D3E',
   lat: 37.4979,
-  lng: 127.0276,
+  lng: 127276,
 };
 
 const mockStation2: Station = {
@@ -22,7 +22,7 @@ const mockStation2: Station = {
   line: '2',
   lineColor: '#009D3E',
   lat: 37.5006,
-  lng: 127.0365,
+  lng: 127365,
 };
 
 describe('useAppStore', () => {
@@ -1123,18 +1123,18 @@ describe('useAppStore', () => {
   });
 
   it('setDismissSilence: timestamp + 좌표 함께 메모리와 storage에 기록', async () => {
-    await useAppStore.getState().setDismissSilence(1_700_000_000_000, { lat: 37.5, lng: 127.0 });
+    await useAppStore.getState().setDismissSilence(1_700_000_000_000, { lat: 37.5, lng: 127 });
     expect(useAppStore.getState().dismissSilence).toEqual({
       sinceTs: 1_700_000_000_000,
       sinceLat: 37.5,
-      sinceLng: 127.0,
+      sinceLng: 127,
     });
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
       'subway-now:dismiss-silence',
       JSON.stringify({
         sinceTs: 1_700_000_000_000,
         sinceLat: 37.5,
-        sinceLng: 127.0,
+        sinceLng: 127,
       }),
     );
   });
