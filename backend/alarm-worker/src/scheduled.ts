@@ -18,7 +18,9 @@ import {
   type GateSkipReason,
 } from './boardingPrompt';
 import {
+  detectKalmanDrift,
   readKalmanState,
+  resetKalmanForArrival,
   runKalmanStep,
   writeKalmanState,
 } from './kalmanFilter';
@@ -169,6 +171,16 @@ export interface ScheduledStats extends LiveActivityStats {
    * 차단한 횟수. 측정 인프라 — gate가 실제로 발동된 빈도 + E5 RMSE/recall과 cross-check.
    */
   phaseImminentBlocked: number;
+  /**
+   * #826 — arvlCd=ARRIVED ground truth로 Kalman state hard reset된 횟수 (v=0/P=R_LOW).
+   * lockless ARRIVED 또는 boardingLock trainCode arrived 시점에 발사. drift 누적 차단.
+   */
+  kalmanReset: number;
+  /**
+   * #826 — 정상 cycle에서 |gpsAvgKmh - state.v| ≥ DRIFT_WARNING_THRESHOLD_KMH인 누적 횟수.
+   * 누적이 의미있게 커지면 Kalman 튜닝(R/Q) 재측정 또는 reset 정책 조정 신호.
+   */
+  kalmanDriftWarning: number;
 }
 
 /**
@@ -215,6 +227,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     boardingPromptFired: 0,
     boardingPromptBlocked: 0,
     phaseImminentBlocked: 0,
+    kalmanReset: 0,
+    kalmanDriftWarning: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
@@ -346,6 +360,7 @@ async function runFusionStep(
   trip: Trip,
   env: Env,
   now: number,
+  stats: ScheduledStats,
 ): Promise<FusionStepResult> {
   const [series, accelSeries, kalmanPrior] = await Promise.all([
     readSeries(env.TRIPS, trip.token),
@@ -359,6 +374,14 @@ async function runFusionStep(
 
   if (!observationValid) {
     return { series, posMetrics, kalmanKmh: null, phaseState: null };
+  }
+
+  // #826 — drift 측정은 prior 존재 정상 cycle만. 첫 cycle은 v=gpsAvg 초기화라 delta=0으로 의미 없음.
+  if (kalmanPrior !== null) {
+    const drift = detectKalmanDrift(kalmanPrior, posMetrics.gpsAvgKmh);
+    if (drift.warning) {
+      stats.kalmanDriftWarning += 1;
+    }
   }
 
   const kalmanState = runKalmanStep({
@@ -471,6 +494,10 @@ export async function runTrainCodeTracking(
   }
 
   if (estimate.arrived) {
+    // #826 — arvlCd=ARRIVED ground truth → Kalman state hard reset.
+    // 정거장 도착은 가장 강한 신호 (실제 정차) — v=0/P=R_LOW로 drift 누적 차단.
+    await writeKalmanState(env.TRIPS, trip.token, resetKalmanForArrival(now));
+    stats.kalmanReset += 1;
     await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log);
     return;
   }
@@ -748,7 +775,7 @@ export async function runLocklessIntermediate(
     return;
   }
   // #825 — Phase 3 E3 fusion step. 분류 결과를 trip에 stamp + imminent push 발사 가드에 사용.
-  const fusion = await runFusionStep(trip, env, now);
+  const fusion = await runFusionStep(trip, env, now, stats);
   let dirty = false;
   if (fusion.phaseState) {
     trip.stationPhase = fusion.phaseState;
@@ -768,6 +795,11 @@ export async function runLocklessIntermediate(
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
+  // #826 — fires=true(ARRIVED/ENTERING)는 ground truth 신호. push 발사 여부(phase 가드)와
+  // 무관하게 Kalman state를 reset해 drift 누적을 차단한다. arvlCd가 가장 강한 신호 — phase
+  // 분류는 휴리스틱이라 contradiction 시 arvlCd를 신뢰.
+  await writeKalmanState(env.TRIPS, trip.token, resetKalmanForArrival(now));
+  stats.kalmanReset += 1;
   // #825 — high-confidence non-APPROACHING phase면 차단 (false positive 1차).
   // 신호 부재/낮은 신뢰는 기존 동작 그대로 (회귀 없음, #834 wire 전까지 자연 skip).
   if (!phaseAllowsImminentFiring(fusion.phaseState)) {
@@ -976,7 +1008,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 
   stats.boardingPromptEvaluated += 1;
 
-  const fusion = await runFusionStep(trip, env, now);
+  const fusion = await runFusionStep(trip, env, now, stats);
   let dirty = false;
   // phase 분류 결과가 있으면 trip에 stamp — 다음 cycle hysteresis 입력 + lockless 가드용 상태.
   if (fusion.phaseState) {

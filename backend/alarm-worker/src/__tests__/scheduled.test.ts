@@ -1,7 +1,7 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { readKalmanState } from '../kalmanFilter';
+import { R_LOW, readKalmanState } from '../kalmanFilter';
 import {
   MAX_CONSECUTIVE_ETA_MISSING,
   RESCHEDULE_THRESHOLD_MS,
@@ -11,6 +11,7 @@ import {
   pickApnsHost,
   pickBestArrivalSignal,
   runScheduled,
+  type ScheduledDeps,
 } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
@@ -1929,5 +1930,358 @@ describe('runScheduled — #825 Phase 3 E3: phaseImminentBlocked + stationPhase 
     // stationPhase는 undefined 상태 유지
     const stored = JSON.parse((await kv.get('trip:phase-no-dist-tok'))!) as Trip;
     expect(stored.stationPhase).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #826 — ScheduledStats 초기값 검증
+// ---------------------------------------------------------------------------
+
+describe('ScheduledStats 초기값 (#826 E4)', () => {
+  it('kalmanReset, kalmanDriftWarning 초기값 0 — trip 없는 빈 실행', async () => {
+    const kv = new InMemoryKV();
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.kalmanReset).toBe(0);
+    expect(stats.kalmanDriftWarning).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #826 — drift telemetry
+// ---------------------------------------------------------------------------
+
+/**
+ * series 헬퍼 (#826 drift telemetry): 유효한 positionSeries를 KV에 심는다.
+ * gpsAvgKmh가 `targetKmh` 근방이 되도록 두 지점을 배치한다.
+ * 두 포인트의 haversine 거리 / Δt = gpsAvg.
+ *
+ * sonar S7721 — 함수를 describe 외부 module scope에 두어 매 describe call 시 재정의 회피.
+ */
+async function seedSeriesWithGpsAvg(
+  kv: InMemoryKV,
+  token: string,
+  targetGpsKmh: number,
+): Promise<void> {
+  // Δt = 10s, lng 차이로 동서 이동 시뮬. 위도 0 기준 1도 ≈ 111.32 km.
+  const dtMs = 10_000;
+  const distKm = (targetGpsKmh * dtMs) / 3_600_000;
+  const lngDelta = distKm / 111.32;
+  const series = [
+    { lat: 0, lng: 0, accuracy: 10, ts: NOW - dtMs, motion: 'automotive' },
+    { lat: 0, lng: lngDelta, accuracy: 10, ts: NOW, motion: 'automotive' },
+  ];
+  await kv.put(`pos:${token}`, JSON.stringify(series));
+}
+
+function makeDriftTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+  return makeTrip({
+    token,
+    promptGeoContext: {
+      origin: { lat: 0, lng: 0 },
+      nextStation: { lat: 0, lng: 0.01 },
+      direction: 'up',
+    },
+    promptDisplay: { originStation: '강남', line: '2' },
+    ...overrides,
+  });
+}
+
+describe('runScheduled — #826 drift telemetry (kalmanDriftWarning)', () => {
+  it('prior=null 첫 cycle → kalmanDriftWarning 0 (drift 검사 건너뜀)', async () => {
+    // prior가 없으면 detectKalmanDrift 호출 자체를 skip — delta=0이 아닌 호출 미발생
+    const kv = new InMemoryKV();
+    const trip = makeDriftTrip('drift-first');
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // gpsAvg ≈ 30 km/h series 심기
+    await seedSeriesWithGpsAvg(kv, 'drift-first', 30);
+
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'd1',
+    });
+    // prior=null → detectKalmanDrift 미호출 → kalmanDriftWarning 미증가
+    expect(stats.kalmanDriftWarning).toBe(0);
+  });
+
+  it('prior 있음 + |gpsAvg - state.v| ≥ 15 → kalmanDriftWarning++', async () => {
+    // prior state.v=0 (정차), gpsAvg ≈ 30 km/h → delta=30 ≥ 15 → warning
+    const kv = new InMemoryKV();
+    const token = 'drift-warn';
+    const trip = makeDriftTrip(token);
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSeriesWithGpsAvg(kv, token, 30);
+    // KV에 prior 심기 — state.v=0 (도착 직후 reset 상태)
+    await kv.put(`kalman:${token}`, JSON.stringify({ v: 0, P: R_LOW, ts: NOW - 15_000 }));
+
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'd2',
+    });
+    expect(stats.kalmanDriftWarning).toBe(1);
+  });
+
+  it('prior 있음 + 작은 delta(< 15) → kalmanDriftWarning 0', async () => {
+    // prior state.v=30, gpsAvg ≈ 32 → delta=2 < 15 → warning 없음
+    const kv = new InMemoryKV();
+    const token = 'drift-small';
+    const trip = makeDriftTrip(token);
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedSeriesWithGpsAvg(kv, token, 32);
+    await kv.put(`kalman:${token}`, JSON.stringify({ v: 30, P: 25, ts: NOW - 15_000 }));
+
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'd3',
+    });
+    expect(stats.kalmanDriftWarning).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #826 — lockless ARRIVED/ENTERING → Kalman reset
+// ---------------------------------------------------------------------------
+
+function makeLocklessKalmanTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+  return makeTrip({
+    token,
+    waypoints: [
+      { stationName: '강남', line: '2', kind: 'intermediate' },
+      { stationName: '역삼', line: '2', kind: 'destination' },
+    ],
+    locklessStationPassed: true,
+    ...overrides,
+  });
+}
+
+function makeArrivedSignal(arvlCd: number): ArrivalEntry {
+  return {
+    destination: '강남행',
+    arrivalSeconds: 10,
+    trainCode: '9999',
+    isUp: true,
+    subwayNm: '지하철2호선',
+    arvlCd,
+  };
+}
+
+/**
+ * #826 Kalman reset 테스트용 deps 헬퍼 — 동일 boilerplate(apnsConfig/Hosts/fetchImpl/now)를
+ * 5곳에서 반복하지 않게 묶음. sonar new_duplicated_lines_density 임계 정합.
+ */
+function makeKalmanResetDeps(
+  seoul: SeoulArrivalClient,
+  pushId: string,
+): ScheduledDeps {
+  return {
+    seoul,
+    apnsConfig,
+    apnsHosts: APNS_HOSTS,
+    fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+    now: () => NOW,
+    generatePushId: () => pushId,
+  };
+}
+
+describe('runScheduled — #826 lockless intermediate Kalman reset', () => {
+  it('arvlCd=ARRIVED(1) → fires=true → kalman:<token>이 v=0/P=4로 reset + stats.kalmanReset=1', async () => {
+    const kv = new InMemoryKV();
+    const token = 'lock-kalman-1';
+    await putTrip(kv as unknown as KVNamespace, makeLocklessKalmanTrip(token));
+    // 기존 kalman state 심기 (reset 이전 상태)
+    await kv.put(`kalman:${token}`, JSON.stringify({ v: 40, P: 100, ts: NOW - 5_000 }));
+
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoul([makeArrivedSignal(1)]), 'lk1'),
+    );
+
+    expect(stats.kalmanReset).toBe(1);
+    const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
+    expect(kalmanState?.v).toBe(0);
+    expect(kalmanState?.P).toBe(R_LOW);
+    expect(kalmanState?.ts).toBe(NOW);
+  });
+
+  it('arvlCd=ENTERING(0) → fires=true → Kalman reset 발사 + stats.kalmanReset=1', async () => {
+    const kv = new InMemoryKV();
+    const token = 'lock-kalman-2';
+    await putTrip(kv as unknown as KVNamespace, makeLocklessKalmanTrip(token));
+    await kv.put(`kalman:${token}`, JSON.stringify({ v: 35, P: 50, ts: NOW - 3_000 }));
+
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoul([makeArrivedSignal(0)]), 'lk2'),
+    );
+
+    expect(stats.kalmanReset).toBe(1);
+    const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
+    expect(kalmanState?.v).toBe(0);
+    expect(kalmanState?.P).toBe(R_LOW);
+  });
+
+  it('arvlCd=2(출발) → fires=false → Kalman reset 미발사 + stats.kalmanReset=0', async () => {
+    // arvlCd=2는 ENTERING(0)/ARRIVED(1) 아님 → fires=false → reset 경로 미진입
+    const kv = new InMemoryKV();
+    const token = 'lock-kalman-3';
+    await putTrip(kv as unknown as KVNamespace, makeLocklessKalmanTrip(token));
+    await kv.put(`kalman:${token}`, JSON.stringify({ v: 30, P: 25, ts: NOW - 3_000 }));
+
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoul([makeArrivedSignal(2)]), 'lk3'),
+    );
+
+    // 핵심: fires=false로 reset 경로 자체 미진입 → kalmanReset=0
+    expect(stats.kalmanReset).toBe(0);
+  });
+
+  it('phase gate 차단 케이스 → reset은 phase gate와 무관하게 발사 (kalmanReset=1, phaseImminentBlocked=1)', async () => {
+    // ARRIVED + high-confidence CRUISING → phase gate 차단 → push 미발사
+    // 하지만 reset은 phase gate 평가 전에 이미 실행 → kalmanReset=1
+    const kv = new InMemoryKV();
+    const token = 'lock-kalman-4';
+    const tripWithCruising = makeLocklessKalmanTrip(token, {
+      stationPhase: {
+        current: 'CRUISING',
+        confidence: 0.9, // high-confidence CRUISING → gate 차단
+        lastEvaluatedAt: NOW - 1000,
+      },
+    });
+    await putTrip(kv as unknown as KVNamespace, tripWithCruising);
+    await kv.put(`kalman:${token}`, JSON.stringify({ v: 35, P: 25, ts: NOW - 3_000 }));
+    // nearestStationDistanceM 있는 series로 phase classification 활성화
+    const series = [
+      { lat: 0, lng: -0.0004, accuracy: 10, ts: NOW - 60_000, motion: 'automotive', nearestStationDistanceM: 500 },
+      { lat: 0, lng: 0.0002, accuracy: 10, ts: NOW - 30_000, motion: 'automotive', nearestStationDistanceM: 500 },
+      { lat: 0, lng: 0.0008, accuracy: 10, ts: NOW, motion: 'automotive', nearestStationDistanceM: 500 },
+    ];
+    await kv.put(`pos:${token}`, JSON.stringify(series));
+
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoul([makeArrivedSignal(1)]), 'lk4'),
+    );
+
+    // reset은 phase gate 이전에 발사
+    expect(stats.kalmanReset).toBe(1);
+    // phase gate가 차단
+    expect(stats.phaseImminentBlocked).toBe(1);
+    // push 미발사
+    expect(stats.pushed).toBe(0);
+    // kalman state는 reset됨
+    const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
+    expect(kalmanState?.v).toBe(0);
+    expect(kalmanState?.P).toBe(R_LOW);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #826 — runTrainCodeTracking → Kalman reset on arrived
+// ---------------------------------------------------------------------------
+
+function makeLockWithKalmanTrip(token: string, overrides: Partial<Trip> = {}): Trip {
+  return makeTrip({
+    token,
+    route: { type: 'direct', line: '7', stops: 2 },
+    waypoints: [
+      { stationName: '중곡', line: '7', kind: 'intermediate' },
+      { stationName: '군자', line: '7', kind: 'destination' },
+    ],
+    boardingLock: {
+      trainCode: '7246',
+      line: '7',
+      subwayId: '1007',
+      selectedDepartureTime: NOW,
+      segmentStations: ['용마산', '중곡', '군자'],
+      expiresAt: NOW + 60 * 60_000,
+    },
+    ...overrides,
+  });
+}
+
+function makeSeoulWithArvl(stationName: string, seconds: number, arvlCd: number | null): SeoulArrivalClient {
+  return new SeoulArrivalClient({
+    apiKey: 'K',
+    host: 'h',
+    now: () => NOW,
+    fetchImpl: (async () =>
+      new Response(
+        JSON.stringify({
+          realtimeArrivalList: [
+            {
+              barvlDt: String(seconds),
+              recptnDt: '',
+              updnLine: '상행',
+              trainLineNm: stationName,
+              btrainNo: '7246',
+              subwayNm: '지하철7호선',
+              arvlCd,
+            },
+          ],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch,
+  });
+}
+
+describe('runScheduled — #826 runTrainCodeTracking Kalman reset', () => {
+  it('boardingLock 활성 + estimate.arrived=true(arvlCd=1) → reset + stats.kalmanReset=1', async () => {
+    const kv = new InMemoryKV();
+    const token = 'tc-kalman-1';
+    await putTrip(kv as unknown as KVNamespace, makeLockWithKalmanTrip(token));
+    // 기존 kalman state 심기
+    await kv.put(`kalman:${token}`, JSON.stringify({ v: 40, P: 100, ts: NOW - 5_000 }));
+
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoulWithArvl('중곡', 0, 1), 'tc1'), // arvlCd=1 ARRIVED
+    );
+
+    expect(stats.kalmanReset).toBe(1);
+    const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
+    expect(kalmanState?.v).toBe(0);
+    expect(kalmanState?.P).toBe(R_LOW);
+    expect(kalmanState?.ts).toBe(NOW);
+  });
+
+  it('boardingLock 활성 + estimate.arrived=false → reset 미발사 + stats.kalmanReset=0', async () => {
+    const kv = new InMemoryKV();
+    const token = 'tc-kalman-2';
+    await putTrip(kv as unknown as KVNamespace, makeLockWithKalmanTrip(token));
+    // 일반 ETA 응답 (도착 아님)
+    const originalV = 35;
+    await kv.put(`kalman:${token}`, JSON.stringify({ v: originalV, P: 25, ts: NOW - 5_000 }));
+
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoulWithArvl('중곡', 120, null), 'tc2'), // arrived=false
+    );
+
+    expect(stats.kalmanReset).toBe(0);
+    // kalman state는 reset되지 않음 (runFusionStep은 lockless/boardingPrompt 경로에서만 동작)
+    const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
+    // reset이 없었으므로 v≠0 (원래 값 또는 update된 값)
+    if (kalmanState !== null) {
+      // arrived=false이면 kalman reset이 없어야 함 — v=0 아님을 확인
+      expect(kalmanState.v).not.toBe(0);
+    }
   });
 });
