@@ -27,8 +27,8 @@ interface Props {
   /** 헤더 라벨 커스텀 (환승 list 등). 미전달 시 기본 "탑승할 열차 선택". compact=true면 무시. */
   title?: string;
   /**
-   * 다음 인접역 라벨(#649, #749). 종착과 같이 "{destination}행 · {label}방면" 형태로 노출.
-   * 호출자가 resolveNextAdjacentStationName으로 계산해 전달. null/미전달이면 종착만 표기.
+   * 다음 인접역 라벨(#649, #749, #807). 있으면 "<label>방면"만 노출(종착 제거).
+   * 호출자가 resolveNextAdjacentStationName으로 계산해 전달. null/미전달이면 종착 fallback.
    */
   nextStationLabel?: string | null;
   /**
@@ -57,11 +57,11 @@ interface Props {
  * #790: 거리 표기를 API `arvlMsg2`에서 정규식 파싱한 실거리로 변경 (`parseArrivalDistance`).
  *       비어있는 statusMessage(주로 mock/schedule fallback)는 기존 `${index+1}번째 전`로 fallback.
  * #792: 종착 표기는 `parseTrainLineDirection`로 i18n 정규화한다 (기존 하드코딩 "행" 부착 제거).
- *       종착에 이미 다음역 명이 포함된 경우(예: "어린이대공원(세종대)방면"+"어린이대공원") "방면"
- *       접미사를 생략해 라벨 중복("…방면행 · …방면")을 차단한다.
  * #805: "곧 도착"/"전역 출발"/"당역 도착" 등 statusMessage가 sequence 슬롯을 차지하는 임박 상태에서
  *       도착 예정 HH:mm 시간 라벨이 같은 줄에서 가려지는 회귀가 있었다. 시간 라벨을 항상 별도 라인
  *       으로 분리해 "상태 텍스트(또는 거리) → 시간"이 위아래로 명확히 보이도록 한다.
+ * #807: 첫째 줄은 종착(마천행/방화행 등)이 아니라 **다음 인접역 방면**만 표시(`buildDirectionMeta`).
+ *       nextStationLabel 미전달 시에만 종착 fallback. 종착 분기 누락 회귀(5호선 등) 완전 차단.
  */
 export function BoardingTrainList({
   arrivals,
