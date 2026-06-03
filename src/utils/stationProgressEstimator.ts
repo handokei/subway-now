@@ -3,6 +3,7 @@ import type { ArrivalInfo } from '../api/arrivalApi';
 import type { Station } from '../types/station';
 import type { TrainProgressResult } from './trackTrainProgress';
 import { projectArrivalEtaStation } from './arrivalEtaProjection';
+import { hopsElapsedFrom } from './hopTime';
 
 /**
  * ADR-008 — 탑승 진행 추정(BoardingLock 활성 trip 중 현재역) 합성기.
@@ -11,14 +12,21 @@ import { projectArrivalEtaStation } from './arrivalEtaProjection';
  *  ① LivePosition   — realtimePosition으로 lock.trainCode 직접 발견 → 그 statnId (drift=0)
  *  ② ArrivalEta     — 다음 역 arrival에서 trainCode 발견 → arrivalSeconds로 ETA 투영 (Stage 2/#740)
  *  ③ ReanchoredHop  — ①②가 마지막으로 본 (역, 시각)에 재앵커 — 최대 1 hop만 적분
- *  ④ DefaultHop     — 노선/세그먼트 hop time 테이블 (Stage 3/#624)
+ *  ④ DefaultHop     — `lock.boardedAt + boardingStationId` 앵커 + segment별 hop time 테이블 (Stage 3/#779)
  *
- * Stage 1(#739)은 ①③. Stage 2(#745)에서 ②(projectArrivalEtaStation 합성) 도입. ④는 Stage 3까지
- * 명시적 빈 스텁으로 자리만 잡는다 — 후속 stage에서 채우면 그대로 합성 우선순위에 끼어든다(OCP).
+ * Stage 1(#739)은 ①③. Stage 2(#745)에서 ②(projectArrivalEtaStation 합성) 도입.
+ * Stage 3(#779)에서 ④ 구현 — `lock.boardedAt` 앵커가 살아있을 때만 도달(lastObserved 부재 케이스).
+ * ③/④ 모두 segment별 hop time을 `hopsElapsedFrom`으로 누적해 uniform 90s 가정을 제거(ADR-008 §④).
  *
- * 핵심 변경: 기존 `interpolateBoardingLockStation`은 `lock.boardedAt`을 시작 앵커로 N hop을 통째로
- * 적분 → 보간이 메꾸는 구간이 trip 전체였다. ReanchoredHop은 마지막 실관측 `(arcIndex, observedAtMs)`에
+ * 핵심 변경(Stage 1): 기존 `interpolateBoardingLockStation`은 `lock.boardedAt`을 시작 앵커로 N hop을
+ * 통째로 적분 → 보간이 메꾸는 구간이 trip 전체였다. ReanchoredHop은 마지막 실관측 `(arcIndex, observedAtMs)`에
  * 재앵커 → 폴링 간격(5초)마다 앵커가 갱신되므로 보간 구간이 최대 1 hop으로 줄어든다. (ADR-008 §③)
+ *
+ * Stage 3 변경(#779): `hopTimeMs` 단일 매직넘버 → `hopTimeMsForHop(fromIdx)` 룩업으로 시그니처 전환.
+ * `lock.boardingLine` 기준 `stationTravelTimes.json`(#655) 룩업, 미커버 노선/구간은 `hopTime.ts` 안에서
+ * 90s graceful fallback. ReanchoredHop과 DefaultHop의 책임을 명시적으로 분리:
+ *   - ReanchoredHop: lastObserved가 유효할 때만 동작(없으면 null)
+ *   - DefaultHop:    lastObserved 부재 시 `(boardedAt, boardingStationId)` 앵커로 fallback
  */
 
 /** estimator 입력 — Stage 2/3에서 ArrivalEta/HopTimeTable 신호 주입 시 입력 필드만 추가하면 된다. */
@@ -43,8 +51,14 @@ export interface StationProgressEstimatorInput {
    * 호출 측이 ref로 관리해 trainProgress 매칭이 끊긴 후에도 직전 관측을 보존한다.
    */
   lastObserved: { arcIndex: number; observedAtMs: number } | null;
-  /** Strategy ③④에서 사용할 hop 시간(ms). Stage 1은 HOP_TIME_MS 패스스루, Stage 3에서 lookup. */
-  hopTimeMs: number;
+  /**
+   * Strategy ③④에서 사용할 hop 시간 lookup. arc 위 `fromIdx`에서 다음 역으로의 hop ms를 반환.
+   *
+   * Stage 3(#779) — uniform `HOP_TIME_MS` 매직넘버를 segment별 lookup으로 대체.
+   * 호출자는 `lock.boardingLine`을 캡슐화한 closure를 전달한다(`(idx) => hopTimeMsAt(arc, idx, line)`).
+   * arc 경계/미커버 노선은 `hopTime.ts` 내부에서 `HOP_TIME_MS` graceful fallback.
+   */
+  hopTimeMsForHop: (fromIdx: number) => number;
   /**
    * Strategy ② 입력 (#745) — `arcStations[currentIdxHint + 1]` 역의 ArrivalInfo 목록.
    * `projectArrivalEtaStation`이 row별로 trainCode 매칭 + 신선도 필터링을 수행하므로 호출자는
@@ -136,54 +150,74 @@ function tryArrivalEta(
 }
 
 /**
- * Strategy ③ — lastObserved(또는 fallback으로 boardedAt+boardingIdx)에 재앵커 + 시간 적분.
+ * `anchorIdx`에서 `elapsedMs` 동안 segment별 hop time을 누적해 산출한 현재 arc 인덱스.
  *
- * 핵심: lastObserved가 있으면 `(observedAtMs, arcIndex)` 앵커, 없으면 `(boardedAt, boardingIdx)`.
+ * 시계 후진(elapsedMs < 0)이나 종착역 cap+grace 초과 시 null. cap 이내면 종착역으로 saturate.
+ * ReanchoredHop/DefaultHop이 공유 — anchor 종류(lastObserved vs boardedAt)만 다르고 시간 적분 로직은 동일.
+ */
+function projectIndexByHopTime(
+  arcStations: Station[],
+  anchorIdx: number,
+  elapsedMs: number,
+  hopTimeMsForHop: (fromIdx: number) => number,
+): number | null {
+  if (elapsedMs < 0) return null;
+  const hops = hopsElapsedFrom(arcStations.length, anchorIdx, elapsedMs, hopTimeMsForHop);
+  const lastIdx = arcStations.length - 1;
+  if (anchorIdx + hops > lastIdx + OVER_TERMINAL_GRACE_HOPS) return null;
+  return Math.min(anchorIdx + hops, lastIdx);
+}
+
+/**
+ * Strategy ③ — `lastObserved`(LivePosition 직전 관측)에 재앵커 + segment별 hop time 누적.
+ *
+ * lastObserved가 없거나 arc 범위 밖이면 본 전략 skip → 다음 전략(④ DefaultHop)에서 boardedAt fallback.
  * lastObserved는 LivePosition이 살아있던 동안 갱신되므로 보간 구간이 폴링 1회분(최대 1 hop)으로 제한된다.
  *
- * 시계 후진(now < anchorTs)이나 종착역 cap+grace 초과 시 null.
- *
- * 상위 가드(lock null, arc 비어있음, lock 만료)는 estimateStationProgress에서 차단되므로 여기서는
- * 시그니처에 lock 비-null만 명시(NonNullable) — 호출부와 함께 점검할 수 있도록 비공개 헬퍼로 유지.
+ * Stage 3(#779): 시간 적분이 segment별 실측 hop time(`hopTimeMsForHop`)을 사용 — 9호선 급행처럼
+ * 데이터가 없는 노선/구간은 lookup 내부에서 graceful 90s fallback.
  */
 function tryReanchoredHop(
-  input: StationProgressEstimatorInput & { lock: BoardingLock },
+  input: StationProgressEstimatorInput,
 ): StationProgressEstimate | null {
-  const { lock, arcStations, now, lastObserved, hopTimeMs } = input;
+  const { arcStations, now, lastObserved, hopTimeMsForHop } = input;
+  if (!lastObserved) return null;
+  if (lastObserved.arcIndex < 0 || lastObserved.arcIndex >= arcStations.length) return null;
 
-  let anchorIdx: number;
-  let anchorTs: number;
-  // lastObserved가 arc 범위를 벗어나면(잘못된 값) boardedAt fallback으로 안전 복구.
-  if (
-    lastObserved &&
-    lastObserved.arcIndex >= 0 &&
-    lastObserved.arcIndex < arcStations.length
-  ) {
-    anchorIdx = lastObserved.arcIndex;
-    anchorTs = lastObserved.observedAtMs;
-  } else {
-    const boardingIdx = arcStations.findIndex((s) => s.id === lock.boardingStationId);
-    if (boardingIdx === -1) return null;
-    anchorIdx = boardingIdx;
-    anchorTs = lock.boardedAt;
-  }
-
-  const elapsed = now - anchorTs;
-  if (elapsed < 0) return null;
-
-  const hopsElapsed = Math.floor(elapsed / hopTimeMs);
-  const lastIdx = arcStations.length - 1;
-  if (anchorIdx + hopsElapsed > lastIdx + OVER_TERMINAL_GRACE_HOPS) return null;
-  const idx = Math.min(anchorIdx + hopsElapsed, lastIdx);
+  const idx = projectIndexByHopTime(
+    arcStations,
+    lastObserved.arcIndex,
+    now - lastObserved.observedAtMs,
+    hopTimeMsForHop,
+  );
+  if (idx === null) return null;
   return { station: arcStations[idx], index: idx, strategy: 'reanchored-hop' };
 }
 
-/** Strategy ④ — Stage 3/#624에서 채울 예정. line/segment별 hop time 데이터 테이블 fallback. */
+/**
+ * Strategy ④ — `lock.boardedAt + lock.boardingStationId` 앵커 + segment별 hop time 누적.
+ *
+ * ①②③ 모두 fallback된 dead zone에서만 도달 (lastObserved도 없는 상태). Stage 3(#779)에서 ADR-008 §④
+ * "per-line/segment 데이터 테이블"을 구현 — uniform 90s 가정 제거.
+ *
+ * 상위 가드(lock null, arc 비어있음, lock 만료)는 estimateStationProgress에서 차단되므로
+ * 시그니처에 lock 비-null만 명시(NonNullable).
+ */
 function tryDefaultHop(
-  _input: StationProgressEstimatorInput,
+  input: StationProgressEstimatorInput & { lock: BoardingLock },
 ): StationProgressEstimate | null {
-  // Stage 3/#624 — HOP_TIME_TABLE lookup으로 line/segment별 정밀 hop time 대체.
-  return null;
+  const { lock, arcStations, now, hopTimeMsForHop } = input;
+  const boardingIdx = arcStations.findIndex((s) => s.id === lock.boardingStationId);
+  if (boardingIdx === -1) return null;
+
+  const idx = projectIndexByHopTime(
+    arcStations,
+    boardingIdx,
+    now - lock.boardedAt,
+    hopTimeMsForHop,
+  );
+  if (idx === null) return null;
+  return { station: arcStations[idx], index: idx, strategy: 'default-hop' };
 }
 
 /**
@@ -201,8 +235,8 @@ export function arcIndexOfStation(
 /**
  * 4단 전략을 우선순위대로 시도. 처음 채택된 전략의 결과를 반환.
  *
- * Stage 2(#745) 기준 ①(LivePosition) → ②(ArrivalEta) → ③(ReanchoredHop) → ④(스텁) 순.
- * ④는 후속 stage에서 채워지면 자연스레 끼어든다(OCP).
+ * Stage 3(#779) 기준 ①(LivePosition) → ②(ArrivalEta) → ③(ReanchoredHop) → ④(DefaultHop) 순.
+ * ③은 `lastObserved` 유효 시만 동작, ④는 `lock.boardedAt + boardingStationId` 앵커로 fallback.
  */
 export function estimateStationProgress(
   input: StationProgressEstimatorInput,
@@ -212,13 +246,14 @@ export function estimateStationProgress(
   if (arcStations.length === 0) return null;
   if (isBoardingLockExpired(lock, now)) return null;
 
-  // tryLivePosition은 lock과 무관 — trainProgress.trainNo === lockedTrainCode만 검사.
-  // tryReanchoredHop은 lock에 의존하므로 비-null 시그니처로 좁힌다.
+  // tryLivePosition/ArrivalEta/ReanchoredHop은 lock에 직접 의존하지 않으나 estimateStationProgress가
+  // 이미 lock 비-null을 보장해 호출 트리 전체가 active trip context. tryDefaultHop만 lock.boardedAt/
+  // boardingStationId를 사용하므로 시그니처에 명시(NonNullable)한다.
   const lockedInput = { ...input, lock };
   return (
     tryLivePosition(input) ??
     tryArrivalEta(input) ??
-    tryReanchoredHop(lockedInput) ??
-    tryDefaultHop(input)
+    tryReanchoredHop(input) ??
+    tryDefaultHop(lockedInput)
   );
 }

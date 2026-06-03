@@ -6,6 +6,11 @@ import type { BoardingLock } from '../../types/boardingLock';
 import type { Station } from '../../types/station';
 import type { TrainProgressResult } from '../trackTrainProgress';
 
+// 기존 테스트들이 HOP_TIME_MS uniform 가정을 그대로 사용 — Stage 3에서도 estimator의 시간 적분
+// 로직 회귀를 검증하려면 동일한 시간 단위가 필요. lookup closure로 감싸 시그니처만 신규 형태로 맞춘다.
+// Strategy ③④의 segment별 누적 회귀는 별도 describe(Stage 3) 블록에서 가변 hop time으로 검증.
+const UNIFORM_HOP = (_fromIdx: number) => HOP_TIME_MS;
+
 const ARC: Station[] = [
   { id: '7-001', name: '용마산', line: '7', lineColor: '#x', lat: 0, lng: 0 },
   { id: '7-002', name: '중곡', line: '7', lineColor: '#x', lat: 0, lng: 0 },
@@ -78,7 +83,7 @@ describe('estimateStationProgress', () => {
           trainProgress: null,
           lockedTrainCode: null,
           lastObserved: null,
-          hopTimeMs: HOP_TIME_MS,
+          hopTimeMsForHop: UNIFORM_HOP,
           ...NO_ARRIVAL_INPUT,
         }),
       ).toBeNull();
@@ -93,7 +98,7 @@ describe('estimateStationProgress', () => {
           trainProgress: null,
           lockedTrainCode: '7093',
           lastObserved: null,
-          hopTimeMs: HOP_TIME_MS,
+          hopTimeMsForHop: UNIFORM_HOP,
           ...NO_ARRIVAL_INPUT,
         }),
       ).toBeNull();
@@ -110,7 +115,7 @@ describe('estimateStationProgress', () => {
           trainProgress: null,
           lockedTrainCode: '7093',
           lastObserved: null,
-          hopTimeMs: HOP_TIME_MS,
+          hopTimeMsForHop: UNIFORM_HOP,
           ...NO_ARRIVAL_INPUT,
         }),
       ).toBeNull();
@@ -126,7 +131,7 @@ describe('estimateStationProgress', () => {
         trainProgress: makeTrainProgress({ stationIdx: 2 }),
         lockedTrainCode: '7093',
         lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
       expect(r).toEqual({
@@ -137,7 +142,7 @@ describe('estimateStationProgress', () => {
     });
 
     it('lockedTrainCode null이면 LivePosition skip', () => {
-      // lockedTrainCode 없으면 매칭 불가 → ReanchoredHop fallback (lastObserved도 없으니 boarding 앵커)
+      // lockedTrainCode 없으면 매칭 불가 → ③ skip(lastObs null) → ④ DefaultHop이 boardedAt 앵커로 fallback.
       const r = estimateStationProgress({
         lock: makeLock(),
         arcStations: ARC,
@@ -145,10 +150,10 @@ describe('estimateStationProgress', () => {
         trainProgress: makeTrainProgress({ stationIdx: 2 }),
         lockedTrainCode: null,
         lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
-      expect(r?.strategy).toBe('reanchored-hop');
+      expect(r?.strategy).toBe('default-hop');
       expect(r?.station).toBe(ARC[0]); // boarding 앵커, elapsed=0
     });
 
@@ -160,10 +165,10 @@ describe('estimateStationProgress', () => {
         trainProgress: makeTrainProgress({ trainNo: '9999', stationIdx: 2 }),
         lockedTrainCode: '7093',
         lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
-      expect(r?.strategy).toBe('reanchored-hop');
+      expect(r?.strategy).toBe('default-hop');
       expect(r?.station).toBe(ARC[0]);
     });
 
@@ -183,10 +188,10 @@ describe('estimateStationProgress', () => {
         trainProgress: makeTrainProgress({ currentStation: offArc }),
         lockedTrainCode: '7093',
         lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
-      expect(r?.strategy).toBe('reanchored-hop');
+      expect(r?.strategy).toBe('default-hop');
     });
 
     it('trainProgress null이면 LivePosition skip', () => {
@@ -197,10 +202,10 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: '7093',
         lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
-      expect(r?.strategy).toBe('reanchored-hop');
+      expect(r?.strategy).toBe('default-hop');
     });
   });
 
@@ -215,7 +220,7 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: '7093',
         lastObserved: { arcIndex: 2, observedAtMs: observedAt },
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
       expect(r).toEqual({
@@ -225,25 +230,8 @@ describe('estimateStationProgress', () => {
       });
     });
 
-    it('lastObserved 없으면 boardedAt + boardingIdx 앵커로 fallback', () => {
-      const r = estimateStationProgress({
-        lock: makeLock(),
-        arcStations: ARC,
-        now: T0 + HOP_TIME_MS,
-        trainProgress: null,
-        lockedTrainCode: '7093',
-        lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
-        ...NO_ARRIVAL_INPUT,
-      });
-      expect(r).toEqual({
-        station: ARC[1],
-        index: 1,
-        strategy: 'reanchored-hop',
-      });
-    });
-
-    it('lastObserved 시각이 미래(시계 후진)면 ReanchoredHop skip → null', () => {
+    it('lastObserved 시각이 미래(시계 후진)면 ReanchoredHop skip → ④ DefaultHop fallback', () => {
+      // ③ skip(시계 후진) → ④에서 boardedAt 기준 elapsed=0이므로 idx=0(boarding).
       const r = estimateStationProgress({
         lock: makeLock(),
         arcStations: ARC,
@@ -251,28 +239,15 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: '7093',
         lastObserved: { arcIndex: 2, observedAtMs: T0 + 1_000 },
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
-      expect(r).toBeNull();
+      expect(r?.strategy).toBe('default-hop');
+      expect(r?.station).toBe(ARC[0]);
     });
 
-    it('boardedAt fallback 케이스에서 boardingStationId가 arc에 없으면 null', () => {
-      const r = estimateStationProgress({
-        lock: makeLock({ boardingStationId: '9-999' }),
-        arcStations: ARC,
-        now: T0,
-        trainProgress: null,
-        lockedTrainCode: '7093',
-        lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
-        ...NO_ARRIVAL_INPUT,
-      });
-      expect(r).toBeNull();
-    });
-
-    it('lastObserved.arcIndex가 범위 밖이면 boardedAt fallback', () => {
-      // lastObserved.arcIndex가 arc 길이보다 크면 잘못된 값 → boardedAt fallback으로 안전 복구
+    it('lastObserved.arcIndex가 범위 밖이면 ④ DefaultHop으로 fallback', () => {
+      // ③은 안전을 위해 범위 밖 lastObserved는 skip → ④가 boardedAt 앵커로 fallback.
       const r = estimateStationProgress({
         lock: makeLock(),
         arcStations: ARC,
@@ -280,15 +255,16 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: '7093',
         lastObserved: { arcIndex: 99, observedAtMs: T0 },
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
-      expect(r?.strategy).toBe('reanchored-hop');
+      expect(r?.strategy).toBe('default-hop');
       expect(r?.station).toBe(ARC[1]); // boardingIdx(0) + 1 hop
     });
 
-    it('종착역 초과 cap + grace 초과 시 null', () => {
-      // 종착역 cap 후 grace 이상은 lock release 신호 → null
+    it('종착역 초과 cap + grace 초과 시 ③ null', () => {
+      // ③에서 종착역 cap+grace 초과 검출 → null. ④도 동일 boardedAt 기준이면 동일 결과지만, 본 케이스는
+      // lastObserved가 이미 cap 직전이라 ④의 boardedAt 적분과 분리해 검증한다.
       const lock = makeLock({ expectedDurationMs: 100 * HOP_TIME_MS });
       const observedAt = T0;
       const r = estimateStationProgress({
@@ -298,7 +274,7 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: '7093',
         lastObserved: { arcIndex: 0, observedAtMs: observedAt },
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
       expect(r).toBeNull();
@@ -315,7 +291,7 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: '7093',
         lastObserved: { arcIndex: 0, observedAtMs: observedAt },
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
       expect(r).toEqual({
@@ -323,6 +299,90 @@ describe('estimateStationProgress', () => {
         index: 4,
         strategy: 'reanchored-hop',
       });
+    });
+  });
+
+  describe('Strategy ④ DefaultHop — boardedAt + boardingStationId 앵커 (Stage 3/#779)', () => {
+    it('lastObserved 없으면 boardedAt + boardingIdx 앵커로 fallback', () => {
+      const r = estimateStationProgress({
+        lock: makeLock(),
+        arcStations: ARC,
+        now: T0 + HOP_TIME_MS,
+        trainProgress: null,
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toEqual({
+        station: ARC[1],
+        index: 1,
+        strategy: 'default-hop',
+      });
+    });
+
+    it('boardingStationId가 arc에 없으면 ④ null', () => {
+      const r = estimateStationProgress({
+        lock: makeLock({ boardingStationId: '9-999' }),
+        arcStations: ARC,
+        now: T0,
+        trainProgress: null,
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toBeNull();
+    });
+
+    it('boardedAt이 미래(시계 후진)면 ④ null', () => {
+      // now < boardedAt → elapsed < 0 → ④ null.
+      const lock = makeLock({ boardedAt: T0 + 60_000 });
+      const r = estimateStationProgress({
+        lock,
+        arcStations: ARC,
+        now: T0,
+        trainProgress: null,
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toBeNull();
+    });
+
+    it('종착역 cap+grace 초과 시 ④ null', () => {
+      const lock = makeLock({ expectedDurationMs: 100 * HOP_TIME_MS });
+      const r = estimateStationProgress({
+        lock,
+        arcStations: ARC,
+        now: T0 + 100 * HOP_TIME_MS,
+        trainProgress: null,
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toBeNull();
+    });
+
+    it('segment별 hop time이 다르면 누적 시간 기준으로 hop 산정 (ADR-008 §④)', () => {
+      // lookup이 idx에 따라 가변 — 0→1: 60s, 1→2: 60s, 2→3: 120s, 3→4: 60s.
+      // elapsed=150s → 0+1(60s 소비) → 1+1(120s 소비) → 다음 hop 120s는 30s만 남아 stop. hops=2.
+      const variableHop = (fromIdx: number) =>
+        fromIdx === 2 ? 120_000 : 60_000;
+      const r = estimateStationProgress({
+        lock: makeLock(),
+        arcStations: ARC,
+        now: T0 + 150_000,
+        trainProgress: null,
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: variableHop,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r?.strategy).toBe('default-hop');
+      expect(r?.index).toBe(2);
     });
   });
 
@@ -336,7 +396,7 @@ describe('estimateStationProgress', () => {
         trainProgress: null, // ① stale
         lockedTrainCode: '7093',
         lastObserved: { arcIndex: 2, observedAtMs: T0 - 10_000 }, // ③도 가능하지만 ②가 우선
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         nextStationArrivals: [
           makeArrival({ arrivalCode: ARRIVAL_CODE.ENTERING, arrivalSeconds: 14 }),
         ],
@@ -358,7 +418,7 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: '7093',
         lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         nextStationArrivals: [
           makeArrival({ arrivalCode: ARRIVAL_CODE.PREV_ARRIVED, arrivalSeconds: 45 }),
         ],
@@ -382,7 +442,7 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: '7093',
         lastObserved: { arcIndex: 1, observedAtMs: observedAt },
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         nextStationArrivals: [
           makeArrival({
             arrivalCode: ARRIVAL_CODE.ENTERING,
@@ -395,7 +455,7 @@ describe('estimateStationProgress', () => {
       expect(r?.strategy).toBe('reanchored-hop');
     });
 
-    it('currentIdxHint null → ② skip → ReanchoredHop fallback', () => {
+    it('currentIdxHint null → ② skip → ③ lastObs null이라 ④ DefaultHop fallback', () => {
       const r = estimateStationProgress({
         lock: makeLock(),
         arcStations: ARC,
@@ -403,17 +463,17 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: '7093',
         lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         nextStationArrivals: [
           makeArrival({ arrivalCode: ARRIVAL_CODE.ENTERING, arrivalSeconds: 14 }),
         ],
         arrivalEtaTtlMs: ARRIVAL_TTL_MS,
         currentIdxHint: null,
       });
-      expect(r?.strategy).toBe('reanchored-hop');
+      expect(r?.strategy).toBe('default-hop');
     });
 
-    it('lockedTrainCode null → ② skip(trainCode 매칭 불가) → ReanchoredHop', () => {
+    it('lockedTrainCode null → ② skip → ④ DefaultHop', () => {
       const r = estimateStationProgress({
         lock: makeLock(),
         arcStations: ARC,
@@ -421,17 +481,17 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: null,
         lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         nextStationArrivals: [
           makeArrival({ arrivalCode: ARRIVAL_CODE.ENTERING }),
         ],
         arrivalEtaTtlMs: ARRIVAL_TTL_MS,
         currentIdxHint: 2,
       });
-      expect(r?.strategy).toBe('reanchored-hop');
+      expect(r?.strategy).toBe('default-hop');
     });
 
-    it('nextStationArrivals 빈 배열 → ② skip → ReanchoredHop', () => {
+    it('nextStationArrivals 빈 배열 → ② skip → ④ DefaultHop', () => {
       const r = estimateStationProgress({
         lock: makeLock(),
         arcStations: ARC,
@@ -439,15 +499,15 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: '7093',
         lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         nextStationArrivals: [],
         arrivalEtaTtlMs: ARRIVAL_TTL_MS,
         currentIdxHint: 2,
       });
-      expect(r?.strategy).toBe('reanchored-hop');
+      expect(r?.strategy).toBe('default-hop');
     });
 
-    it('trainCode 미일치 → ② skip → ReanchoredHop', () => {
+    it('trainCode 미일치 → ② skip → ④ DefaultHop', () => {
       const r = estimateStationProgress({
         lock: makeLock(),
         arcStations: ARC,
@@ -455,14 +515,14 @@ describe('estimateStationProgress', () => {
         trainProgress: null,
         lockedTrainCode: '7093',
         lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         nextStationArrivals: [
           makeArrival({ trainCode: '9999', arrivalCode: ARRIVAL_CODE.ENTERING }),
         ],
         arrivalEtaTtlMs: ARRIVAL_TTL_MS,
         currentIdxHint: 2,
       });
-      expect(r?.strategy).toBe('reanchored-hop');
+      expect(r?.strategy).toBe('default-hop');
     });
   });
 
@@ -476,7 +536,7 @@ describe('estimateStationProgress', () => {
         trainProgress: makeTrainProgress({ stationIdx: 1 }), // LivePosition: idx 1
         lockedTrainCode: '7093',
         lastObserved: { arcIndex: 3, observedAtMs: observedAt }, // ReanchoredHop이 가능했다면 더 앞쪽
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         ...NO_ARRIVAL_INPUT,
       });
       // LivePosition 우선 — strategy='live-position', index=1.
@@ -495,7 +555,7 @@ describe('estimateStationProgress', () => {
         trainProgress: makeTrainProgress({ stationIdx: 1 }),
         lockedTrainCode: '7093',
         lastObserved: null,
-        hopTimeMs: HOP_TIME_MS,
+        hopTimeMsForHop: UNIFORM_HOP,
         nextStationArrivals: [
           makeArrival({ arrivalCode: ARRIVAL_CODE.ENTERING, arrivalSeconds: 10 }),
         ],
