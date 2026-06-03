@@ -80,6 +80,12 @@ export interface EvaluateBoardingPromptInputs {
    * (Phase 1/2 회귀 없음).
    */
   kalmanKmh?: number | null;
+  /**
+   * Pre-computed window metrics (#833). 호출자가 이미 동일 series/now로
+   * `evaluateWindow`를 계산했다면(예: Kalman observation 산출용) 결과를 그대로 전달해
+   * hot path redundancy를 제거한다. 미지정 시 내부에서 1회 계산 — 회귀 없음.
+   */
+  metrics?: WindowedMetrics;
 }
 
 /**
@@ -103,7 +109,9 @@ export function evaluateBoardingPromptGates(
   }
 
   // #6 — 60s 윈도우 N≥3 (cold start 보호). 0/1 sample은 metrics.start/end null로 자연 차단.
-  const metrics = evaluateWindow(inputs.series, inputs.now);
+  // #833 — 호출자가 동일 series/now로 이미 evaluateWindow를 돌렸다면(예: scheduled.ts의
+  // Kalman observation) 결과를 재사용해 hot path 중복 계산을 제거한다.
+  const metrics = inputs.metrics ?? evaluateWindow(inputs.series, inputs.now);
   if (metrics.count < MIN_WINDOW_SAMPLES) {
     return { pass: false, reason: 'window-too-small', metrics };
   }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ARRIVAL_CODE } from '../alarm';
 import {
   DISMISS_SILENCE_MS,
@@ -7,6 +7,7 @@ import {
   markPromptSilenced,
   pickAutoTrainCode,
 } from '../boardingPrompt';
+import * as positionSeries from '../positionSeries';
 import type { PositionPoint } from '../types';
 import type { ArrivalEntry } from '../seoul';
 
@@ -332,6 +333,58 @@ describe('evaluateBoardingPromptGates — #824 kalmanKmh 전달', () => {
     expect(withKalman.pass).toBe(true);
     if (withoutKalman.pass && withKalman.pass) {
       expect(withKalman.fusedSpeedKmh).toBeGreaterThan(withoutKalman.fusedSpeedKmh);
+    }
+  });
+});
+
+describe('evaluateBoardingPromptGates — #833 pre-computed metrics 재사용', () => {
+  const now = 1_000_000;
+
+  it('metrics 미지정 시 내부 evaluateWindow를 호출한다', () => {
+    const spy = vi.spyOn(positionSeries, 'evaluateWindow');
+    try {
+      const r = evaluateBoardingPromptGates({
+        series: happySeries(now),
+        origin: ORIGIN,
+        nextStation: NEXT,
+        now,
+      });
+      expect(r.pass).toBe(true);
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('metrics 지정 시 evaluateWindow를 호출하지 않고 주입값을 그대로 사용한다', () => {
+    // 내부 호출이 일어났다면 happy series 결과를 재계산해 stationary 차단을 우회했을 것.
+    // motion=stationary로 주입한 metrics를 그대로 쓴다면 motion-not-moving으로 차단되어야 한다.
+    const injected: positionSeries.WindowedMetrics = {
+      count: 5,
+      gpsAvgKmh: 20,
+      avgAccuracyMeters: 10,
+      motion: 'stationary',
+      start: { lat: 0, lng: -0.0004 },
+      end: { lat: 0, lng: 0.0008 },
+      mapMatchedKmh: null,
+    };
+    const spy = vi.spyOn(positionSeries, 'evaluateWindow');
+    try {
+      const r = evaluateBoardingPromptGates({
+        series: happySeries(now),
+        origin: ORIGIN,
+        nextStation: NEXT,
+        now,
+        metrics: injected,
+      });
+      expect(r.pass).toBe(false);
+      if (!r.pass) {
+        expect(r.reason).toBe('motion-not-moving');
+        expect(r.metrics).toBe(injected); // 동일 참조 — 재계산 안 함
+      }
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
     }
   });
 });
