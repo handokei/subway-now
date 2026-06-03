@@ -58,6 +58,12 @@ jest.mock('../../utils/motionActivity', () => ({
   getCurrentMotionStationary: () => mockGetCurrentMotionStationary(),
 }));
 
+// ── accelMotionState 모킹 (#823 가속도 latest 첨부) ──
+const mockGetLatestAccelSummary = jest.fn();
+jest.mock('../../utils/accelMotionState', () => ({
+  getLatestAccelSummary: () => mockGetLatestAccelSummary(),
+}));
+
 // ── logger 모킹 ──
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({
@@ -161,6 +167,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
     mockUploadPosition.mockResolvedValue({ ok: true, status: 200 });
     mockGetCurrentMotionStationary.mockReturnValue(false);
+    mockGetLatestAccelSummary.mockReturnValue(null);
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -814,6 +821,67 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       expect(mockUploadPosition).toHaveBeenCalledWith(
         expect.objectContaining({ accuracy: 0 }),
       );
+    });
+
+    it('#823 — fresh accelSummary는 payload에 첨부', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+      const now = Date.now();
+      const accel = {
+        startTs: now - 1000,
+        endTs: now - 500, // 500ms 전 — stale 가드 통과
+        count: 100,
+        ax: 0.1,
+        ay: 0.2,
+        az: 0.3,
+        magnitudeMean: 0.5,
+        magnitudeStd: 0.1,
+        magnitudePeak: 1.2,
+      };
+      mockGetLatestAccelSummary.mockReturnValue(accel);
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      expect(mockUploadPosition).toHaveBeenCalledWith(
+        expect.objectContaining({ accelSummary: accel }),
+      );
+    });
+
+    it('#823 — stale accelSummary(>5s)는 첨부하지 않음', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+      const now = Date.now();
+      const accel = {
+        startTs: now - 11_000,
+        endTs: now - 10_000, // 10초 전 — stale 가드에 걸림
+        count: 100,
+        ax: 0.1,
+        ay: 0.2,
+        az: 0.3,
+        magnitudeMean: 0.5,
+        magnitudeStd: 0.1,
+        magnitudePeak: 1.2,
+      };
+      mockGetLatestAccelSummary.mockReturnValue(accel);
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      const call = mockUploadPosition.mock.calls[0]?.[0];
+      expect(call?.accelSummary).toBeUndefined();
+    });
+
+    it('#823 — latest accelSummary 부재면 accelSummary 키는 undefined로 송신', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+      mockGetLatestAccelSummary.mockReturnValue(null);
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      const call = mockUploadPosition.mock.calls[0]?.[0];
+      expect(call?.accelSummary).toBeUndefined();
     });
   });
 });

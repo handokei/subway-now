@@ -80,6 +80,33 @@ describe('uploadPosition (#819)', () => {
     expect(r).toEqual({ ok: false, status: 500 });
   });
 
+  it('#823 accelSummary 포함 → body에 그대로 직렬화', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+    const accelSummary = {
+      startTs: 1000,
+      endTs: 2000,
+      count: 100,
+      ax: 0.1,
+      ay: 0.2,
+      az: 0.3,
+      magnitudeMean: 0.5,
+      magnitudeStd: 0.1,
+      magnitudePeak: 1.2,
+    };
+    await uploadPosition({
+      token: 'tok',
+      lat: 37.5,
+      lng: 127,
+      accuracy: 10,
+      ts: 1234,
+      motion: 'automotive',
+      accelSummary,
+    });
+    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(JSON.parse(init.body).accelSummary).toEqual(accelSummary);
+  });
+
   it('fetch throw → ok=false (graceful)', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
     (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
