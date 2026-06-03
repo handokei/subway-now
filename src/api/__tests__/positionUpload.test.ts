@@ -30,6 +30,26 @@ afterEach(() => {
   global.fetch = ORIGINAL_FETCH;
 });
 
+// #834 — 강남역 좌표(37.4979/127.0276) 기반 uploadPosition body 캡처 헬퍼.
+// 두 신규 테스트가 공유하는 fetch mock setup + body 추출을 중복 없이 표현한다.
+async function captureGangnamUploadBody(
+  overrides: Partial<Parameters<typeof uploadPosition>[0]> = {},
+): Promise<Record<string, unknown>> {
+  process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+  (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
+  await uploadPosition({
+    token: 'tok',
+    lat: 37.4979,
+    lng: 127.0276,
+    accuracy: 10,
+    ts: 0,
+    motion: 'automotive',
+    ...overrides,
+  });
+  const [, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
+  return JSON.parse(init.body);
+}
+
 describe('uploadPosition (#819)', () => {
   it('URL 미설정 시 skipped=true — fetch 미호출', async () => {
     const r = await uploadPosition({
@@ -205,18 +225,7 @@ describe('uploadPosition (#819)', () => {
 
   it('#834: 한국 좌표(강남역) → body에 nearestStationDistanceM이 finite 양수', async () => {
     // ACTIVE_BOARDING_LINE_KEY 미설정 — mapMatched는 omit, nearestStationDistance만 첨부 확인.
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
-    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
-    await uploadPosition({
-      token: 'tok',
-      lat: 37.4979,
-      lng: 127.0276,
-      accuracy: 10,
-      ts: 0,
-      motion: 'automotive',
-    });
-    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
-    const body = JSON.parse(init.body);
+    const body = await captureGangnamUploadBody();
     expect(typeof body.nearestStationDistanceM).toBe('number');
     expect(Number.isFinite(body.nearestStationDistanceM)).toBe(true);
     expect(body.nearestStationDistanceM).toBeGreaterThanOrEqual(0);
@@ -224,19 +233,7 @@ describe('uploadPosition (#819)', () => {
 
   it('#834: 호출자가 명시 전달한 nearestStationDistanceM은 override (resolver 미호출)', async () => {
     // payload에 0 명시 → resolver를 호출하지 않고 그대로 직렬화 (스파이로 미호출 확인).
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
-    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
-    await uploadPosition({
-      token: 'tok',
-      lat: 37.4979,
-      lng: 127.0276,
-      accuracy: 10,
-      ts: 0,
-      motion: 'automotive',
-      nearestStationDistanceM: 0,
-    });
-    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
-    const body = JSON.parse(init.body);
+    const body = await captureGangnamUploadBody({ nearestStationDistanceM: 0 });
     expect(body.nearestStationDistanceM).toBe(0);
   });
 
