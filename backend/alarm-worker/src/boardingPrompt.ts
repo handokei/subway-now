@@ -74,6 +74,12 @@ export interface EvaluateBoardingPromptInputs {
   now: number;
   /** trip의 boarding-prompt 상태 — 게이트 #9 평가. */
   promptState?: BoardingPromptState;
+  /**
+   * Phase 3 Kalman smoothed velocity (#824). 호출자가 kalmanFilter.runKalmanStep으로
+   * 산출해 전달. 미적용 단계는 null/undefined — fusedSpeed가 가중치 0으로 자연 무시
+   * (Phase 1/2 회귀 없음).
+   */
+  kalmanKmh?: number | null;
 }
 
 /**
@@ -143,13 +149,15 @@ export function evaluateBoardingPromptGates(
     return { pass: false, reason: 'motion-not-moving', metrics };
   }
 
-  // #7 — fused speed. mapMatchedKmh는 #828에서 wire — 양 끝 sample이 같은 line + arcM을 가질
-  // 때만 evaluateWindow가 산출하고, 그 외에는 null로 강등 (GPS-only fallback).
+  // #7 — fused speed. mapMatchedKmh는 #828, kalmanKmh는 #824에서 wire — 양 끝 sample이 같은
+  // line + arcM을 가질 때만 evaluateWindow가 mapMatchedKmh 산출, 그 외에는 null로 강등
+  // (GPS-only fallback). kalmanKmh는 호출자(scheduled.ts)가 runKalmanStep으로 산출 후 주입.
   const fused = fusedSpeed({
     gpsAvgKmh: metrics.gpsAvgKmh,
     gpsAccuracyMeters: metrics.avgAccuracyMeters,
     motion: metrics.motion,
     mapMatchedKmh: metrics.mapMatchedKmh,
+    kalmanKmh: inputs.kalmanKmh ?? null,
   });
   if (fused.speed < MIN_FUSED_SPEED_KMH || fused.confidence === 'low') {
     return { pass: false, reason: 'speed-too-low', metrics };

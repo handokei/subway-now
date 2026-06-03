@@ -244,6 +244,98 @@ describe('evaluateBoardingPromptGates — 9단 AND 게이트', () => {
   });
 });
 
+describe('evaluateBoardingPromptGates — #824 kalmanKmh 전달', () => {
+  const now = 1_000_000;
+  const ORIGIN = { lat: 0, lng: 0 };
+  const NEXT = { lat: 0, lng: 0.01 };
+
+  /**
+   * 아주 느린 series — GPS 속도가 too-low가 되도록 원점 부근에서 거의 이동 안 함.
+   * 단, origin(0,0) 방향(동쪽)으로 이동 + 마지막 sample이 origin 100m 이내여야
+   * 다른 gate(방향/origin-too-far)를 통과할 수 있다.
+   *
+   * 속도: lng -0.00004 → 0 → 0.00004
+   *   Δlng ≈ 4.44m/30s → ≈ 0.53 km/h (automotive mode이므로 floor 5 km/h 적용됨)
+   *   automotive floor=5 → fusedSpeed 5 → MIN_FUSED_SPEED_KMH=5 → 경계.
+   *   실제로 5 이상이므로 gate를 통과할 수 있다.
+   *
+   * 그래서 walking mode로 하면 floor가 없어 0.53 km/h < 5 km/h → speed-too-low.
+   */
+  function verySlowWalkingSeries(n: number) {
+    return [
+      { lat: 0, lng: -0.00004, accuracy: 10, ts: n - 60_000, motion: 'walking' as const },
+      { lat: 0, lng: 0, accuracy: 10, ts: n - 30_000, motion: 'walking' as const },
+      { lat: 0, lng: 0.00004, accuracy: 10, ts: n, motion: 'walking' as const },
+    ];
+  }
+
+  it('kalmanKmh 없으면 매우 저속 walking series는 speed-too-low', () => {
+    const r = evaluateBoardingPromptGates({
+      series: verySlowWalkingSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      kalmanKmh: undefined,
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('speed-too-low');
+  });
+
+  it('kalmanKmh=50 주입 시 fusedSpeedKmh가 달라져 game outcome이 변한다', () => {
+    // GPS-only: speed-too-low
+    // kalmanKmh=50 주입 시: totalW = 0.7 + 0.6 = 1.3
+    // raw = (gpsAvg*0.7 + 50*0.6) / 1.3 >> 5 km/h
+    // walking clamp: Math.min(raw, 10) = 10 → 5 km/h 초과 → speed gate 통과
+    const withKalman = evaluateBoardingPromptGates({
+      series: verySlowWalkingSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      kalmanKmh: 50,
+    });
+    // kalmanKmh 주입 후 pass=true이거나, 다른 reason으로 fail (speed-too-low는 아님)
+    if (!withKalman.pass) {
+      expect(withKalman.reason).not.toBe('speed-too-low');
+    }
+    if (withKalman.pass) {
+      expect(withKalman.fusedSpeedKmh).toBeGreaterThan(5);
+    }
+  });
+
+  it('kalmanKmh 전달 시 fusedSpeedKmh가 GPS-only보다 크다 (happy path 기준)', () => {
+    // happy series: 동쪽으로 충분히 이동 (automotive)
+    function happySeries(n: number) {
+      return [
+        { lat: 0, lng: -0.0004, accuracy: 10, ts: n - 60_000, motion: 'automotive' as const },
+        { lat: 0, lng: 0.0002, accuracy: 10, ts: n - 30_000, motion: 'automotive' as const },
+        { lat: 0, lng: 0.0008, accuracy: 10, ts: n, motion: 'automotive' as const },
+      ];
+    }
+
+    const withoutKalman = evaluateBoardingPromptGates({
+      series: happySeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      kalmanKmh: null,
+    });
+    const withKalman = evaluateBoardingPromptGates({
+      series: happySeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      kalmanKmh: 60, // GPS-only 속도보다 훨씬 높은 Kalman 값
+    });
+
+    // 둘 다 통과해야 하며 Kalman 있을 때 fusedSpeedKmh가 더 크다
+    expect(withoutKalman.pass).toBe(true);
+    expect(withKalman.pass).toBe(true);
+    if (withoutKalman.pass && withKalman.pass) {
+      expect(withKalman.fusedSpeedKmh).toBeGreaterThan(withoutKalman.fusedSpeedKmh);
+    }
+  });
+});
+
 describe('markPromptFired / markPromptSilenced', () => {
   it('markPromptFired는 fired=true + lastFiredAt 설정', () => {
     expect(markPromptFired(1234)).toEqual({ fired: true, lastFiredAt: 1234 });

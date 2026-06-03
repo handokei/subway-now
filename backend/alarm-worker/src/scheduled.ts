@@ -3,6 +3,7 @@
  */
 
 import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
+import { evaluateAccelWindow, readAccelSeries } from './accelSeries';
 import {
   sendBoardingPromptPush,
   sendReschedulePush,
@@ -17,13 +18,18 @@ import {
   type GateSkipReason,
 } from './boardingPrompt';
 import {
+  readKalmanState,
+  runKalmanStep,
+  writeKalmanState,
+} from './kalmanFilter';
+import {
   buildLiveActivityContentState,
   cleanupTripWithLa,
   fireLiveActivityUpdate,
   type LiveActivityStats,
 } from './liveActivity';
 import { matchLine } from './lineAlias';
-import { readSeries } from './positionSeries';
+import { evaluateWindow, readSeries } from './positionSeries';
 import { getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import { listTrips, putTrip } from './trips';
@@ -847,13 +853,48 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 
   stats.boardingPromptEvaluated += 1;
 
-  const series = await readSeries(env.TRIPS, trip.token);
+  // Phase 3 E2 (#824) — positionSeries + accelSeries + 직전 Kalman state를 병렬 로드.
+  // 정상 cycle은 predict+update로 smoothed velocity를 산출해 fusedSpeed의 가중평균에 합류.
+  //
+  // 두 가지 가드:
+  //   (1) 관측 무효 (count=0 or 모든 hop이 accuracy로 reject되어 avgAccuracy=Infinity)
+  //       → state I/O 자체를 skip. 거짓 0 km/h observation을 누적하지 않는다 (리뷰 P2-1).
+  //   (2) prior 부재 첫 cycle은 state.v === gpsAvgKmh (관측 직접 초기화)이므로
+  //       fusedSpeed에 합류시키면 같은 GPS가 가중치 2회 합산 → confidence 가짜 상승.
+  //       state는 다음 cycle prior로 쓸 수 있게 persist 하되 kalmanKmh는 null로 전달
+  //       해 fusion에는 합류하지 않는다 (리뷰 P2-3). 다음 cycle부터 진짜 smoothing 효과.
+  const [series, accelSeries, kalmanPrior] = await Promise.all([
+    readSeries(env.TRIPS, trip.token),
+    readAccelSeries(env.TRIPS, trip.token),
+    readKalmanState(env.TRIPS, trip.token),
+  ]);
+  const posMetrics = evaluateWindow(series, now);
+  const accelMetrics = evaluateAccelWindow(accelSeries, now);
+  const observationValid =
+    posMetrics.count > 0 && Number.isFinite(posMetrics.avgAccuracyMeters);
+
+  let kalmanKmh: number | null = null;
+  if (observationValid) {
+    const kalmanState = runKalmanStep({
+      prior: kalmanPrior,
+      gpsAvgKmh: posMetrics.gpsAvgKmh,
+      gpsAccuracyMeters: posMetrics.avgAccuracyMeters,
+      accelMagnitudeStd: accelMetrics.avgMagnitudeStd,
+      now,
+    });
+    await writeKalmanState(env.TRIPS, trip.token, kalmanState);
+    if (kalmanPrior !== null) {
+      kalmanKmh = kalmanState.v;
+    }
+  }
+
   const outcome = evaluateBoardingPromptGates({
     series,
     origin: geo.origin,
     nextStation: geo.nextStation,
     now,
     promptState: trip.boardingPromptState,
+    kalmanKmh,
   });
 
   if (!outcome.pass) {

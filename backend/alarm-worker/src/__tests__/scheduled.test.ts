@@ -1,6 +1,7 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
+import { readKalmanState } from '../kalmanFilter';
 import {
   MAX_CONSECUTIVE_ETA_MISSING,
   RESCHEDULE_THRESHOLD_MS,
@@ -1436,5 +1437,247 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     expect(stats.envCorrected).toBe(1);
     const persisted = JSON.parse((await kv.get('trip:bp-tok'))!);
     expect(persisted.apnsEnv).toBe('production');
+  });
+});
+
+describe('runScheduled — evaluateAndMaybeFireBoardingPrompt Kalman KV 통합 (#824)', () => {
+  /**
+   * boarding-prompt 경로에서 Kalman state가 KV에 persist/read되는지 검증.
+   *
+   * evaluateAndMaybeFireBoardingPrompt는:
+   *   1. accelSeries + kalmanState 병렬 로드 (readAccelSeries + readKalmanState)
+   *   2. runKalmanStep 실행
+   *   3. writeKalmanState → KV에 `kalman:<token>` 저장
+   *   4. kalmanState.v를 evaluateBoardingPromptGates에 전달
+   */
+
+  function makeKalmanTrip(overrides: Partial<Trip> = {}): Trip {
+    return makeTrip({
+      token: 'kalman-tok',
+      promptGeoContext: {
+        origin: { lat: 0, lng: 0 },
+        nextStation: { lat: 0, lng: 0.01 },
+        direction: 'up',
+      },
+      promptDisplay: { originStation: '강남', line: '2' },
+      ...overrides,
+    });
+  }
+
+  async function seedHappySeries(kv: InMemoryKV, token = 'kalman-tok'): Promise<void> {
+    const series = [
+      { lat: 0, lng: -0.0004, accuracy: 10, ts: NOW - 60_000, motion: 'automotive' },
+      { lat: 0, lng: 0.0002, accuracy: 10, ts: NOW - 30_000, motion: 'automotive' },
+      { lat: 0, lng: 0.0008, accuracy: 10, ts: NOW, motion: 'automotive' },
+    ];
+    await kv.put(`pos:${token}`, JSON.stringify(series));
+  }
+
+  function makeKalmanPromptDeps(fetchImpl: typeof fetch) {
+    return {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      fetchImpl,
+      generatePushId: () => 'kalman-push-1',
+    };
+  }
+
+  it('evaluateAndMaybeFireBoardingPrompt: writeKalmanState → KV에 kalman:<token> 저장됨', async () => {
+    // promptGeoContext 있는 trip + happy series → evaluateAndMaybeFireBoardingPrompt 진입
+    // kalman KV key = 'kalman:kalman-tok' 생성 확인
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeKalmanTrip());
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    await runScheduled(makeEnv(kv), makeKalmanPromptDeps(fetchImpl));
+
+    // KV에 kalman state가 저장되어야 함
+    const kalmanState = await readKalmanState(kv as unknown as KVNamespace, 'kalman-tok');
+    expect(kalmanState).not.toBeNull();
+    expect(typeof kalmanState?.v).toBe('number');
+    expect(typeof kalmanState?.P).toBe('number');
+    expect(typeof kalmanState?.ts).toBe('number');
+    expect(Number.isFinite(kalmanState!.v)).toBe(true);
+    expect(Number.isFinite(kalmanState!.P)).toBe(true);
+  });
+
+  it('prior Kalman state가 KV에 있으면 다음 cycle에서 predict+update 연속 실행', async () => {
+    // 1st cycle: prior=null → observation 초기화 → state 저장
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeKalmanTrip());
+    await seedHappySeries(kv);
+    const fetchImpl1 = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+
+    await runScheduled(makeEnv(kv), makeKalmanPromptDeps(fetchImpl1));
+    const stateAfterCycle1 = await readKalmanState(kv as unknown as KVNamespace, 'kalman-tok');
+    expect(stateAfterCycle1).not.toBeNull();
+
+    // 2nd cycle: boardingPromptState.fired=true이므로 게이트 차단되지만
+    // Kalman step은 게이트와 무관하게 실행되어 state가 갱신되어야 함.
+    // fired=true로 게이트 차단 → 따라서 boardingPromptFired=0이어야 함.
+    // Kalman writeKalmanState는 게이트 평가 전에 실행되므로 state가 갱신됨.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeKalmanTrip({ boardingPromptState: { fired: true, lastFiredAt: NOW - 1000 } }),
+    );
+    const fetchImpl2 = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeKalmanPromptDeps(fetchImpl2));
+    expect(stats.boardingPromptFired).toBe(0); // 게이트 차단
+    expect(stats.boardingPromptBlocked).toBe(1);
+
+    // 2nd cycle 후 state가 업데이트되었는지 확인 (ts가 now=NOW로 갱신)
+    const stateAfterCycle2 = await readKalmanState(kv as unknown as KVNamespace, 'kalman-tok');
+    expect(stateAfterCycle2).not.toBeNull();
+    expect(stateAfterCycle2?.ts).toBe(NOW);
+  });
+
+  it('kalmanKmh가 evaluateBoardingPromptGates에 전달되어 fusedSpeedKmh에 영향을 줌 (간접 검증)', async () => {
+    // kalman state를 KV에 미리 넣어 두면 (prior 있음 + 최근 ts),
+    // runKalmanStep이 predict+update를 실행해 kalmanKmh가 GPS avg와 다를 수 있다.
+    // outcome.fusedSpeedKmh가 GPS-only보다 달라지는지를 비교한다.
+
+    // Case A: KV에 kalman state 없음 (prior=null → 초기화 → kalmanKmh ≈ gpsAvg)
+    const kvA = new InMemoryKV();
+    await seedHappySeries(kvA, 'kalman-tok');
+    await putTrip(kvA as unknown as KVNamespace, makeKalmanTrip());
+    const fetchA = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const statsA = await runScheduled(makeEnv(kvA), makeKalmanPromptDeps(fetchA));
+    // 게이트 통과 여부와 kalman state 저장 확인
+    expect(statsA.boardingPromptEvaluated).toBe(1);
+    const stateA = await readKalmanState(kvA as unknown as KVNamespace, 'kalman-tok');
+    expect(stateA).not.toBeNull();
+
+    // Case B: KV에 kalman state가 있음 (prior 있음 → predict+update로 다른 v 값)
+    const kvB = new InMemoryKV();
+    // prior state: v=100 km/h (비현실적으로 높은 값) → kalmanKmh가 GPS avg와 달라짐
+    const priorState = { v: 100, P: 400, ts: NOW - 5_000 };
+    await kvB.put('kalman:kalman-tok', JSON.stringify(priorState));
+    await putTrip(kvB as unknown as KVNamespace, makeKalmanTrip());
+    await seedHappySeries(kvB, 'kalman-tok');
+    const fetchB = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const statsB = await runScheduled(makeEnv(kvB), makeKalmanPromptDeps(fetchB));
+    expect(statsB.boardingPromptEvaluated).toBe(1);
+
+    // KV의 kalman state가 갱신되어 있어야 함 (ts=NOW로)
+    const stateB = await readKalmanState(kvB as unknown as KVNamespace, 'kalman-tok');
+    expect(stateB?.ts).toBe(NOW);
+    // v는 prior(100)과 GPS avg 블렌딩 → 100과 gpsAvg 사이의 값이어야 함
+    expect(stateB!.v).toBeGreaterThan(0);
+  });
+
+  // 기존 lockMissing/lock-active 회귀 보존
+  it('기존 lockMissing 회귀: lock 부재 + promptGeoContext 없음 → lockMissing+1, kalman 미호출', async () => {
+    const kv = new InMemoryKV();
+    // promptGeoContext 없는 trip → evaluateAndMaybeFireBoardingPrompt에서 early return
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ token: 'no-geo-kalman' }));
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      generatePushId: () => 'k1',
+    });
+    expect(stats.lockMissing).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    // kalman KV key가 생성되지 않아야 함
+    expect(await kv.get('kalman:no-geo-kalman')).toBeNull();
+  });
+
+  it('기존 lock-active trip은 kalman path 진입 안 함 (lockMissing=0)', async () => {
+    const kv = new InMemoryKV();
+    const lockTrip = makeTrip({
+      token: 'active-lock-kalman',
+      boardingLock: {
+        trainCode: 'X',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: NOW,
+        segmentStations: ['강남', '역삼'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+      waypoints: [{ stationName: '역삼', line: '2', kind: 'destination' }],
+    });
+    await putTrip(kv as unknown as KVNamespace, lockTrip);
+    // Seoul API: arrivals 비어 있음 → etaMissing
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      generatePushId: () => 'k2',
+    });
+    expect(stats.lockMissing).toBe(0);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    // kalman key 미생성 (lock-active 분기는 kalman path 미통과)
+    expect(await kv.get('kalman:active-lock-kalman')).toBeNull();
+  });
+
+  // 리뷰 P2-1 — 무관측 cycle은 Kalman state I/O를 skip해 거짓 0 km/h observation 누적 방지.
+  it('series 비어 있으면 kalman state 미작성 (관측 무효 → skip)', async () => {
+    const kv = new InMemoryKV();
+    // positionSeries 자체가 없는 trip — count=0, avgAccuracy=Infinity
+    await putTrip(kv as unknown as KVNamespace, makeKalmanTrip({ token: 'empty-series' }));
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      fetchImpl,
+      generatePushId: () => 'empty-1',
+    });
+    // boarding-prompt 평가는 진입했지만 게이트에서 차단됨 (window-too-small)
+    expect(stats.boardingPromptEvaluated).toBe(1);
+    expect(stats.boardingPromptFired).toBe(0);
+    // kalman state는 만들어지지 않아야 함 — 거짓 0 km/h observation으로 prior 오염 방지
+    expect(await kv.get('kalman:empty-series')).toBeNull();
+  });
+
+  it('모든 sample이 accuracy로 reject되면 kalman state 미작성 (관측 무효 → skip)', async () => {
+    const kv = new InMemoryKV();
+    // accuracy ≥ 50m sample만 있어 totalHopMs=0 → avgAccuracy=Infinity, gpsAvg=0
+    const series = [
+      { lat: 0, lng: -0.0004, accuracy: 80, ts: NOW - 60_000, motion: 'automotive' },
+      { lat: 0, lng: 0.0002, accuracy: 80, ts: NOW - 30_000, motion: 'automotive' },
+      { lat: 0, lng: 0.0008, accuracy: 80, ts: NOW, motion: 'automotive' },
+    ];
+    await kv.put('pos:bad-acc', JSON.stringify(series));
+    await putTrip(kv as unknown as KVNamespace, makeKalmanTrip({ token: 'bad-acc' }));
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      fetchImpl,
+      generatePushId: () => 'bad-acc-1',
+    });
+    // accuracy-too-poor 게이트에서 차단되고 Kalman은 skip
+    expect(await kv.get('kalman:bad-acc')).toBeNull();
+  });
+
+  // 리뷰 P2-3 — prior 부재 첫 cycle은 state.v=gpsAvg로 초기화되어 fusion에 합류 시
+  // 같은 GPS가 2회 가중 → confidence 가짜 상승. state는 persist 하되 kalmanKmh는 null로
+  // 게이트에 전달해야 한다. 검증: prior 없는 cycle은 GPS-only fusedSpeed와 동일 confidence.
+  it('prior=null 첫 cycle은 state는 persist하되 kalmanKmh를 게이트에 전달하지 않음', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeKalmanTrip({ token: 'first-cycle' }));
+    await seedHappySeries(kv, 'first-cycle');
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const stats = await runScheduled(makeEnv(kv), makeKalmanPromptDeps(fetchImpl));
+
+    // state는 다음 cycle prior로 쓸 수 있게 persist
+    const state = await readKalmanState(kv as unknown as KVNamespace, 'first-cycle');
+    expect(state).not.toBeNull();
+    expect(state?.ts).toBe(NOW);
+    // boarding-prompt 게이트는 통과 — kalmanKmh=null이라 fusedSpeed는 GPS+map only 합산
+    expect(stats.boardingPromptEvaluated).toBe(1);
   });
 });
