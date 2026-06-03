@@ -478,7 +478,12 @@ export function useStationAlarm({
             logSuppressedDedupStation('fg', candidateStation);
             return;
           }
-          const target = resolveNextTarget(capturedRoute, capturedDestinationName);
+          // #796: candidateStation.line을 전달해 multi-transfer 환승역 정확 식별.
+          const target = resolveNextTarget(
+            capturedRoute,
+            capturedDestinationName,
+            candidateStation.line,
+          );
           // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
           await sendStationPassedNotification(
             candidateStation.name,

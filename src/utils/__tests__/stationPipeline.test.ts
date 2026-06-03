@@ -202,6 +202,38 @@ describe('processLocationUpdate', () => {
         expect.any(Array),
       );
     });
+
+    // #796 P1-1: resolveNextTarget도 같은 lock-degraded currentLine을 사용해야 함.
+    // BG GPS jitter로 nearest가 옆 노선 station(예: 5호선 군자)을 잡아도 lock(7호선) SSOT로
+    // segment 식별하여 다음-다음 transfer로 잘못 넘어가지 않는다.
+    it('#796 P1-1 lock 활성 시 resolveNextTarget의 currentLine도 lock.boardingLine 사용', async () => {
+      // 7→5→8 multi-transfer route. GPS는 5호선 군자 station(line='5')으로 jitter됐지만
+      // 실제 사용자는 7호선 탑승 중이라 lock.boardingLine='7'.
+      const multiRoute = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '군자', fromLine: '7', toLine: '5', stopsToTransfer: 0 },
+          { transferName: '천호', fromLine: '5', toLine: '8', stopsToTransfer: 6 },
+        ],
+        stopsAfterLastTransfer: 2,
+      });
+      const stationOn5: Station = { ...mockStation, line: '5' };
+      mockFindNearestStation.mockReturnValue({ station: stationOn5, distanceKm: 0.1 });
+      mockFindRoute.mockReturnValue(multiRoute);
+      mockIsStationOnRoute.mockReturnValue(true);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockGetBoardingLock.mockResolvedValue(lockOnLine7);
+
+      await call();
+
+      // raw GPS line이라면 transfer[1]=천호로 잘못 넘어갔을 것 (segment[1].fromLine='5'와 매칭).
+      // lock SSOT 적용으로 transfer[0]=군자 안내가 유지된다.
+      expect(mockSendStationPassedNotification).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({ nextStationName: '군자', isTransfer: true }),
+        undefined,
+      );
+    });
   });
 
   it('passes null etaSeconds when speedMps is not provided', async () => {
@@ -871,6 +903,129 @@ describe('resolveNextTarget', () => {
       stopsToNextStation: 2,
       isTransfer: true,
       stopsToDestination: 11,
+    });
+  });
+
+  describe('#796 currentLine 기반 segment 식별 (multi-transfer 회귀)', () => {
+    it('회귀: multi-transfer 첫 환승역에 도착(stopsToTransfer=0)했어도 currentLine === fromLine이면 그 transfer 반환', () => {
+      // 2026-06-03 실기기 회귀: 군자(7→5) 정확 도착 시 천호(5→8)로 잘못 안내됨.
+      // updateRouteFromPosition이 군자_7호선에서 stopsToTransfer=0으로 갱신한 직후, 사용자는
+      // 아직 7호선에 있으나 legacy 로직은 transfers[1](천호)을 반환했음.
+      const route = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '군자', fromLine: '7', toLine: '5', stopsToTransfer: 0 },
+          { transferName: '천호', fromLine: '5', toLine: '8', stopsToTransfer: 6 },
+        ],
+        stopsAfterLastTransfer: 2,
+      });
+      expect(resolveNextTarget(route, '어린이대공원', '7')).toEqual({
+        nextStationName: '군자',
+        stopsToNextStation: 0,
+        isTransfer: true,
+        stopsToDestination: 8,
+      });
+    });
+
+    it('currentLine === segment[1].fromLine(5호선)이면 transfer[1] 반환 (환승 완료 후)', () => {
+      const route = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '군자', fromLine: '7', toLine: '5', stopsToTransfer: 0 },
+          { transferName: '천호', fromLine: '5', toLine: '8', stopsToTransfer: 4 },
+        ],
+        stopsAfterLastTransfer: 2,
+      });
+      expect(resolveNextTarget(route, '어린이대공원', '5')).toEqual({
+        nextStationName: '천호',
+        stopsToNextStation: 4,
+        isTransfer: true,
+        stopsToDestination: 6,
+      });
+    });
+
+    it('currentLine === lastTransfer.toLine(8호선)이면 destination 반환', () => {
+      const route = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '군자', fromLine: '7', toLine: '5', stopsToTransfer: 0 },
+          { transferName: '천호', fromLine: '5', toLine: '8', stopsToTransfer: 0 },
+        ],
+        stopsAfterLastTransfer: 2,
+      });
+      expect(resolveNextTarget(route, '어린이대공원', '8')).toEqual({
+        nextStationName: '어린이대공원',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      });
+    });
+
+    it('currentLine 어느 segment에도 매칭 안 되면 legacy(stopsToTransfer>0) fallback', () => {
+      // 사용자가 route 밖 노선(예: 1호선)에 있는 비정상 케이스 — legacy로 안전하게 fallthrough.
+      const route = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '군자', fromLine: '7', toLine: '5', stopsToTransfer: 3 },
+          { transferName: '천호', fromLine: '5', toLine: '8', stopsToTransfer: 6 },
+        ],
+        stopsAfterLastTransfer: 2,
+      });
+      expect(resolveNextTarget(route, '어린이대공원', '1')).toEqual({
+        nextStationName: '군자',
+        stopsToNextStation: 3,
+        isTransfer: true,
+        stopsToDestination: 11,
+      });
+    });
+
+    it('single transfer: currentLine === fromLine 이면 stopsToTransfer=0이어도 transfer 안내 유지 (환승역 도착 timing)', () => {
+      // 동일한 회귀 패턴이 single transfer에서도 발생할 수 있음 — 환승역 정확 도착 시점.
+      const route = makeTransferRoute({
+        transferName: '군자', fromLine: '7', toLine: '5',
+        stopsToTransfer: 0, stopsFromTransfer: 9,
+      });
+      expect(resolveNextTarget(route, '이대', '7')).toEqual({
+        nextStationName: '군자',
+        stopsToNextStation: 0,
+        isTransfer: true,
+        stopsToDestination: 9,
+      });
+    });
+
+    it('single transfer: currentLine === toLine 이면 destination (환승 완료 후)', () => {
+      const route = makeTransferRoute({
+        transferName: '군자', fromLine: '7', toLine: '5',
+        stopsToTransfer: 0, stopsFromTransfer: 3,
+      });
+      expect(resolveNextTarget(route, '이대', '5')).toEqual({
+        nextStationName: '이대',
+        stopsToNextStation: 3,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
+    });
+
+    it('single transfer: currentLine 미매칭이면 legacy fallback (stopsToTransfer > 0이면 transfer)', () => {
+      const route = makeTransferRoute({
+        transferName: '군자', fromLine: '7', toLine: '5',
+        stopsToTransfer: 2, stopsFromTransfer: 9,
+      });
+      expect(resolveNextTarget(route, '이대', '1')).toEqual({
+        nextStationName: '군자',
+        stopsToNextStation: 2,
+        isTransfer: true,
+        stopsToDestination: 11,
+      });
+    });
+
+    it('single transfer: currentLine 미매칭이면 legacy fallback (stopsToTransfer = 0이면 destination)', () => {
+      const route = makeTransferRoute({
+        transferName: '군자', fromLine: '7', toLine: '5',
+        stopsToTransfer: 0, stopsFromTransfer: 3,
+      });
+      expect(resolveNextTarget(route, '이대', '1')).toEqual({
+        nextStationName: '이대',
+        stopsToNextStation: 3,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
     });
   });
 });

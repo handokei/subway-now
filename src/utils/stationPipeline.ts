@@ -16,7 +16,7 @@ import {
 } from './alarmLog';
 import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
-import type { NearestStationResult, Station } from '../types/station';
+import type { LineNumber, NearestStationResult, Station } from '../types/station';
 import type { Route } from './stationRoute';
 import type { AlarmEvent } from './stationAlarm';
 import type { FusionSource } from './pickFusedStation';
@@ -29,7 +29,27 @@ export interface NextTarget {
   stopsToDestination: number;
 }
 
-export function resolveNextTarget(route: Route, destinationName: string): NextTarget | null {
+/**
+ * 현재 route 상태와 사용자 위치(currentLine)를 기반으로 다음 안내 타겟을 결정한다.
+ *
+ * #796 회귀(2026-06-03 실기기): multi-transfer에서 사용자가 첫 환승역에 도착한 순간
+ * `transfers[0].stopsToTransfer === 0`이 되는데, 기존 로직은 이를 "통과했다"로 해석해
+ * `transfers[1]`(다음-다음 환승)을 nextTarget으로 반환했다. 실제로는 두 가지 의미가 섞여 있다:
+ *   A. 사용자가 환승역에 정확히 도착 — 아직 fromLine에 있음, 환승해야 함
+ *   B. 사용자가 환승역을 지나 toLine으로 갈아탐 — 이미 통과
+ *
+ * 두 케이스를 데이터만으로는 구분할 수 없으므로 `currentLine`을 추가 신호로 받는다.
+ * - currentLine === transfers[i].fromLine: 사용자는 segment[i]에 있으며 transfer[i] 방향. 무조건 transfer[i] 반환.
+ * - currentLine === lastTransfer.toLine: 마지막 leg에 도달. destination 반환.
+ * - currentLine 미전달 또는 unmatch: legacy(`stopsToTransfer > 0`) fallback.
+ *
+ * legacy 경로는 backward compat — 호출자가 점진적으로 currentLine을 전달하도록 한다.
+ */
+export function resolveNextTarget(
+  route: Route,
+  destinationName: string,
+  currentLine?: LineNumber,
+): NextTarget | null {
   if (!route) return null;
 
   if (route.type === 'direct') {
@@ -43,6 +63,24 @@ export function resolveNextTarget(route: Route, destinationName: string): NextTa
 
   if (route.type === 'transfer') {
     const stopsToDestination = route.stopsToTransfer + route.stopsFromTransfer;
+    // currentLine === fromLine이면 사용자는 환승 전 segment에 있음. stopsToTransfer가 0(환승역 정확 도착)이어도 transfer 안내 유지.
+    if (currentLine === route.fromLine) {
+      return {
+        nextStationName: route.transferName,
+        stopsToNextStation: route.stopsToTransfer,
+        isTransfer: true,
+        stopsToDestination,
+      };
+    }
+    if (currentLine === route.toLine) {
+      return {
+        nextStationName: destinationName,
+        stopsToNextStation: route.stopsFromTransfer,
+        isTransfer: false,
+        stopsToDestination: route.stopsFromTransfer,
+      };
+    }
+    // currentLine 미전달 또는 unmatch — legacy 폴백.
     if (route.stopsToTransfer > 0) {
       return {
         nextStationName: route.transferName,
@@ -61,6 +99,34 @@ export function resolveNextTarget(route: Route, destinationName: string): NextTa
 
   if (route.type === 'multi-transfer') {
     const { transfers } = route;
+    // currentLine 우선 — 정확한 segment 식별.
+    if (currentLine !== undefined) {
+      for (let i = 0; i < transfers.length; i++) {
+        if (transfers[i].fromLine === currentLine) {
+          let remaining = route.stopsAfterLastTransfer;
+          for (let j = i; j < transfers.length; j++) {
+            remaining += transfers[j].stopsToTransfer;
+          }
+          return {
+            nextStationName: transfers[i].transferName,
+            stopsToNextStation: transfers[i].stopsToTransfer,
+            isTransfer: true,
+            stopsToDestination: remaining,
+          };
+        }
+      }
+      const lastTransfer = transfers[transfers.length - 1];
+      if (lastTransfer && currentLine === lastTransfer.toLine) {
+        return {
+          nextStationName: destinationName,
+          stopsToNextStation: route.stopsAfterLastTransfer,
+          isTransfer: false,
+          stopsToDestination: route.stopsAfterLastTransfer,
+        };
+      }
+      // unmatched currentLine — legacy로 fallthrough.
+    }
+    // Legacy: 첫 stopsToTransfer > 0인 transfer 반환. currentLine 없는 호출자(테스트/임시 콜) 보존.
     for (let i = 0; i < transfers.length; i++) {
       const t = transfers[i];
       if (t.stopsToTransfer > 0) {
@@ -214,7 +280,14 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   if (route && isStationOnRoute(nearest.station, route)) {
     const lastNotifiedStationId = await getLastNotifiedStationId();
     if (nearest.station.id !== lastNotifiedStationId) {
-      const target = resolveNextTarget(route, destination.name);
+      // #796: 환승역 도착 timing의 segment 정확 식별. evaluateAlarmPhase(:233)와 동일한
+      // currentLine 결정 — lock.boardingLine 우선 → BG GPS jitter로 nearest가 옆 노선 station을
+      // 잡아도 잘못된 다음-다음 transfer 안내를 차단. lock 없으면 nearest.station.line fallback.
+      const target = resolveNextTarget(
+        route,
+        destination.name,
+        lockForLineGuard?.boardingLine ?? nearest.station.line,
+      );
       if (target) {
         // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
         await sendStationPassedNotification(
