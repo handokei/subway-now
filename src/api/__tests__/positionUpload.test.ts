@@ -1,9 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  defaultNearestStationResolver,
   dismissBoardingPrompt,
   readActiveBoardingLine,
   uploadPosition,
   withMapMatched,
+  withNearestStationDistance,
 } from '../positionUpload';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../constants/storageKeys';
 
@@ -56,14 +58,18 @@ describe('uploadPosition (#819)', () => {
     expect(r).toEqual({ ok: true, status: 200 });
     const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('https://api.test.dev/position');
-    expect(JSON.parse(init.body)).toEqual({
-      token: 'tok',
-      lat: 37.5,
-      lng: 127,
-      accuracy: 10,
-      ts: 1234,
-      motion: 'automotive',
-    });
+    // #834: 한국 좌표는 defaultNearestStationResolver가 자동으로 nearestStationDistanceM을
+    // 첨부하므로 exact toEqual 대신 핵심 필드만 비교한다.
+    expect(JSON.parse(init.body)).toEqual(
+      expect.objectContaining({
+        token: 'tok',
+        lat: 37.5,
+        lng: 127,
+        accuracy: 10,
+        ts: 1234,
+        motion: 'automotive',
+      }),
+    );
   });
 
   it('non-OK status → ok=false + status', async () => {
@@ -197,6 +203,43 @@ describe('uploadPosition (#819)', () => {
     expect(body.mapMatchedArcM).toBe(999);
   });
 
+  it('#834: 한국 좌표(강남역) → body에 nearestStationDistanceM이 finite 양수', async () => {
+    // ACTIVE_BOARDING_LINE_KEY 미설정 — mapMatched는 omit, nearestStationDistance만 첨부 확인.
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+    await uploadPosition({
+      token: 'tok',
+      lat: 37.4979,
+      lng: 127.0276,
+      accuracy: 10,
+      ts: 0,
+      motion: 'automotive',
+    });
+    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(typeof body.nearestStationDistanceM).toBe('number');
+    expect(Number.isFinite(body.nearestStationDistanceM)).toBe(true);
+    expect(body.nearestStationDistanceM).toBeGreaterThanOrEqual(0);
+  });
+
+  it('#834: 호출자가 명시 전달한 nearestStationDistanceM은 override (resolver 미호출)', async () => {
+    // payload에 0 명시 → resolver를 호출하지 않고 그대로 직렬화 (스파이로 미호출 확인).
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+    await uploadPosition({
+      token: 'tok',
+      lat: 37.4979,
+      lng: 127.0276,
+      accuracy: 10,
+      ts: 0,
+      motion: 'automotive',
+      nearestStationDistanceM: 0,
+    });
+    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body.nearestStationDistanceM).toBe(0);
+  });
+
   it('5s 후 timeout abort — controller.abort 콜백 호출됨', async () => {
     // fetch가 abort signal을 받기까지 timer를 advance. setTimeout 콜백이 실행돼야
     // controller.abort()가 호출됨 (함수 커버리지 확보).
@@ -289,6 +332,77 @@ describe('withMapMatched (#828)', () => {
     };
     const out = await withMapMatched(payload, async () => null);
     expect(out).toEqual(payload);
+  });
+});
+
+describe('withNearestStationDistance (#834)', () => {
+  it('명시 nearestStationDistanceM이 이미 있으면 그대로 반환 (resolver 미호출)', async () => {
+    const resolver = jest.fn();
+    const out = withNearestStationDistance(
+      {
+        token: 'tok',
+        lat: 37.4979,
+        lng: 127.0276,
+        accuracy: 0,
+        ts: 0,
+        motion: 'walking',
+        nearestStationDistanceM: 0,
+      },
+      resolver,
+    );
+    expect(out.nearestStationDistanceM).toBe(0);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('resolver 주입 — 호출자가 지정한 값으로 첨부 (확장성)', () => {
+    // 측정 fixture / spatial index 등 호출자 단 확장 시나리오.
+    const out = withNearestStationDistance(
+      {
+        token: 'tok',
+        lat: 37.4979,
+        lng: 127.0276,
+        accuracy: 0,
+        ts: 0,
+        motion: 'walking',
+      },
+      () => 42,
+    );
+    expect(out.nearestStationDistanceM).toBe(42);
+  });
+
+  it('resolver가 undefined 반환 → 필드 omit (graceful)', () => {
+    const payload = {
+      token: 'tok',
+      lat: 37.4979,
+      lng: 127.0276,
+      accuracy: 0,
+      ts: 0,
+      motion: 'walking' as const,
+    };
+    const out = withNearestStationDistance(payload, () => undefined);
+    expect(out).toEqual(payload);
+    expect(out.nearestStationDistanceM).toBeUndefined();
+  });
+
+  it('defaultNearestStationResolver — 한국 좌표 → finite 양수 m', () => {
+    // findNearestStation은 maxDistanceKm 없이 호출되므로 지구 어디든 매칭은 되지만
+    // 한국 좌표(강남역)에서는 실제 거리가 작은 값이어야 한다.
+    const m = defaultNearestStationResolver(37.4979, 127.0276);
+    expect(typeof m).toBe('number');
+    expect(Number.isFinite(m)).toBe(true);
+    expect(m).toBeGreaterThanOrEqual(0);
+  });
+
+  it('defaultNearestStationResolver — findNearestStation null → undefined (graceful 분기)', () => {
+    // 실제 stations.json은 528개라 null이 나올 수 없지만, 안전 가드 분기를 커버하기 위해
+    // 모듈을 mock해 null을 강제한다.
+    jest.isolateModules(() => {
+      jest.doMock('../../utils/findNearestStation', () => ({
+        findNearestStation: () => null,
+      }));
+      const mod = require('../positionUpload');
+      expect(mod.defaultNearestStationResolver(0, 0)).toBeUndefined();
+    });
   });
 });
 

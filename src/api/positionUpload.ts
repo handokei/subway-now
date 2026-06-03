@@ -15,6 +15,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ACTIVE_BOARDING_LINE_KEY } from '../constants/storageKeys';
 import { snapToLinePolyline } from '../utils/linePolyline';
 import { isLineNumber } from '../utils/lineGuard';
+import { findNearestStation } from '../utils/findNearestStation';
 import type { LineNumber } from '../types/station';
 import { createLogger } from '../utils/logger';
 import type { AccelSummary } from '../utils/accelMotion';
@@ -68,6 +69,14 @@ export interface PositionUploadPayload {
    */
   mapMatchedLine?: string;
   mapMatchedArcM?: number;
+  /**
+   * #834 Phase 3 E3-B — 클라가 stations.json 전수 스캔으로 산출한 최근접 역까지의 거리 (m).
+   * backend는 stations.json을 갖지 않으므로 거리는 반드시 클라 책임 (`mapMatched*`와 동형).
+   * backend `stationPhase.ts`가 APPROACHING/DWELLING/DEPARTING/CRUISING 분류 입력 중
+   * 하나로 사용. undefined → phase 산출 skip (회귀 없음, GPS-only fallback).
+   * 음수/NaN/Infinity는 backend가 series 단계에서 거부.
+   */
+  nearestStationDistanceM?: number;
 }
 
 export interface PositionUploadResult {
@@ -122,6 +131,52 @@ export async function withMapMatched(
   };
 }
 
+/**
+ * #834 — 좌표를 받아 최근접 역까지의 거리(m)를 반환하는 전략 함수.
+ *
+ * 기본 구현은 `findNearestStation` (stations.json 528개 전수 스캔, BG sample 당 1회).
+ * 호출자는 측정 fixture / spatial index / active-line scoping 등 미래 확장을 위해
+ * 자기만의 resolver를 주입할 수 있다. undefined 반환 시 필드 omit (graceful).
+ */
+export type NearestStationResolver = (lat: number, lng: number) => number | undefined;
+
+/** 1km → 1000m 변환 상수. 매직넘버 분리. */
+const METERS_PER_KM = 1000;
+
+/**
+ * 기본 resolver — `findNearestStation`이 반환한 km 거리를 m로 변환.
+ * null(매칭 실패) → undefined (snap skip, graceful).
+ */
+export const defaultNearestStationResolver: NearestStationResolver = (lat, lng) => {
+  const result = findNearestStation(lat, lng);
+  if (!result) return undefined;
+  return result.distanceKm * METERS_PER_KM;
+};
+
+/**
+ * #834 — resolver가 산출한 최근접 역 거리를 payload에 첨부.
+ *
+ * - 호출자가 `nearestStationDistanceM`을 명시 전달했으면 그대로 사용 (override, resolver 미호출).
+ * - resolver undefined → 필드 omit (graceful, GPS-only fallback).
+ *
+ * `withMapMatched`와 동형 패턴 — resolver를 함수로 주입받아 미래의 spatial index /
+ * 측정 fixture / active-line scoping 같은 확장이 호출자 단에서 자유롭게 결정된다.
+ */
+export function withNearestStationDistance(
+  payload: PositionUploadPayload,
+  resolve: NearestStationResolver = defaultNearestStationResolver,
+): PositionUploadPayload {
+  if (payload.nearestStationDistanceM !== undefined) {
+    return payload;
+  }
+  const distanceM = resolve(payload.lat, payload.lng);
+  if (distanceM === undefined) return payload;
+  return {
+    ...payload,
+    nearestStationDistanceM: distanceM,
+  };
+}
+
 export async function uploadPosition(
   payload: PositionUploadPayload,
 ): Promise<PositionUploadResult> {
@@ -130,7 +185,8 @@ export async function uploadPosition(
     log.info('ALARM_BACKEND_URL not set — skip position upload');
     return { ok: false, skipped: true };
   }
-  const enriched = await withMapMatched(payload);
+  const mapMatched = await withMapMatched(payload);
+  const enriched = withNearestStationDistance(mapMatched);
   try {
     const res = await fetchWithTimeout(`${base}/position`, {
       method: 'POST',
