@@ -59,6 +59,9 @@ interface Props {
  * #792: 종착 표기는 `parseTrainLineDirection`로 i18n 정규화한다 (기존 하드코딩 "행" 부착 제거).
  *       종착에 이미 다음역 명이 포함된 경우(예: "어린이대공원(세종대)방면"+"어린이대공원") "방면"
  *       접미사를 생략해 라벨 중복("…방면행 · …방면")을 차단한다.
+ * #805: "곧 도착"/"전역 출발"/"당역 도착" 등 statusMessage가 sequence 슬롯을 차지하는 임박 상태에서
+ *       도착 예정 HH:mm 시간 라벨이 같은 줄에서 가려지는 회귀가 있었다. 시간 라벨을 항상 별도 라인
+ *       으로 분리해 "상태 텍스트(또는 거리) → 시간"이 위아래로 명확히 보이도록 한다.
  */
 export function BoardingTrainList({
   arrivals,
@@ -141,14 +144,21 @@ export function BoardingTrainList({
                     <Text style={[typography.mono, { color: colors.muted }]}>{train.trainCode}</Text>
                   ))}
               </View>
-              <View style={styles.rowDetailLine}>
-                <Text
-                  style={[typography.bodySm, { color: colors.muted }]}
-                  testID={`boarding-train-sequence-${train.trainCode}`}
-                >
-                  {sequenceText}
-                </Text>
-                <Text style={[typography.bodySm, { color: colors.subtle }]}>·</Text>
+              {/* #805: sequence(거리/상태)와 시간 라벨은 별도 라인으로 분리.
+                  sequenceText가 "전역 출발"/"당역 도착"/"4번째 전" 등 어떤 길이여도 시간 라벨이
+                  같은 줄에서 가려지지 않는다. sequenceText가 비어 있으면 그 라인은 미렌더하지만
+                  시간 라벨 라인은 항상 표시한다. */}
+              {sequenceText.length > 0 && (
+                <View style={styles.rowSequenceLine}>
+                  <Text
+                    style={[typography.bodySm, { color: colors.muted }]}
+                    testID={`boarding-train-sequence-${train.trainCode}`}
+                  >
+                    {sequenceText}
+                  </Text>
+                </View>
+              )}
+              <View style={styles.rowArrivalLine}>
                 <Text
                   style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}
                   testID={`boarding-train-arrival-${train.trainCode}`}
@@ -207,10 +217,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
   },
-  rowDetailLine: {
+  rowSequenceLine: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: spacing.xs,
+  },
+  rowArrivalLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   empty: {
     padding: spacing.lg,

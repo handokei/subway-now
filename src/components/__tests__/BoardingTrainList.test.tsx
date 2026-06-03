@@ -261,6 +261,37 @@ describe('BoardingTrainList', () => {
     });
   });
 
+  describe('#805 도착 임박 상태에서도 시간 라벨 유지', () => {
+    // arvlCd=0(진입)/1(도착)/2(출발)/3(전역 출발) 등 임박 상태에서 statusMessage가 시간 텍스트를
+    // 대체하더라도 BoardingTrainList의 도착 예정 HH:mm 라벨은 별도 라인으로 항상 노출되어야 한다.
+    it.each<[string, Partial<ArrivalInfo>]>([
+      ['arrivalSeconds=0 + statusMessage 비어있음', { arrivalSeconds: 0, statusMessage: '' }],
+      ['arrivalSeconds=0 + "곧 도착"', { arrivalSeconds: 0, statusMessage: '곧 도착' }],
+      ['arrivalSeconds=1 + "전역 출발"', { arrivalSeconds: 1, statusMessage: '전역 출발' }],
+      ['arrivalSeconds=30 + "당역 도착"', { arrivalSeconds: 30, statusMessage: '당역 도착' }],
+    ])('%s — arrival 시간 라벨이 보임', (_, overrides) => {
+      const base = new Date(2026, 0, 1, 9, 0).getTime();
+      const train = makeTrain({ trainCode: 'T-805', receivedAtMs: base, ...overrides });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      const arrival = getByTestId('boarding-train-arrival-T-805');
+      // 도착 예정 텍스트는 항상 "HH:mm 도착 예정" 형태로 렌더.
+      expect(arrival.props.children).toMatch(/\d{2}:\d{2} 도착 예정$/);
+    });
+
+    it('sequence 라인과 arrival 라인은 별도 View — 시간 라벨이 같은 줄에서 가려지지 않음', () => {
+      const train = makeTrain({ trainCode: 'T-LINES', statusMessage: '전역 출발' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      const sequence = getByTestId('boarding-train-sequence-T-LINES');
+      const arrival = getByTestId('boarding-train-arrival-T-LINES');
+      // 두 element가 동일 parent(같은 row) 안에 있되 서로 다른 View 안에 있어야 한다.
+      expect(sequence.parent).not.toBe(arrival.parent);
+    });
+  });
+
   describe('#664 환승역 line 필터 + 호선 색 stripe', () => {
     function flattenStyle(style: unknown): Record<string, unknown> {
       if (Array.isArray(style)) return Object.assign({}, ...style.map(flattenStyle));
