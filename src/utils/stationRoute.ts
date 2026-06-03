@@ -3,10 +3,12 @@ import stationTravelTimesJson from '../data/stationTravelTimes.json';
 import transferTimes from '../data/transferTimes.json';
 import type { Station } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
+import { WALKING_SPEED_M_PER_S } from '../constants/eta';
 import type { LineNumber } from '../types/station';
 import { applyStationAlias } from '../data/stationAliases';
 import { createLogger } from './logger';
 import { normalizeStationName as baseNormalizeStationName } from './normalizeStationName';
+import { distanceMetersBetween, estimateEtaSeconds } from './stationEta';
 
 const logger = createLogger('StationRoute');
 
@@ -742,9 +744,62 @@ function getTravelMinutes(route: NonNullable<Route>): number {
   return Math.round(totalSeconds / 60);
 }
 
-export function calculateStaticETA(route: Route): number | null {
+/** lat/lng만 추출한 좌표 — Station 전체를 넘기지 않아 결합도를 낮춘다. */
+export interface LatLng {
+  lat: number;
+  lng: number;
+}
+
+/**
+ * calculateStaticETA에 도보 시간을 합산하기 위한 옵션. 누락된 페어는 walking=0으로
+ * graceful fallback (예: 위치 권한 미확보 시 currentLocation만 빠질 수 있음).
+ *
+ * - currentLocation + originStation 둘 다 있으면 출발 도보 시간 합산
+ * - destination + destinationStation 둘 다 있으면 하차 도보 시간 합산
+ */
+export interface StaticEtaWalkingOptions {
+  /** 사용자 현재 위치(GPS). originStation과 함께 있을 때 출발역까지 도보 시간 계산. */
+  currentLocation?: LatLng;
+  /** 경로의 출발 지하철역 좌표. currentLocation 없으면 미사용. */
+  originStation?: LatLng;
+  /** 사용자 최종 목적지(예: 사무실 좌표). destinationStation과 함께 있을 때 하차 도보 시간 계산. */
+  destination?: LatLng;
+  /** 경로의 하차 지하철역 좌표. destination 없으면 미사용. */
+  destinationStation?: LatLng;
+}
+
+// 한 페어(사용자 좌표 + 역 좌표)의 도보 시간(분). 누락 시 0.
+// estimateEtaSeconds를 재사용하되, 보행은 항상 WALKING_SPEED_M_PER_S(=1.2) 위쪽이라 null이 될 일이 없다.
+function calculateWalkingMinutes(from: LatLng | undefined, to: LatLng | undefined): number {
+  if (!from || !to) return 0;
+  const distM = distanceMetersBetween(from.lat, from.lng, to.lat, to.lng);
+  // WALKING_SPEED_M_PER_S(=1.2) >= MIN_VALID_SPEED_MPS(=0.5) 이므로 항상 number 반환.
+  // 타입 narrowing을 위해 ?? 0 — 향후 상수 변경 시 회귀 차단.
+  /* istanbul ignore next -- WALKING_SPEED_M_PER_S > MIN_VALID_SPEED_MPS 불변식상 null 경로 도달 불가 */
+  const seconds = estimateEtaSeconds(distM, WALKING_SPEED_M_PER_S) ?? 0;
+  return seconds / 60;
+}
+
+/**
+ * 경로 정적 ETA(분). 기본 대기 + 지하철 운행/환승 + (옵션) 출발/도착 도보 시간.
+ *
+ * - route=null이면 null
+ * - options 미지정 시 기존 동작 그대로 (도보 0분)
+ * - 페어가 부분적으로 누락되면 해당 도보 시간만 0 (예: currentLocation은 있는데 originStation이 없으면
+ *   출발 도보 0 — 사용자 위치 권한 미확보 등 부분 정보 상황에서 graceful fallback)
+ *
+ * 반환은 분 단위 정수 — 호출처(메인 ETA 카운터/알림 body 등)가 정수를 전제로 한다.
+ * 지하철 시간은 getTravelMinutes에서 이미 분 단위 정수, 도보 합계는 여기서 한 번 round 해 더한다.
+ */
+export function calculateStaticETA(
+  route: Route,
+  options: StaticEtaWalkingOptions = {},
+): number | null {
   if (!route) return null;
-  return DEFAULT_WAIT_MINUTES + getTravelMinutes(route);
+  const walkingMinutes =
+    calculateWalkingMinutes(options.currentLocation, options.originStation) +
+    calculateWalkingMinutes(options.destinationStation, options.destination);
+  return DEFAULT_WAIT_MINUTES + getTravelMinutes(route) + Math.round(walkingMinutes);
 }
 
 /**

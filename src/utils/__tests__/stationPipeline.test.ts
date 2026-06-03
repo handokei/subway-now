@@ -264,6 +264,19 @@ describe('processLocationUpdate', () => {
     );
   });
 
+  // #776: 도보 시간 합산을 위해 currentLocation/originStation을 calculateStaticETA에 전달.
+  it('calculateStaticETA에 currentLocation(GPS)과 originStation(nearest 좌표)을 전달한다', async () => {
+    mockFindNearestStation.mockReturnValue(mockNearestResult);
+    mockFindRoute.mockReturnValue(mockRoute);
+
+    await call();
+
+    expect(mockCalculateStaticETA).toHaveBeenCalledWith(mockRoute, {
+      currentLocation: { lat: 37.498, lng: 127.028 },
+      originStation: { lat: mockStation.lat, lng: mockStation.lng },
+    });
+  });
+
   it('passes alarmEvent to updateStationNotification only when sleepMode is true', async () => {
     mockFindNearestStation.mockReturnValue(mockNearestResult);
     mockFindRoute.mockReturnValue(mockRoute);
@@ -345,7 +358,7 @@ describe('processLocationUpdate', () => {
 
     expect(mockUpdateRouteFromPosition).toHaveBeenCalledWith(storedRoute, mockStation, 'station-2');
     expect(mockFindRoute).not.toHaveBeenCalled();
-    expect(mockCalculateStaticETA).toHaveBeenCalledWith(updatedRoute);
+    expect(mockCalculateStaticETA).toHaveBeenCalledWith(updatedRoute, expect.any(Object));
   });
 
   it('calls findRoute when no storedRoute is provided', async () => {
