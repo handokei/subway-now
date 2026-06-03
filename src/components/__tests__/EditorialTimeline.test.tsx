@@ -333,6 +333,46 @@ describe('EditorialTimeline quickExit door label', () => {
   });
 });
 
+describe('#804 marker/connector 정렬', () => {
+  const { StyleSheet } = require('react-native');
+
+  // dot에서 markerCol(width 28 + alignItems:'center') 부모를 거슬러 올라가 찾는다.
+  // RN test renderer가 중간 wrapper를 넣을 수 있어 단일 parent 의존 불가.
+  function findMarkerColStyle(dotEl: any): any {
+    let node = dotEl.parent;
+    while (node) {
+      const flat = StyleSheet.flatten(node.props?.style);
+      if (flat && flat.width === 28 && flat.alignItems != null) return flat;
+      node = node.parent;
+    }
+    return null;
+  }
+
+  // markerCol(width 28)이 alignItems: 'center'면 dot center = 14.
+  // connector(width 1, left 14)도 같은 center → dot 폭(10/12/7)과 무관하게 정렬됨.
+  it('markerCol은 alignItems: center로 dot 폭과 무관하게 column center 정렬', () => {
+    render(<EditorialTimeline stops={MOCK_STOPS.twoStops} />);
+    const dot = screen.getByTestId('filled-dot');
+    const style = findMarkerColStyle(dot);
+    expect(style).not.toBeNull();
+    expect(style.alignItems).toBe('center');
+    expect(style.width).toBe(28);
+    expect(style.paddingLeft).toBeUndefined();
+  });
+
+  it('intermediate dot에서 marginLeft hack(1.5)가 제거되어 column center에 그대로 놓인다', () => {
+    const stops: Stop[] = [
+      { station: '강남', line: '2', mark: 'filled' },
+      { station: '교대', line: '2', mark: 'intermediate' },
+      { station: '서초', line: '2', stopsFromPrev: '2정거장', mark: 'dest', note: '도착' },
+    ];
+    render(<EditorialTimeline stops={stops} />);
+    const intermediateDot = screen.getByTestId('intermediate-dot');
+    const style = StyleSheet.flatten(intermediateDot.props.style);
+    expect(style.marginLeft).toBeUndefined();
+  });
+});
+
 describe('intermediate stop 렌더링', () => {
   it('intermediate mark는 intermediate-dot을 렌더링한다', () => {
     const stops: Stop[] = [
