@@ -1080,6 +1080,40 @@ describe('POST /boarding-prompt/dismiss (#819)', () => {
   });
 });
 
+describe('POST /metrics/boarding-prompt (#827)', () => {
+  const validBody = { token: 'aabbccdd11223344', outcome: 'dismissed' as const };
+
+  it('returns 400 on invalid JSON', async () => {
+    const env = makeEnv();
+    const res = await post('/metrics/boarding-prompt', 'not-json{', env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_json' });
+  });
+
+  it('returns 400 on invalid payload', async () => {
+    const env = makeEnv();
+    const res = await post('/metrics/boarding-prompt', { token: '' }, env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_payload' });
+  });
+
+  it('writes to TELEMETRY binding when present', async () => {
+    const writer: AnalyticsEngineWriter = { writeDataPoint: vi.fn() };
+    const env = makeEnv({ TELEMETRY: writer });
+    const res = await post('/metrics/boarding-prompt', validBody, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+    expect(writer.writeDataPoint).toHaveBeenCalled();
+  });
+
+  it('still returns ok when TELEMETRY binding absent', async () => {
+    const env = makeEnv();
+    const res = await post('/metrics/boarding-prompt', validBody, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+});
+
 describe('validateTrip — #819 promptGeoContext / promptDisplay', () => {
   function withPrompt(overrides: Record<string, unknown>): Record<string, unknown> {
     return { ...base(), ...overrides };

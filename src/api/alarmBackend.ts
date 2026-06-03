@@ -375,6 +375,45 @@ export async function clearActiveTrip(token: string): Promise<AlarmBackendResult
 }
 
 /**
+ * boarding-prompt 응답 측정 (#827).
+ *
+ * 사용자가 "탑승했냐?" 푸시에 응답한 결과를 backend `/metrics/boarding-prompt`로 보낸다.
+ * `boarded` / `dismissed` 두 outcome만 허용. dismiss 시 silencedUntil 갱신은 별도
+ * `/boarding-prompt/dismiss` endpoint에서 수행 — 본 호출은 측정 only(부수효과 없음).
+ *
+ * URL 미설정/네트워크 실패 시 throw 없이 `{ok:false}` — measurement loss는 발생하지만 본
+ * 알람 흐름에는 영향 없음.
+ */
+export type BoardingPromptOutcome = 'boarded' | 'dismissed';
+
+export async function reportBoardingPromptOutcome(
+  token: string,
+  outcome: BoardingPromptOutcome,
+): Promise<AlarmBackendResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip boarding-prompt metric');
+    return { ok: false, skipped: true };
+  }
+  if (!token) return { ok: false };
+  try {
+    const res = await fetchWithTimeout(`${base}/metrics/boarding-prompt`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token, outcome }),
+    });
+    if (!res.ok) {
+      log.warn(`boarding-prompt metric failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('boarding-prompt metric error', e);
+    return { ok: false };
+  }
+}
+
+/**
  * Live Activity push token 등록 (#586 B/C).
  * native가 emit한 push token hex를 backend의 trip 레코드에 보관한다.
  * URL 미설정/네트워크 실패는 throw 없이 `{ok:false}` — LA 자체는 정상 동작한다.

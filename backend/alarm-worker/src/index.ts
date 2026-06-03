@@ -13,6 +13,10 @@
 
 import { Hono } from 'hono';
 import { markPromptSilenced } from './boardingPrompt';
+import {
+  recordBoardingPromptOutcome,
+  validateBoardingPromptOutcome,
+} from './boardingPromptOutcome';
 import { runFallbackPushes } from './fallback';
 import {
   cleanupTripWithLa,
@@ -331,6 +335,32 @@ export function validateDismissPayload(input: unknown): DismissPayload | null {
   if (typeof obj.token !== 'string' || obj.token.length === 0) return null;
   return { token: obj.token };
 }
+
+/**
+ * boarding-prompt 응답 측정 (#827).
+ *
+ * 클라이언트가 "탑승했냐?" 푸시 응답을 받아 결과(boarded/dismissed)를 보고한다.
+ * `/boarding-prompt/dismiss`는 trip의 silencedUntil 갱신용이고 본 endpoint는 측정 only —
+ * 같은 dismiss 응답이라도 두 endpoint를 별개로 호출해야 false positive 분모/분자가 정확해진다.
+ *
+ * TELEMETRY binding 부재 시 graceful no-op (개발 환경 호환).
+ */
+app.post('/metrics/boarding-prompt', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  const payload = validateBoardingPromptOutcome(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const writer = c.env.TELEMETRY;
+  if (writer) {
+    recordBoardingPromptOutcome(writer, payload);
+  }
+  return c.json({ ok: true });
+});
 
 interface PushAckPayload {
   pushId: string;
