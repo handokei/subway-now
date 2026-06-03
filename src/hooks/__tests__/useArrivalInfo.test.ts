@@ -1,6 +1,6 @@
 import { renderHook, act, waitFor } from '@testing-library/react-native';
 import { AppState } from 'react-native';
-import { useArrivalInfo, __resetArrivalCacheForTests } from '../useArrivalInfo';
+import { prefetchArrival, useArrivalInfo, __resetArrivalCacheForTests } from '../useArrivalInfo';
 import * as arrivalApiModule from '../../api/arrivalApi';
 
 jest.mock('../../api/arrivalApi');
@@ -392,6 +392,76 @@ describe('useArrivalInfo', () => {
 
     // 에러 무시 — 기존 데이터 유지
     expect(result.current.arrival).toEqual(mockArrival);
+  });
+
+  describe('prefetchArrival (#814)', () => {
+    it('stationName이 null이면 fetch하지 않는다', async () => {
+      await prefetchArrival(null, '5');
+      expect(arrivalApiModule.fetchArrivalInfo).not.toHaveBeenCalled();
+    });
+
+    it('cache miss 시 fetch + cache에 저장 — 다음 useArrivalInfo 마운트에서 cache hit', async () => {
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+      await prefetchArrival('공덕', '5');
+      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('공덕', { lineHint: '5' });
+
+      // 후속 useArrivalInfo 마운트는 cache hit으로 loading=false 즉시 표시.
+      const { result } = renderHook(() => useArrivalInfo('공덕', '5'));
+      expect(result.current.arrival).toEqual(mockArrival);
+      expect(result.current.loading).toBe(false);
+    });
+
+    it('cache가 valid면 no-op — 중복 네트워크 호출 방지', async () => {
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+
+      await prefetchArrival('공덕', '5');
+      const firstCalls = (arrivalApiModule.fetchArrivalInfo as jest.Mock).mock.calls.length;
+      await prefetchArrival('공덕', '5');
+      expect((arrivalApiModule.fetchArrivalInfo as jest.Mock).mock.calls.length).toBe(firstCalls);
+    });
+
+    it('lineHint=null이면 undefined로 provider에 전달', async () => {
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+      await prefetchArrival('공덕', null);
+      expect(arrivalApiModule.fetchArrivalInfo).toHaveBeenCalledWith('공덕', { lineHint: undefined });
+    });
+
+    it('mock 데이터는 cache에 저장하지 않는다', async () => {
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrivalWithMock);
+      await prefetchArrival('공덕', '5');
+      // 같은 station에 한 번 더 prefetch — cache가 비어 있으므로 다시 fetch 발생
+      await prefetchArrival('공덕', '5');
+      expect((arrivalApiModule.fetchArrivalInfo as jest.Mock).mock.calls.length).toBe(2);
+    });
+
+    it('fetch 실패는 silent하게 무시한다 — 다음 폴링이 재시도', async () => {
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockRejectedValue(new Error('network'));
+      await expect(prefetchArrival('공덕', '5')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('refetch (#814)', () => {
+    it('refetch 호출 시 polling 주기를 기다리지 않고 즉시 fetch한다', async () => {
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+      const { result } = renderHook(() => useArrivalInfo('강남'));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      const initialCalls = (arrivalApiModule.fetchArrivalInfo as jest.Mock).mock.calls.length;
+      act(() => result.current.refetch());
+      await waitFor(() =>
+        expect((arrivalApiModule.fetchArrivalInfo as jest.Mock).mock.calls.length).toBeGreaterThan(
+          initialCalls,
+        ),
+      );
+    });
+
+    it('stationName이 null이면 refetch는 no-op', async () => {
+      const { result } = renderHook(() => useArrivalInfo(null));
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      act(() => result.current.refetch());
+      expect(arrivalApiModule.fetchArrivalInfo).not.toHaveBeenCalled();
+    });
   });
 
   it('포그라운드 복귀 시 캐시를 클리어하고 fresh fetch한다', async () => {

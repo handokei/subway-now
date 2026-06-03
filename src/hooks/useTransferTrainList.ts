@@ -1,7 +1,10 @@
-import { useCallback, useMemo } from 'react';
-import { useArrivalInfo } from './useArrivalInfo';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { prefetchArrival, useArrivalInfo } from './useArrivalInfo';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
-import { findActiveTransferContext } from '../utils/findActiveTransferContext';
+import {
+  findActiveTransferContext,
+  findUpcomingTransferPrefetch,
+} from '../utils/findActiveTransferContext';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../constants/boardingLock';
 import { calculateRemainingLegETA } from '../utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../api/arrivalApi';
@@ -50,7 +53,36 @@ export function useTransferTrainList({
 
   const transferStationName = context?.transferStationInToLine.name ?? null;
   const transferLine = context?.nextLine ?? null;
-  const { arrival } = useArrivalInfo(transferStationName, transferLine, arrivalProvider);
+  const { arrival, refetch } = useArrivalInfo(transferStationName, transferLine, arrivalProvider);
+
+  // #814 — 환승 알람 imminent 시점부터 다음 노선 arrival을 사전 폴링한다.
+  // findUpcomingTransferPrefetch는 lock 활성 + transfer 라우트 + 다음 환승까지 잔여 stops ≤ 1
+  // (또는 이미 환승역 위)일 때만 target을 반환한다. 비환승 trip(direct route)이면 항상 null —
+  // prefetch가 자연스럽게 skip되어 불필요 폴링이 발생하지 않는다.
+  // prefetchArrival 자체가 cache TTL(30s) 내 valid 엔트리가 있으면 no-op이라 같은 trigger가
+  // 여러 번 호출돼도 중복 네트워크 호출이 없다.
+  const upcomingTransfer = useMemo(
+    () => findUpcomingTransferPrefetch(lock, route, destinationName, currentStation),
+    [lock, route, destinationName, currentStation],
+  );
+  const upcomingStation = upcomingTransfer?.transferStationName ?? null;
+  const upcomingLine = upcomingTransfer?.nextLine ?? null;
+  useEffect(() => {
+    if (!upcomingStation || !upcomingLine) return;
+    void prefetchArrival(upcomingStation, upcomingLine);
+  }, [upcomingStation, upcomingLine]);
+
+  // #814 — context가 막 활성화된 순간(release: 사용자가 환승역에 도달해 다음 leg로 전환)
+  // useArrivalInfo의 자연 polling 주기를 기다리지 않고 즉시 한 번 강제 fetch. cache가 비어
+  // 있으면 첫 응답을 앞당기고, cache가 있어도 latest로 갱신해 stale 데이터 노출 시간을 줄인다.
+  const prevContextActiveRef = useRef(false);
+  useEffect(() => {
+    const active = context !== null;
+    if (active && !prevContextActiveRef.current) {
+      refetch();
+    }
+    prevContextActiveRef.current = active;
+  }, [context, refetch]);
 
   const arrivals = useMemo<ArrivalInfo[]>(
     () => filterByDirection(arrival, context?.direction ?? null),
