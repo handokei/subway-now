@@ -75,7 +75,12 @@ export type AlarmLogReason =
   | 'movement-motion-stationary'
   // #750 — 공통 sleep 룰 게이트(shouldSuppressBySleepRule)가 차단한 발사.
   // scheduler/FG/BG 3개 path 어디서든 같은 reason으로 적재 — 정책 단일 출처.
-  | 'sleep-first-transfer';
+  | 'sleep-first-transfer'
+  // #816 C — lockless 분기에서 client 추가 가드가 차단한 발사.
+  //   'lockless-non-intermediate': lock 없는 trip에 transfer/destination push 도달 (backend race).
+  //   'lockless-opt-out': 사용자 토글 OFF 상태에서 lockless intermediate push 도달.
+  | 'lockless-non-intermediate'
+  | 'lockless-opt-out';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.

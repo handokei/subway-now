@@ -147,6 +147,20 @@ describe('validateTrip', () => {
     // 필드 자체가 부재인 경우(구버전 trip): undefined로 보존, scheduled.ts가 ?? 0으로 fallback.
     expect(validateTrip(base())?.consecutiveEtaMissing).toBeUndefined();
   });
+
+  // #816 C — lockless station-passed opt-in 필드
+  it('preserves boolean locklessStationPassed (#816)', () => {
+    expect(validateTrip({ ...base(), locklessStationPassed: true })?.locklessStationPassed).toBe(true);
+    expect(validateTrip({ ...base(), locklessStationPassed: false })?.locklessStationPassed).toBe(false);
+  });
+
+  it('drops non-boolean locklessStationPassed and absent field stays undefined', () => {
+    expect(
+      validateTrip({ ...base(), locklessStationPassed: 'yes' })?.locklessStationPassed,
+    ).toBeUndefined();
+    expect(validateTrip({ ...base(), locklessStationPassed: 1 })?.locklessStationPassed).toBeUndefined();
+    expect(validateTrip(base())?.locklessStationPassed).toBeUndefined();
+  });
 });
 
 describe('validateTrip — boardingLock (#585)', () => {

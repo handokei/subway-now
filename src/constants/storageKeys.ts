@@ -52,3 +52,11 @@ export const BG_PERMISSION_DENIED_DISMISSED_KEY = 'subway-now:bg-permission-deni
 // 형식: {"station": Station, "distanceKm": number, "timestamp": number} JSON.
 // WhileInUse 권한 사용자에게는 BG task 자체가 동작하지 않으므로 graceful no-op (key 없음).
 export const BG_LAST_STATION_KEY = 'subway-now:bg-last-station';
+// #816 C — 사용자 opt-in 토글: lock 없는 trip route에서도 station-passed 알림 허용 여부.
+// 기본 OFF. #640 회귀(lock 없는 noise alarm) 차단을 위해 명시적 opt-in 필요.
+// 형식: 'true' 또는 키 부재. (sleep 모드 같은 패턴 — 단순 boolean)
+export const LOCKLESS_STATION_PASSED_KEY = 'subway-now:lockless-station-passed';
+// #816 B — boardingPrompt 발사 추적 (trip당 1회 발사 + dismiss 시 5분 silence).
+// 형식: {"tripKey": string, "promptedAt": number, "dismissedAt"?: number} JSON.
+// tripKey는 `${destinationId}|${createdAtBucketMs}` — destination 변경 시 자동 reset.
+export const BOARDING_PROMPT_STATE_KEY = 'subway-now:boarding-prompt-state';

@@ -61,6 +61,15 @@ export interface RegisterTripPayload {
    * 기준으로 추적·reschedule 가능. 없으면 backend는 기존 anchor waypoint 폴링으로 fallback.
    */
   boardingLock?: AlarmBoardingLock;
+  /**
+   * #816 C — 사용자 명시 opt-in (lockless station-passed).
+   * true면 BoardingLock 없는 trip에서도 backend가 intermediate waypoint 통과 시
+   * station-passed(silent push)를 발사한다. 미송신/false면 기존 #640 게이트 그대로 (lock 부재 → skip).
+   *
+   * 토글 OFF 상태에선 false를 명시 송신할 필요 없음 — alarmBackend는 미송신 시 backend에서
+   * default OFF로 해석. dedup hash에는 반드시 포함해 토글 변경이 즉시 재등록되도록 한다.
+   */
+  locklessStationPassed?: boolean;
 }
 
 export interface AlarmBackendResult {
@@ -113,6 +122,7 @@ function buildRegisterHash(body: {
   alarmAtEpochMs: number;
   apnsEnv: ApnsEnv;
   boardingLock?: AlarmBoardingLock;
+  locklessStationPassed?: boolean;
 }): string {
   return JSON.stringify({
     token: body.token,
@@ -126,6 +136,9 @@ function buildRegisterHash(body: {
     boardingLockKey: body.boardingLock
       ? `${body.boardingLock.trainCode}|${body.boardingLock.line}|${body.boardingLock.subwayId}|${body.boardingLock.segmentStations.join(',')}`
       : null,
+    // #816 C — 토글 변경 즉시 backend로 전달되도록 dedup key에 포함.
+    // undefined와 false를 다르게 다루지 않는다 — 둘 다 OFF 동일 효과.
+    locklessStationPassed: body.locklessStationPassed === true,
   });
 }
 
@@ -169,6 +182,8 @@ async function performRegisterFetch(
     apnsEnv: payload.apnsEnv,
     // boardingLock은 있을 때만 송신 (없으면 backend는 기존 anchor 폴링).
     ...(payload.boardingLock ? { boardingLock: payload.boardingLock } : {}),
+    // #816 C — 토글 ON일 때만 송신. OFF/미설정은 필드 자체를 누락해 기존 trip schema 호환.
+    ...(payload.locklessStationPassed === true ? { locklessStationPassed: true } : {}),
   };
 
   try {
@@ -214,6 +229,7 @@ export function registerActiveTrip(
     alarmAtEpochMs: payload.alarmAtEpochMs,
     apnsEnv: payload.apnsEnv,
     boardingLock: payload.boardingLock,
+    locklessStationPassed: payload.locklessStationPassed,
   });
   if (hash === lastRegisteredHash) {
     return Promise.resolve({ ok: true, skipped: true });

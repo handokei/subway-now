@@ -31,6 +31,10 @@ export default function SettingsScreen() {
   const accessibilityMode = useAppStore((s) => s.accessibilityMode);
   const setAccessibilityMode = useAppStore((s) => s.setAccessibilityMode);
   const loadAccessibilityMode = useAppStore((s) => s.loadAccessibilityMode);
+  // #816 C — lockless station-passed opt-in 토글.
+  const locklessStationPassed = useAppStore((s) => s.locklessStationPassed);
+  const setLocklessStationPassed = useAppStore((s) => s.setLocklessStationPassed);
+  const loadLocklessStationPassed = useAppStore((s) => s.loadLocklessStationPassed);
   const themeMode = useAppStore((s) => s.themeMode);
   const setThemeMode = useAppStore((s) => s.setThemeMode);
   const routePreference = useAppStore((s) => s.routePreference);
@@ -47,6 +51,7 @@ export default function SettingsScreen() {
     loadAllowSpeaker();
     loadAccessibilityMode();
     loadRoutePreference();
+    loadLocklessStationPassed();
   }, []);
 
   return (
@@ -135,6 +140,23 @@ export default function SettingsScreen() {
               trackColor={{ false: colors.hair, true: colors.accent }}
               thumbColor={allowSpeaker ? colors.onAccent : colors.subtle}
               testID="allow-speaker-switch"
+            />
+          </View>
+
+          {/* #816 C — lockless station-passed opt-in. 기본 OFF + 명시 동의 후에만 lock 없는 trip의 station-passed 발사. */}
+          <View style={[styles.settingRow, { borderTopWidth: 1, borderTopColor: colors.hair }]}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: colors.ink }]}>{t('settings.locklessStationPassedLabel')}</Text>
+              <Text style={[styles.settingDesc, { color: colors.muted }]}>
+                {t('settings.locklessStationPassedDescription')}
+              </Text>
+            </View>
+            <Switch
+              value={locklessStationPassed}
+              onValueChange={setLocklessStationPassed}
+              trackColor={{ false: colors.hair, true: colors.accent }}
+              thumbColor={locklessStationPassed ? colors.onAccent : colors.subtle}
+              testID="lockless-station-passed-switch"
             />
           </View>
         </View>

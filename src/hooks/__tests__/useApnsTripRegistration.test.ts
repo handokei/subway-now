@@ -869,4 +869,80 @@ describe('useApnsTripRegistration', () => {
       expect(refreshed?.[0].boardingLock.trainCode).toBe('7246');
     });
   });
+
+  // #816 C — lockless station-passed opt-in
+  describe('lockless station-passed (#816)', () => {
+    it('locklessStationPassed=true 입력 시 register payload에 포함', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          locklessStationPassed: true,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].locklessStationPassed).toBe(true);
+    });
+
+    it('locklessStationPassed 미지정/false면 register payload에 미포함', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].locklessStationPassed).toBeUndefined();
+    });
+
+    it('토글 OFF→ON 전환 시 즉시 재등록 (deps 반영)', async () => {
+      const { rerender } = renderHook(
+        ({ lsp }: { lsp: boolean }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            locklessStationPassed: lsp,
+          }),
+        { initialProps: { lsp: false } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].locklessStationPassed).toBeUndefined();
+
+      rerender({ lsp: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].locklessStationPassed).toBe(true);
+    });
+
+    it('token refresh 경로도 최신 토글값을 송신 (latestInputsRef)', async () => {
+      const { rerender } = renderHook(
+        ({ lsp }: { lsp: boolean }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            locklessStationPassed: lsp,
+          }),
+        { initialProps: { lsp: false } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      // 토글 ON으로 변경
+      rerender({ lsp: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+
+      const listener = mockAddPushTokenListener.mock.calls[0][0];
+      await act(async () => {
+        listener({ data: 'token-NEW' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const refreshed = mockRegister.mock.calls.find(
+        (c) => (c[0] as { token: string }).token === 'token-NEW',
+      );
+      expect(refreshed?.[0].locklessStationPassed).toBe(true);
+    });
+  });
 });

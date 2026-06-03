@@ -73,6 +73,8 @@
     "speakerOffTitle": "スピーカー出力をオフ",
     "speakerOffMessage": "スピーカー出力をオフにすると、イヤホン未接続時は振動のみになります。続けますか?",
     "speakerOffConfirm": "オフにする",
+    "locklessStationPassedLabel": "列車未選択時の通過駅通知",
+    "locklessStationPassedDescription": "乗車列車を選択していない経路でも通過駅通知を受け取ります。推定に依存するためノイズが出る可能性があります。",
     "languageSection": "言語",
     "languageLabel": "アプリの言語",
     "languageDescription": "自動はデバイスの設定に従います",

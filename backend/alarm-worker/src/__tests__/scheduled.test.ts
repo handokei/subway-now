@@ -244,6 +244,168 @@ describe('runScheduled', () => {
       expect(seoulFetch).not.toHaveBeenCalled();
     });
   });
+
+  // #816 C — lockless station-passed opt-in 분기. lock 없어도 토글 ON + intermediate면 발사 허용.
+  describe('#816 C — lockless intermediate', () => {
+    function makeApnsFetchOk(): ReturnType<typeof vi.fn> {
+      return vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+    }
+
+    function intermediateTrip(overrides: Partial<Trip> = {}): Trip {
+      return makeTrip({
+        waypoints: [
+          { stationName: '강남', line: '2', kind: 'intermediate' },
+          { stationName: '역삼', line: '2', kind: 'destination' },
+        ],
+        locklessStationPassed: true,
+        ...overrides,
+      });
+    }
+
+    it('lock 없음 + 토글 ON + intermediate + arvlCd=1 → push 발사 + locklessIntermediateFired 카운트 + waypoint shift', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, intermediateTrip());
+      const seoul = makeSeoul([
+        { destination: '강남행', arrivalSeconds: 30, trainCode: '7246', isUp: true, subwayNm: '지하철2호선', arvlCd: 1 },
+      ]);
+      const apnsFetch = makeApnsFetchOk();
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(stats.pushed).toBe(1);
+      expect(stats.locklessIntermediateFired).toBe(1);
+      expect(stats.lockMissing).toBe(0);
+      expect(apnsFetch).toHaveBeenCalled();
+    });
+
+    it('lock 없음 + 토글 OFF + intermediate → lockMissing 카운트 (발사 0)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        intermediateTrip({ locklessStationPassed: false }),
+      );
+      const seoulFetch = vi.fn();
+      const seoul = new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => NOW,
+        fetchImpl: seoulFetch as unknown as typeof fetch,
+      });
+      const apnsFetch = vi.fn();
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(stats.pushed).toBe(0);
+      expect(stats.locklessIntermediateFired).toBe(0);
+      expect(stats.lockMissing).toBe(1);
+      expect(seoulFetch).not.toHaveBeenCalled();
+    });
+
+    it('lock 없음 + 토글 ON + destination kind → lockMissing 카운트 (lockless는 intermediate만 발사)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTrip({
+          waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+          locklessStationPassed: true,
+        }),
+      );
+      const seoulFetch = vi.fn();
+      const seoul = new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => NOW,
+        fetchImpl: seoulFetch as unknown as typeof fetch,
+      });
+      const apnsFetch = vi.fn();
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(stats.pushed).toBe(0);
+      expect(stats.locklessIntermediateFired).toBe(0);
+      expect(stats.lockMissing).toBe(1);
+    });
+
+    it('lock 없음 + 토글 ON + intermediate + arvlCd 신호 없음(min ETA fallback) → 발사 0 (ARRIVED/ENTERING만 trigger)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, intermediateTrip());
+      const seoul = makeSeoul([
+        { destination: '강남행', arrivalSeconds: 60, trainCode: '7246', isUp: true, subwayNm: '지하철2호선', arvlCd: null },
+      ]);
+      const apnsFetch = vi.fn();
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(stats.pushed).toBe(0);
+      expect(stats.locklessIntermediateFired).toBe(0);
+      expect(apnsFetch).not.toHaveBeenCalled();
+    });
+
+    it('lock 없음 + 토글 ON + intermediate + arrivals 비어있음 → etaMissing 증가, 발사 0', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, intermediateTrip());
+      const seoul = makeSeoul([]);
+      const apnsFetch = vi.fn();
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      expect(stats.pushed).toBe(0);
+      expect(stats.etaMissing).toBe(1);
+      expect(apnsFetch).not.toHaveBeenCalled();
+    });
+
+    it('lock 없음 + 토글 ON + intermediate(ARRIVED) → 발사 후 다음 intermediate가 남으면 waypoint advance', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeTrip({
+          waypoints: [
+            { stationName: '강남', line: '2', kind: 'intermediate' },
+            { stationName: '역삼', line: '2', kind: 'intermediate' },
+            { stationName: '선릉', line: '2', kind: 'destination' },
+          ],
+          locklessStationPassed: true,
+        }),
+      );
+      const seoul = makeSeoul([
+        { destination: '선릉행', arrivalSeconds: 0, trainCode: 'X', isUp: true, subwayNm: '지하철2호선', arvlCd: 1 },
+      ]);
+      const apnsFetch = makeApnsFetchOk();
+      await runScheduled(makeEnv(kv), {
+        seoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      // 한 cycle 후 첫 waypoint(강남)는 shift되어야 한다.
+      const stored = await (kv as unknown as KVNamespace).get('trip:tok');
+      expect(stored).not.toBeNull();
+      const parsed = JSON.parse(stored as string);
+      expect(parsed.waypoints[0].stationName).toBe('역삼');
+      expect(parsed.lastFiredPhase).toBeUndefined();
+    });
+  });
 });
 
 describe('runScheduled — boardingLock trainCode tracking (#585)', () => {

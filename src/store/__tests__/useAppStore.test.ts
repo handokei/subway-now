@@ -27,7 +27,7 @@ const mockStation2: Station = {
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, tripOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null, debugVisible: false, accessibilityMode: false });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, tripOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null, debugVisible: false, accessibilityMode: false, locklessStationPassed: false });
     jest.clearAllMocks();
   });
 
@@ -624,6 +624,50 @@ describe('useAppStore', () => {
 
     const { sleepMode } = useAppStore.getState();
     expect(sleepMode).toBe(false);
+  });
+
+  // #816 C — lockless station-passed opt-in 토글 (기본 OFF).
+  it('초기 locklessStationPassed는 false이다', () => {
+    const { locklessStationPassed } = useAppStore.getState();
+    expect(locklessStationPassed).toBe(false);
+  });
+
+  it('setLocklessStationPassed: true를 설정하면 상태와 AsyncStorage가 갱신된다', async () => {
+    const { setLocklessStationPassed } = useAppStore.getState();
+    await setLocklessStationPassed(true);
+
+    expect(useAppStore.getState().locklessStationPassed).toBe(true);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:lockless-station-passed',
+      JSON.stringify(true),
+    );
+  });
+
+  it('loadLocklessStationPassed: 저장된 true를 복원한다', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(true));
+
+    const { loadLocklessStationPassed } = useAppStore.getState();
+    await loadLocklessStationPassed();
+
+    expect(useAppStore.getState().locklessStationPassed).toBe(true);
+  });
+
+  it('loadLocklessStationPassed: 저장된 값이 없으면 기본 false 유지', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+
+    const { loadLocklessStationPassed } = useAppStore.getState();
+    await loadLocklessStationPassed();
+
+    expect(useAppStore.getState().locklessStationPassed).toBe(false);
+  });
+
+  it('loadLocklessStationPassed: AsyncStorage 오류 시 false 유지', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
+
+    const { loadLocklessStationPassed } = useAppStore.getState();
+    await loadLocklessStationPassed();
+
+    expect(useAppStore.getState().locklessStationPassed).toBe(false);
   });
 
   it('초기 customOrigin은 null이다', () => {

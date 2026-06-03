@@ -73,6 +73,8 @@
     "speakerOffTitle": "Turn off speaker output",
     "speakerOffMessage": "Disabling speaker output will play only vibration when earphones are not connected. Continue?",
     "speakerOffConfirm": "Turn off",
+    "locklessStationPassedLabel": "Station-passed alerts without train selection",
+    "locklessStationPassedDescription": "Receive station-passed notifications even when no train is selected. Estimates may be noisy.",
     "languageSection": "Language",
     "languageLabel": "App language",
     "languageDescription": "Auto follows your device setting",
