@@ -22,7 +22,7 @@ import {
   arcIndexOfStation,
   estimateStationProgress,
 } from '../utils/stationProgressEstimator';
-import { HOP_TIME_MS } from '../constants/boardingLock';
+import { hopTimeMsAt } from '../utils/hopTime';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import {
   MAX_ACTIVE_LINES,
@@ -438,6 +438,15 @@ export function useFusedNearestStation(
 
   // useMemo로 감싸면 deps가 시간을 포함하지 않아 부모 리렌더가 없는 동안 stale.
   // estimator는 분기·정수 산술 위주 — render마다 직접 계산해도 무비용.
+  // ADR-008 Stage 3(#779): boardingLock의 leg 노선(`boardingLine`)을 캡슐화한 hop time lookup을
+  // estimator에 주입. lock이 없으면 estimator 자체가 비활성이므로 boardingLine은 lock present 시점에만
+  // 의미가 있다 — null 분기에서는 fallback closure(uniform HOP_TIME_MS)를 넘겨 estimator의 ③④가
+  // 호출되더라도 안전하게 종료(lock null 가드에서 이미 차단).
+  const lockedLine = boardingLock?.boardingLine ?? null;
+  const hopTimeMsForHop = lockedLine
+    ? (fromIdx: number) => hopTimeMsAt(arcStations, fromIdx, lockedLine)
+    : /* istanbul ignore next — estimator는 lock null이면 line 245에서 early return하므로 sentinel 도달 불가 */
+      () => Number.POSITIVE_INFINITY;
   const estimate = estimateStationProgress({
     lock: boardingLock ?? null,
     arcStations,
@@ -445,7 +454,7 @@ export function useFusedNearestStation(
     trainProgress: freshTrainProgress,
     lockedTrainCode: lockedTrainCode ?? null,
     lastObserved: lastObservedRef.current,
-    hopTimeMs: HOP_TIME_MS,
+    hopTimeMsForHop,
     nextStationArrivals,
     arrivalEtaTtlMs: POSITION_TRAIN_TTL_MS,
     currentIdxHint,
