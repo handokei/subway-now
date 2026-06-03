@@ -201,3 +201,94 @@ export function resolveHopTimeMs(line: LineNumber, fromId?: string, toId?: strin
 2. 전략 ② ArrivalEtaStrategy 추가 — hop time 실측화
 3. 전략 ④ `hopTimes.ts` 데이터 테이블로 매직넘버 대체(#624)
 4. (엔드게임) `BffProgressProvider`로 ② 서버 위임(#622)
+
+## Stage 4 — BffProgressProvider 서버 위임
+
+### Why now
+
+#622 (`boardingLock` client→backend sync gap)가 2026-05-30 COMPLETED로 closed.
+`RegisterTripPayload.boardingLock` 어댑터 머지로 backend KV `trip.boardingLock`이 매 cron마다
+실재(`scanned=1, lockMissing=0`) — 서버가 lock의 `trainCode/boardingLine/segmentStations`를
+권위 있게 알게 됨. Stage 1-3 estimator는 클라가 동일 신호(`realtimePosition` / `realtimeStationArrival`)를
+직접 폴링해 합성하지만, 동일 권위 신호를 서버가 1분 cron에서 이미 평가하므로 클라가 그 결과를
+**소비만** 해도 충분하다. Stage 4 차단요인 해소 — 진행 가능 상태.
+
+### Interface
+
+서버 응답은 lock 단위로 "현재 어디서 다음 어디까지 얼마"를 권위 있게 표현. 인터페이스는 ADR-002
+Provider 패턴과 동형으로 정의(클라는 인터페이스에만 의존).
+
+```ts
+// src/providers/progress/types.ts (Stage 4 sub-issue에서 생성)
+export interface BffProgressResponse {
+  waypointIndex: number;                    // route segment 내 현재 waypoint (0-indexed)
+  remainingHopsMs: number;                  // 다음 waypoint까지 잔여 ms (서버 ETA 기준)
+  confidence: 'high' | 'medium' | 'low';    // 서버가 계산한 신뢰도 — 클라는 medium 이상만 채택
+  receivedAtMs: number;                     // 서버 응답 시각 (epoch ms) — Stage 1-3 신선도 계약과 동일 명명
+  ttlMs: number;                            // 응답 유효 기간 — 만료 시 클라 fallback
+}
+
+export interface BffProgressProvider {
+  /** trip 식별 토큰(lock과 1:1)으로 서버 progress 조회. 인증/캐싱은 구현체 책임. */
+  fetch(tripToken: string, nowMs: number): Promise<BffProgressResponse | null>;
+}
+```
+
+ADR-008 본문에서는 인터페이스 윤곽만 합의. 실제 응답 스키마 확정/구현은 sub-issue가 결정한다.
+
+### 신호 우선순위 통합
+
+기존 Stage 1-3 전략 표에 Stage 4를 **최상위(우선순위 0)**로 추가. 우선순위는 낮을수록 신뢰가 높다.
+
+| 우선순위 | 전략 | 신호 | 신선도 게이트 |
+|---|---|---|---|
+| **0** | **BffProgressStrategy (Stage 4)** | server BffProgress | `confidence ∈ {high, medium}` 그리고 `nowMs - receivedAtMs ≤ ttlMs` |
+| 1 | LivePositionStrategy (Stage 1) | `realtimePosition` (`trainNo === lock.trainCode`) | 기존 ADR-008 본문 — `receivedAtMs > 0` + fusion TTL/distance 통과 |
+| 2 | ArrivalEtaStrategy (Stage 2) | `realtimeStationArrival` (`trainCode === lock.trainCode`) | `arrivalSeconds` 신선, `arvlCd` 유효 |
+| 3 | ReanchoredHopStrategy (Stage 3) | 마지막 실관측 `(idx, ts)` | `lastObservedRef` 존재 |
+| 4 | DefaultHopStrategy (Stage 3.1) | `HOP_TIME_TABLE` lookup | 무조건 사용 가능 (최후수단) |
+
+`estimateStationProgress`(`src/utils/stationProgressEstimator.ts`) 내부 전략 배열 맨 앞에 Stage 4 전략을
+주입. 기존 전략은 변경 없이 fallback chain으로 유지 — 회귀 가드 그대로.
+
+### 호출 흐름
+
+```
+silent push wake (1분 cron) ─┐
+        FG 진입 ─────────────┼─→ BffProgressProvider.fetch(tripToken, now)
+        주기 폴링 (TTL 만료) ─┘            │
+                                          ├─ 응답 수신: cache(ttlMs) → estimator 우선순위 0 입력
+                                          └─ 실패/timeout/confidence low/만료
+                                               → Stage 1-3 fallback (기존 경로 그대로)
+```
+
+호출 위치는 `useFusedNearestStation`이 estimator 입력 모으는 지점(현 line 391~450 영역).
+캐시는 진행 중인 trip 단위(`lock.trainCode + boardingLine`)로 유지 — 캐시 미스 또는 TTL 만료
+시점에만 fetch.
+
+### 측정 (metrics.catalog 후속 등록)
+
+| metric | 의미 |
+|---|---|
+| `serverProgress.received` | 서버 응답을 채택해 estimator 우선순위 0로 사용한 카운트 |
+| `serverProgress.fallbackToClient` | 응답 미수신/만료/confidence 미달로 Stage 1-3 fallback 발생 카운트 |
+| `serverProgress.deltaVsEstimator` | Stage 4 채택 시 Stage 1-3 시뮬 결과와의 waypoint index 차이 분포(P50/P95) |
+
+`deltaVsEstimator`는 Stage 4 채택과 동시에 Stage 1-3을 음영(shadow) 실행해 비교. 운영 임계 결정 전에
+신뢰도 분포를 관측하는 용도. 정식 metric 등록은 Stage 4 측정 sub-issue가 처리한다.
+
+### 회귀 가드
+
+- 서버 응답 미수신/만료/`confidence === 'low'` → 100% Stage 1-3 fallback. 기존 estimator 회귀 가드
+  (종착역 고정, ArcStations 역행 방지, fusion 게이트) 그대로 적용.
+- Stage 4 전략은 신선도 게이트 실패 시 **반드시 null 반환** — 다음 전략으로 자연 진행.
+- 네트워크 timeout은 estimator 동기 경로를 막지 않도록 캐시 기반 비동기 refresh.
+- 단위 테스트: 응답 정상/만료/low/네트워크 실패 4 케이스에서 fallback 동작 검증.
+
+### Open questions (Stage 4 구현 sub-issue에서 측정으로 결정)
+
+1. **캐시 TTL 적정값** — backend cron이 1분 cadence이므로 60s가 자연 기본이나, 환승 직후 첫 cron 사이에
+   `lockMissing` 가능성 있음 → 짧은 TTL + 적극 refresh vs 긴 TTL + skew 허용 트레이드오프.
+2. **호출 빈도** — silent push wake 시 무조건 fetch vs estimator가 우선순위 0 slot 비었을 때만 fetch.
+3. **transfer 환승 직후 첫 응답 신뢰도** — backend의 `parseBoardingLock` 검증 통과 직후 1~2 cron은
+   `confidence` 보수적으로 내릴지 여부 — 운영 데이터로 결정.
