@@ -5,6 +5,7 @@ import type { ArrivalInfo } from '../api/arrivalApi';
 import type { LineNumber } from '../types/station';
 import { formatClockTime } from '../utils/formatTime';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
+import { parseArrivalDistance } from '../utils/arrivalStatusDistance';
 import { LINE_COLORS } from '../constants/lineColors';
 
 /** row 좌측 호선 색 stripe 두께(#664). 시각적 구분을 헤더 외에도 row마다 즉시 인지 가능하게. */
@@ -47,8 +48,10 @@ interface Props {
  *       compact 모드는 hop slot 안 inline이라 row borderRadius 없음(직각). stripe도 같은 정신으로
  *       직각 유지 — 일반 모드는 카드 radius와 어울리는 둥근 코너 stripe로 자연스럽게 처리됨.
  * #749: 2줄 row 레이아웃 — 첫째 줄 "{destination}행 · {nextStation}방면" (방면은 옵셔널),
- *       둘째 줄 "{index+1}번째 전 · {HH:mm} 도착 예정". 카운터는 호출자가 전달한 배열 순서를
- *       1-indexed로 변환. 같은 trainCode가 유지되는 동안 카운터 안정 → "같은 열차 지연" 신호.
+ *       둘째 줄 "{거리} · {HH:mm} 도착 예정". 거리는 #790에서 API 실측치로 교체.
+ * #790: 거리 표기를 API `arvlMsg2`에서 정규식 파싱한 실거리로 변경 (`parseArrivalDistance`).
+ *       비어있는 statusMessage(주로 mock/schedule fallback)는 기존 `${index+1}번째 전`로 fallback.
+ *       이는 사용자의 "역 개수" 직관과 배열 순번이 어긋나던 회귀(2026-06-03 실기기 보고)를 해소한다.
  */
 export function BoardingTrainList({
   arrivals,
@@ -94,7 +97,11 @@ export function BoardingTrainList({
         const metaText = nextStationLabel
           ? `${train.destination}행 · ${nextStationLabel}방면`
           : `${train.destination}행`;
-        const sequenceText = `${index + 1}번째 전`;
+        // #790: API arvlMsg2 기반 진짜 거리 표시. 비어있으면 배열 인덱스 fallback(이전 동작 유지 —
+        // 주로 mock/schedule fallback 경로). 실 응답에서는 항상 [N]번째 전역 패턴이 들어와
+        // 사용자 의도(역 개수)와 일치한다.
+        const parsedDistance = parseArrivalDistance(train.statusMessage);
+        const sequenceText = parsedDistance.length > 0 ? parsedDistance : `${index + 1}번째 전`;
         const arrivalText = `${formatArrivalClock(train)} 도착 예정`;
         return (
           <Pressable
