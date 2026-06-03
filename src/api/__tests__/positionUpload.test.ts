@@ -1,5 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { dismissBoardingPrompt, uploadPosition, withMapMatched } from '../positionUpload';
+import {
+  dismissBoardingPrompt,
+  readActiveBoardingLine,
+  uploadPosition,
+  withMapMatched,
+} from '../positionUpload';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../constants/storageKeys';
 
 jest.mock('../../utils/logger', () => ({
@@ -225,6 +230,64 @@ describe('withMapMatched (#828)', () => {
     };
     const out = await withMapMatched(payload);
     expect(out).toEqual(payload);
+    AsyncStorage.getItem = originalGetItem;
+  });
+
+  it('resolver 주입 — 호출자가 지정한 line으로 snap 수행 (확장성)', async () => {
+    // AsyncStorage 키에 의존하지 않고 명시 resolver만으로 snap 가능 — multi-trip/fallback 시나리오 확장점.
+    // 2호선 강남역 좌표(matched) + resolver가 '2' 반환 → 결과에 mapMatched 필드가 채워짐.
+    const out = await withMapMatched(
+      {
+        token: 'tok',
+        lat: 37.4979,
+        lng: 127.0276,
+        accuracy: 0,
+        ts: 0,
+        motion: 'walking',
+      },
+      async () => '2',
+    );
+    expect(out.mapMatchedLine).toBe('2');
+    expect(typeof out.mapMatchedArcM).toBe('number');
+  });
+
+  it('resolver가 null 반환 → snap skip (필드 omit)', async () => {
+    const payload = {
+      token: 'tok',
+      lat: 37.4979,
+      lng: 127.0276,
+      accuracy: 0,
+      ts: 0,
+      motion: 'walking' as const,
+    };
+    const out = await withMapMatched(payload, async () => null);
+    expect(out).toEqual(payload);
+  });
+});
+
+describe('readActiveBoardingLine (#828)', () => {
+  beforeEach(async () => {
+    await AsyncStorage.clear();
+  });
+
+  it('AsyncStorage 값이 stations.json line 코드면 LineNumber로 좁힘', async () => {
+    await AsyncStorage.setItem(ACTIVE_BOARDING_LINE_KEY, '2');
+    expect(await readActiveBoardingLine()).toBe('2');
+  });
+
+  it('유효하지 않은 line 코드(가짜 호선)는 null — isLineNumber 가드', async () => {
+    await AsyncStorage.setItem(ACTIVE_BOARDING_LINE_KEY, 'fake-line-99');
+    expect(await readActiveBoardingLine()).toBeNull();
+  });
+
+  it('키 부재 → null', async () => {
+    expect(await readActiveBoardingLine()).toBeNull();
+  });
+
+  it('AsyncStorage throw → null (graceful)', async () => {
+    const originalGetItem = AsyncStorage.getItem;
+    (AsyncStorage.getItem as jest.Mock) = jest.fn().mockRejectedValue(new Error('boom'));
+    expect(await readActiveBoardingLine()).toBeNull();
     AsyncStorage.getItem = originalGetItem;
   });
 });
