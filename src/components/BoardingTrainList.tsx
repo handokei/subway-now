@@ -6,6 +6,7 @@ import type { LineNumber, Station } from '../types/station';
 import { formatClockTime } from '../utils/formatTime';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
 import { buildDirectionMeta } from '../utils/trainLineDirection';
+import { parseArrivalDistance } from '../utils/arrivalStatusDistance';
 import { LINE_COLORS } from '../constants/lineColors';
 import stationsData from '../data/stations.json';
 
@@ -53,6 +54,8 @@ interface Props {
  * #749: 2줄 row 레이아웃 — 첫째 줄 "{종착}{방면?}" (방면은 옵셔널), 둘째 줄 "{거리} · {HH:mm} 도착 예정".
  *       카운터는 호출자가 전달한 배열 순서를 1-indexed로 변환. 같은 trainCode가 유지되는 동안
  *       카운터 안정 → "같은 열차 지연" 신호.
+ * #790: 거리 표기를 API `arvlMsg2`에서 정규식 파싱한 실거리로 변경 (`parseArrivalDistance`).
+ *       비어있는 statusMessage(주로 mock/schedule fallback)는 기존 `${index+1}번째 전`로 fallback.
  * #792: 종착 표기는 `parseTrainLineDirection`로 i18n 정규화한다 (기존 하드코딩 "행" 부착 제거).
  *       종착에 이미 다음역 명이 포함된 경우(예: "어린이대공원(세종대)방면"+"어린이대공원") "방면"
  *       접미사를 생략해 라벨 중복("…방면행 · …방면")을 차단한다.
@@ -98,8 +101,13 @@ export function BoardingTrainList({
       )}
       {filteredArrivals.map((train, index) => {
         const unreachable = isUnreachable(train);
+        // #792: 종착·방면 라벨을 i18n 정규화 + dedup. nextStationLabel 미전달이면 종착만.
         const metaText = buildDirectionMeta(train.destination, nextStationLabel, allStations);
-        const sequenceText = `${index + 1}번째 전`;
+        // #790: API arvlMsg2 기반 진짜 거리 표시. 비어있으면 배열 인덱스 fallback(이전 동작 유지 —
+        // 주로 mock/schedule fallback 경로). 실 응답에서는 항상 [N]번째 전역 패턴이 들어와
+        // 사용자 의도(역 개수)와 일치한다.
+        const parsedDistance = parseArrivalDistance(train.statusMessage);
+        const sequenceText = parsedDistance.length > 0 ? parsedDistance : `${index + 1}번째 전`;
         const arrivalText = `${formatArrivalClock(train)} 도착 예정`;
         return (
           <Pressable

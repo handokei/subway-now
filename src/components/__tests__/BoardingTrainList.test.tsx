@@ -231,6 +231,36 @@ describe('BoardingTrainList', () => {
     });
   });
 
+  describe('#790 거리 표기 — API arvlMsg2 실측치', () => {
+    it('statusMessage "[4]번째 전역 (문정)" → "4번째 전"', () => {
+      const train = makeTrain({ trainCode: 'T-DIST', statusMessage: '[4]번째 전역 (문정)' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      expect(getByTestId('boarding-train-sequence-T-DIST').props.children).toBe('4번째 전');
+    });
+
+    it('statusMessage "전역 출발"(비매칭)이면 원본 그대로 표시', () => {
+      const train = makeTrain({ trainCode: 'T-DEPARTED', statusMessage: '전역 출발' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      expect(getByTestId('boarding-train-sequence-T-DEPARTED').props.children).toBe('전역 출발');
+    });
+
+    it('statusMessage 빈 문자열(mock/schedule)이면 index+1 fallback', () => {
+      const trains = [
+        makeTrain({ trainCode: 'T-MOCK-1', statusMessage: '' }),
+        makeTrain({ trainCode: 'T-MOCK-2', statusMessage: '' }),
+      ];
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={trains} line="2" onSelect={() => {}} />,
+      );
+      expect(getByTestId('boarding-train-sequence-T-MOCK-1').props.children).toBe('1번째 전');
+      expect(getByTestId('boarding-train-sequence-T-MOCK-2').props.children).toBe('2번째 전');
+    });
+  });
+
   describe('#664 환승역 line 필터 + 호선 색 stripe', () => {
     function flattenStyle(style: unknown): Record<string, unknown> {
       if (Array.isArray(style)) return Object.assign({}, ...style.map(flattenStyle));

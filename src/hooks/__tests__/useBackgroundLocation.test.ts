@@ -1,5 +1,7 @@
-import { renderHook, act, waitFor } from '@testing-library/react-native';
+import { renderHook, waitFor } from '@testing-library/react-native';
 import { Alert, Linking } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { BG_PERMISSION_DENIED_DISMISSED_KEY } from '../../constants/storageKeys';
 import type { Station } from '../../types/station';
 
 // ── Alert.alert / Linking.openSettings 모킹 ──
@@ -71,8 +73,10 @@ const mockDestination2: Station = {
 };
 
 describe('useBackgroundLocation', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
+    // #791: dismiss flag는 AsyncStorage(영속)에 저장되므로 매 테스트마다 초기화.
+    await AsyncStorage.clear();
     mockStopLocationUpdatesAsync.mockResolvedValue(undefined);
     mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'granted' });
     mockIsTaskRegisteredAsync.mockResolvedValue(false);
@@ -183,6 +187,112 @@ describe('useBackgroundLocation', () => {
     });
 
     expect(mockAlertAlert).toHaveBeenCalledTimes(1);
+  });
+
+  // #791: dismiss 플래그가 AsyncStorage에 영속 저장되어 앱 재시작 후에도 Alert가 다시 뜨지 않는다.
+  it('#791 첫 denied Alert 후 dismiss 플래그가 AsyncStorage에 저장된다', async () => {
+    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+
+    renderHook(() => useBackgroundLocation(mockDestination));
+
+    await waitFor(() => {
+      expect(mockAlertAlert).toHaveBeenCalledTimes(1);
+    });
+
+    expect(await AsyncStorage.getItem(BG_PERMISSION_DENIED_DISMISSED_KEY)).toBe('true');
+  });
+
+  it('#791 새 hook instance(앱 재시작 시나리오)에서도 dismiss 플래그가 있으면 Alert 미노출', async () => {
+    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    await AsyncStorage.setItem(BG_PERMISSION_DENIED_DISMISSED_KEY, 'true');
+
+    renderHook(() => useBackgroundLocation(mockDestination));
+
+    await waitFor(() => {
+      expect(mockRequestBackgroundPermissionsAsync).toHaveBeenCalled();
+    });
+    // 권한 요청은 여전히 일어나지만 Alert는 띄우지 않는다.
+    expect(mockAlertAlert).not.toHaveBeenCalled();
+  });
+
+  it('#791 AsyncStorage getItem 오류는 "미노출 이력 없음"으로 처리 → Alert 정상 노출', async () => {
+    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    const getItemSpy = jest
+      .spyOn(AsyncStorage, 'getItem')
+      .mockRejectedValueOnce(new Error('storage corrupt'));
+
+    renderHook(() => useBackgroundLocation(mockDestination));
+
+    await waitFor(() => {
+      expect(mockAlertAlert).toHaveBeenCalledTimes(1);
+    });
+
+    getItemSpy.mockRestore();
+  });
+
+  it('#791 AsyncStorage setItem 오류는 silent — Alert는 여전히 노출', async () => {
+    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    const setItemSpy = jest
+      .spyOn(AsyncStorage, 'setItem')
+      .mockRejectedValueOnce(new Error('disk full'));
+
+    renderHook(() => useBackgroundLocation(mockDestination));
+
+    await waitFor(() => {
+      expect(mockAlertAlert).toHaveBeenCalledTimes(1);
+    });
+
+    setItemSpy.mockRestore();
+  });
+
+  it('#791 hydrate 도중 unmount되면 Alert를 띄우지 않는다 (cancelled 가드)', async () => {
+    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    let resolveGetItem!: (value: string | null) => void;
+    const getItemSpy = jest.spyOn(AsyncStorage, 'getItem').mockReturnValueOnce(
+      new Promise<string | null>((resolve) => {
+        resolveGetItem = resolve;
+      }),
+    );
+
+    const { unmount } = renderHook(() => useBackgroundLocation(mockDestination));
+
+    await waitFor(() => {
+      expect(mockRequestBackgroundPermissionsAsync).toHaveBeenCalled();
+    });
+
+    unmount();
+    resolveGetItem(null);
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockAlertAlert).not.toHaveBeenCalled();
+    getItemSpy.mockRestore();
+  });
+
+  it('#791 setItem(dismiss 저장) 도중 unmount되면 storage는 갱신되지만 Alert는 미노출', async () => {
+    mockRequestBackgroundPermissionsAsync.mockResolvedValue({ status: 'denied' });
+    let resolveSetItem!: () => void;
+    const setItemSpy = jest.spyOn(AsyncStorage, 'setItem').mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveSetItem = resolve;
+      }),
+    );
+
+    const { unmount } = renderHook(() => useBackgroundLocation(mockDestination));
+
+    await waitFor(() => {
+      expect(setItemSpy).toHaveBeenCalledWith(BG_PERMISSION_DENIED_DISMISSED_KEY, 'true');
+    });
+
+    unmount();
+    resolveSetItem();
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockAlertAlert).not.toHaveBeenCalled();
+    setItemSpy.mockRestore();
   });
 
   it('cancelled(unmount race) 상태에서는 denied여도 Alert를 띄우지 않는다 (#387)', async () => {

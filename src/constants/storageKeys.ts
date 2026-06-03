@@ -42,6 +42,10 @@ export const BOARDING_LOCK_KEY = 'subway-now:boarding-lock';
 // release/expiry 또는 새 Lock 시점에 일괄 cancel하기 위한 추적 큐.
 // 형식: string[] JSON.
 export const SCHEDULED_NOTIFICATIONS_KEY = 'subway-now:scheduled-notifications';
+// #791 — BG 위치 권한 거부 시 띄우는 안내 Alert를 사용자가 dismiss한 적이 있는지.
+// 'true' 또는 키 부재. 한 번 dismiss하면 앱 재시작 후에도 다시 노출하지 않는다.
+// 사용자는 첫 안내로 결정한 상태이므로 반복 노출은 스팸. (WhileInUse 1차 시나리오 정책 정렬)
+export const BG_PERMISSION_DENIED_DISMISSED_KEY = 'subway-now:bg-permission-denied-dismissed';
 // #711 — BG task가 마지막으로 평가한 nearest station + 평가 시각.
 // FG 복귀 직후 fresh fix가 들어오기 전 일시 공백을 메우기 위한 임시 hydrate 용도.
 // hydrate 시 locationUncertain=true는 유지 — fresh fix(applyLocation) 도착 시점에 해제된다.
