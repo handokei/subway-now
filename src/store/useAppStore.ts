@@ -10,6 +10,7 @@ import type { AlarmEvent } from '../utils/stationAlarm';
 import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, TRIP_ORIGIN_KEY, LOCKLESS_STATION_PASSED_KEY } from '../constants/storageKeys';
 import { runTripBoundCleanups } from './tripBoundCleanups';
 import {
+  clearDismissSilence as clearDismissSilenceStorage,
   setDismissSilence as setDismissSilenceStorage,
   getDismissSilence as getDismissSilenceStorage,
   type DismissSilenceState,
