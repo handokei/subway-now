@@ -2194,6 +2194,70 @@ describe('runScheduled — #826 lockless intermediate Kalman reset', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #837 P2-1 — lockless dedup gate / reset 순서 (arvlCd > phase 우선순위)
+// ---------------------------------------------------------------------------
+
+describe('runScheduled — #837 P2-1 lockless dedup vs Kalman reset 순서', () => {
+  it('이미 imminent 발사한 trip + arvlCd=ARRIVED → reset은 발사 (kalmanReset=1), push는 dedup으로 skip', async () => {
+    // 핵심: dedup된 trip이라도 ground truth(ARRIVED)면 Kalman state는 reset해야 함.
+    // 이전 동작: dedup gate가 fusion/reset 이전이라 reset 미진입 → drift 누적.
+    // 수정 후: fusion + arrivals fetch + reset 수행 → dedup gate가 push만 차단.
+    const kv = new InMemoryKV();
+    const token = 'lock-dedup-reset-1';
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLocklessKalmanTrip(token, { lastFiredPhase: 'imminent' }),
+    );
+    await kv.put(`kalman:${token}`, JSON.stringify({ v: 40, P: 100, ts: NOW - 5_000 }));
+
+    const fetchSpy = vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch;
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([makeArrivedSignal(1)]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchSpy,
+      now: () => NOW,
+      generatePushId: () => 'lk-dedup-1',
+    });
+
+    // reset은 수행 (drift 차단)
+    expect(stats.kalmanReset).toBe(1);
+    const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
+    expect(kalmanState?.v).toBe(0);
+    expect(kalmanState?.P).toBe(R_LOW);
+    // push는 dedup으로 skip (APNs fetch 호출 0회)
+    expect(stats.pushed).toBe(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('이미 imminent 발사한 trip + signal null (etaMissing) → reset 미발사 (fires만이 진실)', async () => {
+    // dedup gate 이동했어도 reset 트리거는 fires=true만이어야 함.
+    // signal 부재/arvlCd null은 etaMissing 경로 — reset 미진입.
+    const kv = new InMemoryKV();
+    const token = 'lock-dedup-reset-2';
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLocklessKalmanTrip(token, { lastFiredPhase: 'imminent' }),
+    );
+    await kv.put(`kalman:${token}`, JSON.stringify({ v: 35, P: 50, ts: NOW - 3_000 }));
+
+    const stats = await runScheduled(
+      makeEnv(kv),
+      // arrivals 빈 배열 → signal=null → etaMissing 경로
+      makeKalmanResetDeps(makeSeoul([]), 'lk-dedup-2'),
+    );
+
+    expect(stats.kalmanReset).toBe(0);
+    expect(stats.etaMissing).toBe(1);
+    expect(stats.pushed).toBe(0);
+    // kalman state 보존 (reset 미진입)
+    const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
+    expect(kalmanState?.v).toBe(35);
+    expect(kalmanState?.P).toBe(50);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #826 — runTrainCodeTracking → Kalman reset on arrived
 // ---------------------------------------------------------------------------
 
