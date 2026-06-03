@@ -14,13 +14,14 @@ jest.mock('../../utils/stationNotification', () => ({
 }));
 
 const mockDismiss = jest.fn();
-const mockEndTrip = jest.fn();
 
-function renderAlarm(type: AlarmEvent['type'], stationName: string) {
-  const event: AlarmEvent = { phaseId: 'early', type, stationName };
-  return render(
-    <AlarmOverlay event={event} onDismiss={mockDismiss} onEndTrip={mockEndTrip} />,
-  );
+function renderAlarm(
+  type: AlarmEvent['type'],
+  stationName: string,
+  phaseId: AlarmEvent['phaseId'] = 'early',
+) {
+  const event: AlarmEvent = { phaseId, type, stationName };
+  return render(<AlarmOverlay event={event} onDismiss={mockDismiss} />);
 }
 
 async function triggerModalClose(rendered: ReturnType<typeof renderAlarm>) {
@@ -46,23 +47,31 @@ describe('AlarmOverlay', () => {
     expect(getByText('시청에서\n환승하세요')).toBeTruthy();
   });
 
-  it('#633 환승 알람 dismiss → trip 유지. clearAlarmNotification만 호출, onEndTrip X', async () => {
+  it('환승 알람 dismiss → trip 유지. clearAlarmNotification만 호출 (#633)', async () => {
     const { getByTestId } = renderAlarm('transfer', '시청');
     fireEvent.press(getByTestId('alarm-dismiss-button'));
     await waitFor(() => {
       expect(mockClearAlarmNotification).toHaveBeenCalled();
       expect(mockKillAllAlarms).not.toHaveBeenCalled();
-      expect(mockEndTrip).not.toHaveBeenCalled();
       expect(mockDismiss).toHaveBeenCalled();
     });
   });
 
-  it('#633 도착 알람 dismiss → trip 종료. killAllAlarms + onEndTrip 호출', async () => {
-    const { getByTestId } = renderAlarm('destination', '강남');
+  it('#806 도착 알람(early) dismiss → trip 유지. killAllAlarms만 호출, release 트리거 없음', async () => {
+    const { getByTestId } = renderAlarm('destination', '강남', 'early');
     fireEvent.press(getByTestId('alarm-dismiss-button'));
     await waitFor(() => {
       expect(mockKillAllAlarms).toHaveBeenCalled();
-      expect(mockEndTrip).toHaveBeenCalled();
+      expect(mockClearAlarmNotification).not.toHaveBeenCalled();
+      expect(mockDismiss).toHaveBeenCalled();
+    });
+  });
+
+  it('#806 도착 알람(imminent) dismiss → trip 유지. killAllAlarms만 호출', async () => {
+    const { getByTestId } = renderAlarm('destination', '강남', 'imminent');
+    fireEvent.press(getByTestId('alarm-dismiss-button'));
+    await waitFor(() => {
+      expect(mockKillAllAlarms).toHaveBeenCalled();
       expect(mockClearAlarmNotification).not.toHaveBeenCalled();
       expect(mockDismiss).toHaveBeenCalled();
     });
@@ -85,12 +94,11 @@ describe('AlarmOverlay', () => {
       expect(renderAlarm('transfer', '시청').queryByTestId('alarm-keep-trip-button')).toBeNull();
     });
 
-    it('도착 알람 onRequestClose(Android 백 버튼/스와이프)도 trip 종료 동작 — handleDismiss로 통일', async () => {
-      const rendered = renderAlarm('destination', '강남');
+    it('#806 도착 알람 onRequestClose(Android 백 버튼/스와이프)도 trip 유지', async () => {
+      const rendered = renderAlarm('destination', '강남', 'early');
       await triggerModalClose(rendered);
       await waitFor(() => {
         expect(mockKillAllAlarms).toHaveBeenCalled();
-        expect(mockEndTrip).toHaveBeenCalled();
         expect(mockClearAlarmNotification).not.toHaveBeenCalled();
         expect(mockDismiss).toHaveBeenCalled();
       });
@@ -102,7 +110,6 @@ describe('AlarmOverlay', () => {
       await waitFor(() => {
         expect(mockClearAlarmNotification).toHaveBeenCalled();
         expect(mockKillAllAlarms).not.toHaveBeenCalled();
-        expect(mockEndTrip).not.toHaveBeenCalled();
         expect(mockDismiss).toHaveBeenCalled();
       });
     });
