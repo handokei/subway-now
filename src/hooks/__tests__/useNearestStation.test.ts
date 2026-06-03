@@ -540,10 +540,10 @@ describe('useNearestStation', () => {
     logSpy.mockRestore();
   });
 
-  it('저정확도 캐시 위치(MAX_ACCURACY_M 초과)는 무시하고 진단 로그를 남긴다', async () => {
+  it('표시 게이트 초과 캐시 위치(MAX_ACCURACY_M_DISPLAY 초과)는 무시하고 진단 로그를 남긴다', async () => {
     const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     mockGranted();
-    mockLastKnownLocation(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M + 1 });
+    mockLastKnownLocation(37.4980, 127.0277, { accuracy: MAX_ACCURACY_M_DISPLAY + 1 });
 
     const { result } = renderHook(() => useNearestStation());
 
@@ -554,11 +554,64 @@ describe('useNearestStation', () => {
       '[useNearestStation]',
       'lastKnown rejected: lowAccuracy',
       expect.objectContaining({
-        accuracyMeters: MAX_ACCURACY_M + 1,
+        accuracyMeters: MAX_ACCURACY_M_DISPLAY + 1,
         cumulativeLowAccuracy: 1,
       }),
     );
     logSpy.mockRestore();
+  });
+
+  it('#808 cold start hydrate: 알람 게이트 초과지만 표시 게이트 통과 fix는 uncertain=true로 hydrate한다', async () => {
+    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    mockGranted();
+    // 220m: MAX_ACCURACY_M=200 초과 + MAX_ACCURACY_M_DISPLAY=250 이하
+    mockLastKnownLocation(37.4980, 127.0277, { accuracy: 220 });
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // cold start 빈 화면 회피: result 채워짐
+    expect(result.current.result).not.toBeNull();
+    expect(result.current.result?.station.name).toBe('강남');
+    // "위치 확인 중" UX: uncertain=true
+    expect(result.current.locationUncertain).toBe(true);
+    expect(logSpy).toHaveBeenCalledWith(
+      '[useNearestStation]',
+      'lastKnown coldStart hydrate: uncertain',
+      expect.objectContaining({ accuracyMeters: 220 }),
+    );
+    logSpy.mockRestore();
+  });
+
+  it('#808 cold start hydrate 후 fresh fix가 들어오면 uncertain이 false로 복귀한다', async () => {
+    mockGranted();
+    mockLastKnownLocation(37.4980, 127.0277, { accuracy: 220 });
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.result).not.toBeNull());
+    expect(result.current.locationUncertain).toBe(true);
+
+    // fresh fix(strict 통과)가 들어오면 정정
+    simulateGps(37.4980, 127.0277, { accuracy: 30 });
+    await waitFor(() => expect(result.current.locationUncertain).toBe(false));
+    expect(result.current.result?.station.name).toBe('강남');
+  });
+
+  it('#808 cold start hydrate: speed=-1인 lastKnown은 speedMps를 null로 정규화한다', async () => {
+    mockGranted();
+    (Location.getLastKnownPositionAsync as jest.Mock).mockResolvedValue({
+      coords: { latitude: 37.4980, longitude: 127.0277, accuracy: 220, speed: -1 },
+      timestamp: Date.now() - 5_000,
+    });
+
+    const { result } = renderHook(() => useNearestStation());
+
+    await waitFor(() => expect(result.current.result).not.toBeNull());
+    // speed=-1 → null로 정규화. positionStability/motionStationary fallback 대상으로 전환.
+    expect(result.current.speedMps).toBeNull();
+    expect(result.current.result?.station.name).toBe('강남');
   });
 
   it('lastKnown 거부 카운터는 FG 재진입마다 누적된다', async () => {
