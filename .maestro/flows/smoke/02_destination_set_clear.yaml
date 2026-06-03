@@ -31,8 +31,13 @@ name: "smoke - 목적지 설정 & 초기화"
 - tapOn:
     id: "search-input"
 - inputText: "잠실"
-- assertVisible:
-    id: "suggestions-list"
+# iOS 시뮬레이터 IME가 한글 입력 후 setQuery → suggestions useMemo → SectionList 렌더까지
+# 종종 ~1s를 넘긴다. maestro default assertVisible timeout(~1s)을 벗어나는 결정적 지연이라
+# extendedWaitUntil로 5s까지 흡수한다.
+- extendedWaitUntil:
+    visible:
+      id: "suggestions-list"
+    timeout: 5000
 - tapOn:
     id: "suggestion-item-2-016"
 
