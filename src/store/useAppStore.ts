@@ -7,10 +7,8 @@ function demoteSlotEntries(entries: FavoriteEntry[], role: FavoriteSlotRole): Fa
   return entries.map((f) => (f.role === role ? { ...f, role: 'general' as FavoriteRole } : f));
 }
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, BOARDING_LOCK_KEY, SCHEDULED_NOTIFICATIONS_KEY, ACTIVE_TRIP_KEY, TRIP_ORIGIN_KEY, LOCKLESS_STATION_PASSED_KEY } from '../constants/storageKeys';
-import { clearFiredAlarms, clearLastNotifiedStationId, clearLastFiredAlarmStationName } from '../utils/notificationState';
-import { clearFiredPushIds } from '../utils/firedPushIds';
-import { clearTripTrainCode } from '../utils/tripTrainCode';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, TRIP_ORIGIN_KEY, LOCKLESS_STATION_PASSED_KEY } from '../constants/storageKeys';
+import { runTripBoundCleanups } from './tripBoundCleanups';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../i18n/types';
 
@@ -211,21 +209,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 주의: 여기서는 storage만 정리한다. BoardingLock 메모리 release 및 예약 알림 cancel은
     // useBoardingLockController가 destinationId 변경 감지로 처리한다 (store 분리 유지).
     if (isSwitch) {
-      clearFiredAlarms().catch(noop);
-      AsyncStorage.removeItem(ROUTE_KEY).catch(noop);
-      AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY).catch(noop);
-      AsyncStorage.removeItem(BOARDING_LOCK_KEY).catch(noop);
-      AsyncStorage.removeItem(SCHEDULED_NOTIFICATIONS_KEY).catch(noop);
-      AsyncStorage.removeItem(ACTIVE_TRIP_KEY).catch(noop);
-      AsyncStorage.removeItem(TRIP_ORIGIN_KEY).catch(noop);
-      // #799: silent push 및 알람 state도 trip-bound — destination switch에 같이 정리.
-      // #702 cleanup이 누락했던 키들(2026-06-03 실기기 트립 종료 후 stale currentStation 등 잔재).
-      // 각 키의 trip-bound 정당성은 storageKeys.ts 주석 참고.
-      clearLastNotifiedStationId().catch(noop);       // station-passed dedup
-      clearLastFiredAlarmStationName().catch(noop);   // 사전 예약 alarm 마지막 발화 역
-      clearFiredPushIds().catch(noop);                // silent push pushId dedup
-      clearTripTrainCode().catch(noop);               // trip-bound trainCode
-      AsyncStorage.removeItem(ALARM_EVENT_KEY).catch(noop); // 마지막 alarm event payload
+      // trip-bound storage 키 cleanup은 단일 메타 배열에서 일괄 실행한다.
+      // 새 trip-bound 키 추가 시 src/store/tripBoundCleanups.ts에 한 줄만 추가하면
+      // setDestination에서 누락 회귀가 차단된다. (#702 → #799 사이 LAST_FIRED_ALARM_STATION_NAME_KEY 등
+      // 호출부에서 빠졌던 사례 재발 방지.)
+      runTripBoundCleanups().catch(noop);
       // customOrigin 메모리 상태도 동기화. (loadCustomOrigin은 hydration용이므로 영향 없음)
       if (get().customOrigin !== null) {
         set({ customOrigin: null });
