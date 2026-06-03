@@ -67,6 +67,7 @@ const mockLogSuppressedDedupAlarm = jest.fn();
 const mockLogSuppressedDedupStation = jest.fn();
 const mockLogSuppressedMovement = jest.fn();
 const mockLogSuppressedSleepFirstTransfer = jest.fn();
+const mockLogSuppressedDismissSilence = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -76,6 +77,7 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedMovement: (...args: unknown[]) => mockLogSuppressedMovement(...args),
   logSuppressedSleepFirstTransfer: (...args: unknown[]) =>
     mockLogSuppressedSleepFirstTransfer(...args),
+  logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
 }));
 
 const mockGetBoardingLock = jest.fn();
@@ -136,7 +138,7 @@ function defaultInputs(overrides: Partial<UseStationAlarmInputs> = {}): UseStati
 describe('useStationAlarm', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    useAppStore.setState({ sleepMode: false, allowSpeaker: true, alarmEvent: null });
+    useAppStore.setState({ sleepMode: false, allowSpeaker: true, alarmEvent: null, dismissSilence: null });
     mockEvaluateAlarmPhase.mockReturnValue(null);
     mockResolveAlarmDirection.mockReturnValue(undefined);
     mockResolveNextTarget.mockReturnValue(null);
@@ -2013,6 +2015,215 @@ describe('useStationAlarm', () => {
       rerender({ lat: 37.50001 });
 
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+    });
+  });
+
+  describe('#746 dismiss silence 게이트 (FG)', () => {
+    const route = makeDirectRoute(3, '2');
+    const userLocation = { lat: 37.498, lng: 127.028 };
+
+    it('ETA path: silence 활성이면 phase 알람 차단 + log + return (movement gate 전 단계)', async () => {
+      useAppStore.setState({
+        dismissSilence: {
+          sinceTs: Date.now(),
+          sinceLat: userLocation.lat,
+          sinceLng: userLocation.lng,
+        },
+      });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation,
+            speedMps: 10,
+            accuracyMeters: 50,
+            nearestStation: makeStation('S1', '시청', 37.498, 127.028),
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockLogSuppressedDismissSilence).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: earlyDest.stationName,
+            kind: earlyDest.type,
+            phaseId: earlyDest.phaseId,
+          }),
+        ),
+      );
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('API imminent path: silence 활성이면 imminent도 차단', async () => {
+      useAppStore.setState({
+        dismissSilence: {
+          sinceTs: Date.now(),
+          sinceLat: null,
+          sinceLng: null,
+        },
+      });
+      mockGetStoredTripTrainCode.mockResolvedValue('T-1');
+      mockUseArrivalInfo.mockReturnValue({ arrival: { up: [], down: [] }, loading: false, isMock: false });
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation,
+            speedMps: 10,
+            accuracyMeters: 50,
+            nearestStation: makeStation('S1', '시청', 37.498, 127.028),
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockLogSuppressedDismissSilence).toHaveBeenCalledWith(
+          expect.objectContaining({
+            stationName: imminentDest.stationName,
+            kind: 'destination',
+            phaseId: 'imminent',
+          }),
+        ),
+      );
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('station-passed path: silence 활성이면 알림 차단 + lastNotifiedStationId 갱신 보존', async () => {
+      useAppStore.setState({
+        dismissSilence: {
+          sinceTs: Date.now(),
+          sinceLat: userLocation.lat,
+          sinceLng: userLocation.lng,
+        },
+      });
+      mockGetLastNotifiedStationId.mockResolvedValue('other-id');
+      const nearestStation = makeStation('S1', '시청', 37.498, 127.028);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation,
+            speedMps: 10,
+            accuracyMeters: 50,
+            nearestStation,
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockLogSuppressedDismissSilence).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: nearestStation.name,
+            kind: 'station-passed',
+          }),
+        ),
+      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+    });
+
+    it('silence 만료(시간 5분 초과) → 게이트 통과 + store clear action 호출 (정상 발사)', async () => {
+      const setStateSpy = jest.spyOn(useAppStore.getState(), 'clearDismissSilence');
+      useAppStore.setState({
+        dismissSilence: {
+          sinceTs: Date.now() - 10 * 60_000,
+          sinceLat: null,
+          sinceLng: null,
+        },
+      });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation,
+            speedMps: 10,
+            accuracyMeters: 50,
+            nearestStation: makeStation('S1', '시청', 37.498, 127.028),
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(setStateSpy).toHaveBeenCalled();
+      setStateSpy.mockRestore();
+    });
+
+    it('API imminent path: silence 만료(시간) 시 clear 호출 + 정상 발사', async () => {
+      const clearSpy = jest.spyOn(useAppStore.getState(), 'clearDismissSilence');
+      useAppStore.setState({
+        dismissSilence: {
+          sinceTs: Date.now() - 10 * 60_000,
+          sinceLat: null,
+          sinceLng: null,
+        },
+      });
+      mockGetStoredTripTrainCode.mockResolvedValue('T-1');
+      mockUseArrivalInfo.mockReturnValue({ arrival: { up: [], down: [] }, loading: false, isMock: false });
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation,
+            speedMps: 10,
+            accuracyMeters: 50,
+            nearestStation: makeStation('S1', '시청', 37.498, 127.028),
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(clearSpy).toHaveBeenCalled();
+      clearSpy.mockRestore();
+    });
+
+    it('silence 만료(거리 200m 이상) → 게이트 통과', async () => {
+      useAppStore.setState({
+        dismissSilence: {
+          sinceTs: Date.now(),
+          sinceLat: 37.498,
+          sinceLng: 127.028,
+        },
+      });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            // 0.003도 ≈ 333m 떨어진 좌표.
+            userLocation: { lat: 37.501, lng: 127.028 },
+            speedMps: 10,
+            accuracyMeters: 50,
+            nearestStation: makeStation('S1', '시청', 37.501, 127.028),
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+    });
+
+    it('silence state 없음 → 게이트 통과 (정상 발사)', async () => {
+      useAppStore.setState({ dismissSilence: null });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation,
+            speedMps: 10,
+            accuracyMeters: 50,
+            nearestStation: makeStation('S1', '시청', 37.498, 127.028),
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedDismissSilence).not.toHaveBeenCalled();
     });
   });
 });

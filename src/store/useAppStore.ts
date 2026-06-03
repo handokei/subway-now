@@ -9,6 +9,11 @@ function demoteSlotEntries(entries: FavoriteEntry[], role: FavoriteSlotRole): Fa
 import type { AlarmEvent } from '../utils/stationAlarm';
 import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, TRIP_ORIGIN_KEY, LOCKLESS_STATION_PASSED_KEY } from '../constants/storageKeys';
 import { runTripBoundCleanups } from './tripBoundCleanups';
+import {
+  setDismissSilence as setDismissSilenceStorage,
+  getDismissSilence as getDismissSilenceStorage,
+  type DismissSilenceState,
+} from '../utils/dismissSilenceStorage';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../i18n/types';
 
@@ -74,6 +79,15 @@ interface AppState {
   setAlarmEvent: (event: AlarmEvent) => void;
   clearAlarmEvent: () => void;
   loadAlarmEvent: () => Promise<void>;
+  /**
+   * #746 — 사용자가 알람을 dismiss한 시점 기록. 5분 또는 200m 이내까지 모든 카테고리
+   * 알람을 차단한다. AsyncStorage SSOT(DISMISS_SILENCE_KEY)와 in-memory mirror 동기 유지.
+   * BG path는 storage helper(getDismissSilence)를 직접 read.
+   */
+  dismissSilence: DismissSilenceState | null;
+  setDismissSilence: (now: number, position: { lat: number; lng: number } | null) => Promise<void>;
+  clearDismissSilence: () => Promise<void>;
+  loadDismissSilence: () => Promise<void>;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -91,6 +105,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   debugVisible: false,
   accessibilityMode: false,
   locklessStationPassed: false,
+  dismissSilence: null,
 
   setDebugVisible: (visible: boolean) => {
     set({ debugVisible: visible });
@@ -211,8 +226,8 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (isSwitch) {
       // trip-bound storage 키 cleanup은 단일 메타 배열에서 일괄 실행한다.
       // 새 trip-bound 키 추가 시 src/store/tripBoundCleanups.ts에 한 줄만 추가하면
-      // setDestination에서 누락 회귀가 차단된다. (#702 → #799 사이 LAST_FIRED_ALARM_STATION_NAME_KEY 등
-      // 호출부에서 빠졌던 사례 재발 방지.)
+      // setDestination에서 누락 회귀가 차단된다. (#702 → #799 사이 LAST_FIRED_ALARM_STATION_NAME_KEY,
+      // #746 dismissSilence 등 누락 사례 재발 방지.)
       runTripBoundCleanups().catch(noop);
       // customOrigin 메모리 상태도 동기화. (loadCustomOrigin은 hydration용이므로 영향 없음)
       if (get().customOrigin !== null) {
@@ -221,6 +236,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       // alarmEvent 메모리 상태도 동기화 — clearAlarmEvent와 같은 set, 재진입 안전.
       if (get().alarmEvent !== null) {
         set({ alarmEvent: null });
+      }
+      // #746: dismissSilence 메모리 상태도 동기화 — storage clear와 같은 set, 재진입 안전.
+      if (get().dismissSilence !== null) {
+        set({ dismissSilence: null });
       }
     }
   },
@@ -424,6 +443,31 @@ export const useAppStore = create<AppState>((set, get) => ({
     } catch {
       // 저장된 데이터 없음 — false 유지
     }
+  },
+
+  // #746 — 사용자가 알람을 dismiss하면 silence 시작점을 기록. 좌표는 호출자가 마지막 알려진
+  // 사용자 위치를 전달 — GPS 미가용 시 null을 넘기면 거리 조건은 미평가되고 시간 조건만 활성.
+  // 메모리/storage 양쪽 동기 — BG 게이트가 storage helper로 직접 read해도 일관.
+  setDismissSilence: async (now, position) => {
+    const next: DismissSilenceState = {
+      sinceTs: now,
+      sinceLat: position?.lat ?? null,
+      sinceLng: position?.lng ?? null,
+    };
+    set({ dismissSilence: next });
+    await setDismissSilenceStorage(next);
+  },
+
+  clearDismissSilence: async () => {
+    if (get().dismissSilence !== null) {
+      set({ dismissSilence: null });
+    }
+    await clearDismissSilenceStorage();
+  },
+
+  loadDismissSilence: async () => {
+    const stored = await getDismissSilenceStorage();
+    set({ dismissSilence: stored });
   },
 
 }));

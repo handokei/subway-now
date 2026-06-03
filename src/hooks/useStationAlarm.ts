@@ -23,9 +23,11 @@ import {
   logFiredStationPassed,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
+  logSuppressedDismissSilence,
   logSuppressedMovement,
   logSuppressedSleepFirstTransfer,
 } from '../utils/alarmLog';
+import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { getBoardingLock } from '../utils/boardingLockStorage';
 import { shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../utils/movementGate';
@@ -123,6 +125,10 @@ export function useStationAlarm({
   const sleepMode = useAppStore((s) => s.sleepMode);
   const allowSpeaker = useAppStore((s) => s.allowSpeaker);
   const setAlarmEvent = useAppStore((s) => s.setAlarmEvent);
+  // #746 — dismiss silence 게이트 평가용 in-memory state. clear는 만료 시점에
+  // store action을 통해 호출(storage도 함께 정리). 게이트 자체는 pure 함수.
+  const dismissSilence = useAppStore((s) => s.dismissSilence);
+  const clearDismissSilenceAction = useAppStore((s) => s.clearDismissSilence);
   const sleepModeRef = useRef(sleepMode);
   const allowSpeakerRef = useRef(allowSpeaker);
 
@@ -306,6 +312,25 @@ export function useStationAlarm({
     // #754: in-flight dedup은 fireAndLog 진입부의 sync firedAlarmsRef.current.add(key) 가
     // 보장한다 (await getBoardingLock 전에 set에 들어가므로 같은 키의 동시 호출은 즉시 return).
     if (rawEvent) {
+      // #746 — dismiss silence 게이트. 사용자 dismiss 후 5분/200m 이내라면 모든 카테고리 차단.
+      // movement/dedup보다 위 — 사용자 명시 정책이 데이터 정확성보다 우선.
+      const silenceDecision = evaluateDismissSilence(
+        dismissSilence,
+        Date.now(),
+        userLocation,
+      );
+      if (silenceDecision.silenced) {
+        logSuppressedDismissSilence({
+          source: 'fg',
+          stationName: rawEvent.stationName,
+          kind: rawEvent.type,
+          phaseId: rawEvent.phaseId,
+        });
+        return;
+      }
+      if (silenceDecision.expired) {
+        void clearDismissSilenceAction();
+      }
       // #733 — Phase ETA path movement gate. early phase는 etaSeconds 무관, remainingStops<=1만
       // 검사하므로 fusion이 인접역으로 jitter하면 즉시 발사. snapshot 1/2에서 관측된 20:07:48 등
       // 정적 transfer-early 회귀 차단.
@@ -348,6 +373,8 @@ export function useStationAlarm({
     positionStability,
     motionStationary,
     skipWarmupGuard,
+    dismissSilence,
+    clearDismissSilenceAction,
   ]);
 
   // #396: 도착정보 API 신호로 imminent 발사.
@@ -369,6 +396,25 @@ export function useStationAlarm({
 
     const imminentKey = `imminent:${destination.name}`;
     if (firedAlarmsRef.current.has(imminentKey)) return;
+
+    // #746 — dismiss silence 게이트. dismiss 후 5분/200m 이내라면 imminent도 차단.
+    const silenceDecision = evaluateDismissSilence(
+      dismissSilence,
+      Date.now(),
+      userLocation,
+    );
+    if (silenceDecision.silenced) {
+      logSuppressedDismissSilence({
+        source: 'fg',
+        stationName: destination.name,
+        kind: 'destination',
+        phaseId: 'imminent',
+      });
+      return;
+    }
+    if (silenceDecision.expired) {
+      void clearDismissSilenceAction();
+    }
 
     // #727 정적 misfire 가드 — useStationAlarm은 timestamp 입력이 없으므로 speed/accuracy만 평가.
     // #733 — speed=null 시 positionStability fallback 사용.
@@ -410,6 +456,10 @@ export function useStationAlarm({
     accuracyMeters,
     positionStability,
     motionStationary,
+    dismissSilence,
+    clearDismissSilenceAction,
+    userLocation?.lat,
+    userLocation?.lng,
   ]);
 
   // Station-passed 알림 효과: 경로상 역 변경 시 dedup된 per-station 알림.
@@ -470,6 +520,25 @@ export function useStationAlarm({
         return;
       }
 
+      // #746 — dismiss silence 게이트. station-passed 카테고리도 동일 정책으로 차단.
+      // userLocation 없이도 시간 조건만 평가 가능 — null 좌표 그대로 전달.
+      const silenceDecision = evaluateDismissSilence(
+        dismissSilence,
+        Date.now(),
+        userLocation,
+      );
+      if (silenceDecision.silenced) {
+        logSuppressedDismissSilence({
+          source: 'fg',
+          stationName: candidateStation.name,
+          kind: 'station-passed',
+        });
+        return;
+      }
+      if (silenceDecision.expired) {
+        void clearDismissSilenceAction();
+      }
+
       void (async () => {
         try {
           const lastId = await getLastNotifiedStationId();
@@ -511,5 +580,9 @@ export function useStationAlarm({
     accuracyOk,
     arrivalConfirmed,
     movementSuppressionReason,
+    dismissSilence,
+    clearDismissSilenceAction,
+    userLocation?.lat,
+    userLocation?.lng,
   ]);
 }

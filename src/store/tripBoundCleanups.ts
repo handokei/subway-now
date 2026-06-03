@@ -15,6 +15,7 @@ import {
 } from '../utils/notificationState';
 import { clearFiredPushIds } from '../utils/firedPushIds';
 import { clearTripTrainCode } from '../utils/tripTrainCode';
+import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dismissSilenceStorage';
 
 // trip-bound storage cleanup 단일 출처.
 // useAppStore.setDestination이 isSwitch(목적지 변경 또는 null 클리어) 분기에서 호출한다.
@@ -42,6 +43,8 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   clearFiredPushIds,
   clearTripTrainCode,
   () => AsyncStorage.removeItem(ALARM_EVENT_KEY),
+  // #746 — 새 trip 시작 시 이전 trip의 dismiss silence는 무효 → 즉시 클리어.
+  clearDismissSilenceStorage,
 ];
 
 /**

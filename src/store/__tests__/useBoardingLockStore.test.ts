@@ -5,11 +5,16 @@ import type { BoardingLock } from '../../types/boardingLock';
 const mockGetBoardingLock = jest.fn();
 const mockSetBoardingLock = jest.fn();
 const mockClearBoardingLock = jest.fn();
+const mockClearDismissSilence = jest.fn();
 
 jest.mock('../../utils/boardingLockStorage', () => ({
   getBoardingLock: (...args: unknown[]) => mockGetBoardingLock(...args),
   setBoardingLock: (...args: unknown[]) => mockSetBoardingLock(...args),
   clearBoardingLock: (...args: unknown[]) => mockClearBoardingLock(...args),
+}));
+
+jest.mock('../../utils/dismissSilenceStorage', () => ({
+  clearDismissSilence: (...args: unknown[]) => mockClearDismissSilence(...args),
 }));
 
 const sample: BoardingLock = {
@@ -26,6 +31,7 @@ describe('useBoardingLockStore', () => {
     jest.clearAllMocks();
     mockSetBoardingLock.mockResolvedValue(undefined);
     mockClearBoardingLock.mockResolvedValue(undefined);
+    mockClearDismissSilence.mockResolvedValue(undefined);
     useBoardingLockStore.setState({ lock: null });
   });
 
@@ -52,6 +58,13 @@ describe('useBoardingLockStore', () => {
       });
       expect(useBoardingLockStore.getState().lock).toEqual(next);
       expect(mockSetBoardingLock).toHaveBeenLastCalledWith(next);
+    });
+
+    it('#746 — createLock은 dismissSilence storage를 즉시 클리어', async () => {
+      await act(async () => {
+        await useBoardingLockStore.getState().createLock(sample);
+      });
+      expect(mockClearDismissSilence).toHaveBeenCalledTimes(1);
     });
   });
 

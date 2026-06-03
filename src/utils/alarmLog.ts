@@ -80,7 +80,9 @@ export type AlarmLogReason =
   //   'lockless-non-intermediate': lock 없는 trip에 transfer/destination push 도달 (backend race).
   //   'lockless-opt-out': 사용자 토글 OFF 상태에서 lockless intermediate push 도달.
   | 'lockless-non-intermediate'
-  | 'lockless-opt-out';
+  | 'lockless-opt-out'
+  // #746 — 사용자가 알람을 dismiss한 직후 5분 또는 200m 이내 동안 모든 카테고리 차단.
+  | 'dismiss-silence';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -460,6 +462,28 @@ export function logSuppressedMovement(input: {
     source: input.source,
     outcome: 'suppressed',
     reason: input.reason,
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
+  });
+}
+
+/**
+ * #746 — dismiss silence 게이트가 차단한 알람 1건 적재.
+ * source는 호출 path를 식별: FG polling은 'fg', BG location task는 'bg',
+ * silent push BG handler는 'silent-push-skipped'.
+ */
+export function logSuppressedDismissSilence(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'dismiss-silence',
     stationName: input.stationName,
     kind: input.kind,
     phaseId: input.phaseId,

@@ -86,6 +86,11 @@ export default function HomeScreen() {
   const alarmEvent = useAppStore((s) => s.alarmEvent);
   const clearAlarmEvent = useAppStore((s) => s.clearAlarmEvent);
   const loadAlarmEvent = useAppStore((s) => s.loadAlarmEvent);
+  // #746: 알람 dismiss → silence 시작점 기록. 같은 컴포넌트의 userLocation을 같이 캡처.
+  const setDismissSilence = useAppStore((s) => s.setDismissSilence);
+  // #746 reviewer P1: cold-start hydration — storage에 살아있는 silence 상태를
+  // FG path가 무시하지 않도록 loadAlarmEvent와 같은 시퀀스로 hydrate.
+  const loadDismissSilence = useAppStore((s) => s.loadDismissSilence);
   const [pickerVisible, setPickerVisible] = useState(false);
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const prevDestIdRef = useRef<string | null>(null);
@@ -339,6 +344,7 @@ export default function HomeScreen() {
     loadRoutePreference();
     loadAlarmEvent();
     loadLocklessStationPassed();
+    loadDismissSilence();
     // iOS가 BG에서 앱을 메모리 압박으로 종료하면 Zustand 상태는 휘발되지만
     // DESTINATION_KEY는 디스크에 남는다. 콜드/웜 부팅 시 복원해 trip을 이어간다 (#541).
     // #700 — tripOrigin을 먼저 await으로 hydrate한 다음 destination을 set한다.
@@ -892,7 +898,17 @@ export default function HomeScreen() {
         // #806: dismiss는 알람 UI/진동만 끄고 trip(BoardingLock)은 유지.
         // 한 정거장 전(early) destination 알람을 끄면 trip이 종료되던 회귀의 fix.
         // trip release는 도착 자동 release(useBoardingLockAutoRelease, #759)에 위임한다.
-        <AlarmOverlay event={alarmEvent} onDismiss={clearAlarmEvent} />
+        // #746: dismiss와 동시에 silence 시작점 기록. userLocation 미가용 시 시간 단독 silence.
+        <AlarmOverlay
+          event={alarmEvent}
+          onDismiss={() => {
+            void setDismissSilence(
+              Date.now(),
+              userLocation ? { lat: userLocation.lat, lng: userLocation.lng } : null,
+            );
+            clearAlarmEvent();
+          }}
+        />
       )}
 
       <DestinationPicker

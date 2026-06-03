@@ -26,6 +26,7 @@ import {
   FLUSH_DEBOUNCE_MS,
   FLUSH_MAX_DELAY_MS,
   logSuppressedDedupStation,
+  logSuppressedDismissSilence,
   logSuppressedGate,
   logSuppressedMovement,
   logSilentPushReceived,
@@ -481,6 +482,44 @@ describe('alarmLog', () => {
         kind: 'destination',
         phaseId: 'early',
       });
+    });
+
+    it('logSuppressedDismissSilence: reason=dismiss-silence + source/kind/phaseId 보존 (#746)', async () => {
+      logSuppressedDismissSilence({
+        source: 'fg',
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'early',
+      });
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'dismiss-silence',
+        stationName: '강남',
+        kind: 'destination',
+        phaseId: 'early',
+      });
+    });
+
+    it('logSuppressedDismissSilence: phaseId 미전달 시에도 적재 (station-passed kind)', async () => {
+      logSuppressedDismissSilence({
+        source: 'bg',
+        stationName: '시청',
+        kind: 'station-passed',
+      });
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg',
+        outcome: 'suppressed',
+        reason: 'dismiss-silence',
+        kind: 'station-passed',
+      });
+      expect(saved[0].phaseId).toBeUndefined();
     });
 
     it('#626 같은 키 윈도우 내 재호출은 drop (FG polling 매초 평가 스팸 차단)', async () => {
