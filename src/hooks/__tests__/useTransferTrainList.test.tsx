@@ -1,15 +1,17 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { useTransferTrainList, filterArrivalsByDirection } from '../useTransferTrainList';
-import { useArrivalInfo } from '../useArrivalInfo';
+import { prefetchArrival, useArrivalInfo } from '../useArrivalInfo';
 import { useBoardingLockStore } from '../../store/useBoardingLockStore';
 import { findStationByNameAndLine } from '../../utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../../api/arrivalApi';
 import type { BoardingLock } from '../../types/boardingLock';
 import type { Station } from '../../types/station';
-import { makeTransferRoute } from '../../testUtils/routeFixtures';
+import { makeDirectRoute, makeTransferRoute } from '../../testUtils/routeFixtures';
 
 jest.mock('../useArrivalInfo');
 const mockUseArrival = useArrivalInfo as jest.Mock;
+const mockPrefetchArrival = prefetchArrival as jest.Mock;
+const mockRefetch = jest.fn();
 
 const mockCreateLock = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../store/useBoardingLockStore', () => {
@@ -39,7 +41,7 @@ const route = makeTransferRoute({
 const gondeokOn6 = findStationByNameAndLine('공덕', '6') as Station;
 
 function arrivalRet(arrival: StationArrival | null) {
-  return { arrival, loading: false, isMock: false };
+  return { arrival, loading: false, isMock: false, refetch: mockRefetch };
 }
 
 function makeTrain(overrides: Partial<ArrivalInfo>): ArrivalInfo {
@@ -62,6 +64,7 @@ describe('useTransferTrainList', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockUseArrival.mockReturnValue(arrivalRet(null));
+    mockPrefetchArrival.mockResolvedValue(undefined);
   });
 
   it('context 미확정(currentStation=null) → context=null + arrivals=[]', () => {
@@ -144,6 +147,131 @@ describe('useTransferTrainList', () => {
     expect(mockCreateLock).not.toHaveBeenCalled();
   });
 
+  // #814 — 환승 imminent prefetch + transferContext 활성화 시 refetch
+  describe('#814 imminent prefetch & release refetch', () => {
+    it('환승 1정거장 전(imminent) → 다음 호선 arrival prefetch 트리거', () => {
+      const hyochangOn6 = findStationByNameAndLine('효창공원앞', '6') as Station;
+      const routeImminent = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 3,
+      });
+      renderHook(() =>
+        useTransferTrainList({
+          lock,
+          route: routeImminent,
+          destinationName: '여의나루',
+          currentStation: hyochangOn6,
+        }),
+      );
+      expect(mockPrefetchArrival).toHaveBeenCalledWith('공덕', '5');
+    });
+
+    it('환승역 도달 시(잔여=0)도 prefetch — context 활성화와 동시 prefetch+refetch', () => {
+      renderHook(() =>
+        useTransferTrainList({
+          lock,
+          route,
+          destinationName: '여의나루',
+          currentStation: gondeokOn6,
+        }),
+      );
+      expect(mockPrefetchArrival).toHaveBeenCalledWith('공덕', '5');
+    });
+
+    it('환승 2정거장 이상 전 → prefetch 미발생', () => {
+      const samgakji = findStationByNameAndLine('삼각지', '6') as Station;
+      renderHook(() =>
+        useTransferTrainList({
+          lock,
+          route,
+          destinationName: '여의나루',
+          currentStation: samgakji,
+        }),
+      );
+      expect(mockPrefetchArrival).not.toHaveBeenCalled();
+    });
+
+    it('비환승 trip(direct route) → prefetch 미발생 (불필요 폴링 없음)', () => {
+      const directRoute = makeDirectRoute(5, '6');
+      const lockOn6 = { ...lock, boardingLine: '6' as const };
+      renderHook(() =>
+        useTransferTrainList({
+          lock: lockOn6,
+          route: directRoute,
+          destinationName: '여의나루',
+          currentStation: gondeokOn6,
+        }),
+      );
+      expect(mockPrefetchArrival).not.toHaveBeenCalled();
+    });
+
+    it('lock=null → prefetch 미발생', () => {
+      renderHook(() =>
+        useTransferTrainList({
+          lock: null,
+          route,
+          destinationName: '여의나루',
+          currentStation: gondeokOn6,
+        }),
+      );
+      expect(mockPrefetchArrival).not.toHaveBeenCalled();
+    });
+
+    it('transferContext 활성화 즉시 refetch 호출 — 첫 응답 앞당김', () => {
+      // 초기 마운트: currentStation=null → context null → refetch 미호출
+      const { rerender } = renderHook(
+        (props: {
+          lock: BoardingLock | null;
+          currentStation: Station | null;
+        }) =>
+          useTransferTrainList({
+            lock: props.lock,
+            route,
+            destinationName: '여의나루',
+            currentStation: props.currentStation,
+          }),
+        { initialProps: { lock, currentStation: null } },
+      );
+      expect(mockRefetch).not.toHaveBeenCalled();
+
+      // 환승역 도달 → context 활성화 → refetch 1회
+      rerender({ lock, currentStation: gondeokOn6 });
+      expect(mockRefetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('transferContext 유지 중에는 추가 refetch 미발생 (re-render에 면역)', () => {
+      const { rerender } = renderHook(
+        (props: { currentStation: Station }) =>
+          useTransferTrainList({
+            lock,
+            route,
+            destinationName: '여의나루',
+            currentStation: props.currentStation,
+          }),
+        { initialProps: { currentStation: gondeokOn6 } },
+      );
+      expect(mockRefetch).toHaveBeenCalledTimes(1);
+      // 같은 currentStation으로 rerender — context 동일 → refetch 추가 호출 없음
+      rerender({ currentStation: gondeokOn6 });
+      expect(mockRefetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('비환승 trip은 refetch도 미호출', () => {
+      const directRoute = makeDirectRoute(5, '6');
+      renderHook(() =>
+        useTransferTrainList({
+          lock,
+          route: directRoute,
+          destinationName: '강남',
+          currentStation: gondeokOn6,
+        }),
+      );
+      expect(mockRefetch).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('filterArrivalsByDirection', () => {

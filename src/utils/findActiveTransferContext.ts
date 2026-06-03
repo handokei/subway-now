@@ -1,7 +1,12 @@
 import type { BoardingLock } from '../types/boardingLock';
 import type { LineNumber, Station } from '../types/station';
 import type { Route } from './stationRoute';
-import { findStationByNameAndLine, getStationsOnLine, isSameStationName } from './stationRoute';
+import {
+  findStationByNameAndLine,
+  getRemainingStops,
+  getStationsOnLine,
+  isSameStationName,
+} from './stationRoute';
 import { resolveAllTargets } from './stationAlarm';
 import type { TripDirection } from './tripDirection';
 
@@ -75,6 +80,79 @@ export function findActiveTransferContext(
     direction,
     completedTransferIdx: matchedIdx,
   };
+}
+
+/** prefetch 트리거에 사용 — 환승 imminent로 판정하는 잔여 stops 임계값 (#814). */
+const PREFETCH_IMMINENT_STOPS = 1;
+
+export interface UpcomingTransferTarget {
+  /** 환승 후 탑승할 노선 — useArrivalInfo lineHint로 사용. */
+  nextLine: LineNumber;
+  /** toLine 기준 환승역 이름 — prefetch 캐시 키(useArrivalInfo의 stationName과 동일 스코프). */
+  transferStationName: string;
+}
+
+/**
+ * 현재 leg에서 다음 환승이 imminent(잔여 stops ≤ 1)인지 판정하고, prefetch 대상(next line + 환승역)
+ * 을 반환한다 (#814). 이미 환승역 도달해 findActiveTransferContext가 활성 컨텍스트를 반환하는
+ * 순간은 포함된다(잔여 stops = 0).
+ *
+ * - lock/route/currentStation 중 하나라도 없으면 null
+ * - lock.boardingLine을 fromLine으로 가지는 transfer waypoint(=다음 환승)를 찾아
+ *   currentStation으로부터의 잔여 stops를 계산. PREFETCH_IMMINENT_STOPS 이하만 반환
+ * - direct route는 transfer waypoint가 없어 null
+ * - currentStation이 fromLine 변형이 아닌 경우(=환승 도중 nextLine으로 이미 stitch된 상태)는
+ *   nextLine 변형으로 currentStation을 재조회해 잔여=0(=환승역 위)로 평가
+ *
+ * 호출자(useTransferTrainList)는 결과를 받으면 prefetchArrival을 호출해 BoardingTrainList
+ * warmup을 줄인다. 비환승 trip은 null 반환 → prefetch 미발생.
+ */
+export function findUpcomingTransferPrefetch(
+  lock: BoardingLock | null,
+  route: Route,
+  destinationName: string | null,
+  currentStation: Station | null,
+): UpcomingTransferTarget | null {
+  if (!lock || !route || !destinationName || !currentStation) return null;
+  if (route.type === 'direct') return null;
+
+  const targets = resolveAllTargets(route, destinationName);
+  // 다음 환승 = lock.boardingLine을 fromLine으로 사용하는 transfer 타겟 (= approachLine === boardingLine).
+  // multi-transfer에서도 사용자가 현재 leg의 boardingLine을 기준으로 다음 환승만 찾는다.
+  const upcoming = targets.find(
+    (t) => t.alarmType === 'transfer' && t.approachLine === lock.boardingLine,
+  );
+  if (!upcoming) return null;
+
+  const upcomingIdx = targets.indexOf(upcoming);
+  const next = targets[upcomingIdx + 1];
+  // resolveAllTargets는 transfer 타겟 뒤에 destination/다음 transfer를 보장 — 방어 코드만.
+  /* istanbul ignore next */
+  if (!next) return null;
+
+  const nextLine = next.approachLine;
+  // 위 upcoming 매칭이 t.approachLine === lock.boardingLine 조건으로 이미 filter 했으므로
+  // lock.boardingLine === nextLine 시나리오는 매칭 자체가 안 된다 (다음 leg는 다른 노선).
+  // 같은 노선 안에서 leg가 분리되는 케이스(e.g. 분기선)는 stations.json 라우트에 없음.
+
+  // 잔여 stops: currentStation이 fromLine 변형이면 직접 계산.
+  const fromLineStation = findStationByNameAndLine(currentStation.name, upcoming.approachLine);
+  const transferOnFromLine = findStationByNameAndLine(upcoming.name, upcoming.approachLine);
+  /* istanbul ignore next -- targets는 stations.json에서 도출되므로 lookup 실패는 데이터 정합성 가상 케이스. */
+  if (!transferOnFromLine) return null;
+
+  // currentStation.name이 fromLine 변형으로 존재하지 않으면 잔여 stops를 계산할 수 없다.
+  // 일반 시나리오에선 사용자가 fromLine 위에 있어 lookup이 항상 성공한다. lookup 실패는 fusion이
+  // 다른 노선으로 stitch됐거나 데이터 정합성 깨진 케이스 — 보수적으로 prefetch 건너뜀.
+  if (!fromLineStation) return null;
+
+  const remainingStops = getRemainingStops(fromLineStation.id, transferOnFromLine.id);
+  /* istanbul ignore next -- fromLineStation과 transferOnFromLine은 같은 line(upcoming.approachLine)
+     으로 lookup된 결과라 getRemainingStops가 null을 반환할 일이 없다. 방어 코드. */
+  if (remainingStops === null) return null;
+  if (remainingStops > PREFETCH_IMMINENT_STOPS) return null;
+
+  return { nextLine, transferStationName: upcoming.name };
 }
 
 /**

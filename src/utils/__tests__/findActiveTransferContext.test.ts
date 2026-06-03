@@ -1,4 +1,8 @@
-import { findActiveTransferContext, resolveDirectionInLine } from '../findActiveTransferContext';
+import {
+  findActiveTransferContext,
+  findUpcomingTransferPrefetch,
+  resolveDirectionInLine,
+} from '../findActiveTransferContext';
 import { findStationByNameAndLine, getStationsOnLine } from '../stationRoute';
 import type { BoardingLock } from '../../types/boardingLock';
 import type { Station } from '../../types/station';
@@ -178,6 +182,171 @@ describe('findActiveTransferContext', () => {
     expect(
       findActiveTransferContext(transferredLock, route, '여의나루', gondeokOnLine6),
     ).toBeNull();
+  });
+
+  describe('findUpcomingTransferPrefetch (#814)', () => {
+    it('lock=null이면 null', () => {
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      expect(findUpcomingTransferPrefetch(null, route, '여의나루', gondeokOnLine6)).toBeNull();
+    });
+
+    it('route=null이면 null', () => {
+      expect(findUpcomingTransferPrefetch(lock, null, '여의나루', gondeokOnLine6)).toBeNull();
+    });
+
+    it('destinationName=null이면 null', () => {
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      expect(findUpcomingTransferPrefetch(lock, route, null, gondeokOnLine6)).toBeNull();
+    });
+
+    it('currentStation=null이면 null', () => {
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      expect(findUpcomingTransferPrefetch(lock, route, '여의나루', null)).toBeNull();
+    });
+
+    it('direct route(비환승 trip)은 항상 null — prefetch 미발생', () => {
+      const route = makeDirectRoute(5, '6');
+      const lockOn6 = { ...lock, boardingLine: '6' as const };
+      expect(findUpcomingTransferPrefetch(lockOn6, route, '공덕', gondeokOnLine6)).toBeNull();
+    });
+
+    it('환승 1정거장 전 (imminent) → next line + 환승역 반환', () => {
+      // 6호선 효창공원앞은 공덕 바로 다음(잔여 stops=1) — imminent threshold 충족
+      const hyochangOn6 = findStationByNameAndLine('효창공원앞', '6') as Station;
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 3,
+      });
+      const lockOn6 = { ...lock, boardingLine: '6' as const };
+      const result = findUpcomingTransferPrefetch(lockOn6, route, '여의나루', hyochangOn6);
+      expect(result).not.toBeNull();
+      expect(result!.nextLine).toBe('5');
+      expect(result!.transferStationName).toBe('공덕');
+    });
+
+    it('환승 2정거장 이상 전 → null (잔여 stops > 1)', () => {
+      // 6호선 삼각지는 공덕에서 2 stop 떨어짐 — threshold 초과
+      const samgakji = findStationByNameAndLine('삼각지', '6') as Station;
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      const lockOn6 = { ...lock, boardingLine: '6' as const };
+      expect(findUpcomingTransferPrefetch(lockOn6, route, '여의나루', samgakji)).toBeNull();
+    });
+
+    it('이미 환승역 도달(잔여=0)도 prefetch target 반환 — context 활성화와 동시 호출 케이스', () => {
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      const lockOn6 = { ...lock, boardingLine: '6' as const };
+      const result = findUpcomingTransferPrefetch(lockOn6, route, '여의나루', gondeokOnLine6);
+      expect(result).not.toBeNull();
+      expect(result!.transferStationName).toBe('공덕');
+    });
+
+    it('lock이 이미 nextLine으로 교체됨(환승 완료) → null', () => {
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 3,
+      });
+      const transferredLock = { ...lock, boardingLine: '5' as const };
+      const hyochangOn6 = findStationByNameAndLine('효창공원앞', '6') as Station;
+      expect(
+        findUpcomingTransferPrefetch(transferredLock, route, '여의나루', hyochangOn6),
+      ).toBeNull();
+    });
+
+    it('currentStation이 환승역명과 같지만 다른 line variant — fromLine variant lookup으로 잔여=0', () => {
+      // 사용자가 환승역에 도달해 fusion이 nextLine 변형(공덕 5호선)으로 stitch된 직후.
+      // currentStation.line='5'이지만 currentStation.name='공덕'이고 fromLine(6)에도 공덕이 존재 →
+      // findStationByNameAndLine('공덕', '6') 성공 → getRemainingStops(6공덕, 6공덕) = 0 → prefetch.
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      const lockOn6 = { ...lock, boardingLine: '6' as const };
+      const result = findUpcomingTransferPrefetch(lockOn6, route, '여의나루', gondeokOnLine5);
+      expect(result).not.toBeNull();
+      expect(result!.transferStationName).toBe('공덕');
+    });
+
+    it('currentStation이 fromLine variant도 없는 다른 역(여의나루) → null', () => {
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 3,
+      });
+      const lockOn6 = { ...lock, boardingLine: '6' as const };
+      // 5호선 여의나루: 6호선 variant 없음 + 환승역명과도 다름 → fromLineStation undefined → null
+      expect(findUpcomingTransferPrefetch(lockOn6, route, '여의나루', yeouinaru)).toBeNull();
+    });
+
+    it('lock.boardingLine이 어떤 transfer waypoint의 fromLine도 아니면 null', () => {
+      // 사용자가 1호선 lock인데 route는 6→5 환승 — fromLine 매칭 없음
+      const route = makeTransferRoute({
+        transferName: '공덕',
+        fromLine: '6',
+        toLine: '5',
+        stopsToTransfer: 1,
+        stopsFromTransfer: 3,
+      });
+      const lockOn1 = { ...lock, boardingLine: '1' as const };
+      const hyochangOn6 = findStationByNameAndLine('효창공원앞', '6') as Station;
+      expect(findUpcomingTransferPrefetch(lockOn1, route, '여의나루', hyochangOn6)).toBeNull();
+    });
+
+    it('multi-transfer route — 첫 leg의 다음 환승만 prefetch 대상', () => {
+      const route = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '공덕', fromLine: '6', toLine: '5', stopsToTransfer: 1 },
+          { transferName: '여의도', fromLine: '5', toLine: '9', stopsToTransfer: 3 },
+        ],
+        stopsAfterLastTransfer: 1,
+      });
+      const lockOn6 = { ...lock, boardingLine: '6' as const };
+      const hyochangOn6 = findStationByNameAndLine('효창공원앞', '6') as Station;
+      const result = findUpcomingTransferPrefetch(lockOn6, route, '아무목적지', hyochangOn6);
+      expect(result).not.toBeNull();
+      expect(result!.transferStationName).toBe('공덕');
+      expect(result!.nextLine).toBe('5');
+    });
   });
 
   describe('resolveDirectionInLine (직접 호출)', () => {
