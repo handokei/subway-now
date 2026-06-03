@@ -79,8 +79,9 @@ describe('MisBoardingReselectModal', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('#749 nextStationLabel을 BoardingTrainList로 forward — "○○행 · ○○방면" 표기', () => {
-    // destination은 Seoul API trainLineNm 원본 포맷("도봉산행"). #792 parseTrainLineDirection 정규화.
+  it('#807 nextStationLabel을 BoardingTrainList로 forward — "<next>방면"만 표기 (종착 제거)', () => {
+    // destination은 Seoul API trainLineNm 원본 포맷("도봉산행"). #807 사양으로 종착은 UI에서 빠지고
+    // 다음 인접역 방면만 노출된다. 5호선 마천/방화 누락 회귀의 회귀 차단.
     const train = makeTrain({ trainCode: 'C', destination: '도봉산행', line: '7' });
     const { getByTestId } = renderWithTheme(
       <MisBoardingReselectModal
@@ -92,6 +93,6 @@ describe('MisBoardingReselectModal', () => {
         nextStationLabel="사가정"
       />,
     );
-    expect(getByTestId('boarding-train-meta-C').props.children).toBe('도봉산행 · 사가정방면');
+    expect(getByTestId('boarding-train-meta-C').props.children).toBe('사가정방면');
   });
 });

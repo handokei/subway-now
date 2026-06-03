@@ -127,7 +127,8 @@ describe('BoardingTrainList', () => {
     expect(onSelect).toHaveBeenCalled();
   });
 
-  it('#749 nextStationLabel 전달 시 종착 + 방면 동시 표시 ("○○행 · ○○방면")', () => {
+  it('#807 nextStationLabel 전달 시 종착 제거하고 "<next>방면"만 표시', () => {
+    // 5호선 마천행 등 종착 분기 누락 회귀의 회귀 차단. 종착 표기는 UI에서 빠진다.
     const train = makeTrain({ trainCode: 'T-NEXT', destination: '석남행', line: '7' });
     const { getByTestId } = renderWithTheme(
       <BoardingTrainList
@@ -137,7 +138,7 @@ describe('BoardingTrainList', () => {
         nextStationLabel="중곡"
       />,
     );
-    expect(getByTestId('boarding-train-meta-T-NEXT').props.children).toBe('석남행 · 중곡방면');
+    expect(getByTestId('boarding-train-meta-T-NEXT').props.children).toBe('중곡방면');
   });
 
   it('#749 nextStationLabel null이면 종착만 표시 (방면 생략)', () => {
@@ -169,7 +170,7 @@ describe('BoardingTrainList', () => {
     expect(getByTestId('boarding-train-sequence-T-3RD').props.children).toBe('3번째 전');
   });
 
-  it('#749 compact 모드: 헤더/trainCode 라인 생략, 단일 row 종착·방면 라벨', () => {
+  it('#749 compact 모드: 헤더/trainCode 라인 생략, 단일 row "<next>방면" 라벨(#807)', () => {
     const train = makeTrain({ trainCode: 'T-COMPACT', destination: '석남행', line: '7' });
     const { getByTestId, queryByText } = renderWithTheme(
       <BoardingTrainList
@@ -180,7 +181,7 @@ describe('BoardingTrainList', () => {
         nextStationLabel="중곡"
       />,
     );
-    expect(getByTestId('boarding-train-meta-T-COMPACT').props.children).toBe('석남행 · 중곡방면');
+    expect(getByTestId('boarding-train-meta-T-COMPACT').props.children).toBe('중곡방면');
     expect(queryByText('탑승할 열차 선택')).toBeNull();
     expect(queryByText('T-COMPACT')).toBeNull();
   });
@@ -208,17 +209,19 @@ describe('BoardingTrainList', () => {
     expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
   });
 
-  // #792 라벨 dedup 회귀 가드 — 동일 BoardingTrainList 렌더 + assertion 패턴이라 it.each로 통합
-  // (SonarCloud CPD duplication 차단; 직전 PR #788과 동일한 접근).
-  describe('#792 종착/방면 라벨 중복 제거', () => {
+  // #807 라벨 통일 — 종착(마천행/방화행 등) 제거하고 "<next>방면"만 노출.
+  // nextStationLabel 미전달 시에만 종착 fallback. 노선/종착 표기에 무관 동일 결과.
+  describe('#807 종착 제거 · "<next>방면" 통일', () => {
     it.each<[string, string, LineNumber, string | null, string]>([
-      ['방면 패턴 + 동일 역 dedup', '어린이대공원(세종대)방면', '7', '어린이대공원', '어린이대공원(세종대)방면'],
-      ['순환선 + nextStationLabel 없음 → 행 미부착', '내선순환', '2', null, '내선순환'],
-      ['일반 종착 + 다른 인접역 → 정상 부착', '도봉산행', '7', '중곡', '도봉산행 · 중곡방면'],
-      // 1호선 망월사 시뮬레이션 — 이전 includes() 기반 dedup이 false-positive로 "도봉산행"만 표시했음.
-      ['substring false-positive 방지 (도봉산행 + 도봉)', '도봉산행', '1', '도봉', '도봉산행 · 도봉방면'],
+      ['방면 패턴 종착 + next → next만', '어린이대공원(세종대)방면', '7', '구의', '구의방면'],
+      ['순환선 + nextStationLabel 없음 → 종착 fallback', '내선순환', '2', null, '내선순환'],
+      ['일반 종착 + 다른 인접역 → next방면', '도봉산행', '7', '중곡', '중곡방면'],
+      ['terminal=next 케이스도 dedup 없이 next방면', '도봉산행', '1', '도봉산', '도봉산방면'],
+      // 5호선 회귀 가드 — 종착 분기 누락 차단의 회귀 자체 제거.
+      ['5호선 마천행 → next방면', '마천행', '5', '중곡', '중곡방면'],
+      ['5호선 방화행 → next방면', '방화행', '5', '광화문', '광화문방면'],
     ])('%s', (_, destination, line, nextStationLabel, expected) => {
-      const train = makeTrain({ trainCode: 'T-792', destination, line });
+      const train = makeTrain({ trainCode: 'T-807', destination, line });
       const { getByTestId } = renderWithTheme(
         <BoardingTrainList
           arrivals={[train]}
@@ -227,7 +230,7 @@ describe('BoardingTrainList', () => {
           nextStationLabel={nextStationLabel}
         />,
       );
-      expect(getByTestId('boarding-train-meta-T-792').props.children).toBe(expected);
+      expect(getByTestId('boarding-train-meta-T-807').props.children).toBe(expected);
     });
   });
 

@@ -27,61 +27,33 @@ export function parseTrainLineDirection(
 }
 
 /**
- * #792: 종착역의 "기준 역명"만 추출한다. dedup용 정확 비교 키.
+ * #807: 종착(마천행/방화행 등)이 아니라 **다음으로 지날 인접역 방면**만 노출한다.
  *
- * 패턴별 추출:
- *   "도봉산행"               → "도봉산"
- *   "어린이대공원(세종대)방면" → "어린이대공원"   (괄호 안 별칭/노선 표기 제거)
- *   "어린이대공원방면"         → "어린이대공원"
- *   "내선순환" / "외선순환"    → null            (순환선은 종착이 없음)
- *   ""                       → null
- *   "비정형 텍스트"            → null            (외부 호출자는 비교 못 함 → 안전한 fallback)
+ * 사용자 요구(#807): "내가 타야하는 다음 역" 정보만 한 줄로. 종착 표기는 정보 과부하 + 노선별
+ * 분기(상일동/하남검단산 등) 누락 회귀의 원인이라 제거. nextStationLabel이 있으면 항상
+ * `<name>방면`만 반환한다 — terminal/destination 비교 없이 일관 통일.
  *
- * 호출자(`buildDirectionMeta`)는 추출된 terminal이 nextStationLabel과 **정확히 같을 때만** dedup해
- * substring false-positive(예: "도봉산행".includes("도봉")=true → 잘못된 dedup)를 방지한다.
+ * nextStationLabel 미전달(null/빈문자) 시에만 종착(`parseTrainLineDirection`)으로 fallback —
+ * 환승 list 등에서 진행 방향 미정인 경우 종착 텍스트라도 보여주기 위함.
  *
- * 구현 노트: `.+?` 같은 lazy quantifier + optional group 조합은 ReDoS(super-linear backtracking)
- * 위험이라 sonar:typescript:S5852가 잡는다. suffix 매칭 + 단순 char-class 정규식으로 회피한다.
- */
-const TRAILING_PAREN_ALIAS_RE = /\([^()]*\)$/;
-const TERMINAL_SUFFIX_BOUND_FOR = '행';
-const TERMINAL_SUFFIX_VIA_NAME = '방면';
-
-export function getTerminalStationName(trainLineNm: string): string | null {
-  if (!trainLineNm) return null;
-  if (trainLineNm === '내선순환' || trainLineNm === '외선순환') return null;
-
-  if (trainLineNm.endsWith(TERMINAL_SUFFIX_VIA_NAME)) {
-    const withoutSuffix = trainLineNm.slice(0, -TERMINAL_SUFFIX_VIA_NAME.length);
-    const withoutAlias = withoutSuffix.replace(TRAILING_PAREN_ALIAS_RE, '');
-    return withoutAlias.length > 0 ? withoutAlias : null;
-  }
-  if (trainLineNm.endsWith(TERMINAL_SUFFIX_BOUND_FOR)) {
-    const withoutSuffix = trainLineNm.slice(0, -TERMINAL_SUFFIX_BOUND_FOR.length);
-    return withoutSuffix.length > 0 ? withoutSuffix : null;
-  }
-  return null;
-}
-
-/**
- * #792: 종착·방면 라벨 빌더. parseTrainLineDirection으로 종착 표기 i18n 정규화 후, nextStationLabel과
- * 종착 역명이 같으면 "방면" 접미사 생략(중복 차단). 다국어 부속 라벨은 `direction.viaName` 키 사용.
+ * 다국어:
+ *   - ko: "<name>방면"
+ *   - en: "via <name>"
+ *   - ja: "<name>方面"
+ *   - zh: "<name>方向"
  *
- * 회귀 가드:
- *   - destination="어린이대공원(세종대)방면", nextStationLabel="어린이대공원" → terminal 일치 → dedup ✓
- *   - destination="도봉산행", nextStationLabel="도봉" → terminal "도봉산" ≠ "도봉" → 정상 부착 ✓
- *     (이전 substring 기반은 false-positive로 dedup해 사용자에게 방면 정보 누락)
- *   - destination="도봉산행", nextStationLabel="도봉산" → terminal 일치 → dedup ✓
- *   - destination="내선순환" → terminal null → 항상 부속 라벨 부착 (단 nextStationLabel 있을 때)
+ * 회귀 가드(#807):
+ *   - destination="마천행", nextStationLabel="중곡" → "중곡방면" (5호선 마천/방화 누락 차단)
+ *   - destination="어린이대공원(세종대)방면", nextStationLabel="어린이대공원" → "어린이대공원방면"
+ *   - destination="내선순환", nextStationLabel="신도림" → "신도림방면"
+ *
+ * stations 인자는 fallback 경로(`parseTrainLineDirection`)에서만 사용. 일반 경로는 i18n 키만 사용.
  */
 export function buildDirectionMeta(
   destination: string,
   nextStationLabel: string | null,
   stations: readonly Station[],
 ): string {
-  const direction = parseTrainLineDirection(destination, stations);
-  if (!nextStationLabel) return direction;
-  const terminal = getTerminalStationName(destination);
-  if (terminal !== null && terminal === nextStationLabel) return direction;
-  return `${direction} · ${i18next.t('direction.viaName', { name: nextStationLabel })}`;
+  if (!nextStationLabel) return parseTrainLineDirection(destination, stations);
+  return i18next.t('direction.viaName', { name: nextStationLabel });
 }

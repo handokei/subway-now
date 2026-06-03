@@ -1,9 +1,5 @@
 import i18next from 'i18next';
-import {
-  parseTrainLineDirection,
-  getTerminalStationName,
-  buildDirectionMeta,
-} from '../trainLineDirection';
+import { parseTrainLineDirection, buildDirectionMeta } from '../trainLineDirection';
 import type { Station } from '../../types/station';
 
 const stations: Station[] = [
@@ -20,7 +16,7 @@ describe('parseTrainLineDirection', () => {
   });
 
   it.each([
-    // [lang, input, expected, 설명]
+    // [lang, input, expected]
     ['ko', '내선순환', '내선순환'],
     ['en', '내선순환', 'Inner Loop'],
     ['ko', '외선순환', '외선순환'],
@@ -38,99 +34,74 @@ describe('parseTrainLineDirection', () => {
   });
 });
 
-describe('getTerminalStationName (#792)', () => {
-  // i18n에 독립적인 순수 추출 함수 — locale 전환 불필요.
-  it.each([
-    // 일반 종착
-    ['도봉산행', '도봉산'],
-    ['소요산행', '소요산'],
-    ['구로행', '구로'],
-    // 방면 패턴 (지선/분기)
-    ['어린이대공원방면', '어린이대공원'],
-    // 방면 + 괄호 별칭 (#792 회귀 원본)
-    ['어린이대공원(세종대)방면', '어린이대공원'],
-    ['응암(은평구청)방면', '응암'],
-  ])('terminal 추출: "%s" → "%s"', (input, expected) => {
-    expect(getTerminalStationName(input)).toBe(expected);
-  });
-
-  it.each([
-    // 순환선은 종착 없음
-    ['내선순환'],
-    ['외선순환'],
-    // 빈 문자열
-    [''],
-    // 접미사 단독 입력 — 역명 0길이라 null fallback
-    ['방면'],
-    ['(별칭)방면'],
-    ['행'],
-  ])('null 반환: "%s"', (input) => {
-    expect(getTerminalStationName(input)).toBeNull();
-  });
-
-  it('비정형 텍스트는 null (안전한 fallback — caller가 dedup 못 함)', () => {
-    expect(getTerminalStationName('급행임시')).toBeNull();
-    expect(getTerminalStationName('운행중')).toBeNull();
-  });
-});
-
-describe('buildDirectionMeta (#792)', () => {
+describe('buildDirectionMeta (#807)', () => {
+  // #807: 종착(마천행/방화행 등) 제거, **다음 인접역 방면**만 노출. nextStationLabel 미전달 시에만
+  // 종착 fallback. terminal/destination 비교 없이 일관 통일.
   afterEach(async () => {
     await i18next.changeLanguage('ko');
   });
 
-  describe('회귀 가드 — substring false-positive 방지', () => {
-    it('destination="도봉산행" + nextStationLabel="도봉" → 정상 부착 (terminal "도봉산" ≠ "도봉")', () => {
-      // 1호선 망월사 시뮬레이션. 이전 includes() 기반 dedup은 false-positive로 방면 정보를 누락했음.
-      expect(buildDirectionMeta('도봉산행', '도봉', stations)).toBe('도봉산행 · 도봉방면');
+  describe('nextStationLabel 있음 — 항상 "<name>방면"만', () => {
+    it('일반 종착 + 다음역 → 다음역방면만 (종착 제거)', () => {
+      expect(buildDirectionMeta('소요산행', '구로', stations)).toBe('구로방면');
     });
 
-    it('destination="도봉산행" + nextStationLabel="도봉산" → dedup (terminal 정확 일치)', () => {
-      expect(buildDirectionMeta('도봉산행', '도봉산', stations)).toBe('도봉산행');
+    it('5호선 마천행 — 종착 제거, 다음역방면만 (#807 회귀 원본)', () => {
+      // 5호선 군자→중곡 진행 시 사용자가 보고 싶은 표시는 "중곡방면"뿐.
+      expect(buildDirectionMeta('마천행', '중곡', stations)).toBe('중곡방면');
     });
 
-    it('destination="어린이대공원(세종대)방면" + nextStationLabel="어린이대공원" → dedup (#792 원본 회귀)', () => {
-      expect(buildDirectionMeta('어린이대공원(세종대)방면', '어린이대공원', stations)).toBe(
-        '어린이대공원(세종대)방면',
-      );
+    it('5호선 방화행 — 반대 방향도 동일하게 다음역방면만', () => {
+      expect(buildDirectionMeta('방화행', '광화문', stations)).toBe('광화문방면');
+    });
+
+    it('순환선 + 다음역 → 다음역방면 (종착 정보 없으니 항상 방면)', () => {
+      expect(buildDirectionMeta('내선순환', '신도림', stations)).toBe('신도림방면');
+    });
+
+    it('terminal 일치 케이스도 더 이상 dedup 없이 "<name>방면"', () => {
+      // 종착이 사라졌으므로 dedup 개념 자체가 없음. terminal=nextStation도 단순 방면 표기.
+      expect(buildDirectionMeta('도봉산행', '도봉산', stations)).toBe('도봉산방면');
+    });
+
+    it('괄호 별칭 종착 — 다음역명만 보이므로 별칭 영향 없음', () => {
+      expect(buildDirectionMeta('어린이대공원(세종대)방면', '구의', stations)).toBe('구의방면');
     });
   });
 
-  describe('순환선/nextStationLabel 미전달', () => {
-    it('nextStationLabel=null이면 종착만 표기', () => {
+  describe('nextStationLabel 없음(null) — 종착 fallback', () => {
+    it('일반 종착', () => {
       expect(buildDirectionMeta('소요산행', null, stations)).toBe('소요산행');
     });
 
-    it('순환선은 terminal null이라 항상 부속 라벨 부착 (nextStationLabel 있을 때)', () => {
-      expect(buildDirectionMeta('내선순환', '신도림', stations)).toBe('내선순환 · 신도림방면');
+    it('순환선', () => {
+      expect(buildDirectionMeta('내선순환', null, stations)).toBe('내선순환');
     });
 
-    it('순환선 + nextStationLabel=null → 순환선만', () => {
-      expect(buildDirectionMeta('내선순환', null, stations)).toBe('내선순환');
+    it('비정형 텍스트도 그대로 fallback', () => {
+      expect(buildDirectionMeta('급행임시', null, stations)).toBe('급행임시');
     });
   });
 
-  describe('다국어 (#792 P1-2)', () => {
-    it('en locale에서도 dedup 정상 동작 (terminal 비교는 i18n 독립)', async () => {
+  describe('다국어 — 다음역방면 표기 통일', () => {
+    it('en locale: "via <name>" 포맷', async () => {
       await i18next.changeLanguage('en');
-      expect(buildDirectionMeta('어린이대공원(세종대)방면', '어린이대공원', stations)).toBe(
-        '어린이대공원(세종대)방면',
-      );
+      expect(buildDirectionMeta('마천행', '중곡', stations)).toBe('via 중곡');
     });
 
-    it('en locale 부속 라벨은 "via {{name}}" 포맷', async () => {
-      await i18next.changeLanguage('en');
-      expect(buildDirectionMeta('소요산행', '구로', stations)).toBe('Bound for Soyosan · via 구로');
-    });
-
-    it('ja locale 부속 라벨은 "{{name}}方面" 포맷 (역명은 nameJa 없으면 nameEn fallback)', async () => {
+    it('ja locale: "<name>方面" 포맷', async () => {
       await i18next.changeLanguage('ja');
-      expect(buildDirectionMeta('소요산행', '구로', stations)).toBe('Soyosan行き · 구로方面');
+      expect(buildDirectionMeta('마천행', '중곡', stations)).toBe('중곡方面');
     });
 
-    it('zh locale 부속 라벨은 "{{name}}方向" 포맷 (역명은 nameHanja 없으면 nameEn fallback)', async () => {
+    it('zh locale: "<name>方向" 포맷', async () => {
       await i18next.changeLanguage('zh');
-      expect(buildDirectionMeta('소요산행', '구로', stations)).toBe('开往Soyosan · 구로方向');
+      expect(buildDirectionMeta('마천행', '중곡', stations)).toBe('중곡方向');
+    });
+
+    it('en locale + null nextStation → 종착 fallback (Bound for ...)', async () => {
+      await i18next.changeLanguage('en');
+      expect(buildDirectionMeta('소요산행', null, stations)).toBe('Bound for Soyosan');
     });
   });
 });
