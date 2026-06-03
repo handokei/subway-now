@@ -110,6 +110,12 @@ export interface ProcessLocationInputs {
   fusionSource?: FusionSource;
   /** GPS 게이트 실패 등으로 위치가 불확실한 상태. true면 source를 무시하고 'uncertain' 라벨. */
   locationUncertain?: boolean;
+  /**
+   * #777 — 출발역(nearest.station)의 다음 열차 도착 정보. arrival API에서 추출.
+   * 호출자가 제공하면 calculateStaticETA가 동적 대기 시간으로 사용, 미제공 시 DEFAULT_WAIT_MINUTES fallback.
+   * 호출자(BG/FG) 통합은 점진적으로 진행 — 본 옵션이 없어도 회귀 없음.
+   */
+  arrivalAtOrigin?: { arrivalSeconds: number; receivedAtMs: number };
 }
 
 export async function processLocationUpdate(inputs: ProcessLocationInputs): Promise<PipelineResult> {
@@ -125,6 +131,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     source,
     fusionSource,
     locationUncertain = false,
+    arrivalAtOrigin,
   } = inputs;
 
   const notificationSource = fusionSource
@@ -242,9 +249,11 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   // #776: 도보 시간 합산. nearest.station을 출발역으로, 사용자 GPS(lat/lng)를 currentLocation으로.
   // 하차 도보는 미적용 — 현 시점 데이터 모델은 destination이 Station(=하차역)으로 사용자 최종 좌표와
   // 일치하므로 도보 0이 자명. 사용자 좌표를 별도로 보유하게 되면 destination/destinationStation 추가.
+  // #777: arrivalAtOrigin 호출자가 제공 시 calculateStaticETA가 다음 열차 대기를 동적으로 계산.
   const eta = calculateStaticETA(route, {
     currentLocation: { lat, lng },
     originStation: { lat: nearest.station.lat, lng: nearest.station.lng },
+    arrivalAtOrigin,
   });
   await updateStationNotification(
     nearest.station,
