@@ -1097,6 +1097,56 @@ describe('POST /position (#819)', () => {
     expect(parsed[0].mapMatchedLine).toBeUndefined();
     expect(parsed[0].mapMatchedArcM).toBeUndefined();
   });
+
+  describe('#825 — nearestStationDistanceM 옵션 필드', () => {
+    const BASE_POS = { token: 'tok-nsd', lat: 1, lng: 2, accuracy: 5, ts: 1234, motion: 'walking' as const };
+
+    it('정상값(number ≥ 0) → point.nearestStationDistanceM에 set', async () => {
+      const env = makeKvEnv();
+      const res = await post('/position', { ...BASE_POS, nearestStationDistanceM: 150 }, env);
+      expect(res.status).toBe(200);
+      const stored = JSON.parse((await env.TRIPS.get('pos:tok-nsd'))!) as Array<Record<string, unknown>>;
+      expect(stored[0].nearestStationDistanceM).toBe(150);
+    });
+
+    it('nearestStationDistanceM=0 → set (경계값 0 허용)', async () => {
+      const env = makeKvEnv();
+      await post('/position', { ...BASE_POS, nearestStationDistanceM: 0 }, env);
+      const stored = JSON.parse((await env.TRIPS.get('pos:tok-nsd'))!) as Array<Record<string, unknown>>;
+      expect(stored[0].nearestStationDistanceM).toBe(0);
+    });
+
+    it('음수 → undefined로 graceful skip (payload 거부 X, 200)', async () => {
+      const env = makeKvEnv();
+      const res = await post('/position', { ...BASE_POS, nearestStationDistanceM: -1 }, env);
+      expect(res.status).toBe(200);
+      const stored = JSON.parse((await env.TRIPS.get('pos:tok-nsd'))!) as Array<Record<string, unknown>>;
+      expect(stored[0].nearestStationDistanceM).toBeUndefined();
+    });
+
+    it('NaN → undefined로 graceful skip', async () => {
+      const env = makeKvEnv();
+      const res = await post('/position', { ...BASE_POS, nearestStationDistanceM: NaN }, env);
+      expect(res.status).toBe(200);
+      const stored = JSON.parse((await env.TRIPS.get('pos:tok-nsd'))!) as Array<Record<string, unknown>>;
+      expect(stored[0].nearestStationDistanceM).toBeUndefined();
+    });
+
+    it('문자열 → undefined로 graceful skip', async () => {
+      const env = makeKvEnv();
+      const res = await post('/position', { ...BASE_POS, nearestStationDistanceM: '100' }, env);
+      expect(res.status).toBe(200);
+      const stored = JSON.parse((await env.TRIPS.get('pos:tok-nsd'))!) as Array<Record<string, unknown>>;
+      expect(stored[0].nearestStationDistanceM).toBeUndefined();
+    });
+
+    it('필드 없음 → undefined (옵션 필드 부재 정상 처리)', async () => {
+      const env = makeKvEnv();
+      await post('/position', BASE_POS, env);
+      const stored = JSON.parse((await env.TRIPS.get('pos:tok-nsd'))!) as Array<Record<string, unknown>>;
+      expect(stored[0].nearestStationDistanceM).toBeUndefined();
+    });
+  });
 });
 
 describe('POST /boarding-prompt/dismiss (#819)', () => {

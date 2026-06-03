@@ -29,11 +29,24 @@ import {
   type LiveActivityStats,
 } from './liveActivity';
 import { matchLine } from './lineAlias';
-import { evaluateWindow, readSeries } from './positionSeries';
+import {
+  evaluateWindow,
+  readSeries,
+  type WindowedMetrics,
+} from './positionSeries';
 import { getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
+import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import { listTrips, putTrip } from './trips';
-import type { ApnsEnv, BoardingLockMeta, Env, Trip, Waypoint } from './types';
+import type {
+  ApnsEnv,
+  BoardingLockMeta,
+  Env,
+  PositionPoint,
+  StationPhaseState,
+  Trip,
+  Waypoint,
+} from './types';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -151,6 +164,11 @@ export interface ScheduledStats extends LiveActivityStats {
   boardingPromptFired: number;
   /** #819 — 게이트 차단으로 미발사한 횟수 — false positive 1차 방어 효과 측정. */
   boardingPromptBlocked: number;
+  /**
+   * #825 — phase 분류가 'high-confidence non-APPROACHING'으로 lockless imminent 발사를
+   * 차단한 횟수. 측정 인프라 — gate가 실제로 발동된 빈도 + E5 RMSE/recall과 cross-check.
+   */
+  phaseImminentBlocked: number;
 }
 
 /**
@@ -196,6 +214,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     boardingPromptEvaluated: 0,
     boardingPromptFired: 0,
     boardingPromptBlocked: 0,
+    phaseImminentBlocked: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
@@ -290,6 +309,89 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     seoulCalls: deps.seoul.stats.callCount,
   });
   return stats;
+}
+
+/** runFusionStep 반환값 — boarding-prompt / lockless-intermediate 분기에서 공통 사용. */
+interface FusionStepResult {
+  /** 원본 positionSeries (호출자가 evaluateBoardingPromptGates 등에 그대로 전달). */
+  series: PositionPoint[];
+  /** evaluateWindow 결과 — observation 유효성/window 카운트 평가용. */
+  posMetrics: WindowedMetrics;
+  /**
+   * smoothed velocity를 fusedSpeed에 합류시킬 값 (km/h). null인 경우:
+   *  - observation 무효 (Kalman skip)
+   *  - prior=null 첫 cycle (state는 persist하지만 fusion 합류 제외 — #832 P2-3 정합)
+   */
+  kalmanKmh: number | null;
+  /** 운행 phase 분류 결과. null인 경우: observation 무효 또는 nearestStationDistanceM 미수신. */
+  phaseState: StationPhaseState | null;
+}
+
+/**
+ * Phase 3 fusion 한 cycle pipeline (#824 E2 + #825 E3).
+ *
+ *   1. positionSeries + accelSeries + Kalman prior state 병렬 KV read
+ *   2. evaluateWindow + evaluateAccelWindow
+ *   3. observationValid 가드 — 무효면 state I/O skip (P2-1)
+ *   4. runKalmanStep → writeKalmanState
+ *   5. prior 부재 첫 cycle은 fusion 합류 제외 (P2-3)
+ *   6. runStationPhaseStep — nearestStationDistanceM 없으면 phase null로 graceful skip (#834 wire 전)
+ *
+ * 호출자 책임:
+ *   - phaseState non-null이면 trip.stationPhase에 stamp + putTrip 시 persist
+ *   - kalmanKmh를 게이트/fusion 입력으로 전달
+ *   - series는 본 함수가 fetched한 raw KV 값 — 추가 read 불필요
+ */
+async function runFusionStep(
+  trip: Trip,
+  env: Env,
+  now: number,
+): Promise<FusionStepResult> {
+  const [series, accelSeries, kalmanPrior] = await Promise.all([
+    readSeries(env.TRIPS, trip.token),
+    readAccelSeries(env.TRIPS, trip.token),
+    readKalmanState(env.TRIPS, trip.token),
+  ]);
+  const posMetrics = evaluateWindow(series, now);
+  const accelMetrics = evaluateAccelWindow(accelSeries, now);
+  const observationValid =
+    posMetrics.count > 0 && Number.isFinite(posMetrics.avgAccuracyMeters);
+
+  if (!observationValid) {
+    return { series, posMetrics, kalmanKmh: null, phaseState: null };
+  }
+
+  const kalmanState = runKalmanStep({
+    prior: kalmanPrior,
+    gpsAvgKmh: posMetrics.gpsAvgKmh,
+    gpsAccuracyMeters: posMetrics.avgAccuracyMeters,
+    accelMagnitudeStd: accelMetrics.avgMagnitudeStd,
+    now,
+  });
+  await writeKalmanState(env.TRIPS, trip.token, kalmanState);
+
+  // P2-3 정합 — 첫 cycle은 v=gpsAvg라 fusion에 합류 시 같은 GPS 2회 가중 → confidence 가짜
+  // 상승. state는 persist 하되 fusion 입력에서는 제외.
+  const kalmanKmh = kalmanPrior !== null ? kalmanState.v : null;
+
+  // phase 분류 — 가장 최신 sample의 distance 입력. #834 wire 전까지 undefined → null 반환.
+  // 직전 cycle의 kalmanPrior.v를 prevKalmanKmh로 전달해 APPROACHING(감속)/DEPARTING(가속)
+  // 방향 구분 — accel magnitude만으로는 부호 부재라 분리 불가.
+  const lastSample = series[series.length - 1];
+  const phaseState = runStationPhaseStep(
+    {
+      kalmanKmh: kalmanState.v,
+      prevKalmanKmh: kalmanPrior?.v,
+      accelMagnitudeMean: accelMetrics.avgMagnitudeMean,
+      accelMagnitudeStd: accelMetrics.avgMagnitudeStd,
+      nearestStationDistanceM: lastSample?.nearestStationDistanceM,
+      motion: posMetrics.motion,
+      now,
+    },
+    trip.stationPhase,
+  );
+
+  return { series, posMetrics, kalmanKmh, phaseState };
 }
 
 /**
@@ -645,16 +747,38 @@ export async function runLocklessIntermediate(
   if (trip.lastFiredPhase === 'imminent') {
     return;
   }
+  // #825 — Phase 3 E3 fusion step. 분류 결과를 trip에 stamp + imminent push 발사 가드에 사용.
+  const fusion = await runFusionStep(trip, env, now);
+  let dirty = false;
+  if (fusion.phaseState) {
+    trip.stationPhase = fusion.phaseState;
+    dirty = true;
+  }
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   const signal = pickBestArrivalSignal(arrivals, waypoint);
   if (signal === null || signal.arvlCd === null) {
     stats.etaMissing += 1;
+    if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
   // 발사 트리거: 해당 역에 진입(ENTERING) 또는 도착(ARRIVED). 그 외 phase는 통과 알림 부적합.
   const fires =
     signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
   if (!fires) {
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+  // #825 — high-confidence non-APPROACHING phase면 차단 (false positive 1차).
+  // 신호 부재/낮은 신뢰는 기존 동작 그대로 (회귀 없음, #834 wire 전까지 자연 skip).
+  if (!phaseAllowsImminentFiring(fusion.phaseState)) {
+    stats.phaseImminentBlocked += 1;
+    log('lockless: phase gate blocked', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      phase: fusion.phaseState?.current,
+      confidence: fusion.phaseState?.confidence,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
   const pushId = generatePushId();
@@ -686,7 +810,6 @@ export async function runLocklessIntermediate(
     log,
     trip.token.slice(0, 8),
   );
-  let dirty = false;
   if (heal.correctedEnv) {
     trip.apnsEnv = heal.correctedEnv;
     dirty = true;
@@ -853,48 +976,21 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 
   stats.boardingPromptEvaluated += 1;
 
-  // Phase 3 E2 (#824) — positionSeries + accelSeries + 직전 Kalman state를 병렬 로드.
-  // 정상 cycle은 predict+update로 smoothed velocity를 산출해 fusedSpeed의 가중평균에 합류.
-  //
-  // 두 가지 가드:
-  //   (1) 관측 무효 (count=0 or 모든 hop이 accuracy로 reject되어 avgAccuracy=Infinity)
-  //       → state I/O 자체를 skip. 거짓 0 km/h observation을 누적하지 않는다 (리뷰 P2-1).
-  //   (2) prior 부재 첫 cycle은 state.v === gpsAvgKmh (관측 직접 초기화)이므로
-  //       fusedSpeed에 합류시키면 같은 GPS가 가중치 2회 합산 → confidence 가짜 상승.
-  //       state는 다음 cycle prior로 쓸 수 있게 persist 하되 kalmanKmh는 null로 전달
-  //       해 fusion에는 합류하지 않는다 (리뷰 P2-3). 다음 cycle부터 진짜 smoothing 효과.
-  const [series, accelSeries, kalmanPrior] = await Promise.all([
-    readSeries(env.TRIPS, trip.token),
-    readAccelSeries(env.TRIPS, trip.token),
-    readKalmanState(env.TRIPS, trip.token),
-  ]);
-  const posMetrics = evaluateWindow(series, now);
-  const accelMetrics = evaluateAccelWindow(accelSeries, now);
-  const observationValid =
-    posMetrics.count > 0 && Number.isFinite(posMetrics.avgAccuracyMeters);
-
-  let kalmanKmh: number | null = null;
-  if (observationValid) {
-    const kalmanState = runKalmanStep({
-      prior: kalmanPrior,
-      gpsAvgKmh: posMetrics.gpsAvgKmh,
-      gpsAccuracyMeters: posMetrics.avgAccuracyMeters,
-      accelMagnitudeStd: accelMetrics.avgMagnitudeStd,
-      now,
-    });
-    await writeKalmanState(env.TRIPS, trip.token, kalmanState);
-    if (kalmanPrior !== null) {
-      kalmanKmh = kalmanState.v;
-    }
+  const fusion = await runFusionStep(trip, env, now);
+  let dirty = false;
+  // phase 분류 결과가 있으면 trip에 stamp — 다음 cycle hysteresis 입력 + lockless 가드용 상태.
+  if (fusion.phaseState) {
+    trip.stationPhase = fusion.phaseState;
+    dirty = true;
   }
 
   const outcome = evaluateBoardingPromptGates({
-    series,
+    series: fusion.series,
     origin: geo.origin,
     nextStation: geo.nextStation,
     now,
     promptState: trip.boardingPromptState,
-    kalmanKmh,
+    kalmanKmh: fusion.kalmanKmh,
   });
 
   if (!outcome.pass) {
@@ -903,6 +999,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       token: trip.token.slice(0, 8),
       reason: outcome.reason satisfies GateSkipReason,
     });
+    if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
 
@@ -930,7 +1027,6 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     trip.token.slice(0, 8),
   );
 
-  let dirty = false;
   if (heal.correctedEnv) {
     trip.apnsEnv = heal.correctedEnv;
     dirty = true;
