@@ -50,6 +50,7 @@ import { TRANSFER_WALKING_BUFFER_SECONDS, BOARDING_PROXIMITY_THRESHOLD_M } from 
 import { BoardingTrainList } from '../../src/components/BoardingTrainList';
 import { BoardingLockHopCard } from '../../src/components/BoardingLockHopCard';
 import { resolveNextAdjacentStationName } from '../../src/utils/nextAdjacentStation';
+import { getApproachLine } from '../../src/utils/approachLine';
 import type { Stop } from '../../src/utils/journeyAdapter';
 
 const logger = createLogger('HomeScreen');
@@ -142,9 +143,12 @@ export default function HomeScreen() {
   const isCustomOrigin = customOrigin !== null;
   const effectiveOrigin = customOrigin ?? result?.station ?? null;
   useTripOrigin(destination, effectiveOrigin, setTripOrigin, tripOrigin);
+  // #797: 환승역에서 nearest.station.line이 trip 방향과 어긋나는 회귀 차단.
+  // BoardingLock(사용자 선택) > Route(구조적 SSOT) > station.line fallback.
+  const approachLine = getApproachLine(route, fusionBoardingLock, effectiveOrigin);
   const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(
     effectiveOrigin?.name ?? null,
-    effectiveOrigin?.line ?? null,
+    approachLine,
   );
   const arrival = useArrivalCountdown(rawArrival);
   const isFav = effectiveOrigin ? favorites.some((f) => f.station.id === effectiveOrigin.id) : false;
@@ -709,7 +713,9 @@ export default function HomeScreen() {
                               return (
                                 <BoardingTrainList
                                   arrivals={directionalArrivals}
-                                  line={effectiveOrigin.line}
+                                  // #797: approachLine 우선 — 환승역에서 effectiveOrigin.line이 trip 방향과
+                                  // 어긋날 때 BoardingLock·route SSOT로 정확한 호선 표시.
+                                  line={approachLine ?? effectiveOrigin.line}
                                   onSelect={createLockFromTrain}
                                   compact
                                   nextStationLabel={label}
