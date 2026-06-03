@@ -21,6 +21,7 @@ import {
 } from './liveActivity';
 import { ackPending } from './pendingPushes';
 import { appendPositionPoint } from './positionSeries';
+import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { deleteProgress, getProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
@@ -31,6 +32,7 @@ import {
 } from './telemetry';
 import { getTrip, putTrip } from './trips';
 import type {
+  AccelSummary,
   BoardingLockMeta,
   Env,
   PositionPoint,
@@ -242,12 +244,17 @@ app.post('/position', async (c) => {
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
   await appendPositionPoint(c.env.TRIPS, payload.token, payload.point);
+  // #823 Phase 3 E1 — 가속도 옵션 필드. 부재 또는 invalid 시 skip (positionSeries는 이미 적재됨).
+  if (payload.accelSummary) {
+    await appendAccelSample(c.env.TRIPS, payload.token, payload.accelSummary);
+  }
   return c.json({ ok: true });
 });
 
 interface PositionUploadPayload {
   token: string;
   point: PositionPoint;
+  accelSummary?: AccelSummary;
 }
 
 export function validatePositionPayload(input: unknown): PositionUploadPayload | null {
@@ -269,6 +276,9 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
   ) {
     return null;
   }
+  // #823 — accelSummary는 옵션. 부재 또는 invalid 형식은 graceful skip (전체 payload 거부 X).
+  //   E1 단계는 기존 #819 게이트와 정합. 가속도 부재는 게이트 동작에 영향 0.
+  const accelSummary = isAccelSummary(obj.accelSummary) ? obj.accelSummary : undefined;
   return {
     token: obj.token,
     point: {
@@ -278,6 +288,7 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
       ts: obj.ts,
       motion,
     },
+    accelSummary,
   };
 }
 

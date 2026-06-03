@@ -12,6 +12,7 @@
  */
 
 import { createLogger } from '../utils/logger';
+import type { AccelSummary } from '../utils/accelMotion';
 
 const log = createLogger('positionUpload');
 
@@ -27,6 +28,12 @@ export interface PositionUploadPayload {
   /** epoch ms — 디바이스 측정 시각. backend 시계와의 drift는 평균속도가 자체 보정. */
   ts: number;
   motion: PositionMotion;
+  /**
+   * #823 Phase 3 E1 — 가속도 1초 window 요약값 (옵션).
+   * 디바이스에서 100Hz raw → 1Hz 요약 변환 후 첨부. 부재 시 backend는 가속도 series append를 skip
+   * — 기존 #819 게이트는 영향 없음 (E1은 신호 추가만, fusion 사용은 E2 단계 몫).
+   */
+  accelSummary?: AccelSummary;
 }
 
 export interface PositionUploadResult {

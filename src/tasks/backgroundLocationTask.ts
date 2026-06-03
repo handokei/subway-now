@@ -11,12 +11,19 @@ import { logSuppressedGate } from '../utils/alarmLog';
 import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY } from '../constants/storageKeys';
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
+import { getLatestAccelSummary } from '../utils/accelMotionState';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
 
 const logger = createLogger('BackgroundLocation');
 
 export const BACKGROUND_LOCATION_TASK = 'background-location-task';
+
+/**
+ * #823 — accelSummary 첨부 가능한 최대 stale age. WINDOW_FLUSH_MS(1s)의 5배 cushion으로
+ * FG가 짧게 꺼졌다 다시 켜지는 경우는 허용하면서, 분 단위로 오래된 stale은 차단한다.
+ */
+export const ACCEL_SUMMARY_MAX_AGE_MS = 5_000;
 
 async function readBgLastFix(): Promise<FixSample | null> {
   try {
@@ -121,6 +128,14 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     const apnsToken = await AsyncStorage.getItem(APNS_TOKEN_KEY).catch(() => null);
     if (apnsToken) {
       const motion: PositionMotion = getCurrentMotionStationary() ? 'stationary' : 'unknown';
+      // #823 — 가속도 latest summary 첨부 (옵션). useAccelerometer가 FG에서 갱신.
+      //   BG-only 또는 FG → BG 전환 후 시간이 지난 케이스에 stale snapshot이 남아있을 수 있어
+      //   ACCEL_SUMMARY_MAX_AGE_MS 이상 오래된 건 제외 (E1 정책: 결정적 freshness 우선).
+      const latestAccel = getLatestAccelSummary();
+      const accelSummary =
+        latestAccel && Date.now() - latestAccel.endTs <= ACCEL_SUMMARY_MAX_AGE_MS
+          ? latestAccel
+          : undefined;
       void uploadPosition({
         token: apnsToken,
         lat,
@@ -128,6 +143,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         accuracy: accuracy ?? 0,
         ts: latest.timestamp,
         motion,
+        accelSummary,
       });
     }
 

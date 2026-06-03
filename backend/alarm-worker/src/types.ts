@@ -204,6 +204,36 @@ export interface PositionPoint {
 }
 
 /**
+ * 디바이스에서 1초 window로 압축한 선형 가속도 요약 (#823 Phase 3 E1).
+ *
+ * 100Hz raw를 backend로 보내지 않는 이유: BG 배터리/네트워크 비용. 디바이스에서
+ * 평균/표준편차/피크 magnitude로 압축해 1Hz 요약만 송신한다. backend는 KV ring buffer로
+ * 누적하며 (E2 Kalman / E3 phase 감지가 입력으로 사용), 단위는 m/s² (SI).
+ *
+ * 모든 axis 값은 중력이 이미 제거된 **linear acceleration**.
+ */
+export interface AccelSummary {
+  /** window 시작 epoch ms. */
+  startTs: number;
+  /** window 종료 epoch ms. */
+  endTs: number;
+  /** window 내 raw sample 수. 디바이스측 MIN_SAMPLES_FOR_SUMMARY(50) 이상만 backend에 도달. */
+  count: number;
+  /** linear ax 평균 (m/s²). */
+  ax: number;
+  /** linear ay 평균 (m/s²). */
+  ay: number;
+  /** linear az 평균 (m/s²). */
+  az: number;
+  /** linear magnitude 평균 (m/s²). 정거장 phase 감지 1차 신호. */
+  magnitudeMean: number;
+  /** linear magnitude 표준편차 (m/s²). 도보/지하철 noise 패턴 구분용. */
+  magnitudeStd: number;
+  /** linear magnitude 최대값 (m/s²). 출발/감속 피크 감지용. */
+  magnitudePeak: number;
+}
+
+/**
  * trip 단위 boarding-prompt 발사 상태 (#819 게이트 #9).
  * 같은 trip에 1회 + 사용자 dismiss/미탑승 후 5분 silence 정책.
  */

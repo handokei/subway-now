@@ -934,6 +934,76 @@ describe('POST /position (#819)', () => {
     const res = await post('/position', body, env);
     expect(res.status).toBe(400);
   });
+
+  describe('#823 — accelSummary 옵션 필드', () => {
+    const accel = {
+      startTs: 1000,
+      endTs: 2000,
+      count: 100,
+      ax: 0.1,
+      ay: 0.2,
+      az: 0.3,
+      magnitudeMean: 0.5,
+      magnitudeStd: 0.1,
+      magnitudePeak: 1.2,
+    };
+
+    it('valid accelSummary 포함 → position + accel series 둘 다 저장', async () => {
+      const env = makeKvEnv();
+      const res = await post(
+        '/position',
+        {
+          token: 'tok-acc',
+          lat: 1,
+          lng: 2,
+          accuracy: 5,
+          ts: 1500,
+          motion: 'automotive',
+          accelSummary: accel,
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const accelStored = (await env.TRIPS.get('accel:tok-acc'))!;
+      expect(JSON.parse(accelStored)).toEqual([accel]);
+      const posStored = (await env.TRIPS.get('pos:tok-acc'))!;
+      expect(JSON.parse(posStored)).toHaveLength(1);
+    });
+
+    it('accelSummary 부재 → position만 저장, accel series 빈 상태', async () => {
+      const env = makeKvEnv();
+      const res = await post(
+        '/position',
+        { token: 'tok-no-acc', lat: 1, lng: 2, accuracy: 5, ts: 1500, motion: 'walking' },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const accelStored = await env.TRIPS.get('accel:tok-no-acc');
+      expect(accelStored).toBeNull();
+      const posStored = (await env.TRIPS.get('pos:tok-no-acc'))!;
+      expect(JSON.parse(posStored)).toHaveLength(1);
+    });
+
+    it('invalid accelSummary 형식 → graceful skip (position만 저장, 200)', async () => {
+      const env = makeKvEnv();
+      const res = await post(
+        '/position',
+        {
+          token: 'tok-bad-acc',
+          lat: 1,
+          lng: 2,
+          accuracy: 5,
+          ts: 1500,
+          motion: 'walking',
+          accelSummary: { startTs: 'bad' }, // 형식 불일치 → skip
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const accelStored = await env.TRIPS.get('accel:tok-bad-acc');
+      expect(accelStored).toBeNull();
+    });
+  });
 });
 
 describe('POST /boarding-prompt/dismiss (#819)', () => {
