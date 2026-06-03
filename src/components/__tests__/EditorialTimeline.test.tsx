@@ -21,11 +21,15 @@ jest.mock('../../data/quickExit.json', () => ({
   },
 }));
 
-// 빠른 환승 도어 — 군자(5↔7) 단순 fixture.
+// 빠른 환승 도어 — 군자(5↔7) 단순 fixture + 건대입구(7↔2) #788 fromTerminal 분기 검증용.
 jest.mock('../../data/transferExit.json', () => ({
   군자: [
     { fromLine: '5', toLine: '7', doorNumber: '1-1' },
     { fromLine: '7', toLine: '5', doorNumber: '5-1' },
+  ],
+  건대입구: [
+    { fromLine: '7', toLine: '2', fromTerminal: '장암', doorNumber: '8-4' },
+    { fromLine: '7', toLine: '2', fromTerminal: '석남', doorNumber: '1-1' },
   ],
 }));
 
@@ -281,6 +285,33 @@ describe('EditorialTimeline quickExit door label', () => {
     ];
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getByText('1-1번 문')).toBeTruthy();
+  });
+
+  // #788 단조 노선 환승에서 진행방면별로 transferExit row가 갈리는지 검증.
+  // 양 방향 case가 같은 환승역(건대입구)을 공유하므로 stops 빌더 + assertion을 한 곳으로 모은다.
+  function makeTransferAtGeondaeStops(origin: string): Stop[] {
+    return [
+      { station: origin, line: '7', mark: 'filled' },
+      {
+        station: '건대입구',
+        line: '2',
+        stopsFromPrev: '1정거장',
+        mark: 'transfer',
+        note: '환승',
+        arrivalContext: { line: '7', fromName: origin, toName: '건대입구' },
+        transferTarget: { toLine: '2' },
+      },
+    ];
+  }
+
+  it.each<[string, string, string, string]>([
+    // 출발역 boarding-door도 같은 도어를 재사용하므로 expected가 2회 표시되는 게 정상 → getAllByText.
+    ['용마산→건대입구 (high=석남 방면)', '용마산', '1-1', '8-4'],
+    ['뚝섬유원지→건대입구 (low=장암 방면)', '뚝섬유원지', '8-4', '1-1'],
+  ])('#788 7→2 환승 fromTerminal로 row 갈림: %s', (_label, origin, expected, suppressed) => {
+    render(<EditorialTimeline stops={makeTransferAtGeondaeStops(origin)} />);
+    expect(screen.getAllByText(new RegExp(`${expected}번 문`)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(new RegExp(`${suppressed}번 문`))).toBeNull();
   });
 
   it('환승 stop이지만 transferExit 매칭이 없으면 quickExit fallback', () => {

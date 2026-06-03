@@ -1,4 +1,4 @@
-import { resolveTravelDirection } from '../travelDirection';
+import { resolveProgressingTerminal, resolveTravelDirection } from '../travelDirection';
 
 jest.mock('../stationRoute', () => ({
   // 가짜 3호선 — 단조 노선이라는 가정. (MONOTONIC_LINES 화이트리스트에 포함됨.)
@@ -65,5 +65,39 @@ describe('resolveTravelDirection', () => {
     expect(resolveTravelDirection('6', '응암', '신내')).toBeNull();
     expect(resolveTravelDirection('1', '소요산', '인천')).toBeNull();
     expect(resolveTravelDirection('gyeongui', '운천', '지평')).toBeNull();
+  });
+});
+
+describe('resolveProgressingTerminal (#788)', () => {
+  // travelDirection.test.ts 상단 jest.mock에서 line 3의 stations 시퀀스는
+  // [대화, 주엽, 연신내, 종로3가, 오금]. lineTopology.json 실데이터(endpoints["3"] = {low:대화, high:오금})와 정렬.
+
+  it('단조 노선에서 toIdx > fromIdx면 high endpoint 반환', () => {
+    // 주엽(idx 1) → 종로3가(idx 3): id 증가 → high → "오금"
+    expect(resolveProgressingTerminal('3', '주엽', '종로3가')).toBe('오금');
+  });
+
+  it('단조 노선에서 toIdx < fromIdx면 low endpoint 반환', () => {
+    // 오금(idx 4) → 종로3가(idx 3): id 감소 → low → "대화"
+    expect(resolveProgressingTerminal('3', '오금', '종로3가')).toBe('대화');
+  });
+
+  it('비단조 노선은 null (resolveTravelDirection이 null이기 때문)', () => {
+    expect(resolveProgressingTerminal('2', '시청', '잠실')).toBeNull();
+    expect(resolveProgressingTerminal('5', '방화', '마천')).toBeNull();
+  });
+
+  it('같은 역이면 null', () => {
+    expect(resolveProgressingTerminal('3', '종로3가', '종로3가')).toBeNull();
+  });
+
+  it('출발역이 노선에 없으면 null', () => {
+    expect(resolveProgressingTerminal('3', '없는역', '오금')).toBeNull();
+  });
+
+  it('단조 노선 화이트리스트지만 mock stations 빈 배열이면 null', () => {
+    // line 8은 단조 화이트리스트에 있지만 본 mock에서 stations 빈 배열로 반환 →
+    // resolveTravelDirection 단계에서 이미 null이라 진입 자체가 안 됨.
+    expect(resolveProgressingTerminal('8', '암사', '모란')).toBeNull();
   });
 });

@@ -6,7 +6,7 @@ import type { Stop, StopArrivalContext } from '../utils/journeyAdapter';
 import { LineBadge, getLineColor } from './LineBadge';
 import { useAppStore } from '../store/useAppStore';
 import { resolveQuickExit } from '../utils/quickExit';
-import { resolveTravelDirection } from '../utils/travelDirection';
+import { resolveProgressingTerminal, resolveTravelDirection } from '../utils/travelDirection';
 import { resolveTransferDoor } from '../utils/transferExit';
 import { findStationByNameAndLine } from '../utils/stationRoute';
 import type { LineNumber } from '../types/station';
@@ -33,10 +33,15 @@ function resolveStopDoor(
   accessibilityMode: boolean,
 ): string | null {
   if (transferToLine) {
+    // #788: 단조 노선의 진행 방면 운영 종점을 fromTerminal로 전달 — 같은 환승역의 양 방향
+    // row(예: 7→2 장암행 8-4 vs 석남행 1-1) 중 사용자가 가는 쪽을 정확히 선택. 비단조/매핑
+    // 미보유 노선은 null이라 기존 동작(첫 매치) 유지.
+    const fromTerminal = resolveProgressingTerminal(ctx.line, ctx.fromName, ctx.toName) ?? undefined;
     const transfer = resolveTransferDoor({
       stationName: ctx.toName,
       fromLine: ctx.line,
       toLine: transferToLine,
+      fromTerminal,
     });
     if (transfer) return transfer.doorNumber;
   }
