@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   registerActiveTrip,
   clearActiveTrip,
@@ -8,6 +9,7 @@ import {
 } from '../alarmBackend';
 import type { RegisterTripPayload } from '../alarmBackend';
 import { makeDirectRoute } from '../../testUtils/routeFixtures';
+import { ACTIVE_BOARDING_LINE_KEY } from '../../constants/storageKeys';
 
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({
@@ -547,6 +549,45 @@ describe('alarmBackend', () => {
       });
       expect(jitter.skipped).toBe(true);
       expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('#828 — ACTIVE_BOARDING_LINE_KEY mirror', () => {
+    beforeEach(async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      await AsyncStorage.removeItem(ACTIVE_BOARDING_LINE_KEY);
+    });
+
+    it('register 시 promptDisplay.line이 AsyncStorage에 mirror', async () => {
+      await registerActiveTrip({
+        ...SAMPLE_PAYLOAD,
+        promptDisplay: { originStation: '강남', line: '2' },
+      });
+      expect(await AsyncStorage.getItem(ACTIVE_BOARDING_LINE_KEY)).toBe('2');
+    });
+
+    it('register 시 promptDisplay 부재면 mirror 제거', async () => {
+      await AsyncStorage.setItem(ACTIVE_BOARDING_LINE_KEY, 'stale');
+      await registerActiveTrip(SAMPLE_PAYLOAD);
+      expect(await AsyncStorage.getItem(ACTIVE_BOARDING_LINE_KEY)).toBeNull();
+    });
+
+    it('clearActiveTrip 호출 시 mirror 제거', async () => {
+      await AsyncStorage.setItem(ACTIVE_BOARDING_LINE_KEY, '2');
+      await clearActiveTrip('token-hex');
+      expect(await AsyncStorage.getItem(ACTIVE_BOARDING_LINE_KEY)).toBeNull();
+    });
+
+    it('AsyncStorage throw → register는 계속 진행 (graceful)', async () => {
+      const originalSetItem = AsyncStorage.setItem;
+      (AsyncStorage.setItem as jest.Mock) = jest.fn().mockRejectedValue(new Error('storage down'));
+      const result = await registerActiveTrip({
+        ...SAMPLE_PAYLOAD,
+        promptDisplay: { originStation: '강남', line: '2' },
+      });
+      expect(result.ok).toBe(true);
+      AsyncStorage.setItem = originalSetItem;
     });
   });
 });

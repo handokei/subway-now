@@ -11,6 +11,10 @@
  * baseline(사전 예약만)은 그대로 동작한다.
  */
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ACTIVE_BOARDING_LINE_KEY } from '../constants/storageKeys';
+import { snapToLinePolyline } from '../utils/linePolyline';
+import type { LineNumber } from '../types/station';
 import { createLogger } from '../utils/logger';
 
 const log = createLogger('positionUpload');
@@ -27,6 +31,13 @@ export interface PositionUploadPayload {
   /** epoch ms — 디바이스 측정 시각. backend 시계와의 drift는 평균속도가 자체 보정. */
   ts: number;
   motion: PositionMotion;
+  /**
+   * #828 Phase 2 fusion — 클라이언트가 active boarding line polyline에 좌표를 사영한 결과.
+   * 짝(line+arcM)으로만 의미가 있고 한쪽만 보내면 backend가 둘 다 무시한다.
+   * unmatched / boarding line 미설정 시 두 필드 모두 omit (graceful — backend는 GPS-only로 동작).
+   */
+  mapMatchedLine?: string;
+  mapMatchedArcM?: number;
 }
 
 export interface PositionUploadResult {
@@ -54,6 +65,39 @@ async function fetchWithTimeout(input: string, init: RequestInit): Promise<Respo
   }
 }
 
+/**
+ * #828 — active boarding line이 mirror돼 있으면 그 라인으로 좌표를 snap해 mapMatched 결과를 채운다.
+ *
+ * - 호출자가 `mapMatchedLine` + `mapMatchedArcM`을 명시 전달했으면 그대로 사용 (override).
+ * - mirror 부재 / unmatched / AsyncStorage 실패 → 두 필드 모두 omit (graceful, GPS-only fallback).
+ *
+ * 결과 객체는 backend로 보낼 JSON. 호출자가 직접 쓸 수 있게 export.
+ */
+export async function withMapMatched(
+  payload: PositionUploadPayload,
+): Promise<PositionUploadPayload> {
+  if (payload.mapMatchedLine !== undefined && payload.mapMatchedArcM !== undefined) {
+    return payload;
+  }
+  let line: string | null;
+  try {
+    line = await AsyncStorage.getItem(ACTIVE_BOARDING_LINE_KEY);
+  } catch {
+    return payload;
+  }
+  if (!line) return payload;
+  const snap = snapToLinePolyline(
+    { lat: payload.lat, lng: payload.lng },
+    line as LineNumber,
+  );
+  if (!snap.matched) return payload;
+  return {
+    ...payload,
+    mapMatchedLine: snap.line,
+    mapMatchedArcM: snap.arcM,
+  };
+}
+
 export async function uploadPosition(
   payload: PositionUploadPayload,
 ): Promise<PositionUploadResult> {
@@ -62,11 +106,12 @@ export async function uploadPosition(
     log.info('ALARM_BACKEND_URL not set — skip position upload');
     return { ok: false, skipped: true };
   }
+  const enriched = await withMapMatched(payload);
   try {
     const res = await fetchWithTimeout(`${base}/position`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(enriched),
     });
     if (!res.ok) {
       log.warn(`position upload failed status=${res.status}`);
