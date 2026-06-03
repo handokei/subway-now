@@ -693,90 +693,95 @@ describe('silentPushTask', () => {
 
     // #816 C — lockless station-passed 분기
     describe('#816 C — lockless 분기 (lock 없음)', () => {
-      function setLockless(enabled: boolean) {
+      type LocklessStorage = 'on' | 'off' | 'absent' | 'throw';
+
+      function mockLocklessStorage(state: LocklessStorage) {
         (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
           if (key === DESTINATION_KEY) return JSON.stringify(destStation);
           if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === LOCKLESS_STATION_PASSED_KEY) return JSON.stringify(enabled);
+          if (key === LOCKLESS_STATION_PASSED_KEY) {
+            if (state === 'on') return JSON.stringify(true);
+            if (state === 'off') return JSON.stringify(false);
+            if (state === 'throw') throw new Error('boom');
+            return null; // absent
+          }
           return null;
         });
       }
 
-      it('lock 없음 + destination kind → skip(lockless-non-intermediate) + ack', async () => {
-        mockGetBoardingLock.mockResolvedValue(null);
-        await handleSilentPush(
-          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-dest' }),
-        );
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lockless-non-intermediate', kind: 'destination' }),
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith({
+      type SkipCase = {
+        name: string;
+        kind: 'destination' | 'transfer' | 'intermediate';
+        storage: LocklessStorage;
+        pushId?: string;
+        reason: 'lockless-non-intermediate' | 'lockless-opt-out';
+        logKind: 'destination' | 'transfer' | 'station-passed';
+      };
+
+      const skipCases: SkipCase[] = [
+        {
+          name: 'destination kind → lockless-non-intermediate + ack',
+          kind: 'destination',
+          storage: 'on',
           pushId: 'p-dest',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'skipped',
           reason: 'lockless-non-intermediate',
-        });
-      });
-
-      it('lock 없음 + transfer kind → skip(lockless-non-intermediate)', async () => {
-        mockGetBoardingLock.mockResolvedValue(null);
-        await handleSilentPush(payload({ kind: 'transfer', phase: 'imminent' }));
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lockless-non-intermediate', kind: 'transfer' }),
-        );
-      });
-
-      it('lock 없음 + intermediate + 토글 OFF → skip(lockless-opt-out) + ack', async () => {
-        mockGetBoardingLock.mockResolvedValue(null);
-        setLockless(false);
-        await handleSilentPush(
-          payload({ kind: 'intermediate', phase: 'imminent', pushId: 'p-off' }),
-        );
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lockless-opt-out', kind: 'station-passed' }),
-        );
-        expect(mockSendPushAck).toHaveBeenCalledWith({
+          logKind: 'destination',
+        },
+        {
+          name: 'transfer kind → lockless-non-intermediate',
+          kind: 'transfer',
+          storage: 'on',
+          reason: 'lockless-non-intermediate',
+          logKind: 'transfer',
+        },
+        {
+          name: 'intermediate + 토글 OFF → lockless-opt-out + ack',
+          kind: 'intermediate',
+          storage: 'off',
           pushId: 'p-off',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'skipped',
           reason: 'lockless-opt-out',
-        });
+          logKind: 'station-passed',
+        },
+        {
+          name: 'intermediate + 토글 키 자체 부재 → lockless-opt-out (기본 OFF)',
+          kind: 'intermediate',
+          storage: 'absent',
+          reason: 'lockless-opt-out',
+          logKind: 'station-passed',
+        },
+        {
+          name: 'intermediate + 토글 AsyncStorage read 오류 → lockless-opt-out (안전 fallback)',
+          kind: 'intermediate',
+          storage: 'throw',
+          reason: 'lockless-opt-out',
+          logKind: 'station-passed',
+        },
+      ];
+
+      it.each(skipCases)('lock 없음 + $name', async ({ kind, storage, pushId, reason, logKind }) => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        mockLocklessStorage(storage);
+        await handleSilentPush(payload({ kind, phase: 'imminent', ...(pushId ? { pushId } : {}) }));
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason, kind: logKind }),
+        );
+        if (pushId) {
+          expect(mockSendPushAck).toHaveBeenCalledWith({
+            pushId,
+            token: DEFAULT_APNS_TOKEN,
+            outcome: 'skipped',
+            reason,
+          });
+        }
       });
 
       it('lock 없음 + intermediate + 토글 ON → 일반 게이트로 진행 후 발사', async () => {
         mockGetBoardingLock.mockResolvedValue(null);
-        setLockless(true);
+        mockLocklessStorage('on');
         await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
         expect(mockScheduleNotificationAsync).toHaveBeenCalled();
         expect(mockLogSilentPushFired).toHaveBeenCalled();
-      });
-
-      it('lock 없음 + 토글 키 자체 부재 → opt-out (기본 OFF)', async () => {
-        mockGetBoardingLock.mockResolvedValue(null);
-        // 기본 mock: LOCKLESS_STATION_PASSED_KEY는 null 반환 (beforeEach 기본).
-        await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lockless-opt-out' }),
-        );
-      });
-
-      it('lock 없음 + 토글 AsyncStorage read 오류 → opt-out (안전 fallback)', async () => {
-        mockGetBoardingLock.mockResolvedValue(null);
-        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
-          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
-          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === LOCKLESS_STATION_PASSED_KEY) throw new Error('boom');
-          return null;
-        });
-        await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
-        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
-        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lockless-opt-out' }),
-        );
       });
     });
 
