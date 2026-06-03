@@ -4,6 +4,7 @@ import {
   sendPushAck,
   registerLiveActivityToken,
   clearLiveActivityToken,
+  reportBoardingPromptOutcome,
   __resetAlarmBackendDedup,
 } from '../alarmBackend';
 import type { RegisterTripPayload } from '../alarmBackend';
@@ -420,6 +421,46 @@ describe('alarmBackend', () => {
       await sendPushAck(ACK);
       const [url] = (global.fetch as jest.Mock).mock.calls[0];
       expect(url).toBe('https://api.test.dev/push/ack');
+    });
+  });
+
+  describe('reportBoardingPromptOutcome (#827)', () => {
+    it('URL 미설정 시 skipped=true 반환', async () => {
+      const result = await reportBoardingPromptOutcome('tok', 'boarded');
+      expect(result).toEqual({ ok: false, skipped: true });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('빈 token이면 ok=false (fetch 미호출)', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      const result = await reportBoardingPromptOutcome('', 'boarded');
+      expect(result).toEqual({ ok: false });
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('POST /metrics/boarding-prompt에 token/outcome 직렬화', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+      const result = await reportBoardingPromptOutcome('tok-1', 'dismissed');
+      expect(result).toEqual({ ok: true, status: 200 });
+      const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+      expect(url).toBe('https://api.test.dev/metrics/boarding-prompt');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body)).toEqual({ token: 'tok-1', outcome: 'dismissed' });
+    });
+
+    it('non-2xx 응답 시 ok=false + status', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 } as Response);
+      const result = await reportBoardingPromptOutcome('tok-1', 'boarded');
+      expect(result).toEqual({ ok: false, status: 500 });
+    });
+
+    it('fetch throw 시 ok=false (throw 안 함)', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
+      const result = await reportBoardingPromptOutcome('tok-1', 'boarded');
+      expect(result).toEqual({ ok: false });
     });
   });
 
