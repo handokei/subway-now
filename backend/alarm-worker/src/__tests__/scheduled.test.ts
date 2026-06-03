@@ -244,6 +244,165 @@ describe('runScheduled', () => {
       expect(seoulFetch).not.toHaveBeenCalled();
     });
   });
+
+  // #816 C — lockless station-passed opt-in 분기. lock 없어도 토글 ON + intermediate면 발사 허용.
+  describe('#816 C — lockless intermediate', () => {
+    function makeApnsFetchOk(): ReturnType<typeof vi.fn> {
+      return vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+    }
+
+    function intermediateTrip(overrides: Partial<Trip> = {}): Trip {
+      return makeTrip({
+        waypoints: [
+          { stationName: '강남', line: '2', kind: 'intermediate' },
+          { stationName: '역삼', line: '2', kind: 'destination' },
+        ],
+        locklessStationPassed: true,
+        ...overrides,
+      });
+    }
+
+    /**
+     * Lockless scenario 셋업 통일 헬퍼. trip을 InMemoryKV에 넣고 seoul/apns mock 주입 후
+     * runScheduled를 한 cycle 돌려 stats + apnsFetch + kv를 반환한다. 어설션은 호출부에서.
+     *
+     * `arrivals`:
+     *   - undefined: Seoul fetch mock(`seoulFetch`)을 vi.fn()으로 두고 호출 여부만 추적
+     *     (lockMissing 게이트 등으로 Seoul 호출 자체가 일어나면 안 되는 시나리오용)
+     *   - 배열 (빈 배열 포함): makeSeoul로 실제 응답 — 빈 배열은 etaMissing 트리거
+     */
+    async function runLocklessCycle(input: {
+      trip: Trip;
+      arrivals?: ArrivalEntry[];
+      apnsOk?: boolean;
+    }) {
+      const kv = new InMemoryKV();
+      await putTrip(kv as unknown as KVNamespace, input.trip);
+      const seoulFetch = vi.fn();
+      const seoul = input.arrivals
+        ? makeSeoul(input.arrivals)
+        : new SeoulArrivalClient({
+            apiKey: 'K',
+            host: 'h',
+            now: () => NOW,
+            fetchImpl: seoulFetch as unknown as typeof fetch,
+          });
+      const apnsFetch = input.apnsOk ? makeApnsFetchOk() : vi.fn();
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      return { kv, stats, apnsFetch, seoulFetch };
+    }
+
+    const ARVL_ARRIVED: ArrivalEntry = {
+      destination: '강남행',
+      arrivalSeconds: 30,
+      trainCode: '7246',
+      isUp: true,
+      subwayNm: '지하철2호선',
+      arvlCd: 1,
+    };
+    const ARVL_NO_SIGNAL: ArrivalEntry = { ...ARVL_ARRIVED, arrivalSeconds: 60, arvlCd: null };
+
+    type LocklessCase = {
+      name: string;
+      trip: () => Trip;
+      arrivals?: ArrivalEntry[]; // undefined → Seoul fetch 미호출 보장 케이스
+      apnsOk: boolean;
+      expect: { pushed: number; locklessFired: number; lockMissing?: number; etaMissing?: number };
+      apnsCalled: boolean;
+      seoulCalled?: boolean; // arrivals undefined 케이스에서 seoulFetch 호출 여부 검증.
+    };
+
+    const cases: LocklessCase[] = [
+      {
+        name: '토글 ON + intermediate + arvlCd=1 → 발사 + locklessIntermediateFired 카운트',
+        trip: () => intermediateTrip(),
+        arrivals: [ARVL_ARRIVED],
+        apnsOk: true,
+        expect: { pushed: 1, locklessFired: 1, lockMissing: 0 },
+        apnsCalled: true,
+      },
+      {
+        name: '토글 OFF + intermediate → lockMissing 카운트 (발사 0, Seoul fetch 미호출)',
+        trip: () => intermediateTrip({ locklessStationPassed: false }),
+        apnsOk: false,
+        expect: { pushed: 0, locklessFired: 0, lockMissing: 1 },
+        apnsCalled: false,
+        seoulCalled: false,
+      },
+      {
+        name: '토글 ON + destination kind → lockMissing 카운트 (lockless는 intermediate만)',
+        trip: () =>
+          makeTrip({
+            waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+            locklessStationPassed: true,
+          }),
+        apnsOk: false,
+        expect: { pushed: 0, locklessFired: 0, lockMissing: 1 },
+        apnsCalled: false,
+      },
+      {
+        name: '토글 ON + intermediate + arvlCd 신호 없음 → 발사 0 (ARRIVED/ENTERING만 trigger)',
+        trip: () => intermediateTrip(),
+        arrivals: [ARVL_NO_SIGNAL],
+        apnsOk: false,
+        expect: { pushed: 0, locklessFired: 0 },
+        apnsCalled: false,
+      },
+      {
+        name: '토글 ON + intermediate + arrivals 비어있음 → etaMissing 증가, 발사 0',
+        trip: () => intermediateTrip(),
+        arrivals: [],
+        apnsOk: false,
+        expect: { pushed: 0, locklessFired: 0, etaMissing: 1 },
+        apnsCalled: false,
+      },
+    ];
+
+    it.each(cases)('lock 없음 + $name', async ({ trip, arrivals, apnsOk, expect: ex, apnsCalled, seoulCalled }) => {
+      const { stats, apnsFetch, seoulFetch } = await runLocklessCycle({
+        trip: trip(),
+        arrivals,
+        apnsOk,
+      });
+      expect(stats.pushed).toBe(ex.pushed);
+      expect(stats.locklessIntermediateFired).toBe(ex.locklessFired);
+      if (ex.lockMissing !== undefined) expect(stats.lockMissing).toBe(ex.lockMissing);
+      if (ex.etaMissing !== undefined) expect(stats.etaMissing).toBe(ex.etaMissing);
+      if (apnsCalled) {
+        expect(apnsFetch).toHaveBeenCalled();
+      } else {
+        expect(apnsFetch).not.toHaveBeenCalled();
+      }
+      if (seoulCalled === false) expect(seoulFetch).not.toHaveBeenCalled();
+    });
+
+    it('lock 없음 + intermediate(ARRIVED) → 발사 후 다음 intermediate 남으면 waypoint advance', async () => {
+      const { kv } = await runLocklessCycle({
+        trip: makeTrip({
+          waypoints: [
+            { stationName: '강남', line: '2', kind: 'intermediate' },
+            { stationName: '역삼', line: '2', kind: 'intermediate' },
+            { stationName: '선릉', line: '2', kind: 'destination' },
+          ],
+          locklessStationPassed: true,
+        }),
+        arrivals: [{ ...ARVL_ARRIVED, destination: '선릉행', arrivalSeconds: 0, trainCode: 'X' }],
+        apnsOk: true,
+      });
+      // 한 cycle 후 첫 waypoint(강남)는 shift되어야 한다.
+      const stored = await (kv as unknown as KVNamespace).get('trip:tok');
+      expect(stored).not.toBeNull();
+      const parsed = JSON.parse(stored as string);
+      expect(parsed.waypoints[0].stationName).toBe('역삼');
+      expect(parsed.lastFiredPhase).toBeUndefined();
+    });
+  });
 });
 
 describe('runScheduled — boardingLock trainCode tracking (#585)', () => {

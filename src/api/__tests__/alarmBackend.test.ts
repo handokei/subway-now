@@ -203,6 +203,33 @@ describe('alarmBackend', () => {
         expect(body.boardingLock).toBeUndefined();
       });
 
+      // #816 C — lockless station-passed 토글
+      it('locklessStationPassed=true 송신 + 토글 변경 시 재등록', async () => {
+        const first = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          locklessStationPassed: true,
+        });
+        expect(first.ok).toBe(true);
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.locklessStationPassed).toBe(true);
+
+        // 토글 OFF로 재호출 → hash 달라져서 재등록 (dedup 미적용)
+        const off = await registerActiveTrip({
+          ...SAMPLE_PAYLOAD,
+          locklessStationPassed: false,
+        });
+        expect(off).toEqual({ ok: true, status: 200 });
+        expect(global.fetch).toHaveBeenCalledTimes(2);
+        const offBody = JSON.parse((global.fetch as jest.Mock).mock.calls[1][1].body);
+        expect(offBody.locklessStationPassed).toBeUndefined();
+      });
+
+      it('locklessStationPassed=false/미설정이면 body에 미포함', async () => {
+        await registerActiveTrip({ ...SAMPLE_PAYLOAD, locklessStationPassed: false });
+        const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+        expect(body.locklessStationPassed).toBeUndefined();
+      });
+
       it('#701 in-flight dedup: 동일 페이로드 동시 호출 시 fetch는 1번만 발사된다', async () => {
         let resolveFetch: ((v: Response) => void) | null = null;
         (global.fetch as jest.Mock).mockImplementationOnce(

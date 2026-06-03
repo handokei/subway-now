@@ -20,7 +20,11 @@ import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
 import type { Station } from '../types/station';
-import { APNS_TOKEN_KEY, DESTINATION_KEY } from '../constants/storageKeys';
+import {
+  APNS_TOKEN_KEY,
+  DESTINATION_KEY,
+  LOCKLESS_STATION_PASSED_KEY,
+} from '../constants/storageKeys';
 import { sendPushAck } from '../api/alarmBackend';
 import { createLogger } from '../utils/logger';
 import {
@@ -266,6 +270,21 @@ async function loadApnsToken(): Promise<string | null> {
 }
 
 /**
+ * #816 C — 사용자 토글 (lockless station-passed opt-in) 현재값을 AsyncStorage에서 읽는다.
+ * BG task에서는 zustand store에 접근 불가하므로 useAppStore.setLocklessStationPassed가
+ * 기록한 키를 직접 read. 값이 없거나 파싱 실패면 OFF(false) — default 보수적.
+ */
+async function loadLocklessOptIn(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(LOCKLESS_STATION_PASSED_KEY);
+    if (!raw) return false;
+    return JSON.parse(raw) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Task 콜백 본체 — 단위 테스트가 직접 호출할 수 있도록 export.
  */
 export async function handleSilentPush(input: NotificationBackgroundTaskData): Promise<void> {
@@ -377,6 +396,38 @@ async function fireWithGate(
       logger.info(
         `lock line mismatch skip: nextWaypoint=${payload.nextWaypoint} boardingLine=${lock.boardingLine}`,
       );
+      return;
+    }
+  } else {
+    // #816 C — lock 없는 trip의 lockless 분기.
+    // backend가 lockless trip의 station-passed(intermediate)만 발사하지만, race로 transfer/destination이
+    // 도착하거나 토글 OFF로 변경된 직후의 push가 도달할 수 있어 client에서 추가 가드.
+    //   1) intermediate가 아니면 skip (trainCode 없이 알람 위치 보장 불가)
+    //   2) 토글 OFF면 skip (사용자 명시 동의 부재 → #640 회귀 차단)
+    // 둘 다 통과하면 line 가드 우회하고 일반 위치/movement 게이트로 진행.
+    if (payload.kind !== 'intermediate') {
+      logSilentPushSkipped({
+        stationName: payload.nextWaypoint,
+        kind: payload.kind,
+        phaseId: payload.phase,
+        reason: 'lockless-non-intermediate',
+      });
+      ackOutcome(payload.pushId, apnsToken, 'skipped', 'lockless-non-intermediate');
+      logger.info(
+        `lockless skip non-intermediate: kind=${payload.kind} station=${payload.nextWaypoint}`,
+      );
+      return;
+    }
+    const optedIn = await loadLocklessOptIn();
+    if (!optedIn) {
+      logSilentPushSkipped({
+        stationName: payload.nextWaypoint,
+        kind: 'station-passed',
+        phaseId: payload.phase,
+        reason: 'lockless-opt-out',
+      });
+      ackOutcome(payload.pushId, apnsToken, 'skipped', 'lockless-opt-out');
+      logger.info(`lockless skip opt-out: station=${payload.nextWaypoint}`);
       return;
     }
   }

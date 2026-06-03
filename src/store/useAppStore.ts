@@ -7,7 +7,7 @@ function demoteSlotEntries(entries: FavoriteEntry[], role: FavoriteSlotRole): Fa
   return entries.map((f) => (f.role === role ? { ...f, role: 'general' as FavoriteRole } : f));
 }
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, BOARDING_LOCK_KEY, SCHEDULED_NOTIFICATIONS_KEY, ACTIVE_TRIP_KEY, TRIP_ORIGIN_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, BOARDING_LOCK_KEY, SCHEDULED_NOTIFICATIONS_KEY, ACTIVE_TRIP_KEY, TRIP_ORIGIN_KEY, LOCKLESS_STATION_PASSED_KEY } from '../constants/storageKeys';
 import { clearFiredAlarms, clearLastNotifiedStationId, clearLastFiredAlarmStationName } from '../utils/notificationState';
 import { clearFiredPushIds } from '../utils/firedPushIds';
 import { clearTripTrainCode } from '../utils/tripTrainCode';
@@ -60,6 +60,14 @@ interface AppState {
   loadLocalePreference: () => Promise<void>;
   setSleepMode: (enabled: boolean) => Promise<void>;
   loadSleepMode: () => Promise<void>;
+  /**
+   * #816 C — BoardingLock 없는 trip에서도 station-passed(intermediate) 알림을 받을지 여부.
+   * 기본 OFF. ON 시 useApnsTripRegistration이 backend trip register payload에 포함시키고,
+   * backend가 lockless intermediate 발사를 허용한다.
+   */
+  locklessStationPassed: boolean;
+  setLocklessStationPassed: (enabled: boolean) => Promise<void>;
+  loadLocklessStationPassed: () => Promise<void>;
   setAllowSpeaker: (enabled: boolean) => Promise<void>;
   loadAllowSpeaker: () => Promise<void>;
   accessibilityMode: boolean;
@@ -84,6 +92,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   alarmEvent: null,
   debugVisible: false,
   accessibilityMode: false,
+  locklessStationPassed: false,
 
   setDebugVisible: (visible: boolean) => {
     set({ debugVisible: visible });
@@ -407,6 +416,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       const raw = await AsyncStorage.getItem(SLEEP_MODE_KEY);
       if (raw) {
         set({ sleepMode: JSON.parse(raw) });
+      }
+    } catch {
+      // 저장된 데이터 없음 — false 유지
+    }
+  },
+
+  setLocklessStationPassed: async (enabled: boolean) => {
+    set({ locklessStationPassed: enabled });
+    await AsyncStorage.setItem(LOCKLESS_STATION_PASSED_KEY, JSON.stringify(enabled));
+  },
+
+  loadLocklessStationPassed: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(LOCKLESS_STATION_PASSED_KEY);
+      if (raw) {
+        set({ locklessStationPassed: JSON.parse(raw) === true });
       }
     } catch {
       // 저장된 데이터 없음 — false 유지

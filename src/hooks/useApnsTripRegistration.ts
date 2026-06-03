@@ -38,6 +38,12 @@ export interface UseApnsTripRegistrationInputs {
    * anchor waypoint 폴링으로 fallback.
    */
   boardingLock?: BoardingLock | null;
+  /**
+   * #816 C — 사용자 명시 opt-in. BoardingLock 없는 trip에서 station-passed 알림 발사 허용 여부.
+   * true면 backend가 lock 부재 trip에서도 intermediate waypoint 통과 시 silent push 발사한다.
+   * 미설정/false면 기존 #640 게이트 그대로 (lock 없으면 push 0건).
+   */
+  locklessStationPassed?: boolean;
 }
 
 /**
@@ -59,6 +65,7 @@ interface RegisterCallInputs {
   nextStationEtaSeconds: number | null;
   currentStation: Station | null;
   boardingLock: BoardingLock | null;
+  locklessStationPassed: boolean;
   /** 같은 trip 세션 동안 고정되는 epoch ms. backend `isSameSession` 판정 키(#589). */
   createdAt: number;
 }
@@ -97,6 +104,8 @@ async function callRegister(input: RegisterCallInputs) {
     apnsEnv: resolveApnsEnv(),
     createdAt: input.createdAt,
     ...(boardingLockMeta ? { boardingLock: boardingLockMeta } : {}),
+    // #816 C — 토글 ON이면 backend에 lockless station-passed opt-in 명시. OFF면 필드 누락.
+    ...(input.locklessStationPassed ? { locklessStationPassed: true } : {}),
   });
 }
 
@@ -106,6 +115,7 @@ export function useApnsTripRegistration({
   nextStationEtaSeconds,
   currentStation = null,
   boardingLock = null,
+  locklessStationPassed = false,
 }: UseApnsTripRegistrationInputs): void {
   // route 객체 reference가 categorized recompute로 자주 바뀌므로 내용 기반 signature로
   // 메모화 — register useEffect deps에 사용해 동일 경로 재등록(POST /trips 폭주) 방지.
@@ -114,9 +124,9 @@ export function useApnsTripRegistration({
   // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
   const boardingLockSig = lockSig(boardingLock);
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
-  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock });
+  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, locklessStationPassed });
   useEffect(() => {
-    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock };
+    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, locklessStationPassed };
   });
 
   // #589 — backend `isSameSession`(token+createdAt) 판정용. 같은 trip(같은
@@ -173,6 +183,7 @@ export function useApnsTripRegistration({
           nextStationEtaSeconds: eta,
           currentStation: cs,
           boardingLock: bl,
+          locklessStationPassed: lsp,
         } = latestInputsRef.current;
         if (!r || !d) return;
         const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
@@ -183,6 +194,7 @@ export function useApnsTripRegistration({
           nextStationEtaSeconds: eta,
           currentStation: cs,
           boardingLock: bl,
+          locklessStationPassed: lsp,
           createdAt: resolveTripCreatedAt(sessionKey),
         });
         // #767 — main effect와 동일 기준으로 lock sig를 추적해야 다음 cycle의 release 판정 정확도
@@ -235,6 +247,7 @@ export function useApnsTripRegistration({
         nextStationEtaSeconds,
         currentStation,
         boardingLock,
+        locklessStationPassed,
         createdAt: resolveTripCreatedAt(sessionKey),
       });
       // POST 발사 직후(성공/실패 무관) 송신된 lock sig를 기록 — 다음 cycle이 "직전 송신 = lock,
@@ -278,6 +291,8 @@ export function useApnsTripRegistration({
     // deps에서 제외한다. 첫 register 후 backend cron(#704/#705)이 자체 progress KV로
     // station-by-station advance를 영속화하므로 client 재등록이 불필요하다. latestInputsRef로
     // token-refresh 경로는 여전히 최신값을 사용한다.
+    // #816 C: 토글 변경 시 즉시 backend에 반영해야 하므로 deps에 포함. 사용자가 ON/OFF 전환하면
+    // 한 cycle만에 register payload가 갱신된다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeSig, destination?.id, boardingLockSig]);
+  }, [routeSig, destination?.id, boardingLockSig, locklessStationPassed]);
 }

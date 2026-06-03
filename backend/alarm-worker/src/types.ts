@@ -108,6 +108,18 @@ export interface Trip {
    * 기존 trip(필드 부재)은 0으로 fallback (backward compat).
    */
   consecutiveEtaMissing?: number;
+  /**
+   * #816 C — 사용자 opt-in lockless station-passed.
+   * BoardingLock 없는 trip에서도 station-passed(intermediate) 알림을 발사할지 여부.
+   *
+   * 기본 (필드 부재 또는 false): #640 게이트 그대로 — lock 없으면 cycle skip.
+   * true: lock 없어도 intermediate waypoint 도착만 push 발사 허용.
+   *   - transfer/destination waypoint는 여전히 skip (trainCode 없이 정확도 보장 불가)
+   *   - 사용자가 명시 설정 토글로 ON했을 때만 trip 등록 시 송신
+   *
+   * 노이즈 차단 책임: 사용자에게 옵트인 권한 위임. #640 회귀는 OFF가 default로 보호.
+   */
+  locklessStationPassed?: boolean;
 }
 
 /** Device가 확정한 탑승 열차 정보 (#584). */

@@ -3,7 +3,12 @@
  */
 
 import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
-import { sendReschedulePush, type ApnsConfig, type SendPushResult } from './apns';
+import {
+  sendReschedulePush,
+  sendSilentPush,
+  type ApnsConfig,
+  type SendPushResult,
+} from './apns';
 import { flipApnsEnv, pickApnsHost } from './apnsHost';
 import {
   buildLiveActivityContentState,
@@ -121,6 +126,12 @@ export interface ScheduledStats extends LiveActivityStats {
    * 사용자가 열차 미선택 상태에서 noise push가 발사되지 않도록 차단된 결과.
    */
   lockMissing: number;
+  /**
+   * #816 C — lockless opt-in 토글 ON trip에서 station-passed(intermediate) push가 발사된 횟수.
+   * false-positive 측정 인프라 — 사용자 dismiss/탭률은 client alarmLog로 별도 적재된다.
+   * (lockMissing은 토글 OFF로 게이트 차단된 trip만 카운트되도록 유지 — 두 stat은 disjoint.)
+   */
+  locklessIntermediateFired: number;
 }
 
 /**
@@ -159,6 +170,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     etaMissing: 0,
     envCorrected: 0,
     lockMissing: 0,
+    locklessIntermediateFired: 0,
     laPushSent: 0,
     laPushFailed: 0,
     laTokenCleared: 0,
@@ -194,10 +206,25 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // Seoul polling/push 모두 skip. 디바이스는 lock 등록 후 train-code 단위로 정확히 추적하며,
     // lock 부재 상태에서의 phase-based push는 "탑승 전 노이즈"였다.
     if (!isBoardingLockActive(trip, now)) {
+      // #816 C — lockless opt-in trip은 게이트 우회. lock 없이도 intermediate waypoint 통과
+      // 시 station-passed push 발사. 사용자가 명시 동의(client 토글)한 trip에 한정한다.
+      // intermediate kind가 아니면(transfer/destination) 여전히 skip — trainCode 없이 발사하면
+      // 잘못된 leg/방향으로 갈 위험.
+      if (trip.locklessStationPassed && waypoint.kind === 'intermediate') {
+        try {
+          await runLocklessIntermediate(trip, waypoint, env, deps, stats, now, log, generatePushId);
+        } catch (e) {
+          stats.errors += 1;
+          log('lockless: poll error', { error: String(e), token: trip.token.slice(0, 8) });
+        }
+        continue;
+      }
       stats.lockMissing += 1;
       log('boarding-lock: skip cycle (lock missing or expired)', {
         token: trip.token.slice(0, 8),
         station: waypoint.stationName,
+        locklessOptIn: trip.locklessStationPassed === true,
+        waypointKind: waypoint.kind,
       });
       continue;
     }
@@ -556,6 +583,111 @@ export async function maybeReschedulePush(
     await putTrip(env.TRIPS, trip);
   }
   return { cleanedUp: false };
+}
+
+/**
+ * #816 C — lockless trip (사용자 opt-in)에서 intermediate waypoint 통과를 추적하고 station-passed
+ * push를 발사한다. BoardingLock 없으니 trainCode 추적은 불가 — Seoul arrivals 중 best signal로
+ * "그 역에 어느 열차가 진입/도착했다"만 판정한다.
+ *
+ * 발사 조건:
+ *   1. arrivals 중 best signal의 arvlCd가 ARRIVED(1) 또는 ENTERING(0)
+ *   2. dedup: 같은 waypoint에서 이미 한 번 발사한 경우 (lastFiredPhase='imminent') skip
+ *
+ * 발사 성공 시: waypoint shift + lastFiredPhase reset + trip 저장. waypoint 0이면 trip cleanup.
+ * 사양상 transfer/destination kind는 호출 전에 분기로 차단됨 — 이 함수는 intermediate에 한정.
+ */
+export async function runLocklessIntermediate(
+  trip: Trip,
+  waypoint: Waypoint,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  // 같은 waypoint에서 이미 발사했으면 dedup (lockless 흐름은 phase 개념이 없으니 imminent 단일 stamp 사용).
+  if (trip.lastFiredPhase === 'imminent') {
+    return;
+  }
+  const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
+  const signal = pickBestArrivalSignal(arrivals, waypoint);
+  if (signal === null || signal.arvlCd === null) {
+    stats.etaMissing += 1;
+    return;
+  }
+  // 발사 트리거: 해당 역에 진입(ENTERING) 또는 도착(ARRIVED). 그 외 phase는 통과 알림 부적합.
+  const fires =
+    signal.arvlCd === ARRIVAL_CODE.ENTERING || signal.arvlCd === ARRIVAL_CODE.ARRIVED;
+  if (!fires) {
+    return;
+  }
+  const pushId = generatePushId();
+  log('lockless: station-passed push', {
+    token: trip.token.slice(0, 8),
+    station: waypoint.stationName,
+    arvlCd: signal.arvlCd,
+    etaSeconds: signal.etaSeconds,
+  });
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendSilentPush({
+        deviceToken: trip.token,
+        payload: {
+          nextWaypoint: waypoint.stationName,
+          etaSeconds: signal.etaSeconds,
+          phase: 'imminent',
+          kind: 'intermediate',
+          sentAt: now,
+          pushId,
+        },
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+  );
+  let dirty = false;
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    dirty = true;
+    stats.envCorrected += 1;
+  }
+  if (!heal.result.ok) {
+    stats.errors += 1;
+    log('lockless: push failed', {
+      status: heal.result.status,
+      reason: heal.result.reason,
+      token: trip.token.slice(0, 8),
+    });
+    if (
+      isUnrecoverableApnsError(heal.result.status, heal.result.reason) ||
+      heal.envMismatchExhausted
+    ) {
+      await cleanupTripWithLa(trip, env, deps, stats, now, log);
+      return;
+    }
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+  // 발사 성공 — waypoint 진행 + dedup stamp + 측정 카운터.
+  stats.pushed += 1;
+  stats.locklessIntermediateFired += 1;
+  trip.lastFiredPhase = 'imminent';
+  trip.waypoints.shift();
+  if (trip.waypoints.length === 0) {
+    // 마지막 intermediate까지 통과 — trip 종료. lockless는 destination을 직접 다루지 않는다.
+    await cleanupTripWithLa(trip, env, deps, stats, now, log);
+    return;
+  }
+  // 다음 waypoint를 위해 dedup stamp reset (위 shift 직후 첫 waypoint는 새 발사 대상).
+  trip.lastFiredPhase = undefined;
+  await putTrip(env.TRIPS, trip);
 }
 
 /**

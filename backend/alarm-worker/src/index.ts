@@ -402,6 +402,9 @@ export function validateTrip(input: unknown): Trip | null {
     // POST /trips merge 단계에서 existing 값을 보존한다 (consecutiveEtaMissing 누적이 유지되어야 자동 종료가 정상 동작).
     consecutiveEtaMissing:
       typeof obj.consecutiveEtaMissing === 'number' ? obj.consecutiveEtaMissing : undefined,
+    // #816 C: 사용자 명시 opt-in 토글값. 미송신 또는 boolean 아니면 undefined (default OFF).
+    locklessStationPassed:
+      typeof obj.locklessStationPassed === 'boolean' ? obj.locklessStationPassed : undefined,
   };
 }
 

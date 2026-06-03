@@ -103,7 +103,11 @@ import {
   registerSilentPushTask,
   SILENT_PUSH_TASK,
 } from '../silentPushTask';
-import { APNS_TOKEN_KEY, DESTINATION_KEY } from '../../constants/storageKeys';
+import {
+  APNS_TOKEN_KEY,
+  DESTINATION_KEY,
+  LOCKLESS_STATION_PASSED_KEY,
+} from '../../constants/storageKeys';
 
 const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
 
@@ -150,6 +154,18 @@ const PASSING_GATE = {
 };
 
 describe('silentPushTask', () => {
+  // #816 C — 기본 lock을 부여해 기존 fire 테스트가 lockless 가드(lock null + non-intermediate 차단)에
+  // 막히지 않도록 한다. lockless 분기는 별도 describe에서 lock=null로 명시 override해 검증.
+  // line 가드는 lookup 반환값이 두 함수 모두 null이면 graceful pass (#707 — stations.json miss 케이스).
+  const defaultBoardingLock = {
+    destinationId: '0228',
+    trainCode: 'T-default',
+    boardingStationId: 'station-default',
+    boardingLine: '2' as const,
+    boardedAt: 1_700_000_000_000,
+    expectedDurationMs: 600_000,
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockScheduleNotificationAsync.mockResolvedValue('id');
@@ -162,9 +178,9 @@ describe('silentPushTask', () => {
       return null;
     });
     mockSendPushAck.mockResolvedValue({ ok: true });
-    // 기본: lock 없음 → line 가드 미적용 (기존 동작).
-    mockGetBoardingLock.mockResolvedValue(null);
-    // 기본: stationLookup miss는 가드에 영향 없음(lock 없을 때 호출되지 않음).
+    // 기본: lock 활성. lockless 가드를 우회하려면 lock 부여가 필요(stations.json 미존재 가정).
+    mockGetBoardingLock.mockResolvedValue(defaultBoardingLock);
+    // 기본 lookup 모두 null → line 가드는 graceful pass(stations.json 어디에도 없음 가정).
     mockFindStationByNameAndLine.mockReturnValue(null);
     mockFindStationByName.mockReturnValue(null);
   });
@@ -646,9 +662,15 @@ describe('silentPushTask', () => {
         );
       });
 
-      it('lock 없음 → line 가드 skip (lookup 호출 안 됨, 기존 게이트 흐름)', async () => {
+      it('lock 없음 + intermediate + 토글 ON → line 가드 skip + 발사 (#816 C 정상 흐름)', async () => {
         mockGetBoardingLock.mockResolvedValue(null);
-        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === LOCKLESS_STATION_PASSED_KEY) return JSON.stringify(true);
+          return null;
+        });
+        await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
         expect(mockFindStationByNameAndLine).not.toHaveBeenCalled();
         expect(mockScheduleNotificationAsync).toHaveBeenCalled();
       });
@@ -666,6 +688,100 @@ describe('silentPushTask', () => {
           expect.objectContaining({ kind: 'station-passed', reason: 'lock-line-mismatch' }),
         );
         expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+    });
+
+    // #816 C — lockless station-passed 분기
+    describe('#816 C — lockless 분기 (lock 없음)', () => {
+      type LocklessStorage = 'on' | 'off' | 'absent' | 'throw';
+
+      function mockLocklessStorage(state: LocklessStorage) {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === LOCKLESS_STATION_PASSED_KEY) {
+            if (state === 'on') return JSON.stringify(true);
+            if (state === 'off') return JSON.stringify(false);
+            if (state === 'throw') throw new Error('boom');
+            return null; // absent
+          }
+          return null;
+        });
+      }
+
+      type SkipCase = {
+        name: string;
+        kind: 'destination' | 'transfer' | 'intermediate';
+        storage: LocklessStorage;
+        pushId?: string;
+        reason: 'lockless-non-intermediate' | 'lockless-opt-out';
+        logKind: 'destination' | 'transfer' | 'station-passed';
+      };
+
+      const skipCases: SkipCase[] = [
+        {
+          name: 'destination kind → lockless-non-intermediate + ack',
+          kind: 'destination',
+          storage: 'on',
+          pushId: 'p-dest',
+          reason: 'lockless-non-intermediate',
+          logKind: 'destination',
+        },
+        {
+          name: 'transfer kind → lockless-non-intermediate',
+          kind: 'transfer',
+          storage: 'on',
+          reason: 'lockless-non-intermediate',
+          logKind: 'transfer',
+        },
+        {
+          name: 'intermediate + 토글 OFF → lockless-opt-out + ack',
+          kind: 'intermediate',
+          storage: 'off',
+          pushId: 'p-off',
+          reason: 'lockless-opt-out',
+          logKind: 'station-passed',
+        },
+        {
+          name: 'intermediate + 토글 키 자체 부재 → lockless-opt-out (기본 OFF)',
+          kind: 'intermediate',
+          storage: 'absent',
+          reason: 'lockless-opt-out',
+          logKind: 'station-passed',
+        },
+        {
+          name: 'intermediate + 토글 AsyncStorage read 오류 → lockless-opt-out (안전 fallback)',
+          kind: 'intermediate',
+          storage: 'throw',
+          reason: 'lockless-opt-out',
+          logKind: 'station-passed',
+        },
+      ];
+
+      it.each(skipCases)('lock 없음 + $name', async ({ kind, storage, pushId, reason, logKind }) => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        mockLocklessStorage(storage);
+        await handleSilentPush(payload({ kind, phase: 'imminent', ...(pushId ? { pushId } : {}) }));
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason, kind: logKind }),
+        );
+        if (pushId) {
+          expect(mockSendPushAck).toHaveBeenCalledWith({
+            pushId,
+            token: DEFAULT_APNS_TOKEN,
+            outcome: 'skipped',
+            reason,
+          });
+        }
+      });
+
+      it('lock 없음 + intermediate + 토글 ON → 일반 게이트로 진행 후 발사', async () => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        mockLocklessStorage('on');
+        await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
       });
     });
 

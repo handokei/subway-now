@@ -73,6 +73,8 @@
     "speakerOffTitle": "关闭扬声器输出",
     "speakerOffMessage": "关闭扬声器输出后,未连接耳机时只会震动。是否继续?",
     "speakerOffConfirm": "关闭",
+    "locklessStationPassedLabel": "未选择列车时通过站点通知",
+    "locklessStationPassedDescription": "在未选择乘车列车的路线上也接收通过站点的通知。基于推测,可能会有噪音。",
     "languageSection": "语言",
     "languageLabel": "应用语言",
     "languageDescription": "自动会跟随设备设置",
