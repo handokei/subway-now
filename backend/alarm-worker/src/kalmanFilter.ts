@@ -197,6 +197,53 @@ export async function clearKalmanState(
   await kv.delete(stateKey(token));
 }
 
+/**
+ * Drift warning 임계 (km/h) — gpsAvgKmh와 Kalman state.v 차이가 이 이상이면 누적 drift 신호.
+ * 호출자가 cycle별로 측정해 ScheduledStats에 카운트한다 (E5 인프라와 cross-check).
+ *
+ * 15 km/h = 정거장 사이 평균속도(약 30~40 km/h)의 절반 — 의미있는 편차 임계.
+ * 노이즈는 R_HIGH/R_REJECT bands에서 자연 흡수되므로 보수적 임계로 시작.
+ * E5 측정 후 ↓ 조정 가능.
+ */
+export const DRIFT_WARNING_THRESHOLD_KMH = 15;
+
+/**
+ * Kalman state hard reset — 정거장 도착 (arvlCd=1) ground truth (#826 Phase 3 E4).
+ *
+ * 정거장에 도착하는 순간은 가장 강한 ground truth — 열차는 사실상 정차 상태.
+ * v=0(정지), P=R_LOW(낮은 분산 = 강한 신뢰), ts=now로 state를 직접 재초기화한다.
+ * 이후 cycle에서는 이 reset state를 prior로 받아 predict+update가 다시 시작.
+ *
+ * R_LOW를 P_0로 채택한 이유: arvlCd=1은 거의 0 노이즈 신호 — Kalman 신뢰 입력으로
+ * R 단계 함수의 가장 좋은 GPS(<20m)과 같은 신뢰도를 부여한다.
+ */
+export function resetKalmanForArrival(now: number): KalmanState {
+  return { v: 0, P: R_LOW, ts: now };
+}
+
+/**
+ * Drift 측정 — 현재 cycle |gpsAvgKmh - state.v| (km/h, 부호 없음, signed: state.v - gpsAvgKmh).
+ *
+ * 호출자가 임계(DRIFT_WARNING_THRESHOLD_KMH) 초과를 카운트해 ScheduledStats에 누적.
+ * 부호 정보는 drift 방향(over/underestimate) 진단용 — 절댓값 임계와 분리해 두 신호 모두 제공.
+ *
+ * 호출 시점: 정상 cycle (observationValid + prior 존재) — state.v가 의미 있는 prior일 때.
+ */
+export interface KalmanDriftSignal {
+  /** signed difference: state.v - gpsAvgKmh. */
+  delta: number;
+  /** |delta| ≥ DRIFT_WARNING_THRESHOLD_KMH 여부. */
+  warning: boolean;
+}
+
+export function detectKalmanDrift(
+  state: KalmanState,
+  gpsAvgKmh: number,
+): KalmanDriftSignal {
+  const delta = state.v - gpsAvgKmh;
+  return { delta, warning: Math.abs(delta) >= DRIFT_WARNING_THRESHOLD_KMH };
+}
+
 function stateKey(token: string): string {
   return `${KALMAN_STATE_PREFIX}${token}`;
 }

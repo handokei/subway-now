@@ -18,6 +18,7 @@ import {
   ACCURACY_R_MID_M,
   ACCEL_STD_Q_LOW,
   ACCEL_STD_Q_MID,
+  DRIFT_WARNING_THRESHOLD_KMH,
   Q_HIGH,
   Q_LOW,
   Q_MID,
@@ -29,8 +30,10 @@ import {
   clearKalmanState,
   computeNoiseQ,
   computeNoiseR,
+  detectKalmanDrift,
   predictKalman,
   readKalmanState,
+  resetKalmanForArrival,
   runKalmanStep,
   updateKalman,
   writeKalmanState,
@@ -405,6 +408,117 @@ describe('readKalmanState / writeKalmanState / clearKalmanState — KV 입출력
     await writeKalmanState(kv, 'bob', s2);
     expect(await readKalmanState(kv, 'alice')).toEqual(s1);
     expect(await readKalmanState(kv, 'bob')).toEqual(s2);
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// DRIFT_WARNING_THRESHOLD_KMH 상수
+// ─────────────────────────────────────────────────────
+
+describe('DRIFT_WARNING_THRESHOLD_KMH 상수 (#826 E4)', () => {
+  it('DRIFT_WARNING_THRESHOLD_KMH === 15', () => {
+    expect(DRIFT_WARNING_THRESHOLD_KMH).toBe(15);
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// resetKalmanForArrival
+// ─────────────────────────────────────────────────────
+
+describe('resetKalmanForArrival — 정거장 도착 ground truth hard reset (#826 E4)', () => {
+  it('now=1000 → { v: 0, P: R_LOW(=4), ts: 1000 }', () => {
+    const result = resetKalmanForArrival(1000);
+    expect(result).toEqual({ v: 0, P: R_LOW, ts: 1000 });
+  });
+
+  it('now=0 → ts=0, v=0, P=R_LOW', () => {
+    const result = resetKalmanForArrival(0);
+    expect(result.v).toBe(0);
+    expect(result.P).toBe(R_LOW);
+    expect(result.ts).toBe(0);
+  });
+
+  it('큰 ts 값도 그대로 반영', () => {
+    const ts = 1_700_000_000_000;
+    const result = resetKalmanForArrival(ts);
+    expect(result.ts).toBe(ts);
+    expect(result.v).toBe(0);
+    expect(result.P).toBe(R_LOW);
+  });
+
+  it('v는 항상 0 — 어떤 now에서도 불변', () => {
+    [100, 5_000, 9_999_999].forEach((now) => {
+      expect(resetKalmanForArrival(now).v).toBe(0);
+    });
+  });
+
+  it('P는 항상 R_LOW(=4) — 어떤 now에서도 불변', () => {
+    [1, 500, 1_000_000].forEach((now) => {
+      expect(resetKalmanForArrival(now).P).toBe(R_LOW);
+    });
+  });
+
+  it('매 호출마다 새 객체를 반환 (객체 동일성 아님)', () => {
+    const a = resetKalmanForArrival(1000);
+    const b = resetKalmanForArrival(1000);
+    expect(a).not.toBe(b);
+    expect(a).toEqual(b);
+  });
+});
+
+// ─────────────────────────────────────────────────────
+// detectKalmanDrift
+// ─────────────────────────────────────────────────────
+
+describe('detectKalmanDrift — drift 측정 (#826 E4)', () => {
+  const makeState = (v: number): KalmanState => ({ v, P: 10, ts: 1000 });
+
+  it('state.v=20, gpsAvg=5 → delta=15, warning=true (정확히 임계)', () => {
+    const result = detectKalmanDrift(makeState(20), 5);
+    expect(result.delta).toBe(15);
+    expect(result.warning).toBe(true);
+  });
+
+  it('state.v=10, gpsAvg=5 → delta=5, warning=false (임계 미달)', () => {
+    const result = detectKalmanDrift(makeState(10), 5);
+    expect(result.delta).toBe(5);
+    expect(result.warning).toBe(false);
+  });
+
+  it('state.v=5, gpsAvg=25 → delta=-20, warning=true (음수 delta, 절댓값 임계 초과)', () => {
+    const result = detectKalmanDrift(makeState(5), 25);
+    expect(result.delta).toBe(-20);
+    expect(result.warning).toBe(true);
+  });
+
+  it('state.v=gpsAvg → delta=0, warning=false', () => {
+    const result = detectKalmanDrift(makeState(30), 30);
+    expect(result.delta).toBe(0);
+    expect(result.warning).toBe(false);
+  });
+
+  it('경계값: |delta| = 14.99 → warning=false', () => {
+    // state.v=19.99, gpsAvg=5 → delta=14.99
+    const result = detectKalmanDrift(makeState(19.99), 5);
+    expect(Math.abs(result.delta)).toBeCloseTo(14.99, 5);
+    expect(result.warning).toBe(false);
+  });
+
+  it('경계값: |delta| = 15 → warning=true', () => {
+    const result = detectKalmanDrift(makeState(20), 5);
+    expect(Math.abs(result.delta)).toBe(15);
+    expect(result.warning).toBe(true);
+  });
+
+  it('경계값: |delta| = 15.01 → warning=true', () => {
+    const result = detectKalmanDrift(makeState(20.01), 5);
+    expect(result.warning).toBe(true);
+  });
+
+  it('delta는 signed: state.v - gpsAvgKmh (음수 포함)', () => {
+    // state.v=10, gpsAvg=30 → delta = -20
+    const result = detectKalmanDrift(makeState(10), 30);
+    expect(result.delta).toBe(-20);
   });
 });
 
