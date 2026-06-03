@@ -3,6 +3,7 @@ import { BoardingTrainList } from '../BoardingTrainList';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
 import { LINE_COLORS } from '../../constants/lineColors';
 import type { ArrivalInfo } from '../../api/arrivalApi';
+import type { LineNumber } from '../../types/station';
 
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
@@ -207,59 +208,26 @@ describe('BoardingTrainList', () => {
     expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
   });
 
+  // #792 라벨 dedup 회귀 가드 — 동일 BoardingTrainList 렌더 + assertion 패턴이라 it.each로 통합
+  // (SonarCloud CPD duplication 차단; 직전 PR #788과 동일한 접근).
   describe('#792 종착/방면 라벨 중복 제거', () => {
-    it('destination "어린이대공원(세종대)방면" + nextStationLabel "어린이대공원" → 접미사 생략 (중복 차단)', () => {
-      const train = makeTrain({
-        trainCode: 'T-DEDUP',
-        destination: '어린이대공원(세종대)방면',
-        line: '7',
-      });
+    it.each<[string, string, LineNumber, string | null, string]>([
+      ['방면 패턴 + 동일 역 dedup', '어린이대공원(세종대)방면', '7', '어린이대공원', '어린이대공원(세종대)방면'],
+      ['순환선 + nextStationLabel 없음 → 행 미부착', '내선순환', '2', null, '내선순환'],
+      ['일반 종착 + 다른 인접역 → 정상 부착', '도봉산행', '7', '중곡', '도봉산행 · 중곡방면'],
+      // 1호선 망월사 시뮬레이션 — 이전 includes() 기반 dedup이 false-positive로 "도봉산행"만 표시했음.
+      ['substring false-positive 방지 (도봉산행 + 도봉)', '도봉산행', '1', '도봉', '도봉산행 · 도봉방면'],
+    ])('%s', (_, destination, line, nextStationLabel, expected) => {
+      const train = makeTrain({ trainCode: 'T-792', destination, line });
       const { getByTestId } = renderWithTheme(
         <BoardingTrainList
           arrivals={[train]}
-          line="7"
+          line={line}
           onSelect={() => {}}
-          nextStationLabel="어린이대공원"
+          nextStationLabel={nextStationLabel}
         />,
       );
-      expect(getByTestId('boarding-train-meta-T-DEDUP').props.children).toBe(
-        '어린이대공원(세종대)방면',
-      );
-    });
-
-    it('destination "내선순환"은 parseTrainLineDirection으로 정규화되어 "행" 미부착', () => {
-      const train = makeTrain({ trainCode: 'T-LOOP', destination: '내선순환', line: '2' });
-      const { getByTestId } = renderWithTheme(
-        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
-      );
-      expect(getByTestId('boarding-train-meta-T-LOOP').props.children).toBe('내선순환');
-    });
-
-    it('destination "도봉산행"은 정규화 결과 그대로 표기, 다른 nextStationLabel은 정상 부착', () => {
-      const train = makeTrain({ trainCode: 'T-NORMAL', destination: '도봉산행', line: '7' });
-      const { getByTestId } = renderWithTheme(
-        <BoardingTrainList
-          arrivals={[train]}
-          line="7"
-          onSelect={() => {}}
-          nextStationLabel="중곡"
-        />,
-      );
-      expect(getByTestId('boarding-train-meta-T-NORMAL').props.children).toBe('도봉산행 · 중곡방면');
-    });
-
-    it('substring false-positive 방지: "도봉산행" + "도봉" → terminal 정확비교라 정상 부착', () => {
-      // 1호선 망월사 시뮬레이션. P1-1: 이전 includes() 기반 dedup은 false-positive로 "도봉산행"만 표시했음.
-      const train = makeTrain({ trainCode: 'T-PREFIX', destination: '도봉산행', line: '1' });
-      const { getByTestId } = renderWithTheme(
-        <BoardingTrainList
-          arrivals={[train]}
-          line="1"
-          onSelect={() => {}}
-          nextStationLabel="도봉"
-        />,
-      );
-      expect(getByTestId('boarding-train-meta-T-PREFIX').props.children).toBe('도봉산행 · 도봉방면');
+      expect(getByTestId('boarding-train-meta-T-792').props.children).toBe(expected);
     });
   });
 

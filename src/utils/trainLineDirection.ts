@@ -39,20 +39,27 @@ export function parseTrainLineDirection(
  *
  * 호출자(`buildDirectionMeta`)는 추출된 terminal이 nextStationLabel과 **정확히 같을 때만** dedup해
  * substring false-positive(예: "도봉산행".includes("도봉")=true → 잘못된 dedup)를 방지한다.
+ *
+ * 구현 노트: `.+?` 같은 lazy quantifier + optional group 조합은 ReDoS(super-linear backtracking)
+ * 위험이라 sonar:typescript:S5852가 잡는다. suffix 매칭 + 단순 char-class 정규식으로 회피한다.
  */
-const BOUND_FOR_RE = /^(?<terminal>.+?)행$/;
-const VIA_NAME_RE = /^(?<terminal>.+?)(?:\([^)]*\))?방면$/;
+const TRAILING_PAREN_ALIAS_RE = /\([^()]*\)$/;
+const TERMINAL_SUFFIX_BOUND_FOR = '행';
+const TERMINAL_SUFFIX_VIA_NAME = '방면';
 
 export function getTerminalStationName(trainLineNm: string): string | null {
   if (!trainLineNm) return null;
   if (trainLineNm === '내선순환' || trainLineNm === '외선순환') return null;
 
-  const viaMatch = VIA_NAME_RE.exec(trainLineNm);
-  if (viaMatch?.groups?.terminal) return viaMatch.groups.terminal;
-
-  const boundMatch = BOUND_FOR_RE.exec(trainLineNm);
-  if (boundMatch?.groups?.terminal) return boundMatch.groups.terminal;
-
+  if (trainLineNm.endsWith(TERMINAL_SUFFIX_VIA_NAME)) {
+    const withoutSuffix = trainLineNm.slice(0, -TERMINAL_SUFFIX_VIA_NAME.length);
+    const withoutAlias = withoutSuffix.replace(TRAILING_PAREN_ALIAS_RE, '');
+    return withoutAlias.length > 0 ? withoutAlias : null;
+  }
+  if (trainLineNm.endsWith(TERMINAL_SUFFIX_BOUND_FOR)) {
+    const withoutSuffix = trainLineNm.slice(0, -TERMINAL_SUFFIX_BOUND_FOR.length);
+    return withoutSuffix.length > 0 ? withoutSuffix : null;
+  }
   return null;
 }
 
