@@ -287,52 +287,31 @@ describe('EditorialTimeline quickExit door label', () => {
     expect(screen.getByText('1-1번 문')).toBeTruthy();
   });
 
-  it('#788 단조 노선 환승: 진행방면 fromTerminal로 정확한 row 선택 (용마산→건대입구 석남행)', () => {
-    // 7호선 용마산(idx 14) → 건대입구(idx 18): id 증가 = high → endpoints.high "석남" 매칭.
-    // transferExit fixture에 7→2 두 row (장암 8-4 / 석남 1-1) — fromTerminal "석남"이 선택되어 "1-1번 문".
-    // 출발역 boarding-door도 같은 도어(다음 hop 재사용)라 1-1이 2회 표시되는 게 정상.
-    const stops: Stop[] = [
-      { station: '용마산', line: '7', mark: 'filled' },
+  // #788 단조 노선 환승에서 진행방면별로 transferExit row가 갈리는지 검증.
+  // 양 방향 case가 같은 환승역(건대입구)을 공유하므로 stops 빌더 + assertion을 한 곳으로 모은다.
+  function makeTransferAtGeondaeStops(origin: string): Stop[] {
+    return [
+      { station: origin, line: '7', mark: 'filled' },
       {
         station: '건대입구',
         line: '2',
-        stopsFromPrev: '4정거장',
+        stopsFromPrev: '1정거장',
         mark: 'transfer',
         note: '환승',
-        arrivalContext: { line: '7', fromName: '용마산', toName: '건대입구' },
+        arrivalContext: { line: '7', fromName: origin, toName: '건대입구' },
         transferTarget: { toLine: '2' },
       },
-      {
-        station: '성수',
-        line: '2',
-        stopsFromPrev: '1정거장',
-        mark: 'dest',
-        note: '도착',
-        arrivalContext: { line: '2', fromName: '건대입구', toName: '성수' },
-      },
     ];
-    render(<EditorialTimeline stops={stops} />);
-    expect(screen.getAllByText(/1-1번 문/).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/8-4번 문/)).toBeNull();
-  });
+  }
 
-  it('#788 같은 환승역 + 반대방향: 진행방면 "장암"으로 8-4 row 선택 (뚝섬유원지→건대입구 장암행)', () => {
-    // 뚝섬유원지(7-019) → 건대입구(7-018): id 감소 = low → endpoints.low "장암" 매칭 → "8-4번 문".
-    const stops: Stop[] = [
-      { station: '뚝섬유원지', line: '7', mark: 'filled' },
-      {
-        station: '건대입구',
-        line: '2',
-        stopsFromPrev: '1정거장',
-        mark: 'transfer',
-        note: '환승',
-        arrivalContext: { line: '7', fromName: '뚝섬유원지', toName: '건대입구' },
-        transferTarget: { toLine: '2' },
-      },
-    ];
-    render(<EditorialTimeline stops={stops} />);
-    expect(screen.getAllByText(/8-4번 문/).length).toBeGreaterThan(0);
-    expect(screen.queryByText(/1-1번 문/)).toBeNull();
+  it.each<[string, string, string, string]>([
+    // 출발역 boarding-door도 같은 도어를 재사용하므로 expected가 2회 표시되는 게 정상 → getAllByText.
+    ['용마산→건대입구 (high=석남 방면)', '용마산', '1-1', '8-4'],
+    ['뚝섬유원지→건대입구 (low=장암 방면)', '뚝섬유원지', '8-4', '1-1'],
+  ])('#788 7→2 환승 fromTerminal로 row 갈림: %s', (_label, origin, expected, suppressed) => {
+    render(<EditorialTimeline stops={makeTransferAtGeondaeStops(origin)} />);
+    expect(screen.getAllByText(new RegExp(`${expected}번 문`)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(new RegExp(`${suppressed}번 문`))).toBeNull();
   });
 
   it('환승 stop이지만 transferExit 매칭이 없으면 quickExit fallback', () => {
