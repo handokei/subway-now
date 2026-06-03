@@ -526,6 +526,103 @@ describe('calculateStaticETA — 도보 시간 합산 (#776)', () => {
   });
 });
 
+describe('calculateStaticETA — 다음 열차 대기 동적화 (#777)', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('arrivalAtOrigin fresh이면 arrivalSeconds(분)를 대기로 사용', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    // arrivalSeconds=120 → 2분, travel=10, walking=0 → 12분
+    expect(
+      calculateStaticETA(route, {
+        arrivalAtOrigin: { arrivalSeconds: 120, receivedAtMs: NOW - 10_000 },
+        nowMs: NOW,
+      }),
+    ).toBe(12);
+  });
+
+  it('arrivalSeconds가 크면 대기도 길어진다 (5분)', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    // arrivalSeconds=300 → 5분, total 15분
+    expect(
+      calculateStaticETA(route, {
+        arrivalAtOrigin: { arrivalSeconds: 300, receivedAtMs: NOW },
+        nowMs: NOW,
+      }),
+    ).toBe(15);
+  });
+
+  it('arrivalSeconds=0 (열차 방금 도착)이면 대기 0분', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    // 0 + 10 + 0 = 10
+    expect(
+      calculateStaticETA(route, {
+        arrivalAtOrigin: { arrivalSeconds: 0, receivedAtMs: NOW },
+        nowMs: NOW,
+      }),
+    ).toBe(10);
+  });
+
+  it('arrivalAtOrigin stale(>60s)이면 DEFAULT_WAIT_MINUTES fallback', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    // 60_001ms 경과 → stale, fallback 3분
+    expect(
+      calculateStaticETA(route, {
+        arrivalAtOrigin: { arrivalSeconds: 120, receivedAtMs: NOW - 60_001 },
+        nowMs: NOW,
+      }),
+    ).toBe(13);
+  });
+
+  it('receivedAtMs=0 (mock/누락 컨벤션)이면 DEFAULT_WAIT_MINUTES fallback', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    expect(
+      calculateStaticETA(route, {
+        arrivalAtOrigin: { arrivalSeconds: 120, receivedAtMs: 0 },
+        nowMs: NOW,
+      }),
+    ).toBe(13);
+  });
+
+  it('arrivalSeconds 음수(비정상)이면 DEFAULT_WAIT_MINUTES fallback', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    expect(
+      calculateStaticETA(route, {
+        arrivalAtOrigin: { arrivalSeconds: -1, receivedAtMs: NOW },
+        nowMs: NOW,
+      }),
+    ).toBe(13);
+  });
+
+  it('arrival + walking 동시 합산', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    const userNearOrigin = { lat: 37.5, lng: 127.0 };
+    const originStationCoords = { lat: 37.5009, lng: 127.0 }; // 도보 ~1.4분 → round 1
+    // wait=2(arrival 120s) + travel=10 + walk=1 = 13
+    expect(
+      calculateStaticETA(route, {
+        currentLocation: userNearOrigin,
+        originStation: originStationCoords,
+        arrivalAtOrigin: { arrivalSeconds: 120, receivedAtMs: NOW },
+        nowMs: NOW,
+      }),
+    ).toBe(13);
+  });
+
+  it('nowMs 미지정 시 Date.now() 사용', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    const spy = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+    try {
+      expect(
+        calculateStaticETA(route, {
+          arrivalAtOrigin: { arrivalSeconds: 120, receivedAtMs: NOW - 10_000 },
+        }),
+      ).toBe(12);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 describe('환승역별 실측 환승시간 반영', () => {
   // CSV 출처: 공공데이터포털 15044419 (보행속도 1.2 m/s 기준)
   // 교대(2↔3) 63초 vs 잠실(8↔2) 158초 — 같은 stops여도 travelMinutes 차이 발생

@@ -3,7 +3,7 @@ import stationTravelTimesJson from '../data/stationTravelTimes.json';
 import transferTimes from '../data/transferTimes.json';
 import type { Station } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
-import { WALKING_SPEED_M_PER_S } from '../constants/eta';
+import { WALKING_SPEED_M_PER_S, ARRIVAL_FRESHNESS_MS } from '../constants/eta';
 import type { LineNumber } from '../types/station';
 import { applyStationAlias } from '../data/stationAliases';
 import { createLogger } from './logger';
@@ -713,6 +713,9 @@ export function buildJourneyDisplay(
   return { segments, totalStops };
 }
 
+// 출발역 다음 열차 대기 시간 fallback(분). arrivalAtOrigin이 없거나 stale일 때 사용.
+// 평시 평균값에 가깝지만 첨두/심야 편차로 실측과 2~7분 차이 가능 — #777에서 arrival 동적값으로
+// 전환했고 본 상수는 데이터 부재 시 회귀 방지 fallback 역할.
 const DEFAULT_WAIT_MINUTES = 3;
 
 // 반환값은 항상 정수 분. 호출처(메인 ETA 카운터/알림 body/Live Activity etaMinutes Swift Int? 디코딩)가
@@ -751,13 +754,17 @@ export interface LatLng {
 }
 
 /**
- * calculateStaticETA에 도보 시간을 합산하기 위한 옵션. 누락된 페어는 walking=0으로
- * graceful fallback (예: 위치 권한 미확보 시 currentLocation만 빠질 수 있음).
+ * calculateStaticETA 옵션. 누락된 필드는 graceful fallback(도보=0, 대기=DEFAULT_WAIT_MINUTES).
  *
+ * 도보 (#776):
  * - currentLocation + originStation 둘 다 있으면 출발 도보 시간 합산
  * - destination + destinationStation 둘 다 있으면 하차 도보 시간 합산
+ *
+ * 대기 (#777):
+ * - arrivalAtOrigin이 있고 freshness(60s) 통과 → arrivalSeconds를 분으로 환산해 사용
+ * - 없거나 stale → DEFAULT_WAIT_MINUTES fallback
  */
-export interface StaticEtaWalkingOptions {
+export interface StaticEtaOptions {
   /** 사용자 현재 위치(GPS). originStation과 함께 있을 때 출발역까지 도보 시간 계산. */
   currentLocation?: LatLng;
   /** 경로의 출발 지하철역 좌표. currentLocation 없으면 미사용. */
@@ -766,6 +773,14 @@ export interface StaticEtaWalkingOptions {
   destination?: LatLng;
   /** 경로의 하차 지하철역 좌표. destination 없으면 미사용. */
   destinationStation?: LatLng;
+  /**
+   * 출발역의 다음 열차 도착 정보. realtimePosition/arrival API에서 추출.
+   * `receivedAtMs <= 0`이거나 `nowMs - receivedAtMs > ARRIVAL_FRESHNESS_MS`이면 stale로 간주.
+   * 누락 또는 stale 시 DEFAULT_WAIT_MINUTES fallback (회귀 없음).
+   */
+  arrivalAtOrigin?: { arrivalSeconds: number; receivedAtMs: number };
+  /** freshness 계산용 현재 시각(ms). 미지정 시 Date.now() — 테스트에서 monkeypatch. */
+  nowMs?: number;
 }
 
 // 한 페어(사용자 좌표 + 역 좌표)의 도보 시간(분). 누락 시 0.
@@ -780,26 +795,42 @@ function calculateWalkingMinutes(from: LatLng | undefined, to: LatLng | undefine
   return seconds / 60;
 }
 
+// arrivalAtOrigin이 fresh하면 arrivalSeconds(초)를 분으로, 아니면 DEFAULT_WAIT_MINUTES.
+// 게이트: receivedAtMs<=0(mock/누락), 나이>ARRIVAL_FRESHNESS_MS(stale), arrivalSeconds<0(비정상).
+function resolveWaitMinutes(
+  arrivalAtOrigin: StaticEtaOptions['arrivalAtOrigin'],
+  nowMs: number,
+): number {
+  if (!arrivalAtOrigin) return DEFAULT_WAIT_MINUTES;
+  const { arrivalSeconds, receivedAtMs } = arrivalAtOrigin;
+  if (receivedAtMs <= 0) return DEFAULT_WAIT_MINUTES;
+  if (nowMs - receivedAtMs > ARRIVAL_FRESHNESS_MS) return DEFAULT_WAIT_MINUTES;
+  if (arrivalSeconds < 0) return DEFAULT_WAIT_MINUTES;
+  return arrivalSeconds / 60;
+}
+
 /**
- * 경로 정적 ETA(분). 기본 대기 + 지하철 운행/환승 + (옵션) 출발/도착 도보 시간.
+ * 경로 정적 ETA(분). 다음 열차 대기 + 지하철 운행/환승 + (옵션) 출발/도착 도보 시간.
  *
  * - route=null이면 null
- * - options 미지정 시 기존 동작 그대로 (도보 0분)
+ * - options 미지정 시 기존 동작과 동치 (도보 0, 대기 DEFAULT_WAIT_MINUTES) — 회귀 없음
  * - 페어가 부분적으로 누락되면 해당 도보 시간만 0 (예: currentLocation은 있는데 originStation이 없으면
  *   출발 도보 0 — 사용자 위치 권한 미확보 등 부분 정보 상황에서 graceful fallback)
+ * - arrivalAtOrigin fresh → arrivalSeconds 동적 사용, 없거나 stale → DEFAULT_WAIT_MINUTES
  *
  * 반환은 분 단위 정수 — 호출처(메인 ETA 카운터/알림 body 등)가 정수를 전제로 한다.
- * 지하철 시간은 getTravelMinutes에서 이미 분 단위 정수, 도보 합계는 여기서 한 번 round 해 더한다.
+ * 지하철 시간은 getTravelMinutes에서 이미 분 단위 정수, 대기/도보 합은 여기서 한 번 round 해 더한다.
  */
 export function calculateStaticETA(
   route: Route,
-  options: StaticEtaWalkingOptions = {},
+  options: StaticEtaOptions = {},
 ): number | null {
   if (!route) return null;
   const walkingMinutes =
     calculateWalkingMinutes(options.currentLocation, options.originStation) +
     calculateWalkingMinutes(options.destinationStation, options.destination);
-  return DEFAULT_WAIT_MINUTES + getTravelMinutes(route) + Math.round(walkingMinutes);
+  const waitMinutes = resolveWaitMinutes(options.arrivalAtOrigin, options.nowMs ?? Date.now());
+  return Math.round(waitMinutes) + getTravelMinutes(route) + Math.round(walkingMinutes);
 }
 
 /**
