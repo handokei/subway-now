@@ -35,6 +35,8 @@ import {
   logSilentPushSkipped,
   type AlarmLogReason,
 } from '../utils/alarmLog';
+import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
+import { clearDismissSilence, getDismissSilence } from '../utils/dismissSilenceStorage';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../utils/movementGate';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
 import { addFiredPushId } from '../utils/firedPushIds';
@@ -430,6 +432,27 @@ async function fireWithGate(
       logger.info(`lockless skip opt-out: station=${payload.nextWaypoint}`);
       return;
     }
+  }
+
+  // #746 — dismiss silence 게이트. BG path는 좌표 신뢰성이 낮아 시간 조건만 평가
+  //   (currentPosition=null). lock/lockless 분기 통과 후 위치 게이트보다 위에 위치해
+  //   사용자 정책이 데이터 정확성보다 우선되도록 한다.
+  const dismissSilenceState = await getDismissSilence();
+  const silenceDecision = evaluateDismissSilence(dismissSilenceState, Date.now(), null);
+  if (!silenceDecision.silenced && silenceDecision.expired) {
+    await clearDismissSilence();
+  }
+  if (silenceDecision.silenced) {
+    const logKind = payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
+    logSilentPushSkipped({
+      stationName: payload.nextWaypoint,
+      kind: logKind,
+      phaseId: payload.phase,
+      reason: 'dismiss-silence',
+    });
+    ackOutcome(payload.pushId, apnsToken, 'skipped', 'dismiss-silence');
+    logger.info(`dismiss-silence skip: station=${payload.nextWaypoint}`);
+    return;
   }
 
   const gate = await checkSilentPushLocationGate({

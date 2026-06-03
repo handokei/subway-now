@@ -6,6 +6,7 @@ import {
   getBoardingLock,
   setBoardingLock,
 } from '../utils/boardingLockStorage';
+import { clearDismissSilence } from '../utils/dismissSilenceStorage';
 
 /**
  * BoardingLock 전역 store (#584 PR A).
@@ -35,6 +36,9 @@ export const useBoardingLockStore = create<BoardingLockState>((set, get) => ({
   createLock: async (lock: BoardingLock) => {
     set({ lock });
     await setBoardingLock(lock);
+    // #746: 새 lock 생성 = 사용자가 새 leg에 탑승 의사 명시 → 이전 dismiss silence는 무효.
+    // 동일 trip 내 환승으로 lock이 교체되는 경우에도 같은 의미 — 즉시 클리어.
+    await clearDismissSilence();
   },
 
   releaseLock: async () => {

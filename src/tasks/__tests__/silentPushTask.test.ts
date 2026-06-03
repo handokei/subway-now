@@ -77,6 +77,13 @@ jest.mock('../../utils/boardingLockStorage', () => ({
   getBoardingLock: (...args: unknown[]) => mockGetBoardingLock(...args),
 }));
 
+const mockGetDismissSilence = jest.fn();
+const mockClearDismissSilence = jest.fn();
+jest.mock('../../utils/dismissSilenceStorage', () => ({
+  getDismissSilence: (...args: unknown[]) => mockGetDismissSilence(...args),
+  clearDismissSilence: (...args: unknown[]) => mockClearDismissSilence(...args),
+}));
+
 const mockFindStationByNameAndLine = jest.fn();
 const mockFindStationByName = jest.fn();
 jest.mock('../../utils/stationLookup', () => ({
@@ -183,6 +190,9 @@ describe('silentPushTask', () => {
     // 기본 lookup 모두 null → line 가드는 graceful pass(stations.json 어디에도 없음 가정).
     mockFindStationByNameAndLine.mockReturnValue(null);
     mockFindStationByName.mockReturnValue(null);
+    // #746 — 기본 silence 없음.
+    mockGetDismissSilence.mockResolvedValue(null);
+    mockClearDismissSilence.mockResolvedValue(undefined);
   });
 
   it('defineTask가 SILENT_PUSH_TASK 이름으로 콜백을 등록한다', () => {
@@ -1102,6 +1112,62 @@ describe('silentPushTask', () => {
         await handleSilentPush(reschedulePayload({ pushId: 'rs-uuid' }));
         expect(mockSendPushAck).not.toHaveBeenCalled();
         expect(mockLogSilentPushRescheduleReceived).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    describe('#746 dismiss silence 게이트 (BG silent push)', () => {
+      it('silence 활성이면 발사 차단 + logSilentPushSkipped(reason=dismiss-silence) + ACK skip', async () => {
+        mockGetDismissSilence.mockResolvedValue({
+          sinceTs: Date.now(),
+          sinceLat: null,
+          sinceLng: null,
+        });
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent', pushId: 'p1' }));
+        expect(mockCheckGate).not.toHaveBeenCalled();
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({
+            reason: 'dismiss-silence',
+            stationName: '강남',
+            kind: 'destination',
+            phaseId: 'imminent',
+          }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: 'skipped', reason: 'dismiss-silence' }),
+        );
+      });
+
+      it('silence 만료 시 clear 호출 + 정상 발사 path로 진입(checkGate 호출)', async () => {
+        mockGetDismissSilence.mockResolvedValue({
+          sinceTs: Date.now() - 10 * 60_000,
+          sinceLat: null,
+          sinceLng: null,
+        });
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockClearDismissSilence).toHaveBeenCalledTimes(1);
+        expect(mockCheckGate).toHaveBeenCalled();
+      });
+
+      it('intermediate 카테고리도 silence가 차단(kind=station-passed로 log)', async () => {
+        mockGetDismissSilence.mockResolvedValue({
+          sinceTs: Date.now(),
+          sinceLat: null,
+          sinceLng: null,
+        });
+        await handleSilentPush(payload({ kind: 'intermediate', phase: 'early', pushId: 'p2' }));
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({
+            reason: 'dismiss-silence',
+            kind: 'station-passed',
+          }),
+        );
+      });
+
+      it('silence state null이면 정상 path로 진입', async () => {
+        mockGetDismissSilence.mockResolvedValue(null);
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockCheckGate).toHaveBeenCalled();
       });
     });
   });

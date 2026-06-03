@@ -13,7 +13,7 @@ const mockStation: Station = {
   line: '2',
   lineColor: '#009D3E',
   lat: 37.4979,
-  lng: 127.0276,
+  lng: 127276,
 };
 
 const mockStation2: Station = {
@@ -22,12 +22,12 @@ const mockStation2: Station = {
   line: '2',
   lineColor: '#009D3E',
   lat: 37.5006,
-  lng: 127.0365,
+  lng: 127365,
 };
 
 describe('useAppStore', () => {
   beforeEach(() => {
-    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, tripOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null, debugVisible: false, accessibilityMode: false, locklessStationPassed: false });
+    useAppStore.setState({ favorites: [], destination: null, recentDestination: null, sleepMode: false, allowSpeaker: true, customOrigin: null, tripOrigin: null, themeMode: 'auto', routePreference: 'optimal', localePreference: 'auto', alarmEvent: null, debugVisible: false, accessibilityMode: false, locklessStationPassed: false, dismissSilence: null });
     jest.clearAllMocks();
   });
 
@@ -1114,5 +1114,82 @@ describe('useAppStore', () => {
     expect(useAppStore.getState().debugVisible).toBe(true);
     useAppStore.getState().setDebugVisible(false);
     expect(useAppStore.getState().debugVisible).toBe(false);
+  });
+
+  // ── #746 dismissSilence ──
+
+  it('초기 dismissSilence는 null', () => {
+    expect(useAppStore.getState().dismissSilence).toBeNull();
+  });
+
+  it('setDismissSilence: timestamp + 좌표 함께 메모리와 storage에 기록', async () => {
+    await useAppStore.getState().setDismissSilence(1_700_000_000_000, { lat: 37.5, lng: 127 });
+    expect(useAppStore.getState().dismissSilence).toEqual({
+      sinceTs: 1_700_000_000_000,
+      sinceLat: 37.5,
+      sinceLng: 127,
+    });
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:dismiss-silence',
+      JSON.stringify({
+        sinceTs: 1_700_000_000_000,
+        sinceLat: 37.5,
+        sinceLng: 127,
+      }),
+    );
+  });
+
+  it('setDismissSilence: 좌표 null이면 sinceLat/sinceLng 모두 null로 저장', async () => {
+    await useAppStore.getState().setDismissSilence(42, null);
+    expect(useAppStore.getState().dismissSilence).toEqual({
+      sinceTs: 42,
+      sinceLat: null,
+      sinceLng: null,
+    });
+  });
+
+  it('clearDismissSilence: 메모리와 storage 모두 비운다', async () => {
+    await useAppStore.getState().setDismissSilence(42, { lat: 0, lng: 0 });
+    await useAppStore.getState().clearDismissSilence();
+    expect(useAppStore.getState().dismissSilence).toBeNull();
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:dismiss-silence');
+  });
+
+  it('clearDismissSilence: 이미 null이어도 storage clear는 호출(재진입 안전)', async () => {
+    await useAppStore.getState().clearDismissSilence();
+    expect(useAppStore.getState().dismissSilence).toBeNull();
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:dismiss-silence');
+  });
+
+  it('loadDismissSilence: storage에서 hydrate', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
+      JSON.stringify({ sinceTs: 99, sinceLat: 1, sinceLng: 2 }),
+    );
+    await useAppStore.getState().loadDismissSilence();
+    expect(useAppStore.getState().dismissSilence).toEqual({
+      sinceTs: 99,
+      sinceLat: 1,
+      sinceLng: 2,
+    });
+  });
+
+  it('setDestination 으로 새 destination 설정 시 dismissSilence는 즉시 클리어', async () => {
+    await useAppStore.getState().setDismissSilence(1, { lat: 0, lng: 0 });
+    expect(useAppStore.getState().dismissSilence).not.toBeNull();
+    // 새 destination 진입 (switch).
+    useAppStore.getState().setDestination(mockStation);
+    expect(useAppStore.getState().dismissSilence).toBeNull();
+  });
+
+  it('setDestination: 같은 destination 재설정(isSwitch=false)이면 dismissSilence 유지', async () => {
+    useAppStore.setState({ destination: mockStation });
+    await useAppStore.getState().setDismissSilence(1, { lat: 0, lng: 0 });
+    // 같은 destination 재설정 — storage clear 분기는 미실행.
+    useAppStore.getState().setDestination(mockStation);
+    expect(useAppStore.getState().dismissSilence).toEqual({
+      sinceTs: 1,
+      sinceLat: 0,
+      sinceLng: 0,
+    });
   });
 });

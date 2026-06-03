@@ -23,9 +23,11 @@ import {
   logFiredStationPassed,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
+  logSuppressedDismissSilence,
   logSuppressedMovement,
   logSuppressedSleepFirstTransfer,
 } from '../utils/alarmLog';
+import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { getBoardingLock } from '../utils/boardingLockStorage';
 import { shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../utils/movementGate';
@@ -37,6 +39,39 @@ import type { FusionConfidence, FusionSource } from '../utils/pickFusedStation';
 import { resolveNotificationSource } from '../utils/notificationSource';
 
 const logger = createLogger('StationAlarm');
+
+/**
+ * #746 — dismiss silence 게이트 판정 + 만료 시 store clear 호출.
+ * 3개 effect(phase / imminent / station-passed)에서 evaluate→expired 분기를 반복하던 것을 추출.
+ * 호출부는 반환값의 silenced만 보고 log + return을 직접 처리한다(콜백 미사용 → 익명 함수
+ * 추가 카운팅 방지).
+ *
+ * - silenced=true: 호출부가 logSuppressedDismissSilence 후 즉시 return.
+ * - expired=true:  헬퍼가 clear action을 fire-and-forget으로 호출(실패 무시, 다음 사이클 재시도).
+ *
+ * SonarCloud S3776(cognitive complexity) 해소 — phase effect의 silence 분기 4개를
+ * 단일 호출로 압축. 동시에 S3735(void 연산자)도 Promise chain으로 대체.
+ */
+function applySilenceGate(
+  silence: import('../utils/dismissSilenceStorage').DismissSilenceState | null,
+  now: number,
+  userLocation: { lat: number; lng: number } | null,
+  clearAction: () => Promise<void>,
+): { silenced: boolean } {
+  const decision = evaluateDismissSilence(silence, now, userLocation);
+  if (decision.silenced) return { silenced: true };
+  if (decision.expired) {
+    // expired → store/storage cleanup. test spy 환경에서 undefined 반환 가능성을
+    // Promise.resolve로 정규화하고, 실패는 logger.warn으로 흡수해 익명 catch 핸들러를
+    // 만들지 않는다(커버리지 안정).
+    Promise.resolve(clearAction()).then(undefined, logClearFailure);
+  }
+  return { silenced: false };
+}
+
+function logClearFailure(e: unknown): void {
+  logger.warn('clearDismissSilence 실패 — 다음 사이클 재시도', e);
+}
 
 export interface UseStationAlarmInputs {
   route: Route;
@@ -123,6 +158,10 @@ export function useStationAlarm({
   const sleepMode = useAppStore((s) => s.sleepMode);
   const allowSpeaker = useAppStore((s) => s.allowSpeaker);
   const setAlarmEvent = useAppStore((s) => s.setAlarmEvent);
+  // #746 — dismiss silence 게이트 평가용 in-memory state. clear는 만료 시점에
+  // store action을 통해 호출(storage도 함께 정리). 게이트 자체는 pure 함수.
+  const dismissSilence = useAppStore((s) => s.dismissSilence);
+  const clearDismissSilenceAction = useAppStore((s) => s.clearDismissSilence);
   const sleepModeRef = useRef(sleepMode);
   const allowSpeakerRef = useRef(allowSpeaker);
 
@@ -306,6 +345,23 @@ export function useStationAlarm({
     // #754: in-flight dedup은 fireAndLog 진입부의 sync firedAlarmsRef.current.add(key) 가
     // 보장한다 (await getBoardingLock 전에 set에 들어가므로 같은 키의 동시 호출은 즉시 return).
     if (rawEvent) {
+      // #746 — dismiss silence 게이트. 사용자 dismiss 후 5분/200m 이내라면 모든 카테고리 차단.
+      // movement/dedup보다 위 — 사용자 명시 정책이 데이터 정확성보다 우선.
+      const silenceGate = applySilenceGate(
+        dismissSilence,
+        Date.now(),
+        userLocation,
+        clearDismissSilenceAction,
+      );
+      if (silenceGate.silenced) {
+        logSuppressedDismissSilence({
+          source: 'fg',
+          stationName: rawEvent.stationName,
+          kind: rawEvent.type,
+          phaseId: rawEvent.phaseId,
+        });
+        return;
+      }
       // #733 — Phase ETA path movement gate. early phase는 etaSeconds 무관, remainingStops<=1만
       // 검사하므로 fusion이 인접역으로 jitter하면 즉시 발사. snapshot 1/2에서 관측된 20:07:48 등
       // 정적 transfer-early 회귀 차단.
@@ -348,6 +404,8 @@ export function useStationAlarm({
     positionStability,
     motionStationary,
     skipWarmupGuard,
+    dismissSilence,
+    clearDismissSilenceAction,
   ]);
 
   // #396: 도착정보 API 신호로 imminent 발사.
@@ -369,6 +427,23 @@ export function useStationAlarm({
 
     const imminentKey = `imminent:${destination.name}`;
     if (firedAlarmsRef.current.has(imminentKey)) return;
+
+    // #746 — dismiss silence 게이트. dismiss 후 5분/200m 이내라면 imminent도 차단.
+    const silenceGate = applySilenceGate(
+      dismissSilence,
+      Date.now(),
+      userLocation,
+      clearDismissSilenceAction,
+    );
+    if (silenceGate.silenced) {
+      logSuppressedDismissSilence({
+        source: 'fg',
+        stationName: destination.name,
+        kind: 'destination',
+        phaseId: 'imminent',
+      });
+      return;
+    }
 
     // #727 정적 misfire 가드 — useStationAlarm은 timestamp 입력이 없으므로 speed/accuracy만 평가.
     // #733 — speed=null 시 positionStability fallback 사용.
@@ -410,6 +485,10 @@ export function useStationAlarm({
     accuracyMeters,
     positionStability,
     motionStationary,
+    dismissSilence,
+    clearDismissSilenceAction,
+    userLocation?.lat,
+    userLocation?.lng,
   ]);
 
   // Station-passed 알림 효과: 경로상 역 변경 시 dedup된 per-station 알림.
@@ -470,6 +549,23 @@ export function useStationAlarm({
         return;
       }
 
+      // #746 — dismiss silence 게이트. station-passed 카테고리도 동일 정책으로 차단.
+      // userLocation 없이도 시간 조건만 평가 가능 — null 좌표 그대로 전달.
+      const silenceGate = applySilenceGate(
+        dismissSilence,
+        Date.now(),
+        userLocation,
+        clearDismissSilenceAction,
+      );
+      if (silenceGate.silenced) {
+        logSuppressedDismissSilence({
+          source: 'fg',
+          stationName: candidateStation.name,
+          kind: 'station-passed',
+        });
+        return;
+      }
+
       void (async () => {
         try {
           const lastId = await getLastNotifiedStationId();
@@ -511,5 +607,9 @@ export function useStationAlarm({
     accuracyOk,
     arrivalConfirmed,
     movementSuppressionReason,
+    dismissSilence,
+    clearDismissSilenceAction,
+    userLocation?.lat,
+    userLocation?.lng,
   ]);
 }

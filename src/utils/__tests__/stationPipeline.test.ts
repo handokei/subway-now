@@ -39,6 +39,13 @@ jest.mock('../boardingLockStorage', () => ({
   getBoardingLock: () => mockGetBoardingLock(),
 }));
 
+const mockGetDismissSilence = jest.fn();
+const mockClearDismissSilence = jest.fn();
+jest.mock('../dismissSilenceStorage', () => ({
+  getDismissSilence: (...args: unknown[]) => mockGetDismissSilence(...args),
+  clearDismissSilence: (...args: unknown[]) => mockClearDismissSilence(...args),
+}));
+
 const mockAdvanceHopWindow = jest.fn().mockResolvedValue(undefined);
 jest.mock('../boardingLockScheduler', () => ({
   advanceHopWindow: (...args: unknown[]) => mockAdvanceHopWindow(...args),
@@ -65,6 +72,7 @@ const mockLogFiredStationPassed = jest.fn();
 const mockLogSuppressedDedupStation = jest.fn();
 const mockLogSuppressedDedupAlarm = jest.fn();
 const mockLogSuppressedSleepFirstTransfer = jest.fn();
+const mockLogSuppressedDismissSilence = jest.fn();
 jest.mock('../alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
@@ -72,6 +80,7 @@ jest.mock('../alarmLog', () => ({
   logSuppressedDedupAlarm: (...args: unknown[]) => mockLogSuppressedDedupAlarm(...args),
   logSuppressedSleepFirstTransfer: (...args: unknown[]) =>
     mockLogSuppressedSleepFirstTransfer(...args),
+  logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
 }));
 
 import { processLocationUpdate, resolveNextTarget } from '../stationPipeline';
@@ -133,6 +142,9 @@ describe('processLocationUpdate', () => {
     mockResolveAllTargets.mockReturnValue([
       { name: '시청', stops: 3, alarmType: 'destination', approachLine: '2' },
     ]);
+    // #746: dismissSilence 기본은 null — silence 없음.
+    mockGetDismissSilence.mockResolvedValue(null);
+    mockClearDismissSilence.mockResolvedValue(undefined);
   });
 
   it('returns null nearest and null alarm when findNearestStation returns null', async () => {
@@ -794,6 +806,98 @@ describe('processLocationUpdate', () => {
       await call({ sleepMode: true });
       expect(mockSendAlarmNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('#746 dismiss silence 게이트 (BG path)', () => {
+    beforeEach(() => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockIsStationOnRoute.mockReturnValue(true);
+    });
+
+    it('silence 활성이면 phase 알람 발사 차단 + suppress reason 로그', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+      // 시간/거리 모두 silence 범위.
+      mockGetDismissSilence.mockResolvedValue({
+        sinceTs: Date.now(),
+        sinceLat: 37.498,
+        sinceLng: 127.028,
+      });
+      const result = await call({ source: 'bg' });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogSuppressedDismissSilence).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'bg',
+          stationName: mockAlarmEvent.stationName,
+          kind: mockAlarmEvent.type,
+          phaseId: mockAlarmEvent.phaseId,
+        }),
+      );
+      // 반환 alarmEvent는 null로 정정 (caller가 sleep overlay 등에 표시하지 않도록).
+      expect(result.alarmEvent).toBeNull();
+    });
+
+    it('silence 활성이면 station-passed 알림도 차단 + lastNotifiedStationId 갱신 보존', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue('other-id');
+      mockGetDismissSilence.mockResolvedValue({
+        sinceTs: Date.now(),
+        sinceLat: 37.498,
+        sinceLng: 127.028,
+      });
+      await call({ source: 'bg' });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+      expect(mockLogSuppressedDismissSilence).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'bg',
+          stationName: mockStation.name,
+          kind: 'station-passed',
+        }),
+      );
+    });
+
+    it('silence 만료(시간) 시 게이트 통과 + storage clear 호출', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+      mockGetDismissSilence.mockResolvedValue({
+        sinceTs: Date.now() - 10 * 60_000,
+        sinceLat: null,
+        sinceLng: null,
+      });
+      await call({ source: 'bg' });
+      expect(mockClearDismissSilence).toHaveBeenCalledTimes(1);
+      expect(mockSendAlarmNotification).toHaveBeenCalled();
+    });
+
+    it('silence state 좌표 null(=GPS-less dismiss)이면 거리 평가 skip — 시간 조건만 활성', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+      mockGetDismissSilence.mockResolvedValue({
+        sinceTs: Date.now(),
+        sinceLat: null,
+        sinceLng: null,
+      });
+      // 사용자가 1km 떨어진 좌표여도 시간 조건이 silence이므로 차단.
+      await call({ source: 'bg', lat: 37.6, lng: 127.1 });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('silence state 없음(null) → 정상 발사', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+      mockGetDismissSilence.mockResolvedValue(null);
+      await call({ source: 'bg' });
+      expect(mockLogSuppressedDismissSilence).not.toHaveBeenCalled();
+      expect(mockSendAlarmNotification).toHaveBeenCalled();
+    });
+
+    it('silence 활성이어도 updateStationNotification(UI)은 계속 호출 — silence는 알람만 차단', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue(mockAlarmEvent);
+      mockGetDismissSilence.mockResolvedValue({
+        sinceTs: Date.now(),
+        sinceLat: null,
+        sinceLng: null,
+      });
+      await call({ source: 'bg' });
+      expect(mockUpdateStationNotification).toHaveBeenCalled();
     });
   });
 });

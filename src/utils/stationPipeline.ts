@@ -11,10 +11,13 @@ import {
   logFiredStationPassed,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
+  logSuppressedDismissSilence,
   logSuppressedSleepFirstTransfer,
   type AlarmLogSource,
 } from './alarmLog';
 import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
+import { evaluateDismissSilence } from './dismissSilenceGate';
+import { clearDismissSilence, getDismissSilence } from './dismissSilenceStorage';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import type { LineNumber, NearestStationResult, Station } from '../types/station';
 import type { Route } from './stationRoute';
@@ -247,10 +250,34 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
 
   for (const event of suppressed) logSuppressedDedupAlarm(source, event);
 
+  // #746 — dismiss silence 게이트. BG path는 storage helper를 직접 read해 store와 동일 결과.
+  // 한 cycle 안에서 phase + station-passed 분기가 모두 사용하므로 1회 read.
+  const dismissSilenceState = await getDismissSilence();
+  const silenceDecision = evaluateDismissSilence(
+    dismissSilenceState,
+    Date.now(),
+    { lat, lng },
+  );
+  if (!silenceDecision.silenced && silenceDecision.expired) {
+    await clearDismissSilence();
+  }
+
   // alarmEvent && route 두 조건이 동시에 참일 때만 발사 분기 진입.
   // evaluateAlarmPhase는 route=null이면 항상 null이라 사실상 alarmEvent != null이면 route != null.
   // 명시 가드로 type narrowing 후 resolveAllTargets 호출 — non-null assertion 회피.
-  if (alarmEvent && route) {
+  // #746 — silence가 활성이면 phase 알람 발사는 skip하지만 UI 갱신(updateStationNotification)은
+  //   계속 — silence는 "알람"만 차단, "현재 역 표시" 같은 정보 표시는 보존.
+  let suppressedAlarmEvent = false;
+  if (alarmEvent && route && silenceDecision.silenced) {
+    logSuppressedDismissSilence({
+      source,
+      stationName: alarmEvent.stationName,
+      kind: alarmEvent.type,
+      phaseId: alarmEvent.phaseId,
+    });
+    suppressedAlarmEvent = true;
+  }
+  if (alarmEvent && route && !suppressedAlarmEvent) {
     // #750: 공통 sleep 룰 게이트. scheduler 사전 예약이 skip한 transfer를 BG 즉시 발사 path가
     // 우회 발사하던 회귀 차단. 첫 hop 판정은 route의 첫 waypoint와 stationName 일치로 — lock
     // 활성 동안 leg가 갱신되면 lock도 갱신되므로 route.targets[0]이 곧 현재 leg의 첫 hop.
@@ -277,7 +304,15 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   // 역 변경 감지 → per-station 알림. 단, 경로상 노선의 역만 (false alarm 방지)
   // 알림 상태는 notificationState 모듈(AsyncStorage)을 단일 출처로 사용해
   // Foreground/Background 양쪽에서 동일한 dedup이 적용된다.
-  if (route && isStationOnRoute(nearest.station, route)) {
+  // #746 — station-passed도 dismiss silence 게이트. dedup(lastNotifiedStationId)보다 위에 두어
+  //   silence 중에는 lastNotifiedStationId 갱신을 막아 silence 만료 직후 정상 발사를 보존한다.
+  if (route && isStationOnRoute(nearest.station, route) && silenceDecision.silenced) {
+    logSuppressedDismissSilence({
+      source,
+      stationName: nearest.station.name,
+      kind: 'station-passed',
+    });
+  } else if (route && isStationOnRoute(nearest.station, route)) {
     const lastNotifiedStationId = await getLastNotifiedStationId();
     if (nearest.station.id !== lastNotifiedStationId) {
       // #796: 환승역 도착 timing의 segment 정확 식별. evaluateAlarmPhase(:233)와 동일한
@@ -336,6 +371,8 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     arrivalAtOrigin,
     arrivalsAtTransfers,
   });
+  // #746 — silence로 차단된 phase 알람은 sleep overlay에 노출하지 않음 (alarmEvent → null).
+  const effectiveAlarmEvent = suppressedAlarmEvent ? null : alarmEvent;
   await updateStationNotification(
     nearest.station,
     Math.round(nearest.distanceKm * 1000),
@@ -343,9 +380,9 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     route,
     eta,
     undefined,
-    sleepMode ? alarmEvent : null,
+    sleepMode ? effectiveAlarmEvent : null,
     notificationSource,
   );
 
-  return { alarmEvent, nearest };
+  return { alarmEvent: effectiveAlarmEvent, nearest };
 }

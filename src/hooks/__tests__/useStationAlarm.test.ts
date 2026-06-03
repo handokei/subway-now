@@ -67,6 +67,7 @@ const mockLogSuppressedDedupAlarm = jest.fn();
 const mockLogSuppressedDedupStation = jest.fn();
 const mockLogSuppressedMovement = jest.fn();
 const mockLogSuppressedSleepFirstTransfer = jest.fn();
+const mockLogSuppressedDismissSilence = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -76,6 +77,7 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedMovement: (...args: unknown[]) => mockLogSuppressedMovement(...args),
   logSuppressedSleepFirstTransfer: (...args: unknown[]) =>
     mockLogSuppressedSleepFirstTransfer(...args),
+  logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
 }));
 
 const mockGetBoardingLock = jest.fn();
@@ -136,7 +138,7 @@ function defaultInputs(overrides: Partial<UseStationAlarmInputs> = {}): UseStati
 describe('useStationAlarm', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    useAppStore.setState({ sleepMode: false, allowSpeaker: true, alarmEvent: null });
+    useAppStore.setState({ sleepMode: false, allowSpeaker: true, alarmEvent: null, dismissSilence: null });
     mockEvaluateAlarmPhase.mockReturnValue(null);
     mockResolveAlarmDirection.mockReturnValue(undefined);
     mockResolveNextTarget.mockReturnValue(null);
@@ -2013,6 +2015,150 @@ describe('useStationAlarm', () => {
       rerender({ lat: 37.50001 });
 
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+    });
+  });
+
+  describe('#746 dismiss silence 게이트 (FG)', () => {
+    const route = makeDirectRoute(3, '2');
+    const userLocation = { lat: 37.498, lng: 127.028 };
+    const ALARM_INPUTS = {
+      route,
+      destination,
+      userLocation,
+      speedMps: 10,
+      accuracyMeters: 50,
+      nearestStation: makeStation('S1', '시청', 37.498, 127.028),
+    };
+
+    // 중복 fixture 추출 — SonarCloud new_duplicated_lines_density 3% 임계 준수.
+    function seedSilence(state: { sinceTs: number; sinceLat: number | null; sinceLng: number | null }) {
+      useAppStore.setState({ dismissSilence: state });
+    }
+    function seedActiveSilence(loc: { lat: number; lng: number } | null = null) {
+      seedSilence({
+        sinceTs: Date.now(),
+        sinceLat: loc?.lat ?? null,
+        sinceLng: loc?.lng ?? null,
+      });
+    }
+    function seedExpiredSilence() {
+      seedSilence({ sinceTs: Date.now() - 10 * 60_000, sinceLat: null, sinceLng: null });
+    }
+    function setupApiImminent() {
+      mockGetStoredTripTrainCode.mockResolvedValue('T-1');
+      mockUseArrivalInfo.mockReturnValue({ arrival: { up: [], down: [] }, loading: false, isMock: false });
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+    }
+    function renderForSilence() {
+      renderHook(() => useStationAlarm(defaultInputs(ALARM_INPUTS)));
+    }
+
+    it('ETA path: silence 활성이면 phase 알람 차단 + log + return (movement gate 전 단계)', async () => {
+      seedActiveSilence(userLocation);
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderForSilence();
+      await waitFor(() =>
+        expect(mockLogSuppressedDismissSilence).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: earlyDest.stationName,
+            kind: earlyDest.type,
+            phaseId: earlyDest.phaseId,
+          }),
+        ),
+      );
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('API imminent path: silence 활성이면 imminent도 차단', async () => {
+      seedActiveSilence();
+      setupApiImminent();
+      renderForSilence();
+      await waitFor(() =>
+        expect(mockLogSuppressedDismissSilence).toHaveBeenCalledWith(
+          expect.objectContaining({
+            stationName: imminentDest.stationName,
+            kind: 'destination',
+            phaseId: 'imminent',
+          }),
+        ),
+      );
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('station-passed path: silence 활성이면 알림 차단 + lastNotifiedStationId 갱신 보존', async () => {
+      seedActiveSilence(userLocation);
+      mockGetLastNotifiedStationId.mockResolvedValue('other-id');
+      renderForSilence();
+      await waitFor(() =>
+        expect(mockLogSuppressedDismissSilence).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: ALARM_INPUTS.nearestStation.name,
+            kind: 'station-passed',
+          }),
+        ),
+      );
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+    });
+
+    it('silence 만료(시간 5분 초과) → 게이트 통과 + store clear action 호출 (정상 발사)', async () => {
+      const setStateSpy = jest.spyOn(useAppStore.getState(), 'clearDismissSilence');
+      seedExpiredSilence();
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderForSilence();
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(setStateSpy).toHaveBeenCalled();
+      setStateSpy.mockRestore();
+    });
+
+    it('API imminent path: silence 만료(시간) 시 clear 호출 + 정상 발사', async () => {
+      const clearSpy = jest.spyOn(useAppStore.getState(), 'clearDismissSilence');
+      seedExpiredSilence();
+      setupApiImminent();
+      renderForSilence();
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(clearSpy).toHaveBeenCalled();
+      clearSpy.mockRestore();
+    });
+
+    it('silence 만료(거리 200m 이상) → 게이트 통과', async () => {
+      // 0.003도 ≈ 333m. 시간은 fresh지만 좌표 거리로 만료.
+      seedSilence({ sinceTs: Date.now(), sinceLat: 37.498, sinceLng: 127.028 });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            ...ALARM_INPUTS,
+            userLocation: { lat: 37.501, lng: 127.028 },
+            nearestStation: makeStation('S1', '시청', 37.501, 127.028),
+          }),
+        ),
+      );
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+    });
+
+    it('silence state 없음 → 게이트 통과 (정상 발사)', async () => {
+      useAppStore.setState({ dismissSilence: null });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderForSilence();
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedDismissSilence).not.toHaveBeenCalled();
+    });
+
+    it('silence 만료 시 clearAction이 reject되어도 정상 발사 + warn 로그', async () => {
+      // applySilenceGate의 logClearFailure 분기 커버.
+      const clearSpy = jest
+        .spyOn(useAppStore.getState(), 'clearDismissSilence')
+        .mockRejectedValueOnce(new Error('storage write failed'));
+      seedExpiredSilence();
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderForSilence();
+      // reject되어도 silence는 통과되어 알람 정상 발사.
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(clearSpy).toHaveBeenCalled();
+      clearSpy.mockRestore();
     });
   });
 });

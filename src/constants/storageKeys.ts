@@ -60,6 +60,11 @@ export const LOCKLESS_STATION_PASSED_KEY = 'subway-now:lockless-station-passed';
 // 형식: {"tripKey": string, "promptedAt": number, "dismissedAt"?: number} JSON.
 // tripKey는 `${destinationId}|${createdAtBucketMs}` — destination 변경 시 자동 reset.
 export const BOARDING_PROMPT_STATE_KEY = 'subway-now:boarding-prompt-state';
+// #746 — 사용자가 알람을 dismiss한 시점의 timestamp + 좌표(좌표는 null 가능).
+// dismiss 후 5분 또는 200m 이동까지 모든 카테고리 알람 silence하는 게이트의 SSOT.
+// 형식: {"sinceTs": number, "sinceLat": number | null, "sinceLng": number | null} JSON.
+// 새 trip 시작(setDestination switch) 또는 새 BoardingLock 생성 시 즉시 클리어한다.
+export const DISMISS_SILENCE_KEY = 'subway-now:dismiss-silence';
 // #828 — Phase 1+2 fusion wire — active trip의 boarding line code.
 // BG/FG location task가 좌표 upload 시 이 line으로 linePolyline snap을 수행해
 // `mapMatchedArcM` + `mapMatchedLine`을 backend에 첨부한다.
