@@ -21,11 +21,15 @@ jest.mock('../../data/quickExit.json', () => ({
   },
 }));
 
-// 빠른 환승 도어 — 군자(5↔7) 단순 fixture.
+// 빠른 환승 도어 — 군자(5↔7) 단순 fixture + 건대입구(7↔2) #788 fromTerminal 분기 검증용.
 jest.mock('../../data/transferExit.json', () => ({
   군자: [
     { fromLine: '5', toLine: '7', doorNumber: '1-1' },
     { fromLine: '7', toLine: '5', doorNumber: '5-1' },
+  ],
+  건대입구: [
+    { fromLine: '7', toLine: '2', fromTerminal: '장암', doorNumber: '8-4' },
+    { fromLine: '7', toLine: '2', fromTerminal: '석남', doorNumber: '1-1' },
   ],
 }));
 
@@ -281,6 +285,54 @@ describe('EditorialTimeline quickExit door label', () => {
     ];
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getByText('1-1번 문')).toBeTruthy();
+  });
+
+  it('#788 단조 노선 환승: 진행방면 fromTerminal로 정확한 row 선택 (용마산→건대입구 석남행)', () => {
+    // 7호선 용마산(idx 14) → 건대입구(idx 18): id 증가 = high → endpoints.high "석남" 매칭.
+    // transferExit fixture에 7→2 두 row (장암 8-4 / 석남 1-1) — fromTerminal "석남"이 선택되어 "1-1번 문".
+    // 출발역 boarding-door도 같은 도어(다음 hop 재사용)라 1-1이 2회 표시되는 게 정상.
+    const stops: Stop[] = [
+      { station: '용마산', line: '7', mark: 'filled' },
+      {
+        station: '건대입구',
+        line: '2',
+        stopsFromPrev: '4정거장',
+        mark: 'transfer',
+        note: '환승',
+        arrivalContext: { line: '7', fromName: '용마산', toName: '건대입구' },
+        transferTarget: { toLine: '2' },
+      },
+      {
+        station: '성수',
+        line: '2',
+        stopsFromPrev: '1정거장',
+        mark: 'dest',
+        note: '도착',
+        arrivalContext: { line: '2', fromName: '건대입구', toName: '성수' },
+      },
+    ];
+    render(<EditorialTimeline stops={stops} />);
+    expect(screen.getAllByText(/1-1번 문/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/8-4번 문/)).toBeNull();
+  });
+
+  it('#788 같은 환승역 + 반대방향: 진행방면 "장암"으로 8-4 row 선택 (뚝섬유원지→건대입구 장암행)', () => {
+    // 뚝섬유원지(7-019) → 건대입구(7-018): id 감소 = low → endpoints.low "장암" 매칭 → "8-4번 문".
+    const stops: Stop[] = [
+      { station: '뚝섬유원지', line: '7', mark: 'filled' },
+      {
+        station: '건대입구',
+        line: '2',
+        stopsFromPrev: '1정거장',
+        mark: 'transfer',
+        note: '환승',
+        arrivalContext: { line: '7', fromName: '뚝섬유원지', toName: '건대입구' },
+        transferTarget: { toLine: '2' },
+      },
+    ];
+    render(<EditorialTimeline stops={stops} />);
+    expect(screen.getAllByText(/8-4번 문/).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/1-1번 문/)).toBeNull();
   });
 
   it('환승 stop이지만 transferExit 매칭이 없으면 quickExit fallback', () => {
