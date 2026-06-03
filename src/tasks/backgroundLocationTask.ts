@@ -116,6 +116,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
     // lastNotifiedStationId는 stationPipeline 내부에서 notificationState 모듈을 통해
     // AsyncStorage에 직접 read/write 한다 (Foreground 훅과 단일 출처 공유).
+    //
+    // #784: arrivalAtOrigin / arrivalsAtTransfers를 BG에서 미전달 — calculateStaticETA는 DEFAULT_WAIT_MINUTES
+    // fallback으로 흐른다. FG의 arrivalCache는 in-memory TtlCache(useArrivalInfo)라 BG 프로세스에서
+    // 접근 불가하고, BG 전용 arrival 폴링은 OS quota 비용 대비 효익이 작다 — BG는 notification 본문
+    // ETA 한 곳만 갱신. AsyncStorage 캐시 경로는 측정 결과 BG 정확도 ↑ 효과가 확인되면 후속 도입.
     const { alarmEvent, nearest } = await processLocationUpdate({
       lat,
       lng,
