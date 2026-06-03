@@ -273,6 +273,17 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
   ) {
     return null;
   }
+  // #828 — map matching 필드는 옵션. 짝(line+arcM)이 함께 와야 series에 적재.
+  // 한쪽만 보낸 페이로드는 구버전/잘못된 클라로 간주해 두 필드를 모두 무시 (graceful).
+  const mapMatchedLine =
+    typeof obj.mapMatchedLine === 'string' && obj.mapMatchedLine.length > 0
+      ? obj.mapMatchedLine
+      : undefined;
+  const mapMatchedArcM =
+    typeof obj.mapMatchedArcM === 'number' && Number.isFinite(obj.mapMatchedArcM)
+      ? obj.mapMatchedArcM
+      : undefined;
+  const hasPair = mapMatchedLine !== undefined && mapMatchedArcM !== undefined;
   return {
     token: obj.token,
     point: {
@@ -281,6 +292,7 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
       accuracy: obj.accuracy,
       ts: obj.ts,
       motion,
+      ...(hasPair ? { mapMatchedLine, mapMatchedArcM } : {}),
     },
   };
 }

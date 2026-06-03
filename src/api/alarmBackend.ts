@@ -8,11 +8,31 @@
  * graceful skip(`{ok:false, skipped:true}`) — Phase 1 baseline(사전 예약만)으로 동작한다.
  */
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Route } from '../utils/stationRoute';
 import type { ApnsEnv } from '../utils/apnsEnv';
 import { createLogger } from '../utils/logger';
+import { ACTIVE_BOARDING_LINE_KEY } from '../constants/storageKeys';
 
 const log = createLogger('alarmBackend');
+
+/**
+ * #828 — BG/FG location task가 좌표 upload 시 linePolyline snap을 수행할 active boarding line.
+ * register/clear 시점에 mirror하여 backgroundLocationTask가 trip 컨텍스트 없이도 snap 가능.
+ *
+ * AsyncStorage 실패는 graceful — snap이 skip될 뿐 fusion 자체는 Phase 1로 자연 동작.
+ */
+async function mirrorBoardingLine(line: string | undefined): Promise<void> {
+  try {
+    if (line && line.length > 0) {
+      await AsyncStorage.setItem(ACTIVE_BOARDING_LINE_KEY, line);
+    } else {
+      await AsyncStorage.removeItem(ACTIVE_BOARDING_LINE_KEY);
+    }
+  } catch (e) {
+    log.warn('mirror boarding line failed', e);
+  }
+}
 
 /** 백엔드 Trip.Waypoint와 동일 구조. backend/alarm-worker/src/types.ts와 동기화. */
 export interface AlarmWaypoint {
@@ -271,6 +291,10 @@ export function registerActiveTrip(
     return pending;
   }
 
+  // #828 — BG/FG location task가 snap에 사용할 boarding line을 mirror. fetch와 병렬로 발사해
+  // register와 무관하게 (URL 미설정 graceful 경로에서도) 다음 좌표 upload부터 효과.
+  void mirrorBoardingLine(payload.promptDisplay?.line);
+
   const promise = performRegisterFetch(base, payload, hash).finally(() => {
     inFlightRegisters.delete(hash);
   });
@@ -325,6 +349,8 @@ export async function clearActiveTrip(token: string): Promise<AlarmBackendResult
   // 이전 Promise를 재사용하지 않는다.
   lastRegisteredHash = null;
   inFlightRegisters.clear();
+  // #828 — trip 종료 시 mirror도 제거. 다음 좌표 upload부터 snap skip(graceful).
+  void mirrorBoardingLine(undefined);
 
   const base = getBackendUrl();
   if (!base) {

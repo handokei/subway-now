@@ -934,6 +934,99 @@ describe('POST /position (#819)', () => {
     const res = await post('/position', body, env);
     expect(res.status).toBe(400);
   });
+
+  it('#828: mapMatchedLine + mapMatchedArcM 둘 다 있으면 series에 적재', async () => {
+    const env = makeKvEnv();
+    const res = await post(
+      '/position',
+      {
+        token: 'tok-mm',
+        lat: 1,
+        lng: 2,
+        accuracy: 5,
+        ts: 1234,
+        motion: 'walking',
+        mapMatchedLine: '2',
+        mapMatchedArcM: 678.9,
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const stored = (await env.TRIPS.get('pos:tok-mm'))!;
+    expect(JSON.parse(stored)).toEqual([
+      {
+        lat: 1,
+        lng: 2,
+        accuracy: 5,
+        ts: 1234,
+        motion: 'walking',
+        mapMatchedLine: '2',
+        mapMatchedArcM: 678.9,
+      },
+    ]);
+  });
+
+  it.each([
+    [
+      'mapMatchedLine only — 둘 다 omit 처리',
+      {
+        token: 'tok-mm-half',
+        lat: 1,
+        lng: 2,
+        accuracy: 5,
+        ts: 0,
+        motion: 'walking',
+        mapMatchedLine: '2',
+      },
+    ],
+    [
+      'mapMatchedArcM only — 둘 다 omit 처리',
+      {
+        token: 'tok-mm-half',
+        lat: 1,
+        lng: 2,
+        accuracy: 5,
+        ts: 0,
+        motion: 'walking',
+        mapMatchedArcM: 100,
+      },
+    ],
+    [
+      'mapMatchedLine 빈 문자열 — 둘 다 omit 처리',
+      {
+        token: 'tok-mm-half',
+        lat: 1,
+        lng: 2,
+        accuracy: 5,
+        ts: 0,
+        motion: 'walking',
+        mapMatchedLine: '',
+        mapMatchedArcM: 100,
+      },
+    ],
+    [
+      'mapMatchedArcM NaN/inf — 둘 다 omit 처리',
+      {
+        token: 'tok-mm-half',
+        lat: 1,
+        lng: 2,
+        accuracy: 5,
+        ts: 0,
+        motion: 'walking',
+        mapMatchedLine: '2',
+        mapMatchedArcM: Infinity,
+      },
+    ],
+  ])('#828: %s', async (_label, body) => {
+    const env = makeKvEnv();
+    const res = await post('/position', body, env);
+    expect(res.status).toBe(200);
+    const stored = (await env.TRIPS.get(`pos:${body.token}`))!;
+    const parsed = JSON.parse(stored) as Array<Record<string, unknown>>;
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].mapMatchedLine).toBeUndefined();
+    expect(parsed[0].mapMatchedArcM).toBeUndefined();
+  });
 });
 
 describe('POST /boarding-prompt/dismiss (#819)', () => {

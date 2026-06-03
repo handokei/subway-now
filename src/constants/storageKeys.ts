@@ -60,3 +60,9 @@ export const LOCKLESS_STATION_PASSED_KEY = 'subway-now:lockless-station-passed';
 // 형식: {"tripKey": string, "promptedAt": number, "dismissedAt"?: number} JSON.
 // tripKey는 `${destinationId}|${createdAtBucketMs}` — destination 변경 시 자동 reset.
 export const BOARDING_PROMPT_STATE_KEY = 'subway-now:boarding-prompt-state';
+// #828 — Phase 1+2 fusion wire — active trip의 boarding line code.
+// BG/FG location task가 좌표 upload 시 이 line으로 linePolyline snap을 수행해
+// `mapMatchedArcM` + `mapMatchedLine`을 backend에 첨부한다.
+// registerActiveTrip이 promptDisplay.line으로 set하고 clearActiveTrip이 삭제.
+// 형식: LineNumber 문자열 ('1'..'9' | 'airport' | ...). 키 부재 = snap skip(graceful).
+export const ACTIVE_BOARDING_LINE_KEY = 'subway-now:active-boarding-line';

@@ -11,9 +11,36 @@
  * baseline(사전 예약만)은 그대로 동작한다.
  */
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ACTIVE_BOARDING_LINE_KEY } from '../constants/storageKeys';
+import { snapToLinePolyline } from '../utils/linePolyline';
+import { isLineNumber } from '../utils/lineGuard';
+import type { LineNumber } from '../types/station';
 import { createLogger } from '../utils/logger';
 
 const log = createLogger('positionUpload');
+
+/**
+ * #828 — 좌표 snap 대상 line을 산출하는 전략 함수.
+ *
+ * 기본 구현은 `ACTIVE_BOARDING_LINE_KEY`를 읽는 AsyncStorage 백엔드(`readActiveBoardingLine`).
+ * 호출자는 multi-trip / multi-line / fallback line 시나리오에 맞춰 자기만의 resolver를
+ * 주입할 수 있다. resolver가 null을 반환하면 snap을 skip한다.
+ */
+export type ActiveLineResolver = () => Promise<LineNumber | null>;
+
+/**
+ * 기본 resolver — `ACTIVE_BOARDING_LINE_KEY`를 AsyncStorage에서 읽고 `LineNumber`로 좁힌다.
+ * 키 부재 / 잘못된 코드 / AsyncStorage 실패 → null (snap skip, graceful).
+ */
+export const readActiveBoardingLine: ActiveLineResolver = async () => {
+  try {
+    const raw = await AsyncStorage.getItem(ACTIVE_BOARDING_LINE_KEY);
+    return isLineNumber(raw) ? raw : null;
+  } catch {
+    return null;
+  }
+};
 
 export type PositionMotion = 'stationary' | 'walking' | 'automotive' | 'unknown';
 
@@ -27,6 +54,13 @@ export interface PositionUploadPayload {
   /** epoch ms — 디바이스 측정 시각. backend 시계와의 drift는 평균속도가 자체 보정. */
   ts: number;
   motion: PositionMotion;
+  /**
+   * #828 Phase 2 fusion — 클라이언트가 active boarding line polyline에 좌표를 사영한 결과.
+   * 짝(line+arcM)으로만 의미가 있고 한쪽만 보내면 backend가 둘 다 무시한다.
+   * unmatched / boarding line 미설정 시 두 필드 모두 omit (graceful — backend는 GPS-only로 동작).
+   */
+  mapMatchedLine?: string;
+  mapMatchedArcM?: number;
 }
 
 export interface PositionUploadResult {
@@ -54,6 +88,33 @@ async function fetchWithTimeout(input: string, init: RequestInit): Promise<Respo
   }
 }
 
+/**
+ * #828 — resolver가 반환한 line에 좌표를 사영해 mapMatched 결과를 payload에 첨부.
+ *
+ * - 호출자가 `mapMatchedLine` + `mapMatchedArcM`을 명시 전달했으면 그대로 사용 (override).
+ * - resolver null / unmatched → 두 필드 모두 omit (graceful, GPS-only fallback).
+ *
+ * resolver를 함수로 주입받아 multi-trip / fallback line / 측정 fixture 같은 미래 확장이
+ * 호출자 단에서 자유롭게 결정된다 (CLAUDE.md 글로벌 규칙 3번 — 확장성/재사용성 우선).
+ */
+export async function withMapMatched(
+  payload: PositionUploadPayload,
+  resolveLine: ActiveLineResolver = readActiveBoardingLine,
+): Promise<PositionUploadPayload> {
+  if (payload.mapMatchedLine !== undefined && payload.mapMatchedArcM !== undefined) {
+    return payload;
+  }
+  const line = await resolveLine();
+  if (!line) return payload;
+  const snap = snapToLinePolyline({ lat: payload.lat, lng: payload.lng }, line);
+  if (!snap.matched) return payload;
+  return {
+    ...payload,
+    mapMatchedLine: snap.line,
+    mapMatchedArcM: snap.arcM,
+  };
+}
+
 export async function uploadPosition(
   payload: PositionUploadPayload,
 ): Promise<PositionUploadResult> {
@@ -62,11 +123,12 @@ export async function uploadPosition(
     log.info('ALARM_BACKEND_URL not set — skip position upload');
     return { ok: false, skipped: true };
   }
+  const enriched = await withMapMatched(payload);
   try {
     const res = await fetchWithTimeout(`${base}/position`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(enriched),
     });
     if (!res.ok) {
       log.warn(`position upload failed status=${res.status}`);

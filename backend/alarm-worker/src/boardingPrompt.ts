@@ -143,12 +143,13 @@ export function evaluateBoardingPromptGates(
     return { pass: false, reason: 'motion-not-moving', metrics };
   }
 
-  // #7 — fused speed. mapMatchedKmh는 Phase 2 (#817) 후속에서 채움 — 현재는 null.
+  // #7 — fused speed. mapMatchedKmh는 #828에서 wire — 양 끝 sample이 같은 line + arcM을 가질
+  // 때만 evaluateWindow가 산출하고, 그 외에는 null로 강등 (GPS-only fallback).
   const fused = fusedSpeed({
     gpsAvgKmh: metrics.gpsAvgKmh,
     gpsAccuracyMeters: metrics.avgAccuracyMeters,
     motion: metrics.motion,
-    mapMatchedKmh: null,
+    mapMatchedKmh: metrics.mapMatchedKmh,
   });
   if (fused.speed < MIN_FUSED_SPEED_KMH || fused.confidence === 'low') {
     return { pass: false, reason: 'speed-too-low', metrics };
