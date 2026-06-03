@@ -442,34 +442,31 @@ describe('useAppStore', () => {
     expect(useAppStore.getState().alarmEvent).toBeNull();
   });
 
-  it('setDestination(#799): 같은 목적지 재설정 시 silent push/알람 state도 유지 (#702 정책 일관)', () => {
+  it('setDestination(#702/#799): 같은 목적지 재설정 시에는 trip-bound storage 전부 유지', () => {
     const { setDestination } = useAppStore.getState();
     setDestination(mockStation);
     jest.clearAllMocks();
 
+    // 동일 station id 재설정 — switch 아님 → 모든 trip-bound cleanup 건너뜀.
     setDestination(mockStation);
 
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:last-notified-station');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:last-fired-alarm-station-name');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:fired-push-ids');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:trip-train-code');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:alarm-event');
-  });
-
-  it('setDestination(#702): 같은 목적지 재설정 시에는 부수 storage를 건드리지 않는다', () => {
-    const { setDestination } = useAppStore.getState();
-    setDestination(mockStation);
-    jest.clearAllMocks();
-
-    // 동일 station id 재설정 — switch 아님
-    setDestination(mockStation);
-
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:custom-origin');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:boarding-lock');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:scheduled-notifications');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:active-trip');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:fired-alarms');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:route');
+    for (const key of [
+      // #702 부수 storage
+      'subway-now:custom-origin',
+      'subway-now:boarding-lock',
+      'subway-now:scheduled-notifications',
+      'subway-now:active-trip',
+      'subway-now:fired-alarms',
+      'subway-now:route',
+      // #799 silent push/알람 state
+      'subway-now:last-notified-station',
+      'subway-now:last-fired-alarm-station-name',
+      'subway-now:fired-push-ids',
+      'subway-now:trip-train-code',
+      'subway-now:alarm-event',
+    ]) {
+      expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith(key);
+    }
   });
 
   it('setDestination(#702): switch 시 customOrigin 메모리 state도 null로 동기화', () => {
