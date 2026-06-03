@@ -23,17 +23,13 @@ export const BOARDING_LOCK_ALARM_PREFIX = 'bl:';
 // 생기면 src/constants/로 일괄 추출 — 현재는 surgical change 원칙상 PR D 진입 전 유지.
 const ALARM_CHANNEL_ID = 'station-alarm';
 
-const HOP_TIME_SECONDS = HOP_TIME_MS / 1000;
-
 /**
- * Phase별 lead time. #584 SLA 설계(2026-05-28):
- *  - early : 1정거장 전(=HOP_TIME) — barvlDt 60s 단위 ±30s 오차 흡수
- *  - imminent : 45초 전 — timeSensitive interruption으로 BG 발사 보장
+ * imminent phase의 고정 lead time(초). 45초 전 — timeSensitive interruption으로 BG 발사 보장.
+ *
+ * early는 #785부터 leg별 segment 평균(legSeconds / legStops)으로 동적 산출되어 노선/시간대별
+ * 실측 hop time에 정렬된다 — 별도 상수 없음. {@link computeHopTimings} 참조.
  */
-const PHASE_LEAD_SECONDS: Record<AlarmPhaseId, number> = {
-  early: HOP_TIME_SECONDS,
-  imminent: 45,
-};
+const IMMINENT_LEAD_MS = 45_000;
 
 /**
  * iOS interruption level mapping. early는 평소(active), imminent는 timeSensitive로
@@ -97,18 +93,23 @@ export function parseBoardingLockAlarmIdentifier(
  * 한 곳에서만 정의되도록 모은다.
  *
  * `arrivalMs - lead` 가 `observedMs` 이하면 해당 phase는 skip(과거 시각 가드).
+ *
+ * `earlyLeadMs`: 본 hop의 "1정거장 전" 시간(ms). 노선/구간별 hop time에 따라 다르며 호출자가
+ * {@link computeHopTimings}로 산출해 전달한다. imminent는 {@link IMMINENT_LEAD_MS} 고정.
  */
 async function scheduleSingleHop(params: {
   lock: BoardingLock;
   target: CurrentTarget;
   hopIndex: number;
   arrivalMs: number;
+  earlyLeadMs: number;
   observedMs: number;
 }): Promise<string[]> {
-  const { lock, target, hopIndex, arrivalMs, observedMs } = params;
+  const { lock, target, hopIndex, arrivalMs, earlyLeadMs, observedMs } = params;
   const ids: string[] = [];
   for (const phase of ALARM_PHASES) {
-    const fireMs = arrivalMs - PHASE_LEAD_SECONDS[phase.id] * 1000;
+    const leadMs = leadMsForPhase(phase.id, earlyLeadMs);
+    const fireMs = arrivalMs - leadMs;
     if (fireMs <= observedMs) continue;
     const event: AlarmEvent = {
       phaseId: phase.id,
@@ -141,17 +142,66 @@ async function scheduleSingleHop(params: {
   return ids;
 }
 
+interface HopTiming {
+  /** 절대 도착 시각(ms epoch). lock.boardedAt + 0..=hopIndex leg seconds 누적. */
+  arrivalMs: number;
+  /** 이 hop의 early phase lead(ms). leg 평균 hop time = legSeconds / legStops. */
+  earlyLeadMs: number;
+}
+
 /**
- * 누적 stops 기반 절대 도착 시각(ms). hopIndex까지 모든 target의 stops를 합산해 lock.boardedAt에 더한다.
+ * #785: 각 hop에 대해 (arrivalMs, earlyLeadMs)를 산출. route의 leg 별 실측 secondsXxx
+ * 필드(=getStopSeconds 누적 결과)를 그대로 사용 — uniform 90s 대신 segment lookup 기반.
+ *
+ * - arrivalMs: lock.boardedAt + 0..=hopIndex leg seconds 누적
+ * - earlyLeadMs: legSeconds / legStops (해당 leg의 평균 hop time). legStops=0이면
+ *   {@link HOP_TIME_MS} graceful fallback — 일반적으로 nondist destination collapse 케이스.
+ *
+ * 본 함수는 route의 secondsXxx 캐시값에만 의존 — station 시퀀스 워킹 없음. estimator의
+ * segment 누적값과 일치하는 alarm 시각을 제공한다(ADR-008 Stage 3 정렬).
  */
-function arrivalMsForHop(
+function computeHopTimings(
   lock: BoardingLock,
+  route: NonNullable<Route>,
   allTargets: CurrentTarget[],
+): HopTiming[] {
+  const timings: HopTiming[] = [];
+  let cumulativeMs = lock.boardedAt;
+  for (let i = 0; i < allTargets.length; i++) {
+    const target = allTargets[i];
+    const legSeconds = legSecondsAt(route, i, target.name);
+    const legMs = legSeconds * 1000;
+    cumulativeMs += legMs;
+    const earlyLeadMs = target.stops > 0 ? legMs / target.stops : HOP_TIME_MS;
+    timings.push({ arrivalMs: cumulativeMs, earlyLeadMs });
+  }
+  return timings;
+}
+
+/**
+ * leg 인덱스에 해당하는 route 필드에서 실측 운행 시간(초)을 꺼낸다.
+ * `resolveAllTargets`의 leg 매핑과 1:1 정렬되어야 한다 — 매핑이 바뀌면 함께 갱신.
+ *
+ * `targetName`은 transfer 분기에서만 사용(collapsed transfer 구별). direct/multi-transfer는
+ * route 필드 + hopIndex만으로 결정 — 호출자는 매번 `target.name`을 넘기지만 다른 분기에서는 ignore.
+ */
+function legSecondsAt(
+  route: NonNullable<Route>,
   hopIndex: number,
+  targetName: string,
 ): number {
-  let cumulativeStops = 0;
-  for (let i = 0; i <= hopIndex; i++) cumulativeStops += allTargets[i].stops;
-  return lock.boardedAt + cumulativeStops * HOP_TIME_SECONDS * 1000;
+  if (route.type === 'direct') return route.travelSeconds;
+  if (route.type === 'transfer') {
+    // target[0]은 항상 transferName과 같음(={transfer 또는 collapsed destination}). target[1]은 환승 후 destination.
+    if (isSameStationName(route.transferName, targetName)) return route.secondsToTransfer;
+    return route.secondsFromTransfer;
+  }
+  if (hopIndex < route.transfers.length) return route.transfers[hopIndex].secondsToTransfer;
+  return route.secondsAfterLastTransfer;
+}
+
+function leadMsForPhase(phaseId: AlarmPhaseId, earlyLeadMs: number): number {
+  return phaseId === 'early' ? earlyLeadMs : IMMINENT_LEAD_MS;
 }
 
 /**
@@ -218,6 +268,7 @@ export async function scheduleHopsForLock(params: ScheduleHopsParams): Promise<s
     params;
   const observedMs = now ?? lock.boardedAt;
   const allTargets = resolveAllTargets(route, destinationName);
+  const timings = computeHopTimings(lock, route, allTargets);
   const lastIdx = Math.min(windowSize, allTargets.length);
 
   const scheduledIds: string[] = [];
@@ -230,7 +281,8 @@ export async function scheduleHopsForLock(params: ScheduleHopsParams): Promise<s
       lock,
       target: allTargets[hopIndex],
       hopIndex,
-      arrivalMs: arrivalMsForHop(lock, allTargets, hopIndex),
+      arrivalMs: timings[hopIndex].arrivalMs,
+      earlyLeadMs: timings[hopIndex].earlyLeadMs,
       observedMs,
     });
     scheduledIds.push(...ids);
@@ -344,6 +396,7 @@ export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<
   );
 
   const observedMs = now ?? lock.boardedAt;
+  const timings = computeHopTimings(lock, route, allTargets);
   const scheduledIds: string[] = [];
   const windowEnd = Math.min(passedIndex + windowSize, allTargets.length - 1);
   for (let hopIndex = passedIndex + 1; hopIndex <= windowEnd; hopIndex++) {
@@ -364,7 +417,8 @@ export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<
       lock,
       target: allTargets[hopIndex],
       hopIndex,
-      arrivalMs: arrivalMsForHop(lock, allTargets, hopIndex),
+      arrivalMs: timings[hopIndex].arrivalMs,
+      earlyLeadMs: timings[hopIndex].earlyLeadMs,
       observedMs,
     });
     scheduledIds.push(...ids);
