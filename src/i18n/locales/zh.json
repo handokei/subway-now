@@ -227,7 +227,8 @@
   "direction": {
     "boundFor": "开往{{name}}",
     "innerLoop": "内环",
-    "outerLoop": "外环"
+    "outerLoop": "外环",
+    "viaName": "{{name}}方向"
   },
   "source": {
     "positionTrain": "列车数据",

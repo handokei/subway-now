@@ -227,7 +227,8 @@
   "direction": {
     "boundFor": "Bound for {{name}}",
     "innerLoop": "Inner Loop",
-    "outerLoop": "Outer Loop"
+    "outerLoop": "Outer Loop",
+    "viaName": "via {{name}}"
   },
   "source": {
     "positionTrain": "Train data",

@@ -227,7 +227,8 @@
   "direction": {
     "boundFor": "{{name}}行き",
     "innerLoop": "内回り",
-    "outerLoop": "外回り"
+    "outerLoop": "外回り",
+    "viaName": "{{name}}方面"
   },
   "source": {
     "positionTrain": "列車データ",

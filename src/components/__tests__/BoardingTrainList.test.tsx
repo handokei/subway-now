@@ -3,6 +3,7 @@ import { BoardingTrainList } from '../BoardingTrainList';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
 import { LINE_COLORS } from '../../constants/lineColors';
 import type { ArrivalInfo } from '../../api/arrivalApi';
+import type { LineNumber } from '../../types/station';
 
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
@@ -30,7 +31,9 @@ describe('BoardingTrainList', () => {
   });
 
   it('#749 각 train마다 종착(○○행) 표기 + 카운터 + 시각', () => {
-    const trains = [makeTrain({ trainCode: 'T-A', destination: '강남', arrivalMinutes: 2 })];
+    // destination은 Seoul API trainLineNm 원본 포맷(예: "강남행"). #792에서 parseTrainLineDirection으로
+    // 정규화하므로 기존 raw 값을 그대로 전달.
+    const trains = [makeTrain({ trainCode: 'T-A', destination: '강남행', arrivalMinutes: 2 })];
     const { getByTestId } = renderWithTheme(
       <BoardingTrainList arrivals={trains} line="2" onSelect={() => {}} />,
     );
@@ -105,7 +108,7 @@ describe('BoardingTrainList', () => {
   });
 
   it('#648 SCHED-* trainCode는 사용자에게 숨기고 "시간표" 라벨로 대체', () => {
-    const fallback = makeTrain({ trainCode: 'SCHED-DN-1', destination: '석남', line: '7' });
+    const fallback = makeTrain({ trainCode: 'SCHED-DN-1', destination: '석남행', line: '7' });
     const { getByText, queryByText, getByTestId } = renderWithTheme(
       <BoardingTrainList arrivals={[fallback]} line="7" onSelect={() => {}} />,
     );
@@ -125,7 +128,7 @@ describe('BoardingTrainList', () => {
   });
 
   it('#749 nextStationLabel 전달 시 종착 + 방면 동시 표시 ("○○행 · ○○방면")', () => {
-    const train = makeTrain({ trainCode: 'T-NEXT', destination: '석남', line: '7' });
+    const train = makeTrain({ trainCode: 'T-NEXT', destination: '석남행', line: '7' });
     const { getByTestId } = renderWithTheme(
       <BoardingTrainList
         arrivals={[train]}
@@ -138,7 +141,7 @@ describe('BoardingTrainList', () => {
   });
 
   it('#749 nextStationLabel null이면 종착만 표시 (방면 생략)', () => {
-    const train = makeTrain({ trainCode: 'T-NO-NEXT', destination: '석남', line: '7' });
+    const train = makeTrain({ trainCode: 'T-NO-NEXT', destination: '석남행', line: '7' });
     const { getByTestId } = renderWithTheme(
       <BoardingTrainList
         arrivals={[train]}
@@ -167,7 +170,7 @@ describe('BoardingTrainList', () => {
   });
 
   it('#749 compact 모드: 헤더/trainCode 라인 생략, 단일 row 종착·방면 라벨', () => {
-    const train = makeTrain({ trainCode: 'T-COMPACT', destination: '석남', line: '7' });
+    const train = makeTrain({ trainCode: 'T-COMPACT', destination: '석남행', line: '7' });
     const { getByTestId, queryByText } = renderWithTheme(
       <BoardingTrainList
         arrivals={[train]}
@@ -183,7 +186,7 @@ describe('BoardingTrainList', () => {
   });
 
   it('#749 compact 모드에서도 카운터 + 시각 표기', () => {
-    const train = makeTrain({ trainCode: 'T-CO-SEQ', destination: '석남', line: '7' });
+    const train = makeTrain({ trainCode: 'T-CO-SEQ', destination: '석남행', line: '7' });
     const { getByTestId } = renderWithTheme(
       <BoardingTrainList
         arrivals={[train]}
@@ -203,6 +206,29 @@ describe('BoardingTrainList', () => {
     );
     expect(getByTestId('boarding-train-list-empty')).toBeTruthy();
     expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
+  });
+
+  // #792 라벨 dedup 회귀 가드 — 동일 BoardingTrainList 렌더 + assertion 패턴이라 it.each로 통합
+  // (SonarCloud CPD duplication 차단; 직전 PR #788과 동일한 접근).
+  describe('#792 종착/방면 라벨 중복 제거', () => {
+    it.each<[string, string, LineNumber, string | null, string]>([
+      ['방면 패턴 + 동일 역 dedup', '어린이대공원(세종대)방면', '7', '어린이대공원', '어린이대공원(세종대)방면'],
+      ['순환선 + nextStationLabel 없음 → 행 미부착', '내선순환', '2', null, '내선순환'],
+      ['일반 종착 + 다른 인접역 → 정상 부착', '도봉산행', '7', '중곡', '도봉산행 · 중곡방면'],
+      // 1호선 망월사 시뮬레이션 — 이전 includes() 기반 dedup이 false-positive로 "도봉산행"만 표시했음.
+      ['substring false-positive 방지 (도봉산행 + 도봉)', '도봉산행', '1', '도봉', '도봉산행 · 도봉방면'],
+    ])('%s', (_, destination, line, nextStationLabel, expected) => {
+      const train = makeTrain({ trainCode: 'T-792', destination, line });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line={line}
+          onSelect={() => {}}
+          nextStationLabel={nextStationLabel}
+        />,
+      );
+      expect(getByTestId('boarding-train-meta-T-792').props.children).toBe(expected);
+    });
   });
 
   describe('#790 거리 표기 — API arvlMsg2 실측치', () => {

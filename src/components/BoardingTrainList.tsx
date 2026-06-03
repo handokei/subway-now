@@ -2,11 +2,15 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTheme, typography, spacing, radius } from '../theme';
 import { LineBadge } from './LineBadge';
 import type { ArrivalInfo } from '../api/arrivalApi';
-import type { LineNumber } from '../types/station';
+import type { LineNumber, Station } from '../types/station';
 import { formatClockTime } from '../utils/formatTime';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
+import { buildDirectionMeta } from '../utils/trainLineDirection';
 import { parseArrivalDistance } from '../utils/arrivalStatusDistance';
 import { LINE_COLORS } from '../constants/lineColors';
+import stationsData from '../data/stations.json';
+
+const allStations = stationsData as Station[];
 
 /** row 좌측 호선 색 stripe 두께(#664). 시각적 구분을 헤더 외에도 row마다 즉시 인지 가능하게. */
 const LINE_STRIPE_WIDTH = 3;
@@ -47,11 +51,14 @@ interface Props {
  * #649: compact + nextStationLabel — Timeline hop slot 안에 inline 배치되는 형태 지원.
  *       compact 모드는 hop slot 안 inline이라 row borderRadius 없음(직각). stripe도 같은 정신으로
  *       직각 유지 — 일반 모드는 카드 radius와 어울리는 둥근 코너 stripe로 자연스럽게 처리됨.
- * #749: 2줄 row 레이아웃 — 첫째 줄 "{destination}행 · {nextStation}방면" (방면은 옵셔널),
- *       둘째 줄 "{거리} · {HH:mm} 도착 예정". 거리는 #790에서 API 실측치로 교체.
+ * #749: 2줄 row 레이아웃 — 첫째 줄 "{종착}{방면?}" (방면은 옵셔널), 둘째 줄 "{거리} · {HH:mm} 도착 예정".
+ *       카운터는 호출자가 전달한 배열 순서를 1-indexed로 변환. 같은 trainCode가 유지되는 동안
+ *       카운터 안정 → "같은 열차 지연" 신호.
  * #790: 거리 표기를 API `arvlMsg2`에서 정규식 파싱한 실거리로 변경 (`parseArrivalDistance`).
  *       비어있는 statusMessage(주로 mock/schedule fallback)는 기존 `${index+1}번째 전`로 fallback.
- *       이는 사용자의 "역 개수" 직관과 배열 순번이 어긋나던 회귀(2026-06-03 실기기 보고)를 해소한다.
+ * #792: 종착 표기는 `parseTrainLineDirection`로 i18n 정규화한다 (기존 하드코딩 "행" 부착 제거).
+ *       종착에 이미 다음역 명이 포함된 경우(예: "어린이대공원(세종대)방면"+"어린이대공원") "방면"
+ *       접미사를 생략해 라벨 중복("…방면행 · …방면")을 차단한다.
  */
 export function BoardingTrainList({
   arrivals,
@@ -94,9 +101,8 @@ export function BoardingTrainList({
       )}
       {filteredArrivals.map((train, index) => {
         const unreachable = isUnreachable(train);
-        const metaText = nextStationLabel
-          ? `${train.destination}행 · ${nextStationLabel}방면`
-          : `${train.destination}행`;
+        // #792: 종착·방면 라벨을 i18n 정규화 + dedup. nextStationLabel 미전달이면 종착만.
+        const metaText = buildDirectionMeta(train.destination, nextStationLabel, allStations);
         // #790: API arvlMsg2 기반 진짜 거리 표시. 비어있으면 배열 인덱스 fallback(이전 동작 유지 —
         // 주로 mock/schedule fallback 경로). 실 응답에서는 항상 [N]번째 전역 패턴이 들어와
         // 사용자 의도(역 개수)와 일치한다.
