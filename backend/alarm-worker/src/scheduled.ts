@@ -1023,6 +1023,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     now,
     promptState: trip.boardingPromptState,
     kalmanKmh: fusion.kalmanKmh,
+    // #833 — runFusionStep이 Kalman observation을 위해 이미 evaluateWindow를 1회 돌렸다.
+    // 그 결과를 그대로 재사용해 trip당 redundant window 평가를 제거 (동작 동치).
+    metrics: fusion.posMetrics,
   });
 
   if (!outcome.pass) {
