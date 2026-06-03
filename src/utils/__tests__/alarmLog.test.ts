@@ -423,6 +423,18 @@ describe('alarmLog', () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
     });
 
+    // 마지막 setItem 호출에 저장된 첫 엔트리가 matchers와 일치하는지 검증.
+    // log helper 테스트들의 flush + JSON.parse + toMatchObject 반복 패턴 추출
+    // (SonarCloud new_duplicated_lines_density 임계 준수).
+    async function expectLastSavedEntryMatches(matchers: Partial<AlarmLogEntry>): Promise<AlarmLogEntry> {
+      await flushAlarmLog();
+      const calls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+      const [, savedJson] = calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject(matchers);
+      return saved[0];
+    }
+
     it('logFiredAlarm: source + event를 outcome=fired로 적재한다', async () => {
       logFiredAlarm('fg', event);
       await flushAlarmLog();
@@ -470,11 +482,7 @@ describe('alarmLog', () => {
 
     it('logSuppressedDedupAlarm: reason=dedup-alarm, phase+type+stationName 적재 (#580)', async () => {
       logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '강남' });
-      await flushAlarmLog();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
+      await expectLastSavedEntryMatches({
         source: 'fg',
         outcome: 'suppressed',
         reason: 'dedup-alarm',
@@ -491,10 +499,7 @@ describe('alarmLog', () => {
         kind: 'destination',
         phaseId: 'early',
       });
-      await flushAlarmLog();
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
+      await expectLastSavedEntryMatches({
         source: 'fg',
         outcome: 'suppressed',
         reason: 'dismiss-silence',
@@ -510,16 +515,13 @@ describe('alarmLog', () => {
         stationName: '시청',
         kind: 'station-passed',
       });
-      await flushAlarmLog();
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
+      const entry = await expectLastSavedEntryMatches({
         source: 'bg',
         outcome: 'suppressed',
         reason: 'dismiss-silence',
         kind: 'station-passed',
       });
-      expect(saved[0].phaseId).toBeUndefined();
+      expect(entry.phaseId).toBeUndefined();
     });
 
     it('#626 같은 키 윈도우 내 재호출은 drop (FG polling 매초 평가 스팸 차단)', async () => {
