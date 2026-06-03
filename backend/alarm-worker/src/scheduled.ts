@@ -19,6 +19,7 @@ import {
 } from './boardingPrompt';
 import {
   detectKalmanDrift,
+  type KalmanState,
   readKalmanState,
   resetKalmanForArrival,
   runKalmanStep,
@@ -330,6 +331,13 @@ interface FusionStepResult {
   kalmanKmh: number | null;
   /** 운행 phase 분류 결과. null인 경우: observation 무효 또는 nearestStationDistanceM 미수신. */
   phaseState: StationPhaseState | null;
+  /**
+   * 정상 cycle(observationValid)의 직전 cycle Kalman state — drift 측정 입력 (#837 P2-3).
+   * observation 무효 cycle 또는 KV 미존재면 null → 호출자 maybeCountDrift가 skip.
+   */
+  kalmanPrior: KalmanState | null;
+  /** 이번 cycle predict+update 직후 state. observation 무효면 null (KV write 자체가 skip). */
+  kalmanState: KalmanState | null;
 }
 
 /**
@@ -346,12 +354,13 @@ interface FusionStepResult {
  *   - phaseState non-null이면 trip.stationPhase에 stamp + putTrip 시 persist
  *   - kalmanKmh를 게이트/fusion 입력으로 전달
  *   - series는 본 함수가 fetched한 raw KV 값 — 추가 read 불필요
+ *   - #837 P2-3 — drift 카운트(stats.kalmanDriftWarning)는 호출자가 maybeCountDrift(prior, posMetrics, stats)
+ *     로 수행. fusion 자체는 stats를 받지 않아 SRP 유지(HTTP path 등에서 stats 없이 재사용 가능).
  */
 async function runFusionStep(
   trip: Trip,
   env: Env,
   now: number,
-  stats: ScheduledStats,
 ): Promise<FusionStepResult> {
   const [series, accelSeries, kalmanPrior] = await Promise.all([
     readSeries(env.TRIPS, trip.token),
@@ -364,15 +373,15 @@ async function runFusionStep(
     posMetrics.count > 0 && Number.isFinite(posMetrics.avgAccuracyMeters);
 
   if (!observationValid) {
-    return { series, posMetrics, kalmanKmh: null, phaseState: null };
-  }
-
-  // #826 — drift 측정은 prior 존재 정상 cycle만. 첫 cycle은 v=gpsAvg 초기화라 delta=0으로 의미 없음.
-  if (kalmanPrior !== null) {
-    const drift = detectKalmanDrift(kalmanPrior, posMetrics.gpsAvgKmh);
-    if (drift.warning) {
-      stats.kalmanDriftWarning += 1;
-    }
+    // observation 무효 cycle은 drift도 의미 없음 — kalmanPrior=null로 반환해 호출자가 skip.
+    return {
+      series,
+      posMetrics,
+      kalmanKmh: null,
+      phaseState: null,
+      kalmanPrior: null,
+      kalmanState: null,
+    };
   }
 
   const kalmanState = runKalmanStep({
@@ -405,7 +414,37 @@ async function runFusionStep(
     trip.stationPhase,
   );
 
-  return { series, posMetrics, kalmanKmh, phaseState };
+  return {
+    series,
+    posMetrics,
+    kalmanKmh,
+    phaseState,
+    kalmanPrior,
+    kalmanState,
+  };
+}
+
+/**
+ * #837 P2-3 — Kalman drift 카운트 헬퍼.
+ *
+ * runFusionStep에서 분리한 책임 (SRP):
+ *  - fusion은 순수 pipeline (KV I/O + 계산만), stats 의존 제거 → HTTP path 등에서 dummy stats 없이 재사용.
+ *  - drift 카운트는 호출자 직후에 수행 — 발생 시점/조건 동치(정상 cycle + prior 존재).
+ *
+ * skip 조건:
+ *  - prior=null (첫 cycle, v=gpsAvg 초기화라 delta=0 의미 없음)
+ *  - posMetrics가 fusion observation 무효 cycle의 것이면 호출자가 prior=null로 받음 (#826 정합)
+ */
+export function maybeCountDrift(
+  prior: KalmanState | null,
+  posMetrics: WindowedMetrics,
+  stats: ScheduledStats,
+): void {
+  if (prior === null) return;
+  const drift = detectKalmanDrift(prior, posMetrics.gpsAvgKmh);
+  if (drift.warning) {
+    stats.kalmanDriftWarning += 1;
+  }
 }
 
 /**
@@ -765,7 +804,9 @@ export async function runLocklessIntermediate(
   // arvlCd=ARRIVED/ENTERING은 phase보다 강한 ground truth 신호이므로, 이미 imminent 발사한
   // waypoint라도 reset은 수행해야 한다(state drift 누적 차단). push 발사만 dedup으로 차단.
   // #825 — Phase 3 E3 fusion step. 분류 결과를 trip에 stamp + imminent push 발사 가드에 사용.
-  const fusion = await runFusionStep(trip, env, now, stats);
+  const fusion = await runFusionStep(trip, env, now);
+  // #837 P2-3 — drift 카운트는 fusion 외부 (SRP). fusion 결과 직후 동일 시점/조건으로 평가.
+  maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats);
   let dirty = false;
   if (fusion.phaseState) {
     trip.stationPhase = fusion.phaseState;
@@ -1004,7 +1045,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 
   stats.boardingPromptEvaluated += 1;
 
-  const fusion = await runFusionStep(trip, env, now, stats);
+  const fusion = await runFusionStep(trip, env, now);
+  // #837 P2-3 — drift 카운트는 fusion 외부 (SRP). fusion 결과 직후 동일 시점/조건으로 평가.
+  maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats);
   let dirty = false;
   // phase 분류 결과가 있으면 trip에 stamp — 다음 cycle hysteresis 입력 + lockless 가드용 상태.
   if (fusion.phaseState) {

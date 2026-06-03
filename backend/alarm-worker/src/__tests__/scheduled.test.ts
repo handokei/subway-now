@@ -1,17 +1,20 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
-import { R_LOW, readKalmanState } from '../kalmanFilter';
+import { DRIFT_WARNING_THRESHOLD_KMH, R_LOW, readKalmanState, type KalmanState } from '../kalmanFilter';
+import type { WindowedMetrics } from '../positionSeries';
 import {
   MAX_CONSECUTIVE_ETA_MISSING,
   RESCHEDULE_THRESHOLD_MS,
   estimateArrivalFromPosition,
   flipApnsEnv,
+  maybeCountDrift,
   pickActiveWaypoint,
   pickApnsHost,
   pickBestArrivalSignal,
   runScheduled,
   type ScheduledDeps,
+  type ScheduledStats,
 } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
@@ -2051,6 +2054,55 @@ describe('runScheduled — #826 drift telemetry (kalmanDriftWarning)', () => {
       now: () => NOW,
       generatePushId: () => 'd3',
     });
+    expect(stats.kalmanDriftWarning).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #837 P2-3 — maybeCountDrift 단위 (fusion에서 분리한 헬퍼, SRP)
+// ---------------------------------------------------------------------------
+
+function makePosMetricsFixture(gpsAvgKmh: number): WindowedMetrics {
+  return {
+    count: 6,
+    gpsAvgKmh,
+    avgAccuracyMeters: 12,
+    motion: 'walking',
+    start: null,
+    end: null,
+    mapMatchedKmh: null,
+  };
+}
+
+function makeEmptyStats(): ScheduledStats {
+  // maybeCountDrift는 stats.kalmanDriftWarning만 참조. 다른 필드는 영향 없어 0으로 채운다.
+  // ScheduledStats 전체 필드를 일일이 적는 대신 runScheduled 본문과 동일하게 단일 필드만 검증한다.
+  return { kalmanDriftWarning: 0 } as unknown as ScheduledStats;
+}
+
+describe('maybeCountDrift (#837 P2-3)', () => {
+  it('prior=null이면 drift 카운트 skip (첫 cycle)', () => {
+    const stats = makeEmptyStats();
+    const posMetrics = makePosMetricsFixture(30); // delta=30 ≥ 15지만 prior 없음
+    maybeCountDrift(null, posMetrics, stats);
+    expect(stats.kalmanDriftWarning).toBe(0);
+  });
+
+  it('prior 존재 + |state.v - gpsAvg| ≥ DRIFT_WARNING_THRESHOLD_KMH → +1', () => {
+    const stats = makeEmptyStats();
+    const prior: KalmanState = { v: 0, P: R_LOW, ts: 0 };
+    // state.v=0, gpsAvg=DRIFT_WARNING_THRESHOLD_KMH → |delta|=15 (경계 포함)
+    const posMetrics = makePosMetricsFixture(DRIFT_WARNING_THRESHOLD_KMH);
+    maybeCountDrift(prior, posMetrics, stats);
+    expect(stats.kalmanDriftWarning).toBe(1);
+  });
+
+  it('prior 존재 + |delta| < 임계 → 카운트 변화 없음', () => {
+    const stats = makeEmptyStats();
+    const prior: KalmanState = { v: 30, P: 25, ts: 0 };
+    // |30 - 32| = 2 < 15
+    const posMetrics = makePosMetricsFixture(32);
+    maybeCountDrift(prior, posMetrics, stats);
     expect(stats.kalmanDriftWarning).toBe(0);
   });
 });
