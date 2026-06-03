@@ -11,6 +11,7 @@ import {
   pickApnsHost,
   pickBestArrivalSignal,
   runScheduled,
+  type ScheduledDeps,
 } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
@@ -2081,6 +2082,24 @@ function makeArrivedSignal(arvlCd: number): ArrivalEntry {
   };
 }
 
+/**
+ * #826 Kalman reset 테스트용 deps 헬퍼 — 동일 boilerplate(apnsConfig/Hosts/fetchImpl/now)를
+ * 5곳에서 반복하지 않게 묶음. sonar new_duplicated_lines_density 임계 정합.
+ */
+function makeKalmanResetDeps(
+  seoul: SeoulArrivalClient,
+  pushId: string,
+): ScheduledDeps {
+  return {
+    seoul,
+    apnsConfig,
+    apnsHosts: APNS_HOSTS,
+    fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+    now: () => NOW,
+    generatePushId: () => pushId,
+  };
+}
+
 describe('runScheduled — #826 lockless intermediate Kalman reset', () => {
   it('arvlCd=ARRIVED(1) → fires=true → kalman:<token>이 v=0/P=4로 reset + stats.kalmanReset=1', async () => {
     const kv = new InMemoryKV();
@@ -2089,14 +2108,10 @@ describe('runScheduled — #826 lockless intermediate Kalman reset', () => {
     // 기존 kalman state 심기 (reset 이전 상태)
     await kv.put(`kalman:${token}`, JSON.stringify({ v: 40, P: 100, ts: NOW - 5_000 }));
 
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoul([makeArrivedSignal(1)]),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'lk1',
-    });
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoul([makeArrivedSignal(1)]), 'lk1'),
+    );
 
     expect(stats.kalmanReset).toBe(1);
     const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
@@ -2111,14 +2126,10 @@ describe('runScheduled — #826 lockless intermediate Kalman reset', () => {
     await putTrip(kv as unknown as KVNamespace, makeLocklessKalmanTrip(token));
     await kv.put(`kalman:${token}`, JSON.stringify({ v: 35, P: 50, ts: NOW - 3_000 }));
 
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoul([makeArrivedSignal(0)]),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'lk2',
-    });
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoul([makeArrivedSignal(0)]), 'lk2'),
+    );
 
     expect(stats.kalmanReset).toBe(1);
     const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
@@ -2133,14 +2144,10 @@ describe('runScheduled — #826 lockless intermediate Kalman reset', () => {
     await putTrip(kv as unknown as KVNamespace, makeLocklessKalmanTrip(token));
     await kv.put(`kalman:${token}`, JSON.stringify({ v: 30, P: 25, ts: NOW - 3_000 }));
 
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoul([makeArrivedSignal(2)]),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'lk3',
-    });
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoul([makeArrivedSignal(2)]), 'lk3'),
+    );
 
     // 핵심: fires=false로 reset 경로 자체 미진입 → kalmanReset=0
     expect(stats.kalmanReset).toBe(0);
@@ -2168,14 +2175,10 @@ describe('runScheduled — #826 lockless intermediate Kalman reset', () => {
     ];
     await kv.put(`pos:${token}`, JSON.stringify(series));
 
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoul([makeArrivedSignal(1)]),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'lk4',
-    });
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoul([makeArrivedSignal(1)]), 'lk4'),
+    );
 
     // reset은 phase gate 이전에 발사
     expect(stats.kalmanReset).toBe(1);
@@ -2247,14 +2250,10 @@ describe('runScheduled — #826 runTrainCodeTracking Kalman reset', () => {
     // 기존 kalman state 심기
     await kv.put(`kalman:${token}`, JSON.stringify({ v: 40, P: 100, ts: NOW - 5_000 }));
 
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoulWithArvl('중곡', 0, 1), // arvlCd=1 ARRIVED
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'tc1',
-    });
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoulWithArvl('중곡', 0, 1), 'tc1'), // arvlCd=1 ARRIVED
+    );
 
     expect(stats.kalmanReset).toBe(1);
     const kalmanState = await readKalmanState(kv as unknown as KVNamespace, token);
@@ -2271,14 +2270,10 @@ describe('runScheduled — #826 runTrainCodeTracking Kalman reset', () => {
     const originalV = 35;
     await kv.put(`kalman:${token}`, JSON.stringify({ v: originalV, P: 25, ts: NOW - 5_000 }));
 
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoulWithArvl('중곡', 120, null), // arrived=false, 일반 예측
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'tc2',
-    });
+    const stats = await runScheduled(
+      makeEnv(kv),
+      makeKalmanResetDeps(makeSeoulWithArvl('중곡', 120, null), 'tc2'), // arrived=false
+    );
 
     expect(stats.kalmanReset).toBe(0);
     // kalman state는 reset되지 않음 (runFusionStep은 lockless/boardingPrompt 경로에서만 동작)
