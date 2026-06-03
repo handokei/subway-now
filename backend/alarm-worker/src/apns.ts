@@ -7,7 +7,14 @@
 
 import { importPKCS8, SignJWT } from 'jose';
 import type { AlarmPhase } from './alarm';
-import type { ReschedulePushPayload } from './types';
+import type { BoardingPromptPushPayload, ReschedulePushPayload } from './types';
+
+/**
+ * iOS UNNotificationCategory 식별자 (#819 B 슬라이스). 클라이언트는 같은 식별자로
+ * `Notifications.setNotificationCategoryAsync('BOARDING_PROMPT', ...)`로 [탑승]/[미탑승]
+ * 액션을 등록한다. 푸시 payload `aps.category`로 매칭.
+ */
+export const BOARDING_PROMPT_CATEGORY = 'BOARDING_PROMPT';
 
 /**
  * APNs JWT는 1시간 이내 재사용 가능. Worker 인스턴스 메모리에 캐시한다.
@@ -284,6 +291,73 @@ export async function sendLiveActivityUpdate(
       'apns-topic': `${options.config.bundleId}.push-type.liveactivity`,
       'apns-push-type': 'liveactivity',
       'apns-priority': String(priority),
+      'content-type': 'application/json',
+    },
+    body,
+  });
+
+  if (response.ok) return { ok: true, status: response.status };
+  return parseApnsError(response);
+}
+
+/**
+ * "탑승했냐?" 푸시 발사 (#819 B 슬라이스).
+ *
+ * iOS UNNotificationCategory "BOARDING_PROMPT" 액션 [탑승]/[미탑승]을 노출하려면 alert push
+ * (apns-push-type: alert, priority 10) + `aps.category` 필드가 필요하다. 일반 silent push와
+ * 달리 화면 표시가 핵심 UX. 클라이언트는 payload의 `originStation` / `line` / `tripToken`을
+ * 받아 [탑승] 응답 시 arvlCd 우선순위로 trainCode 자동 선택 후 BoardingLock을 생성한다.
+ */
+export interface SendBoardingPromptPushOptions {
+  deviceToken: string;
+  pushId: string;
+  /** 사용자 표시용 제목 (i18n는 클라가 한다 — 백엔드는 영문 raw 기본). */
+  title: string;
+  /** 사용자 표시용 본문 — `${line}호선 ${originStation}` 같은 컨텍스트 포함 권장. */
+  body: string;
+  /** trip 컨텍스트 — 클라이언트가 응답 처리 시 사용. */
+  originStation: string;
+  line: string;
+  tripToken: string;
+  sentAt: number;
+  config: ApnsConfig;
+  host: string;
+  fetchImpl?: typeof fetch;
+  now?: number;
+}
+
+export async function sendBoardingPromptPush(
+  options: SendBoardingPromptPushOptions,
+): Promise<SendPushResult> {
+  const jwt = await buildApnsJwt(options.config, options.now);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const url = `https://${options.host}/3/device/${options.deviceToken}`;
+
+  const data: BoardingPromptPushPayload = {
+    pushId: options.pushId,
+    kind: 'boarding-prompt',
+    originStation: options.originStation,
+    line: options.line,
+    tripToken: options.tripToken,
+    sentAt: options.sentAt,
+  };
+
+  const body = JSON.stringify({
+    aps: {
+      alert: { title: options.title, body: options.body },
+      sound: 'default',
+      category: BOARDING_PROMPT_CATEGORY,
+    },
+    data,
+  });
+
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      authorization: `bearer ${jwt}`,
+      'apns-topic': options.config.bundleId,
+      'apns-push-type': 'alert',
+      'apns-priority': '10',
       'content-type': 'application/json',
     },
     body,

@@ -898,3 +898,207 @@ describe('Live Activity endpoints (#586 C)', () => {
     });
   });
 });
+
+describe('POST /position (#819)', () => {
+  it('valid payload → KV에 series append + 200', async () => {
+    const env = makeKvEnv();
+    const res = await post(
+      '/position',
+      { token: 'tok-pos', lat: 1, lng: 2, accuracy: 5, ts: 1234, motion: 'walking' },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const stored = (await env.TRIPS.get('pos:tok-pos'))!;
+    expect(JSON.parse(stored)).toEqual([
+      { lat: 1, lng: 2, accuracy: 5, ts: 1234, motion: 'walking' },
+    ]);
+  });
+
+  it('invalid JSON → 400', async () => {
+    const env = makeKvEnv();
+    const res = await post('/position', '{', env);
+    expect(res.status).toBe(400);
+  });
+
+  it.each([
+    ['missing token', { lat: 1, lng: 2, accuracy: 5, ts: 0, motion: 'walking' }],
+    ['empty token', { token: '', lat: 1, lng: 2, accuracy: 5, ts: 0, motion: 'walking' }],
+    ['lat not number', { token: 't', lat: 'x', lng: 2, accuracy: 5, ts: 0, motion: 'walking' }],
+    ['lng infinity', { token: 't', lat: 1, lng: Infinity, accuracy: 5, ts: 0, motion: 'walking' }],
+    ['accuracy negative', { token: 't', lat: 1, lng: 2, accuracy: -1, ts: 0, motion: 'walking' }],
+    ['ts not number', { token: 't', lat: 1, lng: 2, accuracy: 5, ts: 'x', motion: 'walking' }],
+    ['motion invalid', { token: 't', lat: 1, lng: 2, accuracy: 5, ts: 0, motion: 'flying' }],
+    ['empty body', null],
+  ])('invalid_payload — %s', async (_label, body) => {
+    const env = makeKvEnv();
+    const res = await post('/position', body, env);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('POST /boarding-prompt/dismiss (#819)', () => {
+  const CREATED = 1_710_000_000_000;
+  function tripBody(): Record<string, unknown> {
+    return {
+      token: 'tok-dis',
+      route: { type: 'direct', line: '2', stops: 3 },
+      destination: 'dst',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      expiresAt: CREATED + 60 * 60_000,
+      alarmAtEpochMs: CREATED + 30 * 60_000,
+      createdAt: CREATED,
+    };
+  }
+
+  it('trip 없으면 idempotent 200 applied:false', async () => {
+    const env = makeKvEnv();
+    const res = await post('/boarding-prompt/dismiss', { token: 'no-trip' }, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, applied: false });
+  });
+
+  it('trip 있으면 silencedUntil 설정 (현재 시각 + 5분 이후)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CREATED);
+    const env = makeKvEnv();
+    await post('/trips', tripBody(), env);
+    const res = await post('/boarding-prompt/dismiss', { token: 'tok-dis' }, env);
+    expect(res.status).toBe(200);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-dis')) as string);
+    expect(stored.boardingPromptState.silencedUntil).toBe(CREATED + 5 * 60 * 1000);
+    vi.useRealTimers();
+  });
+
+  it('invalid_json → 400', async () => {
+    const env = makeKvEnv();
+    const res = await post('/boarding-prompt/dismiss', '{', env);
+    expect(res.status).toBe(400);
+  });
+
+  it.each([
+    ['missing token', {}],
+    ['empty token', { token: '' }],
+    ['token not string', { token: 123 }],
+    ['null body', null],
+  ])('invalid_payload — %s', async (_label, body) => {
+    const env = makeKvEnv();
+    const res = await post('/boarding-prompt/dismiss', body, env);
+    expect(res.status).toBe(400);
+  });
+});
+
+describe('validateTrip — #819 promptGeoContext / promptDisplay', () => {
+  function withPrompt(overrides: Record<string, unknown>): Record<string, unknown> {
+    return { ...base(), ...overrides };
+  }
+
+  it('valid geoContext + display 보존', () => {
+    const trip = validateTrip(
+      withPrompt({
+        promptGeoContext: {
+          origin: { lat: 1, lng: 2 },
+          nextStation: { lat: 3, lng: 4 },
+          direction: 'up',
+        },
+        promptDisplay: { originStation: '강남', line: '2' },
+      }),
+    );
+    expect(trip?.promptGeoContext).toEqual({
+      origin: { lat: 1, lng: 2 },
+      nextStation: { lat: 3, lng: 4 },
+      direction: 'up',
+    });
+    expect(trip?.promptDisplay).toEqual({ originStation: '강남', line: '2' });
+  });
+
+  it('direction 부재 → null로 강등 (양방향 허용)', () => {
+    const trip = validateTrip(
+      withPrompt({
+        promptGeoContext: {
+          origin: { lat: 1, lng: 2 },
+          nextStation: { lat: 3, lng: 4 },
+        },
+      }),
+    );
+    expect(trip?.promptGeoContext?.direction).toBeNull();
+  });
+
+  it.each([
+    ['origin coord 누락', { promptGeoContext: { nextStation: { lat: 1, lng: 2 } } }],
+    ['nextStation 누락', { promptGeoContext: { origin: { lat: 1, lng: 2 } } }],
+    ['lat NaN', { promptGeoContext: { origin: { lat: NaN, lng: 2 }, nextStation: { lat: 3, lng: 4 } } }],
+    ['lng infinity', { promptGeoContext: { origin: { lat: 1, lng: Infinity }, nextStation: { lat: 3, lng: 4 } } }],
+    ['nextStation lat string', { promptGeoContext: { origin: { lat: 1, lng: 2 }, nextStation: { lat: 'x', lng: 4 } } }],
+    ['nextStation lng string', { promptGeoContext: { origin: { lat: 1, lng: 2 }, nextStation: { lat: 3, lng: 'y' } } }],
+    ['non-object', { promptGeoContext: 'oops' }],
+  ])('promptGeoContext invalid — %s', (_label, override) => {
+    const trip = validateTrip(withPrompt(override));
+    expect(trip?.promptGeoContext).toBeUndefined();
+  });
+
+  it.each([
+    ['originStation 누락', { promptDisplay: { line: '2' } }],
+    ['line 누락', { promptDisplay: { originStation: '강남' } }],
+    ['originStation 빈 문자열', { promptDisplay: { originStation: '', line: '2' } }],
+    ['line 빈 문자열', { promptDisplay: { originStation: '강남', line: '' } }],
+    ['non-object', { promptDisplay: 'oops' }],
+  ])('promptDisplay invalid — %s', (_label, override) => {
+    const trip = validateTrip(withPrompt(override));
+    expect(trip?.promptDisplay).toBeUndefined();
+  });
+});
+
+describe('POST /trips — #819 boardingPromptState carries over same session', () => {
+  const CREATED = 1_700_000_000_000;
+  function tripBody(): Record<string, unknown> {
+    return {
+      token: 'tok-bp',
+      route: { type: 'direct', line: '2', stops: 3 },
+      destination: 'dst',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      expiresAt: CREATED + 60 * 60_000,
+      alarmAtEpochMs: CREATED + 30 * 60_000,
+      createdAt: CREATED,
+      promptGeoContext: {
+        origin: { lat: 0, lng: 0 },
+        nextStation: { lat: 0, lng: 0.01 },
+        direction: 'up',
+      },
+      promptDisplay: { originStation: '강남', line: '2' },
+    };
+  }
+
+  it('same session re-register → 이전 fired state 보존', async () => {
+    const env = makeKvEnv();
+    // 첫 등록 후 backend가 state.fired=true 적재했다고 가정
+    await env.TRIPS.put(
+      'trip:tok-bp',
+      JSON.stringify({
+        ...validateTrip(tripBody()),
+        boardingPromptState: { fired: true, lastFiredAt: CREATED - 10_000 },
+      }),
+    );
+    // re-register
+    await post('/trips', tripBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-bp')) as string);
+    expect(stored.boardingPromptState).toEqual({ fired: true, lastFiredAt: CREATED - 10_000 });
+  });
+
+  it('new session (createdAt drift > 5s) → state 초기화', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(CREATED);
+    const env = makeKvEnv();
+    // 기존 trip을 명시 trainCode 없이 저장 (#704 trainCode 미사용 시 createdAt drift만 본다)
+    await env.TRIPS.put(
+      'trip:tok-bp',
+      JSON.stringify({
+        ...validateTrip(tripBody()),
+        boardingPromptState: { fired: true, lastFiredAt: CREATED - 10_000 },
+      }),
+    );
+    await post('/trips', { ...tripBody(), createdAt: CREATED + 10_000 }, env);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-bp')) as string);
+    expect(stored.boardingPromptState).toBeUndefined();
+    vi.useRealTimers();
+  });
+});

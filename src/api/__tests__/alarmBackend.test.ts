@@ -496,4 +496,57 @@ describe('alarmBackend', () => {
       expect(result).toEqual({ ok: false });
     });
   });
+
+  describe('promptGeoContext / promptDisplay (#819)', () => {
+    const PROMPT_PAYLOAD: RegisterTripPayload = {
+      ...SAMPLE_PAYLOAD,
+      promptGeoContext: {
+        origin: { lat: 37.5, lng: 127 },
+        nextStation: { lat: 37.51, lng: 127.01 },
+        direction: 'up',
+      },
+      promptDisplay: { originStation: '강남', line: '2' },
+    };
+
+    beforeEach(() => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+    });
+
+    it('promptGeoContext + promptDisplay body에 포함', async () => {
+      await registerActiveTrip(PROMPT_PAYLOAD);
+      const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+      expect(body.promptGeoContext).toEqual({
+        origin: { lat: 37.5, lng: 127 },
+        nextStation: { lat: 37.51, lng: 127.01 },
+        direction: 'up',
+      });
+      expect(body.promptDisplay).toEqual({ originStation: '강남', line: '2' });
+    });
+
+    it('promptDisplay만 다르면 dedup 깨고 재등록', async () => {
+      await registerActiveTrip(PROMPT_PAYLOAD);
+      const changed = await registerActiveTrip({
+        ...PROMPT_PAYLOAD,
+        promptDisplay: { originStation: '강남', line: '신분당' },
+      });
+      expect(changed.ok).toBe(true);
+      expect(changed.skipped).toBeUndefined();
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('promptGeoContext 좌표 jitter는 dedup 유지 (hash에 미포함)', async () => {
+      await registerActiveTrip(PROMPT_PAYLOAD);
+      const jitter = await registerActiveTrip({
+        ...PROMPT_PAYLOAD,
+        promptGeoContext: {
+          origin: { lat: 37.5001, lng: 127.0001 },
+          nextStation: { lat: 37.5101, lng: 127.0101 },
+          direction: 'up',
+        },
+      });
+      expect(jitter.skipped).toBe(true);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+  });
 });

@@ -12,6 +12,7 @@
  */
 
 import { Hono } from 'hono';
+import { markPromptSilenced } from './boardingPrompt';
 import { runFallbackPushes } from './fallback';
 import {
   cleanupTripWithLa,
@@ -19,6 +20,7 @@ import {
   type LiveActivityStats,
 } from './liveActivity';
 import { ackPending } from './pendingPushes';
+import { appendPositionPoint } from './positionSeries';
 import { deleteProgress, getProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
@@ -28,7 +30,14 @@ import {
   writeTelemetryDataPoints,
 } from './telemetry';
 import { getTrip, putTrip } from './trips';
-import type { BoardingLockMeta, Env, Trip } from './types';
+import type {
+  BoardingLockMeta,
+  Env,
+  PositionPoint,
+  PromptDisplay,
+  PromptGeoContext,
+  Trip,
+} from './types';
 
 /**
  * HTTP DELETE 같은 단일 trip 정리 진입점에서 LA dismissal 발사하기 위한 deps.
@@ -121,6 +130,10 @@ app.post('/trips', async (c) => {
         // #706: 연속 etaMissing 카운터는 backend-only state — 디바이스가 같은 세션으로 re-register해도
         // 누적치를 보존해야 자동 종료가 정상 동작 (re-register마다 0으로 초기화되면 무한 폴링 회귀).
         consecutiveEtaMissing: existing.consecutiveEtaMissing,
+        // #819: boarding-prompt 발사 카운터는 backend-only state — 디바이스가 같은 세션으로
+        // re-register하더라도 trip당 1회 + 5분 silence 정책을 유지해야 한다 (re-register마다
+        // reset되면 spam 회귀). promptGeoContext / promptDisplay는 incoming이 최신이라 그대로 받음.
+        boardingPromptState: existing.boardingPromptState,
       }
     : incoming;
 
@@ -208,6 +221,104 @@ app.post('/push/ack', async (c) => {
   const result = await ackPending(c.env.PENDING_PUSHES, ack.pushId, ack.token);
   return c.json({ ok: true, ...result });
 });
+
+/**
+ * 클라이언트 위치 sample 송신 (#819 Phase 1).
+ * BG/FG에서 backgroundLocationTask가 fix마다 호출. backend가 device token별 series를 KV에
+ * 누적해 cron 사이클마다 9단 boarding-prompt 게이트 평가에 사용한다.
+ *
+ * Body: { token, lat, lng, accuracy, ts, motion }
+ * Trip 존재 확인하지 않는다 — boarding-prompt가 켜지지 않은 디바이스라도 series는 보관해도 무해
+ * (TTL 1h로 자연 폐기).
+ */
+app.post('/position', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  const payload = validatePositionPayload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  await appendPositionPoint(c.env.TRIPS, payload.token, payload.point);
+  return c.json({ ok: true });
+});
+
+interface PositionUploadPayload {
+  token: string;
+  point: PositionPoint;
+}
+
+export function validatePositionPayload(input: unknown): PositionUploadPayload | null {
+  if (!input || typeof input !== 'object') return null;
+  const obj = input as Record<string, unknown>;
+  if (typeof obj.token !== 'string' || obj.token.length === 0) return null;
+  if (typeof obj.lat !== 'number' || !Number.isFinite(obj.lat)) return null;
+  if (typeof obj.lng !== 'number' || !Number.isFinite(obj.lng)) return null;
+  if (typeof obj.accuracy !== 'number' || !Number.isFinite(obj.accuracy) || obj.accuracy < 0) {
+    return null;
+  }
+  if (typeof obj.ts !== 'number' || !Number.isFinite(obj.ts)) return null;
+  const motion = obj.motion;
+  if (
+    motion !== 'stationary' &&
+    motion !== 'walking' &&
+    motion !== 'automotive' &&
+    motion !== 'unknown'
+  ) {
+    return null;
+  }
+  return {
+    token: obj.token,
+    point: {
+      lat: obj.lat,
+      lng: obj.lng,
+      accuracy: obj.accuracy,
+      ts: obj.ts,
+      motion,
+    },
+  };
+}
+
+/**
+ * boarding-prompt 사용자 [미탑승]/dismiss 신호 (#819 게이트 #9).
+ * 클라이언트가 사용자 응답을 받아 호출한다. silencedUntil을 set해 5분간 재발사 차단.
+ *
+ * Body: { token }
+ * Trip 부재 시 idempotent — 200 deleted:false.
+ */
+app.post('/boarding-prompt/dismiss', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+  const payload = validateDismissPayload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const existing = await getTrip(c.env.TRIPS, payload.token);
+  if (!existing) return c.json({ ok: true, applied: false });
+
+  const updated: Trip = {
+    ...existing,
+    boardingPromptState: markPromptSilenced(existing.boardingPromptState, Date.now()),
+  };
+  await putTrip(c.env.TRIPS, updated);
+  return c.json({ ok: true, applied: true });
+});
+
+interface DismissPayload {
+  token: string;
+}
+
+export function validateDismissPayload(input: unknown): DismissPayload | null {
+  if (!input || typeof input !== 'object') return null;
+  const obj = input as Record<string, unknown>;
+  if (typeof obj.token !== 'string' || obj.token.length === 0) return null;
+  return { token: obj.token };
+}
 
 interface PushAckPayload {
   pushId: string;
@@ -405,7 +516,41 @@ export function validateTrip(input: unknown): Trip | null {
     // #816 C: 사용자 명시 opt-in 토글값. 미송신 또는 boolean 아니면 undefined (default OFF).
     locklessStationPassed:
       typeof obj.locklessStationPassed === 'boolean' ? obj.locklessStationPassed : undefined,
+    // #819: boarding-prompt 평가용 컨텍스트. 좌표/표시 명시 부재 시 백엔드는 lockMissing 분기에서
+    // 자연 skip — 좌표 없는 평가는 게이트 #4/#5 정확도 0이라 의미 없음.
+    promptGeoContext: parsePromptGeoContext(obj.promptGeoContext),
+    promptDisplay: parsePromptDisplay(obj.promptDisplay),
   };
+}
+
+function parsePromptGeoContext(raw: unknown): PromptGeoContext | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  const origin = o.origin;
+  const next = o.nextStation;
+  if (!origin || typeof origin !== 'object') return undefined;
+  if (!next || typeof next !== 'object') return undefined;
+  const oc = origin as Record<string, unknown>;
+  const nc = next as Record<string, unknown>;
+  if (typeof oc.lat !== 'number' || !Number.isFinite(oc.lat)) return undefined;
+  if (typeof oc.lng !== 'number' || !Number.isFinite(oc.lng)) return undefined;
+  if (typeof nc.lat !== 'number' || !Number.isFinite(nc.lat)) return undefined;
+  if (typeof nc.lng !== 'number' || !Number.isFinite(nc.lng)) return undefined;
+  const direction = o.direction;
+  const dir = direction === 'up' || direction === 'down' ? direction : null;
+  return {
+    origin: { lat: oc.lat, lng: oc.lng },
+    nextStation: { lat: nc.lat, lng: nc.lng },
+    direction: dir,
+  };
+}
+
+function parsePromptDisplay(raw: unknown): PromptDisplay | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.originStation !== 'string' || o.originStation.length === 0) return undefined;
+  if (typeof o.line !== 'string' || o.line.length === 0) return undefined;
+  return { originStation: o.originStation, line: o.line };
 }
 
 /**

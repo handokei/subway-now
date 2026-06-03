@@ -1296,3 +1296,145 @@ describe('#705 scheduled.ts progress KV mirroring', () => {
     expect(await readProgress(kv)).toBeNull();
   });
 });
+
+describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
+  function makeUnlockedTrip(overrides: Partial<Trip> = {}): Trip {
+    // lockMissing 분기 진입 — boardingLock 없음.
+    return makeTrip({
+      token: 'bp-tok',
+      promptGeoContext: {
+        origin: { lat: 0, lng: 0 },
+        nextStation: { lat: 0, lng: 0.01 },
+        direction: 'up',
+      },
+      promptDisplay: { originStation: '강남', line: '2' },
+      ...overrides,
+    });
+  }
+
+  function makeBoardingPromptDeps(fetchImpl: typeof fetch) {
+    return {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      fetchImpl,
+      generatePushId: () => 'bp-push-1',
+    };
+  }
+
+  /** "happy path" series — 9단 모두 통과하는 60s window. helper에서 NOW 기준 timestamp 사용. */
+  async function seedHappySeries(kv: InMemoryKV, token = 'bp-tok'): Promise<void> {
+    const series = [
+      { lat: 0, lng: -0.0004, accuracy: 10, ts: NOW - 60_000, motion: 'automotive' },
+      { lat: 0, lng: 0.0002, accuracy: 10, ts: NOW - 30_000, motion: 'automotive' },
+      { lat: 0, lng: 0.0008, accuracy: 10, ts: NOW, motion: 'automotive' },
+    ];
+    await kv.put(`pos:${token}`, JSON.stringify(series));
+  }
+
+  it('promptGeoContext 없으면 skip — boardingPromptEvaluated 미증가', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ token: 'no-geo' }));
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    expect(stats.boardingPromptFired).toBe(0);
+  });
+
+  it('9단 통과 + APNs 200 → alert push 발사 + state.fired 영구화', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn(
+      async () => new Response(null, { status: 200 }),
+    ) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+
+    expect(stats.boardingPromptEvaluated).toBe(1);
+    expect(stats.boardingPromptFired).toBe(1);
+    expect(stats.boardingPromptBlocked).toBe(0);
+
+    // 1회 fetch (APNs) — 후속 cron에서 dedup.
+    const fetchMock = fetchImpl as unknown as ReturnType<typeof vi.fn>;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0];
+    expect((init as RequestInit).headers).toMatchObject({
+      'apns-push-type': 'alert',
+      'apns-priority': '10',
+    });
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.aps.category).toBe('BOARDING_PROMPT');
+    expect(body.data.kind).toBe('boarding-prompt');
+    expect(body.data.originStation).toBe('강남');
+    expect(body.data.line).toBe('2');
+
+    const persisted = JSON.parse((await kv.get('trip:bp-tok'))!);
+    expect(persisted.boardingPromptState).toEqual({ fired: true, lastFiredAt: NOW });
+  });
+
+  it('이미 fired된 trip은 미발사 + blocked 카운트', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({ boardingPromptState: { fired: true, lastFiredAt: NOW - 60_000 } }),
+    );
+    await seedHappySeries(kv);
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptBlocked).toBe(1);
+    expect(fetchImpl as unknown as ReturnType<typeof vi.fn>).not.toHaveBeenCalled();
+  });
+
+  it('series 비어 있으면 window-too-small로 차단', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptEvaluated).toBe(1);
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.boardingPromptBlocked).toBe(1);
+  });
+
+  it('APNs 실패 시 errors 카운트 + state 유지', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeUnlockedTrip());
+    await seedHappySeries(kv);
+    // 410 외 일반 실패 — env mismatch 아님
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ reason: 'TopicDisallowed' }), { status: 403 }),
+    ) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptFired).toBe(0);
+    expect(stats.errors).toBeGreaterThan(0);
+  });
+
+  it('APNs env mismatch 시 self-heal → corrected env 저장', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeUnlockedTrip({ apnsEnv: 'sandbox' }),
+    );
+    await seedHappySeries(kv);
+    let callIdx = 0;
+    const fetchImpl = vi.fn(async () => {
+      callIdx += 1;
+      if (callIdx === 1) {
+        return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 });
+      }
+      return new Response(null, { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const stats = await runScheduled(makeEnv(kv), makeBoardingPromptDeps(fetchImpl));
+    expect(stats.boardingPromptFired).toBe(1);
+    expect(stats.envCorrected).toBe(1);
+    const persisted = JSON.parse((await kv.get('trip:bp-tok'))!);
+    expect(persisted.apnsEnv).toBe('production');
+  });
+});

@@ -4,6 +4,7 @@
 
 import { ARRIVAL_CODE, TRAIN_STATUS } from './alarm';
 import {
+  sendBoardingPromptPush,
   sendReschedulePush,
   sendSilentPush,
   type ApnsConfig,
@@ -11,12 +12,18 @@ import {
 } from './apns';
 import { flipApnsEnv, pickApnsHost } from './apnsHost';
 import {
+  evaluateBoardingPromptGates,
+  markPromptFired,
+  type GateSkipReason,
+} from './boardingPrompt';
+import {
   buildLiveActivityContentState,
   cleanupTripWithLa,
   fireLiveActivityUpdate,
   type LiveActivityStats,
 } from './liveActivity';
 import { matchLine } from './lineAlias';
+import { readSeries } from './positionSeries';
 import { getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import { listTrips, putTrip } from './trips';
@@ -132,6 +139,12 @@ export interface ScheduledStats extends LiveActivityStats {
    * (lockMissing은 토글 OFF로 게이트 차단된 trip만 카운트되도록 유지 — 두 stat은 disjoint.)
    */
   locklessIntermediateFired: number;
+  /** #819 — boarding-prompt 게이트 평가가 한 번이라도 시도된 trip 수 (lockMissing 부분집합). */
+  boardingPromptEvaluated: number;
+  /** #819 — 9단 AND 게이트를 모두 통과해 alert push가 발사된 횟수 (측정 인프라). */
+  boardingPromptFired: number;
+  /** #819 — 게이트 차단으로 미발사한 횟수 — false positive 1차 방어 효과 측정. */
+  boardingPromptBlocked: number;
 }
 
 /**
@@ -174,6 +187,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     laPushSent: 0,
     laPushFailed: 0,
     laTokenCleared: 0,
+    boardingPromptEvaluated: 0,
+    boardingPromptFired: 0,
+    boardingPromptBlocked: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
@@ -226,6 +242,18 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
         locklessOptIn: trip.locklessStationPassed === true,
         waypointKind: waypoint.kind,
       });
+      // #819 — lock 미발생 trip에 boarding-prompt 9단 게이트 평가 분기. 게이트 통과 시 alert
+      // push로 "탑승 중이세요?"를 묻고, 클라이언트가 사용자 응답으로 lock을 자동 생성한다.
+      // 게이트 자체가 false positive 9중 차단 (ADR Section 2)이라 phase-based 노이즈와 분리.
+      try {
+        await evaluateAndMaybeFireBoardingPrompt(trip, env, deps, stats, now, log, generatePushId);
+      } catch (e) {
+        stats.errors += 1;
+        log('boarding-prompt: evaluation error', {
+          error: String(e),
+          token: trip.token.slice(0, 8),
+        });
+      }
       continue;
     }
 
@@ -785,4 +813,107 @@ function isUnrecoverableApnsError(status: number, _reason: string | undefined): 
  */
 function isApnsEnvMismatch(status: number, reason: string | undefined): boolean {
   return status === 400 && reason === 'BadDeviceToken';
+}
+
+/**
+ * "탑승했냐?" 푸시 평가 + 발사 (#819 B 슬라이스).
+ *
+ * lockMissing 분기에서만 호출. promptGeoContext가 없으면 skip — backend는 stations 좌표를
+ * 갖지 않으므로 평가 자체 불가. 9단 AND 게이트 평가는 evaluateBoardingPromptGates에 위임.
+ *
+ * 발사 성공:
+ *   - alert push (BOARDING_PROMPT category)로 [탑승]/[미탑승] 액션 노출
+ *   - trip.boardingPromptState = markPromptFired(now) → KV 저장 (게이트 #9 1회 정책)
+ *   - boardingPromptFired stat +1
+ *
+ * 차단:
+ *   - boardingPromptBlocked stat +1 (게이트 reason 로그)
+ *
+ * 좌표 컨텍스트 부재:
+ *   - no-op (silent skip, blocked 카운트 안 함 — 게이트 평가 안 한 것과 평가 후 차단 분리)
+ */
+export async function evaluateAndMaybeFireBoardingPrompt(
+  trip: Trip,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<void> {
+  const geo = trip.promptGeoContext;
+  const display = trip.promptDisplay;
+  if (!geo || !display) return;
+
+  stats.boardingPromptEvaluated += 1;
+
+  const series = await readSeries(env.TRIPS, trip.token);
+  const outcome = evaluateBoardingPromptGates({
+    series,
+    origin: geo.origin,
+    nextStation: geo.nextStation,
+    now,
+    promptState: trip.boardingPromptState,
+  });
+
+  if (!outcome.pass) {
+    stats.boardingPromptBlocked += 1;
+    log('boarding-prompt: gate blocked', {
+      token: trip.token.slice(0, 8),
+      reason: outcome.reason satisfies GateSkipReason,
+    });
+    return;
+  }
+
+  // 9단 통과 — alert push 발사.
+  const pushId = generatePushId();
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendBoardingPromptPush({
+        deviceToken: trip.token,
+        pushId,
+        title: 'Are you on board?',
+        body: `${display.line} · ${display.originStation}`,
+        originStation: display.originStation,
+        line: display.line,
+        tripToken: trip.token,
+        sentAt: now,
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+  );
+
+  let dirty = false;
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    dirty = true;
+    stats.envCorrected += 1;
+  }
+  if (heal.result.ok) {
+    stats.boardingPromptFired += 1;
+    trip.boardingPromptState = markPromptFired(now);
+    dirty = true;
+    log('boarding-prompt: fired', {
+      token: trip.token.slice(0, 8),
+      line: display.line,
+      originStation: display.originStation,
+      fusedSpeedKmh: Math.round(outcome.fusedSpeedKmh * 10) / 10,
+    });
+  } else {
+    stats.errors += 1;
+    log('boarding-prompt: push failed', {
+      token: trip.token.slice(0, 8),
+      status: heal.result.status,
+      reason: heal.result.reason,
+    });
+  }
+  if (dirty) {
+    await putTrip(env.TRIPS, trip);
+  }
 }

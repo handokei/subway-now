@@ -120,6 +120,37 @@ export interface Trip {
    * 노이즈 차단 책임: 사용자에게 옵트인 권한 위임. #640 회귀는 OFF가 default로 보호.
    */
   locklessStationPassed?: boolean;
+  /**
+   * boarding-prompt(#819) 발사 추적 — trip당 1회 + dismiss 5분 silence 게이트(#9).
+   * 부재 = 미발사 상태. 사용자 응답으로 lock이 생기면 자연스럽게 게이트 #2가 차단한다.
+   */
+  boardingPromptState?: BoardingPromptState;
+  /**
+   * boarding-prompt 평가용 출발역/다음역 좌표 (#819 게이트 #4/#5).
+   * backend는 stations.json을 갖지 않으므로 클라이언트가 trip 등록 시 함께 보낸다.
+   * 부재 시 boarding-prompt 평가 자체를 skip — 좌표 없는 lockMissing trip은 silent.
+   */
+  promptGeoContext?: PromptGeoContext;
+  /**
+   * boarding-prompt에 노출할 사용자 표시명 (#819).
+   * `originStation`: lock의 boardingStationId가 아닌 실제 역 이름 (Notification body 빌드).
+   * `line`: trip 출발 라인 (lock 생성 시 boardingLine으로 그대로 사용).
+   */
+  promptDisplay?: PromptDisplay;
+}
+
+/** boarding-prompt 게이트 평가용 출발역/다음역 좌표. */
+export interface PromptGeoContext {
+  origin: { lat: number; lng: number };
+  nextStation: { lat: number; lng: number };
+  /** 방향 게이트(#5)에서 어느 방향으로 가야 하는지 — Seoul API의 isUp과 정합. */
+  direction: 'up' | 'down' | null;
+}
+
+/** boarding-prompt 사용자 표시 컨텍스트. */
+export interface PromptDisplay {
+  originStation: string;
+  line: string;
 }
 
 /** Device가 확정한 탑승 열차 정보 (#584). */
@@ -154,6 +185,53 @@ export interface ReschedulePushPayload {
 
 /** APNs 토큰 환경. sandbox는 dev/preview/internal 빌드, production은 App Store/TestFlight. */
 export type ApnsEnv = 'sandbox' | 'production';
+
+/**
+ * 클라이언트가 송신한 단일 위치 샘플 (#819 Phase 1 fusion).
+ * KV 시리즈에 60s window로 누적되며 게이트 #3~#7 평가에 사용된다.
+ */
+export interface PositionPoint {
+  /** 위도 (degrees, WGS84) */
+  lat: number;
+  /** 경도 (degrees, WGS84) */
+  lng: number;
+  /** GPS accuracy meters — `>= 50m`는 평균속도 계산에서 제외 (게이트 #3 정책). */
+  accuracy: number;
+  /** epoch ms — 디바이스에서 측정한 시각 (시계 drift는 평균속도가 자가 보정). */
+  ts: number;
+  /** CMMotionActivity 분류 — graceful: 미지원/권한 거절 시 'unknown'. */
+  motion: 'stationary' | 'walking' | 'automotive' | 'unknown';
+}
+
+/**
+ * trip 단위 boarding-prompt 발사 상태 (#819 게이트 #9).
+ * 같은 trip에 1회 + 사용자 dismiss/미탑승 후 5분 silence 정책.
+ */
+export interface BoardingPromptState {
+  /** 마지막 발사 시각 (epoch ms). */
+  lastFiredAt?: number;
+  /** 사용자가 dismiss/미탑승으로 silence 요청한 시각 (epoch ms). */
+  silencedUntil?: number;
+  /** 이 trip에 이미 발사 후 사용자 응답을 받았는지 — 한 trip 1회 정책. */
+  fired?: boolean;
+}
+
+/**
+ * boarding-prompt push payload (#819 B 슬라이스).
+ * BOARDING_PROMPT iOS category 액션 [탑승]/[미탑승]을 함께 노출하기 위해
+ * alert + category로 발사한다 (silent 아님).
+ */
+export interface BoardingPromptPushPayload {
+  pushId: string;
+  kind: 'boarding-prompt';
+  /** 사용자 출발역 (lock 생성 시 boardingStation으로 사용). */
+  originStation: string;
+  /** 출발 노선 (lock 생성 시 boardingLine으로 사용). */
+  line: string;
+  /** trip 토큰 — 푸시 응답 시점에 trip 컨텍스트 복원용. */
+  tripToken: string;
+  sentAt: number;
+}
 
 /**
  * Cloudflare Analytics Engine writer. Minimal surface — Worker types에 의존하지 않게 별도 선언.
