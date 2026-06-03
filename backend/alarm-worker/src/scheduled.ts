@@ -770,10 +770,9 @@ export async function runLocklessIntermediate(
   log: Logger,
   generatePushId: () => string,
 ): Promise<void> {
-  // 같은 waypoint에서 이미 발사했으면 dedup (lockless 흐름은 phase 개념이 없으니 imminent 단일 stamp 사용).
-  if (trip.lastFiredPhase === 'imminent') {
-    return;
-  }
+  // #837 P2-1 — dedup gate를 fusion + arrivals fetch + reset 이후로 이동.
+  // arvlCd=ARRIVED/ENTERING은 phase보다 강한 ground truth 신호이므로, 이미 imminent 발사한
+  // waypoint라도 reset은 수행해야 한다(state drift 누적 차단). push 발사만 dedup으로 차단.
   // #825 — Phase 3 E3 fusion step. 분류 결과를 trip에 stamp + imminent push 발사 가드에 사용.
   const fusion = await runFusionStep(trip, env, now, stats);
   let dirty = false;
@@ -795,11 +794,17 @@ export async function runLocklessIntermediate(
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
-  // #826 — fires=true(ARRIVED/ENTERING)는 ground truth 신호. push 발사 여부(phase 가드)와
+  // #826 — fires=true(ARRIVED/ENTERING)는 ground truth 신호. push 발사 여부(phase 가드/dedup)와
   // 무관하게 Kalman state를 reset해 drift 누적을 차단한다. arvlCd가 가장 강한 신호 — phase
-  // 분류는 휴리스틱이라 contradiction 시 arvlCd를 신뢰.
+  // 분류는 휴리스틱이라 contradiction 시 arvlCd를 신뢰. KV write는 idempotent(v=0/P=R_LOW).
   await writeKalmanState(env.TRIPS, trip.token, resetKalmanForArrival(now));
   stats.kalmanReset += 1;
+  // #837 P2-1 — dedup gate (reset 이후, push 발사 직전). 같은 waypoint에서 이미 발사했으면
+  // push만 skip하고 dirty 저장 후 return (lockless 흐름은 phase 개념이 없으니 imminent 단일 stamp 사용).
+  if (trip.lastFiredPhase === 'imminent') {
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
   // #825 — high-confidence non-APPROACHING phase면 차단 (false positive 1차).
   // 신호 부재/낮은 신뢰는 기존 동작 그대로 (회귀 없음, #834 wire 전까지 자연 skip).
   if (!phaseAllowsImminentFiring(fusion.phaseState)) {
