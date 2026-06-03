@@ -13,6 +13,7 @@ import { useAppStore } from '../../src/store/useAppStore';
 import { useBoardingLockStore } from '../../src/store/useBoardingLockStore';
 import { DestinationPicker } from '../../src/components/DestinationPicker';
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../../src/utils/stationRoute';
+import { pickArrivalAtOrigin } from '../../src/utils/pickArrivalAtOrigin';
 import { EditorialTimeline } from '../../src/components/EditorialTimeline';
 import { journeyDisplayToStops, nearestResultToNearest } from '../../src/utils/journeyAdapter';
 import { useRouter } from 'expo-router';
@@ -194,7 +195,19 @@ export default function HomeScreen() {
   const etaMinutes = route && nextTrainMinutes !== null && nextTrainMinutes !== Infinity
     ? calculateETA(nextTrainMinutes, route)
     : null;
-  const staticEtaMinutes = route ? calculateStaticETA(route) : null;
+  // #784: rawArrival(useArrivalInfo)을 직접 사용 — useArrivalCountdown(1Hz tick)은 receivedAtMs를
+  // 원본으로 유지하면서 arrivalSeconds만 차감해 60s 후 항상 stale로 판정되는 회귀 회피(옵션 B).
+  // 분 단위 정수 ETA라 tick 미반영 영향 없음. arrivalsAtTransfers는 환승역별 폴링 인프라가 없어
+  // undefined — leg당 DEFAULT_WAIT_MINUTES fallback 유지.
+  const staticEtaMinutes = route
+    ? calculateStaticETA(route, {
+        currentLocation: userLocation ?? undefined,
+        originStation: effectiveOrigin
+          ? { lat: effectiveOrigin.lat, lng: effectiveOrigin.lng }
+          : undefined,
+        arrivalAtOrigin: pickArrivalAtOrigin(rawArrival),
+      })
+    : null;
   const isRealtimeEta = etaMinutes !== null && !arrivalIsMock && arrival !== null;
   const displayEta = isRealtimeEta ? etaMinutes : staticEtaMinutes;
 
