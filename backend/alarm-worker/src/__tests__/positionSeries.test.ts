@@ -351,6 +351,82 @@ describe('positionSeries — readSeries map matching field validation', () => {
   });
 });
 
+describe('positionSeries — nearestStationDistanceM field validation (#825)', () => {
+  it('nearestStationDistanceM 정상값(양수 finite) → series에 정상 적재', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const valid: PositionPoint = {
+      lat: 37.5,
+      lng: 127.0,
+      accuracy: 5,
+      ts: 1000,
+      motion: 'automotive',
+      nearestStationDistanceM: 150,
+    };
+    await appendPositionPoint(kv, 'tok', valid);
+    const series = await readSeries(kv, 'tok');
+    expect(series).toEqual([valid]);
+    expect(series[0].nearestStationDistanceM).toBe(150);
+  });
+
+  it('nearestStationDistanceM=0 → 정상 적재 (0m도 유효)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      { lat: 37.5, lng: 127.0, accuracy: 5, ts: 1000, motion: 'walking', nearestStationDistanceM: 0 },
+    ]);
+    await kv.put('pos:tok', raw);
+    const series = await readSeries(kv, 'tok');
+    expect(series).toHaveLength(1);
+    expect(series[0].nearestStationDistanceM).toBe(0);
+  });
+
+  it('nearestStationDistanceM 음수 → filter됨 (haversine 거리는 항상 ≥ 0)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      { lat: 37.5, lng: 127.0, accuracy: 5, ts: 1000, motion: 'walking', nearestStationDistanceM: -1 },
+    ]);
+    await kv.put('pos:tok', raw);
+    expect(await readSeries(kv, 'tok')).toEqual([]);
+  });
+
+  it('nearestStationDistanceM=NaN → filter됨', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      { lat: 37.5, lng: 127.0, accuracy: 5, ts: 1000, motion: 'walking', nearestStationDistanceM: NaN },
+    ]);
+    await kv.put('pos:tok', raw);
+    expect(await readSeries(kv, 'tok')).toEqual([]);
+  });
+
+  it('nearestStationDistanceM=Infinity → filter됨', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      { lat: 37.5, lng: 127.0, accuracy: 5, ts: 1000, motion: 'walking', nearestStationDistanceM: Infinity },
+    ]);
+    await kv.put('pos:tok', raw);
+    expect(await readSeries(kv, 'tok')).toEqual([]);
+  });
+
+  it('nearestStationDistanceM 문자열 타입 → filter됨', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      { lat: 37.5, lng: 127.0, accuracy: 5, ts: 1000, motion: 'walking', nearestStationDistanceM: '100' },
+    ]);
+    await kv.put('pos:tok', raw);
+    expect(await readSeries(kv, 'tok')).toEqual([]);
+  });
+
+  it('nearestStationDistanceM 필드 없음(undefined) → 정상 적재 (옵션 필드)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      { lat: 37.5, lng: 127.0, accuracy: 5, ts: 1000, motion: 'walking' },
+    ]);
+    await kv.put('pos:tok', raw);
+    const series = await readSeries(kv, 'tok');
+    expect(series).toHaveLength(1);
+    expect(series[0].nearestStationDistanceM).toBeUndefined();
+  });
+});
+
 describe('cosineDirection', () => {
   it('같은 방향 → 1', () => {
     // 동→서 두 vector 동일 방향

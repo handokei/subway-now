@@ -294,6 +294,14 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
       ? obj.mapMatchedArcM
       : undefined;
   const hasPair = mapMatchedLine !== undefined && mapMatchedArcM !== undefined;
+  // #825 — Phase 3 E3 입력. 클라가 stations.json haversine 산출해 stamp (#834에서 wire).
+  // 음수/NaN/Infinity는 graceful skip (전체 payload 거부 X — 기존 mapMatched 정책과 정합).
+  const nearestStationDistanceM =
+    typeof obj.nearestStationDistanceM === 'number' &&
+    Number.isFinite(obj.nearestStationDistanceM) &&
+    obj.nearestStationDistanceM >= 0
+      ? obj.nearestStationDistanceM
+      : undefined;
   return {
     token: obj.token,
     point: {
@@ -303,6 +311,7 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
       ts: obj.ts,
       motion,
       ...(hasPair ? { mapMatchedLine, mapMatchedArcM } : {}),
+      ...(nearestStationDistanceM !== undefined ? { nearestStationDistanceM } : {}),
     },
     accelSummary,
   };

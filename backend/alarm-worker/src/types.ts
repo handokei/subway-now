@@ -137,6 +137,37 @@ export interface Trip {
    * `line`: trip 출발 라인 (lock 생성 시 boardingLine으로 그대로 사용).
    */
   promptDisplay?: PromptDisplay;
+  /**
+   * Phase 3 E3 (#825) — 운행 phase 분류 + 2 cycle hysteresis 상태. cron 사이클마다
+   * stationPhase.ts가 분류 결과로 갱신한다. 사용자가 명시 보내는 필드 아님 — backend 자체 stamp.
+   * 부재(첫 평가 전) = phase 분류 신호 없음.
+   */
+  stationPhase?: StationPhaseState;
+}
+
+/**
+ * 운행 phase 분류 (#825 Phase 3 E3).
+ *   APPROACHING — 진입/감속
+ *   DWELLING   — 정차
+ *   DEPARTING  — 출발/가속
+ *   CRUISING   — 순항
+ */
+export type StationPhaseType = 'APPROACHING' | 'DWELLING' | 'DEPARTING' | 'CRUISING';
+
+/**
+ * trip별 phase 분류 + 2 cycle hysteresis 상태.
+ *   - current: 마지막으로 확정된 phase
+ *   - candidate / candidateCount: 직전 candidate (current와 다른 신호)와 연속 횟수.
+ *     2 cycle 연속 같은 candidate면 current로 승격 (flicker 방지).
+ *   - confidence: 마지막 분류의 confidence 0~1 (hysteresis boost 후 값)
+ *   - lastEvaluatedAt: 마지막 분류 epoch ms — 진단/디버그 로그용.
+ */
+export interface StationPhaseState {
+  current: StationPhaseType;
+  confidence: number;
+  candidate?: StationPhaseType;
+  candidateCount?: number;
+  lastEvaluatedAt: number;
 }
 
 /** boarding-prompt 게이트 평가용 출발역/다음역 좌표. */
@@ -213,6 +244,17 @@ export interface PositionPoint {
    */
   mapMatchedLine?: string;
   mapMatchedArcM?: number;
+  /**
+   * Phase 3 E3 (#825) — 가장 가까운 정거장까지의 거리 (meters). 클라이언트가 매 sample
+   * 송신 시 `stations.json` 좌표 사전으로 haversine 산출해 stamp한다 (#834).
+   *
+   * 사용: backend `stationPhase.ts`가 운행 phase(APPROACHING/DWELLING/DEPARTING/CRUISING)
+   * 분류 입력 중 하나로 사용. 미적용 단계는 undefined — phase 산출 skip (회귀 없음).
+   *
+   * 정책: backend는 stations.json을 갖지 않으므로 거리는 반드시 클라 책임
+   * (mapMatchedLine/ArcM과 동일 패턴).
+   */
+  nearestStationDistanceM?: number;
 }
 
 /**

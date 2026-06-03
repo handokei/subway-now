@@ -115,6 +115,13 @@ function isPositionPoint(value: unknown): value is PositionPoint {
   const hasLine = typeof o.mapMatchedLine === 'string';
   const hasArc = typeof o.mapMatchedArcM === 'number';
   if (hasLine !== hasArc) return false;
+  // #825 — nearestStationDistanceM은 옵션. 값이 있다면 finite number 필수. 음수도 거부
+  //   (haversine 거리는 항상 ≥ 0).
+  if (o.nearestStationDistanceM !== undefined) {
+    if (typeof o.nearestStationDistanceM !== 'number') return false;
+    if (!Number.isFinite(o.nearestStationDistanceM)) return false;
+    if (o.nearestStationDistanceM < 0) return false;
+  }
   return true;
 }
 
