@@ -193,6 +193,55 @@ describe('evaluateBoardingPromptGates — 9단 AND 게이트', () => {
     expect(r.pass).toBe(false);
     if (!r.pass) expect(r.reason).toBe('speed-too-low');
   });
+
+  it('#828: mapMatched arcM이 양 끝 sample에 있으면 fusedSpeed에 흘러간다 (GPS+map weighted)', () => {
+    // 좌표는 happy GPS와 동일하지만 양 끝 sample에 arcM 0 → 1000 (1km, 60s) → mapMatched=60 km/h.
+    // GPS-only 평균은 ~5.3 km/h였으나 mapMatched 가중치가 합산되어 metrics.mapMatchedKmh 산출.
+    const wired: PositionPoint[] = [
+      {
+        lat: 0,
+        lng: -0.0004,
+        accuracy: 10,
+        ts: now - 60_000,
+        motion: 'automotive',
+        mapMatchedLine: '2',
+        mapMatchedArcM: 0,
+      },
+      { lat: 0, lng: 0.0002, accuracy: 10, ts: now - 30_000, motion: 'automotive' },
+      {
+        lat: 0,
+        lng: 0.0008,
+        accuracy: 10,
+        ts: now,
+        motion: 'automotive',
+        mapMatchedLine: '2',
+        mapMatchedArcM: 1000,
+      },
+    ];
+    const r = evaluateBoardingPromptGates({
+      series: wired,
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+    });
+    expect(r.pass).toBe(true);
+    if (r.pass) {
+      expect(r.metrics.mapMatchedKmh).toBeCloseTo(60, 0);
+      // happy(GPS-only)의 fusedSpeedKmh보다 큰 값이어야 — mapMatched 60km/h가 weighted average에 합류.
+      expect(r.fusedSpeedKmh).toBeGreaterThan(10);
+    }
+  });
+
+  it('#828: mapMatched 부재면 mapMatchedKmh=null로 GPS-only 동작 (Phase 1 회귀 없음)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: happySeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+    });
+    expect(r.pass).toBe(true);
+    if (r.pass) expect(r.metrics.mapMatchedKmh).toBeNull();
+  });
 });
 
 describe('markPromptFired / markPromptSilenced', () => {

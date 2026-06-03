@@ -92,16 +92,30 @@ function seriesKey(token: string): string {
 function isPositionPoint(value: unknown): value is PositionPoint {
   if (!value || typeof value !== 'object') return false;
   const o = value as Record<string, unknown>;
-  return (
-    typeof o.lat === 'number' &&
-    typeof o.lng === 'number' &&
-    typeof o.accuracy === 'number' &&
-    typeof o.ts === 'number' &&
-    (o.motion === 'stationary' ||
-      o.motion === 'walking' ||
-      o.motion === 'automotive' ||
-      o.motion === 'unknown')
-  );
+  if (
+    typeof o.lat !== 'number' ||
+    typeof o.lng !== 'number' ||
+    typeof o.accuracy !== 'number' ||
+    typeof o.ts !== 'number'
+  ) {
+    return false;
+  }
+  if (
+    o.motion !== 'stationary' &&
+    o.motion !== 'walking' &&
+    o.motion !== 'automotive' &&
+    o.motion !== 'unknown'
+  ) {
+    return false;
+  }
+  // #828 — optional map matching 필드는 짝(line+arcM)이 함께 있을 때만 유효. 한쪽만 있는
+  // payload는 stale write로 간주해 series에서 거부 (false positive 1차 차단 정책 정렬).
+  if (o.mapMatchedLine !== undefined && typeof o.mapMatchedLine !== 'string') return false;
+  if (o.mapMatchedArcM !== undefined && typeof o.mapMatchedArcM !== 'number') return false;
+  const hasLine = typeof o.mapMatchedLine === 'string';
+  const hasArc = typeof o.mapMatchedArcM === 'number';
+  if (hasLine !== hasArc) return false;
+  return true;
 }
 
 export interface WindowedMetrics {
@@ -117,6 +131,15 @@ export interface WindowedMetrics {
   start: { lat: number; lng: number } | null;
   /** 시작점/끝점 좌표 — 방향 cosine 계산 입력. */
   end: { lat: number; lng: number } | null;
+  /**
+   * Phase 2 map matching 결과 (#828). 윈도우 양 끝 sample이 모두 같은 line + arcM을 가질 때만
+   * `|Δarc| / Δt`로 산출 — fusedSpeed의 mapMatchedKmh 인자로 그대로 전달된다.
+   *
+   * - null: 클라이언트가 한쪽이라도 snap 못한 경우 (boarding line 미설정/멀리 떨어진 좌표).
+   *   fusedSpeed는 GPS-only로 자연 동작 (Phase 1 회귀 없음).
+   * - 환승역 disambiguate: start/end line이 다르면 null로 강등.
+   */
+  mapMatchedKmh: number | null;
 }
 
 /**
@@ -167,7 +190,33 @@ export function evaluateWindow(
     motion,
     start: start ? { lat: start.lat, lng: start.lng } : null,
     end: end ? { lat: end.lat, lng: end.lng } : null,
+    mapMatchedKmh: computeMapMatchedKmh(start, end),
   };
+}
+
+/**
+ * 윈도우 양 끝 sample이 모두 같은 line + arcM을 갖는 경우 `|Δarc| / Δt`로 평균속도(km/h) 산출.
+ *
+ * - 한쪽이라도 snap 안 됨 / line 다름 / Δt ≤ 0 / Δarc = 0 → null (fusedSpeed가 GPS-only로 강등).
+ * - 역방향 진행(음의 Δarc)은 `|·|`로 처리해 호출자가 방향을 알 필요 없게 한다 — 이는
+ *   client `mapMatchedSpeedKmh`(#817) 정책과 정렬.
+ */
+function computeMapMatchedKmh(
+  start: PositionPoint | undefined,
+  end: PositionPoint | undefined,
+): number | null {
+  if (!start || !end) return null;
+  const { mapMatchedLine: startLine, mapMatchedArcM: startArc } = start;
+  const { mapMatchedLine: endLine, mapMatchedArcM: endArc } = end;
+  if (startLine === undefined || startArc === undefined) return null;
+  if (endLine === undefined || endArc === undefined) return null;
+  if (startLine !== endLine) return null;
+  const dtMs = end.ts - start.ts;
+  if (dtMs <= 0) return null;
+  const deltaM = Math.abs(endArc - startArc);
+  if (deltaM === 0) return null;
+  const mps = deltaM / (dtMs / 1000);
+  return mps * 3.6;
 }
 
 /**

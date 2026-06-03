@@ -201,6 +201,18 @@ export interface PositionPoint {
   ts: number;
   /** CMMotionActivity 분류 — graceful: 미지원/권한 거절 시 'unknown'. */
   motion: 'stationary' | 'walking' | 'automotive' | 'unknown';
+  /**
+   * Phase 2 map matching (#828) — 클라이언트가 활성 boarding line polyline에 좌표를 사영해
+   * 산출한 누적 arc 거리(m) + 노선 코드. (`src/utils/linePolyline.ts`)
+   *
+   * - 양 끝 sample이 모두 같은 line + arcM을 갖는 경우에만 evaluateWindow가 mapMatchedKmh
+   *   산출 → fusedSpeed가 GPS+map matching 가중평균으로 동작.
+   * - 부재 시 mapMatchedKmh=null로 강등 → fusedSpeed가 GPS-only로 동작 (Phase 1 회귀 없음).
+   * - 환승역 disambiguate: 클라이언트가 active line으로만 snap하므로 다른 line snap은 자연 차단.
+   * - backend는 stations.json을 갖지 않으므로 snap은 반드시 클라이언트 책임이다 (types 주석 참조).
+   */
+  mapMatchedLine?: string;
+  mapMatchedArcM?: number;
 }
 
 /**
