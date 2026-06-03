@@ -409,8 +409,8 @@ describe('calculateStaticETA', () => {
       stopsToTransfer: 1,
       stopsFromTransfer: 5,
     });
-    // 3분 대기 + round(12 + 63/60) = 3 + 13 = 16분
-    expect(calculateStaticETA(route)).toBe(16);
+    // 출발 3분 대기 + 환승 leg 3분 대기(#778) + round(12 + 63/60)=13 = 19분
+    expect(calculateStaticETA(route)).toBe(19);
   });
 
   it('MultiTransferRoute일 때 기본대기3분 + 환승별 실측 시간 합산을 반환한다', () => {
@@ -421,8 +421,8 @@ describe('calculateStaticETA', () => {
       ],
       stopsAfterLastTransfer: 4,
     });
-    // 3분 대기 + round(24 + 242/60) = 3 + 28 = 31분
-    expect(calculateStaticETA(route)).toBe(31);
+    // 출발 3분 + 환승 2 leg × 3분(#778) + round(24 + 242/60)=28 = 37분
+    expect(calculateStaticETA(route)).toBe(37);
   });
 
   it('route가 null이면 null을 반환한다', () => {
@@ -657,8 +657,120 @@ describe('환승역별 실측 환승시간 반영', () => {
       ],
       stopsAfterLastTransfer: 3,
     });
-    // 3분 대기 + round((1+2+3)*2 + (63+133)/60) = 3 + round(15.2667) = 3 + 15 = 18분
-    expect(calculateStaticETA(route)).toBe(18);
+    // 출발 3분 + 환승 2 leg × 3분(#778) + round((1+2+3)*2 + (63+133)/60)=15 = 24분
+    expect(calculateStaticETA(route)).toBe(24);
+  });
+});
+
+describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => {
+  const NOW = 1_700_000_000_000;
+
+  it('TransferRoute에서 arrivalsAtTransfers[0] fresh이면 동적 대기로 사용', () => {
+    const route: TransferRoute = makeTransferRoute({
+      transferName: '교대', fromLine: '2', toLine: '3',
+      stopsToTransfer: 1, stopsFromTransfer: 5,
+    });
+    // 출발 3분(fallback) + 환승 leg 5분(arrivalSeconds=300) + travel 13 = 21
+    expect(
+      calculateStaticETA(route, {
+        arrivalsAtTransfers: [{ arrivalSeconds: 300, receivedAtMs: NOW }],
+        nowMs: NOW,
+      }),
+    ).toBe(21);
+  });
+
+  it('MultiTransferRoute에서 각 leg마다 동적 합산', () => {
+    const route: MultiTransferRoute = makeMultiTransferRoute({
+      transfers: [
+        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+      ],
+      stopsAfterLastTransfer: 4,
+    });
+    // 출발 3분(fallback) + leg0 1분(60s) + leg1 2분(120s) + travel 28 = 34
+    expect(
+      calculateStaticETA(route, {
+        arrivalsAtTransfers: [
+          { arrivalSeconds: 60, receivedAtMs: NOW },
+          { arrivalSeconds: 120, receivedAtMs: NOW },
+        ],
+        nowMs: NOW,
+      }),
+    ).toBe(34);
+  });
+
+  it('일부 leg만 제공 시 누락 element는 leg당 DEFAULT_WAIT_MINUTES fallback', () => {
+    const route: MultiTransferRoute = makeMultiTransferRoute({
+      transfers: [
+        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+      ],
+      stopsAfterLastTransfer: 4,
+    });
+    // 출발 3분 + leg0 1분(60s) + leg1 3분(null → fallback) + travel 28 = 35
+    expect(
+      calculateStaticETA(route, {
+        arrivalsAtTransfers: [{ arrivalSeconds: 60, receivedAtMs: NOW }, null],
+        nowMs: NOW,
+      }),
+    ).toBe(35);
+  });
+
+  it('arrivalsAtTransfers 빈 배열이면 leg마다 fallback (회귀 없음)', () => {
+    const route: TransferRoute = makeTransferRoute({
+      transferName: '교대', fromLine: '2', toLine: '3',
+      stopsToTransfer: 1, stopsFromTransfer: 5,
+    });
+    // 출발 3분 + 환승 3분(빈 배열 → undefined → fallback) + travel 13 = 19
+    expect(
+      calculateStaticETA(route, { arrivalsAtTransfers: [], nowMs: NOW }),
+    ).toBe(19);
+  });
+
+  it('DirectRoute에 arrivalsAtTransfers 전달해도 영향 없음 (transferCount=0)', () => {
+    const route: DirectRoute = makeDirectRoute(5, '2');
+    // 출발 3분 + travel 10 = 13 (transferCount=0이라 배열 무시)
+    expect(
+      calculateStaticETA(route, {
+        arrivalsAtTransfers: [{ arrivalSeconds: 600, receivedAtMs: NOW }],
+        nowMs: NOW,
+      }),
+    ).toBe(13);
+  });
+
+  it('stale element는 그 leg만 fallback', () => {
+    const route: TransferRoute = makeTransferRoute({
+      transferName: '교대', fromLine: '2', toLine: '3',
+      stopsToTransfer: 1, stopsFromTransfer: 5,
+    });
+    // 60_001ms 경과 → stale → fallback. 출발 3 + 환승 3 + travel 13 = 19
+    expect(
+      calculateStaticETA(route, {
+        arrivalsAtTransfers: [{ arrivalSeconds: 300, receivedAtMs: NOW - 60_001 }],
+        nowMs: NOW,
+      }),
+    ).toBe(19);
+  });
+
+  it('합산 round 정책 — 개별 round했다면 +1되었을 케이스', () => {
+    const route: MultiTransferRoute = makeMultiTransferRoute({
+      transfers: [
+        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+      ],
+      stopsAfterLastTransfer: 4,
+    });
+    // 출발 3(fallback) + leg0 0.5(30s) + leg1 0.5(30s) = 4.0분 → round(4.0)=4
+    // 개별 round했다면 3 + 1 + 1 = 5 (잘못된 합산). 본 PR은 합산 후 round로 4.
+    expect(
+      calculateStaticETA(route, {
+        arrivalsAtTransfers: [
+          { arrivalSeconds: 30, receivedAtMs: NOW },
+          { arrivalSeconds: 30, receivedAtMs: NOW },
+        ],
+        nowMs: NOW,
+      }),
+    ).toBe(32); // wait 4 + travel 28
   });
 });
 

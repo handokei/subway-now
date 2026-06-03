@@ -116,6 +116,11 @@ export interface ProcessLocationInputs {
    * 호출자(BG/FG) 통합은 점진적으로 진행 — 본 옵션이 없어도 회귀 없음.
    */
   arrivalAtOrigin?: { arrivalSeconds: number; receivedAtMs: number };
+  /**
+   * #778 — 각 환승역의 다음 열차 도착 정보 (transfer 순서). null/누락 element는 leg당 DEFAULT_WAIT_MINUTES fallback.
+   * 호출자가 환승 leg마다 arrival을 제공하면 calculateStaticETA가 동적으로 합산.
+   */
+  arrivalsAtTransfers?: ReadonlyArray<{ arrivalSeconds: number; receivedAtMs: number } | null>;
 }
 
 export async function processLocationUpdate(inputs: ProcessLocationInputs): Promise<PipelineResult> {
@@ -132,6 +137,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
     fusionSource,
     locationUncertain = false,
     arrivalAtOrigin,
+    arrivalsAtTransfers,
   } = inputs;
 
   const notificationSource = fusionSource
@@ -250,10 +256,12 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   // 하차 도보는 미적용 — 현 시점 데이터 모델은 destination이 Station(=하차역)으로 사용자 최종 좌표와
   // 일치하므로 도보 0이 자명. 사용자 좌표를 별도로 보유하게 되면 destination/destinationStation 추가.
   // #777: arrivalAtOrigin 호출자가 제공 시 calculateStaticETA가 다음 열차 대기를 동적으로 계산.
+  // #778: arrivalsAtTransfers 호출자가 제공 시 환승 leg마다 동적, 미제공 시 leg당 DEFAULT_WAIT_MINUTES.
   const eta = calculateStaticETA(route, {
     currentLocation: { lat, lng },
     originStation: { lat: nearest.station.lat, lng: nearest.station.lng },
     arrivalAtOrigin,
+    arrivalsAtTransfers,
   });
   await updateStationNotification(
     nearest.station,
