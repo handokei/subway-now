@@ -1,0 +1,67 @@
+{
+  "$schema": "./metrics.catalog.schema.json",
+  "description": "Phase 3 fusion baseline 지표 카탈로그. backend metrics.ts와 scripts/perf-report.js의 단일 SSOT.",
+  "constants": {
+    "SLA_LATE_THRESHOLD_MS": 30000,
+    "FALSE_POSITIVE_RATIO_THRESHOLD": 0.05,
+    "MIN_SAMPLE_FOR_DECISION": 30,
+    "SLA_PERCENTILE": 0.95,
+    "METRIC_LABEL_PREFIX": "phase3"
+  },
+  "metrics": [
+    {
+      "key": "boardingFalsePositiveRate",
+      "constantName": "BOARDING_FALSE_POSITIVE",
+      "format": "rate",
+      "display": "percentage",
+      "description": "9단 게이트 통과 후 미탑승 dismiss된 비율",
+      "gate": {
+        "field": "value",
+        "op": ">",
+        "thresholdConst": "FALSE_POSITIVE_RATIO_THRESHOLD",
+        "triggerName": "falsePositive"
+      }
+    },
+    {
+      "key": "imminentSlaErrorMs",
+      "constantName": "IMMINENT_SLA_ERROR",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "임박 알람 발사 vs 실제 도착 시각 차이",
+      "gate": {
+        "field": "p95",
+        "op": ">",
+        "thresholdConst": "SLA_LATE_THRESHOLD_MS",
+        "triggerName": "imminentSla"
+      }
+    },
+    {
+      "key": "stationPassedAccuracy",
+      "constantName": "STATION_PASSED_ACCURACY",
+      "format": "rate",
+      "display": "percentage",
+      "description": "사전 예약 station-passed가 실제 통과와 일치한 비율"
+    },
+    {
+      "key": "phaseClassificationAccuracy",
+      "constantName": "PHASE_CLASSIFICATION_ACCURACY",
+      "format": "rate",
+      "display": "percentage",
+      "description": "E3 4-class precision/recall"
+    },
+    {
+      "key": "driftRecoveryMeters",
+      "constantName": "DRIFT_RECOVERY",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "E4 GPS 회복 시점 position 오차"
+    },
+    {
+      "key": "kalmanResidual",
+      "constantName": "KALMAN_RESIDUAL",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "E2 Kalman predict vs observe 차이"
+    }
+  ]
+}

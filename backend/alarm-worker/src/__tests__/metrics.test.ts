@@ -4,11 +4,13 @@ import {
   FALSE_POSITIVE_RATIO_THRESHOLD,
   isRateMetric,
   mean,
+  METRIC_CATALOG,
   METRIC_KIND,
   MIN_SAMPLE_FOR_DECISION,
   percentile,
   rate,
   SLA_LATE_THRESHOLD_MS,
+  SLA_PERCENTILE,
   summarizeMetric,
   validateMetricBatch,
   validateMetricEntry,
@@ -144,86 +146,152 @@ function makeSummary(
 
 describe('decidePhaseFour', () => {
   it('holds decision when falsePositive samples insufficient', () => {
-    const decision = decidePhaseFour({
-      falsePositive: makeSummary({
+    const decision = decidePhaseFour([
+      makeSummary({
         kind: METRIC_KIND.BOARDING_FALSE_POSITIVE,
         significant: false,
         count: 5,
       }),
-      imminentSla: makeSummary({ kind: METRIC_KIND.IMMINENT_SLA_ERROR }),
-    });
+      makeSummary({ kind: METRIC_KIND.IMMINENT_SLA_ERROR }),
+    ]);
     expect(decision.proceed).toBe(false);
     expect(decision.insufficientSamples).toBe(true);
     expect(decision.triggers).toEqual([]);
   });
 
   it('holds decision when imminentSla samples insufficient', () => {
-    const decision = decidePhaseFour({
-      falsePositive: makeSummary({ kind: METRIC_KIND.BOARDING_FALSE_POSITIVE }),
-      imminentSla: makeSummary({
+    const decision = decidePhaseFour([
+      makeSummary({ kind: METRIC_KIND.BOARDING_FALSE_POSITIVE }),
+      makeSummary({
         kind: METRIC_KIND.IMMINENT_SLA_ERROR,
         significant: false,
         count: 2,
       }),
-    });
+    ]);
     expect(decision.proceed).toBe(false);
     expect(decision.insufficientSamples).toBe(true);
   });
 
+  it('holds when a gated metric is missing from input', () => {
+    // 카탈로그의 모든 gate-필수 메트릭이 입력에 있어야 함.
+    const decision = decidePhaseFour([
+      makeSummary({ kind: METRIC_KIND.BOARDING_FALSE_POSITIVE }),
+    ]);
+    expect(decision.insufficientSamples).toBe(true);
+    expect(decision.proceed).toBe(false);
+  });
+
   it('skips Phase 4 when both within threshold', () => {
-    const decision = decidePhaseFour({
-      falsePositive: makeSummary({
+    const decision = decidePhaseFour([
+      makeSummary({
         kind: METRIC_KIND.BOARDING_FALSE_POSITIVE,
         value: FALSE_POSITIVE_RATIO_THRESHOLD,
       }),
-      imminentSla: makeSummary({
+      makeSummary({
         kind: METRIC_KIND.IMMINENT_SLA_ERROR,
         p95: SLA_LATE_THRESHOLD_MS,
       }),
-    });
+    ]);
     expect(decision.proceed).toBe(false);
     expect(decision.insufficientSamples).toBe(false);
     expect(decision.triggers).toEqual([]);
   });
 
   it('triggers on false-positive breach', () => {
-    const decision = decidePhaseFour({
-      falsePositive: makeSummary({
+    const decision = decidePhaseFour([
+      makeSummary({
         kind: METRIC_KIND.BOARDING_FALSE_POSITIVE,
         value: FALSE_POSITIVE_RATIO_THRESHOLD + 0.01,
       }),
-      imminentSla: makeSummary({ kind: METRIC_KIND.IMMINENT_SLA_ERROR }),
-    });
+      makeSummary({ kind: METRIC_KIND.IMMINENT_SLA_ERROR }),
+    ]);
     expect(decision.proceed).toBe(true);
     expect(decision.triggers).toContain('falsePositive');
     expect(decision.triggers).not.toContain('imminentSla');
   });
 
   it('triggers on imminentSla breach', () => {
-    const decision = decidePhaseFour({
-      falsePositive: makeSummary({ kind: METRIC_KIND.BOARDING_FALSE_POSITIVE }),
-      imminentSla: makeSummary({
+    const decision = decidePhaseFour([
+      makeSummary({ kind: METRIC_KIND.BOARDING_FALSE_POSITIVE }),
+      makeSummary({
         kind: METRIC_KIND.IMMINENT_SLA_ERROR,
         p95: SLA_LATE_THRESHOLD_MS + 1,
       }),
-    });
+    ]);
     expect(decision.proceed).toBe(true);
     expect(decision.triggers).toContain('imminentSla');
   });
 
   it('aggregates multiple triggers', () => {
-    const decision = decidePhaseFour({
-      falsePositive: makeSummary({
+    const decision = decidePhaseFour([
+      makeSummary({
         kind: METRIC_KIND.BOARDING_FALSE_POSITIVE,
         value: 0.3,
       }),
-      imminentSla: makeSummary({
+      makeSummary({
         kind: METRIC_KIND.IMMINENT_SLA_ERROR,
         p95: SLA_LATE_THRESHOLD_MS + 1000,
       }),
-    });
+    ]);
     expect(decision.proceed).toBe(true);
     expect(decision.triggers).toEqual(['falsePositive', 'imminentSla']);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────
+// 카탈로그 — data-driven 보장.
+// 새 지표/게이트 추가 시 추가 분기 코드 필요 없음을 회귀 보장.
+// ───────────────────────────────────────────────────────────────
+
+describe('METRIC_CATALOG (data-driven)', () => {
+  it('exposes every catalog key via METRIC_KIND', () => {
+    for (const entry of METRIC_CATALOG) {
+      expect(METRIC_KIND[entry.constantName]).toBe(entry.key);
+    }
+  });
+
+  it('every metric has a known format', () => {
+    for (const entry of METRIC_CATALOG) {
+      expect(['rate', 'histogram']).toContain(entry.format);
+    }
+  });
+
+  it('every gate references a known threshold constant', () => {
+    const allowed = new Set([
+      'SLA_LATE_THRESHOLD_MS',
+      'FALSE_POSITIVE_RATIO_THRESHOLD',
+      'MIN_SAMPLE_FOR_DECISION',
+      'SLA_PERCENTILE',
+    ]);
+    for (const entry of METRIC_CATALOG) {
+      if (entry.gate) {
+        expect(allowed.has(entry.gate.thresholdConst)).toBe(true);
+      }
+    }
+  });
+
+  it('gates currently registered cover exactly the documented Phase 4 inputs', () => {
+    const triggers = METRIC_CATALOG.filter((m) => m.gate).map((m) => m.gate?.triggerName);
+    expect(triggers).toEqual(['falsePositive', 'imminentSla']);
+  });
+});
+
+describe('SLA_PERCENTILE', () => {
+  it('reflects catalog constant (default 0.95)', () => {
+    expect(SLA_PERCENTILE).toBe(0.95);
+  });
+
+  it('summarizeMetric uses SLA_PERCENTILE for histogram p95 field', () => {
+    // SLA_PERCENTILE이 0.95라는 가정 없이 분포 기반 검증:
+    // 정렬 후 ceil(p * n) - 1 인덱스 일치.
+    const samples = Array.from({ length: 100 }, (_, i) => i + 1);
+    const expectedIdx = Math.max(0, Math.ceil(SLA_PERCENTILE * samples.length) - 1);
+    const expected = samples[expectedIdx];
+    const result = summarizeMetric({
+      kind: METRIC_KIND.IMMINENT_SLA_ERROR,
+      samples,
+    });
+    expect(result.p95).toBe(expected);
   });
 });
 
@@ -278,9 +346,10 @@ describe('writeMetricDataPoints', () => {
     };
     writeMetricDataPoints(writer, 'aabbccdd11223344', hist);
     const labels = writer.writeDataPoint.mock.calls.map((c) => c[0].blobs[0]);
+    const pctLabel = `p${Math.round(SLA_PERCENTILE * 100)}`;
     expect(labels).toContain('phase3:imminentSlaErrorMs:count');
     expect(labels).toContain('phase3:imminentSlaErrorMs:mean');
-    expect(labels).toContain('phase3:imminentSlaErrorMs:p95');
+    expect(labels).toContain(`phase3:imminentSlaErrorMs:${pctLabel}`);
   });
 
   it('skips zero histogram values (empty samples writes nothing)', () => {

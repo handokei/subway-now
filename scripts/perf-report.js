@@ -11,32 +11,53 @@
  *   cat metrics.json | node scripts/perf-report.js
  *   npm run perf:report -- metrics.json
  *
- * backend `metrics.ts`와 schema 호환 — wrangler tail 또는 Analytics Engine query 결과를
- * 그대로 입력 가능. 외부 의존성 없음 — node fs / process만 사용.
+ * 카탈로그 SSOT:
+ *   `backend/alarm-worker/src/metrics.catalog.json` — backend metrics.ts와 공유.
+ *   새 지표/임계 추가 시 JSON 1곳만 수정하면 양쪽이 동일하게 반영된다.
+ *
+ * 외부 의존성 없음 — node fs / process만 사용.
  */
 
 'use strict';
 
 const fs = require('node:fs');
+const path = require('node:path');
 
 // ───────────────────────────────────────────────────────────────
-// Phase 4 결정 임계 — backend metrics.ts와 동기화 (CONST source of truth).
+// 카탈로그 — backend metrics.ts와 단일 JSON SSOT 공유.
 // ───────────────────────────────────────────────────────────────
 
-const SLA_LATE_THRESHOLD_MS = 30_000;
-const FALSE_POSITIVE_RATIO_THRESHOLD = 0.05;
-const MIN_SAMPLE_FOR_DECISION = 30;
+const CATALOG_PATH = path.resolve(
+  __dirname,
+  '..',
+  'backend',
+  'alarm-worker',
+  'src',
+  'metrics.catalog.json',
+);
 
-// 지표 카탈로그 — 새 지표 추가 시 키 1개만 늘리면 perf-report 흐름 무수정.
-const METRIC_KIND = {
-  BOARDING_FALSE_POSITIVE: 'boardingFalsePositiveRate',
-  IMMINENT_SLA_ERROR: 'imminentSlaErrorMs',
-  STATION_PASSED_ACCURACY: 'stationPassedAccuracy',
-  PHASE_CLASSIFICATION_ACCURACY: 'phaseClassificationAccuracy',
-  DRIFT_RECOVERY: 'driftRecoveryMeters',
-  KALMAN_RESIDUAL: 'kalmanResidual',
-};
-const KNOWN_KINDS = new Set(Object.values(METRIC_KIND));
+/* istanbul ignore next — catalog 로드 실패는 빌드/배포 사고이고 단위 테스트로 재현 불가. */
+function loadCatalog() {
+  return JSON.parse(fs.readFileSync(CATALOG_PATH, 'utf8'));
+}
+
+const CATALOG = loadCatalog();
+
+const SLA_LATE_THRESHOLD_MS = CATALOG.constants.SLA_LATE_THRESHOLD_MS;
+const FALSE_POSITIVE_RATIO_THRESHOLD = CATALOG.constants.FALSE_POSITIVE_RATIO_THRESHOLD;
+const MIN_SAMPLE_FOR_DECISION = CATALOG.constants.MIN_SAMPLE_FOR_DECISION;
+const SLA_PERCENTILE = CATALOG.constants.SLA_PERCENTILE;
+
+// 카탈로그의 constantName → key 매핑 — 기존 호출자 호환.
+const METRIC_KIND = Object.freeze(
+  CATALOG.metrics.reduce((acc, m) => {
+    acc[m.constantName] = m.key;
+    return acc;
+  }, {}),
+);
+
+const KNOWN_KINDS = new Set(CATALOG.metrics.map((m) => m.key));
+const METRIC_BY_KEY = new Map(CATALOG.metrics.map((m) => [m.key, m]));
 
 // ───────────────────────────────────────────────────────────────
 // 통계.
@@ -78,45 +99,68 @@ function summarize(entry) {
   return {
     kind: entry.kind,
     value: mean(entry.samples),
-    p95: percentile(entry.samples, 0.95),
+    p95: percentile(entry.samples, SLA_PERCENTILE),
     count: entry.samples.length,
     significant: entry.samples.length >= MIN_SAMPLE_FOR_DECISION,
   };
 }
 
 // ───────────────────────────────────────────────────────────────
-// 결정.
+// 결정 — 카탈로그의 gate 메타를 순회. 새 게이트 추가 시 분기 무수정.
 // ───────────────────────────────────────────────────────────────
 
+function gatedEntries() {
+  return CATALOG.metrics.filter((m) => m.gate);
+}
+
+function gateValue(summary, gate) {
+  return gate.field === 'p95' ? summary.p95 : summary.value;
+}
+
+function gateThreshold(gate) {
+  return CATALOG.constants[gate.thresholdConst];
+}
+
+function gateBreached(summary, gate) {
+  const threshold = gateThreshold(gate);
+  const v = gateValue(summary, gate);
+  // 현재 op는 '>'만 지원 — 카탈로그 확장 시 분기 추가.
+  return gate.op === '>' && v > threshold;
+}
+
 function decidePhaseFour(summaries) {
-  const fp = summaries.find((s) => s.kind === METRIC_KIND.BOARDING_FALSE_POSITIVE);
-  const sla = summaries.find((s) => s.kind === METRIC_KIND.IMMINENT_SLA_ERROR);
-  if (!fp || !sla) {
-    return { proceed: false, insufficientSamples: true, triggers: [] };
-  }
-  if (!fp.significant || !sla.significant) {
-    return { proceed: false, insufficientSamples: true, triggers: [] };
+  const byKind = new Map(summaries.map((s) => [s.kind, s]));
+  const gates = gatedEntries();
+  for (const entry of gates) {
+    const s = byKind.get(entry.key);
+    if (!s || !s.significant) {
+      return { proceed: false, insufficientSamples: true, triggers: [] };
+    }
   }
   const triggers = [];
-  if (fp.value > FALSE_POSITIVE_RATIO_THRESHOLD) triggers.push('falsePositive');
-  if (sla.p95 > SLA_LATE_THRESHOLD_MS) triggers.push('imminentSla');
+  for (const entry of gates) {
+    const s = byKind.get(entry.key);
+    if (gateBreached(s, entry.gate)) triggers.push(entry.gate.triggerName);
+  }
   return { proceed: triggers.length > 0, insufficientSamples: false, triggers };
 }
 
 // ───────────────────────────────────────────────────────────────
-// 입력 검증.
+// 입력 검증 — 카탈로그 format에 따라 분기.
 // ───────────────────────────────────────────────────────────────
 
 function validateEntry(raw) {
   if (!raw || typeof raw !== 'object') return null;
   if (!KNOWN_KINDS.has(raw.kind)) return null;
-  if ('total' in raw) {
+  const meta = METRIC_BY_KEY.get(raw.kind);
+  if (meta && meta.format === 'rate') {
     const { hit, total } = raw;
     if (!Number.isInteger(hit) || hit < 0) return null;
     if (!Number.isInteger(total) || total < 0) return null;
     if (hit > total) return null;
     return { kind: raw.kind, hit, total };
   }
+  // histogram (or unknown — safety net으로 histogram 처리)
   if (!Array.isArray(raw.samples)) return null;
   for (const v of raw.samples) {
     if (typeof v !== 'number' || !Number.isFinite(v)) return null;
@@ -137,6 +181,7 @@ function validateBatch(raw) {
 
 // ───────────────────────────────────────────────────────────────
 // 리포트 빌드 — 순수 함수, IO 없음. CLI smoke 테스트 진입점.
+// 카탈로그 display에 따라 포맷 분기 (percentage / numeric). if 체인 없음.
 // ───────────────────────────────────────────────────────────────
 
 function buildReport(entries) {
@@ -145,18 +190,19 @@ function buildReport(entries) {
   return { summaries, decision };
 }
 
+const PERCENTILE_LABEL = `p${Math.round(SLA_PERCENTILE * 100)}`;
+
 function formatSummary(summary) {
-  const pct = (n) => `${(n * 100).toFixed(2)}%`;
-  if (summary.kind === METRIC_KIND.BOARDING_FALSE_POSITIVE) {
-    return `  ${summary.kind}: ${pct(summary.value)} (n=${summary.count}${summary.significant ? '' : ', insufficient'})`;
+  const meta = METRIC_BY_KEY.get(summary.kind);
+  const sampleTag = `n=${summary.count}${summary.significant ? '' : ', insufficient'}`;
+  // display 메타가 누락된 경우는 안전 폴백으로 numeric.
+  const display = meta ? meta.display : 'numeric';
+  if (display === 'percentage') {
+    const pct = `${(summary.value * 100).toFixed(2)}%`;
+    return `  ${summary.kind}: ${pct} (${sampleTag})`;
   }
-  if (
-    summary.kind === METRIC_KIND.STATION_PASSED_ACCURACY ||
-    summary.kind === METRIC_KIND.PHASE_CLASSIFICATION_ACCURACY
-  ) {
-    return `  ${summary.kind}: ${pct(summary.value)} (n=${summary.count}${summary.significant ? '' : ', insufficient'})`;
-  }
-  return `  ${summary.kind}: mean=${summary.value.toFixed(2)} p95=${summary.p95.toFixed(2)} (n=${summary.count}${summary.significant ? '' : ', insufficient'})`;
+  // numeric / histogram
+  return `  ${summary.kind}: mean=${summary.value.toFixed(2)} ${PERCENTILE_LABEL}=${summary.p95.toFixed(2)} (${sampleTag})`;
 }
 
 function formatReport(report) {
@@ -229,9 +275,11 @@ function main(argv, env = {}) {
 
 module.exports = {
   METRIC_KIND,
+  METRIC_CATALOG: CATALOG.metrics,
   SLA_LATE_THRESHOLD_MS,
   FALSE_POSITIVE_RATIO_THRESHOLD,
   MIN_SAMPLE_FOR_DECISION,
+  SLA_PERCENTILE,
   percentile,
   mean,
   isRate,
@@ -250,3 +298,4 @@ module.exports = {
 if (require.main === module) {
   process.exit(main(process.argv));
 }
+

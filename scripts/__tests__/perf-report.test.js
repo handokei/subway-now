@@ -9,9 +9,11 @@ const path = require('node:path');
 
 const {
   METRIC_KIND,
+  METRIC_CATALOG,
   SLA_LATE_THRESHOLD_MS,
   FALSE_POSITIVE_RATIO_THRESHOLD,
   MIN_SAMPLE_FOR_DECISION,
+  SLA_PERCENTILE,
   percentile,
   mean,
   isRate,
@@ -24,6 +26,8 @@ const {
   formatReport,
   main,
 } = require('../perf-report');
+
+const catalogJson = require('../../backend/alarm-worker/src/metrics.catalog.json');
 
 describe('percentile', () => {
   it('returns 0 for empty', () => {
@@ -365,8 +369,50 @@ describe('formatSummary', () => {
       count: 40,
       significant: true,
     });
+    const pctLabel = `p${Math.round(SLA_PERCENTILE * 100)}`;
     expect(text).toContain('mean=1500.50');
-    expect(text).toContain('p95=2800.25');
+    expect(text).toContain(`${pctLabel}=2800.25`);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────
+// 카탈로그 SSOT 일관성 — backend metrics.catalog.json 단일 출처.
+// ───────────────────────────────────────────────────────────────
+
+describe('catalog SSOT consistency', () => {
+  it('exports same constants as catalog JSON', () => {
+    expect(SLA_LATE_THRESHOLD_MS).toBe(catalogJson.constants.SLA_LATE_THRESHOLD_MS);
+    expect(FALSE_POSITIVE_RATIO_THRESHOLD).toBe(
+      catalogJson.constants.FALSE_POSITIVE_RATIO_THRESHOLD,
+    );
+    expect(MIN_SAMPLE_FOR_DECISION).toBe(catalogJson.constants.MIN_SAMPLE_FOR_DECISION);
+    expect(SLA_PERCENTILE).toBe(catalogJson.constants.SLA_PERCENTILE);
+  });
+
+  it('METRIC_KIND mirrors catalog entries', () => {
+    for (const entry of catalogJson.metrics) {
+      expect(METRIC_KIND[entry.constantName]).toBe(entry.key);
+    }
+  });
+
+  it('METRIC_CATALOG reflects raw catalog entries', () => {
+    expect(METRIC_CATALOG).toHaveLength(catalogJson.metrics.length);
+    const keys = METRIC_CATALOG.map((m) => m.key);
+    const expected = catalogJson.metrics.map((m) => m.key);
+    expect(keys).toEqual(expected);
+  });
+
+  it('every gate references an existing constant', () => {
+    for (const entry of catalogJson.metrics) {
+      if (entry.gate) {
+        expect(
+          Object.prototype.hasOwnProperty.call(
+            catalogJson.constants,
+            entry.gate.thresholdConst,
+          ),
+        ).toBe(true);
+      }
+    }
   });
 });
 
