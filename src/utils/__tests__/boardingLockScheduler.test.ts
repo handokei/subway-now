@@ -159,7 +159,8 @@ describe('scheduleHopsForLock', () => {
   it('direct route: destination waypoint 1개를 예약, early+imminent 모두 발사', async () => {
     await scheduleHopsForLock({ lock, route: directRoute, destinationName: '강남' });
 
-    // 2 stops * 90s = 180s; early lead = 90s, imminent lead = 45s → 둘 다 양수
+    // fixture STOP_FALLBACK_SECONDS=120 → travelSeconds=240s. arrival=NOW+240k.
+    // #785: early lead=240/2=120s, imminent lead=45s → 둘 다 양수 → 2회 예약.
     expect(mockedSchedule).toHaveBeenCalledTimes(2);
     expect(mockedAdd).toHaveBeenCalledWith([
       'bl:T-100:0:early:강남',
@@ -203,7 +204,8 @@ describe('scheduleHopsForLock', () => {
   });
 
   it('과거 시각으로 산출되는 알람은 skip — now가 충분히 진행된 경우', async () => {
-    // direct stops=2 → waypointEta=180s. now를 boardedAt + 200초로 잡으면 둘 다 음수.
+    // fixture 120s/stop → arrival=240s. early fires at 240−120=120s, imminent at 240−45=195s.
+    // now=NOW+200s → 두 fire time 모두 ≤200s → 둘 다 skip.
     await scheduleHopsForLock({
       lock,
       route: directRoute,
@@ -268,8 +270,7 @@ describe('scheduleHopsForLock', () => {
   });
 
   it('빈 targets은 storage write도 빈 배열', async () => {
-    // direct stops=0 → totalStops=0, but resolveAllTargets returns 1 entry with stops=0.
-    // waypointEta=0 → 모든 phase에서 fireSeconds <= 0 → 예약 안 됨.
+    // direct stops=0 → travelSeconds=0 → arrival=NOW. 모든 fire time ≤ NOW → 예약 안 됨.
     const zeroRoute: DirectRoute = makeDirectRoute(0, '2');
     await scheduleHopsForLock({ lock, route: zeroRoute, destinationName: '강남' });
     expect(mockedSchedule).not.toHaveBeenCalled();
@@ -510,6 +511,133 @@ describe('advanceHopWindow', () => {
     });
     // 매칭됐다면 hopIndex=0 cancel이 발생한다 — 매칭 실패였다면 no-op.
     expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:early:교대');
+  });
+});
+
+describe('#785 segment lookup 기반 timing', () => {
+  // 픽스처는 STOP_FALLBACK_SECONDS=120 사용 — 기존 uniform 90s 가정과 다름.
+  // 본 describe는 alarm 발사 시각이 route.secondsXxx(=getStopSeconds 누적 결과) 기반으로
+  // 산출되는지를 검증한다. ADR-008 Stage 3 estimator의 segment 누적값과 정렬됨을 보장.
+  function triggerMsByIdentifier(suffixMatcher: (id: string) => boolean): number {
+    const call = mockedSchedule.mock.calls.find((c) => {
+      const id = c[0].identifier ?? '';
+      return suffixMatcher(id);
+    });
+    if (!call) throw new Error('matching schedule call not found');
+    const trigger = call[0].trigger as { date: Date };
+    return trigger.date.getTime();
+  }
+
+  it('direct route: arrival = boardedAt + travelSeconds(누적), early lead = legSeconds/stops', async () => {
+    // directRoute(2 stops, travelSeconds=240): arrival = NOW + 240_000.
+    // early lead = 240/2 = 120s → fires at NOW + 120_000.
+    await scheduleHopsForLock({ lock, route: directRoute, destinationName: '강남' });
+    expect(triggerMsByIdentifier((id) => id.includes(':early:'))).toBe(NOW + 120_000);
+  });
+
+  it('direct route: imminent은 45s 고정 lead', async () => {
+    await scheduleHopsForLock({ lock, route: directRoute, destinationName: '강남' });
+    // arrival NOW+240_000 − 45_000 = NOW+195_000.
+    expect(triggerMsByIdentifier((id) => id.includes(':imminent:'))).toBe(NOW + 195_000);
+  });
+
+  it('transfer route: hop[1] arrival = secondsToTransfer + secondsFromTransfer', async () => {
+    // transferRoute: stopsToTransfer=2(240s), stopsFromTransfer=3(360s).
+    // hop[0] 교대: arrival=NOW+240_000, lead=120s → fires NOW+120_000.
+    // hop[1] 오금: arrival=NOW+600_000, lead=360/3=120s → fires NOW+480_000.
+    await scheduleHopsForLock({ lock, route: transferRoute, destinationName: '오금' });
+    expect(triggerMsByIdentifier((id) => id.endsWith(':교대') && id.includes(':early:'))).toBe(
+      NOW + 120_000,
+    );
+    expect(triggerMsByIdentifier((id) => id.endsWith(':오금') && id.includes(':early:'))).toBe(
+      NOW + 480_000,
+    );
+  });
+
+  it('transfer route: leg 별 secondsPerStop이 다르면 lead도 다름', async () => {
+    // 의도적으로 leg별 비대칭. stops=2/3 + seconds=200/600 → leg avg = 100s / 200s.
+    const skewedTransfer = makeTransferRoute({
+      transferName: '교대',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 2,
+      stopsFromTransfer: 3,
+    });
+    skewedTransfer.secondsToTransfer = 200;
+    skewedTransfer.secondsFromTransfer = 600;
+    await scheduleHopsForLock({ lock, route: skewedTransfer, destinationName: '오금' });
+    // hop[0]: arrival = NOW + 200_000. lead = 200/2 = 100s → fires NOW+100_000.
+    expect(triggerMsByIdentifier((id) => id.endsWith(':교대') && id.includes(':early:'))).toBe(
+      NOW + 100_000,
+    );
+    // hop[1]: arrival = NOW + 800_000. lead = 600/3 = 200s → fires NOW+600_000.
+    expect(triggerMsByIdentifier((id) => id.endsWith(':오금') && id.includes(':early:'))).toBe(
+      NOW + 600_000,
+    );
+  });
+
+  it('multi-transfer: 각 leg 누적 + leg별 lead 적용', async () => {
+    // multiRoute targets: 교대(2,240s), 약수(2,240s), 한강진(1,120s), 온수(2,240s). window=3.
+    await scheduleHopsForLock({ lock, route: multiRoute, destinationName: '온수' });
+    // 교대: arrival NOW+240k, lead 120s → NOW+120k.
+    expect(triggerMsByIdentifier((id) => id.endsWith(':교대') && id.includes(':early:'))).toBe(
+      NOW + 120_000,
+    );
+    // 약수: arrival NOW+480k, lead 120s → NOW+360k.
+    expect(triggerMsByIdentifier((id) => id.endsWith(':약수') && id.includes(':early:'))).toBe(
+      NOW + 360_000,
+    );
+    // 한강진: arrival NOW+600k, lead 120s(1 hop이라 leg 전체) → NOW+480k.
+    expect(triggerMsByIdentifier((id) => id.endsWith(':한강진') && id.includes(':early:'))).toBe(
+      NOW + 480_000,
+    );
+  });
+
+  it('multi-transfer: transferName === destinationName 케이스 첫 leg만 사용', async () => {
+    // 목적지가 첫 환승역과 같으면 targets는 첫 환승역 하나만 — secondsToTransfer 적용.
+    const collapsedMulti = makeMultiTransferRoute({
+      transfers: [
+        { transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 2 },
+        { transferName: '약수', fromLine: '3', toLine: '6', stopsToTransfer: 2 },
+      ],
+      stopsAfterLastTransfer: 0,
+    });
+    await scheduleHopsForLock({ lock, route: collapsedMulti, destinationName: '교대' });
+    // hop[0] 교대(목적지): arrival = NOW + 240_000, lead 120s → NOW+120_000.
+    expect(triggerMsByIdentifier((id) => id.endsWith(':교대') && id.includes(':early:'))).toBe(
+      NOW + 120_000,
+    );
+  });
+
+  it('stops=0 leg은 lead가 HOP_TIME_MS(90s)로 fallback (division-by-zero 방지)', async () => {
+    // arrival>0 + stops=0인 경계 케이스(collapsed transfer + legSeconds>0)로 fallback 분기를
+    // 실제로 트리거해서 lead=HOP_TIME_MS(=90_000)임을 fire time으로 단언.
+    // legSeconds=120 → arrival=NOW+120_000. early lead=90_000 → fires NOW+30_000.
+    const collapsedZeroStops = makeTransferRoute({
+      transferName: '교대',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 0,
+      stopsFromTransfer: 0,
+    });
+    collapsedZeroStops.secondsToTransfer = 120;
+    await scheduleHopsForLock({ lock, route: collapsedZeroStops, destinationName: '교대' });
+    expect(triggerMsByIdentifier((id) => id.includes(':early:'))).toBe(NOW + 30_000);
+  });
+
+  it('advanceHopWindow도 새 timing(누적 secondsXxx)로 예약', async () => {
+    mockedGet.mockResolvedValueOnce([]);
+    await advanceHopWindow({
+      lock,
+      route: multiRoute,
+      destinationName: '온수',
+      passedStationName: '교대',
+    });
+    // 교대(0) 통과 → 약수(1)/한강진(2)/온수(3) 예약. 온수 arrival = 240+240+120+240 = 840s.
+    // lead 120s → fires NOW+720_000.
+    expect(triggerMsByIdentifier((id) => id.endsWith(':온수') && id.includes(':early:'))).toBe(
+      NOW + 720_000,
+    );
   });
 });
 
