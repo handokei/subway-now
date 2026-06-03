@@ -8,6 +8,9 @@
  *
  * 노선별 종착역(첫/마지막 역)을 stations.json에서 데이터 주도로 추출해 라인 전체를 한 곳에 모아
  * 검증한다. 새 노선이 stations.json에 추가되면 해당 노선 fixture가 자동 포함된다.
+ *
+ * 중복 차단: 동일 패턴(라인별 정/역/전구간, ko/en fallback)은 it.each(scenario × line) 단일 루프로
+ * 통합해 SonarCloud CPD를 회피한다.
  */
 
 import i18next from 'i18next';
@@ -29,19 +32,13 @@ interface LineTerminals {
   line: LineNumber;
   first: Station;
   last: Station;
-  count: number;
 }
 
 // 라인별 첫/마지막 역(종착 fixture) 계산. getStationsOnLine은 id 기준 정렬을 보장한다
-// (stationRoute.test.ts의 별도 describe에서 검증됨).
+// (stationRoute.test.ts 별도 describe에서 검증됨).
 const lineTerminals: LineTerminals[] = LINES.map((line) => {
   const stations = getStationsOnLine(line);
-  return {
-    line,
-    first: stations[0],
-    last: stations[stations.length - 1],
-    count: stations.length,
-  };
+  return { line, first: stations[0], last: stations[stations.length - 1] };
 });
 
 describe('#807 — buildDirectionMeta 전 노선 종착 라벨 → "<next>방면" 통일', () => {
@@ -56,7 +53,7 @@ describe('#807 — buildDirectionMeta 전 노선 종착 라벨 → "<next>방면
       '$line 노선: 마지막 종착 라벨로 진입해도 다음역방면만',
       async ({ first, last }) => {
         await i18next.changeLanguage('ko');
-        // 양 방향 종착 라벨로 가정해도 nextStationLabel="중곡"이면 항상 "중곡방면"
+        // 양 종착 라벨 모두 nextStationLabel="중곡"이면 일관된 "중곡방면"
         expect(buildDirectionMeta(`${first.name}행`, '중곡', allStations)).toBe('중곡방면');
         expect(buildDirectionMeta(`${last.name}행`, '중곡', allStations)).toBe('중곡방면');
       },
@@ -78,24 +75,19 @@ describe('#807 — buildDirectionMeta 전 노선 종착 라벨 → "<next>방면
 
   describe('데이터에 없는 종착 표기(상일동/하남검단산 등)도 next만 살아남음', () => {
     // 운영상 들어오지만 stations.json에 미반영된 종착도 다음역방면만 표시되므로 영향 없음.
-    const operationalTerminalsNotInData = [
-      '상일동행',
-      '하남검단산행',
-      '신창행',
-      '연천행',
-      '석남행',
-      '진접행',
-      '별내행',
-      '서동탄행',
-      '병점행',
-    ];
-
-    it.each(operationalTerminalsNotInData)(
-      '"%s" + next="중곡" → "중곡방면"',
-      (destination) => {
-        expect(buildDirectionMeta(destination, '중곡', allStations)).toBe('중곡방면');
-      },
-    );
+    it.each([
+      ['상일동행'],
+      ['하남검단산행'],
+      ['신창행'],
+      ['연천행'],
+      ['석남행'],
+      ['진접행'],
+      ['별내행'],
+      ['서동탄행'],
+      ['병점행'],
+    ])('"%s" + next="중곡" → "중곡방면"', (destination) => {
+      expect(buildDirectionMeta(destination, '중곡', allStations)).toBe('중곡방면');
+    });
   });
 
   describe('순환선: 종착 정보 없어도 다음역방면 OK', () => {
@@ -108,20 +100,14 @@ describe('#807 — buildDirectionMeta 전 노선 종착 라벨 → "<next>방면
   });
 
   describe('다국어 통일 — next 표기만 i18n 변환', () => {
-    it.each<[LineNumber, string]>([
-      ['1', 'en'],
-      ['5', 'en'],
-      ['7', 'ja'],
-      ['9', 'zh'],
-    ])('$line 노선 / lang=$1: terminal과 무관하게 next만 i18n 표기', async (line, lang) => {
+    it.each<[LineNumber, 'en' | 'ja' | 'zh', string]>([
+      ['1', 'en', 'via 다음역'],
+      ['5', 'en', 'via 다음역'],
+      ['7', 'ja', '다음역方面'],
+      ['9', 'zh', '다음역方向'],
+    ])('$line 노선 / lang=$1: terminal과 무관하게 next만 i18n 표기', async (line, lang, expected) => {
       await i18next.changeLanguage(lang);
       const { first, last } = lineTerminals.find((t) => t.line === line)!;
-      const expectedTemplate: Record<string, string> = {
-        en: 'via 다음역',
-        ja: '다음역方面',
-        zh: '다음역方向',
-      };
-      const expected = expectedTemplate[lang];
       expect(buildDirectionMeta(`${first.name}행`, '다음역', allStations)).toBe(expected);
       expect(buildDirectionMeta(`${last.name}행`, '다음역', allStations)).toBe(expected);
     });
@@ -131,84 +117,77 @@ describe('#807 — buildDirectionMeta 전 노선 종착 라벨 → "<next>방면
 describe('#807 — parseTrainLineDirection (종착 fallback 경로) 전 노선 검증', () => {
   // buildDirectionMeta가 nextStationLabel 미전달 시 fallback으로 호출하는 경로 — 환승 list 등에서
   // 진행 방향 미정일 때 종착 텍스트는 노출되므로 i18n 정규화가 정상 동작해야 함.
+  // ko/en을 (lang × line) 단일 it.each로 통합해 동일 어셈블리/어설션 블록 중복을 차단(CPD).
   afterEach(async () => {
     await i18next.changeLanguage('ko');
   });
 
-  describe('ko: 종착역 라벨은 한글 원본 그대로', () => {
-    it.each(lineTerminals)('$line', async ({ first, last }) => {
-      await i18next.changeLanguage('ko');
-      const firstLabel = `${first.name}행`;
-      const lastLabel = `${last.name}행`;
-      expect(parseTrainLineDirection(firstLabel, allStations)).toBe(firstLabel);
-      expect(parseTrainLineDirection(lastLabel, allStations)).toBe(lastLabel);
-    });
-  });
+  // expected 계산은 lang별 한 줄 분기. lang 추가 시 표만 확장하면 됨.
+  function expectedTerminal(label: string, station: Station, lang: 'ko' | 'en'): string {
+    if (lang === 'ko') return `${label}행`;
+    const en = station.nameEn ?? station.name;
+    return `Bound for ${en}`;
+  }
 
-  describe('en: 종착역 라벨은 nameEn으로 i18n 정규화', () => {
-    it.each(lineTerminals)('$line', async ({ first, last }) => {
-      await i18next.changeLanguage('en');
-      // stations.json의 모든 운영 역은 nameEn을 갖는다. 비어있으면 한글 fallback이 stationDisplay에서 동작.
-      const firstEn = first.nameEn ?? first.name;
-      const lastEn = last.nameEn ?? last.name;
+  const langs = ['ko', 'en'] as const;
+  const langLineCases = langs.flatMap((lang) =>
+    lineTerminals.map((t) => ({ lang, ...t })),
+  );
+
+  it.each(langLineCases)(
+    'lang=$lang / line=$line 첫·마지막 종착 라벨 i18n 정규화',
+    async ({ lang, first, last }) => {
+      await i18next.changeLanguage(lang);
       expect(parseTrainLineDirection(`${first.name}행`, allStations)).toBe(
-        `Bound for ${firstEn}`,
+        expectedTerminal(first.name, first, lang),
       );
       expect(parseTrainLineDirection(`${last.name}행`, allStations)).toBe(
-        `Bound for ${lastEn}`,
+        expectedTerminal(last.name, last, lang),
       );
-    });
-  });
+    },
+  );
 
   describe('신분당선 광교(경기대)행 — 괄호 별칭 종착', () => {
-    it('ko: 원본 그대로', async () => {
-      await i18next.changeLanguage('ko');
-      expect(parseTrainLineDirection('광교(경기대)행', allStations)).toBe('광교(경기대)행');
-    });
-
-    it('en: 정확 매칭으로 nameEn="Gwanggyo" 변환', async () => {
-      await i18next.changeLanguage('en');
-      expect(parseTrainLineDirection('광교(경기대)행', allStations)).toBe(
-        'Bound for Gwanggyo',
-      );
+    it.each<['ko' | 'en', string]>([
+      ['ko', '광교(경기대)행'],
+      ['en', 'Bound for Gwanggyo'],
+    ])('lang=%s → "%s"', async (lang, expected) => {
+      await i18next.changeLanguage(lang);
+      expect(parseTrainLineDirection('광교(경기대)행', allStations)).toBe(expected);
     });
   });
 });
 
 describe('#807 — getNextStationName 전 노선 DirectRoute fixture', () => {
-  // 라인별 첫 역→두 번째 역(정방향), 마지막 역→끝에서 두 번째(역방향), 첫→마지막 종착 트립을
-  // 검증. 5호선 방화→마천 같은 전 구간 트립에서 첫 hop이 두 번째 역을 정확히 짚는지 가드.
+  // 정방향(첫→두 번째), 역방향(마지막→끝에서 두 번째), 전 구간 트립(첫→마지막)을 한 it.each로
+  // 통합. caseBuilder는 라인 stations에서 시나리오별 (from, to, expected)를 추출 — 중복 블록 제거.
+  type Scenario = '정방향' | '역방향' | '전구간트립';
+  const scenarios: Scenario[] = ['정방향', '역방향', '전구간트립'];
 
-  describe('정방향: 첫 역 → 두 번째 역 (라인별)', () => {
-    it.each(lineTerminals)('$line', ({ line }) => {
-      const stations = getStationsOnLine(line);
-      const first = stations[0];
-      const second = stations[1];
-      const route = findRoute(first.id, second.id);
-      expect(route).not.toBeNull();
-      expect(getNextStationName(first.id, second.id, route)).toBe(second.name);
-    });
-  });
+  function buildCase(line: LineNumber, scenario: Scenario): {
+    from: Station;
+    to: Station;
+    expected: string;
+  } {
+    const stations = getStationsOnLine(line);
+    const first = stations[0];
+    const second = stations[1];
+    const last = stations[stations.length - 1];
+    const beforeLast = stations[stations.length - 2];
+    if (scenario === '정방향') return { from: first, to: second, expected: second.name };
+    if (scenario === '역방향') return { from: last, to: beforeLast, expected: beforeLast.name };
+    // 전구간트립: 첫→마지막 트립의 첫 hop은 두 번째 역.
+    return { from: first, to: last, expected: second.name };
+  }
 
-  describe('역방향: 마지막 역 → 끝에서 두 번째 역 (라인별)', () => {
-    it.each(lineTerminals)('$line', ({ line }) => {
-      const stations = getStationsOnLine(line);
-      const last = stations[stations.length - 1];
-      const beforeLast = stations[stations.length - 2];
-      const route = findRoute(last.id, beforeLast.id);
-      expect(route).not.toBeNull();
-      expect(getNextStationName(last.id, beforeLast.id, route)).toBe(beforeLast.name);
-    });
-  });
+  const cases = scenarios.flatMap((scenario) =>
+    lineTerminals.map((t) => ({ scenario, line: t.line })),
+  );
 
-  describe('전 구간 종착 트립: 첫 역 → 마지막 역 (라인별)', () => {
-    it.each(lineTerminals)('$line: 첫 hop은 두 번째 역', ({ line }) => {
-      const stations = getStationsOnLine(line);
-      const first = stations[0];
-      const last = stations[stations.length - 1];
-      const route = findRoute(first.id, last.id);
-      expect(route).not.toBeNull();
-      expect(getNextStationName(first.id, last.id, route)).toBe(stations[1].name);
-    });
+  it.each(cases)('scenario=$scenario / line=$line', ({ scenario, line }) => {
+    const { from, to, expected } = buildCase(line, scenario);
+    const route = findRoute(from.id, to.id);
+    expect(route).not.toBeNull();
+    expect(getNextStationName(from.id, to.id, route)).toBe(expected);
   });
 });
