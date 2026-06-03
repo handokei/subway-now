@@ -884,16 +884,10 @@ export default function HomeScreen() {
       </ScrollView>
 
       {alarmEvent && (
-        <AlarmOverlay
-          event={alarmEvent}
-          onDismiss={clearAlarmEvent}
-          // #633: 도착 알람 dismiss 시 trip 종료. lock release + destination clear.
-          // 환승 알람은 AlarmOverlay 내부에서 trip 유지하며 진동만 정지.
-          onEndTrip={() => {
-            releaseBoardingLock();
-            setDestination(null);
-          }}
-        />
+        // #806: dismiss는 알람 UI/진동만 끄고 trip(BoardingLock)은 유지.
+        // 한 정거장 전(early) destination 알람을 끄면 trip이 종료되던 회귀의 fix.
+        // trip release는 도착 자동 release(useBoardingLockAutoRelease, #759)에 위임한다.
+        <AlarmOverlay event={alarmEvent} onDismiss={clearAlarmEvent} />
       )}
 
       <DestinationPicker

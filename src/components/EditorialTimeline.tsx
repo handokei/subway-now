@@ -205,10 +205,12 @@ const styles = StyleSheet.create({
     position: 'relative',
     gap: spacing.md,
   },
-  markerCol: { width: 28, alignItems: 'flex-start', paddingLeft: 7 },
+  // #804 — dot 폭(10/12/7px)이 종류별로 달라도 markerCol(width 28) center에 자동 정렬되도록
+  // alignItems: 'center'. connector(width 1)도 같은 center(left 14)에 두면 dot/connector 어긋남 없음.
+  markerCol: { width: 28, alignItems: 'center' },
   connector: {
     position: 'absolute',
-    left: 13,
+    left: 14,
     top: 18,
     bottom: -6,
     width: 1,
@@ -216,7 +218,7 @@ const styles = StyleSheet.create({
   dot:     { width: 10, height: 10, borderRadius: 5 },
   dotRing: { width: 12, height: 12, borderRadius: 6, borderWidth: 2 },
   dotDest: { width: 12, height: 12, borderRadius: 6 },
-  dotIntermediate: { width: 7, height: 7, borderRadius: 4, borderWidth: 1, marginLeft: 1.5 },
+  dotIntermediate: { width: 7, height: 7, borderRadius: 4, borderWidth: 1 },
   rowIntermediate: { minHeight: 30 },
   hopSlot: {
     paddingLeft: 28 + spacing.md, // markerCol 폭 + 행 gap — slot이 station label과 좌측 정렬되도록

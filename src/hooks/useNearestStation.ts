@@ -12,6 +12,7 @@ import {
   isPlausibleJump,
   type FixSample,
 } from '../utils/locationGates';
+import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY } from '../constants/location';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../constants/e2e';
 import { createLogger } from '../utils/logger';
@@ -187,15 +188,34 @@ export function useNearestStation(): UseNearestStationReturn {
       }
       setPermissionDenied(false);
 
-      // 캐시된 위치는 신선하고 알람 엄격 게이트(200m)를 통과하는 경우만 즉시 표시.
-      // 콜드 스타트 시 부정확한 fix로 사용자에게 오정보를 주는 것을 방지.
+      // #808: 캐시 위치 hydrate 정책 — cold start 빈 화면 회피 + 잘못된 라우팅 방지.
+      //
+      // freshness 게이트(MAX_LOCATION_AGE_MS=15s)는 항상 유지 — stale 좌표로 hydrate하면
+      // 사용자가 이미 이동한 뒤일 수 있어 위험.
+      //
+      // accuracy 게이트는 **표시 게이트(MAX_ACCURACY_M_DISPLAY=250m)**까지 허용:
+      //   - 알람 엄격(200m) 통과 → applyLocation 정상 경로 (uncertain=false)
+      //   - 알람 엄격 초과 + 표시 통과 (200~250m) → result만 hydrate + uncertain=true
+      //     (cold start 빈 화면 회피 — UI는 "위치 확인 중" + 추정 역 표시)
+      //   - 표시 게이트 초과 → 진단 로그 + 무시 (오정보 방지)
+      // watch가 fresh fix를 보내면 uncertain이 false로 복귀하며 정정 가능.
+      // 사용자 정책 "실시간성 우선, 나쁜 좌표 거부"와 일치 — 250m도 거부, 그 이하만 hydrate.
       const lastKnown = await Location.getLastKnownPositionAsync();
       if (lastKnown) {
         const fresh = isLocationFresh(lastKnown.timestamp);
-        const acceptable = isAccuracyAcceptable(lastKnown.coords.accuracy);
-        if (fresh && acceptable) {
+        const strictlyAcceptable = isAccuracyAcceptable(lastKnown.coords.accuracy);
+        const displayAcceptable = isAccuracyAcceptableForDisplay(lastKnown.coords.accuracy);
+        if (fresh && strictlyAcceptable) {
           applyLocation(lastKnown.coords, lastKnown.timestamp);
           setLoading(false);
+        } else if (fresh && displayAcceptable) {
+          // cold start 완화 hydrate — result는 채우되 uncertain=true로 신뢰도 표시.
+          applyLocation(lastKnown.coords, lastKnown.timestamp);
+          setLocationUncertain(true);
+          setLoading(false);
+          logger.info('lastKnown coldStart hydrate: uncertain', {
+            accuracyMeters: lastKnown.coords.accuracy,
+          });
         } else if (!fresh) {
           lastKnownStaleCountRef.current += 1;
           logger.info('lastKnown rejected: stale', {

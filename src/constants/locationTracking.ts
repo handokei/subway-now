@@ -12,6 +12,15 @@ const TRACKING_TIME_INTERVAL_MS = 30_000;
 // - `pausesUpdatesAutomatically: false`: iOS의 stationary 오판으로 인한 업데이트 중단 차단.
 // - `activityType: AutomotiveNavigation`: iOS가 GPS를 가장 공격적으로 유지하도록 차량 내비 프로필 사용.
 // - `deferredUpdatesInterval` 미설정: 백그라운드 batching 비활성화 (회귀 가드 #189).
+//
+// #808 — `accuracy: High` 유지 결정 (BestForNavigation 미채택):
+//   BestForNavigation은 GPS-only로 ~5m 정확도를 노리지만 fallback이 없다. 지하철 사용자는
+//   지하/터널 비중이 크고 GPS lock이 끊기는 환경 → BestForNavigation은 fix 자체를 못 얻는
+//   구간이 길어진다. High는 GPS lock 실패 시 WiFi BSSID / Cell tower triangulation으로
+//   fallback해 50~100m fix를 계속 흘려보낸다(useFusedNearestStation에서 realtimePosition fusion이
+//   GPS 부정확도를 보정 — 표시는 가능, 알람은 별도 엄격 게이트로 차단). 배터리 영향도 BestForNavigation
+//   대비 낮다. 본 앱은 차량 내비가 아니라 지하철 추적이므로 정확도 vs 배터리 vs 지하 가용성 균형이
+//   High가 최적.
 export const LOCATION_TRACKING_OPTIONS = {
   accuracy: Location.Accuracy.High,
   activityType: Location.LocationActivityType.AutomotiveNavigation,

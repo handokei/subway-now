@@ -13,14 +13,9 @@ const allStations = stationsData as Station[];
 interface AlarmOverlayProps {
   event: AlarmEvent;
   onDismiss: () => void;
-  /**
-   * 도착 알람 dismiss 시 호출 — trip 종료 처리(lock release + destination clear).
-   * 환승 알람 dismiss는 trip 유지이므로 호출 안 함.
-   */
-  onEndTrip: () => void;
 }
 
-export function AlarmOverlay({ event, onDismiss, onEndTrip }: AlarmOverlayProps) {
+export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
   const isTransfer = event.type === 'transfer';
   const { t } = useTranslation();
   const title = t(isTransfer ? 'alarmOverlay.transferTitle' : 'alarmOverlay.arrivalTitle');
@@ -29,20 +24,22 @@ export function AlarmOverlay({ event, onDismiss, onEndTrip }: AlarmOverlayProps)
   });
   const { colors } = useTheme();
 
-  // #741: dismiss UX 단순화 — 단일 버튼 + 통일 라벨("알람 끄기").
-  // 동작은 알람 종류별로 분기 유지:
-  //  - transfer: trip 유지. clearAlarmNotification만. 후속 도착 알람은 계속.
-  //  - destination: trip 종료. killAllAlarms + onEndTrip.
-  // Android 백 버튼/스와이프(onRequestClose)도 같은 분기를 따른다.
-  // 보조 버튼("이 알람만 끄기")은 #673에서 도입했으나 destination/lock을 건드리지 않아
-  // 다음 평가 사이클에 재발화 → 진동 재발생 회귀가 있어 제거. 미스파이어 root cause는
-  // ADR-008 #739, 정적 misfire 가드(#727/#733), 알람 misfire 큐(#370~#373)에서 처리.
+  // #806: dismiss는 알람 UI/진동만 끄고 trip(BoardingLock)은 절대 release하지 않는다.
+  //   한 정거장 전(early) destination 알람을 끄면 trip이 종료되던 회귀의 fix.
+  //   trip release는 도착역 station-passed 또는 자동 하차(useBoardingLockAutoRelease, #759)가
+  //   감지한 시점에만 트리거 — dismiss는 그 라이프사이클에 관여하지 않는다.
+  //
+  // 분기는 알람 종류별로 후속 알람 정리 범위만 다르다:
+  //  - transfer: clearAlarmNotification만 — 후속 도착 알람(예약/발사 예정)을 보존.
+  //  - destination: killAllAlarms — 같은 도착역 후속 phase(imminent 등) 예약을 함께 차단,
+  //    같은 trip 안에서 도착 알람을 재발사하지 않도록.
+  //
+  // Android 백 버튼/스와이프(onRequestClose)도 동일 분기.
   const handleDismiss = async () => {
     if (isTransfer) {
       await clearAlarmNotification();
     } else {
       await killAllAlarms();
-      onEndTrip();
     }
     onDismiss();
   };
