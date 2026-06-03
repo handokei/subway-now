@@ -70,6 +70,24 @@ export interface RegisterTripPayload {
    * default OFF로 해석. dedup hash에는 반드시 포함해 토글 변경이 즉시 재등록되도록 한다.
    */
   locklessStationPassed?: boolean;
+  /**
+   * #819 — boarding-prompt 9단 게이트 평가에 필요한 출발역/다음역 좌표.
+   * lockMissing trip에 대해 backend가 평가 — 좌표 부재 시 backend는 자동 skip.
+   */
+  promptGeoContext?: {
+    origin: { lat: number; lng: number };
+    nextStation: { lat: number; lng: number };
+    /** 출발역에서 trip 방향 (Seoul API의 isUp과 정합). 모르면 null — 양방향 허용. */
+    direction: 'up' | 'down' | null;
+  };
+  /**
+   * #819 — boarding-prompt push 본문에 노출할 출발역/노선 표시명.
+   * 좌표(promptGeoContext)와 짝으로 보내야 backend가 평가 결과 push를 빌드할 수 있다.
+   */
+  promptDisplay?: {
+    originStation: string;
+    line: string;
+  };
 }
 
 export interface AlarmBackendResult {
@@ -123,6 +141,7 @@ function buildRegisterHash(body: {
   apnsEnv: ApnsEnv;
   boardingLock?: AlarmBoardingLock;
   locklessStationPassed?: boolean;
+  promptDisplay?: { originStation: string; line: string };
 }): string {
   return JSON.stringify({
     token: body.token,
@@ -139,6 +158,12 @@ function buildRegisterHash(body: {
     // #816 C — 토글 변경 즉시 backend로 전달되도록 dedup key에 포함.
     // undefined와 false를 다르게 다루지 않는다 — 둘 다 OFF 동일 효과.
     locklessStationPassed: body.locklessStationPassed === true,
+    // #819 — promptDisplay(출발역/라인)가 바뀌면 backend가 보내는 push 본문이 달라지므로 dedup 키 일부.
+    // 좌표(promptGeoContext)는 GPS jitter로 매번 약간씩 흔들리므로 hash에 안 넣어 폭주 방지 — backend가
+    // 게이트 평가 시점에 KV series로 자체 계산하니 영향 없음.
+    promptDisplayKey: body.promptDisplay
+      ? `${body.promptDisplay.originStation}|${body.promptDisplay.line}`
+      : null,
   });
 }
 
@@ -184,6 +209,9 @@ async function performRegisterFetch(
     ...(payload.boardingLock ? { boardingLock: payload.boardingLock } : {}),
     // #816 C — 토글 ON일 때만 송신. OFF/미설정은 필드 자체를 누락해 기존 trip schema 호환.
     ...(payload.locklessStationPassed === true ? { locklessStationPassed: true } : {}),
+    // #819 — boarding-prompt 평가 컨텍스트. 좌표/표시 둘 중 하나라도 없으면 backend는 자동 skip.
+    ...(payload.promptGeoContext ? { promptGeoContext: payload.promptGeoContext } : {}),
+    ...(payload.promptDisplay ? { promptDisplay: payload.promptDisplay } : {}),
   };
 
   try {
@@ -230,6 +258,7 @@ export function registerActiveTrip(
     apnsEnv: payload.apnsEnv,
     boardingLock: payload.boardingLock,
     locklessStationPassed: payload.locklessStationPassed,
+    promptDisplay: payload.promptDisplay,
   });
   if (hash === lastRegisteredHash) {
     return Promise.resolve({ ok: true, skipped: true });

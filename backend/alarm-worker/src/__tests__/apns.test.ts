@@ -1,9 +1,11 @@
 import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  BOARDING_PROMPT_CATEGORY,
   buildApnsJwt,
   resetApnsJwtCache,
   sendAlertPush,
+  sendBoardingPromptPush,
   sendLiveActivityUpdate,
   sendReschedulePush,
   sendSilentPush,
@@ -349,6 +351,66 @@ describe('sendLiveActivityUpdate (#586 C)', () => {
       activityToken: 't',
       contentState: {},
       event: 'update',
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ ok: false, status: 410, reason: 'BadDeviceToken' });
+  });
+});
+
+describe('sendBoardingPromptPush (#819)', () => {
+  beforeEach(() => resetApnsJwtCache());
+
+  it('alert push + category + data payload 송신', async () => {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const result = await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p1',
+      title: 'Are you on board?',
+      body: '2 · 강남',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok',
+      sentAt: 1234,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(result).toEqual({ ok: true, status: 200 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe(`https://${TEST_HOST}/3/device/device-hex`);
+    const headers = call[1].headers as Record<string, string>;
+    expect(headers['apns-push-type']).toBe('alert');
+    expect(headers['apns-priority']).toBe('10');
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.alert).toEqual({ title: 'Are you on board?', body: '2 · 강남' });
+    expect(body.aps.category).toBe(BOARDING_PROMPT_CATEGORY);
+    expect(body.aps.sound).toBe('default');
+    expect(body.data).toEqual({
+      pushId: 'p1',
+      kind: 'boarding-prompt',
+      originStation: '강남',
+      line: '2',
+      tripToken: 'tok',
+      sentAt: 1234,
+    });
+  });
+
+  it('non-OK 응답은 status/reason을 그대로 반환', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 410 }),
+    );
+    const result = await sendBoardingPromptPush({
+      deviceToken: 'device-hex',
+      pushId: 'p1',
+      title: 'T',
+      body: 'B',
+      originStation: 'O',
+      line: 'L',
+      tripToken: 't',
+      sentAt: 0,
       config: makeConfig(),
       host: TEST_HOST,
       fetchImpl: fetchImpl as unknown as typeof fetch,

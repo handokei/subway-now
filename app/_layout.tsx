@@ -20,6 +20,10 @@ import { registerScheduledAlarmListener } from '../src/utils/scheduledAlarmRecei
 import { cancelScheduledAlarms } from '../src/utils/alarmScheduler';
 import { unregisterAlarmRefreshTask } from '../src/tasks/alarmRefreshTask';
 import { stopVibration } from '../src/utils/alarmSound';
+import { setupBoardingPromptCategory } from '../src/utils/notificationCategory';
+import { useBoardingPromptResponder } from '../src/hooks/useBoardingPromptResponder';
+import { fetchArrivalInfo } from '../src/api/arrivalApi';
+import { FALLBACK_BOARDING_DURATION_MINUTES } from '../src/constants/boardingLock';
 
 const layoutLogger = createLogger('RootLayout');
 
@@ -28,6 +32,10 @@ setupNotificationHandler();
 // iOS silent push BG task 등록 — APNs payload 수신용.
 // 권한/플랫폼 미지원 시 내부에서 graceful no-op.
 registerSilentPushTask().catch((e) => layoutLogger.warn('silent push task 등록 실패:', e));
+// #819 — "탑승했냐?" 푸시의 BOARDING_PROMPT category 등록. 액션 [탑승]/[미탑승]을 노출.
+setupBoardingPromptCategory().catch((e) =>
+  layoutLogger.warn('boarding-prompt category 등록 실패(#819):', e),
+);
 // 사전 예약 alarm receiver는 잔존 예약 발사 시 FIRED_ALARMS 갱신만 담당.
 registerScheduledAlarmListener();
 // 부팅 시 1회 마이그레이션 — #478 PR 1-2 사전예약 폐기 시점:
@@ -62,7 +70,17 @@ function RootContent() {
   const loadLocalePreference = useAppStore((s) => s.loadLocalePreference);
   const debugVisible = useAppStore((s) => s.debugVisible);
   const setDebugVisible = useAppStore((s) => s.setDebugVisible);
+  const destinationId = useAppStore((s) => s.destination?.id ?? null);
   const { i18n: i18nInstance } = useTranslation();
+
+  // #819 — "탑승했냐?" 응답 listener. boarding-prompt 카테고리 푸시의 [탑승]/[미탑승] 또는 탭을 받아
+  // arvlCd 우선순위로 trainCode 자동 lock 또는 5분 silence POST. 미bound trip(destinationId=null)에서도
+  // 마운트 — payload만 들어오면 silence POST는 동작.
+  useBoardingPromptResponder({
+    fetchArrivalsForStation: (stationName) => fetchArrivalInfo(stationName),
+    destinationId,
+    expectedDurationMs: FALLBACK_BOARDING_DURATION_MINUTES * 60_000,
+  });
 
   useEffect(() => {
     loadLocalePreference();

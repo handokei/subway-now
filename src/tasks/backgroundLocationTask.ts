@@ -4,11 +4,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { processLocationUpdate } from '../utils/stationPipeline';
 import { alarmKey } from '../utils/stationAlarm';
 import { createLogger } from '../utils/logger';
-import { DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
+import { APNS_TOKEN_KEY, DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../constants/storageKeys';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 import { isAccuracyAcceptable, isLocationFresh, isPlausibleJump, type FixSample } from '../utils/locationGates';
 import { logSuppressedGate } from '../utils/alarmLog';
 import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY } from '../constants/storageKeys';
+import { uploadPosition, type PositionMotion } from '../api/positionUpload';
+import { getCurrentMotionStationary } from '../utils/motionActivity';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
 
@@ -110,6 +112,25 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       return;
     }
     await AsyncStorage.setItem(BG_LAST_FIX_KEY, JSON.stringify(currFix));
+
+    // #819 — backend로 단일 좌표 + Motion sample 송신. backend가 KV에 60s ring buffer로 누적해
+    // boarding-prompt 9단 게이트(ADR Section 2)에 사용. APNs token 부재 시 skip (서버측 series는
+    // device token으로 키되므로 token 없으면 적재 불가). graceful fire-and-forget — 송신 실패는
+    // 본 BG task 흐름에 영향 없음 (#640: zero trip = zero push 정책은 그대로, 좌표 누락은 게이트
+    // 통과 못 하게 만들 뿐).
+    const apnsToken = await AsyncStorage.getItem(APNS_TOKEN_KEY).catch(() => null);
+    if (apnsToken) {
+      const motion: PositionMotion = getCurrentMotionStationary() ? 'stationary' : 'unknown';
+      void uploadPosition({
+        token: apnsToken,
+        lat,
+        lng,
+        accuracy: accuracy ?? 0,
+        ts: latest.timestamp,
+        motion,
+      });
+    }
+
     // destinationId scoped — 이전 trip의 stale entry는 빈 set으로 반환된다(#462).
     const firedAlarms = await getFiredAlarms(destination.id);
     const storedRoute: Route = routeJson ? JSON.parse(routeJson) : null;
