@@ -105,3 +105,8 @@ export function getLastFiredAlarmStationName(): Promise<string | null> {
 export function setLastFiredAlarmStationName(name: string): Promise<void> {
   return safeSetItem(LAST_FIRED_ALARM_STATION_NAME_KEY, name);
 }
+
+/** #799: trip 종료/전환 시 호출. 사전 예약 alarm state는 trip-bound. */
+export function clearLastFiredAlarmStationName(): Promise<void> {
+  return safeRemoveItem(LAST_FIRED_ALARM_STATION_NAME_KEY);
+}

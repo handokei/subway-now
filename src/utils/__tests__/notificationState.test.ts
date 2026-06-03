@@ -8,6 +8,7 @@ import {
   clearFiredAlarms,
   getLastFiredAlarmStationName,
   setLastFiredAlarmStationName,
+  clearLastFiredAlarmStationName,
 } from '../notificationState';
 import {
   LAST_NOTIFIED_STATION_KEY,
@@ -192,6 +193,19 @@ describe('notificationState', () => {
       (AsyncStorage.setItem as jest.Mock).mockResolvedValueOnce(undefined);
       await setLastFiredAlarmStationName('시청');
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(LAST_FIRED_ALARM_STATION_NAME_KEY, '시청');
+    });
+  });
+
+  describe('clearLastFiredAlarmStationName (#799)', () => {
+    it('AsyncStorage에서 LAST_FIRED_ALARM_STATION_NAME_KEY를 삭제한다', async () => {
+      (AsyncStorage.removeItem as jest.Mock).mockResolvedValueOnce(undefined);
+      await clearLastFiredAlarmStationName();
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith(LAST_FIRED_ALARM_STATION_NAME_KEY);
+    });
+
+    it('AsyncStorage 오류도 swallow', async () => {
+      (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('boom'));
+      await expect(clearLastFiredAlarmStationName()).resolves.toBeUndefined();
     });
   });
 

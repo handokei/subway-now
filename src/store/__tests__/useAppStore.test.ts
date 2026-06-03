@@ -400,20 +400,73 @@ describe('useAppStore', () => {
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:active-trip');
   });
 
-  it('setDestination(#702): 같은 목적지 재설정 시에는 부수 storage를 건드리지 않는다', () => {
+  // clearFiredPushIds는 firedPushIds 모듈의 write queue를 통과 — microtask flush 후 검증.
+  async function flushMicrotasks(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  // #799: switch와 null 두 경로가 동일한 trip-bound cleanup을 트리거하므로 it.each로 통합
+  // (SonarCloud CPD duplication 차단; #788/#795와 동일한 접근).
+  it.each<[string, 'switch' | 'null']>([
+    ['switch', 'switch'],
+    ['null clear', 'null'],
+  ])('setDestination(#799): %s 시 silent push/알람 trip-bound state 정리', async (_, transition) => {
     const { setDestination } = useAppStore.getState();
     setDestination(mockStation);
     jest.clearAllMocks();
 
-    // 동일 station id 재설정 — switch 아님
+    setDestination(transition === 'switch' ? mockStation2 : null);
+    await flushMicrotasks();
+
+    for (const key of [
+      'subway-now:last-notified-station',
+      'subway-now:last-fired-alarm-station-name',
+      'subway-now:fired-push-ids',
+      'subway-now:trip-train-code',
+      'subway-now:alarm-event',
+    ]) {
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith(key);
+    }
+  });
+
+  it('setDestination(#799): switch 시 alarmEvent 메모리 state도 null로 동기화', () => {
+    const { setDestination, setAlarmEvent } = useAppStore.getState();
+    setDestination(mockStation);
+    setAlarmEvent({ phaseId: 'early', type: 'destination', stationName: '시청' });
+    expect(useAppStore.getState().alarmEvent).not.toBeNull();
+
+    setDestination(mockStation2);
+
+    expect(useAppStore.getState().alarmEvent).toBeNull();
+  });
+
+  it('setDestination(#702/#799): 같은 목적지 재설정 시에는 trip-bound storage 전부 유지', () => {
+    const { setDestination } = useAppStore.getState();
+    setDestination(mockStation);
+    jest.clearAllMocks();
+
+    // 동일 station id 재설정 — switch 아님 → 모든 trip-bound cleanup 건너뜀.
     setDestination(mockStation);
 
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:custom-origin');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:boarding-lock');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:scheduled-notifications');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:active-trip');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:fired-alarms');
-    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:route');
+    for (const key of [
+      // #702 부수 storage
+      'subway-now:custom-origin',
+      'subway-now:boarding-lock',
+      'subway-now:scheduled-notifications',
+      'subway-now:active-trip',
+      'subway-now:fired-alarms',
+      'subway-now:route',
+      // #799 silent push/알람 state
+      'subway-now:last-notified-station',
+      'subway-now:last-fired-alarm-station-name',
+      'subway-now:fired-push-ids',
+      'subway-now:trip-train-code',
+      'subway-now:alarm-event',
+    ]) {
+      expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith(key);
+    }
   });
 
   it('setDestination(#702): switch 시 customOrigin 메모리 state도 null로 동기화', () => {
