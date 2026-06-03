@@ -227,7 +227,8 @@
   "direction": {
     "boundFor": "{{name}}행",
     "innerLoop": "내선순환",
-    "outerLoop": "외선순환"
+    "outerLoop": "외선순환",
+    "viaName": "{{name}}방면"
   },
   "source": {
     "positionTrain": "열차 데이터",

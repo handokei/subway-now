@@ -2,10 +2,14 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTheme, typography, spacing, radius } from '../theme';
 import { LineBadge } from './LineBadge';
 import type { ArrivalInfo } from '../api/arrivalApi';
-import type { LineNumber } from '../types/station';
+import type { LineNumber, Station } from '../types/station';
 import { formatClockTime } from '../utils/formatTime';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
+import { buildDirectionMeta } from '../utils/trainLineDirection';
 import { LINE_COLORS } from '../constants/lineColors';
+import stationsData from '../data/stations.json';
+
+const allStations = stationsData as Station[];
 
 /** row 좌측 호선 색 stripe 두께(#664). 시각적 구분을 헤더 외에도 row마다 즉시 인지 가능하게. */
 const LINE_STRIPE_WIDTH = 3;
@@ -46,9 +50,12 @@ interface Props {
  * #649: compact + nextStationLabel — Timeline hop slot 안에 inline 배치되는 형태 지원.
  *       compact 모드는 hop slot 안 inline이라 row borderRadius 없음(직각). stripe도 같은 정신으로
  *       직각 유지 — 일반 모드는 카드 radius와 어울리는 둥근 코너 stripe로 자연스럽게 처리됨.
- * #749: 2줄 row 레이아웃 — 첫째 줄 "{destination}행 · {nextStation}방면" (방면은 옵셔널),
- *       둘째 줄 "{index+1}번째 전 · {HH:mm} 도착 예정". 카운터는 호출자가 전달한 배열 순서를
- *       1-indexed로 변환. 같은 trainCode가 유지되는 동안 카운터 안정 → "같은 열차 지연" 신호.
+ * #749: 2줄 row 레이아웃 — 첫째 줄 "{종착}{방면?}" (방면은 옵셔널), 둘째 줄 "{거리} · {HH:mm} 도착 예정".
+ *       카운터는 호출자가 전달한 배열 순서를 1-indexed로 변환. 같은 trainCode가 유지되는 동안
+ *       카운터 안정 → "같은 열차 지연" 신호.
+ * #792: 종착 표기는 `parseTrainLineDirection`로 i18n 정규화한다 (기존 하드코딩 "행" 부착 제거).
+ *       종착에 이미 다음역 명이 포함된 경우(예: "어린이대공원(세종대)방면"+"어린이대공원") "방면"
+ *       접미사를 생략해 라벨 중복("…방면행 · …방면")을 차단한다.
  */
 export function BoardingTrainList({
   arrivals,
@@ -91,9 +98,7 @@ export function BoardingTrainList({
       )}
       {filteredArrivals.map((train, index) => {
         const unreachable = isUnreachable(train);
-        const metaText = nextStationLabel
-          ? `${train.destination}행 · ${nextStationLabel}방면`
-          : `${train.destination}행`;
+        const metaText = buildDirectionMeta(train.destination, nextStationLabel, allStations);
         const sequenceText = `${index + 1}번째 전`;
         const arrivalText = `${formatArrivalClock(train)} 도착 예정`;
         return (
