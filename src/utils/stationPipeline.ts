@@ -280,8 +280,14 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   if (route && isStationOnRoute(nearest.station, route)) {
     const lastNotifiedStationId = await getLastNotifiedStationId();
     if (nearest.station.id !== lastNotifiedStationId) {
-      // #796: 현재 nearest.station.line을 전달해 multi-transfer 환승역 도착 timing의 segment 식별 정확화.
-      const target = resolveNextTarget(route, destination.name, nearest.station.line);
+      // #796: 환승역 도착 timing의 segment 정확 식별. evaluateAlarmPhase(:233)와 동일한
+      // currentLine 결정 — lock.boardingLine 우선 → BG GPS jitter로 nearest가 옆 노선 station을
+      // 잡아도 잘못된 다음-다음 transfer 안내를 차단. lock 없으면 nearest.station.line fallback.
+      const target = resolveNextTarget(
+        route,
+        destination.name,
+        lockForLineGuard?.boardingLine ?? nearest.station.line,
+      );
       if (target) {
         // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
         await sendStationPassedNotification(

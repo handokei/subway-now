@@ -202,6 +202,38 @@ describe('processLocationUpdate', () => {
         expect.any(Array),
       );
     });
+
+    // #796 P1-1: resolveNextTarget도 같은 lock-degraded currentLine을 사용해야 함.
+    // BG GPS jitter로 nearest가 옆 노선 station(예: 5호선 군자)을 잡아도 lock(7호선) SSOT로
+    // segment 식별하여 다음-다음 transfer로 잘못 넘어가지 않는다.
+    it('#796 P1-1 lock 활성 시 resolveNextTarget의 currentLine도 lock.boardingLine 사용', async () => {
+      // 7→5→8 multi-transfer route. GPS는 5호선 군자 station(line='5')으로 jitter됐지만
+      // 실제 사용자는 7호선 탑승 중이라 lock.boardingLine='7'.
+      const multiRoute = makeMultiTransferRoute({
+        transfers: [
+          { transferName: '군자', fromLine: '7', toLine: '5', stopsToTransfer: 0 },
+          { transferName: '천호', fromLine: '5', toLine: '8', stopsToTransfer: 6 },
+        ],
+        stopsAfterLastTransfer: 2,
+      });
+      const stationOn5: Station = { ...mockStation, line: '5' };
+      mockFindNearestStation.mockReturnValue({ station: stationOn5, distanceKm: 0.1 });
+      mockFindRoute.mockReturnValue(multiRoute);
+      mockIsStationOnRoute.mockReturnValue(true);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockGetBoardingLock.mockResolvedValue(lockOnLine7);
+
+      await call();
+
+      // raw GPS line이라면 transfer[1]=천호로 잘못 넘어갔을 것 (segment[1].fromLine='5'와 매칭).
+      // lock SSOT 적용으로 transfer[0]=군자 안내가 유지된다.
+      expect(mockSendStationPassedNotification).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(String),
+        expect.objectContaining({ nextStationName: '군자', isTransfer: true }),
+        undefined,
+      );
+    });
   });
 
   it('passes null etaSeconds when speedMps is not provided', async () => {
