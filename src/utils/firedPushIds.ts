@@ -80,3 +80,18 @@ export function hasFiredPushId(
     return now - ts < FIRED_PUSH_ID_TTL_MS;
   });
 }
+
+/**
+ * #799: trip 종료/전환 시 호출. trip-bound dedup state라 다음 trip으로 이월하면
+ * 이전 trip의 pushId가 false-positive로 잡혀 새 alert가 silent 처리되는 회귀 가능.
+ * write queue를 통해 호출해 add/has와의 순서 일관성 보존.
+ */
+export function clearFiredPushIds(): Promise<void> {
+  return enqueue(async () => {
+    try {
+      await AsyncStorage.removeItem(FIRED_PUSH_IDS_KEY);
+    } catch (e) {
+      logger.warn('clearFiredPushIds 실패:', e);
+    }
+  });
+}

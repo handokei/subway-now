@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   addFiredPushId,
   hasFiredPushId,
+  clearFiredPushIds,
   FIRED_PUSH_ID_TTL_MS,
 } from '../firedPushIds';
 import { FIRED_PUSH_IDS_KEY } from '../../constants/storageKeys';
@@ -9,6 +10,7 @@ import { FIRED_PUSH_IDS_KEY } from '../../constants/storageKeys';
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
   setItem: jest.fn(),
+  removeItem: jest.fn(),
 }));
 
 jest.mock('../logger', () => ({
@@ -147,6 +149,35 @@ describe('firedPushIds (#574 P2e)', () => {
 
   it('AsyncStorage key는 storageKeys 상수', () => {
     expect(FIRED_PUSH_IDS_KEY).toBe('subway-now:fired-push-ids');
+  });
+
+  describe('clearFiredPushIds (#799)', () => {
+    it('AsyncStorage.removeItem(FIRED_PUSH_IDS_KEY) 호출', async () => {
+      (AsyncStorage.removeItem as jest.Mock).mockResolvedValueOnce(undefined);
+      await clearFiredPushIds();
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith(FIRED_PUSH_IDS_KEY);
+    });
+
+    it('removeItem 실패도 swallow (fire-and-forget)', async () => {
+      (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('boom'));
+      await expect(clearFiredPushIds()).resolves.toBeUndefined();
+    });
+
+    it('write queue 통과 — pending add 완료 후 실행', async () => {
+      let storage: string | null = null;
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async () => storage);
+      (AsyncStorage.setItem as jest.Mock).mockImplementation(async (_k, v) => {
+        storage = v;
+      });
+      (AsyncStorage.removeItem as jest.Mock).mockImplementation(async () => {
+        storage = null;
+      });
+      const addP = addFiredPushId('p1', NOW);
+      const clearP = clearFiredPushIds();
+      await addP;
+      await clearP;
+      expect(storage).toBeNull();
+    });
   });
 
   describe('동시성 직렬화 큐', () => {

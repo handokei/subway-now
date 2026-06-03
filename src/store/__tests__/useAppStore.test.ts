@@ -400,6 +400,68 @@ describe('useAppStore', () => {
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:active-trip');
   });
 
+  // clearFiredPushIds는 firedPushIds 모듈의 write queue를 통과 — microtask flush 후 검증.
+  async function flushMicrotasks(): Promise<void> {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  }
+
+  it('setDestination(#799): switch 시 silent push/알람 state도 정리 (last-notified, last-fired-name, fired-push-ids, trip-train-code, alarm-event)', async () => {
+    const { setDestination } = useAppStore.getState();
+    setDestination(mockStation);
+    jest.clearAllMocks();
+
+    setDestination(mockStation2);
+    await flushMicrotasks();
+
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:last-notified-station');
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:last-fired-alarm-station-name');
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:fired-push-ids');
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:trip-train-code');
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:alarm-event');
+  });
+
+  it('setDestination(#799): null로 클리어 시에도 silent push/알람 state 정리', async () => {
+    const { setDestination } = useAppStore.getState();
+    setDestination(mockStation);
+    jest.clearAllMocks();
+
+    setDestination(null);
+    await flushMicrotasks();
+
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:last-notified-station');
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:last-fired-alarm-station-name');
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:fired-push-ids');
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:trip-train-code');
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:alarm-event');
+  });
+
+  it('setDestination(#799): switch 시 alarmEvent 메모리 state도 null로 동기화', () => {
+    const { setDestination, setAlarmEvent } = useAppStore.getState();
+    setDestination(mockStation);
+    setAlarmEvent({ phaseId: 'early', type: 'destination', stationName: '시청' });
+    expect(useAppStore.getState().alarmEvent).not.toBeNull();
+
+    setDestination(mockStation2);
+
+    expect(useAppStore.getState().alarmEvent).toBeNull();
+  });
+
+  it('setDestination(#799): 같은 목적지 재설정 시 silent push/알람 state도 유지 (#702 정책 일관)', () => {
+    const { setDestination } = useAppStore.getState();
+    setDestination(mockStation);
+    jest.clearAllMocks();
+
+    setDestination(mockStation);
+
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:last-notified-station');
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:last-fired-alarm-station-name');
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:fired-push-ids');
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:trip-train-code');
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:alarm-event');
+  });
+
   it('setDestination(#702): 같은 목적지 재설정 시에는 부수 storage를 건드리지 않는다', () => {
     const { setDestination } = useAppStore.getState();
     setDestination(mockStation);
