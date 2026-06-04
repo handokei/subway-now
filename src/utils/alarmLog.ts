@@ -432,6 +432,48 @@ export function summarizeAlarmLogBySource(
   return counts;
 }
 
+/**
+ * Silent push outcome별 집계 (#856).
+ *
+ * DebugModal Silent Push 섹션에서 "lastRecv 시간만 보고 왜 안 울리지?" 의문을 해소하기 위한
+ * UX 보조 카운트. `summarizeAlarmLogBySource`와 별개로 silent push 3개 source만 좁혀 집계.
+ *
+ * - `received`: backend가 보낸 silent push 도달 횟수 (`silent-push-received`)
+ * - `fired`: 위치 게이트 통과해 실제 알림이 노출된 횟수 (`silent-push-fired`)
+ * - `skipped`: 위치 게이트 실패로 발사 안 한 횟수 (`silent-push-skipped`)
+ *
+ * 새 silent push source가 추가되면 SILENT_PUSH_OUTCOME_SOURCES 맵에 한 줄만 더하면
+ * 자동 반영 (글로벌 룰 3 — 데이터 주도).
+ */
+const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcomeCounts | null> = {
+  'silent-push-received': 'received',
+  'silent-push-fired': 'fired',
+  'silent-push-skipped': 'skipped',
+  fg: null,
+  bg: null,
+  'fg-evaluated': null,
+  'bg-scheduled': null,
+  'alert-fallback-fired': null,
+  'fg-hydrate': null,
+};
+
+export interface SilentPushOutcomeCounts {
+  received: number;
+  fired: number;
+  skipped: number;
+}
+
+export function countSilentPushOutcomes(
+  entries: readonly AlarmLogEntry[],
+): SilentPushOutcomeCounts {
+  const counts: SilentPushOutcomeCounts = { received: 0, fired: 0, skipped: 0 };
+  for (const entry of entries) {
+    const bucket = SILENT_PUSH_OUTCOME_SOURCES[entry.source];
+    if (bucket !== null) counts[bucket] += 1;
+  }
+  return counts;
+}
+
 export function logSuppressedGate(
   reason: 'gate-age' | 'gate-accuracy' | 'gate-jump',
   location: AlarmLogLocation,

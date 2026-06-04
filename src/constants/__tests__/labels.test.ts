@@ -1,4 +1,8 @@
-import { buildFallbackSequenceLabel } from '../labels';
+import {
+  buildFallbackSequenceLabel,
+  buildSilentPushCountValue,
+  SILENT_PUSH_LABELS,
+} from '../labels';
 
 describe('buildFallbackSequenceLabel (#855)', () => {
   describe('arrivalSeconds > 0 — "(약 M분 후)" 결합', () => {
@@ -34,5 +38,34 @@ describe('buildFallbackSequenceLabel (#855)', () => {
     it('arrivalSeconds 음수면 분 라벨 생략 (이론상 발생 안하지만 가드)', () => {
       expect(buildFallbackSequenceLabel(1, -10)).toBe('약 2정거장 전');
     });
+  });
+});
+
+describe('buildSilentPushCountValue (#856)', () => {
+  it('lastFormatted가 있으면 "N (last X)"로 결합', () => {
+    expect(buildSilentPushCountValue(15, '01:23:45')).toBe('15 (last 01:23:45)');
+    expect(buildSilentPushCountValue(0, '(never)')).toBe('0 (last (never))');
+  });
+
+  it('lastFormatted가 null이면 카운트만', () => {
+    expect(buildSilentPushCountValue(3, null)).toBe('3');
+    expect(buildSilentPushCountValue(0, null)).toBe('0');
+  });
+});
+
+describe('SILENT_PUSH_LABELS (#856)', () => {
+  it('toggle off 라벨은 lockless 비활성 + 설정 안내 문구를 포함한다', () => {
+    expect(SILENT_PUSH_LABELS.toggleOff).toContain('lockless');
+    expect(SILENT_PUSH_LABELS.toggleOff).toContain('설정');
+  });
+
+  it('toggle on 라벨은 짧은 활성 표기다', () => {
+    expect(SILENT_PUSH_LABELS.toggleOn).toBe('on');
+  });
+
+  it('received/fired/toggle key는 dump 헤더용 안정 식별자', () => {
+    expect(SILENT_PUSH_LABELS.receivedKey).toBe('received');
+    expect(SILENT_PUSH_LABELS.firedKey).toBe('fired');
+    expect(SILENT_PUSH_LABELS.toggleKey).toBe('toggle');
   });
 });
