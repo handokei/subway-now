@@ -35,3 +35,44 @@ export function buildFallbackSequenceLabel(index: number, arrivalSeconds?: numbe
   const minutes = Math.max(1, Math.round(arrivalSeconds / 60));
   return `${base} (약 ${minutes}분 후)`;
 }
+
+/**
+ * #856 — DebugModal Silent Push 섹션 라벨.
+ *
+ * `lastReceivedAt`만 보고 "왜 안 울리지?" 묻는 사용자 의문 해결을 위해 received/fired
+ * 카운트와 lockless toggle 상태를 한 라인씩 노출. 측정 인프라가 아니라 UX 표기 보조.
+ *
+ * 텍스트는 JSX 하드코딩 금지(글로벌 룰 3) 정책 + 추후 i18n 일괄 전환 대비 위치만 분리.
+ * (DebugModal은 dev/internal 영역이라 i18n 미적용은 의도된 stand-still — i18n 전환 시 일괄.)
+ */
+export const SILENT_PUSH_LABELS = {
+  /** received row 라벨. 카운트와 last time을 결합한다. */
+  receivedKey: 'received',
+  /** fired row 라벨. 카운트와 last time을 결합한다. */
+  firedKey: 'fired',
+  /** lockless station-passed toggle row 라벨. */
+  toggleKey: 'toggle',
+  /** toggle ON 표기 — 활성. */
+  toggleOn: 'on',
+  /** toggle OFF 표기 — lockless 비활성, 설정에서 켜기 안내. */
+  toggleOff: 'off — lockless station-passed 비활성 (설정에서 켜기)',
+} as const;
+
+/**
+ * received/fired row의 value 문자열을 만든다.
+ *
+ * 예:
+ *   buildSilentPushCountValue(15, '01:23:45')  → '15 (last 01:23:45)'
+ *   buildSilentPushCountValue(0, '(never)')    → '0 (last (never))'
+ *   buildSilentPushCountValue(3, null)         → '3'
+ *
+ * `lastFormatted`는 이미 포맷된 문자열(formatAt 결과 등). null이면 last 라벨 생략.
+ * 카운트와 시각을 한 줄로 합쳐 KeyValue row 1개로 표시.
+ */
+export function buildSilentPushCountValue(
+  count: number,
+  lastFormatted: string | null,
+): string {
+  if (lastFormatted == null) return String(count);
+  return `${count} (last ${lastFormatted})`;
+}

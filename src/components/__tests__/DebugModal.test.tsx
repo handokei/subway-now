@@ -3,6 +3,7 @@ import { AppState, Share } from 'react-native';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { DebugModal, __test__ } from '../DebugModal';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
+import { useAppStore } from '../../store/useAppStore';
 import type { AlarmLogEntry } from '../../utils/alarmLog';
 import type { Station, NearestStationResult } from '../../types/station';
 import type { StationArrival } from '../../api/arrivalApi';
@@ -1065,9 +1066,12 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
     expect(dump).toContain('activeTrip=…ef567890');
     expect(dump).toContain('apnsEnv=sandbox');
     expect(dump).toContain('taskRegistration=success');
-    expect(dump).toContain('lastReceived=');
-    expect(dump).toContain('lastFired=');
+    // #856 — lastReceived/lastFired는 received/fired 카운트 row로 흡수.
+    expect(dump).toContain('received=0 (last ');
+    expect(dump).toContain('fired=0 (last ');
     expect(dump).toContain('lastSkipped=');
+    // #856 — lockless toggle 기본 OFF(미전달 시 false).
+    expect(dump).toContain('toggle=off');
   });
 
   it('buildDumpText: token 없으면 (none), 시각 null이면 (never)', () => {
@@ -1108,8 +1112,9 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
     expect(dump).toContain('activeTrip=(none)');
     expect(dump).toContain('apnsEnv=production');
     expect(dump).toContain('taskRegistration=unknown');
-    expect(dump).toContain('lastReceived=(never)');
-    expect(dump).toContain('lastFired=(never)');
+    // #856 — received/fired 카운트 row가 lastReceived/lastFired 시각을 흡수.
+    expect(dump).toContain('received=0 (last (never))');
+    expect(dump).toContain('fired=0 (last (never))');
     expect(dump).toContain('lastSkipped=(never)');
   });
 
@@ -1314,5 +1319,103 @@ describe('DebugModal — Scheduled queue UI (#756)', () => {
     const sharedMessage = shareSpy.mock.calls[0][0].message;
     expect(sharedMessage).toContain('## Scheduled queue (1)');
     expect(sharedMessage).toContain('bl:T:0:imminent:장한평');
+  });
+});
+
+describe('DebugModal — Silent Push UX 카운트/토글 (#856)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setupHookDefaults();
+    act(() => {
+      useAppStore.setState({ locklessStationPassed: false });
+    });
+  });
+
+  afterEach(() => {
+    act(() => {
+      useAppStore.setState({ locklessStationPassed: false });
+    });
+  });
+
+  it('alarm log에 silent-push-received/fired/skipped가 있으면 received/fired 카운트 row가 노출된다', async () => {
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: 1, source: 'silent-push-received', outcome: 'received' },
+      { ts: 2, source: 'silent-push-received', outcome: 'received' },
+      { ts: 3, source: 'silent-push-fired', outcome: 'fired' },
+      { ts: 4, source: 'silent-push-skipped', outcome: 'suppressed' },
+    ]);
+    mockUseSilentPushDiagnostics.mockReturnValue({
+      apnsToken: null,
+      activeTripToken: null,
+      apnsEnv: 'sandbox',
+      permissionStatus: null,
+      taskRegistrationState: 'success',
+      taskRegistrationError: null,
+      lastReceivedAt: new Date('2026-06-04T01:23:45Z').getTime(),
+      lastFiredAt: new Date('2026-06-04T01:24:00Z').getTime(),
+      lastSkippedAt: null,
+      hasRoute: false,
+      destinationId: null,
+      lastNotifiedStationId: null,
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    // logs 도착 후 row가 갱신될 때까지 대기. value에 카운트(2/1)와 시간이 함께 노출.
+    await waitFor(() => expect(screen.getByText(/^2 \(last \d{2}:\d{2}:\d{2}\)$/)).toBeTruthy());
+    expect(screen.getByText(/^1 \(last \d{2}:\d{2}:\d{2}\)$/)).toBeTruthy();
+  });
+
+  it('locklessStationPassed=false면 toggle row가 OFF 안내 문구로 노출된다', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText(/lockless station-passed 비활성/)).toBeTruthy();
+  });
+
+  it('locklessStationPassed=true면 toggle row가 "on"으로 노출된다', async () => {
+    act(() => {
+      useAppStore.setState({ locklessStationPassed: true });
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('on')).toBeTruthy();
+  });
+
+  it('Share dump에 received/fired 카운트와 toggle 라벨이 포함된다', async () => {
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: 1, source: 'silent-push-received', outcome: 'received' },
+      { ts: 2, source: 'silent-push-fired', outcome: 'fired' },
+    ]);
+    act(() => {
+      useAppStore.setState({ locklessStationPassed: true });
+    });
+    const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    // logs 반영(Alarm log 카운트로 검증) 후 share — useCallback closure가 신규 logs 캡처.
+    await waitFor(() => expect(screen.getByText('Alarm log (2)')).toBeTruthy());
+    fireEvent.press(screen.getByTestId('debug-share-dump'));
+    const msg = shareSpy.mock.calls[0][0].message;
+    expect(msg).toContain('received=1');
+    expect(msg).toContain('fired=1');
+    expect(msg).toContain('toggle=on');
+    shareSpy.mockRestore();
+  });
+
+  it('빈 log + lastReceived null이면 received=0 (last (never)) 노출', async () => {
+    mockUseSilentPushDiagnostics.mockReturnValue({
+      apnsToken: null,
+      activeTripToken: null,
+      apnsEnv: 'sandbox',
+      permissionStatus: null,
+      taskRegistrationState: 'unknown',
+      taskRegistrationError: null,
+      lastReceivedAt: null,
+      lastFiredAt: null,
+      lastSkippedAt: null,
+      hasRoute: false,
+      destinationId: null,
+      lastNotifiedStationId: null,
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getAllByText('0 (last (never))').length).toBeGreaterThanOrEqual(2);
   });
 });

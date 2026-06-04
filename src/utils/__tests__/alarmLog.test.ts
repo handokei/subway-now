@@ -35,6 +35,7 @@ import {
   logSilentPushSkipped,
   logAlertFallbackFired,
   summarizeAlarmLogBySource,
+  countSilentPushOutcomes,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -940,6 +941,37 @@ describe('alarmLog', () => {
       const result = summarizeAlarmLogBySource(entries);
       expect(result).toEqual({ fg: 1 });
       expect(Object.keys(result)).not.toContain('bg');
+    });
+  });
+
+  describe('countSilentPushOutcomes (#856)', () => {
+    it('빈 배열이면 모두 0', () => {
+      expect(countSilentPushOutcomes([])).toEqual({ received: 0, fired: 0, skipped: 0 });
+    });
+
+    it('silent-push-received / silent-push-fired / silent-push-skipped만 집계한다', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ source: 'silent-push-received' }),
+        makeEntry({ source: 'silent-push-received' }),
+        makeEntry({ source: 'silent-push-received' }),
+        makeEntry({ source: 'silent-push-fired' }),
+        makeEntry({ source: 'silent-push-skipped' }),
+        makeEntry({ source: 'silent-push-skipped' }),
+      ];
+      expect(countSilentPushOutcomes(entries)).toEqual({ received: 3, fired: 1, skipped: 2 });
+    });
+
+    it('silent push 외 source(fg/bg/bg-scheduled/alert-fallback-fired/fg-hydrate/fg-evaluated)는 무시', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ source: 'fg' }),
+        makeEntry({ source: 'bg' }),
+        makeEntry({ source: 'bg-scheduled' }),
+        makeEntry({ source: 'alert-fallback-fired' }),
+        makeEntry({ source: 'fg-hydrate' }),
+        makeEntry({ source: 'fg-evaluated' }),
+        makeEntry({ source: 'silent-push-received' }),
+      ];
+      expect(countSilentPushOutcomes(entries)).toEqual({ received: 1, fired: 0, skipped: 0 });
     });
   });
 
