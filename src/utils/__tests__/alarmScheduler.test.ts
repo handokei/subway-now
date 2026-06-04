@@ -8,6 +8,7 @@ import {
 } from '../alarmScheduler';
 import { logScheduledAlarm } from '../alarmLog';
 import { getLastNotifiedStationId } from '../notificationState';
+import * as stationRoute from '../stationRoute';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,
@@ -15,12 +16,16 @@ import {
 } from '../../testUtils/routeFixtures';
 
 jest.mock('expo-notifications');
+
+const mockLoggerWarn = jest.fn();
+const mockLoggerInfo = jest.fn();
+const mockLoggerError = jest.fn();
 jest.mock('../logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
+    info: (...args: unknown[]) => mockLoggerInfo(...args),
+    warn: (...args: unknown[]) => mockLoggerWarn(...args),
+    error: (...args: unknown[]) => mockLoggerError(...args),
   }),
 }));
 
@@ -73,6 +78,9 @@ describe('parseScheduledAlarmIdentifier', () => {
 describe('scheduleAlarmsForRoute', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockLoggerWarn.mockClear();
+    mockLoggerInfo.mockClear();
+    mockLoggerError.mockClear();
     (Notifications.scheduleNotificationAsync as jest.Mock).mockResolvedValue('id');
     mockedGetLastNotified.mockResolvedValue(null);
     jest.replaceProperty(Platform, 'OS', 'ios');
@@ -386,6 +394,135 @@ describe('scheduleAlarmsForRoute', () => {
     expect(mockedLogScheduled.mock.calls.every(([event]) => event.stationName === '강남')).toBe(
       true,
     );
+  });
+
+  // ── #866 진단 로그 ──
+  // OS 사전 예약 큐가 0건일 때 분기(a/b+c/d) 중 어디서 멈췄는지 분류 가능해야 한다.
+  // 정상 경로(매 cycle reschedule)는 warn 발화 0건 — TestFlight USB Console noise 차단.
+  describe('#866 진단 로그', () => {
+    it('(a) totalStops=0이면 reason=total-stops-zero로 warn 후 빈 배열', async () => {
+      const route = makeDirectRoute(0, '1');
+      const result = await scheduleAlarmsForRoute({
+        route,
+        destinationName: '강남',
+        currentStationApproachEtaSeconds: 600,
+        now: NOW,
+      });
+      expect(result).toEqual([]);
+      const calls = mockLoggerWarn.mock.calls.map((c) => String(c[0]));
+      expect(
+        calls.some(
+          (msg) =>
+            msg.includes('reason=total-stops-zero') &&
+            msg.includes('targets=강남/0') &&
+            msg.includes('approachEta=600') &&
+            msg.includes('routeType=direct'),
+        ),
+      ).toBe(true);
+      // 정상 경로 noise 차단을 검증 — 이상 분기 1줄만.
+      expect(calls).toHaveLength(1);
+    });
+
+    it('(a) approachEta가 null이어도 total-stops-zero 로그에 approachEta=null로 표기된다', async () => {
+      const route = makeDirectRoute(0, '1');
+      await scheduleAlarmsForRoute({
+        route,
+        destinationName: '강남',
+        currentStationApproachEtaSeconds: null,
+        now: NOW,
+      });
+      const calls = mockLoggerWarn.mock.calls.map((c) => String(c[0]));
+      expect(
+        calls.some(
+          (msg) =>
+            msg.includes('reason=total-stops-zero') && msg.includes('approachEta=null'),
+        ),
+      ).toBe(true);
+    });
+
+    it('(b)/(c) scheduled=0인 분기는 reason=all-phases-skipped로 warn (전체 skip 분류 가능)', async () => {
+      // calculateStaticETA를 spy해 매우 작은 ETA(0.1분=6s)를 반환. finalEta=6s → 모든
+      // phase의 fireSeconds<=0이 되어 all-phases-skipped 경로 진입. 실 production에선
+      // approachEta=null + 비정상 staticETA(예: route 데이터 결손) 결합으로만 발생.
+      const spy = jest
+        .spyOn(stationRoute, 'calculateStaticETA')
+        .mockImplementation(() => 0.1);
+      try {
+        const route = makeDirectRoute(1, '1');
+        const result = await scheduleAlarmsForRoute({
+          route,
+          destinationName: '강남',
+          currentStationApproachEtaSeconds: null,
+          now: NOW,
+        });
+        expect(result).toEqual([]);
+        const calls = mockLoggerWarn.mock.calls.map((c) => String(c[0]));
+        expect(
+          calls.some(
+            (msg) =>
+              msg.includes('reason=all-phases-skipped') &&
+              msg.includes('totalStops=1') &&
+              msg.includes('finalEta=6.0') &&
+              msg.includes('approachEta=null') &&
+              msg.includes('skips=') &&
+              msg.includes('강남/early/') &&
+              msg.includes('강남/imminent/'),
+          ),
+        ).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('(d) scheduleNotificationAsync throw 시 caller로 그대로 전파 (try/catch 미흡수)', async () => {
+      const route = makeDirectRoute(10, '1');
+      const err = new Error('permission denied');
+      (Notifications.scheduleNotificationAsync as jest.Mock).mockRejectedValueOnce(err);
+
+      await expect(
+        scheduleAlarmsForRoute({
+          route,
+          destinationName: '강남',
+          currentStationApproachEtaSeconds: 600,
+          now: NOW,
+        }),
+      ).rejects.toThrow('permission denied');
+    });
+
+    it('정상 예약 케이스에서는 warn을 발화하지 않는다 (noise 0건)', async () => {
+      const route = makeDirectRoute(10, '1');
+      await scheduleAlarmsForRoute({
+        route,
+        destinationName: '강남',
+        currentStationApproachEtaSeconds: 600,
+        now: NOW,
+      });
+      expect(mockLoggerWarn).not.toHaveBeenCalled();
+      // 기존 success info 라인은 유지 — 콘솔 debug용.
+      expect(mockLoggerInfo).toHaveBeenCalledWith(
+        expect.stringContaining('scheduled 2 alarms for 1 waypoints'),
+      );
+    });
+
+    it('일부 phase만 skip된 부분 성공 케이스는 warn하지 않는다 (scheduled>0이라 정상으로 분류)', async () => {
+      // 환승역 stopsToTransfer=0 → 환승 waypoint는 두 phase 모두 fireSec<=0으로 skip.
+      // 도착역 stopsFromTransfer는 양수라 예약된다.
+      const route = makeTransferRoute({
+        transferName: '동대문',
+        fromLine: '1',
+        toLine: '4',
+        stopsToTransfer: 0,
+        stopsFromTransfer: 5,
+      });
+      const result = await scheduleAlarmsForRoute({
+        route,
+        destinationName: '강남',
+        currentStationApproachEtaSeconds: 60,
+        now: NOW,
+      });
+      expect(result.length).toBeGreaterThan(0);
+      expect(mockLoggerWarn).not.toHaveBeenCalled();
+    });
   });
 });
 
