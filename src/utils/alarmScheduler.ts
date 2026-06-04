@@ -78,6 +78,12 @@ export interface ScheduleAlarmsParams {
  *
  * waypoint별 시각은 누적 정거장 수 비율로 finalEtaSeconds를 안분한다.
  * 과거 시각으로 산출된 알람은 건너뛴다.
+ *
+ * #866 진단 로그(`logger.warn`)는 OS 사전 예약 큐가 0건으로 보고되는 회귀를 분류한다:
+ *   (a) total-stops-zero     — totalStops=0 (route stops=0)
+ *   (b)/(c) all-phases-skipped — 모든 fireSeconds<=0 (finalEta가 너무 작거나 lead 부족)
+ *   (d) scheduleNotificationAsync throw — caller의 `.catch((e) => logger.error(...))` 경로로 전파
+ * 정상 경로(매 cycle 호출, trip 30분당 360회+)에서는 일체 warn하지 않는다. 이상 분기에서만 warn.
  */
 export async function scheduleAlarmsForRoute(
   params: ScheduleAlarmsParams,
@@ -92,7 +98,16 @@ export async function scheduleAlarmsForRoute(
 
   const targets = resolveAllTargets(route, destinationName);
   const totalStops = targets.reduce((sum, t) => sum + t.stops, 0);
-  if (totalStops === 0) return [];
+
+  if (totalStops === 0) {
+    // (a) 분기 — resolveAllTargets가 모든 waypoint stops=0(direct stops=0 등).
+    logger.warn(
+      `scheduleAlarms skip reason=total-stops-zero targets=${targets
+        .map((t) => `${t.name}/${t.stops}`)
+        .join(',')} approachEta=${currentStationApproachEtaSeconds ?? 'null'} routeType=${route.type}`,
+    );
+    return [];
+  }
 
   const finalEtaSeconds = resolveFinalEtaSeconds(currentStationApproachEtaSeconds, totalStops, route);
 
@@ -103,6 +118,7 @@ export async function scheduleAlarmsForRoute(
   const stampTrainCode = stamp?.usedTrainCode ?? null;
 
   const scheduled: ScheduledAlarm[] = [];
+  const skipped: string[] = [];
   let cumulativeStops = 0;
 
   for (const target of targets) {
@@ -111,7 +127,11 @@ export async function scheduleAlarmsForRoute(
 
     for (const phase of ALARM_PHASES) {
       const fireSeconds = waypointEtaSeconds - PHASE_LEAD_SECONDS[phase.id];
-      if (fireSeconds <= 0) continue;
+      if (fireSeconds <= 0) {
+        // (b)/(c) 분기 — fireSeconds<=0. ETA fallback이 작거나 lead 대비 ETA 부족.
+        skipped.push(`${target.name}/${phase.id}/${fireSeconds.toFixed(1)}`);
+        continue;
+      }
 
       const event: AlarmEvent = {
         phaseId: phase.id,
@@ -122,6 +142,9 @@ export async function scheduleAlarmsForRoute(
       const fireDate = new Date(now + fireSeconds * 1000);
       const { title, body } = buildAlarmContent(event);
 
+      // #866 (d) 분기 — scheduleNotificationAsync가 throw하면 caller(useScheduledAlarms)의
+      // `.catch((e) => logger.error('재예약 실패:', e))` 경로로 그대로 전파. try/catch를 두면
+      // error → warn 강등으로 운영 알람 신호가 사라지므로 명시적으로 전파한다.
       await Notifications.scheduleNotificationAsync({
         identifier,
         content: {
@@ -152,7 +175,17 @@ export async function scheduleAlarmsForRoute(
     }
   }
 
-  logger.info(`scheduled ${scheduled.length} alarms for ${targets.length} waypoints`);
+  // #866 — scheduled=0인 이상 분기(b/c)만 warn. 정상 경로(reschedule이 30분 trip당 360회 호출)
+  // 에서 enter/done warn을 모두 출력하면 USB Console에서 진단 신호가 noise에 묻힌다.
+  if (scheduled.length === 0) {
+    logger.warn(
+      `scheduleAlarms skip reason=all-phases-skipped totalStops=${totalStops} finalEta=${finalEtaSeconds.toFixed(
+        1,
+      )} approachEta=${currentStationApproachEtaSeconds ?? 'null'} skips=${skipped.join('|')}`,
+    );
+  } else {
+    logger.info(`scheduled ${scheduled.length} alarms for ${targets.length} waypoints`);
+  }
   return scheduled;
 }
 
