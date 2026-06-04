@@ -185,10 +185,54 @@ function fusedDiffersFromGps(
   return fused.station.id !== gps.station.id;
 }
 
+/**
+ * fusedSpeed signal — backend Phase 3 fusion(ADR-009) 산출치를 디버그 모달에 전달하기 위한 prop 형태.
+ * 클라 자체에는 산출 함수가 아직 없으므로(#819 후속) 호출부가 명시적으로 주입한다.
+ * 미전달이면 UI/dump 모두 `(no fused signal)`로 노출 — GPS speed=null과 구분 가능.
+ */
+export interface FusedSpeedSignal {
+  kmh: number;
+  source: FusionSource;
+}
+
+const NO_FUSED_SIGNAL_LABEL = '(no fused signal)';
+
+/**
+ * GPS 섹션에 노출할 row 목록. fused 라인은 fused signal 유무와 무관하게 항상 1줄 — 사용자가
+ * "현재 속도 신호가 클라에 도달했는가"를 즉시 인지할 수 있게 한다. 줄별 렌더링은 호출부에서
+ * `Array.map`으로 순회.
+ */
+function buildGpsRows(args: {
+  userLocation: { lat: number; lng: number } | null;
+  speedMps: number | null;
+  accuracyMeters: number | null;
+  fusedSpeed: FusedSpeedSignal | null;
+}): { label: string; value: string }[] {
+  if (!args.userLocation) return [];
+  const fusedValue = args.fusedSpeed
+    ? `${args.fusedSpeed.kmh.toFixed(1)} km/h (${args.fusedSpeed.source})`
+    : NO_FUSED_SIGNAL_LABEL;
+  return [
+    { label: 'lat', value: String(args.userLocation.lat) },
+    { label: 'lng', value: String(args.userLocation.lng) },
+    {
+      label: 'speed',
+      value: args.speedMps == null ? '-' : `${args.speedMps.toFixed(2)} m/s`,
+    },
+    { label: 'fused', value: fusedValue },
+    {
+      label: 'accuracy',
+      value: args.accuracyMeters == null ? '-' : `${args.accuracyMeters.toFixed(0)} m`,
+    },
+  ];
+}
+
 function buildDumpText(args: {
   userLocation: { lat: number; lng: number } | null;
   speedMps: number | null;
   accuracyMeters: number | null;
+  /** #853 — Phase 3 fused speed. 미전달이면 dump의 fused 라인이 (no fused signal). */
+  fusedSpeed?: FusedSpeedSignal | null;
   nearestName: string | null;
   nearestDistanceM: number | null;
   variants: string[];
@@ -214,11 +258,17 @@ function buildDumpText(args: {
   lines.push(`[Subway debug] ${new Date().toISOString()}`);
   lines.push('');
   lines.push('## GPS');
-  lines.push(
-    args.userLocation
-      ? `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}, speed=${args.speedMps ?? '-'} m/s, accuracy=${args.accuracyMeters ?? '-'} m`
-      : '(no location)',
-  );
+  if (args.userLocation) {
+    const fusedDump = args.fusedSpeed
+      ? `${args.fusedSpeed.kmh.toFixed(1)} km/h (${args.fusedSpeed.source})`
+      : NO_FUSED_SIGNAL_LABEL;
+    lines.push(
+      `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}, speed=${args.speedMps ?? '-'} m/s, accuracy=${args.accuracyMeters ?? '-'} m`,
+      `fused=${fusedDump}`,
+    );
+  } else {
+    lines.push('(no location)');
+  }
   lines.push('');
   lines.push('## Nearest');
   lines.push(
@@ -291,6 +341,12 @@ interface DebugModalProps {
    * 미전달이면 섹션에서 "(n/a)"로 표기.
    */
   candidateTrains?: string[];
+  /**
+   * #853 — backend fused speed(ADR-009 Phase 3). 미전달이면 GPS 섹션 fused 라인이
+   * `(no fused signal)`로 표기돼 사용자가 클라 GPS 미측정과 구분 가능.
+   * 클라 자체 산출 함수는 #819 후속.
+   */
+  fusedSpeed?: FusedSpeedSignal;
 }
 
 // 디버그 모달은 측정 인프라 — 관찰자 효과를 피하려고 모달이 열린 동안에만 마운트한다.
@@ -303,7 +359,7 @@ export function DebugModal(props: DebugModalProps) {
   return <DebugModalInner {...props} />;
 }
 
-function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
+function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<DebugModalProps>) {
   const { colors } = useTheme();
   // #458: RN Modal 안에서는 SafeAreaView가 안 먹는다(portal로 inset 컨텍스트 분리).
   // 루트 SafeAreaProvider의 insets를 hook으로 직접 받아 헤더에 manual padding.
@@ -377,11 +433,15 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
   const nearestDistanceM = result ? Math.round(result.distanceKm * 1000) : null;
   const variantNames = variants.map((v) => `${v.name}(${v.line})`);
 
+  // fusedSpeed prop을 null로 정규화해 buildGpsRows/buildDumpText 양쪽에서 동일 분기 사용.
+  const fusedSpeedSignal: FusedSpeedSignal | null = fusedSpeed ?? null;
+
   const handleShare = useCallback(() => {
     const message = buildDumpText({
       userLocation,
       speedMps,
       accuracyMeters,
+      fusedSpeed: fusedSpeedSignal,
       nearestName: result?.station.name ?? null,
       nearestDistanceM,
       variants: variantNames,
@@ -405,6 +465,7 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
     userLocation,
     speedMps,
     accuracyMeters,
+    fusedSpeedSignal,
     result,
     nearestDistanceM,
     variantNames,
@@ -439,20 +500,14 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
         <ScrollView contentContainerStyle={{ padding: spacing.xl }}>
           <Section title="GPS" colors={colors}>
             {userLocation ? (
-              <>
-                <KeyValue label="lat" value={String(userLocation.lat)} colors={colors} />
-                <KeyValue label="lng" value={String(userLocation.lng)} colors={colors} />
-                <KeyValue
-                  label="speed"
-                  value={speedMps != null ? `${speedMps.toFixed(2)} m/s` : '-'}
-                  colors={colors}
-                />
-                <KeyValue
-                  label="accuracy"
-                  value={accuracyMeters != null ? `${accuracyMeters.toFixed(0)} m` : '-'}
-                  colors={colors}
-                />
-              </>
+              buildGpsRows({
+                userLocation,
+                speedMps,
+                accuracyMeters,
+                fusedSpeed: fusedSpeedSignal,
+              }).map(({ label, value }) => (
+                <KeyValue key={label} label={label} value={value} colors={colors} />
+              ))
             ) : (
               <Text style={[typography.mono, { color: colors.muted }]}>(no location)</Text>
             )}
@@ -699,10 +754,12 @@ function KeyValue({
 export const __test__ = {
   formatLogLine,
   buildDumpText,
+  buildGpsRows,
   formatFusionDebugLine,
   formatTokenTail,
   formatAt,
   formatSourceCountsLine,
+  NO_FUSED_SIGNAL_LABEL,
 };
 
 const styles = StyleSheet.create({

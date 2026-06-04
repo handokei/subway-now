@@ -2,6 +2,7 @@ import * as Location from 'expo-location';
 import { haversine } from './haversine';
 import { findStationByName } from './stationLookup';
 import { createLogger } from './logger';
+import { isValidGpsSpeedMps } from '../constants/location';
 
 const logger = createLogger('SilentPushLocationGate');
 
@@ -84,7 +85,7 @@ function extractMotionFields(
 ): { speedMps?: number; accuracyM?: number } {
   const out: { speedMps?: number; accuracyM?: number } = {};
   // expo-location speed/accuracy는 측정 불가 시 -1 또는 null. 음수/null은 미적용으로 정리.
-  if (typeof coords.speed === 'number' && coords.speed >= 0) out.speedMps = coords.speed;
+  if (isValidGpsSpeedMps(coords.speed)) out.speedMps = coords.speed;
   if (typeof coords.accuracy === 'number' && coords.accuracy >= 0) out.accuracyM = coords.accuracy;
   return out;
 }

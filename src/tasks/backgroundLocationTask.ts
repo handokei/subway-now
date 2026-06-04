@@ -13,6 +13,7 @@ import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
 import { getLatestAccelSummary } from '../utils/accelMotionState';
 import type { Route } from '../utils/stationRoute';
+import { isValidGpsSpeedMps } from '../constants/location';
 import type { Station } from '../types/station';
 
 const logger = createLogger('BackgroundLocation');
@@ -73,7 +74,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
   }
 
   const { speed } = latest.coords;
-  const speedMps = speed != null && speed >= 0 ? speed : null;
+  const speedMps = isValidGpsSpeedMps(speed) ? speed : null;
 
   try {
     const [destJson, sleepJson, routeJson, allowSpeakerJson] = await Promise.all([
