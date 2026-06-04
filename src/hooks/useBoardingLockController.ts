@@ -7,7 +7,7 @@ import type { ArrivalInfo, StationArrival } from '../api/arrivalApi';
 import type { Route } from '../utils/stationRoute';
 import type { Station } from '../types/station';
 import type { BoardingLock } from '../types/boardingLock';
-import { FALLBACK_BOARDING_DURATION_MINUTES } from '../constants/boardingLock';
+import { FALLBACK_BOARDING_DURATION_MINUTES } from '../shared/constants/boardingLock';
 
 export interface UseBoardingLockControllerInputs {
   destinationId: string | null;

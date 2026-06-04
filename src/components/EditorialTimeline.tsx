@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { useTheme, typography, spacing } from '../theme';
+import { useTheme, typography, spacing } from '../shared/theme';
 import type { Stop, StopArrivalContext } from '../utils/journeyAdapter';
 import { LineBadge, getLineColor } from './LineBadge';
 import { useAppStore } from '../store/useAppStore';

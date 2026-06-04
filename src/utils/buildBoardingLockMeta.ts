@@ -2,7 +2,7 @@ import type { BoardingLock } from '../types/boardingLock';
 import { BOARDING_LOCK_EXPIRY_FACTOR } from '../types/boardingLock';
 import type { Route } from './stationRoute';
 import { getStationsOnLine, findStationByNameAndLine } from './stationRoute';
-import { lineToSubwayId } from '../constants/lineApiNames';
+import { lineToSubwayId } from '../shared/constants/lineApiNames';
 import type { Station } from '../types/station';
 import type { LineNumber } from '../types/station';
 import type { AlarmBoardingLock } from '../api/alarmBackend';

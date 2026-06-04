@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { useTheme, typography, spacing, radius } from '../theme';
+import { useTheme, typography, spacing, radius } from '../shared/theme';
 
 interface Props {
   /** true일 때 노출. false면 unmount 또는 즉시 숨김. */

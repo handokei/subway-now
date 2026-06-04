@@ -1,5 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { useTheme, typography, spacing, radius } from '../theme';
+import { useTheme, typography, spacing, radius } from '../shared/theme';
 import { LineBadge } from './LineBadge';
 import type { ArrivalInfo } from '../api/arrivalApi';
 import type { LineNumber, Station } from '../types/station';
@@ -7,8 +7,8 @@ import { formatClockTime } from '../utils/formatTime';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
 import { buildDirectionMeta } from '../utils/trainLineDirection';
 import { parseArrivalDistance } from '../utils/arrivalStatusDistance';
-import { LINE_COLORS } from '../constants/lineColors';
-import { buildFallbackSequenceLabel } from '../constants/labels';
+import { LINE_COLORS } from '../shared/constants/lineColors';
+import { buildFallbackSequenceLabel } from '../shared/constants/labels';
 import stationsData from '../data/stations.json';
 
 const allStations = stationsData as Station[];

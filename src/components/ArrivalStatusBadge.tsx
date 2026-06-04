@@ -1,13 +1,13 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { useTheme } from '../theme';
-import { ARRIVAL_CODE } from '../constants/arrivalCodes';
+import { useTheme } from '../shared/theme';
+import { ARRIVAL_CODE } from '../shared/constants/arrivalCodes';
 import {
   TRAIN_TYPE_LABEL,
   TRAIN_TYPE_VARIANT,
   type BadgeVariant,
   type TrainType,
-} from '../constants/trainTypes';
+} from '../shared/constants/trainTypes';
 
 interface Props {
   isLastTrain?: boolean;

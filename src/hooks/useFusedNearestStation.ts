@@ -23,13 +23,13 @@ import {
   estimateStationProgress,
 } from '../utils/stationProgressEstimator';
 import { hopTimeMsAt } from '../utils/hopTime';
-import { MAX_STATION_DISTANCE_KM } from '../constants/location';
+import { MAX_STATION_DISTANCE_KM } from '../shared/constants/location';
 import {
   MAX_ACTIVE_LINES,
   MAX_FUSION_DELTA_KM,
   MAX_FUSION_DISTANCE_KM,
   POSITION_TRAIN_TTL_MS,
-} from '../constants/realtime';
+} from '../shared/constants/realtime';
 import type { LinePositions } from '../api/positionApi';
 import type { ArrivalInfo, StationArrival } from '../api/arrivalApi';
 import type { BoardingLock } from '../types/boardingLock';
@@ -66,7 +66,7 @@ interface UseFusedNearestStationReturn {
    *  GPS fallback 경로에 의존하는 호출자(예: 표시부)는 이 값으로 "위치 확인 중" UX를 띄울 수 있다. */
   locationUncertain: boolean;
   /** #852 — GPS watch 구독 활성 여부(FG only). BG/silent push wake 시 'bg' — 디버그 표기용. */
-  gpsActive: import('../constants/gpsStatus').GpsActiveState;
+  gpsActive: import('../shared/constants/gpsStatus').GpsActiveState;
   /** #852 — 마지막 신뢰 fix epoch ms. null = 한 번도 fix 없음. 디버그 표기용. */
   lastFixAtMs: number | null;
   /**

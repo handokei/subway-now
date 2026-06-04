@@ -79,8 +79,8 @@ import type { AlarmEvent } from '../../utils/stationAlarm';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
 import '../../tasks/backgroundLocationTask';
 import { BACKGROUND_LOCATION_TASK } from '../../tasks/backgroundLocationTask';
-import { MAX_ACCURACY_M, MAX_LOCATION_AGE_MS } from '../../constants/location';
-import { ALARM_EVENT_KEY } from '../../constants/storageKeys';
+import { MAX_ACCURACY_M, MAX_LOCATION_AGE_MS } from '../../shared/constants/location';
+import { ALARM_EVENT_KEY } from '../../shared/constants/storageKeys';
 import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 // ── 픽스처 ──

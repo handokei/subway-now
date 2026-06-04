@@ -13,7 +13,7 @@
 
 import { useCallback, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { APNS_TOKEN_KEY, TELEMETRY_LAST_FLUSH_KEY } from '../constants/storageKeys';
+import { APNS_TOKEN_KEY, TELEMETRY_LAST_FLUSH_KEY } from '../shared/constants/storageKeys';
 import { getAlarmLog } from '../utils/alarmLog';
 import {
   aggregateSilentPushEntries,

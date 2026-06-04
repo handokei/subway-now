@@ -1,6 +1,6 @@
 import { createLogger } from '../utils/logger';
-import { parseTrainTypeFromDirectAt, type TrainType } from '../constants/trainTypes';
-import { getLineApiName } from '../constants/lineApiNames';
+import { parseTrainTypeFromDirectAt, type TrainType } from '../shared/constants/trainTypes';
+import { getLineApiName } from '../shared/constants/lineApiNames';
 import type { LineNumber } from '../types/station';
 
 const log = createLogger('positionApi');

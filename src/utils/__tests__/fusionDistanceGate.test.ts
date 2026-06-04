@@ -1,5 +1,5 @@
 import { passesFusionDistanceGate } from '../fusionDistanceGate';
-import { MAX_ACCURACY_M } from '../../constants/location';
+import { MAX_ACCURACY_M } from '../../shared/constants/location';
 import type { NearestStationResult, Station } from '../../types/station';
 
 function makeStation(id: string, lat: number, lng: number): Station {

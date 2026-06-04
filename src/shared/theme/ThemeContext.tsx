@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, type ReactNode } from 'react';
 import { useColorScheme } from 'react-native';
 import { lightColors, darkColors, type ThemeColors } from './theme';
-import { useAppStore } from '../store/useAppStore';
+import { useAppStore } from '../../store/useAppStore';
 
 interface ThemeContextValue {
   colors: ThemeColors;

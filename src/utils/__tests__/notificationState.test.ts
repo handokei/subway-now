@@ -14,7 +14,7 @@ import {
   LAST_NOTIFIED_STATION_KEY,
   FIRED_ALARMS_KEY,
   LAST_FIRED_ALARM_STATION_NAME_KEY,
-} from '../../constants/storageKeys';
+} from '../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),

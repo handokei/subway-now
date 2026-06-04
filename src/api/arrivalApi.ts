@@ -1,6 +1,6 @@
 import { createLogger } from '../utils/logger';
-import { parseTrainType, type TrainType } from '../constants/trainTypes';
-import { subwayIdToLine } from '../constants/lineApiNames';
+import { parseTrainType, type TrainType } from '../shared/constants/trainTypes';
+import { subwayIdToLine } from '../shared/constants/lineApiNames';
 import { findLineByStationName } from '../utils/stationLookup';
 import { buildScheduleArrival, hasHeadwayData } from '../utils/scheduleFallback';
 import type { LineNumber } from '../types/station';

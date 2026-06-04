@@ -3,7 +3,7 @@ import { StyleSheet } from 'react-native';
 import { screen } from '@testing-library/react-native';
 import { ArrivalStatusBadge } from '../ArrivalStatusBadge';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
-import { ARRIVAL_CODE } from '../../constants/arrivalCodes';
+import { ARRIVAL_CODE } from '../../shared/constants/arrivalCodes';
 
 describe('ArrivalStatusBadge', () => {
   it('표시할 배지가 없으면 null 반환', () => {

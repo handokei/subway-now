@@ -7,7 +7,7 @@ import {
   BAROMETER_DPDT_WINDOW_MS,
   BAROMETER_RING_BUFFER_TTL_MS,
   BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
-} from '../../constants/barometer';
+} from '../../shared/constants/barometer';
 
 const NOW = 1_700_000_000_000; // 고정 epoch (테스트 결정성 확보)
 

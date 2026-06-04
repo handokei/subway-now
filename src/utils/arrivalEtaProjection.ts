@@ -1,6 +1,6 @@
 import type { ArrivalInfo } from '../api/arrivalApi';
 import type { Station } from '../types/station';
-import { ARRIVAL_CODE } from '../constants/arrivalCodes';
+import { ARRIVAL_CODE } from '../shared/constants/arrivalCodes';
 
 /**
  * ADR-008 ② ArrivalEtaStrategy의 순수 함수 코어 (Stage 2, #740).

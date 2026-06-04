@@ -1,5 +1,5 @@
 import { haversine } from './haversine';
-import { DISMISS_SILENCE_MS, DISMISS_SILENCE_RADIUS_M } from '../constants/alarmSilence';
+import { DISMISS_SILENCE_MS, DISMISS_SILENCE_RADIUS_M } from '../shared/constants/alarmSilence';
 import type { DismissSilenceState } from './dismissSilenceStorage';
 
 export type DismissSilenceDecision =

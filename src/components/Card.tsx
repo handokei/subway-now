@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { StyleSheet, View, type ViewStyle } from 'react-native';
-import { useTheme, radius, spacing } from '../theme';
+import { useTheme, radius, spacing } from '../shared/theme';
 
 interface Props {
   children: ReactNode;

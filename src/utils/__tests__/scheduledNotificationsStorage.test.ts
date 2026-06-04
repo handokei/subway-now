@@ -5,7 +5,7 @@ import {
   getScheduledNotificationIds,
   removeScheduledNotificationIds,
 } from '../scheduledNotificationsStorage';
-import { SCHEDULED_NOTIFICATIONS_KEY } from '../../constants/storageKeys';
+import { SCHEDULED_NOTIFICATIONS_KEY } from '../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),

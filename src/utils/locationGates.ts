@@ -4,7 +4,7 @@ import {
   MAX_LOCATION_AGE_MS,
   MAX_PLAUSIBLE_SPEED_MPS,
   MIN_JUMP_DISTANCE_M,
-} from '../constants/location';
+} from '../shared/constants/location';
 import { haversine } from './haversine';
 
 export function isLocationFresh(timestamp: number | undefined): boolean {

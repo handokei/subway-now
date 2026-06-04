@@ -1,5 +1,5 @@
 import type { StationArrival } from '../api/arrivalApi';
-import { ARRIVAL_CODE } from '../constants/arrivalCodes';
+import { ARRIVAL_CODE } from '../shared/constants/arrivalCodes';
 
 /**
  * 도착정보 응답에서 lock된 사용자 열차의 arrivalCode가 "곧 도착"(ENTERING/ARRIVED)인지 판정.

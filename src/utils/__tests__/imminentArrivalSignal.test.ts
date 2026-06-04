@@ -1,5 +1,5 @@
 import { isImminentByArrivalCode } from '../imminentArrivalSignal';
-import { ARRIVAL_CODE } from '../../constants/arrivalCodes';
+import { ARRIVAL_CODE } from '../../shared/constants/arrivalCodes';
 import type { ArrivalInfo, StationArrival } from '../../api/arrivalApi';
 
 function makeTrain(trainCode: string, arrivalCode: number): ArrivalInfo {

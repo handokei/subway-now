@@ -5,7 +5,7 @@ import {
   type Route,
 } from './stationRoute';
 import type { Station } from '../types/station';
-import { MAX_INTER_STATION_M } from '../constants/routeProgress';
+import { MAX_INTER_STATION_M } from '../shared/constants/routeProgress';
 
 // 위도 1° ≒ 111.32km (적도 기준). 서울 위도(~37.5°)에서도 위도 방향 거리는 변하지 않음.
 // 경도 1°는 위도에 따라 cos(lat)배. 서울 시내(수십 km 범위)에서 등각도 평면 근사는

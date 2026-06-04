@@ -110,8 +110,8 @@ import {
   DESTINATION_KEY,
   LAST_NOTIFIED_STATION_KEY,
   FIRED_ALARMS_KEY,
-} from '../../constants/storageKeys';
-import { MAX_LOCATION_AGE_MS, MAX_ACCURACY_M } from '../../constants/location';
+} from '../../shared/constants/storageKeys';
+import { MAX_LOCATION_AGE_MS, MAX_ACCURACY_M } from '../../shared/constants/location';
 import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 // ── 테스트 버퍼 상수: 임계값 안쪽/바깥쪽임을 이름으로 드러낸다 ──

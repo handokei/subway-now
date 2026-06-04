@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import stationsData from '../data/stations.json';
 import type { Station } from '../types/station';
 import { matchesStationQuery } from '../utils/stationDisplay';
-import { useTheme, spacing, radius } from '../theme';
+import { useTheme, spacing, radius } from '../shared/theme';
 import { StationSuggestionList } from './StationSuggestionList';
 
 const allStations = stationsData as Station[];

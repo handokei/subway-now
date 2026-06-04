@@ -1,7 +1,7 @@
 import { pickFusedStation } from '../pickFusedStation';
 import type { NearestStationResult } from '../../types/station';
 import type { StationArrival, ArrivalInfo } from '../../api/arrivalApi';
-import { ARRIVAL_CODE } from '../../constants/arrivalCodes';
+import { ARRIVAL_CODE } from '../../shared/constants/arrivalCodes';
 import { MOCK_STATIONS } from '../../testUtils/fixtures';
 
 const NOW = 1_700_000_000_000; // 신선한 receivedAtMs

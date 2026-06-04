@@ -14,8 +14,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { useStickyStation, type StickyFixInput, type StickyMotionInput } from '../useStickyStation';
-import { STICKY_TTL_MS } from '../../constants/stickyStation';
-import { STICKY_STATION_KEY } from '../../constants/storageKeys';
+import { STICKY_TTL_MS } from '../../shared/constants/stickyStation';
+import { STICKY_STATION_KEY } from '../../shared/constants/storageKeys';
 import * as fusionDebugBuffer from '../../utils/fusionDebugBuffer';
 import type { Station } from '../../types/station';
 

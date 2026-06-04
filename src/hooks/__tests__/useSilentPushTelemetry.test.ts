@@ -41,7 +41,7 @@ import {
   flushSilentPushTelemetry,
   TELEMETRY_FLUSH_INTERVAL_MS,
 } from '../useSilentPushTelemetry';
-import { APNS_TOKEN_KEY, TELEMETRY_LAST_FLUSH_KEY } from '../../constants/storageKeys';
+import { APNS_TOKEN_KEY, TELEMETRY_LAST_FLUSH_KEY } from '../../shared/constants/storageKeys';
 import type { AlarmLogEntry } from '../../utils/alarmLog';
 
 function silentPushReceivedEntry(ts: number): AlarmLogEntry {

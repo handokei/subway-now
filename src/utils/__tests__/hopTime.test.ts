@@ -1,5 +1,5 @@
 import { hopTimeMsForSegment, hopTimeMsAt, hopsElapsedFrom } from '../hopTime';
-import { HOP_TIME_MS } from '../../constants/boardingLock';
+import { HOP_TIME_MS } from '../../shared/constants/boardingLock';
 import type { Station } from '../../types/station';
 
 jest.mock('../stationRoute', () => ({

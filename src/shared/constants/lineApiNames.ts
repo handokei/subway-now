@@ -1,4 +1,4 @@
-import type { LineNumber } from '../types/station';
+import type { LineNumber } from '../../types/station';
 
 /**
  * 서울 열린데이터 API `realtimePosition` 호출 시 `subwayNm` 파라미터로 사용하는 호선명.

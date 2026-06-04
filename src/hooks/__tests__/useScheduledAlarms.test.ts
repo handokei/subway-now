@@ -7,7 +7,7 @@ import {
   scheduleAlarmsForRoute,
   cancelScheduledAlarms,
 } from '../../utils/alarmScheduler';
-import { TRIP_TRAIN_CODE_KEY } from '../../constants/storageKeys';
+import { TRIP_TRAIN_CODE_KEY } from '../../shared/constants/storageKeys';
 import type { Station } from '../../types/station';
 import type { StationArrival } from '../../api/arrivalApi';
 import { makeDirectRoute } from '../../testUtils/routeFixtures';

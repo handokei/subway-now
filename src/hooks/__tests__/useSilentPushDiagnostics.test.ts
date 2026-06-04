@@ -33,7 +33,7 @@ import {
   ROUTE_KEY,
   DESTINATION_KEY,
   LAST_NOTIFIED_STATION_KEY,
-} from '../../constants/storageKeys';
+} from '../../shared/constants/storageKeys';
 
 const flushPromises = () => new Promise((resolve) => setImmediate(resolve));
 

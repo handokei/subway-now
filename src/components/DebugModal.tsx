@@ -12,8 +12,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/useAppStore';
-import { isDebugModalEnabled } from '../constants/debugFlags';
-import type { GpsActiveState } from '../constants/gpsStatus';
+import { isDebugModalEnabled } from '../shared/constants/debugFlags';
+import type { GpsActiveState } from '../shared/constants/gpsStatus';
 import { formatClockTimeWithSeconds } from '../utils/formatTime';
 import { useFusedNearestStation } from '../hooks/useFusedNearestStation';
 import { useArrivalInfo } from '../hooks/useArrivalInfo';
@@ -28,7 +28,7 @@ import {
   summarizeAlarmLogBySource,
   type AlarmLogEntry,
 } from '../utils/alarmLog';
-import { SILENT_PUSH_LABELS, buildSilentPushCountValue } from '../constants/labels';
+import { SILENT_PUSH_LABELS, buildSilentPushCountValue } from '../shared/constants/labels';
 import {
   clearFusionDebugEntries,
   getFusionDebugEntries,
@@ -42,7 +42,7 @@ import {
 } from '../utils/scheduledNotificationsDump';
 import type { FusionConfidence, FusionSource } from '../utils/pickFusedStation';
 import type { NearestStationResult } from '../types/station';
-import { useTheme, spacing, radius, typography } from '../theme';
+import { useTheme, spacing, radius, typography } from '../shared/theme';
 
 function formatTime(ts: number): string {
   const d = new Date(ts);

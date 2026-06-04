@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { FIRED_PUSH_IDS_KEY } from '../constants/storageKeys';
+import { FIRED_PUSH_IDS_KEY } from '../shared/constants/storageKeys';
 import { createLogger } from './logger';
 
 // #574 P2e — silent push fire/dedup 시점에 pushId를 기록하고, 동일 pushId의 alert push가

@@ -18,7 +18,7 @@ import {
 import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
 import { evaluateDismissSilence } from './dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from './dismissSilenceStorage';
-import { MAX_STATION_DISTANCE_KM } from '../constants/location';
+import { MAX_STATION_DISTANCE_KM } from '../shared/constants/location';
 import type { LineNumber, NearestStationResult, Station } from '../types/station';
 import type { Route } from './stationRoute';
 import type { AlarmEvent } from './stationAlarm';

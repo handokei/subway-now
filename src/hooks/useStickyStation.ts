@@ -23,8 +23,8 @@
 import { useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { NearestStationResult, Station } from '../types/station';
-import { STICKY_STATION_KEY } from '../constants/storageKeys';
-import { STICKY_LOCK_CONSECUTIVE_COUNT } from '../constants/stickyStation';
+import { STICKY_STATION_KEY } from '../shared/constants/storageKeys';
+import { STICKY_LOCK_CONSECUTIVE_COUNT } from '../shared/constants/stickyStation';
 import {
   isGoodFix,
   shouldUnlockByDistance,

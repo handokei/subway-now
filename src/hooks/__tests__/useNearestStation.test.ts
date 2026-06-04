@@ -4,13 +4,13 @@ import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNearestStation } from '../useNearestStation';
 import * as findNearestStationModule from '../../utils/findNearestStation';
-import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY, MAX_LOCATION_AGE_MS } from '../../constants/location';
-import { BG_LAST_STATION_KEY } from '../../constants/storageKeys';
+import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY, MAX_LOCATION_AGE_MS } from '../../shared/constants/location';
+import { BG_LAST_STATION_KEY } from '../../shared/constants/storageKeys';
 
 jest.mock('expo-location');
 
 const e2eState = { isMock: false };
-jest.mock('../../constants/e2e', () => ({
+jest.mock('../../shared/constants/e2e', () => ({
   get IS_E2E_MOCK() {
     return e2eState.isMock;
   },

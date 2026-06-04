@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef } from 'react';
 import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTranslation } from 'react-i18next';
-import { SLEEP_MODE_GUIDE_SHOWN_KEY } from '../constants/storageKeys';
+import { SLEEP_MODE_GUIDE_SHOWN_KEY } from '../shared/constants/storageKeys';
 
 export function useSleepModeGuide(): (onConfirm: () => void) => void {
   const shownRef = useRef(false);

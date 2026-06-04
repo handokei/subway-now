@@ -3,7 +3,7 @@ import { renderHook } from '@testing-library/react-native';
 import * as RN from 'react-native';
 import { ThemeProvider, useTheme } from '../ThemeContext';
 import { lightColors, darkColors } from '../theme';
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore } from '../../../store/useAppStore';
 
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');
 

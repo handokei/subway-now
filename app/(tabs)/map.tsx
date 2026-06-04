@@ -10,13 +10,13 @@ import { MapSearchBar } from '../../src/components/MapSearchBar';
 import { LocationStateView } from '../../src/components/LocationStateView';
 import { StatusChip } from '../../src/components/StatusChip';
 import stationsData from '../../src/data/stations.json';
-import { useTheme, spacing, radius } from '../../src/theme';
+import { useTheme, spacing, radius } from '../../src/shared/theme';
 import { useAppStore } from '../../src/store/useAppStore';
 import { LineBadge } from '../../src/components/LineBadge';
 import { getStationDisplayName } from '../../src/utils/stationDisplay';
 import { routeToCoordinates, type RouteCoordinatePath } from '../../src/utils/routeToCoordinates';
 import type { Route } from '../../src/utils/stationRoute';
-import { ROUTE_KEY } from '../../src/constants/storageKeys';
+import { ROUTE_KEY } from '../../src/shared/constants/storageKeys';
 import {
   FAVORITE_SLOT_ICONS,
   FAVORITE_SLOT_ROLES,

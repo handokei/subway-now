@@ -1,4 +1,4 @@
-import type { TrainType } from '../constants/trainTypes';
+import type { TrainType } from '../shared/constants/trainTypes';
 import type { LineNumber } from '../types/station';
 import { EXPRESS_STOPS } from '../data/expressStops';
 

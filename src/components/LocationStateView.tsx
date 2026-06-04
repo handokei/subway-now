@@ -2,7 +2,7 @@ import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import { useTheme } from '../theme';
+import { useTheme } from '../shared/theme';
 
 interface LocationStateViewProps {
   permissionDenied: boolean;

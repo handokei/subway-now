@@ -12,7 +12,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ACTIVE_BOARDING_LINE_KEY } from '../constants/storageKeys';
+import { ACTIVE_BOARDING_LINE_KEY } from '../shared/constants/storageKeys';
 import { snapToLinePolyline } from '../utils/linePolyline';
 import { isLineNumber } from '../utils/lineGuard';
 import { findNearestStation } from '../utils/findNearestStation';

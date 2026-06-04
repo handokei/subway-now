@@ -14,7 +14,7 @@
  * directionalArrivals와 동일 정책 — 거기서 이미 진행 방향 + 노선 매칭 + arrivalSeconds>0이 필터됨).
  */
 
-import { ARRIVAL_CODE } from '../constants/arrivalCodes';
+import { ARRIVAL_CODE } from '../shared/constants/arrivalCodes';
 import type { ArrivalInfo } from '../api/arrivalApi';
 
 /**

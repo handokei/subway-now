@@ -5,8 +5,8 @@ import MapView, { Circle, Marker, Polyline, PROVIDER_DEFAULT } from 'react-nativ
 import type { Station } from '../types/station';
 import type { RouteCoordinatePath } from '../utils/routeToCoordinates';
 import { buildMapConfig } from '../utils/buildMapConfig';
-import { useTheme, withAlpha } from '../theme';
-import { LINE_BADGE_LABEL } from '../constants/lineColors';
+import { useTheme, withAlpha } from '../shared/theme';
+import { LINE_BADGE_LABEL } from '../shared/constants/lineColors';
 import { getStationDisplayName } from '../utils/stationDisplay';
 
 interface StationMapProps {
