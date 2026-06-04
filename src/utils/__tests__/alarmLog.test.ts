@@ -824,41 +824,29 @@ describe('alarmLog', () => {
 
     // #868 — trip-ended 수신 적재. station name 자리에 `trip-ended:${reason}`을 인코딩해
     // DebugModal에서 reason을 가시화. kind/phaseId는 trip 종료라 의미 없음.
-    it('logSilentPushTripEndedReceived: stationName=trip-ended:${reason}, sentAt/receivedAt 적재 (#868)', async () => {
-      logSilentPushTripEndedReceived({
-        reason: 'eta-missing',
-        sentAt: 1_780_000_000_000,
-        receivedAt: 1_780_000_001_500,
-      });
-      await flushAlarmLog();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0]).toMatchObject({
-        ts: 1_780_000_001_500,
-        source: 'silent-push-received',
-        outcome: 'received',
-        stationName: 'trip-ended:eta-missing',
-        sentAt: 1_780_000_000_000,
-        receivedAt: 1_780_000_001_500,
-      });
-      expect(saved[0].kind).toBeUndefined();
-      expect(saved[0].phaseId).toBeUndefined();
-    });
-
-    it('logSilentPushTripEndedReceived: sentAt 누락이면 undefined로 적재 (#868)', async () => {
-      logSilentPushTripEndedReceived({
-        reason: 'destination-arrived',
-        sentAt: undefined,
-        receivedAt: 1_780_000_001_500,
-      });
-      await flushAlarmLog();
-
-      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
-      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved[0].sentAt).toBeUndefined();
-      expect(saved[0].stationName).toBe('trip-ended:destination-arrived');
-    });
+    it.each<['eta-missing' | 'destination-arrived', number | undefined]>([
+      ['eta-missing', 1_780_000_000_000],
+      ['destination-arrived', undefined],
+    ])(
+      'logSilentPushTripEndedReceived reason=%s sentAt=%s 적재 (#868)',
+      async (reason, sentAt) => {
+        const receivedAt = 1_780_000_001_500;
+        logSilentPushTripEndedReceived({ reason, sentAt, receivedAt });
+        await flushAlarmLog();
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved[0]).toMatchObject({
+          ts: receivedAt,
+          source: 'silent-push-received',
+          outcome: 'received',
+          stationName: `trip-ended:${reason}`,
+          receivedAt,
+        });
+        expect(saved[0].sentAt).toBe(sentAt);
+        expect(saved[0].kind).toBeUndefined();
+        expect(saved[0].phaseId).toBeUndefined();
+      },
+    );
 
     it('logSilentPushFired: 게이트 통과 후 발사 1건 적재 (#478 PR 1-2)', async () => {
       logSilentPushFired({

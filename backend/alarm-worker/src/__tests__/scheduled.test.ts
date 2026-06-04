@@ -1245,26 +1245,27 @@ describe('runScheduled — trip-ended silent push (#868)', () => {
     return body.data;
   }
 
+  // 본 describe 안에서만 쓰이는 fixture — makeLockTrip은 outer scope에 있어 재사용 불가.
+  function makeEtaThresholdTrip(token: string, missCount: number) {
+    return makeTrip({
+      token,
+      route: { type: 'direct', line: '7', stops: 2 },
+      waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
+      boardingLock: {
+        trainCode: '7246',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW,
+        segmentStations: ['용마산', '중곡', '군자'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+      consecutiveEtaMissing: missCount,
+    });
+  }
+
   it('fires trip-ended push (reason=eta-missing) when consecutiveEtaMissing exceeds threshold', async () => {
     const kv = new InMemoryKV();
-    // makeLockTrip은 inner describe scope이므로 같은 fixture를 인라인 재구성.
-    await putTrip(
-      kv as unknown as KVNamespace,
-      makeTrip({
-        token: 'end-tok',
-        route: { type: 'direct', line: '7', stops: 2 },
-        waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
-        boardingLock: {
-          trainCode: '7246',
-          line: '7',
-          subwayId: '1007',
-          selectedDepartureTime: NOW,
-          segmentStations: ['용마산', '중곡', '군자'],
-          expiresAt: NOW + 60 * 60_000,
-        },
-        consecutiveEtaMissing: 4, // 임계(5) -1
-      }),
-    );
+    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('end-tok', 4));
     const fetchImpl = makeOkFetch();
     // arrivals 비어 있음 → estimate=null → miss 1 더 → 5 도달 → auto-end.
     // top-level makeSeoul은 positions endpoint도 같은 fetchImpl을 사용 — realtimePositionList 키가
@@ -1344,23 +1345,7 @@ describe('runScheduled — trip-ended silent push (#868)', () => {
 
   it('#868 P2-1 — trip-ended push fetch throw해도 cleanup 흐름 계속 (trip 삭제됨)', async () => {
     const kv = new InMemoryKV();
-    await putTrip(
-      kv as unknown as KVNamespace,
-      makeTrip({
-        token: 'thr-tok',
-        route: { type: 'direct', line: '7', stops: 2 },
-        waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
-        boardingLock: {
-          trainCode: '7246',
-          line: '7',
-          subwayId: '1007',
-          selectedDepartureTime: NOW,
-          segmentStations: ['용마산', '중곡', '군자'],
-          expiresAt: NOW + 60 * 60_000,
-        },
-        consecutiveEtaMissing: 4,
-      }),
-    );
+    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('thr-tok', 4));
     // trip-ended push만 reject — reschedule/LA push는 정상.
     const throwingFetch = vi.fn((url: unknown, init?: { body?: string }) => {
       const body = typeof init?.body === 'string' ? init.body : '';
@@ -1383,23 +1368,7 @@ describe('runScheduled — trip-ended silent push (#868)', () => {
 
   it('does not fire trip-ended push when miss counter increments below threshold', async () => {
     const kv = new InMemoryKV();
-    await putTrip(
-      kv as unknown as KVNamespace,
-      makeTrip({
-        token: 'mid-tok',
-        route: { type: 'direct', line: '7', stops: 2 },
-        waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
-        boardingLock: {
-          trainCode: '7246',
-          line: '7',
-          subwayId: '1007',
-          selectedDepartureTime: NOW,
-          segmentStations: ['용마산', '중곡', '군자'],
-          expiresAt: NOW + 60 * 60_000,
-        },
-        consecutiveEtaMissing: 1,
-      }),
-    );
+    await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('mid-tok', 1));
     const fetchImpl = makeOkFetch();
     await runScheduled(makeEnv(kv), {
       seoul: makeSeoul([]),
