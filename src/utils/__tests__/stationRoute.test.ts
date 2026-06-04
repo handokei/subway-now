@@ -361,11 +361,11 @@ describe('buildJourneyDisplay', () => {
 describe('calculateETA', () => {
   it('DirectRoute일 때 대기시간 + 정거장*2분을 반환한다', () => {
     const route: DirectRoute = makeDirectRoute(5, '2');
-    // 3분 대기 + 5*2분 = 13분
+    // 3분 대기 + 5*2분 = 13분 (환승 0 → leg wait 0)
     expect(calculateETA(3, route)).toBe(13);
   });
 
-  it('TransferRoute일 때 대기시간 + 정거장*2분 + 실측 환승시간을 반환한다', () => {
+  it('TransferRoute일 때 출발 대기 + 운행 + 환승 leg 대기(#851)를 모두 합산한다', () => {
     const route: TransferRoute = makeTransferRoute({
       transferName: '교대',
       fromLine: '2',
@@ -373,11 +373,11 @@ describe('calculateETA', () => {
       stopsToTransfer: 1,
       stopsFromTransfer: 5,
     });
-    // 2분 대기 + 6*2분 + 교대(2↔3) 환승 63초 → round(13.05)=13분 → 총 15분
-    expect(calculateETA(2, route)).toBe(15);
+    // 출발 2분 + 운행 round(12 + 63/60)=13 + 환승 leg 1*DEFAULT_WAIT(3) = 18분
+    expect(calculateETA(2, route)).toBe(18);
   });
 
-  it('MultiTransferRoute일 때 환승별 실측 시간 합산을 반환한다', () => {
+  it('MultiTransferRoute일 때 leg 수만큼 환승 대기가 합산된다(#851)', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
         { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
@@ -385,12 +385,27 @@ describe('calculateETA', () => {
       ],
       stopsAfterLastTransfer: 4,
     });
-    // 2분 대기 + 12*2분 + (잠실 158초 + 시청 84초) → round(28.0333)=28분 → 총 30분
-    expect(calculateETA(2, route)).toBe(30);
+    // 출발 2분 + 운행 round(12*2 + (158+84)/60)=28 + 환승 2*DEFAULT_WAIT(6) = 36분
+    expect(calculateETA(2, route)).toBe(36);
   });
 
   it('route가 null이면 대기시간만 반환한다', () => {
     expect(calculateETA(5, null)).toBe(5);
+  });
+
+  // #851 회귀: 용마산(7) → 건대입구 환승 → 성수(2) 실측 데이터 기반
+  // 7호선 용마산→건대입구 320s(5.33min) + 환승 7|2|건대입구 64s(1.07min)
+  // + 2호선 건대입구→성수 90s(1.5min) = 474s ≈ 7.9 → round 8min 운행.
+  // 환승 leg wait 3min 포함, 출발 nextTrainMinutes=0이면 총 11분.
+  // 기존 버그: 환승 leg wait 누락 → 8분으로 과소 표기 (실측에선 사용자가 환승역 직전이라 5분 표시).
+  it('#851 용마산→성수 transfer route는 환승 leg 대기를 합산한다', () => {
+    const route = findRoute('7-015', '2-011');
+    expect(route).not.toBeNull();
+    expect(route!.type).toBe('transfer');
+    // nextTrainMinutes=0 가정: 운행(8) + 환승 leg wait(3) = 11분
+    expect(calculateETA(0, route)).toBeGreaterThanOrEqual(7);
+    // calculateStaticETA와 일관 (출발 대기 fallback 3 + 환승 leg wait 3 + 운행 8 = 14)
+    expect(calculateStaticETA(route)).toBeGreaterThanOrEqual(7);
   });
 });
 
@@ -645,8 +660,8 @@ describe('환승역별 실측 환승시간 반영', () => {
       transferName: '존재하지않는환승역', fromLine: '2', toLine: '3',
       stopsToTransfer: 1, stopsFromTransfer: 4,
     });
-    // 0분 대기 + round(5*2 + 180/60) = 13분
-    expect(calculateETA(0, route)).toBe(13);
+    // 0분 출발 대기 + round(5*2 + 180/60)=13 + 환승 leg 대기 1*DEFAULT_WAIT(3) = 16분 (#851)
+    expect(calculateETA(0, route)).toBe(16);
   });
 
   it('multi-transfer는 환승역별 실측 시간을 누적 합산한다', () => {
