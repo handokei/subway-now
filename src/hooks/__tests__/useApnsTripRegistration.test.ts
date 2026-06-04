@@ -647,6 +647,21 @@ describe('useApnsTripRegistration', () => {
       const args = mockRegister.mock.calls[0][0];
       expect(args.boardingLock).toBeUndefined();
     });
+
+    it('#865 — SCHED-* 시간표 fallback trainCode면 payload.boardingLock 누락 (backend 누설 차단)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+          boardingLock: { ...lockFor7, trainCode: 'SCHED-UP-1' },
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
+      const args = mockRegister.mock.calls[0][0];
+      expect(args.boardingLock).toBeUndefined();
+    });
   });
 
   describe('#767 boardingLock 해제 race 차단 (debounce)', () => {
