@@ -1328,160 +1328,111 @@ describe('DebugModal — fusedSpeed fallback (#853)', () => {
     rows: ReturnType<typeof __test__.buildGpsRows>,
   ): string => rows.find((r) => r.label === label)?.value ?? '';
 
+  // SonarCloud CPD 회피: 4개 buildGpsRows 테스트가 동일 baseline. helper로 공통 args 묶음.
+  type GpsArgs = Parameters<typeof __test__.buildGpsRows>[0];
+  const gpsRowsArgs = (overrides: Partial<GpsArgs> = {}): GpsArgs => ({
+    userLocation: { lat: 37.5, lng: 127 },
+    speedMps: null,
+    accuracyMeters: null,
+    fusedSpeed: null,
+    ...overrides,
+  });
+
+  // SonarCloud CPD 회피: 3개 buildDumpText 테스트가 동일 baseline. silentPush/fusion 블록 helper로 묶음.
+  const baselineSilentPush = {
+    apnsToken: null,
+    activeTripToken: null,
+    apnsEnv: 'sandbox' as const,
+    permissionStatus: null,
+    taskRegistrationState: 'unknown' as const,
+    taskRegistrationError: null,
+    lastReceivedAt: null,
+    lastFiredAt: null,
+    lastSkippedAt: null,
+    hasRoute: false,
+    destinationId: null,
+    lastNotifiedStationId: null,
+  };
+  type DumpArgs = Parameters<typeof __test__.buildDumpText>[0];
+  const fusedDumpArgs = (overrides: Partial<DumpArgs> = {}): DumpArgs => ({
+    userLocation: { lat: 37.5, lng: 127 },
+    speedMps: null,
+    accuracyMeters: null,
+    nearestName: '강남',
+    nearestDistanceM: 100,
+    variants: [],
+    fusion: {
+      confidence: 'gps-only',
+      source: 'gps',
+      fusedLabel: '-',
+      gpsLabel: '-',
+      differs: false,
+      candidateTrains: null,
+    },
+    arrivalSummary: '-',
+    isMock: false,
+    silentPush: baselineSilentPush,
+    logs: [],
+    ...overrides,
+  });
+
   it('buildGpsRows: userLocation 없으면 빈 배열', () => {
-    const rows = __test__.buildGpsRows({
-      userLocation: null,
-      speedMps: 1,
-      accuracyMeters: 10,
-      fusedSpeed: null,
-    });
+    const rows = __test__.buildGpsRows(
+      gpsRowsArgs({ userLocation: null, speedMps: 1, accuracyMeters: 10 }),
+    );
     expect(rows).toEqual([]);
   });
 
   it('buildGpsRows: GPS speed 정상 + fused 미전달이면 fused 라벨이 (no fused signal)', () => {
-    const rows = __test__.buildGpsRows({
-      userLocation: { lat: 37.5, lng: 127.0 },
-      speedMps: 1.13,
-      accuracyMeters: 12,
-      fusedSpeed: null,
-    });
+    const rows = __test__.buildGpsRows(
+      gpsRowsArgs({ speedMps: 1.13, accuracyMeters: 12 }),
+    );
     expect(fusedRowFor('speed', rows)).toBe('1.13 m/s');
     expect(fusedRowFor('fused', rows)).toBe(__test__.NO_FUSED_SIGNAL_LABEL);
     expect(fusedRowFor('accuracy', rows)).toBe('12 m');
   });
 
   it('buildGpsRows: GPS speed=null이어도 fused signal 전달되면 km/h + source 노출', () => {
-    const rows = __test__.buildGpsRows({
-      userLocation: { lat: 37.5, lng: 127.0 },
-      speedMps: null,
-      accuracyMeters: null,
-      fusedSpeed: { kmh: 18.4, source: 'position-train' },
-    });
+    const rows = __test__.buildGpsRows(
+      gpsRowsArgs({ fusedSpeed: { kmh: 18.4, source: 'position-train' } }),
+    );
     expect(fusedRowFor('speed', rows)).toBe('-');
     expect(fusedRowFor('fused', rows)).toBe('18.4 km/h (position-train)');
     expect(fusedRowFor('accuracy', rows)).toBe('-');
   });
 
   it('buildGpsRows: fused signal source는 FusionSource enum 그대로 노출(kalman/mapMatched 등 후속 확장 시 라벨 변경 불필요)', () => {
-    const rows = __test__.buildGpsRows({
-      userLocation: { lat: 37.5, lng: 127.0 },
-      speedMps: null,
-      accuracyMeters: null,
-      fusedSpeed: { kmh: 0, source: 'gps' },
-    });
+    const rows = __test__.buildGpsRows(
+      gpsRowsArgs({ fusedSpeed: { kmh: 0, source: 'gps' } }),
+    );
     expect(fusedRowFor('fused', rows)).toBe('0.0 km/h (gps)');
   });
 
   it('buildDumpText: fused signal 미전달이면 fused=(no fused signal) 라인', () => {
-    const dump = __test__.buildDumpText({
-      userLocation: { lat: 37.5, lng: 127.0 },
-      speedMps: null,
-      accuracyMeters: null,
-      nearestName: '강남',
-      nearestDistanceM: 100,
-      variants: [],
-      fusion: {
-        confidence: 'gps-only',
-        source: 'gps',
-        fusedLabel: '-',
-        gpsLabel: '-',
-        differs: false,
-        candidateTrains: null,
-      },
-      arrivalSummary: '-',
-      isMock: false,
-      silentPush: {
-        apnsToken: null,
-        activeTripToken: null,
-        apnsEnv: 'sandbox',
-        permissionStatus: null,
-        taskRegistrationState: 'unknown',
-        taskRegistrationError: null,
-        lastReceivedAt: null,
-        lastFiredAt: null,
-        lastSkippedAt: null,
-        hasRoute: false,
-        destinationId: null,
-        lastNotifiedStationId: null,
-      },
-      logs: [],
-    });
+    const dump = __test__.buildDumpText(fusedDumpArgs());
     expect(dump).toContain(`fused=${__test__.NO_FUSED_SIGNAL_LABEL}`);
   });
 
   it('buildDumpText: fused signal 전달 시 km/h + source 라인', () => {
-    const dump = __test__.buildDumpText({
-      userLocation: { lat: 37.5, lng: 127.0 },
-      speedMps: 1.5,
-      accuracyMeters: 10,
-      fusedSpeed: { kmh: 22.7, source: 'position' },
-      nearestName: '강남',
-      nearestDistanceM: 100,
-      variants: [],
-      fusion: {
-        confidence: 'gps-only',
-        source: 'gps',
-        fusedLabel: '-',
-        gpsLabel: '-',
-        differs: false,
-        candidateTrains: null,
-      },
-      arrivalSummary: '-',
-      isMock: false,
-      silentPush: {
-        apnsToken: null,
-        activeTripToken: null,
-        apnsEnv: 'sandbox',
-        permissionStatus: null,
-        taskRegistrationState: 'unknown',
-        taskRegistrationError: null,
-        lastReceivedAt: null,
-        lastFiredAt: null,
-        lastSkippedAt: null,
-        hasRoute: false,
-        destinationId: null,
-        lastNotifiedStationId: null,
-      },
-      logs: [],
-    });
+    const dump = __test__.buildDumpText(
+      fusedDumpArgs({
+        speedMps: 1.5,
+        accuracyMeters: 10,
+        fusedSpeed: { kmh: 22.7, source: 'position' },
+      }),
+    );
     expect(dump).toContain('fused=22.7 km/h (position)');
   });
 
   it('buildDumpText: userLocation=null이면 fused 라인 자체 미노출 ("(no location)"만)', () => {
-    const dump = __test__.buildDumpText({
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      fusedSpeed: { kmh: 5, source: 'gps' },
-      nearestName: null,
-      nearestDistanceM: null,
-      variants: [],
-      fusion: {
-        confidence: 'gps-only',
-        source: 'gps',
-        fusedLabel: '-',
-        gpsLabel: '-',
-        differs: false,
-        candidateTrains: null,
-      },
-      arrivalSummary: '-',
-      isMock: false,
-      silentPush: {
-        apnsToken: null,
-        activeTripToken: null,
-        apnsEnv: 'sandbox',
-        permissionStatus: null,
-        taskRegistrationState: 'unknown',
-        taskRegistrationError: null,
-        lastReceivedAt: null,
-        lastFiredAt: null,
-        lastSkippedAt: null,
-        hasRoute: false,
-        destinationId: null,
-        lastNotifiedStationId: null,
-      },
-      logs: [],
-    });
+    const dump = __test__.buildDumpText(
+      fusedDumpArgs({
+        userLocation: null,
+        nearestName: null,
+        nearestDistanceM: null,
+        fusedSpeed: { kmh: 5, source: 'gps' },
+      }),
+    );
     expect(dump).toContain('(no location)');
     expect(dump).not.toContain('fused=');
   });

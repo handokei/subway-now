@@ -192,12 +192,12 @@ function buildGpsRows(args: {
     { label: 'lng', value: String(args.userLocation.lng) },
     {
       label: 'speed',
-      value: args.speedMps != null ? `${args.speedMps.toFixed(2)} m/s` : '-',
+      value: args.speedMps == null ? '-' : `${args.speedMps.toFixed(2)} m/s`,
     },
     { label: 'fused', value: fusedValue },
     {
       label: 'accuracy',
-      value: args.accuracyMeters != null ? `${args.accuracyMeters.toFixed(0)} m` : '-',
+      value: args.accuracyMeters == null ? '-' : `${args.accuracyMeters.toFixed(0)} m`,
     },
   ];
 }
@@ -236,8 +236,8 @@ function buildDumpText(args: {
       : NO_FUSED_SIGNAL_LABEL;
     lines.push(
       `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}, speed=${args.speedMps ?? '-'} m/s, accuracy=${args.accuracyMeters ?? '-'} m`,
+      `fused=${fusedDump}`,
     );
-    lines.push(`fused=${fusedDump}`);
   } else {
     lines.push('(no location)');
   }
@@ -331,7 +331,7 @@ export function DebugModal(props: DebugModalProps) {
   return <DebugModalInner {...props} />;
 }
 
-function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: DebugModalProps) {
+function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<DebugModalProps>) {
   const { colors } = useTheme();
   // #458: RN Modal 안에서는 SafeAreaView가 안 먹는다(portal로 inset 컨텍스트 분리).
   // 루트 SafeAreaProvider의 insets를 hook으로 직접 받아 헤더에 manual padding.
