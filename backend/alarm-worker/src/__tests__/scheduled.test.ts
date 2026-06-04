@@ -711,6 +711,73 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     expect(stored.lastTrackedArrivalEpoch).toBeUndefined();
   });
 
+  // #864 — transfer waypoint 통과 시 lock release. 다음 cycle에서 새 leg의 trainCode를
+  // 찾지 못해 5분 만에 trip auto-end되던 회귀를 차단.
+  it('#864 — transfer waypoint advance 시 boardingLock release + progress 정리 (trip은 유지)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+        consecutiveEtaMissing: 2,
+      }),
+    );
+    // 옛 trainCode + shiftedCount가 진행 중 progress KV에 남아 있는 상태를 시뮬레이션.
+    await kv.put(
+      'progress:lock-tok',
+      JSON.stringify({ trainCode: '7246', shiftedCount: 2, lastTrackedArrivalEpoch: NOW + 5000 }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-transfer',
+    });
+    const raw = (await kv.get('trip:lock-tok')) as string;
+    expect(raw).not.toBeNull();
+    const stored = JSON.parse(raw);
+    expect(stored.boardingLock).toBeUndefined();
+    expect(stored.consecutiveEtaMissing).toBe(0);
+    expect(stored.waypoints).toHaveLength(1);
+    expect(stored.waypoints[0].stationName).toBe('아차산');
+    // P2-1: progress KV도 함께 정리 — token-refresh race에서 옛 trainCode가 progressApplies=true로
+    // 진입해 backend에 옛 lock이 부활하는 회귀를 차단.
+    expect(await kv.get('progress:lock-tok')).toBeNull();
+  });
+
+  it('#864 — intermediate waypoint advance 시 boardingLock은 유지 (같은 train 계속 추적)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '군자', line: '7', kind: 'destination' },
+        ],
+      }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('중곡', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-intermediate',
+    });
+    const stored = JSON.parse((await kv.get('trip:lock-tok')) as string);
+    expect(stored.boardingLock).toBeDefined();
+    expect(stored.boardingLock.trainCode).toBe('7246');
+    expect(stored.waypoints).toHaveLength(1);
+    expect(stored.waypoints[0].stationName).toBe('군자');
+  });
+
   it.each([
     ['destination 도착 시 trip 삭제', '군자', 'destination'] as const,
     ['마지막 intermediate 통과 후 빈 리스트면 trip 삭제', '중곡', 'intermediate'] as const,
