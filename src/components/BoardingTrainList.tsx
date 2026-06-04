@@ -8,6 +8,7 @@ import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
 import { buildDirectionMeta } from '../utils/trainLineDirection';
 import { parseArrivalDistance } from '../utils/arrivalStatusDistance';
 import { LINE_COLORS } from '../constants/lineColors';
+import { buildFallbackSequenceLabel } from '../constants/labels';
 import stationsData from '../data/stations.json';
 
 const allStations = stationsData as Station[];
@@ -55,7 +56,10 @@ interface Props {
  *       카운터는 호출자가 전달한 배열 순서를 1-indexed로 변환. 같은 trainCode가 유지되는 동안
  *       카운터 안정 → "같은 열차 지연" 신호.
  * #790: 거리 표기를 API `arvlMsg2`에서 정규식 파싱한 실거리로 변경 (`parseArrivalDistance`).
- *       비어있는 statusMessage(주로 mock/schedule fallback)는 기존 `${index+1}번째 전`로 fallback.
+ *       비어있는 statusMessage(주로 mock/schedule fallback)는 `${index+1}번째 전`로 fallback.
+ * #855: fallback 라벨을 "약 N정거장 전 (약 M분 후)"로 변경. 단위(정거장/분) 명시로 mock/schedule
+ *       fallback 시 사용자가 거리/시간을 인지할 수 있게 함. 라벨 텍스트는 `constants/labels.ts`
+ *       에 분리하여 JSX 하드코딩 금지(글로벌 룰 3).
  * #792: 종착 표기는 `parseTrainLineDirection`로 i18n 정규화한다 (기존 하드코딩 "행" 부착 제거).
  * #805: "곧 도착"/"전역 출발"/"당역 도착" 등 statusMessage가 sequence 슬롯을 차지하는 임박 상태에서
  *       도착 예정 HH:mm 시간 라벨이 같은 줄에서 가려지는 회귀가 있었다. 시간 라벨을 항상 별도 라인
@@ -106,11 +110,14 @@ export function BoardingTrainList({
         const unreachable = isUnreachable(train);
         // #792: 종착·방면 라벨을 i18n 정규화 + dedup. nextStationLabel 미전달이면 종착만.
         const metaText = buildDirectionMeta(train.destination, nextStationLabel, allStations);
-        // #790: API arvlMsg2 기반 진짜 거리 표시. 비어있으면 배열 인덱스 fallback(이전 동작 유지 —
-        // 주로 mock/schedule fallback 경로). 실 응답에서는 항상 [N]번째 전역 패턴이 들어와
-        // 사용자 의도(역 개수)와 일치한다.
+        // #790: API arvlMsg2 기반 진짜 거리 표시. 비어있으면 mock/schedule fallback 경로 —
+        // #855에서 fallback 라벨을 "약 N정거장 전 (약 M분 후)"로 단위 명시. arrivalSeconds가 0
+        // 이하면 분 라벨 생략.
         const parsedDistance = parseArrivalDistance(train.statusMessage);
-        const sequenceText = parsedDistance.length > 0 ? parsedDistance : `${index + 1}번째 전`;
+        const sequenceText =
+          parsedDistance.length > 0
+            ? parsedDistance
+            : buildFallbackSequenceLabel(index, train.arrivalSeconds);
         const arrivalText = `${formatArrivalClock(train)} 도착 예정`;
         return (
           <Pressable
