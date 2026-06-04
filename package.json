@@ -15,6 +15,8 @@
     "data:fetch-quick-exit": "node scripts/fetch-quick-exit.js",
     "data:build-transfer-times": "node scripts/build-transfer-times.js",
     "tail:capture": "scripts/capture-tail.sh",
+    "measure:blocked-reasons": "scripts/capture-blocked-reasons.sh",
+    "measure:blocked-reasons:aggregate": "node scripts/aggregate-blocked-reasons.js",
     "perf:report": "node scripts/perf-report.js",
     "e2e": "maestro test .maestro/flows/",
     "e2e:home": "maestro test .maestro/flows/home/",
