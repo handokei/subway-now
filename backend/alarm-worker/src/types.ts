@@ -214,6 +214,43 @@ export interface ReschedulePushPayload {
   sentAt: number;
 }
 
+/**
+ * Trip 자동 종료 reason (#868).
+ *   - 'eta-missing' — consecutiveEtaMissing 임계 초과 (운행 시간대 외 / trainCode 소실)
+ *   - 'destination-arrived' — 목적지 도착 또는 마지막 intermediate 통과로 trip 종료
+ *   - 'expired' — trip.expiresAt 시각 초과로 자동 만료
+ *   - 'push-unrecoverable' — APNs unrecoverable error로 trip 폐기
+ *
+ * 클라가 명시적으로 trip을 끝낸 경로(HTTP DELETE /trips/:token)는 발사 대상이 아님 —
+ * 사용자가 destination을 clear하면 이미 클라이언트 store가 정리된 상태이기 때문.
+ */
+export type TripEndedReason =
+  | 'eta-missing'
+  | 'destination-arrived'
+  | 'expired'
+  | 'push-unrecoverable';
+
+/**
+ * Trip ended silent push payload (#868).
+ * backend가 server-side로 trip을 자동 종료(eta-missing/destination-arrived/expired/push-unrecoverable)
+ * 했을 때 클라이언트의 route/destination/lock state를 동기화하기 위해 발사한다.
+ *
+ * client는 이 payload 수신 시 trip-bound storage(route, destination, boardingLock, activeTrip 등)를
+ * 일괄 cleanup한다. cleanup만 하므로 alert fallback 대상이 아니며 pushId echo 의무도 없다 (graceful loss
+ * 시에는 다음 FG 진입 시 useTripsBackendSync 등이 종국에는 hydrate로 복구).
+ *
+ * `tripToken`은 race 가드용 — backend가 trip A에 대해 push를 발사한 후 APNs latency 동안
+ * 사용자가 trip B를 새로 시작했다면, 클라는 tripToken과 현재 ACTIVE_TRIP_KEY를 비교해
+ * 불일치 시 cleanup을 skip (trip B의 storage를 잘못 파괴하는 것을 방지).
+ */
+export interface TripEndedPushPayload {
+  pushId: string;
+  kind: 'trip-ended';
+  reason: TripEndedReason;
+  sentAt: number;
+  tripToken: string;
+}
+
 /** APNs 토큰 환경. sandbox는 dev/preview/internal 빌드, production은 App Store/TestFlight. */
 export type ApnsEnv = 'sandbox' | 'production';
 

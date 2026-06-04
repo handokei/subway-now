@@ -1,5 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { TRIP_BOUND_CLEANUPS, runTripBoundCleanups } from '../tripBoundCleanups';
+import {
+  DESTINATION_KEY,
+  ROUTE_KEY,
+  BOARDING_LOCK_KEY,
+  ACTIVE_TRIP_KEY,
+} from '../../constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
@@ -12,6 +18,20 @@ describe('tripBoundCleanups', () => {
 
   it('TRIP_BOUND_CLEANUPS는 비어있지 않다 (메타 배열 self-check)', () => {
     expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThan(0);
+  });
+
+  it('#868 — runTripBoundCleanups 실행 시 DESTINATION_KEY와 핵심 trip-bound 키들이 storage에서 제거된다', async () => {
+    // BG silent push 경로에서 zustand store에 접근 불가하므로 storage 직접 제거가 유일한 경로.
+    // DESTINATION_KEY 누락 회귀 차단 (#868 P1-1).
+    (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
+    await runTripBoundCleanups();
+    const removedKeys = (AsyncStorage.removeItem as jest.Mock).mock.calls.map(
+      (c) => c[0] as string,
+    );
+    expect(removedKeys).toContain(DESTINATION_KEY);
+    expect(removedKeys).toContain(ROUTE_KEY);
+    expect(removedKeys).toContain(BOARDING_LOCK_KEY);
+    expect(removedKeys).toContain(ACTIVE_TRIP_KEY);
   });
 
   it('TRIP_BOUND_CLEANUPS의 모든 항목은 호출 가능하며 Promise를 반환하고 reject하지 않는다', async () => {

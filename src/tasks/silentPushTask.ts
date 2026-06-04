@@ -22,6 +22,7 @@ import i18next from 'i18next';
 import type { Station } from '../types/station';
 import {
   APNS_TOKEN_KEY,
+  ACTIVE_TRIP_KEY,
   DESTINATION_KEY,
   LOCKLESS_STATION_PASSED_KEY,
 } from '../constants/storageKeys';
@@ -31,10 +32,12 @@ import {
   flushAlarmLog,
   logSilentPushReceived,
   logSilentPushRescheduleReceived,
+  logSilentPushTripEndedReceived,
   logSilentPushFired,
   logSilentPushSkipped,
   type AlarmLogReason,
 } from '../utils/alarmLog';
+import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from '../utils/dismissSilenceStorage';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../utils/movementGate';
@@ -91,8 +94,43 @@ export interface RescheduleSilentPushPayload {
   pushId?: string;
 }
 
-/** extractPayload 결과 — standard silent push 또는 reschedule push. */
-export type ExtractedPayload = SilentPushPayload | RescheduleSilentPushPayload;
+/**
+ * Trip ended silent push payload (#868). 백엔드가 server-side로 trip을 자동 종료했을 때
+ * 클라이언트의 route/destination/lock state를 동기화하라는 신호. backend `apns.ts`의
+ * `TripEndedPushPayload`와 1:1.
+ *
+ * reason 타입은 backend types.ts의 `TripEndedReason`과 동일 enum literal을 사용하지만,
+ * 클라는 unknown reason도 graceful하게 처리하기 위해 string으로 받아 후처리한다.
+ * (구버전 backend 호환 + 신규 reason 추가 시 회귀 없음.)
+ */
+export interface TripEndedSilentPushPayload {
+  kind: 'trip-ended';
+  reason: TripEndedReason;
+  sentAt?: number;
+  pushId?: string;
+  /**
+   * race 가드용 trip 식별자(#868 P1-2). backend가 보낸 trip의 token — 클라가 현재
+   * ACTIVE_TRIP_KEY와 비교해 불일치 시 cleanup skip. 구버전 backend 호환을 위해 optional.
+   */
+  tripToken?: string;
+}
+
+/**
+ * Trip 자동 종료 reason — backend `types.ts`의 TripEndedReason과 정렬.
+ * 알 수 없는 reason은 'unknown'으로 정규화해 처리 (구버전 backend 호환 + cleanup은 동일).
+ */
+export type TripEndedReason =
+  | 'eta-missing'
+  | 'destination-arrived'
+  | 'expired'
+  | 'push-unrecoverable'
+  | 'unknown';
+
+/** extractPayload 결과 — standard silent push / reschedule push / trip-ended push. */
+export type ExtractedPayload =
+  | SilentPushPayload
+  | RescheduleSilentPushPayload
+  | TripEndedSilentPushPayload;
 
 /**
  * expo-notifications iOS의 `BackgroundEventTransformer.swift`가 APNs payload를
@@ -132,6 +170,10 @@ function isRescheduleCandidate(rec: Record<string, unknown>): boolean {
   return rec.kind === 'reschedule';
 }
 
+function isTripEndedCandidate(rec: Record<string, unknown>): boolean {
+  return rec.kind === 'trip-ended';
+}
+
 function findFieldsLayer(
   taskData: NotificationBackgroundTaskData['data'],
 ): Record<string, unknown> | null {
@@ -147,7 +189,13 @@ function findFieldsLayer(
     candidates.push(root);
   }
   for (const rec of candidates) {
-    if (isStandardCandidate(rec) || isRescheduleCandidate(rec)) return rec;
+    if (
+      isStandardCandidate(rec) ||
+      isRescheduleCandidate(rec) ||
+      isTripEndedCandidate(rec)
+    ) {
+      return rec;
+    }
   }
   return null;
 }
@@ -166,6 +214,8 @@ export function extractPayload(
   if (!obj) return null;
   // reschedule 분기 (#725) — schema가 standard와 다름. discriminator는 kind === 'reschedule'.
   if (obj.kind === 'reschedule') return extractReschedulePayload(obj);
+  // trip-ended 분기 (#868) — schema는 단순 (reason만). discriminator는 kind === 'trip-ended'.
+  if (obj.kind === 'trip-ended') return extractTripEndedPayload(obj);
   return extractStandardPayload(obj);
 }
 
@@ -206,6 +256,37 @@ function extractReschedulePayload(
     sentAt: validSentAt(sentAt),
     pushId: validPushId(pushId),
   };
+}
+
+/**
+ * trip-ended payload 추출 (#868). schema 최소 — discriminator(kind)와 reason만.
+ * reason이 known set에 없으면 'unknown'으로 정규화 (구버전 backend / 신규 reason 호환).
+ */
+function extractTripEndedPayload(
+  obj: Record<string, unknown>,
+): TripEndedSilentPushPayload | null {
+  const { reason, sentAt, pushId, tripToken } = obj;
+  return {
+    kind: 'trip-ended',
+    reason: normalizeTripEndedReason(reason),
+    sentAt: validSentAt(sentAt),
+    pushId: validPushId(pushId),
+    tripToken: typeof tripToken === 'string' && tripToken.length > 0 ? tripToken : undefined,
+  };
+}
+
+const KNOWN_TRIP_ENDED_REASONS: ReadonlyArray<TripEndedReason> = [
+  'eta-missing',
+  'destination-arrived',
+  'expired',
+  'push-unrecoverable',
+];
+
+function normalizeTripEndedReason(reason: unknown): TripEndedReason {
+  if (typeof reason !== 'string') return 'unknown';
+  return KNOWN_TRIP_ENDED_REASONS.includes(reason as TripEndedReason)
+    ? (reason as TripEndedReason)
+    : 'unknown';
 }
 
 function validSentAt(sentAt: unknown): number | undefined {
@@ -327,6 +408,38 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         receivedAt,
       });
       ackOutcome(payload.pushId, apnsToken, 'fired', 'reschedule-received');
+      return;
+    }
+
+    // trip-ended 분기 (#868) — backend가 server-side trip 자동 종료를 알리는 신호.
+    // route/destination/lock 등 trip-bound storage를 일괄 cleanup해 다음 FG 진입 시
+    // store hydrate가 stale state를 그대로 재현하지 않도록 한다.
+    //
+    // ack outcome='fired'는 backend pendingPushes 입장에서는 "처리 완료, alert fallback 발사 마라"
+    // 신호. trip-ended는 alert fallback 대상이 아니지만 호환을 위해 일반 silent push와 같은 의미로 ack.
+    if (payload.kind === 'trip-ended') {
+      logger.info(
+        `trip-ended received: reason=${payload.reason} tripToken=${payload.tripToken?.slice(0, 8) ?? 'unknown'} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
+      );
+      // race 가드(#868 P1-2). 신규 backend는 tripToken을 항상 보냄. 구버전(undefined)은
+      // 호환 위해 cleanup 진행 — race 가능성은 있지만 backend 배포 후 사라짐.
+      if (payload.tripToken !== undefined) {
+        const activeTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+        if (activeTripToken !== null && activeTripToken !== payload.tripToken) {
+          logger.warn(
+            `trip-ended skip: tripToken mismatch payload=${payload.tripToken.slice(0, 8)} active=${activeTripToken.slice(0, 8)}`,
+          );
+          ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}:token-mismatch`);
+          return;
+        }
+      }
+      logSilentPushTripEndedReceived({
+        reason: payload.reason,
+        sentAt: payload.sentAt,
+        receivedAt,
+      });
+      await runTripBoundCleanups();
+      ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}`);
       return;
     }
 

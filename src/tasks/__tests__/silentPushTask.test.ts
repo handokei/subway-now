@@ -20,6 +20,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 
 const mockLogSilentPushReceived = jest.fn();
 const mockLogSilentPushRescheduleReceived = jest.fn();
+const mockLogSilentPushTripEndedReceived = jest.fn();
 const mockLogSilentPushFired = jest.fn();
 const mockLogSilentPushSkipped = jest.fn();
 const mockFlushAlarmLog = jest.fn().mockResolvedValue(undefined);
@@ -27,9 +28,17 @@ jest.mock('../../utils/alarmLog', () => ({
   logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
   logSilentPushRescheduleReceived: (...args: unknown[]) =>
     mockLogSilentPushRescheduleReceived(...args),
+  logSilentPushTripEndedReceived: (...args: unknown[]) =>
+    mockLogSilentPushTripEndedReceived(...args),
   logSilentPushFired: (...args: unknown[]) => mockLogSilentPushFired(...args),
   logSilentPushSkipped: (...args: unknown[]) => mockLogSilentPushSkipped(...args),
   flushAlarmLog: () => mockFlushAlarmLog(),
+}));
+
+// #868 — trip-ended payload 수신 시 trip-bound storage cleanup.
+const mockRunTripBoundCleanups = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../store/tripBoundCleanups', () => ({
+  runTripBoundCleanups: () => mockRunTripBoundCleanups(),
 }));
 
 const mockCheckGate = jest.fn();
@@ -112,6 +121,7 @@ import {
 } from '../silentPushTask';
 import {
   APNS_TOKEN_KEY,
+  ACTIVE_TRIP_KEY,
   DESTINATION_KEY,
   LOCKLESS_STATION_PASSED_KEY,
 } from '../../constants/storageKeys';
@@ -417,6 +427,79 @@ describe('silentPushTask', () => {
             }),
           ),
         ).toMatchObject({ sentAt: undefined, pushId: undefined });
+      });
+    });
+
+    // #868 — server-side trip auto-end 신호. nextWaypoint 없이 reason만 의미 있는 payload.
+    describe('trip-ended kind (#868)', () => {
+      it('정상 trip-ended payload → TripEndedSilentPushPayload', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'trip-ended',
+              reason: 'eta-missing',
+              sentAt: 1_780_000_000_000,
+              pushId: 'uuid-te',
+            }),
+          ),
+        ).toEqual({
+          kind: 'trip-ended',
+          reason: 'eta-missing',
+          sentAt: 1_780_000_000_000,
+          pushId: 'uuid-te',
+        });
+      });
+
+      it.each([
+        ['eta-missing'],
+        ['destination-arrived'],
+        ['expired'],
+        ['push-unrecoverable'],
+      ])('known reason %s → 그대로 전달', (reason) => {
+        expect(
+          extractPayload(bgTaskData({ kind: 'trip-ended', reason })),
+        ).toMatchObject({ reason });
+      });
+
+      it('알 수 없는 reason → unknown으로 정규화 (구버전/신규 호환)', () => {
+        expect(
+          extractPayload(bgTaskData({ kind: 'trip-ended', reason: 'future-reason' })),
+        ).toMatchObject({ reason: 'unknown' });
+      });
+
+      it('reason 누락/비문자열 → unknown', () => {
+        expect(
+          extractPayload(bgTaskData({ kind: 'trip-ended' })),
+        ).toMatchObject({ reason: 'unknown' });
+        expect(
+          extractPayload(bgTaskData({ kind: 'trip-ended', reason: 42 })),
+        ).toMatchObject({ reason: 'unknown' });
+      });
+
+      it('sentAt/pushId 옵션 — 누락 시 undefined로 정리', () => {
+        expect(
+          extractPayload(bgTaskData({ kind: 'trip-ended', reason: 'expired' })),
+        ).toMatchObject({ sentAt: undefined, pushId: undefined });
+      });
+
+      it('tripToken 포함 시 그대로 전달 (race 가드용)', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ kind: 'trip-ended', reason: 'eta-missing', tripToken: 'tok-abc' }),
+          ),
+        ).toMatchObject({ tripToken: 'tok-abc' });
+      });
+
+      it('tripToken 누락/비문자열/빈 문자열 → undefined로 정규화 (구버전 backend 호환)', () => {
+        expect(
+          extractPayload(bgTaskData({ kind: 'trip-ended', reason: 'expired' })),
+        ).toMatchObject({ tripToken: undefined });
+        expect(
+          extractPayload(bgTaskData({ kind: 'trip-ended', reason: 'expired', tripToken: 42 })),
+        ).toMatchObject({ tripToken: undefined });
+        expect(
+          extractPayload(bgTaskData({ kind: 'trip-ended', reason: 'expired', tripToken: '' })),
+        ).toMatchObject({ tripToken: undefined });
       });
     });
   });
@@ -1112,6 +1195,147 @@ describe('silentPushTask', () => {
         await handleSilentPush(reschedulePayload({ pushId: 'rs-uuid' }));
         expect(mockSendPushAck).not.toHaveBeenCalled();
         expect(mockLogSilentPushRescheduleReceived).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // #868 — server-side trip 자동 종료 신호 수신 → trip-bound storage cleanup.
+    describe('trip-ended kind (#868)', () => {
+      function tripEndedPayload(extra: Record<string, unknown> = {}) {
+        return {
+          data: {
+            data: {
+              data: { kind: 'trip-ended', reason: 'eta-missing', ...extra },
+              dataString: null,
+            },
+            notification: null,
+            aps: { 'content-available': 1 },
+          },
+        };
+      }
+
+      it('trip-ended 수신 → runTripBoundCleanups 호출 + 표준 발사 경로 미진입', async () => {
+        await handleSilentPush(tripEndedPayload({ sentAt: 1_780_000_000_000 }));
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+        // standard 발사 경로는 호출되지 않아야 함.
+        expect(mockLogSilentPushReceived).not.toHaveBeenCalled();
+        expect(mockCheckGate).not.toHaveBeenCalled();
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).not.toHaveBeenCalled();
+      });
+
+      it('logSilentPushTripEndedReceived 1회 호출 + reason 보존', async () => {
+        await handleSilentPush(
+          tripEndedPayload({ reason: 'destination-arrived', sentAt: 1_780_000_000_000 }),
+        );
+        expect(mockLogSilentPushTripEndedReceived).toHaveBeenCalledTimes(1);
+        const arg = mockLogSilentPushTripEndedReceived.mock.calls[0][0];
+        expect(arg.reason).toBe('destination-arrived');
+        expect(arg.sentAt).toBe(1_780_000_000_000);
+        expect(typeof arg.receivedAt).toBe('number');
+      });
+
+      it.each([
+        ['eta-missing'],
+        ['destination-arrived'],
+        ['expired'],
+        ['push-unrecoverable'],
+      ])('known reason %s에서 cleanup 트리거', async (reason) => {
+        await handleSilentPush(tripEndedPayload({ reason }));
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+        expect(mockLogSilentPushTripEndedReceived).toHaveBeenCalledWith(
+          expect.objectContaining({ reason }),
+        );
+      });
+
+      it('알 수 없는 reason도 정규화(unknown)되어 cleanup 트리거', async () => {
+        await handleSilentPush(tripEndedPayload({ reason: 'future-reason' }));
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+        expect(mockLogSilentPushTripEndedReceived).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'unknown' }),
+        );
+      });
+
+      it('pushId 있으면 ack(fired, trip-ended:reason) 전송', async () => {
+        await handleSilentPush(tripEndedPayload({ pushId: 'te-uuid', reason: 'expired' }));
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'te-uuid',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'fired',
+          reason: 'trip-ended:expired',
+        });
+      });
+
+      it('pushId 없으면 ack 호출 안 함 — cleanup은 그대로', async () => {
+        await handleSilentPush(tripEndedPayload());
+        expect(mockSendPushAck).not.toHaveBeenCalled();
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      });
+
+      it('apnsToken null이면 pushId 있어도 ack skip — cleanup은 그대로', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) return null;
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          return null;
+        });
+        await handleSilentPush(tripEndedPayload({ pushId: 'te-uuid' }));
+        expect(mockSendPushAck).not.toHaveBeenCalled();
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      });
+
+      it('#868 P1-2 — tripToken이 ACTIVE_TRIP_KEY와 불일치하면 cleanup skip + ack는 token-mismatch reason', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === ACTIVE_TRIP_KEY) return 'NEW-TRIP-TOKEN';
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          return null;
+        });
+        await handleSilentPush(
+          tripEndedPayload({ pushId: 'te-uuid', tripToken: 'OLD-TRIP-TOKEN' }),
+        );
+        // cleanup은 호출되지 않아야 함 (다른 trip의 storage를 파괴하지 않음).
+        expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+        // ack는 그대로 전송(backend pendingPushes 정합).
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'te-uuid',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'fired',
+          reason: expect.stringContaining('token-mismatch') as unknown as string,
+        });
+      });
+
+      it('#868 P1-2 — tripToken이 ACTIVE_TRIP_KEY와 일치하면 cleanup 진행', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === ACTIVE_TRIP_KEY) return 'SAME-TRIP-TOKEN';
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          return null;
+        });
+        await handleSilentPush(tripEndedPayload({ tripToken: 'SAME-TRIP-TOKEN' }));
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      });
+
+      it('#868 P1-2 — tripToken이 payload에 없으면(구버전 backend) cleanup 진행 (호환)', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === ACTIVE_TRIP_KEY) return 'ANY-TOKEN';
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          return null;
+        });
+        // tripToken 누락 = 구버전 backend
+        await handleSilentPush(tripEndedPayload());
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      });
+
+      it('#868 P1-2 — ACTIVE_TRIP_KEY가 null(클라 이미 trip 종료)이면 cleanup 진행', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === ACTIVE_TRIP_KEY) return null;
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          return null;
+        });
+        await handleSilentPush(tripEndedPayload({ tripToken: 'OLD-TRIP-TOKEN' }));
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
       });
     });
 

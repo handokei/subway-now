@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   ROUTE_KEY,
+  DESTINATION_KEY,
   CUSTOM_ORIGIN_KEY,
   BOARDING_LOCK_KEY,
   SCHEDULED_NOTIFICATIONS_KEY,
@@ -33,6 +34,10 @@ import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dism
 export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   clearFiredAlarms,
   () => AsyncStorage.removeItem(ROUTE_KEY),
+  // #868 — silent push trip-ended 경로에서는 zustand store에 접근 불가하므로 storage를 직접 제거.
+  // setDestination(null) 경로는 useAppStore가 이미 inline으로 removeItem을 수행하지만,
+  // 멱등 호출이라 중복 해도 무해. 이 배열은 BG cleanup의 single source.
+  () => AsyncStorage.removeItem(DESTINATION_KEY),
   () => AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY),
   () => AsyncStorage.removeItem(BOARDING_LOCK_KEY),
   () => AsyncStorage.removeItem(SCHEDULED_NOTIFICATIONS_KEY),
