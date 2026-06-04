@@ -20,3 +20,18 @@ export const MAX_PLAUSIBLE_SPEED_MPS = 50;
 // 짧은 간격(< 1s) 두 fix가 거의 같은 위치일 때 d/dt가 비정상적으로 부풀어 false-positive
 // 차단이 발생하는 것을 막는다. 21:29 사고(25km)는 이 임계값보다 한참 위라 영향 없음.
 export const MIN_JUMP_DISTANCE_M = 100;
+
+// iOS CoreLocation은 속도를 측정할 수 없을 때 음수(보통 -1)를 반환한다.
+// stationary/indoor/cold-start 등에서 자주 발생 — null로 정규화해 다운스트림이
+// "측정 불가"와 "정지(0 m/s)"를 명확히 구분하도록 한다.
+// 참고: Apple docs — CLLocation.speed: "A negative value indicates an invalid speed."
+export const GPS_SPEED_INVALID = -1;
+
+/**
+ * GPS speed가 의미 있는 값인지(>= 0) 판정. null/undefined/음수는 모두 invalid.
+ * GPS_SPEED_INVALID 게이트 적용 지점이 여럿(`useNearestStation`의 fix/drop 분기 등)이라
+ * helper로 분리해 의미를 한 곳에 모은다.
+ */
+export function isValidGpsSpeedMps(value: number | null | undefined): value is number {
+  return value != null && value >= 0;
+}

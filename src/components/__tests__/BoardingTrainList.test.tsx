@@ -39,7 +39,8 @@ describe('BoardingTrainList', () => {
     );
     expect(getByTestId('boarding-train-row-T-A')).toBeTruthy();
     expect(getByTestId('boarding-train-meta-T-A').props.children).toBe('강남행');
-    expect(getByTestId('boarding-train-sequence-T-A').props.children).toBe('1번째 전');
+    // #855: statusMessage 빈 경우 fallback 라벨 "약 N정거장 전 (약 M분 후)" — arrivalSeconds=180 → 3분.
+    expect(getByTestId('boarding-train-sequence-T-A').props.children).toBe('약 1정거장 전 (약 3분 후)');
   });
 
   it('#634 도착 시각을 receivedAtMs + arrivalSeconds 기반 HH:mm으로 표시', () => {
@@ -165,9 +166,10 @@ describe('BoardingTrainList', () => {
     const { getByTestId } = renderWithTheme(
       <BoardingTrainList arrivals={trains} line="2" onSelect={() => {}} />,
     );
-    expect(getByTestId('boarding-train-sequence-T-1ST').props.children).toBe('1번째 전');
-    expect(getByTestId('boarding-train-sequence-T-2ND').props.children).toBe('2번째 전');
-    expect(getByTestId('boarding-train-sequence-T-3RD').props.children).toBe('3번째 전');
+    // #855: fallback 라벨에 분 라벨 포함. arrivalSeconds 60/180/300 → 1/3/5분.
+    expect(getByTestId('boarding-train-sequence-T-1ST').props.children).toBe('약 1정거장 전 (약 1분 후)');
+    expect(getByTestId('boarding-train-sequence-T-2ND').props.children).toBe('약 2정거장 전 (약 3분 후)');
+    expect(getByTestId('boarding-train-sequence-T-3RD').props.children).toBe('약 3정거장 전 (약 5분 후)');
   });
 
   it('#749 compact 모드: 헤더/trainCode 라인 생략, 단일 row "<next>방면" 라벨(#807)', () => {
@@ -197,7 +199,7 @@ describe('BoardingTrainList', () => {
         nextStationLabel="중곡"
       />,
     );
-    expect(getByTestId('boarding-train-sequence-T-CO-SEQ').props.children).toBe('1번째 전');
+    expect(getByTestId('boarding-train-sequence-T-CO-SEQ').props.children).toBe('약 1정거장 전 (약 3분 후)');
     expect(getByTestId('boarding-train-arrival-T-CO-SEQ')).toBeTruthy();
   });
 
@@ -251,7 +253,7 @@ describe('BoardingTrainList', () => {
       expect(getByTestId('boarding-train-sequence-T-DEPARTED').props.children).toBe('전역 출발');
     });
 
-    it('statusMessage 빈 문자열(mock/schedule)이면 index+1 fallback', () => {
+    it('#855 statusMessage 빈 문자열(mock/schedule)이면 "약 N정거장 전 (약 M분 후)" fallback', () => {
       const trains = [
         makeTrain({ trainCode: 'T-MOCK-1', statusMessage: '' }),
         makeTrain({ trainCode: 'T-MOCK-2', statusMessage: '' }),
@@ -259,8 +261,21 @@ describe('BoardingTrainList', () => {
       const { getByTestId } = renderWithTheme(
         <BoardingTrainList arrivals={trains} line="2" onSelect={() => {}} />,
       );
-      expect(getByTestId('boarding-train-sequence-T-MOCK-1').props.children).toBe('1번째 전');
-      expect(getByTestId('boarding-train-sequence-T-MOCK-2').props.children).toBe('2번째 전');
+      // arrivalSeconds=180 default → 3분.
+      expect(getByTestId('boarding-train-sequence-T-MOCK-1').props.children).toBe(
+        '약 1정거장 전 (약 3분 후)',
+      );
+      expect(getByTestId('boarding-train-sequence-T-MOCK-2').props.children).toBe(
+        '약 2정거장 전 (약 3분 후)',
+      );
+    });
+
+    it('#855 statusMessage 빈 + arrivalSeconds=0 이면 분 라벨 생략 ("약 N정거장 전"만)', () => {
+      const train = makeTrain({ trainCode: 'T-MOCK-0', statusMessage: '', arrivalSeconds: 0 });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      expect(getByTestId('boarding-train-sequence-T-MOCK-0').props.children).toBe('약 1정거장 전');
     });
   });
 

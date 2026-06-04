@@ -12,8 +12,12 @@ import {
   isPlausibleJump,
   type FixSample,
 } from '../utils/locationGates';
-import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY } from '../constants/location';
-import { MAX_STATION_DISTANCE_KM } from '../constants/location';
+import {
+  MAX_ACCURACY_M,
+  MAX_ACCURACY_M_DISPLAY,
+  MAX_STATION_DISTANCE_KM,
+  isValidGpsSpeedMps,
+} from '../constants/location';
 import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../constants/e2e';
 import {
   appStateToGpsActive,
@@ -141,7 +145,7 @@ export function useNearestStation(): UseNearestStationReturn {
 
     // raw 신호는 매 fix 즉시 갱신. useFusedNearestStation의 candidates 메모가
     // userLocation 변화에 의존하므로 throttle 안에 두면 천천히 이동할 때 후보가 잠긴다.
-    setSpeedMps(speed != null && speed >= 0 ? speed : null);
+    setSpeedMps(isValidGpsSpeedMps(speed) ? speed : null);
     setAccuracyMeters(accuracy ?? null);
     setUserLocation({ lat: latitude, lng: longitude });
 
@@ -161,7 +165,7 @@ export function useNearestStation(): UseNearestStationReturn {
         lat: latitude,
         lng: longitude,
         accuracyMeters: accuracy ?? null,
-        speedMps: speed != null && speed >= 0 ? speed : null,
+        speedMps: isValidGpsSpeedMps(speed) ? speed : null,
         nearestStation: stationsResult?.primary.name ?? null,
         nearestLine: stationsResult?.primary.line ?? null,
         nearestDistanceKm: stationsResult?.distanceKm ?? null,
@@ -276,7 +280,7 @@ export function useNearestStation(): UseNearestStationReturn {
               lat: location.coords.latitude,
               lng: location.coords.longitude,
               accuracyMeters: location.coords.accuracy,
-              speedMps: dropSpeed != null && dropSpeed >= 0 ? dropSpeed : null,
+              speedMps: isValidGpsSpeedMps(dropSpeed) ? dropSpeed : null,
               nearestStation: null,
               nearestLine: null,
               nearestDistanceKm: null,
