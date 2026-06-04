@@ -19,3 +19,16 @@ export function formatClockTime(epochMs: number): string {
   const mm = String(d.getMinutes()).padStart(2, '0');
   return `${hh}:${mm}`;
 }
+
+/**
+ * epoch ms → "HH:mm:ss" (24h, zero-padded). 디버그/진단 표시용 (#852).
+ * null → "(never)" — 한 번도 갱신된 적 없는 상태를 명시.
+ */
+export function formatClockTimeWithSeconds(epochMs: number | null): string {
+  if (epochMs == null) return '(never)';
+  const d = new Date(epochMs);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const ss = String(d.getSeconds()).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}

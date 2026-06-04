@@ -252,6 +252,12 @@ jobs:
         # 실패해도 후속 진단 step이 돌도록 continue-on-error.
         # 최종 job 결과는 마지막 step("Maestro 결과 판정")이 결정.
         continue-on-error: true
+        # #852 cifix: GitHub runner cold start 시 xcuitest installer가
+        # 기본 120s 안에 sim에 올라오지 못해 "iOS driver not ready in time"으로 즉시 실패하는
+        # 회귀가 관측됨. maestro가 직접 "MAESTRO_DRIVER_STARTUP_TIMEOUT 늘려라"고 안내함.
+        # ms 단위, 4분(240000ms)으로 여유 확보.
+        env:
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: '240000'
         run: |
           maestro --version || true
           maestro test --help 2>&1 | head -40 || true

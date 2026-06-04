@@ -13,6 +13,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/useAppStore';
 import { isDebugModalEnabled } from '../constants/debugFlags';
+import type { GpsActiveState } from '../constants/gpsStatus';
+import { formatClockTimeWithSeconds } from '../utils/formatTime';
 import { useFusedNearestStation } from '../hooks/useFusedNearestStation';
 import { useArrivalInfo } from '../hooks/useArrivalInfo';
 import {
@@ -231,6 +233,10 @@ function buildDumpText(args: {
   userLocation: { lat: number; lng: number } | null;
   speedMps: number | null;
   accuracyMeters: number | null;
+  // #852: GPS watch 구독 상태(FG/BG) + 마지막 신뢰 fix 시각. silent push wake 시 stale window 진단용.
+  // 호환을 위해 optional — 미전달 시 'fg' / null로 fallback (한 번도 fix 없는 상태와 동일 표기).
+  gpsActive?: GpsActiveState;
+  lastFixAtMs?: number | null;
   /** #853 — Phase 3 fused speed. 미전달이면 dump의 fused 라인이 (no fused signal). */
   fusedSpeed?: FusedSpeedSignal | null;
   nearestName: string | null;
@@ -255,23 +261,30 @@ function buildDumpText(args: {
   scheduledDump?: ScheduledNotificationDumpEntry[] | null;
 }): string {
   const lines: string[] = [];
-  lines.push(`[Subway debug] ${new Date().toISOString()}`);
-  lines.push('');
-  lines.push('## GPS');
+  // SonarCloud S7778: 인접한 정적 push 호출은 다인자 단일 호출로 묶는다.
+  // #852: watch 구독 상태 + 마지막 fix 시각. 'bg'면 watch가 정지된 상태(silent push wake 등).
+  // #853: fused speed signal. userLocation 있는 경우만 라인 노출, 미전달 시 NO_FUSED_SIGNAL_LABEL.
+  // 호출자 호환을 위해 두 필드 모두 optional — 미전달 시 'fg'/(never)/(no fused signal)로 표기.
+  const gpsLines: string[] = [];
   if (args.userLocation) {
     const fusedDump = args.fusedSpeed
       ? `${args.fusedSpeed.kmh.toFixed(1)} km/h (${args.fusedSpeed.source})`
       : NO_FUSED_SIGNAL_LABEL;
-    lines.push(
+    gpsLines.push(
       `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}, speed=${args.speedMps ?? '-'} m/s, accuracy=${args.accuracyMeters ?? '-'} m`,
       `fused=${fusedDump}`,
     );
   } else {
-    lines.push('(no location)');
+    gpsLines.push('(no location)');
   }
-  lines.push('');
-  lines.push('## Nearest');
   lines.push(
+    `[Subway debug] ${new Date().toISOString()}`,
+    '',
+    '## GPS',
+    ...gpsLines,
+    `state=${args.gpsActive ?? 'fg'}, lastFix=${formatClockTimeWithSeconds(args.lastFixAtMs ?? null)}`,
+    '',
+    '## Nearest',
     args.nearestName
       ? `${args.nearestName} · ${args.nearestDistanceM ?? '-'} m`
       : '(no nearest station)',
@@ -279,23 +292,22 @@ function buildDumpText(args: {
   if (args.variants.length > 0) {
     lines.push(`variants: ${args.variants.join(', ')}`);
   }
-  lines.push('');
-  lines.push('## Fusion');
-  lines.push(`confidence=${args.fusion.confidence}, source=${args.fusion.source}`);
-  lines.push(`fused: ${args.fusion.fusedLabel}`);
-  lines.push(`gps:   ${args.fusion.gpsLabel}`);
+  lines.push(
+    '',
+    '## Fusion',
+    `confidence=${args.fusion.confidence}, source=${args.fusion.source}`,
+    `fused: ${args.fusion.fusedLabel}`,
+    `gps:   ${args.fusion.gpsLabel}`,
+  );
   if (args.fusion.differs) lines.push('(fused != gps)');
   if (args.fusion.candidateTrains) {
     lines.push(
       `candidateTrains(${args.fusion.candidateTrains.length}): ${args.fusion.candidateTrains.join(', ') || '-'}`,
     );
   }
-  lines.push('');
-  lines.push('## Arrival');
-  lines.push(args.arrivalSummary);
+  lines.push('', '## Arrival', args.arrivalSummary);
   if (args.isMock) lines.push('(MOCK)');
-  lines.push('');
-  lines.push('## Silent Push');
+  lines.push('', '## Silent Push');
   for (const { dumpKey, value } of silentPushDiagRows(args.silentPush, args.logs, args.locklessOn ?? false)) {
     lines.push(`${dumpKey}=${value}`);
   }
@@ -373,6 +385,8 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
     userLocation,
     speedMps,
     accuracyMeters,
+    gpsActive,
+    lastFixAtMs,
   } = useFusedNearestStation();
   const stationName = result?.station.name ?? null;
   const { arrival, isMock } = useArrivalInfo(stationName);
@@ -441,6 +455,9 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
       userLocation,
       speedMps,
       accuracyMeters,
+      // #852: hook이 신규 필드를 미지원하던 시점 호환 — undefined면 'fg'/null로 fallback.
+      gpsActive: gpsActive ?? 'fg',
+      lastFixAtMs: lastFixAtMs ?? null,
       fusedSpeed: fusedSpeedSignal,
       nearestName: result?.station.name ?? null,
       nearestDistanceM,
@@ -465,6 +482,8 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
     userLocation,
     speedMps,
     accuracyMeters,
+    gpsActive,
+    lastFixAtMs,
     fusedSpeedSignal,
     result,
     nearestDistanceM,
@@ -511,6 +530,14 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
             ) : (
               <Text style={[typography.mono, { color: colors.muted }]}>(no location)</Text>
             )}
+            {/* #852: GPS watch 구독 상태 — 사용자가 "왜 위치가 안 바뀌지" 확인 가능.
+                userLocation 유무와 무관하게 항상 노출(cold start 'fg lastFix=(never)' 식별). */}
+            <KeyValue label="state" value={gpsActive ?? 'fg'} colors={colors} />
+            <KeyValue
+              label="lastFix"
+              value={formatClockTimeWithSeconds(lastFixAtMs ?? null)}
+              colors={colors}
+            />
           </Section>
 
           <Section title="Fusion" colors={colors}>

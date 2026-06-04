@@ -1020,3 +1020,100 @@ describe('useNearestStation — E2E mock mode', () => {
     expect(result.current.permissionDenied).toBe(false);
   });
 });
+
+describe('useNearestStation — #852 GPS state & lastFix', () => {
+  // RN의 AppState.currentState는 plain property — defineProperty로 직접 덮어쓴다.
+  const originalCurrentState = AppState.currentState;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    appStateCallback = null;
+    watchCallback = null;
+    mockNoLastKnownLocation();
+    mockSubscription.remove.mockClear();
+    (Location.watchPositionAsync as jest.Mock).mockImplementation(
+      async (_options: unknown, callback: typeof watchCallback) => {
+        watchCallback = callback;
+        return mockSubscription;
+      },
+    );
+    mockGranted();
+    mockLocation(37.4979, 127.0276);
+    // jest 환경에서 AppState.currentState가 'unknown'일 수 있어 명시적으로 'active' 고정.
+    // 실제 UI hook은 마운트 시점이 FG라 'fg' 기본값과 일치.
+    (AppState as { currentState: string }).currentState = 'active';
+  });
+
+  afterEach(() => {
+    (AppState as { currentState: string }).currentState = originalCurrentState;
+  });
+
+  it('초기 마운트 시 gpsActive=fg, lastFixAtMs=null', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.gpsActive).toBe('fg');
+    expect(result.current.lastFixAtMs).toBeNull();
+  });
+
+  it('신뢰 fix 채택 시 lastFixAtMs가 fix timestamp로 갱신된다', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(watchCallback).not.toBeNull());
+
+    const fixTs = new Date(2026, 5, 4, 8, 42, 15).getTime();
+    simulateGps(37.4979, 127.0276, { accuracy: 20, timestamp: fixTs });
+
+    await waitFor(() => expect(result.current.lastFixAtMs).toBe(fixTs));
+  });
+
+  it('AppState background 전환 시 gpsActive=bg, lastFixAtMs는 BG 진입 직전 값 유지', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(watchCallback).not.toBeNull());
+
+    const fixTs = new Date(2026, 5, 4, 8, 42, 15).getTime();
+    simulateGps(37.4979, 127.0276, { accuracy: 20, timestamp: fixTs });
+    await waitFor(() => expect(result.current.lastFixAtMs).toBe(fixTs));
+
+    act(() => { appStateCallback?.('background'); });
+
+    expect(result.current.gpsActive).toBe('bg');
+    // BG에서는 watch가 정지되어 lastFixAtMs가 갱신되지 않음 — stale window 시각화 핵심.
+    expect(result.current.lastFixAtMs).toBe(fixTs);
+  });
+
+  it('AppState inactive도 gpsActive=bg로 매핑 (watch 정지 상태와 일관)', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => { appStateCallback?.('inactive'); });
+
+    expect(result.current.gpsActive).toBe('bg');
+  });
+
+  it('AppState active 복귀 시 gpsActive=fg로 즉시 전환', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => { appStateCallback?.('background'); });
+    expect(result.current.gpsActive).toBe('bg');
+
+    await act(async () => { appStateCallback?.('active'); });
+    expect(result.current.gpsActive).toBe('fg');
+  });
+
+  it('jump gate drop된 fix는 lastFixAtMs를 갱신하지 않는다 (stale 시각 유지)', async () => {
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(watchCallback).not.toBeNull());
+
+    const validTs = new Date(2026, 5, 4, 8, 42, 15).getTime();
+    simulateGps(37.4979, 127.0276, { accuracy: 20, timestamp: validTs });
+    await waitFor(() => expect(result.current.lastFixAtMs).toBe(validTs));
+
+    // 25km 점프 8s — isPlausibleJump fail → drop, lastFixAtMs 미갱신.
+    const jumpTs = validTs + 8_000;
+    simulateGps(37.7, 127.3, { accuracy: 20, timestamp: jumpTs });
+
+    // 약간 기다려도 stale 시각 유지(jump drop은 setLocationUncertain만 호출).
+    await new Promise((r) => setTimeout(r, 10));
+    expect(result.current.lastFixAtMs).toBe(validTs);
+  });
+});

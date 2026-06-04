@@ -60,6 +60,24 @@ const variantStation: Station = {
 };
 
 const baseResult: NearestStationResult = { station, distanceKm: 0.123 };
+const baseUserLocation = { lat: 37.5, lng: 127 };
+// #852: GPS section state/lastFix 테스트들이 동일 mock 골격을 반복 — duplication 감지 회피.
+// 호출부는 override만 넘기고, 나머지는 기본값으로 채운다.
+const fusedReturnFixture = (overrides: Record<string, unknown> = {}) => ({
+  result: baseResult,
+  gpsResult: baseResult,
+  confidence: 'gps-only' as const,
+  source: 'gps' as const,
+  variants: [],
+  userLocation: baseUserLocation,
+  speedMps: 1,
+  accuracyMeters: 12,
+  loading: false,
+  error: null,
+  permissionDenied: false,
+  refresh: jest.fn(),
+  ...overrides,
+});
 const arrivalDefaults = {
   line: '1' as const,
   receivedAtMs: 0,
@@ -80,7 +98,7 @@ const setupHookDefaults = () => {
     confidence: 'gps-only',
     source: 'gps',
     variants: [station, variantStation],
-    userLocation: { lat: 37.5, lng: 127.0 },
+    userLocation: { lat: 37.5, lng: 127 },
     speedMps: 1.5,
     accuracyMeters: 20,
     loading: false,
@@ -107,6 +125,49 @@ const setupHookDefaults = () => {
   mockClearAlarmLog.mockResolvedValue(undefined);
   mockDumpScheduledNotifications.mockResolvedValue([]);
 };
+
+// SonarCloud new_duplicated_lines_density 임계 준수 — 여러 describe에 걸친 buildDumpText
+// 호출이 동일 baseline(null 좌표/null speed/baseFusion 등)을 반복. outer scope helper로 통합.
+const baseFusion = {
+  confidence: 'gps-only' as const,
+  source: 'gps' as const,
+  fusedLabel: '강남(2) · 123m',
+  gpsLabel: '강남(2) · 123m',
+  differs: false,
+  candidateTrains: null as string[] | null,
+};
+const baseSilentPush = {
+  apnsToken: null,
+  activeTripToken: null,
+  apnsEnv: 'sandbox' as const,
+  permissionStatus: null,
+  taskRegistrationState: 'unknown' as const,
+  taskRegistrationError: null,
+  lastReceivedAt: null,
+  lastFiredAt: null,
+  lastSkippedAt: null,
+  hasRoute: false,
+  destinationId: null,
+  lastNotifiedStationId: null,
+};
+type DumpArgs = Parameters<typeof __test__.buildDumpText>[0];
+const baselineDumpArgs: DumpArgs = {
+  userLocation: null,
+  speedMps: null,
+  accuracyMeters: null,
+  nearestName: null,
+  nearestDistanceM: null,
+  variants: [],
+  fusion: baseFusion,
+  arrivalSummary: '-',
+  isMock: false,
+  silentPush: baseSilentPush,
+  logs: [],
+};
+const makeDumpArgs = (overrides: Partial<DumpArgs> = {}): DumpArgs => ({
+  ...baselineDumpArgs,
+  ...overrides,
+});
 
 describe('DebugModal', () => {
   let appStateListener: ((state: string) => void) | null = null;
@@ -261,7 +322,7 @@ describe('DebugModal', () => {
       confidence: 'gps-only',
       source: 'gps',
       variants: [],
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: null,
       accuracyMeters: null,
       loading: false,
@@ -341,7 +402,7 @@ describe('DebugModal', () => {
       confidence: 'arrival-confirmed',
       source: 'arrival',
       variants: [],
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: 1,
       accuracyMeters: 12,
       loading: false,
@@ -366,7 +427,7 @@ describe('DebugModal', () => {
       confidence: 'arrival-arriving',
       source: 'arrival',
       variants: [],
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: 1,
       accuracyMeters: 10,
       loading: false,
@@ -386,6 +447,46 @@ describe('DebugModal', () => {
   it('candidateTrains가 빈 배열이면 "0: -"으로 표시한다', () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} candidateTrains={[]} />);
     expect(screen.getByText('0: -')).toBeTruthy();
+  });
+
+  it('#852: GPS 섹션에 state/lastFix를 항상 표시 (fix 있을 때)', () => {
+    const fixTs = new Date(2026, 5, 4, 8, 42, 15).getTime();
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({ gpsActive: 'fg', lastFixAtMs: fixTs }),
+    );
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('state')).toBeTruthy();
+    expect(screen.getByText('fg')).toBeTruthy();
+    expect(screen.getByText('lastFix')).toBeTruthy();
+    expect(screen.getByText('08:42:15')).toBeTruthy();
+  });
+
+  it('#852: GPS 섹션 state/lastFix — userLocation 없어도 항상 노출 (cold start)', () => {
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        result: null,
+        gpsResult: null,
+        userLocation: null,
+        speedMps: null,
+        accuracyMeters: null,
+        gpsActive: 'bg',
+        lastFixAtMs: null,
+      }),
+    );
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('(no location)')).toBeTruthy();
+    // state/lastFix는 userLocation 유무와 무관하게 노출.
+    expect(screen.getByText('bg')).toBeTruthy();
+    // (never)는 silentPush rows(lastReceived/lastFired/lastSkipped)에도 등장 → 최소 1개 이상.
+    expect(screen.getAllByText('(never)').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('#852: hook이 gpsActive/lastFixAtMs를 미제공해도 fg/(never)로 fallback', () => {
+    // gpsActive / lastFixAtMs 의도적 미설정.
+    mockUseFusedNearestStation.mockReturnValue(fusedReturnFixture({ accuracyMeters: 10 }));
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('fg')).toBeTruthy();
+    expect(screen.getAllByText('(never)').length).toBeGreaterThanOrEqual(1);
   });
 
   it('unmount 시 AppState listener를 정리한다', async () => {
@@ -416,7 +517,7 @@ describe('DebugModal helpers', () => {
       source: 'bg',
       outcome: 'suppressed',
       reason: 'gate-accuracy',
-      location: { lat: 37.5, lng: 127.0, accuracy: 80, ageMs: 1500 },
+      location: { lat: 37.5, lng: 127, accuracy: 80, ageMs: 1500 },
     };
     const line = __test__.formatLogLine(entry);
     expect(line).toContain('bg');
@@ -489,38 +590,14 @@ describe('DebugModal helpers', () => {
       source: 'bg',
       outcome: 'suppressed',
       reason: 'gate-age',
-      location: { lat: 37.5, lng: 127.0, accuracy: null, ageMs: 5000 },
+      location: { lat: 37.5, lng: 127, accuracy: null, ageMs: 5000 },
     };
     expect(__test__.formatLogLine(entry)).toContain('acc=-');
   });
 
-  const baseFusion = {
-    confidence: 'gps-only' as const,
-    source: 'gps' as const,
-    fusedLabel: '강남(2) · 123m',
-    gpsLabel: '강남(2) · 123m',
-    differs: false,
-    candidateTrains: null as string[] | null,
-  };
-
-  const baseSilentPush = {
-    apnsToken: null,
-    activeTripToken: null,
-    apnsEnv: 'sandbox' as const,
-    permissionStatus: null,
-    taskRegistrationState: 'unknown' as const,
-    taskRegistrationError: null,
-    lastReceivedAt: null,
-    lastFiredAt: null,
-    lastSkippedAt: null,
-    hasRoute: false,
-    destinationId: null,
-    lastNotifiedStationId: null,
-  };
-
   it('buildDumpText: 모든 섹션 포함', () => {
     const dump = __test__.buildDumpText({
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: 2,
       accuracyMeters: 30,
       nearestName: '강남',
@@ -546,7 +623,7 @@ describe('DebugModal helpers', () => {
 
   it('buildDumpText: fused != gps이면 diff 라인을 추가한다', () => {
     const dump = __test__.buildDumpText({
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: 2,
       accuracyMeters: 30,
       nearestName: '강남',
@@ -617,9 +694,32 @@ describe('DebugModal helpers', () => {
     expect(dump).toContain('## Alarm log (0)');
   });
 
+  it('#852 buildDumpText: gpsActive/lastFixAtMs를 받으면 state= / lastFix= 라인을 추가한다', () => {
+    const fixTs = new Date(2026, 5, 4, 8, 42, 15).getTime();
+    const dump = __test__.buildDumpText(
+      makeDumpArgs({
+        userLocation: { lat: 37.5, lng: 127 },
+        speedMps: 2,
+        accuracyMeters: 30,
+        gpsActive: 'bg',
+        lastFixAtMs: fixTs,
+        nearestName: '강남',
+        nearestDistanceM: 123,
+        arrivalSummary: 'x',
+      }),
+    );
+    expect(dump).toContain('state=bg, lastFix=08:42:15');
+  });
+
+  it('#852 buildDumpText: gpsActive/lastFixAtMs 미전달 시 state=fg, lastFix=(never)로 fallback', () => {
+    // gpsActive / lastFixAtMs 의도적 미전달 — baseline 그대로.
+    const dump = __test__.buildDumpText(makeDumpArgs());
+    expect(dump).toContain('state=fg, lastFix=(never)');
+  });
+
   it('buildDumpText: userLocation은 있고 speedMps/accuracy만 null이면 "-" 표기', () => {
     const dump = __test__.buildDumpText({
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: null,
       accuracyMeters: null,
       nearestName: '강남',
@@ -707,7 +807,7 @@ describe('DebugModal arrival edge cases', () => {
     confidence: 'gps-only' as const,
     source: 'gps' as const,
     variants: [],
-    userLocation: { lat: 37.5, lng: 127.0 },
+    userLocation: { lat: 37.5, lng: 127 },
     speedMps: 1,
     accuracyMeters: 15,
     loading: false,
@@ -814,7 +914,7 @@ describe('DebugModal fusion log section', () => {
       event: 'gps-fix',
       ts: Date.now(),
       lat: 37.5,
-      lng: 127.0,
+      lng: 127,
       accuracyMeters: 20,
       speedMps: 0,
       nearestStation: '용마산',
@@ -839,7 +939,7 @@ describe('formatFusionDebugLine', () => {
       event: 'gps-fix',
       ts: new Date('2026-05-20T14:30:00Z').getTime(),
       lat: 37.5,
-      lng: 127.0,
+      lng: 127,
       accuracyMeters: 25,
       speedMps: 0,
       nearestStation: '용마산',
@@ -1040,27 +1140,13 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
     lastNotifiedStationId: '7-015',
   };
 
+  // 본 describe 4개 호출은 fusion.fusedLabel/gpsLabel을 '-'로 쓰는 변형이 필요. dash fusion 헬퍼.
+  const dashFusion = { ...baseFusion, fusedLabel: '-', gpsLabel: '-' };
+
   it('buildDumpText: Silent Push 섹션을 모든 필드와 함께 포함', () => {
-    const dump = __test__.buildDumpText({
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      nearestName: null,
-      nearestDistanceM: null,
-      variants: [],
-      fusion: {
-        confidence: 'gps-only',
-        source: 'gps',
-        fusedLabel: '-',
-        gpsLabel: '-',
-        differs: false,
-        candidateTrains: null,
-      },
-      arrivalSummary: '-',
-      isMock: false,
-      silentPush: baseSilentPushFull,
-      logs: [],
-    });
+    const dump = __test__.buildDumpText(
+      makeDumpArgs({ fusion: dashFusion, silentPush: baseSilentPushFull }),
+    );
     expect(dump).toContain('## Silent Push');
     expect(dump).toContain('apnsToken=…89abcdef'); // 끝 8자만
     expect(dump).toContain('activeTrip=…ef567890');
@@ -1075,39 +1161,12 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
   });
 
   it('buildDumpText: token 없으면 (none), 시각 null이면 (never)', () => {
-    const dump = __test__.buildDumpText({
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      nearestName: null,
-      nearestDistanceM: null,
-      variants: [],
-      fusion: {
-        confidence: 'gps-only',
-        source: 'gps',
-        fusedLabel: '-',
-        gpsLabel: '-',
-        differs: false,
-        candidateTrains: null,
-      },
-      arrivalSummary: '-',
-      isMock: false,
-      silentPush: {
-        apnsToken: null,
-        activeTripToken: null,
-        apnsEnv: 'production',
-        permissionStatus: null,
-        taskRegistrationState: 'unknown',
-        taskRegistrationError: null,
-        lastReceivedAt: null,
-        lastFiredAt: null,
-        lastSkippedAt: null,
-        hasRoute: false,
-        destinationId: null,
-        lastNotifiedStationId: null,
-      },
-      logs: [],
-    });
+    const dump = __test__.buildDumpText(
+      makeDumpArgs({
+        fusion: dashFusion,
+        silentPush: { ...baseSilentPush, apnsEnv: 'production' },
+      }),
+    );
     expect(dump).toContain('apnsToken=(none)');
     expect(dump).toContain('activeTrip=(none)');
     expect(dump).toContain('apnsEnv=production');
@@ -1119,58 +1178,27 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
   });
 
   it('buildDumpText: 짧은 토큰(8자 이하)은 그대로 노출', () => {
-    const dump = __test__.buildDumpText({
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      nearestName: null,
-      nearestDistanceM: null,
-      variants: [],
-      fusion: {
-        confidence: 'gps-only',
-        source: 'gps',
-        fusedLabel: '-',
-        gpsLabel: '-',
-        differs: false,
-        candidateTrains: null,
-      },
-      arrivalSummary: '-',
-      isMock: false,
-      silentPush: {
-        ...baseSilentPushFull,
-        apnsToken: 'short12',
-      },
-      logs: [],
-    });
+    const dump = __test__.buildDumpText(
+      makeDumpArgs({
+        fusion: dashFusion,
+        silentPush: { ...baseSilentPushFull, apnsToken: 'short12' },
+      }),
+    );
     expect(dump).toContain('apnsToken=short12');
   });
 
   it('buildDumpText: taskRegistrationError 있으면 괄호 안에 메시지 표기', () => {
-    const dump = __test__.buildDumpText({
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      nearestName: null,
-      nearestDistanceM: null,
-      variants: [],
-      fusion: {
-        confidence: 'gps-only',
-        source: 'gps',
-        fusedLabel: '-',
-        gpsLabel: '-',
-        differs: false,
-        candidateTrains: null,
-      },
-      arrivalSummary: '-',
-      isMock: false,
-      silentPush: {
-        ...baseSilentPushFull,
-        permissionStatus: null,
-        taskRegistrationState: 'failed',
-        taskRegistrationError: 'not supported',
-      },
-      logs: [],
-    });
+    const dump = __test__.buildDumpText(
+      makeDumpArgs({
+        fusion: dashFusion,
+        silentPush: {
+          ...baseSilentPushFull,
+          permissionStatus: null,
+          taskRegistrationState: 'failed',
+          taskRegistrationError: 'not supported',
+        },
+      }),
+    );
     expect(dump).toContain('taskRegistration=failed (not supported)');
   });
 

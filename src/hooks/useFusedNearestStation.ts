@@ -65,6 +65,10 @@ interface UseFusedNearestStationReturn {
   /** GPS 표시 게이트 drop으로 좌표가 정지된 상태. fusion에서 position/arrival 신호가 살아있어도
    *  GPS fallback 경로에 의존하는 호출자(예: 표시부)는 이 값으로 "위치 확인 중" UX를 띄울 수 있다. */
   locationUncertain: boolean;
+  /** #852 — GPS watch 구독 활성 여부(FG only). BG/silent push wake 시 'bg' — 디버그 표기용. */
+  gpsActive: import('../constants/gpsStatus').GpsActiveState;
+  /** #852 — 마지막 신뢰 fix epoch ms. null = 한 번도 fix 없음. 디버그 표기용. */
+  lastFixAtMs: number | null;
   /**
    * #733 — 위치 이력 기반 정적/이동/판정불가. iOS가 speed=-1(미측정)을 보고하는 정적 케이스에서
    * movementGate fallback 신호로 사용. 호출자(useStationAlarm 등)가 evaluateMovement에 전달해
@@ -573,6 +577,8 @@ export function useFusedNearestStation(
     error: gps.error,
     permissionDenied: gps.permissionDenied,
     locationUncertain: gps.locationUncertain,
+    gpsActive: gps.gpsActive,
+    lastFixAtMs: gps.lastFixAtMs,
     positionStability,
     refresh: gps.refresh,
   };
