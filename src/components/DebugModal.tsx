@@ -201,8 +201,8 @@ function buildDumpText(args: {
   // 호출자 호환을 위해 optional — 미전달 시 'fg'/(never)로 표기.
   lines.push(
     `state=${args.gpsActive ?? 'fg'}, lastFix=${formatClockTimeWithSeconds(args.lastFixAtMs ?? null)}`,
+    '',
   );
-  lines.push('');
   lines.push('## Nearest');
   lines.push(
     args.nearestName

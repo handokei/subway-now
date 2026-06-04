@@ -59,6 +59,24 @@ const variantStation: Station = {
 };
 
 const baseResult: NearestStationResult = { station, distanceKm: 0.123 };
+const baseUserLocation = { lat: 37.5, lng: 127 };
+// #852: GPS section state/lastFix 테스트들이 동일 mock 골격을 반복 — duplication 감지 회피.
+// 호출부는 override만 넘기고, 나머지는 기본값으로 채운다.
+const fusedReturnFixture = (overrides: Record<string, unknown> = {}) => ({
+  result: baseResult,
+  gpsResult: baseResult,
+  confidence: 'gps-only' as const,
+  source: 'gps' as const,
+  variants: [],
+  userLocation: baseUserLocation,
+  speedMps: 1,
+  accuracyMeters: 12,
+  loading: false,
+  error: null,
+  permissionDenied: false,
+  refresh: jest.fn(),
+  ...overrides,
+});
 const arrivalDefaults = {
   line: '1' as const,
   receivedAtMs: 0,
@@ -79,7 +97,7 @@ const setupHookDefaults = () => {
     confidence: 'gps-only',
     source: 'gps',
     variants: [station, variantStation],
-    userLocation: { lat: 37.5, lng: 127.0 },
+    userLocation: { lat: 37.5, lng: 127 },
     speedMps: 1.5,
     accuracyMeters: 20,
     loading: false,
@@ -260,7 +278,7 @@ describe('DebugModal', () => {
       confidence: 'gps-only',
       source: 'gps',
       variants: [],
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: null,
       accuracyMeters: null,
       loading: false,
@@ -340,7 +358,7 @@ describe('DebugModal', () => {
       confidence: 'arrival-confirmed',
       source: 'arrival',
       variants: [],
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: 1,
       accuracyMeters: 12,
       loading: false,
@@ -365,7 +383,7 @@ describe('DebugModal', () => {
       confidence: 'arrival-arriving',
       source: 'arrival',
       variants: [],
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: 1,
       accuracyMeters: 10,
       loading: false,
@@ -389,22 +407,9 @@ describe('DebugModal', () => {
 
   it('#852: GPS 섹션에 state/lastFix를 항상 표시 (fix 있을 때)', () => {
     const fixTs = new Date(2026, 5, 4, 8, 42, 15).getTime();
-    mockUseFusedNearestStation.mockReturnValue({
-      result: baseResult,
-      gpsResult: baseResult,
-      confidence: 'gps-only',
-      source: 'gps',
-      variants: [],
-      userLocation: { lat: 37.5, lng: 127.0 },
-      speedMps: 1,
-      accuracyMeters: 12,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      gpsActive: 'fg',
-      lastFixAtMs: fixTs,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({ gpsActive: 'fg', lastFixAtMs: fixTs }),
+    );
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByText('state')).toBeTruthy();
     expect(screen.getByText('fg')).toBeTruthy();
@@ -413,22 +418,17 @@ describe('DebugModal', () => {
   });
 
   it('#852: GPS 섹션 state/lastFix — userLocation 없어도 항상 노출 (cold start)', () => {
-    mockUseFusedNearestStation.mockReturnValue({
-      result: null,
-      gpsResult: null,
-      confidence: 'gps-only',
-      source: 'gps',
-      variants: [],
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      gpsActive: 'bg',
-      lastFixAtMs: null,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        result: null,
+        gpsResult: null,
+        userLocation: null,
+        speedMps: null,
+        accuracyMeters: null,
+        gpsActive: 'bg',
+        lastFixAtMs: null,
+      }),
+    );
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByText('(no location)')).toBeTruthy();
     // state/lastFix는 userLocation 유무와 무관하게 노출.
@@ -438,21 +438,8 @@ describe('DebugModal', () => {
   });
 
   it('#852: hook이 gpsActive/lastFixAtMs를 미제공해도 fg/(never)로 fallback', () => {
-    mockUseFusedNearestStation.mockReturnValue({
-      result: baseResult,
-      gpsResult: baseResult,
-      confidence: 'gps-only',
-      source: 'gps',
-      variants: [],
-      userLocation: { lat: 37.5, lng: 127.0 },
-      speedMps: 1,
-      accuracyMeters: 10,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-      // gpsActive / lastFixAtMs 의도적 미설정.
-    });
+    // gpsActive / lastFixAtMs 의도적 미설정.
+    mockUseFusedNearestStation.mockReturnValue(fusedReturnFixture({ accuracyMeters: 10 }));
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByText('fg')).toBeTruthy();
     expect(screen.getAllByText('(never)').length).toBeGreaterThanOrEqual(1);
@@ -486,7 +473,7 @@ describe('DebugModal helpers', () => {
       source: 'bg',
       outcome: 'suppressed',
       reason: 'gate-accuracy',
-      location: { lat: 37.5, lng: 127.0, accuracy: 80, ageMs: 1500 },
+      location: { lat: 37.5, lng: 127, accuracy: 80, ageMs: 1500 },
     };
     const line = __test__.formatLogLine(entry);
     expect(line).toContain('bg');
@@ -559,7 +546,7 @@ describe('DebugModal helpers', () => {
       source: 'bg',
       outcome: 'suppressed',
       reason: 'gate-age',
-      location: { lat: 37.5, lng: 127.0, accuracy: null, ageMs: 5000 },
+      location: { lat: 37.5, lng: 127, accuracy: null, ageMs: 5000 },
     };
     expect(__test__.formatLogLine(entry)).toContain('acc=-');
   });
@@ -590,7 +577,7 @@ describe('DebugModal helpers', () => {
 
   it('buildDumpText: 모든 섹션 포함', () => {
     const dump = __test__.buildDumpText({
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: 2,
       accuracyMeters: 30,
       nearestName: '강남',
@@ -616,7 +603,7 @@ describe('DebugModal helpers', () => {
 
   it('buildDumpText: fused != gps이면 diff 라인을 추가한다', () => {
     const dump = __test__.buildDumpText({
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: 2,
       accuracyMeters: 30,
       nearestName: '강남',
@@ -690,7 +677,7 @@ describe('DebugModal helpers', () => {
   it('#852 buildDumpText: gpsActive/lastFixAtMs를 받으면 state= / lastFix= 라인을 추가한다', () => {
     const fixTs = new Date(2026, 5, 4, 8, 42, 15).getTime();
     const dump = __test__.buildDumpText({
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: 2,
       accuracyMeters: 30,
       gpsActive: 'bg',
@@ -727,7 +714,7 @@ describe('DebugModal helpers', () => {
 
   it('buildDumpText: userLocation은 있고 speedMps/accuracy만 null이면 "-" 표기', () => {
     const dump = __test__.buildDumpText({
-      userLocation: { lat: 37.5, lng: 127.0 },
+      userLocation: { lat: 37.5, lng: 127 },
       speedMps: null,
       accuracyMeters: null,
       nearestName: '강남',
@@ -815,7 +802,7 @@ describe('DebugModal arrival edge cases', () => {
     confidence: 'gps-only' as const,
     source: 'gps' as const,
     variants: [],
-    userLocation: { lat: 37.5, lng: 127.0 },
+    userLocation: { lat: 37.5, lng: 127 },
     speedMps: 1,
     accuracyMeters: 15,
     loading: false,
@@ -922,7 +909,7 @@ describe('DebugModal fusion log section', () => {
       event: 'gps-fix',
       ts: Date.now(),
       lat: 37.5,
-      lng: 127.0,
+      lng: 127,
       accuracyMeters: 20,
       speedMps: 0,
       nearestStation: '용마산',
@@ -947,7 +934,7 @@ describe('formatFusionDebugLine', () => {
       event: 'gps-fix',
       ts: new Date('2026-05-20T14:30:00Z').getTime(),
       lat: 37.5,
-      lng: 127.0,
+      lng: 127,
       accuracyMeters: 25,
       speedMps: 0,
       nearestStation: '용마산',
