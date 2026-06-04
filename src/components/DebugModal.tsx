@@ -189,22 +189,19 @@ function buildDumpText(args: {
   scheduledDump?: ScheduledNotificationDumpEntry[] | null;
 }): string {
   const lines: string[] = [];
-  lines.push(`[Subway debug] ${new Date().toISOString()}`);
-  lines.push('');
-  lines.push('## GPS');
-  lines.push(
-    args.userLocation
-      ? `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}, speed=${args.speedMps ?? '-'} m/s, accuracy=${args.accuracyMeters ?? '-'} m`
-      : '(no location)',
-  );
+  // SonarCloud S7778: 인접한 정적 push 호출은 다인자 단일 호출로 묶는다.
   // #852: watch 구독 상태 + 마지막 fix 시각. 'bg'면 watch가 정지된 상태(silent push wake 등).
   // 호출자 호환을 위해 optional — 미전달 시 'fg'/(never)로 표기.
   lines.push(
+    `[Subway debug] ${new Date().toISOString()}`,
+    '',
+    '## GPS',
+    args.userLocation
+      ? `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}, speed=${args.speedMps ?? '-'} m/s, accuracy=${args.accuracyMeters ?? '-'} m`
+      : '(no location)',
     `state=${args.gpsActive ?? 'fg'}, lastFix=${formatClockTimeWithSeconds(args.lastFixAtMs ?? null)}`,
     '',
-  );
-  lines.push('## Nearest');
-  lines.push(
+    '## Nearest',
     args.nearestName
       ? `${args.nearestName} · ${args.nearestDistanceM ?? '-'} m`
       : '(no nearest station)',
@@ -212,23 +209,22 @@ function buildDumpText(args: {
   if (args.variants.length > 0) {
     lines.push(`variants: ${args.variants.join(', ')}`);
   }
-  lines.push('');
-  lines.push('## Fusion');
-  lines.push(`confidence=${args.fusion.confidence}, source=${args.fusion.source}`);
-  lines.push(`fused: ${args.fusion.fusedLabel}`);
-  lines.push(`gps:   ${args.fusion.gpsLabel}`);
+  lines.push(
+    '',
+    '## Fusion',
+    `confidence=${args.fusion.confidence}, source=${args.fusion.source}`,
+    `fused: ${args.fusion.fusedLabel}`,
+    `gps:   ${args.fusion.gpsLabel}`,
+  );
   if (args.fusion.differs) lines.push('(fused != gps)');
   if (args.fusion.candidateTrains) {
     lines.push(
       `candidateTrains(${args.fusion.candidateTrains.length}): ${args.fusion.candidateTrains.join(', ') || '-'}`,
     );
   }
-  lines.push('');
-  lines.push('## Arrival');
-  lines.push(args.arrivalSummary);
+  lines.push('', '## Arrival', args.arrivalSummary);
   if (args.isMock) lines.push('(MOCK)');
-  lines.push('');
-  lines.push('## Silent Push');
+  lines.push('', '## Silent Push');
   for (const { dumpKey, value } of silentPushDiagRows(args.silentPush)) {
     lines.push(`${dumpKey}=${value}`);
   }
