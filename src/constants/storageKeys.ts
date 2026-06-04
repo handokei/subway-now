@@ -65,6 +65,12 @@ export const BOARDING_PROMPT_STATE_KEY = 'subway-now:boarding-prompt-state';
 // 형식: {"sinceTs": number, "sinceLat": number | null, "sinceLng": number | null} JSON.
 // 새 trip 시작(setDestination switch) 또는 새 BoardingLock 생성 시 즉시 클리어한다.
 export const DISMISS_SILENCE_KEY = 'subway-now:dismiss-silence';
+// #876 — Sticky Station lock 영속화 키.
+// 좋은 fix(accuracy ≤ 50m, speed < 1 m/s)가 같은 역 N회 연속 관찰될 때 그 역을 lock.
+// trip 없는 상태(탑승 전 / 환승 대기 / 단순 위치 확인)에서 지하 noise로 흔들리지 않게 표시.
+// 형식: {"station": Station, "lockedAt": number} JSON.
+// TTL(30분) 경과 또는 1km+ 이동 또는 automotive motion 시 unlock.
+export const STICKY_STATION_KEY = 'subway-now:sticky-station';
 // #828 — Phase 1+2 fusion wire — active trip의 boarding line code.
 // BG/FG location task가 좌표 upload 시 이 line으로 linePolyline snap을 수행해
 // `mapMatchedArcM` + `mapMatchedLine`을 backend에 첨부한다.

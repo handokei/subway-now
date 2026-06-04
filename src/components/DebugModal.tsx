@@ -94,6 +94,11 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
     const reason = entry.dropReason ? ` reason=${entry.dropReason}` : '';
     return `${time} | ${entry.event} | ${station} d=${d} acc=${acc}${reason}`;
   }
+  if (entry.kind === 'sticky') {
+    const acc = entry.accuracyMeters != null ? `${Math.round(entry.accuracyMeters)}m` : '-';
+    const sp = entry.speedMps != null ? `${entry.speedMps.toFixed(1)}m/s` : '-';
+    return `${time} | sticky:${entry.event} | ${entry.stationName}(${entry.line}) acc=${acc} sp=${sp}`;
+  }
   const station = entry.stationName ? `${entry.stationName}(${entry.line ?? '-'})` : '-';
   const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';
   const acc =

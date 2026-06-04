@@ -89,8 +89,11 @@ const simulateGps = (
 };
 
 describe('useNearestStation', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     jest.clearAllMocks();
+    // #876 — sticky station이 AsyncStorage에 lock을 남기면 다음 테스트 hydrate 시 잔류 lock이
+    // result를 override해 회귀(잘못된 station 반환). 매 테스트 전에 storage clear.
+    await AsyncStorage.clear();
     appStateCallback = null;
     watchCallback = null;
     mockNoLastKnownLocation();
@@ -974,6 +977,51 @@ describe('useNearestStation — #711 BG_LAST_STATION hydrate', () => {
     // hydrate가 흘러도 prev ?? bg → 강남 유지
     await waitFor(() => expect(Location.getCurrentPositionAsync).toHaveBeenCalled());
     expect(result.current.result?.station.name).toBe('강남');
+  });
+});
+
+describe('useNearestStation — #876 sticky station integration', () => {
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+    appStateCallback = null;
+    watchCallback = null;
+    mockNoLastKnownLocation();
+    mockSubscription.remove.mockClear();
+    (Location.watchPositionAsync as jest.Mock).mockImplementation(
+      async (_options: unknown, callback: typeof watchCallback) => {
+        watchCallback = callback;
+        return mockSubscription;
+      },
+    );
+  });
+
+  it('초기 source는 live (sticky 비활성)', async () => {
+    mockGranted();
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+    simulateGps(37.4980, 127.0277, { accuracy: 20 });
+    await waitFor(() => expect(result.current.result).not.toBeNull());
+    expect(result.current.source).toBe('live');
+    expect(result.current.result?.station.name).toBe('강남');
+  });
+
+  it('AsyncStorage 미리 저장된 sticky lock 있고 GPS가 다른 역이면 result는 sticky 역으로 override', async () => {
+    // 효창공원앞 lock 미리 저장(1분 전). GPS는 강남 좌표 → sticky override.
+    const hyochang = { id: '6-019', name: '효창공원앞', line: '6', lineColor: '#cd7c2f',
+      lat: 37.539252, lng: 126.961392 };
+    await AsyncStorage.setItem(
+      'subway-now:sticky-station',
+      JSON.stringify({ station: hyochang, lockedAt: Date.now() - 60_000 }),
+    );
+    mockGranted();
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+    simulateGps(37.4980, 127.0277, { accuracy: 100 }); // 강남, accuracy 나쁨 → sticky가 better-fix로 갱신 X
+    await waitFor(() => expect(result.current.source).toBe('sticky'));
+    expect(result.current.result?.station.name).toBe('효창공원앞');
+    // distanceKm은 userLocation 기준 재계산 (효창 ↔ 강남 ≈ 10km+)
+    expect(result.current.result?.distanceKm).toBeGreaterThan(5);
   });
 });
 

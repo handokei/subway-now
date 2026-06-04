@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -26,6 +26,12 @@ import {
 } from '../constants/gpsStatus';
 import { createLogger } from '../utils/logger';
 import { pushFusionDebugEntry } from '../utils/fusionDebugBuffer';
+import { haversine } from '../utils/haversine';
+import { useStickyStation } from './useStickyStation';
+
+/** #876 — useNearestStation 표시값의 출처. sticky lock된 역이면 'sticky', 아니면 GPS live.
+ *  알람 트리거에는 영향 없음 — 호출자가 출처별 UX(예: "탑승 전 추정")를 분기할 수 있게 노출. */
+export type NearestStationSource = 'sticky' | 'live';
 
 const logger = createLogger('useNearestStation');
 
@@ -54,6 +60,9 @@ interface UseNearestStationReturn {
   // #852: 마지막 신뢰 fix epoch ms. BG 진입 후 새 fix가 없으면 이 시각은 정지.
   // null = 한 번도 fix 없음(cold start). 디버그 모달 표기용.
   lastFixAtMs: number | null;
+  // #876: result 출처. sticky lock된 역이면 'sticky', live GPS 최근접이면 'live'.
+  // 호출자가 출처별 UX(예: 라벨 "탑승 전 추정")로 분기 가능. 알람 트리거에는 영향 없음.
+  source: NearestStationSource;
   refresh: () => Promise<void>;
 }
 
@@ -365,8 +374,35 @@ export function useNearestStation(): UseNearestStationReturn {
     };
   }, [startWatch, stopWatch, refresh]);
 
+  // #876 — 매 fix를 sticky 훅에 전달. lock된 역이 있으면 result를 그것으로 override.
+  // fusion candidates는 useFusedNearestStation에서 userLocation 기반으로 별도 계산하므로 영향 없음.
+  const sticky = useStickyStation({
+    candidate: result,
+    accuracyMeters,
+    speedMps,
+  });
+
+  const exposed = useMemo<{ result: NearestStationResult | null; source: NearestStationSource }>(
+    () => {
+      // sticky 비활성 또는 sticky가 live와 같은 역이면 live 결과 그대로 — reference 유지로
+      // throttle/리렌더 가정을 깨지 않는다. sticky가 다른 역을 lock한 경우에만 override.
+      if (!sticky.locked) return { result, source: 'live' };
+      if (result && result.station.id === sticky.locked.id) {
+        return { result, source: 'sticky' };
+      }
+      const distanceKm = userLocation
+        ? haversine(userLocation.lat, userLocation.lng, sticky.locked.lat, sticky.locked.lng)
+        : 0;
+      return {
+        result: { station: sticky.locked, distanceKm },
+        source: 'sticky',
+      };
+    },
+    [sticky.locked, result, userLocation],
+  );
+
   return {
-    result,
+    result: exposed.result,
     variants,
     userLocation,
     speedMps,
@@ -377,6 +413,7 @@ export function useNearestStation(): UseNearestStationReturn {
     locationUncertain,
     gpsActive,
     lastFixAtMs,
+    source: exposed.source,
     refresh,
   };
 }
