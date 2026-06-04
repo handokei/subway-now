@@ -37,7 +37,7 @@ import {
   readSeries,
   type WindowedMetrics,
 } from './positionSeries';
-import { getProgress, putProgress, type TripProgress } from './progress';
+import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import { listTrips, putTrip } from './trips';
@@ -625,11 +625,28 @@ export async function advanceBoardingLockWaypoint(
   trip.waypoints.shift();
   trip.lastTrackedArrivalEpoch = undefined;
   trip.lastLaPushEpoch = undefined;
+  // #864 — transfer waypoint 통과 = 직전 train segment 종료. lock을 유지하면 다음 cycle이
+  // 새 line(예: 5호선)에서 옛 trainCode(예: 7327)를 찾아 etaMissing 5회 후 trip auto-end로 사망.
+  // lock을 release하면 다음 cycle은 isBoardingLockActive=false → evaluateAndMaybeFireBoardingPrompt
+  // 가 사용자에게 환승 train 선택을 prompt하고, 클라이언트의 createTransferLock이 새 lock을 등록.
+  // segmentStations도 직전 leg 기준이라 위치 fallback 폴링도 더는 의미 없음.
+  //
+  // progress KV도 같이 정리 — 옛 trainCode + shiftedCount가 stale로 남으면 token-refresh race
+  // (`useApnsTripRegistration` `latestInputsRef` 옛 lock 보유) 윈도우에서 client 옛 lock POST 시
+  // `progressApplies=true` 분기로 진입해 옛 lock이 backend에 다시 active로 복원되는 회귀가 가능.
+  const lockReleasedOnTransfer = waypoint.kind === 'transfer' && trip.boardingLock !== undefined;
+  if (lockReleasedOnTransfer) {
+    trip.boardingLock = undefined;
+    trip.consecutiveEtaMissing = 0;
+    await deleteProgress(env.TRIPS, trip.token);
+  }
   log('boarding-lock: waypoint advanced', {
     token: trip.token.slice(0, 8),
     completed: waypoint.stationName,
     kind: waypoint.kind,
     remaining: trip.waypoints.length,
+    // P2-2: true일 때만 log key 포함 — false noise로 운영 로그 가시성 저하 방지.
+    ...(lockReleasedOnTransfer ? { lockReleasedOnTransfer: true } : {}),
   });
   if (trip.waypoints.length === 0) {
     await cleanupTripWithLa(trip, env, deps, stats, now, log);
