@@ -341,6 +341,28 @@ export function logSilentPushRescheduleReceived(input: {
 }
 
 /**
+ * Trip-ended silent push 수신 1건 적재 (#868).
+ *
+ * server-side trip auto-end 신호. 일반 silent push와 source는 같지만 station/kind/phaseId 모두 무의미
+ * (trip 자체가 종료되므로 다음 역 컨텍스트 없음). reason은 stationName 자리에 인코딩해 DebugModal에서
+ * 가시화 — alarmLog schema에 새 reason 필드를 더하지 않고 기존 슬롯을 재사용한다.
+ */
+export function logSilentPushTripEndedReceived(input: {
+  reason: string;
+  sentAt: number | undefined;
+  receivedAt: number;
+}): void {
+  appendAlarmLog({
+    ts: input.receivedAt,
+    source: 'silent-push-received',
+    outcome: 'received',
+    stationName: `trip-ended:${input.reason}`,
+    sentAt: input.sentAt,
+    receivedAt: input.receivedAt,
+  });
+}
+
+/**
  * silent push가 위치 게이트 통과 → 즉시 발사한 1건 (#478 PR 1-2).
  */
 export function logSilentPushFired(input: {

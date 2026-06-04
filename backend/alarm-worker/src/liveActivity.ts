@@ -13,12 +13,16 @@
  * 폴백 helper로 raw 필드(etaMinutes, distanceM, alarmType 등)에서 derive 한다.
  */
 
-import { sendLiveActivityUpdate, type LiveActivityContentState } from './apns';
+import {
+  sendLiveActivityUpdate,
+  sendTripEndedPush,
+  type LiveActivityContentState,
+} from './apns';
 import { pickApnsHost } from './apnsHost';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
 import { deleteTrip } from './trips';
-import type { ApnsEnv, Env, Trip, Waypoint } from './types';
+import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from './types';
 
 /**
  * stale-date까지 클라이언트가 last content-state를 신뢰할 수 있는 시간(초).
@@ -171,6 +175,13 @@ export async function fireLiveActivityDismissal(
 /**
  * trip 정리 wrapper — LA dismissal(있을 때만) + deleteTrip을 단일 진입점으로.
  * scheduled.ts의 모든 deleteTrip 호출 + HTTP DELETE /trips/:token이 공유.
+ *
+ * #868 — reason 지정 시 trip-ended silent push 발사. server-side auto-end 경로(scheduled.ts의
+ * cron 호출자)는 reason을 명시 전달해 클라 route/destination/lock state를 동기화한다.
+ * HTTP DELETE 경로는 reason 미지정 — 이미 사용자가 destination을 clear한 시점이라 push 불필요.
+ *
+ * push는 LA dismissal과 별개의 budget(분당 0~1건 trip 종료 수준)이라 LA push와 직렬 발사로 충분.
+ * 실패 시 graceful — log만 남기고 cleanup 흐름은 계속 진행한다.
  */
 export async function cleanupTripWithLa(
   trip: Trip,
@@ -179,11 +190,61 @@ export async function cleanupTripWithLa(
   stats: LiveActivityStats,
   now: number,
   log: Logger,
+  reason?: TripEndedReason,
 ): Promise<void> {
   await fireLiveActivityDismissal(trip, deps, stats, now, log);
+  if (reason) {
+    await fireTripEndedPush(trip, reason, deps, now, log);
+  }
   await deleteTrip(env.TRIPS, trip.token);
   // #705 — trip을 폐기할 때 progress entry도 함께 제거. TTL이 자연 만료를 보장하지만
   // 즉시 cleanup해야 새 동일 token trip 등록 시 stale shiftedCount가 끼지 않는다.
   await deleteProgress(env.TRIPS, trip.token);
+}
+
+/**
+ * trip-ended silent push 발사 (#868). LA dismissal과 직렬로 1회 발사.
+ * 실패는 fire-and-forget 성격이지만 흐름 일관성을 위해 await — APNs latency는 cron 1 cycle 안에서 흡수.
+ * fireLiveActivityDismissal과 마찬가지로 trip 상태 변경 없이 best-effort.
+ */
+async function fireTripEndedPush(
+  trip: Trip,
+  reason: TripEndedReason,
+  deps: LiveActivityDeps,
+  now: number,
+  log: Logger,
+): Promise<void> {
+  const host = pickApnsHost(trip.apnsEnv, deps.apnsHosts);
+  const pushId = crypto.randomUUID();
+  // JWT 서명 / network reject 등의 throw가 cleanup 흐름을 차단하지 않도록 swallow.
+  // trip-ended push는 graceful fail-soft — graceful loss 시 클라는 다음 FG hydrate에서 회복.
+  try {
+    const result = await sendTripEndedPush({
+      deviceToken: trip.token,
+      pushId,
+      reason,
+      sentAt: now,
+      // race 가드(#868 P1-2) — push 도착 시점에 클라가 trip 갈아탔으면 ACTIVE_TRIP_KEY 불일치로 cleanup skip.
+      tripToken: trip.token,
+      config: deps.apnsConfig,
+      host,
+      fetchImpl: deps.fetchImpl,
+      now,
+    });
+    if (!result.ok) {
+      log('trip-ended push failed', {
+        token: trip.token.slice(0, 8),
+        reason,
+        status: result.status,
+        pushReason: result.reason,
+      });
+    }
+  } catch (e) {
+    log('trip-ended push threw', {
+      token: trip.token.slice(0, 8),
+      reason,
+      error: String(e),
+    });
+  }
 }
 

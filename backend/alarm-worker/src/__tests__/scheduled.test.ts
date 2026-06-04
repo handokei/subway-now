@@ -210,10 +210,13 @@ describe('runScheduled', () => {
       makeTrip({ expiresAt: NOW + 5_000, alarmAtEpochMs: NOW - 1 }),
     );
     // expire 이전이지만 다음 시점은 expire 이후
+    // #868 — expired 경로는 trip-ended silent push도 발사 시도하므로 fetch mock 필요.
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runScheduled(makeEnv(kv), {
       seoul: makeSeoul([]),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
       now: () => NOW + 10_000,
     });
     expect(stats.polled).toBe(0);
@@ -1207,6 +1210,209 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     // shift 시 lastLaPushEpoch는 reset되어 다음 polling cycle의 첫 estimate가 임계 검사 없이 push되도록 보장.
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBeUndefined();
+  });
+});
+
+// #868 — server-side trip auto-end 경로에서 클라 state sync용 trip-ended silent push가 발사되는지.
+// LA dismissal과 별개 budget(분당 0~1건)이라 trip 종료 cleanup 1건당 1회 발사가 기대 동작.
+describe('runScheduled — trip-ended silent push (#868)', () => {
+  /** APNs silent push (trip-ended kind) 호출만 추출 — LA push와 분리해 단언. */
+  function getTripEndedCalls(
+    fetchImpl: ReturnType<typeof vi.fn>,
+  ): [string, RequestInit][] {
+    return (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) => {
+      const headers = (c[1]?.headers ?? {}) as Record<string, string>;
+      if (headers['apns-push-type'] !== 'background') return false;
+      try {
+        const body = JSON.parse(c[1]?.body as string) as { data?: { kind?: string } };
+        return body?.data?.kind === 'trip-ended';
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  /** trip-ended push body의 data field 추출. */
+  function parseTripEndedData(call: [string, RequestInit]): {
+    kind: string;
+    reason: string;
+    pushId: string;
+    sentAt: number;
+  } {
+    const body = JSON.parse(call[1].body as string) as {
+      data: { kind: string; reason: string; pushId: string; sentAt: number };
+    };
+    return body.data;
+  }
+
+  it('fires trip-ended push (reason=eta-missing) when consecutiveEtaMissing exceeds threshold', async () => {
+    const kv = new InMemoryKV();
+    // makeLockTrip은 inner describe scope이므로 같은 fixture를 인라인 재구성.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'end-tok',
+        route: { type: 'direct', line: '7', stops: 2 },
+        waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
+        boardingLock: {
+          trainCode: '7246',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: NOW,
+          segmentStations: ['용마산', '중곡', '군자'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+        consecutiveEtaMissing: 4, // 임계(5) -1
+      }),
+    );
+    const fetchImpl = makeOkFetch();
+    // arrivals 비어 있음 → estimate=null → miss 1 더 → 5 도달 → auto-end.
+    // top-level makeSeoul은 positions endpoint도 같은 fetchImpl을 사용 — realtimePositionList 키가
+    // 없어 빈 배열로 처리되므로 fallback도 estimate=null로 떨어진다.
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-eta-end',
+    });
+    const calls = getTripEndedCalls(fetchImpl);
+    expect(calls).toHaveLength(1);
+    const data = parseTripEndedData(calls[0]);
+    expect(data.kind).toBe('trip-ended');
+    expect(data.reason).toBe('eta-missing');
+    expect(data.sentAt).toBe(NOW);
+    expect(typeof data.pushId).toBe('string');
+    expect(data.pushId.length).toBeGreaterThan(0);
+    // #868 P1-2 race 가드 — payload에 tripToken 포함되어야 클라가 ACTIVE_TRIP_KEY와 매칭 가능.
+    expect(data.tripToken).toBe('end-tok');
+    // trip은 KV에서 삭제돼야 함 (#706 cleanup).
+    expect(await kv.get('trip:end-tok')).toBeNull();
+  });
+
+  it('fires trip-ended push (reason=destination-arrived) when destination waypoint ARRIVED', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
+    const fetchImpl = makeOkFetch();
+    // ARRIVED(arvlCd=1) → advanceBoardingLockWaypoint → destination → cleanup
+    await runLaScheduled(kv, { seoul: makeLockedSeoul(0, 1), fetchImpl });
+    const calls = getTripEndedCalls(fetchImpl);
+    expect(calls).toHaveLength(1);
+    const data = parseTripEndedData(calls[0]);
+    expect(data.reason).toBe('destination-arrived');
+    expect(await kv.get('trip:la-tok')).toBeNull();
+  });
+
+  it('fires trip-ended push (reason=expired) on trip.expiresAt elapsed', async () => {
+    const kv = new InMemoryKV();
+    await kv.put(
+      'trip:la-tok',
+      JSON.stringify(
+        makeLockedLaTrip({ expiresAt: NOW + 5_000, alarmAtEpochMs: NOW - 1 }),
+      ),
+    );
+    const fetchImpl = makeOkFetch();
+    await runLaScheduled(kv, {
+      seoul: makeLockedSeoul(0),
+      fetchImpl,
+      now: () => NOW + 10_000,
+    });
+    const calls = getTripEndedCalls(fetchImpl);
+    expect(calls).toHaveLength(1);
+    expect(parseTripEndedData(calls[0]).reason).toBe('expired');
+  });
+
+  it('fires trip-ended push (reason=push-unrecoverable) on reschedule 410 Unregistered', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
+    const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {
+      if (isLaCall(url, init)) return new Response('', { status: 200 });
+      const body = init?.body as string | undefined;
+      // trip-ended push는 정상 응답 — reschedule push만 410 Unregistered로 폐기 트리거.
+      if (body && body.includes('"trip-ended"')) {
+        return new Response('', { status: 200 });
+      }
+      return new Response(JSON.stringify({ reason: 'Unregistered' }), { status: 410 });
+    });
+    await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    const calls = getTripEndedCalls(fetchImpl);
+    expect(calls).toHaveLength(1);
+    expect(parseTripEndedData(calls[0]).reason).toBe('push-unrecoverable');
+    expect(await kv.get('trip:la-tok')).toBeNull();
+  });
+
+  it('#868 P2-1 — trip-ended push fetch throw해도 cleanup 흐름 계속 (trip 삭제됨)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'thr-tok',
+        route: { type: 'direct', line: '7', stops: 2 },
+        waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
+        boardingLock: {
+          trainCode: '7246',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: NOW,
+          segmentStations: ['용마산', '중곡', '군자'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+        consecutiveEtaMissing: 4,
+      }),
+    );
+    // trip-ended push만 reject — reschedule/LA push는 정상.
+    const throwingFetch = vi.fn((url: unknown, init?: { body?: string }) => {
+      const body = typeof init?.body === 'string' ? init.body : '';
+      if (body.includes('"trip-ended"')) {
+        return Promise.reject(new Error('network down'));
+      }
+      return Promise.resolve(new Response('', { status: 200 }));
+    });
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: throwingFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-thr',
+    });
+    // throw 흡수 → cleanup 진행 → trip 삭제.
+    expect(await kv.get('trip:thr-tok')).toBeNull();
+  });
+
+  it('does not fire trip-ended push when miss counter increments below threshold', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'mid-tok',
+        route: { type: 'direct', line: '7', stops: 2 },
+        waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
+        boardingLock: {
+          trainCode: '7246',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: NOW,
+          segmentStations: ['용마산', '중곡', '군자'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+        consecutiveEtaMissing: 1,
+      }),
+    );
+    const fetchImpl = makeOkFetch();
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-no-end',
+    });
+    expect(getTripEndedCalls(fetchImpl)).toHaveLength(0);
+    // trip은 살아 있어야 함 (counter만 증가)
+    const stored = JSON.parse((await kv.get('trip:mid-tok')) as string) as Trip;
+    expect(stored.consecutiveEtaMissing).toBe(2);
   });
 });
 

@@ -7,7 +7,12 @@
 
 import { importPKCS8, SignJWT } from 'jose';
 import type { AlarmPhase } from './alarm';
-import type { BoardingPromptPushPayload, ReschedulePushPayload } from './types';
+import type {
+  BoardingPromptPushPayload,
+  ReschedulePushPayload,
+  TripEndedPushPayload,
+  TripEndedReason,
+} from './types';
 
 /**
  * iOS UNNotificationCategory 식별자 (#819 B 슬라이스). 클라이언트는 같은 식별자로
@@ -209,6 +214,59 @@ export async function sendReschedulePush(
     nextStation: options.nextStation,
     newArrivalTimeEpoch: options.newArrivalTimeEpoch,
     sentAt: options.sentAt,
+  };
+
+  const body = JSON.stringify({ aps: { 'content-available': 1 }, data: payload });
+
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: {
+      authorization: `bearer ${jwt}`,
+      'apns-topic': options.config.bundleId,
+      'apns-push-type': 'background',
+      'apns-priority': '5',
+      'content-type': 'application/json',
+    },
+    body,
+  });
+
+  if (response.ok) return { ok: true, status: response.status };
+  return parseApnsError(response);
+}
+
+/**
+ * Trip ended silent push (#868). server-side trip auto-end 시 클라이언트 state sync 신호.
+ *
+ * silent push와 동일 헤더(background, priority 5)지만 payload의 `kind: 'trip-ended'`로 구분.
+ * - alert fallback 대상이 아니다 — graceful loss 시 다음 FG 진입에서 trip 상태 재동기화 경로가 보강.
+ * - 발사 비용은 trip 종료 1건당 1회로 극소 (분당 0~1건 수준) — APNs budget 영향 무시 가능.
+ */
+export interface SendTripEndedPushOptions {
+  deviceToken: string;
+  pushId: string;
+  reason: TripEndedReason;
+  sentAt: number;
+  /** 종료된 trip의 token — 클라가 현재 ACTIVE_TRIP_KEY와 비교해 race 차단(#868 P1-2). */
+  tripToken: string;
+  config: ApnsConfig;
+  host: string;
+  fetchImpl?: typeof fetch;
+  now?: number;
+}
+
+export async function sendTripEndedPush(
+  options: SendTripEndedPushOptions,
+): Promise<SendPushResult> {
+  const jwt = await buildApnsJwt(options.config, options.now);
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const url = `https://${options.host}/3/device/${options.deviceToken}`;
+
+  const payload: TripEndedPushPayload = {
+    pushId: options.pushId,
+    kind: 'trip-ended',
+    reason: options.reason,
+    sentAt: options.sentAt,
+    tripToken: options.tripToken,
   };
 
   const body = JSON.stringify({ aps: { 'content-available': 1 }, data: payload });
