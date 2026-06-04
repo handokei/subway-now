@@ -15,6 +15,11 @@ import {
 import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY } from '../constants/location';
 import { MAX_STATION_DISTANCE_KM } from '../constants/location';
 import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../constants/e2e';
+import {
+  appStateToGpsActive,
+  currentGpsActive,
+  type GpsActiveState,
+} from '../constants/gpsStatus';
 import { createLogger } from '../utils/logger';
 import { pushFusionDebugEntry } from '../utils/fusionDebugBuffer';
 
@@ -39,6 +44,12 @@ interface UseNearestStationReturn {
   // true: 직전 좌표가 표시 게이트(MAX_ACCURACY_M_DISPLAY)에 의해 drop되어 result가
   // 마지막 신뢰 fix로 정지된 상태. 호출자는 "위치 확인 중" 상태로 표시한다.
   locationUncertain: boolean;
+  // #852: GPS watch 구독 활성 여부. AppState 'active' 동안만 'fg', 그 외(BG/inactive)는 'bg'.
+  // silent push wake 시에도 'bg' — 사용자가 디버그 모달에서 "왜 안 바뀌지" 확인 가능.
+  gpsActive: GpsActiveState;
+  // #852: 마지막 신뢰 fix epoch ms. BG 진입 후 새 fix가 없으면 이 시각은 정지.
+  // null = 한 번도 fix 없음(cold start). 디버그 모달 표기용.
+  lastFixAtMs: number | null;
   refresh: () => Promise<void>;
 }
 
@@ -89,6 +100,10 @@ export function useNearestStation(): UseNearestStationReturn {
   const [error, setError] = useState<string | null>(null);
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [locationUncertain, setLocationUncertain] = useState(false);
+  // #852: AppState 초기값 기준 — RN의 초기 currentState는 보통 'active'지만
+  // 모듈 마운트 타이밍에 따라 'unknown'/'background'일 수 있어 wrapper로 통일.
+  const [gpsActive, setGpsActive] = useState<GpsActiveState>(() => currentGpsActive());
+  const [lastFixAtMs, setLastFixAtMs] = useState<number | null>(null);
   const subscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const lastStationIdRef = useRef<string | null>(null);
   const lastDistanceRef = useRef<number>(0);
@@ -113,6 +128,9 @@ export function useNearestStation(): UseNearestStationReturn {
     // (호출자 측 setLocationUncertain(false)에 의존하면 jump drop 직후 정상 fix가 들어와도
     //  복귀 호출 경로가 없어 uncertain이 고착되는 결함 발생 — P1 회피.)
     setLocationUncertain(false);
+    // #852: 신뢰 fix가 채택된 시점을 기록 — 디버그 모달 GPS 섹션에서 stale window 시각화.
+    // jump/accuracy drop된 fix는 채택 안 함(stale 시각이 그대로 유지) — 사용자가 stale 구간 식별 가능.
+    setLastFixAtMs(timestamp);
     const stationsResult = findNearestStations(latitude, longitude, MAX_STATION_DISTANCE_KM);
 
     const newId = stationsResult?.primary.id ?? null;
@@ -312,6 +330,9 @@ export function useNearestStation(): UseNearestStationReturn {
     startWatch();
 
     const appStateSub = AppState.addEventListener('change', (state) => {
+      // #852: AppState 전환 시점에 즉시 gpsActive 라벨 갱신. silent push wake로 BG에 있는 동안
+      // 'bg' 상태 유지 → 사용자가 디버그 모달에서 확인 가능.
+      setGpsActive(appStateToGpsActive(state));
       if (state === 'active') {
         // FG 복귀 시 result는 BG 진입 시점의 stale 위치 — 사용자가 그 사이 이동했을 수 있다 (#543).
         // 명시적으로 uncertain 상태로 전환해 UI가 "위치 확인 중"을 표시하게 하고,
@@ -340,5 +361,18 @@ export function useNearestStation(): UseNearestStationReturn {
     };
   }, [startWatch, stopWatch, refresh]);
 
-  return { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, refresh };
+  return {
+    result,
+    variants,
+    userLocation,
+    speedMps,
+    accuracyMeters,
+    loading,
+    error,
+    permissionDenied,
+    locationUncertain,
+    gpsActive,
+    lastFixAtMs,
+    refresh,
+  };
 }

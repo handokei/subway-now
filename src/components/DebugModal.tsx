@@ -13,6 +13,8 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppStore } from '../store/useAppStore';
 import { isDebugModalEnabled } from '../constants/debugFlags';
+import type { GpsActiveState } from '../constants/gpsStatus';
+import { formatClockTimeWithSeconds } from '../utils/formatTime';
 import { useFusedNearestStation } from '../hooks/useFusedNearestStation';
 import { useArrivalInfo } from '../hooks/useArrivalInfo';
 import {
@@ -164,6 +166,10 @@ function buildDumpText(args: {
   userLocation: { lat: number; lng: number } | null;
   speedMps: number | null;
   accuracyMeters: number | null;
+  // #852: GPS watch 구독 상태(FG/BG) + 마지막 신뢰 fix 시각. silent push wake 시 stale window 진단용.
+  // 호환을 위해 optional — 미전달 시 'fg' / null로 fallback (한 번도 fix 없는 상태와 동일 표기).
+  gpsActive?: GpsActiveState;
+  lastFixAtMs?: number | null;
   nearestName: string | null;
   nearestDistanceM: number | null;
   variants: string[];
@@ -190,6 +196,11 @@ function buildDumpText(args: {
     args.userLocation
       ? `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}, speed=${args.speedMps ?? '-'} m/s, accuracy=${args.accuracyMeters ?? '-'} m`
       : '(no location)',
+  );
+  // #852: watch 구독 상태 + 마지막 fix 시각. 'bg'면 watch가 정지된 상태(silent push wake 등).
+  // 호출자 호환을 위해 optional — 미전달 시 'fg'/(never)로 표기.
+  lines.push(
+    `state=${args.gpsActive ?? 'fg'}, lastFix=${formatClockTimeWithSeconds(args.lastFixAtMs ?? null)}`,
   );
   lines.push('');
   lines.push('## Nearest');
@@ -289,6 +300,8 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
     userLocation,
     speedMps,
     accuracyMeters,
+    gpsActive,
+    lastFixAtMs,
   } = useFusedNearestStation();
   const stationName = result?.station.name ?? null;
   const { arrival, isMock } = useArrivalInfo(stationName);
@@ -350,6 +363,9 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
       userLocation,
       speedMps,
       accuracyMeters,
+      // #852: hook이 신규 필드를 미지원하던 시점 호환 — undefined면 'fg'/null로 fallback.
+      gpsActive: gpsActive ?? 'fg',
+      lastFixAtMs: lastFixAtMs ?? null,
       nearestName: result?.station.name ?? null,
       nearestDistanceM,
       variants: variantNames,
@@ -372,6 +388,8 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
     userLocation,
     speedMps,
     accuracyMeters,
+    gpsActive,
+    lastFixAtMs,
     result,
     nearestDistanceM,
     variantNames,
@@ -422,6 +440,14 @@ function DebugModalInner({ onClose, candidateTrains }: DebugModalProps) {
             ) : (
               <Text style={[typography.mono, { color: colors.muted }]}>(no location)</Text>
             )}
+            {/* #852: GPS watch 구독 상태 — 사용자가 "왜 위치가 안 바뀌지" 확인 가능.
+                userLocation 유무와 무관하게 항상 노출(cold start 'fg lastFix=(never)' 식별). */}
+            <KeyValue label="state" value={gpsActive ?? 'fg'} colors={colors} />
+            <KeyValue
+              label="lastFix"
+              value={formatClockTimeWithSeconds(lastFixAtMs ?? null)}
+              colors={colors}
+            />
           </Section>
 
           <Section title="Fusion" colors={colors}>

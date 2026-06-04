@@ -387,6 +387,77 @@ describe('DebugModal', () => {
     expect(screen.getByText('0: -')).toBeTruthy();
   });
 
+  it('#852: GPS 섹션에 state/lastFix를 항상 표시 (fix 있을 때)', () => {
+    const fixTs = new Date(2026, 5, 4, 8, 42, 15).getTime();
+    mockUseFusedNearestStation.mockReturnValue({
+      result: baseResult,
+      gpsResult: baseResult,
+      confidence: 'gps-only',
+      source: 'gps',
+      variants: [],
+      userLocation: { lat: 37.5, lng: 127.0 },
+      speedMps: 1,
+      accuracyMeters: 12,
+      loading: false,
+      error: null,
+      permissionDenied: false,
+      gpsActive: 'fg',
+      lastFixAtMs: fixTs,
+      refresh: jest.fn(),
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('state')).toBeTruthy();
+    expect(screen.getByText('fg')).toBeTruthy();
+    expect(screen.getByText('lastFix')).toBeTruthy();
+    expect(screen.getByText('08:42:15')).toBeTruthy();
+  });
+
+  it('#852: GPS 섹션 state/lastFix — userLocation 없어도 항상 노출 (cold start)', () => {
+    mockUseFusedNearestStation.mockReturnValue({
+      result: null,
+      gpsResult: null,
+      confidence: 'gps-only',
+      source: 'gps',
+      variants: [],
+      userLocation: null,
+      speedMps: null,
+      accuracyMeters: null,
+      loading: false,
+      error: null,
+      permissionDenied: false,
+      gpsActive: 'bg',
+      lastFixAtMs: null,
+      refresh: jest.fn(),
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('(no location)')).toBeTruthy();
+    // state/lastFix는 userLocation 유무와 무관하게 노출.
+    expect(screen.getByText('bg')).toBeTruthy();
+    // (never)는 silentPush rows(lastReceived/lastFired/lastSkipped)에도 등장 → 최소 1개 이상.
+    expect(screen.getAllByText('(never)').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('#852: hook이 gpsActive/lastFixAtMs를 미제공해도 fg/(never)로 fallback', () => {
+    mockUseFusedNearestStation.mockReturnValue({
+      result: baseResult,
+      gpsResult: baseResult,
+      confidence: 'gps-only',
+      source: 'gps',
+      variants: [],
+      userLocation: { lat: 37.5, lng: 127.0 },
+      speedMps: 1,
+      accuracyMeters: 10,
+      loading: false,
+      error: null,
+      permissionDenied: false,
+      refresh: jest.fn(),
+      // gpsActive / lastFixAtMs 의도적 미설정.
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('fg')).toBeTruthy();
+    expect(screen.getAllByText('(never)').length).toBeGreaterThanOrEqual(1);
+  });
+
   it('unmount 시 AppState listener를 정리한다', async () => {
     const { unmount } = renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
@@ -614,6 +685,44 @@ describe('DebugModal helpers', () => {
     expect(dump).not.toContain('(MOCK)');
     expect(dump).not.toContain('candidateTrains');
     expect(dump).toContain('## Alarm log (0)');
+  });
+
+  it('#852 buildDumpText: gpsActive/lastFixAtMs를 받으면 state= / lastFix= 라인을 추가한다', () => {
+    const fixTs = new Date(2026, 5, 4, 8, 42, 15).getTime();
+    const dump = __test__.buildDumpText({
+      userLocation: { lat: 37.5, lng: 127.0 },
+      speedMps: 2,
+      accuracyMeters: 30,
+      gpsActive: 'bg',
+      lastFixAtMs: fixTs,
+      nearestName: '강남',
+      nearestDistanceM: 123,
+      variants: [],
+      fusion: baseFusion,
+      arrivalSummary: 'x',
+      isMock: false,
+      silentPush: baseSilentPush,
+      logs: [],
+    });
+    expect(dump).toContain('state=bg, lastFix=08:42:15');
+  });
+
+  it('#852 buildDumpText: gpsActive/lastFixAtMs 미전달 시 state=fg, lastFix=(never)로 fallback', () => {
+    const dump = __test__.buildDumpText({
+      userLocation: null,
+      speedMps: null,
+      accuracyMeters: null,
+      // gpsActive / lastFixAtMs 의도적 미전달.
+      nearestName: null,
+      nearestDistanceM: null,
+      variants: [],
+      fusion: baseFusion,
+      arrivalSummary: '-',
+      isMock: false,
+      silentPush: baseSilentPush,
+      logs: [],
+    });
+    expect(dump).toContain('state=fg, lastFix=(never)');
   });
 
   it('buildDumpText: userLocation은 있고 speedMps/accuracy만 null이면 "-" 표기', () => {

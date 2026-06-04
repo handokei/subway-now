@@ -1,4 +1,4 @@
-import { formatArrivalTime, formatClockTime } from '../formatTime';
+import { formatArrivalTime, formatClockTime, formatClockTimeWithSeconds } from '../formatTime';
 
 describe('formatArrivalTime', () => {
   it('0초 이하이면 "곧 도착"을 반환한다', () => {
@@ -33,5 +33,21 @@ describe('formatClockTime (#625)', () => {
     // 2026-01-01T03:05:00 UTC 같은 시각을 timezone-agnostic하게 검증.
     const d = new Date(2026, 0, 1, 3, 5);
     expect(formatClockTime(d.getTime())).toBe('03:05');
+  });
+});
+
+describe('formatClockTimeWithSeconds (#852)', () => {
+  it('null이면 (never)', () => {
+    expect(formatClockTimeWithSeconds(null)).toBe('(never)');
+  });
+
+  it('HH:mm:ss 24h 포맷, 한 자리도 모두 두 자리로 패딩', () => {
+    const d = new Date(2026, 5, 3, 8, 7, 5);
+    expect(formatClockTimeWithSeconds(d.getTime())).toBe('08:07:05');
+  });
+
+  it('두 자리 시/분/초를 그대로 표기', () => {
+    const d = new Date(2026, 5, 3, 14, 30, 45);
+    expect(formatClockTimeWithSeconds(d.getTime())).toBe('14:30:45');
   });
 });
