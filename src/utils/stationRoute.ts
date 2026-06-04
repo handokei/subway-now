@@ -975,9 +975,21 @@ export function routeSignature(route: Route): string {
   }
 }
 
+/**
+ * 실시간 다음 열차 분 + 운행 분 + 환승 leg별 다음 열차 대기 분.
+ *
+ * #851: 기존 구현은 환승 leg의 다음 열차 대기를 누락해 환승 경로 ETA가 직통 시간 수준으로 과소
+ * 표기되는 회귀 (용마산→건대입구 환승→성수 ≈ 5분으로 표시). `calculateStaticETA`와 동일하게
+ * leg당 `DEFAULT_WAIT_MINUTES` fallback을 합산해 정합성을 맞춘다.
+ *
+ * 첫 열차 대기는 호출자가 실시간으로 측정해 `nextTrainMinutes`로 주입한다.
+ * 환승 leg 대기는 환승역별 폴링 인프라가 없으므로 fallback만 사용 — 후속에서 동적화 시
+ * `calculateStaticETA`의 `arrivalsAtTransfers`와 동일한 옵션 시그니처로 확장.
+ */
 export function calculateETA(nextTrainMinutes: number, route: Route): number {
   if (!route) return nextTrainMinutes;
-  return nextTrainMinutes + getTravelMinutes(route);
+  const transferWait = getTransferCount(route) * DEFAULT_WAIT_MINUTES;
+  return nextTrainMinutes + getTravelMinutes(route) + transferWait;
 }
 
 function getNextStationOnLine(
