@@ -971,6 +971,31 @@ describe('formatFusionDebugLine', () => {
     expect(line).toContain('reason=low-accuracy-display');
   });
 
+  it.each([
+    ['locked', 50, 0.3, 'sticky:locked', 'acc=50m', 'sp=0.3m/s'],
+    ['unlocked-distance', null, null, 'sticky:unlocked-distance', 'acc=-', 'sp=-'],
+    ['unlocked-motion', 30, null, 'sticky:unlocked-motion', 'acc=30m', 'sp=-'],
+    ['unlocked-ttl', null, 0, 'sticky:unlocked-ttl', 'acc=-', 'sp=0.0m/s'],
+    ['unlocked-better-fix', 20, 0.5, 'sticky:unlocked-better-fix', 'acc=20m', 'sp=0.5m/s'],
+  ] as const)(
+    'sticky 엔트리(%s): event/station/acc/speed 포함',
+    (event, acc, sp, expectedEvent, expectedAcc, expectedSp) => {
+      const line = formatFusionDebugLine({
+        kind: 'sticky',
+        event,
+        ts: 0,
+        stationName: '서울역',
+        line: '1',
+        accuracyMeters: acc,
+        speedMps: sp,
+      });
+      expect(line).toContain(expectedEvent);
+      expect(line).toContain('서울역(1)');
+      expect(line).toContain(expectedAcc);
+      expect(line).toContain(expectedSp);
+    },
+  );
+
   it('gps 엔트리: nearestStation/distance/accuracy 누락 시 "-" 표기', () => {
     const line = formatFusionDebugLine({
       kind: 'gps',

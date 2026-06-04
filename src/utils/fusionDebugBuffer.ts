@@ -50,7 +50,27 @@ export interface GpsFixEntry {
   dropReason?: string;
 }
 
-export type FusionDebugEntry = FusionDecisionEntry | GpsFixEntry;
+/** #876 — sticky station lock/unlock 이벤트 측정.
+ *  현장에서 잘못된 lock 또는 unlock이 발생했는지 사후 재구성하기 위한 채널. */
+export type StickyStationEvent =
+  | 'locked'
+  | 'unlocked-distance'
+  | 'unlocked-motion'
+  | 'unlocked-ttl'
+  | 'unlocked-better-fix';
+
+export interface StickyStationEntry {
+  kind: 'sticky';
+  event: StickyStationEvent;
+  ts: number;
+  stationName: string;
+  line: string;
+  /** locked 시: lock된 fix의 정확도/속도. unlock 시: trigger fix의 정확도/속도(없으면 null). */
+  accuracyMeters: number | null;
+  speedMps: number | null;
+}
+
+export type FusionDebugEntry = FusionDecisionEntry | GpsFixEntry | StickyStationEntry;
 
 type Listener = () => void;
 
