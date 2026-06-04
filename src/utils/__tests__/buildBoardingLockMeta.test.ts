@@ -80,6 +80,28 @@ describe('buildBoardingLockMeta', () => {
     expect(result).toBeNull();
   });
 
+  it('#865 — 시간표 fallback trainCode(SCHED-*)면 null (backend 누설 차단)', () => {
+    const route = makeDirectRoute(1, '7');
+    const result = buildBoardingLockMeta({
+      lock: { ...baseLock, trainCode: 'SCHED-UP-1', boardingLine: '7' },
+      route,
+      destinationName: '용마산',
+      boardingStationName: '면목',
+    });
+    expect(result).toBeNull();
+  });
+
+  it('#865 — SCHED-DN-* 같은 다른 suffix도 동일하게 null', () => {
+    const route = makeDirectRoute(1, '7');
+    const result = buildBoardingLockMeta({
+      lock: { ...baseLock, trainCode: 'SCHED-DN-2', boardingLine: '7' },
+      route,
+      destinationName: '용마산',
+      boardingStationName: '면목',
+    });
+    expect(result).toBeNull();
+  });
+
   it('segmentStations 추론 불가하면 (boardingLine ≠ route segment) null', () => {
     const route = makeTransferRoute({
       transferName: '교대',

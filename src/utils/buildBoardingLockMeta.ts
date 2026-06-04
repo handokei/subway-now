@@ -6,6 +6,10 @@ import { lineToSubwayId } from '../constants/lineApiNames';
 import type { Station } from '../types/station';
 import type { LineNumber } from '../types/station';
 import type { AlarmBoardingLock } from '../api/alarmBackend';
+import { isScheduleFallbackTrainCode } from './scheduleFallback';
+import { createLogger } from './logger';
+
+const logger = createLogger('buildBoardingLockMeta');
 
 /**
  * 현재 BoardingLock leg의 끝 역(다음 환승역 또는 최종 도착역) 이름을 결정한다.
@@ -91,6 +95,17 @@ export function buildBoardingLockMeta({
   destinationName: string;
   boardingStationName: string;
 }): AlarmBoardingLock | null {
+  // #865 — 시간표 fallback이 만든 가상 trainCode(SCHED-*)는 backend 실시간 API에서
+  // 절대 찾을 수 없어 `consecutiveEtaMissing exceeded`로 4분 만에 trip auto-end된다.
+  // 등록 자체를 보류해 backend가 anchor waypoint 폴링으로 fallback하게 한다 — 실시간
+  // trainCode가 잡히면 다음 effect cycle에서 정상 등록된다. (UI 측 필터는 #648.)
+  if (isScheduleFallbackTrainCode(lock.trainCode)) {
+    logger.warn(
+      `skip backend register — schedule fallback trainCode=${lock.trainCode} (line=${lock.boardingLine})`,
+    );
+    return null;
+  }
+
   const subwayId = lineToSubwayId(lock.boardingLine);
   if (!subwayId) return null;
 
