@@ -34,6 +34,25 @@ preview_id = "53a86628f78c48fa91fa954f84514df3"
 [triggers]
 crons = ["*/1 * * * *"]
 
+# Observability — Workers Logs persist (#863)
+# `wrangler tail`은 실시간 1~2분 윈도우만 잡혀 retrospective 진단 불가.
+# logs만 활성화해 invocation logs를 Workers Logs에 영구 저장, dashboard에서 조회 가능.
+# traces는 비용/성능 영향 최소화 위해 일단 비활성. 필요 시 토글.
+[observability]
+enabled = false
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
+
 # 공개 환경변수 (시크릿은 `wrangler secret put` 사용)
 # - SEOUL_API_KEY          : 서울 열린데이터 API 키
 # - APNS_KEY_ID            : APNs 인증키 KeyID
