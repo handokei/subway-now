@@ -23,10 +23,12 @@ import {
 } from '../hooks/useSilentPushDiagnostics';
 import {
   clearAlarmLog,
+  countSilentPushOutcomes,
   getAlarmLog,
   summarizeAlarmLogBySource,
   type AlarmLogEntry,
 } from '../utils/alarmLog';
+import { SILENT_PUSH_LABELS, buildSilentPushCountValue } from '../constants/labels';
 import {
   clearFusionDebugEntries,
   getFusionDebugEntries,
@@ -127,13 +129,23 @@ function formatAt(ts: number | null): string {
  * - uiLabel: KeyValue 좌측 (좁은 폭 — 약어)
  * - dumpKey: 텍스트 dump의 헤더 (전체 단어)
  * 새 필드는 여기와 hook 타입만 손대면 dump/UI가 동시에 갱신된다.
+ *
+ * #856 — `logs`/`locklessOn` 보강. lastRecv/lastFired 시간만 보고 "왜 안 울리지?" 묻는
+ * 사용자 의문을 한 라인으로 해소하기 위해 received/fired 카운트 + toggle 상태 row 추가.
+ * lastRecv/lastFired row는 카운트와 같은 값으로 흡수돼 단일 라인으로 줄어든다(중복 제거).
  */
 function silentPushDiagRows(
   d: SilentPushDiagnostics,
+  logs: readonly AlarmLogEntry[],
+  locklessOn: boolean,
 ): { uiLabel: string; dumpKey: string; value: string }[] {
   const task = d.taskRegistrationError
     ? `${d.taskRegistrationState} (${d.taskRegistrationError})`
     : d.taskRegistrationState;
+  const silentCounts = countSilentPushOutcomes(logs);
+  const receivedValue = buildSilentPushCountValue(silentCounts.received, formatAt(d.lastReceivedAt));
+  const firedValue = buildSilentPushCountValue(silentCounts.fired, formatAt(d.lastFiredAt));
+  const toggleValue = locklessOn ? SILENT_PUSH_LABELS.toggleOn : SILENT_PUSH_LABELS.toggleOff;
   return [
     { uiLabel: 'permission', dumpKey: 'permission', value: d.permissionStatus ?? '(unknown)' },
     { uiLabel: 'apnsToken', dumpKey: 'apnsToken', value: formatTokenTail(d.apnsToken) },
@@ -143,9 +155,22 @@ function silentPushDiagRows(
     { uiLabel: 'route', dumpKey: 'route', value: d.hasRoute ? 'set' : '(none)' },
     { uiLabel: 'dest', dumpKey: 'destination', value: d.destinationId ?? '(none)' },
     { uiLabel: 'currStn', dumpKey: 'currentStation', value: d.lastNotifiedStationId ?? '(none)' },
-    { uiLabel: 'lastRecv', dumpKey: 'lastReceived', value: formatAt(d.lastReceivedAt) },
-    { uiLabel: 'lastFired', dumpKey: 'lastFired', value: formatAt(d.lastFiredAt) },
+    {
+      uiLabel: SILENT_PUSH_LABELS.receivedKey,
+      dumpKey: SILENT_PUSH_LABELS.receivedKey,
+      value: receivedValue,
+    },
+    {
+      uiLabel: SILENT_PUSH_LABELS.firedKey,
+      dumpKey: SILENT_PUSH_LABELS.firedKey,
+      value: firedValue,
+    },
     { uiLabel: 'lastSkip', dumpKey: 'lastSkipped', value: formatAt(d.lastSkippedAt) },
+    {
+      uiLabel: SILENT_PUSH_LABELS.toggleKey,
+      dumpKey: SILENT_PUSH_LABELS.toggleKey,
+      value: toggleValue,
+    },
   ];
 }
 
@@ -229,6 +254,9 @@ function buildDumpText(args: {
   isMock: boolean;
   silentPush: SilentPushDiagnostics;
   logs: AlarmLogEntry[];
+  // #856: lockless station-passed toggle ON/OFF — Silent Push 섹션 row의 SSOT.
+  // optional — DebugModal 본체는 항상 전달, 단순 dump 단위 테스트는 생략 가능(기본 false).
+  locklessOn?: boolean;
   // #756: OS 큐 dump. 미전달/null = DebugModal에서 한 번도 Refresh 안 한 상태.
   scheduledDump?: ScheduledNotificationDumpEntry[] | null;
 }): string {
@@ -280,7 +308,7 @@ function buildDumpText(args: {
   lines.push('', '## Arrival', args.arrivalSummary);
   if (args.isMock) lines.push('(MOCK)');
   lines.push('', '## Silent Push');
-  for (const { dumpKey, value } of silentPushDiagRows(args.silentPush)) {
+  for (const { dumpKey, value } of silentPushDiagRows(args.silentPush, args.logs, args.locklessOn ?? false)) {
     lines.push(`${dumpKey}=${value}`);
   }
   lines.push('');
@@ -363,6 +391,10 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
   const stationName = result?.station.name ?? null;
   const { arrival, isMock } = useArrivalInfo(stationName);
   const silentPush = useSilentPushDiagnostics();
+  // #856: lockless station-passed toggle. OFF면 backend가 받은 silent push도 client가
+  // intermediate 알림을 차단 → "received는 늘어도 fired는 안 늘어남"이 정상 동작.
+  // DebugModal에 한 줄로 노출해 사용자가 설정 위치를 즉시 알 수 있게 한다.
+  const locklessOn = useAppStore((s) => s.locklessStationPassed);
   const fusedLabel = formatStationLabel(result);
   const gpsLabel = formatStationLabel(gpsResult);
   const differs = fusedDiffersFromGps(result, gpsResult);
@@ -442,6 +474,7 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
       isMock,
       silentPush,
       logs,
+      locklessOn,
       scheduledDump,
     });
     void Share.share({ message });
@@ -465,6 +498,7 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
     isMock,
     silentPush,
     logs,
+    locklessOn,
     scheduledDump,
   ]);
 
@@ -565,7 +599,7 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
           </Section>
 
           <Section title="Silent Push" colors={colors}>
-            {silentPushDiagRows(silentPush).map(({ uiLabel, value }) => (
+            {silentPushDiagRows(silentPush, logs, locklessOn).map(({ uiLabel, value }) => (
               <KeyValue key={uiLabel} label={uiLabel} value={value} colors={colors} />
             ))}
           </Section>
