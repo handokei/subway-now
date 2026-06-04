@@ -213,7 +213,27 @@ export function resolveHopTimeMs(line: LineNumber, fromId?: string, toId?: strin
 직접 폴링해 합성하지만, 동일 권위 신호를 서버가 1분 cron에서 이미 평가하므로 클라가 그 결과를
 **소비만** 해도 충분하다. Stage 4 차단요인 해소 — 진행 가능 상태.
 
-### Interface
+### 결정 — Phase A/B Stacked (2026-06-04)
+
+Stage 4를 한 번에 silent push까지 가지 않고 **Pull → Push 2단계**로 깐다. 카카오맵 "초정밀 지하철"의
+본질은 알고리즘이 아니라 \"서버가 정답을 내려준다\"는 단순함이며, 그 효과의 8할은 Phase A만으로도
+나온다는 판단.
+
+| Phase | 방식 | 트리거 | 비용 | 의존 |
+|---|---|---|---|---|
+| **A — Pull** | `GET /trips/:token/progress` 폴링 | FG 진입 / TTL 만료 / silent push wake | 폴링 1건 / TTL당 | backend cron 1분 cadence |
+| **B — Push** | Silent push로 즉시 갱신 | backend cron이 waypoint 변화 감지 시 | APNs 1건 / 변화당 | #586 silent push 채널 (이미 가동) |
+
+**근거**:
+1. Phase A만으로도 사용자 체감 정확도는 카카오 수준 근접. 우선 깔고 실측.
+2. Phase B는 지연 단축 + 폴링 비용 0 보너스. APNs 의존 + 쿼터/실패 risk가 있어 A 안정화 후 stack.
+3. Phase B 실패 시 자연스럽게 Phase A로 fallback — 회귀 가드 비용 추가 0.
+
+**진행 순서**: Phase A 머지 → 운영 1주 측정 (`serverProgress.received` / `deltaVsEstimator` 분포) → Phase B 합류 결정.
+
+추적: Epic #874.
+
+### Phase A — Pull endpoint
 
 서버 응답은 lock 단위로 "현재 어디서 다음 어디까지 얼마"를 권위 있게 표현. 인터페이스는 ADR-002
 Provider 패턴과 동형으로 정의(클라는 인터페이스에만 의존).
@@ -235,6 +255,55 @@ export interface BffProgressProvider {
 ```
 
 ADR-008 본문에서는 인터페이스 윤곽만 합의. 실제 응답 스키마 확정/구현은 sub-issue가 결정한다.
+
+### Phase B — Silent push 트리거
+
+Phase A 안정화 후 stack. backend cron이 waypoint 변화를 감지한 순간 push를 쏴서 클라가 다음 폴링
+주기까지 기다리지 않게 한다. 채널은 신규 추가 없이 **#586 Live Activity silent push 인프라 재사용**.
+
+#### 트리거 조건
+
+backend cron(`scheduled.ts`)에서 `runTrainCodeTracking` 1 사이클 동안:
+
+| 조건 | 의미 |
+|---|---|
+| `progress.shiftedCount` 변화 (n → n+1) | waypoint 1개 통과 — 핵심 트리거 |
+| `confidence` 단계 변화 (medium ↔ high) | 신뢰도 상승/하강 — 클라 UI 강조 변경 가능 |
+| `lockMissing → 회복` | 환승 직후 첫 정상 응답 — 클라 즉시 갱신 가치 큼 |
+
+위 셋 중 하나 발생 시 silent push 1건 발행. 변화 없으면 미발행 (idempotent).
+
+#### Payload
+
+#586 silent push payload(`alert.ts`/`apns.ts`)에 `serverProgress` 키 1개 추가:
+
+```ts
+// backend/alarm-worker/src/apns.ts payload 확장
+interface SilentPushPayload {
+  // ... 기존 Live Activity 필드
+  serverProgress?: {
+    tripToken: string;          // routing 식별
+    response: BffProgressResponse;  // Phase A와 동일 응답 — 클라 캐시 즉시 갱신
+    pushedAtMs: number;         // 발행 epoch ms (지연 측정용)
+  };
+}
+```
+
+클라(`PushNotificationService`)는 `serverProgress` 키가 있으면 estimator 캐시(`BffProgressProvider`의
+in-memory cache)를 **즉시 갱신** — 다음 estimator 호출이 우선순위 0 slot을 곧바로 채운다.
+
+#### 회귀 가드
+
+- Push 실패 / APNs reject / 클라 미수신 → **Phase A pull로 자연 fallback** (Phase A의 TTL 만료 폴링이 메꿈)
+- Payload 누락된 silent push는 무시 — 기존 Live Activity 흐름 변화 0
+- Phase B 측정값(`serverProgress.pushLatencyMs` = `pushedAtMs - clientReceivedAtMs`)이 임계(예: 5s) 초과면 자동으로 Push 비활성화 + Pull-only 운영
+
+#### Sub-issue 진행 순서
+
+1. Phase A endpoint + provider + estimator slot 0 통합 (별도 sub-issue)
+2. 운영 1주 — `serverProgress.received` / `deltaVsEstimator` 분포 측정
+3. 측정 결과로 Phase B 합류 여부 / 캐시 TTL / push 트리거 임계 결정
+4. Phase B 합류 sub-issue (이 ADR 본문 update + 별도 ADR 분기 불필요)
 
 ### 신호 우선순위 통합
 
@@ -292,3 +361,7 @@ silent push wake (1분 cron) ─┐
 2. **호출 빈도** — silent push wake 시 무조건 fetch vs estimator가 우선순위 0 slot 비었을 때만 fetch.
 3. **transfer 환승 직후 첫 응답 신뢰도** — backend의 `parseBoardingLock` 검증 통과 직후 1~2 cron은
    `confidence` 보수적으로 내릴지 여부 — 운영 데이터로 결정.
+4. **Phase B push 트리거 임계** — waypoint 변화(`shiftedCount` n→n+1)만으로 충분 vs 도착 임박
+   (`remainingHopsMs < N`)도 별도 트리거 — Phase A 측정값으로 결정.
+5. **Phase B APNs 쿼터** — 동시 활성 trip 다수일 때 push 빈도 cap 필요 여부. silent push는 APNs
+   per-device per-hour 제한 존재 — Phase A 운영 중 활성 trip 동시성 분포 보고 결정.
