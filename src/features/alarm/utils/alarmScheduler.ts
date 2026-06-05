@@ -2,7 +2,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { ALARM_PHASES, type AlarmPhaseId } from './alarmPhases';
 import { alarmKey, resolveAllTargets, type AlarmEvent } from './stationAlarm';
-import { calculateStaticETA, type Route } from '../../../utils/stationRoute';
+import { calculateStaticETA, type Route } from '../../route/utils/stationRoute';
 import { buildAlarmContent } from './stationNotification';
 import { createLogger } from '../../../utils/logger';
 import { logScheduledAlarm, type AlarmLogDirection } from './alarmLog';

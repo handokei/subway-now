@@ -1,7 +1,7 @@
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { useStationAlarm, type UseStationAlarmInputs } from '../useStationAlarm';
 import { useAppStore } from '../../../../store/useAppStore';
-import type { Station } from '../../../../types/station';
+import type { Station } from '../../../../shared/types/station';
 import type { AlarmEvent } from '../../utils/stationAlarm';
 import {
   makeDirectRoute,
@@ -90,17 +90,17 @@ jest.mock('../../utils/scheduledAlarmReceiver', () => ({
 }));
 
 const mockIsImminentByArrivalCode = jest.fn();
-jest.mock('../../../../utils/imminentArrivalSignal', () => ({
+jest.mock('../../../arrival/utils/imminentArrivalSignal', () => ({
   isImminentByArrivalCode: (...args: unknown[]) => mockIsImminentByArrivalCode(...args),
 }));
 
 const mockGetStoredTripTrainCode = jest.fn();
-jest.mock('../../../../utils/tripTrainCode', () => ({
+jest.mock('../../../route/utils/tripTrainCode', () => ({
   getStoredTripTrainCode: (...args: unknown[]) => mockGetStoredTripTrainCode(...args),
 }));
 
 const mockUseArrivalInfo = jest.fn();
-jest.mock('../../../../hooks/useArrivalInfo', () => ({
+jest.mock('../../../arrival/hooks/useArrivalInfo', () => ({
   useArrivalInfo: (...args: unknown[]) => mockUseArrivalInfo(...args),
 }));
 

@@ -8,7 +8,7 @@ jest.mock('expo-location', () => ({
 }));
 
 const mockFindStationByName = jest.fn();
-jest.mock('../../../../utils/stationLookup', () => ({
+jest.mock('../../../nearest-station/utils/stationLookup', () => ({
   findStationByName: (...args: unknown[]) => mockFindStationByName(...args),
 }));
 

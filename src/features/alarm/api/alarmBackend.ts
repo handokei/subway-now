@@ -9,7 +9,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { Route } from '../../../utils/stationRoute';
+import type { Route } from '../../route/utils/stationRoute';
 import type { ApnsEnv } from '../../../utils/apnsEnv';
 import { createLogger } from '../../../utils/logger';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../shared/constants/storageKeys';

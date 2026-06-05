@@ -8,7 +8,7 @@ import {
 } from '../alarmScheduler';
 import { logScheduledAlarm } from '../alarmLog';
 import { getLastNotifiedStationId } from '../notificationState';
-import * as stationRoute from '../../../../utils/stationRoute';
+import * as stationRoute from '../../../route/utils/stationRoute';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,

@@ -1,18 +1,18 @@
 import { useEffect, useRef } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
-import type { Route } from '../../../utils/stationRoute';
-import type { Station } from '../../../types/station';
-import type { StationArrival } from '../../../api/arrivalApi';
+import type { Route } from '../../route/utils/stationRoute';
+import type { Station } from '../../../shared/types/station';
+import type { StationArrival } from '../../arrival/api/arrivalApi';
 import {
   cancelScheduledAlarms,
   scheduleAlarmsForRoute,
 } from '../utils/alarmScheduler';
-import { pickNextArrival } from '../../../utils/nextArrivalPick';
-import { resolveTripDirection } from '../../../utils/tripDirection';
+import { pickNextArrival } from '../../arrival/utils/nextArrivalPick';
+import { resolveTripDirection } from '../../route/utils/tripDirection';
 import {
   captureTripTrainCodeIfAbsent,
   clearTripTrainCode,
-} from '../../../utils/tripTrainCode';
+} from '../../route/utils/tripTrainCode';
 import { createLogger } from '../../../utils/logger';
 
 const logger = createLogger('useScheduledAlarms');

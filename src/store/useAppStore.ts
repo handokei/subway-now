@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Station, FavoriteEntry, FavoriteRole, FavoriteSlotRole, isFavoriteSlotRole } from '../types/station';
+import { Station, FavoriteEntry, FavoriteRole, FavoriteSlotRole, isFavoriteSlotRole } from '../shared/types/station';
 
 // 슬롯(home/work) 단일성 invariant — 새 entry가 해당 슬롯을 차지하기 전에 기존 entry는 general로 강등한다.
 function demoteSlotEntries(entries: FavoriteEntry[], role: FavoriteSlotRole): FavoriteEntry[] {
@@ -15,7 +15,7 @@ import {
   getDismissSilence as getDismissSilenceStorage,
   type DismissSilenceState,
 } from '../features/alarm/utils/dismissSilenceStorage';
-import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
+import { ROUTE_CATEGORIES, type RoutePreference } from '../features/route/utils/stationRoute';
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../shared/i18n/types';
 
 export type ThemeMode = 'auto' | 'light' | 'dark';

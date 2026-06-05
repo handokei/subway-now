@@ -1,6 +1,6 @@
 import { colors, lightColors, darkColors, font, typography, spacing, radius } from '../theme';
 import type { ThemeColors } from '../theme';
-import type { LineNumber } from '../../../types/station';
+import type { LineNumber } from '../../types/station';
 
 const ALL_LINES: LineNumber[] = [
   '1', '2', '3', '4', '5', '6', '7', '8', '9',

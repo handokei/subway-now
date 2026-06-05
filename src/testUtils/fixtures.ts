@@ -1,7 +1,7 @@
-import type { NearestStationResult } from '../types/station';
-import type { ArrivalInfo } from '../api/arrivalApi';
-import type { JourneyDisplay } from '../utils/stationRoute';
-import type { Stop, ArrivalTrain } from '../utils/journeyAdapter';
+import type { NearestStationResult } from '../shared/types/station';
+import type { ArrivalInfo } from '../features/arrival/api/arrivalApi';
+import type { JourneyDisplay } from '../features/route/utils/stationRoute';
+import type { Stop, ArrivalTrain } from '../features/route/utils/journeyAdapter';
 
 export const MOCK_STATIONS = {
   hyochang: { id: '0601', name: '효창공원앞', line: '6' as const, lineColor: '#CD7C2F', lat: 37.5, lng: 126.9 },

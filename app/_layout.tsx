@@ -22,7 +22,7 @@ import { unregisterAlarmRefreshTask } from '../src/features/alarm/tasks/alarmRef
 import { stopVibration } from '../src/features/alarm/utils/alarmSound';
 import { setupBoardingPromptCategory } from '../src/features/alarm/utils/notificationCategory';
 import { useBoardingPromptResponder } from '../src/features/alarm/hooks/useBoardingPromptResponder';
-import { fetchArrivalInfo } from '../src/api/arrivalApi';
+import { fetchArrivalInfo } from '../src/features/arrival/api/arrivalApi';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../src/shared/constants/boardingLock';
 
 const layoutLogger = createLogger('RootLayout');

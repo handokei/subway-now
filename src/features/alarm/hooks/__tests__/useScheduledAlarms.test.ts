@@ -8,8 +8,8 @@ import {
   cancelScheduledAlarms,
 } from '../../utils/alarmScheduler';
 import { TRIP_TRAIN_CODE_KEY } from '../../../../shared/constants/storageKeys';
-import type { Station } from '../../../../types/station';
-import type { StationArrival } from '../../../../api/arrivalApi';
+import type { Station } from '../../../../shared/types/station';
+import type { StationArrival } from '../../../arrival/api/arrivalApi';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 
 jest.mock('../../utils/alarmScheduler');

@@ -1,6 +1,6 @@
 import * as Location from 'expo-location';
 import { haversine } from '../../../utils/haversine';
-import { findStationByName } from '../../../utils/stationLookup';
+import { findStationByName } from '../../nearest-station/utils/stationLookup';
 import { createLogger } from '../../../utils/logger';
 import { isValidGpsSpeedMps } from '../../../shared/constants/location';
 

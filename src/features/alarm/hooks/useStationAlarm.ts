@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { isStationOnRoute, isSameStationName } from '../../../utils/stationRoute';
-import type { Route } from '../../../utils/stationRoute';
-import type { Station } from '../../../types/station';
+import { isStationOnRoute, isSameStationName } from '../../route/utils/stationRoute';
+import type { Route } from '../../route/utils/stationRoute';
+import type { Station } from '../../../shared/types/station';
 import { alarmKey, evaluateAlarmPhase, resolveAllTargets, type AlarmEvent } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
-import { distanceMetersBetween, estimateEtaSeconds } from '../../../utils/stationEta';
+import { distanceMetersBetween, estimateEtaSeconds } from '../../arrival/utils/stationEta';
 import { resolveNextTarget } from '../utils/stationPipeline';
 import { sendAlarmNotification, sendStationPassedNotification } from '../utils/stationNotification';
-import { isImminentByArrivalCode } from '../../../utils/imminentArrivalSignal';
-import { getStoredTripTrainCode } from '../../../utils/tripTrainCode';
-import { useArrivalInfo } from '../../../hooks/useArrivalInfo';
+import { isImminentByArrivalCode } from '../../arrival/utils/imminentArrivalSignal';
+import { getStoredTripTrainCode } from '../../route/utils/tripTrainCode';
+import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import {
   getLastNotifiedStationId,
   setLastNotifiedStationId,
@@ -30,12 +30,12 @@ import {
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { getBoardingLock } from '../utils/boardingLockStorage';
 import { shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
-import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../../utils/movementGate';
-import type { PositionStability } from '../../../utils/positionStaticDetector';
+import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
+import type { PositionStability } from '../../nearest-station/utils/positionStaticDetector';
 import { useAppStore } from '../../../store/useAppStore';
 import { createLogger } from '../../../utils/logger';
-import { isAccuracyAcceptable } from '../../../utils/locationGates';
-import type { FusionConfidence, FusionSource } from '../../../utils/pickFusedStation';
+import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
+import type { FusionConfidence, FusionSource } from '../../nearest-station/utils/pickFusedStation';
 import { resolveNotificationSource } from '../utils/notificationSource';
 
 const logger = createLogger('StationAlarm');

@@ -3,9 +3,9 @@ import { useTranslation } from 'react-i18next';
 import type { AlarmEvent } from '../../../store/useAppStore';
 import { clearAlarmNotification } from '../utils/stationNotification';
 import { killAllAlarms } from '../utils/alarmKill';
-import { getStationDisplayNameByName } from '../../../utils/stationDisplay';
+import { getStationDisplayNameByName } from '../../nearest-station/utils/stationDisplay';
 import stationsData from '../../../data/stations.json';
-import type { Station } from '../../../types/station';
+import type { Station } from '../../../shared/types/station';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 
 const allStations = stationsData as Station[];

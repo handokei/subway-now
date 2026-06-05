@@ -1,22 +1,22 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import i18next from 'i18next';
-import { Station } from '../../../types/station';
+import { Station } from '../../../shared/types/station';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
-import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName } from '../../../utils/stationRoute';
+import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName } from '../../route/utils/stationRoute';
 import type { AlarmEvent } from './stationAlarm';
 import type { NextTarget } from './stationPipeline';
 import * as LiveActivity from 'live-activity';
 import { vibrateAlarm, stopVibration } from './alarmSound';
 import { speakAlarm } from './tts';
 import { createLogger } from '../../../utils/logger';
-import { getStationDisplayName, getStationDisplayNameByName } from '../../../utils/stationDisplay';
+import { getStationDisplayName, getStationDisplayNameByName } from '../../nearest-station/utils/stationDisplay';
 import { saveStationToWidget, clearWidgetStation } from '../../../utils/widgetStorage';
 import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../../../data/stations.json';
-import type { ExitSide } from '../../../types/exitSide';
-import { lookupExitSide } from '../../../utils/exitSide';
-import { hasQuickExitData } from '../../../utils/quickExit';
+import type { ExitSide } from '../../route/types/exitSide';
+import { lookupExitSide } from '../../route/utils/exitSide';
+import { hasQuickExitData } from '../../route/utils/quickExit';
 import {
   notificationSourceI18nKey,
   shouldDiscloseNotificationSource,

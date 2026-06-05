@@ -2,10 +2,10 @@ import React, { useMemo, useState } from 'react';
 import { Keyboard, StyleSheet, TextInput, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import stationsData from '../data/stations.json';
-import type { Station } from '../types/station';
-import { matchesStationQuery } from '../utils/stationDisplay';
+import type { Station } from '../shared/types/station';
+import { matchesStationQuery } from '../features/nearest-station/utils/stationDisplay';
 import { useTheme, spacing, radius } from '../shared/theme';
-import { StationSuggestionList } from './StationSuggestionList';
+import { StationSuggestionList } from '../features/nearest-station/components/StationSuggestionList';
 
 const allStations = stationsData as Station[];
 const MAX_SUGGESTIONS = 8;

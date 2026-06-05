@@ -20,7 +20,7 @@ import {
   startMotionActivityUpdates,
   stopMotionActivityUpdates,
   getCurrentMotionStationary,
-} from '../utils/motionActivity';
+} from '../features/nearest-station/utils/motionActivity';
 
 /** 폴링 주기 — 너무 짧으면 native 부하, 너무 길면 motion 변화 누락. 5s는 절충점. */
 const POLL_INTERVAL_MS = 5_000;

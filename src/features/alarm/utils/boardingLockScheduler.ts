@@ -2,7 +2,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { ALARM_PHASES, type AlarmPhaseId } from './alarmPhases';
 import { resolveAllTargets, type AlarmEvent, type CurrentTarget } from './stationAlarm';
-import { isSameStationName, type Route } from '../../../utils/stationRoute';
+import { isSameStationName, type Route } from '../../route/utils/stationRoute';
 import { buildAlarmContent } from './stationNotification';
 import type { BoardingLock } from '../types/boardingLock';
 import {

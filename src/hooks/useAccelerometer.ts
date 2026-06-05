@@ -22,8 +22,8 @@
 
 import { useEffect } from 'react';
 import { Accelerometer, type AccelerometerMeasurement } from 'expo-sensors';
-import { summarizeWindow } from '../utils/accelMotion';
-import { setLatestAccelSummary } from '../utils/accelMotionState';
+import { summarizeWindow } from '../features/nearest-station/utils/accelMotion';
+import { setLatestAccelSummary } from '../features/nearest-station/utils/accelMotionState';
 
 /** raw sample interval — 100Hz. 1초 window에서 100 sample → summary count 충족. */
 export const SAMPLE_INTERVAL_MS = 10;

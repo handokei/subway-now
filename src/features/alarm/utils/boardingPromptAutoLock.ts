@@ -15,7 +15,7 @@
  */
 
 import { ARRIVAL_CODE } from '../../../shared/constants/arrivalCodes';
-import type { ArrivalInfo } from '../../../api/arrivalApi';
+import type { ArrivalInfo } from '../../arrival/api/arrivalApi';
 
 /**
  * 후보 리스트(이미 line/방향 필터 후)에서 arvlCd 우선순위로 1대를 고른다.

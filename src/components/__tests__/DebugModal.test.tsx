@@ -5,8 +5,8 @@ import { DebugModal, __test__ } from '../DebugModal';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
 import { useAppStore } from '../../store/useAppStore';
 import type { AlarmLogEntry } from '../../features/alarm/utils/alarmLog';
-import type { Station, NearestStationResult } from '../../types/station';
-import type { StationArrival } from '../../api/arrivalApi';
+import type { Station, NearestStationResult } from '../../shared/types/station';
+import type { StationArrival } from '../../features/arrival/api/arrivalApi';
 
 const mockUseFusedNearestStation = jest.fn();
 const mockUseArrivalInfo = jest.fn();
@@ -14,10 +14,10 @@ const mockUseSilentPushDiagnostics = jest.fn();
 const mockGetAlarmLog = jest.fn();
 const mockClearAlarmLog = jest.fn();
 
-jest.mock('../../hooks/useFusedNearestStation', () => ({
+jest.mock('../../features/nearest-station/hooks/useFusedNearestStation', () => ({
   useFusedNearestStation: () => mockUseFusedNearestStation(),
 }));
-jest.mock('../../hooks/useArrivalInfo', () => ({
+jest.mock('../../features/arrival/hooks/useArrivalInfo', () => ({
   useArrivalInfo: (name: string | null) => mockUseArrivalInfo(name),
 }));
 // silentPushTask는 expo-task-manager native module이 필요 — jest 환경에서 chain break.
@@ -873,7 +873,7 @@ describe('DebugModal share with null nearest', () => {
 
 describe('DebugModal fusion log section', () => {
   const { pushFusionDebugEntry, clearFusionDebugEntries } =
-    jest.requireActual('../../utils/fusionDebugBuffer');
+    jest.requireActual('../../features/nearest-station/utils/fusionDebugBuffer');
 
   beforeEach(() => {
     jest.clearAllMocks();

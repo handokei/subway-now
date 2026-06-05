@@ -19,15 +19,15 @@ import {
   type FavoriteEntry,
   type FavoriteSlotRole,
   type Station,
-} from '../../src/types/station';
-import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
-import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
+} from '../../src/shared/types/station';
+import { useArrivalInfo } from '../../src/features/arrival/hooks/useArrivalInfo';
+import { useArrivalCountdown } from '../../src/features/arrival/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../../src/utils/formatTime';
-import { getStationDisplayName, matchesStationQuery } from '../../src/utils/stationDisplay';
+import { getStationDisplayName, matchesStationQuery } from '../../src/features/nearest-station/utils/stationDisplay';
 import { useTheme, type ThemeColors } from '../../src/shared/theme';
 import stationsData from '../../src/data/stations.json';
-import { ArrivalSourceNotice } from '../../src/components/ArrivalSourceNotice';
-import type { StationArrival } from '../../src/api/arrivalApi';
+import { ArrivalSourceNotice } from '../../src/features/arrival/components/ArrivalSourceNotice';
+import type { StationArrival } from '../../src/features/arrival/api/arrivalApi';
 
 const allStations = stationsData as Station[];
 

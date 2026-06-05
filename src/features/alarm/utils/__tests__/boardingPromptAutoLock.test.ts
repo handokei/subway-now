@@ -1,5 +1,5 @@
 import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
-import type { ArrivalInfo } from '../../../../api/arrivalApi';
+import type { ArrivalInfo } from '../../../arrival/api/arrivalApi';
 import { pickAutoTrainCodeFromArrivals } from '../boardingPromptAutoLock';
 
 function arr(overrides: Partial<ArrivalInfo>): ArrivalInfo {

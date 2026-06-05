@@ -1,5 +1,5 @@
-import type { Station } from '../types/station';
-import { groupStationsByName, type StationGroup } from './groupStationsByName';
+import type { Station } from '../shared/types/station';
+import { groupStationsByName, type StationGroup } from '../features/nearest-station/utils/groupStationsByName';
 
 export interface MapStationGroup extends StationGroup {
   isNearest: boolean;

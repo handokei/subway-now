@@ -1,5 +1,5 @@
 import { buildMapConfig } from '../buildMapConfig';
-import type { Station } from '../../types/station';
+import type { Station } from '../../shared/types/station';
 
 const gangnam: Station = {
   id: '2-022',

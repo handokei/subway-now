@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import { saveStationToWidget, clearWidgetStation } from '../widgetStorage';
-import { Station } from '../../types/station';
+import { Station } from '../../shared/types/station';
 
 const mockSave = jest.fn().mockResolvedValue(undefined);
 const mockClear = jest.fn().mockResolvedValue(undefined);

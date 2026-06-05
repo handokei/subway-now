@@ -15,7 +15,7 @@ import {
   clearLastFiredAlarmStationName,
 } from '../utils/notificationState';
 import { clearFiredPushIds } from '../utils/firedPushIds';
-import { clearTripTrainCode } from '../../../utils/tripTrainCode';
+import { clearTripTrainCode } from '../../route/utils/tripTrainCode';
 import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dismissSilenceStorage';
 
 // trip-bound storage cleanup 단일 출처.

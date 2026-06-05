@@ -16,7 +16,7 @@ jest.mock('expo-sensors', () => ({
 }));
 
 import { useAccelerometer, SAMPLE_INTERVAL_MS, WINDOW_FLUSH_MS } from '../useAccelerometer';
-import { getLatestAccelSummary, setLatestAccelSummary } from '../../utils/accelMotionState';
+import { getLatestAccelSummary, setLatestAccelSummary } from '../../features/nearest-station/utils/accelMotionState';
 
 type Listener = (m: { x: number; y: number; z: number; timestamp: number }) => void;
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import type { BoardingLock } from '../types/boardingLock';
-import type { Route } from '../../../utils/stationRoute';
-import { isSameStationName } from '../../../utils/stationRoute';
+import type { Route } from '../../route/utils/stationRoute';
+import { isSameStationName } from '../../route/utils/stationRoute';
 import { resolveAllTargets } from '../utils/stationAlarm';
 import { advanceHopWindow } from '../utils/boardingLockScheduler';
 import { createLogger } from '../../../utils/logger';
