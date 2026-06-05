@@ -144,7 +144,7 @@ describe('useBarometer (#875)', () => {
 
     // t=0 baseline.
     act(() => {
-      listener({ pressure: 1013.0, timestamp: 0 });
+      listener({ pressure: 1013, timestamp: 0 });
     });
     expect(result.current.subsurface).toBe(false);
 
@@ -153,7 +153,7 @@ describe('useBarometer (#875)', () => {
       nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
       act(() => {
         listener({
-          pressure: 1013.0 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
+          pressure: 1013 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
           timestamp: 30 + i,
         });
       });
@@ -175,7 +175,7 @@ describe('useBarometer (#875)', () => {
     const listener = mockAddListener.mock.calls[0][0] as Listener;
 
     act(() => {
-      listener({ pressure: 1013.0, timestamp: 0 });
+      listener({ pressure: 1013, timestamp: 0 });
     });
 
     // 임계+, 임계-, 임계+ 진동 — 같은 카운트(true)가 2회 누적되나 사이의 false가 reset.
@@ -183,7 +183,7 @@ describe('useBarometer (#875)', () => {
       nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
       const overshoot = i % 2 === 0 ? BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA : 0;
       act(() => {
-        listener({ pressure: 1013.0 + overshoot, timestamp: 30 + i });
+        listener({ pressure: 1013 + overshoot, timestamp: 30 + i });
       });
     }
     expect(result.current.subsurface).toBe(false);
@@ -210,7 +210,7 @@ describe('useBarometer (#875)', () => {
 
     // t=0 baseline.
     act(() => {
-      listener({ pressure: 1013.0, timestamp: 0 });
+      listener({ pressure: 1013, timestamp: 0 });
     });
     // 첫 sample은 readings 1개 + baseline 부재 — verdict null → undefined.
     expect(result.current.stop).toBeUndefined();
@@ -219,7 +219,7 @@ describe('useBarometer (#875)', () => {
     for (let i = 0; i < 3; i++) {
       nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
       act(() => {
-        listener({ pressure: 1013.0, timestamp: 30 + i });
+        listener({ pressure: 1013, timestamp: 30 + i });
       });
     }
     expect(result.current.stop).toBe(true);
@@ -238,14 +238,14 @@ describe('useBarometer (#875)', () => {
     const listener = mockAddListener.mock.calls[0][0] as Listener;
 
     act(() => {
-      listener({ pressure: 1013.0, timestamp: 0 });
+      listener({ pressure: 1013, timestamp: 0 });
     });
     // 정차 → 이동 전환: dP=0.1 hPa(임계 0.05 초과) 3회 연속.
     for (let i = 0; i < 3; i++) {
       nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
       act(() => {
         listener({
-          pressure: 1013.0 + BAROMETER_STOP_DP_THRESHOLD_HPA + 0.05,
+          pressure: 1013 + BAROMETER_STOP_DP_THRESHOLD_HPA + 0.05,
           timestamp: 30 + i,
         });
       });
@@ -267,12 +267,12 @@ describe('useBarometer (#875)', () => {
 
     // 정차 신호 확립.
     act(() => {
-      listener({ pressure: 1013.0, timestamp: 0 });
+      listener({ pressure: 1013, timestamp: 0 });
     });
     for (let i = 0; i < 3; i++) {
       nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
       act(() => {
-        listener({ pressure: 1013.0, timestamp: 30 + i });
+        listener({ pressure: 1013, timestamp: 30 + i });
       });
     }
     expect(result.current.stop).toBe(true);
@@ -300,13 +300,13 @@ describe('useBarometer (#875)', () => {
 
     // baseline.
     act(() => {
-      listener({ pressure: 1013.0, timestamp: 0 });
+      listener({ pressure: 1013, timestamp: 0 });
     });
     // stop=true 2번만 — confirm 3 미달.
     for (let i = 0; i < 2; i++) {
       nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
       act(() => {
-        listener({ pressure: 1013.0, timestamp: 30 + i });
+        listener({ pressure: 1013, timestamp: 30 + i });
       });
     }
     expect(result.current.stop).toBeUndefined();
@@ -322,13 +322,13 @@ describe('useBarometer (#875)', () => {
     await flush();
     const listener = mockAddListener.mock.calls[0][0] as Listener;
     act(() => {
-      listener({ pressure: 1013.0, timestamp: 0 });
+      listener({ pressure: 1013, timestamp: 0 });
     });
     for (let i = 0; i < 3; i++) {
       nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
       act(() => {
         listener({
-          pressure: 1013.0 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
+          pressure: 1013 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
           timestamp: 30 + i,
         });
       });

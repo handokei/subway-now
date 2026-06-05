@@ -198,19 +198,20 @@ export function useFusedNearestStation(
    */
   motionStationary?: boolean,
   /**
-   * #903 (Seam G) — 기압계(useBarometer) dP/dt가 지하 진입을 시사하는지. true면 GPS-only 결과는
-   * 'gps-only-underground'로 confidence 강등해 stationAlarm의 early/transfer phase 발사를 보류.
-   * sticky의 motion unlock 신호와 동일 시그널 — useNearestStation으로도 함께 prop drilling.
-   * 미전달이면 기존 'gps-only' 그대로 (graceful — 기압계 미지원/권한 거절 케이스 호환).
+   * #903 (Seam G) + #921 — 기압계 신호 묶음.
+   * - `subsurface`: dP/dt가 지하 진입을 시사하는지. true면 GPS-only 결과는 'gps-only-underground'로
+   *   confidence 강등해 stationAlarm의 early/transfer phase 발사를 보류. sticky motion unlock과 동일.
+   *   useNearestStation으로도 함께 prop drilling. 미전달이면 graceful (기압계 미지원/권한 거절 호환).
+   * - `signal`: subsurface+stop을 모두 담은 전체 신호 — fusion(B1 후속 PR) 입력. 미전달이면 fusion
+   *   'barometer-stop' 입력 unavailable로 흐른다(다른 신호로 합의 가능). subsurface와 분리한 이유:
+   *   subsurface는 cascade 강등에 즉시 결합, signal은 측정 단계 분리.
+   *
+   * S107 회피를 위해 단일 객체로 묶었다. 어느 한 키만 줘도 됨.
    */
-  barometerSubsurface?: boolean,
-  /**
-   * #921 — 기압계 전체 신호(subsurface + stop). 신호 fusion(B1 후속 PR) 입력. 미전달이면 fusion
-   * 'barometer-stop' 입력 unavailable로 흘러간다(다른 신호로 합의 가능). subsurface와 별도 인자로
-   * 분리한 이유: subsurface는 cascade 강등에 즉시 결합되어 있고, 본 신호는 측정 단계로 분리.
-   */
-  barometerSignal?: BarometerSignal,
+  barometer?: { subsurface?: boolean; signal?: BarometerSignal },
 ): UseFusedNearestStationReturn {
+  const barometerSubsurface = barometer?.subsurface;
+  const barometerSignal = barometer?.signal;
   const gps = useNearestStation({ barometerSubsurface });
   // #733 — 위치 이력 기반 정적 판정. shouldDowngradeFusion이 speed=null일 때 fallback으로 사용.
   // useNearestStation의 userLocation 변경마다 자동 누적/판정.
@@ -590,14 +591,13 @@ export function useFusedNearestStation(
   // 어떤 후보(c0/c1/c2)에서 왔든 같은 station name이면 한 슬롯에서 lockedTrainCode를 찾을 수 있다.
   // 매칭 슬롯이 없으면 (route-progress/interp 결과가 GPS top-3 밖) arrival=null → arvlcd 입력
   // unavailable로 흐른다.
-  const fusionArrival =
-    result != null
-      ? pickArrivalForStationName(result.station.name, [
-          { stationName: c0, arrival: a0.arrival },
-          { stationName: c1, arrival: a1.arrival },
-          { stationName: c2, arrival: a2.arrival },
-        ])
-      : null;
+  const fusionArrival = result
+    ? pickArrivalForStationName(result.station.name, [
+        { stationName: c0, arrival: a0.arrival },
+        { stationName: c1, arrival: a1.arrival },
+        { stationName: c2, arrival: a2.arrival },
+      ])
+    : null;
   const detectionInput = useMemo(
     () => ({
       barometer: barometerSignal ?? null,

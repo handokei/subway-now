@@ -146,7 +146,7 @@ export default function HomeScreen() {
   //   2) useApnsTripRegistration: backend payload subsurface 동봉(threshold 5→10).
   const barometerSignal = useBarometer();
   const { subsurface: barometerSubsurface } = barometerSignal;
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, barometerSubsurface, barometerSignal);
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal });
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,
