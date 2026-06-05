@@ -1,0 +1,97 @@
+{
+  "$schema": "./subwayWifiSsidMap.schema",
+  "_meta": {
+    "description": "지하철 역사 wifi SSID → 역명 매핑 (#913, Epic #912). 지하에서 GPS가 실패해도 SSID 직접 매칭으로 현재 역을 100% 확정하기 위한 데이터.",
+    "patternSyntax": "정규식. 대소문자 무시(매칭 함수에서 'i' 플래그 부여). 한글/영문/한자/공백 변형을 흡수하도록 작성.",
+    "matchRule": "여러 항목의 patterns 중 하나라도 매치되면 stationName(canonical)으로 매핑. 정규화는 normalizeStationName + applyStationAlias를 거쳐 stations.json과 매칭한다.",
+    "lineHint": "환승역은 line이 여러 개이므로 lineHint는 단일값 강제 불가. 호출자(useNearestStation cascade)가 다른 신호(boarding-lock, 경로)와 교차로 호선을 결정한다.",
+    "dataCollection": "실제 SSID 패턴은 현장에서 수집해 점진적으로 보강한다. 본 PR은 통신사 공용 패턴(T_subway/Olleh_Subway/U+Subway) + 일부 역명 포함 패턴의 placeholder로 시작."
+  },
+  "entries": [
+    {
+      "stationName": "용마산",
+      "patterns": ["^T_subway_용마산", "^Olleh_Subway_용마산", "Yongmasan"]
+    },
+    {
+      "stationName": "중곡",
+      "patterns": ["^T_subway_중곡", "^Olleh_Subway_중곡", "Junggok"]
+    },
+    {
+      "stationName": "군자",
+      "patterns": ["^T_subway_군자", "^Olleh_Subway_군자", "Gunja"]
+    },
+    {
+      "stationName": "강남",
+      "patterns": ["^T_subway_강남", "^Olleh_Subway_강남", "Gangnam_Station"]
+    },
+    {
+      "stationName": "서울역",
+      "patterns": ["^T_subway_서울역", "^Olleh_Subway_서울역", "Seoul_Station_Subway"]
+    },
+    {
+      "stationName": "시청",
+      "patterns": ["^T_subway_시청", "^Olleh_Subway_시청", "CityHall_Subway"]
+    },
+    {
+      "stationName": "종로3가",
+      "patterns": ["^T_subway_종로3가", "^Olleh_Subway_종로3가", "Jongno3ga"]
+    },
+    {
+      "stationName": "왕십리",
+      "patterns": [
+        "^T_subway_왕십리",
+        "^Olleh_Subway_왕십리",
+        "U\\+Subway_왕십리",
+        "Wangsimni"
+      ]
+    },
+    {
+      "stationName": "건대입구",
+      "patterns": ["^T_subway_건대입구", "^Olleh_Subway_건대입구", "Konkuk_Univ"]
+    },
+    {
+      "stationName": "성수",
+      "patterns": ["^T_subway_성수", "^Olleh_Subway_성수", "Seongsu"]
+    },
+    {
+      "stationName": "잠실",
+      "patterns": ["^T_subway_잠실", "^Olleh_Subway_잠실", "Jamsil"]
+    },
+    {
+      "stationName": "사당",
+      "patterns": ["^T_subway_사당", "^Olleh_Subway_사당", "Sadang"]
+    },
+    {
+      "stationName": "이수",
+      "patterns": ["^T_subway_이수", "^Olleh_Subway_이수", "^T_subway_총신대입구", "Isu_Station"]
+    },
+    {
+      "stationName": "고속터미널",
+      "patterns": ["^T_subway_고속터미널", "^Olleh_Subway_고속터미널", "Express_Bus_Terminal"]
+    },
+    {
+      "stationName": "신도림",
+      "patterns": ["^T_subway_신도림", "^Olleh_Subway_신도림", "Sindorim"]
+    },
+    {
+      "stationName": "홍대입구",
+      "patterns": ["^T_subway_홍대입구", "^Olleh_Subway_홍대입구", "Hongik_Univ"]
+    },
+    {
+      "stationName": "교대",
+      "patterns": ["^T_subway_교대", "^Olleh_Subway_교대", "Seoul_Nat_Univ_of_Education"]
+    },
+    {
+      "stationName": "동대문역사문화공원",
+      "patterns": [
+        "^T_subway_동대문역사문화공원",
+        "^Olleh_Subway_동대문역사문화공원",
+        "DDP_Subway"
+      ]
+    },
+    {
+      "stationName": "공덕",
+      "patterns": ["^T_subway_공덕", "^Olleh_Subway_공덕", "Gongdeok"]
+    }
+  ]
+}

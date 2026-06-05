@@ -30,6 +30,7 @@ export function resolveNotificationSource(
     case 'position-train':
     case 'position':
     case 'arrival':
+    case 'wifi-ssid':
       return 'positionTrain';
     case 'route-progress':
       return 'routeProgress';
