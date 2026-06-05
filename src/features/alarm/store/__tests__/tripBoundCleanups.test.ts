@@ -5,6 +5,8 @@ import {
   ROUTE_KEY,
   BOARDING_LOCK_KEY,
   ACTIVE_TRIP_KEY,
+  TRIP_STARTED_AT_KEY,
+  LAST_UPLOADED_RECALL_TRIP_START_KEY,
 } from '../../../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -32,6 +34,11 @@ describe('tripBoundCleanups', () => {
     expect(removedKeys).toContain(ROUTE_KEY);
     expect(removedKeys).toContain(BOARDING_LOCK_KEY);
     expect(removedKeys).toContain(ACTIVE_TRIP_KEY);
+    // #919 — trip start는 cleanup 대상이지만 LAST_UPLOADED_RECALL_TRIP_START_KEY는 보존
+    // (dedup 마커 — BG silent push upload 후 직후 FG setDestination(null) 재트리거 시
+    //  같은 tripStart 중복 upload 방지). 다른 tripStart로 시작되면 자연 무효화됨.
+    expect(removedKeys).toContain(TRIP_STARTED_AT_KEY);
+    expect(removedKeys).not.toContain(LAST_UPLOADED_RECALL_TRIP_START_KEY);
   });
 
   it('TRIP_BOUND_CLEANUPS의 모든 항목은 호출 가능하며 Promise를 반환하고 reject하지 않는다', async () => {

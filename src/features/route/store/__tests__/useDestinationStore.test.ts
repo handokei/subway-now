@@ -8,10 +8,21 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useDestinationStore } from '../useDestinationStore';
 import { useAlarmEventStore } from '../../../alarm/store/useAlarmEventStore';
 import { Station } from '../../../../shared/types/station';
+import { setTripStartedAt } from '../../../alarm/utils/tripStartStorage';
+import { triggerTripEndRecall } from '../../../alarm/utils/triggerTripEndRecall';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
+
+// #919 — recall trigger / tripStart setter는 wiring 본 자체가 단위 검증 대상이라
+// store 테스트에서는 호출 여부만 확인하면 충분. 실제 동작은 각 파일의 전용 테스트에서.
+jest.mock('../../../alarm/utils/tripStartStorage', () => ({
+  setTripStartedAt: jest.fn().mockResolvedValue(undefined),
+}));
+jest.mock('../../../alarm/utils/triggerTripEndRecall', () => ({
+  triggerTripEndRecall: jest.fn().mockResolvedValue({ uploaded: false }),
+}));
 
 const mockStation: Station = {
   id: '2-022',
@@ -42,6 +53,10 @@ describe('useDestinationStore', () => {
     });
     useAlarmEventStore.setState({ alarmEvent: null, dismissSilence: null });
     jest.clearAllMocks();
+    // jest.clearAllMocks가 mock implementations도 리셋 — #919 trigger/setTripStartedAt이
+    // Promise를 반환하지 않으면 setDestination의 .then chain이 깨진다. 기본 impl 복구.
+    (triggerTripEndRecall as jest.Mock).mockResolvedValue({ uploaded: false });
+    (setTripStartedAt as jest.Mock).mockResolvedValue(undefined);
   });
 
   // ── destination ──
@@ -68,7 +83,7 @@ describe('useDestinationStore', () => {
     expect(destination).toBeNull();
   });
 
-  it('setDestination: 역 설정 시 AsyncStorage에 저장하고 null 시 삭제한다', () => {
+  it('setDestination: 역 설정 시 AsyncStorage에 저장하고 null 시 삭제한다', async () => {
     const { setDestination } = useDestinationStore.getState();
     setDestination(mockStation);
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
@@ -77,7 +92,11 @@ describe('useDestinationStore', () => {
     );
 
     jest.clearAllMocks();
+    (triggerTripEndRecall as jest.Mock).mockResolvedValue({ uploaded: false });
+    (setTripStartedAt as jest.Mock).mockResolvedValue(undefined);
     setDestination(null);
+    // #919 — trigger → cleanup이 then-chain이라 microtask flush 후 검증.
+    await flushMicrotasks();
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:destination');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:fired-alarms');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:route');
@@ -85,13 +104,17 @@ describe('useDestinationStore', () => {
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:trip-origin');
   });
 
-  it('setDestination(#702): 목적지 switch 시 부수 storage(customOrigin/lock/scheduled/active-trip) 자동 클리어', () => {
+  it('setDestination(#702): 목적지 switch 시 부수 storage(customOrigin/lock/scheduled/active-trip) 자동 클리어', async () => {
     const { setDestination } = useDestinationStore.getState();
     setDestination(mockStation);
     jest.clearAllMocks();
+    (triggerTripEndRecall as jest.Mock).mockResolvedValue({ uploaded: false });
+    (setTripStartedAt as jest.Mock).mockResolvedValue(undefined);
 
     // 다른 역으로 switch
     setDestination(mockStation2);
+    // #919 — trigger → cleanup이 then-chain이라 microtask flush 후 검증.
+    await flushMicrotasks();
 
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:custom-origin');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:boarding-lock');
@@ -101,12 +124,16 @@ describe('useDestinationStore', () => {
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:route');
   });
 
-  it('setDestination(#702): null로 클리어 시에도 부수 storage 자동 클리어', () => {
+  it('setDestination(#702): null로 클리어 시에도 부수 storage 자동 클리어', async () => {
     const { setDestination } = useDestinationStore.getState();
     setDestination(mockStation);
     jest.clearAllMocks();
+    (triggerTripEndRecall as jest.Mock).mockResolvedValue({ uploaded: false });
+    (setTripStartedAt as jest.Mock).mockResolvedValue(undefined);
 
     setDestination(null);
+    // #919 — trigger → cleanup이 then-chain이라 microtask flush 후 검증.
+    await flushMicrotasks();
 
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:custom-origin');
     expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:boarding-lock');
@@ -116,9 +143,12 @@ describe('useDestinationStore', () => {
 
   // clearFiredPushIds는 firedPushIds 모듈의 write queue를 통과 — microtask flush 후 검증.
   async function flushMicrotasks(): Promise<void> {
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // #919 — setDestination이 triggerTripEndRecall → runTripBoundCleanups → setTripStartedAt
+    // 세 단계 then-chain을 돌리는데 cleanup 안에서 Promise.allSettled가 추가 microtask를 만든다.
+    // 충분히 넉넉하게 flush.
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
   }
 
   // #799: switch와 null 두 경로가 동일한 trip-bound cleanup을 트리거하므로 it.each로 통합.
@@ -501,5 +531,68 @@ describe('useDestinationStore', () => {
       sinceLat: 0,
       sinceLng: 0,
     });
+  });
+
+  // ── #919 trip-end recall wiring ──
+
+  it('setDestination(#919): switch 시 triggerTripEndRecall이 cleanup *이전*에 호출된다', async () => {
+    // 호출 순서를 추적 — trigger가 cleanup *이전*이어야 ROUTE_KEY 등을 읽을 수 있다.
+    const callOrder: string[] = [];
+    (triggerTripEndRecall as jest.Mock).mockImplementation(async () => {
+      callOrder.push('trigger');
+      return { uploaded: false };
+    });
+    (setTripStartedAt as jest.Mock).mockImplementation(async () => {
+      callOrder.push('setTripStartedAt');
+    });
+    // runTripBoundCleanups 자체를 spy 못 하므로 그 안에서 호출되는 removeItem 첫 트리거를 마커로 사용.
+    (AsyncStorage.removeItem as jest.Mock).mockImplementation(async (key: string) => {
+      if (!callOrder.includes('cleanup')) callOrder.push('cleanup');
+      return undefined;
+    });
+
+    // 첫 destination — switch (prev=null → next=mockStation).
+    useDestinationStore.getState().setDestination(mockStation);
+    await flushMicrotasks();
+
+    expect(callOrder).toEqual(['trigger', 'cleanup', 'setTripStartedAt']);
+  });
+
+  it('setDestination(#919): null로 종료 시 triggerTripEndRecall 호출, 단 새 tripStart 기록 안 함', async () => {
+    useDestinationStore.setState({ destination: mockStation });
+    const triggerMock = triggerTripEndRecall as jest.Mock;
+    const setTripStartedAtMock = setTripStartedAt as jest.Mock;
+    triggerMock.mockClear();
+    setTripStartedAtMock.mockClear();
+
+    useDestinationStore.getState().setDestination(null);
+    await flushMicrotasks();
+
+    expect(triggerMock).toHaveBeenCalledTimes(1);
+    expect(setTripStartedAtMock).not.toHaveBeenCalled(); // trip 종료 — 새 tripStart 기록 없음
+  });
+
+  it('setDestination(#919): 같은 destination 재설정(isSwitch=false)이면 trigger/set 둘 다 호출 안 됨', async () => {
+    useDestinationStore.setState({ destination: mockStation });
+    const triggerMock = triggerTripEndRecall as jest.Mock;
+    const setTripStartedAtMock = setTripStartedAt as jest.Mock;
+    triggerMock.mockClear();
+    setTripStartedAtMock.mockClear();
+
+    useDestinationStore.getState().setDestination(mockStation);
+    await flushMicrotasks();
+
+    expect(triggerMock).not.toHaveBeenCalled();
+    expect(setTripStartedAtMock).not.toHaveBeenCalled();
+  });
+
+  it('setDestination(#919): trigger가 reject해도 setDestination 흐름은 영향 없음 (graceful)', async () => {
+    const triggerMock = triggerTripEndRecall as jest.Mock;
+    triggerMock.mockRejectedValueOnce(new Error('trigger fail'));
+
+    // throw가 노출되면 unhandled rejection으로 잡힐 것 — 노출 안 되어야 함.
+    useDestinationStore.getState().setDestination(mockStation);
+    await flushMicrotasks();
+    expect(useDestinationStore.getState().destination?.id).toBe('2-022');
   });
 });

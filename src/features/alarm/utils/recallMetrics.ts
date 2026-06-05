@@ -20,9 +20,22 @@ export interface TripRecallInput {
   routeStops: readonly string[];
   /** alarmLog ring buffer 의 모든 entries (필터링은 내부에서). */
   entries: readonly AlarmLogEntry[];
-  /** trip 시작 epoch ms (exclusive) — 이전 trip 의 잔여 entries 차단. */
+  /**
+   * trip 시작 epoch ms — alarmLog 윈도우의 **exclusive lower bound** (`entry.ts > tripStart`).
+   *
+   * 의미: "이 시각보다 *뒤에* 적재된 alarmLog entries만 카운트한다."
+   *
+   * 경계 정책 (#919 P2-1):
+   *  - 권장: `setDestination(non-null)`로 새 trip을 만든 직후의 `Date.now()` 시각을 사용한다
+   *    (`tripStartStorage.setTripStartedAt`이 자동 기록). 이렇게 하면 직전 trip의 종료 직후에
+   *    적재된 entries(예: 같은 ms에 fire된 마지막 station-passed)가 새 trip에 leak되지 않는다.
+   *  - exclusive 인 이유: 동일 ms에 두 trip 경계가 겹치는 코너 케이스에서 직전 trip 의 entry 가
+   *    새 trip 의 분자에 포함되지 않도록 한다 (혼합 회귀 차단).
+   *  - 만약 caller가 *직전 trip의 마지막 entry ts* 같은 보수적 값을 쓰고 싶다면 그 ts 그대로
+   *    넘기면 된다 — exclusive 비교라 그 entry 자체는 제외되고 그 다음(>)부터만 포함된다.
+   */
   tripStart: number;
-  /** trip 종료 epoch ms (inclusive). */
+  /** trip 종료 epoch ms — alarmLog 윈도우의 **inclusive upper bound** (`entry.ts <= tripEnd`). */
   tripEnd: number;
 }
 
