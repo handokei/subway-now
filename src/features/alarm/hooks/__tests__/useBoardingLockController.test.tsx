@@ -130,8 +130,18 @@ describe('useBoardingLockController', () => {
       expect(result.current.directionalArrivals).toEqual([upTrain, downTrain]);
     });
 
-    it('#666 arrivalSeconds <= 0 (지나간 열차)는 directionalArrivals에서 제외', () => {
-      const passed = makeTrain({ trainCode: 'PASSED', arrivalSeconds: 0 });
+    it('#897 Seam A: arrivalSeconds=0 (임박) 열차도 list에 유지 — useArrivalCountdown 0초 tick에서 행 사라짐 회귀 차단', () => {
+      const imminent = makeTrain({ trainCode: 'IMMINENT', arrivalSeconds: 0 });
+      const future = makeTrain({ trainCode: 'FUTURE', arrivalSeconds: 180 });
+      const arrivalImminent: StationArrival = { up: [imminent, future], down: [] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: arrivalImminent }),
+      );
+      expect(result.current.directionalArrivals).toEqual([imminent, future]);
+    });
+
+    it('#897 음수 arrivalSeconds(이미 지나간)는 그대로 제외 — createLock 오발화 방지', () => {
+      const passed = makeTrain({ trainCode: 'PASSED', arrivalSeconds: -10 });
       const future = makeTrain({ trainCode: 'FUTURE', arrivalSeconds: 180 });
       const arrivalWithPast: StationArrival = { up: [passed, future], down: [] };
       const { result } = renderHook(() =>
@@ -149,10 +159,10 @@ describe('useBoardingLockController', () => {
       (Date.now as jest.Mock).mockRestore();
     });
 
-    it('expectedDurationMinutes를 ms로 변환해 lock 생성', async () => {
+    it('expectedDurationMinutes를 ms로 변환해 lock 생성 + initialEtaSeconds 스냅샷(#897)', async () => {
       const { result } = renderHook(() => useBoardingLockController(defaultInputs));
       await act(async () => {
-        result.current.createLockFromTrain(makeTrain({ trainCode: 'T-X' }));
+        result.current.createLockFromTrain(makeTrain({ trainCode: 'T-X', arrivalSeconds: 240 }));
       });
       expect(mockSetBoardingLock).toHaveBeenCalledWith({
         destinationId: 'dest-1',
@@ -161,6 +171,7 @@ describe('useBoardingLockController', () => {
         boardingLine: '2',
         boardedAt: 1_700_000_000_000,
         expectedDurationMs: 20 * 60_000,
+        initialEtaSeconds: 240,
       });
     });
 

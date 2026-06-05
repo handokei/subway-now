@@ -5,6 +5,7 @@ import type { ArrivalInfo } from '../../../shared/types/arrival';
 import type { NearestStationResult, LineNumber, Station } from '../../../shared/types/station';
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
 import { parseTrainLineDirection } from './trainLineDirection';
+import { arrivalAt } from '../../../shared/utils/arrivalClock';
 import stationsData from '../../../data/stations.json';
 
 const allStations = stationsData as Station[];
@@ -135,15 +136,15 @@ export function arrivalInfoToArrivalTrain(
   direction: string,
   line: LineNumber,
 ): ArrivalTrain[] {
-  const now = Date.now();
   // item.destination은 서울 열린데이터 API의 trainLineNm 기반("소요산행", "내선순환" 등 방면 표현).
   // parseTrainLineDirection이 패턴(역명+행, 내선/외선순환)을 인식해 현재 언어로 표시한다.
+  // #897 Seam A: arrivalAt(item) — BoardingTrainList와 동일한 anchor. useArrivalCountdown tick과 동기.
   return items.map((item) => ({
     direction: item.destination
       ? parseTrainLineDirection(item.destination, allStations)
       : direction,
     line,
-    arrivalAtMs: now + item.arrivalSeconds * 1000,
+    arrivalAtMs: arrivalAt(item),
     subtext: item.statusMessage || undefined,
     isLastTrain: item.isLastTrain,
     trainType: item.trainType,

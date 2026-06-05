@@ -116,6 +116,8 @@ export function useTransferTrainList({
         boardingLine: context.nextLine,
         boardedAt: Date.now(),
         expectedDurationMs: durationMin * 60_000,
+        // #897 Seam A: 환승 leg 탑승 시점 ETA 스냅샷. 새 폴 응답이 이보다 +180s 이상이면 지연 신호.
+        initialEtaSeconds: train.arrivalSeconds,
       });
     },
     [context, lock, route, createLock],

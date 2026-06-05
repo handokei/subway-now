@@ -68,6 +68,29 @@ describe('boardingLockStorage', () => {
       (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage'));
       expect(await getBoardingLock()).toBeNull();
     });
+
+    it('#897 initialEtaSeconds 누락 (레거시 lock) — 통과시키되 값은 undefined', async () => {
+      // 레거시 lock은 initialEtaSeconds 필드 없이 저장돼 있다. 새 코드가 지연 칩만 미노출할 뿐
+      // 다른 alarm 로직(만료/leg 교체)은 영향 없으므로 통과시킨다.
+      const legacy = { ...sample };
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(legacy));
+      const restored = await getBoardingLock();
+      expect(restored).toEqual(sample);
+      expect(restored?.initialEtaSeconds).toBeUndefined();
+    });
+
+    it('#897 initialEtaSeconds가 number면 그대로 복원', async () => {
+      const withEta = { ...sample, initialEtaSeconds: 180 };
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(withEta));
+      const restored = await getBoardingLock();
+      expect(restored?.initialEtaSeconds).toBe(180);
+    });
+
+    it('#897 initialEtaSeconds가 number/undefined 외 타입이면 손상 → null', async () => {
+      const broken = { ...sample, initialEtaSeconds: 'not-a-number' };
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(broken));
+      expect(await getBoardingLock()).toBeNull();
+    });
   });
 
   describe('setBoardingLock', () => {

@@ -491,7 +491,31 @@ export function useFusedNearestStation(
   // 자체가 일어나지 않으므로 backward 정정 손실 없음.
   if (estimate && arcStations.length > 0) {
     const chosenIdx = arcIndexOfStation(arcStations, result?.station ?? null);
-    if (chosenIdx === -1 || estimate.index > chosenIdx) {
+    // Seam B (#898): hop-time 적분 전략(③④)에 forward observation ceiling 적용 —
+    // LivePosition/ArrivalEta dead-zone에서 적분이 물리 위치보다 앞서 발산하면 알람·LA·위젯이
+    // 모두 잘못된 "다음 역"을 소비(2026-06-05 13:19 transfer/early/건대입구 fired @ 성수).
+    // 실시간 신호(①LivePosition·②ArrivalEta) 외 모든 strategy는 cap 대상 — 부정형 분기로
+    // 신규 strategy(Seam G 등)가 추가될 때 기본 cap 적용 되도록 안전 방향 디폴트.
+    const isInterpolated =
+      estimate.strategy !== 'live-position' && estimate.strategy !== 'arrival-eta';
+    let withinObservationCeiling = true;
+    if (isInterpolated) {
+      const livePositionIdx = positionTrainResult
+        ? arcIndexOfStation(arcStations, positionTrainResult.station)
+        : -1;
+      const reanchoredObservedIdx = lastObservedRef.current?.arcIndex ?? -1;
+      // estimate가 non-null이면 boardingLock도 non-null(estimator 245 가드) — false branch 도달 불가.
+      const boardingIdx = boardingLock
+        ? arcStations.findIndex((s) => s.id === boardingLock.boardingStationId)
+        : /* istanbul ignore next */ -1;
+      const lastRealObservedIdx = Math.max(
+        livePositionIdx,
+        reanchoredObservedIdx,
+        boardingIdx,
+      );
+      withinObservationCeiling = estimate.index <= lastRealObservedIdx + 1;
+    }
+    if ((chosenIdx === -1 || estimate.index > chosenIdx) && withinObservationCeiling) {
       const distanceKm = gps.userLocation
         ? haversine(
             gps.userLocation.lat,
