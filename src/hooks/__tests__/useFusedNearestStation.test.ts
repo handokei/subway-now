@@ -302,7 +302,7 @@ describe('useFusedNearestStation', () => {
   });
 
   describe('#662 환승역 fusion 강등 가드 (BoardingLock 기준)', () => {
-    const lockOnLine = (line: '2' | '3'): import('../../types/boardingLock').BoardingLock => ({
+    const lockOnLine = (line: '2' | '3'): import('../../features/alarm/types/boardingLock').BoardingLock => ({
       destinationId: 'dest-1',
       trainCode: 'T-3',
       boardingStationId: MOCK_STATIONS.gangnam.id,

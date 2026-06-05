@@ -17,7 +17,7 @@ import { findTopNearestStations } from '../../utils/findNearestStation';
 import { enumerateTransferStations } from '../../utils/transferStations';
 import { TRAIN_STATUS } from '../../shared/constants/trainStatus';
 import type { TrainPosition, LinePositions } from '../../api/positionApi';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../features/alarm/types/boardingLock';
 import type { Station } from '../../types/station';
 
 jest.mock('../useNearestStation');

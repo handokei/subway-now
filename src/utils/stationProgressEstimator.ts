@@ -1,4 +1,4 @@
-import { isBoardingLockExpired, type BoardingLock } from '../types/boardingLock';
+import { isBoardingLockExpired, type BoardingLock } from '../features/alarm/types/boardingLock';
 import type { ArrivalInfo } from '../api/arrivalApi';
 import type { Station } from '../types/station';
 import type { TrainProgressResult } from './trackTrainProgress';

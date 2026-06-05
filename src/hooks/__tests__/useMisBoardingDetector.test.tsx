@@ -4,7 +4,7 @@ import {
   MIS_BOARDING_GRACE_MS,
   MIS_BOARDING_MISS_THRESHOLD,
 } from '../useMisBoardingDetector';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../features/alarm/types/boardingLock';
 import type { LinePositions, TrainPosition } from '../../api/positionApi';
 
 const baseLock: BoardingLock = {

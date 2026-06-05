@@ -5,7 +5,7 @@ import type {
   TransferRoute,
   MultiTransferRoute,
 } from '../stationRoute';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../features/alarm/types/boardingLock';
 import type { Station } from '../../types/station';
 
 function makeStation(line: Station['line'], overrides: Partial<Station> = {}): Station {

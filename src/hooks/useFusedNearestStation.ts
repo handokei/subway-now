@@ -32,7 +32,7 @@ import {
 } from '../shared/constants/realtime';
 import type { LinePositions } from '../api/positionApi';
 import type { ArrivalInfo, StationArrival } from '../api/arrivalApi';
-import type { BoardingLock } from '../types/boardingLock';
+import type { BoardingLock } from '../features/alarm/types/boardingLock';
 import type { NearestStationResult, Station } from '../types/station';
 import type { ArrivalProvider, PositionProvider } from '../providers/types';
 import type { Route } from '../utils/stationRoute';

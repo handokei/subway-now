@@ -87,7 +87,7 @@ jest.mock('../../utils/stationRoute', () => ({
 const mockSendAlarmNotification = jest.fn((..._args: unknown[]) => Promise.resolve());
 const mockSendStationPassedNotification = jest.fn((..._args: unknown[]) => Promise.resolve());
 const mockUpdateStationNotification = jest.fn((..._args: unknown[]) => Promise.resolve());
-jest.mock('../../utils/stationNotification', () => ({
+jest.mock('../../features/alarm/utils/stationNotification', () => ({
   sendAlarmNotification: (...args: unknown[]) => mockSendAlarmNotification(...args),
   sendStationPassedNotification: (...args: unknown[]) => mockSendStationPassedNotification(...args),
   updateStationNotification: (...args: unknown[]) => mockUpdateStationNotification(...args),
@@ -104,8 +104,8 @@ jest.mock('../../utils/logger', () => ({
 
 // ── 모듈 import (defineTask 실행 시점) ──
 import '../../tasks/backgroundLocationTask';
-import { processLocationUpdate } from '../../utils/stationPipeline';
-import { alarmKey } from '../../utils/stationAlarm';
+import { processLocationUpdate } from '../../features/alarm/utils/stationPipeline';
+import { alarmKey } from '../../features/alarm/utils/stationAlarm';
 import {
   DESTINATION_KEY,
   LAST_NOTIFIED_STATION_KEY,

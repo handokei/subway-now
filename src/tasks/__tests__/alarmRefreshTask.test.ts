@@ -27,7 +27,7 @@ import {
   ALARM_REFRESH_TASK,
   registerAlarmRefreshTask,
   unregisterAlarmRefreshTask,
-} from '../alarmRefreshTask';
+} from '../../features/alarm/tasks/alarmRefreshTask';
 
 function getCallback(): () => Promise<number> {
   return (global as any).__bgRefreshCallback;

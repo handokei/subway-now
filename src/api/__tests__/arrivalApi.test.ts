@@ -449,8 +449,8 @@ describe('fetchArrivalInfo', () => {
       // stations.json mocking 없이는 강제 케이스 만들기 어려우므로
       // hasHeadwayData를 모킹해 line은 찾았지만 headway가 없는 분기를 검증.
       jest.isolateModules(() => {
-        jest.doMock('../../utils/scheduleFallback', () => {
-          const actual = jest.requireActual('../../utils/scheduleFallback');
+        jest.doMock('../../features/alarm/utils/scheduleFallback', () => {
+          const actual = jest.requireActual('../../features/alarm/utils/scheduleFallback');
           return { ...actual, hasHeadwayData: () => false };
         });
         const { fetchArrivalInfo: fn, MOCK_ARRIVALS: mock } = require('../arrivalApi');

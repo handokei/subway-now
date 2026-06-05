@@ -2,7 +2,7 @@ import { renderHook, waitFor } from '@testing-library/react-native';
 import * as Location from 'expo-location';
 
 jest.mock('expo-location');
-jest.mock('../../../src/data/stations.json', () => []);
+jest.mock('../../data/stations.json', () => []);
 
 import { useNearestStation } from '../useNearestStation';
 

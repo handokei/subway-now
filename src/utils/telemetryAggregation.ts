@@ -8,7 +8,7 @@
  * 동작 변경 없음 — 순수 측정 집계 함수.
  */
 
-import type { AlarmLogEntry, AlarmLogReason } from './alarmLog';
+import type { AlarmLogEntry, AlarmLogReason } from '../features/alarm/utils/alarmLog';
 
 export interface SilentPushTelemetryPayload {
   /** 이전 flush 시각(epoch ms). 첫 flush는 0. */

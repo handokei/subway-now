@@ -16,7 +16,7 @@ import {
   getIntermediateStationNames,
   isSameStationName,
 } from './stationRoute';
-import type { AlarmWaypoint } from '../api/alarmBackend';
+import type { AlarmWaypoint } from '../features/alarm/api/alarmBackend';
 
 interface Context {
   destinationName: string;

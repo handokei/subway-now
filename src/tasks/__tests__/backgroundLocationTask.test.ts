@@ -22,27 +22,27 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 
 // ── stationPipeline 모킹 ──
 const mockProcessLocationUpdate = jest.fn();
-jest.mock('../../utils/stationPipeline', () => ({
+jest.mock('../../features/alarm/utils/stationPipeline', () => ({
   processLocationUpdate: (...args: unknown[]) => mockProcessLocationUpdate(...args),
 }));
 
 // ── stationAlarm 모킹 ──
 const mockAlarmKey = jest.fn();
-jest.mock('../../utils/stationAlarm', () => ({
+jest.mock('../../features/alarm/utils/stationAlarm', () => ({
   alarmKey: (...args: unknown[]) => mockAlarmKey(...args),
 }));
 
 // ── notificationState 모킹 (firedAlarms는 destination scoped, #462) ──
 const mockGetFiredAlarms = jest.fn();
 const mockSetFiredAlarms = jest.fn();
-jest.mock('../../utils/notificationState', () => ({
+jest.mock('../../features/alarm/utils/notificationState', () => ({
   getFiredAlarms: (...args: unknown[]) => mockGetFiredAlarms(...args),
   setFiredAlarms: (...args: unknown[]) => mockSetFiredAlarms(...args),
 }));
 
 // ── alarmLog 모킹 ──
 const mockLogSuppressedGate = jest.fn();
-jest.mock('../../utils/alarmLog', () => ({
+jest.mock('../../features/alarm/utils/alarmLog', () => ({
   logSuppressedGate: (...args: unknown[]) => mockLogSuppressedGate(...args),
 }));
 
@@ -75,10 +75,10 @@ jest.mock('../../utils/logger', () => ({
 }));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { AlarmEvent } from '../../utils/stationAlarm';
+import type { AlarmEvent } from '../../features/alarm/utils/stationAlarm';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
 import '../../tasks/backgroundLocationTask';
-import { BACKGROUND_LOCATION_TASK } from '../../tasks/backgroundLocationTask';
+import { BACKGROUND_LOCATION_TASK } from '../backgroundLocationTask';
 import { MAX_ACCURACY_M, MAX_LOCATION_AGE_MS } from '../../shared/constants/location';
 import { ALARM_EVENT_KEY } from '../../shared/constants/storageKeys';
 import { makeDirectRoute } from '../../testUtils/routeFixtures';
