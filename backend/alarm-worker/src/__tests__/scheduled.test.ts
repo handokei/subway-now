@@ -173,6 +173,21 @@ function parseArvlCdStationPassedData(call: [string, RequestInit]): {
   return body.data;
 }
 
+// 7호선 용마산→중곡→군자 leg lockTrip 공용 (lock 추적/arvlCd fire 테스트 공통).
+// token만 describe별로 다르므로 token은 호출 시 명시.
+function makeLockTripFixture(token: string, overrides: Partial<Trip> = {}): Trip {
+  return makeTrip({
+    token,
+    route: { type: 'direct', line: '7', stops: 2 },
+    waypoints: [
+      { stationName: '중곡', line: '7', kind: 'intermediate' },
+      { stationName: '군자', line: '7', kind: 'destination' },
+    ],
+    boardingLock: makeBoardingLock(),
+    ...overrides,
+  });
+}
+
 // boardingLock fixture — 7호선 용마산→중곡→군자 leg 공용 (lock 추적/arvlCd fire 테스트 공통).
 function makeBoardingLock(overrides: Partial<BoardingLockMeta> = {}): BoardingLockMeta {
   return {
@@ -574,19 +589,7 @@ describe('runScheduled', () => {
 
 describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
   const makeLock = makeBoardingLock;
-
-  function makeLockTrip(overrides: Partial<Trip> = {}): Trip {
-    return makeTrip({
-      token: 'lock-tok',
-      route: { type: 'direct', line: '7', stops: 2 },
-      waypoints: [
-        { stationName: '중곡', line: '7', kind: 'intermediate' },
-        { stationName: '군자', line: '7', kind: 'destination' },
-      ],
-      boardingLock: makeLock(),
-      ...overrides,
-    });
-  }
+  const makeLockTrip = (overrides: Partial<Trip> = {}) => makeLockTripFixture('lock-tok', overrides);
 
   /** Seoul API 응답 — arrivals와 positions를 URL 경로로 분기. */
   function makeSeoulCombo(
@@ -3384,19 +3387,7 @@ describe('estimateBoardingLockArrival arvlCd exposure (#917 A2)', () => {
 
 describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   const makeLock = makeBoardingLock;
-
-  function makeLockTrip(overrides: Partial<Trip> = {}): Trip {
-    return makeTrip({
-      token: 'arvl-tok',
-      route: { type: 'direct', line: '7', stops: 2 },
-      waypoints: [
-        { stationName: '중곡', line: '7', kind: 'intermediate' },
-        { stationName: '군자', line: '7', kind: 'destination' },
-      ],
-      boardingLock: makeLock(),
-      ...overrides,
-    });
-  }
+  const makeLockTrip = (overrides: Partial<Trip> = {}) => makeLockTripFixture('arvl-tok', overrides);
 
   const makeArrivalSeoul = makeArvlCdFireSeoul;
   const getStationPassedCalls = getArvlCdStationPassedCalls;
