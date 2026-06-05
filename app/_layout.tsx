@@ -9,7 +9,7 @@ import { ThemeProvider, useTheme } from '../src/shared/theme';
 import { setupNotificationHandler, refreshNotificationChannels } from '../src/features/alarm/utils/stationNotification';
 import { setMinLevel, createLogger } from '../src/utils/logger';
 import { i18n } from '../src/shared/i18n';
-import { useApplyLocale } from '../src/hooks/useApplyLocale';
+import { useApplyLocale } from '../src/features/settings/hooks/useApplyLocale';
 import { useSilentPushTelemetry } from '../src/features/alarm/hooks/useSilentPushTelemetry';
 import { useAppStore } from '../src/store/useAppStore';
 import { DebugModal } from '../src/components/DebugModal';

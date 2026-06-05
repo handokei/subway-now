@@ -2,12 +2,12 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import MapView, { Circle, Marker, Polyline, PROVIDER_DEFAULT } from 'react-native-maps';
-import type { Station } from '../shared/types/station';
-import type { RouteCoordinatePath } from '../features/route/utils/routeToCoordinates';
+import type { Station } from '../../../shared/types/station';
+import type { RouteCoordinatePath } from '../../route/utils/routeToCoordinates';
 import { buildMapConfig } from '../utils/buildMapConfig';
-import { useTheme, withAlpha } from '../shared/theme';
-import { LINE_BADGE_LABEL } from '../shared/constants/lineColors';
-import { getStationDisplayName } from '../features/nearest-station/utils/stationDisplay';
+import { useTheme, withAlpha } from '../../../shared/theme';
+import { LINE_BADGE_LABEL } from '../../../shared/constants/lineColors';
+import { getStationDisplayName } from '../../nearest-station/utils/stationDisplay';
 
 interface StationMapProps {
   userLat: number;

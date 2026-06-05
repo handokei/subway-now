@@ -33,7 +33,7 @@ describe('useMapData', () => {
 
   it('반환된 역들은 모두 지정 반경 이내에 있다', () => {
     const { result } = renderHook(() => useMapData(37.5665, 126.9780, 1.0));
-    const { haversine } = require('../../utils/haversine');
+    const { haversine } = require('../../../../utils/haversine');
     for (const station of result.current.nearbyStations) {
       const dist = haversine(37.5665, 126.9780, station.lat, station.lng);
       expect(dist).toBeLessThanOrEqual(1.0);

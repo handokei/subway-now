@@ -1,8 +1,8 @@
 import React from 'react';
 import i18next from 'i18next';
 import { StationMap } from '../StationMap.web';
-import { Station } from '../../shared/types/station';
-import { renderWithTheme } from '../../testUtils/renderWithTheme';
+import { Station } from '../../../../shared/types/station';
+import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 
 const gangnam: Station = {
   id: '2-222',

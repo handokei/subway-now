@@ -7,7 +7,7 @@ import {
   scheduleHopsForLock,
 } from '../utils/boardingLockScheduler';
 import { createLogger } from '../../../utils/logger';
-import { useSleepModeRef } from '../../../hooks/useSleepModeRef';
+import { useSleepModeRef } from '../../settings/hooks/useSleepModeRef';
 
 const logger = createLogger('useBoardingLockScheduler');
 

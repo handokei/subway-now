@@ -1,6 +1,6 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { useSleepModeRef } from '../useSleepModeRef';
-import { useAppStore } from '../../store/useAppStore';
+import { useAppStore } from '../../../../store/useAppStore';
 
 describe('useSleepModeRef', () => {
   beforeEach(() => {

@@ -18,7 +18,7 @@ import {
   type FavoriteSlotRole,
   type Station,
 } from '../../../shared/types/station';
-import { StationMap } from '../../../components/StationMap';
+import { StationMap } from '../../map/components/StationMap';
 import { StationSuggestionList } from '../../nearest-station/components/StationSuggestionList';
 import { createLogger } from '../../../utils/logger';
 import { matchesStationQuery, getStationDisplayName } from '../../nearest-station/utils/stationDisplay';

@@ -5,7 +5,7 @@ import { isSameStationName } from '../../route/utils/stationRoute';
 import { resolveAllTargets } from '../utils/stationAlarm';
 import { advanceHopWindow } from '../utils/boardingLockScheduler';
 import { createLogger } from '../../../utils/logger';
-import { useSleepModeRef } from '../../../hooks/useSleepModeRef';
+import { useSleepModeRef } from '../../settings/hooks/useSleepModeRef';
 
 const logger = createLogger('useBoardingLockAdvancer');
 

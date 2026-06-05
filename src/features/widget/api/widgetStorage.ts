@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import * as LiveActivity from 'live-activity';
-import { Station } from '../shared/types/station';
+import { Station } from '../../../shared/types/station';
 
 // 동일 역 머무는 동안 매 GPS 폴링마다 WidgetCenter.reloadAllTimelines 가
 // 호출되는 낭비를 막기 위한 station.id 기준 dedupe.

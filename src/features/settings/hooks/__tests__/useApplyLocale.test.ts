@@ -2,8 +2,8 @@ import { renderHook } from '@testing-library/react-native';
 import * as Localization from 'expo-localization';
 import i18next from 'i18next';
 import { resolveLanguage, useApplyLocale } from '../useApplyLocale';
-import { useAppStore } from '../../store/useAppStore';
-import type { LocalePreference } from '../../store/useAppStore';
+import { useAppStore } from '../../../../store/useAppStore';
+import type { LocalePreference } from '../../../../store/useAppStore';
 
 jest.mock('expo-localization', () => ({
   getLocales: jest.fn(() => [{ languageCode: 'ko' }]),

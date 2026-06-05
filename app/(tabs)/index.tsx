@@ -34,7 +34,7 @@ import { LineBadge } from '../../src/components/LineBadge';
 import { SourceBadge } from '../../src/features/arrival/components/SourceBadge';
 import { resolveNotificationSource } from '../../src/features/alarm/utils/notificationSource';
 import { ArrivalSourceNotice } from '../../src/features/arrival/components/ArrivalSourceNotice';
-import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
+import { useSleepModeGuide } from '../../src/features/settings/hooks/useSleepModeGuide';
 import { useArrivalAutoClear } from '../../src/features/arrival/hooks/useArrivalAutoClear';
 import { useBoardingLockController } from '../../src/features/alarm/hooks/useBoardingLockController';
 import { useBoardingLockScheduler } from '../../src/features/alarm/hooks/useBoardingLockScheduler';
