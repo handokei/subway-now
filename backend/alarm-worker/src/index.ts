@@ -405,6 +405,8 @@ app.post('/boarding-lock/sync', async (c) => {
       // 새 waypoint의 첫 push를 보장하기 위해 baseline reset (advanceBoardingLockWaypoint와 동형).
       lastTrackedArrivalEpoch: undefined,
       lastLaPushEpoch: undefined,
+      // #900 Seam D — heartbeat 기준점도 함께 reset (baseline 동형).
+      lastLaPushAt: undefined,
     };
     // progress KV mirror — POST /trips re-register 시 같은 trainCode면 shift 진행분이 보존되도록.
     await maybeMirrorLockSyncProgress(c.env.TRIPS, working, advance.shiftedCount);
@@ -503,6 +505,8 @@ async function maybeMirrorLockSyncProgress(
     shiftedCount: prevShifted + shiftedDelta,
     lastTrackedArrivalEpoch: trip.lastTrackedArrivalEpoch,
     lastLaPushEpoch: trip.lastLaPushEpoch,
+    // #900 Seam D — heartbeat wall-clock도 mirror해 POST /trips race 후에도 보존.
+    lastLaPushAt: trip.lastLaPushAt,
     consecutiveEtaMissing: trip.consecutiveEtaMissing,
   };
   const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
@@ -658,6 +662,8 @@ export function applyProgress(
     waypoints,
     lastTrackedArrivalEpoch: progress.lastTrackedArrivalEpoch,
     lastLaPushEpoch: progress.lastLaPushEpoch,
+    // #900 Seam D — heartbeat wall-clock도 progress가 SSOT.
+    lastLaPushAt: progress.lastLaPushAt,
     consecutiveEtaMissing: progress.consecutiveEtaMissing,
   };
 }

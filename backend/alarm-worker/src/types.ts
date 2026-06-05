@@ -101,6 +101,13 @@ export interface Trip {
    */
   lastLaPushEpoch?: number;
   /**
+   * 마지막으로 LA update push를 발사한 시각(epoch ms) — #900 Seam D.
+   * lastLaPushEpoch가 "콘텐츠 기준 시간(추정 도착)"인 반면 이 필드는 "발사 시각(wall clock)"이라
+   * 60s heartbeat 게이트 평가에 사용된다. waypoint shift 시 lastLaPushEpoch와 함께 reset.
+   * 레거시 trip(필드 부재) → heartbeat 미평가 → 기존 ΔETA 임계 그대로.
+   */
+  lastLaPushAt?: number;
+  /**
    * 연속 etaMissing 카운트 (#706). 운행 시간대 외(새벽 등)에 trainCode가 Seoul API에서
    * 사라져도 trip이 자동 종료되지 않아 무한 폴링하던 회귀(8h × 1/min) 방지용.
    * runTrainCodeTracking이 estimate=null 받을 때마다 +1, 성공 시 0 reset.
