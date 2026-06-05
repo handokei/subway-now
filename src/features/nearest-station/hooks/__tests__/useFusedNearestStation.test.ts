@@ -827,7 +827,27 @@ describe('useFusedNearestStation', () => {
       mockUsePositions.mockReturnValue(positionRet(null));
     }
 
-    it('GPS stale(용마산) + 3 hop 경과 → interp(어린이대공원)이 ratchet forward로 승격', () => {
+    it('GPS stale(용마산) + 1 hop 경과 → interp(중곡)이 ratchet forward로 승격', () => {
+      // Seam B (#898): 라이브 관측 없는 dead-zone에선 boardingIdx+1까지만 허용.
+      // 본 시나리오는 lastObservedRef=null + boardingIdx=용마산(0) → cap=중곡(1).
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 90_000);
+        setupGpsAt(yongmasan);
+        const { result } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        expect(result.current.source).toBe('boarding-lock-interp');
+        expect(result.current.confidence).toBe('boarding-lock-interp');
+        expect(result.current.result?.station.id).toBe(junggok.id);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('Seam B (#898) — dead-zone 3 hop 경과해도 interp이 boardingIdx+1 초과 안 함', () => {
+      // 13:19:12 회귀 fixture 인자: LivePosition/ArrivalEta 모두 결손인 상황에서 적분이
+      // 물리 위치보다 여러 hop 앞서 가는 것을 차단. estimator 내부 cap + 외부 cap 이중 가드.
       jest.useFakeTimers();
       try {
         jest.setSystemTime(T0 + 3 * 90_000);
@@ -835,9 +855,9 @@ describe('useFusedNearestStation', () => {
         const { result } = renderHook(() =>
           useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
         );
-        expect(result.current.source).toBe('boarding-lock-interp');
-        expect(result.current.confidence).toBe('boarding-lock-interp');
-        expect(result.current.result?.station.id).toBe(oolinidae.id);
+        expect(result.current.result?.station.id).toBe(junggok.id);
+        expect(result.current.result?.station.id).not.toBe(oolinidae.id);
+        expect(result.current.result?.station.id).not.toBe(konkuk.id);
       } finally {
         jest.useRealTimers();
       }
@@ -903,7 +923,8 @@ describe('useFusedNearestStation', () => {
       }
     });
 
-    it('GPS가 arc 밖(서울역 공항철도) + lock 활성 → interp가 채택됨', () => {
+    it('GPS가 arc 밖(서울역 공항철도) + lock 활성 → interp가 boardingIdx+1까지 채택', () => {
+      // Seam B (#898): GPS가 arc 밖이라도 라이브 관측은 여전히 없음 → cap=중곡(1).
       jest.useFakeTimers();
       try {
         jest.setSystemTime(T0 + 2 * 90_000);
@@ -913,7 +934,7 @@ describe('useFusedNearestStation', () => {
           useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
         );
         expect(result.current.source).toBe('boarding-lock-interp');
-        expect(result.current.result?.station.id).toBe(gunja.id);
+        expect(result.current.result?.station.id).toBe(junggok.id);
       } finally {
         jest.useRealTimers();
       }
@@ -1030,11 +1051,11 @@ describe('useFusedNearestStation', () => {
 
         // 시계만 진행. boardingLock/arcStations/GPS는 그대로 — 의존성이 안 바뀌어도
         // interp이 새 now를 반영해야 한다. 부모 리렌더(rerender)는 한 번 발생시켜
-        // hook이 다시 호출되는 정상 사이클을 시뮬레이션.
-        jest.setSystemTime(T0 + 3 * 90_000);
+        // hook이 다시 호출되는 정상 사이클을 시뮬레이션. Seam B cap에 따라 +1 hop까지.
+        jest.setSystemTime(T0 + 90_000);
         rerender(undefined);
         expect(result.current.source).toBe('boarding-lock-interp');
-        expect(result.current.result?.station.id).toBe(oolinidae.id);
+        expect(result.current.result?.station.id).toBe(junggok.id);
       } finally {
         jest.useRealTimers();
       }
@@ -1202,6 +1223,7 @@ describe('useFusedNearestStation', () => {
     it('다음 역이 GPS 후보가 아니면 ② skip → ③(ReanchoredHop)으로 fallback (line 133 return [])', () => {
       // 후보에 다음 역(중곡) 없음 — 슬롯 stationName=용마산 vs station.name=중곡 → 모두 continue.
       // 슬롯에 arrival 데이터를 주입(line 127 '!arrival' continue가 아닌 line 128 stationName 불일치 분기 cover).
+      // Seam B (#898): lastObserved=용마산(idx 0) → cap=중곡(idx 1). disconnect 90s 후 ReanchoredHop 채택.
       const arrivalAtYongmasan: StationArrival = {
         up: [info(ARRIVAL_CODE.RUNNING, { trainCode: 'OTHER', line: '7' })],
         down: [],
@@ -1210,12 +1232,13 @@ describe('useFusedNearestStation', () => {
         candidates: [{ station: yongmasan, distanceKm: 0 }],
         arrivalMock: (name) =>
           name === yongmasan.name ? arrivalRet(arrivalAtYongmasan) : arrivalRet(null),
-        disconnectAtMs: T0_745 + 2 * 90_000,
+        disconnectAtMs: T0_745 + 90_000,
       });
     });
 
     it('다음 역 슬롯이 있어도 row.line이 모두 다른 호선이면 ② skip (matched.length=0 branch, line 131)', () => {
       // 중곡 슬롯 arrival의 row.line='2', junggok.line='7' 불일치 → filter 빈 배열. RUNNING(99)으로 fused 픽업 차단.
+      // Seam B (#898): disconnect 90s 후 ReanchoredHop이 lastObserved+1=중곡까지만 진행.
       const arrivalAtJunggokWrongLine: StationArrival = {
         up: [info(ARRIVAL_CODE.RUNNING, { trainCode: '7093', line: '2' })],
         down: [],
@@ -1227,7 +1250,7 @@ describe('useFusedNearestStation', () => {
         ],
         arrivalMock: (name) =>
           name === junggok.name ? arrivalRet(arrivalAtJunggokWrongLine) : arrivalRet(null),
-        disconnectAtMs: T0_745 + 5_000 + 3 * 90_000,
+        disconnectAtMs: T0_745 + 5_000 + 90_000,
       });
     });
 
