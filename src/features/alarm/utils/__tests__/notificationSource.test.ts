@@ -9,9 +9,11 @@ import type { FusionSource } from '../../../../shared/types/fusion';
 describe('resolveNotificationSource', () => {
   it.each<[FusionSource, NotificationSource]>([
     ['boarding-lock', 'positionTrain'],
+    ['boarding-lock-interp', 'positionTrain'],
     ['position-train', 'positionTrain'],
     ['position', 'positionTrain'],
     ['arrival', 'positionTrain'],
+    ['wifi-ssid', 'positionTrain'],
     ['route-progress', 'routeProgress'],
     ['gps', 'gpsOnly'],
   ])('%s → %s', (source, expected) => {
