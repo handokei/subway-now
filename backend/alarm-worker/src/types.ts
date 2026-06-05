@@ -133,6 +133,23 @@ export interface Trip {
    */
   boardingPromptState?: BoardingPromptState;
   /**
+   * #916 follow-up B — backend auto-lock 또는 boarding-prompt가 발사된 마지막 시각(epoch ms).
+   * `boardingPromptState`와 별개로 유지되는 dedup 마커.
+   *
+   * 필요한 이유: `boardingPromptState`는 `isSameSession=false` 분기에서 `baseTrip=incoming`로
+   * 갈아치워져 사라진다. auto-lock 성공 직후 사용자가 lock을 클리어/swap하거나 목적지를
+   * 살짝 바꿔 새 createdAt으로 재등록하면 새 trip 세션처럼 인식돼 prompt가 재발사된다 —
+   * 같은 trip token + 같은 출발 컨텍스트에 대해 backend가 방금 자동 lock을 시도/성공한 직후라.
+   *
+   * 본 필드는 같은 token + window 내 새 세션에도 보존되어 `evaluateAndMaybeFireBoardingPrompt`
+   * 초입에서 prompt 재평가 자체를 차단한다 (AUTO_PROMPT_DEDUP_WINDOW_MS = 30분, lockSwap의
+   * SWAP_LOCK_TTL_MS와 정합). 윈도우 만료 또는 명백히 다른 trip(createdAt이 window 이상 차이)은
+   * 보존하지 않아 새 prompt가 자연 발사된다.
+   *
+   * 클라이언트는 절대 송신하지 않는다 — backend가 stamp + 자체 보존.
+   */
+  lastAutoPromptedAt?: number;
+  /**
    * boarding-prompt 평가용 출발역/다음역 좌표 (#819 게이트 #4/#5).
    * backend는 stations.json을 갖지 않으므로 클라이언트가 trip 등록 시 함께 보낸다.
    * 부재 시 boarding-prompt 평가 자체를 skip — 좌표 없는 lockMissing trip은 silent.
