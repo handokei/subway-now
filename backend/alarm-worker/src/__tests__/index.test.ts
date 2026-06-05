@@ -381,32 +381,44 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     expect(finalTrip.consecutiveEtaMissing).toBe(4);
   });
 
-  // #903 (Seam G) — subsurface true→false 전환(지상 복귀)에서 누적 카운터 리셋.
-  // 지하 인내 임계(10)로 쌓은 값이 지상 임계(5)에 즉시 걸려 trip이 자동 종료되는 회귀 차단.
-  it('resets consecutiveEtaMissing when subsurface flips true→false (surface recovery)', async () => {
-    const env = makeKvEnv();
-    await post('/trips', { ...tripBody(), subsurface: true }, env);
-    const underground = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
-    underground.consecutiveEtaMissing = 7;
-    await env.TRIPS.put('trip:tok-578', JSON.stringify(underground));
-    // 지상 복귀
-    await post('/trips', { ...tripBody(), subsurface: false }, env);
-    const recovered = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
-    expect(recovered.consecutiveEtaMissing).toBe(0);
-    expect(recovered.subsurface).toBe(false);
-  });
+  // #903 (Seam G) — subsurface 전환에 따른 누적 카운터 정책.
+  // helper: existing trip을 (subsurface, count) 상태로 셋업.
+  async function seedExistingTrip(
+    env: ReturnType<typeof makeKvEnv>,
+    initialSubsurface: boolean | undefined,
+    missCount: number,
+  ): Promise<void> {
+    const body = initialSubsurface === undefined ? tripBody() : { ...tripBody(), subsurface: initialSubsurface };
+    await post('/trips', body, env);
+    const existing = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    existing.consecutiveEtaMissing = missCount;
+    await env.TRIPS.put('trip:tok-578', JSON.stringify(existing));
+  }
 
-  // 인내 모드(subsurface true)로 들어갈 때(undefined→true)는 카운터 그대로 — 보존이 #706 의도와 일치.
-  it('preserves consecutiveEtaMissing when subsurface goes undefined→true (no reset)', async () => {
+  it.each([
+    {
+      label: 'true→false 전환(지상 복귀) → counter 리셋',
+      initial: true,
+      seed: 7,
+      next: false,
+      expectedCount: 0,
+      expectedSubsurface: false,
+    },
+    {
+      label: 'undefined→true 전환(지하 진입) → counter 보존',
+      initial: undefined,
+      seed: 3,
+      next: true,
+      expectedCount: 3,
+      expectedSubsurface: true,
+    },
+  ])('subsurface $label', async ({ initial, seed, next, expectedCount, expectedSubsurface }) => {
     const env = makeKvEnv();
-    await post('/trips', tripBody(), env);
-    const advanced = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
-    advanced.consecutiveEtaMissing = 3;
-    await env.TRIPS.put('trip:tok-578', JSON.stringify(advanced));
-    await post('/trips', { ...tripBody(), subsurface: true }, env);
+    await seedExistingTrip(env, initial, seed);
+    await post('/trips', { ...tripBody(), subsurface: next }, env);
     const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
-    expect(finalTrip.consecutiveEtaMissing).toBe(3);
-    expect(finalTrip.subsurface).toBe(true);
+    expect(finalTrip.consecutiveEtaMissing).toBe(expectedCount);
+    expect(finalTrip.subsurface).toBe(expectedSubsurface);
   });
 
   it('returns 400 on invalid JSON', async () => {
