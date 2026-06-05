@@ -1,5 +1,6 @@
 import {
   appendBarometerReading,
+  evaluateLatestStop,
   evaluateLatestSubsurface,
   getBarometerReadings,
   narrowStationsByDepthAndEta,
@@ -27,38 +28,50 @@ describe('barometerState (#875)', () => {
   });
 
   it('append 시 readings에 누적', () => {
-    appendBarometerReading({ t: NOW, pressureHpa: 1013.0 });
-    appendBarometerReading({ t: NOW + 1_000, pressureHpa: 1013.05 });
+    appendBarometerReading({ t: NOW, pressureHpa: 1013 });
+    appendBarometerReading({ t: NOW + 1_000, pressureHpa: 10135 });
     expect(getBarometerReadings()).toHaveLength(2);
   });
 
   it('append 시 TTL 초과 reading 자동 제거', () => {
     appendBarometerReading({
       t: NOW - BAROMETER_RING_BUFFER_TTL_MS - 5_000,
-      pressureHpa: 1012.0,
+      pressureHpa: 1012,
     });
     // 새 reading의 t를 now로 사용하므로, 위 entry는 cutoff 밖으로 즉시 제거됨.
-    appendBarometerReading({ t: NOW, pressureHpa: 1013.0 });
+    appendBarometerReading({ t: NOW, pressureHpa: 1013 });
     expect(getBarometerReadings()).toHaveLength(1);
-    expect(getBarometerReadings()[0].pressureHpa).toBeCloseTo(1013.0);
+    expect(getBarometerReadings()[0].pressureHpa).toBeCloseTo(1013);
   });
 
   it('충분한 readings 누적 후 평가 → detected', () => {
     appendBarometerReading({
       t: NOW - BAROMETER_DPDT_WINDOW_MS,
-      pressureHpa: 1013.0,
+      pressureHpa: 1013,
     });
     appendBarometerReading({
       t: NOW,
-      pressureHpa: 1013.0 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
+      pressureHpa: 1013 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
     });
     const v = evaluateLatestSubsurface(NOW);
     expect(v).not.toBeNull();
     expect(v!.detected).toBe(true);
   });
 
+  it('evaluateLatestStop — readings 부족 시 null, 정차 패턴이면 detected', () => {
+    expect(evaluateLatestStop(NOW)).toBeNull();
+    appendBarometerReading({
+      t: NOW - BAROMETER_DPDT_WINDOW_MS,
+      pressureHpa: 1013,
+    });
+    appendBarometerReading({ t: NOW, pressureHpa: 1013 });
+    const v = evaluateLatestStop(NOW);
+    expect(v).not.toBeNull();
+    expect(v!.detected).toBe(true);
+  });
+
   it('resetBarometerState → 비움', () => {
-    appendBarometerReading({ t: NOW, pressureHpa: 1013.0 });
+    appendBarometerReading({ t: NOW, pressureHpa: 1013 });
     expect(getBarometerReadings()).toHaveLength(1);
     resetBarometerState();
     expect(getBarometerReadings()).toEqual([]);

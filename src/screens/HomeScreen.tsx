@@ -150,8 +150,9 @@ export default function HomeScreen() {
   // #903 (Seam G) — 기압계 dP/dt 신호. 미지원/권한 거절은 subsurface=false 고정(graceful).
   //   1) useFusedNearestStation: 'gps-only' → 'gps-only-underground' 강등 + sticky automotive 트리거.
   //   2) useApnsTripRegistration: backend payload subsurface 동봉(threshold 5→10).
-  const { subsurface: barometerSubsurface } = useBarometer();
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, barometerSubsurface);
+  const barometerSignal = useBarometer();
+  const { subsurface: barometerSubsurface } = barometerSignal;
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal });
 
   // #914 (F4) — 1탭 현재역 확정 모달. 자동 추정이 locationUncertain으로 길어지면 후보 1~3개를
   // 카드로 노출, 1탭 = customOrigin 적용. wifiStation 네이티브 브릿지(F2 후속)는 미연결이라 null.
@@ -182,6 +183,7 @@ export default function HomeScreen() {
   const handleConfirmAutoToastDismiss = useCallback(() => setConfirmAutoToast(null), []);
   // 검색 fallback 실제 wire는 후속 PR — 현재는 onClose와 동일 동작(모달만 닫음).
   // (origin 검색용 picker는 별도 component 필요. DestinationPicker는 목적지 전용.)
+
 
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
   const { arrivedBanner } = useArrivalAutoClear({

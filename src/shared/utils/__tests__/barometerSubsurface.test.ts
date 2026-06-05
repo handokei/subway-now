@@ -1,4 +1,5 @@
 import {
+  evaluateBarometerStop,
   evaluateSubsurfaceEnter,
   pruneStaleReadings,
   type BarometerReading,
@@ -6,6 +7,7 @@ import {
 import {
   BAROMETER_DPDT_WINDOW_MS,
   BAROMETER_RING_BUFFER_TTL_MS,
+  BAROMETER_STOP_DP_THRESHOLD_HPA,
   BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
 } from '../../constants/barometer';
 
@@ -24,7 +26,7 @@ describe('barometerSubsurface (#875)', () => {
 
     it('window 미달 (30s 이내 데이터만) → null', () => {
       const readings = [
-        reading(-10_000, 1013.0),
+        reading(-10_000, 1013),
         reading(-5_000, 1013.1),
         reading(0, 1013.2),
       ];
@@ -34,8 +36,8 @@ describe('barometerSubsurface (#875)', () => {
 
     it('정확히 dP=+0.3 hPa / 30s → detected', () => {
       const readings = [
-        reading(-BAROMETER_DPDT_WINDOW_MS, 1013.0),
-        reading(0, 1013.0 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA),
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013),
+        reading(0, 1013 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA),
       ];
       const v = evaluateSubsurfaceEnter(readings, NOW);
       expect(v).not.toBeNull();
@@ -46,7 +48,7 @@ describe('barometerSubsurface (#875)', () => {
 
     it('dP=+0.5 hPa / 30s (임계 초과) → detected', () => {
       const readings = [
-        reading(-BAROMETER_DPDT_WINDOW_MS, 1013.0),
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013),
         reading(-15_000, 1013.2),
         reading(0, 1013.5),
       ];
@@ -58,7 +60,7 @@ describe('barometerSubsurface (#875)', () => {
 
     it('dP=+0.1 hPa / 30s (임계 미달) → suppressed', () => {
       const readings = [
-        reading(-BAROMETER_DPDT_WINDOW_MS, 1013.0),
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013),
         reading(0, 1013.1),
       ];
       const v = evaluateSubsurfaceEnter(readings, NOW);
@@ -70,7 +72,7 @@ describe('barometerSubsurface (#875)', () => {
     it('dP 음수 (지상으로 상승) → suppressed', () => {
       const readings = [
         reading(-BAROMETER_DPDT_WINDOW_MS, 1013.5),
-        reading(0, 1013.0),
+        reading(0, 1013),
       ];
       const v = evaluateSubsurfaceEnter(readings, NOW);
       expect(v).not.toBeNull();
@@ -82,7 +84,7 @@ describe('barometerSubsurface (#875)', () => {
       // 50s, 40s, 30s 전 + 현재. 평가 baseline은 30s 이전 readings 중
       // 가장 최근(=가장 작은 elapsed) → 30s 전.
       const readings = [
-        reading(-50_000, 1013.0),
+        reading(-50_000, 1013),
         reading(-40_000, 1013.1),
         reading(-30_000, 1013.2),
         reading(0, 1013.5),
@@ -98,7 +100,7 @@ describe('barometerSubsurface (#875)', () => {
     it('정렬되지 않은 readings도 시간순으로 평가', () => {
       const readings = [
         reading(0, 1013.5),
-        reading(-BAROMETER_DPDT_WINDOW_MS, 1013.0),
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013),
         reading(-10_000, 1013.2),
       ];
       const v = evaluateSubsurfaceEnter(readings, NOW);
@@ -124,13 +126,76 @@ describe('barometerSubsurface (#875)', () => {
     it('readings의 가장 최신이 평가 시점(now)보다 미래면 그것을 latest로 사용', () => {
       // 클라이언트 clock 미세 차이를 흡수 — 가장 큰 t를 latest로 본다.
       const readings = [
-        reading(-BAROMETER_DPDT_WINDOW_MS, 1013.0),
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013),
         reading(+500, 1013.4),
       ];
       const v = evaluateSubsurfaceEnter(readings, NOW);
       expect(v).not.toBeNull();
       expect(v!.detected).toBe(true);
       expect(v!.deltaHpa).toBeCloseTo(0.4);
+    });
+  });
+
+  describe('evaluateBarometerStop (#921)', () => {
+    it('빈 readings → null (평가 불가)', () => {
+      expect(evaluateBarometerStop([], NOW)).toBeNull();
+    });
+
+    it('window 미달 (30s 이전 baseline 없음) → null', () => {
+      const readings = [reading(-5_000, 1013), reading(0, 1013)];
+      expect(evaluateBarometerStop(readings, NOW)).toBeNull();
+    });
+
+    it('dP=0 정확히 정차 → detected', () => {
+      const readings = [
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013),
+        reading(0, 1013),
+      ];
+      const v = evaluateBarometerStop(readings, NOW);
+      expect(v).not.toBeNull();
+      expect(v!.detected).toBe(true);
+      expect(v!.deltaHpa).toBeCloseTo(0);
+    });
+
+    it('|dP| 임계 정확히 (+0.05 hPa) → detected (FP_EPSILON 내)', () => {
+      const readings = [
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013),
+        reading(0, 1013 + BAROMETER_STOP_DP_THRESHOLD_HPA),
+      ];
+      const v = evaluateBarometerStop(readings, NOW);
+      expect(v).not.toBeNull();
+      expect(v!.detected).toBe(true);
+    });
+
+    it('|dP| 임계 정확히 (-0.05 hPa, 음수 방향) → detected', () => {
+      const readings = [
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013),
+        reading(0, 1013 - BAROMETER_STOP_DP_THRESHOLD_HPA),
+      ];
+      const v = evaluateBarometerStop(readings, NOW);
+      expect(v).not.toBeNull();
+      expect(v!.detected).toBe(true);
+      expect(v!.deltaHpa).toBeCloseTo(-BAROMETER_STOP_DP_THRESHOLD_HPA);
+    });
+
+    it('|dP|=+0.1 hPa (임계 초과, 이동 중) → detected=false', () => {
+      const readings = [
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013),
+        reading(0, 1013.1),
+      ];
+      const v = evaluateBarometerStop(readings, NOW);
+      expect(v).not.toBeNull();
+      expect(v!.detected).toBe(false);
+    });
+
+    it('|dP|=+0.3 hPa (subsurface 임계 — 지하 진입 중, stop 아님) → detected=false', () => {
+      const readings = [
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013),
+        reading(0, 1013 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA),
+      ];
+      const v = evaluateBarometerStop(readings, NOW);
+      expect(v).not.toBeNull();
+      expect(v!.detected).toBe(false);
     });
   });
 
@@ -141,7 +206,7 @@ describe('barometerSubsurface (#875)', () => {
 
     it('TTL 이내 readings 보존', () => {
       const readings = [
-        reading(-30_000, 1013.0),
+        reading(-30_000, 1013),
         reading(-10_000, 1013.1),
         reading(0, 1013.2),
       ];
@@ -152,22 +217,22 @@ describe('barometerSubsurface (#875)', () => {
     it('TTL 초과 reading 제거', () => {
       const readings = [
         reading(-(BAROMETER_RING_BUFFER_TTL_MS + 1_000), 1012.5),
-        reading(-30_000, 1013.0),
+        reading(-30_000, 1013),
         reading(0, 1013.2),
       ];
       const out = pruneStaleReadings(readings, NOW);
       expect(out).toHaveLength(2);
-      expect(out[0].pressureHpa).toBeCloseTo(1013.0);
+      expect(out[0].pressureHpa).toBeCloseTo(1013);
     });
 
     it('정확히 TTL 경계 reading은 보존 (inclusive)', () => {
-      const readings = [reading(-BAROMETER_RING_BUFFER_TTL_MS, 1012.0)];
+      const readings = [reading(-BAROMETER_RING_BUFFER_TTL_MS, 1012)];
       const out = pruneStaleReadings(readings, NOW);
       expect(out).toHaveLength(1);
     });
 
     it('readings 입력 mutate 안 함 (새 배열 반환)', () => {
-      const readings = [reading(-100_000, 1012.0), reading(0, 1013.0)];
+      const readings = [reading(-100_000, 1012), reading(0, 1013)];
       const before = readings.length;
       pruneStaleReadings(readings, NOW);
       expect(readings).toHaveLength(before);
