@@ -1,7 +1,6 @@
 import { findFgArvlCdFireSignal } from '../fgArvlCdFastPath';
-import type { StationArrival } from '../../../../shared/types/arrival';
+import type { ArrivalInfo, StationArrival } from '../../../../shared/types/arrival';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
-import type { ArrivalInfo } from '../../../../shared/types/arrival';
 import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
 
 function makeRow(overrides: Partial<ArrivalInfo>): ArrivalInfo {

@@ -2439,12 +2439,12 @@ describe('useStationAlarm', () => {
         dismissSilence: {
           sinceTs: Date.now(),
           sinceLat: 37.5,
-          sinceLng: 127.0,
+          sinceLng: 127,
         },
       });
 
       renderHook(() =>
-        useStationAlarm(fastPathInputs({ userLocation: { lat: 37.5, lng: 127.0 } })),
+        useStationAlarm(fastPathInputs({ userLocation: { lat: 37.5, lng: 127 } })),
       );
 
       await waitFor(() =>
