@@ -26,9 +26,9 @@
  *
  * fixture 스키마는 .maestro/flows/regression/README.md 참고.
  */
-const { createServer } = require('http');
-const { readFileSync, existsSync } = require('fs');
-const { join } = require('path');
+const { createServer } = require('node:http');
+const { readFileSync, existsSync } = require('node:fs');
+const { join } = require('node:path');
 
 const PORT = Number(process.env.PORT || 8788);
 const SCENARIO = process.env.SCENARIO;
@@ -88,7 +88,7 @@ function handle(req, res) {
   const url = req.url || '/';
   const method = req.method || 'GET';
 
-  console.log(`[mock-backend] ${method} ${url}`);
+  console.log('[mock-backend] %s %s', encodeURIComponent(method), encodeURIComponent(url));
 
   // GET /api/arrival/:stationName — BFF arrival
   const arrivalMatch = url.match(ARRIVAL_PATH);
