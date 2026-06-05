@@ -6,6 +6,7 @@
  */
 
 import type { SilentPushTelemetryPayload } from '../utils/telemetryAggregation';
+import type { TripRecallResult } from '../utils/recallMetrics';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('telemetryBackend');
@@ -72,6 +73,55 @@ export async function uploadSilentPushTelemetry(
     return { ok: true, status: res.status };
   } catch (e) {
     log.warn('telemetry upload error', e);
+    return { ok: false };
+  }
+}
+
+/**
+ * 매역 알림 recall KPI 1건을 backend `/telemetry/recall` 로 upload 한다 (#919, Epic #912 A4).
+ *
+ * silent push telemetry 와 같은 graceful 정책:
+ *   - URL 미설정 / token 빈 → skipped=true (no-op)
+ *   - 실패 시 호출자에 ok=false 반환, throw 안 함.
+ *
+ * backend endpoint 자체 구현은 별도 PR (이번 PR 은 client 만).
+ */
+export async function uploadRecallTelemetry(
+  token: string,
+  recall: TripRecallResult,
+): Promise<TelemetryUploadResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip recall upload');
+    return { ok: false, skipped: true };
+  }
+  if (!token) {
+    return { ok: false, skipped: true };
+  }
+
+  const body = {
+    token,
+    tripStart: recall.tripStart,
+    tripEnd: recall.tripEnd,
+    expectedStops: recall.expectedStops,
+    firedStops: recall.firedStops,
+    recallPct: recall.recallPct,
+    gateSuppressionCounts: recall.gateSuppressionCounts,
+  };
+
+  try {
+    const res = await fetchWithTimeout(`${base}/telemetry/recall`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      log.warn(`recall upload failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('recall upload error', e);
     return { ok: false };
   }
 }
