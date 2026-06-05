@@ -87,7 +87,7 @@ describe('recordScheduledAlarm', () => {
     expect(ledger.length).toBe(LEDGER_MAX_ENTRIES);
     // oldest 3건이 잘려나가야 함
     expect(ledger[0].identifier).toBe('tba:early:S3');
-    expect(ledger[ledger.length - 1].identifier).toBe(`tba:early:S${LEDGER_MAX_ENTRIES + 2}`);
+    expect(ledger.at(-1)?.identifier).toBe(`tba:early:S${LEDGER_MAX_ENTRIES + 2}`);
   });
 
   it('AsyncStorage setItem 실패 시 graceful (throw 안 함)', async () => {

@@ -329,7 +329,7 @@ describe('#918 A3 prescheduled fire ledger 기록', () => {
 
   it('FG 수신 시 notification.date를 그대로 전달', async () => {
     mockAddListener.mockImplementationOnce((cb) => {
-      void cb({ date: 7777, request: { identifier: 'tba:early:Foo' } });
+      cb({ date: 7777, request: { identifier: 'tba:early:Foo' } });
       return { remove: jest.fn() };
     });
 
@@ -347,7 +347,7 @@ describe('#918 A3 prescheduled fire ledger 기록', () => {
     jest.spyOn(Date, 'now').mockReturnValue(555);
     mockAddListener.mockImplementationOnce((cb) => {
       // date 누락
-      void cb({ request: { identifier: 'tba:early:Bar' } });
+      cb({ request: { identifier: 'tba:early:Bar' } });
       return { remove: jest.fn() };
     });
 

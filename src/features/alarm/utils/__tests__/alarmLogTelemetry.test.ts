@@ -293,7 +293,7 @@ describe('computeAndUploadTripPrescheduled', () => {
     await computeAndUploadTripPrescheduled({ tripStart: 0, tripEnd: 1000 });
 
     const callArg = mockComputePrescheduledMetrics.mock.calls[0][0];
-    expect(Array.from(callArg.firedStationNames).sort()).toEqual(['In']);
+    expect([...callArg.firedStationNames]).toEqual(['In']);
   });
 
   it('upload 실패해도 throw 안 함', async () => {
