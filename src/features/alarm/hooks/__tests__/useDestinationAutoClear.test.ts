@@ -84,6 +84,30 @@ function baseInputs(overrides: Partial<UseDestinationAutoClearInputs> = {}): Use
   };
 }
 
+/**
+ * 4단 setup (setArrival → onAutoClear → initial inputs → mountAtT0) 통합 helper.
+ * SonarCloud가 잡는 rerender 기반 테스트들의 중복 boilerplate 제거(arrival 코드/onAutoClear/initial inputs를
+ * 인자로 받아 같은 mount 시퀀스를 반환).
+ */
+function mountStationaryDetect(params: {
+  arvlCodes: number[];
+  inputOverrides?: Partial<UseDestinationAutoClearInputs>;
+}) {
+  setArrival(arrivalWithCodes(params.arvlCodes));
+  const onAutoClear = jest.fn();
+  const initial = baseInputs({
+    onAutoClear,
+    motionStationary: true,
+    ...params.inputOverrides,
+  });
+  const { rerender } = withDateNow(T0, () =>
+    renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
+      initialProps: initial,
+    }),
+  );
+  return { onAutoClear, initial, rerender };
+}
+
 describe('pickDestinationArvlCd', () => {
   it('arrival=null이면 null', () => {
     expect(pickDestinationArvlCd(null)).toBeNull();
@@ -153,12 +177,7 @@ describe('useDestinationAutoClear', () => {
   });
 
   it('motionStationary 진입 후 60s 지나면 onAutoClear 1회 호출 + log', () => {
-    setArrival(arrivalWithCodes([1]));
-    const onAutoClear = jest.fn();
-    const initial = baseInputs({ onAutoClear, motionStationary: true });
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), { initialProps: initial }),
-    );
+    const { onAutoClear, initial, rerender } = mountStationaryDetect({ arvlCodes: [1] });
     withDateNow(T0 + STATIONARY_THRESHOLD_MS, () => {
       // userLocation을 미세 변경해 effect 재실행 트리거 (좌표 가까운 jitter).
       rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
@@ -170,14 +189,12 @@ describe('useDestinationAutoClear', () => {
   });
 
   it('userLocation이 50m 밖이면 발사 안 함', () => {
-    setArrival(arrivalWithCodes([1]));
-    const onAutoClear = jest.fn();
     // 100m offset (1 deg lat ≈ 111km → 0.001 ≈ 111m → 안전하게 0.002)
     const far = { lat: destination.lat + 0.002, lng: destination.lng };
-    const initial = baseInputs({ onAutoClear, motionStationary: true, userLocation: far });
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), { initialProps: initial }),
-    );
+    const { onAutoClear, initial, rerender } = mountStationaryDetect({
+      arvlCodes: [1],
+      inputOverrides: { userLocation: far },
+    });
     withDateNow(T0 + STATIONARY_THRESHOLD_MS, () => {
       rerender({ ...initial, userLocation: { ...far, lat: far.lat + 0.00001 } });
     });
@@ -185,12 +202,7 @@ describe('useDestinationAutoClear', () => {
   });
 
   it('motionStationary가 중간에 끊기면 카운터 리셋 → 60s 새로 대기', () => {
-    setArrival(arrivalWithCodes([1]));
-    const onAutoClear = jest.fn();
-    const initial = baseInputs({ onAutoClear, motionStationary: true });
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), { initialProps: initial }),
-    );
+    const { onAutoClear, initial, rerender } = mountStationaryDetect({ arvlCodes: [1] });
     // 30s 경과 후 잠깐 walking
     withDateNow(T0 + STATIONARY_THRESHOLD_MS / 2, () => {
       rerender({ ...initial, motionStationary: false });
@@ -203,12 +215,7 @@ describe('useDestinationAutoClear', () => {
   });
 
   it('한 trip에서 1회만 발사 — 같은 destination에서 후속 rerender는 no-op', () => {
-    setArrival(arrivalWithCodes([1]));
-    const onAutoClear = jest.fn();
-    const initial = baseInputs({ onAutoClear, motionStationary: true });
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), { initialProps: initial }),
-    );
+    const { onAutoClear, initial, rerender } = mountStationaryDetect({ arvlCodes: [1] });
     withDateNow(T0 + STATIONARY_THRESHOLD_MS, () => {
       rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
     });
@@ -221,12 +228,7 @@ describe('useDestinationAutoClear', () => {
   });
 
   it('destination 변경 시 fired ref 리셋 — 새 destination도 1회 발사 가능', () => {
-    setArrival(arrivalWithCodes([1]));
-    const onAutoClear = jest.fn();
-    const initial = baseInputs({ onAutoClear, motionStationary: true });
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), { initialProps: initial }),
-    );
+    const { onAutoClear, initial, rerender } = mountStationaryDetect({ arvlCodes: [1] });
     withDateNow(T0 + STATIONARY_THRESHOLD_MS, () => {
       rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
     });
@@ -252,12 +254,7 @@ describe('useDestinationAutoClear', () => {
   });
 
   it('destination null로 전환 시 stationary ref 리셋 — 같은 destination 재설정 시 새 카운트', () => {
-    setArrival(arrivalWithCodes([1]));
-    const onAutoClear = jest.fn();
-    const initial = baseInputs({ onAutoClear, motionStationary: true });
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), { initialProps: initial }),
-    );
+    const { onAutoClear, initial, rerender } = mountStationaryDetect({ arvlCodes: [1] });
     // stationary 30s 누적 후 destination null로 전환
     withDateNow(T0 + STATIONARY_THRESHOLD_MS / 2, () => {
       rerender({ ...initial, destination: null });
@@ -274,12 +271,10 @@ describe('useDestinationAutoClear', () => {
   });
 
   it('userLocation=null이면 detect 입력 불충분 → 발사 안 함', () => {
-    setArrival(arrivalWithCodes([1]));
-    const onAutoClear = jest.fn();
-    const initial = baseInputs({ onAutoClear, motionStationary: true, userLocation: null });
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), { initialProps: initial }),
-    );
+    const { onAutoClear, initial, rerender } = mountStationaryDetect({
+      arvlCodes: [1],
+      inputOverrides: { userLocation: null },
+    });
     withDateNow(T0 + STATIONARY_THRESHOLD_MS, () => {
       rerender({ ...initial });
     });
@@ -287,15 +282,13 @@ describe('useDestinationAutoClear', () => {
   });
 
   it('확인용 — NEAR_STATION_RADIUS_M(50m) 경계 직전이면 발사', () => {
-    setArrival(arrivalWithCodes([0])); // ENTERING도 통과
-    const onAutoClear = jest.fn();
     // ~40m 정도 — 100m 보수.  111000 m/deg lat → 40m ≈ 0.00036 deg
     const near = { lat: destination.lat + 0.00036, lng: destination.lng };
     expect(NEAR_STATION_RADIUS_M).toBe(50); // sanity — 변경 시 본 테스트 보정 필요
-    const initial = baseInputs({ onAutoClear, motionStationary: true, userLocation: near });
-    const { rerender } = withDateNow(T0, () =>
-      renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), { initialProps: initial }),
-    );
+    const { onAutoClear, initial, rerender } = mountStationaryDetect({
+      arvlCodes: [0], // ENTERING도 통과
+      inputOverrides: { userLocation: near },
+    });
     withDateNow(T0 + STATIONARY_THRESHOLD_MS, () => {
       rerender({ ...initial, userLocation: { ...near, lat: near.lat + 0.00001 } });
     });
