@@ -1402,87 +1402,27 @@ describe('validateBoardingLockSync (#901)', () => {
     expect(validateBoardingLockSync('s')).toBeNull();
   });
 
-  it('빈 token reject', () => {
-    expect(
-      validateBoardingLockSync({
-        token: '',
-        observedStationName: '강남',
-        observedAtMs: 1,
-        accuracy: 10,
-      }),
-    ).toBeNull();
-  });
+  // 정상 baseline에서 한 필드만 변형해 reject 게이트를 일괄 검증.
+  const validBase = {
+    token: 'tok',
+    observedStationName: '강남',
+    observedAtMs: 1,
+    accuracy: 10,
+  } as Record<string, unknown>;
 
-  it('observedStationName 누락 reject', () => {
-    expect(
-      validateBoardingLockSync({ token: 'tok', observedAtMs: 1, accuracy: 10 }),
-    ).toBeNull();
-  });
-
-  it('빈 observedStationName reject', () => {
-    expect(
-      validateBoardingLockSync({
-        token: 'tok',
-        observedStationName: '',
-        observedAtMs: 1,
-        accuracy: 10,
-      }),
-    ).toBeNull();
-  });
-
-  it('NaN observedAtMs reject', () => {
-    expect(
-      validateBoardingLockSync({
-        token: 'tok',
-        observedStationName: '강남',
-        observedAtMs: Number.NaN,
-        accuracy: 10,
-      }),
-    ).toBeNull();
-  });
-
-  it('비숫자 observedAtMs reject', () => {
-    expect(
-      validateBoardingLockSync({
-        token: 'tok',
-        observedStationName: '강남',
-        observedAtMs: '1',
-        accuracy: 10,
-      }),
-    ).toBeNull();
-  });
-
-  it('음수 accuracy reject', () => {
-    expect(
-      validateBoardingLockSync({
-        token: 'tok',
-        observedStationName: '강남',
-        observedAtMs: 1,
-        accuracy: -1,
-      }),
-    ).toBeNull();
-  });
-
-  it('NaN accuracy reject', () => {
-    expect(
-      validateBoardingLockSync({
-        token: 'tok',
-        observedStationName: '강남',
-        observedAtMs: 1,
-        accuracy: Number.NaN,
-      }),
-    ).toBeNull();
-  });
-
-  it('비숫자 accuracy reject', () => {
-    expect(
-      validateBoardingLockSync({
-        token: 'tok',
-        observedStationName: '강남',
-        observedAtMs: 1,
-        accuracy: 'a',
-      }),
-    ).toBeNull();
+  it.each<{ label: string; mutate: (p: Record<string, unknown>) => void }>([
+    { label: '빈 token', mutate: (p) => (p.token = '') },
+    { label: 'observedStationName 누락', mutate: (p) => delete p.observedStationName },
+    { label: '빈 observedStationName', mutate: (p) => (p.observedStationName = '') },
+    { label: 'NaN observedAtMs', mutate: (p) => (p.observedAtMs = Number.NaN) },
+    { label: '비숫자 observedAtMs', mutate: (p) => (p.observedAtMs = '1') },
+    { label: '음수 accuracy', mutate: (p) => (p.accuracy = -1) },
+    { label: 'NaN accuracy', mutate: (p) => (p.accuracy = Number.NaN) },
+    { label: '비숫자 accuracy', mutate: (p) => (p.accuracy = 'a') },
+  ])('$label reject', ({ mutate }) => {
+    const payload = { ...validBase };
+    mutate(payload);
+    expect(validateBoardingLockSync(payload)).toBeNull();
   });
 });
 
