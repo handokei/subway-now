@@ -31,6 +31,10 @@ import { deleteProgress, getProgress, putProgress, type TripProgress } from './p
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
 import {
+  recordRecallUpload,
+  validateRecallUpload,
+} from './recallTelemetry';
+import {
   tokenPrefix,
   validateTelemetryUpload,
   writeTelemetryDataPoints,
@@ -208,6 +212,44 @@ app.post('/telemetry/silent-push', async (c) => {
       received: payload.received,
       fired: payload.fired,
       skipped: payload.skipped,
+      sink: writer ? 'ae' : 'none',
+    }),
+  );
+  return c.json({ ok: true });
+});
+
+/**
+ * 매역 알림 recall KPI upload (#919, Epic #912 A4).
+ *
+ * Trip 1건 종료 시 client(`alarmLogTelemetry.computeAndUploadTripRecall`)가 산출한 recall %와
+ * 게이트별 차단 분포를 Analytics Engine에 적재한다. 클라가 idempotency 가드를 가지므로 같은
+ * tripStart 재호출은 안 옴 — backend는 단순 적재.
+ *
+ * Trip 존재 여부 확인 안 함 — trip이 이미 만료된 경우에도 telemetry는 보존(데이터 완전성).
+ * TELEMETRY binding 미설정 시 graceful no-op (개발 환경 호환, `/telemetry/silent-push`와 동형).
+ */
+app.post('/telemetry/recall', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const payload = validateRecallUpload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const writer = c.env.TELEMETRY;
+  if (writer) {
+    recordRecallUpload(writer, payload);
+  }
+  console.log(
+    JSON.stringify({
+      msg: 'recall uploaded',
+      tokenPrefix: tokenPrefix(payload.token),
+      expectedStops: payload.expectedStops,
+      firedStops: payload.firedStops,
+      recallPct: payload.recallPct,
       sink: writer ? 'ae' : 'none',
     }),
   );

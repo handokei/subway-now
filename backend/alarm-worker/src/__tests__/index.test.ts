@@ -812,27 +812,24 @@ describe('POST /trips — #705 progress KV preserves advance across POST race', 
   });
 });
 
-describe('POST /telemetry/silent-push', () => {
-  const validBody = {
-    token: 'aabbccdd11223344',
-    since: 0,
-    until: 1000,
-    received: 3,
-    fired: 2,
-    skipped: 1,
-    skipReasons: { 'gate-out-of-range': 1 },
-  };
-
+/**
+ * 4 tests 공통 패턴 — TELEMETRY 적재형 POST endpoint(/telemetry/silent-push,
+ * /metrics/boarding-prompt, /telemetry/recall)는 모두 (1) invalid JSON 400,
+ * (2) invalid payload 400, (3) writer 있을 때 적재, (4) writer 없을 때 graceful
+ * 200을 보장해야 한다. Sonar `new_duplicated_lines_density` 임계(3%)에 걸리지 않도록
+ * helper로 통합 (#919 sonar fix).
+ */
+function runTelemetryEndpointSuite(path: string, validBody: Record<string, unknown>): void {
   it('returns 400 on invalid JSON', async () => {
     const env = makeEnv();
-    const res = await post('/telemetry/silent-push', 'not-json{', env);
+    const res = await post(path, 'not-json{', env);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'invalid_json' });
   });
 
   it('returns 400 on invalid payload', async () => {
     const env = makeEnv();
-    const res = await post('/telemetry/silent-push', { token: '' }, env);
+    const res = await post(path, { token: '' }, env);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'invalid_payload' });
   });
@@ -840,7 +837,7 @@ describe('POST /telemetry/silent-push', () => {
   it('writes to TELEMETRY binding when present', async () => {
     const writer: AnalyticsEngineWriter = { writeDataPoint: vi.fn() };
     const env = makeEnv({ TELEMETRY: writer });
-    const res = await post('/telemetry/silent-push', validBody, env);
+    const res = await post(path, validBody, env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(writer.writeDataPoint).toHaveBeenCalled();
@@ -848,9 +845,21 @@ describe('POST /telemetry/silent-push', () => {
 
   it('still returns ok when TELEMETRY binding absent (graceful)', async () => {
     const env = makeEnv();
-    const res = await post('/telemetry/silent-push', validBody, env);
+    const res = await post(path, validBody, env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
+  });
+}
+
+describe('POST /telemetry/silent-push', () => {
+  runTelemetryEndpointSuite('/telemetry/silent-push', {
+    token: 'aabbccdd11223344',
+    since: 0,
+    until: 1000,
+    received: 3,
+    fired: 2,
+    skipped: 1,
+    skipReasons: { 'gate-out-of-range': 1 },
   });
 });
 
@@ -1429,36 +1438,21 @@ describe('POST /boarding-prompt/dismiss (#819)', () => {
 });
 
 describe('POST /metrics/boarding-prompt (#827)', () => {
-  const validBody = { token: 'aabbccdd11223344', outcome: 'dismissed' as const };
-
-  it('returns 400 on invalid JSON', async () => {
-    const env = makeEnv();
-    const res = await post('/metrics/boarding-prompt', 'not-json{', env);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'invalid_json' });
+  runTelemetryEndpointSuite('/metrics/boarding-prompt', {
+    token: 'aabbccdd11223344',
+    outcome: 'dismissed',
   });
+});
 
-  it('returns 400 on invalid payload', async () => {
-    const env = makeEnv();
-    const res = await post('/metrics/boarding-prompt', { token: '' }, env);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'invalid_payload' });
-  });
-
-  it('writes to TELEMETRY binding when present', async () => {
-    const writer: AnalyticsEngineWriter = { writeDataPoint: vi.fn() };
-    const env = makeEnv({ TELEMETRY: writer });
-    const res = await post('/metrics/boarding-prompt', validBody, env);
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-    expect(writer.writeDataPoint).toHaveBeenCalled();
-  });
-
-  it('still returns ok when TELEMETRY binding absent', async () => {
-    const env = makeEnv();
-    const res = await post('/metrics/boarding-prompt', validBody, env);
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+describe('POST /telemetry/recall (#919)', () => {
+  runTelemetryEndpointSuite('/telemetry/recall', {
+    token: 'aabbccdd11223344',
+    tripStart: 1_000,
+    tripEnd: 2_000,
+    expectedStops: 5,
+    firedStops: 4,
+    recallPct: 80,
+    gateSuppressionCounts: { 'gate-accuracy': 1 },
   });
 });
 
