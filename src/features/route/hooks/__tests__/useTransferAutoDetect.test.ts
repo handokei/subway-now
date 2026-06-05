@@ -68,6 +68,22 @@ function baseInputs(overrides: Partial<Parameters<typeof useTransferAutoDetect>[
   };
 }
 
+/** 4호선 60s + 5호선 90s 두 줄 임박. 다중 후보 detect의 표준 fixture. */
+function multiCandidateArrival(): StationArrival {
+  return makeArrival([
+    makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
+    makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5' }),
+  ]);
+}
+
+/** rerender-capable hook 실행. props prop으로 동적 재실행. */
+function renderTransferDetect(initialProps: Parameters<typeof useTransferAutoDetect>[0]) {
+  return renderHook(
+    (props: Parameters<typeof useTransferAutoDetect>[0]) => useTransferAutoDetect(props),
+    { initialProps },
+  );
+}
+
 describe('useTransferAutoDetect', () => {
   it('단일 후보 detect → onAutoLock 호출 (현재 boardingLine 제외)', () => {
     const onAutoLock = jest.fn();
@@ -113,12 +129,8 @@ describe('useTransferAutoDetect', () => {
 
   it('다중 후보 → 모달 open + modalCandidates 노출', () => {
     const onAutoLock = jest.fn();
-    const arrival = makeArrival([
-      makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
-      makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5' }),
-    ]);
     const { result } = renderHook(() =>
-      useTransferAutoDetect(baseInputs({ arrival, onAutoLock })),
+      useTransferAutoDetect(baseInputs({ arrival: multiCandidateArrival(), onAutoLock })),
     );
     expect(onAutoLock).not.toHaveBeenCalled();
     expect(result.current.modalVisible).toBe(true);
@@ -142,14 +154,8 @@ describe('useTransferAutoDetect', () => {
 
   it('dismissModal → 같은 환승역에서 재오픈 안 됨, 다른 역으로 이동하면 재오픈 가능', () => {
     const onAutoLock = jest.fn();
-    const arrival = makeArrival([
-      makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
-      makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5' }),
-    ]);
-    const { result, rerender } = renderHook(
-      (props: Parameters<typeof useTransferAutoDetect>[0]) => useTransferAutoDetect(props),
-      { initialProps: baseInputs({ arrival, onAutoLock }) },
-    );
+    const arrival = multiCandidateArrival();
+    const { result, rerender } = renderTransferDetect(baseInputs({ arrival, onAutoLock }));
     expect(result.current.modalVisible).toBe(true);
     act(() => result.current.dismissModal());
     expect(result.current.modalVisible).toBe(false);
@@ -167,10 +173,7 @@ describe('useTransferAutoDetect', () => {
     const arrival = makeArrival([
       makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4-A' }),
     ]);
-    const { rerender } = renderHook(
-      (props: Parameters<typeof useTransferAutoDetect>[0]) => useTransferAutoDetect(props),
-      { initialProps: baseInputs({ arrival, onAutoLock }) },
-    );
+    const { rerender } = renderTransferDetect(baseInputs({ arrival, onAutoLock }));
     rerender(baseInputs({ arrival, onAutoLock }));
     rerender(baseInputs({ arrival, onAutoLock }));
     expect(onAutoLock).toHaveBeenCalledTimes(1);
@@ -184,9 +187,7 @@ describe('useTransferAutoDetect', () => {
     const arrivalB = makeArrival([
       makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4-B' }),
     ]);
-    const { rerender } = renderHook((props: Parameters<typeof useTransferAutoDetect>[0]) => useTransferAutoDetect(props), {
-      initialProps: baseInputs({ arrival: arrivalA, onAutoLock }),
-    });
+    const { rerender } = renderTransferDetect(baseInputs({ arrival: arrivalA, onAutoLock }));
     rerender(baseInputs({ arrival: arrivalB, onAutoLock }));
     expect(onAutoLock).toHaveBeenCalledTimes(2);
     expect(onAutoLock.mock.calls[1][0].trainCode).toBe('T-4-B');
@@ -266,10 +267,7 @@ describe('useTransferAutoDetect', () => {
 
   it('variants에 candidate line 없음 → 모달 후보 0 (selectLine 호출해도 no-op)', () => {
     const onAutoLock = jest.fn();
-    const arrival = makeArrival([
-      makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
-      makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5' }),
-    ]);
+    const arrival = multiCandidateArrival();
     // variants에 4호선만 있고 5호선 없음 — 5호선은 modalCandidates에서 제외.
     const partialNearest: NearestStationsResult = {
       primary: DDP_2,
@@ -286,14 +284,8 @@ describe('useTransferAutoDetect', () => {
 
   it('selectLine — arrival이 사라진 뒤 호출되면 trainCode pick 실패로 no-op', () => {
     const onAutoLock = jest.fn();
-    const arrival = makeArrival([
-      makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
-      makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5' }),
-    ]);
-    const { result, rerender } = renderHook(
-      (props: Parameters<typeof useTransferAutoDetect>[0]) => useTransferAutoDetect(props),
-      { initialProps: baseInputs({ arrival, onAutoLock }) },
-    );
+    const arrival = multiCandidateArrival();
+    const { result, rerender } = renderTransferDetect(baseInputs({ arrival, onAutoLock }));
     // arrival null로 전환 — modalVisible은 close 효과 effect로 false 가지만 selectLine 콜백은 유효.
     rerender(baseInputs({ arrival: null, onAutoLock }));
     onAutoLock.mockClear();
@@ -315,10 +307,7 @@ describe('useTransferAutoDetect', () => {
     const arrival = makeArrival([
       makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4-A' }),
     ]);
-    const { rerender } = renderHook(
-      (props: Parameters<typeof useTransferAutoDetect>[0]) => useTransferAutoDetect(props),
-      { initialProps: baseInputs({ arrival, onAutoLock }) },
-    );
+    const { rerender } = renderTransferDetect(baseInputs({ arrival, onAutoLock }));
     expect(onAutoLock).toHaveBeenCalledTimes(1);
     // GPS 끊김 — nearestStations null.
     rerender(baseInputs({ nearestStations: null, arrival, onAutoLock }));
@@ -334,41 +323,35 @@ describe('useTransferAutoDetect', () => {
       makeArrival([
         makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4-A' }),
       ]);
-    const { rerender } = renderHook(
-      (props: Parameters<typeof useTransferAutoDetect>[0]) => useTransferAutoDetect(props),
-      { initialProps: baseInputs({ arrival: makeArrivalA(), onAutoLock }) },
-    );
+    const { rerender } = renderTransferDetect(baseInputs({ arrival: makeArrivalA(), onAutoLock }));
     expect(onAutoLock).toHaveBeenCalledTimes(1);
     // 새 arrival 객체(ref만 다름, 데이터 동일) → effect 재실행하지만 ref key가 같으면 skip.
     rerender(baseInputs({ arrival: makeArrivalA(), onAutoLock }));
     expect(onAutoLock).toHaveBeenCalledTimes(1);
   });
 
-  it('selectLine — 같은 line의 train이 여러 개면 가장 임박한 trainCode 선택', () => {
-    const onAutoLock = jest.fn();
-    const arrival = makeArrival(
-      [
+  // pickImminentTrainCode가 best replace(later→earlier) 분기와 skip(earlier→later) 분기를
+  // 둘 다 타도록 두 순서를 it.each로 압축.
+  it.each<{ label: string; ups: ArrivalInfo[] }>([
+    {
+      label: 'LATE-first → best replace 분기',
+      ups: [
         makeArrivalInfo({ destination: '서울역', arrivalSeconds: 120, line: '4', trainCode: 'T-4-LATE' }),
         makeArrivalInfo({ destination: '서울역', arrivalSeconds: 30, line: '4', trainCode: 'T-4-EARLY' }),
       ],
-      [makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5' })],
-    );
-    const { result } = renderHook(() =>
-      useTransferAutoDetect(baseInputs({ arrival, onAutoLock })),
-    );
-    act(() => result.current.selectLine('4'));
-    expect(onAutoLock).toHaveBeenCalledWith({ trainCode: 'T-4-EARLY', line: '4', subwayId: '1004' });
-  });
-
-  it('selectLine — 같은 line의 두 번째 train이 더 늦으면 첫 번째 유지(best 변경 없음 분기)', () => {
-    const onAutoLock = jest.fn();
-    const arrival = makeArrival(
-      [
+    },
+    {
+      label: 'EARLY-first → best 유지(skip) 분기',
+      ups: [
         makeArrivalInfo({ destination: '서울역', arrivalSeconds: 30, line: '4', trainCode: 'T-4-EARLY' }),
         makeArrivalInfo({ destination: '서울역', arrivalSeconds: 120, line: '4', trainCode: 'T-4-LATE' }),
       ],
-      [makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5' })],
-    );
+    },
+  ])('selectLine — 같은 line 다중 train: $label 에서 EARLY 선택', ({ ups }) => {
+    const onAutoLock = jest.fn();
+    const arrival = makeArrival(ups, [
+      makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5' }),
+    ]);
     const { result } = renderHook(() =>
       useTransferAutoDetect(baseInputs({ arrival, onAutoLock })),
     );
@@ -380,17 +363,11 @@ describe('useTransferAutoDetect', () => {
     // multi 후보 detect로 모달 open된 상태에서, 새 polling으로 arrival에서 한 line이 사라진 뒤
     // 사용자가 사라진 line을 선택한 케이스. pickImminentTrainCode가 best=null → trainCode null.
     const onAutoLock = jest.fn();
-    const arrivalMulti = makeArrival([
-      makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
-      makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5' }),
-    ]);
+    const arrivalMulti = multiCandidateArrival();
     const arrivalOnly5 = makeArrival([
       makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5' }),
     ]);
-    const { result, rerender } = renderHook(
-      (props: Parameters<typeof useTransferAutoDetect>[0]) => useTransferAutoDetect(props),
-      { initialProps: baseInputs({ arrival: arrivalMulti, onAutoLock }) },
-    );
+    const { result, rerender } = renderTransferDetect(baseInputs({ arrival: arrivalMulti, onAutoLock }));
     rerender(baseInputs({ arrival: arrivalOnly5, onAutoLock }));
     // 사용자가 사라진 line 4 선택 — pickImminentTrainCode에서 매칭 없음 → no-op.
     onAutoLock.mockClear();
@@ -400,13 +377,7 @@ describe('useTransferAutoDetect', () => {
 
   it('detect → 단일 후보로 hydrate된 후 candidates가 비면(arrival 사라짐) 모달 닫힘', () => {
     const onAutoLock = jest.fn();
-    const arrivalMulti = makeArrival([
-      makeArrivalInfo({ destination: '서울역', arrivalSeconds: 60, line: '4', trainCode: 'T-4' }),
-      makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5' }),
-    ]);
-    const { result, rerender } = renderHook((props: Parameters<typeof useTransferAutoDetect>[0]) => useTransferAutoDetect(props), {
-      initialProps: baseInputs({ arrival: arrivalMulti, onAutoLock }),
-    });
+    const { result, rerender } = renderTransferDetect(baseInputs({ arrival: multiCandidateArrival(), onAutoLock }));
     expect(result.current.modalVisible).toBe(true);
     // 다음 polling — 도착 데이터가 비면 후보 0 → 모달 close.
     rerender(baseInputs({ arrival: null, onAutoLock }));
