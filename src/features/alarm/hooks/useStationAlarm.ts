@@ -40,7 +40,8 @@ import { getBoardingLock } from '../utils/boardingLockStorage';
 import { shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
 import type { PositionStability } from '../../nearest-station/utils/positionStaticDetector';
-import { useAppStore } from '../../../store/useAppStore';
+import { useSettingsStore } from '../../settings/store/useSettingsStore';
+import { useAlarmEventStore } from '../store/useAlarmEventStore';
 import { createLogger } from '../../../shared/utils/logger';
 import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
@@ -163,13 +164,13 @@ export function useStationAlarm({
     () => (fusionSource ? resolveNotificationSource(fusionSource, locationUncertain) : undefined),
     [fusionSource, locationUncertain],
   );
-  const sleepMode = useAppStore((s) => s.sleepMode);
-  const allowSpeaker = useAppStore((s) => s.allowSpeaker);
-  const setAlarmEvent = useAppStore((s) => s.setAlarmEvent);
+  const sleepMode = useSettingsStore((s) => s.sleepMode);
+  const allowSpeaker = useSettingsStore((s) => s.allowSpeaker);
+  const setAlarmEvent = useAlarmEventStore((s) => s.setAlarmEvent);
   // #746 — dismiss silence 게이트 평가용 in-memory state. clear는 만료 시점에
   // store action을 통해 호출(storage도 함께 정리). 게이트 자체는 pure 함수.
-  const dismissSilence = useAppStore((s) => s.dismissSilence);
-  const clearDismissSilenceAction = useAppStore((s) => s.clearDismissSilence);
+  const dismissSilence = useAlarmEventStore((s) => s.dismissSilence);
+  const clearDismissSilenceAction = useAlarmEventStore((s) => s.clearDismissSilence);
   const sleepModeRef = useRef(sleepMode);
   const allowSpeakerRef = useRef(allowSpeaker);
 

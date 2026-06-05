@@ -4,6 +4,7 @@
  * - ADR (노션): "Feature-based + Ports & Adapters 디렉토리 재정비 로드맵"
  *   https://app.notion.com/p/36e30c0194b68148ba29f2bc4554ce8a
  * - 이슈: #890 (chore: ESLint import/no-restricted-paths error 승격)
+ * - 후속 Step 6 (#892): favorites 슬라이스 신설에 따른 sibling zone 추가.
  *
  * 현재 상태 — **enforce 모드 (error)**:
  *   ESLint 설치 완료. import/no-restricted-paths가 error로 승격되어 위반 시
@@ -73,6 +74,7 @@ module.exports = {
             target: './src/features/alarm',
             from: [
               './src/features/arrival',
+              './src/features/favorites',
               './src/features/map',
               './src/features/nearest-station',
               './src/features/route',
@@ -86,6 +88,21 @@ module.exports = {
             target: './src/features/arrival',
             from: [
               './src/features/alarm',
+              './src/features/favorites',
+              './src/features/map',
+              './src/features/nearest-station',
+              './src/features/route',
+              './src/features/settings',
+              './src/features/widget',
+            ],
+            message:
+              'feature 슬라이스끼리 직접 import 할 수 없습니다. 공통 코드는 shared/로 추출하세요.',
+          },
+          {
+            target: './src/features/favorites',
+            from: [
+              './src/features/alarm',
+              './src/features/arrival',
               './src/features/map',
               './src/features/nearest-station',
               './src/features/route',
@@ -100,6 +117,7 @@ module.exports = {
             from: [
               './src/features/alarm',
               './src/features/arrival',
+              './src/features/favorites',
               './src/features/nearest-station',
               './src/features/route',
               './src/features/settings',
@@ -113,6 +131,7 @@ module.exports = {
             from: [
               './src/features/alarm',
               './src/features/arrival',
+              './src/features/favorites',
               './src/features/map',
               './src/features/route',
               './src/features/settings',
@@ -126,6 +145,7 @@ module.exports = {
             from: [
               './src/features/alarm',
               './src/features/arrival',
+              './src/features/favorites',
               './src/features/map',
               './src/features/nearest-station',
               './src/features/settings',
@@ -139,6 +159,7 @@ module.exports = {
             from: [
               './src/features/alarm',
               './src/features/arrival',
+              './src/features/favorites',
               './src/features/map',
               './src/features/nearest-station',
               './src/features/route',
@@ -152,6 +173,7 @@ module.exports = {
             from: [
               './src/features/alarm',
               './src/features/arrival',
+              './src/features/favorites',
               './src/features/map',
               './src/features/nearest-station',
               './src/features/route',

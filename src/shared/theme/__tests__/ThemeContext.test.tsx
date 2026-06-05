@@ -3,7 +3,7 @@ import { renderHook } from '@testing-library/react-native';
 import * as RN from 'react-native';
 import { ThemeProvider, useTheme } from '../ThemeContext';
 import { lightColors, darkColors } from '../theme';
-import { useAppStore } from '../../../store/useAppStore';
+import { useThemeStore } from '../store/useThemeStore';
 
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');
 
@@ -13,7 +13,7 @@ describe('ThemeContext', () => {
   beforeEach(() => {
     mockUseColorScheme.mockReturnValue('light');
     loadThemeMode = jest.fn();
-    useAppStore.setState({ themeMode: 'auto', loadThemeMode });
+    useThemeStore.setState({ themeMode: 'auto', loadThemeMode });
   });
 
   afterEach(() => {
@@ -67,7 +67,7 @@ describe('ThemeContext', () => {
     });
 
     it('light 모드이면 시스템 다크여도 lightColors를 제공한다', () => {
-      useAppStore.setState({ themeMode: 'light' });
+      useThemeStore.setState({ themeMode: 'light' });
       mockUseColorScheme.mockReturnValue('dark');
       const { result } = renderHook(() => useTheme(), { wrapper });
 
@@ -76,7 +76,7 @@ describe('ThemeContext', () => {
     });
 
     it('dark 모드이면 시스템 라이트여도 darkColors를 제공한다', () => {
-      useAppStore.setState({ themeMode: 'dark' });
+      useThemeStore.setState({ themeMode: 'dark' });
       mockUseColorScheme.mockReturnValue('light');
       const { result } = renderHook(() => useTheme(), { wrapper });
 

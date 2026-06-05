@@ -4,7 +4,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
-import { useAppStore, type ThemeMode, type LocalePreference } from '../../src/store/useAppStore';
+import { useSettingsStore } from '../../src/features/settings/store/useSettingsStore';
+import { useDestinationStore } from '../../src/features/route/store/useDestinationStore';
+import { useDebugStore } from '../../src/features/debug/store/useDebugStore';
+import { useThemeStore, type ThemeMode } from '../../src/shared/theme/store/useThemeStore';
+import { useLocaleStore, type LocalePreference } from '../../src/shared/i18n/store/useLocaleStore';
 import { ROUTE_CATEGORIES } from '../../src/shared/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../../src/shared/i18n/types';
 import { useTheme, spacing, radius } from '../../src/shared/theme';
@@ -22,25 +26,25 @@ const THEME_OPTIONS = [
 ] as const satisfies readonly { value: ThemeMode; labelKey: string }[];
 
 export default function SettingsScreen() {
-  const sleepMode = useAppStore((s) => s.sleepMode);
-  const setSleepMode = useAppStore((s) => s.setSleepMode);
-  const loadSleepMode = useAppStore((s) => s.loadSleepMode);
-  const allowSpeaker = useAppStore((s) => s.allowSpeaker);
-  const setAllowSpeaker = useAppStore((s) => s.setAllowSpeaker);
-  const loadAllowSpeaker = useAppStore((s) => s.loadAllowSpeaker);
-  const accessibilityMode = useAppStore((s) => s.accessibilityMode);
-  const setAccessibilityMode = useAppStore((s) => s.setAccessibilityMode);
-  const loadAccessibilityMode = useAppStore((s) => s.loadAccessibilityMode);
+  const sleepMode = useSettingsStore((s) => s.sleepMode);
+  const setSleepMode = useSettingsStore((s) => s.setSleepMode);
+  const loadSleepMode = useSettingsStore((s) => s.loadSleepMode);
+  const allowSpeaker = useSettingsStore((s) => s.allowSpeaker);
+  const setAllowSpeaker = useSettingsStore((s) => s.setAllowSpeaker);
+  const loadAllowSpeaker = useSettingsStore((s) => s.loadAllowSpeaker);
+  const accessibilityMode = useSettingsStore((s) => s.accessibilityMode);
+  const setAccessibilityMode = useSettingsStore((s) => s.setAccessibilityMode);
+  const loadAccessibilityMode = useSettingsStore((s) => s.loadAccessibilityMode);
   // #816 C — lockless station-passed opt-in 토글.
-  const locklessStationPassed = useAppStore((s) => s.locklessStationPassed);
-  const setLocklessStationPassed = useAppStore((s) => s.setLocklessStationPassed);
-  const loadLocklessStationPassed = useAppStore((s) => s.loadLocklessStationPassed);
-  const themeMode = useAppStore((s) => s.themeMode);
-  const setThemeMode = useAppStore((s) => s.setThemeMode);
-  const routePreference = useAppStore((s) => s.routePreference);
-  const setRoutePreference = useAppStore((s) => s.setRoutePreference);
-  const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
-  const localePreference = useAppStore((s) => s.localePreference);
+  const locklessStationPassed = useSettingsStore((s) => s.locklessStationPassed);
+  const setLocklessStationPassed = useSettingsStore((s) => s.setLocklessStationPassed);
+  const loadLocklessStationPassed = useSettingsStore((s) => s.loadLocklessStationPassed);
+  const themeMode = useThemeStore((s) => s.themeMode);
+  const setThemeMode = useThemeStore((s) => s.setThemeMode);
+  const routePreference = useDestinationStore((s) => s.routePreference);
+  const setRoutePreference = useDestinationStore((s) => s.setRoutePreference);
+  const loadRoutePreference = useDestinationStore((s) => s.loadRoutePreference);
+  const localePreference = useLocaleStore((s) => s.localePreference);
   const { colors } = useTheme();
   const { t } = useTranslation();
   const router = useRouter();
@@ -192,7 +196,7 @@ function VersionFooter() {
   const { colors } = useTheme();
   const tapCountRef = useRef(0);
   const lastTapAtRef = useRef(0);
-  const setDebugVisible = useAppStore((s) => s.setDebugVisible);
+  const setDebugVisible = useDebugStore((s) => s.setDebugVisible);
   const version = Constants.expoConfig?.version ?? '-';
 
   const handlePress = () => {

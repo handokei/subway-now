@@ -27,7 +27,7 @@ import { clearTripTrainCode } from '../../route/utils/tripTrainCode';
 import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dismissSilenceStorage';
 
 // trip-bound storage cleanup 단일 출처.
-// useAppStore.setDestination이 isSwitch(목적지 변경 또는 null 클리어) 분기에서 호출한다.
+// useDestinationStore.setDestination이 isSwitch(목적지 변경 또는 null 클리어) 분기에서 호출한다.
 //
 // 새 trip-bound 키를 추가할 때 이 배열에 한 줄만 더하면 회귀 자동 차단.
 // (#702 → #799 사이 LAST_FIRED_ALARM_STATION_NAME_KEY 등 setDestination cleanup에서
@@ -43,7 +43,7 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   clearFiredAlarms,
   () => AsyncStorage.removeItem(ROUTE_KEY),
   // #868 — silent push trip-ended 경로에서는 zustand store에 접근 불가하므로 storage를 직접 제거.
-  // setDestination(null) 경로는 useAppStore가 이미 inline으로 removeItem을 수행하지만,
+  // setDestination(null) 경로는 useDestinationStore가 이미 inline으로 removeItem을 수행하지만,
   // 멱등 호출이라 중복 해도 무해. 이 배열은 BG cleanup의 single source.
   () => AsyncStorage.removeItem(DESTINATION_KEY),
   () => AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY),

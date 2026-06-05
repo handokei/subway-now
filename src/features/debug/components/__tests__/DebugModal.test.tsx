@@ -3,7 +3,7 @@ import { AppState, Share } from 'react-native';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { DebugModal, __test__ } from '../DebugModal';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
-import { useAppStore } from '../../../../store/useAppStore';
+import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
@@ -1380,13 +1380,13 @@ describe('DebugModal — Silent Push UX 카운트/토글 (#856)', () => {
     jest.clearAllMocks();
     setupHookDefaults();
     act(() => {
-      useAppStore.setState({ locklessStationPassed: false });
+      useSettingsStore.setState({ locklessStationPassed: false });
     });
   });
 
   afterEach(() => {
     act(() => {
-      useAppStore.setState({ locklessStationPassed: false });
+      useSettingsStore.setState({ locklessStationPassed: false });
     });
   });
 
@@ -1425,7 +1425,7 @@ describe('DebugModal — Silent Push UX 카운트/토글 (#856)', () => {
 
   it('locklessStationPassed=true면 toggle row가 "on"으로 노출된다', async () => {
     act(() => {
-      useAppStore.setState({ locklessStationPassed: true });
+      useSettingsStore.setState({ locklessStationPassed: true });
     });
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
@@ -1438,7 +1438,7 @@ describe('DebugModal — Silent Push UX 카운트/토글 (#856)', () => {
       { ts: 2, source: 'silent-push-fired', outcome: 'fired' },
     ]);
     act(() => {
-      useAppStore.setState({ locklessStationPassed: true });
+      useSettingsStore.setState({ locklessStationPassed: true });
     });
     const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
     renderWithTheme(<DebugModal onClose={jest.fn()} />);

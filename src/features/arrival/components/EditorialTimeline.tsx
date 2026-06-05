@@ -12,7 +12,7 @@ import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing } from '../../../shared/theme';
 import type { Stop, StopArrivalContext } from '../../../shared/types/journey';
 import { LineBadge, getLineColor } from '../../../shared/ui/LineBadge';
-import { useAppStore } from '../../../store/useAppStore';
+import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { resolveQuickExit } from '../../route/utils/quickExit';
 import { resolveProgressingTerminal, resolveTravelDirection } from '../../route/utils/travelDirection';
 import { resolveTransferDoor } from '../../route/utils/transferExit';
@@ -81,7 +81,7 @@ function doorFor(stop: Stop | null, accessibilityMode: boolean): string | null {
 export function EditorialTimeline({ stops, renderHopSlot }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
-  const accessibilityMode = useAppStore((s) => s.accessibilityMode);
+  const accessibilityMode = useSettingsStore((s) => s.accessibilityMode);
   return (
     <View>
       {stops.map((s, i) => {

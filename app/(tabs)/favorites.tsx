@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import { useAppStore } from '../../src/store/useAppStore';
+import { useFavoritesStore } from '../../src/features/favorites/store/useFavoritesStore';
 import { LINE_NAMES } from '../../src/shared/constants/lineColors';
 import {
   FAVORITE_SLOT_ICONS,
@@ -32,12 +32,12 @@ import type { StationArrival } from '../../src/features/arrival/api/arrivalApi';
 const allStations = stationsData as Station[];
 
 export default function FavoritesScreen() {
-  const favorites = useAppStore((s) => s.favorites);
-  const addFavorite = useAppStore((s) => s.addFavorite);
-  const removeFavorite = useAppStore((s) => s.removeFavorite);
-  const setFavoriteLabel = useAppStore((s) => s.setFavoriteLabel);
-  const setSlotFavorite = useAppStore((s) => s.setSlotFavorite);
-  const loadFavorites = useAppStore((s) => s.loadFavorites);
+  const favorites = useFavoritesStore((s) => s.favorites);
+  const addFavorite = useFavoritesStore((s) => s.addFavorite);
+  const removeFavorite = useFavoritesStore((s) => s.removeFavorite);
+  const setFavoriteLabel = useFavoritesStore((s) => s.setFavoriteLabel);
+  const setSlotFavorite = useFavoritesStore((s) => s.setSlotFavorite);
+  const loadFavorites = useFavoritesStore((s) => s.loadFavorites);
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [slotPicker, setSlotPicker] = useState<FavoriteSlotRole | null>(null);

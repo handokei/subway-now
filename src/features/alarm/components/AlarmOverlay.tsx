@@ -1,6 +1,6 @@
 import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import type { AlarmEvent } from '../../../store/useAppStore';
+import type { AlarmEvent } from '../../../shared/types/alarm';
 import { clearAlarmNotification } from '../utils/stationNotification';
 import { killAllAlarms } from '../utils/alarmKill';
 import { getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';

@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, fireEvent, waitFor } from '@testing-library/react-native';
 import { AlarmOverlay } from '../AlarmOverlay';
-import type { AlarmEvent } from '../../../../store/useAppStore';
+import type { AlarmEvent } from '../../../../shared/types/alarm';
 
 const mockKillAllAlarms = jest.fn().mockResolvedValue(undefined);
 const mockClearAlarmNotification = jest.fn().mockResolvedValue(undefined);

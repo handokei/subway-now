@@ -1,3 +1,7 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature test: useBoardingLockScheduler 본체가 orchestrator(file-level disable). settings
+ * store(sleepMode) 분기 검증을 위해 같은 import 사용. ADR Phase 5 (#890).
+ */
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { useBoardingLockScheduler } from '../useBoardingLockScheduler';
 import {
@@ -5,7 +9,7 @@ import {
   scheduleHopsForLock,
 } from '../../utils/boardingLockScheduler';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
-import { useAppStore } from '../../../../store/useAppStore';
+import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeFixtures';
 
 jest.mock('../../utils/boardingLockScheduler', () => {
@@ -57,7 +61,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockedSchedule.mockResolvedValue([]);
   mockedCancel.mockResolvedValue(undefined);
-  useAppStore.setState({ sleepMode: false });
+  useSettingsStore.setState({ sleepMode: false });
 });
 
 describe('useBoardingLockScheduler', () => {
@@ -158,7 +162,7 @@ describe('useBoardingLockScheduler', () => {
   });
 
   it('#632 sleepMode=true 상태에서 schedule에 sleepMode=true 전달', async () => {
-    useAppStore.setState({ sleepMode: true });
+    useSettingsStore.setState({ sleepMode: true });
     renderHook(() =>
       useBoardingLockScheduler({ lock: lockA, route, destinationName: '강남' }),
     );
@@ -175,7 +179,7 @@ describe('useBoardingLockScheduler', () => {
   it('#632 sleepMode 토글은 effect를 재실행시키지 않는다 (ref capture)', async () => {
     const { rerender } = renderScheduler({ lock: lockA, route, destinationName: '강남' });
     await awaitFirstSchedule();
-    useAppStore.setState({ sleepMode: true });
+    useSettingsStore.setState({ sleepMode: true });
     rerender({ lock: lockA, route, destinationName: '강남' });
     await new Promise((r) => setTimeout(r, 0));
     expect(mockedSchedule).toHaveBeenCalledTimes(1);

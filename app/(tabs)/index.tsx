@@ -9,7 +9,10 @@ import type { ArrivalInfo } from '../../src/features/arrival/api/arrivalApi';
 import { useArrivalCountdown } from '../../src/features/arrival/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../../src/shared/utils/formatTime';
 import { LINE_NAMES } from '../../src/shared/constants/lineColors';
-import { useAppStore } from '../../src/store/useAppStore';
+import { useFavoritesStore } from '../../src/features/favorites/store/useFavoritesStore';
+import { useSettingsStore } from '../../src/features/settings/store/useSettingsStore';
+import { useDestinationStore } from '../../src/features/route/store/useDestinationStore';
+import { useAlarmEventStore } from '../../src/features/alarm/store/useAlarmEventStore';
 import { useBoardingLockStore } from '../../src/features/alarm/store/useBoardingLockStore';
 import { DestinationPicker } from '../../src/features/route/components/DestinationPicker';
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../../src/shared/utils/stationRoute';
@@ -63,34 +66,34 @@ export default function HomeScreen() {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const router = useRouter();
-  const customOrigin = useAppStore((s) => s.customOrigin);
-  const loadCustomOrigin = useAppStore((s) => s.loadCustomOrigin);
-  const addFavorite = useAppStore((s) => s.addFavorite);
-  const removeFavorite = useAppStore((s) => s.removeFavorite);
-  const setSlotFavorite = useAppStore((s) => s.setSlotFavorite);
-  const favorites = useAppStore((s) => s.favorites);
-  const loadFavorites = useAppStore((s) => s.loadFavorites);
-  const destination = useAppStore((s) => s.destination);
-  const setDestination = useAppStore((s) => s.setDestination);
-  const loadDestination = useAppStore((s) => s.loadDestination);
-  const recentDestination = useAppStore((s) => s.recentDestination);
-  const setRecentDestination = useAppStore((s) => s.setRecentDestination);
-  const sleepMode = useAppStore((s) => s.sleepMode);
-  const setSleepMode = useAppStore((s) => s.setSleepMode);
-  const loadSleepMode = useAppStore((s) => s.loadSleepMode);
-  const loadAllowSpeaker = useAppStore((s) => s.loadAllowSpeaker);
+  const customOrigin = useDestinationStore((s) => s.customOrigin);
+  const loadCustomOrigin = useDestinationStore((s) => s.loadCustomOrigin);
+  const addFavorite = useFavoritesStore((s) => s.addFavorite);
+  const removeFavorite = useFavoritesStore((s) => s.removeFavorite);
+  const setSlotFavorite = useFavoritesStore((s) => s.setSlotFavorite);
+  const favorites = useFavoritesStore((s) => s.favorites);
+  const loadFavorites = useFavoritesStore((s) => s.loadFavorites);
+  const destination = useDestinationStore((s) => s.destination);
+  const setDestination = useDestinationStore((s) => s.setDestination);
+  const loadDestination = useDestinationStore((s) => s.loadDestination);
+  const recentDestination = useDestinationStore((s) => s.recentDestination);
+  const setRecentDestination = useDestinationStore((s) => s.setRecentDestination);
+  const sleepMode = useSettingsStore((s) => s.sleepMode);
+  const setSleepMode = useSettingsStore((s) => s.setSleepMode);
+  const loadSleepMode = useSettingsStore((s) => s.loadSleepMode);
+  const loadAllowSpeaker = useSettingsStore((s) => s.loadAllowSpeaker);
   // #816 C — lockless station-passed 토글. useApnsTripRegistration이 backend register payload에 포함시킨다.
-  const locklessStationPassed = useAppStore((s) => s.locklessStationPassed);
-  const loadLocklessStationPassed = useAppStore((s) => s.loadLocklessStationPassed);
+  const locklessStationPassed = useSettingsStore((s) => s.locklessStationPassed);
+  const loadLocklessStationPassed = useSettingsStore((s) => s.loadLocklessStationPassed);
   const showSleepModeGuide = useSleepModeGuide();
-  const alarmEvent = useAppStore((s) => s.alarmEvent);
-  const clearAlarmEvent = useAppStore((s) => s.clearAlarmEvent);
-  const loadAlarmEvent = useAppStore((s) => s.loadAlarmEvent);
+  const alarmEvent = useAlarmEventStore((s) => s.alarmEvent);
+  const clearAlarmEvent = useAlarmEventStore((s) => s.clearAlarmEvent);
+  const loadAlarmEvent = useAlarmEventStore((s) => s.loadAlarmEvent);
   // #746: 알람 dismiss → silence 시작점 기록. 같은 컴포넌트의 userLocation을 같이 캡처.
-  const setDismissSilence = useAppStore((s) => s.setDismissSilence);
+  const setDismissSilence = useAlarmEventStore((s) => s.setDismissSilence);
   // #746 reviewer P1: cold-start hydration — storage에 살아있는 silence 상태를
   // FG path가 무시하지 않도록 loadAlarmEvent와 같은 시퀀스로 hydrate.
-  const loadDismissSilence = useAppStore((s) => s.loadDismissSilence);
+  const loadDismissSilence = useAlarmEventStore((s) => s.loadDismissSilence);
   const [pickerVisible, setPickerVisible] = useState(false);
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const prevDestIdRef = useRef<string | null>(null);
@@ -100,8 +103,8 @@ export default function HomeScreen() {
   const firstSendWaitStartRef = useRef<number | null>(null);
   const firstSendFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [firstSendFallbackTick, setFirstSendFallbackTick] = useState(0);
-  const routePreference = useAppStore((s) => s.routePreference);
-  const loadRoutePreference = useAppStore((s) => s.loadRoutePreference);
+  const routePreference = useDestinationStore((s) => s.routePreference);
+  const loadRoutePreference = useDestinationStore((s) => s.loadRoutePreference);
   const [categorized, setCategorized] = useState<CategorizedRoute[]>([]);
   const [selectedKey, setSelectedKey] = useState<RoutePreference>(routePreference);
   // #546: 경로 timeline을 출발/환승/도착 마커만 보일지(false), 모든 정거장을 펼쳐 보일지(true)
@@ -121,9 +124,9 @@ export default function HomeScreen() {
   // routeContext가 채워지고 useRouteProgress(1D map matching)가 활성화된다.
   // #700 — store SSOT로 이전. cold restart 시 loadTripOrigin이 영속값을 복원해
   // 첫 GPS fix가 진짜 출발역과 다른 회귀를 차단한다.
-  const tripOrigin = useAppStore((s) => s.tripOrigin);
-  const setTripOrigin = useAppStore((s) => s.setTripOrigin);
-  const loadTripOrigin = useAppStore((s) => s.loadTripOrigin);
+  const tripOrigin = useDestinationStore((s) => s.tripOrigin);
+  const setTripOrigin = useDestinationStore((s) => s.setTripOrigin);
+  const loadTripOrigin = useDestinationStore((s) => s.loadTripOrigin);
   const routeContext = useMemo(
     () => (route && tripOrigin && destination ? { route, origin: tripOrigin, destination } : undefined),
     [route, tripOrigin, destination],
