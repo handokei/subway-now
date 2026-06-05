@@ -21,6 +21,7 @@ import {
 import stationAbsolutePressureData from '../../data/stationAbsolutePressure.json';
 import type { LineNumber, Station } from '../types/station';
 import {
+  evaluateBarometerStop,
   evaluateSubsurfaceEnter,
   pruneStaleReadings,
   type BarometerReading,
@@ -69,6 +70,14 @@ export function getBarometerReadings(): readonly BarometerReading[] {
  */
 export function evaluateLatestSubsurface(now: number): SubsurfaceVerdict | null {
   return evaluateSubsurfaceEnter(readings, now);
+}
+
+/**
+ * #921 — 현재 시점 기준 정차 패턴 평가 결과를 반환. readings 부족이면 null.
+ * useFusedStationDetection이 fusion 신호 'barometer-stop' 입력으로 사용.
+ */
+export function evaluateLatestStop(now: number): SubsurfaceVerdict | null {
+  return evaluateBarometerStop(readings, now);
 }
 
 /**

@@ -1,4 +1,5 @@
 import {
+  evaluateBarometerStop,
   evaluateSubsurfaceEnter,
   pruneStaleReadings,
   type BarometerReading,
@@ -6,6 +7,7 @@ import {
 import {
   BAROMETER_DPDT_WINDOW_MS,
   BAROMETER_RING_BUFFER_TTL_MS,
+  BAROMETER_STOP_DP_THRESHOLD_HPA,
   BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
 } from '../../constants/barometer';
 
@@ -131,6 +133,69 @@ describe('barometerSubsurface (#875)', () => {
       expect(v).not.toBeNull();
       expect(v!.detected).toBe(true);
       expect(v!.deltaHpa).toBeCloseTo(0.4);
+    });
+  });
+
+  describe('evaluateBarometerStop (#921)', () => {
+    it('빈 readings → null (평가 불가)', () => {
+      expect(evaluateBarometerStop([], NOW)).toBeNull();
+    });
+
+    it('window 미달 (30s 이전 baseline 없음) → null', () => {
+      const readings = [reading(-5_000, 1013.0), reading(0, 1013.0)];
+      expect(evaluateBarometerStop(readings, NOW)).toBeNull();
+    });
+
+    it('dP=0 정확히 정차 → detected', () => {
+      const readings = [
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013.0),
+        reading(0, 1013.0),
+      ];
+      const v = evaluateBarometerStop(readings, NOW);
+      expect(v).not.toBeNull();
+      expect(v!.detected).toBe(true);
+      expect(v!.deltaHpa).toBeCloseTo(0);
+    });
+
+    it('|dP| 임계 정확히 (+0.05 hPa) → detected (FP_EPSILON 내)', () => {
+      const readings = [
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013.0),
+        reading(0, 1013.0 + BAROMETER_STOP_DP_THRESHOLD_HPA),
+      ];
+      const v = evaluateBarometerStop(readings, NOW);
+      expect(v).not.toBeNull();
+      expect(v!.detected).toBe(true);
+    });
+
+    it('|dP| 임계 정확히 (-0.05 hPa, 음수 방향) → detected', () => {
+      const readings = [
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013.0),
+        reading(0, 1013.0 - BAROMETER_STOP_DP_THRESHOLD_HPA),
+      ];
+      const v = evaluateBarometerStop(readings, NOW);
+      expect(v).not.toBeNull();
+      expect(v!.detected).toBe(true);
+      expect(v!.deltaHpa).toBeCloseTo(-BAROMETER_STOP_DP_THRESHOLD_HPA);
+    });
+
+    it('|dP|=+0.1 hPa (임계 초과, 이동 중) → detected=false', () => {
+      const readings = [
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013.0),
+        reading(0, 1013.1),
+      ];
+      const v = evaluateBarometerStop(readings, NOW);
+      expect(v).not.toBeNull();
+      expect(v!.detected).toBe(false);
+    });
+
+    it('|dP|=+0.3 hPa (subsurface 임계 — 지하 진입 중, stop 아님) → detected=false', () => {
+      const readings = [
+        reading(-BAROMETER_DPDT_WINDOW_MS, 1013.0),
+        reading(0, 1013.0 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA),
+      ];
+      const v = evaluateBarometerStop(readings, NOW);
+      expect(v).not.toBeNull();
+      expect(v!.detected).toBe(false);
     });
   });
 

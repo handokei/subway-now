@@ -1,5 +1,6 @@
 import {
   appendBarometerReading,
+  evaluateLatestStop,
   evaluateLatestSubsurface,
   getBarometerReadings,
   narrowStationsByPressure,
@@ -52,6 +53,18 @@ describe('barometerState (#875)', () => {
       pressureHpa: 1013.0 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
     });
     const v = evaluateLatestSubsurface(NOW);
+    expect(v).not.toBeNull();
+    expect(v!.detected).toBe(true);
+  });
+
+  it('evaluateLatestStop — readings 부족 시 null, 정차 패턴이면 detected', () => {
+    expect(evaluateLatestStop(NOW)).toBeNull();
+    appendBarometerReading({
+      t: NOW - BAROMETER_DPDT_WINDOW_MS,
+      pressureHpa: 1013.0,
+    });
+    appendBarometerReading({ t: NOW, pressureHpa: 1013.0 });
+    const v = evaluateLatestStop(NOW);
     expect(v).not.toBeNull();
     expect(v!.detected).toBe(true);
   });

@@ -19,6 +19,7 @@ import { useBarometer } from '../useBarometer';
 import {
   BAROMETER_SAMPLE_INTERVAL_MS,
   BAROMETER_DPDT_WINDOW_MS,
+  BAROMETER_STOP_DP_THRESHOLD_HPA,
   BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
 } from '../../constants/barometer';
 import {
@@ -188,6 +189,127 @@ describe('useBarometer (#875)', () => {
     expect(result.current.subsurface).toBe(false);
 
     nowSpy.mockRestore();
+  });
+
+  it('#921 — 초기 stop=undefined (reading 부족, fusion에 unavailable)', async () => {
+    mockIsAvailable.mockResolvedValue(false);
+    const { result } = renderHook(() => useBarometer());
+    await flush();
+    expect(result.current.stop).toBeUndefined();
+  });
+
+  it('#921 — 정차 패턴(dP≈0)이 N회 연속이면 stop=true (hysteresis)', async () => {
+    mockIsAvailable.mockResolvedValue(true);
+    mockRequestPermissions.mockResolvedValue({ granted: true });
+    const baseT = 1_700_000_000_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseT);
+
+    const { result } = renderHook(() => useBarometer());
+    await flush();
+    const listener = mockAddListener.mock.calls[0][0] as Listener;
+
+    // t=0 baseline.
+    act(() => {
+      listener({ pressure: 1013.0, timestamp: 0 });
+    });
+    // 첫 sample은 readings 1개 + baseline 부재 — verdict null → undefined.
+    expect(result.current.stop).toBeUndefined();
+
+    // 30s 경과 + dP≈0 — confirm 3회 누적되면 stop=true.
+    for (let i = 0; i < 3; i++) {
+      nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
+      act(() => {
+        listener({ pressure: 1013.0, timestamp: 30 + i });
+      });
+    }
+    expect(result.current.stop).toBe(true);
+
+    nowSpy.mockRestore();
+  });
+
+  it('#921 — |dP|가 stop 임계 초과(이동 중)면 stop=false (hysteresis 후)', async () => {
+    mockIsAvailable.mockResolvedValue(true);
+    mockRequestPermissions.mockResolvedValue({ granted: true });
+    const baseT = 1_700_000_000_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseT);
+
+    const { result } = renderHook(() => useBarometer());
+    await flush();
+    const listener = mockAddListener.mock.calls[0][0] as Listener;
+
+    act(() => {
+      listener({ pressure: 1013.0, timestamp: 0 });
+    });
+    // 정차 → 이동 전환: dP=0.1 hPa(임계 0.05 초과) 3회 연속.
+    for (let i = 0; i < 3; i++) {
+      nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
+      act(() => {
+        listener({
+          pressure: 1013.0 + BAROMETER_STOP_DP_THRESHOLD_HPA + 0.05,
+          timestamp: 30 + i,
+        });
+      });
+    }
+    expect(result.current.stop).toBe(false);
+
+    nowSpy.mockRestore();
+  });
+
+  it('#921 — stop verdict가 가짜→진짜→불가(null)로 흐르면 undefined로 즉시 리셋', async () => {
+    mockIsAvailable.mockResolvedValue(true);
+    mockRequestPermissions.mockResolvedValue({ granted: true });
+    const baseT = 1_700_000_000_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseT);
+
+    const { result } = renderHook(() => useBarometer());
+    await flush();
+    const listener = mockAddListener.mock.calls[0][0] as Listener;
+
+    // 정차 신호 확립.
+    act(() => {
+      listener({ pressure: 1013.0, timestamp: 0 });
+    });
+    for (let i = 0; i < 3; i++) {
+      nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
+      act(() => {
+        listener({ pressure: 1013.0, timestamp: 30 + i });
+      });
+    }
+    expect(result.current.stop).toBe(true);
+
+    // resetBarometerState로 readings를 비워 verdict null 유도 — 첫 새 reading은 baseline 부재.
+    resetBarometerState();
+    nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS * 3);
+    act(() => {
+      listener({ pressure: 1013.5, timestamp: 100 });
+    });
+    expect(result.current.stop).toBeUndefined();
+
+    nowSpy.mockRestore();
+  });
+
+  it('#921 — stop hysteresis: 카운터 미달은 state 미반영 + 동일 verdict 도착 시 카운터 리셋', async () => {
+    mockIsAvailable.mockResolvedValue(true);
+    mockRequestPermissions.mockResolvedValue({ granted: true });
+    const baseT = 1_700_000_000_000;
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseT);
+
+    const { result } = renderHook(() => useBarometer());
+    await flush();
+    const listener = mockAddListener.mock.calls[0][0] as Listener;
+
+    // baseline.
+    act(() => {
+      listener({ pressure: 1013.0, timestamp: 0 });
+    });
+    // stop=true 2번만 — confirm 3 미달.
+    for (let i = 0; i < 2; i++) {
+      nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS + i * 1_000);
+      act(() => {
+        listener({ pressure: 1013.0, timestamp: 30 + i });
+      });
+    }
+    expect(result.current.stop).toBeUndefined();
   });
 
   it('#903 — unmount 시 subscription remove + ring buffer reset', async () => {

@@ -144,8 +144,9 @@ export default function HomeScreen() {
   // #903 (Seam G) — 기압계 dP/dt 신호. 미지원/권한 거절은 subsurface=false 고정(graceful).
   //   1) useFusedNearestStation: 'gps-only' → 'gps-only-underground' 강등 + sticky automotive 트리거.
   //   2) useApnsTripRegistration: backend payload subsurface 동봉(threshold 5→10).
-  const { subsurface: barometerSubsurface } = useBarometer();
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, barometerSubsurface);
+  const barometerSignal = useBarometer();
+  const { subsurface: barometerSubsurface } = barometerSignal;
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, barometerSubsurface, barometerSignal);
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,
