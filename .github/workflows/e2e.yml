@@ -164,7 +164,10 @@ jobs:
       matrix:
         scenario:
           - seam-b-13-19
-          # 후속 PR에서 추가: seam-c-14-02, seam-e-13-39, seam-f-13-24
+          - seam-e-13-39
+          - seam-f-13-24
+          # Seam C는 transfer-leg / FG-return 이벤트 mock 설계 결함으로 보류
+          # ([[project-2026-06-05-epic-912-session-end]]).
     env:
       SIM_NAME: 'iPhone 16'
       EXPO_PUBLIC_USE_BFF: 'true'
