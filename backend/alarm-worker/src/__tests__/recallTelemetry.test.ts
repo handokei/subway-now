@@ -46,9 +46,9 @@ describe('validateRecallUpload', () => {
   });
 
   it.each([
-    ['tripStart', NaN],
+    ['tripStart', Number.NaN],
     ['tripStart', 'x'],
-    ['tripEnd', NaN],
+    ['tripEnd', Number.NaN],
     ['tripEnd', 'x'],
   ])('rejects non-finite %s (%p)', (field, value) => {
     expect(validateRecallUpload({ ...base(), [field]: value })).toBeNull();
@@ -63,7 +63,7 @@ describe('validateRecallUpload', () => {
   it.each([
     ['expectedStops', -1],
     ['expectedStops', 1.5],
-    ['expectedStops', NaN],
+    ['expectedStops', Number.NaN],
     ['expectedStops', 'x'],
     ['firedStops', -1],
     ['firedStops', 1.5],
@@ -81,7 +81,7 @@ describe('validateRecallUpload', () => {
     ['recallPct', -1],
     ['recallPct', 101],
     ['recallPct', 50.5],
-    ['recallPct', NaN],
+    ['recallPct', Number.NaN],
   ])('rejects out-of-range %s (%p)', (field, value) => {
     expect(validateRecallUpload({ ...base(), [field]: value })).toBeNull();
   });
@@ -131,11 +131,11 @@ describe('validateRecallUpload', () => {
   });
 });
 
-describe('recordRecallUpload', () => {
-  function makeWriter() {
-    return { writeDataPoint: vi.fn() };
-  }
+function makeWriter() {
+  return { writeDataPoint: vi.fn() };
+}
 
+describe('recordRecallUpload', () => {
   const payload: RecallUpload = {
     token: 'aabbccdd11223344',
     tripStart: 0,

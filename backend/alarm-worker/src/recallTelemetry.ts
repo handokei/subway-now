@@ -89,6 +89,25 @@ function isFiniteNumber(v: unknown): v is number {
 }
 
 /**
+ * `gateSuppressionCounts` 객체에서 알려진 reason만 자연수로 보존한다.
+ *   - 객체 아니면 null
+ *   - 알려진 reason 값이 자연수 아니면 null (전체 payload reject)
+ *   - 미지 reason은 silently drop (구/신 클라이언트 호환)
+ */
+function parseGateCounts(raw: unknown): Partial<Record<KnownGateReason, number>> | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const counts: Partial<Record<KnownGateReason, number>> = {};
+  for (const reason of KNOWN_GATE_REASONS) {
+    const v = obj[reason];
+    if (v === undefined) continue;
+    if (!isNonNegativeInt(v)) return null;
+    counts[reason] = v;
+  }
+  return counts;
+}
+
+/**
  * payload 검증. 한 필드라도 깨졌으면 null — 호출자는 400 반환.
  *
  * 규칙:
@@ -109,18 +128,9 @@ export function validateRecallUpload(input: unknown): RecallUpload | null {
   if (!isNonNegativeInt(obj.expectedStops)) return null;
   if (!isNonNegativeInt(obj.firedStops)) return null;
   if (obj.firedStops > obj.expectedStops) return null;
-  if (!isNonNegativeInt(obj.recallPct)) return null;
-  if (obj.recallPct > 100) return null;
-  if (!obj.gateSuppressionCounts || typeof obj.gateSuppressionCounts !== 'object') return null;
-
-  const raw = obj.gateSuppressionCounts as Record<string, unknown>;
-  const counts: Partial<Record<KnownGateReason, number>> = {};
-  for (const reason of KNOWN_GATE_REASONS) {
-    const v = raw[reason];
-    if (v === undefined) continue;
-    if (!isNonNegativeInt(v)) return null;
-    counts[reason] = v;
-  }
+  if (!isNonNegativeInt(obj.recallPct) || obj.recallPct > 100) return null;
+  const counts = parseGateCounts(obj.gateSuppressionCounts);
+  if (counts === null) return null;
 
   return {
     token: obj.token,
