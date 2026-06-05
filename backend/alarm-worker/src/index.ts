@@ -12,6 +12,7 @@
  */
 
 import { Hono } from 'hono';
+import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import { markPromptSilenced } from './boardingPrompt';
 import {
   recordBoardingPromptOutcome,
@@ -90,6 +91,15 @@ app.post('/trips', async (c) => {
   //   3) 그 외 (다른 trainCode 또는 큰 drift) → 새 세션, 전면 교체
   const existing = await getTrip(c.env.TRIPS, incoming.token);
   const isSameSession = existing !== null && evaluateSameSession(existing, incoming);
+  // #916 follow-up B — auto-prompt dedup 마커 보존. boardingPromptState와 달리 isSameSession=false
+  // 분기에서도 같은 token + AUTO_PROMPT_DEDUP_WINDOW_MS 안이면 보존한다. 사용자가 lock 클리어 후
+  // 목적지를 살짝 바꿔 새 createdAt으로 재등록하는 케이스에서 prompt 재발사를 차단 (fired+clear
+  // 분기 회복). 윈도우 만료/필드 부재면 undefined로 자연 리셋 — 새 trip은 fresh prompt 평가.
+  const preservedLastAutoPromptedAt =
+    existing?.lastAutoPromptedAt !== undefined &&
+    incoming.createdAt - existing.lastAutoPromptedAt < AUTO_PROMPT_DEDUP_WINDOW_MS
+      ? existing.lastAutoPromptedAt
+      : undefined;
   // #705: progress KV 우선 참조. 같은 trainCode면 shift된 waypoints를 incoming에 적용.
   // 다른 trainCode/none이면 progress 폐기.
   const progress = existing !== null ? await getProgress(c.env.TRIPS, incoming.token) : null;
@@ -149,8 +159,16 @@ app.post('/trips', async (c) => {
         // re-register하더라도 trip당 1회 + 5분 silence 정책을 유지해야 한다 (re-register마다
         // reset되면 spam 회귀). promptGeoContext / promptDisplay는 incoming이 최신이라 그대로 받음.
         boardingPromptState: existing.boardingPromptState,
+        // #916 follow-up B — same session에선 같은 trip이므로 그대로 보존.
+        lastAutoPromptedAt: existing.lastAutoPromptedAt,
       }
-    : incoming;
+    : {
+        ...incoming,
+        // #916 follow-up B — 새 세션(createdAt drift > 5s)으로 판정돼 incoming으로 전면 교체되더라도
+        // 같은 token + window 안이면 auto-prompt dedup 마커는 보존. backend가 직전에 auto-lock 시도/
+        // 발사한 trip 컨텍스트의 재발사 ping-pong을 차단한다.
+        lastAutoPromptedAt: preservedLastAutoPromptedAt,
+      };
 
   // #705 — progress KV가 우선. 같은 trainCode면 incoming.waypoints에서 shift된 만큼 잘라낸다.
   // existing trip이 사라졌더라도(KV TTL 만료 등) progress가 살아 있으면 진행분을 그대로 복원.

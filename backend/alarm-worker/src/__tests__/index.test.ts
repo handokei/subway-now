@@ -417,6 +417,68 @@ describe('POST /trips — server-set auto-lock 보존 (#916 follow-up A)', () =>
   });
 });
 
+describe('POST /trips — lastAutoPromptedAt 보존 (#916 follow-up B)', () => {
+  // 30분 window (AUTO_PROMPT_DEDUP_WINDOW_MS) 안/밖, same/new session 4사분면 검증.
+  const CREATED = 1_700_000_000_000;
+  const TOKEN = 'tok-916-fub';
+  const WITHIN_WINDOW_MS = 5 * 60_000; // 5분 — 30분 window 안
+  const BEYOND_WINDOW_MS = 31 * 60_000; // 31분 — 30분 window 밖
+
+  function tripBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return { ...base(), token: TOKEN, createdAt: CREATED, ...overrides };
+  }
+
+  async function seedExisting(
+    env: ReturnType<typeof makeKvEnv>,
+    fields: Record<string, unknown>,
+  ): Promise<void> {
+    await env.TRIPS.put(
+      `trip:${TOKEN}`,
+      JSON.stringify({ ...tripBody(), ...fields }),
+    );
+  }
+
+  it('same session — existing.lastAutoPromptedAt 보존', async () => {
+    const env = makeKvEnv();
+    const stamp = CREATED - WITHIN_WINDOW_MS;
+    await seedExisting(env, { lastAutoPromptedAt: stamp });
+    await post('/trips', tripBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lastAutoPromptedAt).toBe(stamp);
+  });
+
+  it('new session(createdAt drift > 5s) — window 안이면 보존', async () => {
+    const env = makeKvEnv();
+    const stamp = CREATED - WITHIN_WINDOW_MS;
+    await seedExisting(env, { lastAutoPromptedAt: stamp });
+    // boardingPromptState는 새 세션에서 리셋되지만 dedup 마커는 살아남아야 한다.
+    await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lastAutoPromptedAt).toBe(stamp);
+  });
+
+  it('new session + window 밖 — 보존하지 않음(undefined)', async () => {
+    const env = makeKvEnv();
+    // existing의 createdAt도 같이 옛 시각으로 시뮬레이션 (둘 다 옛 시각이라야 incoming 새 시각과 drift)
+    const oldNow = CREATED - BEYOND_WINDOW_MS;
+    await env.TRIPS.put(
+      `trip:${TOKEN}`,
+      JSON.stringify({ ...tripBody({ createdAt: oldNow }), lastAutoPromptedAt: oldNow }),
+    );
+    await post('/trips', tripBody({ createdAt: CREATED }), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lastAutoPromptedAt).toBeUndefined();
+  });
+
+  it('existing 마커 부재 — incoming도 마커 없이 저장(undefined)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, {}); // lastAutoPromptedAt 없음
+    await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lastAutoPromptedAt).toBeUndefined();
+  });
+});
+
 describe('POST /trips (#578 — preserve advance progress on re-register)', () => {
   const CREATED = 1_700_000_000_000;
 

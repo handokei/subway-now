@@ -12,7 +12,7 @@ import {
   type SendPushResult,
 } from './apns';
 import { flipApnsEnv, pickApnsHost } from './apnsHost';
-import { attemptAutoLock } from './autoLock';
+import { attemptAutoLock, AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import {
   evaluateBoardingPromptGates,
   markPromptFired,
@@ -225,6 +225,13 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   autoLockFalsePositive: number;
   /**
+   * #916 follow-up B — 직전 auto-prompt 발사 윈도우(AUTO_PROMPT_DEDUP_WINDOW_MS) 안에 다시
+   * `evaluateAndMaybeFireBoardingPrompt`에 진입한 trip을 `lastAutoPromptedAt` 마커로 차단한
+   * 누적 횟수. lock이 클리어/swap돼 lockMissing으로 돌아오거나 `isSameSession=false`로
+   * boardingPromptState가 리셋된 케이스가 여기에 잡힌다. 0이면 회귀 방어가 발동되지 않은 상태.
+   */
+  boardingPromptAutoDeduped: number;
+  /**
    * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
    * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
    * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
@@ -292,6 +299,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     kalmanDriftWarning: 0,
     autoLockSuccess: 0,
     autoLockFalsePositive: 0,
+    boardingPromptAutoDeduped: 0,
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
@@ -1439,6 +1447,22 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   const display = trip.promptDisplay;
   if (!geo || !display) return;
 
+  // #916 follow-up B — fired+clear 분기 회복. 직전 auto-prompt 발사 윈도우 안에 다시 들어왔다면
+  // 평가 자체를 skip — boardingPromptState가 isSameSession=false로 리셋됐거나 lock이 클리어된
+  // 직후 같은 trip token이 lockMissing으로 돌아온 케이스. 같은 trip 컨텍스트의 중복 auto-prompt
+  // 시도/푸시를 차단한다 (윈도우 만료 후엔 자연 재평가 — 새 leg/새 trip은 fresh).
+  if (
+    trip.lastAutoPromptedAt !== undefined &&
+    now - trip.lastAutoPromptedAt < AUTO_PROMPT_DEDUP_WINDOW_MS
+  ) {
+    stats.boardingPromptAutoDeduped += 1;
+    log('boarding-prompt: auto-deduped (within window)', {
+      token: trip.token.slice(0, 8),
+      ageMs: now - trip.lastAutoPromptedAt,
+    });
+    return;
+  }
+
   stats.boardingPromptEvaluated += 1;
 
   const fusion = await runFusionStep(trip, env, now);
@@ -1491,6 +1515,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     if (autoLock) {
       trip.boardingLock = autoLock;
       trip.boardingPromptState = markPromptFired(now);
+      // #916 follow-up B — auto-prompt dedup 마커. lock이 나중에 클리어돼도 window 안에서
+      // 재발사를 차단한다. boardingPromptState와 별개라 isSameSession=false 리셋에도 살아남는다.
+      trip.lastAutoPromptedAt = now;
       trip.consecutiveEtaMissing = 0;
       stats.autoLockSuccess += 1;
       log('boarding-prompt: auto-lock attached', {
@@ -1537,6 +1564,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   if (heal.result.ok) {
     stats.boardingPromptFired += 1;
     trip.boardingPromptState = markPromptFired(now);
+    // #916 follow-up B — prompt push도 같은 dedup 마커를 stamp한다. dismiss + 클리어 후
+    // isSameSession=false 분기로 boardingPromptState가 사라져도 window 안에서 재발사 차단.
+    trip.lastAutoPromptedAt = now;
     dirty = true;
     log('boarding-prompt: fired', {
       token: trip.token.slice(0, 8),

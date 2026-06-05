@@ -3260,6 +3260,111 @@ describe('runScheduled — #916 A1 auto-lock', () => {
   });
 });
 
+// ──────────────────────────────────────────────────────────────────────────
+// #916 follow-up B — fired+clear 분기 회복. auto-lock 후 lock이 클리어돼 lockMissing으로
+// 돌아온 trip의 auto-prompt 재발사를 `lastAutoPromptedAt` 윈도우로 차단.
+// ──────────────────────────────────────────────────────────────────────────
+
+describe('runScheduled — #916 follow-up B lastAutoPromptedAt dedup', () => {
+  const seedHappySeries = (kv: InMemoryKV, token: string) => seedHappyGateSeries(kv, token);
+  // AUTO_PROMPT_DEDUP_WINDOW_MS = 30분 — 매직 넘버 안 쓰고 의도 그대로 표현.
+  const WINDOW_MS = 30 * 60_000;
+
+  async function runOneCycle(
+    kv: InMemoryKV,
+    arrivals: ArrivalEntry[],
+    pushId = 'fub-1',
+  ): Promise<ScheduledStats> {
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    return runScheduled(makeEnv(kv), {
+      seoul: makeSeoul(arrivals),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      fetchImpl,
+      generatePushId: () => pushId,
+    });
+  }
+
+  it('auto-lock 성공 시 lastAutoPromptedAt이 stamp된다', async () => {
+    const kv = new InMemoryKV();
+    const token = 'fub-stamp';
+    await putTrip(kv as unknown as KVNamespace, makePromptTrip({ token }));
+    await seedHappySeries(kv, token);
+    const stats = await runOneCycle(kv, [
+      { destination: '선릉', arrivalSeconds: 60, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
+    ]);
+    expect(stats.autoLockSuccess).toBe(1);
+    const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
+    expect(stored.lastAutoPromptedAt).toBe(NOW);
+  });
+
+  it('prompt push 발사 시에도 lastAutoPromptedAt stamp (auto-lock 실패 fallback)', async () => {
+    const kv = new InMemoryKV();
+    const token = 'fub-stamp-push';
+    await putTrip(kv as unknown as KVNamespace, makePromptTrip({ token }));
+    await seedHappySeries(kv, token);
+    // ambiguity → auto-lock 실패 → push 발사 path
+    const stats = await runOneCycle(kv, [
+      { destination: 'A', arrivalSeconds: 60, trainCode: 'X1', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
+      { destination: 'B', arrivalSeconds: 90, trainCode: 'X2', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
+    ]);
+    expect(stats.boardingPromptFired).toBe(1);
+    const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
+    expect(stored.lastAutoPromptedAt).toBe(NOW);
+  });
+
+  it('lastAutoPromptedAt 윈도우 안(=lock 클리어된 직후) → 재평가 자체 차단 (dedup)', async () => {
+    const kv = new InMemoryKV();
+    const token = 'fub-dedup';
+    // 시뮬레이션: 직전 cycle에서 auto-prompt가 발사된 trip이 lock 클리어 + boardingPromptState도
+    // 외부 분기(isSameSession=false)로 리셋된 상태로 lockMissing으로 돌아왔다.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makePromptTrip({
+        token,
+        lastAutoPromptedAt: NOW - 5 * 60_000, // 5분 전 — window(30분) 안
+        boardingPromptState: undefined,
+      }),
+    );
+    await seedHappySeries(kv, token);
+    const stats = await runOneCycle(kv, [
+      { destination: '선릉', arrivalSeconds: 60, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
+    ]);
+    // 평가 자체에 안 들어감 — 측정 인프라가 별도 dedup 카운터로 잡는다.
+    expect(stats.boardingPromptAutoDeduped).toBe(1);
+    expect(stats.boardingPromptEvaluated).toBe(0);
+    expect(stats.autoLockSuccess).toBe(0);
+    expect(stats.boardingPromptFired).toBe(0);
+    // trip은 그대로 — auto-prompt 마커는 유지된다.
+    const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
+    expect(stored.lastAutoPromptedAt).toBe(NOW - 5 * 60_000);
+    expect(stored.boardingLock).toBeUndefined();
+  });
+
+  it('lastAutoPromptedAt 윈도우 밖 → 정상 평가 (새 trip 효과)', async () => {
+    const kv = new InMemoryKV();
+    const token = 'fub-window-expired';
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makePromptTrip({
+        token,
+        lastAutoPromptedAt: NOW - WINDOW_MS - 1_000, // window 만료
+        boardingPromptState: undefined,
+      }),
+    );
+    await seedHappySeries(kv, token);
+    const stats = await runOneCycle(kv, [
+      { destination: '선릉', arrivalSeconds: 60, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
+    ]);
+    expect(stats.boardingPromptAutoDeduped).toBe(0);
+    expect(stats.autoLockSuccess).toBe(1);
+    const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
+    // 새 발사로 마커 갱신.
+    expect(stored.lastAutoPromptedAt).toBe(NOW);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // #917 A2 — arvlCd∈{0,1} 매역 알림 1차 source. backend cron이 lock된 trainCode를
 // realtimeArrivalList에서 추적해 next waypoint에서 ARRIVED/ENTERING 첫 관찰 시
