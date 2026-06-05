@@ -41,6 +41,12 @@ jest.mock('../../store/tripBoundCleanups', () => ({
   runTripBoundCleanups: () => mockRunTripBoundCleanups(),
 }));
 
+// #899 (Seam C) — trip-ended 분기는 FG 복귀를 위한 sentinel을 작성한다.
+const mockSetTripEndedSentinel = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../utils/tripEndedSentinel', () => ({
+  setTripEndedSentinel: (...args: unknown[]) => mockSetTripEndedSentinel(...args),
+}));
+
 const mockCheckGate = jest.fn();
 jest.mock('../../utils/silentPushLocationGate', () => ({
   checkSilentPushLocationGate: (...args: unknown[]) => mockCheckGate(...args),
@@ -1325,6 +1331,27 @@ describe('silentPushTask', () => {
         // tripToken 누락 = 구버전 backend
         await handleSilentPush(tripEndedPayload());
         expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      });
+
+      // #899 (Seam C) — BG에서는 zustand에 접근 불가 → sentinel을 작성해 FG 복귀 시 store reset 트리거.
+      it('#899 (Seam C) — cleanup 완료 후 setTripEndedSentinel 호출', async () => {
+        await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
+        expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+        expect(mockSetTripEndedSentinel).toHaveBeenCalledTimes(1);
+        expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(expect.any(Number));
+      });
+
+      it('#899 (Seam C) — tripToken mismatch로 cleanup skip 시 sentinel도 작성 안 함', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === ACTIVE_TRIP_KEY) return 'NEW-TRIP-TOKEN';
+          return null;
+        });
+        await handleSilentPush(
+          tripEndedPayload({ pushId: 'te-uuid', tripToken: 'OLD-TRIP-TOKEN' }),
+        );
+        expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+        expect(mockSetTripEndedSentinel).not.toHaveBeenCalled();
       });
 
       it('#868 P1-2 — ACTIVE_TRIP_KEY가 null(클라 이미 trip 종료)이면 cleanup 진행', async () => {

@@ -71,6 +71,15 @@ export const DISMISS_SILENCE_KEY = 'subway-now:dismiss-silence';
 // 형식: {"station": Station, "lockedAt": number} JSON.
 // TTL(30분) 경과 또는 1km+ 이동 또는 automotive motion 시 unlock.
 export const STICKY_STATION_KEY = 'subway-now:sticky-station';
+// #899 (Seam C) — silent push trip-ended 핸들러가 BG에서 작성하는 sentinel.
+// BG에서는 zustand store에 접근할 수 없어 storage cleanup만 수행하는데, 그러면
+// FG 복귀 시 hydrated 직전의 in-memory store 상태(destination/lock 등)가 stale로
+// 잠시 노출된다. trip-ended 시 이 키에 epoch ms를 쓰면 useStateRehydration이
+// AppState 'active' 진입 시 키를 읽고 sentinel 이후 destination/lock store를
+// reset해 stale UI를 차단한다. 처리 후 키를 즉시 삭제 — 키가 다시 나타나면
+// 또 다른 trip-ended를 의미.
+// 형식: 숫자 (epoch ms) 문자열.
+export const TRIP_ENDED_BY_BACKEND_AT_KEY = 'subway-now:trip-ended-by-backend-at';
 // #828 — Phase 1+2 fusion wire — active trip의 boarding line code.
 // BG/FG location task가 좌표 upload 시 이 line으로 linePolyline snap을 수행해
 // `mapMatchedArcM` + `mapMatchedLine`을 backend에 첨부한다.

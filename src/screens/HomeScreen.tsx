@@ -278,12 +278,14 @@ export default function HomeScreen() {
   });
   // #759 — 목적지역 도착 grace 후 lock 자동 release. 명시 "하차" 버튼은 그대로 유지하며,
   // 사용자가 누르지 않은 정상 도착 케이스만 처리. sleep mode와 무관.
+  // #899 (Seam C) — route를 전달해 환승 leg waypoint 도달 시에도 자동 release.
   useBoardingLockAutoRelease({
     lock: boardingLock,
     destinationId: destination?.id ?? null,
     currentStation: result?.station ?? null,
     distanceKm: result?.distanceKm ?? null,
     releaseLock: releaseBoardingLock,
+    route,
   });
   // #584 PR D3: lock.boardingLine 위치 데이터를 별도 구독 — fusion 캐시와 dedup되어 추가 비용 없음.
   // lock 없으면 line=null로 호출되어 polling이 자동 정지된다.
