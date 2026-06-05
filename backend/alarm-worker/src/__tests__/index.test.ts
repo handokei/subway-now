@@ -1,5 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { app, validateLiveActivityRegister, validatePushAck, validateTrip } from '../index';
+import {
+  app,
+  computeLockSyncAdvance,
+  LOCK_TTL_REFRESH_MS,
+  validateBoardingLockSync,
+  validateLiveActivityRegister,
+  validatePushAck,
+  validateTrip,
+} from '../index';
+import { progressKey, type TripProgress } from '../progress';
 import { pendingKey } from '../pendingPushes';
 import type { AnalyticsEngineWriter, Env } from '../types';
 import { InMemoryKV } from './inMemoryKv';
@@ -1347,5 +1356,386 @@ describe('POST /trips — #819 boardingPromptState carries over same session', (
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-bp')) as string);
     expect(stored.boardingPromptState).toBeUndefined();
     vi.useRealTimers();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Seam E (#901) — POST /boarding-lock/sync
+// ──────────────────────────────────────────────────────────────────────────
+
+describe('validateBoardingLockSync (#901)', () => {
+  it('정상 payload 통과', () => {
+    expect(
+      validateBoardingLockSync({
+        token: 'tok',
+        observedStationName: '강남',
+        observedAtMs: 1,
+        accuracy: 10,
+      }),
+    ).toEqual({ token: 'tok', observedStationName: '강남', observedAtMs: 1, accuracy: 10 });
+  });
+
+  it('subsurface 옵션 필드 유지', () => {
+    const p = validateBoardingLockSync({
+      token: 'tok',
+      observedStationName: '강남',
+      observedAtMs: 1,
+      accuracy: 10,
+      subsurface: false,
+    });
+    expect(p?.subsurface).toBe(false);
+  });
+
+  it('subsurface 잘못된 타입은 무시', () => {
+    const p = validateBoardingLockSync({
+      token: 'tok',
+      observedStationName: '강남',
+      observedAtMs: 1,
+      accuracy: 10,
+      subsurface: 'yes',
+    });
+    expect(p?.subsurface).toBeUndefined();
+  });
+
+  it('non-object reject', () => {
+    expect(validateBoardingLockSync(null)).toBeNull();
+    expect(validateBoardingLockSync('s')).toBeNull();
+  });
+
+  it('빈 token reject', () => {
+    expect(
+      validateBoardingLockSync({
+        token: '',
+        observedStationName: '강남',
+        observedAtMs: 1,
+        accuracy: 10,
+      }),
+    ).toBeNull();
+  });
+
+  it('observedStationName 누락 reject', () => {
+    expect(
+      validateBoardingLockSync({ token: 'tok', observedAtMs: 1, accuracy: 10 }),
+    ).toBeNull();
+  });
+
+  it('빈 observedStationName reject', () => {
+    expect(
+      validateBoardingLockSync({
+        token: 'tok',
+        observedStationName: '',
+        observedAtMs: 1,
+        accuracy: 10,
+      }),
+    ).toBeNull();
+  });
+
+  it('NaN observedAtMs reject', () => {
+    expect(
+      validateBoardingLockSync({
+        token: 'tok',
+        observedStationName: '강남',
+        observedAtMs: Number.NaN,
+        accuracy: 10,
+      }),
+    ).toBeNull();
+  });
+
+  it('비숫자 observedAtMs reject', () => {
+    expect(
+      validateBoardingLockSync({
+        token: 'tok',
+        observedStationName: '강남',
+        observedAtMs: '1',
+        accuracy: 10,
+      }),
+    ).toBeNull();
+  });
+
+  it('음수 accuracy reject', () => {
+    expect(
+      validateBoardingLockSync({
+        token: 'tok',
+        observedStationName: '강남',
+        observedAtMs: 1,
+        accuracy: -1,
+      }),
+    ).toBeNull();
+  });
+
+  it('NaN accuracy reject', () => {
+    expect(
+      validateBoardingLockSync({
+        token: 'tok',
+        observedStationName: '강남',
+        observedAtMs: 1,
+        accuracy: Number.NaN,
+      }),
+    ).toBeNull();
+  });
+
+  it('비숫자 accuracy reject', () => {
+    expect(
+      validateBoardingLockSync({
+        token: 'tok',
+        observedStationName: '강남',
+        observedAtMs: 1,
+        accuracy: 'a',
+      }),
+    ).toBeNull();
+  });
+});
+
+describe('computeLockSyncAdvance (#901)', () => {
+  const w = (name: string) => ({ stationName: name, line: '2', kind: 'intermediate' as const });
+
+  it('waypoints[0] 일치 → 1 hop shift', () => {
+    expect(computeLockSyncAdvance([w('A'), w('B'), w('C')], 'A')).toEqual({ shiftedCount: 1 });
+  });
+
+  it('waypoints[1] 일치 → 2 hop catch-up', () => {
+    expect(computeLockSyncAdvance([w('A'), w('B'), w('C')], 'B')).toEqual({ shiftedCount: 2 });
+  });
+
+  it('waypoints[2] 일치 → 3 hop catch-up', () => {
+    expect(computeLockSyncAdvance([w('A'), w('B'), w('C')], 'C')).toEqual({ shiftedCount: 3 });
+  });
+
+  it('미일치 → 0 (no-op)', () => {
+    expect(computeLockSyncAdvance([w('A'), w('B')], 'X')).toEqual({ shiftedCount: 0 });
+  });
+
+  it('빈 waypoints → 0', () => {
+    expect(computeLockSyncAdvance([], 'A')).toEqual({ shiftedCount: 0 });
+  });
+});
+
+describe('POST /boarding-lock/sync (#901)', () => {
+  const FUTURE_LOCK = Date.now() + 30 * 60 * 1000;
+
+  function tripWithLock(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    return {
+      token: 'tok-sync',
+      route: { type: 'direct', line: '2', stops: 3 },
+      destination: 'dst',
+      waypoints: [
+        { stationName: '강남', line: '2', kind: 'intermediate' },
+        { stationName: '역삼', line: '2', kind: 'intermediate' },
+        { stationName: '선릉', line: '2', kind: 'destination' },
+      ],
+      expiresAt: FUTURE,
+      alarmAtEpochMs: FUTURE - 30 * 60 * 1000,
+      boardingLock: {
+        trainCode: 'T-1',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: 1,
+        segmentStations: ['강남', '역삼', '선릉'],
+        expiresAt: FUTURE_LOCK,
+      },
+      ...overrides,
+    };
+  }
+
+  it('잘못된 JSON → 400', async () => {
+    const env = makeKvEnv();
+    const res = await post('/boarding-lock/sync', '{', env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_json' });
+  });
+
+  it('잘못된 payload → 400', async () => {
+    const env = makeKvEnv();
+    const res = await post('/boarding-lock/sync', { token: 'x' }, env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_payload' });
+  });
+
+  it('trip 부재 → 404 trip_not_found', async () => {
+    const env = makeKvEnv();
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'unknown', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'trip_not_found' });
+  });
+
+  it('현재 waypoints[0] 일치 → 1 hop advance + currentWaypoint=역삼', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripWithLock(), env);
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({
+      ok: true,
+      advanced: true,
+      currentWaypoint: '역삼',
+      nextStation: '역삼',
+    });
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+    expect(stored.waypoints.map((w: { stationName: string }) => w.stationName)).toEqual([
+      '역삼',
+      '선릉',
+    ]);
+  });
+
+  it('waypoints[1] 일치 → 2 hop catch-up advance', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripWithLock(), env);
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { advanced: boolean; currentWaypoint: string | null };
+    expect(body.advanced).toBe(true);
+    expect(body.currentWaypoint).toBe('선릉');
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+    expect(stored.waypoints).toHaveLength(1);
+  });
+
+  it('미일치 → no-op (advanced=false), waypoints 그대로', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripWithLock(), env);
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '신촌', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { advanced: boolean; currentWaypoint: string | null };
+    expect(body.advanced).toBe(false);
+    expect(body.currentWaypoint).toBe('강남');
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+    expect(stored.waypoints).toHaveLength(3);
+  });
+
+  it('마지막 waypoint(destination) 일치 → 전체 소진 + currentWaypoint=null', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripWithLock(), env);
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '선릉', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      advanced: boolean;
+      currentWaypoint: string | null;
+      nextStation: string | null;
+    };
+    expect(body.advanced).toBe(true);
+    expect(body.currentWaypoint).toBeNull();
+    expect(body.nextStation).toBeNull();
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+    expect(stored.waypoints).toEqual([]);
+  });
+
+  it('boardingLock TTL refresh — expiresAt이 now+30min 이상으로 연장', async () => {
+    vi.useFakeTimers();
+    const NOW = Date.now();
+    vi.setSystemTime(NOW);
+    const env = makeKvEnv();
+    // 짧은 TTL의 lock을 직접 KV에 적재 — POST /trips 검증을 우회하기 위해.
+    const trip = validateTrip(
+      tripWithLock({ boardingLock: { ...(tripWithLock().boardingLock as object), expiresAt: NOW + 60_000 } }),
+    );
+    await env.TRIPS.put('trip:tok-sync', JSON.stringify(trip));
+    await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+    expect(stored.boardingLock.expiresAt).toBeGreaterThanOrEqual(NOW + LOCK_TTL_REFRESH_MS);
+    vi.useRealTimers();
+  });
+
+  it('boardingLock 없는 trip — advance만 일어나고 lock 필드 추가 안 됨', async () => {
+    const env = makeKvEnv();
+    const tripNoLock = tripWithLock();
+    delete tripNoLock.boardingLock;
+    await post('/trips', tripNoLock, env);
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { advanced: boolean };
+    expect(body.advanced).toBe(true);
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+    expect(stored.boardingLock).toBeUndefined();
+  });
+
+  it('advance 시 progress KV에 shiftedCount mirror', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripWithLock(), env);
+    await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    const progressRaw = await env.TRIPS.get(progressKey('tok-sync'));
+    expect(progressRaw).not.toBeNull();
+    const progress = JSON.parse(progressRaw as string) as TripProgress;
+    expect(progress.trainCode).toBe('T-1');
+    expect(progress.shiftedCount).toBe(2);
+  });
+
+  it('advance 누적 — 두 번째 sync도 progress.shiftedCount 누적', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripWithLock(), env);
+    // 1차 sync — 강남(0) → 1 hop
+    await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    // 2차 sync — 역삼(이제 waypoints[0]) → 1 hop 추가
+    await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '역삼', observedAtMs: 2, accuracy: 5 },
+      env,
+    );
+    const progress = JSON.parse((await env.TRIPS.get(progressKey('tok-sync'))) as string);
+    expect(progress.shiftedCount).toBe(2);
+  });
+
+  it('boardingLock 없는 trip → progress mirror 안 함 (trainCode 없음)', async () => {
+    const env = makeKvEnv();
+    const tripNoLock = tripWithLock();
+    delete tripNoLock.boardingLock;
+    await post('/trips', tripNoLock, env);
+    await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    expect(await env.TRIPS.get(progressKey('tok-sync'))).toBeNull();
+  });
+
+  it('subsurface 필드 허용 — 200', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripWithLock(), env);
+    const res = await post(
+      '/boarding-lock/sync',
+      {
+        token: 'tok-sync',
+        observedStationName: '강남',
+        observedAtMs: 1,
+        accuracy: 5,
+        subsurface: false,
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
   });
 });
