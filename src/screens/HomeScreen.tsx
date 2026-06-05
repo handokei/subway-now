@@ -42,9 +42,13 @@ import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide'
 import { useArrivalAutoClear } from '../features/arrival/hooks/useArrivalAutoClear';
 import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLockController';
 import { useBoardingLockScheduler } from '../features/alarm/hooks/useBoardingLockScheduler';
+import { useTripBoundAlarmScheduler } from '../features/alarm/hooks/useTripBoundAlarmScheduler';
 import { useBoardingLockAdvancer } from '../features/alarm/hooks/useBoardingLockAdvancer';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
+import { useDestinationAutoClear } from '../features/alarm/hooks/useDestinationAutoClear';
 import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
+import { useCurrentStationConfirmModal } from '../features/nearest-station/hooks/useCurrentStationConfirmModal';
+import { CurrentStationConfirmModal } from '../features/nearest-station/components/CurrentStationConfirmModal';
 import { MisBoardingBanner } from '../features/route/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../features/route/components/MisBoardingReselectModal';
 import { Toast } from '../shared/ui/Toast';
@@ -57,6 +61,7 @@ import { BoardingLockHopCard } from '../features/alarm/components/BoardingLockHo
 import { resolveNextAdjacentStationName } from '../features/route/utils/nextAdjacentStation';
 import { getApproachLine } from '../features/route/utils/approachLine';
 import type { Stop } from '../shared/types/journey';
+import type { Station } from '../shared/types/station';
 
 const logger = createLogger('HomeScreen');
 
@@ -69,6 +74,7 @@ export default function HomeScreen() {
   const { t } = useTranslation();
   const router = useRouter();
   const customOrigin = useDestinationStore((s) => s.customOrigin);
+  const setCustomOrigin = useDestinationStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useDestinationStore((s) => s.loadCustomOrigin);
   const addFavorite = useFavoritesStore((s) => s.addFavorite);
   const removeFavorite = useFavoritesStore((s) => s.removeFavorite);
@@ -147,6 +153,38 @@ export default function HomeScreen() {
   const barometerSignal = useBarometer();
   const { subsurface: barometerSubsurface } = barometerSignal;
   const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal });
+
+  // #914 (F4) — 1탭 현재역 확정 모달. 자동 추정이 locationUncertain으로 길어지면 후보 1~3개를
+  // 카드로 노출, 1탭 = customOrigin 적용. wifiStation 네이티브 브릿지(F2 후속)는 미연결이라 null.
+  const [confirmAutoToast, setConfirmAutoToast] = useState<string | null>(null);
+  const handleConfirmStation = useCallback(
+    (station: Station) => {
+      setCustomOrigin(station);
+    },
+    [setCustomOrigin],
+  );
+  const confirmModal = useCurrentStationConfirmModal({
+    locationUncertain,
+    userLocation,
+    wifiStation: null,
+    hasEffectiveOrigin: customOrigin !== null || result?.station != null,
+    onConfirmStation: handleConfirmStation,
+  });
+  useEffect(() => {
+    if (confirmModal.autoConfirmedStation) {
+      setConfirmAutoToast(
+        t('currentStationConfirm.autoConfirmed', {
+          name: getStationDisplayName(confirmModal.autoConfirmedStation),
+        }),
+      );
+      confirmModal.consumeAutoConfirmed();
+    }
+  }, [confirmModal.autoConfirmedStation, confirmModal.consumeAutoConfirmed, t]);
+  const handleConfirmAutoToastDismiss = useCallback(() => setConfirmAutoToast(null), []);
+  // 검색 fallback 실제 wire는 후속 PR — 현재는 onClose와 동일 동작(모달만 닫음).
+  // (origin 검색용 picker는 별도 component 필요. DestinationPicker는 목적지 전용.)
+
+
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,
@@ -250,6 +288,10 @@ export default function HomeScreen() {
     locationUncertain,
     positionStability,
     motionStationary,
+    // #917 A2 follow-up — FG fast path: 현재 폴링 중인 origin/nearest station arrival을 전달해
+    // lock.trainCode arvlCd∈{0,1} 첫 관찰 시 매역 알림 즉시 발사. rawArrival(useArrivalCountdown
+    // 미적용)을 직접 전달 — 매역 발사 트리거는 분 단위 tick과 무관한 arvlCd 원본 값.
+    currentStationArrival: rawArrival,
   });
 
   // #584 PR B — BoardingLock 진입점. UI 렌더링/lock 생성만 담당하며,
@@ -283,6 +325,14 @@ export default function HomeScreen() {
     route,
     destinationName: destination?.name ?? null,
   });
+  // #918 (A3 후속 wire) — boarding lock + route + destination이 모두 갖춰지면 OS local notification에
+  // 사전 예약. 네트워크 0 환경에서 silent push가 못 가는 trip의 fallback alarm 경로. `bl:` prefix와
+  // 분리된 `tba:` prefix를 사용해 lock-scheduler 큐와 충돌 없이 공존한다.
+  useTripBoundAlarmScheduler({
+    lock: boardingLock,
+    route,
+    destinationName: destination?.name ?? null,
+  });
   useBoardingLockAdvancer({
     lock: boardingLock,
     route,
@@ -299,6 +349,19 @@ export default function HomeScreen() {
     distanceKm: result?.distanceKm ?? null,
     releaseLock: releaseBoardingLock,
     route,
+  });
+  // #925 (C2 wire) — destination 자동 하차 감지. arvlCd=0/1 + 역 50m 이내 + 60s motion stationary
+  // 4-신호 AND 게이트 통과 시 setDestination(null) 호출 → 후속 LA end / trip-end recall은
+  // useDestinationStore.setDestination(null)의 기존 cleanup 경로(triggerTripEndRecall, runTripBoundCleanups)에서 처리.
+  // useBoardingLockAutoRelease(lock 라이프사이클, 300m/45s)와는 임계값/책임이 달라 독립적으로 동작.
+  // 기존 arrival/useArrivalAutoClear(500m/2s, GPS 역명 매칭)와도 책임 분리:
+  //   - arrival/useArrivalAutoClear: 도착 banner UX + 빠른 2초 후 자동 클리어 (낙관적 단순 정책).
+  //   - 본 hook: motion=stationary + arvlCd 보강 → 사용자가 명시 "하차" 안 누른 케이스의 안전망.
+  useDestinationAutoClear({
+    destination,
+    userLocation,
+    motionStationary,
+    onAutoClear: handleArrivalClear,
   });
   // #584 PR D3: lock.boardingLine 위치 데이터를 별도 구독 — fusion 캐시와 dedup되어 추가 비용 없음.
   // lock 없으면 line=null로 호출되어 polling이 자동 정지된다.
@@ -944,6 +1007,23 @@ export default function HomeScreen() {
           }}
         />
       )}
+
+      {/* #914 (F4) — 1탭 현재역 확정. wifi 단일 매칭은 자동 확정 + toast 노출,
+           GPS 다중 후보는 모달 1탭 확정, 후보 0개는 검색 fallback 안내. */}
+      <CurrentStationConfirmModal
+        visible={confirmModal.visible}
+        candidates={confirmModal.candidates}
+        topPick={confirmModal.topPick}
+        onConfirm={confirmModal.onCardTap}
+        onSearchFallback={confirmModal.onClose}
+        onClose={confirmModal.onClose}
+      />
+      <Toast
+        visible={confirmAutoToast !== null}
+        message={confirmAutoToast ?? ''}
+        onDismiss={handleConfirmAutoToastDismiss}
+        testID="current-station-auto-confirm-toast"
+      />
 
       <DestinationPicker
         visible={pickerVisible}

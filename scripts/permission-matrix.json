@@ -25,6 +25,39 @@
       "flow": "whileInUse-fg-aboveground-normal.yaml",
       "baseline": true,
       "_doc": "E2 baseline. 가장 흔한 사용자 시나리오(권한=사용중 + 앱 열림 + 지상 + 일반모드). 매역 알람 정상 발사를 보장한다."
+    },
+    {
+      "id": "always-fg-aboveground-normal-ios18",
+      "permission": "always",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 95,
+      "flow": "always-fg-aboveground-normal-ios18.yaml",
+      "_doc": "권한 다른 쪽 baseline 대조군. Always 권한 경로(매역 알림 SLA 정본 권한)에서도 홈 진입점이 동작함을 보장한다."
+    },
+    {
+      "id": "whileInUse-fg-aboveground-sleep-ios18",
+      "permission": "whileInUse",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "sleep",
+      "os": "ios18",
+      "expectedRecallPct": 90,
+      "flow": "whileInUse-fg-aboveground-sleep-ios18.yaml",
+      "_doc": "권한 다운그레이드 + 취침 모드 조합 회귀 가드. 두 차원이 결합해도 토글이 reachable 해야 한다."
+    },
+    {
+      "id": "always-fg-aboveground-sleep-ios18",
+      "permission": "always",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "sleep",
+      "os": "ios18",
+      "expectedRecallPct": 95,
+      "flow": "always-fg-aboveground-sleep-ios18.yaml",
+      "_doc": "매역 알림 SLA의 정본 조합(권한=항상 + 취침). 후속 PR에서 실측 recall로 업데이트."
     }
   ]
 }

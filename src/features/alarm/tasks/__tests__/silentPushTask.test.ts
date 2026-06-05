@@ -47,6 +47,12 @@ jest.mock('../../utils/tripEndedSentinel', () => ({
   setTripEndedSentinel: (...args: unknown[]) => mockSetTripEndedSentinel(...args),
 }));
 
+// #919 — trip-ended 분기는 cleanup 직전에 recall trigger를 호출한다.
+const mockTriggerTripEndRecall = jest.fn().mockResolvedValue({ uploaded: false });
+jest.mock('../../utils/triggerTripEndRecall', () => ({
+  triggerTripEndRecall: (...args: unknown[]) => mockTriggerTripEndRecall(...args),
+}));
+
 const mockCheckGate = jest.fn();
 jest.mock('../../utils/silentPushLocationGate', () => ({
   checkSilentPushLocationGate: (...args: unknown[]) => mockCheckGate(...args),
@@ -215,6 +221,8 @@ describe('silentPushTask', () => {
     // #746 — 기본 silence 없음.
     mockGetDismissSilence.mockResolvedValue(null);
     mockClearDismissSilence.mockResolvedValue(undefined);
+    // #919 — recall trigger 기본 graceful skip.
+    mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
   });
 
   it('defineTask가 SILENT_PUSH_TASK 이름으로 콜백을 등록한다', () => {
@@ -1369,6 +1377,35 @@ describe('silentPushTask', () => {
         });
         await handleSilentPush(tripEndedPayload({ tripToken: 'OLD-TRIP-TOKEN' }));
         expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+      });
+
+      // #919 — trip-end recall KPI 측정. cleanup *이전*에 trigger되어야 routeStops를 읽을 수 있다.
+      it('#919 — trip-ended 수신 시 triggerTripEndRecall 호출 + cleanup *이전* 순서 보장', async () => {
+        const callOrder: string[] = [];
+        mockTriggerTripEndRecall.mockImplementation(async () => {
+          callOrder.push('trigger');
+          return { uploaded: false };
+        });
+        mockRunTripBoundCleanups.mockImplementation(async () => {
+          callOrder.push('cleanup');
+        });
+
+        await handleSilentPush(tripEndedPayload({ reason: 'expired' }));
+
+        expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
+        expect(callOrder).toEqual(['trigger', 'cleanup']);
+      });
+
+      it('#919 — tripToken mismatch로 cleanup skip 시 recall trigger도 호출 안 함', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === ACTIVE_TRIP_KEY) return 'NEW-TRIP-TOKEN';
+          return null;
+        });
+        await handleSilentPush(
+          tripEndedPayload({ pushId: 'te-uuid', tripToken: 'OLD-TRIP-TOKEN' }),
+        );
+        expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
       });
     });
 

@@ -12,6 +12,7 @@
  */
 
 import { Hono } from 'hono';
+import { AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
 import { markPromptSilenced } from './boardingPrompt';
 import {
   recordBoardingPromptOutcome,
@@ -29,6 +30,10 @@ import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
+import {
+  recordRecallUpload,
+  validateRecallUpload,
+} from './recallTelemetry';
 import {
   tokenPrefix,
   validateTelemetryUpload,
@@ -90,6 +95,15 @@ app.post('/trips', async (c) => {
   //   3) 그 외 (다른 trainCode 또는 큰 drift) → 새 세션, 전면 교체
   const existing = await getTrip(c.env.TRIPS, incoming.token);
   const isSameSession = existing !== null && evaluateSameSession(existing, incoming);
+  // #916 follow-up B — auto-prompt dedup 마커 보존. boardingPromptState와 달리 isSameSession=false
+  // 분기에서도 같은 token + AUTO_PROMPT_DEDUP_WINDOW_MS 안이면 보존한다. 사용자가 lock 클리어 후
+  // 목적지를 살짝 바꿔 새 createdAt으로 재등록하는 케이스에서 prompt 재발사를 차단 (fired+clear
+  // 분기 회복). 윈도우 만료/필드 부재면 undefined로 자연 리셋 — 새 trip은 fresh prompt 평가.
+  const preservedLastAutoPromptedAt =
+    existing?.lastAutoPromptedAt !== undefined &&
+    incoming.createdAt - existing.lastAutoPromptedAt < AUTO_PROMPT_DEDUP_WINDOW_MS
+      ? existing.lastAutoPromptedAt
+      : undefined;
   // #705: progress KV 우선 참조. 같은 trainCode면 shift된 waypoints를 incoming에 적용.
   // 다른 trainCode/none이면 progress 폐기.
   const progress = existing !== null ? await getProgress(c.env.TRIPS, incoming.token) : null;
@@ -107,12 +121,30 @@ app.post('/trips', async (c) => {
         lastFiredPhase: existing.lastFiredPhase,
         lastEtaSeconds: existing.lastEtaSeconds,
         apnsEnv: existing.apnsEnv ?? incoming.apnsEnv,
+        // #916 follow-up A — server-set auto-lock 보존.
+        // 9단 게이트 통과로 backend가 합성한 lock(autoLockedAt 마커 보유)은 client가 lock 필드
+        // 없이 재등록해도 silent하게 drop되지 않아야 한다 (cron 추적이 끊기는 회귀 차단).
+        // 마커가 없는 사용자 명시 lock은 기존 정책대로 incoming.boardingLock===undefined일 때 drop —
+        // 사용자가 명시적으로 lock을 해제했다는 신호로 간주.
+        // incoming.boardingLock이 truthy면 (사용자가 다른 trainCode 선택 또는 client가 같은 lock
+        // 재송신) 그대로 채택돼 swap 경로가 동작.
+        boardingLock:
+          incoming.boardingLock ??
+          (existing.boardingLock?.autoLockedAt !== undefined
+            ? existing.boardingLock
+            : undefined),
         // boardingLock이 바뀌면(예: 환승 후 새 trainCode) 추적 baseline도 리셋.
         // 양쪽 모두 boardingLock이 있고 trainCode가 같을 때만 baseline 유지 — 둘 다 undefined인
         // 경우 비교가 true로 평가돼 stale epoch이 살아남는 회귀를 막는다.
+        //
+        // #916 follow-up A — incoming.boardingLock===undefined + existing auto-lock 보존 케이스도
+        // 같은 lock이 유지되므로 baseline 유지 (cron 추적 연속성). 사용자 명시 lock drop 케이스는
+        // 기존 정책대로 undefined로 리셋.
         lastTrackedArrivalEpoch:
-          incoming.boardingLock &&
-          existing.boardingLock?.trainCode === incoming.boardingLock.trainCode
+          (incoming.boardingLock &&
+            existing.boardingLock?.trainCode === incoming.boardingLock.trainCode) ||
+          (incoming.boardingLock === undefined &&
+            existing.boardingLock?.autoLockedAt !== undefined)
             ? existing.lastTrackedArrivalEpoch
             : undefined,
         // #586 C: Live Activity token/state는 별도 endpoint(`/live-activity/register`)로 관리.
@@ -131,8 +163,16 @@ app.post('/trips', async (c) => {
         // re-register하더라도 trip당 1회 + 5분 silence 정책을 유지해야 한다 (re-register마다
         // reset되면 spam 회귀). promptGeoContext / promptDisplay는 incoming이 최신이라 그대로 받음.
         boardingPromptState: existing.boardingPromptState,
+        // #916 follow-up B — same session에선 같은 trip이므로 그대로 보존.
+        lastAutoPromptedAt: existing.lastAutoPromptedAt,
       }
-    : incoming;
+    : {
+        ...incoming,
+        // #916 follow-up B — 새 세션(createdAt drift > 5s)으로 판정돼 incoming으로 전면 교체되더라도
+        // 같은 token + window 안이면 auto-prompt dedup 마커는 보존. backend가 직전에 auto-lock 시도/
+        // 발사한 trip 컨텍스트의 재발사 ping-pong을 차단한다.
+        lastAutoPromptedAt: preservedLastAutoPromptedAt,
+      };
 
   // #705 — progress KV가 우선. 같은 trainCode면 incoming.waypoints에서 shift된 만큼 잘라낸다.
   // existing trip이 사라졌더라도(KV TTL 만료 등) progress가 살아 있으면 진행분을 그대로 복원.
@@ -172,6 +212,44 @@ app.post('/telemetry/silent-push', async (c) => {
       received: payload.received,
       fired: payload.fired,
       skipped: payload.skipped,
+      sink: writer ? 'ae' : 'none',
+    }),
+  );
+  return c.json({ ok: true });
+});
+
+/**
+ * 매역 알림 recall KPI upload (#919, Epic #912 A4).
+ *
+ * Trip 1건 종료 시 client(`alarmLogTelemetry.computeAndUploadTripRecall`)가 산출한 recall %와
+ * 게이트별 차단 분포를 Analytics Engine에 적재한다. 클라가 idempotency 가드를 가지므로 같은
+ * tripStart 재호출은 안 옴 — backend는 단순 적재.
+ *
+ * Trip 존재 여부 확인 안 함 — trip이 이미 만료된 경우에도 telemetry는 보존(데이터 완전성).
+ * TELEMETRY binding 미설정 시 graceful no-op (개발 환경 호환, `/telemetry/silent-push`와 동형).
+ */
+app.post('/telemetry/recall', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const payload = validateRecallUpload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const writer = c.env.TELEMETRY;
+  if (writer) {
+    recordRecallUpload(writer, payload);
+  }
+  console.log(
+    JSON.stringify({
+      msg: 'recall uploaded',
+      tokenPrefix: tokenPrefix(payload.token),
+      expectedStops: payload.expectedStops,
+      firedStops: payload.firedStops,
+      recallPct: payload.recallPct,
       sink: writer ? 'ae' : 'none',
     }),
   );
@@ -786,6 +864,9 @@ function parseBoardingLock(raw: unknown): BoardingLockMeta | undefined {
     selectedDepartureTime: o.selectedDepartureTime,
     segmentStations: o.segmentStations as string[],
     expiresAt: o.expiresAt,
+    // #916 follow-up A: server-set 마커. client는 절대 송신하지 않지만 incoming 본문에 어떤 이유로
+    // 같이 echo돼도 보존한다 (drop하면 서버 set lock 표시가 사라져 보존 분기가 무력화됨).
+    ...(typeof o.autoLockedAt === 'number' ? { autoLockedAt: o.autoLockedAt } : {}),
   };
 }
 

@@ -3,10 +3,16 @@ import { Platform } from 'react-native';
 import {
   TRIP_BOUND_ALARM_PREFIX,
   cancelTripBoundAlarms,
+  deriveTripBoundStops,
   prescheduleStationAlerts,
   tripBoundAlarmIdentifier,
   type TripBoundStop,
 } from '../tripBoundScheduler';
+import {
+  makeDirectRoute,
+  makeMultiTransferRoute,
+  makeTransferRoute,
+} from '../../../../testUtils/routeFixtures';
 
 jest.mock('expo-notifications');
 
@@ -341,5 +347,69 @@ describe('cancelTripBoundAlarms', () => {
     mockedGetAll.mockResolvedValue([]);
     await expect(cancelTripBoundAlarms()).resolves.toBeUndefined();
     expect(mockedCancel).not.toHaveBeenCalled();
+  });
+});
+
+// #918 (A3 후속) — useTripBoundAlarmScheduler가 호출하는 caller-side helper.
+// route 종류별 hop 매핑 + legStops=0 fallback을 검증.
+describe('deriveTripBoundStops', () => {
+  it('route=null이면 빈 배열', () => {
+    const { routeStops, estimatedHopTimesMs } = deriveTripBoundStops(null, '강남');
+    expect(routeStops).toEqual([]);
+    expect(estimatedHopTimesMs).toEqual([]);
+  });
+
+  it('destinationName=null이면 빈 배열', () => {
+    const { routeStops } = deriveTripBoundStops(makeDirectRoute(2, '2'), null);
+    expect(routeStops).toEqual([]);
+  });
+
+  it('direct route → destination 1개 waypoint, hopMs=full leg time', () => {
+    const route = makeDirectRoute(3, '2');
+    const { routeStops, estimatedHopTimesMs } = deriveTripBoundStops(route, '강남');
+    expect(routeStops).toEqual([{ stationName: '강남', alarmType: 'destination' }]);
+    expect(estimatedHopTimesMs.length).toBe(1);
+    // waypoint-level: hopMs = travelSeconds * 1000 (평균 X). 360 * 1000 = 360_000.
+    expect(estimatedHopTimesMs[0]).toBe(360_000);
+  });
+
+  it('transfer route → 환승역 + 도착역 2개 waypoint, 각 leg full seconds', () => {
+    const route = makeTransferRoute({
+      transferName: '교대',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 2,
+      stopsFromTransfer: 3,
+    });
+    const { routeStops, estimatedHopTimesMs } = deriveTripBoundStops(route, '강남');
+    expect(routeStops).toEqual([
+      { stationName: '교대', alarmType: 'transfer' },
+      { stationName: '강남', alarmType: 'destination' },
+    ]);
+    // hopMs는 각 leg full seconds. 양수 검증 (정확 값은 makeTransferRoute fixture 의존).
+    expect(estimatedHopTimesMs.length).toBe(2);
+    expect(estimatedHopTimesMs[0]).toBeGreaterThan(0);
+    expect(estimatedHopTimesMs[1]).toBeGreaterThan(0);
+  });
+
+  it('multi-transfer route → 환승역 N개 + 마지막 leg 도착역, hopIndex 매핑 정확', () => {
+    const route = makeMultiTransferRoute({
+      transfers: [
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 2 },
+        { transferName: '종로3가', fromLine: '1', toLine: '3', stopsToTransfer: 3 },
+      ],
+      stopsAfterLastTransfer: 4,
+    });
+    const { routeStops, estimatedHopTimesMs } = deriveTripBoundStops(route, '약수');
+    expect(routeStops.map((s) => s.stationName)).toEqual(['시청', '종로3가', '약수']);
+    expect(routeStops.map((s) => s.alarmType)).toEqual(['transfer', 'transfer', 'destination']);
+    expect(estimatedHopTimesMs.length).toBe(3);
+    expect(estimatedHopTimesMs.every((ms) => ms > 0)).toBe(true);
+  });
+
+  it('legSeconds=0/음수/NaN/Infinity면 HOP_TIME_MS fallback', () => {
+    const route = { type: 'direct' as const, stops: 1, line: '2' as const, travelSeconds: 0 };
+    const { estimatedHopTimesMs } = deriveTripBoundStops(route, '강남');
+    expect(estimatedHopTimesMs).toEqual([90_000]);
   });
 });

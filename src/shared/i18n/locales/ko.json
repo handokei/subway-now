@@ -130,7 +130,8 @@
     "topPickHint": "추천",
     "empty": "주변 역을 찾지 못했습니다",
     "searchFallback": "검색으로 선택",
-    "close": "닫기"
+    "close": "닫기",
+    "autoConfirmed": "{{name}}으로 확정됨"
   },
   "sleepModeGuide": {
     "title": "취침 모드 안내",

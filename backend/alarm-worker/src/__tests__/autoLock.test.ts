@@ -40,6 +40,8 @@ describe('attemptAutoLock (#916 A1)', () => {
     expect(lock?.segmentStations).toEqual(['강남', '역삼', '선릉']);
     expect(lock?.expiresAt).toBe(NOW + AUTO_LOCK_TTL_MS);
     expect(lock?.selectedDepartureTime).toBe(NOW);
+    // #916 follow-up A — server-set 마커. POST /trips 재등록 시 보존 분기의 키.
+    expect(lock?.autoLockedAt).toBe(NOW);
   });
 
   it('AUTO_LOCK_TTL_MS는 SWAP_LOCK_TTL_MS와 동일 (단일 정책)', () => {

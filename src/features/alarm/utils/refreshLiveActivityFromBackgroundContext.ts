@@ -36,6 +36,7 @@ import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { createLogger } from '../../../shared/utils/logger';
 import { buildLiveActivityData } from './stationNotification';
+import { isLaDismissed } from './laDismissSentinel';
 
 const logger = createLogger('SilentPushLaRefresh');
 
@@ -94,6 +95,13 @@ export async function refreshLiveActivityFromBackgroundContext(): Promise<void> 
   try {
     if (!LiveActivity.isLiveActivityEnabled()) {
       logger.info('LA disabled — skip refresh');
+      return;
+    }
+    // #926 (Seam E3) — 사용자가 LA를 dismiss한 직후에는 silent push가 도착해도 LA를 다시
+    // 살리지 않는다. TTL(LA_DISMISS_SENTINEL_TTL_MS, 30분) 안의 sentinel이 있으면 skip.
+    // TTL 경과 또는 명시적 clear 후에는 정상 refresh.
+    if (await isLaDismissed()) {
+      logger.info('LA dismiss sentinel active — skip refresh');
       return;
     }
     const [destRaw, routeRaw, bgRaw] = await Promise.all([

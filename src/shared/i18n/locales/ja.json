@@ -130,7 +130,8 @@
     "topPickHint": "おすすめ",
     "empty": "近くの駅が見つかりませんでした",
     "searchFallback": "検索で選ぶ",
-    "close": "閉じる"
+    "close": "閉じる",
+    "autoConfirmed": "{{name}}に確定しました"
   },
   "sleepModeGuide": {
     "title": "おやすみモードのご案内",

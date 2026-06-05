@@ -133,6 +133,23 @@ export interface Trip {
    */
   boardingPromptState?: BoardingPromptState;
   /**
+   * #916 follow-up B — backend auto-lock 또는 boarding-prompt가 발사된 마지막 시각(epoch ms).
+   * `boardingPromptState`와 별개로 유지되는 dedup 마커.
+   *
+   * 필요한 이유: `boardingPromptState`는 `isSameSession=false` 분기에서 `baseTrip=incoming`로
+   * 갈아치워져 사라진다. auto-lock 성공 직후 사용자가 lock을 클리어/swap하거나 목적지를
+   * 살짝 바꿔 새 createdAt으로 재등록하면 새 trip 세션처럼 인식돼 prompt가 재발사된다 —
+   * 같은 trip token + 같은 출발 컨텍스트에 대해 backend가 방금 자동 lock을 시도/성공한 직후라.
+   *
+   * 본 필드는 같은 token + window 내 새 세션에도 보존되어 `evaluateAndMaybeFireBoardingPrompt`
+   * 초입에서 prompt 재평가 자체를 차단한다 (AUTO_PROMPT_DEDUP_WINDOW_MS = 30분, lockSwap의
+   * SWAP_LOCK_TTL_MS와 정합). 윈도우 만료 또는 명백히 다른 trip(createdAt이 window 이상 차이)은
+   * 보존하지 않아 새 prompt가 자연 발사된다.
+   *
+   * 클라이언트는 절대 송신하지 않는다 — backend가 stamp + 자체 보존.
+   */
+  lastAutoPromptedAt?: number;
+  /**
    * boarding-prompt 평가용 출발역/다음역 좌표 (#819 게이트 #4/#5).
    * backend는 stations.json을 갖지 않으므로 클라이언트가 trip 등록 시 함께 보낸다.
    * 부재 시 boarding-prompt 평가 자체를 skip — 좌표 없는 lockMissing trip은 silent.
@@ -214,6 +231,19 @@ export interface BoardingLockMeta {
   segmentStations: string[];
   /** Lock 자동 만료 시각 (epoch ms) */
   expiresAt: number;
+  /**
+   * #916 follow-up A — backend가 9단 게이트 통과 시점에 자동 합성한 lock의 stamp (epoch ms).
+   * 사용자가 명시적으로 [탑승] 버튼을 탭해 client가 POST한 lock에는 절대 부재한다.
+   *
+   * 용도: 같은 세션에서 client가 lock 필드 없이 `POST /trips`로 재등록할 때(예: GPS update,
+   * cold restart) baseTrip spread가 `existing.boardingLock`을 silent하게 drop하던 회귀를 차단한다.
+   * 이 마커가 있는 existing lock은 incoming.boardingLock===undefined일 때 보존되고,
+   * 마커가 없는 사용자 명시 lock은 기존 정책대로 drop된다 ("lock 해제" 의미 유지).
+   *
+   * 사용자가 다른 trainCode를 탭해 새 lock을 POST하면 incoming.boardingLock이 truthy라
+   * 기존 swap 경로(`lockSwap.ts`)가 그대로 동작 — 마커 유무와 무관히 새 lock 채택.
+   */
+  autoLockedAt?: number;
 }
 
 /**

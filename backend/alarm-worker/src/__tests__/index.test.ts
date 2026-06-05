@@ -312,6 +312,173 @@ describe('POST /trips — boardingLock merge (#585)', () => {
   });
 });
 
+// #916 follow-up A — server-set auto-lock(autoLockedAt 마커) 보존.
+// client가 lock 필드 없이 same-session 재등록하면 사용자 명시 lock은 drop되고
+// server-set auto-lock은 보존되어야 한다 (cron 추적 연속성).
+describe('POST /trips — server-set auto-lock 보존 (#916 follow-up A)', () => {
+  const CREATED = 1_700_000_000_000;
+  const TOKEN = 'tok-916-fua';
+
+  function tripBody(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    return {
+      ...base(),
+      token: TOKEN,
+      createdAt: CREATED,
+      ...overrides,
+    };
+  }
+
+  /** existing trip을 KV에 직접 주입 — backend가 자동 합성한 server-set lock 시뮬레이션. */
+  async function seedExisting(
+    env: ReturnType<typeof makeKvEnv>,
+    lock: Record<string, unknown> | undefined,
+  ): Promise<void> {
+    const seeded: Record<string, unknown> = { ...tripBody() };
+    if (lock !== undefined) seeded.boardingLock = lock;
+    await env.TRIPS.put(`trip:${TOKEN}`, JSON.stringify(seeded));
+  }
+
+  function serverSetLock(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      trainCode: 'AUTO1',
+      line: '7',
+      subwayId: '1007',
+      selectedDepartureTime: CREATED,
+      segmentStations: ['용마산', '중곡', '군자'],
+      expiresAt: FUTURE,
+      autoLockedAt: CREATED + 1_000,
+      ...overrides,
+    };
+  }
+
+  function userSetLock(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    // autoLockedAt 부재 = 사용자 명시 lock
+    return {
+      trainCode: 'USER1',
+      line: '7',
+      subwayId: '1007',
+      selectedDepartureTime: CREATED,
+      segmentStations: ['용마산', '중곡', '군자'],
+      expiresAt: FUTURE,
+      ...overrides,
+    };
+  }
+
+  it('server-set lock + incoming.boardingLock 부재 → 보존', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, serverSetLock());
+    await post('/trips', tripBody(), env); // incoming.boardingLock 없음
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.boardingLock?.trainCode).toBe('AUTO1');
+    expect(stored.boardingLock?.autoLockedAt).toBe(CREATED + 1_000);
+  });
+
+  it('user-set lock + incoming.boardingLock 부재 → drop (기존 정책 유지)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, userSetLock());
+    await post('/trips', tripBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.boardingLock).toBeUndefined();
+  });
+
+  it('server-set lock + incoming 새 trainCode → swap (새 lock 채택)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, serverSetLock({ trainCode: 'AUTO1' }));
+    await post(
+      '/trips',
+      tripBody({
+        boardingLock: {
+          trainCode: 'NEW1',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: CREATED,
+          segmentStations: ['용마산', '중곡', '군자'],
+          expiresAt: FUTURE,
+        },
+      }),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.boardingLock?.trainCode).toBe('NEW1');
+    // 새 lock은 client가 보낸 그대로 — autoLockedAt 마커 없음
+    expect(stored.boardingLock?.autoLockedAt).toBeUndefined();
+  });
+
+  it('server-set lock 보존 시 lastTrackedArrivalEpoch도 유지 (cron 추적 연속성)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, serverSetLock());
+    // backend cron이 baseline epoch을 stamp한 상태 시뮬레이션
+    const advanced = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    advanced.lastTrackedArrivalEpoch = 12_345;
+    await env.TRIPS.put(`trip:${TOKEN}`, JSON.stringify(advanced));
+    await post('/trips', tripBody(), env); // lock 필드 없이 재등록
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lastTrackedArrivalEpoch).toBe(12_345);
+  });
+});
+
+describe('POST /trips — lastAutoPromptedAt 보존 (#916 follow-up B)', () => {
+  // 30분 window (AUTO_PROMPT_DEDUP_WINDOW_MS) 안/밖, same/new session 4사분면 검증.
+  const CREATED = 1_700_000_000_000;
+  const TOKEN = 'tok-916-fub';
+  const WITHIN_WINDOW_MS = 5 * 60_000; // 5분 — 30분 window 안
+  const BEYOND_WINDOW_MS = 31 * 60_000; // 31분 — 30분 window 밖
+
+  function tripBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return { ...base(), token: TOKEN, createdAt: CREATED, ...overrides };
+  }
+
+  async function seedExisting(
+    env: ReturnType<typeof makeKvEnv>,
+    fields: Record<string, unknown>,
+  ): Promise<void> {
+    await env.TRIPS.put(
+      `trip:${TOKEN}`,
+      JSON.stringify({ ...tripBody(), ...fields }),
+    );
+  }
+
+  it('same session — existing.lastAutoPromptedAt 보존', async () => {
+    const env = makeKvEnv();
+    const stamp = CREATED - WITHIN_WINDOW_MS;
+    await seedExisting(env, { lastAutoPromptedAt: stamp });
+    await post('/trips', tripBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lastAutoPromptedAt).toBe(stamp);
+  });
+
+  it('new session(createdAt drift > 5s) — window 안이면 보존', async () => {
+    const env = makeKvEnv();
+    const stamp = CREATED - WITHIN_WINDOW_MS;
+    await seedExisting(env, { lastAutoPromptedAt: stamp });
+    // boardingPromptState는 새 세션에서 리셋되지만 dedup 마커는 살아남아야 한다.
+    await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lastAutoPromptedAt).toBe(stamp);
+  });
+
+  it('new session + window 밖 — 보존하지 않음(undefined)', async () => {
+    const env = makeKvEnv();
+    // existing의 createdAt도 같이 옛 시각으로 시뮬레이션 (둘 다 옛 시각이라야 incoming 새 시각과 drift)
+    const oldNow = CREATED - BEYOND_WINDOW_MS;
+    await env.TRIPS.put(
+      `trip:${TOKEN}`,
+      JSON.stringify({ ...tripBody({ createdAt: oldNow }), lastAutoPromptedAt: oldNow }),
+    );
+    await post('/trips', tripBody({ createdAt: CREATED }), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lastAutoPromptedAt).toBeUndefined();
+  });
+
+  it('existing 마커 부재 — incoming도 마커 없이 저장(undefined)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, {}); // lastAutoPromptedAt 없음
+    await post('/trips', tripBody({ createdAt: CREATED + 10_000 }), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lastAutoPromptedAt).toBeUndefined();
+  });
+});
+
 describe('POST /trips (#578 — preserve advance progress on re-register)', () => {
   const CREATED = 1_700_000_000_000;
 
@@ -645,27 +812,24 @@ describe('POST /trips — #705 progress KV preserves advance across POST race', 
   });
 });
 
-describe('POST /telemetry/silent-push', () => {
-  const validBody = {
-    token: 'aabbccdd11223344',
-    since: 0,
-    until: 1000,
-    received: 3,
-    fired: 2,
-    skipped: 1,
-    skipReasons: { 'gate-out-of-range': 1 },
-  };
-
+/**
+ * 4 tests 공통 패턴 — TELEMETRY 적재형 POST endpoint(/telemetry/silent-push,
+ * /metrics/boarding-prompt, /telemetry/recall)는 모두 (1) invalid JSON 400,
+ * (2) invalid payload 400, (3) writer 있을 때 적재, (4) writer 없을 때 graceful
+ * 200을 보장해야 한다. Sonar `new_duplicated_lines_density` 임계(3%)에 걸리지 않도록
+ * helper로 통합 (#919 sonar fix).
+ */
+function runTelemetryEndpointSuite(path: string, validBody: Record<string, unknown>): void {
   it('returns 400 on invalid JSON', async () => {
     const env = makeEnv();
-    const res = await post('/telemetry/silent-push', 'not-json{', env);
+    const res = await post(path, 'not-json{', env);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'invalid_json' });
   });
 
   it('returns 400 on invalid payload', async () => {
     const env = makeEnv();
-    const res = await post('/telemetry/silent-push', { token: '' }, env);
+    const res = await post(path, { token: '' }, env);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'invalid_payload' });
   });
@@ -673,7 +837,7 @@ describe('POST /telemetry/silent-push', () => {
   it('writes to TELEMETRY binding when present', async () => {
     const writer: AnalyticsEngineWriter = { writeDataPoint: vi.fn() };
     const env = makeEnv({ TELEMETRY: writer });
-    const res = await post('/telemetry/silent-push', validBody, env);
+    const res = await post(path, validBody, env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(writer.writeDataPoint).toHaveBeenCalled();
@@ -681,9 +845,21 @@ describe('POST /telemetry/silent-push', () => {
 
   it('still returns ok when TELEMETRY binding absent (graceful)', async () => {
     const env = makeEnv();
-    const res = await post('/telemetry/silent-push', validBody, env);
+    const res = await post(path, validBody, env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
+  });
+}
+
+describe('POST /telemetry/silent-push', () => {
+  runTelemetryEndpointSuite('/telemetry/silent-push', {
+    token: 'aabbccdd11223344',
+    since: 0,
+    until: 1000,
+    received: 3,
+    fired: 2,
+    skipped: 1,
+    skipReasons: { 'gate-out-of-range': 1 },
   });
 });
 
@@ -1262,36 +1438,21 @@ describe('POST /boarding-prompt/dismiss (#819)', () => {
 });
 
 describe('POST /metrics/boarding-prompt (#827)', () => {
-  const validBody = { token: 'aabbccdd11223344', outcome: 'dismissed' as const };
-
-  it('returns 400 on invalid JSON', async () => {
-    const env = makeEnv();
-    const res = await post('/metrics/boarding-prompt', 'not-json{', env);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'invalid_json' });
+  runTelemetryEndpointSuite('/metrics/boarding-prompt', {
+    token: 'aabbccdd11223344',
+    outcome: 'dismissed',
   });
+});
 
-  it('returns 400 on invalid payload', async () => {
-    const env = makeEnv();
-    const res = await post('/metrics/boarding-prompt', { token: '' }, env);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'invalid_payload' });
-  });
-
-  it('writes to TELEMETRY binding when present', async () => {
-    const writer: AnalyticsEngineWriter = { writeDataPoint: vi.fn() };
-    const env = makeEnv({ TELEMETRY: writer });
-    const res = await post('/metrics/boarding-prompt', validBody, env);
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-    expect(writer.writeDataPoint).toHaveBeenCalled();
-  });
-
-  it('still returns ok when TELEMETRY binding absent', async () => {
-    const env = makeEnv();
-    const res = await post('/metrics/boarding-prompt', validBody, env);
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+describe('POST /telemetry/recall (#919)', () => {
+  runTelemetryEndpointSuite('/telemetry/recall', {
+    token: 'aabbccdd11223344',
+    tripStart: 1_000,
+    tripEnd: 2_000,
+    expectedStops: 5,
+    firedStops: 4,
+    recallPct: 80,
+    gateSuppressionCounts: { 'gate-accuracy': 1 },
   });
 });
 

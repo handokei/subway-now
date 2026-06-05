@@ -43,7 +43,10 @@ export type AlarmLogSource =
   | 'alert-fallback-fired'
   // #580: useStationAlarm 하이드레이션 1회당 1엔트리. destinationId + 복원된 fired set 크기 기록.
   // 두 번째 fire 직전에 ref가 비워졌는지 직접 관찰 — race 가설 확인용.
-  | 'fg-hydrate';
+  | 'fg-hydrate'
+  // #917 A2 follow-up — FG fast path: lock.trainCode arvlCd∈{0,1} 신호로 매역 알림 발사한 케이스.
+  // 일반 GPS 기반 fg와 구분해 backend cron silent push 대비 fast path 도달률·정확도 측정.
+  | 'fg-arvlcd';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -477,6 +480,7 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'bg-scheduled': null,
   'alert-fallback-fired': null,
   'fg-hydrate': null,
+  'fg-arvlcd': null,
 };
 
 export interface SilentPushOutcomeCounts {

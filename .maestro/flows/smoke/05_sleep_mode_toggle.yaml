@@ -31,19 +31,26 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
 - tapOn:
     id: "search-input"
 - inputText: "잠실"
-- assertVisible:
-    id: "suggestions-list"
+# iOS 시뮬레이터 IME가 한글 입력 후 setQuery → suggestions useMemo → SectionList 렌더까지
+# 종종 ~1s를 넘긴다. flow 02와 동일하게 extendedWaitUntil(5s)로 흡수.
+- extendedWaitUntil:
+    visible:
+      id: "suggestions-list"
+    timeout: 5000
 - tapOn:
     id: "suggestion-item-2-016"
 
-# 잠실 설정 직후 destination 박스 높이가 커져 home-sleep-mode-switch가 viewport 밖.
-# HomeScreen은 outer ScrollView 단일 컨테이너(src/screens/HomeScreen.tsx:567) — scrollUntilVisible
-# DOWN으로 안전 스크롤(06 flow와 동일 패턴). 고정 swipe %는 디바이스 높이/leg 개수 따라 부족할 수 있어 회귀(#943).
+# 잠실 설정 직후 destination/route 박스가 늘어나 home-sleep-mode-switch가 viewport 밖.
+# #644는 단발 swipe(50%→30%)로 보정했지만 이후 destination 블록에 컨텐츠가 추가되며
+# (#749/#758/#797/#816) 한 번의 swipe로는 도달 못 하는 회귀 발생(#949). scrollUntilVisible로
+# 가변 컨텐츠 길이에 자동 적응하도록 전환. centerElement로 nested ScrollView 인식 안정화.
 - scrollUntilVisible:
     element:
       id: "home-sleep-mode-switch"
     direction: DOWN
     timeout: 10000
+    centerElement: true
+    visibilityPercentage: 100
 - tapOn:
     id: "home-sleep-mode-switch"
 
@@ -61,7 +68,7 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
 - tapOn:
     id: "sleep-mode-switch"
 
-# 홈 탭 복귀 — 동일 사유로 scrollUntilVisible 사용
+# 홈 탭 복귀
 - tapOn:
     point: "12%,95%"
 - scrollUntilVisible:
@@ -69,3 +76,5 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
       id: "home-sleep-mode-switch"
     direction: DOWN
     timeout: 10000
+    centerElement: true
+    visibilityPercentage: 100

@@ -34,6 +34,19 @@ import type { BoardingLockMeta, Trip, Waypoint } from './types';
  */
 export const AUTO_LOCK_TTL_MS = SWAP_LOCK_TTL_MS;
 
+/**
+ * #916 follow-up B — auto-prompt 발사 dedup 윈도우.
+ *
+ * `evaluateAndMaybeFireBoardingPrompt`가 9단 게이트 통과 직후 `attemptAutoLock`을 시도/성공한
+ * trip은 이 윈도우 내에서 다시 prompt를 평가하지 않는다. lock이 사라져도(transfer release,
+ * 사용자 swap, isSameSession=false로 boardingPromptState 리셋) 같은 trip token에 대한 자동
+ * prompt 재발사를 차단해 시도 - 클리어 - 재시도 ping-pong 회귀를 방지한다.
+ *
+ * 길이는 `AUTO_LOCK_TTL_MS`(=30분)와 동일 — 자동 lock TTL이 끝나면 prompt dedup도 자연 만료.
+ * 두 정책이 한 번에 바뀌도록 같은 상수를 재사용한다.
+ */
+export const AUTO_PROMPT_DEDUP_WINDOW_MS = AUTO_LOCK_TTL_MS;
+
 export interface AttemptAutoLockInputs {
   trip: Trip;
   /** 다음 추적 대상 waypoint — arrivals 폴링 대상 (현재 leg 첫 waypoint). */
@@ -97,5 +110,8 @@ export async function attemptAutoLock(
     selectedDepartureTime: now,
     segmentStations,
     expiresAt: now + AUTO_LOCK_TTL_MS,
+    // #916 follow-up A — server-set 표시. POST /trips 재등록 시 incoming.boardingLock=undefined
+    // 케이스에서 existing lock을 보존할지 판단하는 마커 (사용자 명시 lock과 구분).
+    autoLockedAt: now,
   };
 }
