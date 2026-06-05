@@ -960,4 +960,79 @@ describe('useApnsTripRegistration', () => {
       expect(refreshed?.[0].locklessStationPassed).toBe(true);
     });
   });
+
+  // #903 (Seam G) — 기압계 subsurface 전달
+  describe('subsurface (#903)', () => {
+    it('subsurface=true 입력 시 register payload에 포함', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          subsurface: true,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].subsurface).toBe(true);
+    });
+
+    it('subsurface 미지정/false면 register payload에 미포함 (graceful)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].subsurface).toBeUndefined();
+    });
+
+    it('OFF→ON 전환 시 즉시 재등록 (deps 반영 — backend threshold 빠른 갱신)', async () => {
+      const { rerender } = renderHook(
+        ({ sub }: { sub: boolean }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            subsurface: sub,
+          }),
+        { initialProps: { sub: false } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockRegister.mock.calls[0][0].subsurface).toBeUndefined();
+
+      rerender({ sub: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockRegister.mock.calls[1][0].subsurface).toBe(true);
+    });
+
+    it('token refresh 경로도 최신 subsurface 값을 송신', async () => {
+      const { rerender } = renderHook(
+        ({ sub }: { sub: boolean }) =>
+          useApnsTripRegistration({
+            route: directRoute,
+            destination: station,
+            nextStationEtaSeconds: 120,
+            subsurface: sub,
+          }),
+        { initialProps: { sub: false } },
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      rerender({ sub: true });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+
+      const listener = mockAddPushTokenListener.mock.calls[0][0];
+      await act(async () => {
+        listener({ data: 'token-NEW2' });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const refreshed = mockRegister.mock.calls.find(
+        (c) => (c[0] as { token: string }).token === 'token-NEW2',
+      );
+      expect(refreshed?.[0].subsurface).toBe(true);
+    });
+  });
 });

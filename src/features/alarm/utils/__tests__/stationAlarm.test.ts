@@ -409,4 +409,98 @@ describe('evaluateAlarmPhase', () => {
       ).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남' });
     });
   });
+
+  describe('#903 Seam G — degradedConfidence (gps-only-underground 강등 시 게이트)', () => {
+    it('degraded=true이고 phase=early이면 발사 보류 (destination/early)', () => {
+      // 강남까지 1정거장 — early 발사 조건. degraded 없으면 발사하지만 degraded=true면 보류.
+      const route = makeDirectRoute(1, '2');
+      expect(
+        evaluateAlarmPhase(
+          source({ route, destinationName, degradedConfidence: true }),
+          new Set(),
+        ),
+      ).toBeNull();
+    });
+
+    it('degraded=false이면 early 정상 발사 (제어군)', () => {
+      const route = makeDirectRoute(1, '2');
+      expect(
+        evaluateAlarmPhase(
+          source({ route, destinationName, degradedConfidence: false }),
+          new Set(),
+        ),
+      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남' });
+    });
+
+    it('degraded=true이고 transfer 카테고리면 모든 phase 보류', () => {
+      // TransferRoute: 환승역 시청 1정거장 (transfer early 발사 조건).
+      const route = makeTransferRoute(1, 5);
+      expect(
+        evaluateAlarmPhase(
+          source({ route, destinationName, degradedConfidence: true }),
+          new Set(),
+        ),
+      ).toBeNull();
+    });
+
+    it('degraded=true여도 destination imminent는 통과 (ETA 거리 게이트가 이중 가드)', () => {
+      const route = makeDirectRoute(1, '2');
+      // early phase가 보류되면 다음 phase(imminent)도 같은 leg 내에서 evaluate되어야 한다.
+      // imminent는 destination 카테고리 + remainingStops<=1 + etaSeconds<=10이면 발사.
+      const got = evaluateAlarmPhase(
+        source({
+          route,
+          destinationName,
+          etaSeconds: 5,
+          degradedConfidence: true,
+        }),
+        new Set(),
+      );
+      expect(got).toEqual({ phaseId: 'imminent', type: 'destination', stationName: '강남' });
+    });
+
+    it('degraded 미전달(undefined)이면 기존 동작 (graceful)', () => {
+      const route = makeDirectRoute(1, '2');
+      expect(
+        evaluateAlarmPhase(source({ route, destinationName }), new Set()),
+      ).toEqual({ phaseId: 'early', type: 'destination', stationName: '강남' });
+    });
+
+    it('지하 7정거장 시뮬레이션 — degraded 상태에서 모든 cycle 알람 보류, 지상 복귀 후 정상 발사', () => {
+      // 시청 → 을지로3가 7정거장 시나리오. remainingStops 7→1 시뮬레이션 + transfer route 사용.
+      // 지하 동안 degraded=true → transfer/early phase 모두 발사 안 됨 → fired set 0개.
+      // 지상 복귀(degraded=false) 후 1정거장 남았을 때 정상 발사.
+      const fired = new Set<string>();
+      const route = makeTransferRoute(2, 5, '시청'); // 시청 환승 + 도착역 강남
+      // 7→3 정거장 동안 degraded=true (지하), early phase는 stops<=1만 발사이므로 어차피 발사 안 됨.
+      // transfer 카테고리는 stopsToTransfer=2일 때 도달.
+      const transferEarly = evaluateAlarmPhase(
+        source({
+          route: makeTransferRoute(1, 5, '시청'),
+          destinationName,
+          degradedConfidence: true,
+          currentLine: '1', // fromLine 매칭
+        }),
+        fired,
+      );
+      expect(transferEarly).toBeNull(); // transfer 카테고리는 degraded 시 차단
+      expect(fired.size).toBe(0);
+
+      // 지상 복귀 — 같은 stops/route, degraded=false → 정상 발사
+      const transferEarlySurface = evaluateAlarmPhase(
+        source({
+          route: makeTransferRoute(1, 5, '시청'),
+          destinationName,
+          degradedConfidence: false,
+          currentLine: '1',
+        }),
+        fired,
+      );
+      expect(transferEarlySurface).toEqual({
+        phaseId: 'early',
+        type: 'transfer',
+        stationName: '시청',
+      });
+    });
+  });
 });
