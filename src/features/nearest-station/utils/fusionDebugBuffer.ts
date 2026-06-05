@@ -30,6 +30,18 @@ export interface FusionDecisionEntry {
   gpsAccuracyAtPushMeters: number | null;
   /** 4개 우선순위 후보 raw — 왜 그 source가 선택됐는지 사후 재구성. */
   candidates: FusionCandidateMini[];
+  /**
+   * #921 — 신호 fusion verdict (3 신호 합의). 본 PR에서는 cascade 비결합 — 측정용으로만 기록.
+   *
+   * 후속 PR에서 cascade에 합쳐질 때까지 dormant이 아닌 "관찰 가능" 상태 유지 — 실기기에서 어느
+   * 신호가 합의에 기여했는지 사후 재구성용. null이면 본 사이클에 fusion 입력 자체가 없음.
+   */
+  detectionSignals?: {
+    detected: boolean;
+    confidence: 'high' | 'medium' | 'low';
+    signalsAgreed: number;
+    signalsAvailable: number;
+  } | null;
 }
 
 export type GpsFixKind = 'gps-fix' | 'gps-drop';

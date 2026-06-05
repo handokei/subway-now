@@ -26,6 +26,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Barometer, type BarometerMeasurement } from 'expo-sensors';
 import {
   appendBarometerReading,
+  evaluateLatestStop,
   evaluateLatestSubsurface,
   resetBarometerState,
 } from '../utils/barometerState';
@@ -43,6 +44,13 @@ import {
 export interface BarometerSignal {
   /** 30s 윈도우 dP가 임계 이상 상승했는가 (지하 진입 후보). */
   subsurface: boolean;
+  /**
+   * #921 — 30s 윈도우 |dP|가 정차 임계 이하인가 (역 도착 후보).
+   *
+   * 평가 불가(reading 부족) → undefined. fuseStationDetectionSignals 입력으로
+   * 그대로 전달되면 unavailable로 분류된다 — 다른 신호로 합의 가능.
+   */
+  stop: boolean | undefined;
 }
 
 /**
@@ -54,10 +62,16 @@ export interface BarometerSignal {
  */
 export function useBarometer(): BarometerSignal {
   const [subsurface, setSubsurface] = useState<boolean>(false);
+  // #921 — readings 부족 또는 unmount 직후는 undefined. fusion 입력 unavailable로 흘러간다.
+  const [stop, setStop] = useState<boolean | undefined>(undefined);
   // #903 — hysteresis: 임계 부근 노이즈 진동 흡수. lastEmitted와 다른 verdict가 N회 연속
   // 들어와야 state flip. lastEmitted과 같은 verdict가 들어오면 카운터 리셋.
-  const lastEmittedRef = useRef<boolean>(false);
-  const pendingCountRef = useRef<number>(0);
+  const lastSubsurfaceRef = useRef<boolean>(false);
+  const subsurfacePendingRef = useRef<number>(0);
+  // #921 — stop 신호도 동일 hysteresis. undefined(평가 불가)는 즉시 반영 — 신호 부재는
+  // hysteresis로 흐리면 안 되고 즉시 unavailable로 표기되어야 fusion이 정확하다.
+  const lastStopRef = useRef<boolean | undefined>(undefined);
+  const stopPendingRef = useRef<number>(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,17 +89,39 @@ export function useBarometer(): BarometerSignal {
         // ring buffer는 epoch ms 윈도우로 평가하므로 Date.now()로 직접 stamp.
         const now = Date.now();
         appendBarometerReading({ t: now, pressureHpa: m.pressure });
-        const verdict = evaluateLatestSubsurface(now);
-        const detected = verdict?.detected === true;
-        if (detected === lastEmittedRef.current) {
-          pendingCountRef.current = 0;
+
+        const subVerdict = evaluateLatestSubsurface(now);
+        const subDetected = subVerdict?.detected === true;
+        if (subDetected === lastSubsurfaceRef.current) {
+          subsurfacePendingRef.current = 0;
+        } else {
+          subsurfacePendingRef.current += 1;
+          if (subsurfacePendingRef.current >= BAROMETER_SUBSURFACE_CONFIRM_SAMPLES) {
+            lastSubsurfaceRef.current = subDetected;
+            subsurfacePendingRef.current = 0;
+            setSubsurface(subDetected);
+          }
+        }
+
+        const stopVerdict = evaluateLatestStop(now);
+        const stopDetected: boolean | undefined =
+          stopVerdict === null ? undefined : stopVerdict.detected;
+        if (stopDetected === lastStopRef.current) {
+          stopPendingRef.current = 0;
           return;
         }
-        pendingCountRef.current += 1;
-        if (pendingCountRef.current >= BAROMETER_SUBSURFACE_CONFIRM_SAMPLES) {
-          lastEmittedRef.current = detected;
-          pendingCountRef.current = 0;
-          setSubsurface(detected);
+        if (stopDetected === undefined) {
+          // 평가 불가(reading 부족)는 hysteresis 없이 즉시 반영 — fusion 입력 정확성 우선.
+          lastStopRef.current = undefined;
+          stopPendingRef.current = 0;
+          setStop(undefined);
+          return;
+        }
+        stopPendingRef.current += 1;
+        if (stopPendingRef.current >= BAROMETER_SUBSURFACE_CONFIRM_SAMPLES) {
+          lastStopRef.current = stopDetected;
+          stopPendingRef.current = 0;
+          setStop(stopDetected);
         }
       });
     };
@@ -101,7 +137,7 @@ export function useBarometer(): BarometerSignal {
     };
   }, []);
 
-  return { subsurface };
+  return { subsurface, stop };
 }
 
 /** isAvailableAsync 예외를 false로 폴백 — 일부 시뮬레이터에서 throw. */

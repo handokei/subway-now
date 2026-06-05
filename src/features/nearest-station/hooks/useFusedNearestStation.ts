@@ -16,6 +16,8 @@ import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import { useTrainPositions } from '../../route/hooks/useTrainPositions';
 import { useRouteProgress } from '../../route/hooks/useRouteProgress';
 import { usePositionStability } from './usePositionStability';
+import { useFusedStationDetection } from './useFusedStationDetection';
+import type { BarometerSignal } from '../../../shared/hooks/useBarometer';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { findActiveLines } from '../../route/utils/findActiveLines';
 import { pickFusedStation, type FusionConfidence, type FusionSource } from '../utils/pickFusedStation';
@@ -147,6 +149,24 @@ function pickArrivalsForStation(
 }
 
 /**
+ * #921 — 채택된 result.station.name과 매칭되는 후보 슬롯의 StationArrival을 반환.
+ *
+ * 신호 fusion 입력용 — slot에서 어떤 row가 lockedTrainCode와 매칭되는지는 호출자
+ * (useFusedStationDetection)가 판정한다. 매칭 슬롯이 없으면 null — fusion 입력 unavailable.
+ */
+function pickArrivalForStationName(
+  stationName: string,
+  slots: readonly CandidateArrivalSlot[],
+): StationArrival | null {
+  for (const slot of slots) {
+    if (slot.stationName === stationName && slot.arrival !== null) {
+      return slot.arrival;
+    }
+  }
+  return null;
+}
+
+/**
  * 경로 컨텍스트가 제공되면 useRouteProgress(1D map matching)를 기본으로 사용해
  * 단일 GPS 점프로 화면이 흔들리는 문제를 막는다. 경로가 없으면 기존 GPS+arrival fusion 유지.
  */
@@ -178,13 +198,20 @@ export function useFusedNearestStation(
    */
   motionStationary?: boolean,
   /**
-   * #903 (Seam G) — 기압계(useBarometer) dP/dt가 지하 진입을 시사하는지. true면 GPS-only 결과는
-   * 'gps-only-underground'로 confidence 강등해 stationAlarm의 early/transfer phase 발사를 보류.
-   * sticky의 motion unlock 신호와 동일 시그널 — useNearestStation으로도 함께 prop drilling.
-   * 미전달이면 기존 'gps-only' 그대로 (graceful — 기압계 미지원/권한 거절 케이스 호환).
+   * #903 (Seam G) + #921 — 기압계 신호 묶음.
+   * - `subsurface`: dP/dt가 지하 진입을 시사하는지. true면 GPS-only 결과는 'gps-only-underground'로
+   *   confidence 강등해 stationAlarm의 early/transfer phase 발사를 보류. sticky motion unlock과 동일.
+   *   useNearestStation으로도 함께 prop drilling. 미전달이면 graceful (기압계 미지원/권한 거절 호환).
+   * - `signal`: subsurface+stop을 모두 담은 전체 신호 — fusion(B1 후속 PR) 입력. 미전달이면 fusion
+   *   'barometer-stop' 입력 unavailable로 흐른다(다른 신호로 합의 가능). subsurface와 분리한 이유:
+   *   subsurface는 cascade 강등에 즉시 결합, signal은 측정 단계 분리.
+   *
+   * S107 회피를 위해 단일 객체로 묶었다. 어느 한 키만 줘도 됨.
    */
-  barometerSubsurface?: boolean,
+  barometer?: { subsurface?: boolean; signal?: BarometerSignal },
 ): UseFusedNearestStationReturn {
+  const barometerSubsurface = barometer?.subsurface;
+  const barometerSignal = barometer?.signal;
   const gps = useNearestStation({ barometerSubsurface });
   // #733 — 위치 이력 기반 정적 판정. shouldDowngradeFusion이 speed=null일 때 fallback으로 사용.
   // useNearestStation의 userLocation 변경마다 자동 누적/판정.
@@ -557,6 +584,31 @@ export function useFusedNearestStation(
     confidence = 'gps-only-underground';
   }
 
+  // #921 — 신호 fusion(barometer-stop + motion-stationary + arvlcd-arrived) wire-up.
+  // 본 PR에서는 cascade 비결합 — verdict만 측정 entry에 첨부. 후속 PR(별도 이슈)에서 cascade 결합.
+  //
+  // arrival 입력: 채택된 result의 station name과 매칭되는 후보 슬롯의 arrival을 사용. result가
+  // 어떤 후보(c0/c1/c2)에서 왔든 같은 station name이면 한 슬롯에서 lockedTrainCode를 찾을 수 있다.
+  // 매칭 슬롯이 없으면 (route-progress/interp 결과가 GPS top-3 밖) arrival=null → arvlcd 입력
+  // unavailable로 흐른다.
+  const fusionArrival = result
+    ? pickArrivalForStationName(result.station.name, [
+        { stationName: c0, arrival: a0.arrival },
+        { stationName: c1, arrival: a1.arrival },
+        { stationName: c2, arrival: a2.arrival },
+      ])
+    : null;
+  const detectionInput = useMemo(
+    () => ({
+      barometer: barometerSignal ?? null,
+      motionStationary,
+      arrival: fusionArrival,
+      lockedTrainCode: lockedTrainCode ?? null,
+    }),
+    [barometerSignal, motionStationary, fusionArrival, lockedTrainCode],
+  );
+  const detectionVerdict = useFusedStationDetection(detectionInput);
+
   // 측정(#443): 결정 변화(source/stationId/confidence) 시에만 push.
   // render 중 side-effect 회피 + 의존성 누락 은폐 회피를 위해 결정 key를 ref로 비교.
   const lastDecisionKeyRef = useRef<string | null>(null);
@@ -609,8 +661,18 @@ export function useFusedNearestStation(
       distanceKm: result?.distanceKm ?? null,
       gpsAccuracyAtPushMeters: gps.accuracyMeters,
       candidates,
+      // #921 — 신호 fusion verdict. signalsAvailable=0이면 입력 자체가 없었음(null로 기록).
+      detectionSignals:
+        detectionVerdict.signalsAvailable === 0
+          ? null
+          : {
+              detected: detectionVerdict.detected,
+              confidence: detectionVerdict.confidence,
+              signalsAgreed: detectionVerdict.signalsAgreed,
+              signalsAvailable: detectionVerdict.signalsAvailable,
+            },
     });
-  }, [decisionKey, source, confidence, result, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, trainProgress, lockedTrainCode]);
+  }, [decisionKey, source, confidence, result, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, trainProgress, lockedTrainCode, detectionVerdict]);
 
   return {
     result,
