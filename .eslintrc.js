@@ -5,6 +5,8 @@
  *   https://app.notion.com/p/36e30c0194b68148ba29f2bc4554ce8a
  * - 이슈: #890 (chore: ESLint import/no-restricted-paths error 승격)
  * - 후속 Step 6 (#892): favorites 슬라이스 신설에 따른 sibling zone 추가.
+ * - 후속 Step 7 (#894): `src/screens/` 신설 (bulletproof "thin route + thick screen")
+ *   에 따른 screens 역참조 차단 zone 추가.
  *
  * 현재 상태 — **enforce 모드 (error)**:
  *   ESLint 설치 완료. import/no-restricted-paths가 error로 승격되어 위반 시
@@ -14,6 +16,8 @@
  *   1. `src/features/*` → 다른 `src/features/*`를 직접 import 금지
  *      공통 코드는 `src/shared/` 하위로 추출 (type / util / port).
  *   2. `src/shared/*` → `src/features/*`를 import 금지 (shared는 features 모름)
+ *   3. `src/screens/*`는 위 layer — `src/features/*`, `src/shared/*`가 역참조 금지
+ *      (Step 7). screens는 features를 조합하는 controller. features는 screens 모름.
  *
  * @see docs/adr/ — 도메인 ADR 디렉토리
  */
@@ -60,12 +64,12 @@ module.exports = {
       'error',
       {
         zones: [
-          // shared/는 features/를 모른다 — 역참조 금지
+          // shared/는 features/와 screens/를 모른다 — 역참조 금지
           {
             target: './src/shared',
-            from: './src/features',
+            from: ['./src/features', './src/screens'],
             message:
-              'shared/는 features/를 import 할 수 없습니다 (의존 방향: features → shared).',
+              'shared/는 features/ 또는 screens/를 import 할 수 없습니다 (의존 방향: screens → features → shared).',
           },
           // features/끼리는 직접 의존 금지 — 슬라이스별 zone으로 sibling import 차단.
           // (import/no-restricted-paths는 target == from의 sub-tree 내부 import는 허용하므로,
@@ -181,6 +185,13 @@ module.exports = {
             ],
             message:
               'feature 슬라이스끼리 직접 import 할 수 없습니다. 공통 코드는 shared/로 추출하세요.',
+          },
+          // Step 7 — features/는 screens/를 모른다 (screens는 features 위 layer).
+          {
+            target: './src/features',
+            from: './src/screens',
+            message:
+              'features/는 screens/를 import 할 수 없습니다. screens가 features를 조합하는 controller layer입니다.',
           },
         ],
       },
