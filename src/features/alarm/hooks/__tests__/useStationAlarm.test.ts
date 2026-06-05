@@ -334,59 +334,6 @@ describe('useStationAlarm', () => {
     );
   });
 
-  // #903 (Seam G) — arrivalConfidence가 강등 라벨이면 evaluateAlarmPhase에 degradedConfidence=true 전달
-  describe('#903 degradedConfidence 전달', () => {
-    const route = makeDirectRoute(3, '2');
-    const baseInputs = () =>
-      defaultInputs({
-        route,
-        destination,
-        userLocation: { lat: 37.4, lng: 127.0 },
-        speedMps: 10,
-        accuracyMeters: 100,
-      });
-
-    it('arrivalConfidence="gps-only-underground" → degradedConfidence=true', async () => {
-      renderHook(() =>
-        useStationAlarm({ ...baseInputs(), arrivalConfidence: 'gps-only-underground' }),
-      );
-      await waitFor(() =>
-        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
-          expect.objectContaining({ degradedConfidence: true }),
-          expect.any(Set),
-          undefined,
-          expect.any(Array),
-        ),
-      );
-    });
-
-    it('arrivalConfidence="gps-only" → degradedConfidence=false', async () => {
-      renderHook(() =>
-        useStationAlarm({ ...baseInputs(), arrivalConfidence: 'gps-only' }),
-      );
-      await waitFor(() =>
-        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
-          expect.objectContaining({ degradedConfidence: false }),
-          expect.any(Set),
-          undefined,
-          expect.any(Array),
-        ),
-      );
-    });
-
-    it('arrivalConfidence 미전달 → degradedConfidence=false (graceful)', async () => {
-      renderHook(() => useStationAlarm(baseInputs()));
-      await waitFor(() =>
-        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
-          expect.objectContaining({ degradedConfidence: false }),
-          expect.any(Set),
-          undefined,
-          expect.any(Array),
-        ),
-      );
-    });
-  });
-
   it('passes null etaSeconds when speed is null', async () => {
     const route = makeDirectRoute(3, '2');
     renderHook(() =>

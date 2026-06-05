@@ -24,7 +24,6 @@ import { getStationDisplayName } from '../shared/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../features/alarm/utils/stationNotification';
 import { useStationAlarm } from '../features/alarm/hooks/useStationAlarm';
 import { useMotionActivity } from '../features/nearest-station/hooks/useMotionActivity';
-import { useBarometer } from '../shared/hooks/useBarometer';
 import { useTripOrigin } from '../features/route/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../features/nearest-station/hooks/useBackgroundLocation';
 import { useApnsTripRegistration } from '../features/alarm/hooks/useApnsTripRegistration';
@@ -140,11 +139,7 @@ export default function HomeScreen() {
   // #728 — CMMotionActivity 신호. 권한 요청/폴링은 hook 내부에서 lifecycle 관리.
   // 미지원/거절 시 false로 고정되어 기존 가드만 동작 (graceful fallback).
   const motionStationary = useMotionActivity();
-  // #903 (Seam G) — 기압계 dP/dt 신호. 미지원/권한 거절은 subsurface=false 고정(graceful).
-  //   1) useFusedNearestStation: 'gps-only' → 'gps-only-underground' 강등 + sticky automotive 트리거.
-  //   2) useApnsTripRegistration: backend payload subsurface 동봉(threshold 5→10).
-  const { subsurface: barometerSubsurface } = useBarometer();
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, barometerSubsurface);
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary);
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,
@@ -336,7 +331,6 @@ export default function HomeScreen() {
     currentStation: result?.station ?? null,
     boardingLock,
     locklessStationPassed,
-    subsurface: barometerSubsurface,
   });
 
   useEffect(() => {

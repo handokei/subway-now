@@ -121,12 +121,7 @@ app.post('/trips', async (c) => {
         activityState: existing.activityState,
         // #706: 연속 etaMissing 카운터는 backend-only state — 디바이스가 같은 세션으로 re-register해도
         // 누적치를 보존해야 자동 종료가 정상 동작 (re-register마다 0으로 초기화되면 무한 폴링 회귀).
-        // #903 (Seam G) — 지상 복귀(subsurface true→false) 시 누적 카운터 리셋. 지하 인내 임계(10)로
-        // 누적된 값이 지상 임계(5)에 곧장 걸려 trip이 즉시 자동 종료되는 회귀 방지. 신호 회복 = trust restored.
-        consecutiveEtaMissing:
-          existing.subsurface === true && incoming.subsurface !== true
-            ? 0
-            : existing.consecutiveEtaMissing,
+        consecutiveEtaMissing: existing.consecutiveEtaMissing,
         // #819: boarding-prompt 발사 카운터는 backend-only state — 디바이스가 같은 세션으로
         // re-register하더라도 trip당 1회 + 5분 silence 정책을 유지해야 한다 (re-register마다
         // reset되면 spam 회귀). promptGeoContext / promptDisplay는 incoming이 최신이라 그대로 받음.
@@ -557,9 +552,6 @@ export function validateTrip(input: unknown): Trip | null {
     // 자연 skip — 좌표 없는 평가는 게이트 #4/#5 정확도 0이라 의미 없음.
     promptGeoContext: parsePromptGeoContext(obj.promptGeoContext),
     promptDisplay: parsePromptDisplay(obj.promptDisplay),
-    // #903 (Seam G): 클라이언트 기압계가 보고한 지하 진입 신호. 미송신/비boolean이면 undefined(default OFF).
-    // scheduled.ts가 이 값으로 consecutiveEtaMissing threshold(5 vs 10)를 분기한다.
-    subsurface: typeof obj.subsurface === 'boolean' ? obj.subsurface : undefined,
   };
 }
 

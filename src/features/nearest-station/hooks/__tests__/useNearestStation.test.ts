@@ -3,7 +3,6 @@ import * as Location from 'expo-location';
 import { AppState } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNearestStation } from '../useNearestStation';
-import * as useStickyStationModule from '../useStickyStation';
 import * as findNearestStationModule from '../../utils/findNearestStation';
 import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY, MAX_LOCATION_AGE_MS } from '../../../../shared/constants/location';
 import { BG_LAST_STATION_KEY } from '../../../../shared/constants/storageKeys';
@@ -1164,36 +1163,5 @@ describe('useNearestStation — #852 GPS state & lastFix', () => {
     // 약간 기다려도 stale 시각 유지(jump drop은 setLocationUncertain만 호출).
     await new Promise((r) => setTimeout(r, 10));
     expect(result.current.lastFixAtMs).toBe(validTs);
-  });
-});
-
-describe('useNearestStation — #903 Seam G barometer→sticky', () => {
-  beforeEach(async () => {
-    jest.clearAllMocks();
-    await AsyncStorage.clear();
-    appStateCallback = null;
-    watchCallback = null;
-    mockNoLastKnownLocation();
-    mockSubscription.remove.mockClear();
-    (Location.watchPositionAsync as jest.Mock).mockImplementation(
-      async (_options: unknown, callback: typeof watchCallback) => {
-        watchCallback = callback;
-        return mockSubscription;
-      },
-    );
-    mockGranted();
-  });
-
-  it.each([
-    { label: '기본(미전달) → automotive=false', input: undefined, expected: false },
-    { label: 'barometerSubsurface=true → automotive=true', input: true, expected: true },
-    { label: 'barometerSubsurface=false → automotive=false (graceful)', input: false, expected: false },
-  ])('$label', async ({ input, expected }) => {
-    const spy = jest.spyOn(useStickyStationModule, 'useStickyStation');
-    renderHook(() => useNearestStation(input === undefined ? {} : { barometerSubsurface: input }));
-    await waitFor(() => expect(spy).toHaveBeenCalled());
-    const lastCall = spy.mock.calls[spy.mock.calls.length - 1];
-    expect(lastCall[1]).toEqual({ automotive: expected });
-    spy.mockRestore();
   });
 });

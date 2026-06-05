@@ -6,14 +6,12 @@ import type { WindowedMetrics } from '../positionSeries';
 import {
   MAX_CONSECUTIVE_ETA_MISSING,
   RESCHEDULE_THRESHOLD_MS,
-  SUBSURFACE_ETA_MISSING_TOLERANCE,
   estimateArrivalFromPosition,
   flipApnsEnv,
   maybeCountDrift,
   pickActiveWaypoint,
   pickApnsHost,
   pickBestArrivalSignal,
-  resolveEtaMissingThreshold,
   runScheduled,
   type ScheduledDeps,
   type ScheduledStats,
@@ -692,25 +690,6 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
   describe('MAX_CONSECUTIVE_ETA_MISSING (#706)', () => {
     it('is 5', () => {
       expect(MAX_CONSECUTIVE_ETA_MISSING).toBe(5);
-    });
-  });
-
-  // #903 (Seam G) — 기압계 subsurface trip은 인내 threshold(10) 적용.
-  describe('#903 SUBSURFACE_ETA_MISSING_TOLERANCE', () => {
-    it('is 10 (기본의 2배)', () => {
-      expect(SUBSURFACE_ETA_MISSING_TOLERANCE).toBe(10);
-    });
-
-    it('resolveEtaMissingThreshold(subsurface=true) → 10', () => {
-      expect(resolveEtaMissingThreshold({ subsurface: true })).toBe(SUBSURFACE_ETA_MISSING_TOLERANCE);
-    });
-
-    it('resolveEtaMissingThreshold(subsurface=false) → 5 (기본)', () => {
-      expect(resolveEtaMissingThreshold({ subsurface: false })).toBe(MAX_CONSECUTIVE_ETA_MISSING);
-    });
-
-    it('resolveEtaMissingThreshold(subsurface=undefined) → 5 (graceful default)', () => {
-      expect(resolveEtaMissingThreshold({})).toBe(MAX_CONSECUTIVE_ETA_MISSING);
     });
   });
 

@@ -52,12 +52,6 @@ export interface UseApnsTripRegistrationInputs {
    * 미설정/false면 기존 #640 게이트 그대로 (lock 없으면 push 0건).
    */
   locklessStationPassed?: boolean;
-  /**
-   * #903 (Seam G) — 기압계 dP/dt가 지하 진입을 시사하는가. true면 backend로 함께 전달되어
-   * consecutiveEtaMissing threshold를 5→10으로 늘려 일시 GPS/arrival 누락에 더 인내한다.
-   * 미설정/false면 기존 threshold(5) 유지 — 기압계 미지원 환경 graceful.
-   */
-  subsurface?: boolean;
 }
 
 /**
@@ -80,8 +74,6 @@ interface RegisterCallInputs {
   currentStation: Station | null;
   boardingLock: BoardingLock | null;
   locklessStationPassed: boolean;
-  /** #903 (Seam G) — 기압계 subsurface 신호. true면 backend threshold 5→10. */
-  subsurface: boolean;
   /** 같은 trip 세션 동안 고정되는 epoch ms. backend `isSameSession` 판정 키(#589). */
   createdAt: number;
 }
@@ -122,8 +114,6 @@ async function callRegister(input: RegisterCallInputs) {
     ...(boardingLockMeta ? { boardingLock: boardingLockMeta } : {}),
     // #816 C — 토글 ON이면 backend에 lockless station-passed opt-in 명시. OFF면 필드 누락.
     ...(input.locklessStationPassed ? { locklessStationPassed: true } : {}),
-    // #903 (Seam G) — 기압계 subsurface ON일 때만 송신. OFF/false는 필드 누락(graceful).
-    ...(input.subsurface ? { subsurface: true } : {}),
   });
 }
 
@@ -134,7 +124,6 @@ export function useApnsTripRegistration({
   currentStation = null,
   boardingLock = null,
   locklessStationPassed = false,
-  subsurface = false,
 }: UseApnsTripRegistrationInputs): void {
   // route 객체 reference가 categorized recompute로 자주 바뀌므로 내용 기반 signature로
   // 메모화 — register useEffect deps에 사용해 동일 경로 재등록(POST /trips 폭주) 방지.
@@ -143,9 +132,9 @@ export function useApnsTripRegistration({
   // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
   const boardingLockSig = lockSig(boardingLock);
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
-  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, locklessStationPassed, subsurface });
+  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, locklessStationPassed });
   useEffect(() => {
-    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, locklessStationPassed, subsurface };
+    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, locklessStationPassed };
   });
 
   // #589 — backend `isSameSession`(token+createdAt) 판정용. 같은 trip(같은
@@ -203,7 +192,6 @@ export function useApnsTripRegistration({
           currentStation: cs,
           boardingLock: bl,
           locklessStationPassed: lsp,
-          subsurface: sub,
         } = latestInputsRef.current;
         if (!r || !d) return;
         const sessionKey = `${token}:${routeSignature(r)}:${d.id}`;
@@ -215,7 +203,6 @@ export function useApnsTripRegistration({
           currentStation: cs,
           boardingLock: bl,
           locklessStationPassed: lsp,
-          subsurface: sub,
           createdAt: resolveTripCreatedAt(sessionKey),
         });
         // #767 — main effect와 동일 기준으로 lock sig를 추적해야 다음 cycle의 release 판정 정확도
@@ -269,7 +256,6 @@ export function useApnsTripRegistration({
         currentStation,
         boardingLock,
         locklessStationPassed,
-        subsurface,
         createdAt: resolveTripCreatedAt(sessionKey),
       });
       // POST 발사 직후(성공/실패 무관) 송신된 lock sig를 기록 — 다음 cycle이 "직전 송신 = lock,
@@ -315,9 +301,6 @@ export function useApnsTripRegistration({
     // token-refresh 경로는 여전히 최신값을 사용한다.
     // #816 C: 토글 변경 시 즉시 backend에 반영해야 하므로 deps에 포함. 사용자가 ON/OFF 전환하면
     // 한 cycle만에 register payload가 갱신된다.
-    // #903 (Seam G): subsurface 변화 시 backend threshold(5→10)를 빨리 갱신해 지하 진입 직후
-    // 일시 GPS/arrival 누락에 인내. useBarometer의 60s 윈도우 평가가 토글 폭주를 자체 흡수하므로
-    // deps churn 위험 낮음. alarmBackend의 dedup hash가 subsurface 미변화 사이클은 POST를 skip.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeSig, destination?.id, boardingLockSig, locklessStationPassed, subsurface]);
+  }, [routeSig, destination?.id, boardingLockSig, locklessStationPassed]);
 }

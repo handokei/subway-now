@@ -77,14 +77,6 @@ export interface AlarmSource {
   // approachLine이 일치하는 웨이포인트만 phase 평가 대상이 된다.
   // GPS 미확정 등으로 노선을 알 수 없을 때만 명시적으로 null을 전달 — 모든 leg 평가가 skip된다.
   currentLine: LineNumber | null;
-  /**
-   * #903 (Seam G) — fusion confidence가 'gps-only-underground'로 강등됐는가.
-   * true면 transfer 알람과 early phase 알람을 차단한다(지하 GPS는 wifi/cell 삼각측량 fallback일
-   * 가능성이 높아 정거장 단위 추정이 부정확). imminent phase는 destination 카테고리에 한해 통과 —
-   * 거리 게이트(useStationAlarm.isAccuracyAcceptable)와 ETA 임계(10s)가 이중 가드.
-   * 미전달/false면 기존 동작 유지(graceful — 기압계 미지원 환경 호환).
-   */
-  degradedConfidence?: boolean;
 }
 
 /**
@@ -134,13 +126,6 @@ export function evaluateAlarmPhase(
         continue;
       }
       if (!phase.evaluate(context)) continue;
-      // #903 (Seam G) — confidence 'gps-only-underground' 강등 시 early phase / transfer 카테고리 보류.
-      // 지하 진입 진행 중엔 정거장 단위 추정이 부정확해 환승역 미리 알림이나 다음 hop 도달 알람이
-      // 잘못 발사될 위험. imminent + destination만 통과 — useStationAlarm의 accuracy 200m 게이트와
-      // ETA 10s 임계가 이중 가드. dedup으로는 적재하지 않음(silenced — 다음 tick에서 신호 복귀 시 재평가).
-      if (source.degradedConfidence === true) {
-        if (phase.id === 'early' || target.alarmType === 'transfer') continue;
-      }
       return { phaseId: phase.id, type: target.alarmType, stationName: target.name };
     }
     // 매칭된 leg는 현재 사용자가 탑승 중인 구간 — 발사 조건 미달이면 다음 leg를 평가하지 않는다.

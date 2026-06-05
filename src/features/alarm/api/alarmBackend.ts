@@ -107,13 +107,6 @@ export interface RegisterTripPayload {
     originStation: string;
     line: string;
   };
-  /**
-   * #903 (Seam G) — 등록 시점 기압계가 지하 진입을 시사하는가.
-   * true면 backend가 consecutiveEtaMissing threshold를 5→10으로 늘려 일시 GPS/arrival
-   * 누락에 더 인내한다(지하 dead zone일 때 trainCode 추적이 자주 끊김).
-   * false/미설정은 기존 동작 그대로 — 기압계 미지원/권한 거절 환경 graceful.
-   */
-  subsurface?: boolean;
 }
 
 export interface AlarmBackendResult {
@@ -168,7 +161,6 @@ function buildRegisterHash(body: {
   boardingLock?: AlarmBoardingLock;
   locklessStationPassed?: boolean;
   promptDisplay?: { originStation: string; line: string };
-  subsurface?: boolean;
 }): string {
   return JSON.stringify({
     token: body.token,
@@ -191,9 +183,6 @@ function buildRegisterHash(body: {
     promptDisplayKey: body.promptDisplay
       ? `${body.promptDisplay.originStation}|${body.promptDisplay.line}`
       : null,
-    // #903 (Seam G) — subsurface 토글이 바뀌면 backend threshold가 즉시 갱신되도록 dedup 키 포함.
-    // 빈번한 ON/OFF jitter는 useBarometer의 60s 윈도우 평가가 자체 흡수하므로 폭주 위험 낮음.
-    subsurface: body.subsurface === true,
   });
 }
 
@@ -242,8 +231,6 @@ async function performRegisterFetch(
     // #819 — boarding-prompt 평가 컨텍스트. 좌표/표시 둘 중 하나라도 없으면 backend는 자동 skip.
     ...(payload.promptGeoContext ? { promptGeoContext: payload.promptGeoContext } : {}),
     ...(payload.promptDisplay ? { promptDisplay: payload.promptDisplay } : {}),
-    // #903 (Seam G) — 지하 진입 신호. ON일 때만 송신. backend는 부재 시 false default로 기존 threshold(5) 적용.
-    ...(payload.subsurface === true ? { subsurface: true } : {}),
   };
 
   try {
@@ -291,7 +278,6 @@ export function registerActiveTrip(
     boardingLock: payload.boardingLock,
     locklessStationPassed: payload.locklessStationPassed,
     promptDisplay: payload.promptDisplay,
-    subsurface: payload.subsurface,
   });
   if (hash === lastRegisteredHash) {
     return Promise.resolve({ ok: true, skipped: true });
