@@ -1,10 +1,15 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature test: arrival 컴포넌트가 settings store에 의존하는 부분(접근성 모드 분기)을
+ * 검증하기 위해 settings store import. 본체 EditorialTimeline.tsx도 file-level disable로
+ * 옵트인되어 있어 같은 패턴 적용. ADR Phase 5 (#890) orchestration 컨벤션.
+ */
 import React from 'react';
 import { render, screen } from '@testing-library/react-native';
 import { EditorialTimeline, mix, hex } from '../EditorialTimeline';
 import { MOCK_STOPS } from '../../../../testUtils/fixtures';
 import type { Stop } from '../../../../shared/types/journey';
 import type { LineNumber } from '../../../../shared/types/station';
-import { useAppStore } from '../../../../store/useAppStore';
+import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 
 // 결정적 빠른하차 픽스처 — quickExit 라벨/모드 분기 검증용.
 // - 3호선 경복궁(id 3-019): 단조 노선 + direction 필터 케이스.
@@ -134,7 +139,7 @@ describe('EditorialTimeline', () => {
 
 describe('EditorialTimeline quickExit door label', () => {
   beforeEach(() => {
-    useAppStore.setState({ accessibilityMode: false });
+    useSettingsStore.setState({ accessibilityMode: false });
   });
 
   // 단조노선(3호선) + 경복궁 데이터 보유 + 상행 매칭(교대→경복궁) → stairs 우선으로 3-2 표시.
@@ -156,7 +161,7 @@ describe('EditorialTimeline quickExit door label', () => {
   });
 
   it('accessibilityMode ON 이면 elevator 우선으로 다른 문번호가 뜬다', () => {
-    useAppStore.setState({ accessibilityMode: true });
+    useSettingsStore.setState({ accessibilityMode: true });
     render(<EditorialTimeline stops={stopsWithQuickExit} />);
     expect(screen.getByText('5-1번 문')).toBeTruthy();
     expect(screen.queryByText('3-2번 문')).toBeNull();
@@ -255,7 +260,7 @@ describe('EditorialTimeline quickExit door label', () => {
   });
 
   it('#676 비단조 노선 fallback도 accessibilityMode ON 시 elevator 우선', () => {
-    useAppStore.setState({ accessibilityMode: true });
+    useSettingsStore.setState({ accessibilityMode: true });
     render(<EditorialTimeline stops={makeDestOnlyStops('1', '시청', '회기')} />);
     expect(screen.getByText('4-2번 문')).toBeTruthy();
     expect(screen.queryByText('7-3번 문')).toBeNull();

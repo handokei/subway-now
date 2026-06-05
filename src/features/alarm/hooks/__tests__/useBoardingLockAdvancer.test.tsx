@@ -1,8 +1,12 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature test: useBoardingLockAdvancer 본체가 orchestrator(file-level disable). settings
+ * store(sleepMode) 분기 검증을 위해 같은 import 사용. ADR Phase 5 (#890).
+ */
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { useBoardingLockAdvancer } from '../useBoardingLockAdvancer';
 import { advanceHopWindow } from '../../utils/boardingLockScheduler';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
-import { useAppStore } from '../../../../store/useAppStore';
+import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeFixtures';
 
 jest.mock('../../utils/boardingLockScheduler', () => ({
@@ -44,7 +48,7 @@ type Props = Parameters<typeof useBoardingLockAdvancer>[0];
 beforeEach(() => {
   jest.clearAllMocks();
   mockedAdvance.mockResolvedValue(undefined);
-  useAppStore.setState({ sleepMode: false });
+  useSettingsStore.setState({ sleepMode: false });
 });
 
 describe('useBoardingLockAdvancer', () => {
@@ -259,7 +263,7 @@ describe('useBoardingLockAdvancer', () => {
   });
 
   it('#632 sleepMode=true 상태에서 advance 호출에 sleepMode=true 전달', async () => {
-    useAppStore.setState({ sleepMode: true });
+    useSettingsStore.setState({ sleepMode: true });
     renderHook(() =>
       useBoardingLockAdvancer({
         lock: lockA,

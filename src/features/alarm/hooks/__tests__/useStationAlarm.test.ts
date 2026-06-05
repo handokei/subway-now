@@ -1,6 +1,12 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature test: useStationAlarm은 본질적 orchestrator(본체에도 file-level disable 있음).
+ * settings store(sleepMode/allowSpeaker)에 의존하는 분기를 검증하려면 같은 import 필요.
+ * ADR Phase 5 (#890) orchestration 컨벤션.
+ */
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { useStationAlarm, type UseStationAlarmInputs } from '../useStationAlarm';
-import { useAppStore } from '../../../../store/useAppStore';
+import { useSettingsStore } from '../../../settings/store/useSettingsStore';
+import { useAlarmEventStore } from '../../store/useAlarmEventStore';
 import type { Station } from '../../../../shared/types/station';
 import type { AlarmEvent } from '../../utils/stationAlarm';
 import {
@@ -138,7 +144,8 @@ function defaultInputs(overrides: Partial<UseStationAlarmInputs> = {}): UseStati
 describe('useStationAlarm', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    useAppStore.setState({ sleepMode: false, allowSpeaker: true, alarmEvent: null, dismissSilence: null });
+    useSettingsStore.setState({ sleepMode: false, allowSpeaker: true });
+    useAlarmEventStore.setState({ alarmEvent: null, dismissSilence: null });
     mockEvaluateAlarmPhase.mockReturnValue(null);
     mockResolveAlarmDirection.mockReturnValue(undefined);
     mockResolveNextTarget.mockReturnValue(null);
@@ -466,7 +473,7 @@ describe('useStationAlarm', () => {
   });
 
   it('passes sleepMode to sendAlarmNotification', async () => {
-    useAppStore.setState({ sleepMode: true });
+    useSettingsStore.setState({ sleepMode: true });
     const route = makeDirectRoute(1, '2');
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
@@ -476,24 +483,24 @@ describe('useStationAlarm', () => {
   });
 
   it('sets alarmEvent in store when sleepMode is on', async () => {
-    useAppStore.setState({ sleepMode: true });
+    useSettingsStore.setState({ sleepMode: true });
     const route = makeDirectRoute(1, '2');
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
-    await waitFor(() => expect(useAppStore.getState().alarmEvent).toEqual(earlyDest));
+    await waitFor(() => expect(useAlarmEventStore.getState().alarmEvent).toEqual(earlyDest));
   });
 
   it('does not set alarmEvent when sleepMode is off', async () => {
-    useAppStore.setState({ sleepMode: false });
+    useSettingsStore.setState({ sleepMode: false });
     const route = makeDirectRoute(1, '2');
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
-    expect(useAppStore.getState().alarmEvent).toBeNull();
+    expect(useAlarmEventStore.getState().alarmEvent).toBeNull();
   });
 
   it('passes allowSpeaker=false from store', async () => {
-    useAppStore.setState({ allowSpeaker: false });
+    useSettingsStore.setState({ allowSpeaker: false });
     const route = makeDirectRoute(1, '2');
     mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
     renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
@@ -508,7 +515,7 @@ describe('useStationAlarm', () => {
     const { rerender } = renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
     await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
 
-    useAppStore.setState({ sleepMode: true });
+    useSettingsStore.setState({ sleepMode: true });
     rerender({});
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
   });
@@ -533,7 +540,7 @@ describe('useStationAlarm', () => {
     };
 
     it('sleep ON + lock 활성 + 첫 hop transfer → sendAlarmNotification 호출 X, suppression 로그', async () => {
-      useAppStore.setState({ sleepMode: true });
+      useSettingsStore.setState({ sleepMode: true });
       mockGetBoardingLock.mockResolvedValue(lock);
       // transferRoute targets: [{name:'시청', alarmType:'transfer'}, {name:'강남', alarmType:'destination'}].
       // earlyTransfer.stationName='시청'이 첫 hop과 일치 → suppress.
@@ -559,7 +566,7 @@ describe('useStationAlarm', () => {
     });
 
     it('sleep OFF + 첫 hop transfer → 정상 발사', async () => {
-      useAppStore.setState({ sleepMode: false });
+      useSettingsStore.setState({ sleepMode: false });
       mockGetBoardingLock.mockResolvedValue(lock);
       const route = makeTransferRoute({
         transferName: '시청',
@@ -576,7 +583,7 @@ describe('useStationAlarm', () => {
     });
 
     it('sleep ON + lock null → 게이트 비활성, 정상 발사', async () => {
-      useAppStore.setState({ sleepMode: true });
+      useSettingsStore.setState({ sleepMode: true });
       mockGetBoardingLock.mockResolvedValue(null);
       const route = makeTransferRoute({
         transferName: '시청',
@@ -593,7 +600,7 @@ describe('useStationAlarm', () => {
     });
 
     it('sleep ON + lock 활성 + destination 카테고리 → 정상 발사 (transfer 외 영향 없음)', async () => {
-      useAppStore.setState({ sleepMode: true });
+      useSettingsStore.setState({ sleepMode: true });
       mockGetBoardingLock.mockResolvedValue(lock);
       const route = makeDirectRoute(1, '2');
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
@@ -604,7 +611,7 @@ describe('useStationAlarm', () => {
     });
 
     it('sleep ON + lock 활성 + imminent API path도 동일 게이트 적용 (firstHop transfer면 suppress)', async () => {
-      useAppStore.setState({ sleepMode: true });
+      useSettingsStore.setState({ sleepMode: true });
       mockGetBoardingLock.mockResolvedValue(lock);
       // imminent path는 destination event를 발사하므로 게이트 trigger 안 됨 — 회귀 확인용.
       // 별도 시나리오: imminent transfer는 phase 평가 한쪽뿐이라 case는 ETA effect에서 cover.
@@ -1317,10 +1324,10 @@ describe('useStationAlarm', () => {
     });
 
     it('sleepMode면 setAlarmEvent도 함께 호출', async () => {
-      useAppStore.setState({ sleepMode: true });
+      useSettingsStore.setState({ sleepMode: true });
       mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
       mockIsImminentByArrivalCode.mockReturnValue(true);
-      const setAlarmEventSpy = jest.spyOn(useAppStore.getState(), 'setAlarmEvent');
+      const setAlarmEventSpy = jest.spyOn(useAlarmEventStore.getState(), 'setAlarmEvent');
 
       renderHook(() =>
         useStationAlarm(defaultInputs({ route, destination, nearestStation: station })),
@@ -1982,7 +1989,7 @@ describe('useStationAlarm', () => {
         boardedAt: Date.now(),
         expectedDurationMs: 60_000,
       };
-      useAppStore.setState({ sleepMode: true });
+      useSettingsStore.setState({ sleepMode: true });
       mockGetBoardingLock.mockResolvedValue(lock);
 
       const route = makeTransferRoute({
@@ -2011,7 +2018,7 @@ describe('useStationAlarm', () => {
 
       // sleep OFF 토글 → firedAlarms.delete가 sync 적용됐다면 다음 evaluation은 정상 발사.
       // delete가 빠지면 같은 키가 firedAlarms에 남아 진입 가드가 영구 봉쇄 → 회귀.
-      useAppStore.setState({ sleepMode: false });
+      useSettingsStore.setState({ sleepMode: false });
       rerender({ lat: 37.50001 });
 
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
@@ -2032,7 +2039,7 @@ describe('useStationAlarm', () => {
 
     // 중복 fixture 추출 — SonarCloud new_duplicated_lines_density 3% 임계 준수.
     function seedSilence(state: { sinceTs: number; sinceLat: number | null; sinceLng: number | null }) {
-      useAppStore.setState({ dismissSilence: state });
+      useAlarmEventStore.setState({ dismissSilence: state });
     }
     function seedActiveSilence(loc: { lat: number; lng: number } | null = null) {
       seedSilence({
@@ -2104,7 +2111,7 @@ describe('useStationAlarm', () => {
     });
 
     it('silence 만료(시간 5분 초과) → 게이트 통과 + store clear action 호출 (정상 발사)', async () => {
-      const setStateSpy = jest.spyOn(useAppStore.getState(), 'clearDismissSilence');
+      const setStateSpy = jest.spyOn(useAlarmEventStore.getState(), 'clearDismissSilence');
       seedExpiredSilence();
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
       renderForSilence();
@@ -2114,7 +2121,7 @@ describe('useStationAlarm', () => {
     });
 
     it('API imminent path: silence 만료(시간) 시 clear 호출 + 정상 발사', async () => {
-      const clearSpy = jest.spyOn(useAppStore.getState(), 'clearDismissSilence');
+      const clearSpy = jest.spyOn(useAlarmEventStore.getState(), 'clearDismissSilence');
       seedExpiredSilence();
       setupApiImminent();
       renderForSilence();
@@ -2140,7 +2147,7 @@ describe('useStationAlarm', () => {
     });
 
     it('silence state 없음 → 게이트 통과 (정상 발사)', async () => {
-      useAppStore.setState({ dismissSilence: null });
+      useAlarmEventStore.setState({ dismissSilence: null });
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
       renderForSilence();
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
@@ -2150,7 +2157,7 @@ describe('useStationAlarm', () => {
     it('silence 만료 시 clearAction이 reject되어도 정상 발사 + warn 로그', async () => {
       // applySilenceGate의 logClearFailure 분기 커버.
       const clearSpy = jest
-        .spyOn(useAppStore.getState(), 'clearDismissSilence')
+        .spyOn(useAlarmEventStore.getState(), 'clearDismissSilence')
         .mockRejectedValueOnce(new Error('storage write failed'));
       seedExpiredSilence();
       mockEvaluateAlarmPhase.mockReturnValue(earlyDest);

@@ -1,7 +1,7 @@
 import type { TravelDirection } from './exitSide';
 
 /**
- * 알람 도메인 type — useAppStore, BG task 등 cross-feature에서 참조되므로 shared로 추출.
+ * 알람 도메인 type — useAlarmEventStore, BG task 등 cross-feature에서 참조되므로 shared로 추출.
  * 원본 위치: `src/features/alarm/utils/stationAlarm.ts` (re-export 유지).
  *
  * ADR Roadmap Phase 5 (#890).

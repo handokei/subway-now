@@ -2,8 +2,8 @@ import { renderHook } from '@testing-library/react-native';
 import * as Localization from 'expo-localization';
 import i18next from 'i18next';
 import { resolveLanguage, useApplyLocale } from '../useApplyLocale';
-import { useAppStore } from '../../../../store/useAppStore';
-import type { LocalePreference } from '../../../../store/useAppStore';
+import { useLocaleStore } from '../../../../shared/i18n/store/useLocaleStore';
+import type { LocalePreference } from '../../../../shared/i18n/store/useLocaleStore';
 
 jest.mock('expo-localization', () => ({
   getLocales: jest.fn(() => [{ languageCode: 'ko' }]),
@@ -33,7 +33,7 @@ describe('useApplyLocale', () => {
   let originalLanguageDescriptor: PropertyDescriptor | undefined;
 
   beforeEach(() => {
-    useAppStore.setState({ localePreference: 'auto' });
+    useLocaleStore.setState({ localePreference: 'auto' });
     useLocalesMock.mockReturnValue([{ languageCode: 'ko' }]);
     changeLanguageSpy = jest.spyOn(i18next, 'changeLanguage').mockResolvedValue(undefined as never);
     originalLanguageDescriptor = Object.getOwnPropertyDescriptor(i18next, 'language');
@@ -49,7 +49,7 @@ describe('useApplyLocale', () => {
   function arrange(opts: { current: string; preference: LocalePreference; os?: string }) {
     Object.defineProperty(i18next, 'language', { value: opts.current, configurable: true });
     useLocalesMock.mockReturnValue([{ languageCode: opts.os ?? 'ko' }]);
-    useAppStore.setState({ localePreference: opts.preference });
+    useLocaleStore.setState({ localePreference: opts.preference });
     renderHook(() => useApplyLocale());
   }
 

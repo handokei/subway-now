@@ -11,7 +11,9 @@ import { setMinLevel, createLogger } from '../src/shared/utils/logger';
 import { i18n } from '../src/shared/i18n';
 import { useApplyLocale } from '../src/features/settings/hooks/useApplyLocale';
 import { useSilentPushTelemetry } from '../src/features/alarm/hooks/useSilentPushTelemetry';
-import { useAppStore } from '../src/store/useAppStore';
+import { useDebugStore } from '../src/features/debug/store/useDebugStore';
+import { useDestinationStore } from '../src/features/route/store/useDestinationStore';
+import { useLocaleStore } from '../src/shared/i18n/store/useLocaleStore';
 import { DebugModal } from '../src/features/debug/components/DebugModal';
 import { isDebugModalEnabled } from '../src/shared/constants/debugFlags';
 import '../src/tasks/backgroundLocationTask';
@@ -60,17 +62,17 @@ if (!__DEV__) {
   if (!g.__SUBWAY_DEV_MENU_REGISTERED__) {
     g.__SUBWAY_DEV_MENU_REGISTERED__ = true;
     DevSettings.addMenuItem('Subway debug', () => {
-      useAppStore.getState().setDebugVisible(true);
+      useDebugStore.getState().setDebugVisible(true);
     });
   }
 }
 
 function RootContent() {
   const { isDark } = useTheme();
-  const loadLocalePreference = useAppStore((s) => s.loadLocalePreference);
-  const debugVisible = useAppStore((s) => s.debugVisible);
-  const setDebugVisible = useAppStore((s) => s.setDebugVisible);
-  const destinationId = useAppStore((s) => s.destination?.id ?? null);
+  const loadLocalePreference = useLocaleStore((s) => s.loadLocalePreference);
+  const debugVisible = useDebugStore((s) => s.debugVisible);
+  const setDebugVisible = useDebugStore((s) => s.setDebugVisible);
+  const destinationId = useDestinationStore((s) => s.destination?.id ?? null);
   const { i18n: i18nInstance } = useTranslation();
 
   // #819 — "탑승했냐?" 응답 listener. boarding-prompt 카테고리 푸시의 [탑승]/[미탑승] 또는 탭을 받아

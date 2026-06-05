@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useAppStore } from '../../../store/useAppStore';
+import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { isDebugModalEnabled } from '../../../shared/constants/debugFlags';
 import type { GpsActiveState } from '../../../shared/constants/gpsStatus';
 import { formatClockTimeWithSeconds } from '../../../shared/utils/formatTime';
@@ -399,7 +399,7 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
   // #856: lockless station-passed toggle. OFF면 backend가 받은 silent push도 client가
   // intermediate 알림을 차단 → "received는 늘어도 fired는 안 늘어남"이 정상 동작.
   // DebugModal에 한 줄로 노출해 사용자가 설정 위치를 즉시 알 수 있게 한다.
-  const locklessOn = useAppStore((s) => s.locklessStationPassed);
+  const locklessOn = useSettingsStore((s) => s.locklessStationPassed);
   const fusedLabel = formatStationLabel(result);
   const gpsLabel = formatStationLabel(gpsResult);
   const differs = fusedDiffersFromGps(result, gpsResult);

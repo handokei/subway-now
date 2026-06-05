@@ -362,7 +362,7 @@ async function loadApnsToken(): Promise<string | null> {
 
 /**
  * #816 C — 사용자 토글 (lockless station-passed opt-in) 현재값을 AsyncStorage에서 읽는다.
- * BG task에서는 zustand store에 접근 불가하므로 useAppStore.setLocklessStationPassed가
+ * BG task에서는 zustand store에 접근 불가하므로 useSettingsStore.setLocklessStationPassed가
  * 기록한 키를 직접 read. 값이 없거나 파싱 실패면 OFF(false) — default 보수적.
  */
 async function loadLocklessOptIn(): Promise<boolean> {

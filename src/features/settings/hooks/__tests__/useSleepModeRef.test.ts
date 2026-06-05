@@ -1,14 +1,14 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { useSleepModeRef } from '../useSleepModeRef';
-import { useAppStore } from '../../../../store/useAppStore';
+import { useSettingsStore } from '../../store/useSettingsStore';
 
 describe('useSleepModeRef', () => {
   beforeEach(() => {
-    useAppStore.setState({ sleepMode: false });
+    useSettingsStore.setState({ sleepMode: false });
   });
 
   it('현재 sleepMode 값을 ref로 노출한다', () => {
-    useAppStore.setState({ sleepMode: true });
+    useSettingsStore.setState({ sleepMode: true });
     const { result } = renderHook(() => useSleepModeRef());
     expect(result.current.current).toBe(true);
   });
@@ -18,7 +18,7 @@ describe('useSleepModeRef', () => {
     expect(result.current.current).toBe(false);
 
     act(() => {
-      useAppStore.setState({ sleepMode: true });
+      useSettingsStore.setState({ sleepMode: true });
     });
     rerender({});
     expect(result.current.current).toBe(true);
