@@ -108,10 +108,12 @@ GPS (expo-location)
     → stationNotification.ts (Live Activity + 푸시 알림)
 ```
 
-### 레이어 구조 (Feature-based + Ports & Adapters, ADR Phase 5)
+### 레이어 구조 (Feature-based + Ports & Adapters, ADR Phase 5 + Step 7)
 ADR "Feature-based + Ports & Adapters 디렉토리 재정비" (https://app.notion.com/p/36e30c0194b68148ba29f2bc4554ce8a) 적용.
-의존 방향: `app/` → `src/features/*` → `src/shared/*`. features 끼리는 ESLint(`import/no-restricted-paths`)로 직접 import를 차단한다.
+의존 방향: `app/` (thin route) → `src/screens/*` (controller) → `src/features/*` → `src/shared/*`. features 끼리, features → screens, shared → screens는 ESLint(`import/no-restricted-paths`)로 직접 import를 차단한다.
 
+- **`app/`** — expo-router route entry (각 파일 1~2줄 re-export). 화면 본체는 `src/screens/`에 둔다 (bulletproof-react "thin route + thick screen", Step 7 / #894).
+- **`src/screens/`** — 화면 본체. features를 조합하는 controller layer. expo-router의 route entry는 `app/(tabs)/X.tsx`가 `src/screens/XScreen.tsx`를 default re-export하는 형태. coverage 제외 (E2E + 수동 검증).
 - **`src/features/<slice>/`** — 도메인별 슬라이스. 각 슬라이스는 자체 `api/`, `hooks/`, `components/`, `utils/`, `tasks/`, `providers/`, `store/` 등을 내부에 둔다.
   - `alarm/` — 알람·BoardingLock·silent push
   - `arrival/` — 실시간 도착 정보
@@ -213,7 +215,8 @@ perf/#이슈번호-대상         예: perf/#139-map-clustering
 
 - `import/no-restricted-paths` enforce(error). `npm run lint` 또는 CI에서 검증.
 - `src/features/<X>/`는 `src/features/<Y>/`를 직접 import할 수 없다 — 공용 코드는 `src/shared/`로 추출한다.
-- `src/shared/`는 `src/features/`를 import할 수 없다.
+- `src/shared/`는 `src/features/`, `src/screens/`를 import할 수 없다.
+- `src/features/`는 `src/screens/`를 import할 수 없다 (screens는 features 위 layer, Step 7).
 - 본질적 cross-feature orchestrator(예: `useFusedNearestStation`, `backgroundLocationTask`, `useStationAlarm` 등)는 파일 헤더의 `eslint-disable import/no-restricted-paths` 주석으로 명시 옵트인한다. 후속 PR에서 orchestration 슬라이스로 이전 예정.
 
 ---

@@ -51,7 +51,8 @@
       "!src/features/*/providers/types.ts",
       "!src/features/*/providers/index.ts",
       "!src/features/*/providers/progress/index.ts",
-      "!src/shared/theme/index.ts"
+      "!src/shared/theme/index.ts",
+      "!src/screens/**"
     ],
     "moduleFileExtensions": [
       "ts",
