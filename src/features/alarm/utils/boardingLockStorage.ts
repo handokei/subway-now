@@ -15,13 +15,17 @@ const logger = createLogger('BoardingLockStorage');
 function isBoardingLock(value: unknown): value is BoardingLock {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
+  // initialEtaSeconds(#897)는 선택 필드 — 레거시 lock(없음)도 통과시키되, 존재 시에는 number만 허용.
+  // undefined도 number도 아닌 값(예: string)은 손상으로 간주.
+  const initialEtaOk = v.initialEtaSeconds === undefined || typeof v.initialEtaSeconds === 'number';
   return (
     typeof v.destinationId === 'string' &&
     typeof v.trainCode === 'string' &&
     typeof v.boardingStationId === 'string' &&
     typeof v.boardingLine === 'string' &&
     typeof v.boardedAt === 'number' &&
-    typeof v.expectedDurationMs === 'number'
+    typeof v.expectedDurationMs === 'number' &&
+    initialEtaOk
   );
 }
 

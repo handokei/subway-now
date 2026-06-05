@@ -129,8 +129,9 @@ describe('useTransferTrainList', () => {
         currentStation: gondeokOn6,
       }),
     );
-    act(() => result.current.createTransferLock(makeTrain({ trainCode: 'NEW' })));
+    act(() => result.current.createTransferLock(makeTrain({ trainCode: 'NEW', arrivalSeconds: 240 })));
     // calculateRemainingLegETA(route, 0) = stopsFromTransfer(3)*MINUTES_PER_STOP(2) = 6분
+    // #897 Seam A: initialEtaSeconds=탭한 train의 잔여 ETA(=240) 스냅샷.
     expect(mockCreateLock).toHaveBeenCalledWith(
       expect.objectContaining({
         destinationId: 'dest-X',
@@ -138,6 +139,7 @@ describe('useTransferTrainList', () => {
         boardingLine: '5',
         boardingStationId: (findStationByNameAndLine('공덕', '5') as Station).id,
         expectedDurationMs: 6 * 60_000,
+        initialEtaSeconds: 240,
       }),
     );
   });
