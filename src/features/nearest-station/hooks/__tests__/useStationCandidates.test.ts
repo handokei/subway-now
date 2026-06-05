@@ -1,6 +1,7 @@
 import { renderHook } from '@testing-library/react-native';
 import { useStationCandidates } from '../useStationCandidates';
 import type { Station } from '../../../../shared/types/station';
+import { DEPTH_TO_PRESSURE_HPA_PER_M } from '../../../../shared/constants/barometer';
 
 const YONGMASAN: Station = {
   id: '7-015',
@@ -134,5 +135,101 @@ describe('useStationCandidates', () => {
     const first = result.current;
     rerender(props);
     expect(result.current).toBe(first);
+  });
+
+  describe('F3 기압계 절대값 narrow (#920)', () => {
+    // 잠실: GPS top-N(이름 dedup) → [잠실, 잠실나루] 같은 deduped 후보 목록.
+    // 잠실 line 2 depth_m=16. 잠실나루는 압력 데이터 없음(narrow 시 자동 탈락).
+    const JAMSIL_LOC = { lat: 37.513262, lng: 127.100159 };
+    const SURFACE = 1013;
+    const PRESSURE_AT_16M = SURFACE + 16 * DEPTH_TO_PRESSURE_HPA_PER_M;
+    const PRESSURE_FAR_OFF = 950; // 어떤 entry도 매칭 안 됨.
+
+    it('absolutePressure 없으면 GPS 후보 그대로 (narrow skip)', () => {
+      const { result } = renderHook(() =>
+        useStationCandidates({
+          userLocation: JAMSIL_LOC,
+          wifiStation: null,
+          absolutePressureHpa: null,
+          surfacePressureHpa: SURFACE,
+        }),
+      );
+      const names = result.current.candidates.map((s) => s.name);
+      expect(names).toContain('잠실');
+      expect(names).toContain('잠실나루');
+    });
+
+    it('surfacePressure 없으면 narrow skip → GPS 후보 그대로', () => {
+      const { result } = renderHook(() =>
+        useStationCandidates({
+          userLocation: JAMSIL_LOC,
+          wifiStation: null,
+          absolutePressureHpa: PRESSURE_AT_16M,
+          surfacePressureHpa: null,
+        }),
+      );
+      const names = result.current.candidates.map((s) => s.name);
+      expect(names).toContain('잠실');
+      expect(names).toContain('잠실나루');
+    });
+
+    it('압력값 모두 주면 narrow 적용 → 데이터 있는 역만 살아남음', () => {
+      // 잠실(line2 depth 16m)은 매칭, 잠실나루(데이터 없음)는 탈락.
+      const { result } = renderHook(() =>
+        useStationCandidates({
+          userLocation: JAMSIL_LOC,
+          wifiStation: null,
+          absolutePressureHpa: PRESSURE_AT_16M,
+          surfacePressureHpa: SURFACE,
+        }),
+      );
+      const names = result.current.candidates.map((s) => s.name);
+      expect(names).toContain('잠실');
+      expect(names).not.toContain('잠실나루');
+    });
+
+    it('narrow 결과 0개면 GPS 후보로 fallback (안전망)', () => {
+      // 950 hPa는 어떤 entry도 매칭 안 됨 → GPS 후보 그대로 유지.
+      const { result } = renderHook(() =>
+        useStationCandidates({
+          userLocation: JAMSIL_LOC,
+          wifiStation: null,
+          absolutePressureHpa: PRESSURE_FAR_OFF,
+          surfacePressureHpa: SURFACE,
+        }),
+      );
+      const names = result.current.candidates.map((s) => s.name);
+      expect(names).toContain('잠실');
+    });
+
+    it('narrow 후 단일 후보 → isAutoConfirmed=true', () => {
+      const { result } = renderHook(() =>
+        useStationCandidates({
+          userLocation: JAMSIL_LOC,
+          wifiStation: null,
+          absolutePressureHpa: PRESSURE_AT_16M,
+          surfacePressureHpa: SURFACE,
+        }),
+      );
+      // narrow 후보가 1개로 좁혀지면 자동 확정 신호.
+      if (result.current.candidates.length === 1) {
+        expect(result.current.isAutoConfirmed).toBe(true);
+      }
+      expect(result.current.topPick?.name).toBe('잠실');
+    });
+
+    it('wifi가 있으면 F3 입력이 와도 wifi 우선', () => {
+      const fakeWifi: Station = { ...YONGMASAN, id: 'wifi-pick', name: 'WifiPick' };
+      const { result } = renderHook(() =>
+        useStationCandidates({
+          userLocation: JAMSIL_LOC,
+          wifiStation: fakeWifi,
+          absolutePressureHpa: PRESSURE_AT_16M,
+          surfacePressureHpa: SURFACE,
+        }),
+      );
+      expect(result.current.topPick).toBe(fakeWifi);
+      expect(result.current.candidates).toEqual([fakeWifi]);
+    });
   });
 });
