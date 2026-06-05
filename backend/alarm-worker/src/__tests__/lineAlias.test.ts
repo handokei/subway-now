@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LINE_ALIAS_MAP, canonicalLineName, matchLine } from '../lineAlias';
+import { LINE_ALIAS_MAP, canonicalLineName, matchLine, subwayIdForLine } from '../lineAlias';
 
 describe('canonicalLineName (#585)', () => {
   it.each([
@@ -73,5 +73,30 @@ describe('matchLine', () => {
       expect(LINE_ALIAS_MAP[code]).toBeDefined();
       expect(LINE_ALIAS_MAP[code].length).toBeGreaterThan(0);
     }
+  });
+});
+
+describe('subwayIdForLine (#902)', () => {
+  // 클라 LINE_TO_SUBWAY_ID(src/shared/constants/lineApiNames.ts)와 정합 확인.
+  it.each([
+    ['1', '1001'],
+    ['2', '1002'],
+    ['3', '1003'],
+    ['4', '1004'],
+    ['5', '1005'],
+    ['6', '1006'],
+    ['7', '1007'],
+    ['8', '1008'],
+    ['9', '1009'],
+    ['gyeongui', '1063'],
+    ['airport', '1065'],
+    ['bundang', '1075'],
+    ['sinbundang', '1077'],
+  ])('maps line="%s" → "%s"', (line, expected) => {
+    expect(subwayIdForLine(line)).toBe(expected);
+  });
+
+  it('returns null for unknown line', () => {
+    expect(subwayIdForLine('unknown')).toBeNull();
   });
 });

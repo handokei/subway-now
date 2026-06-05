@@ -2662,3 +2662,217 @@ describe('runScheduled — #826 runTrainCodeTracking Kalman reset', () => {
     }
   });
 });
+
+/**
+ * #902 Seam F 공용 fixture 빌더.
+ *
+ * `realtimeArrivalList` raw row 1건의 shape는 `makeSeoul` 등 기존 helper와 동일하지만,
+ * 본 describe 묶음(환승 swap + 사라짐 re-attach)이 URL 분기, multi-row ambiguity 등을 별도로
+ * 조합하므로 row 빌더만 외부로 추출해 중복(barvlDt/recptnDt/updnLine ... arvlCd)을 제거한다.
+ */
+interface RawArrivalRowInput {
+  trainCode: string;
+  arrivalSeconds: number;
+  arvlCd: number;
+  subwayNm: string;
+  destination?: string;
+}
+function rawArrivalRow(row: RawArrivalRowInput): Record<string, unknown> {
+  return {
+    barvlDt: String(row.arrivalSeconds),
+    recptnDt: '',
+    updnLine: '상행',
+    trainLineNm: row.destination ?? '도봉산',
+    btrainNo: row.trainCode,
+    subwayNm: row.subwayNm,
+    arvlCd: row.arvlCd,
+  };
+}
+function arrivalListResponse(rows: RawArrivalRowInput[]): Response {
+  return new Response(
+    JSON.stringify({ realtimeArrivalList: rows.map(rawArrivalRow) }),
+    { status: 200 },
+  );
+}
+
+/**
+ * #902 Seam F — 환승 자동 trainCode swap 통합 테스트.
+ *
+ * 시나리오: 7호선 trainCode "7327"으로 건대입구(transfer) ARRIVED → lock 해제 + 다음 cycle
+ * 안에 같은 polling으로 2호선 성수 arrivals에서 후보 trainCode "2227"을 자동 attach.
+ * 옛 동작: lock 비어있는 다음 cycle이 boarding-prompt 경로로 떨어져 사용자가 manual 선택 필요.
+ */
+describe('runScheduled — Seam F 환승 자동 swap (#902)', () => {
+  /** transfer→destination waypoints + line 7 boardingLock(건대입구로 ARRIVED 예정)의 trip 빌더. */
+  function makeTransferTrip(overrides: Partial<Trip> = {}): Trip {
+    return makeTrip({
+      token: 'transfer-tok',
+      route: { type: 'direct', line: '7', stops: 3 },
+      waypoints: [
+        { stationName: '건대입구', line: '7', kind: 'transfer' },
+        { stationName: '성수', line: '2', kind: 'destination' },
+      ],
+      boardingLock: {
+        trainCode: '7327',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW,
+        segmentStations: ['어린이대공원', '군자', '건대입구'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+      ...overrides,
+    });
+  }
+
+  /**
+   * 라인별 응답 분기 fetch — 7호선 건대입구는 ARRIVED, 2호선 성수는 후보 1개(2227 arvlCd=1).
+   * Seoul API URL은 stationName query를 포함 — encode된 stationName으로 분기.
+   */
+  function makeTransferSeoul(): SeoulArrivalClient {
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async (url: string) => {
+        if (url.includes(encodeURIComponent('건대입구'))) {
+          // 7호선 trainCode 7327이 건대입구에 ARRIVED(arvlCd=1).
+          return arrivalListResponse([
+            { trainCode: '7327', arrivalSeconds: 0, arvlCd: 1, subwayNm: '지하철7호선' },
+          ]);
+        }
+        if (url.includes(encodeURIComponent('성수'))) {
+          // 2호선 성수: 후보 trainCode 2227 ARRIVED 1대만 → pickAutoTrainCode 1순위로 결정.
+          return arrivalListResponse([
+            { trainCode: '2227', arrivalSeconds: 60, arvlCd: 1, subwayNm: '지하철2호선', destination: '성수' },
+          ]);
+        }
+        return arrivalListResponse([]);
+      }) as unknown as typeof fetch,
+    });
+  }
+
+  it('attaches new trainCode on transfer release within the same cycle', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTransferTrip());
+    const fetchImpl = makeOkFetch();
+    await runLaScheduled(kv, { seoul: makeTransferSeoul(), fetchImpl });
+
+    // trip은 KV에 남아 있어야 한다 (transfer는 trip 종료가 아님).
+    const raw = await kv.get('trip:transfer-tok');
+    expect(raw).not.toBeNull();
+    const stored = JSON.parse(raw as string) as Trip;
+    // waypoint shift: 건대입구 제거 → 첫 waypoint=성수
+    expect(stored.waypoints[0].stationName).toBe('성수');
+    expect(stored.waypoints[0].line).toBe('2');
+    // 자동 swap된 lock: trainCode 2227 + line 2 + segmentStations=[성수]
+    expect(stored.boardingLock).toBeDefined();
+    expect(stored.boardingLock?.trainCode).toBe('2227');
+    expect(stored.boardingLock?.line).toBe('2');
+    expect(stored.boardingLock?.subwayId).toBe('1002');
+    expect(stored.boardingLock?.segmentStations).toEqual(['성수']);
+  });
+
+  it('leaves lock undefined when no candidate matches (boarding-prompt fallback path)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTransferTrip());
+    // 7호선 건대입구는 ARRIVED 정상, 2호선 성수는 빈 응답 → swap 실패 → 기존 lockMissing 흐름.
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async (url: string) => {
+        if (url.includes(encodeURIComponent('건대입구'))) {
+          return arrivalListResponse([
+            { trainCode: '7327', arrivalSeconds: 0, arvlCd: 1, subwayNm: '지하철7호선' },
+          ]);
+        }
+        return arrivalListResponse([]);
+      }) as unknown as typeof fetch,
+    });
+    await runLaScheduled(kv, { seoul, fetchImpl: makeOkFetch() });
+    const stored = JSON.parse((await kv.get('trip:transfer-tok')) as string) as Trip;
+    expect(stored.waypoints[0].stationName).toBe('성수');
+    expect(stored.boardingLock).toBeUndefined();
+  });
+});
+
+/**
+ * #902 Seam F — trainCode 사라짐 후 재attach.
+ *
+ * 시나리오: 옛 trainCode가 Seoul API에서 사라지면 같은 station/line의 신규 trainCode를 같은
+ * cycle에 자동 swap. previousMissCount=1 + 이번 cycle 미스 = 2 도달이 트리거. 1로는 false swap
+ * 위험 — 일시적 API 누락과 진짜 사라짐 구분 불가.
+ */
+describe('runScheduled — Seam F 사라짐 후 재attach (#902)', () => {
+  function makeMissingTrainTrip(missCount: number): Trip {
+    // boardingLock.trainCode=7174는 사라짐(arrivals에 부재). same-line(7) 신규 후보로 swap 기대.
+    return makeTrip({
+      token: 'miss-tok',
+      route: { type: 'direct', line: '7', stops: 2 },
+      waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
+      boardingLock: {
+        trainCode: '7174',
+        line: '7',
+        subwayId: '1007',
+        selectedDepartureTime: NOW,
+        segmentStations: ['어린이대공원', '군자'],
+        expiresAt: NOW + 60 * 60_000,
+      },
+      consecutiveEtaMissing: missCount,
+    });
+  }
+
+  /** 7호선 군자 응답: trainCode 7174는 없음, 7246(arvlCd=2 DEPARTED) 1대만. */
+  function makeReAttachSeoul(): SeoulArrivalClient {
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        arrivalListResponse([
+          { trainCode: '7246', arrivalSeconds: 60, arvlCd: 2, subwayNm: '지하철7호선' },
+        ])) as unknown as typeof fetch,
+    });
+  }
+
+  it('swaps to new trainCode when threshold reached (prev miss=1 + this miss = 2)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeMissingTrainTrip(1));
+    const fetchImpl = makeOkFetch();
+    await runLaScheduled(kv, { seoul: makeReAttachSeoul(), fetchImpl });
+    const stored = JSON.parse((await kv.get('trip:miss-tok')) as string) as Trip;
+    // swap 성공 → trainCode 갱신 + 카운터 reset
+    expect(stored.boardingLock?.trainCode).toBe('7246');
+    expect(stored.consecutiveEtaMissing ?? 0).toBe(0);
+  });
+
+  it('does not swap on first miss (prev=0) — single transient API miss tolerated', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeMissingTrainTrip(0));
+    await runLaScheduled(kv, { seoul: makeReAttachSeoul(), fetchImpl: makeOkFetch() });
+    const stored = JSON.parse((await kv.get('trip:miss-tok')) as string) as Trip;
+    // swap 안 됨 — 기존 trainCode 유지 + 카운터 +1
+    expect(stored.boardingLock?.trainCode).toBe('7174');
+    expect(stored.consecutiveEtaMissing).toBe(1);
+  });
+
+  it('keeps incrementing miss counter when no candidate at threshold (ambiguous arrivals)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeMissingTrainTrip(1));
+    // 두 trainCode 모두 arvlCd=1 → pickAutoTrainCode가 ambiguity로 null → swap 실패
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        arrivalListResponse([
+          { trainCode: 'A', arrivalSeconds: 30, arvlCd: 1, subwayNm: '지하철7호선' },
+          { trainCode: 'B', arrivalSeconds: 60, arvlCd: 1, subwayNm: '지하철7호선' },
+        ])) as unknown as typeof fetch,
+    });
+    await runLaScheduled(kv, { seoul, fetchImpl: makeOkFetch() });
+    const stored = JSON.parse((await kv.get('trip:miss-tok')) as string) as Trip;
+    expect(stored.boardingLock?.trainCode).toBe('7174');
+    expect(stored.consecutiveEtaMissing).toBe(2);
+  });
+});

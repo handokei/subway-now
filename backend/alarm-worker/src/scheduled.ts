@@ -32,6 +32,7 @@ import {
   type LiveActivityStats,
 } from './liveActivity';
 import { matchLine } from './lineAlias';
+import { attachTrainCodeForLeg } from './lockSwap';
 import {
   evaluateWindow,
   readSeries,
@@ -496,7 +497,19 @@ async function mirrorProgress(
  *
  * 3단계로 분리: estimate → arrival 시 waypoint 진행(early return) → 아니면 reschedule push.
  * push가 trip 도착 시점에 의미 없으므로 도착 케이스를 먼저 처리해 dirty write를 단일화.
+ *
+ * #902 Seam F — estimate=null이고 누적 miss가 임계(VANISH_RE_ATTACH_THRESHOLD) 도달 직전이면
+ * 같은 station/line의 신규 trainCode를 자동 swap 후 같은 cycle에 재estimate한다.
  */
+
+/**
+ * #902 Seam F — trainCode 사라짐 후 재attach 시도 임계.
+ * `consecutiveEtaMissing`이 이 값에 도달한 미스 cycle에서 한 번 swap을 시도한다.
+ * 1회로는 일시적 API 누락과 진짜 사라짐을 구분하지 못해 false swap 위험이 크므로 2로 둔다.
+ * (그 미만 미스는 단순 누락으로 간주 + 카운터 증가만).
+ */
+export const VANISH_RE_ATTACH_THRESHOLD = 2;
+
 export async function runTrainCodeTracking(
   trip: Trip,
   waypoint: Waypoint,
@@ -508,14 +521,48 @@ export async function runTrainCodeTracking(
   log: Logger,
   generatePushId: () => string,
 ): Promise<void> {
-  const estimate = await estimateBoardingLockArrival(deps, lock, waypoint, now);
+  let activeLock = lock;
+  let estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
+  if (estimate === null) {
+    const previousMissCount = trip.consecutiveEtaMissing ?? 0;
+    // #902 Seam F — 사라짐 후 재attach. previous=1 + 이번 미스 = 2 도달 시 1회 swap 시도.
+    // 같은 station에 같은 line 신규 trainCode가 보이면 lock을 교체하고 이번 cycle에 재estimate.
+    // 성공 시 그 아래의 정상 경로(arrived/reschedule)로 자연 진입.
+    const reachedVanishThreshold = previousMissCount + 1 >= VANISH_RE_ATTACH_THRESHOLD;
+    if (reachedVanishThreshold) {
+      const swapped = await attachTrainCodeForLeg({
+        trip,
+        targetWaypoint: waypoint,
+        seoul: deps.seoul,
+        now,
+      });
+      if (swapped && swapped.trainCode !== activeLock.trainCode) {
+        log('boarding-lock: trainCode vanished, swapped', {
+          token: trip.token.slice(0, 8),
+          previousTrainCode: activeLock.trainCode,
+          newTrainCode: swapped.trainCode,
+          station: waypoint.stationName,
+          consecutiveEtaMissing: previousMissCount + 1,
+        });
+        // segmentStations는 기존 lock 것을 유지 (이미 진행 중인 leg) — 새 trainCode/expiresAt만 채택.
+        activeLock = {
+          ...activeLock,
+          trainCode: swapped.trainCode,
+          expiresAt: Math.max(activeLock.expiresAt, swapped.expiresAt),
+        };
+        trip.boardingLock = activeLock;
+        trip.consecutiveEtaMissing = 0;
+        estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
+      }
+    }
+  }
   if (estimate === null) {
     stats.etaMissing += 1;
     const previousMissCount = trip.consecutiveEtaMissing ?? 0;
     const nextMissCount = previousMissCount + 1;
     log('boarding-lock: trainCode not found in arrivals or positions', {
       token: trip.token.slice(0, 8),
-      trainCode: lock.trainCode,
+      trainCode: activeLock.trainCode,
       station: waypoint.stationName,
       consecutiveEtaMissing: nextMissCount,
     });
@@ -526,7 +573,7 @@ export async function runTrainCodeTracking(
       // #868 — 클라 state sync용 trip-ended silent push 발사 (reason=eta-missing).
       log('boarding-lock: trip auto-ended (consecutiveEtaMissing exceeded)', {
         token: trip.token.slice(0, 8),
-        trainCode: lock.trainCode,
+        trainCode: activeLock.trainCode,
         station: waypoint.stationName,
         threshold,
         subsurface: trip.subsurface === true,
@@ -558,7 +605,7 @@ export async function runTrainCodeTracking(
   const { cleanedUp } = await maybeReschedulePush(
     trip,
     waypoint,
-    lock,
+    activeLock,
     estimate.epoch,
     env,
     deps,
@@ -664,6 +711,24 @@ export async function advanceBoardingLockWaypoint(
     trip.consecutiveEtaMissing = 0;
     await deleteProgress(env.TRIPS, trip.token);
   }
+  // #902 Seam F — 환승 직후 자동 trainCode swap. release한 lock 자리에 새 노선의 후보를
+  // 동일 cycle 안에 부착해 다음 cycle의 lockMissing/boarding-prompt 우회 + 즉시 trainCode 추적.
+  // 후보 ambiguity / arrivals 비어있음 / subwayId 매핑 누락이면 attempted=true + 결과 null →
+  // 기존 lockMissing → evaluateAndMaybeFireBoardingPrompt fallback 흐름이 그대로 살아있다.
+  let transferSwapAttached = false;
+  if (lockReleasedOnTransfer && trip.waypoints.length > 0) {
+    const next = trip.waypoints[0];
+    const swapped = await attachTrainCodeForLeg({
+      trip,
+      targetWaypoint: next,
+      seoul: deps.seoul,
+      now,
+    });
+    if (swapped) {
+      trip.boardingLock = swapped;
+      transferSwapAttached = true;
+    }
+  }
   log('boarding-lock: waypoint advanced', {
     token: trip.token.slice(0, 8),
     completed: waypoint.stationName,
@@ -671,6 +736,7 @@ export async function advanceBoardingLockWaypoint(
     remaining: trip.waypoints.length,
     // P2-2: true일 때만 log key 포함 — false noise로 운영 로그 가시성 저하 방지.
     ...(lockReleasedOnTransfer ? { lockReleasedOnTransfer: true } : {}),
+    ...(transferSwapAttached ? { transferSwapAttached: true } : {}),
   });
   if (trip.waypoints.length === 0) {
     // #868 — waypoints 소진(intermediate 마지막 통과)도 effective destination-arrived.
