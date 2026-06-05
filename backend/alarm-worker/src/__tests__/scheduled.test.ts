@@ -65,6 +65,114 @@ function makeEnv(kv: InMemoryKV, pending?: InMemoryKV): Env {
   };
 }
 
+// estimateBoardingLockArrival 테스트 공용 — 단일 arvlCd 노출만 검증.
+function makeEstimateArrivalSeoul(arvlCd: number | null): SeoulArrivalClient {
+  return new SeoulArrivalClient({
+    apiKey: 'K',
+    host: 'h',
+    now: () => NOW,
+    fetchImpl: (async () =>
+      new Response(
+        JSON.stringify({
+          realtimeArrivalList: [
+            {
+              barvlDt: '0',
+              recptnDt: '',
+              updnLine: '상행',
+              trainLineNm: '중곡',
+              btrainNo: '7246',
+              subwayNm: '지하철7호선',
+              arvlCd,
+            },
+          ],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch,
+  });
+}
+
+function makeEstimateArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
+  return {
+    seoul,
+    apnsConfig,
+    apnsHosts: APNS_HOSTS,
+    fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+  };
+}
+
+// #917 arvlCd fire 테스트용 — stationName/seconds/arvlCd/trainCode 명시.
+function makeArvlCdFireSeoul(
+  stationName: string,
+  seconds: number,
+  arvlCd: number | null,
+  trainCode = '7246',
+): SeoulArrivalClient {
+  return new SeoulArrivalClient({
+    apiKey: 'K',
+    host: 'h',
+    now: () => NOW,
+    fetchImpl: (async () =>
+      new Response(
+        JSON.stringify({
+          realtimeArrivalList: [
+            {
+              barvlDt: String(seconds),
+              recptnDt: '',
+              updnLine: '상행',
+              trainLineNm: stationName,
+              btrainNo: trainCode,
+              subwayNm: '지하철7호선',
+              arvlCd,
+            },
+          ],
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch,
+  });
+}
+
+/** arvlCd fire silent push (background, kind=intermediate/destination, phase=imminent) 호출만 추출. */
+function getArvlCdStationPassedCalls(
+  fetchImpl: ReturnType<typeof vi.fn>,
+): [string, RequestInit][] {
+  return (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) => {
+    const headers = (c[1]?.headers ?? {}) as Record<string, string>;
+    if (headers['apns-push-type'] !== 'background') return false;
+    try {
+      const body = JSON.parse(c[1]?.body as string) as {
+        data?: { phase?: string; kind?: string };
+      };
+      return (
+        body?.data?.phase === 'imminent' &&
+        (body?.data?.kind === 'intermediate' || body?.data?.kind === 'destination')
+      );
+    } catch {
+      return false;
+    }
+  });
+}
+
+function parseArvlCdStationPassedData(call: [string, RequestInit]): {
+  nextWaypoint: string;
+  etaSeconds: number;
+  phase: string;
+  kind: string;
+  pushId: string;
+  sentAt: number;
+} {
+  const body = JSON.parse(call[1].body as string) as {
+    data: {
+      nextWaypoint: string;
+      etaSeconds: number;
+      phase: string;
+      kind: string;
+      pushId: string;
+      sentAt: number;
+    };
+  };
+  return body.data;
+}
+
 // boardingLock fixture — 7호선 용마산→중곡→군자 leg 공용 (lock 추적/arvlCd fire 테스트 공통).
 function makeBoardingLock(overrides: Partial<BoardingLockMeta> = {}): BoardingLockMeta {
   return {
@@ -3204,39 +3312,8 @@ describe('estimateBoardingLockArrival arvlCd exposure (#917 A2)', () => {
   };
   const waypoint: Waypoint = { stationName: '중곡', line: '7', kind: 'intermediate' };
 
-  function makeArrivalSeoul(arvlCd: number | null): SeoulArrivalClient {
-    return new SeoulArrivalClient({
-      apiKey: 'K',
-      host: 'h',
-      now: () => NOW,
-      fetchImpl: (async () =>
-        new Response(
-          JSON.stringify({
-            realtimeArrivalList: [
-              {
-                barvlDt: '0',
-                recptnDt: '',
-                updnLine: '상행',
-                trainLineNm: '중곡',
-                btrainNo: '7246',
-                subwayNm: '지하철7호선',
-                arvlCd,
-              },
-            ],
-          }),
-          { status: 200 },
-        )) as unknown as typeof fetch,
-    });
-  }
-
-  function makeArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
-    return {
-      seoul,
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
-    };
-  }
+  const makeArrivalSeoul = makeEstimateArrivalSeoul;
+  const makeArrivalDeps = makeEstimateArrivalDeps;
 
   it('arrivals 매칭 시 arvlCd=1 노출 (arrived=true)', async () => {
     const result = await estimateBoardingLockArrival(
@@ -3321,80 +3398,9 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     });
   }
 
-  /** arrivals + positions URL 분기 + lock.trainCode 매칭 응답 builder. */
-  function makeArrivalSeoul(
-    stationName: string,
-    seconds: number,
-    arvlCd: number | null,
-    trainCode = '7246',
-  ): SeoulArrivalClient {
-    return new SeoulArrivalClient({
-      apiKey: 'K',
-      host: 'h',
-      now: () => NOW,
-      fetchImpl: (async () =>
-        new Response(
-          JSON.stringify({
-            realtimeArrivalList: [
-              {
-                barvlDt: String(seconds),
-                recptnDt: '',
-                updnLine: '상행',
-                trainLineNm: stationName,
-                btrainNo: trainCode,
-                subwayNm: '지하철7호선',
-                arvlCd,
-              },
-            ],
-          }),
-          { status: 200 },
-        )) as unknown as typeof fetch,
-    });
-  }
-
-  /** silent push (background, kind=intermediate/destination) 호출만 추출. */
-  function getStationPassedCalls(
-    fetchImpl: ReturnType<typeof vi.fn>,
-  ): [string, RequestInit][] {
-    return (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) => {
-      const headers = (c[1]?.headers ?? {}) as Record<string, string>;
-      if (headers['apns-push-type'] !== 'background') return false;
-      try {
-        const body = JSON.parse(c[1]?.body as string) as {
-          data?: { phase?: string; kind?: string };
-        };
-        // arvlCd fire는 phase=imminent + kind∈{intermediate, destination}.
-        // reschedule push(kind='reschedule')와 trip-ended push(kind='trip-ended')와 구분.
-        return (
-          body?.data?.phase === 'imminent' &&
-          (body?.data?.kind === 'intermediate' || body?.data?.kind === 'destination')
-        );
-      } catch {
-        return false;
-      }
-    });
-  }
-
-  function parseStationPassedData(call: [string, RequestInit]): {
-    nextWaypoint: string;
-    etaSeconds: number;
-    phase: string;
-    kind: string;
-    pushId: string;
-    sentAt: number;
-  } {
-    const body = JSON.parse(call[1].body as string) as {
-      data: {
-        nextWaypoint: string;
-        etaSeconds: number;
-        phase: string;
-        kind: string;
-        pushId: string;
-        sentAt: number;
-      };
-    };
-    return body.data;
-  }
+  const makeArrivalSeoul = makeArvlCdFireSeoul;
+  const getStationPassedCalls = getArvlCdStationPassedCalls;
+  const parseStationPassedData = parseArvlCdStationPassedData;
 
   it('arvlCd=1(ARRIVED) → 매역 push 발사 + stats.arvlCdFireSuccess=1 + dedup KV stamp', async () => {
     const kv = new InMemoryKV();

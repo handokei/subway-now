@@ -754,6 +754,49 @@ async function attemptVanishSwap(
   return newLock;
 }
 
+/**
+ * estimate가 null로 끝난 cycle 처리 — etaMissing 카운터 누적 + 임계 초과 시 trip 자동 종료.
+ * runTrainCodeTracking의 cognitive complexity 분담용 추출 (Sonar S3776).
+ */
+async function handleEtaMissing(
+  trip: Trip,
+  waypoint: Waypoint,
+  activeLock: BoardingLockMeta,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+): Promise<void> {
+  stats.etaMissing += 1;
+  const previousMissCount = trip.consecutiveEtaMissing ?? 0;
+  const nextMissCount = previousMissCount + 1;
+  log('boarding-lock: trainCode not found in arrivals or positions', {
+    token: trip.token.slice(0, 8),
+    trainCode: activeLock.trainCode,
+    station: waypoint.stationName,
+    consecutiveEtaMissing: nextMissCount,
+  });
+  // #903 (Seam G) — subsurface=true trip은 인내 임계(10)로 분기. 지하 dead zone GPS/trainCode 일시 누락 인내.
+  const threshold = resolveEtaMissingThreshold(trip);
+  if (nextMissCount >= threshold) {
+    // #706 — 운행 시간대 외 무한 폴링 차단. cleanupTripWithLa가 LA dismissal + deleteTrip을 묶어 정리.
+    // #868 — 클라 state sync용 trip-ended silent push 발사 (reason=eta-missing).
+    log('boarding-lock: trip auto-ended (consecutiveEtaMissing exceeded)', {
+      token: trip.token.slice(0, 8),
+      trainCode: activeLock.trainCode,
+      station: waypoint.stationName,
+      threshold,
+      subsurface: trip.subsurface === true,
+    });
+    await cleanupTripWithLa(trip, env, deps, stats, now, log, 'eta-missing');
+    return;
+  }
+  trip.consecutiveEtaMissing = nextMissCount;
+  await putTrip(env.TRIPS, trip);
+  await mirrorProgress(env.TRIPS, trip, 0);
+}
+
 export async function runTrainCodeTracking(
   trip: Trip,
   waypoint: Waypoint,
@@ -775,33 +818,7 @@ export async function runTrainCodeTracking(
     }
   }
   if (estimate === null) {
-    stats.etaMissing += 1;
-    const previousMissCount = trip.consecutiveEtaMissing ?? 0;
-    const nextMissCount = previousMissCount + 1;
-    log('boarding-lock: trainCode not found in arrivals or positions', {
-      token: trip.token.slice(0, 8),
-      trainCode: activeLock.trainCode,
-      station: waypoint.stationName,
-      consecutiveEtaMissing: nextMissCount,
-    });
-    // #903 (Seam G) — subsurface=true trip은 인내 임계(10)로 분기. 지하 dead zone GPS/trainCode 일시 누락 인내.
-    const threshold = resolveEtaMissingThreshold(trip);
-    if (nextMissCount >= threshold) {
-      // #706 — 운행 시간대 외 무한 폴링 차단. cleanupTripWithLa가 LA dismissal + deleteTrip을 묶어 정리.
-      // #868 — 클라 state sync용 trip-ended silent push 발사 (reason=eta-missing).
-      log('boarding-lock: trip auto-ended (consecutiveEtaMissing exceeded)', {
-        token: trip.token.slice(0, 8),
-        trainCode: activeLock.trainCode,
-        station: waypoint.stationName,
-        threshold,
-        subsurface: trip.subsurface === true,
-      });
-      await cleanupTripWithLa(trip, env, deps, stats, now, log, 'eta-missing');
-      return;
-    }
-    trip.consecutiveEtaMissing = nextMissCount;
-    await putTrip(env.TRIPS, trip);
-    await mirrorProgress(env.TRIPS, trip, 0);
+    await handleEtaMissing(trip, waypoint, activeLock, env, deps, stats, now, log);
     return;
   }
 
