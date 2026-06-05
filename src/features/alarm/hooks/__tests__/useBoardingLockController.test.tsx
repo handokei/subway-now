@@ -363,6 +363,19 @@ describe('useBoardingLockController', () => {
       expect(mockSetBoardingLock).not.toHaveBeenCalled();
       expect(useBoardingLockStore.getState().lock?.trainCode).toBe('OLD-1');
     });
+
+    it('createLock storage 실패 시 graceful — .catch가 swallow', async () => {
+      // storage 일시 실패 시뮬레이션. createLock 내부의 setBoardingLock이 throw하면
+      // useBoardingLockController의 .catch 분기로 흡수돼 다음 sync에서 자연 재시도.
+      mockSetBoardingLock.mockRejectedValueOnce(new Error('storage'));
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+      });
+      // throw가 RN 외부로 새지 않으면 OK — 다음 fix에서 createLock이 다시 호출되도록 lock은 null 유지.
+      await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+      expect(useBoardingLockStore.getState().lock).toBeNull();
+    });
   });
 
   describe('releaseLock', () => {
