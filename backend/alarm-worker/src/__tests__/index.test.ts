@@ -1569,6 +1569,8 @@ describe('POST /boarding-lock/sync (#901)', () => {
       advanced: true,
       currentWaypoint: '역삼',
       nextStation: '역삼',
+      // #916 — tripWithLock fixture에 boardingLock이 미리 설정돼 있으므로 candidate로 노출.
+      autoLockCandidate: { trainCode: 'T-1', line: '2', subwayId: '1002' },
     });
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
     expect(stored.waypoints.map((w: { stationName: string }) => w.stationName)).toEqual([
@@ -1729,5 +1731,39 @@ describe('POST /boarding-lock/sync (#901)', () => {
       env,
     );
     expect(res.status).toBe(200);
+  });
+
+  // #916 A1 — boardingLock이 있으면 autoLockCandidate로 노출, 없으면 null.
+  // client는 이 필드를 보고 자동 lock이 부착됐는지 알 수 있다.
+  it('boardingLock 있는 trip → autoLockCandidate에 trainCode/line/subwayId 노출', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripWithLock(), env);
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '신촌', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      autoLockCandidate: { trainCode: string; line: string; subwayId: string } | null;
+    };
+    expect(body.autoLockCandidate).toEqual({ trainCode: 'T-1', line: '2', subwayId: '1002' });
+  });
+
+  it('boardingLock 없는 trip → autoLockCandidate=null', async () => {
+    const env = makeKvEnv();
+    const tripNoLock = tripWithLock();
+    delete tripNoLock.boardingLock;
+    await post('/trips', tripNoLock, env);
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'tok-sync', observedStationName: '신촌', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      autoLockCandidate: unknown;
+    };
+    expect(body.autoLockCandidate).toBeNull();
   });
 });

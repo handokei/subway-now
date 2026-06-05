@@ -62,6 +62,20 @@
       "format": "histogram",
       "display": "numeric",
       "description": "E2 Kalman predict vs observe 차이"
+    },
+    {
+      "key": "autoLockSuccess",
+      "constantName": "AUTO_LOCK_SUCCESS",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#916 A1 — 9단 게이트 통과 후 backend가 trainCode를 자동 결정해 lock 부착에 성공한 비율"
+    },
+    {
+      "key": "autoLockFalsePositive",
+      "constantName": "AUTO_LOCK_FALSE_POSITIVE",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#916 A1 — 자동 lock 후 사용자가 다른 trainCode로 swap한 비율 (catalog placeholder, 후속 PR에서 client swap 신호 wire)"
     }
   ]
 }

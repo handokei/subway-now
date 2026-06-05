@@ -371,10 +371,13 @@ app.post('/metrics/boarding-prompt', async (c) => {
  *
  * Body: { token, observedStationName, observedAtMs, accuracy, subsurface? }
  * Response 200:
- *   { ok, advanced, currentWaypoint, nextStation }
+ *   { ok, advanced, currentWaypoint, nextStation, autoLockCandidate }
  *   - advanced: 이번 sync로 waypoints가 shift됐는지 (1+ hop)
  *   - currentWaypoint: 정정 후 first waypoint stationName (없으면 null — destination 도착)
  *   - nextStation: 정정 후 first waypoint = 다음 알람 대상 (currentWaypoint와 동일, 의미상 alias)
+ *   - autoLockCandidate (#916 A1): cron이 자동 lock을 부착했을 때 그 lock 메타.
+ *     클라는 이 값을 보고 사용자가 직접 탭하지 않아도 boardingLock state를 hydrate 가능.
+ *     없으면 null. 후속 PR에서 클라이언트가 이 필드를 처리한다.
  * Response 404: { error: 'trip_not_found' } — 클라는 다음 fix에서 자연 retry
  *
  * Trip 부재 시 lock 재생성 책임은 본 endpoint가 지지 않음 — 클라가 useApnsTripRegistration으로
@@ -431,6 +434,16 @@ app.post('/boarding-lock/sync', async (c) => {
     advanced: advance.shiftedCount > 0,
     currentWaypoint: head ? head.stationName : null,
     nextStation: head ? head.stationName : null,
+    // #916 A1 — cron auto-lock(또는 사용자 명시 lock)이 trip에 부착돼 있으면 그 메타를
+    // candidate로 노출. client가 이 값으로 boardingLock UI/state를 hydrate한다.
+    // segmentStations/expiresAt 등 내부 필드는 client가 트래킹할 필요가 없어 공개 표면 최소화.
+    autoLockCandidate: working.boardingLock
+      ? {
+          trainCode: working.boardingLock.trainCode,
+          line: working.boardingLock.line,
+          subwayId: working.boardingLock.subwayId,
+        }
+      : null,
   });
 });
 
