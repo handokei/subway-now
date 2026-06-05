@@ -124,6 +124,14 @@
     "assignSlot": "Add {{label}}",
     "pendingSlot": "The next station you pick will be saved as {{label}}"
   },
+  "currentStationConfirm": {
+    "title": "Confirm your current station",
+    "subtitle": "Tap to set as current station",
+    "topPickHint": "Best match",
+    "empty": "No nearby station found",
+    "searchFallback": "Search instead",
+    "close": "Close"
+  },
   "sleepModeGuide": {
     "title": "Sleep mode notice",
     "message": "If earphones are not connected, the alarm may play through the speaker.\n\nIf you do not want speaker output, turn off 'Allow speaker output' under Settings > Alarm.",

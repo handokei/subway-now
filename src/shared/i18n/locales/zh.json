@@ -124,6 +124,14 @@
     "assignSlot": "添加{{label}}",
     "pendingSlot": "下次选择的车站将保存为{{label}}"
   },
+  "currentStationConfirm": {
+    "title": "请确认当前车站",
+    "subtitle": "点按即设为当前车站",
+    "topPickHint": "推荐",
+    "empty": "附近未找到车站",
+    "searchFallback": "通过搜索选择",
+    "close": "关闭"
+  },
   "sleepModeGuide": {
     "title": "睡眠模式提示",
     "message": "如果未连接耳机,提醒可能通过扬声器播放。\n\n如不希望扬声器输出,请在 设置 > 提醒 中关闭'允许扬声器输出'。",
