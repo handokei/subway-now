@@ -16,7 +16,7 @@ import { useDestinationStore } from '../src/features/route/store/useDestinationS
 import { useLocaleStore } from '../src/shared/i18n/store/useLocaleStore';
 import { DebugModal } from '../src/features/debug/components/DebugModal';
 import { isDebugModalEnabled } from '../src/shared/constants/debugFlags';
-import '../src/tasks/backgroundLocationTask';
+import '../src/features/nearest-station/tasks/backgroundLocationTask';
 import { registerSilentPushTask } from '../src/features/alarm/tasks/silentPushTask';
 import { registerScheduledAlarmListener } from '../src/features/alarm/utils/scheduledAlarmReceiver';
 import { cancelScheduledAlarms } from '../src/features/alarm/utils/alarmScheduler';
