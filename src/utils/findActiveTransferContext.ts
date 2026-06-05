@@ -1,4 +1,4 @@
-import type { BoardingLock } from '../types/boardingLock';
+import type { BoardingLock } from '../features/alarm/types/boardingLock';
 import type { LineNumber, Station } from '../types/station';
 import type { Route } from './stationRoute';
 import {
@@ -7,7 +7,7 @@ import {
   getStationsOnLine,
   isSameStationName,
 } from './stationRoute';
-import { resolveAllTargets } from './stationAlarm';
+import { resolveAllTargets } from '../features/alarm/utils/stationAlarm';
 import type { TripDirection } from './tripDirection';
 
 export interface ActiveTransferContext {

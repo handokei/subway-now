@@ -20,14 +20,14 @@ import { useArrivalInfo } from '../hooks/useArrivalInfo';
 import {
   useSilentPushDiagnostics,
   type SilentPushDiagnostics,
-} from '../hooks/useSilentPushDiagnostics';
+} from '../features/alarm/hooks/useSilentPushDiagnostics';
 import {
   clearAlarmLog,
   countSilentPushOutcomes,
   getAlarmLog,
   summarizeAlarmLogBySource,
   type AlarmLogEntry,
-} from '../utils/alarmLog';
+} from '../features/alarm/utils/alarmLog';
 import { SILENT_PUSH_LABELS, buildSilentPushCountValue } from '../shared/constants/labels';
 import {
   clearFusionDebugEntries,
@@ -39,7 +39,7 @@ import {
   dumpScheduledNotifications,
   formatScheduledNotificationLine,
   type ScheduledNotificationDumpEntry,
-} from '../utils/scheduledNotificationsDump';
+} from '../features/alarm/utils/scheduledNotificationsDump';
 import type { FusionConfidence, FusionSource } from '../utils/pickFusedStation';
 import type { NearestStationResult } from '../types/station';
 import { useTheme, spacing, radius, typography } from '../shared/theme';

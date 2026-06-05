@@ -1,5 +1,5 @@
 import { detectMisBoarding } from '../detectMisBoarding';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../features/alarm/types/boardingLock';
 import type { LinePositions, TrainPosition } from '../../api/positionApi';
 
 const lock: BoardingLock = {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { prefetchArrival, useArrivalInfo } from './useArrivalInfo';
-import { useBoardingLockStore } from '../store/useBoardingLockStore';
+import { useBoardingLockStore } from '../features/alarm/store/useBoardingLockStore';
 import {
   findActiveTransferContext,
   findUpcomingTransferPrefetch,
@@ -8,7 +8,7 @@ import {
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../shared/constants/boardingLock';
 import { calculateRemainingLegETA } from '../utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../api/arrivalApi';
-import type { BoardingLock } from '../types/boardingLock';
+import type { BoardingLock } from '../features/alarm/types/boardingLock';
 import type { Station } from '../types/station';
 import type { Route } from '../utils/stationRoute';
 import type { ArrivalProvider } from '../providers/types';

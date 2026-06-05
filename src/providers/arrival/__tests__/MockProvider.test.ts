@@ -1,6 +1,6 @@
 import { MockArrivalProvider } from '../MockProvider';
 import { MOCK_ARRIVALS } from '../../../api/arrivalApi';
-import { SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX } from '../../../utils/scheduleFallback';
+import { SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX } from '../../../features/alarm/utils/scheduleFallback';
 
 describe('MockArrivalProvider', () => {
   let provider: MockArrivalProvider;

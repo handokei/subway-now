@@ -2,7 +2,7 @@ import { arcIndexOfStation, estimateStationProgress } from '../stationProgressEs
 import { HOP_TIME_MS } from '../../shared/constants/boardingLock';
 import { ARRIVAL_CODE } from '../../shared/constants/arrivalCodes';
 import type { ArrivalInfo } from '../../api/arrivalApi';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../features/alarm/types/boardingLock';
 import type { Station } from '../../types/station';
 import type { TrainProgressResult } from '../trackTrainProgress';
 

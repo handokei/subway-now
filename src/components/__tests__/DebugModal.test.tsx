@@ -4,7 +4,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { DebugModal, __test__ } from '../DebugModal';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
 import { useAppStore } from '../../store/useAppStore';
-import type { AlarmLogEntry } from '../../utils/alarmLog';
+import type { AlarmLogEntry } from '../../features/alarm/utils/alarmLog';
 import type { Station, NearestStationResult } from '../../types/station';
 import type { StationArrival } from '../../api/arrivalApi';
 
@@ -21,11 +21,11 @@ jest.mock('../../hooks/useArrivalInfo', () => ({
   useArrivalInfo: (name: string | null) => mockUseArrivalInfo(name),
 }));
 // silentPushTask는 expo-task-manager native module이 필요 — jest 환경에서 chain break.
-jest.mock('../../hooks/useSilentPushDiagnostics', () => ({
+jest.mock('../../features/alarm/hooks/useSilentPushDiagnostics', () => ({
   useSilentPushDiagnostics: () => mockUseSilentPushDiagnostics(),
 }));
-jest.mock('../../utils/alarmLog', () => {
-  const actual = jest.requireActual('../../utils/alarmLog');
+jest.mock('../../features/alarm/utils/alarmLog', () => {
+  const actual = jest.requireActual('../../features/alarm/utils/alarmLog');
   return {
     ...actual,
     getAlarmLog: () => mockGetAlarmLog(),
@@ -34,8 +34,8 @@ jest.mock('../../utils/alarmLog', () => {
 });
 
 const mockDumpScheduledNotifications = jest.fn();
-jest.mock('../../utils/scheduledNotificationsDump', () => {
-  const actual = jest.requireActual('../../utils/scheduledNotificationsDump');
+jest.mock('../../features/alarm/utils/scheduledNotificationsDump', () => {
+  const actual = jest.requireActual('../../features/alarm/utils/scheduledNotificationsDump');
   return {
     ...actual,
     dumpScheduledNotifications: () => mockDumpScheduledNotifications(),

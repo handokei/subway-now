@@ -8,7 +8,7 @@ import {
   notificationSourceI18nKey,
   shouldDiscloseNotificationSource,
   type NotificationSource,
-} from '../utils/notificationSource';
+} from '../features/alarm/utils/notificationSource';
 
 interface SourceBadgeProps {
   source: FusionSource;

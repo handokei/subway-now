@@ -1,5 +1,5 @@
 import type { Route } from './stationRoute';
-import type { BoardingLock } from '../types/boardingLock';
+import type { BoardingLock } from '../features/alarm/types/boardingLock';
 import type { LineNumber, Station } from '../types/station';
 
 /**

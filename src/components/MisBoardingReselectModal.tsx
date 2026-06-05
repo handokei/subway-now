@@ -1,7 +1,7 @@
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme, typography, spacing, radius } from '../shared/theme';
-import { BoardingTrainList } from './BoardingTrainList';
+import { BoardingTrainList } from '../features/alarm/components/BoardingTrainList';
 import type { ArrivalInfo } from '../api/arrivalApi';
 import type { LineNumber } from '../types/station';
 

@@ -2,7 +2,7 @@ import {
   aggregateSilentPushEntries,
   isEmptyTelemetry,
 } from '../telemetryAggregation';
-import type { AlarmLogEntry } from '../alarmLog';
+import type { AlarmLogEntry } from '../../features/alarm/utils/alarmLog';
 
 function entry(partial: Partial<AlarmLogEntry> & Pick<AlarmLogEntry, 'ts' | 'source' | 'outcome'>): AlarmLogEntry {
   return { ...partial };

@@ -4,7 +4,7 @@ import {
   resolveDirectionInLine,
 } from '../findActiveTransferContext';
 import { findStationByNameAndLine, getStationsOnLine } from '../stationRoute';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../features/alarm/types/boardingLock';
 import type { Station } from '../../types/station';
 import {
   makeDirectRoute,

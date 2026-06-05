@@ -1,13 +1,13 @@
 import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { processLocationUpdate } from '../utils/stationPipeline';
-import { alarmKey } from '../utils/stationAlarm';
+import { processLocationUpdate } from '../features/alarm/utils/stationPipeline';
+import { alarmKey } from '../features/alarm/utils/stationAlarm';
 import { createLogger } from '../utils/logger';
 import { APNS_TOKEN_KEY, DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../shared/constants/storageKeys';
-import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
+import { getFiredAlarms, setFiredAlarms } from '../features/alarm/utils/notificationState';
 import { isAccuracyAcceptable, isLocationFresh, isPlausibleJump, type FixSample } from '../utils/locationGates';
-import { logSuppressedGate } from '../utils/alarmLog';
+import { logSuppressedGate } from '../features/alarm/utils/alarmLog';
 import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY } from '../shared/constants/storageKeys';
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { getCurrentMotionStationary } from '../utils/motionActivity';

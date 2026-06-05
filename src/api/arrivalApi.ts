@@ -2,7 +2,7 @@ import { createLogger } from '../utils/logger';
 import { parseTrainType, type TrainType } from '../shared/constants/trainTypes';
 import { subwayIdToLine } from '../shared/constants/lineApiNames';
 import { findLineByStationName } from '../utils/stationLookup';
-import { buildScheduleArrival, hasHeadwayData } from '../utils/scheduleFallback';
+import { buildScheduleArrival, hasHeadwayData } from '../features/alarm/utils/scheduleFallback';
 import type { LineNumber } from '../types/station';
 
 const log = createLogger('arrivalApi');

@@ -1,10 +1,10 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { useTransferTrainList, filterArrivalsByDirection } from '../useTransferTrainList';
 import { prefetchArrival, useArrivalInfo } from '../useArrivalInfo';
-import { useBoardingLockStore } from '../../store/useBoardingLockStore';
+import { useBoardingLockStore } from '../../features/alarm/store/useBoardingLockStore';
 import { findStationByNameAndLine } from '../../utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../../api/arrivalApi';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../features/alarm/types/boardingLock';
 import type { Station } from '../../types/station';
 import { makeDirectRoute, makeTransferRoute } from '../../testUtils/routeFixtures';
 
@@ -14,8 +14,8 @@ const mockPrefetchArrival = prefetchArrival as jest.Mock;
 const mockRefetch = jest.fn();
 
 const mockCreateLock = jest.fn().mockResolvedValue(undefined);
-jest.mock('../../store/useBoardingLockStore', () => {
-  const actual = jest.requireActual('../../store/useBoardingLockStore');
+jest.mock('../../features/alarm/store/useBoardingLockStore', () => {
+  const actual = jest.requireActual('../../features/alarm/store/useBoardingLockStore');
   return {
     ...actual,
     useBoardingLockStore: ((selector?: (s: { createLock: jest.Mock }) => unknown) =>

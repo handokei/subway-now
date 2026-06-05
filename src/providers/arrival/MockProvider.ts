@@ -1,7 +1,7 @@
 import type { ArrivalProvider, ArrivalOptions } from '../types';
 import { MOCK_ARRIVALS, type StationArrival } from '../../api/arrivalApi';
 import { findLineByStationName } from '../../utils/stationLookup';
-import { buildScheduleArrival, hasHeadwayData } from '../../utils/scheduleFallback';
+import { buildScheduleArrival, hasHeadwayData } from '../../features/alarm/utils/scheduleFallback';
 
 /**
  * 개발/테스트용 mock arrival provider.
