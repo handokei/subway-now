@@ -22,18 +22,43 @@
  *     수집·평가 자체만. 송신/게이트 통합은 후속 sub-issue.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Barometer, type BarometerMeasurement } from 'expo-sensors';
 import {
   appendBarometerReading,
+  evaluateLatestSubsurface,
   resetBarometerState,
 } from '../utils/barometerState';
-import { BAROMETER_SAMPLE_INTERVAL_MS } from '../constants/barometer';
+import {
+  BAROMETER_SAMPLE_INTERVAL_MS,
+  BAROMETER_SUBSURFACE_CONFIRM_SAMPLES,
+} from '../constants/barometer';
 
 /**
- * 기압계 수집을 활성화한다. 반환값 없음 — 외부에서는 `evaluateLatestSubsurface()`로 조회.
+ * #903 — 외부 소비자에 노출되는 보조 신호 스냅샷.
+ *
+ * `subsurface`만 노출 — UI/sticky/alarm은 boolean 한 값으로 충분. 디버그용 raw delta는
+ * `getBarometerReadings()` / `evaluateLatestSubsurface()`로 직접 조회.
  */
-export function useBarometer(): void {
+export interface BarometerSignal {
+  /** 30s 윈도우 dP가 임계 이상 상승했는가 (지하 진입 후보). */
+  subsurface: boolean;
+}
+
+/**
+ * 기압계 수집을 활성화하고 최신 dP/dt 평가 결과를 반환한다.
+ *
+ * 미지원/권한 거절/reading 부족: subsurface=false (보수적 fallback).
+ * Seam G(#903) — 호출자(useNearestStation / useFusedNearestStation)는 반환값의 subsurface로
+ * sticky automotive · fusion confidence · backend payload를 한 신호로 일관되게 분기한다.
+ */
+export function useBarometer(): BarometerSignal {
+  const [subsurface, setSubsurface] = useState<boolean>(false);
+  // #903 — hysteresis: 임계 부근 노이즈 진동 흡수. lastEmitted와 다른 verdict가 N회 연속
+  // 들어와야 state flip. lastEmitted과 같은 verdict가 들어오면 카운터 리셋.
+  const lastEmittedRef = useRef<boolean>(false);
+  const pendingCountRef = useRef<number>(0);
+
   useEffect(() => {
     let cancelled = false;
     let subscription: { remove(): void } | null = null;
@@ -48,7 +73,20 @@ export function useBarometer(): void {
       subscription = Barometer.addListener((m: BarometerMeasurement) => {
         // m.timestamp는 boot 이후 초 — wall-clock과 직접 비교 불가.
         // ring buffer는 epoch ms 윈도우로 평가하므로 Date.now()로 직접 stamp.
-        appendBarometerReading({ t: Date.now(), pressureHpa: m.pressure });
+        const now = Date.now();
+        appendBarometerReading({ t: now, pressureHpa: m.pressure });
+        const verdict = evaluateLatestSubsurface(now);
+        const detected = verdict?.detected === true;
+        if (detected === lastEmittedRef.current) {
+          pendingCountRef.current = 0;
+          return;
+        }
+        pendingCountRef.current += 1;
+        if (pendingCountRef.current >= BAROMETER_SUBSURFACE_CONFIRM_SAMPLES) {
+          lastEmittedRef.current = detected;
+          pendingCountRef.current = 0;
+          setSubsurface(detected);
+        }
       });
     };
 
@@ -58,8 +96,12 @@ export function useBarometer(): void {
       cancelled = true;
       if (subscription !== null) subscription.remove();
       resetBarometerState();
+      // 주의: unmount 후 setSubsurface 호출은 React가 무시(unmounted state warning). state는
+      // remount 시 useState 초기값으로 자연 리셋되므로 명시적 reset 불필요.
     };
   }, []);
+
+  return { subsurface };
 }
 
 /** isAvailableAsync 예외를 false로 폴백 — 일부 시뮬레이터에서 throw. */

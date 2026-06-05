@@ -1295,4 +1295,40 @@ describe('useFusedNearestStation', () => {
       }
     });
   });
+
+  describe('#903 Seam G: barometer subsurface confidence 강등', () => {
+    beforeEach(() => {
+      mockUseNearest.mockReturnValue(gpsBase());
+      mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions.mockReturnValue(positionRet(null));
+    });
+
+    const renderWithSub = (sub?: boolean) =>
+      renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, null, null, false, sub),
+      );
+
+    it.each([
+      { label: 'subsurface=true + gps-only → gps-only-underground 강등', sub: true, expected: 'gps-only-underground' },
+      { label: 'subsurface=false → 강등 없음', sub: false, expected: 'gps-only' },
+      { label: 'subsurface 미전달 → 강등 없음 (graceful)', sub: undefined, expected: 'gps-only' },
+    ])('$label', ({ sub, expected }) => {
+      const { result } = renderWithSub(sub);
+      expect(result.current.confidence).toBe(expected);
+    });
+
+    it('subsurface=true + 강등 케이스: source=gps + result=GPS 최근접 유지', () => {
+      const { result } = renderWithSub(true);
+      expect(result.current.source).toBe('gps');
+      expect(result.current.result?.station.id).toBe(MOCK_STATIONS.gangnam.id);
+    });
+
+    it('subsurface=true이지만 confidence가 arrival-confirmed면 강등하지 않음', () => {
+      // arrival-confirmed는 자체 검증 신호 — 기압계로 강등하지 않는다.
+      mockUseArrival.mockReturnValue(arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }));
+      const { result } = renderWithSub(true);
+      expect(result.current.confidence).toBe('arrival-confirmed');
+    });
+  });
 });

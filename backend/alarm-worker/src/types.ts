@@ -143,6 +143,15 @@ export interface Trip {
    * 부재(첫 평가 전) = phase 분류 신호 없음.
    */
   stationPhase?: StationPhaseState;
+  /**
+   * #903 (Seam G) — 클라이언트 기압계가 지하 진입을 시사하는가. true면 backend가
+   * consecutiveEtaMissing threshold를 5→10(SUBSURFACE_ETA_MISSING_TOLERANCE)으로 늘려 일시 GPS/arrival
+   * 누락을 더 인내한다. 부재/false면 기존 threshold(MAX_CONSECUTIVE_ETA_MISSING=5) 유지.
+   *
+   * 운영 정책: 기압계 신호는 client가 매 register POST에 동봉. 새 POST가 오면 갱신되며,
+   * 한 trip 내에서 지상→지하 전이로 false→true 변동 가능. cron 사이클 사이의 stale은 next register로 자연 정정.
+   */
+  subsurface?: boolean;
 }
 
 /**

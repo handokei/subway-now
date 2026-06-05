@@ -177,8 +177,15 @@ export function useFusedNearestStation(
    * 정적 사용자 케이스에서 positionStability보다 우선 적용. 미전달이면 기존 동작 유지.
    */
   motionStationary?: boolean,
+  /**
+   * #903 (Seam G) — 기압계(useBarometer) dP/dt가 지하 진입을 시사하는지. true면 GPS-only 결과는
+   * 'gps-only-underground'로 confidence 강등해 stationAlarm의 early/transfer phase 발사를 보류.
+   * sticky의 motion unlock 신호와 동일 시그널 — useNearestStation으로도 함께 prop drilling.
+   * 미전달이면 기존 'gps-only' 그대로 (graceful — 기압계 미지원/권한 거절 케이스 호환).
+   */
+  barometerSubsurface?: boolean,
 ): UseFusedNearestStationReturn {
-  const gps = useNearestStation();
+  const gps = useNearestStation({ barometerSubsurface });
   // #733 — 위치 이력 기반 정적 판정. shouldDowngradeFusion이 speed=null일 때 fallback으로 사용.
   // useNearestStation의 userLocation 변경마다 자동 누적/판정.
   const positionStability = usePositionStability(gps.userLocation);
@@ -540,6 +547,14 @@ export function useFusedNearestStation(
     confidence = 'gps-only';
     source = 'gps';
     result = gps.result;
+  }
+
+  // #903 (Seam G) — GPS-only 결과인데 기압계 dP/dt가 지하 진입을 시사하면 'gps-only-underground'로 강등.
+  // 지하 GPS fix는 wifi/cell 삼각측량 fallback이 보고된 좌표일 가능성이 높아 stationAlarm 게이트에서
+  // early/transfer 알람 발사를 별도 정책으로 보류. source는 그대로 'gps' — 신호원 자체는 동일.
+  // 다른 confidence(position-train / boarding-lock / arrival-*)는 강등하지 않음 — 본인의 검증 신호로 우선.
+  if (confidence === 'gps-only' && barometerSubsurface === true) {
+    confidence = 'gps-only-underground';
   }
 
   // 측정(#443): 결정 변화(source/stationId/confidence) 시에만 push.

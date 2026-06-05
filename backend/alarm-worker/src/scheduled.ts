@@ -83,6 +83,24 @@ export const LA_PUSH_THRESHOLD_MS = 30_000;
 export const MAX_CONSECUTIVE_ETA_MISSING = 5;
 
 /**
+ * #903 (Seam G) — 기압계 subsurface=true trip에 적용되는 인내 임계치 (10회 ≈ 10분).
+ * 지하 dead zone에서 GPS/trainCode 신호 누락이 더 자주, 더 길게 발생하므로 기본 임계의 2배로 인내.
+ * 너무 크면 자동 종료 효과를 잃어 무한 폴링 위험 — 2배가 절충점.
+ */
+export const SUBSURFACE_ETA_MISSING_TOLERANCE = 10;
+
+/**
+ * trip별 etaMissing 임계 결정. subsurface=true면 늘려 잡고, 그 외엔 기본값.
+ * 클라가 매 register POST에 기압계 신호를 동봉하므로 한 trip 내에서 지상→지하 전이 시
+ * threshold가 자연 갱신된다(stale 가능 윈도우는 다음 register 까지 ≤ ALARM_TIME_BUCKET_MS).
+ */
+export function resolveEtaMissingThreshold(trip: Pick<Trip, 'subsurface'>): number {
+  return trip.subsurface === true
+    ? SUBSURFACE_ETA_MISSING_TOLERANCE
+    : MAX_CONSECUTIVE_ETA_MISSING;
+}
+
+/**
  * cron이 progress KV를 read할 때의 cacheTtl (#766/#770).
  * POST `/trips`가 putProgress 직후 같은 cron 사이클에서 옛 값을 읽지 않도록 30s까지 단축.
  * trips.ts/pendingPushes.ts의 cron read와 동일 정책. Cloudflare KV는 cacheTtl<30s 시
@@ -501,14 +519,17 @@ export async function runTrainCodeTracking(
       station: waypoint.stationName,
       consecutiveEtaMissing: nextMissCount,
     });
-    if (nextMissCount >= MAX_CONSECUTIVE_ETA_MISSING) {
+    // #903 (Seam G) — subsurface=true trip은 인내 임계(10)로 분기. 지하 dead zone GPS/trainCode 일시 누락 인내.
+    const threshold = resolveEtaMissingThreshold(trip);
+    if (nextMissCount >= threshold) {
       // #706 — 운행 시간대 외 무한 폴링 차단. cleanupTripWithLa가 LA dismissal + deleteTrip을 묶어 정리.
       // #868 — 클라 state sync용 trip-ended silent push 발사 (reason=eta-missing).
       log('boarding-lock: trip auto-ended (consecutiveEtaMissing exceeded)', {
         token: trip.token.slice(0, 8),
         trainCode: lock.trainCode,
         station: waypoint.stationName,
-        threshold: MAX_CONSECUTIVE_ETA_MISSING,
+        threshold,
+        subsurface: trip.subsurface === true,
       });
       await cleanupTripWithLa(trip, env, deps, stats, now, log, 'eta-missing');
       return;

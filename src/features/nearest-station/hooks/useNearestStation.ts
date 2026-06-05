@@ -103,7 +103,21 @@ function applyNearestResult(
   }
 }
 
-export function useNearestStation(): UseNearestStationReturn {
+/**
+ * #903 (Seam G) — 외부 신호 입력. 옵셔널이라 기존 호출자(테스트, 다른 화면)는 영향 없음.
+ */
+export interface UseNearestStationInputs {
+  /**
+   * 기압계(useBarometer) dP/dt가 지하 진입을 시사하는지. true면 useStickyStation의 automotive
+   * 입력으로 전달되어 차/지하철 이동 확정 unlock 트리거. subsurface 신호는 OS 가속도계/GPS와
+   * 무관하게 지상→지하 전이를 가장 일찍 감지하므로 sticky의 motion unlock 트리거로 사용한다.
+   */
+  barometerSubsurface?: boolean;
+}
+
+export function useNearestStation(
+  inputs: UseNearestStationInputs = {},
+): UseNearestStationReturn {
   const [result, setResult] = useState<NearestStationResult | null>(null);
   const [variants, setVariants] = useState<Station[]>([]);
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
@@ -376,11 +390,19 @@ export function useNearestStation(): UseNearestStationReturn {
 
   // #876 — 매 fix를 sticky 훅에 전달. lock된 역이 있으면 result를 그것으로 override.
   // fusion candidates는 useFusedNearestStation에서 userLocation 기반으로 별도 계산하므로 영향 없음.
-  const sticky = useStickyStation({
-    candidate: result,
-    accuracyMeters,
-    speedMps,
-  });
+  //
+  // #903 (Seam G) — 기압계 subsurface 신호를 sticky의 automotive 입력으로 매핑.
+  // 지하 진입은 차/지하철 이동 확정과 동등한 unlock 트리거(사용자가 이미 지상 sticky를 떠나 이동 중).
+  // CMMotionActivity native bridge가 자동차 신호를 노출하지 않아 sticky가 motion unlock 미작동
+  // 상태였던 회귀 해소.
+  const sticky = useStickyStation(
+    {
+      candidate: result,
+      accuracyMeters,
+      speedMps,
+    },
+    { automotive: inputs.barometerSubsurface === true },
+  );
 
   const exposed = useMemo<{ result: NearestStationResult | null; source: NearestStationSource }>(
     () => {

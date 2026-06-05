@@ -338,12 +338,16 @@ export function useStationAlarm({
     }
 
     const suppressed: AlarmEvent[] = [];
+    // #903 (Seam G) — 기압계 강등 시 evaluateAlarmPhase가 early/transfer 알람을 보류.
+    // arrivalConfidence는 useFusedNearestStation이 'gps-only-underground'로 강등한 값을 그대로 흘려보냄.
+    const degraded = arrivalConfidence === 'gps-only-underground';
     const rawEvent = evaluateAlarmPhase(
       {
         route,
         destinationName: destination.name,
         etaSeconds,
         currentLine: nearestStation?.line ?? null,
+        degradedConfidence: degraded,
       },
       firedAlarmsRef.current,
       undefined,
@@ -415,6 +419,9 @@ export function useStationAlarm({
     skipWarmupGuard,
     dismissSilence,
     clearDismissSilenceAction,
+    // #903 — degraded 평가는 arrivalConfidence에서 파생. 지하 진입으로 'gps-only'→
+    // 'gps-only-underground' 단독 전환 시(다른 deps 정적) 본 effect 재실행되어 차단 정책 즉시 반영.
+    arrivalConfidence,
   ]);
 
   // #396: 도착정보 API 신호로 imminent 발사.
@@ -498,6 +505,8 @@ export function useStationAlarm({
     clearDismissSilenceAction,
     userLocation?.lat,
     userLocation?.lng,
+    // #903 — 위 ETA effect와 동일 사유. degraded 단독 전환에 본 API-신호 effect도 즉시 반응.
+    arrivalConfidence,
   ]);
 
   // Station-passed 알림 효과: 경로상 역 변경 시 dedup된 per-station 알림.

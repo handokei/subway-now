@@ -161,6 +161,18 @@ describe('validateTrip', () => {
     expect(validateTrip({ ...base(), locklessStationPassed: 1 })?.locklessStationPassed).toBeUndefined();
     expect(validateTrip(base())?.locklessStationPassed).toBeUndefined();
   });
+
+  // #903 (Seam G) — subsurface 필드
+  it('preserves boolean subsurface (#903)', () => {
+    expect(validateTrip({ ...base(), subsurface: true })?.subsurface).toBe(true);
+    expect(validateTrip({ ...base(), subsurface: false })?.subsurface).toBe(false);
+  });
+
+  it('drops non-boolean subsurface and absent field stays undefined (#903)', () => {
+    expect(validateTrip({ ...base(), subsurface: 'yes' })?.subsurface).toBeUndefined();
+    expect(validateTrip({ ...base(), subsurface: 1 })?.subsurface).toBeUndefined();
+    expect(validateTrip(base())?.subsurface).toBeUndefined();
+  });
 });
 
 describe('validateTrip — boardingLock (#585)', () => {
@@ -367,6 +379,46 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     await post('/trips', tripBody(), env); // device sends payload w/o counter
     const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
     expect(finalTrip.consecutiveEtaMissing).toBe(4);
+  });
+
+  // #903 (Seam G) — subsurface 전환에 따른 누적 카운터 정책.
+  // helper: existing trip을 (subsurface, count) 상태로 셋업.
+  async function seedExistingTrip(
+    env: ReturnType<typeof makeKvEnv>,
+    initialSubsurface: boolean | undefined,
+    missCount: number,
+  ): Promise<void> {
+    const body = initialSubsurface === undefined ? tripBody() : { ...tripBody(), subsurface: initialSubsurface };
+    await post('/trips', body, env);
+    const existing = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    existing.consecutiveEtaMissing = missCount;
+    await env.TRIPS.put('trip:tok-578', JSON.stringify(existing));
+  }
+
+  it.each([
+    {
+      label: 'true→false 전환(지상 복귀) → counter 리셋',
+      initial: true,
+      seed: 7,
+      next: false,
+      expectedCount: 0,
+      expectedSubsurface: false,
+    },
+    {
+      label: 'undefined→true 전환(지하 진입) → counter 보존',
+      initial: undefined,
+      seed: 3,
+      next: true,
+      expectedCount: 3,
+      expectedSubsurface: true,
+    },
+  ])('subsurface $label', async ({ initial, seed, next, expectedCount, expectedSubsurface }) => {
+    const env = makeKvEnv();
+    await seedExistingTrip(env, initial, seed);
+    await post('/trips', { ...tripBody(), subsurface: next }, env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(finalTrip.consecutiveEtaMissing).toBe(expectedCount);
+    expect(finalTrip.subsurface).toBe(expectedSubsurface);
   });
 
   it('returns 400 on invalid JSON', async () => {

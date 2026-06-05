@@ -48,3 +48,13 @@ export const BAROMETER_RING_BUFFER_TTL_MS = 60_000;
  * 더 높은 주기는 배터리 소모만 키운다.
  */
 export const BAROMETER_SAMPLE_INTERVAL_MS = 1_000;
+
+/**
+ * #903 — subsurface verdict의 hysteresis 확인 샘플 수.
+ *
+ * 임계(0.3hPa) 부근에서 센서 noise로 verdict가 1Hz 토글되면 useBarometer가 setSubsurface을
+ * 매초 반전해 상위 hook re-render 폭주(useApnsTripRegistration register effect, alarmBackend
+ * dedup hash churn)를 일으킨다. N회 연속 동일 verdict를 확인한 후에만 state를 flip해 진동을
+ * 흡수. 3회 × 1초 = 3초 grace는 지하 진입 응답성과 false toggle 차단의 균형.
+ */
+export const BAROMETER_SUBSURFACE_CONFIRM_SAMPLES = 3;
