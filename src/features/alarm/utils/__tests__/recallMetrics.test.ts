@@ -12,18 +12,23 @@ function entry(
   return { ...partial };
 }
 
+// 자주 쓰는 fg-evaluated fired 보일러플레이트 — duplication 차단.
+function firedAt(ts: number, stationName?: string): AlarmLogEntry {
+  return entry({
+    ts,
+    source: 'fg-evaluated',
+    outcome: 'fired',
+    kind: 'station-passed',
+    ...(stationName ? { stationName } : {}),
+  });
+}
+
 describe('computeTripRecall', () => {
   // route 역 3개 중 2개가 trip 윈도우 내 fired → recall = 2/3.
   it('expected vs fired로 recall%를 계산한다', () => {
     const route = ['강남', '역삼', '선릉'];
     const entries: AlarmLogEntry[] = [
-      entry({
-        ts: 100,
-        source: 'fg-evaluated',
-        outcome: 'fired',
-        kind: 'station-passed',
-        stationName: '강남',
-      }),
+      firedAt(100, '강남'),
       entry({
         ts: 200,
         source: 'silent-push-fired',
@@ -61,8 +66,8 @@ describe('computeTripRecall', () => {
   it('100% recall — 모든 역 fired', () => {
     const route = ['A', 'B'];
     const entries: AlarmLogEntry[] = [
-      entry({ ts: 1, source: 'fg-evaluated', outcome: 'fired', kind: 'station-passed', stationName: 'A' }),
-      entry({ ts: 2, source: 'fg-evaluated', outcome: 'fired', kind: 'station-passed', stationName: 'B' }),
+      firedAt(1, 'A'),
+      firedAt(2, 'B'),
     ];
 
     const result = computeTripRecall({
@@ -80,11 +85,11 @@ describe('computeTripRecall', () => {
     const route = ['A', 'B', 'C'];
     const entries: AlarmLogEntry[] = [
       // 윈도우 밖 (ts <= tripStart): 무시
-      entry({ ts: 50, source: 'fg-evaluated', outcome: 'fired', kind: 'station-passed', stationName: 'A' }),
+      firedAt(50, 'A'),
       // 윈도우 안: 카운트
-      entry({ ts: 150, source: 'fg-evaluated', outcome: 'fired', kind: 'station-passed', stationName: 'B' }),
+      firedAt(150, 'B'),
       // 윈도우 밖 (ts > tripEnd): 무시
-      entry({ ts: 600, source: 'fg-evaluated', outcome: 'fired', kind: 'station-passed', stationName: 'C' }),
+      firedAt(600, 'C'),
     ];
 
     const result = computeTripRecall({
@@ -101,9 +106,9 @@ describe('computeTripRecall', () => {
   it('같은 역이 여러 번 fired돼도 1번으로 카운트 (dedup by stationName)', () => {
     const route = ['A', 'B'];
     const entries: AlarmLogEntry[] = [
-      entry({ ts: 100, source: 'fg-evaluated', outcome: 'fired', kind: 'station-passed', stationName: 'A' }),
+      firedAt(100, 'A'),
       entry({ ts: 200, source: 'silent-push-fired', outcome: 'fired', kind: 'station-passed', stationName: 'A' }),
-      entry({ ts: 300, source: 'fg-evaluated', outcome: 'fired', kind: 'station-passed', stationName: 'B' }),
+      firedAt(300, 'B'),
     ];
 
     const result = computeTripRecall({
@@ -120,8 +125,8 @@ describe('computeTripRecall', () => {
   it('route에 없는 역의 fired는 무시 (recall 분자는 route ∩ fired)', () => {
     const route = ['A', 'B'];
     const entries: AlarmLogEntry[] = [
-      entry({ ts: 100, source: 'fg-evaluated', outcome: 'fired', kind: 'station-passed', stationName: 'X' }),
-      entry({ ts: 200, source: 'fg-evaluated', outcome: 'fired', kind: 'station-passed', stationName: 'A' }),
+      firedAt(100, 'X'),
+      firedAt(200, 'A'),
     ];
 
     const result = computeTripRecall({
@@ -145,7 +150,7 @@ describe('computeTripRecall', () => {
         kind: 'station-passed',
         stationName: 'A',
       }),
-      entry({ ts: 200, source: 'fg-evaluated', outcome: 'fired', kind: 'station-passed', stationName: 'B' }),
+      firedAt(200, 'B'),
     ];
 
     const result = computeTripRecall({
@@ -161,7 +166,7 @@ describe('computeTripRecall', () => {
   it('stationName 없는 fired 엔트리는 무시', () => {
     const route = ['A'];
     const entries: AlarmLogEntry[] = [
-      entry({ ts: 100, source: 'fg-evaluated', outcome: 'fired', kind: 'station-passed' }),
+      firedAt(100),
     ];
 
     const result = computeTripRecall({
