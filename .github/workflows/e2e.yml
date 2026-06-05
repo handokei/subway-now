@@ -311,3 +311,132 @@ jobs:
             echo "::error::regression(${{ matrix.scenario }}) 실패. artifact를 확인하세요."
             exit 1
           fi
+
+  permission-matrix:
+    name: E2E Permission Matrix (#923)
+    # 권한 매트릭스 회귀 가드(#923). Always vs WhileInUse × FG/BG × 지상/지하 × 일반/취침 × OS
+    # 차원에서 매역 알람 경로 정상 동작을 검증한다. nightly only, PR 게이트 아님.
+    #
+    # 새 cell 추가는 scripts/permission-matrix.json에 entry를 더한 뒤
+    # 아래 matrix.cell에도 같은 id를 추가하면 끝(runner는 데이터 주도).
+    runs-on: macos-14
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        cell:
+          - whileInUse-fg-aboveground-normal-ios18
+          # 후속 PR에서 추가: always-*, *-bg-*, *-underground-*, *-sleep-*, ios17, android
+    env:
+      SIM_NAME: 'iPhone 16'
+      EXPO_PUBLIC_E2E_MOCK: '1'
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Xcode 버전 고정
+        uses: maxim-lobanov/setup-xcode@1242409711ff5721add51979e9e11e23ebb7e5a4 # v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 의존성 설치
+        run: npm ci --legacy-peer-deps
+
+      - name: Maestro CLI 설치
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+
+      - name: Maestro flow 문법 검증 (permissions)
+        run: |
+          set -e
+          if "$HOME/.maestro/bin/maestro" test --help 2>&1 | grep -q -- '--dry-run'; then
+            "$HOME/.maestro/bin/maestro" test .maestro/flows/permissions --dry-run || exit 1
+          fi
+
+      - name: 매트릭스 dry-run (cell 선택 검증)
+        run: node scripts/permission-matrix-runner.js --cell ${{ matrix.cell }} --dry-run
+
+      - name: E2E mock 빌드-time env 주입
+        run: |
+          echo 'export EXPO_PUBLIC_E2E_MOCK=1' >> ios/.xcode.env.local
+          cat ios/.xcode.env.local
+
+      - name: iOS Prebuild
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: CocoaPods 캐시
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: pods-${{ runner.os }}-
+
+      - name: CocoaPods 설치
+        run: cd ios && pod install
+
+      - name: iOS 빌드 (Release, E2E mock)
+        run: |
+          cd ios
+          xcodebuild -workspace subwaynow.xcworkspace \
+            -scheme subwaynow \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,name=${SIM_NAME}" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            build
+
+      - name: 시뮬레이터 부팅
+        run: |
+          xcrun simctl boot "${SIM_NAME}" || true
+          xcrun simctl bootstatus "${SIM_NAME}" -b
+
+      - name: 앱 설치
+        run: |
+          APP_PATH=$(find ios/build -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then echo "ERROR: .app not found"; exit 1; fi
+          xcrun simctl install booted "$APP_PATH"
+
+      - name: 권한 매트릭스 실행
+        id: matrix
+        continue-on-error: true
+        env:
+          # MAESTRO_BIN은 기본값 "maestro" — $GITHUB_PATH에 추가된 ~/.maestro/bin이 해석한다.
+          # 다른 job들과 동일 패턴(regression/nightly가 maestro를 PATH로 호출).
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: '240000'
+        run: node scripts/permission-matrix-runner.js --cell ${{ matrix.cell }}
+
+      - name: 진단 자료 수집
+        if: always()
+        run: |
+          mkdir -p ./diag-permission-${{ matrix.cell }}
+          xcrun simctl io booted screenshot ./diag-permission-${{ matrix.cell }}/last-screen.png || true
+          xcrun simctl spawn booted log show --last 2m --predicate 'process == "subwaynow"' --style compact \
+            > ./diag-permission-${{ matrix.cell }}/app.log 2>&1 || true
+
+      - name: 결과 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-permission-${{ matrix.cell }}-results
+          path: |
+            permission-matrix-*.xml
+            permission-matrix-debug-*/
+            diag-permission-*/
+
+      - name: 결과 판정
+        if: always()
+        run: |
+          if [ "${{ steps.matrix.outcome }}" != "success" ]; then
+            echo "::error::permission-matrix(${{ matrix.cell }}) 실패. artifact를 확인하세요."
+            exit 1
+          fi

@@ -1,0 +1,30 @@
+{
+  "$schema": "./permission-matrix.schema.json",
+  "_doc": [
+    "권한 매트릭스 회귀 테스트 정의 (#923 E2).",
+    "각 cell은 권한 × 앱상태 × 환경 × 모드 × OS 차원의 한 점이며, Maestro flow와 expected를 매핑한다.",
+    "새 셀 추가는 cells 배열에 entry 하나만 추가하면 된다 (runner는 데이터 주도).",
+    "expectedRecallPct는 후속 PR에서 실측 기반으로 채워질 예정(현재는 baseline 1셀만 정의)."
+  ],
+  "dimensions": {
+    "permission": ["always", "whileInUse"],
+    "appState": ["fg", "bg"],
+    "environment": ["aboveground", "underground"],
+    "mode": ["normal", "sleep"],
+    "os": ["ios17", "ios18", "android"]
+  },
+  "cells": [
+    {
+      "id": "whileInUse-fg-aboveground-normal-ios18",
+      "permission": "whileInUse",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 95,
+      "flow": "whileInUse-fg-aboveground-normal.yaml",
+      "baseline": true,
+      "_doc": "E2 baseline. 가장 흔한 사용자 시나리오(권한=사용중 + 앱 열림 + 지상 + 일반모드). 매역 알람 정상 발사를 보장한다."
+    }
+  ]
+}
