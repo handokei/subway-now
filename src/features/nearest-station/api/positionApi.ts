@@ -1,37 +1,14 @@
-import { createLogger } from '../../../utils/logger';
-import { parseTrainTypeFromDirectAt, type TrainType } from '../../../shared/constants/trainTypes';
+import { createLogger } from '../../../shared/utils/logger';
+import { parseTrainTypeFromDirectAt } from '../../../shared/constants/trainTypes';
 import { getLineApiName } from '../../../shared/constants/lineApiNames';
 import type { LineNumber } from '../../../shared/types/station';
+import type { TrainPosition, LinePositions } from '../../../shared/types/position';
+
+// 도메인 type은 shared/types/position으로 추출됨 (#890, Phase 5).
+// 기존 호출자 호환을 위해 re-export 유지.
+export type { TrainPosition, LinePositions };
 
 const log = createLogger('positionApi');
-
-/**
- * realtimePosition 응답의 단일 열차 정보(앱 도메인 형태로 정규화).
- * statnId가 fusion 신호의 핵심 — "이 열차가 지금 어느 역에 있나" 확정 정보.
- */
-export interface TrainPosition {
-  statnId: string;
-  statnNm: string;
-  trainNo: string;
-  /** trainSttus: 0:진입, 1:도착, 2:출발, 3:전역출발 */
-  trainStatus: number;
-  /** 0:상행/내선, 1:하행/외선 */
-  updnLine: number;
-  /** 종착역 */
-  terminalStationId: string;
-  terminalStationName: string;
-  /** directAt 매핑(express/rapid/normal — ITX는 도착정보에서만) */
-  trainType: TrainType;
-  isLastTrain: boolean;
-  /** recptnDt 파싱 결과 — Stage 1과 같은 신선도 계약(0=알 수 없음). */
-  receivedAtMs: number;
-}
-
-export interface LinePositions {
-  line: LineNumber;
-  trains: TrainPosition[];
-  isMock?: boolean;
-}
 
 /** mock — API 키 없거나 실패 시 fallback. fusion 신호로 사용되지 않음(receivedAtMs=0). */
 export const MOCK_POSITIONS: Readonly<LinePositions> = Object.freeze({
@@ -73,11 +50,9 @@ export function parsePositionRecvTime(lastRecptnDt: unknown, recptnDt: unknown):
   return Date.parse(full.replace(' ', 'T') + SEOUL_API_TZ_OFFSET);
 }
 
-export interface FetchPositionOptions {
-  timeoutMs?: number;
-  /** 0~limit 범위로 호출 (호선당 최대 1000건이지만 일반적으로 100 충분). */
-  limit?: number;
-}
+// FetchPositionOptions는 shared/types/providers로 추출됨 (#890, Phase 5).
+import type { FetchPositionOptions } from '../../../shared/types/providers';
+export type { FetchPositionOptions };
 
 export async function fetchTrainPositions(
   line: LineNumber,

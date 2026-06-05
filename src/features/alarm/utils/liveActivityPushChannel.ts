@@ -22,7 +22,7 @@ import {
   clearLiveActivityToken,
   registerLiveActivityToken,
 } from '../api/alarmBackend';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('liveActivityPushChannel');
 

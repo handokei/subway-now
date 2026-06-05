@@ -4,7 +4,7 @@ import {
   nearestResultToNearest,
 } from '../journeyAdapter';
 import type { Stop, StopArrivalContext } from '../journeyAdapter';
-import type { JourneyDisplay } from '../stationRoute';
+import type { JourneyDisplay } from '../../../../shared/utils/stationRoute';
 import type { LineNumber } from '../../../../shared/types/station';
 import { MOCK_JOURNEYS, makeNearestResult, makeArrivalInfo } from '../../../../testUtils/fixtures';
 

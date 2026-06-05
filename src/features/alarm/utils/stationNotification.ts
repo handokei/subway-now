@@ -1,20 +1,28 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: 이 파일은 의도적으로 여러 features의 hook/util을 조합하는
+ * orchestrator 역할이라 직접 import가 본질적이다. Phase 5 enforce 모드에서 file-level disable로
+ * 옵트인 처리. 후속 PR(별도 이슈)에서 orchestration 슬라이스(예: features/fusion/, app shell)로
+ * 추출하여 disable을 제거할 예정.
+ *
+ * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
+ */
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import i18next from 'i18next';
 import { Station } from '../../../shared/types/station';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
-import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName } from '../../route/utils/stationRoute';
+import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName } from '../../../shared/utils/stationRoute';
 import type { AlarmEvent } from './stationAlarm';
 import type { NextTarget } from './stationPipeline';
 import * as LiveActivity from 'live-activity';
 import { vibrateAlarm, stopVibration } from './alarmSound';
 import { speakAlarm } from './tts';
-import { createLogger } from '../../../utils/logger';
-import { getStationDisplayName, getStationDisplayNameByName } from '../../nearest-station/utils/stationDisplay';
+import { createLogger } from '../../../shared/utils/logger';
+import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
 import { saveStationToWidget, clearWidgetStation } from '../../widget/api/widgetStorage';
 import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../../../data/stations.json';
-import type { ExitSide } from '../../route/types/exitSide';
+import type { ExitSide } from '../../../shared/types/exitSide';
 import { lookupExitSide } from '../../route/utils/exitSide';
 import { hasQuickExitData } from '../../route/utils/quickExit';
 import {

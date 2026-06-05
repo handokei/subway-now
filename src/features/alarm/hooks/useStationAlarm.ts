@@ -1,10 +1,18 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: 이 파일은 의도적으로 여러 features의 hook/util을 조합하는
+ * orchestrator 역할이라 직접 import가 본질적이다. Phase 5 enforce 모드에서 file-level disable로
+ * 옵트인 처리. 후속 PR(별도 이슈)에서 orchestration 슬라이스(예: features/fusion/, app shell)로
+ * 추출하여 disable을 제거할 예정.
+ *
+ * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
+ */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { isStationOnRoute, isSameStationName } from '../../route/utils/stationRoute';
-import type { Route } from '../../route/utils/stationRoute';
+import { isStationOnRoute, isSameStationName } from '../../../shared/utils/stationRoute';
+import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
 import { alarmKey, evaluateAlarmPhase, resolveAllTargets, type AlarmEvent } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
-import { distanceMetersBetween, estimateEtaSeconds } from '../../arrival/utils/stationEta';
+import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils/stationEta';
 import { resolveNextTarget } from '../utils/stationPipeline';
 import { sendAlarmNotification, sendStationPassedNotification } from '../utils/stationNotification';
 import { isImminentByArrivalCode } from '../../arrival/utils/imminentArrivalSignal';
@@ -33,9 +41,9 @@ import { shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
 import type { PositionStability } from '../../nearest-station/utils/positionStaticDetector';
 import { useAppStore } from '../../../store/useAppStore';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
-import type { FusionConfidence, FusionSource } from '../../nearest-station/utils/pickFusedStation';
+import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import { resolveNotificationSource } from '../utils/notificationSource';
 
 const logger = createLogger('StationAlarm');

@@ -4,8 +4,8 @@ import type {
   DirectRoute,
   TransferRoute,
   MultiTransferRoute,
-} from '../stationRoute';
-import type { BoardingLock } from '../../../alarm/types/boardingLock';
+} from '../../../../shared/utils/stationRoute';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import type { Station } from '../../../../shared/types/station';
 
 function makeStation(line: Station['line'], overrides: Partial<Station> = {}): Station {

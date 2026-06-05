@@ -1,6 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import { stopVibration } from './alarmSound';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('AlarmKill');
 

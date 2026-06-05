@@ -1,4 +1,4 @@
-import type { CandidateTrain } from '../../../arrival/utils/pickCandidateTrains';
+import type { CandidateTrain } from '../../../../shared/types/position';
 import type { LineNumber } from '../../../../shared/types/station';
 import { trackTrainProgress, type TrackTrainProgressInput } from '../trackTrainProgress';
 

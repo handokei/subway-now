@@ -1,7 +1,7 @@
 import { renderHook, act } from '@testing-library/react-native';
 import { useRouteProgress, type UseRouteProgressInputs } from '../useRouteProgress';
-import { findStationByNameAndLine } from '../../utils/stationRoute';
-import type { Route } from '../../utils/stationRoute';
+import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
+import type { Route } from '../../../../shared/utils/stationRoute';
 import type { Station } from '../../../../shared/types/station';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 

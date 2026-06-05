@@ -24,7 +24,7 @@ import * as Notifications from 'expo-notifications';
 // 런타임 의존 방향은 여전히 features → shared (alarm 도메인이 본 어댑터를 호출)이다.
 // Phase 5에서 NotificationPort를 features/alarm/ports/에 둘지 shared/ports/로 옮길지
 // 도메인 단일성을 다시 판단 후 룰을 enforce(error)로 승격한다.
-import type { NotificationPort, NotificationPayload } from '../../../features/alarm/ports/NotificationPort';
+import type { NotificationPort, NotificationPayload } from '../../ports/NotificationPort';
 
 async function scheduleImmediate(payload: NotificationPayload): Promise<void> {
   // 기존 알림 dismiss는 실패해도 무시 — 알림이 없을 수도 있음.

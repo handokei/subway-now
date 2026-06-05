@@ -47,7 +47,7 @@ jest.mock('../../utils/notificationState', () => ({
   setFiredAlarms: (...args: unknown[]) => mockSetFiredAlarms(...args),
 }));
 
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

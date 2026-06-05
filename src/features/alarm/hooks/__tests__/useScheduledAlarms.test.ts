@@ -9,11 +9,11 @@ import {
 } from '../../utils/alarmScheduler';
 import { TRIP_TRAIN_CODE_KEY } from '../../../../shared/constants/storageKeys';
 import type { Station } from '../../../../shared/types/station';
-import type { StationArrival } from '../../../arrival/api/arrivalApi';
+import type { StationArrival } from '../../../../shared/types/arrival';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 
 jest.mock('../../utils/alarmScheduler');
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

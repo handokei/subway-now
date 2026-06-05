@@ -65,7 +65,7 @@ jest.mock('../../utils/accelMotionState', () => ({
 }));
 
 // ── logger 모킹 ──
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),
@@ -75,7 +75,7 @@ jest.mock('../../../../utils/logger', () => ({
 }));
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { AlarmEvent } from '../../../alarm/utils/stationAlarm';
+import type { AlarmEvent } from '../../../../shared/types/alarm';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
 import '../../tasks/backgroundLocationTask';
 import { BACKGROUND_LOCATION_TASK } from '../backgroundLocationTask';

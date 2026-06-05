@@ -1,9 +1,17 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: 이 파일은 의도적으로 여러 features의 hook/util을 조합하는
+ * orchestrator 역할이라 직접 import가 본질적이다. Phase 5 enforce 모드에서 file-level disable로
+ * 옵트인 처리. 후속 PR(별도 이슈)에서 orchestration 슬라이스(예: features/fusion/, app shell)로
+ * 추출하여 disable을 제거할 예정.
+ *
+ * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
+ */
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
-import { LineBadge } from '../../../components/LineBadge';
-import type { ArrivalInfo } from '../../arrival/api/arrivalApi';
+import { LineBadge } from '../../../shared/ui/LineBadge';
+import type { ArrivalInfo } from '../../../shared/types/arrival';
 import type { LineNumber, Station } from '../../../shared/types/station';
-import { formatClockTime } from '../../../utils/formatTime';
+import { formatClockTime } from '../../../shared/utils/formatTime';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
 import { buildDirectionMeta } from '../../route/utils/trainLineDirection';
 import { parseArrivalDistance } from '../../arrival/utils/arrivalStatusDistance';

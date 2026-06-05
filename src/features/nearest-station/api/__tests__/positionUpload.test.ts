@@ -9,7 +9,7 @@ import {
 } from '../positionUpload';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../../shared/constants/storageKeys';
 
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

@@ -1,5 +1,5 @@
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
-import type { Route, DirectRoute } from '../../../route/utils/stationRoute';
+import type { Route, DirectRoute } from '../../../../shared/utils/stationRoute';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,
@@ -17,7 +17,7 @@ const mockCalculateStaticETA = jest.fn();
 const mockUpdateRouteFromPosition = jest.fn();
 const mockIsStationOnRoute = jest.fn();
 const mockIsSameStationName = jest.fn((a: string, b: string) => a === b);
-jest.mock('../../../route/utils/stationRoute', () => ({
+jest.mock('../../../../shared/utils/stationRoute', () => ({
   findRoute: (...args: unknown[]) => mockFindRoute(...args),
   calculateStaticETA: (...args: unknown[]) => mockCalculateStaticETA(...args),
   updateRouteFromPosition: (...args: unknown[]) => mockUpdateRouteFromPosition(...args),

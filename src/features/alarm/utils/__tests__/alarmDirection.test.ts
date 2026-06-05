@@ -1,5 +1,5 @@
 import { resolveAlarmDirection } from '../alarmDirection';
-import type { Route } from '../../../route/utils/stationRoute';
+import type { Route } from '../../../../shared/utils/stationRoute';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,
@@ -17,7 +17,7 @@ jest.mock('../../../route/utils/travelDirection', () => ({
   },
 }));
 
-jest.mock('../../../route/utils/stationRoute', () => ({
+jest.mock('../../../../shared/utils/stationRoute', () => ({
   isSameStationName: (a: string, b: string) => a === b,
 }));
 

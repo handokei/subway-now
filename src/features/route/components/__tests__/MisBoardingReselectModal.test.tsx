@@ -1,7 +1,7 @@
 import { fireEvent } from '@testing-library/react-native';
 import { MisBoardingReselectModal } from '../MisBoardingReselectModal';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
-import type { ArrivalInfo } from '../../../arrival/api/arrivalApi';
+import type { ArrivalInfo } from '../../../../shared/types/arrival';
 
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {

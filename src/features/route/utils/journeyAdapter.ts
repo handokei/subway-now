@@ -1,57 +1,24 @@
 import i18next from 'i18next';
-import type { JourneyDisplay, JourneySegment } from './stationRoute';
-import { getStationsOnLine, isSameStationName } from './stationRoute';
-import type { ArrivalInfo } from '../../arrival/api/arrivalApi';
+import type { JourneyDisplay, JourneySegment } from '../../../shared/utils/stationRoute';
+import { getStationsOnLine, isSameStationName } from '../../../shared/utils/stationRoute';
+import type { ArrivalInfo } from '../../../shared/types/arrival';
 import type { NearestStationResult, LineNumber, Station } from '../../../shared/types/station';
-import { getStationDisplayName, getStationDisplayNameByName } from '../../nearest-station/utils/stationDisplay';
+import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
 import { parseTrainLineDirection } from './trainLineDirection';
 import stationsData from '../../../data/stations.json';
 
 const allStations = stationsData as Station[];
 
-// 빠른하차 라벨 결정에 필요한 컨텍스트.
-// 출발역(filled)은 도착 시점이 없으므로 미지정 — caller는 undefined를 라벨 미표시로 해석한다.
-export interface StopArrivalContext {
-  line: LineNumber;
-  fromName: string;
-  toName: string;
-}
-
-// 환승 stop에서 "갈아탈 다음 노선" — UI(EditorialTimeline)가 transferExit lookup에 사용.
-// 환승역이 곧 목적지로 흡수되는 경우(0정거장 종착)에는 설정되지 않는다.
-export interface StopTransferTarget {
-  toLine: LineNumber;
-}
-
-export interface Stop {
-  station: string;
-  line: string | null;
-  stopsFromPrev?: string;
-  mark: 'filled' | 'transfer' | 'dest' | 'intermediate';
-  note?: string;
-  arrivalContext?: StopArrivalContext;
-  transferTarget?: StopTransferTarget;
-}
-
-export interface ArrivalTrain {
-  direction: string;
-  line: string;
-  arrivalAtMs: number;
-  subtext?: string;
-  /** 막차 여부 — UI 안전성 배지. */
-  isLastTrain?: boolean;
-  /** 열차 타입 — 'normal'은 배지 미표시. */
-  trainType?: import('../../../shared/constants/trainTypes').TrainType;
-  /** arvlCd — 0:진입, 1:도착, 2:출발 등. UI 진입/도착 배지용. */
-  arrivalCode?: number;
-}
-
-export interface HandoffNearest {
-  name: string;
-  line: string;
-  distanceM: number;
-  walkMin: number;
-}
+// Stop/StopArrivalContext/StopTransferTarget/ArrivalTrain/HandoffNearest는
+// shared/types/journey로 추출됨 (#890, Phase 5). 기존 호출자 호환을 위해 re-export 유지.
+import type {
+  StopArrivalContext,
+  StopTransferTarget,
+  Stop,
+  ArrivalTrain,
+  HandoffNearest,
+} from '../../../shared/types/journey';
+export type { StopArrivalContext, StopTransferTarget, Stop, ArrivalTrain, HandoffNearest };
 
 const WALK_SPEED_M_PER_MIN = 80;
 

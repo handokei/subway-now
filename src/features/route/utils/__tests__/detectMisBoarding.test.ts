@@ -1,6 +1,6 @@
 import { detectMisBoarding } from '../detectMisBoarding';
-import type { BoardingLock } from '../../../alarm/types/boardingLock';
-import type { LinePositions, TrainPosition } from '../../../nearest-station/api/positionApi';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
+import type { LinePositions, TrainPosition } from '../../../../shared/types/position';
 
 const lock: BoardingLock = {
   destinationId: 'd',

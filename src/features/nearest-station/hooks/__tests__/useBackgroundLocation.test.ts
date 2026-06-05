@@ -40,7 +40,7 @@ jest.mock('../../tasks/backgroundLocationTask', () => ({
 }));
 
 // ── logger 모킹 ──
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

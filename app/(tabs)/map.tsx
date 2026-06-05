@@ -7,15 +7,15 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNearestStation } from '../../src/features/nearest-station/hooks/useNearestStation';
 import { StationMap } from '../../src/features/map/components/StationMap';
 import { MapSearchBar } from '../../src/features/map/components/MapSearchBar';
-import { LocationStateView } from '../../src/components/LocationStateView';
+import { LocationStateView } from '../../src/shared/ui/LocationStateView';
 import { StatusChip } from '../../src/features/arrival/components/StatusChip';
 import stationsData from '../../src/data/stations.json';
 import { useTheme, spacing, radius } from '../../src/shared/theme';
 import { useAppStore } from '../../src/store/useAppStore';
-import { LineBadge } from '../../src/components/LineBadge';
-import { getStationDisplayName } from '../../src/features/nearest-station/utils/stationDisplay';
+import { LineBadge } from '../../src/shared/ui/LineBadge';
+import { getStationDisplayName } from '../../src/shared/utils/stationDisplay';
 import { routeToCoordinates, type RouteCoordinatePath } from '../../src/features/route/utils/routeToCoordinates';
-import type { Route } from '../../src/features/route/utils/stationRoute';
+import type { Route } from '../../src/shared/utils/stationRoute';
 import { ROUTE_KEY } from '../../src/shared/constants/storageKeys';
 import {
   FAVORITE_SLOT_ICONS,

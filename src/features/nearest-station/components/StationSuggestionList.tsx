@@ -2,7 +2,7 @@ import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { Station } from '../../../shared/types/station';
 import { LINE_NAMES } from '../../../shared/constants/lineColors';
-import { getStationDisplayName } from '../utils/stationDisplay';
+import { getStationDisplayName } from '../../../shared/utils/stationDisplay';
 import { useTheme, spacing, radius } from '../../../shared/theme';
 
 interface Props {

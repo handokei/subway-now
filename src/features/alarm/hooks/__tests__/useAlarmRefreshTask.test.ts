@@ -9,7 +9,7 @@ jest.mock('../../tasks/alarmRefreshTask', () => ({
   unregisterAlarmRefreshTask: (...args: unknown[]) => mockUnregister(...args),
 }));
 
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

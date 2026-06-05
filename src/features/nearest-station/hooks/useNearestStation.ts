@@ -24,9 +24,9 @@ import {
   currentGpsActive,
   type GpsActiveState,
 } from '../../../shared/constants/gpsStatus';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 import { pushFusionDebugEntry } from '../utils/fusionDebugBuffer';
-import { haversine } from '../../../utils/haversine';
+import { haversine } from '../../../shared/utils/haversine';
 import { useStickyStation } from './useStickyStation';
 
 /** #876 — useNearestStation 표시값의 출처. sticky lock된 역이면 'sticky', 아니면 GPS live.

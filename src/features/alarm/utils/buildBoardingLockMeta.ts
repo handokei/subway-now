@@ -1,13 +1,13 @@
-import type { BoardingLock } from '../types/boardingLock';
-import { BOARDING_LOCK_EXPIRY_FACTOR } from '../types/boardingLock';
-import type { Route } from '../../route/utils/stationRoute';
-import { getStationsOnLine, findStationByNameAndLine } from '../../route/utils/stationRoute';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
+import { BOARDING_LOCK_EXPIRY_FACTOR } from '../../../shared/types/boardingLock';
+import type { Route } from '../../../shared/utils/stationRoute';
+import { getStationsOnLine, findStationByNameAndLine } from '../../../shared/utils/stationRoute';
 import { lineToSubwayId } from '../../../shared/constants/lineApiNames';
 import type { Station } from '../../../shared/types/station';
 import type { LineNumber } from '../../../shared/types/station';
 import type { AlarmBoardingLock } from '../api/alarmBackend';
 import { isScheduleFallbackTrainCode } from './scheduleFallback';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('buildBoardingLockMeta');
 

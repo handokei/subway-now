@@ -1,5 +1,5 @@
 import { routeToCoordinates } from '../routeToCoordinates';
-import { findRoute } from '../stationRoute';
+import { findRoute } from '../../../../shared/utils/stationRoute';
 import stationsData from '../../../../data/stations.json';
 import type { Station } from '../../../../shared/types/station';
 import {

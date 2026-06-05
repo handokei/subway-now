@@ -1,6 +1,6 @@
 import { buildBoardingLockMeta, findSegmentEndStationName } from '../buildBoardingLockMeta';
-import { BOARDING_LOCK_EXPIRY_FACTOR } from '../../types/boardingLock';
-import type { BoardingLock } from '../../types/boardingLock';
+import { BOARDING_LOCK_EXPIRY_FACTOR } from '../../../../shared/types/boardingLock';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,

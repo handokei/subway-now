@@ -61,7 +61,7 @@ jest.mock('../../utils/stationNotification', () => ({
   buildAlarmContent: (...args: unknown[]) => mockBuildAlarmContent(...(args as Parameters<typeof mockBuildAlarmContent>)),
 }));
 
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),
@@ -95,7 +95,7 @@ jest.mock('../../utils/dismissSilenceStorage', () => ({
 
 const mockFindStationByNameAndLine = jest.fn();
 const mockFindStationByName = jest.fn();
-jest.mock('../../../nearest-station/utils/stationLookup', () => ({
+jest.mock('../../../../shared/utils/stationLookup', () => ({
   findStationByNameAndLine: (...args: unknown[]) => mockFindStationByNameAndLine(...args),
   findStationByName: (...args: unknown[]) => mockFindStationByName(...args),
 }));

@@ -1,6 +1,6 @@
 import type { LineNumber, Station } from '../../../shared/types/station';
-import type { TravelDirection } from '../types/exitSide';
-import { getStationsOnLine, normalizeStationName } from './stationRoute';
+import type { TravelDirection } from '../../../shared/types/exitSide';
+import { getStationsOnLine, normalizeStationName } from '../../../shared/utils/stationRoute';
 import lineTopology from '../../../data/lineTopology.json';
 
 // 단조(상행 종점 → 하행 종점)로 stations.json에 표현 가능한 노선만 인덱스 비교로 방향을 결정한다.

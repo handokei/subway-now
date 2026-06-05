@@ -9,7 +9,7 @@ import {
   FACILITY_PRIORITY_ACCESSIBILITY,
   FACILITY_PRIORITY_DEFAULT,
 } from '../types/quickExit';
-import type { TravelDirection } from '../types/exitSide';
+import type { TravelDirection } from '../../../shared/types/exitSide';
 
 const QUICK_EXIT_MAP = quickExitData as QuickExitMap;
 

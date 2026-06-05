@@ -4,7 +4,7 @@ import {
   registerAlarmRefreshTask,
   unregisterAlarmRefreshTask,
 } from '../tasks/alarmRefreshTask';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useAlarmRefreshTask');
 

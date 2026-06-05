@@ -3,7 +3,7 @@ import { findNearestStation, findNearestStations, findTopNearestStations } from 
 // haversine을 모킹하여 어떤 역이 가장 가깝게 계산되는지 완전히 제어한다.
 // stations.json 데이터가 크므로 haversine 결과를 고정하여 루프 분기를 독립적으로 검증한다.
 const mockHaversine = jest.fn();
-jest.mock('../../../../utils/haversine', () => ({
+jest.mock('../../../../shared/utils/haversine', () => ({
   haversine: (...args: unknown[]) => mockHaversine(...args),
 }));
 
@@ -31,7 +31,7 @@ describe('findNearestStation', () => {
     // jest.resetModules를 활용한 격리 테스트
     jest.resetModules();
 
-    jest.doMock('../../../../utils/haversine', () => ({ haversine: jest.fn() }));
+    jest.doMock('../../../../shared/utils/haversine', () => ({ haversine: jest.fn() }));
     jest.doMock('../../../../data/stations.json', () => []);
 
     const { findNearestStation: fn } = require('../findNearestStation');
@@ -159,7 +159,7 @@ describe('findNearestStations', () => {
 
   it('빈 stations에서 null을 반환한다', () => {
     jest.resetModules();
-    jest.doMock('../../../../utils/haversine', () => ({ haversine: jest.fn() }));
+    jest.doMock('../../../../shared/utils/haversine', () => ({ haversine: jest.fn() }));
     jest.doMock('../../../../data/stations.json', () => []);
 
     const { findNearestStations: fn } = require('../findNearestStation');

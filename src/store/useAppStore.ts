@@ -6,7 +6,7 @@ import { Station, FavoriteEntry, FavoriteRole, FavoriteSlotRole, isFavoriteSlotR
 function demoteSlotEntries(entries: FavoriteEntry[], role: FavoriteSlotRole): FavoriteEntry[] {
   return entries.map((f) => (f.role === role ? { ...f, role: 'general' as FavoriteRole } : f));
 }
-import type { AlarmEvent } from '../features/alarm/utils/stationAlarm';
+import type { AlarmEvent } from '../shared/types/alarm';
 import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, TRIP_ORIGIN_KEY, LOCKLESS_STATION_PASSED_KEY } from '../shared/constants/storageKeys';
 import { runTripBoundCleanups } from '../features/alarm/store/tripBoundCleanups';
 import {
@@ -15,7 +15,7 @@ import {
   getDismissSilence as getDismissSilenceStorage,
   type DismissSilenceState,
 } from '../features/alarm/utils/dismissSilenceStorage';
-import { ROUTE_CATEGORIES, type RoutePreference } from '../features/route/utils/stationRoute';
+import { ROUTE_CATEGORIES, type RoutePreference } from '../shared/utils/stationRoute';
 import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../shared/i18n/types';
 
 export type ThemeMode = 'auto' | 'light' | 'dark';

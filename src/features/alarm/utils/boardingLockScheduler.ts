@@ -2,16 +2,16 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { ALARM_PHASES, type AlarmPhaseId } from './alarmPhases';
 import { resolveAllTargets, type AlarmEvent, type CurrentTarget } from './stationAlarm';
-import { isSameStationName, type Route } from '../../route/utils/stationRoute';
+import { isSameStationName, type Route } from '../../../shared/utils/stationRoute';
 import { buildAlarmContent } from './stationNotification';
-import type { BoardingLock } from '../types/boardingLock';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
 import {
   addScheduledNotificationIds,
   clearScheduledNotificationIds,
   getScheduledNotificationIds,
   removeScheduledNotificationIds,
 } from './scheduledNotificationsStorage';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
 import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
 import { logSuppressedSleepFirstTransfer } from './alarmLog';

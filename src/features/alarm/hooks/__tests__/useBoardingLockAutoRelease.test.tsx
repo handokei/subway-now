@@ -3,7 +3,7 @@ import {
   useBoardingLockAutoRelease,
   type UseBoardingLockAutoReleaseInputs,
 } from '../useBoardingLockAutoRelease';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import type { Station } from '../../../../shared/types/station';
 import {
   ARRIVAL_PROXIMITY_THRESHOLD_M,
@@ -11,7 +11,7 @@ import {
 } from '../../../../shared/constants/boardingLock';
 
 const mockLoggerInfo = jest.fn();
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: (...args: unknown[]) => mockLoggerInfo(...args),

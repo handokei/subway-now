@@ -8,7 +8,7 @@ import {
   SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX,
 } from '../scheduleFallback';
 import type { LineNumber } from '../../../../shared/types/station';
-import type { StationArrival } from '../../../arrival/api/arrivalApi';
+import type { StationArrival } from '../../../../shared/types/arrival';
 
 /**
  * 시간표 JSON을 mock해 buildScheduleArrival을 호출. mockPath 기본값은 line-1.

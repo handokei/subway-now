@@ -1,11 +1,11 @@
 import { useEffect, useRef } from 'react';
-import type { BoardingLock } from '../types/boardingLock';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { Station } from '../../../shared/types/station';
 import {
   ARRIVAL_PROXIMITY_THRESHOLD_M,
   AUTO_RELEASE_GRACE_MS,
 } from '../../../shared/constants/boardingLock';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useBoardingLockAutoRelease');
 

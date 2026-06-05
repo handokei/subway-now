@@ -6,7 +6,7 @@ import {
   type RouteArc,
   type RoutePositionInfo,
 } from '../utils/routeProgress';
-import type { Route } from '../utils/stationRoute';
+import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
 import {
   MAX_PERP_M,

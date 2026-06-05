@@ -6,7 +6,7 @@
  */
 
 import type { Station } from '../../../shared/types/station';
-import { haversine } from '../../../utils/haversine';
+import { haversine } from '../../../shared/utils/haversine';
 import {
   STICKY_GOOD_FIX_ACCURACY_M,
   STICKY_GOOD_FIX_SPEED_MAX_MPS,

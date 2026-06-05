@@ -1,6 +1,6 @@
 import type { LineNumber } from '../../../shared/types/station';
 import { resolveTravelDirection } from './travelDirection';
-import { getStationsOnLine, normalizeStationName } from './stationRoute';
+import { getStationsOnLine, normalizeStationName } from '../../../shared/utils/stationRoute';
 
 /**
  * 현재역에서 toward 방향(다음 waypoint 또는 종착)으로 한 정거장 뒤의 인접역 이름을 반환(#649).

@@ -4,7 +4,7 @@ import {
   cancelAllHopsForLock,
   scheduleHopsForLock,
 } from '../../utils/boardingLockScheduler';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import { useAppStore } from '../../../../store/useAppStore';
 import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeFixtures';
 
@@ -20,7 +20,7 @@ jest.mock('../../utils/boardingLockScheduler', () => {
 });
 const mockLoggerError = jest.fn();
 const mockLoggerWarn = jest.fn();
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

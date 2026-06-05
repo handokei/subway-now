@@ -1,6 +1,6 @@
 import stationsData from '../../../data/stations.json';
 import type { Station } from '../../../shared/types/station';
-import { haversine } from '../../../utils/haversine';
+import { haversine } from '../../../shared/utils/haversine';
 
 export interface TransferStationGroup {
   name: string;

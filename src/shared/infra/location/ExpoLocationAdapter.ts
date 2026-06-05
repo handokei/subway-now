@@ -23,7 +23,7 @@ import * as Location from 'expo-location';
 // 본 import는 'features/nearest-station/ports/LocationPort'의 **타입만** 참조하는 컴파일타임 의존이며,
 // 런타임 의존 방향은 여전히 features → shared (nearest-station 도메인이 본 어댑터를 호출)이다.
 // Phase 5에서 LocationPort를 도메인 단일성에 맞춰 위치 재판단 후 룰을 enforce(error)로 승격한다.
-import type { LocationFix, LocationPermissionResult, LocationPort } from '../../../features/nearest-station/ports/LocationPort';
+import type { LocationFix, LocationPermissionResult, LocationPort } from '../../ports/LocationPort';
 
 async function getCurrentPosition(): Promise<LocationFix> {
   const { coords, timestamp } = await Location.getCurrentPositionAsync({});

@@ -1,6 +1,6 @@
 import i18next from 'i18next';
 import type { Station } from '../../../shared/types/station';
-import { getStationDisplayNameByName } from '../../nearest-station/utils/stationDisplay';
+import { getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
 
 // 서울 열린데이터 API의 trainLineNm 필드는 순수 역명이 아닌 방면 표현을 담는다:
 //   - "<역명>행" 일반 노선 (소요산행, 성수행, 광운대행 등)

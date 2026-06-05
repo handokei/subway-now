@@ -8,7 +8,7 @@ import type { Station } from '../../../shared/types/station';
 import { BACKGROUND_LOCATION_TASK } from '../tasks/backgroundLocationTask';
 import { LOCATION_TRACKING_OPTIONS } from '../../../shared/constants/locationTracking';
 import { BG_PERMISSION_DENIED_DISMISSED_KEY } from '../../../shared/constants/storageKeys';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('BackgroundLocation');
 

@@ -3,8 +3,8 @@ import type { StationArrival } from '../api/arrivalApi';
 import type { ArrivalProvider } from '../providers/types';
 import type { LineNumber } from '../../../shared/types/station';
 import { createArrivalProvider } from '../providers/factory';
-import { TtlCache } from '../../../utils/ttlCache';
-import { usePolling } from '../../../hooks/usePolling';
+import { TtlCache } from '../../../shared/utils/ttlCache';
+import { usePolling } from '../../../shared/hooks/usePolling';
 
 const POLL_INTERVAL_MS = 5_000;
 const CACHE_TTL_MS = 30_000;

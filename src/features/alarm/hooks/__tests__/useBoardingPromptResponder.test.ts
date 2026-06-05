@@ -1,3 +1,11 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: 이 파일은 의도적으로 여러 features의 hook/util을 조합하는
+ * orchestrator 역할이라 직접 import가 본질적이다. Phase 5 enforce 모드에서 file-level disable로
+ * 옵트인 처리. 후속 PR(별도 이슈)에서 orchestration 슬라이스(예: features/fusion/, app shell)로
+ * 추출하여 disable을 제거할 예정.
+ *
+ * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
+ */
 import * as Notifications from 'expo-notifications';
 import {
   extractBoardingPromptPayload,
@@ -10,7 +18,7 @@ import {
 } from '../../utils/notificationCategory';
 import * as positionUpload from '../../../nearest-station/api/positionUpload';
 import { renderHook } from '@testing-library/react-native';
-import type { StationArrival } from '../../../arrival/api/arrivalApi';
+import type { StationArrival } from '../../../../shared/types/arrival';
 
 jest.mock('expo-notifications', () => ({
   addNotificationResponseReceivedListener: jest.fn(),
@@ -19,10 +27,10 @@ jest.mock('expo-notifications', () => ({
 jest.mock('../../../nearest-station/api/positionUpload', () => ({
   dismissBoardingPrompt: jest.fn(),
 }));
-jest.mock('../../../nearest-station/utils/stationLookup', () => ({
+jest.mock('../../../../shared/utils/stationLookup', () => ({
   findStationByNameAndLine: jest.fn(),
 }));
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),
@@ -48,7 +56,7 @@ jest.mock('../../store/useBoardingLockStore', () => {
   };
 });
 
-const { findStationByNameAndLine } = jest.requireMock('../../../nearest-station/utils/stationLookup');
+const { findStationByNameAndLine } = jest.requireMock('../../../../shared/utils/stationLookup');
 const { __mockCreateLock: createLockMock } = jest.requireMock(
   '../../store/useBoardingLockStore',
 );

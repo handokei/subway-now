@@ -1,7 +1,7 @@
 import { routeToWaypoints } from '../routeWaypoints';
-import type { Route } from '../stationRoute';
-import { getStationsOnLine } from '../stationRoute';
-import type { AlarmWaypoint } from '../../../alarm/api/alarmBackend';
+import type { Route } from '../../../../shared/utils/stationRoute';
+import { getStationsOnLine } from '../../../../shared/utils/stationRoute';
+import type { AlarmWaypoint } from '../../../../shared/types/alarm';
 import type { LineNumber, Station } from '../../../../shared/types/station';
 import {
   makeDirectRoute,

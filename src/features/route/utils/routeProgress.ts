@@ -1,9 +1,9 @@
-import { haversine } from '../../../utils/haversine';
+import { haversine } from '../../../shared/utils/haversine';
 import {
   findStationByNameAndLine,
   getStationsOnLine,
   type Route,
-} from './stationRoute';
+} from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
 import { MAX_INTER_STATION_M } from '../../../shared/constants/routeProgress';
 

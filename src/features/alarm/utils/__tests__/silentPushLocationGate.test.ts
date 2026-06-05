@@ -8,11 +8,11 @@ jest.mock('expo-location', () => ({
 }));
 
 const mockFindStationByName = jest.fn();
-jest.mock('../../../nearest-station/utils/stationLookup', () => ({
+jest.mock('../../../../shared/utils/stationLookup', () => ({
   findStationByName: (...args: unknown[]) => mockFindStationByName(...args),
 }));
 
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

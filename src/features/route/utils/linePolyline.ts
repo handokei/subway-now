@@ -1,4 +1,4 @@
-import { getStationsOnLine } from './stationRoute';
+import { getStationsOnLine } from '../../../shared/utils/stationRoute';
 import type { LineNumber, Station } from '../../../shared/types/station';
 
 /**

@@ -1,5 +1,5 @@
 import type { StationArrival } from '../api/arrivalApi';
-import type { StaticEtaOptions } from '../../route/utils/stationRoute';
+import type { StaticEtaOptions } from '../../../shared/utils/stationRoute';
 
 /**
  * 출발역 arrival 응답에서 `calculateStaticETA`의 `arrivalAtOrigin` 옵션 값을 추출한다.

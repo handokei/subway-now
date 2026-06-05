@@ -1,4 +1,4 @@
-import type { LinePositions, TrainPosition } from '../../../nearest-station/api/positionApi';
+import type { LinePositions, TrainPosition } from '../../../../shared/types/position';
 import type { LineNumber } from '../../../../shared/types/station';
 import { pickCandidateTrains } from '../pickCandidateTrains';
 

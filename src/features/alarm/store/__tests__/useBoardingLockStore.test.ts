@@ -1,6 +1,6 @@
 import { act } from '@testing-library/react-native';
 import { useBoardingLockStore } from '../useBoardingLockStore';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 
 const mockGetBoardingLock = jest.fn();
 const mockSetBoardingLock = jest.fn();

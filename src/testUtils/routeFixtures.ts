@@ -3,7 +3,7 @@ import type {
   MultiTransferRoute,
   TransferRoute,
   TransferSegment,
-} from '../features/route/utils/stationRoute';
+} from '../shared/utils/stationRoute';
 import type { LineNumber } from '../shared/types/station';
 
 /**

@@ -1,5 +1,5 @@
 import stationsData from '../../../data/stations.json';
-import { haversine } from '../../../utils/haversine';
+import { haversine } from '../../../shared/utils/haversine';
 import type { NearestStationResult, NearestStationsResult, Station } from '../../../shared/types/station';
 
 const stations = stationsData as Station[];

@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { FIRED_PUSH_IDS_KEY } from '../../../shared/constants/storageKeys';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 // #574 P2e — silent push fire/dedup 시점에 pushId를 기록하고, 동일 pushId의 alert push가
 // 도달했을 때 중복 표시를 차단한다. silent → ACK → 백엔드 KV 정리 사이의 race(~1s)에서

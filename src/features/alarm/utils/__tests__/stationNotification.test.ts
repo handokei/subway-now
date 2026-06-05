@@ -18,7 +18,7 @@ import {
 } from '../../../../testUtils/routeFixtures';
 
 jest.mock('expo-notifications');
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

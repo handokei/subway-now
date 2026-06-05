@@ -5,7 +5,7 @@ import {
   mapMatchedSpeedKmh,
   snapToLinePolyline,
 } from '../linePolyline';
-import { getStationsOnLine } from '../stationRoute';
+import { getStationsOnLine } from '../../../../shared/utils/stationRoute';
 import type { LineNumber } from '../../../../shared/types/station';
 
 describe('linePolyline', () => {

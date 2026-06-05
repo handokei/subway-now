@@ -35,7 +35,7 @@ import {
   pushFusionDebugEntry,
   type StickyStationEvent,
 } from '../utils/fusionDebugBuffer';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useStickyStation');
 

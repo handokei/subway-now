@@ -26,7 +26,7 @@ import {
   DESTINATION_KEY,
   LAST_NOTIFIED_STATION_KEY,
 } from '../../../shared/constants/storageKeys';
-import { resolveApnsEnv, type ApnsEnv } from '../../../utils/apnsEnv';
+import { resolveApnsEnv, type ApnsEnv } from '../../../shared/utils/apnsEnv';
 import { getAlarmLog, type AlarmLogSource } from '../utils/alarmLog';
 import {
   getSilentPushRegistrationStatus,
