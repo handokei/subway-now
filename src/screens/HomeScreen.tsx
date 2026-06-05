@@ -250,6 +250,10 @@ export default function HomeScreen() {
     locationUncertain,
     positionStability,
     motionStationary,
+    // #917 A2 follow-up — FG fast path: 현재 폴링 중인 origin/nearest station arrival을 전달해
+    // lock.trainCode arvlCd∈{0,1} 첫 관찰 시 매역 알림 즉시 발사. rawArrival(useArrivalCountdown
+    // 미적용)을 직접 전달 — 매역 발사 트리거는 분 단위 tick과 무관한 arvlCd 원본 값.
+    currentStationArrival: rawArrival,
   });
 
   // #584 PR B — BoardingLock 진입점. UI 렌더링/lock 생성만 담당하며,
