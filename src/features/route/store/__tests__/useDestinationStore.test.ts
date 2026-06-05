@@ -212,6 +212,35 @@ describe('useDestinationStore', () => {
     }
   });
 
+  // #926 — destination 재설정 시 LA dismiss sentinel도 함께 reset되어 다음 silent push에서
+  // LA가 다시 살아나야 한다. switch와 null 두 경로 모두 동일 cleanup을 트리거.
+  it.each<[string, 'switch' | 'null']>([
+    ['switch', 'switch'],
+    ['null clear', 'null'],
+  ])('setDestination(#926): %s 시 LA dismiss sentinel도 함께 클리어', async (_, transition) => {
+    const { setDestination } = useDestinationStore.getState();
+    setDestination(mockStation);
+    jest.clearAllMocks();
+    (triggerTripEndRecall as jest.Mock).mockResolvedValue({ uploaded: false });
+    (setTripStartedAt as jest.Mock).mockResolvedValue(undefined);
+
+    setDestination(transition === 'switch' ? mockStation2 : null);
+    await flushMicrotasks();
+
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:la-dismissed-at');
+  });
+
+  it('setDestination(#926): 같은 목적지 재설정에서는 sentinel을 건드리지 않는다 — dismiss 의도 보존', () => {
+    const { setDestination } = useDestinationStore.getState();
+    setDestination(mockStation);
+    jest.clearAllMocks();
+
+    // 같은 station 재설정 — switch 아님 → sentinel 보존(사용자 dismiss 의도가 더 강함).
+    setDestination(mockStation);
+
+    expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:la-dismissed-at');
+  });
+
   it('setDestination(#702): switch 시 customOrigin 메모리 state도 null로 동기화', () => {
     const { setDestination, setCustomOrigin } = useDestinationStore.getState();
     setDestination(mockStation);
