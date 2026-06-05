@@ -5,7 +5,7 @@ import {
   getStoredTripTrainCode,
   setTripTrainCode,
 } from '../tripTrainCode';
-import { TRIP_TRAIN_CODE_KEY } from '../../constants/storageKeys';
+import { TRIP_TRAIN_CODE_KEY } from '../../shared/constants/storageKeys';
 import type { StationArrival, ArrivalInfo } from '../../api/arrivalApi';
 import { makeArrivalInfo } from '../../testUtils/fixtures';
 

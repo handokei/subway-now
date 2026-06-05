@@ -1,7 +1,7 @@
 import { fireEvent } from '@testing-library/react-native';
 import { BoardingLockHopCard } from '../BoardingLockHopCard';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
-import { LINE_COLORS, LINE_NAMES } from '../../constants/lineColors';
+import { LINE_COLORS, LINE_NAMES } from '../../shared/constants/lineColors';
 import type { BoardingLock } from '../../types/boardingLock';
 
 const baseLock: BoardingLock = {

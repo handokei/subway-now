@@ -12,7 +12,7 @@ import {
   removeScheduledNotificationIds,
 } from './scheduledNotificationsStorage';
 import { createLogger } from './logger';
-import { HOP_TIME_MS } from '../constants/boardingLock';
+import { HOP_TIME_MS } from '../shared/constants/boardingLock';
 import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
 import { logSuppressedSleepFirstTransfer } from './alarmLog';
 

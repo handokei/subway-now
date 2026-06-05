@@ -5,7 +5,7 @@ import {
   clearFiredPushIds,
   FIRED_PUSH_ID_TTL_MS,
 } from '../firedPushIds';
-import { FIRED_PUSH_IDS_KEY } from '../../constants/storageKeys';
+import { FIRED_PUSH_IDS_KEY } from '../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),

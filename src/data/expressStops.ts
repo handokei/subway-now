@@ -13,7 +13,7 @@
  * stations.json 보완 시 이 목록도 함께 확장한다.
  */
 
-import type { TrainType } from '../constants/trainTypes';
+import type { TrainType } from '../shared/constants/trainTypes';
 import type { LineNumber } from '../types/station';
 
 export type ExpressStopsByType = Partial<Record<TrainType, ReadonlySet<string>>>;

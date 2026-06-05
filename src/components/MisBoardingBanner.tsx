@@ -1,5 +1,5 @@
 import { Text } from 'react-native';
-import { useTheme, typography, spacing } from '../theme';
+import { useTheme, typography, spacing } from '../shared/theme';
 import { ActionBanner } from './ActionBanner';
 
 interface Props {

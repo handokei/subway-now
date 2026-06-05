@@ -7,7 +7,7 @@ import {
   withMapMatched,
   withNearestStationDistance,
 } from '../positionUpload';
-import { ACTIVE_BOARDING_LINE_KEY } from '../../constants/storageKeys';
+import { ACTIVE_BOARDING_LINE_KEY } from '../../shared/constants/storageKeys';
 
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({

@@ -4,7 +4,7 @@ import {
   getBoardingLock,
   setBoardingLock,
 } from '../boardingLockStorage';
-import { BOARDING_LOCK_KEY } from '../../constants/storageKeys';
+import { BOARDING_LOCK_KEY } from '../../shared/constants/storageKeys';
 import type { BoardingLock } from '../../types/boardingLock';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({

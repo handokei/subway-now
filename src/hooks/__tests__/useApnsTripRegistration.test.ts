@@ -34,8 +34,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useApnsTripRegistration } from '../useApnsTripRegistration';
 import type { Station } from '../../types/station';
 import type { Route } from '../../utils/stationRoute';
-import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../constants/storageKeys';
-import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../constants/boardingLock';
+import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../shared/constants/storageKeys';
+import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../shared/constants/boardingLock';
 import { makeDirectRoute } from '../../testUtils/routeFixtures';
 
 const station: Station = {

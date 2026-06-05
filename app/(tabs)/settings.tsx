@@ -6,14 +6,14 @@ import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
 import { useAppStore, type ThemeMode, type LocalePreference } from '../../src/store/useAppStore';
 import { ROUTE_CATEGORIES } from '../../src/utils/stationRoute';
-import { LANGUAGE_REGISTRY } from '../../src/i18n/types';
-import { useTheme, spacing, radius } from '../../src/theme';
+import { LANGUAGE_REGISTRY } from '../../src/shared/i18n/types';
+import { useTheme, spacing, radius } from '../../src/shared/theme';
 import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
 import {
   DEBUG_MODAL_TRIGGER_RESET_MS,
   DEBUG_MODAL_TRIGGER_TAP_COUNT,
   isDebugModalEnabled,
-} from '../../src/constants/debugFlags';
+} from '../../src/shared/constants/debugFlags';
 
 const THEME_OPTIONS = [
   { value: 'auto', labelKey: 'settings.themeAuto' },

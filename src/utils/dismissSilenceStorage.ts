@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { DISMISS_SILENCE_KEY } from '../constants/storageKeys';
+import { DISMISS_SILENCE_KEY } from '../shared/constants/storageKeys';
 
 /**
  * #746 — dismiss silence 상태. dismiss 시점의 timestamp와 좌표.

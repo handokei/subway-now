@@ -1,5 +1,5 @@
 import { StyleSheet, Text, type TextStyle } from 'react-native';
-import { useTheme, typography, spacing } from '../theme';
+import { useTheme, typography, spacing } from '../shared/theme';
 
 interface Props {
   label: string;

@@ -2,7 +2,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import i18next from 'i18next';
 import { Station } from '../types/station';
-import { LINE_COLORS, LINE_NAMES } from '../constants/lineColors';
+import { LINE_COLORS, LINE_NAMES } from '../shared/constants/lineColors';
 import { DirectRoute, TransferRoute, MultiTransferRoute, normalizeStationName } from './stationRoute';
 import type { AlarmEvent } from './stationAlarm';
 import type { NextTarget } from './stationPipeline';

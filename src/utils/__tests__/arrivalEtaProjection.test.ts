@@ -1,5 +1,5 @@
 import { projectArrivalEtaStation } from '../arrivalEtaProjection';
-import { ARRIVAL_CODE } from '../../constants/arrivalCodes';
+import { ARRIVAL_CODE } from '../../shared/constants/arrivalCodes';
 import type { ArrivalInfo } from '../../api/arrivalApi';
 import type { Station } from '../../types/station';
 

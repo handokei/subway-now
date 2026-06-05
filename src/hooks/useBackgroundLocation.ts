@@ -6,8 +6,8 @@ import * as TaskManager from 'expo-task-manager';
 import { useTranslation } from 'react-i18next';
 import type { Station } from '../types/station';
 import { BACKGROUND_LOCATION_TASK } from '../tasks/backgroundLocationTask';
-import { LOCATION_TRACKING_OPTIONS } from '../constants/locationTracking';
-import { BG_PERMISSION_DENIED_DISMISSED_KEY } from '../constants/storageKeys';
+import { LOCATION_TRACKING_OPTIONS } from '../shared/constants/locationTracking';
+import { BG_PERMISSION_DENIED_DISMISSED_KEY } from '../shared/constants/storageKeys';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('BackgroundLocation');

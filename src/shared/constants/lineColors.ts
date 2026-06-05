@@ -1,5 +1,5 @@
 import i18next from 'i18next';
-import { LineNumber } from '../types/station';
+import { LineNumber } from '../../types/station';
 
 export const LINE_COLORS: Record<LineNumber, string> = {
   '1': '#0052A4',

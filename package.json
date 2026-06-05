@@ -48,7 +48,7 @@
       "!src/providers/index.ts",
       "!src/providers/types.ts",
       "!src/providers/arrival/index.ts",
-      "!src/theme/index.ts"
+      "!src/shared/theme/index.ts"
     ],
     "moduleFileExtensions": [
       "ts",

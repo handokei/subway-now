@@ -15,7 +15,7 @@ import { useArrivalInfo } from '../useArrivalInfo';
 import { useTrainPositions } from '../useTrainPositions';
 import { findTopNearestStations } from '../../utils/findNearestStation';
 import { enumerateTransferStations } from '../../utils/transferStations';
-import { TRAIN_STATUS } from '../../constants/trainStatus';
+import { TRAIN_STATUS } from '../../shared/constants/trainStatus';
 import type { TrainPosition, LinePositions } from '../../api/positionApi';
 import type { BoardingLock } from '../../types/boardingLock';
 import type { Station } from '../../types/station';

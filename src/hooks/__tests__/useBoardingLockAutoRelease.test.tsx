@@ -8,7 +8,7 @@ import type { Station } from '../../types/station';
 import {
   ARRIVAL_PROXIMITY_THRESHOLD_M,
   AUTO_RELEASE_GRACE_MS,
-} from '../../constants/boardingLock';
+} from '../../shared/constants/boardingLock';
 
 const mockLoggerInfo = jest.fn();
 jest.mock('../../utils/logger', () => ({

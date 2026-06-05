@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { useTheme, typography, spacing } from '../theme';
+import { useTheme, typography, spacing } from '../shared/theme';
 import { useCountdown } from '../hooks/useCountdown';
 import type { ArrivalTrain } from '../utils/journeyAdapter';
 import { LineBadge, getLineColor } from './LineBadge';

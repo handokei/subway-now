@@ -13,7 +13,7 @@ import {
   MAX_PLAUSIBLE_MPS,
   ACCURACY_WEIGHT_SCALE_M,
   DEFAULT_ACCURACY_WEIGHT,
-} from '../constants/routeProgress';
+} from '../shared/constants/routeProgress';
 
 /**
  * GPS 관측의 progress 갱신 가중치. 정확도가 좋을수록 GPS를 더 신뢰한다.

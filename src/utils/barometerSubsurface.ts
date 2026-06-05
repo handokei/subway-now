@@ -16,7 +16,7 @@ import {
   BAROMETER_DPDT_WINDOW_MS,
   BAROMETER_RING_BUFFER_TTL_MS,
   BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
-} from '../constants/barometer';
+} from '../shared/constants/barometer';
 
 /**
  * 단일 기압 reading. expo-sensors `BarometerMeasurement.pressure`는 hPa 단위.

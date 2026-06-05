@@ -2,7 +2,7 @@ import { evaluateDismissSilence } from '../dismissSilenceGate';
 import {
   DISMISS_SILENCE_MS,
   DISMISS_SILENCE_RADIUS_M,
-} from '../../constants/alarmSilence';
+} from '../../shared/constants/alarmSilence';
 
 const SEOUL = { lat: 37.5665, lng: 126.978 };
 

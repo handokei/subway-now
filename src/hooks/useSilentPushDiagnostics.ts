@@ -25,7 +25,7 @@ import {
   ROUTE_KEY,
   DESTINATION_KEY,
   LAST_NOTIFIED_STATION_KEY,
-} from '../constants/storageKeys';
+} from '../shared/constants/storageKeys';
 import { resolveApnsEnv, type ApnsEnv } from '../utils/apnsEnv';
 import { getAlarmLog, type AlarmLogSource } from '../utils/alarmLog';
 import {

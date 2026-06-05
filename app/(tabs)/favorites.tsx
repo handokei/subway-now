@@ -11,7 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useAppStore } from '../../src/store/useAppStore';
-import { LINE_NAMES } from '../../src/constants/lineColors';
+import { LINE_NAMES } from '../../src/shared/constants/lineColors';
 import {
   FAVORITE_SLOT_ICONS,
   FAVORITE_SLOT_ROLES,
@@ -24,7 +24,7 @@ import { useArrivalInfo } from '../../src/hooks/useArrivalInfo';
 import { useArrivalCountdown } from '../../src/hooks/useArrivalCountdown';
 import { formatArrivalTime } from '../../src/utils/formatTime';
 import { getStationDisplayName, matchesStationQuery } from '../../src/utils/stationDisplay';
-import { useTheme, type ThemeColors } from '../../src/theme';
+import { useTheme, type ThemeColors } from '../../src/shared/theme';
 import stationsData from '../../src/data/stations.json';
 import { ArrivalSourceNotice } from '../../src/components/ArrivalSourceNotice';
 import type { StationArrival } from '../../src/api/arrivalApi';

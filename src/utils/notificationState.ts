@@ -3,7 +3,7 @@ import {
   LAST_NOTIFIED_STATION_KEY,
   FIRED_ALARMS_KEY,
   LAST_FIRED_ALARM_STATION_NAME_KEY,
-} from '../constants/storageKeys';
+} from '../shared/constants/storageKeys';
 import { createLogger } from './logger';
 
 // Foreground/Background 양쪽에서 호출되는 알림 상태 저장소.

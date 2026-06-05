@@ -2,8 +2,8 @@ import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { Stack, useRouter } from 'expo-router';
 import { useAppStore, type LocalePreference } from '../src/store/useAppStore';
-import { LANGUAGE_REGISTRY } from '../src/i18n/types';
-import { useTheme, spacing } from '../src/theme';
+import { LANGUAGE_REGISTRY } from '../src/shared/i18n/types';
+import { useTheme, spacing } from '../src/shared/theme';
 
 export default function LanguageScreen() {
   const localePreference = useAppStore((s) => s.localePreference);

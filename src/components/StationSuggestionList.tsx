@@ -1,9 +1,9 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { Station } from '../types/station';
-import { LINE_NAMES } from '../constants/lineColors';
+import { LINE_NAMES } from '../shared/constants/lineColors';
 import { getStationDisplayName } from '../utils/stationDisplay';
-import { useTheme, spacing, radius } from '../theme';
+import { useTheme, spacing, radius } from '../shared/theme';
 
 interface Props {
   readonly suggestions: readonly Station[];

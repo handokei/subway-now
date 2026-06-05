@@ -12,7 +12,7 @@ import {
   STICKY_GOOD_FIX_SPEED_MAX_MPS,
   STICKY_TTL_MS,
   STICKY_UNLOCK_DISTANCE_KM,
-} from '../constants/stickyStation';
+} from '../shared/constants/stickyStation';
 
 /** 평가 대상 좌표 + 동반 신호. accuracy null은 측정 불가, speed null은 정지로 간주(보수). */
 export interface StickyFixInput {

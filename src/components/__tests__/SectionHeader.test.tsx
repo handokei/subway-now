@@ -2,7 +2,7 @@ import React from 'react';
 import { StyleSheet } from 'react-native';
 import { screen } from '@testing-library/react-native';
 import { SectionHeader } from '../SectionHeader';
-import { lightColors, darkColors } from '../../theme';
+import { lightColors, darkColors } from '../../shared/theme';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
 import * as RN from 'react-native';
 

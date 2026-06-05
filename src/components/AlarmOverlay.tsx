@@ -6,7 +6,7 @@ import { killAllAlarms } from '../utils/alarmKill';
 import { getStationDisplayNameByName } from '../utils/stationDisplay';
 import stationsData from '../data/stations.json';
 import type { Station } from '../types/station';
-import { useTheme, typography, spacing, radius } from '../theme';
+import { useTheme, typography, spacing, radius } from '../shared/theme';
 
 const allStations = stationsData as Station[];
 

@@ -7,7 +7,7 @@ import {
   setFiredAlarms,
   setLastFiredAlarmStationName,
 } from './notificationState';
-import { DESTINATION_KEY } from '../constants/storageKeys';
+import { DESTINATION_KEY } from '../shared/constants/storageKeys';
 import { createLogger } from './logger';
 
 const logger = createLogger('ScheduledAlarmReceiver');

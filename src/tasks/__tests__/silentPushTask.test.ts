@@ -124,7 +124,7 @@ import {
   ACTIVE_TRIP_KEY,
   DESTINATION_KEY,
   LOCKLESS_STATION_PASSED_KEY,
-} from '../../constants/storageKeys';
+} from '../../shared/constants/storageKeys';
 
 const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
 

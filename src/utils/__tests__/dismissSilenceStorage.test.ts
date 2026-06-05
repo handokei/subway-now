@@ -4,7 +4,7 @@ import {
   getDismissSilence,
   setDismissSilence,
 } from '../dismissSilenceStorage';
-import { DISMISS_SILENCE_KEY } from '../../constants/storageKeys';
+import { DISMISS_SILENCE_KEY } from '../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),

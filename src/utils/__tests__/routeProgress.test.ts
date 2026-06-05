@@ -165,7 +165,7 @@ describe('computeRouteArc', () => {
 
   it('returns null when adjacent stations exceed MAX_INTER_STATION_M (data corruption guard)', () => {
     jest.resetModules();
-    jest.doMock('../../constants/routeProgress', () => ({
+    jest.doMock('../../shared/constants/routeProgress', () => ({
       MAX_INTER_STATION_M: 100,
     }));
     const { computeRouteArc: cra } = require('../routeProgress');

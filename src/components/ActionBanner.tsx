@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { useTheme, typography, spacing, radius } from '../theme';
+import { useTheme, typography, spacing, radius } from '../shared/theme';
 
 interface Props {
   /** border + 액션 텍스트/테두리 색. accent(보통) 또는 warn(경고) 등 의도 색. */

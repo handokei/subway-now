@@ -1,6 +1,6 @@
 import i18next from 'i18next';
 
-import type { SupportedLanguage } from '../i18n/types';
+import type { SupportedLanguage } from '../shared/i18n/types';
 import type { Station } from '../types/station';
 
 type StationLabelFields = Pick<Station, 'name' | 'nameEn' | 'nameJa' | 'nameHanja'>;

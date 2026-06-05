@@ -14,7 +14,7 @@ import {
   STICKY_GOOD_FIX_SPEED_MAX_MPS,
   STICKY_TTL_MS,
   STICKY_UNLOCK_DISTANCE_KM,
-} from '../../constants/stickyStation';
+} from '../../shared/constants/stickyStation';
 import {
   isGoodFix,
   shouldUnlockByDistance,

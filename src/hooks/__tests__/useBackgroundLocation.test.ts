@@ -1,7 +1,7 @@
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { Alert, Linking } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { BG_PERMISSION_DENIED_DISMISSED_KEY } from '../../constants/storageKeys';
+import { BG_PERMISSION_DENIED_DISMISSED_KEY } from '../../shared/constants/storageKeys';
 import type { Station } from '../../types/station';
 
 // ── Alert.alert / Linking.openSettings 모킹 ──
@@ -50,7 +50,7 @@ jest.mock('../../utils/logger', () => ({
 }));
 
 import { useBackgroundLocation } from '../useBackgroundLocation';
-import { LOCATION_TRACKING_OPTIONS } from '../../constants/locationTracking';
+import { LOCATION_TRACKING_OPTIONS } from '../../shared/constants/locationTracking';
 
 // ── 픽스처 ──
 

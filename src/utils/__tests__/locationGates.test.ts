@@ -1,4 +1,4 @@
-import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY, MAX_LOCATION_AGE_MS } from '../../constants/location';
+import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY, MAX_LOCATION_AGE_MS } from '../../shared/constants/location';
 import {
   isAccuracyAcceptable,
   isAccuracyAcceptableForDisplay,

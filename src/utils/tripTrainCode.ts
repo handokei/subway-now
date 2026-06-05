@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { TRIP_TRAIN_CODE_KEY } from '../constants/storageKeys';
+import { TRIP_TRAIN_CODE_KEY } from '../shared/constants/storageKeys';
 import { pickNextArrival, type StationArrival } from './nextArrivalPick';
 import { createLogger } from './logger';
 

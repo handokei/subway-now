@@ -3,7 +3,7 @@ import { AppState } from 'react-native';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { NearestStationResult, Station } from '../types/station';
-import { BG_LAST_STATION_KEY } from '../constants/storageKeys';
+import { BG_LAST_STATION_KEY } from '../shared/constants/storageKeys';
 import { findNearestStations } from '../utils/findNearestStation';
 import {
   isAccuracyAcceptable,
@@ -17,13 +17,13 @@ import {
   MAX_ACCURACY_M_DISPLAY,
   MAX_STATION_DISTANCE_KM,
   isValidGpsSpeedMps,
-} from '../constants/location';
-import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../constants/e2e';
+} from '../shared/constants/location';
+import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../shared/constants/e2e';
 import {
   appStateToGpsActive,
   currentGpsActive,
   type GpsActiveState,
-} from '../constants/gpsStatus';
+} from '../shared/constants/gpsStatus';
 import { createLogger } from '../utils/logger';
 import { pushFusionDebugEntry } from '../utils/fusionDebugBuffer';
 import { haversine } from '../utils/haversine';

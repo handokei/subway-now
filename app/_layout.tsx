@@ -5,15 +5,15 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { I18nextProvider, useTranslation } from 'react-i18next';
-import { ThemeProvider, useTheme } from '../src/theme';
+import { ThemeProvider, useTheme } from '../src/shared/theme';
 import { setupNotificationHandler, refreshNotificationChannels } from '../src/utils/stationNotification';
 import { setMinLevel, createLogger } from '../src/utils/logger';
-import { i18n } from '../src/i18n';
+import { i18n } from '../src/shared/i18n';
 import { useApplyLocale } from '../src/hooks/useApplyLocale';
 import { useSilentPushTelemetry } from '../src/hooks/useSilentPushTelemetry';
 import { useAppStore } from '../src/store/useAppStore';
 import { DebugModal } from '../src/components/DebugModal';
-import { isDebugModalEnabled } from '../src/constants/debugFlags';
+import { isDebugModalEnabled } from '../src/shared/constants/debugFlags';
 import '../src/tasks/backgroundLocationTask';
 import { registerSilentPushTask } from '../src/tasks/silentPushTask';
 import { registerScheduledAlarmListener } from '../src/utils/scheduledAlarmReceiver';
@@ -23,7 +23,7 @@ import { stopVibration } from '../src/utils/alarmSound';
 import { setupBoardingPromptCategory } from '../src/utils/notificationCategory';
 import { useBoardingPromptResponder } from '../src/hooks/useBoardingPromptResponder';
 import { fetchArrivalInfo } from '../src/api/arrivalApi';
-import { FALLBACK_BOARDING_DURATION_MINUTES } from '../src/constants/boardingLock';
+import { FALLBACK_BOARDING_DURATION_MINUTES } from '../src/shared/constants/boardingLock';
 
 const layoutLogger = createLogger('RootLayout');
 

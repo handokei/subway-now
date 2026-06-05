@@ -1,6 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { useTheme, spacing } from '../theme';
+import { useTheme, spacing } from '../shared/theme';
 
 interface StatusChipProps {
   label: string;

@@ -41,7 +41,7 @@ export interface ArrivalTrain {
   /** 막차 여부 — UI 안전성 배지. */
   isLastTrain?: boolean;
   /** 열차 타입 — 'normal'은 배지 미표시. */
-  trainType?: import('../constants/trainTypes').TrainType;
+  trainType?: import('../shared/constants/trainTypes').TrainType;
   /** arvlCd — 0:진입, 1:도착, 2:출발 등. UI 진입/도착 배지용. */
   arrivalCode?: number;
 }

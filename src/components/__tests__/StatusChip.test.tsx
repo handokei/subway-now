@@ -3,7 +3,7 @@ import { screen, fireEvent } from '@testing-library/react-native';
 import * as RN from 'react-native';
 import { StatusChip } from '../StatusChip';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
-import { lightColors, darkColors } from '../../theme';
+import { lightColors, darkColors } from '../../shared/theme';
 import { StyleSheet } from 'react-native';
 
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');

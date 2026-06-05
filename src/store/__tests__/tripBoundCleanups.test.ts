@@ -5,7 +5,7 @@ import {
   ROUTE_KEY,
   BOARDING_LOCK_KEY,
   ACTIVE_TRIP_KEY,
-} from '../../constants/storageKeys';
+} from '../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')

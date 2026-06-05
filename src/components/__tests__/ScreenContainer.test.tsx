@@ -2,7 +2,7 @@ import React from 'react';
 import { StyleSheet, Text } from 'react-native';
 import { screen } from '@testing-library/react-native';
 import { ScreenContainer } from '../ScreenContainer';
-import { lightColors, darkColors } from '../../theme';
+import { lightColors, darkColors } from '../../shared/theme';
 import { renderWithTheme } from '../../testUtils/renderWithTheme';
 import * as RN from 'react-native';
 

@@ -7,7 +7,7 @@ function demoteSlotEntries(entries: FavoriteEntry[], role: FavoriteSlotRole): Fa
   return entries.map((f) => (f.role === role ? { ...f, role: 'general' as FavoriteRole } : f));
 }
 import type { AlarmEvent } from '../utils/stationAlarm';
-import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, TRIP_ORIGIN_KEY, LOCKLESS_STATION_PASSED_KEY } from '../constants/storageKeys';
+import { FAVORITES_KEY, SLEEP_MODE_KEY, DESTINATION_KEY, ALARM_EVENT_KEY, CUSTOM_ORIGIN_KEY, THEME_MODE_KEY, ROUTE_PREFERENCE_KEY, ALLOW_SPEAKER_KEY, LOCALE_PREFERENCE_KEY, ACCESSIBILITY_MODE_KEY, TRIP_ORIGIN_KEY, LOCKLESS_STATION_PASSED_KEY } from '../shared/constants/storageKeys';
 import { runTripBoundCleanups } from './tripBoundCleanups';
 import {
   clearDismissSilence as clearDismissSilenceStorage,
@@ -16,7 +16,7 @@ import {
   type DismissSilenceState,
 } from '../utils/dismissSilenceStorage';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../utils/stationRoute';
-import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../i18n/types';
+import { SUPPORTED_LANGUAGES, type SupportedLanguage } from '../shared/i18n/types';
 
 export type ThemeMode = 'auto' | 'light' | 'dark';
 export type LocalePreference = 'auto' | SupportedLanguage;

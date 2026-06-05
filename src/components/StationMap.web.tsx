@@ -3,9 +3,9 @@ import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { Station } from '../types/station';
 import { haversine } from '../utils/haversine';
-import { LINE_BADGE_LABEL } from '../constants/lineColors';
+import { LINE_BADGE_LABEL } from '../shared/constants/lineColors';
 import { groupStationsByName } from '../utils/groupStationsByName';
-import { useTheme } from '../theme';
+import { useTheme } from '../shared/theme';
 
 interface StationMapProps {
   userLat: number;

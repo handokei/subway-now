@@ -4,7 +4,7 @@ import type { Station } from '../types/station';
 import {
   ARRIVAL_PROXIMITY_THRESHOLD_M,
   AUTO_RELEASE_GRACE_MS,
-} from '../constants/boardingLock';
+} from '../shared/constants/boardingLock';
 import { createLogger } from '../utils/logger';
 
 const logger = createLogger('useBoardingLockAutoRelease');

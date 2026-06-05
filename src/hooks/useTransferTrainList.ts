@@ -5,7 +5,7 @@ import {
   findActiveTransferContext,
   findUpcomingTransferPrefetch,
 } from '../utils/findActiveTransferContext';
-import { FALLBACK_BOARDING_DURATION_MINUTES } from '../constants/boardingLock';
+import { FALLBACK_BOARDING_DURATION_MINUTES } from '../shared/constants/boardingLock';
 import { calculateRemainingLegETA } from '../utils/stationRoute';
 import type { ArrivalInfo, StationArrival } from '../api/arrivalApi';
 import type { BoardingLock } from '../types/boardingLock';

@@ -1,5 +1,5 @@
 import { getStopSeconds } from './stationRoute';
-import { HOP_TIME_MS } from '../constants/boardingLock';
+import { HOP_TIME_MS } from '../shared/constants/boardingLock';
 import type { LineNumber, Station } from '../types/station';
 
 /**

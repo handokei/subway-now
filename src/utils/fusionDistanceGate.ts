@@ -1,4 +1,4 @@
-import { MAX_ACCURACY_M } from '../constants/location';
+import { MAX_ACCURACY_M } from '../shared/constants/location';
 import type { NearestStationResult } from '../types/station';
 
 // #444: fusion 결과(non-gps source)가 사용자 실위치와 동떨어진 station을 채택하지 않도록

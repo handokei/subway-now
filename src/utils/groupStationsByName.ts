@@ -1,5 +1,5 @@
 import type { Station, LineNumber } from '../types/station';
-import { LINE_COLORS } from '../constants/lineColors';
+import { LINE_COLORS } from '../shared/constants/lineColors';
 
 export interface StationGroup {
   key: string;

@@ -10,7 +10,7 @@ import {
 } from '../alarmBackend';
 import type { RegisterTripPayload } from '../alarmBackend';
 import { makeDirectRoute } from '../../testUtils/routeFixtures';
-import { ACTIVE_BOARDING_LINE_KEY } from '../../constants/storageKeys';
+import { ACTIVE_BOARDING_LINE_KEY } from '../../shared/constants/storageKeys';
 
 jest.mock('../../utils/logger', () => ({
   createLogger: () => ({

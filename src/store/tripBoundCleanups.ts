@@ -8,7 +8,7 @@ import {
   ACTIVE_TRIP_KEY,
   TRIP_ORIGIN_KEY,
   ALARM_EVENT_KEY,
-} from '../constants/storageKeys';
+} from '../shared/constants/storageKeys';
 import {
   clearFiredAlarms,
   clearLastNotifiedStationId,

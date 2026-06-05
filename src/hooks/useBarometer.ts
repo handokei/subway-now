@@ -28,7 +28,7 @@ import {
   appendBarometerReading,
   resetBarometerState,
 } from '../utils/barometerState';
-import { BAROMETER_SAMPLE_INTERVAL_MS } from '../constants/barometer';
+import { BAROMETER_SAMPLE_INTERVAL_MS } from '../shared/constants/barometer';
 
 /**
  * 기압계 수집을 활성화한다. 반환값 없음 — 외부에서는 `evaluateLatestSubsurface()`로 조회.

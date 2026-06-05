@@ -1,8 +1,8 @@
 import type { NearestStationResult } from '../types/station';
 import type { StationArrival } from '../api/arrivalApi';
 import type { LinePositions } from '../api/positionApi';
-import { getArrivalPriority } from '../constants/arrivalCodes';
-import { getTrainStatusPriority } from '../constants/trainStatus';
+import { getArrivalPriority } from '../shared/constants/arrivalCodes';
+import { getTrainStatusPriority } from '../shared/constants/trainStatus';
 
 /**
  * fusion 결과 신뢰도 — UI/로깅용. 점수 ≥ 100이면 confirmed, 0 < x < 100이면 arriving.

@@ -16,7 +16,7 @@ jest.mock('expo-sensors', () => ({
 }));
 
 import { useBarometer } from '../useBarometer';
-import { BAROMETER_SAMPLE_INTERVAL_MS } from '../../constants/barometer';
+import { BAROMETER_SAMPLE_INTERVAL_MS } from '../../shared/constants/barometer';
 import {
   getBarometerReadings,
   resetBarometerState,

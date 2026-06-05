@@ -22,7 +22,7 @@ import { StationMap } from './StationMap';
 import { StationSuggestionList } from './StationSuggestionList';
 import { createLogger } from '../utils/logger';
 import { matchesStationQuery, getStationDisplayName } from '../utils/stationDisplay';
-import { useTheme, spacing, radius } from '../theme';
+import { useTheme, spacing, radius } from '../shared/theme';
 
 const logger = createLogger('DestinationPicker');
 

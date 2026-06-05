@@ -1,6 +1,6 @@
 import { arcIndexOfStation, estimateStationProgress } from '../stationProgressEstimator';
-import { HOP_TIME_MS } from '../../constants/boardingLock';
-import { ARRIVAL_CODE } from '../../constants/arrivalCodes';
+import { HOP_TIME_MS } from '../../shared/constants/boardingLock';
+import { ARRIVAL_CODE } from '../../shared/constants/arrivalCodes';
 import type { ArrivalInfo } from '../../api/arrivalApi';
 import type { BoardingLock } from '../../types/boardingLock';
 import type { Station } from '../../types/station';
