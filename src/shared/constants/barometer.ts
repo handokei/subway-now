@@ -50,6 +50,32 @@ export const BAROMETER_RING_BUFFER_TTL_MS = 60_000;
 export const BAROMETER_SAMPLE_INTERVAL_MS = 1_000;
 
 /**
+ * #920 — 깊이(m) → 압력 변화(hPa) 환산 상수.
+ *
+ * 단위: hPa / m.
+ *
+ * 표준 대기 모델(ISA, 해수면 부근)에서 고도 1m 하강 시 약 0.12 hPa 상승한다.
+ * `avgPressure_hPa = surfacePressure + (depth_m × DEPTH_TO_PRESSURE_HPA_PER_M)`.
+ *
+ * 데이터 파일에 absolute pressure가 명시되지 않은 역은 이 상수로 추정한다
+ * (CLAUDE.md §3 데이터 주도 — 새 역 추가 시 코드 수정 없이 깊이만 채우면 됨).
+ */
+export const DEPTH_TO_PRESSURE_HPA_PER_M = 0.12;
+
+/**
+ * #920 — F3 절대값 narrow에 사용하는 압력 일치 tolerance.
+ *
+ * 단위: hPa.
+ *
+ * 근거:
+ *   - 일별 기압 변동(고/저기압) ±5 hPa 수준 → 단일 기준치로는 매칭 불가.
+ *     본 PR에서는 surfacePressure를 외부에서 주입받는 형태로 일반화하여 변동을 흡수.
+ *   - 센서 정밀도 ≈ 0.1 hPa, 깊이 ±5m(약 0.6 hPa) 오차 고려해 1.0 hPa 허용.
+ *   - 깊이 차이 약 8m 이내 역은 후보로 같이 잡힘 → ±2역 narrow 목표에 부합.
+ */
+export const BAROMETER_ABS_TOLERANCE_HPA = 1.0;
+
+/**
  * #903 — subsurface verdict의 hysteresis 확인 샘플 수.
  *
  * 임계(0.3hPa) 부근에서 센서 noise로 verdict가 1Hz 토글되면 useBarometer가 setSubsurface을

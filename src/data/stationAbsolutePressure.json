@@ -1,0 +1,122 @@
+[
+  {
+    "stationId": "1-031",
+    "stationName": "종로3가",
+    "line": "1",
+    "depth_m": 14
+  },
+  {
+    "stationId": "3-021",
+    "stationName": "종로3가",
+    "line": "3",
+    "depth_m": 22
+  },
+  {
+    "stationId": "5-025",
+    "stationName": "종로3가",
+    "line": "5",
+    "depth_m": 35
+  },
+  {
+    "stationId": "1-033",
+    "stationName": "시청",
+    "line": "1",
+    "depth_m": 12
+  },
+  {
+    "stationId": "2-001",
+    "stationName": "시청",
+    "line": "2",
+    "depth_m": 18
+  },
+  {
+    "stationId": "5-024",
+    "stationName": "광화문",
+    "line": "5",
+    "depth_m": 32
+  },
+  {
+    "stationId": "2-016",
+    "stationName": "잠실",
+    "line": "2",
+    "depth_m": 16
+  },
+  {
+    "stationId": "8-005",
+    "stationName": "잠실",
+    "line": "8",
+    "depth_m": 28
+  },
+  {
+    "stationId": "2-022",
+    "stationName": "강남",
+    "line": "2",
+    "depth_m": 20
+  },
+  {
+    "stationId": "sinbundang-013",
+    "stationName": "강남",
+    "line": "sinbundang",
+    "depth_m": 45
+  },
+  {
+    "stationId": "5-031",
+    "stationName": "왕십리",
+    "line": "5",
+    "depth_m": 27
+  },
+  {
+    "stationId": "2-008",
+    "stationName": "왕십리",
+    "line": "2",
+    "depth_m": 8
+  },
+  {
+    "stationId": "6-021",
+    "stationName": "이태원",
+    "line": "6",
+    "depth_m": 26
+  },
+  {
+    "stationId": "5-017",
+    "stationName": "여의도",
+    "line": "5",
+    "depth_m": 22
+  },
+  {
+    "stationId": "9-015",
+    "stationName": "여의도",
+    "line": "9",
+    "depth_m": 17
+  },
+  {
+    "stationId": "3-041",
+    "stationName": "수서",
+    "line": "3",
+    "depth_m": 14
+  },
+  {
+    "stationId": "2-020",
+    "stationName": "선릉",
+    "line": "2",
+    "depth_m": 18
+  },
+  {
+    "stationId": "2-019",
+    "stationName": "삼성",
+    "line": "2",
+    "depth_m": 21
+  },
+  {
+    "stationId": "1-042",
+    "stationName": "구로",
+    "line": "1",
+    "depth_m": 0
+  },
+  {
+    "stationId": "4-003",
+    "stationName": "노원",
+    "line": "4",
+    "depth_m": 0
+  }
+]

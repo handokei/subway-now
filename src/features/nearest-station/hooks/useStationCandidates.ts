@@ -3,17 +3,20 @@
  *
  * 자동 추정으로 현재역을 단정할 수 없을 때 1탭 모달에 뿌릴 후보 목록을 메모이즈한다.
  * - wifi SSID(F2) 매칭 결과가 있으면 그 역을 topPick으로 두고 후보 1개 + 자동 확정 신호.
+ * - F2 실패 시 F3 기압계 절대값(#920)으로 GPS 후보를 narrow.
  * - 그 외엔 GPS 기반 `findTopNearestStations`로 거리순 상위 N개를 반환.
  *
  * 본 hook은 부수 효과 없는 순수 계산 layer. 모달 표시/검색 fallback 트리거는 호출자가 결정한다.
  *
  * 후속 PR:
  *  - HomeScreen wire(cold start + locationUncertain 길어질 때 표시)
- *  - F3 기압계(#920) 신호를 입력에 추가해 지하 진입 시 후보 가중치 보정
+ *  - F3 surfacePressure baseline 수집 (현재는 호출자가 주입)
+ *  - 환승역 노선/방향 결합 narrow
  */
 import { useMemo } from 'react';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
+import { narrowStationsByPressure } from '../../../shared/utils/barometerState';
 import type { Station } from '../../../shared/types/station';
 
 export const DEFAULT_MAX_CANDIDATES = 3;
@@ -23,6 +26,10 @@ export interface UseStationCandidatesInputs {
   readonly userLocation: { readonly lat: number; readonly lng: number } | null;
   /** F2 wifi SSID 매칭 결과 (`lookupStationBySsid`). 있으면 최우선. */
   readonly wifiStation: Station | null;
+  /** F3 기압계 절대 측정값(hPa). null이면 narrow skip. */
+  readonly absolutePressureHpa?: number | null;
+  /** 같은 지역 지상 기준 압력(hPa). absolutePressureHpa와 함께 주어져야 narrow 활성. */
+  readonly surfacePressureHpa?: number | null;
   /** 후보 최대 개수. 기본 3. */
   readonly maxCandidates?: number;
   /** GPS 후보 추출 시 반경(km). 기본 `MAX_STATION_DISTANCE_KM`(1.0). */
@@ -50,6 +57,8 @@ export function useStationCandidates(
   const {
     userLocation,
     wifiStation,
+    absolutePressureHpa = null,
+    surfacePressureHpa = null,
     maxCandidates = DEFAULT_MAX_CANDIDATES,
     maxDistanceKm = MAX_STATION_DISTANCE_KM,
   } = inputs;
@@ -74,11 +83,31 @@ export function useStationCandidates(
     );
     if (ranked.length === 0) return EMPTY;
 
-    const candidates = ranked.map((r) => r.station);
+    const gpsCandidates = ranked.map((r) => r.station);
+
+    // F3 — 기압계 절대값으로 GPS 후보를 narrow. 압력값 모두 주어지고 narrow 결과가
+    // 비지 않을 때만 적용. 0개로 좁아지면 F3 신호를 무시(GPS 후보 그대로 사용).
+    let candidates = gpsCandidates;
+    if (absolutePressureHpa !== null && surfacePressureHpa !== null) {
+      const narrowed = narrowStationsByPressure(
+        absolutePressureHpa,
+        surfacePressureHpa,
+        gpsCandidates,
+      );
+      if (narrowed.length > 0) candidates = narrowed;
+    }
+
     return {
       candidates,
       topPick: candidates[0],
       isAutoConfirmed: candidates.length === 1,
     };
-  }, [userLocation, wifiStation, maxCandidates, maxDistanceKm]);
+  }, [
+    userLocation,
+    wifiStation,
+    absolutePressureHpa,
+    surfacePressureHpa,
+    maxCandidates,
+    maxDistanceKm,
+  ]);
 }
