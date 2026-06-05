@@ -191,6 +191,9 @@ function tryReanchoredHop(
     hopTimeMsForHop,
   );
   if (idx === null) return null;
+  // Seam B(#898) 외부 cap은 useFusedNearestStation에서 적용 — 내부에서 한 번 더 자르면
+  // 종착역 grace cap(line 168)과 충돌(`종착역 유지` 시나리오에서 +1로 잘림). ReanchoredHop은
+  // 외부 ceiling으로만 제한, 내부는 종착 grace 보존.
   return { station: arcStations[idx], index: idx, strategy: 'reanchored-hop' };
 }
 
@@ -217,7 +220,11 @@ function tryDefaultHop(
     hopTimeMsForHop,
   );
   if (idx === null) return null;
-  return { station: arcStations[idx], index: idx, strategy: 'default-hop' };
+  // Seam B (#898): dead-zone(①②③ 모두 실패)에서는 boarding 외 anchor가 없다. boarding+1로
+  // cap해 적분이 종착역까지 단번에 흘러가는 것을 차단. 외부 cap(useFusedNearestStation)과 이중
+  // 안전. tryReanchoredHop은 lastObserved 앵커가 갱신되며 종착 grace 의미가 있으므로 외부 cap만 적용.
+  const cappedIdx = Math.min(idx, boardingIdx + 1);
+  return { station: arcStations[cappedIdx], index: cappedIdx, strategy: 'default-hop' };
 }
 
 /**

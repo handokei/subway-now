@@ -366,9 +366,10 @@ describe('estimateStationProgress', () => {
       expect(r).toBeNull();
     });
 
-    it('segment별 hop time이 다르면 누적 시간 기준으로 hop 산정 (ADR-008 §④)', () => {
-      // lookup이 idx에 따라 가변 — 0→1: 60s, 1→2: 60s, 2→3: 120s, 3→4: 60s.
-      // elapsed=150s → 0+1(60s 소비) → 1+1(120s 소비) → 다음 hop 120s는 30s만 남아 stop. hops=2.
+    it('Seam B (#898) — segment hop time과 무관하게 boardingIdx+1로 cap', () => {
+      // 적분 자체는 segment별 hop time을 누적하지만(0→1:60s, 2→3:120s) Seam B cap이
+      // 결과를 boardingIdx+1=1로 제한 — dead-zone forward 발산 차단. variable-hop math
+      // 자체의 회귀 가드는 Strategy ③ ReanchoredHop 테스트(상위) 참고.
       const variableHop = (fromIdx: number) =>
         fromIdx === 2 ? 120_000 : 60_000;
       const r = estimateStationProgress({
@@ -382,7 +383,7 @@ describe('estimateStationProgress', () => {
         ...NO_ARRIVAL_INPUT,
       });
       expect(r?.strategy).toBe('default-hop');
-      expect(r?.index).toBe(2);
+      expect(r?.index).toBe(1);
     });
   });
 
