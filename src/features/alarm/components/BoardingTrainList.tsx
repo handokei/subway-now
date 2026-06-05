@@ -1,12 +1,12 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 import { LineBadge } from '../../../components/LineBadge';
-import type { ArrivalInfo } from '../../../api/arrivalApi';
-import type { LineNumber, Station } from '../../../types/station';
+import type { ArrivalInfo } from '../../arrival/api/arrivalApi';
+import type { LineNumber, Station } from '../../../shared/types/station';
 import { formatClockTime } from '../../../utils/formatTime';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
-import { buildDirectionMeta } from '../../../utils/trainLineDirection';
-import { parseArrivalDistance } from '../../../utils/arrivalStatusDistance';
+import { buildDirectionMeta } from '../../route/utils/trainLineDirection';
+import { parseArrivalDistance } from '../../arrival/utils/arrivalStatusDistance';
 import { LINE_COLORS } from '../../../shared/constants/lineColors';
 import { buildFallbackSequenceLabel } from '../../../shared/constants/labels';
 import stationsData from '../../../data/stations.json';

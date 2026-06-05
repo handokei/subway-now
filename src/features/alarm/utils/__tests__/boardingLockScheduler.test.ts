@@ -16,7 +16,7 @@ import {
   clearScheduledNotificationIds,
 } from '../scheduledNotificationsStorage';
 import type { BoardingLock } from '../../types/boardingLock';
-import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../../../../utils/stationRoute';
+import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../../../route/utils/stationRoute';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,

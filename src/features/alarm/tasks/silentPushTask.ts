@@ -19,7 +19,7 @@ import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
-import type { Station } from '../../../types/station';
+import type { Station } from '../../../shared/types/station';
 import {
   APNS_TOKEN_KEY,
   ACTIVE_TRIP_KEY,
@@ -40,8 +40,8 @@ import {
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from '../utils/dismissSilenceStorage';
-import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../../utils/movementGate';
-import { getCurrentMotionStationary } from '../../../utils/motionActivity';
+import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
+import { getCurrentMotionStationary } from '../../nearest-station/utils/motionActivity';
 import { addFiredPushId } from '../utils/firedPushIds';
 import {
   checkSilentPushLocationGate,
@@ -52,7 +52,7 @@ import { buildAlarmContent } from '../utils/stationNotification';
 import { type NotificationSource } from '../utils/notificationSource';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 import { getBoardingLock } from '../utils/boardingLockStorage';
-import { findStationByName, findStationByNameAndLine } from '../../../utils/stationLookup';
+import { findStationByName, findStationByNameAndLine } from '../../nearest-station/utils/stationLookup';
 
 // silent push는 서버가 train data 기반으로 발사하므로 라벨도 'positionTrain'으로 고정.
 // 향후 GPS 게이트 경로 등 다른 출처가 생기면 인자화 한다.

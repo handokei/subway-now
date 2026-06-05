@@ -16,15 +16,15 @@
 
 import { useEffect } from 'react';
 import * as Notifications from 'expo-notifications';
-import type { ArrivalInfo, StationArrival } from '../../../api/arrivalApi';
-import { dismissBoardingPrompt } from '../../../api/positionUpload';
+import type { ArrivalInfo, StationArrival } from '../../arrival/api/arrivalApi';
+import { dismissBoardingPrompt } from '../../nearest-station/api/positionUpload';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { pickAutoTrainCodeFromArrivals } from '../utils/boardingPromptAutoLock';
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
 } from '../utils/notificationCategory';
-import { findStationByNameAndLine } from '../../../utils/stationLookup';
+import { findStationByNameAndLine } from '../../nearest-station/utils/stationLookup';
 import { createLogger } from '../../../utils/logger';
 
 const log = createLogger('boardingPromptResponder');

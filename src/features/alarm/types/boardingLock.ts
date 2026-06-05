@@ -1,4 +1,4 @@
-import type { LineNumber } from '../../../types/station';
+import type { LineNumber } from '../../../shared/types/station';
 
 /**
  * BoardingLock — 사용자가 명시적으로 탑승한 열차/노선/시각을 확정 (#584).

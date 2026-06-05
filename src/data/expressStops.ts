@@ -14,7 +14,7 @@
  */
 
 import type { TrainType } from '../shared/constants/trainTypes';
-import type { LineNumber } from '../types/station';
+import type { LineNumber } from '../shared/types/station';
 
 export type ExpressStopsByType = Partial<Record<TrainType, ReadonlySet<string>>>;
 

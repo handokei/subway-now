@@ -1,10 +1,10 @@
 import React from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { Station } from '../types/station';
+import { Station } from '../shared/types/station';
 import { haversine } from '../utils/haversine';
 import { LINE_BADGE_LABEL } from '../shared/constants/lineColors';
-import { groupStationsByName } from '../utils/groupStationsByName';
+import { groupStationsByName } from '../features/nearest-station/utils/groupStationsByName';
 import { useTheme } from '../shared/theme';
 
 interface StationMapProps {

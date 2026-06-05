@@ -1,5 +1,5 @@
 import { renderHook, waitFor } from '@testing-library/react-native';
-import type { Station } from '../../../../types/station';
+import type { Station } from '../../../../shared/types/station';
 
 const mockRegister = jest.fn();
 const mockUnregister = jest.fn();

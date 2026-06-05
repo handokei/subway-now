@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import type { Station } from '../../../types/station';
+import type { Station } from '../../../shared/types/station';
 import {
   registerAlarmRefreshTask,
   unregisterAlarmRefreshTask,

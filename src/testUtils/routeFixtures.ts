@@ -3,8 +3,8 @@ import type {
   MultiTransferRoute,
   TransferRoute,
   TransferSegment,
-} from '../utils/stationRoute';
-import type { LineNumber } from '../types/station';
+} from '../features/route/utils/stationRoute';
+import type { LineNumber } from '../shared/types/station';
 
 /**
  * 테스트용 평균 운행 시간 (초/정거장). production은 build-transfer-times.js 실측 lookup,

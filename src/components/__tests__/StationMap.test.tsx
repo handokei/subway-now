@@ -2,7 +2,7 @@ import React from 'react';
 import { Platform } from 'react-native';
 import { render, waitFor, fireEvent, act } from '@testing-library/react-native';
 import { StationMap } from '../StationMap';
-import type { Station } from '../../types/station';
+import type { Station } from '../../shared/types/station';
 import { installLanguageRestoreHook, setLang } from '../../testUtils/i18nLanguageOverride';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { __animateToRegionMock, __fitToCoordinatesMock } = require('react-native-maps');

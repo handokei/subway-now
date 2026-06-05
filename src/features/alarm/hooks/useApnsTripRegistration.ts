@@ -11,11 +11,11 @@
 import { useEffect, useMemo, useRef } from 'react';
 import * as Notifications from 'expo-notifications';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { Station } from '../../../types/station';
-import type { Route } from '../../../utils/stationRoute';
-import { routeSignature, getStationById } from '../../../utils/stationRoute';
+import type { Station } from '../../../shared/types/station';
+import type { Route } from '../../route/utils/stationRoute';
+import { routeSignature, getStationById } from '../../route/utils/stationRoute';
 import { registerActiveTrip, clearActiveTrip, type AlarmBoardingLock } from '../api/alarmBackend';
-import { routeToWaypoints } from '../../../utils/routeWaypoints';
+import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import { buildBoardingLockMeta } from '../utils/buildBoardingLockMeta';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../shared/constants/boardingLock';

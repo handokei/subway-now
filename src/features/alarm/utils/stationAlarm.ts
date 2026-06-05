@@ -1,7 +1,7 @@
-import type { Route } from '../../../utils/stationRoute';
-import { isSameStationName } from '../../../utils/stationRoute';
-import type { TravelDirection } from '../../../types/exitSide';
-import type { LineNumber } from '../../../types/station';
+import type { Route } from '../../route/utils/stationRoute';
+import { isSameStationName } from '../../route/utils/stationRoute';
+import type { TravelDirection } from '../../route/types/exitSide';
+import type { LineNumber } from '../../../shared/types/station';
 import { ALARM_PHASES, type AlarmContext, type AlarmPhase, type AlarmPhaseId } from './alarmPhases';
 
 export type AlarmType = 'destination' | 'transfer';

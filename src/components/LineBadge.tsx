@@ -2,7 +2,7 @@ import React from 'react';
 import { View, Text } from 'react-native';
 import { typography } from '../shared/theme';
 import { LINE_COLORS, LINE_NAMES } from '../shared/constants/lineColors';
-import type { LineNumber } from '../types/station';
+import type { LineNumber } from '../shared/types/station';
 
 interface LineBadgeProps {
   line: string;

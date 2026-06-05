@@ -5,8 +5,8 @@ import {
   type UseBoardingLockControllerInputs,
 } from '../useBoardingLockController';
 import { useBoardingLockStore } from '../../store/useBoardingLockStore';
-import type { ArrivalInfo, StationArrival } from '../../../../api/arrivalApi';
-import type { Station } from '../../../../types/station';
+import type { ArrivalInfo, StationArrival } from '../../../arrival/api/arrivalApi';
+import type { Station } from '../../../../shared/types/station';
 import type { BoardingLock } from '../../types/boardingLock';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 
@@ -21,12 +21,12 @@ jest.mock('../../utils/boardingLockStorage', () => ({
 }));
 
 const mockResolveTripDirection = jest.fn();
-jest.mock('../../../../utils/tripDirection', () => ({
+jest.mock('../../../route/utils/tripDirection', () => ({
   resolveTripDirection: (...args: unknown[]) => mockResolveTripDirection(...args),
 }));
 
 const mockFindStationByNameAndLine = jest.fn();
-jest.mock('../../../../utils/stationLookup', () => ({
+jest.mock('../../../nearest-station/utils/stationLookup', () => ({
   findStationByNameAndLine: (...args: unknown[]) => mockFindStationByNameAndLine(...args),
 }));
 

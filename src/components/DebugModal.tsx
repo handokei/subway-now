@@ -15,8 +15,8 @@ import { useAppStore } from '../store/useAppStore';
 import { isDebugModalEnabled } from '../shared/constants/debugFlags';
 import type { GpsActiveState } from '../shared/constants/gpsStatus';
 import { formatClockTimeWithSeconds } from '../utils/formatTime';
-import { useFusedNearestStation } from '../hooks/useFusedNearestStation';
-import { useArrivalInfo } from '../hooks/useArrivalInfo';
+import { useFusedNearestStation } from '../features/nearest-station/hooks/useFusedNearestStation';
+import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
 import {
   useSilentPushDiagnostics,
   type SilentPushDiagnostics,
@@ -34,14 +34,14 @@ import {
   getFusionDebugEntries,
   subscribeFusionDebug,
   type FusionDebugEntry,
-} from '../utils/fusionDebugBuffer';
+} from '../features/nearest-station/utils/fusionDebugBuffer';
 import {
   dumpScheduledNotifications,
   formatScheduledNotificationLine,
   type ScheduledNotificationDumpEntry,
 } from '../features/alarm/utils/scheduledNotificationsDump';
-import type { FusionConfidence, FusionSource } from '../utils/pickFusedStation';
-import type { NearestStationResult } from '../types/station';
+import type { FusionConfidence, FusionSource } from '../features/nearest-station/utils/pickFusedStation';
+import type { NearestStationResult } from '../shared/types/station';
 import { useTheme, spacing, radius, typography } from '../shared/theme';
 
 function formatTime(ts: number): string {

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { BoardingLock } from '../types/boardingLock';
-import type { Station } from '../../../types/station';
+import type { Station } from '../../../shared/types/station';
 import {
   ARRIVAL_PROXIMITY_THRESHOLD_M,
   AUTO_RELEASE_GRACE_MS,

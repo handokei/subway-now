@@ -1,8 +1,8 @@
 import type { AlarmEvent } from './stationAlarm';
-import type { Route } from '../../../utils/stationRoute';
-import { isSameStationName } from '../../../utils/stationRoute';
-import type { TravelDirection } from '../../../types/exitSide';
-import { resolveTravelDirection } from '../../../utils/travelDirection';
+import type { Route } from '../../route/utils/stationRoute';
+import { isSameStationName } from '../../route/utils/stationRoute';
+import type { TravelDirection } from '../../route/types/exitSide';
+import { resolveTravelDirection } from '../../route/utils/travelDirection';
 
 interface ResolveAlarmDirectionInput {
   route: NonNullable<Route>;

@@ -43,7 +43,7 @@ import {
 } from '../alarmLog';
 import { ALARM_LOG_KEY } from '../../../../shared/constants/storageKeys';
 import type { AlarmEvent } from '../stationAlarm';
-import type { Station } from '../../../../types/station';
+import type { Station } from '../../../../shared/types/station';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),

@@ -1,5 +1,5 @@
-import type { Station, NearestStationResult } from '../../../../types/station';
-import type { Route, DirectRoute } from '../../../../utils/stationRoute';
+import type { Station, NearestStationResult } from '../../../../shared/types/station';
+import type { Route, DirectRoute } from '../../../route/utils/stationRoute';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,
@@ -8,7 +8,7 @@ import {
 import type { AlarmEvent } from '../stationAlarm';
 
 const mockFindNearestStation = jest.fn();
-jest.mock('../../../../utils/findNearestStation', () => ({
+jest.mock('../../../nearest-station/utils/findNearestStation', () => ({
   findNearestStation: (...args: unknown[]) => mockFindNearestStation(...args),
 }));
 
@@ -17,7 +17,7 @@ const mockCalculateStaticETA = jest.fn();
 const mockUpdateRouteFromPosition = jest.fn();
 const mockIsStationOnRoute = jest.fn();
 const mockIsSameStationName = jest.fn((a: string, b: string) => a === b);
-jest.mock('../../../../utils/stationRoute', () => ({
+jest.mock('../../../route/utils/stationRoute', () => ({
   findRoute: (...args: unknown[]) => mockFindRoute(...args),
   calculateStaticETA: (...args: unknown[]) => mockCalculateStaticETA(...args),
   updateRouteFromPosition: (...args: unknown[]) => mockUpdateRouteFromPosition(...args),

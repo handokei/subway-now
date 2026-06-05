@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import type { BoardingLock } from '../types/boardingLock';
-import type { Route } from '../../../utils/stationRoute';
+import type { Route } from '../../route/utils/stationRoute';
 import {
   cancelAllHopsForLock,
   routeSignature,

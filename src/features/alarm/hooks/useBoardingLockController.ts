@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
-import { resolveTripDirection } from '../../../utils/tripDirection';
-import { findStationByNameAndLine } from '../../../utils/stationLookup';
-import type { ArrivalInfo, StationArrival } from '../../../api/arrivalApi';
-import type { Route } from '../../../utils/stationRoute';
-import type { Station } from '../../../types/station';
+import { resolveTripDirection } from '../../route/utils/tripDirection';
+import { findStationByNameAndLine } from '../../nearest-station/utils/stationLookup';
+import type { ArrivalInfo, StationArrival } from '../../arrival/api/arrivalApi';
+import type { Route } from '../../route/utils/stationRoute';
+import type { Station } from '../../../shared/types/station';
 import type { BoardingLock } from '../types/boardingLock';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../../../shared/constants/boardingLock';
 

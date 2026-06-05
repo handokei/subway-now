@@ -1,7 +1,7 @@
 // theme.ts — 디자인 토큰 (라이트/다크)
 // 앱 전체에서 import하여 사용. 색/폰트/간격을 한 곳에서 관리.
 
-import type { LineNumber } from '../../types/station';
+import type { LineNumber } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
 
 // 테마 불변 토큰

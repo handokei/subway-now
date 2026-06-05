@@ -1,5 +1,5 @@
 import { saveStationToWidget, clearWidgetStation } from '../widgetStorage.web';
-import { Station } from '../../types/station';
+import { Station } from '../../shared/types/station';
 
 const mockStation: Station = {
   id: '2-001',

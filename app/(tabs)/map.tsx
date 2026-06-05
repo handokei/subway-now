@@ -4,25 +4,25 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useTranslation } from 'react-i18next';
 import { router, useFocusEffect } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useNearestStation } from '../../src/hooks/useNearestStation';
+import { useNearestStation } from '../../src/features/nearest-station/hooks/useNearestStation';
 import { StationMap } from '../../src/components/StationMap';
 import { MapSearchBar } from '../../src/components/MapSearchBar';
 import { LocationStateView } from '../../src/components/LocationStateView';
-import { StatusChip } from '../../src/components/StatusChip';
+import { StatusChip } from '../../src/features/arrival/components/StatusChip';
 import stationsData from '../../src/data/stations.json';
 import { useTheme, spacing, radius } from '../../src/shared/theme';
 import { useAppStore } from '../../src/store/useAppStore';
 import { LineBadge } from '../../src/components/LineBadge';
-import { getStationDisplayName } from '../../src/utils/stationDisplay';
-import { routeToCoordinates, type RouteCoordinatePath } from '../../src/utils/routeToCoordinates';
-import type { Route } from '../../src/utils/stationRoute';
+import { getStationDisplayName } from '../../src/features/nearest-station/utils/stationDisplay';
+import { routeToCoordinates, type RouteCoordinatePath } from '../../src/features/route/utils/routeToCoordinates';
+import type { Route } from '../../src/features/route/utils/stationRoute';
 import { ROUTE_KEY } from '../../src/shared/constants/storageKeys';
 import {
   FAVORITE_SLOT_ICONS,
   FAVORITE_SLOT_ROLES,
   type FavoriteSlotRole,
   type Station,
-} from '../../src/types/station';
+} from '../../src/shared/types/station';
 
 export default function MapScreen() {
   const { userLocation, result, loading, error, permissionDenied, refresh, accuracyMeters, locationUncertain } =

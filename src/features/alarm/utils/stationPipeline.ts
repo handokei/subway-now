@@ -1,8 +1,8 @@
-import { findNearestStation } from '../../../utils/findNearestStation';
-import { findRoute, calculateStaticETA, isSameStationName, isStationOnRoute, updateRouteFromPosition } from '../../../utils/stationRoute';
+import { findNearestStation } from '../../nearest-station/utils/findNearestStation';
+import { findRoute, calculateStaticETA, isSameStationName, isStationOnRoute, updateRouteFromPosition } from '../../route/utils/stationRoute';
 import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
 import { sendAlarmNotification, sendStationPassedNotification, updateStationNotification } from './stationNotification';
-import { distanceMetersBetween, estimateEtaSeconds } from '../../../utils/stationEta';
+import { distanceMetersBetween, estimateEtaSeconds } from '../../arrival/utils/stationEta';
 import { advanceHopWindow } from './boardingLockScheduler';
 import { getBoardingLock } from './boardingLockStorage';
 import { getLastNotifiedStationId, setLastNotifiedStationId } from './notificationState';
@@ -19,10 +19,10 @@ import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
 import { evaluateDismissSilence } from './dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from './dismissSilenceStorage';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
-import type { LineNumber, NearestStationResult, Station } from '../../../types/station';
-import type { Route } from '../../../utils/stationRoute';
+import type { LineNumber, NearestStationResult, Station } from '../../../shared/types/station';
+import type { Route } from '../../route/utils/stationRoute';
 import type { AlarmEvent } from './stationAlarm';
-import type { FusionSource } from '../../../utils/pickFusedStation';
+import type { FusionSource } from '../../nearest-station/utils/pickFusedStation';
 import { resolveNotificationSource } from './notificationSource';
 
 export interface NextTarget {

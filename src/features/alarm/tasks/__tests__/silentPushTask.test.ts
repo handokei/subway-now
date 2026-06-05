@@ -77,7 +77,7 @@ jest.mock('../../api/alarmBackend', () => ({
 
 // #728 — motionActivity 신호. 기본 false (=== "stationary 아님"), 특정 테스트에서만 true로 override.
 const mockGetMotionStationary = jest.fn(() => false);
-jest.mock('../../../../utils/motionActivity', () => ({
+jest.mock('../../../nearest-station/utils/motionActivity', () => ({
   getCurrentMotionStationary: () => mockGetMotionStationary(),
 }));
 
@@ -95,7 +95,7 @@ jest.mock('../../utils/dismissSilenceStorage', () => ({
 
 const mockFindStationByNameAndLine = jest.fn();
 const mockFindStationByName = jest.fn();
-jest.mock('../../../../utils/stationLookup', () => ({
+jest.mock('../../../nearest-station/utils/stationLookup', () => ({
   findStationByNameAndLine: (...args: unknown[]) => mockFindStationByNameAndLine(...args),
   findStationByName: (...args: unknown[]) => mockFindStationByName(...args),
 }));

@@ -14,7 +14,7 @@ const mockStart = jest.fn();
 const mockStop = jest.fn();
 const mockGet = jest.fn();
 
-jest.mock('../../utils/motionActivity', () => ({
+jest.mock('../../features/nearest-station/utils/motionActivity', () => ({
   isMotionActivitySupported: () => mockSupported(),
   requestMotionActivityPermission: () => mockRequest(),
   startMotionActivityUpdates: () => mockStart(),

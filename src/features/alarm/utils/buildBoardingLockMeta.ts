@@ -1,10 +1,10 @@
 import type { BoardingLock } from '../types/boardingLock';
 import { BOARDING_LOCK_EXPIRY_FACTOR } from '../types/boardingLock';
-import type { Route } from '../../../utils/stationRoute';
-import { getStationsOnLine, findStationByNameAndLine } from '../../../utils/stationRoute';
+import type { Route } from '../../route/utils/stationRoute';
+import { getStationsOnLine, findStationByNameAndLine } from '../../route/utils/stationRoute';
 import { lineToSubwayId } from '../../../shared/constants/lineApiNames';
-import type { Station } from '../../../types/station';
-import type { LineNumber } from '../../../types/station';
+import type { Station } from '../../../shared/types/station';
+import type { LineNumber } from '../../../shared/types/station';
 import type { AlarmBoardingLock } from '../api/alarmBackend';
 import { isScheduleFallbackTrainCode } from './scheduleFallback';
 import { createLogger } from '../../../utils/logger';

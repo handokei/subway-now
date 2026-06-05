@@ -10,7 +10,7 @@ import {
   sendStationPassedNotification,
   buildAlarmContent,
 } from '../stationNotification';
-import { Station } from '../../../../types/station';
+import { Station } from '../../../../shared/types/station';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,

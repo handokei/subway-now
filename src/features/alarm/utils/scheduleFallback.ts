@@ -1,5 +1,5 @@
-import type { LineNumber } from '../../../types/station';
-import type { ArrivalInfo, StationArrival } from '../../../api/arrivalApi';
+import type { LineNumber } from '../../../shared/types/station';
+import type { ArrivalInfo, StationArrival } from '../../arrival/api/arrivalApi';
 import headways from '../../../data/lineHeadways.json';
 import terminals from '../../../data/lineTerminals.json';
 import line1Timetable from '../../../data/timetables/line-1.json';

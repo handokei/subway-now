@@ -8,18 +8,18 @@ import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
 } from '../../utils/notificationCategory';
-import * as positionUpload from '../../../../api/positionUpload';
+import * as positionUpload from '../../../nearest-station/api/positionUpload';
 import { renderHook } from '@testing-library/react-native';
-import type { StationArrival } from '../../../../api/arrivalApi';
+import type { StationArrival } from '../../../arrival/api/arrivalApi';
 
 jest.mock('expo-notifications', () => ({
   addNotificationResponseReceivedListener: jest.fn(),
   DEFAULT_ACTION_IDENTIFIER: '$default',
 }));
-jest.mock('../../../../api/positionUpload', () => ({
+jest.mock('../../../nearest-station/api/positionUpload', () => ({
   dismissBoardingPrompt: jest.fn(),
 }));
-jest.mock('../../../../utils/stationLookup', () => ({
+jest.mock('../../../nearest-station/utils/stationLookup', () => ({
   findStationByNameAndLine: jest.fn(),
 }));
 jest.mock('../../../../utils/logger', () => ({
@@ -48,7 +48,7 @@ jest.mock('../../store/useBoardingLockStore', () => {
   };
 });
 
-const { findStationByNameAndLine } = jest.requireMock('../../../../utils/stationLookup');
+const { findStationByNameAndLine } = jest.requireMock('../../../nearest-station/utils/stationLookup');
 const { __mockCreateLock: createLockMock } = jest.requireMock(
   '../../store/useBoardingLockStore',
 );

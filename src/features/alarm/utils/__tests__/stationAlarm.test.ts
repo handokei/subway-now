@@ -1,6 +1,6 @@
 import { alarmKey, evaluateAlarmPhase, resolveAllTargets, type AlarmEvent, type AlarmSource } from '../stationAlarm';
-import type { TransferRoute, MultiTransferRoute } from '../../../../utils/stationRoute';
-import type { LineNumber } from '../../../../types/station';
+import type { TransferRoute, MultiTransferRoute } from '../../../route/utils/stationRoute';
+import type { LineNumber } from '../../../../shared/types/station';
 import {
   makeDirectRoute,
   makeMultiTransferRoute as makeMultiTransferRouteFixture,
