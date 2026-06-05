@@ -163,7 +163,7 @@ describe('useBoardingLockAutoRelease', () => {
       rerender(baseInputs({ releaseLock, distanceKm: proximityKm - 0.01 }));
     });
     expect(releaseLock).toHaveBeenCalledTimes(1);
-    expect(mockLoggerInfo).toHaveBeenCalledWith('도착 grace 충족 → lock 자동 release');
+    expect(mockLoggerInfo).toHaveBeenCalledWith('destination grace 충족 → lock 자동 release');
   });
 
   it('grace 만료 후 같은 조건 유지되어도 중복 release 안 함 (ref 리셋되어 새 카운트)', () => {
@@ -243,6 +243,126 @@ describe('useBoardingLockAutoRelease', () => {
     // 사용자가 막 탑승 — 도착 조건 충족하나 첫 진입
     withDateNow(T0 + 100, () => {
       rerender(baseInputs({ releaseLock }));
+    });
+    expect(releaseLock).not.toHaveBeenCalled();
+  });
+
+  // ── #899 (Seam C) — 환승 waypoint 자동 release 분기 ──
+
+  const transferStation: Station = {
+    id: 'transfer-1',
+    name: '왕십리',
+    line: '2',
+    lineColor: '#000',
+    lat: 37.6,
+    lng: 127.0,
+  };
+  const transferRoute = {
+    type: 'transfer' as const,
+    transferName: '왕십리',
+    fromLine: '2' as const,
+    toLine: '5' as const,
+    stopsToTransfer: 3,
+    stopsFromTransfer: 4,
+    secondsToTransfer: 360,
+    secondsFromTransfer: 480,
+  };
+
+  it('환승 leg waypoint 도달 + proximity → grace 후 release', () => {
+    const releaseLock = jest.fn();
+    const inputs = baseInputs({
+      releaseLock,
+      currentStation: transferStation,
+      route: transferRoute,
+    });
+    const { rerender } = mountAtT0(inputs);
+    withDateNow(T0 + AUTO_RELEASE_GRACE_MS, () => {
+      rerender({ ...inputs, distanceKm: proximityKm - 0.01 });
+    });
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+    expect(mockLoggerInfo).toHaveBeenCalledWith('transfer grace 충족 → lock 자동 release');
+  });
+
+  it('route=null이면 환승 분기 불가 — 비목적지에서 release 안 함', () => {
+    const releaseLock = jest.fn();
+    const inputs = baseInputs({
+      releaseLock,
+      currentStation: transferStation,
+      route: null,
+    });
+    const { rerender } = mountAtT0(inputs);
+    withDateNow(T0 + AUTO_RELEASE_GRACE_MS, () => {
+      rerender({ ...inputs, distanceKm: proximityKm - 0.01 });
+    });
+    expect(releaseLock).not.toHaveBeenCalled();
+  });
+
+  it('환승 leg fromLine과 lock.boardingLine 불일치면 release 안 함 (동명이역 회피)', () => {
+    const releaseLock = jest.fn();
+    const wrongLine = { ...transferRoute, fromLine: '5' as const };
+    const inputs = baseInputs({
+      releaseLock,
+      currentStation: transferStation,
+      route: wrongLine,
+    });
+    const { rerender } = mountAtT0(inputs);
+    withDateNow(T0 + AUTO_RELEASE_GRACE_MS, () => {
+      rerender({ ...inputs, distanceKm: proximityKm - 0.01 });
+    });
+    expect(releaseLock).not.toHaveBeenCalled();
+  });
+
+  it('multi-transfer route — 첫 환승역 매칭 시에도 release', () => {
+    const releaseLock = jest.fn();
+    const multiRoute = {
+      type: 'multi-transfer' as const,
+      transfers: [
+        {
+          transferName: '왕십리',
+          fromLine: '2' as const,
+          toLine: '5' as const,
+          stopsToTransfer: 3,
+          secondsToTransfer: 360,
+        },
+        {
+          transferName: '광화문',
+          fromLine: '5' as const,
+          toLine: '3' as const,
+          stopsToTransfer: 2,
+          secondsToTransfer: 240,
+        },
+      ],
+      stopsAfterLastTransfer: 4,
+      secondsAfterLastTransfer: 480,
+    };
+    const inputs = baseInputs({
+      releaseLock,
+      currentStation: transferStation,
+      route: multiRoute,
+    });
+    const { rerender } = mountAtT0(inputs);
+    withDateNow(T0 + AUTO_RELEASE_GRACE_MS, () => {
+      rerender({ ...inputs, distanceKm: proximityKm - 0.01 });
+    });
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('direct route는 transfer 분기 없음 — 비목적지에서 release 안 함', () => {
+    const releaseLock = jest.fn();
+    const directRoute = {
+      type: 'direct' as const,
+      stops: 5,
+      line: '2' as const,
+      travelSeconds: 600,
+    };
+    const inputs = baseInputs({
+      releaseLock,
+      currentStation: transferStation,
+      route: directRoute,
+    });
+    const { rerender } = mountAtT0(inputs);
+    withDateNow(T0 + AUTO_RELEASE_GRACE_MS, () => {
+      rerender({ ...inputs, distanceKm: proximityKm - 0.01 });
     });
     expect(releaseLock).not.toHaveBeenCalled();
   });

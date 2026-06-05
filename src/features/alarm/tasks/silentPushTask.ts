@@ -46,6 +46,7 @@ import {
   type AlarmLogReason,
 } from '../utils/alarmLog';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
+import { setTripEndedSentinel } from '../utils/tripEndedSentinel';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from '../utils/dismissSilenceStorage';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
@@ -447,6 +448,9 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         receivedAt,
       });
       await runTripBoundCleanups();
+      // #899 (Seam C) — BG에서는 zustand store에 접근 불가. FG 복귀 시점에
+      // useStateRehydration이 이 sentinel을 보고 destination/lock store도 reset.
+      await setTripEndedSentinel(receivedAt);
       ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}`);
       return;
     }

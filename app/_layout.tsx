@@ -24,6 +24,7 @@ import { unregisterAlarmRefreshTask } from '../src/features/alarm/tasks/alarmRef
 import { stopVibration } from '../src/features/alarm/utils/alarmSound';
 import { setupBoardingPromptCategory } from '../src/features/alarm/utils/notificationCategory';
 import { useBoardingPromptResponder } from '../src/features/alarm/hooks/useBoardingPromptResponder';
+import { useStateRehydration } from '../src/shared/hooks/useStateRehydration';
 import { fetchArrivalInfo } from '../src/features/arrival/api/arrivalApi';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../src/shared/constants/boardingLock';
 
@@ -83,6 +84,11 @@ function RootContent() {
     destinationId,
     expectedDurationMs: FALLBACK_BOARDING_DURATION_MINUTES * 60_000,
   });
+
+  // #899 (Seam C) — trip-bound 상태 단일 hydration seam. AppState 'active' 진입 시
+  // destination/customOrigin/tripOrigin/lock을 storage에서 재수화하고, BG silent push가
+  // trip-ended sentinel을 남겼다면 destination/lock store를 reset해 stale UI를 차단.
+  useStateRehydration();
 
   useEffect(() => {
     loadLocalePreference();
