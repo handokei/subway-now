@@ -679,24 +679,9 @@ export function useStationAlarm({
         return;
       }
 
-      // #746 — dismiss silence 게이트. station-passed 카테고리도 동일 정책으로 차단.
+      // #746 — dismiss silence 게이트 + dispatch는 helper로 통합 (Sonar cpd 회피).
       // userLocation 없이도 시간 조건만 평가 가능 — null 좌표 그대로 전달.
-      const silenceGate = applySilenceGate(
-        dismissSilence,
-        Date.now(),
-        userLocation,
-        clearDismissSilenceAction,
-      );
-      if (silenceGate.silenced) {
-        logSuppressedDismissSilence({
-          source: 'fg',
-          stationName: candidateStation.name,
-          kind: 'station-passed',
-        });
-        return;
-      }
-
-      void dispatchStationPassed({
+      void runSilenceGateAndDispatch({
         source: 'fg',
         candidateStation,
         capturedRoute,
@@ -704,6 +689,9 @@ export function useStationAlarm({
         notificationSource,
         isCancelled: () => cancelled,
         errorLogPrefix: '역 통과 알림 실패:',
+        dismissSilence,
+        userLocation,
+        clearDismissSilenceAction,
       });
     }
 
@@ -766,24 +754,9 @@ export function useStationAlarm({
       const signal = findFgArvlCdFireSignal(currentStationArrival, lock);
       if (!signal) return;
 
-      // #746 dismiss silence — 사용자 명시 정책 우선.
-      const silenceGate = applySilenceGate(
-        dismissSilence,
-        Date.now(),
-        userLocation,
-        clearDismissSilenceAction,
-      );
-      if (silenceGate.silenced) {
-        logSuppressedDismissSilence({
-          source: 'fg-arvlcd',
-          stationName: candidateStation.name,
-          kind: 'station-passed',
-        });
-        return;
-      }
-
       // #727/#728/#733 — 정적 misfire 가드. arvlCd 신호가 강해도 정적 사용자(speed=0) 발사는
       // 잘못된 trainCode lock 케이스 (fusion이 통과 열차를 momentary adopt)에서 위험.
+      // movement gate는 silence gate보다 먼저 평가 — 정적 사용자면 silence 만료 부수효과도 불필요.
       if (movementSuppressionReason) {
         logSuppressedMovement({
           source: 'fg-arvlcd',
@@ -794,8 +767,9 @@ export function useStationAlarm({
         return;
       }
 
+      // #746 silence gate + dispatch는 helper로 통합 (Sonar cpd 회피).
       // lastNotifiedStationId 공유 dedup. cancelled 재확인 — getBoardingLock 후 effect cleanup 가능.
-      await dispatchStationPassed({
+      await runSilenceGateAndDispatch({
         source: 'fg-arvlcd',
         candidateStation,
         capturedRoute,
@@ -803,6 +777,9 @@ export function useStationAlarm({
         notificationSource,
         isCancelled: () => cancelled,
         errorLogPrefix: 'FG arvlCd fast-path 알림 실패:',
+        dismissSilence,
+        userLocation,
+        clearDismissSilenceAction,
       });
     })();
 
