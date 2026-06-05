@@ -1,9 +1,11 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import { ALARM_PHASES, type AlarmPhaseId } from './alarmPhases';
-import { alarmKey, type AlarmEvent } from './stationAlarm';
+import { alarmKey, resolveAllTargets, type AlarmEvent } from './stationAlarm';
 import { buildAlarmContent } from './stationNotification';
 import type { AlarmType } from '../../../shared/types/alarm';
+import { isSameStationName, type Route } from '../../../shared/utils/stationRoute';
+import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('TripBoundScheduler');
@@ -169,6 +171,60 @@ export function tripBoundAlarmIdentifier(
   event: Pick<AlarmEvent, 'phaseId' | 'stationName'>,
 ): string {
   return `${TRIP_BOUND_ALARM_PREFIX}${alarmKey(event)}`;
+}
+
+/**
+ * #918 (caller-side helper): `route` + `destinationName`에서 prescheduleStationAlerts에 넘길
+ * `routeStops` + `estimatedHopTimesMs`를 만든다.
+ *
+ * **계약**: routeStops는 *waypoint 단위*(transfer + destination만). 각 hop의 hopMs는 직전
+ * waypoint→현 waypoint 전체 leg 시간(`legSeconds * 1000`). preschedule은 cumulative hop으로
+ * fire 시각을 계산하므로 destination 알람은 boardedAt + 전체 trip 시간 - 10s에 발사된다.
+ * (legSeconds/legStops 평균 X — 그 값은 station-level 시퀀스용이고 본 helper는 waypoint-level.
+ *  self code-review에서 평균치 누적 시 imminent가 leg 1/legStops 위치에서 발사되는 회귀 식별.)
+ *
+ * - legSeconds≤0/NaN/Infinity 가드: HOP_TIME_MS fallback. 사용자에게 노출되는 알람 시각이
+ *   NaN으로 OS 큐에 들어가는 회귀를 caller-side에서 차단(scheduler 본체의 `Number.isFinite`
+ *   가드와 이중 안전).
+ * - route=null 또는 destinationName=null이면 빈 배열 — 호출자(hook)는 cancel만 수행하고 schedule skip.
+ */
+export function deriveTripBoundStops(
+  route: Route,
+  destinationName: string | null,
+): { routeStops: TripBoundStop[]; estimatedHopTimesMs: number[] } {
+  if (!route || !destinationName) {
+    return { routeStops: [], estimatedHopTimesMs: [] };
+  }
+  const targets = resolveAllTargets(route, destinationName);
+  const routeStops: TripBoundStop[] = targets.map((t) => ({
+    stationName: t.name,
+    alarmType: t.alarmType,
+  }));
+  const estimatedHopTimesMs: number[] = targets.map((t, i) => {
+    const legSeconds = legSecondsForHop(route, i, t.name);
+    const legMs = legSeconds * 1000;
+    if (!Number.isFinite(legMs) || legMs <= 0) return HOP_TIME_MS;
+    return legMs;
+  });
+  return { routeStops, estimatedHopTimesMs };
+}
+
+/**
+ * hopIndex / target name으로 route의 leg seconds 필드를 선택. boardingLockScheduler.legSecondsAt
+ * 와 동일한 매핑(resolveAllTargets와 1:1 정렬). 두 곳을 합치는 SSOT 통합은 별도 PR.
+ */
+function legSecondsForHop(
+  route: NonNullable<Route>,
+  hopIndex: number,
+  targetName: string,
+): number {
+  if (route.type === 'direct') return route.travelSeconds;
+  if (route.type === 'transfer') {
+    if (isSameStationName(route.transferName, targetName)) return route.secondsToTransfer;
+    return route.secondsFromTransfer;
+  }
+  if (hopIndex < route.transfers.length) return route.transfers[hopIndex].secondsToTransfer;
+  return route.secondsAfterLastTransfer;
 }
 
 /**

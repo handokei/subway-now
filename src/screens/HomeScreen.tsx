@@ -42,6 +42,7 @@ import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide'
 import { useArrivalAutoClear } from '../features/arrival/hooks/useArrivalAutoClear';
 import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLockController';
 import { useBoardingLockScheduler } from '../features/alarm/hooks/useBoardingLockScheduler';
+import { useTripBoundAlarmScheduler } from '../features/alarm/hooks/useTripBoundAlarmScheduler';
 import { useBoardingLockAdvancer } from '../features/alarm/hooks/useBoardingLockAdvancer';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
 import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
@@ -278,6 +279,14 @@ export default function HomeScreen() {
     onAutoLockCandidate: hydrateLockFromCandidate,
   });
   useBoardingLockScheduler({
+    lock: boardingLock,
+    route,
+    destinationName: destination?.name ?? null,
+  });
+  // #918 (A3 후속 wire) — boarding lock + route + destination이 모두 갖춰지면 OS local notification에
+  // 사전 예약. 네트워크 0 환경에서 silent push가 못 가는 trip의 fallback alarm 경로. `bl:` prefix와
+  // 분리된 `tba:` prefix를 사용해 lock-scheduler 큐와 충돌 없이 공존한다.
+  useTripBoundAlarmScheduler({
     lock: boardingLock,
     route,
     destinationName: destination?.name ?? null,
