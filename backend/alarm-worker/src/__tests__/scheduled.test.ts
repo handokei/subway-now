@@ -4,10 +4,15 @@ import { resetApnsJwtCache, type ApnsConfig } from '../apns';
 import { DRIFT_WARNING_THRESHOLD_KMH, R_LOW, readKalmanState, type KalmanState } from '../kalmanFilter';
 import type { WindowedMetrics } from '../positionSeries';
 import {
+  ARVLCD_FIRE_DEDUP_TTL_SEC,
+  ARVLCD_FIRE_KEY_PREFIX,
   MAX_CONSECUTIVE_ETA_MISSING,
   RESCHEDULE_THRESHOLD_MS,
   SUBSURFACE_ETA_MISSING_TOLERANCE,
+  arvlCdFireKey,
   estimateArrivalFromPosition,
+  estimateBoardingLockArrival,
+  evaluateArvlCdFireGate,
   flipApnsEnv,
   maybeCountDrift,
   pickActiveWaypoint,
@@ -20,7 +25,7 @@ import {
 } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
-import type { BoardingLockMeta, Env, Trip } from '../types';
+import type { BoardingLockMeta, Env, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
 let apnsConfig: ApnsConfig;
@@ -3116,5 +3121,536 @@ describe('runScheduled — #916 A1 auto-lock', () => {
 
     const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
     expect(stored.boardingLock?.trainCode).toBe('USER-Y');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #917 A2 — arvlCd∈{0,1} 매역 알림 1차 source. backend cron이 lock된 trainCode를
+// realtimeArrivalList에서 추적해 next waypoint에서 ARRIVED/ENTERING 첫 관찰 시
+// station-passed silent push를 발사. dedup KV로 같은 신호 중복 차단.
+// ---------------------------------------------------------------------------
+
+describe('arvlCdFireKey / ARVLCD_FIRE_KEY_PREFIX (#917 A2)', () => {
+  it('prefix는 arvlcd-fire:', () => {
+    expect(ARVLCD_FIRE_KEY_PREFIX).toBe('arvlcd-fire:');
+  });
+
+  it('key는 token|trainCode|station|arvlCd 조합 — arvlCd 0과 1을 별 entry로 분리', () => {
+    expect(arvlCdFireKey('tok1', '7246', '중곡', 0)).toBe('arvlcd-fire:tok1|7246|중곡|0');
+    expect(arvlCdFireKey('tok1', '7246', '중곡', 1)).toBe('arvlcd-fire:tok1|7246|중곡|1');
+    expect(arvlCdFireKey('tok1', '7246', '중곡', 0)).not.toBe(arvlCdFireKey('tok1', '7246', '중곡', 1));
+  });
+
+  it('token이 다르면 다른 key — 같은 train 다른 trip이 서로 silence하지 않음 (cross-trip leak 차단)', () => {
+    // 두 사용자가 같은 train(5025) 탄 채 같은 역(강남) 도착 시 각 trip별 dedup entry.
+    expect(arvlCdFireKey('tokA', '5025', '강남', 1)).not.toBe(arvlCdFireKey('tokB', '5025', '강남', 1));
+  });
+
+  it('dedup TTL은 1시간 (60s × 60)', () => {
+    expect(ARVLCD_FIRE_DEDUP_TTL_SEC).toBe(60 * 60);
+  });
+});
+
+describe('evaluateArvlCdFireGate (#917 A2 prereq guard)', () => {
+  const activeLock: BoardingLockMeta = {
+    trainCode: '7246',
+    line: '7',
+    subwayId: '1007',
+    selectedDepartureTime: NOW,
+    segmentStations: ['용마산', '중곡'],
+    expiresAt: NOW + 60 * 60_000,
+  };
+
+  it('lock 활성 + arvlCd=1(ARRIVED) → fire', () => {
+    expect(evaluateArvlCdFireGate(activeLock, 1, NOW)).toBe('fire');
+  });
+
+  it('lock 활성 + arvlCd=0(ENTERING) → fire', () => {
+    expect(evaluateArvlCdFireGate(activeLock, 0, NOW)).toBe('fire');
+  });
+
+  it('#640 회귀 — lock undefined → mismatch (push X)', () => {
+    expect(evaluateArvlCdFireGate(undefined, 1, NOW)).toBe('mismatch');
+  });
+
+  it('#640 회귀 — lock 만료 → mismatch (push X)', () => {
+    const expired = { ...activeLock, expiresAt: NOW - 1 };
+    expect(evaluateArvlCdFireGate(expired, 1, NOW)).toBe('mismatch');
+  });
+
+  it('positions-fallback (arvlCd=null) → mismatch (push X)', () => {
+    expect(evaluateArvlCdFireGate(activeLock, null, NOW)).toBe('mismatch');
+  });
+
+  it('arvlCd=2(DEPARTED) 등 비-매역 신호 → mismatch', () => {
+    expect(evaluateArvlCdFireGate(activeLock, 2, NOW)).toBe('mismatch');
+    expect(evaluateArvlCdFireGate(activeLock, 4, NOW)).toBe('mismatch');
+    expect(evaluateArvlCdFireGate(activeLock, 5, NOW)).toBe('mismatch');
+    expect(evaluateArvlCdFireGate(activeLock, 99, NOW)).toBe('mismatch');
+  });
+});
+
+describe('estimateBoardingLockArrival arvlCd exposure (#917 A2)', () => {
+  const lock: BoardingLockMeta = {
+    trainCode: '7246',
+    line: '7',
+    subwayId: '1007',
+    selectedDepartureTime: NOW,
+    segmentStations: ['용마산', '중곡', '군자'],
+    expiresAt: NOW + 60 * 60_000,
+  };
+  const waypoint: Waypoint = { stationName: '중곡', line: '7', kind: 'intermediate' };
+
+  function makeArrivalSeoul(arvlCd: number | null): SeoulArrivalClient {
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            realtimeArrivalList: [
+              {
+                barvlDt: '0',
+                recptnDt: '',
+                updnLine: '상행',
+                trainLineNm: '중곡',
+                btrainNo: '7246',
+                subwayNm: '지하철7호선',
+                arvlCd,
+              },
+            ],
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+  }
+
+  function makeArrivalDeps(seoul: SeoulArrivalClient): ScheduledDeps {
+    return {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+    };
+  }
+
+  it('arrivals 매칭 시 arvlCd=1 노출 (arrived=true)', async () => {
+    const result = await estimateBoardingLockArrival(
+      makeArrivalDeps(makeArrivalSeoul(1)),
+      lock,
+      waypoint,
+      NOW,
+    );
+    expect(result).toEqual({ epoch: NOW, arrived: true, arvlCd: 1 });
+  });
+
+  it('arrivals 매칭 시 arvlCd=0 노출 (arrived=true)', async () => {
+    const result = await estimateBoardingLockArrival(
+      makeArrivalDeps(makeArrivalSeoul(0)),
+      lock,
+      waypoint,
+      NOW,
+    );
+    expect(result).toEqual({ epoch: NOW, arrived: true, arvlCd: 0 });
+  });
+
+  it('arrivals 매칭 + arvlCd=2(DEPARTED) → arrived=false + arvlCd=2 그대로 노출', async () => {
+    const result = await estimateBoardingLockArrival(
+      makeArrivalDeps(makeArrivalSeoul(2)),
+      lock,
+      waypoint,
+      NOW,
+    );
+    expect(result).toEqual({ epoch: NOW, arrived: false, arvlCd: 2 });
+  });
+
+  it('arrivals 매칭 + arvlCd=null → arrived=false + arvlCd=null', async () => {
+    const result = await estimateBoardingLockArrival(
+      makeArrivalDeps(makeArrivalSeoul(null)),
+      lock,
+      waypoint,
+      NOW,
+    );
+    expect(result).toEqual({ epoch: NOW, arrived: false, arvlCd: null });
+  });
+
+  it('positions-fallback → arvlCd=null (sttus 신호는 매역 SSOT 아님)', async () => {
+    // arrivals 빈 응답 + positions에 lock.trainCode 매칭 → fallback 경로 진입.
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async (url: string) => {
+        if (url.includes('/realtimePosition/')) {
+          return new Response(
+            JSON.stringify({
+              realtimePositionList: [
+                { trainNo: '7246', statnNm: '중곡', trainSttus: 1, updnLine: '상행', lastRecptnDt: '' },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    const result = await estimateBoardingLockArrival(makeArrivalDeps(seoul), lock, waypoint, NOW);
+    // arrived=true (sttus=ARRIVED + station match)지만 arvlCd=null (positions 경로 명시)
+    expect(result?.arvlCd).toBeNull();
+    expect(result?.arrived).toBe(true);
+  });
+});
+
+describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
+  function makeLock(overrides: Partial<BoardingLockMeta> = {}): BoardingLockMeta {
+    return {
+      trainCode: '7246',
+      line: '7',
+      subwayId: '1007',
+      selectedDepartureTime: NOW,
+      segmentStations: ['용마산', '중곡', '군자'],
+      expiresAt: NOW + 60 * 60_000,
+      ...overrides,
+    };
+  }
+
+  function makeLockTrip(overrides: Partial<Trip> = {}): Trip {
+    return makeTrip({
+      token: 'arvl-tok',
+      route: { type: 'direct', line: '7', stops: 2 },
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate' },
+        { stationName: '군자', line: '7', kind: 'destination' },
+      ],
+      boardingLock: makeLock(),
+      ...overrides,
+    });
+  }
+
+  /** arrivals + positions URL 분기 + lock.trainCode 매칭 응답 builder. */
+  function makeArrivalSeoul(
+    stationName: string,
+    seconds: number,
+    arvlCd: number | null,
+    trainCode = '7246',
+  ): SeoulArrivalClient {
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async () =>
+        new Response(
+          JSON.stringify({
+            realtimeArrivalList: [
+              {
+                barvlDt: String(seconds),
+                recptnDt: '',
+                updnLine: '상행',
+                trainLineNm: stationName,
+                btrainNo: trainCode,
+                subwayNm: '지하철7호선',
+                arvlCd,
+              },
+            ],
+          }),
+          { status: 200 },
+        )) as unknown as typeof fetch,
+    });
+  }
+
+  /** silent push (background, kind=intermediate/destination) 호출만 추출. */
+  function getStationPassedCalls(
+    fetchImpl: ReturnType<typeof vi.fn>,
+  ): [string, RequestInit][] {
+    return (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) => {
+      const headers = (c[1]?.headers ?? {}) as Record<string, string>;
+      if (headers['apns-push-type'] !== 'background') return false;
+      try {
+        const body = JSON.parse(c[1]?.body as string) as {
+          data?: { phase?: string; kind?: string };
+        };
+        // arvlCd fire는 phase=imminent + kind∈{intermediate, destination}.
+        // reschedule push(kind='reschedule')와 trip-ended push(kind='trip-ended')와 구분.
+        return (
+          body?.data?.phase === 'imminent' &&
+          (body?.data?.kind === 'intermediate' || body?.data?.kind === 'destination')
+        );
+      } catch {
+        return false;
+      }
+    });
+  }
+
+  function parseStationPassedData(call: [string, RequestInit]): {
+    nextWaypoint: string;
+    etaSeconds: number;
+    phase: string;
+    kind: string;
+    pushId: string;
+    sentAt: number;
+  } {
+    const body = JSON.parse(call[1].body as string) as {
+      data: {
+        nextWaypoint: string;
+        etaSeconds: number;
+        phase: string;
+        kind: string;
+        pushId: string;
+        sentAt: number;
+      };
+    };
+    return body.data;
+  }
+
+  it('arvlCd=1(ARRIVED) → 매역 push 발사 + stats.arvlCdFireSuccess=1 + dedup KV stamp', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-1',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    expect(stats.arvlCdFireDedup).toBe(0);
+    expect(stats.arvlCdFireMismatch).toBe(0);
+    expect(stats.pushed).toBe(1);
+    const calls = getStationPassedCalls(apnsFetch);
+    expect(calls).toHaveLength(1);
+    const data = parseStationPassedData(calls[0]);
+    expect(data.nextWaypoint).toBe('중곡');
+    expect(data.kind).toBe('intermediate');
+    expect(data.phase).toBe('imminent');
+    expect(data.etaSeconds).toBe(0);
+    expect(data.pushId).toBe('p-arvl-1');
+    expect(data.sentAt).toBe(NOW);
+    // dedup KV stamp 확인 (TTL은 InMemoryKV가 그대로 보관 — expiration 무시)
+    expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 1))).toBe('1');
+  });
+
+  it('arvlCd=0(ENTERING) → 매역 push 발사 (arvlCd=0 dedup key)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('중곡', 0, 0),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-0',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 0))).toBe('1');
+    // arvlCd=1 entry는 아직 stamp 없음 — 0과 1은 분리.
+    expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 1))).toBeNull();
+  });
+
+  it('dedup — 같은 (trainCode, station, arvlCd) 이미 stamp되어 있으면 push 미발사', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    // 이전 cycle에서 같은 신호로 이미 stamp된 상태
+    await kv.put(arvlCdFireKey('arvl-tok', '7246', '중곡', 1), '1');
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-dup',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(0);
+    expect(stats.arvlCdFireDedup).toBe(1);
+    // 매역 push 발사 없음 (waypoint advance LA push 등 다른 경로 push는 별개)
+    expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
+  });
+
+  it('#640 회귀 가드 — positions-fallback arrived(arvlCd=null)은 매역 push 미발사 (mismatch++)', async () => {
+    // arrivals 빈 응답 + positions에 lock.trainCode가 target 역에 ARRIVED.
+    // 호출 흐름: estimate.arrived=true (positions 경로), estimate.arvlCd=null → fire 게이트 차단.
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async (url: string) => {
+        if (url.includes('/realtimePosition/')) {
+          return new Response(
+            JSON.stringify({
+              realtimePositionList: [
+                { trainNo: '7246', statnNm: '중곡', trainSttus: 1, updnLine: '상행', lastRecptnDt: '' },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-pos',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(0);
+    expect(stats.arvlCdFireMismatch).toBe(1);
+    expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
+  });
+
+  it('#640 회귀 가드 — lock 부재 trip은 lockMissing 게이트에 막혀 매역 fire 경로 진입 자체 X', async () => {
+    // lock 없는 trip + arrivals에 임의 trainCode arvlCd=1 → 외부에서 보면 "매역 신호"지만
+    // lockMissing 게이트가 차단해야 한다.
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeTrip()); // boardingLock undefined
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('강남', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-nolock',
+    });
+    expect(stats.lockMissing).toBe(1);
+    expect(stats.arvlCdFireSuccess).toBe(0);
+    // mismatch도 0 — 게이트가 더 위에서 차단해 fire 경로 진입 자체가 없음.
+    expect(stats.arvlCdFireMismatch).toBe(0);
+    expect(apnsFetch).not.toHaveBeenCalled();
+  });
+
+  it('waypoint advance는 매역 push 발사 후에도 정상 수행 (push와 progress는 독립)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-adv',
+    });
+    // 중곡(intermediate) advance 후 다음 waypoint=군자
+    const stored = JSON.parse((await kv.get('trip:arvl-tok')) as string) as Trip;
+    expect(stored.waypoints).toHaveLength(1);
+    expect(stored.waypoints[0].stationName).toBe('군자');
+  });
+
+  it('APNs env mismatch self-heal — sandbox 1차 거부 → production 정정 + arvlCdFireSuccess=1', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip({ apnsEnv: 'sandbox' }));
+    const apnsFetch = vi.fn();
+    apnsFetch
+      .mockImplementationOnce(async () =>
+        new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+      )
+      .mockImplementationOnce(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-heal',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    expect(stats.envCorrected).toBe(1);
+    const stored = JSON.parse((await kv.get('trip:arvl-tok')) as string) as Trip;
+    expect(stored.apnsEnv).toBe('production');
+  });
+
+  it('push 실패 시 stats.errors++ + dedup KV 미stamp (다음 cycle 재시도 허용)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
+    const apnsFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadFoo' }), { status: 400 }),
+    );
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-fail',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(0);
+    expect(stats.errors).toBeGreaterThanOrEqual(1);
+    // 실패는 dedup stamp X — 다음 cycle 재시도 가능.
+    expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 1))).toBeNull();
+  });
+
+  it('destination waypoint도 arvlCd=1이면 매역 push 발사 (kind=destination)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
+      }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('군자', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-dest',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    const calls = getStationPassedCalls(apnsFetch);
+    expect(calls).toHaveLength(1);
+    expect(parseStationPassedData(calls[0]).kind).toBe('destination');
+  });
+
+  it('cross-trip 격리 — 같은 trainCode 같은 역에 두 trip 동시 도착 시 둘 다 발사 (token이 dedup key)', async () => {
+    // 두 사용자가 같은 train(7246)을 탄 채 같은 cycle 안 같은 역(중곡)에 도착하는 시나리오.
+    // 옛 동작(token 미포함 dedup key)은 두 번째 trip을 silence했음.
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip({ token: 'user-a' }));
+    await putTrip(kv as unknown as KVNamespace, makeLockTrip({ token: 'user-b' }));
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-cross',
+    });
+    // 두 trip 모두 push 발사.
+    expect(stats.arvlCdFireSuccess).toBe(2);
+    expect(stats.arvlCdFireDedup).toBe(0);
+    expect(getStationPassedCalls(apnsFetch)).toHaveLength(2);
+  });
+
+  it('arvlCd=1이지만 lock 만료된 trip은 lockMissing 게이트로 차단 (fire 경로 미진입)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({ boardingLock: makeLock({ expiresAt: NOW - 1 }) }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-arvl-exp',
+    });
+    expect(stats.lockMissing).toBe(1);
+    expect(stats.arvlCdFireSuccess).toBe(0);
+    expect(stats.arvlCdFireMismatch).toBe(0); // 게이트 위 차단이라 fire 경로 미진입
+    expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
   });
 });

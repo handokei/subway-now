@@ -224,6 +224,24 @@ export interface ScheduledStats extends LiveActivityStats {
    * client swap 신호 처리는 후속 PR (#916 A2)에서 wire한다. 현재는 항상 0.
    */
   autoLockFalsePositive: number;
+  /**
+   * #917 A2 — boardingLock 활성 trip에서 Seoul arrivals의 arvlCd∈{0(ENTERING), 1(ARRIVED)}
+   * 신호로 매역 station-passed silent push가 성공 발사된 누적 횟수. 매역 알림 1차 source는
+   * GPS가 아니라 이 신호 — 다운로드 가치 직결(지하/지상 무관).
+   */
+  arvlCdFireSuccess: number;
+  /**
+   * #917 A2 — 같은 (trainCode, station, arvlCd) 조합에 대해 이미 발사한 dedup KV가 있어
+   * 매역 push가 차단된 횟수. cron 60s × Seoul API 갱신 지연으로 같은 신호가 2~3 cycle 반복
+   * 노출되는데, 클라가 같은 알림을 중복 수신하는 회귀를 차단한다.
+   */
+  arvlCdFireDedup: number;
+  /**
+   * #917 A2 — 매역 fire path 진입했지만 prereq 게이트(lock 활성 + arvlCd∈{0,1}) 실패로
+   * push 미발사된 횟수. positions-fallback arrived(arvlCd=null) 등 SSOT가 arvlCd가 아닌
+   * 경로를 측정한다. #640 회귀(lock 없는 trip 발사) 방어 신호 — 정상 운영에서는 0이어야 한다.
+   */
+  arvlCdFireMismatch: number;
 }
 
 /**
@@ -274,6 +292,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     kalmanDriftWarning: 0,
     autoLockSuccess: 0,
     autoLockFalsePositive: 0,
+    arvlCdFireSuccess: 0,
+    arvlCdFireDedup: 0,
+    arvlCdFireMismatch: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
@@ -537,6 +558,157 @@ async function mirrorProgress(
  */
 export const VANISH_RE_ATTACH_THRESHOLD = 2;
 
+/**
+ * #917 A2 — 매역 알림 dedup KV TTL(초).
+ * 같은 trainCode가 같은 역의 arvlCd∈{0,1} 신호를 cron 60s × Seoul API 갱신 지연으로 2~3 cycle
+ * 반복 노출하는데, 그 윈도우 동안 push가 중복 발사되지 않도록 차단한다.
+ * 한 trip 진행 중 같은 역으로 다시 돌아올 일은 없으므로 보수적으로 1시간 — KV TTL 최소(60s) 위.
+ */
+export const ARVLCD_FIRE_DEDUP_TTL_SEC = 60 * 60;
+
+/**
+ * #917 A2 — 매역 알림 dedup KV key prefix.
+ * Key 형식: `${prefix}${token}|${trainCode}|${stationName}|${arvlCd}`
+ *
+ * 주의: trip token이 key에 포함된다 — 같은 train(trainCode)을 탄 여러 사용자가 같은 역에
+ * 도착할 때 한 명만 push 받고 나머지가 dedup으로 silence되는 cross-trip leak을 차단한다.
+ */
+export const ARVLCD_FIRE_KEY_PREFIX = 'arvlcd-fire:';
+
+/**
+ * dedup KV key 빌더. arvlCd 0(ENTERING) vs 1(ARRIVED)은 별 entry로 분리(둘 다 신호).
+ * token은 trip 단위 격리 — 같은 train 다른 trip이 서로 silence하지 않도록.
+ */
+export function arvlCdFireKey(
+  token: string,
+  trainCode: string,
+  stationName: string,
+  arvlCd: number,
+): string {
+  return `${ARVLCD_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}|${arvlCd}`;
+}
+
+/**
+ * arvlCd∈{0(ENTERING), 1(ARRIVED)} 신호로 매역 알림 발사 가능한지 prereq 평가 (#917 A2 가드).
+ *
+ * Returns:
+ *   - 'fire'      — push 발사 진행
+ *   - 'mismatch'  — prereq 실패. push X. arvlCdFireMismatch++로 카운트해 회귀 측정.
+ *
+ * 가드:
+ *   1. lock 활성 (호출 전 isBoardingLockActive로 이미 검증되지만 defensive recheck)
+ *   2. estimate.arvlCd가 ARRIVED(1) 또는 ENTERING(0)
+ *
+ * #640 회귀 차단: lock 없는 trip은 애초에 runTrainCodeTracking에 도달하지 못한다.
+ * positions-fallback arrived(arvlCd=null)는 매역 알림 SSOT(arvlCd)와 다른 신호 →
+ * mismatch로 분류해 push 미발사 + 운영 가시성 카운트.
+ */
+export function evaluateArvlCdFireGate(
+  lock: BoardingLockMeta | undefined,
+  estimateArvlCd: number | null,
+  now: number,
+): 'fire' | 'mismatch' {
+  if (lock === undefined || lock.expiresAt <= now) return 'mismatch';
+  if (estimateArvlCd !== ARRIVAL_CODE.ARRIVED && estimateArvlCd !== ARRIVAL_CODE.ENTERING) {
+    return 'mismatch';
+  }
+  return 'fire';
+}
+
+/**
+ * #917 A2 — boardingLock trip에서 arvlCd∈{0,1} 신호 관측 시 매역 station-passed silent push 발사.
+ *
+ * 호출 시점: runTrainCodeTracking이 estimate.arrived=true를 얻은 직후 advanceBoardingLockWaypoint
+ * 진입 전. prereq 게이트(lock 활성 + arvlCd∈{0,1}) 통과 + dedup KV 미존재 시 발사.
+ *
+ * push 실패 분기 정책:
+ *   - APNs env mismatch self-heal은 reschedule push와 동일 (sendWithEnvHeal 재사용)
+ *   - 410 Unregistered / env exhausted 등 unrecoverable은 trip 자체 cleanup이 reschedule 경로의
+ *     maybeReschedulePush에서 처리되므로 본 함수는 그 분기를 만들지 않는다 — arvlCd fire는 trip
+ *     상태에 영향을 주지 않는 보조 신호로 한정 (waypoint advance / cleanup은 호출자 책임).
+ *   - 일반 실패는 stats.errors++ + log만 — dedup KV는 성공 시에만 stamp해 다음 cycle 재시도 허용.
+ *
+ * @returns cleanedUp=true는 token unrecoverable로 trip 폐기 신호 (호출자가 advance 스킵).
+ *          현재 정책상 cleanup 분기는 없고 항상 false 반환.
+ */
+export async function fireArvlCdStationPush(
+  trip: Trip,
+  waypoint: Waypoint,
+  lock: BoardingLockMeta,
+  arvlCd: number,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+  generatePushId: () => string,
+): Promise<{ dirty: boolean }> {
+  const key = arvlCdFireKey(trip.token, lock.trainCode, waypoint.stationName, arvlCd);
+  const existing = await env.TRIPS.get(key);
+  if (existing !== null) {
+    stats.arvlCdFireDedup += 1;
+    log('arvlcd-fire: dedup skip', {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+      arvlCd,
+    });
+    return { dirty: false };
+  }
+  const pushId = generatePushId();
+  log('arvlcd-fire: station-passed push', {
+    token: trip.token.slice(0, 8),
+    trainCode: lock.trainCode,
+    station: waypoint.stationName,
+    arvlCd,
+    kind: waypoint.kind,
+  });
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendSilentPush({
+        deviceToken: trip.token,
+        payload: {
+          nextWaypoint: waypoint.stationName,
+          // arvlCd∈{0,1}은 "지금 진입/도착" 신호 — eta는 사실상 0.
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: waypoint.kind,
+          sentAt: now,
+          pushId,
+        },
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+  );
+  let dirty = false;
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    dirty = true;
+    stats.envCorrected += 1;
+  }
+  if (!heal.result.ok) {
+    stats.errors += 1;
+    log('arvlcd-fire: push failed', {
+      status: heal.result.status,
+      reason: heal.result.reason,
+      token: trip.token.slice(0, 8),
+    });
+    // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
+    return { dirty };
+  }
+  stats.arvlCdFireSuccess += 1;
+  stats.pushed += 1;
+  // dedup stamp — 같은 cycle에서 Seoul API 갱신 지연으로 같은 신호가 재노출돼도 차단.
+  await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
+  return { dirty };
+}
+
 export async function runTrainCodeTracking(
   trip: Trip,
   waypoint: Waypoint,
@@ -625,6 +797,33 @@ export async function runTrainCodeTracking(
     // 정거장 도착은 가장 강한 신호 (실제 정차) — v=0/P=R_LOW로 drift 누적 차단.
     await writeKalmanState(env.TRIPS, trip.token, resetKalmanForArrival(now));
     stats.kalmanReset += 1;
+    // #917 A2 — 매역 알림 1차 source는 arvlCd∈{0(ENTERING), 1(ARRIVED)}.
+    // positions-fallback arrived(arvlCd=null)는 SSOT 다름 — mismatch로 분류해 push X.
+    // prereq 게이트: lock 활성 + arvlCd∈{0,1}. #640 회귀(lock 없는 trip 발사) defensive recheck.
+    const gate = evaluateArvlCdFireGate(activeLock, estimate.arvlCd, now);
+    if (gate === 'fire' && estimate.arvlCd !== null) {
+      const fire = await fireArvlCdStationPush(
+        trip,
+        waypoint,
+        activeLock,
+        estimate.arvlCd,
+        env,
+        deps,
+        stats,
+        now,
+        log,
+        generatePushId,
+      );
+      if (fire.dirty) await putTrip(env.TRIPS, trip);
+    } else {
+      stats.arvlCdFireMismatch += 1;
+      log('arvlcd-fire: mismatch (prereq failed)', {
+        token: trip.token.slice(0, 8),
+        trainCode: activeLock.trainCode,
+        station: waypoint.stationName,
+        arvlCd: estimate.arvlCd,
+      });
+    }
     await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log);
     return;
   }
@@ -675,7 +874,7 @@ export async function estimateBoardingLockArrival(
   lock: BoardingLockMeta,
   waypoint: Waypoint,
   now: number,
-): Promise<{ epoch: number; arrived: boolean } | null> {
+): Promise<{ epoch: number; arrived: boolean; arvlCd: number | null } | null> {
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   const matched = arrivals.find((a) => a.trainCode === lock.trainCode);
   if (matched) {
@@ -683,6 +882,9 @@ export async function estimateBoardingLockArrival(
       epoch: now + matched.arrivalSeconds * 1000,
       arrived:
         matched.arvlCd === ARRIVAL_CODE.ARRIVED || matched.arvlCd === ARRIVAL_CODE.ENTERING,
+      // #917 A2 — 매역 알림 1차 source. arrivals 경로의 arvlCd를 호출자에게 노출해
+      // dedup key 구성 + position-fallback arrived와 구분(positions 경로는 arvlCd=null).
+      arvlCd: matched.arvlCd,
     };
   }
   const positions = await deps.seoul.fetchPositions(lock.line);
@@ -690,7 +892,9 @@ export async function estimateBoardingLockArrival(
   if (!train) return null;
   const fallback = estimateArrivalFromPosition(train, waypoint.stationName, lock, now);
   if (fallback.epoch === null) return null;
-  return { epoch: fallback.epoch, arrived: fallback.arrived };
+  // positions 경로의 arrived는 arvlCd가 아닌 sttus 신호 — 호출자가 arvlCd 매역 fire 분기를
+  // skip하도록 null 명시 (#917 A2 prereq guard).
+  return { epoch: fallback.epoch, arrived: fallback.arrived, arvlCd: null };
 }
 
 /**

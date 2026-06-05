@@ -76,6 +76,27 @@
       "format": "rate",
       "display": "percentage",
       "description": "#916 A1 — 자동 lock 후 사용자가 다른 trainCode로 swap한 비율 (catalog placeholder, 후속 PR에서 client swap 신호 wire)"
+    },
+    {
+      "key": "arvlCdFireSuccess",
+      "constantName": "ARVLCD_FIRE_SUCCESS",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#917 A2 — boardingLock 활성 trip에서 Seoul arvlCd∈{0,1} 신호로 매역 station-passed push 발사 성공 비율"
+    },
+    {
+      "key": "arvlCdFireDedup",
+      "constantName": "ARVLCD_FIRE_DEDUP",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#917 A2 — 같은 (trainCode, station, arvlCd) 조합 dedup KV로 차단된 비율 — Seoul API 갱신 지연으로 중복 신호 차단 효과 측정"
+    },
+    {
+      "key": "arvlCdFireMismatch",
+      "constantName": "ARVLCD_FIRE_MISMATCH",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#917 A2 — prereq 게이트(lock 활성 + arvlCd∈{0,1}) 실패로 매역 push 미발사된 비율 — #640 회귀 방어 신호"
     }
   ]
 }
