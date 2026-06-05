@@ -244,8 +244,10 @@ function computeDelayMinutes(
 ): number | null {
   if (initialEtaSeconds == null || initialEtaSeconds <= 0) return null;
   if (arrivals.length === 0) return null;
-  const nearest = arrivals.reduce((min, cur) =>
-    cur.arrivalSeconds < min.arrivalSeconds ? cur : min,
+  const [head, ...rest] = arrivals;
+  const nearest = rest.reduce(
+    (min, cur) => (cur.arrivalSeconds < min.arrivalSeconds ? cur : min),
+    head,
   );
   const diff = nearest.arrivalSeconds - initialEtaSeconds;
   if (diff < DELAY_NOTICE_THRESHOLD_SECONDS) return null;
