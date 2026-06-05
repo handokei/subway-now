@@ -14,11 +14,9 @@
  */
 
 import { createLogger } from '../../../shared/utils/logger';
+import { fetchWithTimeout, getBackendUrl } from './backendHttp';
 
 const log = createLogger('boardingLockSync');
-
-/** fetch 타임아웃 — BG/foreground 모두 짧게 유지. positionUpload와 동일. */
-const REQUEST_TIMEOUT_MS = 5000;
 
 /**
  * Seam E POST payload. backend `validateBoardingLockSync` 시그니처와 1:1 정합.
@@ -51,22 +49,6 @@ export interface BoardingLockSyncResponse {
   /** HTTP 실패/skip을 호출자가 진단할 수 있게 노출 — graceful (throw 아님). */
   skipped?: boolean;
   status?: number;
-}
-
-function getBackendUrl(): string | null {
-  const url = process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
-  if (!url) return null;
-  return url.replace(/\/$/, '');
-}
-
-async function fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 /**
