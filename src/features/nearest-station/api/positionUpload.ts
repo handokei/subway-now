@@ -20,6 +20,7 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { fetchWithTimeout, getBackendUrl } from './backendHttp';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../shared/constants/storageKeys';
 import { snapToLinePolyline } from '../../route/utils/linePolyline';
 import { isLineNumber } from '../../route/utils/lineGuard';
@@ -93,24 +94,7 @@ export interface PositionUploadResult {
   status?: number;
 }
 
-/** fetch 타임아웃 — BG task는 OS suspend 임박이라 짧게 유지. */
-const REQUEST_TIMEOUT_MS = 5000;
-
-function getBackendUrl(): string | null {
-  const url = process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
-  if (!url) return null;
-  return url.replace(/\/$/, '');
-}
-
-async function fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
+// Seam E (#901) — getBackendUrl/fetchWithTimeout은 backendHttp.ts로 추출 (boardingLockSync도 재사용).
 
 /**
  * #828 — resolver가 반환한 line에 좌표를 사영해 mapMatched 결과를 payload에 첨부.
