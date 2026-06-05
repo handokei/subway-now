@@ -44,55 +44,18 @@ async function flushAsyncStorage(): Promise<void> {
 }
 
 describe('useBoardingLockSync (#901)', () => {
-  it('tripActive=false → 발사 안 함', async () => {
-    renderHook(() =>
-      useBoardingLockSync({
-        currentStationName: '강남',
-        accuracyMeters: 10,
-        tripActive: false,
-      }),
-    );
-    act(() => {
-      jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100);
-    });
-    await flushAsyncStorage();
-    expect(mockedSync).not.toHaveBeenCalled();
-  });
+  type SyncInputs = Parameters<typeof useBoardingLockSync>[0];
+  const defaults: SyncInputs = { currentStationName: '강남', accuracyMeters: 10, tripActive: true };
+  const renderSync = (overrides: Partial<SyncInputs> = {}) =>
+    renderHook(() => useBoardingLockSync({ ...defaults, ...overrides }));
 
-  it('currentStationName=null → 발사 안 함', async () => {
-    renderHook(() =>
-      useBoardingLockSync({
-        currentStationName: null,
-        accuracyMeters: 10,
-        tripActive: true,
-      }),
-    );
-    act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
-    await flushAsyncStorage();
-    expect(mockedSync).not.toHaveBeenCalled();
-  });
-
-  it('accuracy=null → 발사 안 함', async () => {
-    renderHook(() =>
-      useBoardingLockSync({
-        currentStationName: '강남',
-        accuracyMeters: null,
-        tripActive: true,
-      }),
-    );
-    act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
-    await flushAsyncStorage();
-    expect(mockedSync).not.toHaveBeenCalled();
-  });
-
-  it('accuracy > 50m → 발사 안 함', async () => {
-    renderHook(() =>
-      useBoardingLockSync({
-        currentStationName: '강남',
-        accuracyMeters: GOOD_FIX_ACCURACY_MAX_M + 1,
-        tripActive: true,
-      }),
-    );
+  it.each<{ label: string; overrides: Partial<SyncInputs> }>([
+    { label: 'tripActive=false', overrides: { tripActive: false } },
+    { label: 'currentStationName=null', overrides: { currentStationName: null } },
+    { label: 'accuracy=null', overrides: { accuracyMeters: null } },
+    { label: 'accuracy > 50m', overrides: { accuracyMeters: GOOD_FIX_ACCURACY_MAX_M + 1 } },
+  ])('게이트 실패 ($label) → debounce 후에도 미발사', async ({ overrides }) => {
+    renderSync(overrides);
     act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
     await flushAsyncStorage();
     expect(mockedSync).not.toHaveBeenCalled();
@@ -217,81 +180,23 @@ describe('useBoardingLockSync (#901)', () => {
     expect(mockedSync).toHaveBeenCalledTimes(2);
   });
 
-  it('force 트리거지만 currentStation null → 발사 안 함', async () => {
-    renderHook(() =>
-      useBoardingLockSync({
-        currentStationName: null,
-        accuracyMeters: 10,
-        tripActive: true,
-        forceTriggerKey: 'k',
-      }),
-    );
+  it.each<{ label: string; overrides: Partial<SyncInputs> }>([
+    { label: 'currentStation null', overrides: { currentStationName: null } },
+    { label: 'accuracy null', overrides: { accuracyMeters: null } },
+    { label: 'accuracy > 50m', overrides: { accuracyMeters: GOOD_FIX_ACCURACY_MAX_M + 1 } },
+    { label: 'tripActive=false', overrides: { tripActive: false } },
+  ])('force 트리거지만 $label → 발사 안 함', async ({ overrides }) => {
+    renderSync({ forceTriggerKey: 'k', ...overrides });
     await flushAsyncStorage();
     expect(mockedSync).not.toHaveBeenCalled();
   });
 
-  it('force 트리거지만 accuracy null → 발사 안 함', async () => {
-    renderHook(() =>
-      useBoardingLockSync({
-        currentStationName: '강남',
-        accuracyMeters: null,
-        tripActive: true,
-        forceTriggerKey: 'k',
-      }),
-    );
-    await flushAsyncStorage();
-    expect(mockedSync).not.toHaveBeenCalled();
-  });
-
-  it('force 트리거지만 accuracy > 50m → 발사 안 함', async () => {
-    renderHook(() =>
-      useBoardingLockSync({
-        currentStationName: '강남',
-        accuracyMeters: GOOD_FIX_ACCURACY_MAX_M + 1,
-        tripActive: true,
-        forceTriggerKey: 'k',
-      }),
-    );
-    await flushAsyncStorage();
-    expect(mockedSync).not.toHaveBeenCalled();
-  });
-
-  it('force 트리거지만 tripActive=false → 발사 안 함', async () => {
-    renderHook(() =>
-      useBoardingLockSync({
-        currentStationName: '강남',
-        accuracyMeters: 10,
-        tripActive: false,
-        forceTriggerKey: 'k',
-      }),
-    );
-    await flushAsyncStorage();
-    expect(mockedSync).not.toHaveBeenCalled();
-  });
-
-  it('APNs 토큰 없으면 graceful skip', async () => {
-    await AsyncStorage.removeItem(APNS_TOKEN_KEY);
-    renderHook(() =>
-      useBoardingLockSync({
-        currentStationName: '강남',
-        accuracyMeters: 10,
-        tripActive: true,
-      }),
-    );
-    act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
-    await flushAsyncStorage();
-    expect(mockedSync).not.toHaveBeenCalled();
-  });
-
-  it('ACTIVE_TRIP_KEY 없으면 graceful skip', async () => {
-    await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
-    renderHook(() =>
-      useBoardingLockSync({
-        currentStationName: '강남',
-        accuracyMeters: 10,
-        tripActive: true,
-      }),
-    );
+  it.each<{ label: string; key: typeof APNS_TOKEN_KEY | typeof ACTIVE_TRIP_KEY }>([
+    { label: 'APNs 토큰', key: APNS_TOKEN_KEY },
+    { label: 'ACTIVE_TRIP_KEY', key: ACTIVE_TRIP_KEY },
+  ])('$label 없으면 graceful skip', async ({ key }) => {
+    await AsyncStorage.removeItem(key);
+    renderSync();
     act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
     await flushAsyncStorage();
     expect(mockedSync).not.toHaveBeenCalled();
