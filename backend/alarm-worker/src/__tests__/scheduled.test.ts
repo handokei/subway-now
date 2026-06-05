@@ -3538,21 +3538,17 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   });
 
   it('APNs env mismatch self-heal — sandbox 1차 거부 → production 정정 + arvlCdFireSuccess=1', async () => {
-    const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeLockTrip({ apnsEnv: 'sandbox' }));
     const apnsFetch = vi.fn();
     apnsFetch
       .mockImplementationOnce(async () =>
         new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
       )
       .mockImplementationOnce(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
+    const { stats, kv } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 1),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p-arvl-heal',
+      trip: makeLockTrip({ apnsEnv: 'sandbox' }),
+      apnsFetch,
+      pushId: 'p-arvl-heal',
     });
     expect(stats.arvlCdFireSuccess).toBe(1);
     expect(stats.envCorrected).toBe(1);
@@ -3561,18 +3557,13 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   });
 
   it('push 실패 시 stats.errors++ + dedup KV 미stamp (다음 cycle 재시도 허용)', async () => {
-    const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
     const apnsFetch = vi.fn(async () =>
       new Response(JSON.stringify({ reason: 'BadFoo' }), { status: 400 }),
     );
-    const stats = await runScheduled(makeEnv(kv), {
+    const { stats, kv } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 1),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p-arvl-fail',
+      apnsFetch,
+      pushId: 'p-arvl-fail',
     });
     expect(stats.arvlCdFireSuccess).toBe(0);
     expect(stats.errors).toBeGreaterThanOrEqual(1);
@@ -3581,21 +3572,12 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   });
 
   it('destination waypoint도 arvlCd=1이면 매역 push 발사 (kind=destination)', async () => {
-    const kv = new InMemoryKV();
-    await putTrip(
-      kv as unknown as KVNamespace,
-      makeLockTrip({
+    const { stats, apnsFetch } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('군자', 0, 1),
+      trip: makeLockTrip({
         waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
       }),
-    );
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeArrivalSeoul('군자', 0, 1),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p-arvl-dest',
+      pushId: 'p-arvl-dest',
     });
     expect(stats.arvlCdFireSuccess).toBe(1);
     const calls = getStationPassedCalls(apnsFetch);
@@ -3606,38 +3588,25 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   it('cross-trip 격리 — 같은 trainCode 같은 역에 두 trip 동시 도착 시 둘 다 발사 (token이 dedup key)', async () => {
     // 두 사용자가 같은 train(7246)을 탄 채 같은 cycle 안 같은 역(중곡)에 도착하는 시나리오.
     // 옛 동작(token 미포함 dedup key)은 두 번째 trip을 silence했음.
-    const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeLockTrip({ token: 'user-a' }));
-    await putTrip(kv as unknown as KVNamespace, makeLockTrip({ token: 'user-b' }));
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
+    const { stats, apnsFetch } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 1),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p-arvl-cross',
+      trip: makeLockTrip({ token: 'user-a' }),
+      pushId: 'p-arvl-cross',
+      seedKv: async (kv) => {
+        // 두 번째 trip을 같은 KV에 추가 시드.
+        await putTrip(kv as unknown as KVNamespace, makeLockTrip({ token: 'user-b' }));
+      },
     });
-    // 두 trip 모두 push 발사.
     expect(stats.arvlCdFireSuccess).toBe(2);
     expect(stats.arvlCdFireDedup).toBe(0);
     expect(getStationPassedCalls(apnsFetch)).toHaveLength(2);
   });
 
   it('arvlCd=1이지만 lock 만료된 trip은 lockMissing 게이트로 차단 (fire 경로 미진입)', async () => {
-    const kv = new InMemoryKV();
-    await putTrip(
-      kv as unknown as KVNamespace,
-      makeLockTrip({ boardingLock: makeLock({ expiresAt: NOW - 1 }) }),
-    );
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
+    const { stats, apnsFetch } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 1),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p-arvl-exp',
+      trip: makeLockTrip({ boardingLock: makeLock({ expiresAt: NOW - 1 }) }),
+      pushId: 'p-arvl-exp',
     });
     expect(stats.lockMissing).toBe(1);
     expect(stats.arvlCdFireSuccess).toBe(0);
