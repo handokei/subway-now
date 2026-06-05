@@ -16,7 +16,10 @@
 import { useMemo } from 'react';
 import { findTopNearestStations } from '../utils/findNearestStation';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
-import { narrowStationsByPressure } from '../../../shared/utils/barometerState';
+import {
+  narrowStationsByDepthAndEta,
+  narrowStationsByPressure,
+} from '../../../shared/utils/barometerState';
 import type { Station } from '../../../shared/types/station';
 
 export const DEFAULT_MAX_CANDIDATES = 3;
@@ -30,6 +33,13 @@ export interface UseStationCandidatesInputs {
   readonly absolutePressureHpa?: number | null;
   /** 같은 지역 지상 기준 압력(hPa). absolutePressureHpa와 함께 주어져야 narrow 활성. */
   readonly surfacePressureHpa?: number | null;
+  /**
+   * F3 추가 narrow(#920 후속) — 직전 확정역. previousStation+secondsSincePrevious가
+   * 모두 주어졌을 때만 깊이+ETA 결합으로 모호한 후보를 단일 후보로 좁힌다.
+   */
+  readonly previousStation?: Station | null;
+  /** 직전 확정역 통과 후 경과 시간(초). previousStation과 함께 주어져야 결합 narrow 활성. */
+  readonly secondsSincePrevious?: number | null;
   /** 후보 최대 개수. 기본 3. */
   readonly maxCandidates?: number;
   /** GPS 후보 추출 시 반경(km). 기본 `MAX_STATION_DISTANCE_KM`(1.0). */
@@ -59,6 +69,8 @@ export function useStationCandidates(
     wifiStation,
     absolutePressureHpa = null,
     surfacePressureHpa = null,
+    previousStation = null,
+    secondsSincePrevious = null,
     maxCandidates = DEFAULT_MAX_CANDIDATES,
     maxDistanceKm = MAX_STATION_DISTANCE_KM,
   } = inputs;
@@ -97,6 +109,25 @@ export function useStationCandidates(
       if (narrowed.length > 0) candidates = narrowed;
     }
 
+    // F3 추가 narrow(#920 후속) — baseline이 여전히 모호하고 직전 확정역 정보가 있으면
+    // 깊이+ETA 결합으로 단일 후보로 좁힘. 결정적 단서가 부족하면 narrow 함수가 candidates
+    // 그대로 반환 → 안전.
+    if (
+      candidates.length > 1 &&
+      previousStation !== null &&
+      secondsSincePrevious !== null &&
+      absolutePressureHpa !== null &&
+      surfacePressureHpa !== null
+    ) {
+      candidates = narrowStationsByDepthAndEta({
+        measuredPressureHpa: absolutePressureHpa,
+        surfacePressureHpa,
+        candidates,
+        previousStation,
+        secondsSincePrevious,
+      });
+    }
+
     return {
       candidates,
       topPick: candidates[0],
@@ -107,6 +138,8 @@ export function useStationCandidates(
     wifiStation,
     absolutePressureHpa,
     surfacePressureHpa,
+    previousStation,
+    secondsSincePrevious,
     maxCandidates,
     maxDistanceKm,
   ]);

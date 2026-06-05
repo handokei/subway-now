@@ -16,9 +16,11 @@
 
 import {
   BAROMETER_ABS_TOLERANCE_HPA,
+  BAROMETER_ETA_TOLERANCE_SEC,
   DEPTH_TO_PRESSURE_HPA_PER_M,
 } from '../constants/barometer';
 import stationAbsolutePressureData from '../../data/stationAbsolutePressure.json';
+import stationTravelTimesJson from '../../data/stationTravelTimes.json';
 import type { LineNumber, Station } from '../types/station';
 import {
   evaluateSubsurfaceEnter,
@@ -45,6 +47,30 @@ export interface StationAbsolutePressureEntry {
 
 const ABS_PRESSURE_ENTRIES: readonly StationAbsolutePressureEntry[] =
   stationAbsolutePressureData as readonly StationAbsolutePressureEntry[];
+
+const TRAVEL_TIMES = stationTravelTimesJson as Record<string, number>;
+
+/**
+ * stationTravelTimes.json은 인접 hop만 등록. 인접이 아니면 undefined → 본 narrow에서 신호 미사용.
+ * `${line}|${fromId}|${toId}` 키는 `stationRoute.ts`와 동일하게 양방향 모두 등록되어 있다.
+ */
+function lookupAdjacentHopSeconds(
+  line: LineNumber,
+  fromId: string,
+  toId: string,
+): number | null {
+  const key = `${line}|${fromId}|${toId}`;
+  return TRAVEL_TIMES[key] ?? null;
+}
+
+/**
+ * stationAbsolutePressure.json에서 stationId로 depth_m 조회. 없으면 null.
+ * 단발 lookup이라 Map 캐시는 oversimplification — 호출 빈도(1초당 1회 미만)에서는 선형이 충분히 빠르다.
+ */
+function lookupDepthMeters(stationId: string): number | null {
+  const entry = ABS_PRESSURE_ENTRIES.find((e) => e.stationId === stationId);
+  return entry ? entry.depth_m : null;
+}
 
 let readings: BarometerReading[] = [];
 
@@ -111,4 +137,90 @@ export function narrowStationsByPressure(
   }
 
   return candidates.filter((s) => matchedIds.has(s.id));
+}
+
+/**
+ * #920 후속 — 깊이+ETA 결합 narrow.
+ *
+ * `narrowStationsByPressure`가 2~3개의 모호한 후보를 돌려줬을 때, 직전 확정역에서 측정된 경과
+ * 시간과 데이터상의 인접 hop 운행시간(`stationTravelTimes.json`)을 비교해 한 후보로 좁힌다.
+ *
+ * 정책:
+ *   - candidates ≤ 1 → no-op (이미 단일 또는 비어 있음).
+ *   - candidate 중 `previousStation`과 같은 노선이며 인접 hop인 것만 평가 대상.
+ *     비인접/다른 노선 후보는 ETA 신호로 가를 수 없으므로 평가에서 제외하되 fallback 후보에는 남긴다.
+ *   - depthError(hPa) + etaError(sec) 양쪽 데이터가 모두 있는 후보만 점수화 (graceful skip).
+ *   - 점수 = depthError/toleranceHpa + etaError/etaToleranceSec — 단위 정규화한 합.
+ *   - 점수 정렬 후 winner가 runner-up과 충분히 갈리면(winner score < runner_up - 1.0) winner만 반환.
+ *     gap 미달이면 baseline candidates 그대로 (오판 방지 — F3는 보조 신호).
+ *   - 평가 가능한 후보가 0개면 baseline 그대로.
+ *
+ * @returns 단일 후보 1개(승자) 또는 입력 candidates 그대로(no-op).
+ */
+export interface DepthEtaNarrowInput {
+  readonly measuredPressureHpa: number;
+  readonly surfacePressureHpa: number;
+  readonly candidates: readonly Station[];
+  readonly previousStation: Station;
+  /** 직전 확정역 통과 후 경과 시간(초). 음수면 평가 skip. */
+  readonly secondsSincePrevious: number;
+  readonly toleranceHpa?: number;
+  readonly etaToleranceSec?: number;
+}
+
+const DEPTH_ETA_DECISIVE_GAP = 1.0;
+
+export function narrowStationsByDepthAndEta(
+  input: DepthEtaNarrowInput,
+): Station[] {
+  const {
+    measuredPressureHpa,
+    surfacePressureHpa,
+    candidates,
+    previousStation,
+    secondsSincePrevious,
+    toleranceHpa = BAROMETER_ABS_TOLERANCE_HPA,
+    etaToleranceSec = BAROMETER_ETA_TOLERANCE_SEC,
+  } = input;
+
+  if (candidates.length <= 1) return [...candidates];
+  if (secondsSincePrevious < 0) return [...candidates];
+
+  type Scored = { station: Station; score: number };
+  const scored: Scored[] = [];
+
+  for (const cand of candidates) {
+    if (cand.line !== previousStation.line) continue;
+    const hopSec = lookupAdjacentHopSeconds(
+      cand.line,
+      previousStation.id,
+      cand.id,
+    );
+    if (hopSec === null) continue;
+    const depth = lookupDepthMeters(cand.id);
+    if (depth === null) continue;
+
+    const expectedPressure =
+      surfacePressureHpa + depth * DEPTH_TO_PRESSURE_HPA_PER_M;
+    const depthError = Math.abs(measuredPressureHpa - expectedPressure);
+    const etaError = Math.abs(secondsSincePrevious - hopSec);
+    const score = depthError / toleranceHpa + etaError / etaToleranceSec;
+    scored.push({ station: cand, score });
+  }
+
+  if (scored.length === 0) return [...candidates];
+  scored.sort((a, b) => a.score - b.score);
+
+  // 평가 가능한 후보가 단 1개라도 점수가 형편없으면 baseline로 fallback.
+  // 환산 점수 2.0은 "depthError가 tolerance와 같고 etaError가 tolerance와 같음" → 신호 의미 없음.
+  const TOO_WEAK = 2.0;
+  if (scored[0].score > TOO_WEAK) return [...candidates];
+
+  // 평가 가능한 후보가 1개뿐 → 그 후보를 반환 (다른 후보는 신호 결정 불가).
+  if (scored.length === 1) return [scored[0].station];
+
+  // 2개 이상 — winner가 runner-up과 충분히 갈리면 winner만, 아니면 baseline.
+  const gap = scored[1].score - scored[0].score;
+  if (gap >= DEPTH_ETA_DECISIVE_GAP) return [scored[0].station];
+  return [...candidates];
 }
