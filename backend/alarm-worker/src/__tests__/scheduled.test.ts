@@ -173,6 +173,28 @@ function parseArvlCdStationPassedData(call: [string, RequestInit]): {
   return body.data;
 }
 
+// arrivals 빈 응답 + positions에 lock.trainCode 매칭(중곡 ARRIVED) — positions-fallback 경로 테스트 공용.
+function makePositionsFallbackSeoul(): SeoulArrivalClient {
+  return new SeoulArrivalClient({
+    apiKey: 'K',
+    host: 'h',
+    now: () => NOW,
+    fetchImpl: (async (url: string) => {
+      if (url.includes('/realtimePosition/')) {
+        return new Response(
+          JSON.stringify({
+            realtimePositionList: [
+              { trainNo: '7246', statnNm: '중곡', trainSttus: 1, updnLine: '상행', lastRecptnDt: '' },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 });
+    }) as unknown as typeof fetch,
+  });
+}
+
 // 7호선 용마산→중곡→군자 leg lockTrip 공용 (lock 추적/arvlCd fire 테스트 공통).
 // token만 describe별로 다르므로 token은 호출 시 명시.
 function makeLockTripFixture(token: string, overrides: Partial<Trip> = {}): Trip {
@@ -3360,25 +3382,12 @@ describe('estimateBoardingLockArrival arvlCd exposure (#917 A2)', () => {
 
   it('positions-fallback → arvlCd=null (sttus 신호는 매역 SSOT 아님)', async () => {
     // arrivals 빈 응답 + positions에 lock.trainCode 매칭 → fallback 경로 진입.
-    const seoul = new SeoulArrivalClient({
-      apiKey: 'K',
-      host: 'h',
-      now: () => NOW,
-      fetchImpl: (async (url: string) => {
-        if (url.includes('/realtimePosition/')) {
-          return new Response(
-            JSON.stringify({
-              realtimePositionList: [
-                { trainNo: '7246', statnNm: '중곡', trainSttus: 1, updnLine: '상행', lastRecptnDt: '' },
-              ],
-            }),
-            { status: 200 },
-          );
-        }
-        return new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 });
-      }) as unknown as typeof fetch,
-    });
-    const result = await estimateBoardingLockArrival(makeArrivalDeps(seoul), lock, waypoint, NOW);
+    const result = await estimateBoardingLockArrival(
+      makeArrivalDeps(makePositionsFallbackSeoul()),
+      lock,
+      waypoint,
+      NOW,
+    );
     // arrived=true (sttus=ARRIVED + station match)지만 arvlCd=null (positions 경로 명시)
     expect(result?.arvlCd).toBeNull();
     expect(result?.arrived).toBe(true);
@@ -3470,24 +3479,7 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     // 호출 흐름: estimate.arrived=true (positions 경로), estimate.arvlCd=null → fire 게이트 차단.
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeLockTrip());
-    const seoul = new SeoulArrivalClient({
-      apiKey: 'K',
-      host: 'h',
-      now: () => NOW,
-      fetchImpl: (async (url: string) => {
-        if (url.includes('/realtimePosition/')) {
-          return new Response(
-            JSON.stringify({
-              realtimePositionList: [
-                { trainNo: '7246', statnNm: '중곡', trainSttus: 1, updnLine: '상행', lastRecptnDt: '' },
-              ],
-            }),
-            { status: 200 },
-          );
-        }
-        return new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 });
-      }) as unknown as typeof fetch,
-    });
+    const seoul = makePositionsFallbackSeoul();
     const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runScheduled(makeEnv(kv), {
       seoul,
