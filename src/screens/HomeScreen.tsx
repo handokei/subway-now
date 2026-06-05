@@ -46,6 +46,8 @@ import { useTripBoundAlarmScheduler } from '../features/alarm/hooks/useTripBound
 import { useBoardingLockAdvancer } from '../features/alarm/hooks/useBoardingLockAdvancer';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
 import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
+import { useCurrentStationConfirmModal } from '../features/nearest-station/hooks/useCurrentStationConfirmModal';
+import { CurrentStationConfirmModal } from '../features/nearest-station/components/CurrentStationConfirmModal';
 import { MisBoardingBanner } from '../features/route/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../features/route/components/MisBoardingReselectModal';
 import { Toast } from '../shared/ui/Toast';
@@ -58,6 +60,7 @@ import { BoardingLockHopCard } from '../features/alarm/components/BoardingLockHo
 import { resolveNextAdjacentStationName } from '../features/route/utils/nextAdjacentStation';
 import { getApproachLine } from '../features/route/utils/approachLine';
 import type { Stop } from '../shared/types/journey';
+import type { Station } from '../shared/types/station';
 
 const logger = createLogger('HomeScreen');
 
@@ -70,6 +73,7 @@ export default function HomeScreen() {
   const { t } = useTranslation();
   const router = useRouter();
   const customOrigin = useDestinationStore((s) => s.customOrigin);
+  const setCustomOrigin = useDestinationStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useDestinationStore((s) => s.loadCustomOrigin);
   const addFavorite = useFavoritesStore((s) => s.addFavorite);
   const removeFavorite = useFavoritesStore((s) => s.removeFavorite);
@@ -147,6 +151,37 @@ export default function HomeScreen() {
   //   2) useApnsTripRegistration: backend payload subsurface 동봉(threshold 5→10).
   const { subsurface: barometerSubsurface } = useBarometer();
   const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, barometerSubsurface);
+
+  // #914 (F4) — 1탭 현재역 확정 모달. 자동 추정이 locationUncertain으로 길어지면 후보 1~3개를
+  // 카드로 노출, 1탭 = customOrigin 적용. wifiStation 네이티브 브릿지(F2 후속)는 미연결이라 null.
+  const [confirmAutoToast, setConfirmAutoToast] = useState<string | null>(null);
+  const handleConfirmStation = useCallback(
+    (station: Station) => {
+      setCustomOrigin(station);
+    },
+    [setCustomOrigin],
+  );
+  const confirmModal = useCurrentStationConfirmModal({
+    locationUncertain,
+    userLocation,
+    wifiStation: null,
+    hasEffectiveOrigin: customOrigin !== null || result?.station != null,
+    onConfirmStation: handleConfirmStation,
+  });
+  useEffect(() => {
+    if (confirmModal.autoConfirmedStation) {
+      setConfirmAutoToast(
+        t('currentStationConfirm.autoConfirmed', {
+          name: getStationDisplayName(confirmModal.autoConfirmedStation),
+        }),
+      );
+      confirmModal.consumeAutoConfirmed();
+    }
+  }, [confirmModal.autoConfirmedStation, confirmModal.consumeAutoConfirmed, t]);
+  const handleConfirmAutoToastDismiss = useCallback(() => setConfirmAutoToast(null), []);
+  // 검색 fallback 실제 wire는 후속 PR — 현재는 onClose와 동일 동작(모달만 닫음).
+  // (origin 검색용 picker는 별도 component 필요. DestinationPicker는 목적지 전용.)
+
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
   const { arrivedBanner } = useArrivalAutoClear({
     currentStationName: result?.station.name,
@@ -956,6 +991,23 @@ export default function HomeScreen() {
           }}
         />
       )}
+
+      {/* #914 (F4) — 1탭 현재역 확정. wifi 단일 매칭은 자동 확정 + toast 노출,
+           GPS 다중 후보는 모달 1탭 확정, 후보 0개는 검색 fallback 안내. */}
+      <CurrentStationConfirmModal
+        visible={confirmModal.visible}
+        candidates={confirmModal.candidates}
+        topPick={confirmModal.topPick}
+        onConfirm={confirmModal.onCardTap}
+        onSearchFallback={confirmModal.onClose}
+        onClose={confirmModal.onClose}
+      />
+      <Toast
+        visible={confirmAutoToast !== null}
+        message={confirmAutoToast ?? ''}
+        onDismiss={handleConfirmAutoToastDismiss}
+        testID="current-station-auto-confirm-toast"
+      />
 
       <DestinationPicker
         visible={pickerVisible}

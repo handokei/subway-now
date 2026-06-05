@@ -130,7 +130,8 @@
     "topPickHint": "Best match",
     "empty": "No nearby station found",
     "searchFallback": "Search instead",
-    "close": "Close"
+    "close": "Close",
+    "autoConfirmed": "Confirmed as {{name}}"
   },
   "sleepModeGuide": {
     "title": "Sleep mode notice",
