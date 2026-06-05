@@ -21,7 +21,7 @@
 import { useEffect, useRef } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
-import { syncBoardingLock } from '../../nearest-station/api/boardingLockSync';
+import { syncBoardingLock, type AutoLockCandidate } from '../../nearest-station/api/boardingLockSync';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useBoardingLockSync');
@@ -52,6 +52,14 @@ export interface UseBoardingLockSyncOptions {
   forceTriggerKey?: string | null;
   /** Seam G subsurface 신호 (옵션) — backend 로그에 진단 라벨로 첨부. */
   subsurface?: boolean;
+  /**
+   * #915/#916 A1 — backend 응답에서 autoLockCandidate를 받으면 호출. 호출자는 이 콜백에서
+   * useBoardingLockStore.createLock으로 hydrate해 사용자 명시 탭 없이 lock UX 활성화한다.
+   *
+   * candidate가 null인 응답은 콜백 호출 안 함(콜백은 candidate 존재 신호 전용).
+   * 같은 trainCode 중복 hydrate는 호출자가 store level에서 idempotent 판단.
+   */
+  onAutoLockCandidate?: (candidate: AutoLockCandidate) => void;
 }
 
 /**
@@ -64,11 +72,26 @@ export function useBoardingLockSync({
   tripActive,
   forceTriggerKey,
   subsurface,
+  onAutoLockCandidate,
 }: UseBoardingLockSyncOptions): void {
   // 이미 보낸 currentStation을 기억해 debounce 안의 중복 발사를 방지.
   const lastSentStationRef = useRef<string | null>(null);
   // forceTriggerKey 이전 값 — 같은 key 재전달 시 no-op 판정용.
   const lastForceKeyRef = useRef<string | null>(null);
+  // #915 — 매 렌더 새 함수일 가능성 → ref로 latest 보관해 effect deps churn 회피.
+  const onAutoLockCandidateRef = useRef(onAutoLockCandidate);
+  useEffect(() => {
+    onAutoLockCandidateRef.current = onAutoLockCandidate;
+  }, [onAutoLockCandidate]);
+
+  // tripActive false → true 전환 시 lastSent ref들을 리셋. 새 trip의 첫 currentStationName이
+  // 이전 trip의 마지막 station과 같아도 첫 sync가 발사되도록 보장 (#915 self code-review C4).
+  useEffect(() => {
+    if (!tripActive) {
+      lastSentStationRef.current = null;
+      lastForceKeyRef.current = null;
+    }
+  }, [tripActive]);
 
   // 1) currentStationName 변경 debounce 트리거.
   useEffect(() => {
@@ -88,6 +111,7 @@ export function useBoardingLockSync({
         accuracy: accuracyMeters,
         subsurface,
         reason: 'station-change',
+        onAutoLockCandidate: onAutoLockCandidateRef.current,
       });
     }, SYNC_DEBOUNCE_MS);
 
@@ -115,6 +139,7 @@ export function useBoardingLockSync({
       accuracy: accuracyMeters,
       subsurface,
       reason: 'force-trigger',
+      onAutoLockCandidate: onAutoLockCandidateRef.current,
     });
   }, [tripActive, forceTriggerKey, currentStationName, accuracyMeters, subsurface]);
 }
@@ -124,11 +149,13 @@ interface FireSyncInput {
   accuracy: number;
   subsurface?: boolean;
   reason: 'station-change' | 'force-trigger';
+  onAutoLockCandidate?: (candidate: AutoLockCandidate) => void;
 }
 
 /**
  * AsyncStorage에서 token을 읽어 syncBoardingLock 호출. token/trip 부재는 graceful no-op.
- * 호출 결과는 무시(throw하지 않음) — 정정 응답은 호출자 store를 mutate하지 않는다.
+ * 응답의 autoLockCandidate(#916)는 호출자 콜백으로 전달 — 정정 자체(currentWaypoint)는
+ * cron silent push 경로가 별도로 client store를 mutate한다.
  */
 async function fireSync(input: FireSyncInput): Promise<void> {
   const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
@@ -149,6 +176,11 @@ async function fireSync(input: FireSyncInput): Promise<void> {
     reason: input.reason,
     advanced: res.advanced ?? false,
     currentWaypoint: res.currentWaypoint ?? null,
+    autoLockCandidate: res.autoLockCandidate?.trainCode ?? null,
     ok: res.ok,
   });
+  // #915/#916 — backend가 자동/명시 lock 메타를 노출했으면 호출자에 전달. null이면 미호출.
+  if (res.ok && res.autoLockCandidate) {
+    input.onAutoLockCandidate?.(res.autoLockCandidate);
+  }
 }

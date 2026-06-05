@@ -44,6 +44,7 @@ import { useBoardingLockController } from '../features/alarm/hooks/useBoardingLo
 import { useBoardingLockScheduler } from '../features/alarm/hooks/useBoardingLockScheduler';
 import { useBoardingLockAdvancer } from '../features/alarm/hooks/useBoardingLockAdvancer';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
+import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
 import { MisBoardingBanner } from '../features/route/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../features/route/components/MisBoardingReselectModal';
 import { Toast } from '../shared/ui/Toast';
@@ -256,6 +257,7 @@ export default function HomeScreen() {
     lock: boardingLock,
     directionalArrivals,
     createLockFromTrain,
+    hydrateLockFromCandidate,
     releaseLock: releaseBoardingLock,
   } = useBoardingLockController({
     destinationId: destination?.id ?? null,
@@ -264,6 +266,16 @@ export default function HomeScreen() {
     arrival,
     currentStation: result?.station ?? null,
     expectedDurationMinutes: staticEtaMinutes,
+  });
+  // #915 (C1 destination-only baseline UX) — destination 설정 직후 backend로 좋은 fix sync 발사.
+  // backend cron이 9단 게이트 통과 시 autoLockCandidate 응답에 부착(#916) → 사용자 명시 탭 없이
+  // boardingLock hydrate. lock 활성 여부와 무관하게 trip 활성 동안 폴링.
+  useBoardingLockSync({
+    currentStationName: result?.station.name ?? null,
+    accuracyMeters: accuracyMeters ?? null,
+    tripActive: Boolean(destination && route),
+    subsurface: barometerSubsurface,
+    onAutoLockCandidate: hydrateLockFromCandidate,
   });
   useBoardingLockScheduler({
     lock: boardingLock,

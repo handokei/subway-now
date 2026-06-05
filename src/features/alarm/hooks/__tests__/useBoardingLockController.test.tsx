@@ -250,6 +250,129 @@ describe('useBoardingLockController', () => {
     });
   });
 
+  // #915/#916 — backend autoLockCandidate hydrate. lockController가 createLock으로 위임.
+  describe('hydrateLockFromCandidate (#915/#916)', () => {
+    it('valid candidate + 컨텍스트 있음 → createLock 호출', async () => {
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+      });
+      await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+      const lock = mockSetBoardingLock.mock.calls[0][0];
+      expect(lock).toMatchObject({
+        destinationId: 'dest-1',
+        trainCode: 'AUTO-7',
+        boardingLine: '2',
+        expectedDurationMs: 20 * 60_000,
+      });
+      // initialEtaSeconds는 자동 hydrate에선 미포함 (Seam A 지연 칩은 명시 탭 lock 한정).
+      expect(lock.initialEtaSeconds).toBeUndefined();
+    });
+
+    it('역명+line 매칭 시 boardingStationId 정정', async () => {
+      mockFindStationByNameAndLine.mockReturnValueOnce({ id: 'stn-A-line2', name: '강남', line: '2' });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+      });
+      await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+      expect(mockSetBoardingLock.mock.calls[0][0].boardingStationId).toBe('stn-A-line2');
+    });
+
+    it('역명 매칭 실패 → currentStation.id 폴백', async () => {
+      mockFindStationByNameAndLine.mockReturnValueOnce(null);
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+      });
+      await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+      expect(mockSetBoardingLock.mock.calls[0][0].boardingStationId).toBe('stn-A');
+    });
+
+    it('expectedDurationMinutes null → fallback 30분', async () => {
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, expectedDurationMinutes: null }),
+      );
+      await act(async () => {
+        result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+      });
+      await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+      expect(mockSetBoardingLock.mock.calls[0][0].expectedDurationMs).toBe(30 * 60_000);
+    });
+
+    it('destinationId null → no-op', async () => {
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, destinationId: null }),
+      );
+      await act(async () => {
+        result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+      });
+      expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('currentStation null → no-op', async () => {
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, currentStation: null }),
+      );
+      await act(async () => {
+        result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+      });
+      expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('candidate.line 무효 값 → no-op (graceful)', async () => {
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '99', subwayId: '1099' });
+      });
+      expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('idempotent — 동일 trainCode + line이 이미 활성이면 재생성 안 함', async () => {
+      const existing: BoardingLock = {
+        destinationId: 'dest-1',
+        trainCode: 'AUTO-7',
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: Date.now(),
+        expectedDurationMs: 600_000,
+      };
+      // loadLock(mount effect)이 store를 덮어쓰지 않도록 storage mock도 동일 lock 반환.
+      mockGetBoardingLock.mockResolvedValue(existing);
+      useBoardingLockStore.setState({ lock: existing });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await waitFor(() => expect(useBoardingLockStore.getState().lock?.trainCode).toBe('AUTO-7'));
+      mockSetBoardingLock.mockClear();
+      await act(async () => {
+        result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+      });
+      expect(mockSetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('lock 이미 존재 → 다른 trainCode candidate 와도 no-op (사용자 명시 lock overwrite 차단)', async () => {
+      const existing: BoardingLock = {
+        destinationId: 'dest-1',
+        trainCode: 'OLD-1',
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: Date.now(),
+        expectedDurationMs: 600_000,
+      };
+      mockGetBoardingLock.mockResolvedValue(existing);
+      useBoardingLockStore.setState({ lock: existing });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await waitFor(() => expect(useBoardingLockStore.getState().lock?.trainCode).toBe('OLD-1'));
+      mockSetBoardingLock.mockClear();
+      await act(async () => {
+        result.current.hydrateLockFromCandidate({ trainCode: 'NEW-2', line: '2', subwayId: '1002' });
+      });
+      // 정책: lock 존재 시 hydrate no-op. 사용자가 picker 탭한 lock을 backend cron candidate가
+      // silently overwrite하지 않게 보호. swap은 createLockFromTrain으로 명시 호출.
+      expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      expect(useBoardingLockStore.getState().lock?.trainCode).toBe('OLD-1');
+    });
+  });
+
   describe('releaseLock', () => {
     it('store releaseLock으로 위임 — storage clear', async () => {
       useBoardingLockStore.setState({

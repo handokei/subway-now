@@ -54,11 +54,30 @@ describe('syncBoardingLock (#901)', () => {
       advanced: true,
       currentWaypoint: '역삼',
       nextStation: '역삼',
+      autoLockCandidate: null,
     });
     const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('https://api.test.dev/boarding-lock/sync');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual(basePayload);
+  });
+
+  it('#915/#916 — autoLockCandidate 응답 forward', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () =>
+        Promise.resolve({
+          ok: true,
+          advanced: false,
+          currentWaypoint: '역삼',
+          nextStation: '역삼',
+          autoLockCandidate: { trainCode: '7246', line: '2', subwayId: '1002' },
+        }),
+    });
+    const r = await syncBoardingLock(basePayload);
+    expect(r.autoLockCandidate).toEqual({ trainCode: '7246', line: '2', subwayId: '1002' });
   });
 
   it('subsurface 옵션 필드 forward', async () => {
@@ -101,6 +120,7 @@ describe('syncBoardingLock (#901)', () => {
       advanced: false,
       currentWaypoint: null,
       nextStation: null,
+      autoLockCandidate: null,
     });
   });
 
@@ -118,6 +138,7 @@ describe('syncBoardingLock (#901)', () => {
       advanced: false,
       currentWaypoint: null,
       nextStation: null,
+      autoLockCandidate: null,
     });
   });
 
