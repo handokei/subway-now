@@ -16,6 +16,8 @@ import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils
 import { resolveNextTarget } from '../utils/stationPipeline';
 import { sendAlarmNotification, sendStationPassedNotification } from '../utils/stationNotification';
 import { isImminentByArrivalCode } from '../../arrival/utils/imminentArrivalSignal';
+import { findFgArvlCdFireSignal } from '../utils/fgArvlCdFastPath';
+import type { StationArrival } from '../../../shared/types/arrival';
 import { getStoredTripTrainCode } from '../../route/utils/tripTrainCode';
 import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import {
@@ -113,6 +115,16 @@ export interface UseStationAlarmInputs {
    */
   motionStationary?: boolean;
   /**
+   * #917 A2 follow-up — FG fast path arvlCd∈{0,1} 매역 알림 입력.
+   *
+   * 호출자(HomeScreen 등)가 현재 폴링 중인 `useArrivalInfo` 결과를 그대로 전달한다.
+   * 폴링 station은 nearestStation(또는 origin)이 일반적이며, 매역 fast-path effect는
+   * 그 arrival.up/down row 중 lock.trainCode 일치 + arvlCd∈{0,1}을 트리거 신호로 본다.
+   *
+   * 미전달이면 fast-path 효과는 no-op — 기존 ETA/API imminent path와 backend cron 1차 source만 동작.
+   */
+  currentStationArrival?: StationArrival | null;
+  /**
    * 테스트 전용 — #670/#672 좌표 warmup 가드 비활성화.
    * production 호출자는 미설정으로 둠. 단위 테스트에서 mount 직후 alarm 평가 검증 시 사용.
    */
@@ -131,6 +143,7 @@ export function useStationAlarm({
   locationUncertain = false,
   positionStability,
   motionStationary,
+  currentStationArrival,
   skipWarmupGuard = false,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
@@ -629,5 +642,122 @@ export function useStationAlarm({
     clearDismissSilenceAction,
     userLocation?.lat,
     userLocation?.lng,
+  ]);
+
+  // #917 A2 follow-up — FG fast path: lock.trainCode가 currentStationArrival의 row에
+  // arvlCd∈{0,1}으로 첫 관찰되면 nearestStation에 대한 매역(station-passed) 알림 즉시 발사.
+  //
+  // 백엔드 cron(10~30s 사이클) 대비 우위: 클라는 useArrivalInfo 1주기(보통 30s) 안에 같은 신호를
+  // 이미 가지고 있으므로 BG silent push 도달 지연 없이 발사 가능. 지하/지상 무관 SSOT가 GPS 아닌
+  // Seoul `realtimeArrivalList`.
+  //
+  // 가드 (AND, 하나라도 false면 no-op):
+  //   1. firedHydrated — destination별 firedAlarms 복원 완료 후
+  //   2. route + destination + nearestStation 존재 (nearest 없으면 fire 대상 station 결정 불가)
+  //   3. firedAlarmsRef destinationId 일치 (#699 race 가드)
+  //   4. nearestStation이 route 상에 있음 (off-route 신호 무시)
+  //   5. lock 존재 + lock.trainCode == row.trainCode + arvlCd∈{0,1} (findFgArvlCdFireSignal — #640 회귀 가드)
+  //   6. dismiss silence 미적용
+  //   7. movement gate(speed/accuracy/static) 통과
+  //   8. lastNotifiedStationId 미일치 (GPS station-passed와 dedup 공유 — 한 station에 한 알람)
+  //
+  // dedup 정책: lastNotifiedStationId 단일 출처. 기존 station-passed effect와 같은 키를 사용해
+  // GPS 경로/Fast path 어느 쪽이 먼저 발사해도 다른 쪽은 자동 dedup. 이슈가 명시한
+  // `(trainCode, station, arvlCd)` granularity는 station-level dedup의 superset이라 충족된다.
+  useEffect(() => {
+    if (!firedHydrated) return;
+    if (!route || !destination) return;
+    if (!nearestStation) return;
+    if (firedAlarmsRefDestIdRef.current !== destination.id) return;
+    if (!currentStationArrival) return;
+    if (!isStationOnRoute(nearestStation, route)) return;
+
+    const candidateStation = nearestStation;
+    const capturedRoute = route;
+    const capturedDestinationName = destination.name;
+
+    let cancelled = false;
+    void (async () => {
+      const lock = await getBoardingLock();
+      if (cancelled) return;
+      // #640 회귀 가드 — lock 부재 시 lockless trip의 임의 train arvlCd로 fire 절대 금지.
+      // findFgArvlCdFireSignal 내부 가드와 중복이지만 명시 — 가드 본질이 본 PR의 핵심.
+      if (!lock) return;
+      const signal = findFgArvlCdFireSignal(currentStationArrival, lock);
+      if (!signal) return;
+
+      // #746 dismiss silence — 사용자 명시 정책 우선.
+      const silenceGate = applySilenceGate(
+        dismissSilence,
+        Date.now(),
+        userLocation,
+        clearDismissSilenceAction,
+      );
+      if (silenceGate.silenced) {
+        logSuppressedDismissSilence({
+          source: 'fg-arvlcd',
+          stationName: candidateStation.name,
+          kind: 'station-passed',
+        });
+        return;
+      }
+
+      // #727/#728/#733 — 정적 misfire 가드. arvlCd 신호가 강해도 정적 사용자(speed=0) 발사는
+      // 잘못된 trainCode lock 케이스 (fusion이 통과 열차를 momentary adopt)에서 위험.
+      if (movementSuppressionReason) {
+        logSuppressedMovement({
+          source: 'fg-arvlcd',
+          stationName: candidateStation.name,
+          kind: 'station-passed',
+          reason: movementSuppressionReason,
+        });
+        return;
+      }
+
+      // lastNotifiedStationId 공유 dedup. cancelled 재확인 — getBoardingLock 후 effect cleanup 가능.
+      try {
+        const lastId = await getLastNotifiedStationId();
+        if (cancelled) return;
+        if (candidateStation.id === lastId) {
+          logSuppressedDedupStation('fg-arvlcd', candidateStation);
+          return;
+        }
+        const target = resolveNextTarget(
+          capturedRoute,
+          capturedDestinationName,
+          candidateStation.line,
+        );
+        await sendStationPassedNotification(
+          candidateStation.name,
+          capturedDestinationName,
+          target,
+          notificationSource,
+        );
+        if (cancelled) return;
+        await setLastNotifiedStationId(candidateStation.id);
+        logFiredStationPassed('fg-arvlcd', candidateStation);
+      } catch (e) {
+        logger.error('FG arvlCd fast-path 알림 실패:', e);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    firedHydrated,
+    route,
+    destination?.id,
+    destination?.name,
+    nearestStation?.id,
+    nearestStation?.name,
+    nearestStation?.line,
+    currentStationArrival,
+    movementSuppressionReason,
+    dismissSilence,
+    clearDismissSilenceAction,
+    userLocation?.lat,
+    userLocation?.lng,
+    notificationSource,
   ]);
 }

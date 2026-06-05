@@ -100,6 +100,11 @@ jest.mock('../../../arrival/utils/imminentArrivalSignal', () => ({
   isImminentByArrivalCode: (...args: unknown[]) => mockIsImminentByArrivalCode(...args),
 }));
 
+const mockFindFgArvlCdFireSignal = jest.fn();
+jest.mock('../../utils/fgArvlCdFastPath', () => ({
+  findFgArvlCdFireSignal: (...args: unknown[]) => mockFindFgArvlCdFireSignal(...args),
+}));
+
 const mockGetStoredTripTrainCode = jest.fn();
 jest.mock('../../../route/utils/tripTrainCode', () => ({
   getStoredTripTrainCode: (...args: unknown[]) => mockGetStoredTripTrainCode(...args),
@@ -157,6 +162,7 @@ describe('useStationAlarm', () => {
     mockGetStoredTripTrainCode.mockResolvedValue(null);
     mockUseArrivalInfo.mockReturnValue({ arrival: null, loading: false, isMock: false });
     mockGetBoardingLock.mockResolvedValue(null);
+    mockFindFgArvlCdFireSignal.mockReturnValue(null);
   });
 
   it('does not evaluate when route is null', () => {
@@ -2219,6 +2225,379 @@ describe('useStationAlarm', () => {
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
       expect(clearSpy).toHaveBeenCalled();
       clearSpy.mockRestore();
+    });
+  });
+
+  // #917 A2 follow-up — FG fast path: lock.trainCode arvlCd∈{0,1} 매역 알림.
+  // GPS 기반 station-passed effect와 분리해 검증하기 위해 nearestStation을 off-route로 두고
+  // `findFgArvlCdFireSignal` mock으로 fast path만 isolate. fast path 자체는 isStationOnRoute을
+  // 보지만, 그 게이트는 effect 내부에서 직접 검사하지 않고 mock 반환값 + 경로 매칭으로 확인.
+  // GPS path는 isStationOnRoute=false로 사전 차단되므로 fast path 단독 검증이 가능.
+  describe('#917 FG fast path arvlCd∈{0,1} 매역 알림', () => {
+    const route = makeDirectRoute(3, '2');
+    // line '2' — direct route와 일치 → 양쪽 effect 모두 on-route. 그러나 GPS effect는
+    // 별도 mockGetLastNotifiedStationId 사전 set으로 dedup 처리(아래 helper).
+    const onRouteStation = makeStation('S-시청', '시청');
+    const activeLock = {
+      destinationId: 'D1',
+      trainCode: 'T-LOCK',
+      boardingStationId: 'S0',
+      boardingLine: '2' as const,
+      boardedAt: 1_700_000_000_000,
+      expectedDurationMs: 600_000,
+    };
+    const dummyArrival = { up: [], down: [], isMock: false };
+
+    /**
+     * fastPathInputs:
+     *   - speedMps/accuracyMeters: movement gate 통과
+     *   - currentStationArrival: non-null (effect 게이트 통과). 내용은 mock으로 대체되므로 placeholder.
+     *   - nearestStation: on-route (line '2'). GPS path 발사를 막기 위해 default beforeEach에서
+     *     mockGetLastNotifiedStationId를 onRouteStation.id로 set → GPS path는 dedup 차단되고
+     *     fast path도 같은 dedup에 걸린다. fast path 통과 케이스 테스트는 별도 mockGetLastNotifiedStationId(null)
+     *     override + GPS path 차단을 위해 nearestStation 자체를 off-route로 둠.
+     */
+    function fastPathInputs(overrides: Partial<UseStationAlarmInputs> = {}): UseStationAlarmInputs {
+      return defaultInputs({
+        route,
+        destination,
+        nearestStation: onRouteStation,
+        speedMps: 5,
+        accuracyMeters: 50,
+        currentStationArrival: dummyArrival,
+        ...overrides,
+      });
+    }
+
+    // GPS station-passed effect를 완전히 우회하기 위해 off-route station으로 둠.
+    // fast path effect도 isStationOnRoute로 같은 station을 검사하지만, 핵심 게이트 검증은
+    // GPS path 발사가 0인 환경에서 fast path만의 fire/no-fire를 관찰하기 위함.
+    // off-route 테스트 외엔 onRouteStation을 쓰고, lastNotifiedStationId 사전 set으로 GPS dedup.
+    const OFF_ROUTE_LINE = '3' as const;
+    const offRouteStation: Station = { ...onRouteStation, id: 'OFF', line: OFF_ROUTE_LINE };
+
+    // fast path positive — GPS path는 nearestStation을 off-route로 두어 차단, fast path는
+    // isStationOnRoute=false 직격이라 발사 못 함. 다른 방법: GPS path가 dedup으로 차단되는 시나리오.
+    // → mockGetLastNotifiedStationId를 'GPS-FIRED'로 set하면 GPS path는 fire 후 dedup에 막힘…
+    //   아니, GPS path는 lastId === candidateStation.id면 dedup. candidateStation.id=onRouteStation.id.
+    //   다른 id를 fast path와 GPS가 봐도 둘 다 같은 candidate를 보기 때문에 분리 불가.
+    //
+    // 결론: positive 테스트는 GPS+fast 둘 다 fire 가능한 환경에서 진행 + 'fg-arvlcd' source 라벨로
+    // fast path 발사 여부만 가린다. GPS path는 sendStationPassedNotification을 'fg' source로 logFiredStationPassed
+    // 호출하므로 mock 호출 인자로 식별 가능.
+
+    it('lock 활성 + arvlCd 신호 → station-passed 알림 발사 + lastNotifiedStationId 갱신 + fg-arvlcd source 적재', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() => useStationAlarm(fastPathInputs()));
+
+      await waitFor(() =>
+        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg-arvlcd', onRouteStation),
+      );
+      expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(onRouteStation.id);
+    });
+
+    // #640 회귀 가드 — 본 PR의 핵심.
+    it('#640 회귀 가드 — lock 부재면 같은 신호여도 fast path 발사 X (fg-arvlcd 미적재)', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id); // GPS dedup
+      // findFgArvlCdFireSignal mock은 lock=null로 호출되어 null 반환 (helper 자체 가드 검증).
+      mockFindFgArvlCdFireSignal.mockImplementation((_arrival, lock) =>
+        lock ? { trainCode: 'T-LOCK', arvlCd: 0 } : null,
+      );
+
+      renderHook(() => useStationAlarm(fastPathInputs()));
+
+      // 충분히 대기 — fast path가 발사해선 안 됨.
+      await waitFor(() => expect(mockGetBoardingLock).toHaveBeenCalled());
+      await Promise.resolve();
+      await Promise.resolve();
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('#640 회귀 가드 — findFgArvlCdFireSignal이 null 반환(trainCode 불일치/arvlCd 불일치)면 발사 X', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+      mockFindFgArvlCdFireSignal.mockReturnValue(null);
+
+      renderHook(() => useStationAlarm(fastPathInputs()));
+
+      await waitFor(() => expect(mockGetBoardingLock).toHaveBeenCalled());
+      await Promise.resolve();
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('lastNotifiedStationId가 같은 station.id면 fast path dedup → fg-arvlcd dedup 로그', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() => useStationAlarm(fastPathInputs()));
+
+      await waitFor(() =>
+        expect(mockLogSuppressedDedupStation).toHaveBeenCalledWith('fg-arvlcd', onRouteStation),
+      );
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('currentStationArrival 미전달(undefined)이면 fast path no-op (getBoardingLock 미호출)', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+
+      renderHook(() => useStationAlarm(fastPathInputs({ currentStationArrival: undefined })));
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      await Promise.resolve();
+      // mockEvaluateAlarmPhase=null & isImminentByArrivalCode=false → fireAndLog 미호출 →
+      // 본 hook에서 getBoardingLock 호출자는 fast path뿐. fast path가 early return하면 호출 0.
+      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('currentStationArrival null이면 fast path no-op', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+
+      renderHook(() => useStationAlarm(fastPathInputs({ currentStationArrival: null })));
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      await Promise.resolve();
+      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('nearestStation null이면 fast path no-op (fire 대상 station 결정 불가)', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+
+      renderHook(() => useStationAlarm(fastPathInputs({ nearestStation: null })));
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      await Promise.resolve();
+      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('nearestStation이 route 밖이면(line 불일치) fast path no-op', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+
+      renderHook(() => useStationAlarm(fastPathInputs({ nearestStation: offRouteStation })));
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      await Promise.resolve();
+      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('route 또는 destination 미설정이면 fast path no-op', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+
+      renderHook(() => useStationAlarm(fastPathInputs({ route: null })));
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      await Promise.resolve();
+      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('destination 미설정이면 fast path no-op', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+
+      renderHook(() => useStationAlarm(fastPathInputs({ destination: null })));
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      await Promise.resolve();
+      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('movement gate 차단(speed=0) → fast path 발사 X + logSuppressedMovement(fg-arvlcd)', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() => useStationAlarm(fastPathInputs({ speedMps: 0 })));
+
+      await waitFor(() =>
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg-arvlcd',
+            stationName: onRouteStation.name,
+            kind: 'station-passed',
+            reason: 'movement-static-speed',
+          }),
+        ),
+      );
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('dismiss silence 활성 시 fast path 발사 X + logSuppressedDismissSilence(fg-arvlcd)', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+      useAlarmEventStore.setState({
+        dismissSilence: {
+          sinceTs: Date.now(),
+          sinceLat: 37.5,
+          sinceLng: 127.0,
+        },
+      });
+
+      renderHook(() =>
+        useStationAlarm(fastPathInputs({ userLocation: { lat: 37.5, lng: 127.0 } })),
+      );
+
+      await waitFor(() =>
+        expect(mockLogSuppressedDismissSilence).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg-arvlcd',
+            stationName: onRouteStation.name,
+            kind: 'station-passed',
+          }),
+        ),
+      );
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('hydration 미완료 시 fast path 보류 (firedHydrated=false)', async () => {
+      mockGetFiredAlarms.mockReturnValue(new Promise(() => {})); // 영원히 pending
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() => useStationAlarm(fastPathInputs()));
+
+      await Promise.resolve();
+      // hydration 보류 — fast path는 firedHydrated 가드로 early return.
+      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    });
+
+    it('내부 storage read/send 실패 시 catch로 swallow (logger.error 분기 커버)', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      // getLastNotifiedStationId가 throw → fast path 내부 try/catch가 흡수.
+      // GPS path는 자체 try/catch가 있어 같은 에러로 둘 다 차단되지만 본 테스트는 fast path
+      // 분기 커버가 목적.
+      mockGetLastNotifiedStationId.mockRejectedValue(new Error('disk error'));
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() => useStationAlarm(fastPathInputs()));
+
+      // 에러 발생해도 unhandled rejection 없이 완료. fast path는 logFiredStationPassed 미호출.
+      await waitFor(() => expect(mockGetLastNotifiedStationId).toHaveBeenCalled());
+      await Promise.resolve();
+      await Promise.resolve();
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('effect cleanup (unmount) 후엔 후속 작업이 fast path 발사 안 함', async () => {
+      // getBoardingLock을 지연 resolve로 cleanup 시점을 끼워 넣음.
+      let resolveLock: (v: typeof activeLock) => void = () => {};
+      mockGetBoardingLock.mockReturnValueOnce(
+        new Promise<typeof activeLock>((r) => {
+          resolveLock = r;
+        }),
+      );
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      const { unmount } = renderHook(() => useStationAlarm(fastPathInputs()));
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      unmount();
+      resolveLock(activeLock);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // fast path의 logFiredStationPassed('fg-arvlcd', ...)이 호출되지 않아야 한다.
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('getLastNotifiedStationId 후 cleanup 되면 dedup/send 분기 진입 안 함 (cancelled gate line 720)', async () => {
+      // GPS effect와 fast path effect 둘 다 호출 가능 — mockImplementation으로 모든 호출 pending.
+      const resolvers: Array<(v: string | null) => void> = [];
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockImplementation(
+        () =>
+          new Promise<string | null>((r) => {
+            resolvers.push(r);
+          }),
+      );
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      const { unmount } = renderHook(() => useStationAlarm(fastPathInputs()));
+      // fast path는 getBoardingLock(resolved) → findSignal(sync) → gates(sync) → getLastNotifiedStationId(pending).
+      // 첫 mock 호출은 GPS effect일 수 있어 fast path가 자기 호출에 도달하도록 충분히 await.
+      await waitFor(() => expect(mockGetLastNotifiedStationId.mock.calls.length).toBeGreaterThanOrEqual(2));
+      // 추가 microtask flush로 두 effect 모두 await 지점에 도달했음을 보장.
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      unmount();
+      resolvers.forEach((r) => r(null));
+      // resolve 후 microtask 충분히 돌려 `if (cancelled) return;` 진입(line 720).
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+      // dedup 로그도 호출되지 않아야 한다 (cancelled로 early return).
+      const arvlCdDedups = mockLogSuppressedDedupStation.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdDedups).toHaveLength(0);
+    });
+
+    it('sendStationPassedNotification 후 cleanup 되면 setLastNotifiedStationId 미호출 (cancelled gate line 736)', async () => {
+      // send pending 동안 unmount → setLastNotifiedStationId 미호출 + logFiredStationPassed 미호출.
+      // GPS effect와 fast path effect 둘 다 send 호출하므로 mockImplementation으로 전체 pending.
+      const resolvers: Array<() => void> = [];
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+      mockSendStationPassedNotification.mockImplementation(
+        () =>
+          new Promise<void>((r) => {
+            resolvers.push(r);
+          }),
+      );
+
+      const { unmount } = renderHook(() => useStationAlarm(fastPathInputs()));
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      unmount();
+      // 모든 pending send를 해제 — 각 effect는 cancelled=true를 보고 setLastNotifiedStationId skip.
+      resolvers.forEach((r) => r());
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // setLastNotifiedStationId와 logFiredStationPassed('fg-arvlcd', ...) 모두 미호출.
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('destination 변경 직후 firedAlarmsRef.destId 미일치 시점에는 fast path 보류 (line 671)', async () => {
+      // hydration mock: 첫 destination에 대해 hydrate 완료 → ref id 일치.
+      // 그 후 destination 변경 시 새 hydrate 진행 중인 짧은 시점에 fast path effect deps 재실행 →
+      // ref.current는 아직 old destination id라 새 destination.id와 불일치 → early return.
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      // 첫 destination 정상 hydrate.
+      mockGetFiredAlarms.mockResolvedValueOnce(new Set<string>());
+      // 두 번째 destination는 hydrate를 pending으로 두어 ref.id가 갱신 전 상태 유지.
+      mockGetFiredAlarms.mockReturnValueOnce(new Promise(() => {}));
+
+      const { rerender } = renderHook(
+        ({ dest }: { dest: Station }) => useStationAlarm(fastPathInputs({ destination: dest })),
+        { initialProps: { dest: destination } },
+      );
+
+      // 첫 destination hydrate 완료 대기.
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+
+      // destination 교체. 새 destination의 hydrate는 pending → firedHydrated=false 또는 ref.id 불일치.
+      mockLogFiredStationPassed.mockClear();
+      rerender({ dest: altDestination });
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
     });
   });
 });
