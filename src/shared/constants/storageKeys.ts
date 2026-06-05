@@ -87,6 +87,17 @@ export const TRIP_ENDED_BY_BACKEND_AT_KEY = 'subway-now:trip-ended-by-backend-at
 // HomeScreen 진입/destination 재설정 같은 명시적 의사도 sentinel clear 트리거가 될 수 있다(후속 PR).
 // 형식: 숫자(epoch ms) 문자열. 키 부재 = sentinel 없음.
 export const LA_DISMISSED_AT_KEY = 'subway-now:la-dismissed-at';
+// #919 — Trip 시작 epoch ms. setDestination(non-null)의 switch 분기에서 set,
+// trip-end 시점에 recall KPI 계산용 alarmLog 윈도우 lower bound로 사용.
+// tripBoundCleanups에서 새 trip 시작 또는 trip 종료 시 함께 제거된다.
+// 형식: 숫자(epoch ms) 문자열.
+export const TRIP_STARTED_AT_KEY = 'subway-now:trip-started-at';
+// #919 — 마지막으로 recall telemetry upload된 tripStart 값. idempotency 가드:
+// 같은 trip을 두 번 trigger해도(silent push trip-ended → FG 진입 후 setDestination(null) race 등)
+// 중복 upload 되지 않도록 비교한다. 새 trip이 시작되면 tripBoundCleanups에서 제거되어
+// 다음 trip에 대해 다시 upload가 가능해진다.
+// 형식: 숫자(epoch ms) 문자열.
+export const LAST_UPLOADED_RECALL_TRIP_START_KEY = 'subway-now:last-uploaded-recall-trip-start';
 // #828 — Phase 1+2 fusion wire — active trip의 boarding line code.
 // BG/FG location task가 좌표 upload 시 이 line으로 linePolyline snap을 수행해
 // `mapMatchedArcM` + `mapMatchedLine`을 backend에 첨부한다.

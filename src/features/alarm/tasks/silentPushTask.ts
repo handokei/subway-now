@@ -47,6 +47,7 @@ import {
 } from '../utils/alarmLog';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { setTripEndedSentinel } from '../utils/tripEndedSentinel';
+import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from '../utils/dismissSilenceStorage';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
@@ -448,6 +449,10 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         sentAt: payload.sentAt,
         receivedAt,
       });
+      // #919 — trip-end recall KPI upload. *반드시* cleanup 전에 호출해야 한다 — trigger가
+      // ROUTE_KEY/DESTINATION_KEY/TRIP_STARTED_AT_KEY를 읽어 routeStops를 구성하기 때문.
+      // trigger는 throw하지 않으므로 후속 cleanup/sentinel 흐름 차단 없음.
+      await triggerTripEndRecall();
       await runTripBoundCleanups();
       // #899 (Seam C) — BG에서는 zustand store에 접근 불가. FG 복귀 시점에
       // useStateRehydration이 이 sentinel을 보고 destination/lock store도 reset.

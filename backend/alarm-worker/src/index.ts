@@ -107,12 +107,30 @@ app.post('/trips', async (c) => {
         lastFiredPhase: existing.lastFiredPhase,
         lastEtaSeconds: existing.lastEtaSeconds,
         apnsEnv: existing.apnsEnv ?? incoming.apnsEnv,
+        // #916 follow-up A — server-set auto-lock 보존.
+        // 9단 게이트 통과로 backend가 합성한 lock(autoLockedAt 마커 보유)은 client가 lock 필드
+        // 없이 재등록해도 silent하게 drop되지 않아야 한다 (cron 추적이 끊기는 회귀 차단).
+        // 마커가 없는 사용자 명시 lock은 기존 정책대로 incoming.boardingLock===undefined일 때 drop —
+        // 사용자가 명시적으로 lock을 해제했다는 신호로 간주.
+        // incoming.boardingLock이 truthy면 (사용자가 다른 trainCode 선택 또는 client가 같은 lock
+        // 재송신) 그대로 채택돼 swap 경로가 동작.
+        boardingLock:
+          incoming.boardingLock ??
+          (existing.boardingLock?.autoLockedAt !== undefined
+            ? existing.boardingLock
+            : undefined),
         // boardingLock이 바뀌면(예: 환승 후 새 trainCode) 추적 baseline도 리셋.
         // 양쪽 모두 boardingLock이 있고 trainCode가 같을 때만 baseline 유지 — 둘 다 undefined인
         // 경우 비교가 true로 평가돼 stale epoch이 살아남는 회귀를 막는다.
+        //
+        // #916 follow-up A — incoming.boardingLock===undefined + existing auto-lock 보존 케이스도
+        // 같은 lock이 유지되므로 baseline 유지 (cron 추적 연속성). 사용자 명시 lock drop 케이스는
+        // 기존 정책대로 undefined로 리셋.
         lastTrackedArrivalEpoch:
-          incoming.boardingLock &&
-          existing.boardingLock?.trainCode === incoming.boardingLock.trainCode
+          (incoming.boardingLock &&
+            existing.boardingLock?.trainCode === incoming.boardingLock.trainCode) ||
+          (incoming.boardingLock === undefined &&
+            existing.boardingLock?.autoLockedAt !== undefined)
             ? existing.lastTrackedArrivalEpoch
             : undefined,
         // #586 C: Live Activity token/state는 별도 endpoint(`/live-activity/register`)로 관리.
@@ -786,6 +804,9 @@ function parseBoardingLock(raw: unknown): BoardingLockMeta | undefined {
     selectedDepartureTime: o.selectedDepartureTime,
     segmentStations: o.segmentStations as string[],
     expiresAt: o.expiresAt,
+    // #916 follow-up A: server-set 마커. client는 절대 송신하지 않지만 incoming 본문에 어떤 이유로
+    // 같이 echo돼도 보존한다 (drop하면 서버 set lock 표시가 사라져 보존 분기가 무력화됨).
+    ...(typeof o.autoLockedAt === 'number' ? { autoLockedAt: o.autoLockedAt } : {}),
   };
 }
 

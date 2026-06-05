@@ -16,6 +16,8 @@ import {
   ROUTE_PREFERENCE_KEY,
 } from '../../../shared/constants/storageKeys';
 import { runTripBoundCleanups } from '../../alarm/store/tripBoundCleanups';
+import { setTripStartedAt } from '../../alarm/utils/tripStartStorage';
+import { triggerTripEndRecall } from '../../alarm/utils/triggerTripEndRecall';
 import { useAlarmEventStore } from '../../alarm/store/useAlarmEventStore';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../../../shared/utils/stationRoute';
 
@@ -81,11 +83,22 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
     // 주의: 여기서는 storage만 정리한다. BoardingLock 메모리 release 및 예약 알림 cancel은
     // useBoardingLockController가 destinationId 변경 감지로 처리한다 (store 분리 유지).
     if (isSwitch) {
-      // trip-bound storage 키 cleanup은 단일 메타 배열에서 일괄 실행한다.
-      // 새 trip-bound 키 추가 시 src/features/alarm/store/tripBoundCleanups.ts에 한 줄만
-      // 추가하면 setDestination에서 누락 회귀가 차단된다. (#702 → #799 사이
-      // LAST_FIRED_ALARM_STATION_NAME_KEY, #746 dismissSilence 등 누락 사례 재발 방지.)
-      runTripBoundCleanups().catch(noop);
+      // #919 + cleanup + 새 trip 기록을 순서대로 chain. 각 단계는 자체 catch를 가져
+      // 한 단계 실패가 다음 단계를 막지 않도록 한다 — 측정 인프라가 cleanup의 critical
+      // path를 차단하면 안 된다.
+      // 1) recall trigger: ROUTE_KEY/DESTINATION_KEY/TRIP_STARTED_AT_KEY를 cleanup 전에 읽어야 함
+      // 2) trip-bound storage 키 cleanup
+      //    새 trip-bound 키 추가 시 src/features/alarm/store/tripBoundCleanups.ts에 한 줄만
+      //    추가하면 setDestination에서 누락 회귀가 차단된다. (#702 → #799 사이
+      //    LAST_FIRED_ALARM_STATION_NAME_KEY, #746 dismissSilence 등 누락 사례 재발 방지.)
+      // 3) 새 trip(station != null)이면 새 tripStart를 기록 — cleanup이 직전에 이전 키를 제거했으니
+      //    여기서 set하면 다음 trip 측정 가능. station === null(trip 종료) 경로에서는 set 안 함.
+      triggerTripEndRecall()
+        .catch(noop)
+        .then(() => runTripBoundCleanups())
+        .catch(noop)
+        .then(() => (station ? setTripStartedAt() : undefined))
+        .catch(noop);
       // customOrigin 메모리 상태도 동기화. (loadCustomOrigin은 hydration용이므로 영향 없음)
       if (get().customOrigin !== null) {
         set({ customOrigin: null });
