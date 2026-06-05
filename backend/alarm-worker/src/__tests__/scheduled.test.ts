@@ -3403,14 +3403,17 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   const parseStationPassedData = parseArvlCdStationPassedData;
 
   // arvlCd fire 테스트 공통 setup — kv 시드 + runScheduled 실행. apnsFetch는 옵션으로 사전 stub 가능.
+  // seedKv는 trip put 직후 추가 KV 시드 (이전 cycle stamp 등) 수행하는 콜백.
   async function runArvlScheduled(opts: {
     seoul: SeoulArrivalClient;
     trip?: Trip;
     apnsFetch?: ReturnType<typeof vi.fn>;
     pushId?: string;
+    seedKv?: (kv: InMemoryKV) => Promise<void>;
   }): Promise<{ stats: ScheduledStats; kv: InMemoryKV; apnsFetch: ReturnType<typeof vi.fn> }> {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, opts.trip ?? makeLockTrip());
+    if (opts.seedKv) await opts.seedKv(kv);
     const apnsFetch = opts.apnsFetch ?? vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runScheduled(makeEnv(kv), {
       seoul: opts.seoul,
@@ -3446,16 +3449,9 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   });
 
   it('arvlCd=0(ENTERING) → 매역 push 발사 (arvlCd=0 dedup key)', async () => {
-    const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
+    const { stats, kv } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 0),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p-arvl-0',
+      pushId: 'p-arvl-0',
     });
     expect(stats.arvlCdFireSuccess).toBe(1);
     expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 0))).toBe('1');
@@ -3464,18 +3460,13 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   });
 
   it('dedup — 같은 (trainCode, station, arvlCd) 이미 stamp되어 있으면 push 미발사', async () => {
-    const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
-    // 이전 cycle에서 같은 신호로 이미 stamp된 상태
-    await kv.put(arvlCdFireKey('arvl-tok', '7246', '중곡', 1), '1');
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
+    const { stats, apnsFetch } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 1),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p-arvl-dup',
+      pushId: 'p-arvl-dup',
+      seedKv: async (kv) => {
+        // 이전 cycle에서 같은 신호로 이미 stamp된 상태
+        await kv.put(arvlCdFireKey('arvl-tok', '7246', '중곡', 1), '1');
+      },
     });
     expect(stats.arvlCdFireSuccess).toBe(0);
     expect(stats.arvlCdFireDedup).toBe(1);
