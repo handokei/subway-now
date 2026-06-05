@@ -130,7 +130,8 @@
     "topPickHint": "推荐",
     "empty": "附近未找到车站",
     "searchFallback": "通过搜索选择",
-    "close": "关闭"
+    "close": "关闭",
+    "autoConfirmed": "已确认为{{name}}"
   },
   "sleepModeGuide": {
     "title": "睡眠模式提示",
