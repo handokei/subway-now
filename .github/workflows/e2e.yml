@@ -326,7 +326,10 @@ jobs:
       matrix:
         cell:
           - whileInUse-fg-aboveground-normal-ios18
-          # 후속 PR에서 추가: always-*, *-bg-*, *-underground-*, *-sleep-*, ios17, android
+          - always-fg-aboveground-normal-ios18
+          - whileInUse-fg-aboveground-sleep-ios18
+          - always-fg-aboveground-sleep-ios18
+          # 후속 PR에서 추가: *-bg-*, *-underground-*, ios17, android
     env:
       SIM_NAME: 'iPhone 16'
       EXPO_PUBLIC_E2E_MOCK: '1'

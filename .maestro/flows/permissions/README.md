@@ -10,19 +10,20 @@ Android, FG/BG, 지상/지하, 일반/취침 등 권한·환경 조합별로 매
 - `scripts/permission-matrix-runner.js` — JSON을 읽어 cell 단위로 maestro 실행.
 - `.maestro/flows/permissions/<cell-id>.yaml` — cell별 Maestro flow.
 
-## 첫 PR 범위 (E2)
+## 현재 PR 범위 (E2 첫 PR + 후속)
 
-baseline 1셀만 포함:
+| cell id | permission | appState | environment | mode | os | 비고 |
+| --- | --- | --- | --- | --- | --- | --- |
+| `whileInUse-fg-aboveground-normal-ios18` | WhileInUse | FG | 지상 | 일반 | iOS 18 | baseline (첫 PR) |
+| `always-fg-aboveground-normal-ios18` | Always | FG | 지상 | 일반 | iOS 18 | 권한 대조군 |
+| `whileInUse-fg-aboveground-sleep-ios18` | WhileInUse | FG | 지상 | 취침 | iOS 18 | 권한↓ + 취침 결합 |
+| `always-fg-aboveground-sleep-ios18` | Always | FG | 지상 | 취침 | iOS 18 | SLA 정본 조합 |
 
-| cell id | permission | appState | environment | mode | os |
-| --- | --- | --- | --- | --- | --- |
-| `whileInUse-fg-aboveground-normal-ios18` | WhileInUse | FG | 지상 | 일반 | iOS 18 |
-
-후속 PR에서 추가될 15+ cell (`scripts/permission-matrix.json`의 `cells` 배열에
+후속 PR에서 추가될 cell (`scripts/permission-matrix.json`의 `cells` 배열에
 entry만 추가하면 runner와 CI matrix가 자동으로 픽업):
 
-- Always × FG/BG × 지상/지하 × 일반/취침 = 8 cell
-- WhileInUse × FG/BG × 지상/지하 × 일반/취침 = 8 cell (baseline 1셀 제외 7)
+- `*-bg-*` 차원 (앱 BG 상태에서 매역 알람 SLA 검증)
+- `*-underground-*` 차원 (E2E mock fixture 확장 필요)
 - iOS 17 / Android 차원은 OS dimension 확장
 
 ## 로컬 실행
