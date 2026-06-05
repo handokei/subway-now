@@ -12,6 +12,7 @@ import {
   type SendPushResult,
 } from './apns';
 import { flipApnsEnv, pickApnsHost } from './apnsHost';
+import { attemptAutoLock } from './autoLock';
 import {
   evaluateBoardingPromptGates,
   markPromptFired,
@@ -211,6 +212,18 @@ export interface ScheduledStats extends LiveActivityStats {
    * 누적이 의미있게 커지면 Kalman 튜닝(R/Q) 재측정 또는 reset 정책 조정 신호.
    */
   kalmanDriftWarning: number;
+  /**
+   * #916 A1 — 9단 게이트 통과 후 backend가 `attemptAutoLock`으로 trainCode를 자동 합성해
+   * `trip.boardingLock`을 부착한 누적 횟수. 사용자가 "탑승" 액션을 직접 탭하지 않아도 cron이
+   * 매역 추적을 시작한 케이스 수 = 다운로드 가치 직결 신호.
+   */
+  autoLockSuccess: number;
+  /**
+   * #916 A1 — 자동 lock 후 사용자가 다른 trainCode로 swap한 케이스의 placeholder
+   * (false positive 측정 인프라). 본 PR에서는 catalog 등록 + stat 필드 placeholder만 — 실제
+   * client swap 신호 처리는 후속 PR (#916 A2)에서 wire한다. 현재는 항상 0.
+   */
+  autoLockFalsePositive: number;
 }
 
 /**
@@ -259,6 +272,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     phaseImminentBlocked: 0,
     kalmanReset: 0,
     kalmanDriftWarning: 0,
+    autoLockSuccess: 0,
+    autoLockFalsePositive: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
@@ -1214,6 +1229,38 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     });
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
+  }
+
+  // #916 A1 — 9단 게이트 통과 시점에 backend가 직접 trainCode를 결정 가능한지 시도.
+  // 성공하면 사용자에게 "탑승했냐?" 푸시 없이 lock을 자동 부착하고 cron이 매역 추적을 시작.
+  // 실패(arrivals 없음/ambiguity/subwayId 매핑 누락 등) → 기존 boarding-prompt push fallback.
+  // 거짓 양성 방어: 사용자가 다른 trainCode를 탭하면 client가 새 lock POST → #864/#704 분기로
+  // 자연 교체. boardingPromptState도 함께 fired stamp해 같은 cycle에서 prompt 발사를 차단.
+  const targetWaypoint = pickActiveWaypoint(trip);
+  if (targetWaypoint) {
+    const autoLock = await attemptAutoLock({
+      trip,
+      targetWaypoint,
+      originStation: display.originStation,
+      direction: geo.direction,
+      seoul: deps.seoul,
+      now,
+    });
+    if (autoLock) {
+      trip.boardingLock = autoLock;
+      trip.boardingPromptState = markPromptFired(now);
+      trip.consecutiveEtaMissing = 0;
+      stats.autoLockSuccess += 1;
+      log('boarding-prompt: auto-lock attached', {
+        token: trip.token.slice(0, 8),
+        trainCode: autoLock.trainCode,
+        line: autoLock.line,
+        originStation: display.originStation,
+        fusedSpeedKmh: Math.round(outcome.fusedSpeedKmh * 10) / 10,
+      });
+      await putTrip(env.TRIPS, trip);
+      return;
+    }
   }
 
   // 9단 통과 — alert push 발사.
