@@ -16,6 +16,8 @@ import {
   ACTIVE_TRIP_KEY,
   TRIP_ORIGIN_KEY,
   ALARM_EVENT_KEY,
+  TRIP_STARTED_AT_KEY,
+  LAST_UPLOADED_RECALL_TRIP_START_KEY,
 } from '../../../shared/constants/storageKeys';
 import {
   clearFiredAlarms,
@@ -58,6 +60,11 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   () => AsyncStorage.removeItem(ALARM_EVENT_KEY),
   // #746 — 새 trip 시작 시 이전 trip의 dismiss silence는 무효 → 즉시 클리어.
   clearDismissSilenceStorage,
+  // #919 — trip 시작 시각만 제거. LAST_UPLOADED_RECALL_TRIP_START_KEY는 dedup 마커이므로
+  // 새 trip이 시작될 때 (tripStart 값이 달라질 때) 자연 무효화된다. 여기서 같이 지우면
+  // BG silent-push가 upload + 직후 FG setDestination(null)이 같은 tripStart로 재trigger되는
+  // 경계(self review)에서 idempotency가 깨져 중복 upload 가능 → 보존이 안전.
+  () => AsyncStorage.removeItem(TRIP_STARTED_AT_KEY),
 ];
 
 /**
