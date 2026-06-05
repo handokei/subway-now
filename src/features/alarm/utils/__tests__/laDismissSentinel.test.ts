@@ -9,16 +9,13 @@ import { LA_DISMISS_SENTINEL_TTL_MS } from '../../../../shared/constants/laDismi
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
-  default: {
-    setItem: jest.fn(),
-    getItem: jest.fn(),
-    removeItem: jest.fn(),
-  },
+  default: { setItem: jest.fn(), getItem: jest.fn(), removeItem: jest.fn() },
 }));
 
-const setItemMock = AsyncStorage.setItem as jest.Mock;
-const getItemMock = AsyncStorage.getItem as jest.Mock;
-const removeItemMock = AsyncStorage.removeItem as jest.Mock;
+const storage = jest.mocked(AsyncStorage);
+const setItemMock = storage.setItem;
+const getItemMock = storage.getItem;
+const removeItemMock = storage.removeItem;
 
 describe('laDismissSentinel', () => {
   beforeEach(() => {
