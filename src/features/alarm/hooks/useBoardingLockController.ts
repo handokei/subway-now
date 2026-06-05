@@ -95,8 +95,10 @@ export function useBoardingLockController({
 
   const directionalArrivals = useMemo<ArrivalInfo[]>(() => {
     if (!arrival) return [];
-    // #666 이미 지나간 열차(arrivalSeconds <= 0) 제외 — 사용자가 탭하면 lock 오발화.
-    const reachable = (t: ArrivalInfo): boolean => t.arrivalSeconds > 0;
+    // #897 (Seam A): 임박(arrivalSeconds=0) 열차도 list에 유지 — useArrivalCountdown tick으로 0초가
+    // 되어 행이 사라지면 사용자가 다음 차를 같은 차로 오인하는 회귀가 발생. 음수(이미 지나간)만 차단.
+    // 음수 train은 createLockFromTrain에서도 의미가 없어 #666 가드를 갈음한다.
+    const reachable = (t: ArrivalInfo): boolean => t.arrivalSeconds >= 0;
     if (direction === 'up') return arrival.up.filter(reachable);
     if (direction === 'down') return arrival.down.filter(reachable);
     return [...arrival.up, ...arrival.down].filter(reachable);
@@ -121,6 +123,9 @@ export function useBoardingLockController({
         boardingLine: train.line,
         boardedAt: Date.now(),
         expectedDurationMs: durationMin * 60_000,
+        // #897 Seam A: 탑승 시점 ETA 스냅샷. 동일 trainCode가 유지되는 동안 새 폴링의 arrivalSeconds가
+        // 이 값보다 크게 늘면 그 차이가 지연(분). BoardingTrainList가 "+N분 지연" 칩으로 노출.
+        initialEtaSeconds: train.arrivalSeconds,
       });
     },
     [destinationId, currentStation, expectedDurationMinutes, createLock],

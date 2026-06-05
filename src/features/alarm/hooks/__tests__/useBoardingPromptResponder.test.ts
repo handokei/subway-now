@@ -136,7 +136,7 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     };
   }
 
-  it('[탑승] 액션 + 후보 명확 + station 매칭 → createLock 호출', async () => {
+  it('[탑승] 액션 + 후보 명확 + station 매칭 → createLock 호출 + initialEtaSeconds 스냅샷(#897)', async () => {
     (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
     const deps = makeDeps();
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
@@ -148,6 +148,8 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
         boardingStationId: 'S1',
         boardingLine: '2',
         expectedDurationMs: 600_000,
+        // #897 Seam A: auto-lock 시점의 ETA(makeArrival 기본=60s) 스냅샷.
+        initialEtaSeconds: 60,
       }),
     );
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();

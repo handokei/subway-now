@@ -43,27 +43,174 @@ describe('BoardingTrainList', () => {
     expect(getByTestId('boarding-train-sequence-T-A').props.children).toBe('약 1정거장 전 (약 3분 후)');
   });
 
-  it('#634 도착 시각을 receivedAtMs + arrivalSeconds 기반 HH:mm으로 표시', () => {
-    // 2026-01-01 03:05 + 180s = 2026-01-01 03:08
-    const base = new Date(2026, 0, 1, 3, 5).getTime();
-    const train = makeTrain({ trainCode: 'T-CLOCK', receivedAtMs: base, arrivalSeconds: 180 });
-    const { getByTestId } = renderWithTheme(
-      <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
-    );
-    expect(getByTestId('boarding-train-arrival-T-CLOCK').props.children).toBe('03:08 도착 예정');
-  });
-
-  it('#634 receivedAtMs=0(mock/stale)이면 현재 시각 기준 HH:mm 계산', () => {
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(new Date(2026, 0, 1, 10, 0).getTime());
+  it('#897 Seam A: 도착 시각은 현재 시각 + arrivalSeconds 기반 HH:mm으로 표시', () => {
+    // #897: anchor를 receivedAtMs+arrivalSeconds → Date.now()+arrivalSeconds로 통일.
+    // useArrivalCountdown tick(1초마다 arrivalSeconds-1)과 시계 흐름이 동기화돼 stable.
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(new Date(2026, 0, 1, 3, 5).getTime());
     try {
-      const train = makeTrain({ trainCode: 'T-NOW', receivedAtMs: 0, arrivalSeconds: 120 });
+      // receivedAtMs 값에 관계없이 (지금 + 180s) 기준 HH:mm.
+      const train = makeTrain({ trainCode: 'T-CLOCK', receivedAtMs: 0, arrivalSeconds: 180 });
       const { getByTestId } = renderWithTheme(
         <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
       );
-      expect(getByTestId('boarding-train-arrival-T-NOW').props.children).toBe('10:02 도착 예정');
+      expect(getByTestId('boarding-train-arrival-T-CLOCK').props.children).toBe('03:08 도착 예정');
     } finally {
       nowSpy.mockRestore();
     }
+  });
+
+  it('#897 Seam A: receivedAtMs 과거 값이어도 anchor는 현재 시각 — useArrivalCountdown tick과 stable', () => {
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(new Date(2026, 0, 1, 10, 0).getTime());
+    try {
+      // receivedAtMs가 1시간 전이라도 표시 시각은 (지금=10:00) + 120s = 10:02.
+      const stale = new Date(2026, 0, 1, 9, 0).getTime();
+      const train = makeTrain({ trainCode: 'T-STALE', receivedAtMs: stale, arrivalSeconds: 120 });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      expect(getByTestId('boarding-train-arrival-T-STALE').props.children).toBe('10:02 도착 예정');
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  describe('#897 Seam A — initialEtaSeconds 지연 칩', () => {
+    it('arrivalSeconds 차이 < 임계치(180s) → 칩 미노출', () => {
+      const train = makeTrain({ trainCode: 'T-OK', arrivalSeconds: 240 });
+      const { queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          initialEtaSeconds={120}
+        />,
+      );
+      expect(queryByTestId('boarding-train-delay-chip')).toBeNull();
+    });
+
+    it('차이 = 정확히 임계치 → 칩 노출 (diff < THRESHOLD가 거짓이므로 분기 진입)', () => {
+      // 120 + 180 = 300. diff=180. `diff < 180` false → 칩 노출 + ceil(180/60)=3.
+      const train = makeTrain({ trainCode: 'T-EDGE', arrivalSeconds: 300 });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          initialEtaSeconds={120}
+        />,
+      );
+      expect(getByTestId('boarding-train-delay-chip').props.children).toBeDefined();
+    });
+
+    it('arrivals 정렬 안 됨 → 가장 빠른 arrival 기준 (호출자 정렬 무관)', () => {
+      // 정렬되지 않은 입력: [400s, 90s]. nearest=90s. initial=60 → diff=30 < 180 → 칩 미노출.
+      // 정렬을 못 한 호출자가 첫 row를 nearest로 잘못 잡으면 diff=340 → "+6분 지연" 오발화하지 않음.
+      const slow = makeTrain({ trainCode: 'T-SLOW', arrivalSeconds: 400 });
+      const fast = makeTrain({ trainCode: 'T-FAST', arrivalSeconds: 90 });
+      const { queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[slow, fast]}
+          line="2"
+          onSelect={() => {}}
+          initialEtaSeconds={60}
+        />,
+      );
+      expect(queryByTestId('boarding-train-delay-chip')).toBeNull();
+    });
+
+    it('arrivals 오름차순 입력 → 첫 row가 nearest로 유지 (reduce keep-min 분기)', () => {
+      // [90s, 400s]. first=90s. cur=400s, 400<90 false → min(90) 유지. diff=90-60=30 < 180 → 미노출.
+      const fast = makeTrain({ trainCode: 'T-FAST', arrivalSeconds: 90 });
+      const slow = makeTrain({ trainCode: 'T-SLOW', arrivalSeconds: 400 });
+      const { queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[fast, slow]}
+          line="2"
+          onSelect={() => {}}
+          initialEtaSeconds={60}
+        />,
+      );
+      expect(queryByTestId('boarding-train-delay-chip')).toBeNull();
+    });
+
+    it('initialEtaSeconds=0 (임박 열차를 탭한 lock) → 칩 미노출 (baseline 0은 비교 의미 없음)', () => {
+      // 사용자가 arrivalSeconds=0 train을 탭해 initialEtaSeconds=0인 lock 생성.
+      // 다음 폴에 같은 trainCode가 캐시 재출현으로 300s 잡혀도 false positive 발사하지 않음.
+      const train = makeTrain({ trainCode: 'T-IMM', arrivalSeconds: 300 });
+      const { queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          initialEtaSeconds={0}
+        />,
+      );
+      expect(queryByTestId('boarding-train-delay-chip')).toBeNull();
+    });
+
+    it('차이 >= 임계치(180s) → "+N분 지연" 칩 노출 (ceil)', () => {
+      // initial 60s → 현재 240s. diff=180s → ceil(180/60)=3분.
+      const train = makeTrain({ trainCode: 'T-DELAY', arrivalSeconds: 240 });
+      const { getByText } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          initialEtaSeconds={60}
+        />,
+      );
+      expect(getByText('+3분 지연')).toBeTruthy();
+    });
+
+    it('회귀 fixture — initial 90s에서 폴 결과가 90s 그대로면 칩 미노출 (정상 진행)', () => {
+      const train = makeTrain({ trainCode: 'T-SAME', arrivalSeconds: 90 });
+      const { queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          initialEtaSeconds={90}
+        />,
+      );
+      expect(queryByTestId('boarding-train-delay-chip')).toBeNull();
+    });
+
+    it('회귀 fixture — initial 90s에서 추가 1분(60s) 지연 = diff 60s < 180 임계치 → 칩 미노출', () => {
+      // "1분 30초 → 그대로 1분 30초로 안 줄고 1분 더 지연" 시나리오 시작점.
+      const train = makeTrain({ trainCode: 'T-1MIN', arrivalSeconds: 150 });
+      const { queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          initialEtaSeconds={90}
+        />,
+      );
+      // 60s 지연은 임계치 미만 → 칩 미노출. 누적이 임계치를 넘으면 칩 노출.
+      expect(queryByTestId('boarding-train-delay-chip')).toBeNull();
+    });
+
+    it('initialEtaSeconds 미전달 → 칩 미노출 (lock 없는 상태에서 안전)', () => {
+      const train = makeTrain({ trainCode: 'T-NOLOCK', arrivalSeconds: 600 });
+      const { queryByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      expect(queryByTestId('boarding-train-delay-chip')).toBeNull();
+    });
+
+    it('filtered arrivals 비어있으면 칩 미노출', () => {
+      // 헤더 line 2 + train.line 7 → 필터 후 빈 list. 칩도 미노출.
+      const train = makeTrain({ trainCode: 'T-WRONG', line: '7' });
+      const { queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          initialEtaSeconds={60}
+        />,
+      );
+      expect(queryByTestId('boarding-train-delay-chip')).toBeNull();
+    });
   });
 
   it('train row 탭 시 onSelect에 해당 train 전달', () => {

@@ -58,4 +58,82 @@ describe('BoardingLockHopCard (#758)', () => {
       : card.props.style;
     expect(stripeStyle.borderLeftColor).toBe(LINE_COLORS['2']);
   });
+
+  describe('#897 Seam A — 지연 칩', () => {
+    const lockWithEta: BoardingLock = { ...baseLock, initialEtaSeconds: 120 };
+
+    it('initialEtaSeconds 미설정 (레거시 lock) → 칩 미노출', () => {
+      const { queryByTestId } = renderWithTheme(
+        <BoardingLockHopCard lock={baseLock} onRelease={() => {}} currentEtaSeconds={600} />,
+      );
+      expect(queryByTestId('boarding-lock-hop-delay-chip')).toBeNull();
+    });
+
+    it('currentEtaSeconds 미전달 (lock train이 응답에 없음) → 칩 미노출', () => {
+      const { queryByTestId } = renderWithTheme(
+        <BoardingLockHopCard lock={lockWithEta} onRelease={() => {}} />,
+      );
+      expect(queryByTestId('boarding-lock-hop-delay-chip')).toBeNull();
+    });
+
+    it('차이 < 임계치(180s) → 칩 미노출', () => {
+      const { queryByTestId } = renderWithTheme(
+        <BoardingLockHopCard
+          lock={lockWithEta}
+          onRelease={() => {}}
+          currentEtaSeconds={240}
+        />,
+      );
+      expect(queryByTestId('boarding-lock-hop-delay-chip')).toBeNull();
+    });
+
+    it('차이 >= 임계치 → "+N분 지연" 칩 노출 (ceil)', () => {
+      const { getByText } = renderWithTheme(
+        <BoardingLockHopCard
+          lock={lockWithEta}
+          onRelease={() => {}}
+          currentEtaSeconds={300}
+        />,
+      );
+      // diff=180s → ceil(180/60)=3분.
+      expect(getByText('+3분 지연')).toBeTruthy();
+    });
+
+    it('회귀 fixture — initial 90s에서 동일 90s 폴 → 칩 미노출', () => {
+      const { queryByTestId } = renderWithTheme(
+        <BoardingLockHopCard
+          lock={{ ...baseLock, initialEtaSeconds: 90 }}
+          onRelease={() => {}}
+          currentEtaSeconds={90}
+        />,
+      );
+      expect(queryByTestId('boarding-lock-hop-delay-chip')).toBeNull();
+    });
+
+    it('회귀 fixture — initial 90s에서 누적 +4분(240s) 지연 → "+4분 지연"', () => {
+      // "1분 30초 → 1분 더 지연" 시나리오에서 추가 폴링까지 누적된 케이스.
+      const { getByText } = renderWithTheme(
+        <BoardingLockHopCard
+          lock={{ ...baseLock, initialEtaSeconds: 90 }}
+          onRelease={() => {}}
+          currentEtaSeconds={330}
+        />,
+      );
+      // diff=240s → ceil(240/60)=4분.
+      expect(getByText('+4분 지연')).toBeTruthy();
+    });
+
+    it('initialEtaSeconds=0 (임박 열차 lock) → 칩 미노출 (baseline 0은 의미 없음)', () => {
+      // useBoardingLockController가 arrivalSeconds=0 train 탭을 허용 → initialEtaSeconds=0 lock 가능.
+      // baseline이 없는 상태에서 currentEta가 큰 값으로 잡혀도 false positive 차단.
+      const { queryByTestId } = renderWithTheme(
+        <BoardingLockHopCard
+          lock={{ ...baseLock, initialEtaSeconds: 0 }}
+          onRelease={() => {}}
+          currentEtaSeconds={300}
+        />,
+      );
+      expect(queryByTestId('boarding-lock-hop-delay-chip')).toBeNull();
+    });
+  });
 });

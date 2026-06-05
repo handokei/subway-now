@@ -169,5 +169,7 @@ async function tryAutoLock(
     boardingLine: chosen.line,
     boardedAt: Date.now(),
     expectedDurationMs: deps.expectedDurationMs,
+    // #897 Seam A: auto-lock 시점 ETA 스냅샷. 지연 신호의 기준치.
+    initialEtaSeconds: chosen.arrivalSeconds,
   });
 }

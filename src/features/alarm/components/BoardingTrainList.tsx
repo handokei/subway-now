@@ -12,6 +12,7 @@ import { LineBadge } from '../../../shared/ui/LineBadge';
 import type { ArrivalInfo } from '../../../shared/types/arrival';
 import type { LineNumber, Station } from '../../../shared/types/station';
 import { formatClockTime } from '../../../shared/utils/formatTime';
+import { arrivalAt } from '../../../shared/utils/arrivalClock';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
 import { buildDirectionMeta } from '../../route/utils/trainLineDirection';
 import { parseArrivalDistance } from '../../arrival/utils/arrivalStatusDistance';
@@ -23,6 +24,15 @@ const allStations = stationsData as Station[];
 
 /** row 좌측 호선 색 stripe 두께(#664). 시각적 구분을 헤더 외에도 row마다 즉시 인지 가능하게. */
 const LINE_STRIPE_WIDTH = 3;
+
+/**
+ * 지연 노출 임계값(초) — Epic #896 Seam A (#897).
+ *
+ * BoardingLock이 잡힌 시점의 ETA(initialEtaSeconds)와 현재 폴의 가장 가까운 도착 ETA 차이가
+ * 이 값 이상이면 "+N분 지연" 칩을 노출. 30s 폴링 jitter + 약간의 정상 변동을 흡수하면서 사용자가
+ * 체감 가능한 단위(3분)를 첫 신호로 잡는다.
+ */
+const DELAY_NOTICE_THRESHOLD_SECONDS = 180;
 
 interface Props {
   arrivals: ArrivalInfo[];
@@ -45,6 +55,14 @@ interface Props {
    * row padding 축소, 폰트 한 단계 다운, trainCode 라인 생략.
    */
   compact?: boolean;
+  /**
+   * 활성 BoardingLock의 탑승 시점 ETA 스냅샷(초) — Epic #896 Seam A (#897).
+   *
+   * 가장 가까운 도착 train의 arrivalSeconds가 이 값보다 DELAY_NOTICE_THRESHOLD_SECONDS 이상 늘었다면
+   * 같은 trainCode 유지 동안 누적 지연이 발생한 것으로 보고 "+N분 지연" 칩을 노출한다.
+   * 미전달이면 칩 미노출 — lock 없는 상태(예: misBoarding 재선택)나 레거시 lock에서도 안전.
+   */
+  initialEtaSeconds?: number;
 }
 
 /**
@@ -83,6 +101,7 @@ export function BoardingTrainList({
   title = '탑승할 열차 선택',
   nextStationLabel = null,
   compact = false,
+  initialEtaSeconds,
 }: Props) {
   const { colors } = useTheme();
   const isUnreachable = (train: ArrivalInfo): boolean =>
@@ -91,6 +110,10 @@ export function BoardingTrainList({
   // #664: 환승역 statnNm 응답에 같은 이름 다른 노선 열차가 섞여 들어오므로 헤더 line 기준 필터.
   // train.line은 어댑터가 subwayId로 row마다 정확히 결정한 값(#663). 일치하는 row만 표시.
   const filteredArrivals = arrivals.filter((train) => train.line === line);
+
+  // #897 Seam A: 가장 가까운 도착 ETA가 lock 시점보다 +180s 이상이면 누적 지연(분) 노출.
+  // arrivals는 호출자가 도착시간 오름차순으로 전달한다는 컨벤션을 따른다(#749 카운터와 동일 가정).
+  const delayMinutes = computeDelayMinutes(filteredArrivals, initialEtaSeconds);
 
   if (filteredArrivals.length === 0) {
     return (
@@ -112,6 +135,14 @@ export function BoardingTrainList({
         <View style={styles.header}>
           <LineBadge line={line} />
           <Text style={[typography.label, { color: colors.muted }]}>{title}</Text>
+        </View>
+      )}
+      {delayMinutes != null && (
+        <View
+          style={[styles.delayChip, { borderColor: colors.danger }]}
+          testID="boarding-train-delay-chip"
+        >
+          <Text style={[styles.delayChipText, { color: colors.danger }]}>{`+${delayMinutes}분 지연`}</Text>
         </View>
       )}
       {filteredArrivals.map((train, index) => {
@@ -190,13 +221,35 @@ export function BoardingTrainList({
 }
 
 /**
- * 도착 시각 절대 표기(HH:mm) — #634.
- * receivedAtMs(API fetch 시점) + arrivalSeconds로 절대 도착 시각 산출.
- * receivedAtMs 0(mock/stale)이면 현재 시각 기준 fallback — 한 사이클 내에서는 결정적.
+ * 도착 시각 절대 표기(HH:mm) — #634, #897.
+ *
+ * #897 Seam A: anchor를 receivedAtMs+arrivalSeconds → `arrivalAt(train)` (현재 시각 + 남은 초)로 통일.
+ * useArrivalCountdown이 tick마다 arrivalSeconds를 1씩 줄이는 동안 시계도 1초 흐르므로 anchor가 stable.
+ * ArrivalRow(useCountdown 기반)와 같은 row의 시각이 항상 일치한다.
  */
 function formatArrivalClock(train: ArrivalInfo): string {
-  const baseMs = train.receivedAtMs > 0 ? train.receivedAtMs : Date.now();
-  return formatClockTime(baseMs + train.arrivalSeconds * 1000);
+  return formatClockTime(arrivalAt(train));
+}
+
+/**
+ * 지연(분) 계산 — Epic #896 Seam A (#897).
+ *
+ * 가장 가까운 도착의 arrivalSeconds가 초기 ETA보다 임계값(180초) 이상 늘면 그 차이를 분 단위 올림으로 반환.
+ * 미만이면 null(칩 미노출). initialEta 미전달이나 0 이하(임박/baseline 없음)도 null.
+ * 호출자가 정렬을 보장하지 않을 수 있으므로 본 함수가 arrivalSeconds 오름차순 정렬 후 nearest 선택.
+ */
+function computeDelayMinutes(
+  arrivals: ArrivalInfo[],
+  initialEtaSeconds: number | undefined,
+): number | null {
+  if (initialEtaSeconds == null || initialEtaSeconds <= 0) return null;
+  if (arrivals.length === 0) return null;
+  const nearest = arrivals.reduce((min, cur) =>
+    cur.arrivalSeconds < min.arrivalSeconds ? cur : min,
+  );
+  const diff = nearest.arrivalSeconds - initialEtaSeconds;
+  if (diff < DELAY_NOTICE_THRESHOLD_SECONDS) return null;
+  return Math.ceil(diff / 60);
 }
 
 const styles = StyleSheet.create({
@@ -248,4 +301,13 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.sm,
   },
+  // #897 — outline 칩. ArrivalStatusBadge의 outline variant와 동일 외형(borderWidth 1 + radius 3).
+  delayChip: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 1,
+    borderRadius: 3,
+    borderWidth: 1,
+  },
+  delayChipText: { fontSize: 11, fontWeight: '700', letterSpacing: 0 },
 });

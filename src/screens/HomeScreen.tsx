@@ -690,10 +690,16 @@ export default function HomeScreen() {
                             // #758 — origin hop slot에 BoardingLock 활성 상태 카드 렌더.
                             // BoardingLockBanner 별도 카드는 제거되고 timeline 안 hop으로 통합.
                             if (i === 0 && stop.mark === 'filled' && boardingLock) {
+                              // #897 Seam A: lock.trainCode 매칭 train의 잔여 ETA → 지연 칩 계산 input.
+                              // 매칭 없으면 undefined → 칩 미노출 (graceful).
+                              const matchedTrain = directionalArrivals.find(
+                                (t) => t.trainCode === boardingLock.trainCode,
+                              );
                               return (
                                 <BoardingLockHopCard
                                   lock={boardingLock}
                                   onRelease={releaseBoardingLock}
+                                  currentEtaSeconds={matchedTrain?.arrivalSeconds}
                                 />
                               );
                             }
@@ -724,6 +730,8 @@ export default function HomeScreen() {
                                     towardName,
                                   )
                                 : null;
+                              // #897 Seam A: 이 분기는 `!boardingLock` 가드 안 — lock이 없으므로 지연 칩 비교 기준이 없다.
+                              // 사용자가 BoardingTrainList에서 열차를 탭해야 lock이 생성되고, 이후 폴링에서 칩이 활성화된다.
                               return (
                                 <BoardingTrainList
                                   arrivals={directionalArrivals}
@@ -748,6 +756,8 @@ export default function HomeScreen() {
                                 transferContext.transferStationInToLine.name,
                                 transferContext.nextWaypointName,
                               );
+                              // #897 Seam A: 환승 list는 다음 leg 선택용 — 새 leg의 lock은 아직 없다.
+                              // 현재 lock은 이전 leg(곧 종료)라 ETA 비교 baseline으로 부적합. 칩 미노출.
                               return (
                                 <BoardingTrainList
                                   arrivals={transferArrivals}
