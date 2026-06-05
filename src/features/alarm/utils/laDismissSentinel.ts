@@ -7,7 +7,9 @@
  *
  * 정책:
  *  - sentinel TTL = `LA_DISMISS_SENTINEL_TTL_MS` (30분). TTL 경과 후 자동 만료 → LA 재상승 OK.
- *  - 명시적 reset(destination 재설정 / 앱 진입)은 `clearLaDismissSentinel()`로 즉시 해제(후속 PR).
+ *  - 명시적 reset(destination 재설정)은 `clearLaDismissSentinel()`로 즉시 해제 — #926 후속 PR에서
+ *    `TRIP_BOUND_CLEANUPS`(alarm/store/tripBoundCleanups.ts)에 wire되어
+ *    `setDestination` switch 분기에서 자동 호출된다.
  *
  * SSOT key: `storageKeys.LA_DISMISSED_AT_KEY`.
  *
@@ -48,7 +50,10 @@ export async function isLaDismissed(now: number = Date.now()): Promise<boolean> 
   }
 }
 
-/** sentinel 명시적 reset. destination 재설정 / 앱 진입 트리거에서 호출(후속 PR). */
+/**
+ * sentinel 명시적 reset. `TRIP_BOUND_CLEANUPS`에 wire되어 `setDestination` switch 시 자동 호출(#926).
+ * 사용자가 새 목적지를 설정하는 것은 dismiss 의도보다 강한 재engagement 신호이므로 TTL을 기다리지 않고 즉시 해제.
+ */
 export async function clearLaDismissSentinel(): Promise<void> {
   try {
     await AsyncStorage.removeItem(LA_DISMISSED_AT_KEY);

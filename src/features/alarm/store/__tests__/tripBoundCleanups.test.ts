@@ -7,6 +7,7 @@ import {
   ACTIVE_TRIP_KEY,
   TRIP_STARTED_AT_KEY,
   LAST_UPLOADED_RECALL_TRIP_START_KEY,
+  LA_DISMISSED_AT_KEY,
 } from '../../../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -38,6 +39,9 @@ describe('tripBoundCleanups', () => {
     // (dedup 마커 — BG silent push upload 후 직후 FG setDestination(null) 재트리거 시
     //  같은 tripStart 중복 upload 방지). 다른 tripStart로 시작되면 자연 무효화됨.
     expect(removedKeys).toContain(TRIP_STARTED_AT_KEY);
+    // #926 — LA dismiss sentinel도 destination switch 시 함께 클리어. 다음 silent push에서
+    // LA 재상승 허용. 누락 회귀가 발생하면 dismiss 후 새 trip 시작해도 LA가 살아나지 않음.
+    expect(removedKeys).toContain(LA_DISMISSED_AT_KEY);
     expect(removedKeys).not.toContain(LAST_UPLOADED_RECALL_TRIP_START_KEY);
   });
 
