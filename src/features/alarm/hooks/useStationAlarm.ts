@@ -47,7 +47,7 @@ import { useAlarmEventStore } from '../store/useAlarmEventStore';
 import { createLogger } from '../../../shared/utils/logger';
 import { isAccuracyAcceptable } from '../../nearest-station/utils/locationGates';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
-import { resolveNotificationSource } from '../utils/notificationSource';
+import { resolveNotificationSource, type NotificationSource } from '../utils/notificationSource';
 
 const logger = createLogger('StationAlarm');
 
@@ -82,6 +82,105 @@ function applySilenceGate(
 
 function logClearFailure(e: unknown): void {
   logger.warn('clearDismissSilence 실패 — 다음 사이클 재시도', e);
+}
+
+/**
+ * #917 follow-up — station-passed 알림 dedup → resolve → send → setLast → log 시퀀스 추출.
+ * GPS station-passed effect와 FG arvlCd fast-path effect가 동일한 5단 시퀀스를 반복하던 것
+ * (Sonar cpd 27/25 line 블록)을 단일 함수로 통합. source 라벨만 다르고 dedup 키는
+ * lastNotifiedStationId 단일 출처 — 어느 effect가 먼저 발사해도 다른 쪽이 자동 dedup.
+ *
+ * cancelled 콜백을 받는 이유: 호출부가 IIFE 내부에서 effect cleanup을 관찰해야 함.
+ * await 경계마다 재확인하지 않으면 stale fire 가능.
+ */
+async function dispatchStationPassed(params: {
+  source: 'fg' | 'fg-arvlcd';
+  candidateStation: Station;
+  capturedRoute: Route;
+  capturedDestinationName: string;
+  notificationSource: NotificationSource | undefined;
+  isCancelled: () => boolean;
+  errorLogPrefix: string;
+}): Promise<void> {
+  const {
+    source,
+    candidateStation,
+    capturedRoute,
+    capturedDestinationName,
+    notificationSource,
+    isCancelled,
+    errorLogPrefix,
+  } = params;
+  try {
+    const lastId = await getLastNotifiedStationId();
+    if (isCancelled()) return;
+    if (candidateStation.id === lastId) {
+      logSuppressedDedupStation(source, candidateStation);
+      return;
+    }
+    // #796: candidateStation.line을 전달해 multi-transfer 환승역 정확 식별.
+    const target = resolveNextTarget(
+      capturedRoute,
+      capturedDestinationName,
+      candidateStation.line,
+    );
+    // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
+    await sendStationPassedNotification(
+      candidateStation.name,
+      capturedDestinationName,
+      target,
+      notificationSource,
+    );
+    if (isCancelled()) return;
+    await setLastNotifiedStationId(candidateStation.id);
+    logFiredStationPassed(source, candidateStation);
+  } catch (e) {
+    logger.error(errorLogPrefix, e);
+  }
+}
+
+/**
+ * #917 follow-up — silence 게이트 통과 후 dispatchStationPassed 호출. GPS path(`fg`)와 FG arvlCd
+ * fast-path(`fg-arvlcd`)가 같은 silence→dispatch 시퀀스를 반복하던 Sonar cpd 25 line 블록을 통합.
+ * silenced=true면 log + return; 아니면 dispatch. 두 path 모두 호출 직전에 movement gate를
+ * 자체적으로 처리(GPS path는 effect 진입 시점에 미리, FG path는 본 helper 호출 직전에) 한 뒤
+ * 본 함수를 호출한다.
+ */
+async function runSilenceGateAndDispatch(params: {
+  source: 'fg' | 'fg-arvlcd';
+  candidateStation: Station;
+  capturedRoute: Route;
+  capturedDestinationName: string;
+  notificationSource: NotificationSource | undefined;
+  isCancelled: () => boolean;
+  errorLogPrefix: string;
+  dismissSilence: import('../utils/dismissSilenceStorage').DismissSilenceState | null;
+  userLocation: { lat: number; lng: number } | null;
+  clearDismissSilenceAction: () => Promise<void>;
+}): Promise<void> {
+  const silenceGate = applySilenceGate(
+    params.dismissSilence,
+    Date.now(),
+    params.userLocation,
+    params.clearDismissSilenceAction,
+  );
+  if (silenceGate.silenced) {
+    logSuppressedDismissSilence({
+      source: params.source,
+      stationName: params.candidateStation.name,
+      kind: 'station-passed',
+    });
+    return;
+  }
+  await dispatchStationPassed({
+    source: params.source,
+    candidateStation: params.candidateStation,
+    capturedRoute: params.capturedRoute,
+    capturedDestinationName: params.capturedDestinationName,
+    notificationSource: params.notificationSource,
+    isCancelled: params.isCancelled,
+    errorLogPrefix: params.errorLogPrefix,
+  });
 }
 
 export interface UseStationAlarmInputs {
@@ -597,34 +696,15 @@ export function useStationAlarm({
         return;
       }
 
-      void (async () => {
-        try {
-          const lastId = await getLastNotifiedStationId();
-          if (cancelled) return;
-          if (candidateStation.id === lastId) {
-            logSuppressedDedupStation('fg', candidateStation);
-            return;
-          }
-          // #796: candidateStation.line을 전달해 multi-transfer 환승역 정확 식별.
-          const target = resolveNextTarget(
-            capturedRoute,
-            capturedDestinationName,
-            candidateStation.line,
-          );
-          // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
-          await sendStationPassedNotification(
-            candidateStation.name,
-            capturedDestinationName,
-            target,
-            notificationSource,
-          );
-          if (cancelled) return;
-          await setLastNotifiedStationId(candidateStation.id);
-          logFiredStationPassed('fg', candidateStation);
-        } catch (e) {
-          logger.error('역 통과 알림 실패:', e);
-        }
-      })();
+      void dispatchStationPassed({
+        source: 'fg',
+        candidateStation,
+        capturedRoute,
+        capturedDestinationName,
+        notificationSource,
+        isCancelled: () => cancelled,
+        errorLogPrefix: '역 통과 알림 실패:',
+      });
     }
 
     return () => {
@@ -715,30 +795,15 @@ export function useStationAlarm({
       }
 
       // lastNotifiedStationId 공유 dedup. cancelled 재확인 — getBoardingLock 후 effect cleanup 가능.
-      try {
-        const lastId = await getLastNotifiedStationId();
-        if (cancelled) return;
-        if (candidateStation.id === lastId) {
-          logSuppressedDedupStation('fg-arvlcd', candidateStation);
-          return;
-        }
-        const target = resolveNextTarget(
-          capturedRoute,
-          capturedDestinationName,
-          candidateStation.line,
-        );
-        await sendStationPassedNotification(
-          candidateStation.name,
-          capturedDestinationName,
-          target,
-          notificationSource,
-        );
-        if (cancelled) return;
-        await setLastNotifiedStationId(candidateStation.id);
-        logFiredStationPassed('fg-arvlcd', candidateStation);
-      } catch (e) {
-        logger.error('FG arvlCd fast-path 알림 실패:', e);
-      }
+      await dispatchStationPassed({
+        source: 'fg-arvlcd',
+        candidateStation,
+        capturedRoute,
+        capturedDestinationName,
+        notificationSource,
+        isCancelled: () => cancelled,
+        errorLogPrefix: 'FG arvlCd fast-path 알림 실패:',
+      });
     })();
 
     return () => {

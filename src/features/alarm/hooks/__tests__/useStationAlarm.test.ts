@@ -624,26 +624,13 @@ describe('useStationAlarm', () => {
       expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
-    it('sleep OFF + 첫 hop transfer → 정상 발사', async () => {
-      useSettingsStore.setState({ sleepMode: false });
-      mockGetBoardingLock.mockResolvedValue(lock);
-      const route = makeTransferRoute({
-        transferName: '시청',
-        fromLine: '2',
-        toLine: '1',
-        stopsToTransfer: 2,
-        stopsFromTransfer: 3,
-      });
-      mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
-      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
-
-      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
-      expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
-    });
-
-    it('sleep ON + lock null → 게이트 비활성, 정상 발사', async () => {
-      useSettingsStore.setState({ sleepMode: true });
-      mockGetBoardingLock.mockResolvedValue(null);
+    // Sonar cpd 통합 — sleep OFF/lock 활성 vs sleep ON/lock null 모두 게이트 비활성 → 정상 발사.
+    it.each([
+      { name: 'sleep OFF + 첫 hop transfer → 정상 발사', sleepMode: false, lockValue: lock },
+      { name: 'sleep ON + lock null → 게이트 비활성, 정상 발사', sleepMode: true, lockValue: null },
+    ])('$name', async ({ sleepMode, lockValue }) => {
+      useSettingsStore.setState({ sleepMode });
+      mockGetBoardingLock.mockResolvedValue(lockValue);
       const route = makeTransferRoute({
         transferName: '시청',
         fromLine: '2',
