@@ -35,6 +35,17 @@ export interface BoardingLockSyncPayload {
 }
 
 /**
+ * #916 A1 — backend cron이 자동 lock을 부착했을 때 노출하는 후보 메타.
+ * Client는 이 값으로 boardingLock store를 hydrate해 사용자가 직접 BoardingTrainList에서
+ * 열차를 탭하지 않아도 trainCode 추적이 활성화된다 (#915 destination-only baseline UX).
+ */
+export interface AutoLockCandidate {
+  trainCode: string;
+  line: string;
+  subwayId: string;
+}
+
+/**
  * Seam E response. 호출자는 `currentWaypoint`로 client store(useBoardingLockStore 등)에
  * 정정 결과를 반영할 수 있다. waypoints가 비면(`null`) destination 도착.
  */
@@ -46,6 +57,11 @@ export interface BoardingLockSyncResponse {
   currentWaypoint?: string | null;
   /** currentWaypoint와 동일 — 의미상 alias (다음 알람 대상). */
   nextStation?: string | null;
+  /**
+   * #916 A1 — backend가 trip에 부착한 자동/명시 lock 메타. 없으면 null.
+   * Client는 이 값을 useBoardingLockStore에 hydrate해 사용자 명시 탭 없이도 lock UX 활성화.
+   */
+  autoLockCandidate?: AutoLockCandidate | null;
   /** HTTP 실패/skip을 호출자가 진단할 수 있게 노출 — graceful (throw 아님). */
   skipped?: boolean;
   status?: number;
@@ -84,6 +100,7 @@ export async function syncBoardingLock(
       advanced: json?.advanced ?? false,
       currentWaypoint: json?.currentWaypoint ?? null,
       nextStation: json?.nextStation ?? null,
+      autoLockCandidate: json?.autoLockCandidate ?? null,
     };
   } catch (e) {
     log.warn('boarding-lock sync error', e);

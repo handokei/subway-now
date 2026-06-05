@@ -11,7 +11,8 @@ describe('useSettingsStore', () => {
       sleepMode: false,
       allowSpeaker: true,
       accessibilityMode: false,
-      locklessStationPassed: false,
+      // #915 — default ON. 각 테스트가 명시적으로 false로 덮어쓸 수 있다.
+      locklessStationPassed: true,
     });
     jest.clearAllMocks();
   });
@@ -129,13 +130,23 @@ describe('useSettingsStore', () => {
     expect(useSettingsStore.getState().accessibilityMode).toBe(false);
   });
 
-  // ── #816 C — locklessStationPassed opt-in 토글 (기본 OFF) ──
+  // ── #816 C / #915 — locklessStationPassed (기본 ON, destination-only baseline) ──
 
-  it('초기 locklessStationPassed는 false이다', () => {
+  it('초기 locklessStationPassed는 true이다 (#915 default ON)', () => {
+    expect(useSettingsStore.getState().locklessStationPassed).toBe(true);
+  });
+
+  it('setLocklessStationPassed: false를 설정하면 상태와 AsyncStorage가 갱신된다', async () => {
+    await useSettingsStore.getState().setLocklessStationPassed(false);
     expect(useSettingsStore.getState().locklessStationPassed).toBe(false);
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:lockless-station-passed',
+      JSON.stringify(false),
+    );
   });
 
   it('setLocklessStationPassed: true를 설정하면 상태와 AsyncStorage가 갱신된다', async () => {
+    useSettingsStore.setState({ locklessStationPassed: false });
     await useSettingsStore.getState().setLocklessStationPassed(true);
     expect(useSettingsStore.getState().locklessStationPassed).toBe(true);
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
@@ -144,21 +155,21 @@ describe('useSettingsStore', () => {
     );
   });
 
-  it('loadLocklessStationPassed: 저장된 true를 복원한다', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(true));
+  it('loadLocklessStationPassed: 저장된 false를 복원한다 (기존 사용자 명시 OFF 보존)', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(false));
+    await useSettingsStore.getState().loadLocklessStationPassed();
+    expect(useSettingsStore.getState().locklessStationPassed).toBe(false);
+  });
+
+  it('loadLocklessStationPassed: 저장된 값이 없으면 기본 true 유지 (#915)', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
     await useSettingsStore.getState().loadLocklessStationPassed();
     expect(useSettingsStore.getState().locklessStationPassed).toBe(true);
   });
 
-  it('loadLocklessStationPassed: 저장된 값이 없으면 기본 false 유지', async () => {
-    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
-    await useSettingsStore.getState().loadLocklessStationPassed();
-    expect(useSettingsStore.getState().locklessStationPassed).toBe(false);
-  });
-
-  it('loadLocklessStationPassed: AsyncStorage 오류 시 false 유지', async () => {
+  it('loadLocklessStationPassed: AsyncStorage 오류 시 true 유지', async () => {
     (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
     await useSettingsStore.getState().loadLocklessStationPassed();
-    expect(useSettingsStore.getState().locklessStationPassed).toBe(false);
+    expect(useSettingsStore.getState().locklessStationPassed).toBe(true);
   });
 });

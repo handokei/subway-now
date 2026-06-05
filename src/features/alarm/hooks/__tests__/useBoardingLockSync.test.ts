@@ -289,6 +289,116 @@ describe('useBoardingLockSync (#901)', () => {
     expect(mockedSync).toHaveBeenCalledTimes(1);
   });
 
+  // #915/#916 — backend autoLockCandidate를 호출자 콜백으로 전달.
+  describe('onAutoLockCandidate (#915/#916)', () => {
+    it('응답에 autoLockCandidate 있음 → 콜백 호출', async () => {
+      mockedSync.mockResolvedValueOnce({
+        ok: true,
+        advanced: false,
+        currentWaypoint: '역삼',
+        nextStation: '역삼',
+        autoLockCandidate: { trainCode: 'AUTO-7', line: '2', subwayId: '1002' },
+      });
+      const onAutoLockCandidate = jest.fn();
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '강남',
+          accuracyMeters: 10,
+          tripActive: true,
+          onAutoLockCandidate,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(onAutoLockCandidate).toHaveBeenCalledWith({
+        trainCode: 'AUTO-7',
+        line: '2',
+        subwayId: '1002',
+      });
+    });
+
+    it('응답에 autoLockCandidate 없음(null) → 콜백 미호출', async () => {
+      mockedSync.mockResolvedValueOnce({
+        ok: true,
+        advanced: false,
+        currentWaypoint: '역삼',
+        nextStation: '역삼',
+        autoLockCandidate: null,
+      });
+      const onAutoLockCandidate = jest.fn();
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '강남',
+          accuracyMeters: 10,
+          tripActive: true,
+          onAutoLockCandidate,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(onAutoLockCandidate).not.toHaveBeenCalled();
+    });
+
+    it('ok=false 응답 → autoLockCandidate 있어도 콜백 미호출 (graceful)', async () => {
+      mockedSync.mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        autoLockCandidate: { trainCode: 'AUTO-7', line: '2', subwayId: '1002' },
+      });
+      const onAutoLockCandidate = jest.fn();
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '강남',
+          accuracyMeters: 10,
+          tripActive: true,
+          onAutoLockCandidate,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(onAutoLockCandidate).not.toHaveBeenCalled();
+    });
+
+    it('force-trigger 경로도 콜백 호출', async () => {
+      mockedSync.mockResolvedValueOnce({
+        ok: true,
+        autoLockCandidate: { trainCode: 'AUTO-X', line: '2', subwayId: '1002' },
+      });
+      const onAutoLockCandidate = jest.fn();
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '강남',
+          accuracyMeters: 10,
+          tripActive: true,
+          forceTriggerKey: 'k1',
+          onAutoLockCandidate,
+        }),
+      );
+      await flushAsyncStorage();
+      expect(onAutoLockCandidate).toHaveBeenCalledWith({
+        trainCode: 'AUTO-X',
+        line: '2',
+        subwayId: '1002',
+      });
+    });
+
+    it('콜백 미제공 + autoLockCandidate 응답 → graceful (throw 없음)', async () => {
+      mockedSync.mockResolvedValueOnce({
+        ok: true,
+        autoLockCandidate: { trainCode: 'AUTO-7', line: '2', subwayId: '1002' },
+      });
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '강남',
+          accuracyMeters: 10,
+          tripActive: true,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await expect(flushAsyncStorage()).resolves.toBeUndefined();
+    });
+  });
+
   it('debounce timer cleanup — unmount 시 미발사', async () => {
     const { unmount } = renderHook(() =>
       useBoardingLockSync({

@@ -13,9 +13,10 @@ import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { Route } from '../../../shared/utils/stationRoute';
-import type { Station } from '../../../shared/types/station';
+import type { LineNumber, Station } from '../../../shared/types/station';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../../../shared/constants/boardingLock';
+import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSync';
 
 export interface UseBoardingLockControllerInputs {
   destinationId: string | null;
@@ -36,8 +37,28 @@ export interface UseBoardingLockControllerResult {
   directionalArrivals: ArrivalInfo[];
   /** 사용자가 도착 list에서 열차 탭 시 호출. lock 생성을 위한 컨텍스트가 부족하면 no-op. */
   createLockFromTrain: (train: ArrivalInfo) => void;
+  /**
+   * #915/#916 — backend `/boarding-lock/sync` 응답의 autoLockCandidate로 lock을 hydrate.
+   * destination-only baseline UX에서 사용자가 명시 탭하지 않아도 backend cron이 trainCode를
+   * 결정하면 client store에 반영해 lock UX 활성화한다.
+   *
+   * idempotent: 이미 같은 trainCode + boardingLine으로 활성 lock이 있으면 no-op.
+   * lock 생성을 위한 컨텍스트(destinationId / currentStation / line valid) 부족 시 no-op.
+   */
+  hydrateLockFromCandidate: (candidate: AutoLockCandidate) => void;
   /** 명시 하차. lock 없는 상태에서 호출돼도 안전. */
   releaseLock: () => void;
+}
+
+/**
+ * #915 — backend candidate.line(string)이 LineNumber valid 값인지 narrow.
+ * 미정합이면 hydrate skip — 호출자는 graceful로 lock 없는 상태 유지.
+ */
+const VALID_LINES: ReadonlyArray<LineNumber> = [
+  '1', '2', '3', '4', '5', '6', '7', '8', '9', 'airport', 'gyeongui', 'bundang', 'sinbundang',
+];
+function asLineNumber(raw: string): LineNumber | null {
+  return (VALID_LINES as ReadonlyArray<string>).includes(raw) ? (raw as LineNumber) : null;
 }
 
 /**
@@ -135,10 +156,44 @@ export function useBoardingLockController({
     void releaseLock();
   }, [releaseLock]);
 
+  // #915/#916 — backend autoLockCandidate를 받아 client BoardingLock store hydrate.
+  // hydrate 정책: lock이 이미 존재하면 항상 no-op.
+  //  - 사용자가 BoardingTrainList에서 명시 탭한 lock을 backend cron candidate(다른 trainCode 가능)가
+  //    silently overwrite하지 않게 보호 (#915 self code-review).
+  //  - destination 변경 시 controller의 stale-lock release effect가 lock=null로 만든 후에야 hydrate.
+  //  - 자동 lock도 한 번 잡히면 변경 X (Seam F swap은 backend cron이 trip.boardingLock을 갱신하고
+  //    silent push로 client store가 hydrate되는 별 경로).
+  const hydrateLockFromCandidate = useCallback(
+    (candidate: AutoLockCandidate) => {
+      if (!destinationId || !currentStation) return;
+      const boardingLine = asLineNumber(candidate.line);
+      if (!boardingLine) return;
+      if (lock) return;
+      const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
+      // boardingStationId는 createLockFromTrain과 동일하게 (역명, candidate.line) 매칭 정정.
+      const correctedStation = findStationByNameAndLine(currentStation.name, boardingLine);
+      const boardingStationId = correctedStation?.id ?? currentStation.id;
+      createLock({
+        destinationId,
+        trainCode: candidate.trainCode,
+        boardingStationId,
+        boardingLine,
+        boardedAt: Date.now(),
+        expectedDurationMs: durationMin * 60_000,
+        // initialEtaSeconds는 candidate에 없음 — Seam A 지연 칩은 cron이 채워둔 lock 메타로 노출되지 않으며,
+        // 사용자가 명시 탭한 lock에서만 노출되는 게 의도(자동 lock은 정확도가 보장 안 됨).
+      }).catch(() => {
+        // store action rejection은 graceful — loadLock race / storage 일시 실패는 다음 sync에서 자연 재시도.
+      });
+    },
+    [destinationId, currentStation, expectedDurationMinutes, lock, createLock],
+  );
+
   return {
     lock,
     directionalArrivals,
     createLockFromTrain,
+    hydrateLockFromCandidate,
     releaseLock: release,
   };
 }

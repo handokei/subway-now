@@ -30,8 +30,9 @@ export interface SettingsState {
 
   /**
    * #816 C — BoardingLock 없는 trip에서도 station-passed(intermediate) 알림을 받을지 여부.
-   * 기본 OFF. ON 시 useApnsTripRegistration이 backend trip register payload에 포함시키고,
-   * backend가 lockless intermediate 발사를 허용한다.
+   * 기본 ON (#915 — destination-only baseline). ON 시 useApnsTripRegistration이 backend trip register
+   * payload에 포함시키고, backend가 lockless intermediate 발사를 허용한다. 사용자가 명시적으로 OFF
+   * 하지 않는 한 zero-config baseline UX를 위해 매역 알림이 자동 동작한다.
    */
   locklessStationPassed: boolean;
   setLocklessStationPassed: (enabled: boolean) => Promise<void>;
@@ -42,7 +43,8 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   sleepMode: false,
   allowSpeaker: true,
   accessibilityMode: false,
-  locklessStationPassed: false,
+  // #915 — destination-only baseline UX. 매역 알림이 zero-config로 동작하도록 default ON.
+  locklessStationPassed: true,
 
   setSleepMode: async (enabled: boolean) => {
     set({ sleepMode: enabled });
