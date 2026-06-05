@@ -3402,17 +3402,31 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   const getStationPassedCalls = getArvlCdStationPassedCalls;
   const parseStationPassedData = parseArvlCdStationPassedData;
 
-  it('arvlCd=1(ARRIVED) → 매역 push 발사 + stats.arvlCdFireSuccess=1 + dedup KV stamp', async () => {
+  // arvlCd fire 테스트 공통 setup — kv 시드 + runScheduled 실행. apnsFetch는 옵션으로 사전 stub 가능.
+  async function runArvlScheduled(opts: {
+    seoul: SeoulArrivalClient;
+    trip?: Trip;
+    apnsFetch?: ReturnType<typeof vi.fn>;
+    pushId?: string;
+  }): Promise<{ stats: ScheduledStats; kv: InMemoryKV; apnsFetch: ReturnType<typeof vi.fn> }> {
     const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await putTrip(kv as unknown as KVNamespace, opts.trip ?? makeLockTrip());
+    const apnsFetch = opts.apnsFetch ?? vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeArrivalSeoul('중곡', 0, 1),
+      seoul: opts.seoul,
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       fetchImpl: apnsFetch as unknown as typeof fetch,
       now: () => NOW,
-      generatePushId: () => 'p-arvl-1',
+      generatePushId: () => opts.pushId ?? 'p-arvl-1',
+    });
+    return { stats, kv, apnsFetch };
+  }
+
+  it('arvlCd=1(ARRIVED) → 매역 push 발사 + stats.arvlCdFireSuccess=1 + dedup KV stamp', async () => {
+    const { stats, kv, apnsFetch } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      pushId: 'p-arvl-1',
     });
     expect(stats.arvlCdFireSuccess).toBe(1);
     expect(stats.arvlCdFireDedup).toBe(0);
@@ -3509,16 +3523,10 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   it('#640 회귀 가드 — lock 부재 trip은 lockMissing 게이트에 막혀 매역 fire 경로 진입 자체 X', async () => {
     // lock 없는 trip + arrivals에 임의 trainCode arvlCd=1 → 외부에서 보면 "매역 신호"지만
     // lockMissing 게이트가 차단해야 한다.
-    const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeTrip()); // boardingLock undefined
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = await runScheduled(makeEnv(kv), {
+    const { stats, apnsFetch } = await runArvlScheduled({
       seoul: makeArrivalSeoul('강남', 0, 1),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p-arvl-nolock',
+      trip: makeTrip(), // boardingLock undefined
+      pushId: 'p-arvl-nolock',
     });
     expect(stats.lockMissing).toBe(1);
     expect(stats.arvlCdFireSuccess).toBe(0);
@@ -3528,16 +3536,9 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
   });
 
   it('waypoint advance는 매역 push 발사 후에도 정상 수행 (push와 progress는 독립)', async () => {
-    const kv = new InMemoryKV();
-    await putTrip(kv as unknown as KVNamespace, makeLockTrip());
-    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    await runScheduled(makeEnv(kv), {
+    const { kv } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 1),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p-arvl-adv',
+      pushId: 'p-arvl-adv',
     });
     // 중곡(intermediate) advance 후 다음 waypoint=군자
     const stored = JSON.parse((await kv.get('trip:arvl-tok')) as string) as Trip;
