@@ -17,6 +17,11 @@ jest.mock('../notificationState', () => ({
   setLastFiredAlarmStationName: jest.fn(),
 }));
 
+const mockRecordFiredAlarm = jest.fn();
+jest.mock('../prescheduledMetrics', () => ({
+  recordFiredAlarm: (...args: unknown[]) => mockRecordFiredAlarm(...args),
+}));
+
 const mockErrorSpy = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -56,6 +61,8 @@ let appStateSpy: jest.SpyInstance;
 beforeEach(async () => {
   jest.clearAllMocks();
   mockErrorSpy.mockClear();
+  mockRecordFiredAlarm.mockReset();
+  mockRecordFiredAlarm.mockResolvedValue(undefined);
   mockGetFiredAlarms.mockResolvedValue(new Set());
   mockSetFiredAlarms.mockResolvedValue(undefined);
   mockSetLastFiredAlarmStationName.mockResolvedValue(undefined);
@@ -284,5 +291,74 @@ describe('registerScheduledAlarmListener', () => {
 describe('awaitInitialScheduledAlarmDrain', () => {
   it('리스너가 등록되지 않았으면 즉시 resolve한다', async () => {
     await expect(awaitInitialScheduledAlarmDrain()).resolves.toBeUndefined();
+  });
+});
+
+describe('#918 A3 prescheduled fire ledger 기록', () => {
+  it('drain 시 Notification.date를 actualFireMs로 전달 (BG 발사 시점 보존)', async () => {
+    mockGetPresented.mockResolvedValueOnce([
+      { date: 1234567890, request: { identifier: 'tba:early:강남' } },
+    ]);
+
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+
+    expect(mockRecordFiredAlarm).toHaveBeenCalledWith({
+      identifier: 'tba:early:강남',
+      actualFireMs: 1234567890,
+    });
+    handle.remove();
+  });
+
+  it('drain 시 date가 number 아니면 Date.now() 폴백', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(999_999);
+    mockGetPresented.mockResolvedValueOnce([
+      { date: undefined, request: { identifier: 'tba:early:A' } },
+    ]);
+
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+
+    expect(mockRecordFiredAlarm).toHaveBeenCalledWith({
+      identifier: 'tba:early:A',
+      actualFireMs: 999_999,
+    });
+    handle.remove();
+    (Date.now as jest.Mock).mockRestore();
+  });
+
+  it('FG 수신 시 notification.date를 그대로 전달', async () => {
+    mockAddListener.mockImplementationOnce((cb) => {
+      void cb({ date: 7777, request: { identifier: 'tba:early:Foo' } });
+      return { remove: jest.fn() };
+    });
+
+    const handle = registerScheduledAlarmListener();
+    await flushAsync();
+
+    expect(mockRecordFiredAlarm).toHaveBeenCalledWith({
+      identifier: 'tba:early:Foo',
+      actualFireMs: 7777,
+    });
+    handle.remove();
+  });
+
+  it('FG 수신 시 date가 number 아니면 Date.now() 폴백', async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(555);
+    mockAddListener.mockImplementationOnce((cb) => {
+      // date 누락
+      void cb({ request: { identifier: 'tba:early:Bar' } });
+      return { remove: jest.fn() };
+    });
+
+    const handle = registerScheduledAlarmListener();
+    await flushAsync();
+
+    expect(mockRecordFiredAlarm).toHaveBeenCalledWith({
+      identifier: 'tba:early:Bar',
+      actualFireMs: 555,
+    });
+    handle.remove();
+    (Date.now as jest.Mock).mockRestore();
   });
 });

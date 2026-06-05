@@ -28,6 +28,7 @@ import { clearFiredPushIds } from '../utils/firedPushIds';
 import { clearTripTrainCode } from '../../route/utils/tripTrainCode';
 import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dismissSilenceStorage';
 import { clearLaDismissSentinel } from '../utils/laDismissSentinel';
+import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
 
 // trip-bound storage cleanup 단일 출처.
 // useDestinationStore.setDestination이 isSwitch(목적지 변경 또는 null 클리어) 분기에서 호출한다.
@@ -69,6 +70,10 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // BG silent-push가 upload + 직후 FG setDestination(null)이 같은 tripStart로 재trigger되는
   // 경계(self review)에서 idempotency가 깨져 중복 upload 가능 → 보존이 안전.
   () => AsyncStorage.removeItem(TRIP_STARTED_AT_KEY),
+  // #918 — A3 사전 예약 측정 ledger. 새 trip마다 클리어 — 직전 trip의 잔여 fire/scheduled가
+  // 새 trip 분모에 섞이는 회귀 차단. LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY는 recall과
+  // 같은 이유로 보존 (tripStart값으로 자연 무효화).
+  clearPrescheduledLedger,
 ];
 
 /**

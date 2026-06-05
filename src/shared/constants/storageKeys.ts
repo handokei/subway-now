@@ -98,6 +98,15 @@ export const TRIP_STARTED_AT_KEY = 'subway-now:trip-started-at';
 // 다음 trip에 대해 다시 upload가 가능해진다.
 // 형식: 숫자(epoch ms) 문자열.
 export const LAST_UPLOADED_RECALL_TRIP_START_KEY = 'subway-now:last-uploaded-recall-trip-start';
+// #918 — A3 사전 예약 효과 측정 ledger.
+// `tripBoundScheduler.prescheduleStationAlerts` 1건 등록 시 entry 추가,
+// `tba:` 알람 발사 수신 시 actualFireMs 기록. trip 종료 시 compute → backend upload.
+// 형식: PrescheduledLedgerEntry[] JSON (prescheduledMetrics.ts).
+export const PRESCHEDULED_LEDGER_KEY = 'subway-now:prescheduled-ledger';
+// #918 — 마지막으로 prescheduled telemetry upload된 tripStart 값. recall과 동형 idempotency.
+// 형식: 숫자(epoch ms) 문자열.
+export const LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY =
+  'subway-now:last-uploaded-prescheduled-trip-start';
 // #828 — Phase 1+2 fusion wire — active trip의 boarding line code.
 // BG/FG location task가 좌표 upload 시 이 line으로 linePolyline snap을 수행해
 // `mapMatchedArcM` + `mapMatchedLine`을 backend에 첨부한다.

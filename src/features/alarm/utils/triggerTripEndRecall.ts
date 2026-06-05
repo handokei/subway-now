@@ -30,11 +30,15 @@ import {
   ROUTE_KEY,
   TRIP_ORIGIN_KEY,
   LAST_UPLOADED_RECALL_TRIP_START_KEY,
+  LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY,
 } from '../../../shared/constants/storageKeys';
 import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { computeRouteArc } from '../../route/utils/routeProgress';
-import { computeAndUploadTripRecall } from './alarmLogTelemetry';
+import {
+  computeAndUploadTripPrescheduled,
+  computeAndUploadTripRecall,
+} from './alarmLogTelemetry';
 import { getTripStartedAt } from './tripStartStorage';
 import { createLogger } from '../../../shared/utils/logger';
 
@@ -92,10 +96,40 @@ export async function triggerTripEndRecall(): Promise<TriggerTripEndRecallResult
       await AsyncStorage.setItem(LAST_UPLOADED_RECALL_TRIP_START_KEY, String(tripStart));
     }
 
+    // #918 A3 — recall과 같은 trip 종료 시점에 사전 예약 텔레메트리도 upload. recall과 별도
+    // idempotency 키를 사용 — recall 실패/skip이 prescheduled upload를 막지 않게.
+    await triggerPrescheduledUpload(tripStart);
+
     return { uploaded: result.uploaded };
   } catch (e) {
     log.warn('trigger error', e);
     return { uploaded: false, skipped: 'error' };
+  }
+}
+
+/**
+ * 사전 예약 텔레메트리 1건 upload + idempotency 키 기록.
+ * recall과 분리한 이유: recall은 route arc 계산이 실패하면 skip하지만 prescheduled는 ledger만
+ * 보면 되므로 routeStops 부재 케이스(custom origin 사용 등)에서도 발사 가능해야 한다.
+ *
+ * 에러는 흡수 — trip-end 흐름을 측정 인프라가 차단하지 않는다.
+ */
+async function triggerPrescheduledUpload(tripStart: number): Promise<void> {
+  try {
+    const lastRaw = await AsyncStorage.getItem(LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY);
+    if (lastRaw !== null && Number(lastRaw) === tripStart) {
+      log.info(`duplicate prescheduled upload skip: tripStart=${tripStart}`);
+      return;
+    }
+    const result = await computeAndUploadTripPrescheduled({ tripStart });
+    if (result.uploaded) {
+      await AsyncStorage.setItem(
+        LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY,
+        String(tripStart),
+      );
+    }
+  } catch (e) {
+    log.warn('prescheduled trigger error', e);
   }
 }
 

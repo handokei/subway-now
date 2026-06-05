@@ -7,6 +7,7 @@ import type { AlarmType } from '../../../shared/types/alarm';
 import { isSameStationName, type Route } from '../../../shared/utils/stationRoute';
 import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
+import { recordScheduledAlarm } from './prescheduledMetrics';
 
 const logger = createLogger('TripBoundScheduler');
 
@@ -150,6 +151,11 @@ export async function prescheduleStationAlerts(
       });
 
       scheduled.push({ identifier, event, fireDate });
+      // #918 A3 measurement — ledger에 적재해 trip 종료 시 fire delta / miss rate / station 정확도 산출.
+      // 실패는 graceful (prescheduledMetrics 내부에서 try/catch — schedule 흐름 차단 안 함).
+      // 순차 await — 동시 RMW가 서로 덮어쓰는 race 차단. 30+ 역 trip 1회 약 ~100-300ms 추가지만
+      // 사전 예약은 trip 시작 시 1회만 발생하는 oneshot이라 허용.
+      await recordScheduledAlarm({ identifier, scheduledFireMs: fireMs });
     }
   }
 

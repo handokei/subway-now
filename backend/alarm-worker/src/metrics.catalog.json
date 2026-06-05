@@ -112,6 +112,27 @@
       "format": "rate",
       "display": "percentage",
       "description": "#919 A4 — recall < 100% trip에서 매역 알림을 차단한 게이트(accuracy/motion/silence/lockMissing/...) 분포. 차단 reason은 별도 blob label로 적재(reason 카탈로그는 recallTelemetry.ts:KNOWN_GATE_REASONS와 client recallMetrics.ts:GATE_SUPPRESSION_REASONS의 양방향 SSOT)."
+    },
+    {
+      "key": "prescheduledFireMissRate",
+      "constantName": "PRESCHEDULED_FIRE_MISS_RATE",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#918 A3 — trip 종료까지 fire ledger에 actualFireMs가 기록되지 않은 비율. hit=scheduledCount-firedCount, total=scheduledCount. OS local notification 누락/cancel/일정 변경의 합산 신호 — A4 recall과 보완. 운영 KPI(Phase 4 결정 게이트 아님)."
+    },
+    {
+      "key": "prescheduledStationAccuracy",
+      "constantName": "PRESCHEDULED_STATION_ACCURACY",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#918 A3 — fired 사전 예약 알람의 station 정확도. hit=fired entry 중 alarmLog가 같은 station에서 fired outcome을 남긴 수, total=firedCount. 사전 예약 시점 prediction과 실제 trip 진행 일치도."
+    },
+    {
+      "key": "prescheduledFireDeltaMs",
+      "constantName": "PRESCHEDULED_FIRE_DELTA_MS",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "#918 A3 — actualFireMs - scheduledFireMs (양수=OS 늦게 발사). p95로 OS 타이밍 SLA 추적. 시계 보정/timer drift 진단 신호."
     }
   ]
 }

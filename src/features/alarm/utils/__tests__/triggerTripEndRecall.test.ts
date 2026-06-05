@@ -8,6 +8,7 @@
 const mockGetItem = jest.fn();
 const mockSetItem = jest.fn();
 const mockComputeAndUploadTripRecall = jest.fn();
+const mockComputeAndUploadTripPrescheduled = jest.fn();
 const mockComputeRouteArc = jest.fn();
 const mockGetTripStartedAt = jest.fn();
 
@@ -21,6 +22,8 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 
 jest.mock('../alarmLogTelemetry', () => ({
   computeAndUploadTripRecall: (...args: unknown[]) => mockComputeAndUploadTripRecall(...args),
+  computeAndUploadTripPrescheduled: (...args: unknown[]) =>
+    mockComputeAndUploadTripPrescheduled(...args),
 }));
 
 jest.mock('../../../route/utils/routeProgress', () => ({
@@ -46,6 +49,7 @@ import {
   ROUTE_KEY,
   TRIP_ORIGIN_KEY,
   LAST_UPLOADED_RECALL_TRIP_START_KEY,
+  LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY,
 } from '../../../../shared/constants/storageKeys';
 
 const ROUTE_JSON = JSON.stringify({ type: 'direct', line: '2', stops: 3, travelSeconds: 300 });
@@ -69,6 +73,8 @@ describe('triggerTripEndRecall', () => {
     mockGetItem.mockReset();
     mockSetItem.mockReset();
     mockComputeAndUploadTripRecall.mockReset();
+    mockComputeAndUploadTripPrescheduled.mockReset();
+    mockComputeAndUploadTripPrescheduled.mockResolvedValue({ uploaded: false });
     mockComputeRouteArc.mockReset();
     mockGetTripStartedAt.mockReset();
   });
@@ -182,6 +188,98 @@ describe('triggerTripEndRecall', () => {
     const result = await triggerTripEndRecall();
 
     expect(result).toEqual({ uploaded: false, skipped: 'error' });
+  });
+
+  it('#918 — prescheduled 트리거 호출: uploaded=true 시 LAST_UPLOADED_PRESCHEDULED 기록', async () => {
+    mockGetTripStartedAt.mockResolvedValue(100);
+    setStorage({
+      [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+      [LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY]: null,
+      [ROUTE_KEY]: ROUTE_JSON,
+      [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+      [DESTINATION_KEY]: DEST_JSON,
+    });
+    mockComputeRouteArc.mockReturnValue({
+      stations: ROUTE_ARC_STATIONS,
+      arcM: [0, 1, 2],
+      totalLengthM: 2,
+    });
+    mockComputeAndUploadTripRecall.mockResolvedValue({ uploaded: true });
+    mockComputeAndUploadTripPrescheduled.mockResolvedValue({ uploaded: true });
+    mockSetItem.mockResolvedValue(undefined);
+
+    await triggerTripEndRecall();
+
+    expect(mockComputeAndUploadTripPrescheduled).toHaveBeenCalledWith({ tripStart: 100 });
+    expect(mockSetItem).toHaveBeenCalledWith(LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY, '100');
+  });
+
+  it('#918 — prescheduled uploaded=false면 LAST_UPLOADED_PRESCHEDULED 기록 안 함', async () => {
+    mockGetTripStartedAt.mockResolvedValue(100);
+    setStorage({
+      [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+      [LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY]: null,
+      [ROUTE_KEY]: ROUTE_JSON,
+      [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+      [DESTINATION_KEY]: DEST_JSON,
+    });
+    mockComputeRouteArc.mockReturnValue({
+      stations: ROUTE_ARC_STATIONS,
+      arcM: [0, 1, 2],
+      totalLengthM: 2,
+    });
+    mockComputeAndUploadTripRecall.mockResolvedValue({ uploaded: true });
+    mockComputeAndUploadTripPrescheduled.mockResolvedValue({ uploaded: false, skipped: 'empty' });
+    mockSetItem.mockResolvedValue(undefined);
+
+    await triggerTripEndRecall();
+
+    const presetCalls = mockSetItem.mock.calls.filter(
+      (c) => c[0] === LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY,
+    );
+    expect(presetCalls).toHaveLength(0);
+  });
+
+  it('#918 — prescheduled 마커가 같은 tripStart면 trigger skip (중복 차단)', async () => {
+    mockGetTripStartedAt.mockResolvedValue(100);
+    setStorage({
+      [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+      [LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY]: '100',
+      [ROUTE_KEY]: ROUTE_JSON,
+      [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+      [DESTINATION_KEY]: DEST_JSON,
+    });
+    mockComputeRouteArc.mockReturnValue({
+      stations: ROUTE_ARC_STATIONS,
+      arcM: [0, 1, 2],
+      totalLengthM: 2,
+    });
+    mockComputeAndUploadTripRecall.mockResolvedValue({ uploaded: true });
+
+    await triggerTripEndRecall();
+
+    expect(mockComputeAndUploadTripPrescheduled).not.toHaveBeenCalled();
+  });
+
+  it('#918 — prescheduled trigger 예외도 흡수 (recall 결과는 영향 없음)', async () => {
+    mockGetTripStartedAt.mockResolvedValue(100);
+    setStorage({
+      [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+      [LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY]: null,
+      [ROUTE_KEY]: ROUTE_JSON,
+      [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+      [DESTINATION_KEY]: DEST_JSON,
+    });
+    mockComputeRouteArc.mockReturnValue({
+      stations: ROUTE_ARC_STATIONS,
+      arcM: [0, 1, 2],
+      totalLengthM: 2,
+    });
+    mockComputeAndUploadTripRecall.mockResolvedValue({ uploaded: true });
+    mockComputeAndUploadTripPrescheduled.mockRejectedValue(new Error('boom'));
+
+    const result = await triggerTripEndRecall();
+    expect(result.uploaded).toBe(true); // recall 성공 영향 없음
   });
 
   it('LAST_UPLOADED 값이 다른 tripStart면 정상 upload 진행', async () => {
