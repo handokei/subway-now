@@ -22,6 +22,13 @@ jest.mock('../stationNotification', () => ({
   buildLiveActivityData: (...args: unknown[]) => mockBuild(...args),
 }));
 
+// #926 — LA dismiss sentinel은 본 모듈의 독립 유닛 테스트(`laDismissSentinel.test.ts`)에서
+// 검증한다. 여기서는 wire-up만 격리 검증 — sentinel 활성 시 LA refresh가 skip되는지.
+const mockIsLaDismissed = jest.fn(async () => false);
+jest.mock('../laDismissSentinel', () => ({
+  isLaDismissed: () => mockIsLaDismissed(),
+}));
+
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -69,6 +76,7 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockIsLiveActivityEnabled.mockReturnValue(true);
+    mockIsLaDismissed.mockResolvedValue(false);
     Object.defineProperty(Platform, 'OS', { value: 'ios', configurable: true });
   });
 
@@ -88,6 +96,14 @@ describe('refreshLiveActivityFromBackgroundContext', () => {
     mockIsLiveActivityEnabled.mockReturnValue(false);
     await refreshLiveActivityFromBackgroundContext();
     expect(AsyncStorage.getItem).not.toHaveBeenCalled();
+  });
+
+  it('#926 — dismiss sentinel 활성이면 storage 읽기 전에 skip (LA 안 살림)', async () => {
+    mockIsLaDismissed.mockResolvedValueOnce(true);
+    await refreshLiveActivityFromBackgroundContext();
+    expect(AsyncStorage.getItem).not.toHaveBeenCalled();
+    expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+    expect(mockEndLiveActivity).not.toHaveBeenCalled();
   });
 
   it('destination 없으면 endLiveActivity 호출', async () => {
