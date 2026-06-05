@@ -124,6 +124,14 @@
     "assignSlot": "{{label}}を追加",
     "pendingSlot": "次に選ぶ駅を{{label}}として保存します"
   },
+  "currentStationConfirm": {
+    "title": "現在の駅を確認してください",
+    "subtitle": "タップすると現在の駅に設定されます",
+    "topPickHint": "おすすめ",
+    "empty": "近くの駅が見つかりませんでした",
+    "searchFallback": "検索で選ぶ",
+    "close": "閉じる"
+  },
   "sleepModeGuide": {
     "title": "おやすみモードのご案内",
     "message": "イヤホンが接続されていない場合、アラームがスピーカーで再生されることがあります。\n\nスピーカー出力を希望しない場合は、設定 > アラームで「スピーカー出力を許可」をオフにしてください。",
