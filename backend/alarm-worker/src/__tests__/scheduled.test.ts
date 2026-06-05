@@ -1166,6 +1166,60 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     expect(getLaCalls(fetchImpl)).toHaveLength(0);
   });
 
+  // #900 Seam D — 60s heartbeat 게이트.
+  it('fires LA heartbeat when delta < 30s but lastLaPushAt is ≥ 60s ago', async () => {
+    const kv = new InMemoryKV();
+    // ETA 변동(ΔETA=10s)은 임계 미달이지만 lastLaPushAt이 60s 전이라 heartbeat 발사 기대.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({
+        lastTrackedArrivalEpoch: NOW + 110_000,
+        lastLaPushEpoch: NOW + 110_000,
+        lastLaPushAt: NOW - 60_000,
+      }),
+    );
+    const fetchImpl = makeOkFetch();
+    // seoul: +120s vs LA baseline(+110s) → ΔETA=10s < 30s
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    expect(stats.laPushSent).toBe(1);
+    expect(getLaCalls(fetchImpl)).toHaveLength(1);
+    const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
+    // heartbeat 발사 시 wall-clock도 갱신됨 — 다음 heartbeat 평가 baseline.
+    expect(stored.lastLaPushAt).toBe(NOW);
+    expect(stored.lastLaPushEpoch).toBe(NOW + 120_000);
+  });
+
+  it('does not fire LA heartbeat when lastLaPushAt is < 60s ago and delta < 30s', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockedLaTrip({
+        lastTrackedArrivalEpoch: NOW + 110_000,
+        lastLaPushEpoch: NOW + 110_000,
+        lastLaPushAt: NOW - 30_000, // 30s 전 — 60s 임계 미달
+      }),
+    );
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, { seoul: makeLockedSeoul(120), fetchImpl });
+    expect(stats.laPushSent).toBe(0);
+    expect(getLaCalls(fetchImpl)).toHaveLength(0);
+  });
+
+  it('stamps lastLaPushAt on the first LA push (no baseline → fired)', async () => {
+    const kv = new InMemoryKV();
+    // lastLaPushEpoch/lastLaPushAt 둘 다 undefined → ΔETA 분기에서 통과 (기존 first-push 경로).
+    await putTrip(kv as unknown as KVNamespace, makeLockedLaTrip());
+    const fetchImpl = makeOkFetch();
+    const stats = await runLaScheduled(kv, {
+      seoul: makeLockedSeoul(120),
+      fetchImpl,
+      now: () => NOW + 5_000,
+    });
+    expect(stats.laPushSent).toBe(1);
+    const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
+    expect(stored.lastLaPushAt).toBe(NOW + 5_000);
+  });
+
   it('does not fire LA when activityPushToken is missing', async () => {
     const kv = new InMemoryKV();
     await putTrip(

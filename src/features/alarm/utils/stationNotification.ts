@@ -243,7 +243,12 @@ function buildContent(
   };
 }
 
-function buildLiveActivityData(
+/**
+ * Live Activity content-state payload 빌더 — 입력은 train/route/alarm 정보, 출력은 native
+ * Live Activity 모듈에 전달할 직렬화된 `LiveActivityData`. `updateStationNotification`(FG)과
+ * `refreshLiveActivityFromBackgroundContext`(#900 Seam D, silent push BG)에서 공유한다.
+ */
+export function buildLiveActivityData(
   currentStation: Station,
   distanceM: number,
   destination?: Station | null,

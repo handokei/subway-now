@@ -30,6 +30,8 @@ export interface TripProgress {
   lastTrackedArrivalEpoch?: number;
   /** Trip의 lastLaPushEpoch 사본. */
   lastLaPushEpoch?: number;
+  /** Trip의 lastLaPushAt(wall-clock) 사본 — #900 heartbeat 게이트 기준점. */
+  lastLaPushAt?: number;
   /** Trip의 consecutiveEtaMissing 사본. */
   consecutiveEtaMissing?: number;
 }

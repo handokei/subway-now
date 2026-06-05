@@ -77,6 +77,16 @@ const FALLBACK_HOP_SEC = 90;
 export const LA_PUSH_THRESHOLD_MS = 30_000;
 
 /**
+ * LA heartbeat 간격 (#900 Seam D). ETA가 정체돼 ΔETA 임계 미달이어도 마지막 LA push 후
+ * 이 간격이 지나면 한 번 더 발사한다. 사용자가 BG에서도 stale content-state를 보지 않게
+ * 갱신을 강제하기 위한 안전망.
+ *
+ * cron 60s × 임계 60_000ms = 매 cron 마다 적어도 한 번 LA refresh 보장. APNs LA budget
+ * (앱당 분당 ~60건)을 단일 trip이 모두 소모해도 안전한 상한.
+ */
+export const LA_HEARTBEAT_INTERVAL_MS = 60_000;
+
+/**
  * 연속 etaMissing 임계치 (#706). 한 trip이 N회 연속 trainCode 매칭 실패면 자동 종료.
  * 운행 시간대 외(새벽)에 trainCode가 Seoul API에서 사라지면 무한 폴링하던 회귀(8h × 1/min) 방지.
  * cron 주기 60s × 5회 = 5분 — 일시적 API 누락은 흡수하고 운행 종료/탈선 신호는 잡는다.
@@ -486,6 +496,8 @@ async function mirrorProgress(
     shiftedCount: prevShifted + shiftedCountDelta,
     lastTrackedArrivalEpoch: trip.lastTrackedArrivalEpoch,
     lastLaPushEpoch: trip.lastLaPushEpoch,
+    // #900 Seam D — heartbeat wall-clock도 mirror해 POST /trips race 후에도 보존.
+    lastLaPushAt: trip.lastLaPushAt,
     consecutiveEtaMissing: trip.consecutiveEtaMissing,
   };
   const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
@@ -696,6 +708,8 @@ export async function advanceBoardingLockWaypoint(
   trip.waypoints.shift();
   trip.lastTrackedArrivalEpoch = undefined;
   trip.lastLaPushEpoch = undefined;
+  // #900 Seam D — heartbeat 기준점도 reset. 다음 hop은 첫 LA push 후 wall-clock stamp.
+  trip.lastLaPushAt = undefined;
   // #864 — transfer waypoint 통과 = 직전 train segment 종료. lock을 유지하면 다음 cycle이
   // 새 line(예: 5호선)에서 옛 trainCode(예: 7327)를 찾아 etaMissing 5회 후 trip auto-end로 사망.
   // lock을 release하면 다음 cycle은 isBoardingLockActive=false → evaluateAndMaybeFireBoardingPrompt
@@ -768,6 +782,10 @@ export async function advanceBoardingLockWaypoint(
  *
  * 반환 dirty=true는 호출자가 putTrip을 호출해야 함을 의미한다.
  * (lastLaPushEpoch 갱신 또는 410 token clear 둘 다 dirty)
+ *
+ * #900 Seam D — ΔETA 임계가 미달이어도 직전 LA push 후 LA_HEARTBEAT_INTERVAL_MS(60s)가
+ * 지났으면 heartbeat로 한 번 더 발사한다. ETA가 정체된 BG 구간에서 content-state가
+ * stale로 남는 것을 방지하기 위한 안전망. `trip.lastLaPushAt`(epoch ms) 기반.
  */
 export async function maybeFireLiveActivityUpdate(
   trip: Trip,
@@ -780,8 +798,14 @@ export async function maybeFireLiveActivityUpdate(
 ): Promise<boolean> {
   if (!trip.activityPushToken || trip.activityState !== 'live') return false;
   const last = trip.lastLaPushEpoch;
+  // #900 — 둘 다 만족 안 하면 skip:
+  //   (a) ΔETA ≥ LA_PUSH_THRESHOLD_MS (변동 발사)
+  //   (b) heartbeat: (now − lastLaPushAt) ≥ LA_HEARTBEAT_INTERVAL_MS (정체 안전망)
+  // last/lastLaPushAt이 둘 다 undefined인 첫 push는 (a) 분기에서 통과 (기존 동작).
   if (last !== undefined && Math.abs(newArrivalEpoch - last) < LA_PUSH_THRESHOLD_MS) {
-    return false;
+    const heartbeatDue =
+      trip.lastLaPushAt !== undefined && now - trip.lastLaPushAt >= LA_HEARTBEAT_INTERVAL_MS;
+    if (!heartbeatDue) return false;
   }
   const etaSeconds = Math.max(0, Math.round((newArrivalEpoch - now) / 1000));
   const contentState = buildLiveActivityContentState(
@@ -791,10 +815,12 @@ export async function maybeFireLiveActivityUpdate(
   );
   const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log);
   if (result.dirty) {
-    // 410 분기 — token이 비워졌으므로 lastLaPushEpoch는 갱신하지 않는다.
+    // 410 분기 — token이 비워졌으므로 lastLaPushEpoch/lastLaPushAt은 갱신하지 않는다.
     return true;
   }
   trip.lastLaPushEpoch = newArrivalEpoch;
+  // #900 Seam D — heartbeat 게이트 기준점. 발사 시각(wall clock)을 stamp.
+  trip.lastLaPushAt = now;
   return true;
 }
 

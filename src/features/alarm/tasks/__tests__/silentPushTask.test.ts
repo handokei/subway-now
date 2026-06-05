@@ -67,6 +67,12 @@ jest.mock('../../utils/stationNotification', () => ({
   buildAlarmContent: (...args: unknown[]) => mockBuildAlarmContent(...(args as Parameters<typeof mockBuildAlarmContent>)),
 }));
 
+// #900 Seam D — silent push finally에서 호출하는 LA refresh. mock로 호출 횟수만 검증.
+const mockRefreshLa = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../utils/refreshLiveActivityFromBackgroundContext', () => ({
+  refreshLiveActivityFromBackgroundContext: () => mockRefreshLa(),
+}));
+
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -1461,6 +1467,49 @@ describe('silentPushTask', () => {
       const status = getSilentPushRegistrationStatus();
       expect(status.state).toBe('failed');
       expect(status.error).toBe('string-rejection');
+    });
+  });
+
+  describe('#900 Seam D — refreshLiveActivityFromBackgroundContext invocation', () => {
+    // payload kind 전반에서 LA refresh가 정확히 1회 호출됨을 검증.
+    // 데이터 주도: 각 row가 (label, taskData, mock setup)을 정의해 동일 assertion 반복.
+    function lockMismatchPayload() {
+      mockFindStationByNameAndLine.mockReturnValueOnce(null);
+      mockFindStationByName.mockReturnValueOnce({} as never);
+      return payload({ kind: 'transfer' });
+    }
+    function gateSkipPayload() {
+      mockCheckGate.mockResolvedValueOnce({
+        pass: false,
+        reason: 'out-of-range',
+        distanceM: 5000,
+        thresholdM: 800,
+        locationSource: 'cache',
+        locationAgeMs: 5000,
+      });
+      return payload({ kind: 'transfer' });
+    }
+    const cases: Array<{ label: string; build: () => unknown }> = [
+      { label: '정상 fire', build: () => payload({ kind: 'destination' }) },
+      { label: 'reschedule kind', build: () => payload({ kind: 'reschedule', nextStation: '강남', newArrivalTimeEpoch: 1, trainCode: 'T1' }) },
+      { label: 'trip-ended kind', build: () => payload({ kind: 'trip-ended', reason: 'expired' }) },
+      { label: 'payload missing(invalid)', build: () => ({ data: { data: { data: {}, dataString: null }, notification: null, aps: { 'content-available': 1 } } }) },
+      { label: 'lock-line-mismatch skip', build: () => lockMismatchPayload() },
+      { label: 'gate skip', build: () => gateSkipPayload() },
+    ];
+    it.each(cases)('$label 후에도 refreshLiveActivityFromBackgroundContext 1회 호출', async ({ build }) => {
+      await handleSilentPush(build() as never);
+      expect(mockRefreshLa).toHaveBeenCalledTimes(1);
+    });
+
+    it('refresh가 throw해도 caller로 전파되지 않는다 (silent push 전체 흐름 보호)', async () => {
+      mockRefreshLa.mockRejectedValueOnce(new Error('LA fail'));
+      await expect(handleSilentPush(payload({ kind: 'destination' }) as never)).resolves.toBeUndefined();
+    });
+
+    it('error input일 때도 refresh가 호출된다', async () => {
+      await handleSilentPush({ data: undefined, error: { message: 'boom' } });
+      expect(mockRefreshLa).toHaveBeenCalledTimes(1);
     });
   });
 });

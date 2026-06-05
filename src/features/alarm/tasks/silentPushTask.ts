@@ -58,6 +58,7 @@ import {
 } from '../utils/silentPushLocationGate';
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
 import { buildAlarmContent } from '../utils/stationNotification';
+import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
 import { type NotificationSource } from '../utils/notificationSource';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 import { getBoardingLock } from '../utils/boardingLockStorage';
@@ -490,8 +491,16 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       logger.error('silent push fire 실패:', e);
     }
   } finally {
-    // pending 강제 flush — debounce timer 만료를 기다리면 BG task 종료 후라 손실.
+    // #900 Seam D — 권한 무관 LA refresh. 모든 silent push 종료 경로(정상/early-return/error)
+    // 끝에서 한 번 호출. **순서 중요**: flushAlarmLog 먼저 await — 지하 환경에서 native LA
+    // update가 ActivityKit lock으로 수 초 stall 가능. BG task 시간 예산(~25s)을 LA가 잠식하면
+    // alarmLog가 손실(#735 회귀). 측정 인프라(alarmLog)가 항상 보호되도록 LA를 뒤에 둔다.
     await flushAlarmLog();
+    try {
+      await refreshLiveActivityFromBackgroundContext();
+    } catch (e) {
+      logger.error('refreshLiveActivityFromBackgroundContext 실패:', e);
+    }
   }
 }
 
