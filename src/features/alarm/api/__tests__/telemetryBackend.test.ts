@@ -11,7 +11,7 @@ jest.mock('../../../../shared/utils/logger', () => ({
   }),
 }));
 
-const ORIGINAL_FETCH = global.fetch;
+const ORIGINAL_FETCH = globalThis.fetch;
 
 const PAYLOAD: SilentPushTelemetryPayload = {
   since: 0,
@@ -25,32 +25,32 @@ const PAYLOAD: SilentPushTelemetryPayload = {
 describe('uploadSilentPushTelemetry', () => {
   beforeEach(() => {
     delete process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
-    global.fetch = jest.fn();
+    globalThis.fetch = jest.fn();
   });
 
   afterEach(() => {
-    global.fetch = ORIGINAL_FETCH;
+    globalThis.fetch = ORIGINAL_FETCH;
   });
 
   it('URL 미설정이면 skipped=true', async () => {
     const result = await uploadSilentPushTelemetry('token', PAYLOAD);
     expect(result).toEqual({ ok: false, skipped: true });
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('빈 token도 skipped=true', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
     const result = await uploadSilentPushTelemetry('', PAYLOAD);
     expect(result).toEqual({ ok: false, skipped: true });
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('정상 응답 시 ok=true, body 직렬화 확인', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
+    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
     const result = await uploadSilentPushTelemetry('tok', PAYLOAD);
     expect(result).toEqual({ ok: true, status: 200 });
-    const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+    const [url, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('https://api.test/telemetry/silent-push');
     expect(init.method).toBe('POST');
     const body = JSON.parse(init.body);
@@ -61,14 +61,14 @@ describe('uploadSilentPushTelemetry', () => {
 
   it('!res.ok 응답 시 ok=false + status', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test';
-    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
+    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
     const result = await uploadSilentPushTelemetry('tok', PAYLOAD);
     expect(result).toEqual({ ok: false, status: 500 });
   });
 
   it('fetch throw 시 ok=false', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test';
-    (global.fetch as jest.Mock).mockRejectedValue(new Error('network'));
+    (globalThis.fetch as jest.Mock).mockRejectedValue(new Error('network'));
     const result = await uploadSilentPushTelemetry('tok', PAYLOAD);
     expect(result).toEqual({ ok: false });
   });
@@ -76,7 +76,7 @@ describe('uploadSilentPushTelemetry', () => {
   it('타임아웃 발동 시 abort → ok=false', async () => {
     jest.useFakeTimers();
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test';
-    (global.fetch as jest.Mock).mockImplementation(
+    (globalThis.fetch as jest.Mock).mockImplementation(
       (_url: string, init: RequestInit) =>
         new Promise((_resolve, reject) => {
           init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
@@ -102,32 +102,32 @@ const RECALL_PAYLOAD: TripRecallResult = {
 describe('uploadRecallTelemetry', () => {
   beforeEach(() => {
     delete process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
-    global.fetch = jest.fn();
+    globalThis.fetch = jest.fn();
   });
 
   afterEach(() => {
-    global.fetch = ORIGINAL_FETCH;
+    globalThis.fetch = ORIGINAL_FETCH;
   });
 
   it('URL 미설정이면 skipped=true', async () => {
     const result = await uploadRecallTelemetry('token', RECALL_PAYLOAD);
     expect(result).toEqual({ ok: false, skipped: true });
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('빈 token도 skipped=true', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
     const result = await uploadRecallTelemetry('', RECALL_PAYLOAD);
     expect(result).toEqual({ ok: false, skipped: true });
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('정상 응답 시 ok=true, body 직렬화 확인', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
+    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
     const result = await uploadRecallTelemetry('tok', RECALL_PAYLOAD);
     expect(result).toEqual({ ok: true, status: 200 });
-    const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+    const [url, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
     expect(url).toBe('https://api.test/telemetry/recall');
     expect(init.method).toBe('POST');
     const body = JSON.parse(init.body);
@@ -140,14 +140,14 @@ describe('uploadRecallTelemetry', () => {
 
   it('!res.ok 응답 시 ok=false + status', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test';
-    (global.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
+    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
     const result = await uploadRecallTelemetry('tok', RECALL_PAYLOAD);
     expect(result).toEqual({ ok: false, status: 500 });
   });
 
   it('fetch throw 시 ok=false', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test';
-    (global.fetch as jest.Mock).mockRejectedValue(new Error('network'));
+    (globalThis.fetch as jest.Mock).mockRejectedValue(new Error('network'));
     const result = await uploadRecallTelemetry('tok', RECALL_PAYLOAD);
     expect(result).toEqual({ ok: false });
   });

@@ -79,6 +79,27 @@ function isInWindow(entry: AlarmLogEntry, tripStart: number, tripEnd: number): b
   return entry.ts > tripStart && entry.ts <= tripEnd;
 }
 
+function accountForFiredEntry(
+  entry: AlarmLogEntry,
+  routeSet: ReadonlySet<string>,
+  firedRouteStations: Set<string>,
+): void {
+  const name = entry.stationName;
+  if (name && routeSet.has(name)) {
+    firedRouteStations.add(name);
+  }
+}
+
+function accountForSuppressedEntry(
+  entry: AlarmLogEntry,
+  gateSuppressionCounts: Partial<Record<AlarmLogReason, number>>,
+): void {
+  const reason = entry.reason;
+  if (reason && GATE_REASON_SET.has(reason)) {
+    gateSuppressionCounts[reason] = (gateSuppressionCounts[reason] ?? 0) + 1;
+  }
+}
+
 export function computeTripRecall(input: TripRecallInput): TripRecallResult {
   const { routeStops, entries, tripStart, tripEnd } = input;
   const expectedStops = routeStops.length;
@@ -90,20 +111,10 @@ export function computeTripRecall(input: TripRecallInput): TripRecallResult {
 
   for (const entry of entries) {
     if (!isInWindow(entry, tripStart, tripEnd)) continue;
-
     if (entry.outcome === 'fired') {
-      const name = entry.stationName;
-      if (name && routeSet.has(name)) {
-        firedRouteStations.add(name);
-      }
-      continue;
-    }
-
-    if (entry.outcome === 'suppressed') {
-      const reason = entry.reason;
-      if (reason && GATE_REASON_SET.has(reason)) {
-        gateSuppressionCounts[reason] = (gateSuppressionCounts[reason] ?? 0) + 1;
-      }
+      accountForFiredEntry(entry, routeSet, firedRouteStations);
+    } else if (entry.outcome === 'suppressed') {
+      accountForSuppressedEntry(entry, gateSuppressionCounts);
     }
   }
 
