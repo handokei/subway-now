@@ -45,6 +45,7 @@ import { useBoardingLockScheduler } from '../features/alarm/hooks/useBoardingLoc
 import { useTripBoundAlarmScheduler } from '../features/alarm/hooks/useTripBoundAlarmScheduler';
 import { useBoardingLockAdvancer } from '../features/alarm/hooks/useBoardingLockAdvancer';
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
+import { useDestinationAutoClear } from '../features/alarm/hooks/useDestinationAutoClear';
 import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
 import { useCurrentStationConfirmModal } from '../features/nearest-station/hooks/useCurrentStationConfirmModal';
 import { CurrentStationConfirmModal } from '../features/nearest-station/components/CurrentStationConfirmModal';
@@ -346,6 +347,19 @@ export default function HomeScreen() {
     distanceKm: result?.distanceKm ?? null,
     releaseLock: releaseBoardingLock,
     route,
+  });
+  // #925 (C2 wire) — destination 자동 하차 감지. arvlCd=0/1 + 역 50m 이내 + 60s motion stationary
+  // 4-신호 AND 게이트 통과 시 setDestination(null) 호출 → 후속 LA end / trip-end recall은
+  // useDestinationStore.setDestination(null)의 기존 cleanup 경로(triggerTripEndRecall, runTripBoundCleanups)에서 처리.
+  // useBoardingLockAutoRelease(lock 라이프사이클, 300m/45s)와는 임계값/책임이 달라 독립적으로 동작.
+  // 기존 arrival/useArrivalAutoClear(500m/2s, GPS 역명 매칭)와도 책임 분리:
+  //   - arrival/useArrivalAutoClear: 도착 banner UX + 빠른 2초 후 자동 클리어 (낙관적 단순 정책).
+  //   - 본 hook: motion=stationary + arvlCd 보강 → 사용자가 명시 "하차" 안 누른 케이스의 안전망.
+  useDestinationAutoClear({
+    destination,
+    userLocation,
+    motionStationary,
+    onAutoClear: handleArrivalClear,
   });
   // #584 PR D3: lock.boardingLine 위치 데이터를 별도 구독 — fusion 캐시와 dedup되어 추가 비용 없음.
   // lock 없으면 line=null로 호출되어 polling이 자동 정지된다.
