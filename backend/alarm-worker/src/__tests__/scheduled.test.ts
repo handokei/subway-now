@@ -60,6 +60,37 @@ function makeEnv(kv: InMemoryKV, pending?: InMemoryKV): Env {
   };
 }
 
+// 9단 게이트 happy path 공용 GPS series — boarding-prompt / kalman / auto-lock 테스트 공통 사용.
+// 게이트 #4(origin 100m 이내) / #5(direction cosine ≥ 0.7) / #7(speed ≥ 5 km/h) 모두 통과 설계.
+async function seedHappyGateSeries(kv: InMemoryKV, token: string): Promise<void> {
+  const series = [
+    { lat: 0, lng: -0.0004, accuracy: 10, ts: NOW - 60_000, motion: 'automotive' },
+    { lat: 0, lng: 0.0002, accuracy: 10, ts: NOW - 30_000, motion: 'automotive' },
+    { lat: 0, lng: 0.0008, accuracy: 10, ts: NOW, motion: 'automotive' },
+  ];
+  await kv.put(`pos:${token}`, JSON.stringify(series));
+}
+
+// #916 auto-lock 테스트용 trip 시드. promptGeoContext + promptDisplay + waypoints 9단 게이트 통과 형태.
+function makePromptTrip(overrides: Partial<Trip> = {}): Trip {
+  return makeTrip({
+    token: 'auto-lock-tok',
+    route: { type: 'direct', line: '2', stops: 3 },
+    destination: '선릉',
+    waypoints: [
+      { stationName: '역삼', line: '2', kind: 'intermediate' },
+      { stationName: '선릉', line: '2', kind: 'destination' },
+    ],
+    promptGeoContext: {
+      origin: { lat: 0, lng: 0 },
+      nextStation: { lat: 0, lng: 0.01 },
+      direction: 'up',
+    },
+    promptDisplay: { originStation: '강남', line: '2' },
+    ...overrides,
+  });
+}
+
 function makeTrip(overrides: Partial<Trip> = {}): Trip {
   return {
     token: 'tok',
@@ -1643,15 +1674,8 @@ describe('runScheduled — boarding-prompt 9단 게이트 (#819)', () => {
     };
   }
 
-  /** "happy path" series — 9단 모두 통과하는 60s window. helper에서 NOW 기준 timestamp 사용. */
-  async function seedHappySeries(kv: InMemoryKV, token = 'bp-tok'): Promise<void> {
-    const series = [
-      { lat: 0, lng: -0.0004, accuracy: 10, ts: NOW - 60_000, motion: 'automotive' },
-      { lat: 0, lng: 0.0002, accuracy: 10, ts: NOW - 30_000, motion: 'automotive' },
-      { lat: 0, lng: 0.0008, accuracy: 10, ts: NOW, motion: 'automotive' },
-    ];
-    await kv.put(`pos:${token}`, JSON.stringify(series));
-  }
+  /** "happy path" series — 모듈 레벨 seedHappyGateSeries 재사용 (bp-tok 기본). */
+  const seedHappySeries = (kv: InMemoryKV, token = 'bp-tok') => seedHappyGateSeries(kv, token);
 
   it('promptGeoContext 없으면 skip — boardingPromptEvaluated 미증가', async () => {
     const kv = new InMemoryKV();
@@ -1783,14 +1807,7 @@ describe('runScheduled — evaluateAndMaybeFireBoardingPrompt Kalman KV 통합 (
     });
   }
 
-  async function seedHappySeries(kv: InMemoryKV, token = 'kalman-tok'): Promise<void> {
-    const series = [
-      { lat: 0, lng: -0.0004, accuracy: 10, ts: NOW - 60_000, motion: 'automotive' },
-      { lat: 0, lng: 0.0002, accuracy: 10, ts: NOW - 30_000, motion: 'automotive' },
-      { lat: 0, lng: 0.0008, accuracy: 10, ts: NOW, motion: 'automotive' },
-    ];
-    await kv.put(`pos:${token}`, JSON.stringify(series));
-  }
+  const seedHappySeries = (kv: InMemoryKV, token = 'kalman-tok') => seedHappyGateSeries(kv, token);
 
   function makeKalmanPromptDeps(fetchImpl: typeof fetch) {
     return {
@@ -2936,35 +2953,8 @@ describe('runScheduled — Seam F 사라짐 후 재attach (#902)', () => {
 // ──────────────────────────────────────────────────────────────────────────
 
 describe('runScheduled — #916 A1 auto-lock', () => {
-  // 9단 게이트를 통과시키는 happy GPS series + 동일한 prompt geo/display.
-  // 게이트 #4(origin 100m 이내) / #5(direction cosine ≥ 0.7) / #7(speed ≥ 5 km/h) 모두 통과하도록 설계.
-  function makePromptTrip(overrides: Partial<Trip> = {}): Trip {
-    return makeTrip({
-      token: 'auto-lock-tok',
-      route: { type: 'direct', line: '2', stops: 3 },
-      destination: '선릉',
-      waypoints: [
-        { stationName: '역삼', line: '2', kind: 'intermediate' },
-        { stationName: '선릉', line: '2', kind: 'destination' },
-      ],
-      promptGeoContext: {
-        origin: { lat: 0, lng: 0 },
-        nextStation: { lat: 0, lng: 0.01 },
-        direction: 'up',
-      },
-      promptDisplay: { originStation: '강남', line: '2' },
-      ...overrides,
-    });
-  }
-
-  async function seedHappySeries(kv: InMemoryKV, token: string): Promise<void> {
-    const series = [
-      { lat: 0, lng: -0.0004, accuracy: 10, ts: NOW - 60_000, motion: 'automotive' },
-      { lat: 0, lng: 0.0002, accuracy: 10, ts: NOW - 30_000, motion: 'automotive' },
-      { lat: 0, lng: 0.0008, accuracy: 10, ts: NOW, motion: 'automotive' },
-    ];
-    await kv.put(`pos:${token}`, JSON.stringify(series));
-  }
+  // 모듈 레벨 makePromptTrip / seedHappyGateSeries 재사용 (boarding-prompt / kalman 테스트와 공통).
+  const seedHappySeries = (kv: InMemoryKV, token: string) => seedHappyGateSeries(kv, token);
 
   // 9단 게이트 통과 시점에 backend가 arvlCd=2 단일 후보로 trainCode를 결정 → 자동 lock 부착.
   it('9단 통과 + arrivals 단일 후보 → auto-lock 성공, boardingPrompt push 미발사', async () => {
