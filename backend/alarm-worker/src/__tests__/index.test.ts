@@ -312,6 +312,111 @@ describe('POST /trips — boardingLock merge (#585)', () => {
   });
 });
 
+// #916 follow-up A — server-set auto-lock(autoLockedAt 마커) 보존.
+// client가 lock 필드 없이 same-session 재등록하면 사용자 명시 lock은 drop되고
+// server-set auto-lock은 보존되어야 한다 (cron 추적 연속성).
+describe('POST /trips — server-set auto-lock 보존 (#916 follow-up A)', () => {
+  const CREATED = 1_700_000_000_000;
+  const TOKEN = 'tok-916-fua';
+
+  function tripBody(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    return {
+      ...base(),
+      token: TOKEN,
+      createdAt: CREATED,
+      ...overrides,
+    };
+  }
+
+  /** existing trip을 KV에 직접 주입 — backend가 자동 합성한 server-set lock 시뮬레이션. */
+  async function seedExisting(
+    env: ReturnType<typeof makeKvEnv>,
+    lock: Record<string, unknown> | undefined,
+  ): Promise<void> {
+    const seeded: Record<string, unknown> = { ...tripBody() };
+    if (lock !== undefined) seeded.boardingLock = lock;
+    await env.TRIPS.put(`trip:${TOKEN}`, JSON.stringify(seeded));
+  }
+
+  function serverSetLock(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      trainCode: 'AUTO1',
+      line: '7',
+      subwayId: '1007',
+      selectedDepartureTime: CREATED,
+      segmentStations: ['용마산', '중곡', '군자'],
+      expiresAt: FUTURE,
+      autoLockedAt: CREATED + 1_000,
+      ...overrides,
+    };
+  }
+
+  function userSetLock(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    // autoLockedAt 부재 = 사용자 명시 lock
+    return {
+      trainCode: 'USER1',
+      line: '7',
+      subwayId: '1007',
+      selectedDepartureTime: CREATED,
+      segmentStations: ['용마산', '중곡', '군자'],
+      expiresAt: FUTURE,
+      ...overrides,
+    };
+  }
+
+  it('server-set lock + incoming.boardingLock 부재 → 보존', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, serverSetLock());
+    await post('/trips', tripBody(), env); // incoming.boardingLock 없음
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.boardingLock?.trainCode).toBe('AUTO1');
+    expect(stored.boardingLock?.autoLockedAt).toBe(CREATED + 1_000);
+  });
+
+  it('user-set lock + incoming.boardingLock 부재 → drop (기존 정책 유지)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, userSetLock());
+    await post('/trips', tripBody(), env);
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.boardingLock).toBeUndefined();
+  });
+
+  it('server-set lock + incoming 새 trainCode → swap (새 lock 채택)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, serverSetLock({ trainCode: 'AUTO1' }));
+    await post(
+      '/trips',
+      tripBody({
+        boardingLock: {
+          trainCode: 'NEW1',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: CREATED,
+          segmentStations: ['용마산', '중곡', '군자'],
+          expiresAt: FUTURE,
+        },
+      }),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.boardingLock?.trainCode).toBe('NEW1');
+    // 새 lock은 client가 보낸 그대로 — autoLockedAt 마커 없음
+    expect(stored.boardingLock?.autoLockedAt).toBeUndefined();
+  });
+
+  it('server-set lock 보존 시 lastTrackedArrivalEpoch도 유지 (cron 추적 연속성)', async () => {
+    const env = makeKvEnv();
+    await seedExisting(env, serverSetLock());
+    // backend cron이 baseline epoch을 stamp한 상태 시뮬레이션
+    const advanced = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    advanced.lastTrackedArrivalEpoch = 12_345;
+    await env.TRIPS.put(`trip:${TOKEN}`, JSON.stringify(advanced));
+    await post('/trips', tripBody(), env); // lock 필드 없이 재등록
+    const stored = JSON.parse((await env.TRIPS.get(`trip:${TOKEN}`)) as string);
+    expect(stored.lastTrackedArrivalEpoch).toBe(12_345);
+  });
+});
+
 describe('POST /trips (#578 — preserve advance progress on re-register)', () => {
   const CREATED = 1_700_000_000_000;
 

@@ -214,6 +214,19 @@ export interface BoardingLockMeta {
   segmentStations: string[];
   /** Lock 자동 만료 시각 (epoch ms) */
   expiresAt: number;
+  /**
+   * #916 follow-up A — backend가 9단 게이트 통과 시점에 자동 합성한 lock의 stamp (epoch ms).
+   * 사용자가 명시적으로 [탑승] 버튼을 탭해 client가 POST한 lock에는 절대 부재한다.
+   *
+   * 용도: 같은 세션에서 client가 lock 필드 없이 `POST /trips`로 재등록할 때(예: GPS update,
+   * cold restart) baseTrip spread가 `existing.boardingLock`을 silent하게 drop하던 회귀를 차단한다.
+   * 이 마커가 있는 existing lock은 incoming.boardingLock===undefined일 때 보존되고,
+   * 마커가 없는 사용자 명시 lock은 기존 정책대로 drop된다 ("lock 해제" 의미 유지).
+   *
+   * 사용자가 다른 trainCode를 탭해 새 lock을 POST하면 incoming.boardingLock이 truthy라
+   * 기존 swap 경로(`lockSwap.ts`)가 그대로 동작 — 마커 유무와 무관히 새 lock 채택.
+   */
+  autoLockedAt?: number;
 }
 
 /**

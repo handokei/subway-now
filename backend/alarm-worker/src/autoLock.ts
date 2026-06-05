@@ -97,5 +97,8 @@ export async function attemptAutoLock(
     selectedDepartureTime: now,
     segmentStations,
     expiresAt: now + AUTO_LOCK_TTL_MS,
+    // #916 follow-up A — server-set 표시. POST /trips 재등록 시 incoming.boardingLock=undefined
+    // 케이스에서 existing lock을 보존할지 판단하는 마커 (사용자 명시 lock과 구분).
+    autoLockedAt: now,
   };
 }
