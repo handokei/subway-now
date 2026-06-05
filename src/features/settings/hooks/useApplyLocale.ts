@@ -1,8 +1,8 @@
 import { useEffect } from 'react';
 import * as Localization from 'expo-localization';
 import i18next from 'i18next';
-import { useAppStore, type LocalePreference } from '../store/useAppStore';
-import { FALLBACK_LANGUAGE, SUPPORTED_LANGUAGES, type SupportedLanguage } from '../shared/i18n/types';
+import { useAppStore, type LocalePreference } from '../../../store/useAppStore';
+import { FALLBACK_LANGUAGE, SUPPORTED_LANGUAGES, type SupportedLanguage } from '../../../shared/i18n/types';
 
 export function resolveLanguage(
   preference: LocalePreference,

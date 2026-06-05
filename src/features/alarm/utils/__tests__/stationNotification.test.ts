@@ -58,7 +58,7 @@ jest.mock('../firedPushIds', () => ({
 
 const mockSaveStationToWidget = jest.fn().mockResolvedValue(undefined);
 const mockClearWidgetStation = jest.fn().mockResolvedValue(undefined);
-jest.mock('../../../../utils/widgetStorage', () => ({
+jest.mock('../../../widget/api/widgetStorage', () => ({
   saveStationToWidget: (...args: unknown[]) => mockSaveStationToWidget(...args),
   clearWidgetStation: () => mockClearWidgetStation(),
 }));

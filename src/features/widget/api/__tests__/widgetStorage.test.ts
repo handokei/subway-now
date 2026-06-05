@@ -1,11 +1,11 @@
 import { Platform } from 'react-native';
 import { saveStationToWidget, clearWidgetStation } from '../widgetStorage';
-import { Station } from '../../shared/types/station';
+import { Station } from '../../../../shared/types/station';
 
 const mockSave = jest.fn().mockResolvedValue(undefined);
 const mockClear = jest.fn().mockResolvedValue(undefined);
 
-jest.mock('../../../modules/live-activity', () => ({
+jest.mock('../../../../../modules/live-activity', () => ({
   saveWidgetStation: (...args: unknown[]) => mockSave(...args),
   clearWidgetStation: () => mockClear(),
 }));

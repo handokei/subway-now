@@ -8,7 +8,7 @@ import { useAppStore, type ThemeMode, type LocalePreference } from '../../src/st
 import { ROUTE_CATEGORIES } from '../../src/features/route/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../../src/shared/i18n/types';
 import { useTheme, spacing, radius } from '../../src/shared/theme';
-import { useSleepModeGuide } from '../../src/hooks/useSleepModeGuide';
+import { useSleepModeGuide } from '../../src/features/settings/hooks/useSleepModeGuide';
 import {
   DEBUG_MODAL_TRIGGER_RESET_MS,
   DEBUG_MODAL_TRIGGER_TAP_COUNT,

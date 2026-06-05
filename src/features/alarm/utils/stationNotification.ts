@@ -11,7 +11,7 @@ import { vibrateAlarm, stopVibration } from './alarmSound';
 import { speakAlarm } from './tts';
 import { createLogger } from '../../../utils/logger';
 import { getStationDisplayName, getStationDisplayNameByName } from '../../nearest-station/utils/stationDisplay';
-import { saveStationToWidget, clearWidgetStation } from '../../../utils/widgetStorage';
+import { saveStationToWidget, clearWidgetStation } from '../../widget/api/widgetStorage';
 import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../../../data/stations.json';
 import type { ExitSide } from '../../route/types/exitSide';
