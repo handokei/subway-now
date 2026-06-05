@@ -758,16 +758,18 @@ async function attemptVanishSwap(
  * estimate가 null로 끝난 cycle 처리 — etaMissing 카운터 누적 + 임계 초과 시 trip 자동 종료.
  * runTrainCodeTracking의 cognitive complexity 분담용 추출 (Sonar S3776).
  */
-async function handleEtaMissing(
-  trip: Trip,
-  waypoint: Waypoint,
-  activeLock: BoardingLockMeta,
-  env: Env,
-  deps: ScheduledDeps,
-  stats: ScheduledStats,
-  now: number,
-  log: Logger,
-): Promise<void> {
+interface HandleEtaMissingInputs {
+  trip: Trip;
+  waypoint: Waypoint;
+  activeLock: BoardingLockMeta;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+}
+async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
+  const { trip, waypoint, activeLock, env, deps, stats, now, log } = inputs;
   stats.etaMissing += 1;
   const previousMissCount = trip.consecutiveEtaMissing ?? 0;
   const nextMissCount = previousMissCount + 1;
@@ -818,7 +820,7 @@ export async function runTrainCodeTracking(
     }
   }
   if (estimate === null) {
-    await handleEtaMissing(trip, waypoint, activeLock, env, deps, stats, now, log);
+    await handleEtaMissing({ trip, waypoint, activeLock, env, deps, stats, now, log });
     return;
   }
 
