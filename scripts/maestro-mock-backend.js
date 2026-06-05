@@ -88,7 +88,10 @@ function handle(req, res) {
   const url = req.url || '/';
   const method = req.method || 'GET';
 
-  console.log('[mock-backend] %s %s', encodeURIComponent(method), encodeURIComponent(url));
+  // 화이트리스트 외 문자는 '_' 로 치환 (SonarCloud S5145: log injection 차단)
+  const safeMethod = /^[A-Z]+$/.test(method) ? method : 'INVALID';
+  const safeUrl = url.replace(/[^a-zA-Z0-9/_\-?=&%.:]/g, '_').slice(0, 200);
+  console.log('[mock-backend] %s %s', safeMethod, safeUrl);
 
   // GET /api/arrival/:stationName — BFF arrival
   const arrivalMatch = url.match(ARRIVAL_PATH);
