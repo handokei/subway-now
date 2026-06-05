@@ -37,14 +37,13 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
     id: "suggestion-item-2-016"
 
 # 잠실 설정 직후 destination 박스 높이가 커져 home-sleep-mode-switch가 viewport 밖.
-# scrollUntilVisible은 nested ScrollView에서 element 인식 실패 가능 → 명시적 swipe로 강제 스크롤.
-- swipe:
-    start: "50%, 80%"
-    end: "50%, 30%"
-- extendedWaitUntil:
-    visible:
+# HomeScreen은 outer ScrollView 단일 컨테이너(src/screens/HomeScreen.tsx:567) — scrollUntilVisible
+# DOWN으로 안전 스크롤(06 flow와 동일 패턴). 고정 swipe %는 디바이스 높이/leg 개수 따라 부족할 수 있어 회귀(#943).
+- scrollUntilVisible:
+    element:
       id: "home-sleep-mode-switch"
-    timeout: 5000
+    direction: DOWN
+    timeout: 10000
 - tapOn:
     id: "home-sleep-mode-switch"
 
@@ -62,13 +61,11 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
 - tapOn:
     id: "sleep-mode-switch"
 
-# 홈 탭 복귀
+# 홈 탭 복귀 — 동일 사유로 scrollUntilVisible 사용
 - tapOn:
     point: "12%,95%"
-- swipe:
-    start: "50%, 80%"
-    end: "50%, 30%"
-- extendedWaitUntil:
-    visible:
+- scrollUntilVisible:
+    element:
       id: "home-sleep-mode-switch"
-    timeout: 5000
+    direction: DOWN
+    timeout: 10000
