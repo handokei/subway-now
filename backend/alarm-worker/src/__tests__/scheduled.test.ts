@@ -2956,36 +2956,46 @@ describe('runScheduled — #916 A1 auto-lock', () => {
   // 모듈 레벨 makePromptTrip / seedHappyGateSeries 재사용 (boarding-prompt / kalman 테스트와 공통).
   const seedHappySeries = (kv: InMemoryKV, token: string) => seedHappyGateSeries(kv, token);
 
+  // 4 tests 공통 setup. 9단 게이트 통과 trip 시드 + GPS series + runScheduled 실행.
+  async function runAutoLockCron(opts: {
+    kv: InMemoryKV;
+    token: string;
+    arrivals: ArrivalEntry[];
+    seedSeries?: boolean;
+    pushId?: string;
+  }): Promise<{
+    stats: ScheduledStats;
+    fetchImpl: ReturnType<typeof vi.fn>;
+  }> {
+    await putTrip(opts.kv as unknown as KVNamespace, makePromptTrip({ token: opts.token }));
+    if (opts.seedSeries !== false) await seedHappySeries(opts.kv, opts.token);
+    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+    const stats = await runScheduled(makeEnv(opts.kv), {
+      seoul: makeSeoul(opts.arrivals),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      now: () => NOW,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      generatePushId: () => opts.pushId ?? 'auto-1',
+    });
+    return { stats, fetchImpl };
+  }
+
   // 9단 게이트 통과 시점에 backend가 arvlCd=2 단일 후보로 trainCode를 결정 → 자동 lock 부착.
   it('9단 통과 + arrivals 단일 후보 → auto-lock 성공, boardingPrompt push 미발사', async () => {
     const kv = new InMemoryKV();
     const token = 'auto-lock-tok';
-    await putTrip(kv as unknown as KVNamespace, makePromptTrip({ token }));
-    await seedHappySeries(kv, token);
-    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
-
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoul([
-        {
-          destination: '선릉',
-          arrivalSeconds: 60,
-          trainCode: 'AUTO-T1',
-          isUp: true,
-          subwayNm: '지하철2호선',
-          arvlCd: 2,
-        },
-      ]),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      now: () => NOW,
-      fetchImpl,
-      generatePushId: () => 'auto-1',
+    const { stats, fetchImpl } = await runAutoLockCron({
+      kv,
+      token,
+      arrivals: [
+        { destination: '선릉', arrivalSeconds: 60, trainCode: 'AUTO-T1', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
+      ],
     });
 
     expect(stats.autoLockSuccess).toBe(1);
     expect(stats.boardingPromptFired).toBe(0);
     expect(stats.boardingPromptEvaluated).toBe(1);
-    // boardingPromptPush 미발사 → fetchImpl 호출 0 (APNs 호출 자체가 없어야 함)
     expect(fetchImpl).not.toHaveBeenCalled();
 
     const stored = JSON.parse((await kv.get(`trip:${token}`)) as string) as Trip;
@@ -2999,20 +3009,14 @@ describe('runScheduled — #916 A1 auto-lock', () => {
   it('arvlCd 우선순위 ambiguity → auto-lock 실패 → boarding-prompt push 발사', async () => {
     const kv = new InMemoryKV();
     const token = 'auto-amb-tok';
-    await putTrip(kv as unknown as KVNamespace, makePromptTrip({ token }));
-    await seedHappySeries(kv, token);
-    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
-
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoul([
+    const { stats } = await runAutoLockCron({
+      kv,
+      token,
+      pushId: 'amb-1',
+      arrivals: [
         { destination: 'A', arrivalSeconds: 60, trainCode: 'X1', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
         { destination: 'B', arrivalSeconds: 90, trainCode: 'X2', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
-      ]),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      now: () => NOW,
-      fetchImpl,
-      generatePushId: () => 'amb-1',
+      ],
     });
 
     expect(stats.autoLockSuccess).toBe(0);
@@ -3026,20 +3030,7 @@ describe('runScheduled — #916 A1 auto-lock', () => {
   // arrivals 비어있어도 9단 통과(arrivals API와 promptGeoContext는 독립) → auto-lock skip → fallback.
   it('arrivals 비어있음 → auto-lock 실패 → boarding-prompt push 발사', async () => {
     const kv = new InMemoryKV();
-    const token = 'auto-empty-tok';
-    await putTrip(kv as unknown as KVNamespace, makePromptTrip({ token }));
-    await seedHappySeries(kv, token);
-    const fetchImpl = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
-
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoul([]),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      now: () => NOW,
-      fetchImpl,
-      generatePushId: () => 'empty-1',
-    });
-
+    const { stats } = await runAutoLockCron({ kv, token: 'auto-empty-tok', arrivals: [], pushId: 'empty-1' });
     expect(stats.autoLockSuccess).toBe(0);
     expect(stats.boardingPromptFired).toBe(1);
   });
@@ -3047,22 +3038,15 @@ describe('runScheduled — #916 A1 auto-lock', () => {
   // 9단 게이트 차단 → auto-lock 자체에 진입하지 않음.
   it('게이트 차단(window-too-small) → auto-lock 미시도', async () => {
     const kv = new InMemoryKV();
-    const token = 'auto-gate-block';
-    await putTrip(kv as unknown as KVNamespace, makePromptTrip({ token }));
-    // series 미시드 → window-too-small로 게이트 차단
-    const fetchImpl = vi.fn() as unknown as typeof fetch;
-
-    const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeSeoul([
+    const { stats } = await runAutoLockCron({
+      kv,
+      token: 'auto-gate-block',
+      seedSeries: false, // series 미시드 → window-too-small 게이트 차단
+      pushId: 'gate-1',
+      arrivals: [
         { destination: 'A', arrivalSeconds: 60, trainCode: 'T', isUp: true, subwayNm: '지하철2호선', arvlCd: 2 },
-      ]),
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      now: () => NOW,
-      fetchImpl,
-      generatePushId: () => 'gate-1',
+      ],
     });
-
     expect(stats.autoLockSuccess).toBe(0);
     expect(stats.boardingPromptBlocked).toBe(1);
     expect(stats.boardingPromptFired).toBe(0);

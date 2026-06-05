@@ -1,49 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { AUTO_LOCK_TTL_MS, attemptAutoLock } from '../autoLock';
 import { SWAP_LOCK_TTL_MS } from '../lockSwap';
-import { SeoulArrivalClient, type ArrivalEntry } from '../seoul';
-import type { Trip, Waypoint } from '../types';
-
-const NOW = 1_700_000_000_000;
-
-function makeSeoul(arrivals: ArrivalEntry[]): SeoulArrivalClient {
-  return new SeoulArrivalClient({
-    apiKey: 'K',
-    host: 'h',
-    now: () => NOW,
-    fetchImpl: (async () =>
-      new Response(
-        JSON.stringify({
-          realtimeArrivalList: arrivals.map((a) => ({
-            barvlDt: String(a.arrivalSeconds),
-            recptnDt: '',
-            updnLine: a.isUp ? '상행' : '하행',
-            trainLineNm: a.destination,
-            btrainNo: a.trainCode,
-            subwayNm: a.subwayNm,
-            arvlCd: a.arvlCd,
-          })),
-        }),
-        { status: 200 },
-      )) as unknown as typeof fetch,
-  });
-}
-
-function makeTrip(overrides: Partial<Trip> = {}): Trip {
-  return {
-    token: 'tok-auto',
-    route: { type: 'direct', line: '2', stops: 5 },
-    destination: 'dst',
-    waypoints: [
-      { stationName: '역삼', line: '2', kind: 'intermediate' },
-      { stationName: '선릉', line: '2', kind: 'destination' },
-    ],
-    expiresAt: NOW + 60 * 60_000,
-    createdAt: NOW,
-    alarmAtEpochMs: NOW + 60_000,
-    ...overrides,
-  };
-}
+import { type ArrivalEntry } from '../seoul';
+import type { Waypoint } from '../types';
+import {
+  FIXTURE_NOW as NOW,
+  makeSeoulFixture as makeSeoul,
+  makeTripFixture as makeTrip,
+} from './helpers/testFixtures';
 
 const target: Waypoint = { stationName: '역삼', line: '2', kind: 'intermediate' };
 
