@@ -173,7 +173,7 @@ export function useBoardingLockController({
       // boardingStationId는 createLockFromTrain과 동일하게 (역명, candidate.line) 매칭 정정.
       const correctedStation = findStationByNameAndLine(currentStation.name, boardingLine);
       const boardingStationId = correctedStation?.id ?? currentStation.id;
-      void createLock({
+      createLock({
         destinationId,
         trainCode: candidate.trainCode,
         boardingStationId,
@@ -182,6 +182,8 @@ export function useBoardingLockController({
         expectedDurationMs: durationMin * 60_000,
         // initialEtaSeconds는 candidate에 없음 — Seam A 지연 칩은 cron이 채워둔 lock 메타로 노출되지 않으며,
         // 사용자가 명시 탭한 lock에서만 노출되는 게 의도(자동 lock은 정확도가 보장 안 됨).
+      }).catch(() => {
+        // store action rejection은 graceful — loadLock race / storage 일시 실패는 다음 sync에서 자연 재시도.
       });
     },
     [destinationId, currentStation, expectedDurationMinutes, lock, createLock],
