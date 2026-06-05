@@ -46,32 +46,32 @@ async function flush(): Promise<void> {
 }
 
 describe('useBarometer (#875)', () => {
-  it('isAvailable=false → permission 요청도 하지 않고 listener 등록 X', async () => {
-    mockIsAvailable.mockResolvedValue(false);
-    renderHook(() => useBarometer());
-    await flush();
-    expect(mockRequestPermissions).not.toHaveBeenCalled();
-    expect(mockAddListener).not.toHaveBeenCalled();
-  });
-
-  it('isAvailable throw → graceful, no-op', async () => {
-    mockIsAvailable.mockRejectedValue(new Error('boom'));
-    renderHook(() => useBarometer());
-    await flush();
-    expect(mockAddListener).not.toHaveBeenCalled();
-  });
-
-  it('권한 거절 → listener 등록 X', async () => {
-    mockIsAvailable.mockResolvedValue(true);
-    mockRequestPermissions.mockResolvedValue({ granted: false });
-    renderHook(() => useBarometer());
-    await flush();
-    expect(mockAddListener).not.toHaveBeenCalled();
-  });
-
-  it('requestPermissions throw → graceful, no-op', async () => {
-    mockIsAvailable.mockResolvedValue(true);
-    mockRequestPermissions.mockRejectedValue(new Error('denied'));
+  // permission / availability 게이트 실패는 모두 동일 결과(listener 미등록)로 수렴 — 입력만 달리해 테이블화.
+  it.each<{ label: string; setup: () => void }>([
+    {
+      label: 'isAvailable=false',
+      setup: () => mockIsAvailable.mockResolvedValue(false),
+    },
+    {
+      label: 'isAvailable throw',
+      setup: () => mockIsAvailable.mockRejectedValue(new Error('boom')),
+    },
+    {
+      label: '권한 거절',
+      setup: () => {
+        mockIsAvailable.mockResolvedValue(true);
+        mockRequestPermissions.mockResolvedValue({ granted: false });
+      },
+    },
+    {
+      label: 'requestPermissions throw',
+      setup: () => {
+        mockIsAvailable.mockResolvedValue(true);
+        mockRequestPermissions.mockRejectedValue(new Error('denied'));
+      },
+    },
+  ])('게이트 실패 ($label) → listener 등록 X', async ({ setup }) => {
+    setup();
     renderHook(() => useBarometer());
     await flush();
     expect(mockAddListener).not.toHaveBeenCalled();
