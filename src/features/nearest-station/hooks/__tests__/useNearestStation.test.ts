@@ -1184,31 +1184,16 @@ describe('useNearestStation — #903 Seam G barometer→sticky', () => {
     mockGranted();
   });
 
-  it('기본(미전달) 시 sticky motion.automotive=false', async () => {
+  it.each([
+    { label: '기본(미전달) → automotive=false', input: undefined, expected: false },
+    { label: 'barometerSubsurface=true → automotive=true', input: true, expected: true },
+    { label: 'barometerSubsurface=false → automotive=false (graceful)', input: false, expected: false },
+  ])('$label', async ({ input, expected }) => {
     const spy = jest.spyOn(useStickyStationModule, 'useStickyStation');
-    renderHook(() => useNearestStation());
-    await waitFor(() => expect(spy).toHaveBeenCalled());
-    // 호출 인자 검증: 마지막 호출의 2번째 인자.
-    const lastCall = spy.mock.calls[spy.mock.calls.length - 1];
-    expect(lastCall[1]).toEqual({ automotive: false });
-    spy.mockRestore();
-  });
-
-  it('barometerSubsurface=true → sticky motion.automotive=true 매핑', async () => {
-    const spy = jest.spyOn(useStickyStationModule, 'useStickyStation');
-    renderHook(() => useNearestStation({ barometerSubsurface: true }));
+    renderHook(() => useNearestStation(input === undefined ? {} : { barometerSubsurface: input }));
     await waitFor(() => expect(spy).toHaveBeenCalled());
     const lastCall = spy.mock.calls[spy.mock.calls.length - 1];
-    expect(lastCall[1]).toEqual({ automotive: true });
-    spy.mockRestore();
-  });
-
-  it('barometerSubsurface=false → sticky motion.automotive=false (graceful)', async () => {
-    const spy = jest.spyOn(useStickyStationModule, 'useStickyStation');
-    renderHook(() => useNearestStation({ barometerSubsurface: false }));
-    await waitFor(() => expect(spy).toHaveBeenCalled());
-    const lastCall = spy.mock.calls[spy.mock.calls.length - 1];
-    expect(lastCall[1]).toEqual({ automotive: false });
+    expect(lastCall[1]).toEqual({ automotive: expected });
     spy.mockRestore();
   });
 });
