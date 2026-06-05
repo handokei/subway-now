@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SCHEDULED_NOTIFICATIONS_KEY } from '../../../shared/constants/storageKeys';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('ScheduledNotificationsStorage');
 

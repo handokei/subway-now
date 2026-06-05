@@ -1,6 +1,6 @@
 import { pickFusedStation } from '../pickFusedStation';
 import type { NearestStationResult } from '../../../../shared/types/station';
-import type { StationArrival, ArrivalInfo } from '../../../arrival/api/arrivalApi';
+import type { StationArrival, ArrivalInfo } from '../../../../shared/types/arrival';
 import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
 

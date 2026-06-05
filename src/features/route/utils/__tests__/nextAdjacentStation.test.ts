@@ -1,5 +1,5 @@
 import { resolveNextAdjacentStationName } from '../nextAdjacentStation';
-import { getStationsOnLine } from '../stationRoute';
+import { getStationsOnLine } from '../../../../shared/utils/stationRoute';
 
 describe('resolveNextAdjacentStationName', () => {
   it('7호선 단조 — 용마산에서 부평구청(downstream 종점) 방향 → 한 칸 다음 인접역', () => {

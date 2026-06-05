@@ -5,7 +5,7 @@ import {
   MAX_PLAUSIBLE_SPEED_MPS,
   MIN_JUMP_DISTANCE_M,
 } from '../../../shared/constants/location';
-import { haversine } from '../../../utils/haversine';
+import { haversine } from '../../../shared/utils/haversine';
 
 export function isLocationFresh(timestamp: number | undefined): boolean {
   // expo-location 타입상 timestamp는 non-nullable이지만, 네이티브 deferred batch에서

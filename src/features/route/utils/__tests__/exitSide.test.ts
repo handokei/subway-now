@@ -1,5 +1,5 @@
 import { lookupExitSide } from '../exitSide';
-import type { ExitSideMap } from '../../types/exitSide';
+import type { ExitSideMap } from '../../../../shared/types/exitSide';
 
 jest.mock('../../../../data/exitSide.json', () => ({
   강남: { up: 'left', down: 'right' },

@@ -1,7 +1,7 @@
 import transferExitData from '../../../data/transferExit.json';
 import type { TransferExitEntry, TransferExitMap } from '../types/transferExit';
 import type { LineNumber } from '../../../shared/types/station';
-import { normalizeStationName } from './stationRoute';
+import { normalizeStationName } from '../../../shared/utils/stationRoute';
 
 const MAP = transferExitData as TransferExitMap;
 

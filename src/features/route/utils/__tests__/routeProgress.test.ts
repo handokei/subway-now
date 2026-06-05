@@ -4,7 +4,7 @@ import {
   stationAtProgress,
   type RouteArc,
 } from '../routeProgress';
-import { findStationByNameAndLine } from '../stationRoute';
+import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
 import type { Station } from '../../../../shared/types/station';
 import {
   makeDirectRoute,
@@ -169,7 +169,7 @@ describe('computeRouteArc', () => {
       MAX_INTER_STATION_M: 100,
     }));
     const { computeRouteArc: cra } = require('../routeProgress');
-    const { findStationByNameAndLine: fsbnl } = require('../stationRoute');
+    const { findStationByNameAndLine: fsbnl } = require('../../../../shared/utils/stationRoute');
     const ori = fsbnl('사가정', '7');
     const dst = fsbnl('어린이대공원', '7');
     const route = makeDirectRoute(4, '7');

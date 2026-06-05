@@ -2,11 +2,11 @@ import { hopTimeMsForSegment, hopTimeMsAt, hopsElapsedFrom } from '../hopTime';
 import { HOP_TIME_MS } from '../../../../shared/constants/boardingLock';
 import type { Station } from '../../../../shared/types/station';
 
-jest.mock('../stationRoute', () => ({
+jest.mock('../../../../shared/utils/stationRoute', () => ({
   getStopSeconds: jest.fn(),
 }));
 
-import { getStopSeconds } from '../stationRoute';
+import { getStopSeconds } from '../../../../shared/utils/stationRoute';
 
 const mockedGetStopSeconds = getStopSeconds as jest.MockedFunction<typeof getStopSeconds>;
 

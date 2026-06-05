@@ -2,7 +2,7 @@ import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import * as Localization from 'expo-localization';
 
-import { createLogger } from '../../utils/logger';
+import { createLogger } from '../../shared/utils/logger';
 import {
   FALLBACK_LANGUAGE,
   LANGUAGE_REGISTRY,

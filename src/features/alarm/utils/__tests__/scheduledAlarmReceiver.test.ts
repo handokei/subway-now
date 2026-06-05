@@ -18,7 +18,7 @@ jest.mock('../notificationState', () => ({
 }));
 
 const mockErrorSpy = jest.fn();
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

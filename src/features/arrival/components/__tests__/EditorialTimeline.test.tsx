@@ -2,7 +2,7 @@ import React from 'react';
 import { render, screen } from '@testing-library/react-native';
 import { EditorialTimeline, mix, hex } from '../EditorialTimeline';
 import { MOCK_STOPS } from '../../../../testUtils/fixtures';
-import type { Stop } from '../../../route/utils/journeyAdapter';
+import type { Stop } from '../../../../shared/types/journey';
 import type { LineNumber } from '../../../../shared/types/station';
 import { useAppStore } from '../../../../store/useAppStore';
 

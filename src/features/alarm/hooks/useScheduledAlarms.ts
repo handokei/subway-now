@@ -1,8 +1,16 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: 이 파일은 의도적으로 여러 features의 hook/util을 조합하는
+ * orchestrator 역할이라 직접 import가 본질적이다. Phase 5 enforce 모드에서 file-level disable로
+ * 옵트인 처리. 후속 PR(별도 이슈)에서 orchestration 슬라이스(예: features/fusion/, app shell)로
+ * 추출하여 disable을 제거할 예정.
+ *
+ * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
+ */
 import { useEffect, useRef } from 'react';
 import { AppState, type AppStateStatus } from 'react-native';
-import type { Route } from '../../route/utils/stationRoute';
+import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
-import type { StationArrival } from '../../arrival/api/arrivalApi';
+import type { StationArrival } from '../../../shared/types/arrival';
 import {
   cancelScheduledAlarms,
   scheduleAlarmsForRoute,
@@ -13,7 +21,7 @@ import {
   captureTripTrainCodeIfAbsent,
   clearTripTrainCode,
 } from '../../route/utils/tripTrainCode';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useScheduledAlarms');
 

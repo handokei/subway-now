@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BOARDING_LOCK_KEY } from '../../../shared/constants/storageKeys';
-import { createLogger } from '../../../utils/logger';
-import type { BoardingLock } from '../types/boardingLock';
+import { createLogger } from '../../../shared/utils/logger';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
 
 const logger = createLogger('BoardingLockStorage');
 

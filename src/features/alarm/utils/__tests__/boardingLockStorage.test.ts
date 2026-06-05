@@ -5,7 +5,7 @@ import {
   setBoardingLock,
 } from '../boardingLockStorage';
 import { BOARDING_LOCK_KEY } from '../../../../shared/constants/storageKeys';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
@@ -13,7 +13,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   removeItem: jest.fn(),
 }));
 
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

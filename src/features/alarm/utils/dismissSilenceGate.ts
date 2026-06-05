@@ -1,4 +1,4 @@
-import { haversine } from '../../../utils/haversine';
+import { haversine } from '../../../shared/utils/haversine';
 import { DISMISS_SILENCE_MS, DISMISS_SILENCE_RADIUS_M } from '../../../shared/constants/alarmSilence';
 import type { DismissSilenceState } from './dismissSilenceStorage';
 

@@ -12,7 +12,7 @@ jest.mock('expo-background-task', () => ({
   BackgroundTaskResult: { Success: 1, Failed: 2 },
 }));
 
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

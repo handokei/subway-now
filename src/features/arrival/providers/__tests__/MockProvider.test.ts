@@ -1,3 +1,11 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: 이 파일은 의도적으로 여러 features의 hook/util을 조합하는
+ * orchestrator 역할이라 직접 import가 본질적이다. Phase 5 enforce 모드에서 file-level disable로
+ * 옵트인 처리. 후속 PR(별도 이슈)에서 orchestration 슬라이스(예: features/fusion/, app shell)로
+ * 추출하여 disable을 제거할 예정.
+ *
+ * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
+ */
 import { MockArrivalProvider } from '../MockProvider';
 import { MOCK_ARRIVALS } from '../../api/arrivalApi';
 import { SCHEDULE_FALLBACK_TRAIN_CODE_PREFIX } from '../../../alarm/utils/scheduleFallback';

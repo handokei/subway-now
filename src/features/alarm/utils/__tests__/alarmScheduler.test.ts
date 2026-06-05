@@ -8,7 +8,7 @@ import {
 } from '../alarmScheduler';
 import { logScheduledAlarm } from '../alarmLog';
 import { getLastNotifiedStationId } from '../notificationState';
-import * as stationRoute from '../../../route/utils/stationRoute';
+import * as stationRoute from '../../../../shared/utils/stationRoute';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,
@@ -20,7 +20,7 @@ jest.mock('expo-notifications');
 const mockLoggerWarn = jest.fn();
 const mockLoggerInfo = jest.fn();
 const mockLoggerError = jest.fn();
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: (...args: unknown[]) => mockLoggerInfo(...args),

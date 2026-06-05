@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, type AppStateStatus } from 'react-native';
 import { ALARM_LOG_KEY } from '../../../shared/constants/storageKeys';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 import type { AlarmEvent } from './stationAlarm';
 import type { AlarmPhaseId } from './alarmPhases';
 import type { Station } from '../../../shared/types/station';

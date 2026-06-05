@@ -1,7 +1,7 @@
 import * as Speech from 'expo-speech';
 import i18next from 'i18next';
 import { FALLBACK_LANGUAGE, LANGUAGE_REGISTRY } from '../../../shared/i18n/types';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('TTS');
 

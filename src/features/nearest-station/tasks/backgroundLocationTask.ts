@@ -1,9 +1,17 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: 이 파일은 의도적으로 여러 features의 hook/util을 조합하는
+ * orchestrator 역할이라 직접 import가 본질적이다. Phase 5 enforce 모드에서 file-level disable로
+ * 옵트인 처리. 후속 PR(별도 이슈)에서 orchestration 슬라이스(예: features/fusion/, app shell)로
+ * 추출하여 disable을 제거할 예정.
+ *
+ * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
+ */
 import * as TaskManager from 'expo-task-manager';
 import * as Location from 'expo-location';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { processLocationUpdate } from '../../alarm/utils/stationPipeline';
 import { alarmKey } from '../../alarm/utils/stationAlarm';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 import { APNS_TOKEN_KEY, DESTINATION_KEY, SLEEP_MODE_KEY, ALARM_EVENT_KEY, ROUTE_KEY, ALLOW_SPEAKER_KEY } from '../../../shared/constants/storageKeys';
 import { getFiredAlarms, setFiredAlarms } from '../../alarm/utils/notificationState';
 import { isAccuracyAcceptable, isLocationFresh, isPlausibleJump, type FixSample } from '../utils/locationGates';
@@ -12,7 +20,7 @@ import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY } from '../../../shared/constants/
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
 import { getLatestAccelSummary } from '../utils/accelMotionState';
-import type { Route } from '../../route/utils/stationRoute';
+import type { Route } from '../../../shared/utils/stationRoute';
 import { isValidGpsSpeedMps } from '../../../shared/constants/location';
 import type { Station } from '../../../shared/types/station';
 

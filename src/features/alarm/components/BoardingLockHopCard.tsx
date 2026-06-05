@@ -1,8 +1,8 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
-import { formatClockTime } from '../../../utils/formatTime';
-import type { BoardingLock } from '../types/boardingLock';
+import { formatClockTime } from '../../../shared/utils/formatTime';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
 
 /** BoardingTrainList compact row와 동일한 좌측 stripe 두께 (#664/#758). */
 const LINE_STRIPE_WIDTH = 3;

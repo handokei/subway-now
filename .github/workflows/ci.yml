@@ -34,11 +34,12 @@ jobs:
           files=$(git diff --name-only "$base"...HEAD || echo "")
           echo "Changed files vs $base:"
           echo "$files"
-          # 추가 스킵 후보:
-          # - src/types/      : 타입 전용, 런타임 영향 없음 (tsc로 type 체크에서 잡힘)
+          # 추가 스킵 후보 (ADR Phase 5 디렉토리 재정비 반영):
+          # - src/shared/types/, src/features/<slice>/types/ : 타입 전용, 런타임 영향 없음 (tsc로 type 체크에서 잡힘)
           # - src/data/       : 정적 데이터. mock smoke는 stations.json을 우회 (강남 fixture 단락)
+          # - src/features/<slice>/tasks/ : expo-task-manager backed BG task. mock smoke와 무관(FG only).
           # - src/__tests__/, src/**/__tests__/ : 테스트 코드는 앱 번들 미포함, jest로 별도 검증
-          SKIP_RE='^(src/shared/i18n/|src/testUtils/|src/types/|src/data/|src/tasks/|src/(.+/)?__tests__/|backend/|docs/|scripts/|tasks/|img/|subway/|locales/|__mocks__/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/(e2e|ci)\.yml$|eas\.json$|jest\.setup\.js$|sonar-project\.properties$|\.env\.example$|\.gitignore$|\.prettierrc.*$|\.eslintrc.*$|\.editorconfig$|.*\.md$|.*\.txt$)'
+          SKIP_RE='^(src/shared/i18n/|src/shared/types/|src/testUtils/|src/data/|src/features/[^/]+/types/|src/features/[^/]+/tasks/|src/(.+/)?__tests__/|backend/|docs/|scripts/|tasks/|img/|subway/|locales/|__mocks__/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/(e2e|ci)\.yml$|eas\.json$|jest\.setup\.js$|sonar-project\.properties$|\.env\.example$|\.gitignore$|\.prettierrc.*$|\.eslintrc.*$|\.editorconfig$|.*\.md$|.*\.txt$)'
           relevant=$(echo "$files" | grep -v '^$' | grep -vE "$SKIP_RE" || true)
           if [ -z "$relevant" ] && [ -n "$files" ]; then
             echo "ui_affected=false" >> "$GITHUB_OUTPUT"

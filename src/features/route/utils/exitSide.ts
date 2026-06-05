@@ -1,6 +1,6 @@
 import exitSideData from '../../../data/exitSide.json';
-import type { ExitSide, ExitSideMap, TravelDirection } from '../types/exitSide';
-import { normalizeStationName } from './stationRoute';
+import type { ExitSide, ExitSideMap, TravelDirection } from '../../../shared/types/exitSide';
+import { normalizeStationName } from '../../../shared/utils/stationRoute';
 
 const EXIT_SIDE_MAP: ExitSideMap = exitSideData;
 

@@ -15,8 +15,8 @@ import {
   removeScheduledNotificationIds,
   clearScheduledNotificationIds,
 } from '../scheduledNotificationsStorage';
-import type { BoardingLock } from '../../types/boardingLock';
-import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../../../route/utils/stationRoute';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
+import type { DirectRoute, TransferRoute, MultiTransferRoute } from '../../../../shared/utils/stationRoute';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,
@@ -30,7 +30,7 @@ jest.mock('../scheduledNotificationsStorage', () => ({
   getScheduledNotificationIds: jest.fn(),
   clearScheduledNotificationIds: jest.fn(),
 }));
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

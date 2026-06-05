@@ -1,4 +1,4 @@
-import type { BoardingLock } from '../types/boardingLock';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { AlarmType } from './stationAlarm';
 
 /**

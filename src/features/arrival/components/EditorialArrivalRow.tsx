@@ -1,9 +1,9 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { useTheme, typography, spacing } from '../../../shared/theme';
-import { useCountdown } from '../../../hooks/useCountdown';
-import type { ArrivalTrain } from '../../route/utils/journeyAdapter';
-import { LineBadge, getLineColor } from '../../../components/LineBadge';
+import { useCountdown } from '../../../shared/hooks/useCountdown';
+import type { ArrivalTrain } from '../../../shared/types/journey';
+import { LineBadge, getLineColor } from '../../../shared/ui/LineBadge';
 import { ArrivalStatusBadge } from './ArrivalStatusBadge';
 
 interface Props {

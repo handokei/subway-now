@@ -15,7 +15,7 @@
  *   — 정적 사용자가 GPS 지터(~12m accuracy)로 그려내는 spread를 흡수하는 임계값.
  */
 
-import { haversine } from '../../../utils/haversine';
+import { haversine } from '../../../shared/utils/haversine';
 
 /** 정적 판정에 필요한 시간 윈도우 (ms). 60s = 일반 GPS 폴링 2~3 cycle 보장. */
 export const STATIC_WINDOW_MS = 60_000;

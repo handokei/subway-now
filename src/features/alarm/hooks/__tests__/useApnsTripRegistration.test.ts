@@ -21,7 +21,7 @@ jest.mock('../../api/alarmBackend', () => ({
   clearActiveTrip: (...args: unknown[]) => mockClear(...args),
 }));
 
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),
@@ -33,7 +33,7 @@ jest.mock('../../../../utils/logger', () => ({
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useApnsTripRegistration } from '../useApnsTripRegistration';
 import type { Station } from '../../../../shared/types/station';
-import type { Route } from '../../../route/utils/stationRoute';
+import type { Route } from '../../../../shared/utils/stationRoute';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
 import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../../shared/constants/boardingLock';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';

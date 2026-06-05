@@ -1,4 +1,4 @@
-import type { FusionSource } from '../../nearest-station/utils/pickFusedStation';
+import type { FusionSource } from '../../../shared/types/fusion';
 
 /**
  * 사용자에게 노출되는 데이터 출처 그룹 (#327 Phase B).

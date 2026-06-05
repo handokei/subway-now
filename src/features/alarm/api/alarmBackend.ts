@@ -9,9 +9,9 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { Route } from '../../route/utils/stationRoute';
-import type { ApnsEnv } from '../../../utils/apnsEnv';
-import { createLogger } from '../../../utils/logger';
+import type { Route } from '../../../shared/utils/stationRoute';
+import type { ApnsEnv } from '../../../shared/utils/apnsEnv';
+import { createLogger } from '../../../shared/utils/logger';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../shared/constants/storageKeys';
 
 const log = createLogger('alarmBackend');
@@ -34,12 +34,11 @@ async function mirrorBoardingLine(line: string | undefined): Promise<void> {
   }
 }
 
-/** 백엔드 Trip.Waypoint와 동일 구조. backend/alarm-worker/src/types.ts와 동기화. */
-export interface AlarmWaypoint {
-  stationName: string;
-  line: string;
-  kind: 'transfer' | 'destination' | 'intermediate';
-}
+// AlarmWaypoint는 shared/types/alarm으로 추출됨 (#890, Phase 5).
+// 기존 호출자(route/utils/routeWaypoints 등) 호환을 위해 re-export 유지.
+// 백엔드 Trip.Waypoint와 동일 구조. backend/alarm-worker/src/types.ts와 동기화.
+import type { AlarmWaypoint } from '../../../shared/types/alarm';
+export type { AlarmWaypoint };
 
 /**
  * 백엔드 Trip.boardingLock과 동일 구조 (#622). backend/alarm-worker/src/types.ts의

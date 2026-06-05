@@ -1,7 +1,7 @@
 import * as Location from 'expo-location';
-import { haversine } from '../../../utils/haversine';
-import { findStationByName } from '../../nearest-station/utils/stationLookup';
-import { createLogger } from '../../../utils/logger';
+import { haversine } from '../../../shared/utils/haversine';
+import { findStationByName } from '../../../shared/utils/stationLookup';
+import { createLogger } from '../../../shared/utils/logger';
 import { isValidGpsSpeedMps } from '../../../shared/constants/location';
 
 const logger = createLogger('SilentPushLocationGate');

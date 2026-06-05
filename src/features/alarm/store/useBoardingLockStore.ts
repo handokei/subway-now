@@ -1,6 +1,6 @@
 import { create } from 'zustand';
-import type { BoardingLock } from '../types/boardingLock';
-import { isBoardingLockExpired } from '../types/boardingLock';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
+import { isBoardingLockExpired } from '../../../shared/types/boardingLock';
 import {
   clearBoardingLock,
   getBoardingLock,

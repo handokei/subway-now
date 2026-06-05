@@ -7,7 +7,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 const mockUpload = jest.fn();
-jest.mock('../../../../api/telemetryBackend', () => ({
+jest.mock('../../api/telemetryBackend', () => ({
   uploadSilentPushTelemetry: (...args: unknown[]) => mockUpload(...args),
 }));
 
@@ -16,7 +16,7 @@ jest.mock('../../utils/alarmLog', () => ({
   getAlarmLog: (...args: unknown[]) => mockGetAlarmLog(...args),
 }));
 
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

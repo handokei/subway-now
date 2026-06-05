@@ -18,10 +18,10 @@ import { getAlarmLog } from '../utils/alarmLog';
 import {
   aggregateSilentPushEntries,
   isEmptyTelemetry,
-} from '../../../utils/telemetryAggregation';
-import { uploadSilentPushTelemetry } from '../../../api/telemetryBackend';
-import { usePolling } from '../../../hooks/usePolling';
-import { createLogger } from '../../../utils/logger';
+} from '../utils/telemetryAggregation';
+import { uploadSilentPushTelemetry } from '../api/telemetryBackend';
+import { usePolling } from '../../../shared/hooks/usePolling';
+import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('useSilentPushTelemetry');
 

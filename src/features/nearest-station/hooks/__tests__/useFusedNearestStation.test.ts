@@ -1,14 +1,22 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: 이 파일은 의도적으로 여러 features의 hook/util을 조합하는
+ * orchestrator 역할이라 직접 import가 본질적이다. Phase 5 enforce 모드에서 file-level disable로
+ * 옵트인 처리. 후속 PR(별도 이슈)에서 orchestration 슬라이스(예: features/fusion/, app shell)로
+ * 추출하여 disable을 제거할 예정.
+ *
+ * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
+ */
 import { renderHook } from '@testing-library/react-native';
 import { useFusedNearestStation } from '../useFusedNearestStation';
 import { useNearestStation } from '../useNearestStation';
 import { useArrivalInfo } from '../../../arrival/hooks/useArrivalInfo';
 import { useTrainPositions } from '../../../route/hooks/useTrainPositions';
 import { findTopNearestStations } from '../../utils/findNearestStation';
-import { findStationByNameAndLine } from '../../../route/utils/stationRoute';
+import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
 import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
 import { TRAIN_STATUS } from '../../../../shared/constants/trainStatus';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
-import type { StationArrival, ArrivalInfo } from '../../../arrival/api/arrivalApi';
+import type { StationArrival, ArrivalInfo } from '../../../../shared/types/arrival';
 import type { Station } from '../../../../shared/types/station';
 import type { LinePositions, TrainPosition } from '../../api/positionApi';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
@@ -302,7 +310,7 @@ describe('useFusedNearestStation', () => {
   });
 
   describe('#662 환승역 fusion 강등 가드 (BoardingLock 기준)', () => {
-    const lockOnLine = (line: '2' | '3'): import('../../../alarm/types/boardingLock').BoardingLock => ({
+    const lockOnLine = (line: '2' | '3'): import('../../../../shared/types/boardingLock').BoardingLock => ({
       destinationId: 'dest-1',
       trainCode: 'T-3',
       boardingStationId: MOCK_STATIONS.gangnam.id,
@@ -537,7 +545,7 @@ describe('useFusedNearestStation', () => {
         lng: yongmasan.lng,
       };
       const here = { ...yongmasan, id: 'YHERE' };
-      const stationRouteModule = jest.requireActual('../../../route/utils/stationRoute');
+      const stationRouteModule = jest.requireActual('../../../../shared/utils/stationRoute');
       const spy = jest
         .spyOn(stationRouteModule, 'findStationByNameAndLine')
         .mockImplementation((...args) => {

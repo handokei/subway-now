@@ -1,15 +1,10 @@
-import type { LinePositions } from '../../nearest-station/api/positionApi';
+import type { LinePositions } from '../../../shared/types/position';
 import type { LineNumber } from '../../../shared/types/station';
-import { getStationsOnLine } from '../../route/utils/stationRoute';
+import { getStationsOnLine } from '../../../shared/utils/stationRoute';
 
-export interface CandidateTrain {
-  trainNo: string;
-  line: LineNumber;
-  direction: 0 | 1;
-  currentStationName: string;
-  trainStatus: number;
-  receivedAtMs: number;
-}
+// CandidateTrain은 shared/types/position으로 추출됨 (#890, Phase 5). re-export 유지.
+import type { CandidateTrain } from '../../../shared/types/position';
+export type { CandidateTrain };
 
 export interface PickCandidateTrainsInput {
   positions: LinePositions[];

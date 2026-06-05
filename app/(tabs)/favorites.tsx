@@ -22,8 +22,8 @@ import {
 } from '../../src/shared/types/station';
 import { useArrivalInfo } from '../../src/features/arrival/hooks/useArrivalInfo';
 import { useArrivalCountdown } from '../../src/features/arrival/hooks/useArrivalCountdown';
-import { formatArrivalTime } from '../../src/utils/formatTime';
-import { getStationDisplayName, matchesStationQuery } from '../../src/features/nearest-station/utils/stationDisplay';
+import { formatArrivalTime } from '../../src/shared/utils/formatTime';
+import { getStationDisplayName, matchesStationQuery } from '../../src/shared/utils/stationDisplay';
 import { useTheme, type ThemeColors } from '../../src/shared/theme';
 import stationsData from '../../src/data/stations.json';
 import { ArrivalSourceNotice } from '../../src/features/arrival/components/ArrivalSourceNotice';

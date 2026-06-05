@@ -1,6 +1,6 @@
 import { resolveProgressingTerminal, resolveTravelDirection } from '../travelDirection';
 
-jest.mock('../stationRoute', () => ({
+jest.mock('../../../../shared/utils/stationRoute', () => ({
   // 가짜 3호선 — 단조 노선이라는 가정. (MONOTONIC_LINES 화이트리스트에 포함됨.)
   getStationsOnLine: (line: string) => {
     if (line === '3') {

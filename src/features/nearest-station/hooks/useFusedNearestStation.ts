@@ -1,3 +1,11 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: 이 파일은 의도적으로 여러 features의 hook/util을 조합하는
+ * orchestrator 역할이라 직접 import가 본질적이다. Phase 5 enforce 모드에서 file-level disable로
+ * 옵트인 처리. 후속 PR(별도 이슈)에서 orchestration 슬라이스(예: features/fusion/, app shell)로
+ * 추출하여 disable을 제거할 예정.
+ *
+ * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
+ */
 import { useEffect, useMemo, useRef } from 'react';
 import {
   pushFusionDebugEntry,
@@ -15,7 +23,7 @@ import { shouldDowngradeFusion } from '../utils/movementGate';
 import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
-import { haversine } from '../../../utils/haversine';
+import { haversine } from '../../../shared/utils/haversine';
 import { passesFusionDistanceGate } from '../utils/fusionDistanceGate';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import {
@@ -31,12 +39,12 @@ import {
   POSITION_TRAIN_TTL_MS,
 } from '../../../shared/constants/realtime';
 import type { LinePositions } from '../api/positionApi';
-import type { ArrivalInfo, StationArrival } from '../../arrival/api/arrivalApi';
-import type { BoardingLock } from '../../alarm/types/boardingLock';
+import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { NearestStationResult, Station } from '../../../shared/types/station';
-import type { ArrivalProvider } from '../../arrival/providers/types';
+import type { ArrivalProvider } from '../../../shared/types/providers';
 import type { PositionProvider } from '../providers/types';
-import type { Route } from '../../route/utils/stationRoute';
+import type { Route } from '../../../shared/utils/stationRoute';
 
 /**
  * fusion 후보 개수. MAX_ACTIVE_LINES와 동기화 — Rules of Hooks로 useArrivalInfo/useTrainPositions를

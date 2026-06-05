@@ -4,7 +4,7 @@ import {
   FIRED_ALARMS_KEY,
   LAST_FIRED_ALARM_STATION_NAME_KEY,
 } from '../../../shared/constants/storageKeys';
-import { createLogger } from '../../../utils/logger';
+import { createLogger } from '../../../shared/utils/logger';
 
 // Foreground/Background 양쪽에서 호출되는 알림 상태 저장소.
 // React 라이프사이클 외부(TaskManager 콜백)에서도 동작해야 하므로

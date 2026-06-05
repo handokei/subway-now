@@ -7,7 +7,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 const mockResolveApnsEnv = jest.fn();
-jest.mock('../../../../utils/apnsEnv', () => ({
+jest.mock('../../../../shared/utils/apnsEnv', () => ({
   resolveApnsEnv: () => mockResolveApnsEnv(),
 }));
 

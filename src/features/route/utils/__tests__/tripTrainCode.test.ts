@@ -6,14 +6,14 @@ import {
   setTripTrainCode,
 } from '../tripTrainCode';
 import { TRIP_TRAIN_CODE_KEY } from '../../../../shared/constants/storageKeys';
-import type { StationArrival, ArrivalInfo } from '../../../arrival/api/arrivalApi';
+import type { StationArrival, ArrivalInfo } from '../../../../shared/types/arrival';
 import { makeArrivalInfo } from '../../../../testUtils/fixtures';
 
 function info(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return makeArrivalInfo({ destination: 'D', arrivalSeconds: 100, trainCode: 'T-1', ...overrides });
 }
 
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

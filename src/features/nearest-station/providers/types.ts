@@ -1,7 +1,3 @@
-import type { LinePositions, FetchPositionOptions } from '../api/positionApi';
-import type { LineNumber } from '../../../shared/types/station';
-
-/** 호선 단위 실시간 열차위치 조회 — Phase 3. */
-export interface PositionProvider {
-  getPositions(line: LineNumber, options?: FetchPositionOptions): Promise<LinePositions>;
-}
+// PositionProvider/FetchPositionOptions는 shared/types/providers로 추출됨 (#890, Phase 5).
+// 기존 호출자 호환을 위해 re-export 유지.
+export type { PositionProvider, FetchPositionOptions } from '../../../shared/types/providers';

@@ -1,6 +1,6 @@
 import { Text } from 'react-native';
 import { useTheme, typography, spacing } from '../../../shared/theme';
-import { ActionBanner } from '../../../components/ActionBanner';
+import { ActionBanner } from '../../../shared/ui/ActionBanner';
 
 interface Props {
   onReselect: () => void;

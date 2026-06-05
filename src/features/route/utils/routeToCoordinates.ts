@@ -1,6 +1,6 @@
 import type { LineNumber, Station } from '../../../shared/types/station';
-import type { Route } from './stationRoute';
-import { findStationByNameAndLine, getStationsOnLine } from './stationRoute';
+import type { Route } from '../../../shared/utils/stationRoute';
+import { findStationByNameAndLine, getStationsOnLine } from '../../../shared/utils/stationRoute';
 
 export type RouteStationRole = 'origin' | 'transfer' | 'destination';
 

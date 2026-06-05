@@ -1,4 +1,4 @@
-import type { TravelDirection } from './exitSide';
+import type { TravelDirection } from '../../../shared/types/exitSide';
 
 export type FacilityCategory = 'stairs' | 'elevator' | 'transfer';
 

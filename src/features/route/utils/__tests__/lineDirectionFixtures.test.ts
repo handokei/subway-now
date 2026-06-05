@@ -18,7 +18,7 @@ import i18next from 'i18next';
 import stationsData from '../../../../data/stations.json';
 import type { LineNumber, Station } from '../../../../shared/types/station';
 import { buildDirectionMeta, parseTrainLineDirection } from '../trainLineDirection';
-import { findRoute, getNextStationName, getStationsOnLine } from '../stationRoute';
+import { findRoute, getNextStationName, getStationsOnLine } from '../../../../shared/utils/stationRoute';
 
 const allStations = stationsData as Station[];
 

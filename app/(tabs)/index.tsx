@@ -7,20 +7,20 @@ import { useFusedNearestStation } from '../../src/features/nearest-station/hooks
 import { useArrivalInfo } from '../../src/features/arrival/hooks/useArrivalInfo';
 import type { ArrivalInfo } from '../../src/features/arrival/api/arrivalApi';
 import { useArrivalCountdown } from '../../src/features/arrival/hooks/useArrivalCountdown';
-import { formatArrivalTime } from '../../src/utils/formatTime';
+import { formatArrivalTime } from '../../src/shared/utils/formatTime';
 import { LINE_NAMES } from '../../src/shared/constants/lineColors';
 import { useAppStore } from '../../src/store/useAppStore';
 import { useBoardingLockStore } from '../../src/features/alarm/store/useBoardingLockStore';
 import { DestinationPicker } from '../../src/features/route/components/DestinationPicker';
-import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../../src/features/route/utils/stationRoute';
+import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../../src/shared/utils/stationRoute';
 import { pickArrivalAtOrigin } from '../../src/features/arrival/utils/pickArrivalAtOrigin';
 import { EditorialTimeline } from '../../src/features/arrival/components/EditorialTimeline';
 import { journeyDisplayToStops, nearestResultToNearest } from '../../src/features/route/utils/journeyAdapter';
 import { useRouter } from 'expo-router';
-import { getStationDisplayName } from '../../src/features/nearest-station/utils/stationDisplay';
+import { getStationDisplayName } from '../../src/shared/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../../src/features/alarm/utils/stationNotification';
 import { useStationAlarm } from '../../src/features/alarm/hooks/useStationAlarm';
-import { useMotionActivity } from '../../src/hooks/useMotionActivity';
+import { useMotionActivity } from '../../src/features/nearest-station/hooks/useMotionActivity';
 import { useTripOrigin } from '../../src/features/route/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../../src/features/nearest-station/hooks/useBackgroundLocation';
 import { useApnsTripRegistration } from '../../src/features/alarm/hooks/useApnsTripRegistration';
@@ -28,9 +28,9 @@ import { registerSilentPushTask } from '../../src/features/alarm/tasks/silentPus
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ROUTE_KEY } from '../../src/shared/constants/storageKeys';
 import { AlarmOverlay } from '../../src/features/alarm/components/AlarmOverlay';
-import { createLogger } from '../../src/utils/logger';
+import { createLogger } from '../../src/shared/utils/logger';
 import { useTheme, typography, spacing, radius } from '../../src/shared/theme';
-import { LineBadge } from '../../src/components/LineBadge';
+import { LineBadge } from '../../src/shared/ui/LineBadge';
 import { SourceBadge } from '../../src/features/arrival/components/SourceBadge';
 import { resolveNotificationSource } from '../../src/features/alarm/utils/notificationSource';
 import { ArrivalSourceNotice } from '../../src/features/arrival/components/ArrivalSourceNotice';
@@ -42,7 +42,7 @@ import { useBoardingLockAdvancer } from '../../src/features/alarm/hooks/useBoard
 import { useBoardingLockAutoRelease } from '../../src/features/alarm/hooks/useBoardingLockAutoRelease';
 import { MisBoardingBanner } from '../../src/features/route/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../../src/features/route/components/MisBoardingReselectModal';
-import { Toast } from '../../src/components/Toast';
+import { Toast } from '../../src/shared/ui/Toast';
 import { useMisBoardingDetector } from '../../src/features/route/hooks/useMisBoardingDetector';
 import { useTrainPositions } from '../../src/features/route/hooks/useTrainPositions';
 import { useTransferTrainList } from '../../src/features/route/hooks/useTransferTrainList';
@@ -51,7 +51,7 @@ import { BoardingTrainList } from '../../src/features/alarm/components/BoardingT
 import { BoardingLockHopCard } from '../../src/features/alarm/components/BoardingLockHopCard';
 import { resolveNextAdjacentStationName } from '../../src/features/route/utils/nextAdjacentStation';
 import { getApproachLine } from '../../src/features/route/utils/approachLine';
-import type { Stop } from '../../src/features/route/utils/journeyAdapter';
+import type { Stop } from '../../src/shared/types/journey';
 
 const logger = createLogger('HomeScreen');
 

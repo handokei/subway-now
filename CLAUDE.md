@@ -108,20 +108,36 @@ GPS (expo-location)
     → stationNotification.ts (Live Activity + 푸시 알림)
 ```
 
-### 레이어 구조
-- **`src/api/`** — 외부 API 호출만 담당
-- **`src/hooks/`** — 비즈니스 로직 캡슐화. 훅 내부에서 setInterval로 자체 폴링 관리
-- **`src/store/`** — Zustand 전역 상태 (즐겨찾기, 목적지, 취침모드). AsyncStorage로 영속화
-- **`src/utils/`** — 순수 함수들. `haversine.ts` (거리), `stationRoute.ts` (경로 탐색), `buildMapHtml.ts` (Kakao Maps HTML), `stationNotification.ts` (Live Activity)
-- **`src/components/`** — UI 컴포넌트. 공통: `ScreenContainer`, `Card`, `SectionHeader`
-- **`src/theme/`** — 테마 시스템. `ThemeProvider` + `useTheme()` (라이트/다크 자동 전환)
-- **`src/providers/`** — 도착 정보 Provider 패턴 (팩토리 기반)
-- **`src/testUtils/`** — 테스트 유틸리티. `renderWithTheme`, `fixtures`
-- **`modules/`** — 네이티브 모듈: `live-activity` (iOS Live Activity), `audio-route` (이어폰 감지)
+### 레이어 구조 (Feature-based + Ports & Adapters, ADR Phase 5)
+ADR "Feature-based + Ports & Adapters 디렉토리 재정비" (https://app.notion.com/p/36e30c0194b68148ba29f2bc4554ce8a) 적용.
+의존 방향: `app/` → `src/features/*` → `src/shared/*`. features 끼리는 ESLint(`import/no-restricted-paths`)로 직접 import를 차단한다.
+
+- **`src/features/<slice>/`** — 도메인별 슬라이스. 각 슬라이스는 자체 `api/`, `hooks/`, `components/`, `utils/`, `tasks/`, `providers/`, `store/` 등을 내부에 둔다.
+  - `alarm/` — 알람·BoardingLock·silent push
+  - `arrival/` — 실시간 도착 정보
+  - `nearest-station/` — GPS 기반 최근접 역 탐색 + fusion
+  - `route/` — 경로 탐색·환승·trip 진행
+  - `map/` — 지도 화면(Kakao Maps WebView)
+  - `widget/` — iOS 홈 위젯 데이터 게이트웨이
+  - `settings/` — 설정·언어·취침모드
+  - `debug/` — DebugModal (cross-feature observer)
+- **`src/shared/`** — 모든 features가 공유하는 공통 인프라.
+  - `types/` — 도메인 type (`station`, `arrival`, `boardingLock`, `fusion`, `journey`, `position`, `providers`, `exitSide`, `alarm` 등)
+  - `utils/` — 순수 함수 (`haversine`, `stationRoute`, `stationLookup`, `stationDisplay`, `stationEta`, `logger`, `formatTime`, `ttlCache`, `normalizeStationName`, `apnsEnv`, `barometer*`)
+  - `hooks/` — 공용 hook (`usePolling`, `useCountdown`, `useBarometer`)
+  - `ui/` — 공용 컴포넌트 (`ScreenContainer`, `Card`, `LineBadge`, `SectionHeader`, `Toast`, `ActionBanner`, `LocationStateView`)
+  - `theme/` — 테마 시스템 (`ThemeProvider`, `useTheme()`)
+  - `constants/` — 상수 (`lineColors`, `lineApiNames`, `storageKeys`, `trainTypes`, `arrivalCodes`, `eta`, `labels`, `debugFlags`, `gpsStatus`, `trainStatus`, `barometer`)
+  - `i18n/` — i18next 설정 + locales(ko/en/ja/zh)
+  - `infra/` — Adapter 구현 (`location/Expo*`, `notification/Expo*`, `storage/AsyncStorage*`, `storage/SharedGroup*`)
+  - `ports/` — Adapter가 구현하는 추상 인터페이스 (`LocationPort`, `NotificationPort`, `WidgetStoragePort`)
+- **`src/store/useAppStore.ts`** — Zustand 전역 상태 (즐겨찾기, 목적지, 취침모드 등). AsyncStorage 영속화. favorites slice 분해는 ADR Phase 5 follow-up.
+- **`src/testUtils/`** — 테스트 유틸리티 (`renderWithTheme`, `fixtures`, `routeFixtures`, `i18nLanguageOverride`)
+- **`modules/`** — 네이티브 모듈 (`live-activity`, `audio-route`, `motion-activity`)
 - **`targets/`** — `subway-widget` (iOS 홈 위젯)
 
 ### 테마 시스템
-- `ThemeProvider` (`src/theme/ThemeContext.tsx`)가 `app/_layout.tsx`에 마운트
+- `ThemeProvider` (`src/shared/theme/ThemeContext.tsx`)가 `app/_layout.tsx`에 마운트
 - `useColorScheme()`으로 OS 다크모드 자동 감지
 - 라이트: Editorial Light (B) — 크림톤(`#F5F2EC`) + 어스레드(`#C8553D`)
 - 다크: C · Focus — 퓨어블랙(`#0A0A0A`) + 라임그린(`#C8E600`)
@@ -129,13 +145,13 @@ GPS (expo-location)
 - StyleSheet.create는 레이아웃 전용, 색상은 인라인 `[layout, { color: colors.xxx }]`
 
 ### 지도 구현
-- `buildMapHtml.ts`로 HTML 생성 → `WebView`에 주입 (Kakao Maps SDK)
+- `src/features/map/utils/buildMapConfig.ts`로 HTML 생성 → `WebView`에 주입 (Kakao Maps SDK)
 - `MarkerClusterer`로 528개 역 마커 성능 최적화 (자동 클러스터링)
 - SDK 로드 실패 시 `window.onerror` → RN fallback UI 표시
-- 웹 플랫폼은 `StationMap.web.tsx`로 별도 구현
+- 웹 플랫폼은 `src/features/map/components/StationMap.web.tsx`로 별도 구현
 
 ### iOS 위젯 & Live Activity
-- `widgetStorage.ts`가 App Groups → SharedGroupPreferences에 현재 역 정보 저장
+- `src/features/widget/api/widgetStorage.ts`가 App Groups → SharedGroupPreferences에 현재 역 정보 저장
 - `modules/live-activity/` — iOS Dynamic Island + Lock Screen Live Activity
 
 ---
@@ -178,7 +194,7 @@ perf/#이슈번호-대상         예: perf/#139-map-clustering
 ### PR 머지 규칙
 - **CI 통과 필수 확인** — `gh pr checks <PR번호>`로 `Type Check & Test` pass 확인 후 머지
 - `E2E Smoke (mock mode)`는 ci.yml의 `changes` job이 UI 영향 경로 변경을 감지한 PR에서만 실행 (i18n/백엔드/문서 PR은 자동 스킵). 안정화 후 branch protection required로 승격 예정 (Phase 4)
-- E2E 스킵 기준 경로 (변경되어도 smoke 미실행): `src/i18n/`, `src/testUtils/`, `src/types/`, `src/data/`, `src/tasks/`, `src/**/__tests__/`, `backend/`, `docs/`, `scripts/`, `tasks/`, `img/`, `subway/`, `locales/`(top), `__mocks__/`, `.maestro/manual/`, `.maestro/flows/{gps,scenario}/`, `.github/workflows/{e2e,ci}.yml`, `eas.json`, `jest.setup.js`, `sonar-project.properties`, `.env.example`, `.gitignore`, `.prettierrc*`, `.eslintrc*`, `.editorconfig`, `*.md`, `*.txt`
+- E2E 스킵 기준 경로 (변경되어도 smoke 미실행): `src/shared/i18n/`, `src/shared/types/`, `src/testUtils/`, `src/data/`, `src/features/<slice>/types/`, `src/features/<slice>/tasks/`, `src/**/__tests__/`, `backend/`, `docs/`, `scripts/`, `tasks/`, `img/`, `subway/`, `locales/`(top), `__mocks__/`, `.maestro/manual/`, `.maestro/flows/{gps,scenario}/`, `.github/workflows/{e2e,ci}.yml`, `eas.json`, `jest.setup.js`, `sonar-project.properties`, `.env.example`, `.gitignore`, `.prettierrc*`, `.eslintrc*`, `.editorconfig`, `*.md`, `*.txt`
 - nightly의 gps/scenario(`e2e.yml`)는 PR 게이트 아님. 실기기 수동 회귀는 `.maestro/manual/`
 
 ---
@@ -186,12 +202,19 @@ perf/#이슈번호-대상         예: perf/#139-map-clustering
 ## 테스트 규칙
 
 - **커버리지 100%** (lines / functions / branches / statements) — `package.json`의 `coverageThreshold`로 자동 강제
-- **테스트 파일 위치**: `src/<모듈>/__tests__/<파일명>.test.ts`
+- **테스트 파일 위치**: `src/<feature 또는 shared>/<sub>/__tests__/<파일명>.test.ts`
 - **Mock 원칙**: `expo-location`, `fetch`, `AsyncStorage`, `widgetStorage`, `react-native-webview`는 `jest.mock()`으로 격리
 - 훅 테스트는 `@testing-library/react-native`의 `renderHook` + `act` + `waitFor` 사용
 - 테마 의존 컴포넌트는 `renderWithTheme` (`src/testUtils/renderWithTheme.tsx`) 사용
 - 인터벌 테스트는 `jest.useFakeTimers()` 사용
 - barrel re-export 파일(`**/index.ts`)은 `collectCoverageFrom`에서 제외
+
+## 디렉토리 경계 룰 (ESLint)
+
+- `import/no-restricted-paths` enforce(error). `npm run lint` 또는 CI에서 검증.
+- `src/features/<X>/`는 `src/features/<Y>/`를 직접 import할 수 없다 — 공용 코드는 `src/shared/`로 추출한다.
+- `src/shared/`는 `src/features/`를 import할 수 없다.
+- 본질적 cross-feature orchestrator(예: `useFusedNearestStation`, `backgroundLocationTask`, `useStationAlarm` 등)는 파일 헤더의 `eslint-disable import/no-restricted-paths` 주석으로 명시 옵트인한다. 후속 PR에서 orchestration 슬라이스로 이전 예정.
 
 ---
 
@@ -218,6 +241,6 @@ EXPO_PUBLIC_KAKAO_MAP_KEY=         # 카카오맵 JavaScript API
 
 ### 확장성/재사용성 (글로벌 규칙 3번 적용)
 - 노선/역 관련 분기: `if-else`/`switch` 대신 `stations.json`, `lineColors.ts` 등 데이터로 구동
-- 상수 위치: `src/constants/`에 `UPPER_SNAKE_CASE`로 분리
-- API Provider: 새 제공자 추가 시 `src/providers/` 인터페이스 구현체만 추가
+- 상수 위치: `src/shared/constants/`에 `UPPER_SNAKE_CASE`로 분리
+- API Provider: 새 제공자 추가 시 `src/features/<도메인>/providers/` 인터페이스 구현체만 추가
 - 알람/경로 로직: 환승 횟수에 의존하지 않고 `transfers` 배열 순회로 처리

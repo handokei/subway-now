@@ -4,7 +4,7 @@ import {
   shouldDiscloseNotificationSource,
   type NotificationSource,
 } from '../notificationSource';
-import type { FusionSource } from '../../../nearest-station/utils/pickFusedStation';
+import type { FusionSource } from '../../../../shared/types/fusion';
 
 describe('resolveNotificationSource', () => {
   it.each<[FusionSource, NotificationSource]>([

@@ -1,5 +1,5 @@
-import type { BoardingLock } from '../../alarm/types/boardingLock';
-import type { LinePositions } from '../../nearest-station/api/positionApi';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
+import type { LinePositions } from '../../../shared/types/position';
 
 /**
  * BoardingLock의 trainCode가 lock.boardingLine의 위치 데이터에서 관측되는지 검사 (#584 PR D3).

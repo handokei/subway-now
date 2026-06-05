@@ -19,7 +19,7 @@
  * @see src/features/nearest-station/ports/LocationPort.ts
  */
 
-import type { LocationFix, LocationPermissionResult, LocationPort } from '../../../features/nearest-station/ports/LocationPort';
+import type { LocationFix, LocationPermissionResult, LocationPort } from '../../ports/LocationPort';
 
 export interface FakeLocationAdapterOptions {
   /** 초기 위치 — 지정하지 않으면 서울시청. */

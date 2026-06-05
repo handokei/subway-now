@@ -1,7 +1,7 @@
-import type { CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
+import type { CandidateTrain } from '../../../shared/types/position';
 import type { Station } from '../../../shared/types/station';
-import { findStationByNameAndLine } from './stationRoute';
-import { haversine } from '../../../utils/haversine';
+import { findStationByNameAndLine } from '../../../shared/utils/stationRoute';
+import { haversine } from '../../../shared/utils/haversine';
 
 export interface TrackTrainProgressInput {
   candidates: CandidateTrain[];

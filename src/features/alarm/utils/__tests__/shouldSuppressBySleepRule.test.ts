@@ -1,5 +1,5 @@
 import { shouldSuppressBySleepRule } from '../shouldSuppressBySleepRule';
-import type { BoardingLock } from '../../types/boardingLock';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 
 // #750 — 공통 게이트 단위 테스트.
 // 동일 규칙(="탑승/leg 시작 직후 첫 hop이 transfer + sleep ON → suppress")이

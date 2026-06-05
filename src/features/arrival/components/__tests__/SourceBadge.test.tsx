@@ -4,7 +4,7 @@ import * as RN from 'react-native';
 import i18next from 'i18next';
 import { SourceBadge } from '../SourceBadge';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
-import type { FusionSource } from '../../../nearest-station/utils/pickFusedStation';
+import type { FusionSource } from '../../../../shared/types/fusion';
 
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');
 

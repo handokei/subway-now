@@ -1,6 +1,6 @@
 import type { LineNumber } from '../../../shared/types/station';
-import type { Route } from './stationRoute';
-import { getStationsOnLine } from './stationRoute';
+import type { Route } from '../../../shared/utils/stationRoute';
+import { getStationsOnLine } from '../../../shared/utils/stationRoute';
 
 export type TripDirection = 'up' | 'down';
 

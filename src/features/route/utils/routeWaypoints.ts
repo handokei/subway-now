@@ -10,13 +10,13 @@
  */
 
 import type { LineNumber, Station } from '../../../shared/types/station';
-import type { DirectRoute, MultiTransferRoute, Route, TransferRoute } from './stationRoute';
+import type { DirectRoute, MultiTransferRoute, Route, TransferRoute } from '../../../shared/utils/stationRoute';
 import {
   findStationByNameAndLine,
   getIntermediateStationNames,
   isSameStationName,
-} from './stationRoute';
-import type { AlarmWaypoint } from '../../alarm/api/alarmBackend';
+} from '../../../shared/utils/stationRoute';
+import type { AlarmWaypoint } from '../../../shared/types/alarm';
 
 interface Context {
   destinationName: string;

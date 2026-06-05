@@ -1,6 +1,6 @@
 import { Platform } from 'react-native';
 import * as LiveActivity from 'live-activity';
-import type { WidgetStoragePort } from '../../../features/widget/ports/WidgetStoragePort';
+import type { WidgetStoragePort } from '../../ports/WidgetStoragePort';
 
 /**
  * SharedGroupAdapter — iOS App Groups(SharedGroupPreferences) 기반 WidgetStoragePort 구현.

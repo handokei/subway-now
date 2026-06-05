@@ -2,7 +2,7 @@ import { fireEvent } from '@testing-library/react-native';
 import { BoardingTrainList } from '../BoardingTrainList';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { LINE_COLORS } from '../../../../shared/constants/lineColors';
-import type { ArrivalInfo } from '../../../arrival/api/arrivalApi';
+import type { ArrivalInfo } from '../../../../shared/types/arrival';
 import type { LineNumber } from '../../../../shared/types/station';
 
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {

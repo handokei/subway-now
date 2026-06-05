@@ -12,7 +12,7 @@ jest.mock('i18next', () => ({
   default: { language: 'ko' },
 }));
 
-jest.mock('../../../../utils/logger', () => ({
+jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
     info: jest.fn(),

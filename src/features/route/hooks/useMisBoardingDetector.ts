@@ -1,6 +1,6 @@
 import { type MutableRefObject, useEffect, useRef, useState } from 'react';
-import type { BoardingLock } from '../../alarm/types/boardingLock';
-import type { LinePositions } from '../../nearest-station/api/positionApi';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
+import type { LinePositions } from '../../../shared/types/position';
 import { detectMisBoarding } from '../utils/detectMisBoarding';
 
 /**

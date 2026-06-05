@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { useRouter } from 'expo-router';
 import Constants from 'expo-constants';
 import { useAppStore, type ThemeMode, type LocalePreference } from '../../src/store/useAppStore';
-import { ROUTE_CATEGORIES } from '../../src/features/route/utils/stationRoute';
+import { ROUTE_CATEGORIES } from '../../src/shared/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../../src/shared/i18n/types';
 import { useTheme, spacing, radius } from '../../src/shared/theme';
 import { useSleepModeGuide } from '../../src/features/settings/hooks/useSleepModeGuide';

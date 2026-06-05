@@ -3,8 +3,8 @@ import {
   findUpcomingTransferPrefetch,
   resolveDirectionInLine,
 } from '../findActiveTransferContext';
-import { findStationByNameAndLine, getStationsOnLine } from '../stationRoute';
-import type { BoardingLock } from '../../../alarm/types/boardingLock';
+import { findStationByNameAndLine, getStationsOnLine } from '../../../../shared/utils/stationRoute';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import type { Station } from '../../../../shared/types/station';
 import {
   makeDirectRoute,
