@@ -184,6 +184,38 @@ describe('useTripBoundAlarmScheduler', () => {
     await waitFor(() => expect(mockedPreschedule).toHaveBeenCalledTimes(2));
   });
 
+  // cancel await 중 새 effect가 token을 bump하면 stale run은 cancel 직후 early return해야 한다.
+  it('stale completion 가드: cancel await 중 새 effect fire 시 stale run이 preschedule을 호출하지 않음', async () => {
+    let resolveCancelB: (() => void) | null = null;
+    // 첫 run(A): cancel 없음(prev 없음) + 정상 preschedule.
+    mockedPreschedule.mockResolvedValueOnce([]);
+    // 두 번째 run(B): cancel을 지연 → 그 사이 lockC로 token bump.
+    mockedCancel.mockImplementationOnce(
+      () => new Promise<void>((res) => { resolveCancelB = () => res(); }),
+    );
+    // 세 번째 run(C): 정상 cancel + preschedule.
+    mockedCancel.mockResolvedValueOnce(undefined);
+    mockedPreschedule.mockResolvedValueOnce([]);
+
+    const lockC: BoardingLock = { ...lockA, trainCode: 'C', boardedAt: 3_000 };
+    const { rerender } = renderScheduler({ lock: lockA, route, destinationName: '강남' });
+    await waitFor(() => expect(mockedPreschedule).toHaveBeenCalledTimes(1));
+
+    // run B 시작 → cancel pending.
+    rerender({ lock: lockB, route, destinationName: '강남' });
+    await waitFor(() => expect(mockedCancel).toHaveBeenCalledTimes(1));
+
+    // token bump → run C 시작 (이전 token=B는 이제 stale).
+    rerender({ lock: lockC, route, destinationName: '강남' });
+    await waitFor(() => expect(mockedCancel).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockedPreschedule).toHaveBeenCalledTimes(2));
+
+    // 이제 run B의 cancel을 늦게 resolve — stale 가드(line 77)가 발동해 추가 preschedule 호출 없어야 함.
+    if (resolveCancelB) (resolveCancelB as () => void)();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedPreschedule).toHaveBeenCalledTimes(2);
+  });
+
   // async race 가드: 이전 run이 await에서 멈춰있는 동안 새 lock으로 effect가 다시 fire되면
   // stale run은 ref를 업데이트하지 말아야 한다 (self code-review #3).
   it('stale completion 가드: 빠른 lock swap 시 stale run의 ref update 차단', async () => {
