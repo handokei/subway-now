@@ -5,25 +5,27 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 import { I18nextProvider, useTranslation } from 'react-i18next';
-import { ThemeProvider, useTheme } from '../src/theme';
-import { setupNotificationHandler, refreshNotificationChannels } from '../src/utils/stationNotification';
-import { setMinLevel, createLogger } from '../src/utils/logger';
-import { i18n } from '../src/i18n';
-import { useApplyLocale } from '../src/hooks/useApplyLocale';
-import { useSilentPushTelemetry } from '../src/hooks/useSilentPushTelemetry';
-import { useAppStore } from '../src/store/useAppStore';
-import { DebugModal } from '../src/components/DebugModal';
-import { isDebugModalEnabled } from '../src/constants/debugFlags';
+import { ThemeProvider, useTheme } from '../src/shared/theme';
+import { setupNotificationHandler, refreshNotificationChannels } from '../src/features/alarm/utils/stationNotification';
+import { setMinLevel, createLogger } from '../src/shared/utils/logger';
+import { i18n } from '../src/shared/i18n';
+import { useApplyLocale } from '../src/features/settings/hooks/useApplyLocale';
+import { useSilentPushTelemetry } from '../src/features/alarm/hooks/useSilentPushTelemetry';
+import { useDebugStore } from '../src/features/debug/store/useDebugStore';
+import { useDestinationStore } from '../src/features/route/store/useDestinationStore';
+import { useLocaleStore } from '../src/shared/i18n/store/useLocaleStore';
+import { DebugModal } from '../src/features/debug/components/DebugModal';
+import { isDebugModalEnabled } from '../src/shared/constants/debugFlags';
 import '../src/tasks/backgroundLocationTask';
-import { registerSilentPushTask } from '../src/tasks/silentPushTask';
-import { registerScheduledAlarmListener } from '../src/utils/scheduledAlarmReceiver';
-import { cancelScheduledAlarms } from '../src/utils/alarmScheduler';
-import { unregisterAlarmRefreshTask } from '../src/tasks/alarmRefreshTask';
-import { stopVibration } from '../src/utils/alarmSound';
-import { setupBoardingPromptCategory } from '../src/utils/notificationCategory';
-import { useBoardingPromptResponder } from '../src/hooks/useBoardingPromptResponder';
-import { fetchArrivalInfo } from '../src/api/arrivalApi';
-import { FALLBACK_BOARDING_DURATION_MINUTES } from '../src/constants/boardingLock';
+import { registerSilentPushTask } from '../src/features/alarm/tasks/silentPushTask';
+import { registerScheduledAlarmListener } from '../src/features/alarm/utils/scheduledAlarmReceiver';
+import { cancelScheduledAlarms } from '../src/features/alarm/utils/alarmScheduler';
+import { unregisterAlarmRefreshTask } from '../src/features/alarm/tasks/alarmRefreshTask';
+import { stopVibration } from '../src/features/alarm/utils/alarmSound';
+import { setupBoardingPromptCategory } from '../src/features/alarm/utils/notificationCategory';
+import { useBoardingPromptResponder } from '../src/features/alarm/hooks/useBoardingPromptResponder';
+import { fetchArrivalInfo } from '../src/features/arrival/api/arrivalApi';
+import { FALLBACK_BOARDING_DURATION_MINUTES } from '../src/shared/constants/boardingLock';
 
 const layoutLogger = createLogger('RootLayout');
 
@@ -60,17 +62,17 @@ if (!__DEV__) {
   if (!g.__SUBWAY_DEV_MENU_REGISTERED__) {
     g.__SUBWAY_DEV_MENU_REGISTERED__ = true;
     DevSettings.addMenuItem('Subway debug', () => {
-      useAppStore.getState().setDebugVisible(true);
+      useDebugStore.getState().setDebugVisible(true);
     });
   }
 }
 
 function RootContent() {
   const { isDark } = useTheme();
-  const loadLocalePreference = useAppStore((s) => s.loadLocalePreference);
-  const debugVisible = useAppStore((s) => s.debugVisible);
-  const setDebugVisible = useAppStore((s) => s.setDebugVisible);
-  const destinationId = useAppStore((s) => s.destination?.id ?? null);
+  const loadLocalePreference = useLocaleStore((s) => s.loadLocalePreference);
+  const debugVisible = useDebugStore((s) => s.debugVisible);
+  const setDebugVisible = useDebugStore((s) => s.setDebugVisible);
+  const destinationId = useDestinationStore((s) => s.destination?.id ?? null);
   const { i18n: i18nInstance } = useTranslation();
 
   // #819 — "탑승했냐?" 응답 listener. boarding-prompt 카테고리 푸시의 [탑승]/[미탑승] 또는 탭을 받아

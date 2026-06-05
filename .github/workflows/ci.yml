@@ -34,11 +34,12 @@ jobs:
           files=$(git diff --name-only "$base"...HEAD || echo "")
           echo "Changed files vs $base:"
           echo "$files"
-          # 추가 스킵 후보:
-          # - src/types/      : 타입 전용, 런타임 영향 없음 (tsc로 type 체크에서 잡힘)
+          # 추가 스킵 후보 (ADR Phase 5 디렉토리 재정비 반영):
+          # - src/shared/types/, src/features/<slice>/types/ : 타입 전용, 런타임 영향 없음 (tsc로 type 체크에서 잡힘)
           # - src/data/       : 정적 데이터. mock smoke는 stations.json을 우회 (강남 fixture 단락)
+          # - src/features/<slice>/tasks/ : expo-task-manager backed BG task. mock smoke와 무관(FG only).
           # - src/__tests__/, src/**/__tests__/ : 테스트 코드는 앱 번들 미포함, jest로 별도 검증
-          SKIP_RE='^(src/i18n/|src/testUtils/|src/types/|src/data/|src/tasks/|src/(.+/)?__tests__/|backend/|docs/|scripts/|tasks/|img/|subway/|locales/|__mocks__/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/(e2e|ci)\.yml$|eas\.json$|jest\.setup\.js$|sonar-project\.properties$|\.env\.example$|\.gitignore$|\.prettierrc.*$|\.eslintrc.*$|\.editorconfig$|.*\.md$|.*\.txt$)'
+          SKIP_RE='^(src/shared/i18n/|src/shared/types/|src/testUtils/|src/data/|src/features/[^/]+/types/|src/features/[^/]+/tasks/|src/(.+/)?__tests__/|backend/|docs/|scripts/|tasks/|img/|subway/|locales/|__mocks__/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/(e2e|ci)\.yml$|eas\.json$|jest\.setup\.js$|sonar-project\.properties$|\.env\.example$|\.gitignore$|\.prettierrc.*$|\.eslintrc.*$|\.editorconfig$|.*\.md$|.*\.txt$)'
           relevant=$(echo "$files" | grep -v '^$' | grep -vE "$SKIP_RE" || true)
           if [ -z "$relevant" ] && [ -n "$files" ]; then
             echo "ui_affected=false" >> "$GITHUB_OUTPUT"
@@ -202,7 +203,7 @@ jobs:
 
       - name: JS 번들에 mock sentinel이 inline되었는지 검증
         # Hermes bytecode는 숫자 리터럴을 보존하지 않으므로 좌표 grep 불가.
-        # 대신 src/constants/e2e.ts의 문자열 sentinel을 사용. Hermes는 UTF-8 문자열 테이블을 유지함.
+        # 대신 src/shared/constants/e2e.ts의 문자열 sentinel을 사용. Hermes는 UTF-8 문자열 테이블을 유지함.
         # IS_E2E_MOCK이 babel-time에 true 상수로 inline되면 활성 sentinel만 번들에 남는다.
         run: |
           BUNDLE=$(find ios/build -path '*/Build/Products/Release-iphonesimulator/*.app/main.jsbundle' -type f | head -1)
@@ -211,11 +212,11 @@ jobs:
             find ios/build -name "*.app" -type d
             exit 1
           fi
-          # sentinel 문자열을 src/constants/e2e.ts에서 동적 추출 (SSOT)
-          ACTIVE=$(node -e "const m=require('fs').readFileSync('src/constants/e2e.ts','utf8'); const r=m.match(/'(__E2E_MOCK_ACTIVE_[^']+)'/); if(!r){process.exit(1)} console.log(r[1])")
-          INACTIVE=$(node -e "const m=require('fs').readFileSync('src/constants/e2e.ts','utf8'); const r=m.match(/'(__E2E_MOCK_INACTIVE[^']*)'/); if(!r){process.exit(1)} console.log(r[1])")
+          # sentinel 문자열을 src/shared/constants/e2e.ts에서 동적 추출 (SSOT)
+          ACTIVE=$(node -e "const m=require('fs').readFileSync('src/shared/constants/e2e.ts','utf8'); const r=m.match(/'(__E2E_MOCK_ACTIVE_[^']+)'/); if(!r){process.exit(1)} console.log(r[1])")
+          INACTIVE=$(node -e "const m=require('fs').readFileSync('src/shared/constants/e2e.ts','utf8'); const r=m.match(/'(__E2E_MOCK_INACTIVE[^']*)'/); if(!r){process.exit(1)} console.log(r[1])")
           if [ -z "$ACTIVE" ] || [ -z "$INACTIVE" ]; then
-            echo "::error::src/constants/e2e.ts에서 sentinel 문자열 추출 실패"
+            echo "::error::src/shared/constants/e2e.ts에서 sentinel 문자열 추출 실패"
             exit 1
           fi
           HAS_ACTIVE=0
