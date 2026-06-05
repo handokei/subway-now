@@ -148,3 +148,166 @@ jobs:
             maestro-debug-scenario/
             diag-gps/
             diag-scenario/
+
+  regression:
+    name: E2E Regression (#922 fixture mock)
+    # 2026-06-05에 발견된 4건의 알람 회귀(Seam B/C/E/F)에 대한 실기기-동등 가드.
+    # `scripts/maestro-mock-backend.ts`가 BFF/alarm-worker 응답을 회귀 시점 상태로 고정 →
+    # GPS 좌표 + UI 검증만으로 회귀 재현. nightly only, PR 게이트 아님.
+    #
+    # 시나리오 추가는 아래 matrix에 fixture 이름(scripts/fixtures/regression/*.json)만 추가.
+    runs-on: macos-14
+    timeout-minutes: 45
+    strategy:
+      # 한 시나리오가 깨져도 나머지 신호는 보존.
+      fail-fast: false
+      matrix:
+        scenario:
+          - seam-b-13-19
+          # 후속 PR에서 추가: seam-c-14-02, seam-e-13-39, seam-f-13-24
+    env:
+      SIM_NAME: 'iPhone 16'
+      EXPO_PUBLIC_USE_BFF: 'true'
+      EXPO_PUBLIC_BFF_URL: 'http://localhost:8788'
+      EXPO_PUBLIC_ALARM_BACKEND_URL: 'http://localhost:8788'
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Xcode 버전 고정
+        uses: maxim-lobanov/setup-xcode@1242409711ff5721add51979e9e11e23ebb7e5a4 # v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: 의존성 설치
+        run: npm ci --legacy-peer-deps
+
+      - name: Maestro CLI 설치
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> $GITHUB_PATH
+
+      - name: Maestro flow 문법 검증 (regression)
+        run: |
+          set -e
+          if "$HOME/.maestro/bin/maestro" test --help 2>&1 | grep -q -- '--dry-run'; then
+            "$HOME/.maestro/bin/maestro" test .maestro/flows/regression --dry-run || exit 1
+          fi
+
+      - name: mock backend 기동 (백그라운드)
+        run: |
+          node scripts/maestro-mock-backend.js \
+            > mock-backend.log 2>&1 &
+          echo "MOCK_PID=$!" >> $GITHUB_ENV
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8788/healthz > /dev/null; then
+              echo "mock backend ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::mock backend가 30초 안에 기동되지 않음"
+          cat mock-backend.log
+          exit 1
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+          PORT: '8788'
+
+      - name: mock 백엔드 빌드-time env 주입
+        # Expo의 with-environment.sh가 .xcode.env.local을 소싱하므로 여기 export.
+        run: |
+          {
+            echo 'export EXPO_PUBLIC_USE_BFF=true'
+            echo 'export EXPO_PUBLIC_BFF_URL=http://localhost:8788'
+            echo 'export EXPO_PUBLIC_ALARM_BACKEND_URL=http://localhost:8788'
+          } >> ios/.xcode.env.local
+          cat ios/.xcode.env.local
+
+      - name: iOS Prebuild
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: CocoaPods 캐시
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: pods-${{ runner.os }}-
+
+      - name: CocoaPods 설치
+        run: cd ios && pod install
+
+      - name: iOS 빌드 (Release, mock backend)
+        run: |
+          cd ios
+          xcodebuild -workspace subwaynow.xcworkspace \
+            -scheme subwaynow \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,name=${SIM_NAME}" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=YES \
+            build
+
+      - name: 시뮬레이터 부팅
+        run: |
+          xcrun simctl boot "${SIM_NAME}" || true
+          xcrun simctl bootstatus "${SIM_NAME}" -b
+
+      - name: 앱 설치
+        run: |
+          APP_PATH=$(find ios/build -name "*.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then echo "ERROR: .app not found"; exit 1; fi
+          xcrun simctl install booted "$APP_PATH"
+
+      - name: Maestro regression 실행
+        id: regression
+        continue-on-error: true
+        env:
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: '240000'
+        run: |
+          maestro test .maestro/flows/regression/${{ matrix.scenario }}.yaml \
+            --format junit \
+            --output maestro-regression-${{ matrix.scenario }}.xml \
+            --debug-output ./maestro-debug-regression-${{ matrix.scenario }}
+
+      - name: 진단 자료 수집
+        if: always()
+        run: |
+          mkdir -p ./diag-regression-${{ matrix.scenario }}
+          xcrun simctl io booted screenshot ./diag-regression-${{ matrix.scenario }}/last-screen.png || true
+          xcrun simctl spawn booted log show --last 2m --predicate 'process == "subwaynow"' --style compact \
+            > ./diag-regression-${{ matrix.scenario }}/app.log 2>&1 || true
+          cp mock-backend.log ./diag-regression-${{ matrix.scenario }}/ || true
+
+      - name: mock backend 종료
+        if: always()
+        run: |
+          if [ -n "${MOCK_PID:-}" ]; then
+            kill "${MOCK_PID}" 2>/dev/null || true
+          fi
+
+      - name: 결과 업로드
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maestro-regression-${{ matrix.scenario }}-results
+          path: |
+            maestro-regression-*.xml
+            maestro-debug-regression-*/
+            diag-regression-*/
+
+      - name: 결과 판정
+        if: always()
+        run: |
+          if [ "${{ steps.regression.outcome }}" != "success" ]; then
+            echo "::error::regression(${{ matrix.scenario }}) 실패. artifact를 확인하세요."
+            exit 1
+          fi
