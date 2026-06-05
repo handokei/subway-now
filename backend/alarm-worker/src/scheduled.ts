@@ -631,18 +631,23 @@ export function evaluateArvlCdFireGate(
  * @returns cleanedUp=true는 token unrecoverable로 trip 폐기 신호 (호출자가 advance 스킵).
  *          현재 정책상 cleanup 분기는 없고 항상 false 반환.
  */
+export interface FireArvlCdStationPushInputs {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  arvlCd: number;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+}
+
 export async function fireArvlCdStationPush(
-  trip: Trip,
-  waypoint: Waypoint,
-  lock: BoardingLockMeta,
-  arvlCd: number,
-  env: Env,
-  deps: ScheduledDeps,
-  stats: ScheduledStats,
-  now: number,
-  log: Logger,
-  generatePushId: () => string,
+  inputs: FireArvlCdStationPushInputs,
 ): Promise<{ dirty: boolean }> {
+  const { trip, waypoint, lock, arvlCd, env, deps, stats, now, log, generatePushId } = inputs;
   const key = arvlCdFireKey(trip.token, lock.trainCode, waypoint.stationName, arvlCd);
   const existing = await env.TRIPS.get(key);
   if (existing !== null) {
@@ -709,6 +714,46 @@ export async function fireArvlCdStationPush(
   return { dirty };
 }
 
+/**
+ * #902 Seam F — trainCode 사라짐 후 swap. previous+이번 미스 = VANISH_RE_ATTACH_THRESHOLD 도달 시 시도.
+ * 같은 station에 같은 line 신규 trainCode가 보이면 activeLock 교체. 호출자는 swap 결과를 사용해 재estimate.
+ * `runTrainCodeTracking`의 cognitive complexity 분담용 추출 (Sonar S3776).
+ */
+async function attemptVanishSwap(
+  trip: Trip,
+  waypoint: Waypoint,
+  activeLock: BoardingLockMeta,
+  deps: ScheduledDeps,
+  now: number,
+  log: Logger,
+): Promise<BoardingLockMeta | null> {
+  const previousMissCount = trip.consecutiveEtaMissing ?? 0;
+  if (previousMissCount + 1 < VANISH_RE_ATTACH_THRESHOLD) return null;
+  const swapped = await attachTrainCodeForLeg({
+    trip,
+    targetWaypoint: waypoint,
+    seoul: deps.seoul,
+    now,
+  });
+  if (!swapped || swapped.trainCode === activeLock.trainCode) return null;
+  log('boarding-lock: trainCode vanished, swapped', {
+    token: trip.token.slice(0, 8),
+    previousTrainCode: activeLock.trainCode,
+    newTrainCode: swapped.trainCode,
+    station: waypoint.stationName,
+    consecutiveEtaMissing: previousMissCount + 1,
+  });
+  // segmentStations는 기존 lock 것을 유지 (이미 진행 중인 leg) — 새 trainCode/expiresAt만 채택.
+  const newLock: BoardingLockMeta = {
+    ...activeLock,
+    trainCode: swapped.trainCode,
+    expiresAt: Math.max(activeLock.expiresAt, swapped.expiresAt),
+  };
+  trip.boardingLock = newLock;
+  trip.consecutiveEtaMissing = 0;
+  return newLock;
+}
+
 export async function runTrainCodeTracking(
   trip: Trip,
   waypoint: Waypoint,
@@ -723,36 +768,10 @@ export async function runTrainCodeTracking(
   let activeLock = lock;
   let estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
   if (estimate === null) {
-    const previousMissCount = trip.consecutiveEtaMissing ?? 0;
-    // #902 Seam F — 사라짐 후 재attach. previous=1 + 이번 미스 = 2 도달 시 1회 swap 시도.
-    // 같은 station에 같은 line 신규 trainCode가 보이면 lock을 교체하고 이번 cycle에 재estimate.
-    // 성공 시 그 아래의 정상 경로(arrived/reschedule)로 자연 진입.
-    const reachedVanishThreshold = previousMissCount + 1 >= VANISH_RE_ATTACH_THRESHOLD;
-    if (reachedVanishThreshold) {
-      const swapped = await attachTrainCodeForLeg({
-        trip,
-        targetWaypoint: waypoint,
-        seoul: deps.seoul,
-        now,
-      });
-      if (swapped && swapped.trainCode !== activeLock.trainCode) {
-        log('boarding-lock: trainCode vanished, swapped', {
-          token: trip.token.slice(0, 8),
-          previousTrainCode: activeLock.trainCode,
-          newTrainCode: swapped.trainCode,
-          station: waypoint.stationName,
-          consecutiveEtaMissing: previousMissCount + 1,
-        });
-        // segmentStations는 기존 lock 것을 유지 (이미 진행 중인 leg) — 새 trainCode/expiresAt만 채택.
-        activeLock = {
-          ...activeLock,
-          trainCode: swapped.trainCode,
-          expiresAt: Math.max(activeLock.expiresAt, swapped.expiresAt),
-        };
-        trip.boardingLock = activeLock;
-        trip.consecutiveEtaMissing = 0;
-        estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
-      }
+    const swappedLock = await attemptVanishSwap(trip, waypoint, activeLock, deps, now, log);
+    if (swappedLock) {
+      activeLock = swappedLock;
+      estimate = await estimateBoardingLockArrival(deps, activeLock, waypoint, now);
     }
   }
   if (estimate === null) {
@@ -802,18 +821,18 @@ export async function runTrainCodeTracking(
     // prereq 게이트: lock 활성 + arvlCd∈{0,1}. #640 회귀(lock 없는 trip 발사) defensive recheck.
     const gate = evaluateArvlCdFireGate(activeLock, estimate.arvlCd, now);
     if (gate === 'fire' && estimate.arvlCd !== null) {
-      const fire = await fireArvlCdStationPush(
+      const fire = await fireArvlCdStationPush({
         trip,
         waypoint,
-        activeLock,
-        estimate.arvlCd,
+        lock: activeLock,
+        arvlCd: estimate.arvlCd,
         env,
         deps,
         stats,
         now,
         log,
         generatePushId,
-      );
+      });
       if (fire.dirty) await putTrip(env.TRIPS, trip);
     } else {
       stats.arvlCdFireMismatch += 1;

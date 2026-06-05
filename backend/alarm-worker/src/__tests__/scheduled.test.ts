@@ -65,6 +65,19 @@ function makeEnv(kv: InMemoryKV, pending?: InMemoryKV): Env {
   };
 }
 
+// boardingLock fixture — 7호선 용마산→중곡→군자 leg 공용 (lock 추적/arvlCd fire 테스트 공통).
+function makeBoardingLock(overrides: Partial<BoardingLockMeta> = {}): BoardingLockMeta {
+  return {
+    trainCode: '7246',
+    line: '7',
+    subwayId: '1007',
+    selectedDepartureTime: NOW,
+    segmentStations: ['용마산', '중곡', '군자'],
+    expiresAt: NOW + 60 * 60_000,
+    ...overrides,
+  };
+}
+
 // 9단 게이트 happy path 공용 GPS series — boarding-prompt / kalman / auto-lock 테스트 공통 사용.
 // 게이트 #4(origin 100m 이내) / #5(direction cosine ≥ 0.7) / #7(speed ≥ 5 km/h) 모두 통과 설계.
 async function seedHappyGateSeries(kv: InMemoryKV, token: string): Promise<void> {
@@ -452,17 +465,7 @@ describe('runScheduled', () => {
 });
 
 describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
-  function makeLock(overrides: Partial<BoardingLockMeta> = {}): BoardingLockMeta {
-    return {
-      trainCode: '7246',
-      line: '7',
-      subwayId: '1007',
-      selectedDepartureTime: NOW,
-      segmentStations: ['용마산', '중곡', '군자'],
-      expiresAt: NOW + 60 * 60_000,
-      ...overrides,
-    };
-  }
+  const makeLock = makeBoardingLock;
 
   function makeLockTrip(overrides: Partial<Trip> = {}): Trip {
     return makeTrip({
@@ -3303,17 +3306,7 @@ describe('estimateBoardingLockArrival arvlCd exposure (#917 A2)', () => {
 });
 
 describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
-  function makeLock(overrides: Partial<BoardingLockMeta> = {}): BoardingLockMeta {
-    return {
-      trainCode: '7246',
-      line: '7',
-      subwayId: '1007',
-      selectedDepartureTime: NOW,
-      segmentStations: ['용마산', '중곡', '군자'],
-      expiresAt: NOW + 60 * 60_000,
-      ...overrides,
-    };
-  }
+  const makeLock = makeBoardingLock;
 
   function makeLockTrip(overrides: Partial<Trip> = {}): Trip {
     return makeTrip({
