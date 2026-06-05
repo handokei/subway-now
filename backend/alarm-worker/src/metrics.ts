@@ -83,6 +83,13 @@ export const MIN_SAMPLE_FOR_DECISION = readNumber('MIN_SAMPLE_FOR_DECISION');
 /** 히스토그램 메트릭의 SLA 평가용 백분위수. 0.95 = 95p. */
 export const SLA_PERCENTILE = readNumber('SLA_PERCENTILE');
 
+/**
+ * #919 A4 — 매역 알림 recall 운영 KPI 하한 비율. 본 비율 미만 trip이 alert 임계.
+ * Phase 4 결정 게이트(`decidePhaseFour`)와 분리된 운영 회귀 감시용 — 본 PR은 SSOT 노출만 하고
+ * 실제 alert 배선은 후속 PR (Slack webhook / cron summary)에서 처리.
+ */
+export const MIN_RECALL_RATIO_THRESHOLD = readNumber('MIN_RECALL_RATIO_THRESHOLD');
+
 /** AE 적재 label prefix — 기존 silent-push 텔레메트리와 namespace 분리. */
 const METRIC_LABEL_PREFIX = readString('METRIC_LABEL_PREFIX');
 

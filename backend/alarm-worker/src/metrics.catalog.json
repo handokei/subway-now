@@ -6,7 +6,8 @@
     "FALSE_POSITIVE_RATIO_THRESHOLD": 0.05,
     "MIN_SAMPLE_FOR_DECISION": 30,
     "SLA_PERCENTILE": 0.95,
-    "METRIC_LABEL_PREFIX": "phase3"
+    "METRIC_LABEL_PREFIX": "phase3",
+    "MIN_RECALL_RATIO_THRESHOLD": 0.95
   },
   "metrics": [
     {
@@ -97,6 +98,20 @@
       "format": "rate",
       "display": "percentage",
       "description": "#917 A2 — prereq 게이트(lock 활성 + arvlCd∈{0,1}) 실패로 매역 push 미발사된 비율 — #640 회귀 방어 신호"
+    },
+    {
+      "key": "perStationAlarmRecall",
+      "constantName": "PER_STATION_ALARM_RECALL",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#919 A4 — trip 종료 시 route 정차역 대비 실제 발사된 매역 알림 비율. hit=firedStops, total=expectedStops. MIN_RECALL_RATIO_THRESHOLD(0.95) 미달 trip 비율로 운영 alert 발사 (Phase 4 결정 게이트 아님 — 운영 KPI)."
+    },
+    {
+      "key": "gateSuppressionDistribution",
+      "constantName": "GATE_SUPPRESSION_DISTRIBUTION",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#919 A4 — recall < 100% trip에서 매역 알림을 차단한 게이트(accuracy/motion/silence/lockMissing/...) 분포. 차단 reason은 별도 blob label로 적재(reason 카탈로그는 recallTelemetry.ts:KNOWN_GATE_REASONS와 client recallMetrics.ts:GATE_SUPPRESSION_REASONS의 양방향 SSOT)."
     }
   ]
 }
