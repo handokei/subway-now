@@ -49,7 +49,10 @@
     "locationUncertainTitle": "위치 확인 중",
     "locationUncertainDescription": "현재 GPS 정확도가 낮아\n위치를 단정할 수 없습니다.\n잠시 후 자동으로 다시 확인합니다.",
     "refresh": "새로고침",
-    "boardingProximityHint": "탑승역 근처에서 열차를 선택할 수 있어요"
+    "boardingProximityHint": "탑승역 근처에서 열차를 선택할 수 있어요",
+    "boardingTrainListTitle": "탑승할 열차 선택",
+    "boardingTrainListEmpty": "도착 예정 열차가 없습니다.",
+    "misBoardingToast": "탑승 열차를 찾을 수 없어요. 다시 선택해주세요."
   },
   "settings": {
     "title": "설정",
