@@ -300,14 +300,38 @@ describe('useBoardingLockController', () => {
       expect(mockSetBoardingLock.mock.calls[0][0].expectedDurationMs).toBe(30 * 60_000);
     });
 
-    it('destinationId null → no-op', async () => {
-      const { result } = renderHook(() =>
-        useBoardingLockController({ ...defaultInputs, destinationId: null }),
-      );
+    // #978 (PR #955 follow-up): destinationId null이면 free-trip sentinel으로 hydrate.
+    // 사용자가 나중에 실제 destination 설정 → destination 변경 effect가 sentinel mismatch로 자동 release.
+    it('destinationId null → sentinel destinationId + hydratedFromSentinel marker stamp (#978)', async () => {
+      jest.spyOn(Date, 'now').mockReturnValue(1_700_000_111_222);
+      try {
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...defaultInputs, destinationId: null }),
+        );
+        await act(async () => {
+          result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+        });
+        await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+        const created = mockSetBoardingLock.mock.calls[0][0];
+        expect(created.destinationId).toBe('__free-trip-sentinel__');
+        expect(created.hydratedFromSentinel).toEqual({
+          destinationId: '__free-trip-sentinel__',
+          sentinelAt: 1_700_000_111_222,
+        });
+      } finally {
+        (Date.now as jest.Mock).mockRestore();
+      }
+    });
+
+    it('destinationId 있음 → sentinel marker 없음 (기존 동작 유지)', async () => {
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
       await act(async () => {
         result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
       });
-      expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+      const created = mockSetBoardingLock.mock.calls[0][0];
+      expect(created.destinationId).toBe('dest-1');
+      expect(created.hydratedFromSentinel).toBeUndefined();
     });
 
     it('currentStation null → no-op', async () => {
@@ -426,6 +450,49 @@ describe('useBoardingLockController', () => {
       renderHook(() => useBoardingLockController(defaultInputs));
       await waitFor(() => expect(useBoardingLockStore.getState().lock).toEqual(matching));
       expect(mockClearBoardingLock).not.toHaveBeenCalled();
+    });
+
+    // #978 — free-trip sentinel lock 상태 + destinationId=null이면 같은 free trip으로 간주, 유지.
+    it('sentinel lock + destinationId null이면 release 안 함 (같은 free trip 유지) (#978)', async () => {
+      const sentinelLock: BoardingLock = {
+        destinationId: '__free-trip-sentinel__',
+        trainCode: 'AUTO-7',
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: Date.now(),
+        expectedDurationMs: 600_000,
+        hydratedFromSentinel: {
+          destinationId: '__free-trip-sentinel__',
+          sentinelAt: Date.now(),
+        },
+      };
+      mockGetBoardingLock.mockResolvedValueOnce(sentinelLock);
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, destinationId: null }),
+      );
+      await waitFor(() => expect(useBoardingLockStore.getState().lock).toEqual(sentinelLock));
+      expect(mockClearBoardingLock).not.toHaveBeenCalled();
+    });
+
+    // #978 — sentinel lock 활성 중 사용자가 실제 destination 설정 → sentinel mismatch로 invalidate.
+    it('sentinel lock + 실 destinationId 설정 → 자동 release (cross-talk 차단) (#978)', async () => {
+      const sentinelLock: BoardingLock = {
+        destinationId: '__free-trip-sentinel__',
+        trainCode: 'AUTO-7',
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: Date.now(),
+        expectedDurationMs: 600_000,
+        hydratedFromSentinel: {
+          destinationId: '__free-trip-sentinel__',
+          sentinelAt: Date.now(),
+        },
+      };
+      mockGetBoardingLock.mockResolvedValueOnce(sentinelLock);
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, destinationId: 'dest-real' }),
+      );
+      await waitFor(() => expect(mockClearBoardingLock).toHaveBeenCalled());
     });
   });
 

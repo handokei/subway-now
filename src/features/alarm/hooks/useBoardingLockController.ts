@@ -15,7 +15,10 @@ import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival'
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { LineNumber, Station } from '../../../shared/types/station';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
-import { FALLBACK_BOARDING_DURATION_MINUTES } from '../../../shared/constants/boardingLock';
+import {
+  FALLBACK_BOARDING_DURATION_MINUTES,
+  FREE_TRIP_DESTINATION_SENTINEL,
+} from '../../../shared/constants/boardingLock';
 import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSync';
 
 export interface UseBoardingLockControllerInputs {
@@ -93,10 +96,14 @@ export function useBoardingLockController({
   }, [loadLock]);
 
   // destination 변경 → stale lock release. 같은 destination이면 그대로 유지(앱 재시작 등).
+  // #978: free-trip sentinel lock은 destinationId=null인 동안 그대로 유지하고, 사용자가 실제
+  // destination을 설정하는 순간(sentinel !== realId) invalidate. destinationId=null + sentinel lock
+  // 조합은 "여전히 free trip 진행 중"으로 본다.
   useEffect(() => {
-    if (lock && lock.destinationId !== destinationId) {
-      void releaseLock();
-    }
+    if (!lock) return;
+    if (lock.destinationId === destinationId) return;
+    if (destinationId === null && lock.destinationId === FREE_TRIP_DESTINATION_SENTINEL) return;
+    void releaseLock();
   }, [lock, destinationId, releaseLock]);
 
   // AppState active 진입 시 만료 검사 + 마운트 직후 1회.
@@ -165,23 +172,37 @@ export function useBoardingLockController({
   //    silent push로 client store가 hydrate되는 별 경로).
   const hydrateLockFromCandidate = useCallback(
     (candidate: AutoLockCandidate) => {
-      if (!destinationId || !currentStation) return;
+      if (!currentStation) return;
       const boardingLine = asLineNumber(candidate.line);
       if (!boardingLine) return;
       if (lock) return;
+      // #978 (PR #955 follow-up): destinationId 없으면 free-trip sentinel으로 hydrate.
+      // 사용자가 나중에 실제 destination을 설정하면 위의 destination 변경 effect가
+      // (sentinel !== realId) → 자동 release하므로 cross-talk 차단.
+      const isSentinel = !destinationId;
+      const effectiveDestinationId = destinationId ?? FREE_TRIP_DESTINATION_SENTINEL;
       const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
       // boardingStationId는 createLockFromTrain과 동일하게 (역명, candidate.line) 매칭 정정.
       const correctedStation = findStationByNameAndLine(currentStation.name, boardingLine);
       const boardingStationId = correctedStation?.id ?? currentStation.id;
+      const now = Date.now();
       createLock({
-        destinationId,
+        destinationId: effectiveDestinationId,
         trainCode: candidate.trainCode,
         boardingStationId,
         boardingLine,
-        boardedAt: Date.now(),
+        boardedAt: now,
         expectedDurationMs: durationMin * 60_000,
         // initialEtaSeconds는 candidate에 없음 — Seam A 지연 칩은 cron이 채워둔 lock 메타로 노출되지 않으며,
         // 사용자가 명시 탭한 lock에서만 노출되는 게 의도(자동 lock은 정확도가 보장 안 됨).
+        ...(isSentinel
+          ? {
+              hydratedFromSentinel: {
+                destinationId: FREE_TRIP_DESTINATION_SENTINEL,
+                sentinelAt: now,
+              },
+            }
+          : {}),
       }).catch(() => {
         // store action rejection은 graceful — loadLock race / storage 일시 실패는 다음 sync에서 자연 재시도.
       });
