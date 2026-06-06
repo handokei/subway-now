@@ -88,4 +88,53 @@ describe('fuseStationDetectionSignals', () => {
   it('STATION_DETECTION_SIGNALS 목록은 readonly이며 비어있지 않다', () => {
     expect(STATION_DETECTION_SIGNALS.length).toBeGreaterThan(0);
   });
+
+  /**
+   * #921 acceptance — 지하 시청→을지로3가 방향 2호선 7정거장 시뮬레이션.
+   *
+   * 지하 구간이라 GPS는 stale. 3개 fusion 신호(기압 dP/dt 정차,
+   * motion stationary, ArvlCd ARRIVED)가 매 역마다 모두 true가 되는
+   * 사이클을 7회 반복했을 때 매 역에서 detected=true / confidence='high'
+   * 100% 인식되는지 검증. 1개라도 인식 실패하면 본 테스트 실패한다.
+   *
+   * 데이터 주도: 정거장 이름 리스트만 늘리면 hop 수와 무관하게 확장.
+   */
+  it('지하 7정거장(2호선 시청→을지로3가 방향) 매역 인식 100%', () => {
+    const UNDERGROUND_HOPS = [
+      '시청',
+      '을지로입구',
+      '을지로3가',
+      '을지로4가',
+      '동대문역사문화공원',
+      '신당',
+      '상왕십리',
+    ] as const;
+
+    const verdicts = UNDERGROUND_HOPS.map((stationName) => {
+      // 도착 사이클: 3개 신호 모두 true (기압 정차 + motion stationary + arvlCd ARRIVED).
+      const arrival = fuseStationDetectionSignals({
+        'barometer-stop': true,
+        'motion-stationary': true,
+        'arvlcd-arrived': true,
+      });
+      // 발차 사이클: 3개 신호 모두 false → 인식 끊김 (다음 hop 준비).
+      const depart = fuseStationDetectionSignals({
+        'barometer-stop': false,
+        'motion-stationary': false,
+        'arvlcd-arrived': false,
+      });
+      return { stationName, arrival, depart };
+    });
+
+    // 매역 도착 사이클 인식 100% — 7/7 detected=true.
+    const detectedCount = verdicts.filter((v) => v.arrival.detected).length;
+    expect(detectedCount).toBe(UNDERGROUND_HOPS.length);
+    // 매역 confidence='high' — 3 신호 합의.
+    verdicts.forEach(({ arrival, depart }) => {
+      expect(arrival.confidence).toBe('high');
+      expect(arrival.signalsAgreed).toBe(3);
+      // 발차 cycle은 detected=false로 사이클 분리.
+      expect(depart.detected).toBe(false);
+    });
+  });
 });
