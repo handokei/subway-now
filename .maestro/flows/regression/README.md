@@ -1,7 +1,8 @@
 # Maestro 회귀 fixture (#922)
 
-2026-06-05 실기기에서 발생한 4건의 알람 회귀(Seam B/C/E/F)를 단위 테스트 외에 실기기-동등
-환경에서 회귀 가드로 잡기 위한 Maestro flow 모음.
+2026-06-05 실기기에서 발생한 4건의 알람 회귀(Seam B/C/E/F)와 후속 Seam A(#897 lock 지연 칩),
+Seam D(#456 DebugModal 진입)를 단위 테스트 외에 실기기-동등 환경에서 회귀 가드로 잡기 위한
+Maestro flow 모음.
 
 ## 구성
 
@@ -20,6 +21,8 @@ SCENARIO=seam-b-13-19 PORT=8788 node scripts/maestro-mock-backend.js
 echo 'export EXPO_PUBLIC_USE_BFF=true' >> ios/.xcode.env.local
 echo 'export EXPO_PUBLIC_BFF_URL=http://localhost:8788' >> ios/.xcode.env.local
 echo 'export EXPO_PUBLIC_ALARM_BACKEND_URL=http://localhost:8788' >> ios/.xcode.env.local
+# Seam D (DebugModal 진입) 시나리오를 release 빌드로 실행할 때만 필요. dev 빌드(__DEV__=true)는 불필요.
+echo 'export EXPO_PUBLIC_DEBUG_MODAL=true' >> ios/.xcode.env.local
 npm run ios
 
 # 3) flow 실행
@@ -33,6 +36,8 @@ maestro test .maestro/flows/regression/seam-b-13-19.yaml
 | `seam-b-13-19.yaml` | B | 13:19 transfer/early/건대입구 fired @ 성수 | 성수 정지 + 건대입구 5분 후 ETA → false-positive 발사 없음 |
 | `seam-e-13-39.yaml` | E | 13:39~45 lockMissing | `/boarding-lock/sync` 응답이 advanced=true여도 ghost 알람 발사 0건, chip 안정 |
 | `seam-f-13-24.yaml` | F | 13:24~28 trainCode 7174 사라짐 | 25s 시점 trainCode drop 후에도 lockMissing/ghost 알람 발사 0건 |
+| `seam-a-delay-chip.yaml` | A | #897 lock 지연 칩 | 어린이대공원에서 7180 lock 후 phase 30s 전환 → `boarding-lock-hop-delay-chip` `+4분 지연` 노출 |
+| `seam-d-debug-entry.yaml` | D | #456 DebugModal 진입 | 설정 탭 → version footer 7-tap → `debug-modal` + `debug-arrival-summary` 노출, close 정상 |
 
 보류:
 - Seam C — 13:23 waypoint advanced + 14:02 stale chip. transfer-leg / FG-return /
