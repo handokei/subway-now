@@ -2,7 +2,6 @@
   "common": {
     "retry": "重试",
     "close": "关闭",
-    "confirm": "确定",
     "cancel": "取消",
     "remove": "删除"
   },

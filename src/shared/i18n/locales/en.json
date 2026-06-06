@@ -2,7 +2,6 @@
   "common": {
     "retry": "Retry",
     "close": "Close",
-    "confirm": "OK",
     "cancel": "Cancel",
     "remove": "Remove"
   },
