@@ -40,6 +40,16 @@ export interface UseStationCandidatesInputs {
   readonly previousStation?: Station | null;
   /** 직전 확정역 통과 후 경과 시간(초). previousStation과 함께 주어져야 결합 narrow 활성. */
   readonly secondsSincePrevious?: number | null;
+  /**
+   * F3 wave 2(#989) — CMMotionActivity stationary 신호. true면 사용자가 정지 상태 →
+   * 도착역에 멈춰 있을 가능성 ↑. `barometerStable`과 결합해 결정 gap 완화.
+   */
+  readonly motionStationary?: boolean | null;
+  /**
+   * F3 wave 2(#989) — `evaluateBarometerStop().detected` 결과. 압력 변화 없음 = 같은 깊이.
+   * 한쪽만 true여도 TOO_WEAK 임계만 완화(약한 가중치).
+   */
+  readonly barometerStable?: boolean | null;
   /** 후보 최대 개수. 기본 3. */
   readonly maxCandidates?: number;
   /** GPS 후보 추출 시 반경(km). 기본 `MAX_STATION_DISTANCE_KM`(1.0). */
@@ -71,6 +81,8 @@ export function useStationCandidates(
     surfacePressureHpa = null,
     previousStation = null,
     secondsSincePrevious = null,
+    motionStationary = null,
+    barometerStable = null,
     maxCandidates = DEFAULT_MAX_CANDIDATES,
     maxDistanceKm = MAX_STATION_DISTANCE_KM,
   } = inputs;
@@ -125,6 +137,8 @@ export function useStationCandidates(
         candidates,
         previousStation,
         secondsSincePrevious,
+        motionStationary: motionStationary ?? false,
+        barometerStable: barometerStable ?? false,
       });
     }
 
@@ -140,6 +154,8 @@ export function useStationCandidates(
     surfacePressureHpa,
     previousStation,
     secondsSincePrevious,
+    motionStationary,
+    barometerStable,
     maxCandidates,
     maxDistanceKm,
   ]);
