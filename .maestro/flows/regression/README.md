@@ -1,8 +1,8 @@
 # Maestro 회귀 fixture (#922)
 
 2026-06-05 실기기에서 발생한 4건의 알람 회귀(Seam B/C/E/F)와 후속 Seam A(#897 lock 지연 칩),
-Seam D(#456 DebugModal 진입)를 단위 테스트 외에 실기기-동등 환경에서 회귀 가드로 잡기 위한
-Maestro flow 모음.
+Seam D(#456 DebugModal 진입), Seam G(#903 barometer sticky wireup), LA refresh heartbeat
+(#900)을 단위 테스트 외에 실기기-동등 환경에서 회귀 가드로 잡기 위한 Maestro flow 모음.
 
 ## 구성
 
@@ -38,6 +38,8 @@ maestro test .maestro/flows/regression/seam-b-13-19.yaml
 | `seam-f-13-24.yaml` | F | 13:24~28 trainCode 7174 사라짐 | 25s 시점 trainCode drop 후에도 lockMissing/ghost 알람 발사 0건 |
 | `seam-a-delay-chip.yaml` | A | #897 lock 지연 칩 | 어린이대공원에서 7180 lock 후 phase 30s 전환 → `boarding-lock-hop-delay-chip` `+4분 지연` 노출 |
 | `seam-d-debug-entry.yaml` | D | #456 DebugModal 진입 | 설정 탭 → version footer 7-tap → `debug-modal` + `debug-arrival-summary` 노출, close 정상 |
+| `seam-g-sticky-wireup.yaml` | G | #903 barometer sticky wireup | 지하 좌표(보문) 단순 trip 90s 안정 — sticky 강등/알람 게이트 wire-up 회귀 시 ghost 알람 표면화 |
+| `seam-la-refresh-heartbeat.yaml` | LA-heartbeat | #900 LA refresh heartbeat | ETA 정체(arrivalSeconds=180 stable) 90s 동안 트립 chip + 알람 안정. heartbeat 게이트 회귀 시 ghost 표면화 |
 
 보류:
 - Seam C — 13:23 waypoint advanced + 14:02 stale chip. transfer-leg / FG-return /
@@ -51,7 +53,7 @@ maestro test .maestro/flows/regression/seam-b-13-19.yaml
 ```jsonc
 {
   "name": "사람이 읽을 시나리오 설명",
-  "seam": "B|C|E|F",
+  "seam": "A|B|C|D|E|F|G|LA-heartbeat",
   "arrivals": {
     "<역 이름>": [
       {
