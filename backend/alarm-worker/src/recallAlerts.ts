@@ -22,7 +22,7 @@
  * Privacy: webhook payload는 비율/표본 수만 포함 — token prefix·user ID 미노출.
  */
 
-import { MIN_RECALL_RATIO_THRESHOLD } from './metrics';
+import { MIN_RECALL_RATIO_THRESHOLD, RECALL_THRESHOLD_CRITICAL } from './metrics';
 import {
   gateSuppressionDistribution7dQuery,
   lowRecallTripRatioQuery,
@@ -61,13 +61,36 @@ export interface RecallAlertGateEntry {
   count: number;
 }
 
+/**
+ * Alert severity 등급 (#1003). critical은 warning보다 엄격(낮은 recall) 임계.
+ *   - 'critical' : trip recall < `RECALL_THRESHOLD_CRITICAL` 가 존재
+ *   - 'warning'  : critical은 없지만 trip recall < `MIN_RECALL_RATIO_THRESHOLD` 가 존재
+ *
+ * 둘 다 같은 webhook으로 흐르되 운영자가 severity로 즉시 triage 우선순위 판단.
+ */
+export type RecallAlertSeverity = 'warning' | 'critical';
+
 /** webhook POST payload 모양 — Slack incoming webhook은 `text` field만 보면 무시한다(호환). */
 export interface RecallAlertPayload {
   /** alert kind discriminator — 향후 다른 KPI alert가 같은 webhook 재사용할 수 있게 분리. */
   kind: 'low-recall';
-  /** observed ratio (0~1). MIN_RECALL_RATIO_THRESHOLD 미달 trip / total trip. */
+  /**
+   * #1003 — alert 심각도. critical = warning 임계보다 낮은 recall threshold 미달 trip 존재.
+   * receiver가 severity로 분기 (페이지 색상, on-call 알림 강도 등).
+   */
+  severity: RecallAlertSeverity;
+  /**
+   * Observed ratio (0~1). severity에 따라 의미가 다르다:
+   *   - severity='warning'  → `low_recall_ratio` (recall < warning threshold trip 비율)
+   *   - severity='critical' → `critical_recall_ratio` (recall < critical threshold trip 비율)
+   * receiver는 `threshold`와 함께 읽어 의미 일치.
+   */
   ratio: number;
-  /** SSOT threshold (currently 0.95). */
+  /**
+   * 발사 trigger가 된 severity의 SSOT threshold.
+   *   - severity='warning'  → `MIN_RECALL_RATIO_THRESHOLD` (현재 0.95)
+   *   - severity='critical' → `RECALL_THRESHOLD_CRITICAL` (현재 0.90)
+   */
   threshold: number;
   /** 7d window 내 평가된 token prefix 수 — ratio의 신뢰도 입력. */
   sampleSize: number;
@@ -95,6 +118,10 @@ interface SqlApiRow {
   total_tokens?: number;
   low_recall_tokens?: number;
   low_recall_ratio?: number;
+  /** #1003 — recall < `RECALL_THRESHOLD_CRITICAL` 미달 token 수. */
+  critical_recall_tokens?: number;
+  /** #1003 — recall < `RECALL_THRESHOLD_CRITICAL` 미달 token / total token. */
+  critical_recall_ratio?: number;
 }
 
 interface SqlApiResponse {
@@ -118,8 +145,8 @@ interface GateSqlResponse {
  *   1. 4가지 graceful no-op 조건 검사 (binding/url/account/token 부재)
  *   2. dedup KV stamp 확인 — 1시간 윈도우 내면 즉시 종료
  *   3. SQL API POST(`lowRecallTripRatioQuery`)
- *   4. 결과 row 없음 또는 ratio === 0 → no breach, 종료
- *   5. ratio > 0 → webhook POST + dedup stamp 갱신
+ *   4. 결과 row 없음 또는 warning ratio === 0 → no breach, 종료
+ *   5. critical ratio > 0 → severity='critical' / 아니면 'warning' → webhook POST + dedup stamp 갱신
  *
  * fetch 실패는 throw하지 않고 log로만 흘려 cron 본 흐름을 막지 않는다.
  */
@@ -141,24 +168,35 @@ export async function evaluateAndMaybeAlert(
   const row = await fetchLowRecallRow(env, deps);
   if (row === null) return { kind: 'noop', reason: 'fetch-failed' };
 
-  const ratio = row.low_recall_ratio ?? 0;
   const sampleSize = row.total_tokens ?? 0;
-  if (ratio <= 0 || sampleSize <= 0) {
+  const warningRatio = row.low_recall_ratio ?? 0;
+  const criticalRatio = row.critical_recall_ratio ?? 0;
+  if (sampleSize <= 0 || warningRatio <= 0) {
+    // critical ⊂ warning이므로 warning이 0이면 critical도 0 — 단일 가드면 충분.
     return { kind: 'noop', reason: 'no-breach' };
   }
 
+  // #1003 — severity 분기. critical은 warning보다 엄격(낮은 threshold) → critical > 0이면 우선.
+  const severity: RecallAlertSeverity = criticalRatio > 0 ? 'critical' : 'warning';
+  const ratio = severity === 'critical' ? criticalRatio : warningRatio;
+  const threshold = severity === 'critical'
+    ? RECALL_THRESHOLD_CRITICAL
+    : MIN_RECALL_RATIO_THRESHOLD;
+
   // Gate breakdown은 root cause 단서로만 사용 — fetch 실패해도 alert 본 흐름은 진행.
   const gateBreakdown = await fetchGateBreakdown(env, deps);
+  const severityTag = severity === 'critical' ? '[CRITICAL]' : '[WARNING]';
   const baseText =
-    `subway-now recall alert — ${(ratio * 100).toFixed(1)}% of trips fell below ` +
-    `${MIN_RECALL_RATIO_THRESHOLD} recall (sample=${sampleSize})`;
+    `${severityTag} subway-now recall alert — ${(ratio * 100).toFixed(1)}% of trips fell below ` +
+    `${threshold} recall (sample=${sampleSize})`;
   const text = gateBreakdown.length > 0
     ? `${baseText}\nTop gates: ${formatGateSummary(gateBreakdown)}`
     : baseText;
   const payload: RecallAlertPayload = {
     kind: 'low-recall',
+    severity,
     ratio,
-    threshold: MIN_RECALL_RATIO_THRESHOLD,
+    threshold,
     sampleSize,
     observedAt: now,
     timeWindow: { from: now - ALERT_WINDOW_MS, to: now },

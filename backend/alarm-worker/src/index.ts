@@ -35,7 +35,7 @@ import {
   recordRecallUpload,
   validateRecallUpload,
 } from './recallTelemetry';
-import { MIN_RECALL_RATIO_THRESHOLD } from './metrics';
+import { MIN_RECALL_RATIO_THRESHOLD, RECALL_THRESHOLD_CRITICAL } from './metrics';
 import { RECALL_DATASET, RECALL_OPS_PAGE_URL, RECALL_QUERIES } from './recallQueries';
 import {
   recordPrescheduledUpload,
@@ -322,6 +322,8 @@ app.get('/metrics/recall/summary', (c) => {
     dataset: RECALL_DATASET,
     available: c.env.TELEMETRY !== undefined,
     minRecallRatioThreshold: MIN_RECALL_RATIO_THRESHOLD,
+    // #1003 — alert severity 등급 분리. dashboard도 두 임계 모두 노출.
+    recallThresholdCritical: RECALL_THRESHOLD_CRITICAL,
     opsPageUrl: RECALL_OPS_PAGE_URL,
     queries: RECALL_QUERIES,
   });
