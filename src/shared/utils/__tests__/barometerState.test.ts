@@ -393,4 +393,94 @@ describe('narrowStationsByDepthAndEta (#920 후속)', () => {
     });
     expect(result).toEqual([SEODAEMUN_5, JONGNO3GA_5]);
   });
+
+  describe('wave 2(#989) — motion + barometer 신호 결합', () => {
+    // gap fail 시나리오: elapsed 85, measured=1016.6 (광화문 depth 32m).
+    //   서대문: depthError 0, etaError 5 → score 0.167
+    //   종로3가: depthError 0.6, etaError 15 → score 1.1
+    //   gap = 0.933 < 1.0 → 기본 동작은 baseline. 0.5(reinforced) ≤ 0.933 → winner 선택.
+    const GAP_FAIL_INPUT = {
+      measuredPressureHpa: 1016.6,
+      surfacePressureHpa: SURFACE,
+      candidates: [SEODAEMUN_5, JONGNO3GA_5] as const,
+      previousStation: GWANGHWAMUN_5,
+      secondsSincePrevious: 85,
+    };
+
+    it('두 신호 모두 true → gap 완화로 winner 선택', () => {
+      const result = narrowStationsByDepthAndEta({
+        ...GAP_FAIL_INPUT,
+        candidates: [...GAP_FAIL_INPUT.candidates],
+        motionStationary: true,
+        barometerStable: true,
+      });
+      expect(result).toEqual([SEODAEMUN_5]);
+    });
+
+    it('motion만 true → gap 임계는 기본 → baseline 그대로 (반쪽 신호)', () => {
+      const result = narrowStationsByDepthAndEta({
+        ...GAP_FAIL_INPUT,
+        candidates: [...GAP_FAIL_INPUT.candidates],
+        motionStationary: true,
+        barometerStable: false,
+      });
+      expect(result).toEqual([SEODAEMUN_5, JONGNO3GA_5]);
+    });
+
+    it('barometer만 true → gap 임계는 기본 → baseline 그대로 (반쪽 신호)', () => {
+      const result = narrowStationsByDepthAndEta({
+        ...GAP_FAIL_INPUT,
+        candidates: [...GAP_FAIL_INPUT.candidates],
+        motionStationary: false,
+        barometerStable: true,
+      });
+      expect(result).toEqual([SEODAEMUN_5, JONGNO3GA_5]);
+    });
+
+    it('두 신호 모두 false/미제공 → 기본 동작 (회귀 검사)', () => {
+      const result = narrowStationsByDepthAndEta({
+        ...GAP_FAIL_INPUT,
+        candidates: [...GAP_FAIL_INPUT.candidates],
+      });
+      expect(result).toEqual([SEODAEMUN_5, JONGNO3GA_5]);
+    });
+
+    // TOO_WEAK 시나리오: 평가 가능한 후보 1개(종로3가), depthError 2.3 → score 2.3.
+    //   기본 TOO_WEAK=2.0 → fallback. anyReinforced=3.0 → 2.3 < 3.0 → 종로3가 단일 반환.
+    const TOO_WEAK_INPUT = {
+      measuredPressureHpa: 1019.5, // 종로3가 expected 1017.2 → depthError 2.3
+      surfacePressureHpa: SURFACE,
+      candidates: [JONGNO3GA_5, SEOLLEUNG_2] as const,
+      previousStation: GWANGHWAMUN_5,
+      secondsSincePrevious: 100,
+    };
+
+    it('TOO_WEAK 경계 + motion만 true → TOO_WEAK 완화로 winner 선택', () => {
+      const result = narrowStationsByDepthAndEta({
+        ...TOO_WEAK_INPUT,
+        candidates: [...TOO_WEAK_INPUT.candidates],
+        motionStationary: true,
+      });
+      expect(result).toEqual([JONGNO3GA_5]);
+    });
+
+    it('TOO_WEAK 경계 + barometer만 true → TOO_WEAK 완화로 winner 선택', () => {
+      const result = narrowStationsByDepthAndEta({
+        ...TOO_WEAK_INPUT,
+        candidates: [...TOO_WEAK_INPUT.candidates],
+        barometerStable: true,
+      });
+      expect(result).toEqual([JONGNO3GA_5]);
+    });
+
+    it('TOO_WEAK 경계 + 둘 다 false → 기본 TOO_WEAK 적용 (회귀)', () => {
+      const result = narrowStationsByDepthAndEta({
+        ...TOO_WEAK_INPUT,
+        candidates: [...TOO_WEAK_INPUT.candidates],
+        motionStationary: false,
+        barometerStable: false,
+      });
+      expect(result).toEqual([JONGNO3GA_5, SEOLLEUNG_2]);
+    });
+  });
 });

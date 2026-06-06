@@ -175,9 +175,33 @@ export interface DepthEtaNarrowInput {
   readonly secondsSincePrevious: number;
   readonly toleranceHpa?: number;
   readonly etaToleranceSec?: number;
+  /**
+   * #920 wave 2 — 사용자 정지 신호(CMMotionActivity). true면 도착역에 멈춰 있을 가능성 ↑.
+   * `barometerStable`과 함께 true일 때 결정 gap을 완화해 winner 선택을 허용한다.
+   * 미제공/false이면 기존 동작.
+   */
+  readonly motionStationary?: boolean;
+  /**
+   * #920 wave 2 — 기압 변화 없음 신호(`evaluateBarometerStop` detected).
+   * true면 압력이 안정 → 같은 깊이에 머무름(정차 후보). motion과 결합 시 결정 gap 완화.
+   * 한쪽만 true면 TOO_WEAK만 완화(약한 가중치), 둘 다 true면 GAP+TOO_WEAK 모두 완화.
+   */
+  readonly barometerStable?: boolean;
 }
 
 const DEPTH_ETA_DECISIVE_GAP = 1.0;
+/**
+ * #920 wave 2 — motion+barometer 두 신호 모두 true일 때 적용하는 완화 gap.
+ * 1.0 → 0.5. winner와 runner-up이 가깝게 붙어 baseline fallback되던 케이스에서 winner 선택 허용.
+ * 0.5는 점수 단위계(depthError/tolerance + etaError/tolerance) 절반 — 한 차원이 명확히 갈리면 충분.
+ */
+const DEPTH_ETA_DECISIVE_GAP_REINFORCED = 0.5;
+const DEPTH_ETA_TOO_WEAK = 2.0;
+/**
+ * #920 wave 2 — motion 또는 barometer 한 신호라도 true일 때 적용하는 완화 TOO_WEAK.
+ * 2.0 → 3.0. 측정 잡음으로 점수가 약간 높아져도 winner 선택 허용. 둘 다 false/미제공이면 기본값.
+ */
+const DEPTH_ETA_TOO_WEAK_REINFORCED = 3.0;
 
 export function narrowStationsByDepthAndEta(
   input: DepthEtaNarrowInput,
@@ -190,6 +214,8 @@ export function narrowStationsByDepthAndEta(
     secondsSincePrevious,
     toleranceHpa = BAROMETER_ABS_TOLERANCE_HPA,
     etaToleranceSec = BAROMETER_ETA_TOLERANCE_SEC,
+    motionStationary = false,
+    barometerStable = false,
   } = input;
 
   if (candidates.length <= 1) return [...candidates];
@@ -220,16 +246,25 @@ export function narrowStationsByDepthAndEta(
   if (scored.length === 0) return [...candidates];
   scored.sort((a, b) => a.score - b.score);
 
+  // #920 wave 2 — 신호 강도에 따라 임계 완화:
+  //   - 둘 다 true(정지+압력 안정) = 도착역 근거 강함 → GAP + TOO_WEAK 모두 완화
+  //   - 한쪽만 true = 부분 신호 → TOO_WEAK만 완화 (약한 가중치)
+  //   - 둘 다 false/미제공 = 기존 동작 (회귀 X)
+  const bothReinforced = motionStationary && barometerStable;
+  const anyReinforced = motionStationary || barometerStable;
+  const tooWeak = anyReinforced ? DEPTH_ETA_TOO_WEAK_REINFORCED : DEPTH_ETA_TOO_WEAK;
+  const decisiveGap = bothReinforced
+    ? DEPTH_ETA_DECISIVE_GAP_REINFORCED
+    : DEPTH_ETA_DECISIVE_GAP;
+
   // 평가 가능한 후보가 단 1개라도 점수가 형편없으면 baseline로 fallback.
-  // 환산 점수 2.0은 "depthError가 tolerance와 같고 etaError가 tolerance와 같음" → 신호 의미 없음.
-  const TOO_WEAK = 2.0;
-  if (scored[0].score > TOO_WEAK) return [...candidates];
+  if (scored[0].score > tooWeak) return [...candidates];
 
   // 평가 가능한 후보가 1개뿐 → 그 후보를 반환 (다른 후보는 신호 결정 불가).
   if (scored.length === 1) return [scored[0].station];
 
   // 2개 이상 — winner가 runner-up과 충분히 갈리면 winner만, 아니면 baseline.
   const gap = scored[1].score - scored[0].score;
-  if (gap >= DEPTH_ETA_DECISIVE_GAP) return [scored[0].station];
+  if (gap >= decisiveGap) return [scored[0].station];
   return [...candidates];
 }

@@ -301,5 +301,60 @@ describe('useStationCandidates', () => {
       expect(names).toContain('광화문');
       expect(names).toContain('종로3가');
     });
+
+    describe('wave 2(#989) — motion + barometer 신호 wire-up', () => {
+      // 본 hook은 wave 2 신호를 narrowStationsByDepthAndEta로 그대로 전달한다.
+      // 결정 로직의 GAP/TOO_WEAK 완화는 barometerState 단위 테스트에서 검증.
+      // 여기서는 입력 옵션이 결과를 깨지 않는지(회귀)와 memoization이 깨지지 않는지만 확인.
+      const BASE_INPUT = {
+        userLocation: MIDPOINT_LOC,
+        wifiStation: null,
+        maxCandidates: 5,
+        maxDistanceKm: 2,
+        absolutePressureHpa: SURFACE + 32 * DEPTH_TO_PRESSURE_HPA_PER_M,
+        surfacePressureHpa: SURFACE,
+        previousStation: SEODAEMUN_5,
+        secondsSincePrevious: 90,
+      };
+
+      it('두 신호 모두 true → 결과는 narrow 함수 결정 (회귀 없음)', () => {
+        const { result } = renderHook(() =>
+          useStationCandidates({
+            ...BASE_INPUT,
+            motionStationary: true,
+            barometerStable: true,
+          }),
+        );
+        expect(result.current.topPick?.name).toBe('광화문');
+        expect(result.current.isAutoConfirmed).toBe(true);
+      });
+
+      it('두 신호 미제공 → 결과는 narrow 함수 결정 (회귀 없음)', () => {
+        const { result } = renderHook(() => useStationCandidates(BASE_INPUT));
+        expect(result.current.topPick?.name).toBe('광화문');
+      });
+
+      it('motion만 true → narrow 함수로 전달되고 결과 일관성 유지', () => {
+        const { result } = renderHook(() =>
+          useStationCandidates({ ...BASE_INPUT, motionStationary: true }),
+        );
+        expect(result.current.topPick?.name).toBe('광화문');
+      });
+
+      it('동일 입력 rerender 시 참조 안정성 (signals deps 포함)', () => {
+        const props = {
+          ...BASE_INPUT,
+          motionStationary: true,
+          barometerStable: true,
+        };
+        const { result, rerender } = renderHook(
+          (p: typeof props) => useStationCandidates(p),
+          { initialProps: props },
+        );
+        const first = result.current;
+        rerender(props);
+        expect(result.current).toBe(first);
+      });
+    });
   });
 });
