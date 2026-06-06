@@ -93,6 +93,7 @@
     "i18next": "~26.1.0",
     "live-activity": "file:./modules/live-activity",
     "motion-activity": "file:./modules/motion-activity",
+    "wifi-ssid": "file:./modules/wifi-ssid",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-i18next": "~17.0.7",

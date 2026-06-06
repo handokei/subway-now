@@ -1,0 +1,5 @@
+# This is a Gradle generated file for dependency locking.
+# Manual edits can break the build and are not advised.
+# Expo Module이라 host app(android/) 의 build.gradle을 통해 의존이 inject된다.
+# 자체 의존은 ExpoModulesCore project reference만 있어 lockfile은 empty.
+empty=
