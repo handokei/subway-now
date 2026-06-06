@@ -91,6 +91,39 @@
       "expectedRecallPct": 90,
       "flow": "always-fg-aboveground-normal-android.yaml",
       "_doc": "Android 플랫폼 차원 첫 진입. ACCESS_BACKGROUND_LOCATION 권한 dispatch가 Maestro permission 매핑에서 올바르게 처리되는지 회귀 가드. 후속 PR에서 Android 시뮬레이터 부팅 분기."
+    },
+    {
+      "id": "always-fg-underground-normal-ios18",
+      "permission": "always",
+      "appState": "fg",
+      "environment": "underground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 90,
+      "flow": "always-fg-underground-normal-ios18.yaml",
+      "_doc": "underground 환경 차원 첫 진입. 지하역 GPS 좌표(신도림 1호선) dispatch 후 홈 진입점 유지 회귀 가드. mock fixture 확장 전까지는 dispatch-only(ios17/android 패턴과 동일)."
+    },
+    {
+      "id": "always-bg-aboveground-sleep-ios18",
+      "permission": "always",
+      "appState": "bg",
+      "environment": "aboveground",
+      "mode": "sleep",
+      "os": "ios18",
+      "expectedRecallPct": 90,
+      "flow": "always-bg-aboveground-sleep-ios18.yaml",
+      "_doc": "BG × sleep 결합 차원 첫 진입. 매역 알람 SLA 정본 운영 조합(Always + BG + 취침). 후속 PR에서 BG silent push 발사 verify로 확장."
+    },
+    {
+      "id": "always-bg-underground-normal-ios18",
+      "permission": "always",
+      "appState": "bg",
+      "environment": "underground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 85,
+      "flow": "always-bg-underground-normal-ios18.yaml",
+      "_doc": "BG × underground 결합 차원 첫 진입. cold-restart 후 Always 권한 보존 회귀 가드. 매역 알람 SLA 최난도 조합(Always + BG + 지하)의 직전 단계."
     }
   ]
 }
