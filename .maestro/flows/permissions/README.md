@@ -24,15 +24,17 @@ Android, FG/BG, 지상/지하, 일반/취침 등 권한·환경 조합별로 매
 | `always-fg-underground-normal-ios18` | Always | FG | 지하 | 일반 | iOS 18 | underground 차원 첫 진입 (3차 wave) |
 | `always-bg-aboveground-sleep-ios18` | Always | BG | 지상 | 취침 | iOS 18 | BG × sleep 결합 첫 진입 (3차 wave) |
 | `always-bg-underground-normal-ios18` | Always | BG | 지하 | 일반 | iOS 18 | BG × underground 결합 첫 진입 (3차 wave) |
+| `always-bg-underground-sleep-ios18` | Always | BG | 지하 | 취침 | iOS 18 | SLA 최난도 결합(Always+BG+지하+취침) 첫 진입 (4차 wave) |
+| `whileInUse-bg-aboveground-normal-ios18` | WhileInUse | BG | 지상 | 일반 | iOS 18 | WhileInUse × BG 결합 첫 진입 (4차 wave) |
+| `whileInUse-fg-underground-normal-ios18` | WhileInUse | FG | 지하 | 일반 | iOS 18 | WhileInUse × underground 결합 첫 진입 (4차 wave) |
 
 후속 PR에서 추가될 cell (`scripts/permission-matrix.json`의 `cells` 배열에
 entry만 추가하면 runner와 CI matrix가 자동으로 픽업):
 
 - E2E mock fixture 확장 — `*-underground-*` cell이 강남(지상) 대신 지하역(예: 신도림)을
   반환하도록 분기. 현재 underground cell은 GPS dispatch만 검증(dispatch-only).
-- `always-bg-underground-sleep-ios18` 최난도 SLA 정본 조합 (3차 wave의 BG × underground와
-  BG × sleep을 결합)
-- WhileInUse × BG / underground × sleep 등 권한↓ × 가혹 환경 결합
+- WhileInUse × BG × sleep / WhileInUse × underground × sleep / WhileInUse × BG × underground
+  등 권한↓ × 가혹 환경 추가 결합
 - iOS 17 / Android cell의 실제 시뮬레이터/디바이스 부팅 분기 (현재는 iOS 18 시뮬에서 권한 dispatch만 검증)
 - 실측 recall 측정 (`expectedRecallPct` placeholder → 실측치)
 
