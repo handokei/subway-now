@@ -11,7 +11,7 @@ public class LiveActivityModule: Module {
     public func definition() -> ModuleDefinition {
         Name("LiveActivity")
 
-        Events("onPushToken", "onActivityEnded")
+        Events("onPushToken", "onActivityEnded", "onActivityDismissed")
 
         OnCreate {
             if #available(iOS 16.2, *) {
@@ -22,6 +22,12 @@ public class LiveActivityModule: Module {
                         },
                         onActivityEnded: { [weak self] in
                             self?.sendEvent("onActivityEnded", [:])
+                        },
+                        onActivityDismissed: { [weak self] dismissedAtMs in
+                            self?.sendEvent("onActivityDismissed", [
+                                "dismissedAt": dismissedAtMs,
+                                "reason": "user",
+                            ])
                         }
                     )
                 }

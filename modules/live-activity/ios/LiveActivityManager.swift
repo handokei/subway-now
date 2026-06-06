@@ -17,6 +17,13 @@ actor LiveActivityManager {
     /// LiveActivityModule이 주입하는 이벤트 emitter. 메인 액터/스레드 안전성은 호출자가 보장한다.
     var onPushTokenHex: ((String) -> Void)?
     var onActivityEnded: (() -> Void)?
+    /// 사용자가 LA를 직접 swipe-to-dismiss 한 경우만 emit (#967).
+    /// 앱이 `end()`를 호출해 종료된 경우는 emit 되지 않는다 — dismiss sentinel은 사용자 의도만 반영.
+    var onActivityDismissed: ((_ dismissedAtMs: Double) -> Void)?
+
+    /// `end()` 호출 직전 set 되는 플래그. observer가 `.ended`/`.dismissed`로 전이된 시점에
+    /// 이 값이 true면 system end로 분류 → dismiss emit skip. false면 사용자 swipe로 분류.
+    private var expectingSystemEnd: Bool = false
 
     private init() {}
 
@@ -26,10 +33,12 @@ actor LiveActivityManager {
 
     func setEventHandlers(
         onPushTokenHex: @escaping (String) -> Void,
-        onActivityEnded: @escaping () -> Void
+        onActivityEnded: @escaping () -> Void,
+        onActivityDismissed: @escaping (_ dismissedAtMs: Double) -> Void
     ) {
         self.onPushTokenHex = onPushTokenHex
         self.onActivityEnded = onActivityEnded
+        self.onActivityDismissed = onActivityDismissed
     }
 
     /// 현재 추적 중인 Activity + 이전 세션에서 남은 고아 Activity 일괄 종료.
@@ -81,11 +90,23 @@ actor LiveActivityManager {
             for await state in activity.activityStateUpdates {
                 if Task.isCancelled { return }
                 if state == .ended || state == .dismissed {
-                    await self?.emitActivityEnded()
+                    await self?.handleObservedEnd()
                     return
                 }
             }
         }
+    }
+
+    /// observer에서 `.ended`/`.dismissed`를 받은 시점에 호출.
+    /// `expectingSystemEnd` 플래그가 false면 사용자 swipe로 분류 → dismiss emit.
+    /// 어느 경우든 기존 `onActivityEnded`는 호출 (backend deregister 호환).
+    private func handleObservedEnd() {
+        let wasUserDismiss = !expectingSystemEnd
+        expectingSystemEnd = false
+        if wasUserDismiss {
+            emitActivityDismissed()
+        }
+        emitActivityEnded()
     }
 
     private func emitPushToken(_ hex: String) {
@@ -99,6 +120,14 @@ actor LiveActivityManager {
         onActivityEnded?()
         #if DEBUG
         print("[LiveActivity] ended")
+        #endif
+    }
+
+    private func emitActivityDismissed() {
+        let dismissedAtMs = Date().timeIntervalSince1970 * 1000
+        onActivityDismissed?(dismissedAtMs)
+        #if DEBUG
+        print("[LiveActivity] dismissed by user at \(dismissedAtMs)")
         #endif
     }
 
@@ -173,6 +202,8 @@ actor LiveActivityManager {
         // 명시적 종료 경로: backend가 token deregister 트리거를 받을 수 있도록
         // observer cancel 이전에 직접 emit. JS / backend는 idempotent 처리 전제.
         // (start() 내부 cleanup 경로는 다음 토큰이 backend를 upsert하므로 emit 불필요)
+        // #967: observer가 뒤따라 발사될 때 system end로 분류하도록 플래그 set.
+        expectingSystemEnd = true
         let hadActivity = currentActivity != nil
             || !Activity<SubwayActivityAttributes>.activities.isEmpty
         if hadActivity {

@@ -28,6 +28,7 @@ import { useBarometer } from '../shared/hooks/useBarometer';
 import { useTripOrigin } from '../features/route/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../features/nearest-station/hooks/useBackgroundLocation';
 import { useApnsTripRegistration } from '../features/alarm/hooks/useApnsTripRegistration';
+import { useLiveActivityDismissBridge } from '../features/alarm/hooks/useLiveActivityDismissBridge';
 import { registerSilentPushTask } from '../features/alarm/tasks/silentPushTask';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ROUTE_KEY } from '../shared/constants/storageKeys';
@@ -440,6 +441,7 @@ export default function HomeScreen() {
     [selectTransferDetectLine],
   );
   useBackgroundLocation(destination);
+  useLiveActivityDismissBridge();
   useApnsTripRegistration({
     route,
     destination,

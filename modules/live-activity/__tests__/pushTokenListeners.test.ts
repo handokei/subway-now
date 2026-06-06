@@ -72,4 +72,41 @@ describe('live-activity push token / ended listeners', () => {
     expect(mockAddListener).not.toHaveBeenCalled();
     expect(() => sub.remove()).not.toThrow();
   });
+
+  it('iOS: addActivityDismissedListener wires native addListener("onActivityDismissed", cb)', () => {
+    Object.defineProperty(Platform, 'OS', { configurable: true, get: () => 'ios' });
+    const remove = jest.fn();
+    mockAddListener.mockReturnValue({ remove });
+    mockRequireOptionalNativeModule.mockReturnValue({ addListener: mockAddListener });
+
+    const mod = require('../index');
+    const cb = jest.fn();
+    const sub = mod.addActivityDismissedListener(cb);
+
+    expect(mockAddListener).toHaveBeenCalledWith('onActivityDismissed', cb);
+    sub.remove();
+    expect(remove).toHaveBeenCalledTimes(1);
+  });
+
+  it('non-iOS: addActivityDismissedListener returns noop subscription', () => {
+    Object.defineProperty(Platform, 'OS', { configurable: true, get: () => 'android' });
+    mockRequireOptionalNativeModule.mockReturnValue(null);
+
+    const mod = require('../index');
+    const sub = mod.addActivityDismissedListener(() => undefined);
+
+    expect(mockAddListener).not.toHaveBeenCalled();
+    expect(() => sub.remove()).not.toThrow();
+  });
+
+  it('iOS but native module missing: addActivityDismissedListener returns noop subscription', () => {
+    Object.defineProperty(Platform, 'OS', { configurable: true, get: () => 'ios' });
+    mockRequireOptionalNativeModule.mockReturnValue(null);
+
+    const mod = require('../index');
+    const sub = mod.addActivityDismissedListener(() => undefined);
+
+    expect(mockAddListener).not.toHaveBeenCalled();
+    expect(() => sub.remove()).not.toThrow();
+  });
 });
