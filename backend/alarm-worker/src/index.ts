@@ -19,6 +19,7 @@ import {
   validateBoardingPromptOutcome,
 } from './boardingPromptOutcome';
 import { runFallbackPushes } from './fallback';
+import { evaluateAndMaybeAlert } from './recallAlerts';
 import {
   cleanupTripWithLa,
   type LiveActivityDeps,
@@ -956,5 +957,8 @@ export default {
     await runScheduled(env, { seoul, apnsConfig, apnsHosts, log });
     // #572 P2c — silent push 30s 미ACK entry를 alert로 fallback. 같은 cron 사이클에서 실행.
     await runFallbackPushes(env, { apnsConfig, apnsHosts, log });
+    // #972 — low-recall trip ratio 임계 위반 시 운영 webhook 발사. dedup KV(1h)로 spam 차단.
+    // binding/secret 미설정 환경에서는 graceful no-op이라 회귀 없음.
+    await evaluateAndMaybeAlert(env, { fetchImpl: fetch, now: () => Date.now(), log });
   },
 };
