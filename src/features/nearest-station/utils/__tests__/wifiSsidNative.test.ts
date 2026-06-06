@@ -57,7 +57,7 @@ describe('wifiSsidNative (#913)', () => {
     });
 
     it('native가 non-string (undefined) 반환 → null', async () => {
-      mockNativeModule.getCurrentSsid.mockResolvedValue(undefined as unknown as string);
+      mockNativeModule.getCurrentSsid.mockResolvedValue(undefined);
       await expect(getCurrentWifiSsid()).resolves.toBeNull();
     });
 

@@ -23,7 +23,7 @@ import { renderHook, act, waitFor } from '@testing-library/react-native';
 import { useWifiStation } from '../useWifiStation';
 import type { Station } from '../../../../shared/types/station';
 
-const yongmasan: Station = { id: '7-yongmasan', name: '용마산', line: '7', lineColor: '#747F00', lat: 37.5, lng: 127.0 };
+const yongmasan: Station = { id: '7-yongmasan', name: '용마산', line: '7', lineColor: '#747F00', lat: 37.5, lng: 127 };
 const junggok: Station = { id: '7-junggok', name: '중곡', line: '7', lineColor: '#747F00', lat: 37.5, lng: 127.1 };
 
 describe('useWifiStation (#913)', () => {
