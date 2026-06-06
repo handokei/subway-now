@@ -23,8 +23,15 @@ import {
 import {
   computePrescheduledMetrics,
   isEmptyPrescheduledMetrics,
+  readPrescheduledLedger,
   type PrescheduledMetricsResult,
 } from './prescheduledMetrics';
+import {
+  collectMissContext,
+  isEmptyMissContext,
+  type PrescheduledMissContext,
+} from './prescheduledMissContext';
+import { getBoardingLock } from './boardingLockStorage';
 import {
   uploadPrescheduledTelemetry,
   uploadRecallTelemetry,
@@ -93,6 +100,8 @@ export interface ComputeAndUploadTripPrescheduledResult {
   uploaded: boolean;
   skipped?: ComputeAndUploadSkipReason;
   metrics?: PrescheduledMetricsResult;
+  /** miss 발생(scheduled>fired) trip 에서만 채워지는 진단 컨텍스트. (#986) */
+  missContext?: PrescheduledMissContext;
 }
 
 /**
@@ -102,6 +111,9 @@ export interface ComputeAndUploadTripPrescheduledResult {
  * alarmLog는 한 번만 읽어 fired stationName 집합을 만들고 prescheduledMetrics에 전달
  * (recall + prescheduled 양쪽 모두 alarmLog 의존이지만 caller가 각각 호출하므로 두 번 읽힘 —
  * trip-end는 자주 일어나지 않아 비용 무시 가능).
+ *
+ * #986 — miss 발생(scheduled>fired) trip 에서만 BoardingLock + ledger 를 추가로 읽어
+ * `missContext` 를 derive해 upload payload에 첨부한다. fired-only(정상) trip은 추가 I/O 없음.
  */
 export async function computeAndUploadTripPrescheduled(
   input: ComputeAndUploadTripPrescheduledInput,
@@ -126,12 +138,45 @@ export async function computeAndUploadTripPrescheduled(
       return { uploaded: false, skipped: 'empty', metrics };
     }
 
-    const result = await uploadPrescheduledTelemetry(token, metrics);
-    return { uploaded: result.ok, metrics };
+    const missContext = await buildMissContextIfMissed({
+      metrics,
+      alarmLogEntries: entries,
+      tripStart: input.tripStart,
+      tripEnd,
+    });
+
+    const result = await uploadPrescheduledTelemetry(token, metrics, missContext);
+    return { uploaded: result.ok, metrics, missContext };
   } catch (e) {
     log.warn('prescheduled upload error', e);
     return { uploaded: false, skipped: 'error' };
   }
+}
+
+/**
+ * miss 발생 시에만 BoardingLock + ledger 추가 I/O. 빈 context면 undefined 반환 (caller가
+ * payload 에 첨부 안 함).
+ */
+async function buildMissContextIfMissed(input: {
+  metrics: PrescheduledMetricsResult;
+  alarmLogEntries: readonly AlarmLogEntry[];
+  tripStart: number;
+  tripEnd: number;
+}): Promise<PrescheduledMissContext | undefined> {
+  const { metrics, alarmLogEntries, tripStart, tripEnd } = input;
+  if (metrics.scheduledCount <= metrics.firedCount) return undefined;
+  const [boardingLock, ledger] = await Promise.all([
+    getBoardingLock(),
+    readPrescheduledLedger(),
+  ]);
+  const context = collectMissContext({
+    tripStart,
+    tripEnd,
+    alarmLogEntries,
+    boardingLock,
+    ledger,
+  });
+  return isEmptyMissContext(context) ? undefined : context;
 }
 
 /**
