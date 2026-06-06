@@ -47,44 +47,70 @@ describe('evaluateArvlcdArrivedSignal', () => {
     expect(evaluateArvlcdArrivedSignal(null, TRAIN_CODE)).toBeUndefined();
   });
 
-  it('lockedTrainCode null → undefined', () => {
-    const a = arrival([arrivalRow({ arrivalCode: ARRIVAL_CODE.ARRIVED })]);
-    expect(evaluateArvlcdArrivedSignal(a, null)).toBeUndefined();
+  describe('post-boarding (lockedTrainCode 있음)', () => {
+    it('row 매칭 없음 → undefined', () => {
+      const a = arrival([arrivalRow({ trainCode: 'OTHER' })]);
+      expect(evaluateArvlcdArrivedSignal(a, TRAIN_CODE)).toBeUndefined();
+    });
+
+    it.each([
+      ['ARRIVED', ARRIVAL_CODE.ARRIVED],
+      ['ENTERING', ARRIVAL_CODE.ENTERING],
+    ])('arvlCd=%s → true', (_label, code) => {
+      const a = arrival([arrivalRow({ arrivalCode: code })]);
+      expect(evaluateArvlcdArrivedSignal(a, TRAIN_CODE)).toBe(true);
+    });
+
+    it.each([
+      ['DEPARTED', ARRIVAL_CODE.DEPARTED],
+      ['PREV_ARRIVED', ARRIVAL_CODE.PREV_ARRIVED],
+      ['RUNNING', ARRIVAL_CODE.RUNNING],
+    ])('arvlCd=%s → false (명시 미합의)', (_label, code) => {
+      const a = arrival([arrivalRow({ arrivalCode: code })]);
+      expect(evaluateArvlcdArrivedSignal(a, TRAIN_CODE)).toBe(false);
+    });
+
+    it('up과 down 모두 검색 — down에 매칭 row가 있어도 찾아냄', () => {
+      const a = arrival(
+        [arrivalRow({ trainCode: 'OTHER' })],
+        [arrivalRow({ trainCode: TRAIN_CODE, arrivalCode: ARRIVAL_CODE.ARRIVED })],
+      );
+      expect(evaluateArvlcdArrivedSignal(a, TRAIN_CODE)).toBe(true);
+    });
   });
 
-  it('lockedTrainCode undefined → undefined', () => {
-    const a = arrival([arrivalRow({ arrivalCode: ARRIVAL_CODE.ARRIVED })]);
-    expect(evaluateArvlcdArrivedSignal(a, undefined)).toBeUndefined();
-  });
+  describe('pre-boarding (lockedTrainCode 없음, #962)', () => {
+    it.each([
+      ['null', null],
+      ['undefined', undefined],
+    ])('lockedTrainCode=%s + 어느 row든 ARRIVED → true (weak signal)', (_label, locked) => {
+      const a = arrival([
+        arrivalRow({ trainCode: 'OTHER1', arrivalCode: ARRIVAL_CODE.RUNNING }),
+        arrivalRow({ trainCode: 'OTHER2', arrivalCode: ARRIVAL_CODE.ARRIVED }),
+      ]);
+      expect(evaluateArvlcdArrivedSignal(a, locked)).toBe(true);
+    });
 
-  it('row 매칭 없음 → undefined', () => {
-    const a = arrival([arrivalRow({ trainCode: 'OTHER' })]);
-    expect(evaluateArvlcdArrivedSignal(a, TRAIN_CODE)).toBeUndefined();
-  });
+    it('lockedTrainCode=null + down에 ENTERING row → true', () => {
+      const a = arrival(
+        [arrivalRow({ trainCode: 'OTHER1', arrivalCode: ARRIVAL_CODE.RUNNING })],
+        [arrivalRow({ trainCode: 'OTHER2', arrivalCode: ARRIVAL_CODE.ENTERING })],
+      );
+      expect(evaluateArvlcdArrivedSignal(a, null)).toBe(true);
+    });
 
-  it.each([
-    ['ARRIVED', ARRIVAL_CODE.ARRIVED],
-    ['ENTERING', ARRIVAL_CODE.ENTERING],
-  ])('arvlCd=%s → true', (_label, code) => {
-    const a = arrival([arrivalRow({ arrivalCode: code })]);
-    expect(evaluateArvlcdArrivedSignal(a, TRAIN_CODE)).toBe(true);
-  });
+    it('lockedTrainCode=null + 모든 row 운행/출발 → false (명시 미합의)', () => {
+      const a = arrival([
+        arrivalRow({ arrivalCode: ARRIVAL_CODE.RUNNING }),
+        arrivalRow({ arrivalCode: ARRIVAL_CODE.DEPARTED }),
+      ]);
+      expect(evaluateArvlcdArrivedSignal(a, null)).toBe(false);
+    });
 
-  it.each([
-    ['DEPARTED', ARRIVAL_CODE.DEPARTED],
-    ['PREV_ARRIVED', ARRIVAL_CODE.PREV_ARRIVED],
-    ['RUNNING', ARRIVAL_CODE.RUNNING],
-  ])('arvlCd=%s → false (명시 미합의)', (_label, code) => {
-    const a = arrival([arrivalRow({ arrivalCode: code })]);
-    expect(evaluateArvlcdArrivedSignal(a, TRAIN_CODE)).toBe(false);
-  });
-
-  it('up과 down 모두 검색 — down에 매칭 row가 있어도 찾아냄', () => {
-    const a = arrival(
-      [arrivalRow({ trainCode: 'OTHER' })],
-      [arrivalRow({ trainCode: TRAIN_CODE, arrivalCode: ARRIVAL_CODE.ARRIVED })],
-    );
-    expect(evaluateArvlcdArrivedSignal(a, TRAIN_CODE)).toBe(true);
+    it('lockedTrainCode=null + arrival 비어있음 → false', () => {
+      const a = arrival([], []);
+      expect(evaluateArvlcdArrivedSignal(a, null)).toBe(false);
+    });
   });
 });
 
@@ -175,6 +201,36 @@ describe('useFusedStationDetection', () => {
     expect(result.current.detected).toBe(true);
     expect(result.current.confidence).toBe('medium');
     expect(result.current.signalsAgreed).toBe(2);
+  });
+
+  it('#962 pre-boarding: lockedTrainCode=null + any ARRIVED + motion-stationary=true → detected medium (weak signal이 합의에 기여)', () => {
+    const a = arrival([arrivalRow({ trainCode: 'OTHER', arrivalCode: ARRIVAL_CODE.ARRIVED })]);
+    const { result } = renderHook(() =>
+      useFusedStationDetection({
+        barometer: null,
+        motionStationary: true,
+        arrival: a,
+        lockedTrainCode: null,
+      }),
+    );
+    expect(result.current.detected).toBe(true);
+    expect(result.current.confidence).toBe('medium');
+    expect(result.current.signalsAgreed).toBe(2);
+  });
+
+  it('#962 pre-boarding: lockedTrainCode=null + any ARRIVED 단독 → detected=false (>=2 합의 필요)', () => {
+    const a = arrival([arrivalRow({ trainCode: 'OTHER', arrivalCode: ARRIVAL_CODE.ARRIVED })]);
+    const { result } = renderHook(() =>
+      useFusedStationDetection({
+        barometer: null,
+        motionStationary: undefined,
+        arrival: a,
+        lockedTrainCode: null,
+      }),
+    );
+    expect(result.current.detected).toBe(false);
+    expect(result.current.signalsAgreed).toBe(1);
+    expect(result.current.signalsAvailable).toBe(1);
   });
 
   it('3 신호 모두 합의 → detected high', () => {
