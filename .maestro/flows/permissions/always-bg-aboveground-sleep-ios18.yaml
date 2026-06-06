@@ -1,0 +1,78 @@
+appId: com.subwaynow.app
+name: "permissions - Always × BG × 지상 × 취침 (#923 cell)"
+# 권한 매트릭스 cell.
+# 차원: permission=always, appState=bg, environment=aboveground, mode=sleep, os=ios18
+#
+# 검증 목표:
+#   - 매역 알람 SLA의 정본 운영 조합(권한=Always + BG + 취침 모드 ON).
+#     BG → FG 복귀 후에도 취침 모드 토글이 유지되고 홈 진입점이 reachable 함을 보장한다.
+#   - bg × sleep 결합 차원 첫 진입 — 후속 PR에서 BG silent push 발사 verify로 확장 예정.
+#
+# 전제: baseline cell과 동일 (EXPO_PUBLIC_E2E_MOCK=1, 강남역 fixture).
+# BG 전이 모사는 always-bg-aboveground-normal-ios18 cell과 동일한 stopApp + relaunch 패턴.
+---
+- setLocation:
+    latitude: 37.497942
+    longitude: 127.027621
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+- tapOn:
+    text: ".*localhost.*"
+    optional: true
+- tapOn:
+    text: "Continue"
+    optional: true
+
+- swipe:
+    start: 50%, 50%
+    end: 50%, 95%
+
+# 1차 포그라운드 진입 — 홈 노출 확인
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+- assertVisible:
+    text: "강남|Gangnam"
+
+# 취침 모드 ON
+- scrollUntilVisible:
+    element:
+      id: "home-sleep-mode-switch"
+    direction: DOWN
+
+- tapOn:
+    id: "home-sleep-mode-switch"
+
+# BG 전이 모사 — stopApp 후 relaunch (clearState=false로 권한/취침 상태 보존)
+- stopApp:
+    appId: com.subwaynow.app
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: false
+
+# 복귀 후에도 홈 진입점이 유지되어야 한다 (BG × sleep 결합 회귀 가드)
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 15000
+
+- assertVisible:
+    text: "강남|Gangnam"
+
+# 취침 모드 토글이 복귀 후에도 reachable 해야 한다
+- scrollUntilVisible:
+    element:
+      id: "home-sleep-mode-switch"
+    direction: DOWN
+
+- assertVisible:
+    id: "home-sleep-mode-switch"
