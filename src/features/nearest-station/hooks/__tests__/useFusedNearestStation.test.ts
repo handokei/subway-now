@@ -7,7 +7,10 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import { renderHook } from '@testing-library/react-native';
-import { useFusedNearestStation } from '../useFusedNearestStation';
+import {
+  useFusedNearestStation,
+  pickArrivalForStationName,
+} from '../useFusedNearestStation';
 import { useNearestStation } from '../useNearestStation';
 import { useArrivalInfo } from '../../../arrival/hooks/useArrivalInfo';
 import { useTrainPositions } from '../../../route/hooks/useTrainPositions';
@@ -1329,6 +1332,47 @@ describe('useFusedNearestStation', () => {
       mockUseArrival.mockReturnValue(arrivalRet({ up: [info(ARRIVAL_CODE.ARRIVED)], down: [] }));
       const { result } = renderWithSub(true);
       expect(result.current.confidence).toBe('arrival-confirmed');
+    });
+  });
+
+  describe('#957 (P1.4) pickArrivalForStationName — 환승역 line 좁힘', () => {
+    // 같은 stationName('충무로') 다른 line('3'/'4')이 동시에 후보 슬롯에 들어온 환승역.
+    // useArrivalInfo는 (name, line)로 폴링하므로 슬롯의 line은 응답 라인과 1:1 동일.
+    const arrival3: StationArrival = { up: [info(ARRIVAL_CODE.RUNNING, { line: '3' })], down: [] };
+    const arrival4: StationArrival = { up: [info(ARRIVAL_CODE.ARRIVED, { line: '4' })], down: [] };
+    const slotsTransfer = [
+      { stationName: '충무로', line: '3', arrival: arrival3 },
+      { stationName: '충무로', line: '4', arrival: arrival4 },
+      { stationName: null, line: null, arrival: null },
+    ];
+
+    it('result.line=3호선 → 3호선 슬롯 픽 (4호선 옆 슬롯 무시)', () => {
+      expect(pickArrivalForStationName('충무로', '3', slotsTransfer)).toBe(arrival3);
+    });
+
+    it('result.line=4호선 → 4호선 슬롯 픽', () => {
+      expect(pickArrivalForStationName('충무로', '4', slotsTransfer)).toBe(arrival4);
+    });
+
+    it('line 미일치(다른 호선만 슬롯에 있음) → null 반환 → fusion 입력 unavailable', () => {
+      expect(pickArrivalForStationName('충무로', '5', slotsTransfer)).toBeNull();
+    });
+
+    it('단일 노선 일반역(매칭 슬롯 존재) → 기존 동작 동일', () => {
+      const slots = [{ stationName: '강남', line: '2', arrival: arrival3 }];
+      expect(pickArrivalForStationName('강남', '2', slots)).toBe(arrival3);
+    });
+
+    it('매칭 슬롯의 arrival이 null이면 skip하고 다음 슬롯 검사', () => {
+      const slots = [
+        { stationName: '충무로', line: '3', arrival: null },
+        { stationName: '충무로', line: '3', arrival: arrival3 },
+      ];
+      expect(pickArrivalForStationName('충무로', '3', slots)).toBe(arrival3);
+    });
+
+    it('빈 슬롯 배열 → null', () => {
+      expect(pickArrivalForStationName('충무로', '3', [])).toBeNull();
     });
   });
 });
