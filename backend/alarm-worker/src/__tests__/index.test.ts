@@ -1456,6 +1456,46 @@ describe('POST /telemetry/recall (#919)', () => {
   });
 });
 
+describe('GET /metrics/recall/summary (#919 후속)', () => {
+  async function get(env: Env): Promise<Response> {
+    return app.fetch(
+      new Request('http://example.com/metrics/recall/summary', { method: 'GET' }),
+      env,
+    );
+  }
+
+  it('returns dataset + queries + threshold (binding 부재 시 available=false)', async () => {
+    const env = makeEnv();
+    const res = await get(env);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      dataset: string;
+      available: boolean;
+      minRecallRatioThreshold: number;
+      queries: { id: string; description: string; sql: string }[];
+    };
+    expect(body.dataset).toBe('silent_push_telemetry');
+    expect(body.available).toBe(false);
+    expect(body.minRecallRatioThreshold).toBeGreaterThan(0);
+    expect(body.minRecallRatioThreshold).toBeLessThanOrEqual(1);
+    expect(body.queries.length).toBeGreaterThanOrEqual(3);
+    for (const q of body.queries) {
+      expect(typeof q.id).toBe('string');
+      expect(q.id.length).toBeGreaterThan(0);
+      expect(typeof q.description).toBe('string');
+      expect(q.sql).toContain('silent_push_telemetry');
+    }
+  });
+
+  it('reports available=true when TELEMETRY binding present', async () => {
+    const writer: AnalyticsEngineWriter = { writeDataPoint: vi.fn() };
+    const env = makeEnv({ TELEMETRY: writer });
+    const res = await get(env);
+    const body = (await res.json()) as { available: boolean };
+    expect(body.available).toBe(true);
+  });
+});
+
 describe('validateTrip — #819 promptGeoContext / promptDisplay', () => {
   function withPrompt(overrides: Record<string, unknown>): Record<string, unknown> {
     return { ...base(), ...overrides };
