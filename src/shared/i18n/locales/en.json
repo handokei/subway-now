@@ -123,6 +123,7 @@
   "destinationPicker": {
     "noLocation": "Location info unavailable.",
     "title": "Set destination",
+    "originTitle": "Choose current station",
     "searchPlaceholder": "Search station name",
     "assignSlot": "Add {{label}}",
     "pendingSlot": "The next station you pick will be saved as {{label}}"

@@ -46,6 +46,13 @@ interface Props {
   readonly userLng?: number | null;
   readonly onRecenter?: () => void;
   readonly onAssignSlot?: (role: FavoriteSlotRole, station: Station) => void;
+  /**
+   * 모달 헤더 타이틀 모드 (#977, PR #954 follow-up).
+   * - 'destination'(기본): destinationPicker.title
+   * - 'origin': destinationPicker.originTitle — F4 confirm 모달 검색 fallback에서 사용.
+   * UI/검색/맵 인프라는 동일 — i18n title만 스위치.
+   */
+  readonly mode?: 'destination' | 'origin';
 }
 
 export function DestinationPicker({
@@ -57,6 +64,7 @@ export function DestinationPicker({
   favorites,
   onRecenter,
   onAssignSlot,
+  mode = 'destination',
 }: Props) {
   const [query, setQuery] = useState('');
   const [showDropdown, setShowDropdown] = useState(false);
@@ -148,7 +156,9 @@ export function DestinationPicker({
 
         <View style={styles.overlay} pointerEvents="box-none">
           <View style={[styles.header, { backgroundColor: colors.bgTranslucent }]}>
-            <Text style={[styles.title, { color: colors.ink }]}>{t('destinationPicker.title')}</Text>
+            <Text style={[styles.title, { color: colors.ink }]}>
+              {t(mode === 'origin' ? 'destinationPicker.originTitle' : 'destinationPicker.title')}
+            </Text>
             <TouchableOpacity onPress={handleClose} testID="close-button">
               <Text style={[styles.closeText, { color: colors.accent }]}>{t('common.close')}</Text>
             </TouchableOpacity>
