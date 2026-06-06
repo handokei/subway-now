@@ -346,8 +346,12 @@ jobs:
           - always-fg-underground-normal-ios18
           - always-bg-aboveground-sleep-ios18
           - always-bg-underground-normal-ios18
-          # 후속 PR에서 추가: E2E mock fixture 확장(underground 분기), 최난도 조합
-          # (always-bg-underground-sleep-ios18), WhileInUse × 가혹 환경, 실측 recall 측정.
+          - always-bg-underground-sleep-ios18
+          - whileInUse-bg-aboveground-normal-ios18
+          - whileInUse-fg-underground-normal-ios18
+          # 후속 PR에서 추가: E2E mock fixture 확장(underground 분기),
+          # WhileInUse × BG × sleep / WhileInUse × underground × sleep 등 권한↓ 최난도 결합,
+          # 실측 recall 측정.
           # 주의: ios17/android cell은 현재 iPhone 16(iOS 18) 시뮬에서 권한 dispatch만 검증.
           #       OS/플랫폼별 실제 시뮬레이터 부팅 분기는 후속 PR.
           #       underground cell도 fixture 확장 전까지 GPS dispatch만 검증

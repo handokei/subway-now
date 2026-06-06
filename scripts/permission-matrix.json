@@ -124,6 +124,39 @@
       "expectedRecallPct": 85,
       "flow": "always-bg-underground-normal-ios18.yaml",
       "_doc": "BG × underground 결합 차원 첫 진입. cold-restart 후 Always 권한 보존 회귀 가드. 매역 알람 SLA 최난도 조합(Always + BG + 지하)의 직전 단계."
+    },
+    {
+      "id": "always-bg-underground-sleep-ios18",
+      "permission": "always",
+      "appState": "bg",
+      "environment": "underground",
+      "mode": "sleep",
+      "os": "ios18",
+      "expectedRecallPct": 80,
+      "flow": "always-bg-underground-sleep-ios18.yaml",
+      "_doc": "매역 알람 SLA 최난도 조합(Always + BG + 지하 + 취침) 첫 진입. 3차 wave의 BG×sleep / BG×underground 결합 직후 단계. underground는 dispatch-only(fixture 확장 전)."
+    },
+    {
+      "id": "whileInUse-bg-aboveground-normal-ios18",
+      "permission": "whileInUse",
+      "appState": "bg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 80,
+      "flow": "whileInUse-bg-aboveground-normal-ios18.yaml",
+      "_doc": "WhileInUse × BG 결합 첫 진입. 가장 흔한 권한 다운그레이드 사용자 시나리오(앱 BG 진입 시 권한 격하) 회귀 가드. cold-restart 후 WhileInUse 권한 보존 + 홈 진입점 유지."
+    },
+    {
+      "id": "whileInUse-fg-underground-normal-ios18",
+      "permission": "whileInUse",
+      "appState": "fg",
+      "environment": "underground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 85,
+      "flow": "whileInUse-fg-underground-normal-ios18.yaml",
+      "_doc": "WhileInUse × underground 결합 첫 진입. 권한↓ + 가혹 환경 결합 회귀 가드. underground는 dispatch-only(fixture 확장 전)."
     }
   ]
 }
