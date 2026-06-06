@@ -1466,6 +1466,50 @@ describe('POST /telemetry/prescheduled (#918 A3)', () => {
     stationAccurateCount: 3,
     fireDeltaSamplesMs: [10, -5, 0, 100],
   });
+
+  // #986 — missContext optional 첨부.
+  it('accepts missContext and returns ok (Logpush로 보존)', async () => {
+    const env = makeEnv();
+    const res = await post(
+      '/telemetry/prescheduled',
+      {
+        token: 'aabbccdd11223344',
+        tripStart: 1_000,
+        tripEnd: 2_000,
+        scheduledCount: 5,
+        firedCount: 4,
+        stationAccurateCount: 3,
+        fireDeltaSamplesMs: [10, -5, 0, 100],
+        missContext: {
+          lockedTrainCode: '5050',
+          lockedAt: 999,
+          missedIdentifiers: ['tba:early:강남'],
+        },
+      },
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
+  it('rejects malformed missContext (400)', async () => {
+    const env = makeEnv();
+    const res = await post(
+      '/telemetry/prescheduled',
+      {
+        token: 'aabbccdd11223344',
+        tripStart: 1_000,
+        tripEnd: 2_000,
+        scheduledCount: 5,
+        firedCount: 4,
+        stationAccurateCount: 3,
+        fireDeltaSamplesMs: [10, -5, 0, 100],
+        missContext: { lockedAt: 'not-a-number' },
+      },
+      env,
+    );
+    expect(res.status).toBe(400);
+  });
 });
 
 describe('GET /metrics/recall/summary (#919 후속)', () => {

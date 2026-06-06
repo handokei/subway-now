@@ -8,6 +8,7 @@
 import type { SilentPushTelemetryPayload } from '../utils/telemetryAggregation';
 import type { TripRecallResult } from '../utils/recallMetrics';
 import type { PrescheduledMetricsResult } from '../utils/prescheduledMetrics';
+import type { PrescheduledMissContext } from '../utils/prescheduledMissContext';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('telemetryBackend');
@@ -131,10 +132,14 @@ export async function uploadRecallTelemetry(
  * A3 사전 예약 효과 텔레메트리 1건을 backend `/telemetry/prescheduled`로 upload (#918, Epic #912 P1).
  *
  * recall과 같은 graceful 정책 — URL/token 부재 시 skipped, fetch 실패 시 ok=false. throw 안 함.
+ *
+ * #986 — caller가 miss 발생 trip에서 derive한 `missContext`를 선택적으로 첨부.
+ * undefined면 body에 포함하지 않아 기존 backend 호환 유지.
  */
 export async function uploadPrescheduledTelemetry(
   token: string,
   metrics: PrescheduledMetricsResult,
+  missContext?: PrescheduledMissContext,
 ): Promise<TelemetryUploadResult> {
   const base = getBackendUrl();
   if (!base) {
@@ -145,7 +150,7 @@ export async function uploadPrescheduledTelemetry(
     return { ok: false, skipped: true };
   }
 
-  const body = {
+  const body: Record<string, unknown> = {
     token,
     tripStart: metrics.tripStart,
     tripEnd: metrics.tripEnd,
@@ -154,6 +159,9 @@ export async function uploadPrescheduledTelemetry(
     stationAccurateCount: metrics.stationAccurateCount,
     fireDeltaSamplesMs: metrics.fireDeltaSamplesMs,
   };
+  if (missContext !== undefined) {
+    body.missContext = missContext;
+  }
 
   try {
     const res = await fetchWithTimeout(`${base}/telemetry/prescheduled`, {

@@ -219,4 +219,28 @@ describe('uploadPrescheduledTelemetry', () => {
     const result = await uploadPrescheduledTelemetry('tok', PRESCHEDULED_PAYLOAD);
     expect(result).toEqual({ ok: false });
   });
+
+  // #986 — missContext optional 인자.
+  it('missContext 미전달 시 body에 missContext 필드 미포함', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test';
+    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
+    await uploadPrescheduledTelemetry('tok', PRESCHEDULED_PAYLOAD);
+    const [, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect('missContext' in body).toBe(false);
+  });
+
+  it('missContext 전달 시 body에 그대로 포함', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test';
+    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
+    const missContext = {
+      lockedTrainCode: '5050',
+      lockedAt: 50,
+      missedIdentifiers: ['tba:early:강남'],
+    };
+    await uploadPrescheduledTelemetry('tok', PRESCHEDULED_PAYLOAD, missContext);
+    const [, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
+    const body = JSON.parse(init.body);
+    expect(body.missContext).toEqual(missContext);
+  });
 });

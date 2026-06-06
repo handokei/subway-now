@@ -26,6 +26,26 @@ import {
 import type { AnalyticsEngineWriter } from './types';
 
 /**
+ * Trip-end 진단 컨텍스트 (#986). 모든 필드 optional — 신호 없으면 생략.
+ * client `prescheduledMissContext.PrescheduledMissContext` 와 동형. validation 동기 갱신.
+ */
+export interface MissContext {
+  lockedTrainCode?: string;
+  lockedAt?: number;
+  lastSilentPushReceived?: {
+    sentAt?: number;
+    receivedAt: number;
+    stationName?: string;
+  };
+  lastScheduledStamp?: {
+    selectedArrivalSeconds?: number;
+    expectedStationAtFire?: string;
+    actualLastNotifiedStation?: string;
+  };
+  missedIdentifiers?: readonly string[];
+}
+
+/**
  * client → backend upload payload.
  *   client `uploadPrescheduledTelemetry`(api/telemetryBackend.ts)와 동일 schema.
  */
@@ -44,6 +64,8 @@ export interface PrescheduledUpload {
   stationAccurateCount: number;
   /** actualFireMs - scheduledFireMs 차이 sample. fired entry당 1건. */
   fireDeltaSamplesMs: readonly number[];
+  /** miss 발생 trip 진단 컨텍스트 (#986). 없으면 생략. */
+  missContext?: MissContext;
 }
 
 function isNonNegativeInt(v: unknown): v is number {
@@ -68,6 +90,102 @@ function parseDeltaSamples(raw: unknown): number[] | null {
   return out;
 }
 
+/** missContext.missedIdentifiers 길이 상한. trip 1건의 사전 예약은 최대 ~80건이라 여유. */
+const MAX_MISSED_IDENTIFIERS = 200;
+/** identifier/stationName 문자열 길이 상한 — 비정상 입력 안전망. */
+const MAX_STRING_LEN = 200;
+
+function isShortString(v: unknown): v is string {
+  return typeof v === 'string' && v.length > 0 && v.length <= MAX_STRING_LEN;
+}
+
+function parseLastSilentPushReceived(
+  raw: unknown,
+): NonNullable<MissContext['lastSilentPushReceived']> | null | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  if (!isFiniteNumber(obj.receivedAt)) return null;
+  const out: NonNullable<MissContext['lastSilentPushReceived']> = { receivedAt: obj.receivedAt };
+  if (obj.sentAt !== undefined) {
+    if (!isFiniteNumber(obj.sentAt)) return null;
+    out.sentAt = obj.sentAt;
+  }
+  if (obj.stationName !== undefined) {
+    if (!isShortString(obj.stationName)) return null;
+    out.stationName = obj.stationName;
+  }
+  return out;
+}
+
+function parseLastScheduledStamp(
+  raw: unknown,
+): NonNullable<MissContext['lastScheduledStamp']> | null | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object') return null;
+  const obj = raw as Record<string, unknown>;
+  const out: NonNullable<MissContext['lastScheduledStamp']> = {};
+  if (obj.selectedArrivalSeconds !== undefined) {
+    if (!isFiniteNumber(obj.selectedArrivalSeconds)) return null;
+    out.selectedArrivalSeconds = obj.selectedArrivalSeconds;
+  }
+  if (obj.expectedStationAtFire !== undefined) {
+    if (!isShortString(obj.expectedStationAtFire)) return null;
+    out.expectedStationAtFire = obj.expectedStationAtFire;
+  }
+  if (obj.actualLastNotifiedStation !== undefined) {
+    if (!isShortString(obj.actualLastNotifiedStation)) return null;
+    out.actualLastNotifiedStation = obj.actualLastNotifiedStation;
+  }
+  return out;
+}
+
+function parseMissedIdentifiers(raw: unknown): string[] | null | undefined {
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw)) return null;
+  if (raw.length > MAX_MISSED_IDENTIFIERS) return null;
+  const out: string[] = [];
+  for (const v of raw) {
+    if (!isShortString(v)) return null;
+    out.push(v);
+  }
+  return out;
+}
+
+/**
+ * `missContext` 검증 (#986). 부재(undefined) 시 호출자 통과. 한 필드라도 깨졌으면 null —
+ * caller는 전체 payload 400으로 처리해 client bug를 빨리 노출.
+ */
+export function validateMissContext(raw: unknown): MissContext | null | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  const out: MissContext = {};
+
+  if (obj.lockedTrainCode !== undefined) {
+    if (!isShortString(obj.lockedTrainCode)) return null;
+    out.lockedTrainCode = obj.lockedTrainCode;
+  }
+  if (obj.lockedAt !== undefined) {
+    if (!isFiniteNumber(obj.lockedAt)) return null;
+    out.lockedAt = obj.lockedAt;
+  }
+
+  const silent = parseLastSilentPushReceived(obj.lastSilentPushReceived);
+  if (silent === null) return null;
+  if (silent !== undefined) out.lastSilentPushReceived = silent;
+
+  const stamp = parseLastScheduledStamp(obj.lastScheduledStamp);
+  if (stamp === null) return null;
+  if (stamp !== undefined) out.lastScheduledStamp = stamp;
+
+  const missed = parseMissedIdentifiers(obj.missedIdentifiers);
+  if (missed === null) return null;
+  if (missed !== undefined) out.missedIdentifiers = missed;
+
+  return out;
+}
+
 /**
  * payload 검증. 한 필드라도 깨졌으면 null — caller는 400.
  *
@@ -77,6 +195,7 @@ function parseDeltaSamples(raw: unknown): number[] | null {
  *   - scheduledCount/firedCount/stationAccurateCount는 자연수
  *   - firedCount <= scheduledCount, stationAccurateCount <= firedCount
  *   - fireDeltaSamplesMs는 유한수 배열, 길이는 firedCount와 일치(불일치=client bug, reject)
+ *   - missContext (#986)는 optional — 존재 시 shape 강제, 깨졌으면 reject
  */
 export function validatePrescheduledUpload(input: unknown): PrescheduledUpload | null {
   if (!input || typeof input !== 'object') return null;
@@ -94,7 +213,10 @@ export function validatePrescheduledUpload(input: unknown): PrescheduledUpload |
   if (samples === null) return null;
   if (samples.length !== obj.firedCount) return null;
 
-  return {
+  const missContext = validateMissContext(obj.missContext);
+  if (missContext === null) return null;
+
+  const payload: PrescheduledUpload = {
     token: obj.token,
     tripStart: obj.tripStart,
     tripEnd: obj.tripEnd,
@@ -103,6 +225,8 @@ export function validatePrescheduledUpload(input: unknown): PrescheduledUpload |
     stationAccurateCount: obj.stationAccurateCount,
     fireDeltaSamplesMs: samples,
   };
+  if (missContext !== undefined) payload.missContext = missContext;
+  return payload;
 }
 
 /**

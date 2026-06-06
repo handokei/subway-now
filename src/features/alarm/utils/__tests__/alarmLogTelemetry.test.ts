@@ -9,6 +9,9 @@ const mockUploadRecallTelemetry = jest.fn();
 const mockUploadPrescheduledTelemetry = jest.fn();
 const mockGetItem = jest.fn();
 const mockComputePrescheduledMetrics = jest.fn();
+const mockReadPrescheduledLedger = jest.fn();
+const mockGetBoardingLock = jest.fn();
+const mockCollectMissContext = jest.fn();
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -30,6 +33,16 @@ jest.mock('../../api/telemetryBackend', () => ({
 jest.mock('../prescheduledMetrics', () => ({
   computePrescheduledMetrics: (...args: unknown[]) => mockComputePrescheduledMetrics(...args),
   isEmptyPrescheduledMetrics: (m: { scheduledCount: number }) => m.scheduledCount === 0,
+  readPrescheduledLedger: (...args: unknown[]) => mockReadPrescheduledLedger(...args),
+}));
+
+jest.mock('../boardingLockStorage', () => ({
+  getBoardingLock: (...args: unknown[]) => mockGetBoardingLock(...args),
+}));
+
+jest.mock('../prescheduledMissContext', () => ({
+  collectMissContext: (...args: unknown[]) => mockCollectMissContext(...args),
+  isEmptyMissContext: (ctx: Record<string, unknown>) => Object.keys(ctx).length === 0,
 }));
 
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -171,6 +184,9 @@ describe('computeAndUploadTripPrescheduled', () => {
     mockUploadPrescheduledTelemetry.mockReset();
     mockGetItem.mockReset();
     mockComputePrescheduledMetrics.mockReset();
+    mockReadPrescheduledLedger.mockReset().mockResolvedValue([]);
+    mockGetBoardingLock.mockReset().mockResolvedValue(null);
+    mockCollectMissContext.mockReset().mockReturnValue({});
   });
 
   it('APNs token 없으면 upload 호출 안 함 (graceful skip)', async () => {
@@ -345,5 +361,115 @@ describe('computeAndUploadTripPrescheduled', () => {
     const callArg = mockComputePrescheduledMetrics.mock.calls[0][0];
     expect(callArg.tripEnd).toBe(NOW);
     (Date.now as jest.Mock).mockRestore();
+  });
+
+  // #986 — missContext 첨부 분기.
+  it('miss 없음(scheduled=fired)이면 missContext 수집 안 함', async () => {
+    mockGetItem.mockResolvedValue('apns-token');
+    mockGetAlarmLog.mockResolvedValue([]);
+    mockComputePrescheduledMetrics.mockResolvedValue({
+      tripStart: 0,
+      tripEnd: 1000,
+      scheduledCount: 3,
+      firedCount: 3,
+      stationAccurateCount: 3,
+      fireDeltaSamplesMs: [1, 2, 3],
+    });
+    mockUploadPrescheduledTelemetry.mockResolvedValue({ ok: true, status: 200 });
+
+    const result = await computeAndUploadTripPrescheduled({ tripStart: 0, tripEnd: 1000 });
+
+    expect(mockReadPrescheduledLedger).not.toHaveBeenCalled();
+    expect(mockGetBoardingLock).not.toHaveBeenCalled();
+    expect(mockCollectMissContext).not.toHaveBeenCalled();
+    const [, , passedContext] = mockUploadPrescheduledTelemetry.mock.calls[0];
+    expect(passedContext).toBeUndefined();
+    expect(result.missContext).toBeUndefined();
+  });
+
+  it('miss 발생(scheduled>fired) + collectMissContext 결과 비어있으면 missContext 미첨부', async () => {
+    mockGetItem.mockResolvedValue('apns-token');
+    mockGetAlarmLog.mockResolvedValue([]);
+    mockComputePrescheduledMetrics.mockResolvedValue({
+      tripStart: 0,
+      tripEnd: 1000,
+      scheduledCount: 3,
+      firedCount: 1,
+      stationAccurateCount: 1,
+      fireDeltaSamplesMs: [10],
+    });
+    mockCollectMissContext.mockReturnValue({}); // 빈 context — 가드로 미첨부
+    mockUploadPrescheduledTelemetry.mockResolvedValue({ ok: true, status: 200 });
+
+    const result = await computeAndUploadTripPrescheduled({ tripStart: 0, tripEnd: 1000 });
+
+    expect(mockReadPrescheduledLedger).toHaveBeenCalledTimes(1);
+    expect(mockGetBoardingLock).toHaveBeenCalledTimes(1);
+    expect(mockCollectMissContext).toHaveBeenCalledTimes(1);
+    const [, , passedContext] = mockUploadPrescheduledTelemetry.mock.calls[0];
+    expect(passedContext).toBeUndefined();
+    expect(result.missContext).toBeUndefined();
+  });
+
+  it('miss 발생 + collectMissContext 결과 비어있지 않으면 upload payload에 첨부', async () => {
+    mockGetItem.mockResolvedValue('apns-token');
+    mockGetAlarmLog.mockResolvedValue([
+      fixedEntry({
+        ts: 100,
+        source: 'silent-push-received',
+        outcome: 'received',
+        receivedAt: 100,
+        stationName: '강남',
+      }),
+    ]);
+    mockGetBoardingLock.mockResolvedValue({
+      destinationId: 'd',
+      trainCode: '5050',
+      boardingStationId: 'A',
+      boardingLine: '2',
+      boardedAt: 50,
+      expectedDurationMs: 600_000,
+    });
+    mockReadPrescheduledLedger.mockResolvedValue([
+      { identifier: 'tba:early:강남', scheduledFireMs: 500 },
+    ]);
+    mockComputePrescheduledMetrics.mockResolvedValue({
+      tripStart: 0,
+      tripEnd: 1000,
+      scheduledCount: 3,
+      firedCount: 1,
+      stationAccurateCount: 1,
+      fireDeltaSamplesMs: [10],
+    });
+    const expectedContext = {
+      lockedTrainCode: '5050',
+      lockedAt: 50,
+      missedIdentifiers: ['tba:early:강남'],
+    };
+    mockCollectMissContext.mockReturnValue(expectedContext);
+    mockUploadPrescheduledTelemetry.mockResolvedValue({ ok: true, status: 200 });
+
+    const result = await computeAndUploadTripPrescheduled({ tripStart: 0, tripEnd: 1000 });
+
+    const [, , passedContext] = mockUploadPrescheduledTelemetry.mock.calls[0];
+    expect(passedContext).toEqual(expectedContext);
+    expect(result.missContext).toEqual(expectedContext);
+
+    // collectMissContext 호출 인자 검증 — alarmLog/lock/ledger 전달
+    const collectArg = mockCollectMissContext.mock.calls[0][0];
+    expect(collectArg.tripStart).toBe(0);
+    expect(collectArg.tripEnd).toBe(1000);
+    expect(collectArg.boardingLock).toEqual({
+      destinationId: 'd',
+      trainCode: '5050',
+      boardingStationId: 'A',
+      boardingLine: '2',
+      boardedAt: 50,
+      expectedDurationMs: 600_000,
+    });
+    expect(collectArg.ledger).toEqual([
+      { identifier: 'tba:early:강남', scheduledFireMs: 500 },
+    ]);
+    expect(collectArg.alarmLogEntries).toHaveLength(1);
   });
 });

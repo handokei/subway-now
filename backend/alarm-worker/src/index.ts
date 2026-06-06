@@ -297,6 +297,9 @@ app.post('/telemetry/prescheduled', async (c) => {
       stationAccurateCount: payload.stationAccurateCount,
       deltaSamples: payload.fireDeltaSamplesMs.length,
       sink: writer ? 'ae' : 'none',
+      // #986 — miss trip 진단 컨텍스트. 없으면 omit (JSON.stringify가 undefined 자동 제거).
+      // Logpush로 사후 root cause 분석 (AE blob에는 미적재 — free-form/PII 회피).
+      missContext: payload.missContext,
     }),
   );
   return c.json({ ok: true });

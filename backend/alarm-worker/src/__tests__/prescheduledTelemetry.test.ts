@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   recordPrescheduledUpload,
+  validateMissContext,
   validatePrescheduledUpload,
   type PrescheduledUpload,
 } from '../prescheduledTelemetry';
@@ -222,5 +223,157 @@ describe('catalog SSOT', () => {
     expect(METRIC_KIND.PRESCHEDULED_FIRE_MISS_RATE).toBe('prescheduledFireMissRate');
     expect(METRIC_KIND.PRESCHEDULED_STATION_ACCURACY).toBe('prescheduledStationAccuracy');
     expect(METRIC_KIND.PRESCHEDULED_FIRE_DELTA_MS).toBe('prescheduledFireDeltaMs');
+  });
+});
+
+// #986 — missContext validation.
+describe('validateMissContext', () => {
+  it('undefined → undefined (skip 처리)', () => {
+    expect(validateMissContext(undefined)).toBeUndefined();
+  });
+
+  it.each([null, 'x', 123, []])('non-object %p → null', (v) => {
+    expect(validateMissContext(v)).toBeNull();
+  });
+
+  it('빈 객체 → 빈 MissContext', () => {
+    expect(validateMissContext({})).toEqual({});
+  });
+
+  it('정상 필드 전부 → 통과', () => {
+    const ctx = {
+      lockedTrainCode: '5050',
+      lockedAt: 1_000,
+      lastSilentPushReceived: { sentAt: 900, receivedAt: 1_000, stationName: '강남' },
+      lastScheduledStamp: {
+        selectedArrivalSeconds: 60,
+        expectedStationAtFire: '강남',
+        actualLastNotifiedStation: '역삼',
+      },
+      missedIdentifiers: ['tba:early:강남', 'tba:imminent:역삼'],
+    };
+    expect(validateMissContext(ctx)).toEqual(ctx);
+  });
+
+  it.each([
+    ['lockedTrainCode', 123],
+    ['lockedTrainCode', ''],
+    ['lockedAt', 'x'],
+    ['lockedAt', Number.NaN],
+  ])('reject invalid %s (%p)', (field, value) => {
+    expect(validateMissContext({ [field]: value })).toBeNull();
+  });
+
+  it('lockedTrainCode 길이 상한 초과 → reject', () => {
+    expect(validateMissContext({ lockedTrainCode: 'x'.repeat(201) })).toBeNull();
+  });
+
+  it('lastSilentPushReceived: receivedAt 누락 → reject', () => {
+    expect(validateMissContext({ lastSilentPushReceived: { sentAt: 1 } })).toBeNull();
+  });
+
+  it('lastSilentPushReceived: sentAt 비유한 → reject', () => {
+    expect(
+      validateMissContext({ lastSilentPushReceived: { receivedAt: 1, sentAt: Number.NaN } }),
+    ).toBeNull();
+  });
+
+  it('lastSilentPushReceived: stationName 빈문자 → reject', () => {
+    expect(
+      validateMissContext({ lastSilentPushReceived: { receivedAt: 1, stationName: '' } }),
+    ).toBeNull();
+  });
+
+  it('lastSilentPushReceived: receivedAt만 있으면 통과', () => {
+    expect(
+      validateMissContext({ lastSilentPushReceived: { receivedAt: 100 } }),
+    ).toEqual({ lastSilentPushReceived: { receivedAt: 100 } });
+  });
+
+  it.each([null, 'x', 123])('lastSilentPushReceived non-object %p → reject', (v) => {
+    expect(validateMissContext({ lastSilentPushReceived: v })).toBeNull();
+  });
+
+  it('lastScheduledStamp: 모든 필드 optional, 부분만 있어도 통과', () => {
+    expect(
+      validateMissContext({ lastScheduledStamp: { selectedArrivalSeconds: 45 } }),
+    ).toEqual({ lastScheduledStamp: { selectedArrivalSeconds: 45 } });
+  });
+
+  it.each([
+    ['selectedArrivalSeconds', Number.NaN],
+    ['selectedArrivalSeconds', 'x'],
+    ['expectedStationAtFire', 123],
+    ['expectedStationAtFire', ''],
+    ['actualLastNotifiedStation', 123],
+  ])('lastScheduledStamp invalid %s (%p) → reject', (field, value) => {
+    expect(
+      validateMissContext({ lastScheduledStamp: { [field]: value } }),
+    ).toBeNull();
+  });
+
+  it.each([null, 'x', 123])('lastScheduledStamp non-object %p → reject', (v) => {
+    expect(validateMissContext({ lastScheduledStamp: v })).toBeNull();
+  });
+
+  it('missedIdentifiers: 비배열 → reject', () => {
+    expect(validateMissContext({ missedIdentifiers: 'x' })).toBeNull();
+  });
+
+  it('missedIdentifiers: 상한(200) 초과 → reject', () => {
+    const ids = Array.from({ length: 201 }, (_, i) => `tba:early:S${i}`);
+    expect(validateMissContext({ missedIdentifiers: ids })).toBeNull();
+  });
+
+  it('missedIdentifiers: 비문자 entry → reject', () => {
+    expect(validateMissContext({ missedIdentifiers: ['tba:x:A', 1] })).toBeNull();
+  });
+
+  it('missedIdentifiers: 길이 상한 초과 entry → reject', () => {
+    expect(
+      validateMissContext({ missedIdentifiers: ['tba:x:A', 'y'.repeat(201)] }),
+    ).toBeNull();
+  });
+
+  it('missedIdentifiers: 빈 문자열 entry → reject', () => {
+    expect(validateMissContext({ missedIdentifiers: [''] })).toBeNull();
+  });
+
+  it('missedIdentifiers: 빈 배열 → 통과', () => {
+    expect(validateMissContext({ missedIdentifiers: [] })).toEqual({
+      missedIdentifiers: [],
+    });
+  });
+});
+
+// #986 — payload integration.
+describe('validatePrescheduledUpload with missContext', () => {
+  it('missContext 부재 시 payload에 missContext 키 없음', () => {
+    const out = validatePrescheduledUpload(base());
+    expect(out).not.toBeNull();
+    expect(out!.missContext).toBeUndefined();
+  });
+
+  it('정상 missContext 시 payload에 포함', () => {
+    const out = validatePrescheduledUpload({
+      ...base(),
+      missContext: {
+        lockedTrainCode: '5050',
+        lockedAt: 50,
+        missedIdentifiers: ['tba:early:강남'],
+      },
+    });
+    expect(out).not.toBeNull();
+    expect(out!.missContext).toEqual({
+      lockedTrainCode: '5050',
+      lockedAt: 50,
+      missedIdentifiers: ['tba:early:강남'],
+    });
+  });
+
+  it('깨진 missContext는 전체 payload reject', () => {
+    expect(
+      validatePrescheduledUpload({ ...base(), missContext: { lockedAt: 'x' } }),
+    ).toBeNull();
   });
 });
