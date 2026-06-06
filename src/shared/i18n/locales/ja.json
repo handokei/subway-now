@@ -49,7 +49,10 @@
     "locationUncertainTitle": "位置確認中",
     "locationUncertainDescription": "GPSの精度が低いため、\n現在地を特定できません。\nしばらくしてから自動で再試行します。",
     "refresh": "更新",
-    "boardingProximityHint": "乗車駅の近くで列車を選択できます"
+    "boardingProximityHint": "乗車駅の近くで列車を選択できます",
+    "boardingTrainListTitle": "乗車する列車を選択",
+    "boardingTrainListEmpty": "到着予定の列車がありません。",
+    "misBoardingToast": "乗車中の列車が見つかりません。もう一度選択してください。"
   },
   "settings": {
     "title": "設定",

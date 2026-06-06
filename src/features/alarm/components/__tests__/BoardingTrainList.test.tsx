@@ -22,11 +22,12 @@ function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
 }
 
 describe('BoardingTrainList', () => {
-  it('arrivals 비어있을 때 placeholder 렌더', () => {
+  it('arrivals 비어있을 때 placeholder 렌더 (#915 후속: i18n 키 사용)', () => {
     const { getByTestId, getByText } = renderWithTheme(
       <BoardingTrainList arrivals={[]} line="2" onSelect={() => {}} />,
     );
     expect(getByTestId('boarding-train-list-empty')).toBeTruthy();
+    // jest.setup.js의 i18n 기본 lng='ko' → ko.json home.boardingTrainListEmpty 값.
     expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
   });
 

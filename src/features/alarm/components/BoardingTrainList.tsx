@@ -7,6 +7,7 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 import { LineBadge } from '../../../shared/ui/LineBadge';
 import type { ArrivalInfo } from '../../../shared/types/arrival';
@@ -43,7 +44,7 @@ interface Props {
    * 환승 list에서 도보 buffer 표현용. 미전달 시 모든 열차 활성.
    */
   walkingBufferSeconds?: number;
-  /** 헤더 라벨 커스텀 (환승 list 등). 미전달 시 기본 "탑승할 열차 선택". compact=true면 무시. */
+  /** 헤더 라벨 커스텀 (환승 list 등). 미전달 시 home.boardingTrainListTitle i18n 키. compact=true면 무시. */
   title?: string;
   /**
    * 다음 인접역 라벨(#649, #749, #807). 있으면 "<label>방면"만 노출(종착 제거).
@@ -98,12 +99,16 @@ export function BoardingTrainList({
   line,
   onSelect,
   walkingBufferSeconds,
-  title = '탑승할 열차 선택',
+  title,
   nextStationLabel = null,
   compact = false,
   initialEtaSeconds,
 }: Props) {
   const { colors } = useTheme();
+  const { t } = useTranslation();
+  // #915 후속: 헤더 라벨/empty placeholder를 i18n으로 분리.
+  // 4 locales(ko/en/ja/zh) 비-한국어 사용자가 핵심 baseline UX("탑승할 열차 선택")를 모국어로 본다.
+  const headerTitle = title ?? t('home.boardingTrainListTitle');
   const isUnreachable = (train: ArrivalInfo): boolean =>
     walkingBufferSeconds != null && train.arrivalSeconds < walkingBufferSeconds;
 
@@ -121,7 +126,7 @@ export function BoardingTrainList({
         style={compact ? styles.emptyCompact : styles.empty}
         testID="boarding-train-list-empty"
       >
-        <Text style={[typography.bodySm, { color: colors.muted }]}>도착 예정 열차가 없습니다.</Text>
+        <Text style={[typography.bodySm, { color: colors.muted }]}>{t('home.boardingTrainListEmpty')}</Text>
       </View>
     );
   }
@@ -134,7 +139,7 @@ export function BoardingTrainList({
       {!compact && (
         <View style={styles.header}>
           <LineBadge line={line} />
-          <Text style={[typography.label, { color: colors.muted }]}>{title}</Text>
+          <Text style={[typography.label, { color: colors.muted }]}>{headerTitle}</Text>
         </View>
       )}
       {delayMinutes != null && (
