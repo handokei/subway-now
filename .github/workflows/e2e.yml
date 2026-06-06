@@ -166,6 +166,8 @@ jobs:
           - seam-b-13-19
           - seam-e-13-39
           - seam-f-13-24
+          - seam-a-delay-chip
+          - seam-d-debug-entry
           # Seam C는 transfer-leg / FG-return 이벤트 mock 설계 결함으로 보류
           # ([[project-2026-06-05-epic-912-session-end]]).
     env:
@@ -173,6 +175,9 @@ jobs:
       EXPO_PUBLIC_USE_BFF: 'true'
       EXPO_PUBLIC_BFF_URL: 'http://localhost:8788'
       EXPO_PUBLIC_ALARM_BACKEND_URL: 'http://localhost:8788'
+      # Seam D 회귀 가드는 release 빌드에서 DebugModal 트리거가 살아 있는지 검증한다 — flag로 명시 활성.
+      # 다른 시나리오(B/E/F/A)는 영향 받지 않음(모달은 명시 7-tap 트리거에서만 노출).
+      EXPO_PUBLIC_DEBUG_MODAL: 'true'
 
     steps:
       - name: 코드 체크아웃
@@ -225,11 +230,14 @@ jobs:
 
       - name: mock 백엔드 빌드-time env 주입
         # Expo의 with-environment.sh가 .xcode.env.local을 소싱하므로 여기 export.
+        # EXPO_PUBLIC_DEBUG_MODAL은 Seam D 시나리오 전용이지만 release 빌드는 시나리오와
+        # 무관하게 1회 캐시되므로 모든 시나리오에 동일하게 주입(다른 시나리오는 7-tap을 안 함).
         run: |
           {
             echo 'export EXPO_PUBLIC_USE_BFF=true'
             echo 'export EXPO_PUBLIC_BFF_URL=http://localhost:8788'
             echo 'export EXPO_PUBLIC_ALARM_BACKEND_URL=http://localhost:8788'
+            echo 'export EXPO_PUBLIC_DEBUG_MODAL=true'
           } >> ios/.xcode.env.local
           cat ios/.xcode.env.local
 
