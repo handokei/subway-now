@@ -1528,6 +1528,7 @@ describe('GET /metrics/recall/summary (#919 후속)', () => {
       dataset: string;
       available: boolean;
       minRecallRatioThreshold: number;
+      recallThresholdCritical: number;
       opsPageUrl: string;
       queries: { id: string; description: string; sql: string }[];
     };
@@ -1535,6 +1536,9 @@ describe('GET /metrics/recall/summary (#919 후속)', () => {
     expect(body.available).toBe(false);
     expect(body.minRecallRatioThreshold).toBeGreaterThan(0);
     expect(body.minRecallRatioThreshold).toBeLessThanOrEqual(1);
+    // #1003 — critical 임계도 노출되고 invariant(critical < warning) 충족.
+    expect(body.recallThresholdCritical).toBeGreaterThan(0);
+    expect(body.recallThresholdCritical).toBeLessThan(body.minRecallRatioThreshold);
     expect(body.opsPageUrl).toMatch(/^https:\/\//);
     expect(body.queries.length).toBeGreaterThanOrEqual(3);
     for (const q of body.queries) {

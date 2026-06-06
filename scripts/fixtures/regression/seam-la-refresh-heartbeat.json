@@ -1,0 +1,66 @@
+{
+  "name": "LA refresh heartbeat (#900) — ETA 정체 구간 트립 안정성",
+  "seam": "LA-heartbeat",
+  "_doc": [
+    "Epic #896 Seam D / #900 LA refresh heartbeat 회귀 가드. backend(alarm-worker scheduled)",
+    "의 maybeFireLiveActivityUpdate는 ΔETA ≥ 30s 또는 (now − lastLaPushAt) ≥ 60s일 때 LA push",
+    "를 발사해 ETA 정체 구간에서도 content-state stale을 방지한다.",
+    "",
+    "Maestro는 APNs/LA push 발사 수를 직접 관찰할 수 없으므로(LA는 iOS 시스템 영역), 본 fixture는",
+    "**클라이언트 표면 안정성**을 회귀 가드한다:",
+    "  - 어린이대공원(7-016) → 군자(7-017) 단순 trip 형성",
+    "  - 어린이대공원 ETA가 90s 동안 arrivalSeconds=180 (3분)으로 stable → ΔETA 0, heartbeat 윈도 진입",
+    "  - 그 동안 client UI(트립 chip, lock 카드, 알람)가 stable, ghost 발사 0건",
+    "",
+    "backend heartbeat 발사 회수 자체는 alarm-worker 단위 테스트가 cron mock으로 검증한다.",
+    "본 fixture는 정체된 ETA가 client에 false-positive 회귀를 유발하지 않음을 가드한다."
+  ],
+  "arrivals": {
+    "어린이대공원": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "장암",
+              "arrivalMinutes": 3,
+              "arrivalSeconds": 180,
+              "statusMessage": "3분 후 도착",
+              "trainCode": "7180",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ],
+    "군자": [
+      {
+        "fromMs": 0,
+        "body": {
+          "up": [
+            {
+              "destination": "장암",
+              "arrivalMinutes": 5,
+              "arrivalSeconds": 300,
+              "statusMessage": "5분 후 도착",
+              "trainCode": "7180",
+              "line": "7",
+              "receivedAtMs": 0,
+              "arrivalCode": 99,
+              "isLastTrain": false,
+              "trainType": "normal"
+            }
+          ],
+          "down": [],
+          "source": "realtime"
+        }
+      }
+    ]
+  }
+}
