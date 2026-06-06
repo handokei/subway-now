@@ -188,7 +188,7 @@ function collectOtherLineArrivals(
   const out: OtherLineArrival[] = [];
   for (const t of all) {
     if (boardingLine !== null && t.line === boardingLine) continue;
-    out.push({ line: t.line, arrivalSeconds: t.arrivalSeconds });
+    out.push({ line: t.line, arrivalSeconds: t.arrivalSeconds, arrivalCode: t.arrivalCode });
   }
   return out;
 }
