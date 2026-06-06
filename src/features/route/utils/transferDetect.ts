@@ -15,6 +15,7 @@
  *
  * candidateLines: 임박 도착이 잡힌 다른 노선들 — 다중 후보일 때 F4 모달(#914)에서 사용자에게 선택지 제공.
  */
+import { getArrivalPriority } from '../../../shared/constants/arrivalCodes';
 import type { LineNumber, NearestStationsResult } from '../../../shared/types/station';
 
 /** 다른 노선 도착이 "임박"으로 간주되는 최대 초. 이 이내 도착이면 환승 후보로 가산. */
@@ -23,6 +24,11 @@ export const TRANSFER_DETECT_IMMINENT_SECONDS = 180;
 export interface OtherLineArrival {
   line: LineNumber;
   arrivalSeconds: number;
+  /**
+   * arvlCd 응답값(0:진입, 1:도착, 5:전역도착 등). 누락은 -1.
+   * candidateLines 정렬에 사용 — `getArrivalPriority` 큰 값(도착>진입>...)이 더 임박.
+   */
+  arrivalCode?: number;
 }
 
 export interface DetectTransferInput {
@@ -39,7 +45,11 @@ export interface DetectTransferInput {
 
 export interface DetectTransferResult {
   detected: boolean;
-  /** 임박 도착이 감지된 다른 노선들(dedup, 입력 순서 보존). */
+  /**
+   * 임박 도착이 감지된 다른 노선들(dedup, imminence 정렬).
+   * 정렬 기준: arvlCd priority desc (1=도착>0=진입>5=전역도착>4=전역진입) → arrivalSeconds asc.
+   * 호출자는 `candidateLines[0]`을 가장 임박한 노선(=topPick)으로 사용 가능.
+   */
   candidateLines: LineNumber[];
 }
 
@@ -57,15 +67,34 @@ export function detectTransfer(input: DetectTransferInput): DetectTransferResult
   return { detected: true, candidateLines };
 }
 
+interface LineImminence {
+  line: LineNumber;
+  priority: number;
+  arrivalSeconds: number;
+}
+
 function collectImminentLines(arrivals: OtherLineArrival[]): LineNumber[] {
-  const seen = new Set<LineNumber>();
-  const out: LineNumber[] = [];
+  // line별 가장 임박한 신호로 sort key를 잡는다(같은 line의 여러 도착 중 best 선택).
+  const bestByLine = new Map<LineNumber, LineImminence>();
   for (const a of arrivals) {
     if (a.arrivalSeconds > TRANSFER_DETECT_IMMINENT_SECONDS) continue;
     if (a.arrivalSeconds < 0) continue;
-    if (seen.has(a.line)) continue;
-    seen.add(a.line);
-    out.push(a.line);
+    const priority = getArrivalPriority(a.arrivalCode);
+    const prev = bestByLine.get(a.line);
+    if (!prev || isMoreImminent(priority, a.arrivalSeconds, prev)) {
+      bestByLine.set(a.line, { line: a.line, priority, arrivalSeconds: a.arrivalSeconds });
+    }
   }
-  return out;
+  return [...bestByLine.values()]
+    .sort((x, y) => y.priority - x.priority || x.arrivalSeconds - y.arrivalSeconds)
+    .map((entry) => entry.line);
+}
+
+function isMoreImminent(
+  priority: number,
+  arrivalSeconds: number,
+  prev: LineImminence,
+): boolean {
+  if (priority !== prev.priority) return priority > prev.priority;
+  return arrivalSeconds < prev.arrivalSeconds;
 }
