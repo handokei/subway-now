@@ -93,6 +93,18 @@ export const BAROMETER_ABS_TOLERANCE_HPA = 1.0;
 export const BAROMETER_STOP_DP_THRESHOLD_HPA = 0.05;
 
 /**
+ * #920 (후속) — F3 narrow 단계에서 ETA 게이트가 허용하는 |observed - expected| 윈도우(초).
+ *
+ * 근거:
+ *   - 인접 역간 운행시간은 60~150s(stationTravelTimes.json 분포). 같은 hop도 dwell/혼잡으로 ±15s 흔함.
+ *   - GPS-time 측정 오차 + 사용자 탑승 시점 측정 오차로 추가 ±10~15s.
+ *   - 30s는 인접 hop에서는 정합/불일치를 명확히 가르되, 환승역 같은 다른 노선 후보(예: depth가
+ *     비슷하지만 hop 시간이 60s vs 120s)를 분리할 만큼 좁다.
+ *   - F3는 보조 신호이므로 윈도우 밖이면 후보 탈락이 아니라 narrow 결과 0개로 보고 baseline fallback.
+ */
+export const BAROMETER_ETA_TOLERANCE_SEC = 30;
+
+/**
  * #903 — subsurface verdict의 hysteresis 확인 샘플 수.
  *
  * 임계(0.3hPa) 부근에서 센서 noise로 verdict가 1Hz 토글되면 useBarometer가 setSubsurface을

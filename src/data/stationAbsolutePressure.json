@@ -36,6 +36,18 @@
     "depth_m": 32
   },
   {
+    "stationId": "5-023",
+    "stationName": "서대문",
+    "line": "5",
+    "depth_m": 30
+  },
+  {
+    "stationId": "5-026",
+    "stationName": "을지로4가",
+    "line": "5",
+    "depth_m": 33
+  },
+  {
     "stationId": "2-016",
     "stationName": "잠실",
     "line": "2",

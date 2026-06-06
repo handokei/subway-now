@@ -232,4 +232,74 @@ describe('useStationCandidates', () => {
       expect(result.current.candidates).toEqual([fakeWifi]);
     });
   });
+
+  describe('F3 추가 narrow — depth+ETA 결합 (#920 후속)', () => {
+    // 광화문(37.5715, 126.9769)과 종로3가(37.5717, 126.9919) 중간 좌표 — 두 역 모두 1km 반경 안.
+    // 둘 다 stationAbsolutePressure.json에 depth 등록(광화문 32m, 종로3가 35m). 5호선 인접.
+    const MIDPOINT_LOC = { lat: 37.5716, lng: 126.9844 };
+    const SEODAEMUN_5: Station = {
+      id: '5-023',
+      name: '서대문',
+      line: '5',
+      lineColor: '#996CAC',
+      lat: 37.5657,
+      lng: 126.9666,
+    };
+    const SURFACE = 1013;
+
+    it('baseline 후보 ≥2 + previousStation 인접 → 추가 narrow로 단일 후보', () => {
+      // 측정 1016.84 hPa(=32m). baseline은 광화문(0) + 종로3가(0.36) 둘 다 매칭 통과.
+      // previousStation=서대문(5-023). 서대문↔광화문 hop 90s 존재, 서대문↔종로3가 hop 없음.
+      // → 평가 가능한 후보 1개(광화문) → 광화문 단일 반환.
+      const { result } = renderHook(() =>
+        useStationCandidates({
+          userLocation: MIDPOINT_LOC,
+          wifiStation: null,
+          maxCandidates: 5,
+          maxDistanceKm: 2,
+          absolutePressureHpa: SURFACE + 32 * DEPTH_TO_PRESSURE_HPA_PER_M,
+          surfacePressureHpa: SURFACE,
+          previousStation: SEODAEMUN_5,
+          secondsSincePrevious: 90,
+        }),
+      );
+      expect(result.current.candidates.length).toBe(1);
+      expect(result.current.topPick?.name).toBe('광화문');
+      expect(result.current.isAutoConfirmed).toBe(true);
+    });
+
+    it('previousStation 없으면 추가 narrow skip → baseline 후보 유지', () => {
+      const { result } = renderHook(() =>
+        useStationCandidates({
+          userLocation: MIDPOINT_LOC,
+          wifiStation: null,
+          maxCandidates: 5,
+          maxDistanceKm: 2,
+          absolutePressureHpa: SURFACE + 32 * DEPTH_TO_PRESSURE_HPA_PER_M,
+          surfacePressureHpa: SURFACE,
+        }),
+      );
+      const names = result.current.candidates.map((s) => s.name);
+      expect(names).toContain('광화문');
+      expect(names).toContain('종로3가');
+    });
+
+    it('secondsSincePrevious 없으면 추가 narrow skip', () => {
+      const { result } = renderHook(() =>
+        useStationCandidates({
+          userLocation: MIDPOINT_LOC,
+          wifiStation: null,
+          maxCandidates: 5,
+          maxDistanceKm: 2,
+          absolutePressureHpa: SURFACE + 32 * DEPTH_TO_PRESSURE_HPA_PER_M,
+          surfacePressureHpa: SURFACE,
+          previousStation: SEODAEMUN_5,
+          secondsSincePrevious: null,
+        }),
+      );
+      const names = result.current.candidates.map((s) => s.name);
+      expect(names).toContain('광화문');
+      expect(names).toContain('종로3가');
+    });
+  });
 });
