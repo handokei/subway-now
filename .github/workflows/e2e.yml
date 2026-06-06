@@ -168,6 +168,8 @@ jobs:
           - seam-f-13-24
           - seam-a-delay-chip
           - seam-d-debug-entry
+          - seam-g-sticky-wireup
+          - seam-la-refresh-heartbeat
           # Seam C는 transfer-leg / FG-return 이벤트 mock 설계 결함으로 보류
           # ([[project-2026-06-05-epic-912-session-end]]).
     env:
