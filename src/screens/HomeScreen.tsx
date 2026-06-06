@@ -105,6 +105,9 @@ export default function HomeScreen() {
   // FG path가 무시하지 않도록 loadAlarmEvent와 같은 시퀀스로 hydrate.
   const loadDismissSilence = useAlarmEventStore((s) => s.loadDismissSilence);
   const [pickerVisible, setPickerVisible] = useState(false);
+  // #977 — F4 confirm 모달 검색 fallback. 후보 0개 또는 사용자 명시 "검색으로 선택" 시 origin 전용
+  // DestinationPicker(mode='origin')를 띄워 직접 station 검색 → setCustomOrigin.
+  const [originPickerVisible, setOriginPickerVisible] = useState(false);
   const prevNotifKeyRef = useRef<string | undefined>(undefined);
   const prevDestIdRef = useRef<string | null>(null);
   // #534: route 비동기 계산이 끝나기 전 첫 LA 송출이 일어나면 ETA-less 카드가 잠금화면에
@@ -183,8 +186,23 @@ export default function HomeScreen() {
     }
   }, [confirmModal.autoConfirmedStation, confirmModal.consumeAutoConfirmed, t]);
   const handleConfirmAutoToastDismiss = useCallback(() => setConfirmAutoToast(null), []);
-  // 검색 fallback 실제 wire는 후속 PR — 현재는 onClose와 동일 동작(모달만 닫음).
-  // (origin 검색용 picker는 별도 component 필요. DestinationPicker는 목적지 전용.)
+  // #977 — F4 검색 fallback wire. confirm 모달 dismiss(setDismissed=true) + origin picker 오픈.
+  // 사용자가 picker에서 station 선택 시 setCustomOrigin → confirm 모달은 hasEffectiveOrigin
+  // 으로 자동 차단되어 재오픈하지 않는다.
+  // onClose는 hook 내부 useCallback(deps=[])로 stable — 객체 자체가 아닌 method를 deps에 둔다.
+  const confirmModalClose = confirmModal.onClose;
+  const handleSearchFallback = useCallback(() => {
+    confirmModalClose();
+    setOriginPickerVisible(true);
+  }, [confirmModalClose]);
+  const handleOriginPickerSelect = useCallback(
+    (station: Station) => {
+      setCustomOrigin(station);
+      setOriginPickerVisible(false);
+    },
+    [setCustomOrigin],
+  );
+  const handleOriginPickerClose = useCallback(() => setOriginPickerVisible(false), []);
 
 
   const handleArrivalClear = useCallback(() => setDestination(null), [setDestination]);
@@ -1054,14 +1072,28 @@ export default function HomeScreen() {
       )}
 
       {/* #914 (F4) — 1탭 현재역 확정. wifi 단일 매칭은 자동 확정 + toast 노출,
-           GPS 다중 후보는 모달 1탭 확정, 후보 0개는 검색 fallback 안내. */}
+           GPS 다중 후보는 모달 1탭 확정, 후보 0개는 검색 fallback 안내(#977 wire). */}
       <CurrentStationConfirmModal
         visible={confirmModal.visible}
         candidates={confirmModal.candidates}
         topPick={confirmModal.topPick}
         onConfirm={confirmModal.onCardTap}
-        onSearchFallback={confirmModal.onClose}
+        onSearchFallback={handleSearchFallback}
         onClose={confirmModal.onClose}
+      />
+      {/* #977 — F4 검색 fallback origin picker. DestinationPicker mode='origin' 재사용.
+           onAssignSlot 미전달 → 즐겨찾기 슬롯 placeholder는 자동 숨김(origin 컨텍스트 무관). */}
+      <DestinationPicker
+        visible={originPickerVisible}
+        mode="origin"
+        onSelect={handleOriginPickerSelect}
+        onClose={handleOriginPickerClose}
+        favorites={favorites}
+        userLat={userLocation?.lat ?? null}
+        userLng={userLocation?.lng ?? null}
+        onRecenter={() => {
+          void refreshRef.current();
+        }}
       />
       <Toast
         visible={confirmAutoToast !== null}
