@@ -37,6 +37,18 @@ import { RECALL_DISTRIBUTION_LABEL_PREFIX } from './recallTelemetry';
 export const RECALL_DATASET = 'silent_push_telemetry';
 
 /**
+ * 운영 대시보드 Notion 페이지 URL (#981 / PR #961 후속).
+ *
+ * Notion 페이지가 endpoint 응답에 포함된 SQL 카탈로그를 그대로 사용한다.
+ * `GET /metrics/recall/summary` 응답에 함께 노출 — 외부에서 endpoint만 보고도
+ * 운영 페이지 위치를 알 수 있게 SSOT 일원화.
+ *
+ * 페이지 컨텐츠 source: `docs/ops/recall-dashboard.md`.
+ */
+export const RECALL_OPS_PAGE_URL =
+  'https://app.notion.com/p/37730c0194b6817e8953dacb9e533039';
+
+/**
  * 본 모듈이 사용하는 metric 식별자 — catalog SSOT(`metrics.catalog.json`)에서 동적으로 끌어와
  * hardcoded 식별자 없음. catalog에서 key가 바뀌면 query도 자동 갱신.
  */

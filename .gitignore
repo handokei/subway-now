@@ -63,6 +63,7 @@ coverage-temp/
 docs/*
 !docs/ci/
 !docs/decisions/
+!docs/ops/
 handoff/
 img/
 subway/

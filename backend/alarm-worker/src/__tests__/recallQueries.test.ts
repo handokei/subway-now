@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   RECALL_DATASET,
+  RECALL_OPS_PAGE_URL,
   RECALL_QUERIES,
   dailyRecallRateQuery,
   gateSuppressionDistributionQuery,
@@ -22,6 +23,12 @@ describe('RECALL_DATASET', () => {
   it('matches wrangler.toml dataset name', () => {
     // wrangler.toml의 `dataset = "silent_push_telemetry"`와 동일 (#498 / #506 주석 참조).
     expect(RECALL_DATASET).toBe('silent_push_telemetry');
+  });
+});
+
+describe('RECALL_OPS_PAGE_URL (#981)', () => {
+  it('is a Notion URL (운영 페이지 SSOT)', () => {
+    expect(RECALL_OPS_PAGE_URL).toMatch(/^https:\/\/(app\.notion\.com|.*\.notion\.site)\//);
   });
 });
 
