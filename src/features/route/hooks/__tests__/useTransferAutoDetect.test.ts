@@ -378,4 +378,166 @@ describe('useTransferAutoDetect', () => {
     rerender(baseInputs({ arrival: null, onAutoLock }));
     expect(result.current.modalVisible).toBe(false);
   });
+
+  /**
+   * #971 (#955 follow-up) — trainType priority.
+   *
+   * 환승 후보 line(1호선)에 일반·급행 두 trainType이 동시에 임박해 있을 때,
+   * destinationName이 일반정차역 only(예: '대방')이면 급행(서울역 등만 정차)을 통과
+   * 사고로 lock해서는 안 되므로 일반을 선택해야 한다. 반대로 destination이 급행 정차역
+   * (예: '용산')이면 일반보다 조금 늦더라도 급행을 우선 선택해야 한다.
+   *
+   * 1호선 환승역 fixture(서울역-1·4호선) 재사용. variants는 4호선 boardingLine 제외 후
+   * 1호선이 후보로 잡히도록 구성.
+   */
+  describe('#971 trainType priority', () => {
+    const SEOUL_1: Station = { id: '0101', name: '서울역', line: '1', lineColor: '#0052A4', lat: 37.554, lng: 126.972 };
+    const SEOUL_4: Station = { id: '0426', name: '서울역', line: '4', lineColor: '#00A0E2', lat: 37.554, lng: 126.972 };
+    const transferNearest1_4: NearestStationsResult = {
+      primary: SEOUL_4,
+      variants: [SEOUL_4, SEOUL_1],
+      distanceKm: 0.03,
+      isTransfer: true,
+    };
+
+    /** 1호선 같은 line에 normal(빠름)·express(느림) 두 줄 임박. */
+    function mixedTrainTypeArrival(): StationArrival {
+      return makeArrival([
+        makeArrivalInfo({ destination: '인천', arrivalSeconds: 30, line: '1', trainCode: 'T-1-NORMAL', trainType: 'normal' }),
+        makeArrivalInfo({ destination: '동인천', arrivalSeconds: 120, line: '1', trainCode: 'T-1-EXPRESS', trainType: 'express' }),
+      ]);
+    }
+
+    it('destination이 일반정차역 only(대방) → 일반 우선 (express 통과 회피)', () => {
+      // 대방은 1호선 normal 정차역. EXPRESS_STOPS['1'].express에 없음 → express 통과.
+      const onAutoLock = jest.fn();
+      const { result } = renderHook(() =>
+        useTransferAutoDetect(
+          baseInputs({
+            nearestStations: transferNearest1_4,
+            arrival: mixedTrainTypeArrival(),
+            destinationName: '대방',
+            // 다중 후보 회피: boardingLine을 4호선으로 두면 1호선만 후보.
+            boardingLock: makeLock({ boardingLine: '4', boardingStationId: SEOUL_4.id }),
+            onAutoLock,
+          }),
+        ),
+      );
+      expect(onAutoLock).toHaveBeenCalledTimes(1);
+      // express가 더 빠르더라도 normal(통과 안 함) 우선.
+      expect(result.current.candidateLines).toEqual(['1']);
+      expect(onAutoLock).toHaveBeenCalledWith({ trainCode: 'T-1-NORMAL', line: '1', subwayId: '1001' });
+    });
+
+    it('destination이 급행 정차역(용산) → 일반·급행 모두 후보, 가장 임박한 normal 선택', () => {
+      // 용산은 EXPRESS_STOPS['1'].express에 있음. normal도 모든 역 정차 → 둘 다 preferred.
+      // 가장 임박한 normal(30s) 선택.
+      const onAutoLock = jest.fn();
+      renderHook(() =>
+        useTransferAutoDetect(
+          baseInputs({
+            nearestStations: transferNearest1_4,
+            arrival: mixedTrainTypeArrival(),
+            destinationName: '용산',
+            boardingLock: makeLock({ boardingLine: '4', boardingStationId: SEOUL_4.id }),
+            onAutoLock,
+          }),
+        ),
+      );
+      expect(onAutoLock).toHaveBeenCalledWith({ trainCode: 'T-1-NORMAL', line: '1', subwayId: '1001' });
+    });
+
+    it('destination이 급행 정차역(용산) + 급행이 더 임박 → 급행 선택', () => {
+      const onAutoLock = jest.fn();
+      const arrival = makeArrival([
+        makeArrivalInfo({ destination: '인천', arrivalSeconds: 180, line: '1', trainCode: 'T-1-NORMAL', trainType: 'normal' }),
+        makeArrivalInfo({ destination: '동인천', arrivalSeconds: 60, line: '1', trainCode: 'T-1-EXPRESS', trainType: 'express' }),
+      ]);
+      renderHook(() =>
+        useTransferAutoDetect(
+          baseInputs({
+            nearestStations: transferNearest1_4,
+            arrival,
+            destinationName: '용산',
+            boardingLock: makeLock({ boardingLine: '4', boardingStationId: SEOUL_4.id }),
+            onAutoLock,
+          }),
+        ),
+      );
+      expect(onAutoLock).toHaveBeenCalledWith({ trainCode: 'T-1-EXPRESS', line: '1', subwayId: '1001' });
+    });
+
+    it('destination=null → 기존 동작 유지 (가장 임박한 후보 선택, trainType 무시)', () => {
+      // destinationName null이면 express가 더 빨라도 normal(법적 type 무관) 모두 동등 후보.
+      // mixedTrainTypeArrival은 normal이 빠름 → normal 선택.
+      const onAutoLock = jest.fn();
+      renderHook(() =>
+        useTransferAutoDetect(
+          baseInputs({
+            nearestStations: transferNearest1_4,
+            arrival: mixedTrainTypeArrival(),
+            destinationName: null,
+            boardingLock: makeLock({ boardingLine: '4', boardingStationId: SEOUL_4.id }),
+            onAutoLock,
+          }),
+        ),
+      );
+      expect(onAutoLock).toHaveBeenCalledWith({ trainCode: 'T-1-NORMAL', line: '1', subwayId: '1001' });
+    });
+
+    it('destination 일반정차역 only + 후보가 express만 → fallback으로 express 선택 (no-op 회피)', () => {
+      // express만 남아 있고 통과 위험이 있어도, hydrate 자체를 막으면 lock 기회를 영구 잃는다.
+      // preferred 비면 fallback으로 가장 임박한 후보 선택 — 사용자 안전성 표시는 별도 UI 책임.
+      const onAutoLock = jest.fn();
+      const arrival = makeArrival([
+        makeArrivalInfo({ destination: '동인천', arrivalSeconds: 60, line: '1', trainCode: 'T-1-EXPRESS', trainType: 'express' }),
+      ]);
+      renderHook(() =>
+        useTransferAutoDetect(
+          baseInputs({
+            nearestStations: transferNearest1_4,
+            arrival,
+            destinationName: '대방',
+            boardingLock: makeLock({ boardingLine: '4', boardingStationId: SEOUL_4.id }),
+            onAutoLock,
+          }),
+        ),
+      );
+      expect(onAutoLock).toHaveBeenCalledWith({ trainCode: 'T-1-EXPRESS', line: '1', subwayId: '1001' });
+    });
+
+    it('selectLine 경로도 동일한 trainType 우선순위 적용 (다중 후보 모달에서 선택)', () => {
+      // 1호선·5호선 다중 후보 fixture. 1호선에 normal/express 혼합 → 사용자가 1호선 선택 시
+      // destination(대방)에 맞춰 normal 선택.
+      const onAutoLock = jest.fn();
+      const DDP_1: Station = { id: '0145', name: '동대문', line: '1', lineColor: '#0052A4', lat: 37.571, lng: 127.009 };
+      const DDP_2: Station = { id: '0205-2', name: '동대문', line: '2', lineColor: '#009D3E', lat: 37.571, lng: 127.009 };
+      const DDP_5_X: Station = { id: '0505-X', name: '동대문', line: '5', lineColor: '#996CAC', lat: 37.571, lng: 127.009 };
+      const nearest: NearestStationsResult = {
+        primary: DDP_2,
+        variants: [DDP_2, DDP_1, DDP_5_X],
+        distanceKm: 0.03,
+        isTransfer: true,
+      };
+      const arrival = makeArrival([
+        makeArrivalInfo({ destination: '인천', arrivalSeconds: 30, line: '1', trainCode: 'T-1-NORMAL', trainType: 'normal' }),
+        makeArrivalInfo({ destination: '동인천', arrivalSeconds: 60, line: '1', trainCode: 'T-1-EXPRESS', trainType: 'express' }),
+        makeArrivalInfo({ destination: '왕십리', arrivalSeconds: 90, line: '5', trainCode: 'T-5', trainType: 'normal' }),
+      ]);
+      const { result } = renderTransferDetect(
+        baseInputs({
+          nearestStations: nearest,
+          arrival,
+          destinationName: '대방',
+          // boardingLine 2호선 — 1·5호선이 후보로.
+          boardingLock: makeLock({ boardingLine: '2', boardingStationId: DDP_2.id }),
+          onAutoLock,
+        }),
+      );
+      expect(result.current.candidateLines).toEqual(['1', '5']);
+      act(() => result.current.selectLine('1'));
+      // destination=대방 → 1호선 normal(30s) > express(60s) preferred 선택.
+      expect(onAutoLock).toHaveBeenCalledWith({ trainCode: 'T-1-NORMAL', line: '1', subwayId: '1001' });
+    });
+  });
 });
