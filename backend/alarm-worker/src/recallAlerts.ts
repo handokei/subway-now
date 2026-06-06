@@ -23,11 +23,24 @@
  */
 
 import { MIN_RECALL_RATIO_THRESHOLD } from './metrics';
-import { lowRecallTripRatioQuery } from './recallQueries';
+import {
+  gateSuppressionDistribution7dQuery,
+  lowRecallTripRatioQuery,
+} from './recallQueries';
 import type { Env } from './types';
 
 /** 같은 임계 위반 alert이 연속 발사되지 않도록 차단하는 최소 윈도우 (1시간). */
 export const ALERT_DEDUP_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Alert payload `timeWindow`/`gateBreakdown`이 참조하는 집계 윈도우.
+ * `lowRecallTripRatioQuery` SQL 본문의 `INTERVAL '7' DAY`와 동일 — 한 쪽이 바뀌면 같이 갱신.
+ * alert의 의미적 시간 범위는 **임계를 결정하는 ratio query**의 7d를 기준으로 통일.
+ */
+export const ALERT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Alert payload에 임베드할 gate breakdown 항목 수 상한 (root cause 단서, 본문 폭주 차단). */
+export const ALERT_GATE_BREAKDOWN_TOP_N = 5;
 
 /** KV key — 마지막 webhook 발사 시각 epoch ms 저장. */
 export const ALERT_DEDUP_KEY = 'recallAlert:lastFiredAt';
@@ -38,6 +51,15 @@ export const ALERT_DEDUP_KEY = 'recallAlert:lastFiredAt';
  */
 export const SQL_API_URL_TEMPLATE = (accountId: string): string =>
   `https://api.cloudflare.com/client/v4/accounts/${accountId}/analytics_engine/sql`;
+
+/**
+ * Gate suppression breakdown 1 항목. root cause 단서로 alert 본문에 임베드.
+ * `KNOWN_GATE_REASONS` SSOT의 reason key.
+ */
+export interface RecallAlertGateEntry {
+  reason: string;
+  count: number;
+}
 
 /** webhook POST payload 모양 — Slack incoming webhook은 `text` field만 보면 무시한다(호환). */
 export interface RecallAlertPayload {
@@ -51,6 +73,16 @@ export interface RecallAlertPayload {
   sampleSize: number;
   /** epoch ms — alert 평가 시각. */
   observedAt: number;
+  /**
+   * 집계 윈도우 epoch ms — `lowRecallTripRatioQuery`의 7d 윈도우 반영.
+   * receiver가 `from`/`to` 범위로 dashboard deep-link를 만들 수 있게 explicit 노출.
+   */
+  timeWindow: { from: number; to: number };
+  /**
+   * 미달 trip의 주요 차단 사유 top N (count desc). gate breakdown query 실패 시 빈 배열.
+   * Alert 받는 운영자가 어떤 gate를 먼저 봐야 할지 즉시 단서 제공.
+   */
+  gateBreakdown: RecallAlertGateEntry[];
   /** Slack incoming webhook이 그대로 표시할 텍스트(payload kind와 무관한 호환 필드). */
   text: string;
 }
@@ -67,6 +99,16 @@ interface SqlApiRow {
 
 interface SqlApiResponse {
   data?: SqlApiRow[];
+}
+
+/** Gate suppression query 응답 row — `gateSuppressionDistributionQuery` 출력 shape와 1:1. */
+interface GateSqlRow {
+  reason?: string;
+  suppressed_count?: number;
+}
+
+interface GateSqlResponse {
+  data?: GateSqlRow[];
 }
 
 /**
@@ -105,15 +147,23 @@ export async function evaluateAndMaybeAlert(
     return { kind: 'noop', reason: 'no-breach' };
   }
 
+  // Gate breakdown은 root cause 단서로만 사용 — fetch 실패해도 alert 본 흐름은 진행.
+  const gateBreakdown = await fetchGateBreakdown(env, deps);
+  const baseText =
+    `subway-now recall alert — ${(ratio * 100).toFixed(1)}% of trips fell below ` +
+    `${MIN_RECALL_RATIO_THRESHOLD} recall (sample=${sampleSize})`;
+  const text = gateBreakdown.length > 0
+    ? `${baseText}\nTop gates: ${formatGateSummary(gateBreakdown)}`
+    : baseText;
   const payload: RecallAlertPayload = {
     kind: 'low-recall',
     ratio,
     threshold: MIN_RECALL_RATIO_THRESHOLD,
     sampleSize,
     observedAt: now,
-    text:
-      `subway-now recall alert — ${(ratio * 100).toFixed(1)}% of trips fell below ` +
-      `${MIN_RECALL_RATIO_THRESHOLD} recall (sample=${sampleSize})`,
+    timeWindow: { from: now - ALERT_WINDOW_MS, to: now },
+    gateBreakdown,
+    text,
   };
   const sent = await postWebhook(env.RECALL_ALERT_WEBHOOK_URL, payload, deps);
   if (!sent) return { kind: 'noop', reason: 'webhook-failed' };
@@ -194,6 +244,55 @@ async function fetchLowRecallRow(
     log('recall-alert: SQL API fetch threw', { error: String(e) });
     return null;
   }
+}
+
+/**
+ * Gate suppression breakdown fetch. payload root cause 단서 전용 — 실패는 빈 배열 반환,
+ * alert 본 흐름(ratio breach 발사)은 차단하지 않는다. 그래서 별도 fail-soft 경로.
+ *
+ * 정렬: count desc로 SQL이 이미 정렬해 보내지만, 본 함수가 truncate 책임을 가지므로
+ * 다시 정렬해 race-safe하게 top N만 보존한다.
+ */
+async function fetchGateBreakdown(
+  env: Env,
+  deps: RecallAlertDeps,
+): Promise<RecallAlertGateEntry[]> {
+  const accountId = env.CF_ACCOUNT_ID as string;
+  const token = env.CF_API_TOKEN as string;
+  const log = deps.log ?? (() => undefined);
+  try {
+    const res = await deps.fetchImpl(SQL_API_URL_TEMPLATE(accountId), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'text/plain',
+      },
+      body: gateSuppressionDistribution7dQuery,
+    });
+    if (!res.ok) {
+      log('recall-alert: gate SQL non-ok', { status: res.status });
+      return [];
+    }
+    const body = (await res.json()) as GateSqlResponse;
+    const rows = body.data ?? [];
+    const entries: RecallAlertGateEntry[] = [];
+    for (const r of rows) {
+      if (typeof r.reason !== 'string' || r.reason.length === 0) continue;
+      if (typeof r.suppressed_count !== 'number' || !Number.isFinite(r.suppressed_count)) continue;
+      if (r.suppressed_count <= 0) continue;
+      entries.push({ reason: r.reason, count: r.suppressed_count });
+    }
+    entries.sort((a, b) => b.count - a.count);
+    return entries.slice(0, ALERT_GATE_BREAKDOWN_TOP_N);
+  } catch (e) {
+    log('recall-alert: gate SQL fetch threw', { error: String(e) });
+    return [];
+  }
+}
+
+/** "reason1=12, reason2=7" 형태 단일 줄 — Slack `text` 가독성 위해 top N만. */
+function formatGateSummary(entries: RecallAlertGateEntry[]): string {
+  return entries.map((e) => `${e.reason}=${e.count}`).join(', ');
 }
 
 /**

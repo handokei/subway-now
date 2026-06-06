@@ -8,11 +8,16 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ALERT_DEDUP_KEY,
   ALERT_DEDUP_WINDOW_MS,
+  ALERT_GATE_BREAKDOWN_TOP_N,
+  ALERT_WINDOW_MS,
   SQL_API_URL_TEMPLATE,
   evaluateAndMaybeAlert,
 } from '../recallAlerts';
 import { MIN_RECALL_RATIO_THRESHOLD } from '../metrics';
-import { lowRecallTripRatioQuery } from '../recallQueries';
+import {
+  gateSuppressionDistribution7dQuery,
+  lowRecallTripRatioQuery,
+} from '../recallQueries';
 import type { Env } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -78,6 +83,15 @@ function okResponse(): Response {
   return new Response('ok', { status: 200 });
 }
 
+/** Gate breakdown SQL 응답 stub. row=[]면 빈 data 반환(graceful empty). */
+function gateApiResponse(rows: Array<{ reason: string; count: number }>): Response {
+  const data = rows.map((r) => ({ reason: r.reason, suppressed_count: r.count }));
+  return new Response(JSON.stringify({ data }), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
 describe('evaluateAndMaybeAlert — graceful no-op', () => {
   it('TELEMETRY binding 부재 시 fetch 호출 없이 no-op', async () => {
     const kv = new InMemoryKV();
@@ -122,13 +136,19 @@ describe('evaluateAndMaybeAlert — graceful no-op', () => {
 });
 
 describe('evaluateAndMaybeAlert — breach 발사', () => {
-  it('ratio > 0 → webhook POST + dedup stamp 갱신', async () => {
+  it('ratio > 0 → webhook POST + dedup stamp 갱신 + timeWindow/gateBreakdown 포함', async () => {
     const kv = new InMemoryKV();
     const env = buildEnv(kv);
     const fetchImpl = vi
       .fn()
       .mockResolvedValueOnce(
         sqlApiResponse({ totalTokens: 100, lowRecallTokens: 10, lowRecallRatio: 0.1 }),
+      )
+      .mockResolvedValueOnce(
+        gateApiResponse([
+          { reason: 'gate-accuracy', count: 12 },
+          { reason: 'gate-jump', count: 7 },
+        ]),
       )
       .mockResolvedValueOnce(okResponse());
     const result = await evaluateAndMaybeAlert(env, {
@@ -144,24 +164,38 @@ describe('evaluateAndMaybeAlert — breach 발사', () => {
       threshold: MIN_RECALL_RATIO_THRESHOLD,
       sampleSize: 100,
       observedAt: NOW,
+      timeWindow: { from: NOW - ALERT_WINDOW_MS, to: NOW },
+      gateBreakdown: [
+        { reason: 'gate-accuracy', count: 12 },
+        { reason: 'gate-jump', count: 7 },
+      ],
     });
     expect(result.payload.text).toContain('10.0%');
     expect(result.payload.text).toContain('sample=100');
+    expect(result.payload.text).toContain('gate-accuracy=12');
+    expect(result.payload.text).toContain('gate-jump=7');
 
-    // SQL API call shape 검증.
+    // 1차 SQL: ratio query.
     const [sqlUrl, sqlInit] = fetchImpl.mock.calls[0] as [string, RequestInit];
     expect(sqlUrl).toBe(SQL_API_URL_TEMPLATE('acct-123'));
     expect(sqlInit.method).toBe('POST');
     expect(sqlInit.body).toBe(lowRecallTripRatioQuery);
     expect((sqlInit.headers as Record<string, string>).Authorization).toBe('Bearer token-abc');
 
-    // Webhook call shape 검증.
-    const [webhookUrl, webhookInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    // 2차 SQL: gate breakdown query.
+    const [gateUrl, gateInit] = fetchImpl.mock.calls[1] as [string, RequestInit];
+    expect(gateUrl).toBe(SQL_API_URL_TEMPLATE('acct-123'));
+    expect(gateInit.body).toBe(gateSuppressionDistribution7dQuery);
+
+    // 3차: Webhook POST.
+    const [webhookUrl, webhookInit] = fetchImpl.mock.calls[2] as [string, RequestInit];
     expect(webhookUrl).toBe('https://hooks.slack.test/xyz');
     expect(webhookInit.method).toBe('POST');
     const sentPayload = JSON.parse(webhookInit.body as string);
     expect(sentPayload.kind).toBe('low-recall');
     expect(sentPayload.ratio).toBe(0.1);
+    expect(sentPayload.timeWindow).toEqual({ from: NOW - ALERT_WINDOW_MS, to: NOW });
+    expect(sentPayload.gateBreakdown).toHaveLength(2);
 
     // Dedup stamp 기록되어야 함.
     expect(await kv.get(ALERT_DEDUP_KEY)).toBe(String(NOW));
@@ -234,6 +268,7 @@ describe('evaluateAndMaybeAlert — dedup', () => {
       .mockResolvedValueOnce(
         sqlApiResponse({ totalTokens: 50, lowRecallTokens: 5, lowRecallRatio: 0.1 }),
       )
+      .mockResolvedValueOnce(gateApiResponse([]))
       .mockResolvedValueOnce(okResponse());
     const result = await evaluateAndMaybeAlert(env, {
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -251,6 +286,7 @@ describe('evaluateAndMaybeAlert — dedup', () => {
       .mockResolvedValueOnce(
         sqlApiResponse({ totalTokens: 10, lowRecallTokens: 1, lowRecallRatio: 0.1 }),
       )
+      .mockResolvedValueOnce(gateApiResponse([]))
       .mockResolvedValueOnce(okResponse());
     const result = await evaluateAndMaybeAlert(env, {
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -302,6 +338,7 @@ describe('evaluateAndMaybeAlert — fail-soft', () => {
       .mockResolvedValueOnce(
         sqlApiResponse({ totalTokens: 100, lowRecallTokens: 10, lowRecallRatio: 0.1 }),
       )
+      .mockResolvedValueOnce(gateApiResponse([]))
       .mockResolvedValueOnce(new Response('err', { status: 503 }));
     const result = await evaluateAndMaybeAlert(env, {
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -322,6 +359,7 @@ describe('evaluateAndMaybeAlert — fail-soft', () => {
       .mockResolvedValueOnce(
         sqlApiResponse({ totalTokens: 100, lowRecallTokens: 10, lowRecallRatio: 0.1 }),
       )
+      .mockResolvedValueOnce(gateApiResponse([]))
       .mockRejectedValueOnce(new Error('connection refused'));
     const result = await evaluateAndMaybeAlert(env, {
       fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -345,5 +383,121 @@ describe('evaluateAndMaybeAlert — fail-soft', () => {
       now: () => NOW,
     });
     expect(result).toEqual({ kind: 'noop', reason: 'fetch-failed' });
+  });
+});
+
+describe('evaluateAndMaybeAlert — gate breakdown', () => {
+  function firedBreachRatioStub() {
+    return sqlApiResponse({ totalTokens: 100, lowRecallTokens: 10, lowRecallRatio: 0.1 });
+  }
+
+  it('top N(5) 초과 시 count desc 정렬 후 상위 N개만 보존', async () => {
+    const env = buildEnv(new InMemoryKV());
+    const tooMany = Array.from({ length: ALERT_GATE_BREAKDOWN_TOP_N + 3 }, (_, i) => ({
+      reason: `gate-${i}`,
+      count: (i + 1) * 10, // 10, 20, 30, ... (asc 입력)
+    }));
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(firedBreachRatioStub())
+      .mockResolvedValueOnce(gateApiResponse(tooMany))
+      .mockResolvedValueOnce(okResponse());
+    const result = await evaluateAndMaybeAlert(env, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(result.kind).toBe('fired');
+    if (result.kind !== 'fired') throw new Error('unreachable');
+    expect(result.payload.gateBreakdown).toHaveLength(ALERT_GATE_BREAKDOWN_TOP_N);
+    // desc 정렬 보장: 첫 항목이 가장 큰 count.
+    const counts = result.payload.gateBreakdown.map((e) => e.count);
+    expect(counts).toEqual([...counts].sort((a, b) => b - a));
+    expect(counts[0]).toBe((ALERT_GATE_BREAKDOWN_TOP_N + 3) * 10);
+  });
+
+  it('count=0 또는 음수, 비정상 row는 drop', async () => {
+    const env = buildEnv(new InMemoryKV());
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(firedBreachRatioStub())
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            data: [
+              { reason: 'gate-jump', suppressed_count: 5 },
+              { reason: 'gate-noop', suppressed_count: 0 },
+              { reason: '', suppressed_count: 3 },
+              { reason: 'gate-neg', suppressed_count: -1 },
+              { reason: 'gate-nan', suppressed_count: 'oops' },
+              { reason: 'gate-missing' },
+            ],
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(okResponse());
+    const result = await evaluateAndMaybeAlert(env, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(result.kind).toBe('fired');
+    if (result.kind !== 'fired') throw new Error('unreachable');
+    expect(result.payload.gateBreakdown).toEqual([{ reason: 'gate-jump', count: 5 }]);
+  });
+
+  it('gate SQL non-ok → 빈 배열, alert는 정상 발사', async () => {
+    const env = buildEnv(new InMemoryKV());
+    const log = vi.fn();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(firedBreachRatioStub())
+      .mockResolvedValueOnce(new Response('err', { status: 500 }))
+      .mockResolvedValueOnce(okResponse());
+    const result = await evaluateAndMaybeAlert(env, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      log,
+    });
+    expect(result.kind).toBe('fired');
+    if (result.kind !== 'fired') throw new Error('unreachable');
+    expect(result.payload.gateBreakdown).toEqual([]);
+    // baseText만 — gate top 줄 미포함
+    expect(result.payload.text).not.toContain('Top gates:');
+    expect(log).toHaveBeenCalledWith('recall-alert: gate SQL non-ok', { status: 500 });
+  });
+
+  it('gate SQL throw → 빈 배열, alert는 정상 발사 + log', async () => {
+    const env = buildEnv(new InMemoryKV());
+    const log = vi.fn();
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(firedBreachRatioStub())
+      .mockRejectedValueOnce(new Error('gate net down'))
+      .mockResolvedValueOnce(okResponse());
+    const result = await evaluateAndMaybeAlert(env, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      log,
+    });
+    expect(result.kind).toBe('fired');
+    if (result.kind !== 'fired') throw new Error('unreachable');
+    expect(result.payload.gateBreakdown).toEqual([]);
+    expect(log).toHaveBeenCalledWith('recall-alert: gate SQL fetch threw', {
+      error: 'Error: gate net down',
+    });
+  });
+
+  it('gate SQL throw + log 미주입 시 silent (default noop logger)', async () => {
+    const env = buildEnv(new InMemoryKV());
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(firedBreachRatioStub())
+      .mockRejectedValueOnce(new Error('x'))
+      .mockResolvedValueOnce(okResponse());
+    const result = await evaluateAndMaybeAlert(env, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(result.kind).toBe('fired');
   });
 });

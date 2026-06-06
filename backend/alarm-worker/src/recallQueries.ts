@@ -147,6 +147,28 @@ FROM (
 `.trim();
 
 /**
+ * **Q4. Gate suppression breakdown — 7d window (alert payload 전용).**
+ *
+ * `gateSuppressionDistributionQuery`는 dashboard의 14d 안정 윈도우 SSOT라 변경 부담이 크다.
+ * Alert payload는 `lowRecallTripRatioQuery`의 7d 임계 윈도우와 의미가 일치해야 receiver가
+ * `timeWindow.from`/`to`를 그대로 dashboard deep-link에 쓸 수 있다. 따라서 동일 분포 query를
+ * 7d 윈도우로 별도 노출 — SQL 본문 외엔 동일.
+ *
+ * 사용처
+ *   - `recallAlerts.ts:fetchGateBreakdown` — alert payload `gateBreakdown` 임베드.
+ */
+export const gateSuppressionDistribution7dQuery = `
+SELECT
+  substring(blob1, ${GATE_LABEL_PREFIX.length + 1}) AS reason,
+  SUM(double1) AS suppressed_count
+FROM ${RECALL_DATASET}
+WHERE timestamp > NOW() - INTERVAL '7' DAY
+  AND blob1 LIKE '${GATE_LABEL_PREFIX}%'
+GROUP BY reason
+ORDER BY suppressed_count DESC
+`.trim();
+
+/**
  * Query 목록 — 카탈로그 형태로 노출해 endpoint가 순회. 새 query 추가 시 본 배열에 등록만.
  */
 export interface RecallQueryEntry {
