@@ -7,7 +7,7 @@ import {
   AUTO_RELEASE_GRACE_MS,
 } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
-import { getTransferLegs } from '../../route/utils/transferLegs';
+import { getTransferLegs } from '../../../shared/utils/transferLegs';
 
 const logger = createLogger('useBoardingLockAutoRelease');
 

@@ -3,7 +3,7 @@ import type {
   DirectRoute,
   MultiTransferRoute,
   TransferRoute,
-} from '../../../../shared/utils/stationRoute';
+} from '../stationRoute';
 
 describe('getTransferLegs', () => {
   it('null → []', () => {

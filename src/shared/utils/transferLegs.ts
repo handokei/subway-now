@@ -11,8 +11,8 @@
  *  - TransferRoute: 1개 leg.
  *  - MultiTransferRoute: transfers.length 개 leg.
  */
-import type { Route } from '../../../shared/utils/stationRoute';
-import type { LineNumber } from '../../../shared/types/station';
+import type { Route } from './stationRoute';
+import type { LineNumber } from '../types/station';
 
 export interface TransferLeg {
   /** 환승역 이름 (stations.json의 name과 일치). */

@@ -1,3 +1,10 @@
+/* eslint-disable import/no-restricted-paths --
+ * useStateRehydration은 cross-feature orchestrator로 본체에서 동일 disable 옵트인이
+ * 적용되어 있다 (src/shared/hooks/useStateRehydration.ts 헤더 주석 참조). 본 테스트는
+ * 해당 orchestrator를 검증하므로 동일 store에 대한 jest.spyOn이 필수. CLAUDE.md
+ * "본질적 cross-feature orchestrator는 파일 헤더의 eslint-disable import/no-restricted-paths
+ * 주석으로 명시 옵트인한다" 규칙에 따라 동일 옵트인 적용.
+ */
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { AppState, type AppStateStatus } from 'react-native';
 import { useStateRehydration } from '../useStateRehydration';
