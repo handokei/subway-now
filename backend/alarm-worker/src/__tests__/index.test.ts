@@ -1484,12 +1484,14 @@ describe('GET /metrics/recall/summary (#919 후속)', () => {
       dataset: string;
       available: boolean;
       minRecallRatioThreshold: number;
+      opsPageUrl: string;
       queries: { id: string; description: string; sql: string }[];
     };
     expect(body.dataset).toBe('silent_push_telemetry');
     expect(body.available).toBe(false);
     expect(body.minRecallRatioThreshold).toBeGreaterThan(0);
     expect(body.minRecallRatioThreshold).toBeLessThanOrEqual(1);
+    expect(body.opsPageUrl).toMatch(/^https:\/\//);
     expect(body.queries.length).toBeGreaterThanOrEqual(3);
     for (const q of body.queries) {
       expect(typeof q.id).toBe('string');

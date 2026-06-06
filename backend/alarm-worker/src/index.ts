@@ -36,7 +36,7 @@ import {
   validateRecallUpload,
 } from './recallTelemetry';
 import { MIN_RECALL_RATIO_THRESHOLD } from './metrics';
-import { RECALL_DATASET, RECALL_QUERIES } from './recallQueries';
+import { RECALL_DATASET, RECALL_OPS_PAGE_URL, RECALL_QUERIES } from './recallQueries';
 import {
   recordPrescheduledUpload,
   validatePrescheduledUpload,
@@ -319,6 +319,7 @@ app.get('/metrics/recall/summary', (c) => {
     dataset: RECALL_DATASET,
     available: c.env.TELEMETRY !== undefined,
     minRecallRatioThreshold: MIN_RECALL_RATIO_THRESHOLD,
+    opsPageUrl: RECALL_OPS_PAGE_URL,
     queries: RECALL_QUERIES,
   });
 });
