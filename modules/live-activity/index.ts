@@ -97,3 +97,25 @@ export function addActivityEndedListener(
 ): EventSubscription {
   return LiveActivityModule?.addListener('onActivityEnded', listener) ?? NOOP_SUBSCRIPTION;
 }
+
+/**
+ * 사용자가 Live Activity를 직접 swipe-to-dismiss 한 시점 구독 (#967).
+ * 앱이 `endLiveActivity()` 호출로 종료된 경우는 emit되지 않는다 — dismiss sentinel은
+ * 사용자 의도만 반영해야 silent push의 LA refresh 차단 정책(#926)이 올바르게 동작한다.
+ *
+ * payload:
+ *  - dismissedAt: unix ms (native 시각)
+ *  - reason: 현재는 항상 `'user'` — native가 사용자 swipe 경로에서만 emit
+ */
+export interface ActivityDismissedEvent {
+  dismissedAt: number;
+  reason: 'user';
+}
+
+export function addActivityDismissedListener(
+  listener: (event: ActivityDismissedEvent) => void,
+): EventSubscription {
+  return (
+    LiveActivityModule?.addListener('onActivityDismissed', listener) ?? NOOP_SUBSCRIPTION
+  );
+}
