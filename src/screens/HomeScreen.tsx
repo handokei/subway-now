@@ -48,6 +48,7 @@ import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingL
 import { useDestinationAutoClear } from '../features/alarm/hooks/useDestinationAutoClear';
 import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
 import { useCurrentStationConfirmModal } from '../features/nearest-station/hooks/useCurrentStationConfirmModal';
+import { useWifiStation } from '../features/nearest-station/hooks/useWifiStation';
 import { CurrentStationConfirmModal } from '../features/nearest-station/components/CurrentStationConfirmModal';
 import { MisBoardingBanner } from '../features/route/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../features/route/components/MisBoardingReselectModal';
@@ -156,7 +157,10 @@ export default function HomeScreen() {
   const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal });
 
   // #914 (F4) — 1탭 현재역 확정 모달. 자동 추정이 locationUncertain으로 길어지면 후보 1~3개를
-  // 카드로 노출, 1탭 = customOrigin 적용. wifiStation 네이티브 브릿지(F2 후속)는 미연결이라 null.
+  // 카드로 노출, 1탭 = customOrigin 적용.
+  // #913 (F2) — wifiStation: 네이티브 SSID 브릿지(NEHotspotNetwork / WifiManager) → lookupStationBySsid.
+  // 매칭되면 useStationCandidates가 단일 후보로 자동 확정.
+  const wifiStation = useWifiStation();
   const [confirmAutoToast, setConfirmAutoToast] = useState<string | null>(null);
   const handleConfirmStation = useCallback(
     (station: Station) => {
@@ -167,7 +171,7 @@ export default function HomeScreen() {
   const confirmModal = useCurrentStationConfirmModal({
     locationUncertain,
     userLocation,
-    wifiStation: null,
+    wifiStation,
     hasEffectiveOrigin: customOrigin !== null || result?.station != null,
     onConfirmStation: handleConfirmStation,
   });

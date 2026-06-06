@@ -1,0 +1,10 @@
+{
+  "platforms": ["ios", "android"],
+  "ios": {
+    "modules": ["WifiSsidModule"],
+    "podspecPath": "WifiSsid.podspec"
+  },
+  "android": {
+    "modules": ["com.subwaynow.wifissid.WifiSsidModule"]
+  }
+}
