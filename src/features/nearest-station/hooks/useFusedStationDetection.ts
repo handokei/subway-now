@@ -27,6 +27,7 @@
 
 import { useMemo } from 'react';
 import {
+  STATION_DETECTION_SIGNALS,
   fuseStationDetectionSignals,
   type StationDetectionSignalInput,
   type StationDetectionVerdict,
@@ -99,13 +100,44 @@ export function buildFusionSignalInput(
 }
 
 /**
- * 신호 입력 → fusion verdict. 입력 reference가 동일하면 동일 verdict 캐시.
+ * #963 — fusion 신호 조합의 안정 식별자. unavailable까지 구분해서 인코딩한다.
+ *
+ * 인코딩: STATION_DETECTION_SIGNALS 순서대로 각 신호를 `T`(true) / `F`(false) / `U`(unavailable)
+ * 문자 하나로 합친 고정 길이 문자열. 신호 추가 시 STATION_DETECTION_SIGNALS 갱신만으로 길이가
+ * 자연스럽게 늘어난다.
+ *
+ * 용도: `useFusedNearestStation`의 fusionDebugBuffer dedup key에 포함시켜 같은 station에서
+ * 신호 조합 변화(예: motion stationary flip, barometer subsurface flip)도 별도 entry로 보존.
+ * P1.2 follow-up (PR #944 본문 참고) — decisionKey가 source/confidence/stationId만 비교해
+ * 신호 변화가 측정 데이터에서 누락되던 버그 수정.
+ */
+export function buildFusionSignalMask(input: StationDetectionSignalInput): string {
+  let mask = '';
+  for (const name of STATION_DETECTION_SIGNALS) {
+    const value = input[name];
+    if (value === undefined) {
+      mask += 'U';
+    } else if (value) {
+      mask += 'T';
+    } else {
+      mask += 'F';
+    }
+  }
+  return mask;
+}
+
+/**
+ * 신호 입력 → fusion verdict + signal mask. 입력 reference가 동일하면 동일 결과 캐시.
+ *
+ * signalMask는 호출자(useFusedNearestStation)의 측정 dedup key에 포함되어 신호 조합 변화도
+ * entry로 보존한다 (#963).
  */
 export function useFusedStationDetection(
   input: FusedStationDetectionInput,
-): StationDetectionVerdict {
+): StationDetectionVerdict & { readonly signalMask: string } {
   return useMemo(() => {
     const signalInput = buildFusionSignalInput(input);
-    return fuseStationDetectionSignals(signalInput);
+    const verdict = fuseStationDetectionSignals(signalInput);
+    return { ...verdict, signalMask: buildFusionSignalMask(signalInput) };
   }, [input]);
 }

@@ -1331,4 +1331,54 @@ describe('useFusedNearestStation', () => {
       expect(result.current.confidence).toBe('arrival-confirmed');
     });
   });
+
+  describe('#963 fusionDebugBuffer decisionKey signal mask', () => {
+    beforeEach(() => {
+      mockUseNearest.mockReturnValue(gpsBase());
+      mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions.mockReturnValue(positionRet(null));
+    });
+
+    const renderWithMotion = (motionStationary: boolean | undefined) =>
+      renderHook(
+        ({ ms }: { ms: boolean | undefined }) =>
+          useFusedNearestStation(undefined, undefined, undefined, null, null, ms),
+        { initialProps: { ms: motionStationary } },
+      );
+
+    it('같은 source/confidence/stationId + 다른 signal 조합 → 별도 entry로 보존', () => {
+      const {
+        clearFusionDebugEntries,
+        getFusionDebugEntries,
+      } = jest.requireActual('../../utils/fusionDebugBuffer') as typeof import('../../utils/fusionDebugBuffer');
+      clearFusionDebugEntries();
+
+      // motionStationary=false → mask "UFU"
+      const { rerender } = renderWithMotion(false);
+      // motionStationary=true → 같은 source/confidence/stationId, mask "UTU"
+      rerender({ ms: true });
+      // motionStationary=undefined → mask "UUU"
+      rerender({ ms: undefined });
+
+      const entries = getFusionDebugEntries().filter((e) => e.kind === 'fusion');
+      // 동일 source/confidence/stationId여도 mask가 다르므로 3개 보존
+      expect(entries.length).toBe(3);
+    });
+
+    it('완전 동일 signal 조합 재렌더 → dedup 유지 (entry 1개)', () => {
+      const {
+        clearFusionDebugEntries,
+        getFusionDebugEntries,
+      } = jest.requireActual('../../utils/fusionDebugBuffer') as typeof import('../../utils/fusionDebugBuffer');
+      clearFusionDebugEntries();
+
+      const { rerender } = renderWithMotion(true);
+      rerender({ ms: true });
+      rerender({ ms: true });
+
+      const entries = getFusionDebugEntries().filter((e) => e.kind === 'fusion');
+      expect(entries.length).toBe(1);
+    });
+  });
 });
