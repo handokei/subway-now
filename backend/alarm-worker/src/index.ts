@@ -34,6 +34,8 @@ import {
   recordRecallUpload,
   validateRecallUpload,
 } from './recallTelemetry';
+import { MIN_RECALL_RATIO_THRESHOLD } from './metrics';
+import { RECALL_DATASET, RECALL_QUERIES } from './recallQueries';
 import {
   tokenPrefix,
   validateTelemetryUpload,
@@ -254,6 +256,27 @@ app.post('/telemetry/recall', async (c) => {
     }),
   );
   return c.json({ ok: true });
+});
+
+/**
+ * Recall KPI 집계 query 노출 (#919, Epic #912 A4 후속).
+ *
+ * 운영 대시보드(Grafana / Notion KPI 카드)가 Cloudflare Analytics Engine SQL HTTP API로
+ * 그대로 호출할 수 있는 쿼리 문자열을 SSOT로 반환한다. Worker AE binding은 *write* 전용이라
+ * 워커 자체가 SQL을 실행하지 않는다 — 본 엔드포인트는 query catalog + dataset metadata만 노출.
+ *
+ * `TELEMETRY` binding이 활성화되지 않은 환경에서도 query는 그대로 반환된다(available=false).
+ * 대시보드는 available 플래그로 "데이터 미수집 중" 안내 배너를 노출할 수 있다.
+ *
+ * Privacy: query / dataset 메타만 노출 — 사용자 식별자/원문 미노출.
+ */
+app.get('/metrics/recall/summary', (c) => {
+  return c.json({
+    dataset: RECALL_DATASET,
+    available: c.env.TELEMETRY !== undefined,
+    minRecallRatioThreshold: MIN_RECALL_RATIO_THRESHOLD,
+    queries: RECALL_QUERIES,
+  });
 });
 
 /**
