@@ -1456,6 +1456,18 @@ describe('POST /telemetry/recall (#919)', () => {
   });
 });
 
+describe('POST /telemetry/prescheduled (#918 A3)', () => {
+  runTelemetryEndpointSuite('/telemetry/prescheduled', {
+    token: 'aabbccdd11223344',
+    tripStart: 1_000,
+    tripEnd: 2_000,
+    scheduledCount: 5,
+    firedCount: 4,
+    stationAccurateCount: 3,
+    fireDeltaSamplesMs: [10, -5, 0, 100],
+  });
+});
+
 describe('GET /metrics/recall/summary (#919 후속)', () => {
   async function get(env: Env): Promise<Response> {
     return app.fetch(

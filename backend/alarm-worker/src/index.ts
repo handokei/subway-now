@@ -37,6 +37,10 @@ import {
 import { MIN_RECALL_RATIO_THRESHOLD } from './metrics';
 import { RECALL_DATASET, RECALL_QUERIES } from './recallQueries';
 import {
+  recordPrescheduledUpload,
+  validatePrescheduledUpload,
+} from './prescheduledTelemetry';
+import {
   tokenPrefix,
   validateTelemetryUpload,
   writeTelemetryDataPoints,
@@ -252,6 +256,45 @@ app.post('/telemetry/recall', async (c) => {
       expectedStops: payload.expectedStops,
       firedStops: payload.firedStops,
       recallPct: payload.recallPct,
+      sink: writer ? 'ae' : 'none',
+    }),
+  );
+  return c.json({ ok: true });
+});
+
+/**
+ * A3 사전 예약 효과 텔레메트리 upload (#918, Epic #912 P1).
+ *
+ * Trip 1건 종료 시 client(`prescheduledLogTelemetry.computeAndUploadTripPrescheduled`)가 산출한
+ * miss rate / station 정확도 / fire delta sample을 Analytics Engine에 적재한다.
+ * recall과 동형 — client에 idempotency 가드 (LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY).
+ *
+ * Trip 존재 여부 확인 안 함 — trip 만료 케이스에도 telemetry 보존.
+ * TELEMETRY binding 미설정 시 graceful no-op.
+ */
+app.post('/telemetry/prescheduled', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const payload = validatePrescheduledUpload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const writer = c.env.TELEMETRY;
+  if (writer) {
+    recordPrescheduledUpload(writer, payload);
+  }
+  console.log(
+    JSON.stringify({
+      msg: 'prescheduled uploaded',
+      tokenPrefix: tokenPrefix(payload.token),
+      scheduledCount: payload.scheduledCount,
+      firedCount: payload.firedCount,
+      stationAccurateCount: payload.stationAccurateCount,
+      deltaSamples: payload.fireDeltaSamplesMs.length,
       sink: writer ? 'ae' : 'none',
     }),
   );

@@ -7,6 +7,7 @@
 
 import type { SilentPushTelemetryPayload } from '../utils/telemetryAggregation';
 import type { TripRecallResult } from '../utils/recallMetrics';
+import type { PrescheduledMetricsResult } from '../utils/prescheduledMetrics';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('telemetryBackend');
@@ -122,6 +123,51 @@ export async function uploadRecallTelemetry(
     return { ok: true, status: res.status };
   } catch (e) {
     log.warn('recall upload error', e);
+    return { ok: false };
+  }
+}
+
+/**
+ * A3 사전 예약 효과 텔레메트리 1건을 backend `/telemetry/prescheduled`로 upload (#918, Epic #912 P1).
+ *
+ * recall과 같은 graceful 정책 — URL/token 부재 시 skipped, fetch 실패 시 ok=false. throw 안 함.
+ */
+export async function uploadPrescheduledTelemetry(
+  token: string,
+  metrics: PrescheduledMetricsResult,
+): Promise<TelemetryUploadResult> {
+  const base = getBackendUrl();
+  if (!base) {
+    log.info('ALARM_BACKEND_URL not set — skip prescheduled upload');
+    return { ok: false, skipped: true };
+  }
+  if (!token) {
+    return { ok: false, skipped: true };
+  }
+
+  const body = {
+    token,
+    tripStart: metrics.tripStart,
+    tripEnd: metrics.tripEnd,
+    scheduledCount: metrics.scheduledCount,
+    firedCount: metrics.firedCount,
+    stationAccurateCount: metrics.stationAccurateCount,
+    fireDeltaSamplesMs: metrics.fireDeltaSamplesMs,
+  };
+
+  try {
+    const res = await fetchWithTimeout(`${base}/telemetry/prescheduled`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      log.warn(`prescheduled upload failed status=${res.status}`);
+      return { ok: false, status: res.status };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    log.warn('prescheduled upload error', e);
     return { ok: false };
   }
 }

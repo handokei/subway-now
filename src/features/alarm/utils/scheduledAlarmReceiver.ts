@@ -9,6 +9,7 @@ import {
 } from './notificationState';
 import { DESTINATION_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
+import { recordFiredAlarm } from './prescheduledMetrics';
 
 const logger = createLogger('ScheduledAlarmReceiver');
 
@@ -37,7 +38,14 @@ async function getCurrentDestinationId(): Promise<string | null> {
  * - LAST_FIRED_ALARM_STATION_NAME_KEY를 해당 역 이름으로 갱신 → BGAppRefreshTask가
  *   다음 사이클에서 Arrival API를 올바른 기준역으로 호출.
  */
-export async function reconcileScheduledAlarmDelivery(identifier: string): Promise<void> {
+export async function reconcileScheduledAlarmDelivery(
+  identifier: string,
+  actualFireMs: number = Date.now(),
+): Promise<void> {
+  // #918 A3 measurement — `tba:` prefix 사전 예약 알람 발사 시각 ledger 기록.
+  // `alarm:` prefix와 무관 — graceful no-op for non-tba identifier.
+  await recordFiredAlarm({ identifier, actualFireMs });
+
   const parsed = parseScheduledAlarmIdentifier(identifier);
   if (!parsed) return;
 
@@ -63,6 +71,13 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
   } catch (e) {
     logger.error('delivered 알람 조회 실패:', e);
     return;
+  }
+
+  // #918 A3 — `tba:` prefix BG-fired 알람도 ledger에 fire ts 기록. Notification.date(epoch ms)
+  // 가 OS의 실제 발사 시각 — drain 시점(=FG resume)이 아닌 발사 시점을 정확히 측정.
+  for (const n of presented) {
+    const fireMs = typeof n.date === 'number' ? n.date : Date.now();
+    await recordFiredAlarm({ identifier: n.request.identifier, actualFireMs: fireMs });
   }
 
   const destinationId = await getCurrentDestinationId();
@@ -123,7 +138,11 @@ export function registerScheduledAlarmListener(): ScheduledAlarmListenerHandle {
   initialDrainPromise = drainDeliveredScheduledAlarms();
 
   const notifSub = Notifications.addNotificationReceivedListener((notification) => {
-    void reconcileScheduledAlarmDelivery(notification.request.identifier);
+    // #918 A3 — Notification.date는 OS가 기록한 실제 발사 시각(epoch ms). Date.now() 폴백.
+    void reconcileScheduledAlarmDelivery(
+      notification.request.identifier,
+      typeof notification.date === 'number' ? notification.date : Date.now(),
+    );
   });
 
   const onAppStateChange = (state: AppStateStatus): void => {
