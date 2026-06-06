@@ -1306,7 +1306,7 @@ describe('useFusedNearestStation', () => {
 
     const renderWithSub = (sub?: boolean) =>
       renderHook(() =>
-        useFusedNearestStation(undefined, undefined, undefined, null, null, false, sub),
+        useFusedNearestStation(undefined, undefined, undefined, null, null, false, { subsurface: sub }),
       );
 
     it.each([

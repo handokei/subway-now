@@ -76,6 +76,23 @@ export const DEPTH_TO_PRESSURE_HPA_PER_M = 0.12;
 export const BAROMETER_ABS_TOLERANCE_HPA = 1.0;
 
 /**
+ * #921 — "기압계 정차" 신호 임계 — 30s 윈도우에서 |dP|가 이 값 이하면 stop=true.
+ *
+ * 단위: hPa.
+ *
+ * 근거:
+ *   - 지하철이 정차하면 깊이 변화 없음 → 압력 변화도 작음.
+ *   - 센서 정밀도(약 0.1 hPa)와 자연 기상 변동(분 단위 ±0.01) 사이에서 0.05 hPa 선택.
+ *   - subsurface 임계(0.3 hPa)와 직교적 — 한쪽은 "큰 변화"(이동/진입), 본 임계는 "작은 변화"(정차).
+ *   - 둘 다 false인 중간 영역(0.05 < |dP| < 0.3)은 ambient/지상 보행 — 정차 신호로 부적합.
+ *
+ * 신호 의미 (B1 fusion 'barometer-stop'):
+ *   - 정차 패턴 = readings가 30s 윈도우를 채울 만큼 있고 |dP| < 임계.
+ *   - readings 부족(<30s) → null (unavailable, fusion 입력 미제공).
+ */
+export const BAROMETER_STOP_DP_THRESHOLD_HPA = 0.05;
+
+/**
  * #903 — subsurface verdict의 hysteresis 확인 샘플 수.
  *
  * 임계(0.3hPa) 부근에서 센서 noise로 verdict가 1Hz 토글되면 useBarometer가 setSubsurface을

@@ -15,6 +15,7 @@
 import {
   BAROMETER_DPDT_WINDOW_MS,
   BAROMETER_RING_BUFFER_TTL_MS,
+  BAROMETER_STOP_DP_THRESHOLD_HPA,
   BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
 } from '../constants/barometer';
 
@@ -79,11 +80,58 @@ export function evaluateSubsurfaceEnter(
   readings: readonly BarometerReading[],
   now: number,
 ): SubsurfaceVerdict | null {
+  const window = pickDpdtWindow(readings, now);
+  if (window === null) return null;
+  return {
+    detected: window.deltaHpa >= BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA - FP_EPSILON,
+    deltaHpa: window.deltaHpa,
+    elapsedMs: window.elapsedMs,
+  };
+}
+
+/**
+ * #921 — "정차 패턴" 평가. 30s 윈도우에서 |dP|가 임계 이하면 detected=true.
+ *
+ * subsurface(상승)와 직교 신호:
+ *   - subsurface: dP >= +0.3 (지하 진입 후보)
+ *   - stop:       |dP| <= +0.05 (정차 후보)
+ *   - 중간 영역(0.05 < |dP| < 0.3): 어느 쪽도 아님 (이동 중/지상 보행).
+ *
+ * 평가 불가:
+ *   - readings 비어있음 → null
+ *   - 30s 이전 baseline 없음 → null (sensor warm-up 초기 30s 동안)
+ *
+ * fusion 입력 변환 규약(useFusedStationDetection):
+ *   - verdict.detected=true → signal 'barometer-stop' true
+ *   - verdict.detected=false → signal 'barometer-stop' false (명시적 미합의)
+ *   - verdict null → signal 미제공 (signalsAvailable 감소)
+ */
+export function evaluateBarometerStop(
+  readings: readonly BarometerReading[],
+  now: number,
+): SubsurfaceVerdict | null {
+  const window = pickDpdtWindow(readings, now);
+  if (window === null) return null;
+  return {
+    detected: Math.abs(window.deltaHpa) <= BAROMETER_STOP_DP_THRESHOLD_HPA + FP_EPSILON,
+    deltaHpa: window.deltaHpa,
+    elapsedMs: window.elapsedMs,
+  };
+}
+
+/**
+ * 30s 윈도우의 (baseline, latest) 쌍을 결정해 dP와 elapsedMs를 계산.
+ * subsurface(상승)과 stop(정지) 평가 공통 전처리 — 임계 분기만 호출자가 담당.
+ *
+ * baseline 규칙: `t <= now - BAROMETER_DPDT_WINDOW_MS`를 만족하는 readings 중 가장 최근.
+ * latest 규칙: readings 중 t가 가장 큰 것.
+ */
+function pickDpdtWindow(
+  readings: readonly BarometerReading[],
+  now: number,
+): { deltaHpa: number; elapsedMs: number } | null {
   if (readings.length === 0) return null;
-
-  // readings.length >= 1이므로 latest는 반드시 존재. reduce로 동일 보장.
   const latest = readings.reduce((acc, r) => (r.t > acc.t ? r : acc));
-
   const baselineMaxT = now - BAROMETER_DPDT_WINDOW_MS;
   let baseline: BarometerReading | null = null;
   for (const r of readings) {
@@ -91,12 +139,8 @@ export function evaluateSubsurfaceEnter(
     if (baseline === null || r.t > baseline.t) baseline = r;
   }
   if (baseline === null) return null;
-
-  const deltaHpa = latest.pressureHpa - baseline.pressureHpa;
-  const elapsedMs = latest.t - baseline.t;
   return {
-    detected: deltaHpa >= BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA - FP_EPSILON,
-    deltaHpa,
-    elapsedMs,
+    deltaHpa: latest.pressureHpa - baseline.pressureHpa,
+    elapsedMs: latest.t - baseline.t,
   };
 }

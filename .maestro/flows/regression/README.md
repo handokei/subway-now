@@ -31,11 +31,13 @@ maestro test .maestro/flows/regression/seam-b-13-19.yaml
 | 파일 | Seam | 회귀 시점 | 검증 내용 |
 | --- | --- | --- | --- |
 | `seam-b-13-19.yaml` | B | 13:19 transfer/early/건대입구 fired @ 성수 | 성수 정지 + 건대입구 5분 후 ETA → false-positive 발사 없음 |
+| `seam-e-13-39.yaml` | E | 13:39~45 lockMissing | `/boarding-lock/sync` 응답이 advanced=true여도 ghost 알람 발사 0건, chip 안정 |
+| `seam-f-13-24.yaml` | F | 13:24~28 trainCode 7174 사라짐 | 25s 시점 trainCode drop 후에도 lockMissing/ghost 알람 발사 0건 |
 
-후속 PR에서 추가 예정:
-- Seam C — 13:23 waypoint advanced + 14:02 stale chip
-- Seam E — 13:39~45 lockMissing
-- Seam F — 13:24~28 trainCode 사라짐
+보류:
+- Seam C — 13:23 waypoint advanced + 14:02 stale chip. transfer-leg / FG-return /
+  명시적 event mock 설계가 fixture-driven 구조에 맞지 않아 별도 인프라 PR 후로 미룸
+  ([[project-2026-06-05-epic-912-session-end]]).
 
 ## fixture 작성 가이드
 
@@ -57,7 +59,16 @@ maestro test .maestro/flows/regression/seam-b-13-19.yaml
       }
     ]
   },
-  "strictStations": false      // optional, 없는 역 요청 시 200 빈 응답(false) vs 404(true)
+  "strictStations": false,     // optional, 없는 역 요청 시 200 빈 응답(false) vs 404(true)
+  "boardingLockSync": {        // optional (Seam E). POST /boarding-lock/sync 응답.
+    "response": {              // 없으면 기본 { ok:true, advanced:false } 반환.
+      "ok": true,
+      "advanced": true,
+      "currentWaypoint": "군자",
+      "nextStation": "중곡",
+      "autoLockCandidate": { "trainCode": "7180", "line": "7", "subwayId": "1077" }
+    }
+  }
 }
 ```
 

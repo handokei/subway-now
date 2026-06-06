@@ -110,6 +110,19 @@ function handle(req, res) {
     return;
   }
 
+  // POST /boarding-lock/sync — Seam E (#901). fixture.boardingLockSync.response가
+  // 있으면 그대로 반환(advance/currentWaypoint/autoLockCandidate). 없으면 ACK no-op.
+  // body 파싱 실패는 graceful — sync 호출자도 fail-soft.
+  if (method === 'POST' && url === '/boarding-lock/sync') {
+    const cfg = fixture.boardingLockSync;
+    if (cfg && cfg.response) {
+      sendJson(res, 200, cfg.response);
+    } else {
+      sendJson(res, 200, { ok: true, advanced: false });
+    }
+    return;
+  }
+
   // POST /trips/*, /live-activity/* — alarm-worker.
   // 회귀 시나리오는 silent push 없이 client-side 알람만 검증하므로 ACK만 돌려준다.
   if (method === 'POST' && (url.startsWith('/trips') || url.startsWith('/live-activity'))) {
