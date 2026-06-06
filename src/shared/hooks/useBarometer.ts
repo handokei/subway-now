@@ -32,6 +32,7 @@ import {
 } from '../utils/barometerState';
 import {
   BAROMETER_SAMPLE_INTERVAL_MS,
+  BAROMETER_STOP_CONFIRM_SAMPLES,
   BAROMETER_SUBSURFACE_CONFIRM_SAMPLES,
 } from '../constants/barometer';
 
@@ -68,8 +69,9 @@ export function useBarometer(): BarometerSignal {
   // 들어와야 state flip. lastEmitted과 같은 verdict가 들어오면 카운터 리셋.
   const lastSubsurfaceRef = useRef<boolean>(false);
   const subsurfacePendingRef = useRef<number>(0);
-  // #921 — stop 신호도 동일 hysteresis. undefined(평가 불가)는 즉시 반영 — 신호 부재는
-  // hysteresis로 흐리면 안 되고 즉시 unavailable로 표기되어야 fusion이 정확하다.
+  // #921 — stop 신호도 hysteresis 적용(독립 상수 BAROMETER_STOP_CONFIRM_SAMPLES, #966).
+  // undefined(평가 불가)는 즉시 반영 — 신호 부재는 hysteresis로 흐리면 안 되고 즉시
+  // unavailable로 표기되어야 fusion이 정확하다.
   const lastStopRef = useRef<boolean | undefined>(undefined);
   const stopPendingRef = useRef<number>(0);
 
@@ -118,7 +120,7 @@ export function useBarometer(): BarometerSignal {
           return;
         }
         stopPendingRef.current += 1;
-        if (stopPendingRef.current >= BAROMETER_SUBSURFACE_CONFIRM_SAMPLES) {
+        if (stopPendingRef.current >= BAROMETER_STOP_CONFIRM_SAMPLES) {
           lastStopRef.current = stopDetected;
           stopPendingRef.current = 0;
           setStop(stopDetected);

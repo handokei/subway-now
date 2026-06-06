@@ -113,3 +113,14 @@ export const BAROMETER_ETA_TOLERANCE_SEC = 30;
  * 흡수. 3회 × 1초 = 3초 grace는 지하 진입 응답성과 false toggle 차단의 균형.
  */
 export const BAROMETER_SUBSURFACE_CONFIRM_SAMPLES = 3;
+
+/**
+ * #966 — stop verdict의 hysteresis 확인 샘플 수 (#921 P1.5 follow-up).
+ *
+ * subsurface와 동일 사유로 hysteresis 적용 — 단, 임계(0.05hPa)와 false-positive 비용이
+ * 다르다(stop=true는 사용자에게 "도착" 신호로 노출 가능성, subsurface=true는 내부 게이트만).
+ * 튜닝을 독립 조정할 수 있도록 별도 상수로 분리. 초기값은 회귀 방지를 위해 3 (subsurface와
+ * 동일). 실측 후 stop은 false-positive 비용이 더 크면 4~5로 늘리고, subsurface는 응답성을
+ * 위해 2로 줄이는 식으로 각각 따로 조정 가능.
+ */
+export const BAROMETER_STOP_CONFIRM_SAMPLES = 3;
