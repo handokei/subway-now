@@ -49,7 +49,10 @@
     "locationUncertainTitle": "Locating",
     "locationUncertainDescription": "GPS accuracy is low,\nso we can't pinpoint your location.\nWe'll retry automatically.",
     "refresh": "Refresh",
-    "boardingProximityHint": "Move closer to the boarding station to pick a train"
+    "boardingProximityHint": "Move closer to the boarding station to pick a train",
+    "boardingTrainListTitle": "Pick your train",
+    "boardingTrainListEmpty": "No upcoming trains.",
+    "misBoardingToast": "Can't find your train. Please reselect."
   },
   "settings": {
     "title": "Settings",

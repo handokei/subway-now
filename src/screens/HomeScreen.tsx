@@ -646,7 +646,7 @@ export default function HomeScreen() {
       )}
       <Toast
         visible={misBoardingToastVisible}
-        message="탑승 열차를 찾을 수 없어요. 다시 선택해주세요."
+        message={t('home.misBoardingToast')}
         onDismiss={handleMisBoardingToastDismiss}
         accent={colors.warn}
         testID="mis-boarding-toast"

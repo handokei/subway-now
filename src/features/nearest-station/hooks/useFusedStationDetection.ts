@@ -14,13 +14,19 @@
  * 신호 변환 규약:
  *   - 'barometer-stop'    ← BarometerSignal.stop (undefined → unavailable)
  *   - 'motion-stationary' ← useMotionActivity()의 stationary boolean
- *   - 'arvlcd-arrived'    ← lockedTrainCode 매칭 row의 arvlCd가 ARRIVED|ENTERING이면 true
+ *   - 'arvlcd-arrived'    ← arrival 응답의 arvlCd 평가 (pre/post-boarding 모드 분기, #962):
+ *       - lockedTrainCode != null (post-boarding): 매칭 row의 arvlCd가 ARRIVED|ENTERING이면 true.
+ *           정확한 trainCode 매칭으로 false positive 가능성 낮음 (strong path).
+ *       - lockedTrainCode == null (pre-boarding): up/down 어느 row든 arvlCd가 ARRIVED|ENTERING이면 true.
+ *           아직 어떤 열차를 탔는지 모르는 단계 — "이 역에 어떤 열차든 들어오고 있다"는 약신호로
+ *           사용. motion/barometer와 OR 결합되어야 합의(>=2) 도달 가능 — 단독으로는 detected 못 만듦.
  *
  * unavailable 정책:
  *   - barometer.stop=undefined → fusion 입력에서 키 자체 생략 (signalsAvailable 감소, 다른 신호로
  *     합의 가능).
  *   - motionStationary=undefined → 동일.
- *   - arrival=null 또는 lockedTrainCode=null → arvlcd-arrived 키 생략.
+ *   - arrival=null → arvlcd-arrived 키 생략.
+ *   - lockedTrainCode != null이면서 매칭 row 없음 → arvlcd-arrived 키 생략 (아직 응답에 row 미도착).
  *
  * 본 hook은 순수 변환 — 부수 효과 없음. render마다 동기 계산.
  */
@@ -53,26 +59,40 @@ export interface FusedStationDetectionInput {
   readonly lockedTrainCode: string | null | undefined;
 }
 
+function isArrivedCode(code: ArrivalInfo['arrivalCode']): boolean {
+  return code === ARRIVAL_CODE.ARRIVED || code === ARRIVAL_CODE.ENTERING;
+}
+
 /**
- * arvlcd-arrived 신호 평가.
+ * arvlcd-arrived 신호 평가. lockedTrainCode 존재 여부로 두 모드 분기 (#962).
  *
- * - arrival 또는 lockedTrainCode 부재 → undefined (unavailable).
- * - row 매칭 없음(아직 응답에 안 들어옴) → undefined (unavailable).
- * - row.arrivalCode가 ARRIVED|ENTERING → true.
- * - 그 외(출발/전역/운행중) → false (명시 미합의).
+ * post-boarding (lockedTrainCode != null):
+ *   - 매칭 row 없음 → undefined (unavailable, 아직 응답에 row 미도착).
+ *   - 매칭 row의 arrivalCode가 ARRIVED|ENTERING → true.
+ *   - 그 외 → false.
+ *
+ * pre-boarding (lockedTrainCode == null):
+ *   - up/down 어느 row든 ARRIVED|ENTERING이면 true (약신호).
+ *   - 그 외(rows 비어있음 포함) → false (명시 미합의).
+ *
+ * 공통: arrival === null → undefined (unavailable).
+ *
+ * pre-boarding 모드는 단독으로 detected 못 만듦 — fusion 알고리즘이 >=2 신호 합의를 요구하므로
+ * motion-stationary / barometer-stop과 OR 결합되어야만 합의에 기여한다. 이것이 false positive
+ * 방지 — pre-boarding 약신호가 다른 신호 없이 단독으로 detected를 만들지 않는다.
  */
 export function evaluateArvlcdArrivedSignal(
   arrival: StationArrival | null,
   lockedTrainCode: string | null | undefined,
 ): boolean | undefined {
-  if (arrival === null || lockedTrainCode == null) return undefined;
+  if (arrival === null) return undefined;
   const all: ArrivalInfo[] = [...arrival.up, ...arrival.down];
+  if (lockedTrainCode == null) {
+    return all.some((r) => isArrivedCode(r.arrivalCode));
+  }
   const row = all.find((r) => r.trainCode === lockedTrainCode);
   if (row === undefined) return undefined;
-  return (
-    row.arrivalCode === ARRIVAL_CODE.ARRIVED ||
-    row.arrivalCode === ARRIVAL_CODE.ENTERING
-  );
+  return isArrivedCode(row.arrivalCode);
 }
 
 /**

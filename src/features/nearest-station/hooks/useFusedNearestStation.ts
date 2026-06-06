@@ -120,6 +120,11 @@ function matchPositionsForCandidate(
 interface CandidateArrivalSlot {
   /** 폴링 시 사용한 후보 역명 — `useArrivalInfo`의 첫 인자와 동일. */
   stationName: string | null;
+  /**
+   * 폴링 시 사용한 후보 노선 — `useArrivalInfo`의 두 번째 인자와 동일. 같은 역명 다른 노선
+   * 환승역(예: 충무로 3호선/4호선)에서 잘못된 슬롯이 픽되는 것을 차단하기 위해 사용. (#921 P1.4)
+   */
+  line: string | null;
   arrival: StationArrival | null;
 }
 
@@ -149,17 +154,26 @@ function pickArrivalsForStation(
 }
 
 /**
- * #921 — 채택된 result.station.name과 매칭되는 후보 슬롯의 StationArrival을 반환.
+ * #921 — 채택된 result.station(name+line)과 매칭되는 후보 슬롯의 StationArrival을 반환.
  *
  * 신호 fusion 입력용 — slot에서 어떤 row가 lockedTrainCode와 매칭되는지는 호출자
  * (useFusedStationDetection)가 판정한다. 매칭 슬롯이 없으면 null — fusion 입력 unavailable.
+ *
+ * #957 (P1.4 follow-up): 환승역(같은 stationName 다른 line)에서 옆 노선 슬롯이 픽되는 회귀
+ * 차단. `useArrivalInfo`는 `(stationName, line)`로 폴링하므로 슬롯의 line은 응답의 라인과
+ * 동일하다. 따라서 result.station.line과 슬롯 line을 같이 비교해야 한다.
  */
-function pickArrivalForStationName(
+export function pickArrivalForStationName(
   stationName: string,
+  line: string,
   slots: readonly CandidateArrivalSlot[],
 ): StationArrival | null {
   for (const slot of slots) {
-    if (slot.stationName === stationName && slot.arrival !== null) {
+    if (
+      slot.stationName === stationName &&
+      slot.line === line &&
+      slot.arrival !== null
+    ) {
       return slot.arrival;
     }
   }
@@ -478,9 +492,9 @@ export function useFusedNearestStation(
       ? arcStations[currentIdxHint + 1]
       : null;
   const nextStationArrivals = pickArrivalsForStation(nextStationOnArc, [
-    { stationName: c0, arrival: a0.arrival },
-    { stationName: c1, arrival: a1.arrival },
-    { stationName: c2, arrival: a2.arrival },
+    { stationName: c0, line: h0, arrival: a0.arrival },
+    { stationName: c1, line: h1, arrival: a1.arrival },
+    { stationName: c2, line: h2, arrival: a2.arrival },
   ]);
 
   // useMemo로 감싸면 deps가 시간을 포함하지 않아 부모 리렌더가 없는 동안 stale.
@@ -592,10 +606,10 @@ export function useFusedNearestStation(
   // 매칭 슬롯이 없으면 (route-progress/interp 결과가 GPS top-3 밖) arrival=null → arvlcd 입력
   // unavailable로 흐른다.
   const fusionArrival = result
-    ? pickArrivalForStationName(result.station.name, [
-        { stationName: c0, arrival: a0.arrival },
-        { stationName: c1, arrival: a1.arrival },
-        { stationName: c2, arrival: a2.arrival },
+    ? pickArrivalForStationName(result.station.name, result.station.line, [
+        { stationName: c0, line: h0, arrival: a0.arrival },
+        { stationName: c1, line: h1, arrival: a1.arrival },
+        { stationName: c2, line: h2, arrival: a2.arrival },
       ])
     : null;
   const detectionInput = useMemo(
