@@ -38,6 +38,10 @@ module.exports = {
         // 정지 상태에서의 잘못된 알람 발사를 차단.
         NSMotionUsageDescription:
           '정지 상태에서 잘못된 알람이 울리지 않도록 움직임 감지를 사용합니다.',
+        // #913 (F2) — NEHotspotNetwork.fetchCurrent로 현재 wifi SSID를 조회해 지하철 SSID
+        // 패턴 매칭(`lookupStationBySsid`)으로 지하에서 현재 역을 100% 확정한다.
+        // 별도 entitlement(`HotspotConfiguration`) 대신 기존 WhileInUse Location 권한을 재사용.
+        // 별도 prompt 없이 동작하지만 Apple Privacy nutrition label은 "Wifi connection" 카테고리로 분류 필요.
       },
     },
     android: {
@@ -50,6 +54,8 @@ module.exports = {
         'ACCESS_BACKGROUND_LOCATION',
         'android.permission.ACCESS_COARSE_LOCATION',
         'android.permission.ACCESS_FINE_LOCATION',
+        // #913 (F2) — WifiManager.connectionInfo.ssid 조회용. ACCESS_FINE_LOCATION과 함께 필요.
+        'android.permission.ACCESS_WIFI_STATE',
       ],
       edgeToEdgeEnabled: true,
       predictiveBackGestureEnabled: false,

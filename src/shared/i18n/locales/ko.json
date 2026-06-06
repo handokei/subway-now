@@ -123,6 +123,7 @@
   "destinationPicker": {
     "noLocation": "위치 정보가 없습니다.",
     "title": "목적지 설정",
+    "originTitle": "현재 역 선택",
     "searchPlaceholder": "역 이름 검색",
     "assignSlot": "{{label}} 추가",
     "pendingSlot": "다음에 선택하는 역을 {{label}}로 저장합니다"

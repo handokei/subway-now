@@ -437,4 +437,17 @@ export interface Env {
   APNS_TEAM_ID: string;
   APNS_PRIVATE_KEY: string;
   APNS_BUNDLE_ID: string;
+  /**
+   * 운영 alert webhook URL (#972, PR #961 follow-up). Slack incoming webhook 또는 호환
+   * receiver. 미설정 시 `evaluateAndMaybeAlert`는 graceful no-op.
+   * 등록: `wrangler secret put RECALL_ALERT_WEBHOOK_URL`
+   */
+  RECALL_ALERT_WEBHOOK_URL?: string;
+  /**
+   * Cloudflare Analytics Engine SQL HTTP API 호출용 account ID (#972).
+   * `RECALL_ALERT_WEBHOOK_URL`과 함께 셋 다 있어야 alert 평가가 동작.
+   */
+  CF_ACCOUNT_ID?: string;
+  /** Cloudflare API token (Analytics Engine read 권한) (#972). secret으로 등록. */
+  CF_API_TOKEN?: string;
 }

@@ -384,4 +384,35 @@ describe('DestinationPicker', () => {
     fireEvent(getByTestId('search-input'), 'focus');
     expect(getByTestId('suggestions-list')).toBeTruthy();
   });
+
+  // #977 — F4 모달 검색 fallback. mode prop으로 i18n title만 스위치(UI/검색/맵 인프라 동일).
+  describe('mode prop (#977)', () => {
+    it('mode 미지정 시 기본 destination 타이틀을 노출한다', () => {
+      const { getByText } = render(<DestinationPicker {...defaultProps} />);
+      expect(getByText('목적지 설정')).toBeTruthy();
+    });
+
+    it("mode='destination' 명시 시 destination 타이틀을 노출한다", () => {
+      const { getByText } = render(<DestinationPicker {...defaultProps} mode="destination" />);
+      expect(getByText('목적지 설정')).toBeTruthy();
+    });
+
+    it("mode='origin' 시 origin 타이틀(현재 역 선택)을 노출한다", () => {
+      const { getByText, queryByText } = render(
+        <DestinationPicker {...defaultProps} mode="origin" />,
+      );
+      expect(getByText('현재 역 선택')).toBeTruthy();
+      expect(queryByText('목적지 설정')).toBeNull();
+    });
+
+    it("mode='origin'에서도 onSelect는 동일하게 station을 인자로 호출된다", () => {
+      const onSelect = jest.fn();
+      const { getByTestId } = render(
+        <DestinationPicker {...defaultProps} mode="origin" onSelect={onSelect} />,
+      );
+      fireEvent.changeText(getByTestId('search-input'), '강남');
+      fireEvent.press(getByTestId(`suggestion-item-${mockStation.id}`));
+      expect(onSelect).toHaveBeenCalledWith(mockStation);
+    });
+  });
 });

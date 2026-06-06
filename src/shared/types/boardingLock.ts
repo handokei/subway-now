@@ -32,6 +32,25 @@ export interface BoardingLock {
    * 지연 라벨은 값이 존재할 때만 노출되므로 graceful — 잘못된 추측 없이 다음 createLock에서 채워진다.
    */
   initialEtaSeconds?: number;
+  /**
+   * Free-trip sentinel marker (#978, PR #955 follow-up).
+   *
+   * 사용자가 destination을 설정하지 않은 free trip에서 transfer auto-detect로 hydrate된
+   * lock에만 stamp된다. 명시 destination이 있는 일반 lock에는 undefined.
+   *
+   * 용도:
+   *   - 진단/텔레메트리: 이 lock이 sentinel-destination 기반인지 명시.
+   *   - controller가 hydrate 시점을 sentinelAt에 기록 → 후속 free-trip 만료 정책에서 사용 가능.
+   *
+   * destination 변경 시 invalidate는 BoardingLock.destinationId가 sentinel 값 자체로 채워져
+   * 있기 때문에 기존 destinationId mismatch effect로 자동 처리된다 (별도 분기 불필요).
+   */
+  hydratedFromSentinel?: {
+    /** sentinel 상수 값 — 디버그/로그용. lock.destinationId와 동일해야 한다. */
+    destinationId: string;
+    /** sentinel-hydrate 시각(ms epoch). */
+    sentinelAt: number;
+  };
 }
 
 /** 자동 만료 안전 계수 — 예상 소요시간이 50% 초과되면 잘못된 Lock으로 보고 해제. */

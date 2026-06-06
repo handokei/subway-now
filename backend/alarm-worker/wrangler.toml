@@ -59,6 +59,12 @@ head_sampling_rate = 1
 # - APNS_TEAM_ID           : Apple Developer Team ID
 # - APNS_PRIVATE_KEY       : .p8 PEM 본문 (BEGIN/END 라인 포함)
 # - APNS_BUNDLE_ID         : 앱 번들 ID (예: com.handokei.subwaynow)
+#
+# #972 — recall alert webhook (PR #961 follow-up). 셋 다 설정되어야 cron이 평가/발사한다.
+# 하나라도 비어 있으면 `evaluateAndMaybeAlert`가 graceful no-op (현재 Workers Paid 대기로 사실상 비활성).
+# - RECALL_ALERT_WEBHOOK_URL  : Slack incoming webhook URL 또는 호환 receiver
+# - CF_ACCOUNT_ID             : Cloudflare account ID (Analytics Engine SQL HTTP API endpoint 조립)
+# - CF_API_TOKEN              : Cloudflare API token (Analytics Engine read 권한)
 [vars]
 APNS_HOST = "api.push.apple.com"
 APNS_HOST_SANDBOX = "api.sandbox.push.apple.com"

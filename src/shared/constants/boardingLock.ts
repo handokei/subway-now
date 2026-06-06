@@ -77,3 +77,20 @@ export const AUTO_RELEASE_GRACE_MS = 45_000;
  *    지연돼 BG cron이 옛 lock으로 한 사이클 더 폴링 가능.
  */
 export const BOARDING_LOCK_RELEASE_DEBOUNCE_MS = 1500;
+
+/**
+ * Free-trip sentinel destinationId (#978, PR #955 follow-up).
+ *
+ * 사용자가 명시 destination을 설정하지 않은 free trip 상태에서도 transfer auto-detect로
+ * boardingLock을 자동 hydrate하려면 lock storage 스키마상 destinationId가 비어 있을 수 없다
+ * (#915 정책: 모든 lock은 trip 단위 id로 trip과 1:1 매핑되며, destination 변경 시 자동 release).
+ *
+ * 이 sentinel을 destinationId로 사용해 lock을 생성하면:
+ *   1) 사용자가 나중에 실제 destination을 설정하는 순간, controller의 destination 변경 effect
+ *      (lock.destinationId !== input.destinationId)가 발동해 sentinel lock을 자동 invalidate.
+ *      → 다른 trip의 stale lock cross-talk 차단.
+ *   2) sentinel이 유지되는 동안은 같은 free trip으로 간주, lock 그대로 유지.
+ *
+ * 값은 일반 destination id(`stn-*`, UUID 등)와 충돌하지 않도록 `__` prefix.
+ */
+export const FREE_TRIP_DESTINATION_SENTINEL = '__free-trip-sentinel__';

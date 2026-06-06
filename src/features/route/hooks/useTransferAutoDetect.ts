@@ -19,13 +19,14 @@
  *     기존 환승 list flow가 책임지므로 자동 detect는 중복 트리거 금지.
  *   - 현재 boardingLock의 boardingLine으로만 후보가 들어와 있다 (=같은 노선 환승 데이터).
  *
- * 후속 PR 후보:
- *   - destination 미설정 free trip을 위한 sentinel-destination lock (현재는 hydrate skip).
- *   - 후보 line 선택 후 가장 임박한 trainCode 산출 시 trainType(express) 우선순위 적용.
+ * #971 (#955 follow-up) — 후보 line의 trainCode 산출 시 destination 정차 여부로 우선순위.
+ *   destination이 일반정차만 가능 → 급행/특급 통과로 lock 사고 회피. destination 미설정 시
+ *   기존 동작(가장 임박) 유지.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { detectTransfer } from '../utils/transferDetect';
 import { findActiveTransferContext } from '../utils/findActiveTransferContext';
+import { isExpressStop } from '../utils/expressLookup';
 import { lineToSubwayId } from '../../../shared/constants/lineApiNames';
 import type { OtherLineArrival } from '../utils/transferDetect';
 import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSync';
@@ -127,7 +128,7 @@ export function useTransferAutoDetect({
     }
     if (candidateLines.length === 1) {
       const [line] = candidateLines;
-      const candidate = buildAutoLockCandidate(line, arrival);
+      const candidate = buildAutoLockCandidate(line, arrival, destinationName);
       /* istanbul ignore next -- candidateLines가 detectTransfer로 산출되었으면 arrival에 해당 line의
          imminent 도착이 반드시 존재 → pickImminentTrainCode는 항상 trainCode를 반환. 방어 코드. */
       if (!candidate) return;
@@ -142,7 +143,7 @@ export function useTransferAutoDetect({
     }
     if (dismissedAtStationRef.current === stationKey) return;
     setModalVisible(true);
-  }, [detection.detected, candidateLines, currentStation, arrival, onAutoLock, modalVisible, stationKey]);
+  }, [detection.detected, candidateLines, currentStation, arrival, destinationName, onAutoLock, modalVisible, stationKey]);
 
   const modalCandidates = useMemo<Station[]>(() => {
     if (!currentStation) return [];
@@ -155,7 +156,7 @@ export function useTransferAutoDetect({
   const selectLine = useCallback(
     (line: LineNumber) => {
       if (!currentStation) return;
-      const candidate = buildAutoLockCandidate(line, arrival);
+      const candidate = buildAutoLockCandidate(line, arrival, destinationName);
       if (!candidate) return;
       const key = `${currentStation.id}|${candidate.trainCode}|${candidate.line}`;
       lastAutoLockedKeyRef.current = key;
@@ -163,7 +164,7 @@ export function useTransferAutoDetect({
       setModalVisible(false);
       dismissedAtStationRef.current = stationKey;
     },
-    [currentStation, arrival, onAutoLock, stationKey],
+    [currentStation, arrival, destinationName, onAutoLock, stationKey],
   );
 
   const dismissModal = useCallback(() => {
@@ -195,33 +196,56 @@ function collectOtherLineArrivals(
 /**
  * candidate line의 첫(=가장 임박) trainCode를 사용해 AutoLockCandidate 구성.
  * subwayId 매핑 누락 시 null — 호출자가 hydrate skip(이미 line valid 가드 있음).
+ *
+ * #971: destinationName이 주어지면 trainType이 destination에 정차하는 후보를 우선 선택.
+ * 일반정차역만 가능한 destination에서 급행/특급이 통과하는 lock 사고를 회피한다.
  */
 function buildAutoLockCandidate(
   line: LineNumber,
   arrival: StationArrival | null,
+  destinationName: string | null,
 ): AutoLockCandidate | null {
   const subwayId = lineToSubwayId(line);
   /* istanbul ignore next -- 모든 LineNumber는 LINE_TO_SUBWAY_ID에 등록되어 있어 null 분기는
      valid LineNumber 입력 하에서 도달 불가. 타입 보강용 방어. */
   if (!subwayId) return null;
-  const trainCode = pickImminentTrainCode(arrival, line);
+  const trainCode = pickImminentTrainCode(arrival, line, destinationName);
   if (!trainCode) return null;
   return { trainCode, line, subwayId };
 }
 
-function pickImminentTrainCode(arrival: StationArrival | null, line: LineNumber): string | null {
+/**
+ * 같은 line의 후보 중 가장 임박한 trainCode 반환.
+ *
+ * #971: destinationName이 있으면 destination 정차 가능한 trainType을 1차 후보군으로,
+ * 그 군이 비면 전체에서 fallback. destinationName=null은 기존 동작(전체에서 imminent).
+ *
+ * `isExpressStop`은 normal에 대해 항상 true, 데이터 미보유 line/type에 대해 보수적으로 true →
+ * 미지의 노선/타입을 사용자에게 무리하게 막지 않는다. 일반정차역 only인 destination에서
+ * 정확한 express 정차역 데이터가 있는 경우(예: 1·9호선 급행)에만 express 후보를 제외한다.
+ */
+function pickImminentTrainCode(
+  arrival: StationArrival | null,
+  line: LineNumber,
+  destinationName: string | null,
+): string | null {
   if (!arrival) return null;
   const all: ArrivalInfo[] = [...arrival.up, ...arrival.down];
-  let best: ArrivalInfo | null = null;
+  let preferred: ArrivalInfo | null = null;
+  let fallback: ArrivalInfo | null = null;
   for (const t of all) {
     if (t.line !== line) continue;
     /* istanbul ignore next -- detectTransfer는 음수 arrivalSeconds를 후보에서 제외한 뒤 line을
        반환하므로, 그 line의 음수 train이 있더라도 양수 train이 이미 적어도 하나 존재. 양수만
        best로 선택되어 음수 분기는 도달하지 않는다. 방어 코드. */
     if (t.arrivalSeconds < 0) continue;
-    if (!best || t.arrivalSeconds < best.arrivalSeconds) best = t;
+    if (!fallback || t.arrivalSeconds < fallback.arrivalSeconds) fallback = t;
+    // destination 미설정 → 모든 후보가 preferred와 동등 → fallback만으로 판정.
+    if (destinationName === null) continue;
+    if (!isExpressStop(destinationName, line, t.trainType)) continue;
+    if (!preferred || t.arrivalSeconds < preferred.arrivalSeconds) preferred = t;
   }
-  return best?.trainCode ?? null;
+  return (preferred ?? fallback)?.trainCode ?? null;
 }
 
 /**
