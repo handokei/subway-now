@@ -27,7 +27,11 @@
  * Privacy: query는 token prefix(8자)만 다룬다 — 개별 사용자 식별 불가.
  */
 
-import { METRIC_KIND, MIN_RECALL_RATIO_THRESHOLD } from './metrics';
+import {
+  METRIC_KIND,
+  MIN_RECALL_RATIO_THRESHOLD,
+  RECALL_THRESHOLD_CRITICAL,
+} from './metrics';
 import { RECALL_DISTRIBUTION_LABEL_PREFIX } from './recallTelemetry';
 
 /**
@@ -112,26 +116,33 @@ ORDER BY suppressed_count DESC
 `.trim();
 
 /**
- * **Q3. Low-recall trip ratio (alert 임계).**
+ * **Q3. Low-recall trip ratio (alert 임계, 두 등급).**
  *
- * token prefix 단위로 hit/total 합산 → 비율 < threshold인 prefix 비율 산출.
- * 이 값이 운영 임계(예: 5%)를 넘으면 운영 알림 (Slack / 이메일) 발사 — 별도 PR에서 wiring.
+ * token prefix 단위로 hit/total 합산 → 두 임계 미만 prefix 수를 동시에 산출:
+ *   - `low_recall_tokens` : recall < `MIN_RECALL_RATIO_THRESHOLD` (warning)
+ *   - `critical_recall_tokens` : recall < `RECALL_THRESHOLD_CRITICAL` (critical, more strict)
  *
- * threshold는 `metrics.catalog.json:MIN_RECALL_RATIO_THRESHOLD` SSOT.
+ * 두 카운트가 같은 outer SELECT에서 나오므로 evaluator는 SQL 1회 호출로 두 severity를
+ * 모두 결정. critical ⊂ low_recall 관계는 SQL이 보장.
+ *
+ * Threshold SSOT: `metrics.catalog.json:{MIN_RECALL_RATIO_THRESHOLD, RECALL_THRESHOLD_CRITICAL}`.
  *
  * 사용처
- *   - "95% 미달 trip 비율" KPI 카드.
- *   - 임계 초과 시 운영 alert webhook trigger 입력값.
+ *   - "95% / 90% 미달 trip 비율" KPI 카드.
+ *   - 임계 초과 시 운영 alert webhook trigger 입력값 (severity 분기).
  */
 export const lowRecallTripRatioQuery = `
 SELECT
   total_tokens,
   low_recall_tokens,
-  if(total_tokens > 0, low_recall_tokens / total_tokens, 0) AS low_recall_ratio
+  critical_recall_tokens,
+  if(total_tokens > 0, low_recall_tokens / total_tokens, 0) AS low_recall_ratio,
+  if(total_tokens > 0, critical_recall_tokens / total_tokens, 0) AS critical_recall_ratio
 FROM (
   SELECT
     COUNT(*) AS total_tokens,
-    SUM(CASE WHEN total > 0 AND (hit / total) < ${MIN_RECALL_RATIO_THRESHOLD} THEN 1 ELSE 0 END) AS low_recall_tokens
+    SUM(CASE WHEN total > 0 AND (hit / total) < ${MIN_RECALL_RATIO_THRESHOLD} THEN 1 ELSE 0 END) AS low_recall_tokens,
+    SUM(CASE WHEN total > 0 AND (hit / total) < ${RECALL_THRESHOLD_CRITICAL} THEN 1 ELSE 0 END) AS critical_recall_tokens
   FROM (
     SELECT
       blob2 AS token_prefix,
@@ -193,7 +204,7 @@ export const RECALL_QUERIES: readonly RecallQueryEntry[] = Object.freeze([
   },
   {
     id: 'low-recall-trip-ratio',
-    description: `recall < ${MIN_RECALL_RATIO_THRESHOLD} token 비율 (운영 alert 임계 입력, 7일 윈도우)`,
+    description: `recall < ${MIN_RECALL_RATIO_THRESHOLD} (warning) / < ${RECALL_THRESHOLD_CRITICAL} (critical) token 비율 (운영 alert 임계 입력, 7일 윈도우)`,
     sql: lowRecallTripRatioQuery,
   },
 ]);

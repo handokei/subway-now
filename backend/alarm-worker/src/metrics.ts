@@ -85,10 +85,21 @@ export const SLA_PERCENTILE = readNumber('SLA_PERCENTILE');
 
 /**
  * #919 A4 — 매역 알림 recall 운영 KPI 하한 비율. 본 비율 미만 trip이 alert 임계.
- * Phase 4 결정 게이트(`decidePhaseFour`)와 분리된 운영 회귀 감시용 — 본 PR은 SSOT 노출만 하고
- * 실제 alert 배선은 후속 PR (Slack webhook / cron summary)에서 처리.
+ * Phase 4 결정 게이트(`decidePhaseFour`)와 분리된 운영 회귀 감시용.
+ *
+ * **Severity 의미 (#1003)**: 본 값은 **warning** 임계. trip recall이 이 값 미만이면 warning,
+ * `RECALL_THRESHOLD_CRITICAL` 미만이면 critical으로 분류된다. 상수명은 backward compat 유지.
  */
 export const MIN_RECALL_RATIO_THRESHOLD = readNumber('MIN_RECALL_RATIO_THRESHOLD');
+
+/**
+ * #1003 — recall **critical** 임계 (warning보다 낮은 값). trip recall이 본 값 미만이면
+ * 더 심각한 회귀로 분류해 alert payload `severity='critical'` 발사.
+ * warning 임계(`MIN_RECALL_RATIO_THRESHOLD`)와 두 등급으로 분리해 운영 triage 우선순위 명확화.
+ *
+ * Invariant: `RECALL_THRESHOLD_CRITICAL < MIN_RECALL_RATIO_THRESHOLD`. critical이 warning보다 엄격(낮은 값)이어야 한다.
+ */
+export const RECALL_THRESHOLD_CRITICAL = readNumber('RECALL_THRESHOLD_CRITICAL');
 
 /** AE 적재 label prefix — 기존 silent-push 텔레메트리와 namespace 분리. */
 const METRIC_LABEL_PREFIX = readString('METRIC_LABEL_PREFIX');

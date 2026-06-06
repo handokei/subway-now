@@ -16,7 +16,11 @@ import {
   gateSuppressionDistributionQuery,
   lowRecallTripRatioQuery,
 } from '../recallQueries';
-import { METRIC_KIND, MIN_RECALL_RATIO_THRESHOLD } from '../metrics';
+import {
+  METRIC_KIND,
+  MIN_RECALL_RATIO_THRESHOLD,
+  RECALL_THRESHOLD_CRITICAL,
+} from '../metrics';
 import { RECALL_DISTRIBUTION_LABEL_PREFIX } from '../recallTelemetry';
 
 describe('RECALL_DATASET', () => {
@@ -67,17 +71,34 @@ describe('gateSuppressionDistributionQuery', () => {
 });
 
 describe('lowRecallTripRatioQuery', () => {
-  it('embeds the catalog SSOT threshold value', () => {
+  it('embeds both warning and critical thresholds (#1003)', () => {
     expect(lowRecallTripRatioQuery).toContain(String(MIN_RECALL_RATIO_THRESHOLD));
+    expect(lowRecallTripRatioQuery).toContain(String(RECALL_THRESHOLD_CRITICAL));
+  });
+
+  it('exposes both low_recall and critical_recall count/ratio columns (#1003)', () => {
+    expect(lowRecallTripRatioQuery).toContain('low_recall_tokens');
+    expect(lowRecallTripRatioQuery).toContain('low_recall_ratio');
+    expect(lowRecallTripRatioQuery).toContain('critical_recall_tokens');
+    expect(lowRecallTripRatioQuery).toContain('critical_recall_ratio');
   });
 
   it('aggregates per token prefix (blob2)', () => {
     expect(lowRecallTripRatioQuery).toContain('blob2');
   });
 
-  it('guards division by zero (total_tokens=0 → ratio=0 instead of NaN)', () => {
+  it('guards division by zero for both ratios (#1003)', () => {
     // 빈 7일 윈도우에서 outer SELECT가 NaN/inf를 산출하면 alert webhook이 spurious 발사.
-    expect(lowRecallTripRatioQuery).toContain('if(total_tokens > 0');
+    expect(lowRecallTripRatioQuery).toContain('if(total_tokens > 0, low_recall_tokens');
+    expect(lowRecallTripRatioQuery).toContain('if(total_tokens > 0, critical_recall_tokens');
+  });
+});
+
+describe('RECALL_THRESHOLD_CRITICAL invariant (#1003)', () => {
+  it('critical threshold is strictly less than warning threshold', () => {
+    // critical은 warning보다 엄격(낮은 recall). 역전되면 alert severity 분기가 항상 critical로 끌려간다.
+    expect(RECALL_THRESHOLD_CRITICAL).toBeLessThan(MIN_RECALL_RATIO_THRESHOLD);
+    expect(RECALL_THRESHOLD_CRITICAL).toBeGreaterThan(0);
   });
 });
 

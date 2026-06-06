@@ -13,7 +13,7 @@ import {
   SQL_API_URL_TEMPLATE,
   evaluateAndMaybeAlert,
 } from '../recallAlerts';
-import { MIN_RECALL_RATIO_THRESHOLD } from '../metrics';
+import { MIN_RECALL_RATIO_THRESHOLD, RECALL_THRESHOLD_CRITICAL } from '../metrics';
 import {
   gateSuppressionDistribution7dQuery,
   lowRecallTripRatioQuery,
@@ -57,11 +57,16 @@ function buildEnv(kv: InMemoryKV, overrides: BuildEnvOptions = {}): Env {
   };
 }
 
-/** AE SQL API 응답 stub — `data[0]`에 row 1개 또는 빈 배열. */
+/**
+ * AE SQL API 응답 stub — `data[0]`에 row 1개 또는 빈 배열.
+ * #1003: critical 카운트도 같이 stub. 호출자가 미지정 시 0으로 정규화 → warning-only.
+ */
 function sqlApiResponse(row: {
   totalTokens?: number;
   lowRecallTokens?: number;
   lowRecallRatio?: number;
+  criticalRecallTokens?: number;
+  criticalRecallRatio?: number;
 } | null): Response {
   const data =
     row === null
@@ -71,6 +76,8 @@ function sqlApiResponse(row: {
             total_tokens: row.totalTokens,
             low_recall_tokens: row.lowRecallTokens,
             low_recall_ratio: row.lowRecallRatio,
+            critical_recall_tokens: row.criticalRecallTokens ?? 0,
+            critical_recall_ratio: row.criticalRecallRatio ?? 0,
           },
         ];
   return new Response(JSON.stringify({ data }), {
@@ -160,6 +167,7 @@ describe('evaluateAndMaybeAlert — breach 발사', () => {
     if (result.kind !== 'fired') throw new Error('unreachable');
     expect(result.payload).toMatchObject({
       kind: 'low-recall',
+      severity: 'warning',
       ratio: 0.1,
       threshold: MIN_RECALL_RATIO_THRESHOLD,
       sampleSize: 100,
@@ -170,6 +178,7 @@ describe('evaluateAndMaybeAlert — breach 발사', () => {
         { reason: 'gate-jump', count: 7 },
       ],
     });
+    expect(result.payload.text).toContain('[WARNING]');
     expect(result.payload.text).toContain('10.0%');
     expect(result.payload.text).toContain('sample=100');
     expect(result.payload.text).toContain('gate-accuracy=12');
@@ -499,5 +508,117 @@ describe('evaluateAndMaybeAlert — gate breakdown', () => {
       now: () => NOW,
     });
     expect(result.kind).toBe('fired');
+  });
+});
+
+describe('evaluateAndMaybeAlert — severity 등급 분리 (#1003)', () => {
+  function noGate(): Response {
+    return new Response(JSON.stringify({ data: [] }), { status: 200 });
+  }
+
+  it('critical ratio > 0 → severity=critical + threshold=RECALL_THRESHOLD_CRITICAL + [CRITICAL] prefix', async () => {
+    const env = buildEnv(new InMemoryKV());
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        sqlApiResponse({
+          totalTokens: 100,
+          lowRecallTokens: 12,
+          lowRecallRatio: 0.12,
+          criticalRecallTokens: 4,
+          criticalRecallRatio: 0.04,
+        }),
+      )
+      .mockResolvedValueOnce(noGate())
+      .mockResolvedValueOnce(okResponse());
+    const result = await evaluateAndMaybeAlert(env, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(result.kind).toBe('fired');
+    if (result.kind !== 'fired') throw new Error('unreachable');
+    expect(result.payload.severity).toBe('critical');
+    // critical일 때 ratio/threshold는 critical 값.
+    expect(result.payload.ratio).toBe(0.04);
+    expect(result.payload.threshold).toBe(RECALL_THRESHOLD_CRITICAL);
+    expect(result.payload.text).toContain('[CRITICAL]');
+    expect(result.payload.text).not.toContain('[WARNING]');
+    expect(result.payload.text).toContain('4.0%');
+    expect(result.payload.text).toContain(String(RECALL_THRESHOLD_CRITICAL));
+  });
+
+  it('warning ratio > 0 + critical=0 → severity=warning + threshold=MIN_RECALL_RATIO_THRESHOLD + [WARNING] prefix', async () => {
+    const env = buildEnv(new InMemoryKV());
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        sqlApiResponse({
+          totalTokens: 100,
+          lowRecallTokens: 7,
+          lowRecallRatio: 0.07,
+          criticalRecallTokens: 0,
+          criticalRecallRatio: 0,
+        }),
+      )
+      .mockResolvedValueOnce(noGate())
+      .mockResolvedValueOnce(okResponse());
+    const result = await evaluateAndMaybeAlert(env, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(result.kind).toBe('fired');
+    if (result.kind !== 'fired') throw new Error('unreachable');
+    expect(result.payload.severity).toBe('warning');
+    expect(result.payload.ratio).toBe(0.07);
+    expect(result.payload.threshold).toBe(MIN_RECALL_RATIO_THRESHOLD);
+    expect(result.payload.text).toContain('[WARNING]');
+    expect(result.payload.text).not.toContain('[CRITICAL]');
+  });
+
+  it('warning=0 → critical도 0(부분집합) → noop (sample은 있어도)', async () => {
+    // critical ⊂ warning이라 warning=0이면 critical도 0이어야 자연스럽다. SQL의 보장 그대로 흐름 확인.
+    const env = buildEnv(new InMemoryKV());
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        sqlApiResponse({
+          totalTokens: 100,
+          lowRecallTokens: 0,
+          lowRecallRatio: 0,
+          criticalRecallTokens: 0,
+          criticalRecallRatio: 0,
+        }),
+      );
+    const result = await evaluateAndMaybeAlert(env, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(result).toEqual({ kind: 'noop', reason: 'no-breach' });
+    // SQL 1회만 — gate query/webhook 미호출.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('payload에 severity 필드 회귀 — 직렬화 후에도 존재', async () => {
+    const env = buildEnv(new InMemoryKV());
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        sqlApiResponse({
+          totalTokens: 50,
+          lowRecallTokens: 10,
+          lowRecallRatio: 0.2,
+          criticalRecallTokens: 5,
+          criticalRecallRatio: 0.1,
+        }),
+      )
+      .mockResolvedValueOnce(noGate())
+      .mockResolvedValueOnce(okResponse());
+    await evaluateAndMaybeAlert(env, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    const [, webhookInit] = fetchImpl.mock.calls[2] as [string, RequestInit];
+    const sent = JSON.parse(webhookInit.body as string) as { severity: string };
+    expect(sent.severity).toBe('critical');
   });
 });
