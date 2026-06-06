@@ -55,6 +55,7 @@ import { Toast } from '../shared/ui/Toast';
 import { useMisBoardingDetector } from '../features/route/hooks/useMisBoardingDetector';
 import { useTrainPositions } from '../features/route/hooks/useTrainPositions';
 import { useTransferTrainList } from '../features/route/hooks/useTransferTrainList';
+import { useTransferAutoDetect } from '../features/route/hooks/useTransferAutoDetect';
 import { TRANSFER_WALKING_BUFFER_SECONDS, BOARDING_PROXIMITY_THRESHOLD_M } from '../shared/constants/boardingLock';
 import { BoardingTrainList } from '../features/alarm/components/BoardingTrainList';
 import { BoardingLockHopCard } from '../features/alarm/components/BoardingLockHopCard';
@@ -405,6 +406,39 @@ export default function HomeScreen() {
     destinationName: destination?.name ?? null,
     currentStation: result?.station ?? null,
   });
+  // #924 D1 — route 미설정 환승 자동 detect. 환승역 walking + 다른 노선 임박 ArrivalRow 신호 결합.
+  // useFusedNearestStation은 NearestStationResult(단수)만 노출 — 본 hook 입력 NearestStationsResult로 재조합.
+  const nearestStationsForDetect = useMemo(() => {
+    if (!result) return null;
+    return {
+      primary: result.station,
+      variants,
+      distanceKm: result.distanceKm,
+      // primary가 환승역 candidate들 사이에 포함되어 있으면 환승역. variants가 비어 있어도 같은 이름
+      // 다른 노선이 stations.json에 1개라도 더 있으면 isTransfer=true.
+      isTransfer: variants.length > 1,
+    };
+  }, [result, variants]);
+  const {
+    modalVisible: transferDetectModalVisible,
+    modalCandidates: transferDetectCandidates,
+    selectLine: selectTransferDetectLine,
+    dismissModal: dismissTransferDetectModal,
+  } = useTransferAutoDetect({
+    nearestStations: nearestStationsForDetect,
+    motionStationary,
+    arrival: rawArrival,
+    boardingLock,
+    route,
+    destinationName: destination?.name ?? null,
+    onAutoLock: hydrateLockFromCandidate,
+  });
+  const handleTransferDetectConfirm = useCallback(
+    (station: Station) => {
+      selectTransferDetectLine(station.line);
+    },
+    [selectTransferDetectLine],
+  );
   useBackgroundLocation(destination);
   useApnsTripRegistration({
     route,
@@ -625,6 +659,15 @@ export default function HomeScreen() {
         onSelect={handleMisBoardingReselect}
         onClose={handleMisBoardingModalClose}
         nextStationLabel={nextStationName}
+      />
+      {/* #924 D1 — 환승 자동 detect 다중 후보 모달. F4 1탭 모달 인프라(#914) 재사용. */}
+      <CurrentStationConfirmModal
+        visible={transferDetectModalVisible}
+        candidates={transferDetectCandidates}
+        topPick={transferDetectCandidates[0] ?? null}
+        onConfirm={handleTransferDetectConfirm}
+        onSearchFallback={dismissTransferDetectModal}
+        onClose={dismissTransferDetectModal}
       />
 
       <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
