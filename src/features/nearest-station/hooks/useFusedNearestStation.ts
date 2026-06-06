@@ -625,9 +625,13 @@ export function useFusedNearestStation(
 
   // 측정(#443): 결정 변화(source/stationId/confidence) 시에만 push.
   // render 중 side-effect 회피 + 의존성 누락 은폐 회피를 위해 결정 key를 ref로 비교.
+  //
+  // #963 — signalMask까지 포함해 신호 조합 변화(motion/barometer/arvlcd flip)도 별도 entry로
+  // 보존. 이전엔 source/confidence/stationId만 비교해 같은 결정 안에서 신호 변화가 측정 데이터에서
+  // 누락됐다 (PR #944 P1.2 follow-up).
   const lastDecisionKeyRef = useRef<string | null>(null);
   const resultStationId = result?.station.id ?? null;
-  const decisionKey = `${source}|${confidence}|${resultStationId}`;
+  const decisionKey = `${source}|${confidence}|${resultStationId}|${detectionVerdict.signalMask}`;
   useEffect(() => {
     if (lastDecisionKeyRef.current === decisionKey) return;
     lastDecisionKeyRef.current = decisionKey;

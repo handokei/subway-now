@@ -6,6 +6,7 @@
 import { renderHook } from '@testing-library/react-native';
 import {
   buildFusionSignalInput,
+  buildFusionSignalMask,
   evaluateArvlcdArrivedSignal,
   useFusedStationDetection,
   type FusedStationDetectionInput,
@@ -169,6 +170,48 @@ describe('buildFusionSignalInput', () => {
   });
 });
 
+describe('buildFusionSignalMask (#963)', () => {
+  it('빈 입력 → "UUU" (모든 신호 unavailable)', () => {
+    expect(buildFusionSignalMask({})).toBe('UUU');
+  });
+
+  it('모든 신호 true → "TTT"', () => {
+    expect(
+      buildFusionSignalMask({
+        'barometer-stop': true,
+        'motion-stationary': true,
+        'arvlcd-arrived': true,
+      }),
+    ).toBe('TTT');
+  });
+
+  it('모든 신호 false → "FFF"', () => {
+    expect(
+      buildFusionSignalMask({
+        'barometer-stop': false,
+        'motion-stationary': false,
+        'arvlcd-arrived': false,
+      }),
+    ).toBe('FFF');
+  });
+
+  it('일부 unavailable 혼합 — STATION_DETECTION_SIGNALS 순서 유지', () => {
+    expect(
+      buildFusionSignalMask({
+        'arvlcd-arrived': true,
+        'barometer-stop': false,
+      }),
+    ).toBe('FUT');
+  });
+
+  it('신호 조합이 다르면 mask가 다르다 (dedup key로 사용 가능)', () => {
+    const a = buildFusionSignalMask({ 'motion-stationary': true });
+    const b = buildFusionSignalMask({ 'motion-stationary': false });
+    const c = buildFusionSignalMask({});
+    expect(new Set([a, b, c]).size).toBe(3);
+  });
+});
+
 describe('useFusedStationDetection', () => {
   it('빈 입력 → detected=false low', () => {
     const { result } = renderHook(() => useFusedStationDetection(EMPTY_INPUT));
@@ -247,6 +290,25 @@ describe('useFusedStationDetection', () => {
     expect(result.current.confidence).toBe('high');
     expect(result.current.signalsAgreed).toBe(3);
     expect(result.current.signalsAvailable).toBe(3);
+  });
+
+  it('#963 verdict에 signalMask가 포함된다 — 모든 unavailable이면 "UUU"', () => {
+    const { result } = renderHook(() => useFusedStationDetection(EMPTY_INPUT));
+    expect(result.current.signalMask).toBe('UUU');
+  });
+
+  it('#963 신호 조합별 signalMask — 순서 STATION_DETECTION_SIGNALS 따름', () => {
+    const a = arrival([arrivalRow({ arrivalCode: ARRIVAL_CODE.ARRIVED })]);
+    const { result } = renderHook(() =>
+      useFusedStationDetection({
+        barometer: { subsurface: false, stop: true },
+        motionStationary: false,
+        arrival: a,
+        lockedTrainCode: TRAIN_CODE,
+      }),
+    );
+    // STATION_DETECTION_SIGNALS: ['barometer-stop','motion-stationary','arvlcd-arrived']
+    expect(result.current.signalMask).toBe('TFT');
   });
 
   it('같은 input reference로 재호출 시 verdict reference 동일 (useMemo)', () => {
