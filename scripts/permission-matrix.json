@@ -58,6 +58,39 @@
       "expectedRecallPct": 95,
       "flow": "always-fg-aboveground-sleep-ios18.yaml",
       "_doc": "매역 알림 SLA의 정본 조합(권한=항상 + 취침). 후속 PR에서 실측 recall로 업데이트."
+    },
+    {
+      "id": "always-bg-aboveground-normal-ios18",
+      "permission": "always",
+      "appState": "bg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "ios18",
+      "expectedRecallPct": 95,
+      "flow": "always-bg-aboveground-normal-ios18.yaml",
+      "_doc": "BG 차원 첫 진입. 매역 알람 SLA 본진 시나리오(Always + 백그라운드)에서 BG→FG 복귀 후 홈 진입점 유지 회귀 가드. 후속 PR에서 BG 알람 발사 verify로 확장."
+    },
+    {
+      "id": "whileInUse-fg-aboveground-normal-ios17",
+      "permission": "whileInUse",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "ios17",
+      "expectedRecallPct": 95,
+      "flow": "whileInUse-fg-aboveground-normal-ios17.yaml",
+      "_doc": "iOS 17 OS 차원 첫 진입. baseline과 동일 시나리오를 iOS 17 시뮬레이터에서 회귀 가드. 후속 PR에서 SIM_NAME 분기."
+    },
+    {
+      "id": "always-fg-aboveground-normal-android",
+      "permission": "always",
+      "appState": "fg",
+      "environment": "aboveground",
+      "mode": "normal",
+      "os": "android",
+      "expectedRecallPct": 90,
+      "flow": "always-fg-aboveground-normal-android.yaml",
+      "_doc": "Android 플랫폼 차원 첫 진입. ACCESS_BACKGROUND_LOCATION 권한 dispatch가 Maestro permission 매핑에서 올바르게 처리되는지 회귀 가드. 후속 PR에서 Android 시뮬레이터 부팅 분기."
     }
   ]
 }

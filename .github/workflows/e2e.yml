@@ -332,7 +332,12 @@ jobs:
           - always-fg-aboveground-normal-ios18
           - whileInUse-fg-aboveground-sleep-ios18
           - always-fg-aboveground-sleep-ios18
-          # 후속 PR에서 추가: *-bg-*, *-underground-*, ios17, android
+          - always-bg-aboveground-normal-ios18
+          - whileInUse-fg-aboveground-normal-ios17
+          - always-fg-aboveground-normal-android
+          # 후속 PR에서 추가: *-underground-*, *-bg-sleep-*, 실측 recall 측정
+          # 주의: ios17/android cell은 현재 iPhone 16(iOS 18) 시뮬에서 권한 dispatch만 검증.
+          #       OS/플랫폼별 실제 시뮬레이터 부팅 분기는 후속 PR.
     env:
       SIM_NAME: 'iPhone 16'
       EXPO_PUBLIC_E2E_MOCK: '1'
