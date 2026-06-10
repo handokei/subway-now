@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +13,7 @@ import { ROUTE_CATEGORIES } from '../shared/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../shared/i18n/types';
 import { useTheme, spacing, radius } from '../shared/theme';
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
+import { FeedbackModal } from '../features/feedback/components/FeedbackModal';
 import {
   DEBUG_MODAL_TRIGGER_RESET_MS,
   DEBUG_MODAL_TRIGGER_TAP_COUNT,
@@ -49,6 +50,8 @@ export default function SettingsScreen() {
   const { t } = useTranslation();
   const router = useRouter();
   const showSleepModeGuide = useSleepModeGuide();
+  // #1034 — 버그 신고 모달 (Cloudflare KV FEEDBACK + POST /feedback).
+  const [feedbackVisible, setFeedbackVisible] = useState(false);
 
   useEffect(() => {
     loadSleepMode();
@@ -202,8 +205,36 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* #1034 — 버그 신고 진입점. Pressable 1줄로 모달 open. */}
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
+          <Text style={[styles.sectionTitle, { color: colors.muted }]}>
+            {t('settings.feedbackSection')}
+          </Text>
+          <Pressable
+            style={styles.settingRow}
+            onPress={() => setFeedbackVisible(true)}
+            testID="feedback-entry"
+            accessibilityRole="button"
+            accessibilityLabel={t('settings.feedbackLabel')}
+          >
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: colors.ink }]}>
+                {t('settings.feedbackLabel')}
+              </Text>
+              <Text style={[styles.settingDesc, { color: colors.muted }]}>
+                {t('settings.feedbackDescription')}
+              </Text>
+            </View>
+            <Text style={[styles.localeChevron, { color: colors.muted }]}>›</Text>
+          </Pressable>
+        </View>
+
         <VersionFooter />
       </ScrollView>
+      <FeedbackModal
+        visible={feedbackVisible}
+        onClose={() => setFeedbackVisible(false)}
+      />
     </SafeAreaView>
   );
 }

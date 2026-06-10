@@ -19,6 +19,11 @@ import {
   validateBoardingPromptOutcome,
 } from './boardingPromptOutcome';
 import { runFallbackPushes } from './fallback';
+import {
+  generateFeedbackId,
+  storeFeedback,
+  validateFeedback,
+} from './feedback';
 import { evaluateAndMaybeAlert } from './recallAlerts';
 import {
   cleanupTripWithLa,
@@ -81,6 +86,40 @@ function makeLaStats(): LiveActivityStats {
 export const app = new Hono<{ Bindings: Env }>();
 
 app.get('/health', (c) => c.json({ ok: true }));
+
+/**
+ * 사용자 버그 신고 (#1034, docs/requirements/12-cross-cutting.md).
+ *
+ * Body: `{ message: string, context?: { appVersion?, platform?, locale?, deviceModel? } }`
+ *   - message: 1~2000자 (validateFeedback이 trim 후 길이 검사)
+ *   - context: 옵션 — 알려진 필드만 보존, 나머지는 drop (forward compat)
+ *
+ * Responses:
+ *   201 { ok: true, key }       — 적재 성공
+ *   400 { error: 'invalid_json' | 'invalid_payload' }
+ *   503 { error: 'feedback_unavailable' } — FEEDBACK binding 미설정 (운영자 namespace 발급 전)
+ *
+ * 보관: TTL 30일. 운영자가 `wrangler kv` CLI로 수거.
+ */
+app.post('/feedback', async (c) => {
+  const kv = c.env.FEEDBACK;
+  if (!kv) return c.json({ error: 'feedback_unavailable' }, 503);
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const payload = validateFeedback(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const receivedAt = Date.now();
+  const id = generateFeedbackId();
+  const key = await storeFeedback(kv, payload, receivedAt, id);
+  return c.json({ ok: true, key }, 201);
+});
 
 app.post('/trips', async (c) => {
   let body: unknown;

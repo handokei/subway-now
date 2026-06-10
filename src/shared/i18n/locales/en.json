@@ -82,7 +82,19 @@
     "languageSection": "Language",
     "languageLabel": "App language",
     "languageDescription": "Auto follows your device setting",
-    "languageAuto": "Auto"
+    "languageAuto": "Auto",
+    "feedbackSection": "Support",
+    "feedbackLabel": "Report a bug",
+    "feedbackDescription": "Tell us about issues you encountered"
+  },
+  "feedback": {
+    "title": "Report a bug",
+    "description": "Describe the problem you experienced. App version and OS info will be sent along.",
+    "placeholder": "e.g. The arrival alarm for Gangnam didn't fire",
+    "submit": "Send",
+    "submitting": "Sending…",
+    "successToast": "Sent. Thank you!",
+    "errorToast": "Failed to send. Please try again later."
   },
   "map": {
     "originBadge": "Origin",

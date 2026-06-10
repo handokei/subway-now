@@ -82,7 +82,19 @@
     "languageSection": "言語",
     "languageLabel": "アプリの言語",
     "languageDescription": "自動はデバイスの設定に従います",
-    "languageAuto": "自動"
+    "languageAuto": "自動",
+    "feedbackSection": "サポート",
+    "feedbackLabel": "バグを報告",
+    "feedbackDescription": "アプリで発生した問題をお知らせください"
+  },
+  "feedback": {
+    "title": "バグを報告",
+    "description": "発生した問題を詳しく記入してください。アプリのバージョンとOS情報も一緒に送信されます。",
+    "placeholder": "例: 江南駅の到着アラームが鳴りませんでした",
+    "submit": "送信",
+    "submitting": "送信中…",
+    "successToast": "送信しました。ありがとうございます！",
+    "errorToast": "送信に失敗しました。しばらくしてからもう一度お試しください。"
   },
   "map": {
     "originBadge": "出発",

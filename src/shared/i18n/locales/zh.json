@@ -82,7 +82,19 @@
     "languageSection": "语言",
     "languageLabel": "应用语言",
     "languageDescription": "自动会跟随设备设置",
-    "languageAuto": "自动"
+    "languageAuto": "自动",
+    "feedbackSection": "支持",
+    "feedbackLabel": "报告问题",
+    "feedbackDescription": "告诉我们您遇到的问题"
+  },
+  "feedback": {
+    "title": "报告问题",
+    "description": "请详细描述您遇到的问题。应用版本和系统信息将一并发送。",
+    "placeholder": "例如：江南站的到达提醒未响起",
+    "submit": "发送",
+    "submitting": "正在发送…",
+    "successToast": "已发送，感谢您的反馈！",
+    "errorToast": "发送失败，请稍后再试。"
   },
   "map": {
     "originBadge": "出发",
