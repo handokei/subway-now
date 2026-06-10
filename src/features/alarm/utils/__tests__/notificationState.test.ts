@@ -81,6 +81,14 @@ describe('notificationState', () => {
       expect(result).toBeNull();
     });
 
+    it('유효한 JSON이지만 레코드 형식이 아니면 null을 반환한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify({ foo: 'bar' }));
+
+      const result = await getLastNotifiedStationId('dest-1');
+
+      expect(result).toBeNull();
+    });
+
     it('AsyncStorage가 에러를 던지면 null을 반환한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage 오류'));
 
