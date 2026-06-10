@@ -1,4 +1,5 @@
 import { Text } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing } from '../../../shared/theme';
 import { ActionBanner } from '../../../shared/ui/ActionBanner';
 
@@ -11,9 +12,12 @@ interface Props {
  *
  * 표시 조건/감지 로직은 useMisBoardingDetector가 담당 — 이 컴포넌트는 순수 표시 + 액션.
  * 공통 레이아웃은 ActionBanner 슬롯 패턴으로 위임.
+ *
+ * a11y(#1077 후속): ActionBanner의 a11y props로 alert role + 액션 라벨/힌트 주입.
  */
 export function MisBoardingBanner({ onReselect }: Props) {
   const { colors } = useTheme();
+  const { t } = useTranslation();
   return (
     <ActionBanner
       accent={colors.warn}
@@ -22,6 +26,9 @@ export function MisBoardingBanner({ onReselect }: Props) {
       onActionPress={onReselect}
       actionTestID="mis-boarding-reselect"
       marginBottom={spacing.md}
+      accessibilityLabel={t('a11y.route.misBoardingBannerLabel')}
+      actionAccessibilityLabel={t('a11y.route.misBoardingReselectLabel')}
+      actionAccessibilityHint={t('a11y.route.misBoardingReselectHint')}
     >
       <Text style={[typography.label, { color: colors.warn }]}>탑승 열차 미확인</Text>
       <Text style={[typography.body, { color: colors.muted }]}>
