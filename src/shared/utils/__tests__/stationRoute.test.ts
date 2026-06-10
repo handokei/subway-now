@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 import {
@@ -804,6 +804,18 @@ describe('구간별 실측 운행시간 반영 (#655)', () => {
   it('실측 hop가 fallback보다 짧으면 calculateStaticETA도 짧아진다', () => {
     // 3분 대기 + round(180/60) = 3 + 3 = 6분 (fallback이면 3 + round(240/60) = 7분).
     expect(calculateStaticETA(findRoute('1-030', '1-032'))).toBe(6);
+  });
+});
+
+describe('getStopDistanceMeters (#1111)', () => {
+  it('실측 트랙 거리(미터)를 양방향으로 반환한다', () => {
+    // 1호선 시청(1-033) ↔ 종각(1-032): DIST_KM 1.0 → 1000m. 양방향 동일.
+    expect(getStopDistanceMeters('1', '1-033', '1-032')).toBe(1000);
+    expect(getStopDistanceMeters('1', '1-032', '1-033')).toBe(1000);
+  });
+
+  it('데이터 미커버 hop은 null (호출자가 haversine fallback 선택)', () => {
+    expect(getStopDistanceMeters('1', 'NOPE', 'NEITHER')).toBeNull();
   });
 });
 
