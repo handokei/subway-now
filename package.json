@@ -75,6 +75,7 @@
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
+    "@sentry/react-native": "~7.13.0",
     "audio-route": "file:./modules/audio-route",
     "expo": "~54.0.33",
     "expo-av": "~16.0.8",
@@ -94,7 +95,6 @@
     "i18next": "~26.1.0",
     "live-activity": "file:./modules/live-activity",
     "motion-activity": "file:./modules/motion-activity",
-    "wifi-ssid": "file:./modules/wifi-ssid",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-i18next": "~17.0.7",
@@ -103,6 +103,7 @@
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
     "react-native-web": "^0.21.2",
+    "wifi-ssid": "file:./modules/wifi-ssid",
     "zustand": "^5.0.12"
   },
   "devDependencies": {

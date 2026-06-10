@@ -27,8 +27,13 @@ import { useBoardingPromptResponder } from '../src/features/alarm/hooks/useBoard
 import { useStateRehydration } from '../src/shared/hooks/useStateRehydration';
 import { fetchArrivalInfo } from '../src/features/arrival/api/arrivalApi';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../src/shared/constants/boardingLock';
+import { initSentryIfOptedIn } from '../src/shared/infra/monitoring/sentryInit';
 
 const layoutLogger = createLogger('RootLayout');
+
+// #1038 — Sentry 에러 모니터링 init (default OFF, opt-in only).
+// fire-and-forget — boot path 비차단. UI 토글은 follow-up PR.
+initSentryIfOptedIn().catch((e) => layoutLogger.warn('Sentry init 실패(#1038):', e));
 
 SplashScreen.preventAutoHideAsync();
 setupNotificationHandler();

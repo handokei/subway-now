@@ -1550,9 +1550,16 @@ describe('runScheduled — trip-ended silent push (#868)', () => {
     reason: string;
     pushId: string;
     sentAt: number;
+    tripToken: string;
   } {
     const body = JSON.parse(call[1].body as string) as {
-      data: { kind: string; reason: string; pushId: string; sentAt: number };
+      data: {
+        kind: string;
+        reason: string;
+        pushId: string;
+        sentAt: number;
+        tripToken: string;
+      };
     };
     return body.data;
   }
@@ -1659,7 +1666,7 @@ describe('runScheduled — trip-ended silent push (#868)', () => {
     const kv = new InMemoryKV();
     await putTrip(kv as unknown as KVNamespace, makeEtaThresholdTrip('thr-tok', 4));
     // trip-ended push만 reject — reschedule/LA push는 정상.
-    const throwingFetch = vi.fn((url: unknown, init?: { body?: string }) => {
+    const throwingFetch = vi.fn((_url: unknown, init?: { body?: string }) => {
       const body = typeof init?.body === 'string' ? init.body : '';
       if (body.includes('"trip-ended"')) {
         return Promise.reject(new Error('network down'));

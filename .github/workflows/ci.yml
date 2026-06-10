@@ -204,6 +204,11 @@ jobs:
         # Release는 항상 번들을 임베드하고 prod 동작과도 일치.
         env:
           EXPO_PUBLIC_E2E_MOCK: 'true'
+          # #1038 Sentry: Release 빌드의 "Bundle React Native code and images" phase는
+          # sentry-cli로 source map을 자동 업로드한다. CI에는 SENTRY_AUTH_TOKEN/ORG이 없으므로
+          # 업로드가 실패하면서 collect-modules.sh가 sourcemap을 못 찾아 exit 1 → 전체 빌드 fail.
+          # CI smoke는 source map 업로드가 불필요(앱 실행만 검증) → 명시적으로 비활성화.
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
         run: |
           cd ios
           # ONLY_ACTIVE_ARCH=YES: Release 기본은 x86_64+arm64 둘 다 빌드(universal binary 가정).

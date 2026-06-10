@@ -26,14 +26,13 @@
  *   - line: 첫 leg 라인 (boarding 단계 노선)
  *
  * `currentStation === null`이거나 next/lookup 실패 시 null 반환 — backend는 자동 skip.
- *
- * TODO(#1028 follow-up): firstLeg 추출은 tripDirection.ts에도 중복 존재. shared util로 분리 예정.
  */
 
-import type { Station, LineNumber } from '../../../shared/types/station';
+import type { Station } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
 import {
   findStationByNameAndLine,
+  getFirstLeg,
   getNextStationName,
 } from '../../../shared/utils/stationRoute';
 import { resolveTravelDirection } from '../../route/utils/travelDirection';
@@ -56,22 +55,6 @@ interface BuildInputs {
   destination: Station | null;
 }
 
-interface FirstLeg {
-  line: LineNumber;
-  endName: string;
-}
-
-function firstLeg(route: NonNullable<Route>, destinationName: string): FirstLeg {
-  if (route.type === 'direct') {
-    return { line: route.line, endName: destinationName };
-  }
-  if (route.type === 'transfer') {
-    return { line: route.fromLine, endName: route.transferName };
-  }
-  const first = route.transfers[0];
-  return { line: first.fromLine, endName: first.transferName };
-}
-
 export function buildBoardingPromptContext({
   route,
   currentStation,
@@ -79,7 +62,7 @@ export function buildBoardingPromptContext({
 }: BuildInputs): BoardingPromptContext | null {
   if (!route || !currentStation || !destination) return null;
 
-  const leg = firstLeg(route, destination.name);
+  const leg = getFirstLeg(route, destination.name);
   const nextName = getNextStationName(currentStation.id, destination.id, route);
   if (!nextName) return null;
 

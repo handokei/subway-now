@@ -53,7 +53,11 @@
     "boardingProximityHint": "靠近乘车站后可以选择列车",
     "boardingTrainListTitle": "选择乘坐列车",
     "boardingTrainListEmpty": "暂无即将到达的列车。",
-    "misBoardingToast": "找不到乘坐的列车,请重新选择。"
+    "misBoardingToast": "找不到乘坐的列车,请重新选择。",
+    "autoDisembarkToast": {
+      "message": "已到达{{name}},已清除目的地",
+      "undo": "撤销"
+    }
   },
   "settings": {
     "title": "设置",

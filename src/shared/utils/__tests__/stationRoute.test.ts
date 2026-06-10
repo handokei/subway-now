@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 import {
@@ -1522,6 +1522,35 @@ describe('updateRouteFromPosition', () => {
       const result = updateRouteFromPosition(storedMultiRoute, jangam7, '1-001');
       expect(result).toBeNull();
     });
+  });
+});
+
+describe('getFirstLeg', () => {
+  it('direct route → { line, endName: destinationName }', () => {
+    const route = makeDirectRoute(3, '2');
+    expect(getFirstLeg(route, '강남')).toEqual({ line: '2', endName: '강남' });
+  });
+
+  it('transfer route → { line: fromLine, endName: transferName }', () => {
+    const route = makeTransferRoute({
+      transferName: '서울역',
+      fromLine: '1',
+      toLine: '4',
+      stopsToTransfer: 5,
+      stopsFromTransfer: 3,
+    });
+    expect(getFirstLeg(route, '강남')).toEqual({ line: '1', endName: '서울역' });
+  });
+
+  it('multi-transfer route → { line: transfers[0].fromLine, endName: transfers[0].transferName }', () => {
+    const route = makeMultiTransferRoute({
+      transfers: [
+        { transferName: '서울역', fromLine: '1', toLine: '4', stopsToTransfer: 5 },
+        { transferName: '명동', fromLine: '4', toLine: '2', stopsToTransfer: 3 },
+      ],
+      stopsAfterLastTransfer: 2,
+    });
+    expect(getFirstLeg(route, '강남')).toEqual({ line: '1', endName: '서울역' });
   });
 });
 

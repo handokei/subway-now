@@ -85,6 +85,7 @@ module.exports = {
       'expo-background-task',
       './modules/live-activity/app.plugin.js',
       './plugins/with-fmt-consteval-patch.js',
+      '@sentry/react-native/expo',
       '@bacons/apple-targets',
     ],
     extra: {

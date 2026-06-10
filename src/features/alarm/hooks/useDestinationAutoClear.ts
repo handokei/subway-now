@@ -56,8 +56,12 @@ export interface UseDestinationAutoClearInputs {
   userLocation: { lat: number; lng: number } | null;
   /** CMMotionActivity stationary 신호. 미지원/거절 케이스는 false로 전달되어 detect=false. */
   motionStationary: boolean;
-  /** `setDestination(null)`을 호출하는 콜백. HomeScreen이 useCallback으로 메모이즈해 전달. */
-  onAutoClear: () => void;
+  /**
+   * 자동 해제 시 호출. `setDestination(null)` 등 cleanup은 caller 책임이다.
+   * #1058: cleared station을 인자로 받아 caller가 undo toast에 노출하거나 복원할 수 있다.
+   * HomeScreen이 useCallback으로 메모이즈해 전달.
+   */
+  onAutoClear: (cleared: Station) => void;
 }
 
 /**
@@ -141,7 +145,7 @@ export function useDestinationAutoClear({
       logger.info(
         `destination=${destination.name} 자동 해제 (confidence=${result.confidence})`,
       );
-      onAutoClear();
+      onAutoClear(destination);
     }
   }, [
     destination,

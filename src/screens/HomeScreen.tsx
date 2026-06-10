@@ -395,11 +395,29 @@ export default function HomeScreen() {
   // 기존 arrival/useArrivalAutoClear(500m/2s, GPS 역명 매칭)와도 책임 분리:
   //   - arrival/useArrivalAutoClear: 도착 banner UX + 빠른 2초 후 자동 클리어 (낙관적 단순 정책).
   //   - 본 hook: motion=stationary + arvlCd 보강 → 사용자가 명시 "하차" 안 누른 케이스의 안전망.
+  // #1058: 자동 하차 직후 6초간 toast + undo 액션. cleared 인자는 useDestinationAutoClear가
+  // fire 시점 destination snapshot을 전달 — recentDestination이 아니라 "방금 해제된" station을
+  // 그대로 복원할 수 있다 (사용자가 trip 도중 다른 picker 작업으로 recent를 덮어쓰는 회귀 차단).
+  const [autoDisembarkToast, setAutoDisembarkToast] = useState<Station | null>(null);
+  const handleAutoDisembark = useCallback(
+    (cleared: Station) => {
+      setDestination(null);
+      setAutoDisembarkToast(cleared);
+    },
+    [setDestination],
+  );
+  const handleAutoDisembarkUndo = useCallback(() => {
+    if (autoDisembarkToast) {
+      setDestination(autoDisembarkToast);
+    }
+    setAutoDisembarkToast(null);
+  }, [autoDisembarkToast, setDestination]);
+  const handleAutoDisembarkDismiss = useCallback(() => setAutoDisembarkToast(null), []);
   useDestinationAutoClear({
     destination,
     userLocation,
     motionStationary,
-    onAutoClear: handleArrivalClear,
+    onAutoClear: handleAutoDisembark,
   });
   // #584 PR D3: lock.boardingLine 위치 데이터를 별도 구독 — fusion 캐시와 dedup되어 추가 비용 없음.
   // lock 없으면 line=null로 호출되어 polling이 자동 정지된다.
@@ -689,6 +707,15 @@ export default function HomeScreen() {
         onDismiss={handleMisBoardingToastDismiss}
         accent={colors.warn}
         testID="mis-boarding-toast"
+      />
+      <Toast
+        visible={autoDisembarkToast !== null}
+        message={t('home.autoDisembarkToast.message', { name: autoDisembarkToast?.name ?? '' })}
+        actionLabel={t('home.autoDisembarkToast.undo')}
+        onAction={handleAutoDisembarkUndo}
+        onDismiss={handleAutoDisembarkDismiss}
+        durationMs={6000}
+        testID="auto-disembark-toast"
       />
       {/* line이 정해져야 list를 렌더 가능 — line null이면 모달 자체를 띄우지 않음 (빈 sheet 회피). */}
       <MisBoardingReselectModal
