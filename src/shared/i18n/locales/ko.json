@@ -284,5 +284,11 @@
       "boardingLockReleaseLabel": "하차",
       "boardingLockReleaseHint": "현재 탑승 상태를 종료합니다"
     }
+  },
+  "share": {
+    "trip": {
+      "title": "지하철 경로",
+      "bodyTemplate": "🚇 지하철 경로\n출발: {{fromName}} ({{fromLine}})\n도착: {{toName}} ({{toLine}})\n약 {{minutes}}분 소요 ({{stops}}정거장)"
+    }
   }
 }

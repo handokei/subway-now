@@ -284,5 +284,11 @@
       "boardingLockReleaseLabel": "下车",
       "boardingLockReleaseHint": "结束当前乘车状态"
     }
+  },
+  "share": {
+    "trip": {
+      "title": "地铁路线",
+      "bodyTemplate": "🚇 地铁路线\n出发: {{fromName}} ({{fromLine}})\n到达: {{toName}} ({{toLine}})\n约 {{minutes}}分钟 ({{stops}}站)"
+    }
   }
 }
