@@ -30,53 +30,25 @@ jest.mock('../../../../shared/utils/stationRoute', () => ({
 }));
 
 describe('inferLoopDirection', () => {
-  it('순환선 외(monotonic) 노선은 null', () => {
-    expect(inferLoopDirection('3', '대화', '주엽')).toBeNull();
-  });
+  // 케이스: [설명, line, from, to, 기대값]
+  // - LOOP_LINES(2호선) 외 / 동일 역 / 정반대 위치 / 지선 매칭 실패 → null
+  // - id 증가 방향이 짧으면 'down' (외선순환), wrap 방향이 짧으면 'up' (내선순환)
+  // - normalize는 정확 매칭 다음 fallback
+  const cases: Array<[string, '2' | '3', string, string, 'up' | 'down' | null]> = [
+    ['순환선 외(monotonic) 노선은 null', '3', '대화', '주엽', null],
+    ['LOOP_LINES 미포함 노선은 동일 역도 null', '3', '대화', '대화', null],
+    ['시청(0) → 을지로4가(3): forward=3, backward=5 → down', '2', '시청', '을지로4가', 'down'],
+    ['시청(0) → 왕십리(7): forward=7, backward=1 → up', '2', '시청', '왕십리', 'up'],
+    ['시청(0) ↔ 동대문역사문화공원(4): 정반대 → null', '2', '시청', '동대문역사문화공원', null],
+    ['동일 역이면 null', '2', '시청', '시청', null],
+    ['from이 지선(까치산) → null', '2', '까치산', '시청', null],
+    ['to가 지선(까치산) → null', '2', '시청', '까치산', null],
+    ['시청(0) → 을지로3가(별칭)(2): normalize 매칭 → down', '2', '시청', '을지로3가(별칭)', 'down'],
+    ['시청(0) → 을지로입구(1): 정확 매칭 우선 → down', '2', '시청', '을지로입구', 'down'],
+  ];
 
-  it('2호선이지만 stations 빈 경우는 null', () => {
-    // line '6'을 빈 배열로 mock — 동일 분기 검증 위해 line '2'에 대해 빈 배열 시나리오를
-    // 별도로 만들 수 없으므로 LOOP_LINES 분기 후 stations.length === 0 가드를 보장하기 위해
-    // 임시로 mock을 덮어쓰지 않고, 빈 루프 가드는 다음 케이스(필터 결과 < 2)에서 함께 검증한다.
-    // 여기서는 monotonic skip만 우선 확인.
-    expect(inferLoopDirection('3', '대화', '대화')).toBeNull();
-  });
-
-  it('id 증가 방향이 짧으면 외선순환(down)', () => {
-    // 시청(0) → 을지로4가(3): forward=3, backward=5 → down
-    expect(inferLoopDirection('2', '시청', '을지로4가')).toBe('down');
-  });
-
-  it('id 감소(wrap) 방향이 짧으면 내선순환(up)', () => {
-    // 시청(0) → 왕십리(7): forward=7, backward=1 → up
-    expect(inferLoopDirection('2', '시청', '왕십리')).toBe('up');
-  });
-
-  it('정반대 위치(두 호 동일 길이)는 null', () => {
-    // 루프 길이 8 → 시청(0) ↔ 동대문역사문화공원(4): forward=4, backward=4 → null
-    expect(inferLoopDirection('2', '시청', '동대문역사문화공원')).toBeNull();
-  });
-
-  it('동일 역이면 null', () => {
-    expect(inferLoopDirection('2', '시청', '시청')).toBeNull();
-  });
-
-  it('from이 지선(까치산)이면 메인 루프 인덱스 매칭 실패 → null', () => {
-    expect(inferLoopDirection('2', '까치산', '시청')).toBeNull();
-  });
-
-  it('to가 지선이면 null', () => {
-    expect(inferLoopDirection('2', '시청', '까치산')).toBeNull();
-  });
-
-  it('역명에 별칭 괄호가 붙어도 normalize로 매칭', () => {
-    // 시청(0) → 을지로3가(별칭)(2): forward=2, backward=6 → down
-    expect(inferLoopDirection('2', '시청', '을지로3가(별칭)')).toBe('down');
-  });
-
-  it('정확 매칭이 normalize 매칭보다 우선', () => {
-    // 시청(0) → 을지로입구(1): forward=1, backward=7 → down (정확 매칭 경로 검증)
-    expect(inferLoopDirection('2', '시청', '을지로입구')).toBe('down');
+  it.each(cases)('%s', (_desc, line, from, to, expected) => {
+    expect(inferLoopDirection(line, from, to)).toBe(expected);
   });
 });
 
