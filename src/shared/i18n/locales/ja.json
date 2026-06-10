@@ -294,5 +294,12 @@
       "preFirst": "始発前 · 始発 {{time}} 予定",
       "postLast": "終電後 · 明日の始発 {{time}}"
     }
+  },
+  "share": {
+    "trip": {
+      "title": "地下鉄ルート",
+      "buttonLabel": "ルートを共有",
+      "bodyTemplate": "🚇 地下鉄ルート\n出発: {{fromName}} ({{fromLine}})\n到着: {{toName}} ({{toLine}})\n約 {{minutes}} 分 ({{stops}} 駅)"
+    }
   }
 }
