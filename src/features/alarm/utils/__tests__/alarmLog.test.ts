@@ -19,6 +19,8 @@ import {
   logFiredStationPassed,
   logScheduledAlarm,
   logFiredAlarmsHydrate,
+  logRefMismatch,
+  _resetRefMismatchWindowForTests,
   logSuppressedDedupAlarm,
   _resetDedupAlarmWindowForTests,
   _simulateAppStateForTest,
@@ -84,6 +86,7 @@ describe('alarmLog', () => {
     (AsyncStorage.setItem as jest.Mock).mockReset().mockResolvedValue(undefined);
     (AsyncStorage.removeItem as jest.Mock).mockReset().mockResolvedValue(undefined);
     _resetDedupAlarmWindowForTests();
+    _resetRefMismatchWindowForTests();
     // #735 — 모듈 스코프 pending/timer 격리.
     resetAlarmLogForTest();
   });
@@ -988,7 +991,7 @@ describe('alarmLog', () => {
       expect(countSilentPushOutcomes(entries)).toEqual({ received: 3, fired: 1, skipped: 2 });
     });
 
-    it('silent push 외 source(fg/bg/bg-scheduled/alert-fallback-fired/fg-hydrate/fg-evaluated)는 무시', () => {
+    it('silent push 외 source(fg/bg/bg-scheduled/alert-fallback-fired/fg-hydrate/fg-evaluated/fg-ref-mismatch)는 무시', () => {
       const entries: AlarmLogEntry[] = [
         makeEntry({ source: 'fg' }),
         makeEntry({ source: 'bg' }),
@@ -996,9 +999,72 @@ describe('alarmLog', () => {
         makeEntry({ source: 'alert-fallback-fired' }),
         makeEntry({ source: 'fg-hydrate' }),
         makeEntry({ source: 'fg-evaluated' }),
+        makeEntry({ source: 'fg-ref-mismatch' }),
         makeEntry({ source: 'silent-push-received' }),
       ];
       expect(countSilentPushOutcomes(entries)).toEqual({ received: 1, fired: 0, skipped: 0 });
+    });
+  });
+
+  describe('logRefMismatch (#580 M4 race detection stamp)', () => {
+    it('destinationId + refDestId를 fg-ref-mismatch/suppressed 엔트리로 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logRefMismatch('dest-1', 'dest-0');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg-ref-mismatch',
+        outcome: 'suppressed',
+        destinationId: 'dest-1',
+        refDestId: 'dest-0',
+      });
+    });
+
+    it('refDestId=null(초기 상태)도 그대로 기록한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logRefMismatch('dest-1', null);
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg-ref-mismatch',
+        outcome: 'suppressed',
+        destinationId: 'dest-1',
+        refDestId: null,
+      });
+    });
+
+    it('같은 (destinationId, refDestId) 쌍은 DEDUP_LOG_WINDOW_MS 안에 1건만 적재한다 (#626 패턴)', async () => {
+      jest.useFakeTimers();
+      try {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+        logRefMismatch('dest-1', 'dest-0');
+        logRefMismatch('dest-1', 'dest-0'); // dedup → drop
+        logRefMismatch('dest-1', 'dest-0'); // dedup → drop
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved.filter((e) => e.source === 'fg-ref-mismatch')).toHaveLength(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('window 리셋 후에는 같은 쌍도 다시 적재된다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      logRefMismatch('dest-1', 'dest-0');
+      // 윈도우 캐시를 명시 리셋해 만료를 시뮬레이트.
+      _resetRefMismatchWindowForTests();
+      logRefMismatch('dest-1', 'dest-0'); // 캐시 비어있으므로 적재
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved.filter((e) => e.source === 'fg-ref-mismatch')).toHaveLength(2);
     });
   });
 

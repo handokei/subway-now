@@ -46,7 +46,11 @@ export type AlarmLogSource =
   | 'fg-hydrate'
   // #917 A2 follow-up — FG fast path: lock.trainCode arvlCd∈{0,1} 신호로 매역 알림 발사한 케이스.
   // 일반 GPS 기반 fg와 구분해 backend cron silent push 대비 fast path 도달률·정확도 측정.
-  | 'fg-arvlcd';
+  | 'fg-arvlcd'
+  // #580 M4: firedAlarmsRefDestIdRef vs destination.id mismatch 감지 stamp.
+  // ETA/API/FG arvlCd effect 진입 시 refDestId가 destination.id와 다르면 1건 기록.
+  // 같은 destinationId에서 mismatch가 반복되면 hydration 완료 전에 effect가 재실행되는 race 정황.
+  | 'fg-ref-mismatch';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -151,6 +155,8 @@ export interface AlarmLogEntry {
   // #580: fg-hydrate 엔트리 — destinationId + 복원된 fired set 크기.
   destinationId?: string | null;
   firedAlarmsCount?: number;
+  // #580 M4: fg-ref-mismatch 엔트리 — 예상 destinationId와 실제 refDestId 기록.
+  refDestId?: string | null;
 }
 
 const logger = createLogger('AlarmLog');
@@ -233,6 +239,42 @@ export function logFiredAlarmsHydrate(destinationId: string | null, firedAlarmsC
     destinationId,
     firedAlarmsCount,
   });
+}
+
+/**
+ * #580 M4: firedAlarmsRefDestIdRef mismatch 1건 적재.
+ *
+ * ETA/API imminent/FG arvlCd 3개 effect 진입 시 ref가 가리키는 destinationId(refDestId)가
+ * 현재 destination.id(destinationId)와 다를 때 호출된다.
+ *
+ * 정상 동작: destination 전환 직후 hydration 완료 전에만 발생 → hydration 완료되면 소멸.
+ * 회귀 패턴: 같은 destinationId에서 mismatch가 반복되면 hydration이 완료되지 않거나 ref가
+ * 잘못 갱신되는 race 정황.
+ *
+ * in-memory time-window dedup (#626 패턴). ETA/API effect가 GPS fix마다 재실행되므로
+ * dedup 없이는 hydration 창 동안 수백 건이 적재돼 ring buffer를 가득 채운다.
+ * 같은 (destinationId, refDestId) 쌍이 DEDUP_LOG_WINDOW_MS 안에 재호출되면 drop.
+ */
+const lastRefMismatchTs = new Map<string, number>();
+
+export function logRefMismatch(destinationId: string, refDestId: string | null): void {
+  const now = Date.now();
+  const key = `${destinationId}|${refDestId}`;
+  const last = lastRefMismatchTs.get(key);
+  if (last !== undefined && now - last < DEDUP_LOG_WINDOW_MS) return;
+  lastRefMismatchTs.set(key, now);
+  appendAlarmLog({
+    ts: now,
+    source: 'fg-ref-mismatch',
+    outcome: 'suppressed',
+    destinationId,
+    refDestId,
+  });
+}
+
+/** 테스트 전용 — refMismatch 윈도우 캐시 리셋. */
+export function _resetRefMismatchWindowForTests(): void {
+  lastRefMismatchTs.clear();
 }
 
 /**
@@ -481,6 +523,7 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'alert-fallback-fired': null,
   'fg-hydrate': null,
   'fg-arvlcd': null,
+  'fg-ref-mismatch': null,
 };
 
 export interface SilentPushOutcomeCounts {
