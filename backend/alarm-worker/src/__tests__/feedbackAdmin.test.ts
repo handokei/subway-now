@@ -54,6 +54,34 @@ async function authedGet(path: string, kv: InMemoryKV): Promise<Response> {
   return get(path, authedEnv(kv), { authorization: 'Bearer secret' });
 }
 
+/**
+ * Shared auth/binding gate tests for any /admin/feedback* route.
+ * Covers: missing ADMIN_TOKEN (503), mismatched token (401), missing FEEDBACK binding (503).
+ * Extracted to avoid duplicated test blocks across describe groups (SonarCloud).
+ */
+function describeAdminAuthGate(path: string): void {
+  it(`${path} returns 503 when ADMIN_TOKEN missing`, async () => {
+    const res = await get(path, makeEnv());
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'admin_unavailable' });
+  });
+
+  it(`${path} returns 401 when token mismatches`, async () => {
+    const res = await get(path, makeEnv({ ADMIN_TOKEN: 'secret' }), {
+      authorization: 'Bearer nope',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it(`${path} returns 503 when FEEDBACK binding missing`, async () => {
+    const res = await get(path, makeEnv({ ADMIN_TOKEN: 'secret' }), {
+      authorization: 'Bearer secret',
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'feedback_unavailable' });
+  });
+}
+
 async function seed(kv: InMemoryKV, count: number, baseTs = 10_000): Promise<void> {
   for (let i = 0; i < count; i++) {
     await storeFeedback(
@@ -233,11 +261,7 @@ describe('toCsv', () => {
 });
 
 describe('GET /admin/feedback', () => {
-  it('returns 503 when ADMIN_TOKEN secret missing', async () => {
-    const res = await get('/admin/feedback', makeEnv());
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'admin_unavailable' });
-  });
+  describeAdminAuthGate('/admin/feedback');
 
   it('returns 401 when Authorization header absent', async () => {
     const res = await get('/admin/feedback', makeEnv({ ADMIN_TOKEN: 'secret' }));
@@ -250,21 +274,6 @@ describe('GET /admin/feedback', () => {
       authorization: 'Basic secret',
     });
     expect(res.status).toBe(401);
-  });
-
-  it('returns 401 when token mismatches', async () => {
-    const res = await get('/admin/feedback', makeEnv({ ADMIN_TOKEN: 'secret' }), {
-      authorization: 'Bearer nope',
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('returns 503 when FEEDBACK binding missing despite valid auth', async () => {
-    const res = await get('/admin/feedback', makeEnv({ ADMIN_TOKEN: 'secret' }), {
-      authorization: 'Bearer secret',
-    });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'feedback_unavailable' });
   });
 
   it('returns entries with default limit and nextBefore=null on small dataset', async () => {
@@ -537,26 +546,7 @@ describe('maybeRunDailyFeedbackStats', () => {
 });
 
 describe('GET /admin/feedback/stats', () => {
-  it('returns 503 when ADMIN_TOKEN missing', async () => {
-    const res = await get('/admin/feedback/stats', makeEnv());
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'admin_unavailable' });
-  });
-
-  it('returns 401 when token mismatches', async () => {
-    const res = await get('/admin/feedback/stats', makeEnv({ ADMIN_TOKEN: 'secret' }), {
-      authorization: 'Bearer nope',
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('returns 503 when FEEDBACK binding missing', async () => {
-    const res = await get('/admin/feedback/stats', makeEnv({ ADMIN_TOKEN: 'secret' }), {
-      authorization: 'Bearer secret',
-    });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'feedback_unavailable' });
-  });
+  describeAdminAuthGate('/admin/feedback/stats');
 
   it('returns 400 for malformed date', async () => {
     const kv = new InMemoryKV();
