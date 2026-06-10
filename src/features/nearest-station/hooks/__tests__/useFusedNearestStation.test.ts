@@ -333,11 +333,6 @@ describe('useFusedNearestStation', () => {
 
     it('lock.boardingLine과 positionTrain.line이 같으면 positionTrain 유지', () => {
       setupPositionTrainTransferStation('T-3');
-      // #1016 hole-b: lock 활성 시 accuracy>MAX_ACCURACY_M bypass 금지 → 충무로 실 좌표로 override해
-      // 거리 게이트 통과 보장. 테스트 목적은 line check(#662)이며 거리 gate는 별도 describe에서 검증.
-      mockUseNearest.mockReturnValue(
-        gpsBase({ accuracyMeters: 50, userLocation: { lat: 37.5614, lng: 126.994 } }),
-      );
       const { result } = renderHook(() =>
         useFusedNearestStation(undefined, undefined, undefined, null, lockOnLine('3')),
       );
@@ -460,8 +455,7 @@ describe('useFusedNearestStation', () => {
     const { result, rerender } = renderHook(() => useFusedNearestStation());
     expect(result.current.confidence).toBe('position-train');
 
-    // 두 번째 렌더: 두 트레인 (T-1, T-2). GPS가 사라지면 position-train도 강등됨.
-    // #1016 hole-a: userLocation=null → positionTrainResult=null. sticky는 gps fallback으로 대체.
+    // 두 번째 렌더: 두 트레인 (T-1, T-2). GPS 없이도 sticky로 T-1 유지.
     mockUsePositions.mockReturnValue(
       positionRet({
         line: '2',
@@ -473,8 +467,8 @@ describe('useFusedNearestStation', () => {
     );
     mockUseNearest.mockReturnValue(gpsBase({ userLocation: null }));
     rerender(undefined);
-    // hole-a: userLocation=null이면 positionTrainResult=null → gps fallback
-    expect(result.current.source).toBe('gps');
+    expect(result.current.source).toBe('position-train');
+    expect(result.current.result?.station.name).toBe(MOCK_STATIONS.gangnam.name);
   });
 
   it('GPS pass-through 필드들(loading/error/permissionDenied/locationUncertain/refresh 등)이 보존된다', () => {
@@ -969,13 +963,6 @@ describe('useFusedNearestStation', () => {
         // GPS는 용마산(arc 첫 역). 7093이 군자(arc idx 2)에서 도착 — trainProgress → 군자.
         jest.setSystemTime(T0 + 2 * 90_000);
         setupGpsAtWithLoosAccuracy(yongmasan);
-        // #1016 hole-b: lock 활성 시 accuracy>MAX_ACCURACY_M bypass 금지.
-        // 용마산-군자 실 좌표 거리(~2km)가 MAX_FUSION_DISTANCE_KM(0.6km) 초과 → userLocation을
-        // 군자 실 좌표로 override해 positionTrainResult가 거리 게이트를 통과하도록 함.
-        mockUseNearest.mockReturnValue(
-          gpsBase({ userLocation: { lat: gunja.lat, lng: gunja.lng }, accuracyMeters: 50 }),
-        );
-        mockFindTop.mockReturnValue([{ station: gunja, distanceKm: 0 }]);
         const t7093 = train('군자', TRAIN_STATUS.ARRIVED, { trainNo: '7093' });
         mockUsePositions.mockReturnValue(positionRet({ line: '7', trains: [t7093] }));
 
