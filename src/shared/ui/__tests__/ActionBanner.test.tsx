@@ -63,4 +63,73 @@ describe('ActionBanner', () => {
       .find((m: number | undefined) => m !== undefined);
     expect(marginBottom).toBe(expected);
   });
+
+  it('컨테이너에 alert role + liveRegion + 전달된 accessibilityLabel 부착', () => {
+    const { getByTestId } = renderWithTheme(
+      <ActionBanner
+        accent="#000"
+        testID="banner"
+        actionLabel="실행"
+        actionTestID="banner-action"
+        onActionPress={() => {}}
+        accessibilityLabel="긴급 안내"
+      >
+        <Text>info</Text>
+      </ActionBanner>,
+    );
+    const view = getByTestId('banner');
+    expect(view.props.accessibilityRole).toBe('alert');
+    expect(view.props.accessibilityLiveRegion).toBe('polite');
+    expect(view.props.accessibilityLabel).toBe('긴급 안내');
+  });
+
+  it('accessibilityLabel 미전달 시 컨테이너 라벨 undefined', () => {
+    const { getByTestId } = renderWithTheme(
+      <ActionBanner
+        accent="#000"
+        testID="banner"
+        actionLabel="실행"
+        actionTestID="banner-action"
+        onActionPress={() => {}}
+      >
+        <Text>info</Text>
+      </ActionBanner>,
+    );
+    expect(getByTestId('banner').props.accessibilityLabel).toBeUndefined();
+  });
+
+  it('액션 버튼: actionAccessibilityLabel 우선, 미전달 시 actionLabel fallback + hint 전달', () => {
+    const { getByTestId, rerender } = renderWithTheme(
+      <ActionBanner
+        accent="#000"
+        testID="banner"
+        actionLabel="실행"
+        actionTestID="banner-action"
+        onActionPress={() => {}}
+        actionAccessibilityLabel="자세한 실행"
+        actionAccessibilityHint="동작 시작"
+      >
+        <Text>info</Text>
+      </ActionBanner>,
+    );
+    const action = getByTestId('banner-action');
+    expect(action.props.accessibilityRole).toBe('button');
+    expect(action.props.accessibilityLabel).toBe('자세한 실행');
+    expect(action.props.accessibilityHint).toBe('동작 시작');
+
+    rerender(
+      <ActionBanner
+        accent="#000"
+        testID="banner"
+        actionLabel="실행"
+        actionTestID="banner-action"
+        onActionPress={() => {}}
+      >
+        <Text>info</Text>
+      </ActionBanner>,
+    );
+    const action2 = getByTestId('banner-action');
+    expect(action2.props.accessibilityLabel).toBe('실행');
+    expect(action2.props.accessibilityHint).toBeUndefined();
+  });
 });

@@ -294,7 +294,10 @@
       "assignSlotHint": "将下次选择的车站保存到此槽位",
       "favoriteChipHint": "点击将此站设为目的地",
       "misBoardingCloseLabel": "关闭",
-      "misBoardingCloseHint": "取消重新选择"
+      "misBoardingCloseHint": "取消重新选择",
+      "misBoardingBannerLabel": "无法识别乘坐的列车，请重新选择。",
+      "misBoardingReselectLabel": "重新选择乘坐列车",
+      "misBoardingReselectHint": "重新打开乘坐列车选择界面"
     }
   },
   "service": {
