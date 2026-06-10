@@ -18,6 +18,14 @@ const {
 
 const TMP_OUT = path.join(os.tmpdir(), 'subway-now-wiki-platform-test.json');
 
+// 테스트 헬퍼: MediaWiki parse API 응답 mock 생성 (중복 제거)
+const wikiResponse = (wikitext) => ({
+  ok: true,
+  json: async () => ({ parse: { wikitext: { '*': wikitext } } }),
+});
+const notFoundResponse = () => ({ ok: false, json: async () => ({}) });
+const mockFetchOnce = (wikitext) => jest.fn().mockResolvedValue(wikiResponse(wikitext));
+
 describe('extractPlatformFields', () => {
   it('returns [] for empty / null input', () => {
     expect(extractPlatformFields('')).toEqual([]);
@@ -104,10 +112,7 @@ describe('aggregateLayout', () => {
 
 describe('fetchWikitext', () => {
   it('returns wikitext on 200', async () => {
-    const fakeFetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ parse: { wikitext: { '*': '|승강장 = 1면 2선' } } }),
-    });
+    const fakeFetch = mockFetchOnce('|승강장 = 1면 2선');
     const wt = await fetchWikitext('잠실역', fakeFetch);
     expect(wt).toBe('|승강장 = 1면 2선');
     expect(fakeFetch).toHaveBeenCalledWith(
@@ -117,7 +122,7 @@ describe('fetchWikitext', () => {
   });
 
   it('returns null on non-ok response', async () => {
-    const fakeFetch = jest.fn().mockResolvedValue({ ok: false, json: async () => ({}) });
+    const fakeFetch = jest.fn().mockResolvedValue(notFoundResponse());
     expect(await fetchWikitext('없는역', fakeFetch)).toBeNull();
   });
 
@@ -129,10 +134,7 @@ describe('fetchWikitext', () => {
 
 describe('resolveStation', () => {
   it('uses first matching candidate', async () => {
-    const fakeFetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ parse: { wikitext: { '*': '|승강장 = 2면 2선([[상대식]])' } } }),
-    });
+    const fakeFetch = mockFetchOnce('|승강장 = 2면 2선([[상대식]])');
     const r = await resolveStation({ name: '잠실', line: '2' }, fakeFetch);
     expect(r).toEqual({
       stationName: '잠실',
@@ -147,11 +149,8 @@ describe('resolveStation', () => {
 
   it('falls through to next candidate when first has no 승강장 field (disambiguation)', async () => {
     const fakeFetch = jest.fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ parse: { wikitext: { '*': '동음이의 페이지' } } }) })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ parse: { wikitext: { '*': '|승강장 = 1면 2선 섬식' } } }),
-      });
+      .mockResolvedValueOnce(wikiResponse('동음이의 페이지'))
+      .mockResolvedValueOnce(wikiResponse('|승강장 = 1면 2선 섬식'));
     const r = await resolveStation({ name: '시청', line: '2' }, fakeFetch);
     expect(r.wikiTitle).toBe('시청역 (서울)');
     expect(r.layout).toBe('island');
@@ -160,19 +159,16 @@ describe('resolveStation', () => {
 
   it('skips candidate when fetchWikitext returns null', async () => {
     const fakeFetch = jest.fn()
-      .mockResolvedValueOnce({ ok: false, json: async () => ({}) })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ parse: { wikitext: { '*': '|승강장 = 1면 2선' } } }),
-      })
-      .mockResolvedValueOnce({ ok: false, json: async () => ({}) });
+      .mockResolvedValueOnce(notFoundResponse())
+      .mockResolvedValueOnce(wikiResponse('|승강장 = 1면 2선'))
+      .mockResolvedValueOnce(notFoundResponse());
     const r = await resolveStation({ name: '강남', line: '2' }, fakeFetch);
     expect(r.wikiTitle).toBe('강남역 (서울)');
     expect(r.layout).toBe('island');
   });
 
   it('returns unknown when all candidates fail', async () => {
-    const fakeFetch = jest.fn().mockResolvedValue({ ok: false, json: async () => ({}) });
+    const fakeFetch = jest.fn().mockResolvedValue(notFoundResponse());
     const r = await resolveStation({ name: '없음', line: '99' }, fakeFetch);
     expect(r).toEqual({
       stationName: '없음',
@@ -243,10 +239,7 @@ describe('run (integration with deps injection)', () => {
   });
 
   it('scrapes --only stations and writes output', async () => {
-    const fakeFetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ parse: { wikitext: { '*': '|승강장 = 1면 2선 ([[섬식]])' } } }),
-    });
+    const fakeFetch = mockFetchOnce('|승강장 = 1면 2선 ([[섬식]])');
     const sleepFn = jest.fn().mockResolvedValue(undefined);
     const writeFile = jest.fn();
     const log = jest.fn();
@@ -270,10 +263,7 @@ describe('run (integration with deps injection)', () => {
   });
 
   it('handles --sample argument', async () => {
-    const fakeFetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ parse: { wikitext: { '*': '|승강장 = 2면 2선 상대식' } } }),
-    });
+    const fakeFetch = mockFetchOnce('|승강장 = 2면 2선 상대식');
     const r = await run(['--sample', '1'], {
       fetch: fakeFetch,
       sleep: jest.fn(),
