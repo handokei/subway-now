@@ -21,6 +21,12 @@ preview_id = "53a86628f78c48fa91fa954f84514df3"
 # KV: 사용자 버그 신고 (#1034, docs/requirements/12-cross-cutting.md)
 # `POST /feedback`이 메시지 + 디바이스 컨텍스트를 30일 TTL로 적재.
 # 운영자가 `wrangler kv key list --binding FEEDBACK`으로 수거 후 분기 트리아지.
+# 키 prefix:
+#   - `feedback:<epochMs>:<id>` — 원문 entry, TTL 30일
+#   - `rl:feedback:<ip>:<windowStartMs>` — rate limit 카운터, TTL 60s
+#   - `stats:YYYY-MM-DD` — 일일 집계 (#1080 follow-up). cron이 매일 00:05 UTC에 어제 entry를
+#     집계(platform/appVersion/locale 카운트)해 적재. TTL 365일.
+#     `GET /admin/feedback/stats?date=YYYY-MM-DD`로 조회.
 [[kv_namespaces]]
 binding = "FEEDBACK"
 id = "831193b9d97f44c5b65131f045c09804"
