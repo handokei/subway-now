@@ -259,6 +259,10 @@ jobs:
         run: cd ios && pod install
 
       - name: iOS 빌드 (Release, mock backend)
+        # #1038 Sentry: CI에는 SENTRY_AUTH_TOKEN/ORG이 없어 source map 자동 업로드가 실패한다.
+        # collect-modules.sh가 sourcemap을 못 찾아 exit 1 → 빌드 fail. 비활성화로 우회.
+        env:
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
         run: |
           cd ios
           xcodebuild -workspace subwaynow.xcworkspace \
@@ -416,6 +420,10 @@ jobs:
         run: cd ios && pod install
 
       - name: iOS 빌드 (Release, E2E mock)
+        # #1038 Sentry: CI에는 SENTRY_AUTH_TOKEN/ORG이 없어 source map 자동 업로드가 실패한다.
+        # collect-modules.sh가 sourcemap을 못 찾아 exit 1 → 빌드 fail. 비활성화로 우회.
+        env:
+          SENTRY_DISABLE_AUTO_UPLOAD: 'true'
         run: |
           cd ios
           xcodebuild -workspace subwaynow.xcworkspace \
