@@ -289,10 +289,10 @@
       "boardingLockReleaseHint": "Ends the current boarding session"
     }
   },
-  "share": {
-    "trip": {
-      "title": "Subway route",
-      "bodyTemplate": "🚇 Subway route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nAbout {{minutes}} min ({{stops}} stops)"
+  "service": {
+    "window": {
+      "preFirst": "Before first train · first train at {{time}}",
+      "postLast": "After last train · first train tomorrow at {{time}}"
     }
   }
 }
