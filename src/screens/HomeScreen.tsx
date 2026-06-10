@@ -36,6 +36,7 @@ import { AlarmOverlay } from '../features/alarm/components/AlarmOverlay';
 import { createLogger } from '../shared/utils/logger';
 import { useTheme, typography, spacing, radius } from '../shared/theme';
 import { LineBadge } from '../shared/ui/LineBadge';
+import { ServiceWindowBanner } from '../shared/ui/ServiceWindowBanner';
 import { SourceBadge } from '../features/arrival/components/SourceBadge';
 import { resolveNotificationSource } from '../features/alarm/utils/notificationSource';
 import { ArrivalSourceNotice } from '../features/arrival/components/ArrivalSourceNotice';
@@ -742,6 +743,11 @@ export default function HomeScreen() {
       >
         {effectiveOrigin ? (
           <>
+            {/* #1066 follow-up — 운행 시간 외 안내 배너. 배너 자체가 in-service/unknown 분기에서
+                 null을 반환해 운행 중엔 자동 숨김. effectiveOrigin.line 기준으로 timetable 조회. */}
+            <View style={{ paddingHorizontal: spacing.xxl, paddingTop: spacing.xxl }}>
+              <ServiceWindowBanner stationName={effectiveOrigin.name} line={effectiveOrigin.line} />
+            </View>
             {/* Hero: origin station */}
             <View style={{ paddingHorizontal: spacing.xxl, paddingTop: spacing.xxxl - 4 }}>
               <Text style={[typography.label, { color: colors.muted, marginBottom: 10 }]}>
