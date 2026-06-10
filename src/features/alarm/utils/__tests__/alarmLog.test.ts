@@ -28,6 +28,7 @@ import {
   FLUSH_MAX_DELAY_MS,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
+  logSuppressedSleepFirstTransfer,
   logSuppressedGate,
   logSuppressedMovement,
   logSilentPushReceived,
@@ -528,6 +529,41 @@ describe('alarmLog', () => {
       expect(entry.phaseId).toBeUndefined();
     });
 
+    it('logSuppressedSleepFirstTransfer: reason=sleep-first-transfer, kind=transfer 고정, source/phaseId 보존 (#750)', async () => {
+      logSuppressedSleepFirstTransfer({
+        source: 'bg-scheduled',
+        stationName: '강남',
+        phaseId: 'early',
+      });
+      await expectLastSavedEntryMatches({
+        source: 'bg-scheduled',
+        outcome: 'suppressed',
+        reason: 'sleep-first-transfer',
+        stationName: '강남',
+        kind: 'transfer',
+        phaseId: 'early',
+      });
+    });
+
+    it('logSuppressedSleepFirstTransfer: phaseId 미전달 시에도 적재', async () => {
+      logSuppressedSleepFirstTransfer({
+        source: 'fg',
+        stationName: '역삼',
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'sleep-first-transfer',
+        stationName: '역삼',
+        kind: 'transfer',
+      });
+      expect(saved[0].phaseId).toBeUndefined();
+    });
+
     it('#626 같은 키 윈도우 내 재호출은 drop (FG polling 매초 평가 스팸 차단)', async () => {
       const baseTs = 1_700_000_000_000;
       const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
@@ -814,6 +850,35 @@ describe('alarmLog', () => {
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
       expect(saved).toHaveLength(2);
+    });
+
+    it('#1023 burst Map cap 초과 시 만료 엔트리 sweep — logSuppressedMovement 사용', async () => {
+      const baseTs = 1_700_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      try {
+        // cap(64)보다 많은 고유 역 키 적재 — 모두 첫 호출이므로 통과.
+        for (let i = 0; i < 70; i++) {
+          logSuppressedMovement({
+            source: 'fg',
+            stationName: `s${i}`,
+            reason: 'movement-static-speed',
+          });
+        }
+        await flushAlarmLog();
+        const callsBefore = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
+
+        // 윈도우 충분히 넘긴 후 새 키 1개 → sweep 발동, 만료 엔트리 정리.
+        nowSpy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS * 2);
+        logSuppressedMovement({
+          source: 'fg',
+          stationName: 's-after',
+          reason: 'movement-static-speed',
+        });
+        await flushAlarmLog();
+        expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(callsBefore + 1);
+      } finally {
+        nowSpy.mockRestore();
+      }
     });
 
     it('logSilentPushReceived: source=silent-push-received, outcome=received, sentAt/receivedAt 적재 (#478)', async () => {
