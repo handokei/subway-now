@@ -1,5 +1,35 @@
 import { getServiceWindow } from '../serviceWindow';
 
+type ServiceWindowResult = ReturnType<typeof getServiceWindow>;
+
+// 테스트용 line-1.json mock + getServiceWindow 재로드를 한 헬퍼로 통합.
+// 동일한 isolateModules + doMock + require 시퀀스가 여러 it()에서 반복돼 Sonar 중복으로 검출됨.
+function withMockedLine1(
+  stations: Record<string, unknown>,
+  call: (
+    fn: (input: {
+      stationName: string;
+      line: string;
+      now?: Date;
+      dayType?: 'weekday' | 'saturday' | 'sunday';
+    }) => ServiceWindowResult,
+  ) => void,
+): void {
+  jest.isolateModules(() => {
+    jest.doMock('../../../../data/timetables/line-1.json', () => ({ stations }));
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getServiceWindow: build } = require('../serviceWindow');
+    call(build);
+  });
+  jest.resetModules();
+}
+
+const SIMPLE_TIMETABLE = {
+  weekday: { up: ['0600', '2300'], down: ['0610', '2250'] },
+  saturday: { up: ['0600'], down: ['0610'] },
+  sunday: { up: ['0600'], down: ['0610'] },
+};
+
 describe('getServiceWindow', () => {
   // KST 시간대 명시. UTC+9 — KST 정오는 UTC 03:00.
   const KST_WEEKDAY_NOON = new Date('2026-06-09T03:00:00.000Z'); // 화요일 12:00 KST
@@ -51,18 +81,7 @@ describe('getServiceWindow', () => {
   describe('status="pre-first" 분기', () => {
     it('overnight 없는 timetable에서 첫차 전은 pre-first (mock으로 검증)', () => {
       // 모든 실제 1~9호선 역은 24h+ 운행을 가지므로 non-overnight 분기는 mock으로 검증.
-      jest.isolateModules(() => {
-        jest.doMock('../../../../data/timetables/line-1.json', () => ({
-          stations: {
-            테스트역: {
-              weekday: { up: ['0600', '2300'], down: ['0610', '2250'] },
-              saturday: { up: ['0600'], down: ['0610'] },
-              sunday: { up: ['0600'], down: ['0610'] },
-            },
-          },
-        }));
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { getServiceWindow: build } = require('../serviceWindow');
+      withMockedLine1({ 테스트역: SIMPLE_TIMETABLE }, (build) => {
         // KST 04:00 = UTC 19:00 전날.
         const earlyMorning = new Date('2026-06-08T19:00:00.000Z');
         const result = build({ stationName: '테스트역', line: '1', now: earlyMorning });
@@ -70,7 +89,6 @@ describe('getServiceWindow', () => {
         expect(result.firstTrain).toBe('06:00');
         expect(result.lastTrain).toBe('23:00');
       });
-      jest.resetModules();
     });
 
     it('overnight timetable에서 첫차 전(overnight tail 종료 후 ~ 다음 첫차 전)은 post-last로 분류', () => {
@@ -88,44 +106,20 @@ describe('getServiceWindow', () => {
 
   describe('non-overnight timetable post-last 분기', () => {
     it('lastRaw < 1440 timetable에서 막차 후는 post-last (mock으로 검증)', () => {
-      jest.isolateModules(() => {
-        jest.doMock('../../../../data/timetables/line-1.json', () => ({
-          stations: {
-            테스트역: {
-              weekday: { up: ['0600', '2300'], down: ['0610', '2250'] },
-              saturday: { up: ['0600'], down: ['0610'] },
-              sunday: { up: ['0600'], down: ['0610'] },
-            },
-          },
-        }));
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { getServiceWindow: build } = require('../serviceWindow');
+      withMockedLine1({ 테스트역: SIMPLE_TIMETABLE }, (build) => {
         // KST 23:30 = UTC 14:30 → 23:00(last) 후.
         const afterLast = new Date('2026-06-09T14:30:00.000Z');
         const result = build({ stationName: '테스트역', line: '1', now: afterLast });
         expect(result.status).toBe('post-last');
       });
-      jest.resetModules();
     });
 
     it('lastRaw < 1440 timetable에서 윈도우 내는 in-service (mock으로 검증)', () => {
-      jest.isolateModules(() => {
-        jest.doMock('../../../../data/timetables/line-1.json', () => ({
-          stations: {
-            테스트역: {
-              weekday: { up: ['0600', '2300'], down: ['0610', '2250'] },
-              saturday: { up: ['0600'], down: ['0610'] },
-              sunday: { up: ['0600'], down: ['0610'] },
-            },
-          },
-        }));
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { getServiceWindow: build } = require('../serviceWindow');
+      withMockedLine1({ 테스트역: SIMPLE_TIMETABLE }, (build) => {
         const noon = new Date('2026-06-09T03:00:00.000Z');
         const result = build({ stationName: '테스트역', line: '1', now: noon });
         expect(result.status).toBe('in-service');
       });
-      jest.resetModules();
     });
   });
 
@@ -164,18 +158,12 @@ describe('getServiceWindow', () => {
 
     it('모든 슬롯이 "0000"(NON_OPERATING)인 비정상 timetable은 unknown', () => {
       // jest.isolateModules + doMock 으로 line-1.json을 일시 치환.
-      jest.isolateModules(() => {
-        jest.doMock('../../../../data/timetables/line-1.json', () => ({
-          stations: {
-            전부미운행: {
-              weekday: { up: ['0000', '0000'], down: ['0000'] },
-              saturday: { up: ['0000'], down: ['0000'] },
-              sunday: { up: ['0000'], down: ['0000'] },
-            },
-          },
-        }));
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { getServiceWindow: build } = require('../serviceWindow');
+      const allZero = {
+        weekday: { up: ['0000', '0000'], down: ['0000'] },
+        saturday: { up: ['0000'], down: ['0000'] },
+        sunday: { up: ['0000'], down: ['0000'] },
+      };
+      withMockedLine1({ 전부미운행: allZero }, (build) => {
         const result = build({
           stationName: '전부미운행',
           line: '1',
@@ -183,7 +171,6 @@ describe('getServiceWindow', () => {
         });
         expect(result).toEqual({ firstTrain: null, lastTrain: null, status: 'unknown' });
       });
-      jest.resetModules();
     });
   });
 
