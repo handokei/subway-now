@@ -66,6 +66,8 @@ describe('estimatorDebugBuffer', () => {
   it('clearEstimatorEntries 시 구독자에게 알린다', () => {
     const cb = jest.fn();
     subscribeEstimatorDebug(cb);
+    pushEstimatorEntry(makeEntry(999));
+    cb.mockClear();
     clearEstimatorEntries();
     expect(cb).toHaveBeenCalledTimes(1);
   });

@@ -29,6 +29,7 @@ export function createDebugBuffer<T>(capacity: number): DebugBuffer<T> {
       return buffer;
     },
     clear(): void {
+      if (buffer.length === 0) return;
       buffer = [];
       notify();
     },

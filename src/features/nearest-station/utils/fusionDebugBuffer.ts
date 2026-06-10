@@ -1,4 +1,5 @@
 import type { FusionConfidence, FusionSource } from './pickFusedStation';
+import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
 
 // 측정 인프라(#443): fusion 결정/GPS fix 이벤트를 in-memory ring buffer에 보관.
 // 외부 도구(Metro/Xcode) 없이 DebugModal에서 사후 재구성하기 위한 채널.
@@ -84,36 +85,20 @@ export interface StickyStationEntry {
 
 export type FusionDebugEntry = FusionDecisionEntry | GpsFixEntry | StickyStationEntry;
 
-type Listener = () => void;
-
-const buffer: FusionDebugEntry[] = [];
-const listeners = new Set<Listener>();
-
-function emit(): void {
-  for (const l of listeners) l();
-}
+const db = createDebugBuffer<FusionDebugEntry>(FUSION_DEBUG_BUFFER_CAPACITY);
 
 export function pushFusionDebugEntry(entry: FusionDebugEntry): void {
-  buffer.push(entry);
-  if (buffer.length > FUSION_DEBUG_BUFFER_CAPACITY) {
-    buffer.splice(0, buffer.length - FUSION_DEBUG_BUFFER_CAPACITY);
-  }
-  emit();
+  db.push(entry);
 }
 
 export function getFusionDebugEntries(): readonly FusionDebugEntry[] {
-  return buffer;
+  return db.get();
 }
 
 export function clearFusionDebugEntries(): void {
-  if (buffer.length === 0) return;
-  buffer.length = 0;
-  emit();
+  db.clear();
 }
 
-export function subscribeFusionDebug(listener: Listener): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
+export function subscribeFusionDebug(listener: () => void): () => void {
+  return db.subscribe(listener);
 }

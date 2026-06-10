@@ -40,8 +40,18 @@ describe('createDebugBuffer', () => {
     const buf = createDebugBuffer<number>(10);
     const cb = jest.fn();
     buf.subscribe(cb);
+    buf.push(1);
+    cb.mockClear();
     buf.clear();
     expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('빈 버퍼 clear 시 구독자에게 알리지 않는다', () => {
+    const buf = createDebugBuffer<number>(10);
+    const cb = jest.fn();
+    buf.subscribe(cb);
+    buf.clear();
+    expect(cb).not.toHaveBeenCalled();
   });
 
   it('unsubscribe 후 콜백을 호출하지 않는다', () => {
