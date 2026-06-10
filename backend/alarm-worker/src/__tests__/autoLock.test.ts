@@ -156,58 +156,50 @@ describe('attemptAutoLock (#916 A1)', () => {
 });
 
 describe('attemptAutoLock RC1 confidence gate (#1018)', () => {
+  // 공통 헬퍼: 역삼에 T1(arvlCd=2), 강남에 지정된 arrivals를 반환하는 seoul fixture.
+  function makeDepartedSeoul(originArrivals: ArrivalEntry[] = []) {
+    return makeSeoulFixtureByStation({
+      역삼: [arrival({ trainCode: 'T1', arvlCd: 2 })],
+      강남: originArrivals,
+    });
+  }
+
+  // 공통 헬퍼: 기본 confidence gate 테스트 입력 + 선택적 override.
+  function callGate(
+    seoul: ReturnType<typeof makeSeoulFixtureByStation>,
+    extra: Partial<Parameters<typeof attemptAutoLock>[0]> = {},
+  ) {
+    return attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul,
+      now: NOW,
+      ...extra,
+    });
+  }
+
   it('AUTO_LOCK_CONFIDENCE_THRESHOLD는 2', () => {
     expect(AUTO_LOCK_CONFIDENCE_THRESHOLD).toBe(2);
   });
 
   it('arvlCd=2 + origin에 동일 trainCode 있음 → confidence=2 → 통과', async () => {
     // next-waypoint: T1이 arvlCd=2 (출발), origin: T1도 보임 → score=2, threshold=2 → pass
-    const seoul = makeSeoulFixtureByStation({
-      역삼: [arrival({ trainCode: 'T1', arvlCd: 2 })],
-      강남: [arrival({ trainCode: 'T1', arvlCd: 1 })],
-    });
-    const lock = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul,
-      now: NOW,
-    });
+    const lock = await callGate(makeDepartedSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]));
     expect(lock).not.toBeNull();
     expect(lock?.trainCode).toBe('T1');
   });
 
   it('arvlCd=2 + origin에 없음 + 신호 없음 → confidence=0 → null', async () => {
     // next-waypoint: T1이 arvlCd=2, origin: 빈 배열 → score=0 < threshold=2 → null
-    const seoul = makeSeoulFixtureByStation({
-      역삼: [arrival({ trainCode: 'T1', arvlCd: 2 })],
-      강남: [],
-    });
-    const lock = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul,
-      now: NOW,
-    });
+    const lock = await callGate(makeDepartedSeoul());
     expect(lock).toBeNull();
   });
 
   it('arvlCd=2 + origin 없음 + boardingPromptState.fired + 최근 motion → confidence=2 → 통과', async () => {
     // origin 미확인(0) + fired(+1) + lastMotionAt within 3min(+1) = 2 → pass
-    const seoul = makeSeoulFixtureByStation({
-      역삼: [arrival({ trainCode: 'T1', arvlCd: 2 })],
-      강남: [],
-    });
-    const lock = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul,
-      now: NOW,
+    const lock = await callGate(makeDepartedSeoul(), {
       boardingPromptState: { fired: true, lastFiredAt: NOW - 60_000 },
       lastMotionAt: NOW - 60_000, // 1분 전 — 3분 이내
     });
@@ -217,17 +209,7 @@ describe('attemptAutoLock RC1 confidence gate (#1018)', () => {
 
   it('arvlCd=2 + origin 없음 + fired만 있음 → confidence=1 → null', async () => {
     // origin(0) + fired(+1) = 1 < threshold=2 → null
-    const seoul = makeSeoulFixtureByStation({
-      역삼: [arrival({ trainCode: 'T1', arvlCd: 2 })],
-      강남: [],
-    });
-    const lock = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul,
-      now: NOW,
+    const lock = await callGate(makeDepartedSeoul(), {
       boardingPromptState: { fired: true, lastFiredAt: NOW - 60_000 },
       // lastMotionAt 미전달
     });
@@ -236,34 +218,12 @@ describe('attemptAutoLock RC1 confidence gate (#1018)', () => {
 
   it('arvlCd=2 + origin 없음 + 최근 motion만 있음 → confidence=1 → null', async () => {
     // origin(0) + lastMotionAt(+1) = 1 < threshold=2 → null
-    const seoul = makeSeoulFixtureByStation({
-      역삼: [arrival({ trainCode: 'T1', arvlCd: 2 })],
-      강남: [],
-    });
-    const lock = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul,
-      now: NOW,
-      lastMotionAt: NOW - 60_000,
-    });
+    const lock = await callGate(makeDepartedSeoul(), { lastMotionAt: NOW - 60_000 });
     expect(lock).toBeNull();
   });
 
   it('arvlCd=2 + origin 없음 + motion이 너무 오래됨(>3min) → confidence=0 → null', async () => {
-    const seoul = makeSeoulFixtureByStation({
-      역삼: [arrival({ trainCode: 'T1', arvlCd: 2 })],
-      강남: [],
-    });
-    const lock = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul,
-      now: NOW,
+    const lock = await callGate(makeDepartedSeoul(), {
       boardingPromptState: { fired: false },
       lastMotionAt: NOW - 4 * 60_000, // 4분 전 — 3분 초과
     });
@@ -298,18 +258,9 @@ describe('attemptAutoLock RC1 confidence gate (#1018)', () => {
 
   it('arvlCd=2 + origin에 다른 trainCode만 있음 → confidence=0 → null', async () => {
     // origin arrivals에는 T2만 있고 T1은 없음 → origin 미확인(0) + 소프트 신호 없음 → null
-    const seoul = makeSeoulFixtureByStation({
-      역삼: [arrival({ trainCode: 'T1', arvlCd: 2 })],
-      강남: [arrival({ trainCode: 'T2', arvlCd: 1 })],
-    });
-    const lock = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul,
-      now: NOW,
-    });
+    const lock = await callGate(
+      makeDepartedSeoul([arrival({ trainCode: 'T2', arvlCd: 1 })]),
+    );
     expect(lock).toBeNull();
   });
 });
