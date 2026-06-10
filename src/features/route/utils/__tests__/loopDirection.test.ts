@@ -94,7 +94,7 @@ describe('inferLoopDirection — empty/small loop guards', () => {
   });
 
   it('순환선이지만 stations 빈 배열이면 null', () => {
-    stationRoute.getStationsOnLine = (line: string) => (line === '2' ? [] : []);
+    stationRoute.getStationsOnLine = () => [];
     expect(inferLoopDirection('2', '시청', '왕십리')).toBeNull();
   });
 
