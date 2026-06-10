@@ -1628,3 +1628,207 @@ describe('DebugModal — fusedSpeed fallback (#853)', () => {
     expect(await screen.findByText('18.0 km/h (position-train)')).toBeTruthy();
   });
 });
+
+describe('DebugModal — BoardingLock 섹션 (#1025)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setupHookDefaults();
+  });
+
+  it('lock이 없으면 active=no를 표시한다', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('BoardingLock')).toBeTruthy();
+    expect(screen.getByText('no')).toBeTruthy();
+  });
+
+  it('lock이 활성이면 active=yes + trainCode/line을 표시한다', async () => {
+    const { useBoardingLockStore } = jest.requireActual('../../../alarm/store/useBoardingLockStore');
+    act(() => {
+      useBoardingLockStore.setState({
+        lock: {
+          destinationId: 'dest-1',
+          trainCode: 'T-101',
+          boardingStationId: 'stn-1',
+          boardingLine: '2',
+          boardedAt: Date.now(),
+          expectedDurationMs: 30 * 60 * 1000,
+        },
+      });
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('T-101')).toBeTruthy();
+    expect(screen.getByText('yes')).toBeTruthy();
+    act(() => {
+      useBoardingLockStore.setState({ lock: null });
+    });
+  });
+
+  it('lock이 sentinel이면 sentinel=yes를 표시한다', async () => {
+    const { useBoardingLockStore } = jest.requireActual('../../../alarm/store/useBoardingLockStore');
+    act(() => {
+      useBoardingLockStore.setState({
+        lock: {
+          destinationId: 'FREE_TRIP_SENTINEL',
+          trainCode: 'T-999',
+          boardingStationId: 'stn-2',
+          boardingLine: '7',
+          boardedAt: Date.now(),
+          expectedDurationMs: 30 * 60 * 1000,
+          hydratedFromSentinel: {
+            destinationId: 'FREE_TRIP_SENTINEL',
+            sentinelAt: Date.now(),
+          },
+        },
+      });
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('sentinel')).toBeTruthy();
+    act(() => {
+      useBoardingLockStore.setState({ lock: null });
+    });
+  });
+});
+
+describe('DebugModal — Estimator State 섹션 (#1025)', () => {
+  const { pushEstimatorEntry, clearEstimatorEntries } =
+    jest.requireActual('../../../route/utils/estimatorDebugBuffer');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearEstimatorEntries();
+    setupHookDefaults();
+  });
+
+  it('비어있으면 (empty) 표시', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Estimator State (0)')).toBeTruthy();
+  });
+
+  it('엔트리가 있으면 라인을 노출한다', async () => {
+    act(() => {
+      pushEstimatorEntry({
+        ts: new Date('2026-06-01T10:00:00Z').getTime(),
+        strategy: 'live-position',
+        stationName: '강남',
+        stationLine: '2',
+        arcIndex: 3,
+      });
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(screen.getByText('Estimator State (1)')).toBeTruthy());
+    const entries = screen.getAllByTestId('debug-estimator-entry');
+    expect(entries[0].props.children).toContain('live-position');
+    expect(entries[0].props.children).toContain('강남(2)');
+    expect(entries[0].props.children).toContain('idx=3');
+  });
+
+  it('Clear 버튼이 estimator 로그를 비운다', async () => {
+    act(() => {
+      pushEstimatorEntry({
+        ts: Date.now(),
+        strategy: 'default-hop',
+        stationName: '역삼',
+        stationLine: '2',
+        arcIndex: 1,
+      });
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(screen.getByText('Estimator State (1)')).toBeTruthy());
+    act(() => {
+      fireEvent.press(screen.getByTestId('debug-estimator-clear'));
+    });
+    expect(screen.getByText('Estimator State (0)')).toBeTruthy();
+  });
+});
+
+describe('DebugModal — Gates 섹션 (#1025)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setupHookDefaults();
+  });
+
+  it('gate block이 없으면 "(no gate blocks)"를 표시한다', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Gates')).toBeTruthy();
+    expect(screen.getByText('(no gate blocks)')).toBeTruthy();
+  });
+
+  it('gate/movement reason이 있는 로그가 있으면 카운트를 표시한다', async () => {
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: 1, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+      { ts: 2, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+      { ts: 3, source: 'fg', outcome: 'suppressed', reason: 'movement-static-speed' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(screen.getByText('Alarm log (3)')).toBeTruthy());
+    // Gates 섹션에 gate-out-of-range/movement-static-speed 카운트 노출 확인.
+    expect(screen.getByText('gate-out-of-range')).toBeTruthy();
+    expect(screen.getByText('movement-static-speed')).toBeTruthy();
+  });
+});
+
+describe('DebugModal helpers — countGateReasons (#1025)', () => {
+  const { countGateReasons: count } = __test__;
+
+  it('매칭 없으면 빈 객체 반환', () => {
+    expect(count([], ['gate-age', 'gate-accuracy'] as never[])).toEqual({});
+  });
+
+  it('매칭되는 reason만 집계한다', () => {
+    const logs: AlarmLogEntry[] = [
+      { ts: 1, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+      { ts: 2, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+      { ts: 3, source: 'fg', outcome: 'suppressed', reason: 'movement-static-speed' },
+      { ts: 4, source: 'fg', outcome: 'fired' }, // reason 없음 — 집계 안 됨
+      { ts: 5, source: 'bg', outcome: 'suppressed', reason: 'dedup-station' }, // 목록 밖 — 집계 안 됨
+    ];
+    const result = count(logs, ['gate-out-of-range', 'movement-static-speed'] as never[]);
+    expect(result).toEqual({ 'gate-out-of-range': 2, 'movement-static-speed': 1 });
+  });
+});
+
+describe('DebugModal helpers — formatEstimatorLine (#1025)', () => {
+  const { formatEstimatorLine: fmt } = __test__;
+
+  it('strategy + station + idx 포함', () => {
+    const line = fmt({
+      ts: new Date('2026-06-01T10:00:00Z').getTime(),
+      strategy: 'reanchored-hop',
+      stationName: '강남',
+      stationLine: '2',
+      arcIndex: 5,
+    });
+    expect(line).toContain('reanchored-hop');
+    expect(line).toContain('강남(2)');
+    expect(line).toContain('idx=5');
+  });
+
+  it('strategy null이면 "none"으로 표기', () => {
+    const line = fmt({
+      ts: Date.now(),
+      strategy: null,
+      stationName: null,
+      stationLine: null,
+      arcIndex: null,
+    });
+    expect(line).toContain('none');
+    expect(line).toContain('idx=-');
+  });
+
+  it('stationLine null이면 "-"로 표기', () => {
+    const line = fmt({
+      ts: Date.now(),
+      strategy: 'default-hop',
+      stationName: '역삼',
+      stationLine: null,
+      arcIndex: 2,
+    });
+    expect(line).toContain('역삼(-)');
+    expect(line).toContain('idx=2');
+  });
+});

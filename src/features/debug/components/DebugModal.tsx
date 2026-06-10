@@ -27,7 +27,16 @@ import {
   getAlarmLog,
   summarizeAlarmLogBySource,
   type AlarmLogEntry,
+  type AlarmLogReason,
 } from '../../../features/alarm/utils/alarmLog';
+import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
+import { isBoardingLockExpired } from '../../../shared/types/boardingLock';
+import {
+  clearEstimatorEntries,
+  getEstimatorEntries,
+  subscribeEstimatorDebug,
+  type EstimatorDebugEntry,
+} from '../../../features/route/utils/estimatorDebugBuffer';
 import { SILENT_PUSH_LABELS, buildSilentPushCountValue } from '../../../shared/constants/labels';
 import {
   clearFusionDebugEntries,
@@ -339,6 +348,44 @@ function buildDumpText(args: {
   return lines.join('\n');
 }
 
+/** 게이트 reason 분류. 동일 prefix로 시작하면 같은 범주. */
+const GATE_REASONS: readonly AlarmLogReason[] = [
+  'gate-age',
+  'gate-accuracy',
+  'gate-jump',
+  'gate-unknown-station',
+  'gate-no-location',
+  'gate-stale-location',
+  'gate-out-of-range',
+];
+
+const MOVEMENT_REASONS: readonly AlarmLogReason[] = [
+  'movement-no-location',
+  'movement-stale-timestamp',
+  'movement-low-accuracy',
+  'movement-static-speed',
+  'movement-static-position',
+  'movement-motion-stationary',
+];
+
+/**
+ * 알람 로그 항목에서 gate/movement reason별 통과/차단 분포를 집계 (#1025).
+ * 결과: `reason → count` (count > 0인 항목만). 빈 객체이면 관련 항목 없음.
+ */
+export function countGateReasons(
+  logs: readonly AlarmLogEntry[],
+  reasons: readonly AlarmLogReason[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const reasonSet = new Set<string>(reasons);
+  for (const entry of logs) {
+    if (entry.reason && reasonSet.has(entry.reason)) {
+      counts[entry.reason] = (counts[entry.reason] ?? 0) + 1;
+    }
+  }
+  return counts;
+}
+
 /**
  * Alarm log section header / dump 헤더에서 공유되는 source별 카운트 요약 문자열 (#564).
  * 비어있으면 빈 문자열을 반환 → 호출부에서 falsy로 분기 가능.
@@ -403,9 +450,13 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
   const fusedLabel = formatStationLabel(result);
   const gpsLabel = formatStationLabel(gpsResult);
   const differs = fusedDiffersFromGps(result, gpsResult);
+  const lock = useBoardingLockStore((s) => s.lock);
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
   const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
     getFusionDebugEntries(),
+  );
+  const [estimatorLogs, setEstimatorLogs] = useState<readonly EstimatorDebugEntry[]>(() =>
+    getEstimatorEntries(),
   );
   // #756: OS 큐 ground-truth dump. 호출 직후 한 번 비동기로 채워진다.
   // null = 아직 한 번도 dump 안 한 상태 → "Tap Refresh" placeholder 노출.
@@ -417,6 +468,10 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
 
   useEffect(() => {
     return subscribeFusionDebug(() => setFusionLogs([...getFusionDebugEntries()]));
+  }, []);
+
+  useEffect(() => {
+    return subscribeEstimatorDebug(() => setEstimatorLogs([...getEstimatorEntries()]));
   }, []);
 
   const refreshLogs = useCallback(async () => {
@@ -609,6 +664,41 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
             ))}
           </Section>
 
+          <BoardingLockSection lock={lock} colors={colors} />
+
+          <Section
+            title={`Estimator State (${estimatorLogs.length})`}
+            colors={colors}
+            action={
+              <Pressable
+                onPress={() => {
+                  clearEstimatorEntries();
+                  setEstimatorLogs([]);
+                }}
+                testID="debug-estimator-clear"
+              >
+                <Text style={[typography.bodySm, { color: colors.accent }]}>Clear</Text>
+              </Pressable>
+            }
+          >
+            {estimatorLogs.length === 0 ? (
+              <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
+            ) : (
+              [...estimatorLogs].reverse().map((entry, idx) => (
+                <Text
+                  key={`${entry.ts}-${idx}`}
+                  style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
+                  selectable
+                  testID="debug-estimator-entry"
+                >
+                  {formatEstimatorLine(entry)}
+                </Text>
+              ))
+            )}
+          </Section>
+
+          <GatesSection logs={logs} colors={colors} />
+
           <Section
             title={`Fusion log (${fusionLogs.length})`}
             colors={colors}
@@ -744,6 +834,96 @@ function ScheduledQueueBody({
   );
 }
 
+/** BoardingLock 섹션 — lock 활성/trainCode/boardingLine/expiresAt 요약 (#1025). */
+function BoardingLockSection({
+  lock,
+  colors,
+}: Readonly<{
+  lock: import('../../../shared/types/boardingLock').BoardingLock | null;
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  const now = Date.now();
+  const active = lock !== null && !isBoardingLockExpired(lock, now);
+  return (
+    <Section title="BoardingLock" colors={colors}>
+      <KeyValue label="active" value={active ? 'yes' : 'no'} colors={colors} />
+      {lock && (
+        <>
+          <KeyValue label="trainCode" value={lock.trainCode} colors={colors} />
+          <KeyValue label="line" value={String(lock.boardingLine)} colors={colors} />
+          <KeyValue
+            label="expiresAt"
+            value={formatAt(
+              lock.boardedAt + lock.expectedDurationMs * 1.5,
+            )}
+            colors={colors}
+          />
+          <KeyValue
+            label="boardedAt"
+            value={formatAt(lock.boardedAt)}
+            colors={colors}
+          />
+          {lock.hydratedFromSentinel && (
+            <KeyValue label="sentinel" value="yes" colors={colors} />
+          )}
+        </>
+      )}
+    </Section>
+  );
+}
+
+/** Estimator 엔트리를 한 줄 텍스트로 포맷 (#1025). */
+export function formatEstimatorLine(entry: EstimatorDebugEntry): string {
+  const time = formatTime(entry.ts);
+  const strategy = entry.strategy ?? 'none';
+  const station = entry.stationName
+    ? `${entry.stationName}(${entry.stationLine ?? '-'})`
+    : '-';
+  const idx = entry.arcIndex != null ? `idx=${entry.arcIndex}` : 'idx=-';
+  return `${time} | ${strategy} | ${station} ${idx}`;
+}
+
+/** Gates 섹션 — gate 7종 + movement 6종 reason 분포 (#1025). */
+function GatesSection({
+  logs,
+  colors,
+}: Readonly<{
+  logs: readonly AlarmLogEntry[];
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  const gateCounts = countGateReasons(logs, GATE_REASONS);
+  const movementCounts = countGateReasons(logs, MOVEMENT_REASONS);
+  const gateKeys = Object.keys(gateCounts).sort();
+  const movementKeys = Object.keys(movementCounts).sort();
+  const isEmpty = gateKeys.length === 0 && movementKeys.length === 0;
+  return (
+    <Section title="Gates" colors={colors}>
+      {isEmpty ? (
+        <Text style={[typography.mono, { color: colors.muted }]}>(no gate blocks)</Text>
+      ) : (
+        <>
+          {gateKeys.map((key) => (
+            <KeyValue
+              key={key}
+              label={key}
+              value={String(gateCounts[key])}
+              colors={colors}
+            />
+          ))}
+          {movementKeys.map((key) => (
+            <KeyValue
+              key={key}
+              label={key}
+              value={String(movementCounts[key])}
+              colors={colors}
+            />
+          ))}
+        </>
+      )}
+    </Section>
+  );
+}
+
 interface SectionProps {
   title: string;
   children: React.ReactNode;
@@ -791,6 +971,8 @@ export const __test__ = {
   formatTokenTail,
   formatAt,
   formatSourceCountsLine,
+  formatEstimatorLine,
+  countGateReasons,
   NO_FUSED_SIGNAL_LABEL,
 };
 

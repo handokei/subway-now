@@ -11,6 +11,7 @@ import {
   pushFusionDebugEntry,
   type FusionCandidateMini,
 } from '../utils/fusionDebugBuffer';
+import { pushEstimatorEntry } from '../../route/utils/estimatorDebugBuffer';
 import { useNearestStation } from './useNearestStation';
 import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import { useTrainPositions } from '../../route/hooks/useTrainPositions';
@@ -622,6 +623,24 @@ export function useFusedNearestStation(
     [barometerSignal, motionStationary, fusionArrival, lockedTrainCode],
   );
   const detectionVerdict = useFusedStationDetection(detectionInput);
+
+  // #1025 — Estimator 전략 변화 시 debug buffer에 push.
+  // estimate key: strategy|stationId|arcIndex. null estimate는 strategy=null로 기록.
+  const lastEstimateKeyRef = useRef<string | null>(null);
+  const estimateKey = estimate
+    ? `${estimate.strategy}|${estimate.station.id}|${estimate.index}`
+    : 'null';
+  useEffect(() => {
+    if (lastEstimateKeyRef.current === estimateKey) return;
+    lastEstimateKeyRef.current = estimateKey;
+    pushEstimatorEntry({
+      ts: Date.now(),
+      strategy: estimate?.strategy ?? null,
+      stationName: estimate?.station.name ?? null,
+      stationLine: estimate?.station.line ?? null,
+      arcIndex: estimate?.index ?? null,
+    });
+  }, [estimateKey, estimate]);
 
   // 측정(#443): 결정 변화(source/stationId/confidence) 시에만 push.
   // render 중 side-effect 회피 + 의존성 누락 은폐 회피를 위해 결정 key를 ref로 비교.
