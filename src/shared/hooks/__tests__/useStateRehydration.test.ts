@@ -19,6 +19,12 @@ jest.mock('../../../features/alarm/utils/tripEndedSentinel', () => ({
   setTripEndedSentinel: jest.fn(),
 }));
 
+const mockAddDomainBreadcrumb = jest.fn();
+jest.mock('../../infra/monitoring/breadcrumb', () => ({
+  addLogBreadcrumb: jest.fn(),
+  addDomainBreadcrumb: (...args: unknown[]) => mockAddDomainBreadcrumb(...args),
+}));
+
 // destination store cross-feature import는 storage helper 안에서 일어나므로 spy로 충분.
 // useDestinationStore.getState()를 그대로 사용한다 (실제 store)
 
@@ -108,15 +114,38 @@ describe('useStateRehydration', () => {
     await waitFor(() => expect(mockLoadDestination).toHaveBeenCalledTimes(2));
   });
 
-  it("AppState 비'active'는 무시", async () => {
+  it("AppState 비'active'는 rehydrate 트리거 무시", async () => {
     const app = mockAppState();
     renderHook(() => useStateRehydration());
     await waitFor(() => expect(mockLoadDestination).toHaveBeenCalledTimes(1));
 
     app.emit('background');
     app.emit('inactive');
-    // 마운트 1회 외 추가 호출 없음
+    // 마운트 1회 외 추가 rehydrate 호출 없음
     expect(mockLoadDestination).toHaveBeenCalledTimes(1);
+  });
+
+  describe('lifecycle breadcrumb', () => {
+    async function emitAppState(state: AppStateStatus): Promise<void> {
+      const app = mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      mockAddDomainBreadcrumb.mockClear();
+      app.emit(state);
+    }
+
+    it.each([
+      ['active' as const],
+      ['background' as const],
+    ])("'%s' 진입 시 lifecycle 카테고리 breadcrumb", async (state) => {
+      await emitAppState(state);
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('lifecycle', state);
+    });
+
+    it("기타 상태('inactive')는 breadcrumb 추가 안 함", async () => {
+      await emitAppState('inactive');
+      expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
+    });
   });
 
   it('unmount 시 AppState listener remove', () => {

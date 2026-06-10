@@ -6,6 +6,7 @@ const mockGetBoardingLock = jest.fn();
 const mockSetBoardingLock = jest.fn();
 const mockClearBoardingLock = jest.fn();
 const mockClearDismissSilence = jest.fn();
+const mockAddDomainBreadcrumb = jest.fn();
 
 jest.mock('../../utils/boardingLockStorage', () => ({
   getBoardingLock: (...args: unknown[]) => mockGetBoardingLock(...args),
@@ -15,6 +16,11 @@ jest.mock('../../utils/boardingLockStorage', () => ({
 
 jest.mock('../../utils/dismissSilenceStorage', () => ({
   clearDismissSilence: (...args: unknown[]) => mockClearDismissSilence(...args),
+}));
+
+jest.mock('../../../../shared/infra/monitoring/breadcrumb', () => ({
+  addLogBreadcrumb: jest.fn(),
+  addDomainBreadcrumb: (...args: unknown[]) => mockAddDomainBreadcrumb(...args),
 }));
 
 const sample: BoardingLock = {
@@ -76,6 +82,36 @@ describe('useBoardingLockStore', () => {
       });
       expect(useBoardingLockStore.getState().lock).toBeNull();
       expect(mockClearBoardingLock).toHaveBeenCalled();
+    });
+
+    it('release breadcrumb는 직전 lock이 있을 때만 추가', async () => {
+      useBoardingLockStore.setState({ lock: sample });
+      await act(async () => {
+        await useBoardingLockStore.getState().releaseLock();
+      });
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('boarding', 'lock-release', {
+        trainCode: sample.trainCode,
+        line: sample.boardingLine,
+      });
+    });
+
+    it('lock이 없으면 release breadcrumb skip (noise 방지)', async () => {
+      await act(async () => {
+        await useBoardingLockStore.getState().releaseLock();
+      });
+      expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('breadcrumb', () => {
+    it('createLock 시 lock-create breadcrumb 추가', async () => {
+      await act(async () => {
+        await useBoardingLockStore.getState().createLock(sample);
+      });
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('boarding', 'lock-create', {
+        trainCode: sample.trainCode,
+        line: sample.boardingLine,
+      });
     });
   });
 

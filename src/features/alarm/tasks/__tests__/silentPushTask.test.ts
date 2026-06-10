@@ -118,6 +118,12 @@ jest.mock('../../../../shared/utils/stationLookup', () => ({
   findStationByName: (...args: unknown[]) => mockFindStationByName(...args),
 }));
 
+const mockAddDomainBreadcrumb = jest.fn();
+jest.mock('../../../../shared/infra/monitoring/breadcrumb', () => ({
+  addLogBreadcrumb: jest.fn(),
+  addDomainBreadcrumb: (...args: unknown[]) => mockAddDomainBreadcrumb(...args),
+}));
+
 // i18next는 키 그대로 반환 (intermediate 본문 빌더 검증용).
 jest.mock('i18next', () => ({
   __esModule: true,
@@ -1547,6 +1553,31 @@ describe('silentPushTask', () => {
     it('error input일 때도 refresh가 호출된다', async () => {
       await handleSilentPush({ data: undefined, error: { message: 'boom' } });
       expect(mockRefreshLa).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('domain breadcrumb (silent push 수신)', () => {
+    beforeEach(() => {
+      mockAddDomainBreadcrumb.mockClear();
+    });
+
+    it('payload 추출 성공 시 push 카테고리 breadcrumb', async () => {
+      await handleSilentPush(
+        bgTaskData({ nextWaypoint: '서울', etaSeconds: 30, phase: 'early' }),
+      );
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('push', 'silent-push', {
+        kind: 'fire',
+      });
+    });
+
+    it('payload 추출 실패 시 breadcrumb 없음', async () => {
+      await handleSilentPush({ data: undefined });
+      expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
+    });
+
+    it('error input 시 breadcrumb 없음', async () => {
+      await handleSilentPush({ data: undefined, error: { message: 'boom' } });
+      expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
     });
   });
 });
