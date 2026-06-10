@@ -8,8 +8,16 @@
  * `widgetStorage.ts` 함수를 직접 호출한다. Phase 5에서 어댑터 주입으로 전환.
  */
 export interface WidgetStoragePort {
-  /** 현재 역과 거리(km)를 위젯 저장소에 쓰고 WidgetCenter를 리로드한다. */
-  saveStation(stationName: string, lineColor: string, distanceKm: number): Promise<void>;
+  /**
+   * 현재 역과 거리(km)를 위젯 저장소에 쓰고 WidgetCenter를 리로드한다.
+   * `savedAt`은 위젯 측 freshness 표시에 사용된다 (default: 호출 시각).
+   */
+  saveStation(
+    stationName: string,
+    lineColor: string,
+    distanceKm: number,
+    savedAt?: number,
+  ): Promise<void>;
   /** 위젯에 저장된 역 정보를 초기화한다. */
   clearStation(): Promise<void>;
 }

@@ -290,6 +290,9 @@
       "favoriteChipHint": "Tap to set this station as destination",
       "misBoardingCloseLabel": "Close",
       "misBoardingCloseHint": "Cancels reselection",
+      "misBoardingBannerLabel": "Cannot identify your train. Please reselect.",
+      "misBoardingReselectLabel": "Reselect boarding train",
+      "misBoardingReselectHint": "Reopens the boarding train picker",
       "titleHeaderRole": "header"
     }
   },

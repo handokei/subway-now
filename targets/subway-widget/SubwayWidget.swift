@@ -9,7 +9,13 @@ struct SubwayEntry: TimelineEntry {
     let lineColor: String
     let distanceM: Int
     let isAvailable: Bool
+    // 앱이 마지막으로 위젯 데이터를 기록한 시각. nil이면 freshness 표시 생략 (legacy 데이터).
+    let savedAt: Date?
 }
+
+// 저장 시각으로부터 이 시간이 지나면 위젯에 "정보 오래됨"을 표시한다.
+// 백그라운드 위치 갱신이 끊겼거나 앱이 종료된 상태를 사용자에게 알리는 용도.
+private let STALE_THRESHOLD_SECONDS: TimeInterval = 10 * 60
 
 // MARK: - Timeline Provider
 
@@ -22,7 +28,8 @@ struct SubwayProvider: TimelineProvider {
             stationName: "강남",
             lineColor: "#009933",
             distanceM: 120,
-            isAvailable: true
+            isAvailable: true,
+            savedAt: Date()
         )
     }
 
@@ -32,7 +39,9 @@ struct SubwayProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<SubwayEntry>) -> Void) {
         let entry = makeEntry()
-        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: Date()) ?? Date()
+        // 앱이 종료된 상태에서도 freshness 표시(10분 임계)가 비교적 빨리 반영되도록
+        // 5분 간격으로 재평가한다. 앱이 살아있으면 saveWidgetStation이 호출되며 즉시 reload.
+        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date()
         let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
         completion(timeline)
     }
@@ -44,13 +53,17 @@ struct SubwayProvider: TimelineProvider {
         let distanceStr = defaults?.string(forKey: "distanceM") ?? "0"
         let distance = Int(distanceStr) ?? 0
         let isAvailable = !name.isEmpty
+        // savedAt이 없는 레거시 설치 환경에서는 nil로 두어 freshness 표시를 생략한다.
+        let savedAtSec = defaults?.object(forKey: "savedAt") as? Double
+        let savedAt = savedAtSec.map { Date(timeIntervalSince1970: $0) }
 
         return SubwayEntry(
             date: Date(),
             stationName: isAvailable ? name : "감지 중",
             lineColor: color,
             distanceM: distance,
-            isAvailable: isAvailable
+            isAvailable: isAvailable,
+            savedAt: savedAt
         )
     }
 }
@@ -76,6 +89,12 @@ struct SubwayWidgetView: View {
 
     var lineColor: Color {
         Color(hex: entry.lineColor) ?? .gray
+    }
+
+    // savedAt이 임계치 이전이면 stale로 간주. nil(legacy)이면 stale 표시 생략.
+    var isStale: Bool {
+        guard let savedAt = entry.savedAt else { return false }
+        return entry.date.timeIntervalSince(savedAt) > STALE_THRESHOLD_SECONDS
     }
 
     var body: some View {
@@ -111,6 +130,12 @@ struct SubwayWidgetView: View {
                 Text("\(entry.distanceM)m")
                     .font(.subheadline)
                     .foregroundColor(lineColor)
+            }
+
+            if isStale {
+                Text("정보 오래됨")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
 
             Spacer()

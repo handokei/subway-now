@@ -52,4 +52,5 @@ describe('ServiceWindowBanner', () => {
       renderWithTheme(<ServiceWindowBanner stationName="소요산" line="1" />),
     ).not.toThrow();
   });
+
 });

@@ -30,6 +30,8 @@ interface Props {
 export function ServiceWindowBanner({ stationName, line, now }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
+  // #1088(safe Intl helper) 머지 이후 getServiceWindow는 throw 대신 status='unknown' 반환 →
+  // 별도 try/catch 불필요. unknown 분기에서 null을 반환하는 아래 가드가 안전망 역할.
   const { status, firstTrain } = getServiceWindow({ stationName, line, now });
 
   // 운행 중이거나 timetable unknown이면 안내 불필요.
@@ -44,22 +46,31 @@ export function ServiceWindowBanner({ stationName, line, now }: Props) {
       : t('service.window.postLast', { time: firstTrain });
 
   return (
-    <View
-      style={[styles.container, { backgroundColor: colors.card, borderColor: colors.warn }]}
-      testID="service-window-banner"
-      accessibilityRole="alert"
-    >
-      <Text
-        style={[typography.body, { color: colors.warn, fontWeight: '600' }]}
-        testID="service-window-banner-text"
+    <View style={styles.outer}>
+      <View
+        style={[styles.container, { backgroundColor: colors.card, borderColor: colors.warn }]}
+        testID="service-window-banner"
+        accessibilityRole="alert"
       >
-        {message}
-      </Text>
+        <Text
+          style={[typography.body, { color: colors.warn, fontWeight: '600' }]}
+          testID="service-window-banner-text"
+        >
+          {message}
+        </Text>
+      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  // 외곽 spacing을 배너가 직접 소유한다. HomeScreen 등 consumer가 wrapper에
+  // padding을 두면 운행 중(=배너 null)에도 phantom 여백이 남아 viewport-tight
+  // layout(E2E scrollUntilVisible 등)에서 회귀를 일으킨다(#1083).
+  outer: {
+    paddingHorizontal: spacing.xxl,
+    paddingTop: spacing.xxl,
+  },
   container: {
     padding: spacing.lg,
     borderRadius: radius.lg,
