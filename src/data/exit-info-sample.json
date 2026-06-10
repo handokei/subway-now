@@ -1,0 +1,44 @@
+{
+  "_source": "서울특별시 공공데이터 OA-15993 '지하철역 출구별 주요 시설 정보' (https://data.seoul.go.kr/dataList/OA-15993/S/1/datasetView.do)",
+  "_note": "PoC sample fixture. 실 API 키 발급 + 전수 수집은 follow-up. 본 fixture는 공개 명세 기반으로 수기 작성한 대표 역 일부.",
+  "exits": [
+    {
+      "stationName": "강남",
+      "line": "2",
+      "exitNumber": "1",
+      "facilities": ["국기원", "강남구청"],
+      "nearby": "테헤란로 방면"
+    },
+    {
+      "stationName": "강남",
+      "line": "2",
+      "exitNumber": "6",
+      "facilities": ["강남역 지하상가", "교보타워"]
+    },
+    {
+      "stationName": "강남",
+      "line": "2",
+      "exitNumber": "10",
+      "facilities": ["뉴욕제과", "강남대로 버스환승센터"]
+    },
+    {
+      "stationName": "시청",
+      "line": "1",
+      "exitNumber": "5",
+      "facilities": ["서울시청", "서울도서관"]
+    },
+    {
+      "stationName": "시청",
+      "line": "1",
+      "exitNumber": "1",
+      "facilities": ["프레스센터", "조선일보"]
+    },
+    {
+      "stationName": "홍대입구",
+      "line": "2",
+      "exitNumber": "9",
+      "facilities": ["홍익대학교", "홍대 걷고싶은거리"],
+      "nearby": "주말 야간 혼잡"
+    }
+  ]
+}
