@@ -39,7 +39,7 @@ jobs:
           # - src/data/       : 정적 데이터. mock smoke는 stations.json을 우회 (강남 fixture 단락)
           # - src/features/<slice>/tasks/ : expo-task-manager backed BG task. mock smoke와 무관(FG only).
           # - src/__tests__/, src/**/__tests__/ : 테스트 코드는 앱 번들 미포함, jest로 별도 검증
-          SKIP_RE='^(src/shared/i18n/|src/shared/types/|src/testUtils/|src/data/|src/features/[^/]+/types/|src/features/[^/]+/tasks/|src/(.+/)?__tests__/|backend/|docs/|scripts/|tasks/|img/|subway/|locales/|__mocks__/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/(e2e|ci)\.yml$|eas\.json$|jest\.setup\.js$|sonar-project\.properties$|\.env\.example$|\.gitignore$|\.prettierrc.*$|\.eslintrc.*$|\.editorconfig$|.*\.md$|.*\.txt$)'
+          SKIP_RE='^(src/shared/i18n/|src/shared/types/|src/testUtils/|src/data/|src/features/[^/]+/types/|src/features/[^/]+/tasks/|src/(.+/)?__tests__/|backend/|docs/|scripts/|tasks/|img/|subway/|locales/|__mocks__/|\.claude/|\.maestro/manual/|\.maestro/flows/(gps|scenario)/|\.github/workflows/(e2e|ci)\.yml$|eas\.json$|jest\.setup\.js$|sonar-project\.properties$|\.env\.example$|\.gitignore$|\.prettierrc.*$|\.eslintrc.*$|\.editorconfig$|.*\.md$|.*\.txt$)'
           relevant=$(echo "$files" | grep -v '^$' | grep -vE "$SKIP_RE" || true)
           if [ -z "$relevant" ] && [ -n "$files" ]; then
             echo "ui_affected=false" >> "$GITHUB_OUTPUT"
@@ -194,7 +194,9 @@ jobs:
       - name: Mock env를 Xcode build phase로 주입
         # xcodebuild → build phase → Metro 체인의 env 전파 누락에 대비.
         # Expo의 with-environment.sh가 .xcode.env.local을 소싱하므로 여기 export 추가.
+        # ios/.xcode.env.local은 .gitignore 대상이라 CI에 존재하지 않음 → touch로 먼저 생성.
         run: |
+          touch ios/.xcode.env.local
           echo 'export EXPO_PUBLIC_E2E_MOCK=true' >> ios/.xcode.env.local
           cat ios/.xcode.env.local
 
