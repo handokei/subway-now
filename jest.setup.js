@@ -16,6 +16,13 @@ jest.mock('expo-localization', () => ({
   getLocales: () => [{ languageCode: 'ko' }],
 }));
 
+// @sentry/react-native: ESM 모듈로 jest transform 미지원 →
+// 전역 no-op mock. 개별 테스트가 필요시 jest.mock으로 덮어쓴다.
+jest.mock('@sentry/react-native', () => ({
+  init: jest.fn(),
+  close: jest.fn(),
+}));
+
 const i18next = require('i18next');
 const { initReactI18next } = require('react-i18next');
 const { LANGUAGE_REGISTRY, FALLBACK_LANGUAGE } = require('./src/shared/i18n/types');

@@ -89,7 +89,10 @@
     "languageAuto": "Auto",
     "feedbackSection": "Support",
     "feedbackLabel": "Report a bug",
-    "feedbackDescription": "Tell us about issues you encountered"
+    "feedbackDescription": "Tell us about issues you encountered",
+    "privacySection": "Privacy",
+    "sentryOptInLabel": "Send diagnostic data",
+    "sentryOptInDescription": "Send anonymous error reports to the developer"
   },
   "feedback": {
     "title": "Report a bug",
@@ -273,6 +276,7 @@
       "sleepModeHint": "Plays a wake-up alarm sound when headphones are connected",
       "speakerOutputHint": "Plays alarm sound through the speaker when headphones are not connected",
       "locklessStationPassedHint": "Receive station-passed alerts even when no train is selected",
+      "sentryOptInHint": "Consent to send anonymous error reports",
       "accessibilityModeHint": "Guides quick-exit positions based on elevators",
       "versionFooterLabel": "App version {{version}}",
       "versionFooterHint": "Tap multiple times to open the debug menu",

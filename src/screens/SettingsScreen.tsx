@@ -40,6 +40,10 @@ export default function SettingsScreen() {
   const locklessStationPassed = useSettingsStore((s) => s.locklessStationPassed);
   const setLocklessStationPassed = useSettingsStore((s) => s.setLocklessStationPassed);
   const loadLocklessStationPassed = useSettingsStore((s) => s.loadLocklessStationPassed);
+  // #1038 follow-up — Sentry 오류 진단 정보 opt-in.
+  const sentryOptIn = useSettingsStore((s) => s.sentryOptIn);
+  const setSentryOptIn = useSettingsStore((s) => s.setSentryOptIn);
+  const loadSentryOptIn = useSettingsStore((s) => s.loadSentryOptIn);
   const themeMode = useThemeStore((s) => s.themeMode);
   const setThemeMode = useThemeStore((s) => s.setThemeMode);
   const routePreference = useDestinationStore((s) => s.routePreference);
@@ -59,6 +63,7 @@ export default function SettingsScreen() {
     loadAccessibilityMode();
     loadRoutePreference();
     loadLocklessStationPassed();
+    loadSentryOptIn();
   }, []);
 
   return (
@@ -201,6 +206,34 @@ export default function SettingsScreen() {
               accessibilityLabel={t('settings.accessibilityModeLabel')}
               accessibilityHint={t('a11y.settings.accessibilityModeHint')}
               accessibilityState={{ checked: accessibilityMode }}
+            />
+          </View>
+        </View>
+
+        {/* #1038 follow-up — Sentry 오류 진단 정보 opt-in. 기본 OFF. */}
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
+          <Text style={[styles.sectionTitle, { color: colors.muted }]}>
+            {t('settings.privacySection')}
+          </Text>
+          <View style={styles.settingRow}>
+            <View style={styles.settingInfo}>
+              <Text style={[styles.settingLabel, { color: colors.ink }]}>
+                {t('settings.sentryOptInLabel')}
+              </Text>
+              <Text style={[styles.settingDesc, { color: colors.muted }]}>
+                {t('settings.sentryOptInDescription')}
+              </Text>
+            </View>
+            <Switch
+              value={sentryOptIn}
+              onValueChange={setSentryOptIn}
+              trackColor={{ false: colors.hair, true: colors.accent }}
+              thumbColor={sentryOptIn ? colors.onAccent : colors.subtle}
+              testID="sentry-opt-in-switch"
+              accessibilityRole="switch"
+              accessibilityLabel={t('settings.sentryOptInLabel')}
+              accessibilityHint={t('a11y.settings.sentryOptInHint')}
+              accessibilityState={{ checked: sentryOptIn }}
             />
           </View>
         </View>
