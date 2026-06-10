@@ -194,7 +194,9 @@ jobs:
       - name: Mock env를 Xcode build phase로 주입
         # xcodebuild → build phase → Metro 체인의 env 전파 누락에 대비.
         # Expo의 with-environment.sh가 .xcode.env.local을 소싱하므로 여기 export 추가.
+        # ios/.xcode.env.local은 .gitignore 대상이라 CI에 존재하지 않음 → touch로 먼저 생성.
         run: |
+          touch ios/.xcode.env.local
           echo 'export EXPO_PUBLIC_E2E_MOCK=true' >> ios/.xcode.env.local
           cat ios/.xcode.env.local
 
