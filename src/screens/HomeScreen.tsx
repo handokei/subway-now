@@ -66,6 +66,9 @@ import { BoardingTrainList } from '../features/alarm/components/BoardingTrainLis
 import { BoardingLockHopCard } from '../features/alarm/components/BoardingLockHopCard';
 import { resolveNextAdjacentStationName } from '../features/route/utils/nextAdjacentStation';
 import { getApproachLine } from '../features/route/utils/approachLine';
+import { useCongestion } from '../features/congestion/hooks/useCongestion';
+import { deriveCongestionDirection } from '../features/congestion/utils/deriveDirection';
+import { CongestionBadge } from '../features/congestion/components/CongestionBadge';
 import type { Stop } from '../shared/types/journey';
 import type { LineNumber, Station } from '../shared/types/station';
 
@@ -316,6 +319,18 @@ export default function HomeScreen() {
     () => (effectiveOrigin && destination && route ? getNextStationName(effectiveOrigin.id, destination.id, route) : null),
     [effectiveOrigin?.id, destination?.id, route],
   );
+
+  // #1112 — 현재역 시간대 평균 혼잡도. route 없으면 진행 방향 추론이 불가능하므로 direction=null로
+  // useCongestion이 null 반환 → 배지 미노출 (graceful). #1097 PoC Mock provider 결과를 그대로 표시.
+  const congestionDirection = useMemo(
+    () => deriveCongestionDirection(approachLine, effectiveOrigin?.name, nextStationName),
+    [approachLine, effectiveOrigin?.name, nextStationName],
+  );
+  const congestionEntry = useCongestion({
+    stationName: effectiveOrigin?.name ?? null,
+    line: approachLine,
+    direction: congestionDirection,
+  });
 
   useStationAlarm({
     route,
@@ -808,6 +823,9 @@ export default function HomeScreen() {
                     locationUncertain={locationUncertain}
                     testID="home-source-badge"
                   />
+                )}
+                {congestionEntry && (
+                  <CongestionBadge entry={congestionEntry} testID="home-congestion-badge" />
                 )}
                 {__DEV__ && (
                   <>

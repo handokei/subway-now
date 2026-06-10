@@ -56,6 +56,21 @@
     "autoDisembarkToast": {
       "message": "Arrived at {{name}} — destination cleared",
       "undo": "Undo"
+    },
+    "congestion": {
+      "level": {
+        "low": "Light",
+        "medium": "Moderate",
+        "high": "Crowded",
+        "veryHigh": "Very crowded"
+      },
+      "hint": {
+        "low": "Seats likely available",
+        "medium": "Standing with handrails",
+        "high": "Tightly packed",
+        "veryHigh": "Hard to move around"
+      },
+      "a11yLabel": "Average congestion right now: {{level}}, about {{raw}} percent"
     }
   },
   "settings": {
