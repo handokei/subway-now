@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, InteractionManager, Pressable, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { AppState, InteractionManager, Pressable, RefreshControl, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useTranslation } from 'react-i18next';
@@ -226,12 +226,24 @@ export default function HomeScreen() {
   // #797: 환승역에서 nearest.station.line이 trip 방향과 어긋나는 회귀 차단.
   // BoardingLock(사용자 선택) > Route(구조적 SSOT) > station.line fallback.
   const approachLine = getApproachLine(route, fusionBoardingLock, effectiveOrigin);
-  const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading } = useArrivalInfo(
+  const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading, refetch: refetchArrival } = useArrivalInfo(
     effectiveOrigin?.name ?? null,
     approachLine,
   );
   const arrival = useArrivalCountdown(rawArrival);
   const isFav = effectiveOrigin ? favorites.some((f) => f.station.id === effectiveOrigin.id) : false;
+
+  // #1029 pull-to-refresh: 사용자 트리거에만 spinner 표시 (background polling과 분리).
+  const [isManualRefreshing, setIsManualRefreshing] = useState(false);
+  const handleRefresh = useCallback(async () => {
+    setIsManualRefreshing(true);
+    try {
+      await refresh();
+      refetchArrival();
+    } finally {
+      setIsManualRefreshing(false);
+    }
+  }, [refresh, refetchArrival]);
 
   // 환승역이면 모든 호선 변형에서 경로 계산 → 출발역 환승 없는 최적 경로 자동 선택
   const originVariants = !isCustomOrigin && variants.length > 1 ? variants : effectiveOrigin ? [effectiveOrigin] : [];
@@ -694,7 +706,10 @@ export default function HomeScreen() {
         onClose={dismissTransferDetectModal}
       />
 
-      <ScrollView contentContainerStyle={{ paddingBottom: 80 }}>
+      <ScrollView
+        contentContainerStyle={{ paddingBottom: 80 }}
+        refreshControl={<RefreshControl refreshing={isManualRefreshing} onRefresh={handleRefresh} />}
+      >
         {effectiveOrigin ? (
           <>
             {/* Hero: origin station */}
