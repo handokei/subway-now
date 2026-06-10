@@ -294,5 +294,11 @@
       "preFirst": "첫차 전 · 첫차 {{time}} 예정",
       "postLast": "막차 후 · 내일 첫차 {{time}}"
     }
+  },
+  "share": {
+    "trip": {
+      "title": "지하철 경로 공유",
+      "bodyTemplate": "{{fromName}}({{fromLine}}) → {{toName}}({{toLine}})\n약 {{minutes}}분 · {{stops}}개 역"
+    }
   }
 }

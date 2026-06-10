@@ -294,5 +294,11 @@
       "preFirst": "Before first train · first train at {{time}}",
       "postLast": "After last train · first train tomorrow at {{time}}"
     }
+  },
+  "share": {
+    "trip": {
+      "title": "Share subway route",
+      "bodyTemplate": "{{fromName}} ({{fromLine}}) → {{toName}} ({{toLine}})\n~{{minutes}} min · {{stops}} stops"
+    }
   }
 }

@@ -294,5 +294,11 @@
       "preFirst": "首班车前 · 首班车 {{time}}",
       "postLast": "末班车后 · 明日首班车 {{time}}"
     }
+  },
+  "share": {
+    "trip": {
+      "title": "分享地铁路线",
+      "bodyTemplate": "{{fromName}}（{{fromLine}}）→ {{toName}}（{{toLine}}）\n约{{minutes}}分钟 · {{stops}}站"
+    }
   }
 }
