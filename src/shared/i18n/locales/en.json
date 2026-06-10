@@ -2,7 +2,6 @@
   "common": {
     "retry": "Retry",
     "close": "Close",
-    "confirm": "OK",
     "cancel": "Cancel",
     "remove": "Remove"
   },
@@ -275,13 +274,9 @@
       "locklessStationPassedHint": "Receive station-passed alerts even when no train is selected",
       "accessibilityModeHint": "Guides quick-exit positions based on elevators",
       "versionFooterLabel": "App version {{version}}",
-      "versionFooterHint": "Tap multiple times to open the debug menu",
-      "themeSegmentHint": "Change theme",
-      "routeSegmentHint": "Change route preference",
-      "localeRowHint": "Tap to select language"
+      "versionFooterHint": "Tap multiple times to open the debug menu"
     },
     "alarm": {
-      "dismissLabel": "Dismiss alarm",
       "dismissHint": "Stops the alarm sound and vibration",
       "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
       "boardingTrainSelectHint": "Tap to board this train",

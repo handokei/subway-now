@@ -2,7 +2,6 @@
   "common": {
     "retry": "再試行",
     "close": "閉じる",
-    "confirm": "OK",
     "cancel": "キャンセル",
     "remove": "削除"
   },
@@ -275,13 +274,9 @@
       "locklessStationPassedHint": "乗車列車を選択していなくても通過通知を受け取る",
       "accessibilityModeHint": "エレベーター基準で速やかな降車位置を案内",
       "versionFooterLabel": "アプリバージョン {{version}}",
-      "versionFooterHint": "複数回タップでデバッグメニューを開く",
-      "themeSegmentHint": "テーマを変更",
-      "routeSegmentHint": "経路設定を変更",
-      "localeRowHint": "タップして言語を選択"
+      "versionFooterHint": "複数回タップでデバッグメニューを開く"
     },
     "alarm": {
-      "dismissLabel": "アラームを停止",
       "dismissHint": "アラーム音と振動を停止します",
       "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
       "boardingTrainSelectHint": "タップしてこの列車に乗車",
