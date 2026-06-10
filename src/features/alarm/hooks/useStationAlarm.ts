@@ -7,10 +7,10 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { isStationOnRoute, isSameStationName } from '../../../shared/utils/stationRoute';
+import { getFirstLeg, isStationOnRoute, isSameStationName } from '../../../shared/utils/stationRoute';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
-import { alarmKey, evaluateAlarmPhase, resolveAllTargets, type AlarmEvent } from '../utils/stationAlarm';
+import { alarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils/stationEta';
 import { resolveNextTarget } from '../utils/stationPipeline';
@@ -360,9 +360,9 @@ export function useStationAlarm({
     // #750: 공통 sleep 룰 게이트. scheduler가 사전 예약을 skip한 transfer를 FG polling이
     // 우회 발사하던 회귀 차단. sleep으로 suppress된 키는 firedAlarmsRef에서 제거해 sleep OFF
     // 토글 시 다음 evaluation이 정상 발사 경로로 진입할 수 있게 한다.
-    // resolveAllTargets는 route가 활성이면 최소 1개 waypoint를 반환한다 — empty 분기 가드 불필요.
-    const firstHopName = resolveAllTargets(activeRoute, activeDestination.name)[0].name;
-    const isFirstHop = isSameStationName(firstHopName, rawEvent.stationName);
+    // getFirstLeg는 route 타입과 무관하게 첫 leg endName을 반환 — direct/transfer/multi-transfer
+    // 모두 첫 hop과 일치 (transferName 또는 collapsed destination).
+    const isFirstHop = isSameStationName(getFirstLeg(activeRoute, activeDestination.name).endName, rawEvent.stationName);
     const lock = await getBoardingLock();
     if (
       shouldSuppressBySleepRule({
