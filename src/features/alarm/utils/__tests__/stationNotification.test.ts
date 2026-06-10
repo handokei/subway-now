@@ -903,15 +903,10 @@ describe('stationNotification', () => {
       mockClearWidgetStation.mockResolvedValue(undefined);
     });
 
-    it('updateStationNotification은 saveStationToWidget을 km 단위로 호출한다', async () => {
+    it('updateStationNotification은 saveStationToWidget을 호출하지 않는다 (#1079)', async () => {
+      // 위젯 갱신은 useWidgetMirror가 직접 담당. updateStationNotification은 LA/알림만 담당.
       await updateStationNotification(mockStation, 250);
-      expect(mockSaveStationToWidget).toHaveBeenCalledWith(mockStation, 0.25);
-    });
-
-    it('saveStationToWidget이 실패해도 updateLiveActivity는 호출된다', async () => {
-      mockSaveStationToWidget.mockRejectedValueOnce(new Error('group missing'));
-      await updateStationNotification(mockStation, 100);
-      expect(mockUpdateLiveActivity).toHaveBeenCalled();
+      expect(mockSaveStationToWidget).not.toHaveBeenCalled();
     });
 
     it('clearStationNotification은 위젯을 비우지 않는다 (#1094)', async () => {

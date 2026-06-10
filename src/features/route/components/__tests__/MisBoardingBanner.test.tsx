@@ -20,4 +20,19 @@ describe('MisBoardingBanner', () => {
     fireEvent.press(getByTestId('mis-boarding-reselect'));
     expect(onReselect).toHaveBeenCalledTimes(1);
   });
+
+  it('a11y: 배너에 alert role + liveRegion, 재선택 버튼에 라벨/힌트 부착(#1077 후속)', () => {
+    const { getByTestId } = renderWithTheme(<MisBoardingBanner onReselect={() => {}} />);
+    const banner = getByTestId('mis-boarding-banner');
+    expect(banner.props.accessibilityRole).toBe('alert');
+    expect(banner.props.accessibilityLiveRegion).toBe('polite');
+    expect(banner.props.accessibilityLabel).toBe(
+      '탑승 열차를 확인할 수 없습니다. 다시 선택하세요.',
+    );
+
+    const action = getByTestId('mis-boarding-reselect');
+    expect(action.props.accessibilityRole).toBe('button');
+    expect(action.props.accessibilityLabel).toBe('탑승 열차 재선택');
+    expect(action.props.accessibilityHint).toBe('탑승 열차 선택 화면을 다시 엽니다');
+  });
 });

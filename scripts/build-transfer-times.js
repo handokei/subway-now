@@ -16,7 +16,9 @@
 const fs = require('fs');
 const path = require('path');
 // 정규화 SSOT — stationRoute.ts와 동일 로직 보장.
-const { normalizeStationName } = require('../src/utils/normalizeStationName');
+const { normalizeStationName } = require('../src/shared/utils/normalizeStationName');
+// 별칭 SSOT — 노선별 공식 표기 차이(예: "이수" ↔ "총신대입구")를 흡수.
+const { applyStationAlias } = require('../src/data/stationAliases');
 
 const CSV_PATH = path.join(
   __dirname,
@@ -52,9 +54,13 @@ function main() {
   const rows = csv.split('\n').slice(1).filter(Boolean);
   const stations = JSON.parse(fs.readFileSync(STATIONS_PATH, 'utf-8'));
 
+  // validStationKey: 역명 조회 시 정규화 후 별칭까지 적용한 canonical 표기로 등록.
+  // 예) 7호선 "이수" → normalizeStationName → applyStationAlias → "총신대입구"
+  // 이렇게 하면 CSV에 "총신대입구"로 기재된 7호선 측 검증이 통과된다.
   const validStationKey = new Set();
   for (const s of stations) {
-    validStationKey.add(`${s.line}|${normalizeStationName(s.name)}`);
+    const canonical = applyStationAlias(normalizeStationName(s.name));
+    validStationKey.add(`${s.line}|${canonical}`);
   }
 
   const out = {};
@@ -77,7 +83,7 @@ function main() {
       stats.droppedLine++;
       continue;
     }
-    const name = normalizeStationName(station);
+    const name = applyStationAlias(normalizeStationName(station));
     const fromValid = validStationKey.has(`${fromLine}|${name}`);
     const toValid = validStationKey.has(`${toLine}|${name}`);
     if (!fromValid || !toValid) {

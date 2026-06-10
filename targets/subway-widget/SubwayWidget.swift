@@ -9,6 +9,33 @@ struct SubwayEntry: TimelineEntry {
     let lineColor: String
     let distanceM: Int
     let isAvailable: Bool
+    // 앱이 마지막으로 위젯 데이터를 기록한 시각. nil이면 freshness 표시 생략 (legacy 데이터).
+    let savedAt: Date?
+}
+
+// Freshness 3단계 임계. savedAt으로부터 경과 시간으로 tier를 결정한다.
+// - fresh: ≤ STALE_THRESHOLD_SECONDS → 캡션 미표시 (정상)
+// - stale: STALE < t ≤ EXPIRED → "갱신 지연" 캡션 (백그라운드 갱신 일시 중단 신호)
+// - expired: > EXPIRED_THRESHOLD_SECONDS → "정보 오래됨" 캡션 + 본문 dim (앱이 죽었거나 권한 끊김)
+private let STALE_THRESHOLD_SECONDS: TimeInterval = 2 * 60
+private let EXPIRED_THRESHOLD_SECONDS: TimeInterval = 10 * 60
+
+// 본문 dim 시 사용할 opacity (expired tier에서만 적용).
+private let EXPIRED_CONTENT_OPACITY: Double = 0.45
+
+enum WidgetFreshness {
+    case fresh
+    case stale
+    case expired
+    case unknown // legacy: savedAt nil
+
+    static func from(savedAt: Date?, now: Date) -> WidgetFreshness {
+        guard let savedAt = savedAt else { return .unknown }
+        let elapsed = now.timeIntervalSince(savedAt)
+        if elapsed > EXPIRED_THRESHOLD_SECONDS { return .expired }
+        if elapsed > STALE_THRESHOLD_SECONDS { return .stale }
+        return .fresh
+    }
 }
 
 // MARK: - Timeline Provider
@@ -22,7 +49,8 @@ struct SubwayProvider: TimelineProvider {
             stationName: "강남",
             lineColor: "#009933",
             distanceM: 120,
-            isAvailable: true
+            isAvailable: true,
+            savedAt: Date()
         )
     }
 
@@ -32,7 +60,9 @@ struct SubwayProvider: TimelineProvider {
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<SubwayEntry>) -> Void) {
         let entry = makeEntry()
-        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 15, to: Date()) ?? Date()
+        // 앱이 종료된 상태에서도 freshness 표시(10분 임계)가 비교적 빨리 반영되도록
+        // 5분 간격으로 재평가한다. 앱이 살아있으면 saveWidgetStation이 호출되며 즉시 reload.
+        let nextUpdate = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date()
         let timeline = Timeline(entries: [entry], policy: .after(nextUpdate))
         completion(timeline)
     }
@@ -44,13 +74,17 @@ struct SubwayProvider: TimelineProvider {
         let distanceStr = defaults?.string(forKey: "distanceM") ?? "0"
         let distance = Int(distanceStr) ?? 0
         let isAvailable = !name.isEmpty
+        // savedAt이 없는 레거시 설치 환경에서는 nil로 두어 freshness 표시를 생략한다.
+        let savedAtSec = defaults?.object(forKey: "savedAt") as? Double
+        let savedAt = savedAtSec.map { Date(timeIntervalSince1970: $0) }
 
         return SubwayEntry(
             date: Date(),
             stationName: isAvailable ? name : "감지 중",
             lineColor: color,
             distanceM: distance,
-            isAvailable: isAvailable
+            isAvailable: isAvailable,
+            savedAt: savedAt
         )
     }
 }
@@ -76,6 +110,22 @@ struct SubwayWidgetView: View {
 
     var lineColor: Color {
         Color(hex: entry.lineColor) ?? .gray
+    }
+
+    var freshness: WidgetFreshness {
+        WidgetFreshness.from(savedAt: entry.savedAt, now: entry.date)
+    }
+
+    var freshnessCaption: String? {
+        switch freshness {
+        case .stale: return "갱신 지연"
+        case .expired: return "정보 오래됨"
+        case .fresh, .unknown: return nil
+        }
+    }
+
+    var contentOpacity: Double {
+        freshness == .expired ? EXPIRED_CONTENT_OPACITY : 1.0
     }
 
     var body: some View {
@@ -106,11 +156,19 @@ struct SubwayWidgetView: View {
                 .foregroundColor(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+                .opacity(contentOpacity)
 
             if entry.isAvailable {
                 Text("\(entry.distanceM)m")
                     .font(.subheadline)
                     .foregroundColor(lineColor)
+                    .opacity(contentOpacity)
+            }
+
+            if let caption = freshnessCaption {
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
             }
 
             Spacer()

@@ -88,7 +88,10 @@
     "languageAuto": "自動",
     "feedbackSection": "サポート",
     "feedbackLabel": "バグを報告",
-    "feedbackDescription": "アプリで発生した問題をお知らせください"
+    "feedbackDescription": "アプリで発生した問題をお知らせください",
+    "privacySection": "プライバシー",
+    "sentryOptInLabel": "エラー診断情報の送信",
+    "sentryOptInDescription": "匿名のエラー情報を開発者に送信します"
   },
   "feedback": {
     "title": "バグを報告",
@@ -272,6 +275,7 @@
       "sleepModeHint": "イヤホン接続時に起床アラーム音で鳴ります",
       "speakerOutputHint": "イヤホン未接続時にスピーカーでアラーム音を再生",
       "locklessStationPassedHint": "乗車列車を選択していなくても通過通知を受け取る",
+      "sentryOptInHint": "匿名のエラー情報送信に同意",
       "accessibilityModeHint": "エレベーター基準で速やかな降車位置を案内",
       "versionFooterLabel": "アプリバージョン {{version}}",
       "versionFooterHint": "複数回タップでデバッグメニューを開く"
@@ -290,6 +294,9 @@
       "favoriteChipHint": "タップしてこの駅を目的地に設定",
       "misBoardingCloseLabel": "閉じる",
       "misBoardingCloseHint": "再選択をキャンセルします",
+      "misBoardingBannerLabel": "乗車中の列車を特定できません。再選択してください。",
+      "misBoardingReselectLabel": "乗車列車を再選択",
+      "misBoardingReselectHint": "乗車列車選択画面を再度開きます",
       "titleHeaderRole": "header"
     }
   },

@@ -236,7 +236,9 @@ jobs:
         # Expo의 with-environment.sh가 .xcode.env.local을 소싱하므로 여기 export.
         # EXPO_PUBLIC_DEBUG_MODAL은 Seam D 시나리오 전용이지만 release 빌드는 시나리오와
         # 무관하게 1회 캐시되므로 모든 시나리오에 동일하게 주입(다른 시나리오는 7-tap을 안 함).
+        # ios/.xcode.env.local은 .gitignore 대상이라 CI에 존재하지 않음 → touch로 먼저 생성.
         run: |
+          touch ios/.xcode.env.local
           {
             echo 'export EXPO_PUBLIC_USE_BFF=true'
             echo 'export EXPO_PUBLIC_BFF_URL=http://localhost:8788'
@@ -402,7 +404,9 @@ jobs:
         run: node scripts/permission-matrix-runner.js --cell ${{ matrix.cell }} --dry-run
 
       - name: E2E mock 빌드-time env 주입
+        # ios/.xcode.env.local은 .gitignore 대상이라 CI에 존재하지 않음 → touch로 먼저 생성.
         run: |
+          touch ios/.xcode.env.local
           echo 'export EXPO_PUBLIC_E2E_MOCK=1' >> ios/.xcode.env.local
           cat ios/.xcode.env.local
 

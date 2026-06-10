@@ -48,7 +48,11 @@ coverage/
 .idea/
 
 # Claude Code
-.claude/
+.claude/*
+# 워크트리 스킬은 팀 공통 (#1090: node_modules symlink 금지 자동화)
+!.claude/skills/
+.claude/skills/*
+!.claude/skills/worktree/
 
 # Maestro E2E 산출물
 .maestro/screenshots/

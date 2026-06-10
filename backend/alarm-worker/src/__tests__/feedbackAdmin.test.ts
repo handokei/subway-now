@@ -1,11 +1,19 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { app } from '../index';
 import {
+  aggregateFeedbackStats,
+  dayStartFromIsoDate,
   FEEDBACK_LIST_DEFAULT_LIMIT,
   FEEDBACK_LIST_MAX_LIMIT,
+  feedbackStatsKey,
+  getFeedbackStats,
+  isoDateUtc,
+  listAllFeedbackKeys,
   listFeedback,
+  maybeRunDailyFeedbackStats,
   normalizeLimit,
   parseReceivedAtFromKey,
+  storeFeedbackStats,
   toCsv,
 } from '../feedbackAdmin';
 import { storeFeedback } from '../feedback';
@@ -36,6 +44,42 @@ async function get(
     new Request(`http://example.com${path}`, { method: 'GET', headers }),
     env,
   );
+}
+
+function authedEnv(kv: InMemoryKV): Env {
+  return makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace });
+}
+
+async function authedGet(path: string, kv: InMemoryKV): Promise<Response> {
+  return get(path, authedEnv(kv), { authorization: 'Bearer secret' });
+}
+
+/**
+ * Shared auth/binding gate tests for any /admin/feedback* route.
+ * Covers: missing ADMIN_TOKEN (503), mismatched token (401), missing FEEDBACK binding (503).
+ * Extracted to avoid duplicated test blocks across describe groups (SonarCloud).
+ */
+function describeAdminAuthGate(path: string): void {
+  it(`${path} returns 503 when ADMIN_TOKEN missing`, async () => {
+    const res = await get(path, makeEnv());
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'admin_unavailable' });
+  });
+
+  it(`${path} returns 401 when token mismatches`, async () => {
+    const res = await get(path, makeEnv({ ADMIN_TOKEN: 'secret' }), {
+      authorization: 'Bearer nope',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it(`${path} returns 503 when FEEDBACK binding missing`, async () => {
+    const res = await get(path, makeEnv({ ADMIN_TOKEN: 'secret' }), {
+      authorization: 'Bearer secret',
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'feedback_unavailable' });
+  });
 }
 
 async function seed(kv: InMemoryKV, count: number, baseTs = 10_000): Promise<void> {
@@ -217,11 +261,7 @@ describe('toCsv', () => {
 });
 
 describe('GET /admin/feedback', () => {
-  it('returns 503 when ADMIN_TOKEN secret missing', async () => {
-    const res = await get('/admin/feedback', makeEnv());
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'admin_unavailable' });
-  });
+  describeAdminAuthGate('/admin/feedback');
 
   it('returns 401 when Authorization header absent', async () => {
     const res = await get('/admin/feedback', makeEnv({ ADMIN_TOKEN: 'secret' }));
@@ -236,29 +276,10 @@ describe('GET /admin/feedback', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 401 when token mismatches', async () => {
-    const res = await get('/admin/feedback', makeEnv({ ADMIN_TOKEN: 'secret' }), {
-      authorization: 'Bearer nope',
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('returns 503 when FEEDBACK binding missing despite valid auth', async () => {
-    const res = await get('/admin/feedback', makeEnv({ ADMIN_TOKEN: 'secret' }), {
-      authorization: 'Bearer secret',
-    });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'feedback_unavailable' });
-  });
-
   it('returns entries with default limit and nextBefore=null on small dataset', async () => {
     const kv = new InMemoryKV();
     await seed(kv, 2, 100);
-    const res = await get(
-      '/admin/feedback',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback', kv);
     expect(res.status).toBe(200);
     const json = (await res.json()) as { entries: { receivedAt: number }[]; nextBefore: number | null };
     expect(json.entries.map((e) => e.receivedAt)).toEqual([101, 100]);
@@ -268,11 +289,7 @@ describe('GET /admin/feedback', () => {
   it('honors limit and before query params', async () => {
     const kv = new InMemoryKV();
     await seed(kv, 5, 200);
-    const res = await get(
-      '/admin/feedback?limit=2&before=204',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback?limit=2&before=204', kv);
     expect(res.status).toBe(200);
     const json = (await res.json()) as { entries: { receivedAt: number }[]; nextBefore: number | null };
     expect(json.entries.map((e) => e.receivedAt)).toEqual([203, 202]);
@@ -282,11 +299,7 @@ describe('GET /admin/feedback', () => {
   it('ignores non-numeric query params (falls back to defaults)', async () => {
     const kv = new InMemoryKV();
     await seed(kv, 2, 300);
-    const res = await get(
-      '/admin/feedback?limit=abc&before=xyz',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback?limit=abc&before=xyz', kv);
     expect(res.status).toBe(200);
     const json = (await res.json()) as { entries: unknown[] };
     expect(json.entries).toHaveLength(2);
@@ -318,11 +331,7 @@ describe('GET /admin/feedback/export.csv', () => {
 
   it('returns header-only CSV when no entries', async () => {
     const kv = new InMemoryKV();
-    const res = await get(
-      '/admin/feedback/export.csv',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback/export.csv', kv);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
     expect(res.headers.get('content-disposition')).toContain('feedback.csv');
@@ -334,16 +343,254 @@ describe('GET /admin/feedback/export.csv', () => {
   it('serializes entries with header + rows', async () => {
     const kv = new InMemoryKV();
     await seed(kv, 2, 500);
-    const res = await get(
-      '/admin/feedback/export.csv?limit=10',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback/export.csv?limit=10', kv);
     expect(res.status).toBe(200);
     const body = await res.text();
     const lines = body.trim().split('\n');
     expect(lines).toHaveLength(3); // header + 2 entries
     expect(lines[1]).toContain('"msg-1"'); // newest first
     expect(lines[2]).toContain('"msg-0"');
+  });
+});
+
+describe('listAllFeedbackKeys', () => {
+  it('joins paginated KV list pages via cursor (#1080 follow-up)', async () => {
+    const kv = new InMemoryKV();
+    kv.pageSize = 2;
+    await seed(kv, 5, 1_000);
+    const keys = await listAllFeedbackKeys(kv as unknown as KVNamespace);
+    expect(keys).toHaveLength(5);
+  });
+
+  it('listFeedback now returns newest entries even past first KV page', async () => {
+    const kv = new InMemoryKV();
+    kv.pageSize = 2;
+    // 5 entries — pre-fix would only see the lex-asc first 2 keys (oldest), losing newest 3.
+    await seed(kv, 5, 1_000);
+    const result = await listFeedback(kv as unknown as KVNamespace, { limit: 3 });
+    expect(result.entries.map((e) => e.receivedAt)).toEqual([1_004, 1_003, 1_002]);
+  });
+});
+
+describe('isoDateUtc / dayStartFromIsoDate', () => {
+  it('round-trips a UTC midnight epoch', () => {
+    const epoch = Date.UTC(2026, 5, 9);
+    expect(isoDateUtc(epoch)).toBe('2026-06-09');
+    expect(dayStartFromIsoDate('2026-06-09')).toBe(epoch);
+  });
+
+  it('rejects malformed dates with NaN', () => {
+    expect(Number.isNaN(dayStartFromIsoDate('nope'))).toBe(true);
+    expect(Number.isNaN(dayStartFromIsoDate('2026-13-40'))).toBe(true);
+    expect(Number.isNaN(dayStartFromIsoDate('2026-6-9'))).toBe(true);
+  });
+});
+
+describe('aggregateFeedbackStats', () => {
+  it('counts entries in [dayStart, dayEnd) by platform/appVersion/locale buckets', async () => {
+    const kv = new InMemoryKV();
+    const dayStart = Date.UTC(2026, 5, 9);
+    // 3 in-range
+    await storeFeedback(
+      kv as unknown as KVNamespace,
+      { message: 'a', context: { platform: 'ios', appVersion: '1.0.0', locale: 'ko-KR' } },
+      dayStart + 1_000,
+      'a1',
+    );
+    await storeFeedback(
+      kv as unknown as KVNamespace,
+      { message: 'b', context: { platform: 'android', appVersion: '1.0.0', locale: 'en-US' } },
+      dayStart + 2_000,
+      'a2',
+    );
+    await storeFeedback(
+      kv as unknown as KVNamespace,
+      { message: 'c' },
+      dayStart + 3_000,
+      'a3',
+    );
+    // out-of-range (next day)
+    await storeFeedback(
+      kv as unknown as KVNamespace,
+      { message: 'd', context: { platform: 'ios' } },
+      dayStart + 24 * 60 * 60 * 1000,
+      'a4',
+    );
+    // out-of-range (previous day)
+    await storeFeedback(
+      kv as unknown as KVNamespace,
+      { message: 'e', context: { platform: 'ios' } },
+      dayStart - 1,
+      'a5',
+    );
+
+    const stats = await aggregateFeedbackStats(kv as unknown as KVNamespace, dayStart);
+    expect(stats.date).toBe('2026-06-09');
+    expect(stats.total).toBe(3);
+    expect(stats.byPlatform).toEqual({ ios: 1, android: 1, unknown: 1 });
+    expect(stats.byAppVersion).toEqual({ '1.0.0': 2, unknown: 1 });
+    expect(stats.byLocale).toEqual({ ko: 1, en: 1, unknown: 1 });
+  });
+
+  it('skips entries whose stored value disappeared mid-aggregate', async () => {
+    const kv = new InMemoryKV();
+    const dayStart = Date.UTC(2026, 5, 9);
+    await storeFeedback(kv as unknown as KVNamespace, { message: 'keep' }, dayStart + 1, 'k1');
+    await storeFeedback(kv as unknown as KVNamespace, { message: 'gone' }, dayStart + 2, 'k2');
+    kv.store.delete('feedback:' + (dayStart + 2) + ':k2');
+    const stats = await aggregateFeedbackStats(kv as unknown as KVNamespace, dayStart);
+    expect(stats.total).toBe(1); // count is from key enumeration
+    expect(stats.byPlatform).toEqual({ unknown: 1 });
+  });
+
+  it('skips entries with malformed JSON', async () => {
+    const kv = new InMemoryKV();
+    const dayStart = Date.UTC(2026, 5, 9);
+    await kv.put(`feedback:${dayStart + 1}:bad`, '{not json');
+    const stats = await aggregateFeedbackStats(kv as unknown as KVNamespace, dayStart);
+    expect(stats.total).toBe(1); // counted by key
+    expect(stats.byPlatform).toEqual({}); // but no bucket bumped
+  });
+
+  it('treats bare locale without dash as its own bucket', async () => {
+    const kv = new InMemoryKV();
+    const dayStart = Date.UTC(2026, 5, 9);
+    await storeFeedback(
+      kv as unknown as KVNamespace,
+      { message: 'x', context: { locale: 'ja' } },
+      dayStart + 1,
+      'j1',
+    );
+    const stats = await aggregateFeedbackStats(kv as unknown as KVNamespace, dayStart);
+    expect(stats.byLocale).toEqual({ ja: 1 });
+  });
+});
+
+describe('storeFeedbackStats / getFeedbackStats', () => {
+  it('round-trips stats via stats:YYYY-MM-DD key', async () => {
+    const kv = new InMemoryKV();
+    const stats = {
+      date: '2026-06-09',
+      total: 2,
+      byPlatform: { ios: 2 },
+      byAppVersion: { '1.0.0': 2 },
+      byLocale: { ko: 2 },
+    };
+    await storeFeedbackStats(kv as unknown as KVNamespace, stats);
+    expect(await getFeedbackStats(kv as unknown as KVNamespace, '2026-06-09')).toEqual(stats);
+  });
+
+  it('returns null when stats key missing', async () => {
+    const kv = new InMemoryKV();
+    expect(await getFeedbackStats(kv as unknown as KVNamespace, '2026-06-09')).toBeNull();
+  });
+
+  it('returns null when stored value is malformed JSON', async () => {
+    const kv = new InMemoryKV();
+    await kv.put(feedbackStatsKey('2026-06-09'), '{broken');
+    expect(await getFeedbackStats(kv as unknown as KVNamespace, '2026-06-09')).toBeNull();
+  });
+});
+
+describe('maybeRunDailyFeedbackStats', () => {
+  const targetDay = Date.UTC(2026, 5, 9);
+  const cronTime = Date.UTC(2026, 5, 10, 0, 5); // 00:05 UTC the next day
+
+  it('skips when current UTC hour is not 0', async () => {
+    const kv = new InMemoryKV();
+    const result = await maybeRunDailyFeedbackStats(
+      kv as unknown as KVNamespace,
+      Date.UTC(2026, 5, 10, 1, 5),
+    );
+    expect(result.ran).toBe(false);
+  });
+
+  it('skips when current UTC minute is not 5', async () => {
+    const kv = new InMemoryKV();
+    const result = await maybeRunDailyFeedbackStats(
+      kv as unknown as KVNamespace,
+      Date.UTC(2026, 5, 10, 0, 6),
+    );
+    expect(result.ran).toBe(false);
+  });
+
+  it('runs at 00:05 UTC and aggregates the previous day', async () => {
+    const kv = new InMemoryKV();
+    await storeFeedback(
+      kv as unknown as KVNamespace,
+      { message: 'x', context: { platform: 'ios' } },
+      targetDay + 1_000,
+      'r1',
+    );
+    const result = await maybeRunDailyFeedbackStats(kv as unknown as KVNamespace, cronTime);
+    expect(result).toEqual({ ran: true, date: '2026-06-09' });
+    const stored = await getFeedbackStats(kv as unknown as KVNamespace, '2026-06-09');
+    expect(stored?.total).toBe(1);
+    expect(stored?.byPlatform).toEqual({ ios: 1 });
+  });
+
+  it('is idempotent — second run at same window does not re-aggregate', async () => {
+    const kv = new InMemoryKV();
+    await storeFeedbackStats(kv as unknown as KVNamespace, {
+      date: '2026-06-09',
+      total: 99,
+      byPlatform: { ios: 99 },
+      byAppVersion: {},
+      byLocale: {},
+    });
+    const result = await maybeRunDailyFeedbackStats(kv as unknown as KVNamespace, cronTime);
+    expect(result).toEqual({ ran: false, date: '2026-06-09' });
+    const stored = await getFeedbackStats(kv as unknown as KVNamespace, '2026-06-09');
+    expect(stored?.total).toBe(99); // preserved
+  });
+});
+
+describe('GET /admin/feedback/stats', () => {
+  describeAdminAuthGate('/admin/feedback/stats');
+
+  it('returns 400 for malformed date', async () => {
+    const kv = new InMemoryKV();
+    const res = await authedGet('/admin/feedback/stats?date=not-a-date', kv);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_date' });
+  });
+
+  it('returns 404 when stats for that date not yet stored', async () => {
+    const kv = new InMemoryKV();
+    const res = await authedGet('/admin/feedback/stats?date=2026-06-09', kv);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'stats_not_found' });
+  });
+
+  it('returns stored stats for the requested date', async () => {
+    const kv = new InMemoryKV();
+    await storeFeedbackStats(kv as unknown as KVNamespace, {
+      date: '2026-06-09',
+      total: 7,
+      byPlatform: { ios: 5, android: 2 },
+      byAppVersion: { '1.0.0': 7 },
+      byLocale: { ko: 7 },
+    });
+    const res = await authedGet('/admin/feedback/stats?date=2026-06-09', kv);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { total: number };
+    expect(json.total).toBe(7);
+  });
+
+  it('defaults date= to yesterday UTC when query omitted', async () => {
+    const kv = new InMemoryKV();
+    const yesterday = isoDateUtc(Date.now() - 24 * 60 * 60 * 1000);
+    await storeFeedbackStats(kv as unknown as KVNamespace, {
+      date: yesterday,
+      total: 3,
+      byPlatform: {},
+      byAppVersion: {},
+      byLocale: {},
+    });
+    const res = await authedGet('/admin/feedback/stats', kv);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { date: string; total: number };
+    expect(json.date).toBe(yesterday);
+    expect(json.total).toBe(3);
   });
 });

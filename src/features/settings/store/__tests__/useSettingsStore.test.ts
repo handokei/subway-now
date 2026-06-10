@@ -1,9 +1,21 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSettingsStore } from '../useSettingsStore';
+import {
+  getSentryOptIn,
+  setSentryOptIn,
+} from '../../../../shared/infra/monitoring/sentryInit';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
 );
+
+jest.mock('../../../../shared/infra/monitoring/sentryInit', () => ({
+  getSentryOptIn: jest.fn().mockResolvedValue(false),
+  setSentryOptIn: jest.fn().mockResolvedValue(undefined),
+}));
+
+const getSentryOptInMock = getSentryOptIn as jest.Mock;
+const setSentryOptInMock = setSentryOptIn as jest.Mock;
 
 describe('useSettingsStore', () => {
   beforeEach(() => {
@@ -13,8 +25,11 @@ describe('useSettingsStore', () => {
       accessibilityMode: false,
       // #915 — default ON. 각 테스트가 명시적으로 false로 덮어쓸 수 있다.
       locklessStationPassed: true,
+      sentryOptIn: false,
     });
     jest.clearAllMocks();
+    getSentryOptInMock.mockResolvedValue(false);
+    setSentryOptInMock.mockResolvedValue(undefined);
   });
 
   // ── sleepMode ──
@@ -171,5 +186,36 @@ describe('useSettingsStore', () => {
     (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
     await useSettingsStore.getState().loadLocklessStationPassed();
     expect(useSettingsStore.getState().locklessStationPassed).toBe(true);
+  });
+
+  // ── #1038 — sentryOptIn (default OFF, opt-in only) ──
+
+  it('초기 sentryOptIn은 false다 (#1038 default OFF)', () => {
+    expect(useSettingsStore.getState().sentryOptIn).toBe(false);
+  });
+
+  it('setSentryOptIn: true → 상태 갱신 + sentryInit.setSentryOptIn(true) 호출', async () => {
+    await useSettingsStore.getState().setSentryOptIn(true);
+    expect(useSettingsStore.getState().sentryOptIn).toBe(true);
+    expect(setSentryOptInMock).toHaveBeenCalledWith(true);
+  });
+
+  it('setSentryOptIn: false → 상태 갱신 + sentryInit.setSentryOptIn(false) 호출', async () => {
+    useSettingsStore.setState({ sentryOptIn: true });
+    await useSettingsStore.getState().setSentryOptIn(false);
+    expect(useSettingsStore.getState().sentryOptIn).toBe(false);
+    expect(setSentryOptInMock).toHaveBeenCalledWith(false);
+  });
+
+  it('loadSentryOptIn: 저장된 true를 복원한다', async () => {
+    getSentryOptInMock.mockResolvedValueOnce(true);
+    await useSettingsStore.getState().loadSentryOptIn();
+    expect(useSettingsStore.getState().sentryOptIn).toBe(true);
+  });
+
+  it('loadSentryOptIn: 저장값 없으면 false 유지', async () => {
+    getSentryOptInMock.mockResolvedValueOnce(false);
+    await useSettingsStore.getState().loadSentryOptIn();
+    expect(useSettingsStore.getState().sentryOptIn).toBe(false);
   });
 });

@@ -88,7 +88,10 @@
     "languageAuto": "자동",
     "feedbackSection": "지원",
     "feedbackLabel": "버그 신고",
-    "feedbackDescription": "앱에서 겪은 문제를 알려 주세요"
+    "feedbackDescription": "앱에서 겪은 문제를 알려 주세요",
+    "privacySection": "개인정보",
+    "sentryOptInLabel": "오류 진단 정보 전송",
+    "sentryOptInDescription": "익명 오류 정보를 개발자에게 전송합니다"
   },
   "feedback": {
     "title": "버그 신고",
@@ -272,6 +275,7 @@
       "sleepModeHint": "이어폰 연결 시 기상 알람음으로 울립니다",
       "speakerOutputHint": "이어폰 미연결 시 스피커로 알람음 재생",
       "locklessStationPassedHint": "탑승 열차 선택 없이도 역 통과 알림 수신",
+      "sentryOptInHint": "익명 오류 정보 전송 동의",
       "accessibilityModeHint": "엘리베이터 기준으로 빠른 하차 위치 안내",
       "versionFooterLabel": "앱 버전 {{version}}",
       "versionFooterHint": "여러 번 탭하면 디버그 메뉴 열기"
@@ -290,6 +294,9 @@
       "favoriteChipHint": "탭하여 이 역을 목적지로 선택",
       "misBoardingCloseLabel": "닫기",
       "misBoardingCloseHint": "재선택을 취소합니다",
+      "misBoardingBannerLabel": "탑승 열차를 확인할 수 없습니다. 다시 선택하세요.",
+      "misBoardingReselectLabel": "탑승 열차 재선택",
+      "misBoardingReselectHint": "탑승 열차 선택 화면을 다시 엽니다",
       "titleHeaderRole": "header"
     }
   },
