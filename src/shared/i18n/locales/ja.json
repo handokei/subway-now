@@ -56,6 +56,21 @@
     "autoDisembarkToast": {
       "message": "{{name}}に到着し、目的地を解除しました",
       "undo": "元に戻す"
+    },
+    "congestion": {
+      "level": {
+        "low": "余裕",
+        "medium": "普通",
+        "high": "混雑",
+        "veryHigh": "非常に混雑"
+      },
+      "hint": {
+        "low": "座席に余裕があります",
+        "medium": "つり革を使う程度です",
+        "high": "密着するほど混んでいます",
+        "veryHigh": "車内移動が難しい状況です"
+      },
+      "a11yLabel": "現在の時間帯平均混雑度 {{level}}、約{{raw}}パーセント"
     }
   },
   "settings": {

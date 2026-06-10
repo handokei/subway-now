@@ -56,6 +56,21 @@
     "autoDisembarkToast": {
       "message": "已到达{{name}},已清除目的地",
       "undo": "撤销"
+    },
+    "congestion": {
+      "level": {
+        "low": "宽松",
+        "medium": "一般",
+        "high": "拥挤",
+        "veryHigh": "非常拥挤"
+      },
+      "hint": {
+        "low": "有座位余裕",
+        "medium": "需扶把手站立",
+        "high": "贴身拥挤",
+        "veryHigh": "车内难以移动"
+      },
+      "a11yLabel": "当前时段平均拥挤度{{level}},约{{raw}}%"
     }
   },
   "settings": {
