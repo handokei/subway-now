@@ -25,7 +25,14 @@ import {
   storeFeedback,
   validateFeedback,
 } from './feedback';
-import { listFeedback, toCsv } from './feedbackAdmin';
+import {
+  dayStartFromIsoDate,
+  getFeedbackStats,
+  isoDateUtc,
+  listFeedback,
+  maybeRunDailyFeedbackStats,
+  toCsv,
+} from './feedbackAdmin';
 import { evaluateAndMaybeAlert } from './recallAlerts';
 import {
   cleanupTripWithLa,
@@ -184,6 +191,37 @@ app.get('/admin/feedback/export.csv', async (c) => {
       'content-disposition': 'attachment; filename="feedback.csv"',
     },
   });
+});
+
+/**
+ * 운영자용 feedback 일일 통계 조회 (#1080 follow-up).
+ *
+ * 매일 00:05 UTC cron이 어제 entry를 집계해 `stats:YYYY-MM-DD` KV에 365일 TTL로 적재.
+ * 본 endpoint는 그 결과를 그대로 반환 — Worker가 즉석에서 집계하지 않는다 (CPU 비용 보호).
+ *
+ * Auth: `/admin/feedback`과 동일 정책 (Bearer + ADMIN_TOKEN secret).
+ * Query: `?date=YYYY-MM-DD` (UTC). 미지정 시 어제 UTC 날짜 default.
+ *
+ * Response 200: { date, total, byPlatform, byAppVersion, byLocale }
+ * Response 400: { error: 'invalid_date' } — date 형식 불일치
+ * Response 404: { error: 'stats_not_found' } — 해당 날 집계가 아직 없음 (오늘 또는 미수집)
+ * Response 401/503: 인증/binding 정책 동일
+ */
+app.get('/admin/feedback/stats', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const kv = c.env.FEEDBACK;
+  if (!kv) return c.json({ error: 'feedback_unavailable' }, 503);
+
+  const requested = c.req.query('date');
+  const date = requested ?? isoDateUtc(Date.now() - 24 * 60 * 60 * 1000);
+  if (!Number.isFinite(dayStartFromIsoDate(date))) {
+    return c.json({ error: 'invalid_date' }, 400);
+  }
+
+  const stats = await getFeedbackStats(kv, date);
+  if (!stats) return c.json({ error: 'stats_not_found' }, 404);
+  return c.json(stats);
 });
 
 interface AdminAuthError {
@@ -1101,5 +1139,14 @@ export default {
     // #972 — low-recall trip ratio 임계 위반 시 운영 webhook 발사. dedup KV(1h)로 spam 차단.
     // binding/secret 미설정 환경에서는 graceful no-op이라 회귀 없음.
     await evaluateAndMaybeAlert(env, { fetchImpl: fetch, now: () => Date.now(), log });
+    // #1080 follow-up — feedback 일일 통계 집계. 매분 cron이지만 함수가 자체적으로
+    // 00:05 UTC 1분 윈도우만 동작 + 같은 날짜 키 존재 시 skip(idempotent). FEEDBACK binding
+    // 부재 시 graceful no-op.
+    if (env.FEEDBACK) {
+      const result = await maybeRunDailyFeedbackStats(env.FEEDBACK, Date.now());
+      if (result.ran) {
+        log('feedback daily stats aggregated', { date: result.date });
+      }
+    }
   },
 };

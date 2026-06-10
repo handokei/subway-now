@@ -13,9 +13,30 @@ struct SubwayEntry: TimelineEntry {
     let savedAt: Date?
 }
 
-// 저장 시각으로부터 이 시간이 지나면 위젯에 "정보 오래됨"을 표시한다.
-// 백그라운드 위치 갱신이 끊겼거나 앱이 종료된 상태를 사용자에게 알리는 용도.
-private let STALE_THRESHOLD_SECONDS: TimeInterval = 10 * 60
+// Freshness 3단계 임계. savedAt으로부터 경과 시간으로 tier를 결정한다.
+// - fresh: ≤ STALE_THRESHOLD_SECONDS → 캡션 미표시 (정상)
+// - stale: STALE < t ≤ EXPIRED → "갱신 지연" 캡션 (백그라운드 갱신 일시 중단 신호)
+// - expired: > EXPIRED_THRESHOLD_SECONDS → "정보 오래됨" 캡션 + 본문 dim (앱이 죽었거나 권한 끊김)
+private let STALE_THRESHOLD_SECONDS: TimeInterval = 2 * 60
+private let EXPIRED_THRESHOLD_SECONDS: TimeInterval = 10 * 60
+
+// 본문 dim 시 사용할 opacity (expired tier에서만 적용).
+private let EXPIRED_CONTENT_OPACITY: Double = 0.45
+
+enum WidgetFreshness {
+    case fresh
+    case stale
+    case expired
+    case unknown // legacy: savedAt nil
+
+    static func from(savedAt: Date?, now: Date) -> WidgetFreshness {
+        guard let savedAt = savedAt else { return .unknown }
+        let elapsed = now.timeIntervalSince(savedAt)
+        if elapsed > EXPIRED_THRESHOLD_SECONDS { return .expired }
+        if elapsed > STALE_THRESHOLD_SECONDS { return .stale }
+        return .fresh
+    }
+}
 
 // MARK: - Timeline Provider
 
@@ -91,10 +112,20 @@ struct SubwayWidgetView: View {
         Color(hex: entry.lineColor) ?? .gray
     }
 
-    // savedAt이 임계치 이전이면 stale로 간주. nil(legacy)이면 stale 표시 생략.
-    var isStale: Bool {
-        guard let savedAt = entry.savedAt else { return false }
-        return entry.date.timeIntervalSince(savedAt) > STALE_THRESHOLD_SECONDS
+    var freshness: WidgetFreshness {
+        WidgetFreshness.from(savedAt: entry.savedAt, now: entry.date)
+    }
+
+    var freshnessCaption: String? {
+        switch freshness {
+        case .stale: return "갱신 지연"
+        case .expired: return "정보 오래됨"
+        case .fresh, .unknown: return nil
+        }
+    }
+
+    var contentOpacity: Double {
+        freshness == .expired ? EXPIRED_CONTENT_OPACITY : 1.0
     }
 
     var body: some View {
@@ -125,15 +156,17 @@ struct SubwayWidgetView: View {
                 .foregroundColor(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
+                .opacity(contentOpacity)
 
             if entry.isAvailable {
                 Text("\(entry.distanceM)m")
                     .font(.subheadline)
                     .foregroundColor(lineColor)
+                    .opacity(contentOpacity)
             }
 
-            if isStale {
-                Text("정보 오래됨")
+            if let caption = freshnessCaption {
+                Text(caption)
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

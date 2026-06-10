@@ -38,15 +38,33 @@ export class InMemoryKV {
     this.store.delete(key);
   }
 
+  /**
+   * `pageSize`를 인스턴스 필드로 두고 cursor로 잇는 KV 의사 동작.
+   * 기본은 `Infinity` → 단일 페이지(기존 호환). 테스트에서 페이지네이션 회귀를 확인할 때만
+   * `kv.pageSize = N`으로 작게 설정한다.
+   */
+  pageSize = Number.POSITIVE_INFINITY;
+
   async list(options?: { prefix?: string; cursor?: string }): Promise<{
     keys: { name: string }[];
     list_complete: boolean;
     cursor: string;
   }> {
     const prefix = options?.prefix ?? '';
-    const keys = [...this.store.keys()]
+    const allMatching = [...this.store.keys()]
       .filter((k) => k.startsWith(prefix))
-      .map((name) => ({ name }));
-    return { keys, list_complete: true, cursor: '' };
+      .sort((a, b) => a.localeCompare(b));
+    const startIdx = options?.cursor ? Number.parseInt(options.cursor, 10) : 0;
+    const safeStart = Number.isFinite(startIdx) && startIdx >= 0 ? startIdx : 0;
+    const endIdx = Number.isFinite(this.pageSize)
+      ? Math.min(allMatching.length, safeStart + this.pageSize)
+      : allMatching.length;
+    const page = allMatching.slice(safeStart, endIdx).map((name) => ({ name }));
+    const complete = endIdx >= allMatching.length;
+    return {
+      keys: page,
+      list_complete: complete,
+      cursor: complete ? '' : String(endIdx),
+    };
   }
 }

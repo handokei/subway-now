@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 // 정규화 SSOT — stationRoute.ts와 동일 로직 보장.
-const { normalizeStationName } = require('../src/utils/normalizeStationName');
+const { normalizeStationName } = require('../src/shared/utils/normalizeStationName');
 
 const CSV_PATH = path.join(
   __dirname,
