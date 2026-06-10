@@ -302,5 +302,12 @@
       "preFirst": "Before first train · first train at {{time}}",
       "postLast": "After last train · first train tomorrow at {{time}}"
     }
+  },
+  "share": {
+    "trip": {
+      "title": "Subway Route",
+      "buttonLabel": "Share route",
+      "bodyTemplate": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nAbout {{minutes}} min ({{stops}} stops)"
+    }
   }
 }

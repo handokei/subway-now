@@ -54,6 +54,7 @@ import { useWifiStation } from '../features/nearest-station/hooks/useWifiStation
 import { CurrentStationConfirmModal } from '../features/nearest-station/components/CurrentStationConfirmModal';
 import { MisBoardingBanner } from '../features/route/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../features/route/components/MisBoardingReselectModal';
+import { ShareTripButton } from '../features/route/components/ShareTripButton';
 import { Toast } from '../shared/ui/Toast';
 import { useMisBoardingDetector } from '../features/route/hooks/useMisBoardingDetector';
 import { useTrainPositions } from '../features/route/hooks/useTrainPositions';
@@ -872,19 +873,30 @@ export default function HomeScreen() {
                   )}
                   {journey && (() => {
                     const stops = journeyDisplayToStops(journey, { expanded: routeExpanded });
+                    const selectedCandidate = categorized.find((r) => r.category.key === selectedKey)?.candidate;
                     return (
                       <>
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
-                          onPress={() => setRouteExpanded((v) => !v)}
-                          style={styles.expandToggle}
-                          testID="route-expand-toggle"
-                        >
-                          <Text style={[typography.label, { color: colors.accent, fontWeight: '600' }]}>
-                            {routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
-                          </Text>
-                        </Pressable>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
+                            onPress={() => setRouteExpanded((v) => !v)}
+                            style={styles.expandToggle}
+                            testID="route-expand-toggle"
+                          >
+                            <Text style={[typography.label, { color: colors.accent, fontWeight: '600' }]}>
+                              {routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
+                            </Text>
+                          </Pressable>
+                          {/* PR #1069 follow-up — 경로 시스템 텍스트 공유. route/currentStation/destination 누락 시 자동 숨김. */}
+                          <ShareTripButton
+                            route={route}
+                            currentStation={result?.station ?? null}
+                            destination={destination}
+                            totalStops={journey.totalStops}
+                            travelMinutes={selectedCandidate?.travelMinutes ?? 0}
+                          />
+                        </View>
                         <EditorialTimeline
                           stops={stops}
                           renderHopSlot={(stop, i) => {
