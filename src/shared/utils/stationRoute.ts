@@ -1,5 +1,6 @@
 import stations from '../../data/stations.json';
 import stationTravelTimesJson from '../../data/stationTravelTimes.json';
+import stationDistancesJson from '../../data/stationDistances.json';
 import transferTimes from '../../data/transferTimes.json';
 import type { Station } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
@@ -14,6 +15,7 @@ const logger = createLogger('StationRoute');
 
 const allStations = stations as Station[];
 const stationTravelTimes = stationTravelTimesJson as Record<string, number>;
+const stationDistances = stationDistancesJson as Record<string, number>;
 
 // 실측 운행시간이 누락된 hop의 fallback (예: 9호선/공항철도 등 #655 미커버 노선).
 const STOP_FALLBACK_SECONDS = 120;
@@ -30,6 +32,20 @@ export function getStopSeconds(line: LineNumber, fromId: string, toId: string): 
   if (hit !== undefined) return hit;
   logger.debug(`getStopSeconds miss: ${key} → fallback ${STOP_FALLBACK_SECONDS}s`);
   return STOP_FALLBACK_SECONDS;
+}
+
+/**
+ * #1111 PoC: line의 fromId → toId 인접 hop 실측 트랙 거리(미터).
+ * 서울 열린데이터 StationDstncReqreTimeHm의 DIST_KM을 km→m로 변환해 저장.
+ * 양방향 동일 값. 미커버 노선(9호선/공항철도 등)은 `null` 반환 — 호출자가 haversine fallback 선택.
+ *
+ * 활용 후보: fusion ETA(`stationEta.ts`)가 haversine 직선거리를 쓰는데, 실측은 전체 평균 1.04x,
+ * p90 1.15x, 최대 1.40x(1호선 시청↔종각) 더 길다. 트랙 거리 사용 시 곡선·우회 구간 ETA 정확도 향상.
+ */
+export function getStopDistanceMeters(line: LineNumber, fromId: string, toId: string): number | null {
+  const key = `${line}|${fromId}|${toId}`;
+  const hit = stationDistances[key];
+  return hit !== undefined ? hit : null;
 }
 
 // line 위 fromIdx → toIdx 구간을 한 hop씩 누적한 운행 시간(초). 환승 대기 미포함.
@@ -171,7 +187,7 @@ export interface JourneyDisplay {
 
 // 괄호 부제 제거는 ./normalizeStationName.js (SSOT — 빌드 스크립트와 공유)에 위임하고,
 // 그 위에 노선별 공식 표기 차이(예: "이수" ↔ "총신대입구")를 흡수하는 별칭을 한 번 더 적용한다.
-// Alias는 transferGraph 매칭 전용 — CSV 원본을 다루는 build-transfer-times.js는 적용 대상 아님.
+// Alias는 transferGraph 매칭 + transferTimes 키 생성 양쪽에 적용 — build-transfer-times.js도 동일 로직 사용.
 export function normalizeStationName(name: string): string {
   return applyStationAlias(baseNormalizeStationName(name));
 }
