@@ -214,4 +214,32 @@ describe('getServiceWindow', () => {
       expect(['pre-first', 'in-service', 'post-last', 'unknown']).toContain(result.status);
     });
   });
+
+  describe('#1088: Intl part 누락 시 graceful degrade', () => {
+    it('weekday part 누락 시 dayType auto 분류 불가 → unknown', () => {
+      const spy = jest
+        .spyOn(Intl.DateTimeFormat.prototype, 'formatToParts')
+        .mockImplementationOnce(() => [{ type: 'literal', value: '' }]);
+      const result = getServiceWindow({ stationName: '소요산', line: '1', now: KST_WEEKDAY_NOON });
+      expect(result).toEqual({ firstTrain: null, lastTrain: null, status: 'unknown' });
+      spy.mockRestore();
+    });
+
+    it('hour/minute part 누락 시 시각만 표시되고 status=unknown', () => {
+      // dayType 명시 시 classifyDayTypeKst 미호출 → 첫 formatToParts 호출은 getKstMinutesOfDay.
+      const spy = jest
+        .spyOn(Intl.DateTimeFormat.prototype, 'formatToParts')
+        .mockImplementationOnce(() => [{ type: 'literal', value: '' }]);
+      const result = getServiceWindow({
+        stationName: '소요산',
+        line: '1',
+        now: KST_WEEKDAY_NOON,
+        dayType: 'weekday',
+      });
+      expect(result.firstTrain).not.toBeNull();
+      expect(result.lastTrain).not.toBeNull();
+      expect(result.status).toBe('unknown');
+      spy.mockRestore();
+    });
+  });
 });

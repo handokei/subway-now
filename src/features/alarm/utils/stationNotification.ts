@@ -19,7 +19,7 @@ import { vibrateAlarm, stopVibration } from './alarmSound';
 import { speakAlarm } from './tts';
 import { createLogger } from '../../../shared/utils/logger';
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
-import { saveStationToWidget, clearWidgetStation } from '../../widget/api/widgetStorage';
+import { saveStationToWidget } from '../../widget/api/widgetStorage';
 import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../../../data/stations.json';
 import type { ExitSide } from '../../../shared/types/exitSide';
@@ -424,9 +424,9 @@ async function dismissStationPassedNotification(): Promise<void> {
 }
 
 export async function clearStationNotification(): Promise<void> {
-  await clearWidgetStation().catch((e) =>
-    notifLogger.error('위젯 해제 실패:', e),
-  );
+  // #1094: 위젯은 nearest station 결과를 따로 mirror 하므로 여기서 비우지 않는다.
+  // destination이 없거나 경로가 끝나도 사용자가 500m 내 역 근처에 있는 동안엔
+  // 위젯이 계속 현재 역을 보여줘야 한다. 위젯 lifecycle은 HomeScreen mirror effect가 담당.
   if (Platform.OS === 'ios') {
     if (!LiveActivity.isLiveActivityEnabled()) {
       notifLogger.info('알림 해제 (Live Activity 비활성)');
