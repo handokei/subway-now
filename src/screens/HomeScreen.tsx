@@ -22,6 +22,7 @@ import { EditorialArrivalRow } from '../features/arrival/components/EditorialArr
 import { useRouter } from 'expo-router';
 import { getStationDisplayName } from '../shared/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../features/alarm/utils/stationNotification';
+import { useWidgetMirror } from '../features/widget/hooks/useWidgetMirror';
 import { useStationAlarm } from '../features/alarm/hooks/useStationAlarm';
 import { useMotionActivity } from '../features/nearest-station/hooks/useMotionActivity';
 import { useBarometer } from '../shared/hooks/useBarometer';
@@ -552,6 +553,10 @@ export default function HomeScreen() {
       }
     };
   }, []);
+
+  // #1094: 위젯은 destination/route 진행 여부와 무관하게 항상 nearest station을 미러링한다.
+  // 50m bucket 단위로 dedupe되어 GPS tick 폭주를 흡수. LA/푸시 알림 lifecycle과 의도적으로 분리.
+  useWidgetMirror(result?.station ?? null, result?.distanceKm ?? null);
 
   useEffect(() => {
     const prevDestId = prevDestIdRef.current;
