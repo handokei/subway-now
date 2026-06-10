@@ -313,6 +313,32 @@ describe('useFusedNearestStation', () => {
   });
 
   describe('#662 환승역 fusion 강등 가드 (BoardingLock 기준)', () => {
+    // #1016 fix (b): lock 활성 시 accuracy>MAX_ACCURACY_M bypass 제거로 GPS를 실좌표 근처에 놓아야 함.
+    // 실 충무로(3호선) 좌표를 GPS로 사용 — distance≈0 → gate 통과.
+    const realChungmuro3 = findStationByNameAndLine('충무로', '3')!;
+
+    function setupPositionTrainWithRealCoords(trainNo: string): void {
+      // GPS를 실 충무로(3호선) 좌표에 배치 — lock 활성 + accuracyMeters=50이어도 gate 통과.
+      mockUseNearest.mockReturnValue(gpsBase({
+        userLocation: { lat: realChungmuro3.lat, lng: realChungmuro3.lng },
+        accuracyMeters: 50,
+      }));
+      mockFindTop.mockReturnValue([
+        { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
+        { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 },
+      ]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions
+        .mockReturnValueOnce(positionRet({ line: '2', trains: [] }))
+        .mockReturnValueOnce(
+          positionRet({
+            line: '3',
+            trains: [train(MOCK_STATIONS.chungmuro.name, TRAIN_STATUS.ARRIVED, { trainNo })],
+          }),
+        )
+        .mockReturnValueOnce(positionRet(null));
+    }
+
     const lockOnLine = (line: '2' | '3'): import('../../../../shared/types/boardingLock').BoardingLock => ({
       destinationId: 'dest-1',
       trainCode: 'T-3',
@@ -323,16 +349,16 @@ describe('useFusedNearestStation', () => {
     });
 
     it('lock.boardingLine과 positionTrain.line이 다르면 positionTrain 강등 → GPS로 fallthrough', () => {
-      setupPositionTrainTransferStation('T-3');
+      setupPositionTrainWithRealCoords('T-3');
       const { result } = renderHook(() =>
         useFusedNearestStation(undefined, undefined, undefined, null, lockOnLine('2')),
       );
       expect(result.current.source).toBe('gps');
-      expect(result.current.result?.station.name).toBe(MOCK_STATIONS.gangnam.name);
     });
 
     it('lock.boardingLine과 positionTrain.line이 같으면 positionTrain 유지', () => {
-      setupPositionTrainTransferStation('T-3');
+      // #1016 fix (b): lock 활성이므로 accuracy bypass 없음. GPS를 실 충무로 좌표에 배치.
+      setupPositionTrainWithRealCoords('T-3');
       const { result } = renderHook(() =>
         useFusedNearestStation(undefined, undefined, undefined, null, lockOnLine('3')),
       );
@@ -437,7 +463,7 @@ describe('useFusedNearestStation', () => {
     expect(result.current.source).toBe('arrival');
   });
 
-  it('position-train 다중 후보: lastConfirmedTrainNo 우선(sticky) — 이전 결과 유지', () => {
+  it('position-train 다중 후보: lastConfirmedTrainNo 우선(sticky) — GPS 있을 때 이전 결과 유지', () => {
     // #445 거리 게이트 우회 — MOCK 좌표와 stations.json 실좌표가 다르므로.
     mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
     mockFindTop.mockReturnValue([
@@ -455,7 +481,9 @@ describe('useFusedNearestStation', () => {
     const { result, rerender } = renderHook(() => useFusedNearestStation());
     expect(result.current.confidence).toBe('position-train');
 
-    // 두 번째 렌더: 두 트레인 (T-1, T-2). GPS 없이도 sticky로 T-1 유지.
+    // 두 번째 렌더: 두 트레인 (T-1, T-2). GPS 유지(accuracy=1500). sticky로 T-1 유지.
+    // #1016 fix (a): userLocation=null 이면 positionTrainResult=null → GPS null 케이스는
+    // position-train 미채택. GPS 있는 케이스에서만 sticky가 동작하는지 검증.
     mockUsePositions.mockReturnValue(
       positionRet({
         line: '2',
@@ -465,10 +493,28 @@ describe('useFusedNearestStation', () => {
         ],
       }),
     );
-    mockUseNearest.mockReturnValue(gpsBase({ userLocation: null }));
+    // GPS 유지 (userLocation 있음) — sticky가 동작해야 함
     rerender(undefined);
     expect(result.current.source).toBe('position-train');
     expect(result.current.result?.station.name).toBe(MOCK_STATIONS.gangnam.name);
+  });
+
+  it('position-train: userLocation null → positionTrainResult null — #1016 fix (a)', () => {
+    // #1016 hole (a): userLocation==null 이면 distanceKm=0 placeholder가 게이트를 자동 통과했었음.
+    // fix 이후 userLocation 없으면 positionTrainResult=null → position-train 미채택.
+    mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500, userLocation: null }));
+    mockFindTop.mockReturnValue([]);
+    mockUseArrival.mockReturnValue(arrivalRet(null));
+    mockUsePositions.mockReturnValue(
+      positionRet({
+        line: '2',
+        trains: [train(MOCK_STATIONS.gangnam.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-U' })],
+      }),
+    );
+
+    const { result } = renderHook(() => useFusedNearestStation());
+
+    expect(result.current.source).not.toBe('position-train');
   });
 
   it('GPS pass-through 필드들(loading/error/permissionDenied/locationUncertain/refresh 등)이 보존된다', () => {
@@ -960,9 +1006,10 @@ describe('useFusedNearestStation', () => {
     it('LivePosition(trainNo===trainCode) + arc 위 → effect가 lastObservedRef 갱신 (#739 Stage 1)', () => {
       jest.useFakeTimers();
       try {
-        // GPS는 용마산(arc 첫 역). 7093이 군자(arc idx 2)에서 도착 — trainProgress → 군자.
+        // #1016 fix (b): lock 활성 + accuracy bypass 제거로 GPS를 실 군자 좌표에 배치해야 gate 통과.
+        // GPS는 군자(arc idx 2). 7093이 군자에서 도착 — trainProgress → 군자, positionTrainResult 채택.
         jest.setSystemTime(T0 + 2 * 90_000);
-        setupGpsAtWithLoosAccuracy(yongmasan);
+        setupGpsAt(gunja);
         const t7093 = train('군자', TRAIN_STATUS.ARRIVED, { trainNo: '7093' });
         mockUsePositions.mockReturnValue(positionRet({ line: '7', trains: [t7093] }));
 

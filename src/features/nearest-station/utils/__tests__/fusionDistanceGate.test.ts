@@ -119,5 +119,63 @@ describe('passesFusionDistanceGate', () => {
       }),
     ).toBe(true);
   });
+
+  describe('#1016 hole (b) — lockActive 엄격 모드', () => {
+    it('lockActive=false 이면 accuracy>MAX_ACCURACY_M 지하 bypass 유지(기존 동작)', () => {
+      expect(
+        passesFusionDistanceGate({
+          candidate: makeResult('A', 0, 0, 0.7),
+          userLocation,
+          accuracyMeters: MAX_ACCURACY_M + 1,
+          gpsNearest,
+          maxAbsoluteKm: 0.6,
+          maxDeltaKm: 0.2,
+          lockActive: false,
+        }),
+      ).toBe(true);
+    });
+
+    it('lockActive=true 이면 accuracy>MAX_ACCURACY_M 이어도 bypass 거부 — 절대 거리 초과 시 실패', () => {
+      expect(
+        passesFusionDistanceGate({
+          candidate: makeResult('A', 0, 0, 0.7),
+          userLocation,
+          accuracyMeters: MAX_ACCURACY_M + 1,
+          gpsNearest,
+          maxAbsoluteKm: 0.6,
+          maxDeltaKm: 0.2,
+          lockActive: true,
+        }),
+      ).toBe(false);
+    });
+
+    it('lockActive=true 이어도 accuracyMeters=null 이면 통과(측정 불가)', () => {
+      expect(
+        passesFusionDistanceGate({
+          candidate: makeResult('A', 0, 0, 0.2),
+          userLocation,
+          accuracyMeters: null,
+          gpsNearest,
+          maxAbsoluteKm: 0.6,
+          maxDeltaKm: 0.2,
+          lockActive: true,
+        }),
+      ).toBe(true);
+    });
+
+    it('lockActive=true + accuracy 양호 + 거리 정상 → 통과', () => {
+      expect(
+        passesFusionDistanceGate({
+          candidate: makeResult('A', 0, 0, 0.2),
+          userLocation,
+          accuracyMeters: 50,
+          gpsNearest,
+          maxAbsoluteKm: 0.6,
+          maxDeltaKm: 0.2,
+          lockActive: true,
+        }),
+      ).toBe(true);
+    });
+  });
 });
 

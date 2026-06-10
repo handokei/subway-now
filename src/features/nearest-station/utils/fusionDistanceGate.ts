@@ -15,18 +15,25 @@ export interface FusionDistanceGateInput {
   gpsNearest: NearestStationResult | undefined;
   maxAbsoluteKm: number;
   maxDeltaKm: number;
+  /**
+   * BoardingLock 활성 여부 (#1016 hole b).
+   * true이면 accuracy>MAX_ACCURACY_M bypass를 거부 — 지하라도 lock이 있으면 거리 게이트를 엄격히 적용.
+   */
+  lockActive?: boolean;
 }
 
 /**
  * 후보 station이 GPS sanity 검사를 통과하는지.
- * - userLocation 없거나 accuracy null/저조 → 통과(검사 불가)
+ * - userLocation 없거나 accuracy null/저조(lock 비활성 시만) → 통과(검사 불가)
+ * - lockActive=true면 accuracy 저조 bypass 거부 — lock이 있으면 지하라도 엄격 검사
  * - 절대 거리 > maxAbsoluteKm → 실패
  * - GPS-nearest와 다른 station이고 거리 차이 > maxDeltaKm → 실패
  */
 export function passesFusionDistanceGate(input: FusionDistanceGateInput): boolean {
-  const { candidate, userLocation, accuracyMeters, gpsNearest, maxAbsoluteKm, maxDeltaKm } = input;
+  const { candidate, userLocation, accuracyMeters, gpsNearest, maxAbsoluteKm, maxDeltaKm, lockActive } = input;
   if (!userLocation) return true;
-  if (accuracyMeters == null || accuracyMeters > MAX_ACCURACY_M) return true;
+  if (accuracyMeters == null) return true;
+  if (!lockActive && accuracyMeters > MAX_ACCURACY_M) return true;
   if (candidate.distanceKm > maxAbsoluteKm) return false;
   if (
     gpsNearest &&

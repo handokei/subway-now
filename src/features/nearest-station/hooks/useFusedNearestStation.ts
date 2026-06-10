@@ -35,6 +35,7 @@ import {
 import { hopTimeMsAt } from '../../route/utils/hopTime';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
 import {
+  LOCK_NEXT_HOP_WINDOW,
   MAX_ACTIVE_LINES,
   MAX_FUSION_DELTA_KM,
   MAX_FUSION_DISTANCE_KM,
@@ -290,6 +291,19 @@ export function useFusedNearestStation(
     );
   }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions]);
 
+  // arcStations — routeContext에서 미리 산출. positionTrainResult 내 (c) 게이트가 arc window를
+  // 참조하므로 positionTrainResult useMemo보다 앞에 위치해야 한다.
+  // ADR-008 stationProgressEstimator — 이후 estimate override에서도 재사용.
+  const arcStations = useMemo<Station[]>(() => {
+    if (!routeContext || !routeContext.origin || !routeContext.destination) return [];
+    const arc = computeRouteArc(
+      routeContext.route,
+      routeContext.origin,
+      routeContext.destination,
+    );
+    return arc?.stations ?? [];
+  }, [routeContext]);
+
   // Phase 1C: Position-first fusion.
   // 후보 trainNo들(pickCandidateTrains) → trackTrainProgress로 단일 trainNo·현재역 결정.
   // anchor = 각 호선의 GPS 최근접 후보. 후보 1개로 단정되거나 GPS로 disambiguation되면 채택.
@@ -340,12 +354,12 @@ export function useFusedNearestStation(
 
   const positionTrainResult: NearestStationResult | null = useMemo(() => {
     if (!trainProgress) return null;
+    // #1016 hole (a): userLocation 없으면 distanceKm=0 placeholder 대신 null 반환.
+    // placeholder는 거리 게이트를 자동 통과시켜 GPS가 전혀 없는 상태에서도 position-train이
+    // 채택되는 hole을 만든다. userLocation 없으면 거리 sanity 자체가 불가하므로 강등.
+    if (!gps.userLocation) return null;
     const station = trainProgress.currentStation;
-    // userLocation 부재(sticky 케이스 등) 시 placeholder 0. 신뢰도 보조 신호로 사용 금지 —
-    // distanceKm은 화면 표시용이며 알람/정확도 판단은 source=='position-train'으로만 분기.
-    const distanceKm = gps.userLocation
-      ? haversine(gps.userLocation.lat, gps.userLocation.lng, station.lat, station.lng)
-      : 0;
+    const distanceKm = haversine(gps.userLocation.lat, gps.userLocation.lng, station.lat, station.lng);
 
     // #445 TTL: trainProgress가 신선해야 함. stale하면 강등.
     // ref가 0이면 effect가 첫 ts를 commit하기 전 — useMemo는 pure하게 두기 위해 면제.
@@ -356,6 +370,7 @@ export function useFusedNearestStation(
       return null;
     }
     // #444 거리 sanity — fused/route와 공통 헬퍼 재사용.
+    // #1016 hole (b): boardingLock 활성 시 lockActive=true로 accuracy>200m bypass 거부.
     const candidate = { station, distanceKm };
     if (
       !passesFusionDistanceGate({
@@ -365,6 +380,7 @@ export function useFusedNearestStation(
         gpsNearest: candidates[0],
         maxAbsoluteKm: MAX_FUSION_DISTANCE_KM,
         maxDeltaKm: MAX_FUSION_DELTA_KM,
+        lockActive: boardingLock != null,
       })
     ) {
       return null;
@@ -376,8 +392,20 @@ export function useFusedNearestStation(
     if (boardingLock && station.line !== boardingLock.boardingLine) {
       return null;
     }
+    // #1016 hole (c): BoardingLock 활성이고 arcStations 있으면 station.id가 arc의 nextHops
+    // window(탑승역 인덱스 + LOCK_NEXT_HOP_WINDOW) 내에 있어야 함. arc가 없거나 탑승역이 arc에
+    // 없으면 스킵(routeContext 없는 free-trip 또는 데이터 불일치 — 기존 동작 유지).
+    if (boardingLock && arcStations.length > 0) {
+      const boardingIdx = arcStations.findIndex((s) => s.id === boardingLock.boardingStationId);
+      if (boardingIdx !== -1) {
+        const stationIdx = arcStations.findIndex((s) => s.id === station.id);
+        if (stationIdx === -1 || stationIdx > boardingIdx + LOCK_NEXT_HOP_WINDOW) {
+          return null;
+        }
+      }
+    }
     return candidate;
-  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock]);
+  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock, arcStations]);
 
   const routeResult: NearestStationResult | null = progress.position
     ? {
@@ -439,15 +467,7 @@ export function useFusedNearestStation(
   // 채택 결과가 더 앞이면 그대로(실제 신호 우선) — 역행 방지(monotone forward).
   // confidence/source는 #584 PR D2의 'boarding-lock'(position-train + trainCode 매칭)과
   // 구분하기 위해 'boarding-lock-interp' 별도 라벨 사용 — 측정·디버그 인프라에서 구분 가능.
-  const arcStations = useMemo<Station[]>(() => {
-    if (!routeContext || !routeContext.origin || !routeContext.destination) return [];
-    const arc = computeRouteArc(
-      routeContext.route,
-      routeContext.origin,
-      routeContext.destination,
-    );
-    return arc?.stations ?? [];
-  }, [routeContext]);
+  // arcStations는 positionTrainResult의 (c) 게이트가 참조하므로 위에서 미리 산출됨.
 
   // estimator/anchor에 넘기는 trainProgress는 fusion 게이트(TTL + distance)를 통과한 것만 신선 신호로 인정.
   // positionTrainResult가 null이면 trainProgress는 stale이거나 게이트 탈락 — Strategy ①(LivePosition)이
