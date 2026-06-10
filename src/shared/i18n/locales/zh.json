@@ -289,7 +289,8 @@
       "assignSlotHint": "将下次选择的车站保存到此槽位",
       "favoriteChipHint": "点击将此站设为目的地",
       "misBoardingCloseLabel": "关闭",
-      "misBoardingCloseHint": "取消重新选择"
+      "misBoardingCloseHint": "取消重新选择",
+      "titleHeaderRole": "header"
     }
   },
   "service": {

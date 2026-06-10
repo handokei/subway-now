@@ -289,7 +289,8 @@
       "assignSlotHint": "Saves the next selected station to this slot",
       "favoriteChipHint": "Tap to set this station as destination",
       "misBoardingCloseLabel": "Close",
-      "misBoardingCloseHint": "Cancels reselection"
+      "misBoardingCloseHint": "Cancels reselection",
+      "titleHeaderRole": "header"
     }
   },
   "service": {

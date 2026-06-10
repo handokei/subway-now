@@ -289,7 +289,8 @@
       "assignSlotHint": "次に選択する駅をこのスロットに保存します",
       "favoriteChipHint": "タップしてこの駅を目的地に設定",
       "misBoardingCloseLabel": "閉じる",
-      "misBoardingCloseHint": "再選択をキャンセルします"
+      "misBoardingCloseHint": "再選択をキャンセルします",
+      "titleHeaderRole": "header"
     }
   },
   "service": {
