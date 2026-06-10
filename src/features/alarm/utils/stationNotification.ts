@@ -19,7 +19,6 @@ import { vibrateAlarm, stopVibration } from './alarmSound';
 import { speakAlarm } from './tts';
 import { createLogger } from '../../../shared/utils/logger';
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
-import { saveStationToWidget } from '../../widget/api/widgetStorage';
 import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../../../data/stations.json';
 import type { ExitSide } from '../../../shared/types/exitSide';
@@ -382,10 +381,6 @@ export async function updateStationNotification(
   source?: NotificationSource,
 ): Promise<void> {
   notifLogger.info('updateStation:', currentStation.name, `${distanceM}m`, destination ? `→ ${destination.name}` : '');
-
-  await saveStationToWidget(currentStation, distanceM / 1000).catch((e) =>
-    notifLogger.error('위젯 저장 실패:', e),
-  );
 
   if (Platform.OS === 'ios') {
     const liveActivityEnabled = LiveActivity.isLiveActivityEnabled();
