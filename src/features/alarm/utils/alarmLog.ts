@@ -214,6 +214,7 @@ export function logFiredStationPassed(source: AlarmLogSource, station: Station):
 }
 
 export function logSuppressedDedupStation(source: AlarmLogSource, station: Station): void {
+  if (isBurstDuplicate('dedup-station', station.name)) return;
   appendAlarmLog({
     ts: Date.now(),
     source,
@@ -329,6 +330,38 @@ export function logSuppressedDedupAlarm(
 /** 테스트용 — 윈도우 캐시 리셋. */
 export function _resetDedupAlarmWindowForTests(): void {
   lastDedupLogTs.clear();
+}
+
+/**
+ * #1023: burst-prone 5 reason (movement-* 3종 + dedup-station + movement-low-accuracy)용
+ * in-memory time-window dedup.
+ *
+ * logSuppressedDedupAlarm과 동일한 DEDUP_LOG_WINDOW_MS / DEDUP_LOG_MAP_CAP 정책을 공유한다.
+ * 키: `${reason}|${stationName}` — 같은 역의 같은 reason 반복 스팸 차단.
+ * stationName까지 구분해야 역이 바뀌었을 때 첫 신호를 drop하지 않는다.
+ */
+const lastBurstSuppressTs = new Map<string, number>();
+
+function sweepExpiredBurstEntries(now: number): void {
+  if (lastBurstSuppressTs.size <= DEDUP_LOG_MAP_CAP) return;
+  for (const [k, ts] of lastBurstSuppressTs) {
+    if (now - ts >= DEDUP_LOG_WINDOW_MS) lastBurstSuppressTs.delete(k);
+  }
+}
+
+function isBurstDuplicate(reason: string, stationName: string): boolean {
+  const now = Date.now();
+  const key = `${reason}|${stationName}`;
+  const last = lastBurstSuppressTs.get(key);
+  if (last !== undefined && now - last < DEDUP_LOG_WINDOW_MS) return true;
+  lastBurstSuppressTs.set(key, now);
+  sweepExpiredBurstEntries(now);
+  return false;
+}
+
+/** 테스트용 — burst dedup 윈도우 캐시 리셋. */
+export function _resetBurstSuppressWindowForTests(): void {
+  lastBurstSuppressTs.clear();
 }
 
 /**
@@ -568,6 +601,7 @@ export function logSuppressedMovement(input: {
   phaseId?: AlarmPhaseId;
   reason: Extract<AlarmLogReason, `movement-${string}`>;
 }): void {
+  if (isBurstDuplicate(input.reason, input.stationName)) return;
   appendAlarmLog({
     ts: Date.now(),
     source: input.source,

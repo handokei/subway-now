@@ -187,7 +187,7 @@ export interface JourneyDisplay {
 
 // 괄호 부제 제거는 ./normalizeStationName.js (SSOT — 빌드 스크립트와 공유)에 위임하고,
 // 그 위에 노선별 공식 표기 차이(예: "이수" ↔ "총신대입구")를 흡수하는 별칭을 한 번 더 적용한다.
-// Alias는 transferGraph 매칭 전용 — CSV 원본을 다루는 build-transfer-times.js는 적용 대상 아님.
+// Alias는 transferGraph 매칭 + transferTimes 키 생성 양쪽에 적용 — build-transfer-times.js도 동일 로직 사용.
 export function normalizeStationName(name: string): string {
   return applyStationAlias(baseNormalizeStationName(name));
 }

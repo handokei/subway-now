@@ -58,6 +58,12 @@ jest.mock('../firedPushIds', () => ({
 
 const mockSaveStationToWidget = jest.fn().mockResolvedValue(undefined);
 const mockClearWidgetStation = jest.fn().mockResolvedValue(undefined);
+const mockAddDomainBreadcrumb = jest.fn();
+jest.mock('../../../../shared/infra/monitoring/breadcrumb', () => ({
+  addLogBreadcrumb: jest.fn(),
+  addDomainBreadcrumb: (...args: unknown[]) => mockAddDomainBreadcrumb(...args),
+}));
+
 jest.mock('../../../widget/api/widgetStorage', () => ({
   saveStationToWidget: (...args: unknown[]) => mockSaveStationToWidget(...args),
   clearWidgetStation: () => mockClearWidgetStation(),
@@ -260,6 +266,16 @@ describe('stationNotification', () => {
       (Notifications.deleteNotificationChannelAsync as jest.Mock).mockRejectedValue(new Error('채널 없음'));
       await initStationNotification();
       expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm', expect.anything());
+    });
+
+    it('권한 요청 후 permission 카테고리 breadcrumb 추가', async () => {
+      mockAddDomainBreadcrumb.mockClear();
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      (Notifications.requestPermissionsAsync as jest.Mock).mockResolvedValueOnce({ status: 'granted' });
+      await initStationNotification();
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('permission', 'notification', {
+        status: 'granted',
+      });
     });
   });
 
@@ -771,6 +787,35 @@ describe('stationNotification', () => {
         expectAlarmNotification('도착 임박', '곧 잠실에 도착합니다. 하차 준비하세요!\n출구가 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
       });
     });
+
+    describe('domain breadcrumb', () => {
+      beforeEach(() => {
+        mockAddDomainBreadcrumb.mockClear();
+        jest.replaceProperty(Platform, 'OS', 'ios');
+      });
+
+      it('alarm fire 시 alarm 카테고리 breadcrumb 추가', async () => {
+        await sendAlarmNotification(earlyDest, true);
+        expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('alarm', 'fire', {
+          type: 'destination',
+          phase: 'early',
+          station: '강남',
+          sleepMode: true,
+          source: undefined,
+        });
+      });
+
+      it('source가 있으면 breadcrumb data에 포함', async () => {
+        await sendAlarmNotification(earlyTransfer, false, true, 'positionTrain');
+        expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('alarm', 'fire', {
+          type: 'transfer',
+          phase: 'early',
+          station: '시청',
+          sleepMode: false,
+          source: 'positionTrain',
+        });
+      });
+    });
   });
 
   describe('sendStationPassedNotification', () => {
@@ -858,15 +903,10 @@ describe('stationNotification', () => {
       mockClearWidgetStation.mockResolvedValue(undefined);
     });
 
-    it('updateStationNotification은 saveStationToWidget을 km 단위로 호출한다', async () => {
+    it('updateStationNotification은 saveStationToWidget을 호출하지 않는다 (#1079)', async () => {
+      // 위젯 갱신은 useWidgetMirror가 직접 담당. updateStationNotification은 LA/알림만 담당.
       await updateStationNotification(mockStation, 250);
-      expect(mockSaveStationToWidget).toHaveBeenCalledWith(mockStation, 0.25);
-    });
-
-    it('saveStationToWidget이 실패해도 updateLiveActivity는 호출된다', async () => {
-      mockSaveStationToWidget.mockRejectedValueOnce(new Error('group missing'));
-      await updateStationNotification(mockStation, 100);
-      expect(mockUpdateLiveActivity).toHaveBeenCalled();
+      expect(mockSaveStationToWidget).not.toHaveBeenCalled();
     });
 
     it('clearStationNotification은 위젯을 비우지 않는다 (#1094)', async () => {

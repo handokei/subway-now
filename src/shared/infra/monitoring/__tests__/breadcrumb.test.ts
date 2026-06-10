@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/react-native';
-import { addLogBreadcrumb } from '../breadcrumb';
+import { addDomainBreadcrumb, addLogBreadcrumb } from '../breadcrumb';
 import { setSentryEnabled } from '../sentryState';
 
 const addBreadcrumbMock = Sentry.addBreadcrumb as jest.Mock;
@@ -83,6 +83,34 @@ describe('addLogBreadcrumb', () => {
       level: 'info',
       category: 'log',
       message: '[TAG]',
+    });
+  });
+});
+
+describe('addDomainBreadcrumb', () => {
+  it('opt-in 비활성 시 no-op', () => {
+    addDomainBreadcrumb('alarm', 'fire', { station: '강남' });
+    expect(addBreadcrumbMock).not.toHaveBeenCalled();
+  });
+
+  it('category/message/data를 그대로 전달', () => {
+    setSentryEnabled(true);
+    addDomainBreadcrumb('alarm', 'fire', { station: '강남', phase: 'early' });
+    expect(addBreadcrumbMock).toHaveBeenCalledWith({
+      level: 'info',
+      category: 'alarm',
+      message: 'fire',
+      data: { station: '강남', phase: 'early' },
+    });
+  });
+
+  it('data 미지정 시 data 키 자체를 누락', () => {
+    setSentryEnabled(true);
+    addDomainBreadcrumb('lifecycle', 'foreground');
+    expect(addBreadcrumbMock).toHaveBeenCalledWith({
+      level: 'info',
+      category: 'lifecycle',
+      message: 'foreground',
     });
   });
 });

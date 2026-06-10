@@ -18,8 +18,8 @@ import * as LiveActivity from 'live-activity';
 import { vibrateAlarm, stopVibration } from './alarmSound';
 import { speakAlarm } from './tts';
 import { createLogger } from '../../../shared/utils/logger';
+import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
-import { saveStationToWidget } from '../../widget/api/widgetStorage';
 import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../../../data/stations.json';
 import type { ExitSide } from '../../../shared/types/exitSide';
@@ -158,6 +158,7 @@ export async function initStationNotification(): Promise<void> {
     },
   });
   notifLogger.info('권한 상태:', status);
+  addDomainBreadcrumb('permission', 'notification', { status });
 }
 
 // 좌/우 데이터는 모든 역에 존재하지 않을 수 있다(나무위키 수집 누락 등).
@@ -383,10 +384,6 @@ export async function updateStationNotification(
 ): Promise<void> {
   notifLogger.info('updateStation:', currentStation.name, `${distanceM}m`, destination ? `→ ${destination.name}` : '');
 
-  await saveStationToWidget(currentStation, distanceM / 1000).catch((e) =>
-    notifLogger.error('위젯 저장 실패:', e),
-  );
-
   if (Platform.OS === 'ios') {
     const liveActivityEnabled = LiveActivity.isLiveActivityEnabled();
     liveActivityLogger.info('isLiveActivityEnabled:', liveActivityEnabled);
@@ -537,6 +534,13 @@ export async function sendAlarmNotification(
   vibrateAlarm(sleepMode);
   speakAlarm(body, { sleepMode, allowSpeaker });
   notifLogger.info('알람 알림:', title, body);
+  addDomainBreadcrumb('alarm', 'fire', {
+    type: event.type,
+    phase: event.phaseId,
+    station: event.stationName,
+    sleepMode,
+    source,
+  });
 }
 
 export async function clearAlarmNotification(): Promise<void> {
