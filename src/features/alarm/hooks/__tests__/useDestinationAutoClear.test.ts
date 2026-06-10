@@ -176,13 +176,15 @@ describe('useDestinationAutoClear', () => {
     expect(onAutoClear).not.toHaveBeenCalled();
   });
 
-  it('motionStationary 진입 후 60s 지나면 onAutoClear 1회 호출 + log', () => {
+  it('motionStationary 진입 후 60s 지나면 onAutoClear 1회 호출 + log + cleared station 전달', () => {
     const { onAutoClear, initial, rerender } = mountStationaryDetect({ arvlCodes: [1] });
     withDateNow(T0 + STATIONARY_THRESHOLD_MS, () => {
       // userLocation을 미세 변경해 effect 재실행 트리거 (좌표 가까운 jitter).
       rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
     });
     expect(onAutoClear).toHaveBeenCalledTimes(1);
+    // #1058: cleared station snapshot이 인자로 전달돼야 함 (undo 복원용).
+    expect(onAutoClear).toHaveBeenCalledWith(destination);
     expect(mockLoggerInfo).toHaveBeenCalledWith(
       'destination=강남 자동 해제 (confidence=high)',
     );
