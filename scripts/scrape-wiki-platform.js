@@ -78,7 +78,8 @@ function classifyLayout(raw) {
   // 1면 2선 → 섬식 (1 platform between 2 tracks)
   // 2면 2선 → 상대식 (2 side platforms, 2 tracks)
   // 그 외(2면 4선 등) → mixed/unknown
-  const dim = raw.match(/(\d+)\s*면\s*(\d+)\s*선/);
+  // 숫자 자리수를 2자리로 bound (현실 데이터 상한) — ReDoS 방지.
+  const dim = /(\d{1,2})[ \t]{0,3}면[ \t]{0,3}(\d{1,2})[ \t]{0,3}선/.exec(raw);
   if (dim) {
     const platforms = Number(dim[1]);
     const tracks = Number(dim[2]);
@@ -155,45 +156,53 @@ async function resolveStation(station, fetchFn) {
   };
 }
 
+function pickOnlyStations(stations, only) {
+  const wanted = new Set(only);
+  const seen = new Set();
+  return stations.filter((s) => {
+    if (!wanted.has(s.name) || seen.has(s.name)) return false;
+    seen.add(s.name);
+    return true;
+  });
+}
+
+function groupByLine(stations) {
+  const byLine = new Map();
+  for (const s of stations) {
+    if (!byLine.has(s.line)) byLine.set(s.line, []);
+    byLine.get(s.line).push(s);
+  }
+  return byLine;
+}
+
+function pickSampleRound(byLine, round, sample, picked, seen) {
+  for (const list of byLine.values()) {
+    if (picked.length >= sample) return;
+    const candidate = list[round];
+    if (!candidate || seen.has(candidate.name)) continue;
+    seen.add(candidate.name);
+    picked.push(candidate);
+  }
+}
+
+function pickSampleStations(stations, sample) {
+  const byLine = groupByLine(stations);
+  const picked = [];
+  const seen = new Set();
+  for (let round = 0; picked.length < sample && round < 50; round += 1) {
+    pickSampleRound(byLine, round, sample, picked, seen);
+  }
+  return picked;
+}
+
 /**
  * 샘플 대상 역 리스트를 결정한다.
  *   --only A,B,C → 정확히 그 역들
  *   --sample N → 노선별 균등 샘플
  */
 function pickStations(stations, { only, sample }) {
-  if (only && only.length > 0) {
-    const wanted = new Set(only);
-    // 중복 노선 제거: 같은 이름 첫 등장만
-    const seen = new Set();
-    return stations.filter((s) => {
-      if (!wanted.has(s.name) || seen.has(s.name)) return false;
-      seen.add(s.name);
-      return true;
-    });
-  }
-  if (sample && sample > 0) {
-    // 노선별로 1~2개씩 골라 N개에 도달
-    const byLine = new Map();
-    for (const s of stations) {
-      if (!byLine.has(s.line)) byLine.set(s.line, []);
-      byLine.get(s.line).push(s);
-    }
-    const picked = [];
-    const seen = new Set();
-    let round = 0;
-    while (picked.length < sample && round < 50) {
-      for (const list of byLine.values()) {
-        if (picked.length >= sample) break;
-        const candidate = list[round];
-        if (!candidate) continue;
-        if (seen.has(candidate.name)) continue;
-        seen.add(candidate.name);
-        picked.push(candidate);
-      }
-      round += 1;
-    }
-    return picked;
-  }
+  if (only && only.length > 0) return pickOnlyStations(stations, only);
+  if (sample && sample > 0) return pickSampleStations(stations, sample);
   return [];
 }
 

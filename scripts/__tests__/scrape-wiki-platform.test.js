@@ -3,6 +3,9 @@
  * 네트워크는 mock fetch로 격리한다.
  */
 
+const os = require('node:os');
+const path = require('node:path');
+
 const {
   extractPlatformFields,
   classifyLayout,
@@ -12,6 +15,8 @@ const {
   pickStations,
   run,
 } = require('../scrape-wiki-platform');
+
+const TMP_OUT = path.join(os.tmpdir(), 'subway-now-wiki-platform-test.json');
 
 describe('extractPlatformFields', () => {
   it('returns [] for empty / null input', () => {
@@ -254,12 +259,12 @@ describe('run (integration with deps injection)', () => {
         { name: 'A', line: '1' },
         { name: 'B', line: '2' },
       ],
-      outFile: '/tmp/out.json',
+      outFile: TMP_OUT,
     });
     expect(r.results).toHaveLength(2);
     expect(r.results[0].layout).toBe('island');
-    expect(r.path).toBe('/tmp/out.json');
-    expect(writeFile).toHaveBeenCalledWith('/tmp/out.json', expect.stringContaining('"license": "CC BY-SA 4.0"'));
+    expect(r.path).toBe(TMP_OUT);
+    expect(writeFile).toHaveBeenCalledWith(TMP_OUT, expect.stringContaining('"license": "CC BY-SA 4.0"'));
     // sleep called once between 2 items (not after last)
     expect(sleepFn).toHaveBeenCalledTimes(1);
   });
@@ -275,7 +280,7 @@ describe('run (integration with deps injection)', () => {
       writeFile: jest.fn(),
       log: jest.fn(),
       stations: [{ name: 'X', line: '1' }],
-      outFile: '/tmp/out.json',
+      outFile: TMP_OUT,
     });
     expect(r.results).toHaveLength(1);
     expect(r.results[0].layout).toBe('side');
