@@ -38,8 +38,8 @@ import type { Route } from '../../../shared/utils/stationRoute';
 export interface UseTransferAutoDetectInputs {
   /** 환승역 신호 + 후보 산출에 필요한 현재 fusion 결과. */
   readonly nearestStations: NearestStationsResult | null;
-  /** 현재 정차 중 여부 — `false`(walking)일 때만 detect 활성. */
-  readonly motionStationary: boolean;
+  /** 현재 정차 중 여부 — `false`/`undefined`(warmup)일 때만 detect 활성. */
+  readonly motionStationary: boolean | undefined;
   /** 현재 origin station의 도착 데이터(useArrivalInfo 결과). 다른 노선 후보 추출 입력. */
   readonly arrival: StationArrival | null;
   /** 현재 BoardingLock. 활성이면 boardingLine과 같은 후보는 제외(자기 노선 무한 detect 회피). */

@@ -214,8 +214,10 @@ export function useFusedNearestStation(
   /**
    * #728 — CMMotionActivity(iOS) motion=stationary 신호. shouldDowngradeFusion이 speed=null인
    * 정적 사용자 케이스에서 positionStability보다 우선 적용. 미전달이면 기존 동작 유지.
+   * #1013 — undefined는 warmup 상태(fg-hydrate 직후 ~30s). evaluateMovement로 전달되어
+   * speed=null + positionStability=unknown과 동시 발생 시 'motion-warmup'으로 차단.
    */
-  motionStationary?: boolean,
+  motionStationary?: boolean | undefined,
   /**
    * #903 (Seam G) + #921 — 기압계 신호 묶음.
    * - `subsurface`: dP/dt가 지하 진입을 시사하는지. true면 GPS-only 결과는 'gps-only-underground'로
