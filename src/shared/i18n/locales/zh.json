@@ -287,6 +287,14 @@
       "boardingTrainSelectHint": "点击乘坐该列车",
       "boardingLockReleaseLabel": "下车",
       "boardingLockReleaseHint": "结束当前乘车状态"
+    },
+    "route": {
+      "destinationCloseHint": "取消目的地选择并关闭弹窗",
+      "assignSlotLabel": "指定 {{label}} 槽位",
+      "assignSlotHint": "将下次选择的车站保存到此槽位",
+      "favoriteChipHint": "点击将此站设为目的地",
+      "misBoardingCloseLabel": "关闭",
+      "misBoardingCloseHint": "取消重新选择"
     }
   },
   "service": {

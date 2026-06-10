@@ -287,6 +287,15 @@
       "boardingTrainSelectHint": "탭하여 이 열차로 탑승 등록",
       "boardingLockReleaseLabel": "하차",
       "boardingLockReleaseHint": "현재 탑승 상태를 종료합니다"
+    },
+    "route": {
+      "destinationCloseHint": "목적지 선택을 취소하고 모달을 닫습니다",
+      "assignSlotLabel": "{{label}} 슬롯 지정",
+      "assignSlotHint": "다음에 선택할 역을 이 슬롯에 저장합니다",
+      "favoriteChipHint": "탭하여 이 역을 목적지로 선택",
+      "misBoardingCloseLabel": "닫기",
+      "misBoardingCloseHint": "재선택을 취소합니다",
+      "titleHeaderRole": "header"
     }
   },
   "service": {
