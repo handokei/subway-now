@@ -56,6 +56,21 @@
     "autoDisembarkToast": {
       "message": "{{name}}에 도착해 목적지를 해제했어요",
       "undo": "되돌리기"
+    },
+    "congestion": {
+      "level": {
+        "low": "여유",
+        "medium": "보통",
+        "high": "혼잡",
+        "veryHigh": "매우 혼잡"
+      },
+      "hint": {
+        "low": "좌석 여유 있어요",
+        "medium": "손잡이까지 사용해요",
+        "high": "가까이 밀착해요",
+        "veryHigh": "이동이 어려울 수 있어요"
+      },
+      "a11yLabel": "현재 시간대 평균 혼잡도 {{level}}, 약 {{raw}}퍼센트"
     }
   },
   "settings": {
