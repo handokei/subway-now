@@ -226,6 +226,8 @@ export function pickAutoTrainCode(
   ];
   for (const code of priority) {
     const tier = directional.filter((a) => a.arvlCd === code);
+    // ambiguity 임계: 같은 우선순위 후보가 2개 이상이면 자동 판단 불가 → null.
+    // 단일 후보(tier.length === 1)만 자동 lock을 허용한다.
     if (tier.length === 1) return tier[0].trainCode || null;
     if (tier.length > 1) return null; // ambiguity → 자동 안 함
   }

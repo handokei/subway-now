@@ -1511,6 +1511,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       direction: geo.direction,
       seoul: deps.seoul,
       now,
+      // #1018 RC1 confidence gate 입력 — arvlCd=2 at next-waypoint 검출 시 사용.
+      boardingPromptState: trip.boardingPromptState,
+      lastMotionAt: fusion.series[fusion.series.length - 1]?.ts,
     });
     if (autoLock) {
       trip.boardingLock = autoLock;
