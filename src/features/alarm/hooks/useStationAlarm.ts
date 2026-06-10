@@ -98,6 +98,7 @@ async function dispatchStationPassed(params: {
   source: 'fg' | 'fg-arvlcd';
   candidateStation: Station;
   capturedRoute: Route;
+  capturedDestinationId: string;
   capturedDestinationName: string;
   notificationSource: NotificationSource | undefined;
   isCancelled: () => boolean;
@@ -107,13 +108,14 @@ async function dispatchStationPassed(params: {
     source,
     candidateStation,
     capturedRoute,
+    capturedDestinationId,
     capturedDestinationName,
     notificationSource,
     isCancelled,
     errorLogPrefix,
   } = params;
   try {
-    const lastId = await getLastNotifiedStationId();
+    const lastId = await getLastNotifiedStationId(capturedDestinationId);
     if (isCancelled()) return;
     if (candidateStation.id === lastId) {
       logSuppressedDedupStation(source, candidateStation);
@@ -133,7 +135,7 @@ async function dispatchStationPassed(params: {
       notificationSource,
     );
     if (isCancelled()) return;
-    await setLastNotifiedStationId(candidateStation.id);
+    await setLastNotifiedStationId(capturedDestinationId, candidateStation.id);
     logFiredStationPassed(source, candidateStation);
   } catch (e) {
     logger.error(errorLogPrefix, e);
@@ -151,6 +153,7 @@ async function runSilenceGateAndDispatch(params: {
   source: 'fg' | 'fg-arvlcd';
   candidateStation: Station;
   capturedRoute: Route;
+  capturedDestinationId: string;
   capturedDestinationName: string;
   notificationSource: NotificationSource | undefined;
   isCancelled: () => boolean;
@@ -177,6 +180,7 @@ async function runSilenceGateAndDispatch(params: {
     source: params.source,
     candidateStation: params.candidateStation,
     capturedRoute: params.capturedRoute,
+    capturedDestinationId: params.capturedDestinationId,
     capturedDestinationName: params.capturedDestinationName,
     notificationSource: params.notificationSource,
     isCancelled: params.isCancelled,
@@ -670,6 +674,7 @@ export function useStationAlarm({
     if (nearestStation && isStationOnRoute(nearestStation, route)) {
       const candidateStation = nearestStation;
       const capturedRoute = route;
+      const capturedDestinationId = destination.id;
       const capturedDestinationName = destination.name;
 
       // #733 — station-passed movement gate (S4 fix).
@@ -694,6 +699,7 @@ export function useStationAlarm({
         source: 'fg',
         candidateStation,
         capturedRoute,
+        capturedDestinationId,
         capturedDestinationName,
         notificationSource,
         isCancelled: () => cancelled,
@@ -755,6 +761,7 @@ export function useStationAlarm({
 
     const candidateStation = nearestStation;
     const capturedRoute = route;
+    const capturedDestinationId = destination.id;
     const capturedDestinationName = destination.name;
 
     let cancelled = false;
@@ -786,6 +793,7 @@ export function useStationAlarm({
         source: 'fg-arvlcd',
         candidateStation,
         capturedRoute,
+        capturedDestinationId,
         capturedDestinationName,
         notificationSource,
         isCancelled: () => cancelled,

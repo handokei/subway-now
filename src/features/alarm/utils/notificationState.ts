@@ -39,12 +39,46 @@ async function safeRemoveItem(key: string): Promise<void> {
   }
 }
 
-export function getLastNotifiedStationId(): Promise<string | null> {
-  return safeGetItem(LAST_NOTIFIED_STATION_KEY);
+// #1011: lastNotifiedStationId를 destination tuple로 scoping.
+// 저장 포맷: `{ destinationId, stationId }`. read 시점 destinationId가 저장된 것과
+// 다르면 stale로 간주하고 null을 반환한다. destinationId가 null이면 항상 null.
+interface LastNotifiedRecord {
+  destinationId: string;
+  stationId: string;
 }
 
-export function setLastNotifiedStationId(id: string): Promise<void> {
-  return safeSetItem(LAST_NOTIFIED_STATION_KEY, id);
+function isLastNotifiedRecord(value: unknown): value is LastNotifiedRecord {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    typeof (value as LastNotifiedRecord).destinationId === 'string' &&
+    typeof (value as LastNotifiedRecord).stationId === 'string'
+  );
+}
+
+export async function getLastNotifiedStationId(
+  destinationId: string | null,
+): Promise<string | null> {
+  if (!destinationId) return null;
+  const raw = await safeGetItem(LAST_NOTIFIED_STATION_KEY);
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!isLastNotifiedRecord(parsed)) return null;
+    if (parsed.destinationId !== destinationId) return null;
+    return parsed.stationId;
+  } catch (e) {
+    logger.error(`${LAST_NOTIFIED_STATION_KEY} 파싱 실패:`, e);
+    return null;
+  }
+}
+
+export function setLastNotifiedStationId(
+  destinationId: string,
+  stationId: string,
+): Promise<void> {
+  const record: LastNotifiedRecord = { destinationId, stationId };
+  return safeSetItem(LAST_NOTIFIED_STATION_KEY, JSON.stringify(record));
 }
 
 export function clearLastNotifiedStationId(): Promise<void> {

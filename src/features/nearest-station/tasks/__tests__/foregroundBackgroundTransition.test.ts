@@ -252,7 +252,7 @@ describe('FG↔BG 통합: 알림 dedup (notificationState 단일 출처)', () =>
   it('FG에서 알림 발사 후 BG가 같은 역 받으면 중복 발사하지 않는다', async () => {
     await runFgPipelineAt(fakeStation);
     expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
-    expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(fakeStation.id);
+    expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(JSON.stringify({ destinationId: fakeDestination.id, stationId: fakeStation.id }));
 
     await runBgTaskAt(fakeStation);
 
@@ -262,7 +262,7 @@ describe('FG↔BG 통합: 알림 dedup (notificationState 단일 출처)', () =>
   it('BG에서 알림 발사 후 FG가 같은 역 받으면 중복 발사하지 않는다', async () => {
     await runBgTaskAt(fakeStation);
     expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
-    expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(fakeStation.id);
+    expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(JSON.stringify({ destinationId: fakeDestination.id, stationId: fakeStation.id }));
 
     await runFgPipelineAt(fakeStation);
 
@@ -276,7 +276,7 @@ describe('FG↔BG 통합: 알림 dedup (notificationState 단일 출처)', () =>
     await runBgTaskAt(fakeNextStation);
 
     expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(2);
-    expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(fakeNextStation.id);
+    expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(JSON.stringify({ destinationId: fakeDestination.id, stationId: fakeNextStation.id }));
   });
 
   it('AsyncStorage가 비어 있는 cold start(swipe-kill 직후)에는 BG 첫 콜백이 알림을 발사한다', async () => {
@@ -285,7 +285,7 @@ describe('FG↔BG 통합: 알림 dedup (notificationState 단일 출처)', () =>
     await runBgTaskAt(fakeStation);
 
     expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
-    expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(fakeStation.id);
+    expect(mockStorage.get(LAST_NOTIFIED_STATION_KEY)).toBe(JSON.stringify({ destinationId: fakeDestination.id, stationId: fakeStation.id }));
   });
 });
 
@@ -388,7 +388,7 @@ describe('FG↔BG 통합: swipe-kill 후 재진입 (AsyncStorage 영속성)', ()
     await runBgTaskAt(fakeStation);
     expect(mockSendStationPassedNotification).toHaveBeenCalledTimes(1);
     const persistedId = mockStorage.get(LAST_NOTIFIED_STATION_KEY);
-    expect(persistedId).toBe(fakeStation.id);
+    expect(persistedId).toBe(JSON.stringify({ destinationId: fakeDestination.id, stationId: fakeStation.id }));
 
     // swipe-kill 시뮬레이션: AsyncStorage는 보존, send mock 만 리셋해 "재진입 후 새 send" 검증.
     mockSendStationPassedNotification.mockClear();

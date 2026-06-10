@@ -136,6 +136,7 @@ describe('useScheduledAlarms', () => {
     expect(mockedSchedule).toHaveBeenCalledWith({
       route: ROUTE,
       destinationName: '강남',
+      destinationId: 'dest-1',
       currentStationApproachEtaSeconds: 300, // min(300, 420), currentStation=null → 양방향 fallback
       // stamp.direction은 route-resolved intent — currentStation=null이므로 null로 기록.
       // trainCode는 fallback에서 pick된 up arrival(300 < 420)의 'U1'.
