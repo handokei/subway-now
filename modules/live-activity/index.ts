@@ -61,10 +61,15 @@ export function saveWidgetStation(
   stationName: string,
   lineColor: string,
   distanceM: number,
+  savedAt: number = Date.now(),
 ): Promise<void> {
   return (
-    LiveActivityModule?.saveWidgetStation(stationName, lineColor, distanceM) ??
-    Promise.resolve()
+    LiveActivityModule?.saveWidgetStation(
+      stationName,
+      lineColor,
+      distanceM,
+      savedAt,
+    ) ?? Promise.resolve()
   );
 }
 
