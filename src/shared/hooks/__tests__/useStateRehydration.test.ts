@@ -126,30 +126,24 @@ describe('useStateRehydration', () => {
   });
 
   describe('lifecycle breadcrumb', () => {
-    it("'active' 진입 시 lifecycle 카테고리 breadcrumb", async () => {
+    async function emitAppState(state: AppStateStatus): Promise<void> {
       const app = mockAppState();
       renderHook(() => useStateRehydration());
       await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
       mockAddDomainBreadcrumb.mockClear();
-      app.emit('active');
-      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('lifecycle', 'active');
-    });
+      app.emit(state);
+    }
 
-    it("'background' 진입 시 lifecycle 카테고리 breadcrumb", async () => {
-      const app = mockAppState();
-      renderHook(() => useStateRehydration());
-      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
-      mockAddDomainBreadcrumb.mockClear();
-      app.emit('background');
-      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('lifecycle', 'background');
+    it.each([
+      ['active' as const],
+      ['background' as const],
+    ])("'%s' 진입 시 lifecycle 카테고리 breadcrumb", async (state) => {
+      await emitAppState(state);
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('lifecycle', state);
     });
 
     it("기타 상태('inactive')는 breadcrumb 추가 안 함", async () => {
-      const app = mockAppState();
-      renderHook(() => useStateRehydration());
-      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
-      mockAddDomainBreadcrumb.mockClear();
-      app.emit('inactive');
+      await emitAppState('inactive');
       expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
     });
   });
