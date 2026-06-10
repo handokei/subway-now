@@ -1,6 +1,5 @@
 import { ServiceWindowBanner } from '../ServiceWindowBanner';
 import { renderWithTheme } from '../../../testUtils/renderWithTheme';
-import * as serviceWindowModule from '../../../features/route/utils/serviceWindow';
 
 /**
  * #1066 — getServiceWindow 4개 분기(pre-first / in-service / post-last / unknown)별
@@ -54,19 +53,4 @@ describe('ServiceWindowBanner', () => {
     ).not.toThrow();
   });
 
-  it('getServiceWindow가 throw해도 화면을 크래시시키지 않고 null을 반환한다 (#1083)', () => {
-    // Hermes/iOS Intl 구현에서 timeZone+formatToParts(weekday)가 part를 누락해
-    // TypeError를 던지는 회귀가 관측됐다. 배너는 보조 UI이므로 안전망이 필요하다.
-    const spy = jest.spyOn(serviceWindowModule, 'getServiceWindow').mockImplementation(() => {
-      throw new TypeError("Cannot read property 'value' of undefined");
-    });
-    try {
-      const { queryByTestId } = renderWithTheme(
-        <ServiceWindowBanner stationName="강남" line="2" now={IN_SERVICE_KST_10_00} />,
-      );
-      expect(queryByTestId('service-window-banner')).toBeNull();
-    } finally {
-      spy.mockRestore();
-    }
-  });
 });

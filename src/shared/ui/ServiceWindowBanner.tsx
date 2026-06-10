@@ -30,16 +30,9 @@ interface Props {
 export function ServiceWindowBanner({ stationName, line, now }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
-  // Hermes/iOS Intl 구현이 timeZone+formatToParts(weekday) 조합에서 일부 part를
-  // 누락해 throw하는 사례가 관측됐다(#1083 E2E 회귀). 배너는 보조 UI이므로 어떤 이유로든
-  // window 산출이 실패하면 조용히 null을 반환해 화면 전체 크래시를 막는다.
-  let window: ReturnType<typeof getServiceWindow>;
-  try {
-    window = getServiceWindow({ stationName, line, now });
-  } catch {
-    return null;
-  }
-  const { status, firstTrain } = window;
+  // #1088(safe Intl helper) 머지 이후 getServiceWindow는 throw 대신 status='unknown' 반환 →
+  // 별도 try/catch 불필요. unknown 분기에서 null을 반환하는 아래 가드가 안전망 역할.
+  const { status, firstTrain } = getServiceWindow({ stationName, line, now });
 
   // 운행 중이거나 timetable unknown이면 안내 불필요.
   // firstTrain은 pre-first/post-last 분기일 때 getServiceWindow가 보장하는 non-null.
