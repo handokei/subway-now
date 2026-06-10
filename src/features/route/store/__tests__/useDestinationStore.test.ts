@@ -46,7 +46,7 @@ describe('useDestinationStore', () => {
   beforeEach(() => {
     useDestinationStore.setState({
       destination: null,
-      recentDestination: null,
+      recentDestinations: [],
       customOrigin: null,
       tripOrigin: null,
       routePreference: 'optimal',
@@ -323,28 +323,116 @@ describe('useDestinationStore', () => {
     expect(useDestinationStore.getState().destination).toBeNull();
   });
 
-  // ── recentDestination ──
+  // ── recentDestinations (#1032) ──
 
-  it('초기 recentDestination은 null이다', () => {
-    const { recentDestination } = useDestinationStore.getState();
-    expect(recentDestination).toBeNull();
+  it('초기 recentDestinations는 빈 배열이다', () => {
+    const { recentDestinations } = useDestinationStore.getState();
+    expect(recentDestinations).toEqual([]);
   });
 
-  it('setRecentDestination: 역을 설정하면 상태가 업데이트된다', () => {
-    const { setRecentDestination } = useDestinationStore.getState();
-    setRecentDestination(mockStation);
+  it('addRecentDestination: 최근 선택이 맨 앞으로 추가된다', () => {
+    const { addRecentDestination } = useDestinationStore.getState();
+    addRecentDestination(mockStation);
+    addRecentDestination(mockStation2);
 
-    const { recentDestination } = useDestinationStore.getState();
-    expect(recentDestination?.id).toBe('2-022');
+    const { recentDestinations } = useDestinationStore.getState();
+    expect(recentDestinations.map((s) => s.id)).toEqual(['2-021', '2-022']);
   });
 
-  it('setRecentDestination: null을 설정하면 초기화된다', () => {
-    const { setRecentDestination } = useDestinationStore.getState();
-    setRecentDestination(mockStation);
-    setRecentDestination(null);
+  it('addRecentDestination: 동일 station id는 dedup되고 최신이 맨 앞으로 이동', () => {
+    const { addRecentDestination } = useDestinationStore.getState();
+    addRecentDestination(mockStation);
+    addRecentDestination(mockStation2);
+    addRecentDestination(mockStation); // 재선택
 
-    const { recentDestination } = useDestinationStore.getState();
-    expect(recentDestination).toBeNull();
+    const { recentDestinations } = useDestinationStore.getState();
+    expect(recentDestinations.map((s) => s.id)).toEqual(['2-022', '2-021']);
+  });
+
+  it('addRecentDestination: 최대 3개로 제한된다 (LRU 잘림)', () => {
+    const { addRecentDestination } = useDestinationStore.getState();
+    const s3: Station = { ...mockStation, id: '2-020', name: '선릉' };
+    const s4: Station = { ...mockStation, id: '2-019', name: '삼성' };
+    addRecentDestination(mockStation);
+    addRecentDestination(mockStation2);
+    addRecentDestination(s3);
+    addRecentDestination(s4);
+
+    const { recentDestinations } = useDestinationStore.getState();
+    expect(recentDestinations.map((s) => s.id)).toEqual(['2-019', '2-020', '2-021']);
+  });
+
+  it('addRecentDestination: AsyncStorage에 영속화한다', () => {
+    const { addRecentDestination } = useDestinationStore.getState();
+    addRecentDestination(mockStation);
+
+    expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+      'subway-now:recent-destinations',
+      JSON.stringify([mockStation]),
+    );
+  });
+
+  it('removeRecentDestination: 지정 id만 제거한다', () => {
+    const { addRecentDestination, removeRecentDestination } = useDestinationStore.getState();
+    addRecentDestination(mockStation);
+    addRecentDestination(mockStation2);
+    removeRecentDestination('2-022');
+
+    const { recentDestinations } = useDestinationStore.getState();
+    expect(recentDestinations.map((s) => s.id)).toEqual(['2-021']);
+    expect(AsyncStorage.setItem).toHaveBeenLastCalledWith(
+      'subway-now:recent-destinations',
+      JSON.stringify([mockStation2]),
+    );
+  });
+
+  it('removeRecentDestination: 마지막 항목 제거 시 AsyncStorage 키도 삭제', () => {
+    const { addRecentDestination, removeRecentDestination } = useDestinationStore.getState();
+    addRecentDestination(mockStation);
+    removeRecentDestination('2-022');
+
+    const { recentDestinations } = useDestinationStore.getState();
+    expect(recentDestinations).toEqual([]);
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:recent-destinations');
+  });
+
+  it('loadRecentDestinations: storage에서 hydrate되며 최대 3개로 자른다', async () => {
+    const s3: Station = { ...mockStation, id: '2-020' };
+    const s4: Station = { ...mockStation, id: '2-019' };
+    await AsyncStorage.setItem(
+      'subway-now:recent-destinations',
+      JSON.stringify([mockStation, mockStation2, s3, s4]),
+    );
+
+    const { loadRecentDestinations } = useDestinationStore.getState();
+    await loadRecentDestinations();
+
+    const { recentDestinations } = useDestinationStore.getState();
+    expect(recentDestinations.map((s) => s.id)).toEqual(['2-022', '2-021', '2-020']);
+  });
+
+  it('loadRecentDestinations: 키 부재 시 빈 배열을 유지한다', async () => {
+    await AsyncStorage.removeItem('subway-now:recent-destinations');
+    const { loadRecentDestinations } = useDestinationStore.getState();
+    await loadRecentDestinations();
+
+    expect(useDestinationStore.getState().recentDestinations).toEqual([]);
+  });
+
+  it('loadRecentDestinations: 비배열 JSON은 무시한다', async () => {
+    await AsyncStorage.setItem('subway-now:recent-destinations', JSON.stringify({ bogus: true }));
+    const { loadRecentDestinations } = useDestinationStore.getState();
+    await loadRecentDestinations();
+
+    expect(useDestinationStore.getState().recentDestinations).toEqual([]);
+  });
+
+  it('loadRecentDestinations: 손상된 JSON에서 graceful하게 빈 배열 유지', async () => {
+    (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce('{not-json');
+    const { loadRecentDestinations } = useDestinationStore.getState();
+    await loadRecentDestinations();
+
+    expect(useDestinationStore.getState().recentDestinations).toEqual([]);
   });
 
   // ── customOrigin ──
