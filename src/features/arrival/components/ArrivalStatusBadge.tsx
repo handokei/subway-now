@@ -8,11 +8,29 @@ import {
   type BadgeVariant,
   type TrainType,
 } from '../../../shared/constants/trainTypes';
+import type { LineNumber } from '../../../shared/types/station';
+import { getLastTrainTime, type Direction } from '../utils/lastTrainTime';
 
 interface Props {
   isLastTrain?: boolean;
   trainType?: TrainType;
   arrivalCode?: number;
+  /** 막차 시각 lookup 컨텍스트. 셋 다 제공되면 "막차 HH:mm" 시각 동봉 표시. */
+  stationName?: string;
+  line?: LineNumber;
+  direction?: Direction;
+}
+
+const LAST_TRAIN_LABEL = '막차';
+
+function buildLastTrainLabel(
+  stationName: string | undefined,
+  line: LineNumber | undefined,
+  direction: Direction | undefined,
+): string {
+  if (!stationName || !line || !direction) return LAST_TRAIN_LABEL;
+  const time = getLastTrainTime({ stationName, line, direction, now: new Date() });
+  return time ? `${LAST_TRAIN_LABEL} ${time}` : LAST_TRAIN_LABEL;
 }
 
 interface Badge {
@@ -25,7 +43,14 @@ interface Badge {
  * Arrival 메타데이터(막차/급행/진입 상태)를 작은 배지로 표시.
  * 표시할 배지가 없으면 null 반환해 row 시각 무게 보존.
  */
-export function ArrivalStatusBadge({ isLastTrain, trainType, arrivalCode }: Props) {
+export function ArrivalStatusBadge({
+  isLastTrain,
+  trainType,
+  arrivalCode,
+  stationName,
+  line,
+  direction,
+}: Props) {
   const { colors } = useTheme();
 
   // 표시 우선순위: 급행 > 막차 > 도착/진입.
@@ -40,7 +65,13 @@ export function ArrivalStatusBadge({ isLastTrain, trainType, arrivalCode }: Prop
     });
   }
   if (isLastTrain) {
-    badges.push({ label: '막차', color: colors.danger, variant: 'outline' });
+    badges.push({
+      // stationName/line/direction 컨텍스트가 모두 제공되고 1~9호선 timetable에서
+      // 막차 시각이 lookup되면 "막차 HH:mm" 표기, 아니면 기존 "막차" 라벨 fallback.
+      label: buildLastTrainLabel(stationName, line, direction),
+      color: colors.danger,
+      variant: 'outline',
+    });
   }
   if (arrivalCode === ARRIVAL_CODE.ARRIVED) {
     badges.push({ label: '도착', color: colors.accent, variant: 'outline' });

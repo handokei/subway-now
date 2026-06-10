@@ -135,6 +135,8 @@ export function arrivalInfoToArrivalTrain(
   items: ArrivalInfo[],
   direction: string,
   line: LineNumber,
+  /** #1035 — 막차 시각 lookup 컨텍스트. 호출자가 알면 전달, 없으면 시각 미표기 fallback. */
+  context?: { stationName?: string; directionKey?: 'up' | 'down' },
 ): ArrivalTrain[] {
   // item.destination은 서울 열린데이터 API의 trainLineNm 기반("소요산행", "내선순환" 등 방면 표현).
   // parseTrainLineDirection이 패턴(역명+행, 내선/외선순환)을 인식해 현재 언어로 표시한다.
@@ -149,6 +151,9 @@ export function arrivalInfoToArrivalTrain(
     isLastTrain: item.isLastTrain,
     trainType: item.trainType,
     arrivalCode: item.arrivalCode,
+    stationName: context?.stationName,
+    lineNumber: line,
+    directionKey: context?.directionKey,
   }));
 }
 

@@ -231,8 +231,22 @@ describe('arrivalInfoToArrivalTrain', () => {
         isLastTrain: false,
         trainType: 'normal',
         arrivalCode: -1,
+        stationName: undefined,
+        lineNumber: '6',
+        directionKey: undefined,
       },
     ]);
+  });
+
+  it('#1035 context 전달 시 stationName/directionKey가 ArrivalTrain에 포함된다', () => {
+    const items = [makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 60 })];
+    const result = arrivalInfoToArrivalTrain(items, '상행', '6', {
+      stationName: '응암',
+      directionKey: 'up',
+    });
+    expect(result[0].stationName).toBe('응암');
+    expect(result[0].lineNumber).toBe('6');
+    expect(result[0].directionKey).toBe('up');
   });
 
   it('should pass through meta fields (isLastTrain/trainType/arrivalCode)', () => {

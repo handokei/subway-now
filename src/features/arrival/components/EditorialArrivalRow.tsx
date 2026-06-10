@@ -37,6 +37,9 @@ export function EditorialArrivalRow({ train }: Props) {
           isLastTrain={train.isLastTrain}
           trainType={train.trainType}
           arrivalCode={train.arrivalCode}
+          stationName={train.stationName}
+          line={train.lineNumber}
+          direction={train.directionKey}
         />
       </View>
       <LineBadge line={train.line} color={lineC} />
