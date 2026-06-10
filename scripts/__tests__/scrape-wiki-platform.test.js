@@ -26,6 +26,27 @@ const wikiResponse = (wikitext) => ({
 const notFoundResponse = () => ({ ok: false, json: async () => ({}) });
 const mockFetchOnce = (wikitext) => jest.fn().mockResolvedValue(wikiResponse(wikitext));
 
+// resolveStation 결과 shape 헬퍼 (필드 9줄 중복 제거)
+const stationResult = (overrides) => ({
+  stationName: '',
+  line: '',
+  wikiTitle: null,
+  rawField: null,
+  layout: 'unknown',
+  confidence: 'low',
+  ...overrides,
+});
+
+// run() deps 헬퍼 (kwargs 중복 제거)
+const runDeps = (overrides = {}) => ({
+  fetch: jest.fn(),
+  sleep: jest.fn(),
+  writeFile: jest.fn(),
+  log: jest.fn(),
+  stations: [],
+  ...overrides,
+});
+
 describe('extractPlatformFields', () => {
   it('returns [] for empty / null input', () => {
     expect(extractPlatformFields('')).toEqual([]);
@@ -136,14 +157,14 @@ describe('resolveStation', () => {
   it('uses first matching candidate', async () => {
     const fakeFetch = mockFetchOnce('|승강장 = 2면 2선([[상대식]])');
     const r = await resolveStation({ name: '잠실', line: '2' }, fakeFetch);
-    expect(r).toEqual({
+    expect(r).toEqual(stationResult({
       stationName: '잠실',
       line: '2',
       wikiTitle: '잠실역',
       rawField: '2면 2선([[상대식]])',
       layout: 'side',
       confidence: 'high',
-    });
+    }));
     expect(fakeFetch).toHaveBeenCalledTimes(1);
   });
 
@@ -170,14 +191,7 @@ describe('resolveStation', () => {
   it('returns unknown when all candidates fail', async () => {
     const fakeFetch = jest.fn().mockResolvedValue(notFoundResponse());
     const r = await resolveStation({ name: '없음', line: '99' }, fakeFetch);
-    expect(r).toEqual({
-      stationName: '없음',
-      line: '99',
-      wikiTitle: null,
-      rawField: null,
-      layout: 'unknown',
-      confidence: 'low',
-    });
+    expect(r).toEqual(stationResult({ stationName: '없음', line: '99' }));
   });
 });
 
@@ -226,13 +240,7 @@ describe('pickStations', () => {
 describe('run (integration with deps injection)', () => {
   it('warns and returns empty when no targets', async () => {
     const log = jest.fn();
-    const r = await run([], {
-      fetch: jest.fn(),
-      sleep: jest.fn(),
-      writeFile: jest.fn(),
-      log,
-      stations: [{ name: 'A', line: '1' }],
-    });
+    const r = await run([], runDeps({ log, stations: [{ name: 'A', line: '1' }] }));
     expect(r.results).toEqual([]);
     expect(r.path).toBeNull();
     expect(log).toHaveBeenCalledWith(expect.stringContaining('No target stations'));
@@ -242,18 +250,16 @@ describe('run (integration with deps injection)', () => {
     const fakeFetch = mockFetchOnce('|승강장 = 1면 2선 ([[섬식]])');
     const sleepFn = jest.fn().mockResolvedValue(undefined);
     const writeFile = jest.fn();
-    const log = jest.fn();
-    const r = await run(['--only', 'A,B'], {
+    const r = await run(['--only', 'A,B'], runDeps({
       fetch: fakeFetch,
       sleep: sleepFn,
       writeFile,
-      log,
       stations: [
         { name: 'A', line: '1' },
         { name: 'B', line: '2' },
       ],
       outFile: TMP_OUT,
-    });
+    }));
     expect(r.results).toHaveLength(2);
     expect(r.results[0].layout).toBe('island');
     expect(r.path).toBe(TMP_OUT);
@@ -264,14 +270,11 @@ describe('run (integration with deps injection)', () => {
 
   it('handles --sample argument', async () => {
     const fakeFetch = mockFetchOnce('|승강장 = 2면 2선 상대식');
-    const r = await run(['--sample', '1'], {
+    const r = await run(['--sample', '1'], runDeps({
       fetch: fakeFetch,
-      sleep: jest.fn(),
-      writeFile: jest.fn(),
-      log: jest.fn(),
       stations: [{ name: 'X', line: '1' }],
       outFile: TMP_OUT,
-    });
+    }));
     expect(r.results).toHaveLength(1);
     expect(r.results[0].layout).toBe('side');
   });
