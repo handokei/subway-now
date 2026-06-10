@@ -117,3 +117,9 @@ export const ACTIVE_BOARDING_LINE_KEY = 'subway-now:active-boarding-line';
 // 최대 RECENT_ROUTES_LIMIT개(`src/shared/constants/recentDestinations.ts`)까지 보관.
 // 형식: Station[] JSON.
 export const RECENT_DESTINATIONS_KEY = 'subway-now:recent-destinations';
+// #1038 — Sentry 에러 모니터링 opt-in 토글. 기본 OFF (opt-in only).
+// 사용자 명시 동의 전에는 외부 SaaS(Sentry)로 어떤 데이터도 전송하지 않는다.
+// 'true'일 때만 boot 시 Sentry.init 실행. DSN(EXPO_PUBLIC_SENTRY_DSN) 미설정 시 추가 no-op.
+// UI 토글은 follow-up PR — 현재는 init 인프라만.
+// 형식: 'true' 또는 키 부재.
+export const SENTRY_OPT_IN_KEY = 'subway-now:sentry-opt-in';
