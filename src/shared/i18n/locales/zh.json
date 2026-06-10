@@ -287,6 +287,15 @@
       "boardingTrainSelectHint": "点击乘坐该列车",
       "boardingLockReleaseLabel": "下车",
       "boardingLockReleaseHint": "结束当前乘车状态"
+    },
+    "route": {
+      "destinationCloseHint": "取消目的地选择并关闭弹窗",
+      "assignSlotLabel": "指定 {{label}} 槽位",
+      "assignSlotHint": "将下次选择的车站保存到此槽位",
+      "favoriteChipHint": "点击将此站设为目的地",
+      "misBoardingCloseLabel": "关闭",
+      "misBoardingCloseHint": "取消重新选择",
+      "titleHeaderRole": "header"
     }
   },
   "service": {
@@ -297,8 +306,9 @@
   },
   "share": {
     "trip": {
-      "title": "分享地铁路线",
-      "bodyTemplate": "{{fromName}}（{{fromLine}}）→ {{toName}}（{{toLine}}）\n约{{minutes}}分钟 · {{stops}}站"
+      "title": "地铁路线",
+      "buttonLabel": "分享路线",
+      "bodyTemplate": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n约 {{minutes}} 分钟 ({{stops}} 站)"
     }
   }
 }

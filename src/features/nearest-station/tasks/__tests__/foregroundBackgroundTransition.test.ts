@@ -90,6 +90,8 @@ jest.mock('../../../../shared/utils/stationRoute', () => ({
   // #750 — stationPipeline의 sleep 게이트가 isSameStationName으로 첫 hop을 매칭.
   // 결정적 fake: strict equality로 충분 (테스트는 동일 한국어 이름 사용).
   isSameStationName: (a: string, b: string) => a === b,
+  // direct route 테스트만 사용 — 첫 leg endName은 항상 destinationName.
+  getFirstLeg: (_route: unknown, destinationName: string) => ({ line: '2', endName: destinationName }),
 }));
 
 const mockSendAlarmNotification = jest.fn((..._args: unknown[]) => Promise.resolve());

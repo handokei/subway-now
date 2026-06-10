@@ -1,0 +1,349 @@
+import { beforeEach, describe, expect, it } from 'vitest';
+import { app } from '../index';
+import {
+  FEEDBACK_LIST_DEFAULT_LIMIT,
+  FEEDBACK_LIST_MAX_LIMIT,
+  listFeedback,
+  normalizeLimit,
+  parseReceivedAtFromKey,
+  toCsv,
+} from '../feedbackAdmin';
+import { storeFeedback } from '../feedback';
+import type { Env } from '../types';
+import { InMemoryKV } from './inMemoryKv';
+
+function makeEnv(overrides: Partial<Env> = {}): Env {
+  return {
+    TRIPS: {} as Env['TRIPS'],
+    APNS_HOST: 'h',
+    APNS_HOST_SANDBOX: 'hs',
+    SEOUL_API_HOST: 'h',
+    SEOUL_API_KEY: 'k',
+    APNS_KEY_ID: 'k',
+    APNS_TEAM_ID: 't',
+    APNS_PRIVATE_KEY: 'p',
+    APNS_BUNDLE_ID: 'b',
+    ...overrides,
+  };
+}
+
+async function get(
+  path: string,
+  env: Env,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return app.fetch(
+    new Request(`http://example.com${path}`, { method: 'GET', headers }),
+    env,
+  );
+}
+
+async function seed(kv: InMemoryKV, count: number, baseTs = 10_000): Promise<void> {
+  for (let i = 0; i < count; i++) {
+    await storeFeedback(
+      kv as unknown as KVNamespace,
+      {
+        message: `msg-${i}`,
+        context: { platform: i % 2 === 0 ? 'ios' : 'android', appVersion: `1.0.${i}` },
+      },
+      baseTs + i,
+      `id${i.toString().padStart(4, '0')}`,
+    );
+  }
+}
+
+describe('normalizeLimit', () => {
+  it('falls back to default for non-positive / non-finite', () => {
+    expect(normalizeLimit(0)).toBe(FEEDBACK_LIST_DEFAULT_LIMIT);
+    expect(normalizeLimit(-5)).toBe(FEEDBACK_LIST_DEFAULT_LIMIT);
+    expect(normalizeLimit(Number.NaN)).toBe(FEEDBACK_LIST_DEFAULT_LIMIT);
+    expect(normalizeLimit('hi')).toBe(FEEDBACK_LIST_DEFAULT_LIMIT);
+    expect(normalizeLimit(undefined)).toBe(FEEDBACK_LIST_DEFAULT_LIMIT);
+  });
+
+  it('clamps to max and floors', () => {
+    expect(normalizeLimit(10_000)).toBe(FEEDBACK_LIST_MAX_LIMIT);
+    expect(normalizeLimit(3.9)).toBe(3);
+  });
+
+  it('returns value within range as-is (floored)', () => {
+    expect(normalizeLimit(25)).toBe(25);
+  });
+});
+
+describe('parseReceivedAtFromKey', () => {
+  it('extracts epoch from canonical key', () => {
+    expect(parseReceivedAtFromKey('feedback:1234:abcd')).toBe(1234);
+  });
+
+  it('returns NaN for malformed key', () => {
+    expect(Number.isNaN(parseReceivedAtFromKey('no-colons'))).toBe(true);
+    expect(Number.isNaN(parseReceivedAtFromKey('feedback:nope:id'))).toBe(true);
+  });
+});
+
+describe('listFeedback', () => {
+  let kv: InMemoryKV;
+  beforeEach(() => {
+    kv = new InMemoryKV();
+  });
+
+  it('returns empty result on empty KV', async () => {
+    expect(await listFeedback(kv as unknown as KVNamespace)).toEqual({
+      entries: [],
+      nextBefore: null,
+    });
+  });
+
+  it('returns entries sorted by receivedAt desc', async () => {
+    await seed(kv, 3);
+    const result = await listFeedback(kv as unknown as KVNamespace);
+    expect(result.entries.map((e) => e.receivedAt)).toEqual([10_002, 10_001, 10_000]);
+    expect(result.nextBefore).toBeNull();
+  });
+
+  it('applies limit and exposes nextBefore', async () => {
+    await seed(kv, 5);
+    const result = await listFeedback(kv as unknown as KVNamespace, { limit: 2 });
+    expect(result.entries).toHaveLength(2);
+    expect(result.entries[0].receivedAt).toBe(10_004);
+    expect(result.entries[1].receivedAt).toBe(10_003);
+    expect(result.nextBefore).toBe(10_003);
+  });
+
+  it('paginates with before cursor', async () => {
+    await seed(kv, 5);
+    const result = await listFeedback(kv as unknown as KVNamespace, {
+      limit: 2,
+      before: 10_003,
+    });
+    expect(result.entries.map((e) => e.receivedAt)).toEqual([10_002, 10_001]);
+    expect(result.nextBefore).toBe(10_001);
+  });
+
+  it('nextBefore null when fewer than limit remain', async () => {
+    await seed(kv, 3);
+    const result = await listFeedback(kv as unknown as KVNamespace, { limit: 10 });
+    expect(result.entries).toHaveLength(3);
+    expect(result.nextBefore).toBeNull();
+  });
+
+  it('skips malformed keys and unparseable values', async () => {
+    await seed(kv, 1, 5_000);
+    // 손상된 JSON
+    await kv.put('feedback:6000:bad1', '{not json');
+    // 키 포맷 어긋남(receivedAt 미파싱)
+    await kv.put('feedback:bad', JSON.stringify({ message: 'm', receivedAt: 7000 }));
+    // record schema 어긋남 — message 누락
+    await kv.put('feedback:6001:bad2', JSON.stringify({ receivedAt: 6001 }));
+    // record schema 어긋남 — receivedAt 누락
+    await kv.put('feedback:6002:bad3', JSON.stringify({ message: 'm' }));
+    // record가 객체 아님
+    await kv.put('feedback:6003:bad4', JSON.stringify('string'));
+
+    const result = await listFeedback(kv as unknown as KVNamespace);
+    expect(result.entries.map((e) => e.message)).toEqual(['msg-0']);
+  });
+
+  it('skips keys whose value disappeared mid-list', async () => {
+    await seed(kv, 2, 5_000);
+    // list에는 잡히지만 get에서 사라진 케이스 모사 — 직접 store에서 삭제
+    kv.store.delete('feedback:5001:id0001');
+    const result = await listFeedback(kv as unknown as KVNamespace);
+    expect(result.entries.map((e) => e.receivedAt)).toEqual([5_000]);
+  });
+
+  it('omits context field when record has none', async () => {
+    await storeFeedback(kv as unknown as KVNamespace, { message: 'noctx' }, 9_000, 'idx');
+    const result = await listFeedback(kv as unknown as KVNamespace);
+    expect(result.entries[0]).toEqual({
+      key: 'feedback:9000:idx',
+      receivedAt: 9_000,
+      message: 'noctx',
+    });
+  });
+});
+
+describe('toCsv', () => {
+  it('returns header-only row for empty entries', () => {
+    expect(toCsv([])).toBe(
+      '"key","receivedAt","message","appVersion","platform","locale","deviceModel"\n',
+    );
+  });
+
+  it('serializes entries with ISO timestamp and context fields', () => {
+    const csv = toCsv([
+      {
+        key: 'feedback:0:aa',
+        receivedAt: 0,
+        message: 'hello',
+        context: {
+          appVersion: '1.0.0',
+          platform: 'ios',
+          locale: 'ko-KR',
+          deviceModel: 'iPhone15,2',
+        },
+      },
+    ]);
+    const lines = csv.trim().split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toBe(
+      '"feedback:0:aa","1970-01-01T00:00:00.000Z","hello","1.0.0","ios","ko-KR","iPhone15,2"',
+    );
+  });
+
+  it('escapes quotes, commas, and newlines per RFC 4180', () => {
+    const csv = toCsv([
+      {
+        key: 'feedback:1:bb',
+        receivedAt: 1,
+        message: 'has "quotes", commas,\nand newlines',
+      },
+    ]);
+    expect(csv).toContain('"has ""quotes"", commas,\nand newlines"');
+  });
+
+  it('emits empty cells for missing context fields', () => {
+    const csv = toCsv([
+      {
+        key: 'feedback:2:cc',
+        receivedAt: 2,
+        message: 'partial',
+        context: { platform: 'android' },
+      },
+    ]);
+    expect(csv).toContain('"partial","","android","",""');
+  });
+});
+
+describe('GET /admin/feedback', () => {
+  it('returns 503 when ADMIN_TOKEN secret missing', async () => {
+    const res = await get('/admin/feedback', makeEnv());
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'admin_unavailable' });
+  });
+
+  it('returns 401 when Authorization header absent', async () => {
+    const res = await get('/admin/feedback', makeEnv({ ADMIN_TOKEN: 'secret' }));
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'unauthorized' });
+  });
+
+  it('returns 401 when scheme is not Bearer', async () => {
+    const res = await get('/admin/feedback', makeEnv({ ADMIN_TOKEN: 'secret' }), {
+      authorization: 'Basic secret',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 when token mismatches', async () => {
+    const res = await get('/admin/feedback', makeEnv({ ADMIN_TOKEN: 'secret' }), {
+      authorization: 'Bearer nope',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 503 when FEEDBACK binding missing despite valid auth', async () => {
+    const res = await get('/admin/feedback', makeEnv({ ADMIN_TOKEN: 'secret' }), {
+      authorization: 'Bearer secret',
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'feedback_unavailable' });
+  });
+
+  it('returns entries with default limit and nextBefore=null on small dataset', async () => {
+    const kv = new InMemoryKV();
+    await seed(kv, 2, 100);
+    const res = await get(
+      '/admin/feedback',
+      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
+      { authorization: 'Bearer secret' },
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { entries: { receivedAt: number }[]; nextBefore: number | null };
+    expect(json.entries.map((e) => e.receivedAt)).toEqual([101, 100]);
+    expect(json.nextBefore).toBeNull();
+  });
+
+  it('honors limit and before query params', async () => {
+    const kv = new InMemoryKV();
+    await seed(kv, 5, 200);
+    const res = await get(
+      '/admin/feedback?limit=2&before=204',
+      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
+      { authorization: 'Bearer secret' },
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { entries: { receivedAt: number }[]; nextBefore: number | null };
+    expect(json.entries.map((e) => e.receivedAt)).toEqual([203, 202]);
+    expect(json.nextBefore).toBe(202);
+  });
+
+  it('ignores non-numeric query params (falls back to defaults)', async () => {
+    const kv = new InMemoryKV();
+    await seed(kv, 2, 300);
+    const res = await get(
+      '/admin/feedback?limit=abc&before=xyz',
+      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
+      { authorization: 'Bearer secret' },
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { entries: unknown[] };
+    expect(json.entries).toHaveLength(2);
+  });
+});
+
+describe('GET /admin/feedback/export.csv', () => {
+  it('returns 401 when token mismatches', async () => {
+    const res = await get('/admin/feedback/export.csv', makeEnv({ ADMIN_TOKEN: 'secret' }), {
+      authorization: 'Bearer nope',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 503 when FEEDBACK binding missing', async () => {
+    const res = await get(
+      '/admin/feedback/export.csv',
+      makeEnv({ ADMIN_TOKEN: 'secret' }),
+      { authorization: 'Bearer secret' },
+    );
+    expect(res.status).toBe(503);
+  });
+
+  it('returns 503 when ADMIN_TOKEN missing', async () => {
+    const res = await get('/admin/feedback/export.csv', makeEnv());
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'admin_unavailable' });
+  });
+
+  it('returns header-only CSV when no entries', async () => {
+    const kv = new InMemoryKV();
+    const res = await get(
+      '/admin/feedback/export.csv',
+      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
+      { authorization: 'Bearer secret' },
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
+    expect(res.headers.get('content-disposition')).toContain('feedback.csv');
+    const body = await res.text();
+    expect(body.split('\n')[0]).toContain('"message"');
+    expect(body.trim().split('\n')).toHaveLength(1);
+  });
+
+  it('serializes entries with header + rows', async () => {
+    const kv = new InMemoryKV();
+    await seed(kv, 2, 500);
+    const res = await get(
+      '/admin/feedback/export.csv?limit=10',
+      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
+      { authorization: 'Bearer secret' },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    const lines = body.trim().split('\n');
+    expect(lines).toHaveLength(3); // header + 2 entries
+    expect(lines[1]).toContain('"msg-1"'); // newest first
+    expect(lines[2]).toContain('"msg-0"');
+  });
+});

@@ -389,3 +389,38 @@ describe('isScheduleFallbackTrainCode', () => {
     expect(isScheduleFallbackTrainCode('SC')).toBe(false);
   });
 });
+
+describe('#1088: Intl part 누락(Hermes 회귀) 시 graceful degrade', () => {
+  // 모든 formatToParts 호출에서 part가 누락된 상태를 시뮬레이션.
+  function withMissingParts<T>(fn: () => T): T {
+    const spy = jest
+      .spyOn(Intl.DateTimeFormat.prototype, 'formatToParts')
+      .mockImplementation(() => [{ type: 'literal', value: '' }]);
+    try {
+      return fn();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('classifyDayType: weekday part 누락 시 보수적으로 weekday 반환', () => {
+    withMissingParts(() => {
+      expect(classifyDayType(new Date('2026-05-17T10:00:00+09:00'))).toBe('weekday');
+    });
+  });
+
+  it('classifyPeriod: hour/minute part 누락 시 offPeak 반환', () => {
+    withMissingParts(() => {
+      expect(classifyPeriod(new Date('2026-05-18T08:00:00+09:00'), 'weekday')).toBe('offPeak');
+    });
+  });
+
+  it('buildScheduleArrival: KST part 누락 시 timetable skip 후 headway fallback', () => {
+    withMissingParts(() => {
+      const arrival = buildScheduleArrival('1', '소요산', new Date('2026-05-18T08:00:00+09:00'));
+      // timetable lookup이 skip되어 isMock=true 헤드웨이 경로로 진입.
+      expect(arrival.isMock).toBe(true);
+      expect(arrival.source).toBe('schedule');
+    });
+  });
+});

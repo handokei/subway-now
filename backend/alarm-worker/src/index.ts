@@ -20,10 +20,12 @@ import {
 } from './boardingPromptOutcome';
 import { runFallbackPushes } from './fallback';
 import {
+  checkRateLimit,
   generateFeedbackId,
   storeFeedback,
   validateFeedback,
 } from './feedback';
+import { listFeedback, toCsv } from './feedbackAdmin';
 import { evaluateAndMaybeAlert } from './recallAlerts';
 import {
   cleanupTripWithLa,
@@ -97,13 +99,28 @@ app.get('/health', (c) => c.json({ ok: true }));
  * Responses:
  *   201 { ok: true, key }       — 적재 성공
  *   400 { error: 'invalid_json' | 'invalid_payload' }
+ *   429 { error: 'rate_limited' } — 동일 IP 1분 5회 초과. `Retry-After`(seconds) 포함
  *   503 { error: 'feedback_unavailable' } — FEEDBACK binding 미설정 (운영자 namespace 발급 전)
  *
  * 보관: TTL 30일. 운영자가 `wrangler kv` CLI로 수거.
+ *
+ * Rate limit: CF-Connecting-IP 기준 분당 5회 (PR #1042 follow-up, 스팸 방지).
+ *   - 헤더 부재 시 'unknown' 단일 버킷으로 fallback — 헤더가 없는 환경(테스트/로컬)도 cap 받음.
  */
 app.post('/feedback', async (c) => {
   const kv = c.env.FEEDBACK;
   if (!kv) return c.json({ error: 'feedback_unavailable' }, 503);
+
+  const ip = c.req.header('CF-Connecting-IP') ?? 'unknown';
+  const now = Date.now();
+  const rl = await checkRateLimit(kv, ip, now);
+  if (!rl.allowed) {
+    return c.json(
+      { error: 'rate_limited' },
+      429,
+      { 'Retry-After': String(rl.retryAfterSeconds) },
+    );
+  }
 
   let body: unknown;
   try {
@@ -115,11 +132,90 @@ app.post('/feedback', async (c) => {
   const payload = validateFeedback(body);
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
-  const receivedAt = Date.now();
   const id = generateFeedbackId();
-  const key = await storeFeedback(kv, payload, receivedAt, id);
+  const key = await storeFeedback(kv, payload, now, id);
   return c.json({ ok: true, key }, 201);
 });
+
+/**
+ * 운영자용 feedback 조회 (#1042 follow-up).
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` 필수. ADMIN_TOKEN secret 미설정 시 503.
+ * Query: `?limit=N` (default 50, max 500) / `?before=<epochMs>` (desc 페이지네이션 cursor).
+ *
+ * Response 200:
+ *   { entries: [{ key, receivedAt, message, context? }, ...], nextBefore: number | null }
+ *   - entries: 최신 → 오래된 순 정렬.
+ *   - nextBefore: 다음 페이지 호출 시 그대로 `?before=`로 전달. 더 없으면 null.
+ * Response 401: { error: 'unauthorized' } — 토큰 누락/불일치.
+ * Response 503: { error: 'admin_unavailable' | 'feedback_unavailable' } — secret/binding 미설정.
+ */
+app.get('/admin/feedback', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const kv = c.env.FEEDBACK;
+  if (!kv) return c.json({ error: 'feedback_unavailable' }, 503);
+
+  const limit = parseQueryNumber(c.req.query('limit'));
+  const before = parseQueryNumber(c.req.query('before'));
+  const result = await listFeedback(kv, { limit, before });
+  return c.json(result);
+});
+
+/**
+ * 운영자용 feedback CSV export (#1042 follow-up).
+ * 인증/binding 정책은 `/admin/feedback`과 동일. limit/before 동일하게 적용.
+ * 성공 시 `text/csv` + Content-Disposition으로 다운로드 트리거.
+ */
+app.get('/admin/feedback/export.csv', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const kv = c.env.FEEDBACK;
+  if (!kv) return c.json({ error: 'feedback_unavailable' }, 503);
+
+  const limit = parseQueryNumber(c.req.query('limit'));
+  const before = parseQueryNumber(c.req.query('before'));
+  const { entries } = await listFeedback(kv, { limit, before });
+  const csv = toCsv(entries);
+  return new Response(csv, {
+    status: 200,
+    headers: {
+      'content-type': 'text/csv; charset=utf-8',
+      'content-disposition': 'attachment; filename="feedback.csv"',
+    },
+  });
+});
+
+interface AdminAuthError {
+  code: 'admin_unavailable' | 'unauthorized';
+  status: 503 | 401;
+}
+
+/**
+ * Bearer 토큰 검증. configured token이 없으면 503(설정 누락) — 401과 구분해 운영자가
+ * secret put을 잊은 케이스를 즉시 진단할 수 있게 한다.
+ */
+function checkAdminAuth(
+  authHeader: string | undefined,
+  configured: string | undefined,
+): AdminAuthError | null {
+  if (!configured) return { code: 'admin_unavailable', status: 503 };
+  if (!authHeader) return { code: 'unauthorized', status: 401 };
+  const prefix = 'bearer ';
+  if (authHeader.length <= prefix.length) return { code: 'unauthorized', status: 401 };
+  if (authHeader.slice(0, prefix.length).toLowerCase() !== prefix) {
+    return { code: 'unauthorized', status: 401 };
+  }
+  const token = authHeader.slice(prefix.length).trimStart();
+  if (!token || token !== configured) return { code: 'unauthorized', status: 401 };
+  return null;
+}
+
+function parseQueryNumber(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+}
 
 app.post('/trips', async (c) => {
   let body: unknown;

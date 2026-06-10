@@ -10,13 +10,23 @@ import type { AlarmEvent } from './stationAlarm';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { isSameStationName } from '../../../shared/utils/stationRoute';
 import type { TravelDirection } from '../../../shared/types/exitSide';
+import type { LineNumber } from '../../../shared/types/station';
 import { resolveTravelDirection } from '../../route/utils/travelDirection';
+import { inferLoopDirection } from '../../route/utils/loopDirection';
 
 interface ResolveAlarmDirectionInput {
   route: NonNullable<Route>;
   destinationName: string;
   // 사용자가 현재 탑승해 있는 출발역. DirectRoute나 첫 환승 전 구간의 방향을 결정한다.
   sourceStationName: string;
+}
+
+// 단조 노선은 resolveTravelDirection이, 순환선(2호선)은 inferLoopDirection이 처리(#1063).
+// 양쪽 모두 매칭 실패면 undefined — 알람 본문에서 방향 표시를 생략한다.
+function directionFor(line: LineNumber, from: string, to: string): TravelDirection | undefined {
+  const monotonic = resolveTravelDirection(line, from, to)?.direction;
+  if (monotonic) return monotonic;
+  return inferLoopDirection(line, from, to) ?? undefined;
 }
 
 // 알람 이벤트의 대상역까지 가는 마지막 구간을 찾아, 그 구간의 노선/출발/도착으로
@@ -28,15 +38,15 @@ export function resolveAlarmDirection(
 ): TravelDirection | undefined {
   if (route.type === 'direct') {
     if (!isSameStationName(event.stationName, destinationName)) return undefined;
-    return resolveTravelDirection(route.line, sourceStationName, destinationName)?.direction;
+    return directionFor(route.line, sourceStationName, destinationName);
   }
 
   if (route.type === 'transfer') {
     if (isSameStationName(event.stationName, route.transferName)) {
-      return resolveTravelDirection(route.fromLine, sourceStationName, route.transferName)?.direction;
+      return directionFor(route.fromLine, sourceStationName, route.transferName);
     }
     if (isSameStationName(event.stationName, destinationName)) {
-      return resolveTravelDirection(route.toLine, route.transferName, destinationName)?.direction;
+      return directionFor(route.toLine, route.transferName, destinationName);
     }
     return undefined;
   }
@@ -47,11 +57,11 @@ export function resolveAlarmDirection(
     const segment = transfers[i];
     if (!isSameStationName(event.stationName, segment.transferName)) continue;
     const prevAnchor = i === 0 ? sourceStationName : transfers[i - 1].transferName;
-    return resolveTravelDirection(segment.fromLine, prevAnchor, segment.transferName)?.direction;
+    return directionFor(segment.fromLine, prevAnchor, segment.transferName);
   }
   if (isSameStationName(event.stationName, destinationName)) {
     const last = transfers.at(-1)!;
-    return resolveTravelDirection(last.toLine, last.transferName, destinationName)?.direction;
+    return directionFor(last.toLine, last.transferName, destinationName);
   }
   return undefined;
 }
