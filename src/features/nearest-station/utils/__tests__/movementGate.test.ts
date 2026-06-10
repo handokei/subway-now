@@ -287,8 +287,16 @@ describe('movementGate', () => {
       expect(m.reliable).toBe(true);
     });
 
-    it('speed 없음 + positionStability=unknown이면 reliable=true (보수)', () => {
+    it('speed 없음 + positionStability=unknown + motionStationary 미전달이면 warmup으로 차단 (#1013)', () => {
+      // fg-hydrate 직후 warmup: motion=undefined + speed=null + position=unknown = 신호 부재 구간 차단.
       const m = evaluateMovement({ accuracyM: 50 }, undefined, 'unknown');
+      expect(m.reliable).toBe(false);
+      expect(m.reason).toBe('motion-warmup');
+    });
+
+    it('speed 없음 + positionStability=unknown + motionStationary=false이면 reliable=true (권한 거절 후 정상 경로)', () => {
+      // motion 권한 거절로 motionStationary=false 고정 → warmup 조건 미충족 → gate 통과.
+      const m = evaluateMovement({ accuracyM: 50 }, undefined, 'unknown', false);
       expect(m.reliable).toBe(true);
     });
 
@@ -419,6 +427,52 @@ describe('movementGate', () => {
     it('motionStationary=true + positionStability=moving이면 true (motion이 우선)', () => {
       // speed 미측정인 경우 motion이 positionStability보다 우선 — OS 가속도계가 더 신뢰성 있음
       expect(isStaticSpeedSignal(null, 50, 'moving', true)).toBe(true);
+    });
+  });
+
+  // #1013 — fg-hydrate warmup window 보호: motionStationary=undefined(초기화 중) +
+  // speedMps=null + positionStability='unknown' 동시 발생 시 'motion-warmup' 차단.
+  describe('#1013 — evaluateMovement motion-warmup 보호', () => {
+    it('motionStationary=undefined + speed=null + positionStability=unknown → motion-warmup', () => {
+      const m = evaluateMovement({ accuracyM: 50 }, undefined, 'unknown', undefined);
+      expect(m.reliable).toBe(false);
+      expect(m.reason).toBe('motion-warmup');
+    });
+
+    it('motionStationary=false + speed=null + positionStability=unknown → reliable=true (권한 거절은 warmup 아님)', () => {
+      // motion 권한 거절로 false 고정: warmup 조건(undefined) 미충족 → gate 통과.
+      const m = evaluateMovement({ accuracyM: 50 }, undefined, 'unknown', false);
+      expect(m.reliable).toBe(true);
+    });
+
+    it('motionStationary=undefined + speedMps 있음 → warmup 조건 미충족 → speed 게이트로 평가', () => {
+      // speed가 있으면 warmup 방어선 도달 전에 speed 게이트에서 처리.
+      const mStatic = evaluateMovement({ speedMps: 0, accuracyM: 50 }, undefined, 'unknown', undefined);
+      expect(mStatic.reason).toBe('static-speed');
+      const mMoving = evaluateMovement({ speedMps: 5, accuracyM: 50 }, undefined, 'unknown', undefined);
+      expect(mMoving.reliable).toBe(true);
+    });
+
+    it('motionStationary=undefined + speed=null + positionStability=moving → reliable=true (이동 확정)', () => {
+      // positionStability가 'moving'이면 warmup 조건 미충족 → gate 통과.
+      const m = evaluateMovement({ accuracyM: 50 }, undefined, 'moving', undefined);
+      expect(m.reliable).toBe(true);
+    });
+
+    it('motionStationary=undefined + speed=null + positionStability 미전달 → reliable=true (기존 동작 유지)', () => {
+      // positionStability가 undefined면 'unknown'과 다름 → warmup 미발동.
+      const m = evaluateMovement({ accuracyM: 50 }, undefined, undefined, undefined);
+      expect(m.reliable).toBe(true);
+    });
+
+    it('평가 순서: motion-warmup은 static-position보다 앞에 도달하지 않음 (static-position이 우선)', () => {
+      // positionStability='static' → static-position이 먼저 (warmup 조건=unknown).
+      const m = evaluateMovement({ accuracyM: 50 }, undefined, 'static', undefined);
+      expect(m.reason).toBe('static-position');
+    });
+
+    it('MOVEMENT_TO_ALARM_LOG_REASON에 motion-warmup 포함', () => {
+      expect(MOVEMENT_TO_ALARM_LOG_REASON['motion-warmup']).toBe('movement-motion-warmup');
     });
   });
 

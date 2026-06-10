@@ -54,8 +54,8 @@ export interface UseDestinationAutoClearInputs {
   destination: Station | null;
   /** Fusion에서 결정된 사용자 좌표. null이면 거리 게이트 통과 불가 → detect=false. */
   userLocation: { lat: number; lng: number } | null;
-  /** CMMotionActivity stationary 신호. 미지원/거절 케이스는 false로 전달되어 detect=false. */
-  motionStationary: boolean;
+  /** CMMotionActivity stationary 신호. 미지원/거절 케이스는 false, warmup은 undefined로 전달. */
+  motionStationary: boolean | undefined;
   /**
    * 자동 해제 시 호출. `setDestination(null)` 등 cleanup은 caller 책임이다.
    * #1058: cleared station을 인자로 받아 caller가 undo toast에 노출하거나 복원할 수 있다.

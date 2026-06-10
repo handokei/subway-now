@@ -74,12 +74,14 @@ export type AlarmLogReason =
   // #727 — 정적 misfire 가드(movementGate.ts)가 차단한 발사.
   // #733 — 'movement-static-position'은 speed 미측정 시 위치 이력(usePositionStability) 기반 정적 차단.
   // #728 — 'movement-motion-stationary'는 CMMotionActivity(iOS) motion=stationary 신호 기반.
+  // #1013 — 'movement-motion-warmup'은 fg-hydrate 직후 warmup window 동안 신호 부재 차단.
   | 'movement-no-location'
   | 'movement-stale-timestamp'
   | 'movement-low-accuracy'
   | 'movement-static-speed'
   | 'movement-static-position'
   | 'movement-motion-stationary'
+  | 'movement-motion-warmup'
   // #750 — 공통 sleep 룰 게이트(shouldSuppressBySleepRule)가 차단한 발사.
   // scheduler/FG/BG 3개 path 어디서든 같은 reason으로 적재 — 정책 단일 출처.
   | 'sleep-first-transfer'

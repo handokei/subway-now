@@ -216,8 +216,10 @@ export interface UseStationAlarmInputs {
    * #728 — CMMotionActivity(iOS) motion=stationary 신호. true면 OS 가속도계가 사용자 정적으로 판정.
    * evaluateMovement가 'motion-stationary' reason으로 모든 카테고리(destination/transfer/station-passed)
    * 알람을 차단. 미전달/false면 기존 가드만 동작 (graceful fallback).
+   * #1013 — undefined는 warmup 상태(fg-hydrate 직후 ~30s). speed=null + positionStability=unknown과
+   * 동시 발생 시 evaluateMovement가 'motion-warmup'으로 차단.
    */
-  motionStationary?: boolean;
+  motionStationary?: boolean | undefined;
   /**
    * #917 A2 follow-up — FG fast path arvlCd∈{0,1} 매역 알림 입력.
    *
