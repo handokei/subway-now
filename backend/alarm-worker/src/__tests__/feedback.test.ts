@@ -16,6 +16,20 @@ import {
 import type { Env } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
+// 테스트용 임의의 IP 리터럴. 의미 있는 값이 아니라 "서로 다른 IP" 표식.
+const TEST_IP_A = '1.1.1.1';
+const TEST_IP_B = '2.2.2.2';
+const TEST_IP_C = '9.9.9.9';
+const TEST_IP_D = '8.8.8.8';
+const TEST_IP_E = '7.7.7.7';
+const TEST_IP_SAMPLE = '1.2.3.4';
+
+function envWithKv(): { env: Env; kv: InMemoryKV } {
+  const kv = new InMemoryKV();
+  const env = makeEnv({ FEEDBACK: kv as unknown as KVNamespace });
+  return { env, kv };
+}
+
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
     TRIPS: {} as Env['TRIPS'],
@@ -183,12 +197,6 @@ describe('storeFeedback', () => {
 });
 
 describe('POST /feedback', () => {
-  function envWithKv(): { env: Env; kv: InMemoryKV } {
-    const kv = new InMemoryKV();
-    const env = makeEnv({ FEEDBACK: kv as unknown as KVNamespace });
-    return { env, kv };
-  }
-
   it('returns 503 when FEEDBACK binding is missing', async () => {
     const res = await post('/feedback', { message: 'hi' }, makeEnv());
     expect(res.status).toBe(503);
@@ -255,7 +263,7 @@ describe('rateLimitWindowStart / rateLimitKey', () => {
   });
 
   it('formats key with ip + windowStart', () => {
-    expect(rateLimitKey('1.2.3.4', 60000)).toBe('rl:feedback:1.2.3.4:60000');
+    expect(rateLimitKey(TEST_IP_SAMPLE, 60000)).toBe(`rl:feedback:${TEST_IP_SAMPLE}:60000`);
   });
 });
 
@@ -268,10 +276,10 @@ describe('checkRateLimit', () => {
   it('allows first MAX requests then denies', async () => {
     const now = 1_000_000;
     for (let i = 0; i < FEEDBACK_RATE_LIMIT_MAX; i += 1) {
-      const r = await checkRateLimit(kv as unknown as KVNamespace, '1.1.1.1', now);
+      const r = await checkRateLimit(kv as unknown as KVNamespace, TEST_IP_A, now);
       expect(r.allowed).toBe(true);
     }
-    const denied = await checkRateLimit(kv as unknown as KVNamespace, '1.1.1.1', now);
+    const denied = await checkRateLimit(kv as unknown as KVNamespace, TEST_IP_A, now);
     expect(denied.allowed).toBe(false);
     expect(denied.retryAfterSeconds).toBeGreaterThan(0);
   });
@@ -279,38 +287,38 @@ describe('checkRateLimit', () => {
   it('isolates buckets per IP', async () => {
     const now = 1_000_000;
     for (let i = 0; i < FEEDBACK_RATE_LIMIT_MAX; i += 1) {
-      await checkRateLimit(kv as unknown as KVNamespace, '1.1.1.1', now);
+      await checkRateLimit(kv as unknown as KVNamespace, TEST_IP_A, now);
     }
     // 다른 IP는 별개 버킷
-    const otherIp = await checkRateLimit(kv as unknown as KVNamespace, '2.2.2.2', now);
+    const otherIp = await checkRateLimit(kv as unknown as KVNamespace, TEST_IP_B, now);
     expect(otherIp.allowed).toBe(true);
   });
 
   it('resets in next window', async () => {
     const now = FEEDBACK_RATE_LIMIT_WINDOW_MS * 10;
     for (let i = 0; i < FEEDBACK_RATE_LIMIT_MAX; i += 1) {
-      await checkRateLimit(kv as unknown as KVNamespace, '1.1.1.1', now);
+      await checkRateLimit(kv as unknown as KVNamespace, TEST_IP_A, now);
     }
-    const denied = await checkRateLimit(kv as unknown as KVNamespace, '1.1.1.1', now);
+    const denied = await checkRateLimit(kv as unknown as KVNamespace, TEST_IP_A, now);
     expect(denied.allowed).toBe(false);
 
     const next = now + FEEDBACK_RATE_LIMIT_WINDOW_MS;
-    const allowed = await checkRateLimit(kv as unknown as KVNamespace, '1.1.1.1', next);
+    const allowed = await checkRateLimit(kv as unknown as KVNamespace, TEST_IP_A, next);
     expect(allowed.allowed).toBe(true);
   });
 
   it('writes counter with TTL matching the window', async () => {
     const putSpy = vi.spyOn(kv, 'put');
-    await checkRateLimit(kv as unknown as KVNamespace, '1.1.1.1', 0);
-    expect(putSpy).toHaveBeenCalledWith('rl:feedback:1.1.1.1:0', '1', {
+    await checkRateLimit(kv as unknown as KVNamespace, TEST_IP_A, 0);
+    expect(putSpy).toHaveBeenCalledWith(`rl:feedback:${TEST_IP_A}:0`, '1', {
       expirationTtl: Math.ceil(FEEDBACK_RATE_LIMIT_WINDOW_MS / 1000),
     });
   });
 
   it('treats corrupt counter values as zero', async () => {
     // 외부 시스템이 garbage를 박아도 정상 동작 (방어적).
-    await kv.put('rl:feedback:1.1.1.1:0', 'not-a-number');
-    const r = await checkRateLimit(kv as unknown as KVNamespace, '1.1.1.1', 0);
+    await kv.put(`rl:feedback:${TEST_IP_A}:0`, 'not-a-number');
+    const r = await checkRateLimit(kv as unknown as KVNamespace, TEST_IP_A, 0);
     expect(r.allowed).toBe(true);
   });
 
@@ -318,9 +326,9 @@ describe('checkRateLimit', () => {
     // 윈도우 끝에 가까운 시각이라도 Retry-After는 1초 이상.
     const nearEnd = FEEDBACK_RATE_LIMIT_WINDOW_MS - 100;
     for (let i = 0; i < FEEDBACK_RATE_LIMIT_MAX; i += 1) {
-      await checkRateLimit(kv as unknown as KVNamespace, '1.1.1.1', nearEnd);
+      await checkRateLimit(kv as unknown as KVNamespace, TEST_IP_A, nearEnd);
     }
-    const denied = await checkRateLimit(kv as unknown as KVNamespace, '1.1.1.1', nearEnd);
+    const denied = await checkRateLimit(kv as unknown as KVNamespace, TEST_IP_A, nearEnd);
     expect(denied.allowed).toBe(false);
     expect(denied.retryAfterSeconds).toBeGreaterThanOrEqual(1);
   });
@@ -331,15 +339,9 @@ describe('POST /feedback rate limiting', () => {
     vi.useRealTimers();
   });
 
-  function envWithKv(): { env: Env; kv: InMemoryKV } {
-    const kv = new InMemoryKV();
-    const env = makeEnv({ FEEDBACK: kv as unknown as KVNamespace });
-    return { env, kv };
-  }
-
   it('returns 429 with Retry-After once MAX is exceeded for same IP', async () => {
     const { env } = envWithKv();
-    const headers = { 'CF-Connecting-IP': '9.9.9.9' };
+    const headers = { 'CF-Connecting-IP': TEST_IP_C };
     for (let i = 0; i < FEEDBACK_RATE_LIMIT_MAX; i += 1) {
       const ok = await post('/feedback', { message: `m${i}` }, env, headers);
       expect(ok.status).toBe(201);
@@ -353,10 +355,10 @@ describe('POST /feedback rate limiting', () => {
   it('does not affect a different IP bucket', async () => {
     const { env } = envWithKv();
     for (let i = 0; i < FEEDBACK_RATE_LIMIT_MAX; i += 1) {
-      await post('/feedback', { message: 'm' }, env, { 'CF-Connecting-IP': '9.9.9.9' });
+      await post('/feedback', { message: 'm' }, env, { 'CF-Connecting-IP': TEST_IP_C });
     }
     const other = await post('/feedback', { message: 'hi' }, env, {
-      'CF-Connecting-IP': '8.8.8.8',
+      'CF-Connecting-IP': TEST_IP_D,
     });
     expect(other.status).toBe(201);
   });
@@ -375,7 +377,7 @@ describe('POST /feedback rate limiting', () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(FEEDBACK_RATE_LIMIT_WINDOW_MS * 100));
     const { env } = envWithKv();
-    const headers = { 'CF-Connecting-IP': '7.7.7.7' };
+    const headers = { 'CF-Connecting-IP': TEST_IP_E };
     for (let i = 0; i < FEEDBACK_RATE_LIMIT_MAX; i += 1) {
       await post('/feedback', { message: 'm' }, env, headers);
     }
