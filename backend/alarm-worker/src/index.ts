@@ -186,9 +186,13 @@ function checkAdminAuth(
 ): AdminAuthError | null {
   if (!configured) return { code: 'admin_unavailable', status: 503 };
   if (!authHeader) return { code: 'unauthorized', status: 401 };
-  const match = /^Bearer\s+(.+)$/i.exec(authHeader);
-  if (!match) return { code: 'unauthorized', status: 401 };
-  if (match[1] !== configured) return { code: 'unauthorized', status: 401 };
+  const prefix = 'bearer ';
+  if (authHeader.length <= prefix.length) return { code: 'unauthorized', status: 401 };
+  if (authHeader.slice(0, prefix.length).toLowerCase() !== prefix) {
+    return { code: 'unauthorized', status: 401 };
+  }
+  const token = authHeader.slice(prefix.length).trimStart();
+  if (!token || token !== configured) return { code: 'unauthorized', status: 401 };
   return null;
 }
 
