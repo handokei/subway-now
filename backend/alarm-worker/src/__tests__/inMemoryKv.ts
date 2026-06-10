@@ -51,7 +51,9 @@ export class InMemoryKV {
     cursor: string;
   }> {
     const prefix = options?.prefix ?? '';
-    const allMatching = [...this.store.keys()].filter((k) => k.startsWith(prefix)).sort();
+    const allMatching = [...this.store.keys()]
+      .filter((k) => k.startsWith(prefix))
+      .sort((a, b) => a.localeCompare(b));
     const startIdx = options?.cursor ? Number.parseInt(options.cursor, 10) : 0;
     const safeStart = Number.isFinite(startIdx) && startIdx >= 0 ? startIdx : 0;
     const endIdx = Number.isFinite(this.pageSize)

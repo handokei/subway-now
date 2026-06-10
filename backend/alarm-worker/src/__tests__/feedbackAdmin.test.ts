@@ -46,6 +46,14 @@ async function get(
   );
 }
 
+function authedEnv(kv: InMemoryKV): Env {
+  return makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace });
+}
+
+async function authedGet(path: string, kv: InMemoryKV): Promise<Response> {
+  return get(path, authedEnv(kv), { authorization: 'Bearer secret' });
+}
+
 async function seed(kv: InMemoryKV, count: number, baseTs = 10_000): Promise<void> {
   for (let i = 0; i < count; i++) {
     await storeFeedback(
@@ -262,11 +270,7 @@ describe('GET /admin/feedback', () => {
   it('returns entries with default limit and nextBefore=null on small dataset', async () => {
     const kv = new InMemoryKV();
     await seed(kv, 2, 100);
-    const res = await get(
-      '/admin/feedback',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback', kv);
     expect(res.status).toBe(200);
     const json = (await res.json()) as { entries: { receivedAt: number }[]; nextBefore: number | null };
     expect(json.entries.map((e) => e.receivedAt)).toEqual([101, 100]);
@@ -276,11 +280,7 @@ describe('GET /admin/feedback', () => {
   it('honors limit and before query params', async () => {
     const kv = new InMemoryKV();
     await seed(kv, 5, 200);
-    const res = await get(
-      '/admin/feedback?limit=2&before=204',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback?limit=2&before=204', kv);
     expect(res.status).toBe(200);
     const json = (await res.json()) as { entries: { receivedAt: number }[]; nextBefore: number | null };
     expect(json.entries.map((e) => e.receivedAt)).toEqual([203, 202]);
@@ -290,11 +290,7 @@ describe('GET /admin/feedback', () => {
   it('ignores non-numeric query params (falls back to defaults)', async () => {
     const kv = new InMemoryKV();
     await seed(kv, 2, 300);
-    const res = await get(
-      '/admin/feedback?limit=abc&before=xyz',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback?limit=abc&before=xyz', kv);
     expect(res.status).toBe(200);
     const json = (await res.json()) as { entries: unknown[] };
     expect(json.entries).toHaveLength(2);
@@ -326,11 +322,7 @@ describe('GET /admin/feedback/export.csv', () => {
 
   it('returns header-only CSV when no entries', async () => {
     const kv = new InMemoryKV();
-    const res = await get(
-      '/admin/feedback/export.csv',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback/export.csv', kv);
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('text/csv; charset=utf-8');
     expect(res.headers.get('content-disposition')).toContain('feedback.csv');
@@ -342,11 +334,7 @@ describe('GET /admin/feedback/export.csv', () => {
   it('serializes entries with header + rows', async () => {
     const kv = new InMemoryKV();
     await seed(kv, 2, 500);
-    const res = await get(
-      '/admin/feedback/export.csv?limit=10',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback/export.csv?limit=10', kv);
     expect(res.status).toBe(200);
     const body = await res.text();
     const lines = body.trim().split('\n');
@@ -572,22 +560,14 @@ describe('GET /admin/feedback/stats', () => {
 
   it('returns 400 for malformed date', async () => {
     const kv = new InMemoryKV();
-    const res = await get(
-      '/admin/feedback/stats?date=not-a-date',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback/stats?date=not-a-date', kv);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'invalid_date' });
   });
 
   it('returns 404 when stats for that date not yet stored', async () => {
     const kv = new InMemoryKV();
-    const res = await get(
-      '/admin/feedback/stats?date=2026-06-09',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback/stats?date=2026-06-09', kv);
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'stats_not_found' });
   });
@@ -601,11 +581,7 @@ describe('GET /admin/feedback/stats', () => {
       byAppVersion: { '1.0.0': 7 },
       byLocale: { ko: 7 },
     });
-    const res = await get(
-      '/admin/feedback/stats?date=2026-06-09',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback/stats?date=2026-06-09', kv);
     expect(res.status).toBe(200);
     const json = (await res.json()) as { total: number };
     expect(json.total).toBe(7);
@@ -621,11 +597,7 @@ describe('GET /admin/feedback/stats', () => {
       byAppVersion: {},
       byLocale: {},
     });
-    const res = await get(
-      '/admin/feedback/stats',
-      makeEnv({ ADMIN_TOKEN: 'secret', FEEDBACK: kv as unknown as KVNamespace }),
-      { authorization: 'Bearer secret' },
-    );
+    const res = await authedGet('/admin/feedback/stats', kv);
     expect(res.status).toBe(200);
     const json = (await res.json()) as { date: string; total: number };
     expect(json.date).toBe(yesterday);
