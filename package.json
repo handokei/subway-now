@@ -15,6 +15,7 @@
     "data:fetch-exit-side": "node scripts/fetch-exit-side.js",
     "data:fetch-quick-exit": "node scripts/fetch-quick-exit.js",
     "data:build-transfer-times": "node scripts/build-transfer-times.js",
+    "validate:data": "node scripts/validate-stations.js",
     "tail:capture": "scripts/capture-tail.sh",
     "measure:blocked-reasons": "scripts/capture-blocked-reasons.sh",
     "measure:blocked-reasons:aggregate": "node scripts/aggregate-blocked-reasons.js",

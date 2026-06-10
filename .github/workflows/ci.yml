@@ -49,8 +49,26 @@ jobs:
             echo "→ e2e-smoke 실행"
           fi
 
+  data-validation:
+    name: Data Validation
+    # stations.json + lineTopology.json 정합성을 5초 안에 검증 (#1039).
+    # 데이터 손상이 type check / test보다 먼저 fail-fast 되도록 분리한다.
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: stations.json + lineTopology 검증
+        run: node scripts/validate-stations.js
+
   test:
     name: Type Check & Test
+    needs: [data-validation]
     runs-on: ubuntu-latest
 
     steps:
