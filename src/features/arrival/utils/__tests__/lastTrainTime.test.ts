@@ -49,4 +49,14 @@ describe('getLastTrainTime', () => {
       getLastTrainTime({ stationName: '존재하지않는역', line: '1', direction: 'up', now: KST_WEEKDAY_NOON }),
     ).toBeNull();
   });
+
+  it('#1088: weekday part 누락(Hermes 회귀) 시 null로 graceful degrade', () => {
+    const spy = jest
+      .spyOn(Intl.DateTimeFormat.prototype, 'formatToParts')
+      .mockImplementationOnce(() => [{ type: 'literal', value: '' }]);
+    expect(
+      getLastTrainTime({ stationName: '소요산', line: '1', direction: 'up', now: KST_WEEKDAY_NOON }),
+    ).toBeNull();
+    spy.mockRestore();
+  });
 });

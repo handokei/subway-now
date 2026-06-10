@@ -1,4 +1,5 @@
 import type { LineNumber } from '../../../shared/types/station';
+import { getDateParts, getWeekdayShort } from '../../../shared/utils/intlDateParts';
 import line1Timetable from '../../../data/timetables/line-1.json';
 import line2Timetable from '../../../data/timetables/line-2.json';
 import line3Timetable from '../../../data/timetables/line-3.json';
@@ -69,28 +70,32 @@ const MINUTES_PER_HOUR = 60;
 /** timetable JSON의 미운행 슬롯 표기 (앞쪽 padding). */
 const NON_OPERATING_SLOT = '0000';
 
-function classifyDayTypeKst(date: Date): DayType {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: SUBWAY_TIMEZONE,
-    weekday: 'short',
-  }).formatToParts(date);
-  const weekday = parts.find((p) => p.type === 'weekday')!.value;
+function classifyDayTypeKst(date: Date): DayType | null {
+  // Hermes/iOS의 weekday part 누락 회귀(#1088)를 안전 helper로 흡수. 누락 시 null →
+  // 호출자가 service window를 unknown으로 보수 처리.
+  const weekday = getWeekdayShort(date, SUBWAY_TIMEZONE);
+  if (weekday === null) return null;
   if (weekday === 'Sun') return 'sunday';
   if (weekday === 'Sat') return 'saturday';
   return 'weekday';
 }
 
-/** Date → KST 기준 minutes-of-day (0~1439). */
-function getKstMinutesOfDay(date: Date): number {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: SUBWAY_TIMEZONE,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).formatToParts(date);
+/** Date → KST 기준 minutes-of-day (0~1439). part 누락 시 null. */
+function getKstMinutesOfDay(date: Date): number | null {
+  const parts = getDateParts(
+    date,
+    {
+      timeZone: SUBWAY_TIMEZONE,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    },
+    ['hour', 'minute'],
+  );
+  if (parts.hour === undefined || parts.minute === undefined) return null;
   // hour12:false에서 자정은 '24'로 나올 수 있어 % 24로 정규화.
-  const hour = Number.parseInt(parts.find((p) => p.type === 'hour')!.value, 10) % HOURS_PER_DAY;
-  const minute = Number.parseInt(parts.find((p) => p.type === 'minute')!.value, 10);
+  const hour = Number.parseInt(parts.hour, 10) % HOURS_PER_DAY;
+  const minute = Number.parseInt(parts.minute, 10);
   return hour * MINUTES_PER_HOUR + minute;
 }
 
@@ -157,6 +162,10 @@ export function getServiceWindow({
     return { firstTrain: null, lastTrain: null, status: 'unknown' };
   }
   const resolvedDayType = dayType ?? classifyDayTypeKst(reference);
+  if (resolvedDayType === null) {
+    // Hermes 등에서 weekday part 누락 — 보수적으로 unknown으로 처리해 잘못된 안내 회피(#1088).
+    return { firstTrain: null, lastTrain: null, status: 'unknown' };
+  }
   const { firstRaw, lastRaw } = pickStationWindow(station[resolvedDayType]);
   if (firstRaw === null || lastRaw === null) {
     // 모든 슬롯이 NON_OPERATING_SLOT인 비정상 케이스 — 호출자가 fallback할 수 있게 unknown.
@@ -166,6 +175,10 @@ export function getServiceWindow({
   const firstTrain = formatMinutes(firstRaw);
   const lastTrain = formatMinutes(lastRaw);
   const nowMinutes = getKstMinutesOfDay(reference);
+  if (nowMinutes === null) {
+    // hour/minute part 누락 — 시간 비교 불가능, 시각만 표시하고 status는 unknown(#1088).
+    return { firstTrain, lastTrain, status: 'unknown' };
+  }
 
   // 24h+ overnight 처리:
   // - lastRaw가 1440 이상이고 nowMinutes <= (lastRaw - 1440)이면 아직 어제 운행분의 끝자락(in-service).
