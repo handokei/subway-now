@@ -1,0 +1,96 @@
+/**
+ * "탔어요?" 푸시(#819) 평가 컨텍스트 빌더.
+ *
+ * backend `evaluateAndMaybeFireBoardingPrompt`는 `trip.promptGeoContext` +
+ * `trip.promptDisplay`가 모두 있어야 9단 게이트 평가를 진행한다. 둘 중 하나라도
+ * 없으면 skip이므로, register payload에 컨텍스트를 동봉해야 발사 0건 상태를 해소한다.
+ *
+ * 전제: boarding-prompt는 **leg 0 미시작(=탑승 전)** 상황에서만 의미 있다. backend의
+ * 9단 게이트가 `origin` 근접 + `nextStation` 방향 이동을 검사하므로, 사용자가 첫 leg를
+ * 이미 진행 중이면 게이트가 자연 차단된다(또는 다른 분기로 위임). 따라서 mid-trip
+ * transfer 등에서 first-leg와 active-leg가 어긋나도 잘못된 발사로 이어지지 않는다.
+ *
+ * 컨텍스트:
+ *   - origin: 호출 시점의 GPS-nearest 역(= 탑승 후보) 좌표
+ *   - nextStation: 첫 leg에서 origin 다음 역 좌표
+ *   - direction: 첫 leg의 진행 방향(단조 라인만), 비단조면 null (양방향 허용)
+ *   - originStation: 사용자 표시용 역 이름
+ *   - line: 첫 leg 라인 (boarding 단계 노선)
+ *
+ * `currentStation === null`이거나 next/lookup 실패 시 null 반환 — backend는 자동 skip.
+ *
+ * TODO(#1028 follow-up): firstLeg 추출은 tripDirection.ts에도 중복 존재. shared util로 분리 예정.
+ */
+
+import type { Station, LineNumber } from '../../../shared/types/station';
+import type { Route } from '../../../shared/utils/stationRoute';
+import {
+  findStationByNameAndLine,
+  getNextStationName,
+} from '../../../shared/utils/stationRoute';
+import { resolveTravelDirection } from '../../route/utils/travelDirection';
+
+export interface BoardingPromptContext {
+  promptGeoContext: {
+    origin: { lat: number; lng: number };
+    nextStation: { lat: number; lng: number };
+    direction: 'up' | 'down' | null;
+  };
+  promptDisplay: {
+    originStation: string;
+    line: string;
+  };
+}
+
+interface BuildInputs {
+  route: Route;
+  currentStation: Station | null;
+  destination: Station | null;
+}
+
+interface FirstLeg {
+  line: LineNumber;
+  endName: string;
+}
+
+function firstLeg(route: NonNullable<Route>, destinationName: string): FirstLeg {
+  if (route.type === 'direct') {
+    return { line: route.line, endName: destinationName };
+  }
+  if (route.type === 'transfer') {
+    return { line: route.fromLine, endName: route.transferName };
+  }
+  const first = route.transfers[0];
+  return { line: first.fromLine, endName: first.transferName };
+}
+
+export function buildBoardingPromptContext({
+  route,
+  currentStation,
+  destination,
+}: BuildInputs): BoardingPromptContext | null {
+  if (!route || !currentStation || !destination) return null;
+
+  const leg = firstLeg(route, destination.name);
+  const nextName = getNextStationName(currentStation.id, destination.id, route);
+  if (!nextName) return null;
+
+  const nextStation = findStationByNameAndLine(nextName, leg.line);
+  /* istanbul ignore next -- getNextStationName이 같은 line에서 lookup한 name이므로 재조회 실패 불가 */
+  if (!nextStation) return null;
+
+  const resolved = resolveTravelDirection(leg.line, currentStation.name, leg.endName);
+  const direction = resolved ? resolved.direction : null;
+
+  return {
+    promptGeoContext: {
+      origin: { lat: currentStation.lat, lng: currentStation.lng },
+      nextStation: { lat: nextStation.lat, lng: nextStation.lng },
+      direction,
+    },
+    promptDisplay: {
+      originStation: currentStation.name,
+      line: leg.line,
+    },
+  };
+}

@@ -25,6 +25,7 @@ import { routeSignature, getStationById } from '../../../shared/utils/stationRou
 import { registerActiveTrip, clearActiveTrip, type AlarmBoardingLock } from '../api/alarmBackend';
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import { buildBoardingLockMeta } from '../utils/buildBoardingLockMeta';
+import { buildBoardingPromptContext } from '../utils/boardingPromptContext';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
@@ -111,6 +112,14 @@ async function callRegister(input: RegisterCallInputs) {
     }
   }
 
+  // #1028: boarding-prompt 평가 컨텍스트 (#819). 둘 다 있어야 backend가 9단 게이트를 돌리므로
+  // 항상 함께 송신. currentStation/route lookup 실패 시 null → 필드 누락 → backend 자동 skip.
+  const promptContext = buildBoardingPromptContext({
+    route: input.route,
+    currentStation: input.currentStation,
+    destination: input.destination,
+  });
+
   return registerActiveTrip({
     token: input.token,
     route: input.route,
@@ -122,6 +131,13 @@ async function callRegister(input: RegisterCallInputs) {
     ...(boardingLockMeta ? { boardingLock: boardingLockMeta } : {}),
     // #816 C — 토글 ON이면 backend에 lockless station-passed opt-in 명시. OFF면 필드 누락.
     ...(input.locklessStationPassed ? { locklessStationPassed: true } : {}),
+    // #819 / #1028 — boarding-prompt 평가/표시 컨텍스트. 짝으로만 송신.
+    ...(promptContext
+      ? {
+          promptGeoContext: promptContext.promptGeoContext,
+          promptDisplay: promptContext.promptDisplay,
+        }
+      : {}),
     // #903 (Seam G) — 기압계 subsurface ON일 때만 송신. OFF/false는 필드 누락(graceful).
     ...(input.subsurface ? { subsurface: true } : {}),
   });
