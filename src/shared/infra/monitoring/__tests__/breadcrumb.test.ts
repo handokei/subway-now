@@ -21,33 +21,17 @@ describe('addLogBreadcrumb', () => {
     expect(captureExceptionMock).not.toHaveBeenCalled();
   });
 
-  it('info → level "info" + category "log"', () => {
+  it.each([
+    ['info' as const, 'info', 'TEST', ['hello'], '[TEST] hello'],
+    ['warn' as const, 'warning', 'TAG', ['주의'], '[TAG] 주의'],
+    ['debug' as const, 'debug', 'TAG', ['dbg'], '[TAG] dbg'],
+  ])('%s → level "%s"', (logLevel, sentryLevel, tag, args, message) => {
     setSentryEnabled(true);
-    addLogBreadcrumb('info', 'TEST', ['hello']);
+    addLogBreadcrumb(logLevel, tag, args);
     expect(addBreadcrumbMock).toHaveBeenCalledWith({
-      level: 'info',
+      level: sentryLevel,
       category: 'log',
-      message: '[TEST] hello',
-    });
-  });
-
-  it('warn → level "warning"', () => {
-    setSentryEnabled(true);
-    addLogBreadcrumb('warn', 'TAG', ['주의']);
-    expect(addBreadcrumbMock).toHaveBeenCalledWith({
-      level: 'warning',
-      category: 'log',
-      message: '[TAG] 주의',
-    });
-  });
-
-  it('debug → level "debug"', () => {
-    setSentryEnabled(true);
-    addLogBreadcrumb('debug', 'TAG', ['dbg']);
-    expect(addBreadcrumbMock).toHaveBeenCalledWith({
-      level: 'debug',
-      category: 'log',
-      message: '[TAG] dbg',
+      message,
     });
   });
 
