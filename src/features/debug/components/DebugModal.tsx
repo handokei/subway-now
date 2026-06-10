@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AppState,
   Modal,
@@ -666,69 +666,33 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
 
           <BoardingLockSection lock={lock} colors={colors} />
 
-          <Section
-            title={`Estimator State (${estimatorLogs.length})`}
+          <DebugLogSection
+            title="Estimator State"
+            logs={estimatorLogs}
+            formatLine={formatEstimatorLine}
+            onClear={() => {
+              clearEstimatorEntries();
+              setEstimatorLogs([]);
+            }}
+            clearTestId="debug-estimator-clear"
+            entryTestId="debug-estimator-entry"
             colors={colors}
-            action={
-              <Pressable
-                onPress={() => {
-                  clearEstimatorEntries();
-                  setEstimatorLogs([]);
-                }}
-                testID="debug-estimator-clear"
-              >
-                <Text style={[typography.bodySm, { color: colors.accent }]}>Clear</Text>
-              </Pressable>
-            }
-          >
-            {estimatorLogs.length === 0 ? (
-              <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
-            ) : (
-              [...estimatorLogs].reverse().map((entry, idx) => (
-                <Text
-                  key={`${entry.ts}-${idx}`}
-                  style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
-                  selectable
-                  testID="debug-estimator-entry"
-                >
-                  {formatEstimatorLine(entry)}
-                </Text>
-              ))
-            )}
-          </Section>
+          />
 
           <GatesSection logs={logs} colors={colors} />
 
-          <Section
-            title={`Fusion log (${fusionLogs.length})`}
+          <DebugLogSection
+            title="Fusion log"
+            logs={fusionLogs}
+            formatLine={formatFusionDebugLine}
+            onClear={() => {
+              clearFusionDebugEntries();
+              setFusionLogs([]);
+            }}
+            clearTestId="debug-fusion-log-clear"
+            entryTestId="debug-fusion-log-entry"
             colors={colors}
-            action={
-              <Pressable
-                onPress={() => {
-                  clearFusionDebugEntries();
-                  setFusionLogs([]);
-                }}
-                testID="debug-fusion-log-clear"
-              >
-                <Text style={[typography.bodySm, { color: colors.accent }]}>Clear</Text>
-              </Pressable>
-            }
-          >
-            {fusionLogs.length === 0 ? (
-              <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
-            ) : (
-              [...fusionLogs].reverse().map((entry, idx) => (
-                <Text
-                  key={`${entry.ts}-${idx}`}
-                  style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
-                  selectable
-                  testID="debug-fusion-log-entry"
-                >
-                  {formatFusionDebugLine(entry)}
-                </Text>
-              ))
-            )}
-          </Section>
+          />
 
           <Section
             title={
@@ -834,6 +798,52 @@ function ScheduledQueueBody({
   );
 }
 
+/** 역방향(최신 → 오래된) 모노 로그 목록 섹션 — Estimator/Fusion 공통 패턴 (#1025). */
+function DebugLogSection<T extends { ts: number }>({
+  title,
+  logs,
+  formatLine,
+  onClear,
+  clearTestId,
+  entryTestId,
+  colors,
+}: Readonly<{
+  title: string;
+  logs: readonly T[];
+  formatLine: (entry: T) => string;
+  onClear: () => void;
+  clearTestId: string;
+  entryTestId: string;
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  return (
+    <Section
+      title={`${title} (${logs.length})`}
+      colors={colors}
+      action={
+        <Pressable onPress={onClear} testID={clearTestId}>
+          <Text style={[typography.bodySm, { color: colors.accent }]}>Clear</Text>
+        </Pressable>
+      }
+    >
+      {logs.length === 0 ? (
+        <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
+      ) : (
+        [...logs].reverse().map((entry, idx) => (
+          <Text
+            key={`${entry.ts}-${idx}`}
+            style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
+            selectable
+            testID={entryTestId}
+          >
+            {formatLine(entry)}
+          </Text>
+        ))
+      )}
+    </Section>
+  );
+}
+
 /** BoardingLock 섹션 — lock 활성/trainCode/boardingLine/expiresAt 요약 (#1025). */
 function BoardingLockSection({
   lock,
@@ -842,8 +852,11 @@ function BoardingLockSection({
   lock: import('../../../shared/types/boardingLock').BoardingLock | null;
   colors: ReturnType<typeof useTheme>['colors'];
 }>) {
-  const now = Date.now();
-  const active = lock !== null && !isBoardingLockExpired(lock, now);
+  // lock 변경 시점 스냅샷 — 디버그 모달 특성상 실시간 갱신 불필요.
+  const active = useMemo(
+    () => lock !== null && !isBoardingLockExpired(lock, Date.now()),
+    [lock],
+  );
   return (
     <Section title="BoardingLock" colors={colors}>
       <KeyValue label="active" value={active ? 'yes' : 'no'} colors={colors} />
@@ -891,34 +904,24 @@ function GatesSection({
   logs: readonly AlarmLogEntry[];
   colors: ReturnType<typeof useTheme>['colors'];
 }>) {
-  const gateCounts = countGateReasons(logs, GATE_REASONS);
-  const movementCounts = countGateReasons(logs, MOVEMENT_REASONS);
-  const gateKeys = Object.keys(gateCounts).sort();
-  const movementKeys = Object.keys(movementCounts).sort();
-  const isEmpty = gateKeys.length === 0 && movementKeys.length === 0;
+  const allCounts = {
+    ...countGateReasons(logs, GATE_REASONS),
+    ...countGateReasons(logs, MOVEMENT_REASONS),
+  };
+  const allKeys = Object.keys(allCounts).sort();
   return (
     <Section title="Gates" colors={colors}>
-      {isEmpty ? (
+      {allKeys.length === 0 ? (
         <Text style={[typography.mono, { color: colors.muted }]}>(no gate blocks)</Text>
       ) : (
-        <>
-          {gateKeys.map((key) => (
-            <KeyValue
-              key={key}
-              label={key}
-              value={String(gateCounts[key])}
-              colors={colors}
-            />
-          ))}
-          {movementKeys.map((key) => (
-            <KeyValue
-              key={key}
-              label={key}
-              value={String(movementCounts[key])}
-              colors={colors}
-            />
-          ))}
-        </>
+        allKeys.map((key) => (
+          <KeyValue
+            key={key}
+            label={key}
+            value={String(allCounts[key])}
+            colors={colors}
+          />
+        ))
       )}
     </Section>
   );
