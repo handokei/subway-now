@@ -288,5 +288,11 @@
       "boardingLockReleaseLabel": "降車",
       "boardingLockReleaseHint": "現在の乗車を終了します"
     }
+  },
+  "share": {
+    "trip": {
+      "title": "地下鉄ルート",
+      "bodyTemplate": "🚇 地下鉄ルート\n出発: {{fromName}} ({{fromLine}})\n到着: {{toName}} ({{toLine}})\n約 {{minutes}}分 ({{stops}}駅)"
+    }
   }
 }
