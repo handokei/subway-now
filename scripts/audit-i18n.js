@@ -18,8 +18,8 @@
 
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const LOCALES_DIR = path.join(REPO_ROOT, 'src/shared/i18n/locales');
@@ -76,76 +76,83 @@ function walk(dir, files = []) {
 // We scan for the call prefix, then read forward up to the first balanced
 // ')' or a comma at depth-0 — extracting any quoted dotted strings on the way.
 const T_CALL_RE = /\b(?:i18n(?:ext)?\.)?t\(/g;
-const QUOTED_KEY_INNER_RE = /(['"])([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_-]+)+)\1/g;
+const QUOTED_KEY_INNER_RE = /(['"])([a-zA-Z]\w*(?:\.[\w-]+)+)\1/g;
 
 // Also pick up table-driven keys: labelKey: 'settings.themeAuto', key: 'foo.bar'
-const LABEL_KEY_RE = /\b(?:labelKey|titleKey|i18nKey|translationKey)\s*:\s*(['"])([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_-]+)+)\1/g;
+const LABEL_KEY_RE = /\b(?:labelKey|titleKey|i18nKey|translationKey)\s*:\s*(['"])([a-zA-Z]\w*(?:\.[\w-]+)+)\1/g;
 
 // Template-literal prefixes like `lines.${...}` — any key under that prefix is live.
-const TEMPLATE_PREFIX_RE = /`([a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z0-9_-]+)*)\.\$\{/g;
+const TEMPLATE_PREFIX_RE = /`([a-zA-Z]\w*(?:\.[\w-]+)*)\.\$\{/g;
+
+function skipString(text, start, quote) {
+  // Return index of the closing quote (or text.length if unterminated).
+  let i = start;
+  while (i < text.length && text[i] !== quote) {
+    if (text[i] === '\\') i++;
+    i++;
+  }
+  return i;
+}
 
 function extractTCallArg(text, start) {
-  // start is the index right after '('. Read until matching ')'.
+  // start is the index right after '('. Read until matching ')' or depth-0 ','.
   let depth = 1;
   let i = start;
-  // Stop at depth-0 comma to limit scope to the first argument.
   while (i < text.length) {
     const ch = text[i];
-    if (ch === '(') depth++;
-    else if (ch === ')') {
+    if (ch === '"' || ch === "'" || ch === '`') {
+      i = skipString(text, i + 1, ch);
+    } else if (ch === '(') {
+      depth++;
+    } else if (ch === ')') {
       depth--;
       if (depth === 0) return text.slice(start, i);
     } else if (ch === ',' && depth === 1) {
       return text.slice(start, i);
-    } else if (ch === '"' || ch === "'" || ch === '`') {
-      // skip string
-      const quote = ch;
-      i++;
-      while (i < text.length && text[i] !== quote) {
-        if (text[i] === '\\') i++;
-        i++;
-      }
     }
     i++;
   }
   return text.slice(start, i);
 }
 
+function recordKey(used, byKey, rel, key) {
+  used.add(key);
+  if (!byKey.has(key)) byKey.set(key, []);
+  byKey.get(key).push(rel);
+}
+
+function scanFile(text, rel, ctx) {
+  const { used, dynamicPrefixes, byKey } = ctx;
+  T_CALL_RE.lastIndex = 0;
+  let m;
+  while ((m = T_CALL_RE.exec(text)) !== null) {
+    const arg = extractTCallArg(text, m.index + m[0].length);
+    QUOTED_KEY_INNER_RE.lastIndex = 0;
+    let km;
+    while ((km = QUOTED_KEY_INNER_RE.exec(arg)) !== null) {
+      recordKey(used, byKey, rel, km[2]);
+    }
+  }
+  LABEL_KEY_RE.lastIndex = 0;
+  while ((m = LABEL_KEY_RE.exec(text)) !== null) {
+    recordKey(used, byKey, rel, m[2]);
+  }
+  TEMPLATE_PREFIX_RE.lastIndex = 0;
+  while ((m = TEMPLATE_PREFIX_RE.exec(text)) !== null) {
+    dynamicPrefixes.add(m[1]);
+  }
+}
+
 function extractUsedKeys() {
-  const used = new Set();
-  const dynamicPrefixes = new Set();
-  const byKey = new Map();
+  const ctx = { used: new Set(), dynamicPrefixes: new Set(), byKey: new Map() };
   for (const root of SCAN_ROOTS) {
     for (const file of walk(root)) {
       const text = fs.readFileSync(file, 'utf8');
       const rel = path.relative(REPO_ROOT, file);
-      T_CALL_RE.lastIndex = 0;
-      let m;
-      while ((m = T_CALL_RE.exec(text)) !== null) {
-        const arg = extractTCallArg(text, m.index + m[0].length);
-        QUOTED_KEY_INNER_RE.lastIndex = 0;
-        let km;
-        while ((km = QUOTED_KEY_INNER_RE.exec(arg)) !== null) {
-          const key = km[2];
-          used.add(key);
-          if (!byKey.has(key)) byKey.set(key, []);
-          byKey.get(key).push(rel);
-        }
-      }
-      LABEL_KEY_RE.lastIndex = 0;
-      while ((m = LABEL_KEY_RE.exec(text)) !== null) {
-        const key = m[2];
-        used.add(key);
-        if (!byKey.has(key)) byKey.set(key, []);
-        byKey.get(key).push(rel);
-      }
-      TEMPLATE_PREFIX_RE.lastIndex = 0;
-      while ((m = TEMPLATE_PREFIX_RE.exec(text)) !== null) {
-        dynamicPrefixes.add(m[1]);
-      }
+      scanFile(text, rel, ctx);
     }
   }
-  return { used, dynamicPrefixes, byKey };
+  return ctx;
 }
 
 function diff(locales) {
@@ -160,15 +167,106 @@ function diff(locales) {
       if (!(key in locales[loc])) missingByLocale[loc].push(key);
     }
   }
-  for (const loc of LOCALES) missingByLocale[loc].sort();
+  for (const loc of LOCALES) missingByLocale[loc].sort((a, b) => a.localeCompare(b));
   return { allKeys, missingByLocale };
 }
 
-function main() {
-  const locales = loadLocales();
-  const { allKeys, missingByLocale } = diff(locales);
-  const { used, dynamicPrefixes } = extractUsedKeys();
+// i18next v4 plural suffixes: t('foo') with { count } resolves to foo_one / foo_other / foo_zero / foo_two / foo_few / foo_many.
+const PLURAL_SUFFIXES = ['_zero', '_one', '_two', '_few', '_many', '_other'];
 
+function hasKeyWithPlural(locale, key) {
+  if (key in locale) return true;
+  for (const suf of PLURAL_SUFFIXES) {
+    if ((key + suf) in locale) return true;
+  }
+  return false;
+}
+
+function stripPluralSuffix(key) {
+  for (const suf of PLURAL_SUFFIXES) {
+    if (key.endsWith(suf)) return key.slice(0, -suf.length);
+  }
+  return key;
+}
+
+function isUnderDynamicPrefix(key, dynamicPrefixes) {
+  for (const p of dynamicPrefixes) {
+    if (key === p || key.startsWith(p + '.')) return true;
+  }
+  return false;
+}
+
+function isDynamicallyReferenced(key, used) {
+  const base = stripPluralSuffix(key);
+  for (const u of used) {
+    if (u === key || u === base) return true;
+    if (u.startsWith(key + '.') || key.startsWith(u + '.')) return true;
+    if (u.startsWith(base + '.') || base.startsWith(u + '.')) return true;
+  }
+  return false;
+}
+
+function reportCrossLocaleMissing(missingByLocale) {
+  console.log('--- Cross-locale missing keys ---');
+  let regression = false;
+  for (const loc of LOCALES) {
+    const miss = missingByLocale[loc];
+    if (miss.length === 0) {
+      console.log(`  ${loc}: OK`);
+      continue;
+    }
+    regression = true;
+    console.log(`  ${loc}: missing ${miss.length}`);
+    for (const k of miss) console.log(`    - ${k}`);
+  }
+  console.log();
+  return regression;
+}
+
+function reportUsedMissing(locales, used) {
+  console.log('--- Used keys missing from any locale ---');
+  const usedMissing = [];
+  for (const key of used) {
+    const missingIn = LOCALES.filter((loc) => !hasKeyWithPlural(locales[loc], key));
+    if (missingIn.length > 0) usedMissing.push({ key, missingIn });
+  }
+  if (usedMissing.length === 0) {
+    console.log('  OK');
+    console.log();
+    return false;
+  }
+  for (const { key, missingIn } of usedMissing) {
+    console.log(`  - ${key}  (missing: ${missingIn.join(', ')})`);
+  }
+  console.log();
+  return true;
+}
+
+function findDeadKeys(allKeys, locales, used, dynamicPrefixes) {
+  const dead = [];
+  for (const key of allKeys) {
+    const inAll = LOCALES.every((loc) => key in locales[loc]);
+    if (!inAll) continue;
+    if (used.has(key)) continue;
+    if (isUnderDynamicPrefix(key, dynamicPrefixes)) continue;
+    if (isDynamicallyReferenced(key, used)) continue;
+    dead.push(key);
+  }
+  dead.sort((a, b) => a.localeCompare(b));
+  return dead;
+}
+
+function reportDeadKeys(dead) {
+  console.log('--- Dead keys (defined but never referenced statically) ---');
+  if (dead.length === 0) {
+    console.log('  OK');
+    return;
+  }
+  console.log(`  ${dead.length} candidates (cleanup is a separate concern, not failing):`);
+  for (const k of dead) console.log(`    - ${k}`);
+}
+
+function printSummary(locales, allKeys, used) {
   console.log('=== i18n audit ===\n');
   console.log(`Locales: ${LOCALES.join(', ')}`);
   for (const loc of LOCALES) {
@@ -176,95 +274,22 @@ function main() {
   }
   console.log(`Total unique keys (union): ${allKeys.size}`);
   console.log(`Used keys in source: ${used.size}\n`);
+}
 
-  let hasRegression = false;
+function main() {
+  const locales = loadLocales();
+  const { allKeys, missingByLocale } = diff(locales);
+  const { used, dynamicPrefixes } = extractUsedKeys();
 
-  console.log('--- Cross-locale missing keys ---');
-  for (const loc of LOCALES) {
-    const miss = missingByLocale[loc];
-    if (miss.length === 0) {
-      console.log(`  ${loc}: OK`);
-    } else {
-      hasRegression = true;
-      console.log(`  ${loc}: missing ${miss.length}`);
-      for (const k of miss) console.log(`    - ${k}`);
-    }
-  }
-  console.log();
+  printSummary(locales, allKeys, used);
 
-  console.log('--- Used keys missing from any locale ---');
-  // i18next v4 plural suffixes: t('foo') with { count } resolves to foo_one / foo_other / foo_zero / foo_two / foo_few / foo_many.
-  // Treat a used key as present in a locale if either the exact key or ANY plural-suffixed variant exists.
-  const PLURAL_SUFFIXES = ['_zero', '_one', '_two', '_few', '_many', '_other'];
-  const hasKey = (locale, key) => {
-    if (key in locale) return true;
-    for (const suf of PLURAL_SUFFIXES) {
-      if ((key + suf) in locale) return true;
-    }
-    return false;
-  };
-  const usedMissing = [];
-  for (const key of used) {
-    const missingIn = LOCALES.filter((loc) => !hasKey(locales[loc], key));
-    if (missingIn.length > 0) {
-      usedMissing.push({ key, missingIn });
-    }
-  }
-  if (usedMissing.length === 0) {
-    console.log('  OK');
-  } else {
-    hasRegression = true;
-    for (const { key, missingIn } of usedMissing) {
-      console.log(`  - ${key}  (missing: ${missingIn.join(', ')})`);
-    }
-  }
-  console.log();
-
-  console.log('--- Dead keys (defined but never referenced statically) ---');
-  // Only report keys present in ALL locales but never used.
-  // (Keys missing in some locales are already reported above.)
-  const dead = [];
-  for (const key of allKeys) {
-    const inAll = LOCALES.every((loc) => key in locales[loc]);
-    if (!inAll) continue;
-    if (used.has(key)) continue;
-    // Template-literal dynamic prefix: t(`lines.${x}`) → any key under "lines" is live.
-    let underDynamicPrefix = false;
-    for (const p of dynamicPrefixes) {
-      if (key === p || key.startsWith(p + '.')) { underDynamicPrefix = true; break; }
-    }
-    if (underDynamicPrefix) continue;
-    // Heuristic: dynamic keys often share a prefix. If any used key startsWith
-    // this key + '.', or this key startsWith any used key + '.', treat as live.
-    let dynamic = false;
-    // Strip plural suffix to compare against used base keys.
-    let base = key;
-    for (const suf of PLURAL_SUFFIXES) {
-      if (key.endsWith(suf)) { base = key.slice(0, -suf.length); break; }
-    }
-    for (const u of used) {
-      if (u === key || u === base) { dynamic = true; break; }
-      if (u.startsWith(key + '.') || key.startsWith(u + '.')) {
-        dynamic = true;
-        break;
-      }
-      if (u.startsWith(base + '.') || base.startsWith(u + '.')) {
-        dynamic = true;
-        break;
-      }
-    }
-    if (!dynamic) dead.push(key);
-  }
-  dead.sort();
-  if (dead.length === 0) {
-    console.log('  OK');
-  } else {
-    console.log(`  ${dead.length} candidates (cleanup is a separate concern, not failing):`);
-    for (const k of dead) console.log(`    - ${k}`);
-  }
+  const crossLocaleRegression = reportCrossLocaleMissing(missingByLocale);
+  const usedMissingRegression = reportUsedMissing(locales, used);
+  const dead = findDeadKeys(allKeys, locales, used, dynamicPrefixes);
+  reportDeadKeys(dead);
 
   console.log();
-  if (hasRegression) {
+  if (crossLocaleRegression || usedMissingRegression) {
     console.log('FAIL: regressions detected.');
     process.exit(1);
   }
