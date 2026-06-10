@@ -31,6 +31,7 @@ import {
   logFiredAlarm,
   logFiredAlarmsHydrate,
   logFiredStationPassed,
+  logRefMismatch,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
@@ -424,7 +425,11 @@ export function useStationAlarm({
 
     // #699: destination 변경 직후 firedAlarmsRef가 옛 destination 내용일 수 있다.
     // hydrate가 완료되어 ref id가 현재 destinationId와 일치할 때까지 평가 보류.
-    if (firedAlarmsRefDestIdRef.current !== destination.id) return;
+    // #580 M4: mismatch 발생 시 stamp — 같은 destinationId에서 반복되면 hydration race 정황.
+    if (firedAlarmsRefDestIdRef.current !== destination.id) {
+      logRefMismatch(destination.id, firedAlarmsRefDestIdRef.current);
+      return;
+    }
 
     // 알람 경로는 표시 경로보다 엄격한 정확도 게이트(MAX_ACCURACY_M=200m)를 적용한다.
     // useNearestStation은 지하 구간에서 정확도 1500m까지 표시용으로 수용하므로,
@@ -550,7 +555,11 @@ export function useStationAlarm({
     if (!route || !destination) return;
     // #699: ETA effect와 동일 guard — destination 전환 race로 stale ref가 imminent를
     // 잘못 발사하는 것을 차단한다.
-    if (firedAlarmsRefDestIdRef.current !== destination.id) return;
+    // #580 M4: mismatch stamp.
+    if (firedAlarmsRefDestIdRef.current !== destination.id) {
+      logRefMismatch(destination.id, firedAlarmsRefDestIdRef.current);
+      return;
+    }
     if (!isImminentByArrivalCode(destinationArrival, trackedTrainCode)) return;
 
     const imminentKey = `imminent:${destination.name}`;
@@ -736,7 +745,11 @@ export function useStationAlarm({
     if (!firedHydrated) return;
     if (!route || !destination) return;
     if (!nearestStation) return;
-    if (firedAlarmsRefDestIdRef.current !== destination.id) return;
+    // #580 M4: mismatch stamp.
+    if (firedAlarmsRefDestIdRef.current !== destination.id) {
+      logRefMismatch(destination.id, firedAlarmsRefDestIdRef.current);
+      return;
+    }
     if (!currentStationArrival) return;
     if (!isStationOnRoute(nearestStation, route)) return;
 
