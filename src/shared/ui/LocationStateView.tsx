@@ -3,6 +3,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import { useTheme } from '../theme';
+import { openAppSettings } from '../utils/openAppSettings';
 
 interface LocationStateViewProps {
   permissionDenied: boolean;
@@ -22,6 +23,13 @@ export function LocationStateView({ permissionDenied, loading, error, onRetry }:
           <Text style={[styles.message, { color: colors.muted }]}>{t('permissions.locationRequiredShort')}</Text>
           <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={onRetry} testID="location-retry-button">
             <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('permissions.request')}</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.secondaryButton, { borderColor: colors.accent }]}
+            onPress={openAppSettings}
+            testID="location-open-settings-button"
+          >
+            <Text style={[styles.buttonText, { color: colors.accent }]}>{t('permissions.openSettings')}</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -73,6 +81,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 8,
+  },
+  secondaryButton: {
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 12,
   },
   buttonText: {
     fontSize: 16,

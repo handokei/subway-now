@@ -3,6 +3,11 @@ import { screen, fireEvent } from '@testing-library/react-native';
 import * as RN from 'react-native';
 import { LocationStateView } from '../LocationStateView';
 import { renderWithTheme } from '../../../testUtils/renderWithTheme';
+import { openAppSettings } from '../../utils/openAppSettings';
+
+jest.mock('../../utils/openAppSettings', () => ({
+  openAppSettings: jest.fn(),
+}));
 
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');
 
@@ -12,6 +17,7 @@ describe('LocationStateView', () => {
   beforeEach(() => {
     mockUseColorScheme.mockReturnValue('light');
     onRetry.mockReset();
+    (openAppSettings as jest.Mock).mockReset();
   });
 
   afterEach(() => {
@@ -26,26 +32,32 @@ describe('LocationStateView', () => {
   });
 
   describe('permissionDenied 상태', () => {
-    it('권한 거부 메시지를 표시한다', () => {
+    beforeEach(() => {
       renderWithTheme(
         <LocationStateView permissionDenied={true} loading={false} error={null} onRetry={onRetry} />,
       );
+    });
+
+    it('권한 거부 메시지를 표시한다', () => {
       expect(screen.getByText('위치 권한이 필요합니다.')).toBeTruthy();
     });
 
     it('권한 요청 버튼을 표시한다', () => {
-      renderWithTheme(
-        <LocationStateView permissionDenied={true} loading={false} error={null} onRetry={onRetry} />,
-      );
       expect(screen.getByText('권한 요청')).toBeTruthy();
     });
 
     it('권한 요청 버튼 클릭 시 onRetry를 호출한다', () => {
-      renderWithTheme(
-        <LocationStateView permissionDenied={true} loading={false} error={null} onRetry={onRetry} />,
-      );
       fireEvent.press(screen.getByTestId('location-retry-button'));
       expect(onRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('"설정 열기" 버튼을 표시한다', () => {
+      expect(screen.getByText('설정 열기')).toBeTruthy();
+    });
+
+    it('"설정 열기" 버튼 클릭 시 openAppSettings를 호출한다', () => {
+      fireEvent.press(screen.getByTestId('location-open-settings-button'));
+      expect(openAppSettings).toHaveBeenCalledTimes(1);
     });
   });
 
