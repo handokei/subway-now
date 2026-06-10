@@ -250,5 +250,26 @@
     "routeProgress": "경로 추정",
     "gpsOnly": "GPS 추정",
     "uncertain": "위치 확인 중"
+  },
+  "a11y": {
+    "settings": {
+      "sleepModeHint": "이어폰 연결 시 기상 알람음으로 울립니다",
+      "speakerOutputHint": "이어폰 미연결 시 스피커로 알람음 재생",
+      "locklessStationPassedHint": "탑승 열차 선택 없이도 역 통과 알림 수신",
+      "accessibilityModeHint": "엘리베이터 기준으로 빠른 하차 위치 안내",
+      "versionFooterLabel": "앱 버전 {{version}}",
+      "versionFooterHint": "여러 번 탭하면 디버그 메뉴 열기",
+      "themeSegmentHint": "테마 변경",
+      "routeSegmentHint": "경로 탐색 방식 변경",
+      "localeRowHint": "탭하여 언어 선택"
+    },
+    "alarm": {
+      "dismissLabel": "알람 끄기",
+      "dismissHint": "알람음과 진동을 중지합니다",
+      "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
+      "boardingTrainSelectHint": "탭하여 이 열차로 탑승 등록",
+      "boardingLockReleaseLabel": "하차",
+      "boardingLockReleaseHint": "현재 탑승 상태를 종료합니다"
+    }
   }
 }

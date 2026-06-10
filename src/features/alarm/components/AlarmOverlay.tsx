@@ -54,6 +54,9 @@ export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
           onPress={handleDismiss}
           testID="alarm-dismiss-button"
           activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={t('alarmOverlay.dismiss')}
+          accessibilityHint={t('a11y.alarm.dismissHint')}
         >
           <Text style={[styles.buttonText, { color: colors.onAccent }]}>
             {t('alarmOverlay.dismiss')}

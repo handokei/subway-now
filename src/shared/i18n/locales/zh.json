@@ -250,5 +250,26 @@
     "routeProgress": "路径推算",
     "gpsOnly": "GPS推算",
     "uncertain": "定位中"
+  },
+  "a11y": {
+    "settings": {
+      "sleepModeHint": "连接耳机时以起床闹钟音播放",
+      "speakerOutputHint": "未连接耳机时通过扬声器播放闹钟音",
+      "locklessStationPassedHint": "未选择乘车列车也会收到经过站点通知",
+      "accessibilityModeHint": "按电梯位置引导快速下车位置",
+      "versionFooterLabel": "应用版本 {{version}}",
+      "versionFooterHint": "多次点击打开调试菜单",
+      "themeSegmentHint": "更改主题",
+      "routeSegmentHint": "更改路径偏好",
+      "localeRowHint": "点击选择语言"
+    },
+    "alarm": {
+      "dismissLabel": "关闭闹钟",
+      "dismissHint": "停止闹钟声和振动",
+      "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
+      "boardingTrainSelectHint": "点击乘坐该列车",
+      "boardingLockReleaseLabel": "下车",
+      "boardingLockReleaseHint": "结束当前乘车状态"
+    }
   }
 }

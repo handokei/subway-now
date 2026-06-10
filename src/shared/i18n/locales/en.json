@@ -250,5 +250,26 @@
     "routeProgress": "Route est.",
     "gpsOnly": "GPS est.",
     "uncertain": "Locating…"
+  },
+  "a11y": {
+    "settings": {
+      "sleepModeHint": "Plays a wake-up alarm sound when headphones are connected",
+      "speakerOutputHint": "Plays alarm sound through the speaker when headphones are not connected",
+      "locklessStationPassedHint": "Receive station-passed alerts even when no train is selected",
+      "accessibilityModeHint": "Guides quick-exit positions based on elevators",
+      "versionFooterLabel": "App version {{version}}",
+      "versionFooterHint": "Tap multiple times to open the debug menu",
+      "themeSegmentHint": "Change theme",
+      "routeSegmentHint": "Change route preference",
+      "localeRowHint": "Tap to select language"
+    },
+    "alarm": {
+      "dismissLabel": "Dismiss alarm",
+      "dismissHint": "Stops the alarm sound and vibration",
+      "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
+      "boardingTrainSelectHint": "Tap to board this train",
+      "boardingLockReleaseLabel": "Get off",
+      "boardingLockReleaseHint": "Ends the current boarding session"
+    }
   }
 }

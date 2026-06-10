@@ -175,6 +175,14 @@ export function BoardingTrainList({
               { opacity: unreachable ? 0.4 : 1 },
             ]}
             testID={`boarding-train-row-${train.trainCode}`}
+            accessibilityRole="button"
+            accessibilityLabel={t('a11y.alarm.boardingTrainSelectLabel', {
+              meta: metaText,
+              sequence: sequenceText,
+              arrival: arrivalText,
+            })}
+            accessibilityHint={t('a11y.alarm.boardingTrainSelectHint')}
+            accessibilityState={{ disabled: unreachable }}
           >
             <View style={styles.rowContent}>
               <View style={styles.rowMetaLine}>
