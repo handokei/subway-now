@@ -115,6 +115,10 @@ export default function SettingsScreen() {
               trackColor={{ false: colors.hair, true: colors.accent }}
               thumbColor={sleepMode ? colors.onAccent : colors.subtle}
               testID="sleep-mode-switch"
+              accessibilityRole="switch"
+              accessibilityLabel={t('settings.sleepModeLabel')}
+              accessibilityHint={t('a11y.settings.sleepModeHint')}
+              accessibilityState={{ checked: sleepMode }}
             />
           </View>
 
@@ -144,6 +148,10 @@ export default function SettingsScreen() {
               trackColor={{ false: colors.hair, true: colors.accent }}
               thumbColor={allowSpeaker ? colors.onAccent : colors.subtle}
               testID="allow-speaker-switch"
+              accessibilityRole="switch"
+              accessibilityLabel={t('settings.speakerOutputLabel')}
+              accessibilityHint={t('a11y.settings.speakerOutputHint')}
+              accessibilityState={{ checked: allowSpeaker }}
             />
           </View>
 
@@ -161,6 +169,10 @@ export default function SettingsScreen() {
               trackColor={{ false: colors.hair, true: colors.accent }}
               thumbColor={locklessStationPassed ? colors.onAccent : colors.subtle}
               testID="lockless-station-passed-switch"
+              accessibilityRole="switch"
+              accessibilityLabel={t('settings.locklessStationPassedLabel')}
+              accessibilityHint={t('a11y.settings.locklessStationPassedHint')}
+              accessibilityState={{ checked: locklessStationPassed }}
             />
           </View>
         </View>
@@ -182,6 +194,10 @@ export default function SettingsScreen() {
               trackColor={{ false: colors.hair, true: colors.accent }}
               thumbColor={accessibilityMode ? colors.onAccent : colors.subtle}
               testID="accessibility-mode-switch"
+              accessibilityRole="switch"
+              accessibilityLabel={t('settings.accessibilityModeLabel')}
+              accessibilityHint={t('a11y.settings.accessibilityModeHint')}
+              accessibilityState={{ checked: accessibilityMode }}
             />
           </View>
         </View>
@@ -194,6 +210,7 @@ export default function SettingsScreen() {
 
 function VersionFooter() {
   const { colors } = useTheme();
+  const { t } = useTranslation();
   const tapCountRef = useRef(0);
   const lastTapAtRef = useRef(0);
   const setDebugVisible = useDebugStore((s) => s.setDebugVisible);
@@ -219,6 +236,9 @@ function VersionFooter() {
       onPress={handlePress}
       style={styles.versionFooter}
       testID="settings-version-footer"
+      accessibilityRole="button"
+      accessibilityLabel={t('a11y.settings.versionFooterLabel', { version })}
+      accessibilityHint={isDebugModalEnabled() ? t('a11y.settings.versionFooterHint') : undefined}
     >
       <Text style={[styles.versionText, { color: colors.muted }]}>v{version}</Text>
     </Pressable>
@@ -320,6 +340,9 @@ function SegmentSetting<T extends string>({
               style={[styles.segment, active && { backgroundColor: colors.accent }]}
               onPress={() => onChange(optionValue)}
               testID={`${testIDPrefix}-${optionValue}`}
+              accessibilityRole="radio"
+              accessibilityLabel={optionLabel}
+              accessibilityState={{ selected: active }}
             >
               <Text style={[styles.segmentText, { color: active ? colors.onAccent : colors.muted }]}>
                 {optionLabel}

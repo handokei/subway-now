@@ -1,4 +1,5 @@
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
 import { LINE_COLORS, LINE_NAMES } from '../../../shared/constants/lineColors';
 import { formatClockTime } from '../../../shared/utils/formatTime';
@@ -32,6 +33,7 @@ interface Props {
  */
 export function BoardingLockHopCard({ lock, onRelease, currentEtaSeconds }: Props) {
   const { colors } = useTheme();
+  const { t } = useTranslation();
   const lineName = LINE_NAMES[lock.boardingLine];
   const timeText = formatClockTime(lock.boardedAt);
   const metaText = `탑승 · ${lineName} · ${timeText}`;
@@ -62,8 +64,13 @@ export function BoardingLockHopCard({ lock, onRelease, currentEtaSeconds }: Prop
         onPress={onRelease}
         style={[styles.releaseButton, { borderColor: colors.accent }]}
         testID="boarding-lock-hop-release"
+        accessibilityRole="button"
+        accessibilityLabel={t('a11y.alarm.boardingLockReleaseLabel')}
+        accessibilityHint={t('a11y.alarm.boardingLockReleaseHint')}
       >
-        <Text style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}>하차</Text>
+        <Text style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}>
+          {t('a11y.alarm.boardingLockReleaseLabel')}
+        </Text>
       </Pressable>
     </View>
   );
