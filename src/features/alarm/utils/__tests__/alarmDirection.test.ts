@@ -1,5 +1,6 @@
 import { resolveAlarmDirection } from '../alarmDirection';
 import type { Route } from '../../../../shared/utils/stationRoute';
+import type { LineNumber } from '../../../../shared/types/station';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,
@@ -62,13 +63,41 @@ describe('resolveAlarmDirection', () => {
     it('루프 노선 fallback: direct route에서 monotonic이 null이면 loop 결과 사용 (#1063)', () => {
       // line '5'는 monotonic mock에서 null. loop mock이 ('시청','왕십리') → 'down' 반환.
       const loopDirect: NonNullable<Route> = makeDirectRoute(3, '5');
-      const dir = resolveAlarmDirection(
-        { type: 'destination', stationName: '왕십리' },
-        { route: loopDirect, destinationName: '왕십리', sourceStationName: '시청' },
-      );
-      expect(dir).toBe('down');
+      expect(
+        resolveAlarmDirection(
+          { type: 'destination', stationName: '왕십리' },
+          { route: loopDirect, destinationName: '왕십리', sourceStationName: '시청' },
+        ),
+      ).toBe('down');
     });
   });
+
+  // 루프 fallback 시나리오를 공통 헬퍼로 추출 (#1063 Sonar 중복 라인 게이트).
+  // 단순 transfer route + (target, source, destination) 조합만 다르므로 위임 형태로 줄인다.
+  const expectLoopTransferDir = (params: {
+    transferName: string;
+    fromLine: LineNumber;
+    toLine: LineNumber;
+    target: { type: 'transfer' | 'destination'; stationName: string };
+    destinationName: string;
+    sourceStationName: string;
+    expected: 'up' | 'down' | undefined;
+  }): void => {
+    const route: NonNullable<Route> = makeTransferRoute({
+      transferName: params.transferName,
+      fromLine: params.fromLine,
+      toLine: params.toLine,
+      stopsToTransfer: 2,
+      stopsFromTransfer: 4,
+    });
+    expect(
+      resolveAlarmDirection(params.target, {
+        route,
+        destinationName: params.destinationName,
+        sourceStationName: params.sourceStationName,
+      }),
+    ).toBe(params.expected);
+  };
 
   describe('transfer route', () => {
     const route: NonNullable<Route> = makeTransferRoute({
@@ -121,34 +150,28 @@ describe('resolveAlarmDirection', () => {
 
     it('루프 노선 fallback: transfer route 환승역 (#1063)', () => {
       // fromLine='5' → monotonic null → loop fallback. ('시청','왕십리') → 'down'.
-      const loopTransfer: NonNullable<Route> = makeTransferRoute({
+      expectLoopTransferDir({
         transferName: '왕십리',
         fromLine: '5',
         toLine: '3',
-        stopsToTransfer: 2,
-        stopsFromTransfer: 4,
+        target: { type: 'transfer', stationName: '왕십리' },
+        destinationName: '강남',
+        sourceStationName: '시청',
+        expected: 'down',
       });
-      const dir = resolveAlarmDirection(
-        { type: 'transfer', stationName: '왕십리' },
-        { route: loopTransfer, destinationName: '강남', sourceStationName: '시청' },
-      );
-      expect(dir).toBe('down');
     });
 
     it('루프 노선 fallback: transfer route 최종 목적지 (#1063)', () => {
       // toLine='5' → monotonic null → loop fallback. transferName→destination 매칭.
-      const loopTransfer: NonNullable<Route> = makeTransferRoute({
+      expectLoopTransferDir({
         transferName: '시청',
         fromLine: '1',
         toLine: '5',
-        stopsToTransfer: 2,
-        stopsFromTransfer: 4,
+        target: { type: 'destination', stationName: '왕십리' },
+        destinationName: '왕십리',
+        sourceStationName: '동대문',
+        expected: 'down',
       });
-      const dir = resolveAlarmDirection(
-        { type: 'destination', stationName: '왕십리' },
-        { route: loopTransfer, destinationName: '왕십리', sourceStationName: '동대문' },
-      );
-      expect(dir).toBe('down');
     });
   });
 
@@ -194,50 +217,41 @@ describe('resolveAlarmDirection', () => {
       expect(dir).toBeUndefined();
     });
 
-    it('루프 노선 fallback: monotonic이 null이면 inferLoopDirection 결과를 사용 (#1063)', () => {
-      // toLine='5'는 monotonic mock에서 null. loopDirection mock이 ('시청','왕십리')에 'down' 반환.
-      // route 전체 경로상 sourceStationName이 사용되지 않으므로 last.transferName → destination 방향만 평가.
-      const loopFallbackRoute: NonNullable<Route> = makeMultiTransferRoute({
+    // multi-transfer 루프 fallback 시나리오 공통 헬퍼 (#1063 Sonar 중복 라인 게이트).
+    // 첫 환승 자리에 노선 '5'를 두고 sourceStationName→transferName 쌍만 다르게 검증.
+    const makeLoopFirstHopRoute = (firstTransferName: string): NonNullable<Route> =>
+      makeMultiTransferRoute({
         transfers: [
-          { transferName: '왕십리', fromLine: '1', toLine: '5', stopsToTransfer: 3 },
-        ],
-        stopsAfterLastTransfer: 4,
-      });
-      // 최종 목적지 평가는 last.toLine='5', from=last.transferName='왕십리', to=destinationName.
-      // 위 시나리오는 from='왕십리'라 loop mock 매칭 안 됨 — 다른 케이스로 검증.
-      // 대신 transfer 매칭 케이스: fromLine='1'(monotonic)이므로 loop 호출 안 됨.
-      // 그래서 첫 환승 자리에 loop 노선을 두고 sourceStationName='시청'→transferName='왕십리'로 매칭.
-      const loopFirstHop: NonNullable<Route> = makeMultiTransferRoute({
-        transfers: [
-          { transferName: '왕십리', fromLine: '5', toLine: '3', stopsToTransfer: 3 },
+          { transferName: firstTransferName, fromLine: '5', toLine: '3', stopsToTransfer: 3 },
           { transferName: '교대', fromLine: '3', toLine: '1', stopsToTransfer: 5 },
         ],
         stopsAfterLastTransfer: 4,
       });
-      // monotonic mock: line '5' → null. loop mock: ('5','시청','왕십리') → 'down'.
-      const dir = resolveAlarmDirection(
-        { type: 'transfer', stationName: '왕십리' },
-        { route: loopFirstHop, destinationName: '강남', sourceStationName: '시청' },
-      );
-      expect(dir).toBe('down');
-      // loopFallbackRoute는 본 테스트의 라인 5 placeholder로만 사용 (eslint unused 회피용 ref).
+
+    it('루프 노선 fallback: monotonic이 null이면 inferLoopDirection 결과를 사용 (#1063)', () => {
+      // 첫 환승의 fromLine='5' → monotonic null → loop fallback ('시청','왕십리') → 'down'.
+      // 추가로 last.toLine='5' placeholder 한 건도 같이 검증 (mock 매칭 안 됨 → 환승 매칭 우선).
+      const loopFallbackRoute: NonNullable<Route> = makeMultiTransferRoute({
+        transfers: [{ transferName: '왕십리', fromLine: '1', toLine: '5', stopsToTransfer: 3 }],
+        stopsAfterLastTransfer: 4,
+      });
       expect(loopFallbackRoute.type).toBe('multi-transfer');
+      expect(
+        resolveAlarmDirection(
+          { type: 'transfer', stationName: '왕십리' },
+          { route: makeLoopFirstHopRoute('왕십리'), destinationName: '강남', sourceStationName: '시청' },
+        ),
+      ).toBe('down');
     });
 
     it('루프 노선 fallback도 null이면 undefined', () => {
-      // line='5'지만 loop mock이 매칭 안 되는 ('a','b') 쌍 — 양쪽 모두 null → undefined.
-      const loopRoute: NonNullable<Route> = makeMultiTransferRoute({
-        transfers: [
-          { transferName: 'b', fromLine: '5', toLine: '3', stopsToTransfer: 3 },
-          { transferName: '교대', fromLine: '3', toLine: '1', stopsToTransfer: 5 },
-        ],
-        stopsAfterLastTransfer: 4,
-      });
-      const dir = resolveAlarmDirection(
-        { type: 'transfer', stationName: 'b' },
-        { route: loopRoute, destinationName: '강남', sourceStationName: 'a' },
-      );
-      expect(dir).toBeUndefined();
+      // ('a','b') 쌍은 loop mock 매칭 안 됨 → 양쪽 모두 null → undefined.
+      expect(
+        resolveAlarmDirection(
+          { type: 'transfer', stationName: 'b' },
+          { route: makeLoopFirstHopRoute('b'), destinationName: '강남', sourceStationName: 'a' },
+        ),
+      ).toBeUndefined();
     });
 
     it('환승 매칭은 됐지만 방향 lookup이 null이면 undefined', () => {
