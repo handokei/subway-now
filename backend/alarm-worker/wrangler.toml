@@ -73,6 +73,10 @@ head_sampling_rate = 1
 # - RECALL_ALERT_WEBHOOK_URL  : Slack incoming webhook URL 또는 호환 receiver
 # - CF_ACCOUNT_ID             : Cloudflare account ID (Analytics Engine SQL HTTP API endpoint 조립)
 # - CF_API_TOKEN              : Cloudflare API token (Analytics Engine read 권한)
+#
+# - ADMIN_TOKEN               : 운영자용 admin endpoint Bearer token (#1042 follow-up).
+#     `/admin/feedback`, `/admin/feedback/export.csv` 접근에 필요. 미설정 시 503.
+#     등록: `wrangler secret put ADMIN_TOKEN`
 [vars]
 APNS_HOST = "api.push.apple.com"
 APNS_HOST_SANDBOX = "api.sandbox.push.apple.com"
