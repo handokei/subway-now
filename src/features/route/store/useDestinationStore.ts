@@ -14,7 +14,9 @@ import {
   CUSTOM_ORIGIN_KEY,
   TRIP_ORIGIN_KEY,
   ROUTE_PREFERENCE_KEY,
+  RECENT_DESTINATIONS_KEY,
 } from '../../../shared/constants/storageKeys';
+import { RECENT_ROUTES_LIMIT } from '../../../shared/constants/recentDestinations';
 import { runTripBoundCleanups } from '../../alarm/store/tripBoundCleanups';
 import { setTripStartedAt } from '../../alarm/utils/tripStartStorage';
 import { triggerTripEndRecall } from '../../alarm/utils/triggerTripEndRecall';
@@ -28,7 +30,8 @@ const noop = (): void => {};
  * Destination/route 상태 store — ADR 후속 Step 6 (#892).
  *
  * 책임:
- *  - destination / recentDestination: 사용자 목적지 (영속 + 메모리).
+ *  - destination / recentDestinations: 사용자 목적지 (영속 + 메모리). recentDestinations는
+ *    LRU 리스트(#1032) — 최대 RECENT_ROUTES_LIMIT개.
  *  - customOrigin: 사용자가 명시 지정한 출발역 (GPS와 별개).
  *  - tripOrigin (#700): trip 시작 시 캡처한 출발역. cold restart 후 첫 GPS fix가
  *    실제 출발역과 다른 회귀 방지용 영속화.
@@ -41,7 +44,12 @@ const noop = (): void => {};
  */
 export interface DestinationState {
   destination: Station | null;
-  recentDestination: Station | null;
+  /**
+   * #1032 — 최근 선택한 목적지 리스트. 가장 최근 우선(index 0).
+   * 동일 station id는 dedup되며 최신 선택이 맨 앞으로 이동.
+   * 최대 RECENT_ROUTES_LIMIT개까지 보관. AsyncStorage(RECENT_DESTINATIONS_KEY)로 영속.
+   */
+  recentDestinations: Station[];
   customOrigin: Station | null;
   // #700 — useTripOrigin이 destination set 시점에 캡처한 origin. cold restart 시
   // 첫 GPS fix가 진짜 출발역과 다른 회귀를 막기 위해 영속화한다 (TRIP_ORIGIN_KEY).
@@ -50,7 +58,9 @@ export interface DestinationState {
 
   setDestination: (station: Station | null) => void;
   loadDestination: () => Promise<void>;
-  setRecentDestination: (station: Station | null) => void;
+  addRecentDestination: (station: Station) => void;
+  removeRecentDestination: (stationId: string) => void;
+  loadRecentDestinations: () => Promise<void>;
   setCustomOrigin: (station: Station | null) => void;
   loadCustomOrigin: () => Promise<void>;
   setTripOrigin: (station: Station | null) => void;
@@ -61,7 +71,7 @@ export interface DestinationState {
 
 export const useDestinationStore = create<DestinationState>((set, get) => ({
   destination: null,
-  recentDestination: null,
+  recentDestinations: [],
   customOrigin: null,
   tripOrigin: null,
   routePreference: 'optimal' as RoutePreference,
@@ -129,8 +139,38 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
     }
   },
 
-  setRecentDestination: (station: Station | null) => {
-    set({ recentDestination: station });
+  // #1032 — 가장 최근 목적지를 리스트 맨 앞에 추가. 같은 id가 이미 있으면 제거 후 prepend(dedup).
+  // 결과 길이는 RECENT_ROUTES_LIMIT으로 자른다.
+  addRecentDestination: (station: Station) => {
+    const prev = get().recentDestinations;
+    const deduped = prev.filter((s) => s.id !== station.id);
+    const next = [station, ...deduped].slice(0, RECENT_ROUTES_LIMIT);
+    set({ recentDestinations: next });
+    AsyncStorage.setItem(RECENT_DESTINATIONS_KEY, JSON.stringify(next)).catch(noop);
+  },
+
+  removeRecentDestination: (stationId: string) => {
+    const next = get().recentDestinations.filter((s) => s.id !== stationId);
+    set({ recentDestinations: next });
+    if (next.length === 0) {
+      AsyncStorage.removeItem(RECENT_DESTINATIONS_KEY).catch(noop);
+    } else {
+      AsyncStorage.setItem(RECENT_DESTINATIONS_KEY, JSON.stringify(next)).catch(noop);
+    }
+  },
+
+  loadRecentDestinations: async () => {
+    try {
+      const raw = await AsyncStorage.getItem(RECENT_DESTINATIONS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          set({ recentDestinations: parsed.slice(0, RECENT_ROUTES_LIMIT) });
+        }
+      }
+    } catch {
+      // 저장된 데이터 없음 — 빈 배열 유지
+    }
   },
 
   setCustomOrigin: (station: Station | null) => {

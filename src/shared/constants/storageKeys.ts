@@ -113,3 +113,7 @@ export const LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY =
 // registerActiveTrip이 promptDisplay.line으로 set하고 clearActiveTrip이 삭제.
 // 형식: LineNumber 문자열 ('1'..'9' | 'airport' | ...). 키 부재 = snap skip(graceful).
 export const ACTIVE_BOARDING_LINE_KEY = 'subway-now:active-boarding-line';
+// #1032 — 최근 선택한 목적지 리스트. 가장 최근 우선(LRU), 동일 station id는 dedup.
+// 최대 RECENT_ROUTES_LIMIT개(`src/shared/constants/recentDestinations.ts`)까지 보관.
+// 형식: Station[] JSON.
+export const RECENT_DESTINATIONS_KEY = 'subway-now:recent-destinations';

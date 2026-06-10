@@ -34,7 +34,7 @@ export default function MapScreen() {
   const setCustomOrigin = useDestinationStore((s) => s.setCustomOrigin);
   const destination = useDestinationStore((s) => s.destination);
   const setDestination = useDestinationStore((s) => s.setDestination);
-  const setRecentDestination = useDestinationStore((s) => s.setRecentDestination);
+  const addRecentDestination = useDestinationStore((s) => s.addRecentDestination);
   const favorites = useFavoritesStore((s) => s.favorites);
   const setSlotFavorite = useFavoritesStore((s) => s.setSlotFavorite);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
@@ -178,7 +178,7 @@ export default function MapScreen() {
             <TouchableOpacity
               style={[styles.selectionButton, { borderWidth: 1, borderColor: colors.accent }]}
               onPress={() => {
-                setRecentDestination(selectedStation);
+                addRecentDestination(selectedStation);
                 setDestination(selectedStation);
                 setSelectedStation(null);
                 router.navigate('/(tabs)');

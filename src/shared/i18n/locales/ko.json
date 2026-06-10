@@ -3,7 +3,8 @@
     "retry": "다시 시도",
     "close": "닫기",
     "confirm": "확인",
-    "cancel": "취소"
+    "cancel": "취소",
+    "remove": "삭제"
   },
   "tabs": {
     "current": "현재 역",

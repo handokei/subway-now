@@ -87,8 +87,10 @@ export default function HomeScreen() {
   const destination = useDestinationStore((s) => s.destination);
   const setDestination = useDestinationStore((s) => s.setDestination);
   const loadDestination = useDestinationStore((s) => s.loadDestination);
-  const recentDestination = useDestinationStore((s) => s.recentDestination);
-  const setRecentDestination = useDestinationStore((s) => s.setRecentDestination);
+  const recentDestinations = useDestinationStore((s) => s.recentDestinations);
+  const addRecentDestination = useDestinationStore((s) => s.addRecentDestination);
+  const removeRecentDestination = useDestinationStore((s) => s.removeRecentDestination);
+  const loadRecentDestinations = useDestinationStore((s) => s.loadRecentDestinations);
   const sleepMode = useSettingsStore((s) => s.sleepMode);
   const setSleepMode = useSettingsStore((s) => s.setSleepMode);
   const loadSleepMode = useSettingsStore((s) => s.loadSleepMode);
@@ -487,6 +489,7 @@ export default function HomeScreen() {
     loadAllowSpeaker();
     loadCustomOrigin();
     loadRoutePreference();
+    loadRecentDestinations();
     loadAlarmEvent();
     loadLocklessStationPassed();
     loadDismissSilence();
@@ -995,20 +998,39 @@ export default function HomeScreen() {
             {/* No destination: picker + recent */}
             {!destination && (
               <View style={{ paddingHorizontal: spacing.xxl, paddingVertical: spacing.xxl }}>
-                {recentDestination && (
-                  <TouchableOpacity
-                    style={[styles.recentDestinationButton, { borderColor: colors.accent }]}
-                    onPress={() => setDestination(recentDestination)}
-                    testID="recent-destination-button"
-                  >
-                    <Text style={[styles.recentDestinationLabel, { color: colors.accent }]}>{t('home.previousDestination')}</Text>
-                    <View style={styles.recentDestinationRow}>
-                      <Text style={[styles.recentDestinationName, { color: colors.ink }]}>{getStationDisplayName(recentDestination)}</Text>
-                      <View style={[styles.recentLineBadge, { backgroundColor: recentDestination.lineColor }]}>
-                        <Text style={styles.recentLineText}>{LINE_NAMES[recentDestination.line]}</Text>
+                {recentDestinations.length > 0 && (
+                  <View testID="recent-destinations-list">
+                    <Text style={[styles.recentDestinationLabel, { color: colors.accent, paddingHorizontal: spacing.lg }]}>
+                      {t('home.previousDestination')}
+                    </Text>
+                    {recentDestinations.map((recent) => (
+                      <View
+                        key={recent.id}
+                        style={[styles.recentDestinationButton, styles.recentDestinationItemRow, { borderColor: colors.accent }]}
+                      >
+                        <TouchableOpacity
+                          style={styles.recentDestinationTapArea}
+                          onPress={() => setDestination(recent)}
+                          testID={`recent-destination-button-${recent.id}`}
+                        >
+                          <View style={styles.recentDestinationRow}>
+                            <Text style={[styles.recentDestinationName, { color: colors.ink }]}>{getStationDisplayName(recent)}</Text>
+                            <View style={[styles.recentLineBadge, { backgroundColor: recent.lineColor }]}>
+                              <Text style={styles.recentLineText}>{LINE_NAMES[recent.line]}</Text>
+                            </View>
+                          </View>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.recentDestinationDelete}
+                          onPress={() => removeRecentDestination(recent.id)}
+                          accessibilityLabel={t('common.remove')}
+                          testID={`recent-destination-delete-${recent.id}`}
+                        >
+                          <Text style={[styles.recentDestinationDeleteText, { color: colors.muted }]}>✕</Text>
+                        </TouchableOpacity>
                       </View>
-                    </View>
-                  </TouchableOpacity>
+                    ))}
+                  </View>
                 )}
                 <TouchableOpacity
                   style={[styles.destinationButton, { backgroundColor: colors.accent }]}
@@ -1109,7 +1131,7 @@ export default function HomeScreen() {
       <DestinationPicker
         visible={pickerVisible}
         onSelect={(station) => {
-          setRecentDestination(station);
+          addRecentDestination(station);
           setDestination(station);
           setPickerVisible(false);
         }}
@@ -1267,6 +1289,22 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
     marginBottom: spacing.sm,
+  },
+  recentDestinationItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  recentDestinationTapArea: {
+    flex: 1,
+  },
+  recentDestinationDelete: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginLeft: spacing.sm,
+  },
+  recentDestinationDeleteText: {
+    fontSize: 16,
+    fontWeight: '700',
   },
   recentDestinationLabel: {
     fontSize: 11,

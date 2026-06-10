@@ -3,7 +3,8 @@
     "retry": "Retry",
     "close": "Close",
     "confirm": "OK",
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "remove": "Remove"
   },
   "tabs": {
     "current": "Current",
