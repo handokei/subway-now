@@ -32,42 +32,49 @@ jest.mock('../../../../shared/utils/stationRoute', () => ({
   isSameStationName: (a: string, b: string) => a === b,
 }));
 
+// 공통 호출 헬퍼 (#1063 Sonar 중복 라인 게이트):
+// 모든 케이스가 (event, { route, destinationName, sourceStationName }) 형태로
+// resolveAlarmDirection을 호출하므로 위임 형태로 줄인다.
+type Target = { type: 'transfer' | 'destination'; stationName: string };
+const callResolve = (
+  route: NonNullable<Route>,
+  target: Target,
+  destinationName: string,
+  sourceStationName: string,
+) =>
+  resolveAlarmDirection(target, {
+    route,
+    destinationName,
+    sourceStationName,
+  });
+
 describe('resolveAlarmDirection', () => {
   describe('direct route', () => {
     const route: NonNullable<Route> = makeDirectRoute(3, '1');
 
     it('대상역이 목적지이면 source→destination 방향을 반환한다', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'destination', stationName: '강남' },
-        { route, destinationName: '강남', sourceStationName: '시청' },
+      expect(callResolve(route, { type: 'destination', stationName: '강남' }, '강남', '시청')).toBe(
+        'down',
       );
-      expect(dir).toBe('down');
     });
 
     it('대상역이 목적지가 아니면 undefined', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'destination', stationName: '다른역' },
-        { route, destinationName: '강남', sourceStationName: '시청' },
-      );
-      expect(dir).toBeUndefined();
+      expect(
+        callResolve(route, { type: 'destination', stationName: '다른역' }, '강남', '시청'),
+      ).toBeUndefined();
     });
 
     it('방향 lookup이 null을 반환하면 undefined', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'destination', stationName: '강남' },
-        { route, destinationName: '강남', sourceStationName: '없는역' },
-      );
-      expect(dir).toBeUndefined();
+      expect(
+        callResolve(route, { type: 'destination', stationName: '강남' }, '강남', '없는역'),
+      ).toBeUndefined();
     });
 
     it('루프 노선 fallback: direct route에서 monotonic이 null이면 loop 결과 사용 (#1063)', () => {
       // line '5'는 monotonic mock에서 null. loop mock이 ('시청','왕십리') → 'down' 반환.
       const loopDirect: NonNullable<Route> = makeDirectRoute(3, '5');
       expect(
-        resolveAlarmDirection(
-          { type: 'destination', stationName: '왕십리' },
-          { route: loopDirect, destinationName: '왕십리', sourceStationName: '시청' },
-        ),
+        callResolve(loopDirect, { type: 'destination', stationName: '왕십리' }, '왕십리', '시청'),
       ).toBe('down');
     });
   });
@@ -78,7 +85,7 @@ describe('resolveAlarmDirection', () => {
     transferName: string;
     fromLine: LineNumber;
     toLine: LineNumber;
-    target: { type: 'transfer' | 'destination'; stationName: string };
+    target: Target;
     destinationName: string;
     sourceStationName: string;
     expected: 'up' | 'down' | undefined;
@@ -91,11 +98,7 @@ describe('resolveAlarmDirection', () => {
       stopsFromTransfer: 4,
     });
     expect(
-      resolveAlarmDirection(params.target, {
-        route,
-        destinationName: params.destinationName,
-        sourceStationName: params.sourceStationName,
-      }),
+      callResolve(route, params.target, params.destinationName, params.sourceStationName),
     ).toBe(params.expected);
   };
 
@@ -109,43 +112,33 @@ describe('resolveAlarmDirection', () => {
     });
 
     it('대상역이 환승역이면 fromLine 기준 방향', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'transfer', stationName: '동대문' },
-        { route, destinationName: '강남', sourceStationName: '시청' },
+      expect(callResolve(route, { type: 'transfer', stationName: '동대문' }, '강남', '시청')).toBe(
+        'down',
       );
-      expect(dir).toBe('down');
     });
 
     it('대상역이 최종 목적지이면 toLine 기준 방향', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'destination', stationName: '강남' },
-        { route, destinationName: '강남', sourceStationName: '시청' },
-      );
-      expect(dir).toBe('up');
+      expect(
+        callResolve(route, { type: 'destination', stationName: '강남' }, '강남', '시청'),
+      ).toBe('up');
     });
 
     it('대상역이 둘 다 아니면 undefined', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'destination', stationName: '엉뚱역' },
-        { route, destinationName: '강남', sourceStationName: '시청' },
-      );
-      expect(dir).toBeUndefined();
+      expect(
+        callResolve(route, { type: 'destination', stationName: '엉뚱역' }, '강남', '시청'),
+      ).toBeUndefined();
     });
 
     it('방향 lookup이 null이면 undefined (환승역)', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'transfer', stationName: '동대문' },
-        { route, destinationName: '강남', sourceStationName: '없는역' },
-      );
-      expect(dir).toBeUndefined();
+      expect(
+        callResolve(route, { type: 'transfer', stationName: '동대문' }, '강남', '없는역'),
+      ).toBeUndefined();
     });
 
     it('방향 lookup이 null이면 undefined (최종 목적지)', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'destination', stationName: '없는역' },
-        { route, destinationName: '없는역', sourceStationName: '시청' },
-      );
-      expect(dir).toBeUndefined();
+      expect(
+        callResolve(route, { type: 'destination', stationName: '없는역' }, '없는역', '시청'),
+      ).toBeUndefined();
     });
 
     it('루프 노선 fallback: transfer route 환승역 (#1063)', () => {
@@ -185,36 +178,28 @@ describe('resolveAlarmDirection', () => {
     });
 
     it('첫 번째 환승은 sourceStationName 기준', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'transfer', stationName: '왕십리' },
-        { route, destinationName: '강남', sourceStationName: '시청' },
+      expect(callResolve(route, { type: 'transfer', stationName: '왕십리' }, '강남', '시청')).toBe(
+        'down',
       );
-      expect(dir).toBe('down');
     });
 
     it('두 번째 환승은 직전 환승역 기준 (해당 fromLine 사용)', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'transfer', stationName: '교대' },
-        { route, destinationName: '강남', sourceStationName: '시청' },
+      expect(callResolve(route, { type: 'transfer', stationName: '교대' }, '강남', '시청')).toBe(
+        'up',
       );
-      expect(dir).toBe('up');
     });
 
     it('최종 목적지는 마지막 환승의 toLine 기준', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'destination', stationName: '강남' },
-        { route, destinationName: '강남', sourceStationName: '시청' },
-      );
       // toLine='3' → mock returns null → undefined
-      expect(dir).toBeUndefined();
+      expect(
+        callResolve(route, { type: 'destination', stationName: '강남' }, '강남', '시청'),
+      ).toBeUndefined();
     });
 
     it('대상역이 어디에도 매칭 안 되면 undefined', () => {
-      const dir = resolveAlarmDirection(
-        { type: 'transfer', stationName: '엉뚱역' },
-        { route, destinationName: '강남', sourceStationName: '시청' },
-      );
-      expect(dir).toBeUndefined();
+      expect(
+        callResolve(route, { type: 'transfer', stationName: '엉뚱역' }, '강남', '시청'),
+      ).toBeUndefined();
     });
 
     // multi-transfer 루프 fallback 시나리오 공통 헬퍼 (#1063 Sonar 중복 라인 게이트).
@@ -237,9 +222,11 @@ describe('resolveAlarmDirection', () => {
       });
       expect(loopFallbackRoute.type).toBe('multi-transfer');
       expect(
-        resolveAlarmDirection(
+        callResolve(
+          makeLoopFirstHopRoute('왕십리'),
           { type: 'transfer', stationName: '왕십리' },
-          { route: makeLoopFirstHopRoute('왕십리'), destinationName: '강남', sourceStationName: '시청' },
+          '강남',
+          '시청',
         ),
       ).toBe('down');
     });
@@ -247,9 +234,11 @@ describe('resolveAlarmDirection', () => {
     it('루프 노선 fallback도 null이면 undefined', () => {
       // ('a','b') 쌍은 loop mock 매칭 안 됨 → 양쪽 모두 null → undefined.
       expect(
-        resolveAlarmDirection(
+        callResolve(
+          makeLoopFirstHopRoute('b'),
           { type: 'transfer', stationName: 'b' },
-          { route: makeLoopFirstHopRoute('b'), destinationName: '강남', sourceStationName: 'a' },
+          '강남',
+          'a',
         ),
       ).toBeUndefined();
     });
@@ -262,11 +251,14 @@ describe('resolveAlarmDirection', () => {
         ],
         stopsAfterLastTransfer: 4,
       });
-      const dir = resolveAlarmDirection(
-        { type: 'transfer', stationName: '왕십리' },
-        { route: routeWithNullableLine, destinationName: '강남', sourceStationName: '시청' },
-      );
-      expect(dir).toBeUndefined();
+      expect(
+        callResolve(
+          routeWithNullableLine,
+          { type: 'transfer', stationName: '왕십리' },
+          '강남',
+          '시청',
+        ),
+      ).toBeUndefined();
     });
   });
 });
