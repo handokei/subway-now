@@ -156,10 +156,19 @@ export function DestinationPicker({
 
         <View style={styles.overlay} pointerEvents="box-none">
           <View style={[styles.header, { backgroundColor: colors.bgTranslucent }]}>
-            <Text style={[styles.title, { color: colors.ink }]}>
+            <Text
+              style={[styles.title, { color: colors.ink }]}
+              accessibilityRole="header"
+            >
               {t(mode === 'origin' ? 'destinationPicker.originTitle' : 'destinationPicker.title')}
             </Text>
-            <TouchableOpacity onPress={handleClose} testID="close-button">
+            <TouchableOpacity
+              onPress={handleClose}
+              testID="close-button"
+              accessibilityRole="button"
+              accessibilityLabel={t('common.close')}
+              accessibilityHint={t('a11y.route.destinationCloseHint')}
+            >
               <Text style={[styles.closeText, { color: colors.accent }]}>{t('common.close')}</Text>
             </TouchableOpacity>
           </View>
@@ -168,7 +177,12 @@ export function DestinationPicker({
               <Text style={[styles.pendingText, { color: colors.onAccent }]}>
                 {t('destinationPicker.pendingSlot', { label: t(`favorites.${pendingSlot}`) })}
               </Text>
-              <TouchableOpacity onPress={() => setPendingSlot(null)} testID="pending-slot-cancel">
+              <TouchableOpacity
+                onPress={() => setPendingSlot(null)}
+                testID="pending-slot-cancel"
+                accessibilityRole="button"
+                accessibilityLabel={t('common.cancel')}
+              >
                 <Text style={[styles.pendingCancel, { color: colors.onAccent }]}>{t('common.cancel')}</Text>
               </TouchableOpacity>
             </View>
@@ -206,6 +220,10 @@ export function DestinationPicker({
                   ]}
                   onPress={() => setPendingSlot(pendingSlot === role ? null : role)}
                   testID={`slot-placeholder-chip-${role}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={t('a11y.route.assignSlotLabel', { label: t(`favorites.${role}`) })}
+                  accessibilityHint={t('a11y.route.assignSlotHint')}
+                  accessibilityState={{ selected: pendingSlot === role }}
                 >
                   <Text style={styles.chipIcon}>{FAVORITE_SLOT_ICONS[role]}</Text>
                   <Text style={[styles.chipText, { color: colors.ink }]}>
@@ -224,6 +242,9 @@ export function DestinationPicker({
                     style={[styles.chip, { backgroundColor: colors.card, borderColor: colors.hair }]}
                     onPress={() => handleSelect(station)}
                     testID={`favorite-chip-${station.id}`}
+                    accessibilityRole="button"
+                    accessibilityLabel={chipText}
+                    accessibilityHint={t('a11y.route.favoriteChipHint')}
                   >
                     {isSlot && <Text style={styles.chipIcon}>{FAVORITE_SLOT_ICONS[role]}</Text>}
                     <Text style={[styles.chipText, { color: colors.ink }]}>{chipText}</Text>
@@ -255,6 +276,7 @@ export function DestinationPicker({
               setRecenterNonce((n) => n + 1);
             }}
             accessibilityLabel={t('map.recenter')}
+            accessibilityRole="button"
             testID="recenter-button"
           >
             <Text style={[styles.recenterIcon, { color: colors.ink }]}>◎</Text>

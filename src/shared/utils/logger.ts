@@ -1,3 +1,5 @@
+import { addLogBreadcrumb } from '../infra/monitoring/breadcrumb';
+
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 const LEVELS: Record<LogLevel, number> = {
@@ -16,6 +18,9 @@ export function setMinLevel(level: LogLevel): void {
 
 function log(level: LogLevel, tag: string, ...args: unknown[]): void {
   if (LEVELS[level] < LEVELS[minLevel]) return;
+
+  // Sentry breadcrumb forward — opt-in 비활성 시 내부에서 no-op.
+  addLogBreadcrumb(level, tag, args);
 
   const message = `[${tag}]`;
   switch (level) {

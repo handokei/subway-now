@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Sentry from '@sentry/react-native';
 import { SENTRY_OPT_IN_KEY } from '../../constants/storageKeys';
 import { createLogger } from '../../utils/logger';
+import { setSentryEnabled } from './sentryState';
 
 const logger = createLogger('SentryInit');
 
@@ -48,6 +49,7 @@ export async function setSentryOptIn(enabled: boolean): Promise<void> {
       enableSentry();
     } else {
       Sentry.close();
+      setSentryEnabled(false);
       logger.info('Sentry 비활성화');
     }
   } catch (e) {
@@ -75,5 +77,6 @@ function enableSentry(): void {
     return;
   }
   Sentry.init({ dsn });
+  setSentryEnabled(true);
   logger.info('Sentry 초기화 완료');
 }

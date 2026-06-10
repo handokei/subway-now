@@ -1,15 +1,13 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Sentry from '@sentry/react-native';
 import { getSentryOptIn, initSentryIfOptedIn, setSentryOptIn } from '../sentryInit';
+import { isSentryEnabled, setSentryEnabled } from '../sentryState';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
   setItem: jest.fn(),
 }));
-jest.mock('@sentry/react-native', () => ({
-  init: jest.fn(),
-  close: jest.fn(),
-}));
+// @sentry/react-native는 jest.setup.js에서 글로벌 모킹됨.
 
 const getItemMock = AsyncStorage.getItem as jest.Mock;
 const setItemMock = AsyncStorage.setItem as jest.Mock;
@@ -24,6 +22,7 @@ beforeEach(() => {
   initMock.mockReset();
   closeMock.mockReset();
   delete process.env.EXPO_PUBLIC_SENTRY_DSN;
+  setSentryEnabled(false);
   jest.spyOn(console, 'log').mockImplementation(() => {});
   jest.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -57,11 +56,12 @@ describe('initSentryIfOptedIn', () => {
     expect(initMock).not.toHaveBeenCalled();
   });
 
-  it('opt-in true + DSN 있음 → Sentry.init 호출', async () => {
+  it('opt-in true + DSN 있음 → Sentry.init 호출 + isSentryEnabled true', async () => {
     getItemMock.mockResolvedValueOnce('true');
     process.env.EXPO_PUBLIC_SENTRY_DSN = 'https://test@sentry.io/123';
     await initSentryIfOptedIn();
     expect(initMock).toHaveBeenCalledWith({ dsn: 'https://test@sentry.io/123' });
+    expect(isSentryEnabled()).toBe(true);
   });
 
   it('AsyncStorage throw → throw 전파하지 않음 (boot path 비차단)', async () => {

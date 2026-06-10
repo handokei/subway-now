@@ -65,7 +65,13 @@ export function MisBoardingReselectModal({
         >
           <View style={[styles.header, { borderBottomColor: colors.hair }]}>
             <Text style={[typography.label, { color: colors.warn }]}>탑승 열차 재선택</Text>
-            <Pressable onPress={onClose} testID="mis-boarding-reselect-close">
+            <Pressable
+              onPress={onClose}
+              testID="mis-boarding-reselect-close"
+              accessibilityRole="button"
+              accessibilityLabel="닫기"
+              accessibilityHint="재선택을 취소합니다"
+            >
               <Text style={[typography.body, { color: colors.accent, fontWeight: '600' }]}>닫기</Text>
             </Pressable>
           </View>

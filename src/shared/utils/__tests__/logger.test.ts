@@ -1,4 +1,8 @@
+import * as Sentry from '@sentry/react-native';
+import { setSentryEnabled } from '../../infra/monitoring/sentryState';
 import { createLogger, setMinLevel } from '../logger';
+
+const addBreadcrumbMock = Sentry.addBreadcrumb as jest.Mock;
 
 describe('createLogger', () => {
   let logSpy: jest.SpyInstance;
@@ -9,10 +13,13 @@ describe('createLogger', () => {
     logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
     warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
     errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    addBreadcrumbMock.mockReset();
+    setSentryEnabled(false);
   });
 
   afterEach(() => {
     jest.restoreAllMocks();
+    setSentryEnabled(false);
   });
 
   it('debug 레벨은 console.log를 호출한다', () => {
@@ -49,6 +56,35 @@ describe('createLogger', () => {
     const logger = createLogger('TEST');
     logger.info('상태:', 'granted', 42);
     expect(logSpy).toHaveBeenCalledWith('[TEST]', '상태:', 'granted', 42);
+  });
+
+  describe('Sentry breadcrumb wire', () => {
+    it('opt-in 비활성 시 breadcrumb 호출 안 함', () => {
+      const logger = createLogger('TAG');
+      logger.info('메시지');
+      expect(addBreadcrumbMock).not.toHaveBeenCalled();
+    });
+
+    it('opt-in 활성 + info → breadcrumb 호출', () => {
+      setSentryEnabled(true);
+      const logger = createLogger('TAG');
+      logger.info('hi');
+      expect(addBreadcrumbMock).toHaveBeenCalledWith({
+        level: 'info',
+        category: 'log',
+        message: '[TAG] hi',
+      });
+    });
+
+    it('minLevel 가드로 막힌 로그는 breadcrumb도 호출 안 함', () => {
+      setSentryEnabled(true);
+      setMinLevel('warn');
+      const logger = createLogger('TAG');
+      logger.debug('skip');
+      logger.info('skip');
+      expect(addBreadcrumbMock).not.toHaveBeenCalled();
+      setMinLevel('debug');
+    });
   });
 
   describe('setMinLevel', () => {
