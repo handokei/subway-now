@@ -1009,4 +1009,60 @@ describe('useApnsTripRegistration', () => {
       expect(refreshed?.[0].subsurface).toBe(true);
     });
   });
+
+  describe('boarding-prompt 컨텍스트 (#1028)', () => {
+    it('currentStation이 destination과 다르면 promptGeoContext/promptDisplay 송신', async () => {
+      // 단조 line(3호선) 대화(3-001) → 정발산(3-003) — buildBoardingPromptContext가 non-null 반환.
+      const origin: Station = {
+        id: '3-001',
+        name: '대화',
+        line: '3',
+        lat: 37.676087,
+        lng: 126.747569,
+        lineColor: '#EF7C1C',
+      };
+      const dest: Station = {
+        id: '3-003',
+        name: '정발산',
+        line: '3',
+        lat: 37.659477,
+        lng: 126.773359,
+        lineColor: '#EF7C1C',
+      };
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: makeDirectRoute(2, '3'),
+          destination: dest,
+          nextStationEtaSeconds: 120,
+          currentStation: origin,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
+      const args = mockRegister.mock.calls[0][0] as {
+        promptGeoContext?: { origin: { lat: number; lng: number }; direction: string | null };
+        promptDisplay?: { originStation: string; line: string };
+      };
+      expect(args.promptGeoContext?.origin).toEqual({ lat: origin.lat, lng: origin.lng });
+      expect(args.promptGeoContext?.direction).toBe('down');
+      expect(args.promptDisplay).toEqual({ originStation: '대화', line: '3' });
+    });
+
+    it('currentStation === destination이면 컨텍스트 누락 (backend 자동 skip)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
+      const args = mockRegister.mock.calls[0][0] as {
+        promptGeoContext?: unknown;
+        promptDisplay?: unknown;
+      };
+      expect(args.promptGeoContext).toBeUndefined();
+      expect(args.promptDisplay).toBeUndefined();
+    });
+  });
 });
