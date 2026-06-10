@@ -457,4 +457,11 @@ export interface Env {
   CF_ACCOUNT_ID?: string;
   /** Cloudflare API token (Analytics Engine read 권한) (#972). secret으로 등록. */
   CF_API_TOKEN?: string;
+  /**
+   * 운영자용 admin endpoint Bearer token (#1042 follow-up).
+   * `/admin/feedback`, `/admin/feedback/export.csv`가 본 토큰으로 인증한다.
+   * 미설정 시 admin endpoint들은 503 (운영자가 secret 등록 전 환경 호환).
+   * 등록: `wrangler secret put ADMIN_TOKEN`
+   */
+  ADMIN_TOKEN?: string;
 }
