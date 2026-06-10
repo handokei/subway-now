@@ -36,20 +36,47 @@ describe('notificationState', () => {
     jest.clearAllMocks();
   });
 
-  describe('getLastNotifiedStationId', () => {
-    it('AsyncStorage에서 LAST_NOTIFIED_STATION_KEY 값을 읽어 반환한다', async () => {
-      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce('station-1');
+  describe('getLastNotifiedStationId (destination scoped, #1011)', () => {
+    it('저장된 destinationId와 일치하면 stationId를 반환한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
+        JSON.stringify({ destinationId: 'dest-1', stationId: 'station-1' }),
+      );
 
-      const result = await getLastNotifiedStationId();
+      const result = await getLastNotifiedStationId('dest-1');
 
       expect(AsyncStorage.getItem).toHaveBeenCalledWith(LAST_NOTIFIED_STATION_KEY);
       expect(result).toBe('station-1');
     });
 
+    it('저장된 destinationId와 다르면 stale로 간주하고 null을 반환한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(
+        JSON.stringify({ destinationId: 'dest-1', stationId: 'station-1' }),
+      );
+
+      const result = await getLastNotifiedStationId('dest-2');
+
+      expect(result).toBeNull();
+    });
+
+    it('destinationId가 null이면 null을 반환한다 (storage read 스킵)', async () => {
+      const result = await getLastNotifiedStationId(null);
+
+      expect(result).toBeNull();
+      expect(AsyncStorage.getItem).not.toHaveBeenCalled();
+    });
+
     it('AsyncStorage가 null을 반환하면 null을 반환한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
 
-      const result = await getLastNotifiedStationId();
+      const result = await getLastNotifiedStationId('dest-1');
+
+      expect(result).toBeNull();
+    });
+
+    it('JSON 파싱 실패 시 null을 반환한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce('not-json');
+
+      const result = await getLastNotifiedStationId('dest-1');
 
       expect(result).toBeNull();
     });
@@ -57,25 +84,31 @@ describe('notificationState', () => {
     it('AsyncStorage가 에러를 던지면 null을 반환한다', async () => {
       (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage 오류'));
 
-      const result = await getLastNotifiedStationId();
+      const result = await getLastNotifiedStationId('dest-1');
 
       expect(result).toBeNull();
     });
   });
 
-  describe('setLastNotifiedStationId', () => {
-    it('AsyncStorage에 LAST_NOTIFIED_STATION_KEY로 값을 저장한다', async () => {
+  describe('setLastNotifiedStationId (destination scoped, #1011)', () => {
+    it('destinationId와 stationId를 객체로 직렬화해 저장한다', async () => {
       (AsyncStorage.setItem as jest.Mock).mockResolvedValueOnce(undefined);
 
-      await setLastNotifiedStationId('station-2');
+      await setLastNotifiedStationId('dest-1', 'station-2');
 
-      expect(AsyncStorage.setItem).toHaveBeenCalledWith(LAST_NOTIFIED_STATION_KEY, 'station-2');
+      expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+        LAST_NOTIFIED_STATION_KEY,
+        expect.any(String),
+      );
+      const written = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(written.destinationId).toBe('dest-1');
+      expect(written.stationId).toBe('station-2');
     });
 
     it('AsyncStorage가 에러를 던져도 throw하지 않는다', async () => {
       (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('storage 오류'));
 
-      await expect(setLastNotifiedStationId('station-3')).resolves.toBeUndefined();
+      await expect(setLastNotifiedStationId('dest-1', 'station-3')).resolves.toBeUndefined();
     });
   });
 

@@ -705,7 +705,7 @@ describe('useStationAlarm', () => {
       await waitFor(() => {
         expect(mockSendStationPassedNotification).toHaveBeenCalledWith('역삼', '강남', directTarget, undefined);
       });
-      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith('S1');
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, 'S1');
     });
 
     it('does not fire when stored lastNotifiedStationId equals nearest station', async () => {
@@ -2284,7 +2284,7 @@ describe('useStationAlarm', () => {
         expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg-arvlcd', onRouteStation),
       );
       expect(mockSendStationPassedNotification).toHaveBeenCalled();
-      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(onRouteStation.id);
+      expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, onRouteStation.id);
     });
 
     // #640 회귀 가드 — 본 PR의 핵심.

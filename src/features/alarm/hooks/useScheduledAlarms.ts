@@ -112,6 +112,7 @@ export function useScheduledAlarms({
     await scheduleAlarmsForRoute({
       route: currentRoute,
       destinationName: currentDestination.name,
+      destinationId: currentDestination.id,
       currentStationApproachEtaSeconds: pick.etaSeconds,
       // stamp.direction은 filter intent(=null이면 "방향 미판정")를 그대로 기록한다.
       // pick.direction(추론된 list)과 다를 수 있으나, 진단 시 의도와 fallback을 구분하기 위함.
