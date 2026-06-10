@@ -29,14 +29,27 @@ describe('widgetStorage (native)', () => {
   });
 
   describe('saveStationToWidget', () => {
-    it('iOS에서 station 정보와 m 단위 거리로 native 함수를 호출한다', async () => {
-      await saveStationToWidget(station, 0.123);
-      expect(mockSave).toHaveBeenCalledWith('강남', '#009933', 123);
+    it('iOS에서 station 정보와 m 단위 거리, savedAt을 native 함수에 전달한다', async () => {
+      const t = 1_700_000_000_000;
+      await saveStationToWidget(station, 0.123, t);
+      expect(mockSave).toHaveBeenCalledWith('강남', '#009933', 123, t);
+    });
+
+    it('savedAt 인자를 생략하면 Date.now()로 호출한다', async () => {
+      const before = Date.now();
+      await saveStationToWidget(station, 0.1);
+      const after = Date.now();
+      const args = mockSave.mock.calls[0];
+      expect(args[0]).toBe('강남');
+      expect(args[1]).toBe('#009933');
+      expect(args[2]).toBe(100);
+      expect(args[3]).toBeGreaterThanOrEqual(before);
+      expect(args[3]).toBeLessThanOrEqual(after);
     });
 
     it('음수 거리는 0으로 보정된다', async () => {
-      await saveStationToWidget(station, -0.5);
-      expect(mockSave).toHaveBeenCalledWith('강남', '#009933', 0);
+      await saveStationToWidget(station, -0.5, 1);
+      expect(mockSave).toHaveBeenCalledWith('강남', '#009933', 0, 1);
     });
 
     it('iOS가 아니면 native 호출 없이 종료된다', async () => {
@@ -45,35 +58,46 @@ describe('widgetStorage (native)', () => {
       expect(mockSave).not.toHaveBeenCalled();
     });
 
-    it('같은 역 + 같은 50m 버킷이면 한 번만 native에 전달된다', async () => {
+    it('같은 역 + 같은 50m 버킷 + freshness 윈도우 내면 한 번만 native에 전달된다', async () => {
       // 100m, 120m, 149m → 모두 bucket 2 (100~149m)
-      await saveStationToWidget(station, 0.1);
-      await saveStationToWidget(station, 0.12);
-      await saveStationToWidget(station, 0.149);
+      const t = 1_700_000_000_000;
+      await saveStationToWidget(station, 0.1, t);
+      await saveStationToWidget(station, 0.12, t + 1_000);
+      await saveStationToWidget(station, 0.149, t + 2_000);
       expect(mockSave).toHaveBeenCalledTimes(1);
     });
 
+    it('같은 역/버킷이라도 5분이 지나면 savedAt 갱신을 위해 다시 전달된다', async () => {
+      const t = 1_700_000_000_000;
+      await saveStationToWidget(station, 0.1, t);
+      // 5분 + 1ms 이후
+      await saveStationToWidget(station, 0.1, t + 5 * 60 * 1000 + 1);
+      expect(mockSave).toHaveBeenCalledTimes(2);
+      expect(mockSave).toHaveBeenNthCalledWith(2, '강남', '#009933', 100, t + 5 * 60 * 1000 + 1);
+    });
+
     it('같은 역이라도 50m 버킷이 바뀌면 다시 전달된다', async () => {
-      await saveStationToWidget(station, 0.5); // bucket 10 (500m)
-      await saveStationToWidget(station, 0.45); // bucket 9 (450m)
-      await saveStationToWidget(station, 0.03); // bucket 0 (30m)
+      const t = 1_700_000_000_000;
+      await saveStationToWidget(station, 0.5, t); // bucket 10 (500m)
+      await saveStationToWidget(station, 0.45, t); // bucket 9 (450m)
+      await saveStationToWidget(station, 0.03, t); // bucket 0 (30m)
       expect(mockSave).toHaveBeenCalledTimes(3);
-      expect(mockSave).toHaveBeenNthCalledWith(1, '강남', '#009933', 500);
-      expect(mockSave).toHaveBeenNthCalledWith(2, '강남', '#009933', 450);
-      expect(mockSave).toHaveBeenNthCalledWith(3, '강남', '#009933', 30);
+      expect(mockSave).toHaveBeenNthCalledWith(1, '강남', '#009933', 500, t);
+      expect(mockSave).toHaveBeenNthCalledWith(2, '강남', '#009933', 450, t);
+      expect(mockSave).toHaveBeenNthCalledWith(3, '강남', '#009933', 30, t);
     });
 
     it('역이 바뀌면 다시 native에 전달된다', async () => {
       const other: Station = { ...station, id: '2-002', name: '역삼' };
-      await saveStationToWidget(station, 0.1);
-      await saveStationToWidget(other, 0.1);
+      await saveStationToWidget(station, 0.1, 1);
+      await saveStationToWidget(other, 0.1, 1);
       expect(mockSave).toHaveBeenCalledTimes(2);
     });
 
     it('clearWidgetStation 이후엔 같은 역/같은 버킷도 다시 전달된다', async () => {
-      await saveStationToWidget(station, 0.1);
+      await saveStationToWidget(station, 0.1, 1);
       await clearWidgetStation();
-      await saveStationToWidget(station, 0.1);
+      await saveStationToWidget(station, 0.1, 1);
       expect(mockSave).toHaveBeenCalledTimes(2);
     });
   });
