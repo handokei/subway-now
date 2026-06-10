@@ -18,14 +18,18 @@ export interface EstimatorDebugEntry {
 }
 
 let buffer: EstimatorDebugEntry[] = [];
-const subscribers: Set<() => void> = new Set();
+const subscribers = new Set<() => void>();
+
+function notifySubscribers(): void {
+  [...subscribers].forEach((cb) => cb());
+}
 
 export function pushEstimatorEntry(entry: EstimatorDebugEntry): void {
   buffer = [...buffer, entry];
   if (buffer.length > ESTIMATOR_DEBUG_BUFFER_CAPACITY) {
     buffer = buffer.slice(buffer.length - ESTIMATOR_DEBUG_BUFFER_CAPACITY);
   }
-  for (const cb of subscribers) cb();
+  notifySubscribers();
 }
 
 export function getEstimatorEntries(): readonly EstimatorDebugEntry[] {
@@ -34,7 +38,7 @@ export function getEstimatorEntries(): readonly EstimatorDebugEntry[] {
 
 export function clearEstimatorEntries(): void {
   buffer = [];
-  for (const cb of subscribers) cb();
+  notifySubscribers();
 }
 
 export function subscribeEstimatorDebug(cb: () => void): () => void {
