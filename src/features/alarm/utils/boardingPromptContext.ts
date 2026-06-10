@@ -1,3 +1,11 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: boarding-prompt 컨텍스트 빌더는 alarm 슬라이스에서 발사하는 push의
+ * 평가 입력을 route 슬라이스의 단조-노선 방향 유틸로부터 빌드한다. boarding-prompt 자체가 alarm + route를
+ * 가로지르는 본질적 cross-feature 게이트라 직접 import가 자연스러움. 후속 PR에서 resolveTravelDirection을
+ * src/shared/utils/로 추출하거나 orchestration 슬라이스로 이전 예정.
+ *
+ * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
+ */
 /**
  * "탔어요?" 푸시(#819) 평가 컨텍스트 빌더.
  *
