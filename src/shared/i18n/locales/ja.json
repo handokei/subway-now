@@ -2,7 +2,6 @@
   "common": {
     "retry": "再試行",
     "close": "閉じる",
-    "confirm": "OK",
     "cancel": "キャンセル",
     "remove": "削除"
   },
@@ -275,24 +274,36 @@
       "locklessStationPassedHint": "乗車列車を選択していなくても通過通知を受け取る",
       "accessibilityModeHint": "エレベーター基準で速やかな降車位置を案内",
       "versionFooterLabel": "アプリバージョン {{version}}",
-      "versionFooterHint": "複数回タップでデバッグメニューを開く",
-      "themeSegmentHint": "テーマを変更",
-      "routeSegmentHint": "経路設定を変更",
-      "localeRowHint": "タップして言語を選択"
+      "versionFooterHint": "複数回タップでデバッグメニューを開く"
     },
     "alarm": {
-      "dismissLabel": "アラームを停止",
       "dismissHint": "アラーム音と振動を停止します",
       "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
       "boardingTrainSelectHint": "タップしてこの列車に乗車",
       "boardingLockReleaseLabel": "降車",
       "boardingLockReleaseHint": "現在の乗車を終了します"
+    },
+    "route": {
+      "destinationCloseHint": "目的地選択をキャンセルしモーダルを閉じます",
+      "assignSlotLabel": "{{label}} スロットを指定",
+      "assignSlotHint": "次に選択する駅をこのスロットに保存します",
+      "favoriteChipHint": "タップしてこの駅を目的地に設定",
+      "misBoardingCloseLabel": "閉じる",
+      "misBoardingCloseHint": "再選択をキャンセルします",
+      "titleHeaderRole": "header"
     }
   },
   "service": {
     "window": {
       "preFirst": "始発前 · 始発 {{time}} 予定",
       "postLast": "終電後 · 明日の始発 {{time}}"
+    }
+  },
+  "share": {
+    "trip": {
+      "title": "地下鉄ルート",
+      "buttonLabel": "ルートを共有",
+      "bodyTemplate": "🚇 地下鉄ルート\n出発: {{fromName}} ({{fromLine}})\n到着: {{toName}} ({{toLine}})\n約 {{minutes}} 分 ({{stops}} 駅)"
     }
   }
 }

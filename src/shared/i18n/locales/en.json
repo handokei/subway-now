@@ -2,7 +2,6 @@
   "common": {
     "retry": "Retry",
     "close": "Close",
-    "confirm": "OK",
     "cancel": "Cancel",
     "remove": "Remove"
   },
@@ -275,24 +274,36 @@
       "locklessStationPassedHint": "Receive station-passed alerts even when no train is selected",
       "accessibilityModeHint": "Guides quick-exit positions based on elevators",
       "versionFooterLabel": "App version {{version}}",
-      "versionFooterHint": "Tap multiple times to open the debug menu",
-      "themeSegmentHint": "Change theme",
-      "routeSegmentHint": "Change route preference",
-      "localeRowHint": "Tap to select language"
+      "versionFooterHint": "Tap multiple times to open the debug menu"
     },
     "alarm": {
-      "dismissLabel": "Dismiss alarm",
       "dismissHint": "Stops the alarm sound and vibration",
       "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
       "boardingTrainSelectHint": "Tap to board this train",
       "boardingLockReleaseLabel": "Get off",
       "boardingLockReleaseHint": "Ends the current boarding session"
+    },
+    "route": {
+      "destinationCloseHint": "Cancels destination selection and closes the modal",
+      "assignSlotLabel": "Assign {{label}} slot",
+      "assignSlotHint": "Saves the next selected station to this slot",
+      "favoriteChipHint": "Tap to set this station as destination",
+      "misBoardingCloseLabel": "Close",
+      "misBoardingCloseHint": "Cancels reselection",
+      "titleHeaderRole": "header"
     }
   },
   "service": {
     "window": {
       "preFirst": "Before first train · first train at {{time}}",
       "postLast": "After last train · first train tomorrow at {{time}}"
+    }
+  },
+  "share": {
+    "trip": {
+      "title": "Subway Route",
+      "buttonLabel": "Share route",
+      "bodyTemplate": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nAbout {{minutes}} min ({{stops}} stops)"
     }
   }
 }

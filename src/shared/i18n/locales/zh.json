@@ -2,7 +2,6 @@
   "common": {
     "retry": "重试",
     "close": "关闭",
-    "confirm": "确定",
     "cancel": "取消",
     "remove": "删除"
   },
@@ -275,24 +274,36 @@
       "locklessStationPassedHint": "未选择乘车列车也会收到经过站点通知",
       "accessibilityModeHint": "按电梯位置引导快速下车位置",
       "versionFooterLabel": "应用版本 {{version}}",
-      "versionFooterHint": "多次点击打开调试菜单",
-      "themeSegmentHint": "更改主题",
-      "routeSegmentHint": "更改路径偏好",
-      "localeRowHint": "点击选择语言"
+      "versionFooterHint": "多次点击打开调试菜单"
     },
     "alarm": {
-      "dismissLabel": "关闭闹钟",
       "dismissHint": "停止闹钟声和振动",
       "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
       "boardingTrainSelectHint": "点击乘坐该列车",
       "boardingLockReleaseLabel": "下车",
       "boardingLockReleaseHint": "结束当前乘车状态"
+    },
+    "route": {
+      "destinationCloseHint": "取消目的地选择并关闭弹窗",
+      "assignSlotLabel": "指定 {{label}} 槽位",
+      "assignSlotHint": "将下次选择的车站保存到此槽位",
+      "favoriteChipHint": "点击将此站设为目的地",
+      "misBoardingCloseLabel": "关闭",
+      "misBoardingCloseHint": "取消重新选择",
+      "titleHeaderRole": "header"
     }
   },
   "service": {
     "window": {
       "preFirst": "首班车前 · 首班车 {{time}}",
       "postLast": "末班车后 · 明日首班车 {{time}}"
+    }
+  },
+  "share": {
+    "trip": {
+      "title": "地铁路线",
+      "buttonLabel": "分享路线",
+      "bodyTemplate": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n约 {{minutes}} 分钟 ({{stops}} 站)"
     }
   }
 }

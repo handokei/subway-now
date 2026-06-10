@@ -7,7 +7,6 @@ import { useFusedNearestStation } from '../features/nearest-station/hooks/useFus
 import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
 import type { ArrivalInfo } from '../features/arrival/api/arrivalApi';
 import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdown';
-import { formatArrivalTime } from '../shared/utils/formatTime';
 import { LINE_NAMES } from '../shared/constants/lineColors';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
 import { useSettingsStore } from '../features/settings/store/useSettingsStore';
@@ -18,10 +17,12 @@ import { DestinationPicker } from '../features/route/components/DestinationPicke
 import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { pickArrivalAtOrigin } from '../features/arrival/utils/pickArrivalAtOrigin';
 import { EditorialTimeline } from '../features/arrival/components/EditorialTimeline';
-import { journeyDisplayToStops, nearestResultToNearest } from '../features/route/utils/journeyAdapter';
+import { arrivalInfoToArrivalTrain, journeyDisplayToStops, nearestResultToNearest } from '../features/route/utils/journeyAdapter';
+import { EditorialArrivalRow } from '../features/arrival/components/EditorialArrivalRow';
 import { useRouter } from 'expo-router';
 import { getStationDisplayName } from '../shared/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../features/alarm/utils/stationNotification';
+import { useWidgetMirror } from '../features/widget/hooks/useWidgetMirror';
 import { useStationAlarm } from '../features/alarm/hooks/useStationAlarm';
 import { useMotionActivity } from '../features/nearest-station/hooks/useMotionActivity';
 import { useBarometer } from '../shared/hooks/useBarometer';
@@ -53,6 +54,7 @@ import { useWifiStation } from '../features/nearest-station/hooks/useWifiStation
 import { CurrentStationConfirmModal } from '../features/nearest-station/components/CurrentStationConfirmModal';
 import { MisBoardingBanner } from '../features/route/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../features/route/components/MisBoardingReselectModal';
+import { ShareTripButton } from '../features/route/components/ShareTripButton';
 import { Toast } from '../shared/ui/Toast';
 import { useMisBoardingDetector } from '../features/route/hooks/useMisBoardingDetector';
 import { useTrainPositions } from '../features/route/hooks/useTrainPositions';
@@ -64,7 +66,7 @@ import { BoardingLockHopCard } from '../features/alarm/components/BoardingLockHo
 import { resolveNextAdjacentStationName } from '../features/route/utils/nextAdjacentStation';
 import { getApproachLine } from '../features/route/utils/approachLine';
 import type { Stop } from '../shared/types/journey';
-import type { Station } from '../shared/types/station';
+import type { LineNumber, Station } from '../shared/types/station';
 
 const logger = createLogger('HomeScreen');
 
@@ -553,6 +555,10 @@ export default function HomeScreen() {
     };
   }, []);
 
+  // #1094: 위젯은 destination/route 진행 여부와 무관하게 항상 nearest station을 미러링한다.
+  // 50m bucket 단위로 dedupe되어 GPS tick 폭주를 흡수. LA/푸시 알림 lifecycle과 의도적으로 분리.
+  useWidgetMirror(result?.station ?? null, result?.distanceKm ?? null);
+
   useEffect(() => {
     const prevDestId = prevDestIdRef.current;
     const currDestId = destination?.id ?? null;
@@ -867,19 +873,30 @@ export default function HomeScreen() {
                   )}
                   {journey && (() => {
                     const stops = journeyDisplayToStops(journey, { expanded: routeExpanded });
+                    const selectedCandidate = categorized.find((r) => r.category.key === selectedKey)?.candidate;
                     return (
                       <>
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
-                          onPress={() => setRouteExpanded((v) => !v)}
-                          style={styles.expandToggle}
-                          testID="route-expand-toggle"
-                        >
-                          <Text style={[typography.label, { color: colors.accent, fontWeight: '600' }]}>
-                            {routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
-                          </Text>
-                        </Pressable>
+                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
+                            onPress={() => setRouteExpanded((v) => !v)}
+                            style={styles.expandToggle}
+                            testID="route-expand-toggle"
+                          >
+                            <Text style={[typography.label, { color: colors.accent, fontWeight: '600' }]}>
+                              {routeExpanded ? t('home.routeCollapse') : t('home.routeExpand')}
+                            </Text>
+                          </Pressable>
+                          {/* PR #1069 follow-up — 경로 시스템 텍스트 공유. route/currentStation/destination 누락 시 자동 숨김. */}
+                          <ShareTripButton
+                            route={route}
+                            currentStation={result?.station ?? null}
+                            destination={destination}
+                            totalStops={journey.totalStops}
+                            travelMinutes={selectedCandidate?.travelMinutes ?? 0}
+                          />
+                        </View>
                         <EditorialTimeline
                           stops={stops}
                           renderHopSlot={(stop, i) => {
@@ -1094,8 +1111,20 @@ export default function HomeScreen() {
                 <ArrivalSourceNotice arrival={arrival} />
                 {arrival && arrival.source !== 'closed' && (
                   <>
-                    <ArrivalRow label={t('arrival.upbound')} items={arrival.up} />
-                    <ArrivalRow label={t('arrival.downbound')} items={arrival.down} />
+                    <ArrivalDirectionGroup
+                      label={t('arrival.upbound')}
+                      items={arrival.up}
+                      stationName={effectiveOrigin.name}
+                      line={effectiveOrigin.line}
+                      directionKey="up"
+                    />
+                    <ArrivalDirectionGroup
+                      label={t('arrival.downbound')}
+                      items={arrival.down}
+                      stationName={effectiveOrigin.name}
+                      line={effectiveOrigin.line}
+                      directionKey="down"
+                    />
                   </>
                 )}
               </View>
@@ -1201,35 +1230,40 @@ function findNextWaypointName(stops: Stop[], fromIdx: number): string | null {
   return null;
 }
 
-function ArrivalRow({
+/**
+ * #1074 — 도착 섹션 한 방향(상행/하행) 그룹.
+ * arrival.up/down(ArrivalInfo[]) → arrivalInfoToArrivalTrain으로 변환해 EditorialArrivalRow로 렌더.
+ * stationName/line/directionKey 컨텍스트를 패스스루해 ArrivalStatusBadge가 막차 HH:mm을 lookup한다(#1035/#1043).
+ */
+function ArrivalDirectionGroup({
   label,
   items,
+  stationName,
+  line,
+  directionKey,
 }: {
   label: string;
-  items: { destination: string; arrivalSeconds: number; statusMessage: string }[];
+  items: ArrivalInfo[];
+  stationName: string;
+  line: LineNumber;
+  directionKey: 'up' | 'down';
 }) {
   const { colors } = useTheme();
   const { t } = useTranslation();
+  const trains = useMemo(
+    () => arrivalInfoToArrivalTrain(items, label, line, { stationName, directionKey }),
+    [items, label, line, stationName, directionKey],
+  );
   return (
-    <View style={[styles.arrivalRow, { borderTopColor: colors.hair }]}>
+    <View style={[styles.arrivalGroup, { borderTopColor: colors.hair }]}>
       <Text style={[styles.arrivalLabel, { color: colors.muted }]}>{label}</Text>
-      <View>
-        {items.length === 0 ? (
-          <Text style={[styles.arrivalItem, { color: colors.ink }]}>{t('home.noArrivalInfo')}</Text>
-        ) : (
-          items.map((item, idx) => (
-            <View key={idx} style={styles.arrivalItemContainer}>
-              <Text style={[styles.arrivalItem, { color: colors.ink }]}>
-                {item.destination ? `${item.destination} · ` : ''}
-                {formatArrivalTime(item.arrivalSeconds)}
-              </Text>
-              {item.statusMessage !== '' && (
-                <Text style={[styles.statusMessage, { color: colors.accent }]}>{item.statusMessage}</Text>
-              )}
-            </View>
-          ))
-        )}
-      </View>
+      {trains.length === 0 ? (
+        <Text style={[styles.arrivalItem, { color: colors.ink }]}>{t('home.noArrivalInfo')}</Text>
+      ) : (
+        trains.map((train, idx) => (
+          <EditorialArrivalRow key={`${train.line}-${idx}`} train={train} />
+        ))
+      )}
     </View>
   );
 }
@@ -1395,28 +1429,18 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     textTransform: 'uppercase',
   },
-  arrivalRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    paddingVertical: 10,
+  arrivalGroup: {
+    paddingTop: 10,
     borderTopWidth: 1,
+    marginTop: spacing.sm,
   },
   arrivalLabel: {
     fontSize: 15,
     fontWeight: '600',
-  },
-  arrivalItemContainer: {
-    marginBottom: 4,
+    marginBottom: spacing.xs,
   },
   arrivalItem: {
     fontSize: 15,
-    textAlign: 'right',
-  },
-  statusMessage: {
-    fontSize: 12,
-    textAlign: 'right',
-    marginTop: 2,
   },
   icon: {
     fontSize: 48,

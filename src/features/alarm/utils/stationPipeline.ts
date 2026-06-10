@@ -7,7 +7,7 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import { findNearestStation } from '../../nearest-station/utils/findNearestStation';
-import { findRoute, calculateStaticETA, isSameStationName, isStationOnRoute, updateRouteFromPosition } from '../../../shared/utils/stationRoute';
+import { findRoute, calculateStaticETA, getFirstLeg, isSameStationName, isStationOnRoute, updateRouteFromPosition } from '../../../shared/utils/stationRoute';
 import { evaluateAlarmPhase, resolveAllTargets } from './stationAlarm';
 import { sendAlarmNotification, sendStationPassedNotification, updateStationNotification } from './stationNotification';
 import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils/stationEta';
@@ -288,9 +288,8 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
   if (alarmEvent && route && !suppressedAlarmEvent) {
     // #750: 공통 sleep 룰 게이트. scheduler 사전 예약이 skip한 transfer를 BG 즉시 발사 path가
     // 우회 발사하던 회귀 차단. 첫 hop 판정은 route의 첫 waypoint와 stationName 일치로 — lock
-    // 활성 동안 leg가 갱신되면 lock도 갱신되므로 route.targets[0]이 곧 현재 leg의 첫 hop.
-    const firstHopName = resolveAllTargets(route, destination.name)[0].name;
-    const isFirstHop = isSameStationName(firstHopName, alarmEvent.stationName);
+    // 활성 동안 leg가 갱신되면 lock도 갱신되므로 route 첫 leg의 endName이 곧 현재 leg의 첫 hop.
+    const isFirstHop = isSameStationName(getFirstLeg(route, destination.name).endName, alarmEvent.stationName);
     const suppressBySleep = shouldSuppressBySleepRule({
       lock: lockForLineGuard,
       event: { type: alarmEvent.type, stationName: alarmEvent.stationName },

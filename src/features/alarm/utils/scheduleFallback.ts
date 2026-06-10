@@ -1,5 +1,6 @@
 import type { LineNumber } from '../../../shared/types/station';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
+import { getDateParts } from '../../../shared/utils/intlDateParts';
 import headways from '../../../data/lineHeadways.json';
 import terminals from '../../../data/lineTerminals.json';
 import line1Timetable from '../../../data/timetables/line-1.json';
@@ -70,34 +71,51 @@ interface KstParts {
   second: number;
 }
 
-function getKstParts(date: Date): KstParts {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: SUBWAY_TIMEZONE,
-    weekday: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).formatToParts(date);
-  // Intl.DateTimeFormat은 요청한 옵션에 해당하는 part를 반드시 반환하므로 non-null 단언.
-  const lookup = (type: Intl.DateTimeFormatPartTypes): string =>
-    parts.find((p) => p.type === type)!.value;
+function getKstParts(date: Date): KstParts | null {
+  // Hermes/iOS에서 weekday part가 누락되는 회귀(#1088). 안전 helper로 nullable 추출 후,
+  // 필수 part 중 하나라도 누락되면 null로 위로 전파해 호출자가 헤드웨이 fallback으로 graceful degrade.
+  const parts = getDateParts(
+    date,
+    {
+      timeZone: SUBWAY_TIMEZONE,
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    },
+    ['weekday', 'hour', 'minute', 'second'],
+  );
+  if (
+    parts.weekday === undefined ||
+    parts.hour === undefined ||
+    parts.minute === undefined ||
+    parts.second === undefined
+  ) {
+    return null;
+  }
   // Safari가 자정에 'hour'를 '24'로 주는 경우를 % 24로 정규화.
-  const hour = Number.parseInt(lookup('hour'), 10) % 24;
-  const minute = Number.parseInt(lookup('minute'), 10);
-  const second = Number.parseInt(lookup('second'), 10);
-  return { weekday: lookup('weekday'), hour, minute, second };
+  const hour = Number.parseInt(parts.hour, 10) % 24;
+  const minute = Number.parseInt(parts.minute, 10);
+  const second = Number.parseInt(parts.second, 10);
+  return { weekday: parts.weekday, hour, minute, second };
 }
 
 export function classifyDayType(date: Date): DayType {
-  const { weekday } = getKstParts(date);
+  const parts = getKstParts(date);
+  // weekday part 누락 시 보수적으로 weekday (가장 흔한 케이스, 헤드웨이 적용 가능).
+  if (parts === null) return 'weekday';
+  const { weekday } = parts;
   if (weekday === 'Sun') return 'sunday';
   if (weekday === 'Sat') return 'saturday';
   return 'weekday';
 }
 
 export function classifyPeriod(date: Date, dayType: DayType): Period {
-  const { hour, minute } = getKstParts(date);
+  const parts = getKstParts(date);
+  // 시간 part 누락 시 가장 흔한 offPeak으로 보수 처리.
+  if (parts === null) return 'offPeak';
+  const { hour, minute } = parts;
   const minutes = hour * 60 + minute;
   // closed: 01:00 ~ 05:30
   if (minutes >= 60 && minutes < 330) return 'closed';
@@ -246,8 +264,11 @@ export function buildScheduleArrival(
 
   // Phase 3 (#473): 시간표 lookup이 가능한 노선/역이면 실제 시간표 기반 ETA를 우선 반환.
   // 시간표 적중 시 isMock=false, source='schedule' 유지 (Phase 4에서 'timetable' 신규 source 검토).
-  const { hour: kstHour, minute: kstMinute, second: kstSecond, weekday: kstWeekday } = getKstParts(now);
-  const timetableHit = lookupTimetable(line, stationName, dayType, kstWeekday, kstHour, kstMinute, kstSecond);
+  // #1088: Hermes에서 KST part 추출 실패 시 timetable lookup을 건너뛰고 헤드웨이 폴백으로 graceful degrade.
+  const kstParts = getKstParts(now);
+  const timetableHit = kstParts
+    ? lookupTimetable(line, stationName, dayType, kstParts.weekday, kstParts.hour, kstParts.minute, kstParts.second)
+    : null;
   if (timetableHit) {
     const up = timetableHit.upSeconds.map((sec, i) => makeTrain(sec, `UP-${i + 1}`, nowMs, upTerminal, line));
     const down = timetableHit.downSeconds.map((sec, i) =>

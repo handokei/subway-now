@@ -2,7 +2,6 @@
   "common": {
     "retry": "다시 시도",
     "close": "닫기",
-    "confirm": "확인",
     "cancel": "취소",
     "remove": "삭제"
   },
@@ -275,24 +274,36 @@
       "locklessStationPassedHint": "탑승 열차 선택 없이도 역 통과 알림 수신",
       "accessibilityModeHint": "엘리베이터 기준으로 빠른 하차 위치 안내",
       "versionFooterLabel": "앱 버전 {{version}}",
-      "versionFooterHint": "여러 번 탭하면 디버그 메뉴 열기",
-      "themeSegmentHint": "테마 변경",
-      "routeSegmentHint": "경로 탐색 방식 변경",
-      "localeRowHint": "탭하여 언어 선택"
+      "versionFooterHint": "여러 번 탭하면 디버그 메뉴 열기"
     },
     "alarm": {
-      "dismissLabel": "알람 끄기",
       "dismissHint": "알람음과 진동을 중지합니다",
       "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
       "boardingTrainSelectHint": "탭하여 이 열차로 탑승 등록",
       "boardingLockReleaseLabel": "하차",
       "boardingLockReleaseHint": "현재 탑승 상태를 종료합니다"
+    },
+    "route": {
+      "destinationCloseHint": "목적지 선택을 취소하고 모달을 닫습니다",
+      "assignSlotLabel": "{{label}} 슬롯 지정",
+      "assignSlotHint": "다음에 선택할 역을 이 슬롯에 저장합니다",
+      "favoriteChipHint": "탭하여 이 역을 목적지로 선택",
+      "misBoardingCloseLabel": "닫기",
+      "misBoardingCloseHint": "재선택을 취소합니다",
+      "titleHeaderRole": "header"
     }
   },
   "service": {
     "window": {
       "preFirst": "첫차 전 · 첫차 {{time}} 예정",
       "postLast": "막차 후 · 내일 첫차 {{time}}"
+    }
+  },
+  "share": {
+    "trip": {
+      "title": "지하철 경로",
+      "buttonLabel": "경로 공유",
+      "bodyTemplate": "🚇 지하철 경로\n출발: {{fromName}} ({{fromLine}})\n도착: {{toName}} ({{toLine}})\n약 {{minutes}}분 소요 ({{stops}}정거장)"
     }
   }
 }

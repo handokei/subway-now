@@ -1,4 +1,5 @@
 import type { LineNumber } from '../../../shared/types/station';
+import { getWeekdayShort } from '../../../shared/utils/intlDateParts';
 import line1Timetable from '../../../data/timetables/line-1.json';
 import line2Timetable from '../../../data/timetables/line-2.json';
 import line3Timetable from '../../../data/timetables/line-3.json';
@@ -48,13 +49,11 @@ const TIMETABLES: Partial<Record<LineNumber, LineTimetable>> = {
 const SUBWAY_TIMEZONE = 'Asia/Seoul';
 const HOURS_PER_DAY = 24;
 
-function classifyDayTypeKst(date: Date): DayType {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: SUBWAY_TIMEZONE,
-    weekday: 'short',
-  }).formatToParts(date);
-  // Intl.DateTimeFormat은 요청한 weekday 옵션에 해당 part를 반드시 반환 (scheduleFallback의 패턴과 동일).
-  const weekday = parts.find((p) => p.type === 'weekday')!.value;
+function classifyDayTypeKst(date: Date): DayType | null {
+  // Hermes/iOS에서 weekday part가 누락되는 회귀(#1088)를 안전 helper로 흡수한다.
+  // 누락 시 null을 그대로 위로 전파해 호출자가 막차 시각 미표시로 fallback한다.
+  const weekday = getWeekdayShort(date, SUBWAY_TIMEZONE);
+  if (weekday === null) return null;
   if (weekday === 'Sun') return 'sunday';
   if (weekday === 'Sat') return 'saturday';
   return 'weekday';
@@ -83,6 +82,7 @@ export function getLastTrainTime({ stationName, line, direction, now }: Params):
   const station = lineData.stations[stationName];
   if (!station) return null;
   const dayType = classifyDayTypeKst(now);
+  if (dayType === null) return null;
   const times = station[dayType][direction];
   // timetable JSON은 시간순 정렬 + 모든 요일/방향에 entry 보유를 전제로 한다
   // (scheduleFallback과 동일 전제). "0000" 같은 미운행 슬롯이 앞쪽에 있어도

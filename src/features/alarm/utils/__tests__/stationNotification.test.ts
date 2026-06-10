@@ -869,15 +869,11 @@ describe('stationNotification', () => {
       expect(mockUpdateLiveActivity).toHaveBeenCalled();
     });
 
-    it('clearStationNotification은 clearWidgetStation을 호출한다', async () => {
+    it('clearStationNotification은 위젯을 비우지 않는다 (#1094)', async () => {
+      // 위젯 lifecycle은 HomeScreen mirror effect가 담당. destination이 사라져도
+      // 사용자가 역 근처에 있는 동안 위젯이 "감지 중"으로 깜빡이는 회귀를 막기 위함.
       await clearStationNotification();
-      expect(mockClearWidgetStation).toHaveBeenCalled();
-    });
-
-    it('clearWidgetStation이 실패해도 endLiveActivity는 호출된다', async () => {
-      mockClearWidgetStation.mockRejectedValueOnce(new Error('group missing'));
-      await clearStationNotification();
-      expect(mockEndLiveActivity).toHaveBeenCalled();
+      expect(mockClearWidgetStation).not.toHaveBeenCalled();
     });
   });
 

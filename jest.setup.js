@@ -22,6 +22,16 @@ const { LANGUAGE_REGISTRY, FALLBACK_LANGUAGE } = require('./src/shared/i18n/type
 
 // react-native-safe-area-context 모킹: 컴포넌트 테스트가 SafeAreaProvider 없이도
 // useSafeAreaInsets / SafeAreaView를 호출할 수 있게. inset은 0(노치 없는 환경)으로 가정.
+// @sentry/react-native 글로벌 모킹: shared/utils/logger가 breadcrumb wire를 위해
+// shared/infra/monitoring/breadcrumb를 통해 Sentry SDK를 import한다. 네이티브 모듈이
+// Jest 환경에서 로드되지 않도록 no-op 모킹.
+// 참고: #1084(opt-in UI)에서 jest.setup.js와 충돌 가능성 있음.
+jest.mock('@sentry/react-native', () => ({
+  init: jest.fn(),
+  addBreadcrumb: jest.fn(),
+  captureException: jest.fn(),
+}));
+
 jest.mock('react-native-safe-area-context', () => {
   const React = require('react');
   const { View } = require('react-native');

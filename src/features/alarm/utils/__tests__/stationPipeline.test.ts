@@ -17,12 +17,14 @@ const mockCalculateStaticETA = jest.fn();
 const mockUpdateRouteFromPosition = jest.fn();
 const mockIsStationOnRoute = jest.fn();
 const mockIsSameStationName = jest.fn((a: string, b: string) => a === b);
+const mockGetFirstLeg = jest.fn((..._args: unknown[]) => ({ line: '2', endName: '' }));
 jest.mock('../../../../shared/utils/stationRoute', () => ({
   findRoute: (...args: unknown[]) => mockFindRoute(...args),
   calculateStaticETA: (...args: unknown[]) => mockCalculateStaticETA(...args),
   updateRouteFromPosition: (...args: unknown[]) => mockUpdateRouteFromPosition(...args),
   isStationOnRoute: (...args: unknown[]) => mockIsStationOnRoute(...args),
   isSameStationName: (a: string, b: string) => mockIsSameStationName(a, b),
+  getFirstLeg: (...args: unknown[]) => mockGetFirstLeg(...args),
 }));
 
 const mockEvaluateAlarmPhase = jest.fn();
@@ -142,6 +144,7 @@ describe('processLocationUpdate', () => {
     mockResolveAllTargets.mockReturnValue([
       { name: '시청', stops: 3, alarmType: 'destination', approachLine: '2' },
     ]);
+    mockGetFirstLeg.mockReturnValue({ line: '2', endName: '시청' });
     // #746: dismissSilence 기본은 null — silence 없음.
     mockGetDismissSilence.mockResolvedValue(null);
     mockClearDismissSilence.mockResolvedValue(undefined);
@@ -733,6 +736,7 @@ describe('processLocationUpdate', () => {
         { name: '교대', stops: 1, alarmType: 'transfer', approachLine: '2' },
         { name: '시청', stops: 3, alarmType: 'destination', approachLine: '1' },
       ]);
+      mockGetFirstLeg.mockReturnValue({ line: '2', endName: '교대' });
     });
 
     it('sleep ON + lock 활성 + 첫 hop transfer → sendAlarmNotification 호출 X, suppression 로그', async () => {

@@ -45,24 +45,35 @@ describe('widgetStorage (native)', () => {
       expect(mockSave).not.toHaveBeenCalled();
     });
 
-    it('같은 역에 대해 연속 호출하면 한 번만 native에 전달된다', async () => {
+    it('같은 역 + 같은 50m 버킷이면 한 번만 native에 전달된다', async () => {
+      // 100m, 120m, 149m → 모두 bucket 2 (100~149m)
       await saveStationToWidget(station, 0.1);
-      await saveStationToWidget(station, 0.2);
-      await saveStationToWidget(station, 0.3);
+      await saveStationToWidget(station, 0.12);
+      await saveStationToWidget(station, 0.149);
       expect(mockSave).toHaveBeenCalledTimes(1);
+    });
+
+    it('같은 역이라도 50m 버킷이 바뀌면 다시 전달된다', async () => {
+      await saveStationToWidget(station, 0.5); // bucket 10 (500m)
+      await saveStationToWidget(station, 0.45); // bucket 9 (450m)
+      await saveStationToWidget(station, 0.03); // bucket 0 (30m)
+      expect(mockSave).toHaveBeenCalledTimes(3);
+      expect(mockSave).toHaveBeenNthCalledWith(1, '강남', '#009933', 500);
+      expect(mockSave).toHaveBeenNthCalledWith(2, '강남', '#009933', 450);
+      expect(mockSave).toHaveBeenNthCalledWith(3, '강남', '#009933', 30);
     });
 
     it('역이 바뀌면 다시 native에 전달된다', async () => {
       const other: Station = { ...station, id: '2-002', name: '역삼' };
       await saveStationToWidget(station, 0.1);
-      await saveStationToWidget(other, 0.2);
+      await saveStationToWidget(other, 0.1);
       expect(mockSave).toHaveBeenCalledTimes(2);
     });
 
-    it('clearWidgetStation 이후엔 같은 역도 다시 전달된다', async () => {
+    it('clearWidgetStation 이후엔 같은 역/같은 버킷도 다시 전달된다', async () => {
       await saveStationToWidget(station, 0.1);
       await clearWidgetStation();
-      await saveStationToWidget(station, 0.2);
+      await saveStationToWidget(station, 0.1);
       expect(mockSave).toHaveBeenCalledTimes(2);
     });
   });

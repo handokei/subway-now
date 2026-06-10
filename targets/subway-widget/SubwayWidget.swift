@@ -79,6 +79,17 @@ struct SubwayWidgetView: View {
     }
 
     var body: some View {
+        // iOS 17+는 위젯이 containerBackground를 채택하지 않으면
+        // 시스템이 "Please adopt containerBackground API" placeholder를 대신 그린다.
+        // 배포 타겟 15.1이라 availability 분기 필요.
+        if #available(iOS 17.0, *) {
+            content.containerBackground(.background, for: .widget)
+        } else {
+            content
+        }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 4) {
                 Circle()
