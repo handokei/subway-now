@@ -347,6 +347,30 @@ export function updateRouteFromPosition(
   return null;
 }
 
+/**
+ * 경로의 첫 leg(=탑승 단계)의 노선과 종점 역 이름을 반환한다.
+ *
+ *   - direct       → { line, endName: destinationName }
+ *   - transfer     → { line: fromLine, endName: transferName }
+ *   - multiTransfer→ { line: transfers[0].fromLine, endName: transfers[0].transferName }
+ *
+ * "endName"은 첫 leg에서 사용자가 향하는 노선상 종점(다음 환승 지점 또는 최종 목적지) 이름.
+ * tripDirection / boardingPromptContext가 공통으로 사용 — #1028 follow-up (#1065).
+ */
+export function getFirstLeg(
+  route: NonNullable<Route>,
+  destinationName: string,
+): { line: LineNumber; endName: string } {
+  if (route.type === 'direct') {
+    return { line: route.line, endName: destinationName };
+  }
+  if (route.type === 'transfer') {
+    return { line: route.fromLine, endName: route.transferName };
+  }
+  const first = route.transfers[0];
+  return { line: first.fromLine, endName: first.transferName };
+}
+
 export function isStationOnRoute(station: Station, route: NonNullable<Route>): boolean {
   if (route.type === 'direct') {
     return station.line === route.line;
