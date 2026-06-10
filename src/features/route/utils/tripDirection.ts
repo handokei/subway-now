@@ -1,6 +1,5 @@
-import type { LineNumber } from '../../../shared/types/station';
 import type { Route } from '../../../shared/utils/stationRoute';
-import { getStationsOnLine } from '../../../shared/utils/stationRoute';
+import { getFirstLeg, getStationsOnLine } from '../../../shared/utils/stationRoute';
 
 export type TripDirection = 'up' | 'down';
 
@@ -20,24 +19,10 @@ export function resolveTripDirection(
   destinationName: string,
   currentStationId: string,
 ): TripDirection | null {
-  const { line, nextWaypointName } = firstLeg(route, destinationName);
+  const { line, endName } = getFirstLeg(route, destinationName);
   const lineStations = getStationsOnLine(line);
   const currIdx = lineStations.findIndex((s) => s.id === currentStationId);
-  const nextIdx = lineStations.findIndex((s) => s.name === nextWaypointName);
+  const nextIdx = lineStations.findIndex((s) => s.name === endName);
   if (currIdx < 0 || nextIdx < 0 || currIdx === nextIdx) return null;
   return nextIdx > currIdx ? 'down' : 'up';
-}
-
-function firstLeg(
-  route: NonNullable<Route>,
-  destinationName: string,
-): { line: LineNumber; nextWaypointName: string } {
-  if (route.type === 'direct') {
-    return { line: route.line, nextWaypointName: destinationName };
-  }
-  if (route.type === 'transfer') {
-    return { line: route.fromLine, nextWaypointName: route.transferName };
-  }
-  const first = route.transfers[0];
-  return { line: first.fromLine, nextWaypointName: first.transferName };
 }
