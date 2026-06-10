@@ -1,4 +1,4 @@
-# ADR-011: Alarm Dedup Idempotency Key 설계
+# ADR-012: Alarm Dedup Idempotency Key 설계
 
 ## 상태
 
