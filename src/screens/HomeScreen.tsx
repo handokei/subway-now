@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as SplashScreen from 'expo-splash-screen';
 import { useTranslation } from 'react-i18next';
 import { useFusedNearestStation } from '../features/nearest-station/hooks/useFusedNearestStation';
+import { useWidgetSync } from '../features/widget/hooks/useWidgetSync';
 import { useArrivalInfo } from '../features/arrival/hooks/useArrivalInfo';
 import type { ArrivalInfo } from '../features/arrival/api/arrivalApi';
 import { useArrivalCountdown } from '../features/arrival/hooks/useArrivalCountdown';
@@ -161,6 +162,10 @@ export default function HomeScreen() {
   const barometerSignal = useBarometer();
   const { subsurface: barometerSubsurface } = barometerSignal;
   const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal });
+
+  // #1079 — 위젯 갱신은 destination/route와 독립. fused 현재역이 갱신될 때마다 직접 sync.
+  // (기존엔 stationNotification → saveStationToWidget 체인이 destination 미설정 시 early-return.)
+  useWidgetSync(result?.station ?? null, result?.distanceKm ?? null);
 
   // #914 (F4) — 1탭 현재역 확정 모달. 자동 추정이 locationUncertain으로 길어지면 후보 1~3개를
   // 카드로 노출, 1탭 = customOrigin 적용.

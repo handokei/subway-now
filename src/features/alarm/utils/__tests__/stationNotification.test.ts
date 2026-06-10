@@ -851,33 +851,21 @@ describe('stationNotification', () => {
     });
   });
 
-  describe('widget storage 연동', () => {
+  describe('widget storage 분리 (#1079)', () => {
     beforeEach(() => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       mockSaveStationToWidget.mockResolvedValue(undefined);
       mockClearWidgetStation.mockResolvedValue(undefined);
     });
 
-    it('updateStationNotification은 saveStationToWidget을 km 단위로 호출한다', async () => {
+    it('updateStationNotification은 saveStationToWidget을 호출하지 않는다 (useWidgetSync로 분리)', async () => {
       await updateStationNotification(mockStation, 250);
-      expect(mockSaveStationToWidget).toHaveBeenCalledWith(mockStation, 0.25);
+      expect(mockSaveStationToWidget).not.toHaveBeenCalled();
     });
 
-    it('saveStationToWidget이 실패해도 updateLiveActivity는 호출된다', async () => {
-      mockSaveStationToWidget.mockRejectedValueOnce(new Error('group missing'));
-      await updateStationNotification(mockStation, 100);
-      expect(mockUpdateLiveActivity).toHaveBeenCalled();
-    });
-
-    it('clearStationNotification은 clearWidgetStation을 호출한다', async () => {
+    it('clearStationNotification은 clearWidgetStation을 호출하지 않는다 (위젯은 알림 lifecycle과 독립)', async () => {
       await clearStationNotification();
-      expect(mockClearWidgetStation).toHaveBeenCalled();
-    });
-
-    it('clearWidgetStation이 실패해도 endLiveActivity는 호출된다', async () => {
-      mockClearWidgetStation.mockRejectedValueOnce(new Error('group missing'));
-      await clearStationNotification();
-      expect(mockEndLiveActivity).toHaveBeenCalled();
+      expect(mockClearWidgetStation).not.toHaveBeenCalled();
     });
   });
 

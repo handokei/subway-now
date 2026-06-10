@@ -19,7 +19,6 @@ import { vibrateAlarm, stopVibration } from './alarmSound';
 import { speakAlarm } from './tts';
 import { createLogger } from '../../../shared/utils/logger';
 import { getStationDisplayName, getStationDisplayNameByName } from '../../../shared/utils/stationDisplay';
-import { saveStationToWidget, clearWidgetStation } from '../../widget/api/widgetStorage';
 import { hasFiredPushId } from './firedPushIds';
 import stationsData from '../../../data/stations.json';
 import type { ExitSide } from '../../../shared/types/exitSide';
@@ -383,9 +382,9 @@ export async function updateStationNotification(
 ): Promise<void> {
   notifLogger.info('updateStation:', currentStation.name, `${distanceM}m`, destination ? `→ ${destination.name}` : '');
 
-  await saveStationToWidget(currentStation, distanceM / 1000).catch((e) =>
-    notifLogger.error('위젯 저장 실패:', e),
-  );
+  // 위젯 갱신은 destination 게이트와 독립적으로 useWidgetSync hook이 담당한다 (#1079).
+  // updateStationNotification은 destination이 있을 때만 호출되므로, 여기에서 saveStationToWidget을
+  // 호출하면 목적지 미설정/다른 탭/HomeScreen 미진입 케이스에서 위젯이 "감지 중"에 멈춘다.
 
   if (Platform.OS === 'ios') {
     const liveActivityEnabled = LiveActivity.isLiveActivityEnabled();
@@ -424,9 +423,8 @@ async function dismissStationPassedNotification(): Promise<void> {
 }
 
 export async function clearStationNotification(): Promise<void> {
-  await clearWidgetStation().catch((e) =>
-    notifLogger.error('위젯 해제 실패:', e),
-  );
+  // 위젯은 알림/Live Activity와 독립 lifecycle (#1079) — 여기서 clearWidgetStation을
+  // 호출하면 trip 종료/destination clear 시 위젯도 같이 꺼져 본 fix가 무력화된다.
   if (Platform.OS === 'ios') {
     if (!LiveActivity.isLiveActivityEnabled()) {
       notifLogger.info('알림 해제 (Live Activity 비활성)');
