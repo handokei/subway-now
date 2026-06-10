@@ -72,37 +72,18 @@ describe('extractPlatformFields', () => {
 });
 
 describe('classifyLayout', () => {
-  it('returns unknown for empty', () => {
-    expect(classifyLayout('')).toEqual({ layout: 'unknown', confidence: 'low' });
-    expect(classifyLayout(null)).toEqual({ layout: 'unknown', confidence: 'low' });
-  });
-
-  it('detects 섬식 with high confidence', () => {
-    expect(classifyLayout('1면 2선 ([[섬식 승강장|섬식]])')).toEqual({ layout: 'island', confidence: 'high' });
-  });
-
-  it('detects 상대식 with high confidence', () => {
-    expect(classifyLayout('2면 2선([[상대식 승강장|상대식]])')).toEqual({ layout: 'side', confidence: 'high' });
-  });
-
-  it('detects mixed when both 섬식 and 상대식 present', () => {
-    expect(classifyLayout('상행 섬식 / 하행 상대식')).toEqual({ layout: 'mixed', confidence: 'high' });
-  });
-
-  it('heuristic: 1면 2선 → island (medium)', () => {
-    expect(classifyLayout('1면 2선')).toEqual({ layout: 'island', confidence: 'medium' });
-  });
-
-  it('heuristic: 2면 2선 → side (medium)', () => {
-    expect(classifyLayout('2면 2선')).toEqual({ layout: 'side', confidence: 'medium' });
-  });
-
-  it('heuristic: 2면 4선 → mixed (low)', () => {
-    expect(classifyLayout('2면 4선 혼합')).toEqual({ layout: 'mixed', confidence: 'low' });
-  });
-
-  it('returns unknown for free text without 면선 pattern', () => {
-    expect(classifyLayout('지상역')).toEqual({ layout: 'unknown', confidence: 'low' });
+  it.each([
+    ['empty string', '', 'unknown', 'low'],
+    ['null', null, 'unknown', 'low'],
+    ['섬식 (high)', '1면 2선 ([[섬식 승강장|섬식]])', 'island', 'high'],
+    ['상대식 (high)', '2면 2선([[상대식 승강장|상대식]])', 'side', 'high'],
+    ['both 섬식+상대식 → mixed (high)', '상행 섬식 / 하행 상대식', 'mixed', 'high'],
+    ['1면 2선 heuristic → island (medium)', '1면 2선', 'island', 'medium'],
+    ['2면 2선 heuristic → side (medium)', '2면 2선', 'side', 'medium'],
+    ['2면 4선 heuristic → mixed (low)', '2면 4선 혼합', 'mixed', 'low'],
+    ['free text without 면선 → unknown', '지상역', 'unknown', 'low'],
+  ])('%s', (_label, input, layout, confidence) => {
+    expect(classifyLayout(input)).toEqual({ layout, confidence });
   });
 });
 
