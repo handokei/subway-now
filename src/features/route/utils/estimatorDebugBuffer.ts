@@ -1,11 +1,9 @@
 /**
  * Estimator 전략 결과를 in-memory ring buffer에 보관 (#1025).
  * DebugModal의 "Estimator State" 섹션이 구독해 마지막 채택 전략을 표시한다.
- *
- * fusion debug buffer와 동일 패턴 — 구독자는 pushEstimatorEntry가 호출될 때마다
- * 전달받은 콜백으로 최신 버퍼를 갱신한다.
  */
 import type { StationProgressStrategy } from './stationProgressEstimator';
+import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
 
 export const ESTIMATOR_DEBUG_BUFFER_CAPACITY = 50;
 
@@ -17,33 +15,20 @@ export interface EstimatorDebugEntry {
   arcIndex: number | null;
 }
 
-let buffer: EstimatorDebugEntry[] = [];
-const subscribers = new Set<() => void>();
-
-function notifySubscribers(): void {
-  [...subscribers].forEach((cb) => cb());
-}
+const db = createDebugBuffer<EstimatorDebugEntry>(ESTIMATOR_DEBUG_BUFFER_CAPACITY);
 
 export function pushEstimatorEntry(entry: EstimatorDebugEntry): void {
-  buffer = [...buffer, entry];
-  if (buffer.length > ESTIMATOR_DEBUG_BUFFER_CAPACITY) {
-    buffer = buffer.slice(buffer.length - ESTIMATOR_DEBUG_BUFFER_CAPACITY);
-  }
-  notifySubscribers();
+  db.push(entry);
 }
 
 export function getEstimatorEntries(): readonly EstimatorDebugEntry[] {
-  return buffer;
+  return db.get();
 }
 
 export function clearEstimatorEntries(): void {
-  buffer = [];
-  notifySubscribers();
+  db.clear();
 }
 
 export function subscribeEstimatorDebug(cb: () => void): () => void {
-  subscribers.add(cb);
-  return () => {
-    subscribers.delete(cb);
-  };
+  return db.subscribe(cb);
 }

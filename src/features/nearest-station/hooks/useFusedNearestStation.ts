@@ -636,8 +636,8 @@ export function useFusedNearestStation(
     pushEstimatorEntry({
       ts: Date.now(),
       strategy: estimate?.strategy ?? null,
-      stationName: estimate?.station.name ?? null,
-      stationLine: estimate?.station.line ?? null,
+      stationName: estimate?.station?.name ?? null,
+      stationLine: estimate?.station?.line ?? null,
       arcIndex: estimate?.index ?? null,
     });
   }, [estimateKey, estimate]);
