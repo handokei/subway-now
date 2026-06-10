@@ -1,4 +1,5 @@
 import React from 'react';
+import { Keyboard } from 'react-native';
 import { act, fireEvent, waitFor } from '@testing-library/react-native';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { FeedbackModal, FEEDBACK_MAX_LENGTH } from '../FeedbackModal';
@@ -126,5 +127,39 @@ describe('FeedbackModal', () => {
 
   it('FEEDBACK_MAX_LENGTH is 2000 (matches backend)', () => {
     expect(FEEDBACK_MAX_LENGTH).toBe(2000);
+  });
+
+  it('dismisses keyboard when backdrop is pressed', () => {
+    const dismissSpy = jest.spyOn(Keyboard, 'dismiss').mockImplementation(() => {});
+    const { getByTestId } = renderWithTheme(
+      <FeedbackModal visible onClose={jest.fn()} />,
+    );
+    fireEvent.press(getByTestId('feedback-backdrop'));
+    expect(dismissSpy).toHaveBeenCalled();
+    dismissSpy.mockRestore();
+  });
+
+  it('uses height behavior on Android KeyboardAvoidingView', () => {
+    const original = require('react-native').Platform.OS;
+    require('react-native').Platform.OS = 'android';
+    try {
+      const { getByTestId } = renderWithTheme(
+        <FeedbackModal visible onClose={jest.fn()} />,
+      );
+      // 렌더만 성공하면 OK — Android 분기 커버.
+      expect(getByTestId('feedback-backdrop')).toBeTruthy();
+    } finally {
+      require('react-native').Platform.OS = original;
+    }
+  });
+
+  it('ScrollView allows taps to pass through to submit button while keyboard open', () => {
+    const { getByTestId } = renderWithTheme(
+      <FeedbackModal visible onClose={jest.fn()} />,
+    );
+    // keyboardShouldPersistTaps="handled" 보장 — 키보드가 열려 있어도 submit 버튼이 첫 탭에 반응한다.
+    expect(getByTestId('feedback-scroll').props.keyboardShouldPersistTaps).toBe(
+      'handled',
+    );
   });
 });

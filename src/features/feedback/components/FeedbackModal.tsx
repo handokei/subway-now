@@ -11,8 +11,12 @@
  */
 import { useState } from 'react';
 import {
+  Keyboard,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -72,7 +76,16 @@ export function FeedbackModal({ visible, onClose }: Props) {
       onRequestClose={handleClose}
       testID="feedback-modal"
     >
-      <View style={[styles.backdrop, { backgroundColor: colors.overlay }]}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={[styles.backdrop, { backgroundColor: colors.overlay }]}
+      >
+        <Pressable
+          style={styles.backdropPressable}
+          onPress={Keyboard.dismiss}
+          testID="feedback-backdrop"
+          accessible={false}
+        />
         <View
           style={[
             styles.sheet,
@@ -82,70 +95,76 @@ export function FeedbackModal({ visible, onClose }: Props) {
             },
           ]}
         >
-          <View style={styles.header}>
-            <Text style={[styles.title, { color: colors.ink }]}>
-              {t('feedback.title')}
-            </Text>
-            <Pressable
-              onPress={handleClose}
-              testID="feedback-close"
-              accessibilityRole="button"
-              accessibilityLabel={t('common.close')}
-            >
-              <Text style={[styles.close, { color: colors.muted }]}>✕</Text>
-            </Pressable>
-          </View>
-
-          <Text style={[styles.description, { color: colors.muted }]}>
-            {t('feedback.description')}
-          </Text>
-
-          <TextInput
-            style={[
-              styles.input,
-              { color: colors.ink, borderColor: colors.hair, backgroundColor: colors.bg },
-            ]}
-            value={message}
-            onChangeText={setMessage}
-            placeholder={t('feedback.placeholder')}
-            placeholderTextColor={colors.muted}
-            multiline
-            maxLength={FEEDBACK_MAX_LENGTH}
-            testID="feedback-input"
-            accessibilityLabel={t('feedback.title')}
-          />
-
-          <Text style={[styles.counter, { color: colors.muted }]}>
-            {trimmed.length}/{FEEDBACK_MAX_LENGTH}
-          </Text>
-
-          {statusText !== null && (
-            <Text
-              style={[styles.status, { color: colors.muted }]}
-              testID="feedback-status"
-            >
-              {statusText}
-            </Text>
-          )}
-
-          <Pressable
-            onPress={handleSubmit}
-            style={[
-              styles.submit,
-              {
-                backgroundColor: canSubmit ? colors.accent : colors.hair,
-              },
-            ]}
-            testID="feedback-submit"
-            accessibilityRole="button"
-            accessibilityState={{ disabled: !canSubmit }}
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={styles.scrollContent}
+            testID="feedback-scroll"
           >
-            <Text style={[styles.submitText, { color: colors.onAccent }]}>
-              {submitting ? t('feedback.submitting') : t('feedback.submit')}
+            <View style={styles.header}>
+              <Text style={[styles.title, { color: colors.ink }]}>
+                {t('feedback.title')}
+              </Text>
+              <Pressable
+                onPress={handleClose}
+                testID="feedback-close"
+                accessibilityRole="button"
+                accessibilityLabel={t('common.close')}
+              >
+                <Text style={[styles.close, { color: colors.muted }]}>✕</Text>
+              </Pressable>
+            </View>
+
+            <Text style={[styles.description, { color: colors.muted }]}>
+              {t('feedback.description')}
             </Text>
-          </Pressable>
+
+            <TextInput
+              style={[
+                styles.input,
+                { color: colors.ink, borderColor: colors.hair, backgroundColor: colors.bg },
+              ]}
+              value={message}
+              onChangeText={setMessage}
+              placeholder={t('feedback.placeholder')}
+              placeholderTextColor={colors.muted}
+              multiline
+              maxLength={FEEDBACK_MAX_LENGTH}
+              testID="feedback-input"
+              accessibilityLabel={t('feedback.title')}
+            />
+
+            <Text style={[styles.counter, { color: colors.muted }]}>
+              {trimmed.length}/{FEEDBACK_MAX_LENGTH}
+            </Text>
+
+            {statusText !== null && (
+              <Text
+                style={[styles.status, { color: colors.muted }]}
+                testID="feedback-status"
+              >
+                {statusText}
+              </Text>
+            )}
+
+            <Pressable
+              onPress={handleSubmit}
+              style={[
+                styles.submit,
+                {
+                  backgroundColor: canSubmit ? colors.accent : colors.hair,
+                },
+              ]}
+              testID="feedback-submit"
+              accessibilityRole="button"
+              accessibilityState={{ disabled: !canSubmit }}
+            >
+              <Text style={[styles.submitText, { color: colors.onAccent }]}>
+                {submitting ? t('feedback.submitting') : t('feedback.submit')}
+              </Text>
+            </Pressable>
+          </ScrollView>
         </View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -155,10 +174,17 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-end',
   },
+  backdropPressable: {
+    ...StyleSheet.absoluteFillObject,
+  },
   sheet: {
     borderTopLeftRadius: radius.lg,
     borderTopRightRadius: radius.lg,
     padding: spacing.lg,
+    maxHeight: '90%',
+  },
+  scrollContent: {
+    flexGrow: 1,
   },
   header: {
     flexDirection: 'row',
