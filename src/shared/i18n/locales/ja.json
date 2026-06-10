@@ -53,7 +53,11 @@
     "boardingProximityHint": "乗車駅の近くで列車を選択できます",
     "boardingTrainListTitle": "乗車する列車を選択",
     "boardingTrainListEmpty": "到着予定の列車がありません。",
-    "misBoardingToast": "乗車中の列車が見つかりません。もう一度選択してください。"
+    "misBoardingToast": "乗車中の列車が見つかりません。もう一度選択してください。",
+    "autoDisembarkToast": {
+      "message": "{{name}}に到着し、目的地を解除しました",
+      "undo": "元に戻す"
+    }
   },
   "settings": {
     "title": "設定",
