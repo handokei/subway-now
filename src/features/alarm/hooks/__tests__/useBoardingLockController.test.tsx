@@ -30,6 +30,12 @@ jest.mock('../../../../shared/utils/stationLookup', () => ({
   findStationByNameAndLine: (...args: unknown[]) => mockFindStationByNameAndLine(...args),
 }));
 
+// #1014 — movementGate 모듈 mock. STATIC_SPEED_THRESHOLD_MPS 실제값(0.5)을 노출해
+// acceptance gate 로직이 테스트에서 일관되게 동작하도록 격리.
+jest.mock('../../../nearest-station/utils/movementGate', () => ({
+  STATIC_SPEED_THRESHOLD_MPS: 0.5,
+}));
+
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
     destination: '종착',
@@ -252,8 +258,19 @@ describe('useBoardingLockController', () => {
 
   // #915/#916 — backend autoLockCandidate hydrate. lockController가 createLock으로 위임.
   describe('hydrateLockFromCandidate (#915/#916)', () => {
+    // #1014 acceptance gate: 이 describe의 기본 inputs는 candidate trainCode 'AUTO-7'을
+    // directionalArrivals에 포함시켜 Gate 1을 통과하도록 설정.
+    const autoArrival: StationArrival = {
+      up: [makeTrain({ trainCode: 'AUTO-7' })],
+      down: [],
+    };
+    const hydrateInputs: UseBoardingLockControllerInputs = {
+      ...defaultInputs,
+      arrival: autoArrival,
+    };
+
     it('valid candidate + 컨텍스트 있음 → createLock 호출', async () => {
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      const { result } = renderHook(() => useBoardingLockController(hydrateInputs));
       await act(async () => {
         result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
       });
@@ -271,7 +288,7 @@ describe('useBoardingLockController', () => {
 
     it('역명+line 매칭 시 boardingStationId 정정', async () => {
       mockFindStationByNameAndLine.mockReturnValueOnce({ id: 'stn-A-line2', name: '강남', line: '2' });
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      const { result } = renderHook(() => useBoardingLockController(hydrateInputs));
       await act(async () => {
         result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
       });
@@ -281,7 +298,7 @@ describe('useBoardingLockController', () => {
 
     it('역명 매칭 실패 → currentStation.id 폴백', async () => {
       mockFindStationByNameAndLine.mockReturnValueOnce(null);
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      const { result } = renderHook(() => useBoardingLockController(hydrateInputs));
       await act(async () => {
         result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
       });
@@ -291,7 +308,7 @@ describe('useBoardingLockController', () => {
 
     it('expectedDurationMinutes null → fallback 30분', async () => {
       const { result } = renderHook(() =>
-        useBoardingLockController({ ...defaultInputs, expectedDurationMinutes: null }),
+        useBoardingLockController({ ...hydrateInputs, expectedDurationMinutes: null }),
       );
       await act(async () => {
         result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
@@ -306,7 +323,7 @@ describe('useBoardingLockController', () => {
       jest.spyOn(Date, 'now').mockReturnValue(1_700_000_111_222);
       try {
         const { result } = renderHook(() =>
-          useBoardingLockController({ ...defaultInputs, destinationId: null }),
+          useBoardingLockController({ ...hydrateInputs, destinationId: null }),
         );
         await act(async () => {
           result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
@@ -324,7 +341,7 @@ describe('useBoardingLockController', () => {
     });
 
     it('destinationId 있음 → sentinel marker 없음 (기존 동작 유지)', async () => {
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      const { result } = renderHook(() => useBoardingLockController(hydrateInputs));
       await act(async () => {
         result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
       });
@@ -336,7 +353,7 @@ describe('useBoardingLockController', () => {
 
     it('currentStation null → no-op', async () => {
       const { result } = renderHook(() =>
-        useBoardingLockController({ ...defaultInputs, currentStation: null }),
+        useBoardingLockController({ ...hydrateInputs, currentStation: null }),
       );
       await act(async () => {
         result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
@@ -345,7 +362,7 @@ describe('useBoardingLockController', () => {
     });
 
     it('candidate.line 무효 값 → no-op (graceful)', async () => {
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      const { result } = renderHook(() => useBoardingLockController(hydrateInputs));
       await act(async () => {
         result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '99', subwayId: '1099' });
       });
@@ -367,7 +384,7 @@ describe('useBoardingLockController', () => {
       };
       mockGetBoardingLock.mockResolvedValue(existing);
       useBoardingLockStore.setState({ lock: existing });
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      const { result } = renderHook(() => useBoardingLockController(hydrateInputs));
       await waitFor(() => expect(useBoardingLockStore.getState().lock?.trainCode).toBe(opts.existingTrainCode));
       mockSetBoardingLock.mockClear();
       await act(async () => {
@@ -392,13 +409,120 @@ describe('useBoardingLockController', () => {
       // storage 일시 실패 시뮬레이션. createLock 내부의 setBoardingLock이 throw하면
       // useBoardingLockController의 .catch 분기로 흡수돼 다음 sync에서 자연 재시도.
       mockSetBoardingLock.mockRejectedValueOnce(new Error('storage'));
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      const { result } = renderHook(() => useBoardingLockController(hydrateInputs));
       await act(async () => {
         result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
       });
       // throw가 RN 외부로 새지 않으면 OK — 다음 fix에서 createLock이 다시 호출되도록 lock은 null 유지.
       await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
       expect(useBoardingLockStore.getState().lock).toBeNull();
+    });
+
+    // #1014 RC2 acceptance gate
+    describe('#1014 acceptance gate', () => {
+      it('Gate 1: candidate.trainCode가 directionalArrivals에 없으면 no-op (origin 이미 지난 열차 차단)', async () => {
+        const arrivalOther: StationArrival = {
+          up: [makeTrain({ trainCode: 'OTHER-1' })],
+          down: [],
+        };
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...defaultInputs, arrival: arrivalOther }),
+        );
+        await act(async () => {
+          result.current.hydrateLockFromCandidate({ trainCode: 'PAST-TRAIN', line: '2', subwayId: '1002' });
+        });
+        expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      });
+
+      it('Gate 1: arrival null이면 no-op (arrival 목록 없음 → 방향 확인 불가)', async () => {
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...defaultInputs, arrival: null }),
+        );
+        await act(async () => {
+          result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+        });
+        expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      });
+
+      it('Gate 1: direction=up일 때 candidate가 down에만 있으면 no-op (방향 불일치 차단)', async () => {
+        mockResolveTripDirection.mockReturnValue('up');
+        const arrivalDirectional: StationArrival = {
+          up: [makeTrain({ trainCode: 'UP-TRAIN' })],
+          down: [makeTrain({ trainCode: 'DOWN-TRAIN' })],
+        };
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...defaultInputs, arrival: arrivalDirectional }),
+        );
+        await act(async () => {
+          result.current.hydrateLockFromCandidate({ trainCode: 'DOWN-TRAIN', line: '2', subwayId: '1002' });
+        });
+        expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      });
+
+      it('Gate 2: motionStationary=false + speedMps >= threshold → 양쪽 신호 이동 확인 → no-op', async () => {
+        // motionStationary=false 단독으로는 차단하지 않는다 — init 직후 false 초기값과 구별 불가.
+        // speedMps가 이동을 교차 확인할 때만 차단.
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...hydrateInputs, motionStationary: false, speedMps: 1.5 }),
+        );
+        await act(async () => {
+          result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+        });
+        expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      });
+
+      it('Gate 2: motionStationary=false + speedMps null → 단일 신호 불확실 → hydrate 허용 (init race 방지)', async () => {
+        // motionStationary=false는 앱 init 직후 useState 초기값일 수 있다.
+        // speedMps 미측정이면 이동 확신 불가 → 보수적으로 통과.
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...hydrateInputs, motionStationary: false }),
+        );
+        await act(async () => {
+          result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+        });
+        await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+      });
+
+      it('Gate 2: speedMps >= STATIC_SPEED_THRESHOLD_MPS(0.5)면 이동 중 → no-op', async () => {
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...hydrateInputs, speedMps: 1.5 }),
+        );
+        await act(async () => {
+          result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+        });
+        expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      });
+
+      it('Gate 2: motionStationary=true면 정적 → hydrate 허용 (speedMps 무관)', async () => {
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...hydrateInputs, motionStationary: true, speedMps: 0.8 }),
+        );
+        await act(async () => {
+          result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+        });
+        await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+      });
+
+      it('Gate 2: speedMps < STATIC_SPEED_THRESHOLD_MPS(0.5)면 정적 → hydrate 허용', async () => {
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...hydrateInputs, speedMps: 0.2 }),
+        );
+        await act(async () => {
+          result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+        });
+        await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+      });
+
+      it('Gate 2: motionStationary/speedMps 모두 미측정이면 보수적 통과 허용 (false negative 방지)', async () => {
+        // motionStationary=undefined, speedMps=undefined → 신호 없음 → 통과
+        const { result } = renderHook(() =>
+          useBoardingLockController(hydrateInputs), // motionStationary/speedMps 미전달
+        );
+        await act(async () => {
+          result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '2', subwayId: '1002' });
+        });
+        await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+      });
     });
   });
 

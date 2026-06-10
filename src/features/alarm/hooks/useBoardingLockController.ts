@@ -11,6 +11,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
+import { STATIC_SPEED_THRESHOLD_MPS } from '../../nearest-station/utils/movementGate';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { LineNumber, Station } from '../../../shared/types/station';
@@ -32,6 +33,18 @@ export interface UseBoardingLockControllerInputs {
    * null이면 fallback 30분 — 잘못된 Lock이라도 자동 만료(× 1.5)가 작동한다.
    */
   expectedDurationMinutes: number | null;
+  /**
+   * #1014 acceptance gate: iOS CMMotionActivity stationary 신호.
+   * true이면 사용자가 원점 대기 중 — hydrate 허용.
+   * undefined는 미측정(게이트에서 speedMps로 fallback).
+   */
+  motionStationary?: boolean | undefined;
+  /**
+   * #1014 acceptance gate: GPS 속도(m/s).
+   * STATIC_SPEED_THRESHOLD_MPS(0.5) 미만이면 정적으로 판단 — hydrate 허용.
+   * null은 미측정(게이트에서 motionStationary로 fallback).
+   */
+  speedMps?: number | null;
 }
 
 export interface UseBoardingLockControllerResult {
@@ -83,6 +96,8 @@ export function useBoardingLockController({
   arrival,
   currentStation,
   expectedDurationMinutes,
+  motionStationary,
+  speedMps,
 }: UseBoardingLockControllerInputs): UseBoardingLockControllerResult {
   const lock = useBoardingLockStore((s) => s.lock);
   const loadLock = useBoardingLockStore((s) => s.loadLock);
@@ -170,12 +185,42 @@ export function useBoardingLockController({
   //  - destination 변경 시 controller의 stale-lock release effect가 lock=null로 만든 후에야 hydrate.
   //  - 자동 lock도 한 번 잡히면 변경 X (Seam F swap은 backend cron이 trip.boardingLock을 갱신하고
   //    silent push로 client store가 hydrate되는 별 경로).
+  // #1014 RC2 acceptance gate — 두 조건 모두 통과해야 hydrate:
+  //  1) candidate.trainCode가 directionalArrivals(현재 역 + 방향 필터)에 있는지 확인
+  //     → origin을 이미 지난 열차(arrival list 없음)는 자동 차단.
+  //     → 방향 불일치 열차도 동시에 차단 (directionalArrivals가 direction 필터 적용됨).
+  //  2) 사용자가 origin에서 정적 대기 중인지 확인 — motionStationary 우선, speedMps fallback.
+  //     → 이미 열차에 탑승해 이동 중인 상태에서 backend가 autoLockCandidate를 지연 응답하는
+  //        false positive를 차단.
   const hydrateLockFromCandidate = useCallback(
     (candidate: AutoLockCandidate) => {
       if (!currentStation) return;
       const boardingLine = asLineNumber(candidate.line);
       if (!boardingLine) return;
       if (lock) return;
+
+      // #1014 Gate 1: trainCode가 현재 directionalArrivals에 있는지 확인.
+      // directionalArrivals는 arrival + direction 필터로 이미 방향 일치 검증을 포함한다.
+      const trainInArrivals = directionalArrivals.some(
+        (t) => t.trainCode === candidate.trainCode,
+      );
+      if (!trainInArrivals) return;
+
+      // #1014 Gate 2: 사용자 원점 dwell 확인.
+      // motionStationary=true → 정적 확정 → 통과.
+      // motionStationary=false → 이동 가능성 있음. speedMps로 교차 검증:
+      //   speedMps >= STATIC_SPEED_THRESHOLD_MPS이면 이동 확정 → 차단.
+      //   speedMps null(미측정) 또는 정적이면 → 통과.
+      //   (motionStationary=false는 앱 init 직후 초기값일 수 있어 단독 차단하지 않는다)
+      // motionStationary 미측정(undefined)이면 speedMps로 단독 판단:
+      //   speedMps >= STATIC_SPEED_THRESHOLD_MPS → 차단. 미측정/정적 → 통과.
+      // 두 신호 모두 없거나 불확실하면 보수적으로 통과 — false negative보다 false positive 방지 우선.
+      if (motionStationary === true) {
+        // stationary 확인됨 → Gate 2 통과
+      } else if (speedMps != null && speedMps >= STATIC_SPEED_THRESHOLD_MPS) {
+        return; // GPS speed로 이동 중 확인 → no-op
+      }
+
       // #978 (PR #955 follow-up): destinationId 없으면 free-trip sentinel으로 hydrate.
       // 사용자가 나중에 실제 destination을 설정하면 위의 destination 변경 effect가
       // (sentinel !== realId) → 자동 release하므로 cross-talk 차단.
@@ -207,7 +252,7 @@ export function useBoardingLockController({
         // store action rejection은 graceful — loadLock race / storage 일시 실패는 다음 sync에서 자연 재시도.
       });
     },
-    [destinationId, currentStation, expectedDurationMinutes, lock, createLock],
+    [destinationId, currentStation, expectedDurationMinutes, lock, createLock, directionalArrivals, motionStationary, speedMps],
   );
 
   return {
