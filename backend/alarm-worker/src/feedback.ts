@@ -13,6 +13,66 @@
 export const FEEDBACK_TTL_SECONDS = 30 * 24 * 60 * 60;
 export const FEEDBACK_MAX_MESSAGE_LENGTH = 2000;
 
+/**
+ * Rate limit (스팸 방지).
+ *
+ * 동일 IP가 1분 fixed window 안에서 5회까지 POST 가능. 6번째부터 429.
+ * Fixed window를 택한 이유:
+ *   - 코드/스토리지 단순. sliding window는 history 배열 유지 필요해 read-modify-write payload가 커진다.
+ *   - 경계에서 burst 허용 (최악 10회/2분) 가능하지만 사용자 버그 신고 채널엔 수용 가능.
+ *
+ * Storage: 기존 FEEDBACK KV를 prefix `rl:feedback:`로 공유. namespace 추가 안 함.
+ * Key: `rl:feedback:${ip}:${windowStartMs}` — 윈도우가 바뀌면 자연스럽게 새 키.
+ * TTL: WINDOW_MS와 동일 (60s) — 윈도우 종료 후 KV가 자동 청소.
+ * Race: KV는 eventually consistent이므로 burst 시 정확히 5건 cap 보장 안 됨 (~5건).
+ *       buggy spammer 차단이 목적이므로 soft cap으로 충분.
+ */
+export const FEEDBACK_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+export const FEEDBACK_RATE_LIMIT_MAX = 5;
+
+export function rateLimitKey(ip: string, windowStartMs: number): string {
+  return `rl:feedback:${ip}:${windowStartMs}`;
+}
+
+export function rateLimitWindowStart(nowMs: number): number {
+  return Math.floor(nowMs / FEEDBACK_RATE_LIMIT_WINDOW_MS) * FEEDBACK_RATE_LIMIT_WINDOW_MS;
+}
+
+export interface RateLimitResult {
+  allowed: boolean;
+  /** 윈도우 종료까지 남은 초. 429 응답의 Retry-After 헤더에 사용. */
+  retryAfterSeconds: number;
+}
+
+/**
+ * Fixed-window 카운트 증가. count > MAX이면 거부.
+ *
+ * 정확한 atomic increment 대신 read→write의 best-effort 증가 — KV는 atomic op이 없다.
+ * 동시 요청 충돌 시 일부 카운트가 누락될 수 있으나, 스팸 차단 임계값(분당 5회)이
+ * 매우 낮아 실질 cap은 ~5건으로 유지된다.
+ */
+export async function checkRateLimit(
+  kv: KVNamespace,
+  ip: string,
+  nowMs: number,
+): Promise<RateLimitResult> {
+  const windowStart = rateLimitWindowStart(nowMs);
+  const key = rateLimitKey(ip, windowStart);
+  const raw = await kv.get(key);
+  const current = raw ? Number.parseInt(raw, 10) : 0;
+  const count = Number.isFinite(current) && current >= 0 ? current : 0;
+  const windowEnd = windowStart + FEEDBACK_RATE_LIMIT_WINDOW_MS;
+  const retryAfterSeconds = Math.max(1, Math.ceil((windowEnd - nowMs) / 1000));
+
+  if (count >= FEEDBACK_RATE_LIMIT_MAX) {
+    return { allowed: false, retryAfterSeconds };
+  }
+  await kv.put(key, String(count + 1), {
+    expirationTtl: Math.ceil(FEEDBACK_RATE_LIMIT_WINDOW_MS / 1000),
+  });
+  return { allowed: true, retryAfterSeconds };
+}
+
 export interface FeedbackContext {
   appVersion?: string;
   platform?: 'ios' | 'android';

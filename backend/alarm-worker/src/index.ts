@@ -20,6 +20,7 @@ import {
 } from './boardingPromptOutcome';
 import { runFallbackPushes } from './fallback';
 import {
+  checkRateLimit,
   generateFeedbackId,
   storeFeedback,
   validateFeedback,
@@ -97,13 +98,28 @@ app.get('/health', (c) => c.json({ ok: true }));
  * Responses:
  *   201 { ok: true, key }       — 적재 성공
  *   400 { error: 'invalid_json' | 'invalid_payload' }
+ *   429 { error: 'rate_limited' } — 동일 IP 1분 5회 초과. `Retry-After`(seconds) 포함
  *   503 { error: 'feedback_unavailable' } — FEEDBACK binding 미설정 (운영자 namespace 발급 전)
  *
  * 보관: TTL 30일. 운영자가 `wrangler kv` CLI로 수거.
+ *
+ * Rate limit: CF-Connecting-IP 기준 분당 5회 (PR #1042 follow-up, 스팸 방지).
+ *   - 헤더 부재 시 'unknown' 단일 버킷으로 fallback — 헤더가 없는 환경(테스트/로컬)도 cap 받음.
  */
 app.post('/feedback', async (c) => {
   const kv = c.env.FEEDBACK;
   if (!kv) return c.json({ error: 'feedback_unavailable' }, 503);
+
+  const ip = c.req.header('CF-Connecting-IP') ?? 'unknown';
+  const now = Date.now();
+  const rl = await checkRateLimit(kv, ip, now);
+  if (!rl.allowed) {
+    return c.json(
+      { error: 'rate_limited' },
+      429,
+      { 'Retry-After': String(rl.retryAfterSeconds) },
+    );
+  }
 
   let body: unknown;
   try {
@@ -115,9 +131,8 @@ app.post('/feedback', async (c) => {
   const payload = validateFeedback(body);
   if (!payload) return c.json({ error: 'invalid_payload' }, 400);
 
-  const receivedAt = Date.now();
   const id = generateFeedbackId();
-  const key = await storeFeedback(kv, payload, receivedAt, id);
+  const key = await storeFeedback(kv, payload, now, id);
   return c.json({ ok: true, key }, 201);
 });
 
