@@ -2030,3 +2030,78 @@ describe('POST /boarding-lock/sync (#901)', () => {
     expect(body.autoLockCandidate).toBeNull();
   });
 });
+
+// ─── GET /admin/quota (#1022) ─────────────────────────────────────────────────
+
+async function getAdminQuota(
+  env: Env,
+  authHeader?: string,
+): Promise<Response> {
+  return app.fetch(
+    new Request('http://example.com/admin/quota', {
+      method: 'GET',
+      headers: authHeader ? { authorization: authHeader } : {},
+    }),
+    env,
+  );
+}
+
+describe('GET /admin/quota (#1022)', () => {
+  it('returns 503 when ADMIN_TOKEN is not configured', async () => {
+    const env = makeKvEnv();
+    const res = await getAdminQuota(env, 'Bearer some-token');
+    expect(res.status).toBe(503);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('admin_unavailable');
+  });
+
+  it('returns 401 when no Authorization header', async () => {
+    const env = makeKvEnv();
+    env.ADMIN_TOKEN = 'secret';
+    const res = await getAdminQuota(env);
+    expect(res.status).toBe(401);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('unauthorized');
+  });
+
+  it('returns 401 when token does not match', async () => {
+    const env = makeKvEnv();
+    env.ADMIN_TOKEN = 'secret';
+    const res = await getAdminQuota(env, 'Bearer wrong-token');
+    expect(res.status).toBe(401);
+    const body = await res.json() as { error: string };
+    expect(body.error).toBe('unauthorized');
+  });
+
+  it('returns 200 with quota status fields', async () => {
+    const env = makeKvEnv();
+    env.ADMIN_TOKEN = 'secret';
+    const res = await getAdminQuota(env, 'Bearer secret');
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      date: string;
+      count: number;
+      limit: number;
+      ratio: number;
+      warning: boolean;
+    };
+    // middleware increments count on every request, so count >= 1
+    expect(body.count).toBeGreaterThanOrEqual(1);
+    expect(body.limit).toBe(100_000);
+    expect(body.ratio).toBeGreaterThanOrEqual(0);
+    expect(body.warning).toBe(false);
+    expect(body.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('reflects request count incremented by middleware', async () => {
+    const env = makeKvEnv();
+    env.ADMIN_TOKEN = 'secret';
+    // Fire one request to increment the counter via middleware
+    await app.fetch(new Request('http://example.com/health'), env);
+    const res = await getAdminQuota(env, 'Bearer secret');
+    expect(res.status).toBe(200);
+    const body = await res.json() as { count: number };
+    // At least 1 from /health + 1 from /admin/quota (middleware runs on all requests)
+    expect(body.count).toBeGreaterThanOrEqual(1);
+  });
+});

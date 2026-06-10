@@ -689,6 +689,21 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
             )}
           </Section>
 
+          {/* #1022: Worker Quota admin view */}
+          <Section title="Worker Quota" colors={colors}>
+            <KeyValue
+              label="endpoint"
+              value={`${process.env.EXPO_PUBLIC_ALARM_BACKEND_URL ?? '(unset)'}/admin/quota`}
+              colors={colors}
+            />
+            <Text
+              style={[typography.mono, { color: colors.muted, marginTop: spacing.xs }]}
+              testID="debug-quota-note"
+            >
+              GET with Bearer ADMIN_TOKEN
+            </Text>
+          </Section>
+
           <View style={styles.actions}>
             <TouchableOpacity
               style={[styles.actionButton, { borderColor: colors.accent }]}
