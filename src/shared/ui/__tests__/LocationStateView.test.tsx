@@ -3,6 +3,11 @@ import { screen, fireEvent } from '@testing-library/react-native';
 import * as RN from 'react-native';
 import { LocationStateView } from '../LocationStateView';
 import { renderWithTheme } from '../../../testUtils/renderWithTheme';
+import { openAppSettings } from '../../utils/openAppSettings';
+
+jest.mock('../../utils/openAppSettings', () => ({
+  openAppSettings: jest.fn(),
+}));
 
 const mockUseColorScheme = jest.spyOn(RN, 'useColorScheme');
 
@@ -12,6 +17,7 @@ describe('LocationStateView', () => {
   beforeEach(() => {
     mockUseColorScheme.mockReturnValue('light');
     onRetry.mockReset();
+    (openAppSettings as jest.Mock).mockReset();
   });
 
   afterEach(() => {
@@ -46,6 +52,21 @@ describe('LocationStateView', () => {
       );
       fireEvent.press(screen.getByTestId('location-retry-button'));
       expect(onRetry).toHaveBeenCalledTimes(1);
+    });
+
+    it('"설정 열기" 버튼을 표시한다', () => {
+      renderWithTheme(
+        <LocationStateView permissionDenied={true} loading={false} error={null} onRetry={onRetry} />,
+      );
+      expect(screen.getByText('설정 열기')).toBeTruthy();
+    });
+
+    it('"설정 열기" 버튼 클릭 시 openAppSettings를 호출한다', () => {
+      renderWithTheme(
+        <LocationStateView permissionDenied={true} loading={false} error={null} onRetry={onRetry} />,
+      );
+      fireEvent.press(screen.getByTestId('location-open-settings-button'));
+      expect(openAppSettings).toHaveBeenCalledTimes(1);
     });
   });
 
