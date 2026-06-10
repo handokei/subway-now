@@ -16,6 +16,27 @@ describe('ArrivalStatusBadge', () => {
     expect(screen.getByText('막차')).toBeTruthy();
   });
 
+  it('isLastTrain + 컨텍스트 → "막차 HH:mm" 시각 동봉', () => {
+    renderWithTheme(
+      <ArrivalStatusBadge isLastTrain stationName="소요산" line="1" direction="down" />,
+    );
+    // 1호선 소요산 down weekday/saturday/sunday 모두 "23:47"로 끝나는 데이터.
+    // (요일별 분기 검증은 lastTrainTime 단위 테스트에서 별도 수행)
+    expect(screen.getByText(/^막차 \d{2}:\d{2}$/)).toBeTruthy();
+  });
+
+  it('isLastTrain + 컨텍스트지만 timetable 없는 노선 → 기존 "막차" fallback', () => {
+    renderWithTheme(
+      <ArrivalStatusBadge isLastTrain stationName="서울역" line="airport" direction="up" />,
+    );
+    expect(screen.getByText('막차')).toBeTruthy();
+  });
+
+  it('isLastTrain + stationName만 제공(불완전 컨텍스트) → "막차" fallback', () => {
+    renderWithTheme(<ArrivalStatusBadge isLastTrain stationName="소요산" />);
+    expect(screen.getByText('막차')).toBeTruthy();
+  });
+
   it('arrivalCode=ARRIVED → 도착 배지', () => {
     renderWithTheme(<ArrivalStatusBadge arrivalCode={ARRIVAL_CODE.ARRIVED} />);
     expect(screen.getByText('도착')).toBeTruthy();
