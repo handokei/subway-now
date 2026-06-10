@@ -88,7 +88,10 @@
     "languageAuto": "自动",
     "feedbackSection": "支持",
     "feedbackLabel": "报告问题",
-    "feedbackDescription": "告诉我们您遇到的问题"
+    "feedbackDescription": "告诉我们您遇到的问题",
+    "privacySection": "隐私",
+    "sentryOptInLabel": "发送错误诊断信息",
+    "sentryOptInDescription": "向开发者发送匿名错误信息"
   },
   "feedback": {
     "title": "报告问题",
@@ -272,6 +275,7 @@
       "sleepModeHint": "连接耳机时以起床闹钟音播放",
       "speakerOutputHint": "未连接耳机时通过扬声器播放闹钟音",
       "locklessStationPassedHint": "未选择乘车列车也会收到经过站点通知",
+      "sentryOptInHint": "同意发送匿名错误信息",
       "accessibilityModeHint": "按电梯位置引导快速下车位置",
       "versionFooterLabel": "应用版本 {{version}}",
       "versionFooterHint": "多次点击打开调试菜单"

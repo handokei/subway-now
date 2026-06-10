@@ -6,6 +6,7 @@ import {
   ACCESSIBILITY_MODE_KEY,
   LOCKLESS_STATION_PASSED_KEY,
 } from '../../../shared/constants/storageKeys';
+import { getSentryOptIn, setSentryOptIn } from '../../../shared/infra/monitoring/sentryInit';
 
 /**
  * Settings store — ADR 후속 Step 6 (#892).
@@ -37,6 +38,15 @@ export interface SettingsState {
   locklessStationPassed: boolean;
   setLocklessStationPassed: (enabled: boolean) => Promise<void>;
   loadLocklessStationPassed: () => Promise<void>;
+
+  /**
+   * #1038 follow-up — Sentry 오류 진단 정보 전송 opt-in. 기본 OFF.
+   * Storage 형식은 `sentryInit.ts`가 boot path에서 읽는 raw 'true'/'false' 문자열.
+   * 토글 시 `setSentryOptIn`이 Sentry SDK를 런타임에 enable/disable한다.
+   */
+  sentryOptIn: boolean;
+  setSentryOptIn: (enabled: boolean) => Promise<void>;
+  loadSentryOptIn: () => Promise<void>;
 }
 
 export const useSettingsStore = create<SettingsState>((set) => ({
@@ -45,6 +55,8 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   accessibilityMode: false,
   // #915 — destination-only baseline UX. 매역 알림이 zero-config로 동작하도록 default ON.
   locklessStationPassed: true,
+  // #1038 — privacy stance. 사용자가 명시 동의해야 활성화.
+  sentryOptIn: false,
 
   setSleepMode: async (enabled: boolean) => {
     set({ sleepMode: enabled });
@@ -108,5 +120,15 @@ export const useSettingsStore = create<SettingsState>((set) => ({
     } catch {
       // 저장된 데이터 없음 — false 유지
     }
+  },
+
+  setSentryOptIn: async (enabled: boolean) => {
+    set({ sentryOptIn: enabled });
+    await setSentryOptIn(enabled);
+  },
+
+  loadSentryOptIn: async () => {
+    const value = await getSentryOptIn();
+    set({ sentryOptIn: value });
   },
 }));
