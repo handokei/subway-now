@@ -22,6 +22,7 @@ import { setTripStartedAt } from '../../alarm/utils/tripStartStorage';
 import { triggerTripEndRecall } from '../../alarm/utils/triggerTripEndRecall';
 import { useAlarmEventStore } from '../../alarm/store/useAlarmEventStore';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../../../shared/utils/stationRoute';
+import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = (): void => {};
@@ -93,6 +94,13 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
     // 주의: 여기서는 storage만 정리한다. BoardingLock 메모리 release 및 예약 알림 cancel은
     // useBoardingLockController가 destinationId 변경 감지로 처리한다 (store 분리 유지).
     if (isSwitch) {
+      // 도메인 이벤트 breadcrumb — trip start(새 destination 지정) / end(null로 해제).
+      // 같은 destination 재설정은 isSwitch=false로 여기 진입하지 않으므로 noise 방지됨.
+      if (station) {
+        addDomainBreadcrumb('trip', 'start', { destination: station.name });
+      } else {
+        addDomainBreadcrumb('trip', 'end', { reason: 'user-clear' });
+      }
       // #919 + cleanup + 새 trip 기록을 순서대로 chain. 각 단계는 자체 catch를 가져
       // 한 단계 실패가 다음 단계를 막지 않도록 한다 — 측정 인프라가 cleanup의 critical
       // path를 차단하면 안 된다.

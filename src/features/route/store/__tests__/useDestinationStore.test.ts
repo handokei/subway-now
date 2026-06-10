@@ -24,6 +24,12 @@ jest.mock('../../../alarm/utils/triggerTripEndRecall', () => ({
   triggerTripEndRecall: jest.fn().mockResolvedValue({ uploaded: false }),
 }));
 
+const mockAddDomainBreadcrumb = jest.fn();
+jest.mock('../../../../shared/infra/monitoring/breadcrumb', () => ({
+  addLogBreadcrumb: jest.fn(),
+  addDomainBreadcrumb: (...args: unknown[]) => mockAddDomainBreadcrumb(...args),
+}));
+
 const mockStation: Station = {
   id: '2-022',
   name: '강남',
@@ -711,5 +717,33 @@ describe('useDestinationStore', () => {
     useDestinationStore.getState().setDestination(mockStation);
     await flushMicrotasks();
     expect(useDestinationStore.getState().destination?.id).toBe('2-022');
+  });
+
+  describe('trip breadcrumb', () => {
+    beforeEach(() => {
+      mockAddDomainBreadcrumb.mockClear();
+      useDestinationStore.setState({ destination: null });
+    });
+
+    it('새 destination 지정 시 trip/start breadcrumb', () => {
+      useDestinationStore.getState().setDestination(mockStation);
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'start', {
+        destination: mockStation.name,
+      });
+    });
+
+    it('destination=null 해제 시 trip/end breadcrumb', () => {
+      useDestinationStore.setState({ destination: mockStation });
+      useDestinationStore.getState().setDestination(null);
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
+        reason: 'user-clear',
+      });
+    });
+
+    it('같은 destination 재설정은 noise 방지를 위해 breadcrumb 없음', () => {
+      useDestinationStore.setState({ destination: mockStation });
+      useDestinationStore.getState().setDestination(mockStation);
+      expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
+    });
   });
 });

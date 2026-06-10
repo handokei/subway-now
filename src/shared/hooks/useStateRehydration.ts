@@ -14,6 +14,7 @@ import {
   getTripEndedSentinel,
 } from '../../features/alarm/utils/tripEndedSentinel';
 import { createLogger } from '../utils/logger';
+import { addDomainBreadcrumb } from '../infra/monitoring/breadcrumb';
 
 const logger = createLogger('useStateRehydration');
 
@@ -38,6 +39,11 @@ export function useStateRehydration(): void {
   useEffect(() => {
     void runRehydration('mount');
     const handler = (state: AppStateStatus): void => {
+      // BG/FG transition은 background↔active 양쪽 모두 의미 있음 — 디버그 시
+      // crash가 active 진입 직후인지 BG로 내려간 직후인지 식별에 사용.
+      if (state === 'active' || state === 'background') {
+        addDomainBreadcrumb('lifecycle', state);
+      }
       if (state === 'active') void runRehydration('active');
     };
     const sub = AppState.addEventListener('change', handler);

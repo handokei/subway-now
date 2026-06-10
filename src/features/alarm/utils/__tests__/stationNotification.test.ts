@@ -58,6 +58,12 @@ jest.mock('../firedPushIds', () => ({
 
 const mockSaveStationToWidget = jest.fn().mockResolvedValue(undefined);
 const mockClearWidgetStation = jest.fn().mockResolvedValue(undefined);
+const mockAddDomainBreadcrumb = jest.fn();
+jest.mock('../../../../shared/infra/monitoring/breadcrumb', () => ({
+  addLogBreadcrumb: jest.fn(),
+  addDomainBreadcrumb: (...args: unknown[]) => mockAddDomainBreadcrumb(...args),
+}));
+
 jest.mock('../../../widget/api/widgetStorage', () => ({
   saveStationToWidget: (...args: unknown[]) => mockSaveStationToWidget(...args),
   clearWidgetStation: () => mockClearWidgetStation(),
@@ -260,6 +266,16 @@ describe('stationNotification', () => {
       (Notifications.deleteNotificationChannelAsync as jest.Mock).mockRejectedValue(new Error('채널 없음'));
       await initStationNotification();
       expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm', expect.anything());
+    });
+
+    it('권한 요청 후 permission 카테고리 breadcrumb 추가', async () => {
+      mockAddDomainBreadcrumb.mockClear();
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      (Notifications.requestPermissionsAsync as jest.Mock).mockResolvedValueOnce({ status: 'granted' });
+      await initStationNotification();
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('permission', 'notification', {
+        status: 'granted',
+      });
     });
   });
 
@@ -769,6 +785,35 @@ describe('stationNotification', () => {
         // 동일 케이스 보호. 잠실이 단일 이름이라 여기서는 정확 매칭으로 작동.
         await sendAlarmNotification({ phaseId: 'imminent', type: 'destination', stationName: '잠실' });
         expectAlarmNotification('도착 임박', '곧 잠실에 도착합니다. 하차 준비하세요!\n출구가 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
+      });
+    });
+
+    describe('domain breadcrumb', () => {
+      beforeEach(() => {
+        mockAddDomainBreadcrumb.mockClear();
+        jest.replaceProperty(Platform, 'OS', 'ios');
+      });
+
+      it('alarm fire 시 alarm 카테고리 breadcrumb 추가', async () => {
+        await sendAlarmNotification(earlyDest, true);
+        expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('alarm', 'fire', {
+          type: 'destination',
+          phase: 'early',
+          station: '강남',
+          sleepMode: true,
+          source: undefined,
+        });
+      });
+
+      it('source가 있으면 breadcrumb data에 포함', async () => {
+        await sendAlarmNotification(earlyTransfer, false, true, 'positionTrain');
+        expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('alarm', 'fire', {
+          type: 'transfer',
+          phase: 'early',
+          station: '시청',
+          sleepMode: false,
+          source: 'positionTrain',
+        });
       });
     });
   });

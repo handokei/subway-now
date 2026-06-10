@@ -64,6 +64,7 @@ import { type NotificationSource } from '../utils/notificationSource';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 import { getBoardingLock } from '../utils/boardingLockStorage';
 import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
+import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 
 // silent push는 서버가 train data 기반으로 발사하므로 라벨도 'positionTrain'으로 고정.
 // 향후 GPS 게이트 경로 등 다른 출처가 생기면 인자화 한다.
@@ -396,6 +397,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       return;
     }
     const receivedAt = Date.now();
+    addDomainBreadcrumb('push', 'silent-push', { kind: payload.kind ?? 'fire' });
     const apnsToken = await loadApnsToken();
 
     // reschedule 분기 (#725). 백엔드는 사전 예약 알람(#584) 시각을 정정하려고 이 push를 보낸다.
