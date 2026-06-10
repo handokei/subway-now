@@ -284,5 +284,11 @@
       "boardingLockReleaseLabel": "Get off",
       "boardingLockReleaseHint": "Ends the current boarding session"
     }
+  },
+  "service": {
+    "window": {
+      "preFirst": "Before first train · first train at {{time}}",
+      "postLast": "After last train · first train tomorrow at {{time}}"
+    }
   }
 }

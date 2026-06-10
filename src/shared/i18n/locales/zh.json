@@ -284,5 +284,11 @@
       "boardingLockReleaseLabel": "下车",
       "boardingLockReleaseHint": "结束当前乘车状态"
     }
+  },
+  "service": {
+    "window": {
+      "preFirst": "首班车前 · 首班车 {{time}}",
+      "postLast": "末班车后 · 明日首班车 {{time}}"
+    }
   }
 }
