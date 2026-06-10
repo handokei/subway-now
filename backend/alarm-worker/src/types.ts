@@ -427,6 +427,13 @@ export interface Env {
    * 생성: `wrangler kv:namespace create PENDING_PUSHES`
    */
   PENDING_PUSHES?: KVNamespace;
+  /**
+   * 사용자 버그 신고 KV (#1034, docs/requirements/12-cross-cutting.md).
+   * `POST /feedback`이 메시지 + 디바이스 컨텍스트를 30일 TTL로 적재.
+   * 미바인딩 시 endpoint는 503 graceful (운영자가 namespace 발급 전 환경 호환).
+   * 생성: `wrangler kv namespace create FEEDBACK`
+   */
+  FEEDBACK?: KVNamespace;
   /** Production APNs host (예: api.push.apple.com) */
   APNS_HOST: string;
   /** Sandbox APNs host (예: api.sandbox.push.apple.com) — dev/preview 빌드 토큰용 */

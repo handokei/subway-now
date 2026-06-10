@@ -81,7 +81,19 @@
     "languageSection": "언어",
     "languageLabel": "앱 언어",
     "languageDescription": "자동은 기기 설정을 따릅니다",
-    "languageAuto": "자동"
+    "languageAuto": "자동",
+    "feedbackSection": "지원",
+    "feedbackLabel": "버그 신고",
+    "feedbackDescription": "앱에서 겪은 문제를 알려 주세요"
+  },
+  "feedback": {
+    "title": "버그 신고",
+    "description": "겪으신 문제를 자세히 적어 주세요. 앱 버전과 OS 정보가 함께 전달됩니다.",
+    "placeholder": "예: 강남역 도착 알람이 울리지 않았어요",
+    "submit": "보내기",
+    "submitting": "보내는 중…",
+    "successToast": "전송했어요. 감사합니다!",
+    "errorToast": "전송에 실패했어요. 잠시 후 다시 시도해 주세요."
   },
   "map": {
     "originBadge": "출발",

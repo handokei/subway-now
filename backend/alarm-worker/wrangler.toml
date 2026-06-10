@@ -18,6 +18,17 @@ binding = "PENDING_PUSHES"
 id = "12e5eae8b5c94420b0efc1e89870c845"
 preview_id = "53a86628f78c48fa91fa954f84514df3"
 
+# KV: 사용자 버그 신고 (#1034, docs/requirements/12-cross-cutting.md)
+# `POST /feedback`이 메시지 + 디바이스 컨텍스트를 30일 TTL로 적재.
+# 운영자가 `wrangler kv key list --binding FEEDBACK`으로 수거 후 분기 트리아지.
+# TODO: 운영자가 `wrangler kv namespace create FEEDBACK` (+ `--preview`)로 실제 ID 발급 후
+#       아래 placeholder 두 줄을 교체. 코드는 `if (env.FEEDBACK)` 분기로 graceful —
+#       binding 미설정 환경(현재 placeholder 상태)에서는 endpoint가 503 응답.
+[[kv_namespaces]]
+binding = "FEEDBACK"
+id = "REPLACE_WITH_FEEDBACK_KV_ID"
+preview_id = "REPLACE_WITH_FEEDBACK_KV_PREVIEW_ID"
+
 # #498 — silent push 게이트 outcome 텔레메트리. 클라가 누적한 카운터를 일별 query 가능하게 적재.
 # Privacy: 카운트만, token은 8자 prefix만. 개별 push 내용/좌표 미저장.
 #
