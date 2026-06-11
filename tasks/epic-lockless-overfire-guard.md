@@ -115,11 +115,51 @@ ADR-008 Stage 4 Phase A+B 통합. **#844의 잔여 범위(PR B/C/D)가 B2 결정
 
 ## 7. Acceptance (epic close 조건)
 
-- [ ] 회귀 7개 1주 측정 0건 (회귀 목록 정의는 원본 유실 — Epic A 머지분 기준 재확정 필요)
+- [ ] 회귀 7개 1주 측정 0건 (정의는 §7.1)
 - [ ] R-1 ~ R-10 monitor 작동
 - [ ] ADR-011 머지
 - [ ] 추가 발견: A 카테고리 흡수 / B follow-up / C 별 epic (B14 룰 적용)
 
+### 7.1 회귀 7개 정의 (Epic A 머지분 기준 재확정, 2026-06-11)
+
+> 본 절은 §7 첫 번째 항목 "회귀 7개 1주 측정 0건"의 SSOT 정의. 원본 SSOT 부재로 Epic A 머지된 sub-issue 본문 + RC 매핑(§1) + alarmLog stamp(#1019) 기준으로 재구성.
+>
+> **선정 원칙**: Epic A에서 backend/client 코드 변경으로 **잘못된 발사 경로**를 봉합한 sub-issue만 포함. 측정 인프라(M1/M4/M7/M8) 및 운영성 개선(DL-B/DL-H)은 본 7개에서 제외 — 회귀 자체가 아니라 그 회귀를 측정하는 도구이기 때문.
+>
+> **회귀 번호**는 epic 본문에 등장하는 "회귀 #1~#7" 임의 식별자이며, GitHub issue 번호와 무관.
+
+| # | 회귀 패턴 (한 줄) | RC | 봉합 sub-issue | 검출 기준 (alarmLog reason — #1019 stamp) |
+| --- | --- | --- | --- | --- |
+| 1 | hydrate 직후 station-passed effect가 warmup 무시하고 즉시 발사 | RC2/RC4 보조 | #1010 | `fired` entry 중 `reason=station-passed` & hydrate 후 경과 시간 < 30s |
+| 2 | backend autoLockCandidate를 client가 무검증 채택 (origin 지난 trainCode hydrate) | RC2 | #1014 | `fired` entry 중 lock acceptance gate 실패 reason(`acceptance-direction-mismatch` / `acceptance-not-in-arrivals` / `acceptance-no-origin-dwell`)이 stamp되지 않은 hydrate 직후 발사 |
+| 3 | hydrate 직후 fusion backward jump를 forward-only 검증이 못 막아 옛 train으로 발사 | RC3 | #1015 | `fired` entry 중 `positionTrainResult.currentStation` index < `lock.boardingIdx` 시점 발사 (forward-only 위반) |
+| 4 | 지하/저정확도 GPS 게이트 3 hole 우회 (userLocation=null placeholder, accuracy>200m bypass, line-only check) | RC3 | #1016 | `fired` entry 중 `gps.userLocation==null` 또는 `gps.accuracy>200m`인데 lock 활성 + nextHops window 밖 station_id 발사 |
+| 5 | `trackTrainProgress` 자체에 forward-only 가드 없어 source 단에서 backward candidate 통과 | RC4 | #1017 | `fired` entry 중 candidate.currentStationIdx < boardingIdx에서 trackTrainProgress 결과로 발사 (source-level forward 위반) |
+| 6 | backend `attemptAutoLock`이 arvlCd=2 at next-waypoint을 무조건 채택해 origin 지난 train lock | RC1 | #1018 | BFF telemetry: `attemptAutoLock` 응답 중 confidence < threshold에서 trainCode 반환 (gate 우회). 또는 client 측 RC1 회귀 #2 패턴과 동시 등장 |
+| 7 | motion 권한 미부여/cold-start에서 motion warmup 부재로 phase gate 우회 → 잘못된 phase에서 발사 | H6 | #1013 | `fired` entry 중 `motion=undefined` & phase gate stamp 누락 & cold-start 후 < 60s positionStability fallback 미적용 |
+
+#### 측정 framework
+
+- **측정 출처**:
+  - **client**: production 빌드의 `alarmLog` `fired` entry + #1019 stamp된 reason 분포 (DebugModal `## Gates` 섹션)
+  - **backend (회귀 6 전용)**: Cloudflare Worker 로그 + `attemptAutoLock` confidence stamp (#1018에서 추가)
+- **수집 도구**:
+  - 1차: 운영자(본인)가 DebugModal `Share` 버튼으로 alarmLog JSON export → 로컬 집계 스크립트 (`scripts/`에 별도 PR로 추가 예정)
+  - 2차(이상치 검증): BFF telemetry는 #1022(M8) Cloudflare Worker quota dashboard에 회귀 6 카운터 1개 추가하는 follow-up으로 자동화
+- **검출 자동화**:
+  - 회귀 1~5, 7: client alarmLog `fired` reason + 컨텍스트 stamp만으로 판별 가능 (별도 인프라 불필요)
+  - 회귀 6: backend confidence gate 우회 카운터 — `R-1` monitor(§5)와 동일 출처
+- **기간**: 1주 연속 (production 빌드 사용 7일). 운영자 본인 1명 기준 (대규모 베타 부재). 1일 평균 trip 횟수 × 7 ≥ 10 trip 이상 누적 시 통계 신뢰성 충족으로 간주
+- **결과 기록**: 측정 종료 후 `tasks/epic-1008-acceptance-result.md` 별 파일에 회귀 #1~#7 카운트 + 트립 표본 수 + 0건 판정 여부 기록 후 본 epic close
+
+#### 비포함 항목 (왜 7개에 안 들어갔는지)
+
+- **H1 #1009 / H5 #1012** — 회귀 봉합이 아니라 진단 인프라/state machine. 측정 도구.
+- **H3' #1011** — `lastNotifiedStationId` destination scoping. 동일 station 재발사 가드이지만 회귀 #1 (warmup)과 trigger 조건이 중첩되어 별도 회귀로 카운트 시 double count. 회귀 #1 measurement에 흡수.
+- **M1/M4/M7/M8 (#1019~#1022)** — 측정/모니터. 회귀 자체가 아니라 본 §7.1의 검출 도구.
+- **DL-B/DL-H (#1023/#1024)** — 운영성(dedup window 확장, burst counter). 봉합이 아니라 운영 잡음 감소.
+
 ## 8. 변경 이력
 
 - 2026-06-11: 원본 부재 확인 후 GitHub 상태 기준 재구성 생성. Epic A 15/17. B1~B5/B14 미결.
+- 2026-06-11: §7.1 "회귀 7개 정의" 추가. Epic A 머지된 #1010/#1013/#1014/#1015/#1016/#1017/#1018 기준 회귀 패턴 + 검출 기준 + 측정 framework 명시 (PR `docs/#1008-epic-acceptance-regressions`).
