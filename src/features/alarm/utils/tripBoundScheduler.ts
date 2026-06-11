@@ -31,8 +31,7 @@ const PHASE_INTERRUPTION: Record<AlarmPhaseId, 'active' | 'timeSensitive'> = {
 /** Android channel id — stationNotification / alarmScheduler / boardingLockScheduler와 동일. */
 const ALARM_CHANNEL_ID = 'station-alarm';
 
-/** imminent phase 고정 lead(ms) — 도착 10초 전. early는 입력 `estimatedHopTimesMs[i]`를 그대로 사용. */
-const IMMINENT_LEAD_MS = 10_000;
+// imminent lead 정책은 `alarmPhases.ts`의 `phase.getLeadMs(hopMs)`에 인코딩됨 (#1194).
 
 /**
  * #918 A3 PR3 — rolling window 64 cap 회피용 윈도우 크기 (stop 단위).
@@ -204,7 +203,7 @@ export async function prescheduleStationAlerts(
     const stop = routeStops[i];
 
     for (const phase of ALARM_PHASES) {
-      const leadMs = phase.id === 'early' ? hopMs : IMMINENT_LEAD_MS;
+      const leadMs = phase.getLeadMs(hopMs);
       const fireMs = cumulativeMs - leadMs;
       // startTime 기준 + 실제 wall-clock 기준 두 조건 모두 통과해야 등록.
       if (fireMs <= startTime || fireMs <= nowMs) continue;
@@ -558,7 +557,7 @@ export async function rescheduleTripBoundAlarm(
   const stop = routeStops[targetIndex];
   let scheduled = 0;
   for (const phase of ALARM_PHASES) {
-    const leadMs = phase.id === 'early' ? hopMs : IMMINENT_LEAD_MS;
+    const leadMs = phase.getLeadMs(hopMs);
     const fireMs = newArrivalMs - leadMs;
     if (fireMs <= nowMs) continue;
     await scheduleStopPhase({ phase, stop, fireMs, occurrenceIdx: 0 });
