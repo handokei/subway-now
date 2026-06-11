@@ -42,12 +42,14 @@ import {
   summarizeAlarmLogBySource,
   countSilentPushOutcomes,
   summarizeAlarmLogByReason,
+  summarizeAlarmLogCounters,
   logBoardingPromptFired,
   BOARDING_PROMPT_WINDOWS,
   countBoardingPromptByWindow,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
+  type AlarmLogReasonCounter,
   type BoardingPromptWindowKey,
 } from '../alarmLog';
 import { ALARM_LOG_KEY } from '../../../../shared/constants/storageKeys';
@@ -1268,6 +1270,39 @@ describe('alarmLog', () => {
     it('reason 없는 suppressed 엔트리는 (unknown)으로 집계한다', () => {
       const entry: AlarmLogEntry = { ts: 1, source: 'fg', outcome: 'suppressed' };
       expect(summarizeAlarmLogByReason([entry])).toEqual({ '(unknown)': 1 });
+    });
+  });
+
+  describe('summarizeAlarmLogCounters (#1021)', () => {
+    it('suppressed 엔트리의 reason별 count+lastTs를 합산해 내림차순으로 반환한다', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed', count: 2, ts: 100 }),
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed', count: 3, ts: 200 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', count: 1, ts: 50 }),
+        makeEntry({ outcome: 'fired' }),
+      ];
+      const result: AlarmLogReasonCounter[] = summarizeAlarmLogCounters(entries);
+      expect(result[0]).toEqual({ reason: 'movement-static-speed', count: 5, lastTs: 200 });
+      expect(result[1]).toEqual({ reason: 'gate-age', count: 1, lastTs: 50 });
+    });
+
+    it('suppressed가 없으면 빈 배열을 반환한다', () => {
+      expect(summarizeAlarmLogCounters([makeEntry({ outcome: 'fired' })])).toEqual([]);
+    });
+
+    it('reason 없는 suppressed 엔트리는 (unknown)으로 집계한다', () => {
+      const entry: AlarmLogEntry = { ts: 1, source: 'fg', outcome: 'suppressed' };
+      const result = summarizeAlarmLogCounters([entry]);
+      expect(result).toEqual([{ reason: '(unknown)', count: 1, lastTs: 1 }]);
+    });
+
+    it('count 필드가 없으면 1로 해석해 합산한다', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: 10 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: 20 }),
+      ];
+      const result = summarizeAlarmLogCounters(entries);
+      expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: 20 }]);
     });
   });
 

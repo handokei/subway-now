@@ -767,12 +767,14 @@ let flushInFlight: Promise<void> | null = null;
  */
 export function appendAlarmLog(entry: AlarmLogEntry): void {
   // #1024 — burst inline counter: reason이 있는 억제 엔트리에서 마지막 pendingEntry가
-  // 동일한 (source, reason, stationName)이면 count++하고 ts를 갱신한다.
+  // 동일한 (source, reason, kind, phaseId, stationName)이면 count++하고 ts를 갱신한다.
   if (entry.reason !== undefined && pendingEntries.length > 0) {
     const last = pendingEntries[pendingEntries.length - 1];
     if (
       last.reason === entry.reason &&
       last.source === entry.source &&
+      last.kind === entry.kind &&
+      last.phaseId === entry.phaseId &&
       last.stationName === entry.stationName
     ) {
       last.count = (last.count ?? 1) + 1;

@@ -22,7 +22,9 @@ import {
   type SilentPushDiagnostics,
 } from '../../../features/alarm/hooks/useSilentPushDiagnostics';
 import {
+  BOARDING_PROMPT_WINDOWS,
   clearAlarmLog,
+  countBoardingPromptByWindow,
   countSilentPushOutcomes,
   getAlarmLog,
   summarizeAlarmLogBySource,

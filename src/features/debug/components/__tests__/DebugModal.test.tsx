@@ -490,7 +490,7 @@ describe('DebugModal', () => {
   });
 
 
-  it('#1021: Counters 섹션에 boardingPrompt 카운터 라벨을 표시한다', async () => {
+  it('#1021: Boarding Prompt 섹션에 boardingPrompt 카운터 라벨을 표시한다', async () => {
     const now = Date.now();
     mockGetAlarmLog.mockResolvedValue([
       { ts: now - 60_000, source: 'boarding-prompt', outcome: 'fired' },
@@ -503,7 +503,7 @@ describe('DebugModal', () => {
     expect(screen.getByText('boardingPrompt(all)')).toBeTruthy();
   });
 
-  it('#1021: Counters 섹션 — boarding-prompt 없으면 카운터 섹션이 0을 표시한다', async () => {
+  it('#1021: Boarding Prompt 섹션 — boarding-prompt 없으면 카운터 섹션이 0을 표시한다', async () => {
     mockGetAlarmLog.mockResolvedValue([]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
