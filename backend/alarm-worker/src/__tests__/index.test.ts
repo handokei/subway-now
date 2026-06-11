@@ -1522,6 +1522,15 @@ describe('POST /telemetry/server-progress (#1173)', () => {
   });
 });
 
+describe('POST /telemetry/delta-vs-estimator (#1174)', () => {
+  runTelemetryEndpointSuite('/telemetry/delta-vs-estimator', {
+    token: 'aabbccdd11223344',
+    windowStart: 1_000,
+    windowEnd: 2_000,
+    deltaSamples: [0, 1, 2, 1, 0],
+  });
+});
+
 describe('GET /metrics/recall/summary (#919 후속)', () => {
   async function get(env: Env): Promise<Response> {
     return app.fetch(
