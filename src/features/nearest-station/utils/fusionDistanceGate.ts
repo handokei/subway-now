@@ -1,5 +1,6 @@
 import { MAX_ACCURACY_M } from '../../../shared/constants/location';
-import type { NearestStationResult } from '../../../shared/types/station';
+import { LOCK_NEXT_HOP_WINDOW } from '../../../shared/constants/realtime';
+import type { NearestStationResult, Station } from '../../../shared/types/station';
 
 // #444: fusion 결과(non-gps source)가 사용자 실위치와 동떨어진 station을 채택하지 않도록
 // 거리·정확도 sanity 검사. positionTrain/fused/route 우선순위에 공통 적용.
@@ -29,6 +30,22 @@ export interface FusionDistanceGateInput {
  * - 절대 거리 > maxAbsoluteKm → 실패
  * - GPS-nearest와 다른 station이고 거리 차이 > maxDeltaKm → 실패
  */
+/**
+ * BoardingLock 활성 시 후보 역이 arc window 내에 있는지 검사 (#1016 hole c).
+ * arc 없거나 탑승역이 arc에 없으면 true(기존 동작 유지).
+ */
+export function isWithinArcWindow(
+  arcStations: readonly Station[],
+  candidateId: string,
+  boardingStationId: string,
+): boolean {
+  if (arcStations.length === 0) return true;
+  const boardingIdx = arcStations.findIndex((s) => s.id === boardingStationId);
+  if (boardingIdx === -1) return true;
+  const candidateIdx = arcStations.findIndex((s) => s.id === candidateId);
+  return candidateIdx !== -1 && candidateIdx <= boardingIdx + LOCK_NEXT_HOP_WINDOW;
+}
+
 export function passesFusionDistanceGate(input: FusionDistanceGateInput): boolean {
   const { candidate, userLocation, accuracyMeters, gpsNearest, maxAbsoluteKm, maxDeltaKm, lockActive } = input;
   if (!userLocation) return true;

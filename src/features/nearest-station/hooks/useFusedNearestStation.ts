@@ -26,7 +26,7 @@ import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
 import { haversine } from '../../../shared/utils/haversine';
-import { passesFusionDistanceGate } from '../utils/fusionDistanceGate';
+import { isWithinArcWindow, passesFusionDistanceGate } from '../utils/fusionDistanceGate';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import {
   arcIndexOfStation,
@@ -35,7 +35,6 @@ import {
 import { hopTimeMsAt } from '../../route/utils/hopTime';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
 import {
-  LOCK_NEXT_HOP_WINDOW,
   MAX_ACTIVE_LINES,
   MAX_FUSION_DELTA_KM,
   MAX_FUSION_DISTANCE_KM,
@@ -392,17 +391,9 @@ export function useFusedNearestStation(
     if (boardingLock && station.line !== boardingLock.boardingLine) {
       return null;
     }
-    // #1016 hole (c): BoardingLock 활성이고 arcStations 있으면 station.id가 arc의 nextHops
-    // window(탑승역 인덱스 + LOCK_NEXT_HOP_WINDOW) 내에 있어야 함. arc가 없거나 탑승역이 arc에
-    // 없으면 스킵(routeContext 없는 free-trip 또는 데이터 불일치 — 기존 동작 유지).
-    if (boardingLock && arcStations.length > 0) {
-      const boardingIdx = arcStations.findIndex((s) => s.id === boardingLock.boardingStationId);
-      if (boardingIdx !== -1) {
-        const stationIdx = arcStations.findIndex((s) => s.id === station.id);
-        if (stationIdx === -1 || stationIdx > boardingIdx + LOCK_NEXT_HOP_WINDOW) {
-          return null;
-        }
-      }
+    // #1016 hole (c): lock 활성 시 arc window 내 역만 허용.
+    if (boardingLock && !isWithinArcWindow(arcStations, station.id, boardingLock.boardingStationId)) {
+      return null;
     }
     return candidate;
   }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock, arcStations]);
