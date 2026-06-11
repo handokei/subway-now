@@ -69,6 +69,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 const mockLogFiredAlarm = jest.fn();
 const mockLogFiredAlarmsHydrate = jest.fn();
 const mockLogFiredStationPassed = jest.fn();
+const mockLogHydrationTransition = jest.fn();
 const mockLogRefMismatch = jest.fn();
 const mockLogSuppressedDedupAlarm = jest.fn();
 const mockLogSuppressedDedupStation = jest.fn();
@@ -81,6 +82,7 @@ jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
+  logHydrationTransition: (...args: unknown[]) => mockLogHydrationTransition(...args),
   logRefMismatch: (...args: unknown[]) => mockLogRefMismatch(...args),
   logSuppressedDedupAlarm: (...args: unknown[]) => mockLogSuppressedDedupAlarm(...args),
   logSuppressedDedupStation: (...args: unknown[]) => mockLogSuppressedDedupStation(...args),
@@ -98,8 +100,9 @@ jest.mock('../../utils/boardingLockStorage', () => ({
   getBoardingLock: () => mockGetBoardingLock(),
 }));
 
+const mockAwaitInitialScheduledAlarmDrain = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/scheduledAlarmReceiver', () => ({
-  awaitInitialScheduledAlarmDrain: jest.fn().mockResolvedValue(undefined),
+  awaitInitialScheduledAlarmDrain: () => mockAwaitInitialScheduledAlarmDrain(),
 }));
 
 const mockIsImminentByArrivalCode = jest.fn();
@@ -170,6 +173,7 @@ describe('useStationAlarm', () => {
     mockUseArrivalInfo.mockReturnValue({ arrival: null, loading: false, isMock: false });
     mockGetBoardingLock.mockResolvedValue(null);
     mockFindFgArvlCdFireSignal.mockReturnValue(null);
+    mockAwaitInitialScheduledAlarmDrain.mockResolvedValue(undefined);
   });
 
   it('does not evaluate when route is null', () => {
@@ -2715,6 +2719,159 @@ describe('useStationAlarm', () => {
 
       const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
       expect(arvlCdFires).toHaveLength(0);
+    });
+  });
+
+  // #1012 (H5) — hydration state machine: pre-hydrate → hydrating → storage-synced → ready.
+  // 'ready' 도달 전 phase 알람 발사가 보류되는지, transition이 alarmLog로 측정되는지 검증.
+  describe('#1012 hydration state machine (H5)', () => {
+    it('4 phase transition이 순서대로 logHydrationTransition으로 적재된다', async () => {
+      const route = makeDirectRoute(1, '2');
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      // 'ready' 도달까지 대기 — hydration 완료 후에만 사이클이 끝난다.
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+
+      const phases = mockLogHydrationTransition.mock.calls.map((c) => c[0]);
+      expect(phases).toEqual(['pre-hydrate', 'hydrating', 'storage-synced', 'ready']);
+      // 모든 transition은 같은 destinationId로 묶인다.
+      for (const call of mockLogHydrationTransition.mock.calls) {
+        expect(call[1]).toBe(destination.id);
+      }
+    });
+
+    it("'ready' 도달 전(drain pending)에는 phase 알람 발사 보류", async () => {
+      // drain을 영원히 pending → storage-synced에 도달 못함 → 'ready' 도달 못함.
+      mockAwaitInitialScheduledAlarmDrain.mockReturnValueOnce(new Promise(() => {}));
+      const route = makeDirectRoute(1, '2');
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      // pre-hydrate / hydrating까지만 sync 적재 — storage-synced/ready 없음.
+      await Promise.resolve();
+      await Promise.resolve();
+      const phases = mockLogHydrationTransition.mock.calls.map((c) => c[0]);
+      expect(phases).toContain('pre-hydrate');
+      expect(phases).toContain('hydrating');
+      expect(phases).not.toContain('storage-synced');
+      expect(phases).not.toContain('ready');
+      // 'ready' 미도달 → phase 알람 보류.
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+
+    it("'ready' 도달 후에만 phase 알람 발사 허용", async () => {
+      const route = makeDirectRoute(1, '2');
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      // 'ready' 도달 후 발사.
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1));
+      const phases = mockLogHydrationTransition.mock.calls.map((c) => c[0]);
+      expect(phases[phases.length - 1]).toBe('ready');
+    });
+
+    it("destination 전환 시 state machine 재시작 (새 destinationId로 4 phase 재적재)", async () => {
+      const route = makeDirectRoute(1, '2');
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      const { rerender } = renderHook(
+        ({ dest }: { dest: Station }) =>
+          useStationAlarm(defaultInputs({ route, destination: dest })),
+        { initialProps: { dest: destination } },
+      );
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalledWith(destination.id));
+
+      mockLogHydrationTransition.mockClear();
+      rerender({ dest: altDestination });
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalledWith(altDestination.id));
+      const phases = mockLogHydrationTransition.mock.calls.map((c) => c[0]);
+      expect(phases).toEqual(['pre-hydrate', 'hydrating', 'storage-synced', 'ready']);
+      for (const call of mockLogHydrationTransition.mock.calls) {
+        expect(call[1]).toBe(altDestination.id);
+      }
+    });
+
+    it('drain 완료 후 destination 전환 → getFiredAlarms resolve 시 cancelled로 ready 미적재', async () => {
+      const route = makeDirectRoute(1, '2');
+      // 첫 destination: getFiredAlarms를 controllable promise로 보류.
+      let resolveFired = (_s: Set<string>): void => {};
+      mockGetFiredAlarms.mockReturnValueOnce(
+        new Promise<Set<string>>((resolve) => {
+          resolveFired = resolve;
+        }),
+      );
+
+      const { rerender } = renderHook(
+        ({ dest }: { dest: Station }) =>
+          useStationAlarm(defaultInputs({ route, destination: dest })),
+        { initialProps: { dest: destination } },
+      );
+      // drain 통과 → storage-synced 적재까지 진행.
+      await waitFor(() =>
+        expect(
+          mockLogHydrationTransition.mock.calls.some((c) => c[0] === 'storage-synced'),
+        ).toBe(true),
+      );
+
+      // destination 교체 → 첫 effect cleanup → cancelled=true.
+      rerender({ dest: altDestination });
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalledWith(altDestination.id));
+
+      mockLogHydrationTransition.mockClear();
+      // 첫 effect의 getFiredAlarms 뒤늦게 resolve → cancelled 가드로 ready 적재 안 됨.
+      resolveFired(new Set<string>());
+      await Promise.resolve();
+      await Promise.resolve();
+      const phasesAfterStale = mockLogHydrationTransition.mock.calls.map((c) => c[0]);
+      expect(phasesAfterStale).not.toContain('ready');
+    });
+
+    it('destination 전환으로 effect cleanup → drain 완료 후 setState 호출되지 않음 (cancelled gate)', async () => {
+      const route = makeDirectRoute(1, '2');
+      // drain을 controllable promise로 보류.
+      let resolveDrain = (): void => {};
+      mockAwaitInitialScheduledAlarmDrain.mockReturnValueOnce(
+        new Promise<void>((resolve) => {
+          resolveDrain = () => resolve();
+        }),
+      );
+
+      const { rerender, unmount } = renderHook(
+        ({ dest }: { dest: Station }) =>
+          useStationAlarm(defaultInputs({ route, destination: dest })),
+        { initialProps: { dest: destination } },
+      );
+
+      // 첫 destination 효과는 pre-hydrate + hydrating까지만 적재.
+      await Promise.resolve();
+      // destination 교체 → 첫 effect cleanup, 두 번째 effect는 즉시 drain resolve된 default mock 사용.
+      rerender({ dest: altDestination });
+      // 두 번째 effect는 정상 사이클 완료.
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalledWith(altDestination.id));
+
+      mockLogHydrationTransition.mockClear();
+      // 첫 effect의 drain promise 뒤늦게 resolve → cancelled 가드로 storage-synced/ready 적재 안 됨.
+      resolveDrain();
+      await Promise.resolve();
+      await Promise.resolve();
+      const phasesAfterStaleResolve = mockLogHydrationTransition.mock.calls.map((c) => c[0]);
+      expect(phasesAfterStaleResolve).not.toContain('storage-synced');
+      expect(phasesAfterStaleResolve).not.toContain('ready');
+      unmount();
     });
   });
 });

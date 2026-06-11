@@ -97,7 +97,15 @@ export type AlarmLogReason =
   | 'gate-phase-accuracy'
   | 'gate-phase-warmup'
   // #1010 — station-passed effect가 lock hydrate 직후 30s warmup window 동안 차단된 발사.
-  | 'gate-station-passed-warmup';
+  | 'gate-station-passed-warmup'
+  // #1012 (H5) — useStationAlarm hydration state machine 각 phase 진입 stamp.
+  // pre-hydrate → hydrating → storage-synced → ready 4단계. 'ready' 전 phase에서는
+  // 모든 phase 알람 발사가 보류된다. transition 한 번에 1엔트리 적재 — 운영에서 phase
+  // 도달 시점·체류 시간 분포 측정.
+  | 'hydration-pre-hydrate'
+  | 'hydration-hydrating'
+  | 'hydration-storage-synced'
+  | 'hydration-ready';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -738,6 +746,37 @@ export function logSuppressedStationPassedWarmup(stationName: string | undefined
     reason: 'gate-station-passed-warmup',
     stationName,
     kind: 'station-passed',
+  });
+}
+
+/**
+ * #1012 (H5) — useStationAlarm hydration state machine transition 1건 적재.
+ *
+ * pre-hydrate → hydrating → storage-synced → ready 4단계 중 진입 직후 호출.
+ * destinationId는 같은 trip 내 transition 묶음을 그루핑하기 위한 컨텍스트.
+ * source는 'fg-hydrate' 재사용 — 기존 hydrate 측정과 동일 소스에서 phase별 reason으로 구분.
+ *
+ * outcome='received'는 정책적으로 "관찰 신호" 의미 (적재만 하고 발사·억제 없음).
+ */
+export type HydrationPhase = 'pre-hydrate' | 'hydrating' | 'storage-synced' | 'ready';
+
+const HYDRATION_PHASE_REASON: Record<HydrationPhase, AlarmLogReason> = {
+  'pre-hydrate': 'hydration-pre-hydrate',
+  hydrating: 'hydration-hydrating',
+  'storage-synced': 'hydration-storage-synced',
+  ready: 'hydration-ready',
+};
+
+export function logHydrationTransition(
+  phase: HydrationPhase,
+  destinationId: string | null,
+): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'fg-hydrate',
+    outcome: 'received',
+    reason: HYDRATION_PHASE_REASON[phase],
+    destinationId,
   });
 }
 
