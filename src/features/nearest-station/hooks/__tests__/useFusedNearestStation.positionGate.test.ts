@@ -22,8 +22,11 @@ import { useTrainPositions } from '../../../route/hooks/useTrainPositions';
 import { findTopNearestStations } from '../../utils/findNearestStation';
 import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute';
 import { TRAIN_STATUS } from '../../../../shared/constants/trainStatus';
-import type { StationArrival } from '../../../../shared/types/arrival';
-import type { LinePositions, TrainPosition } from '../../api/positionApi';
+import {
+  arrivalRet,
+  positionRet,
+  makeTrain as train,
+} from '../../../../testUtils/positionApiFixtures';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 
@@ -59,34 +62,6 @@ function gpsBase(overrides?: Record<string, unknown>) {
     permissionDenied: false,
     locationUncertain: false,
     refresh: jest.fn(),
-    ...overrides,
-  };
-}
-
-function arrivalRet(stationArrival: StationArrival | null = null) {
-  return { arrival: stationArrival, loading: false, isMock: false };
-}
-
-function positionRet(positions: LinePositions | null = null) {
-  return { positions, loading: false, isMock: false };
-}
-
-function train(
-  statnNm: string,
-  trainStatus: number,
-  overrides?: Partial<TrainPosition>,
-): TrainPosition {
-  return {
-    statnId: '',
-    statnNm,
-    trainNo: 'T',
-    trainStatus,
-    updnLine: 0,
-    terminalStationId: '',
-    terminalStationName: '',
-    trainType: 'normal',
-    isLastTrain: false,
-    receivedAtMs: 1_700_000_000_000,
     ...overrides,
   };
 }

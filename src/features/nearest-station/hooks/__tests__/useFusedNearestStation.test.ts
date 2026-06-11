@@ -19,9 +19,13 @@ import { findStationByNameAndLine } from '../../../../shared/utils/stationRoute'
 import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
 import { TRAIN_STATUS } from '../../../../shared/constants/trainStatus';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
+import {
+  arrivalRet,
+  positionRet,
+  makeTrain as train,
+} from '../../../../testUtils/positionApiFixtures';
 import type { StationArrival, ArrivalInfo } from '../../../../shared/types/arrival';
 import type { Station } from '../../../../shared/types/station';
-import type { LinePositions, TrainPosition } from '../../api/positionApi';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
 
 jest.mock('../useNearestStation');
@@ -64,34 +68,6 @@ function info(arrivalCode: number, overrides?: Partial<ArrivalInfo>): ArrivalInf
     arrivalCode,
     isLastTrain: false,
     trainType: 'normal',
-    ...overrides,
-  };
-}
-
-function arrivalRet(stationArrival: StationArrival | null = null) {
-  return { arrival: stationArrival, loading: false, isMock: false };
-}
-
-function positionRet(positions: LinePositions | null = null) {
-  return { positions, loading: false, isMock: false };
-}
-
-function train(
-  statnNm: string,
-  trainStatus: number,
-  overrides?: Partial<TrainPosition>,
-): TrainPosition {
-  return {
-    statnId: '',
-    statnNm,
-    trainNo: 'T',
-    trainStatus,
-    updnLine: 0,
-    terminalStationId: '',
-    terminalStationName: '',
-    trainType: 'normal',
-    isLastTrain: false,
-    receivedAtMs: 1_700_000_000_000,
     ...overrides,
   };
 }
