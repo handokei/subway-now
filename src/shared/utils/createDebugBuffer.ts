@@ -14,7 +14,9 @@ export function createDebugBuffer<T>(capacity: number): DebugBuffer<T> {
   const subscribers = new Set<() => void>();
 
   function notify(): void {
-    [...subscribers].forEach((cb) => cb());
+    for (const cb of [...subscribers]) {
+      cb();
+    }
   }
 
   return {
