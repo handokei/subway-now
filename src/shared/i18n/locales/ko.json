@@ -57,6 +57,7 @@
       "message": "{{name}}에 도착해 목적지를 해제했어요",
       "undo": "되돌리기"
     },
+    "lockCorrectionToast": "탑승 열차가 {{prev}} → {{next}}로 정정되었어요",
     "congestion": {
       "level": {
         "low": "여유",

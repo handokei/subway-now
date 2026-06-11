@@ -16,6 +16,7 @@ import type { LineNumber, Station } from '../../../shared/types/station';
 import { formatClockTime } from '../../../shared/utils/formatTime';
 import { arrivalAt } from '../../../shared/utils/arrivalClock';
 import { isScheduleFallbackTrainCode } from '../utils/scheduleFallback';
+import { recordLockCorrection } from '../utils/lockCorrectionMetrics';
 import { buildDirectionMeta } from '../../route/utils/trainLineDirection';
 import { parseArrivalDistance } from '../../arrival/utils/arrivalStatusDistance';
 import { LINE_COLORS } from '../../../shared/constants/lineColors';
@@ -91,6 +92,15 @@ interface Props {
    * 테스트/조정용 노출.
    */
   pendingTimeoutMs?: number;
+  /**
+   * backend round-trip이 사용자가 탭한 train과 다른 trainCode로 lock을 확정했을 때 발화 — #1166.
+   *
+   * pending(`pendingTrainCode`)과 부모가 전달한 `lockedTrainCode`가 모두 set이지만 서로 다른 값이면
+   * 본 컴포넌트가 pending을 즉시 해제하고 callback을 호출한다. 부모는 toast UX로 사용자에게 정정 사실을
+   * 알린다. 같은 값으로 확정되는 정상 케이스(`lockedTrainCode === pendingTrainCode`)에서는 호출되지 않는다.
+   * 미전달이면 내부 로직(pending 해제 + metric 적재)은 그대로 수행되고 callback만 skip.
+   */
+  onLockCorrected?: (pendingTrainCode: string, confirmedTrainCode: string) => void;
 }
 
 /**
@@ -132,6 +142,7 @@ export function BoardingTrainList({
   initialEtaSeconds,
   lockedTrainCode = null,
   pendingTimeoutMs = PENDING_TIMEOUT_MS_DEFAULT,
+  onLockCorrected,
 }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
@@ -147,14 +158,23 @@ export function BoardingTrainList({
     }
   }, []);
 
-  // 부모가 lockedTrainCode로 확정 신호 → pending 해제(confirmed). 확정된 후 lock 칩/highlight는
-  // 호출자가 자체적으로 처리(별도 lock UI). 본 컴포넌트는 pending 상태만 책임진다.
+  // 부모가 lockedTrainCode로 확정 신호 → pending 해제. 본 컴포넌트는 pending 상태만 책임진다.
+  // #1166: lockedTrainCode가 pendingTrainCode와 다른 값으로 확정되면 정정(round-trip correction).
+  //   pending 즉시 해제 + metric 적재 + onLockCorrected callback 호출 → 부모가 toast UX로 표기.
+  //   metric은 callback 미전달 케이스에서도 적재(테스트/배포 직후 wiring 누락 회귀 차단).
   useEffect(() => {
-    if (pendingTrainCode != null && lockedTrainCode === pendingTrainCode) {
+    if (pendingTrainCode == null || lockedTrainCode == null) return;
+    if (lockedTrainCode === pendingTrainCode) {
       clearRollbackTimer();
       setPendingTrainCode(null);
+      return;
     }
-  }, [lockedTrainCode, pendingTrainCode, clearRollbackTimer]);
+    // 정정 — pending(A) ≠ confirmed(B).
+    clearRollbackTimer();
+    recordLockCorrection(pendingTrainCode, lockedTrainCode);
+    onLockCorrected?.(pendingTrainCode, lockedTrainCode);
+    setPendingTrainCode(null);
+  }, [lockedTrainCode, pendingTrainCode, clearRollbackTimer, onLockCorrected]);
 
   // unmount 시 timer 정리.
   useEffect(() => clearRollbackTimer, [clearRollbackTimer]);

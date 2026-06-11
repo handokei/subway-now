@@ -57,6 +57,7 @@
       "message": "已到达{{name}},已清除目的地",
       "undo": "撤销"
     },
+    "lockCorrectionToast": "已将乘车列车修正为 {{prev}} → {{next}}",
     "congestion": {
       "level": {
         "low": "宽松",

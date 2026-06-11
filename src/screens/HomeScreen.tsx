@@ -175,6 +175,10 @@ export default function HomeScreen() {
   // 매칭되면 useStationCandidates가 단일 후보로 자동 확정.
   const wifiStation = useWifiStation();
   const [confirmAutoToast, setConfirmAutoToast] = useState<string | null>(null);
+  // #1166 — backend가 사용자 탭과 다른 trainCode로 lock을 확정했을 때 노출하는 정정 toast.
+  // BoardingTrainList의 onLockCorrected callback이 채워주며, 같은 메시지가 두 인스턴스(현재역/환승)에
+  // 공통 적용된다. dismiss는 Toast의 5초 timer 또는 사용자 tap.
+  const [lockCorrectionToast, setLockCorrectionToast] = useState<string | null>(null);
   const handleConfirmStation = useCallback(
     (station: Station) => {
       setCustomOrigin(station);
@@ -199,6 +203,14 @@ export default function HomeScreen() {
     }
   }, [confirmModal.autoConfirmedStation, confirmModal.consumeAutoConfirmed, t]);
   const handleConfirmAutoToastDismiss = useCallback(() => setConfirmAutoToast(null), []);
+  // #1166 — pending(prev) → confirmed(next) 정정 시 toast 메시지 구성. 4언어 i18n.
+  const handleLockCorrected = useCallback(
+    (prev: string, next: string) => {
+      setLockCorrectionToast(t('home.lockCorrectionToast', { prev, next }));
+    },
+    [t],
+  );
+  const handleLockCorrectionToastDismiss = useCallback(() => setLockCorrectionToast(null), []);
   // #977 — F4 검색 fallback wire. confirm 모달 dismiss(setDismissed=true) + origin picker 오픈.
   // 사용자가 picker에서 station 선택 시 setCustomOrigin → confirm 모달은 hasEffectiveOrigin
   // 으로 자동 차단되어 재오픈하지 않는다.
@@ -972,6 +984,10 @@ export default function HomeScreen() {
                                   onSelect={createLockFromTrain}
                                   compact
                                   nextStationLabel={label}
+                                  // #1166: 낙관적 탭 → backend 정정 UX. lockedTrainCode를 prop으로 넘겨야
+                                  // pending 일치/정정 effect가 발화한다. fusionBoardingLock 기반 SSOT 사용.
+                                  lockedTrainCode={lockedTrainCode}
+                                  onLockCorrected={handleLockCorrected}
                                 />
                               );
                             }
@@ -997,6 +1013,10 @@ export default function HomeScreen() {
                                   walkingBufferSeconds={TRANSFER_WALKING_BUFFER_SECONDS}
                                   compact
                                   nextStationLabel={label}
+                                  // #1166: 환승 leg lock도 같은 SSOT(fusionBoardingLock). 환승 row에서도
+                                  // round-trip 정정 시 동일 toast UX 적용.
+                                  lockedTrainCode={lockedTrainCode}
+                                  onLockCorrected={handleLockCorrected}
                                 />
                               );
                             }
@@ -1215,6 +1235,13 @@ export default function HomeScreen() {
         message={confirmAutoToast ?? ''}
         onDismiss={handleConfirmAutoToastDismiss}
         testID="current-station-auto-confirm-toast"
+      />
+      {/* #1166 — backend round-trip 정정 toast. 5초 자동 dismiss + tap 닫기. */}
+      <Toast
+        visible={lockCorrectionToast !== null}
+        message={lockCorrectionToast ?? ''}
+        onDismiss={handleLockCorrectionToastDismiss}
+        testID="lock-correction-toast"
       />
 
       <DestinationPicker
