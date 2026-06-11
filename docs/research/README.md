@@ -13,6 +13,7 @@
 | [1091-운행-차질-안내.md](./1091-운행-차질-안내.md) | #1091 | 운행 차질(사고/지연/무정차) 안내 API(15144070) 조사 + 구현 epic 후보 |
 | [1092-exit-side-collection.md](./1092-exit-side-collection.md) | #1092 | exitSide(좌/우 문) 데이터 수집 전략 — 공공 API에 없음, 수동 수집 추천 |
 | [583-silent-push-audit.md](./583-silent-push-audit.md) | #583 | Silent push 디바이스 미도달 audit — apnsEnv host 분기 / self-heal / payload 정상 확인 |
+| [r10-fusion-signal-priority.md](./r10-fusion-signal-priority.md) | #1008 | Epic #1008 R-10 fusion 신호 우선순위 audit + A2-new sub-issue 후보 spec |
 
 ## 작성 규칙
 
