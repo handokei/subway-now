@@ -35,6 +35,7 @@ maestro test .maestro/flows/regression/seam-b-13-19.yaml
 | 파일 | Seam | 회귀 시점 | 검증 내용 |
 | --- | --- | --- | --- |
 | `seam-b-13-19.yaml` | B | 13:19 transfer/early/건대입구 fired @ 성수 | 성수 정지 + 건대입구 5분 후 ETA → false-positive 발사 없음 |
+| `seam-c-hydration.yaml` | C | #899 hydration seam (#922 deferred / #1200) | 강남→역삼 trip 형성 후 destination 해제 + BG/FG cycle 재수화 → stale chip/ghost 알람 0건 |
 | `seam-e-13-39.yaml` | E | 13:39~45 lockMissing | `/boarding-lock/sync` 응답이 advanced=true여도 ghost 알람 발사 0건, chip 안정 |
 | `seam-f-13-24.yaml` | F | 13:24~28 trainCode 7174 사라짐 | 25s 시점 trainCode drop 후에도 lockMissing/ghost 알람 발사 0건 |
 | `seam-a-delay-chip.yaml` | A | #897 lock 지연 칩 | 어린이대공원에서 7180 lock 후 phase 30s 전환 → `boarding-lock-hop-delay-chip` `+4분 지연` 노출 |
@@ -44,10 +45,12 @@ maestro test .maestro/flows/regression/seam-b-13-19.yaml
 | `a1-auto-lock.yaml` | A1 | #916 backend 자동 lock | 강남 → 역삼 destination만 설정 → `autoLockCandidate` 응답으로 row 탭 없이 `boarding-lock-hop-card` 노출 |
 | `a3-preschedule-fire-delta.yaml` | A3 | #918 사전 예약 burst | 어린이대공원 자동 lock 후 30초 안에 `alarm-overlay` 미노출 — fire 시각 가드(`fireMs <= nowMs`) 회귀 방지 |
 
-보류:
-- Seam C — 13:23 waypoint advanced + 14:02 stale chip. transfer-leg / FG-return /
-  명시적 event mock 설계가 fixture-driven 구조에 맞지 않아 별도 인프라 PR 후로 미룸
-  ([[project-2026-06-05-epic-912-session-end]]).
+보류 → 해제:
+- Seam C — 원래 #922에서 transfer-leg / FG-return / silent push 이벤트 mock 설계 결함으로
+  보류됐다. H5(#1012, hydration state machine) 머지 후 #1200에서 **client-observable 경로**
+  (사용자 destination 해제 + stopApp/launchApp BG/FG cycle 재수화)만 가드하는 형태로
+  추가됨. server-side trip-ended silent push / 환승 waypoint 통과 검증은 fixture 구조상
+  여전히 단위 테스트 영역(#899 acceptance)에 위임한다.
 
 ## fixture 작성 가이드
 
