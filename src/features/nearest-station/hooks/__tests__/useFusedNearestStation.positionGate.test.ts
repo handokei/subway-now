@@ -19,20 +19,21 @@ import {
   arrivalRet,
   positionRet,
   makeTrain as train,
+  GPS_BASE_DEFAULTS,
 } from '../../../../testUtils/positionApiFixtures';
-import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 
-jest.mock('../useNearestStation');
-jest.mock('../../../arrival/hooks/useArrivalInfo');
-jest.mock('../../../route/hooks/useTrainPositions');
 jest.mock('../../utils/findNearestStation', () => ({
   findTopNearestStations: jest.fn(),
 }));
+jest.mock('../useNearestStation');
+jest.mock('../../../arrival/hooks/useArrivalInfo');
+jest.mock('../../../route/hooks/useTrainPositions');
 
-const mockUseNearest = useNearestStation as jest.Mock;
-const mockUseArrival = useArrivalInfo as jest.Mock;
-const mockUsePositions = useTrainPositions as jest.Mock;
+const mockNearest = useNearestStation as jest.Mock;
+const mockArrival = useArrivalInfo as jest.Mock;
+const mockPos = useTrainPositions as jest.Mock;
 const mockFindTop = findTopNearestStations as jest.Mock;
 
 // Real 7호선 stations for arc tests
@@ -48,12 +49,7 @@ function gpsBase(overrides?: Record<string, unknown>) {
     result: { station: yongmasan, distanceKm: 0 },
     variants: [yongmasan],
     userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
-    speedMps: 1,
-    accuracyMeters: 50,
-    loading: false,
-    error: null,
-    permissionDenied: false,
-    locationUncertain: false,
+    ...GPS_BASE_DEFAULTS,
     refresh: jest.fn(),
     ...overrides,
   };
@@ -90,21 +86,21 @@ function setup({
   trainCode,
   lock,
 }: SetupOpts = {}) {
-  mockUseNearest.mockReturnValue(gpsBase(gps));
+  mockNearest.mockReturnValue(gpsBase(gps));
   mockFindTop.mockReturnValue([{ station: findTopStation, distanceKm: 0 }]);
   const posVal = positionRet(positions ?? null);
   if (positionsOnce) {
-    mockUsePositions.mockReturnValueOnce(posVal);
+    mockPos.mockReturnValueOnce(posVal);
   } else {
-    mockUsePositions.mockReturnValue(posVal);
+    mockPos.mockReturnValue(posVal);
   }
   return renderHook(() => useFusedNearestStation(undefined, undefined, routeCtx, trainCode, lock));
 }
 
 beforeEach(() => {
   jest.clearAllMocks();
-  mockUseArrival.mockReturnValue(arrivalRet(null));
-  mockUsePositions.mockReturnValue(positionRet(null));
+  mockArrival.mockReturnValue(arrivalRet(null));
+  mockPos.mockReturnValue(positionRet(null));
 });
 
 describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
@@ -276,10 +272,10 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       const subRoute = makeDirectRoute(3, '7');
       const subRouteContext = { route: subRoute, origin: junggok, destination: konkuk };
 
-      mockUseNearest.mockReturnValue(gpsBase()); // GPS at 용마산(yongmasan)
+      mockNearest.mockReturnValue(gpsBase()); // GPS at 용마산(yongmasan)
       mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
       // line='7'(p0)이면 positions 반환, null이면(p1/p2) null 반환. 모든 render에서 일관 적용.
-      mockUsePositions.mockImplementation((line: string | null) =>
+      mockPos.mockImplementation((line: string | null) =>
         line === '7'
           ? positionRet({
               line: '7',
@@ -317,10 +313,10 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
         expectedDurationMs: 600_000,
       });
 
-      mockUseNearest.mockReturnValue(gpsBase());
+      mockNearest.mockReturnValue(gpsBase());
       mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
       // 열차 위치 없음 → trainProgress null → positionTrainResult null.
-      // mockUsePositions는 beforeEach에서 null로 설정됨.
+      // mockPos는 beforeEach에서 null로 설정됨.
 
       const { result, rerender } = renderHook(() =>
         useFusedNearestStation(undefined, undefined, routeCtx, 'T-INTERP', lock),
