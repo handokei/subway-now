@@ -4,6 +4,10 @@ import type { LinePositions } from '../../../shared/types/position';
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import { getArrivalPriority } from '../../../shared/constants/arrivalCodes';
 import { getTrainStatusPriority } from '../../../shared/constants/trainStatus';
+import { createLogger } from '../../../shared/utils/logger';
+import { getTierRank, tierFor } from './fusionTierPriority';
+
+const logger = createLogger('pickFusedStation');
 
 // FusionConfidence/FusionSource는 shared/types/fusion으로 추출됨 (#890, Phase 5).
 // 기존 호출자 호환을 위해 re-export 유지.
@@ -99,21 +103,60 @@ export function pickFusedStation(
   }
 
   if (winnerPriority <= 0) {
-    return {
+    const fallback: FusedStationResult = {
       result: candidates[0].candidate,
       confidence: 'gps-only',
       source: 'gps',
     };
+    logger.debug('decided', {
+      tier: tierFor(fallback.source, fallback.confidence),
+      source: fallback.source,
+      confidence: fallback.confidence,
+      candidates: candidates.length,
+    });
+    return fallback;
   }
 
-  // source 라벨은 winning priority에 실제로 기여한 신호원.
-  // 두 신호원이 같은 점수로 동점이면 정확도 우선(position) — UI/로깅에서 더 신뢰 표시.
-  const source: FusionSource =
-    winnerPosScore >= winnerArrScore ? 'position' : 'arrival';
+  // R-10 (#1168): source 라벨을 explicit FUSION_TIER_PRIORITY로 결정.
+  // 기존 `winnerPosScore >= winnerArrScore`와 동치(position이 arrival보다 상위 tier)지만,
+  // SSOT를 단일 표(`fusionTierPriority.ts`)로 두어 신호 추가/재배열 시 호출 사이트 수정 불필요.
+  const confidence = confidenceFromPriority(winnerPriority);
+  const source = pickHigherTrustSource(winnerPosScore, winnerArrScore, confidence);
 
-  return {
+  const decided: FusedStationResult = {
     result: candidates[winnerIdx].candidate,
-    confidence: confidenceFromPriority(winnerPriority),
+    confidence,
     source,
   };
+  logger.debug('decided', {
+    tier: tierFor(decided.source, decided.confidence),
+    source: decided.source,
+    confidence: decided.confidence,
+    posScore: winnerPosScore,
+    arrScore: winnerArrScore,
+    candidates: candidates.length,
+  });
+  return decided;
+}
+
+/**
+ * winning priority에 기여한 신호원 중 더 신뢰되는 source를 tier 표 기준으로 고른다.
+ *
+ * - 한쪽만 winning score에 도달했다면 그 쪽으로 확정.
+ * - 두 신호원이 같은 점수로 동률이면 `FUSION_TIER_PRIORITY` 표 순서로 결정 — position tier가
+ *   arrival tier보다 상위라 position이 우선(기존 implicit `>=` 동작과 동치).
+ */
+function pickHigherTrustSource(
+  posScore: number,
+  arrScore: number,
+  confidence: FusionConfidence,
+): FusionSource {
+  if (posScore > arrScore) return 'position';
+  if (arrScore > posScore) return 'arrival';
+  // 동점 — tier 표로 결정. position tier가 arrival tier보다 상위라 항상 'position'.
+  // 표에서 두 tier가 역전되면 본 분기가 자연스럽게 따라간다(`getTierRank` lookup).
+  const posRank = getTierRank(tierFor('position', confidence));
+  const arrRank = getTierRank(tierFor('arrival', confidence));
+  // istanbul ignore next — 현 표에서는 posRank < arrRank 보장. 표 재배열 대비 방어 분기.
+  return posRank <= arrRank ? 'position' : 'arrival';
 }
