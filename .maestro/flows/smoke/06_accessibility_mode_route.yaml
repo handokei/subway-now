@@ -43,6 +43,12 @@ name: "smoke - 거동 불편자 모드가 경로 화면 문번호 라벨에 반�
     id: "suggestion-item-3-019"
 
 # 기본 모드: stairs 우선 — 도착역(경복궁) 라벨에 "8-3번 문" 표시
+# Hero + Hr + route header + segment control + 3-row timeline이 iPhone 16 viewport를 초과해
+# 마지막 row(경복궁)가 fold 아래로 떨어지는 타이밍이 있다 (#1125). scroll로 결정적 노출.
+- scrollUntilVisible:
+    element:
+      text: "8-3번 문|Door 8-3"
+    timeout: 10000
 - extendedWaitUntil:
     visible:
       text: "8-3번 문|Door 8-3"
