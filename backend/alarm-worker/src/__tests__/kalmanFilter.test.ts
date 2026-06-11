@@ -426,24 +426,27 @@ describe('DRIFT_WARNING_THRESHOLD_KMH 상수 (#826 E4)', () => {
 // ─────────────────────────────────────────────────────
 
 describe('resetKalmanForArrival — 정거장 도착 ground truth hard reset (#826 E4)', () => {
-  it('now=1000 → { v: 0, P: R_LOW(=4), ts: 1000 }', () => {
+  it('now=1000 → { v: 0, P: R_LOW(=4), ts: 1000, lastResetTs: 1000 }', () => {
     const result = resetKalmanForArrival(1000);
-    expect(result).toEqual({ v: 0, P: R_LOW, ts: 1000 });
+    // #837 P2-2 — lastResetTs stamp는 drift grace window 활성화 입력.
+    expect(result).toEqual({ v: 0, P: R_LOW, ts: 1000, lastResetTs: 1000 });
   });
 
-  it('now=0 → ts=0, v=0, P=R_LOW', () => {
+  it('now=0 → ts=0, v=0, P=R_LOW, lastResetTs=0', () => {
     const result = resetKalmanForArrival(0);
     expect(result.v).toBe(0);
     expect(result.P).toBe(R_LOW);
     expect(result.ts).toBe(0);
+    expect(result.lastResetTs).toBe(0);
   });
 
-  it('큰 ts 값도 그대로 반영', () => {
+  it('큰 ts 값도 그대로 반영 (ts와 lastResetTs 동일)', () => {
     const ts = 1_700_000_000_000;
     const result = resetKalmanForArrival(ts);
     expect(result.ts).toBe(ts);
     expect(result.v).toBe(0);
     expect(result.P).toBe(R_LOW);
+    expect(result.lastResetTs).toBe(ts);
   });
 
   it('v는 항상 0 — 어떤 now에서도 불변', () => {
