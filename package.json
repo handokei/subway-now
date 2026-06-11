@@ -71,7 +71,8 @@
       "/backend/"
     ],
     "modulePathIgnorePatterns": [
-      "<rootDir>/backend/"
+      "<rootDir>/backend/",
+      "<rootDir>/.claude/worktrees/"
     ]
   },
   "dependencies": {
