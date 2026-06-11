@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   AppState,
   Modal,
@@ -731,13 +731,9 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
                   {formatSourceCountsLine(logs)}
                 </Text>
                 {[...logs].reverse().map((entry, idx) => (
-                  <Text
-                    key={`${entry.ts}-${idx}`}
-                    style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
-                    selectable
-                  >
+                  <MonoEntry key={`${entry.ts}-${idx}`} colors={colors}>
                     {formatLogLine(entry)}
-                  </Text>
+                  </MonoEntry>
                 ))}
               </>
             )}
@@ -800,14 +796,9 @@ function ScheduledQueueBody({
   return (
     <>
       {dump.map((entry) => (
-        <Text
-          key={entry.identifier}
-          style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
-          selectable
-          testID="debug-scheduled-dump-entry"
-        >
+        <MonoEntry key={entry.identifier} testID="debug-scheduled-dump-entry" colors={colors}>
           {formatScheduledNotificationLine(entry)}
-        </Text>
+        </MonoEntry>
       ))}
     </>
   );
@@ -845,14 +836,9 @@ function DebugLogSection<T extends { ts: number }>({
         <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
       ) : (
         [...logs].reverse().map((entry, idx) => (
-          <Text
-            key={`${entry.ts}-${idx}`}
-            style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
-            selectable
-            testID={entryTestId}
-          >
+          <MonoEntry key={`${entry.ts}-${idx}`} testID={entryTestId} colors={colors}>
             {formatLine(entry)}
-          </Text>
+          </MonoEntry>
         ))
       )}
     </Section>
@@ -868,10 +854,7 @@ function BoardingLockSection({
   colors: ReturnType<typeof useTheme>['colors'];
 }>) {
   // lock 변경 시점 스냅샷 — 디버그 모달 특성상 실시간 갱신 불필요.
-  const active = useMemo(
-    () => lock !== null && !isBoardingLockExpired(lock, Date.now()),
-    [lock],
-  );
+  const active = lock !== null && !isBoardingLockExpired(lock, Date.now());
   return (
     <Section title="BoardingLock" colors={colors}>
       <KeyValue label="active" value={active ? 'yes' : 'no'} colors={colors} />
@@ -939,6 +922,27 @@ function GatesSection({
         ))
       )}
     </Section>
+  );
+}
+
+/** 단일 모노 로그 라인 — Alarm log / Estimator / Fusion / Scheduled queue 공통 스타일 (#1025). */
+function MonoEntry({
+  testID,
+  children,
+  colors,
+}: {
+  testID?: string;
+  children: string;
+  colors: ReturnType<typeof useTheme>['colors'];
+}) {
+  return (
+    <Text
+      style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
+      selectable
+      testID={testID}
+    >
+      {children}
+    </Text>
   );
 }
 
