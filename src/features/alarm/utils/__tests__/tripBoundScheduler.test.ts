@@ -2,6 +2,7 @@ import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  TRIPBOUND_WINDOW_SIZE,
   TRIP_BOUND_ALARM_PREFIX,
   cancelTripBoundAlarms,
   clearRegisteredTripRouteSig,
@@ -10,6 +11,7 @@ import {
   parseTripBoundAlarmIdentifier,
   prescheduleStationAlerts,
   setRegisteredTripRouteSig,
+  topUpTripBoundWindow,
   tripBoundAlarmIdentifier,
   type TripBoundStop,
 } from '../tripBoundScheduler';
@@ -503,5 +505,257 @@ describe('deriveTripBoundStops', () => {
     const route = { type: 'direct' as const, stops: 1, line: '2' as const, travelSeconds: 0 };
     const { estimatedHopTimesMs } = deriveTripBoundStops(route, '강남');
     expect(estimatedHopTimesMs).toEqual([90_000]);
+  });
+});
+
+// #918 A3 PR3 — rolling window 64 cap 회피.
+describe('TRIPBOUND_WINDOW_SIZE', () => {
+  it('64 pending notification cap 안쪽에 들어가는 양수 상수', () => {
+    expect(TRIPBOUND_WINDOW_SIZE).toBeGreaterThan(0);
+    // 한 stop당 2 phase × WINDOW_SIZE + bl: 채널 여유(20여 개) < 64.
+    expect(TRIPBOUND_WINDOW_SIZE * 2).toBeLessThan(64);
+  });
+});
+
+describe('prescheduleStationAlerts windowSize/startStopIndex (#918 A3 PR3)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockLoggerWarn.mockClear();
+    mockLoggerInfo.mockClear();
+    mockedSchedule.mockResolvedValue('id');
+    jest.replaceProperty(Platform, 'OS', 'ios');
+    jest.useFakeTimers().setSystemTime(NOW);
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('windowSize=1이면 첫 stop만 schedule (나머지 stop의 누적은 진행)', async () => {
+    // 5 stop trip, window=1 → stop 0의 imminent만(=fire>startTime) 예약.
+    // stop 0 early는 fire=startTime이라 skip.
+    const stops: TripBoundStop[] = [
+      { stationName: 'A', alarmType: 'transfer' },
+      { stationName: 'B', alarmType: 'transfer' },
+      { stationName: 'C', alarmType: 'transfer' },
+      { stationName: 'D', alarmType: 'transfer' },
+      { stationName: 'E', alarmType: 'destination' },
+    ];
+    const hops = [120_000, 120_000, 120_000, 120_000, 120_000];
+    const result = await prescheduleStationAlerts({
+      routeStops: stops,
+      estimatedHopTimesMs: hops,
+      startTime: NOW,
+      windowSize: 1,
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0].identifier).toBe('tba:imminent:A');
+  });
+
+  it('startStopIndex=2 + windowSize=2면 stop[2], stop[3]만 schedule, 누적은 정확히 보존', async () => {
+    const stops: TripBoundStop[] = [
+      { stationName: 'A', alarmType: 'transfer' },
+      { stationName: 'B', alarmType: 'transfer' },
+      { stationName: 'C', alarmType: 'transfer' },
+      { stationName: 'D', alarmType: 'transfer' },
+      { stationName: 'E', alarmType: 'destination' },
+    ];
+    const hops = [120_000, 120_000, 120_000, 120_000, 120_000];
+    const result = await prescheduleStationAlerts({
+      routeStops: stops,
+      estimatedHopTimesMs: hops,
+      startTime: NOW,
+      startStopIndex: 2,
+      windowSize: 2,
+    });
+    // C의 arrival = NOW + 360_000, early = NOW + 240_000, imminent = NOW + 350_000
+    // D의 arrival = NOW + 480_000, early = NOW + 360_000, imminent = NOW + 470_000
+    expect(result.map((r) => r.identifier)).toEqual([
+      'tba:early:C',
+      'tba:imminent:C',
+      'tba:early:D',
+      'tba:imminent:D',
+    ]);
+    expect(result[0].fireDate).toEqual(new Date(NOW + 240_000));
+    expect(result[1].fireDate).toEqual(new Date(NOW + 350_000));
+  });
+
+  it('windowSize=0이면 0건 schedule', async () => {
+    const result = await prescheduleStationAlerts({
+      routeStops: defaultStops,
+      estimatedHopTimesMs: defaultHops,
+      startTime: NOW,
+      windowSize: 0,
+    });
+    expect(result).toEqual([]);
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('startStopIndex 음수는 0으로 clamp (caller bug 흡수)', async () => {
+    const result = await prescheduleStationAlerts({
+      routeStops: defaultStops,
+      estimatedHopTimesMs: defaultHops,
+      startTime: NOW,
+      startStopIndex: -5,
+    });
+    // 음수 clamp → 평소 동작과 동일하게 stop 0부터 (stop 0 early skip).
+    expect(result).toHaveLength(5);
+  });
+
+  it('windowSize 음수는 0으로 clamp (no-op)', async () => {
+    const result = await prescheduleStationAlerts({
+      routeStops: defaultStops,
+      estimatedHopTimesMs: defaultHops,
+      startTime: NOW,
+      windowSize: -3,
+    });
+    expect(result).toEqual([]);
+  });
+
+  it('중복 stationName이 윈도우 밖에 있어도 occurrence suffix가 보존된다', async () => {
+    // 윈도우 안 두 번째 등장이 :1 suffix를 받도록 — 윈도우 밖 첫 등장도 occurrence 누적.
+    const stops: TripBoundStop[] = [
+      { stationName: '시청', alarmType: 'transfer' }, // skipped(window 밖)
+      { stationName: '강남', alarmType: 'transfer' },
+      { stationName: '시청', alarmType: 'destination' }, // 두 번째 등장
+    ];
+    const hops = [120_000, 120_000, 120_000];
+    const result = await prescheduleStationAlerts({
+      routeStops: stops,
+      estimatedHopTimesMs: hops,
+      startTime: NOW,
+      startStopIndex: 1,
+      windowSize: 2,
+    });
+    const ids = result.map((r) => r.identifier);
+    // 두 번째 시청은 :1 suffix를 받아야 한다 — 윈도우 밖 첫 시청의 occurrence가 누적됨.
+    expect(ids).toContain('tba:imminent:시청:1');
+  });
+});
+
+describe('topUpTripBoundWindow (#918 A3 PR3)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockLoggerInfo.mockClear();
+    mockedSchedule.mockResolvedValue('id');
+    jest.replaceProperty(Platform, 'OS', 'ios');
+    jest.useFakeTimers().setSystemTime(NOW);
+    mockedGetAll.mockResolvedValue([]);
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  const longStops: TripBoundStop[] = Array.from({ length: 10 }, (_, i) => ({
+    stationName: `S${i}`,
+    alarmType: i === 9 ? ('destination' as const) : ('transfer' as const),
+  }));
+  const longHops = Array.from({ length: 10 }, () => 120_000);
+
+  it('passedStationName이 routeStops에 없으면 no-op', async () => {
+    const result = await topUpTripBoundWindow({
+      routeStops: longStops,
+      estimatedHopTimesMs: longHops,
+      startTime: NOW,
+      passedStationName: 'UNKNOWN',
+      windowSize: 3,
+    });
+    expect(result).toEqual({ cancelled: 0, scheduled: 0 });
+    expect(mockedSchedule).not.toHaveBeenCalled();
+    expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
+  it('routeStops가 비어 있으면 no-op', async () => {
+    const result = await topUpTripBoundWindow({
+      routeStops: [],
+      estimatedHopTimesMs: [],
+      startTime: NOW,
+      passedStationName: 'X',
+    });
+    expect(result).toEqual({ cancelled: 0, scheduled: 0 });
+  });
+
+  it('passedIndex 이전 stop의 tba 알람은 cancel, 윈도우 안 stop은 schedule', async () => {
+    // 큐에 stop S1(passedStation 이전) + S2(현재 윈도우 안) + S5(이전 윈도우 잔여, 새 윈도우 밖) 존재.
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:imminent:S1' },
+      { identifier: 'tba:early:S2' },
+      { identifier: 'tba:imminent:S5' },
+      { identifier: 'bl:T:0:early:X' }, // 다른 prefix — 건드리지 않음.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+
+    const result = await topUpTripBoundWindow({
+      routeStops: longStops,
+      estimatedHopTimesMs: longHops,
+      startTime: NOW,
+      passedStationName: 'S2', // window = [3, 6)
+      windowSize: 3,
+    });
+
+    // 새 윈도우 = stops index 3,4,5 = stationName S3, S4, S5. S5는 윈도우 안.
+    // S1, S2는 윈도우 밖 → cancel. S5는 윈도우 안 → cancel 안 함.
+    expect(mockedCancel).toHaveBeenCalledWith('tba:imminent:S1');
+    expect(mockedCancel).toHaveBeenCalledWith('tba:early:S2');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:imminent:S5');
+    expect(mockedCancel).not.toHaveBeenCalledWith('bl:T:0:early:X');
+    expect(result.cancelled).toBe(2);
+    // schedule된 stop은 S3, S4, S5 — 각 (early, imminent) 2 phase × 3 stop = 6건.
+    expect(result.scheduled).toBe(6);
+  });
+
+  it('잘못된 identifier(parse=null)는 cancel skip', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:malformed' }, // parse → null
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    const result = await topUpTripBoundWindow({
+      routeStops: longStops,
+      estimatedHopTimesMs: longHops,
+      startTime: NOW,
+      passedStationName: 'S0',
+      windowSize: 2,
+    });
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:malformed');
+    expect(result.cancelled).toBe(0);
+  });
+
+  it('windowSize 미지정 시 TRIPBOUND_WINDOW_SIZE 기본값 사용', async () => {
+    const result = await topUpTripBoundWindow({
+      routeStops: longStops,
+      estimatedHopTimesMs: longHops,
+      startTime: NOW,
+      passedStationName: 'S0',
+    });
+    // window = [1, min(10, 1+20)] = [1, 10] → 9 stop × 2 phase = 18.
+    expect(result.scheduled).toBe(18);
+  });
+
+  it('passedIndex가 마지막 stop이면 새 stop 없이 cancel만', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:imminent:S0' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    const result = await topUpTripBoundWindow({
+      routeStops: longStops,
+      estimatedHopTimesMs: longHops,
+      startTime: NOW,
+      passedStationName: 'S9', // 마지막
+      windowSize: 3,
+    });
+    expect(result.scheduled).toBe(0);
+    expect(result.cancelled).toBe(1);
+  });
+
+  it('info 로그에 윈도우 범위 + 카운트 출력', async () => {
+    await topUpTripBoundWindow({
+      routeStops: longStops,
+      estimatedHopTimesMs: longHops,
+      startTime: NOW,
+      passedStationName: 'S0',
+      windowSize: 2,
+    });
+    expect(mockLoggerInfo).toHaveBeenCalledWith(
+      expect.stringContaining('topUp passedIndex=0 window=[1,3)'),
+    );
   });
 });
