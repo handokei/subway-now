@@ -7,6 +7,7 @@
 | 문서 | 이슈 | 주제 |
 | --- | --- | --- |
 | [1098-data-go-kr-api-catalog.md](./1098-data-go-kr-api-catalog.md) | #1098 | data.go.kr / KRIC 지하철 API 카탈로그 + 우선순위 + sub-epic 추천 |
+| [563-region-monitoring-poc.md](./563-region-monitoring-poc.md) | #563 | iOS Region Monitoring(geofence) WhileInUse + BG wake 검증 — 결론: Always 강제로 폐기 |
 | [1091-운행-차질-안내.md](./1091-운행-차질-안내.md) | #1091 | 운행 차질(사고/지연/무정차) 안내 API(15144070) 조사 + 구현 epic 후보 |
 | [1092-exit-side-collection.md](./1092-exit-side-collection.md) | #1092 | exitSide(좌/우 문) 데이터 수집 전략 — 공공 API에 없음, 수동 수집 추천 |
 
