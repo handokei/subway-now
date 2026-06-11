@@ -314,11 +314,13 @@ describe('cancelAllHopsForLock', () => {
 });
 
 describe('purgeBoardingLockSchedulerQueue', () => {
-  it('큐가 비어있으면 no-op', async () => {
+  it('큐가 비어있으면 cancel은 호출하지 않고 storage clear는 멱등으로 항상 수행한다 (#773)', async () => {
     mockedGet.mockResolvedValueOnce([]);
     await purgeBoardingLockSchedulerQueue();
     expect(mockedCancel).not.toHaveBeenCalled();
-    expect(mockedClear).not.toHaveBeenCalled();
+    // #773: TRIP_BOUND_CLEANUPS가 SCHEDULED_NOTIFICATIONS_KEY removal을 본 함수에 위임하므로
+    // empty case에서도 storage key 정리는 보장되어야 한다.
+    expect(mockedClear).toHaveBeenCalled();
   });
 
   it('bl: prefix만 cancel하고 큐 전체 clear', async () => {
