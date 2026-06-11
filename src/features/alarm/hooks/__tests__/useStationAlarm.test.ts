@@ -73,8 +73,10 @@ const mockLogRefMismatch = jest.fn();
 const mockLogSuppressedDedupAlarm = jest.fn();
 const mockLogSuppressedDedupStation = jest.fn();
 const mockLogSuppressedMovement = jest.fn();
+const mockLogSuppressedPhaseGate = jest.fn();
 const mockLogSuppressedSleepFirstTransfer = jest.fn();
 const mockLogSuppressedDismissSilence = jest.fn();
+const mockLogSuppressedStationPassedWarmup = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -83,9 +85,12 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedDedupAlarm: (...args: unknown[]) => mockLogSuppressedDedupAlarm(...args),
   logSuppressedDedupStation: (...args: unknown[]) => mockLogSuppressedDedupStation(...args),
   logSuppressedMovement: (...args: unknown[]) => mockLogSuppressedMovement(...args),
+  logSuppressedPhaseGate: (...args: unknown[]) => mockLogSuppressedPhaseGate(...args),
   logSuppressedSleepFirstTransfer: (...args: unknown[]) =>
     mockLogSuppressedSleepFirstTransfer(...args),
   logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
+  logSuppressedStationPassedWarmup: (...args: unknown[]) =>
+    mockLogSuppressedStationPassedWarmup(...args),
 }));
 
 const mockGetBoardingLock = jest.fn();
@@ -1676,6 +1681,28 @@ describe('useStationAlarm', () => {
     });
   });
 
+
+  describe('#1019 phase gate stamps', () => {
+    const route = makeDirectRoute(3, '2');
+    it('accuracy 초과 시 gate-phase-accuracy stamp', async () => {
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: 10, accuracyMeters: 500 })));
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith('gate-phase-accuracy', destination.name);
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+    it('warmup suppress 시 gate-phase-warmup stamp', async () => {
+      renderHook(() => useStationAlarm({ route, destination, nearestStation: null, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: 10, accuracyMeters: 100 }));
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith('gate-phase-warmup', destination.name);
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+    it('skipWarmupGuard=true이면 gate-phase-warmup stamp 없음', async () => {
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: 10, accuracyMeters: 100 })));
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockLogSuppressedPhaseGate.mock.calls.filter((c) => c[0] === 'gate-phase-warmup')).toHaveLength(0);
+    });
+  });
+
   describe('#670/#672 첫 evaluation suppress 가드', () => {
     const route = makeDirectRoute(3, '2');
     // skipWarmupGuard 미전달 → production default(false) 적용. 첫 evaluation 보류 동작 확인.
@@ -1983,6 +2010,107 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+    });
+  });
+
+  // #1010 — station-passed firedHydrated 가드 + 30s hydration warmup.
+  // lock hydrate 직후 GPS가 stabilize되기 전 false alarm 방지.
+  describe('#1010 station-passed hydration warmup guard', () => {
+    const route = makeDirectRoute(3, '2');
+    const station = makeStation('S1', '역삼');
+
+    it('firedHydrated=false (hydration pending) 동안 station-passed 발사 보류', async () => {
+      // getFiredAlarms를 영원히 pending 상태로 두면 firedHydrated=false 유지
+      mockGetFiredAlarms.mockReturnValue(new Promise(() => {}));
+      mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 2, isTransfer: false, stopsToDestination: 2 });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            accuracyMeters: 50,
+            skipWarmupGuard: false,
+          }),
+        ),
+      );
+
+      // hydration이 완료되지 않으면 발사 없음
+      await new Promise((r) => setTimeout(r, 50));
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('warmup window 내 (hydratedAt 직후) station-passed 차단 + gate-station-passed-warmup 적재', async () => {
+      const baseTs = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 2, isTransfer: false, stopsToDestination: 2 });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            accuracyMeters: 50,
+            skipWarmupGuard: false,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      // warmup window 안 — 발사 차단
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockLogSuppressedStationPassedWarmup).toHaveBeenCalledWith(station.name);
+    });
+
+    it('skipWarmupGuard=true면 warmup window 안에서도 즉시 발사', async () => {
+      const baseTs = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 2, isTransfer: false, stopsToDestination: 2 });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            accuracyMeters: 50,
+            skipWarmupGuard: true,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+    });
+
+    it('warmup window 경과 후 발사 허용 (hydratedAt + 30s 이후)', async () => {
+      const baseTs = 1_700_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      mockResolveNextTarget.mockReturnValue({ nextStationName: '강남', stopsToNextStation: 2, isTransfer: false, stopsToDestination: 2 });
+
+      const { rerender } = renderHook(
+        ({ s }: { s: typeof station | null }) =>
+          useStationAlarm(
+            defaultInputs({
+              route,
+              destination,
+              nearestStation: s,
+              accuracyMeters: 50,
+              skipWarmupGuard: false,
+            }),
+          ),
+        { initialProps: { s: null as typeof station | null } },
+      );
+
+      // hydration 완료 대기 (hydratedAt이 baseTs로 설정됨)
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+
+      // warmup window 경과 후 nearestStation 제공 — 이 시점엔 warmup guard를 통과해야 함.
+      nowSpy.mockReturnValue(baseTs + 30_001);
+      rerender({ s: station });
 
       await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
     });

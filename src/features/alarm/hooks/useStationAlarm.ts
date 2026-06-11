@@ -36,7 +36,9 @@ import {
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
   logSuppressedMovement,
+  logSuppressedPhaseGate,
   logSuppressedSleepFirstTransfer,
+  logSuppressedStationPassedWarmup,
 } from '../utils/alarmLog';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { getBoardingLock } from '../utils/boardingLockStorage';
@@ -51,6 +53,10 @@ import type { FusionConfidence, FusionSource } from '../../../shared/types/fusio
 import { resolveNotificationSource, type NotificationSource } from '../utils/notificationSource';
 
 const logger = createLogger('StationAlarm');
+
+// #1010 — station-passed hydration warmup. lock hydrate 완료 후 이 기간 동안 station-passed 차단.
+// 하이드레이션 직후 firedAlarms가 복원되기 전 GPS 신호와 동기화되는 과도 구간 false alarm 방지.
+const STATION_PASSED_HYDRATE_WARMUP_MS = 30_000;
 
 /**
  * #746 — dismiss silence 게이트 판정 + 만료 시 store clear 호출.
@@ -264,6 +270,9 @@ export function useStationAlarm({
   // 즉시 평가 분기로 진입하면 잘못된 phase 알람이 발사됨. 한 cycle 보류로 다음 deps 변경(좌표/
   // hydrate state 갱신) 시 안정된 입력으로 평가.
   const isFirstAlarmEvalRef = useRef(true);
+  // #1010: station-passed hydration warmup — 하이드레이션 완료 시각(ms). null이면 미완료.
+  // warmup window 동안 station-passed effect가 즉시 차단된다.
+  const stationPassedHydratedAtRef = useRef<number | null>(null);
   // firedAlarms hydration: BG가 AsyncStorage(FIRED_ALARMS_KEY)에 쓴 dedup 상태를
   // destination별로 격리해 복원한다(#462). hydrated=false인 동안 phase 평가를 보류해
   // 빈 ref로 false re-fire가 발생하지 않도록 가드한다.
@@ -324,6 +333,7 @@ export function useStationAlarm({
   // → cross-trip stale state가 새 trip의 evaluator를 오염시키지 않는다.
   useEffect(() => {
     let cancelled = false;
+    stationPassedHydratedAtRef.current = null;
     setFiredHydrated(false);
     void (async () => {
       // 사전 예약 알람의 첫 drain이 완료된 후 read해야 cold start 직후
@@ -335,6 +345,8 @@ export function useStationAlarm({
       firedAlarmsRefDestIdRef.current = destinationId;
       // #580: hydration 시점 진단 — 같은 destinationId에서 size가 다시 0으로 떨어지면 storage race.
       logFiredAlarmsHydrate(destinationId, stored.size);
+      // #1010: station-passed warmup 시작 — 하이드레이션 완료 시각 기록.
+      stationPassedHydratedAtRef.current = Date.now();
       setFiredHydrated(true);
     })();
     return () => {
@@ -441,11 +453,15 @@ export function useStationAlarm({
     // useNearestStation은 지하 구간에서 정확도 1500m까지 표시용으로 수용하므로,
     // 그대로 알람을 울리면 잘못된 역에서 false alarm이 발생한다.
     // Phase 알람은 ETA 거리 계산이 필요해 GPS 게이트가 통과한 경우에만 평가한다.
-    if (!isAccuracyAcceptable(accuracyMeters)) return;
+    if (!isAccuracyAcceptable(accuracyMeters)) {
+      logSuppressedPhaseGate('gate-phase-accuracy', destination.name);
+      return;
+    }
 
     // #670/#672: 첫 trigger suppress — fg-hydrate 직후 stale state 발사 차단.
     if (!skipWarmupGuard && isFirstAlarmEvalRef.current) {
       isFirstAlarmEvalRef.current = false;
+      logSuppressedPhaseGate('gate-phase-warmup', destination.name);
       return;
     }
 
@@ -638,8 +654,9 @@ export function useStationAlarm({
 
   // Station-passed 알림 효과: 경로상 역 변경 시 dedup된 per-station 알림.
   // dedup은 AsyncStorage(lastNotifiedStationId)를 단일 출처로 사용 — Foreground/Background
-  // 양쪽에서 동일하게 적용된다. firedHydrated에 의존하지 않으므로 하이드레이션 완료가
-  // station-passed를 재발사시키지 않는다.
+  // 양쪽에서 동일하게 적용된다.
+  // #1010: firedHydrated 가드 + 30s warmup — lock hydrate 직후 GPS가 stabilize되기 전
+  // false alarm이 발사되는 회귀를 차단한다.
   // #452: deps에 raw accuracyMeters를 두면 GPS 노이즈로 매 fix 재실행 → dedup-suppressed
   // 로그가 cap까지 차서 다른 진단을 밀어낸다. 게이트 통과 여부(boolean)만 dep로 둔다.
   const accuracyOk = isAccuracyAcceptable(accuracyMeters);
@@ -668,6 +685,17 @@ export function useStationAlarm({
   useEffect(() => {
     let cancelled = false;
     if (!route || !destination) return;
+
+    // #1010: firedAlarms 복원 완료 전에는 발사 보류.
+    if (!firedHydrated) return;
+    // #1010: hydration 완료 후 30s warmup window 동안 발사 보류.
+    if (!skipWarmupGuard) {
+      const hydratedAt = stationPassedHydratedAtRef.current;
+      if (hydratedAt !== null && Date.now() - hydratedAt < STATION_PASSED_HYDRATE_WARMUP_MS) {
+        logSuppressedStationPassedWarmup(nearestStation?.name);
+        return;
+      }
+    }
 
     if (!accuracyOk && !arrivalConfirmed) return;
 
@@ -720,6 +748,7 @@ export function useStationAlarm({
     destination?.id,
     destination?.name,
     nearestStation?.id,
+    firedHydrated,
     accuracyOk,
     arrivalConfirmed,
     movementSuppressionReason,

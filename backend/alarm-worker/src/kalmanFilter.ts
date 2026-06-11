@@ -79,6 +79,13 @@ export interface KalmanState {
   P: number;
   /** 마지막 update 시각 (epoch ms). */
   ts: number;
+  /**
+   * #837 P2-2 — 마지막 `resetKalmanForArrival` 호출 시각 (epoch ms).
+   * 직후 cycle에서 prior.v=0과 GPS 회복 phase의 |delta|가 임계 근처라
+   * drift warning이 false positive로 카운트되는 사각지대를 회피하기 위한 grace window 입력.
+   * 미존재(undefined)면 reset 이력 없음 — drift 평가 정상 수행.
+   */
+  lastResetTs?: number;
 }
 
 export interface KalmanStepInputs {
@@ -208,6 +215,19 @@ export async function clearKalmanState(
 export const DRIFT_WARNING_THRESHOLD_KMH = 15;
 
 /**
+ * #837 P2-2 — reset 직후 drift 측정 사각지대를 가리는 grace window (ms).
+ *
+ * `resetKalmanForArrival`은 v=0/P=R_LOW로 state를 강제 초기화한다. 직후 cycle에서
+ * GPS가 정거장 정차 phase가 아닌 출발/회복 phase로 측정되면 |state.v - gpsAvg|가
+ * DRIFT_WARNING_THRESHOLD_KMH 근처/초과로 잡힐 수 있어 `kalmanReset`과
+ * `kalmanDriftWarning`이 같은 trip에서 동시 카운트된다. telemetry 해석이 흐려지므로
+ * reset 후 이 window 동안은 drift warning 카운트를 skip한다.
+ *
+ * 1분 — Kalman state가 다음 1~2 cycle GPS 관측(예: 30s 주기)으로 정상 phase에 안착하는 시간.
+ */
+export const KALMAN_DRIFT_GRACE_MS = 60_000;
+
+/**
  * Kalman state hard reset — 정거장 도착 (arvlCd=1) ground truth (#826 Phase 3 E4).
  *
  * 정거장에 도착하는 순간은 가장 강한 ground truth — 열차는 사실상 정차 상태.
@@ -218,7 +238,8 @@ export const DRIFT_WARNING_THRESHOLD_KMH = 15;
  * R 단계 함수의 가장 좋은 GPS(<20m)과 같은 신뢰도를 부여한다.
  */
 export function resetKalmanForArrival(now: number): KalmanState {
-  return { v: 0, P: R_LOW, ts: now };
+  // #837 P2-2 — lastResetTs stamp로 직후 cycle drift warning grace window 활성화.
+  return { v: 0, P: R_LOW, ts: now, lastResetTs: now };
 }
 
 /**
