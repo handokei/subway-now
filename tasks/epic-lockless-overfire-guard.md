@@ -106,7 +106,7 @@ ADR-008 Stage 4 Phase A+B 통합. **B2 결정(2026-06-11)으로 #844 잔여 PR B
 
 ## 6. 의존 / 통합 / 트리아지 반영 (2026-06-11)
 
-- **선행 epic**: #912 (매역 알람 100%) — 잔여: A3 #918, B1 #921. E1(#922)은 PR #927/#953 머지로 close — Seam C 시나리오 deferred(신규 이슈 발행 필요)
+- **선행 epic**: #912 (매역 알람 100%) — 잔여: A3 #918, B1 #921. E1(#922)은 PR #927/#953 머지로 close — Seam C 시나리오는 #1200으로 발행(H5 #1012 머지 후 착수)
   - A3(#918) 선행 조건: **#773 (옛 trip OS 예약 큐 cleanup)** + iOS 64개 한도 rolling window + fire-time re-validation(#729 흡수) — #918 본문에 반영됨
 - **통합 epic**: #874 (ADR-008 Stage 4 Phase A+B) — B2 결정으로 본 epic 흡수 예정
 - **close**: #844 — PR A 머지 완료(#879). 잔여 B/C/D는 B2 결정으로 Epic C 풀 귀속 (2026-06-11)
@@ -124,3 +124,4 @@ ADR-008 Stage 4 Phase A+B 통합. **B2 결정(2026-06-11)으로 #844 잔여 PR B
 
 - 2026-06-11: 원본 부재 확인 후 GitHub 상태 기준 재구성 생성. Epic A 15/17. B1~B5/B14 미결.
 - 2026-06-11 (2차): H1(#1009) PR #1133 머지로 완료 → Epic A 16/17. B2 결정 완료 — #844 close(잔여 Epic C 풀 귀속), #922 close(E1 완료, Seam C deferred).
+- 2026-06-11 (3차): Seam C deferred 시나리오 → #1200 발행. 본 SSOT PR #1199로 dev 반영 진행.
