@@ -22,6 +22,7 @@ jest.mock('../../utils/findNearestStation');
 jest.mock('../../../route/utils/findActiveLines');
 jest.mock('../../utils/fusionDistanceGate', () => ({
   passesFusionDistanceGate: () => true,
+  isWithinArcWindow: () => true,
 }));
 jest.mock('../../utils/pickFusedStation', () => ({
   pickFusedStation: () => null,
