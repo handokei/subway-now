@@ -586,19 +586,6 @@ export function summarizeAlarmLogCounters(
   return [...map.values()].sort((a, b) => b.count - a.count);
 }
 
-/** reason별 억제 카운트. suppressed 엔트리의 reason 분포. */
-export function summarizeAlarmLogByReason(
-  entries: readonly AlarmLogEntry[],
-): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const entry of entries) {
-    if (entry.outcome !== 'suppressed') continue;
-    const key = entry.reason ?? '(unknown)';
-    counts[key] = (counts[key] ?? 0) + 1;
-  }
-  return counts;
-}
-
 /**
  * Silent push outcome별 집계 (#856).
  *

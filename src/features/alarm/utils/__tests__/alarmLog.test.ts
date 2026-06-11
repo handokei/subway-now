@@ -43,7 +43,6 @@ import {
   summarizeAlarmLogByReason,
   summarizeAlarmLogBySource,
   countSilentPushOutcomes,
-  summarizeAlarmLogByReason,
   summarizeAlarmLogCounters,
   logBoardingPromptFired,
   BOARDING_PROMPT_WINDOWS,
@@ -1325,30 +1324,6 @@ describe('alarmLog', () => {
       (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('storage 오류'));
 
       await expect(clearAlarmLog()).resolves.toBeUndefined();
-    });
-  });
-
-  describe('summarizeAlarmLogByReason (#1019)', () => {
-    it('suppressed 엔트리의 reason별 카운트를 반환한다', () => {
-      const entries: AlarmLogEntry[] = [
-        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed' }),
-        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed' }),
-        makeEntry({ outcome: 'suppressed', reason: 'gate-age' }),
-        makeEntry({ outcome: 'fired' }),
-      ];
-      expect(summarizeAlarmLogByReason(entries)).toEqual({
-        'movement-static-speed': 2,
-        'gate-age': 1,
-      });
-    });
-
-    it('suppressed가 없으면 빈 객체를 반환한다', () => {
-      expect(summarizeAlarmLogByReason([makeEntry({ outcome: 'fired' })])).toEqual({});
-    });
-
-    it('reason 없는 suppressed 엔트리는 (unknown)으로 집계한다', () => {
-      const entry: AlarmLogEntry = { ts: 1, source: 'fg', outcome: 'suppressed' };
-      expect(summarizeAlarmLogByReason([entry])).toEqual({ '(unknown)': 1 });
     });
   });
 
