@@ -899,7 +899,7 @@ function GatesSection({
           <KeyValue
             key={key}
             label={key}
-            value={String(allCounts[key] ?? 0)}
+            value={String(allCounts[key])}
             colors={colors}
           />
         ))
