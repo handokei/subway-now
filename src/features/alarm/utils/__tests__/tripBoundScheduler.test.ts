@@ -866,4 +866,84 @@ describe('rescheduleTripBoundAlarm (#918 A3 PR4)', () => {
     expect(r.scheduled).toBe(0);
     expect(mockedSchedule).not.toHaveBeenCalled();
   });
+
+  // #918 PR4 후속 — 윈도우 가드. routeStops는 [환승역, 도착역] 2개로 활성 윈도우 분리 가능.
+  describe('rolling window 가드 (#918 PR4 후속)', () => {
+    const transferRoute = makeTransferRoute({
+      transferName: '교대',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 3,
+      stopsFromTransfer: 3,
+    });
+    const destinationName = '도착';
+
+    it('윈도우 메타 부재(큐에 tba: 알람 없음)면 가드 skip — 원래대로 재예약', async () => {
+      mockedGetAll.mockResolvedValue([]);
+      const r = await rescheduleTripBoundAlarm({
+        stationName: '교대',
+        newArrivalMs: NOW_MS + 600_000,
+        route: transferRoute,
+        destinationName,
+        now: NOW_MS,
+      });
+      // 활성 윈도우 메타가 없으므로 보수적으로 가드를 적용하지 않고 정상 진행.
+      expect(r.scheduled).toBeGreaterThan(0);
+    });
+
+    it('canonicalName이 활성 윈도우 안이면 정상 cancel + reschedule', async () => {
+      mockedGetAll.mockResolvedValue([
+        { identifier: 'tba:early:교대' },
+        { identifier: 'tba:imminent:교대' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any);
+      const r = await rescheduleTripBoundAlarm({
+        stationName: '교대',
+        newArrivalMs: NOW_MS + 600_000,
+        route: transferRoute,
+        destinationName,
+        now: NOW_MS,
+      });
+      expect(r.cancelled).toBe(2);
+      expect(r.scheduled).toBe(2);
+    });
+
+    it('canonicalName이 활성 윈도우 밖이면 graceful skip — cancel/schedule 0/0', async () => {
+      // 큐엔 '교대'만 예약 — 활성 윈도우 = {'교대'}. 정정 대상 '도착'은 routeStops에 있으나
+      // 윈도우 밖이라 OS 큐 cap 위협 + invariant 위반 차단 위해 skip.
+      mockedGetAll.mockResolvedValue([
+        { identifier: 'tba:early:교대' },
+        { identifier: 'tba:imminent:교대' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any);
+      const r = await rescheduleTripBoundAlarm({
+        stationName: '도착',
+        newArrivalMs: NOW_MS + 600_000,
+        route: transferRoute,
+        destinationName,
+        now: NOW_MS,
+      });
+      expect(r).toEqual({ cancelled: 0, scheduled: 0 });
+      // schedule도 cancel도 호출되지 않아야 한다.
+      expect(mockedSchedule).not.toHaveBeenCalled();
+      expect(mockedCancel).not.toHaveBeenCalled();
+    });
+
+    it('parse 실패 식별자만 큐에 있으면 윈도우 메타 부재로 간주 → 가드 skip', async () => {
+      // tba: prefix지만 malformed라 parse 실패 — 활성 윈도우 집합에 들어가지 않는다.
+      mockedGetAll.mockResolvedValue([
+        { identifier: 'tba:malformed' },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ] as any);
+      const r = await rescheduleTripBoundAlarm({
+        stationName: '도착',
+        newArrivalMs: NOW_MS + 600_000,
+        route: transferRoute,
+        destinationName,
+        now: NOW_MS,
+      });
+      // 메타 부재로 가드 skip → 정상 재예약.
+      expect(r.scheduled).toBeGreaterThan(0);
+    });
+  });
 });

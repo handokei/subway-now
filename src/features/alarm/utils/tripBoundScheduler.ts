@@ -496,9 +496,12 @@ export interface RescheduleTripBoundAlarmResult {
  *     cancel하되 base identifier(`occurrenceIdx=0`) 1개만 재생성한다. `:n` suffix 알람을
  *     cancel하지 못해 stale fire 위험이 있으므로 PR4는 단순/환승 trip만 지원하고 중복역
  *     trip은 후속 이슈에서 occurrence 인덱스 명시 정정 규약으로 다룬다.
- *   - rolling window(`TRIPBOUND_WINDOW_SIZE`) 밖 stop에 대해서도 본 함수는 무조건 OS 큐에
- *     예약을 push한다. 호출자(silentPushTask)는 backend payload에서 윈도우 안 stop에
- *     해당하는 정정 신호만 본 함수로 전달해야 한다 (윈도우 invariant 유지 책임은 caller).
+ *   - rolling window(`TRIPBOUND_WINDOW_SIZE`) 가드는 OS 큐를 SSOT로 사용한다:
+ *     큐에 `tba:` 알람이 1건 이상 활성 상태인데 정정 대상 stop의 canonical name이 활성
+ *     윈도우(현재 큐의 `tba:` station 집합) 밖이면 graceful skip (cancel/schedule 0/0).
+ *     큐가 비어 있으면(아직 preschedule 전 또는 trip 종료 직후) 가드를 적용하지 않는다 —
+ *     활성 윈도우 메타가 없을 때 정정 신호를 안전하게 무시. caller(silentPushTask) 책임
+ *     명세를 함수 내부의 방어적 가드로 보완 (#918 PR4 후속).
  *
  * OS API(`cancelScheduledNotificationAsync` / `getAllScheduledNotificationsAsync`)와
  * `scheduleStopPhase`(내부 `scheduleNotificationAsync`)는 throw 가능 — 호출자(silentPushTask)가
@@ -530,19 +533,35 @@ export async function rescheduleTripBoundAlarm(
     return { cancelled: 0, scheduled: 0 };
   }
 
-  // 기존 `tba:` 알람 중 해당 stationName의 것만 cancel.
-  // canonical name으로 cancel 매칭 — routeStops[targetIndex].stationName과 OS 큐 id를 직접 비교.
+  // 윈도우 가드 + cancel 통합 single pass.
+  // OS 큐의 `tba:` 알람들이 현재 활성 윈도우의 SSOT (저장된 passedIndex 없음, 큐가 곧 상태).
+  //   1) 큐의 모든 `tba:` stationName 수집 → 활성 윈도우 집합.
+  //   2) 집합이 비어 있으면(=윈도우 메타 부재) 가드 skip — trip 시작 직후/종료 직후 race.
+  //   3) 집합이 비어 있지 않은데 canonicalName이 집합에 없으면(=윈도우 밖 stop) graceful skip.
+  //   4) 가드 통과 시 같은 큐 스캔 결과로 canonicalName 매칭 알람만 cancel.
   const canonicalName = routeStops[targetIndex].stationName;
   const all = await Notifications.getAllScheduledNotificationsAsync();
-  let cancelled = 0;
+  const activeWindowNames = new Set<string>();
+  const toCancel: string[] = [];
   for (const req of all) {
     if (!req.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) continue;
     const parsed = parseTripBoundAlarmIdentifier(req.identifier);
     if (parsed === null) continue;
+    activeWindowNames.add(parsed.stationName);
     if (parsed.stationName === canonicalName) {
-      await Notifications.cancelScheduledNotificationAsync(req.identifier);
-      cancelled++;
+      toCancel.push(req.identifier);
     }
+  }
+  if (activeWindowNames.size > 0 && !activeWindowNames.has(canonicalName)) {
+    logger.info(
+      `reschedule skip: ${canonicalName} outside active window (size=${activeWindowNames.size})`,
+    );
+    return { cancelled: 0, scheduled: 0 };
+  }
+  let cancelled = 0;
+  for (const id of toCancel) {
+    await Notifications.cancelScheduledNotificationAsync(id);
+    cancelled++;
   }
 
   // 재예약 — newArrivalMs를 두 phase의 절대 도착 시각으로 직접 사용.
