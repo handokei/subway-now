@@ -42,9 +42,16 @@ import {
   logSuppressedStationPassedWarmup,
   summarizeAlarmLogBySource,
   countSilentPushOutcomes,
+  summarizeAlarmLogByReason,
+  summarizeAlarmLogCounters,
+  logBoardingPromptFired,
+  BOARDING_PROMPT_WINDOWS,
+  countBoardingPromptByWindow,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
+  type AlarmLogReasonCounter,
+  type BoardingPromptWindowKey,
 } from '../alarmLog';
 import { ALARM_LOG_KEY } from '../../../../shared/constants/storageKeys';
 import type { AlarmEvent } from '../stationAlarm';
@@ -189,6 +196,22 @@ describe('alarmLog', () => {
 
       appendAlarmLog(makeEntry());
       await expect(flushAlarmLog()).resolves.toBeUndefined();
+    });
+
+    it('#1024 burst inline counter: 같은 key 연속 append는 단일 entry로 count++ 합산', async () => {
+      // 780-783 라인: (source, reason, kind, phaseId, stationName) 동일한 연속 entry를 inline 합산.
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      const base = makeEntry({ outcome: 'suppressed', reason: 'gate-age', stationName: '강남', kind: 'station-passed', ts: 100 });
+      const second = { ...base, ts: 200 };
+      appendAlarmLog(base);
+      appendAlarmLog(second);
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      // 2개가 아닌 1개 entry로 합산, ts는 최신값(200), count=2
+      expect(saved).toHaveLength(1);
+      expect(saved[0].count).toBe(2);
+      expect(saved[0].ts).toBe(200);
     });
 
     it('pending 없을 때 flush 호출은 no-op (storage 미접근)', async () => {
@@ -630,6 +653,8 @@ describe('alarmLog', () => {
       logSuppressedDedupAlarm('bg', { phaseId: 'early', type: 'destination', stationName: '강남' });
       await flushAlarmLog();
       // #735 — 모든 호출이 1회 batch RMW로 적재. setItem 1번, payload에 5건 모두 포함.
+      // #1024 — burst counter key는 (source, reason, kind, phaseId, stationName).
+      // kind/phaseId가 다른 5개 호출은 각자 별개 key이므로 합산 없이 5건 적재.
       expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(1);
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
@@ -1265,4 +1290,122 @@ describe('alarmLog', () => {
       await expect(clearAlarmLog()).resolves.toBeUndefined();
     });
   });
+
+  describe('summarizeAlarmLogByReason (#1019)', () => {
+    it('suppressed 엔트리의 reason별 카운트를 반환한다', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed' }),
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed' }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age' }),
+        makeEntry({ outcome: 'fired' }),
+      ];
+      expect(summarizeAlarmLogByReason(entries)).toEqual({
+        'movement-static-speed': 2,
+        'gate-age': 1,
+      });
+    });
+
+    it('suppressed가 없으면 빈 객체를 반환한다', () => {
+      expect(summarizeAlarmLogByReason([makeEntry({ outcome: 'fired' })])).toEqual({});
+    });
+
+    it('reason 없는 suppressed 엔트리는 (unknown)으로 집계한다', () => {
+      const entry: AlarmLogEntry = { ts: 1, source: 'fg', outcome: 'suppressed' };
+      expect(summarizeAlarmLogByReason([entry])).toEqual({ '(unknown)': 1 });
+    });
+  });
+
+  describe('summarizeAlarmLogCounters (#1021)', () => {
+    it('suppressed 엔트리의 reason별 count+lastTs를 합산해 내림차순으로 반환한다', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed', count: 2, ts: 100 }),
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed', count: 3, ts: 200 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', count: 1, ts: 50 }),
+        makeEntry({ outcome: 'fired' }),
+      ];
+      const result: AlarmLogReasonCounter[] = summarizeAlarmLogCounters(entries);
+      expect(result[0]).toEqual({ reason: 'movement-static-speed', count: 5, lastTs: 200 });
+      expect(result[1]).toEqual({ reason: 'gate-age', count: 1, lastTs: 50 });
+    });
+
+    it('suppressed가 없으면 빈 배열을 반환한다', () => {
+      expect(summarizeAlarmLogCounters([makeEntry({ outcome: 'fired' })])).toEqual([]);
+    });
+
+    it('reason 없는 suppressed 엔트리는 (unknown)으로 집계한다', () => {
+      const entry: AlarmLogEntry = { ts: 1, source: 'fg', outcome: 'suppressed' };
+      const result = summarizeAlarmLogCounters([entry]);
+      expect(result).toEqual([{ reason: '(unknown)', count: 1, lastTs: 1 }]);
+    });
+
+    it('count 필드가 없으면 1로 해석해 합산한다', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: 10 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: 20 }),
+      ];
+      const result = summarizeAlarmLogCounters(entries);
+      expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: 20 }]);
+    });
+
+    it('나중 entry의 ts가 더 작으면 lastTs를 갱신하지 않는다 — line 565 false branch', () => {
+      // 첫 entry ts=200, 두 번째 ts=100 (역순) → existing.lastTs=200 유지.
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: 200 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: 100 }),
+      ];
+      const result = summarizeAlarmLogCounters(entries);
+      expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: 200 }]);
+    });
+  });
+
+  describe('logBoardingPromptFired + countBoardingPromptByWindow (#1021)', () => {
+    it('logBoardingPromptFired가 boarding-prompt entry를 적재한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logBoardingPromptFired({ originStation: '강남', line: '2' });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0].source).toBe('boarding-prompt');
+      expect(saved[0].outcome).toBe('fired');
+      expect(saved[0].stationName).toBe('2·강남');
+    });
+
+    it('countBoardingPromptByWindow가 윈도우별 발사 횟수를 집계한다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        { ts: now - 2 * 60 * 1000, source: 'boarding-prompt', outcome: 'fired' },
+        { ts: now - 10 * 60 * 1000, source: 'boarding-prompt', outcome: 'fired' },
+        { ts: now - 2 * 60 * 60 * 1000, source: 'boarding-prompt', outcome: 'fired' },
+        { ts: now - 1000, source: 'fg', outcome: 'fired' },
+      ];
+      const counts = countBoardingPromptByWindow(entries, now);
+      expect(counts['5m']).toBe(1);
+      expect(counts['1h']).toBe(2);
+      expect(counts['all']).toBe(3);
+    });
+
+    it('엔트리가 없으면 모든 윈도우가 0', () => {
+      const counts = countBoardingPromptByWindow([], Date.now());
+      for (const { key } of BOARDING_PROMPT_WINDOWS) {
+        expect(counts[key as BoardingPromptWindowKey]).toBe(0);
+      }
+    });
+
+    it('suppressed outcome은 집계하지 않는다', () => {
+      const now = Date.now();
+      const entries: AlarmLogEntry[] = [
+        { ts: now - 1000, source: 'boarding-prompt', outcome: 'suppressed' },
+      ];
+      expect(countBoardingPromptByWindow(entries, now)['5m']).toBe(0);
+    });
+
+    it('now 인자 생략 시 Date.now() 기본값 사용 — line 733 default branch', () => {
+      // 1초 전 fired entry → 기본 now 기준으로 '5m' window 안에 포함.
+      const entries: AlarmLogEntry[] = [
+        { ts: Date.now() - 1000, source: 'boarding-prompt', outcome: 'fired' },
+      ];
+      expect(countBoardingPromptByWindow(entries)['5m']).toBe(1);
+    });
+  });
+
 });
