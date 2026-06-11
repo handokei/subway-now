@@ -155,6 +155,160 @@ describe('SeoulBffProgressProvider', () => {
     expect(result).toBeNull();
   });
 
+  describe('backend down 감지 + exponential backoff (#1172)', () => {
+    function mockFetchFail() {
+      (global.fetch as jest.Mock).mockRejectedValueOnce(new Error('Network error'));
+    }
+
+    it('연속 실패가 임계치 미만이면 매번 fetch를 시도한다', async () => {
+      const provider = new SeoulBffProgressProvider(BASE_URL);
+      mockFetchFail();
+      mockFetchFail();
+
+      await provider.fetch(TRIP_TOKEN, NOW_MS);
+      await provider.fetch(TRIP_TOKEN, NOW_MS + 1_000);
+
+      // 2회 실패는 아직 임계치(3) 미만 — 매 호출마다 fetch.
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('연속 실패가 임계치를 넘으면 backoff 동안 fetch를 건너뛴다', async () => {
+      const provider = new SeoulBffProgressProvider(BASE_URL);
+      mockFetchFail();
+      mockFetchFail();
+      mockFetchFail();
+
+      await provider.fetch(TRIP_TOKEN, NOW_MS);
+      await provider.fetch(TRIP_TOKEN, NOW_MS + 1_000);
+      await provider.fetch(TRIP_TOKEN, NOW_MS + 2_000);
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+
+      // 4번째 호출은 backoff 진입으로 fetch 생략, null 반환.
+      const result = await provider.fetch(TRIP_TOKEN, NOW_MS + 3_000);
+      expect(result).toBeNull();
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+    });
+
+    it('backoff 만료 시점이 되면 다시 fetch를 시도한다', async () => {
+      const provider = new SeoulBffProgressProvider(BASE_URL);
+      // 임계치 도달.
+      mockFetchFail();
+      mockFetchFail();
+      mockFetchFail();
+      await provider.fetch(TRIP_TOKEN, NOW_MS);
+      await provider.fetch(TRIP_TOKEN, NOW_MS);
+      await provider.fetch(TRIP_TOKEN, NOW_MS);
+
+      // 충분히 큰 시간이 지나면 backoff 만료 → 재시도.
+      mockFetchFail();
+      await provider.fetch(TRIP_TOKEN, NOW_MS + 10 * 60_000);
+      expect(global.fetch).toHaveBeenCalledTimes(4);
+    });
+
+    it('backoff 만료 후 성공하면 down 모드가 해제된다 (즉시 재진입 fetch)', async () => {
+      const provider = new SeoulBffProgressProvider(BASE_URL);
+      mockFetchFail();
+      mockFetchFail();
+      mockFetchFail();
+      await provider.fetch(TRIP_TOKEN, NOW_MS);
+      await provider.fetch(TRIP_TOKEN, NOW_MS);
+      await provider.fetch(TRIP_TOKEN, NOW_MS);
+
+      const recovery: BffProgressResponse = {
+        waypointIndex: 1,
+        remainingHopsMs: 40_000,
+        confidence: 'high',
+        receivedAtMs: NOW_MS + 10 * 60_000,
+        ttlMs: 60_000,
+      };
+      mockFetchOk(recovery);
+      const recovered = await provider.fetch(TRIP_TOKEN, NOW_MS + 10 * 60_000);
+      expect(recovered).toEqual(recovery);
+
+      // 회복 후 캐시 만료 시점에 새로 fetch가 정상 동작 — backoff 미적용.
+      const next: BffProgressResponse = {
+        waypointIndex: 2,
+        remainingHopsMs: 30_000,
+        confidence: 'high',
+        receivedAtMs: NOW_MS + 11 * 60_000 + 30_000,
+        ttlMs: 60_000,
+      };
+      mockFetchOk(next);
+      const after = await provider.fetch(TRIP_TOKEN, NOW_MS + 11 * 60_000 + 30_000);
+      expect(after).toEqual(next);
+      expect(global.fetch).toHaveBeenCalledTimes(5);
+    });
+
+    it('중간에 성공이 끼면 실패 카운터가 초기화된다', async () => {
+      const provider = new SeoulBffProgressProvider(BASE_URL);
+      mockFetchFail();
+      mockFetchFail();
+      await provider.fetch(TRIP_TOKEN, NOW_MS);
+      await provider.fetch(TRIP_TOKEN, NOW_MS);
+
+      const ok: BffProgressResponse = {
+        waypointIndex: 0,
+        remainingHopsMs: 50_000,
+        confidence: 'high',
+        receivedAtMs: NOW_MS + 1_000,
+        ttlMs: 60_000,
+      };
+      mockFetchOk(ok);
+      await provider.fetch(TRIP_TOKEN, NOW_MS + 1_000);
+
+      // 캐시 만료 후 또 2회 실패해도 아직 임계치 미만(누적 리셋됨).
+      mockFetchFail();
+      mockFetchFail();
+      await provider.fetch(TRIP_TOKEN, NOW_MS + 80_000);
+      await provider.fetch(TRIP_TOKEN, NOW_MS + 90_000);
+
+      // 모두 실제 fetch 호출 — backoff 미진입.
+      expect(global.fetch).toHaveBeenCalledTimes(5);
+    });
+
+    it('confidence=low 응답은 backend 건강과 무관하므로 실패로 세지 않는다', async () => {
+      const provider = new SeoulBffProgressProvider(BASE_URL);
+      const low: BffProgressResponse = {
+        waypointIndex: 0,
+        remainingHopsMs: 40_000,
+        confidence: 'low',
+        receivedAtMs: NOW_MS,
+        ttlMs: 60_000,
+      };
+      mockFetchOk(low);
+      mockFetchOk(low);
+      mockFetchOk(low);
+      mockFetchOk(low);
+
+      // 4회 모두 low (게이트는 null 반환) — backoff 미진입, 매번 캐시 만료 후 fetch.
+      await provider.fetch(TRIP_TOKEN, NOW_MS);
+      await provider.fetch(TRIP_TOKEN, NOW_MS + 70_000);
+      await provider.fetch(TRIP_TOKEN, NOW_MS + 140_000);
+      await provider.fetch(TRIP_TOKEN, NOW_MS + 210_000);
+
+      expect(global.fetch).toHaveBeenCalledTimes(4);
+    });
+
+    it('backoff 지연은 BACKOFF_MAX_MS를 넘지 않는다', async () => {
+      const provider = new SeoulBffProgressProvider(BASE_URL);
+      // 매번 backoff 만료 직후 실패시켜 지수가 계속 증가하도록 유도.
+      let now = NOW_MS;
+      for (let i = 0; i < 20; i += 1) {
+        mockFetchFail();
+        await provider.fetch(TRIP_TOKEN, now);
+        // 충분히 큰 점프로 다음 backoff 만료를 항상 넘기게 함.
+        now += 10 * 60_000;
+      }
+      const fetchCallsAfterLoop = (global.fetch as jest.Mock).mock.calls.length;
+      expect(fetchCallsAfterLoop).toBe(20);
+
+      // 직전 실패 시점으로부터 BACKOFF_MAX_MS + 여유가 지나면 무조건 재시도 가능해야 함.
+      mockFetchFail();
+      await provider.fetch(TRIP_TOKEN, now + 60_001);
+      expect((global.fetch as jest.Mock).mock.calls.length).toBe(21);
+    });
+  });
+
   it('특수 문자가 포함된 tripToken을 URL 인코딩한다', async () => {
     const provider = new SeoulBffProgressProvider(BASE_URL);
     const response: BffProgressResponse = {
