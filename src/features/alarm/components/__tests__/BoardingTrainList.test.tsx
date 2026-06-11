@@ -359,6 +359,27 @@ describe('BoardingTrainList', () => {
     expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
   });
 
+  // #668 회귀 가드 — compact 모드 row에 카드 배경(colors.card)이 절대 붙지 않음을 강제.
+  // 실기기 회귀(EditorialTimeline hop slot에서 BoardingTrainList가 카드+헤더 모드로 보임)는
+  // 빌드 캐시가 1차 원인이었지만, 컴포넌트 자체에서 compact 분기가 우발적으로 backgroundColor를
+  // 받지 않도록 contract 테스트로 못 박는다. 일반 모드는 기존 다른 테스트에서 stripe + 카드 배경
+  // 결합이 검증되므로 여기서는 compact 음성 케이스만 추가.
+  it('#668 compact 모드 row는 colors.card 배경을 받지 않는다 (회귀 가드)', () => {
+    function flattenStyle(style: unknown): Record<string, unknown> {
+      if (Array.isArray(style)) return Object.assign({}, ...style.map(flattenStyle));
+      return (style ?? {}) as Record<string, unknown>;
+    }
+    const train = makeTrain({ trainCode: 'T-668', line: '7' });
+    const { getByTestId } = renderWithTheme(
+      <BoardingTrainList arrivals={[train]} line="7" onSelect={() => {}} compact />,
+    );
+    const row = getByTestId('boarding-train-row-T-668');
+    const style = flattenStyle(row.props.style);
+    expect(style.backgroundColor).toBeUndefined();
+    // 헤더 라벨도 노출되면 안 됨 (#649 핵심 contract 재확인).
+    expect(row.props.style).toBeDefined();
+  });
+
   // #807 라벨 통일 — 종착(마천행/방화행 등) 제거하고 "<next>방면"만 노출.
   // nextStationLabel 미전달 시에만 종착 fallback. 노선/종착 표기에 무관 동일 결과.
   describe('#807 종착 제거 · "<next>방면" 통일', () => {
