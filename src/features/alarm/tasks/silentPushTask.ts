@@ -57,6 +57,9 @@ import {
   checkSilentPushLocationGate,
   type GateSkipReason,
 } from '../utils/silentPushLocationGate';
+import { rescheduleHopForLock } from '../utils/boardingLockScheduler';
+import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
+import type { Route } from '../../../shared/utils/stationRoute';
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
 import { buildAlarmContent } from '../utils/stationNotification';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
@@ -420,6 +423,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         sentAt: payload.sentAt,
         receivedAt,
       });
+      await applyReschedule(payload, receivedAt);
       ackOutcome(payload.pushId, apnsToken, 'fired', 'reschedule-received');
       return;
     }
@@ -508,6 +512,81 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     } catch (e) {
       logger.error('refreshLiveActivityFromBackgroundContext 실패:', e);
     }
+  }
+}
+
+/**
+ * reschedule silent push(#698) 적용 — 백엔드가 보낸 nextStation/newArrivalTimeEpoch로
+ * 해당 hop의 사전 예약을 cancel + 재예약한다. 본 함수는 SLA 게이트가 아니라 정정 신호이므로
+ * 결과 무관 ack(`reschedule-received`)는 호출자가 처리한다.
+ *
+ * 사전 조건 누락(`lock`/`route`/`destination` 중 하나라도 없음, 또는 newArrivalTimeEpoch 과거)은
+ * 모두 graceful no-op — 신호가 도달했어도 SLA를 깨지 않는다(원본 사전 예약 유지).
+ * 예외는 외부로 전파하지 않고 logger.error 후 swallow — 다른 silent push 흐름과 일관.
+ */
+async function applyReschedule(
+  payload: RescheduleSilentPushPayload,
+  receivedAt: number,
+): Promise<void> {
+  try {
+    if (payload.newArrivalTimeEpoch <= receivedAt) {
+      logger.info(
+        `reschedule skip: newArrivalTimeEpoch=${payload.newArrivalTimeEpoch} <= receivedAt=${receivedAt}`,
+      );
+      return;
+    }
+    const lock = await getBoardingLock();
+    if (!lock) {
+      logger.info('reschedule skip: no boarding lock');
+      return;
+    }
+    if (lock.trainCode !== payload.trainCode) {
+      logger.info(
+        `reschedule skip: trainCode mismatch lock=${lock.trainCode} payload=${payload.trainCode}`,
+      );
+      return;
+    }
+    const [routeRaw, destRaw] = await Promise.all([
+      AsyncStorage.getItem(ROUTE_KEY),
+      AsyncStorage.getItem(DESTINATION_KEY),
+    ]);
+    const route = parseRoute(routeRaw);
+    const destinationName = parseDestinationName(destRaw);
+    if (!route || !destinationName) {
+      logger.info(
+        `reschedule skip: route=${route ? 'ok' : 'null'} destination=${destinationName ?? 'null'}`,
+      );
+      return;
+    }
+    await rescheduleHopForLock({
+      lock,
+      route,
+      destinationName,
+      nextStation: payload.nextStation,
+      newArrivalMs: payload.newArrivalTimeEpoch,
+      now: receivedAt,
+    });
+  } catch (e) {
+    logger.error('reschedule apply 실패:', e);
+  }
+}
+
+function parseRoute(raw: string | null): Route | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Route;
+  } catch {
+    return null;
+  }
+}
+
+function parseDestinationName(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<Station> | null;
+    return parsed && typeof parsed.name === 'string' ? parsed.name : null;
+  } catch {
+    return null;
   }
 }
 

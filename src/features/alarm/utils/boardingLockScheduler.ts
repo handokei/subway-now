@@ -431,6 +431,94 @@ export async function advanceHopWindow(params: AdvanceHopWindowParams): Promise<
   );
 }
 
+export interface RescheduleHopParams {
+  lock: BoardingLock;
+  route: NonNullable<Route>;
+  destinationName: string;
+  /** Backend가 보낸 정정 대상 hop의 stationName(`nextStation`). */
+  nextStation: string;
+  /** 새 도착 시각(ms epoch). 이 시점을 기준으로 phase별 leadMs를 차감해 재예약한다. */
+  newArrivalMs: number;
+  /** 과거 시각 가드 기준점 (ms epoch). 기본 Date.now(). */
+  now?: number;
+}
+
+export interface RescheduleHopResult {
+  cancelled: number;
+  scheduled: number;
+}
+
+/**
+ * Backend의 reschedule silent push(#698)를 받아 특정 hop의 사전 예약을 cancel + 재예약한다.
+ *
+ * - 매칭 대상은 `bl:${lock.trainCode}:*:*:${nextStation}` (phase 무관). nextStation 자체가
+ *   현재 추적 큐에 없으면(이미 통과/미예약) 아무 일도 하지 않는다 — 정정 신호의 graceful skip.
+ * - route + destinationName으로 hopIndex를 다시 매칭해 `scheduleSingleHop`에 `arrivalMs = newArrivalMs`로
+ *   넘긴다 — earlyLeadMs는 leg 평균 hop time(`legSeconds/legStops`)에서 산출(기존 schedule과 동일 로직).
+ * - 과거 시각으로 산출되는 phase는 scheduleSingleHop가 skip한다(`fireMs <= observedMs`).
+ *
+ * 단순 정정만 — windowSize 확장이나 sleep 룰은 본 함수의 책임이 아니다 (정상 schedule 흐름이 별도 처리).
+ */
+export async function rescheduleHopForLock(
+  params: RescheduleHopParams,
+): Promise<RescheduleHopResult> {
+  const { lock, route, destinationName, nextStation, newArrivalMs, now } = params;
+  const observedMs = now ?? Date.now();
+
+  const current = await getScheduledNotificationIds();
+  const lockPrefix = `${BOARDING_LOCK_ALARM_PREFIX}${lock.trainCode}:`;
+  const matches = current
+    .filter((id) => id.startsWith(lockPrefix))
+    .map((id) => ({ id, parsed: parseBoardingLockAlarmIdentifier(id) }))
+    .filter(
+      (x): x is { id: string; parsed: BoardingLockAlarmIdParts } =>
+        x.parsed !== null && isSameStationName(x.parsed.stationName, nextStation),
+    );
+
+  if (matches.length === 0) {
+    logger.info(
+      `reschedule no-op: no scheduled ids for trainCode=${lock.trainCode} nextStation=${nextStation}`,
+    );
+    return { cancelled: 0, scheduled: 0 };
+  }
+
+  const idsToCancel = matches.map((x) => x.id);
+  await cancelAndDismiss(idsToCancel);
+  await removeScheduledNotificationIds(idsToCancel);
+
+  // 새 arrivalMs로 재예약. hopIndex는 cancelled identifier가 알려주지만(여러 phase가 동일),
+  // earlyLeadMs는 route의 leg 정보에서 다시 산출해야 정확하다.
+  const allTargets = resolveAllTargets(route, destinationName);
+  const targetIndex = allTargets.findIndex((t) => isSameStationName(t.name, nextStation));
+  if (targetIndex === -1) {
+    // 캔슬은 했지만 route 매칭 실패 — 재예약 불가. 정정 의미상 신호 폐기. logger.info 만.
+    logger.info(
+      `reschedule cancel-only: nextStation=${nextStation} not found in route — skipped re-schedule`,
+    );
+    return { cancelled: idsToCancel.length, scheduled: 0 };
+  }
+  const target = allTargets[targetIndex];
+  const legSeconds = legSecondsAt(route, targetIndex, target.name);
+  const legMs = legSeconds * 1000;
+  const earlyLeadMs = target.stops > 0 ? legMs / target.stops : HOP_TIME_MS;
+
+  const newIds = await scheduleSingleHop({
+    lock,
+    target,
+    hopIndex: targetIndex,
+    arrivalMs: newArrivalMs,
+    earlyLeadMs,
+    observedMs,
+  });
+  if (newIds.length > 0) {
+    await addScheduledNotificationIds(newIds);
+  }
+  logger.info(
+    `reschedule done: trainCode=${lock.trainCode} nextStation=${nextStation} cancelled=${idsToCancel.length} scheduled=${newIds.length} newArrivalMs=${newArrivalMs}`,
+  );
+  return { cancelled: idsToCancel.length, scheduled: newIds.length };
+}
+
 /**
  * #708: route + destinationName이 만드는 hop 시퀀스의 구조적 signature.
  *
