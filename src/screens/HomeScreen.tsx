@@ -391,6 +391,8 @@ export default function HomeScreen() {
     lock: boardingLock,
     route,
     destinationName: destination?.name ?? null,
+    // #918 A3 PR3 — Fusion 현재역 통과 시 rolling window top-up trigger (64 cap 회피).
+    currentStationName: result?.station.name ?? null,
   });
   useBoardingLockAdvancer({
     lock: boardingLock,
