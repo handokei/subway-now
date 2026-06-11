@@ -94,6 +94,8 @@ export type AlarmLogReason =
   | 'lockless-opt-out'
   // #746 — 사용자가 알람을 dismiss한 직후 5분 또는 200m 이내 동안 모든 카테고리 차단.
   | 'dismiss-silence'
+  | 'gate-phase-accuracy'
+  | 'gate-phase-warmup'
   // #1010 — station-passed effect가 lock hydrate 직후 30s warmup window 동안 차단된 발사.
   | 'gate-station-passed-warmup';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
@@ -531,6 +533,20 @@ export function logAlertFallbackFired(input: {
  * 결과는 카운트가 0이 아닌 source만 포함 — 노이즈 줄이고 새 source가 추가돼도
  * 코드 수정 없이 자동 반영된다 (UI는 데이터 주도).
  */
+
+/**
+ * 게이트/reason별 억제 횟수를 집계한다 (#1019).
+ */
+export function summarizeAlarmLogByReason(entries: readonly AlarmLogEntry[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const e of entries) {
+    if (e.outcome !== 'suppressed') continue;
+    const key = e.reason ?? '(unknown)';
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
 export function summarizeAlarmLogBySource(
   entries: readonly AlarmLogEntry[],
 ): Record<string, number> {
@@ -570,19 +586,6 @@ export function summarizeAlarmLogCounters(
     }
   }
   return [...map.values()].sort((a, b) => b.count - a.count);
-}
-
-/** reason별 억제 카운트. suppressed 엔트리의 reason 분포. */
-export function summarizeAlarmLogByReason(
-  entries: readonly AlarmLogEntry[],
-): Record<string, number> {
-  const counts: Record<string, number> = {};
-  for (const entry of entries) {
-    if (entry.outcome !== 'suppressed') continue;
-    const key = entry.reason ?? '(unknown)';
-    counts[key] = (counts[key] ?? 0) + 1;
-  }
-  return counts;
 }
 
 /**
@@ -641,6 +644,18 @@ export function logSuppressedGate(
     reason,
     location,
   });
+}
+
+/**
+ * FG phase ETA effect의 진입 게이트 차단 1건 적재 (#1019).
+ * 'gate-phase-accuracy': isAccuracyAcceptable(accuracyMeters) 실패.
+ * 'gate-phase-warmup': 첫 trigger suppress (warmup window).
+ * isBurstDuplicate로 DEDUP_LOG_WINDOW_MS 안의 같은 reason+station 중복 drop.
+ */
+export function logSuppressedPhaseGate(reason: 'gate-phase-accuracy' | 'gate-phase-warmup', stationName: string | undefined): void {
+  const name = stationName ?? '(unknown)';
+  if (isBurstDuplicate(reason, name)) return;
+  appendAlarmLog({ ts: Date.now(), source: 'fg-evaluated', outcome: 'suppressed', reason, stationName: name });
 }
 
 /**

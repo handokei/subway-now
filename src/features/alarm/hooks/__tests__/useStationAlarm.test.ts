@@ -73,6 +73,7 @@ const mockLogRefMismatch = jest.fn();
 const mockLogSuppressedDedupAlarm = jest.fn();
 const mockLogSuppressedDedupStation = jest.fn();
 const mockLogSuppressedMovement = jest.fn();
+const mockLogSuppressedPhaseGate = jest.fn();
 const mockLogSuppressedSleepFirstTransfer = jest.fn();
 const mockLogSuppressedDismissSilence = jest.fn();
 const mockLogSuppressedStationPassedWarmup = jest.fn();
@@ -84,6 +85,7 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedDedupAlarm: (...args: unknown[]) => mockLogSuppressedDedupAlarm(...args),
   logSuppressedDedupStation: (...args: unknown[]) => mockLogSuppressedDedupStation(...args),
   logSuppressedMovement: (...args: unknown[]) => mockLogSuppressedMovement(...args),
+  logSuppressedPhaseGate: (...args: unknown[]) => mockLogSuppressedPhaseGate(...args),
   logSuppressedSleepFirstTransfer: (...args: unknown[]) =>
     mockLogSuppressedSleepFirstTransfer(...args),
   logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
@@ -1676,6 +1678,28 @@ describe('useStationAlarm', () => {
       await waitFor(() =>
         expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', imminentDest, 'api'),
       );
+    });
+  });
+
+
+  describe('#1019 phase gate stamps', () => {
+    const route = makeDirectRoute(3, '2');
+    it('accuracy 초과 시 gate-phase-accuracy stamp', async () => {
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: 10, accuracyMeters: 500 })));
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith('gate-phase-accuracy', destination.name);
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+    it('warmup suppress 시 gate-phase-warmup stamp', async () => {
+      renderHook(() => useStationAlarm({ route, destination, nearestStation: null, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: 10, accuracyMeters: 100 }));
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith('gate-phase-warmup', destination.name);
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+    it('skipWarmupGuard=true이면 gate-phase-warmup stamp 없음', async () => {
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127.0 }, speedMps: 10, accuracyMeters: 100 })));
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockLogSuppressedPhaseGate.mock.calls.filter((c) => c[0] === 'gate-phase-warmup')).toHaveLength(0);
     });
   });
 
