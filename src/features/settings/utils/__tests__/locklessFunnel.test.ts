@@ -19,7 +19,7 @@ describe('locklessFunnel', () => {
     emitter = jest.fn<ReturnType<LocklessFunnelEmitter>, Parameters<LocklessFunnelEmitter>>(
       async () => undefined,
     );
-    setLocklessFunnelEmitter(emitter as unknown as LocklessFunnelEmitter);
+    setLocklessFunnelEmitter(emitter);
     jest.clearAllMocks();
     (AsyncStorage.getItem as jest.Mock).mockReset();
     (AsyncStorage.setItem as jest.Mock).mockReset();
