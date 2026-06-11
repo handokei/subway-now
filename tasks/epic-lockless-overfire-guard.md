@@ -68,7 +68,7 @@ related:
 
 ### Epic C 단기 (Week 3, 16 sub-issue 예정) — 회귀 #3/#4 — **미발행**
 
-Lock backend SSOT + GPS 격하 + 토글 폐기. **착수 전 결정 선행: B1(ADR-010), B2(#874 통합), B3(#912 acceptance 재해석).**
+Lock backend SSOT + GPS 격하 + 토글 폐기. **착수 차단 해제 (B1/B2/B3 결정 완료, 2026-06-11).**
 sub-issue 상세는 발행 시 본 문서에 기입한다. (원본 SSOT 부재로 16건의 사전 정의는 유실 — 결정 후 재정의 필요)
 
 ### Epic B (Week 4~9, 9 sub-issue 예정) — 회귀 #5/#6 — **미발행**
@@ -79,16 +79,16 @@ race/storage/lockless 근본 refactor. Epic C 단기 완료 후 착수.
 
 ADR-008 Stage 4 Phase A+B 통합. **B2 결정(2026-06-11)으로 #844 잔여 PR B/C/D가 본 단계 sub 5건 중 3건으로 귀속 확정 — #844 close됨.** sub-issue 발행 시 #844 본문의 PR B/C/D 정의 + open questions 참조.
 
-## 4. 결정 차단 항목 (본인 결정 필요 — 전부 미결)
+## 4. 결정 차단 항목 — **전부 결정 완료 (2026-06-11)**
 
-> ⚠️ **데드라인**: Epic A 16/17. B2는 결정 완료 — Epic C 단기는 잔여 B1/B3 없이 시작 불가.
+> ✅ B1~B5 + B14 결정 완료 → **Epic C 단기 착수 차단 해제.** 다음 단계: ADR-010 개정 + ADR-011 초안, Epic C 단기 16건 sub-issue 재정의·발행.
 
-- [ ] **B1**: ADR-010 C 폐기 + D 신설
+- [x] **B1**: ADR-010 C 폐기 + D 신설 — **2026-06-11 결정** (lockless 옵트인 토글 정책 폐기, 토글 없이 매역 알림 기본 동작)
 - [x] **B2**: epic #874를 본 epic에 통합 — **2026-06-11 결정 완료** (`project_2026_06_11_epic1008_b_decisions.md`). #844 잔여 PR B/C/D → Epic C 풀 sub 3건 귀속, #844 close
-- [ ] **B3**: #912 acceptance 재해석 — "lock 유무 무관 trip 활성이면 매역 발사" (#912 본문에 2026-06-11 임시 반영: 오발사 0건 판정은 본 epic 회귀 측정을 따름)
-- [ ] **B4**: 낙관적 UI (탭 즉시 visual + backend 정정 toast)
-- [ ] **B5**: backend optional 먼저 → 1주 → client → required 승격
-- [ ] **B14**: 추가 발견 대응 — 옵션 3 (A 카테고리 흡수 / B follow-up / C 별 epic)
+- [x] **B3**: #912 acceptance 재해석 — "lock 유무 무관 trip 활성이면 매역 발사" — **2026-06-11 결정 채택** (#912 본문 반영 완료: 오발사 0건 판정은 본 epic 회귀 측정을 따름)
+- [x] **B4**: 낙관적 UI (탭 즉시 visual + backend 정정 toast) — **2026-06-11 결정 채택** (R-3 대응)
+- [x] **B5**: backend optional 먼저 → 1주 관찰 → client → required 승격 — **2026-06-11 결정 채택** (M2 shadow run과 결합)
+- [x] **B14**: 추가 발견 대응 — 옵션 3 확정 (A 카테고리 흡수 / B follow-up / C 별 epic)
 
 ## 5. 리스크 ↔ 대응 매핑 (R-1 ~ R-10)
 
@@ -96,8 +96,8 @@ ADR-008 Stage 4 Phase A+B 통합. **B2 결정(2026-06-11)으로 #844 잔여 PR B
 | --- | --- | --- | --- |
 | R-1 | backend false positive 직격 노출 | Epic A prerequisite (RC1~RC4 게이트) | ✅ Epic A로 해소 중 |
 | R-2/R-9 | backend down | Phase A pull fallback | Epic C 풀에서 |
-| R-3 | lock 탭 round-trip 500ms | 낙관적 UI (B4) | B4 결정 대기 |
-| R-4 | ADR-010 정책 변경 | 본인 권한 (B1) | B1 결정 대기 |
+| R-3 | lock 탭 round-trip 500ms | 낙관적 UI (B4) | B4 채택 — Epic C 단기에서 구현 |
+| R-4 | ADR-010 정책 변경 | 본인 권한 (B1) | B1 결정 완료 — ADR 개정 작업 대기 |
 | R-5 | lock 합성 backend 집중 | M2 shadow run | 미착수 |
 | R-6 | boardingPrompt 폭증 | M7-new monitor (#1021) | ✅ 머지 |
 | R-7 | dismiss-silence 확대 | C9-new (lock 단위 scope) | Epic C에서 |
@@ -125,3 +125,4 @@ ADR-008 Stage 4 Phase A+B 통합. **B2 결정(2026-06-11)으로 #844 잔여 PR B
 - 2026-06-11: 원본 부재 확인 후 GitHub 상태 기준 재구성 생성. Epic A 15/17. B1~B5/B14 미결.
 - 2026-06-11 (2차): H1(#1009) PR #1133 머지로 완료 → Epic A 16/17. B2 결정 완료 — #844 close(잔여 Epic C 풀 귀속), #922 close(E1 완료, Seam C deferred).
 - 2026-06-11 (3차): Seam C deferred 시나리오 → #1200 발행. 본 SSOT PR #1199로 dev 반영 진행.
+- 2026-06-11 (4차): B1/B3/B4/B5 결정 완료(전부 권장안 채택), B14 옵션 3 확정 → 결정 차단 항목 전체 해소. Epic C 단기 착수 가능.
