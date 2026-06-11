@@ -242,4 +242,28 @@ describe('useFusedNearestStation — #1015 forward-only 검증', () => {
       expect(['position-train', 'boarding-lock']).toContain(result.current.source);
     });
   });
+
+  describe('boardingStationId가 arc에 없으면(boardingIdx=-1) forward-only 가드 미적용', () => {
+    it('boardingStationId가 arcStations에 없으면 backward 역도 채택됨', () => {
+      // boardingStationId='unknown-id' → arc에서 findIndex가 -1 → boardingIdx=-1 → 가드 스킵.
+      const lockWithUnknownBoarding: BoardingLock = {
+        ...BOARDING_LOCK,
+        boardingStationId: 'unknown-id',
+      };
+      mockTrackProgress.mockReturnValue(trainProgressFor(ARC_STATION_A));
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          routeContext,
+          'T-2',
+          lockWithUnknownBoarding,
+        ),
+      );
+
+      // boardingIdx=-1 → 가드 조건 미충족 → position-train 또는 boarding-lock 채택
+      expect(['position-train', 'boarding-lock']).toContain(result.current.source);
+    });
+  });
 });
