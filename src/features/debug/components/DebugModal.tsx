@@ -889,7 +889,7 @@ function GatesSection({
     ...countGateReasons(logs, GATE_REASONS),
     ...countGateReasons(logs, MOVEMENT_REASONS),
   };
-  const allKeys = Object.keys(allCounts).sort();
+  const allKeys = Object.keys(allCounts).sort((a, b) => a.localeCompare(b));
   return (
     <Section title="Gates" colors={colors}>
       {allKeys.length === 0 ? (
