@@ -2,6 +2,7 @@
  * Cross-feature test: useTripBoundAlarmScheduler 본체가 orchestrator(file-level disable).
  * 동일 패턴으로 routeFixtures import. ADR Phase 5 (#890).
  */
+import { AppState, type NativeEventSubscription } from 'react-native';
 import { renderHook, waitFor } from '@testing-library/react-native';
 import { useTripBoundAlarmScheduler } from '../useTripBoundAlarmScheduler';
 import type { ScheduledTripBoundAlarm } from '../../utils/tripBoundScheduler';
@@ -9,10 +10,12 @@ import {
   cancelTripBoundAlarms,
   prescheduleStationAlerts,
   setRegisteredTripRouteSig,
+  topUpTripBoundWindow,
 } from '../../utils/tripBoundScheduler';
 import { getTripStartedAt } from '../../utils/tripStartStorage';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeFixtures';
+import { captureAppStateListener } from '../../testHelpers/tripBoundTestFactory';
 
 jest.mock('../../utils/tripBoundScheduler', () => {
   const actual = jest.requireActual('../../utils/tripBoundScheduler');
@@ -21,6 +24,7 @@ jest.mock('../../utils/tripBoundScheduler', () => {
     prescheduleStationAlerts: jest.fn(),
     cancelTripBoundAlarms: jest.fn(),
     setRegisteredTripRouteSig: jest.fn(),
+    topUpTripBoundWindow: jest.fn(),
   };
 });
 
@@ -46,6 +50,7 @@ const mockedGetTripStartedAt = getTripStartedAt as jest.MockedFunction<typeof ge
 const mockedSetSig = setRegisteredTripRouteSig as jest.MockedFunction<
   typeof setRegisteredTripRouteSig
 >;
+const mockedTopUp = topUpTripBoundWindow as jest.MockedFunction<typeof topUpTripBoundWindow>;
 
 type Props = Parameters<typeof useTripBoundAlarmScheduler>[0];
 function renderScheduler(initialProps: Props) {
@@ -71,6 +76,7 @@ beforeEach(() => {
   mockedPreschedule.mockResolvedValue([]);
   mockedCancel.mockResolvedValue(undefined);
   mockedSetSig.mockResolvedValue(undefined);
+  mockedTopUp.mockResolvedValue({ cancelled: 0, scheduled: 0 });
   // 기본은 tripStart 없음 — lock 없는 케이스에서 사전 예약 skip이 유지된다.
   mockedGetTripStartedAt.mockResolvedValue(null);
 });
@@ -326,6 +332,224 @@ describe('useTripBoundAlarmScheduler', () => {
     rerender({ lock: lockA, route: altRoute, destinationName: '강남' });
     await waitFor(() => expect(mockedSetSig).toHaveBeenCalledTimes(2));
     expect(mockedSetSig.mock.calls[1][0]).not.toBe(firstSig);
+  });
+
+  // -------- PR3 (#918 A3): rolling window 64 cap --------
+
+  const transferRouteForTopUp = makeTransferRoute({
+    transferName: '교대',
+    fromLine: '2',
+    toLine: '3',
+    stopsToTransfer: 2,
+    stopsFromTransfer: 3,
+  });
+
+  it('PR3: 초기 preschedule 호출 시 windowSize=TRIPBOUND_WINDOW_SIZE 전달', async () => {
+    renderScheduler({ lock: lockA, route, destinationName: '강남' });
+    await awaitFirstSchedule();
+    const call = mockedPreschedule.mock.calls[0][0];
+    expect(call.windowSize).toBeGreaterThan(0);
+  });
+
+  it('PR3: currentStationName=null이면 top-up skip', async () => {
+    renderScheduler({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: null,
+    });
+    await awaitFirstSchedule();
+    expect(mockedTopUp).not.toHaveBeenCalled();
+  });
+
+  it('PR3: 초기 마운트 + 매칭 currentStationName이 들어오면 top-up 1회 호출', async () => {
+    const { rerender } = renderScheduler({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: null,
+    });
+    await awaitFirstSchedule();
+    rerender({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: '교대',
+    });
+    await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(1));
+    const arg = mockedTopUp.mock.calls[0][0];
+    expect(arg.passedStationName).toBe('교대');
+    expect(arg.windowSize).toBeGreaterThan(0);
+    expect(arg.routeStops.map((s) => s.stationName)).toEqual(['교대', '강남']);
+  });
+
+  it('PR3: 같은 currentStationName으로 rerender 시 effect deps 안 바뀌어 추가 호출 없음', async () => {
+    const { rerender } = renderScheduler({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: '교대',
+    });
+    await awaitFirstSchedule();
+    await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(1));
+    rerender({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: '교대',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedTopUp).toHaveBeenCalledTimes(1);
+  });
+
+  it('PR3: matching 안 되는 currentStationName은 no-op', async () => {
+    const { rerender } = renderScheduler({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: null,
+    });
+    await awaitFirstSchedule();
+    rerender({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: '관계없는역',
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedTopUp).not.toHaveBeenCalled();
+  });
+
+  it('PR3: scheduledStops 없는 상태(스케줄 skip)에서 currentStationName 변경은 no-op', async () => {
+    renderScheduler({
+      lock: null,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: '교대',
+    });
+    // tripStart=null + lock=null → preschedule skip → scheduledStopsRef=null → top-up skip.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedTopUp).not.toHaveBeenCalled();
+  });
+
+  it('PR3: lock 교체로 identity 변경 시 top-up 가드 reset → 같은 currentStation에 대해 다시 호출', async () => {
+    const { rerender } = renderScheduler({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: '교대',
+    });
+    await awaitFirstSchedule();
+    await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(1));
+    // 새 lock 진입 → ref reset.
+    rerender({
+      lock: lockB,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: '교대',
+    });
+    await waitFor(() => expect(mockedPreschedule).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(2));
+  });
+
+  it('PR3: top-up 실패는 logger.error 기록 (throw 없음)', async () => {
+    mockedTopUp.mockRejectedValueOnce(new Error('topup-fail'));
+    renderScheduler({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: '교대',
+    });
+    await awaitFirstSchedule();
+    await waitFor(() => {
+      expect(mockLoggerError).toHaveBeenCalledWith(
+        'topUpTripBoundWindow 실패:',
+        expect.any(Error),
+      );
+    });
+  });
+
+  // -------- PR3: AppState 'active' resume top-up --------
+
+  it('PR3: AppState active 진입 + 직전 top-up stop 있으면 top-up 재호출', async () => {
+    const appState = captureAppStateListener();
+    renderScheduler({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: '교대',
+    });
+    await awaitFirstSchedule();
+    await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(1));
+
+    appState.fire('active');
+    await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(2));
+    appState.restore();
+  });
+
+  it('PR3: AppState background 진입은 top-up trigger 안 함', async () => {
+    const appState = captureAppStateListener();
+    renderScheduler({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: '교대',
+    });
+    await awaitFirstSchedule();
+    await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(1));
+
+    appState.fire('background');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedTopUp).toHaveBeenCalledTimes(1);
+    appState.restore();
+  });
+
+  it('PR3: AppState active 진입 시 scheduledStops/lastToppedUp 없으면 skip', async () => {
+    const appState = captureAppStateListener();
+    // currentStationName 없음 → top-up 안 일어남 → lastToppedUp=null → FG resume skip.
+    renderScheduler({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+    });
+    await awaitFirstSchedule();
+
+    appState.fire('active');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedTopUp).not.toHaveBeenCalled();
+    appState.restore();
+  });
+
+  it('PR3: AppState active 진입 + top-up 실패는 logger.error 기록', async () => {
+    const appState = captureAppStateListener();
+    renderScheduler({
+      lock: lockA,
+      route: transferRouteForTopUp,
+      destinationName: '강남',
+      currentStationName: '교대',
+    });
+    await awaitFirstSchedule();
+    await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(1));
+
+    mockedTopUp.mockRejectedValueOnce(new Error('resume-fail'));
+    appState.fire('active');
+    await waitFor(() => {
+      expect(mockLoggerError).toHaveBeenCalledWith(
+        'FG resume top-up 실패:',
+        expect.any(Error),
+      );
+    });
+    appState.restore();
+  });
+
+  it('PR3: unmount 시 AppState subscription remove 호출', async () => {
+    const remove = jest.fn();
+    const sub: NativeEventSubscription = { remove };
+    const spy = jest.spyOn(AppState, 'addEventListener').mockReturnValue(sub);
+    const { unmount } = renderScheduler({ lock: lockA, route, destinationName: '강남' });
+    unmount();
+    expect(remove).toHaveBeenCalled();
+    spy.mockRestore();
   });
 });
 

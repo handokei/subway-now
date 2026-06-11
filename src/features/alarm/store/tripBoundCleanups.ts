@@ -29,6 +29,7 @@ import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dism
 import { clearLaDismissSentinel } from '../utils/laDismissSentinel';
 import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
 import { purgeBoardingLockSchedulerQueue } from '../utils/boardingLockScheduler';
+import { cancelTripBoundAlarms } from '../utils/tripBoundScheduler';
 
 // trip-bound storage cleanup 단일 출처.
 // useDestinationStore.setDestination이 isSwitch(목적지 변경 또는 null 클리어) 분기에서 호출한다.
@@ -58,6 +59,10 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // + dismiss 처리한 뒤 storage 큐를 clear한다 — OS 큐 한도(64) 도달과 정정 신호 없는 옛 알람
   // 발사 burst를 동시에 차단한다.
   purgeBoardingLockSchedulerQueue,
+  // #918 A3 PR4 — `tba:` 채널의 OS 사전 예약도 cancel. 트립 종료 시점에 남아 있으면
+  // 다음 trip 시작 후 옛 알람이 burst로 발사된다 (purgeBoardingLockSchedulerQueue가 `bl:`만
+  // 제거하기 때문). cancelTripBoundAlarms는 graceful — 큐가 비어도 안전 통과.
+  cancelTripBoundAlarms,
   () => AsyncStorage.removeItem(ACTIVE_TRIP_KEY),
   () => AsyncStorage.removeItem(TRIP_ORIGIN_KEY),
   clearLastNotifiedStationId,

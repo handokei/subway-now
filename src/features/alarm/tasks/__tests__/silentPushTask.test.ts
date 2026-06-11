@@ -110,6 +110,12 @@ jest.mock('../../utils/boardingLockScheduler', () => ({
   rescheduleHopForLock: (...args: unknown[]) => mockRescheduleHopForLock(...args),
 }));
 
+// #918 A3 PR4 — tba 채널 reschedule. mock으로 호출 인자/횟수만 검증.
+const mockRescheduleTripBoundAlarm = jest.fn();
+jest.mock('../../utils/tripBoundScheduler', () => ({
+  rescheduleTripBoundAlarm: (...args: unknown[]) => mockRescheduleTripBoundAlarm(...args),
+}));
+
 const mockGetDismissSilence = jest.fn();
 const mockClearDismissSilence = jest.fn();
 jest.mock('../../utils/dismissSilenceStorage', () => ({
@@ -1368,6 +1374,105 @@ describe('silentPushTask', () => {
             expect.objectContaining({ pushId: 'rs-uuid', outcome: 'fired', reason: 'reschedule-received' }),
           );
           expect(mockLogSilentPushRescheduleReceived).toHaveBeenCalledTimes(1);
+        });
+
+        // #918 A3 PR4 — channels 분기 (bl + tba).
+        describe('channels (#918 A3 PR4)', () => {
+          it('channels=undefined (구 backend) → bl만 호출, tba 미호출', async () => {
+            setStorage();
+            await handleSilentPush(
+              reschedulePayload({ newArrivalTimeEpoch: 9_999_999_999_999 }),
+            );
+            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
+            expect(mockRescheduleTripBoundAlarm).not.toHaveBeenCalled();
+          });
+
+          it("channels=['bl','tba'] → bl + tba 모두 호출", async () => {
+            setStorage();
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: ['bl', 'tba'],
+              }),
+            );
+            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
+            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
+            const tbaArg = mockRescheduleTripBoundAlarm.mock.calls[0][0];
+            expect(tbaArg.stationName).toBe('사가정');
+            expect(tbaArg.newArrivalMs).toBe(9_999_999_999_999);
+            expect(tbaArg.destinationName).toBe(destStation.name);
+          });
+
+          it("channels=['tba'] → tba만 호출, bl 미호출 (lock skip 무관)", async () => {
+            setStorage();
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: ['tba'],
+              }),
+            );
+            expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
+            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
+          });
+
+          it("channels=['tba'] + lock=null → tba는 여전히 호출 (lock-free 채널)", async () => {
+            setStorage({ lock: null });
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: ['tba'],
+              }),
+            );
+            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
+          });
+
+          it('channels 빈 배열 → 구 backend 호환 default(bl)로 fallback', async () => {
+            setStorage();
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: [],
+              }),
+            );
+            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
+            expect(mockRescheduleTripBoundAlarm).not.toHaveBeenCalled();
+          });
+
+          it('channels에 unknown 값만 있으면 default(bl)로 fallback', async () => {
+            setStorage();
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: ['unknown'],
+              }),
+            );
+            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
+            expect(mockRescheduleTripBoundAlarm).not.toHaveBeenCalled();
+          });
+
+          it('channels에 mix(bl + unknown) → bl만 통과', async () => {
+            setStorage();
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: ['bl', 'unknown', 'tba'],
+              }),
+            );
+            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
+            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
+          });
+
+          it('channels가 배열이 아니면 default(bl)로 fallback', async () => {
+            setStorage();
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: 'bl',
+              }),
+            );
+            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
+            expect(mockRescheduleTripBoundAlarm).not.toHaveBeenCalled();
+          });
         });
       });
     });

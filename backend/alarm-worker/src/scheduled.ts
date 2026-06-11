@@ -57,6 +57,7 @@ import type {
   Trip,
   Waypoint,
 } from './types';
+import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -1154,6 +1155,9 @@ export async function maybeReschedulePush(
         host,
         fetchImpl: deps.fetchImpl,
         now,
+        // #918 A3 PR4 — `bl:` + `tba:` 동시 정정. 구 backend 호환을 위해 채널 상수는
+        // types.ts 단일 SSOT (RESCHEDULE_CHANNELS_DEFAULT)에서 import.
+        channels: RESCHEDULE_CHANNELS_DEFAULT,
       }),
     trip.apnsEnv,
     deps.apnsHosts,
