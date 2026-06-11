@@ -320,7 +320,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
       kind: 'station-passed',
     });
   } else if (route && isStationOnRoute(nearest.station, route)) {
-    const lastNotifiedStationId = await getLastNotifiedStationId();
+    const lastNotifiedStationId = await getLastNotifiedStationId(destination.id);
     if (nearest.station.id !== lastNotifiedStationId) {
       // #796: 환승역 도착 timing의 segment 정확 식별. evaluateAlarmPhase(:233)와 동일한
       // currentLine 결정 — lock.boardingLine 우선 → BG GPS jitter로 nearest가 옆 노선 station을
@@ -338,7 +338,7 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
           target,
           notificationSource,
         );
-        await setLastNotifiedStationId(nearest.station.id);
+        await setLastNotifiedStationId(destination.id, nearest.station.id);
         logFiredStationPassed(source, nearest.station);
 
         // #624 BG-safe stale alarm 차단 — 통과한 waypoint의 pre-scheduled bl:* 알람을

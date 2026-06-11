@@ -365,6 +365,8 @@ export default function HomeScreen() {
     arrival,
     currentStation: result?.station ?? null,
     expectedDurationMinutes: staticEtaMinutes,
+    motionStationary,
+    speedMps,
   });
   // #915 (C1 destination-only baseline UX) — destination 설정 직후 backend로 좋은 fix sync 발사.
   // backend cron이 9단 게이트 통과 시 autoLockCandidate 응답에 부착(#916) → 사용자 명시 탭 없이

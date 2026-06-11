@@ -431,7 +431,7 @@ describe('processLocationUpdate', () => {
       isTransfer: false,
       stopsToDestination: 3,
     }, undefined);
-    expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith('station-1');
+    expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(mockDestination.id, 'station-1');
   });
 
   it('does not send station-passed notification when station is the same as stored', async () => {
@@ -458,7 +458,7 @@ describe('processLocationUpdate', () => {
       isTransfer: false,
       stopsToDestination: 3,
     }, undefined);
-    expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith('station-1');
+    expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(mockDestination.id, 'station-1');
   });
 
   it('does not mutate firedAlarms (responsibility moved to caller)', async () => {

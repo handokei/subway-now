@@ -80,6 +80,7 @@ export const GATE_SUPPRESSION_REASONS: readonly AlarmLogReason[] = [
   'movement-static-speed',
   'movement-static-position',
   'movement-motion-stationary',
+  'movement-motion-warmup',
   'sleep-first-transfer',
   'lockless-non-intermediate',
   'lockless-opt-out',

@@ -68,6 +68,11 @@ export interface ScheduleAlarmsParams {
     direction: AlarmLogDirection | null;
     usedTrainCode: string | null;
   };
+  /**
+   * #1011 — destination-scoped lastNotifiedStationId 진단용. 제공 시 destination-scoped 읽기.
+   * 미제공(undefined) 시 null을 사용해 scoped read를 skip — 이전 진단 로그와 동일 의미.
+   */
+  destinationId?: string;
   /** 테스트에서 시각 주입용. 기본값은 Date.now(). */
   now?: number;
 }
@@ -93,6 +98,7 @@ export async function scheduleAlarmsForRoute(
     destinationName,
     currentStationApproachEtaSeconds,
     stamp,
+    destinationId = null,
     now = Date.now(),
   } = params;
 
@@ -113,7 +119,8 @@ export async function scheduleAlarmsForRoute(
 
   // 발사 시점 비교용으로, 예약 직전 LAST_NOTIFIED_STATION을 한 번만 읽는다.
   // 발사 시 실제 값과 다르면 "예상한 위치와 실제 위치가 어긋났다"는 진단 신호.
-  const actualLastNotifiedStation = await getLastNotifiedStationId();
+  // #1011: destinationId가 제공된 경우 destination-scoped 읽기.
+  const actualLastNotifiedStation = await getLastNotifiedStationId(destinationId);
   const stampDirection = stamp?.direction ?? null;
   const stampTrainCode = stamp?.usedTrainCode ?? null;
 
