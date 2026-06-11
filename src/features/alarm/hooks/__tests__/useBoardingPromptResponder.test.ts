@@ -30,6 +30,9 @@ jest.mock('../../../nearest-station/api/positionUpload', () => ({
 jest.mock('../../../../shared/utils/stationLookup', () => ({
   findStationByNameAndLine: jest.fn(),
 }));
+jest.mock('../../utils/alarmLog', () => ({
+  logBoardingPromptAutoLock: jest.fn(),
+}));
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -57,30 +60,45 @@ jest.mock('../../store/useBoardingLockStore', () => {
 });
 
 const { findStationByNameAndLine } = jest.requireMock('../../../../shared/utils/stationLookup');
+const { logBoardingPromptAutoLock } = jest.requireMock('../../utils/alarmLog');
 const { __mockCreateLock: createLockMock } = jest.requireMock(
   '../../store/useBoardingLockStore',
 );
 
-function makeArrival(overrides: Partial<StationArrival['up'][number]> = {}): StationArrival {
+type UpEntry = StationArrival['up'][number];
+
+function makeUpEntry(overrides: Partial<UpEntry> = {}): UpEntry {
   return {
-    up: [
-      {
-        destination: '',
-        arrivalMinutes: 1,
-        arrivalSeconds: 60,
-        statusMessage: '',
-        trainCode: 'T1',
-        line: '2',
-        receivedAtMs: 0,
-        arrivalCode: 2,
-        isLastTrain: false,
-        trainType: 'normal',
-        ...overrides,
-      },
-    ],
-    down: [],
+    destination: '',
+    arrivalMinutes: 1,
+    arrivalSeconds: 60,
+    statusMessage: '',
+    trainCode: 'T1',
+    line: '2',
+    receivedAtMs: 0,
+    arrivalCode: 2,
+    isLastTrain: false,
+    trainType: 'normal',
+    ...overrides,
   };
 }
+
+function makeArrival(overrides: Partial<UpEntry> = {}): StationArrival {
+  return { up: [makeUpEntry(overrides)], down: [] };
+}
+
+function makeArrivalWithUp(entries: Partial<UpEntry>[]): StationArrival {
+  return { up: entries.map(makeUpEntry), down: [] };
+}
+
+// 두 후보 같은 priority 케이스 — ambiguity fallback 측정용 (행동 + telemetry 양쪽 공유).
+const AMBIGUOUS_TRAINS: Partial<UpEntry>[] = [
+  { arrivalMinutes: 1, arrivalSeconds: 60, trainCode: 'T1' },
+  { arrivalMinutes: 2, arrivalSeconds: 120, trainCode: 'T2' },
+];
+
+// line 불일치 단일 후보 — empty candidate set 케이스 공유 (행동 + telemetry).
+const LINE_MISMATCH_TRAIN: Partial<UpEntry>[] = [{ line: '9' }];
 
 describe('extractBoardingPromptPayload', () => {
   it('valid payload → 보존', () => {
@@ -153,6 +171,12 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       }),
     );
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
+    // #1167 — autolock-success telemetry
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-success',
+      originStation: '강남',
+      line: '2',
+    });
   });
 
   it('기본 탭 ($default) → boarded 분기와 동일 처리', async () => {
@@ -191,36 +215,9 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
   });
 
   it('ambiguity (같은 priority 후보 2+) → manual fallback, lock 안 함', async () => {
-    const arrival: StationArrival = {
-      up: [
-        {
-          destination: '',
-          arrivalMinutes: 1,
-          arrivalSeconds: 60,
-          statusMessage: '',
-          trainCode: 'T1',
-          line: '2',
-          receivedAtMs: 0,
-          arrivalCode: 2,
-          isLastTrain: false,
-          trainType: 'normal',
-        },
-        {
-          destination: '',
-          arrivalMinutes: 2,
-          arrivalSeconds: 120,
-          statusMessage: '',
-          trainCode: 'T2',
-          line: '2',
-          receivedAtMs: 0,
-          arrivalCode: 2,
-          isLastTrain: false,
-          trainType: 'normal',
-        },
-      ],
-      down: [],
-    };
-    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => arrival) });
+    const deps = makeDeps({
+      fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(AMBIGUOUS_TRAINS)),
+    });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expect(createLockMock).not.toHaveBeenCalled();
   });
@@ -232,50 +229,86 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     expect(createLockMock).not.toHaveBeenCalled();
   });
 
-  it('arrivalSeconds <= 0인 후보는 필터됨 (지나간 열차 lock 차단)', async () => {
-    const arrival: StationArrival = {
-      up: [
-        {
-          destination: '',
-          arrivalMinutes: 0,
-          arrivalSeconds: 0,
-          statusMessage: '',
-          trainCode: 'T-old',
-          line: '2',
-          receivedAtMs: 0,
-          arrivalCode: 2,
-          isLastTrain: false,
-          trainType: 'normal',
-        },
-      ],
-      down: [],
-    };
-    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => arrival) });
+  it.each([
+    ['arrivalSeconds <= 0 (지나간 열차)', [{ arrivalMinutes: 0, arrivalSeconds: 0, trainCode: 'T-old' }]],
+    ['line 불일치', LINE_MISMATCH_TRAIN],
+  ])('후보 필터링 — %s → lock 안 함', async (_label, entries) => {
+    const deps = makeDeps({
+      fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(entries)),
+    });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expect(createLockMock).not.toHaveBeenCalled();
   });
 
-  it('line 불일치 후보는 필터됨', async () => {
-    const arrival: StationArrival = {
-      up: [
-        {
-          destination: '',
-          arrivalMinutes: 1,
-          arrivalSeconds: 60,
-          statusMessage: '',
-          trainCode: 'T1',
-          line: '9',
-          receivedAtMs: 0,
-          arrivalCode: 2,
-          isLastTrain: false,
-          trainType: 'normal',
-        },
-      ],
-      down: [],
-    };
-    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => arrival) });
-    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
-    expect(createLockMock).not.toHaveBeenCalled();
+  // #1167 — autoLock telemetry. 모든 케이스가 같은 형태로 logBoardingPromptAutoLock을 호출한다.
+  // setup만 다르고 expected reason 1개만 다르므로 it.each + setup factory로 일반화.
+  type AutoLockReason =
+    | 'autolock-no-trip'
+    | 'autolock-arrivals-empty'
+    | 'autolock-ambiguity'
+    | 'autolock-station-lookup'
+    | 'autolock-lock-failed';
+
+  const STATION_MATCH = { id: 'S1', line: '2', name: '강남' };
+
+  // 각 케이스는 deps override + 사전 mock setup을 반환. handleResponse 호출과 assertion은 공통.
+  const autoLockCases: Array<[
+    string,
+    AutoLockReason,
+    () => Partial<Parameters<typeof makeDeps>[0]>,
+  ]> = [
+    ['destinationId null', 'autolock-no-trip', () => ({ destinationId: null })],
+    [
+      'arrivals null',
+      'autolock-arrivals-empty',
+      () => ({ fetchArrivalsForStation: jest.fn(async () => null) }),
+    ],
+    [
+      'line 후보 0개 (모두 필터됨)',
+      'autolock-arrivals-empty',
+      () => ({
+        fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(LINE_MISMATCH_TRAIN)),
+      }),
+    ],
+    [
+      'ambiguity (same priority 후보 2+)',
+      'autolock-ambiguity',
+      () => ({
+        fetchArrivalsForStation: jest.fn(async () => makeArrivalWithUp(AMBIGUOUS_TRAINS)),
+      }),
+    ],
+    [
+      'station lookup 실패',
+      'autolock-station-lookup',
+      () => {
+        (findStationByNameAndLine as jest.Mock).mockReturnValue(null);
+        return {};
+      },
+    ],
+    [
+      'createLock 예외 (manual fallback + swallow)',
+      'autolock-lock-failed',
+      () => {
+        (findStationByNameAndLine as jest.Mock).mockReturnValue(STATION_MATCH);
+        return {
+          createLock: jest.fn(async () => {
+            throw new Error('storage write failed');
+          }),
+        };
+      },
+    ],
+  ];
+
+  it.each(autoLockCases)('telemetry — %s → %s', async (_label, reason, setup) => {
+    const deps = makeDeps(setup());
+    await expect(
+      handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps),
+    ).resolves.toBeUndefined();
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason,
+      originStation: '강남',
+      line: '2',
+    });
   });
 });
 

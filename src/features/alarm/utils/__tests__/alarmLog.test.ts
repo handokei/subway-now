@@ -51,6 +51,8 @@ import {
   logBoardingPromptFired,
   BOARDING_PROMPT_WINDOWS,
   countBoardingPromptByWindow,
+  logBoardingPromptAutoLock,
+  countBoardingPromptAutoLockOutcomes,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -1560,6 +1562,83 @@ describe('alarmLog', () => {
         { ts: Date.now() - 1000, source: 'boarding-prompt', outcome: 'fired' },
       ];
       expect(countBoardingPromptByWindow(entries)['5m']).toBe(1);
+    });
+
+    it('reason 필드가 있는 boarding-prompt entry는 #1021 윈도우 집계에서 제외 (autolock과 분리)', () => {
+      const now = Date.now();
+      const entries: AlarmLogEntry[] = [
+        // autolock-success는 outcome='fired'지만 reason 있음 → 발사 빈도엔 카운트 X.
+        {
+          ts: now - 1000,
+          source: 'boarding-prompt',
+          outcome: 'fired',
+          reason: 'autolock-success',
+        },
+      ];
+      expect(countBoardingPromptByWindow(entries, now)['5m']).toBe(0);
+    });
+  });
+
+  describe('logBoardingPromptAutoLock + countBoardingPromptAutoLockOutcomes (#1167)', () => {
+    it.each([
+      ['autolock-success', 'fired'],
+      ['autolock-no-trip', 'suppressed'],
+      ['autolock-arrivals-empty', 'suppressed'],
+      ['autolock-ambiguity', 'suppressed'],
+      ['autolock-station-lookup', 'suppressed'],
+      ['autolock-lock-failed', 'suppressed'],
+    ] as const)('reason=%s → outcome=%s + stationName 합성', async (reason, expectedOutcome) => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logBoardingPromptAutoLock({ reason, originStation: '강남', line: '2' });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({
+        source: 'boarding-prompt',
+        outcome: expectedOutcome,
+        reason,
+        stationName: '2·강남',
+      });
+    });
+
+    it('countBoardingPromptAutoLockOutcomes가 reason별 분포 집계', () => {
+      const entries: AlarmLogEntry[] = [
+        { ts: 1, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+        { ts: 2, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+        { ts: 3, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-ambiguity' },
+        { ts: 4, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-no-trip' },
+        { ts: 5, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-arrivals-empty' },
+        { ts: 6, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-station-lookup' },
+        { ts: 7, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-lock-failed' },
+        // reason 없는 #1021 발사 entry는 제외
+        { ts: 8, source: 'boarding-prompt', outcome: 'fired' },
+        // 다른 source는 제외
+        { ts: 9, source: 'fg', outcome: 'fired' },
+      ];
+      const counts = countBoardingPromptAutoLockOutcomes(entries);
+      expect(counts).toEqual({
+        'autolock-success': 2,
+        'autolock-no-trip': 1,
+        'autolock-arrivals-empty': 1,
+        'autolock-ambiguity': 1,
+        'autolock-station-lookup': 1,
+        'autolock-lock-failed': 1,
+      });
+    });
+
+    it('boarding-prompt source인데 reason이 autolock 계열이 아니면 무시 (방어)', () => {
+      const entries: AlarmLogEntry[] = [
+        {
+          ts: 1,
+          source: 'boarding-prompt',
+          outcome: 'suppressed',
+          // 다른 도메인 reason — counts에 영향 없음
+          reason: 'gate-age',
+        },
+      ];
+      const counts = countBoardingPromptAutoLockOutcomes(entries);
+      expect(counts['autolock-success']).toBe(0);
+      expect(counts['autolock-no-trip']).toBe(0);
     });
   });
 
