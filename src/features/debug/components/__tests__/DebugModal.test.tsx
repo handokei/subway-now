@@ -1767,8 +1767,9 @@ describe('DebugModal — Gates 섹션 (#1025)', () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(screen.getByText('Alarm log (3)')).toBeTruthy());
     // Gates 섹션에 gate-out-of-range/movement-static-speed 카운트 노출 확인.
-    expect(screen.getByText('gate-out-of-range')).toBeTruthy();
-    expect(screen.getByText('movement-static-speed')).toBeTruthy();
+    // CountersSection도 같은 reason을 표시하므로 getAllByText로 최소 1건 존재를 확인.
+    expect(screen.getAllByText('gate-out-of-range').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('movement-static-speed').length).toBeGreaterThan(0);
   });
 });
 
