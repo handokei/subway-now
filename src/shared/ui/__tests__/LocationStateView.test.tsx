@@ -42,22 +42,24 @@ describe('LocationStateView', () => {
       expect(screen.getByText('위치 권한이 필요합니다.')).toBeTruthy();
     });
 
-    it('권한 요청 버튼을 표시한다', () => {
-      expect(screen.getByText('권한 요청')).toBeTruthy();
+    it('"권한 요청" 버튼은 표시하지 않는다', () => {
+      // iOS 영구 거부 후 requestPermissionsAsync가 dialog 없이 즉시 denied를 반환하므로 제거됨
+      expect(screen.queryByText('권한 요청')).toBeNull();
+      expect(screen.queryByTestId('location-retry-button')).toBeNull();
     });
 
-    it('권한 요청 버튼 클릭 시 onRetry를 호출한다', () => {
-      fireEvent.press(screen.getByTestId('location-retry-button'));
-      expect(onRetry).toHaveBeenCalledTimes(1);
-    });
-
-    it('"설정 열기" 버튼을 표시한다', () => {
+    it('"설정 열기" 단일 버튼만 표시한다', () => {
       expect(screen.getByText('설정 열기')).toBeTruthy();
+      expect(screen.getByTestId('location-open-settings-button')).toBeTruthy();
     });
 
     it('"설정 열기" 버튼 클릭 시 openAppSettings를 호출한다', () => {
       fireEvent.press(screen.getByTestId('location-open-settings-button'));
       expect(openAppSettings).toHaveBeenCalledTimes(1);
+    });
+
+    it('onRetry는 호출되지 않는다 (permissionDenied 분기는 onRetry를 노출하지 않음)', () => {
+      expect(onRetry).not.toHaveBeenCalled();
     });
   });
 
