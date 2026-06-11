@@ -11,6 +11,7 @@ import {
   pushFusionDebugEntry,
   type FusionCandidateMini,
 } from '../utils/fusionDebugBuffer';
+import { pushEstimatorEntry } from '../../route/utils/estimatorDebugBuffer';
 import { useNearestStation } from './useNearestStation';
 import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import { useTrainPositions } from '../../route/hooks/useTrainPositions';
@@ -658,6 +659,26 @@ export function useFusedNearestStation(
     [barometerSignal, motionStationary, fusionArrival, lockedTrainCode],
   );
   const detectionVerdict = useFusedStationDetection(detectionInput);
+
+  // #1025 — Estimator 전략 변화 시 debug buffer에 push.
+  // estimate key: strategy|stationId|arcIndex. null estimate는 strategy=null로 기록.
+  // estimateRef: effect 내부에서 estimate를 deps 없이 최신값으로 읽기 위한 ref.
+  // estimateKey만 deps에 두면 key 변화 시 최신 estimate를 ref로 안전하게 참조 가능.
+  const estimateRef = useRef(estimate);
+  estimateRef.current = estimate;
+  const estimateKey = estimate
+    ? `${estimate.strategy}|${estimate.station.id}|${estimate.index}`
+    : 'null';
+  useEffect(() => {
+    const est = estimateRef.current;
+    pushEstimatorEntry({
+      ts: Date.now(),
+      strategy: est ? est.strategy : null,
+      stationName: est ? est.station.name : null,
+      stationLine: est ? est.station.line : null,
+      arcIndex: est ? est.index : null,
+    });
+  }, [estimateKey]);
 
   // 측정(#443): 결정 변화(source/stationId/confidence) 시에만 push.
   // render 중 side-effect 회피 + 의존성 누락 은폐 회피를 위해 결정 key를 ref로 비교.

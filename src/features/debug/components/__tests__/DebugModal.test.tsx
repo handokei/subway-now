@@ -1704,3 +1704,139 @@ describe('DebugModal — fusedSpeed fallback (#853)', () => {
   });
 
 });
+
+describe('DebugModal — BoardingLock 섹션 (#1025)', () => {
+  // useBoardingLockStore는 jest.requireActual을 사용하므로 describe 스코프에서 1회 resolve.
+  const { useBoardingLockStore } = jest.requireActual('../../../alarm/store/useBoardingLockStore');
+  // boardedAt은 테스트 실행 시점 기준 — Date.now()를 직접 사용해야 만료 판정을 피한다.
+  const activeLockBase = () => ({
+    boardedAt: Date.now(),
+    expectedDurationMs: 30 * 60 * 1000,
+  });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setupHookDefaults();
+    act(() => { useBoardingLockStore.setState({ lock: null }); });
+  });
+
+  const renderAndWait = async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+  };
+
+  it('lock이 없으면 active=no를 표시한다', async () => {
+    await renderAndWait();
+    expect(screen.getByText('BoardingLock')).toBeTruthy();
+    expect(screen.getByText('no')).toBeTruthy();
+  });
+
+  it('lock이 활성이면 active=yes + trainCode/line을 표시한다', async () => {
+    act(() => {
+      useBoardingLockStore.setState({
+        lock: { ...activeLockBase(), destinationId: 'dest-1', trainCode: 'T-101', boardingStationId: 'stn-1', boardingLine: '2' },
+      });
+    });
+    await renderAndWait();
+    expect(screen.getByText('T-101')).toBeTruthy();
+    expect(screen.getByText('yes')).toBeTruthy();
+  });
+
+  it('lock이 sentinel이면 sentinel=yes를 표시한다', async () => {
+    act(() => {
+      useBoardingLockStore.setState({
+        lock: {
+          ...activeLockBase(),
+          destinationId: 'FREE_TRIP_SENTINEL',
+          trainCode: 'T-999',
+          boardingStationId: 'stn-2',
+          boardingLine: '7',
+          hydratedFromSentinel: { destinationId: 'FREE_TRIP_SENTINEL', sentinelAt: Date.now() },
+        },
+      });
+    });
+    await renderAndWait();
+    expect(screen.getByText('sentinel')).toBeTruthy();
+  });
+});
+
+describe('DebugModal — Estimator State 섹션 (#1025)', () => {
+  const { pushEstimatorEntry, clearEstimatorEntries } =
+    jest.requireActual('../../../route/utils/estimatorDebugBuffer');
+
+  // 반복되는 pushEstimatorEntry 호출 baseline — strategy/station/arcIndex만 오버라이드.
+  type EstimatorEntryArgs = Parameters<typeof pushEstimatorEntry>[0];
+  const pushEntry = (overrides: Partial<EstimatorEntryArgs> = {}) =>
+    pushEstimatorEntry({ ts: Date.now(), strategy: 'live-position', stationName: '강남', stationLine: '2', arcIndex: 1, ...overrides });
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearEstimatorEntries();
+    setupHookDefaults();
+  });
+
+  it('비어있으면 (empty) 표시', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Estimator State (0)')).toBeTruthy();
+  });
+
+  it('엔트리가 있으면 라인을 노출한다', async () => {
+    act(() => { pushEntry({ ts: new Date('2026-06-01T10:00:00Z').getTime(), strategy: 'live-position', stationName: '강남', stationLine: '2', arcIndex: 3 }); });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(screen.getByText('Estimator State (1)')).toBeTruthy());
+    const entries = screen.getAllByTestId('debug-estimator-entry');
+    expect(entries[0].props.children).toContain('live-position');
+    expect(entries[0].props.children).toContain('강남(2)');
+    expect(entries[0].props.children).toContain('idx=3');
+  });
+
+  it('Clear 버튼이 estimator 로그를 비운다', async () => {
+    act(() => { pushEntry({ strategy: 'default-hop', stationName: '역삼', arcIndex: 1 }); });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(screen.getByText('Estimator State (1)')).toBeTruthy());
+    act(() => { fireEvent.press(screen.getByTestId('debug-estimator-clear')); });
+    expect(screen.getByText('Estimator State (0)')).toBeTruthy();
+  });
+});
+
+describe('DebugModal — Gates 섹션 (#1025)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setupHookDefaults();
+  });
+
+  it('gate block이 없으면 "(no gate blocks)"를 표시한다', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Gates')).toBeTruthy();
+    expect(screen.getByText('(no gate blocks)')).toBeTruthy();
+  });
+
+  it('gate/movement reason이 있는 로그가 있으면 카운트를 표시한다', async () => {
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: 1, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+      { ts: 2, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+      { ts: 3, source: 'fg', outcome: 'suppressed', reason: 'movement-static-speed' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(screen.getByText('Alarm log (3)')).toBeTruthy());
+    // Gates 섹션에 gate-out-of-range/movement-static-speed 카운트 노출 확인.
+    // CountersSection도 같은 reason을 표시하므로 getAllByText로 최소 1건 존재를 확인.
+    expect(screen.getAllByText('gate-out-of-range').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('movement-static-speed').length).toBeGreaterThan(0);
+  });
+});
+
+describe('DebugModal helpers — formatEstimatorLine (#1025)', () => {
+  const { formatEstimatorLine: fmt } = __test__;
+  // 3개 케이스가 동일 구조 — it.each로 묶어 CPD 토큰 반복 제거.
+  it.each([
+    ['strategy + station + idx 포함', { strategy: 'reanchored-hop' as const, stationName: '강남', stationLine: '2', arcIndex: 5 }, ['reanchored-hop', '강남(2)', 'idx=5']],
+    ['strategy null이면 "none"으로 표기', { strategy: null, stationName: null, stationLine: null, arcIndex: null }, ['none', 'idx=-']],
+    ['stationLine null이면 "-"로 표기', { strategy: 'default-hop' as const, stationName: '역삼', stationLine: null, arcIndex: 2 }, ['역삼(-)', 'idx=2']],
+  ] as const)('%s', (_label, args, expected) => {
+    const line = fmt({ ts: Date.now(), ...args });
+    for (const token of expected) expect(line).toContain(token);
+  });
+});

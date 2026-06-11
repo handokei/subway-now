@@ -43,6 +43,7 @@ import {
   summarizeAlarmLogByReason,
   logSuppressedStationPassedWarmup,
   summarizeAlarmLogBySource,
+  countGateReasons,
   countSilentPushOutcomes,
   summarizeAlarmLogCounters,
   logBoardingPromptFired,
@@ -1358,6 +1359,40 @@ describe('alarmLog', () => {
     });
   });
 
+  describe('countGateReasons (#1025)', () => {
+    it('빈 배열이면 빈 객체를 반환한다', () => {
+      expect(countGateReasons([], ['gate-age', 'gate-accuracy'])).toEqual({});
+    });
+
+    it('지정한 reason에 해당하는 항목만 집계한다', () => {
+      const logs: AlarmLogEntry[] = [
+        { ts: 1, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+        { ts: 2, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+        { ts: 3, source: 'fg', outcome: 'suppressed', reason: 'movement-static-speed' },
+        { ts: 4, source: 'fg', outcome: 'fired' },
+        { ts: 5, source: 'bg', outcome: 'suppressed', reason: 'dedup-station' },
+      ];
+      expect(
+        countGateReasons(logs, ['gate-out-of-range', 'movement-static-speed']),
+      ).toEqual({ 'gate-out-of-range': 2, 'movement-static-speed': 1 });
+    });
+
+    it('reason이 없는 항목은 무시한다', () => {
+      const logs: AlarmLogEntry[] = [
+        { ts: 1, source: 'fg', outcome: 'fired' },
+        { ts: 2, source: 'bg', outcome: 'fired' },
+      ];
+      expect(countGateReasons(logs, ['gate-age'])).toEqual({});
+    });
+
+    it('목록에 없는 reason은 집계하지 않는다', () => {
+      const logs: AlarmLogEntry[] = [
+        { ts: 1, source: 'bg', outcome: 'suppressed', reason: 'dedup-alarm' },
+      ];
+      expect(countGateReasons(logs, ['gate-age', 'gate-accuracy'])).toEqual({});
+    });
+  });
+
   describe('summarizeAlarmLogCounters (#1021)', () => {
     it('suppressed 엔트리의 reason별 count+lastTs를 합산해 내림차순으로 반환한다', () => {
       const entries: AlarmLogEntry[] = [
@@ -1452,3 +1487,4 @@ describe('alarmLog', () => {
   });
 
 });
+
