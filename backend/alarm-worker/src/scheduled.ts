@@ -20,6 +20,7 @@ import {
 } from './boardingPrompt';
 import {
   detectKalmanDrift,
+  KALMAN_DRIFT_GRACE_MS,
   type KalmanState,
   readKalmanState,
   resetKalmanForArrival,
@@ -428,7 +429,7 @@ interface FusionStepResult {
  *   - phaseState non-null이면 trip.stationPhase에 stamp + putTrip 시 persist
  *   - kalmanKmh를 게이트/fusion 입력으로 전달
  *   - series는 본 함수가 fetched한 raw KV 값 — 추가 read 불필요
- *   - #837 P2-3 — drift 카운트(stats.kalmanDriftWarning)는 호출자가 maybeCountDrift(prior, posMetrics, stats)
+ *   - #837 P2-3 — drift 카운트(stats.kalmanDriftWarning)는 호출자가 maybeCountDrift(prior, posMetrics, stats, now)
  *     로 수행. fusion 자체는 stats를 받지 않아 SRP 유지(HTTP path 등에서 stats 없이 재사용 가능).
  */
 async function runFusionStep(
@@ -508,13 +509,24 @@ async function runFusionStep(
  * skip 조건:
  *  - prior=null (첫 cycle, v=gpsAvg 초기화라 delta=0 의미 없음)
  *  - posMetrics가 fusion observation 무효 cycle의 것이면 호출자가 prior=null로 받음 (#826 정합)
+ *  - #837 P2-2 reset grace window: prior.lastResetTs가 있고 now - lastResetTs < KALMAN_DRIFT_GRACE_MS면
+ *    카운트 skip. `resetKalmanForArrival` 직후 cycle은 prior.v=0과 GPS 회복 phase 사이 |delta|가
+ *    임계 근처/초과로 잡혀 kalmanReset과 동시 카운트되는 telemetry 사각지대 — 해석 불명확 해소.
+ *    legacy state는 lastResetTs 미존재(undefined) — grace skip 없이 정상 평가 (회귀 없음).
  */
 export function maybeCountDrift(
   prior: KalmanState | null,
   posMetrics: WindowedMetrics,
   stats: ScheduledStats,
+  now: number,
 ): void {
   if (prior === null) return;
+  if (
+    prior.lastResetTs !== undefined &&
+    now - prior.lastResetTs < KALMAN_DRIFT_GRACE_MS
+  ) {
+    return;
+  }
   const drift = detectKalmanDrift(prior, posMetrics.gpsAvgKmh);
   if (drift.warning) {
     stats.kalmanDriftWarning += 1;
@@ -1208,7 +1220,7 @@ export async function runLocklessIntermediate(
   // #825 — Phase 3 E3 fusion step. 분류 결과를 trip에 stamp + imminent push 발사 가드에 사용.
   const fusion = await runFusionStep(trip, env, now);
   // #837 P2-3 — drift 카운트는 fusion 외부 (SRP). fusion 결과 직후 동일 시점/조건으로 평가.
-  maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats);
+  maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats, now);
   let dirty = false;
   if (fusion.phaseState) {
     trip.stationPhase = fusion.phaseState;
@@ -1467,7 +1479,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
 
   const fusion = await runFusionStep(trip, env, now);
   // #837 P2-3 — drift 카운트는 fusion 외부 (SRP). fusion 결과 직후 동일 시점/조건으로 평가.
-  maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats);
+  maybeCountDrift(fusion.kalmanPrior, fusion.posMetrics, stats, now);
   let dirty = false;
   // phase 분류 결과가 있으면 trip에 stamp — 다음 cycle hysteresis 입력 + lockless 가드용 상태.
   if (fusion.phaseState) {

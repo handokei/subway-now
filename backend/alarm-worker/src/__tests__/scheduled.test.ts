@@ -2561,10 +2561,12 @@ function makeEmptyStats(): ScheduledStats {
 }
 
 describe('maybeCountDrift (#837 P2-3)', () => {
+  const NOW = 1_000_000;
+
   it('prior=null이면 drift 카운트 skip (첫 cycle)', () => {
     const stats = makeEmptyStats();
     const posMetrics = makePosMetricsFixture(30); // delta=30 ≥ 15지만 prior 없음
-    maybeCountDrift(null, posMetrics, stats);
+    maybeCountDrift(null, posMetrics, stats, NOW);
     expect(stats.kalmanDriftWarning).toBe(0);
   });
 
@@ -2573,7 +2575,7 @@ describe('maybeCountDrift (#837 P2-3)', () => {
     const prior: KalmanState = { v: 0, P: R_LOW, ts: 0 };
     // state.v=0, gpsAvg=DRIFT_WARNING_THRESHOLD_KMH → |delta|=15 (경계 포함)
     const posMetrics = makePosMetricsFixture(DRIFT_WARNING_THRESHOLD_KMH);
-    maybeCountDrift(prior, posMetrics, stats);
+    maybeCountDrift(prior, posMetrics, stats, NOW);
     expect(stats.kalmanDriftWarning).toBe(1);
   });
 
@@ -2582,8 +2584,38 @@ describe('maybeCountDrift (#837 P2-3)', () => {
     const prior: KalmanState = { v: 30, P: 25, ts: 0 };
     // |30 - 32| = 2 < 15
     const posMetrics = makePosMetricsFixture(32);
-    maybeCountDrift(prior, posMetrics, stats);
+    maybeCountDrift(prior, posMetrics, stats, NOW);
     expect(stats.kalmanDriftWarning).toBe(0);
+  });
+
+  // #837 P2-2 — reset 직후 grace window
+  it('reset 직후 grace window 안 + |delta| ≥ 임계 → 카운트 skip', () => {
+    const stats = makeEmptyStats();
+    // resetKalmanForArrival 결과 그대로 — lastResetTs = ts
+    const prior: KalmanState = { v: 0, P: R_LOW, ts: NOW, lastResetTs: NOW };
+    // 회복 phase GPS 30 km/h — |delta|=30 ≥ 15
+    const posMetrics = makePosMetricsFixture(30);
+    // grace window 내 (30s 경과)
+    maybeCountDrift(prior, posMetrics, stats, NOW + 30_000);
+    expect(stats.kalmanDriftWarning).toBe(0);
+  });
+
+  it('reset 후 grace window 만료 + |delta| ≥ 임계 → 카운트 +1', () => {
+    const stats = makeEmptyStats();
+    const prior: KalmanState = { v: 0, P: R_LOW, ts: NOW, lastResetTs: NOW };
+    const posMetrics = makePosMetricsFixture(30);
+    // grace window(60s) 만료 (61s 경과)
+    maybeCountDrift(prior, posMetrics, stats, NOW + 61_000);
+    expect(stats.kalmanDriftWarning).toBe(1);
+  });
+
+  it('legacy state(lastResetTs 미존재) + |delta| ≥ 임계 → 정상 카운트 (회귀 없음)', () => {
+    const stats = makeEmptyStats();
+    // 구버전 KV에서 읽은 state — lastResetTs 필드 없음.
+    const prior: KalmanState = { v: 0, P: R_LOW, ts: 0 };
+    const posMetrics = makePosMetricsFixture(30);
+    maybeCountDrift(prior, posMetrics, stats, NOW);
+    expect(stats.kalmanDriftWarning).toBe(1);
   });
 });
 
