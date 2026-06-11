@@ -24,6 +24,9 @@ describe('tripBoundCleanups', () => {
     // mockRejectedValue가 leak되어 다음 테스트의 cancel을 reject하지 않도록.
     (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockReset();
     (Notifications.dismissNotificationAsync as jest.Mock).mockReset();
+    // #918 A3 PR4 — cancelTripBoundAlarms는 OS 큐 enumerate가 필요. auto-mock default가
+    // undefined를 반환하면 for..of에서 throw → cleanup 흐름이 막힌다. 빈 큐로 graceful 통과.
+    (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValue([]);
   });
 
   it('TRIP_BOUND_CLEANUPS는 비어있지 않다 (메타 배열 self-check)', () => {

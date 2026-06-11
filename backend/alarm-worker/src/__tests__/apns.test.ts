@@ -273,6 +273,44 @@ describe('sendReschedulePush (#585)', () => {
     });
     expect(result).toEqual({ ok: false, status: 400, reason: 'BadDeviceToken' });
   });
+
+  // #918 A3 PR4 — channels 옵션 wire 검증.
+  it("channels=['bl','tba']이 payload에 그대로 직렬화된다", async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendReschedulePush({
+      deviceToken: 'devicetoken-hex',
+      pushId: 'rsch-2',
+      trainCode: '7246',
+      nextStation: '중곡',
+      newArrivalTimeEpoch: 1_700_000_120_000,
+      sentAt: 1_700_000_000_000,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      channels: ['bl', 'tba'],
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.channels).toEqual(['bl', 'tba']);
+  });
+
+  it('channels 미지정 시 payload에서 omit (구 backend wire 호환)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendReschedulePush({
+      deviceToken: 'devicetoken-hex',
+      pushId: 'rsch-3',
+      trainCode: '7246',
+      nextStation: '중곡',
+      newArrivalTimeEpoch: 1_700_000_120_000,
+      sentAt: 1_700_000_000_000,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('channels' in body.data).toBe(false);
+  });
 });
 
 describe('sendLiveActivityUpdate (#586 C)', () => {

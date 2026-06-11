@@ -10,6 +10,7 @@ import {
   getRegisteredTripRouteSig,
   parseTripBoundAlarmIdentifier,
   prescheduleStationAlerts,
+  rescheduleTripBoundAlarm,
   setRegisteredTripRouteSig,
   topUpTripBoundWindow,
   tripBoundAlarmIdentifier,
@@ -664,5 +665,205 @@ describe('topUpTripBoundWindow (#918 A3 PR3)', () => {
     expect(mockLoggerInfo).toHaveBeenCalledWith(
       expect.stringContaining('topUp passedIndex=0 window=[1,3)'),
     );
+  });
+});
+
+// #918 A3 PR4 — backend의 reschedule push(tba 채널)을 받아 단일 hop 사전 예약 정정.
+describe('rescheduleTripBoundAlarm (#918 A3 PR4)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockLoggerInfo.mockClear();
+    mockedSchedule.mockResolvedValue('id');
+    jest.replaceProperty(Platform, 'OS', 'ios');
+  });
+
+  const directRoute = makeDirectRoute(3, '2');
+  const NOW_MS = new Date('2026-06-12T09:00:00Z').getTime();
+
+  // fixture sanity: 회귀 가드(early fire == newArrivalMs - hopMs)의 의미가 fixture에 의해
+  // 약해지지 않도록 hopMs 도출 기반인 travelSeconds가 양수임을 명시. fixture가 0이 되면
+  // 아래 silent-drop 회귀 가드도 동시에 trivially 통과해 의미를 잃는다.
+  it('fixture sanity: directRoute.travelSeconds > 0 (회귀 가드 의미 보장)', () => {
+    expect(directRoute.travelSeconds).toBeGreaterThan(0);
+  });
+
+  it('past-time이면 cancel/schedule 둘 다 skip + 0건 반환', async () => {
+    mockedGetAll.mockResolvedValue([]);
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '강남',
+      newArrivalMs: NOW_MS - 1,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW_MS,
+    });
+    expect(r).toEqual({ cancelled: 0, scheduled: 0 });
+    expect(mockedGetAll).not.toHaveBeenCalled();
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('route=null이면 graceful no-op', async () => {
+    mockedGetAll.mockResolvedValue([]);
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '강남',
+      newArrivalMs: NOW_MS + 60_000,
+      route: null,
+      destinationName: '강남',
+      now: NOW_MS,
+    });
+    expect(r).toEqual({ cancelled: 0, scheduled: 0 });
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('destinationName=null이면 graceful no-op', async () => {
+    mockedGetAll.mockResolvedValue([]);
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '강남',
+      newArrivalMs: NOW_MS + 60_000,
+      route: directRoute,
+      destinationName: null,
+      now: NOW_MS,
+    });
+    expect(r).toEqual({ cancelled: 0, scheduled: 0 });
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('stationName이 routeStops에 없으면 no-op', async () => {
+    mockedGetAll.mockResolvedValue([]);
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '없는역',
+      newArrivalMs: NOW_MS + 60_000,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW_MS,
+    });
+    expect(r).toEqual({ cancelled: 0, scheduled: 0 });
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('해당 stationName의 tba: 알람만 cancel하고 newArrivalMs 기준으로 재예약', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:early:강남' },
+      { identifier: 'tba:imminent:강남' },
+      { identifier: 'tba:early:다른역' }, // 보존
+      { identifier: 'bl:T1:0:early:강남' }, // 다른 prefix 보존
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    const newArrivalMs = NOW_MS + 600_000;
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '강남',
+      newArrivalMs,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW_MS,
+    });
+    expect(r.cancelled).toBe(2);
+    // 두 phase 모두 재예약 — 이전엔 toBeGreaterThan(0)이라 early phase silent drop을 통과시켰다.
+    expect(r.scheduled).toBe(2);
+    expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남');
+    expect(mockedCancel).toHaveBeenCalledWith('tba:imminent:강남');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:early:다른역');
+    expect(mockedCancel).not.toHaveBeenCalledWith('bl:T1:0:early:강남');
+    // imminent 알람은 newArrivalMs - 10s에 발사.
+    const scheduledCalls = mockedSchedule.mock.calls;
+    const imminentCall = scheduledCalls.find(
+      ([opts]) => (opts as { identifier?: string }).identifier === 'tba:imminent:강남',
+    );
+    expect(imminentCall).toBeDefined();
+    const imminentTrigger = (
+      imminentCall?.[0] as { trigger: { date: Date } }
+    ).trigger;
+    expect(imminentTrigger.date.getTime()).toBe(newArrivalMs - 10_000);
+  });
+
+  it('parse 실패 identifier는 skip하고 valid한 것만 처리', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:malformed' }, // colon 1개뿐 → parse null
+      { identifier: 'tba:early:강남' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '강남',
+      newArrivalMs: NOW_MS + 600_000,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW_MS,
+    });
+    expect(r.cancelled).toBe(1);
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:malformed');
+  });
+
+  it('now 미지정 시 Date.now() 기준으로 past-time 판정', async () => {
+    jest.useFakeTimers().setSystemTime(NOW_MS);
+    try {
+      mockedGetAll.mockResolvedValue([]);
+      const r = await rescheduleTripBoundAlarm({
+        stationName: '강남',
+        newArrivalMs: NOW_MS - 1,
+        route: directRoute,
+        destinationName: '강남',
+      });
+      expect(r).toEqual({ cancelled: 0, scheduled: 0 });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  // 회귀: 이전 구현은 startTime = newArrivalMs - hopMs로 역산해 prescheduleStationAlerts에
+  // 단일 stop을 통과시켰고, 그 결과 early phase의 fireMs가 startTime과 정확히 같아져
+  // `fireMs <= startTime` 가드에 silent drop됐다. primitive 직접 호출로 전환 후 검증.
+  it('early phase는 (newArrivalMs - hopMs)에 정확히 fire한다 (silent drop 회귀 차단)', async () => {
+    mockedGetAll.mockResolvedValue([]);
+    const newArrivalMs = NOW_MS + 600_000;
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '강남',
+      newArrivalMs,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW_MS,
+    });
+    expect(r.scheduled).toBe(2);
+    const scheduledCalls = mockedSchedule.mock.calls;
+    const earlyCall = scheduledCalls.find(
+      ([opts]) => (opts as { identifier?: string }).identifier === 'tba:early:강남',
+    );
+    expect(earlyCall).toBeDefined();
+    const earlyTrigger = (earlyCall?.[0] as { trigger: { date: Date } }).trigger;
+    const expectedHopMs = directRoute.travelSeconds * 1000;
+    expect(earlyTrigger.date.getTime()).toBe(newArrivalMs - expectedHopMs);
+  });
+
+  it('early phase fireMs가 now 이하면 early만 skip, imminent는 예약', async () => {
+    mockedGetAll.mockResolvedValue([]);
+    // newArrivalMs가 hopMs(=directRoute.travelSeconds*1000)보다 짧은 시간 뒤라
+    // early = newArrivalMs - hopMs ≤ now → drop, imminent = newArrivalMs - 10s > now → 예약.
+    const hopMs = directRoute.travelSeconds * 1000;
+    const newArrivalMs = NOW_MS + hopMs - 1; // early fire = NOW_MS - 1
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '강남',
+      newArrivalMs,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW_MS,
+    });
+    expect(r.scheduled).toBe(1);
+    const ids = mockedSchedule.mock.calls.map(
+      ([opts]) => (opts as { identifier?: string }).identifier,
+    );
+    expect(ids).toEqual(['tba:imminent:강남']);
+  });
+
+  it('imminent phase fireMs도 now 이하면 둘 다 skip', async () => {
+    mockedGetAll.mockResolvedValue([]);
+    // newArrivalMs가 IMMINENT_LEAD_MS(10s)보다 짧은 시간 뒤 → imminent도 과거.
+    const newArrivalMs = NOW_MS + 5_000;
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '강남',
+      newArrivalMs,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW_MS,
+    });
+    expect(r.scheduled).toBe(0);
+    expect(mockedSchedule).not.toHaveBeenCalled();
   });
 });
