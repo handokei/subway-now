@@ -113,10 +113,11 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
   describe('(a) userLocation==null → positionTrainResult null 반환', () => {
     it('GPS 좌표 없을 때 trainProgress가 있어도 null 반환 — distanceKm=0 placeholder gate 통과 방지', () => {
       // GPS 없는 상태. 이전 버전은 distanceKm=0으로 gate 자동 통과. 수정 후 null.
+      // trainProgress가 non-null이 되도록 lockedTrainCode + lock 제공 (line 368 도달).
       mockUseNearest.mockReturnValue(
         gpsBase({ userLocation: null, result: null, accuracyMeters: 50 }),
       );
-      mockFindTop.mockReturnValue([]);
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
       mockUsePositions.mockReturnValue(
         positionRet({
           line: '7',
@@ -124,9 +125,12 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
         }),
       );
 
-      const { result } = renderHook(() => useFusedNearestStation());
+      const lock = makeLock({ boardingLine: '7', trainCode: 'T-A' });
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, 'T-A', lock),
+      );
 
-      // positionTrainResult가 null이므로 source는 gps 또는 gps-only
+      // userLocation=null → line 368 `if (!gps.userLocation) return null` → positionTrainResult null
       expect(result.current.source).not.toBe('position-train');
     });
 
@@ -295,6 +299,34 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
 
       // lock 없으면 arc 검사 안 함 → 면목도 통과 가능
       expect(result.current.source).toBe('position-train');
+    });
+
+    it('arc 안에 있지만 LOCK_NEXT_HOP_WINDOW 초과 시 gate 탈락', () => {
+      // 건대입구: arc idx 4. boardingIdx(용마산=0) + WINDOW(3) = 3 → idx 4 초과 → 탈락.
+      // GPS를 건대입구 좌표에 놓아 거리 게이트(b)는 통과시킴 → fix(c)가 탈락 원인.
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          result: { station: konkuk, distanceKm: 0 },
+          userLocation: { lat: konkuk.lat, lng: konkuk.lng },
+          accuracyMeters: 50,
+        }),
+      );
+      mockFindTop.mockReturnValue([{ station: konkuk, distanceKm: 0 }]);
+      mockUsePositions.mockReturnValue(
+        positionRet({
+          line: '7',
+          trains: [train(konkuk.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-C-WINDOW' })],
+        }),
+      );
+
+      const lock = makeLock({ boardingLine: '7', trainCode: 'T-C-WINDOW' });
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, routeContext, 'T-C-WINDOW', lock),
+      );
+
+      // arc window 초과 → positionTrainResult null → position-train/boarding-lock 미채택
+      expect(result.current.source).not.toBe('position-train');
+      expect(result.current.source).not.toBe('boarding-lock');
     });
 
     it('arc 없으면 arc 소속 검사 미작동 (routeContext 없는 경우)', () => {
