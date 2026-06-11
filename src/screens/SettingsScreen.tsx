@@ -13,6 +13,7 @@ import { ROUTE_CATEGORIES } from '../shared/utils/stationRoute';
 import { LANGUAGE_REGISTRY } from '../shared/i18n/types';
 import { useTheme, spacing, radius } from '../shared/theme';
 import { useSleepModeGuide } from '../features/settings/hooks/useSleepModeGuide';
+import { emitLocklessToggleViewed } from '../features/settings/utils/locklessFunnel';
 import { FeedbackModal } from '../features/feedback/components/FeedbackModal';
 import {
   DEBUG_MODAL_TRIGGER_RESET_MS,
@@ -64,6 +65,8 @@ export default function SettingsScreen() {
     loadRoutePreference();
     loadLocklessStationPassed();
     loadSentryOptIn();
+    // #1175 — lockless 토글 학습 funnel viewed step. SettingsScreen 진입 = 토글 노출.
+    emitLocklessToggleViewed();
   }, []);
 
   return (
