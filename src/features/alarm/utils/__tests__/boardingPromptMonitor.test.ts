@@ -139,8 +139,8 @@ describe('computeBoardingPromptMonitor — byDay', () => {
     const t1 = T0;
     const t2 = T0 + 26 * 60 * 60 * 1000; // 다음 날
     const stats = computeBoardingPromptMonitor([displayed(t1), displayed(t2)]);
-    expect(Object.keys(stats.byDay).sort()).toEqual(
-      [toLocalDayKey(t1), toLocalDayKey(t2)].sort(),
+    expect(Object.keys(stats.byDay).sort((a, b) => a.localeCompare(b))).toEqual(
+      [toLocalDayKey(t1), toLocalDayKey(t2)].sort((a, b) => a.localeCompare(b)),
     );
   });
 });
@@ -164,7 +164,7 @@ describe('exportRecentDays', () => {
   it('과거 → 현재 순서', () => {
     const rows = exportRecentDays(computeBoardingPromptMonitor([]), 5, T0);
     const keys = rows.map((r) => r.dayKey);
-    const sorted = [...keys].sort();
+    const sorted = [...keys].sort((a, b) => a.localeCompare(b));
     expect(keys).toEqual(sorted);
   });
 
