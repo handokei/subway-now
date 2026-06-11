@@ -75,6 +75,6 @@ Live\ Activity.md
 oauth-implementation.md
 subway-now_icon.png
 
-# 로컬 작업 노트 / 데이터 덤프 (이슈/PR 본문으로 관리)
-/tasks/
+# 데이터 덤프
+# (tasks/는 epic SSOT·작업 계획 문서를 repo로 관리하기로 결정 — 2026-06-11, #1008 SSOT 유실 건)
 scripts/CARD_SUBWAY_MONTH_*.csv
