@@ -107,6 +107,12 @@ export const PRESCHEDULED_LEDGER_KEY = 'subway-now:prescheduled-ledger';
 // 형식: 숫자(epoch ms) 문자열.
 export const LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY =
   'subway-now:last-uploaded-prescheduled-trip-start';
+// #918 A3 PR2 — preschedule 시점의 route signature 스냅샷 (#729 흡수).
+// `tba:` 알람이 OS로 발사돼 클라가 reconcile할 때 *현재* sig와 비교해 trip 도중 route가
+// 바뀐(목적지 변경/환승 재산정/노선 갈아탐) 잔여 알람을 식별·억제한다.
+// useTripBoundAlarmScheduler가 preschedule 성공 직후 write, cancel 시 clear.
+// 형식: string (boardingLockScheduler.routeSignature 결과).
+export const TRIP_BOUND_ROUTE_SIG_KEY = 'subway-now:trip-bound-route-sig';
 // #828 — Phase 1+2 fusion wire — active trip의 boarding line code.
 // BG/FG location task가 좌표 upload 시 이 line으로 linePolyline snap을 수행해
 // `mapMatchedArcM` + `mapMatchedLine`을 backend에 첨부한다.

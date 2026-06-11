@@ -43,6 +43,7 @@ import {
   summarizeAlarmLogByReason,
   logHydrationTransition,
   logSuppressedStationPassedWarmup,
+  logSuppressedTbaRevalidation,
   summarizeAlarmLogBySource,
   countGateReasons,
   countSilentPushOutcomes,
@@ -590,6 +591,42 @@ describe('alarmLog', () => {
         reason: 'sleep-first-transfer',
         stationName: '역삼',
         kind: 'transfer',
+      });
+      expect(saved[0].phaseId).toBeUndefined();
+    });
+
+    it.each([
+      ['revalidate-no-trip' as const, '강남', 'early' as const],
+      ['revalidate-route-sig-mismatch' as const, '시청', 'imminent' as const],
+      ['revalidate-waypoint-mismatch' as const, '서울역', 'early' as const],
+    ])(
+      '#918 A3 PR2 logSuppressedTbaRevalidation: %s — source=bg-scheduled 고정 + reason/stationName/phaseId 보존',
+      async (reason, stationName, phaseId) => {
+        logSuppressedTbaRevalidation({ reason, stationName, phaseId });
+        await expectLastSavedEntryMatches({
+          source: 'bg-scheduled',
+          outcome: 'suppressed',
+          reason,
+          stationName,
+          phaseId,
+        });
+      },
+    );
+
+    it('#918 A3 PR2 logSuppressedTbaRevalidation: phaseId 미전달 시에도 적재', async () => {
+      logSuppressedTbaRevalidation({
+        reason: 'revalidate-no-trip',
+        stationName: '약수',
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg-scheduled',
+        outcome: 'suppressed',
+        reason: 'revalidate-no-trip',
+        stationName: '약수',
       });
       expect(saved[0].phaseId).toBeUndefined();
     });

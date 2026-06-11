@@ -11,6 +11,7 @@ import {
   cancelTripBoundAlarms,
   deriveTripBoundStops,
   prescheduleStationAlerts,
+  setRegisteredTripRouteSig,
 } from '../utils/tripBoundScheduler';
 import { getTripStartedAt } from '../utils/tripStartStorage';
 import { createLogger } from '../../../shared/utils/logger';
@@ -100,7 +101,13 @@ export function useTripBoundAlarmScheduler({
         estimatedHopTimesMs,
         startTime: tripStart,
       });
+      // #918 A3 PR2 (#729 흡수): fire-time 재검증을 위해 route signature 영속화.
+      // canSchedule=true 경로는 hasRouteAndDest=true → routeSignature는 항상 string 반환 → nextSig non-null.
+      // sig persist는 preschedule과 같은 awaited 동기 묶음 — 사이에 추가 token guard 없이도 한 번의 stale 차단
+      // (이미 line 91/79)으로 충분. 새 effect가 fire하면 cancelTripBoundAlarms가 sig를 즉시 cleanup하므로
+      // race 시 stale sig 잔존 위험은 새 effect가 흡수.
       if (myToken !== inFlightTokenRef.current) return;
+      await setRegisteredTripRouteSig(nextSig as string);
       scheduledIdentityRef.current = nextIdentity;
       scheduledRouteSigRef.current = nextSig;
     };

@@ -8,6 +8,7 @@ import type { ScheduledTripBoundAlarm } from '../../utils/tripBoundScheduler';
 import {
   cancelTripBoundAlarms,
   prescheduleStationAlerts,
+  setRegisteredTripRouteSig,
 } from '../../utils/tripBoundScheduler';
 import { getTripStartedAt } from '../../utils/tripStartStorage';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
@@ -19,6 +20,7 @@ jest.mock('../../utils/tripBoundScheduler', () => {
     ...actual,
     prescheduleStationAlerts: jest.fn(),
     cancelTripBoundAlarms: jest.fn(),
+    setRegisteredTripRouteSig: jest.fn(),
   };
 });
 
@@ -41,6 +43,9 @@ const mockedPreschedule = prescheduleStationAlerts as jest.MockedFunction<
 >;
 const mockedCancel = cancelTripBoundAlarms as jest.MockedFunction<typeof cancelTripBoundAlarms>;
 const mockedGetTripStartedAt = getTripStartedAt as jest.MockedFunction<typeof getTripStartedAt>;
+const mockedSetSig = setRegisteredTripRouteSig as jest.MockedFunction<
+  typeof setRegisteredTripRouteSig
+>;
 
 type Props = Parameters<typeof useTripBoundAlarmScheduler>[0];
 function renderScheduler(initialProps: Props) {
@@ -65,6 +70,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockedPreschedule.mockResolvedValue([]);
   mockedCancel.mockResolvedValue(undefined);
+  mockedSetSig.mockResolvedValue(undefined);
   // 기본은 tripStart 없음 — lock 없는 케이스에서 사전 예약 skip이 유지된다.
   mockedGetTripStartedAt.mockResolvedValue(null);
 });
@@ -285,6 +291,41 @@ describe('useTripBoundAlarmScheduler', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(mockedPreschedule).not.toHaveBeenCalled();
     expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
+  // -------- PR2 (#918 A3, #729 흡수): fire-time 재검증을 위한 route sig 영속화 --------
+
+  it('PR2: preschedule 성공 직후 현재 route sig를 storage에 영속화한다', async () => {
+    renderScheduler({ lock: lockA, route, destinationName: '강남' });
+    await awaitFirstSchedule();
+    await waitFor(() => expect(mockedSetSig).toHaveBeenCalledTimes(1));
+    // sig는 string 형식(boardingLockScheduler.routeSignature 결과) — 비어 있지 않음.
+    expect(typeof mockedSetSig.mock.calls[0][0]).toBe('string');
+    expect(mockedSetSig.mock.calls[0][0].length).toBeGreaterThan(0);
+  });
+
+  it('PR2: schedule skip 케이스(예: destination=null)에서는 sig 영속화하지 않음', async () => {
+    renderScheduler({ lock: lockA, route, destinationName: null });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedSetSig).not.toHaveBeenCalled();
+  });
+
+  it('PR2: route signature 변경 시 새 sig가 다시 영속화된다', async () => {
+    const altRoute = makeTransferRoute({
+      transferName: '교대',
+      fromLine: '2',
+      toLine: '3',
+      stopsToTransfer: 2,
+      stopsFromTransfer: 3,
+    });
+    const { rerender } = renderScheduler({ lock: lockA, route, destinationName: '강남' });
+    await awaitFirstSchedule();
+    await waitFor(() => expect(mockedSetSig).toHaveBeenCalledTimes(1));
+    const firstSig = mockedSetSig.mock.calls[0][0];
+
+    rerender({ lock: lockA, route: altRoute, destinationName: '강남' });
+    await waitFor(() => expect(mockedSetSig).toHaveBeenCalledTimes(2));
+    expect(mockedSetSig.mock.calls[1][0]).not.toBe(firstSig);
   });
 });
 

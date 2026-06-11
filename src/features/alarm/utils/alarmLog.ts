@@ -105,7 +105,14 @@ export type AlarmLogReason =
   | 'hydration-pre-hydrate'
   | 'hydration-hydrating'
   | 'hydration-storage-synced'
-  | 'hydration-ready';
+  | 'hydration-ready'
+  // #918 A3 PR2 (#729 흡수) — `tba:` 사전 예약 알람 fire-time 재검증 실패.
+  //   'revalidate-no-trip': tripStart 미존재(이미 종료된 trip의 잔여 발화).
+  //   'revalidate-route-sig-mismatch': 예약 시점 sig와 현재 sig 불일치(목적지 변경/환승 재산정).
+  //   'revalidate-waypoint-mismatch': 파싱된 stationName이 현재 route waypoint에 없음.
+  | 'revalidate-no-trip'
+  | 'revalidate-route-sig-mismatch'
+  | 'revalidate-waypoint-mismatch';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -777,6 +784,28 @@ export function logHydrationTransition(
     outcome: 'received',
     reason: HYDRATION_PHASE_REASON[phase],
     destinationId,
+  });
+}
+
+/**
+ * #918 A3 PR2 (#729 흡수) — `tba:` 사전 예약 알람의 fire-time 재검증 실패 1건 적재.
+ *
+ * scheduledAlarmReceiver가 OS-fired identifier를 reconcile하기 직전에 호출 — 적재 후 fired set /
+ * lastStationName 갱신을 skip해 stale 알람이 후속 상태(BG arrival 기준역 등)를 오염시키지 않게 한다.
+ * source='bg-scheduled' 재사용 — preschedule path 출처 통일(stamp/fired log와 동일 source).
+ */
+export function logSuppressedTbaRevalidation(input: {
+  reason: 'revalidate-no-trip' | 'revalidate-route-sig-mismatch' | 'revalidate-waypoint-mismatch';
+  stationName: string;
+  phaseId?: AlarmPhaseId;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'bg-scheduled',
+    outcome: 'suppressed',
+    reason: input.reason,
+    stationName: input.stationName,
+    phaseId: input.phaseId,
   });
 }
 
