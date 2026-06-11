@@ -41,6 +41,7 @@ import {
   logSilentPushSkipped,
   logAlertFallbackFired,
   summarizeAlarmLogByReason,
+  logHydrationTransition,
   logSuppressedStationPassedWarmup,
   summarizeAlarmLogBySource,
   countGateReasons,
@@ -621,6 +622,45 @@ describe('alarmLog', () => {
         kind: 'station-passed',
       });
       expect(saved[0].stationName).toBeUndefined();
+    });
+
+    it('#1012 logHydrationTransition: 4 phase 각각 hydration-* reason + fg-hydrate source로 적재', async () => {
+      logHydrationTransition('pre-hydrate', 'D1');
+      logHydrationTransition('hydrating', 'D1');
+      logHydrationTransition('storage-synced', 'D1');
+      logHydrationTransition('ready', 'D1');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved).toHaveLength(4);
+      expect(saved.map((e) => e.reason)).toEqual([
+        'hydration-pre-hydrate',
+        'hydration-hydrating',
+        'hydration-storage-synced',
+        'hydration-ready',
+      ]);
+      for (const entry of saved) {
+        expect(entry).toMatchObject({
+          source: 'fg-hydrate',
+          outcome: 'received',
+          destinationId: 'D1',
+        });
+      }
+    });
+
+    it('#1012 logHydrationTransition: destinationId=null 허용', async () => {
+      logHydrationTransition('pre-hydrate', null);
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg-hydrate',
+        outcome: 'received',
+        reason: 'hydration-pre-hydrate',
+        destinationId: null,
+      });
     });
 
     it('#626 같은 키 윈도우 내 재호출은 drop (FG polling 매초 평가 스팸 차단)', async () => {

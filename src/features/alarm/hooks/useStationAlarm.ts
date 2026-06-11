@@ -31,6 +31,7 @@ import {
   logFiredAlarm,
   logFiredAlarmsHydrate,
   logFiredStationPassed,
+  logHydrationTransition,
   logRefMismatch,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
@@ -39,6 +40,7 @@ import {
   logSuppressedPhaseGate,
   logSuppressedSleepFirstTransfer,
   logSuppressedStationPassedWarmup,
+  type HydrationPhase,
 } from '../utils/alarmLog';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { getBoardingLock } from '../utils/boardingLockStorage';
@@ -260,8 +262,8 @@ export function useStationAlarm({
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
   // #699: firedAlarmsRef의 내용이 어느 destinationId에 속하는지 추적.
-  // destination 변경 직후엔 hydrate effect가 setFiredHydrated(false)를 호출하지만,
-  // 같은 render cycle의 ETA/API effect는 React state 전파 전이라 firedHydrated=true(stale)
+  // destination 변경 직후엔 hydrate effect가 hydrationPhase를 'pre-hydrate'로 리셋하지만,
+  // 같은 render cycle의 ETA/API effect는 React state 전파 전이라 hydrationPhase='ready'(stale)
   // 클로저로 진입한다. ref id가 현재 destinationId와 다르면 stale state — phase 평가를 보류해
   // 옛 ref로 새 destination에 잘못된 알람을 발사하는 race를 차단한다.
   const firedAlarmsRefDestIdRef = useRef<string | null>(null);
@@ -274,9 +276,16 @@ export function useStationAlarm({
   // warmup window 동안 station-passed effect가 즉시 차단된다.
   const stationPassedHydratedAtRef = useRef<number | null>(null);
   // firedAlarms hydration: BG가 AsyncStorage(FIRED_ALARMS_KEY)에 쓴 dedup 상태를
-  // destination별로 격리해 복원한다(#462). hydrated=false인 동안 phase 평가를 보류해
-  // 빈 ref로 false re-fire가 발생하지 않도록 가드한다.
-  const [firedHydrated, setFiredHydrated] = useState(false);
+  // destination별로 격리해 복원한다(#462).
+  //
+  // #1012 (H5) — 명시적 state machine:
+  //   'pre-hydrate'    : 초기/destination 전환 직후. 모든 phase 평가 보류.
+  //   'hydrating'      : effect entry. drain 대기 중. 보류.
+  //   'storage-synced' : awaitInitialScheduledAlarmDrain 완료. getFiredAlarms 직전. 보류.
+  //   'ready'          : firedAlarmsRef + refDestId 셋업 완료. phase 평가 허용.
+  // hydration race(lock hydrate / storage sync / fired ref 사이) 차단을 위해 각 transition을
+  // 명시화 + alarmLog로 측정 — DebugModal Gates 섹션에서 자동 카운트.
+  const [hydrationPhase, setHydrationPhase] = useState<HydrationPhase>('pre-hydrate');
   const destinationId = destination?.id ?? null;
   // #396: 목적지 역의 도착정보를 별도로 폴링. arrivalCode가 ENTERING/ARRIVED가 되는 순간
   // imminent 신호로 사용. useArrivalInfo는 모듈 스코프 TtlCache를 공유해 추가 호출 비용이 적다.
@@ -334,11 +343,20 @@ export function useStationAlarm({
   useEffect(() => {
     let cancelled = false;
     stationPassedHydratedAtRef.current = null;
-    setFiredHydrated(false);
+    // #1012 (H5) — Phase 1: pre-hydrate 리셋. destination 전환마다 state machine 재시작.
+    setHydrationPhase('pre-hydrate');
+    logHydrationTransition('pre-hydrate', destinationId);
+    // #1012 (H5) — Phase 2: hydrating. effect entry 직후 sync 표기 — drain await 진입 전.
+    setHydrationPhase('hydrating');
+    logHydrationTransition('hydrating', destinationId);
     void (async () => {
       // 사전 예약 알람의 첫 drain이 완료된 후 read해야 cold start 직후
       // BG-fired 알람이 dedup set에 반영된 상태로 hydrate된다.
       await awaitInitialScheduledAlarmDrain();
+      if (cancelled) return;
+      // #1012 (H5) — Phase 3: storage-synced. drain 완료 + getFiredAlarms 직전.
+      setHydrationPhase('storage-synced');
+      logHydrationTransition('storage-synced', destinationId);
       const stored = await getFiredAlarms(destinationId);
       if (cancelled) return;
       firedAlarmsRef.current = stored;
@@ -347,7 +365,9 @@ export function useStationAlarm({
       logFiredAlarmsHydrate(destinationId, stored.size);
       // #1010: station-passed warmup 시작 — 하이드레이션 완료 시각 기록.
       stationPassedHydratedAtRef.current = Date.now();
-      setFiredHydrated(true);
+      // #1012 (H5) — Phase 4: ready. ref 셋업 + warmup 시각 기록 완료 후 phase 평가 허용.
+      setHydrationPhase('ready');
+      logHydrationTransition('ready', destinationId);
     })();
     return () => {
       cancelled = true;
@@ -433,11 +453,11 @@ export function useStationAlarm({
   }
 
   // Phase 알람 효과: ETA 기반 phase 평가 + firedAlarms 갱신.
-  // firedHydrated=false인 동안에는 보류 — BG가 이미 발화한 phase를 빈 ref로 재발화하는 것을 막는다.
+  // hydrationPhase!=='ready'인 동안에는 보류 — BG가 이미 발화한 phase를 빈 ref로 재발화하는 것을 막는다.
   // station-passed와 분리: 하이드레이션 완료로 인한 effect 재실행이 station-passed 중복 발사를
   // 일으키지 않도록 한다(station-passed는 자체 lastNotifiedStationId dedup만 사용).
   useEffect(() => {
-    if (!firedHydrated) return;
+    if (hydrationPhase !== 'ready') return;
 
     if (!route || !destination) return;
 
@@ -549,7 +569,7 @@ export function useStationAlarm({
     userLocation?.lng,
     speedMps,
     accuracyMeters,
-    firedHydrated,
+    hydrationPhase,
     setAlarmEvent,
     nearestStation?.id,
     nearestStation?.line,
@@ -573,7 +593,7 @@ export function useStationAlarm({
   // adoption → 그 trainCode가 목적지역 도착하면 ENTERED → 알람 발사). evaluateMovement로
   // 정적/저신호 거부.
   useEffect(() => {
-    if (!firedHydrated) return;
+    if (hydrationPhase !== 'ready') return;
     if (!route || !destination) return;
     // #699: ETA effect와 동일 guard — destination 전환 race로 stale ref가 imminent를
     // 잘못 발사하는 것을 차단한다.
@@ -632,7 +652,7 @@ export function useStationAlarm({
     // 재발사하지 않도록 storage가 sync된 후 다음 cycle 진입.
     void fireAndLog(rawEvent, 'api', route, destination);
   }, [
-    firedHydrated,
+    hydrationPhase,
     route,
     destination?.id,
     destination?.name,
@@ -655,7 +675,7 @@ export function useStationAlarm({
   // Station-passed 알림 효과: 경로상 역 변경 시 dedup된 per-station 알림.
   // dedup은 AsyncStorage(lastNotifiedStationId)를 단일 출처로 사용 — Foreground/Background
   // 양쪽에서 동일하게 적용된다.
-  // #1010: firedHydrated 가드 + 30s warmup — lock hydrate 직후 GPS가 stabilize되기 전
+  // #1010: hydrationPhase 가드 + 30s warmup — lock hydrate 직후 GPS가 stabilize되기 전
   // false alarm이 발사되는 회귀를 차단한다.
   // #452: deps에 raw accuracyMeters를 두면 GPS 노이즈로 매 fix 재실행 → dedup-suppressed
   // 로그가 cap까지 차서 다른 진단을 밀어낸다. 게이트 통과 여부(boolean)만 dep로 둔다.
@@ -687,7 +707,7 @@ export function useStationAlarm({
     if (!route || !destination) return;
 
     // #1010: firedAlarms 복원 완료 전에는 발사 보류.
-    if (!firedHydrated) return;
+    if (hydrationPhase !== 'ready') return;
     // #1010: hydration 완료 후 30s warmup window 동안 발사 보류.
     if (!skipWarmupGuard) {
       const hydratedAt = stationPassedHydratedAtRef.current;
@@ -748,7 +768,7 @@ export function useStationAlarm({
     destination?.id,
     destination?.name,
     nearestStation?.id,
-    firedHydrated,
+    hydrationPhase,
     accuracyOk,
     arrivalConfirmed,
     movementSuppressionReason,
@@ -766,7 +786,7 @@ export function useStationAlarm({
   // Seoul `realtimeArrivalList`.
   //
   // 가드 (AND, 하나라도 false면 no-op):
-  //   1. firedHydrated — destination별 firedAlarms 복원 완료 후
+  //   1. hydrationPhase==='ready' — destination별 firedAlarms 복원 완료 후
   //   2. route + destination + nearestStation 존재 (nearest 없으면 fire 대상 station 결정 불가)
   //   3. firedAlarmsRef destinationId 일치 (#699 race 가드)
   //   4. nearestStation이 route 상에 있음 (off-route 신호 무시)
@@ -779,7 +799,7 @@ export function useStationAlarm({
   // GPS 경로/Fast path 어느 쪽이 먼저 발사해도 다른 쪽은 자동 dedup. 이슈가 명시한
   // `(trainCode, station, arvlCd)` granularity는 station-level dedup의 superset이라 충족된다.
   useEffect(() => {
-    if (!firedHydrated) return;
+    if (hydrationPhase !== 'ready') return;
     if (!route || !destination) return;
     if (!nearestStation) return;
     // #580 M4: mismatch stamp.
@@ -839,7 +859,7 @@ export function useStationAlarm({
       cancelled = true;
     };
   }, [
-    firedHydrated,
+    hydrationPhase,
     route,
     destination?.id,
     destination?.name,
