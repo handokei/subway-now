@@ -79,16 +79,27 @@ race/storage/lockless 근본 refactor. Epic C 단기 완료 후 착수.
 
 ADR-008 Stage 4 Phase A+B 통합. **#844의 잔여 범위(PR B/C/D)가 B2 결정에 따라 여기로 귀속될 수 있음 — B2 결정 전 #844 착수 금지** (이슈 본문에 배너 명시, 2026-06-11).
 
-## 4. 결정 차단 항목 (본인 결정 필요 — 전부 미결)
+## 4. 결정 항목 (2026-06-11 일괄 확정)
 
-> ⚠️ **데드라인**: Epic A가 15/17이므로 사실상 지금. Epic C 단기는 B1~B3 없이 시작 불가.
+- [x] **B1** — ADR-010 C **유지** + 의미 재정의 ("전체역 보기 정보용") + **토글 OFF 시 활성 lock cleanup**. D 신설 불필요. ADR-013 신설 (PR-α `docs/adr-011-lockless-supplementation`), 코드/UI는 PR-β (예정).
+- [x] **B2** — epic #874를 본 epic에 흡수. #844 PR B/C/D는 Epic C 풀(Week 10~14)에 귀속.
+- [x] **B3** — #912 acceptance 재해석:
+    - ✅ lock 활성 trip: 매역 알림 100%
+    - ✅ lockless trip: boardingPrompt 9단 게이트 통과 + 사용자 [탑승] 응답 시 100%
+    - ⚠️ 게이트 미통과 / 사용자 무응답 / 토글 OFF: acceptance **위반 아님** (사용자 선택)
+- [x] **B4** — 낙관적 UI 채택. trip 등록 직후 BoardingTrainList 노출 → 사용자 탭 시 즉시 visual + lock pending → backend round-trip → 정상은 visual 갱신, 정정은 toast.
+- [x] **B5** — backend optional 먼저 → 1주 측정 (`serverProgress.received ≥ 95%` AND `deltaVsEstimator` 평균 임계 이하) → required 승격.
+- [x] **B14** — 신규 발견 회귀는 B 영역 follow-up. Epic A는 RC1~RC4 close 기준 고정.
 
-- [ ] **B1**: ADR-010 C 폐기 + D 신설
-- [ ] **B2**: epic #874를 본 epic에 통합 (+#844 잔여 범위 귀속 결정)
-- [ ] **B3**: #912 acceptance 재해석 — "lock 유무 무관 trip 활성이면 매역 발사" (#912 본문에 2026-06-11 임시 반영: 오발사 0건 판정은 본 epic 회귀 측정을 따름)
-- [ ] **B4**: 낙관적 UI (탭 즉시 visual + backend 정정 toast)
-- [ ] **B5**: backend optional 먼저 → 1주 → client → required 승격
-- [ ] **B14**: 추가 발견 대응 — 옵션 3 (A 카테고리 흡수 / B follow-up / C 별 epic)
+### B1 후속 작업 묶음
+- ADR 레이어: **PR-α** (ADR-013 신설 + ADR-010 patch) — 진행 중
+- 코드/UI: **PR-β** — `setLocklessStationPassed(false)` lock cleanup + 토글 레이블 "전체역 보기" 4언어 적용
+- acceptance 측정 양식: **PR-γ** (#1159) — `epic-1008-acceptance-result.template.md`
+
+### Epic C 단기 16건 / Epic C 풀 5건 sub-issue 정의 — **미진행**
+- 원본 SSOT 부재로 사전 정의 유실 (§3)
+- B 결정 확정됐으나 sub-issue 16+5건의 코드네임/scope는 사용자가 별도 재정의 작업 필요
+- B2로 #844 PR B/C/D 귀속 결정됨 → Epic C 풀 5건 중 3건 자동 정의 가능 (PR B/C/D + 잔여 2건 새 정의)
 
 ## 5. 리스크 ↔ 대응 매핑 (R-1 ~ R-10)
 
@@ -163,3 +174,4 @@ ADR-008 Stage 4 Phase A+B 통합. **#844의 잔여 범위(PR B/C/D)가 B2 결정
 
 - 2026-06-11: 원본 부재 확인 후 GitHub 상태 기준 재구성 생성. Epic A 15/17. B1~B5/B14 미결.
 - 2026-06-11: §7.1 "회귀 7개 정의" 추가. Epic A 머지된 #1010/#1013/#1014/#1015/#1016/#1017/#1018 기준 회귀 패턴 + 검출 기준 + 측정 framework 명시 (PR `docs/#1008-epic-acceptance-regressions`).
+- 2026-06-11 일괄 확정: §4 B1~B5/B14 결정 — C 토글 유지+재정의, #874 흡수, #912 acceptance 재해석, 낙관적 UI, optional→required 승격, B 영역 follow-up. 코드/UI 반영은 PR-β (예정), ADR은 PR-α (`docs/adr-011-lockless-supplementation`), acceptance 양식은 PR-γ (#1159).
