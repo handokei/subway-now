@@ -12,11 +12,12 @@
 
 import type { LocklessFunnelStep } from '../utils/locklessFunnel';
 import { createLogger } from '../../../shared/utils/logger';
+import {
+  fetchWithTelemetryTimeout,
+  getAlarmBackendUrl,
+} from '../../../shared/utils/telemetryHttp';
 
 const log = createLogger('locklessFunnelBackend');
-
-/** fetch 타임아웃 — telemetry는 후속 흐름 차단 금지. */
-const REQUEST_TIMEOUT_MS = 5000;
 
 export interface LocklessFunnelUploadResult {
   ok: boolean;
@@ -25,28 +26,12 @@ export interface LocklessFunnelUploadResult {
   status?: number;
 }
 
-function getBackendUrl(): string | null {
-  const url = process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
-  if (!url) return null;
-  return url.replace(/\/$/, '');
-}
-
-async function fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 export async function uploadLocklessFunnelStep(
   token: string,
   step: LocklessFunnelStep,
   meta?: Record<string, unknown>,
 ): Promise<LocklessFunnelUploadResult> {
-  const base = getBackendUrl();
+  const base = getAlarmBackendUrl();
   if (!base) {
     log.info('ALARM_BACKEND_URL not set — skip funnel upload');
     return { ok: false, skipped: true };
@@ -65,7 +50,7 @@ export async function uploadLocklessFunnelStep(
   }
 
   try {
-    const res = await fetchWithTimeout(`${base}/telemetry/lockless-funnel`, {
+    const res = await fetchWithTelemetryTimeout(`${base}/telemetry/lockless-funnel`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
