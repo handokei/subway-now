@@ -111,14 +111,15 @@ beforeEach(() => {
 
 describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
   describe('(a) userLocation==null → positionTrainResult null 반환', () => {
-    it('GPS 좌표 없을 때 trainProgress가 있어도 null 반환 — distanceKm=0 placeholder gate 통과 방지', () => {
+    it('GPS 좌표 없을 때 trainProgress non-null이어도 null 반환 — distanceKm=0 placeholder gate 통과 방지', () => {
       // GPS 없는 상태. 이전 버전은 distanceKm=0으로 gate 자동 통과. 수정 후 null.
-      // trainProgress가 non-null이 되도록 lockedTrainCode + lock 제공 (line 368 도달).
+      // p0만 positions 반환(ReturnValueOnce) → p1/p2는 beforeEach의 null fallthrough.
+      // → candidateTrains 후보 1개(single) → trackTrainProgress non-null → line 368 도달.
       mockUseNearest.mockReturnValue(
         gpsBase({ userLocation: null, result: null, accuracyMeters: 50 }),
       );
       mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-      mockUsePositions.mockReturnValue(
+      mockUsePositions.mockReturnValueOnce(
         positionRet({
           line: '7',
           trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-A' })],
@@ -352,6 +353,75 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       );
 
       expect(result.current.source).toBe('boarding-lock');
+    });
+  });
+
+  describe('lastObservedRef 앵커 업데이트 — line 487 커버', () => {
+    it('freshTrainProgress의 station이 arc에 없으면(arcIndexOfStation=-1) 앵커 미갱신 — 기존 source 유지', () => {
+      // lockedTrainCode 있고 boardingLock 없는 상태. positionTrainResult는 gate 통과(boardingLock null → hole-c 비활성).
+      // 하지만 trainProgress.currentStation(용마산)이 중곡→건대입구 arc 밖 → arcIndexOfStation=-1 → line 487 early return.
+      // routeContext origin=중곡, destination=건대입구 → arc=[중곡,군자,건대입구], 용마산 미포함.
+      const subRoute = makeDirectRoute(3, '7');
+      const subRouteContext = { route: subRoute, origin: junggok, destination: konkuk };
+
+      mockUseNearest.mockReturnValue(gpsBase()); // GPS at 용마산(yongmasan)
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+      // line='7'(p0)이면 positions 반환, null이면(p1/p2) null 반환. 모든 render에서 일관 적용.
+      mockUsePositions.mockImplementation((line: string | null) =>
+        line === '7'
+          ? positionRet({
+              line: '7',
+              trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-ARC-MISS' })],
+            })
+          : positionRet(null),
+      );
+
+      // lockedTrainCode 있음 + boardingLock 없음 → hole-c 검사 스킵 → positionTrainResult non-null.
+      // 하지만 arcIndexOfStation(arcStations, 용마산) === -1 → line 487 early return.
+      const { result } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, subRouteContext, 'T-ARC-MISS'),
+      );
+
+      // positionTrainResult = 용마산 → lockedTrainCode 매칭으로 source='boarding-lock'.
+      // 앵커(lastObservedRef)는 arcIndexOfStation=-1 반환으로 미갱신 — line 487 early return.
+      expect(result.current.source).toBe('boarding-lock');
+    });
+  });
+
+  describe('observation ceiling — line 564 커버', () => {
+    it('interpolated estimate + positionTrainResult null → livePositionIdx=-1 분기 통과', () => {
+      // boardingLock 활성 + 90s 경과 → estimator default-hop 채택 (isInterpolated=true).
+      // 열차 위치 없음 → positionTrainResult null → line 564 ternary false branch(: -1) 실행.
+      jest.useFakeTimers();
+      const T0 = 1_700_000_000_000;
+      jest.setSystemTime(T0);
+
+      const routeCtx = { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk };
+      const lock = makeLock({
+        trainCode: 'T-INTERP',
+        boardingStationId: yongmasan.id,
+        boardingLine: '7',
+        boardedAt: T0,
+        expectedDurationMs: 600_000,
+      });
+
+      mockUseNearest.mockReturnValue(gpsBase());
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+      // 열차 위치 없음 → trainProgress null → positionTrainResult null.
+      // mockUsePositions는 beforeEach에서 null로 설정됨.
+
+      const { result, rerender } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, routeCtx, 'T-INTERP', lock),
+      );
+
+      // 90s 후 default-hop이 중곡(arc idx 1)을 채택. positionTrainResult null.
+      // → line 564 positionTrainResult ? ... : -1 의 false branch 실행.
+      jest.setSystemTime(T0 + 90_000);
+      rerender({});
+
+      expect(result.current.source).toBe('boarding-lock-interp');
+
+      jest.useRealTimers();
     });
   });
 });

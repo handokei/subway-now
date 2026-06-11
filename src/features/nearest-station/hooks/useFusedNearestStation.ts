@@ -561,8 +561,11 @@ export function useFusedNearestStation(
       estimate.strategy !== 'live-position' && estimate.strategy !== 'arrival-eta';
     let withinObservationCeiling = true;
     if (isInterpolated) {
-      const livePositionIdx = positionTrainResult
-        ? arcIndexOfStation(arcStations, positionTrainResult.station)
+      // positionTrainResult non-null → freshTrainProgress non-null → tryLivePosition='live-position' →
+      // isInterpolated=false → 이 블록 도달 불가. positionTrainResult는 항상 null.
+      // 향후 새 전략(non-live/non-arrival)이 추가될 때를 대비한 future-proofing.
+      const livePositionIdx = /* istanbul ignore next */ positionTrainResult
+        ? /* istanbul ignore next */ arcIndexOfStation(arcStations, positionTrainResult.station)
         : -1;
       const reanchoredObservedIdx = lastObservedRef.current?.arcIndex ?? -1;
       // estimate가 non-null이면 boardingLock도 non-null(estimator 245 가드) — false branch 도달 불가.
