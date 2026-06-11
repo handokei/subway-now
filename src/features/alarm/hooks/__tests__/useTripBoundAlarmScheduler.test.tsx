@@ -15,6 +15,7 @@ import {
 import { getTripStartedAt } from '../../utils/tripStartStorage';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeFixtures';
+import { captureAppStateListener } from '../../testHelpers/tripBoundTestFactory';
 
 jest.mock('../../utils/tripBoundScheduler', () => {
   const actual = jest.requireActual('../../utils/tripBoundScheduler');
@@ -471,16 +472,7 @@ describe('useTripBoundAlarmScheduler', () => {
   // -------- PR3: AppState 'active' resume top-up --------
 
   it('PR3: AppState active 진입 + 직전 top-up stop 있으면 top-up 재호출', async () => {
-    // listener를 가로채 직접 fire — addEventListener는 React Native 기본 mock.
-    let activeListener: ((state: import("react-native").AppStateStatus) => void) | null = null;
-    const sub: NativeEventSubscription = { remove: jest.fn() };
-    const spy = jest
-      .spyOn(AppState, 'addEventListener')
-      .mockImplementation((_event: import("react-native").AppStateEvent, cb: (state: import("react-native").AppStateStatus) => void) => {
-        activeListener = cb;
-        return sub;
-      });
-
+    const appState = captureAppStateListener();
     renderScheduler({
       lock: lockA,
       route: transferRouteForTopUp,
@@ -490,22 +482,13 @@ describe('useTripBoundAlarmScheduler', () => {
     await awaitFirstSchedule();
     await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(1));
 
-    // FG resume
-    if (activeListener) (activeListener as (state: string) => void)('active');
+    appState.fire('active');
     await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(2));
-    spy.mockRestore();
+    appState.restore();
   });
 
   it('PR3: AppState background 진입은 top-up trigger 안 함', async () => {
-    let activeListener: ((state: import("react-native").AppStateStatus) => void) | null = null;
-    const sub: NativeEventSubscription = { remove: jest.fn() };
-    const spy = jest
-      .spyOn(AppState, 'addEventListener')
-      .mockImplementation((_event: import("react-native").AppStateEvent, cb: (state: import("react-native").AppStateStatus) => void) => {
-        activeListener = cb;
-        return sub;
-      });
-
+    const appState = captureAppStateListener();
     renderScheduler({
       lock: lockA,
       route: transferRouteForTopUp,
@@ -515,22 +498,14 @@ describe('useTripBoundAlarmScheduler', () => {
     await awaitFirstSchedule();
     await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(1));
 
-    if (activeListener) (activeListener as (state: string) => void)('background');
+    appState.fire('background');
     await new Promise((r) => setTimeout(r, 0));
     expect(mockedTopUp).toHaveBeenCalledTimes(1);
-    spy.mockRestore();
+    appState.restore();
   });
 
   it('PR3: AppState active 진입 시 scheduledStops/lastToppedUp 없으면 skip', async () => {
-    let activeListener: ((state: import("react-native").AppStateStatus) => void) | null = null;
-    const sub: NativeEventSubscription = { remove: jest.fn() };
-    const spy = jest
-      .spyOn(AppState, 'addEventListener')
-      .mockImplementation((_event: import("react-native").AppStateEvent, cb: (state: import("react-native").AppStateStatus) => void) => {
-        activeListener = cb;
-        return sub;
-      });
-
+    const appState = captureAppStateListener();
     // currentStationName 없음 → top-up 안 일어남 → lastToppedUp=null → FG resume skip.
     renderScheduler({
       lock: lockA,
@@ -539,22 +514,14 @@ describe('useTripBoundAlarmScheduler', () => {
     });
     await awaitFirstSchedule();
 
-    if (activeListener) (activeListener as (state: string) => void)('active');
+    appState.fire('active');
     await new Promise((r) => setTimeout(r, 0));
     expect(mockedTopUp).not.toHaveBeenCalled();
-    spy.mockRestore();
+    appState.restore();
   });
 
   it('PR3: AppState active 진입 + top-up 실패는 logger.error 기록', async () => {
-    let activeListener: ((state: import("react-native").AppStateStatus) => void) | null = null;
-    const sub: NativeEventSubscription = { remove: jest.fn() };
-    const spy = jest
-      .spyOn(AppState, 'addEventListener')
-      .mockImplementation((_event: import("react-native").AppStateEvent, cb: (state: import("react-native").AppStateStatus) => void) => {
-        activeListener = cb;
-        return sub;
-      });
-
+    const appState = captureAppStateListener();
     renderScheduler({
       lock: lockA,
       route: transferRouteForTopUp,
@@ -565,14 +532,14 @@ describe('useTripBoundAlarmScheduler', () => {
     await waitFor(() => expect(mockedTopUp).toHaveBeenCalledTimes(1));
 
     mockedTopUp.mockRejectedValueOnce(new Error('resume-fail'));
-    if (activeListener) (activeListener as (state: string) => void)('active');
+    appState.fire('active');
     await waitFor(() => {
       expect(mockLoggerError).toHaveBeenCalledWith(
         'FG resume top-up 실패:',
         expect.any(Error),
       );
     });
-    spy.mockRestore();
+    appState.restore();
   });
 
   it('PR3: unmount 시 AppState subscription remove 호출', async () => {
