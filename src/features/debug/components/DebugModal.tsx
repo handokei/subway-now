@@ -363,7 +363,7 @@ function formatSourceCountsLine(logs: readonly AlarmLogEntry[]): string {
 function formatReasonCountsLine(logs: readonly AlarmLogEntry[]): string {
   const counts = summarizeAlarmLogByReason(logs);
   const keys = Object.keys(counts).sort((a, b) => {
-    const diff = (counts[b] ?? 0) - (counts[a] ?? 0);
+    const diff = (counts[b] as number) - (counts[a] as number);
     return diff !== 0 ? diff : a.localeCompare(b);
   });
   if (keys.length === 0) return '';
