@@ -30,6 +30,9 @@ jest.mock('../../../nearest-station/api/positionUpload', () => ({
 jest.mock('../../../../shared/utils/stationLookup', () => ({
   findStationByNameAndLine: jest.fn(),
 }));
+jest.mock('../../utils/alarmLog', () => ({
+  logBoardingPromptAutoLock: jest.fn(),
+}));
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -57,6 +60,7 @@ jest.mock('../../store/useBoardingLockStore', () => {
 });
 
 const { findStationByNameAndLine } = jest.requireMock('../../../../shared/utils/stationLookup');
+const { logBoardingPromptAutoLock } = jest.requireMock('../../utils/alarmLog');
 const { __mockCreateLock: createLockMock } = jest.requireMock(
   '../../store/useBoardingLockStore',
 );
@@ -153,6 +157,12 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
       }),
     );
     expect(positionUpload.dismissBoardingPrompt).not.toHaveBeenCalled();
+    // #1167 — autolock-success telemetry
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-success',
+      originStation: '강남',
+      line: '2',
+    });
   });
 
   it('기본 탭 ($default) → boarded 분기와 동일 처리', async () => {
@@ -276,6 +286,121 @@ describe('handleResponse — boarding-prompt 분기 (#819)', () => {
     const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => arrival) });
     await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
     expect(createLockMock).not.toHaveBeenCalled();
+  });
+
+  // #1167 — autoLock telemetry + lock-failed fallback
+  it('destinationId null → autolock-no-trip telemetry', async () => {
+    const deps = makeDeps({ destinationId: null });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-no-trip',
+      originStation: '강남',
+      line: '2',
+    });
+  });
+
+  it('arrivals null → autolock-arrivals-empty telemetry', async () => {
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => null) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-arrivals-empty',
+      originStation: '강남',
+      line: '2',
+    });
+  });
+
+  it('line 후보 0개 (모두 필터됨) → autolock-arrivals-empty telemetry', async () => {
+    const arrival: StationArrival = {
+      up: [
+        {
+          destination: '',
+          arrivalMinutes: 1,
+          arrivalSeconds: 60,
+          statusMessage: '',
+          trainCode: 'T1',
+          line: '9', // line 불일치 → 필터됨
+          receivedAtMs: 0,
+          arrivalCode: 2,
+          isLastTrain: false,
+          trainType: 'normal',
+        },
+      ],
+      down: [],
+    };
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => arrival) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-arrivals-empty',
+      originStation: '강남',
+      line: '2',
+    });
+  });
+
+  it('ambiguity (same priority 후보 2+) → autolock-ambiguity telemetry', async () => {
+    const arrival: StationArrival = {
+      up: [
+        {
+          destination: '',
+          arrivalMinutes: 1,
+          arrivalSeconds: 60,
+          statusMessage: '',
+          trainCode: 'T1',
+          line: '2',
+          receivedAtMs: 0,
+          arrivalCode: 2,
+          isLastTrain: false,
+          trainType: 'normal',
+        },
+        {
+          destination: '',
+          arrivalMinutes: 2,
+          arrivalSeconds: 120,
+          statusMessage: '',
+          trainCode: 'T2',
+          line: '2',
+          receivedAtMs: 0,
+          arrivalCode: 2,
+          isLastTrain: false,
+          trainType: 'normal',
+        },
+      ],
+      down: [],
+    };
+    const deps = makeDeps({ fetchArrivalsForStation: jest.fn(async () => arrival) });
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-ambiguity',
+      originStation: '강남',
+      line: '2',
+    });
+  });
+
+  it('station lookup 실패 → autolock-station-lookup telemetry', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue(null);
+    const deps = makeDeps();
+    await handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps);
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-station-lookup',
+      originStation: '강남',
+      line: '2',
+    });
+  });
+
+  it('createLock 예외 → manual fallback + autolock-lock-failed telemetry (예외는 swallow)', async () => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    const failingCreateLock = jest.fn(async () => {
+      throw new Error('storage write failed');
+    });
+    const deps = makeDeps({ createLock: failingCreateLock });
+    await expect(
+      handleResponse(BOARDING_PROMPT_ACTION_BOARDED, PAYLOAD, deps),
+    ).resolves.toBeUndefined();
+    expect(failingCreateLock).toHaveBeenCalled();
+    expect(logBoardingPromptAutoLock).toHaveBeenCalledWith({
+      reason: 'autolock-lock-failed',
+      originStation: '강남',
+      line: '2',
+    });
   });
 });
 

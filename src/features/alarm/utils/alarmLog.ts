@@ -112,7 +112,20 @@ export type AlarmLogReason =
   //   'revalidate-waypoint-mismatch': 파싱된 stationName이 현재 route waypoint에 없음.
   | 'revalidate-no-trip'
   | 'revalidate-route-sig-mismatch'
-  | 'revalidate-waypoint-mismatch';
+  | 'revalidate-waypoint-mismatch'
+  // #1167 — boardingPrompt [탑승] 응답 → arvlCd 우선순위 autoLock 결과.
+  //   'autolock-success': arvlCd 우선순위로 1대 확정 → createLock 성공.
+  //   'autolock-no-trip': destinationId null (사용자 trip 종료 후 늦은 탭).
+  //   'autolock-arrivals-empty': fetchArrivalsForStation null/no candidates.
+  //   'autolock-ambiguity': 같은 priority 후보 2+ → manual fallback.
+  //   'autolock-station-lookup': originStation/line 매칭 실패.
+  //   'autolock-lock-failed': createLock 예외 (저장/네트워크 등) → manual fallback.
+  | 'autolock-success'
+  | 'autolock-no-trip'
+  | 'autolock-arrivals-empty'
+  | 'autolock-ambiguity'
+  | 'autolock-station-lookup'
+  | 'autolock-lock-failed';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -835,10 +848,62 @@ export function countBoardingPromptByWindow(
   const counts: Record<BoardingPromptWindowKey, number> = { '5m': 0, '1h': 0, all: 0 };
   for (const entry of entries) {
     if (entry.source !== 'boarding-prompt' || entry.outcome !== 'fired') continue;
+    // #1167 — autolock outcome도 source='boarding-prompt'를 재사용하지만 outcome='suppressed'
+    // 또는 reason='autolock-success'로 구분. 발사 빈도(#1021) 집계에는 reason 미설정 entry만 포함.
+    if (entry.reason !== undefined) continue;
     const ageMs = now - entry.ts;
     for (const { key, ms } of BOARDING_PROMPT_WINDOWS) {
       if (ageMs <= ms) counts[key] += 1;
     }
+  }
+  return counts;
+}
+
+/**
+ * #1167 — boardingPrompt autoLock outcome 적재.
+ *
+ * 성공 시 outcome='fired' + reason='autolock-success', skip 시 outcome='suppressed' + skip 이유.
+ * source='boarding-prompt'를 재사용해 한 화면에서 발사 빈도(#1021) + autolock 분포를 같이 본다.
+ */
+export type BoardingPromptAutoLockReason =
+  | 'autolock-success'
+  | 'autolock-no-trip'
+  | 'autolock-arrivals-empty'
+  | 'autolock-ambiguity'
+  | 'autolock-station-lookup'
+  | 'autolock-lock-failed';
+
+export function logBoardingPromptAutoLock(input: {
+  reason: BoardingPromptAutoLockReason;
+  originStation: string;
+  line: string;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'boarding-prompt',
+    outcome: input.reason === 'autolock-success' ? 'fired' : 'suppressed',
+    reason: input.reason,
+    stationName: `${input.line}·${input.originStation}`,
+  });
+}
+
+/** #1167 — 최근 N건의 autolock outcome 분포 (운영 측정용). */
+export function countBoardingPromptAutoLockOutcomes(
+  entries: readonly AlarmLogEntry[],
+): Record<BoardingPromptAutoLockReason, number> {
+  const counts: Record<BoardingPromptAutoLockReason, number> = {
+    'autolock-success': 0,
+    'autolock-no-trip': 0,
+    'autolock-arrivals-empty': 0,
+    'autolock-ambiguity': 0,
+    'autolock-station-lookup': 0,
+    'autolock-lock-failed': 0,
+  };
+  for (const entry of entries) {
+    if (entry.source !== 'boarding-prompt') continue;
+    const reason = entry.reason;
+    if (reason === undefined) continue;
+    if (reason in counts) counts[reason as BoardingPromptAutoLockReason] += 1;
   }
   return counts;
 }
