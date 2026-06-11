@@ -18,11 +18,11 @@ export const GPS_BASE_DEFAULTS = {
   locationUncertain: false,
 } as const;
 
-export function arrivalRet(stationArrival: StationArrival | null = null) {
+export function arrivalRet(stationArrival: StationArrival | null) {
   return { arrival: stationArrival, loading: false, isMock: false };
 }
 
-export function positionRet(positions: LinePositions | null = null) {
+export function positionRet(positions: LinePositions | null) {
   return { positions, loading: false, isMock: false };
 }
 
