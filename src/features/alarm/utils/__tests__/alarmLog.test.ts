@@ -49,6 +49,7 @@ import {
   countSilentPushOutcomes,
   summarizeAlarmLogCounters,
   logBoardingPromptFired,
+  logBoardingPromptResponded,
   BOARDING_PROMPT_WINDOWS,
   countBoardingPromptByWindow,
   logBoardingPromptAutoLock,
@@ -1564,7 +1565,7 @@ describe('alarmLog', () => {
       expect(countBoardingPromptByWindow(entries)['5m']).toBe(1);
     });
 
-    it('reason 필드가 있는 boarding-prompt entry는 #1021 윈도우 집계에서 제외 (autolock과 분리)', () => {
+    it('reason 필드가 있는 boarding-prompt entry는 #1021 윈도우 집계에서 제외 (autolock/response와 분리)', () => {
       const now = Date.now();
       const entries: AlarmLogEntry[] = [
         // autolock-success는 outcome='fired'지만 reason 있음 → 발사 빈도엔 카운트 X.
@@ -1574,8 +1575,12 @@ describe('alarmLog', () => {
           outcome: 'fired',
           reason: 'autolock-success',
         },
+        // #1170 — response telemetry entry도 reason 있음 → 발사 빈도엔 제외.
+        { ts: now - 1500, source: 'boarding-prompt', outcome: 'fired', reason: 'dedup-station' },
+        // reason 없는 fired entry만 카운트.
+        { ts: now - 2000, source: 'boarding-prompt', outcome: 'fired' },
       ];
-      expect(countBoardingPromptByWindow(entries, now)['5m']).toBe(0);
+      expect(countBoardingPromptByWindow(entries, now)['5m']).toBe(1);
     });
   });
 
@@ -1639,6 +1644,24 @@ describe('alarmLog', () => {
       const counts = countBoardingPromptAutoLockOutcomes(entries);
       expect(counts['autolock-success']).toBe(0);
       expect(counts['autolock-no-trip']).toBe(0);
+    });
+  });
+
+  describe('logBoardingPromptResponded (#1170)', () => {
+    it.each<['boarded' | 'dismissed', 'response-boarded' | 'response-dismissed']>([
+      ['boarded', 'response-boarded'],
+      ['dismissed', 'response-dismissed'],
+    ])('%s outcome → reason=%s entry 적재', async (outcome, reason) => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logBoardingPromptResponded({ outcome });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({
+        source: 'boarding-prompt',
+        outcome: 'received',
+        reason,
+      });
     });
   });
 
