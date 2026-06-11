@@ -4,6 +4,10 @@ import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { LINE_COLORS } from '../../../../shared/constants/lineColors';
 import type { ArrivalInfo } from '../../../../shared/types/arrival';
 import type { LineNumber } from '../../../../shared/types/station';
+import {
+  getLockCorrectionMetrics,
+  resetLockCorrectionMetrics,
+} from '../../utils/lockCorrectionMetrics';
 
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
@@ -606,22 +610,9 @@ describe('BoardingTrainList', () => {
       }
     });
 
-    it('lockedTrainCode가 미일치(다른 trainCode)면 pending 유지 — timeout으로만 해제', () => {
-      const train = makeTrain({ trainCode: 'T-MISS' });
-      const { getByTestId, rerender } = renderWithTheme(
-        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
-      );
-      fireEvent.press(getByTestId('boarding-train-row-T-MISS'));
-      rerender(
-        <BoardingTrainList
-          arrivals={[train]}
-          line="2"
-          onSelect={() => {}}
-          lockedTrainCode="T-OTHER"
-        />,
-      );
-      expect(getByTestId('boarding-train-pending-T-MISS')).toBeTruthy();
-    });
+    // #1166: 정정 case는 별도 describe(`#1166 정정 toast UX`)에서 다룬다. #1165 단계에서 mismatch는
+    // pending을 유지했으나, #1166이 적용된 이후로는 mismatch가 정정 신호로 해석되어 pending이 즉시
+    // 해제된다. 기존 회귀 가드는 정정 동작 테스트(`pending(A) → lock(B) 정정...`)로 대체된다.
 
     it('lockedTrainCode만 있고 pending이 없으면 effect는 no-op (다른 채널로 lock 생성된 케이스)', () => {
       const train = makeTrain({ trainCode: 'T-EXT' });
@@ -663,6 +654,147 @@ describe('BoardingTrainList', () => {
       const rowAfter = getByTestId('boarding-train-row-T-BUSY');
       expect(rowAfter.props.accessibilityState.busy).toBe(true);
       expect(rowAfter.props.accessibilityState.disabled).toBe(false);
+    });
+  });
+
+  describe('#1166 lock 정정 toast UX (Epic #1008 C 단기 2번 / B4 round-trip)', () => {
+    beforeEach(() => {
+      resetLockCorrectionMetrics();
+    });
+
+    it('pending(A) → lockedTrainCode(B) 정정 시 pending 즉시 해제 + onLockCorrected(A, B) 호출', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const onLockCorrected = jest.fn();
+      const { getByTestId, queryByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-A'));
+      expect(getByTestId('boarding-train-pending-T-A')).toBeTruthy();
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-B"
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      expect(queryByTestId('boarding-train-pending-T-A')).toBeNull();
+      expect(onLockCorrected).toHaveBeenCalledTimes(1);
+      expect(onLockCorrected).toHaveBeenCalledWith('T-A', 'T-B');
+    });
+
+    it('정정 시 metric counter 적재 — fired 누적 + lastFiredAtMs > 0', () => {
+      const train = makeTrain({ trainCode: 'T-METRIC' });
+      const { getByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      expect(getLockCorrectionMetrics().fired).toBe(0);
+      fireEvent.press(getByTestId('boarding-train-row-T-METRIC'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-OTHER"
+        />,
+      );
+      const metrics = getLockCorrectionMetrics();
+      expect(metrics.fired).toBe(1);
+      expect(metrics.lastFiredAtMs).toBeGreaterThan(0);
+    });
+
+    it('정상 확정(같은 trainCode) 시 onLockCorrected 미호출 + metric 미적재', () => {
+      const train = makeTrain({ trainCode: 'T-SAME' });
+      const onLockCorrected = jest.fn();
+      const { getByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-SAME'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-SAME"
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      expect(onLockCorrected).not.toHaveBeenCalled();
+      expect(getLockCorrectionMetrics().fired).toBe(0);
+    });
+
+    it('onLockCorrected 미전달이어도 정정 동작은 동일 — pending 해제 + metric 적재(wiring 회귀 가드)', () => {
+      const train = makeTrain({ trainCode: 'T-NOCB' });
+      const { getByTestId, queryByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-NOCB'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-DIFF"
+        />,
+      );
+      expect(queryByTestId('boarding-train-pending-T-NOCB')).toBeNull();
+      expect(getLockCorrectionMetrics().fired).toBe(1);
+    });
+
+    it('정정 후 lock 해제되면 같은 row를 다시 탭해 새 pending 진입 가능 (rollback timer 해제 확인)', () => {
+      const train = makeTrain({ trainCode: 'T-RETAP' });
+      const onSelect = jest.fn();
+      const { getByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-RETAP'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={onSelect}
+          lockedTrainCode="T-X"
+        />,
+      );
+      // 정정 후 lockedTrainCode가 다시 null로 풀린 상태(사용자 명시 해제 등)에서 재탭이 새 pending 진입.
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={onSelect}
+          lockedTrainCode={null}
+        />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-RETAP'));
+      expect(onSelect).toHaveBeenCalledTimes(2);
+      expect(getByTestId('boarding-train-pending-T-RETAP')).toBeTruthy();
+    });
+
+    it('lockedTrainCode만 set이고 pending이 없으면 정정 신호 무시 (외부 lock — 별 채널)', () => {
+      const train = makeTrain({ trainCode: 'T-EXT2' });
+      const onLockCorrected = jest.fn();
+      renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-EXT2"
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      expect(onLockCorrected).not.toHaveBeenCalled();
+      expect(getLockCorrectionMetrics().fired).toBe(0);
     });
   });
 

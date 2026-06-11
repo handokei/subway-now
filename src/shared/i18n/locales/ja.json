@@ -57,6 +57,7 @@
       "message": "{{name}}に到着し、目的地を解除しました",
       "undo": "元に戻す"
     },
+    "lockCorrectionToast": "乗車中の列車を {{prev}} → {{next}} に修正しました",
     "congestion": {
       "level": {
         "low": "余裕",

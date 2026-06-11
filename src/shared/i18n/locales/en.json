@@ -57,6 +57,7 @@
       "message": "Arrived at {{name}} — destination cleared",
       "undo": "Undo"
     },
+    "lockCorrectionToast": "Boarding train corrected: {{prev}} → {{next}}",
     "congestion": {
       "level": {
         "low": "Light",
