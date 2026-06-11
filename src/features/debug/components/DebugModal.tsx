@@ -23,6 +23,7 @@ import {
 } from '../../../features/alarm/hooks/useSilentPushDiagnostics';
 import {
   clearAlarmLog,
+  countGateReasons,
   countSilentPushOutcomes,
   getAlarmLog,
   summarizeAlarmLogBySource,
@@ -367,24 +368,6 @@ const MOVEMENT_REASONS: readonly AlarmLogReason[] = [
   'movement-static-position',
   'movement-motion-stationary',
 ];
-
-/**
- * 알람 로그 항목에서 gate/movement reason별 통과/차단 분포를 집계 (#1025).
- * 결과: `reason → count` (count > 0인 항목만). 빈 객체이면 관련 항목 없음.
- */
-export function countGateReasons(
-  logs: readonly AlarmLogEntry[],
-  reasons: readonly AlarmLogReason[],
-): Record<string, number> {
-  const counts: Record<string, number> = {};
-  const reasonSet = new Set<string>(reasons);
-  for (const entry of logs) {
-    if (entry.reason && reasonSet.has(entry.reason)) {
-      counts[entry.reason] = (counts[entry.reason] ?? 0) + 1;
-    }
-  }
-  return counts;
-}
 
 /**
  * Alarm log section header / dump 헤더에서 공유되는 source별 카운트 요약 문자열 (#564).
@@ -994,7 +977,6 @@ export const __test__ = {
   formatAt,
   formatSourceCountsLine,
   formatEstimatorLine,
-  countGateReasons,
   NO_FUSED_SIGNAL_LABEL,
 };
 

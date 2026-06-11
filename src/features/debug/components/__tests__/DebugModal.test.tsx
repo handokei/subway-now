@@ -4,7 +4,10 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { DebugModal, __test__ } from '../DebugModal';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
-import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
+import {
+  countGateReasons,
+  type AlarmLogEntry,
+} from '../../../../features/alarm/utils/alarmLog';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
 
@@ -1773,10 +1776,8 @@ describe('DebugModal — Gates 섹션 (#1025)', () => {
 });
 
 describe('DebugModal helpers — countGateReasons (#1025)', () => {
-  const { countGateReasons: count } = __test__;
-
   it('매칭 없으면 빈 객체 반환', () => {
-    expect(count([], ['gate-age', 'gate-accuracy'] as never[])).toEqual({});
+    expect(countGateReasons([], ['gate-age', 'gate-accuracy'] as never[])).toEqual({});
   });
 
   it('매칭되는 reason만 집계한다', () => {
@@ -1787,7 +1788,7 @@ describe('DebugModal helpers — countGateReasons (#1025)', () => {
       { ts: 4, source: 'fg', outcome: 'fired' }, // reason 없음 — 집계 안 됨
       { ts: 5, source: 'bg', outcome: 'suppressed', reason: 'dedup-station' }, // 목록 밖 — 집계 안 됨
     ];
-    const result = count(logs, ['gate-out-of-range', 'movement-static-speed'] as never[]);
+    const result = countGateReasons(logs, ['gate-out-of-range', 'movement-static-speed'] as never[]);
     expect(result).toEqual({ 'gate-out-of-range': 2, 'movement-static-speed': 1 });
   });
 });

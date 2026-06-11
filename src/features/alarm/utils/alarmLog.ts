@@ -843,3 +843,22 @@ AppState.addEventListener('change', handleAppStateChange);
 export function _simulateAppStateForTest(state: AppStateStatus): void {
   handleAppStateChange(state);
 }
+
+/**
+ * 알람 로그 항목에서 지정된 reason 목록에 해당하는 항목만 집계 (#1025).
+ * DebugModal Gates 섹션에서 gate/movement reason별 분포를 시각화하는 데 사용.
+ * 결과: `reason → count` (count > 0인 항목만). 빈 객체이면 관련 항목 없음.
+ */
+export function countGateReasons(
+  logs: readonly AlarmLogEntry[],
+  reasons: readonly AlarmLogReason[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const reasonSet = new Set<string>(reasons);
+  for (const entry of logs) {
+    if (entry.reason && reasonSet.has(entry.reason)) {
+      counts[entry.reason] = (counts[entry.reason] ?? 0) + 1;
+    }
+  }
+  return counts;
+}
