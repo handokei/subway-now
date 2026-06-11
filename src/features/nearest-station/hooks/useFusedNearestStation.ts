@@ -27,7 +27,7 @@ import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
 import { haversine } from '../../../shared/utils/haversine';
-import { passesFusionDistanceGate } from '../utils/fusionDistanceGate';
+import { isWithinArcWindow, passesFusionDistanceGate } from '../utils/fusionDistanceGate';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import {
   arcIndexOfStation,
@@ -363,12 +363,12 @@ export function useFusedNearestStation(
 
   const positionTrainResult: NearestStationResult | null = useMemo(() => {
     if (!trainProgress) return null;
+    // #1016 hole (a): userLocation 없으면 distanceKm=0 placeholder 대신 null 반환.
+    // placeholder는 거리 게이트를 자동 통과시켜 GPS가 전혀 없는 상태에서도 position-train이
+    // 채택되는 hole을 만든다. userLocation 없으면 거리 sanity 자체가 불가하므로 강등.
+    if (!gps.userLocation) return null;
     const station = trainProgress.currentStation;
-    // userLocation 부재(sticky 케이스 등) 시 placeholder 0. 신뢰도 보조 신호로 사용 금지 —
-    // distanceKm은 화면 표시용이며 알람/정확도 판단은 source=='position-train'으로만 분기.
-    const distanceKm = gps.userLocation
-      ? haversine(gps.userLocation.lat, gps.userLocation.lng, station.lat, station.lng)
-      : 0;
+    const distanceKm = haversine(gps.userLocation.lat, gps.userLocation.lng, station.lat, station.lng);
 
     // #445 TTL: trainProgress가 신선해야 함. stale하면 강등.
     // ref가 0이면 effect가 첫 ts를 commit하기 전 — useMemo는 pure하게 두기 위해 면제.
@@ -379,6 +379,7 @@ export function useFusedNearestStation(
       return null;
     }
     // #444 거리 sanity — fused/route와 공통 헬퍼 재사용.
+    // #1016 hole (b): boardingLock 활성 시 lockActive=true로 accuracy>200m bypass 거부.
     const candidate = { station, distanceKm };
     if (
       !passesFusionDistanceGate({
@@ -388,6 +389,7 @@ export function useFusedNearestStation(
         gpsNearest: candidates[0],
         maxAbsoluteKm: MAX_FUSION_DISTANCE_KM,
         maxDeltaKm: MAX_FUSION_DELTA_KM,
+        lockActive: boardingLock != null,
       })
     ) {
       return null;
@@ -399,11 +401,12 @@ export function useFusedNearestStation(
     if (boardingLock && station.line !== boardingLock.boardingLine) {
       return null;
     }
+    // #1016 hole (c): lock 활성 시 arc window 내 역만 허용 (arc 밖 또는 window 초과 시 차단).
+    if (boardingLock && !isWithinArcWindow(arcStations, station.id, boardingLock.boardingStationId)) {
+      return null;
+    }
     // #1015 forward-only 검증 — boarding index보다 이전(backward)이면 차단.
-    // boardingLock + arc 있을 때 station이 탑승역보다 arc 위에서 이전에 있으면 null 반환.
-    // trackTrainProgress의 segmentStations 가드(#1017)는 candidate 단계에서 작동하나,
-    // stale sticky + TTL 만료 케이스에서 trainProgress가 backward 역을 물고 있을 수 있어 재검증.
-    // arc 밖(stationIdx === -1)은 다른 가드(#662 노선 가드 등)가 처리 — 이 검사 범위 밖.
+    // isWithinArcWindow는 window 초과만 막으므로, backward jump는 별도 검사가 필요.
     if (boardingLock && arcStations.length > 0) {
       const boardingIdx = arcStations.findIndex(
         (s) => s.id === boardingLock.boardingStationId,
@@ -478,7 +481,7 @@ export function useFusedNearestStation(
   // 채택 결과가 더 앞이면 그대로(실제 신호 우선) — 역행 방지(monotone forward).
   // confidence/source는 #584 PR D2의 'boarding-lock'(position-train + trainCode 매칭)과
   // 구분하기 위해 'boarding-lock-interp' 별도 라벨 사용 — 측정·디버그 인프라에서 구분 가능.
-  // (#1017: arcStations 선언은 trainProgress useMemo 이전으로 이동됨)
+  // arcStations는 positionTrainResult의 (c) 게이트가 참조하므로 위에서 미리 산출됨.
 
   // estimator/anchor에 넘기는 trainProgress는 fusion 게이트(TTL + distance)를 통과한 것만 신선 신호로 인정.
   // positionTrainResult가 null이면 trainProgress는 stale이거나 게이트 탈락 — Strategy ①(LivePosition)이
@@ -572,8 +575,11 @@ export function useFusedNearestStation(
       estimate.strategy !== 'live-position' && estimate.strategy !== 'arrival-eta';
     let withinObservationCeiling = true;
     if (isInterpolated) {
-      const livePositionIdx = positionTrainResult
-        ? arcIndexOfStation(arcStations, positionTrainResult.station)
+      // positionTrainResult non-null → freshTrainProgress non-null → tryLivePosition='live-position' →
+      // isInterpolated=false → 이 블록 도달 불가. positionTrainResult는 항상 null.
+      // 향후 새 전략(non-live/non-arrival)이 추가될 때를 대비한 future-proofing.
+      const livePositionIdx = /* istanbul ignore next */ positionTrainResult
+        ? /* istanbul ignore next */ arcIndexOfStation(arcStations, positionTrainResult.station)
         : -1;
       const reanchoredObservedIdx = lastObservedRef.current?.arcIndex ?? -1;
       // estimate가 non-null이면 boardingLock도 non-null(estimator 245 가드) — false branch 도달 불가.

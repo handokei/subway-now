@@ -46,6 +46,7 @@
     "collectCoverageFrom": [
       "src/**/*.{ts,tsx}",
       "!src/**/__tests__/**",
+      "!src/**/*.d.ts",
       "!src/shared/types/**",
       "!src/features/*/types/**",
       "!src/features/*/ports/**",
@@ -70,7 +71,8 @@
       "/backend/"
     ],
     "modulePathIgnorePatterns": [
-      "<rootDir>/backend/"
+      "<rootDir>/backend/",
+      "<rootDir>/.claude/worktrees/"
     ]
   },
   "dependencies": {
