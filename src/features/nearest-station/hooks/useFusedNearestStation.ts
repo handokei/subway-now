@@ -398,8 +398,24 @@ export function useFusedNearestStation(
     if (boardingLock && station.line !== boardingLock.boardingLine) {
       return null;
     }
+    // #1015 forward-only 검증 — boarding index보다 이전(backward)이면 차단.
+    // boardingLock + arc 있을 때 station이 탑승역보다 arc 위에서 이전에 있으면 null 반환.
+    // trackTrainProgress의 segmentStations 가드(#1017)는 candidate 단계에서 작동하나,
+    // stale sticky + TTL 만료 케이스에서 trainProgress가 backward 역을 물고 있을 수 있어 재검증.
+    // arc 밖(stationIdx === -1)은 다른 가드(#662 노선 가드 등)가 처리 — 이 검사 범위 밖.
+    if (boardingLock && arcStations.length > 0) {
+      const boardingIdx = arcStations.findIndex(
+        (s) => s.id === boardingLock.boardingStationId,
+      );
+      if (boardingIdx !== -1) {
+        const stationIdx = arcIndexOfStation(arcStations, station);
+        if (stationIdx !== -1 && stationIdx < boardingIdx) {
+          return null;
+        }
+      }
+    }
     return candidate;
-  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock]);
+  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock, arcStations]);
 
   const routeResult: NearestStationResult | null = progress.position
     ? {
