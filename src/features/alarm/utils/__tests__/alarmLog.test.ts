@@ -39,6 +39,7 @@ import {
   logSilentPushFired,
   logSilentPushSkipped,
   logAlertFallbackFired,
+  logSuppressedStationPassedWarmup,
   summarizeAlarmLogBySource,
   countSilentPushOutcomes,
   ALARM_LOG_BUFFER_SIZE,
@@ -565,6 +566,36 @@ describe('alarmLog', () => {
         kind: 'transfer',
       });
       expect(saved[0].phaseId).toBeUndefined();
+    });
+
+    it('#1010 logSuppressedStationPassedWarmup: reason=gate-station-passed-warmup + kind=station-passed + source=fg 고정', async () => {
+      logSuppressedStationPassedWarmup('역삼');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'gate-station-passed-warmup',
+        stationName: '역삼',
+        kind: 'station-passed',
+      });
+    });
+
+    it('#1010 logSuppressedStationPassedWarmup: stationName=undefined 허용', async () => {
+      logSuppressedStationPassedWarmup(undefined);
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'gate-station-passed-warmup',
+        kind: 'station-passed',
+      });
+      expect(saved[0].stationName).toBeUndefined();
     });
 
     it('#626 같은 키 윈도우 내 재호출은 drop (FG polling 매초 평가 스팸 차단)', async () => {
