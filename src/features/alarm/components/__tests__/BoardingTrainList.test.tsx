@@ -845,4 +845,152 @@ describe('BoardingTrainList', () => {
       expect(style.borderLeftColor).toBe(LINE_COLORS['7']);
     });
   });
+
+  // #1177 — 4가지 state 명시 구분 (loading / empty / pending / error).
+  // 우선순위: error > loading > empty > data + (pending overlay).
+  describe('#1177 4가지 state 구분', () => {
+    function renderState(props: {
+      arrivals?: ArrivalInfo[];
+      loading?: boolean;
+      error?: { message?: string | null } | null;
+    }) {
+      return renderWithTheme(
+        <BoardingTrainList
+          arrivals={props.arrivals ?? []}
+          line="2"
+          onSelect={() => {}}
+          loading={props.loading}
+          error={props.error}
+        />,
+      );
+    }
+
+    type StateCase = {
+      name: string;
+      input: { arrivals?: ArrivalInfo[]; loading?: boolean; error?: { message?: string | null } | null };
+      visibleTestId: string;
+      hiddenTestIds: string[];
+    };
+
+    const cases: StateCase[] = [
+      {
+        name: 'loading=true → skeleton 노출, empty/error/data row 미노출',
+        input: { loading: true },
+        visibleTestId: 'boarding-train-list-loading',
+        hiddenTestIds: ['boarding-train-list-empty', 'boarding-train-list-error', 'boarding-train-list'],
+      },
+      {
+        name: 'empty(default) → empty placeholder 노출',
+        input: {},
+        visibleTestId: 'boarding-train-list-empty',
+        hiddenTestIds: ['boarding-train-list-loading', 'boarding-train-list-error', 'boarding-train-list'],
+      },
+      {
+        name: 'error 객체 → error UI 노출, loading/empty 무시',
+        input: { loading: true, error: { message: 'network down' } },
+        visibleTestId: 'boarding-train-list-error',
+        hiddenTestIds: ['boarding-train-list-loading', 'boarding-train-list-empty', 'boarding-train-list'],
+      },
+    ];
+
+    it.each(cases)('$name', ({ input, visibleTestId, hiddenTestIds }) => {
+      const { getByTestId, queryByTestId } = renderState(input);
+      expect(getByTestId(visibleTestId)).toBeTruthy();
+      hiddenTestIds.forEach((id) => {
+        expect(queryByTestId(id)).toBeNull();
+      });
+    });
+
+    it('loading → 3개 skeleton row 렌더 (글로벌 룰 3: 인덱스 하드코딩 금지)', () => {
+      const { getByTestId } = renderState({ loading: true });
+      ['s1', 's2', 's3'].forEach((key) => {
+        expect(getByTestId(`boarding-train-list-skeleton-${key}`)).toBeTruthy();
+      });
+    });
+
+    it('loading → compact 모드에서도 skeleton 노출(헤더 생략)', () => {
+      const { getByTestId, queryByText } = renderWithTheme(
+        <BoardingTrainList arrivals={[]} line="2" onSelect={() => {}} loading compact />,
+      );
+      expect(getByTestId('boarding-train-list-loading')).toBeTruthy();
+      // compact는 헤더 라벨 미노출.
+      expect(queryByText('탑승할 열차 선택')).toBeNull();
+    });
+
+    it('error.message 명시 → 그대로 노출', () => {
+      const { getByText } = renderState({ error: { message: '서버가 응답하지 않습니다' } });
+      expect(getByText('서버가 응답하지 않습니다')).toBeTruthy();
+      // 자동 재시도 안내(hint)도 함께 노출.
+      expect(getByText('잠시 후 자동으로 다시 시도합니다.')).toBeTruthy();
+    });
+
+    it('error.message null/빈 문자열 → default 카피로 fallback', () => {
+      const { getByText, rerender } = renderState({ error: { message: null } });
+      expect(getByText('도착 정보를 불러올 수 없어요')).toBeTruthy();
+      rerender(
+        <BoardingTrainList
+          arrivals={[]}
+          line="2"
+          onSelect={() => {}}
+          error={{ message: '' }}
+        />,
+      );
+      expect(getByText('도착 정보를 불러올 수 없어요')).toBeTruthy();
+    });
+
+    it('error 객체이나 message 자체 미전달 → default 카피로 fallback', () => {
+      const { getByText } = renderState({ error: {} });
+      expect(getByText('도착 정보를 불러올 수 없어요')).toBeTruthy();
+    });
+
+    it('empty → 안내 카피 + 자동 재시도 hint 노출 + a11y label 적용', () => {
+      const { getByTestId, getByText } = renderState({});
+      const empty = getByTestId('boarding-train-list-empty');
+      expect(empty.props.accessibilityLabel).toBe('도착 예정 열차 없음');
+      expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
+      expect(getByText('잠시 후 자동으로 다시 확인합니다.')).toBeTruthy();
+    });
+
+    it('data 있을 때 user 탭 → pending banner 노출 + a11y label', () => {
+      const train = makeTrain({ trainCode: 'T-PEND-BANNER' });
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      // 탭 전: banner 미노출.
+      expect(queryByTestId('boarding-train-list-pending-notice')).toBeNull();
+      act(() => {
+        fireEvent.press(getByTestId('boarding-train-row-T-PEND-BANNER'));
+      });
+      const notice = getByTestId('boarding-train-list-pending-notice');
+      expect(notice).toBeTruthy();
+      expect(notice.props.accessibilityLabel).toBe('탑승 등록을 처리하는 중');
+    });
+
+    it('loading state는 accessibilityState.busy=true', () => {
+      const { getByTestId } = renderState({ loading: true });
+      const container = getByTestId('boarding-train-list-loading');
+      expect(container.props.accessibilityState?.busy).toBe(true);
+      expect(container.props.accessibilityLabel).toBe('도착 정보를 불러오는 중');
+    });
+
+    it('error state — compact 모드에서도 노출(스타일 분기)', () => {
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[]}
+          line="2"
+          onSelect={() => {}}
+          error={{ message: 'x' }}
+          compact
+        />,
+      );
+      expect(getByTestId('boarding-train-list-error')).toBeTruthy();
+    });
+
+    it('error state는 accessibilityRole=alert', () => {
+      const { getByTestId } = renderState({ error: { message: 'x' } });
+      const container = getByTestId('boarding-train-list-error');
+      expect(container.props.accessibilityRole).toBe('alert');
+      expect(container.props.accessibilityLabel).toBe('도착 정보를 불러올 수 없음');
+    });
+  });
 });

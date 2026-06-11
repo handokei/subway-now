@@ -51,7 +51,12 @@
     "refresh": "Refresh",
     "boardingProximityHint": "Move closer to the boarding station to pick a train",
     "boardingTrainListTitle": "Pick your train",
+    "boardingTrainListLoading": "Loading arrivals...",
     "boardingTrainListEmpty": "No upcoming trains.",
+    "boardingTrainListEmptyHint": "We'll retry automatically.",
+    "boardingTrainListPending": "Registering boarding...",
+    "boardingTrainListError": "Couldn't load arrivals",
+    "boardingTrainListErrorHint": "We'll retry automatically in a moment.",
     "misBoardingToast": "Can't find your train. Please reselect.",
     "autoDisembarkToast": {
       "message": "Arrived at {{name}} — destination cleared",
@@ -300,6 +305,10 @@
       "dismissHint": "Stops the alarm sound and vibration",
       "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
       "boardingTrainSelectHint": "Tap to board this train",
+      "boardingTrainListLoadingLabel": "Loading arrivals",
+      "boardingTrainListEmptyLabel": "No upcoming trains",
+      "boardingTrainListPendingLabel": "Registering boarding",
+      "boardingTrainListErrorLabel": "Couldn't load arrivals",
       "boardingLockReleaseLabel": "Get off",
       "boardingLockReleaseHint": "Ends the current boarding session"
     },
