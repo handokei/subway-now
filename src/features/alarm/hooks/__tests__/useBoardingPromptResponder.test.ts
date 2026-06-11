@@ -32,6 +32,7 @@ jest.mock('../../../../shared/utils/stationLookup', () => ({
 }));
 jest.mock('../../utils/alarmLog', () => ({
   logBoardingPromptAutoLock: jest.fn(),
+  logBoardingPromptResponded: jest.fn(),
 }));
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -60,7 +61,7 @@ jest.mock('../../store/useBoardingLockStore', () => {
 });
 
 const { findStationByNameAndLine } = jest.requireMock('../../../../shared/utils/stationLookup');
-const { logBoardingPromptAutoLock } = jest.requireMock('../../utils/alarmLog');
+const { logBoardingPromptAutoLock, logBoardingPromptResponded } = jest.requireMock('../../utils/alarmLog');
 const { __mockCreateLock: createLockMock } = jest.requireMock(
   '../../store/useBoardingLockStore',
 );
@@ -386,5 +387,39 @@ describe('useBoardingPromptResponder hook wiring', () => {
     // hook의 비동기 handleResponse 처리 후 검증
     await new Promise((r) => setTimeout(r, 0));
     expect(createLockMock).toHaveBeenCalled();
+  });
+});
+
+describe('handleResponse — #1170 응답 telemetry (logBoardingPromptResponded)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  const PAYLOAD = {
+    kind: 'boarding-prompt' as const,
+    originStation: '강남',
+    line: '2',
+    tripToken: 'tok',
+  };
+
+  function makeDeps(overrides: Partial<Parameters<typeof handleResponse>[2]> = {}) {
+    return {
+      fetchArrivalsForStation: jest.fn(async () => makeArrival()),
+      destinationId: 'dst',
+      expectedDurationMs: 600_000,
+      createLock: createLockMock,
+      ...overrides,
+    };
+  }
+
+  it.each<[string, string, 'boarded' | 'dismissed']>([
+    ['[탑승] 액션', BOARDING_PROMPT_ACTION_BOARDED, 'boarded'],
+    ['기본 탭 ($default)', Notifications.DEFAULT_ACTION_IDENTIFIER, 'boarded'],
+    ['[미탑승] 액션', BOARDING_PROMPT_ACTION_NOT_BOARDED, 'dismissed'],
+    ['알 수 없는 액션', 'SOME_OTHER_ACTION', 'dismissed'],
+  ])('%s → logBoardingPromptResponded({outcome: "%s"})', async (_label, action, outcome) => {
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({ id: 'S1', line: '2', name: '강남' });
+    await handleResponse(action, PAYLOAD, makeDeps());
+    expect(logBoardingPromptResponded).toHaveBeenCalledWith({ outcome });
   });
 });

@@ -28,13 +28,13 @@ import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival'
 import { dismissBoardingPrompt } from '../../nearest-station/api/positionUpload';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { pickAutoTrainCodeFromArrivals } from '../utils/boardingPromptAutoLock';
+import { logBoardingPromptAutoLock, logBoardingPromptResponded } from '../utils/alarmLog';
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
 } from '../utils/notificationCategory';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { createLogger } from '../../../shared/utils/logger';
-import { logBoardingPromptAutoLock } from '../utils/alarmLog';
 
 const log = createLogger('boardingPromptResponder');
 
@@ -121,10 +121,15 @@ export async function handleResponse(
     actionIdentifier === BOARDING_PROMPT_ACTION_BOARDED ||
     actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER
   ) {
+    // #1170 — 응답률/탑승률 measurement. autolock 시도 성공/실패와 무관하게 "사용자가 boarded로
+    // 응답했다"는 사실 기록. boardedRate = boarded / (boarded+dismissed)는 게이트 정확도 proxy.
+    logBoardingPromptResponded({ outcome: 'boarded' });
     await tryAutoLock(payload, deps);
     return;
   }
   // [미탑승] 또는 dismiss — 5분 silence.
+  // #1170 — dismissed 측정. dismiss POST 결과(네트워크 성공/실패)와 무관하게 사용자 인지 기준 적재.
+  logBoardingPromptResponded({ outcome: 'dismissed' });
   await dismissBoardingPrompt(payload.tripToken);
 }
 
