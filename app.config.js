@@ -1,5 +1,14 @@
 const pkg = require('./package.json');
 
+// #696 — Silent push 디바이스 도달 0%(BadDeviceToken) root cause 차단.
+// production 빌드는 APNS production host(`api.push.apple.com`)를 사용하므로
+// entitlement `aps-environment`도 `production`이어야 한다. 그 외(development/preview)는
+// sandbox(`api.sandbox.push.apple.com`)이므로 `development` 유지.
+const isProductionApns =
+  process.env.EAS_BUILD_PROFILE === 'production' ||
+  process.env.EXPO_PUBLIC_APNS_ENV === 'production';
+const apsEnvironment = isProductionApns ? 'production' : 'development';
+
 module.exports = {
   expo: {
     name: 'subway-now',
@@ -24,6 +33,9 @@ module.exports = {
       supportsTablet: false,
       bundleIdentifier: 'com.subwaynow.app',
       appleTeamId: '4755N5H4T4',
+      entitlements: {
+        'aps-environment': apsEnvironment,
+      },
       infoPlist: {
         NSAppTransportSecurity: {
           NSExceptionDomains: {
