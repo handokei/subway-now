@@ -1,11 +1,4 @@
-/* eslint-disable import/no-restricted-paths --
- * Cross-feature orchestration: 이 파일은 의도적으로 여러 features의 hook/util을 조합하는
- * orchestrator 역할이라 직접 import가 본질적이다. Phase 5 enforce 모드에서 file-level disable로
- * 옵트인 처리. 후속 PR(별도 이슈)에서 orchestration 슬라이스(예: features/fusion/, app shell)로
- * 추출하여 disable을 제거할 예정.
- *
- * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
- */
+/* eslint-disable import/no-restricted-paths -- cross-feature orchestration (#890) */
 
 /**
  * #1016 positionTrainResult 거리 게이트 3 hole 봉합 회귀 방지 테스트.
@@ -78,6 +71,36 @@ function makeLock(overrides?: Partial<BoardingLock>): BoardingLock {
   };
 }
 
+type SetupOpts = {
+  gps?: Record<string, unknown>;
+  findTopStation?: ReturnType<typeof findStationByNameAndLine>;
+  positions?: Parameters<typeof positionRet>[0];
+  positionsOnce?: boolean;
+  routeCtx?: Parameters<typeof useFusedNearestStation>[2];
+  trainCode?: string;
+  lock?: BoardingLock;
+};
+
+function setup({
+  gps,
+  findTopStation = yongmasan,
+  positions,
+  positionsOnce = false,
+  routeCtx,
+  trainCode,
+  lock,
+}: SetupOpts = {}) {
+  mockUseNearest.mockReturnValue(gpsBase(gps));
+  mockFindTop.mockReturnValue([{ station: findTopStation, distanceKm: 0 }]);
+  const posVal = positionRet(positions ?? null);
+  if (positionsOnce) {
+    mockUsePositions.mockReturnValueOnce(posVal);
+  } else {
+    mockUsePositions.mockReturnValue(posVal);
+  }
+  return renderHook(() => useFusedNearestStation(undefined, undefined, routeCtx, trainCode, lock));
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockUseArrival.mockReturnValue(arrivalRet(null));
@@ -90,21 +113,14 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       // GPS 없는 상태. 이전 버전은 distanceKm=0으로 gate 자동 통과. 수정 후 null.
       // p0만 positions 반환(ReturnValueOnce) → p1/p2는 beforeEach의 null fallthrough.
       // → candidateTrains 후보 1개(single) → trackTrainProgress non-null → line 368 도달.
-      mockUseNearest.mockReturnValue(
-        gpsBase({ userLocation: null, result: null, accuracyMeters: 50 }),
-      );
-      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-      mockUsePositions.mockReturnValueOnce(
-        positionRet({
-          line: '7',
-          trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-A' })],
-        }),
-      );
-
       const lock = makeLock({ boardingLine: '7', trainCode: 'T-A' });
-      const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, undefined, 'T-A', lock),
-      );
+      const { result } = setup({
+        gps: { userLocation: null, result: null, accuracyMeters: 50 },
+        positions: { line: '7', trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-A' })] },
+        positionsOnce: true,
+        trainCode: 'T-A',
+        lock,
+      });
 
       // userLocation=null → line 368 `if (!gps.userLocation) return null` → positionTrainResult null
       expect(result.current.source).not.toBe('position-train');
@@ -113,21 +129,10 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
     it('GPS 좌표 복구되면 positionTrainResult 정상 채택', () => {
       // accuracyMeters=1500: 지하 bypass 모드. userLocation 있으므로 (a) 통과.
       // arc 없으므로 fix(b) 적용 — 하지만 거리 0(같은 좌표)이므로 gate 통과.
-      mockUseNearest.mockReturnValue(
-        gpsBase({
-          userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
-          accuracyMeters: 1500,
-        }),
-      );
-      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-      mockUsePositions.mockReturnValue(
-        positionRet({
-          line: '7',
-          trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-A' })],
-        }),
-      );
-
-      const { result } = renderHook(() => useFusedNearestStation());
+      const { result } = setup({
+        gps: { userLocation: { lat: yongmasan.lat, lng: yongmasan.lng }, accuracyMeters: 1500 },
+        positions: { line: '7', trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-A' })] },
+      });
 
       expect(result.current.source).toBe('position-train');
     });
@@ -138,20 +143,17 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       // 충무로(3호선)는 yongmasan GPS(37.573647, 127.086727)에서 ~6.85km 떨어져 있다.
       // 이전 버전: accuracy=1500 > MAX_ACCURACY_M → bypass → 자동 통과.
       // 수정 후: lock 활성 + arc 없음 → bypass 비활성 → 거리 초과 → 탈락.
-      mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
-      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-      mockUsePositions.mockReturnValue(
-        positionRet({
+      const lock = makeLock({ boardingLine: '3' });
+      const { result } = setup({
+        gps: { accuracyMeters: 1500 },
+        positions: {
           line: '3',
           // 실제 충무로(3호선) 좌표는 yongmasan GPS에서 ~6.85km 떨어져 있다
           trains: [train(chungmuro3.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-B' })],
-        }),
-      );
-
-      const lock = makeLock({ boardingLine: '3' });
-      const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, undefined, 'T-B', lock),
-      );
+        },
+        trainCode: 'T-B',
+        lock,
+      });
 
       // 충무로가 게이트 탈락 → positionTrain 미채택
       expect(result.current.source).not.toBe('position-train');
@@ -159,35 +161,23 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
 
     it('lock 활성 + arc 없을 때 accuracy=1500이지만 같은 좌표(0km)이면 gate 통과', () => {
       // 같은 좌표에 있으면 거리 = 0 → MAX_FUSION_DISTANCE_KM 이하 → 통과.
-      mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
-      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-      mockUsePositions.mockReturnValue(
-        positionRet({
-          line: '7',
-          trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-B2' })],
-        }),
-      );
-
       const lock = makeLock({ boardingLine: '7', trainCode: 'T-B2' });
-      const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, undefined, 'T-B2', lock),
-      );
+      const { result } = setup({
+        gps: { accuracyMeters: 1500 },
+        positions: { line: '7', trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-B2' })] },
+        trainCode: 'T-B2',
+        lock,
+      });
 
       expect(result.current.source).toBe('boarding-lock');
     });
 
     it('lock 없을 때 accuracy=1500(지하) bypass는 그대로 동작', () => {
       // fix(b)는 lock 활성 시에만 적용 — lock 없으면 기존 bypass 유지.
-      mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
-      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-      mockUsePositions.mockReturnValue(
-        positionRet({
-          line: '7',
-          trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-NOLOCK' })],
-        }),
-      );
-
-      const { result } = renderHook(() => useFusedNearestStation());
+      const { result } = setup({
+        gps: { accuracyMeters: 1500 },
+        positions: { line: '7', trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-NOLOCK' })] },
+      });
 
       expect(result.current.source).toBe('position-train');
     });
@@ -201,24 +191,14 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       // 면목은 7호선이지만 yongmasan→konkuk arc 밖 (용마산보다 출발방향 뒤편)
       const myeonmok = findStationByNameAndLine('면목', '7')!;
       // accuracy=1500: arc 있으므로 fix(b) bypass 유지. fix(c)가 arc 소속을 검사.
-      mockUseNearest.mockReturnValue(
-        gpsBase({
-          userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
-          accuracyMeters: 1500,
-        }),
-      );
-      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-      mockUsePositions.mockReturnValue(
-        positionRet({
-          line: '7',
-          trains: [train(myeonmok.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-C-OFF' })],
-        }),
-      );
-
       const lock = makeLock({ boardingLine: '7' });
-      const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, routeContext, 'T-C-OFF', lock),
-      );
+      const { result } = setup({
+        gps: { userLocation: { lat: yongmasan.lat, lng: yongmasan.lng }, accuracyMeters: 1500 },
+        positions: { line: '7', trains: [train(myeonmok.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-C-OFF' })] },
+        routeCtx: routeContext,
+        trainCode: 'T-C-OFF',
+        lock,
+      });
 
       // 면목은 arc 밖 → gate 탈락 → positionTrain 미채택
       expect(result.current.source).not.toBe('position-train');
@@ -228,25 +208,15 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
     it('arc 위의 역(중곡)은 통과', () => {
       // 중곡 = arc idx 1. GPS를 중곡 좌표에 놓아 거리 게이트(b)도 통과시킨다.
       // accuracy=50(정상): fix(b) 엄격 모드이나 거리가 0(같은 좌표)이므로 통과.
-      mockUseNearest.mockReturnValue(
-        gpsBase({
-          userLocation: { lat: junggok.lat, lng: junggok.lng },
-          result: { station: junggok, distanceKm: 0 },
-          accuracyMeters: 50,
-        }),
-      );
-      mockFindTop.mockReturnValue([{ station: junggok, distanceKm: 0 }]);
-      mockUsePositions.mockReturnValue(
-        positionRet({
-          line: '7',
-          trains: [train(junggok.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-C-IN' })],
-        }),
-      );
-
       const lock = makeLock({ boardingLine: '7', trainCode: 'T-C-IN' });
-      const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, routeContext, 'T-C-IN', lock),
-      );
+      const { result } = setup({
+        gps: { userLocation: { lat: junggok.lat, lng: junggok.lng }, result: { station: junggok, distanceKm: 0 }, accuracyMeters: 50 },
+        findTopStation: junggok,
+        positions: { line: '7', trains: [train(junggok.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-C-IN' })] },
+        routeCtx: routeContext,
+        trainCode: 'T-C-IN',
+        lock,
+      });
 
       expect(result.current.result?.station.id).toBe(junggok.id);
       expect(result.current.source).toBe('boarding-lock');
@@ -255,23 +225,11 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
     it('lock 없으면 arc 소속 검사 미작동 (기존 동작 유지)', () => {
       // fix(c)는 boardingLock 활성 시에만 동작.
       const myeonmok = findStationByNameAndLine('면목', '7')!;
-      mockUseNearest.mockReturnValue(
-        gpsBase({
-          userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
-          accuracyMeters: 1500,
-        }),
-      );
-      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-      mockUsePositions.mockReturnValue(
-        positionRet({
-          line: '7',
-          trains: [train(myeonmok.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-C-NOLOCK' })],
-        }),
-      );
-
-      const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, routeContext),
-      );
+      const { result } = setup({
+        gps: { userLocation: { lat: yongmasan.lat, lng: yongmasan.lng }, accuracyMeters: 1500 },
+        positions: { line: '7', trains: [train(myeonmok.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-C-NOLOCK' })] },
+        routeCtx: routeContext,
+      });
 
       // lock 없으면 arc 검사 안 함 → 면목도 통과 가능
       expect(result.current.source).toBe('position-train');
@@ -280,25 +238,15 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
     it('arc 안에 있지만 LOCK_NEXT_HOP_WINDOW 초과 시 gate 탈락', () => {
       // 건대입구: arc idx 4. boardingIdx(용마산=0) + WINDOW(3) = 3 → idx 4 초과 → 탈락.
       // GPS를 건대입구 좌표에 놓아 거리 게이트(b)는 통과시킴 → fix(c)가 탈락 원인.
-      mockUseNearest.mockReturnValue(
-        gpsBase({
-          result: { station: konkuk, distanceKm: 0 },
-          userLocation: { lat: konkuk.lat, lng: konkuk.lng },
-          accuracyMeters: 50,
-        }),
-      );
-      mockFindTop.mockReturnValue([{ station: konkuk, distanceKm: 0 }]);
-      mockUsePositions.mockReturnValue(
-        positionRet({
-          line: '7',
-          trains: [train(konkuk.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-C-WINDOW' })],
-        }),
-      );
-
       const lock = makeLock({ boardingLine: '7', trainCode: 'T-C-WINDOW' });
-      const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, routeContext, 'T-C-WINDOW', lock),
-      );
+      const { result } = setup({
+        gps: { result: { station: konkuk, distanceKm: 0 }, userLocation: { lat: konkuk.lat, lng: konkuk.lng }, accuracyMeters: 50 },
+        findTopStation: konkuk,
+        positions: { line: '7', trains: [train(konkuk.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-C-WINDOW' })] },
+        routeCtx: routeContext,
+        trainCode: 'T-C-WINDOW',
+        lock,
+      });
 
       // arc window 초과 → positionTrainResult null → position-train/boarding-lock 미채택
       expect(result.current.source).not.toBe('position-train');
@@ -308,24 +256,13 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
     it('arc 없으면 arc 소속 검사 미작동 (routeContext 없는 경우)', () => {
       // arc 없으므로 fix(c) 비활성. fix(b)가 거리 검사 담당.
       // 용마산과 같은 좌표이므로 거리=0 → 통과.
-      mockUseNearest.mockReturnValue(
-        gpsBase({
-          userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
-          accuracyMeters: 1500,
-        }),
-      );
-      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-      mockUsePositions.mockReturnValue(
-        positionRet({
-          line: '7',
-          trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-C-NOARC' })],
-        }),
-      );
-
       const lock = makeLock({ boardingLine: '7', trainCode: 'T-C-NOARC' });
-      const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, undefined, 'T-C-NOARC', lock),
-      );
+      const { result } = setup({
+        gps: { userLocation: { lat: yongmasan.lat, lng: yongmasan.lng }, accuracyMeters: 1500 },
+        positions: { line: '7', trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-C-NOARC' })] },
+        trainCode: 'T-C-NOARC',
+        lock,
+      });
 
       expect(result.current.source).toBe('boarding-lock');
     });
