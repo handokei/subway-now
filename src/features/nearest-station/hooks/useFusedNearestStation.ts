@@ -642,15 +642,12 @@ export function useFusedNearestStation(
   // estimate key: strategy|stationId|arcIndex. null estimate는 strategy=null로 기록.
   // estimateRef: effect 내부에서 estimate를 deps 없이 최신값으로 읽기 위한 ref.
   // estimateKey만 deps에 두면 key 변화 시 최신 estimate를 ref로 안전하게 참조 가능.
-  const lastEstimateKeyRef = useRef<string | null>(null);
   const estimateRef = useRef(estimate);
   estimateRef.current = estimate;
   const estimateKey = estimate
     ? `${estimate.strategy}|${estimate.station.id}|${estimate.index}`
     : 'null';
   useEffect(() => {
-    if (lastEstimateKeyRef.current === estimateKey) return;
-    lastEstimateKeyRef.current = estimateKey;
     const est = estimateRef.current;
     pushEstimatorEntry({
       ts: Date.now(),
