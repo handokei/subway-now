@@ -22,11 +22,15 @@ import {
   type SilentPushDiagnostics,
 } from '../../../features/alarm/hooks/useSilentPushDiagnostics';
 import {
+  BOARDING_PROMPT_WINDOWS,
   clearAlarmLog,
+  countBoardingPromptByWindow,
   countSilentPushOutcomes,
   getAlarmLog,
   summarizeAlarmLogBySource,
+  summarizeAlarmLogCounters,
   type AlarmLogEntry,
+  type AlarmLogReasonCounter,
 } from '../../../features/alarm/utils/alarmLog';
 import { SILENT_PUSH_LABELS, buildSilentPushCountValue } from '../../../shared/constants/labels';
 import {
@@ -689,6 +693,21 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
             )}
           </Section>
 
+                    {/* #1021: boardingPrompt 발사 빈도 카운터 */}
+          <Section title="Boarding Prompt" colors={colors}>
+            {BOARDING_PROMPT_WINDOWS.map(({ key, label }) => (
+              <KeyValue
+                key={key}
+                label={`boardingPrompt(${label})`}
+                value={String(countBoardingPromptByWindow(logs)[key])}
+                colors={colors}
+              />
+            ))}
+          </Section>
+
+          {/* #1024 — ## Counters: reason별 누적 count + 마지막 발생 시각 */}
+          <CountersSection logs={logs} colors={colors} />
+
           {/* #1022: Worker Quota admin view */}
           <Section title="Worker Quota" colors={colors}>
             <KeyValue
@@ -797,6 +816,36 @@ function KeyValue({
   );
 }
 
+/**
+ * ## Counters 섹션 본문 (#1024) — reason별 누적 count + 마지막 발생 시각.
+ * 억제 이벤트가 없으면 "(empty)" 노출. 항상 표시.
+ */
+function CountersSection({
+  logs,
+  colors,
+}: Readonly<{
+  logs: readonly AlarmLogEntry[];
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  const counters: AlarmLogReasonCounter[] = summarizeAlarmLogCounters(logs);
+  return (
+    <Section title="Counters" colors={colors}>
+      {counters.length === 0 ? (
+        <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
+      ) : (
+        counters.map(({ reason, count, lastTs }) => (
+          <KeyValue
+            key={reason}
+            label={reason}
+            value={`${count}x (${formatTime(lastTs)})`}
+            colors={colors}
+          />
+        ))
+      )}
+    </Section>
+  );
+}
+
 // Internal exports for tests — DO NOT use from app code.
 export const __test__ = {
   formatLogLine,
@@ -807,6 +856,7 @@ export const __test__ = {
   formatAt,
   formatSourceCountsLine,
   NO_FUSED_SIGNAL_LABEL,
+  summarizeAlarmLogCounters,
 };
 
 const styles = StyleSheet.create({

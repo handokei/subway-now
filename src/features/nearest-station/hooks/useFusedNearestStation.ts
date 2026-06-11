@@ -400,9 +400,22 @@ export function useFusedNearestStation(
     if (boardingLock && station.line !== boardingLock.boardingLine) {
       return null;
     }
-    // #1016 hole (c): lock 활성 시 arc window 내 역만 허용.
+    // #1016 hole (c): lock 활성 시 arc window 내 역만 허용 (arc 밖 또는 window 초과 시 차단).
     if (boardingLock && !isWithinArcWindow(arcStations, station.id, boardingLock.boardingStationId)) {
       return null;
+    }
+    // #1015 forward-only 검증 — boarding index보다 이전(backward)이면 차단.
+    // isWithinArcWindow는 window 초과만 막으므로, backward jump는 별도 검사가 필요.
+    if (boardingLock && arcStations.length > 0) {
+      const boardingIdx = arcStations.findIndex(
+        (s) => s.id === boardingLock.boardingStationId,
+      );
+      if (boardingIdx !== -1) {
+        const stationIdx = arcIndexOfStation(arcStations, station);
+        if (stationIdx !== -1 && stationIdx < boardingIdx) {
+          return null;
+        }
+      }
     }
     return candidate;
   }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock, arcStations]);
