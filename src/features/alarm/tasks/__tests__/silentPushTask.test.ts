@@ -469,6 +469,43 @@ describe('silentPushTask', () => {
           ),
         ).toMatchObject({ sentAt: undefined, pushId: undefined });
       });
+
+      // #1193 — 중복역 trip의 N번째 occurrence를 정확히 정정하기 위한 인덱스.
+      it.each([
+        ['양의 정수', 2, 2],
+        ['0(첫 등장)', 0, 0],
+      ] as const)('occurrenceIdx 통과 (%s)', (_label, input, expected) => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'reschedule',
+              nextStation: 'A',
+              newArrivalTimeEpoch: 1,
+              trainCode: 'X',
+              occurrenceIdx: input,
+            }),
+          ),
+        ).toMatchObject({ occurrenceIdx: expected });
+      });
+
+      it.each([
+        ['누락', undefined],
+        ['음수', -1],
+        ['소수', 1.5],
+        ['문자열', '2'],
+      ] as const)('occurrenceIdx 비정상값(%s) → undefined', (_label, value) => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              kind: 'reschedule',
+              nextStation: 'A',
+              newArrivalTimeEpoch: 1,
+              trainCode: 'X',
+              ...(value !== undefined ? { occurrenceIdx: value } : {}),
+            }),
+          ),
+        ).toMatchObject({ occurrenceIdx: undefined });
+      });
     });
 
     // #868 — server-side trip auto-end 신호. nextWaypoint 없이 reason만 의미 있는 payload.
@@ -1472,6 +1509,34 @@ describe('silentPushTask', () => {
             );
             expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
             expect(mockRescheduleTripBoundAlarm).not.toHaveBeenCalled();
+          });
+
+          // #1193 — 중복역 trip 정정. payload.occurrenceIdx를 그대로 forward.
+          it('occurrenceIdx는 rescheduleTripBoundAlarm으로 forward (#1193)', async () => {
+            setStorage();
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: ['tba'],
+                occurrenceIdx: 1,
+              }),
+            );
+            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
+            const tbaArg = mockRescheduleTripBoundAlarm.mock.calls[0][0];
+            expect(tbaArg.occurrenceIdx).toBe(1);
+          });
+
+          it('occurrenceIdx 누락 시 undefined로 전달 (클라가 0 fallback) (#1193)', async () => {
+            setStorage();
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: ['tba'],
+              }),
+            );
+            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
+            const tbaArg = mockRescheduleTripBoundAlarm.mock.calls[0][0];
+            expect(tbaArg.occurrenceIdx).toBeUndefined();
           });
         });
       });

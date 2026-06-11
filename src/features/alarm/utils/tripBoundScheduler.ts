@@ -254,26 +254,56 @@ export function tripBoundAlarmIdentifier(
 export interface ParsedTripBoundAlarmIdentifier {
   phaseId: string;
   stationName: string;
+  /**
+   * #1193 — 같은 stationName이 route에 중복 등장(순환선/회차)할 때, n번째 등장의 알람을 식별하는
+   * 0-based 인덱스. base identifier(`tba:early:역명`)는 0, `tba:early:역명:1`은 1, `:2`는 2...
+   *
+   * `parseTripBoundAlarmIdentifier`가 `:n` suffix를 분리해 stationName에서 떼어 낸다 (이전 PR4까지는
+   * stationName에 `:n`이 합쳐진 채 반환되어 reschedule cancel 매칭이 항상 mismatch였다).
+   * suffix 형식이 깨진 경우(`:` 뒤가 숫자가 아니거나 음수 등) `:n` 부분도 stationName으로 간주 —
+   * 기존 호출자 호환성 유지(`isSameStationName` 매칭은 자연 mismatch로 떨어지므로 안전).
+   */
+  occurrenceIdx: number;
 }
 
 /**
- * `tripBoundAlarmIdentifier()`의 역연산 (#918 A3 PR2). prefix 매칭 + phaseId/stationName 분리.
- * 같은 station이 route 안에 두 번 등장해 `:n` occurrence suffix가 붙은 경우(`prescheduleStationAlerts`
- * 내부 로직)에도 station name 안에 콜론이 합쳐진 채 반환된다 — 이후 waypoint 매칭 단계에서 자연스럽게
- * mismatch로 떨어지므로 별도 후처리는 불필요(재검증 안전).
+ * `tripBoundAlarmIdentifier()`의 역연산 (#918 A3 PR2 → #1193 확장).
+ *
+ * 형식:
+ *   `tba:<phaseId>:<stationName>` (occurrenceIdx=0, base identifier)
+ *   `tba:<phaseId>:<stationName>:<n>` (n ≥ 1, 중복역의 n번째 등장)
  *
  * prefix가 다르거나 phaseId/stationName이 비어 있으면 null.
+ * `:n` 의 n이 정수가 아니면 suffix를 stationName 일부로 흡수 (역명에 콜론 포함되는 비정상 케이스도
+ * graceful — backwards-compatible: 기존 호출자가 stationName 그대로 매칭하면 자연 mismatch로 처리).
  */
 export function parseTripBoundAlarmIdentifier(
   identifier: string,
 ): ParsedTripBoundAlarmIdentifier | null {
   if (!identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) return null;
   const rest = identifier.slice(TRIP_BOUND_ALARM_PREFIX.length);
-  const colon = rest.indexOf(':');
-  if (colon <= 0) return null;
-  const stationName = rest.slice(colon + 1);
-  if (!stationName) return null;
-  return { phaseId: rest.slice(0, colon), stationName };
+  const firstColon = rest.indexOf(':');
+  if (firstColon <= 0) return null;
+  const phaseId = rest.slice(0, firstColon);
+  const afterPhase = rest.slice(firstColon + 1);
+  if (!afterPhase) return null;
+  // `:n` suffix 분리 — 마지막 ':' 뒤가 양의 정수면 occurrenceIdx로 채택.
+  const lastColon = afterPhase.lastIndexOf(':');
+  if (lastColon > 0) {
+    const suffix = afterPhase.slice(lastColon + 1);
+    // /^\d+$/ — 숫자만. 빈 문자열은 false.
+    if (suffix.length > 0 && /^\d+$/.test(suffix)) {
+      const occurrenceIdx = Number(suffix);
+      // 0은 base identifier에서 절대 suffix로 표기되지 않으므로(`prescheduleStationAlerts` 규약)
+      // `:0`이 와도 graceful하게 0으로 해석 (round-trip 안전성).
+      return {
+        phaseId,
+        stationName: afterPhase.slice(0, lastColon),
+        occurrenceIdx,
+      };
+    }
+  }
+  return { phaseId, stationName: afterPhase, occurrenceIdx: 0 };
 }
 
 /**
@@ -414,11 +444,20 @@ export async function topUpTripBoundWindow(
   const nextStartIndex = passedIndex + 1;
   const nextEndIndex = Math.min(routeStops.length, nextStartIndex + windowSize);
 
-  // 이미 큐에 있는 `tba:` 알람 중 새 윈도우 밖에 해당하는 것만 cancel.
-  // routeStops[i]의 stationName이 윈도우 안에 있는지 빠르게 판별하기 위한 set.
-  const inWindowStationNames = new Set<string>();
-  for (let i = nextStartIndex; i < nextEndIndex; i++) {
-    inWindowStationNames.add(routeStops[i].stationName);
+  // 이미 큐에 있는 `tba:` 알람 중 새 윈도우 밖에 해당하는 것만 cancel (#1193).
+  // 활성 윈도우는 `${stationName}:${occurrenceIdx}` 단위로 판정해야 정확하다 — 같은 stationName이
+  // route 안에 여러 번 등장하는 경우(순환선/회차) 이미 통과한 occurrence(예: A:0)와 윈도우 안의
+  // 다음 occurrence(예: A:2)는 분리 식별돼야 stale cancel이 누락되지 않는다.
+  const inWindowStationOccurrences = new Set<string>();
+  // 누적은 routeStops 전체에 대해 진행 — `prescheduleStationAlerts`와 동일한 occurrence 규약 보존.
+  const occurrenceCount = new Map<string, number>();
+  for (let i = 0; i < routeStops.length; i++) {
+    const name = routeStops[i].stationName;
+    const occIdx = occurrenceCount.get(name) ?? 0;
+    occurrenceCount.set(name, occIdx + 1);
+    if (i >= nextStartIndex && i < nextEndIndex) {
+      inWindowStationOccurrences.add(`${name}:${occIdx}`);
+    }
   }
 
   const all = await Notifications.getAllScheduledNotificationsAsync();
@@ -427,9 +466,7 @@ export async function topUpTripBoundWindow(
     if (!req.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) continue;
     const parsed = parseTripBoundAlarmIdentifier(req.identifier);
     if (parsed === null) continue;
-    // occurrence suffix가 붙은 경우 stationName에 ":n"이 포함된다 — 그래도 set lookup으로 mismatch 시
-    // cancel 처리되므로 새 윈도우의 첫 등장 알람과 충돌하지 않는다.
-    if (!inWindowStationNames.has(parsed.stationName)) {
+    if (!inWindowStationOccurrences.has(`${parsed.stationName}:${parsed.occurrenceIdx}`)) {
       await Notifications.cancelScheduledNotificationAsync(req.identifier);
       cancelled++;
     }
@@ -448,6 +485,26 @@ export async function topUpTripBoundWindow(
     `topUp passedIndex=${passedIndex} window=[${nextStartIndex},${nextEndIndex}) cancelled=${cancelled} scheduled=${scheduledAlarms.length}`,
   );
   return { cancelled, scheduled: scheduledAlarms.length };
+}
+
+/**
+ * #1193 — routeStops에서 `stationName`의 `occurrenceIdx`번째 등장 인덱스를 반환.
+ * `isSameStationName`(canonical name 정규화) 기반 비교 — 표기 차이(역/驛/Station 등) 흡수.
+ * 등장 횟수가 occurrenceIdx 이하라면 -1.
+ */
+function findOccurrenceIndex(
+  routeStops: ReadonlyArray<TripBoundStop>,
+  stationName: string,
+  occurrenceIdx: number,
+): number {
+  let seen = 0;
+  for (let i = 0; i < routeStops.length; i++) {
+    if (isSameStationName(routeStops[i].stationName, stationName)) {
+      if (seen === occurrenceIdx) return i;
+      seen++;
+    }
+  }
+  return -1;
 }
 
 export interface RescheduleTripBoundAlarmParams {
@@ -470,6 +527,14 @@ export interface RescheduleTripBoundAlarmParams {
    * (테스트가 결정적 결과를 얻기 위해 주입.)
    */
   now?: number;
+  /**
+   * #1193 — 같은 stationName이 route에 중복 등장할 때 정정 대상 occurrence(0-based).
+   * 누락 시 0 (= 첫 등장)으로 해석 — 중복 없는 trip / 구 backend 호환.
+   *
+   * `prescheduleStationAlerts`가 `${stationName}` (occurrenceIdx=0) 또는 `${stationName}:${n}` (n≥1)
+   * identifier로 예약하므로, cancel 매칭과 재예약 모두 이 인덱스를 따른다.
+   */
+  occurrenceIdx?: number;
 }
 
 export interface RescheduleTripBoundAlarmResult {
@@ -491,11 +556,13 @@ export interface RescheduleTripBoundAlarmResult {
  *   - stationName이 routeStops에 없으면 graceful no-op (정정 신호 폐기).
  *   - route/destinationName이 null이면 graceful no-op.
  *
- * **알려진 한계** (#918 A3 PR4 스코프):
- *   - 같은 stationName이 route에 중복 등장(순환선/회차)하는 경우 본 함수는 *모든* occurrence를
- *     cancel하되 base identifier(`occurrenceIdx=0`) 1개만 재생성한다. `:n` suffix 알람을
- *     cancel하지 못해 stale fire 위험이 있으므로 PR4는 단순/환승 trip만 지원하고 중복역
- *     trip은 후속 이슈에서 occurrence 인덱스 명시 정정 규약으로 다룬다.
+ * **#1193 (중복역 trip 정정)**:
+ *   - 같은 stationName이 route에 중복 등장하는 경우 `occurrenceIdx`로 정정 대상 occurrence를 명시.
+ *   - cancel은 `parsed.stationName === canonicalName && parsed.occurrenceIdx === occurrenceIdx`로
+ *     1건만 정확히 매칭한다 — 다른 occurrence의 사전 예약은 보존.
+ *   - 재예약 시 같은 `occurrenceIdx`로 base ID(`tba:early:역`) 또는 `:n` suffix ID를 생성.
+ *
+ * **남은 한계**:
  *   - rolling window(`TRIPBOUND_WINDOW_SIZE`) 밖 stop에 대해서도 본 함수는 무조건 OS 큐에
  *     예약을 push한다. 호출자(silentPushTask)는 backend payload에서 윈도우 안 stop에
  *     해당하는 정정 신호만 본 함수로 전달해야 한다 (윈도우 invariant 유지 책임은 caller).
@@ -509,6 +576,8 @@ export async function rescheduleTripBoundAlarm(
 ): Promise<RescheduleTripBoundAlarmResult> {
   const { stationName, newArrivalMs, route, destinationName } = params;
   const nowMs = params.now ?? Date.now();
+  // #1193 — 정정 대상 occurrence(0-based). 미지정 시 첫 등장.
+  const occurrenceIdx = params.occurrenceIdx ?? 0;
 
   if (newArrivalMs <= nowMs) {
     logger.info(
@@ -524,14 +593,18 @@ export async function rescheduleTripBoundAlarm(
   }
 
   const { routeStops, estimatedHopTimesMs } = deriveTripBoundStops(route, destinationName);
-  const targetIndex = routeStops.findIndex((s) => isSameStationName(s.stationName, stationName));
+  // #1193 — N번째 occurrence를 routeStops에서 찾는다 (occurrenceIdx=0이면 첫 등장).
+  // 같은 stationName이 occurrenceIdx만큼 등장하지 않으면 silent no-op (backend/client 동기화 race).
+  const targetIndex = findOccurrenceIndex(routeStops, stationName, occurrenceIdx);
   if (targetIndex === -1) {
-    logger.info(`reschedule no-op: ${stationName} not found in routeStops`);
+    logger.info(
+      `reschedule no-op: ${stationName} occurrence=${occurrenceIdx} not found in routeStops`,
+    );
     return { cancelled: 0, scheduled: 0 };
   }
 
-  // 기존 `tba:` 알람 중 해당 stationName의 것만 cancel.
-  // canonical name으로 cancel 매칭 — routeStops[targetIndex].stationName과 OS 큐 id를 직접 비교.
+  // 기존 `tba:` 알람 중 해당 (stationName, occurrenceIdx)에 정확히 매칭하는 것만 cancel (#1193).
+  // 다른 occurrence(예: 같은 역의 :0, :2)는 그대로 보존돼 stale fire 위험 없음.
   const canonicalName = routeStops[targetIndex].stationName;
   const all = await Notifications.getAllScheduledNotificationsAsync();
   let cancelled = 0;
@@ -539,7 +612,7 @@ export async function rescheduleTripBoundAlarm(
     if (!req.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) continue;
     const parsed = parseTripBoundAlarmIdentifier(req.identifier);
     if (parsed === null) continue;
-    if (parsed.stationName === canonicalName) {
+    if (parsed.stationName === canonicalName && parsed.occurrenceIdx === occurrenceIdx) {
       await Notifications.cancelScheduledNotificationAsync(req.identifier);
       cancelled++;
     }
@@ -561,12 +634,12 @@ export async function rescheduleTripBoundAlarm(
     const leadMs = phase.id === 'early' ? hopMs : IMMINENT_LEAD_MS;
     const fireMs = newArrivalMs - leadMs;
     if (fireMs <= nowMs) continue;
-    await scheduleStopPhase({ phase, stop, fireMs, occurrenceIdx: 0 });
+    await scheduleStopPhase({ phase, stop, fireMs, occurrenceIdx });
     scheduled++;
   }
 
   logger.info(
-    `reschedule done: station=${canonicalName} cancelled=${cancelled} scheduled=${scheduled} newArrivalMs=${newArrivalMs}`,
+    `reschedule done: station=${canonicalName} occurrence=${occurrenceIdx} cancelled=${cancelled} scheduled=${scheduled} newArrivalMs=${newArrivalMs}`,
   );
   return { cancelled, scheduled };
 }

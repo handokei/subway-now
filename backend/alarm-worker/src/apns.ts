@@ -205,6 +205,12 @@ export interface SendReschedulePushOptions {
    * 신규 호출자(maybeReschedulePush)는 `RESCHEDULE_CHANNELS_DEFAULT`(['bl','tba'])를 넘긴다.
    */
   channels?: ReadonlyArray<RescheduleChannel>;
+  /**
+   * #1193 — `tba:` 채널 정정 대상 occurrence(0-based). nextStation이 route에 중복 등장하면
+   * `Trip.waypoints[i].occurrenceIdx`를 그대로 forward한다. 미지정 시 wire에 필드를 넣지 않음
+   * (구 client는 0 fallback, 구 backend payload와 byte-level 호환).
+   */
+  occurrenceIdx?: number;
 }
 
 export async function sendReschedulePush(
@@ -223,6 +229,12 @@ export async function sendReschedulePush(
     sentAt: options.sentAt,
     // channels 미지정 시 wire에 필드를 넣지 않음 — 구 backend payload와 byte-level 호환.
     ...(options.channels !== undefined ? { channels: options.channels } : {}),
+    // #1193 — occurrenceIdx도 동일하게 conditional spread. 미지정 또는 0이면 wire에서 생략해
+    // 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환을 보존한다.
+    // 0은 base identifier(`tba:early:역`)로 매핑돼 클라가 자연 fallback하므로 생략해도 의미 동일.
+    ...(options.occurrenceIdx !== undefined && options.occurrenceIdx > 0
+      ? { occurrenceIdx: options.occurrenceIdx }
+      : {}),
   };
 
   const body = JSON.stringify({ aps: { 'content-available': 1 }, data: payload });

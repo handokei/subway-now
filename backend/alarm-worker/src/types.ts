@@ -45,6 +45,18 @@ export interface Waypoint {
   line: LineNumber;
   /** "transfer" — 환승 안내 / "destination" — 최종 도착 / "intermediate" — 중간역 통과 */
   kind: 'transfer' | 'destination' | 'intermediate';
+  /**
+   * #1193 — 같은 stationName이 trip 원본 waypoint 시퀀스에 중복 등장(순환선/회차)할 때,
+   * 이 waypoint가 몇 번째 등장인지(0-based). reschedule push의 `occurrenceIdx`로 전달돼
+   * 클라이언트 `rescheduleTripBoundAlarm`이 정확한 `:n` suffix 알람을 cancel + 재예약한다.
+   *
+   * `validateTrip`(POST /trips)에서 incoming 전체 waypoints에 대해 1-pass로 계산해 stamp한다.
+   * waypoint shift가 진행돼도 occurrenceIdx는 stamp 그대로 유지(불변) — 정정 push 시점에
+   * 클라이언트 routeStops 인덱스와 round-trip 일치 보장.
+   *
+   * 구 backend / 구 client 호환을 위해 optional. 미지정 시 클라이언트가 0(첫 등장)으로 fallback.
+   */
+  occurrenceIdx?: number;
 }
 
 export interface Trip {
@@ -277,6 +289,12 @@ export interface ReschedulePushPayload {
   newArrivalTimeEpoch: number;
   sentAt: number;
   channels?: ReadonlyArray<RescheduleChannel>;
+  /**
+   * #1193 — `tba:` 채널 정정 시 정정 대상 occurrence(0-based). nextStation이 trip route에 중복
+   * 등장하면 클라이언트는 이 인덱스로 N번째 등장의 사전 예약 알람을 정확히 cancel + 재예약한다.
+   * 미지정 시 클라이언트는 0(첫 등장)으로 fallback — 중복 없는 trip / 구 backend 호환.
+   */
+  occurrenceIdx?: number;
 }
 
 /**

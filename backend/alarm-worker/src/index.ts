@@ -1140,11 +1140,29 @@ export function validateTrip(input: unknown): Trip | null {
     if (wp.kind !== 'transfer' && wp.kind !== 'destination' && wp.kind !== 'intermediate') return null;
   }
 
+  // #1193 — incoming waypoints 전체에 대해 occurrenceIdx를 1-pass로 stamp.
+  // 같은 stationName이 중복 등장(순환선/회차)할 때 클라이언트의 `:n` suffix identifier 규약과 일치하도록
+  // 0-based 인덱스를 부여. waypoint shift 진행 후에도 값은 불변 — reschedule push 시점까지 일관.
+  // 클라이언트가 이미 occurrenceIdx를 보내준 경우는 그대로 신뢰 (round-trip 안정).
+  const occurrenceCount = new Map<string, number>();
+  const stampedWaypoints = (obj.waypoints as Array<Record<string, unknown>>).map((wp) => {
+    const stationName = wp.stationName as string;
+    const occIdx = occurrenceCount.get(stationName) ?? 0;
+    occurrenceCount.set(stationName, occIdx + 1);
+    const existing =
+      typeof wp.occurrenceIdx === 'number' &&
+      Number.isInteger(wp.occurrenceIdx) &&
+      wp.occurrenceIdx >= 0
+        ? (wp.occurrenceIdx as number)
+        : occIdx;
+    return { ...wp, occurrenceIdx: existing } as Trip['waypoints'][number];
+  });
+
   return {
     token: obj.token,
     route: obj.route as Trip['route'],
     destination: obj.destination,
-    waypoints: obj.waypoints as Trip['waypoints'],
+    waypoints: stampedWaypoints,
     expiresAt: obj.expiresAt,
     createdAt: typeof obj.createdAt === 'number' ? obj.createdAt : Date.now(),
     alarmAtEpochMs: obj.alarmAtEpochMs,

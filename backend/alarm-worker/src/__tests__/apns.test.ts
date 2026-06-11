@@ -311,6 +311,31 @@ describe('sendReschedulePush (#585)', () => {
     const body = JSON.parse(call[1].body as string);
     expect('channels' in body.data).toBe(false);
   });
+
+  // #1193 — 중복역 trip의 occurrenceIdx wire 검증.
+  it.each([
+    ['양의 정수면 payload에 그대로 직렬화', 2, true, 2],
+    ['0이면 wire에서 omit (base ID와 동등, byte-level 호환)', 0, false, undefined],
+    ['미지정이면 wire에서 omit (구 client/backend 호환)', undefined, false, undefined],
+  ])('occurrenceIdx %s', async (_label, input, expectPresent, expectValue) => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendReschedulePush({
+      deviceToken: 'devicetoken-hex',
+      pushId: 'rsch-occ',
+      trainCode: '7246',
+      nextStation: '중곡',
+      newArrivalTimeEpoch: 1_700_000_120_000,
+      sentAt: 1_700_000_000_000,
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      ...(input !== undefined ? { occurrenceIdx: input as number } : {}),
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('occurrenceIdx' in body.data).toBe(expectPresent);
+    if (expectPresent) expect(body.data.occurrenceIdx).toBe(expectValue);
+  });
 });
 
 describe('sendLiveActivityUpdate (#586 C)', () => {

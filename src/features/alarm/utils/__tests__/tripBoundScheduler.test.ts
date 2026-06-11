@@ -107,23 +107,48 @@ describe('tripBoundAlarmIdentifier', () => {
   });
 });
 
-describe('parseTripBoundAlarmIdentifier (#918 A3 PR2)', () => {
-  it('tba:phase:station 형식을 정상 파싱한다', () => {
+describe('parseTripBoundAlarmIdentifier (#918 A3 PR2 → #1193 확장)', () => {
+  it('tba:phase:station 형식을 정상 파싱한다 (occurrenceIdx=0)', () => {
     expect(parseTripBoundAlarmIdentifier('tba:early:강남')).toEqual({
       phaseId: 'early',
       stationName: '강남',
+      occurrenceIdx: 0,
     });
     expect(parseTripBoundAlarmIdentifier('tba:imminent:시청')).toEqual({
       phaseId: 'imminent',
       stationName: '시청',
+      occurrenceIdx: 0,
     });
   });
 
-  it('occurrence suffix(:n)는 stationName에 그대로 포함되어 반환된다', () => {
-    // suffix를 따로 떼지 않음 — 이후 waypoint 매칭 단계에서 자연스럽게 mismatch로 떨어지는 것을 의도.
-    expect(parseTripBoundAlarmIdentifier('tba:imminent:시청:1')).toEqual({
-      phaseId: 'imminent',
-      stationName: '시청:1',
+  // #1193 — :n suffix를 분리해 stationName과 occurrenceIdx를 따로 반환. 이전 PR4까지는
+  // stationName에 ':n'이 합쳐진 채 반환되어 reschedule cancel 매칭이 mismatch였다.
+  it.each([
+    ['tba:imminent:시청:1', 'imminent', '시청', 1],
+    ['tba:early:강남:2', 'early', '강남', 2],
+    ['tba:imminent:홍대입구:10', 'imminent', '홍대입구', 10],
+  ] as const)('occurrence suffix를 분리해 반환한다 (%s)', (id, phaseId, stationName, occurrenceIdx) => {
+    expect(parseTripBoundAlarmIdentifier(id)).toEqual({
+      phaseId,
+      stationName,
+      occurrenceIdx,
+    });
+  });
+
+  it('suffix가 숫자가 아니면 stationName에 흡수 (graceful: 역명에 콜론 포함 케이스)', () => {
+    expect(parseTripBoundAlarmIdentifier('tba:early:역명:abc')).toEqual({
+      phaseId: 'early',
+      stationName: '역명:abc',
+      occurrenceIdx: 0,
+    });
+  });
+
+  it(':0 suffix는 graceful하게 0으로 해석 (round-trip 안전)', () => {
+    // `prescheduleStationAlerts`는 base ID(:0 생략)를 발급하지만, 외부에서 `:0`이 들어와도 동작.
+    expect(parseTripBoundAlarmIdentifier('tba:early:강남:0')).toEqual({
+      phaseId: 'early',
+      stationName: '강남',
+      occurrenceIdx: 0,
     });
   });
 
@@ -865,5 +890,168 @@ describe('rescheduleTripBoundAlarm (#918 A3 PR4)', () => {
     });
     expect(r.scheduled).toBe(0);
     expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+});
+
+// #1193 — 중복역 trip(같은 transferName이 route에 두 번 등장)에서 occurrenceIdx로
+// 정확한 occurrence만 cancel + 재예약. base ID와 :n suffix가 충돌 없이 격리되는지 검증.
+describe('rescheduleTripBoundAlarm 중복역 occurrenceIdx (#1193)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedSchedule.mockResolvedValue('id');
+    jest.replaceProperty(Platform, 'OS', 'ios');
+  });
+
+  // 같은 환승역명을 두 번 등장시키는 multi-transfer route — routeStops는 [회차역, 회차역, 도착역].
+  // (deriveTripBoundStops가 transfer name과 destination name을 그대로 stop으로 평탄화함)
+  const loopRoute = makeMultiTransferRoute({
+    transfers: [
+      { transferName: '회차역', fromLine: '2', toLine: '2', stopsToTransfer: 3 },
+      { transferName: '회차역', fromLine: '2', toLine: '2', stopsToTransfer: 3 },
+    ],
+    stopsAfterLastTransfer: 2,
+  });
+  const NOW_MS = new Date('2026-06-12T09:00:00Z').getTime();
+  const destinationName = '강남';
+
+  it('occurrenceIdx=0: base ID만 cancel + 재예약, :1은 보존', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:early:회차역' }, // occurrence 0
+      { identifier: 'tba:imminent:회차역' }, // occurrence 0
+      { identifier: 'tba:early:회차역:1' }, // occurrence 1 — 보존
+      { identifier: 'tba:imminent:회차역:1' }, // occurrence 1 — 보존
+      { identifier: 'tba:early:강남' }, // 다른 역 보존
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    const newArrivalMs = NOW_MS + 600_000;
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '회차역',
+      newArrivalMs,
+      route: loopRoute,
+      destinationName,
+      now: NOW_MS,
+      occurrenceIdx: 0,
+    });
+    expect(r.cancelled).toBe(2);
+    expect(mockedCancel).toHaveBeenCalledWith('tba:early:회차역');
+    expect(mockedCancel).toHaveBeenCalledWith('tba:imminent:회차역');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:early:회차역:1');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:imminent:회차역:1');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:early:강남');
+    // 재예약은 base ID로 (occurrenceIdx=0).
+    const scheduledIds = mockedSchedule.mock.calls.map(
+      ([opts]) => (opts as { identifier?: string }).identifier,
+    );
+    expect(scheduledIds).toEqual(
+      expect.arrayContaining(['tba:early:회차역', 'tba:imminent:회차역']),
+    );
+    expect(scheduledIds).not.toContain('tba:early:회차역:1');
+  });
+
+  it('occurrenceIdx=1: :1 suffix ID만 cancel + 재예약, base ID는 보존', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:early:회차역' },
+      { identifier: 'tba:imminent:회차역' },
+      { identifier: 'tba:early:회차역:1' },
+      { identifier: 'tba:imminent:회차역:1' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    const newArrivalMs = NOW_MS + 600_000;
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '회차역',
+      newArrivalMs,
+      route: loopRoute,
+      destinationName,
+      now: NOW_MS,
+      occurrenceIdx: 1,
+    });
+    expect(r.cancelled).toBe(2);
+    expect(mockedCancel).toHaveBeenCalledWith('tba:early:회차역:1');
+    expect(mockedCancel).toHaveBeenCalledWith('tba:imminent:회차역:1');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:early:회차역');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:imminent:회차역');
+    // 재예약은 :1 suffix ID로.
+    const scheduledIds = mockedSchedule.mock.calls.map(
+      ([opts]) => (opts as { identifier?: string }).identifier,
+    );
+    expect(scheduledIds).toEqual(
+      expect.arrayContaining(['tba:early:회차역:1', 'tba:imminent:회차역:1']),
+    );
+    expect(scheduledIds).not.toContain('tba:early:회차역');
+  });
+
+  it('occurrenceIdx 미지정 시 0(첫 등장)으로 fallback', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:early:회차역' },
+      { identifier: 'tba:early:회차역:1' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '회차역',
+      newArrivalMs: NOW_MS + 600_000,
+      route: loopRoute,
+      destinationName,
+      now: NOW_MS,
+      // occurrenceIdx 생략
+    });
+    expect(r.cancelled).toBe(1);
+    expect(mockedCancel).toHaveBeenCalledWith('tba:early:회차역');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:early:회차역:1');
+  });
+
+  it('등장 횟수가 occurrenceIdx 이하면 no-op (route 동기화 race)', async () => {
+    mockedGetAll.mockResolvedValue([]);
+    const r = await rescheduleTripBoundAlarm({
+      stationName: '회차역',
+      newArrivalMs: NOW_MS + 600_000,
+      route: loopRoute,
+      destinationName,
+      now: NOW_MS,
+      occurrenceIdx: 5, // 5번째 등장은 없음
+    });
+    expect(r).toEqual({ cancelled: 0, scheduled: 0 });
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+});
+
+// #1193 — topUpTripBoundWindow의 활성 윈도우 판정이 stationName 단위가 아닌
+// `${stationName}:${occurrenceIdx}` 단위로 동작해야 같은 역의 다른 occurrence를 혼동하지 않는다.
+describe('topUpTripBoundWindow 중복역 occurrence 격리 (#1193)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockedSchedule.mockResolvedValue('id');
+    jest.replaceProperty(Platform, 'OS', 'ios');
+  });
+
+  it('passed 이후 같은 역의 다음 occurrence가 윈도우 안이면, 이전 occurrence(:0)는 cancel되고 :1은 보존', async () => {
+    // routeStops = [A:0, B, A:1, C] (A가 두 번 등장).
+    const routeStops: TripBoundStop[] = [
+      { stationName: 'A', alarmType: 'transfer' },
+      { stationName: 'B', alarmType: 'transfer' },
+      { stationName: 'A', alarmType: 'transfer' },
+      { stationName: 'C', alarmType: 'destination' },
+    ];
+    const hops = [60_000, 60_000, 60_000, 60_000];
+
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:early:A' }, // A의 첫 occurrence(이미 통과한 stop) — cancel 대상.
+      { identifier: 'tba:imminent:A' },
+      { identifier: 'tba:early:A:1' }, // 윈도우 안 — 보존.
+      { identifier: 'tba:imminent:A:1' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+
+    const r = await topUpTripBoundWindow({
+      routeStops,
+      estimatedHopTimesMs: hops,
+      startTime: NOW,
+      passedStationName: 'B', // window starts at index 2 → [A:1, C]
+      windowSize: 2,
+    });
+    expect(mockedCancel).toHaveBeenCalledWith('tba:early:A');
+    expect(mockedCancel).toHaveBeenCalledWith('tba:imminent:A');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:early:A:1');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:imminent:A:1');
+    expect(r.cancelled).toBe(2);
   });
 });
