@@ -319,9 +319,13 @@ export async function cancelAllHopsForLock(lock: BoardingLock): Promise<void> {
  */
 export async function purgeBoardingLockSchedulerQueue(): Promise<void> {
   const current = await getScheduledNotificationIds();
-  if (current.length === 0) return;
   const ours = current.filter((id) => id.startsWith(BOARDING_LOCK_ALARM_PREFIX));
-  await cancelAndDismiss(ours);
+  if (ours.length > 0) {
+    await cancelAndDismiss(ours);
+  }
+  // #773: 큐가 비어있어도 storage key는 항상 정리한다. trip release cleanup 호출자
+  // (TRIP_BOUND_CLEANUPS)가 SCHEDULED_NOTIFICATIONS_KEY removal을 본 함수로 위임하므로,
+  // empty case에서도 key가 존재할 수 있다(legacy 잔여 등) — 멱등 보장.
   await clearScheduledNotificationIds();
 }
 

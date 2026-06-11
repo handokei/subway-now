@@ -12,7 +12,6 @@ import {
   DESTINATION_KEY,
   CUSTOM_ORIGIN_KEY,
   BOARDING_LOCK_KEY,
-  SCHEDULED_NOTIFICATIONS_KEY,
   ACTIVE_TRIP_KEY,
   TRIP_ORIGIN_KEY,
   ALARM_EVENT_KEY,
@@ -29,6 +28,7 @@ import { clearTripTrainCode } from '../../route/utils/tripTrainCode';
 import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dismissSilenceStorage';
 import { clearLaDismissSentinel } from '../utils/laDismissSentinel';
 import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
+import { purgeBoardingLockSchedulerQueue } from '../utils/boardingLockScheduler';
 
 // trip-bound storage cleanup 단일 출처.
 // useDestinationStore.setDestination이 isSwitch(목적지 변경 또는 null 클리어) 분기에서 호출한다.
@@ -52,7 +52,12 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   () => AsyncStorage.removeItem(DESTINATION_KEY),
   () => AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY),
   () => AsyncStorage.removeItem(BOARDING_LOCK_KEY),
-  () => AsyncStorage.removeItem(SCHEDULED_NOTIFICATIONS_KEY),
+  // #773 — trip release 시점에 SCHEDULED_NOTIFICATIONS_KEY storage만 비우면 OS 사전 예약은
+  // 그대로 큐에 남아 새 trip 시작 후 옛 알람이 burst로 발사된다 (#918 A3 일반화의 선행 조건).
+  // purgeBoardingLockSchedulerQueue는 `bl:` prefix id를 모두 Notifications.cancelScheduledNotificationAsync
+  // + dismiss 처리한 뒤 storage 큐를 clear한다 — OS 큐 한도(64) 도달과 정정 신호 없는 옛 알람
+  // 발사 burst를 동시에 차단한다.
+  purgeBoardingLockSchedulerQueue,
   () => AsyncStorage.removeItem(ACTIVE_TRIP_KEY),
   () => AsyncStorage.removeItem(TRIP_ORIGIN_KEY),
   clearLastNotifiedStationId,

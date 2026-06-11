@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 import { TRIP_BOUND_CLEANUPS, runTripBoundCleanups } from '../tripBoundCleanups';
 import {
   DESTINATION_KEY,
@@ -8,15 +9,21 @@ import {
   TRIP_STARTED_AT_KEY,
   LAST_UPLOADED_RECALL_TRIP_START_KEY,
   LA_DISMISSED_AT_KEY,
+  SCHEDULED_NOTIFICATIONS_KEY,
 } from '../../../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
 );
+jest.mock('expo-notifications');
 
 describe('tripBoundCleanups', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // expo-notifications auto-mock의 cancel/dismiss implementation을 명시 초기화 — 다른 테스트의
+    // mockRejectedValue가 leak되어 다음 테스트의 cancel을 reject하지 않도록.
+    (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockReset();
+    (Notifications.dismissNotificationAsync as jest.Mock).mockReset();
   });
 
   it('TRIP_BOUND_CLEANUPS는 비어있지 않다 (메타 배열 self-check)', () => {
@@ -43,6 +50,33 @@ describe('tripBoundCleanups', () => {
     // LA 재상승 허용. 누락 회귀가 발생하면 dismiss 후 새 trip 시작해도 LA가 살아나지 않음.
     expect(removedKeys).toContain(LA_DISMISSED_AT_KEY);
     expect(removedKeys).not.toContain(LAST_UPLOADED_RECALL_TRIP_START_KEY);
+  });
+
+  it('#773 — runTripBoundCleanups 실행 시 OS 사전 예약 큐를 cancel + storage clear한다 (옛 trip 알람 burst 차단)', async () => {
+    // trip release 시점에 추적 큐의 모든 `bl:` 사전 예약을 OS에서 cancel해야 한다.
+    // storage만 비우면 iOS 사전 예약은 살아남아 새 trip 시작 후 옛 알람이 burst로 발사된다.
+    const scheduledIds = ['bl:T-100:0:early:강남', 'bl:T-100:0:imminent:강남'];
+    await AsyncStorage.setItem(SCHEDULED_NOTIFICATIONS_KEY, JSON.stringify(scheduledIds));
+    const mockedCancel = Notifications.cancelScheduledNotificationAsync as jest.Mock;
+    mockedCancel.mockResolvedValue(undefined);
+    (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
+
+    await runTripBoundCleanups();
+
+    expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:early:강남');
+    expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:imminent:강남');
+  });
+
+  it('#773 — OS cancel이 reject해도 runTripBoundCleanups는 graceful 종료 (이미 발사된 알람 등)', async () => {
+    // 이미 발사된 알람을 cancel 시 expo가 reject할 수 있다 — 나머지 cleanup에 전파되면 안 됨.
+    await AsyncStorage.setItem(
+      SCHEDULED_NOTIFICATIONS_KEY,
+      JSON.stringify(['bl:T-100:0:early:강남']),
+    );
+    (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockRejectedValue(
+      new Error('already fired'),
+    );
+    await expect(runTripBoundCleanups()).resolves.toBeUndefined();
   });
 
   it('TRIP_BOUND_CLEANUPS의 모든 항목은 호출 가능하며 Promise를 반환하고 reject하지 않는다', async () => {
