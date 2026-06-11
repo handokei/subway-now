@@ -50,7 +50,9 @@ export type AlarmLogSource =
   // #580 M4: firedAlarmsRefDestIdRef vs destination.id mismatch 감지 stamp.
   // ETA/API/FG arvlCd effect 진입 시 refDestId가 destination.id와 다르면 1건 기록.
   // 같은 destinationId에서 mismatch가 반복되면 hydration 완료 전에 effect가 재실행되는 race 정황.
-  | 'fg-ref-mismatch';
+  | 'fg-ref-mismatch'
+  // #1021: boardingPrompt 발사 빈도 측정.
+  | 'boarding-prompt';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -159,6 +161,9 @@ export interface AlarmLogEntry {
   firedAlarmsCount?: number;
   // #580 M4: fg-ref-mismatch 엔트리 — 예상 destinationId와 실제 refDestId 기록.
   refDestId?: string | null;
+  // #1024 — burst inline counter. 같은 reason 연속 발생 시 count++ (새 entry 추가 대신).
+  // 미설정이면 1로 해석 — 기존 entry와 완전 하위 호환.
+  count?: number;
 }
 
 const logger = createLogger('AlarmLog');
@@ -534,6 +539,50 @@ export function summarizeAlarmLogBySource(
   return counts;
 }
 
+export interface AlarmLogReasonCounter {
+  reason: string;
+  count: number;
+  lastTs: number;
+}
+
+/**
+ * reason별 누적 count + 마지막 발생 시각 집계 (#1024).
+ * suppressed 엔트리의 count 필드(미설정 시 1로 해석)를 합산하고 마지막 ts를 추적한다.
+ * DebugModal ## Counters 섹션에서 어떤 reason이 얼마나 자주 억제됐는지 시각화용.
+ * count 내림차순으로 정렬해 반환 — 가장 빈번한 reason이 상단에 노출.
+ */
+export function summarizeAlarmLogCounters(
+  entries: readonly AlarmLogEntry[],
+): AlarmLogReasonCounter[] {
+  const map = new Map<string, AlarmLogReasonCounter>();
+  for (const entry of entries) {
+    if (entry.outcome !== 'suppressed') continue;
+    const key = entry.reason ?? '(unknown)';
+    const entryCount = entry.count ?? 1;
+    const existing = map.get(key);
+    if (existing) {
+      existing.count += entryCount;
+      if (entry.ts > existing.lastTs) existing.lastTs = entry.ts;
+    } else {
+      map.set(key, { reason: key, count: entryCount, lastTs: entry.ts });
+    }
+  }
+  return [...map.values()].sort((a, b) => b.count - a.count);
+}
+
+/** reason별 억제 카운트. suppressed 엔트리의 reason 분포. */
+export function summarizeAlarmLogByReason(
+  entries: readonly AlarmLogEntry[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const entry of entries) {
+    if (entry.outcome !== 'suppressed') continue;
+    const key = entry.reason ?? '(unknown)';
+    counts[key] = (counts[key] ?? 0) + 1;
+  }
+  return counts;
+}
+
 /**
  * Silent push outcome별 집계 (#856).
  *
@@ -559,6 +608,7 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'fg-hydrate': null,
   'fg-arvlcd': null,
   'fg-ref-mismatch': null,
+  'boarding-prompt': null,
 };
 
 export interface SilentPushOutcomeCounts {
@@ -659,6 +709,40 @@ export function logSuppressedSleepFirstTransfer(input: {
   });
 }
 
+/** #1021: boardingPrompt 발사 1건 적재. */
+export function logBoardingPromptFired(input: { originStation: string; line: string }): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'boarding-prompt',
+    outcome: 'fired',
+    stationName: `${input.line}·${input.originStation}`,
+  });
+}
+
+/** #1021: 시간 윈도우별 boardingPrompt 발사 횟수. 5m / 1h / all. */
+export const BOARDING_PROMPT_WINDOWS = [
+  { key: '5m', label: '5m', ms: 5 * 60 * 1000 },
+  { key: '1h', label: '1h', ms: 60 * 60 * 1000 },
+  { key: 'all', label: 'all', ms: Infinity },
+] as const;
+
+export type BoardingPromptWindowKey = (typeof BOARDING_PROMPT_WINDOWS)[number]['key'];
+
+export function countBoardingPromptByWindow(
+  entries: readonly AlarmLogEntry[],
+  now: number = Date.now(),
+): Record<BoardingPromptWindowKey, number> {
+  const counts: Record<BoardingPromptWindowKey, number> = { '5m': 0, '1h': 0, all: 0 };
+  for (const entry of entries) {
+    if (entry.source !== 'boarding-prompt' || entry.outcome !== 'fired') continue;
+    const ageMs = now - entry.ts;
+    for (const { key, ms } of BOARDING_PROMPT_WINDOWS) {
+      if (ageMs <= ms) counts[key] += 1;
+    }
+  }
+  return counts;
+}
+
 // ── CRUD ──
 
 // 모듈 스코프 mutable state (#735 batched write).
@@ -682,6 +766,23 @@ let flushInFlight: Promise<void> | null = null;
  * 직전 등)에서는 await flushAlarmLog() 명시 호출.
  */
 export function appendAlarmLog(entry: AlarmLogEntry): void {
+  // #1024 — burst inline counter: reason이 있는 억제 엔트리에서 마지막 pendingEntry가
+  // 동일한 (source, reason, kind, phaseId, stationName)이면 count++하고 ts를 갱신한다.
+  if (entry.reason !== undefined && pendingEntries.length > 0) {
+    const last = pendingEntries[pendingEntries.length - 1];
+    if (
+      last.reason === entry.reason &&
+      last.source === entry.source &&
+      last.kind === entry.kind &&
+      last.phaseId === entry.phaseId &&
+      last.stationName === entry.stationName
+    ) {
+      last.count = (last.count ?? 1) + 1;
+      last.ts = entry.ts;
+      scheduleFlush();
+      return;
+    }
+  }
   pendingEntries.push(entry);
   oldestPendingTs ??= Date.now();
   scheduleFlush();
