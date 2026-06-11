@@ -51,7 +51,12 @@
     "refresh": "刷新",
     "boardingProximityHint": "靠近乘车站后可以选择列车",
     "boardingTrainListTitle": "选择乘坐列车",
+    "boardingTrainListLoading": "正在加载到达信息...",
     "boardingTrainListEmpty": "暂无即将到达的列车。",
+    "boardingTrainListEmptyHint": "稍后将自动重新确认。",
+    "boardingTrainListPending": "正在登记乘车...",
+    "boardingTrainListError": "无法加载到达信息",
+    "boardingTrainListErrorHint": "稍后将自动重试。",
     "misBoardingToast": "找不到乘坐的列车,请重新选择。",
     "autoDisembarkToast": {
       "message": "已到达{{name}},已清除目的地",
@@ -300,6 +305,10 @@
       "dismissHint": "停止闹钟声和振动",
       "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
       "boardingTrainSelectHint": "点击乘坐该列车",
+      "boardingTrainListLoadingLabel": "正在加载到达信息",
+      "boardingTrainListEmptyLabel": "无即将到达的列车",
+      "boardingTrainListPendingLabel": "正在登记乘车",
+      "boardingTrainListErrorLabel": "无法加载到达信息",
       "boardingLockReleaseLabel": "下车",
       "boardingLockReleaseHint": "结束当前乘车状态"
     },

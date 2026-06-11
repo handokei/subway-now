@@ -51,7 +51,12 @@
     "refresh": "更新",
     "boardingProximityHint": "乗車駅の近くで列車を選択できます",
     "boardingTrainListTitle": "乗車する列車を選択",
+    "boardingTrainListLoading": "到着情報を読み込み中...",
     "boardingTrainListEmpty": "到着予定の列車がありません。",
+    "boardingTrainListEmptyHint": "しばらくしてから自動で再確認します。",
+    "boardingTrainListPending": "乗車を登録中...",
+    "boardingTrainListError": "到着情報を読み込めませんでした",
+    "boardingTrainListErrorHint": "しばらくしてから自動で再試行します。",
     "misBoardingToast": "乗車中の列車が見つかりません。もう一度選択してください。",
     "autoDisembarkToast": {
       "message": "{{name}}に到着し、目的地を解除しました",
@@ -300,6 +305,10 @@
       "dismissHint": "アラーム音と振動を停止します",
       "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
       "boardingTrainSelectHint": "タップしてこの列車に乗車",
+      "boardingTrainListLoadingLabel": "到着情報を読み込み中",
+      "boardingTrainListEmptyLabel": "到着予定の列車なし",
+      "boardingTrainListPendingLabel": "乗車を登録中",
+      "boardingTrainListErrorLabel": "到着情報を読み込めません",
       "boardingLockReleaseLabel": "降車",
       "boardingLockReleaseHint": "現在の乗車を終了します"
     },

@@ -49,6 +49,15 @@ const PENDING_TIMEOUT_MS_DEFAULT = 5000;
 /** pending row 시각 피드백 — accent 색 테두리 두께. row의 borderLeft stripe와 별도 외곽 outline. */
 const PENDING_BORDER_WIDTH = 2;
 
+/**
+ * Loading skeleton row 개수 — #1177. 첫 폴링 응답 도착 전 시각적 placeholder.
+ *
+ * 도착 list는 일반적으로 1~3건이 도착하므로 3행이면 실제 데이터와 시각적 부피 차이가 적어
+ * 응답 도착 시 layout shift가 최소화된다. key를 명시 상수 배열로 분리해 map 순회로 렌더 →
+ * 글로벌 룰 3(데이터 주도, 인덱스 하드코딩 금지) 준수.
+ */
+const SKELETON_ROW_KEYS = ['s1', 's2', 's3'] as const;
+
 interface Props {
   arrivals: ArrivalInfo[];
   line: LineNumber;
@@ -92,6 +101,26 @@ interface Props {
    * 테스트/조정용 노출.
    */
   pendingTimeoutMs?: number;
+  /**
+   * 도착 정보 로딩 중 여부 — #1177 (Epic #1008 C 단기 / B4 UX).
+   *
+   * true이면 arrivals 내용에 상관없이 loading skeleton(placeholder rows) 노출.
+   * 첫 폴링 응답 도착 전 또는 명시적 refresh 동안 사용. 기본 false → 기존 동작 유지.
+   *
+   * 우선순위: error > loading > empty > data. loading과 error가 동시에 true이면 error 우선
+   * (실패한 재시도 중에는 사용자가 무엇이 잘못됐는지 먼저 인지하도록).
+   */
+  loading?: boolean;
+  /**
+   * 도착 정보 로딩 실패 메시지 — #1177.
+   *
+   * null/undefined면 error state 아님. 객체이면 error UI 렌더(메시지 + 자동 재시도 안내).
+   * `message`가 비어 있어도 default 카피(home.boardingTrainListError)로 fallback.
+   *
+   * 호출자는 fetch 실패/timeout/parse 실패 등을 받아 전달한다. 본 컴포넌트는 retry 로직을
+   * 보유하지 않으며 호출자(useArrivalInfo polling)가 다음 tick에 자동 재시도하는 흐름을 전제.
+   */
+  error?: { message?: string | null } | null;
   /**
    * backend round-trip이 사용자가 탭한 train과 다른 trainCode로 lock을 확정했을 때 발화 — #1166.
    *
@@ -142,6 +171,8 @@ export function BoardingTrainList({
   initialEtaSeconds,
   lockedTrainCode = null,
   pendingTimeoutMs = PENDING_TIMEOUT_MS_DEFAULT,
+  loading = false,
+  error = null,
   onLockCorrected,
 }: Props) {
   const { colors } = useTheme();
@@ -207,13 +238,67 @@ export function BoardingTrainList({
   // arrivals는 호출자가 도착시간 오름차순으로 전달한다는 컨벤션을 따른다(#749 카운터와 동일 가정).
   const delayMinutes = computeDelayMinutes(filteredArrivals, initialEtaSeconds);
 
+  // #1177: 4가지 state 구분 — error > loading > empty > data. 낙관적 UI 도입(#1165) 후
+  // 빈 list/loading의 의미를 사용자에게 명확히 전달한다.
+  if (error != null) {
+    const message =
+      error.message != null && error.message.length > 0 ? error.message : t('home.boardingTrainListError');
+    return (
+      <View
+        style={compact ? styles.emptyCompact : styles.empty}
+        testID="boarding-train-list-error"
+        accessibilityRole="alert"
+        accessibilityLabel={t('a11y.alarm.boardingTrainListErrorLabel')}
+      >
+        <Text style={[typography.bodySm, { color: colors.danger, fontWeight: '600' }]}>{message}</Text>
+        <Text style={[typography.bodySm, { color: colors.muted }]}>{t('home.boardingTrainListErrorHint')}</Text>
+      </View>
+    );
+  }
+
+  if (loading) {
+    return (
+      <View
+        style={compact ? styles.containerCompact : styles.container}
+        testID="boarding-train-list-loading"
+        accessibilityLabel={t('a11y.alarm.boardingTrainListLoadingLabel')}
+        accessibilityState={{ busy: true }}
+      >
+        {!compact && (
+          <View style={styles.header}>
+            <LineBadge line={line} />
+            <Text style={[typography.label, { color: colors.muted }]}>{headerTitle}</Text>
+          </View>
+        )}
+        {SKELETON_ROW_KEYS.map((key) => (
+          <View
+            key={key}
+            style={[
+              compact ? styles.rowCompact : styles.row,
+              compact ? null : { backgroundColor: colors.card },
+              { borderLeftWidth: LINE_STRIPE_WIDTH, borderLeftColor: LINE_COLORS[line] },
+              styles.skeletonRow,
+              { backgroundColor: colors.card },
+            ]}
+            testID={`boarding-train-list-skeleton-${key}`}
+          >
+            <View style={[styles.skeletonBar, { backgroundColor: colors.muted, opacity: 0.2, width: '60%' }]} />
+            <View style={[styles.skeletonBar, { backgroundColor: colors.muted, opacity: 0.15, width: '40%' }]} />
+          </View>
+        ))}
+      </View>
+    );
+  }
+
   if (filteredArrivals.length === 0) {
     return (
       <View
         style={compact ? styles.emptyCompact : styles.empty}
         testID="boarding-train-list-empty"
+        accessibilityLabel={t('a11y.alarm.boardingTrainListEmptyLabel')}
       >
         <Text style={[typography.bodySm, { color: colors.muted }]}>{t('home.boardingTrainListEmpty')}</Text>
+        <Text style={[typography.bodySm, { color: colors.subtle }]}>{t('home.boardingTrainListEmptyHint')}</Text>
       </View>
     );
   }
@@ -235,6 +320,20 @@ export function BoardingTrainList({
           testID="boarding-train-delay-chip"
         >
           <Text style={[styles.delayChipText, { color: colors.danger }]}>{`+${delayMinutes}분 지연`}</Text>
+        </View>
+      )}
+      {/* #1177 — pending lock state list-level 안내. row outline highlight와 별도로 list 헤더 영역에
+          상태 텍스트를 노출해 사용자에게 "탭이 처리 중" 임을 명시. row outline만으로는 작은 시각적
+          시그널이라 접근성과 명료성을 위해 텍스트 라인 추가. */}
+      {pendingTrainCode != null && (
+        <View
+          style={styles.pendingNotice}
+          testID="boarding-train-list-pending-notice"
+          accessibilityLabel={t('a11y.alarm.boardingTrainListPendingLabel')}
+        >
+          <Text style={[typography.bodySm, { color: colors.accent, fontWeight: '600' }]}>
+            {t('home.boardingTrainListPending')}
+          </Text>
         </View>
       )}
       {filteredArrivals.map((train, index) => {
@@ -415,10 +514,26 @@ const styles = StyleSheet.create({
   empty: {
     padding: spacing.lg,
     alignItems: 'center',
+    gap: spacing.xs,
   },
   emptyCompact: {
     paddingVertical: spacing.xs,
     paddingHorizontal: spacing.sm,
+    gap: spacing.xs,
+  },
+  // #1177 — loading skeleton row 내부 bar. 색은 인라인으로 muted/opacity 적용.
+  skeletonRow: {
+    gap: spacing.xs,
+    borderRadius: radius.md,
+  },
+  skeletonBar: {
+    height: 10,
+    borderRadius: 4,
+  },
+  // #1177 — pending list-level notice. row outline 외에 list 영역 상단에 텍스트 한 줄 노출.
+  pendingNotice: {
+    paddingVertical: spacing.xs,
+    paddingHorizontal: spacing.xs,
   },
   // #897 — outline 칩. ArrivalStatusBadge의 outline variant와 동일 외형(borderWidth 1 + radius 3).
   delayChip: {
