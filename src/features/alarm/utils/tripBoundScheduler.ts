@@ -1,11 +1,13 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ALARM_PHASES, type AlarmPhaseId } from './alarmPhases';
 import { alarmKey, resolveAllTargets, type AlarmEvent } from './stationAlarm';
 import { buildAlarmContent } from './stationNotification';
 import type { AlarmType } from '../../../shared/types/alarm';
 import { isSameStationName, type Route } from '../../../shared/utils/stationRoute';
 import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
+import { TRIP_BOUND_ROUTE_SIG_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 import { recordScheduledAlarm } from './prescheduledMetrics';
 
@@ -170,13 +172,70 @@ export async function prescheduleStationAlerts(
 }
 
 /**
- * identifier 형식: `tba:${phaseId}:${stationName}`.
+ * identifier 형식: `tba:${phaseId}:${stationName}` 또는 같은 (phaseId, stationName) 중복 시
+ * `tba:${phaseId}:${stationName}:${n}` (n ≥ 1).
  * alarmScheduler의 `alarm:` prefix와 분리해 trip-bound 사전 예약만 식별/취소한다.
  */
 export function tripBoundAlarmIdentifier(
   event: Pick<AlarmEvent, 'phaseId' | 'stationName'>,
 ): string {
   return `${TRIP_BOUND_ALARM_PREFIX}${alarmKey(event)}`;
+}
+
+export interface ParsedTripBoundAlarmIdentifier {
+  phaseId: string;
+  stationName: string;
+}
+
+/**
+ * `tripBoundAlarmIdentifier()`의 역연산 (#918 A3 PR2). prefix 매칭 + phaseId/stationName 분리.
+ * 같은 station이 route 안에 두 번 등장해 `:n` occurrence suffix가 붙은 경우(`prescheduleStationAlerts`
+ * 내부 로직)에도 station name 안에 콜론이 합쳐진 채 반환된다 — 이후 waypoint 매칭 단계에서 자연스럽게
+ * mismatch로 떨어지므로 별도 후처리는 불필요(재검증 안전).
+ *
+ * prefix가 다르거나 phaseId/stationName이 비어 있으면 null.
+ */
+export function parseTripBoundAlarmIdentifier(
+  identifier: string,
+): ParsedTripBoundAlarmIdentifier | null {
+  if (!identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) return null;
+  const rest = identifier.slice(TRIP_BOUND_ALARM_PREFIX.length);
+  const colon = rest.indexOf(':');
+  if (colon <= 0) return null;
+  const stationName = rest.slice(colon + 1);
+  if (!stationName) return null;
+  return { phaseId: rest.slice(0, colon), stationName };
+}
+
+/**
+ * #918 A3 PR2 (#729 흡수) — preschedule 시점의 route signature 영속화 SSOT.
+ * useTripBoundAlarmScheduler가 preschedule 성공 직후 1회 write하고, cancel 시 clear한다.
+ * scheduledAlarmReceiver가 fire 시점에 *현재* sig와 비교해 stale 알람을 식별한다.
+ *
+ * 모든 함수는 graceful — storage 실패는 측정 정확도만 영향, 본 흐름 무관.
+ */
+export async function setRegisteredTripRouteSig(sig: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(TRIP_BOUND_ROUTE_SIG_KEY, sig);
+  } catch {
+    // graceful — 다음 preschedule cycle에서 재시도.
+  }
+}
+
+export async function getRegisteredTripRouteSig(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(TRIP_BOUND_ROUTE_SIG_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export async function clearRegisteredTripRouteSig(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(TRIP_BOUND_ROUTE_SIG_KEY);
+  } catch {
+    // graceful.
+  }
 }
 
 /**
@@ -251,4 +310,6 @@ export async function cancelTripBoundAlarms(): Promise<void> {
   if (cancelled > 0) {
     logger.info(`cancelled ${cancelled} trip-bound alarms`);
   }
+  // #918 A3 PR2: sig storage도 함께 cleanup — 다음 reconcile 시 stale sig가 남지 않게.
+  await clearRegisteredTripRouteSig();
 }

@@ -1,13 +1,19 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   TRIP_BOUND_ALARM_PREFIX,
   cancelTripBoundAlarms,
+  clearRegisteredTripRouteSig,
   deriveTripBoundStops,
+  getRegisteredTripRouteSig,
+  parseTripBoundAlarmIdentifier,
   prescheduleStationAlerts,
+  setRegisteredTripRouteSig,
   tripBoundAlarmIdentifier,
   type TripBoundStop,
 } from '../tripBoundScheduler';
+import { TRIP_BOUND_ROUTE_SIG_KEY } from '../../../../shared/constants/storageKeys';
 import {
   makeDirectRoute,
   makeMultiTransferRoute,
@@ -66,6 +72,83 @@ describe('tripBoundAlarmIdentifier', () => {
   });
   it('prefix 상수는 노출된 값과 일치한다', () => {
     expect(TRIP_BOUND_ALARM_PREFIX).toBe('tba:');
+  });
+});
+
+describe('parseTripBoundAlarmIdentifier (#918 A3 PR2)', () => {
+  it('tba:phase:station 형식을 정상 파싱한다', () => {
+    expect(parseTripBoundAlarmIdentifier('tba:early:강남')).toEqual({
+      phaseId: 'early',
+      stationName: '강남',
+    });
+    expect(parseTripBoundAlarmIdentifier('tba:imminent:시청')).toEqual({
+      phaseId: 'imminent',
+      stationName: '시청',
+    });
+  });
+
+  it('occurrence suffix(:n)는 stationName에 그대로 포함되어 반환된다', () => {
+    // suffix를 따로 떼지 않음 — 이후 waypoint 매칭 단계에서 자연스럽게 mismatch로 떨어지는 것을 의도.
+    expect(parseTripBoundAlarmIdentifier('tba:imminent:시청:1')).toEqual({
+      phaseId: 'imminent',
+      stationName: '시청:1',
+    });
+  });
+
+  it('prefix가 다르면 null', () => {
+    expect(parseTripBoundAlarmIdentifier('alarm:early:강남')).toBeNull();
+    expect(parseTripBoundAlarmIdentifier('bl:T1:0:early:강남')).toBeNull();
+    expect(parseTripBoundAlarmIdentifier('current-station')).toBeNull();
+  });
+
+  it('포맷이 망가지면 null (콜론 없음 / phaseId 비어 있음 / stationName 비어 있음)', () => {
+    expect(parseTripBoundAlarmIdentifier('tba:onlyphase')).toBeNull();
+    expect(parseTripBoundAlarmIdentifier('tba::강남')).toBeNull();
+    expect(parseTripBoundAlarmIdentifier('tba:early:')).toBeNull();
+  });
+});
+
+describe('registered trip route sig storage (#918 A3 PR2)', () => {
+  beforeEach(async () => {
+    await AsyncStorage.clear();
+  });
+
+  it('set → get round-trip 동일 값을 반환한다', async () => {
+    await setRegisteredTripRouteSig('A:1|B:2');
+    expect(await getRegisteredTripRouteSig()).toBe('A:1|B:2');
+  });
+
+  it('미설정 시 null', async () => {
+    expect(await getRegisteredTripRouteSig()).toBeNull();
+  });
+
+  it('clear는 다시 null을 반환하게 한다', async () => {
+    await setRegisteredTripRouteSig('A:1');
+    await clearRegisteredTripRouteSig();
+    expect(await getRegisteredTripRouteSig()).toBeNull();
+  });
+
+  it('set은 TRIP_BOUND_ROUTE_SIG_KEY 키에 저장한다', async () => {
+    await setRegisteredTripRouteSig('A:1|B:2');
+    expect(await AsyncStorage.getItem(TRIP_BOUND_ROUTE_SIG_KEY)).toBe('A:1|B:2');
+  });
+
+  it('AsyncStorage setItem이 throw해도 graceful (예외 전파 없음)', async () => {
+    const spy = jest.spyOn(AsyncStorage, 'setItem').mockRejectedValueOnce(new Error('disk'));
+    await expect(setRegisteredTripRouteSig('A:1')).resolves.toBeUndefined();
+    spy.mockRestore();
+  });
+
+  it('AsyncStorage getItem이 throw해도 null 반환', async () => {
+    const spy = jest.spyOn(AsyncStorage, 'getItem').mockRejectedValueOnce(new Error('disk'));
+    expect(await getRegisteredTripRouteSig()).toBeNull();
+    spy.mockRestore();
+  });
+
+  it('AsyncStorage removeItem이 throw해도 graceful', async () => {
+    const spy = jest.spyOn(AsyncStorage, 'removeItem').mockRejectedValueOnce(new Error('disk'));
+    await expect(clearRegisteredTripRouteSig()).resolves.toBeUndefined();
+    spy.mockRestore();
   });
 });
 
@@ -347,6 +430,15 @@ describe('cancelTripBoundAlarms', () => {
     mockedGetAll.mockResolvedValue([]);
     await expect(cancelTripBoundAlarms()).resolves.toBeUndefined();
     expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
+  it('#918 A3 PR2 — sig storage도 함께 클리어한다 (재예약 사이 stale sig 차단)', async () => {
+    // spy로 set 호출 횟수만 검증 — auto-mock storage state는 테스트 순서에 의존하지 않게.
+    const removeSpy = jest.spyOn(AsyncStorage, 'removeItem');
+    mockedGetAll.mockResolvedValue([]);
+    await cancelTripBoundAlarms();
+    expect(removeSpy).toHaveBeenCalledWith(TRIP_BOUND_ROUTE_SIG_KEY);
+    removeSpy.mockRestore();
   });
 });
 
