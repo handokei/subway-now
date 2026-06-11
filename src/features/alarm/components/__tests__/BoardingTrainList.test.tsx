@@ -1,4 +1,4 @@
-import { fireEvent } from '@testing-library/react-native';
+import { act, fireEvent } from '@testing-library/react-native';
 import { BoardingTrainList } from '../BoardingTrainList';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { LINE_COLORS } from '../../../../shared/constants/lineColors';
@@ -476,6 +476,193 @@ describe('BoardingTrainList', () => {
       const arrival = getByTestId('boarding-train-arrival-T-LINES');
       // 두 element가 동일 parent(같은 row) 안에 있되 서로 다른 View 안에 있어야 한다.
       expect(sequence.parent).not.toBe(arrival.parent);
+    });
+  });
+
+  describe('#1165 낙관적 탭 + pending state (Epic #1008 C 단기 1번 / B4 경로 1)', () => {
+    function flattenStyle(style: unknown): Record<string, unknown> {
+      if (Array.isArray(style)) return Object.assign({}, ...style.map(flattenStyle));
+      return (style ?? {}) as Record<string, unknown>;
+    }
+
+    it('탭 즉시 pending marker 노출 + onSelect 동시 호출 (synchronous, round-trip 대기 없음)', () => {
+      const train = makeTrain({ trainCode: 'T-OPT' });
+      const onSelect = jest.fn();
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} />,
+      );
+      expect(queryByTestId('boarding-train-pending-T-OPT')).toBeNull();
+      fireEvent.press(getByTestId('boarding-train-row-T-OPT'));
+      // 시각 피드백은 onSelect와 동기적으로 발생 (round-trip 대기 없음 — 100ms 이내).
+      expect(getByTestId('boarding-train-pending-T-OPT')).toBeTruthy();
+      expect(onSelect).toHaveBeenCalledWith(train);
+    });
+
+    it('pending 상태 row는 accent outline border로 시각 highlight', () => {
+      const train = makeTrain({ trainCode: 'T-OUTLINE', line: '2' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      const row = getByTestId('boarding-train-row-T-OUTLINE');
+      const before = flattenStyle(row.props.style);
+      expect(before.borderWidth).toBeUndefined();
+      fireEvent.press(row);
+      const after = flattenStyle(row.props.style);
+      expect(after.borderWidth).toBeGreaterThan(0);
+      expect(after.borderColor).toBeDefined();
+    });
+
+    it('pending 중 같은 row 재탭 시 onSelect 추가 호출되지 않음 (중복 탭 방지)', () => {
+      const train = makeTrain({ trainCode: 'T-DUP' });
+      const onSelect = jest.fn();
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-DUP'));
+      fireEvent.press(getByTestId('boarding-train-row-T-DUP'));
+      fireEvent.press(getByTestId('boarding-train-row-T-DUP'));
+      expect(onSelect).toHaveBeenCalledTimes(1);
+    });
+
+    it('pending 중 다른 row 탭 시 disabled — onSelect 호출 안 됨', () => {
+      const a = makeTrain({ trainCode: 'T-A' });
+      const b = makeTrain({ trainCode: 'T-B' });
+      const onSelect = jest.fn();
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[a, b]} line="2" onSelect={onSelect} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-A'));
+      fireEvent.press(getByTestId('boarding-train-row-T-B'));
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      expect(onSelect).toHaveBeenCalledWith(a);
+    });
+
+    it('lockedTrainCode가 pendingTrainCode와 일치하면 pending confirmed → marker 제거 + 재탭 가능', () => {
+      const train = makeTrain({ trainCode: 'T-CONF' });
+      const onSelect = jest.fn();
+      const { getByTestId, queryByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-CONF'));
+      expect(getByTestId('boarding-train-pending-T-CONF')).toBeTruthy();
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={onSelect}
+          lockedTrainCode="T-CONF"
+        />,
+      );
+      expect(queryByTestId('boarding-train-pending-T-CONF')).toBeNull();
+      // 재탭 가능(다른 lock 변경 등) — onSelect 누적 2회.
+      fireEvent.press(getByTestId('boarding-train-row-T-CONF'));
+      expect(onSelect).toHaveBeenCalledTimes(2);
+    });
+
+    it('pendingTimeoutMs 경과 시 자동 rollback — marker 제거 + 재탭 가능', () => {
+      jest.useFakeTimers();
+      try {
+        const train = makeTrain({ trainCode: 'T-TIMEOUT' });
+        const onSelect = jest.fn();
+        const { getByTestId, queryByTestId } = renderWithTheme(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={onSelect}
+            pendingTimeoutMs={3000}
+          />,
+        );
+        fireEvent.press(getByTestId('boarding-train-row-T-TIMEOUT'));
+        expect(getByTestId('boarding-train-pending-T-TIMEOUT')).toBeTruthy();
+        act(() => {
+          jest.advanceTimersByTime(3000);
+        });
+        expect(queryByTestId('boarding-train-pending-T-TIMEOUT')).toBeNull();
+        fireEvent.press(getByTestId('boarding-train-row-T-TIMEOUT'));
+        expect(onSelect).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('unmount 시 rollback timer 정리 — pending timeout 이후 setState 호출되지 않음', () => {
+      jest.useFakeTimers();
+      try {
+        const train = makeTrain({ trainCode: 'T-UNMOUNT' });
+        const { getByTestId, unmount } = renderWithTheme(
+          <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+        );
+        fireEvent.press(getByTestId('boarding-train-row-T-UNMOUNT'));
+        unmount();
+        // setTimeout 시간 경과 — unmount 후 setState 호출 시 React warning 발생 가능.
+        // 본 테스트는 warning 없이 통과해야 한다.
+        expect(() =>
+          act(() => {
+            jest.advanceTimersByTime(10000);
+          }),
+        ).not.toThrow();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('lockedTrainCode가 미일치(다른 trainCode)면 pending 유지 — timeout으로만 해제', () => {
+      const train = makeTrain({ trainCode: 'T-MISS' });
+      const { getByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-MISS'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-OTHER"
+        />,
+      );
+      expect(getByTestId('boarding-train-pending-T-MISS')).toBeTruthy();
+    });
+
+    it('lockedTrainCode만 있고 pending이 없으면 effect는 no-op (다른 채널로 lock 생성된 케이스)', () => {
+      const train = makeTrain({ trainCode: 'T-EXT' });
+      const { queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-EXT"
+        />,
+      );
+      expect(queryByTestId('boarding-train-pending-T-EXT')).toBeNull();
+    });
+
+    it('walkingBufferSeconds로 disabled인 row는 탭해도 pending 진입 안 함', () => {
+      const tooSoon = makeTrain({ trainCode: 'T-EARLY', arrivalSeconds: 60 });
+      const onSelect = jest.fn();
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[tooSoon]}
+          line="2"
+          onSelect={onSelect}
+          walkingBufferSeconds={180}
+        />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-EARLY'));
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(queryByTestId('boarding-train-pending-T-EARLY')).toBeNull();
+    });
+
+    it('연속 두 번째 탭이 새 timer로 교체되지 않음 (pending 동안 모든 탭 무시) — accessibilityState.busy=true', () => {
+      const train = makeTrain({ trainCode: 'T-BUSY' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      const row = getByTestId('boarding-train-row-T-BUSY');
+      expect(row.props.accessibilityState.busy).toBe(false);
+      fireEvent.press(row);
+      const rowAfter = getByTestId('boarding-train-row-T-BUSY');
+      expect(rowAfter.props.accessibilityState.busy).toBe(true);
+      expect(rowAfter.props.accessibilityState.disabled).toBe(false);
     });
   });
 

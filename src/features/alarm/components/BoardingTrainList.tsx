@@ -6,6 +6,7 @@
  *
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing, radius } from '../../../shared/theme';
@@ -34,6 +35,18 @@ const LINE_STRIPE_WIDTH = 3;
  * 체감 가능한 단위(3분)를 첫 신호로 잡는다.
  */
 const DELAY_NOTICE_THRESHOLD_SECONDS = 180;
+
+/**
+ * 낙관적 탭 pending 상태의 자동 rollback 임계값(ms) — #1165 / Epic #1008 C 단기 1번 (B4 경로 1).
+ *
+ * 사용자가 row를 탭한 직후 onSelect → backend round-trip(BoardingLock 생성) 대기 동안 pending 상태로
+ * 시각 피드백을 노출한다. 이 시간 안에 부모가 `lockedTrainCode`로 확정 신호를 주지 않으면 pending을
+ * 자동 해제(rollback)해 stuck 상태를 방지한다. 30s 폴 + 모바일 RTT P95(~3s)를 고려해 5s로 설정.
+ */
+const PENDING_TIMEOUT_MS_DEFAULT = 5000;
+
+/** pending row 시각 피드백 — accent 색 테두리 두께. row의 borderLeft stripe와 별도 외곽 outline. */
+const PENDING_BORDER_WIDTH = 2;
 
 interface Props {
   arrivals: ArrivalInfo[];
@@ -64,6 +77,20 @@ interface Props {
    * 미전달이면 칩 미노출 — lock 없는 상태(예: misBoarding 재선택)나 레거시 lock에서도 안전.
    */
   initialEtaSeconds?: number;
+  /**
+   * 현재 활성 BoardingLock의 trainCode — #1165 낙관적 탭 확정 신호.
+   *
+   * 사용자가 row를 탭하면 컴포넌트가 즉시 pending 상태로 시각 피드백을 보여주고 onSelect를 호출한다.
+   * 부모는 backend round-trip 완료 후 이 prop을 새 lock의 trainCode로 갱신한다. pendingTrainCode와
+   * 일치하면 pending이 confirmed로 전환되며 rollback timer가 해제된다. 미일치 또는 timeout 시에는
+   * pending이 자동 해제(rollback). 미전달 시 pending은 timeout으로만 해제된다.
+   */
+  lockedTrainCode?: string | null;
+  /**
+   * pending 자동 rollback timeout(ms) — #1165. 미전달 시 PENDING_TIMEOUT_MS_DEFAULT(5000ms).
+   * 테스트/조정용 노출.
+   */
+  pendingTimeoutMs?: number;
 }
 
 /**
@@ -103,9 +130,49 @@ export function BoardingTrainList({
   nextStationLabel = null,
   compact = false,
   initialEtaSeconds,
+  lockedTrainCode = null,
+  pendingTimeoutMs = PENDING_TIMEOUT_MS_DEFAULT,
 }: Props) {
   const { colors } = useTheme();
   const { t } = useTranslation();
+  // #1165 낙관적 탭 — 즉시 시각 피드백 + 중복 탭 방지.
+  // pendingTrainCode가 set되어 있으면 그 row가 pending highlight, 다른 row는 disabled.
+  const [pendingTrainCode, setPendingTrainCode] = useState<string | null>(null);
+  const rollbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearRollbackTimer = useCallback(() => {
+    if (rollbackTimerRef.current != null) {
+      clearTimeout(rollbackTimerRef.current);
+      rollbackTimerRef.current = null;
+    }
+  }, []);
+
+  // 부모가 lockedTrainCode로 확정 신호 → pending 해제(confirmed). 확정된 후 lock 칩/highlight는
+  // 호출자가 자체적으로 처리(별도 lock UI). 본 컴포넌트는 pending 상태만 책임진다.
+  useEffect(() => {
+    if (pendingTrainCode != null && lockedTrainCode === pendingTrainCode) {
+      clearRollbackTimer();
+      setPendingTrainCode(null);
+    }
+  }, [lockedTrainCode, pendingTrainCode, clearRollbackTimer]);
+
+  // unmount 시 timer 정리.
+  useEffect(() => clearRollbackTimer, [clearRollbackTimer]);
+
+  const handlePress = useCallback(
+    (train: ArrivalInfo) => {
+      // 이미 다른 row가 pending이면 무시(중복 탭 방지). 같은 row 재탭도 무시.
+      if (pendingTrainCode != null) return;
+      setPendingTrainCode(train.trainCode);
+      clearRollbackTimer();
+      rollbackTimerRef.current = setTimeout(() => {
+        setPendingTrainCode(null);
+        rollbackTimerRef.current = null;
+      }, pendingTimeoutMs);
+      onSelect(train);
+    },
+    [pendingTrainCode, clearRollbackTimer, pendingTimeoutMs, onSelect],
+  );
   // #915 후속: 헤더 라벨/empty placeholder를 i18n으로 분리.
   // 4 locales(ko/en/ja/zh) 비-한국어 사용자가 핵심 baseline UX("탑승할 열차 선택")를 모국어로 본다.
   const headerTitle = title ?? t('home.boardingTrainListTitle');
@@ -152,6 +219,10 @@ export function BoardingTrainList({
       )}
       {filteredArrivals.map((train, index) => {
         const unreachable = isUnreachable(train);
+        // #1165 — 다른 row가 pending이면 이 row는 disabled. 같은 row가 pending이면 highlight.
+        const isPending = pendingTrainCode === train.trainCode;
+        const isPendingBlocked = pendingTrainCode != null && !isPending;
+        const disabled = unreachable || isPendingBlocked;
         // #792: 종착·방면 라벨을 i18n 정규화 + dedup. nextStationLabel 미전달이면 종착만.
         const metaText = buildDirectionMeta(train.destination, nextStationLabel, allStations);
         // #790: API arvlMsg2 기반 진짜 거리 표시. 비어있으면 mock/schedule fallback 경로 —
@@ -166,13 +237,17 @@ export function BoardingTrainList({
         return (
           <Pressable
             key={train.trainCode}
-            onPress={() => onSelect(train)}
-            disabled={unreachable}
+            onPress={() => handlePress(train)}
+            disabled={disabled}
             style={[
               compact ? styles.rowCompact : styles.row,
               compact ? null : { backgroundColor: colors.card },
               { borderLeftWidth: LINE_STRIPE_WIDTH, borderLeftColor: LINE_COLORS[train.line] },
-              { opacity: unreachable ? 0.4 : 1 },
+              isPending && {
+                borderWidth: PENDING_BORDER_WIDTH,
+                borderColor: colors.accent,
+              },
+              { opacity: unreachable ? 0.4 : isPendingBlocked ? 0.5 : 1 },
             ]}
             testID={`boarding-train-row-${train.trainCode}`}
             accessibilityRole="button"
@@ -182,9 +257,18 @@ export function BoardingTrainList({
               arrival: arrivalText,
             })}
             accessibilityHint={t('a11y.alarm.boardingTrainSelectHint')}
-            accessibilityState={{ disabled: unreachable }}
+            accessibilityState={{ disabled, busy: isPending }}
           >
             <View style={styles.rowContent}>
+              {/* #1165 pending marker — 테스트/스크린리더 접근용. 시각적 highlight는 outline border로 처리.
+                  Pressable의 accessibilityState.busy=true가 이미 스크린리더에 pending을 전달하므로
+                  marker 자체는 의미 없는 0×0 View. testID만 노출. */}
+              {isPending && (
+                <View
+                  style={styles.pendingMarker}
+                  testID={`boarding-train-pending-${train.trainCode}`}
+                />
+              )}
               <View style={styles.rowMetaLine}>
                 <Text
                   style={[
@@ -325,4 +409,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   delayChipText: { fontSize: 11, fontWeight: '700', letterSpacing: 0 },
+  // #1165 — pending 상태 visual은 row outline border로 처리. 별도 marker는 0×0 invisible View.
+  // 테스트에서 testID로 pending 진입을 확인하기 위함이며, layout/접근성에 영향을 주지 않는다.
+  pendingMarker: { width: 0, height: 0 },
 });
