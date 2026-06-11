@@ -56,6 +56,10 @@ import {
   validatePrescheduledUpload,
 } from './prescheduledTelemetry';
 import {
+  recordServerProgressUpload,
+  validateServerProgressUpload,
+} from './serverProgressTelemetry';
+import {
   tokenPrefix,
   validateTelemetryUpload,
   writeTelemetryDataPoints,
@@ -507,6 +511,42 @@ app.post('/telemetry/prescheduled', async (c) => {
       // #986 — miss trip 진단 컨텍스트. 없으면 omit (JSON.stringify가 undefined 자동 제거).
       // Logpush로 사후 root cause 분석 (AE blob에는 미적재 — free-form/PII 회피).
       missContext: payload.missContext,
+    }),
+  );
+  return c.json({ ok: true });
+});
+
+/**
+ * BFF `/progress` 폴링 수신율 텔레메트리 upload (#1173, Epic #1008 C 단기 B5).
+ *
+ * Client SeoulBffProgressProvider가 폴링 윈도우 단위로 attempts/received를 집계해 업로드.
+ * TELEMETRY binding 미설정 시 graceful no-op (recall/prescheduled 동형).
+ *
+ * 본 엔드포인트는 catalog SSOT(`serverProgressReceived`)와 짝 — 95% 충족이
+ * B5(server progress) optional → required 승격 게이트 측정 신호.
+ */
+app.post('/telemetry/server-progress', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const payload = validateServerProgressUpload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const writer = c.env.TELEMETRY;
+  if (writer) {
+    recordServerProgressUpload(writer, payload);
+  }
+  console.log(
+    JSON.stringify({
+      msg: 'server-progress uploaded',
+      tokenPrefix: tokenPrefix(payload.token),
+      attempts: payload.attempts,
+      received: payload.received,
+      sink: writer ? 'ae' : 'none',
     }),
   );
   return c.json({ ok: true });

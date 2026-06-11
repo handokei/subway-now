@@ -101,6 +101,14 @@ export const MIN_RECALL_RATIO_THRESHOLD = readNumber('MIN_RECALL_RATIO_THRESHOLD
  */
 export const RECALL_THRESHOLD_CRITICAL = readNumber('RECALL_THRESHOLD_CRITICAL');
 
+/**
+ * #1173 Epic C B5 — BFF `/progress` 폴링 응답 수신율 하한.
+ * 1주 baseline rolling 평균이 본 값 미만이면 backend down / 네트워크 회귀로 분류 → 운영 alert.
+ * 95% 충족 시 B5(server progress) optional → required 승격 게이트로 활용.
+ * Phase 4 결정 게이트(`decidePhaseFour`)와 분리된 운영 KPI.
+ */
+export const MIN_SERVER_PROGRESS_RECEIVED_RATIO = readNumber('MIN_SERVER_PROGRESS_RECEIVED_RATIO');
+
 /** AE 적재 label prefix — 기존 silent-push 텔레메트리와 namespace 분리. */
 const METRIC_LABEL_PREFIX = readString('METRIC_LABEL_PREFIX');
 
