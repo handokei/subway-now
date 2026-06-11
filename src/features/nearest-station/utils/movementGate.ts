@@ -23,7 +23,15 @@
  *   - 평가 순서: stale > accuracy > **motion-stationary** > speed > position.
  *     motion이 speed보다 우선 — 16:14:22 회귀에서 snapshot speed=0.69 m/s가 STATIC_SPEED_THRESHOLD_MPS=0.5를
  *     우회한 phantom 케이스를 잡기 위함. destination/transfer 카테고리도 같은 가드로 보호.
- *   - 권한 거절/미지원: motionStationary 미전달 → 기존 가드만 동작 (graceful fallback).
+ *   - 권한 거절/미지원: motionStationary=false → speed/positionStability 가드로 fallback.
+ *
+ * #1013 — warmup window 보호 + positionStability 60s fallback:
+ *   - fg-hydrate 직후 30s warmup window 동안 motionStationary=undefined (아직 초기화 중).
+ *     이 상태에서 speedMps=null + positionStability='unknown'이면 신호 부재 구간 → 'motion-warmup'으로 차단.
+ *   - motion 권한 거절(motionStationary=false 고정) 시 speed 미측정이면 positionStability fallback이
+ *     유일한 정적 판정 수단. positionStability 60s 수집이 완료되면 'static'/'moving'으로 정상 동작.
+ *   - 평가 순서 확장: stale > accuracy > motion-stationary(=true) > speed > position > **motion-warmup**
+ *     (motion=undefined + speed=null + positionStability=unknown일 때 마지막 보호막).
  *
  * 입력 필드는 모두 옵션 — 호출자가 측정 가능한 신호만 전달하면 된다. 누락된 신호는
  * 해당 분기 검증을 skip (false negative보다 false positive 차단 우선).
@@ -49,7 +57,11 @@ export type MovementReason =
   | 'static-position'
   // #728 — CMMotionActivity(iOS) motion=stationary 신호. OS 가속도계 기반 정적 판정.
   // speed=0.69 m/s 같은 임계 우회 phantom과 destination/transfer 카테고리 무방비 회귀를 동시에 차단.
-  | 'motion-stationary';
+  | 'motion-stationary'
+  // #1013 — fg-hydrate 직후 warmup window(~30s) 동안 motion 신호가 아직 초기화되지 않은 상태.
+  // motionStationary=undefined + speedMps=null + positionStability='unknown' 동시 발생 시 신호 부재
+  // 구간으로 차단. positionStability 60s 수집 또는 motion 초기화 완료 후 자연 해소.
+  | 'motion-warmup';
 
 interface MovementSignalShared {
   speedMps?: number;
@@ -76,6 +88,7 @@ export const MOVEMENT_TO_ALARM_LOG_REASON = {
   'static-speed': 'movement-static-speed',
   'static-position': 'movement-static-position',
   'motion-stationary': 'movement-motion-stationary',
+  'motion-warmup': 'movement-motion-warmup',
 } as const satisfies Record<MovementReason, string>;
 
 /**
@@ -177,7 +190,9 @@ export interface LocationSignalInput {
  *        destination/transfer 카테고리 무방비를 동시 차단하는 핵심 신호.
  *   5. speedMps 있으면서 < STATIC_SPEED_THRESHOLD_MPS → 'static-speed'
  *   6. (#733) speedMps 없고 positionStability='static' → 'static-position'
- *   7. 그 외 → reliable=true
+ *   7. (#1013) motionStationary=undefined + speedMps=null + positionStability='unknown' → 'motion-warmup'
+ *      - fg-hydrate 직후 warmup window. 모든 신호가 부재할 때 한시적 차단.
+ *   8. 그 외 → reliable=true
  *
  * 호출자는 결과의 reason으로 logSuppressedGate/logSilentPushSkipped 등 적재.
  */
@@ -185,6 +200,13 @@ export function evaluateMovement(
   loc: LocationSignalInput | null,
   now: number = Date.now(),
   positionStability?: PositionStability,
+  /**
+   * CMMotionActivity stationary 신호.
+   *   - `true`  : OS 가속도계가 정적 확정 → 즉시 차단 (speed보다 우선).
+   *   - `false` : 이동 중 또는 motion 권한 거절/미지원 → motion 가드 스킵, speed/position fallback.
+   *   - `undefined` : 초기화 중 warmup 상태(fg-hydrate 직후 ~30s). speed=null + positionStability=unknown
+   *                   동시 발생 시 'motion-warmup'으로 차단해 신호 부재 구간 게이트 우회 방지 (#1013).
+   */
   motionStationary?: boolean,
 ): MovementSignal {
   if (!loc) return { reliable: false, reason: 'no-location' };
@@ -215,6 +237,14 @@ export function evaluateMovement(
   // 차단. 'unknown'/'moving'은 신뢰성 없음 → 기존 path 유지 (reliable).
   if (loc.speedMps == null && positionStability === 'static') {
     return { reliable: false, reason: 'static-position' };
+  }
+
+  // #1013 — warmup window 보호. fg-hydrate 직후 motionStationary=undefined(초기화 중) +
+  // speedMps=null + positionStability='unknown' 동시 발생 = 모든 신호 부재 구간.
+  // 이 상태에서 gate를 통과시키면 stale 좌표 기반 잘못된 알람 발사 위험.
+  // positionStability 60s 수집 또는 motion 초기화 완료 후 자연 해소 — 한시적 차단.
+  if (motionStationary === undefined && loc.speedMps == null && positionStability === 'unknown') {
+    return { reliable: false, reason: 'motion-warmup' };
   }
 
   const result: MovementSignal = { reliable: true };

@@ -31,6 +31,7 @@ import {
   logFiredAlarm,
   logFiredAlarmsHydrate,
   logFiredStationPassed,
+  logRefMismatch,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
@@ -97,6 +98,7 @@ async function dispatchStationPassed(params: {
   source: 'fg' | 'fg-arvlcd';
   candidateStation: Station;
   capturedRoute: Route;
+  capturedDestinationId: string;
   capturedDestinationName: string;
   notificationSource: NotificationSource | undefined;
   isCancelled: () => boolean;
@@ -106,13 +108,14 @@ async function dispatchStationPassed(params: {
     source,
     candidateStation,
     capturedRoute,
+    capturedDestinationId,
     capturedDestinationName,
     notificationSource,
     isCancelled,
     errorLogPrefix,
   } = params;
   try {
-    const lastId = await getLastNotifiedStationId();
+    const lastId = await getLastNotifiedStationId(capturedDestinationId);
     if (isCancelled()) return;
     if (candidateStation.id === lastId) {
       logSuppressedDedupStation(source, candidateStation);
@@ -132,7 +135,7 @@ async function dispatchStationPassed(params: {
       notificationSource,
     );
     if (isCancelled()) return;
-    await setLastNotifiedStationId(candidateStation.id);
+    await setLastNotifiedStationId(capturedDestinationId, candidateStation.id);
     logFiredStationPassed(source, candidateStation);
   } catch (e) {
     logger.error(errorLogPrefix, e);
@@ -150,6 +153,7 @@ async function runSilenceGateAndDispatch(params: {
   source: 'fg' | 'fg-arvlcd';
   candidateStation: Station;
   capturedRoute: Route;
+  capturedDestinationId: string;
   capturedDestinationName: string;
   notificationSource: NotificationSource | undefined;
   isCancelled: () => boolean;
@@ -176,6 +180,7 @@ async function runSilenceGateAndDispatch(params: {
     source: params.source,
     candidateStation: params.candidateStation,
     capturedRoute: params.capturedRoute,
+    capturedDestinationId: params.capturedDestinationId,
     capturedDestinationName: params.capturedDestinationName,
     notificationSource: params.notificationSource,
     isCancelled: params.isCancelled,
@@ -211,8 +216,10 @@ export interface UseStationAlarmInputs {
    * #728 — CMMotionActivity(iOS) motion=stationary 신호. true면 OS 가속도계가 사용자 정적으로 판정.
    * evaluateMovement가 'motion-stationary' reason으로 모든 카테고리(destination/transfer/station-passed)
    * 알람을 차단. 미전달/false면 기존 가드만 동작 (graceful fallback).
+   * #1013 — undefined는 warmup 상태(fg-hydrate 직후 ~30s). speed=null + positionStability=unknown과
+   * 동시 발생 시 evaluateMovement가 'motion-warmup'으로 차단.
    */
-  motionStationary?: boolean;
+  motionStationary?: boolean | undefined;
   /**
    * #917 A2 follow-up — FG fast path arvlCd∈{0,1} 매역 알림 입력.
    *
@@ -424,7 +431,11 @@ export function useStationAlarm({
 
     // #699: destination 변경 직후 firedAlarmsRef가 옛 destination 내용일 수 있다.
     // hydrate가 완료되어 ref id가 현재 destinationId와 일치할 때까지 평가 보류.
-    if (firedAlarmsRefDestIdRef.current !== destination.id) return;
+    // #580 M4: mismatch 발생 시 stamp — 같은 destinationId에서 반복되면 hydration race 정황.
+    if (firedAlarmsRefDestIdRef.current !== destination.id) {
+      logRefMismatch(destination.id, firedAlarmsRefDestIdRef.current);
+      return;
+    }
 
     // 알람 경로는 표시 경로보다 엄격한 정확도 게이트(MAX_ACCURACY_M=200m)를 적용한다.
     // useNearestStation은 지하 구간에서 정확도 1500m까지 표시용으로 수용하므로,
@@ -550,7 +561,11 @@ export function useStationAlarm({
     if (!route || !destination) return;
     // #699: ETA effect와 동일 guard — destination 전환 race로 stale ref가 imminent를
     // 잘못 발사하는 것을 차단한다.
-    if (firedAlarmsRefDestIdRef.current !== destination.id) return;
+    // #580 M4: mismatch stamp.
+    if (firedAlarmsRefDestIdRef.current !== destination.id) {
+      logRefMismatch(destination.id, firedAlarmsRefDestIdRef.current);
+      return;
+    }
     if (!isImminentByArrivalCode(destinationArrival, trackedTrainCode)) return;
 
     const imminentKey = `imminent:${destination.name}`;
@@ -661,6 +676,7 @@ export function useStationAlarm({
     if (nearestStation && isStationOnRoute(nearestStation, route)) {
       const candidateStation = nearestStation;
       const capturedRoute = route;
+      const capturedDestinationId = destination.id;
       const capturedDestinationName = destination.name;
 
       // #733 — station-passed movement gate (S4 fix).
@@ -685,6 +701,7 @@ export function useStationAlarm({
         source: 'fg',
         candidateStation,
         capturedRoute,
+        capturedDestinationId,
         capturedDestinationName,
         notificationSource,
         isCancelled: () => cancelled,
@@ -736,12 +753,17 @@ export function useStationAlarm({
     if (!firedHydrated) return;
     if (!route || !destination) return;
     if (!nearestStation) return;
-    if (firedAlarmsRefDestIdRef.current !== destination.id) return;
+    // #580 M4: mismatch stamp.
+    if (firedAlarmsRefDestIdRef.current !== destination.id) {
+      logRefMismatch(destination.id, firedAlarmsRefDestIdRef.current);
+      return;
+    }
     if (!currentStationArrival) return;
     if (!isStationOnRoute(nearestStation, route)) return;
 
     const candidateStation = nearestStation;
     const capturedRoute = route;
+    const capturedDestinationId = destination.id;
     const capturedDestinationName = destination.name;
 
     let cancelled = false;
@@ -773,6 +795,7 @@ export function useStationAlarm({
         source: 'fg-arvlcd',
         candidateStation,
         capturedRoute,
+        capturedDestinationId,
         capturedDestinationName,
         notificationSource,
         isCancelled: () => cancelled,

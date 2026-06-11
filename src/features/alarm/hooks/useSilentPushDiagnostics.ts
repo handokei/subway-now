@@ -120,6 +120,18 @@ export function useSilentPushDiagnostics(): SilentPushDiagnostics {
         // 깨진 entry는 무시 — 진단 표시만 빈 값.
       }
     }
+    // #1011: lastNotifiedStationId는 { destinationId, stationId } JSON. stationId만 표시.
+    // 이전 포맷(plain string) 또는 파싱 실패 시 raw 값으로 graceful degrade.
+    let parsedLastNotifiedStationId: string | null = null;
+    if (lastNotifiedStationId) {
+      try {
+        const parsed = JSON.parse(lastNotifiedStationId) as { stationId?: unknown };
+        parsedLastNotifiedStationId =
+          typeof parsed?.stationId === 'string' ? parsed.stationId : lastNotifiedStationId;
+      } catch {
+        parsedLastNotifiedStationId = lastNotifiedStationId;
+      }
+    }
     setDiag({
       apnsToken,
       activeTripToken,
@@ -130,7 +142,7 @@ export function useSilentPushDiagnostics(): SilentPushDiagnostics {
       ...latest,
       hasRoute: routeJson != null && routeJson.length > 0,
       destinationId,
-      lastNotifiedStationId,
+      lastNotifiedStationId: parsedLastNotifiedStationId,
     });
   }, []);
 

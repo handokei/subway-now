@@ -86,6 +86,11 @@ interface UseFusedNearestStationReturn {
    * speed 부재 시에도 정적 misfire 차단을 가능하게 한다.
    */
   positionStability: PositionStability;
+  /**
+   * #1025 — stationProgressEstimator가 이번 render에서 채택한 전략.
+   * BoardingLock 비활성 시 null. DebugModal Estimator State 섹션에서 사용.
+   */
+  estimatorStrategy: import('../../route/utils/stationProgressEstimator').StationProgressStrategy | null;
   refresh: () => Promise<void>;
 }
 
@@ -209,8 +214,10 @@ export function useFusedNearestStation(
   /**
    * #728 — CMMotionActivity(iOS) motion=stationary 신호. shouldDowngradeFusion이 speed=null인
    * 정적 사용자 케이스에서 positionStability보다 우선 적용. 미전달이면 기존 동작 유지.
+   * #1013 — undefined는 warmup 상태(fg-hydrate 직후 ~30s). evaluateMovement로 전달되어
+   * speed=null + positionStability=unknown과 동시 발생 시 'motion-warmup'으로 차단.
    */
-  motionStationary?: boolean,
+  motionStationary?: boolean | undefined,
   /**
    * #903 (Seam G) + #921 — 기압계 신호 묶음.
    * - `subsurface`: dP/dt가 지하 진입을 시사하는지. true면 GPS-only 결과는 'gps-only-underground'로
@@ -290,19 +297,6 @@ export function useFusedNearestStation(
     );
   }, [candidates, a0.arrival, a1.arrival, a2.arrival, p0.positions, p1.positions, p2.positions]);
 
-  // arcStations — routeContext에서 미리 산출. positionTrainResult 내 (c) 게이트가 arc window를
-  // 참조하므로 positionTrainResult useMemo보다 앞에 위치해야 한다.
-  // ADR-008 stationProgressEstimator — 이후 estimate override에서도 재사용.
-  const arcStations = useMemo<Station[]>(() => {
-    if (!routeContext || !routeContext.origin || !routeContext.destination) return [];
-    const arc = computeRouteArc(
-      routeContext.route,
-      routeContext.origin,
-      routeContext.destination,
-    );
-    return arc?.stations ?? [];
-  }, [routeContext]);
-
   // Phase 1C: Position-first fusion.
   // 후보 trainNo들(pickCandidateTrains) → trackTrainProgress로 단일 trainNo·현재역 결정.
   // anchor = 각 호선의 GPS 최근접 후보. 후보 1개로 단정되거나 GPS로 disambiguation되면 채택.
@@ -324,14 +318,29 @@ export function useFusedNearestStation(
     return out;
   }, [candidates, p0.positions, p1.positions, p2.positions]);
 
+  // #1017: arcStations를 trackTrainProgress forward-only 가드에 넘기기 위해 trainProgress 이전에 선언.
+  // 기존 arcStations useMemo(ADR-008 estimator용)는 아래에서 이 값을 재사용한다.
+  const arcStations = useMemo<Station[]>(() => {
+    if (!routeContext || !routeContext.origin || !routeContext.destination) return [];
+    const arc = computeRouteArc(
+      routeContext.route,
+      routeContext.origin,
+      routeContext.destination,
+    );
+    return arc?.stations ?? [];
+  }, [routeContext]);
+
   const trainProgress = useMemo(
     () =>
       trackTrainProgress({
         candidates: candidateTrains,
         userLocation: gps.userLocation,
         lastConfirmedTrainNo: lastConfirmedTrainNoRef.current,
+        // #1017 forward-only 가드 — boardingLock이 있을 때만 적용.
+        segmentStations: boardingLock ? arcStations : undefined,
+        boardingStationId: boardingLock?.boardingStationId,
       }),
-    [candidateTrains, gps.userLocation],
+    [candidateTrains, gps.userLocation, boardingLock, arcStations],
   );
 
   // #445: trainProgress 갱신 시각 추적 + TTL 만료 후 첫 갱신에서 sticky 락 해제.
@@ -719,6 +728,7 @@ export function useFusedNearestStation(
     gpsActive: gps.gpsActive,
     lastFixAtMs: gps.lastFixAtMs,
     positionStability,
+    estimatorStrategy: estimate?.strategy ?? null,
     refresh: gps.refresh,
   };
 }

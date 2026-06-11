@@ -189,6 +189,27 @@ describe('useSilentPushDiagnostics', () => {
     expect(result.current.destinationId).toBeNull();
   });
 
+  it('lastNotifiedStationId: JSON tuple 포맷 { stationId } → stationId 추출 (#1011)', async () => {
+    mockGetItem.mockImplementation((key: string) =>
+      Promise.resolve(
+        key === LAST_NOTIFIED_STATION_KEY
+          ? JSON.stringify({ destinationId: 'dest-1', stationId: '7-015' })
+          : null,
+      ),
+    );
+    const { result } = renderHook(() => useSilentPushDiagnostics());
+    await waitFor(() => expect(result.current.lastNotifiedStationId).toBe('7-015'));
+  });
+
+  it('lastNotifiedStationId: JSON이지만 stationId가 string 아니면 raw 값 그대로 (#1011)', async () => {
+    const raw = JSON.stringify({ stationId: 42 });
+    mockGetItem.mockImplementation((key: string) =>
+      Promise.resolve(key === LAST_NOTIFIED_STATION_KEY ? raw : null),
+    );
+    const { result } = renderHook(() => useSilentPushDiagnostics());
+    await waitFor(() => expect(result.current.lastNotifiedStationId).toBe(raw));
+  });
+
   it('unmount 시 listener 해제', () => {
     const removeSpy = jest.fn();
     jest.spyOn(AppState, 'addEventListener').mockReturnValue({

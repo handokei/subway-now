@@ -464,4 +464,10 @@ export interface Env {
    * 등록: `wrangler secret put ADMIN_TOKEN`
    */
   ADMIN_TOKEN?: string;
+  /**
+   * 일일 요청 quota 80% 도달 시 경고 webhook URL (#1022).
+   * Slack incoming webhook 또는 호환 receiver. 미설정 시 콘솔 경고만 발사(graceful no-op).
+   * 등록: `wrangler secret put QUOTA_ALERT_WEBHOOK_URL`
+   */
+  QUOTA_ALERT_WEBHOOK_URL?: string;
 }
