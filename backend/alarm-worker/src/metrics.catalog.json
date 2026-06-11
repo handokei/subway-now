@@ -8,7 +8,8 @@
     "SLA_PERCENTILE": 0.95,
     "METRIC_LABEL_PREFIX": "phase3",
     "MIN_RECALL_RATIO_THRESHOLD": 0.95,
-    "RECALL_THRESHOLD_CRITICAL": 0.9
+    "RECALL_THRESHOLD_CRITICAL": 0.9,
+    "MIN_SERVER_PROGRESS_RECEIVED_RATIO": 0.95
   },
   "metrics": [
     {
@@ -134,6 +135,13 @@
       "format": "histogram",
       "display": "numeric",
       "description": "#918 A3 — actualFireMs - scheduledFireMs (양수=OS 늦게 발사). p95로 OS 타이밍 SLA 추적. 시계 보정/timer drift 진단 신호."
+    },
+    {
+      "key": "serverProgressReceived",
+      "constantName": "SERVER_PROGRESS_RECEIVED",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#1173 Epic C B5 — BFF /progress 폴링 응답 수신율. hit=2xx 응답 수, total=요청 시도 수. MIN_SERVER_PROGRESS_RECEIVED_RATIO(0.95) 미달이면 backend down/네트워크 회귀 신호. Phase 4 결정 게이트 아님 — B5 optional→required 승격 게이트 측정 인프라(운영 KPI)."
     }
   ]
 }
