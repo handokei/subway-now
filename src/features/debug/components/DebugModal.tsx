@@ -27,6 +27,8 @@ import {
   getAlarmLog,
   summarizeAlarmLogBySource,
   summarizeAlarmLogCounters,
+  BOARDING_PROMPT_WINDOWS,
+  countBoardingPromptByWindow,
   type AlarmLogEntry,
   type AlarmLogReasonCounter,
 } from '../../../features/alarm/utils/alarmLog';
@@ -692,7 +694,7 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
           </Section>
 
                     {/* #1021: boardingPrompt 발사 빈도 카운터 */}
-          <Section title="Counters" colors={colors}>
+          <Section title="Boarding Prompt" colors={colors}>
             {BOARDING_PROMPT_WINDOWS.map(({ key, label }) => (
               <KeyValue
                 key={key}

@@ -603,11 +603,18 @@ describe('alarmLog', () => {
       logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '역삼' });
       logSuppressedDedupAlarm('bg', { phaseId: 'early', type: 'destination', stationName: '강남' });
       await flushAlarmLog();
-      // #735 — 모든 호출이 1회 batch RMW로 적재. setItem 1번, payload에 5건 모두 포함.
+      // #735 — 1회 batch RMW. setItem 1번.
+      // #1024 — (source, reason, stationName)이 같은 fg/dedup-alarm/강남 3건은 count++ 합산.
+      // 결과: fg/강남 계열(count=3) + fg/역삼(count=1) + bg/강남(count=1) = 3개 entry.
       expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(1);
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved).toHaveLength(5);
+      expect(saved).toHaveLength(3);
+      // fg/강남 계열이 count=3으로 병합되었는지 검증
+      const fgGangnam = saved.find((e) => e.source === 'fg' && e.stationName === '강남');
+      expect(fgGangnam?.count).toBe(3);
+      expect(saved.find((e) => e.stationName === '역삼')).toBeTruthy();
+      expect(saved.find((e) => e.source === 'bg' && e.stationName === '강남')).toBeTruthy();
     });
 
     it('#626 Map cap 초과 시 만료된 엔트리 sweep — 무한 성장 방지', async () => {

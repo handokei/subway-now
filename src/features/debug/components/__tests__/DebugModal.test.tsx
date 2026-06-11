@@ -497,7 +497,7 @@ describe('DebugModal', () => {
     ]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-    expect(screen.getByText('Counters')).toBeTruthy();
+    expect(screen.getByText('Boarding Prompt')).toBeTruthy();
     expect(screen.getByText('boardingPrompt(5m)')).toBeTruthy();
     expect(screen.getByText('boardingPrompt(1h)')).toBeTruthy();
     expect(screen.getByText('boardingPrompt(all)')).toBeTruthy();
@@ -507,7 +507,7 @@ describe('DebugModal', () => {
     mockGetAlarmLog.mockResolvedValue([]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-    expect(screen.getByText('Counters')).toBeTruthy();
+    expect(screen.getByText('Boarding Prompt')).toBeTruthy();
   });
 
     it('unmount 시 AppState listener를 정리한다', async () => {
