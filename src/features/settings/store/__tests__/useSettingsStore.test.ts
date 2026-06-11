@@ -9,6 +9,7 @@ import {
   setSentryOptIn,
 } from '../../../../shared/infra/monitoring/sentryInit';
 import { useBoardingLockStore } from '../../../alarm/store/useBoardingLockStore';
+import { emitLocklessToggleTransition } from '../../utils/locklessFunnel';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -17,6 +18,10 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 jest.mock('../../../../shared/infra/monitoring/sentryInit', () => ({
   getSentryOptIn: jest.fn().mockResolvedValue(false),
   setSentryOptIn: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../../utils/locklessFunnel', () => ({
+  emitLocklessToggleTransition: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('../../../alarm/store/useBoardingLockStore', () => ({
@@ -220,6 +225,19 @@ describe('useSettingsStore', () => {
     (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
     await useSettingsStore.getState().loadLocklessStationPassed();
     expect(useSettingsStore.getState().locklessStationPassed).toBe(true);
+  });
+
+  // #1175 — lockless funnel transition emit
+  it('setLocklessStationPassed: prev=true → next=false 시 emit(true, false) 호출', async () => {
+    useSettingsStore.setState({ locklessStationPassed: true });
+    await useSettingsStore.getState().setLocklessStationPassed(false);
+    expect(emitLocklessToggleTransition).toHaveBeenCalledWith(true, false);
+  });
+
+  it('setLocklessStationPassed: prev=false → next=true 시 emit(false, true) 호출', async () => {
+    useSettingsStore.setState({ locklessStationPassed: false });
+    await useSettingsStore.getState().setLocklessStationPassed(true);
+    expect(emitLocklessToggleTransition).toHaveBeenCalledWith(false, true);
   });
 
   // ── #1038 — sentryOptIn (default OFF, opt-in only) ──
