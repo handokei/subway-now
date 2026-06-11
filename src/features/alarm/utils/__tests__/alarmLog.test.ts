@@ -197,6 +197,22 @@ describe('alarmLog', () => {
       await expect(flushAlarmLog()).resolves.toBeUndefined();
     });
 
+    it('#1024 burst inline counter: 같은 key 연속 append는 단일 entry로 count++ 합산', async () => {
+      // 780-783 라인: (source, reason, kind, phaseId, stationName) 동일한 연속 entry를 inline 합산.
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      const base = makeEntry({ outcome: 'suppressed', reason: 'gate-age', stationName: '강남', kind: 'station-passed', ts: 100 });
+      const second = { ...base, ts: 200 };
+      appendAlarmLog(base);
+      appendAlarmLog(second);
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      // 2개가 아닌 1개 entry로 합산, ts는 최신값(200), count=2
+      expect(saved).toHaveLength(1);
+      expect(saved[0].count).toBe(2);
+      expect(saved[0].ts).toBe(200);
+    });
+
     it('pending 없을 때 flush 호출은 no-op (storage 미접근)', async () => {
       await flushAlarmLog();
       expect(AsyncStorage.getItem).not.toHaveBeenCalled();
@@ -605,18 +621,13 @@ describe('alarmLog', () => {
       logSuppressedDedupAlarm('fg', { phaseId: 'early', type: 'destination', stationName: '역삼' });
       logSuppressedDedupAlarm('bg', { phaseId: 'early', type: 'destination', stationName: '강남' });
       await flushAlarmLog();
-      // #735 — 1회 batch RMW. setItem 1번.
-      // #1024 — (source, reason, stationName)이 같은 fg/dedup-alarm/강남 3건은 count++ 합산.
-      // 결과: fg/강남 계열(count=3) + fg/역삼(count=1) + bg/강남(count=1) = 3개 entry.
+      // #735 — 모든 호출이 1회 batch RMW로 적재. setItem 1번, payload에 5건 모두 포함.
+      // #1024 — burst counter key는 (source, reason, kind, phaseId, stationName).
+      // kind/phaseId가 다른 5개 호출은 각자 별개 key이므로 합산 없이 5건 적재.
       expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(1);
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved: AlarmLogEntry[] = JSON.parse(savedJson);
-      expect(saved).toHaveLength(3);
-      // fg/강남 계열이 count=3으로 병합되었는지 검증
-      const fgGangnam = saved.find((e) => e.source === 'fg' && e.stationName === '강남');
-      expect(fgGangnam?.count).toBe(3);
-      expect(saved.find((e) => e.stationName === '역삼')).toBeTruthy();
-      expect(saved.find((e) => e.source === 'bg' && e.stationName === '강남')).toBeTruthy();
+      expect(saved).toHaveLength(5);
     });
 
     it('#626 Map cap 초과 시 만료된 엔트리 sweep — 무한 성장 방지', async () => {
@@ -1304,6 +1315,16 @@ describe('alarmLog', () => {
       const result = summarizeAlarmLogCounters(entries);
       expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: 20 }]);
     });
+
+    it('나중 entry의 ts가 더 작으면 lastTs를 갱신하지 않는다 — line 565 false branch', () => {
+      // 첫 entry ts=200, 두 번째 ts=100 (역순) → existing.lastTs=200 유지.
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: 200 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: 100 }),
+      ];
+      const result = summarizeAlarmLogCounters(entries);
+      expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: 200 }]);
+    });
   });
 
   describe('logBoardingPromptFired + countBoardingPromptByWindow (#1021)', () => {
@@ -1345,6 +1366,14 @@ describe('alarmLog', () => {
         { ts: now - 1000, source: 'boarding-prompt', outcome: 'suppressed' },
       ];
       expect(countBoardingPromptByWindow(entries, now)['5m']).toBe(0);
+    });
+
+    it('now 인자 생략 시 Date.now() 기본값 사용 — line 733 default branch', () => {
+      // 1초 전 fired entry → 기본 now 기준으로 '5m' window 안에 포함.
+      const entries: AlarmLogEntry[] = [
+        { ts: Date.now() - 1000, source: 'boarding-prompt', outcome: 'fired' },
+      ];
+      expect(countBoardingPromptByWindow(entries)['5m']).toBe(1);
     });
   });
 

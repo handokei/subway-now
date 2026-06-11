@@ -29,8 +29,6 @@ import {
   getAlarmLog,
   summarizeAlarmLogBySource,
   summarizeAlarmLogCounters,
-  BOARDING_PROMPT_WINDOWS,
-  countBoardingPromptByWindow,
   type AlarmLogEntry,
   type AlarmLogReasonCounter,
 } from '../../../features/alarm/utils/alarmLog';
