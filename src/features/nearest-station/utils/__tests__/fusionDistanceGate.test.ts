@@ -1,4 +1,4 @@
-import { passesFusionDistanceGate } from '../fusionDistanceGate';
+import { isWithinArcWindow, passesFusionDistanceGate } from '../fusionDistanceGate';
 import { MAX_ACCURACY_M } from '../../../../shared/constants/location';
 import type { NearestStationResult, Station } from '../../../../shared/types/station';
 
@@ -118,6 +118,96 @@ describe('passesFusionDistanceGate', () => {
         maxDeltaKm: 0.2,
       }),
     ).toBe(true);
+  });
+
+  describe('#1016 hole (b) — lockActive 엄격 모드', () => {
+    it('lockActive=false 이면 accuracy>MAX_ACCURACY_M 지하 bypass 유지(기존 동작)', () => {
+      expect(
+        passesFusionDistanceGate({
+          candidate: makeResult('A', 0, 0, 0.7),
+          userLocation,
+          accuracyMeters: MAX_ACCURACY_M + 1,
+          gpsNearest,
+          maxAbsoluteKm: 0.6,
+          maxDeltaKm: 0.2,
+          lockActive: false,
+        }),
+      ).toBe(true);
+    });
+
+    it('lockActive=true 이면 accuracy>MAX_ACCURACY_M 이어도 bypass 거부 — 절대 거리 초과 시 실패', () => {
+      expect(
+        passesFusionDistanceGate({
+          candidate: makeResult('A', 0, 0, 0.7),
+          userLocation,
+          accuracyMeters: MAX_ACCURACY_M + 1,
+          gpsNearest,
+          maxAbsoluteKm: 0.6,
+          maxDeltaKm: 0.2,
+          lockActive: true,
+        }),
+      ).toBe(false);
+    });
+
+    it('lockActive=true 이어도 accuracyMeters=null 이면 통과(측정 불가)', () => {
+      expect(
+        passesFusionDistanceGate({
+          candidate: makeResult('A', 0, 0, 0.2),
+          userLocation,
+          accuracyMeters: null,
+          gpsNearest,
+          maxAbsoluteKm: 0.6,
+          maxDeltaKm: 0.2,
+          lockActive: true,
+        }),
+      ).toBe(true);
+    });
+
+    it('lockActive=true + accuracy 양호 + 거리 정상 → 통과', () => {
+      expect(
+        passesFusionDistanceGate({
+          candidate: makeResult('A', 0, 0, 0.2),
+          userLocation,
+          accuracyMeters: 50,
+          gpsNearest,
+          maxAbsoluteKm: 0.6,
+          maxDeltaKm: 0.2,
+          lockActive: true,
+        }),
+      ).toBe(true);
+    });
+  });
+});
+
+describe('isWithinArcWindow (#1016 hole c)', () => {
+  const arc: Station[] = ['S0', 'S1', 'S2', 'S3', 'S4', 'S5'].map((id) =>
+    makeStation(id, 0, 0),
+  );
+
+  it('arc 비어있으면 true(free-trip)', () => {
+    expect(isWithinArcWindow([], 'S5', 'S0')).toBe(true);
+  });
+
+  it('탑승역이 arc에 없으면 true(데이터 불일치)', () => {
+    expect(isWithinArcWindow(arc, 'S2', 'UNKNOWN')).toBe(true);
+  });
+
+  it('후보가 arc에 없으면 false', () => {
+    expect(isWithinArcWindow(arc, 'UNKNOWN', 'S0')).toBe(false);
+  });
+
+  it('탑승역 인덱스 + WINDOW 이내 → true', () => {
+    // S0(0) + WINDOW(3) = S3까지 허용
+    expect(isWithinArcWindow(arc, 'S3', 'S0')).toBe(true);
+  });
+
+  it('탑승역 인덱스 + WINDOW 초과 → false', () => {
+    // S0(0) + WINDOW(3) = S3까지, S4는 초과
+    expect(isWithinArcWindow(arc, 'S4', 'S0')).toBe(false);
+  });
+
+  it('후보가 탑승역 자신이면 true', () => {
+    expect(isWithinArcWindow(arc, 'S2', 'S2')).toBe(true);
   });
 });
 

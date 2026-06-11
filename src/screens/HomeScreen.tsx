@@ -37,6 +37,7 @@ import { AlarmOverlay } from '../features/alarm/components/AlarmOverlay';
 import { createLogger } from '../shared/utils/logger';
 import { useTheme, typography, spacing, radius } from '../shared/theme';
 import { LineBadge } from '../shared/ui/LineBadge';
+import { LocationStateView } from '../shared/ui/LocationStateView';
 import { ServiceWindowBanner } from '../shared/ui/ServiceWindowBanner';
 import { SourceBadge } from '../features/arrival/components/SourceBadge';
 import { resolveNotificationSource } from '../features/alarm/utils/notificationSource';
@@ -677,19 +678,10 @@ export default function HomeScreen() {
   }, [arrivedBanner]);
 
   if (permissionDenied) {
+    // MapScreen과 동일한 단일 UI(LocationStateView)로 통일. iOS 영구 거부 시 OS dialog가
+    // 뜨지 않아 "다시 시도"가 dead end가 되는 문제를 해결한다 (#1061).
     return (
-      <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
-        <View style={styles.center}>
-          <Text style={styles.icon}>📍</Text>
-          <Text style={[styles.title, { color: colors.ink }]}>{t('permissions.locationRequiredTitle')}</Text>
-          <Text style={[styles.subtitle, { color: colors.muted }]}>
-            {t('permissions.locationRequiredDescription')}
-          </Text>
-          <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
-            <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('common.retry')}</Text>
-          </TouchableOpacity>
-        </View>
-      </SafeAreaView>
+      <LocationStateView permissionDenied={true} loading={false} error={null} onRetry={refresh} />
     );
   }
 

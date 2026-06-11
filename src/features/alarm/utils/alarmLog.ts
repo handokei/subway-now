@@ -95,7 +95,9 @@ export type AlarmLogReason =
   // #746 — 사용자가 알람을 dismiss한 직후 5분 또는 200m 이내 동안 모든 카테고리 차단.
   | 'dismiss-silence'
   | 'gate-phase-accuracy'
-  | 'gate-phase-warmup';
+  | 'gate-phase-warmup'
+  // #1010 — station-passed effect가 lock hydrate 직후 30s warmup window 동안 차단된 발사.
+  | 'gate-station-passed-warmup';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -724,6 +726,21 @@ export function logSuppressedSleepFirstTransfer(input: {
   });
 }
 
+/**
+ * #1010 — station-passed effect가 lock hydrate 직후 30s warmup window 동안 차단된 발사 1건 적재.
+ * stationName은 nearestStation?.name — unknown이면 undefined.
+ */
+export function logSuppressedStationPassedWarmup(stationName: string | undefined): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'fg',
+    outcome: 'suppressed',
+    reason: 'gate-station-passed-warmup',
+    stationName,
+    kind: 'station-passed',
+  });
+}
+
 /** #1021: boardingPrompt 발사 1건 적재. */
 export function logBoardingPromptFired(input: { originStation: string; line: string }): void {
   appendAlarmLog({
@@ -757,6 +774,7 @@ export function countBoardingPromptByWindow(
   }
   return counts;
 }
+
 
 // ── CRUD ──
 

@@ -17,19 +17,19 @@ export function LocationStateView({ permissionDenied, loading, error, onRetry }:
   const { t } = useTranslation();
 
   if (permissionDenied) {
+    // iOS에서 사용자가 권한을 영구 거부하면 requestPermissionsAsync()는 OS dialog 없이
+    // 즉시 denied를 반환한다. 따라서 "권한 요청" 버튼은 무의미하고, 유일한 복구 경로인
+    // "설정 열기"만 노출한다.
     return (
       <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
           <Text style={[styles.message, { color: colors.muted }]}>{t('permissions.locationRequiredShort')}</Text>
-          <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={onRetry} testID="location-retry-button">
-            <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('permissions.request')}</Text>
-          </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.secondaryButton, { borderColor: colors.accent }]}
+            style={[styles.button, { backgroundColor: colors.accent }]}
             onPress={openAppSettings}
             testID="location-open-settings-button"
           >
-            <Text style={[styles.buttonText, { color: colors.accent }]}>{t('permissions.openSettings')}</Text>
+            <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('permissions.openSettings')}</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -81,13 +81,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingVertical: 12,
     borderRadius: 8,
-  },
-  secondaryButton: {
-    paddingHorizontal: 24,
-    paddingVertical: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    marginTop: 12,
   },
   buttonText: {
     fontSize: 16,
