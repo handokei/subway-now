@@ -1627,4 +1627,59 @@ describe('DebugModal — fusedSpeed fallback (#853)', () => {
     // GPS speed가 "-"로 노출되더라도 fused 라인이 별도로 사용자 인지 가능해야 함.
     expect(await screen.findByText('18.0 km/h (position-train)')).toBeTruthy();
   });
+  describe('formatReasonCountsLine (#1019)', () => {
+    it('빈 로그이면 빈 문자열', () => { expect(__test__.formatReasonCountsLine([])).toBe(''); });
+    it('fired/received는 제외', () => {
+      expect(__test__.formatReasonCountsLine([{ ts: 1, source: 'fg' as const, outcome: 'fired' as const }])).toBe('');
+    });
+    it('suppressed reason별 내림차순', () => {
+      const logs = [
+        { ts: 1, source: 'fg' as const, outcome: 'suppressed' as const, reason: 'gate-phase-accuracy' as const },
+        { ts: 2, source: 'fg' as const, outcome: 'suppressed' as const, reason: 'gate-phase-accuracy' as const },
+        { ts: 3, source: 'fg' as const, outcome: 'suppressed' as const, reason: 'movement-static-speed' as const },
+      ];
+      expect(__test__.formatReasonCountsLine(logs)).toBe('gate-phase-accuracy=2, movement-static-speed=1');
+    });
+    it('카운트 같으면 이름 오름차순', () => {
+      const logs = [
+        { ts: 1, source: 'fg' as const, outcome: 'suppressed' as const, reason: 'movement-static-speed' as const },
+        { ts: 2, source: 'fg' as const, outcome: 'suppressed' as const, reason: 'gate-phase-accuracy' as const },
+      ];
+      expect(__test__.formatReasonCountsLine(logs)).toBe('gate-phase-accuracy=1, movement-static-speed=1');
+    });
+  });
+  describe('buildDumpText ## Gates (#1019)', () => {
+    it('suppressed 없으면 ## Gates 없음', () => {
+      const dump = __test__.buildDumpText(makeDumpArgs({ logs: [{ ts: 1, source: 'fg' as const, outcome: 'fired' as const }] }));
+      expect(dump).not.toContain('## Gates');
+    });
+    it('suppressed 있으면 ## Gates 섹션 포함', () => {
+      const dump = __test__.buildDumpText(makeDumpArgs({
+        logs: [
+          { ts: 1, source: 'fg-evaluated' as const, outcome: 'suppressed' as const, reason: 'gate-phase-accuracy' as const },
+          { ts: 2, source: 'fg-evaluated' as const, outcome: 'suppressed' as const, reason: 'gate-phase-accuracy' as const },
+        ],
+      }));
+      expect(dump).toContain('## Gates');
+      expect(dump).toContain('gate-phase-accuracy=2');
+    });
+  });
+  describe('UI Gates section (#1019)', () => {
+    it('억제 없으면 Gates 섹션 없음', async () => {
+      mockGetAlarmLog.mockResolvedValue([{ ts: 1, source: 'fg', outcome: 'fired' }]);
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.queryByTestId('debug-gate-reason-counts')).toBeNull();
+    });
+    it('억제 있으면 Gates 섹션 표시', async () => {
+      mockGetAlarmLog.mockResolvedValue([
+        { ts: 1, source: 'fg-evaluated', outcome: 'suppressed', reason: 'gate-phase-accuracy' },
+        { ts: 2, source: 'fg-evaluated', outcome: 'suppressed', reason: 'gate-phase-accuracy' },
+      ]);
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      const el = await screen.findByTestId('debug-gate-reason-counts');
+      expect(el.props.children).toContain('gate-phase-accuracy=2');
+    });
+  });
+
 });

@@ -36,6 +36,7 @@ import {
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
   logSuppressedMovement,
+  logSuppressedPhaseGate,
   logSuppressedSleepFirstTransfer,
 } from '../utils/alarmLog';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
@@ -441,11 +442,15 @@ export function useStationAlarm({
     // useNearestStation은 지하 구간에서 정확도 1500m까지 표시용으로 수용하므로,
     // 그대로 알람을 울리면 잘못된 역에서 false alarm이 발생한다.
     // Phase 알람은 ETA 거리 계산이 필요해 GPS 게이트가 통과한 경우에만 평가한다.
-    if (!isAccuracyAcceptable(accuracyMeters)) return;
+    if (!isAccuracyAcceptable(accuracyMeters)) {
+      logSuppressedPhaseGate('gate-phase-accuracy', destination.name);
+      return;
+    }
 
     // #670/#672: 첫 trigger suppress — fg-hydrate 직후 stale state 발사 차단.
     if (!skipWarmupGuard && isFirstAlarmEvalRef.current) {
       isFirstAlarmEvalRef.current = false;
+      logSuppressedPhaseGate('gate-phase-warmup', destination.name);
       return;
     }
 

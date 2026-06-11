@@ -25,6 +25,7 @@ import {
   clearAlarmLog,
   countSilentPushOutcomes,
   getAlarmLog,
+  summarizeAlarmLogByReason,
   summarizeAlarmLogBySource,
   type AlarmLogEntry,
 } from '../../../features/alarm/utils/alarmLog';
@@ -329,6 +330,11 @@ function buildDumpText(args: {
     );
   }
   lines.push('');
+  // #1019 — ## Gates
+  const reasonLine = formatReasonCountsLine(args.logs);
+  if (reasonLine) {
+    lines.push('## Gates', reasonLine, '');
+  }
   lines.push(`## Alarm log (${args.logs.length})`);
   // #564 — source별 카운트 헤더(UI와 동일 포매터 공유). 빈 문자열이면 헤더 생략.
   const sourcesLine = formatSourceCountsLine(args.logs);
@@ -346,6 +352,20 @@ function buildDumpText(args: {
 function formatSourceCountsLine(logs: readonly AlarmLogEntry[]): string {
   const counts = summarizeAlarmLogBySource(logs);
   const keys = Object.keys(counts).sort((a, b) => a.localeCompare(b));
+  if (keys.length === 0) return '';
+  return keys.map((k) => `${k}=${counts[k]}`).join(', ');
+}
+
+
+/**
+ * ## Gates 섹션: reason별 억제 카운트 요약 (#1019).
+ */
+function formatReasonCountsLine(logs: readonly AlarmLogEntry[]): string {
+  const counts = summarizeAlarmLogByReason(logs);
+  const keys = Object.keys(counts).sort((a, b) => {
+    const diff = (counts[b] ?? 0) - (counts[a] ?? 0);
+    return diff !== 0 ? diff : a.localeCompare(b);
+  });
   if (keys.length === 0) return '';
   return keys.map((k) => `${k}=${counts[k]}`).join(', ');
 }
@@ -689,6 +709,19 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
             )}
           </Section>
 
+          {/* #1019: Gates */}
+          {formatReasonCountsLine(logs) ? (
+            <Section title="Gates" colors={colors}>
+              <Text
+                style={[typography.mono, { color: colors.ink }]}
+                selectable
+                testID="debug-gate-reason-counts"
+              >
+                {formatReasonCountsLine(logs)}
+              </Text>
+            </Section>
+          ) : null}
+
           {/* #1022: Worker Quota admin view */}
           <Section title="Worker Quota" colors={colors}>
             <KeyValue
@@ -806,6 +839,7 @@ export const __test__ = {
   formatTokenTail,
   formatAt,
   formatSourceCountsLine,
+  formatReasonCountsLine,
   NO_FUSED_SIGNAL_LABEL,
 };
 

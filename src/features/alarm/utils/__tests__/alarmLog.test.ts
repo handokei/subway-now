@@ -33,12 +33,14 @@ import {
   logSuppressedSleepFirstTransfer,
   logSuppressedGate,
   logSuppressedMovement,
+  logSuppressedPhaseGate,
   logSilentPushReceived,
   logSilentPushRescheduleReceived,
   logSilentPushTripEndedReceived,
   logSilentPushFired,
   logSilentPushSkipped,
   logAlertFallbackFired,
+  summarizeAlarmLogByReason,
   summarizeAlarmLogBySource,
   countSilentPushOutcomes,
   ALARM_LOG_BUFFER_SIZE,
@@ -1221,6 +1223,72 @@ describe('alarmLog', () => {
     });
   });
 
+
+  describe('summarizeAlarmLogByReason (#1019)', () => {
+    it('suppressed reason별 카운트', () => {
+      expect(summarizeAlarmLogByReason([
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed' }),
+        makeEntry({ outcome: 'suppressed', reason: 'movement-static-speed' }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-phase-accuracy' }),
+        makeEntry({ outcome: 'fired' }),
+      ])).toEqual({ 'movement-static-speed': 2, 'gate-phase-accuracy': 1 });
+    });
+    it('fired/received는 제외', () => {
+      expect(summarizeAlarmLogByReason([makeEntry({ outcome: 'fired' })])).toEqual({});
+    });
+    it('reason 없으면 (unknown)', () => {
+      expect(summarizeAlarmLogByReason([makeEntry({ outcome: 'suppressed', reason: undefined })])['(unknown)']).toBe(1);
+    });
+    it('빈 배열', () => { expect(summarizeAlarmLogByReason([])).toEqual({}); });
+  });
+  describe('logSuppressedPhaseGate (#1019)', () => {
+    it('gate-phase-accuracy: fg-evaluated/suppressed로 적재', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logSuppressedPhaseGate('gate-phase-accuracy', '강남');
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved[0]).toMatchObject({ source: 'fg-evaluated', outcome: 'suppressed', reason: 'gate-phase-accuracy', stationName: '강남' });
+    });
+    it('gate-phase-warmup: fg-evaluated/suppressed로 적재', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logSuppressedPhaseGate('gate-phase-warmup', '역삼');
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved[0]).toMatchObject({ source: 'fg-evaluated', outcome: 'suppressed', reason: 'gate-phase-warmup', stationName: '역삼' });
+    });
+    it('stationName undefined이면 (unknown)', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logSuppressedPhaseGate('gate-phase-accuracy', undefined);
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved[0].stationName).toBe('(unknown)');
+    });
+    it('DEDUP_LOG_WINDOW_MS 내 같은 reason+station은 drop', async () => {
+      const baseTs = 1_700_000_000_000;
+      const spy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      try {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+        logSuppressedPhaseGate('gate-phase-accuracy', '강남');
+        await flushAlarmLog();
+        const n = (AsyncStorage.setItem as jest.Mock).mock.calls.length;
+        spy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS - 1);
+        logSuppressedPhaseGate('gate-phase-accuracy', '강남');
+        await flushAlarmLog();
+        expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(n);
+        spy.mockReturnValue(baseTs + DEDUP_LOG_WINDOW_MS + 1);
+        logSuppressedPhaseGate('gate-phase-accuracy', '강남');
+        await flushAlarmLog();
+        expect((AsyncStorage.setItem as jest.Mock).mock.calls.length).toBe(n + 1);
+      } finally { spy.mockRestore(); }
+    });
+    it('다른 역은 별개 윈도우', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logSuppressedPhaseGate('gate-phase-accuracy', '강남');
+      logSuppressedPhaseGate('gate-phase-accuracy', '역삼');
+      await flushAlarmLog();
+      expect(JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1])).toHaveLength(2);
+    });
+  });
   describe('clearAlarmLog', () => {
     it('AsyncStorage에서 ALARM_LOG_KEY를 삭제한다', async () => {
       await clearAlarmLog();
