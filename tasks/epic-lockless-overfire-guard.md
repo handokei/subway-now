@@ -2,11 +2,11 @@
 issue: 1008
 title: "epic: 위치 서비스 재정의 + Lockless Over-Fire Guard (Stage 4 통합) — SSOT"
 created: 2026-06-11
-status: in-progress (Epic A 15/17)
+status: in-progress (Epic A 16/17)
 related:
   - "#912"
   - "#874"
-  - "#844"
+  - "#844" # closed — 잔여 범위 Epic C 풀 귀속
   - tasks/issue-parallelization-plan.md
 ---
 
@@ -44,11 +44,11 @@ related:
 
 ## 3. Epic 구조와 현재 상태 (총 12~14주, buffer 포함 16~19주)
 
-### Epic A (Week 1~2) — 회귀 #1/#2/#7 — **15/17 완료**
+### Epic A (Week 1~2) — 회귀 #1/#2/#7 — **16/17 완료 (잔여 H5 #1012)**
 
 | Codename | Issue | 제목 | 상태 |
 | --- | --- | --- | --- |
-| H1 | #1009 | DebugModal BoardingLock + Estimator State + Gates 섹션 | 🔄 진행 중 (PR #1133) |
+| H1 | #1009 | DebugModal BoardingLock + Estimator State + Gates 섹션 | ✅ (PR #1133, 2026-06-11) |
 | H2' | #1010 | station-passed effect firedHydrated + warmup 가드 | ✅ |
 | H3' | #1011 | lastNotifiedStationId destination scoping | ✅ |
 | H5 | #1012 | hydration state machine | 🔄 진행 중 |
@@ -77,14 +77,14 @@ race/storage/lockless 근본 refactor. Epic C 단기 완료 후 착수.
 
 ### Epic C 풀 (Week 10~14, 5 sub-issue 예정) — D1/D5 완성 — **미발행**
 
-ADR-008 Stage 4 Phase A+B 통합. **#844의 잔여 범위(PR B/C/D)가 B2 결정에 따라 여기로 귀속될 수 있음 — B2 결정 전 #844 착수 금지** (이슈 본문에 배너 명시, 2026-06-11).
+ADR-008 Stage 4 Phase A+B 통합. **B2 결정(2026-06-11)으로 #844 잔여 PR B/C/D가 본 단계 sub 5건 중 3건으로 귀속 확정 — #844 close됨.** sub-issue 발행 시 #844 본문의 PR B/C/D 정의 + open questions 참조.
 
 ## 4. 결정 차단 항목 (본인 결정 필요 — 전부 미결)
 
-> ⚠️ **데드라인**: Epic A가 15/17이므로 사실상 지금. Epic C 단기는 B1~B3 없이 시작 불가.
+> ⚠️ **데드라인**: Epic A 16/17. B2는 결정 완료 — Epic C 단기는 잔여 B1/B3 없이 시작 불가.
 
 - [ ] **B1**: ADR-010 C 폐기 + D 신설
-- [ ] **B2**: epic #874를 본 epic에 통합 (+#844 잔여 범위 귀속 결정)
+- [x] **B2**: epic #874를 본 epic에 통합 — **2026-06-11 결정 완료** (`project_2026_06_11_epic1008_b_decisions.md`). #844 잔여 PR B/C/D → Epic C 풀 sub 3건 귀속, #844 close
 - [ ] **B3**: #912 acceptance 재해석 — "lock 유무 무관 trip 활성이면 매역 발사" (#912 본문에 2026-06-11 임시 반영: 오발사 0건 판정은 본 epic 회귀 측정을 따름)
 - [ ] **B4**: 낙관적 UI (탭 즉시 visual + backend 정정 toast)
 - [ ] **B5**: backend optional 먼저 → 1주 → client → required 승격
@@ -106,10 +106,10 @@ ADR-008 Stage 4 Phase A+B 통합. **#844의 잔여 범위(PR B/C/D)가 B2 결정
 
 ## 6. 의존 / 통합 / 트리아지 반영 (2026-06-11)
 
-- **선행 epic**: #912 (매역 알람 100%) — 잔여: A3 #918, B1 #921, E1 #922
+- **선행 epic**: #912 (매역 알람 100%) — 잔여: A3 #918, B1 #921. E1(#922)은 PR #927/#953 머지로 close — Seam C 시나리오 deferred(신규 이슈 발행 필요)
   - A3(#918) 선행 조건: **#773 (옛 trip OS 예약 큐 cleanup)** + iOS 64개 한도 rolling window + fire-time re-validation(#729 흡수) — #918 본문에 반영됨
 - **통합 epic**: #874 (ADR-008 Stage 4 Phase A+B) — B2 결정으로 본 epic 흡수 예정
-- **보류**: #844 — PR A 머지 완료(#879), PR B/C/D는 B2 결정 전 착수 금지
+- **close**: #844 — PR A 머지 완료(#879). 잔여 B/C/D는 B2 결정으로 Epic C 풀 귀속 (2026-06-11)
 - **완료 close된 선행 epic**: #869 (트리아지) → #896 (7 Seam) — 2026-06-11 정리
 - **본 epic으로 흡수되어 close된 옛 이슈**: #493(alert push 전환), #496(backend progress 인지), #586/#614(LA push update/환승 전환), #674(BG 위치 미갱신), #729(fire-time re-validation→#918), #798(RC3로 해소), #447(GPS 신뢰 정책 재정의)
 
@@ -123,3 +123,4 @@ ADR-008 Stage 4 Phase A+B 통합. **#844의 잔여 범위(PR B/C/D)가 B2 결정
 ## 8. 변경 이력
 
 - 2026-06-11: 원본 부재 확인 후 GitHub 상태 기준 재구성 생성. Epic A 15/17. B1~B5/B14 미결.
+- 2026-06-11 (2차): H1(#1009) PR #1133 머지로 완료 → Epic A 16/17. B2 결정 완료 — #844 close(잔여 Epic C 풀 귀속), #922 close(E1 완료, Seam C deferred).
