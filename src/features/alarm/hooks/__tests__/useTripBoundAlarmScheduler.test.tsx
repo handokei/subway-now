@@ -9,6 +9,7 @@ import {
   cancelTripBoundAlarms,
   prescheduleStationAlerts,
 } from '../../utils/tripBoundScheduler';
+import { getTripStartedAt } from '../../utils/tripStartStorage';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeFixtures';
 
@@ -20,6 +21,10 @@ jest.mock('../../utils/tripBoundScheduler', () => {
     cancelTripBoundAlarms: jest.fn(),
   };
 });
+
+jest.mock('../../utils/tripStartStorage', () => ({
+  getTripStartedAt: jest.fn(),
+}));
 
 const mockLoggerError = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -35,6 +40,7 @@ const mockedPreschedule = prescheduleStationAlerts as jest.MockedFunction<
   typeof prescheduleStationAlerts
 >;
 const mockedCancel = cancelTripBoundAlarms as jest.MockedFunction<typeof cancelTripBoundAlarms>;
+const mockedGetTripStartedAt = getTripStartedAt as jest.MockedFunction<typeof getTripStartedAt>;
 
 type Props = Parameters<typeof useTripBoundAlarmScheduler>[0];
 function renderScheduler(initialProps: Props) {
@@ -59,6 +65,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockedPreschedule.mockResolvedValue([]);
   mockedCancel.mockResolvedValue(undefined);
+  // 기본은 tripStart 없음 — lock 없는 케이스에서 사전 예약 skip이 유지된다.
+  mockedGetTripStartedAt.mockResolvedValue(null);
 });
 
 describe('useTripBoundAlarmScheduler', () => {
@@ -236,6 +244,47 @@ describe('useTripBoundAlarmScheduler', () => {
     // lockA 재진입 시 새 preschedule trigger (ref가 stale에 의해 lockA로 잘못 set되지 않았음 확인).
     rerender({ lock: lockA, route, destinationName: '강남' });
     await waitFor(() => expect(mockedPreschedule).toHaveBeenCalledTimes(3));
+  });
+
+  // -------- PR1: lockless 사전 예약 --------
+
+  it('lockless: lock=null + route + destination + tripStart 있으면 startTime=tripStart로 preschedule', async () => {
+    mockedGetTripStartedAt.mockResolvedValue(5_000);
+    renderScheduler({ lock: null, route, destinationName: '강남' });
+    await awaitFirstSchedule();
+    const call = mockedPreschedule.mock.calls[0][0];
+    expect(call.startTime).toBe(5_000);
+    expect(call.routeStops).toEqual([{ stationName: '강남', alarmType: 'destination' }]);
+    // 초기 마운트 — prev 없으니 cancel 호출 없음.
+    expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
+  it('lockless 후 같은 tripStart로 lock 도착 시 재예약하지 않음 (signature dedup)', async () => {
+    mockedGetTripStartedAt.mockResolvedValue(1_000);
+    const { rerender } = renderScheduler({ lock: null, route, destinationName: '강남' });
+    await awaitFirstSchedule();
+    // lock의 boardedAt이 tripStart와 동일 → identity ts:1000 유지 → no-op.
+    rerender({ lock: lockA, route, destinationName: '강남' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedPreschedule).toHaveBeenCalledTimes(1);
+    expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
+  it('lockless 예약 후 destination clear 시 cancel', async () => {
+    mockedGetTripStartedAt.mockResolvedValue(5_000);
+    const { rerender } = renderScheduler({ lock: null, route, destinationName: '강남' });
+    await awaitFirstSchedule();
+    rerender({ lock: null, route, destinationName: null });
+    await waitFor(() => expect(mockedCancel).toHaveBeenCalledTimes(1));
+    expect(mockedPreschedule).toHaveBeenCalledTimes(1);
+  });
+
+  it('lockless: tripStart 없으면 schedule skip (cold restart pre-destination)', async () => {
+    mockedGetTripStartedAt.mockResolvedValue(null);
+    renderScheduler({ lock: null, route, destinationName: '강남' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mockedPreschedule).not.toHaveBeenCalled();
+    expect(mockedCancel).not.toHaveBeenCalled();
   });
 });
 
