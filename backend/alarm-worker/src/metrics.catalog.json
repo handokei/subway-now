@@ -129,6 +129,13 @@
       "description": "#918 A3 — fired 사전 예약 알람의 station 정확도. hit=fired entry 중 alarmLog가 같은 station에서 fired outcome을 남긴 수, total=firedCount. 사전 예약 시점 prediction과 실제 trip 진행 일치도."
     },
     {
+      "key": "autoLockConfidenceBreakdown",
+      "constantName": "AUTO_LOCK_CONFIDENCE_BREAKDOWN",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "#1171 — RC1 confidence gate(#1018) 평가 시 산출된 score(0~4) 분포. arvlCd=2 branch에서만 sample 적재. 본 분포로 1주 운영 후 AUTO_LOCK_CONFIDENCE_THRESHOLD(현재 2) 튜닝 결정 (낮춰서 lock 통과율↑ vs 높여서 false positive↓). p95/mean으로 threshold 후보 산출. Phase 4 결정 게이트 아님 — 운영 튜닝 측정 인프라."
+    },
+    {
       "key": "prescheduledFireDeltaMs",
       "constantName": "PRESCHEDULED_FIRE_DELTA_MS",
       "format": "histogram",
