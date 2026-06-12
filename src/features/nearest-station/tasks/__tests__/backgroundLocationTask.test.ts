@@ -64,6 +64,12 @@ jest.mock('../../utils/accelMotionState', () => ({
   getLatestAccelSummary: () => mockGetLatestAccelSummary(),
 }));
 
+// ── widgetStorage 모킹 (#1237 Phase 2) ──
+const mockSaveStationToWidget = jest.fn();
+jest.mock('../../../widget/api/widgetStorage', () => ({
+  saveStationToWidget: (...args: unknown[]) => mockSaveStationToWidget(...args),
+}));
+
 // ── logger 모킹 ──
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -168,6 +174,7 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockUploadPosition.mockResolvedValue({ ok: true, status: 200 });
     mockGetCurrentMotionStationary.mockReturnValue(false);
     mockGetLatestAccelSummary.mockReturnValue(null);
+    mockSaveStationToWidget.mockResolvedValue(undefined);
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -740,6 +747,48 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
     const setItemCalls = (AsyncStorage.setItem as jest.Mock).mock.calls;
     expect(setItemCalls.every(([key]) => key !== 'subway-now:bg-last-station')).toBe(true);
+  });
+
+  // ── #1237 Phase 2: BG widget writer ──
+
+  describe('#1237 — BG tick에서 위젯 SSOT(saveStationToWidget) 갱신', () => {
+    it('nearest 정상 → saveStationToWidget(station, distanceKm) 호출', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      mockProcessLocationUpdate.mockResolvedValue({
+        alarmEvent: null,
+        nearest: { station: mockStation, distanceKm: 0.42 },
+      });
+
+      await taskCallback({
+        data: { locations: [makeLocation(37.498, 127.028)] },
+        error: null,
+      });
+
+      expect(mockSaveStationToWidget).toHaveBeenCalledWith(mockStation, 0.42);
+    });
+
+    it('nearest가 null이면 saveStationToWidget 호출 X (clearWidgetStation도 호출 X)', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
+
+      await taskCallback({
+        data: { locations: [makeLocation(37.498, 127.028)] },
+        error: null,
+      });
+
+      expect(mockSaveStationToWidget).not.toHaveBeenCalled();
+    });
+
+    it('destJson 미설정으로 조기 return하는 경우 saveStationToWidget 호출 X', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+
+      await taskCallback({
+        data: { locations: [makeLocation(37.498, 127.028)] },
+        error: null,
+      });
+
+      expect(mockSaveStationToWidget).not.toHaveBeenCalled();
+    });
   });
 
   describe('#819 — backend로 position + motion 송신', () => {
