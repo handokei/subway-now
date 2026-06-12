@@ -764,10 +764,14 @@ async function fireWithGate(
     return;
   }
 
+  // #1209 D3 — lockless 경로는 sticky station 좌표 drift 수용 위해 widened 임계값 사용.
+  // D1(#1207) hop estimator 미연결 단계라 currentHopIndex/payloadHopIndex는 undefined로 두고
+  // 거리 기반 widened fallback 경로로 동작한다.
   const gate = await checkSilentPushLocationGate({
     stationName: payload.nextWaypoint,
     kind: payload.kind,
     phase: payload.phase,
+    isLockless: !lock,
   });
 
   if (!gate.pass) {

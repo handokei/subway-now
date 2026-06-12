@@ -631,6 +631,7 @@ describe('silentPushTask', () => {
         stationName: '강남',
         kind: 'destination',
         phase: 'imminent',
+        isLockless: false,
       });
       expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
       const call = mockScheduleNotificationAsync.mock.calls[0][0];
@@ -953,6 +954,16 @@ describe('silentPushTask', () => {
         await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
         expect(mockScheduleNotificationAsync).toHaveBeenCalled();
         expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+
+      // #1209 D3 — lockless 경로에서 게이트가 widened 임계값 분기를 적용하도록 isLockless 전달.
+      it('lock 없음 + intermediate + 토글 ON → 게이트에 isLockless=true 전달', async () => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        mockLocklessStorage('on');
+        await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
+        expect(mockCheckGate).toHaveBeenCalledWith(
+          expect.objectContaining({ isLockless: true }),
+        );
       });
     });
 
