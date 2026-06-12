@@ -87,6 +87,11 @@ const fusedReturnFixture = (overrides: Record<string, unknown> = {}) => ({
   error: null,
   permissionDenied: false,
   refresh: jest.fn(),
+  // D2(#1208) + D9 wire(#1235) — useFusedNearestStation 신규 노출 필드 기본값.
+  currentHopIndex: null,
+  arcStations: [],
+  detectionTier: 'low' as const,
+  detectionSignalMask: '',
   ...overrides,
 });
 const arrivalDefaults = {
@@ -116,10 +121,10 @@ const setupHookDefaults = () => {
     error: null,
     permissionDenied: false,
     refresh: jest.fn(),
-    // #1235 (D9 wire) — DebugModal이 hook return으로 fusionDetection/trip 도출. 기본값은
-    // estimator/detection 모두 비어있는 상태 — 미트립 + signalsAvailable=0 시나리오.
+    // D2(#1208) + D9 wire(#1235) — DebugModal이 hook return으로 fusionDetection/trip 도출.
+    // 기본값은 estimator/detection 모두 비어있는 상태 — 미트립 + signalsAvailable=0 시나리오.
     currentHopIndex: null,
-    routeHopCount: 0,
+    arcStations: [],
     detectionTier: 'low',
     detectionSignalMask: '',
   });
@@ -254,20 +259,15 @@ describe('DebugModal', () => {
   });
 
   it('userLocation이 null이면 "no location"을 표시한다', () => {
-    mockUseFusedNearestStation.mockReturnValue({
-      result: null,
-      gpsResult: null,
-      confidence: 'gps-only',
-      source: 'gps',
-      variants: [],
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        result: null,
+        gpsResult: null,
+        userLocation: null,
+        speedMps: null,
+        accuracyMeters: null,
+      }),
+    );
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByText('(no location)')).toBeTruthy();
     expect(screen.getByText('(no nearest)')).toBeTruthy();
@@ -340,20 +340,9 @@ describe('DebugModal', () => {
   });
 
   it('speedMps가 null이면 "-"를 표시한다', () => {
-    mockUseFusedNearestStation.mockReturnValue({
-      result: baseResult,
-      gpsResult: baseResult,
-      confidence: 'gps-only',
-      source: 'gps',
-      variants: [],
-      userLocation: { lat: 37.5, lng: 127 },
-      speedMps: null,
-      accuracyMeters: null,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({ speedMps: null, accuracyMeters: null }),
+    );
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getAllByText('-').length).toBeGreaterThan(0);
   });
@@ -420,20 +409,9 @@ describe('DebugModal', () => {
   });
 
   it('Fusion 섹션에 confidence/source/accuracy를 표시한다', async () => {
-    mockUseFusedNearestStation.mockReturnValue({
-      result: baseResult,
-      gpsResult: baseResult,
-      confidence: 'arrival-confirmed',
-      source: 'arrival',
-      variants: [],
-      userLocation: { lat: 37.5, lng: 127 },
-      speedMps: 1,
-      accuracyMeters: 12,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({ confidence: 'arrival-confirmed', source: 'arrival' }),
+    );
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByText('Fusion')).toBeTruthy();
     expect(screen.getByText('arrival-confirmed')).toBeTruthy();
@@ -445,20 +423,15 @@ describe('DebugModal', () => {
 
   it('fused와 gps station id가 다르면 diff 라인을 표시한다', () => {
     const otherStation: Station = { ...station, id: '2-099', name: '역삼' };
-    mockUseFusedNearestStation.mockReturnValue({
-      result: { station, distanceKm: 0.05 },
-      gpsResult: { station: otherStation, distanceKm: 0.18 },
-      confidence: 'arrival-arriving',
-      source: 'arrival',
-      variants: [],
-      userLocation: { lat: 37.5, lng: 127 },
-      speedMps: 1,
-      accuracyMeters: 10,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        result: { station, distanceKm: 0.05 },
+        gpsResult: { station: otherStation, distanceKm: 0.18 },
+        confidence: 'arrival-arriving',
+        source: 'arrival',
+        accuracyMeters: 10,
+      }),
+    );
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByTestId('debug-fusion-diff')).toBeTruthy();
   });
@@ -1137,12 +1110,21 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     });
 
     // currentHopIndex 분기 — 0이면 firstHopApproaching=true, >0이면 false.
+    // arcStations 길이 5 → routeHopCount=5로 DebugModal 내부에서 계산.
+    const fiveHopArc: Station[] = Array.from({ length: 5 }, (_, i) => ({
+      id: `arc-${i}`,
+      name: `역${i}`,
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.5,
+      lng: 127,
+    }));
     it.each([
       [0, 'firstHopApproaching=true'],
       [2, 'firstHopApproaching=false'],
     ])('destination 설정 + currentHopIndex=%i → %s', async (idx, expected) => {
       useDestinationStore.setState({ destination: wireTripDestination });
-      applyWireHook({ currentHopIndex: idx, routeHopCount: 5 });
+      applyWireHook({ currentHopIndex: idx, arcStations: fiveHopArc });
       const message = await shareAndReadDump();
       expect(message).toContain('lockless=true');
       expect(message).toContain(`currentHopIndex=${idx}`);
@@ -1184,25 +1166,10 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
 });
 
 describe('DebugModal arrival edge cases', () => {
-  const baseHooks = {
-    result: baseResult,
-    gpsResult: baseResult,
-    confidence: 'gps-only' as const,
-    source: 'gps' as const,
-    variants: [],
-    userLocation: { lat: 37.5, lng: 127 },
-    speedMps: 1,
-    accuracyMeters: 15,
-    loading: false,
-    error: null,
-    permissionDenied: false,
-    refresh: jest.fn(),
-  };
-
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetAlarmLog.mockResolvedValue([]);
-    mockUseFusedNearestStation.mockReturnValue(baseHooks);
+    mockUseFusedNearestStation.mockReturnValue(fusedReturnFixture({ accuracyMeters: 15 }));
   });
 
   it('up.statusMessage가 빈 문자열이면 괄호를 붙이지 않는다', () => {
@@ -1226,20 +1193,15 @@ describe('DebugModal share with null nearest', () => {
     jest.clearAllMocks();
     mockGetAlarmLog.mockResolvedValue([]);
     mockClearAlarmLog.mockResolvedValue(undefined);
-    mockUseFusedNearestStation.mockReturnValue({
-      result: null,
-      gpsResult: null,
-      confidence: 'gps-only',
-      source: 'gps',
-      variants: [],
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        result: null,
+        gpsResult: null,
+        userLocation: null,
+        speedMps: null,
+        accuracyMeters: null,
+      }),
+    );
     mockUseArrivalInfo.mockReturnValue({ arrival: null, loading: false, isMock: false });
   });
 
@@ -1990,20 +1952,9 @@ describe('DebugModal — fusedSpeed fallback (#853)', () => {
   });
 
   it('GPS 섹션 렌더링: GPS speed=null + fusedSpeed 전달 시 두 줄 분리 노출', async () => {
-    mockUseFusedNearestStation.mockReturnValue({
-      result: baseResult,
-      gpsResult: baseResult,
-      confidence: 'gps-only',
-      source: 'gps',
-      variants: [],
-      userLocation: { lat: 37.5, lng: 127.0 },
-      speedMps: null,
-      accuracyMeters: 12,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({ speedMps: null }),
+    );
     renderWithTheme(
       <DebugModal onClose={jest.fn()} fusedSpeed={{ kmh: 18, source: 'position-train' }} />,
     );
