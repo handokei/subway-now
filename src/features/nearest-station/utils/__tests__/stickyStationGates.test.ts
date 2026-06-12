@@ -160,3 +160,33 @@ describe('shouldUnlockByMotion', () => {
     expect(shouldUnlockByMotion(motion)).toBe(expected);
   });
 });
+
+/**
+ * #1241 — 사용자 trip 2026-06-12 회귀 가드
+ *
+ * Evidence SSOT: tasks/epic-lockless-recovery-2026-06-12.md §1~§2
+ *   - 보고 #3 (08:35:22 어린이대공원→용마산 화면 회귀): sticky station이 trip 활성 + 지하에서도
+ *     motion=automotive로 즉시 unlock되어 GPS sticky 좌표(용마산)가 그대로 노출됨.
+ *   - 기대 동작: subsurface=true + tripActive=true 매트릭스에서 distance/motion 게이트 모두
+ *     false 반환 (지하 dead-zone 좌표는 unlock 트리거 불가).
+ *
+ * 이 describe는 D6 (#1212, PR #1221)에서 적용된 게이트가 향후 회귀로 풀리지 않도록 박제한다.
+ * 위의 describe('shouldUnlockByDistance' / 'shouldUnlockByMotion')의 매트릭스가 기능 검증을
+ * 담당하고, 본 describe는 사용자 보고와 1:1로 묶어 "이 시점에 이 시나리오가 무엇이었는지" 의도를
+ * 코드에 남긴다.
+ */
+describe('사용자 trip 2026-06-12 회귀 가드', () => {
+  const farFix = { lat: 37.4979, lng: 127.0276, accuracyMeters: 20 };
+
+  it('보고 #3 — subsurface + tripActive에서 distance 게이트는 unlock 트리거 금지', () => {
+    expect(
+      shouldUnlockByDistance(seoulStation, { ...farFix, subsurface: true, tripActive: true }),
+    ).toBe(false);
+  });
+
+  it('보고 #3 — subsurface + tripActive에서 motion(automotive) 게이트는 unlock 트리거 금지', () => {
+    expect(
+      shouldUnlockByMotion({ automotive: true, subsurface: true, tripActive: true }),
+    ).toBe(false);
+  });
+});
