@@ -11,6 +11,7 @@ const mockComputeAndUploadTripRecall = jest.fn();
 const mockComputeAndUploadTripPrescheduled = jest.fn();
 const mockComputeRouteArc = jest.fn();
 const mockGetTripStartedAt = jest.fn();
+const mockFlushRegressionCounters = jest.fn();
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -43,8 +44,13 @@ jest.mock('../../../../shared/utils/logger', () => ({
   }),
 }));
 
+jest.mock('../../../../shared/utils/regressionMetrics', () => ({
+  flushRegressionCounters: (...args: unknown[]) => mockFlushRegressionCounters(...args),
+}));
+
 import { triggerTripEndRecall } from '../triggerTripEndRecall';
 import {
+  APNS_TOKEN_KEY,
   DESTINATION_KEY,
   ROUTE_KEY,
   TRIP_ORIGIN_KEY,
@@ -77,6 +83,8 @@ describe('triggerTripEndRecall', () => {
     mockComputeAndUploadTripPrescheduled.mockResolvedValue({ uploaded: false });
     mockComputeRouteArc.mockReset();
     mockGetTripStartedAt.mockReset();
+    mockFlushRegressionCounters.mockReset();
+    mockFlushRegressionCounters.mockResolvedValue(undefined);
   });
 
   it('tripStart 부재 시 즉시 skip (no-trip-start)', async () => {
@@ -299,5 +307,71 @@ describe('triggerTripEndRecall', () => {
     expect(mockComputeAndUploadTripRecall).toHaveBeenCalled();
     expect(mockSetItem).toHaveBeenCalledWith(LAST_UPLOADED_RECALL_TRIP_START_KEY, '200');
     expect(result).toEqual({ uploaded: true });
+  });
+
+  it('#1267 — APNS token 존재 시 flushRegressionCounters(token) 호출', async () => {
+    mockGetTripStartedAt.mockResolvedValue(100);
+    setStorage({
+      [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+      [ROUTE_KEY]: ROUTE_JSON,
+      [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+      [DESTINATION_KEY]: DEST_JSON,
+      [APNS_TOKEN_KEY]: 'apns-token-xyz',
+    });
+    mockComputeRouteArc.mockReturnValue({
+      stations: ROUTE_ARC_STATIONS,
+      arcM: [0, 1, 2],
+      totalLengthM: 2,
+    });
+    mockComputeAndUploadTripRecall.mockResolvedValue({ uploaded: true });
+    mockSetItem.mockResolvedValue(undefined);
+
+    await triggerTripEndRecall();
+
+    expect(mockFlushRegressionCounters).toHaveBeenCalledWith('apns-token-xyz');
+  });
+
+  it('#1267 — APNS token 부재 시 flushRegressionCounters 호출 없이 graceful skip', async () => {
+    mockGetTripStartedAt.mockResolvedValue(100);
+    setStorage({
+      [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+      [ROUTE_KEY]: ROUTE_JSON,
+      [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+      [DESTINATION_KEY]: DEST_JSON,
+      [APNS_TOKEN_KEY]: null,
+    });
+    mockComputeRouteArc.mockReturnValue({
+      stations: ROUTE_ARC_STATIONS,
+      arcM: [0, 1, 2],
+      totalLengthM: 2,
+    });
+    mockComputeAndUploadTripRecall.mockResolvedValue({ uploaded: true });
+    mockSetItem.mockResolvedValue(undefined);
+
+    await triggerTripEndRecall();
+
+    expect(mockFlushRegressionCounters).not.toHaveBeenCalled();
+  });
+
+  it('#1267 — flushRegressionCounters 예외도 흡수 (recall 결과는 영향 없음)', async () => {
+    mockGetTripStartedAt.mockResolvedValue(100);
+    setStorage({
+      [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+      [ROUTE_KEY]: ROUTE_JSON,
+      [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+      [DESTINATION_KEY]: DEST_JSON,
+      [APNS_TOKEN_KEY]: 'apns-token-xyz',
+    });
+    mockComputeRouteArc.mockReturnValue({
+      stations: ROUTE_ARC_STATIONS,
+      arcM: [0, 1, 2],
+      totalLengthM: 2,
+    });
+    mockComputeAndUploadTripRecall.mockResolvedValue({ uploaded: true });
+    mockFlushRegressionCounters.mockRejectedValue(new Error('boom'));
+    mockSetItem.mockResolvedValue(undefined);
+
+    const result = await triggerTripEndRecall();
+    expect(result.uploaded).toBe(true); // recall 성공 영향 없음
   });
 });
