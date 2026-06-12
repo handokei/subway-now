@@ -35,6 +35,10 @@ import {
   type AlarmLogReason,
   type AlarmLogReasonCounter,
 } from '../../../features/alarm/utils/alarmLog';
+import {
+  computeBoardingPromptMonitor,
+  exportRecentDays,
+} from '../../../features/alarm/utils/boardingPromptMonitor';
 import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
 import { isBoardingLockExpired } from '../../../shared/types/boardingLock';
 import {
@@ -771,6 +775,9 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
             ))}
           </Section>
 
+          {/* #1170: boarding-prompt acceptance dashboard (gate 통과율/응답률) */}
+          <BoardingPromptMonitorSection logs={logs} colors={colors} />
+
           {/* #1024 — ## Counters: reason별 누적 count + 마지막 발생 시각 */}
           <CountersSection logs={logs} colors={colors} />
 
@@ -1045,6 +1052,62 @@ function CountersSection({
           />
         ))
       )}
+    </Section>
+  );
+}
+
+/**
+ * #1170 — boarding-prompt acceptance dashboard.
+ *
+ * 표시: displayed / responded / 응답률 / 탑승률 + 최근 7일 일별 표 (export 진입점).
+ * 응답률·탑승률 0건 시 "—" 표기.
+ */
+const RECENT_DAYS = 7;
+
+function formatRatePct(value: number | null): string {
+  return value === null ? '—' : `${value.toFixed(1)}%`;
+}
+
+function BoardingPromptMonitorSection({
+  logs,
+  colors,
+}: Readonly<{
+  logs: readonly AlarmLogEntry[];
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  const stats = computeBoardingPromptMonitor(logs);
+  const rows = exportRecentDays(stats, RECENT_DAYS);
+  return (
+    <Section title="Boarding Prompt Acceptance" colors={colors}>
+      <KeyValue label="displayed" value={String(stats.displayed)} colors={colors} />
+      <KeyValue label="responded" value={String(stats.responded)} colors={colors} />
+      <KeyValue label="boarded" value={String(stats.boarded)} colors={colors} />
+      <KeyValue label="dismissed" value={String(stats.dismissed)} colors={colors} />
+      <KeyValue
+        label="responseRate"
+        value={formatRatePct(stats.responseRatePct)}
+        colors={colors}
+      />
+      <KeyValue
+        label="boardedRate"
+        value={formatRatePct(stats.boardedRatePct)}
+        colors={colors}
+      />
+      <Text
+        style={[typography.mono, { color: colors.muted, marginTop: spacing.xs }]}
+        testID="debug-boarding-prompt-recent-header"
+      >
+        {`recent ${RECENT_DAYS}d (day / disp / resp / brd / dis)`}
+      </Text>
+      {rows.map((row) => (
+        <Text
+          key={row.dayKey}
+          style={[typography.mono, { color: colors.ink }]}
+          testID={`debug-boarding-prompt-day-${row.dayKey}`}
+        >
+          {`${row.dayKey}  ${row.displayed}/${row.responded}/${row.boarded}/${row.dismissed}`}
+        </Text>
+      ))}
     </Section>
   );
 }

@@ -402,6 +402,7 @@ describe('evaluateAlarmPhase', () => {
         {
           id: 'early' as const,
           evaluate: (ctx: { remainingStops: number }) => ctx.remainingStops <= 3,
+          getLeadMs: (hopMs: number) => hopMs,
         },
       ];
       expect(

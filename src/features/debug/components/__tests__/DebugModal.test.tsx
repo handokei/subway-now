@@ -510,6 +510,30 @@ describe('DebugModal', () => {
     expect(screen.getByText('Boarding Prompt')).toBeTruthy();
   });
 
+  it('#1170: Boarding Prompt Acceptance 섹션이 displayed/responded/rate 라벨을 표시한다', async () => {
+    const now = Date.now();
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: now - 60_000, source: 'boarding-prompt', outcome: 'fired' },
+      { ts: now - 30_000, source: 'boarding-prompt', outcome: 'received', reason: 'response-boarded' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Boarding Prompt Acceptance')).toBeTruthy();
+    expect(screen.getByText('displayed')).toBeTruthy();
+    expect(screen.getByText('responded')).toBeTruthy();
+    expect(screen.getByText('responseRate')).toBeTruthy();
+    expect(screen.getByText('boardedRate')).toBeTruthy();
+    // 7일 timeline 진입점 header
+    expect(screen.getByTestId('debug-boarding-prompt-recent-header')).toBeTruthy();
+  });
+
+  it('#1170: 데이터 없으면 rate가 "—" 로 표기된다', async () => {
+    mockGetAlarmLog.mockResolvedValue([]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
+  });
+
     it('unmount 시 AppState listener를 정리한다', async () => {
     const { unmount } = renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());

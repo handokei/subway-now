@@ -125,7 +125,12 @@ export type AlarmLogReason =
   | 'autolock-arrivals-empty'
   | 'autolock-ambiguity'
   | 'autolock-station-lookup'
-  | 'autolock-lock-failed';
+  | 'autolock-lock-failed'
+  // #1170 — boarding-prompt 사용자 응답 측정. 9단 게이트 통과 후 발사된 prompt에 대한 응답.
+  //   'response-boarded': [탑승] 또는 default 탭 액션.
+  //   'response-dismissed': [미탑승] 또는 dismiss.
+  | 'response-boarded'
+  | 'response-dismissed';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -847,9 +852,12 @@ export function countBoardingPromptByWindow(
 ): Record<BoardingPromptWindowKey, number> {
   const counts: Record<BoardingPromptWindowKey, number> = { '5m': 0, '1h': 0, all: 0 };
   for (const entry of entries) {
+    // #1170 — fired 중에서도 reason이 없는 entry만 "발사 빈도"로 계산. response/autolock telemetry
+    // entry는 별도 채널이므로 제외(중복 집계 방지).
     if (entry.source !== 'boarding-prompt' || entry.outcome !== 'fired') continue;
     // #1167 — autolock outcome도 source='boarding-prompt'를 재사용하지만 outcome='suppressed'
     // 또는 reason='autolock-success'로 구분. 발사 빈도(#1021) 집계에는 reason 미설정 entry만 포함.
+    // #1170 — response telemetry entry도 reason 필드를 채워 같은 규칙으로 제외된다.
     if (entry.reason !== undefined) continue;
     const ageMs = now - entry.ts;
     for (const { key, ms } of BOARDING_PROMPT_WINDOWS) {
@@ -907,6 +915,19 @@ export function countBoardingPromptAutoLockOutcomes(
   }
   return counts;
 }
+
+/** #1170: boardingPrompt 사용자 응답 1건 적재. */
+export function logBoardingPromptResponded(input: {
+  outcome: 'boarded' | 'dismissed';
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'boarding-prompt',
+    outcome: 'received',
+    reason: input.outcome === 'boarded' ? 'response-boarded' : 'response-dismissed',
+  });
+}
+
 
 
 // ── CRUD ──
