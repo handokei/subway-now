@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { prefetchArrival, useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import { useBoardingLockStore } from '../../alarm/store/useBoardingLockStore';
+import { pickAutoTrainCodeFromArrivals } from '../../alarm/utils/boardingPromptAutoLock';
 import {
   findActiveTransferContext,
   findUpcomingTransferPrefetch,
@@ -97,6 +98,30 @@ export function useTransferTrainList({
     [arrival, context],
   );
 
+  // #1211 D5 — 환승 leg autoLock 트리거.
+  // 사용자가 origin에서 명시 탭으로 lock을 만든 trip(=현재 lock 존재 = 사용자 명시 의향 trip)에서
+  // planned route transfer waypoint 도달 시, 사용자가 BoardingTrainList에서 새 leg train을 탭하지
+  // 않아도 arvlCd 우선순위로 자동 lock swap을 수행. lockless 직전(= 새 leg trainCode 미정) 상태를
+  // 사용자 개입 없이 채워 환승 후 trainCode-bound 알람·backend sync 정확도를 lock 활성 trip과 동급
+  // 으로 끌어올린다 (CLAUDE.md "사용자 명시 의향 trip" 룰).
+  //
+  // 정책:
+  //   - context 활성(= planned 환승역 도달 + lock 존재 + lock.boardingLine !== nextLine) +
+  //     arvlCd 우선순위로 단일 train 선정 가능 → createTransferLock 즉시 호출.
+  //   - 후보가 ambiguity / empty이면 skip (manual fallback — 기존 BoardingTrainList UX 유지).
+  //   - 같은 환승역에서 1회만 시도 (idempotency). 사용자가 수동 탭하거나 autoLock이 성공하면
+  //     lock.boardingLine === nextLine으로 갱신되어 context가 null로 떨어져 자연 재진입 차단.
+  const autoLockedTransferKeyRef = useRef<string | null>(null);
+  const transferKey = context
+    ? `${context.transferStationInToLine.id}|${context.nextLine}`
+    : null;
+  // currentStation이 환승역을 벗어나면 idempotency ref 리셋 — 다음 trip의 같은 환승역에서 재시도 허용.
+  useEffect(() => {
+    if (!transferKey && autoLockedTransferKeyRef.current) {
+      autoLockedTransferKeyRef.current = null;
+    }
+  }, [transferKey]);
+
   const createLock = useBoardingLockStore((s) => s.createLock);
   const createTransferLock = useCallback(
     (train: ArrivalInfo) => {
@@ -122,6 +147,18 @@ export function useTransferTrainList({
     },
     [context, lock, route, createLock],
   );
+
+  // #1211 D5 — autoLock 실제 트리거. createTransferLock 정의 이후에 effect 배치(클로저 캡처).
+  useEffect(() => {
+    // transferKey가 truthy면 context도 활성 (transferKey가 context에서 도출).
+    if (!transferKey) return;
+    if (autoLockedTransferKeyRef.current === transferKey) return;
+    if (arrivals.length === 0) return;
+    const chosen = pickAutoTrainCodeFromArrivals(arrivals);
+    if (!chosen) return;
+    autoLockedTransferKeyRef.current = transferKey;
+    createTransferLock(chosen);
+  }, [transferKey, arrivals, createTransferLock]);
 
   return { context, arrivals, createTransferLock };
 }
