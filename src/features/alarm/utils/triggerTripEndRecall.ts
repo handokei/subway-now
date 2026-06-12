@@ -26,6 +26,7 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
+  APNS_TOKEN_KEY,
   DESTINATION_KEY,
   ROUTE_KEY,
   TRIP_ORIGIN_KEY,
@@ -41,6 +42,7 @@ import {
 } from './alarmLogTelemetry';
 import { getTripStartedAt } from './tripStartStorage';
 import { createLogger } from '../../../shared/utils/logger';
+import { flushRegressionCounters } from '../../../shared/utils/regressionMetrics';
 
 const log = createLogger('triggerTripEndRecall');
 
@@ -100,6 +102,11 @@ export async function triggerTripEndRecall(): Promise<TriggerTripEndRecallResult
     // idempotency 키를 사용 — recall 실패/skip이 prescheduled upload를 막지 않게.
     await triggerPrescheduledUpload(tripStart);
 
+    // Epic #1204 그룹 0 PR B — trip 동안 누적된 회귀(regression) 카운터를 backend로 flush.
+    // 별도 idempotency 키 불필요 — flush는 합계 0일 때 자동 skip하며, 200 응답 시 카운터를
+    // 즉시 reset하므로 같은 trip이 두 번 trigger되어도 두 번째는 자연스럽게 no-op이 된다.
+    await triggerRegressionFlush();
+
     return { uploaded: result.uploaded };
   } catch (e) {
     log.warn('trigger error', e);
@@ -130,6 +137,20 @@ async function triggerPrescheduledUpload(tripStart: number): Promise<void> {
     }
   } catch (e) {
     log.warn('prescheduled trigger error', e);
+  }
+}
+
+/**
+ * 회귀 카운터 flush 1회. token이 없으면 graceful skip. 모든 에러는 흡수.
+ * `flushRegressionCounters` 자체가 throw 하지 않지만 token 조회 단계 보호를 위해 try-catch.
+ */
+async function triggerRegressionFlush(): Promise<void> {
+  try {
+    const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
+    if (!token) return;
+    await flushRegressionCounters(token);
+  } catch (e) {
+    log.warn('regression flush trigger error', e);
   }
 }
 
