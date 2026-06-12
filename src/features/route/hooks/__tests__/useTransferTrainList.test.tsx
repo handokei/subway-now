@@ -284,6 +284,211 @@ describe('useTransferTrainList', () => {
   });
 });
 
+/**
+ * #1211 D5 — 환승 leg autoLock 트리거.
+ *
+ * 사용자가 origin에서 명시 탭으로 lock을 만든 trip(=현재 lock 존재)에서 planned route transfer
+ * waypoint 도달 + arvlCd 우선순위로 단일 train 선정 가능 → createTransferLock 자동 호출.
+ * lock 없음(lockless 직접 entry) / ambiguity / arrivals 비어있음은 skip — 기존 manual fallback 유지.
+ */
+describe('#1211 D5 환승 leg autoLock 트리거', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseArrival.mockReturnValue(arrivalRet(null));
+    mockPrefetchArrival.mockResolvedValue(undefined);
+  });
+
+  const gondeokOn5Id = (findStationByNameAndLine('공덕', '5') as Station).id;
+
+  /** baseline createTransferLock 호출 시 들어가야 할 lock 필드. */
+  function expectedAutoLock(trainCode: string, initialEtaSeconds: number): unknown {
+    return expect.objectContaining({
+      destinationId: 'dest-X',
+      trainCode,
+      boardingLine: '5',
+      boardingStationId: gondeokOn5Id,
+      expectedDurationMs: 6 * 60_000,
+      initialEtaSeconds,
+    });
+  }
+
+  it('context 활성 + arvlCd 단일 train(ARRIVED=1) → autoLock 1회', () => {
+    const arrived = makeTrain({ trainCode: 'T-ARRIVED', arrivalCode: 1, arrivalSeconds: 30 });
+    const running = makeTrain({ trainCode: 'T-RUN', arrivalCode: 99, arrivalSeconds: 300 });
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [arrived, running], down: [] }));
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockCreateLock).toHaveBeenCalledTimes(1);
+    expect(mockCreateLock).toHaveBeenCalledWith(expectedAutoLock('T-ARRIVED', 30));
+  });
+
+  it('arvlCd 우선순위 — DEPARTED(2) 단일이면 ENTERING(0) 무시하고 DEPARTED 선택', () => {
+    const departed = makeTrain({ trainCode: 'T-DEP', arrivalCode: 2, arrivalSeconds: 10 });
+    const entering = makeTrain({ trainCode: 'T-ENT', arrivalCode: 0, arrivalSeconds: 60 });
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [departed, entering], down: [] }));
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockCreateLock).toHaveBeenCalledWith(expectedAutoLock('T-DEP', 10));
+  });
+
+  it('ambiguity (같은 우선순위 train 2대) → autoLock skip — manual fallback', () => {
+    const a = makeTrain({ trainCode: 'T-A', arrivalCode: 1, arrivalSeconds: 30 });
+    const b = makeTrain({ trainCode: 'T-B', arrivalCode: 1, arrivalSeconds: 60 });
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [a, b], down: [] }));
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockCreateLock).not.toHaveBeenCalled();
+  });
+
+  it('arrivals 비어 있음 → autoLock skip', () => {
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [], down: [] }));
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockCreateLock).not.toHaveBeenCalled();
+  });
+
+  it('context 미활성(currentStation=null) → autoLock skip', () => {
+    const arrived = makeTrain({ trainCode: 'T-ARRIVED', arrivalCode: 1, arrivalSeconds: 30 });
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [arrived], down: [] }));
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: null,
+      }),
+    );
+    expect(mockCreateLock).not.toHaveBeenCalled();
+  });
+
+  it('lock=null(완전 lockless 진입) → context 미활성 → autoLock skip', () => {
+    const arrived = makeTrain({ trainCode: 'T-ARRIVED', arrivalCode: 1, arrivalSeconds: 30 });
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [arrived], down: [] }));
+    renderHook(() =>
+      useTransferTrainList({
+        lock: null,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockCreateLock).not.toHaveBeenCalled();
+  });
+
+  it('같은 환승역에서 polling 반복(arrival 새 객체) → autoLock 1회만 (idempotency)', () => {
+    // 폴링 tick마다 useArrivalInfo가 새 arrival 객체를 반환하더라도(ref만 다름) transferKey가
+    // 동일하면 ref 가드로 effect skip — 한 번만 호출. 실제 폴링 시나리오 시뮬레이션.
+    const makeFreshArrival = (): { arrival: StationArrival; loading: boolean; isMock: boolean; refetch: jest.Mock } =>
+      arrivalRet({
+        up: [makeTrain({ trainCode: 'T-ARRIVED', arrivalCode: 1, arrivalSeconds: 30 })],
+        down: [],
+      }) as { arrival: StationArrival; loading: boolean; isMock: boolean; refetch: jest.Mock };
+    mockUseArrival.mockImplementation(() => makeFreshArrival());
+    const { rerender } = renderHook(
+      (props: { lock: BoardingLock }) =>
+        useTransferTrainList({
+          lock: props.lock,
+          route,
+          destinationName: '여의나루',
+          currentStation: gondeokOn6,
+        }),
+      { initialProps: { lock } },
+    );
+    // 새 arrival 객체가 매 render마다 반환되어 effect deps(arrivals)가 변경되지만, transferKey
+    // ref 가드(line 154)로 skip.
+    rerender({ lock });
+    rerender({ lock });
+    expect(mockCreateLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('autoLock 후 lock.boardingLine === nextLine으로 갱신되면 context 자연 닫힘', () => {
+    // 첫 렌더: 옛 leg lock(boardingLine='6')으로 context 활성 → autoLock 발사.
+    // 두 번째 렌더: lock.boardingLine='5'로 swap 시뮬 → findActiveTransferContext가 null
+    // → autoLock effect의 `if (!context) return`로 안전 skip.
+    const arrived = makeTrain({ trainCode: 'T-ARRIVED', arrivalCode: 1, arrivalSeconds: 30 });
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [arrived], down: [] }));
+    const swapped: BoardingLock = { ...lock, boardingLine: '5' as const, trainCode: 'T-ARRIVED' };
+    const { rerender } = renderHook(
+      (props: { lock: BoardingLock }) =>
+        useTransferTrainList({
+          lock: props.lock,
+          route,
+          destinationName: '여의나루',
+          currentStation: gondeokOn6,
+        }),
+      { initialProps: { lock } },
+    );
+    expect(mockCreateLock).toHaveBeenCalledTimes(1);
+    mockCreateLock.mockClear();
+    rerender({ lock: swapped });
+    expect(mockCreateLock).not.toHaveBeenCalled();
+  });
+
+  it('사용자가 수동 탭(createTransferLock)으로 먼저 lock을 만들면 autoLock은 그 후 재발사 안 함', () => {
+    // arrivals ambiguity 상황 → autoLock 자동 skip → 사용자가 직접 선택 → 그 호출만 발생.
+    const a = makeTrain({ trainCode: 'T-A', arrivalCode: 1, arrivalSeconds: 30 });
+    const b = makeTrain({ trainCode: 'T-B', arrivalCode: 1, arrivalSeconds: 60 });
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [a, b], down: [] }));
+    const { result } = renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockCreateLock).not.toHaveBeenCalled();
+    act(() => result.current.createTransferLock(makeTrain({ trainCode: 'T-A', arrivalSeconds: 30 })));
+    expect(mockCreateLock).toHaveBeenCalledTimes(1);
+    expect(mockCreateLock).toHaveBeenCalledWith(expectedAutoLock('T-A', 30));
+  });
+
+  it('환승역에서 벗어나면(currentStation null로 전환) idempotency ref 리셋 — 다음 진입 시 재시도', () => {
+    const arrived = makeTrain({ trainCode: 'T-ARRIVED', arrivalCode: 1, arrivalSeconds: 30 });
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [arrived], down: [] }));
+    const { rerender } = renderHook(
+      (props: { currentStation: Station | null }) =>
+        useTransferTrainList({
+          lock,
+          route,
+          destinationName: '여의나루',
+          currentStation: props.currentStation,
+        }),
+      { initialProps: { currentStation: gondeokOn6 as Station | null } },
+    );
+    expect(mockCreateLock).toHaveBeenCalledTimes(1);
+    // GPS 끊김 — context null → ref 리셋.
+    rerender({ currentStation: null });
+    // 다시 환승역 진입 — autoLock 재발사.
+    rerender({ currentStation: gondeokOn6 });
+    expect(mockCreateLock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('filterArrivalsByDirection', () => {
   const up = makeTrain({ trainCode: 'UP' });
   const down = makeTrain({ trainCode: 'DN' });
