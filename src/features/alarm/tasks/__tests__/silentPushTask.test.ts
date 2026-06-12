@@ -374,6 +374,49 @@ describe('silentPushTask', () => {
       ).toMatchObject({ pushId: undefined });
     });
 
+    // Epic #1204 그룹 2 D3 (#1273) — backend가 silent push payload에 hopIndex(0-based 절대 시퀀스)를 stamp.
+    // 0 이상 정수만 통과. 음수/non-integer/비숫자/누락은 모두 undefined로 정규화 → gate가 widened fallback.
+    describe('hopIndex (#1273 D3)', () => {
+      it('non-negative integer이면 그대로 전달', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', hopIndex: 0 }),
+          ),
+        ).toMatchObject({ hopIndex: 0 });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', hopIndex: 7 }),
+          ),
+        ).toMatchObject({ hopIndex: 7 });
+      });
+
+      it('누락/음수/non-integer/비숫자/Infinity이면 undefined (구 백엔드 호환)', () => {
+        expect(
+          extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early' })),
+        ).toMatchObject({ hopIndex: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', hopIndex: -1 }),
+          ),
+        ).toMatchObject({ hopIndex: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', hopIndex: 1.5 }),
+          ),
+        ).toMatchObject({ hopIndex: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', hopIndex: '3' }),
+          ),
+        ).toMatchObject({ hopIndex: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', hopIndex: Infinity }),
+          ),
+        ).toMatchObject({ hopIndex: undefined });
+      });
+    });
+
     // #725 — reschedule schema는 standard와 다르므로 별도 분기 검증.
     describe('reschedule kind (#725)', () => {
       it('정상 reschedule payload → RescheduleSilentPushPayload', () => {
@@ -632,6 +675,7 @@ describe('silentPushTask', () => {
         kind: 'destination',
         phase: 'imminent',
         isLockless: false,
+        payloadHopIndex: undefined,
       });
       expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
       const call = mockScheduleNotificationAsync.mock.calls[0][0];
@@ -963,6 +1007,28 @@ describe('silentPushTask', () => {
         await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
         expect(mockCheckGate).toHaveBeenCalledWith(
           expect.objectContaining({ isLockless: true }),
+        );
+      });
+
+      // Epic #1204 그룹 2 D3 (#1273) — payload.hopIndex가 gate.payloadHopIndex로 그대로 전달되는지.
+      // backend SSOT가 frontend gate hop-window 매치 분기에 도달해야 D3 효과 발생.
+      it('payload.hopIndex가 정의되면 게이트에 payloadHopIndex로 wire', async () => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        mockLocklessStorage('on');
+        await handleSilentPush(
+          payload({ kind: 'intermediate', phase: 'imminent', hopIndex: 5 }),
+        );
+        expect(mockCheckGate).toHaveBeenCalledWith(
+          expect.objectContaining({ payloadHopIndex: 5 }),
+        );
+      });
+
+      it('payload.hopIndex가 없으면 게이트에 payloadHopIndex=undefined (거리 fallback)', async () => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        mockLocklessStorage('on');
+        await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
+        expect(mockCheckGate).toHaveBeenCalledWith(
+          expect.objectContaining({ payloadHopIndex: undefined }),
         );
       });
     });

@@ -94,6 +94,13 @@ export interface SilentPushPayload {
    * 구 백엔드 호환 위해 optional — 누락 시 ACK skip(P2c fallback이 발사할 가능성 감수).
    */
   pushId?: string;
+  /**
+   * 백엔드 trip waypoint의 0-based 절대 시퀀스 위치 (#1273 D3 / Epic #1204 그룹 2).
+   * lockless intermediate hop-window 매치 게이트의 SSOT. 구 백엔드 호환 위해 optional —
+   * 누락 시 거리 기반 widened fallback 경로로 동작 (silentPushLocationGate가 처리).
+   * D1(#1207) hop estimator currentHopIndex와 짝지어 사용.
+   */
+  hopIndex?: number;
 }
 
 /**
@@ -265,7 +272,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
   // standard 경로. findFieldsLayer는 isStandardCandidate(nextWaypoint non-empty) 또는
   // isRescheduleCandidate(kind='reschedule') 중 하나로 통과시키지만, kind='reschedule'
   // 케이스는 위 분기에서 잡혔으므로 잔여 케이스는 isStandardCandidate가 보증한 것 — nextWaypoint 보장.
-  const { nextWaypoint, etaSeconds, phase, kind, sentAt, pushId } = obj as {
+  const { nextWaypoint, etaSeconds, phase, kind, sentAt, pushId, hopIndex } = obj as {
     nextWaypoint: string;
   } & Record<string, unknown>;
   if (typeof etaSeconds !== 'number' || !Number.isFinite(etaSeconds)) return null;
@@ -279,7 +286,19 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     kind: validKind,
     sentAt: validSentAt(sentAt),
     pushId: validPushId(pushId),
+    hopIndex: validHopIndex(hopIndex),
   };
+}
+
+/**
+ * #1273 D3 — payload.hopIndex 검증. 0 이상 정수만 통과. 구 backend가 필드를 안 보내면 undefined →
+ * `silentPushLocationGate`가 거리 기반 widened fallback 경로로 동작.
+ * (validOccurrenceIdx와 의미가 다르므로 별도 헬퍼 — hopIndex는 절대 시퀀스, occurrenceIdx는 중복 station 선택.)
+ */
+function validHopIndex(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  if (!Number.isInteger(value) || value < 0) return undefined;
+  return value;
 }
 
 function extractReschedulePayload(
@@ -765,13 +784,15 @@ async function fireWithGate(
   }
 
   // #1209 D3 — lockless 경로는 sticky station 좌표 drift 수용 위해 widened 임계값 사용.
-  // D1(#1207) hop estimator 미연결 단계라 currentHopIndex/payloadHopIndex는 undefined로 두고
-  // 거리 기반 widened fallback 경로로 동작한다.
+  // #1273 D3 — payloadHopIndex는 백엔드 silent push payload의 절대 시퀀스 SSOT. wire.
+  // currentHopIndex는 D1(#1207) hop estimator 미연결 단계라 undefined — 둘 중 하나라도
+  // 없으면 gate가 거리 기반 widened fallback 경로로 동작한다.
   const gate = await checkSilentPushLocationGate({
     stationName: payload.nextWaypoint,
     kind: payload.kind,
     phase: payload.phase,
     isLockless: !lock,
+    payloadHopIndex: payload.hopIndex,
   });
 
   if (!gate.pass) {
