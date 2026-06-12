@@ -26,8 +26,10 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
 # 취침 모드는 목적지 설정 시에만 노출되므로 잠실 지정
 - tapOn:
     id: "destination-button"
-- assertVisible:
-    id: "search-input"
+- extendedWaitUntil:
+    visible:
+      id: "search-input"
+    timeout: 5000
 - tapOn:
     id: "search-input"
 - inputText: "잠실"
@@ -63,8 +65,10 @@ name: "smoke - 취침 모드 토글 (홈 ↔ 설정 동기화)"
 # 설정 탭 동기화 확인
 - tapOn:
     point: "87%,95%"
-- assertVisible:
-    id: "sleep-mode-switch"
+- extendedWaitUntil:
+    visible:
+      id: "sleep-mode-switch"
+    timeout: 5000
 - tapOn:
     id: "sleep-mode-switch"
 

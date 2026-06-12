@@ -33,19 +33,26 @@ name: "smoke - 탭 내비게이션 순회"
     timeout: 10000
 
 # 즐겨찾기 탭 (62.5%)
+# 탭 전환 후 화면 mount까지 maestro default(~1s)를 넘는 경우가 있어 extendedWaitUntil로 흡수 (#1230).
 - tapOn:
     point: "62%,95%"
-- assertVisible:
-    id: "favorites-search-input"
+- extendedWaitUntil:
+    visible:
+      id: "favorites-search-input"
+    timeout: 5000
 
 # 설정 탭 (87.5%)
 - tapOn:
     point: "87%,95%"
-- assertVisible:
-    id: "sleep-mode-switch"
+- extendedWaitUntil:
+    visible:
+      id: "sleep-mode-switch"
+    timeout: 5000
 
 # 홈 탭 복귀 (12.5%)
 - tapOn:
     point: "12%,95%"
-- assertVisible:
-    id: "destination-button"
+- extendedWaitUntil:
+    visible:
+      id: "destination-button"
+    timeout: 5000

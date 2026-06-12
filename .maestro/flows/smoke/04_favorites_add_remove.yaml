@@ -24,10 +24,13 @@ name: "smoke - 즐겨찾기 추가 & 삭제"
     timeout: 10000
 
 # 즐겨찾기 탭 (62.5%)
+# 탭 전환 직후 mount까지 maestro default(~1s)를 넘는 케이스를 흡수 (#1230).
 - tapOn:
     point: "62%,95%"
-- assertVisible:
-    id: "favorites-empty"
+- extendedWaitUntil:
+    visible:
+      id: "favorites-empty"
+    timeout: 5000
 
 # 추가
 - tapOn:
@@ -42,11 +45,15 @@ name: "smoke - 즐겨찾기 추가 & 삭제"
 
 # FavoriteCard는 TouchableOpacity가 여러 Text를 감싸 a11y aggregation으로
 # 단독 station 이름 텍스트가 매처에 안 잡힘. testID로 검증해 a11y 구조 무관하게 결정적.
-- assertVisible:
-    id: "favorite-remove-2-022"
+- extendedWaitUntil:
+    visible:
+      id: "favorite-remove-2-022"
+    timeout: 5000
 
 # 삭제
 - tapOn:
     id: "favorite-remove-2-022"
-- assertVisible:
-    id: "favorites-empty"
+- extendedWaitUntil:
+    visible:
+      id: "favorites-empty"
+    timeout: 5000
