@@ -2766,6 +2766,178 @@ describe('useStationAlarm', () => {
       const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
       expect(arvlCdFires).toHaveLength(0);
     });
+
+  });
+
+  // #1266 (Epic #1204 D2 follow-up) — fast-path도 hop window 게이트 적용.
+  // 회귀 evidence: 2026-06-12 22:31 사용자 trip [Img1] — 신당(+6 hop) + 왕십리(+4 hop) 동시 fire.
+  // GPS station-passed effect는 D2(#1208) 게이트로 차단됐으나 fg-arvlcd fast-path는 같은
+  // 게이트가 없어 fusion이 미래 arc station에 jitter landing + lock.trainCode 일치 시
+  // 미래 hop fire 가능. 본 회귀 가드는 fast-path D2 gate 우회 시 fail by design.
+  //
+  // 독립 describe로 분리 — 직전 #917 fast path 블록 일부 케이스가 pending promise 등을
+  // 리킹해 fast-path effect가 통과 안 하는 leakage 회피.
+  describe('#1266 fast-path hop window 게이트 (Epic #1204 D2 follow-up)', () => {
+    // 직전 #917/#1012 등 일부 케이스가 mockReturnValueOnce(pending promise) 또는
+    // mockImplementation(pending)을 queue에 남길 수 있어 본 describe 진입 시 명시적 reset.
+    // clearAllMocks(top-level beforeEach)는 호출 기록만 clear하고 queued 반환값/
+    // mockImplementation은 보존되기 때문.
+    beforeEach(() => {
+      mockGetFiredAlarms.mockReset();
+      mockGetFiredAlarms.mockResolvedValue(new Set<string>());
+      mockSendStationPassedNotification.mockReset();
+      mockSendStationPassedNotification.mockResolvedValue(undefined);
+    });
+
+    const route1266 = makeDirectRoute(3, '2');
+    const activeLock1266 = {
+      destinationId: 'D1',
+      trainCode: 'T-LOCK',
+      boardingStationId: 'S0',
+      boardingLine: '2' as const,
+      boardedAt: 1_700_000_000_000,
+      expectedDurationMs: 600_000,
+    };
+    const dummyArrival = { up: [], down: [], isMock: false };
+    // arcStations: 7개 (A0~A6), 모두 line='2' — route('2')와 일치.
+    const arcLine2: Station[] = Array.from({ length: 7 }, (_, i) =>
+      makeStation(`FP-A${i}`, `FPSname${i}`, 37.5 + i * 0.001, 127.0 + i * 0.001),
+    );
+
+    function inputs1266(overrides: Partial<UseStationAlarmInputs>): UseStationAlarmInputs {
+      return defaultInputs({
+        route: route1266,
+        destination,
+        nearestStation: arcLine2[0],
+        speedMps: 5,
+        accuracyMeters: 50,
+        currentStationArrival: dummyArrival,
+        ...overrides,
+      });
+    }
+
+    it('22:31 회귀 차단 — currentHopIndex=0 + nearestStation=arc[4] (+4 hop 미래) → fast-path suppressed', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock1266);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() =>
+        useStationAlarm(
+          inputs1266({
+            nearestStation: arcLine2[4],
+            currentHopIndex: 0,
+            arcStations: arcLine2,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindow).toHaveBeenCalledWith({
+          source: 'fg-arvlcd',
+          stationName: arcLine2[4].name,
+          currentHopIndex: 0,
+          candidateIndex: 4,
+        });
+      });
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('22:31 회귀 차단 — currentHopIndex=0 + nearestStation=arc[6] (+6 hop 미래) → fast-path suppressed', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock1266);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() =>
+        useStationAlarm(
+          inputs1266({
+            nearestStation: arcLine2[6],
+            currentHopIndex: 0,
+            arcStations: arcLine2,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindow).toHaveBeenCalledWith({
+          source: 'fg-arvlcd',
+          stationName: arcLine2[6].name,
+          currentHopIndex: 0,
+          candidateIndex: 6,
+        });
+      });
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('정상 case — currentHopIndex=3 + nearestStation=arc[3] (동일 hop) → fast-path fire (정상 동작 보존)', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock1266);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() =>
+        useStationAlarm(
+          inputs1266({
+            nearestStation: arcLine2[3],
+            currentHopIndex: 3,
+            arcStations: arcLine2,
+          }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg-arvlcd', arcLine2[3]),
+      );
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+    });
+
+    it('estimator null + firedAlarms 빈 set → no-source 적재 + fast-path 게이트 미적용 (graceful fallback)', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock1266);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() =>
+        useStationAlarm(
+          inputs1266({
+            nearestStation: arcLine2[0],
+            currentHopIndex: null,
+            arcStations: arcLine2,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindowNoSource).toHaveBeenCalledWith({
+          source: 'fg-arvlcd',
+          stationName: arcLine2[0].name,
+        });
+      });
+      // 게이트 미적용이므로 정상 발사.
+      await waitFor(() =>
+        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg-arvlcd', arcLine2[0]),
+      );
+    });
+
+    it('arcStations 빈 배열 → 게이트 자체 미적용 (기존 동작 보존)', async () => {
+      mockGetBoardingLock.mockResolvedValue(activeLock1266);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() =>
+        useStationAlarm(
+          inputs1266({
+            currentHopIndex: 99,
+            arcStations: [],
+          }),
+        ),
+      );
+
+      await waitFor(() =>
+        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg-arvlcd', arcLine2[0]),
+      );
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+      expect(mockLogSuppressedHopWindowNoSource).not.toHaveBeenCalled();
+    });
   });
 
   // #1012 (H5) — hydration state machine: pre-hydrate → hydrating → storage-synced → ready.
