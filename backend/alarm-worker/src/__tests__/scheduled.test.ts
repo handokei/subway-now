@@ -159,6 +159,8 @@ function parseArvlCdStationPassedData(call: [string, RequestInit]): {
   kind: string;
   pushId: string;
   sentAt: number;
+  // Epic #1204 그룹 2 D3 (#1273) — 구 client 호환을 위해 optional.
+  hopIndex?: number;
 } {
   const body = JSON.parse(call[1].body as string) as {
     data: {
@@ -168,6 +170,7 @@ function parseArvlCdStationPassedData(call: [string, RequestInit]): {
       kind: string;
       pushId: string;
       sentAt: number;
+      hopIndex?: number;
     };
   };
   return body.data;
@@ -584,6 +587,57 @@ describe('runScheduled', () => {
         expect(apnsFetch).not.toHaveBeenCalled();
       }
       if (seoulCalled === false) expect(seoulFetch).not.toHaveBeenCalled();
+    });
+
+    // Epic #1204 그룹 2 D3 (#1273)
+    it('lockless intermediate 발사 시 payload.hopIndex가 waypoint.hopIndex로 wire', async () => {
+      const { apnsFetch } = await runLocklessCycle({
+        trip: makeTrip({
+          waypoints: [
+            { stationName: '강남', line: '2', kind: 'intermediate', hopIndex: 3 },
+            { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
+          ],
+          locklessStationPassed: true,
+        }),
+        arrivals: [ARVL_ARRIVED],
+        apnsOk: true,
+      });
+      const calls = apnsFetch.mock.calls.filter((c) => {
+        try {
+          const body = JSON.parse(c[1]?.body as string) as { data?: { kind?: string } };
+          return body?.data?.kind === 'intermediate';
+        } catch {
+          return false;
+        }
+      });
+      expect(calls).toHaveLength(1);
+      const body = JSON.parse(calls[0][1].body as string) as { data: { hopIndex?: number } };
+      expect(body.data.hopIndex).toBe(3);
+    });
+
+    it('lockless intermediate 발사 시 waypoint.hopIndex 부재면 payload 본문에서도 hopIndex 누락', async () => {
+      const { apnsFetch } = await runLocklessCycle({
+        trip: makeTrip({
+          waypoints: [
+            { stationName: '강남', line: '2', kind: 'intermediate' },
+            { stationName: '역삼', line: '2', kind: 'destination' },
+          ],
+          locklessStationPassed: true,
+        }),
+        arrivals: [ARVL_ARRIVED],
+        apnsOk: true,
+      });
+      const calls = apnsFetch.mock.calls.filter((c) => {
+        try {
+          const body = JSON.parse(c[1]?.body as string) as { data?: { kind?: string } };
+          return body?.data?.kind === 'intermediate';
+        } catch {
+          return false;
+        }
+      });
+      expect(calls).toHaveLength(1);
+      const body = JSON.parse(calls[0][1].body as string) as { data: Record<string, unknown> };
+      expect('hopIndex' in body.data).toBe(false);
     });
 
     it('lock 없음 + intermediate(ARRIVED) → 발사 후 다음 intermediate 남으면 waypoint advance', async () => {
@@ -3590,6 +3644,32 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(data.sentAt).toBe(NOW);
     // dedup KV stamp 확인 (TTL은 InMemoryKV가 그대로 보관 — expiration 무시)
     expect(await kv.get(arvlCdFireKey('arvl-tok', '7246', '중곡', 1))).toBe('1');
+  });
+
+  // Epic #1204 그룹 2 D3 (#1273)
+  it('payload.hopIndex 포함 — waypoint.hopIndex stamp가 그대로 forward', async () => {
+    const tripWithHop = makeLockTripFixture('arvl-tok', {
+      waypoints: [
+        { stationName: '중곡', line: '7', kind: 'intermediate', hopIndex: 4 },
+        { stationName: '군자', line: '7', kind: 'destination', hopIndex: 5 },
+      ],
+    });
+    const { apnsFetch } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      trip: tripWithHop,
+      pushId: 'p-arvl-hop',
+    });
+    const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]);
+    expect(data.hopIndex).toBe(4);
+  });
+
+  it('payload.hopIndex 누락 — waypoint.hopIndex 부재 시 silent push 본문에서도 누락', async () => {
+    const { apnsFetch } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      pushId: 'p-arvl-no-hop',
+    });
+    const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]);
+    expect(data.hopIndex).toBeUndefined();
   });
 
   it('arvlCd=0(ENTERING) → 매역 push 발사 (arvlCd=0 dedup key)', async () => {

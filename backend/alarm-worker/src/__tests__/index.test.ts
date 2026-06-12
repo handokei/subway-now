@@ -237,6 +237,62 @@ describe('validateTrip', () => {
       expect(trip?.waypoints.map((w) => w.occurrenceIdx)).toEqual([0, 1, 0]);
     });
   });
+
+  // Epic #1204 그룹 2 D3 (#1273) — silent push payload hopIndex SSOT용 stamping.
+  describe('hopIndex stamping (#1273)', () => {
+    it('waypoint 시퀀스 0-based 위치로 stamp (단일 등장)', () => {
+      const trip = validateTrip({
+        ...base(),
+        waypoints: [
+          { stationName: '용마산', line: '7', kind: 'transfer' },
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '군자', line: '7', kind: 'destination' },
+        ],
+      });
+      expect(trip?.waypoints.map((w) => w.hopIndex)).toEqual([0, 1, 2]);
+    });
+
+    it('중복 station이 있어도 hopIndex는 절대 시퀀스 위치 유지', () => {
+      const trip = validateTrip({
+        ...base(),
+        waypoints: [
+          { stationName: '회차역', line: '2', kind: 'transfer' },
+          { stationName: '다른역', line: '2', kind: 'transfer' },
+          { stationName: '회차역', line: '2', kind: 'transfer' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+      });
+      expect(trip?.waypoints.map((w) => w.hopIndex)).toEqual([0, 1, 2, 3]);
+      // occurrenceIdx와 별개로 카운트되는지 동시 검증.
+      expect(trip?.waypoints.map((w) => w.occurrenceIdx)).toEqual([0, 0, 1, 0]);
+    });
+
+    it('클라이언트가 명시한 hopIndex는 그대로 신뢰 (round-trip)', () => {
+      const trip = validateTrip({
+        ...base(),
+        waypoints: [
+          { stationName: '용마산', line: '7', kind: 'transfer', hopIndex: 7 },
+          { stationName: '강남', line: '2', kind: 'destination', hopIndex: 8 },
+        ],
+      });
+      expect(trip?.waypoints.map((w) => w.hopIndex)).toEqual([7, 8]);
+    });
+
+    it.each([
+      ['음수', -1],
+      ['소수', 1.5],
+      ['문자열', '1'],
+    ] as const)('비정상 hopIndex(%s)는 무시 후 시퀀스 위치로 fallback', (_label, badValue) => {
+      const trip = validateTrip({
+        ...base(),
+        waypoints: [
+          { stationName: '용마산', line: '7', kind: 'transfer', hopIndex: badValue },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+      });
+      expect(trip?.waypoints.map((w) => w.hopIndex)).toEqual([0, 1]);
+    });
+  });
 });
 
 describe('validateTrip — boardingLock (#585)', () => {
