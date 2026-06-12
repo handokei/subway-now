@@ -2430,3 +2430,116 @@ describe('GET /admin/quota (#1022)', () => {
     expect(body.count).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('POST /telemetry/regression (#1261)', () => {
+  const validBody = {
+    token: 'aabbccdd11223344',
+    since: 0,
+    until: 1000,
+    counts: { '8': 1, '10': 2 },
+  };
+
+  it('returns 400 on invalid JSON', async () => {
+    const env = makeKvEnv();
+    const res = await post('/telemetry/regression', 'not-json{', env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_json' });
+  });
+
+  it('returns 400 on invalid payload', async () => {
+    const env = makeKvEnv();
+    const res = await post('/telemetry/regression', { token: '' }, env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_payload' });
+  });
+
+  it('writes counts to KV when payload valid', async () => {
+    const env = makeKvEnv();
+    const res = await post('/telemetry/regression', validBody, env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+
+    const kv = env.TRIPS as unknown as InMemoryKV;
+    const dayKeys = [...kv.store.keys()].filter((k) => k.startsWith('regression:day:'));
+    expect(dayKeys.length).toBeGreaterThan(0);
+  });
+
+  it('also writes datapoints to TELEMETRY binding when present', async () => {
+    const writer: AnalyticsEngineWriter = { writeDataPoint: vi.fn() };
+    const env = makeEnv({
+      TRIPS: new InMemoryKV() as unknown as Env['TRIPS'],
+      TELEMETRY: writer,
+    });
+    const res = await post('/telemetry/regression', validBody, env);
+    expect(res.status).toBe(200);
+    expect(writer.writeDataPoint).toHaveBeenCalled();
+  });
+});
+
+describe('GET /admin/telemetry/regressions (#1261)', () => {
+  async function getRegressions(env: Env, authHeader?: string): Promise<Response> {
+    return app.fetch(
+      new Request('http://example.com/admin/telemetry/regressions', {
+        headers: authHeader ? { authorization: authHeader } : undefined,
+      }),
+      env,
+    );
+  }
+
+  function makeAuthEnv(): Env {
+    return makeEnv({ TRIPS: new InMemoryKV() as unknown as Env['TRIPS'], ADMIN_TOKEN: 'secret' });
+  }
+
+  it('returns 503 when ADMIN_TOKEN not configured', async () => {
+    const env = makeKvEnv();
+    const res = await getRegressions(env, 'Bearer x');
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'admin_unavailable' });
+  });
+
+  it('returns 401 without bearer header', async () => {
+    const env = makeAuthEnv();
+    const res = await getRegressions(env);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 with wrong token', async () => {
+    const env = makeAuthEnv();
+    const res = await getRegressions(env, 'Bearer wrong');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns all known ids with zero windows when KV empty (authorized)', async () => {
+    const env = makeAuthEnv();
+    const res = await getRegressions(env, 'Bearer secret');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ids: string[];
+      counts: Record<string, { last5m: number; lastHour: number; today: number; last7d: number }>;
+    };
+    expect(body.ids).toEqual(['8', '10', '11', '12']);
+    for (const id of body.ids) {
+      expect(body.counts[id]).toEqual({ last5m: 0, lastHour: 0, today: 0, last7d: 0 });
+    }
+  });
+
+  it('reflects counters previously written via POST', async () => {
+    const env = makeAuthEnv();
+    await post(
+      '/telemetry/regression',
+      {
+        token: 'aabbccdd11223344',
+        since: 0,
+        until: 1,
+        counts: { '8': 3 },
+      },
+      env,
+    );
+    const res = await getRegressions(env, 'Bearer secret');
+    const body = (await res.json()) as {
+      counts: Record<string, { last5m: number; today: number }>;
+    };
+    expect(body.counts['8'].last5m).toBe(3);
+    expect(body.counts['8'].today).toBe(3);
+  });
+});

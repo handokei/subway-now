@@ -68,6 +68,13 @@ import {
   validateTelemetryUpload,
   writeTelemetryDataPoints,
 } from './telemetry';
+import {
+  KNOWN_REGRESSION_IDS,
+  incrementRegressionCounters,
+  readRegressionCounters,
+  validateRegressionUpload,
+  writeRegressionDataPoints,
+} from './regressionTelemetry';
 import { getTrip, putTrip } from './trips';
 import { getQuotaStatus, incrementDailyRequestCount } from './quotaTracker';
 import type {
@@ -591,6 +598,58 @@ app.post('/telemetry/delta-vs-estimator', async (c) => {
     }),
   );
   return c.json({ ok: true });
+});
+
+/**
+ * 회귀 카운터 텔레메트리 upload (#1261, Epic #1204 그룹 0).
+ *
+ * 클라이언트가 trip 종료 시 누적된 회귀 8/10/11/12 발생 수를 보고한다.
+ * 5분 sliding window + 일별 KV 카운터에 적재 + AE binding 있으면 datapoint write.
+ * Trip 존재 여부 확인 안 함 — trip 만료 케이스에도 telemetry 보존(데이터 완전성).
+ */
+app.post('/telemetry/regression', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const payload = validateRegressionUpload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  await incrementRegressionCounters(c.env.TRIPS, Date.now(), payload.counts);
+
+  const writer = c.env.TELEMETRY;
+  if (writer) {
+    writeRegressionDataPoints(writer, payload);
+  }
+  console.log(
+    JSON.stringify({
+      msg: 'regression uploaded',
+      tokenPrefix: tokenPrefix(payload.token),
+      counts: payload.counts,
+      sink: writer ? 'ae' : 'none',
+    }),
+  );
+  return c.json({ ok: true });
+});
+
+/**
+ * 회귀 카운트 조회 (#1261, Epic #1204 그룹 0).
+ *
+ * 운영자가 wrangler tail 없이 5분/일/주 추이 확인. DebugModal Regressions 섹션
+ * (그룹 0 PR C)도 동일 endpoint 사용 (앱이 ADMIN_TOKEN 소지하는 운영 빌드 한정).
+ * 응답은 알려진 모든 id를 포함 (0이어도 키 유지 — 클라이언트 표 안정성).
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — `/admin/feedback`, `/admin/quota`와 동일 정책.
+ * 운영 지표 시계열을 비인증 노출하지 않기 위함.
+ */
+app.get('/admin/telemetry/regressions', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const counts = await readRegressionCounters(c.env.TRIPS, Date.now());
+  return c.json({ ids: KNOWN_REGRESSION_IDS, counts });
 });
 
 /**
