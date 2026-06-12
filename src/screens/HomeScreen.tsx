@@ -247,6 +247,10 @@ export default function HomeScreen() {
   // #797: 환승역에서 nearest.station.line이 trip 방향과 어긋나는 회귀 차단.
   // BoardingLock(사용자 선택) > Route(구조적 SSOT) > station.line fallback.
   const approachLine = getApproachLine(route, fusionBoardingLock, effectiveOrigin);
+  // D7 (#1213) ETA provider SSOT — 현재역 BoardingTrainList(via directionalArrivals)와
+  // 정상 Arrival 표시(EditorialArrivalRow via ArrivalDirectionGroup)는 둘 다 아래 `arrival`을
+  // 출처로 사용한다. 절대 시각 anchor도 arrivalAt(item)으로 통일(#897 Seam A). 따라서 두 surface의
+  // ETA는 같은 시점에 항상 동일해야 한다. 회귀 게이트: etaProviderConsistency.test.ts.
   const { arrival: rawArrival, isMock: arrivalIsMock, loading: arrivalLoading, refetch: refetchArrival } = useArrivalInfo(
     effectiveOrigin?.name ?? null,
     approachLine,
