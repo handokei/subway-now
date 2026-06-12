@@ -37,10 +37,33 @@ import { hopsElapsedFrom } from './hopTime';
  *   - DefaultHop:    lastObserved 부재 시 `(boardedAt, boardingStationId)` 앵커로 fallback
  */
 
+/**
+ * Lockless trip 컨텍스트 (#1207, Epic #1204 D1).
+ *
+ * `lock`이 null인 trip(사용자가 lock 없이 GPS만으로 진행)에서도 estimator가 비활성되지 않도록
+ * `tripStartedAt`을 앵커로 시간 적분을 수행한다. lock 활성 trip은 본 필드를 무시 — `lock`이
+ * non-null이면 기존 4단 전략이 우선.
+ *
+ * `tripStartedAt`은 destination이 설정된 순간(또는 첫 fusion fix 시각)을 호출자가 전달.
+ * arc 위 모든 hop 누적이 elapsed를 넘을 때까지 hop을 진행한다 — `LocklessRouteHop` 전략.
+ *
+ * 사용자 가치: lockless trip + 토글 ON에서도 사용자 명시 의향 trip 동급 정확도 보장
+ * (ADR-013 §B3 면제 폐기). estimator 출력이 D2(hop window 게이트)의 source of truth.
+ */
+export interface LocklessTripContext {
+  /** Trip 시작 epoch ms — destination 설정 시각 또는 첫 fusion fix. */
+  tripStartedAt: number;
+}
+
 /** estimator 입력 — Stage 2/3에서 ArrivalEta/HopTimeTable 신호 주입 시 입력 필드만 추가하면 된다. */
 export interface StationProgressEstimatorInput {
-  /** 활성 BoardingLock. null이면 estimator 자체가 비활성. */
+  /** 활성 BoardingLock. null이면 lockless 분기(`locklessTrip` 제공 시) 또는 비활성. */
   lock: BoardingLock | null;
+  /**
+   * Lockless trip 컨텍스트 (#1207). `lock`이 null이고 본 필드가 제공되면 LocklessRouteHop
+   * 전략으로 시간 적분. 미제공이면 기존 동작(lock null → null).
+   */
+  locklessTrip?: LocklessTripContext | null;
   /** 경로(arc) 위 역 시퀀스 — boarding → destination 순. */
   arcStations: Station[];
   /** 현재 시각(ms). */
@@ -92,7 +115,8 @@ export type StationProgressStrategy =
   | 'live-position'
   | 'arrival-eta'
   | 'reanchored-hop'
-  | 'default-hop';
+  | 'default-hop'
+  | 'lockless-route-hop';
 
 export interface StationProgressEstimate {
   station: Station;
@@ -236,6 +260,42 @@ function tryDefaultHop(
 }
 
 /**
+ * Lockless Strategy — `tripStartedAt`을 arc 0번 앵커로 두고 segment별 hop time을 누적해 현재 위치 추정.
+ *
+ * lock이 없는 trip(사용자가 lock 없이 GPS만으로 진행)에서 estimator가 비활성되는 회귀(#1207)를 막기 위한 #1204 D1.
+ * 사용자 명시 의향(lockless 토글 ON / boardingPrompt 응답) trip은 lock 활성과 동급 정확도 보장 의무 (ADR-013 §B3).
+ *
+ * Guard:
+ *   - `arcStations` 빈 배열 → null (상위 가드에서도 차단되지만 방어적 cap)
+ *   - `now < tripStartedAt`(시계 후진) → null
+ *
+ * Cap:
+ *   - 시간 적분 결과가 arc 끝을 넘으면 마지막 인덱스로 saturate (over-terminal grace는 lock 전략의
+ *     responsibility — lockless는 release 트리거 자체가 다른 경로이므로 clamp만 수행).
+ */
+function tryLocklessRouteHop(
+  arcStations: Station[],
+  tripStartedAt: number,
+  now: number,
+  hopTimeMsForHop: (fromIdx: number) => number,
+): StationProgressEstimate | null {
+  // 상위 estimateStationProgress가 arcStations.length === 0을 미리 차단하므로 본 가드는
+  // 도달 불가하지만 방어적 유지 — 직접 호출자가 추가될 때 안전.
+  /* istanbul ignore next */
+  if (arcStations.length === 0) return null;
+  const elapsedMs = now - tripStartedAt;
+  if (elapsedMs < 0) return null;
+  const hops = hopsElapsedFrom(arcStations.length, 0, elapsedMs, hopTimeMsForHop);
+  const lastIdx = arcStations.length - 1;
+  const idx = Math.min(hops, lastIdx);
+  return {
+    station: arcStations[idx],
+    index: idx,
+    strategy: 'lockless-route-hop',
+  };
+}
+
+/**
  * arcStations에서 station.id 기준 인덱스. 미발견은 -1.
  * estimator 결과와 fusion 결과를 arc 위치로 비교(역행 방지)할 때 사용.
  */
@@ -256,9 +316,16 @@ export function arcIndexOfStation(
 export function estimateStationProgress(
   input: StationProgressEstimatorInput,
 ): StationProgressEstimate | null {
-  const { lock, arcStations, now } = input;
-  if (!lock) return null;
+  const { lock, locklessTrip, arcStations, now, hopTimeMsForHop } = input;
   if (arcStations.length === 0) return null;
+  // Lockless 분기 (#1207): lock이 null이고 locklessTrip 컨텍스트가 제공되면 LocklessRouteHop으로 적분.
+  // locklessTrip 미제공이면 기존 동작 유지(null) — 호출자가 명시적으로 lockless 활성을 옵트인.
+  if (!lock) {
+    if (locklessTrip) {
+      return tryLocklessRouteHop(arcStations, locklessTrip.tripStartedAt, now, hopTimeMsForHop);
+    }
+    return null;
+  }
   if (isBoardingLockExpired(lock, now)) return null;
 
   // tryLivePosition/ArrivalEta/ReanchoredHop은 lock에 직접 의존하지 않으나 estimateStationProgress가
