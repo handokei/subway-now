@@ -217,6 +217,8 @@ describe('DebugModal', () => {
     expect(screen.getByText('Nearest station')).toBeTruthy();
     expect(screen.getByText('Arrival')).toBeTruthy();
     expect(screen.getByTestId('debug-arrival-summary').props.children).toContain('청량리');
+    // #1253 — maestro manual flow가 Alarm log 섹션을 testID로 잡는다.
+    expect(screen.getByTestId('alarm-log-modal-content')).toBeTruthy();
   });
 
   it('Alarm log 섹션에 source별 카운트 라인을 표시한다 (#564)', async () => {
@@ -1007,6 +1009,8 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     );
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
     expect(screen.getByText('Trip')).toBeTruthy();
+    // #1253 — maestro manual flow가 Trip 섹션을 testID로 잡는다.
+    expect(screen.getByTestId('debug-modal-trip-section')).toBeTruthy();
     expect(screen.getByText('lockless')).toBeTruthy();
     expect(screen.getByText(new Date(tripStartedAt).toISOString())).toBeTruthy();
     expect(screen.getByText('3')).toBeTruthy();
