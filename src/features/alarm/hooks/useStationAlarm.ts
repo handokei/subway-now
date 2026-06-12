@@ -946,6 +946,30 @@ export function useStationAlarm({
         return;
       }
 
+      // #1266 (Epic #1204 D2 follow-up) — fast-path에도 hop window 게이트 적용.
+      // 2026-06-12 22:31 회귀: GPS station-passed effect는 D2(#1208) 게이트로 차단됐으나
+      // fg-arvlcd fast-path는 같은 게이트가 없어 fusion이 미래 arc station에 jitter landing
+      // + Seoul API row의 lock.trainCode 일치 + arvlCd∈{0,1}일 때 미래 hop fire 가능.
+      // SSOT 우선순위는 GPS path와 동일 — currentHopIndex prop → firedAlarms fallback → no-source.
+      if (arcStations && arcStations.length > 0) {
+        const effectiveHopIndex =
+          currentHopIndex ?? inferHopIndexFromFiredAlarms(firedAlarmsRef.current, arcStations);
+        if (effectiveHopIndex < 0) {
+          logSuppressedHopWindowNoSource({
+            source: 'fg-arvlcd',
+            stationName: candidateStation.name,
+          });
+        } else if (!isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex)) {
+          logSuppressedHopWindow({
+            source: 'fg-arvlcd',
+            stationName: candidateStation.name,
+            currentHopIndex: effectiveHopIndex,
+            candidateIndex: arcIndexOf(arcStations, candidateStation),
+          });
+          return;
+        }
+      }
+
       // #746 silence gate + dispatch는 helper로 통합 (Sonar cpd 회피).
       // lastNotifiedStationId 공유 dedup. cancelled 재확인 — getBoardingLock 후 effect cleanup 가능.
       // #1236 — sleep 룰 게이트 context. lock은 위에서 이미 fetch.
@@ -987,5 +1011,7 @@ export function useStationAlarm({
     notificationSource,
     // #1236 — currentHopIndex 변화가 sleep 룰 게이트 isFirstHop 판정에 영향.
     currentHopIndex,
+    // #1266 — fast-path hop window 게이트 입력. arcStations 변화 시(환승 후 leg 전환 등) 재평가.
+    arcStations,
   ]);
 }
