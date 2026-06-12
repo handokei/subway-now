@@ -640,10 +640,12 @@ describe('useStationAlarm', () => {
       expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
-    // Sonar cpd 통합 — sleep OFF/lock 활성 vs sleep ON/lock null 모두 게이트 비활성 → 정상 발사.
+    // Sonar cpd 통합 — sleep OFF는 lock 유무와 무관하게 게이트 비활성 → 정상 발사.
+    // #1214 (Epic #1204 D8): lock=null 조기 종료가 제거됐으므로 "sleep ON + lock null" 케이스는
+    // 별도 신규 케이스(아래)에서 suppress=true 로 검증.
     it.each([
-      { name: 'sleep OFF + 첫 hop transfer → 정상 발사', sleepMode: false, lockValue: lock },
-      { name: 'sleep ON + lock null → 게이트 비활성, 정상 발사', sleepMode: true, lockValue: null },
+      { name: 'sleep OFF + lock 활성 + 첫 hop transfer → 정상 발사', sleepMode: false, lockValue: lock },
+      { name: 'sleep OFF + lock null + 첫 hop transfer → 정상 발사', sleepMode: false, lockValue: null },
     ])('$name', async ({ sleepMode, lockValue }) => {
       useSettingsStore.setState({ sleepMode });
       mockGetBoardingLock.mockResolvedValue(lockValue);
@@ -659,6 +661,34 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
+
+    it('sleep ON + lock null + 첫 hop transfer → suppress (#1214 lockless 적용)', async () => {
+      // #1214 (Epic #1204 D8): 사용자 명시 의향 trip(lockless)도 lock 활성과 동급 정확도 보장.
+      // getFirstLeg.endName === stationName 이면 lockless에서도 isFirstHop=true → suppress.
+      useSettingsStore.setState({ sleepMode: true });
+      mockGetBoardingLock.mockResolvedValue(null);
+      const route = makeTransferRoute({
+        transferName: '시청',
+        fromLine: '2',
+        toLine: '1',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      mockEvaluateAlarmPhase.mockReturnValue(earlyTransfer);
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+
+      await waitFor(() =>
+        expect(mockLogSuppressedSleepFirstTransfer).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            stationName: '시청',
+            phaseId: 'early',
+          }),
+        ),
+      );
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredAlarm).not.toHaveBeenCalled();
     });
 
     it('sleep ON + lock 활성 + destination 카테고리 → 정상 발사 (transfer 외 영향 없음)', async () => {
