@@ -53,6 +53,9 @@ import {
 } from '../utils/alarmLog';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { getBoardingLock } from '../utils/boardingLockStorage';
+import { resolveCurrentLine } from '../utils/resolveCurrentLine';
+import type { BoardingLock } from '../../../shared/types/boardingLock';
+import type { LineNumber } from '../../../shared/types/station';
 import { isStationPassedFirstHop, shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
 import type { PositionStability } from '../../nearest-station/utils/positionStaticDetector';
@@ -371,6 +374,11 @@ export function useStationAlarm({
   // 트립에 lock된 사용자 열차 코드. AsyncStorage에서 비동기 로드. lock 실패 상태(null)면
   // API 신호 평가는 보수적으로 false 반환 — 잘못된 train으로 imminent 오발사 방지.
   const [trackedTrainCode, setTrackedTrainCode] = useState<string | null>(null);
+  // Epic #1204 N8 — phase 알람의 currentLine 입력에 lock.boardingLine을 우선 반영하기 위한
+  // 동기 mirror. getBoardingLock은 비동기이므로 trackedTrainCode와 같은 주기(destinationId /
+  // destinationArrival 갱신)로 sync 한다. lock 부재면 null → resolveCurrentLine이
+  // nearestStation.line으로 자연 fallback.
+  const [currentLockLine, setCurrentLockLine] = useState<LineNumber | null>(null);
   // fusion source → 알람 본문 라벨. 두 effect(phase / station-passed)가 공유.
   const notificationSource = useMemo(
     () => (fusionSource ? resolveNotificationSource(fusionSource, locationUncertain) : undefined),
@@ -400,12 +408,19 @@ export function useStationAlarm({
   useEffect(() => {
     if (!destinationId) {
       setTrackedTrainCode(null);
+      setCurrentLockLine(null);
       return;
     }
     let cancelled = false;
     void (async () => {
       const code = await getStoredTripTrainCode(destinationId);
       if (!cancelled) setTrackedTrainCode(code);
+    })();
+    // N8 — lock.boardingLine 동기 mirror. trackedTrainCode와 동일 주기로 refresh되어
+    // phase 알람 effect가 GPS jitter와 무관하게 lock 노선을 currentLine으로 사용한다.
+    void (async () => {
+      const lock: BoardingLock | null = await getBoardingLock();
+      if (!cancelled) setCurrentLockLine(lock?.boardingLine ?? null);
     })();
     return () => {
       cancelled = true;
@@ -580,7 +595,10 @@ export function useStationAlarm({
         route,
         destinationName: destination.name,
         etaSeconds,
-        currentLine: nearestStation?.line ?? null,
+        // Epic #1204 N8 — lock.boardingLine 우선, nearestStation.line fallback.
+        // 5호선 답십리 lock 진행 중 fusion이 2호선 상왕십리를 momentary adopt해도
+        // currentLine='5'로 유지되어 다른 leg의 hop fire를 차단한다.
+        currentLine: resolveCurrentLine(currentLockLine, nearestStation),
         degradedConfidence: degraded,
       },
       firedAlarmsRef.current,
@@ -648,6 +666,8 @@ export function useStationAlarm({
     setAlarmEvent,
     nearestStation?.id,
     nearestStation?.line,
+    // Epic #1204 N8 — lock.boardingLine 변경 시(환승 leg 교체 등) currentLine 재평가.
+    currentLockLine,
     positionStability,
     motionStationary,
     skipWarmupGuard,
