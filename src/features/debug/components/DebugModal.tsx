@@ -62,6 +62,57 @@ import {
 import type { FusionConfidence, FusionSource } from '../../../shared/types/fusion';
 import type { NearestStationResult } from '../../../shared/types/station';
 import { useTheme, spacing, radius, typography } from '../../../shared/theme';
+import { useBarometer } from '../../../shared/hooks/useBarometer';
+
+/**
+ * #1215 (D9) — DebugModal 상태 가시화 신규 prop 묶음.
+ * D1(lockless estimator)/D8(sleep rule wiring) PR 미머지 환경에서도 동작하도록 모두 optional.
+ * 미정의는 UI/dump에서 'unknown'으로 표기 — "신호 없음"과 "신호=false"를 명시적으로 구분.
+ */
+export interface FusionDetectionSummary {
+  /** stationDetectionFusion confidence — 'high' | 'medium' | 'low'. */
+  tier: string;
+  /** signal mask 문자열 (예: 'TFT', 'UUU') — 순서는 STATION_DETECTION_SIGNALS 따름. */
+  signalMask: string;
+}
+
+export interface TripDebugState {
+  /** lockless trip 여부. true면 BoardingLock 없이 사용자 명시 의향만으로 진행 중. */
+  lockless: boolean;
+  /** trip 시작 시각 (ms epoch). null이면 미정. */
+  tripStartedAt: number | null;
+  /** D1 estimator 출력 hop index. undefined면 D1 미머지 또는 estimator null. */
+  currentHopIndex: number | null | undefined;
+  /** 경로 arcStations 총 개수. */
+  routeHopCount: number | null;
+}
+
+export interface SleepDebugState {
+  sleepMode: boolean;
+  /** shouldSuppressBySleepRule의 isFirstHop 입력 — 첫 hop 향하는 중인가. */
+  firstHopApproaching: boolean;
+}
+
+const UNKNOWN_LABEL = '—';
+
+function formatOptionalBool(value: boolean | null | undefined): string {
+  if (value === true) return 'true';
+  if (value === false) return 'false';
+  return UNKNOWN_LABEL;
+}
+
+function formatOptionalString(value: string | null | undefined): string {
+  return value == null || value === '' ? UNKNOWN_LABEL : value;
+}
+
+function formatOptionalNumber(value: number | null | undefined): string {
+  return value == null ? UNKNOWN_LABEL : String(value);
+}
+
+function formatOptionalTs(value: number | null | undefined): string {
+  if (value == null) return UNKNOWN_LABEL;
+  return new Date(value).toISOString();
+}
 
 function formatTime(ts: number): string {
   const d = new Date(ts);
@@ -283,6 +334,11 @@ function buildDumpText(args: {
   locklessOn?: boolean;
   // #756: OS 큐 dump. 미전달/null = DebugModal에서 한 번도 Refresh 안 한 상태.
   scheduledDump?: ScheduledNotificationDumpEntry[] | null;
+  // #1215 (D9) — 추가 상태 가시화. 모두 optional — 미전달 시 dump의 해당 라인은 '—' 표기.
+  barometerSubsurface?: boolean | null;
+  fusionDetection?: FusionDetectionSummary | null;
+  trip?: TripDebugState | null;
+  sleep?: SleepDebugState | null;
 }): string {
   const lines: string[] = [];
   // SonarCloud S7778: 인접한 정적 push 호출은 다인자 단일 호출로 묶는다.
@@ -307,6 +363,7 @@ function buildDumpText(args: {
     '## GPS',
     ...gpsLines,
     `state=${args.gpsActive ?? 'fg'}, lastFix=${formatClockTimeWithSeconds(args.lastFixAtMs ?? null)}`,
+    `subsurface=${formatOptionalBool(args.barometerSubsurface)}`,
     '',
     '## Nearest',
     args.nearestName
@@ -329,6 +386,28 @@ function buildDumpText(args: {
       `candidateTrains(${args.fusion.candidateTrains.length}): ${args.fusion.candidateTrains.join(', ') || '-'}`,
     );
   }
+  // #1215 (D9) — tier / signalMask
+  lines.push(
+    `tier=${formatOptionalString(args.fusionDetection?.tier)}`,
+    `signalMask=${formatOptionalString(args.fusionDetection?.signalMask)}`,
+  );
+  // #1215 (D9) — Trip 섹션
+  lines.push(
+    '',
+    '## Trip',
+    `lockless=${formatOptionalBool(args.trip?.lockless)}`,
+    `tripStartedAt=${formatOptionalTs(args.trip?.tripStartedAt ?? null)}`,
+    `currentHopIndex=${formatOptionalNumber(args.trip?.currentHopIndex)}`,
+    `route hop count=${formatOptionalNumber(args.trip?.routeHopCount ?? null)}`,
+  );
+  // #1215 (D9) — Sleep 섹션
+  const sleepModeText = args.sleep ? (args.sleep.sleepMode ? 'on' : 'off') : UNKNOWN_LABEL;
+  lines.push(
+    '',
+    '## Sleep',
+    `sleepMode=${sleepModeText}`,
+    `firstHopApproaching=${formatOptionalBool(args.sleep?.firstHopApproaching)}`,
+  );
   lines.push('', '## Arrival', args.arrivalSummary);
   if (args.isMock) lines.push('(MOCK)');
   lines.push('', '## Silent Push');
@@ -422,6 +501,22 @@ interface DebugModalProps {
    * 클라 자체 산출 함수는 #819 후속.
    */
   fusedSpeed?: FusedSpeedSignal;
+  /**
+   * #1215 (D9) — Fusion 섹션에 노출할 detection verdict 요약(tier/signalMask).
+   * SSOT는 `useFusedStationDetection` 결과. DebugModal은 호출부가 명시적으로 주입.
+   * 미전달 시 두 row 모두 `—`로 표기.
+   */
+  fusionDetection?: FusionDetectionSummary;
+  /**
+   * #1215 (D9) — lockless trip 진행도. D1 estimator 미머지 환경에서도 graceful.
+   * currentHopIndex가 `undefined`면 D1 미머지(unknown 표기), `null`이면 estimator null 반환.
+   */
+  trip?: TripDebugState;
+  /**
+   * #1215 (D9) — 취침모드 + 첫 hop 향하는지(=sleep rule suppress 트리거 조건).
+   * D8 미머지면 미전달 가능 — Sleep 섹션 두 row가 `—`로 표기.
+   */
+  sleep?: SleepDebugState;
 }
 
 // 디버그 모달은 측정 인프라 — 관찰자 효과를 피하려고 모달이 열린 동안에만 마운트한다.
@@ -434,7 +529,14 @@ export function DebugModal(props: DebugModalProps) {
   return <DebugModalInner {...props} />;
 }
 
-function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<DebugModalProps>) {
+function DebugModalInner({
+  onClose,
+  candidateTrains,
+  fusedSpeed,
+  fusionDetection,
+  trip,
+  sleep,
+}: Readonly<DebugModalProps>) {
   const { colors } = useTheme();
   // #458: RN Modal 안에서는 SafeAreaView가 안 먹는다(portal로 inset 컨텍스트 분리).
   // 루트 SafeAreaProvider의 insets를 hook으로 직접 받아 헤더에 manual padding.
@@ -458,6 +560,9 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
   // intermediate 알림을 차단 → "received는 늘어도 fired는 안 늘어남"이 정상 동작.
   // DebugModal에 한 줄로 노출해 사용자가 설정 위치를 즉시 알 수 있게 한다.
   const locklessOn = useSettingsStore((s) => s.locklessStationPassed);
+  // #1215 (D9) — 기압계 subsurface. useBarometer는 shared/hooks이라 의존 위배 없음.
+  // useFusedNearestStation 내부 useBarometer와 별개 listener — DebugModal 관찰자 효과 허용 범위.
+  const { subsurface: barometerSubsurface } = useBarometer();
   const fusedLabel = formatStationLabel(result);
   const gpsLabel = formatStationLabel(gpsResult);
   const differs = fusedDiffersFromGps(result, gpsResult);
@@ -547,6 +652,10 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
       logs,
       locklessOn,
       scheduledDump,
+      barometerSubsurface,
+      fusionDetection,
+      trip,
+      sleep,
     });
     void Share.share({ message });
   }, [
@@ -571,6 +680,10 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
     logs,
     locklessOn,
     scheduledDump,
+    barometerSubsurface,
+    fusionDetection,
+    trip,
+    sleep,
   ]);
 
   return (
@@ -609,6 +722,12 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
               value={formatClockTimeWithSeconds(lastFixAtMs ?? null)}
               colors={colors}
             />
+            {/* #1215 (D9) — 기압계 subsurface(지하 진입 후보). 사용자 trip의 지상/지하 분기 확인 진입점. */}
+            <KeyValue
+              label="subsurface"
+              value={formatOptionalBool(barometerSubsurface)}
+              colors={colors}
+            />
           </Section>
 
           <Section title="Fusion" colors={colors}>
@@ -631,6 +750,55 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
                   ? `${candidateTrains.length}: ${candidateTrains.join(', ') || '-'}`
                   : '(n/a)'
               }
+              colors={colors}
+            />
+            {/* #1215 (D9) — fusion detection verdict (tier/signalMask). */}
+            <KeyValue
+              label="tier"
+              value={formatOptionalString(fusionDetection?.tier)}
+              colors={colors}
+            />
+            <KeyValue
+              label="signalMask"
+              value={formatOptionalString(fusionDetection?.signalMask)}
+              colors={colors}
+            />
+          </Section>
+
+          {/* #1215 (D9) — Trip 섹션: lockless/tripStartedAt/currentHopIndex/route hop count. */}
+          <Section title="Trip" colors={colors}>
+            <KeyValue
+              label="lockless"
+              value={formatOptionalBool(trip?.lockless)}
+              colors={colors}
+            />
+            <KeyValue
+              label="tripStartedAt"
+              value={formatOptionalTs(trip?.tripStartedAt ?? null)}
+              colors={colors}
+            />
+            <KeyValue
+              label="currentHopIndex"
+              value={formatOptionalNumber(trip?.currentHopIndex)}
+              colors={colors}
+            />
+            <KeyValue
+              label="route hop count"
+              value={formatOptionalNumber(trip?.routeHopCount ?? null)}
+              colors={colors}
+            />
+          </Section>
+
+          {/* #1215 (D9) — Sleep 섹션: sleepMode + 첫 hop 향하는 중인가. */}
+          <Section title="Sleep" colors={colors}>
+            <KeyValue
+              label="sleepMode"
+              value={sleep ? (sleep.sleepMode ? 'on' : 'off') : UNKNOWN_LABEL}
+              colors={colors}
+            />
+            <KeyValue
+              label="firstHopApproaching"
+              value={formatOptionalBool(sleep?.firstHopApproaching)}
               colors={colors}
             />
           </Section>
@@ -1125,6 +1293,11 @@ export const __test__ = {
   formatReasonCountsLine,
   NO_FUSED_SIGNAL_LABEL,
   summarizeAlarmLogCounters,
+  formatOptionalBool,
+  formatOptionalString,
+  formatOptionalNumber,
+  formatOptionalTs,
+  UNKNOWN_LABEL,
 };
 
 const styles = StyleSheet.create({
