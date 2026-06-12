@@ -1,0 +1,69 @@
+appId: com.subwaynow.app
+name: "manual - sticky station 지하 회귀 (보고 3)"
+# 사용자 trip 2026-06-12 evidence — 어린이대공원 부근에서 화면이 용마산으로 회귀.
+# Root cause: motion automotive로 sticky가 unlock되어 trip 활성 + 지하인데도 GPS sticky 노출.
+# 회귀 9 (Epic #1008 §7.1): lockless + subsurface=true + fusion source='gps'면서
+#   실제 좌표의 1km 외 station 매칭 0건.
+# 실기기에서 지하 진입 시 sticky station 유지 가드(D6) 검증.
+---
+- setLocation:
+    latitude: 37.5732
+    longitude: 127.0846
+
+- launchApp:
+    appId: com.subwaynow.app
+    clearState: true
+    permissions:
+      location: always
+      notifications: allow
+
+- tapOn:
+    text: ".*허용.*"
+    optional: true
+- waitForAnimationToEnd
+
+- extendedWaitUntil:
+    visible:
+      id: "home-origin-station-name"
+      text: "용마산|Yongmasan"
+    timeout: 15000
+
+# 목적지: 성수 (trip 활성화)
+- tapOn:
+    id: "destination-button"
+- waitForAnimationToEnd
+- tapOn:
+    id: "search-input"
+- evalScript: maestro.wait(1000)
+- setClipboard: "성수"
+- evalScript: maestro.wait(500)
+- pasteText
+- evalScript: maestro.wait(2000)
+- extendedWaitUntil:
+    visible:
+      id: "suggestions-list"
+    timeout: 5000
+- tapOn:
+    text: "성수"
+- waitForAnimationToEnd
+
+# 지하 이동 — GPS는 sticky로 용마산 부근 유지하다가 어린이대공원 좌표로 점프
+- setLocation:
+    latitude: 37.5479
+    longitude: 127.0739
+- evalScript: maestro.wait(5000)
+
+# 회귀 검증: trip 활성 + subsurface 환경에서 화면이 용마산으로 다시 잡히면 fail.
+- extendedWaitUntil:
+    visible:
+      id: "home-origin-station-name"
+      text: "어린이대공원|Children's Grand Park"
+    timeout: 60000
+
+# DebugModal Trip 섹션 + sticky 상태 검증 — 실기기로 사용자가 확인.
+- tapOn:
+    text: ".*debug.*|.*디버그.*"
+    optional: true
+- evalScript: maestro.wait(500)
+- assertVisible:
+    id: "debug-modal-trip-section"
