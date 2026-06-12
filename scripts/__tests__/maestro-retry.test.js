@@ -164,18 +164,29 @@ describe('resolveFailedFlows', () => {
   });
 });
 
-describe('main CLI', () => {
-  function runMain(args) {
-    const stdout = { buf: '', write: (s) => (stdout.buf += s) };
-    const stderr = { buf: '', write: (s) => (stderr.buf += s) };
-    const code = main(['node', 'maestro-retry.js', ...args], { stdout, stderr });
-    return { code, stdout: stdout.buf, stderr: stderr.buf };
-  }
+function runMain(args) {
+  const stdout = { buf: '', write: (s) => (stdout.buf += s) };
+  const stderr = { buf: '', write: (s) => (stderr.buf += s) };
+  const code = main(['node', 'maestro-retry.js', ...args], { stdout, stderr });
+  return { code, stdout: stdout.buf, stderr: stderr.buf };
+}
 
+describe('main CLI', () => {
   it('exits 1 with usage when args are missing', () => {
     const { code, stderr } = runMain([]);
     expect(code).toBe(1);
     expect(stderr).toMatch(/Usage:/);
+  });
+
+  it('falls back to process.stdout/stderr when io is omitted', () => {
+    const writeSpy = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const code = main(['node', 'maestro-retry.js']);
+      expect(code).toBe(1);
+      expect(writeSpy).toHaveBeenCalled();
+    } finally {
+      writeSpy.mockRestore();
+    }
   });
 
   it('exits 1 when junit XML does not exist', () => {

@@ -60,11 +60,31 @@ function parseFailedTestcaseNames(xml) {
 
 function decodeXmlEntities(s) {
   return s
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&amp;/g, '&');
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&apos;', "'")
+    .replaceAll('&amp;', '&');
+}
+
+const YAML_EXT_RE = /\.ya?ml$/i;
+const YAML_NAME_FIELD_RE = /^\s*name\s*:\s*(.+?)\s*$/m;
+
+/**
+ * 단일 YAML 파일을 맵에 등록한다.
+ *  - yaml `name:` 필드가 있으면 그 값을 키로 등록 (강한 매핑)
+ *  - 파일 stem도 fallback 키로 등록 (yaml name 누락 대비)
+ */
+function registerYamlFlow(map, fullPath, baseName) {
+  const text = fs.readFileSync(fullPath, 'utf8');
+  const nameMatch = YAML_NAME_FIELD_RE.exec(text);
+  if (nameMatch) {
+    map.set(unquoteYaml(nameMatch[1]), fullPath);
+  }
+  const stem = baseName.replace(YAML_EXT_RE, '');
+  if (!map.has(stem)) {
+    map.set(stem, fullPath);
+  }
 }
 
 /**
@@ -76,22 +96,12 @@ function buildFlowNameMap(flowsDir) {
   const stack = [flowsDir];
   while (stack.length > 0) {
     const cur = stack.pop();
-    const entries = fs.readdirSync(cur, { withFileTypes: true });
-    for (const ent of entries) {
+    for (const ent of fs.readdirSync(cur, { withFileTypes: true })) {
       const full = path.join(cur, ent.name);
       if (ent.isDirectory()) {
         stack.push(full);
-      } else if (ent.isFile() && /\.ya?ml$/i.test(ent.name)) {
-        const text = fs.readFileSync(full, 'utf8');
-        const nameMatch = /^\s*name\s*:\s*(.+?)\s*$/m.exec(text);
-        if (nameMatch) {
-          map.set(unquoteYaml(nameMatch[1]), full);
-        }
-        // 파일 stem도 항상 등록 (yaml name 누락된 flow를 위한 fallback)
-        const stem = ent.name.replace(/\.ya?ml$/i, '');
-        if (!map.has(stem)) {
-          map.set(stem, full);
-        }
+      } else if (ent.isFile() && YAML_EXT_RE.test(ent.name)) {
+        registerYamlFlow(map, full, ent.name);
       }
     }
   }
@@ -129,7 +139,9 @@ function resolveFailedFlows(failedNames, nameToPath) {
   return { paths, unresolved };
 }
 
-function main(argv, { stdout, stderr } = { stdout: process.stdout, stderr: process.stderr }) {
+function main(argv, io) {
+  const stdout = io?.stdout ?? process.stdout;
+  const stderr = io?.stderr ?? process.stderr;
   const junitXmlPath = argv[2];
   const flowsDir = argv[3];
   if (!junitXmlPath || !flowsDir) {
