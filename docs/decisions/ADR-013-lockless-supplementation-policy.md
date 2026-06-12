@@ -47,13 +47,11 @@ C 토글을 OFF로 전환할 때 활성 BoardingLock이 있으면 **즉시 clean
 
 | 시나리오 | acceptance | 근거 |
 |---|---|---|
-| lock 활성 trip | ✅ 매역 알림 100% | 기존 ADR-008 SLA 그대로 |
-| lockless trip — boardingPrompt 게이트 통과 + [탑승] 응답 | ✅ 100% (autoLock 직후 100%) | 순위 1 정상 동작 |
-| lockless trip — 게이트 미통과 | acceptance 위반 아님 | 9단 AND 보호망 — 사용자 선택 영역 |
-| lockless trip — 사용자 무응답 ([탑승] 미탭) | acceptance 위반 아님 | 사용자 선택 영역 |
-| lockless trip — C 토글 OFF | acceptance 위반 아님 | 토글 = 명시 opt-in, OFF 사용자는 sub-시각지대 수용 |
+| lock 활성 trip | ✅ 매역 알림 99% + 잘못된 역 0건 | 기존 ADR-008 SLA |
+| **사용자 명시 의향 trip** (C 토글 ON / boardingPrompt 응답 / BoardingTrainList 직접 탭) | ✅ **lock 활성과 동급 보장** — 매역 99% + 잘못된 역 0건 | ADR-010 첫 줄 "두 실패 모드 동급" 원칙 acceptance까지 적용. 정확성 게이트(D1~D6) 보강으로 false positive 차단 |
+| lockless trip — boardingPrompt 게이트 미통과 + 사용자 무응답 + C 토글 OFF | silent (사용자 선택, 기존 정책 유지) | 보호망 없는 영역 — 잘못된 역 알람 0건 보장은 못하나 의도적 침묵 |
 
-핵심: **"매역 알림 100%"는 lock 활성 trip 또는 사용자 명시 의향 trip에 한정**. 게이트/사용자 응답을 우회한 강제 100%는 false positive 폭발과 직교 — 추구하지 않는다.
+핵심: **"매역 알림 99% + 잘못된 역 0건"은 lock 활성 + 사용자 명시 의향 trip에 동급 적용**. 강제 100%(과적용) vs 면제(부적용) false binary가 아닌 **정확성 게이트 보강(제3의 옵션, [[ADR-014]] §1)** 으로 두 실패 모드 동급 보장.
 
 ## D 흐름 부재 사유
 
@@ -65,9 +63,16 @@ D 흐름 신설(별도 자동 lock 생성 경로)은 불필요. B의 게이트 �
 
 B(자동 진입로) + 사용자 manual(2순위) + C(opt-in 정보) 3순위로 충분.
 
+## 변경 이력
+
+- 2026-06-12: B3 면제 폐기 (PR-ε / 본 PR). 2026-06-11 false binary 사고 복구 — ADR-014 §1 결정 옵션 룰 + §4 사용자 명시 의향 동급 보장 룰 적용. epic #1204 발행과 함께.
+
 ## References
 
 - Epic #1008 SSOT (`tasks/epic-lockless-overfire-guard.md` §4 B1/B3)
 - ADR-010 §결정 (B+C 흐름 — 본 ADR이 amend 트리거)
 - ADR-011 (boarding-prompt context wireup — B 흐름 9단 게이트 필드 와이어업)
 - ADR-008 (boarding progress estimator — lock 생성 이후 SLA)
+- ADR-014 — 결정 프로세스 룰 (2026-06-12 신설)
+- Epic #1204 — Lockless Trip 정확도 복구 (본 변경의 부모 epic)
+- `tasks/epic-lockless-recovery-2026-06-12.md` §3.1 (acceptance 복구 결정 상세)
