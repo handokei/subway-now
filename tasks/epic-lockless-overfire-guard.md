@@ -128,18 +128,22 @@ ADR-008 Stage 4 Phase A+B 통합. **B2 결정(2026-06-11)으로 #844 잔여 PR B
 
 ## 7. Acceptance (epic close 조건)
 
-- [ ] 회귀 7개 1주 측정 0건 (정의는 §7.1)
+- [ ] 회귀 12개 1주 측정 0건 (정의는 §7.1)
 - [ ] R-1 ~ R-10 monitor 작동
 - [ ] ADR-011 머지
 - [ ] 추가 발견: A 카테고리 흡수 / B follow-up / C 별 epic (B14 룰 적용)
 
-### 7.1 회귀 7개 정의 (Epic A 머지분 기준 재확정, 2026-06-11)
+### 7.1 회귀 12개 정의 (Epic A 머지분 기준 재확정, 2026-06-11 / lockless 카테고리 추가 2026-06-12)
 
-> 본 절은 §7 첫 번째 항목 "회귀 7개 1주 측정 0건"의 SSOT 정의. 원본 SSOT 부재로 Epic A 머지된 sub-issue 본문 + RC 매핑(§1) + alarmLog stamp(#1019) 기준으로 재구성.
+> 본 절은 §7 첫 번째 항목 "회귀 12개 1주 측정 0건"의 SSOT 정의. 원본 SSOT 부재로 Epic A 머지된 sub-issue 본문 + RC 매핑(§1) + alarmLog stamp(#1019) 기준으로 재구성.
 >
-> **선정 원칙**: Epic A에서 backend/client 코드 변경으로 **잘못된 발사 경로**를 봉합한 sub-issue만 포함. 측정 인프라(M1/M4/M7/M8) 및 운영성 개선(DL-B/DL-H)은 본 7개에서 제외 — 회귀 자체가 아니라 그 회귀를 측정하는 도구이기 때문.
+> **선정 원칙**: Epic A에서 backend/client 코드 변경으로 **잘못된 발사 경로**를 봉합한 sub-issue + Epic #1204 lockless 복구 D-작업 범위를 포함. 측정 인프라(M1/M4/M7/M8) 및 운영성 개선(DL-B/DL-H)은 본 12개에서 제외 — 회귀 자체가 아니라 그 회귀를 측정하는 도구이기 때문.
 >
-> **회귀 번호**는 epic 본문에 등장하는 "회귀 #1~#7" 임의 식별자이며, GitHub issue 번호와 무관.
+> **회귀 번호**는 epic 본문에 등장하는 "회귀 #1~#12" 임의 식별자이며, GitHub issue 번호와 무관.
+>
+> **회귀 카테고리** (2026-06-12 epic #1204 발행 시 lockless 추가):
+> - 회귀 1~7: **lock 활성 trip** 회귀 봉합 (Epic A 머지 sub-issue 기준)
+> - 회귀 8~12: **lockless + 사용자 명시 의향 trip** 회귀 봉합 (Epic #1204 D1~D9 작업)
 
 | # | 회귀 패턴 (한 줄) | RC | 봉합 sub-issue | 검출 기준 (alarmLog reason — #1019 stamp) |
 | --- | --- | --- | --- | --- |
@@ -150,6 +154,11 @@ ADR-008 Stage 4 Phase A+B 통합. **B2 결정(2026-06-11)으로 #844 잔여 PR B
 | 5 | `trackTrainProgress` 자체에 forward-only 가드 없어 source 단에서 backward candidate 통과 | RC4 | #1017 | `fired` entry 중 candidate.currentStationIdx < boardingIdx에서 trackTrainProgress 결과로 발사 (source-level forward 위반) |
 | 6 | backend `attemptAutoLock`이 arvlCd=2 at next-waypoint을 무조건 채택해 origin 지난 train lock | RC1 | #1018 | BFF telemetry: `attemptAutoLock` 응답 중 confidence < threshold에서 trainCode 반환 (gate 우회). 또는 client 측 RC1 회귀 #2 패턴과 동시 등장 |
 | 7 | motion 권한 미부여/cold-start에서 motion warmup 부재로 phase gate 우회 → 잘못된 phase에서 발사 | H6 | #1013 | `fired` entry 중 `motion=undefined` & phase gate stamp 누락 & cold-start 후 < 60s positionStability fallback 미적용 |
+| 8 | lockless + 사용자 명시 의향 trip에서 trip route 진행도 외 역 station-passed 발사 | RC3 보조 + 신규 | D2 (hop window 게이트) | `fired` entry 중 trip route arc의 currentHopIndex ± 1 외 station_id 발사 (currentHopIndex source: D1 lockless estimator → 폴백 firedAlarms max index + 1) |
+| 9 | lockless trip 지하 진입 시 GPS sticky로 잘못된 station 매칭 (sticky station이 motion automotive로 unlock되어 GPS sticky 그대로 노출) | 신규 | D6 (sticky station trip 활성 시 유지) + D1 (estimator cascade) | `fired` entry 중 `subsurface=true` AND `fusion.source='gps'` AND GPS lat/lng 좌표의 1km 외 station에서 station-passed 발사 |
+| 10 | lockless trip 환승 leg trainCode 상실 → backend auto-end (#622 재발) | 신규 | D4 (boarding-lock/sync trainCode 동봉) | backend `boarding-lock: trip auto-ended` 카운트 / 환승 횟수 ≥ 1 trip 총합. 환승 있는 trip 중 auto-end 비율 |
+| 11 | silent push fire/received < 80% (lockless intermediate 위치 게이트 false negative) | 신규 | D3 (silent push 게이트 정밀화) | client `silent-push-received` count vs `silent-push-fired` count 비율 (lockless intermediate kind 한정) |
+| 12 | 환승 leg에서 boardingPrompt/autoLock 미트리거 (planned route 환승이라 useTransferAutoDetect skip) | 신규 | D5 (환승 leg autoLock 확장) | 환승 발생 trip 중 환승 후 N분 내 backend `boardingPromptEvaluated` count 0건 비율 |
 
 #### 측정 framework
 
@@ -179,3 +188,4 @@ ADR-008 Stage 4 Phase A+B 통합. **B2 결정(2026-06-11)으로 #844 잔여 PR B
 - 2026-06-11 (2차): H1(#1009) PR #1133 머지로 완료 → Epic A 16/17. B2 결정 완료 — #844 close(잔여 Epic C 풀 귀속), #922 close(E1 완료, Seam C deferred).
 - 2026-06-11 (3차): Seam C deferred 시나리오 → #1200 발행. 본 SSOT PR #1199로 dev 반영 진행.
 - 2026-06-11 (4차) 일괄 확정: §4 B1/B3/B4/B5/B14 결정 — C 토글 **유지+재정의** + 토글 OFF lock cleanup, #912 acceptance 재해석, 낙관적 UI, optional→required 승격, B 영역 follow-up. 코드/UI 반영은 PR-β (예정), ADR은 PR-α (`docs/adr-011-lockless-supplementation`), acceptance 양식은 PR-γ (#1159). 결정 차단 항목 전체 해소 → Epic C 단기 착수 가능.
+- 2026-06-12: §7.1 회귀 7개 → 12개 확장 (PR-ζ / 본 PR). 2026-06-11 narrow-down 사고 복구 — Epic A 머지 sub-issue만 기준으로 회귀 정의 좁힘이 lockless 회귀 누락 초래. ADR-014 §3 (acceptance 정의 순서 룰: 사용자 가치 → acceptance → 코드) 적용. Epic #1204 발행과 함께.
