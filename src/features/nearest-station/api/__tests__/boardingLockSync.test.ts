@@ -92,6 +92,44 @@ describe('syncBoardingLock (#901)', () => {
     expect(JSON.parse(init.body).subsurface).toBe(false);
   });
 
+  // D4 (#1210) — 환승 leg trainCode + 노선 동봉 정확성. payload extra 분기만 다르고 검증
+  // 셰이프는 동일하므로 1 시나리오 1 케이스로 일괄 검증.
+  it.each<{
+    label: string;
+    payloadExtra: Record<string, string>;
+    expectedPresent: Record<string, string>;
+    expectedAbsent: ReadonlyArray<string>;
+  }>([
+    {
+      label: 'trainCode + boardingLine 제공 → body에 그대로 포함',
+      payloadExtra: { trainCode: 'T-2', boardingLine: '2' },
+      expectedPresent: { trainCode: 'T-2', boardingLine: '2' },
+      expectedAbsent: [],
+    },
+    {
+      label: 'trainCode/boardingLine 미제공 → body에 키 미포함 (구버전 backend 호환)',
+      payloadExtra: {},
+      expectedPresent: {},
+      expectedAbsent: ['trainCode', 'boardingLine'],
+    },
+  ])('#1210 — $label', async ({ payloadExtra, expectedPresent, expectedAbsent }) => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+    (globalThis.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true }),
+    });
+    await syncBoardingLock({ ...basePayload, ...payloadExtra });
+    const [, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
+    const parsed = JSON.parse(init.body);
+    for (const [k, v] of Object.entries(expectedPresent)) {
+      expect(parsed[k]).toBe(v);
+    }
+    for (const k of expectedAbsent) {
+      expect(parsed).not.toHaveProperty(k);
+    }
+  });
+
   it('non-OK status → ok=false + status', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
     (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 404 });

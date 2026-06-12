@@ -854,6 +854,11 @@ app.post('/boarding-lock/sync', async (c) => {
     await maybeMirrorLockSyncProgress(c.env.TRIPS, working, advance.shiftedCount);
   }
 
+  // D4 (#1210) — payload trainCode가 KV lock trainCode와 다르면 환승 leg로 해석.
+  // lock의 trainCode/line을 새 값으로 swap하고 consecutiveEtaMissing을 0으로 reset해
+  // 신규 trainCode가 Seoul API에서 잡힐 때까지의 자동 종료(`MAX_CONSECUTIVE_ETA_MISSING`)를 차단한다.
+  working = applyBoardingLockTrainCodeSwap(working, payload);
+
   // lock TTL refresh — 사용자가 지상에서 lock을 활성 유지 중임을 confirm.
   if (working.boardingLock) {
     working = {
@@ -895,6 +900,17 @@ interface BoardingLockSyncPayload {
   observedAtMs: number;
   accuracy: number;
   subsurface?: boolean;
+  /**
+   * D4 (#1210) — 클라가 직전 fix 시점에 활성으로 보고 있는 boarding lock trainCode.
+   * KV `trip.boardingLock.trainCode`와 다르면 backend가 환승 leg 진입으로 해석해 lock을 갱신하고
+   * `consecutiveEtaMissing`을 0으로 reset한다 (자동 종료 차단). 구버전 클라/lock 없는 trip은 미전송.
+   */
+  trainCode?: string;
+  /**
+   * D4 (#1210) — `trainCode`와 페어. 환승 leg의 새 노선(`BoardingLockMeta.line`)을 갱신한다.
+   * trainCode 없이 단독 전송은 무시 (trainCode가 primary key).
+   */
+  boardingLine?: string;
 }
 
 export function validateBoardingLockSync(input: unknown): BoardingLockSyncPayload | null {
@@ -915,7 +931,48 @@ export function validateBoardingLockSync(input: unknown): BoardingLockSyncPayloa
     accuracy: obj.accuracy,
   };
   if (typeof obj.subsurface === 'boolean') result.subsurface = obj.subsurface;
+  // D4 (#1210) — trainCode/boardingLine은 optional. 빈 문자열은 누락과 동일 (보호 차원).
+  if (typeof obj.trainCode === 'string' && obj.trainCode.length > 0) {
+    result.trainCode = obj.trainCode;
+  }
+  if (typeof obj.boardingLine === 'string' && obj.boardingLine.length > 0) {
+    result.boardingLine = obj.boardingLine;
+  }
   return result;
+}
+
+/**
+ * D4 (#1210) — payload trainCode가 KV trip.boardingLock과 불일치하면 lock의 trainCode/line을
+ * 교체하고 `consecutiveEtaMissing`을 0으로 reset한다. 일치하거나 trainCode 미제공 / lock 부재면
+ * no-op (trip 그대로 반환).
+ *
+ * 정책 근거: 환승 leg 진입 직후 backend Seoul API가 새 trainCode 응답을 받기까지 수십 초 공백이
+ * 생긴다. lock의 trainCode가 옛 값이면 `runTrainCodeTracking`이 매 cycle estimate=null로 카운터를
+ * 누적해 `MAX_CONSECUTIVE_ETA_MISSING` 초과 시 trip을 자동 종료한다 (#1210 evidence). 사용자가
+ * Seam E sync로 새 trainCode를 보내면 KV를 즉시 갱신해 자동 종료를 차단한다.
+ *
+ * 순수 함수 — 호출자(handler)가 putTrip으로 영속화한다.
+ */
+export function applyBoardingLockTrainCodeSwap(
+  trip: Trip,
+  payload: BoardingLockSyncPayload,
+): Trip {
+  const incomingTrainCode = payload.trainCode;
+  if (!incomingTrainCode) return trip;
+  const lock = trip.boardingLock;
+  if (!lock) return trip;
+  if (lock.trainCode === incomingTrainCode) return trip;
+  // 환승 leg 감지 → lock 교체 + 카운터 reset.
+  return {
+    ...trip,
+    boardingLock: {
+      ...lock,
+      trainCode: incomingTrainCode,
+      // boardingLine은 optional payload — 미제공 시 기존 line 유지.
+      line: payload.boardingLine ?? lock.line,
+    },
+    consecutiveEtaMissing: 0,
+  };
 }
 
 /**

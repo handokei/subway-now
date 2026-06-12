@@ -25,6 +25,10 @@ const log = createLogger('boardingLockSync');
  *  - observedAtMs: 디바이스 측정 시각 (epoch ms) — backend 시계 drift는 본 endpoint에서 미사용
  *  - accuracy: GPS accuracy meters — 호출자가 ≤ 50m 게이트 통과 후 호출
  *  - subsurface: Seam G 신호 (optional). false = 지상 진입 즉시 재동기 트리거 식별용 로그
+ *  - trainCode/boardingLine: D4 (#1210) — 현재 lock의 trainCode + 노선. 환승 leg 진입 시
+ *    새 trainCode가 backend에 즉시 반영돼 `consecutiveEtaMissing` 자동 종료를 차단한다.
+ *    optional — 구버전 backend / lock 없는 trip은 미전송. backend는 trainCode 변경 감지 시
+ *    KV `trip.boardingLock`을 갱신하고 `consecutiveEtaMissing`을 0으로 reset.
  */
 export interface BoardingLockSyncPayload {
   token: string;
@@ -32,6 +36,8 @@ export interface BoardingLockSyncPayload {
   observedAtMs: number;
   accuracy: number;
   subsurface?: boolean;
+  trainCode?: string;
+  boardingLine?: string;
 }
 
 /**
