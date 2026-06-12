@@ -57,6 +57,18 @@ export interface Waypoint {
    * 구 backend / 구 client 호환을 위해 optional. 미지정 시 클라이언트가 0(첫 등장)으로 fallback.
    */
   occurrenceIdx?: number;
+  /**
+   * Epic #1204 그룹 2 D3 (#1273) — 원본 waypoint 시퀀스에서의 0-based 위치(=hop index).
+   * `validateTrip`(POST /trips)이 incoming waypoints 전체에 대해 1-pass로 stamp하며, waypoint
+   * shift가 진행돼도 값은 불변. silent push payload `hopIndex` 필드의 SSOT로 사용된다.
+   *
+   * 클라이언트 `silentPushLocationGate`는 D1 estimator의 `currentHopIndex`와 이 값을 비교해
+   * ±LOCKLESS_HOP_WINDOW_TOLERANCE 이내면 거리 검증 우회(hop-window-match), `gate-no-location`
+   * skipReason 발생 시에도 동일 매치로 fallback pass 한다.
+   *
+   * 구 client 호환을 위해 optional — `occurrenceIdx`와 동일 패턴.
+   */
+  hopIndex?: number;
 }
 
 export interface Trip {

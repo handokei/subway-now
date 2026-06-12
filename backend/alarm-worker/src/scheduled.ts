@@ -705,6 +705,10 @@ export async function fireArvlCdStationPush(
           kind: waypoint.kind,
           sentAt: now,
           pushId,
+          // Epic #1204 그룹 2 D3 (#1273) — validateTrip stamp 결과를 forward.
+          // 클라이언트 `silentPushLocationGate`가 D1 estimator currentHopIndex와 매칭 시
+          // 거리 검증 우회/`gate-no-location` fallback에 사용. 구 trip(부재) → undefined.
+          hopIndex: waypoint.hopIndex,
         },
         config: deps.apnsConfig,
         host,
@@ -1294,6 +1298,9 @@ export async function runLocklessIntermediate(
           kind: 'intermediate',
           sentAt: now,
           pushId,
+          // Epic #1204 그룹 2 D3 (#1273) — lockless intermediate도 waypoint.hopIndex forward.
+          // D1 estimator의 currentHopIndex와 ±tolerance 매칭 시 거리 검증 우회 + GPS 미준비 fallback.
+          hopIndex: waypoint.hopIndex,
         },
         config: deps.apnsConfig,
         host,

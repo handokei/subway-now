@@ -566,6 +566,115 @@ describe('checkSilentPushLocationGate', () => {
       expect(result.thresholdM).toBe(800);
     });
 
+    // Epic #1204 그룹 2 D3 (#1273) — gate-no-location fallback 분기.
+    describe('gate-no-location hop fallback (#1273)', () => {
+      it('lockless intermediate + hop 매치 + 위치 미획득 → hop-window-match pass (locationSource 부재)', async () => {
+        mockGetLastKnownPositionAsync.mockResolvedValue(null);
+        mockGetCurrentPositionAsync.mockRejectedValue(new Error('denied'));
+        const result = await checkSilentPushLocationGate({
+          stationName: '강남',
+          kind: 'intermediate',
+          phase: 'imminent',
+          isLockless: true,
+          currentHopIndex: 4,
+          payloadHopIndex: 4,
+        });
+        expect(result.pass).toBe(true);
+        expect(result.passReason).toBe('hop-window-match');
+        expect(result.locationSource).toBeUndefined();
+        expect(result.distanceM).toBeUndefined();
+        expect(result.thresholdM).toBeUndefined();
+      });
+
+      it('lockless intermediate + hop ±1 매치 (경계) + 위치 미획득 → fallback pass', async () => {
+        mockGetLastKnownPositionAsync.mockResolvedValue(null);
+        mockGetCurrentPositionAsync.mockRejectedValue(new Error('denied'));
+        const result = await checkSilentPushLocationGate({
+          stationName: '강남',
+          kind: 'intermediate',
+          phase: 'imminent',
+          isLockless: true,
+          currentHopIndex: 5,
+          payloadHopIndex: 4,
+        });
+        expect(result.pass).toBe(true);
+        expect(result.passReason).toBe('hop-window-match');
+      });
+
+      it('lockless intermediate + hop diff ≥2 + 위치 미획득 → no-location skip (fallback 미적용)', async () => {
+        mockGetLastKnownPositionAsync.mockResolvedValue(null);
+        mockGetCurrentPositionAsync.mockRejectedValue(new Error('denied'));
+        const result = await checkSilentPushLocationGate({
+          stationName: '강남',
+          kind: 'intermediate',
+          phase: 'imminent',
+          isLockless: true,
+          currentHopIndex: 6,
+          payloadHopIndex: 4,
+        });
+        expect(result.pass).toBe(false);
+        expect(result.reason).toBe('no-location');
+      });
+
+      it('lockless + transfer kind + 위치 미획득 → fallback 미적용 (intermediate만 허용)', async () => {
+        mockGetLastKnownPositionAsync.mockResolvedValue(null);
+        mockGetCurrentPositionAsync.mockRejectedValue(new Error('denied'));
+        const result = await checkSilentPushLocationGate({
+          stationName: '강남',
+          kind: 'transfer',
+          phase: 'imminent',
+          isLockless: true,
+          currentHopIndex: 4,
+          payloadHopIndex: 4,
+        });
+        expect(result.pass).toBe(false);
+        expect(result.reason).toBe('no-location');
+      });
+
+      it('isLockless=false + 위치 미획득 + hop 매치 → fallback 미적용 (lock 활성 trip은 보수적)', async () => {
+        mockGetLastKnownPositionAsync.mockResolvedValue(null);
+        mockGetCurrentPositionAsync.mockRejectedValue(new Error('denied'));
+        const result = await checkSilentPushLocationGate({
+          stationName: '강남',
+          kind: 'intermediate',
+          phase: 'imminent',
+          isLockless: false,
+          currentHopIndex: 4,
+          payloadHopIndex: 4,
+        });
+        expect(result.pass).toBe(false);
+        expect(result.reason).toBe('no-location');
+      });
+
+      it('lockless intermediate + currentHopIndex 부재 + 위치 미획득 → no-location skip', async () => {
+        mockGetLastKnownPositionAsync.mockResolvedValue(null);
+        mockGetCurrentPositionAsync.mockRejectedValue(new Error('denied'));
+        const result = await checkSilentPushLocationGate({
+          stationName: '강남',
+          kind: 'intermediate',
+          phase: 'imminent',
+          isLockless: true,
+          payloadHopIndex: 4,
+        });
+        expect(result.pass).toBe(false);
+        expect(result.reason).toBe('no-location');
+      });
+
+      it('lockless intermediate + payloadHopIndex 부재 + 위치 미획득 → no-location skip', async () => {
+        mockGetLastKnownPositionAsync.mockResolvedValue(null);
+        mockGetCurrentPositionAsync.mockRejectedValue(new Error('denied'));
+        const result = await checkSilentPushLocationGate({
+          stationName: '강남',
+          kind: 'intermediate',
+          phase: 'imminent',
+          isLockless: true,
+          currentHopIndex: 4,
+        });
+        expect(result.pass).toBe(false);
+        expect(result.reason).toBe('no-location');
+      });
+    });
+
     it('lockless intermediate + payloadHopIndex만 제공(estimator 미연결) → widened distance 경로', async () => {
       mockGetLastKnownPositionAsync.mockResolvedValue(
         makePosition(MID_FROM_GANGNAM.lat, MID_FROM_GANGNAM.lng, 5_000),

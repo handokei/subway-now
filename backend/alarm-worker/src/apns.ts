@@ -60,6 +60,13 @@ export interface SilentPushPayload {
    * P2c가 30s 미ACK push를 alert fallback으로 재발사할 때 dedup 키로도 사용.
    */
   pushId: string;
+  /**
+   * Epic #1204 그룹 2 D3 (#1273) — 발사 시점 waypoint의 원본 hop index.
+   * 디바이스 `silentPushLocationGate`가 D1 estimator의 currentHopIndex와 비교해 hop-window-match
+   * 분기/`gate-no-location` fallback에 사용한다. 구 backend 호환을 위해 optional — 미전달 시
+   * 클라이언트는 hop 매칭 분기를 자연 skip하고 거리 게이트만 수행한다.
+   */
+  hopIndex?: number;
 }
 
 export async function buildApnsJwt(config: ApnsConfig, now: number = Date.now()): Promise<string> {
@@ -112,6 +119,9 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
       kind: options.payload.kind,
       sentAt: options.payload.sentAt,
       pushId: options.payload.pushId,
+      // Epic #1204 그룹 2 D3 (#1273) — payload.hopIndex가 정의된 경우에만 wire.
+      // 구 backend 호환을 위해 optional이라 undefined일 땐 JSON에서 자연 누락된다.
+      ...(options.payload.hopIndex === undefined ? {} : { hopIndex: options.payload.hopIndex }),
     },
   });
 

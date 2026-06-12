@@ -145,6 +145,71 @@ describe('sendSilentPush', () => {
     expect(result.reason).toBeUndefined();
   });
 
+  // Epic #1204 그룹 2 D3 (#1273) — payload.hopIndex wire 검증.
+  describe('hopIndex (#1273)', () => {
+    it('payload.hopIndex 지정 시 body.data.hopIndex로 전달', async () => {
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response('', { status: 200 }));
+      await sendSilentPush({
+        deviceToken: 'tok',
+        payload: {
+          nextWaypoint: '강남',
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: 'intermediate',
+          sentAt: 1_700_000_000_000,
+          pushId: 'p',
+          hopIndex: 5,
+        },
+        config: makeConfig(),
+        host: TEST_HOST,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const body = JSON.parse((fetchImpl.mock.calls[0][1] as RequestInit).body as string);
+      expect(body.data.hopIndex).toBe(5);
+    });
+
+    it('payload.hopIndex 미지정 시 body.data에서 누락 (구 client 호환)', async () => {
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response('', { status: 200 }));
+      await sendSilentPush({
+        deviceToken: 'tok',
+        payload: {
+          nextWaypoint: '강남',
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: 'intermediate',
+          sentAt: 1_700_000_000_000,
+          pushId: 'p',
+        },
+        config: makeConfig(),
+        host: TEST_HOST,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const body = JSON.parse((fetchImpl.mock.calls[0][1] as RequestInit).body as string);
+      expect('hopIndex' in body.data).toBe(false);
+    });
+
+    it('payload.hopIndex=0 (첫 hop) 도 정상 wire', async () => {
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response('', { status: 200 }));
+      await sendSilentPush({
+        deviceToken: 'tok',
+        payload: {
+          nextWaypoint: '강남',
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: 'intermediate',
+          sentAt: 1_700_000_000_000,
+          pushId: 'p',
+          hopIndex: 0,
+        },
+        config: makeConfig(),
+        host: TEST_HOST,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const body = JSON.parse((fetchImpl.mock.calls[0][1] as RequestInit).body as string);
+      expect(body.data.hopIndex).toBe(0);
+    });
+  });
+
   it('uses sandbox host when provided', async () => {
     const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response('', { status: 200 }),

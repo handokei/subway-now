@@ -1260,18 +1260,24 @@ export function validateTrip(input: unknown): Trip | null {
   // 같은 stationName이 중복 등장(순환선/회차)할 때 클라이언트의 `:n` suffix identifier 규약과 일치하도록
   // 0-based 인덱스를 부여. waypoint shift 진행 후에도 값은 불변 — reschedule push 시점까지 일관.
   // 클라이언트가 이미 occurrenceIdx를 보내준 경우는 그대로 신뢰 (round-trip 안정).
+  // Epic #1204 그룹 2 D3 (#1273) — hopIndex는 시퀀스 0-based 위치. occurrenceIdx와 같은 1-pass에서
+  // 계산하지만 별개 카운터(시퀀스 절대 위치 ≠ stationName 등장 횟수). 클라가 명시 송신한 값은 그대로 신뢰.
   const occurrenceCount = new Map<string, number>();
-  const stampedWaypoints = (obj.waypoints as Array<Record<string, unknown>>).map((wp) => {
+  const stampedWaypoints = (obj.waypoints as Array<Record<string, unknown>>).map((wp, idx) => {
     const stationName = wp.stationName as string;
     const occIdx = occurrenceCount.get(stationName) ?? 0;
     occurrenceCount.set(stationName, occIdx + 1);
-    const existing =
+    const existingOcc =
       typeof wp.occurrenceIdx === 'number' &&
       Number.isInteger(wp.occurrenceIdx) &&
       wp.occurrenceIdx >= 0
         ? wp.occurrenceIdx
         : occIdx;
-    return { ...wp, occurrenceIdx: existing } as Trip['waypoints'][number];
+    const existingHop =
+      typeof wp.hopIndex === 'number' && Number.isInteger(wp.hopIndex) && wp.hopIndex >= 0
+        ? wp.hopIndex
+        : idx;
+    return { ...wp, occurrenceIdx: existingOcc, hopIndex: existingHop } as Trip['waypoints'][number];
   });
 
   return {

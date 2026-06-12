@@ -191,6 +191,17 @@ export async function checkSilentPushLocationGate(
 
   const pos = await resolveUserPosition();
   if (!pos) {
+    // Epic #1204 그룹 2 D3 (#1273) — BG 깨움 직후 GPS 미준비 fallback.
+    // lockless intermediate + D1 estimator currentHopIndex가 payload hopIndex와 매칭되면
+    // 거리 게이트 우회하고 hop 매칭만으로 pass. (사용자 피드백 14/15: 14건 received / 0건 fired)
+    // 측정 가시성을 위해 locationSource는 부재로 두고 passReason='hop-window-match'만 노출.
+    if (
+      input.isLockless === true &&
+      input.kind === 'intermediate' &&
+      isHopWindowMatch(input.currentHopIndex, input.payloadHopIndex)
+    ) {
+      return { pass: true, passReason: 'hop-window-match' };
+    }
     return { pass: false, reason: 'no-location' };
   }
 
