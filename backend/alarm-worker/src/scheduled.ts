@@ -1158,6 +1158,10 @@ export async function maybeReschedulePush(
         // #918 A3 PR4 — `bl:` + `tba:` 동시 정정. 구 backend 호환을 위해 채널 상수는
         // types.ts 단일 SSOT (RESCHEDULE_CHANNELS_DEFAULT)에서 import.
         channels: RESCHEDULE_CHANNELS_DEFAULT,
+        // #1193 — 중복역 trip(순환선/회차)에서 `tba:` 채널의 N번째 등장 정정. `validateTrip`이
+        // POST /trips 시점에 stamp한 값(불변)을 그대로 forward해 클라이언트와 routeStops 인덱스가
+        // round-trip 일치하도록 한다. 구 trip(필드 부재) → undefined → wire 생략 → 클라 0 fallback.
+        occurrenceIdx: waypoint.occurrenceIdx,
       }),
     trip.apnsEnv,
     deps.apnsHosts,

@@ -182,6 +182,60 @@ describe('validateTrip', () => {
     expect(validateTrip({ ...base(), subsurface: 1 })?.subsurface).toBeUndefined();
     expect(validateTrip(base())?.subsurface).toBeUndefined();
   });
+
+  // #1193 — 중복역 trip의 waypoint occurrenceIdx stamping.
+  describe('occurrenceIdx stamping (#1193)', () => {
+    it('단일 등장 waypoints는 모두 occurrenceIdx=0', () => {
+      const trip = validateTrip({
+        ...base(),
+        waypoints: [
+          { stationName: '신도림', line: '2', kind: 'transfer' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+      });
+      expect(trip?.waypoints.map((w) => w.occurrenceIdx)).toEqual([0, 0]);
+    });
+
+    it('같은 stationName 중복 시 0, 1, 2... 순차 stamp', () => {
+      const trip = validateTrip({
+        ...base(),
+        waypoints: [
+          { stationName: '회차역', line: '2', kind: 'transfer' },
+          { stationName: '다른역', line: '2', kind: 'transfer' },
+          { stationName: '회차역', line: '2', kind: 'transfer' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+      });
+      expect(trip?.waypoints.map((w) => w.occurrenceIdx)).toEqual([0, 0, 1, 0]);
+    });
+
+    it('클라이언트가 명시한 occurrenceIdx는 그대로 신뢰 (round-trip)', () => {
+      const trip = validateTrip({
+        ...base(),
+        waypoints: [
+          { stationName: '회차역', line: '2', kind: 'transfer', occurrenceIdx: 5 },
+          { stationName: '강남', line: '2', kind: 'destination', occurrenceIdx: 0 },
+        ],
+      });
+      expect(trip?.waypoints.map((w) => w.occurrenceIdx)).toEqual([5, 0]);
+    });
+
+    it.each([
+      ['음수', -1],
+      ['소수', 1.5],
+      ['문자열', '1'],
+    ] as const)('비정상 occurrenceIdx(%s)는 무시 후 자동 계산', (_label, badValue) => {
+      const trip = validateTrip({
+        ...base(),
+        waypoints: [
+          { stationName: '회차역', line: '2', kind: 'transfer', occurrenceIdx: badValue },
+          { stationName: '회차역', line: '2', kind: 'transfer' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+      });
+      expect(trip?.waypoints.map((w) => w.occurrenceIdx)).toEqual([0, 1, 0]);
+    });
+  });
 });
 
 describe('validateTrip — boardingLock (#585)', () => {

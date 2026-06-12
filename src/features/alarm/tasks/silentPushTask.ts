@@ -128,6 +128,11 @@ export interface RescheduleSilentPushPayload {
   sentAt?: number;
   pushId?: string;
   channels?: ReadonlyArray<RescheduleChannel>;
+  /**
+   * #1193 — `tba:` 채널 정정 시, 같은 stationName이 route에 중복 등장하는 경우 정정 대상
+   * occurrence(0-based). 미지정 시 0(첫 등장)으로 해석 — 구 backend 호환 및 중복 없는 trip 동작 보존.
+   */
+  occurrenceIdx?: number;
 }
 
 /**
@@ -280,7 +285,8 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
 function extractReschedulePayload(
   obj: Record<string, unknown>,
 ): RescheduleSilentPushPayload | null {
-  const { nextStation, newArrivalTimeEpoch, trainCode, sentAt, pushId, channels } = obj;
+  const { nextStation, newArrivalTimeEpoch, trainCode, sentAt, pushId, channels, occurrenceIdx } =
+    obj;
   if (typeof nextStation !== 'string' || nextStation.length === 0) return null;
   if (typeof newArrivalTimeEpoch !== 'number' || !Number.isFinite(newArrivalTimeEpoch)) return null;
   if (typeof trainCode !== 'string' || trainCode.length === 0) return null;
@@ -292,7 +298,18 @@ function extractReschedulePayload(
     sentAt: validSentAt(sentAt),
     pushId: validPushId(pushId),
     channels: validChannels(channels),
+    occurrenceIdx: validOccurrenceIdx(occurrenceIdx),
   };
+}
+
+/**
+ * #1193 — payload.occurrenceIdx 검증. 0 이상 정수만 통과. 구 backend가 필드를 안 보내면 undefined →
+ * `rescheduleTripBoundAlarm`이 0(첫 등장)으로 fallback.
+ */
+function validOccurrenceIdx(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  if (!Number.isInteger(value) || value < 0) return undefined;
+  return value;
 }
 
 /**
@@ -603,6 +620,8 @@ async function applyReschedule(
         route,
         destinationName,
         now: receivedAt,
+        // #1193 — 중복역 trip은 backend가 occurrenceIdx를 명시. 미지정 시 0(첫 등장).
+        occurrenceIdx: payload.occurrenceIdx,
       });
     }
   } catch (e) {
