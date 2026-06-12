@@ -176,9 +176,10 @@ describe('EditorialTimeline quickExit door label', () => {
     // stopsWithQuickExit: 교대(filled, 3호선) → 경복궁(dest, 3호선). 다음 stop 도어 3-2.
     render(<EditorialTimeline stops={stopsWithQuickExit} />);
     expect(screen.getByText('탑승 3-2번 문')).toBeTruthy();
-    expect(screen.getByTestId('boarding-door-0')).toBeTruthy();
-    // 도착 stop은 원래 "3-2번 문"(탑승 prefix 없음) 그대로 유지
-    expect(screen.getByTestId('quick-exit-door-1')).toBeTruthy();
+    expect(screen.getByTestId('boarding-door-0-3-2')).toBeTruthy();
+    // 도착 stop은 원래 "3-2번 문"(탑승 prefix 없음) 그대로 유지.
+    // testID는 door 값을 suffix로 포함해 E2E flow에서 i18n 텍스트 대신 id 정규식으로 검증 가능 (#1230).
+    expect(screen.getByTestId('quick-exit-door-1-3-2')).toBeTruthy();
   });
 
   it('#635 출발역만 있고 다음 stop 없으면 boarding-door 라벨 안 뜬다', () => {
@@ -223,7 +224,7 @@ describe('EditorialTimeline quickExit door label', () => {
     ];
     render(<EditorialTimeline stops={stops} />);
     expect(screen.getByText('탑승 3-2번 문')).toBeTruthy();
-    expect(screen.getByTestId('boarding-door-0')).toBeTruthy();
+    expect(screen.getByTestId('boarding-door-0-3-2')).toBeTruthy();
   });
 
   // 라벨 미표시 케이스 — fromName→toName 단일 segment fixture.

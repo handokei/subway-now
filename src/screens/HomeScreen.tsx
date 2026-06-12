@@ -797,7 +797,10 @@ export default function HomeScreen() {
                   : t('home.originNearest')}
               </Text>
               <View style={styles.heroRow}>
-                <Text style={[typography.hero, { color: colors.ink, flex: 1, fontWeight: '900' }]}>
+                <Text
+                  style={[typography.hero, { color: colors.ink, flex: 1, fontWeight: '900' }]}
+                  testID="home-origin-station-name"
+                >
                   {getStationDisplayName(effectiveOrigin)}
                 </Text>
                 <TouchableOpacity

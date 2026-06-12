@@ -163,7 +163,7 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
               {quickExitDoor != null && (
                 <Text
                   style={[typography.label, { color: colors.subtle, marginTop: 2 }]}
-                  testID={`quick-exit-door-${i}`}
+                  testID={`quick-exit-door-${i}-${quickExitDoor}`}
                 >
                   {t('route.quickExitDoor', { door: quickExitDoor })}
                 </Text>
@@ -171,7 +171,7 @@ export function EditorialTimeline({ stops, renderHopSlot }: Props) {
               {boardingDoor != null && (
                 <Text
                   style={[typography.label, { color: colors.subtle, marginTop: 2 }]}
-                  testID={`boarding-door-${i}`}
+                  testID={`boarding-door-${i}-${boardingDoor}`}
                 >
                   {t('route.boardingDoor', { door: boardingDoor })}
                 </Text>
