@@ -65,6 +65,7 @@ import type { FusionConfidence, FusionSource } from '../../../shared/types/fusio
 import type { NearestStationResult } from '../../../shared/types/station';
 import { useTheme, spacing, radius, typography } from '../../../shared/theme';
 import { useBarometer } from '../../../shared/hooks/useBarometer';
+import { RegressionsSection } from './RegressionsSection';
 
 /**
  * #1215 (D9) — DebugModal 상태 가시화 신규 prop 묶음.
@@ -1009,6 +1010,9 @@ function DebugModalInner({
 
           {/* #1024 — ## Counters: reason별 누적 count + 마지막 발생 시각 */}
           <CountersSection logs={logs} colors={colors} />
+
+          {/* #1263 (Epic #1204 그룹 0 PR C): Regressions 4종 추이 */}
+          <RegressionsSection />
 
           {/* #1022: Worker Quota admin view */}
           <Section title="Worker Quota" colors={colors}>
