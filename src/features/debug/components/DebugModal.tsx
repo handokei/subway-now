@@ -610,7 +610,8 @@ function DebugModalInner({
         lockless: locklessTrip,
         tripStartedAt,
         currentHopIndex,
-        routeHopCount: destination !== null ? routeHopCount : null,
+        // destination 있어야 routeHopCount 표기 의미. 없으면 null → '—' 표기.
+        routeHopCount: destination ? routeHopCount : null,
       },
     [tripProp, locklessTrip, tripStartedAt, currentHopIndex, routeHopCount, destination],
   );
