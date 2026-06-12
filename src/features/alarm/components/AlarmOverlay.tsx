@@ -47,8 +47,12 @@ export function AlarmOverlay({ event, onDismiss }: AlarmOverlayProps) {
   return (
     <Modal visible animationType="fade" testID="alarm-overlay" onRequestClose={handleDismiss}>
       <View style={[styles.container, { backgroundColor: colors.bg }]}>
-        <Text style={[styles.title, { color: colors.accent }]}>{title}</Text>
-        <Text style={[styles.station, { color: colors.ink }]}>{message}</Text>
+        <Text style={[styles.title, { color: colors.accent }]} testID="alarm-overlay-title">
+          {title}
+        </Text>
+        <Text style={[styles.station, { color: colors.ink }]} testID="alarm-overlay-message">
+          {message}
+        </Text>
         <TouchableOpacity
           style={[styles.button, { backgroundColor: colors.accent }]}
           onPress={handleDismiss}

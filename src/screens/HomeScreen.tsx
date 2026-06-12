@@ -722,7 +722,11 @@ export default function HomeScreen() {
       <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
         <View style={styles.center}>
           <Text style={[styles.errorText, { color: colors.accent }]}>{error}</Text>
-          <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
+          <TouchableOpacity
+            style={[styles.button, { backgroundColor: colors.accent }]}
+            onPress={refresh}
+            testID="home-refresh-button"
+          >
             <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
           </TouchableOpacity>
         </View>
@@ -787,7 +791,10 @@ export default function HomeScreen() {
             <ServiceWindowBanner stationName={effectiveOrigin.name} line={effectiveOrigin.line} />
             {/* Hero: origin station */}
             <View style={{ paddingHorizontal: spacing.xxl, paddingTop: spacing.xxxl - 4 }}>
-              <Text style={[typography.label, { color: colors.muted, marginBottom: 10 }]}>
+              <Text
+                style={[typography.label, { color: colors.muted, marginBottom: 10 }]}
+                testID="home-origin-label"
+              >
                 {isCustomOrigin
                   ? t('home.originManual')
                   : source !== 'gps'
@@ -1154,8 +1161,16 @@ export default function HomeScreen() {
 
             {/* #634: BoardingTrainList 두 인스턴스(현재역/환승)는 route 박스 안으로 이동됨. */}
             {effectiveOrigin && (
-              <View style={[styles.arrivalSection, { backgroundColor: colors.card }]}>
-                <Text style={[styles.sectionTitle, { color: colors.muted }]}>{t('home.arrivalInfoTitle')}</Text>
+              <View
+                style={[styles.arrivalSection, { backgroundColor: colors.card }]}
+                testID="home-arrival-section"
+              >
+                <Text
+                  style={[styles.sectionTitle, { color: colors.muted }]}
+                  testID="home-arrival-section-title"
+                >
+                  {t('home.arrivalInfoTitle')}
+                </Text>
                 {arrivalLoading && !arrival && (
                   <Text style={[styles.arrivalItem, { color: colors.ink }]}>{t('home.loading')}</Text>
                 )}
@@ -1186,16 +1201,29 @@ export default function HomeScreen() {
             <Text style={styles.icon}>📍</Text>
             <Text style={[styles.title, { color: colors.ink }]}>{t('home.locationUncertainTitle')}</Text>
             <Text style={[styles.subtitle, { color: colors.muted }]}>{t('home.locationUncertainDescription')}</Text>
-            <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
+            <TouchableOpacity
+              style={[styles.button, { backgroundColor: colors.accent }]}
+              onPress={refresh}
+              testID="home-refresh-button"
+            >
               <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
             </TouchableOpacity>
           </View>
         ) : (
-          <View style={styles.center}>
+          <View style={styles.center} testID="home-not-near-station">
             <Text style={styles.icon}>🚶</Text>
-            <Text style={[styles.title, { color: colors.ink }]}>{t('home.notNearStationTitle')}</Text>
+            <Text
+              style={[styles.title, { color: colors.ink }]}
+              testID="home-not-near-station-title"
+            >
+              {t('home.notNearStationTitle')}
+            </Text>
             <Text style={[styles.subtitle, { color: colors.muted }]}>{t('home.notNearStationDescription')}</Text>
-            <TouchableOpacity style={[styles.button, { backgroundColor: colors.accent }]} onPress={refresh}>
+            <TouchableOpacity
+              style={[styles.button, { backgroundColor: colors.accent }]}
+              onPress={refresh}
+              testID="home-refresh-button"
+            >
               <Text style={[styles.buttonText, { color: colors.onAccent }]}>{t('home.refresh')}</Text>
             </TouchableOpacity>
           </View>
@@ -1313,8 +1341,16 @@ function ArrivalDirectionGroup({
     [items, label, line, stationName, directionKey],
   );
   return (
-    <View style={[styles.arrivalGroup, { borderTopColor: colors.hair }]}>
-      <Text style={[styles.arrivalLabel, { color: colors.muted }]}>{label}</Text>
+    <View
+      style={[styles.arrivalGroup, { borderTopColor: colors.hair }]}
+      testID={`arrival-direction-${directionKey}`}
+    >
+      <Text
+        style={[styles.arrivalLabel, { color: colors.muted }]}
+        testID={`arrival-direction-label-${directionKey}`}
+      >
+        {label}
+      </Text>
       {trains.length === 0 ? (
         <Text style={[styles.arrivalItem, { color: colors.ink }]}>{t('home.noArrivalInfo')}</Text>
       ) : (

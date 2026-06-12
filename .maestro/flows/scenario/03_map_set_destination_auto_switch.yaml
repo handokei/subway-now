@@ -12,6 +12,7 @@ name: "scenario - 지도 도착역 설정 → 홈 자동 전환"
       location: always
       notifications: allow
 
+# 외부 시스템 UI(dev menu / permission alert) — text 매칭 유지
 - tapOn:
     text: ".*localhost.*"
     optional: true
@@ -31,9 +32,11 @@ name: "scenario - 지도 도착역 설정 → 홈 자동 전환"
     timeout: 15000
 - extendedWaitUntil:
     visible:
+      id: "home-origin-station-name"
       text: "강남"
     timeout: 60000
 
+# Map 탭으로 이동 — 탭바는 좌표 탭 (네이티브 tab UI라 testID 부착 불가)
 - tapOn:
     point: "37%,95%"
 - extendedWaitUntil:
@@ -41,8 +44,9 @@ name: "scenario - 지도 도착역 설정 → 홈 자동 전환"
       id: "recenter-button"
     timeout: 10000
 
+# 지도 마커: 그룹 키는 normalize(station name) — 강남 마커
 - tapOn:
-    text: "강남"
+    id: "marker-강남"
 - extendedWaitUntil:
     visible:
       id: "set-destination-button"

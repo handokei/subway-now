@@ -13,20 +13,21 @@ name: "gps - 역 근처 (강남역)"
       location: always
       notifications: allow
 
+# 외부 시스템 UI(권한 alert) — text 매칭 유지
 - tapOn:
     text: ".*허용.*"
     optional: true
 
 - extendedWaitUntil:
     visible:
-      text: "현재역|Current station"
+      id: "home-origin-label"
     timeout: 15000
 
 - assertVisible:
-    text: "강남|Gangnam"
+    id: "home-origin-station-name"
 - assertVisible:
-    text: "Next trains"
+    id: "home-arrival-section-title"
 - assertVisible:
-    text: "상행|Upbound"
+    id: "arrival-direction-label-up"
 - assertVisible:
-    text: "하행|Downbound"
+    id: "arrival-direction-label-down"

@@ -13,12 +13,14 @@ name: "gps - 경로 잠금 점프 거부 (#310)"
       location: always
       notifications: allow
 
+# 외부 시스템 UI(권한 alert) — text 매칭 유지
 - tapOn:
     text: ".*허용.*"
     optional: true
 
 - extendedWaitUntil:
     visible:
+      id: "home-origin-station-name"
       text: "사가정|Sagajeong"
     timeout: 15000
 
@@ -34,8 +36,10 @@ name: "gps - 경로 잠금 점프 거부 (#310)"
 - tapOn:
     id: "search-input"
 - inputText: "어린이대공원"
-- assertVisible:
-    id: "suggestions-list"
+- extendedWaitUntil:
+    visible:
+      id: "suggestions-list"
+    timeout: 5000
 - tapOn:
     id: "suggestion-item-7-018"
 
@@ -54,4 +58,5 @@ name: "gps - 경로 잠금 점프 거부 (#310)"
       - evalScript: maestro.wait(1000)
 
 - assertVisible:
+    id: "home-origin-station-name"
     text: "사가정|Sagajeong"
