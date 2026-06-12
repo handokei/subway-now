@@ -1075,43 +1075,37 @@ describe('useApnsTripRegistration', () => {
   // #1264 (N3) — routeSig 전환 시 사전 예약된 tba: 알람 cancel.
   // 2026-06-12 user trip의 50분 영구 `revalidate-route-sig-mismatch` 회귀 차단.
   describe('#1264 (N3) routeSig 전환 시 cancelTripBoundAlarms', () => {
-    it('첫 register(이전 sig 없음)에는 cancelTripBoundAlarms 호출 안 함', async () => {
-      renderHook(() =>
-        useApnsTripRegistration({
-          route: directRoute,
-          destination: station,
-          nextStationEtaSeconds: 120,
-        }),
+    type TripProps = { route: Route | null; destination: Station | null };
+    const renderTrip = (initialProps: TripProps) =>
+      renderHook(
+        ({ route, destination }: TripProps) =>
+          useApnsTripRegistration({ route, destination, nextStationEtaSeconds: 120 }),
+        { initialProps },
       );
+
+    it('첫 register(이전 sig 없음)에는 cancelTripBoundAlarms 호출 안 함', async () => {
+      renderTrip({ route: directRoute, destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
       expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
     });
 
     it('routeSig 전환 시 register 전에 cancelTripBoundAlarms 호출', async () => {
-      const { rerender } = renderHook(
-        ({ route }: { route: Route }) =>
-          useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
-        { initialProps: { route: makeDirectRoute(5, '2') as Route } },
-      );
+      const { rerender } = renderTrip({ route: makeDirectRoute(5, '2'), destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
       expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
 
       // route 내용 변경 — routeSig 전환
-      rerender({ route: makeDirectRoute(6, '2') as Route });
+      rerender({ route: makeDirectRoute(6, '2'), destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
       expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
     });
 
     it('동일 routeSig 재진입(reference만 변경)에는 cancelTripBoundAlarms 호출 안 함', async () => {
-      const { rerender } = renderHook(
-        ({ route }: { route: Route }) =>
-          useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
-        { initialProps: { route: makeDirectRoute(5, '2') as Route } },
-      );
+      const { rerender } = renderTrip({ route: makeDirectRoute(5, '2'), destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
 
       // 같은 내용 new reference — routeSig 동일
-      rerender({ route: makeDirectRoute(5, '2') as Route });
+      rerender({ route: makeDirectRoute(5, '2'), destination: station });
       await act(async () => {
         await Promise.resolve();
       });
@@ -1120,14 +1114,10 @@ describe('useApnsTripRegistration', () => {
 
     it('cancelTripBoundAlarms 실패해도 register는 graceful 진행', async () => {
       mockCancelTripBoundAlarms.mockRejectedValueOnce(new Error('cancel failed'));
-      const { rerender } = renderHook(
-        ({ route }: { route: Route }) =>
-          useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
-        { initialProps: { route: makeDirectRoute(5, '2') as Route } },
-      );
+      const { rerender } = renderTrip({ route: makeDirectRoute(5, '2'), destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
 
-      rerender({ route: makeDirectRoute(6, '2') as Route });
+      rerender({ route: makeDirectRoute(6, '2'), destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
       expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
       // register는 그대로 발사됨
@@ -1140,36 +1130,26 @@ describe('useApnsTripRegistration', () => {
         if (key === ACTIVE_TRIP_KEY) return 'token-abc';
         return null;
       });
-      const { rerender } = renderHook(
-        ({ r, d }: { r: Route; d: Station | null }) =>
-          useApnsTripRegistration({ route: r, destination: d, nextStationEtaSeconds: 120 }),
-        { initialProps: { r: directRoute as Route, d: station as Station | null } },
-      );
+      const { rerender } = renderTrip({ route: directRoute, destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
 
       // trip 종료
-      rerender({ r: null, d: null });
+      rerender({ route: null, destination: null });
       await waitFor(() => expect(mockClear).toHaveBeenCalled());
       expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
 
       // 새 trip 시작 (다른 route) — lastRouteSigRef가 reset되었으므로 cancel 호출 안 함
-      rerender({ r: makeDirectRoute(7, '2') as Route, d: station as Station | null });
+      rerender({ route: makeDirectRoute(7, '2'), destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
       expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
     });
 
     it('destination 변경 시(routeSig 동일 가정 X — 다른 route 보낼 때) cancel 호출', async () => {
       const altStation: Station = { ...station, id: '2-023', name: '역삼' };
-      const { rerender } = renderHook(
-        ({ r, d }: { r: Route; d: Station }) =>
-          useApnsTripRegistration({ route: r, destination: d, nextStationEtaSeconds: 120 }),
-        {
-          initialProps: { r: makeDirectRoute(5, '2') as Route, d: station },
-        },
-      );
+      const { rerender } = renderTrip({ route: makeDirectRoute(5, '2'), destination: station });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
 
-      rerender({ r: makeDirectRoute(6, '2') as Route, d: altStation });
+      rerender({ route: makeDirectRoute(6, '2'), destination: altStation });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
       expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
     });
@@ -1179,14 +1159,13 @@ describe('useApnsTripRegistration', () => {
       mockCancelTripBoundAlarms.mockImplementation(
         () => new Promise<void>((res) => { resolveCancel = res; }),
       );
-      const { rerender, unmount } = renderHook(
-        ({ route }: { route: Route }) =>
-          useApnsTripRegistration({ route, destination: station, nextStationEtaSeconds: 120 }),
-        { initialProps: { route: makeDirectRoute(5, '2') as Route } },
-      );
+      const { rerender, unmount } = renderTrip({
+        route: makeDirectRoute(5, '2'),
+        destination: station,
+      });
       await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
 
-      rerender({ route: makeDirectRoute(6, '2') as Route });
+      rerender({ route: makeDirectRoute(6, '2'), destination: station });
       await waitFor(() => expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1));
       // unmount 직후 cancel resolve — cancelled 가드로 후속 register 진행 안 함
       unmount();
