@@ -21,6 +21,11 @@ jest.mock('../../api/alarmBackend', () => ({
   clearActiveTrip: (...args: unknown[]) => mockClear(...args),
 }));
 
+const mockCancelTripBoundAlarms = jest.fn();
+jest.mock('../../utils/tripBoundScheduler', () => ({
+  cancelTripBoundAlarms: (...args: unknown[]) => mockCancelTripBoundAlarms(...args),
+}));
+
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -60,6 +65,7 @@ describe('useApnsTripRegistration', () => {
     mockGetDevicePushTokenAsync.mockResolvedValue({ data: 'token-abc' });
     mockRegister.mockResolvedValue({ ok: true });
     mockClear.mockResolvedValue({ ok: true });
+    mockCancelTripBoundAlarms.mockResolvedValue(undefined);
     (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
       if (key === APNS_TOKEN_KEY) return 'token-abc';
       return null;
@@ -1063,6 +1069,112 @@ describe('useApnsTripRegistration', () => {
       };
       expect(args.promptGeoContext).toBeUndefined();
       expect(args.promptDisplay).toBeUndefined();
+    });
+  });
+
+  // #1264 (N3) — routeSig 전환 시 사전 예약된 tba: 알람 cancel.
+  // 2026-06-12 user trip의 50분 영구 `revalidate-route-sig-mismatch` 회귀 차단.
+  describe('#1264 (N3) routeSig 전환 시 cancelTripBoundAlarms', () => {
+    type TripProps = { route: Route | null; destination: Station | null };
+    const renderTrip = (initialProps: TripProps) =>
+      renderHook(
+        ({ route, destination }: TripProps) =>
+          useApnsTripRegistration({ route, destination, nextStationEtaSeconds: 120 }),
+        { initialProps },
+      );
+
+    it('첫 register(이전 sig 없음)에는 cancelTripBoundAlarms 호출 안 함', async () => {
+      renderTrip({ route: directRoute, destination: station });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
+    });
+
+    it('routeSig 전환 시 register 전에 cancelTripBoundAlarms 호출', async () => {
+      const { rerender } = renderTrip({ route: makeDirectRoute(5, '2'), destination: station });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
+
+      // route 내용 변경 — routeSig 전환
+      rerender({ route: makeDirectRoute(6, '2'), destination: station });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
+    });
+
+    it('동일 routeSig 재진입(reference만 변경)에는 cancelTripBoundAlarms 호출 안 함', async () => {
+      const { rerender } = renderTrip({ route: makeDirectRoute(5, '2'), destination: station });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+
+      // 같은 내용 new reference — routeSig 동일
+      rerender({ route: makeDirectRoute(5, '2'), destination: station });
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
+    });
+
+    it('cancelTripBoundAlarms 실패해도 register는 graceful 진행', async () => {
+      mockCancelTripBoundAlarms.mockRejectedValueOnce(new Error('cancel failed'));
+      const { rerender } = renderTrip({ route: makeDirectRoute(5, '2'), destination: station });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+
+      rerender({ route: makeDirectRoute(6, '2'), destination: station });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
+      // register는 그대로 발사됨
+      expect(mockRegister.mock.calls[1][0]).toMatchObject({ destination: station.id });
+    });
+
+    it('trip 종료(route/destination → null) 후 새 trip 시작 시 첫 register는 cancel 호출 안 함', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+        if (key === APNS_TOKEN_KEY) return 'token-abc';
+        if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+        return null;
+      });
+      const { rerender } = renderTrip({ route: directRoute, destination: station });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+
+      // trip 종료
+      rerender({ route: null, destination: null });
+      await waitFor(() => expect(mockClear).toHaveBeenCalled());
+      expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
+
+      // 새 trip 시작 (다른 route) — lastRouteSigRef가 reset되었으므로 cancel 호출 안 함
+      rerender({ route: makeDirectRoute(7, '2'), destination: station });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockCancelTripBoundAlarms).not.toHaveBeenCalled();
+    });
+
+    it('destination 변경 시(routeSig 동일 가정 X — 다른 route 보낼 때) cancel 호출', async () => {
+      const altStation: Station = { ...station, id: '2-023', name: '역삼' };
+      const { rerender } = renderTrip({ route: makeDirectRoute(5, '2'), destination: station });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+
+      rerender({ route: makeDirectRoute(6, '2'), destination: altStation });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+      expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancelTripBoundAlarms in-flight 중 unmount되면 후속 register 미발사 (cancelled 가드)', async () => {
+      let resolveCancel!: () => void;
+      mockCancelTripBoundAlarms.mockImplementation(
+        () => new Promise<void>((res) => { resolveCancel = res; }),
+      );
+      const { rerender, unmount } = renderTrip({
+        route: makeDirectRoute(5, '2'),
+        destination: station,
+      });
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+
+      rerender({ route: makeDirectRoute(6, '2'), destination: station });
+      await waitFor(() => expect(mockCancelTripBoundAlarms).toHaveBeenCalledTimes(1));
+      // unmount 직후 cancel resolve — cancelled 가드로 후속 register 진행 안 함
+      unmount();
+      mockRegister.mockClear();
+      await act(async () => {
+        resolveCancel();
+        await Promise.resolve();
+      });
+      expect(mockRegister).not.toHaveBeenCalled();
     });
   });
 });

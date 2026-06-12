@@ -25,6 +25,7 @@ import { routeSignature, getStationById } from '../../../shared/utils/stationRou
 import { registerActiveTrip, clearActiveTrip, type AlarmBoardingLock } from '../api/alarmBackend';
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import { buildBoardingLockMeta } from '../utils/buildBoardingLockMeta';
+import { cancelTripBoundAlarms } from '../utils/tripBoundScheduler';
 import { buildBoardingPromptContext } from '../utils/boardingPromptContext';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../shared/constants/boardingLock';
@@ -181,6 +182,12 @@ export function useApnsTripRegistration({
   // (non-null → null → 새 lock 3 POST) 판정에 사용. 첫 register 시 null로 시작.
   const lastSentLockSigRef = useRef<string | null>(null);
 
+  // #1264 (N3) — 직전 effect cycle의 routeSig. routeSig가 전환되면 이전 trip의 사전 예약된
+  // `tba:` 알람을 cancel — backend가 보낸 정정 silent push가 stale identifier에 매칭되어
+  // 50분간 `revalidate-route-sig-mismatch`로 누락되는 회귀(2026-06-12 user trip)를 차단한다.
+  // 첫 setDestination(이전 sig 없음)에는 cancel 호출 X — 불필요한 OS 호출 방지.
+  const lastRouteSigRef = useRef<string | null>(null);
+
   // ── 토큰 발급 + 리스너 등록 (mount-once) ──
   useEffect(() => {
     let cancelled = false;
@@ -267,7 +274,24 @@ export function useApnsTripRegistration({
         // 트립 없음 분기에서도 lock 시그를 reset — 다음 trip이 새로 등록될 때 첫 cycle은
         // 즉시 발사(debounce 미적용) 보장.
         lastSentLockSigRef.current = null;
+        // #1264 (N3): trip 종료 시 routeSig 추적도 reset — 다음 trip 시작 시 첫 routeSig는
+        // 신규로 취급되어 cancel skip(불필요한 OS 호출 방지).
+        lastRouteSigRef.current = null;
         return;
+      }
+
+      // #1264 (N3) — routeSig 전환 감지: 이전 routeSig가 있고 다르면 사전 예약된 `tba:` 알람
+      // cancel. backend 정정 silent push가 stale identifier에 매칭 실패하는 회귀 차단.
+      // 첫 setDestination(lastRouteSigRef=null)에는 호출 X — 신규 trip은 cancel할 대상 없음.
+      // cancel 실패해도 후속 register는 진행 (graceful) — runTripBoundCleanups + useTripBoundAlarmScheduler
+      // 가 별경로로 동일 cleanup을 시도하므로 본 호출은 belt-and-suspenders.
+      if (lastRouteSigRef.current !== null && lastRouteSigRef.current !== routeSig) {
+        try {
+          await cancelTripBoundAlarms();
+        } catch (e) {
+          logger.warn('cancelTripBoundAlarms (route switch) 실패:', e);
+        }
+        if (cancelled) return;
       }
 
       // 트립 있음 → 토큰 없으면 graceful skip.
@@ -291,6 +315,8 @@ export function useApnsTripRegistration({
       // POST 발사 직후(성공/실패 무관) 송신된 lock sig를 기록 — 다음 cycle이 "직전 송신 = lock,
       // 신규 = null" 패턴인지 판정해 race 차단.
       lastSentLockSigRef.current = boardingLockSig;
+      // #1264 (N3) — POST 발사 직후 송신된 routeSig를 기록. 다음 cycle에서 전환 감지에 사용.
+      lastRouteSigRef.current = routeSig;
       // #669: cancelled 가드 밖에서 setItem — backend register 성공이면 UI cleanup 여부와 무관하게
       // ACTIVE_TRIP_KEY를 동기화. 가드 안에 두면 nextStationEtaSeconds·currentStation 변경으로
       // useEffect cleanup이 자주 일어나 setItem이 skip되고 DebugModal activeTrip이 (none)으로 표시됨.
