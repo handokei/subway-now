@@ -141,10 +141,13 @@ export async function refreshNotificationChannels(): Promise<void> {
     bypassDnd: true,
   });
   await Notifications.deleteNotificationChannelAsync(STATION_PASSED_CHANNEL_ID).catch(() => {});
+  // #1224 — 매역 알림은 잠을 깨우지 말 것: 진동 0 / 사운드 0 / 배너만
   await Notifications.setNotificationChannelAsync(STATION_PASSED_CHANNEL_ID, {
     name: i18next.t('notifications.channelStationPass'),
     importance: Notifications.AndroidImportance.DEFAULT,
     lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+    sound: null,
+    enableVibrate: false,
   });
 }
 
@@ -473,9 +476,11 @@ export async function sendStationPassedNotification(
   }
   body = appendNotificationSource(body, source);
 
+  // #1224 — 매역 알림은 잠을 깨우지 말 것: 진동 0 / 사운드 0 / 배너만
   await scheduleNotification(STATION_PASSED_NOTIFICATION_ID, {
     title: i18next.t('route.stationPassed', { name: displayStation }),
     body,
+    sound: false,
     ...(Platform.OS === 'android' && {
       channelId: STATION_PASSED_CHANNEL_ID,
       priority: Notifications.AndroidNotificationPriority.DEFAULT,

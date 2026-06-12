@@ -257,6 +257,8 @@ describe('stationNotification', () => {
         name: '역 도착 알림',
         importance: Notifications.AndroidImportance.DEFAULT,
         lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        sound: null,
+        enableVibrate: false,
       });
       expect(Notifications.requestPermissionsAsync).toHaveBeenCalledTimes(1);
     });
@@ -829,7 +831,7 @@ describe('stationNotification', () => {
       });
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-passed',
-        content: { title: '역삼역 도착', body: '강남까지 3정거장 남음' },
+        content: { title: '역삼역 도착', body: '강남까지 3정거장 남음', sound: false },
         trigger: null,
       });
     });
@@ -847,6 +849,7 @@ describe('stationNotification', () => {
         content: {
           title: '용마산역 도착',
           body: '군자 환승까지 2정거장 · 이대까지 11정거장',
+          sound: false,
         },
         trigger: null,
       });
@@ -857,7 +860,7 @@ describe('stationNotification', () => {
       await sendStationPassedNotification('역삼', '강남', null);
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-passed',
-        content: { title: '역삼역 도착', body: '현재 역삼역' },
+        content: { title: '역삼역 도착', body: '현재 역삼역', sound: false },
         trigger: null,
       });
     });
@@ -875,11 +878,79 @@ describe('stationNotification', () => {
         content: {
           title: '역삼역 도착',
           body: '강남까지 3정거장 남음',
+          sound: false,
           channelId: 'station-passed',
           priority: 'default',
         },
         trigger: null,
       });
+    });
+
+    // #1224 — station-passed = 잠 깨우지 말 것. 진동 0 / 사운드 0 / 배너만
+    it('#1224 — iOS scheduleNotification 호출에 sound: false가 포함된다 (잠 안 깨우기)', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendStationPassedNotification('역삼', '강남', null);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: expect.objectContaining({ sound: false }),
+        }),
+      );
+    });
+
+    it('#1224 — Android 채널은 sound: null + enableVibrate: false (진동/사운드 OFF)', async () => {
+      // refreshNotificationChannels는 initStationNotification에서 호출되어 별도 단위로 검증되지만,
+      // 정책 SSOT가 한 곳에 모이도록 동등 가드를 여기서도 명시한다.
+      jest.replaceProperty(Platform, 'OS', 'android');
+      (Notifications.deleteNotificationChannelAsync as jest.Mock).mockResolvedValue(undefined);
+      await initStationNotification();
+      expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith(
+        'station-passed',
+        expect.objectContaining({ sound: null, enableVibrate: false }),
+      );
+    });
+  });
+
+  // #1224 회귀 가드 — transfer/destination 알람 채널/페이로드는 변경 없음
+  describe('#1224 회귀 가드 (transfer/destination 변경 없음)', () => {
+    it('ALARM_CHANNEL_ID는 sound: alarm.wav + enableVibrate: true 유지', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      (Notifications.deleteNotificationChannelAsync as jest.Mock).mockResolvedValue(undefined);
+      await initStationNotification();
+      expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm', {
+        name: '하차/환승 알림',
+        importance: Notifications.AndroidImportance.MAX,
+        sound: 'alarm.wav',
+        enableVibrate: true,
+        vibrationPattern: [0, 1000, 500, 1000],
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        bypassDnd: true,
+      });
+    });
+
+    it('ALARM_SILENT_CHANNEL_ID는 sound: null + enableVibrate: true 유지', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      (Notifications.deleteNotificationChannelAsync as jest.Mock).mockResolvedValue(undefined);
+      await initStationNotification();
+      expect(Notifications.setNotificationChannelAsync).toHaveBeenCalledWith('station-alarm-silent', {
+        name: '하차/환승 알림 (무음)',
+        importance: Notifications.AndroidImportance.MAX,
+        sound: null,
+        enableVibrate: true,
+        vibrationPattern: [0, 1000, 500, 1000],
+        lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+        bypassDnd: true,
+      });
+    });
+
+    it('sendAlarmNotification(transfer/destination)은 sound: alarm.wav 유지', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendAlarmNotification({ phaseId: 'early', type: 'destination', stationName: '강남' });
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith(
+        expect.objectContaining({
+          identifier: 'station-alarm',
+          content: expect.objectContaining({ sound: 'alarm.wav' }),
+        }),
+      );
     });
   });
 
@@ -950,7 +1021,7 @@ describe('stationNotification', () => {
       await sendStationPassedNotification('역삼', '강남', null, source);
       expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
         identifier: 'station-passed',
-        content: { title: '역삼역 도착', body: expectedBody },
+        content: { title: '역삼역 도착', body: expectedBody, sound: false },
         trigger: null,
       });
     });
