@@ -12,6 +12,7 @@ name: "scenario - 다크모드 재시작 후 즉시 적용"
       location: always
       notifications: allow
 
+# 외부 시스템 UI(dev menu / permission alert) — text 매칭 유지
 - tapOn:
     text: ".*localhost.*"
     optional: true
@@ -31,11 +32,13 @@ name: "scenario - 다크모드 재시작 후 즉시 적용"
     timeout: 15000
 - extendedWaitUntil:
     visible:
+      id: "home-origin-station-name"
       text: "강남"
     timeout: 60000
 
 - takeScreenshot: .maestro/screenshots/01_initial_home_light
 
+# Settings 탭 — 좌표 탭
 - tapOn:
     point: "87%,95%"
 - tapOn:
@@ -68,11 +71,13 @@ name: "scenario - 다크모드 재시작 후 즉시 적용"
     timeout: 15000
 - extendedWaitUntil:
     visible:
+      id: "home-origin-station-name"
       text: "강남"
     timeout: 60000
 
 - takeScreenshot: .maestro/screenshots/03_home_after_restart_should_be_dark
 
+# Settings 탭 — 좌표 탭
 - tapOn:
     point: "87%,95%"
 - extendedWaitUntil:

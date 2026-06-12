@@ -12,12 +12,15 @@ name: "gps - 역 변경 (강남 → 잠실)"
       location: always
       notifications: allow
 
+# 외부 시스템 UI(권한 alert) — text 매칭 유지
 - tapOn:
     text: ".*허용.*"
     optional: true
 
+# 강남역 표시까지 대기 — testID + text 동시 매칭으로 dynamic station name 검증
 - extendedWaitUntil:
     visible:
+      id: "home-origin-station-name"
       text: "강남|Gangnam"
     timeout: 15000
 
@@ -27,5 +30,6 @@ name: "gps - 역 변경 (강남 → 잠실)"
 
 - extendedWaitUntil:
     visible:
+      id: "home-origin-station-name"
       text: "잠실|Jamsil"
     timeout: 70000

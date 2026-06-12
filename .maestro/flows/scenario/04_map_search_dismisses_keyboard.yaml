@@ -12,6 +12,7 @@ name: "scenario - 지도 검색 후 키보드 자동 해제"
       location: always
       notifications: allow
 
+# 외부 시스템 UI(dev menu / permission alert) — text 매칭 유지
 - tapOn:
     text: ".*localhost.*"
     optional: true
@@ -31,9 +32,11 @@ name: "scenario - 지도 검색 후 키보드 자동 해제"
     timeout: 15000
 - extendedWaitUntil:
     visible:
+      id: "home-origin-station-name"
       text: "강남"
     timeout: 60000
 
+# Map 탭으로 이동 — 탭바는 좌표 탭
 - tapOn:
     point: "37%,95%"
 - extendedWaitUntil:

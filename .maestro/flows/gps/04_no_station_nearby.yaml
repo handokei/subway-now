@@ -12,14 +12,15 @@ name: "gps - 역에서 먼 곳"
       location: always
       notifications: allow
 
+# 외부 시스템 UI(권한 alert) — text 매칭 유지
 - tapOn:
     text: ".*허용.*"
     optional: true
 
 - extendedWaitUntil:
     visible:
-      text: "지하철역 근처가 아닙니다|Not near a subway station"
+      id: "home-not-near-station-title"
     timeout: 15000
 
 - assertVisible:
-    text: "새로고침|Refresh"
+    id: "home-refresh-button"

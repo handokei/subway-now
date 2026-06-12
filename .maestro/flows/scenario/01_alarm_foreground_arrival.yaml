@@ -13,6 +13,7 @@ name: "scenario - 포그라운드 도착 알람"
       location: always
       notifications: allow
 
+# 외부 시스템 UI(dev menu / permission alert) — text 매칭 유지
 - tapOn:
     text: ".*localhost.*"
     optional: true
@@ -39,8 +40,10 @@ name: "scenario - 포그라운드 도착 알람"
 - evalScript: maestro.wait(500)
 - pasteText
 - evalScript: maestro.wait(2000)
-- assertVisible:
-    id: "suggestions-list"
+- extendedWaitUntil:
+    visible:
+      id: "suggestions-list"
+    timeout: 5000
 - tapOn:
     id: "suggestion-item-2-016"
 - waitForAnimationToEnd
@@ -50,6 +53,7 @@ name: "scenario - 포그라운드 도착 알람"
     element:
       id: "home-sleep-mode-switch"
     direction: DOWN
+    timeout: 10000
 - tapOn:
     id: "home-sleep-mode-switch"
 - evalScript: maestro.wait(1000)
@@ -64,7 +68,9 @@ name: "scenario - 포그라운드 도착 알람"
     commands:
       - evalScript: maestro.wait(1000)
 
+- extendedWaitUntil:
+    visible:
+      id: "alarm-overlay-title"
+    timeout: 5000
 - assertVisible:
-    text: "하차 알림"
-- assertVisible:
-    text: "알람 끄기"
+    id: "alarm-dismiss-button"
