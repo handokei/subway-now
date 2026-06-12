@@ -1684,6 +1684,81 @@ describe('isStationWithinHopWindow (#1208 D2)', () => {
   });
 });
 
+describe('사용자 trip 2026-06-12 회귀 가드 — D2 hop window (#1256)', () => {
+  // SSOT: tasks/epic-lockless-recovery-2026-06-12.md §1~§2
+  // PR #1247 1차 박제 시점에 D2(#1250) 미머지로 skip된 보고 #2/#8 evidence.
+  // hop window 게이트(isStationWithinHopWindow) 회귀 시 본 테스트가 fail해야 한다.
+  // Cover: PR #1202 occurrence 처리(보고 #11)와 별개 — occurrence는 backend 영역.
+
+  // 보고 #2 trip arc: 용마산 → 중곡 → 군자 → 어린이대공원 → 건대입구(7) → 건대입구(2) 환승 → 성수
+  // 7호선 + 2호선 환승이지만 hop window 검증은 노선 무관(arc 인덱스 기반)이므로
+  // 단일 노선 fixture로 충분히 박제 가능 (게이트 책임 = arc 위 hop 거리).
+  const makeArcStations = (names: readonly string[], line: LineNumber = '7'): Station[] =>
+    names.map((name, i) => ({
+      id: `${line}-${i.toString().padStart(3, '0')}`,
+      name,
+      line,
+      lineColor: '#000',
+      lat: 0,
+      lng: 0,
+    }));
+
+  describe('보고 #2 — 08:30:11 중곡 station-passed (실제 위치 어린이대공원, 지나간 hop)', () => {
+    const arcStations = makeArcStations([
+      '용마산',
+      '중곡',
+      '군자',
+      '어린이대공원',
+      '건대입구',
+    ]);
+    const findIdx = (name: string): number => arcStations.findIndex((s) => s.name === name);
+    const candidateChunggok = arcStations[findIdx('중곡')];
+
+    it.each<[string, number, boolean, string]>([
+      ['어린이대공원(현재 위치)', findIdx('어린이대공원'), false, '|3-1|=2 > window=1 → 차단'],
+      ['군자(현재 위치)', findIdx('군자'), true, '|2-1|=1 ≤ window=1 → 통과 (경계)'],
+      ['중곡(현재 위치)', findIdx('중곡'), true, '동일 hop → 통과'],
+    ])(
+      'currentHopIndex=%s → 중곡 candidate %s',
+      (_label, currentHopIndex, expected) => {
+        const result = isStationWithinHopWindow(candidateChunggok, arcStations, currentHopIndex);
+        expect(result).toBe(expected);
+      },
+    );
+  });
+
+  describe('보고 #8 — 13:28:35 성수 destination fire (4정거장 남음)', () => {
+    // 환승 후 2호선 arc: 건대입구(환승) → 뚝섬 → 한양대 → 왕십리 → 성수
+    // (실제 2호선 순방향과 무관 — hop window 검증용 hop diff 시뮬레이션)
+    const arcStations = makeArcStations(
+      ['건대입구', '뚝섬', '한양대', '왕십리', '성수'],
+      '2',
+    );
+    const candidateSeongsu = arcStations[arcStations.length - 1];
+    // currentHopIndex=0 (건대입구) → 성수까지 hop diff 4 > window=1 → 차단
+    const currentHopIndexAtTransfer = 0;
+
+    it('4정거장 남은 destination fire 차단 (hop diff 4 > window 1)', () => {
+      const result = isStationWithinHopWindow(
+        candidateSeongsu,
+        arcStations,
+        currentHopIndexAtTransfer,
+      );
+      expect(result).toBe(false);
+    });
+
+    it.each<[number, boolean, string]>([
+      [0, false, 'hop diff 4 → 차단'],
+      [2, false, 'hop diff 2 → 차단'],
+      [3, true, 'hop diff 1 → 통과 (window 경계)'],
+      [4, true, '동일 hop(도착 직전) → 통과'],
+    ])('currentHopIndex=%i → 성수 candidate', (currentHopIndex, expected) => {
+      const result = isStationWithinHopWindow(candidateSeongsu, arcStations, currentHopIndex);
+      expect(result).toBe(expected);
+    });
+  });
+});
+
 describe('normalizeStationName', () => {
   it('후행 괄호 부제를 제거한다', () => {
     expect(normalizeStationName('상봉(시외버스터미널)')).toBe('상봉');
