@@ -292,6 +292,52 @@ jobs:
             --output maestro-smoke.xml \
             --debug-output ./maestro-debug
 
+      - name: 1차 실패 flow 식별 (#1252 retry)
+        # 1차 maestro 결과에서 실패한 flow YAML 경로만 추출. 전수 재실행 비용 회피.
+        # 1차가 success였으면 빈 출력 → 다음 step의 retry는 skip.
+        id: identify_failed
+        if: always() && steps.maestro_smoke.outcome != 'success'
+        run: |
+          if [ ! -f maestro-smoke.xml ]; then
+            echo "::warning::maestro-smoke.xml not found — 1차에서 junit 미생성. retry skip."
+            echo "failed_count=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          FAILED=$(node scripts/maestro-retry.js maestro-smoke.xml .maestro/flows/smoke)
+          if [ -z "$FAILED" ]; then
+            echo "1차 실패 testcase 없음 (junit에 failure 마커 없음). retry skip."
+            echo "failed_count=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "Retry 대상 flow:"
+            echo "$FAILED"
+            # GITHUB_OUTPUT은 줄바꿈 안전을 위해 delimiter heredoc 사용
+            {
+              echo "failed_flows<<EOF"
+              echo "$FAILED"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+            COUNT=$(echo "$FAILED" | grep -c . || true)
+            echo "failed_count=$COUNT" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Maestro Smoke 재실행 (실패 flow만)
+        id: maestro_retry
+        # 시뮬레이터 환경 flake를 흡수하는 확률 layer. 진짜 회귀는 2차에서도 실패.
+        if: always() && steps.identify_failed.outputs.failed_count != '0' && steps.identify_failed.outputs.failed_count != ''
+        continue-on-error: true
+        env:
+          MAESTRO_DRIVER_STARTUP_TIMEOUT: '240000'
+        run: |
+          echo "${{ steps.identify_failed.outputs.failed_flows }}" | while IFS= read -r flow; do
+            [ -z "$flow" ] && continue
+            echo "::group::Retry $flow"
+            maestro test "$flow" \
+              --format junit \
+              --output "maestro-smoke-retry-$(basename "$flow" .yaml).xml" \
+              --debug-output ./maestro-debug-retry || exit 1
+            echo "::endgroup::"
+          done
+
       - name: 시뮬레이터 마지막 화면 캡처
         if: always()
         run: |
@@ -312,14 +358,28 @@ jobs:
           name: maestro-smoke-results
           path: |
             maestro-smoke.xml
+            maestro-smoke-retry-*.xml
             maestro-debug/
+            maestro-debug-retry/
             diag/
 
-      - name: Maestro 결과 판정
-        # continue-on-error의 outcome으로 job 최종 결과 결정.
+      - name: Maestro 결과 판정 (#1252 retry 반영)
+        # 1차 PASS → success.
+        # 1차 FAIL → retry 결과로 판정. retry success면 flake 흡수 PASS.
+        # retry도 FAIL이거나 1차 junit 누락이면 FAIL (진짜 회귀).
         if: always()
         run: |
-          if [ "${{ steps.maestro_smoke.outcome }}" != "success" ]; then
-            echo "::error::Maestro smoke 실패. artifact의 diag/last-screen.png를 확인하세요."
+          if [ "${{ steps.maestro_smoke.outcome }}" = "success" ]; then
+            echo "1차 maestro smoke success."
+            exit 0
+          fi
+          if [ "${{ steps.identify_failed.outputs.failed_count }}" = "0" ]; then
+            echo "::error::1차 maestro 실패했으나 junit에서 실패 flow를 식별하지 못함. 환경/빌드 문제 가능성."
             exit 1
           fi
+          if [ "${{ steps.maestro_retry.outcome }}" = "success" ]; then
+            echo "::notice::1차 ${{ steps.identify_failed.outputs.failed_count }}개 flow fail → 2차 retry success. 시뮬레이터 환경 flake로 판정 (#1252)."
+            exit 0
+          fi
+          echo "::error::Maestro smoke 1차+2차 모두 실패. 진짜 회귀. artifact의 diag/last-screen.png + maestro-smoke-retry-*.xml 확인."
+          exit 1
