@@ -20,6 +20,9 @@ import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY } from '../../../shared/constants/
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
 import { getLatestAccelSummary } from '../utils/accelMotionState';
+// #1237 — BG tick에서도 위젯 SSOT(App Groups UserDefaults)를 갱신해 FG 진입 전까지 stale로 남지 않게 한다.
+// cross-feature import는 파일 헤더의 file-level eslint-disable로 옵트인 (orchestrator 본질).
+import { saveStationToWidget } from '../../widget/api/widgetStorage';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { isValidGpsSpeedMps } from '../../../shared/constants/location';
 import type { Station } from '../../../shared/types/station';
@@ -202,6 +205,10 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
           timestamp: latest.timestamp,
         }),
       );
+      // #1237 (Phase 2) — 위젯 SSOT 갱신. saveStationToWidget의 module-level 50m bucket dedupe
+      // + FRESHNESS_REFRESH_MS는 FG/BG 같은 인스턴스라 자연 동작. null nearest는 호출 X
+      // (FG/BG transient null로 widget zap 방지, Phase 3 clear 정책 완화와 정합성).
+      await saveStationToWidget(nearest.station, nearest.distanceKm);
     }
 
     logger.info('백그라운드 위치 업데이트 완료:', lat.toFixed(4), lng.toFixed(4));
