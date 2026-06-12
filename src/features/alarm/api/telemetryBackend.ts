@@ -10,6 +10,10 @@ import type { TripRecallResult } from '../utils/recallMetrics';
 import type { PrescheduledMetricsResult } from '../utils/prescheduledMetrics';
 import type { PrescheduledMissContext } from '../utils/prescheduledMissContext';
 import { createLogger } from '../../../shared/utils/logger';
+import {
+  fetchWithTelemetryTimeout,
+  getAlarmBackendUrl,
+} from '../../../shared/utils/telemetryHttp';
 
 const log = createLogger('telemetryBackend');
 
@@ -20,30 +24,11 @@ export interface TelemetryUploadResult {
   status?: number;
 }
 
-/** fetch 타임아웃 — 텔레메트리는 후속 알람 흐름에 영향 주지 않게 짧게 끊는다. */
-const REQUEST_TIMEOUT_MS = 5000;
-
-function getBackendUrl(): string | null {
-  const url = process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
-  if (!url) return null;
-  return url.replace(/\/$/, '');
-}
-
-async function fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    return await fetch(input, { ...init, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 export async function uploadSilentPushTelemetry(
   token: string,
   payload: SilentPushTelemetryPayload,
 ): Promise<TelemetryUploadResult> {
-  const base = getBackendUrl();
+  const base = getAlarmBackendUrl();
   if (!base) {
     log.info('ALARM_BACKEND_URL not set — skip telemetry upload');
     return { ok: false, skipped: true };
@@ -63,7 +48,7 @@ export async function uploadSilentPushTelemetry(
   };
 
   try {
-    const res = await fetchWithTimeout(`${base}/telemetry/silent-push`, {
+    const res = await fetchWithTelemetryTimeout(`${base}/telemetry/silent-push`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
@@ -92,7 +77,7 @@ export async function uploadRecallTelemetry(
   token: string,
   recall: TripRecallResult,
 ): Promise<TelemetryUploadResult> {
-  const base = getBackendUrl();
+  const base = getAlarmBackendUrl();
   if (!base) {
     log.info('ALARM_BACKEND_URL not set — skip recall upload');
     return { ok: false, skipped: true };
@@ -112,7 +97,7 @@ export async function uploadRecallTelemetry(
   };
 
   try {
-    const res = await fetchWithTimeout(`${base}/telemetry/recall`, {
+    const res = await fetchWithTelemetryTimeout(`${base}/telemetry/recall`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
@@ -141,7 +126,7 @@ export async function uploadPrescheduledTelemetry(
   metrics: PrescheduledMetricsResult,
   missContext?: PrescheduledMissContext,
 ): Promise<TelemetryUploadResult> {
-  const base = getBackendUrl();
+  const base = getAlarmBackendUrl();
   if (!base) {
     log.info('ALARM_BACKEND_URL not set — skip prescheduled upload');
     return { ok: false, skipped: true };
@@ -164,7 +149,7 @@ export async function uploadPrescheduledTelemetry(
   }
 
   try {
-    const res = await fetchWithTimeout(`${base}/telemetry/prescheduled`, {
+    const res = await fetchWithTelemetryTimeout(`${base}/telemetry/prescheduled`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),

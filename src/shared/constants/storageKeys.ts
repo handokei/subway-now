@@ -107,6 +107,12 @@ export const PRESCHEDULED_LEDGER_KEY = 'subway-now:prescheduled-ledger';
 // 형식: 숫자(epoch ms) 문자열.
 export const LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY =
   'subway-now:last-uploaded-prescheduled-trip-start';
+// #918 A3 PR2 — preschedule 시점의 route signature 스냅샷 (#729 흡수).
+// `tba:` 알람이 OS로 발사돼 클라가 reconcile할 때 *현재* sig와 비교해 trip 도중 route가
+// 바뀐(목적지 변경/환승 재산정/노선 갈아탐) 잔여 알람을 식별·억제한다.
+// useTripBoundAlarmScheduler가 preschedule 성공 직후 write, cancel 시 clear.
+// 형식: string (boardingLockScheduler.routeSignature 결과).
+export const TRIP_BOUND_ROUTE_SIG_KEY = 'subway-now:trip-bound-route-sig';
 // #828 — Phase 1+2 fusion wire — active trip의 boarding line code.
 // BG/FG location task가 좌표 upload 시 이 line으로 linePolyline snap을 수행해
 // `mapMatchedArcM` + `mapMatchedLine`을 backend에 첨부한다.
@@ -117,6 +123,12 @@ export const ACTIVE_BOARDING_LINE_KEY = 'subway-now:active-boarding-line';
 // 최대 RECENT_ROUTES_LIMIT개(`src/shared/constants/recentDestinations.ts`)까지 보관.
 // 형식: Station[] JSON.
 export const RECENT_DESTINATIONS_KEY = 'subway-now:recent-destinations';
+// #1175 — lockless 토글 학습 funnel: 사용자가 한 번이라도 토글을 OFF로 전환한 적이
+// 있는지(즉, "전체역 보기"가 무엇을 하는지 인지 후 의도적으로 비활성화한 적이 있는지)를
+// 추적한다. ON으로 되돌리는 시점에 이 키가 'true'면 `re_on` funnel step으로 분류해
+// 학습 곡선의 "이해 후 의도적 사용" 신호로 집계한다.
+// 형식: 'true' 또는 키 부재.
+export const LOCKLESS_FUNNEL_SEEN_OFF_KEY = 'subway-now:lockless-funnel-seen-off';
 // #1038 — Sentry 에러 모니터링 opt-in 토글. 기본 OFF (opt-in only).
 // 사용자 명시 동의 전에는 외부 SaaS(Sentry)로 어떤 데이터도 전송하지 않는다.
 // 'true'일 때만 boot 시 Sentry.init 실행. DSN(EXPO_PUBLIC_SENTRY_DSN) 미설정 시 추가 no-op.

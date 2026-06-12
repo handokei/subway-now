@@ -28,6 +28,7 @@ import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival'
 import { dismissBoardingPrompt } from '../../nearest-station/api/positionUpload';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { pickAutoTrainCodeFromArrivals } from '../utils/boardingPromptAutoLock';
+import { logBoardingPromptAutoLock, logBoardingPromptResponded } from '../utils/alarmLog';
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
@@ -120,10 +121,15 @@ export async function handleResponse(
     actionIdentifier === BOARDING_PROMPT_ACTION_BOARDED ||
     actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER
   ) {
+    // #1170 — 응답률/탑승률 measurement. autolock 시도 성공/실패와 무관하게 "사용자가 boarded로
+    // 응답했다"는 사실 기록. boardedRate = boarded / (boarded+dismissed)는 게이트 정확도 proxy.
+    logBoardingPromptResponded({ outcome: 'boarded' });
     await tryAutoLock(payload, deps);
     return;
   }
   // [미탑승] 또는 dismiss — 5분 silence.
+  // #1170 — dismissed 측정. dismiss POST 결과(네트워크 성공/실패)와 무관하게 사용자 인지 기준 적재.
+  logBoardingPromptResponded({ outcome: 'dismissed' });
   await dismissBoardingPrompt(payload.tripToken);
 }
 
@@ -131,8 +137,11 @@ async function tryAutoLock(
   payload: BoardingPromptPayload,
   deps: HandleDeps,
 ): Promise<void> {
+  const telemetry = { originStation: payload.originStation, line: payload.line };
+
   if (!deps.destinationId) {
     // trip이 이미 끝남 — lock 시도 안 함, dismiss로 backend silence.
+    logBoardingPromptAutoLock({ reason: 'autolock-no-trip', ...telemetry });
     await dismissBoardingPrompt(payload.tripToken);
     return;
   }
@@ -140,6 +149,7 @@ async function tryAutoLock(
   const arrival = await deps.fetchArrivalsForStation(payload.originStation);
   if (!arrival) {
     log.info('arrivals fetch returned null — falling back to manual');
+    logBoardingPromptAutoLock({ reason: 'autolock-arrivals-empty', ...telemetry });
     return;
   }
 
@@ -152,6 +162,9 @@ async function tryAutoLock(
   const chosen = pickAutoTrainCodeFromArrivals(sameLine);
   if (!chosen) {
     log.info('ambiguity or empty — auto lock skipped');
+    // 빈 후보와 ambiguity 구분: sameLine이 1개 이상인데 chosen이 null이면 ambiguity.
+    const reason = sameLine.length === 0 ? 'autolock-arrivals-empty' : 'autolock-ambiguity';
+    logBoardingPromptAutoLock({ reason, ...telemetry });
     return;
   }
 
@@ -159,17 +172,26 @@ async function tryAutoLock(
   const station = findStationByNameAndLine(payload.originStation, chosen.line);
   if (!station) {
     log.info('station lookup failed — auto lock skipped');
+    logBoardingPromptAutoLock({ reason: 'autolock-station-lookup', ...telemetry });
     return;
   }
 
-  await deps.createLock({
-    destinationId: deps.destinationId,
-    trainCode: chosen.trainCode,
-    boardingStationId: station.id,
-    boardingLine: chosen.line,
-    boardedAt: Date.now(),
-    expectedDurationMs: deps.expectedDurationMs,
-    // #897 Seam A: auto-lock 시점 ETA 스냅샷. 지연 신호의 기준치.
-    initialEtaSeconds: chosen.arrivalSeconds,
-  });
+  try {
+    await deps.createLock({
+      destinationId: deps.destinationId,
+      trainCode: chosen.trainCode,
+      boardingStationId: station.id,
+      boardingLine: chosen.line,
+      boardedAt: Date.now(),
+      expectedDurationMs: deps.expectedDurationMs,
+      // #897 Seam A: auto-lock 시점 ETA 스냅샷. 지연 신호의 기준치.
+      initialEtaSeconds: chosen.arrivalSeconds,
+    });
+    logBoardingPromptAutoLock({ reason: 'autolock-success', ...telemetry });
+  } catch (err) {
+    // #1167 — lock 실패 시 fallback 경로. createLock는 storage/network 예외 가능.
+    // 사용자는 manual BoardingTrainList에서 재선택. 예외는 swallow — autoLock은 best-effort.
+    log.warn('createLock failed — falling back to manual', err as Error);
+    logBoardingPromptAutoLock({ reason: 'autolock-lock-failed', ...telemetry });
+  }
 }

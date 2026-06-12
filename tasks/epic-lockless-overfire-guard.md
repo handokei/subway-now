@@ -68,7 +68,7 @@ related:
 
 ### Epic C 단기 (Week 3, 16 sub-issue 예정) — 회귀 #3/#4 — **미발행**
 
-Lock backend SSOT + GPS 격하 + 토글 폐기. **착수 차단 해제 (B1/B2/B3 결정 완료, 2026-06-11).**
+Lock backend SSOT + GPS 격하 + 토글 폐기. **착수 차단 해제 (B1~B5/B14 결정 완료, 2026-06-11).**
 sub-issue 상세는 발행 시 본 문서에 기입한다. (원본 SSOT 부재로 16건의 사전 정의는 유실 — 결정 후 재정의 필요)
 
 ### Epic B (Week 4~9, 9 sub-issue 예정) — 회귀 #5/#6 — **미발행**
@@ -79,16 +79,29 @@ race/storage/lockless 근본 refactor. Epic C 단기 완료 후 착수.
 
 ADR-008 Stage 4 Phase A+B 통합. **B2 결정(2026-06-11)으로 #844 잔여 PR B/C/D가 본 단계 sub 5건 중 3건으로 귀속 확정 — #844 close됨.** sub-issue 발행 시 #844 본문의 PR B/C/D 정의 + open questions 참조.
 
-## 4. 결정 차단 항목 — **전부 결정 완료 (2026-06-11)**
+## 4. 결정 항목 — **전부 결정 완료 (2026-06-11 일괄 확정)**
 
-> ✅ B1~B5 + B14 결정 완료 → **Epic C 단기 착수 차단 해제.** 다음 단계: ADR-010 개정 + ADR-011 초안, Epic C 단기 16건 sub-issue 재정의·발행.
+> ✅ B1~B5 + B14 결정 완료 → **Epic C 단기 착수 차단 해제.** 다음 단계: ADR-010 patch + ADR-013 초안(PR-α), 코드/UI(PR-β), Epic C 단기 16건 sub-issue 재정의·발행.
 
-- [x] **B1**: ADR-010 C 폐기 + D 신설 — **2026-06-11 결정** (lockless 옵트인 토글 정책 폐기, 토글 없이 매역 알림 기본 동작)
-- [x] **B2**: epic #874를 본 epic에 통합 — **2026-06-11 결정 완료** (`project_2026_06_11_epic1008_b_decisions.md`). #844 잔여 PR B/C/D → Epic C 풀 sub 3건 귀속, #844 close
-- [x] **B3**: #912 acceptance 재해석 — "lock 유무 무관 trip 활성이면 매역 발사" — **2026-06-11 결정 채택** (#912 본문 반영 완료: 오발사 0건 판정은 본 epic 회귀 측정을 따름)
-- [x] **B4**: 낙관적 UI (탭 즉시 visual + backend 정정 toast) — **2026-06-11 결정 채택** (R-3 대응)
-- [x] **B5**: backend optional 먼저 → 1주 관찰 → client → required 승격 — **2026-06-11 결정 채택** (M2 shadow run과 결합)
-- [x] **B14**: 추가 발견 대응 — 옵션 3 확정 (A 카테고리 흡수 / B follow-up / C 별 epic)
+- [x] **B1** — ADR-010 C **유지** + 의미 재정의 ("전체역 보기 정보용") + **토글 OFF 시 활성 lock cleanup**. D 신설 불필요. ADR-013 신설 (PR-α `docs/adr-011-lockless-supplementation`), 코드/UI는 PR-β (예정).
+- [x] **B2** — epic #874를 본 epic에 흡수. #844 PR B/C/D는 Epic C 풀(Week 10~14)에 귀속. #844 close 완료 (`project_2026_06_11_epic1008_b_decisions.md`).
+- [x] **B3** — #912 acceptance 재해석:
+    - ✅ lock 활성 trip: 매역 알림 100%
+    - ✅ lockless trip: boardingPrompt 9단 게이트 통과 + 사용자 [탑승] 응답 시 100%
+    - ⚠️ 게이트 미통과 / 사용자 무응답 / 토글 OFF: acceptance **위반 아님** (사용자 선택)
+- [x] **B4** — 낙관적 UI 채택. trip 등록 직후 BoardingTrainList 노출 → 사용자 탭 시 즉시 visual + lock pending → backend round-trip → 정상은 visual 갱신, 정정은 toast. (R-3 대응)
+- [x] **B5** — backend optional 먼저 → 1주 측정 (`serverProgress.received ≥ 95%` AND `deltaVsEstimator` 평균 임계 이하) → required 승격. (M2 shadow run과 결합)
+- [x] **B14** — 신규 발견 회귀는 옵션 3 적용: A 카테고리 흡수 / B follow-up / C 별 epic. Epic A는 RC1~RC4 close 기준 고정.
+
+### B1 후속 작업 묶음
+- ADR 레이어: **PR-α** (ADR-013 신설 + ADR-010 patch) — 진행 중
+- 코드/UI: **PR-β** — `setLocklessStationPassed(false)` lock cleanup + 토글 레이블 "전체역 보기" 4언어 적용
+- acceptance 측정 양식: **PR-γ** (#1159) — `epic-1008-acceptance-result.template.md`
+
+### Epic C 단기 16건 / Epic C 풀 5건 sub-issue 정의 — **미진행**
+- 원본 SSOT 부재로 사전 정의 유실 (§3)
+- B 결정 확정됐으나 sub-issue 16+5건의 코드네임/scope는 별도 재정의 작업 필요
+- B2로 #844 PR B/C/D 귀속 결정됨 → Epic C 풀 5건 중 3건 자동 정의 가능 (PR B/C/D + 잔여 2건 새 정의)
 
 ## 5. 리스크 ↔ 대응 매핑 (R-1 ~ R-10)
 
@@ -115,14 +128,54 @@ ADR-008 Stage 4 Phase A+B 통합. **B2 결정(2026-06-11)으로 #844 잔여 PR B
 
 ## 7. Acceptance (epic close 조건)
 
-- [ ] 회귀 7개 1주 측정 0건 (회귀 목록 정의는 원본 유실 — Epic A 머지분 기준 재확정 필요)
+- [ ] 회귀 7개 1주 측정 0건 (정의는 §7.1)
 - [ ] R-1 ~ R-10 monitor 작동
 - [ ] ADR-011 머지
 - [ ] 추가 발견: A 카테고리 흡수 / B follow-up / C 별 epic (B14 룰 적용)
 
+### 7.1 회귀 7개 정의 (Epic A 머지분 기준 재확정, 2026-06-11)
+
+> 본 절은 §7 첫 번째 항목 "회귀 7개 1주 측정 0건"의 SSOT 정의. 원본 SSOT 부재로 Epic A 머지된 sub-issue 본문 + RC 매핑(§1) + alarmLog stamp(#1019) 기준으로 재구성.
+>
+> **선정 원칙**: Epic A에서 backend/client 코드 변경으로 **잘못된 발사 경로**를 봉합한 sub-issue만 포함. 측정 인프라(M1/M4/M7/M8) 및 운영성 개선(DL-B/DL-H)은 본 7개에서 제외 — 회귀 자체가 아니라 그 회귀를 측정하는 도구이기 때문.
+>
+> **회귀 번호**는 epic 본문에 등장하는 "회귀 #1~#7" 임의 식별자이며, GitHub issue 번호와 무관.
+
+| # | 회귀 패턴 (한 줄) | RC | 봉합 sub-issue | 검출 기준 (alarmLog reason — #1019 stamp) |
+| --- | --- | --- | --- | --- |
+| 1 | hydrate 직후 station-passed effect가 warmup 무시하고 즉시 발사 | RC2/RC4 보조 | #1010 | `fired` entry 중 `reason=station-passed` & hydrate 후 경과 시간 < 30s |
+| 2 | backend autoLockCandidate를 client가 무검증 채택 (origin 지난 trainCode hydrate) | RC2 | #1014 | `fired` entry 중 lock acceptance gate 실패 reason(`acceptance-direction-mismatch` / `acceptance-not-in-arrivals` / `acceptance-no-origin-dwell`)이 stamp되지 않은 hydrate 직후 발사 |
+| 3 | hydrate 직후 fusion backward jump를 forward-only 검증이 못 막아 옛 train으로 발사 | RC3 | #1015 | `fired` entry 중 `positionTrainResult.currentStation` index < `lock.boardingIdx` 시점 발사 (forward-only 위반) |
+| 4 | 지하/저정확도 GPS 게이트 3 hole 우회 (userLocation=null placeholder, accuracy>200m bypass, line-only check) | RC3 | #1016 | `fired` entry 중 `gps.userLocation==null` 또는 `gps.accuracy>200m`인데 lock 활성 + nextHops window 밖 station_id 발사 |
+| 5 | `trackTrainProgress` 자체에 forward-only 가드 없어 source 단에서 backward candidate 통과 | RC4 | #1017 | `fired` entry 중 candidate.currentStationIdx < boardingIdx에서 trackTrainProgress 결과로 발사 (source-level forward 위반) |
+| 6 | backend `attemptAutoLock`이 arvlCd=2 at next-waypoint을 무조건 채택해 origin 지난 train lock | RC1 | #1018 | BFF telemetry: `attemptAutoLock` 응답 중 confidence < threshold에서 trainCode 반환 (gate 우회). 또는 client 측 RC1 회귀 #2 패턴과 동시 등장 |
+| 7 | motion 권한 미부여/cold-start에서 motion warmup 부재로 phase gate 우회 → 잘못된 phase에서 발사 | H6 | #1013 | `fired` entry 중 `motion=undefined` & phase gate stamp 누락 & cold-start 후 < 60s positionStability fallback 미적용 |
+
+#### 측정 framework
+
+- **측정 출처**:
+  - **client**: production 빌드의 `alarmLog` `fired` entry + #1019 stamp된 reason 분포 (DebugModal `## Gates` 섹션)
+  - **backend (회귀 6 전용)**: Cloudflare Worker 로그 + `attemptAutoLock` confidence stamp (#1018에서 추가)
+- **수집 도구**:
+  - 1차: 운영자(본인)가 DebugModal `Share` 버튼으로 alarmLog JSON export → 로컬 집계 스크립트 (`scripts/`에 별도 PR로 추가 예정)
+  - 2차(이상치 검증): BFF telemetry는 #1022(M8) Cloudflare Worker quota dashboard에 회귀 6 카운터 1개 추가하는 follow-up으로 자동화
+- **검출 자동화**:
+  - 회귀 1~5, 7: client alarmLog `fired` reason + 컨텍스트 stamp만으로 판별 가능 (별도 인프라 불필요)
+  - 회귀 6: backend confidence gate 우회 카운터 — `R-1` monitor(§5)와 동일 출처
+- **기간**: 1주 연속 (production 빌드 사용 7일). 운영자 본인 1명 기준 (대규모 베타 부재). 1일 평균 trip 횟수 × 7 ≥ 10 trip 이상 누적 시 통계 신뢰성 충족으로 간주
+- **결과 기록**: 측정 종료 후 `tasks/epic-1008-acceptance-result.md` 별 파일에 회귀 #1~#7 카운트 + 트립 표본 수 + 0건 판정 여부 기록 후 본 epic close
+
+#### 비포함 항목 (왜 7개에 안 들어갔는지)
+
+- **H1 #1009 / H5 #1012** — 회귀 봉합이 아니라 진단 인프라/state machine. 측정 도구.
+- **H3' #1011** — `lastNotifiedStationId` destination scoping. 동일 station 재발사 가드이지만 회귀 #1 (warmup)과 trigger 조건이 중첩되어 별도 회귀로 카운트 시 double count. 회귀 #1 measurement에 흡수.
+- **M1/M4/M7/M8 (#1019~#1022)** — 측정/모니터. 회귀 자체가 아니라 본 §7.1의 검출 도구.
+- **DL-B/DL-H (#1023/#1024)** — 운영성(dedup window 확장, burst counter). 봉합이 아니라 운영 잡음 감소.
+
 ## 8. 변경 이력
 
 - 2026-06-11: 원본 부재 확인 후 GitHub 상태 기준 재구성 생성. Epic A 15/17. B1~B5/B14 미결.
+- 2026-06-11: §7.1 "회귀 7개 정의" 추가. Epic A 머지된 #1010/#1013/#1014/#1015/#1016/#1017/#1018 기준 회귀 패턴 + 검출 기준 + 측정 framework 명시 (PR `docs/#1008-epic-acceptance-regressions`).
 - 2026-06-11 (2차): H1(#1009) PR #1133 머지로 완료 → Epic A 16/17. B2 결정 완료 — #844 close(잔여 Epic C 풀 귀속), #922 close(E1 완료, Seam C deferred).
 - 2026-06-11 (3차): Seam C deferred 시나리오 → #1200 발행. 본 SSOT PR #1199로 dev 반영 진행.
-- 2026-06-11 (4차): B1/B3/B4/B5 결정 완료(전부 권장안 채택), B14 옵션 3 확정 → 결정 차단 항목 전체 해소. Epic C 단기 착수 가능.
+- 2026-06-11 (4차) 일괄 확정: §4 B1/B3/B4/B5/B14 결정 — C 토글 **유지+재정의** + 토글 OFF lock cleanup, #912 acceptance 재해석, 낙관적 UI, optional→required 승격, B 영역 follow-up. 코드/UI 반영은 PR-β (예정), ADR은 PR-α (`docs/adr-011-lockless-supplementation`), acceptance 양식은 PR-γ (#1159). 결정 차단 항목 전체 해소 → Epic C 단기 착수 가능.

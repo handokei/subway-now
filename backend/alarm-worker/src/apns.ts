@@ -9,6 +9,7 @@ import { importPKCS8, SignJWT } from 'jose';
 import type { AlarmPhase } from './alarm';
 import type {
   BoardingPromptPushPayload,
+  RescheduleChannel,
   ReschedulePushPayload,
   TripEndedPushPayload,
   TripEndedReason,
@@ -198,6 +199,12 @@ export interface SendReschedulePushOptions {
   host: string;
   fetchImpl?: typeof fetch;
   now?: number;
+  /**
+   * #918 A3 PR4 — 정정 대상 scheduler 채널. 미지정 시 구 backend 동작 보존
+   * (`channels` 필드를 payload에서 omit → 클라가 `['bl']` 단독으로 해석).
+   * 신규 호출자(maybeReschedulePush)는 `RESCHEDULE_CHANNELS_DEFAULT`(['bl','tba'])를 넘긴다.
+   */
+  channels?: ReadonlyArray<RescheduleChannel>;
 }
 
 export async function sendReschedulePush(
@@ -214,6 +221,8 @@ export async function sendReschedulePush(
     nextStation: options.nextStation,
     newArrivalTimeEpoch: options.newArrivalTimeEpoch,
     sentAt: options.sentAt,
+    // channels 미지정 시 wire에 필드를 넣지 않음 — 구 backend payload와 byte-level 호환.
+    ...(options.channels !== undefined ? { channels: options.channels } : {}),
   };
 
   const body = JSON.stringify({ aps: { 'content-available': 1 }, data: payload });

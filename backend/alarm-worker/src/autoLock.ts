@@ -25,8 +25,15 @@
 import { pickAutoTrainCode } from './boardingPrompt';
 import { matchLine, subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
+import { METRIC_KIND, writeMetricDataPoints, type HistogramMetric } from './metrics';
 import type { SeoulArrivalClient } from './seoul';
-import type { BoardingLockMeta, BoardingPromptState, Trip, Waypoint } from './types';
+import type {
+  AnalyticsEngineWriter,
+  BoardingLockMeta,
+  BoardingPromptState,
+  Trip,
+  Waypoint,
+} from './types';
 
 /**
  * 자동 lock의 TTL. lockSwap의 `SWAP_LOCK_TTL_MS`와 동일 30분 — 두 흐름 모두 "사용자 명시
@@ -102,23 +109,55 @@ export interface AttemptAutoLockInputs {
 }
 
 /**
+ * #1171 — RC1 confidence gate 평가 결과를 caller에게 노출하는 trace.
+ *
+ * `attemptAutoLock`이 confidence를 산출했을 때만 set (arvlCd=2 branch). 다른 경로
+ * (subwayId 누락, ambiguity, arvlCd!=2)에서는 undefined. caller는 본 값을 받아
+ * `metrics.autoLockConfidenceBreakdown` histogram에 적재해 운영 분포를 측정한다.
+ *
+ * threshold 튜닝은 본 측정 데이터(1주 운영)로 별도 PR에서 결정한다 — 본 PR은 측정
+ * 인프라만 추가하고 임계값(`AUTO_LOCK_CONFIDENCE_THRESHOLD=2`)은 변경하지 않는다.
+ */
+export interface AutoLockConfidenceTrace {
+  /** RC1 confidence 점수 (0~4). */
+  score: number;
+  /** threshold 통과 여부 (`score >= AUTO_LOCK_CONFIDENCE_THRESHOLD`). */
+  passed: boolean;
+}
+
+/**
+ * #1171 — attemptAutoLock 결과 + confidence trace.
+ *
+ * 기존 nullable return을 wrapping해 caller가 confidence 분포를 적재할 수 있게 한다.
+ * `lock`이 null이고 `confidenceTrace`가 set이면 RC1 gate가 차단한 케이스 (분포 측정 대상).
+ * `lock`이 null이고 `confidenceTrace`가 undefined면 다른 원인의 실패 (subwayId 등).
+ */
+export interface AutoLockAttemptResult {
+  lock: BoardingLockMeta | null;
+  confidenceTrace?: AutoLockConfidenceTrace;
+}
+
+/**
  * lockMissing trip에 대해 trainCode 자동 결정 시도.
  *
- * 성공 (return non-null):
+ * 성공 (`result.lock` non-null):
  *  - subwayId 매핑 성공
  *  - segmentStations 비어있지 않음 (origin + 같은 line 유지 구간)
  *  - arrivals 비어있지 않음
  *  - `pickAutoTrainCode`가 단일 후보로 수렴 (ambiguity 없음)
  *  - RC1 confidence gate 통과 (선택 trainCode의 arvlCd=2인 경우만 평가)
  *
- * 실패 (return null):
+ * 실패 (`result.lock` null):
  *  - 위 중 하나라도 실패 → caller가 기존 boarding-prompt push fallback 진행
+ *
+ * RC1 confidence gate가 평가된 경우(arvlCd=2 branch)에 한해 `result.confidenceTrace`가 set된다.
+ * caller는 이 값을 `metrics.autoLockConfidenceBreakdown` histogram에 적재한다 (#1171).
  *
  * 본 함수는 KV I/O를 하지 않는다 (순수 pipeline). caller가 결과를 trip에 stamp + putTrip.
  */
 export async function attemptAutoLock(
   inputs: AttemptAutoLockInputs,
-): Promise<BoardingLockMeta | null> {
+): Promise<AutoLockAttemptResult> {
   const {
     trip,
     targetWaypoint,
@@ -131,10 +170,10 @@ export async function attemptAutoLock(
   } = inputs;
   const line = targetWaypoint.line;
   const subwayId = subwayIdForLine(line);
-  if (!subwayId) return null;
+  if (!subwayId) return { lock: null };
 
   const legStations = buildLegSegmentStations(trip.waypoints, line);
-  if (legStations.length === 0) return null;
+  if (legStations.length === 0) return { lock: null };
   // origin은 leg의 시작점 — positions fallback이 train.stationName === origin인 케이스를
   // segmentStations.indexOf로 찾을 수 있도록 prepend. legStations 첫 원소(=waypoints[0])와
   // 중복되지 않게 dedup 한다 (이론상 origin과 waypoints[0]는 서로 다른 역이어야 하지만 방어).
@@ -142,17 +181,18 @@ export async function attemptAutoLock(
     legStations[0] === originStation ? legStations : [originStation, ...legStations];
 
   const arrivals = await seoul.fetchArrivals(targetWaypoint.stationName);
-  if (arrivals.length === 0) return null;
+  if (arrivals.length === 0) return { lock: null };
 
   const trainCode = pickAutoTrainCode(arrivals, line, direction);
-  if (!trainCode) return null;
+  if (!trainCode) return { lock: null };
 
   // #1018 RC1 confidence gate — arvlCd=2(출발) at next-waypoint는 사용자가 이미 그 열차를
   // 타고 origin을 떠났거나, 반대로 그 열차가 사용자보다 먼저 출발했을 수 있다 (origin-pass 후보).
   // 추가 신호로 confidence를 합산해 임계 미달 시 null 반환 → prompt push fallback.
   const chosenEntry = arrivals.find((a) => a.trainCode === trainCode);
+  let confidenceTrace: AutoLockConfidenceTrace | undefined;
   if (chosenEntry?.arvlCd === ARVL_CD_DEPARTED) {
-    const confidence = await computeConfidence({
+    const score = await computeConfidence({
       trainCode,
       line,
       originStation,
@@ -161,10 +201,14 @@ export async function attemptAutoLock(
       lastMotionAt,
       now,
     });
-    if (confidence < AUTO_LOCK_CONFIDENCE_THRESHOLD) return null;
+    const passed = score >= AUTO_LOCK_CONFIDENCE_THRESHOLD;
+    // #1171 — trace는 통과/차단 양쪽 모두 set. caller가 분포 히스토그램에 적재해
+    // 1주 운영 후 threshold 튜닝 근거로 사용한다.
+    confidenceTrace = { score, passed };
+    if (!passed) return { lock: null, confidenceTrace };
   }
 
-  return {
+  const lock: BoardingLockMeta = {
     trainCode,
     line,
     subwayId,
@@ -175,6 +219,30 @@ export async function attemptAutoLock(
     // 케이스에서 existing lock을 보존할지 판단하는 마커 (사용자 명시 lock과 구분).
     autoLockedAt: now,
   };
+  return { lock, confidenceTrace };
+}
+
+/**
+ * #1171 — confidence score 한 건을 AE에 histogram sample로 적재.
+ *
+ * 호출자는 `attemptAutoLock`이 반환한 `confidenceTrace.score`를 그대로 전달한다.
+ * trace가 undefined인 경우(arvlCd!=2로 gate 미평가, 또는 더 이른 실패)는 호출 자체를
+ * skip해야 한다 — 표본 오염 방지.
+ *
+ * `writeMetricDataPoints`가 0값을 skip하므로 score=0 sample은 적재되지 않는다.
+ * 0점 분포 자체를 측정하려면 perf-report 측이 total - (1+2+3+4)로 역산한다 — 본 PR은
+ * 최소 변경 원칙으로 기존 schema 유지.
+ */
+export function recordAutoLockConfidence(
+  writer: AnalyticsEngineWriter,
+  token: string,
+  trace: AutoLockConfidenceTrace,
+): void {
+  const histogram: HistogramMetric = {
+    kind: METRIC_KIND.AUTO_LOCK_CONFIDENCE_BREAKDOWN,
+    samples: [trace.score],
+  };
+  writeMetricDataPoints(writer, token, histogram);
 }
 
 interface ComputeConfidenceInputs {

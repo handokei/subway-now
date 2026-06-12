@@ -12,7 +12,11 @@ import {
   type SendPushResult,
 } from './apns';
 import { flipApnsEnv, pickApnsHost } from './apnsHost';
-import { attemptAutoLock, AUTO_PROMPT_DEDUP_WINDOW_MS } from './autoLock';
+import {
+  attemptAutoLock,
+  AUTO_PROMPT_DEDUP_WINDOW_MS,
+  recordAutoLockConfidence,
+} from './autoLock';
 import {
   evaluateBoardingPromptGates,
   markPromptFired,
@@ -53,6 +57,7 @@ import type {
   Trip,
   Waypoint,
 } from './types';
+import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -1150,6 +1155,9 @@ export async function maybeReschedulePush(
         host,
         fetchImpl: deps.fetchImpl,
         now,
+        // #918 A3 PR4 — `bl:` + `tba:` 동시 정정. 구 backend 호환을 위해 채널 상수는
+        // types.ts 단일 SSOT (RESCHEDULE_CHANNELS_DEFAULT)에서 import.
+        channels: RESCHEDULE_CHANNELS_DEFAULT,
       }),
     trip.apnsEnv,
     deps.apnsHosts,
@@ -1516,7 +1524,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
   // 자연 교체. boardingPromptState도 함께 fired stamp해 같은 cycle에서 prompt 발사를 차단.
   const targetWaypoint = pickActiveWaypoint(trip);
   if (targetWaypoint) {
-    const autoLock = await attemptAutoLock({
+    const autoLockResult = await attemptAutoLock({
       trip,
       targetWaypoint,
       originStation: display.originStation,
@@ -1527,6 +1535,13 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       boardingPromptState: trip.boardingPromptState,
       lastMotionAt: fusion.series[fusion.series.length - 1]?.ts,
     });
+    // #1171 — RC1 confidence gate가 평가된 경우(arvlCd=2 branch) score 분포를 AE에 적재.
+    // 1주 운영 후 본 분포로 AUTO_LOCK_CONFIDENCE_THRESHOLD 튜닝 결정.
+    // gate 미평가 케이스(arvlCd!=2 / 더 이른 실패)는 trace undefined → skip.
+    if (autoLockResult.confidenceTrace && env.TELEMETRY) {
+      recordAutoLockConfidence(env.TELEMETRY, trip.token, autoLockResult.confidenceTrace);
+    }
+    const autoLock = autoLockResult.lock;
     if (autoLock) {
       trip.boardingLock = autoLock;
       trip.boardingPromptState = markPromptFired(now);

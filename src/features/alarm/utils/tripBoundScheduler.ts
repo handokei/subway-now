@@ -1,11 +1,13 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
-import { ALARM_PHASES, type AlarmPhaseId } from './alarmPhases';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ALARM_PHASES, type AlarmPhase, type AlarmPhaseId } from './alarmPhases';
 import { alarmKey, resolveAllTargets, type AlarmEvent } from './stationAlarm';
 import { buildAlarmContent } from './stationNotification';
 import type { AlarmType } from '../../../shared/types/alarm';
 import { isSameStationName, type Route } from '../../../shared/utils/stationRoute';
 import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
+import { TRIP_BOUND_ROUTE_SIG_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 import { recordScheduledAlarm } from './prescheduledMetrics';
 
@@ -29,8 +31,20 @@ const PHASE_INTERRUPTION: Record<AlarmPhaseId, 'active' | 'timeSensitive'> = {
 /** Android channel id — stationNotification / alarmScheduler / boardingLockScheduler와 동일. */
 const ALARM_CHANNEL_ID = 'station-alarm';
 
-/** imminent phase 고정 lead(ms) — 도착 10초 전. early는 입력 `estimatedHopTimesMs[i]`를 그대로 사용. */
-const IMMINENT_LEAD_MS = 10_000;
+// imminent lead 정책은 `alarmPhases.ts`의 `phase.getLeadMs(hopMs)`에 인코딩됨 (#1194).
+
+/**
+ * #918 A3 PR3 — rolling window 64 cap 회피용 윈도우 크기 (stop 단위).
+ *
+ * iOS는 앱당 pending local notification 64개 한도. 한 stop당 (early, imminent) 2개씩 예약되므로
+ * `TRIPBOUND_WINDOW_SIZE * 2`가 tba: 채널이 OS 큐에서 점유하는 상한이다. 20 stop으로 둔 이유:
+ *  - tba: 40개 + bl: 채널 6~8개(현재 windowSize 3 × 2 phase, 다음 leg 진입 시 일시적 중복 포함)
+ *    + 시스템(silent push delivery 1~2건) ≈ 50개 — 64 cap 안쪽 안전 마진.
+ *  - 평균 trip 길이(서울 1~9호선 30~40 stop) 대비 절반 이상 커버해, 사용자 통과 1회당 top-up 1회로
+ *    rolling이 매끄럽게 진행된다 — 너무 작으면(예: 5) top-up이 매역 발생해 storage I/O 부담.
+ *  - 64 cap에 너무 가까우면(예: 30) bl: 채널이 lock 전환기에 일시적으로 부풀 때 cap 초과 위험.
+ */
+export const TRIPBOUND_WINDOW_SIZE = 20;
 
 /**
  * 사전 예약 대상 단일 stop. lock-free — boarding lock 메타에 의존하지 않고,
@@ -57,12 +71,77 @@ export interface PrescheduleParams {
   estimatedHopTimesMs: ReadonlyArray<number>;
   /** 누적의 기준점. trip 등록 시각(ms epoch). */
   startTime: number;
+  /**
+   * #918 A3 PR3 — rolling window. 예약할 stop 개수 상한. 미지정이면 routeStops 전체.
+   * `startTime` 누적은 항상 routeStops[0]부터 시작하므로 windowSize는 "앞에서 N개만 예약"으로
+   * 동작한다. 매역 통과 시 `topUpTripBoundWindow`가 다음 N개로 rolling.
+   */
+  windowSize?: number;
+  /**
+   * #918 A3 PR3 — top-up 진입점용. 누적은 routeStops[0]부터 진행하되, 실제 OS schedule은
+   * `startStopIndex` 이상인 stop에만 호출한다 (그 이전 stop은 이미 cancel됨).
+   * 미지정이면 0. 호출자(topUpTripBoundWindow)는 passedIndex+1을 넘긴다.
+   *
+   * 이 옵션을 두는 이유: top-up도 fire 시각을 같은 startTime + 누적 hop으로 산출해야
+   * 초기 preschedule과 정확히 동일한 fire 시각을 보장한다. 그렇지 않으면 매역 통과마다
+   * 누적 오차가 쌓여 imminent가 실제 도착 시각과 어긋난다.
+   */
+  startStopIndex?: number;
 }
 
 export interface ScheduledTripBoundAlarm {
   identifier: string;
   event: AlarmEvent;
   fireDate: Date;
+}
+
+/**
+ * 단일 (stop, phase) OS local notification 1건 예약 primitive.
+ *
+ * 가드는 일절 갖지 않는다 — 호출자가 fireMs 가드(과거 시각 / trip 도메인 trivial 등)를 결정한
+ * 뒤 호출한다. identifier 충돌 회피를 위해 `occurrenceIdx ≥ 1`이면 `:n` suffix가 붙는다
+ * (`prescheduleStationAlerts`의 같은-역-중복 등장 로직과 동일 규약).
+ *
+ * `prescheduleStationAlerts`와 `rescheduleTripBoundAlarm` 양쪽에서 공통 사용 — 한쪽이 누적
+ * `startTime` 모델, 다른 쪽이 `arrivalMs` 직접 지정 모델로 다른 도메인이지만 OS 큐 등록 책임은
+ * 동일하다. 그 책임만 primitive에 둔다.
+ *
+ * 실패 시 caller로 throw (alarmScheduler 정책 일치). `recordScheduledAlarm`은 graceful 내부 처리.
+ */
+async function scheduleStopPhase(params: {
+  phase: AlarmPhase;
+  stop: TripBoundStop;
+  fireMs: number;
+  occurrenceIdx: number;
+}): Promise<ScheduledTripBoundAlarm> {
+  const { phase, stop, fireMs, occurrenceIdx } = params;
+  const event: AlarmEvent = {
+    phaseId: phase.id,
+    type: stop.alarmType,
+    stationName: stop.stationName,
+  };
+  const baseId = tripBoundAlarmIdentifier(event);
+  const identifier = occurrenceIdx === 0 ? baseId : `${baseId}:${occurrenceIdx}`;
+  const fireDate = new Date(fireMs);
+  const { title, body } = buildAlarmContent(event);
+
+  await Notifications.scheduleNotificationAsync({
+    identifier,
+    content: {
+      title,
+      body,
+      sound: 'alarm.wav',
+      ...(Platform.OS === 'android' && {
+        channelId: ALARM_CHANNEL_ID,
+        priority: Notifications.AndroidNotificationPriority.MAX,
+      }),
+      ...(Platform.OS === 'ios' && { interruptionLevel: PHASE_INTERRUPTION[phase.id] }),
+    },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: fireDate },
+  });
+
+  await recordScheduledAlarm({ identifier, scheduledFireMs: fireMs });
+  return { identifier, event, fireDate };
 }
 
 /**
@@ -80,7 +159,7 @@ export interface ScheduledTripBoundAlarm {
 export async function prescheduleStationAlerts(
   params: PrescheduleParams,
 ): Promise<ScheduledTripBoundAlarm[]> {
-  const { routeStops, estimatedHopTimesMs, startTime } = params;
+  const { routeStops, estimatedHopTimesMs, startTime, windowSize, startStopIndex = 0 } = params;
 
   if (routeStops.length !== estimatedHopTimesMs.length) {
     logger.warn(
@@ -91,6 +170,15 @@ export async function prescheduleStationAlerts(
   if (routeStops.length === 0) {
     return [];
   }
+
+  // window 상한 — 미지정이면 전체. 호출자가 명시한 음수/0이면 0 stop schedule(자연스럽게 no-op).
+  // startStopIndex 음수 입력은 0으로 clamp — caller(top-up) bug 흡수.
+  const effectiveStartIndex = startStopIndex < 0 ? 0 : startStopIndex;
+  const effectiveWindowSize = windowSize === undefined ? routeStops.length : windowSize;
+  const scheduleEndIndex = Math.min(
+    routeStops.length,
+    effectiveStartIndex + Math.max(0, effectiveWindowSize),
+  );
 
   const scheduled: ScheduledTripBoundAlarm[] = [];
   let cumulativeMs = startTime;
@@ -115,47 +203,29 @@ export async function prescheduleStationAlerts(
     const stop = routeStops[i];
 
     for (const phase of ALARM_PHASES) {
-      const leadMs = phase.id === 'early' ? hopMs : IMMINENT_LEAD_MS;
+      const leadMs = phase.getLeadMs(hopMs);
       const fireMs = cumulativeMs - leadMs;
       // startTime 기준 + 실제 wall-clock 기준 두 조건 모두 통과해야 등록.
       if (fireMs <= startTime || fireMs <= nowMs) continue;
 
-      const event: AlarmEvent = {
-        phaseId: phase.id,
-        type: stop.alarmType,
-        stationName: stop.stationName,
-      };
-      const baseId = tripBoundAlarmIdentifier(event);
+      // 같은 station이 route 안에 중복 등장하는 경우, identifier 충돌을 피하기 위해 occurrence 누적은
+      // 윈도우 밖 stop에서도 진행해야 한다 (초기 preschedule과 top-up 호출에서 동일 identifier 산출 보장).
       const occKey = `${phase.id}:${stop.stationName}`;
       const occIdx = phaseStationOccurrence.get(occKey) ?? 0;
       phaseStationOccurrence.set(occKey, occIdx + 1);
-      // 첫 등장은 base identifier 유지 (호환), 두 번째 이상은 :n suffix로 unique.
-      const identifier = occIdx === 0 ? baseId : `${baseId}:${occIdx}`;
-      const fireDate = new Date(fireMs);
-      const { title, body } = buildAlarmContent(event);
 
-      // scheduleNotificationAsync가 throw하면 caller로 전파 — alarmScheduler 정책 일치.
-      await Notifications.scheduleNotificationAsync({
-        identifier,
-        content: {
-          title,
-          body,
-          sound: 'alarm.wav',
-          ...(Platform.OS === 'android' && {
-            channelId: ALARM_CHANNEL_ID,
-            priority: Notifications.AndroidNotificationPriority.MAX,
-          }),
-          ...(Platform.OS === 'ios' && { interruptionLevel: PHASE_INTERRUPTION[phase.id] }),
-        },
-        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: fireDate },
+      // 윈도우 밖 stop은 누적/occurrence 진행만, OS schedule은 skip — fire 시각/identifier 정렬 보존.
+      if (i < effectiveStartIndex || i >= scheduleEndIndex) continue;
+
+      // 가드 통과한 (stop, phase)는 primitive에 위임. ledger 적재 + identifier 결정도 primitive 책임.
+      // 첫 등장은 base identifier 유지(호환), 두 번째 이상은 occIdx ≥ 1로 :n suffix가 붙는다.
+      const scheduledAlarm = await scheduleStopPhase({
+        phase,
+        stop,
+        fireMs,
+        occurrenceIdx: occIdx,
       });
-
-      scheduled.push({ identifier, event, fireDate });
-      // #918 A3 measurement — ledger에 적재해 trip 종료 시 fire delta / miss rate / station 정확도 산출.
-      // 실패는 graceful (prescheduledMetrics 내부에서 try/catch — schedule 흐름 차단 안 함).
-      // 순차 await — 동시 RMW가 서로 덮어쓰는 race 차단. 30+ 역 trip 1회 약 ~100-300ms 추가지만
-      // 사전 예약은 trip 시작 시 1회만 발생하는 oneshot이라 허용.
-      await recordScheduledAlarm({ identifier, scheduledFireMs: fireMs });
+      scheduled.push(scheduledAlarm);
     }
   }
 
@@ -170,13 +240,70 @@ export async function prescheduleStationAlerts(
 }
 
 /**
- * identifier 형식: `tba:${phaseId}:${stationName}`.
+ * identifier 형식: `tba:${phaseId}:${stationName}` 또는 같은 (phaseId, stationName) 중복 시
+ * `tba:${phaseId}:${stationName}:${n}` (n ≥ 1).
  * alarmScheduler의 `alarm:` prefix와 분리해 trip-bound 사전 예약만 식별/취소한다.
  */
 export function tripBoundAlarmIdentifier(
   event: Pick<AlarmEvent, 'phaseId' | 'stationName'>,
 ): string {
   return `${TRIP_BOUND_ALARM_PREFIX}${alarmKey(event)}`;
+}
+
+export interface ParsedTripBoundAlarmIdentifier {
+  phaseId: string;
+  stationName: string;
+}
+
+/**
+ * `tripBoundAlarmIdentifier()`의 역연산 (#918 A3 PR2). prefix 매칭 + phaseId/stationName 분리.
+ * 같은 station이 route 안에 두 번 등장해 `:n` occurrence suffix가 붙은 경우(`prescheduleStationAlerts`
+ * 내부 로직)에도 station name 안에 콜론이 합쳐진 채 반환된다 — 이후 waypoint 매칭 단계에서 자연스럽게
+ * mismatch로 떨어지므로 별도 후처리는 불필요(재검증 안전).
+ *
+ * prefix가 다르거나 phaseId/stationName이 비어 있으면 null.
+ */
+export function parseTripBoundAlarmIdentifier(
+  identifier: string,
+): ParsedTripBoundAlarmIdentifier | null {
+  if (!identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) return null;
+  const rest = identifier.slice(TRIP_BOUND_ALARM_PREFIX.length);
+  const colon = rest.indexOf(':');
+  if (colon <= 0) return null;
+  const stationName = rest.slice(colon + 1);
+  if (!stationName) return null;
+  return { phaseId: rest.slice(0, colon), stationName };
+}
+
+/**
+ * #918 A3 PR2 (#729 흡수) — preschedule 시점의 route signature 영속화 SSOT.
+ * useTripBoundAlarmScheduler가 preschedule 성공 직후 1회 write하고, cancel 시 clear한다.
+ * scheduledAlarmReceiver가 fire 시점에 *현재* sig와 비교해 stale 알람을 식별한다.
+ *
+ * 모든 함수는 graceful — storage 실패는 측정 정확도만 영향, 본 흐름 무관.
+ */
+export async function setRegisteredTripRouteSig(sig: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(TRIP_BOUND_ROUTE_SIG_KEY, sig);
+  } catch {
+    // graceful — 다음 preschedule cycle에서 재시도.
+  }
+}
+
+export async function getRegisteredTripRouteSig(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(TRIP_BOUND_ROUTE_SIG_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export async function clearRegisteredTripRouteSig(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(TRIP_BOUND_ROUTE_SIG_KEY);
+  } catch {
+    // graceful.
+  }
 }
 
 /**
@@ -233,6 +360,216 @@ function legSecondsForHop(
   return route.secondsAfterLastTransfer;
 }
 
+export interface TopUpTripBoundWindowParams extends PrescheduleParams {
+  /**
+   * Fusion 등에서 통과 보고된 stop의 stationName. routeStops에 존재해야 effect 발생.
+   * resolveAllTargets canonical name 기준 — caller가 `isSameStationName`으로 매칭해 넘긴다.
+   */
+  passedStationName: string;
+}
+
+export interface TopUpTripBoundWindowResult {
+  cancelled: number;
+  scheduled: number;
+}
+
+/**
+ * #918 A3 PR3 — rolling window top-up.
+ *
+ * Fusion이 새 stop을 통과 보고하면 호출. 통과한 stop과 그 이전 stop의 사전 예약 알람을 cancel하고,
+ * `[passedIndex+1, passedIndex+1+windowSize)` 범위에서 큐에 없는 hop을 채워 예약한다.
+ *
+ * `boardingLockScheduler.advanceHopWindow`와 동일 패턴 — lock-free trip-bound 예약 채널에 적용.
+ * iOS 64 pending notification cap을 회피하기 위해 한 번에 큐에 두는 stop 수를 `windowSize` 이하로
+ * 유지한다(기본 {@link TRIPBOUND_WINDOW_SIZE}).
+ *
+ * - `passedStationName`이 routeStops에 없으면 no-op (no-cancel, no-schedule).
+ * - 큐가 이미 정확한 윈도우 상태면 cancel 0건 + schedule은 idempotent overwrite로 진행되지만
+ *   호출이 빈번하면 OS 부하 — 호출자가 직전 passedStationName을 기억해 중복 호출을 차단해야 한다
+ *   (`useTripBoundAlarmScheduler` 책임).
+ * - FG resume 시 같은 함수로 진입 가능 — passedStationName이 가장 최근 통과한 stop이면 동작 일관.
+ */
+export async function topUpTripBoundWindow(
+  params: TopUpTripBoundWindowParams,
+): Promise<TopUpTripBoundWindowResult> {
+  const {
+    routeStops,
+    estimatedHopTimesMs,
+    startTime,
+    passedStationName,
+    windowSize = TRIPBOUND_WINDOW_SIZE,
+  } = params;
+
+  if (routeStops.length === 0) {
+    return { cancelled: 0, scheduled: 0 };
+  }
+
+  const passedIndex = routeStops.findIndex((s) => s.stationName === passedStationName);
+  if (passedIndex === -1) {
+    return { cancelled: 0, scheduled: 0 };
+  }
+
+  // 새 윈도우 범위 = [nextStartIndex, nextEndIndex).
+  const nextStartIndex = passedIndex + 1;
+  const nextEndIndex = Math.min(routeStops.length, nextStartIndex + windowSize);
+
+  // 이미 큐에 있는 `tba:` 알람 중 새 윈도우 밖에 해당하는 것만 cancel.
+  // routeStops[i]의 stationName이 윈도우 안에 있는지 빠르게 판별하기 위한 set.
+  const inWindowStationNames = new Set<string>();
+  for (let i = nextStartIndex; i < nextEndIndex; i++) {
+    inWindowStationNames.add(routeStops[i].stationName);
+  }
+
+  const all = await Notifications.getAllScheduledNotificationsAsync();
+  let cancelled = 0;
+  for (const req of all) {
+    if (!req.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) continue;
+    const parsed = parseTripBoundAlarmIdentifier(req.identifier);
+    if (parsed === null) continue;
+    // occurrence suffix가 붙은 경우 stationName에 ":n"이 포함된다 — 그래도 set lookup으로 mismatch 시
+    // cancel 처리되므로 새 윈도우의 첫 등장 알람과 충돌하지 않는다.
+    if (!inWindowStationNames.has(parsed.stationName)) {
+      await Notifications.cancelScheduledNotificationAsync(req.identifier);
+      cancelled++;
+    }
+  }
+
+  // 윈도우 안 stop 예약 — idempotent overwrite. 누적 startTime 기반이라 fire 시각은 초기 preschedule과 동일.
+  const scheduledAlarms = await prescheduleStationAlerts({
+    routeStops,
+    estimatedHopTimesMs,
+    startTime,
+    startStopIndex: nextStartIndex,
+    windowSize,
+  });
+
+  logger.info(
+    `topUp passedIndex=${passedIndex} window=[${nextStartIndex},${nextEndIndex}) cancelled=${cancelled} scheduled=${scheduledAlarms.length}`,
+  );
+  return { cancelled, scheduled: scheduledAlarms.length };
+}
+
+export interface RescheduleTripBoundAlarmParams {
+  /** 정정 대상 stop의 canonical 역명 (silent push payload.nextStation과 동일 비교). */
+  stationName: string;
+  /** 새 도착 시각 (epoch ms). past-time이면 graceful no-op. */
+  newArrivalMs: number;
+  /**
+   * 현재 trip의 route. 직접/환승/다중환승 어떤 형태든 — `deriveTripBoundStops`로 평탄화한다.
+   * null이면 no-op (silent push 도달 시점에 client storage가 클리어된 race).
+   */
+  route: Route | null;
+  /**
+   * 현재 destination name. trip-bound stop 시퀀스의 마지막 waypoint.
+   * null이면 no-op (race로 destination이 이미 클리어된 경우).
+   */
+  destinationName: string | null;
+  /**
+   * 현 시각 (epoch ms). past-time 가드용. 미지정 시 Date.now().
+   * (테스트가 결정적 결과를 얻기 위해 주입.)
+   */
+  now?: number;
+}
+
+export interface RescheduleTripBoundAlarmResult {
+  cancelled: number;
+  scheduled: number;
+}
+
+/**
+ * #918 A3 PR4 — `tba:` 채널 단일 hop 정정.
+ *
+ * Backend가 보낸 reschedule silent push(`channels`에 'tba' 포함)를 받아 사전 예약된
+ * 해당 stop의 `tba:` 알람(both phases)을 cancel하고 newArrivalMs 기준으로 재예약한다.
+ *
+ * `boardingLockScheduler.rescheduleHopForLock`의 lock-free 사촌 — `trainCode` 매칭 대신
+ * stationName으로 routeStops에서 hop index를 찾는다.
+ *
+ *   - past-time 가드: newArrivalMs ≤ now이면 cancel + reschedule 모두 skip
+ *     (이미 지난 시각으로 OS에 들어가면 즉시 발사 — 잘못된 burst 차단).
+ *   - stationName이 routeStops에 없으면 graceful no-op (정정 신호 폐기).
+ *   - route/destinationName이 null이면 graceful no-op.
+ *
+ * **알려진 한계** (#918 A3 PR4 스코프):
+ *   - 같은 stationName이 route에 중복 등장(순환선/회차)하는 경우 본 함수는 *모든* occurrence를
+ *     cancel하되 base identifier(`occurrenceIdx=0`) 1개만 재생성한다. `:n` suffix 알람을
+ *     cancel하지 못해 stale fire 위험이 있으므로 PR4는 단순/환승 trip만 지원하고 중복역
+ *     trip은 후속 이슈에서 occurrence 인덱스 명시 정정 규약으로 다룬다.
+ *   - rolling window(`TRIPBOUND_WINDOW_SIZE`) 밖 stop에 대해서도 본 함수는 무조건 OS 큐에
+ *     예약을 push한다. 호출자(silentPushTask)는 backend payload에서 윈도우 안 stop에
+ *     해당하는 정정 신호만 본 함수로 전달해야 한다 (윈도우 invariant 유지 책임은 caller).
+ *
+ * OS API(`cancelScheduledNotificationAsync` / `getAllScheduledNotificationsAsync`)와
+ * `scheduleStopPhase`(내부 `scheduleNotificationAsync`)는 throw 가능 — 호출자(silentPushTask)가
+ * try/catch로 silent push handler crash를 차단한다 (alarmScheduler 정책과 일치).
+ */
+export async function rescheduleTripBoundAlarm(
+  params: RescheduleTripBoundAlarmParams,
+): Promise<RescheduleTripBoundAlarmResult> {
+  const { stationName, newArrivalMs, route, destinationName } = params;
+  const nowMs = params.now ?? Date.now();
+
+  if (newArrivalMs <= nowMs) {
+    logger.info(
+      `reschedule skip: past-time newArrivalMs=${newArrivalMs} now=${nowMs} station=${stationName}`,
+    );
+    return { cancelled: 0, scheduled: 0 };
+  }
+  if (!route || !destinationName) {
+    logger.info(
+      `reschedule skip: route=${route ? 'ok' : 'null'} destination=${destinationName ?? 'null'}`,
+    );
+    return { cancelled: 0, scheduled: 0 };
+  }
+
+  const { routeStops, estimatedHopTimesMs } = deriveTripBoundStops(route, destinationName);
+  const targetIndex = routeStops.findIndex((s) => isSameStationName(s.stationName, stationName));
+  if (targetIndex === -1) {
+    logger.info(`reschedule no-op: ${stationName} not found in routeStops`);
+    return { cancelled: 0, scheduled: 0 };
+  }
+
+  // 기존 `tba:` 알람 중 해당 stationName의 것만 cancel.
+  // canonical name으로 cancel 매칭 — routeStops[targetIndex].stationName과 OS 큐 id를 직접 비교.
+  const canonicalName = routeStops[targetIndex].stationName;
+  const all = await Notifications.getAllScheduledNotificationsAsync();
+  let cancelled = 0;
+  for (const req of all) {
+    if (!req.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) continue;
+    const parsed = parseTripBoundAlarmIdentifier(req.identifier);
+    if (parsed === null) continue;
+    if (parsed.stationName === canonicalName) {
+      await Notifications.cancelScheduledNotificationAsync(req.identifier);
+      cancelled++;
+    }
+  }
+
+  // 재예약 — newArrivalMs를 두 phase의 절대 도착 시각으로 직접 사용.
+  // prescheduleStationAlerts 누적 모델(startTime + Σhop)을 거치지 않으므로 단일 stop을
+  // 위해 startTime을 역산할 필요가 없다 (역산 시 early phase의 fireMs == startTime이 되어
+  // 누적 모델의 `fireMs <= startTime` 가드에 정확히 걸려 silent drop되던 회귀 차단).
+  //
+  // 가드: nowMs 단일 — 정정 push 도착 시점 기준으로 과거 시각만 차단. trip 시작 trivial 가드
+  // (cumulative 모델의 startTime 가드)는 본 시나리오와 무관 — newArrivalMs는 stop의 새 도착
+  // 시각으로 backend가 보내 준 값이지 trip의 출발 시각이 아니다.
+  // hopMs는 deriveTripBoundStops가 HOP_TIME_MS fallback을 보장 — 본 함수에선 별도 가드 없이 사용.
+  const hopMs = estimatedHopTimesMs[targetIndex];
+  const stop = routeStops[targetIndex];
+  let scheduled = 0;
+  for (const phase of ALARM_PHASES) {
+    const leadMs = phase.getLeadMs(hopMs);
+    const fireMs = newArrivalMs - leadMs;
+    if (fireMs <= nowMs) continue;
+    await scheduleStopPhase({ phase, stop, fireMs, occurrenceIdx: 0 });
+    scheduled++;
+  }
+
+  logger.info(
+    `reschedule done: station=${canonicalName} cancelled=${cancelled} scheduled=${scheduled} newArrivalMs=${newArrivalMs}`,
+  );
+  return { cancelled, scheduled };
+}
+
 /**
  * trip 종료(release / 목적지 도착 / 사용자 취소) 시 호출 — `tba:` prefix를 가진 모든 사전
  * 예약 알람을 OS 큐에서 제거한다. 다른 prefix(alarm:, bl:)는 건드리지 않는다.
@@ -251,4 +588,6 @@ export async function cancelTripBoundAlarms(): Promise<void> {
   if (cancelled > 0) {
     logger.info(`cancelled ${cancelled} trip-bound alarms`);
   }
+  // #918 A3 PR2: sig storage도 함께 cleanup — 다음 reconcile 시 stale sig가 남지 않게.
+  await clearRegisteredTripRouteSig();
 }

@@ -1,3 +1,9 @@
+/* eslint-disable import/no-restricted-paths --
+ * Cross-feature orchestration: B1 결정 (Epic #1008, ADR-013) — 토글 OFF 전환 시
+ * 활성 BoardingLock을 즉시 cleanup해야 의미적 일관성("전체역 보기 OFF면 lockless 알림 없음")이
+ * 유지된다. 그래서 settings feature가 alarm feature의 useBoardingLockStore를 직접 호출한다.
+ * 후속 PR에서 orchestration 슬라이스로 추출 예정.
+ */
 import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
@@ -7,6 +13,8 @@ import {
   LOCKLESS_STATION_PASSED_KEY,
 } from '../../../shared/constants/storageKeys';
 import { getSentryOptIn, setSentryOptIn } from '../../../shared/infra/monitoring/sentryInit';
+import { useBoardingLockStore } from '../../alarm/store/useBoardingLockStore';
+import { emitLocklessToggleTransition } from '../utils/locklessFunnel';
 
 /**
  * Settings store — ADR 후속 Step 6 (#892).
@@ -107,8 +115,16 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   },
 
   setLocklessStationPassed: async (enabled: boolean) => {
+    // #1175 — funnel transition emit. set() 전에 prev를 캡처해야 정확한 분기를 얻는다.
+    const prev = useSettingsStore.getState().locklessStationPassed;
     set({ locklessStationPassed: enabled });
     await AsyncStorage.setItem(LOCKLESS_STATION_PASSED_KEY, JSON.stringify(enabled));
+    // B1 (ADR-013): 토글 OFF 전환 시 활성 BoardingLock을 즉시 해제하여
+    // "전체역 보기 OFF면 lockless 알림 없음" 의미를 즉시 반영한다.
+    if (!enabled) {
+      await useBoardingLockStore.getState().releaseLock();
+    }
+    await emitLocklessToggleTransition(prev, enabled);
   },
 
   loadLocklessStationPassed: async () => {

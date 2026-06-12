@@ -57,6 +57,10 @@ import {
   checkSilentPushLocationGate,
   type GateSkipReason,
 } from '../utils/silentPushLocationGate';
+import { rescheduleHopForLock } from '../utils/boardingLockScheduler';
+import { rescheduleTripBoundAlarm } from '../utils/tripBoundScheduler';
+import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
+import type { Route } from '../../../shared/utils/stationRoute';
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
 import { buildAlarmContent } from '../utils/stationNotification';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
@@ -93,9 +97,28 @@ export interface SilentPushPayload {
 }
 
 /**
+ * Reschedule push channel discriminator (#918 A3 PR4). Backend `types.ts`의 `RescheduleChannel`과 정렬.
+ *
+ *  - 'bl' — boarding-lock scheduler (`bl:` prefix). #585 경로. `rescheduleHopForLock` 호출.
+ *  - 'tba' — trip-bound scheduler (`tba:` prefix). lock-free. `rescheduleTripBoundAlarm` 호출.
+ *
+ * 한 payload는 두 채널을 동시에 정정할 수 있다 (둘 다 호출).
+ */
+export type RescheduleChannel = 'bl' | 'tba';
+
+/** 구 backend 호환 default — `channels` 누락 시 'bl' 단독으로 해석 (기존 동작 보존). */
+const DEFAULT_RESCHEDULE_CHANNELS: ReadonlyArray<RescheduleChannel> = ['bl'];
+
+/** 신규 backend(#918 A3 PR4) default — 'bl' + 'tba' 동시 정정. payload 검증/테스트에서 재사용. */
+export const ALL_RESCHEDULE_CHANNELS: ReadonlyArray<RescheduleChannel> = ['bl', 'tba'];
+
+/**
  * Reschedule silent push payload (#725). 백엔드 `sendReschedulePush`가 일반 silent push와
  * 다른 schema(`nextStation` / `newArrivalTimeEpoch` / `trainCode`)를 보낸다 — 별도 인터페이스로
  * 모델링하고 `kind: 'reschedule'`을 discriminator로 사용해 union narrowing.
+ *
+ * `channels` (#918 A3 PR4): 정정 대상 scheduler 채널 배열. 누락 시 구 backend 호환을 위해
+ * `DEFAULT_RESCHEDULE_CHANNELS`(=['bl'])로 해석한다. 신규 backend는 ['bl','tba']를 보낸다.
  */
 export interface RescheduleSilentPushPayload {
   kind: 'reschedule';
@@ -104,6 +127,7 @@ export interface RescheduleSilentPushPayload {
   trainCode: string;
   sentAt?: number;
   pushId?: string;
+  channels?: ReadonlyArray<RescheduleChannel>;
 }
 
 /**
@@ -256,7 +280,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
 function extractReschedulePayload(
   obj: Record<string, unknown>,
 ): RescheduleSilentPushPayload | null {
-  const { nextStation, newArrivalTimeEpoch, trainCode, sentAt, pushId } = obj;
+  const { nextStation, newArrivalTimeEpoch, trainCode, sentAt, pushId, channels } = obj;
   if (typeof nextStation !== 'string' || nextStation.length === 0) return null;
   if (typeof newArrivalTimeEpoch !== 'number' || !Number.isFinite(newArrivalTimeEpoch)) return null;
   if (typeof trainCode !== 'string' || trainCode.length === 0) return null;
@@ -267,7 +291,28 @@ function extractReschedulePayload(
     trainCode,
     sentAt: validSentAt(sentAt),
     pushId: validPushId(pushId),
+    channels: validChannels(channels),
   };
+}
+
+/**
+ * payload.channels 검증. Array of 'bl'|'tba' 만 통과 — 그 외(누락/형식 오류/빈 배열)는 undefined로 정규화.
+ * undefined 결과는 `resolveChannels`에서 `DEFAULT_RESCHEDULE_CHANNELS`로 fallback (구 backend 호환).
+ */
+function validChannels(value: unknown): ReadonlyArray<RescheduleChannel> | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const filtered: RescheduleChannel[] = [];
+  for (const v of value) {
+    if (v === 'bl' || v === 'tba') filtered.push(v);
+  }
+  return filtered.length > 0 ? filtered : undefined;
+}
+
+/** 누락된 channels는 구 backend 호환 default(['bl'])로 해석. */
+function resolveChannels(
+  channels: ReadonlyArray<RescheduleChannel> | undefined,
+): ReadonlyArray<RescheduleChannel> {
+  return channels ?? DEFAULT_RESCHEDULE_CHANNELS;
 }
 
 /**
@@ -420,6 +465,7 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         sentAt: payload.sentAt,
         receivedAt,
       });
+      await applyReschedule(payload, receivedAt);
       ackOutcome(payload.pushId, apnsToken, 'fired', 'reschedule-received');
       return;
     }
@@ -508,6 +554,109 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     } catch (e) {
       logger.error('refreshLiveActivityFromBackgroundContext 실패:', e);
     }
+  }
+}
+
+/**
+ * reschedule silent push(#698) 적용 — 백엔드가 보낸 nextStation/newArrivalTimeEpoch로
+ * 해당 hop의 사전 예약을 cancel + 재예약한다. 본 함수는 SLA 게이트가 아니라 정정 신호이므로
+ * 결과 무관 ack(`reschedule-received`)는 호출자가 처리한다.
+ *
+ * 사전 조건 누락(`lock`/`route`/`destination` 중 하나라도 없음, 또는 newArrivalTimeEpoch 과거)은
+ * 모두 graceful no-op — 신호가 도달했어도 SLA를 깨지 않는다(원본 사전 예약 유지).
+ * 예외는 외부로 전파하지 않고 logger.error 후 swallow — 다른 silent push 흐름과 일관.
+ */
+async function applyReschedule(
+  payload: RescheduleSilentPushPayload,
+  receivedAt: number,
+): Promise<void> {
+  try {
+    if (payload.newArrivalTimeEpoch <= receivedAt) {
+      logger.info(
+        `reschedule skip: newArrivalTimeEpoch=${payload.newArrivalTimeEpoch} <= receivedAt=${receivedAt}`,
+      );
+      return;
+    }
+    // route/destination은 두 채널 모두 사용 — 한 번만 read.
+    const [routeRaw, destRaw] = await Promise.all([
+      AsyncStorage.getItem(ROUTE_KEY),
+      AsyncStorage.getItem(DESTINATION_KEY),
+    ]);
+    const route = parseRoute(routeRaw);
+    const destinationName = parseDestinationName(destRaw);
+    if (!route || !destinationName) {
+      logger.info(
+        `reschedule skip: route=${route ? 'ok' : 'null'} destination=${destinationName ?? 'null'}`,
+      );
+      return;
+    }
+    const channels = resolveChannels(payload.channels);
+    // bl 채널 — 기존 lock-기반 hop 정정. lock 부재/trainCode mismatch 시 graceful skip.
+    if (channels.includes('bl')) {
+      await applyRescheduleBl(payload, route, destinationName, receivedAt);
+    }
+    // tba 채널 (#918 A3 PR4) — lock-free trip-bound 사전 예약 정정.
+    if (channels.includes('tba')) {
+      await rescheduleTripBoundAlarm({
+        stationName: payload.nextStation,
+        newArrivalMs: payload.newArrivalTimeEpoch,
+        route,
+        destinationName,
+        now: receivedAt,
+      });
+    }
+  } catch (e) {
+    logger.error('reschedule apply 실패:', e);
+  }
+}
+
+/**
+ * bl(boarding-lock) 채널 정정 — lock + route + destination 필요. 사전 조건 미충족 시
+ * graceful skip (정정 신호 폐기). tba 채널과 독립적으로 동작 — bl skip이 tba 정정을 막지 않는다.
+ */
+async function applyRescheduleBl(
+  payload: RescheduleSilentPushPayload,
+  route: NonNullable<Route>,
+  destinationName: string,
+  receivedAt: number,
+): Promise<void> {
+  const lock = await getBoardingLock();
+  if (!lock) {
+    logger.info('reschedule bl skip: no boarding lock');
+    return;
+  }
+  if (lock.trainCode !== payload.trainCode) {
+    logger.info(
+      `reschedule bl skip: trainCode mismatch lock=${lock.trainCode} payload=${payload.trainCode}`,
+    );
+    return;
+  }
+  await rescheduleHopForLock({
+    lock,
+    route,
+    destinationName,
+    nextStation: payload.nextStation,
+    newArrivalMs: payload.newArrivalTimeEpoch,
+    now: receivedAt,
+  });
+}
+
+function parseRoute(raw: string | null): Route | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Route;
+  } catch {
+    return null;
+  }
+}
+
+function parseDestinationName(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<Station> | null;
+    return parsed && typeof parsed.name === 'string' ? parsed.name : null;
+  } catch {
+    return null;
   }
 }
 

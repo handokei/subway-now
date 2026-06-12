@@ -6,6 +6,7 @@ import {
   cancelAllHopsForLock,
   parseBoardingLockAlarmIdentifier,
   purgeBoardingLockSchedulerQueue,
+  rescheduleHopForLock,
   routeSignature,
   scheduleHopsForLock,
 } from '../boardingLockScheduler';
@@ -313,11 +314,13 @@ describe('cancelAllHopsForLock', () => {
 });
 
 describe('purgeBoardingLockSchedulerQueue', () => {
-  it('큐가 비어있으면 no-op', async () => {
+  it('큐가 비어있으면 cancel은 호출하지 않고 storage clear는 멱등으로 항상 수행한다 (#773)', async () => {
     mockedGet.mockResolvedValueOnce([]);
     await purgeBoardingLockSchedulerQueue();
     expect(mockedCancel).not.toHaveBeenCalled();
-    expect(mockedClear).not.toHaveBeenCalled();
+    // #773: TRIP_BOUND_CLEANUPS가 SCHEDULED_NOTIFICATIONS_KEY removal을 본 함수에 위임하므로
+    // empty case에서도 storage key 정리는 보장되어야 한다.
+    expect(mockedClear).toHaveBeenCalled();
   });
 
   it('bl: prefix만 cancel하고 큐 전체 clear', async () => {
@@ -672,5 +675,139 @@ describe('routeSignature', () => {
     expect(routeSignature(directRoute, '강남')).not.toBe(
       routeSignature(directRoute, '잠실'),
     );
+  });
+});
+
+describe('rescheduleHopForLock (#698)', () => {
+  it('일치하는 사전 예약 없으면 cancel/schedule 모두 호출 안 함', async () => {
+    mockedGet.mockResolvedValueOnce(['bl:T-100:0:early:다른역']);
+    const result = await rescheduleHopForLock({
+      lock,
+      route: directRoute,
+      destinationName: '강남',
+      nextStation: '강남',
+      newArrivalMs: NOW + 600_000,
+    });
+    expect(result).toEqual({ cancelled: 0, scheduled: 0 });
+    expect(mockedCancel).not.toHaveBeenCalled();
+    expect(mockedSchedule).not.toHaveBeenCalled();
+    expect(mockedRemove).not.toHaveBeenCalled();
+    expect(mockedAdd).not.toHaveBeenCalled();
+  });
+
+  it('nextStation 매칭되는 사전 예약을 cancel + 새 arrivalMs로 재예약', async () => {
+    mockedGet.mockResolvedValueOnce([
+      'bl:T-100:0:early:강남',
+      'bl:T-100:0:imminent:강남',
+      'bl:T-100:1:early:잠실', // 다른 hop — 보존
+      'bl:T-200:0:early:강남', // 다른 lock — 보존
+    ]);
+    const newArrivalMs = NOW + 600_000; // 충분히 미래
+    const result = await rescheduleHopForLock({
+      lock,
+      route: directRoute,
+      destinationName: '강남',
+      nextStation: '강남',
+      newArrivalMs,
+      now: NOW,
+    });
+    expect(mockedCancel).toHaveBeenCalledTimes(2);
+    expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:early:강남');
+    expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:imminent:강남');
+    expect(mockedRemove).toHaveBeenCalledWith([
+      'bl:T-100:0:early:강남',
+      'bl:T-100:0:imminent:강남',
+    ]);
+    // 재예약: directRoute stops=2, travel=240s → earlyLeadMs=120s, imminentLeadMs=45s
+    // 두 trigger 모두 newArrivalMs 미만 → 2건 schedule
+    expect(mockedSchedule).toHaveBeenCalledTimes(2);
+    const scheduledIds = mockedSchedule.mock.calls.map((c) => c[0].identifier ?? '');
+    expect(scheduledIds).toContain('bl:T-100:0:early:강남');
+    expect(scheduledIds).toContain('bl:T-100:0:imminent:강남');
+    const earlyCall = mockedSchedule.mock.calls.find((c) => c[0].identifier === 'bl:T-100:0:early:강남')!;
+    const earlyTrigger = earlyCall[0].trigger as { date: Date };
+    expect(earlyTrigger.date.getTime()).toBe(newArrivalMs - 120_000);
+    const imminentCall = mockedSchedule.mock.calls.find(
+      (c) => c[0].identifier === 'bl:T-100:0:imminent:강남',
+    )!;
+    const imminentTrigger = imminentCall[0].trigger as { date: Date };
+    expect(imminentTrigger.date.getTime()).toBe(newArrivalMs - 45_000);
+    expect(mockedAdd).toHaveBeenCalledWith([
+      'bl:T-100:0:early:강남',
+      'bl:T-100:0:imminent:강남',
+    ]);
+    expect(result).toEqual({ cancelled: 2, scheduled: 2 });
+  });
+
+  it('newArrivalMs가 now 직후이면 과거 phase는 skip', async () => {
+    mockedGet.mockResolvedValueOnce([
+      'bl:T-100:0:early:강남',
+      'bl:T-100:0:imminent:강남',
+    ]);
+    // newArrivalMs = NOW+30s → imminent(45s lead)는 NOW-15s 과거, early(120s lead)도 과거 → 둘 다 skip
+    const result = await rescheduleHopForLock({
+      lock,
+      route: directRoute,
+      destinationName: '강남',
+      nextStation: '강남',
+      newArrivalMs: NOW + 30_000,
+      now: NOW,
+    });
+    expect(mockedCancel).toHaveBeenCalledTimes(2);
+    expect(mockedSchedule).not.toHaveBeenCalled();
+    expect(mockedAdd).not.toHaveBeenCalled();
+    expect(result).toEqual({ cancelled: 2, scheduled: 0 });
+  });
+
+  it('nextStation이 route 안에 없으면 cancel만 수행하고 재예약 skip', async () => {
+    // route는 destinationName='강남' direct이지만, 추적 큐에 알 수 없는 station id가 있고
+    // nextStation이 route 상 target과 매칭되지 않는 케이스 — 정정 신호 폐기.
+    mockedGet.mockResolvedValueOnce(['bl:T-100:0:early:없는역']);
+    const result = await rescheduleHopForLock({
+      lock,
+      route: directRoute,
+      destinationName: '강남',
+      nextStation: '없는역',
+      newArrivalMs: NOW + 600_000,
+      now: NOW,
+    });
+    expect(mockedCancel).toHaveBeenCalledTimes(1);
+    expect(mockedSchedule).not.toHaveBeenCalled();
+    expect(result).toEqual({ cancelled: 1, scheduled: 0 });
+  });
+
+  it('target.stops=0이면 earlyLeadMs는 HOP_TIME_MS fallback', async () => {
+    // stops=0 direct route → travelSeconds=0 → arrival 즉시. newArrivalMs를 충분히 미래로 두면
+    // imminent(45s lead)와 early(HOP_TIME_MS fallback) 모두 미래 → 2건 schedule.
+    mockedGet.mockResolvedValueOnce(['bl:T-100:0:early:강남']);
+    const zeroStopsRoute = makeDirectRoute(0, '2');
+    const result = await rescheduleHopForLock({
+      lock,
+      route: zeroStopsRoute,
+      destinationName: '강남',
+      nextStation: '강남',
+      newArrivalMs: NOW + 600_000,
+      now: NOW,
+    });
+    expect(result.cancelled).toBe(1);
+    expect(mockedSchedule).toHaveBeenCalled();
+  });
+
+  it('default now는 Date.now() — newArrivalMs가 충분히 미래면 정상 동작', async () => {
+    mockedGet.mockResolvedValueOnce(['bl:T-100:0:early:강남']);
+    const spy = jest.spyOn(Date, 'now').mockReturnValue(NOW);
+    try {
+      const result = await rescheduleHopForLock({
+        lock,
+        route: directRoute,
+        destinationName: '강남',
+        nextStation: '강남',
+        newArrivalMs: NOW + 600_000,
+      });
+      expect(result.cancelled).toBe(1);
+      expect(result.scheduled).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

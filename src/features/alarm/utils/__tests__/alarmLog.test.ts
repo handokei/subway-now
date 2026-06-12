@@ -41,13 +41,19 @@ import {
   logSilentPushSkipped,
   logAlertFallbackFired,
   summarizeAlarmLogByReason,
+  logHydrationTransition,
   logSuppressedStationPassedWarmup,
+  logSuppressedTbaRevalidation,
   summarizeAlarmLogBySource,
+  countGateReasons,
   countSilentPushOutcomes,
   summarizeAlarmLogCounters,
   logBoardingPromptFired,
+  logBoardingPromptResponded,
   BOARDING_PROMPT_WINDOWS,
   countBoardingPromptByWindow,
+  logBoardingPromptAutoLock,
+  countBoardingPromptAutoLockOutcomes,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -592,6 +598,42 @@ describe('alarmLog', () => {
       expect(saved[0].phaseId).toBeUndefined();
     });
 
+    it.each([
+      ['revalidate-no-trip' as const, '강남', 'early' as const],
+      ['revalidate-route-sig-mismatch' as const, '시청', 'imminent' as const],
+      ['revalidate-waypoint-mismatch' as const, '서울역', 'early' as const],
+    ])(
+      '#918 A3 PR2 logSuppressedTbaRevalidation: %s — source=bg-scheduled 고정 + reason/stationName/phaseId 보존',
+      async (reason, stationName, phaseId) => {
+        logSuppressedTbaRevalidation({ reason, stationName, phaseId });
+        await expectLastSavedEntryMatches({
+          source: 'bg-scheduled',
+          outcome: 'suppressed',
+          reason,
+          stationName,
+          phaseId,
+        });
+      },
+    );
+
+    it('#918 A3 PR2 logSuppressedTbaRevalidation: phaseId 미전달 시에도 적재', async () => {
+      logSuppressedTbaRevalidation({
+        reason: 'revalidate-no-trip',
+        stationName: '약수',
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'bg-scheduled',
+        outcome: 'suppressed',
+        reason: 'revalidate-no-trip',
+        stationName: '약수',
+      });
+      expect(saved[0].phaseId).toBeUndefined();
+    });
+
     it('#1010 logSuppressedStationPassedWarmup: reason=gate-station-passed-warmup + kind=station-passed + source=fg 고정', async () => {
       logSuppressedStationPassedWarmup('역삼');
       await flushAlarmLog();
@@ -620,6 +662,45 @@ describe('alarmLog', () => {
         kind: 'station-passed',
       });
       expect(saved[0].stationName).toBeUndefined();
+    });
+
+    it('#1012 logHydrationTransition: 4 phase 각각 hydration-* reason + fg-hydrate source로 적재', async () => {
+      logHydrationTransition('pre-hydrate', 'D1');
+      logHydrationTransition('hydrating', 'D1');
+      logHydrationTransition('storage-synced', 'D1');
+      logHydrationTransition('ready', 'D1');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved).toHaveLength(4);
+      expect(saved.map((e) => e.reason)).toEqual([
+        'hydration-pre-hydrate',
+        'hydration-hydrating',
+        'hydration-storage-synced',
+        'hydration-ready',
+      ]);
+      for (const entry of saved) {
+        expect(entry).toMatchObject({
+          source: 'fg-hydrate',
+          outcome: 'received',
+          destinationId: 'D1',
+        });
+      }
+    });
+
+    it('#1012 logHydrationTransition: destinationId=null 허용', async () => {
+      logHydrationTransition('pre-hydrate', null);
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg-hydrate',
+        outcome: 'received',
+        reason: 'hydration-pre-hydrate',
+        destinationId: null,
+      });
     });
 
     it('#626 같은 키 윈도우 내 재호출은 drop (FG polling 매초 평가 스팸 차단)', async () => {
@@ -1358,6 +1439,40 @@ describe('alarmLog', () => {
     });
   });
 
+  describe('countGateReasons (#1025)', () => {
+    it('빈 배열이면 빈 객체를 반환한다', () => {
+      expect(countGateReasons([], ['gate-age', 'gate-accuracy'])).toEqual({});
+    });
+
+    it('지정한 reason에 해당하는 항목만 집계한다', () => {
+      const logs: AlarmLogEntry[] = [
+        { ts: 1, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+        { ts: 2, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+        { ts: 3, source: 'fg', outcome: 'suppressed', reason: 'movement-static-speed' },
+        { ts: 4, source: 'fg', outcome: 'fired' },
+        { ts: 5, source: 'bg', outcome: 'suppressed', reason: 'dedup-station' },
+      ];
+      expect(
+        countGateReasons(logs, ['gate-out-of-range', 'movement-static-speed']),
+      ).toEqual({ 'gate-out-of-range': 2, 'movement-static-speed': 1 });
+    });
+
+    it('reason이 없는 항목은 무시한다', () => {
+      const logs: AlarmLogEntry[] = [
+        { ts: 1, source: 'fg', outcome: 'fired' },
+        { ts: 2, source: 'bg', outcome: 'fired' },
+      ];
+      expect(countGateReasons(logs, ['gate-age'])).toEqual({});
+    });
+
+    it('목록에 없는 reason은 집계하지 않는다', () => {
+      const logs: AlarmLogEntry[] = [
+        { ts: 1, source: 'bg', outcome: 'suppressed', reason: 'dedup-alarm' },
+      ];
+      expect(countGateReasons(logs, ['gate-age', 'gate-accuracy'])).toEqual({});
+    });
+  });
+
   describe('summarizeAlarmLogCounters (#1021)', () => {
     it('suppressed 엔트리의 reason별 count+lastTs를 합산해 내림차순으로 반환한다', () => {
       const entries: AlarmLogEntry[] = [
@@ -1449,6 +1564,106 @@ describe('alarmLog', () => {
       ];
       expect(countBoardingPromptByWindow(entries)['5m']).toBe(1);
     });
+
+    it('reason 필드가 있는 boarding-prompt entry는 #1021 윈도우 집계에서 제외 (autolock/response와 분리)', () => {
+      const now = Date.now();
+      const entries: AlarmLogEntry[] = [
+        // autolock-success는 outcome='fired'지만 reason 있음 → 발사 빈도엔 카운트 X.
+        {
+          ts: now - 1000,
+          source: 'boarding-prompt',
+          outcome: 'fired',
+          reason: 'autolock-success',
+        },
+        // #1170 — response telemetry entry도 reason 있음 → 발사 빈도엔 제외.
+        { ts: now - 1500, source: 'boarding-prompt', outcome: 'fired', reason: 'dedup-station' },
+        // reason 없는 fired entry만 카운트.
+        { ts: now - 2000, source: 'boarding-prompt', outcome: 'fired' },
+      ];
+      expect(countBoardingPromptByWindow(entries, now)['5m']).toBe(1);
+    });
+  });
+
+  describe('logBoardingPromptAutoLock + countBoardingPromptAutoLockOutcomes (#1167)', () => {
+    it.each([
+      ['autolock-success', 'fired'],
+      ['autolock-no-trip', 'suppressed'],
+      ['autolock-arrivals-empty', 'suppressed'],
+      ['autolock-ambiguity', 'suppressed'],
+      ['autolock-station-lookup', 'suppressed'],
+      ['autolock-lock-failed', 'suppressed'],
+    ] as const)('reason=%s → outcome=%s + stationName 합성', async (reason, expectedOutcome) => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logBoardingPromptAutoLock({ reason, originStation: '강남', line: '2' });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({
+        source: 'boarding-prompt',
+        outcome: expectedOutcome,
+        reason,
+        stationName: '2·강남',
+      });
+    });
+
+    it('countBoardingPromptAutoLockOutcomes가 reason별 분포 집계', () => {
+      const entries: AlarmLogEntry[] = [
+        { ts: 1, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+        { ts: 2, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+        { ts: 3, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-ambiguity' },
+        { ts: 4, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-no-trip' },
+        { ts: 5, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-arrivals-empty' },
+        { ts: 6, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-station-lookup' },
+        { ts: 7, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-lock-failed' },
+        // reason 없는 #1021 발사 entry는 제외
+        { ts: 8, source: 'boarding-prompt', outcome: 'fired' },
+        // 다른 source는 제외
+        { ts: 9, source: 'fg', outcome: 'fired' },
+      ];
+      const counts = countBoardingPromptAutoLockOutcomes(entries);
+      expect(counts).toEqual({
+        'autolock-success': 2,
+        'autolock-no-trip': 1,
+        'autolock-arrivals-empty': 1,
+        'autolock-ambiguity': 1,
+        'autolock-station-lookup': 1,
+        'autolock-lock-failed': 1,
+      });
+    });
+
+    it('boarding-prompt source인데 reason이 autolock 계열이 아니면 무시 (방어)', () => {
+      const entries: AlarmLogEntry[] = [
+        {
+          ts: 1,
+          source: 'boarding-prompt',
+          outcome: 'suppressed',
+          // 다른 도메인 reason — counts에 영향 없음
+          reason: 'gate-age',
+        },
+      ];
+      const counts = countBoardingPromptAutoLockOutcomes(entries);
+      expect(counts['autolock-success']).toBe(0);
+      expect(counts['autolock-no-trip']).toBe(0);
+    });
+  });
+
+  describe('logBoardingPromptResponded (#1170)', () => {
+    it.each<['boarded' | 'dismissed', 'response-boarded' | 'response-dismissed']>([
+      ['boarded', 'response-boarded'],
+      ['dismissed', 'response-dismissed'],
+    ])('%s outcome → reason=%s entry 적재', async (outcome, reason) => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(null);
+      logBoardingPromptResponded({ outcome });
+      await flushAlarmLog();
+      const saved = JSON.parse((AsyncStorage.setItem as jest.Mock).mock.calls[0][1]);
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({
+        source: 'boarding-prompt',
+        outcome: 'received',
+        reason,
+      });
+    });
   });
 
 });
+

@@ -1,4 +1,4 @@
-import { ALARM_PHASES, type AlarmContext } from '../alarmPhases';
+import { ALARM_PHASES, IMMINENT_LEAD_MS, type AlarmContext } from '../alarmPhases';
 
 function ctx(partial: Partial<AlarmContext>): AlarmContext {
   return {
@@ -46,6 +46,24 @@ describe('ALARM_PHASES', () => {
 
     it('does not fire when eta is null', () => {
       expect(imminentPhase.evaluate(ctx({ remainingStops: 1, etaSeconds: null }))).toBe(false);
+    });
+  });
+
+  describe('getLeadMs (#1194)', () => {
+    it('early returns hopMs as-is (variable lead)', () => {
+      expect(earlyPhase.getLeadMs(15_000)).toBe(15_000);
+      expect(earlyPhase.getLeadMs(60_000)).toBe(60_000);
+      expect(earlyPhase.getLeadMs(0)).toBe(0);
+    });
+
+    it('imminent returns fixed IMMINENT_LEAD_MS regardless of hopMs', () => {
+      expect(imminentPhase.getLeadMs(15_000)).toBe(IMMINENT_LEAD_MS);
+      expect(imminentPhase.getLeadMs(60_000)).toBe(IMMINENT_LEAD_MS);
+      expect(imminentPhase.getLeadMs(0)).toBe(IMMINENT_LEAD_MS);
+    });
+
+    it('IMMINENT_LEAD_MS is 10 seconds', () => {
+      expect(IMMINENT_LEAD_MS).toBe(10_000);
     });
   });
 });

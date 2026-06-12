@@ -8,7 +8,8 @@
     "SLA_PERCENTILE": 0.95,
     "METRIC_LABEL_PREFIX": "phase3",
     "MIN_RECALL_RATIO_THRESHOLD": 0.95,
-    "RECALL_THRESHOLD_CRITICAL": 0.9
+    "RECALL_THRESHOLD_CRITICAL": 0.9,
+    "MIN_SERVER_PROGRESS_RECEIVED_RATIO": 0.95
   },
   "metrics": [
     {
@@ -129,11 +130,32 @@
       "description": "#918 A3 — fired 사전 예약 알람의 station 정확도. hit=fired entry 중 alarmLog가 같은 station에서 fired outcome을 남긴 수, total=firedCount. 사전 예약 시점 prediction과 실제 trip 진행 일치도."
     },
     {
+      "key": "autoLockConfidenceBreakdown",
+      "constantName": "AUTO_LOCK_CONFIDENCE_BREAKDOWN",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "#1171 — RC1 confidence gate(#1018) 평가 시 산출된 score(0~4) 분포. arvlCd=2 branch에서만 sample 적재. 본 분포로 1주 운영 후 AUTO_LOCK_CONFIDENCE_THRESHOLD(현재 2) 튜닝 결정 (낮춰서 lock 통과율↑ vs 높여서 false positive↓). p95/mean으로 threshold 후보 산출. Phase 4 결정 게이트 아님 — 운영 튜닝 측정 인프라."
+    },
+    {
       "key": "prescheduledFireDeltaMs",
       "constantName": "PRESCHEDULED_FIRE_DELTA_MS",
       "format": "histogram",
       "display": "numeric",
       "description": "#918 A3 — actualFireMs - scheduledFireMs (양수=OS 늦게 발사). p95로 OS 타이밍 SLA 추적. 시계 보정/timer drift 진단 신호."
+    },
+    {
+      "key": "serverProgressReceived",
+      "constantName": "SERVER_PROGRESS_RECEIVED",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#1173 Epic C B5 — BFF /progress 폴링 응답 수신율. hit=2xx 응답 수, total=요청 시도 수. MIN_SERVER_PROGRESS_RECEIVED_RATIO(0.95) 미달이면 backend down/네트워크 회귀 신호. Phase 4 결정 게이트 아님 — B5 optional→required 승격 게이트 측정 인프라(운영 KPI)."
+    },
+    {
+      "key": "deltaVsEstimatorIndex",
+      "constantName": "DELTA_VS_ESTIMATOR_INDEX",
+      "format": "histogram",
+      "display": "numeric",
+      "description": "#1174 Epic C B5 — server BffProgressResponse.waypointIndex와 local stationProgressEstimator(Stage 1-3) 결과의 arc-index 차이 절댓값(|serverIdx - estimatorIdx|, 단위=hop). 1주 baseline 운영으로 P50/P95 산출 → B5(server progress) optional→required 승격 시 P95 임계 결정 근거. Phase 4 결정 게이트 아님 — 운영 측정 KPI(운영 임계는 P95 baseline 확정 후 별도 const로 카탈로그에 추가)."
     }
   ]
 }

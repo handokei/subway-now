@@ -56,6 +56,14 @@ import {
   validatePrescheduledUpload,
 } from './prescheduledTelemetry';
 import {
+  recordServerProgressUpload,
+  validateServerProgressUpload,
+} from './serverProgressTelemetry';
+import {
+  recordDeltaVsEstimatorUpload,
+  validateDeltaVsEstimatorUpload,
+} from './deltaVsEstimatorTelemetry';
+import {
   tokenPrefix,
   validateTelemetryUpload,
   writeTelemetryDataPoints,
@@ -507,6 +515,79 @@ app.post('/telemetry/prescheduled', async (c) => {
       // #986 — miss trip 진단 컨텍스트. 없으면 omit (JSON.stringify가 undefined 자동 제거).
       // Logpush로 사후 root cause 분석 (AE blob에는 미적재 — free-form/PII 회피).
       missContext: payload.missContext,
+    }),
+  );
+  return c.json({ ok: true });
+});
+
+/**
+ * BFF `/progress` 폴링 수신율 텔레메트리 upload (#1173, Epic #1008 C 단기 B5).
+ *
+ * Client SeoulBffProgressProvider가 폴링 윈도우 단위로 attempts/received를 집계해 업로드.
+ * TELEMETRY binding 미설정 시 graceful no-op (recall/prescheduled 동형).
+ *
+ * 본 엔드포인트는 catalog SSOT(`serverProgressReceived`)와 짝 — 95% 충족이
+ * B5(server progress) optional → required 승격 게이트 측정 신호.
+ */
+app.post('/telemetry/server-progress', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const payload = validateServerProgressUpload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const writer = c.env.TELEMETRY;
+  if (writer) {
+    recordServerProgressUpload(writer, payload);
+  }
+  console.log(
+    JSON.stringify({
+      msg: 'server-progress uploaded',
+      tokenPrefix: tokenPrefix(payload.token),
+      attempts: payload.attempts,
+      received: payload.received,
+      sink: writer ? 'ae' : 'none',
+    }),
+  );
+  return c.json({ ok: true });
+});
+
+/**
+ * Shadow Stage 1-3 vs server progress delta 텔레메트리 upload (#1174, Epic #1008 C 단기 B5).
+ *
+ * Client가 같은 trip tick에서 server `BffProgressResponse.waypointIndex`와 local
+ * `stationProgressEstimator` 결과가 모두 살아있을 때 |serverIdx - estimatorIdx|(arc-index hop)을
+ * 누적해 폴링 윈도우 단위로 업로드한다. backend는 단순 적재 — TELEMETRY binding 미설정 시
+ * graceful no-op (recall/prescheduled/server-progress 동형).
+ *
+ * 본 엔드포인트는 catalog SSOT(`deltaVsEstimatorIndex`)와 짝 — 1주 baseline P50/P95가
+ * B5(server progress) optional → required 승격 시 P95 임계 결정 근거.
+ */
+app.post('/telemetry/delta-vs-estimator', async (c) => {
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const payload = validateDeltaVsEstimatorUpload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const writer = c.env.TELEMETRY;
+  if (writer) {
+    recordDeltaVsEstimatorUpload(writer, payload);
+  }
+  console.log(
+    JSON.stringify({
+      msg: 'delta-vs-estimator uploaded',
+      tokenPrefix: tokenPrefix(payload.token),
+      sampleCount: payload.deltaSamples.length,
+      sink: writer ? 'ae' : 'none',
     }),
   );
   return c.json({ ok: true });

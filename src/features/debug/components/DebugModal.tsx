@@ -25,14 +25,28 @@ import {
   BOARDING_PROMPT_WINDOWS,
   clearAlarmLog,
   countBoardingPromptByWindow,
+  countGateReasons,
   countSilentPushOutcomes,
   getAlarmLog,
   summarizeAlarmLogByReason,
   summarizeAlarmLogBySource,
   summarizeAlarmLogCounters,
   type AlarmLogEntry,
+  type AlarmLogReason,
   type AlarmLogReasonCounter,
 } from '../../../features/alarm/utils/alarmLog';
+import {
+  computeBoardingPromptMonitor,
+  exportRecentDays,
+} from '../../../features/alarm/utils/boardingPromptMonitor';
+import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
+import { isBoardingLockExpired } from '../../../shared/types/boardingLock';
+import {
+  clearEstimatorEntries,
+  getEstimatorEntries,
+  subscribeEstimatorDebug,
+  type EstimatorDebugEntry,
+} from '../../../features/route/utils/estimatorDebugBuffer';
 import { SILENT_PUSH_LABELS, buildSilentPushCountValue } from '../../../shared/constants/labels';
 import {
   clearFusionDebugEntries,
@@ -349,6 +363,26 @@ function buildDumpText(args: {
   return lines.join('\n');
 }
 
+/** 게이트 reason 분류. 동일 prefix로 시작하면 같은 범주. */
+const GATE_REASONS: readonly AlarmLogReason[] = [
+  'gate-age',
+  'gate-accuracy',
+  'gate-jump',
+  'gate-unknown-station',
+  'gate-no-location',
+  'gate-stale-location',
+  'gate-out-of-range',
+];
+
+const MOVEMENT_REASONS: readonly AlarmLogReason[] = [
+  'movement-no-location',
+  'movement-stale-timestamp',
+  'movement-low-accuracy',
+  'movement-static-speed',
+  'movement-static-position',
+  'movement-motion-stationary',
+];
+
 /**
  * Alarm log section header / dump 헤더에서 공유되는 source별 카운트 요약 문자열 (#564).
  * 비어있으면 빈 문자열을 반환 → 호출부에서 falsy로 분기 가능.
@@ -427,9 +461,13 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
   const fusedLabel = formatStationLabel(result);
   const gpsLabel = formatStationLabel(gpsResult);
   const differs = fusedDiffersFromGps(result, gpsResult);
+  const lock = useBoardingLockStore((s) => s.lock);
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
   const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
     getFusionDebugEntries(),
+  );
+  const [estimatorLogs, setEstimatorLogs] = useState<readonly EstimatorDebugEntry[]>(() =>
+    getEstimatorEntries(),
   );
   // #756: OS 큐 ground-truth dump. 호출 직후 한 번 비동기로 채워진다.
   // null = 아직 한 번도 dump 안 한 상태 → "Tap Refresh" placeholder 노출.
@@ -441,6 +479,10 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
 
   useEffect(() => {
     return subscribeFusionDebug(() => setFusionLogs([...getFusionDebugEntries()]));
+  }, []);
+
+  useEffect(() => {
+    return subscribeEstimatorDebug(() => setEstimatorLogs([...getEstimatorEntries()]));
   }, []);
 
   const refreshLogs = useCallback(async () => {
@@ -633,36 +675,35 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
             ))}
           </Section>
 
-          <Section
-            title={`Fusion log (${fusionLogs.length})`}
+          <BoardingLockSection lock={lock} colors={colors} />
+
+          <DebugLogSection
+            title="Estimator State"
+            logs={estimatorLogs}
+            formatLine={formatEstimatorLine}
+            onClear={() => {
+              clearEstimatorEntries();
+              setEstimatorLogs([]);
+            }}
+            clearTestId="debug-estimator-clear"
+            entryTestId="debug-estimator-entry"
             colors={colors}
-            action={
-              <Pressable
-                onPress={() => {
-                  clearFusionDebugEntries();
-                  setFusionLogs([]);
-                }}
-                testID="debug-fusion-log-clear"
-              >
-                <Text style={[typography.bodySm, { color: colors.accent }]}>Clear</Text>
-              </Pressable>
-            }
-          >
-            {fusionLogs.length === 0 ? (
-              <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
-            ) : (
-              [...fusionLogs].reverse().map((entry, idx) => (
-                <Text
-                  key={`${entry.ts}-${idx}`}
-                  style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
-                  selectable
-                  testID="debug-fusion-log-entry"
-                >
-                  {formatFusionDebugLine(entry)}
-                </Text>
-              ))
-            )}
-          </Section>
+          />
+
+          <GatesSection logs={logs} colors={colors} />
+
+          <DebugLogSection
+            title="Fusion log"
+            logs={fusionLogs}
+            formatLine={formatFusionDebugLine}
+            onClear={() => {
+              clearFusionDebugEntries();
+              setFusionLogs([]);
+            }}
+            clearTestId="debug-fusion-log-clear"
+            entryTestId="debug-fusion-log-entry"
+            colors={colors}
+          />
 
           <Section
             title={
@@ -701,13 +742,9 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
                   {formatSourceCountsLine(logs)}
                 </Text>
                 {[...logs].reverse().map((entry, idx) => (
-                  <Text
-                    key={`${entry.ts}-${idx}`}
-                    style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
-                    selectable
-                  >
+                  <MonoEntry key={`${entry.ts}-${idx}`} colors={colors}>
                     {formatLogLine(entry)}
-                  </Text>
+                  </MonoEntry>
                 ))}
               </>
             )}
@@ -737,6 +774,9 @@ function DebugModalInner({ onClose, candidateTrains, fusedSpeed }: Readonly<Debu
               />
             ))}
           </Section>
+
+          {/* #1170: boarding-prompt acceptance dashboard (gate 통과율/응답률) */}
+          <BoardingPromptMonitorSection logs={logs} colors={colors} />
 
           {/* #1024 — ## Counters: reason별 누적 count + 마지막 발생 시각 */}
           <CountersSection logs={logs} colors={colors} />
@@ -798,16 +838,153 @@ function ScheduledQueueBody({
   return (
     <>
       {dump.map((entry) => (
-        <Text
-          key={entry.identifier}
-          style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
-          selectable
-          testID="debug-scheduled-dump-entry"
-        >
+        <MonoEntry key={entry.identifier} testID="debug-scheduled-dump-entry" colors={colors}>
           {formatScheduledNotificationLine(entry)}
-        </Text>
+        </MonoEntry>
       ))}
     </>
+  );
+}
+
+/** 역방향(최신 → 오래된) 모노 로그 목록 섹션 — Estimator/Fusion 공통 패턴 (#1025). */
+function DebugLogSection<T extends { ts: number }>({
+  title,
+  logs,
+  formatLine,
+  onClear,
+  clearTestId,
+  entryTestId,
+  colors,
+}: Readonly<{
+  title: string;
+  logs: readonly T[];
+  formatLine: (entry: T) => string;
+  onClear: () => void;
+  clearTestId: string;
+  entryTestId: string;
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  return (
+    <Section
+      title={`${title} (${logs.length})`}
+      colors={colors}
+      action={
+        <Pressable onPress={onClear} testID={clearTestId}>
+          <Text style={[typography.bodySm, { color: colors.accent }]}>Clear</Text>
+        </Pressable>
+      }
+    >
+      {logs.length === 0 ? (
+        <Text style={[typography.mono, { color: colors.muted }]}>(empty)</Text>
+      ) : (
+        [...logs].reverse().map((entry, idx) => (
+          <MonoEntry key={`${entry.ts}-${idx}`} testID={entryTestId} colors={colors}>
+            {formatLine(entry)}
+          </MonoEntry>
+        ))
+      )}
+    </Section>
+  );
+}
+
+/** BoardingLock 섹션 — lock 활성/trainCode/boardingLine/expiresAt 요약 (#1025). */
+function BoardingLockSection({
+  lock,
+  colors,
+}: Readonly<{
+  lock: import('../../../shared/types/boardingLock').BoardingLock | null;
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  // lock 변경 시점 스냅샷 — 디버그 모달 특성상 실시간 갱신 불필요.
+  const active = lock !== null && !isBoardingLockExpired(lock, Date.now());
+  return (
+    <Section title="BoardingLock" colors={colors}>
+      <KeyValue label="active" value={active ? 'yes' : 'no'} colors={colors} />
+      {lock && (
+        <>
+          <KeyValue label="trainCode" value={lock.trainCode} colors={colors} />
+          <KeyValue label="line" value={String(lock.boardingLine)} colors={colors} />
+          <KeyValue
+            label="expiresAt"
+            value={formatAt(
+              lock.boardedAt + lock.expectedDurationMs * 1.5,
+            )}
+            colors={colors}
+          />
+          <KeyValue
+            label="boardedAt"
+            value={formatAt(lock.boardedAt)}
+            colors={colors}
+          />
+          {lock.hydratedFromSentinel && (
+            <KeyValue label="sentinel" value="yes" colors={colors} />
+          )}
+        </>
+      )}
+    </Section>
+  );
+}
+
+/** Estimator 엔트리를 한 줄 텍스트로 포맷 (#1025). */
+export function formatEstimatorLine(entry: EstimatorDebugEntry): string {
+  const time = formatTime(entry.ts);
+  const strategy = entry.strategy ?? 'none';
+  const station = entry.stationName
+    ? `${entry.stationName}(${entry.stationLine ?? '-'})`
+    : '-';
+  const idx = entry.arcIndex != null ? `idx=${entry.arcIndex}` : 'idx=-';
+  return `${time} | ${strategy} | ${station} ${idx}`;
+}
+
+/** Gates 섹션 — gate 7종 + movement 6종 reason 분포 (#1025). */
+function GatesSection({
+  logs,
+  colors,
+}: Readonly<{
+  logs: readonly AlarmLogEntry[];
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  const allCounts = {
+    ...countGateReasons(logs, GATE_REASONS),
+    ...countGateReasons(logs, MOVEMENT_REASONS),
+  };
+  const allKeys = Object.keys(allCounts).sort((a, b) => a.localeCompare(b));
+  return (
+    <Section title="Gates" colors={colors}>
+      {allKeys.length === 0 ? (
+        <Text style={[typography.mono, { color: colors.muted }]}>(no gate blocks)</Text>
+      ) : (
+        allKeys.map((key) => (
+          <KeyValue
+            key={key}
+            label={key}
+            value={String(allCounts[key])}
+            colors={colors}
+          />
+        ))
+      )}
+    </Section>
+  );
+}
+
+/** 단일 모노 로그 라인 — Alarm log / Estimator / Fusion / Scheduled queue 공통 스타일 (#1025). */
+function MonoEntry({
+  testID,
+  children,
+  colors,
+}: {
+  testID?: string;
+  children: string;
+  colors: ReturnType<typeof useTheme>['colors'];
+}) {
+  return (
+    <Text
+      style={[typography.mono, { color: colors.ink, marginBottom: 2 }]}
+      selectable
+      testID={testID}
+    >
+      {children}
+    </Text>
   );
 }
 
@@ -879,6 +1056,62 @@ function CountersSection({
   );
 }
 
+/**
+ * #1170 — boarding-prompt acceptance dashboard.
+ *
+ * 표시: displayed / responded / 응답률 / 탑승률 + 최근 7일 일별 표 (export 진입점).
+ * 응답률·탑승률 0건 시 "—" 표기.
+ */
+const RECENT_DAYS = 7;
+
+function formatRatePct(value: number | null): string {
+  return value === null ? '—' : `${value.toFixed(1)}%`;
+}
+
+function BoardingPromptMonitorSection({
+  logs,
+  colors,
+}: Readonly<{
+  logs: readonly AlarmLogEntry[];
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  const stats = computeBoardingPromptMonitor(logs);
+  const rows = exportRecentDays(stats, RECENT_DAYS);
+  return (
+    <Section title="Boarding Prompt Acceptance" colors={colors}>
+      <KeyValue label="displayed" value={String(stats.displayed)} colors={colors} />
+      <KeyValue label="responded" value={String(stats.responded)} colors={colors} />
+      <KeyValue label="boarded" value={String(stats.boarded)} colors={colors} />
+      <KeyValue label="dismissed" value={String(stats.dismissed)} colors={colors} />
+      <KeyValue
+        label="responseRate"
+        value={formatRatePct(stats.responseRatePct)}
+        colors={colors}
+      />
+      <KeyValue
+        label="boardedRate"
+        value={formatRatePct(stats.boardedRatePct)}
+        colors={colors}
+      />
+      <Text
+        style={[typography.mono, { color: colors.muted, marginTop: spacing.xs }]}
+        testID="debug-boarding-prompt-recent-header"
+      >
+        {`recent ${RECENT_DAYS}d (day / disp / resp / brd / dis)`}
+      </Text>
+      {rows.map((row) => (
+        <Text
+          key={row.dayKey}
+          style={[typography.mono, { color: colors.ink }]}
+          testID={`debug-boarding-prompt-day-${row.dayKey}`}
+        >
+          {`${row.dayKey}  ${row.displayed}/${row.responded}/${row.boarded}/${row.dismissed}`}
+        </Text>
+      ))}
+    </Section>
+  );
+}
+
 // Internal exports for tests — DO NOT use from app code.
 export const __test__ = {
   formatLogLine,
@@ -888,6 +1121,7 @@ export const __test__ = {
   formatTokenTail,
   formatAt,
   formatSourceCountsLine,
+  formatEstimatorLine,
   formatReasonCountsLine,
   NO_FUSED_SIGNAL_LABEL,
   summarizeAlarmLogCounters,

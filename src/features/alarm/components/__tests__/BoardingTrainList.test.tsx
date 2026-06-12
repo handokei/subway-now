@@ -1,9 +1,13 @@
-import { fireEvent } from '@testing-library/react-native';
+import { act, fireEvent } from '@testing-library/react-native';
 import { BoardingTrainList } from '../BoardingTrainList';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { LINE_COLORS } from '../../../../shared/constants/lineColors';
 import type { ArrivalInfo } from '../../../../shared/types/arrival';
 import type { LineNumber } from '../../../../shared/types/station';
+import {
+  getLockCorrectionMetrics,
+  resetLockCorrectionMetrics,
+} from '../../utils/lockCorrectionMetrics';
 
 function makeTrain(overrides: Partial<ArrivalInfo> = {}): ArrivalInfo {
   return {
@@ -479,6 +483,321 @@ describe('BoardingTrainList', () => {
     });
   });
 
+  describe('#1165 낙관적 탭 + pending state (Epic #1008 C 단기 1번 / B4 경로 1)', () => {
+    function flattenStyle(style: unknown): Record<string, unknown> {
+      if (Array.isArray(style)) return Object.assign({}, ...style.map(flattenStyle));
+      return (style ?? {}) as Record<string, unknown>;
+    }
+
+    it('탭 즉시 pending marker 노출 + onSelect 동시 호출 (synchronous, round-trip 대기 없음)', () => {
+      const train = makeTrain({ trainCode: 'T-OPT' });
+      const onSelect = jest.fn();
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} />,
+      );
+      expect(queryByTestId('boarding-train-pending-T-OPT')).toBeNull();
+      fireEvent.press(getByTestId('boarding-train-row-T-OPT'));
+      // 시각 피드백은 onSelect와 동기적으로 발생 (round-trip 대기 없음 — 100ms 이내).
+      expect(getByTestId('boarding-train-pending-T-OPT')).toBeTruthy();
+      expect(onSelect).toHaveBeenCalledWith(train);
+    });
+
+    it('pending 상태 row는 accent outline border로 시각 highlight', () => {
+      const train = makeTrain({ trainCode: 'T-OUTLINE', line: '2' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      const row = getByTestId('boarding-train-row-T-OUTLINE');
+      const before = flattenStyle(row.props.style);
+      expect(before.borderWidth).toBeUndefined();
+      fireEvent.press(row);
+      const after = flattenStyle(row.props.style);
+      expect(after.borderWidth).toBeGreaterThan(0);
+      expect(after.borderColor).toBeDefined();
+    });
+
+    it('pending 중 같은 row 재탭 시 onSelect 추가 호출되지 않음 (중복 탭 방지)', () => {
+      const train = makeTrain({ trainCode: 'T-DUP' });
+      const onSelect = jest.fn();
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-DUP'));
+      fireEvent.press(getByTestId('boarding-train-row-T-DUP'));
+      fireEvent.press(getByTestId('boarding-train-row-T-DUP'));
+      expect(onSelect).toHaveBeenCalledTimes(1);
+    });
+
+    it('pending 중 다른 row 탭 시 disabled — onSelect 호출 안 됨', () => {
+      const a = makeTrain({ trainCode: 'T-A' });
+      const b = makeTrain({ trainCode: 'T-B' });
+      const onSelect = jest.fn();
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[a, b]} line="2" onSelect={onSelect} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-A'));
+      fireEvent.press(getByTestId('boarding-train-row-T-B'));
+      expect(onSelect).toHaveBeenCalledTimes(1);
+      expect(onSelect).toHaveBeenCalledWith(a);
+    });
+
+    it('lockedTrainCode가 pendingTrainCode와 일치하면 pending confirmed → marker 제거 + 재탭 가능', () => {
+      const train = makeTrain({ trainCode: 'T-CONF' });
+      const onSelect = jest.fn();
+      const { getByTestId, queryByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-CONF'));
+      expect(getByTestId('boarding-train-pending-T-CONF')).toBeTruthy();
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={onSelect}
+          lockedTrainCode="T-CONF"
+        />,
+      );
+      expect(queryByTestId('boarding-train-pending-T-CONF')).toBeNull();
+      // 재탭 가능(다른 lock 변경 등) — onSelect 누적 2회.
+      fireEvent.press(getByTestId('boarding-train-row-T-CONF'));
+      expect(onSelect).toHaveBeenCalledTimes(2);
+    });
+
+    it('pendingTimeoutMs 경과 시 자동 rollback — marker 제거 + 재탭 가능', () => {
+      jest.useFakeTimers();
+      try {
+        const train = makeTrain({ trainCode: 'T-TIMEOUT' });
+        const onSelect = jest.fn();
+        const { getByTestId, queryByTestId } = renderWithTheme(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={onSelect}
+            pendingTimeoutMs={3000}
+          />,
+        );
+        fireEvent.press(getByTestId('boarding-train-row-T-TIMEOUT'));
+        expect(getByTestId('boarding-train-pending-T-TIMEOUT')).toBeTruthy();
+        act(() => {
+          jest.advanceTimersByTime(3000);
+        });
+        expect(queryByTestId('boarding-train-pending-T-TIMEOUT')).toBeNull();
+        fireEvent.press(getByTestId('boarding-train-row-T-TIMEOUT'));
+        expect(onSelect).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('unmount 시 rollback timer 정리 — pending timeout 이후 setState 호출되지 않음', () => {
+      jest.useFakeTimers();
+      try {
+        const train = makeTrain({ trainCode: 'T-UNMOUNT' });
+        const { getByTestId, unmount } = renderWithTheme(
+          <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+        );
+        fireEvent.press(getByTestId('boarding-train-row-T-UNMOUNT'));
+        unmount();
+        // setTimeout 시간 경과 — unmount 후 setState 호출 시 React warning 발생 가능.
+        // 본 테스트는 warning 없이 통과해야 한다.
+        expect(() =>
+          act(() => {
+            jest.advanceTimersByTime(10000);
+          }),
+        ).not.toThrow();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    // #1166: 정정 case는 별도 describe(`#1166 정정 toast UX`)에서 다룬다. #1165 단계에서 mismatch는
+    // pending을 유지했으나, #1166이 적용된 이후로는 mismatch가 정정 신호로 해석되어 pending이 즉시
+    // 해제된다. 기존 회귀 가드는 정정 동작 테스트(`pending(A) → lock(B) 정정...`)로 대체된다.
+
+    it('lockedTrainCode만 있고 pending이 없으면 effect는 no-op (다른 채널로 lock 생성된 케이스)', () => {
+      const train = makeTrain({ trainCode: 'T-EXT' });
+      const { queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-EXT"
+        />,
+      );
+      expect(queryByTestId('boarding-train-pending-T-EXT')).toBeNull();
+    });
+
+    it('walkingBufferSeconds로 disabled인 row는 탭해도 pending 진입 안 함', () => {
+      const tooSoon = makeTrain({ trainCode: 'T-EARLY', arrivalSeconds: 60 });
+      const onSelect = jest.fn();
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[tooSoon]}
+          line="2"
+          onSelect={onSelect}
+          walkingBufferSeconds={180}
+        />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-EARLY'));
+      expect(onSelect).not.toHaveBeenCalled();
+      expect(queryByTestId('boarding-train-pending-T-EARLY')).toBeNull();
+    });
+
+    it('연속 두 번째 탭이 새 timer로 교체되지 않음 (pending 동안 모든 탭 무시) — accessibilityState.busy=true', () => {
+      const train = makeTrain({ trainCode: 'T-BUSY' });
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      const row = getByTestId('boarding-train-row-T-BUSY');
+      expect(row.props.accessibilityState.busy).toBe(false);
+      fireEvent.press(row);
+      const rowAfter = getByTestId('boarding-train-row-T-BUSY');
+      expect(rowAfter.props.accessibilityState.busy).toBe(true);
+      expect(rowAfter.props.accessibilityState.disabled).toBe(false);
+    });
+  });
+
+  describe('#1166 lock 정정 toast UX (Epic #1008 C 단기 2번 / B4 round-trip)', () => {
+    beforeEach(() => {
+      resetLockCorrectionMetrics();
+    });
+
+    it('pending(A) → lockedTrainCode(B) 정정 시 pending 즉시 해제 + onLockCorrected(A, B) 호출', () => {
+      const train = makeTrain({ trainCode: 'T-A' });
+      const onLockCorrected = jest.fn();
+      const { getByTestId, queryByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-A'));
+      expect(getByTestId('boarding-train-pending-T-A')).toBeTruthy();
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-B"
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      expect(queryByTestId('boarding-train-pending-T-A')).toBeNull();
+      expect(onLockCorrected).toHaveBeenCalledTimes(1);
+      expect(onLockCorrected).toHaveBeenCalledWith('T-A', 'T-B');
+    });
+
+    it('정정 시 metric counter 적재 — fired 누적 + lastFiredAtMs > 0', () => {
+      const train = makeTrain({ trainCode: 'T-METRIC' });
+      const { getByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      expect(getLockCorrectionMetrics().fired).toBe(0);
+      fireEvent.press(getByTestId('boarding-train-row-T-METRIC'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-OTHER"
+        />,
+      );
+      const metrics = getLockCorrectionMetrics();
+      expect(metrics.fired).toBe(1);
+      expect(metrics.lastFiredAtMs).toBeGreaterThan(0);
+    });
+
+    it('정상 확정(같은 trainCode) 시 onLockCorrected 미호출 + metric 미적재', () => {
+      const train = makeTrain({ trainCode: 'T-SAME' });
+      const onLockCorrected = jest.fn();
+      const { getByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-SAME'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-SAME"
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      expect(onLockCorrected).not.toHaveBeenCalled();
+      expect(getLockCorrectionMetrics().fired).toBe(0);
+    });
+
+    it('onLockCorrected 미전달이어도 정정 동작은 동일 — pending 해제 + metric 적재(wiring 회귀 가드)', () => {
+      const train = makeTrain({ trainCode: 'T-NOCB' });
+      const { getByTestId, queryByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-NOCB'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-DIFF"
+        />,
+      );
+      expect(queryByTestId('boarding-train-pending-T-NOCB')).toBeNull();
+      expect(getLockCorrectionMetrics().fired).toBe(1);
+    });
+
+    it('정정 후 lock 해제되면 같은 row를 다시 탭해 새 pending 진입 가능 (rollback timer 해제 확인)', () => {
+      const train = makeTrain({ trainCode: 'T-RETAP' });
+      const onSelect = jest.fn();
+      const { getByTestId, rerender } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-RETAP'));
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={onSelect}
+          lockedTrainCode="T-X"
+        />,
+      );
+      // 정정 후 lockedTrainCode가 다시 null로 풀린 상태(사용자 명시 해제 등)에서 재탭이 새 pending 진입.
+      rerender(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={onSelect}
+          lockedTrainCode={null}
+        />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-RETAP'));
+      expect(onSelect).toHaveBeenCalledTimes(2);
+      expect(getByTestId('boarding-train-pending-T-RETAP')).toBeTruthy();
+    });
+
+    it('lockedTrainCode만 set이고 pending이 없으면 정정 신호 무시 (외부 lock — 별 채널)', () => {
+      const train = makeTrain({ trainCode: 'T-EXT2' });
+      const onLockCorrected = jest.fn();
+      renderWithTheme(
+        <BoardingTrainList
+          arrivals={[train]}
+          line="2"
+          onSelect={() => {}}
+          lockedTrainCode="T-EXT2"
+          onLockCorrected={onLockCorrected}
+        />,
+      );
+      expect(onLockCorrected).not.toHaveBeenCalled();
+      expect(getLockCorrectionMetrics().fired).toBe(0);
+    });
+  });
+
   describe('#664 환승역 line 필터 + 호선 색 stripe', () => {
     function flattenStyle(style: unknown): Record<string, unknown> {
       if (Array.isArray(style)) return Object.assign({}, ...style.map(flattenStyle));
@@ -524,6 +843,154 @@ describe('BoardingTrainList', () => {
       const row = getByTestId('boarding-train-row-T-COMPACT-7');
       const style = flattenStyle(row.props.style);
       expect(style.borderLeftColor).toBe(LINE_COLORS['7']);
+    });
+  });
+
+  // #1177 — 4가지 state 명시 구분 (loading / empty / pending / error).
+  // 우선순위: error > loading > empty > data + (pending overlay).
+  describe('#1177 4가지 state 구분', () => {
+    function renderState(props: {
+      arrivals?: ArrivalInfo[];
+      loading?: boolean;
+      error?: { message?: string | null } | null;
+    }) {
+      return renderWithTheme(
+        <BoardingTrainList
+          arrivals={props.arrivals ?? []}
+          line="2"
+          onSelect={() => {}}
+          loading={props.loading}
+          error={props.error}
+        />,
+      );
+    }
+
+    type StateCase = {
+      name: string;
+      input: { arrivals?: ArrivalInfo[]; loading?: boolean; error?: { message?: string | null } | null };
+      visibleTestId: string;
+      hiddenTestIds: string[];
+    };
+
+    const cases: StateCase[] = [
+      {
+        name: 'loading=true → skeleton 노출, empty/error/data row 미노출',
+        input: { loading: true },
+        visibleTestId: 'boarding-train-list-loading',
+        hiddenTestIds: ['boarding-train-list-empty', 'boarding-train-list-error', 'boarding-train-list'],
+      },
+      {
+        name: 'empty(default) → empty placeholder 노출',
+        input: {},
+        visibleTestId: 'boarding-train-list-empty',
+        hiddenTestIds: ['boarding-train-list-loading', 'boarding-train-list-error', 'boarding-train-list'],
+      },
+      {
+        name: 'error 객체 → error UI 노출, loading/empty 무시',
+        input: { loading: true, error: { message: 'network down' } },
+        visibleTestId: 'boarding-train-list-error',
+        hiddenTestIds: ['boarding-train-list-loading', 'boarding-train-list-empty', 'boarding-train-list'],
+      },
+    ];
+
+    it.each(cases)('$name', ({ input, visibleTestId, hiddenTestIds }) => {
+      const { getByTestId, queryByTestId } = renderState(input);
+      expect(getByTestId(visibleTestId)).toBeTruthy();
+      hiddenTestIds.forEach((id) => {
+        expect(queryByTestId(id)).toBeNull();
+      });
+    });
+
+    it('loading → 3개 skeleton row 렌더 (글로벌 룰 3: 인덱스 하드코딩 금지)', () => {
+      const { getByTestId } = renderState({ loading: true });
+      ['s1', 's2', 's3'].forEach((key) => {
+        expect(getByTestId(`boarding-train-list-skeleton-${key}`)).toBeTruthy();
+      });
+    });
+
+    it('loading → compact 모드에서도 skeleton 노출(헤더 생략)', () => {
+      const { getByTestId, queryByText } = renderWithTheme(
+        <BoardingTrainList arrivals={[]} line="2" onSelect={() => {}} loading compact />,
+      );
+      expect(getByTestId('boarding-train-list-loading')).toBeTruthy();
+      // compact는 헤더 라벨 미노출.
+      expect(queryByText('탑승할 열차 선택')).toBeNull();
+    });
+
+    it('error.message 명시 → 그대로 노출', () => {
+      const { getByText } = renderState({ error: { message: '서버가 응답하지 않습니다' } });
+      expect(getByText('서버가 응답하지 않습니다')).toBeTruthy();
+      // 자동 재시도 안내(hint)도 함께 노출.
+      expect(getByText('잠시 후 자동으로 다시 시도합니다.')).toBeTruthy();
+    });
+
+    it('error.message null/빈 문자열 → default 카피로 fallback', () => {
+      const { getByText, rerender } = renderState({ error: { message: null } });
+      expect(getByText('도착 정보를 불러올 수 없어요')).toBeTruthy();
+      rerender(
+        <BoardingTrainList
+          arrivals={[]}
+          line="2"
+          onSelect={() => {}}
+          error={{ message: '' }}
+        />,
+      );
+      expect(getByText('도착 정보를 불러올 수 없어요')).toBeTruthy();
+    });
+
+    it('error 객체이나 message 자체 미전달 → default 카피로 fallback', () => {
+      const { getByText } = renderState({ error: {} });
+      expect(getByText('도착 정보를 불러올 수 없어요')).toBeTruthy();
+    });
+
+    it('empty → 안내 카피 + 자동 재시도 hint 노출 + a11y label 적용', () => {
+      const { getByTestId, getByText } = renderState({});
+      const empty = getByTestId('boarding-train-list-empty');
+      expect(empty.props.accessibilityLabel).toBe('도착 예정 열차 없음');
+      expect(getByText('도착 예정 열차가 없습니다.')).toBeTruthy();
+      expect(getByText('잠시 후 자동으로 다시 확인합니다.')).toBeTruthy();
+    });
+
+    it('data 있을 때 user 탭 → pending banner 노출 + a11y label', () => {
+      const train = makeTrain({ trainCode: 'T-PEND-BANNER' });
+      const { getByTestId, queryByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={() => {}} />,
+      );
+      // 탭 전: banner 미노출.
+      expect(queryByTestId('boarding-train-list-pending-notice')).toBeNull();
+      act(() => {
+        fireEvent.press(getByTestId('boarding-train-row-T-PEND-BANNER'));
+      });
+      const notice = getByTestId('boarding-train-list-pending-notice');
+      expect(notice).toBeTruthy();
+      expect(notice.props.accessibilityLabel).toBe('탑승 등록을 처리하는 중');
+    });
+
+    it('loading state는 accessibilityState.busy=true', () => {
+      const { getByTestId } = renderState({ loading: true });
+      const container = getByTestId('boarding-train-list-loading');
+      expect(container.props.accessibilityState?.busy).toBe(true);
+      expect(container.props.accessibilityLabel).toBe('도착 정보를 불러오는 중');
+    });
+
+    it('error state — compact 모드에서도 노출(스타일 분기)', () => {
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList
+          arrivals={[]}
+          line="2"
+          onSelect={() => {}}
+          error={{ message: 'x' }}
+          compact
+        />,
+      );
+      expect(getByTestId('boarding-train-list-error')).toBeTruthy();
+    });
+
+    it('error state는 accessibilityRole=alert', () => {
+      const { getByTestId } = renderState({ error: { message: 'x' } });
+      const container = getByTestId('boarding-train-list-error');
+      expect(container.props.accessibilityRole).toBe('alert');
+      expect(container.props.accessibilityLabel).toBe('도착 정보를 불러올 수 없음');
     });
   });
 });

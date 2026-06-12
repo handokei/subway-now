@@ -97,7 +97,40 @@ export type AlarmLogReason =
   | 'gate-phase-accuracy'
   | 'gate-phase-warmup'
   // #1010 — station-passed effect가 lock hydrate 직후 30s warmup window 동안 차단된 발사.
-  | 'gate-station-passed-warmup';
+  | 'gate-station-passed-warmup'
+  // #1012 (H5) — useStationAlarm hydration state machine 각 phase 진입 stamp.
+  // pre-hydrate → hydrating → storage-synced → ready 4단계. 'ready' 전 phase에서는
+  // 모든 phase 알람 발사가 보류된다. transition 한 번에 1엔트리 적재 — 운영에서 phase
+  // 도달 시점·체류 시간 분포 측정.
+  | 'hydration-pre-hydrate'
+  | 'hydration-hydrating'
+  | 'hydration-storage-synced'
+  | 'hydration-ready'
+  // #918 A3 PR2 (#729 흡수) — `tba:` 사전 예약 알람 fire-time 재검증 실패.
+  //   'revalidate-no-trip': tripStart 미존재(이미 종료된 trip의 잔여 발화).
+  //   'revalidate-route-sig-mismatch': 예약 시점 sig와 현재 sig 불일치(목적지 변경/환승 재산정).
+  //   'revalidate-waypoint-mismatch': 파싱된 stationName이 현재 route waypoint에 없음.
+  | 'revalidate-no-trip'
+  | 'revalidate-route-sig-mismatch'
+  | 'revalidate-waypoint-mismatch'
+  // #1167 — boardingPrompt [탑승] 응답 → arvlCd 우선순위 autoLock 결과.
+  //   'autolock-success': arvlCd 우선순위로 1대 확정 → createLock 성공.
+  //   'autolock-no-trip': destinationId null (사용자 trip 종료 후 늦은 탭).
+  //   'autolock-arrivals-empty': fetchArrivalsForStation null/no candidates.
+  //   'autolock-ambiguity': 같은 priority 후보 2+ → manual fallback.
+  //   'autolock-station-lookup': originStation/line 매칭 실패.
+  //   'autolock-lock-failed': createLock 예외 (저장/네트워크 등) → manual fallback.
+  | 'autolock-success'
+  | 'autolock-no-trip'
+  | 'autolock-arrivals-empty'
+  | 'autolock-ambiguity'
+  | 'autolock-station-lookup'
+  | 'autolock-lock-failed'
+  // #1170 — boarding-prompt 사용자 응답 측정. 9단 게이트 통과 후 발사된 prompt에 대한 응답.
+  //   'response-boarded': [탑승] 또는 default 탭 액션.
+  //   'response-dismissed': [미탑승] 또는 dismiss.
+  | 'response-boarded'
+  | 'response-dismissed';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -741,6 +774,59 @@ export function logSuppressedStationPassedWarmup(stationName: string | undefined
   });
 }
 
+/**
+ * #1012 (H5) — useStationAlarm hydration state machine transition 1건 적재.
+ *
+ * pre-hydrate → hydrating → storage-synced → ready 4단계 중 진입 직후 호출.
+ * destinationId는 같은 trip 내 transition 묶음을 그루핑하기 위한 컨텍스트.
+ * source는 'fg-hydrate' 재사용 — 기존 hydrate 측정과 동일 소스에서 phase별 reason으로 구분.
+ *
+ * outcome='received'는 정책적으로 "관찰 신호" 의미 (적재만 하고 발사·억제 없음).
+ */
+export type HydrationPhase = 'pre-hydrate' | 'hydrating' | 'storage-synced' | 'ready';
+
+const HYDRATION_PHASE_REASON: Record<HydrationPhase, AlarmLogReason> = {
+  'pre-hydrate': 'hydration-pre-hydrate',
+  hydrating: 'hydration-hydrating',
+  'storage-synced': 'hydration-storage-synced',
+  ready: 'hydration-ready',
+};
+
+export function logHydrationTransition(
+  phase: HydrationPhase,
+  destinationId: string | null,
+): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'fg-hydrate',
+    outcome: 'received',
+    reason: HYDRATION_PHASE_REASON[phase],
+    destinationId,
+  });
+}
+
+/**
+ * #918 A3 PR2 (#729 흡수) — `tba:` 사전 예약 알람의 fire-time 재검증 실패 1건 적재.
+ *
+ * scheduledAlarmReceiver가 OS-fired identifier를 reconcile하기 직전에 호출 — 적재 후 fired set /
+ * lastStationName 갱신을 skip해 stale 알람이 후속 상태(BG arrival 기준역 등)를 오염시키지 않게 한다.
+ * source='bg-scheduled' 재사용 — preschedule path 출처 통일(stamp/fired log와 동일 source).
+ */
+export function logSuppressedTbaRevalidation(input: {
+  reason: 'revalidate-no-trip' | 'revalidate-route-sig-mismatch' | 'revalidate-waypoint-mismatch';
+  stationName: string;
+  phaseId?: AlarmPhaseId;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'bg-scheduled',
+    outcome: 'suppressed',
+    reason: input.reason,
+    stationName: input.stationName,
+    phaseId: input.phaseId,
+  });
+}
+
 /** #1021: boardingPrompt 발사 1건 적재. */
 export function logBoardingPromptFired(input: { originStation: string; line: string }): void {
   appendAlarmLog({
@@ -766,7 +852,13 @@ export function countBoardingPromptByWindow(
 ): Record<BoardingPromptWindowKey, number> {
   const counts: Record<BoardingPromptWindowKey, number> = { '5m': 0, '1h': 0, all: 0 };
   for (const entry of entries) {
+    // #1170 — fired 중에서도 reason이 없는 entry만 "발사 빈도"로 계산. response/autolock telemetry
+    // entry는 별도 채널이므로 제외(중복 집계 방지).
     if (entry.source !== 'boarding-prompt' || entry.outcome !== 'fired') continue;
+    // #1167 — autolock outcome도 source='boarding-prompt'를 재사용하지만 outcome='suppressed'
+    // 또는 reason='autolock-success'로 구분. 발사 빈도(#1021) 집계에는 reason 미설정 entry만 포함.
+    // #1170 — response telemetry entry도 reason 필드를 채워 같은 규칙으로 제외된다.
+    if (entry.reason !== undefined) continue;
     const ageMs = now - entry.ts;
     for (const { key, ms } of BOARDING_PROMPT_WINDOWS) {
       if (ageMs <= ms) counts[key] += 1;
@@ -774,6 +866,68 @@ export function countBoardingPromptByWindow(
   }
   return counts;
 }
+
+/**
+ * #1167 — boardingPrompt autoLock outcome 적재.
+ *
+ * 성공 시 outcome='fired' + reason='autolock-success', skip 시 outcome='suppressed' + skip 이유.
+ * source='boarding-prompt'를 재사용해 한 화면에서 발사 빈도(#1021) + autolock 분포를 같이 본다.
+ */
+export type BoardingPromptAutoLockReason =
+  | 'autolock-success'
+  | 'autolock-no-trip'
+  | 'autolock-arrivals-empty'
+  | 'autolock-ambiguity'
+  | 'autolock-station-lookup'
+  | 'autolock-lock-failed';
+
+export function logBoardingPromptAutoLock(input: {
+  reason: BoardingPromptAutoLockReason;
+  originStation: string;
+  line: string;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'boarding-prompt',
+    outcome: input.reason === 'autolock-success' ? 'fired' : 'suppressed',
+    reason: input.reason,
+    stationName: `${input.line}·${input.originStation}`,
+  });
+}
+
+/** #1167 — 최근 N건의 autolock outcome 분포 (운영 측정용). */
+export function countBoardingPromptAutoLockOutcomes(
+  entries: readonly AlarmLogEntry[],
+): Record<BoardingPromptAutoLockReason, number> {
+  const counts: Record<BoardingPromptAutoLockReason, number> = {
+    'autolock-success': 0,
+    'autolock-no-trip': 0,
+    'autolock-arrivals-empty': 0,
+    'autolock-ambiguity': 0,
+    'autolock-station-lookup': 0,
+    'autolock-lock-failed': 0,
+  };
+  for (const entry of entries) {
+    if (entry.source !== 'boarding-prompt') continue;
+    const reason = entry.reason;
+    if (reason === undefined) continue;
+    if (reason in counts) counts[reason as BoardingPromptAutoLockReason] += 1;
+  }
+  return counts;
+}
+
+/** #1170: boardingPrompt 사용자 응답 1건 적재. */
+export function logBoardingPromptResponded(input: {
+  outcome: 'boarded' | 'dismissed';
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'boarding-prompt',
+    outcome: 'received',
+    reason: input.outcome === 'boarded' ? 'response-boarded' : 'response-dismissed',
+  });
+}
+
 
 
 // ── CRUD ──
@@ -976,4 +1130,23 @@ AppState.addEventListener('change', handleAppStateChange);
  */
 export function _simulateAppStateForTest(state: AppStateStatus): void {
   handleAppStateChange(state);
+}
+
+/**
+ * 알람 로그 항목에서 지정된 reason 목록에 해당하는 항목만 집계 (#1025).
+ * DebugModal Gates 섹션에서 gate/movement reason별 분포를 시각화하는 데 사용.
+ * 결과: `reason → count` (count > 0인 항목만). 빈 객체이면 관련 항목 없음.
+ */
+export function countGateReasons(
+  logs: readonly AlarmLogEntry[],
+  reasons: readonly AlarmLogReason[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  const reasonSet = new Set<string>(reasons);
+  for (const entry of logs) {
+    if (entry.reason && reasonSet.has(entry.reason)) {
+      counts[entry.reason] = (counts[entry.reason] ?? 0) + 1;
+    }
+  }
+  return counts;
 }

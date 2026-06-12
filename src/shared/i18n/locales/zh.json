@@ -51,12 +51,18 @@
     "refresh": "刷新",
     "boardingProximityHint": "靠近乘车站后可以选择列车",
     "boardingTrainListTitle": "选择乘坐列车",
+    "boardingTrainListLoading": "正在加载到达信息...",
     "boardingTrainListEmpty": "暂无即将到达的列车。",
+    "boardingTrainListEmptyHint": "稍后将自动重新确认。",
+    "boardingTrainListPending": "正在登记乘车...",
+    "boardingTrainListError": "无法加载到达信息",
+    "boardingTrainListErrorHint": "稍后将自动重试。",
     "misBoardingToast": "找不到乘坐的列车,请重新选择。",
     "autoDisembarkToast": {
       "message": "已到达{{name}},已清除目的地",
       "undo": "撤销"
     },
+    "lockCorrectionToast": "已将乘车列车修正为 {{prev}} → {{next}}",
     "congestion": {
       "level": {
         "low": "宽松",
@@ -95,8 +101,8 @@
     "speakerOffTitle": "关闭扬声器输出",
     "speakerOffMessage": "关闭扬声器输出后,未连接耳机时只会震动。是否继续?",
     "speakerOffConfirm": "关闭",
-    "locklessStationPassedLabel": "未选择列车时通过站点通知",
-    "locklessStationPassedDescription": "在未选择乘车列车的路线上也接收通过站点的通知。基于推测,可能会有噪音。",
+    "locklessStationPassedLabel": "显示全部站点",
+    "locklessStationPassedDescription": "即使未选择乘车列车,也以信息形式通知所有站点。关闭后仅在确认乘车时通知。",
     "languageSection": "语言",
     "languageLabel": "应用语言",
     "languageDescription": "自动会跟随设备设置",
@@ -289,7 +295,7 @@
     "settings": {
       "sleepModeHint": "连接耳机时以起床闹钟音播放",
       "speakerOutputHint": "未连接耳机时通过扬声器播放闹钟音",
-      "locklessStationPassedHint": "未选择乘车列车也会收到经过站点通知",
+      "locklessStationPassedHint": "切换全部站点信息通知",
       "sentryOptInHint": "同意发送匿名错误信息",
       "accessibilityModeHint": "按电梯位置引导快速下车位置",
       "versionFooterLabel": "应用版本 {{version}}",
@@ -299,6 +305,10 @@
       "dismissHint": "停止闹钟声和振动",
       "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
       "boardingTrainSelectHint": "点击乘坐该列车",
+      "boardingTrainListLoadingLabel": "正在加载到达信息",
+      "boardingTrainListEmptyLabel": "无即将到达的列车",
+      "boardingTrainListPendingLabel": "正在登记乘车",
+      "boardingTrainListErrorLabel": "无法加载到达信息",
       "boardingLockReleaseLabel": "下车",
       "boardingLockReleaseHint": "结束当前乘车状态"
     },

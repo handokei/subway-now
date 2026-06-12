@@ -247,9 +247,27 @@ export interface BoardingLockMeta {
 }
 
 /**
+ * Reschedule push channel discriminator (#918 A3 PR4).
+ *
+ *  - 'bl' — boarding-lock scheduler (`bl:` prefix). 기존 #585 경로. trainCode 매칭으로 hop 정정.
+ *  - 'tba' — trip-bound scheduler (`tba:` prefix). lock-free 사전 예약 정정 — trainCode 무관.
+ *
+ * 한 reschedule push는 둘 다를 동시에 정정할 수 있도록 `ReschedulePushPayload.channels`에
+ * 배열로 담는다 (단일 push로 두 채널의 사전 예약을 동기화 — APNs budget 절약).
+ */
+export type RescheduleChannel = 'bl' | 'tba';
+
+/** 신규 backend가 default로 보내는 channels — bl + tba 모두 정정. */
+export const RESCHEDULE_CHANNELS_DEFAULT: ReadonlyArray<RescheduleChannel> = ['bl', 'tba'];
+
+/**
  * Reschedule silent push payload (#585).
  * 디바이스가 사전 예약한 알람의 도착 시각이 backend 관측과 어긋날 때 발사.
  * 디바이스는 이 push를 받아 기존 예약을 cancel하고 newArrivalTimeEpoch로 재예약한다.
+ *
+ * `channels` (#918 A3 PR4): 정정 대상 scheduler 채널. 미지정 시 구 backend 호환을 위해
+ * 클라가 `['bl']` 단독으로 해석 (기존 동작 보존). 신규 backend는 `RESCHEDULE_CHANNELS_DEFAULT`로
+ * `['bl', 'tba']`를 보내 `tba:` 사전 예약도 함께 정정한다.
  */
 export interface ReschedulePushPayload {
   pushId: string;
@@ -258,6 +276,7 @@ export interface ReschedulePushPayload {
   nextStation: string;
   newArrivalTimeEpoch: number;
   sentAt: number;
+  channels?: ReadonlyArray<RescheduleChannel>;
 }
 
 /**

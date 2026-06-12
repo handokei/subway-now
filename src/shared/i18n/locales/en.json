@@ -51,12 +51,18 @@
     "refresh": "Refresh",
     "boardingProximityHint": "Move closer to the boarding station to pick a train",
     "boardingTrainListTitle": "Pick your train",
+    "boardingTrainListLoading": "Loading arrivals...",
     "boardingTrainListEmpty": "No upcoming trains.",
+    "boardingTrainListEmptyHint": "We'll retry automatically.",
+    "boardingTrainListPending": "Registering boarding...",
+    "boardingTrainListError": "Couldn't load arrivals",
+    "boardingTrainListErrorHint": "We'll retry automatically in a moment.",
     "misBoardingToast": "Can't find your train. Please reselect.",
     "autoDisembarkToast": {
       "message": "Arrived at {{name}} — destination cleared",
       "undo": "Undo"
     },
+    "lockCorrectionToast": "Boarding train corrected: {{prev}} → {{next}}",
     "congestion": {
       "level": {
         "low": "Light",
@@ -95,8 +101,8 @@
     "speakerOffTitle": "Turn off speaker output",
     "speakerOffMessage": "Disabling speaker output will play only vibration when earphones are not connected. Continue?",
     "speakerOffConfirm": "Turn off",
-    "locklessStationPassedLabel": "Station-passed alerts without train selection",
-    "locklessStationPassedDescription": "Receive station-passed notifications even when no train is selected. Estimates may be noisy.",
+    "locklessStationPassedLabel": "Show all stations",
+    "locklessStationPassedDescription": "Receive informational alerts for every station, even without a confirmed boarding train. Turn off to alert only after boarding is confirmed.",
     "languageSection": "Language",
     "languageLabel": "App language",
     "languageDescription": "Auto follows your device setting",
@@ -289,7 +295,7 @@
     "settings": {
       "sleepModeHint": "Plays a wake-up alarm sound when headphones are connected",
       "speakerOutputHint": "Plays alarm sound through the speaker when headphones are not connected",
-      "locklessStationPassedHint": "Receive station-passed alerts even when no train is selected",
+      "locklessStationPassedHint": "Toggle all-station informational alerts",
       "sentryOptInHint": "Consent to send anonymous error reports",
       "accessibilityModeHint": "Guides quick-exit positions based on elevators",
       "versionFooterLabel": "App version {{version}}",
@@ -299,6 +305,10 @@
       "dismissHint": "Stops the alarm sound and vibration",
       "boardingTrainSelectLabel": "{{meta}}, {{sequence}}, {{arrival}}",
       "boardingTrainSelectHint": "Tap to board this train",
+      "boardingTrainListLoadingLabel": "Loading arrivals",
+      "boardingTrainListEmptyLabel": "No upcoming trains",
+      "boardingTrainListPendingLabel": "Registering boarding",
+      "boardingTrainListErrorLabel": "Couldn't load arrivals",
       "boardingLockReleaseLabel": "Get off",
       "boardingLockReleaseHint": "Ends the current boarding session"
     },

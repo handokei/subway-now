@@ -1,9 +1,15 @@
+/* eslint-disable import/no-restricted-paths --
+ * B1 (Epic #1008, ADR-013) — settings store가 alarm feature의 BoardingLockStore를
+ * 호출하는 orchestration 동작을 검증하기 위해 mock import가 필요하다.
+ */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useSettingsStore } from '../useSettingsStore';
 import {
   getSentryOptIn,
   setSentryOptIn,
 } from '../../../../shared/infra/monitoring/sentryInit';
+import { useBoardingLockStore } from '../../../alarm/store/useBoardingLockStore';
+import { emitLocklessToggleTransition } from '../../utils/locklessFunnel';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -14,8 +20,23 @@ jest.mock('../../../../shared/infra/monitoring/sentryInit', () => ({
   setSentryOptIn: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock('../../utils/locklessFunnel', () => ({
+  emitLocklessToggleTransition: jest.fn().mockResolvedValue(undefined),
+}));
+
+jest.mock('../../../alarm/store/useBoardingLockStore', () => ({
+  useBoardingLockStore: {
+    getState: jest.fn(() => ({
+      releaseLock: jest.fn().mockResolvedValue(undefined),
+    })),
+  },
+}));
+
 const getSentryOptInMock = getSentryOptIn as jest.Mock;
 const setSentryOptInMock = setSentryOptIn as jest.Mock;
+const useBoardingLockStoreMock = useBoardingLockStore as unknown as {
+  getState: jest.Mock;
+};
 
 describe('useSettingsStore', () => {
   beforeEach(() => {
@@ -30,6 +51,9 @@ describe('useSettingsStore', () => {
     jest.clearAllMocks();
     getSentryOptInMock.mockResolvedValue(false);
     setSentryOptInMock.mockResolvedValue(undefined);
+    useBoardingLockStoreMock.getState.mockReturnValue({
+      releaseLock: jest.fn().mockResolvedValue(undefined),
+    });
   });
 
   // ── sleepMode ──
@@ -170,6 +194,21 @@ describe('useSettingsStore', () => {
     );
   });
 
+  // B1 (Epic #1008, ADR-013) — 토글 OFF 시 활성 BoardingLock cleanup
+  it('setLocklessStationPassed(false): useBoardingLockStore.releaseLock을 호출한다', async () => {
+    const releaseLock = jest.fn().mockResolvedValue(undefined);
+    useBoardingLockStoreMock.getState.mockReturnValue({ releaseLock });
+    await useSettingsStore.getState().setLocklessStationPassed(false);
+    expect(releaseLock).toHaveBeenCalledTimes(1);
+  });
+
+  it('setLocklessStationPassed(true): releaseLock을 호출하지 않는다', async () => {
+    const releaseLock = jest.fn().mockResolvedValue(undefined);
+    useBoardingLockStoreMock.getState.mockReturnValue({ releaseLock });
+    await useSettingsStore.getState().setLocklessStationPassed(true);
+    expect(releaseLock).not.toHaveBeenCalled();
+  });
+
   it('loadLocklessStationPassed: 저장된 false를 복원한다 (기존 사용자 명시 OFF 보존)', async () => {
     (AsyncStorage.getItem as jest.Mock).mockResolvedValueOnce(JSON.stringify(false));
     await useSettingsStore.getState().loadLocklessStationPassed();
@@ -186,6 +225,19 @@ describe('useSettingsStore', () => {
     (AsyncStorage.getItem as jest.Mock).mockRejectedValueOnce(new Error('storage error'));
     await useSettingsStore.getState().loadLocklessStationPassed();
     expect(useSettingsStore.getState().locklessStationPassed).toBe(true);
+  });
+
+  // #1175 — lockless funnel transition emit
+  it('setLocklessStationPassed: prev=true → next=false 시 emit(true, false) 호출', async () => {
+    useSettingsStore.setState({ locklessStationPassed: true });
+    await useSettingsStore.getState().setLocklessStationPassed(false);
+    expect(emitLocklessToggleTransition).toHaveBeenCalledWith(true, false);
+  });
+
+  it('setLocklessStationPassed: prev=false → next=true 시 emit(false, true) 호출', async () => {
+    useSettingsStore.setState({ locklessStationPassed: false });
+    await useSettingsStore.getState().setLocklessStationPassed(true);
+    expect(emitLocklessToggleTransition).toHaveBeenCalledWith(false, true);
   });
 
   // ── #1038 — sentryOptIn (default OFF, opt-in only) ──

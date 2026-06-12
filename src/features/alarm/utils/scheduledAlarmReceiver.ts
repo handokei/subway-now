@@ -7,9 +7,20 @@ import {
   setFiredAlarms,
   setLastFiredAlarmStationName,
 } from './notificationState';
-import { DESTINATION_KEY } from '../../../shared/constants/storageKeys';
+import { DESTINATION_KEY, ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 import { recordFiredAlarm } from './prescheduledMetrics';
+import {
+  TRIP_BOUND_ALARM_PREFIX,
+  getRegisteredTripRouteSig,
+  parseTripBoundAlarmIdentifier,
+} from './tripBoundScheduler';
+import { getTripStartedAt } from './tripStartStorage';
+import { resolveAllTargets } from './stationAlarm';
+import { routeSignature } from './boardingLockScheduler';
+import { logSuppressedTbaRevalidation } from './alarmLog';
+import type { Route } from '../../../shared/utils/stationRoute';
+import type { AlarmPhaseId } from './alarmPhases';
 
 const logger = createLogger('ScheduledAlarmReceiver');
 
@@ -28,8 +39,110 @@ async function getCurrentDestinationId(): Promise<string | null> {
   }
 }
 
+interface ParsedAlarmIdentifier {
+  prefix: 'alarm' | 'tba';
+  phaseId: string;
+  stationName: string;
+}
+
 /**
- * 사전 예약된 `alarm:` 알림이 OS에 의해 발사된 직후 클라이언트 상태를 갱신한다.
+ * `alarm:` / `tba:` 두 prefix 단일 진입점 (#918 A3 PR2).
+ * 두 경로의 phaseId/stationName 추출 로직이 같으므로 호출자는 prefix 분기만 본다.
+ */
+function parseAlarmIdentifier(identifier: string): ParsedAlarmIdentifier | null {
+  if (identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) {
+    const p = parseTripBoundAlarmIdentifier(identifier);
+    return p ? { prefix: 'tba', phaseId: p.phaseId, stationName: p.stationName } : null;
+  }
+  const p = parseScheduledAlarmIdentifier(identifier);
+  return p ? { prefix: 'alarm', phaseId: p.phaseId, stationName: p.stationName } : null;
+}
+
+function safeParseRoute(raw: string | null): Route {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Route;
+  } catch {
+    return null;
+  }
+}
+
+function parseDestinationName(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return typeof parsed?.name === 'string' ? parsed.name : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `tba:` 알람의 fire-time 재검증 (#918 A3 PR2, #729 흡수).
+ *
+ * OS가 예약된 시각에 발사한 trip-bound 알람이 *현재* 시점에도 유효한지 확인한다.
+ * 세 조건 모두 충족해야 reconcile 진행:
+ *   1) tripStart 존재 — trip이 종료되지 않았다.
+ *   2) ROUTE_KEY/DESTINATION_KEY 기반 현재 sig가 등록 시점 sig와 동일 — 목적지/환승 변경 없음.
+ *   3) 파싱된 stationName이 현재 route waypoint 시퀀스 안에 있음 — 방어 검증.
+ *
+ * 한 가지라도 실패하면 reason과 함께 alarmLog에 적재하고 'suppress'를 반환한다.
+ * 호출자는 fired set / lastStationName 갱신을 skip해 stale 알람이 후속 상태를 오염시키지 않게 한다.
+ */
+async function revalidateTbaAlarm(parsed: {
+  phaseId: string;
+  stationName: string;
+}): Promise<'pass' | 'suppress'> {
+  // phaseId는 'early'/'imminent' 둘 중 하나 — alarmLog에는 그대로 통과시켜도 안전.
+  const phaseId = parsed.phaseId as AlarmPhaseId;
+
+  const tripStart = await getTripStartedAt();
+  if (tripStart === null) {
+    logSuppressedTbaRevalidation({
+      reason: 'revalidate-no-trip',
+      stationName: parsed.stationName,
+      phaseId,
+    });
+    return 'suppress';
+  }
+
+  const [routeRaw, destRaw, registeredSig] = await Promise.all([
+    AsyncStorage.getItem(ROUTE_KEY),
+    AsyncStorage.getItem(DESTINATION_KEY),
+    getRegisteredTripRouteSig(),
+  ]);
+  const route: Route = safeParseRoute(routeRaw);
+  const destinationName = parseDestinationName(destRaw);
+  const currentSig = routeSignature(route, destinationName);
+
+  // registeredSig 부재 / 현재 sig 미산출 / 두 값 불일치 모두 mismatch로 묶는다.
+  // (registeredSig 부재는 cancelTripBoundAlarms 직후 잔여 OS 발사 케이스.)
+  if (registeredSig === null || currentSig === null || registeredSig !== currentSig) {
+    logSuppressedTbaRevalidation({
+      reason: 'revalidate-route-sig-mismatch',
+      stationName: parsed.stationName,
+      phaseId,
+    });
+    return 'suppress';
+  }
+
+  // 방어 검증: parsed stationName이 현재 waypoint 시퀀스에 존재해야 한다.
+  // currentSig !== null이면 route, destinationName 둘 다 non-null 보장됨.
+  const targets = resolveAllTargets(route as NonNullable<Route>, destinationName as string);
+  if (!targets.some((t) => t.name === parsed.stationName)) {
+    logSuppressedTbaRevalidation({
+      reason: 'revalidate-waypoint-mismatch',
+      stationName: parsed.stationName,
+      phaseId,
+    });
+    return 'suppress';
+  }
+
+  return 'pass';
+}
+
+/**
+ * 사전 예약된 `alarm:` / `tba:` 알림이 OS에 의해 발사된 직후 클라이언트 상태를 갱신한다.
  * 사전 예약 알람은 클라이언트 콜백을 거치지 않으므로(`alarmScheduler.ts`), 이 함수가
  * FG/BG 양쪽 발화 모두에 대한 상태 동기화 단일 진입점이다.
  *
@@ -37,6 +150,9 @@ async function getCurrentDestinationId(): Promise<string | null> {
  *   해당 phase를 이미 발화된 것으로 간주해 중복 발화를 막는다.
  * - LAST_FIRED_ALARM_STATION_NAME_KEY를 해당 역 이름으로 갱신 → BGAppRefreshTask가
  *   다음 사이클에서 Arrival API를 올바른 기준역으로 호출.
+ *
+ * `tba:` (#918 A3 PR2, #729 흡수): revalidateTbaAlarm이 stale/misfire를 차단한 뒤 위 동작 수행.
+ * `alarm:` 경로는 BoardingLock scheduler cancel/reschedule이 SSOT이므로 별도 재검증 없이 통과.
  */
 export async function reconcileScheduledAlarmDelivery(
   identifier: string,
@@ -46,8 +162,12 @@ export async function reconcileScheduledAlarmDelivery(
   // `alarm:` prefix와 무관 — graceful no-op for non-tba identifier.
   await recordFiredAlarm({ identifier, actualFireMs });
 
-  const parsed = parseScheduledAlarmIdentifier(identifier);
+  const parsed = parseAlarmIdentifier(identifier);
   if (!parsed) return;
+
+  if (parsed.prefix === 'tba' && (await revalidateTbaAlarm(parsed)) === 'suppress') {
+    return;
+  }
 
   const destinationId = await getCurrentDestinationId();
   // destinationId가 없으면 이미 trip이 종료/변경된 알람의 잔여 발화 — 상태 갱신 스킵.
@@ -80,14 +200,23 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
     await recordFiredAlarm({ identifier: n.request.identifier, actualFireMs: fireMs });
   }
 
+  // #918 A3 PR2 — `tba:` 항목은 발사 시점 재검증을 거친다. suppress인 경우 fired set /
+  // lastStationName 갱신에 포함하지 않아 stale 알람이 후속 상태(BG arrival 기준역 등)를 오염시키지
+  // 않게 한다. `alarm:` 경로는 기존 BoardingLock SSOT을 신뢰해 통과.
+  const accepted: ParsedAlarmIdentifier[] = [];
+  for (const n of presented) {
+    const parsed = parseAlarmIdentifier(n.request.identifier);
+    if (!parsed) continue;
+    if (parsed.prefix === 'tba' && (await revalidateTbaAlarm(parsed)) === 'suppress') continue;
+    accepted.push(parsed);
+  }
+
   const destinationId = await getCurrentDestinationId();
   let lastStationName: string | null = null;
   if (destinationId) {
     const fired = await getFiredAlarms(destinationId);
     let firedChanged = false;
-    for (const n of presented) {
-      const parsed = parseScheduledAlarmIdentifier(n.request.identifier);
-      if (!parsed) continue;
+    for (const parsed of accepted) {
       const key = `${parsed.phaseId}:${parsed.stationName}`;
       if (!fired.has(key)) {
         fired.add(key);
@@ -98,9 +227,8 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
     if (firedChanged) await setFiredAlarms(destinationId, fired);
   } else {
     // destinationId 미설정 — fired set 갱신은 스킵하고 lastStationName만 추출.
-    for (const n of presented) {
-      const parsed = parseScheduledAlarmIdentifier(n.request.identifier);
-      if (parsed) lastStationName = parsed.stationName;
+    for (const parsed of accepted) {
+      lastStationName = parsed.stationName;
     }
   }
   if (lastStationName) await setLastFiredAlarmStationName(lastStationName);

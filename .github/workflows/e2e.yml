@@ -164,6 +164,7 @@ jobs:
       matrix:
         scenario:
           - seam-b-13-19
+          - seam-c-hydration
           - seam-e-13-39
           - seam-f-13-24
           - seam-a-delay-chip
@@ -172,8 +173,9 @@ jobs:
           - seam-la-refresh-heartbeat
           - a1-auto-lock
           - a3-preschedule-fire-delta
-          # Seam C는 transfer-leg / FG-return 이벤트 mock 설계 결함으로 보류
-          # ([[project-2026-06-05-epic-912-session-end]]).
+          # Seam C는 #922에서 transfer-leg/FG-return 이벤트 mock 설계 결함으로 보류했다가
+          # H5(#1012, hydration state machine) 머지 후 #1200에서 client-observable 경로
+          # (destination 해제 + BG/FG cycle 재수화)만 가드하는 형태로 추가됨.
     env:
       SIM_NAME: 'iPhone 16'
       EXPO_PUBLIC_USE_BFF: 'true'

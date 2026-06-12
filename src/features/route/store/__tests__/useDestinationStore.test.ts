@@ -151,8 +151,9 @@ describe('useDestinationStore', () => {
   async function flushMicrotasks(): Promise<void> {
     // #919 — setDestination이 triggerTripEndRecall → runTripBoundCleanups → setTripStartedAt
     // 세 단계 then-chain을 돌리는데 cleanup 안에서 Promise.allSettled가 추가 microtask를 만든다.
-    // 충분히 넉넉하게 flush.
-    for (let i = 0; i < 10; i++) {
+    // #773 — purgeBoardingLockSchedulerQueue가 getScheduledNotificationIds + clearScheduledNotificationIds
+    // (각각 AsyncStorage await 2회 포함)를 추가하므로 microtask depth가 더 깊다. 넉넉하게 flush.
+    for (let i = 0; i < 30; i++) {
       await Promise.resolve();
     }
   }

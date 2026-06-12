@@ -2,7 +2,7 @@
 
 ## 상태
 
-Accepted (2026-06-03)
+Accepted (2026-06-03) · Amended 2026-06-11 (ADR-013 보완)
 
 관련 이슈: #816 (D 방향 epic), #817 (Phase 2 map matching), #819 (B 슬라이스 — 탑승 푸시)
 관련 PR (머지): #820/#816(C 슬라이스), #821/#817(Phase 2), #822/#819(B 슬라이스)
@@ -35,15 +35,23 @@ GPS-only로는 정확도 마지노선이 두 가지 면에서 깨졌다:
 
 핵심 — 사용자에게 **"몇 호선 탔어?"가 아니라 "탔어?" 하나만 묻는다.** trainCode 선택은 arvlCd 신호로 백엔드가 결정.
 
-### C 흐름 — Lockless station-passed (opt-in 토글)
+### C 흐름 — 전체역 보기 (정보용 토글) + lock cleanup 트리거
+
+> **Amended 2026-06-11 (B1 확정, ADR-013 통합):**
+> 토글의 의미를 "lockless trip 자동 보완"이 아닌 **"전체역 보기 (정보 표시용)"** 으로 재정의한다.
+> lockless trip의 실제 보완 경로는 §B 흐름(boardingPrompt). 본 토글은 사용자가 명시적으로
+> "모든 역을 보겠다"고 선택한 정보 모드이며, lock과 직교한다.
 
 | 결정 | 값 | 근거 |
 |---|---|---|
 | 기본 상태 | OFF | #640 회귀(잘못된 알림) 차단 — 사용자 동의 영역 |
 | 활성 조건 | `locklessStationPassed=true` AND trip route 존재 | trip route 없으면 zero — zero trip = zero push |
+| 토글 OFF 동작 | **활성 BoardingLock 즉시 cleanup (`tripBoundCleanups` 활용)** | "전체역 보기" 모드 해제 시 lock도 정리 — 정보 표시 모드 일관성 |
 | 저장소 | AsyncStorage `LOCKLESS_STATION_PASSED_KEY` | `src/constants/storageKeys.ts:58` |
 | 백엔드 동기화 | trip register payload에 `locklessStationPassed` 필드 | `backend/alarm-worker/src/types.ts` `Trip.locklessStationPassed` |
 | 발사 게이트 | scheduled.ts lockless 분기 | `backend/alarm-worker/src/scheduled.ts` |
+
+**Lockless trip 보완은 §B (boardingPrompt)가 1순위 경로** — 본 토글은 사용자 명시 의향의 정보 모드. 통합 우선순위는 ADR-013 §결정 참조.
 
 ### False positive 9단 AND 게이트 (B 흐름의 핵심)
 
@@ -140,6 +148,7 @@ B 흐름이 안정화되면 환승 시 next-leg에도 같은 prompt를 자동 �
 2. **A 옵션 환승 자동 prompt 도입 여부** — 위 측정 결과로 결정. false positive ≤ 5% AND 탭률 ≥ 70%면 A+C 권장.
 3. **Phase 4 Particle filter** — Phase 3 dead zone drift 측정 후 정확도 부족 시만. 현시점 보류.
 4. **`project_item6_d_direction_design` 메모 SSOT 통합** — 본 ADR이 SSOT 정착 후 메모는 "ADR-010 참조"로 슬림화.
+5. **ADR-013 — lockless 보완 정책 통합** — B+C 통합 우선순위 SSOT (2026-06-11 B1 확정). 본 ADR §B/§C 의미 재정의 반영.
 
 ## References
 
