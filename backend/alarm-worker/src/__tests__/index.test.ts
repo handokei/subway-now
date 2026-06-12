@@ -1786,44 +1786,42 @@ describe('validateBoardingLockSync (#901)', () => {
     expect(p?.subsurface).toBeUndefined();
   });
 
-  // D4 (#1210) — trainCode / boardingLine optional 검증.
-  it('#1210 — trainCode + boardingLine 정상 통과', () => {
+  // D4 (#1210) — trainCode / boardingLine optional 검증. validBase에 trainCode/boardingLine만
+  // 변형해 일괄 검증 (정상/빈문자열/비문자열).
+  it.each<{
+    label: string;
+    extra: Record<string, unknown>;
+    expectedTrainCode: string | undefined;
+    expectedBoardingLine: string | undefined;
+  }>([
+    {
+      label: '정상 string forward',
+      extra: { trainCode: 'T-1', boardingLine: '2' },
+      expectedTrainCode: 'T-1',
+      expectedBoardingLine: '2',
+    },
+    {
+      label: '빈 문자열은 누락 처리',
+      extra: { trainCode: '', boardingLine: '' },
+      expectedTrainCode: undefined,
+      expectedBoardingLine: undefined,
+    },
+    {
+      label: '비문자열 타입은 무시',
+      extra: { trainCode: 123, boardingLine: { x: 1 } },
+      expectedTrainCode: undefined,
+      expectedBoardingLine: undefined,
+    },
+  ])('#1210 — trainCode/boardingLine: $label', ({ extra, expectedTrainCode, expectedBoardingLine }) => {
     const p = validateBoardingLockSync({
       token: 'tok',
       observedStationName: '강남',
       observedAtMs: 1,
       accuracy: 10,
-      trainCode: 'T-1',
-      boardingLine: '2',
+      ...extra,
     });
-    expect(p?.trainCode).toBe('T-1');
-    expect(p?.boardingLine).toBe('2');
-  });
-
-  it('#1210 — 빈 trainCode/boardingLine 문자열은 누락 처리', () => {
-    const p = validateBoardingLockSync({
-      token: 'tok',
-      observedStationName: '강남',
-      observedAtMs: 1,
-      accuracy: 10,
-      trainCode: '',
-      boardingLine: '',
-    });
-    expect(p?.trainCode).toBeUndefined();
-    expect(p?.boardingLine).toBeUndefined();
-  });
-
-  it('#1210 — trainCode/boardingLine 비문자열 타입은 무시', () => {
-    const p = validateBoardingLockSync({
-      token: 'tok',
-      observedStationName: '강남',
-      observedAtMs: 1,
-      accuracy: 10,
-      trainCode: 123,
-      boardingLine: { x: 1 },
-    });
-    expect(p?.trainCode).toBeUndefined();
-    expect(p?.boardingLine).toBeUndefined();
+    expect(p?.trainCode).toBe(expectedTrainCode);
+    expect(p?.boardingLine).toBe(expectedBoardingLine);
   });
 
   it('non-object reject', () => {
@@ -2146,99 +2144,77 @@ describe('POST /boarding-lock/sync (#901)', () => {
 
   // D4 (#1210) — payload trainCode가 KV lock과 다르면 KV lock 갱신 + consecutiveEtaMissing=0 reset.
   describe('trainCode swap (#1210)', () => {
-    it('payload trainCode != KV lock trainCode → KV trainCode 갱신 + line 갱신', async () => {
-      const env = makeKvEnv();
-      // 환승 전 leg — line 2, trainCode T-1, consecutiveEtaMissing 4 (자동 종료 임계 근처).
-      const trip = validateTrip({
-        ...tripWithLock(),
-        consecutiveEtaMissing: 4,
-      });
-      await env.TRIPS.put('trip:tok-sync', JSON.stringify(trip));
-      const res = await post(
-        '/boarding-lock/sync',
-        {
-          token: 'tok-sync',
-          observedStationName: '신촌',
-          observedAtMs: 1,
-          accuracy: 5,
-          trainCode: 'T-7',
-          boardingLine: '7',
-        },
-        env,
-      );
-      expect(res.status).toBe(200);
-      const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
-      expect(stored.boardingLock.trainCode).toBe('T-7');
-      expect(stored.boardingLock.line).toBe('7');
-      expect(stored.consecutiveEtaMissing).toBe(0);
-    });
+    /**
+     * 4 trip+payload 케이스 ($label) × 동일 assertion 셰이프(lock + counter)로 1 케이스 1 시나리오
+     * 검증. payload 분기는 sync POST 직전에 spread로 추가.
+     */
+    it.each<{
+      label: string;
+      preCounter: number;
+      payloadExtra: Record<string, unknown>;
+      expectedTrainCode: string;
+      expectedLine: string;
+      expectedCounter: number;
+    }>([
+      {
+        label: 'trainCode != KV → KV trainCode + line 갱신, counter reset',
+        preCounter: 4,
+        payloadExtra: { trainCode: 'T-7', boardingLine: '7' },
+        expectedTrainCode: 'T-7',
+        expectedLine: '7',
+        expectedCounter: 0,
+      },
+      {
+        label: 'trainCode == KV → no-op (lock + counter 보존)',
+        preCounter: 2,
+        payloadExtra: { trainCode: 'T-1', boardingLine: '2' },
+        expectedTrainCode: 'T-1',
+        expectedLine: '2',
+        expectedCounter: 2,
+      },
+      {
+        label: 'trainCode 누락 → KV lock + counter 그대로 (backward compat)',
+        preCounter: 3,
+        payloadExtra: {},
+        expectedTrainCode: 'T-1',
+        expectedLine: '2',
+        expectedCounter: 3,
+      },
+      {
+        label: 'boardingLine 누락 + trainCode만 변경 → 기존 line 유지',
+        preCounter: 0,
+        payloadExtra: { trainCode: 'T-NEW' },
+        expectedTrainCode: 'T-NEW',
+        expectedLine: '2',
+        expectedCounter: 0,
+      },
+    ])(
+      'lock 있는 trip — $label',
+      async ({ preCounter, payloadExtra, expectedTrainCode, expectedLine, expectedCounter }) => {
+        const env = makeKvEnv();
+        const trip = validateTrip({ ...tripWithLock(), consecutiveEtaMissing: preCounter });
+        await env.TRIPS.put('trip:tok-sync', JSON.stringify(trip));
+        const res = await post(
+          '/boarding-lock/sync',
+          {
+            token: 'tok-sync',
+            observedStationName: '신촌',
+            observedAtMs: 1,
+            accuracy: 5,
+            ...payloadExtra,
+          },
+          env,
+        );
+        expect(res.status).toBe(200);
+        const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
+        expect(stored.boardingLock.trainCode).toBe(expectedTrainCode);
+        expect(stored.boardingLock.line).toBe(expectedLine);
+        expect(stored.consecutiveEtaMissing).toBe(expectedCounter);
+      },
+    );
 
-    it('payload trainCode == KV lock trainCode → no-op (lock 그대로, counter 보존)', async () => {
-      const env = makeKvEnv();
-      const trip = validateTrip({
-        ...tripWithLock(),
-        consecutiveEtaMissing: 2,
-      });
-      await env.TRIPS.put('trip:tok-sync', JSON.stringify(trip));
-      const res = await post(
-        '/boarding-lock/sync',
-        {
-          token: 'tok-sync',
-          observedStationName: '신촌',
-          observedAtMs: 1,
-          accuracy: 5,
-          trainCode: 'T-1',
-          boardingLine: '2',
-        },
-        env,
-      );
-      expect(res.status).toBe(200);
-      const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
-      expect(stored.boardingLock.trainCode).toBe('T-1');
-      expect(stored.consecutiveEtaMissing).toBe(2);
-    });
-
-    it('payload trainCode 누락 → KV lock 그대로 (backward compat)', async () => {
-      const env = makeKvEnv();
-      const trip = validateTrip({
-        ...tripWithLock(),
-        consecutiveEtaMissing: 3,
-      });
-      await env.TRIPS.put('trip:tok-sync', JSON.stringify(trip));
-      const res = await post(
-        '/boarding-lock/sync',
-        { token: 'tok-sync', observedStationName: '신촌', observedAtMs: 1, accuracy: 5 },
-        env,
-      );
-      expect(res.status).toBe(200);
-      const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
-      expect(stored.boardingLock.trainCode).toBe('T-1');
-      expect(stored.consecutiveEtaMissing).toBe(3);
-    });
-
-    it('boardingLine 누락 + trainCode만 변경 → line은 기존 값 유지, trainCode만 갱신', async () => {
-      const env = makeKvEnv();
-      await env.TRIPS.put(
-        'trip:tok-sync',
-        JSON.stringify(validateTrip(tripWithLock())),
-      );
-      await post(
-        '/boarding-lock/sync',
-        {
-          token: 'tok-sync',
-          observedStationName: '신촌',
-          observedAtMs: 1,
-          accuracy: 5,
-          trainCode: 'T-NEW',
-        },
-        env,
-      );
-      const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
-      expect(stored.boardingLock.trainCode).toBe('T-NEW');
-      // 기존 line 보존.
-      expect(stored.boardingLock.line).toBe('2');
-    });
-
+    // lock 없는 trip은 setup 경로(POST /trips)가 다르고 expectation(boardingLock undefined)이
+    // 별개라 it.each에 합치지 않고 단독 케이스로 둔다.
     it('lock 없는 trip + payload trainCode → no-op (lock 생성 안 함)', async () => {
       const env = makeKvEnv();
       const tripNoLock = tripWithLock();
@@ -2263,62 +2239,74 @@ describe('POST /boarding-lock/sync (#901)', () => {
 });
 
 // D4 (#1210) — applyBoardingLockTrainCodeSwap 순수 함수 단위 테스트.
-describe('applyBoardingLockTrainCodeSwap (#1210)', () => {
-  function baseTrip() {
-    const trip = validateTrip({
-      token: 'tok',
-      route: { type: 'direct', line: '2', stops: 3 },
-      destination: 'dst',
-      waypoints: [{ stationName: '강남', line: '2', kind: 'intermediate' }],
+//
+// outer scope에 fixture builder 둠 — describe 내부 nested function 선언은 SonarCloud의
+// CODE_SMELL (typescript:S6535/S2392 family) 으로 잡힌다. 모든 케이스가 같은 fixture를 쓰므로
+// outer 헬퍼로 hoist.
+function buildD4SwapBaseTrip() {
+  const trip = validateTrip({
+    token: 'tok',
+    route: { type: 'direct', line: '2', stops: 3 },
+    destination: 'dst',
+    waypoints: [{ stationName: '강남', line: '2', kind: 'intermediate' }],
+    expiresAt: FUTURE,
+    alarmAtEpochMs: FUTURE - 60_000,
+    boardingLock: {
+      trainCode: 'T-OLD',
+      line: '2',
+      subwayId: '1002',
+      selectedDepartureTime: 1,
+      segmentStations: ['강남'],
       expiresAt: FUTURE,
-      alarmAtEpochMs: FUTURE - 60_000,
-      boardingLock: {
-        trainCode: 'T-OLD',
-        line: '2',
-        subwayId: '1002',
-        selectedDepartureTime: 1,
-        segmentStations: ['강남'],
-        expiresAt: FUTURE,
-      },
-      consecutiveEtaMissing: 4,
-    });
-    if (!trip) throw new Error('baseTrip fixture failed validateTrip');
-    return trip;
-  }
+    },
+    consecutiveEtaMissing: 4,
+  });
+  if (!trip) throw new Error('buildD4SwapBaseTrip fixture failed validateTrip');
+  return trip;
+}
 
-  function payload(over: Partial<Parameters<typeof applyBoardingLockTrainCodeSwap>[1]> = {}) {
-    return {
-      token: 'tok',
-      observedStationName: '강남',
-      observedAtMs: 1,
-      accuracy: 5,
-      ...over,
-    };
-  }
+function buildD4SwapPayload(
+  over: Partial<Parameters<typeof applyBoardingLockTrainCodeSwap>[1]> = {},
+) {
+  return {
+    token: 'tok',
+    observedStationName: '강남',
+    observedAtMs: 1,
+    accuracy: 5,
+    ...over,
+  };
+}
 
+describe('applyBoardingLockTrainCodeSwap (#1210)', () => {
   it('trainCode 미제공 → 동일 trip 그대로 반환', () => {
-    const trip = baseTrip();
-    const result = applyBoardingLockTrainCodeSwap(trip, payload());
+    const trip = buildD4SwapBaseTrip();
+    const result = applyBoardingLockTrainCodeSwap(trip, buildD4SwapPayload());
     expect(result).toBe(trip);
   });
 
   it('lock 없는 trip → 동일 trip 그대로 반환', () => {
-    const trip = { ...baseTrip(), boardingLock: undefined };
-    const result = applyBoardingLockTrainCodeSwap(trip, payload({ trainCode: 'T-NEW' }));
+    const trip = { ...buildD4SwapBaseTrip(), boardingLock: undefined };
+    const result = applyBoardingLockTrainCodeSwap(
+      trip,
+      buildD4SwapPayload({ trainCode: 'T-NEW' }),
+    );
     expect(result).toBe(trip);
   });
 
   it('trainCode 동일 → 동일 trip 그대로 반환', () => {
-    const trip = baseTrip();
-    const result = applyBoardingLockTrainCodeSwap(trip, payload({ trainCode: 'T-OLD' }));
+    const trip = buildD4SwapBaseTrip();
+    const result = applyBoardingLockTrainCodeSwap(
+      trip,
+      buildD4SwapPayload({ trainCode: 'T-OLD' }),
+    );
     expect(result).toBe(trip);
   });
 
   it('trainCode 변경 → lock.trainCode + line 갱신 + counter reset', () => {
-    const trip = baseTrip();
+    const trip = buildD4SwapBaseTrip();
     const result = applyBoardingLockTrainCodeSwap(
       trip,
-      payload({ trainCode: 'T-NEW', boardingLine: '7' }),
+      buildD4SwapPayload({ trainCode: 'T-NEW', boardingLine: '7' }),
     );
     expect(result.boardingLock?.trainCode).toBe('T-NEW');
     expect(result.boardingLock?.line).toBe('7');
@@ -2329,8 +2317,11 @@ describe('applyBoardingLockTrainCodeSwap (#1210)', () => {
   });
 
   it('trainCode 변경 + line 누락 → 기존 line 유지', () => {
-    const trip = baseTrip();
-    const result = applyBoardingLockTrainCodeSwap(trip, payload({ trainCode: 'T-NEW' }));
+    const trip = buildD4SwapBaseTrip();
+    const result = applyBoardingLockTrainCodeSwap(
+      trip,
+      buildD4SwapPayload({ trainCode: 'T-NEW' }),
+    );
     expect(result.boardingLock?.line).toBe('2');
   });
 });

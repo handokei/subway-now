@@ -401,39 +401,56 @@ describe('useBoardingLockSync (#901)', () => {
 
   // D4 (#1210) — 활성 lock trainCode/line forward + 환승 leg trainCode 변경 시 재발사.
   describe('boardingLock trainCode/line forward (#1210)', () => {
-    it('trainCode + line 제공 → payload에 그대로 forward', async () => {
+    // 단일 렌더 + debounce 또는 force 발사 케이스 3건을 1 시나리오 1 케이스로 일괄 검증.
+    // 각 케이스는 옵션 셋과 expectedPayloadFields, expectedAbsent를 명시한다.
+    it.each<{
+      label: string;
+      options: Partial<Parameters<typeof useBoardingLockSync>[0]>;
+      expectedFields: Record<string, string> | null;
+      expectedAbsent: ReadonlyArray<string>;
+    }>([
+      {
+        label: 'trainCode + line 제공 → payload에 forward',
+        options: { boardingLockTrainCode: 'T-1', boardingLockLine: '2' },
+        expectedFields: { trainCode: 'T-1', boardingLine: '2' },
+        expectedAbsent: [],
+      },
+      {
+        label: 'trainCode/line null → payload에 미포함',
+        options: { boardingLockTrainCode: null, boardingLockLine: null },
+        expectedFields: null,
+        expectedAbsent: ['trainCode', 'boardingLine'],
+      },
+      {
+        label: 'force-trigger 경로도 trainCode/line forward',
+        options: {
+          forceTriggerKey: 'k1',
+          boardingLockTrainCode: 'T-FORCE',
+          boardingLockLine: '9',
+        },
+        expectedFields: { trainCode: 'T-FORCE', boardingLine: '9' },
+        expectedAbsent: [],
+      },
+    ])('$label', async ({ options, expectedFields, expectedAbsent }) => {
       renderHook(() =>
         useBoardingLockSync({
           currentStationName: '강남',
           accuracyMeters: 10,
           tripActive: true,
-          boardingLockTrainCode: 'T-1',
-          boardingLockLine: '2',
+          ...options,
         }),
       );
+      // force-trigger 케이스는 debounce 우회 → advance 호출도 영향 없음 (timer 미설정).
       act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
       await flushAsyncStorage();
       expect(mockedSync).toHaveBeenCalledTimes(1);
-      expect(mockedSync.mock.calls[0][0]).toEqual(
-        expect.objectContaining({ trainCode: 'T-1', boardingLine: '2' }),
-      );
-    });
-
-    it('trainCode/line null → payload에 trainCode/boardingLine 키 미포함', async () => {
-      renderHook(() =>
-        useBoardingLockSync({
-          currentStationName: '강남',
-          accuracyMeters: 10,
-          tripActive: true,
-          boardingLockTrainCode: null,
-          boardingLockLine: null,
-        }),
-      );
-      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
-      await flushAsyncStorage();
       const sent = mockedSync.mock.calls[0][0];
-      expect(sent).not.toHaveProperty('trainCode');
-      expect(sent).not.toHaveProperty('boardingLine');
+      if (expectedFields) {
+        expect(sent).toEqual(expect.objectContaining(expectedFields));
+      }
+      for (const key of expectedAbsent) {
+        expect(sent).not.toHaveProperty(key);
+      }
     });
 
     it('같은 station + trainCode 변경 → debounce 후 재발사', async () => {
@@ -480,24 +497,6 @@ describe('useBoardingLockSync (#901)', () => {
       act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
       await flushAsyncStorage();
       expect(mockedSync).toHaveBeenCalledTimes(1);
-    });
-
-    it('force-trigger 경로도 trainCode/line forward', async () => {
-      renderHook(() =>
-        useBoardingLockSync({
-          currentStationName: '강남',
-          accuracyMeters: 10,
-          tripActive: true,
-          forceTriggerKey: 'k1',
-          boardingLockTrainCode: 'T-FORCE',
-          boardingLockLine: '9',
-        }),
-      );
-      await flushAsyncStorage();
-      expect(mockedSync).toHaveBeenCalledTimes(1);
-      expect(mockedSync.mock.calls[0][0]).toEqual(
-        expect.objectContaining({ trainCode: 'T-FORCE', boardingLine: '9' }),
-      );
     });
 
     it('tripActive false → true 전환 시 trainCode dedup ref도 reset', async () => {
