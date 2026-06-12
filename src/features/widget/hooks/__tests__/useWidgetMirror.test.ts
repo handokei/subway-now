@@ -44,16 +44,17 @@ describe('useWidgetMirror', () => {
     expect(mockClear).not.toHaveBeenCalled();
   });
 
-  it('station이 null이면 clearWidgetStation을 호출한다', () => {
-    renderHook(() => useWidgetMirror(null, null));
-    expect(mockClear).toHaveBeenCalledTimes(1);
-    expect(mockSave).not.toHaveBeenCalled();
-  });
-
-  it('distanceKm이 null이면 station이 있어도 clear', () => {
-    renderHook(() => useWidgetMirror(station, null));
-    expect(mockClear).toHaveBeenCalledTimes(1);
-    expect(mockSave).not.toHaveBeenCalled();
+  describe('일시적 null 입력엔 clear 하지 않고 no-op (#1239)', () => {
+    it.each([
+      ['station=null & distance=null', null, null],
+      ['station=null & distance=number', null, 0.1],
+      ['station 정상 & distance=null', station, null],
+      ['station 정상 & distance=undefined', station, undefined],
+    ] as const)('%s', (_label, s, d) => {
+      renderHook(() => useWidgetMirror(s, d));
+      expect(mockSave).not.toHaveBeenCalled();
+      expect(mockClear).not.toHaveBeenCalled();
+    });
   });
 
   it('같은 50m bucket 내 미세 변경엔 effect가 재실행되지 않는다', () => {
@@ -86,14 +87,15 @@ describe('useWidgetMirror', () => {
     expect(mockSave).toHaveBeenLastCalledWith(other, 0.1);
   });
 
-  it('station → null 전환 시 clear', () => {
+  it('station → null 전환 시에도 clear 호출하지 않음 (위젯은 마지막 역 유지)', () => {
     const { rerender } = renderHook(
       ({ s, d }: { s: Station | null; d: number | null }) => useWidgetMirror(s, d),
       { initialProps: { s: station as Station | null, d: 0.1 as number | null } },
     );
     expect(mockSave).toHaveBeenCalledTimes(1);
     rerender({ s: null, d: null });
-    expect(mockClear).toHaveBeenCalledTimes(1);
+    expect(mockClear).not.toHaveBeenCalled();
+    expect(mockSave).toHaveBeenCalledTimes(1);
   });
 
   it('save 실패 시 logger.error만 호출 (throw 안 함)', async () => {
@@ -101,12 +103,5 @@ describe('useWidgetMirror', () => {
     renderHook(() => useWidgetMirror(station, 0.1));
     await new Promise((r) => setImmediate(r));
     expect(mockLoggerError).toHaveBeenCalledWith('save 실패:', expect.any(Error));
-  });
-
-  it('clear 실패 시 logger.error만 호출 (throw 안 함)', async () => {
-    mockClear.mockRejectedValueOnce(new Error('group missing'));
-    renderHook(() => useWidgetMirror(null, null));
-    await new Promise((r) => setImmediate(r));
-    expect(mockLoggerError).toHaveBeenCalledWith('clear 실패:', expect.any(Error));
   });
 });
