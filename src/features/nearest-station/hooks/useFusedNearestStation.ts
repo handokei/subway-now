@@ -235,7 +235,10 @@ export function useFusedNearestStation(
 ): UseFusedNearestStationReturn {
   const barometerSubsurface = barometer?.subsurface;
   const barometerSignal = barometer?.signal;
-  const gps = useNearestStation({ barometerSubsurface });
+  // D6 (#1212) — trip 활성(origin+destination+route 모두 채워진 상태)을 sticky 게이트에 전달.
+  // routeContext는 HomeScreen에서 trip 시작 시 채워지고 종료 시 undefined로 돌아간다.
+  const tripActive = routeContext != null;
+  const gps = useNearestStation({ barometerSubsurface, tripActive });
   // #733 — 위치 이력 기반 정적 판정. shouldDowngradeFusion이 speed=null일 때 fallback으로 사용.
   // useNearestStation의 userLocation 변경마다 자동 누적/판정.
   const positionStability = usePositionStability(gps.userLocation);

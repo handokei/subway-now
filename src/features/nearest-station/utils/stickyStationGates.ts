@@ -24,6 +24,16 @@ export interface StickyPositionInput {
   lat: number;
   lng: number;
   accuracyMeters: number | null;
+  /**
+   * D6 (#1212) — 기압계가 지하 진입을 시사하는지. trip 활성 + 지하면 GPS 거리 게이트도
+   * 신뢰할 수 없다 — dead-zone에서 부정확한 좌표가 1km+ 점프해 sticky가 잘못 풀리는 케이스 차단.
+   */
+  subsurface?: boolean;
+  /**
+   * D6 (#1212) — trip(목적지/경로) 활성 여부. 사용자가 trip 중이면 sticky를 풀어도
+   * 의미가 없고(현재역은 trip context로 확정), 지하 dead-zone GPS로 풀리면 회귀를 유발한다.
+   */
+  tripActive?: boolean;
 }
 
 /**
@@ -56,6 +66,9 @@ export function isGoodFix(fix: StickyFixInput): boolean {
 export function shouldUnlockByDistance(locked: Station, fix: StickyPositionInput): boolean {
   const { accuracyMeters } = fix;
   if (accuracyMeters == null || accuracyMeters > STICKY_GOOD_FIX_ACCURACY_M) return false;
+  // D6 (#1212) — trip 활성 + 지하면 GPS 1km+ 점프는 dead-zone 부정확 좌표 가능성이 높다.
+  // 지상 trip은 그대로 평가(차로 1km 이동 가능).
+  if (fix.tripActive === true && fix.subsurface === true) return false;
   const distanceKm = haversine(locked.lat, locked.lng, fix.lat, fix.lng);
   return distanceKm > STICKY_UNLOCK_DISTANCE_KM;
 }
@@ -76,8 +89,22 @@ export function shouldUnlockByTtl(lockedAt: number, now: number): boolean {
  */
 export interface StickyMotionInput {
   automotive?: boolean;
+  /**
+   * D6 (#1212) — 기압계가 지하 진입을 시사하는지. 지하 + trip 활성 시 automotive=true는
+   * 지하철 탑승이라는 정상 신호 — 이 조합에서는 sticky를 풀지 않는다.
+   */
+  subsurface?: boolean;
+  /**
+   * D6 (#1212) — trip(목적지/경로) 활성 여부. ADR-010 첫 줄(false positive / miss 동급)에 따라
+   * 사용자 명시 의향 trip은 lock 활성과 동급으로 정확도를 보장한다.
+   */
+  tripActive?: boolean;
 }
 
 export function shouldUnlockByMotion(motion: StickyMotionInput): boolean {
-  return motion.automotive === true;
+  if (motion.automotive !== true) return false;
+  // D6 (#1212) — 지하 + trip 활성 시 automotive는 지하철 탑승의 정상 신호.
+  // 지상 trip은 차/도보 환승 가능성이 있어 그대로 unlock 허용.
+  if (motion.subsurface === true && motion.tripActive === true) return false;
+  return true;
 }
