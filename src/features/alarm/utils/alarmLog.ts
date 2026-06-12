@@ -87,6 +87,10 @@ export type AlarmLogReason =
   // #750 — 공통 sleep 룰 게이트(shouldSuppressBySleepRule)가 차단한 발사.
   // scheduler/FG/BG 3개 path 어디서든 같은 reason으로 적재 — 정책 단일 출처.
   | 'sleep-first-transfer'
+  // #1236 (Epic #1204 D8 wire) — 같은 게이트가 station-passed 카테고리에서 차단한 발사.
+  // transfer 차단(sleep-first-transfer)과 reason을 분리해 D8 station-passed 누수 회귀(2026-06-12 22:11:56 사가정)
+  // 차단 횟수를 독립 집계.
+  | 'sleep-first-station-passed'
   // #816 C — lockless 분기에서 client 추가 가드가 차단한 발사.
   //   'lockless-non-intermediate': lock 없는 trip에 transfer/destination push 도달 (backend race).
   //   'lockless-opt-out': 사용자 토글 OFF 상태에서 lockless intermediate push 도달.
@@ -765,6 +769,26 @@ export function logSuppressedSleepFirstTransfer(input: {
     stationName: input.stationName,
     kind: 'transfer',
     phaseId: input.phaseId,
+  });
+}
+
+/**
+ * #1236 (Epic #1204 D8 wire) — sleep 룰 게이트가 station-passed 카테고리에서 차단한 발사 1건 적재.
+ * D8(#1227)에서 shouldSuppressBySleepRule이 'station-passed'도 차단하도록 확장됐고,
+ * 본 PR이 dispatch path(FG GPS/arvlCd, BG)에서 동 게이트를 호출하도록 wire.
+ * 2026-06-12 22:11:56 사가정 회귀 차단 evidence와 1:1 매핑.
+ */
+export function logSuppressedSleepStationPassed(input: {
+  source: AlarmLogSource;
+  stationName: string;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'sleep-first-station-passed',
+    stationName: input.stationName,
+    kind: 'station-passed',
   });
 }
 

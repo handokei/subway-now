@@ -76,6 +76,7 @@ const mockLogSuppressedDedupStation = jest.fn();
 const mockLogSuppressedMovement = jest.fn();
 const mockLogSuppressedPhaseGate = jest.fn();
 const mockLogSuppressedSleepFirstTransfer = jest.fn();
+const mockLogSuppressedSleepStationPassed = jest.fn();
 const mockLogSuppressedDismissSilence = jest.fn();
 const mockLogSuppressedStationPassedWarmup = jest.fn();
 const mockLogSuppressedHopWindow = jest.fn();
@@ -92,6 +93,8 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedPhaseGate: (...args: unknown[]) => mockLogSuppressedPhaseGate(...args),
   logSuppressedSleepFirstTransfer: (...args: unknown[]) =>
     mockLogSuppressedSleepFirstTransfer(...args),
+  logSuppressedSleepStationPassed: (...args: unknown[]) =>
+    mockLogSuppressedSleepStationPassed(...args),
   logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
   logSuppressedStationPassedWarmup: (...args: unknown[]) =>
     mockLogSuppressedStationPassedWarmup(...args),
@@ -2502,7 +2505,7 @@ describe('useStationAlarm', () => {
       expect(arvlCdFires).toHaveLength(0);
     });
 
-    it('currentStationArrival 미전달(undefined)이면 fast path no-op (getBoardingLock 미호출)', async () => {
+    it('currentStationArrival 미전달(undefined)이면 fast path no-op (arvlCd fire X)', async () => {
       mockGetBoardingLock.mockResolvedValue(activeLock);
       mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
 
@@ -2510,9 +2513,11 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       await Promise.resolve();
-      // mockEvaluateAlarmPhase=null & isImminentByArrivalCode=false → fireAndLog 미호출 →
-      // 본 hook에서 getBoardingLock 호출자는 fast path뿐. fast path가 early return하면 호출 0.
-      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+      await Promise.resolve();
+      // #1236 — GPS station-passed path도 sleep 룰 게이트 위해 getBoardingLock을 호출하므로
+      // 'getBoardingLock 미호출' 대신 'fast path fire 미발생'으로 검증한다.
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
     });
 
     it('currentStationArrival null이면 fast path no-op', async () => {
@@ -2523,7 +2528,9 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       await Promise.resolve();
-      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+      await Promise.resolve();
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
     });
 
     it('nearestStation null이면 fast path no-op (fire 대상 station 결정 불가)', async () => {
@@ -2533,6 +2540,7 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       await Promise.resolve();
+      // nearestStation null이면 GPS station-passed path도 진입 안 함 → getBoardingLock 호출 0.
       expect(mockGetBoardingLock).not.toHaveBeenCalled();
     });
 
@@ -2647,22 +2655,25 @@ describe('useStationAlarm', () => {
     });
 
     it('effect cleanup (unmount) 후엔 후속 작업이 fast path 발사 안 함', async () => {
-      // getBoardingLock을 지연 resolve로 cleanup 시점을 끼워 넣음.
-      let resolveLock: (v: typeof activeLock) => void = () => {};
-      mockGetBoardingLock.mockReturnValueOnce(
-        new Promise<typeof activeLock>((r) => {
-          resolveLock = r;
-        }),
+      // #1236 — GPS path도 getBoardingLock을 호출하므로 mockImplementation으로 모든 호출 pending.
+      // arvlCd path의 `if (cancelled) return;` 분기 커버.
+      const resolvers: Array<(v: typeof activeLock | null) => void> = [];
+      mockGetBoardingLock.mockImplementation(
+        () =>
+          new Promise<typeof activeLock | null>((r) => {
+            resolvers.push(r);
+          }),
       );
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
 
       const { unmount } = renderHook(() => useStationAlarm(fastPathInputs()));
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      // GPS path + arvlCd path 둘 다 getBoardingLock pending에 도달.
+      await waitFor(() => expect(resolvers.length).toBeGreaterThanOrEqual(2));
       unmount();
-      resolveLock(activeLock);
-      await Promise.resolve();
-      await Promise.resolve();
+      resolvers.forEach((r) => r(activeLock));
+      for (let i = 0; i < 8; i++) await Promise.resolve();
 
       // fast path의 logFiredStationPassed('fg-arvlcd', ...)이 호출되지 않아야 한다.
       const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
@@ -3147,6 +3158,172 @@ describe('useStationAlarm', () => {
         });
       });
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+  });
+
+  // #1236 (Epic #1204 D8 wire) — FG dispatch path가 station-passed sleep 룰 게이트를 호출한다.
+  // 2026-06-12 22:11:56 사가정 station-passed 회귀 재현 차단 evidence.
+  // D8(#1227)이 shouldSuppressBySleepRule을 station-passed로 확장했고, 본 PR이 FG GPS / arvlCd
+  // fast path 양쪽에서 게이트를 호출하도록 wire.
+  describe('#1236 sleep 룰 게이트 — station-passed (FG dispatch wire)', () => {
+    const onRouteStation = makeStation('S-PASS', '사가정', 37.5, 127.0);
+    const routeDirect = makeDirectRoute(3, '2');
+    const lockOnSagajeong = {
+      destinationId: destination.id,
+      trainCode: 'T-LOCK',
+      // candidate.id === boardingStationId → isStationPassedFirstHop(lock active) true.
+      boardingStationId: onRouteStation.id,
+      boardingLine: '2' as const,
+      boardedAt: Date.now(),
+      expectedDurationMs: 60 * 60_000,
+    };
+
+    function withSleepGateInputs(
+      overrides: Partial<UseStationAlarmInputs> = {},
+    ): UseStationAlarmInputs {
+      return defaultInputs({
+        route: routeDirect,
+        destination,
+        nearestStation: onRouteStation,
+        userLocation: { lat: 37.5, lng: 127.0 },
+        speedMps: 10,
+        accuracyMeters: 50,
+        ...overrides,
+      });
+    }
+
+    it.each([
+      {
+        name: 'FG GPS path — lockless + sleep ON + currentHopIndex=0 → station-passed 차단 (사가정 22:11:56 evidence)',
+        sleepMode: true,
+        lockValue: null,
+        currentHopIndex: 0 as number | null,
+        expectSuppress: true,
+      },
+      {
+        name: 'FG GPS path — lock 활성 + sleep ON + candidate=boardingStation → station-passed 차단',
+        sleepMode: true,
+        lockValue: lockOnSagajeong,
+        currentHopIndex: null,
+        expectSuppress: true,
+      },
+      {
+        name: 'FG GPS path — sleep OFF + lockless + currentHopIndex=0 → 정상 발사',
+        sleepMode: false,
+        lockValue: null,
+        currentHopIndex: 0 as number | null,
+        expectSuppress: false,
+      },
+      {
+        name: 'FG GPS path — sleep ON + lockless + currentHopIndex=3 → 정상 발사 (첫 hop 아님)',
+        sleepMode: true,
+        lockValue: null,
+        currentHopIndex: 3 as number | null,
+        expectSuppress: false,
+      },
+      {
+        name: 'FG GPS path — sleep ON + lock 활성 + candidate≠boardingStation → 정상 발사',
+        sleepMode: true,
+        lockValue: { ...lockOnSagajeong, boardingStationId: 'S-OTHER' },
+        currentHopIndex: null,
+        expectSuppress: false,
+      },
+    ])('$name', async ({ sleepMode, lockValue, currentHopIndex, expectSuppress }) => {
+      useSettingsStore.setState({ sleepMode });
+      mockGetBoardingLock.mockResolvedValue(lockValue);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 3,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
+
+      renderHook(() => useStationAlarm(withSleepGateInputs({ currentHopIndex })));
+
+      if (expectSuppress) {
+        await waitFor(() =>
+          expect(mockLogSuppressedSleepStationPassed).toHaveBeenCalledWith({
+            source: 'fg',
+            stationName: onRouteStation.name,
+          }),
+        );
+        expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+        expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+      } else {
+        await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+        expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
+      }
+    });
+
+    it('FG arvlCd fast path — lock 활성 + sleep ON + candidate=boardingStation → 차단 + fg-arvlcd suppress 로그', async () => {
+      // arvlCd fast path는 lock != null 필요 (#640 회귀 가드). lock 활성 + first hop 케이스로 검증.
+      useSettingsStore.setState({ sleepMode: true });
+      mockGetBoardingLock.mockResolvedValue(lockOnSagajeong);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+
+      renderHook(() =>
+        useStationAlarm(
+          withSleepGateInputs({
+            currentHopIndex: null,
+            currentStationArrival: { up: [], down: [] } as unknown as Parameters<
+              typeof useStationAlarm
+            >[0]['currentStationArrival'],
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        const calls = mockLogSuppressedSleepStationPassed.mock.calls;
+        expect(calls.some((c) => c[0]?.source === 'fg-arvlcd')).toBe(true);
+      });
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('FG arvlCd fast path — sleep OFF + lock 활성 + first hop → 정상 발사 (게이트 비활성)', async () => {
+      useSettingsStore.setState({ sleepMode: false });
+      mockGetBoardingLock.mockResolvedValue(lockOnSagajeong);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+
+      renderHook(() =>
+        useStationAlarm(
+          withSleepGateInputs({
+            currentHopIndex: null,
+            currentStationArrival: { up: [], down: [] } as unknown as Parameters<
+              typeof useStationAlarm
+            >[0]['currentStationArrival'],
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
+    });
+
+    it('GPS station-passed IIFE: getBoardingLock 후 cleanup → 후속 dispatch 미실행 (cancelled guard)', async () => {
+      // #1236 — GPS path에 추가된 lock fetch IIFE의 `if (cancelled) return;` 분기 커버.
+      const resolvers: Array<(v: typeof lockOnSagajeong | null) => void> = [];
+      mockGetBoardingLock.mockImplementation(
+        () =>
+          new Promise<typeof lockOnSagajeong | null>((r) => {
+            resolvers.push(r);
+          }),
+      );
+      useSettingsStore.setState({ sleepMode: false });
+
+      const { unmount } = renderHook(() =>
+        useStationAlarm(withSleepGateInputs({ currentHopIndex: null })),
+      );
+      await waitFor(() => expect(mockGetBoardingLock).toHaveBeenCalled());
+      unmount();
+      // unmount 후 lock resolve → IIFE의 `if (cancelled) return;`이 후속 dispatch를 차단.
+      resolvers.forEach((r) => r(null));
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
     });
   });
 });

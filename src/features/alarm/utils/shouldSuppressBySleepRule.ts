@@ -57,3 +57,25 @@ export function shouldSuppressBySleepRule(input: SleepRuleInput): boolean {
   if (!input.isFirstHop) return false;
   return input.event.type === 'transfer' || input.event.type === 'station-passed';
 }
+
+/**
+ * #1236 (Epic #1204 D8 wire) — station-passed dispatch path에서 `isFirstHop`을 결정하는 공통 헬퍼.
+ *
+ * FG (useStationAlarm GPS/arvlCd) / BG (stationPipeline) 세 경로가 동일 정책으로
+ * sleep 룰을 호출하기 위해 isFirstHop 산출을 한 곳에 둔다.
+ *
+ * - lock 활성 : candidate 역이 사용자가 명시 lock한 boardingStationId와 일치하면 첫 hop.
+ *   사가정 22:11:56 회귀(boardingStationId='사가정', candidate='사가정', station-passed fire)와 직접 매핑.
+ * - lockless  : D1 estimator의 hopIndex===0이 SSOT. 미전달이면 false(graceful skip — 게이트 미적용).
+ *
+ * 두 신호가 모두 없으면 false — 정확성 보강이 불가능하면 알람을 차단하지 않는다(보수적).
+ */
+export function isStationPassedFirstHop(input: {
+  lock: BoardingLock | null;
+  candidateStationId: string;
+  currentHopIndex: number | null | undefined;
+}): boolean {
+  if (input.lock) return input.candidateStationId === input.lock.boardingStationId;
+  if (input.currentHopIndex === 0) return true;
+  return false;
+}

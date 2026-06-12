@@ -21,9 +21,10 @@ import {
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
   logSuppressedSleepFirstTransfer,
+  logSuppressedSleepStationPassed,
   type AlarmLogSource,
 } from './alarmLog';
-import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
+import { isStationPassedFirstHop, shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
 import { evaluateDismissSilence } from './dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from './dismissSilenceStorage';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
@@ -320,50 +321,70 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
       kind: 'station-passed',
     });
   } else if (route && isStationOnRoute(nearest.station, route)) {
-    const lastNotifiedStationId = await getLastNotifiedStationId(destination.id);
-    if (nearest.station.id !== lastNotifiedStationId) {
-      // #796: 환승역 도착 timing의 segment 정확 식별. evaluateAlarmPhase(:233)와 동일한
-      // currentLine 결정 — lock.boardingLine 우선 → BG GPS jitter로 nearest가 옆 노선 station을
-      // 잡아도 잘못된 다음-다음 transfer 안내를 차단. lock 없으면 nearest.station.line fallback.
-      const target = resolveNextTarget(
-        route,
-        destination.name,
-        lockForLineGuard?.boardingLine ?? nearest.station.line,
-      );
-      if (target) {
-        // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
-        await sendStationPassedNotification(
-          nearest.station.name,
+    // #1236 (Epic #1204 D8 wire) — station-passed sleep 룰 게이트.
+    // lock 활성: candidate가 boardingStationId면 첫 hop → suppress (2026-06-12 22:11:56 사가정 회귀).
+    // lockless BG: estimator output 부재 → currentHopIndex null로 전달, 게이트는 자동 비적용(보수적).
+    // dedup(lastNotifiedStationId) 위에 위치 — sleep으로 차단되면 lastNotifiedStationId 갱신 안 함
+    // → sleep OFF 토글 후 정상 첫 hop 알림이 재발사 가능.
+    if (
+      shouldSuppressBySleepRule({
+        lock: lockForLineGuard,
+        event: { type: 'station-passed', stationName: nearest.station.name },
+        sleepMode,
+        isFirstHop: isStationPassedFirstHop({
+          lock: lockForLineGuard,
+          candidateStationId: nearest.station.id,
+          currentHopIndex: null,
+        }),
+      })
+    ) {
+      logSuppressedSleepStationPassed({ source, stationName: nearest.station.name });
+    } else {
+      const lastNotifiedStationId = await getLastNotifiedStationId(destination.id);
+      if (nearest.station.id !== lastNotifiedStationId) {
+        // #796: 환승역 도착 timing의 segment 정확 식별. evaluateAlarmPhase(:233)와 동일한
+        // currentLine 결정 — lock.boardingLine 우선 → BG GPS jitter로 nearest가 옆 노선 station을
+        // 잡아도 잘못된 다음-다음 transfer 안내를 차단. lock 없으면 nearest.station.line fallback.
+        const target = resolveNextTarget(
+          route,
           destination.name,
-          target,
-          notificationSource,
+          lockForLineGuard?.boardingLine ?? nearest.station.line,
         );
-        await setLastNotifiedStationId(destination.id, nearest.station.id);
-        logFiredStationPassed(source, nearest.station);
+        if (target) {
+          // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
+          await sendStationPassedNotification(
+            nearest.station.name,
+            destination.name,
+            target,
+            notificationSource,
+          );
+          await setLastNotifiedStationId(destination.id, nearest.station.id);
+          logFiredStationPassed(source, nearest.station);
 
-        // #624 BG-safe stale alarm 차단 — 통과한 waypoint의 pre-scheduled bl:* 알람을
-        // 능동 cancel. useBoardingLockAdvancer는 FG only(React hook)지만 stationPipeline은
-        // backgroundLocationTask에서도 호출되어 BG에서도 동일 청소가 일어난다.
-        // advanceHopWindow는 idempotent — FG advancer와 중복 호출돼도 안전.
-        // dedup 가드(lastNotifiedStationId) 안쪽에 위치 — 동일 station 재보고 시
-        // reentrant advance 방지. dedup 구조 리팩터 시 advance가 silent하게 사라지지 않게 주의.
-        const lock = await getBoardingLock();
-        if (lock && route) {
-          const targets = resolveAllTargets(route, destination.name);
-          const matched = targets.find((t) => isSameStationName(t.name, nearest.station.name));
-          if (matched) {
-            await advanceHopWindow({
-              lock,
-              route,
-              destinationName: destination.name,
-              passedStationName: matched.name,
-              sleepMode,
-            });
+          // #624 BG-safe stale alarm 차단 — 통과한 waypoint의 pre-scheduled bl:* 알람을
+          // 능동 cancel. useBoardingLockAdvancer는 FG only(React hook)지만 stationPipeline은
+          // backgroundLocationTask에서도 호출되어 BG에서도 동일 청소가 일어난다.
+          // advanceHopWindow는 idempotent — FG advancer와 중복 호출돼도 안전.
+          // dedup 가드(lastNotifiedStationId) 안쪽에 위치 — 동일 station 재보고 시
+          // reentrant advance 방지. dedup 구조 리팩터 시 advance가 silent하게 사라지지 않게 주의.
+          const lock = await getBoardingLock();
+          if (lock && route) {
+            const targets = resolveAllTargets(route, destination.name);
+            const matched = targets.find((t) => isSameStationName(t.name, nearest.station.name));
+            if (matched) {
+              await advanceHopWindow({
+                lock,
+                route,
+                destinationName: destination.name,
+                passedStationName: matched.name,
+                sleepMode,
+              });
+            }
           }
         }
+      } else {
+        logSuppressedDedupStation(source, nearest.station);
       }
-    } else {
-      logSuppressedDedupStation(source, nearest.station);
     }
   }
 

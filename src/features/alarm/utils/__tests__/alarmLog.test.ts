@@ -31,6 +31,7 @@ import {
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
   logSuppressedSleepFirstTransfer,
+  logSuppressedSleepStationPassed,
   logSuppressedGate,
   logSuppressedMovement,
   logSuppressedPhaseGate,
@@ -599,6 +600,24 @@ describe('alarmLog', () => {
       });
       expect(saved[0].phaseId).toBeUndefined();
     });
+
+    it.each<['fg' | 'fg-arvlcd' | 'bg', string]>([
+      ['fg', '사가정'],
+      ['fg-arvlcd', '강남'],
+      ['bg', '잠실'],
+    ])(
+      '#1236 logSuppressedSleepStationPassed: source=%s — reason=sleep-first-station-passed, kind=station-passed 고정',
+      async (source, stationName) => {
+        logSuppressedSleepStationPassed({ source, stationName });
+        await expectLastSavedEntryMatches({
+          source,
+          outcome: 'suppressed',
+          reason: 'sleep-first-station-passed',
+          stationName,
+          kind: 'station-passed',
+        });
+      },
+    );
 
     it.each([
       ['revalidate-no-trip' as const, '강남', 'early' as const],
