@@ -362,4 +362,225 @@ describe('checkSilentPushLocationGate', () => {
       expect(result.accuracyM).toBe(15);
     });
   });
+
+  // #1209 D3 — lockless intermediate 위치 게이트 정밀화.
+  describe('lockless intermediate 위치 게이트 (#1209 D3)', () => {
+    // 강남에서 ~700m 떨어진 좌표 (기존 300m 임계값에선 fail, lockless widened 800m엔 pass)
+    const MID_FROM_GANGNAM = { lat: 37.5042, lng: 127.0276 };
+    // 강남에서 ~1.5km 떨어진 좌표 (lockless 800m도 초과)
+    const FAR_LOCKLESS = { lat: 37.5114, lng: 127.0276 };
+
+    it('lockless + hop index 매치 시 거리 검증 우회 pass', async () => {
+      // 일부러 임계값 초과 거리에 두고 hop window로 통과시킴.
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(FAR_LOCKLESS.lat, FAR_LOCKLESS.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: true,
+        currentHopIndex: 3,
+        payloadHopIndex: 3,
+      });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('hop-window-match');
+      // hop window 우회 경로는 distance/threshold 미계산.
+      expect(result.distanceM).toBeUndefined();
+      expect(result.thresholdM).toBeUndefined();
+    });
+
+    it('lockless + hop index 차이가 정확히 1이면 pass (경계)', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(FAR_LOCKLESS.lat, FAR_LOCKLESS.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: true,
+        currentHopIndex: 4,
+        payloadHopIndex: 3,
+      });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('hop-window-match');
+    });
+
+    it('lockless + hop index 차이가 2면 hop 매치 실패 → distance 게이트 진행', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(FAR_LOCKLESS.lat, FAR_LOCKLESS.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: true,
+        currentHopIndex: 5,
+        payloadHopIndex: 3,
+      });
+      // hop window 실패 + 거리 1.5km는 lockless widened 800m 초과 → out-of-range
+      expect(result.pass).toBe(false);
+      expect(result.reason).toBe('out-of-range');
+      expect(result.thresholdM).toBe(800);
+    });
+
+    it('lockless + hop index 미제공 + 700m → widened 임계값(800m) 내 pass', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(MID_FROM_GANGNAM.lat, MID_FROM_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: true,
+      });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('within-threshold');
+      expect(result.thresholdM).toBe(800);
+      expect(result.distanceM).toBeGreaterThan(300);
+      expect(result.distanceM).toBeLessThanOrEqual(800);
+    });
+
+    it('lockless + hop index 미제공 + 1.5km → widened 임계값도 초과 → out-of-range', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(FAR_LOCKLESS.lat, FAR_LOCKLESS.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: true,
+      });
+      expect(result.pass).toBe(false);
+      expect(result.reason).toBe('out-of-range');
+      expect(result.thresholdM).toBe(800);
+      expect(result.distanceM).toBeGreaterThan(800);
+    });
+
+    it('lockless + early phase는 widened 1200m 임계값', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(FAR_LOCKLESS.lat, FAR_LOCKLESS.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'early',
+        isLockless: true,
+      });
+      // 1.5km는 1200m도 초과
+      expect(result.pass).toBe(false);
+      expect(result.thresholdM).toBe(1200);
+    });
+
+    it('lockless + early phase + 700m → widened 1200m 내 pass', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(MID_FROM_GANGNAM.lat, MID_FROM_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'early',
+        isLockless: true,
+      });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('within-threshold');
+      expect(result.thresholdM).toBe(1200);
+    });
+
+    it('hop window match passReason은 motion fields도 함께 노출', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue({
+        coords: {
+          latitude: FAR_LOCKLESS.lat,
+          longitude: FAR_LOCKLESS.lng,
+          accuracy: 12,
+          altitude: null,
+          heading: null,
+          speed: 4.5,
+          altitudeAccuracy: null,
+        },
+        timestamp: Date.now() - 5_000,
+      });
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: true,
+        currentHopIndex: 2,
+        payloadHopIndex: 2,
+      });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('hop-window-match');
+      expect(result.speedMps).toBe(4.5);
+      expect(result.accuracyM).toBe(12);
+    });
+
+    it('lockless가 아닌데 hop index 제공해도 기존 좁은 임계값 그대로 (회귀 차단)', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(MID_FROM_GANGNAM.lat, MID_FROM_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: false,
+        currentHopIndex: 3,
+        payloadHopIndex: 3,
+      });
+      // lock 활성으로 간주 → 기존 300m 임계 → 700m fail
+      expect(result.pass).toBe(false);
+      expect(result.thresholdM).toBe(300);
+    });
+
+    it('lockless transfer kind는 widened 적용 X (transfer는 기존 좁은 임계 유지)', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(MID_FROM_GANGNAM.lat, MID_FROM_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'transfer',
+        phase: 'imminent',
+        isLockless: true,
+        currentHopIndex: 3,
+        payloadHopIndex: 3,
+      });
+      // intermediate만 hop window/widened 분기. transfer는 기존 400m 임계.
+      expect(result.thresholdM).toBe(400);
+      expect(result.pass).toBe(false);
+    });
+
+    it('lockless intermediate + currentHopIndex만 제공(payload 누락) → widened distance 경로', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(MID_FROM_GANGNAM.lat, MID_FROM_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: true,
+        currentHopIndex: 3,
+        // payloadHopIndex 미제공
+      });
+      // hop window 판정 불가 → widened distance 경로
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('within-threshold');
+      expect(result.thresholdM).toBe(800);
+    });
+
+    it('lockless intermediate + payloadHopIndex만 제공(estimator 미연결) → widened distance 경로', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(MID_FROM_GANGNAM.lat, MID_FROM_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: true,
+        // currentHopIndex 미제공
+        payloadHopIndex: 3,
+      });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('within-threshold');
+      expect(result.thresholdM).toBe(800);
+    });
+  });
 });
