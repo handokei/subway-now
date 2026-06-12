@@ -13,12 +13,17 @@ const mockUseArrivalInfo = jest.fn();
 const mockUseSilentPushDiagnostics = jest.fn();
 const mockGetAlarmLog = jest.fn();
 const mockClearAlarmLog = jest.fn();
+const mockUseBarometer = jest.fn();
 
 jest.mock('../../../nearest-station/hooks/useFusedNearestStation', () => ({
   useFusedNearestStation: () => mockUseFusedNearestStation(),
 }));
 jest.mock('../../../arrival/hooks/useArrivalInfo', () => ({
   useArrivalInfo: (name: string | null) => mockUseArrivalInfo(name),
+}));
+// #1215 (D9) — DebugModal이 직접 useBarometer를 구독해 subsurface row를 렌더한다.
+jest.mock('../../../../shared/hooks/useBarometer', () => ({
+  useBarometer: () => mockUseBarometer(),
 }));
 // silentPushTask는 expo-task-manager native module이 필요 — jest 환경에서 chain break.
 jest.mock('../../../alarm/hooks/useSilentPushDiagnostics', () => ({
@@ -124,6 +129,8 @@ const setupHookDefaults = () => {
   mockGetAlarmLog.mockResolvedValue([]);
   mockClearAlarmLog.mockResolvedValue(undefined);
   mockDumpScheduledNotifications.mockResolvedValue([]);
+  // #1215 (D9) — 기본은 subsurface=false (지상).
+  mockUseBarometer.mockReturnValue({ subsurface: false, stop: undefined });
 };
 
 // SonarCloud new_duplicated_lines_density 임계 준수 — 여러 describe에 걸친 buildDumpText
@@ -842,6 +849,230 @@ describe('DebugModal helpers', () => {
     });
     expect(line).not.toContain('acc=');
     expect(line).not.toContain('age=');
+  });
+});
+
+// #1215 (D9) — 신규 optional formatter 유닛 케이스.
+// outer scope factory + it.each — SonarCloud nested function 회피.
+describe('DebugModal helpers — D9 optional formatters (#1215)', () => {
+  it.each([
+    [true, 'true'],
+    [false, 'false'],
+    [null, '—'],
+    [undefined, '—'],
+  ])('formatOptionalBool(%p) → %p', (input, expected) => {
+    expect(__test__.formatOptionalBool(input as boolean | null | undefined)).toBe(expected);
+  });
+
+  it.each([
+    ['high', 'high'],
+    ['', '—'],
+    [null, '—'],
+    [undefined, '—'],
+  ])('formatOptionalString(%p) → %p', (input, expected) => {
+    expect(__test__.formatOptionalString(input as string | null | undefined)).toBe(expected);
+  });
+
+  it.each([
+    [0, '0'],
+    [3, '3'],
+    [null, '—'],
+    [undefined, '—'],
+  ])('formatOptionalNumber(%p) → %p', (input, expected) => {
+    expect(__test__.formatOptionalNumber(input as number | null | undefined)).toBe(expected);
+  });
+
+  it('formatOptionalTs: 값이 있으면 ISO, null이면 —', () => {
+    const ts = Date.UTC(2026, 5, 12, 5, 0, 0);
+    expect(__test__.formatOptionalTs(ts)).toBe(new Date(ts).toISOString());
+    expect(__test__.formatOptionalTs(null)).toBe('—');
+    expect(__test__.formatOptionalTs(undefined)).toBe('—');
+  });
+});
+
+// #1215 (D9) — buildDumpText의 D9 신규 섹션. makeDumpArgs로 baseline 공유.
+describe('DebugModal buildDumpText — D9 sections (#1215)', () => {
+  it('미전달 시 subsurface/tier/signalMask/Trip/Sleep 모두 — 표기', () => {
+    const dump = __test__.buildDumpText(makeDumpArgs());
+    expect(dump).toContain('subsurface=—');
+    expect(dump).toContain('tier=—');
+    expect(dump).toContain('signalMask=—');
+    expect(dump).toContain('## Trip');
+    expect(dump).toContain('lockless=—');
+    expect(dump).toContain('tripStartedAt=—');
+    expect(dump).toContain('currentHopIndex=—');
+    expect(dump).toContain('route hop count=—');
+    expect(dump).toContain('## Sleep');
+    expect(dump).toContain('sleepMode=—');
+    expect(dump).toContain('firstHopApproaching=—');
+  });
+
+  it('lockless trip + hop index + sleep on 입력을 dump에 반영', () => {
+    const tripStartedAt = Date.UTC(2026, 5, 12, 4, 0, 0);
+    const dump = __test__.buildDumpText(
+      makeDumpArgs({
+        barometerSubsurface: true,
+        fusionDetection: { tier: 'high', signalMask: 'TFT' },
+        trip: {
+          lockless: true,
+          tripStartedAt,
+          currentHopIndex: 2,
+          routeHopCount: 7,
+        },
+        sleep: { sleepMode: true, firstHopApproaching: false },
+      }),
+    );
+    expect(dump).toContain('subsurface=true');
+    expect(dump).toContain('tier=high');
+    expect(dump).toContain('signalMask=TFT');
+    expect(dump).toContain('lockless=true');
+    expect(dump).toContain(`tripStartedAt=${new Date(tripStartedAt).toISOString()}`);
+    expect(dump).toContain('currentHopIndex=2');
+    expect(dump).toContain('route hop count=7');
+    expect(dump).toContain('sleepMode=on');
+    expect(dump).toContain('firstHopApproaching=false');
+  });
+
+  it('lock 활성 trip(lockless=false) + currentHopIndex=null estimator → currentHopIndex=—', () => {
+    const dump = __test__.buildDumpText(
+      makeDumpArgs({
+        trip: {
+          lockless: false,
+          tripStartedAt: null,
+          currentHopIndex: null,
+          routeHopCount: 5,
+        },
+        sleep: { sleepMode: false, firstHopApproaching: false },
+      }),
+    );
+    expect(dump).toContain('lockless=false');
+    expect(dump).toContain('currentHopIndex=—');
+    expect(dump).toContain('route hop count=5');
+    expect(dump).toContain('sleepMode=off');
+  });
+});
+
+// #1215 (D9) — UI 렌더 분기. setupHookDefaults를 그대로 활용해 hook 입력은 최소화.
+describe('DebugModal — D9 UI sections (#1215)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setupHookDefaults();
+  });
+
+  it.each([
+    [true, 'true'],
+    [false, 'false'],
+  ])('GPS 섹션에 subsurface=%p 노출', async (input, expected) => {
+    mockUseBarometer.mockReturnValue({ subsurface: input, stop: undefined });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('subsurface')).toBeTruthy();
+    // KeyValue의 value 텍스트로 노출. 정확한 매칭은 row 내 텍스트 검색.
+    expect(screen.getAllByText(expected).length).toBeGreaterThan(0);
+  });
+
+  it('fusionDetection 미전달 시 tier/signalMask = —', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('tier')).toBeTruthy();
+    expect(screen.getByText('signalMask')).toBeTruthy();
+    // — 표기가 최소 1회 이상 노출되는지 (다른 row도 — 일 수 있음).
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+  });
+
+  it('fusionDetection 전달 시 tier/signalMask 값 표기', async () => {
+    renderWithTheme(
+      <DebugModal
+        onClose={jest.fn()}
+        fusionDetection={{ tier: 'medium', signalMask: 'TFU' }}
+      />,
+    );
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('medium')).toBeTruthy();
+    expect(screen.getByText('TFU')).toBeTruthy();
+  });
+
+  it('Trip 섹션: lockless=true + currentHopIndex 정의', async () => {
+    const tripStartedAt = Date.UTC(2026, 5, 12, 4, 0, 0);
+    renderWithTheme(
+      <DebugModal
+        onClose={jest.fn()}
+        trip={{
+          lockless: true,
+          tripStartedAt,
+          currentHopIndex: 3,
+          routeHopCount: 8,
+        }}
+      />,
+    );
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Trip')).toBeTruthy();
+    expect(screen.getByText('lockless')).toBeTruthy();
+    expect(screen.getByText(new Date(tripStartedAt).toISOString())).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy();
+    expect(screen.getByText('8')).toBeTruthy();
+  });
+
+  it('Trip 섹션: currentHopIndex undefined(D1 미머지) → —', async () => {
+    renderWithTheme(
+      <DebugModal
+        onClose={jest.fn()}
+        trip={{
+          lockless: false,
+          tripStartedAt: null,
+          currentHopIndex: undefined,
+          routeHopCount: null,
+        }}
+      />,
+    );
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('currentHopIndex')).toBeTruthy();
+    expect(screen.getAllByText('false').length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    [{ sleepMode: true, firstHopApproaching: true }, 'on', 'true'],
+    [{ sleepMode: false, firstHopApproaching: false }, 'off', 'false'],
+  ])('Sleep 섹션 분기: sleep=%p → %p / firstHop=%p', async (input, modeText, hopText) => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} sleep={input} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Sleep')).toBeTruthy();
+    expect(screen.getAllByText(modeText).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(hopText).length).toBeGreaterThan(0);
+  });
+
+  it('Sleep prop 미전달 시 sleepMode = —', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Sleep')).toBeTruthy();
+    expect(screen.getByText('sleepMode')).toBeTruthy();
+    expect(screen.getByText('firstHopApproaching')).toBeTruthy();
+  });
+
+  it('Share dump가 D9 신규 props를 dump에 포함', async () => {
+    mockUseBarometer.mockReturnValue({ subsurface: true, stop: undefined });
+    const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+    renderWithTheme(
+      <DebugModal
+        onClose={jest.fn()}
+        fusionDetection={{ tier: 'high', signalMask: 'TTT' }}
+        trip={{ lockless: true, tripStartedAt: null, currentHopIndex: 1, routeHopCount: 4 }}
+        sleep={{ sleepMode: true, firstHopApproaching: true }}
+      />,
+    );
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    fireEvent.press(screen.getByTestId('debug-share-dump'));
+    await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+    const { message } = shareSpy.mock.calls[0][0] as { message: string };
+    expect(message).toContain('subsurface=true');
+    expect(message).toContain('tier=high');
+    expect(message).toContain('signalMask=TTT');
+    expect(message).toContain('lockless=true');
+    expect(message).toContain('currentHopIndex=1');
+    expect(message).toContain('route hop count=4');
+    expect(message).toContain('sleepMode=on');
+    expect(message).toContain('firstHopApproaching=true');
+    shareSpy.mockRestore();
   });
 });
 
