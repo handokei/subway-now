@@ -1185,15 +1185,29 @@ describe('useNearestStation — #903 Seam G barometer→sticky', () => {
   });
 
   it.each([
-    { label: '기본(미전달) → automotive=false', input: undefined, expected: false },
-    { label: 'barometerSubsurface=true → automotive=true', input: true, expected: true },
+    { label: '기본(미전달) → automotive=false, subsurface=false', input: undefined, expected: false },
+    { label: 'barometerSubsurface=true → automotive=true, subsurface=true', input: true, expected: true },
     { label: 'barometerSubsurface=false → automotive=false (graceful)', input: false, expected: false },
   ])('$label', async ({ input, expected }) => {
     const spy = jest.spyOn(useStickyStationModule, 'useStickyStation');
     renderHook(() => useNearestStation(input === undefined ? {} : { barometerSubsurface: input }));
     await waitFor(() => expect(spy).toHaveBeenCalled());
     const lastCall = spy.mock.calls[spy.mock.calls.length - 1];
-    expect(lastCall[1]).toEqual({ automotive: expected });
+    // D6 (#1212) — motion 입력에 subsurface(=barometerSubsurface mirror) + tripActive 추가.
+    expect(lastCall[1]).toEqual({ automotive: expected, subsurface: expected, tripActive: false });
+    spy.mockRestore();
+  });
+
+  // D6 (#1212) — tripActive 입력이 sticky motion에 전달되는지 검증.
+  it.each([
+    { label: 'tripActive=true 전달', input: true, expected: true },
+    { label: 'tripActive=false 전달', input: false, expected: false },
+  ])('$label', async ({ input, expected }) => {
+    const spy = jest.spyOn(useStickyStationModule, 'useStickyStation');
+    renderHook(() => useNearestStation({ tripActive: input }));
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    const lastCall = spy.mock.calls[spy.mock.calls.length - 1];
+    expect(lastCall[1]).toEqual(expect.objectContaining({ tripActive: expected }));
     spy.mockRestore();
   });
 });

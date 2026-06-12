@@ -113,6 +113,11 @@ export interface UseNearestStationInputs {
    * 무관하게 지상→지하 전이를 가장 일찍 감지하므로 sticky의 motion unlock 트리거로 사용한다.
    */
   barometerSubsurface?: boolean;
+  /**
+   * D6 (#1212) — trip(목적지/경로) 활성 여부. sticky 게이트에 전달되어 trip 활성 + 지하 조합에서
+   * sticky unlock(motion/distance) 보류. 미전달이면 false로 간주(기존 동작 보존).
+   */
+  tripActive?: boolean;
 }
 
 export function useNearestStation(
@@ -401,7 +406,13 @@ export function useNearestStation(
       accuracyMeters,
       speedMps,
     },
-    { automotive: inputs.barometerSubsurface === true },
+    {
+      automotive: inputs.barometerSubsurface === true,
+      // D6 (#1212) — subsurface + tripActive를 sticky 게이트에 직접 전달.
+      // automotive=subsurface 매핑은 유지하되, 지하 + trip 활성 조합에서는 unlock 보류.
+      subsurface: inputs.barometerSubsurface === true,
+      tripActive: inputs.tripActive === true,
+    },
   );
 
   const exposed = useMemo<{ result: NearestStationResult | null; source: NearestStationSource }>(

@@ -101,6 +101,19 @@ describe('shouldUnlockByDistance', () => {
     // 게이트 의미가 ">"인지 ">="인지 명확히 한다 — 구현은 ">"(초과)로 정의.
     expect(exactlyAtThreshold).toBeGreaterThan(0);
   });
+
+  // D6 (#1212) — trip 활성 + 지하 케이스. 강남역 좌표는 서울역에서 ~10km로 거리 게이트 통과.
+  const farFromLocked = { lat: 37.4979, lng: 127.0276, accuracyMeters: 20 };
+  it.each<[string, { subsurface?: boolean; tripActive?: boolean }, boolean]>([
+    ['subsurface=true + tripActive=true → 지하 dead-zone 부정확 좌표 의심 → false', { subsurface: true, tripActive: true }, false],
+    ['subsurface=true + tripActive=false → 기존 동작 → true', { subsurface: true, tripActive: false }, true],
+    ['subsurface=false + tripActive=true → 지상 trip(차/도보) → true', { subsurface: false, tripActive: true }, true],
+    ['둘 다 미정의 → 기존 동작 → true', {}, true],
+  ])('%s', (_label, flags, expected) => {
+    expect(
+      shouldUnlockByDistance(seoulStation, { ...farFromLocked, ...flags }),
+    ).toBe(expected);
+  });
 });
 
 describe('shouldUnlockByTtl', () => {
@@ -134,5 +147,16 @@ describe('shouldUnlockByMotion', () => {
 
   it('automotive 미정의 (motion 신호 없음) → false (보수적 — 풀지 않음)', () => {
     expect(shouldUnlockByMotion({})).toBe(false);
+  });
+
+  // D6 (#1212) — trip 활성 + 지하 케이스 매트릭스
+  it.each<[string, { automotive?: boolean; subsurface?: boolean; tripActive?: boolean }, boolean]>([
+    ['automotive=true + subsurface=true + tripActive=true → 지하철 탑승 정상 신호 → false', { automotive: true, subsurface: true, tripActive: true }, false],
+    ['automotive=true + subsurface=true + tripActive=false → trip 미활성, 풀어도 영향 적음 → true', { automotive: true, subsurface: true, tripActive: false }, true],
+    ['automotive=true + subsurface=false + tripActive=true → 지상 trip은 차/도보 환승 가능 → true', { automotive: true, subsurface: false, tripActive: true }, true],
+    ['automotive=true + subsurface=true (tripActive 미정의) → false로 간주, 기존 동작 → true', { automotive: true, subsurface: true }, true],
+    ['automotive=true + tripActive=true (subsurface 미정의) → false로 간주, 기존 동작 → true', { automotive: true, tripActive: true }, true],
+  ])('%s', (_label, motion, expected) => {
+    expect(shouldUnlockByMotion(motion)).toBe(expected);
   });
 });

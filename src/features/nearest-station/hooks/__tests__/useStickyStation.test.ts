@@ -279,6 +279,46 @@ describe('useStickyStation (#876)', () => {
     await waitFor(() => expect(removeSpy).toHaveBeenCalledWith(STICKY_STATION_KEY));
   });
 
+  // D6 (#1212) — trip 활성 + 지하 시 sticky 유지 검증.
+  describe('D6 (#1212) — trip 활성 + 지하 시 sticky 유지', () => {
+    const lockSeoul = async (motion: StickyMotionInput) => {
+      const hook = renderSticky({ fix: fixAt(seoul), motion });
+      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      hook.rerender({ fix: fixAt(seoul), motion });
+      hook.rerender({ fix: fixAt(seoul), motion });
+      await waitFor(() => expect(hook.result.current.locked?.id).toBe(seoul.id));
+      return hook;
+    };
+
+    it('지하 + trip 활성 + automotive → unlock 보류 (lock 유지)', async () => {
+      const motion: StickyMotionInput = { subsurface: true, tripActive: true };
+      const { result, rerender } = await lockSeoul(motion);
+      // automotive=true가 들어와도 subsurface+tripActive 동시 → unlock 안 함.
+      rerender({ fix: fixAt(seoul), motion: { ...motion, automotive: true } });
+      expect(result.current.locked?.id).toBe(seoul.id);
+    });
+
+    it('지하 + trip 활성 + 멀리 떨어진 좋은 fix → distance unlock 보류', async () => {
+      const motion: StickyMotionInput = { subsurface: true, tripActive: true };
+      const { result, rerender } = await lockSeoul(motion);
+      // 강남역(10km+) 좋은 fix가 들어와도 지하 dead-zone 의심 → unlock 안 함.
+      rerender({ fix: fixAt(gangnam), motion });
+      expect(result.current.locked?.id).toBe(seoul.id);
+    });
+
+    it('지하 + trip 미활성 + automotive → 기존 unlock 동작 (lock 해제)', async () => {
+      const { result, rerender } = await lockSeoul({});
+      rerender({ fix: fixAt(seoul), motion: { automotive: true, subsurface: true, tripActive: false } });
+      await waitFor(() => expect(result.current.locked).toBeNull());
+    });
+
+    it('지상 + trip 활성 + automotive → 기존 unlock 동작 (차/도보 환승 가능)', async () => {
+      const { result, rerender } = await lockSeoul({});
+      rerender({ fix: fixAt(seoul), motion: { automotive: true, subsurface: false, tripActive: true } });
+      await waitFor(() => expect(result.current.locked).toBeNull());
+    });
+  });
+
   it('candidate=null 상태에서는 카운트 안 함', async () => {
     const { result, rerender } = renderSticky({ fix: fixAt(null) });
     await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());

@@ -48,6 +48,16 @@ export interface StickyFixInput {
 export interface StickyMotionInput {
   /** automotive=true면 차/지하철 이동 확정으로 간주 — unlock 트리거. */
   automotive?: boolean;
+  /**
+   * D6 (#1212) — 기압계가 지하 진입을 시사하는지. 지하 + trip 활성 시 automotive 신호는
+   * 지하철 탑승의 정상 신호로 간주하여 sticky를 풀지 않는다. distance 게이트도 같은 조합에서 보류.
+   */
+  subsurface?: boolean;
+  /**
+   * D6 (#1212) — trip(목적지/경로) 활성 여부. 지하 dead-zone GPS로 sticky가 잘못 풀려
+   * "탑승 중 노선 정보 사라짐" 회귀가 발생하던 케이스 차단.
+   */
+  tripActive?: boolean;
 }
 
 export interface UseStickyStationReturn {
@@ -180,6 +190,8 @@ export function useStickyStation(
           lat: candidate.station.lat,
           lng: candidate.station.lng,
           accuracyMeters,
+          subsurface: motion.subsurface,
+          tripActive: motion.tripActive,
         })
       ) {
         // distance unlock은 즉시 — 새 후보 카운트는 다음 fix부터 시작. better-fix 갱신을 같은 effect에서
