@@ -7,7 +7,13 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getFirstLeg, isStationOnRoute, isSameStationName } from '../../../shared/utils/stationRoute';
+import {
+  getFirstLeg,
+  isStationOnRoute,
+  isSameStationName,
+  isStationWithinHopWindow,
+  arcIndexOf,
+} from '../../../shared/utils/stationRoute';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
 import { alarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
@@ -36,6 +42,8 @@ import {
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
+  logSuppressedHopWindow,
+  logSuppressedHopWindowNoSource,
   logSuppressedMovement,
   logSuppressedPhaseGate,
   logSuppressedSleepFirstTransfer,
@@ -196,6 +204,33 @@ async function runSilenceGateAndDispatch(params: {
   });
 }
 
+/**
+ * #1208 (Epic #1204 D2) — firedAlarms set 기반 fallback hop 추정.
+ *
+ * 우선 SSOT(estimator.index / lock 진행 시간)이 모두 부재할 때 사용.
+ * firedAlarms key 형식 `${phaseId}:${stationName}`을 파싱해 arcStations 위 인덱스 중 max를 찾고 +1.
+ * key parse 실패/match 미존재 시 -1 → 호출자가 graceful skip.
+ *
+ * 주의: 본 fallback은 false negative risk가 있음(예: imminent만 fire되고 station-passed dedup이 비어 있으면
+ * 0 반환) — graceful 동작이지 SSOT가 아님. alarmLog reason='gate-hop-window-no-source'를 함께 남겨 분석 가능.
+ */
+function inferHopIndexFromFiredAlarms(
+  firedAlarms: ReadonlySet<string>,
+  arcStations: readonly Station[],
+): number {
+  let maxIdx = -1;
+  for (const key of firedAlarms) {
+    const sep = key.indexOf(':');
+    /* istanbul ignore next — alarmKey()가 항상 `${phaseId}:${stationName}` 형식이라 sep=-1는 도달 불가, 잘못된 key 데이터 방어용 */
+    if (sep === -1) continue;
+    const stationName = key.slice(sep + 1);
+    const idx = arcStations.findIndex((s) => isSameStationName(s.name, stationName));
+    if (idx > maxIdx) maxIdx = idx;
+  }
+  if (maxIdx === -1) return -1;
+  return Math.min(maxIdx + 1, arcStations.length - 1);
+}
+
 export interface UseStationAlarmInputs {
   route: Route;
   destination: Station | null;
@@ -243,6 +278,17 @@ export interface UseStationAlarmInputs {
    * production 호출자는 미설정으로 둠. 단위 테스트에서 mount 직후 alarm 평가 검증 시 사용.
    */
   skipWarmupGuard?: boolean;
+  /**
+   * #1208 (Epic #1204 D2) — D1 estimator가 추정한 현재 hop index.
+   * station-passed 게이트의 1순위 SSOT. null이면 lock 활성 또는 firedAlarms 기반 fallback 시도.
+   * 미전달이면 기존 동작 유지(graceful, 게이트 미적용).
+   */
+  currentHopIndex?: number | null;
+  /**
+   * #1208 — 현재 trip의 arc station 배열. hop window 게이트와 firedAlarms 기반 fallback hop 계산에 사용.
+   * 빈 배열/미전달이면 게이트 미적용(graceful).
+   */
+  arcStations?: readonly Station[];
 }
 
 export function useStationAlarm({
@@ -259,6 +305,8 @@ export function useStationAlarm({
   motionStationary,
   currentStationArrival,
   skipWarmupGuard = false,
+  currentHopIndex = null,
+  arcStations,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
   // #699: firedAlarmsRef의 내용이 어느 destinationId에 속하는지 추적.
@@ -727,6 +775,29 @@ export function useStationAlarm({
       const capturedDestinationId = destination.id;
       const capturedDestinationName = destination.name;
 
+      // #1208 (Epic #1204 D2) — trip 진행도 hop window 게이트.
+      // isStationOnRoute는 candidate가 route 노선 위에 있는지만 검사 → 이미 지나간 hop이나
+      // 미래 hop에서도 통과(사가정 22:11:56 / 성수 13:28:35 회귀). hop window로 추가 가드.
+      // SSOT 우선순위:
+      //   1. currentHopIndex prop (D1 estimator 또는 lock 활성 시 interp 결과 — 호출자가 결정)
+      //   2. firedAlarms set 기반 fallback (graceful, false negative risk)
+      //   3. 둘 다 부재 + arcStations 없음 → 게이트 미적용 (gate-hop-window-no-source)
+      if (arcStations && arcStations.length > 0) {
+        const effectiveHopIndex =
+          currentHopIndex ?? inferHopIndexFromFiredAlarms(firedAlarmsRef.current, arcStations);
+        if (effectiveHopIndex < 0) {
+          logSuppressedHopWindowNoSource({ source: 'fg', stationName: candidateStation.name });
+        } else if (!isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex)) {
+          logSuppressedHopWindow({
+            source: 'fg',
+            stationName: candidateStation.name,
+            currentHopIndex: effectiveHopIndex,
+            candidateIndex: arcIndexOf(arcStations, candidateStation),
+          });
+          return;
+        }
+      }
+
       // #733 — station-passed movement gate (S4 fix).
       // 기존엔 accuracyOk/arrivalConfirmed만 검사 → fusion이 인접역으로 jitter하면 매번 발사.
       // snapshot 2의 20:16:52 면목 알람(사용자 정적, backend trip 없음) 같은 회귀 차단.
@@ -776,6 +847,8 @@ export function useStationAlarm({
     clearDismissSilenceAction,
     userLocation?.lat,
     userLocation?.lng,
+    currentHopIndex,
+    arcStations,
   ]);
 
   // #917 A2 follow-up — FG fast path: lock.trainCode가 currentStationArrival의 row에
