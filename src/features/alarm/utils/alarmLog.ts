@@ -98,6 +98,11 @@ export type AlarmLogReason =
   | 'gate-phase-warmup'
   // #1010 — station-passed effect가 lock hydrate 직후 30s warmup window 동안 차단된 발사.
   | 'gate-station-passed-warmup'
+  // #1208 (Epic #1204 D2) — station-passed가 trip 진행도 hop window 밖이라 차단된 발사.
+  // currentHopIndex ± windowSize 범위 밖 candidate station을 fire 차단 — 사가정/성수 회귀 evidence.
+  // 'gate-hop-window-no-source'는 hop SSOT(estimator/lock/firedAlarms)가 모두 없어 게이트 미적용 graceful skip 적재.
+  | 'gate-hop-window'
+  | 'gate-hop-window-no-source'
   // #1012 (H5) — useStationAlarm hydration state machine 각 phase 진입 stamp.
   // pre-hydrate → hydrating → storage-synced → ready 4단계. 'ready' 전 phase에서는
   // 모든 phase 알람 발사가 보류된다. transition 한 번에 1엔트리 적재 — 운영에서 phase
@@ -201,6 +206,10 @@ export interface AlarmLogEntry {
   // #1024 — burst inline counter. 같은 reason 연속 발생 시 count++ (새 entry 추가 대신).
   // 미설정이면 1로 해석 — 기존 entry와 완전 하위 호환.
   count?: number;
+  // #1208 (Epic #1204 D2) — hop window 게이트 적재 시 진단 컨텍스트.
+  // currentHopIndex = D1 estimator/fallback이 결정한 SSOT hop, candidateIndex = arc 위 candidate 위치.
+  currentHopIndex?: number;
+  candidateIndex?: number;
 }
 
 const logger = createLogger('AlarmLog');
@@ -763,6 +772,47 @@ export function logSuppressedSleepFirstTransfer(input: {
  * #1010 — station-passed effect가 lock hydrate 직후 30s warmup window 동안 차단된 발사 1건 적재.
  * stationName은 nearestStation?.name — unknown이면 undefined.
  */
+/**
+ * #1208 (Epic #1204 D2) — station-passed가 trip 진행도 hop window 밖이라 차단된 발사 1건 적재.
+ * candidateIndex/currentHopIndex가 모두 알려진 경우 phaseId 슬롯에 ":hop=cur/cand" 문자열로 노출.
+ * source는 호출 path 식별: FG polling은 'fg', BG는 'bg' 등.
+ */
+export function logSuppressedHopWindow(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  currentHopIndex: number;
+  candidateIndex: number;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'gate-hop-window',
+    stationName: input.stationName,
+    kind: 'station-passed',
+    currentHopIndex: input.currentHopIndex,
+    candidateIndex: input.candidateIndex,
+  });
+}
+
+/**
+ * #1208 (Epic #1204 D2) — hop window SSOT 부재로 게이트 미적용 1건 적재.
+ * estimator/lock/firedAlarms 셋 다 hop index를 결정하지 못한 graceful skip을 측정.
+ */
+export function logSuppressedHopWindowNoSource(input: {
+  source: AlarmLogSource;
+  stationName: string;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'gate-hop-window-no-source',
+    stationName: input.stationName,
+    kind: 'station-passed',
+  });
+}
+
 export function logSuppressedStationPassedWarmup(stationName: string | undefined): void {
   appendAlarmLog({
     ts: Date.now(),

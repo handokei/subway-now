@@ -93,6 +93,18 @@ interface UseFusedNearestStationReturn {
    * BoardingLock 비활성 시 null. DebugModal Estimator State 섹션에서 사용.
    */
   estimatorStrategy: import('../../route/utils/stationProgressEstimator').StationProgressStrategy | null;
+  /**
+   * #1208 (Epic #1204 D2) — 현재 채택된 estimator의 arc 위 hop index.
+   * useStationAlarm이 station-passed 게이트(`isStationWithinHopWindow`)의 SSOT로 사용.
+   * estimator 미채택 시 null — 호출자가 firedAlarms 등의 fallback으로 추정.
+   */
+  currentHopIndex: number | null;
+  /**
+   * #1208 — 현재 trip의 arc(탑승역~다음 waypoint) station 배열.
+   * useStationAlarm의 hop window 게이트 입력 및 firedAlarms 기반 fallback hop 계산용.
+   * route/trip 없으면 빈 배열.
+   */
+  arcStations: readonly Station[];
   refresh: () => Promise<void>;
 }
 
@@ -827,6 +839,8 @@ export function useFusedNearestStation(
     lastFixAtMs: gps.lastFixAtMs,
     positionStability,
     estimatorStrategy: estimate?.strategy ?? null,
+    currentHopIndex: estimate?.index ?? null,
+    arcStations,
     refresh: gps.refresh,
   };
 }

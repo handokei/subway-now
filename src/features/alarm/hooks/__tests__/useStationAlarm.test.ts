@@ -78,6 +78,8 @@ const mockLogSuppressedPhaseGate = jest.fn();
 const mockLogSuppressedSleepFirstTransfer = jest.fn();
 const mockLogSuppressedDismissSilence = jest.fn();
 const mockLogSuppressedStationPassedWarmup = jest.fn();
+const mockLogSuppressedHopWindow = jest.fn();
+const mockLogSuppressedHopWindowNoSource = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -93,6 +95,9 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
   logSuppressedStationPassedWarmup: (...args: unknown[]) =>
     mockLogSuppressedStationPassedWarmup(...args),
+  logSuppressedHopWindow: (...args: unknown[]) => mockLogSuppressedHopWindow(...args),
+  logSuppressedHopWindowNoSource: (...args: unknown[]) =>
+    mockLogSuppressedHopWindowNoSource(...args),
 }));
 
 const mockGetBoardingLock = jest.fn();
@@ -2902,6 +2907,246 @@ describe('useStationAlarm', () => {
       expect(phasesAfterStaleResolve).not.toContain('storage-synced');
       expect(phasesAfterStaleResolve).not.toContain('ready');
       unmount();
+    });
+  });
+
+  describe('#1208 (Epic #1204 D2) station-passed hop window 게이트', () => {
+    // arcStations: 7개 (S0~S6), 모두 line='2' — isStationOnRoute(direct, '2') 통과.
+    const arc: Station[] = Array.from({ length: 7 }, (_, i) =>
+      makeStation(`A${i}`, `Sname${i}`, 37.5 + i * 0.001, 127.0 + i * 0.001),
+    );
+    const directRouteOnLine2 = makeDirectRoute(6, '2');
+
+    it('22:11:56 사가정 회귀 차단 — lockless + currentHopIndex=2 + candidate arc[6] → suppressed', async () => {
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[6],
+            currentHopIndex: 2,
+            arcStations: arc,
+            // station-passed effect 통과 조건 — accuracy 통과.
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindow).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: arc[6].name,
+          currentHopIndex: 2,
+          candidateIndex: 6,
+        });
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('13:28:35 성수 fire 차단 — lockless + currentHopIndex=2 + candidate arc[6] (=현재+4) → suppressed', async () => {
+      // 4정거장 미래 — currentHopIndex=2면 window [1,3]이라 candidate 6은 차단.
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[6],
+            currentHopIndex: 2,
+            arcStations: arc,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindow).toHaveBeenCalled();
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('lock 활성 + 정상 hop (currentHopIndex=3, candidate arc[3]) → 통과 (기존 동작 보존)', async () => {
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 3,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[3],
+            currentHopIndex: 3,
+            arcStations: arc,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+    });
+
+    it('estimator null + firedAlarms 빈 set + candidate arc[0] → pass (graceful fallback no-source)', async () => {
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 6,
+        isTransfer: false,
+        stopsToDestination: 6,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[0],
+            currentHopIndex: null,
+            arcStations: arc,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindowNoSource).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: arc[0].name,
+        });
+      });
+      // 게이트 미적용이므로 알람은 정상 발사된다.
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+    });
+
+    it('arcStations 빈 배열 → 게이트 자체 미적용 (기존 동작 보존)', async () => {
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 1,
+        isTransfer: false,
+        stopsToDestination: 1,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[0],
+            currentHopIndex: 5,
+            arcStations: [],
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+      expect(mockLogSuppressedHopWindowNoSource).not.toHaveBeenCalled();
+    });
+
+    it('firedAlarms fallback — fired set의 station이 arc 밖이면 inferred=-1 → no-source 적재 + 게이트 미적용', async () => {
+      mockGetFiredAlarms.mockResolvedValue(new Set<string>(['early:OFFROUTE_STATION']));
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 1,
+        isTransfer: false,
+        stopsToDestination: 1,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[0],
+            currentHopIndex: null,
+            arcStations: arc,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindowNoSource).toHaveBeenCalled();
+      });
+      // 게이트 미적용 → 알람 정상 발사.
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+    });
+
+    it('firedAlarms fallback — fired set의 max station이 arc 마지막이면 inferred는 arc 마지막에 cap', async () => {
+      // arc[6] (마지막) 발사 기록 → inferred = min(6+1, 6) = 6. window [5,7] → arc[5] 통과.
+      mockGetFiredAlarms.mockResolvedValue(new Set<string>([`early:${arc[6].name}`]));
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 1,
+        isTransfer: false,
+        stopsToDestination: 1,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[5],
+            currentHopIndex: null,
+            arcStations: arc,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+      expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
+    });
+
+    it('firedAlarms fallback — fired set에 arc[2] station 포함 시 inferred hop=3 → arc[5] 차단 / arc[3] 통과', async () => {
+      // firedAlarms에 "early:Sname2" 적재 → arc index 2가 max → inferred = 3.
+      // window [2,4]이므로 arc[5]는 차단, arc[3]은 통과.
+      mockGetFiredAlarms.mockResolvedValue(new Set<string>([`early:${arc[2].name}`]));
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[5],
+            currentHopIndex: null,
+            arcStations: arc,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockLogSuppressedHopWindow).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: arc[5].name,
+          currentHopIndex: 3,
+          candidateIndex: 5,
+        });
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });
 });

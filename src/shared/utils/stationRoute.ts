@@ -387,6 +387,47 @@ export function getFirstLeg(
   return { line: first.fromLine, endName: first.transferName };
 }
 
+/**
+ * Lockless trip의 station-passed 게이트(#1208, Epic #1204 D2) 기본 hop window 반경.
+ * D1 estimator가 추정한 currentHopIndex 기준 ±N hop 안의 candidate만 통과.
+ * 1이면 이전 hop, 현재 hop, 다음 hop만 fire 허용 — false positive 차단(이미 지나간 hop)
+ * 과 false negative 차단(미래 hop) 사이 보수적 균형.
+ */
+export const LOCKLESS_HOP_WINDOW_DEFAULT = 1;
+
+/**
+ * #1208 (Epic #1204 D2) — station-passed 게이트.
+ * arcStations 위에서 candidate station이 currentHopIndex ± windowSize 범위에 있는지 검사.
+ *
+ * 호출자(useStationAlarm)는 `isStationOnRoute` 다음에 본 함수로 trip 진행도 hop window를 추가 가드한다.
+ * - true: route 위에 있고 hop window 안 → station-passed 발사 허용
+ * - false: route 밖 또는 hop window 밖 → 발사 차단 (caller가 logSuppressedHopWindow로 기록)
+ *
+ * arc 밖 station(arcIndex === -1)이거나 currentHopIndex가 음수면 false.
+ */
+export function isStationWithinHopWindow(
+  station: Station,
+  arcStations: readonly Station[],
+  currentHopIndex: number,
+  windowSize: number = LOCKLESS_HOP_WINDOW_DEFAULT,
+): boolean {
+  if (currentHopIndex < 0) return false;
+  const candidateIndex = arcStations.findIndex((s) => s.id === station.id);
+  if (candidateIndex === -1) return false;
+  return (
+    candidateIndex >= currentHopIndex - windowSize &&
+    candidateIndex <= currentHopIndex + windowSize
+  );
+}
+
+/**
+ * #1208 — arcStations에서 station의 인덱스. 미발견 -1.
+ * useStationAlarm이 fallback hop 추정(firedAlarms max+1) 시 사용.
+ */
+export function arcIndexOf(arcStations: readonly Station[], station: Station): number {
+  return arcStations.findIndex((s) => s.id === station.id);
+}
+
 export function isStationOnRoute(station: Station, route: NonNullable<Route>): boolean {
   if (route.type === 'direct') {
     return station.line === route.line;

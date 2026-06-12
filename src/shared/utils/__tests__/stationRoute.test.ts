@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 import {
@@ -1622,6 +1622,65 @@ describe('isStationOnRoute', () => {
 
   it('multi-transfer route — 어느 환승 구간에도 없으면 false', () => {
     expect(isStationOnRoute(makeStation('7'), multiTransferRoute)).toBe(false);
+  });
+});
+
+describe('isStationWithinHopWindow (#1208 D2)', () => {
+  // 7개 arc — currentHopIndex=2 기준으로 window 검증.
+  // 사가정/성수 회귀 evidence 시뮬레이션용.
+  const makeArc = (count: number): Station[] =>
+    Array.from({ length: count }, (_, i) => ({
+      id: `7-${i.toString().padStart(3, '0')}`,
+      name: `S${i}`,
+      line: '7',
+      lineColor: '#000',
+      lat: 0,
+      lng: 0,
+    }));
+
+  const arc = makeArc(7);
+
+  it.each<[number, number, boolean, string]>([
+    [2, 0, false, 'currentHopIndex=2 + candidate arcStations[0] → suppressed (이미 지나간 hop)'],
+    [2, 1, true, 'currentHopIndex=2 + candidate arcStations[1] → pass (current-1 window)'],
+    [2, 2, true, 'currentHopIndex=2 + candidate arcStations[2] → pass'],
+    [2, 3, true, 'currentHopIndex=2 + candidate arcStations[3] → pass (current+1 window)'],
+    [2, 5, false, 'currentHopIndex=2 + candidate arcStations[5] → suppressed (미래 hop)'],
+  ])('%s', (currentHopIndex, candidateIdx, expected) => {
+    expect(isStationWithinHopWindow(arc[candidateIdx], arc, currentHopIndex)).toBe(expected);
+  });
+
+  it('windowSize=2 + candidate arcStations[4] → pass (확장된 window)', () => {
+    expect(isStationWithinHopWindow(arc[4], arc, 2, 2)).toBe(true);
+  });
+
+  it('candidate not on route(arc) → suppressed', () => {
+    const offRoute: Station = {
+      id: '9-999',
+      name: 'OFFROUTE',
+      line: '9',
+      lineColor: '#fff',
+      lat: 0,
+      lng: 0,
+    };
+    expect(isStationWithinHopWindow(offRoute, arc, 2)).toBe(false);
+  });
+
+  it('currentHopIndex 음수 → suppressed (방어)', () => {
+    expect(isStationWithinHopWindow(arc[0], arc, -1)).toBe(false);
+  });
+
+  it('LOCKLESS_HOP_WINDOW_DEFAULT === 1 (정책 회귀 가드)', () => {
+    expect(LOCKLESS_HOP_WINDOW_DEFAULT).toBe(1);
+  });
+
+  it('arcIndexOf — arc 위 station 인덱스 반환', () => {
+    expect(arcIndexOf(arc, arc[3])).toBe(3);
+  });
+
+  it('arcIndexOf — arc 밖 station은 -1', () => {
+    const offRoute: Station = { id: 'X', name: 'X', line: '9', lineColor: '#fff', lat: 0, lng: 0 };
+    expect(arcIndexOf(arc, offRoute)).toBe(-1);
   });
 });
 

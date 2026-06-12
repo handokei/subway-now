@@ -167,7 +167,7 @@ export default function HomeScreen() {
   //   2) useApnsTripRegistration: backend payload subsurface 동봉(threshold 5→10).
   const barometerSignal = useBarometer();
   const { subsurface: barometerSubsurface } = barometerSignal;
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal });
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal });
 
   // #914 (F4) — 1탭 현재역 확정 모달. 자동 추정이 locationUncertain으로 길어지면 후보 1~3개를
   // 카드로 노출, 1탭 = customOrigin 적용.
@@ -361,6 +361,10 @@ export default function HomeScreen() {
     // lock.trainCode arvlCd∈{0,1} 첫 관찰 시 매역 알림 즉시 발사. rawArrival(useArrivalCountdown
     // 미적용)을 직접 전달 — 매역 발사 트리거는 분 단위 tick과 무관한 arvlCd 원본 값.
     currentStationArrival: rawArrival,
+    // #1208 (Epic #1204 D2) — station-passed hop window 게이트 입력.
+    // D1 estimator(LocklessRouteHop 포함)의 현재 hop index와 arcStations를 그대로 전달.
+    currentHopIndex,
+    arcStations,
   });
 
   // #584 PR B — BoardingLock 진입점. UI 렌더링/lock 생성만 담당하며,
