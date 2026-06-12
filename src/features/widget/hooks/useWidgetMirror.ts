@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import type { Station } from '../../../shared/types/station';
-import { saveStationToWidget, clearWidgetStation } from '../api/widgetStorage';
+import { saveStationToWidget } from '../api/widgetStorage';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('WidgetMirror');
@@ -20,7 +20,11 @@ function distanceBucket(distanceKm: number | undefined | null): number | null {
  * nearest station 결과를 iOS 홈 위젯에 단방향 mirror.
  *
  * - station 존재 (500m 반경 내 감지) → `saveStationToWidget`
- * - station 없음 → `clearWidgetStation` 으로 위젯이 "감지 중" fallback 표시
+ * - station 없음 (loading / locationUncertain 같은 일시적 null) → **no-op**.
+ *   위젯은 마지막 알려진 역 + savedAt freshness 로 stale UX 를 자가 처리한다.
+ *   여기서 UserDefaults 를 비우면 transient null 마다 위젯이 "감지 중" 으로 고착되는
+ *   회귀가 발생한다 (#1239). 명시적 clear 가 필요한 경로(알람 종료 등)는 별도
+ *   `clearWidgetStation` caller(`stationNotification`, `SharedGroupAdapter`)가 담당.
  *
  * 위젯 lifecycle은 destination/route 상태와 분리되어 항상 nearest station을 반영한다(#1094).
  * deps는 50m bucket으로 정규화해 GPS tick마다 불필요한 effect 재실행을 막는다.
@@ -34,7 +38,6 @@ export function useWidgetMirror(
 
   useEffect(() => {
     if (!station || distanceKm == null) {
-      clearWidgetStation().catch((e) => logger.error('clear 실패:', e));
       return;
     }
     saveStationToWidget(station, distanceKm).catch((e) =>
