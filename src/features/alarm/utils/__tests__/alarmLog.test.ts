@@ -43,6 +43,8 @@ import {
   summarizeAlarmLogByReason,
   logHydrationTransition,
   logSuppressedStationPassedWarmup,
+  logSuppressedHopWindow,
+  logSuppressedHopWindowNoSource,
   logSuppressedTbaRevalidation,
   summarizeAlarmLogBySource,
   countGateReasons,
@@ -662,6 +664,43 @@ describe('alarmLog', () => {
         kind: 'station-passed',
       });
       expect(saved[0].stationName).toBeUndefined();
+    });
+
+    it('#1208 logSuppressedHopWindow: reason=gate-hop-window + kind=station-passed + hop 인덱스 stamp', async () => {
+      logSuppressedHopWindow({
+        source: 'fg',
+        stationName: '사가정',
+        currentHopIndex: 2,
+        candidateIndex: 6,
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'gate-hop-window',
+        stationName: '사가정',
+        kind: 'station-passed',
+        currentHopIndex: 2,
+        candidateIndex: 6,
+      });
+    });
+
+    it('#1208 logSuppressedHopWindowNoSource: reason=gate-hop-window-no-source + kind=station-passed', async () => {
+      logSuppressedHopWindowNoSource({ source: 'fg', stationName: '용마산' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'gate-hop-window-no-source',
+        stationName: '용마산',
+        kind: 'station-passed',
+      });
     });
 
     it('#1012 logHydrationTransition: 4 phase 각각 hydration-* reason + fg-hydrate source로 적재', async () => {
