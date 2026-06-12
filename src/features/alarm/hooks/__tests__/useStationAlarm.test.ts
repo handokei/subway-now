@@ -412,6 +412,81 @@ describe('useStationAlarm', () => {
     });
   });
 
+  // Epic #1204 N8 — currentLine 소스 boardingLock 우선.
+  // 5호선 답십리 lock 진행 중 fusion이 2호선 상왕십리 nearest로 jitter해도
+  // currentLine은 lock.boardingLine을 유지해 다른 leg의 hop fire를 차단해야 한다.
+  describe('#1204 N8 — currentLine boardingLock 우선', () => {
+    const route = makeDirectRoute(3, '5');
+    // nearest는 2호선으로 잘못 잡힌 jitter 시나리오 — 실제 사용자는 5호선 trip 진행 중.
+    const wrongNearest = makeStation('N-wrong', '상왕십리', 37.5638, 127.0288);
+    const baseInputs = () =>
+      defaultInputs({
+        route,
+        destination,
+        nearestStation: { ...wrongNearest, line: '2' as const },
+        userLocation: { lat: 37.4, lng: 127.0 },
+        speedMps: 10,
+        accuracyMeters: 100,
+      });
+
+    it('lock.boardingLine 있으면 currentLine은 lock 노선', async () => {
+      mockGetBoardingLock.mockResolvedValue({
+        destinationId: destination.id,
+        trainCode: 'T-5',
+        boardingStationId: 'S-답십리',
+        boardingLine: '5' as const,
+        boardedAt: Date.now(),
+        expectedDurationMs: 600_000,
+      });
+      renderHook(() => useStationAlarm(baseInputs()));
+      await waitFor(() =>
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ currentLine: '5' }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+        ),
+      );
+    });
+
+    it('lock 없으면 nearestStation.line으로 fallback', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      renderHook(() => useStationAlarm(baseInputs()));
+      await waitFor(() =>
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ currentLine: '2' }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+        ),
+      );
+    });
+
+    it('lock + nearestStation 둘 다 null이면 currentLine=null', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: null,
+            userLocation: { lat: 37.4, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 100,
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockEvaluateAlarmPhase).toHaveBeenCalledWith(
+          expect.objectContaining({ currentLine: null }),
+          expect.any(Set),
+          undefined,
+          expect.any(Array),
+        ),
+      );
+    });
+  });
+
   it('passes null etaSeconds when speed is null', async () => {
     const route = makeDirectRoute(3, '2');
     renderHook(() =>
@@ -2540,8 +2615,10 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       await Promise.resolve();
-      // nearestStation null이면 GPS station-passed path도 진입 안 함 → getBoardingLock 호출 0.
-      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+      // #1272 (N8) — destinationId 기반 lock mirror effect가 destinationId 설정 시 lock을
+      // 1회 prefetch 한다. fast path 발사 자체는 nearestStation null이므로 발생하지 않음.
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
     });
 
     it('nearestStation이 route 밖이면(line 불일치) fast path no-op', async () => {
@@ -2551,7 +2628,8 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       await Promise.resolve();
-      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
     });
 
     it('route 또는 destination 미설정이면 fast path no-op', async () => {
@@ -2561,7 +2639,8 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       await Promise.resolve();
-      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
     });
 
     it('destination 미설정이면 fast path no-op', async () => {
@@ -2571,6 +2650,7 @@ describe('useStationAlarm', () => {
 
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       await Promise.resolve();
+      // destination=null이면 lock mirror effect도 early return → getBoardingLock 호출 0.
       expect(mockGetBoardingLock).not.toHaveBeenCalled();
     });
 
@@ -2633,7 +2713,11 @@ describe('useStationAlarm', () => {
 
       await Promise.resolve();
       // hydration 보류 — fast path는 firedHydrated 가드로 early return.
-      expect(mockGetBoardingLock).not.toHaveBeenCalled();
+      // #1272 (N8) — destinationId 기반 lock mirror effect는 hydration과 무관하게 destinationId
+      // 설정 시 lock을 prefetch하므로 getBoardingLock 호출 자체는 발생할 수 있다. 단 fast path
+      // 발사는 발생하지 않음(logFiredStationPassed fg-arvlcd 호출 0).
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
     });
 
     it('내부 storage read/send 실패 시 catch로 swallow (logger.error 분기 커버)', async () => {
