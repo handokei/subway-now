@@ -36,15 +36,19 @@ describe('AlarmOverlay', () => {
   });
 
   it('하차 알림을 표시한다', () => {
-    const { getByText } = renderAlarm('destination', '강남');
+    const { getByText, getByTestId } = renderAlarm('destination', '강남');
     expect(getByText('하차 알림')).toBeTruthy();
     expect(getByText('강남에서\n내리세요')).toBeTruthy();
+    expect(getByTestId('alarm-overlay-title')).toBeTruthy();
+    expect(getByTestId('alarm-overlay-message')).toBeTruthy();
   });
 
   it('환승 알림을 표시한다', () => {
-    const { getByText } = renderAlarm('transfer', '시청');
+    const { getByText, getByTestId } = renderAlarm('transfer', '시청');
     expect(getByText('환승 알림')).toBeTruthy();
     expect(getByText('시청에서\n환승하세요')).toBeTruthy();
+    expect(getByTestId('alarm-overlay-title')).toBeTruthy();
+    expect(getByTestId('alarm-overlay-message')).toBeTruthy();
   });
 
   it('환승 알람 dismiss → trip 유지. clearAlarmNotification만 호출 (#633)', async () => {
