@@ -68,7 +68,8 @@ function decodeXmlEntities(s) {
 }
 
 const YAML_EXT_RE = /\.ya?ml$/i;
-const YAML_NAME_FIELD_RE = /^\s*name\s*:\s*(.+?)\s*$/m;
+// 선형 시간 보장: `.+?` + `\s*$` 같은 backtracking-prone 조합 대신 라인 단위로 자른 뒤 trim.
+const YAML_NAME_FIELD_RE = /^[ \t]*name[ \t]*:[ \t]*([^\n\r]*)/m;
 
 /**
  * 단일 YAML 파일을 맵에 등록한다.
