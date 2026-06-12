@@ -758,9 +758,22 @@ describe('processLocationUpdate', () => {
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
     });
 
-    it('sleep ON + lock null → 게이트 비활성, 정상 발사', async () => {
+    it('sleep ON + lock null + 첫 hop transfer → suppress (#1214 lockless 적용)', async () => {
+      // #1214 (Epic #1204 D8): lock=null 조기 종료 제거 — lockless trip도 동급 정확도 보장.
+      // 호출자(stationPipeline)의 isFirstHop 계산은 getFirstLeg.endName 매칭으로 lockless에서도 동작.
       mockGetBoardingLock.mockResolvedValue(null);
       await call({ sleepMode: true });
+      expect(mockLogSuppressedSleepFirstTransfer).toHaveBeenCalledWith({
+        source: 'bg',
+        stationName: '교대',
+        phaseId: 'early',
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('sleep OFF + lock null + 첫 hop transfer → 정상 발사 (sleep off 우선)', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      await call({ sleepMode: false });
       expect(mockSendAlarmNotification).toHaveBeenCalled();
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
     });
