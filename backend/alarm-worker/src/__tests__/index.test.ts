@@ -2264,8 +2264,8 @@ describe('POST /boarding-lock/sync (#901)', () => {
 
 // D4 (#1210) — applyBoardingLockTrainCodeSwap 순수 함수 단위 테스트.
 describe('applyBoardingLockTrainCodeSwap (#1210)', () => {
-  const baseTrip = (): import('../types').Trip =>
-    validateTrip({
+  function baseTrip() {
+    const trip = validateTrip({
       token: 'tok',
       route: { type: 'direct', line: '2', stops: 3 },
       destination: 'dst',
@@ -2281,7 +2281,10 @@ describe('applyBoardingLockTrainCodeSwap (#1210)', () => {
         expiresAt: FUTURE,
       },
       consecutiveEtaMissing: 4,
-    }) as import('../types').Trip;
+    });
+    if (!trip) throw new Error('baseTrip fixture failed validateTrip');
+    return trip;
+  }
 
   function payload(over: Partial<Parameters<typeof applyBoardingLockTrainCodeSwap>[1]> = {}) {
     return {
