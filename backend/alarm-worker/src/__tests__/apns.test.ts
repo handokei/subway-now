@@ -329,7 +329,7 @@ describe('sendReschedulePush (#585)', () => {
       config: makeConfig(),
       host: TEST_HOST,
       fetchImpl: fetchImpl as unknown as typeof fetch,
-      ...(input !== undefined ? { occurrenceIdx: input as number } : {}),
+      ...(input === undefined ? {} : { occurrenceIdx: input as number }),
     });
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(call[1].body as string);

@@ -1153,7 +1153,7 @@ export function validateTrip(input: unknown): Trip | null {
       typeof wp.occurrenceIdx === 'number' &&
       Number.isInteger(wp.occurrenceIdx) &&
       wp.occurrenceIdx >= 0
-        ? (wp.occurrenceIdx as number)
+        ? wp.occurrenceIdx
         : occIdx;
     return { ...wp, occurrenceIdx: existing } as Trip['waypoints'][number];
   });

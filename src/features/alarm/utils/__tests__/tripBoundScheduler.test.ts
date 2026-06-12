@@ -913,71 +913,53 @@ describe('rescheduleTripBoundAlarm 중복역 occurrenceIdx (#1193)', () => {
   });
   const NOW_MS = new Date('2026-06-12T09:00:00Z').getTime();
   const destinationName = '강남';
+  // 두 occurrence 알람 + 다른 역 알람이 함께 큐에 있는 상태.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fullScheduled = [
+    { identifier: 'tba:early:회차역' },
+    { identifier: 'tba:imminent:회차역' },
+    { identifier: 'tba:early:회차역:1' },
+    { identifier: 'tba:imminent:회차역:1' },
+    { identifier: 'tba:early:강남' },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ] as any;
 
-  it('occurrenceIdx=0: base ID만 cancel + 재예약, :1은 보존', async () => {
-    mockedGetAll.mockResolvedValue([
-      { identifier: 'tba:early:회차역' }, // occurrence 0
-      { identifier: 'tba:imminent:회차역' }, // occurrence 0
-      { identifier: 'tba:early:회차역:1' }, // occurrence 1 — 보존
-      { identifier: 'tba:imminent:회차역:1' }, // occurrence 1 — 보존
-      { identifier: 'tba:early:강남' }, // 다른 역 보존
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ] as any);
-    const newArrivalMs = NOW_MS + 600_000;
-    const r = await rescheduleTripBoundAlarm({
-      stationName: '회차역',
-      newArrivalMs,
-      route: loopRoute,
-      destinationName,
-      now: NOW_MS,
+  const getScheduledIds = () =>
+    mockedSchedule.mock.calls.map(
+      ([opts]) => (opts as { identifier?: string }).identifier,
+    );
+
+  // occurrenceIdx 별로 cancel/schedule 대상 ID가 어떻게 갈리는지만 데이터로 명시.
+  it.each([
+    {
+      label: 'occurrenceIdx=0: base ID만 cancel + 재예약, :1은 보존',
       occurrenceIdx: 0,
-    });
-    expect(r.cancelled).toBe(2);
-    expect(mockedCancel).toHaveBeenCalledWith('tba:early:회차역');
-    expect(mockedCancel).toHaveBeenCalledWith('tba:imminent:회차역');
-    expect(mockedCancel).not.toHaveBeenCalledWith('tba:early:회차역:1');
-    expect(mockedCancel).not.toHaveBeenCalledWith('tba:imminent:회차역:1');
-    expect(mockedCancel).not.toHaveBeenCalledWith('tba:early:강남');
-    // 재예약은 base ID로 (occurrenceIdx=0).
-    const scheduledIds = mockedSchedule.mock.calls.map(
-      ([opts]) => (opts as { identifier?: string }).identifier,
-    );
-    expect(scheduledIds).toEqual(
-      expect.arrayContaining(['tba:early:회차역', 'tba:imminent:회차역']),
-    );
-    expect(scheduledIds).not.toContain('tba:early:회차역:1');
-  });
-
-  it('occurrenceIdx=1: :1 suffix ID만 cancel + 재예약, base ID는 보존', async () => {
-    mockedGetAll.mockResolvedValue([
-      { identifier: 'tba:early:회차역' },
-      { identifier: 'tba:imminent:회차역' },
-      { identifier: 'tba:early:회차역:1' },
-      { identifier: 'tba:imminent:회차역:1' },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ] as any);
-    const newArrivalMs = NOW_MS + 600_000;
+      cancelTargets: ['tba:early:회차역', 'tba:imminent:회차역'],
+      preserveTargets: ['tba:early:회차역:1', 'tba:imminent:회차역:1', 'tba:early:강남'],
+    },
+    {
+      label: 'occurrenceIdx=1: :1 suffix ID만 cancel + 재예약, base ID는 보존',
+      occurrenceIdx: 1,
+      cancelTargets: ['tba:early:회차역:1', 'tba:imminent:회차역:1'],
+      preserveTargets: ['tba:early:회차역', 'tba:imminent:회차역', 'tba:early:강남'],
+    },
+  ])('$label', async ({ occurrenceIdx, cancelTargets, preserveTargets }) => {
+    mockedGetAll.mockResolvedValue(fullScheduled);
     const r = await rescheduleTripBoundAlarm({
       stationName: '회차역',
-      newArrivalMs,
+      newArrivalMs: NOW_MS + 600_000,
       route: loopRoute,
       destinationName,
       now: NOW_MS,
-      occurrenceIdx: 1,
+      occurrenceIdx,
     });
     expect(r.cancelled).toBe(2);
-    expect(mockedCancel).toHaveBeenCalledWith('tba:early:회차역:1');
-    expect(mockedCancel).toHaveBeenCalledWith('tba:imminent:회차역:1');
-    expect(mockedCancel).not.toHaveBeenCalledWith('tba:early:회차역');
-    expect(mockedCancel).not.toHaveBeenCalledWith('tba:imminent:회차역');
-    // 재예약은 :1 suffix ID로.
-    const scheduledIds = mockedSchedule.mock.calls.map(
-      ([opts]) => (opts as { identifier?: string }).identifier,
-    );
-    expect(scheduledIds).toEqual(
-      expect.arrayContaining(['tba:early:회차역:1', 'tba:imminent:회차역:1']),
-    );
-    expect(scheduledIds).not.toContain('tba:early:회차역');
+    for (const id of cancelTargets) expect(mockedCancel).toHaveBeenCalledWith(id);
+    for (const id of preserveTargets) expect(mockedCancel).not.toHaveBeenCalledWith(id);
+    const scheduledIds = getScheduledIds();
+    expect(scheduledIds).toEqual(expect.arrayContaining(cancelTargets));
+    // 같은 stop의 다른 occurrence ID는 재예약 대상에 포함되지 않음.
+    for (const id of preserveTargets) expect(scheduledIds).not.toContain(id);
   });
 
   it('occurrenceIdx 미지정 시 0(첫 등장)으로 fallback', async () => {

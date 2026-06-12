@@ -501,7 +501,7 @@ describe('silentPushTask', () => {
               nextStation: 'A',
               newArrivalTimeEpoch: 1,
               trainCode: 'X',
-              ...(value !== undefined ? { occurrenceIdx: value } : {}),
+              ...(value === undefined ? {} : { occurrenceIdx: value }),
             }),
           ),
         ).toMatchObject({ occurrenceIdx: undefined });
