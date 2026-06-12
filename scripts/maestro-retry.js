@@ -37,11 +37,11 @@ const path = require('node:path');
  */
 function parseFailedTestcaseNames(xml) {
   const names = [];
-  // <testcase ...>...</testcase> 블록 단위로 순회
-  // attrs는 `[^>]` 가 아니라 `[^>/]` — 그렇지 않으면 self-closing `/>` 의 `/` 까지
-  // 탐욕적으로 소비해 `\/>` 분기가 실패하고 다음 `</testcase>` 까지 long-match된다.
-  // (alternation은 backtrack 없이 첫 성공 분기를 채택하므로 attrs 클래스 자체를 좁힌다.)
-  const blockRe = /<testcase\b([^>/]*)(\/>|>([\s\S]*?)<\/testcase>)/g;
+  // <testcase ...>...</testcase> 블록 단위로 순회.
+  // attrs는 `[^>]*?` (non-greedy) — `[^>/]` 로 좁히면 file=".maestro/flows/..."
+  // 같이 `/` 가 포함된 속성값에서 매칭이 깨진다 (#1268). non-greedy + 첫 `>` 또는
+  // `/>` 분기 탐색으로 self-closing/open-close 두 케이스 모두 정확히 분리.
+  const blockRe = /<testcase\b([^>]*?)(\/>|>([\s\S]*?)<\/testcase>)/g;
   let match;
   while ((match = blockRe.exec(xml)) !== null) {
     const attrs = match[1];

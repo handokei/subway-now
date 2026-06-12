@@ -88,6 +88,15 @@ describe('parseFailedTestcaseNames', () => {
     const xml = `<testcase classname="x"><failure/></testcase>`;
     expect(parseFailedTestcaseNames(xml)).toEqual([]);
   });
+
+  // #1268 회귀: maestro junit이 `file=".maestro/flows/smoke/X.yaml"` 같이 슬래시가 포함된
+  // 속성을 내보낼 때 attrs 클래스가 `[^>/]` 였던 시기엔 매칭이 깨져 retry가 동작하지 않았다.
+  it('extracts failed testcase even when attributes contain slashes (issue 1268)', () => {
+    const xml = `<testcase id="smoke - flow" name="smoke - flow" classname="suite" file=".maestro/flows/smoke/06.yaml" time="65.0" status="ERROR">
+      <failure>Assertion is false: id: search-input is visible</failure>
+    </testcase>`;
+    expect(parseFailedTestcaseNames(xml)).toEqual(['smoke - flow']);
+  });
 });
 
 describe('decodeXmlEntities', () => {
