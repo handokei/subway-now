@@ -2142,6 +2142,72 @@ describe('POST /boarding-lock/sync (#901)', () => {
     expect(body.autoLockCandidate).toBeNull();
   });
 
+  // W1 (#1271, Epic #1204 그룹 2) — payload trainCode가 KV lock과 달라 swap 실제 적용된
+  // cycle에서만 autoLockCandidate.from='transfer-swap' hint를 첨부한다. client는 hint를
+  // 보고 motion gate(#1014 RC2 Gate 2)를 우회 — 환승 직후 이동 중 hydrate 차단 회귀 방지.
+  describe('autoLockCandidate.from (W1 #1271 transfer-swap hint)', () => {
+    it('payload trainCode가 KV와 달라 swap 발생 → from=transfer-swap 첨부', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithLock(), env);
+      const res = await post(
+        '/boarding-lock/sync',
+        {
+          token: 'tok-sync',
+          observedStationName: '신촌',
+          observedAtMs: 1,
+          accuracy: 5,
+          trainCode: 'T-NEW',
+          boardingLine: '7',
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        autoLockCandidate: { trainCode: string; line: string; from?: string };
+      };
+      expect(body.autoLockCandidate.trainCode).toBe('T-NEW');
+      expect(body.autoLockCandidate.from).toBe('transfer-swap');
+    });
+
+    it('payload trainCode가 KV와 같음 → from 미첨부 (no swap)', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithLock(), env);
+      const res = await post(
+        '/boarding-lock/sync',
+        {
+          token: 'tok-sync',
+          observedStationName: '신촌',
+          observedAtMs: 1,
+          accuracy: 5,
+          trainCode: 'T-1',
+          boardingLine: '2',
+        },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        autoLockCandidate: { trainCode: string; from?: string };
+      };
+      expect(body.autoLockCandidate.trainCode).toBe('T-1');
+      expect(body.autoLockCandidate.from).toBeUndefined();
+    });
+
+    it('payload trainCode 미제공 → from 미첨부 (swap 비대상)', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithLock(), env);
+      const res = await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '신촌', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        autoLockCandidate: { from?: string };
+      };
+      expect(body.autoLockCandidate.from).toBeUndefined();
+    });
+  });
+
   // D4 (#1210) — payload trainCode가 KV lock과 다르면 KV lock 갱신 + consecutiveEtaMissing=0 reset.
   describe('trainCode swap (#1210)', () => {
     /**

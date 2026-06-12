@@ -523,6 +523,66 @@ describe('useBoardingLockController', () => {
         });
         await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
       });
+
+      // W1 (#1271, Epic #1204 그룹 2) — backend `from:'transfer-swap'` hint가 있으면
+      // Gate 2(motion dwell) 우회. 환승 직후 사용자가 이미 이동 중이어도 hydrate 허용.
+      // Gate 1은 유지 — false positive 방어.
+      describe('W1 (#1271) transfer-swap hint', () => {
+        it('from=transfer-swap이면 motionStationary=false + speedMps >= threshold여도 hydrate 허용 (Gate 2 우회)', async () => {
+          const { result } = renderHook(() =>
+            useBoardingLockController({ ...hydrateInputs, motionStationary: false, speedMps: 1.5 }),
+          );
+          await act(async () => {
+            result.current.hydrateLockFromCandidate({
+              trainCode: 'AUTO-7',
+              line: '2',
+              subwayId: '1002',
+              from: 'transfer-swap',
+            });
+          });
+          await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+        });
+
+        it('from=transfer-swap이어도 Gate 1(trainCode가 directionalArrivals에 없음) 통과 못하면 no-op', async () => {
+          const arrivalOther: StationArrival = {
+            up: [makeTrain({ trainCode: 'OTHER-1' })],
+            down: [],
+          };
+          const { result } = renderHook(() =>
+            useBoardingLockController({
+              ...hydrateInputs,
+              arrival: arrivalOther,
+              motionStationary: false,
+              speedMps: 1.5,
+            }),
+          );
+          await act(async () => {
+            result.current.hydrateLockFromCandidate({
+              trainCode: 'NOT-IN-ARRIVAL',
+              line: '2',
+              subwayId: '1002',
+              from: 'transfer-swap',
+            });
+          });
+          expect(mockSetBoardingLock).not.toHaveBeenCalled();
+        });
+
+        it('hint 없으면 (from undefined) 기존 Gate 2 동작 그대로 — speedMps >= threshold → no-op', async () => {
+          // 회귀 가드: 기존 동작 보존 박제.
+          const { result } = renderHook(() =>
+            useBoardingLockController({ ...hydrateInputs, speedMps: 1.5 }),
+          );
+          await act(async () => {
+            result.current.hydrateLockFromCandidate({
+              trainCode: 'AUTO-7',
+              line: '2',
+              subwayId: '1002',
+              // from 미제공
+            });
+          });
+          expect(mockSetBoardingLock).not.toHaveBeenCalled();
+        });
+      });
     });
   });
 

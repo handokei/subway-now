@@ -916,7 +916,17 @@ app.post('/boarding-lock/sync', async (c) => {
   // D4 (#1210) — payload trainCode가 KV lock trainCode와 다르면 환승 leg로 해석.
   // lock의 trainCode/line을 새 값으로 swap하고 consecutiveEtaMissing을 0으로 reset해
   // 신규 trainCode가 Seoul API에서 잡힐 때까지의 자동 종료(`MAX_CONSECUTIVE_ETA_MISSING`)를 차단한다.
+  //
+  // W1 (#1271, Epic #1204 그룹 2) — swap 발생 여부를 본 cycle 안에서 식별해 응답
+  // autoLockCandidate에 `from: 'transfer-swap'` hint 첨부. client는 hint가 있으면
+  // motion gate(#1014 RC2 Gate #2)를 우회한다 — 환승 직후 사용자가 이동 중인 상태에서
+  // hydrate가 영구 차단되는 회귀(피드백 7, 22:53 transfer skip)를 차단.
+  const preSwapTrainCode = working.boardingLock?.trainCode;
   working = applyBoardingLockTrainCodeSwap(working, payload);
+  const transferSwapApplied =
+    preSwapTrainCode !== undefined &&
+    working.boardingLock !== undefined &&
+    working.boardingLock.trainCode !== preSwapTrainCode;
 
   // lock TTL refresh — 사용자가 지상에서 lock을 활성 유지 중임을 confirm.
   if (working.boardingLock) {
@@ -945,6 +955,8 @@ app.post('/boarding-lock/sync', async (c) => {
           trainCode: working.boardingLock.trainCode,
           line: working.boardingLock.line,
           subwayId: working.boardingLock.subwayId,
+          // W1 (#1271): client motion gate 우회 hint — swap 발생 시에만 첨부.
+          ...(transferSwapApplied ? { from: 'transfer-swap' as const } : {}),
         }
       : null,
   });
