@@ -172,4 +172,110 @@ describe('shouldSuppressBySleepRule', () => {
       ).toBe(expected);
     });
   });
+
+  // SSOT: tasks/epic-lockless-recovery-2026-06-12.md §2 보고 #6
+  // 회귀: 22:11:56 사가정 station-passed fire (취침 ON, lockless, 첫 환승 전).
+  // 차단: D8 shouldSuppressBySleepRule (PR #1251, lockless 경로 적용).
+  // 본 describe는 evidence 박제(#1259) — 위 'lockless trip' 매트릭스와 일부 겹치지만
+  // 보고 #6 사용자 trip 재현 + D8 정책 boundary 명시를 위해 별도 유지.
+  describe('사용자 trip 2026-06-12 회귀 가드 — D8 lockless station-passed (#1259)', () => {
+    it('보고 #6 — 22:11:56 사가정 lockless station-passed fire 차단', () => {
+      expect(
+        shouldSuppressBySleepRule({
+          lock: null,
+          event: { type: 'station-passed', stationName: '사가정' },
+          sleepMode: true,
+          isFirstHop: true,
+        }),
+      ).toBe(true);
+    });
+
+    it.each<{
+      label: string;
+      lock: BoardingLock | null;
+      eventType: SleepRuleEventType;
+      sleepMode: boolean;
+      isFirstHop: boolean;
+      expected: boolean;
+    }>([
+      {
+        label: 'lockless + sleep ON + firstHop + station-passed → suppress (보고 #6)',
+        lock: null,
+        eventType: 'station-passed',
+        sleepMode: true,
+        isFirstHop: true,
+        expected: true,
+      },
+      {
+        label: 'lockless + sleep ON + firstHop + transfer → suppress (D8 확장)',
+        lock: null,
+        eventType: 'transfer',
+        sleepMode: true,
+        isFirstHop: true,
+        expected: true,
+      },
+      {
+        label: 'lockless + sleep ON + firstHop + destination → fire (도착 보존)',
+        lock: null,
+        eventType: 'destination',
+        sleepMode: true,
+        isFirstHop: true,
+        expected: false,
+      },
+      {
+        label: 'lockless + sleep ON + NOT firstHop + station-passed → fire',
+        lock: null,
+        eventType: 'station-passed',
+        sleepMode: true,
+        isFirstHop: false,
+        expected: false,
+      },
+      {
+        label: 'lockless + sleep OFF + station-passed → fire',
+        lock: null,
+        eventType: 'station-passed',
+        sleepMode: false,
+        isFirstHop: true,
+        expected: false,
+      },
+      {
+        label: 'lockless + sleep OFF + transfer → fire',
+        lock: null,
+        eventType: 'transfer',
+        sleepMode: false,
+        isFirstHop: true,
+        expected: false,
+      },
+      {
+        label: 'lockless + sleep OFF + destination → fire',
+        lock: null,
+        eventType: 'destination',
+        sleepMode: false,
+        isFirstHop: true,
+        expected: false,
+      },
+      {
+        label: 'lock 활성 + sleep ON + firstHop + station-passed → suppress (D8 확장)',
+        lock,
+        eventType: 'station-passed',
+        sleepMode: true,
+        isFirstHop: true,
+        expected: true,
+      },
+      {
+        label: 'lock 활성 + sleep ON + firstHop + transfer → suppress (#750 기존)',
+        lock,
+        eventType: 'transfer',
+        sleepMode: true,
+        isFirstHop: true,
+        expected: true,
+      },
+    ])('$label', ({ lock: lockInput, eventType, sleepMode, isFirstHop, expected }) => {
+      expect(
+        shouldSuppressBySleepRule(
+          makeInput({ lock: lockInput, eventType, sleepMode, isFirstHop }),
+        ),
+      ).toBe(expected);
+    });
+  });
 });
