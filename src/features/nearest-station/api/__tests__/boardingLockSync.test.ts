@@ -92,6 +92,35 @@ describe('syncBoardingLock (#901)', () => {
     expect(JSON.parse(init.body).subsurface).toBe(false);
   });
 
+  // D4 (#1210) — 환승 leg trainCode + 노선 동봉 정확성.
+  it('#1210 — trainCode + boardingLine 제공 시 body에 그대로 포함', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+    (globalThis.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true }),
+    });
+    await syncBoardingLock({ ...basePayload, trainCode: 'T-2', boardingLine: '2' });
+    const [, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
+    const parsed = JSON.parse(init.body);
+    expect(parsed.trainCode).toBe('T-2');
+    expect(parsed.boardingLine).toBe('2');
+  });
+
+  it('#1210 — trainCode 없으면 body에 trainCode/boardingLine 키 미포함 (구버전 backend 호환)', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
+    (globalThis.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true }),
+    });
+    await syncBoardingLock(basePayload);
+    const [, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
+    const parsed = JSON.parse(init.body);
+    expect(parsed).not.toHaveProperty('trainCode');
+    expect(parsed).not.toHaveProperty('boardingLine');
+  });
+
   it('non-OK status → ok=false + status', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
     (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 404 });

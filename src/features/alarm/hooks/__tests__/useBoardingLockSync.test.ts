@@ -399,6 +399,131 @@ describe('useBoardingLockSync (#901)', () => {
     });
   });
 
+  // D4 (#1210) — 활성 lock trainCode/line forward + 환승 leg trainCode 변경 시 재발사.
+  describe('boardingLock trainCode/line forward (#1210)', () => {
+    it('trainCode + line 제공 → payload에 그대로 forward', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '강남',
+          accuracyMeters: 10,
+          tripActive: true,
+          boardingLockTrainCode: 'T-1',
+          boardingLockLine: '2',
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+      expect(mockedSync.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ trainCode: 'T-1', boardingLine: '2' }),
+      );
+    });
+
+    it('trainCode/line null → payload에 trainCode/boardingLine 키 미포함', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '강남',
+          accuracyMeters: 10,
+          tripActive: true,
+          boardingLockTrainCode: null,
+          boardingLockLine: null,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      const sent = mockedSync.mock.calls[0][0];
+      expect(sent).not.toHaveProperty('trainCode');
+      expect(sent).not.toHaveProperty('boardingLine');
+    });
+
+    it('같은 station + trainCode 변경 → debounce 후 재발사', async () => {
+      const { rerender } = renderHook(
+        ({ tc }: { tc: string | null }) =>
+          useBoardingLockSync({
+            currentStationName: '건대입구',
+            accuracyMeters: 10,
+            tripActive: true,
+            boardingLockTrainCode: tc,
+            boardingLockLine: tc === 'T-1' ? '2' : '7',
+          }),
+        { initialProps: { tc: 'T-1' as string | null } },
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+      expect(mockedSync.mock.calls[0][0].trainCode).toBe('T-1');
+      // 환승 leg simulation — 같은 환승역에서 lock이 새 trainCode로 교체됨.
+      rerender({ tc: 'T-2' });
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(2);
+      expect(mockedSync.mock.calls[1][0]).toEqual(
+        expect.objectContaining({ trainCode: 'T-2', boardingLine: '7' }),
+      );
+    });
+
+    it('같은 station + 같은 trainCode → 재발사 안 함', async () => {
+      const { rerender } = renderHook(
+        ({ tc }: { tc: string }) =>
+          useBoardingLockSync({
+            currentStationName: '강남',
+            accuracyMeters: 10,
+            tripActive: true,
+            boardingLockTrainCode: tc,
+          }),
+        { initialProps: { tc: 'T-1' } },
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+      rerender({ tc: 'T-1' });
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+    });
+
+    it('force-trigger 경로도 trainCode/line forward', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '강남',
+          accuracyMeters: 10,
+          tripActive: true,
+          forceTriggerKey: 'k1',
+          boardingLockTrainCode: 'T-FORCE',
+          boardingLockLine: '9',
+        }),
+      );
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+      expect(mockedSync.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ trainCode: 'T-FORCE', boardingLine: '9' }),
+      );
+    });
+
+    it('tripActive false → true 전환 시 trainCode dedup ref도 reset', async () => {
+      const { rerender } = renderHook(
+        ({ active }: { active: boolean }) =>
+          useBoardingLockSync({
+            currentStationName: '강남',
+            accuracyMeters: 10,
+            tripActive: active,
+            boardingLockTrainCode: 'T-1',
+          }),
+        { initialProps: { active: true } },
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+      // trip 종료.
+      rerender({ active: false });
+      // trip 재시작 — 같은 station/trainCode면서 첫 sync는 다시 나가야 함.
+      rerender({ active: true });
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it('debounce timer cleanup — unmount 시 미발사', async () => {
     const { unmount } = renderHook(() =>
       useBoardingLockSync({

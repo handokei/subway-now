@@ -53,6 +53,17 @@ export interface UseBoardingLockSyncOptions {
   /** Seam G subsurface 신호 (옵션) — backend 로그에 진단 라벨로 첨부. */
   subsurface?: boolean;
   /**
+   * D4 (#1210) — 현재 활성 boarding lock의 trainCode. 있으면 sync payload에 동봉돼
+   * backend가 환승 leg trainCode 변경을 즉시 인식하고 `consecutiveEtaMissing` 자동 종료를 차단한다.
+   * null/undefined면 payload에 trainCode 미포함 (구버전 backend / lock 없는 trip 호환).
+   */
+  boardingLockTrainCode?: string | null;
+  /**
+   * D4 (#1210) — 현재 활성 boarding lock의 노선. trainCode와 함께 sync payload에 동봉된다.
+   * trainCode 없이 단독 전송은 backend에서 무시 (trainCode가 동일성 판정의 primary key).
+   */
+  boardingLockLine?: string | null;
+  /**
    * #915/#916 A1 — backend 응답에서 autoLockCandidate를 받으면 호출. 호출자는 이 콜백에서
    * useBoardingLockStore.createLock으로 hydrate해 사용자 명시 탭 없이 lock UX 활성화한다.
    *
@@ -72,10 +83,16 @@ export function useBoardingLockSync({
   tripActive,
   forceTriggerKey,
   subsurface,
+  boardingLockTrainCode,
+  boardingLockLine,
   onAutoLockCandidate,
 }: UseBoardingLockSyncOptions): void {
   // 이미 보낸 currentStation을 기억해 debounce 안의 중복 발사를 방지.
   const lastSentStationRef = useRef<string | null>(null);
+  // D4 (#1210) — 이미 보낸 trainCode를 기억해 환승 leg에서 trainCode가 바뀐 trip은 같은 역에서도
+  // 1회 재발사하도록 한다. station 단독 dedup만 두면 환승 직후 사용자가 환승역에 계속 머무는 동안
+  // backend가 새 trainCode를 영영 못 받는 회귀가 생긴다 (D4 evidence consecutiveEtaMissing 자동 종료).
+  const lastSentTrainCodeRef = useRef<string | null>(null);
   // forceTriggerKey 이전 값 — 같은 key 재전달 시 no-op 판정용.
   const lastForceKeyRef = useRef<string | null>(null);
   // #915 — 매 렌더 새 함수일 가능성 → ref로 latest 보관해 effect deps churn 회피.
@@ -89,27 +106,40 @@ export function useBoardingLockSync({
   useEffect(() => {
     if (!tripActive) {
       lastSentStationRef.current = null;
+      lastSentTrainCodeRef.current = null;
       lastForceKeyRef.current = null;
     }
   }, [tripActive]);
 
   // 1) currentStationName 변경 debounce 트리거.
+  // D4: trainCode 변경(환승 leg)도 동일 트리거로 다뤄 같은 역에서도 새 lock으로 1회 재발사.
   useEffect(() => {
     if (!tripActive) return;
     if (!currentStationName) return;
     if (accuracyMeters === null) return;
     if (accuracyMeters > GOOD_FIX_ACCURACY_MAX_M) return;
-    if (lastSentStationRef.current === currentStationName) return;
+    const trainCodeForFire = boardingLockTrainCode ?? null;
+    const stationUnchanged = lastSentStationRef.current === currentStationName;
+    const trainCodeUnchanged = lastSentTrainCodeRef.current === trainCodeForFire;
+    if (stationUnchanged && trainCodeUnchanged) return;
 
     const timer = setTimeout(() => {
-      // race: force-trigger 경로가 같은 station을 이미 발사했을 수 있음. setTimeout 내부에서
-      // 한 번 더 lastSentStation 체크해 중복 발사 차단.
-      if (lastSentStationRef.current === currentStationName) return;
+      // race: force-trigger 경로가 같은 station+trainCode를 이미 발사했을 수 있음. setTimeout
+      // 내부에서 한 번 더 체크해 중복 발사 차단.
+      if (
+        lastSentStationRef.current === currentStationName &&
+        lastSentTrainCodeRef.current === trainCodeForFire
+      ) {
+        return;
+      }
       lastSentStationRef.current = currentStationName;
+      lastSentTrainCodeRef.current = trainCodeForFire;
       void fireSync({
         observedStationName: currentStationName,
         accuracy: accuracyMeters,
         subsurface,
+        trainCode: boardingLockTrainCode ?? null,
+        boardingLine: boardingLockLine ?? null,
         reason: 'station-change',
         onAutoLockCandidate: onAutoLockCandidateRef.current,
       });
@@ -118,7 +148,14 @@ export function useBoardingLockSync({
     return () => {
       clearTimeout(timer);
     };
-  }, [tripActive, currentStationName, accuracyMeters, subsurface]);
+  }, [
+    tripActive,
+    currentStationName,
+    accuracyMeters,
+    subsurface,
+    boardingLockTrainCode,
+    boardingLockLine,
+  ]);
 
   // 2) 명시 트리거 (forceTriggerKey) — debounce 우회.
   useEffect(() => {
@@ -130,24 +167,39 @@ export function useBoardingLockSync({
     if (accuracyMeters > GOOD_FIX_ACCURACY_MAX_M) return;
 
     lastForceKeyRef.current = forceTriggerKey;
-    // lastSentStation을 즉시 동기로 set — effect 1의 debounce timer가 같은 station을 따라
-    // 발사하지 않도록 차단. fire 실패해도 force 트리거는 forceTriggerKey 변경으로만 재시도되므로
+    // lastSent ref들을 즉시 동기로 set — effect 1의 debounce timer가 같은 station/trainCode로
+    // 추가 발사하지 않도록 차단. fire 실패해도 force 트리거는 forceTriggerKey 변경으로만 재시도되므로
     // false-positive 무발사는 발생하지 않음.
     lastSentStationRef.current = currentStationName;
+    lastSentTrainCodeRef.current = boardingLockTrainCode ?? null;
     void fireSync({
       observedStationName: currentStationName,
       accuracy: accuracyMeters,
       subsurface,
+      trainCode: boardingLockTrainCode ?? null,
+      boardingLine: boardingLockLine ?? null,
       reason: 'force-trigger',
       onAutoLockCandidate: onAutoLockCandidateRef.current,
     });
-  }, [tripActive, forceTriggerKey, currentStationName, accuracyMeters, subsurface]);
+  }, [
+    tripActive,
+    forceTriggerKey,
+    currentStationName,
+    accuracyMeters,
+    subsurface,
+    boardingLockTrainCode,
+    boardingLockLine,
+  ]);
 }
 
 interface FireSyncInput {
   observedStationName: string;
   accuracy: number;
   subsurface?: boolean;
+  /** D4 (#1210) — 호출 시점 lock trainCode. null이면 payload에 미포함. */
+  trainCode?: string | null;
+  /** D4 (#1210) — 호출 시점 lock 노선. trainCode와 페어로만 의미. */
+  boardingLine?: string | null;
   reason: 'station-change' | 'force-trigger';
   onAutoLockCandidate?: (candidate: AutoLockCandidate) => void;
 }
@@ -170,10 +222,13 @@ async function fireSync(input: FireSyncInput): Promise<void> {
     observedAtMs: Date.now(),
     accuracy: input.accuracy,
     ...(input.subsurface !== undefined ? { subsurface: input.subsurface } : {}),
+    ...(input.trainCode ? { trainCode: input.trainCode } : {}),
+    ...(input.boardingLine ? { boardingLine: input.boardingLine } : {}),
   };
   const res = await syncBoardingLock(payload);
   logger.info('boarding-lock sync sent', {
     reason: input.reason,
+    trainCode: input.trainCode ?? null,
     advanced: res.advanced ?? false,
     currentWaypoint: res.currentWaypoint ?? null,
     autoLockCandidate: res.autoLockCandidate?.trainCode ?? null,

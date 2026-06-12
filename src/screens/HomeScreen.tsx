@@ -384,11 +384,15 @@ export default function HomeScreen() {
   // #915 (C1 destination-only baseline UX) — destination 설정 직후 backend로 좋은 fix sync 발사.
   // backend cron이 9단 게이트 통과 시 autoLockCandidate 응답에 부착(#916) → 사용자 명시 탭 없이
   // boardingLock hydrate. lock 활성 여부와 무관하게 trip 활성 동안 폴링.
+  // D4 (#1210) — 활성 lock의 trainCode + 노선을 동봉해 환승 leg 진입 시 backend가
+  // 새 trainCode로 추적을 갱신하도록 한다 (consecutiveEtaMissing 자동 종료 차단).
   useBoardingLockSync({
     currentStationName: result?.station.name ?? null,
     accuracyMeters: accuracyMeters ?? null,
     tripActive: Boolean(destination && route),
     subsurface: barometerSubsurface,
+    boardingLockTrainCode: boardingLock?.trainCode ?? null,
+    boardingLockLine: boardingLock?.boardingLine ?? null,
     onAutoLockCandidate: hydrateLockFromCandidate,
   });
   useBoardingLockScheduler({
