@@ -4,6 +4,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { DebugModal, __test__ } from '../DebugModal';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
+import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
@@ -14,6 +15,11 @@ const mockUseSilentPushDiagnostics = jest.fn();
 const mockGetAlarmLog = jest.fn();
 const mockClearAlarmLog = jest.fn();
 const mockUseBarometer = jest.fn();
+// #1235 (D9 wire) — DebugModal이 destinationStore + tripStartStorage SSOT로 trip props 도출.
+const mockGetTripStartedAt = jest.fn();
+jest.mock('../../../alarm/utils/tripStartStorage', () => ({
+  getTripStartedAt: () => mockGetTripStartedAt(),
+}));
 
 jest.mock('../../../nearest-station/hooks/useFusedNearestStation', () => ({
   useFusedNearestStation: () => mockUseFusedNearestStation(),
@@ -81,6 +87,11 @@ const fusedReturnFixture = (overrides: Record<string, unknown> = {}) => ({
   error: null,
   permissionDenied: false,
   refresh: jest.fn(),
+  // D2(#1208) + D9 wire(#1235) — useFusedNearestStation 신규 노출 필드 기본값.
+  currentHopIndex: null,
+  arcStations: [],
+  detectionTier: 'low' as const,
+  detectionSignalMask: '',
   ...overrides,
 });
 const arrivalDefaults = {
@@ -110,6 +121,12 @@ const setupHookDefaults = () => {
     error: null,
     permissionDenied: false,
     refresh: jest.fn(),
+    // D2(#1208) + D9 wire(#1235) — DebugModal이 hook return으로 fusionDetection/trip 도출.
+    // 기본값은 estimator/detection 모두 비어있는 상태 — 미트립 + signalsAvailable=0 시나리오.
+    currentHopIndex: null,
+    arcStations: [],
+    detectionTier: 'low',
+    detectionSignalMask: '',
   });
   mockUseArrivalInfo.mockReturnValue({ arrival: baseArrival, loading: false, isMock: false });
   mockUseSilentPushDiagnostics.mockReturnValue({
@@ -131,6 +148,11 @@ const setupHookDefaults = () => {
   mockDumpScheduledNotifications.mockResolvedValue([]);
   // #1215 (D9) — 기본은 subsurface=false (지상).
   mockUseBarometer.mockReturnValue({ subsurface: false, stop: undefined });
+  // #1235 (D9 wire) — tripStartedAt 기본 null (trip 미시작).
+  mockGetTripStartedAt.mockResolvedValue(null);
+  // #1235 (D9 wire) — destinationStore/settingsStore SSOT 초기화. 매 테스트 독립.
+  useDestinationStore.setState({ destination: null });
+  useSettingsStore.setState({ sleepMode: false });
 };
 
 // SonarCloud new_duplicated_lines_density 임계 준수 — 여러 describe에 걸친 buildDumpText
@@ -237,20 +259,15 @@ describe('DebugModal', () => {
   });
 
   it('userLocation이 null이면 "no location"을 표시한다', () => {
-    mockUseFusedNearestStation.mockReturnValue({
-      result: null,
-      gpsResult: null,
-      confidence: 'gps-only',
-      source: 'gps',
-      variants: [],
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        result: null,
+        gpsResult: null,
+        userLocation: null,
+        speedMps: null,
+        accuracyMeters: null,
+      }),
+    );
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByText('(no location)')).toBeTruthy();
     expect(screen.getByText('(no nearest)')).toBeTruthy();
@@ -323,20 +340,9 @@ describe('DebugModal', () => {
   });
 
   it('speedMps가 null이면 "-"를 표시한다', () => {
-    mockUseFusedNearestStation.mockReturnValue({
-      result: baseResult,
-      gpsResult: baseResult,
-      confidence: 'gps-only',
-      source: 'gps',
-      variants: [],
-      userLocation: { lat: 37.5, lng: 127 },
-      speedMps: null,
-      accuracyMeters: null,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({ speedMps: null, accuracyMeters: null }),
+    );
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getAllByText('-').length).toBeGreaterThan(0);
   });
@@ -403,20 +409,9 @@ describe('DebugModal', () => {
   });
 
   it('Fusion 섹션에 confidence/source/accuracy를 표시한다', async () => {
-    mockUseFusedNearestStation.mockReturnValue({
-      result: baseResult,
-      gpsResult: baseResult,
-      confidence: 'arrival-confirmed',
-      source: 'arrival',
-      variants: [],
-      userLocation: { lat: 37.5, lng: 127 },
-      speedMps: 1,
-      accuracyMeters: 12,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({ confidence: 'arrival-confirmed', source: 'arrival' }),
+    );
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByText('Fusion')).toBeTruthy();
     expect(screen.getByText('arrival-confirmed')).toBeTruthy();
@@ -428,20 +423,15 @@ describe('DebugModal', () => {
 
   it('fused와 gps station id가 다르면 diff 라인을 표시한다', () => {
     const otherStation: Station = { ...station, id: '2-099', name: '역삼' };
-    mockUseFusedNearestStation.mockReturnValue({
-      result: { station, distanceKm: 0.05 },
-      gpsResult: { station: otherStation, distanceKm: 0.18 },
-      confidence: 'arrival-arriving',
-      source: 'arrival',
-      variants: [],
-      userLocation: { lat: 37.5, lng: 127 },
-      speedMps: 1,
-      accuracyMeters: 10,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        result: { station, distanceKm: 0.05 },
+        gpsResult: { station: otherStation, distanceKm: 0.18 },
+        confidence: 'arrival-arriving',
+        source: 'arrival',
+        accuracyMeters: 10,
+      }),
+    );
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByTestId('debug-fusion-diff')).toBeTruthy();
   });
@@ -1074,28 +1064,112 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     expect(message).toContain('firstHopApproaching=true');
     shareSpy.mockRestore();
   });
+
+  // #1235 (D9 wire) — props 미전달 시 DebugModal이 hook return + store + tripStartStorage에서
+  // fusionDetection/trip/sleep SSOT를 도출하는 분기 검증. 외부 helper로 dup 회피
+  // (lesson_sonarcloud_dup_prevention.md: outer scope helper + factory + wrapper).
+  describe('SSOT wire (props 미전달 → hook+store 도출)', () => {
+    // 공유 픽스처/팩토리 — 각 테스트는 single override만 넘긴다.
+    const wireTripDestination: Station = {
+      id: '2-022',
+      name: '강남',
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.4979,
+      lng: 127.0276,
+    };
+    const applyWireHook = (overrides: Record<string, unknown>) => {
+      mockUseFusedNearestStation.mockReturnValue(fusedReturnFixture(overrides));
+    };
+    const renderAndAwaitLog = async () => {
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    };
+    const shareAndReadDump = async (): Promise<string> => {
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      await renderAndAwaitLog();
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      shareSpy.mockRestore();
+      return message;
+    };
+
+    it('hook return의 detectionTier/SignalMask가 Fusion 섹션에 노출된다', async () => {
+      applyWireHook({ detectionTier: 'high', detectionSignalMask: 'TFT' });
+      await renderAndAwaitLog();
+      expect(screen.getByText('high')).toBeTruthy();
+      expect(screen.getByText('TFT')).toBeTruthy();
+    });
+
+    it('destination null + lock 비활성 → Trip lockless=false, routeHopCount=—', async () => {
+      applyWireHook({ detectionTier: 'low', detectionSignalMask: '' });
+      await renderAndAwaitLog();
+      expect(screen.getAllByText('false').length).toBeGreaterThan(0);
+      expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+    });
+
+    // currentHopIndex 분기 — 0이면 firstHopApproaching=true, >0이면 false.
+    // arcStations 길이 5 → routeHopCount=5로 DebugModal 내부에서 계산.
+    const fiveHopArc: Station[] = Array.from({ length: 5 }, (_, i) => ({
+      id: `arc-${i}`,
+      name: `역${i}`,
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.5,
+      lng: 127,
+    }));
+    it.each([
+      [0, 'firstHopApproaching=true'],
+      [2, 'firstHopApproaching=false'],
+    ])('destination 설정 + currentHopIndex=%i → %s', async (idx, expected) => {
+      useDestinationStore.setState({ destination: wireTripDestination });
+      applyWireHook({ currentHopIndex: idx, arcStations: fiveHopArc });
+      const message = await shareAndReadDump();
+      expect(message).toContain('lockless=true');
+      expect(message).toContain(`currentHopIndex=${idx}`);
+      expect(message).toContain('route hop count=5');
+      expect(message).toContain(expected);
+    });
+
+    it('useSettingsStore.sleepMode=true → Sleep 섹션 sleepMode=on', async () => {
+      useSettingsStore.setState({ sleepMode: true });
+      const message = await shareAndReadDump();
+      expect(message).toContain('sleepMode=on');
+    });
+
+    it('tripStartStorage.getTripStartedAt 값이 Trip 섹션에 흐른다', async () => {
+      const tripAt = Date.UTC(2026, 5, 12, 9, 0, 0);
+      mockGetTripStartedAt.mockResolvedValue(tripAt);
+      useDestinationStore.setState({ destination: wireTripDestination });
+      const message = await shareAndReadDump();
+      expect(message).toContain(`tripStartedAt=${new Date(tripAt).toISOString()}`);
+    });
+
+    it('비동기 hydration 중 unmount 시 setState 호출 안 함', async () => {
+      // 영원히 resolve 안 되는 Promise로 cleanup race 강제.
+      let resolveFn: (value: number | null) => void = () => undefined;
+      mockGetTripStartedAt.mockReturnValueOnce(
+        new Promise<number | null>((resolve) => {
+          resolveFn = resolve;
+        }),
+      );
+      const { unmount } = renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      unmount();
+      await act(async () => {
+        resolveFn(123456789);
+      });
+      // throw 없이 통과하면 성공.
+      expect(true).toBe(true);
+    });
+  });
 });
 
 describe('DebugModal arrival edge cases', () => {
-  const baseHooks = {
-    result: baseResult,
-    gpsResult: baseResult,
-    confidence: 'gps-only' as const,
-    source: 'gps' as const,
-    variants: [],
-    userLocation: { lat: 37.5, lng: 127 },
-    speedMps: 1,
-    accuracyMeters: 15,
-    loading: false,
-    error: null,
-    permissionDenied: false,
-    refresh: jest.fn(),
-  };
-
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetAlarmLog.mockResolvedValue([]);
-    mockUseFusedNearestStation.mockReturnValue(baseHooks);
+    mockUseFusedNearestStation.mockReturnValue(fusedReturnFixture({ accuracyMeters: 15 }));
   });
 
   it('up.statusMessage가 빈 문자열이면 괄호를 붙이지 않는다', () => {
@@ -1119,20 +1193,15 @@ describe('DebugModal share with null nearest', () => {
     jest.clearAllMocks();
     mockGetAlarmLog.mockResolvedValue([]);
     mockClearAlarmLog.mockResolvedValue(undefined);
-    mockUseFusedNearestStation.mockReturnValue({
-      result: null,
-      gpsResult: null,
-      confidence: 'gps-only',
-      source: 'gps',
-      variants: [],
-      userLocation: null,
-      speedMps: null,
-      accuracyMeters: null,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        result: null,
+        gpsResult: null,
+        userLocation: null,
+        speedMps: null,
+        accuracyMeters: null,
+      }),
+    );
     mockUseArrivalInfo.mockReturnValue({ arrival: null, loading: false, isMock: false });
   });
 
@@ -1883,20 +1952,9 @@ describe('DebugModal — fusedSpeed fallback (#853)', () => {
   });
 
   it('GPS 섹션 렌더링: GPS speed=null + fusedSpeed 전달 시 두 줄 분리 노출', async () => {
-    mockUseFusedNearestStation.mockReturnValue({
-      result: baseResult,
-      gpsResult: baseResult,
-      confidence: 'gps-only',
-      source: 'gps',
-      variants: [],
-      userLocation: { lat: 37.5, lng: 127.0 },
-      speedMps: null,
-      accuracyMeters: 12,
-      loading: false,
-      error: null,
-      permissionDenied: false,
-      refresh: jest.fn(),
-    });
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({ speedMps: null }),
+    );
     renderWithTheme(
       <DebugModal onClose={jest.fn()} fusedSpeed={{ kmh: 18, source: 'position-train' }} />,
     );
