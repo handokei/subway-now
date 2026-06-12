@@ -215,7 +215,16 @@ export function useBoardingLockController({
       // motionStationary 미측정(undefined)이면 speedMps로 단독 판단:
       //   speedMps >= STATIC_SPEED_THRESHOLD_MPS → 차단. 미측정/정적 → 통과.
       // 두 신호 모두 없거나 불확실하면 보수적으로 통과 — false negative보다 false positive 방지 우선.
-      if (motionStationary === true) {
+      //
+      // W1 (#1271, Epic #1204 그룹 2): backend가 `from:'transfer-swap'` hint를 첨부했으면
+      // Gate 2를 우회한다. swap hint는 backend가 (기존 lock + 새 trainCode + trainCode 변경)
+      // 3 조건을 모두 통과한 신뢰 evidence — 사용자가 이미 이동 중(새 leg 탑승)인 게 정상이라
+      // motion 차단을 적용하면 환승 lock 회복이 영구 차단된다(피드백 7, 22:53 transfer skip).
+      // Gate 1(directionalArrivals 매칭)은 유지해 false positive 방어.
+      // ADR-014 첫 줄: lock 활성/lockless 동급 정확도 보장.
+      if (candidate.from === 'transfer-swap') {
+        // transfer swap evidence 신뢰 → Gate 2 우회
+      } else if (motionStationary === true) {
         // stationary 확인됨 → Gate 2 통과
       } else if (speedMps != null && speedMps >= STATIC_SPEED_THRESHOLD_MPS) {
         return; // GPS speed로 이동 중 확인 → no-op
