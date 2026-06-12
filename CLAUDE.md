@@ -12,6 +12,41 @@ GPS 기반으로 현재 탑승 중인 지하철역을 실시간으로 감지하�
 
 ---
 
+## 결정 / Acceptance 룰 (필수, 2026-06-12 추가)
+
+2026-06-11 일괄 결정 사고로 사용자 가치 손실 후 도입. 상세는 `tasks/lessons.md` L1~L4.
+
+### 결정 옵션 제시 (B1~BN 같은 차단 항목 결정 PR 작성 시)
+- **false binary 금지** — "강제 적용 vs 면제" 두 옵션만 제시 X. 최소 3개 옵션 보장
+- 빠뜨리기 쉬운 옵션: **"정확성 게이트 보강 (현재 코드에 없음, 신규 작업 X주 필요)"** — 현재 코드에 없어도 옵션 테이블에 포함
+- 자가 점검: "사용자가 한쪽 극단 선택 시 ADR 첫 줄 원칙 위반?" → Yes면 옵션 누락
+- 출처: `memory/feedback_decision_no_false_binary.md`
+
+### Epic close 조건
+- **PR 머지 = close 금지.** "Seam A~G 7개 PR 머지"는 진행 척도일 뿐
+- close 조건 필수: 본문 evidence 시나리오 실기기 1주 재발 0건 OR 1주 production 측정 회귀 0건
+- 자가 점검: "epic 본문 evidence가 acceptance에 1:1 매핑되는가?"
+- 출처: `memory/feedback_epic_close_field_verify.md`
+
+### Acceptance 정의 순서
+- **사용자 가치 → acceptance → 코드** 순서. "이미 머지된 sub-issue" 기준 acceptance 금지
+- 회귀 정의 점검:
+  1. lock 활성 / lockless 둘 다 카테고리?
+  2. 사용자 명시 의향(C 토글 ON / boardingPrompt 응답 / 직접 탭) trip이 lock 활성과 동급으로 다뤄지는가?
+  3. ADR 첫 줄 원칙이 acceptance까지 적용되는가?
+  4. 권한 매트릭스(WhileInUse/Always × FG/BG/취침) 모두 커버?
+  5. 환경 매트릭스(지하/지상/환승) 모두 커버?
+- 출처: `memory/feedback_acceptance_drives_code.md`
+
+### 사용자 명시 의향 trip
+- **C 토글 ON / boardingPrompt 응답 / BoardingTrainList 직접 탭 = lock 활성과 동급 정확도 보장 의무**
+- "정보용 토글" 라벨은 UI 텍스트로만, acceptance/게이트는 동급
+- 다음 표현 금지: "사용자 선택 영역 → acceptance 위반 아님", "정보용이라 정확성 게이트 의무 없음", "best effort"
+- ADR-010 첫 줄: "두 실패 모드(false positive / miss)는 비대칭이 아니라 **동급**."
+- 출처: `memory/feedback_user_intent_equal_protection.md`, `docs/decisions/ADR-014-decision-process-rules.md`
+
+---
+
 ## Agent skills
 
 ### Issue tracker
