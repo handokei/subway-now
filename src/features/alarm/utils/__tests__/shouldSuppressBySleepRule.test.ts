@@ -1,4 +1,4 @@
-import { shouldSuppressBySleepRule } from '../shouldSuppressBySleepRule';
+import { isStationPassedFirstHop, shouldSuppressBySleepRule } from '../shouldSuppressBySleepRule';
 import type {
   SleepRuleEventType,
   SleepRuleInput,
@@ -152,6 +152,24 @@ describe('shouldSuppressBySleepRule', () => {
           }),
         ),
       ).toBe(true);
+    });
+  });
+
+  // #1236 (Epic #1204 D8 wire) — station-passed dispatch path 공통 isFirstHop 헬퍼.
+  describe('isStationPassedFirstHop', () => {
+    it.each<[string, BoardingLock | null, string, number | null | undefined, boolean]>([
+      // [name, lock, candidateStationId, currentHopIndex, expected]
+      ['lock 활성 + candidate=boardingStation → true', lock, 'S-BOARD', null, true],
+      ['lock 활성 + candidate≠boardingStation → false', lock, 'S-OTHER', null, false],
+      ['lock 활성 + candidate=boardingStation + hopIndex=3 → lock SSOT 우선 true', lock, 'S-BOARD', 3, true],
+      ['lockless + hopIndex=0 → true', null, 'S-ANY', 0, true],
+      ['lockless + hopIndex=3 → false (첫 hop 아님)', null, 'S-ANY', 3, false],
+      ['lockless + hopIndex=null → false (SSOT 부재, graceful)', null, 'S-ANY', null, false],
+      ['lockless + hopIndex=undefined → false (BG path 미전달, graceful)', null, 'S-ANY', undefined, false],
+    ])('%s', (_, lockArg, candidateStationId, currentHopIndex, expected) => {
+      expect(
+        isStationPassedFirstHop({ lock: lockArg, candidateStationId, currentHopIndex }),
+      ).toBe(expected);
     });
   });
 });

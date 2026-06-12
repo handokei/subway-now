@@ -47,12 +47,13 @@ import {
   logSuppressedMovement,
   logSuppressedPhaseGate,
   logSuppressedSleepFirstTransfer,
+  logSuppressedSleepStationPassed,
   logSuppressedStationPassedWarmup,
   type HydrationPhase,
 } from '../utils/alarmLog';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { getBoardingLock } from '../utils/boardingLockStorage';
-import { shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
+import { isStationPassedFirstHop, shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
 import type { PositionStability } from '../../nearest-station/utils/positionStaticDetector';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
@@ -177,7 +178,33 @@ async function runSilenceGateAndDispatch(params: {
   dismissSilence: import('../utils/dismissSilenceStorage').DismissSilenceState | null;
   userLocation: { lat: number; lng: number } | null;
   clearDismissSilenceAction: () => Promise<void>;
+  // #1236 (Epic #1204 D8 wire) — station-passed sleep 룰 게이트 context.
+  // 호출자가 lock/sleepMode/currentHopIndex를 수집해 전달한다. 게이트 통과 시 dispatch.
+  sleepMode: boolean;
+  currentHopIndex: number | null;
+  /** lock=null이면 lockless trip — currentHopIndex===0으로 판정. lock 활성이면 boardingStationId 비교. */
+  lock: import('../../../shared/types/boardingLock').BoardingLock | null;
 }): Promise<void> {
+  // #1236 — sleep 룰 게이트. dismiss silence 위 — silence 만료/위치 무관하게 sleep 첫 hop은 정책상 차단.
+  // sleep 룰은 정확성 게이트(ADR-013 §B3 / ADR-014)라 silence 만료 부수효과(clear)를 막아도 무방.
+  if (
+    shouldSuppressBySleepRule({
+      lock: params.lock,
+      event: { type: 'station-passed', stationName: params.candidateStation.name },
+      sleepMode: params.sleepMode,
+      isFirstHop: isStationPassedFirstHop({
+        lock: params.lock,
+        candidateStationId: params.candidateStation.id,
+        currentHopIndex: params.currentHopIndex,
+      }),
+    })
+  ) {
+    logSuppressedSleepStationPassed({
+      source: params.source,
+      stationName: params.candidateStation.name,
+    });
+    return;
+  }
   const silenceGate = applySilenceGate(
     params.dismissSilence,
     Date.now(),
@@ -816,19 +843,27 @@ export function useStationAlarm({
 
       // #746 — dismiss silence 게이트 + dispatch는 helper로 통합 (Sonar cpd 회피).
       // userLocation 없이도 시간 조건만 평가 가능 — null 좌표 그대로 전달.
-      void runSilenceGateAndDispatch({
-        source: 'fg',
-        candidateStation,
-        capturedRoute,
-        capturedDestinationId,
-        capturedDestinationName,
-        notificationSource,
-        isCancelled: () => cancelled,
-        errorLogPrefix: '역 통과 알림 실패:',
-        dismissSilence,
-        userLocation,
-        clearDismissSilenceAction,
-      });
+      // #1236 — sleep 룰 게이트는 helper 내부에서 처리. lock은 IIFE에서 async fetch.
+      void (async () => {
+        const lock = await getBoardingLock();
+        if (cancelled) return;
+        await runSilenceGateAndDispatch({
+          source: 'fg',
+          candidateStation,
+          capturedRoute,
+          capturedDestinationId,
+          capturedDestinationName,
+          notificationSource,
+          isCancelled: () => cancelled,
+          errorLogPrefix: '역 통과 알림 실패:',
+          dismissSilence,
+          userLocation,
+          clearDismissSilenceAction,
+          sleepMode: sleepModeRef.current,
+          currentHopIndex,
+          lock,
+        });
+      })();
     }
 
     return () => {
@@ -913,6 +948,7 @@ export function useStationAlarm({
 
       // #746 silence gate + dispatch는 helper로 통합 (Sonar cpd 회피).
       // lastNotifiedStationId 공유 dedup. cancelled 재확인 — getBoardingLock 후 effect cleanup 가능.
+      // #1236 — sleep 룰 게이트 context. lock은 위에서 이미 fetch.
       await runSilenceGateAndDispatch({
         source: 'fg-arvlcd',
         candidateStation,
@@ -925,6 +961,9 @@ export function useStationAlarm({
         dismissSilence,
         userLocation,
         clearDismissSilenceAction,
+        sleepMode: sleepModeRef.current,
+        currentHopIndex,
+        lock,
       });
     })();
 
@@ -946,5 +985,7 @@ export function useStationAlarm({
     userLocation?.lat,
     userLocation?.lng,
     notificationSource,
+    // #1236 — currentHopIndex 변화가 sleep 룰 게이트 isFirstHop 판정에 영향.
+    currentHopIndex,
   ]);
 }

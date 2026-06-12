@@ -74,6 +74,7 @@ const mockLogFiredStationPassed = jest.fn();
 const mockLogSuppressedDedupStation = jest.fn();
 const mockLogSuppressedDedupAlarm = jest.fn();
 const mockLogSuppressedSleepFirstTransfer = jest.fn();
+const mockLogSuppressedSleepStationPassed = jest.fn();
 const mockLogSuppressedDismissSilence = jest.fn();
 jest.mock('../alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
@@ -82,6 +83,8 @@ jest.mock('../alarmLog', () => ({
   logSuppressedDedupAlarm: (...args: unknown[]) => mockLogSuppressedDedupAlarm(...args),
   logSuppressedSleepFirstTransfer: (...args: unknown[]) =>
     mockLogSuppressedSleepFirstTransfer(...args),
+  logSuppressedSleepStationPassed: (...args: unknown[]) =>
+    mockLogSuppressedSleepStationPassed(...args),
   logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
 }));
 
@@ -823,6 +826,77 @@ describe('processLocationUpdate', () => {
       await call({ sleepMode: true });
       expect(mockSendAlarmNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
+    });
+  });
+
+  // #1236 (Epic #1204 D8 wire) — BG station-passed dispatch path도 sleep 룰 게이트 호출.
+  // 2026-06-12 22:11:56 사가정 station-passed fire 회귀를 BG/silent push 양쪽에서 차단.
+  describe('#1236 sleep 룰 게이트 — station-passed (BG path)', () => {
+    const lockOnStation1 = {
+      destinationId: 'station-2',
+      trainCode: 'T-1',
+      // boardingStationId가 mockStation.id와 일치 → station-passed 후보가 첫 hop으로 판정됨.
+      boardingStationId: 'station-1',
+      boardingLine: '2' as const,
+      boardedAt: Date.now(),
+      expectedDurationMs: 60_000,
+    };
+
+    beforeEach(() => {
+      mockFindNearestStation.mockReturnValue(mockNearestResult);
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockIsStationOnRoute.mockReturnValue(true);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      // alarmEvent는 게이트와 무관 — null로 둬서 transfer/destination sleep 게이트와 격리.
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+    });
+
+    it('sleep ON + lock 활성 + candidate=boardingStation → station-passed 차단 + suppress 로그', async () => {
+      mockGetBoardingLock.mockResolvedValue(lockOnStation1);
+      await call({ sleepMode: true });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+      expect(mockLogSuppressedSleepStationPassed).toHaveBeenCalledWith({
+        source: 'bg',
+        stationName: mockStation.name,
+      });
+    });
+
+    it('sleep OFF + lock 활성 + candidate=boardingStation → 정상 발사 (sleep off 우선)', async () => {
+      mockGetBoardingLock.mockResolvedValue(lockOnStation1);
+      await call({ sleepMode: false });
+      expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
+    });
+
+    it('sleep ON + lock 활성 + candidate≠boardingStation → 정상 발사 (첫 hop 아님)', async () => {
+      const lockOnOther = { ...lockOnStation1, boardingStationId: 'station-other' };
+      mockGetBoardingLock.mockResolvedValue(lockOnOther);
+      await call({ sleepMode: true });
+      expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
+    });
+
+    it('sleep ON + lock null (lockless) → BG는 currentHopIndex SSOT 부재라 graceful 통과', async () => {
+      // BG path는 estimator hopIndex 입력이 없어 lockless trip을 차단하지 않는다(보수적 graceful).
+      // FG path가 currentHopIndex로 동급 보장(useStationAlarm 테스트에서 검증).
+      mockGetBoardingLock.mockResolvedValue(null);
+      await call({ sleepMode: true });
+      expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
+    });
+
+    it('sleep ON + lock 활성 + silence 활성 → silence 차단이 우선 (station-passed gate는 호출되지 않음)', async () => {
+      // 같은 candidate에 silence 게이트가 위에 있어 sleep 게이트보다 먼저 차단한다.
+      mockGetBoardingLock.mockResolvedValue(lockOnStation1);
+      mockGetDismissSilence.mockResolvedValue({
+        sinceTs: Date.now(),
+        sinceLat: 37.498,
+        sinceLng: 127.028,
+      });
+      await call({ sleepMode: true });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
     });
   });
 
