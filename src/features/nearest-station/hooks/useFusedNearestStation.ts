@@ -96,15 +96,33 @@ interface UseFusedNearestStationReturn {
   /**
    * #1208 (Epic #1204 D2) — 현재 채택된 estimator의 arc 위 hop index.
    * useStationAlarm이 station-passed 게이트(`isStationWithinHopWindow`)의 SSOT로 사용.
+   * #1235 (D9 wire) — DebugModal Trip 섹션 currentHopIndex row의 SSOT도 동일.
    * estimator 미채택 시 null — 호출자가 firedAlarms 등의 fallback으로 추정.
    */
   currentHopIndex: number | null;
   /**
    * #1208 — 현재 trip의 arc(탑승역~다음 waypoint) station 배열.
    * useStationAlarm의 hop window 게이트 입력 및 firedAlarms 기반 fallback hop 계산용.
+   * #1235 (D9 wire) — DebugModal Trip 섹션 route hop count row가 length로 사용.
    * route/trip 없으면 빈 배열.
    */
   arcStations: readonly Station[];
+
+  /**
+   * #1235 (D9 wire) — useFusedStationDetection이 산출한 verdict.confidence.
+   * 'high' | 'medium' | 'low'. signalsAvailable=0이어도 항상 정의된다.
+   */
+  detectionTier: import('../../../shared/utils/stationDetectionFusion').StationDetectionConfidence;
+  /**
+   * #1235 (D9 wire) — useFusedStationDetection이 산출한 signalMask 문자열.
+   * 신호 미주입 시 빈 문자열.
+   */
+  detectionSignalMask: string;
+  /**
+   * #1235 (D9 wire) — 호출자가 주입한 barometer.subsurface 패스스루.
+   * 미전달이면 undefined.
+   */
+  subsurface: boolean | undefined;
   refresh: () => Promise<void>;
 }
 
@@ -842,8 +860,12 @@ export function useFusedNearestStation(
     lastFixAtMs: gps.lastFixAtMs,
     positionStability,
     estimatorStrategy: estimate?.strategy ?? null,
+    // D2(#1208) + #1235 (D9 wire) — useStationAlarm hop window 게이트 + DebugModal Trip/Fusion/GPS 섹션 SSOT.
     currentHopIndex: estimate?.index ?? null,
     arcStations,
+    detectionTier: detectionVerdict.confidence,
+    detectionSignalMask: detectionVerdict.signalMask,
+    subsurface: barometerSubsurface,
     refresh: gps.refresh,
   };
 }

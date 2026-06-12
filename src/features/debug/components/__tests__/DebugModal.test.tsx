@@ -4,6 +4,7 @@ import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
 import { DebugModal, __test__ } from '../DebugModal';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
+import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
@@ -14,6 +15,11 @@ const mockUseSilentPushDiagnostics = jest.fn();
 const mockGetAlarmLog = jest.fn();
 const mockClearAlarmLog = jest.fn();
 const mockUseBarometer = jest.fn();
+// #1235 (D9 wire) — DebugModal이 destinationStore + tripStartStorage SSOT로 trip props 도출.
+const mockGetTripStartedAt = jest.fn();
+jest.mock('../../../alarm/utils/tripStartStorage', () => ({
+  getTripStartedAt: () => mockGetTripStartedAt(),
+}));
 
 jest.mock('../../../nearest-station/hooks/useFusedNearestStation', () => ({
   useFusedNearestStation: () => mockUseFusedNearestStation(),
@@ -110,6 +116,12 @@ const setupHookDefaults = () => {
     error: null,
     permissionDenied: false,
     refresh: jest.fn(),
+    // #1235 (D9 wire) — DebugModal이 hook return으로 fusionDetection/trip 도출. 기본값은
+    // estimator/detection 모두 비어있는 상태 — 미트립 + signalsAvailable=0 시나리오.
+    currentHopIndex: null,
+    routeHopCount: 0,
+    detectionTier: 'low',
+    detectionSignalMask: '',
   });
   mockUseArrivalInfo.mockReturnValue({ arrival: baseArrival, loading: false, isMock: false });
   mockUseSilentPushDiagnostics.mockReturnValue({
@@ -131,6 +143,11 @@ const setupHookDefaults = () => {
   mockDumpScheduledNotifications.mockResolvedValue([]);
   // #1215 (D9) — 기본은 subsurface=false (지상).
   mockUseBarometer.mockReturnValue({ subsurface: false, stop: undefined });
+  // #1235 (D9 wire) — tripStartedAt 기본 null (trip 미시작).
+  mockGetTripStartedAt.mockResolvedValue(null);
+  // #1235 (D9 wire) — destinationStore/settingsStore SSOT 초기화. 매 테스트 독립.
+  useDestinationStore.setState({ destination: null });
+  useSettingsStore.setState({ sleepMode: false });
 };
 
 // SonarCloud new_duplicated_lines_density 임계 준수 — 여러 describe에 걸친 buildDumpText
@@ -1073,6 +1090,142 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     expect(message).toContain('sleepMode=on');
     expect(message).toContain('firstHopApproaching=true');
     shareSpy.mockRestore();
+  });
+
+  // #1235 (D9 wire) — props 미전달 시 DebugModal이 hook return + store + tripStartStorage에서
+  // fusionDetection/trip/sleep SSOT를 도출하는 분기 검증. 사용자가 _layout 마운트 지점에서
+  // wrapper 없이 <DebugModal /> 만 쓰더라도 D9 sections에 의미있는 값이 흘러야 한다.
+  describe('SSOT wire (props 미전달 → hook+store 도출)', () => {
+    const tripDestination: Station = {
+      id: '2-022',
+      name: '강남',
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.4979,
+      lng: 127.0276,
+    };
+
+    it('hook return의 detectionTier/SignalMask가 Fusion 섹션에 노출된다', async () => {
+      mockUseFusedNearestStation.mockReturnValue(
+        fusedReturnFixture({
+          currentHopIndex: null,
+          routeHopCount: 0,
+          detectionTier: 'high',
+          detectionSignalMask: 'TFT',
+        }),
+      );
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByText('high')).toBeTruthy();
+      expect(screen.getByText('TFT')).toBeTruthy();
+    });
+
+    it('destination null + lock 비활성 → Trip lockless=false, routeHopCount=—', async () => {
+      mockUseFusedNearestStation.mockReturnValue(
+        fusedReturnFixture({
+          currentHopIndex: null,
+          routeHopCount: 0,
+          detectionTier: 'low',
+          detectionSignalMask: '',
+        }),
+      );
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      // Trip lockless row가 'false' 노출. (sleepMode='off'도 동시 노출)
+      expect(screen.getAllByText('false').length).toBeGreaterThan(0);
+      // routeHopCount는 destination null이면 '—' 표기.
+      expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+    });
+
+    it('destination 설정 + lock 비활성 + currentHopIndex=0 → lockless=true, firstHopApproaching=true', async () => {
+      useDestinationStore.setState({ destination: tripDestination });
+      mockUseFusedNearestStation.mockReturnValue(
+        fusedReturnFixture({
+          currentHopIndex: 0,
+          routeHopCount: 5,
+          detectionTier: 'medium',
+          detectionSignalMask: 'TTU',
+        }),
+      );
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      expect(message).toContain('lockless=true');
+      expect(message).toContain('currentHopIndex=0');
+      expect(message).toContain('route hop count=5');
+      expect(message).toContain('firstHopApproaching=true');
+      shareSpy.mockRestore();
+    });
+
+    it('destination 설정 + currentHopIndex>0 → firstHopApproaching=false', async () => {
+      useDestinationStore.setState({ destination: tripDestination });
+      mockUseFusedNearestStation.mockReturnValue(
+        fusedReturnFixture({
+          currentHopIndex: 2,
+          routeHopCount: 5,
+          detectionTier: 'medium',
+          detectionSignalMask: 'TTU',
+        }),
+      );
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      expect(message).toContain('firstHopApproaching=false');
+      shareSpy.mockRestore();
+    });
+
+    it('useSettingsStore.sleepMode=true → Sleep 섹션 sleepMode=on', async () => {
+      useSettingsStore.setState({ sleepMode: true });
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      expect(message).toContain('sleepMode=on');
+      shareSpy.mockRestore();
+    });
+
+    it('tripStartStorage.getTripStartedAt 값이 Trip 섹션에 흐른다', async () => {
+      const tripAt = Date.UTC(2026, 5, 12, 9, 0, 0);
+      mockGetTripStartedAt.mockResolvedValue(tripAt);
+      useDestinationStore.setState({ destination: tripDestination });
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      // tripStartedAt은 비동기 effect로 들어오므로 dump 호출 전 settle 보장.
+      await waitFor(() =>
+        expect(screen.getByText(new Date(tripAt).toISOString())).toBeTruthy(),
+      );
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      expect(message).toContain(`tripStartedAt=${new Date(tripAt).toISOString()}`);
+      shareSpy.mockRestore();
+    });
+
+    it('비동기 hydration 중 unmount 시 setState 호출 안 함', async () => {
+      // 영원히 resolve 안 되는 Promise를 반환해 cleanup race를 강제.
+      let resolveFn: (value: number | null) => void = () => undefined;
+      mockGetTripStartedAt.mockReturnValueOnce(
+        new Promise<number | null>((resolve) => {
+          resolveFn = resolve;
+        }),
+      );
+      const { unmount } = renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      unmount();
+      // cleanup 후 resolve. cancelled 플래그가 set이라 setState 호출돼선 안 됨.
+      await act(async () => {
+        resolveFn(123456789);
+      });
+      // 단순히 throw 없이 통과하면 성공.
+      expect(true).toBe(true);
+    });
   });
 });
 

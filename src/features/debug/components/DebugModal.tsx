@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AppState,
   Modal,
@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
+import { useDestinationStore } from '../../route/store/useDestinationStore';
+import { getTripStartedAt } from '../../alarm/utils/tripStartStorage';
 import { isDebugModalEnabled } from '../../../shared/constants/debugFlags';
 import type { GpsActiveState } from '../../../shared/constants/gpsStatus';
 import { formatClockTimeWithSeconds } from '../../../shared/utils/formatTime';
@@ -533,9 +535,9 @@ function DebugModalInner({
   onClose,
   candidateTrains,
   fusedSpeed,
-  fusionDetection,
-  trip,
-  sleep,
+  fusionDetection: fusionDetectionProp,
+  trip: tripProp,
+  sleep: sleepProp,
 }: Readonly<DebugModalProps>) {
   const { colors } = useTheme();
   // #458: RN Modal 안에서는 SafeAreaView가 안 먹는다(portal로 inset 컨텍스트 분리).
@@ -552,7 +554,14 @@ function DebugModalInner({
     accuracyMeters,
     gpsActive,
     lastFixAtMs,
+    // #1235 (D9 wire) — hook이 노출하는 SSOT로 fusionDetection/trip props 구성.
+    currentHopIndex,
+    arcStations,
+    detectionTier,
+    detectionSignalMask,
   } = useFusedNearestStation();
+  // arc 길이 = trip의 hop 총 수. trip 미설정이면 0.
+  const routeHopCount = arcStations.length;
   const stationName = result?.station.name ?? null;
   const { arrival, isMock } = useArrivalInfo(stationName);
   const silentPush = useSilentPushDiagnostics();
@@ -567,6 +576,55 @@ function DebugModalInner({
   const gpsLabel = formatStationLabel(gpsResult);
   const differs = fusedDiffersFromGps(result, gpsResult);
   const lock = useBoardingLockStore((s) => s.lock);
+
+  // #1235 (D9 wire) — fusionDetection/trip/sleep SSOT 도출.
+  // 호출자가 props로 명시 전달하면 그 값이 우선(테스트/외부 주입). 미전달이면 내부 SSOT 사용.
+  const sleepMode = useSettingsStore((s) => s.sleepMode);
+  const destination = useDestinationStore((s) => s.destination);
+  const lockActive = lock !== null && !isBoardingLockExpired(lock, Date.now());
+  // lockless trip = destination 설정됐고 boardingLock 비활성.
+  const locklessTrip = destination !== null && !lockActive;
+  // tripStartedAt는 AsyncStorage SSOT(tripStartStorage). 마운트 + destination 변경 시 재조회.
+  const [tripStartedAt, setTripStartedAt] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void getTripStartedAt().then((value) => {
+      if (!cancelled) setTripStartedAt(value);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [destination]);
+
+  const fusionDetection: FusionDetectionSummary = useMemo(
+    () =>
+      fusionDetectionProp ?? {
+        tier: detectionTier,
+        signalMask: detectionSignalMask,
+      },
+    [fusionDetectionProp, detectionTier, detectionSignalMask],
+  );
+  const trip: TripDebugState = useMemo(
+    () =>
+      tripProp ?? {
+        lockless: locklessTrip,
+        tripStartedAt,
+        currentHopIndex,
+        routeHopCount: destination !== null ? routeHopCount : null,
+      },
+    [tripProp, locklessTrip, tripStartedAt, currentHopIndex, routeHopCount, destination],
+  );
+  const sleep: SleepDebugState = useMemo(
+    () =>
+      sleepProp ?? {
+        sleepMode,
+        // 첫 hop 향함 = lockless + estimator hop index 0 (탑승역 또는 첫 hop 출발 직후).
+        // lock 활성 trip은 별도 게이트로 들어가므로 본 디버그 표기는 lockless만 true.
+        firstHopApproaching: locklessTrip && currentHopIndex === 0,
+      },
+    [sleepProp, sleepMode, locklessTrip, currentHopIndex],
+  );
+
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
   const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
     getFusionDebugEntries(),
@@ -793,7 +851,8 @@ function DebugModalInner({
           <Section title="Sleep" colors={colors}>
             <KeyValue
               label="sleepMode"
-              value={sleep ? (sleep.sleepMode ? 'on' : 'off') : UNKNOWN_LABEL}
+              // #1235 (D9 wire) — sleep는 SSOT 도출로 항상 non-null. on/off만 분기.
+              value={sleep.sleepMode ? 'on' : 'off'}
               colors={colors}
             />
             <KeyValue
