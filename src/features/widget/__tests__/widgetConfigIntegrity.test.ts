@@ -9,8 +9,8 @@
  * 본 테스트는 두 entitlements SSOT가 같은 App Group을 선언하는지, 그리고 과거에
  * 사용되던 `expo-target.json` (dead 파일) 이 부활하지 않는지를 검증한다.
  */
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const APP_GROUP_KEY = 'com.apple.security.application-groups';
 const EXPECTED_APP_GROUP = 'group.com.subwaynow.app';
@@ -52,8 +52,9 @@ const loadLiveActivityAppGroups = (): readonly string[] => {
   const raw = readFileSync(liveActivityPluginPath, 'utf8');
   // 메인 앱 entitlements는 modules/live-activity/app.plugin.js의 withEntitlementsPlist
   // 콜백이 inline으로 주입한다. 동적 import 없이 정적 검증을 위해 라인 자체를 검사한다.
+  const escapedKey = APP_GROUP_KEY.replaceAll('.', String.raw`\.`);
   const pattern = new RegExp(
-    `['"]${APP_GROUP_KEY.replace(/\./g, '\\.')}['"]\\s*\\]?\\s*=\\s*\\[([^\\]]+)\\]`,
+    String.raw`['"]` + escapedKey + String.raw`['"]\s*\]?\s*=\s*\[([^\]]+)\]`,
   );
   const match = pattern.exec(raw);
   if (!match) {
@@ -85,7 +86,8 @@ describe('widget config integrity (#1242 regression guard)', () => {
     const widgetGroups = loadWidgetEntitlements()[APP_GROUP_KEY] as readonly string[];
     const mainGroups = loadLiveActivityAppGroups();
     // 양쪽이 같은 set이어야 위젯이 메인 앱의 SharedGroupPreferences를 읽을 수 있다.
-    expect([...widgetGroups].sort()).toEqual([...mainGroups].sort());
+    const byLocale = (a: string, b: string): number => a.localeCompare(b);
+    expect([...widgetGroups].sort(byLocale)).toEqual([...mainGroups].sort(byLocale));
   });
 
   it('과거의 expo-target.json (dead 파일)이 부활하지 않는다', () => {
