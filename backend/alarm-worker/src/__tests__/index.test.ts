@@ -2326,6 +2326,36 @@ describe('applyBoardingLockTrainCodeSwap (#1210)', () => {
   });
 });
 
+/**
+ * #1241 — 사용자 trip 2026-06-12 회귀 가드
+ *
+ * Evidence SSOT: tasks/epic-lockless-recovery-2026-06-12.md §1~§2
+ *   - 보고 #5 (08:43 trip BG 강제 종료, 환승 leg trainCode 추적 상실)
+ *   - 보고 #10 (오후 trip에서 동일 재발)
+ *   - 디바이스 로그: `boarding-lock auto-ended (consecutiveEtaMissing=5)`
+ *
+ * 기대 동작: 환승 leg에서 새 trainCode가 도착하면 `applyBoardingLockTrainCodeSwap`이
+ *   1) boardingLock.trainCode를 신규로 갱신
+ *   2) consecutiveEtaMissing을 0으로 리셋
+ * → 5회 누적으로 인한 auto-end가 발생하지 않아야 한다.
+ *
+ * 본 describe는 D4 (#1210, PR #1218) 함수가 향후 회귀로 풀리지 않도록 박제한다.
+ * 위 describe('applyBoardingLockTrainCodeSwap (#1210)') 매트릭스가 기능 검증을 담당하고
+ * 본 describe는 사용자 보고와 1:1로 묶는다.
+ */
+describe('사용자 trip 2026-06-12 회귀 가드 (#1241)', () => {
+  it('보고 #5/#10 — 신규 trainCode 도착 시 consecutiveEtaMissing이 0으로 리셋되어 auto-end 방지', () => {
+    const trip = buildD4SwapBaseTrip();
+    expect(trip.consecutiveEtaMissing).toBeGreaterThan(0);
+    const result = applyBoardingLockTrainCodeSwap(
+      trip,
+      buildD4SwapPayload({ trainCode: 'T-NEW', boardingLine: '7' }),
+    );
+    expect(result.boardingLock?.trainCode).toBe('T-NEW');
+    expect(result.consecutiveEtaMissing).toBe(0);
+  });
+});
+
 // ─── GET /admin/quota (#1022) ─────────────────────────────────────────────────
 
 async function getAdminQuota(

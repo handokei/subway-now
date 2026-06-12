@@ -489,6 +489,41 @@ describe('#1211 D5 환승 leg autoLock 트리거', () => {
   });
 });
 
+/**
+ * #1241 — 사용자 trip 2026-06-12 회귀 가드
+ *
+ * Evidence SSOT: tasks/epic-lockless-recovery-2026-06-12.md §1~§2
+ *   - 보고 #4 (08:36:46 환승 후 호선 자동 선택 안 됨, 건대입구 7→2)
+ *   - 보고 #9 (오후 trip에서 동일 재발)
+ * 기대 동작: 사용자 명시 의향 trip(=lock 존재 + planned transfer waypoint 도달)에서
+ * arvlCd 우선순위로 단일 train이 결정되면 createTransferLock이 자동 호출되어야 한다.
+ *
+ * 이 describe는 D5 (#1211, PR #1220)에서 적용된 autoLock 트리거가 향후 회귀로 풀리지 않도록
+ * 박제한다. 위 '#1211 D5 환승 leg autoLock 트리거' describe가 기능 검증을 담당하고,
+ * 본 describe는 사용자 보고와 직접 매핑된다.
+ */
+describe('사용자 trip 2026-06-12 회귀 가드', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseArrival.mockReturnValue(arrivalRet(null));
+    mockPrefetchArrival.mockResolvedValue(undefined);
+  });
+
+  it('보고 #4/#9 — lock 존재 + planned transfer 도달 + arvlCd 단일 train → autoLock 1회', () => {
+    const arrived = makeTrain({ trainCode: 'T-ARRIVED', arrivalCode: 1, arrivalSeconds: 30 });
+    mockUseArrival.mockReturnValue(arrivalRet({ up: [arrived], down: [] }));
+    renderHook(() =>
+      useTransferTrainList({
+        lock,
+        route,
+        destinationName: '여의나루',
+        currentStation: gondeokOn6,
+      }),
+    );
+    expect(mockCreateLock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('filterArrivalsByDirection', () => {
   const up = makeTrain({ trainCode: 'UP' });
   const down = makeTrain({ trainCode: 'DN' });
