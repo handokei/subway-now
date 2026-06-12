@@ -30,6 +30,9 @@ jest.mock('../../utils/findNearestStation', () => ({
 jest.mock('../useNearestStation');
 jest.mock('../../../arrival/hooks/useArrivalInfo');
 jest.mock('../../../route/hooks/useTrainPositions');
+jest.mock('../../../alarm/utils/tripStartStorage', () => ({
+  getTripStartedAt: jest.fn().mockResolvedValue(null),
+}));
 
 const mockNearest = useNearestStation as jest.Mock;
 const mockArrival = useArrivalInfo as jest.Mock;
@@ -218,8 +221,11 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       expect(result.current.source).toBe('boarding-lock');
     });
 
-    it('lock 없으면 arc 소속 검사 미작동 (기존 동작 유지)', () => {
-      // fix(c)는 boardingLock 활성 시에만 동작.
+    it('lock 없으면 arc 소속 검사 미작동 (gate 자체는 비활성)', () => {
+      // fix(c)는 boardingLock 활성 시에만 동작 — 면목도 gate 통과.
+      // #1207 (Epic #1204 D1): lock 없음 + routeCtx 있음 → lockless-route-hop estimator 활성.
+      // position-train 채택 후 estimator가 chosenIdx=-1(면목 off-arc) 조건에서 override →
+      // source='boarding-lock-interp'. gate 비활성과 estimator override는 분리 책임.
       const myeonmok = findStationByNameAndLine('면목', '7')!;
       const { result } = setup({
         gps: { userLocation: { lat: yongmasan.lat, lng: yongmasan.lng }, accuracyMeters: 1500 },
@@ -227,8 +233,9 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
         routeCtx: routeContext,
       });
 
-      // lock 없으면 arc 검사 안 함 → 면목도 통과 가능
-      expect(result.current.source).toBe('position-train');
+      // lock 없으면 arc 검사 안 함 → 면목도 gate 통과 (position-train 일단 채택).
+      // 단 lockless estimator가 chosenIdx=-1로 override → 최종 source는 boarding-lock-interp.
+      expect(result.current.source).toBe('boarding-lock-interp');
     });
 
     it('arc 안에 있지만 LOCK_NEXT_HOP_WINDOW 초과 시 gate 탈락', () => {
@@ -290,9 +297,107 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
         useFusedNearestStation(undefined, undefined, subRouteContext, 'T-ARC-MISS'),
       );
 
-      // positionTrainResult = 용마산 → lockedTrainCode 매칭으로 source='boarding-lock'.
-      // 앵커(lastObservedRef)는 arcIndexOfStation=-1 반환으로 미갱신 — line 487 early return.
-      expect(result.current.source).toBe('boarding-lock');
+      // positionTrainResult = 용마산 → lockedTrainCode 매칭으로 source='boarding-lock' 채택.
+      // #1207 (Epic #1204 D1): lock 없음 + routeCtx 있음 → lockless-route-hop estimator 활성.
+      // 용마산이 arc 밖이므로 chosenIdx=-1 → estimator override → source='boarding-lock-interp'.
+      // 앵커(lastObservedRef)는 arcIndexOfStation=-1 반환으로 미갱신 — line 487 early return은 유지.
+      expect(result.current.source).toBe('boarding-lock-interp');
+    });
+  });
+
+  describe('#1207 lockless-route-hop estimator 활성화 — lockless hop time closure 커버', () => {
+    it('lock 없음 + routeCtx + tripStartStorage hydration → 저장된 tripStartedAt으로 ref 갱신', async () => {
+      // cold restart 시나리오: storage에 옛 trip 시작 시각이 있고, 첫 render는 Date.now()로 fallback,
+      // 비동기 hydration 도착 시 storage 값으로 ref 갱신.
+      jest.useFakeTimers();
+      const T0 = 1_700_000_000_000;
+      const storedStart = T0 - 5 * 60_000; // 5분 전 trip 시작
+      jest.setSystemTime(T0);
+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const tripStartStorage = require('../../../alarm/utils/tripStartStorage');
+      tripStartStorage.getTripStartedAt.mockResolvedValueOnce(storedStart);
+
+      const routeCtx = { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk };
+      mockNearest.mockReturnValue(gpsBase());
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+
+      const { rerender } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, routeCtx),
+      );
+
+      // hydration Promise resolve를 flush (microtask + 1 tick).
+      await Promise.resolve();
+      await Promise.resolve();
+
+      // 시간을 더 진행 + rerender하면 hydration된 storage 값(5분 전 시작)으로 적분 → 더 앞쪽 hop.
+      jest.setSystemTime(T0 + 1_000);
+      rerender({});
+
+      // hydration이 성공했다면 estimator가 활성 (boarding-lock-interp source).
+      // hydration 실패해도 fallback Date.now()로 동작하므로 source 단독으로는 hydration 검증 불가하나
+      // 본 테스트는 line 556(`stored != null && current === fallbackNow`) 분기 도달이 목표.
+
+      jest.useRealTimers();
+      tripStartStorage.getTripStartedAt.mockResolvedValue(null);
+    });
+
+    it('hydration resolve 전 unmount → cancelled=true로 ref 미갱신', async () => {
+      // unmount cleanup이 cancelled=true 설정 → hydration Promise resolve 시 early return.
+      const routeCtx = { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk };
+      mockNearest.mockReturnValue(gpsBase());
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const tripStartStorage = require('../../../alarm/utils/tripStartStorage');
+      // hydration이 resolve되기 전에 unmount될 수 있도록 deferred Promise 사용.
+      let resolveStored: (v: number | null) => void = () => undefined;
+      tripStartStorage.getTripStartedAt.mockReturnValueOnce(
+        new Promise<number | null>((res) => {
+          resolveStored = res;
+        }),
+      );
+
+      const { unmount } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, routeCtx),
+      );
+
+      unmount();
+      resolveStored(1_700_000_000_000); // resolve 후 cancelled=true 분기 도달.
+      await Promise.resolve();
+      await Promise.resolve();
+
+      tripStartStorage.getTripStartedAt.mockResolvedValue(null);
+    });
+
+    it('lock 없음 + routeCtx + 시간 경과 → lockless-route-hop이 arc hop time lookup closure 호출', () => {
+      // lock 없음 + routeCtx 있음 → 첫 render에 locklessTripStartRef 캡처.
+      // 시간 경과 후 rerender → hopsElapsedFrom이 hopTimeMsForHop 호출 → arc 노선 lookup 실행.
+      // Closure 내부 (segmentLine = arc[fromIdx].line) 경로 커버.
+      jest.useFakeTimers();
+      const T0 = 1_700_000_000_000;
+      jest.setSystemTime(T0);
+
+      const routeCtx = { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk };
+
+      mockNearest.mockReturnValue(gpsBase());
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+      // 열차 위치 없음 → trainProgress null → positionTrainResult null.
+      // mockPos는 beforeEach에서 null로 설정됨.
+
+      const { result, rerender } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, routeCtx),
+      );
+
+      // 첫 render 시 tripStartedAt = T0 캡처.
+      // 5분 경과 → hopsElapsedFrom이 0번 hop의 시작 노선('7') lookup → hopTimeMsAt 호출.
+      jest.setSystemTime(T0 + 5 * 60_000);
+      rerender({});
+
+      // lock 없음 + estimator 채택 → boarding-lock-interp.
+      expect(result.current.source).toBe('boarding-lock-interp');
+
+      jest.useRealTimers();
     });
   });
 

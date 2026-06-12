@@ -34,6 +34,7 @@ import {
   estimateStationProgress,
 } from '../../route/utils/stationProgressEstimator';
 import { hopTimeMsAt } from '../../route/utils/hopTime';
+import { getTripStartedAt } from '../../alarm/utils/tripStartStorage';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
 import {
   MAX_ACTIVE_LINES,
@@ -516,6 +517,52 @@ export function useFusedNearestStation(
     }
   }, [boardingLock]);
 
+  // #1207 (Epic #1204 D1) — lockless trip 앵커. boardingLock이 없고 arc가 산출됐을 때
+  // trip 시작 시각을 estimator(LocklessRouteHop)에 전달한다.
+  // arc(destination/origin) 변화 또는 lock 활성으로 전환되면 ref를 리셋 — 새 trip context 시작.
+  //
+  // SSOT: `tripStartStorage`(AsyncStorage) — destination 설정 시 `setTripStartedAt`이 기록.
+  // cold restart 직후에도 직전 trip 시작 시각을 복구할 수 있다.
+  // hydration이 완료되기 전(또는 storage 키 부재 시)에는 첫 render 시각(`Date.now()`)을 fallback.
+  // 비동기 hydration 1회 → render-time 합성은 항상 ref.current를 동기 읽기.
+  const arcKey = arcStations.length > 0
+    ? `${arcStations[0].id}|${arcStations[arcStations.length - 1].id}`
+    : null;
+  const locklessTripStartRef = useRef<number | null>(null);
+  const prevArcKeyRef = useRef<string | null>(null);
+  const prevLockActiveRef = useRef<boolean>(false);
+  useEffect(() => {
+    const lockActive = boardingLock != null;
+    // arc 변화(목적지/출발지 전환) 또는 lock 상태 전환 시 앵커 리셋.
+    if (prevArcKeyRef.current !== arcKey || prevLockActiveRef.current !== lockActive) {
+      locklessTripStartRef.current = null;
+      prevArcKeyRef.current = arcKey;
+      prevLockActiveRef.current = lockActive;
+    }
+    // lockless trip(lock 없음) + arc 준비됨 + 앵커 비어있음 → 1) SSOT(storage)에서 복구 시도,
+    //   2) 미존재면 첫 render 시각으로 fallback. 비동기 hydration이라 race 가능 — race에서 storage
+    //   값이 도착하면 fallback을 덮어쓴다 (오래된 trip의 진짜 시작 시각을 우선).
+    if (!lockActive && arcKey != null && locklessTripStartRef.current === null) {
+      // 동기 fallback을 먼저 둬 첫 render 직후부터 estimator가 동작 — race로 storage 값이 도착하면
+      // 더 정확한 SSOT 값으로 갱신.
+      const fallbackNow = Date.now();
+      locklessTripStartRef.current = fallbackNow;
+      let cancelled = false;
+      void getTripStartedAt().then((stored) => {
+        if (cancelled) return;
+        // hydration 도착 시점에 trip context가 여전히 같다면(앵커가 fallback 값 그대로) storage 값으로 갱신.
+        // 그 사이 reset이 일어났다면(arc 변화/lock 활성) 덮어쓰지 않는다.
+        if (stored != null && locklessTripStartRef.current === fallbackNow) {
+          locklessTripStartRef.current = stored;
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
+    }
+    return undefined;
+  }, [arcKey, boardingLock]);
+
   // Strategy ②(ArrivalEta) 입력 — 신규 폴링 신설 금지(#745). currentIdxHint는 마지막 LivePosition
   // 관측(lastObservedRef) 또는 채택된 estimate의 직전 idx로 자연스럽게 흐른다. 본 hook은
   // lastObservedRef를 진입점으로 사용 — ①이 마지막에 본 위치를 기준으로 "다음 역"을 산정.
@@ -534,16 +581,23 @@ export function useFusedNearestStation(
   // useMemo로 감싸면 deps가 시간을 포함하지 않아 부모 리렌더가 없는 동안 stale.
   // estimator는 분기·정수 산술 위주 — render마다 직접 계산해도 무비용.
   // ADR-008 Stage 3(#779): boardingLock의 leg 노선(`boardingLine`)을 캡슐화한 hop time lookup을
-  // estimator에 주입. lock이 없으면 estimator 자체가 비활성이므로 boardingLine은 lock present 시점에만
-  // 의미가 있다 — null 분기에서는 fallback closure(uniform HOP_TIME_MS)를 넘겨 estimator의 ③④가
-  // 호출되더라도 안전하게 종료(lock null 가드에서 이미 차단).
+  // estimator에 주입. #1207 (Epic #1204 D1): lockless 분기에서는 arc 각 hop의 출발역 노선을
+  // 동적으로 사용 (lock.boardingLine이 없으므로). 환승 leg가 섞인 arc에서도 segment별 hop time을
+  // 정확히 누적한다.
   const lockedLine = boardingLock?.boardingLine ?? null;
   const hopTimeMsForHop = lockedLine
     ? (fromIdx: number) => hopTimeMsAt(arcStations, fromIdx, lockedLine)
-    : /* istanbul ignore next — estimator는 lock null이면 line 245에서 early return하므로 sentinel 도달 불가 */
-      () => Number.POSITIVE_INFINITY;
+    : // lockless: arc 위 hop의 시작 역 노선을 사용 (lock.boardingLine 부재). hopsElapsedFrom은
+      // fromIdx < arcLength-1일 때만 본 closure를 호출하므로 arcStations[fromIdx]는 항상 정의됨 —
+      // arc 경계 / 미커버 노선 fallback은 hopTimeMsAt 내부에서 처리.
+      (fromIdx: number) => hopTimeMsAt(arcStations, fromIdx, arcStations[fromIdx].line);
+  const locklessTrip =
+    !boardingLock && locklessTripStartRef.current != null
+      ? { tripStartedAt: locklessTripStartRef.current }
+      : null;
   const estimate = estimateStationProgress({
     lock: boardingLock ?? null,
+    locklessTrip,
     arcStations,
     now: Date.now(),
     trainProgress: freshTrainProgress,
@@ -571,8 +625,15 @@ export function useFusedNearestStation(
     // 모두 잘못된 "다음 역"을 소비(2026-06-05 13:19 transfer/early/건대입구 fired @ 성수).
     // 실시간 신호(①LivePosition·②ArrivalEta) 외 모든 strategy는 cap 대상 — 부정형 분기로
     // 신규 strategy(Seam G 등)가 추가될 때 기본 cap 적용 되도록 안전 방향 디폴트.
+    //
+    // #1207 (Epic #1204 D1) — lockless-route-hop은 boardingLock 없음 → boardingIdx=-1, lastObserved
+    // 미갱신 → lastRealObservedIdx=-1로 ceiling이 idx 0에 박혀 lockless trip이 영구 0번 hop에 정지.
+    // lockless 전략 자체가 시간 적분 SSOT(D2 hop window 게이트의 source of truth) — observation
+    // ceiling을 면제한다. 잘못된 forward 발산 방지는 lockless 분기 내 arc clamp + over-terminal cap이 담당.
     const isInterpolated =
-      estimate.strategy !== 'live-position' && estimate.strategy !== 'arrival-eta';
+      estimate.strategy !== 'live-position' &&
+      estimate.strategy !== 'arrival-eta' &&
+      estimate.strategy !== 'lockless-route-hop';
     let withinObservationCeiling = true;
     if (isInterpolated) {
       // positionTrainResult non-null → freshTrainProgress non-null → tryLivePosition='live-position' →

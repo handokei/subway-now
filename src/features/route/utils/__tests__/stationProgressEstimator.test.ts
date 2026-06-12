@@ -527,6 +527,176 @@ describe('estimateStationProgress', () => {
     });
   });
 
+  describe('Strategy ⑤ LocklessRouteHop — lock 없는 trip 시간 적분 (#1207, Epic #1204 D1)', () => {
+    it('lock null + locklessTrip 5분 경과 + 60s/hop → hop index 5 (종착으로 clamp, arc 길이 5)', () => {
+      // arcLength=5, lastIdx=4. 300_000ms / 60_000ms = 5 hop → idx 5 > 4 → clamp to 4.
+      const hop60s = (_fromIdx: number) => 60_000;
+      const r = estimateStationProgress({
+        lock: null,
+        locklessTrip: { tripStartedAt: T0 },
+        arcStations: ARC,
+        now: T0 + 5 * 60_000,
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: hop60s,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toEqual({
+        station: ARC[4],
+        index: 4,
+        strategy: 'lockless-route-hop',
+      });
+    });
+
+    it('lock null + locklessTrip + arc 충분히 길고 60s/hop → 정확한 hop index (5분에 5번째 hop)', () => {
+      // 긴 arc로 종착 clamp가 아닌 정확한 hop index 검증.
+      const longArc: Station[] = Array.from({ length: 10 }, (_v, i) => ({
+        id: `7-${i}`,
+        name: `역${i}`,
+        line: '7',
+        lineColor: '#x',
+        lat: 0,
+        lng: 0,
+      }));
+      const hop60s = (_fromIdx: number) => 60_000;
+      const r = estimateStationProgress({
+        lock: null,
+        locklessTrip: { tripStartedAt: T0 },
+        arcStations: longArc,
+        now: T0 + 5 * 60_000,
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: hop60s,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toEqual({
+        station: longArc[5],
+        index: 5,
+        strategy: 'lockless-route-hop',
+      });
+    });
+
+    it('lock null + locklessTrip + arcStations 비면 null', () => {
+      const r = estimateStationProgress({
+        lock: null,
+        locklessTrip: { tripStartedAt: T0 },
+        arcStations: [],
+        now: T0 + 60_000,
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toBeNull();
+    });
+
+    it('lock null + locklessTrip tripStartedAt 미래(시계 후진) → null', () => {
+      const r = estimateStationProgress({
+        lock: null,
+        locklessTrip: { tripStartedAt: T0 + 60_000 },
+        arcStations: ARC,
+        now: T0,
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toBeNull();
+    });
+
+    it('lock null + locklessTrip + elapsed가 arc 전체 길이 초과 → 마지막 인덱스로 clamp', () => {
+      // arcLength=5, 100 hop 경과 → idx 100을 lastIdx=4로 clamp.
+      const r = estimateStationProgress({
+        lock: null,
+        locklessTrip: { tripStartedAt: T0 },
+        arcStations: ARC,
+        now: T0 + 100 * HOP_TIME_MS,
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toEqual({
+        station: ARC[4],
+        index: 4,
+        strategy: 'lockless-route-hop',
+      });
+    });
+
+    it('lock null + locklessTrip 미제공(undefined) → null (기존 동작 유지)', () => {
+      // 호출자가 locklessTrip을 옵트인하지 않으면 lock null trip은 estimator 비활성 그대로.
+      const r = estimateStationProgress({
+        lock: null,
+        arcStations: ARC,
+        now: T0,
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toBeNull();
+    });
+
+    it('lock null + locklessTrip = null → null (명시적 null도 비활성)', () => {
+      const r = estimateStationProgress({
+        lock: null,
+        locklessTrip: null,
+        arcStations: ARC,
+        now: T0,
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toBeNull();
+    });
+
+    it('lock 활성이면 locklessTrip이 제공돼도 lock 전략이 우선 (lock 우선)', () => {
+      // lock이 있으면 locklessTrip 무시 — 기존 lock 기반 4단 전략으로 흐른다.
+      const r = estimateStationProgress({
+        lock: makeLock(),
+        locklessTrip: { tripStartedAt: T0 - 999 * 60_000 },
+        arcStations: ARC,
+        now: T0 + HOP_TIME_MS,
+        trainProgress: null,
+        lockedTrainCode: '7093',
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      // lock + lastObserved null → ④ DefaultHop, boardingIdx(0) + 1 hop = idx 1.
+      expect(r?.strategy).toBe('default-hop');
+      expect(r?.index).toBe(1);
+    });
+
+    it('lock null + locklessTrip + variable hop time (환승 leg) → segment별 적분', () => {
+      // arc에 환승 leg 가정. fromIdx 0,1: 60s, fromIdx 2,3: 120s.
+      // 240s 경과 → 60+60+120=240 정확히 → 3 hop → idx 3.
+      const variableHop = (fromIdx: number) =>
+        fromIdx >= 2 ? 120_000 : 60_000;
+      const r = estimateStationProgress({
+        lock: null,
+        locklessTrip: { tripStartedAt: T0 },
+        arcStations: ARC,
+        now: T0 + 240_000,
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: variableHop,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r?.strategy).toBe('lockless-route-hop');
+      expect(r?.index).toBe(3);
+    });
+  });
+
   describe('우선순위 합성', () => {
     it('LivePosition 신선하면 ReanchoredHop이 있어도 LivePosition 채택', () => {
       const observedAt = T0;
