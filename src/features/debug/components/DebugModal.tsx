@@ -825,7 +825,7 @@ function DebugModalInner({
           </Section>
 
           {/* #1215 (D9) — Trip 섹션: lockless/tripStartedAt/currentHopIndex/route hop count. */}
-          <Section title="Trip" colors={colors}>
+          <Section title="Trip" colors={colors} testID="debug-modal-trip-section">
             <KeyValue
               label="lockless"
               value={formatOptionalBool(trip?.lockless)}
@@ -952,6 +952,7 @@ function DebugModalInner({
           <Section
             title={`Alarm log (${logs.length})`}
             colors={colors}
+            testID="alarm-log-modal-content"
             action={
               <Pressable onPress={refreshLogs} testID="debug-log-refresh">
                 <Text style={[typography.bodySm, { color: colors.accent }]}>Refresh</Text>
@@ -1221,11 +1222,12 @@ interface SectionProps {
   children: React.ReactNode;
   colors: ReturnType<typeof useTheme>['colors'];
   action?: React.ReactNode;
+  testID?: string;
 }
 
-function Section({ title, children, colors, action }: SectionProps) {
+function Section({ title, children, colors, action, testID }: SectionProps) {
   return (
-    <View style={[styles.section, { backgroundColor: colors.card }]}>
+    <View style={[styles.section, { backgroundColor: colors.card }]} testID={testID}>
       <View style={styles.sectionHeader}>
         <Text style={[typography.label, { color: colors.muted }]}>{title}</Text>
         {action}
