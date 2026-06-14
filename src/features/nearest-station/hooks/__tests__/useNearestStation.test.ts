@@ -5,7 +5,13 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNearestStation } from '../useNearestStation';
 import * as useStickyStationModule from '../useStickyStation';
 import * as findNearestStationModule from '../../utils/findNearestStation';
-import { MAX_ACCURACY_M, MAX_ACCURACY_M_DISPLAY, MAX_LOCATION_AGE_MS } from '../../../../shared/constants/location';
+import {
+  MAX_ACCURACY_M,
+  MAX_ACCURACY_M_DISPLAY,
+  MAX_LOCATION_AGE_MS,
+  FG_WATCH_SURFACE_TIME_INTERVAL_MS,
+  FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
+} from '../../../../shared/constants/location';
 import { BG_LAST_STATION_KEY } from '../../../../shared/constants/storageKeys';
 
 jest.mock('expo-location');
@@ -1209,5 +1215,126 @@ describe('useNearestStation — #903 Seam G barometer→sticky', () => {
     const lastCall = spy.mock.calls[spy.mock.calls.length - 1];
     expect(lastCall[1]).toEqual(expect.objectContaining({ tripActive: expected }));
     spy.mockRestore();
+  });
+});
+
+describe('useNearestStation — #1313 subsurface GPS throttle', () => {
+  // 지상 기본값: High@2s. 지하 throttle: Balanced@12s. interval은 상수에서 가져와 매직넘버 회피.
+  const SURFACE_OPTIONS = {
+    accuracy: Location.Accuracy.High,
+    distanceInterval: 0,
+    timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
+  };
+  const SUBSURFACE_OPTIONS = {
+    accuracy: Location.Accuracy.Balanced,
+    distanceInterval: 0,
+    timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
+  };
+  // RN의 AppState.currentState는 plain property — restart effect가 'active' 가드에 참조한다.
+  const originalCurrentState = AppState.currentState;
+
+  // 마지막 watchPositionAsync 호출의 options 인자.
+  const lastWatchOptions = () => {
+    const calls = (Location.watchPositionAsync as jest.Mock).mock.calls;
+    return calls[calls.length - 1][0];
+  };
+
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+    appStateCallback = null;
+    watchCallback = null;
+    mockNoLastKnownLocation();
+    mockSubscription.remove.mockClear();
+    (Location.watchPositionAsync as jest.Mock).mockImplementation(
+      async (_options: unknown, callback: typeof watchCallback) => {
+        watchCallback = callback;
+        return mockSubscription;
+      },
+    );
+    mockGranted();
+    (AppState as { currentState: string }).currentState = 'active';
+  });
+
+  afterEach(() => {
+    (AppState as { currentState: string }).currentState = originalCurrentState;
+  });
+
+  // 마운트 시 subsurface 값에 따른 초기 watch 옵션 — undefined/false는 절대 throttle하지 않는다(안전 기본값).
+  it.each([
+    { label: 'subsurface 미전달(undefined) → High@2s', props: {}, expected: () => SURFACE_OPTIONS },
+    { label: 'subsurface=false → High@2s', props: { barometerSubsurface: false }, expected: () => SURFACE_OPTIONS },
+    { label: 'subsurface=true → Balanced@12s', props: { barometerSubsurface: true }, expected: () => SUBSURFACE_OPTIONS },
+  ])('마운트 $label', async ({ props, expected }) => {
+    renderHook(() => useNearestStation(props));
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+    // 마운트 effect는 1회만 — restart effect가 중복 start하지 않는다.
+    expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
+    expect(lastWatchOptions()).toEqual(expected());
+  });
+
+  it('subsurface false→true flip 시 watch를 teardown 후 Balanced@12s로 재시작한다', async () => {
+    const { rerender } = renderHook(
+      ({ sub }: { sub: boolean }) => useNearestStation({ barometerSubsurface: sub }),
+      { initialProps: { sub: false } },
+    );
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+    expect(lastWatchOptions()).toEqual(SURFACE_OPTIONS);
+
+    await act(async () => { rerender({ sub: true }); });
+
+    // teardown(remove) 후 새 옵션으로 재시작 — 누수/중복 구독 없음.
+    expect(mockSubscription.remove).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2));
+    expect(lastWatchOptions()).toEqual(SUBSURFACE_OPTIONS);
+  });
+
+  it('subsurface true→false flip 시 watch를 teardown 후 High@2s로 되돌린다', async () => {
+    const { rerender } = renderHook(
+      ({ sub }: { sub: boolean }) => useNearestStation({ barometerSubsurface: sub }),
+      { initialProps: { sub: true } },
+    );
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+    expect(lastWatchOptions()).toEqual(SUBSURFACE_OPTIONS);
+
+    await act(async () => { rerender({ sub: false }); });
+
+    expect(mockSubscription.remove).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2));
+    expect(lastWatchOptions()).toEqual(SURFACE_OPTIONS);
+  });
+
+  it('warmup(undefined)→false 전이는 throttle boolean 불변이라 재시작하지 않는다 (no-op)', async () => {
+    const { rerender } = renderHook(
+      ({ sub }: { sub?: boolean }) => useNearestStation({ barometerSubsurface: sub }),
+      { initialProps: { sub: undefined } },
+    );
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+
+    await act(async () => { rerender({ sub: false }); });
+
+    // 둘 다 High@2s → 재시작 없음, teardown 없음.
+    expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
+    expect(mockSubscription.remove).not.toHaveBeenCalled();
+  });
+
+  it('백그라운드 중 subsurface flip은 FG watch를 켜지 않는다 (active 가드)', async () => {
+    const { rerender } = renderHook(
+      ({ sub }: { sub: boolean }) => useNearestStation({ barometerSubsurface: sub }),
+      { initialProps: { sub: false } },
+    );
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1));
+
+    // 앱이 백그라운드인 동안 flip — restart effect는 'active' 가드에서 early return.
+    (AppState as { currentState: string }).currentState = 'background';
+    await act(async () => { rerender({ sub: true }); });
+
+    expect(Location.watchPositionAsync).toHaveBeenCalledTimes(1);
+    expect(mockSubscription.remove).not.toHaveBeenCalled();
+
+    // FG 복귀 시 'active' 핸들러 refresh→startWatch가 throttledRef를 읽어 Balanced@12s로 반영.
+    (AppState as { currentState: string }).currentState = 'active';
+    await act(async () => { appStateCallback?.('active'); });
+    await waitFor(() => expect(lastWatchOptions()).toEqual(SUBSURFACE_OPTIONS));
   });
 });
