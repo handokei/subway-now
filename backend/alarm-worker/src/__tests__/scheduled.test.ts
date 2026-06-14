@@ -643,6 +643,58 @@ describe('runScheduled', () => {
       expect('hopIndex' in body.data).toBe(false);
     });
 
+    // #1307 — lockless intermediate도 server-authoritative subsurface flag forward.
+    it('lockless intermediate 발사 시 trip.subsurface=true가 payload.subsurface로 wire', async () => {
+      const { apnsFetch } = await runLocklessCycle({
+        trip: makeTrip({
+          waypoints: [
+            { stationName: '강남', line: '2', kind: 'intermediate', hopIndex: 3 },
+            { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
+          ],
+          locklessStationPassed: true,
+          subsurface: true,
+        }),
+        arrivals: [ARVL_ARRIVED],
+        apnsOk: true,
+      });
+      const calls = apnsFetch.mock.calls.filter((c) => {
+        try {
+          const body = JSON.parse(c[1]?.body as string) as { data?: { kind?: string } };
+          return body?.data?.kind === 'intermediate';
+        } catch {
+          return false;
+        }
+      });
+      expect(calls).toHaveLength(1);
+      const body = JSON.parse(calls[0][1].body as string) as { data: { subsurface?: boolean } };
+      expect(body.data.subsurface).toBe(true);
+    });
+
+    it('lockless intermediate 발사 시 trip.subsurface 미설정이면 payload 본문에서 subsurface 누락', async () => {
+      const { apnsFetch } = await runLocklessCycle({
+        trip: makeTrip({
+          waypoints: [
+            { stationName: '강남', line: '2', kind: 'intermediate', hopIndex: 3 },
+            { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
+          ],
+          locklessStationPassed: true,
+        }),
+        arrivals: [ARVL_ARRIVED],
+        apnsOk: true,
+      });
+      const calls = apnsFetch.mock.calls.filter((c) => {
+        try {
+          const body = JSON.parse(c[1]?.body as string) as { data?: { kind?: string } };
+          return body?.data?.kind === 'intermediate';
+        } catch {
+          return false;
+        }
+      });
+      expect(calls).toHaveLength(1);
+      const body = JSON.parse(calls[0][1].body as string) as { data: Record<string, unknown> };
+      expect('subsurface' in body.data).toBe(false);
+    });
+
     it('lock 없음 + intermediate(ARRIVED) → 발사 후 다음 intermediate 남으면 waypoint advance', async () => {
       const { kv } = await runLocklessCycle({
         trip: makeTrip({
@@ -3888,6 +3940,33 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     });
     const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]);
     expect(data.hopIndex).toBeUndefined();
+  });
+
+  // #1307 — server-authoritative subsurface flag forward.
+  it('payload.subsurface=true — trip.subsurface=true가 silent push 본문으로 forward', async () => {
+    const subsurfaceTrip = makeLockTripFixture('arvl-tok', { subsurface: true });
+    const { apnsFetch } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      trip: subsurfaceTrip,
+      pushId: 'p-arvl-sub',
+    });
+    const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]) as Record<
+      string,
+      unknown
+    >;
+    expect(data.subsurface).toBe(true);
+  });
+
+  it('payload.subsurface 누락 — trip.subsurface 미설정 시 본문에서도 누락', async () => {
+    const { apnsFetch } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      pushId: 'p-arvl-no-sub',
+    });
+    const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]) as Record<
+      string,
+      unknown
+    >;
+    expect('subsurface' in data).toBe(false);
   });
 
   it('arvlCd=0(ENTERING) → 매역 push 발사 (arvlCd=0 dedup key)', async () => {

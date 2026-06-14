@@ -67,6 +67,7 @@ import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveAc
 import { type NotificationSource } from '../utils/notificationSource';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 import { getBoardingLock } from '../utils/boardingLockStorage';
+import { getSubsurfaceState } from '../../../shared/utils/subsurfaceState';
 import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
 
@@ -101,6 +102,13 @@ export interface SilentPushPayload {
    * D1(#1207) hop estimator currentHopIndex와 짝지어 사용.
    */
   hopIndex?: number;
+  /**
+   * #1307 — 발사 시점 trip의 지하(subsurface) 판정. server-authoritative.
+   * 위치 게이트는 이 server flag를 우선하고, 부재 시 디바이스 로컬 stamp
+   * (`getSubsurfaceState`)로 fallback한다. true + intermediate면 GPS 거리 검증을 우회해
+   * 지하 stale/spoof GPS로 인한 out-of-range 오거부를 막는다. 구 backend 호환 위해 optional.
+   */
+  subsurface?: boolean;
 }
 
 /**
@@ -272,7 +280,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
   // standard 경로. findFieldsLayer는 isStandardCandidate(nextWaypoint non-empty) 또는
   // isRescheduleCandidate(kind='reschedule') 중 하나로 통과시키지만, kind='reschedule'
   // 케이스는 위 분기에서 잡혔으므로 잔여 케이스는 isStandardCandidate가 보증한 것 — nextWaypoint 보장.
-  const { nextWaypoint, etaSeconds, phase, kind, sentAt, pushId, hopIndex } = obj as {
+  const { nextWaypoint, etaSeconds, phase, kind, sentAt, pushId, hopIndex, subsurface } = obj as {
     nextWaypoint: string;
   } & Record<string, unknown>;
   if (typeof etaSeconds !== 'number' || !Number.isFinite(etaSeconds)) return null;
@@ -287,7 +295,16 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     sentAt: validSentAt(sentAt),
     pushId: validPushId(pushId),
     hopIndex: validHopIndex(hopIndex),
+    subsurface: validSubsurface(subsurface),
   };
+}
+
+/**
+ * #1307 — payload.subsurface 검증. boolean true만 의미를 갖는다. backend는 true일 때만
+ * wire하므로 false/누락/형식 오류는 모두 undefined로 정규화 → 게이트가 로컬 stamp fallback.
+ */
+function validSubsurface(value: unknown): boolean | undefined {
+  return value === true ? true : undefined;
 }
 
 /**
@@ -787,12 +804,17 @@ async function fireWithGate(
   // #1273 D3 — payloadHopIndex는 백엔드 silent push payload의 절대 시퀀스 SSOT. wire.
   // currentHopIndex는 D1(#1207) hop estimator 미연결 단계라 undefined — 둘 중 하나라도
   // 없으면 gate가 거리 기반 widened fallback 경로로 동작한다.
+  // #1307 — subsurface는 server flag(payload.subsurface)를 우선하고, 부재 시 디바이스
+  // 로컬 stamp로 fallback한다. server flag가 이겨야 FG-only stamp가 BG에서 stale 되어도
+  // 지하 intermediate 우회가 동작한다.
+  const subsurface = payload.subsurface ?? (await getSubsurfaceState());
   const gate = await checkSilentPushLocationGate({
     stationName: payload.nextWaypoint,
     kind: payload.kind,
     phase: payload.phase,
     isLockless: !lock,
     payloadHopIndex: payload.hopIndex,
+    subsurface,
   });
 
   if (!gate.pass) {

@@ -210,6 +210,71 @@ describe('sendSilentPush', () => {
     });
   });
 
+  // #1307 — payload.subsurface wire 검증 (server-authoritative 지하 flag).
+  describe('subsurface (#1307)', () => {
+    it('payload.subsurface=true 시 body.data.subsurface로 전달', async () => {
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response('', { status: 200 }));
+      await sendSilentPush({
+        deviceToken: 'tok',
+        payload: {
+          nextWaypoint: '강남',
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: 'intermediate',
+          sentAt: 1_700_000_000_000,
+          pushId: 'p',
+          subsurface: true,
+        },
+        config: makeConfig(),
+        host: TEST_HOST,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const body = JSON.parse((fetchImpl.mock.calls[0][1] as RequestInit).body as string);
+      expect(body.data.subsurface).toBe(true);
+    });
+
+    it('payload.subsurface=false 시 body.data에서 누락 (구 client/byte 호환)', async () => {
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response('', { status: 200 }));
+      await sendSilentPush({
+        deviceToken: 'tok',
+        payload: {
+          nextWaypoint: '강남',
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: 'intermediate',
+          sentAt: 1_700_000_000_000,
+          pushId: 'p',
+          subsurface: false,
+        },
+        config: makeConfig(),
+        host: TEST_HOST,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const body = JSON.parse((fetchImpl.mock.calls[0][1] as RequestInit).body as string);
+      expect('subsurface' in body.data).toBe(false);
+    });
+
+    it('payload.subsurface 미지정 시 body.data에서 누락', async () => {
+      const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response('', { status: 200 }));
+      await sendSilentPush({
+        deviceToken: 'tok',
+        payload: {
+          nextWaypoint: '강남',
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: 'intermediate',
+          sentAt: 1_700_000_000_000,
+          pushId: 'p',
+        },
+        config: makeConfig(),
+        host: TEST_HOST,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const body = JSON.parse((fetchImpl.mock.calls[0][1] as RequestInit).body as string);
+      expect('subsurface' in body.data).toBe(false);
+    });
+  });
+
   it('uses sandbox host when provided', async () => {
     const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response('', { status: 200 }),

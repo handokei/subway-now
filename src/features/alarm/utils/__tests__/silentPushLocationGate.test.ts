@@ -692,4 +692,116 @@ describe('checkSilentPushLocationGate', () => {
       expect(result.thresholdM).toBe(800);
     });
   });
+
+  // #1307 — subsurface(지하) intermediate 거리 검증 우회.
+  describe('subsurface bypass (#1307)', () => {
+    it('subsurface=true + intermediate + GPS out-of-range → subsurface-bypass pass', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(FAR_FROM_GANGNAM.lat, FAR_FROM_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        subsurface: true,
+      });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('subsurface-bypass');
+      expect(result.locationSource).toBe('cache');
+    });
+
+    it('subsurface=true + intermediate + 위치 stale(TTL 초과)여도 bypass pass', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(FAR_FROM_GANGNAM.lat, FAR_FROM_GANGNAM.lng, LOCATION_CACHE_TTL_MS + 10_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        subsurface: true,
+      });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('subsurface-bypass');
+    });
+
+    it('subsurface=true + intermediate + 위치 미획득여도 bypass pass (locationSource 부재)', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(null);
+      mockGetCurrentPositionAsync.mockRejectedValue(new Error('denied'));
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        subsurface: true,
+      });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('subsurface-bypass');
+      expect(result.locationSource).toBeUndefined();
+    });
+
+    it('subsurface-bypass도 motion fields(speed/accuracy) 함께 노출', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue({
+        coords: {
+          latitude: FAR_FROM_GANGNAM.lat,
+          longitude: FAR_FROM_GANGNAM.lng,
+          accuracy: 18,
+          altitude: null,
+          heading: null,
+          speed: 3.2,
+          altitudeAccuracy: null,
+        },
+        timestamp: Date.now() - 5_000,
+      });
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        subsurface: true,
+      });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('subsurface-bypass');
+      expect(result.speedMps).toBe(3.2);
+      expect(result.accuracyM).toBe(18);
+    });
+
+    it('subsurface=true + transfer kind는 bypass 미적용 (기존 GPS 게이트 유지, misfire 방지)', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(FAR_FROM_GANGNAM.lat, FAR_FROM_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'transfer',
+        phase: 'imminent',
+        subsurface: true,
+      });
+      expect(result.pass).toBe(false);
+      expect(result.reason).toBe('out-of-range');
+    });
+
+    it('subsurface=true + destination kind는 bypass 미적용 (기존 GPS 게이트 유지)', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(FAR_FROM_GANGNAM.lat, FAR_FROM_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'destination',
+        phase: 'imminent',
+        subsurface: true,
+      });
+      expect(result.pass).toBe(false);
+      expect(result.reason).toBe('out-of-range');
+    });
+
+    it('subsurface 미지정(false) + intermediate + out-of-range → 기존 게이트(no bypass)', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(FAR_FROM_GANGNAM.lat, FAR_FROM_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+      });
+      expect(result.pass).toBe(false);
+      expect(result.reason).toBe('out-of-range');
+    });
+  });
 });

@@ -58,6 +58,12 @@ jest.mock('../../utils/silentPushLocationGate', () => ({
   checkSilentPushLocationGate: (...args: unknown[]) => mockCheckGate(...args),
 }));
 
+// #1307 — BG에서 stale 되는 로컬 subsurface stamp. 기본 false(미지하).
+const mockGetSubsurfaceState = jest.fn();
+jest.mock('../../../../shared/utils/subsurfaceState', () => ({
+  getSubsurfaceState: (...args: unknown[]) => mockGetSubsurfaceState(...args),
+}));
+
 const mockGetFiredAlarms = jest.fn();
 const mockSetFiredAlarms = jest.fn();
 jest.mock('../../utils/notificationState', () => ({
@@ -224,6 +230,7 @@ describe('silentPushTask', () => {
     jest.clearAllMocks();
     mockScheduleNotificationAsync.mockResolvedValue('id');
     mockCheckGate.mockResolvedValue(PASSING_GATE);
+    mockGetSubsurfaceState.mockResolvedValue(false);
     mockGetFiredAlarms.mockResolvedValue(new Set<string>());
     mockSetFiredAlarms.mockResolvedValue(undefined);
     (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
@@ -414,6 +421,33 @@ describe('silentPushTask', () => {
             bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', hopIndex: Infinity }),
           ),
         ).toMatchObject({ hopIndex: undefined });
+      });
+    });
+
+    // #1307 — backend가 server-authoritative subsurface flag(true일 때만)를 stamp.
+    describe('subsurface (#1307)', () => {
+      it('subsurface=true이면 그대로 전달', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', subsurface: true }),
+          ),
+        ).toMatchObject({ subsurface: true });
+      });
+
+      it('누락/false/비boolean이면 undefined (게이트가 로컬 stamp fallback)', () => {
+        expect(
+          extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early' })),
+        ).toMatchObject({ subsurface: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', subsurface: false }),
+          ),
+        ).toMatchObject({ subsurface: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', subsurface: 'true' }),
+          ),
+        ).toMatchObject({ subsurface: undefined });
       });
     });
 
@@ -676,6 +710,7 @@ describe('silentPushTask', () => {
         phase: 'imminent',
         isLockless: false,
         payloadHopIndex: undefined,
+        subsurface: false,
       });
       expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
       const call = mockScheduleNotificationAsync.mock.calls[0][0];
@@ -1029,6 +1064,34 @@ describe('silentPushTask', () => {
         await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
         expect(mockCheckGate).toHaveBeenCalledWith(
           expect.objectContaining({ payloadHopIndex: undefined }),
+        );
+      });
+
+      // #1307 — server flag(payload.subsurface) 우선, 부재 시 로컬 stamp fallback.
+      it('payload.subsurface=true면 로컬 stamp가 false여도 게이트에 subsurface=true 전달 (server-wins)', async () => {
+        mockGetSubsurfaceState.mockResolvedValue(false);
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent', subsurface: true }));
+        expect(mockCheckGate).toHaveBeenCalledWith(
+          expect.objectContaining({ subsurface: true }),
+        );
+        // server flag가 있으면 로컬 stamp는 조회조차 불필요.
+        expect(mockGetSubsurfaceState).not.toHaveBeenCalled();
+      });
+
+      it('payload.subsurface 부재 + 로컬 stamp=true → 게이트에 subsurface=true (local fallback)', async () => {
+        mockGetSubsurfaceState.mockResolvedValue(true);
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockGetSubsurfaceState).toHaveBeenCalled();
+        expect(mockCheckGate).toHaveBeenCalledWith(
+          expect.objectContaining({ subsurface: true }),
+        );
+      });
+
+      it('payload.subsurface 부재 + 로컬 stamp=false → 게이트에 subsurface=false (기존 GPS 게이트)', async () => {
+        mockGetSubsurfaceState.mockResolvedValue(false);
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockCheckGate).toHaveBeenCalledWith(
+          expect.objectContaining({ subsurface: false }),
         );
       });
     });
