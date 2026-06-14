@@ -30,6 +30,7 @@ import {
   evaluateLatestSubsurface,
   resetBarometerState,
 } from '../utils/barometerState';
+import { setSubsurfaceState } from '../utils/subsurfaceState';
 import {
   BAROMETER_SAMPLE_INTERVAL_MS,
   BAROMETER_STOP_CONFIRM_SAMPLES,
@@ -102,6 +103,7 @@ export function useBarometer(): BarometerSignal {
             lastSubsurfaceRef.current = subDetected;
             subsurfacePendingRef.current = 0;
             setSubsurface(subDetected);
+            void setSubsurfaceState(subDetected);
           }
         }
 
