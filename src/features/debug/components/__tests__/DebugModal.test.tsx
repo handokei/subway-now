@@ -15,6 +15,7 @@ const mockUseSilentPushDiagnostics = jest.fn();
 const mockGetAlarmLog = jest.fn();
 const mockClearAlarmLog = jest.fn();
 const mockUseBarometer = jest.fn();
+const mockUseLowPowerMode = jest.fn();
 // #1235 (D9 wire) — DebugModal이 destinationStore + tripStartStorage SSOT로 trip props 도출.
 const mockGetTripStartedAt = jest.fn();
 jest.mock('../../../alarm/utils/tripStartStorage', () => ({
@@ -30,6 +31,10 @@ jest.mock('../../../arrival/hooks/useArrivalInfo', () => ({
 // #1215 (D9) — DebugModal이 직접 useBarometer를 구독해 subsurface row를 렌더한다.
 jest.mock('../../../../shared/hooks/useBarometer', () => ({
   useBarometer: () => mockUseBarometer(),
+}));
+// #1308 — DebugModal이 useLowPowerMode를 구독해 Silent Push 섹션 lowPower row를 렌더한다.
+jest.mock('../../../../shared/hooks/useLowPowerMode', () => ({
+  useLowPowerMode: () => mockUseLowPowerMode(),
 }));
 // silentPushTask는 expo-task-manager native module이 필요 — jest 환경에서 chain break.
 jest.mock('../../../alarm/hooks/useSilentPushDiagnostics', () => ({
@@ -148,6 +153,8 @@ const setupHookDefaults = () => {
   mockDumpScheduledNotifications.mockResolvedValue([]);
   // #1215 (D9) — 기본은 subsurface=false (지상).
   mockUseBarometer.mockReturnValue({ subsurface: false, stop: undefined });
+  // #1308 — 기본은 LPM off.
+  mockUseLowPowerMode.mockReturnValue(false);
   // #1235 (D9 wire) — tripStartedAt 기본 null (trip 미시작).
   mockGetTripStartedAt.mockResolvedValue(null);
   // #1235 (D9 wire) — destinationStore/settingsStore SSOT 초기화. 매 테스트 독립.
@@ -308,6 +315,20 @@ describe('DebugModal', () => {
     });
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByText('failed (not supported)')).toBeTruthy();
+  });
+
+  it('Silent Push 섹션: LPM off면 lowPower row가 off로 노출된다 (#1308)', () => {
+    mockUseLowPowerMode.mockReturnValue(false);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('lowPower')).toBeTruthy();
+    expect(screen.getAllByText('off').length).toBeGreaterThan(0);
+  });
+
+  it('Silent Push 섹션: LPM on이면 lowPower row가 ON으로 노출된다 (#1308)', () => {
+    mockUseLowPowerMode.mockReturnValue(true);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('lowPower')).toBeTruthy();
+    expect(screen.getByText('ON')).toBeTruthy();
   });
 
   it('Silent Push 섹션: trip 입력이 모두 있으면 set/destination id/currStn id 노출 (#506)', () => {
@@ -663,6 +684,16 @@ describe('DebugModal helpers', () => {
     expect(dump).toContain('## Arrival');
     expect(dump).toContain('(MOCK)');
     expect(dump).toContain('## Alarm log (1)');
+  });
+
+  it('buildDumpText: lowPowerMode=true면 lowPowerMode=ON 라인을 포함한다 (#1308)', () => {
+    const dump = __test__.buildDumpText(makeDumpArgs({ lowPowerMode: true }));
+    expect(dump).toContain('lowPowerMode=ON');
+  });
+
+  it('buildDumpText: lowPowerMode 미전달이면 lowPowerMode=off로 fallback한다 (#1308)', () => {
+    const dump = __test__.buildDumpText(makeDumpArgs());
+    expect(dump).toContain('lowPowerMode=off');
   });
 
   it('buildDumpText: fused != gps이면 diff 라인을 추가한다', () => {
