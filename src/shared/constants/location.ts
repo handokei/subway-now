@@ -27,6 +27,20 @@ export const MIN_JUMP_DISTANCE_M = 100;
 // 위치 지능을 먹인다. 연속 fix가 이 간격보다 자주 들어와도 1회로 묶인다.
 export const FG_POSITION_UPLOAD_THROTTLE_MS = 10_000;
 
+// #1313 — foreground GPS watch 샘플링 파라미터. subsurface(지하) 여부로 갈린다.
+// 지상/warmup/미지원에서는 High@2s를 그대로 유지(정확도 우선), 지하에서만 throttle.
+//
+// 지상(기본): High + distanceInterval:0 + timeInterval:2000.
+//  GPS hardware fix를 최대한 자주 흘려보낸다. subsurface가 true로 확정되기 전까지는
+//  항상 이 값을 사용한다(undefined/false 포함) — 확신 없이 GPS를 절대 낮추지 않는다.
+export const FG_WATCH_SURFACE_TIME_INTERVAL_MS = 2_000;
+// 지하(subsurface 확정): Balanced + distanceInterval:0 + timeInterval:12000.
+//  지하 GPS는 WiFi BSSID/Cell triangulation으로 300~1500m라 알람에 무의미(useStationAlarm 게이트가
+//  별도 차단) — 표시 전용. 위치 지능은 WiFi SSID/기압계/backend dead-reckoning이 담당하므로
+//  FG watch는 12s로 늦춰 배터리를 아낀다. WiFi 역 DB가 ~19개 역만 커버해 표시 공백을 피하려고
+//  완전 정지가 아닌 보수적 throttle을 택했다. High→Balanced로 고정밀 측위 시도도 줄인다.
+export const FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS = 12_000;
+
 // iOS CoreLocation은 속도를 측정할 수 없을 때 음수(보통 -1)를 반환한다.
 // stationary/indoor/cold-start 등에서 자주 발생 — null로 정규화해 다운스트림이
 // "측정 불가"와 "정지(0 m/s)"를 명확히 구분하도록 한다.

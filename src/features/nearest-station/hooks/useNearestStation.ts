@@ -16,6 +16,8 @@ import {
   MAX_ACCURACY_M,
   MAX_ACCURACY_M_DISPLAY,
   MAX_STATION_DISTANCE_KM,
+  FG_WATCH_SURFACE_TIME_INTERVAL_MS,
+  FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
   isValidGpsSpeedMps,
 } from '../../../shared/constants/location';
 import { E2E_MOCK_LOCATION, IS_E2E_MOCK } from '../../../shared/constants/e2e';
@@ -36,6 +38,26 @@ export type NearestStationSource = 'sticky' | 'live';
 const logger = createLogger('useNearestStation');
 
 const MIN_DISTANCE_CHANGE_KM = 0.003; // 3m — UI 갱신을 자주 흘려보낸다.
+
+// #1313 — subsurface 여부로 갈리는 FG watch 옵션. accuracy 선택 + interval을 한 데이터로 묶어
+// startWatch가 throttle boolean만 보고 분기 없이 선택하게 한다(하드코딩 분기 회피).
+// distanceInterval:0은 두 모드 공통 — 시간 기반 샘플링만 쓰고 거리 게이트는 적용하지 않는다.
+const FG_WATCH_OPTIONS_SURFACE: Location.LocationOptions = {
+  accuracy: Location.Accuracy.High,
+  distanceInterval: 0,
+  timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
+};
+const FG_WATCH_OPTIONS_SUBSURFACE: Location.LocationOptions = {
+  accuracy: Location.Accuracy.Balanced,
+  distanceInterval: 0,
+  timeInterval: FG_WATCH_SUBSURFACE_TIME_INTERVAL_MS,
+};
+
+// throttle 여부로 watch 옵션을 고른다. true(지하 확정)면 throttle, false면 지상 기본값.
+// 확신 없이(undefined/false) GPS를 낮추지 않는다 — 호출부가 === true로 좁힌 boolean만 넘긴다(#1313).
+function fgWatchOptionsFor(throttled: boolean): Location.LocationOptions {
+  return throttled ? FG_WATCH_OPTIONS_SUBSURFACE : FG_WATCH_OPTIONS_SURFACE;
+}
 
 // userLocation/result는 표시용 완화 게이트(MAX_ACCURACY_M_DISPLAY=1500m)를 통과한 좌표로 갱신된다.
 // 알람 발화 경로에서 이 값을 ETA/거리 계산에 사용할 경우 반드시 accuracyMeters와 함께 묶어
@@ -137,6 +159,13 @@ export function useNearestStation(
   const [gpsActive, setGpsActive] = useState<GpsActiveState>(() => currentGpsActive());
   const [lastFixAtMs, setLastFixAtMs] = useState<number | null>(null);
   const subscriptionRef = useRef<Location.LocationSubscription | null>(null);
+  // #1313 — "지하라 throttle 중인가"의 SSOT. startWatch가 호출 시점에 이 ref를 읽어 watch 옵션을
+  // 고른다. subsurface 원시값이 아니라 throttle 여부(=== true)를 들고 있어 warmup(undefined)과
+  // false가 동일 분기로 합쳐진다. inputs를 startWatch deps에 넣으면 identity가 매 render 흔들려
+  // mount effect가 재실행되므로 ref로 분리한다(콜백 identity 안정 유지).
+  // 초기값을 첫 render의 subsurface로 맞춰, 마운트 시 이미 지하면 startWatch가 곧장 throttle 옵션을
+  // 고르고 restart effect는 변화 없음으로 early return → 마운트 중복 start 방지.
+  const throttledRef = useRef(inputs.barometerSubsurface === true);
   const lastStationIdRef = useRef<string | null>(null);
   const lastDistanceRef = useRef<number>(0);
   // 진단용 누적 카운터: lastKnown 캐시 fix가 freshness/accuracy 게이트에서 거부된 횟수.
@@ -283,18 +312,17 @@ export function useNearestStation(
 
       // 연속 GPS 스트리밍 — 지하 구간 horizontalAccuracy(300~1500m)도 표시용으로는 수용.
       // 알람은 useStationAlarm에서 accuracyMeters로 별도 엄격 게이트.
-      // High + distanceInterval:0 + timeInterval:2000:
+      // 지상(기본): High + distanceInterval:0 + timeInterval:2000:
       //  좌표를 최대한 자주 흘려보낸다 (foreground 한정, 화면 켜진 동안만).
       //  High는 GPS hardware fix가 없으면 WiFi BSSID / Cell tower triangulation으로 fallback
       //  → 지하 구간에서도 ~50~100m 위치가 들어옴 (BestForNavigation은 fallback 없이 stale).
+      // 지하(subsurface 확정, #1313): Balanced + timeInterval:12000으로 throttle — GPS가 무의미한
+      //  구간에서 full-power watch가 배터리를 태우는 것을 막는다. throttledRef가 현재 throttle 여부를
+      //  들고 있어 flip 시 effect가 stopWatch→startWatch로 재구성한다(아래 useEffect).
       // 참고: pausesUpdatesAutomatically / activityType은 expo-location foreground 옵션에
       //  노출되지 않아 적용 불가. background task 옵션에서만 사용 가능.
       subscriptionRef.current = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.High,
-          distanceInterval: 0,
-          timeInterval: 2000,
-        },
+        fgWatchOptionsFor(throttledRef.current),
         (location) => {
           if (!isAccuracyAcceptableForDisplay(location.coords.accuracy)) {
             setLocationUncertain(true);
@@ -392,6 +420,21 @@ export function useNearestStation(
       appStateSub.remove();
     };
   }, [startWatch, stopWatch, refresh]);
+
+  // #1313 — subsurface(지하) 확정 여부가 뒤집히면 FG watch를 재구성한다. expo-location FG 옵션은
+  // 라이브 변경이 불가해 stopWatch→startWatch로 재시작한다(startWatch가 throttledRef를 읽어 새 옵션 채택).
+  // 3가지 가드:
+  //  - throttle boolean이 실제로 바뀐 경우만 동작 → mount 시 중복 start 방지 + warmup(undefined)→false no-op.
+  //  - AppState 'active'일 때만 재시작 → BG 중 flip이 FG watch를 켜 'background'→stopWatch 규약을 깨는 것 방지.
+  //    (FG 복귀 시 'active' 핸들러의 refresh→startWatch가 ref를 읽어 현재 옵션으로 자연 반영.)
+  useEffect(() => {
+    const next = inputs.barometerSubsurface === true;
+    if (next === throttledRef.current) return;
+    throttledRef.current = next;
+    if (AppState.currentState !== 'active') return;
+    stopWatch();
+    void startWatch();
+  }, [inputs.barometerSubsurface, startWatch, stopWatch]);
 
   // #876 — 매 fix를 sticky 훅에 전달. lock된 역이 있으면 result를 그것으로 override.
   // fusion candidates는 useFusedNearestStation에서 userLocation 기반으로 별도 계산하므로 영향 없음.
