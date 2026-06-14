@@ -36,6 +36,7 @@ import {
 } from '../../../shared/constants/storageKeys';
 import { sendPushAck } from '../api/alarmBackend';
 import { createLogger } from '../../../shared/utils/logger';
+import { getSubsurfaceState } from '../../../shared/utils/subsurfaceState';
 import {
   flushAlarmLog,
   logSilentPushReceived,
@@ -787,12 +788,16 @@ async function fireWithGate(
   // #1273 D3 — payloadHopIndex는 백엔드 silent push payload의 절대 시퀀스 SSOT. wire.
   // currentHopIndex는 D1(#1207) hop estimator 미연결 단계라 undefined — 둘 중 하나라도
   // 없으면 gate가 거리 기반 widened fallback 경로로 동작한다.
+  // #1278 — 지하(subsurface) 여부를 stamp(#1279)에서 읽어 게이트에 전달.
+  // true + intermediate면 게이트가 GPS 거리 검증을 우회하고 backend push를 신뢰한다.
+  const subsurface = await getSubsurfaceState();
   const gate = await checkSilentPushLocationGate({
     stationName: payload.nextWaypoint,
     kind: payload.kind,
     phase: payload.phase,
     isLockless: !lock,
     payloadHopIndex: payload.hopIndex,
+    subsurface,
   });
 
   if (!gate.pass) {

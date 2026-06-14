@@ -27,8 +27,9 @@ export type GateSkipReason = 'unknown-station' | 'no-location' | 'stale-location
  * pass=true일 때 어떤 경로로 통과했는지 식별. 운영 측정/디버깅용.
  * - 'within-threshold': 거리 임계값 이내 (기존 경로)
  * - 'hop-window-match': lockless + hop index 매치(거리 검증 우회, #1209 D3)
+ * - 'subsurface-bypass': 지하(subsurface) intermediate — GPS 신뢰 불가로 거리 게이트 우회(#1278)
  */
-export type GatePassReason = 'within-threshold' | 'hop-window-match';
+export type GatePassReason = 'within-threshold' | 'hop-window-match' | 'subsurface-bypass';
 export type GateLocationSource = 'cache' | 'fresh';
 
 export interface GateResult {
@@ -61,6 +62,11 @@ export interface SilentPushLocationGateInput {
    * silent push payload가 명시한 hop index. 백엔드 schema에 추가되기 전까지 undefined.
    */
   payloadHopIndex?: number;
+  /**
+   * #1278 — 지하(subsurface) 여부. silentPushTask가 getSubsurfaceState()로 읽어 전달.
+   * true + intermediate면 GPS 거리 게이트를 우회하고 backend push를 신뢰한다.
+   */
+  subsurface?: boolean;
 }
 
 interface UserPosition {
@@ -187,6 +193,14 @@ export async function checkSilentPushLocationGate(
   const station = findStationByName(input.stationName);
   if (!station) {
     return { pass: false, reason: 'unknown-station' };
+  }
+
+  // #1278 — 지하(subsurface) intermediate는 GPS가 stale/부재라 거리 게이트가 backend의
+  // 정상 station-passed push를 out-of-range로 거부하던 회귀(중곡 등). subsurface=true면
+  // GPS 해석 자체를 건너뛰고 backend push를 신뢰한다. kind==='intermediate'에 한정 —
+  // transfer/destination은 오발사 위험이 커 우회 제외. 역당 dedup은 호출측이 담당.
+  if (input.subsurface === true && input.kind === 'intermediate') {
+    return { pass: true, passReason: 'subsurface-bypass' };
   }
 
   const pos = await resolveUserPosition();

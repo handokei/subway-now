@@ -676,6 +676,7 @@ describe('silentPushTask', () => {
         phase: 'imminent',
         isLockless: false,
         payloadHopIndex: undefined,
+        subsurface: false,
       });
       expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
       const call = mockScheduleNotificationAsync.mock.calls[0][0];
