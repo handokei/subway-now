@@ -13,7 +13,9 @@ import {
   cancelAllHopsForLock,
   routeSignature,
   scheduleHopsForLock,
+  setRegisteredBlRouteSig,
 } from '../utils/boardingLockScheduler';
+import { clearFiredAlarms } from '../utils/notificationState';
 import { createLogger } from '../../../shared/utils/logger';
 import { useSleepModeRef } from '../../settings/hooks/useSleepModeRef';
 
@@ -112,12 +114,21 @@ export function useBoardingLockScheduler({
         await cancelAllHopsForLock(prev);
       }
       if (canSchedule) {
+        // #1282: route-sig가 바뀐 경우 firedAlarms를 초기화해 이전 route 기반 dedup이
+        // 새 route의 phase 알람 발사를 억제하지 않도록 한다 (feedback #8 re-fire 방지).
+        if (needsRouteChangeReschedule) {
+          await clearFiredAlarms();
+        }
         await scheduleHopsForLock({
           lock,
           route,
           destinationName,
           sleepMode: sleepModeRef.current,
         });
+        // #1282: 예약 성공 직후 sig를 영속화 — receiver gate가 stale `bl:` 발사를 억제하는 데 사용.
+        // canSchedule=true 조건(route/destinationName 모두 non-null)에서만 진입하므로
+        // nextSig는 non-null이 보장된다.
+        await setRegisteredBlRouteSig(nextSig!);
         scheduledTrainCodeRef.current = nextTrain;
         scheduledRouteSigRef.current = nextSig;
       } else if (nextTrain === null) {

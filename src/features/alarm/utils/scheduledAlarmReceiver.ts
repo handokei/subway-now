@@ -17,7 +17,12 @@ import {
 } from './tripBoundScheduler';
 import { getTripStartedAt } from './tripStartStorage';
 import { resolveAllTargets } from './stationAlarm';
-import { routeSignature } from './boardingLockScheduler';
+import {
+  parseBoardingLockAlarmIdentifier,
+  routeSignature,
+  getRegisteredBlRouteSig,
+  BOARDING_LOCK_ALARM_PREFIX,
+} from './boardingLockScheduler';
 import { logSuppressedTbaRevalidation } from './alarmLog';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { AlarmPhaseId } from './alarmPhases';
@@ -40,16 +45,20 @@ async function getCurrentDestinationId(): Promise<string | null> {
 }
 
 interface ParsedAlarmIdentifier {
-  prefix: 'alarm' | 'tba';
+  prefix: 'alarm' | 'tba' | 'bl';
   phaseId: string;
   stationName: string;
 }
 
 /**
- * `alarm:` / `tba:` 두 prefix 단일 진입점 (#918 A3 PR2).
- * 두 경로의 phaseId/stationName 추출 로직이 같으므로 호출자는 prefix 분기만 본다.
+ * `alarm:` / `tba:` / `bl:` 세 prefix 단일 진입점 (#918 A3 PR2, #1282).
+ * 세 경로의 phaseId/stationName 추출 로직이 같으므로 호출자는 prefix 분기만 본다.
  */
 function parseAlarmIdentifier(identifier: string): ParsedAlarmIdentifier | null {
+  if (identifier.startsWith(BOARDING_LOCK_ALARM_PREFIX)) {
+    const p = parseBoardingLockAlarmIdentifier(identifier);
+    return p ? { prefix: 'bl', phaseId: p.phase, stationName: p.stationName } : null;
+  }
   if (identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) {
     const p = parseTripBoundAlarmIdentifier(identifier);
     return p ? { prefix: 'tba', phaseId: p.phaseId, stationName: p.stationName } : null;
@@ -78,71 +87,102 @@ function parseDestinationName(raw: string | null): string | null {
 }
 
 /**
- * `tba:` 알람의 fire-time 재검증 (#918 A3 PR2, #729 흡수).
+ * 사전 예약 알람(`tba:` / `bl:`)의 fire-time 재검증 공통 구현 (#918 A3 PR2, #729 흡수, #1282).
  *
- * OS가 예약된 시각에 발사한 trip-bound 알람이 *현재* 시점에도 유효한지 확인한다.
- * 세 조건 모두 충족해야 reconcile 진행:
- *   1) tripStart 존재 — trip이 종료되지 않았다.
+ * OS가 예약된 시각에 발사한 알람이 *현재* 시점에도 유효한지 확인한다. 두 채널이 동일한
+ * route-sig + waypoint 검증을 공유하므로 단일 헬퍼로 추출하고, 채널별 차이만 인자로 분리한다:
+ *   - `requireTripStart`: `tba:`는 tripStart 존재를 선행 게이트로 요구한다(`true`). `bl:`은 lock
+ *     scheduler가 SSOT이라 tripStart 게이트가 불필요하므로 `false`.
+ *   - `getRegisteredSig`: 채널의 예약 시점 route-sig 영속화 getter.
+ *
+ * 검증 순서:
+ *   1) (requireTripStart 시) tripStart 존재 — trip이 종료되지 않았다.
  *   2) ROUTE_KEY/DESTINATION_KEY 기반 현재 sig가 등록 시점 sig와 동일 — 목적지/환승 변경 없음.
  *   3) 파싱된 stationName이 현재 route waypoint 시퀀스 안에 있음 — 방어 검증.
  *
  * 한 가지라도 실패하면 reason과 함께 alarmLog에 적재하고 'suppress'를 반환한다.
  * 호출자는 fired set / lastStationName 갱신을 skip해 stale 알람이 후속 상태를 오염시키지 않게 한다.
  */
-async function revalidateTbaAlarm(parsed: {
-  phaseId: string;
-  stationName: string;
-}): Promise<'pass' | 'suppress'> {
+type RevalidationSuppressReason = Parameters<typeof logSuppressedTbaRevalidation>[0]['reason'];
+
+async function revalidatePrescheduledAlarm(
+  parsed: { phaseId: string; stationName: string },
+  options: {
+    requireTripStart: boolean;
+    getRegisteredSig: () => Promise<string | null>;
+  },
+): Promise<'pass' | 'suppress'> {
   // phaseId는 'early'/'imminent' 둘 중 하나 — alarmLog에는 그대로 통과시켜도 안전.
   const phaseId = parsed.phaseId as AlarmPhaseId;
-
-  const tripStart = await getTripStartedAt();
-  if (tripStart === null) {
-    logSuppressedTbaRevalidation({
-      reason: 'revalidate-no-trip',
-      stationName: parsed.stationName,
-      phaseId,
-    });
+  const suppress = (reason: RevalidationSuppressReason): 'suppress' => {
+    logSuppressedTbaRevalidation({ reason, stationName: parsed.stationName, phaseId });
     return 'suppress';
+  };
+
+  if (options.requireTripStart && (await getTripStartedAt()) === null) {
+    return suppress('revalidate-no-trip');
   }
 
   const [routeRaw, destRaw, registeredSig] = await Promise.all([
     AsyncStorage.getItem(ROUTE_KEY),
     AsyncStorage.getItem(DESTINATION_KEY),
-    getRegisteredTripRouteSig(),
+    options.getRegisteredSig(),
   ]);
   const route: Route = safeParseRoute(routeRaw);
   const destinationName = parseDestinationName(destRaw);
   const currentSig = routeSignature(route, destinationName);
 
   // registeredSig 부재 / 현재 sig 미산출 / 두 값 불일치 모두 mismatch로 묶는다.
-  // (registeredSig 부재는 cancelTripBoundAlarms 직후 잔여 OS 발사 케이스.)
+  // (registeredSig 부재는 cancel* 직후 잔여 OS 발사 케이스.)
   if (registeredSig === null || currentSig === null || registeredSig !== currentSig) {
-    logSuppressedTbaRevalidation({
-      reason: 'revalidate-route-sig-mismatch',
-      stationName: parsed.stationName,
-      phaseId,
-    });
-    return 'suppress';
+    return suppress('revalidate-route-sig-mismatch');
   }
 
   // 방어 검증: parsed stationName이 현재 waypoint 시퀀스에 존재해야 한다.
   // currentSig !== null이면 route, destinationName 둘 다 non-null 보장됨.
   const targets = resolveAllTargets(route as NonNullable<Route>, destinationName as string);
   if (!targets.some((t) => t.name === parsed.stationName)) {
-    logSuppressedTbaRevalidation({
-      reason: 'revalidate-waypoint-mismatch',
-      stationName: parsed.stationName,
-      phaseId,
-    });
-    return 'suppress';
+    return suppress('revalidate-waypoint-mismatch');
   }
 
   return 'pass';
 }
 
+/** `tba:` 알람 재검증 — tripStart 게이트 + trip-bound sig (#918 A3 PR2, #729 흡수). */
+function revalidateTbaAlarm(parsed: {
+  phaseId: string;
+  stationName: string;
+}): Promise<'pass' | 'suppress'> {
+  return revalidatePrescheduledAlarm(parsed, {
+    requireTripStart: true,
+    getRegisteredSig: getRegisteredTripRouteSig,
+  });
+}
+
+/** `bl:` 알람 재검증 — lock SSOT이라 tripStart 게이트 없음 + boarding-lock sig (#1282). */
+function revalidateBlAlarm(parsed: {
+  phaseId: string;
+  stationName: string;
+}): Promise<'pass' | 'suppress'> {
+  return revalidatePrescheduledAlarm(parsed, {
+    requireTripStart: false,
+    getRegisteredSig: getRegisteredBlRouteSig,
+  });
+}
+
 /**
- * 사전 예약된 `alarm:` / `tba:` 알림이 OS에 의해 발사된 직후 클라이언트 상태를 갱신한다.
+ * prefix별 사전 예약 알람 재검증 디스패처. `alarm:`은 BoardingLock scheduler cancel/reschedule이
+ * SSOT이므로 재검증 없이 'pass'. `tba:` / `bl:`만 채널별 게이트를 거친다.
+ * reconcile 단건/ drain batch 두 호출자가 공유한다.
+ */
+function revalidateByPrefix(parsed: ParsedAlarmIdentifier): Promise<'pass' | 'suppress'> {
+  if (parsed.prefix === 'tba') return revalidateTbaAlarm(parsed);
+  if (parsed.prefix === 'bl') return revalidateBlAlarm(parsed);
+  return Promise.resolve('pass');
+}
+
+/**
+ * 사전 예약된 `alarm:` / `tba:` / `bl:` 알림이 OS에 의해 발사된 직후 클라이언트 상태를 갱신한다.
  * 사전 예약 알람은 클라이언트 콜백을 거치지 않으므로(`alarmScheduler.ts`), 이 함수가
  * FG/BG 양쪽 발화 모두에 대한 상태 동기화 단일 진입점이다.
  *
@@ -165,9 +205,7 @@ export async function reconcileScheduledAlarmDelivery(
   const parsed = parseAlarmIdentifier(identifier);
   if (!parsed) return;
 
-  if (parsed.prefix === 'tba' && (await revalidateTbaAlarm(parsed)) === 'suppress') {
-    return;
-  }
+  if ((await revalidateByPrefix(parsed)) === 'suppress') return;
 
   const destinationId = await getCurrentDestinationId();
   // destinationId가 없으면 이미 trip이 종료/변경된 알람의 잔여 발화 — 상태 갱신 스킵.
@@ -203,11 +241,12 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
   // #918 A3 PR2 — `tba:` 항목은 발사 시점 재검증을 거친다. suppress인 경우 fired set /
   // lastStationName 갱신에 포함하지 않아 stale 알람이 후속 상태(BG arrival 기준역 등)를 오염시키지
   // 않게 한다. `alarm:` 경로는 기존 BoardingLock SSOT을 신뢰해 통과.
+  // #1282 — `bl:` 항목도 동일하게 route-sig 재검증을 거친다.
   const accepted: ParsedAlarmIdentifier[] = [];
   for (const n of presented) {
     const parsed = parseAlarmIdentifier(n.request.identifier);
     if (!parsed) continue;
-    if (parsed.prefix === 'tba' && (await revalidateTbaAlarm(parsed)) === 'suppress') continue;
+    if ((await revalidateByPrefix(parsed)) === 'suppress') continue;
     accepted.push(parsed);
   }
 

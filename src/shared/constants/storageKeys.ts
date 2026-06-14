@@ -113,6 +113,12 @@ export const LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY =
 // useTripBoundAlarmScheduler가 preschedule 성공 직후 write, cancel 시 clear.
 // 형식: string (boardingLockScheduler.routeSignature 결과).
 export const TRIP_BOUND_ROUTE_SIG_KEY = 'subway-now:trip-bound-route-sig';
+// #1282 — boardingLockScheduler가 `bl:` 알람 예약 시 스냅샷하는 route signature.
+// `tba:` 채널의 TRIP_BOUND_ROUTE_SIG_KEY와 동형. scheduledAlarmReceiver가 `bl:` 발사
+// 수신 시 현재 route sig와 비교해 stale 알람을 억제한다.
+// useBoardingLockScheduler가 scheduleHopsForLock 성공 직후 write, cancel 시 clear.
+// 형식: string (boardingLockScheduler.routeSignature 결과).
+export const BOARDING_LOCK_ROUTE_SIG_KEY = 'subway-now:boarding-lock-route-sig';
 // #828 — Phase 1+2 fusion wire — active trip의 boarding line code.
 // BG/FG location task가 좌표 upload 시 이 line으로 linePolyline snap을 수행해
 // `mapMatchedArcM` + `mapMatchedLine`을 backend에 첨부한다.
