@@ -8,10 +8,12 @@ import {
   cancelAllHopsForLock,
   scheduleHopsForLock,
 } from '../../utils/boardingLockScheduler';
+import { clearFiredAlarms } from '../../utils/notificationState';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { makeDirectRoute, makeTransferRoute } from '../../../../testUtils/routeFixtures';
 
+const mockSetRegisteredBlRouteSig = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/boardingLockScheduler', () => {
   const actual = jest.requireActual('../../utils/boardingLockScheduler');
   return {
@@ -20,8 +22,14 @@ jest.mock('../../utils/boardingLockScheduler', () => {
     // routeSignature는 실제 구현을 그대로 사용 — hook이 이 결과로 변경 감지를 하므로
     // mocking하면 트레이드가 의미를 잃는다.
     routeSignature: actual.routeSignature,
+    // #1282: sig 영속화 함수는 storage side-effect가 없는 no-op으로 격리.
+    setRegisteredBlRouteSig: (...args: unknown[]) => mockSetRegisteredBlRouteSig(...args),
   };
 });
+jest.mock('../../utils/notificationState', () => ({
+  // #1282: route-sig 변경 시 firedAlarms 클리어 호출을 격리.
+  clearFiredAlarms: jest.fn().mockResolvedValue(undefined),
+}));
 const mockLoggerError = jest.fn();
 const mockLoggerWarn = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -35,6 +43,7 @@ jest.mock('../../../../shared/utils/logger', () => ({
 
 const mockedSchedule = scheduleHopsForLock as jest.MockedFunction<typeof scheduleHopsForLock>;
 const mockedCancel = cancelAllHopsForLock as jest.MockedFunction<typeof cancelAllHopsForLock>;
+const mockedClearFiredAlarms = clearFiredAlarms as jest.MockedFunction<typeof clearFiredAlarms>;
 
 type SchedulerProps = Parameters<typeof useBoardingLockScheduler>[0];
 
@@ -354,6 +363,43 @@ describe('useBoardingLockScheduler', () => {
       expect(line).toContain('prevTrain=A');
       expect(line).toContain('nextTrain=A');
       expect(line).toContain('routeChange=true');
+    });
+  });
+
+  // #1282 — setRegisteredBlRouteSig + clearFiredAlarms 통합 검증.
+  describe('#1282 bl: route-sig 영속화 및 firedAlarms 초기화', () => {
+    it('신규 lock schedule 시 setRegisteredBlRouteSig를 호출한다', async () => {
+      renderHook(() =>
+        useBoardingLockScheduler({ lock: lockA, route, destinationName: '강남' }),
+      );
+      await waitFor(() => expect(mockSetRegisteredBlRouteSig).toHaveBeenCalled());
+      // routeSignature(route, '강남')는 실제 구현으로 non-null string 반환.
+      expect(mockSetRegisteredBlRouteSig).toHaveBeenCalledWith(expect.any(String));
+    });
+
+    it('route-sig 변경 시 clearFiredAlarms를 호출한 후 reschedule한다 (#1282)', async () => {
+      const altRoute = makeTransferRoute({
+        transferName: '교대',
+        fromLine: '2',
+        toLine: '3',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      const { rerender } = renderScheduler({ lock: lockA, route, destinationName: '강남' });
+      await awaitFirstSchedule();
+      mockedClearFiredAlarms.mockClear();
+      rerender({ lock: lockA, route: altRoute, destinationName: '강남' });
+      await waitFor(() => expect(mockedSchedule).toHaveBeenCalledTimes(2));
+      expect(mockedClearFiredAlarms).toHaveBeenCalledTimes(1);
+    });
+
+    it('trainCode 변경 시에는 clearFiredAlarms를 호출하지 않는다 (route-sig 변경 아님)', async () => {
+      const { rerender } = renderScheduler({ lock: lockA, route, destinationName: '강남' });
+      await awaitFirstSchedule();
+      mockedClearFiredAlarms.mockClear();
+      rerender({ lock: lockB, route, destinationName: '강남' });
+      await waitFor(() => expect(mockedSchedule).toHaveBeenCalledTimes(2));
+      expect(mockedClearFiredAlarms).not.toHaveBeenCalled();
     });
   });
 });

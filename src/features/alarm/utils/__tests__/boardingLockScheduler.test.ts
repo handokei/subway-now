@@ -1,14 +1,18 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   advanceHopWindow,
   boardingLockAlarmIdentifier,
   cancelAllHopsForLock,
+  clearRegisteredBlRouteSig,
+  getRegisteredBlRouteSig,
   parseBoardingLockAlarmIdentifier,
   purgeBoardingLockSchedulerQueue,
   rescheduleHopForLock,
   routeSignature,
   scheduleHopsForLock,
+  setRegisteredBlRouteSig,
 } from '../boardingLockScheduler';
 import {
   addScheduledNotificationIds,
@@ -25,6 +29,11 @@ import {
 } from '../../../../testUtils/routeFixtures';
 
 jest.mock('expo-notifications');
+jest.mock('@react-native-async-storage/async-storage', () => ({
+  getItem: jest.fn(),
+  setItem: jest.fn(),
+  removeItem: jest.fn(),
+}));
 jest.mock('../scheduledNotificationsStorage', () => ({
   addScheduledNotificationIds: jest.fn(),
   removeScheduledNotificationIds: jest.fn(),
@@ -96,9 +105,16 @@ const multiRoute: MultiTransferRoute = makeMultiTransferRoute({
   stopsAfterLastTransfer: 2,
 });
 
+const mockAsyncGetItem = AsyncStorage.getItem as jest.Mock;
+const mockAsyncSetItem = AsyncStorage.setItem as jest.Mock;
+const mockAsyncRemoveItem = AsyncStorage.removeItem as jest.Mock;
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockedGet.mockResolvedValue([]);
+  mockAsyncGetItem.mockResolvedValue(null);
+  mockAsyncSetItem.mockResolvedValue(undefined);
+  mockAsyncRemoveItem.mockResolvedValue(undefined);
   Object.defineProperty(Platform, 'OS', { configurable: true, value: 'ios' });
 });
 
@@ -809,5 +825,75 @@ describe('rescheduleHopForLock (#698)', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// #1282 — bl: route-sig 영속화 함수 단위 테스트.
+describe('setRegisteredBlRouteSig / getRegisteredBlRouteSig / clearRegisteredBlRouteSig (#1282)', () => {
+  it('setRegisteredBlRouteSig: AsyncStorage.setItem을 올바른 키/값으로 호출한다', async () => {
+    await setRegisteredBlRouteSig('SIG-ABC');
+    expect(mockAsyncSetItem).toHaveBeenCalledWith(
+      'subway-now:boarding-lock-route-sig',
+      'SIG-ABC',
+    );
+  });
+
+  it('setRegisteredBlRouteSig: setItem 실패 시 graceful (throw 없음)', async () => {
+    mockAsyncSetItem.mockRejectedValueOnce(new Error('storage fail'));
+    await expect(setRegisteredBlRouteSig('SIG-X')).resolves.toBeUndefined();
+  });
+
+  it('getRegisteredBlRouteSig: 저장된 값을 반환한다', async () => {
+    mockAsyncGetItem.mockResolvedValueOnce('SIG-ABC');
+    const result = await getRegisteredBlRouteSig();
+    expect(result).toBe('SIG-ABC');
+    expect(mockAsyncGetItem).toHaveBeenCalledWith('subway-now:boarding-lock-route-sig');
+  });
+
+  it('getRegisteredBlRouteSig: 값 없으면 null', async () => {
+    mockAsyncGetItem.mockResolvedValueOnce(null);
+    const result = await getRegisteredBlRouteSig();
+    expect(result).toBeNull();
+  });
+
+  it('getRegisteredBlRouteSig: getItem 실패 시 null 반환 (graceful)', async () => {
+    mockAsyncGetItem.mockRejectedValueOnce(new Error('storage fail'));
+    const result = await getRegisteredBlRouteSig();
+    expect(result).toBeNull();
+  });
+
+  it('clearRegisteredBlRouteSig: AsyncStorage.removeItem을 올바른 키로 호출한다', async () => {
+    await clearRegisteredBlRouteSig();
+    expect(mockAsyncRemoveItem).toHaveBeenCalledWith('subway-now:boarding-lock-route-sig');
+  });
+
+  it('clearRegisteredBlRouteSig: removeItem 실패 시 graceful (throw 없음)', async () => {
+    mockAsyncRemoveItem.mockRejectedValueOnce(new Error('storage fail'));
+    await expect(clearRegisteredBlRouteSig()).resolves.toBeUndefined();
+  });
+});
+
+// #1282 — cancelAllHopsForLock이 route-sig 변경 시 clearRegisteredBlRouteSig를 호출하는 통합 검증.
+describe('cancelAllHopsForLock: route-sig cleanup (#1282)', () => {
+  it('취소 대상이 있어도 clearRegisteredBlRouteSig를 호출한다', async () => {
+    mockedGet.mockResolvedValueOnce(['bl:T-100:0:early:강남', 'bl:T-100:0:imminent:강남']);
+    await cancelAllHopsForLock(lock);
+    // clearRegisteredBlRouteSig는 BOARDING_LOCK_ROUTE_SIG_KEY를 removeItem
+    expect(mockAsyncRemoveItem).toHaveBeenCalledWith('subway-now:boarding-lock-route-sig');
+  });
+
+  it('취소 대상이 없어도 clearRegisteredBlRouteSig를 호출한다', async () => {
+    mockedGet.mockResolvedValueOnce([]);
+    await cancelAllHopsForLock(lock);
+    expect(mockAsyncRemoveItem).toHaveBeenCalledWith('subway-now:boarding-lock-route-sig');
+  });
+});
+
+// #1282 — purgeBoardingLockSchedulerQueue도 clearRegisteredBlRouteSig를 호출하는 통합 검증.
+describe('purgeBoardingLockSchedulerQueue: route-sig cleanup (#1282)', () => {
+  it('purge 시 clearRegisteredBlRouteSig를 호출한다', async () => {
+    mockedGet.mockResolvedValueOnce([]);
+    await purgeBoardingLockSchedulerQueue();
+    expect(mockAsyncRemoveItem).toHaveBeenCalledWith('subway-now:boarding-lock-route-sig');
   });
 });

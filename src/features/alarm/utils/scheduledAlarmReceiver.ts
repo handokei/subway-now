@@ -17,7 +17,12 @@ import {
 } from './tripBoundScheduler';
 import { getTripStartedAt } from './tripStartStorage';
 import { resolveAllTargets } from './stationAlarm';
-import { routeSignature } from './boardingLockScheduler';
+import {
+  parseBoardingLockAlarmIdentifier,
+  routeSignature,
+  getRegisteredBlRouteSig,
+  BOARDING_LOCK_ALARM_PREFIX,
+} from './boardingLockScheduler';
 import { logSuppressedTbaRevalidation } from './alarmLog';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { AlarmPhaseId } from './alarmPhases';
@@ -40,16 +45,20 @@ async function getCurrentDestinationId(): Promise<string | null> {
 }
 
 interface ParsedAlarmIdentifier {
-  prefix: 'alarm' | 'tba';
+  prefix: 'alarm' | 'tba' | 'bl';
   phaseId: string;
   stationName: string;
 }
 
 /**
- * `alarm:` / `tba:` 두 prefix 단일 진입점 (#918 A3 PR2).
- * 두 경로의 phaseId/stationName 추출 로직이 같으므로 호출자는 prefix 분기만 본다.
+ * `alarm:` / `tba:` / `bl:` 세 prefix 단일 진입점 (#918 A3 PR2, #1282).
+ * 세 경로의 phaseId/stationName 추출 로직이 같으므로 호출자는 prefix 분기만 본다.
  */
 function parseAlarmIdentifier(identifier: string): ParsedAlarmIdentifier | null {
+  if (identifier.startsWith(BOARDING_LOCK_ALARM_PREFIX)) {
+    const p = parseBoardingLockAlarmIdentifier(identifier);
+    return p ? { prefix: 'bl', phaseId: p.phase, stationName: p.stationName } : null;
+  }
   if (identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) {
     const p = parseTripBoundAlarmIdentifier(identifier);
     return p ? { prefix: 'tba', phaseId: p.phaseId, stationName: p.stationName } : null;
@@ -142,7 +151,55 @@ async function revalidateTbaAlarm(parsed: {
 }
 
 /**
- * 사전 예약된 `alarm:` / `tba:` 알림이 OS에 의해 발사된 직후 클라이언트 상태를 갱신한다.
+ * `bl:` 알람의 fire-time 재검증 (#1282).
+ *
+ * `tba:` 채널의 revalidateTbaAlarm과 동형. `bl:` 알람이 OS에서 발사됐을 때
+ * 현재 trip의 route-sig가 예약 시점 sig와 일치하는지 확인한다.
+ * 일치하지 않으면 route 변경 후 남은 stale 알람이므로 suppress.
+ *
+ * 조건: getRegisteredBlRouteSig()가 null이거나 현재 sig와 불일치면 suppress.
+ * (null은 cancelAllHopsForLock/purgeBoardingLockSchedulerQueue가 clear한 직후 OS 잔여 발사 케이스.)
+ */
+async function revalidateBlAlarm(parsed: {
+  phaseId: string;
+  stationName: string;
+}): Promise<'pass' | 'suppress'> {
+  const phaseId = parsed.phaseId as AlarmPhaseId;
+
+  const [routeRaw, destRaw, registeredSig] = await Promise.all([
+    AsyncStorage.getItem(ROUTE_KEY),
+    AsyncStorage.getItem(DESTINATION_KEY),
+    getRegisteredBlRouteSig(),
+  ]);
+  const route: Route = safeParseRoute(routeRaw);
+  const destinationName = parseDestinationName(destRaw);
+  const currentSig = routeSignature(route, destinationName);
+
+  if (registeredSig === null || currentSig === null || registeredSig !== currentSig) {
+    logSuppressedTbaRevalidation({
+      reason: 'revalidate-route-sig-mismatch',
+      stationName: parsed.stationName,
+      phaseId,
+    });
+    return 'suppress';
+  }
+
+  // 방어 검증: parsed stationName이 현재 waypoint 시퀀스에 존재해야 한다.
+  const targets = resolveAllTargets(route as NonNullable<Route>, destinationName as string);
+  if (!targets.some((t) => t.name === parsed.stationName)) {
+    logSuppressedTbaRevalidation({
+      reason: 'revalidate-waypoint-mismatch',
+      stationName: parsed.stationName,
+      phaseId,
+    });
+    return 'suppress';
+  }
+
+  return 'pass';
+}
+
+/**
+ * 사전 예약된 `alarm:` / `tba:` / `bl:` 알림이 OS에 의해 발사된 직후 클라이언트 상태를 갱신한다.
  * 사전 예약 알람은 클라이언트 콜백을 거치지 않으므로(`alarmScheduler.ts`), 이 함수가
  * FG/BG 양쪽 발화 모두에 대한 상태 동기화 단일 진입점이다.
  *
@@ -166,6 +223,9 @@ export async function reconcileScheduledAlarmDelivery(
   if (!parsed) return;
 
   if (parsed.prefix === 'tba' && (await revalidateTbaAlarm(parsed)) === 'suppress') {
+    return;
+  }
+  if (parsed.prefix === 'bl' && (await revalidateBlAlarm(parsed)) === 'suppress') {
     return;
   }
 
@@ -203,11 +263,13 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
   // #918 A3 PR2 — `tba:` 항목은 발사 시점 재검증을 거친다. suppress인 경우 fired set /
   // lastStationName 갱신에 포함하지 않아 stale 알람이 후속 상태(BG arrival 기준역 등)를 오염시키지
   // 않게 한다. `alarm:` 경로는 기존 BoardingLock SSOT을 신뢰해 통과.
+  // #1282 — `bl:` 항목도 동일하게 route-sig 재검증을 거친다.
   const accepted: ParsedAlarmIdentifier[] = [];
   for (const n of presented) {
     const parsed = parseAlarmIdentifier(n.request.identifier);
     if (!parsed) continue;
     if (parsed.prefix === 'tba' && (await revalidateTbaAlarm(parsed)) === 'suppress') continue;
+    if (parsed.prefix === 'bl' && (await revalidateBlAlarm(parsed)) === 'suppress') continue;
     accepted.push(parsed);
   }
 

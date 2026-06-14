@@ -40,9 +40,15 @@ jest.mock('../tripBoundScheduler', () => {
 });
 
 const mockRouteSignature = jest.fn();
-jest.mock('../boardingLockScheduler', () => ({
-  routeSignature: (...args: unknown[]) => mockRouteSignature(...args),
-}));
+const mockGetRegisteredBlRouteSig = jest.fn();
+jest.mock('../boardingLockScheduler', () => {
+  const actual = jest.requireActual('../boardingLockScheduler');
+  return {
+    ...actual,
+    routeSignature: (...args: unknown[]) => mockRouteSignature(...args),
+    getRegisteredBlRouteSig: (...args: unknown[]) => mockGetRegisteredBlRouteSig(...args),
+  };
+});
 
 const mockResolveAllTargets = jest.fn();
 jest.mock('../stationAlarm', () => ({
@@ -116,6 +122,8 @@ beforeEach(async () => {
   mockGetTripStartedAt.mockResolvedValue(1_000_000);
   mockGetRegisteredTripRouteSig.mockReset();
   mockGetRegisteredTripRouteSig.mockResolvedValue('SIG-A');
+  mockGetRegisteredBlRouteSig.mockReset();
+  mockGetRegisteredBlRouteSig.mockResolvedValue('SIG-A');
   mockRouteSignature.mockReset();
   mockRouteSignature.mockReturnValue('SIG-A');
   mockResolveAllTargets.mockReset();
@@ -654,6 +662,169 @@ describe('tba: fire-time 재검증 (#918 A3 PR2)', () => {
 
       expect(mockSetFiredAlarms).not.toHaveBeenCalled();
       expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
+      handle.remove();
+    });
+  });
+});
+
+// #1282 — `bl:` 사전 예약 알람 수신 재검증.
+describe('bl: fire-time 재검증 (#1282)', () => {
+  beforeEach(() => {
+    setStorageMap({
+      'subway-now:destination': DEST_JSON,
+      'subway-now:route': ROUTE_JSON,
+    });
+  });
+
+  describe('reconcileScheduledAlarmDelivery — `bl:` 단건', () => {
+    it('재검증 통과 시 alarm: 경로와 동일하게 fired set + lastStationName을 갱신한다', async () => {
+      mockGetFiredAlarms.mockResolvedValueOnce(new Set());
+
+      await reconcileScheduledAlarmDelivery('bl:T-100:0:early:강남');
+
+      expect(mockGetFiredAlarms).toHaveBeenCalledWith('dest-1');
+      expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:강남']));
+      expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
+      expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalled();
+    });
+
+    it('등록된 bl sig와 현재 sig 불일치 시 route-sig-mismatch + skip', async () => {
+      mockGetRegisteredBlRouteSig.mockResolvedValueOnce('SIG-OLD');
+      mockRouteSignature.mockReturnValueOnce('SIG-NEW');
+
+      await reconcileScheduledAlarmDelivery('bl:T-100:0:imminent:강남');
+
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith({
+        reason: 'revalidate-route-sig-mismatch',
+        stationName: '강남',
+        phaseId: 'imminent',
+      });
+      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+      expect(mockSetLastFiredAlarmStationName).not.toHaveBeenCalled();
+    });
+
+    it('등록된 bl sig가 null이면 sig-mismatch로 분류', async () => {
+      mockGetRegisteredBlRouteSig.mockResolvedValueOnce(null);
+
+      await reconcileScheduledAlarmDelivery('bl:T-100:0:early:강남');
+
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-route-sig-mismatch' }),
+      );
+      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+    });
+
+    it('현재 sig가 null(route/destination 미설정)이면 sig-mismatch로 분류', async () => {
+      mockRouteSignature.mockReturnValueOnce(null);
+
+      await reconcileScheduledAlarmDelivery('bl:T-100:0:early:강남');
+
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'revalidate-route-sig-mismatch' }),
+      );
+    });
+
+    it('stationName이 현재 waypoint 시퀀스에 없으면 waypoint-mismatch + skip', async () => {
+      mockResolveAllTargets.mockReturnValueOnce([{ name: '시청' }, { name: '서울역' }]);
+
+      await reconcileScheduledAlarmDelivery('bl:T-100:0:early:강남');
+
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith({
+        reason: 'revalidate-waypoint-mismatch',
+        stationName: '강남',
+        phaseId: 'early',
+      });
+      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+      expect(mockSetLastFiredAlarmStationName).not.toHaveBeenCalled();
+    });
+
+    it('bl: prefix는 매칭되지만 포맷 파손 시 parseAlarmIdentifier=null → no-op', async () => {
+      // "bl:T-100:0:bad:강남" — phase가 'bad'라 parseBoardingLockAlarmIdentifier가 null 반환.
+      await reconcileScheduledAlarmDelivery('bl:T-100:0:bad:강남');
+
+      expect(mockGetRegisteredBlRouteSig).not.toHaveBeenCalled();
+      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+    });
+
+    it('재검증 통과 + destinationId 미설정이면 lastStationName만 갱신', async () => {
+      setStorageMap({
+        'subway-now:destination': null,
+        'subway-now:route': ROUTE_JSON,
+      });
+
+      await reconcileScheduledAlarmDelivery('bl:T-100:0:early:강남');
+
+      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+      expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
+    });
+  });
+
+  describe('drainDeliveredScheduledAlarms — `bl:` 항목 재검증', () => {
+    it('suppress된 bl 항목은 fired set/lastStationName 갱신에서 제외된다', async () => {
+      // 첫 bl은 sig-mismatch로 suppress, 두 번째 bl은 pass.
+      mockGetRegisteredBlRouteSig
+        .mockResolvedValueOnce('SIG-OLD')
+        .mockResolvedValueOnce('SIG-A');
+      mockRouteSignature
+        .mockReturnValueOnce('SIG-NEW')
+        .mockReturnValueOnce('SIG-A');
+      mockGetPresented.mockResolvedValueOnce([
+        { date: 1, request: { identifier: 'bl:T-100:0:early:잘못된역' } },
+        { date: 2, request: { identifier: 'bl:T-100:0:imminent:강남' } },
+      ]);
+      mockGetFiredAlarms.mockResolvedValueOnce(new Set());
+
+      const handle = registerScheduledAlarmListener();
+      await awaitInitialScheduledAlarmDrain();
+
+      expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['imminent:강남']));
+      expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
+      expect(mockLogSuppressedTbaRevalidation).toHaveBeenCalledWith(
+        expect.objectContaining({ stationName: '잘못된역' }),
+      );
+      handle.remove();
+    });
+
+    it('모든 bl 항목이 suppress면 fired set/lastStationName 모두 갱신 안 함', async () => {
+      mockGetRegisteredBlRouteSig.mockResolvedValue(null);
+      mockGetPresented.mockResolvedValueOnce([
+        { date: 1, request: { identifier: 'bl:T-100:0:early:A' } },
+        { date: 2, request: { identifier: 'bl:T-100:0:imminent:B' } },
+      ]);
+
+      const handle = registerScheduledAlarmListener();
+      await awaitInitialScheduledAlarmDrain();
+
+      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+      expect(mockSetLastFiredAlarmStationName).not.toHaveBeenCalled();
+      handle.remove();
+    });
+
+    it('`alarm:` 항목은 bl 재검증과 무관하게 그대로 통과한다 — regression 방지', async () => {
+      mockGetPresented.mockResolvedValueOnce([
+        { date: 1, request: { identifier: 'alarm:early:강남' } },
+      ]);
+      mockGetFiredAlarms.mockResolvedValueOnce(new Set());
+
+      const handle = registerScheduledAlarmListener();
+      await awaitInitialScheduledAlarmDrain();
+
+      expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:강남']));
+      expect(mockGetRegisteredBlRouteSig).not.toHaveBeenCalled();
+      handle.remove();
+    });
+
+    it('`tba:` 항목은 bl 재검증과 무관하게 tba 경로로 처리된다 — regression 방지', async () => {
+      mockGetPresented.mockResolvedValueOnce([
+        { date: 1, request: { identifier: 'tba:early:강남' } },
+      ]);
+      mockGetFiredAlarms.mockResolvedValueOnce(new Set());
+
+      const handle = registerScheduledAlarmListener();
+      await awaitInitialScheduledAlarmDrain();
+
+      expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:강남']));
+      expect(mockGetRegisteredBlRouteSig).not.toHaveBeenCalled();
       handle.remove();
     });
   });

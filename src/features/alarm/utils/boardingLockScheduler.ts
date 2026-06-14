@@ -1,5 +1,6 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ALARM_PHASES, type AlarmPhaseId } from './alarmPhases';
 import { resolveAllTargets, type AlarmEvent, type CurrentTarget } from './stationAlarm';
 import { isSameStationName, type Route } from '../../../shared/utils/stationRoute';
@@ -15,6 +16,7 @@ import { createLogger } from '../../../shared/utils/logger';
 import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
 import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
 import { logSuppressedSleepFirstTransfer } from './alarmLog';
+import { BOARDING_LOCK_ROUTE_SIG_KEY } from '../../../shared/constants/storageKeys';
 
 const logger = createLogger('BoardingLockScheduler');
 
@@ -305,11 +307,13 @@ export async function cancelAllHopsForLock(lock: BoardingLock): Promise<void> {
   const current = await getScheduledNotificationIds();
   const lockPrefix = `${BOARDING_LOCK_ALARM_PREFIX}${lock.trainCode}:`;
   const toCancel = current.filter((id) => id.startsWith(lockPrefix));
-  if (toCancel.length === 0) return;
-
-  await cancelAndDismiss(toCancel);
-  await removeScheduledNotificationIds(toCancel);
-  logger.info(`cancelled ${toCancel.length} alarms for lock ${lock.trainCode}`);
+  if (toCancel.length > 0) {
+    await cancelAndDismiss(toCancel);
+    await removeScheduledNotificationIds(toCancel);
+    logger.info(`cancelled ${toCancel.length} alarms for lock ${lock.trainCode}`);
+  }
+  // #1282: sig를 항상 clear — 잔여 OS 발사 분이 receiver gate를 통과하지 않도록.
+  await clearRegisteredBlRouteSig();
 }
 
 /**
@@ -327,6 +331,8 @@ export async function purgeBoardingLockSchedulerQueue(): Promise<void> {
   // (TRIP_BOUND_CLEANUPS)가 SCHEDULED_NOTIFICATIONS_KEY removal을 본 함수로 위임하므로,
   // empty case에서도 key가 존재할 수 있다(legacy 잔여 등) — 멱등 보장.
   await clearScheduledNotificationIds();
+  // #1282: sig도 함께 정리 — trip 종료 후 잔여 OS 발사가 receiver gate를 통과하지 않도록.
+  await clearRegisteredBlRouteSig();
 }
 
 export interface AdvanceHopWindowParams {
@@ -521,6 +527,40 @@ export async function rescheduleHopForLock(
     `reschedule done: trainCode=${lock.trainCode} nextStation=${nextStation} cancelled=${idsToCancel.length} scheduled=${newIds.length} newArrivalMs=${newArrivalMs}`,
   );
   return { cancelled: idsToCancel.length, scheduled: newIds.length };
+}
+
+/**
+ * #1282 — `bl:` 알람 예약 시점의 route signature 영속화 SSOT.
+ *
+ * `tba:` 채널의 setRegisteredTripRouteSig(tripBoundScheduler.ts)와 동형.
+ * useBoardingLockScheduler가 scheduleHopsForLock 성공 직후 write,
+ * cancelAllHopsForLock / purgeBoardingLockSchedulerQueue 시 clear.
+ * scheduledAlarmReceiver가 `bl:` 발사 수신 시 현재 sig와 비교해 stale 알람 억제.
+ *
+ * 모든 함수는 graceful — storage 실패는 측정 정확도만 영향, 본 흐름 무관.
+ */
+export async function setRegisteredBlRouteSig(sig: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(BOARDING_LOCK_ROUTE_SIG_KEY, sig);
+  } catch {
+    // graceful.
+  }
+}
+
+export async function getRegisteredBlRouteSig(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(BOARDING_LOCK_ROUTE_SIG_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export async function clearRegisteredBlRouteSig(): Promise<void> {
+  try {
+    await AsyncStorage.removeItem(BOARDING_LOCK_ROUTE_SIG_KEY);
+  } catch {
+    // graceful.
+  }
 }
 
 /**
