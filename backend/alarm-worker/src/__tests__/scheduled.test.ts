@@ -6,9 +6,12 @@ import type { WindowedMetrics } from '../positionSeries';
 import {
   ARVLCD_FIRE_DEDUP_TTL_SEC,
   ARVLCD_FIRE_KEY_PREFIX,
+  FALLBACK_ADVANCE_GRACE_CYCLES,
+  FALLBACK_HOP_SEC,
   MAX_CONSECUTIVE_ETA_MISSING,
   RESCHEDULE_THRESHOLD_MS,
   SUBSURFACE_ETA_MISSING_TOLERANCE,
+  VANISH_RE_ATTACH_THRESHOLD,
   arvlCdFireKey,
   estimateArrivalFromPosition,
   estimateBoardingLockArrival,
@@ -988,6 +991,170 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
 
     it('resolveEtaMissingThreshold(subsurface=undefined) → 5 (graceful default)', () => {
       expect(resolveEtaMissingThreshold({})).toBe(MAX_CONSECUTIVE_ETA_MISSING);
+    });
+  });
+
+  // #1277 — trainCode 소실 시 시간 기반 waypoint advance fallback
+  describe('#1277 time-based waypoint advance fallback', () => {
+    const FALLBACK_TRIGGER = VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES;
+    // hop 시간이 경과한 epoch: lastTrackedArrivalEpoch = NOW - FALLBACK_HOP_SEC * 1000 (정확히 경과)
+    const LAST_EPOCH_ELAPSED = NOW - FALLBACK_HOP_SEC * 1000;
+    // hop 시간이 아직 미경과: lastTrackedArrivalEpoch = NOW - 30_000 (30s 전, 90s 미달)
+    const LAST_EPOCH_NOT_ELAPSED = NOW - 30_000;
+
+    async function runVanishedScenario(kv: InMemoryKV) {
+      await runScheduled(makeEnv(kv), {
+        // arrivals/positions 모두 비어있음 → trainCode 소실 상태
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: makeOkFetch() as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p1277',
+      });
+    }
+
+    it('FALLBACK_ADVANCE_GRACE_CYCLES is 1', () => {
+      expect(FALLBACK_ADVANCE_GRACE_CYCLES).toBe(1);
+    });
+
+    it('fallback 미발동: miss 횟수가 fallbackTrigger 미달이면 카운터만 증가', async () => {
+      // fallbackTrigger - 1 miss 상태 → nextMissCount = fallbackTrigger - 1 < trigger
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 2,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      await runVanishedScenario(kv);
+      const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
+      expect(stored.consecutiveEtaMissing).toBe(FALLBACK_TRIGGER - 1);
+      expect(stored.boardingLock).toBeDefined();
+    });
+
+    it('시간 경과 + fallbackTrigger 도달 → waypoint advance (intermediate → shift)', async () => {
+      // consecutiveEtaMissing = FALLBACK_TRIGGER - 1 → nextMissCount = FALLBACK_TRIGGER
+      // lastTrackedArrivalEpoch = hop 시간 경과 → advanceBoardingLockWaypoint 호출
+      // 첫 waypoint(intermediate 중곡)가 shift되고 남은 waypoint는 군자(destination)
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      await runVanishedScenario(kv);
+      const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
+      // intermediate 통과 → 다음 waypoint(군자)가 남아야 함
+      expect(stored.waypoints[0].stationName).toBe('군자');
+      // consecutiveEtaMissing 리셋
+      expect(stored.consecutiveEtaMissing).toBe(0);
+    });
+
+    it('시간 경과 + fallbackTrigger 도달 + destination → trip 종료 (cleanupTripWithLa)', async () => {
+      // waypoint가 destination 하나만 남은 경우 → advanceBoardingLockWaypoint → cleanupTripWithLa → trip 삭제
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      await runVanishedScenario(kv);
+      // destination arrived → cleanupTripWithLa → trip 삭제
+      expect(await kv.get('trip:lock-tok')).toBeNull();
+    });
+
+    it('시간 미경과 + fallbackTrigger 도달 → lock release (lockless 인계)', async () => {
+      // hop 시간이 아직 지나지 않았으면 advance 대신 lock release
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_NOT_ELAPSED,
+        }),
+      );
+      await runVanishedScenario(kv);
+      const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
+      // lock release → isBoardingLockActive=false
+      expect(stored.boardingLock).toBeUndefined();
+      expect(stored.consecutiveEtaMissing).toBe(0);
+    });
+
+    it('lastTrackedArrivalEpoch 없음 → fallback 미발동, 기존 auto-end 경로 유지', async () => {
+      // lastTrackedArrivalEpoch가 undefined이면 #1277 fallback은 건너뛰고
+      // 기존 consecutiveEtaMissing threshold 경로만 동작해야 한다.
+      // FALLBACK_TRIGGER 도달해도 auto-end threshold(5) 미달이면 카운터 증가.
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          // lastTrackedArrivalEpoch: undefined (미설정)
+        }),
+      );
+      await runVanishedScenario(kv);
+      const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
+      // fallback 미발동 → 카운터만 증가
+      expect(stored.consecutiveEtaMissing).toBe(FALLBACK_TRIGGER);
+      expect(stored.boardingLock).toBeDefined();
+    });
+
+    it('vanish-swap 후보 존재 시 swap 우선 (time-based fallback 발동 안 됨)', async () => {
+      // 같은 역·노선에 다른 trainCode(7999)가 있으면 attemptVanishSwap이 먼저 성공
+      // → estimate 성공 → handleEtaMissing 호출 안 됨 → fallback 발동 안 됨
+      const kv = new InMemoryKV();
+      // FALLBACK_TRIGGER - 1 miss 상태에서 같은 역에 7999가 보임
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      // arrivals에 다른 trainCode(7999)가 중곡행으로 있음 → attachTrainCodeForLeg가 swap candidate 반환
+      // swap 후 재estimate 성공 → consecutiveEtaMissing 리셋, lock 유지
+      const arrivals: ArrivalEntry[] = [
+        { destination: '중곡', arrivalSeconds: 60, trainCode: '7999', isUp: true, subwayNm: '지하철7호선', arvlCd: null },
+      ];
+      await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo(arrivals, []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: makeOkFetch() as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p1277-swap',
+      });
+      const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
+      // swap 성공 → consecutiveEtaMissing 리셋, boardingLock 존재
+      expect(stored.consecutiveEtaMissing).toBe(0);
+      expect(stored.boardingLock).toBeDefined();
+      // swap된 trainCode가 7999여야 함
+      expect(stored.boardingLock?.trainCode).toBe('7999');
+    });
+
+    it('subsurface trip도 fallbackTrigger 도달 + 시간 경과 시 advance (지하 무한 동결 방지)', async () => {
+      // subsurface=true여도 FALLBACK_TRIGGER 도달 시 advance 발동 (threshold는 더 크지만 freeze 방지 우선)
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          subsurface: true,
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      await runVanishedScenario(kv);
+      const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
+      // advance 발동 → intermediate shift, destination(군자) 남음
+      expect(stored.waypoints[0].stationName).toBe('군자');
+      expect(stored.consecutiveEtaMissing).toBe(0);
     });
   });
 
