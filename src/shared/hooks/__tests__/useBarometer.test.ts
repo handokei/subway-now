@@ -5,6 +5,7 @@ const mockRequestPermissions = jest.fn();
 const mockSetUpdateInterval = jest.fn();
 const mockAddListener = jest.fn();
 const mockRemove = jest.fn();
+const mockSetSubsurfaceState = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('expo-sensors', () => ({
   Barometer: {
@@ -13,6 +14,10 @@ jest.mock('expo-sensors', () => ({
     setUpdateInterval: (...args: unknown[]) => mockSetUpdateInterval(...args),
     addListener: (...args: unknown[]) => mockAddListener(...args),
   },
+}));
+
+jest.mock('../../utils/subsurfaceState', () => ({
+  setSubsurfaceState: (...args: unknown[]) => mockSetSubsurfaceState(...args),
 }));
 
 import { useBarometer } from '../useBarometer';
@@ -35,6 +40,8 @@ beforeEach(() => {
   mockSetUpdateInterval.mockReset();
   mockAddListener.mockReset();
   mockRemove.mockReset();
+  mockSetSubsurfaceState.mockReset();
+  mockSetSubsurfaceState.mockResolvedValue(undefined);
   mockAddListener.mockReturnValue({ remove: mockRemove });
   resetBarometerState();
 });
@@ -284,6 +291,28 @@ describe('useBarometer (#875)', () => {
     // stop=true 2번만 — confirm 3 미달.
     fireListenerWindow(listener, nowSpy, baseT, 2, () => 1013);
     expect(result.current.stop).toBeUndefined();
+
+    nowSpy.mockRestore();
+  });
+
+  it('#1279 — subsurface flip 시 setSubsurfaceState 호출', async () => {
+    const { listener, nowSpy, baseT } = await setupBarometerWithListener();
+
+    act(() => {
+      listener({ pressure: 1013, timestamp: 0 });
+    });
+    // hysteresis 3회 미달 — setSubsurfaceState 미호출.
+    expect(mockSetSubsurfaceState).not.toHaveBeenCalled();
+
+    // confirm 3회 → subsurface=true flip → setSubsurfaceState(true) 호출.
+    fireListenerWindow(
+      listener,
+      nowSpy,
+      baseT,
+      3,
+      () => 1013 + BAROMETER_SUBSURFACE_DP_THRESHOLD_HPA,
+    );
+    expect(mockSetSubsurfaceState).toHaveBeenCalledWith(true);
 
     nowSpy.mockRestore();
   });

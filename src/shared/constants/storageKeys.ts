@@ -141,3 +141,8 @@ export const LOCKLESS_FUNNEL_SEEN_OFF_KEY = 'subway-now:lockless-funnel-seen-off
 // UI 토글은 follow-up PR — 현재는 init 인프라만.
 // 형식: 'true' 또는 키 부재.
 export const SENTRY_OPT_IN_KEY = 'subway-now:sentry-opt-in';
+// #1279 — 기압계 지하 감지 상태(subsurface boolean) AsyncStorage stamp.
+// useBarometer(FG-only React state)가 subsurface flip 시 write → BG silent-push task와
+// 위치 게이트가 동일한 값을 read할 수 있도록 한다. updatedAt(epoch ms)은 TTL 만료 판별용.
+// 형식: {"subsurface": boolean, "updatedAt": number} JSON.
+export const SUBSURFACE_STATE_KEY = 'subway-now:subsurface';
