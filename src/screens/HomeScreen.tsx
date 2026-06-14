@@ -25,6 +25,7 @@ import { initStationNotification, updateStationNotification, clearStationNotific
 import { useWidgetMirror } from '../features/widget/hooks/useWidgetMirror';
 import { useStationAlarm } from '../features/alarm/hooks/useStationAlarm';
 import { useMotionActivity } from '../features/nearest-station/hooks/useMotionActivity';
+import { useAccelerometer } from '../features/nearest-station/hooks/useAccelerometer';
 import { useBarometer } from '../shared/hooks/useBarometer';
 import { useTripOrigin } from '../features/route/hooks/useTripOrigin';
 import { useBackgroundLocation } from '../features/nearest-station/hooks/useBackgroundLocation';
@@ -162,6 +163,10 @@ export default function HomeScreen() {
   // #728 — CMMotionActivity 신호. 권한 요청/폴링은 hook 내부에서 lifecycle 관리.
   // 미지원/거절 시 false로 고정되어 기존 가드만 동작 (graceful fallback).
   const motionStationary = useMotionActivity();
+  // #1287 — 가속도 수집 활성화. BG task(backgroundLocationTask)가 getLatestAccelSummary()로
+  // 조회하는 ambient state를 채운다. 반환값 없음 — useMotionActivity/useBarometer와 동일 패턴.
+  // 미지원/권한 거절은 accelMotionState가 null을 유지해 BG task가 graceful fallback.
+  useAccelerometer();
   // #903 (Seam G) — 기압계 dP/dt 신호. 미지원/권한 거절은 subsurface=false 고정(graceful).
   //   1) useFusedNearestStation: 'gps-only' → 'gps-only-underground' 강등 + sticky automotive 트리거.
   //   2) useApnsTripRegistration: backend payload subsurface 동봉(threshold 5→10).
