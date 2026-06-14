@@ -10,7 +10,7 @@ export const FUSION_DEBUG_BUFFER_CAPACITY = 200;
 
 /** 후보 신호 — 신호원이 늘면 key를 추가만 하면 됨(타입/포맷터 동시 수정 불필요). */
 export interface FusionCandidateMini {
-  key: 'positionTrain' | 'fused' | 'route' | 'gps';
+  key: 'positionTrain' | 'fused' | 'route' | 'gps' | 'wifiSsid';
   stationName: string;
   line: string;
   /** 추가 정보 — 출처별 의미가 다를 수 있어 자유형으로 둠.

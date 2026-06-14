@@ -27,6 +27,7 @@ import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
 import { haversine } from '../../../shared/utils/haversine';
+import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { isWithinArcWindow, passesFusionDistanceGate } from '../utils/fusionDistanceGate';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import {
@@ -269,6 +270,16 @@ export function useFusedNearestStation(
    * S107 회피를 위해 단일 객체로 묶었다. 어느 한 키만 줘도 됨.
    */
   barometer?: { subsurface?: boolean; signal?: BarometerSignal },
+  /**
+   * #1286 — useWifiStation이 반환한 SSID 매칭 결과.
+   * barometerSubsurface===true(지하 GPS dead zone)일 때 fusion cascade 최우선으로 채택.
+   * 지상 / no-match(null)이면 기존 cascade로 자연 fallback.
+   *
+   * 환승역 호선 해소: wifiSsidLookup은 역명으로 첫 번째 호선의 Station을 반환하므로,
+   * boardingLock.boardingLine 또는 routeContext로 호선을 보정한다.
+   * 교차 신호가 없으면 lookupStationBySsid 결과 그대로 채택(단일 호선 역 / 호선 미확정).
+   */
+  wifiStation?: Station | null,
 ): UseFusedNearestStationReturn {
   const barometerSubsurface = barometer?.subsurface;
   const barometerSignal = barometer?.signal;
@@ -491,10 +502,39 @@ export function useFusedNearestStation(
   const routePasses =
     routeResult != null && passesFusionDistanceGate({ ...gateOpts, candidate: routeResult });
 
+  // #1286 — WiFi SSID 역 매칭 → fusion cascade.
+  // barometerSubsurface===true(지하 GPS dead zone)이고 SSID 매칭이 성공했을 때 최우선 채택.
+  // wifiSsidLookup은 역명 → 첫 번째 호선 Station을 반환하므로, 환승역 호선 보정:
+  //   1) boardingLock.boardingLine — 사용자가 명시적으로 탑승한 노선 (가장 정확).
+  //   2) 해당 보정 결과가 없으면 wifiStation 그대로 사용 (단일 호선 역 or 호선 미확정).
+  // 지상(subsurface=false) 또는 SSID 무매칭(null)이면 이 블록을 건너뛰고 기존 cascade로 fallback.
+  const wifiStationResolved: NearestStationResult | null = (() => {
+    if (!barometerSubsurface || !wifiStation) return null;
+    // BoardingLock의 노선으로 환승역 호선 보정 시도.
+    const targetLine = boardingLock?.boardingLine ?? null;
+    const resolvedStation =
+      targetLine && targetLine !== wifiStation.line
+        ? (findStationByNameAndLine(wifiStation.name, targetLine) ?? wifiStation)
+        : wifiStation;
+    const distanceKm = gps.userLocation
+      ? haversine(
+          gps.userLocation.lat,
+          gps.userLocation.lng,
+          resolvedStation.lat,
+          resolvedStation.lng,
+        )
+      : 0;
+    return { station: resolvedStation, distanceKm };
+  })();
+
   let result: NearestStationResult | null;
   let confidence: FusionConfidence;
   let source: FusionSource;
-  if (positionTrainResult) {
+  if (wifiStationResolved) {
+    result = wifiStationResolved;
+    confidence = 'wifi-ssid';
+    source = 'wifi-ssid';
+  } else if (positionTrainResult) {
     result = positionTrainResult;
     // #584 PR D2: position-train의 trainNo가 BoardingLock.trainCode와 일치하면 'boarding-lock'으로 승격.
     // 사용자가 탭한 바로 그 열차가 실시간 위치 API에 잡힌 상태 — 최고 신뢰 신호.
@@ -806,6 +846,10 @@ export function useFusedNearestStation(
     if (lastDecisionKeyRef.current === decisionKey) return;
     lastDecisionKeyRef.current = decisionKey;
     const candidates: FusionCandidateMini[] = [];
+    if (wifiStationResolved) {
+      const { name, line } = wifiStationResolved.station;
+      candidates.push({ key: 'wifiSsid', stationName: name, line });
+    }
     if (positionTrainResult && trainProgress) {
       const { name, line } = positionTrainResult.station;
       // boarding-lock 매칭 근거: 어느 trainNo가 어떤 lock과 비교됐는지 사후 재구성.
@@ -860,7 +904,7 @@ export function useFusedNearestStation(
               signalsAvailable: detectionVerdict.signalsAvailable,
             },
     });
-  }, [decisionKey, source, confidence, result, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, trainProgress, lockedTrainCode, detectionVerdict]);
+  }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, trainProgress, lockedTrainCode, detectionVerdict]);
 
   return {
     result,
