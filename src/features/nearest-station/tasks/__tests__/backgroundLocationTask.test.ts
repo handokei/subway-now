@@ -933,4 +933,65 @@ describe('backgroundLocationTask defineTask 콜백', () => {
       expect(call?.accelSummary).toBeUndefined();
     });
   });
+
+  describe('#1291 — BG 알람 모션 게이트 (주머니 지하 오발사 억제)', () => {
+    it('motionStationary=true이면 processLocationUpdate를 호출하지 않는다 (억제)', async () => {
+      mockGetCurrentMotionStationary.mockReturnValue(true);
+      mockStorageValues(JSON.stringify(mockDestination));
+
+      await taskCallback({
+        data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+        error: null,
+      });
+
+      expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    });
+
+    it('motionStationary=true이면 logSuppressedGate(gate-motion-stationary)를 호출한다', async () => {
+      mockGetCurrentMotionStationary.mockReturnValue(true);
+      mockStorageValues(JSON.stringify(mockDestination));
+
+      await taskCallback({
+        data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+        error: null,
+      });
+
+      expect(mockLogSuppressedGate).toHaveBeenCalledWith(
+        'gate-motion-stationary',
+        expect.objectContaining({ lat: 37.498, lng: 127.028 }),
+      );
+    });
+
+    it('motionStationary=false이면 processLocationUpdate를 호출한다 (회귀 없음 — 이동 중)', async () => {
+      mockGetCurrentMotionStationary.mockReturnValue(false);
+      mockStorageValues(JSON.stringify(mockDestination));
+      mockProcessLocationUpdate.mockResolvedValue({ alarmEvent: null, nearest: null });
+
+      await taskCallback({
+        data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+        error: null,
+      });
+
+      expect(mockProcessLocationUpdate).toHaveBeenCalled();
+    });
+
+    it('motionStationary=true여도 uploadPosition(motion=stationary)은 정상 호출된다 (업로드 후 게이트)', async () => {
+      mockGetCurrentMotionStationary.mockReturnValue(true);
+      (AsyncStorage.getItem as jest.Mock)
+        .mockResolvedValueOnce(JSON.stringify(mockDestination))
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)  // BG_LAST_FIX_KEY
+        .mockResolvedValueOnce('apns-tok-1'); // APNS_TOKEN_KEY
+
+      await taskCallback({
+        data: { locations: [makeLocation(37.498, 127.028, { accuracy: 30 })] },
+        error: null,
+      });
+
+      expect(mockUploadPosition).toHaveBeenCalledWith(expect.objectContaining({ motion: 'stationary' }));
+      expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    });
+  });
 });

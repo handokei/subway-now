@@ -20,6 +20,7 @@ import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY } from '../../../shared/constants/
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
 import { getLatestAccelSummary } from '../utils/accelMotionState';
+import { evaluateMovement } from '../utils/movementGate';
 // #1237 — BG tick에서도 위젯 SSOT(App Groups UserDefaults)를 갱신해 FG 진입 전까지 stale로 남지 않게 한다.
 // cross-feature import는 파일 헤더의 file-level eslint-disable로 옵트인 (orchestrator 본질).
 import { saveStationToWidget } from '../../widget/api/widgetStorage';
@@ -157,6 +158,26 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         motion,
         accelSummary,
       });
+    }
+
+    // #1291 — BG 알람 모션 게이트. FG(`useStationAlarm`/`evaluateMovement`)와 동일 정책:
+    // motionStationary=true(주머니 속 정지 확정)이면 GPS 노이즈로 인한 오발사를 차단한다.
+    // 위 isLocationFresh/isAccuracyAcceptable 게이트를 통과한 fix에 대해서만 평가한다.
+    // evaluateMovement에 motionStationary를 전달해 FG와 동일 판정 로직을 재사용.
+    // BG에서는 motion 신선도를 별도로 관리할 수 없으므로 getCurrentMotionStationary()의 graceful
+    // fallback(미지원/권한 거절 → false)에 의존한다. false이면 게이트를 건너뛰고 기존 경로를 유지.
+    const motionStationary = getCurrentMotionStationary();
+    const motionSignal = evaluateMovement(
+      { timestamp: latest.timestamp, accuracyM: accuracy ?? undefined, speedMps: speedMps ?? undefined },
+      Date.now(),
+      undefined,
+      // motionStationary=false(이동 중 or 권한 거절)이면 undefined 대신 false를 전달해 motion-warmup 차단 안 함.
+      // BG task는 FG hydrate 직후 warmup window 개념이 없으므로 warmup 차단은 의도적으로 배제.
+      motionStationary === true ? true : false,
+    );
+    if (!motionSignal.reliable && motionSignal.reason === 'motion-stationary') {
+      logSuppressedGate('gate-motion-stationary', { lat, lng, accuracy, ageMs });
+      return;
     }
 
     // destinationId scoped — 이전 trip의 stale entry는 빈 set으로 반환된다(#462).
