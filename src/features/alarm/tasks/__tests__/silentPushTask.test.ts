@@ -58,6 +58,12 @@ jest.mock('../../utils/silentPushLocationGate', () => ({
   checkSilentPushLocationGate: (...args: unknown[]) => mockCheckGate(...args),
 }));
 
+// #1307 — BG에서 stale 되는 로컬 subsurface stamp. 기본 false(미지하).
+const mockGetSubsurfaceState = jest.fn();
+jest.mock('../../../../shared/utils/subsurfaceState', () => ({
+  getSubsurfaceState: (...args: unknown[]) => mockGetSubsurfaceState(...args),
+}));
+
 const mockGetFiredAlarms = jest.fn();
 const mockSetFiredAlarms = jest.fn();
 jest.mock('../../utils/notificationState', () => ({
@@ -224,6 +230,7 @@ describe('silentPushTask', () => {
     jest.clearAllMocks();
     mockScheduleNotificationAsync.mockResolvedValue('id');
     mockCheckGate.mockResolvedValue(PASSING_GATE);
+    mockGetSubsurfaceState.mockResolvedValue(false);
     mockGetFiredAlarms.mockResolvedValue(new Set<string>());
     mockSetFiredAlarms.mockResolvedValue(undefined);
     (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
@@ -414,6 +421,33 @@ describe('silentPushTask', () => {
             bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', hopIndex: Infinity }),
           ),
         ).toMatchObject({ hopIndex: undefined });
+      });
+    });
+
+    // #1307 — backend가 server-authoritative subsurface flag(true일 때만)를 stamp.
+    describe('subsurface (#1307)', () => {
+      it('subsurface=true이면 그대로 전달', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', subsurface: true }),
+          ),
+        ).toMatchObject({ subsurface: true });
+      });
+
+      it('누락/false/비boolean이면 undefined (게이트가 로컬 stamp fallback)', () => {
+        expect(
+          extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early' })),
+        ).toMatchObject({ subsurface: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', subsurface: false }),
+          ),
+        ).toMatchObject({ subsurface: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', subsurface: 'true' }),
+          ),
+        ).toMatchObject({ subsurface: undefined });
       });
     });
 
@@ -676,6 +710,7 @@ describe('silentPushTask', () => {
         phase: 'imminent',
         isLockless: false,
         payloadHopIndex: undefined,
+        subsurface: false,
       });
       expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
       const call = mockScheduleNotificationAsync.mock.calls[0][0];
@@ -1030,6 +1065,27 @@ describe('silentPushTask', () => {
         expect(mockCheckGate).toHaveBeenCalledWith(
           expect.objectContaining({ payloadHopIndex: undefined }),
         );
+      });
+
+      // #1307 — server flag(payload.subsurface) 우선, 부재 시 로컬 stamp fallback.
+      // serverFlag가 있으면 로컬 stamp는 조회조차 안 한다(server-wins). 부재 시에만 stamp fallback.
+      it.each([
+        ['server=true → stamp 미조회, 게이트 subsurface=true (server-wins)', true, false, true, false],
+        ['server 부재 + stamp=true → 게이트 subsurface=true (local fallback)', undefined, true, true, true],
+        ['server 부재 + stamp=false → 게이트 subsurface=false (기존 GPS 게이트)', undefined, false, false, true],
+      ])('%s', async (_label, serverFlag, localStamp, expected, stampQueried) => {
+        mockGetSubsurfaceState.mockResolvedValue(localStamp);
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            ...(serverFlag === undefined ? {} : { subsurface: serverFlag }),
+          }),
+        );
+        expect(mockCheckGate).toHaveBeenCalledWith(
+          expect.objectContaining({ subsurface: expected }),
+        );
+        expect(mockGetSubsurfaceState).toHaveBeenCalledTimes(stampQueried ? 1 : 0);
       });
     });
 

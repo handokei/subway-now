@@ -210,6 +210,35 @@ describe('sendSilentPush', () => {
     });
   });
 
+  // #1307 — payload.subsurface wire 검증 (server-authoritative 지하 flag).
+  // true일 때만 wire, false/미지정은 byte-level 호환 위해 omit.
+  it.each([
+    ['true면 body.data.subsurface로 전달', true, true],
+    ['false면 body.data에서 omit (구 client/byte 호환)', false, false],
+    ['미지정이면 body.data에서 omit', undefined, false],
+  ])('subsurface %s (#1307)', async (_label, input, expectPresent) => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: {
+        nextWaypoint: '강남',
+        etaSeconds: 0,
+        phase: 'imminent',
+        kind: 'intermediate',
+        sentAt: 1_700_000_000_000,
+        pushId: 'p',
+        ...(input === undefined ? {} : { subsurface: input }),
+      },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('subsurface' in body.data).toBe(expectPresent);
+    if (expectPresent) expect(body.data.subsurface).toBe(true);
+  });
+
   it('uses sandbox host when provided', async () => {
     const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response('', { status: 200 }),

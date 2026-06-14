@@ -692,4 +692,77 @@ describe('checkSilentPushLocationGate', () => {
       expect(result.thresholdM).toBe(800);
     });
   });
+
+  // #1307 — subsurface(지하) intermediate 거리 검증 우회.
+  describe('subsurface bypass (#1307)', () => {
+    const runGate = (overrides: Partial<Parameters<typeof checkSilentPushLocationGate>[0]>) =>
+      checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        ...overrides,
+      });
+
+    // subsurface=true + intermediate면 위치 상태(out-of-range / stale / 미획득)와 무관하게 우회 pass.
+    it.each([
+      [
+        'GPS out-of-range여도 bypass (cache source 노출)',
+        () => mockGetLastKnownPositionAsync.mockResolvedValue(makePosition(FAR_FROM_GANGNAM.lat, FAR_FROM_GANGNAM.lng, 5_000)),
+        'cache' as const,
+      ],
+      [
+        '위치 stale(TTL 초과)여도 bypass',
+        () => mockGetLastKnownPositionAsync.mockResolvedValue(makePosition(FAR_FROM_GANGNAM.lat, FAR_FROM_GANGNAM.lng, LOCATION_CACHE_TTL_MS + 10_000)),
+        'cache' as const,
+      ],
+      [
+        '위치 미획득여도 bypass (locationSource 부재)',
+        () => {
+          mockGetLastKnownPositionAsync.mockResolvedValue(null);
+          mockGetCurrentPositionAsync.mockRejectedValue(new Error('denied'));
+        },
+        undefined,
+      ],
+    ])('subsurface=true + intermediate + %s', async (_label, setup, expectedSource) => {
+      setup();
+      const result = await runGate({ subsurface: true });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('subsurface-bypass');
+      expect(result.locationSource).toBe(expectedSource);
+    });
+
+    it('subsurface-bypass도 motion fields(speed/accuracy) 함께 노출', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue({
+        coords: {
+          latitude: FAR_FROM_GANGNAM.lat,
+          longitude: FAR_FROM_GANGNAM.lng,
+          accuracy: 18,
+          altitude: null,
+          heading: null,
+          speed: 3.2,
+          altitudeAccuracy: null,
+        },
+        timestamp: Date.now() - 5_000,
+      });
+      const result = await runGate({ subsurface: true });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('subsurface-bypass');
+      expect(result.speedMps).toBe(3.2);
+      expect(result.accuracyM).toBe(18);
+    });
+
+    // transfer/destination은 misfire 방지로 bypass 미적용. intermediate라도 subsurface 미지정이면 미적용.
+    it.each([
+      ['subsurface=true + transfer는 미적용 (기존 게이트)', { kind: 'transfer' as const, subsurface: true }],
+      ['subsurface=true + destination은 미적용 (기존 게이트)', { kind: 'destination' as const, subsurface: true }],
+      ['subsurface 미지정 + intermediate는 미적용 (no bypass)', {}],
+    ])('out-of-range로 skip — %s', async (_label, overrides) => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(FAR_FROM_GANGNAM.lat, FAR_FROM_GANGNAM.lng, 5_000),
+      );
+      const result = await runGate(overrides);
+      expect(result.pass).toBe(false);
+      expect(result.reason).toBe('out-of-range');
+    });
+  });
 });

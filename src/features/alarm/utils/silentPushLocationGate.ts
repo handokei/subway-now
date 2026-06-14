@@ -27,8 +27,9 @@ export type GateSkipReason = 'unknown-station' | 'no-location' | 'stale-location
  * pass=true일 때 어떤 경로로 통과했는지 식별. 운영 측정/디버깅용.
  * - 'within-threshold': 거리 임계값 이내 (기존 경로)
  * - 'hop-window-match': lockless + hop index 매치(거리 검증 우회, #1209 D3)
+ * - 'subsurface-bypass': 지하 intermediate 푸시 — GPS stale/spoof 회피 위해 거리 검증 우회(#1307)
  */
-export type GatePassReason = 'within-threshold' | 'hop-window-match';
+export type GatePassReason = 'within-threshold' | 'hop-window-match' | 'subsurface-bypass';
 export type GateLocationSource = 'cache' | 'fresh';
 
 export interface GateResult {
@@ -61,6 +62,14 @@ export interface SilentPushLocationGateInput {
    * silent push payload가 명시한 hop index. 백엔드 schema에 추가되기 전까지 undefined.
    */
   payloadHopIndex?: number;
+  /**
+   * 지하(subsurface) 여부. #1307. 호출자가 server payload.subsurface를 우선,
+   * 부재 시 디바이스 로컬 stamp(getSubsurfaceState)로 fallback해 해석한 boolean을 넘긴다.
+   * true + intermediate kind면 GPS 거리 검증을 우회한다 — 지하에서 WiFi/cell 보정으로
+   * stale/spoof된 GPS가 정상 intermediate push를 out-of-range로 오거부하는 회귀를 막는다.
+   * transfer/destination은 misfire 방지를 위해 우회하지 않고 기존 GPS 게이트를 유지한다.
+   */
+  subsurface?: boolean;
 }
 
 interface UserPosition {
@@ -170,12 +179,24 @@ function isHopWindowMatch(
 }
 
 /**
+ * #1307 — 지하 intermediate 푸시는 거리 검증을 우회한다.
+ * 지하에서는 WiFi/cell 보정으로 GPS가 stale/spoof되어 거리 게이트가 정상 push를
+ * out-of-range로 오거부한다. backend Seoul-API가 위치 SSOT인 intermediate(매역) push만
+ * 우회 — transfer/destination은 misfire 방지를 위해 기존 GPS 게이트를 유지한다.
+ */
+function isSubsurfaceBypass(input: SilentPushLocationGateInput): boolean {
+  return input.subsurface === true && input.kind === 'intermediate';
+}
+
+/**
  * silent push 수신 시 "사용자가 실제로 그 역 근처에 있는지" 확인하는 게이트.
  * pass=true면 알림 발사, false면 skip + alarmLog에 skipReason 기록.
  *
  * 정책:
  *   1) stationName이 stations.json에 없으면 skip (unknown-station)
  *   2) 위치 획득 실패 시 skip (no-location) — 보수적
+ *   2.5) subsurface(지하) + intermediate면 거리/stale 검증 우회 pass (#1307) —
+ *        지하 GPS stale/spoof로 인한 out-of-range 오거부 차단. transfer/destination은 제외.
  *   3) 캐시가 TTL 초과면 skip (stale-location) — 보수적
  *   4) lockless + intermediate + hop index 매치면 거리 검증 우회 pass (#1209 D3)
  *   5) phase/kind별 임계값 이내면 pass, 초과면 skip (out-of-range)
@@ -202,7 +223,28 @@ export async function checkSilentPushLocationGate(
     ) {
       return { pass: true, passReason: 'hop-window-match' };
     }
+    // #1307 — 지하 intermediate는 GPS 미준비여도 server SSOT를 신뢰해 pass.
+    if (isSubsurfaceBypass(input)) {
+      return { pass: true, passReason: 'subsurface-bypass' };
+    }
     return { pass: false, reason: 'no-location' };
+  }
+
+  const motionFields = {
+    ...(pos.speedMps == null ? {} : { speedMps: pos.speedMps }),
+    ...(pos.accuracyM == null ? {} : { accuracyM: pos.accuracyM }),
+  };
+
+  // #1307 — 지하 intermediate는 GPS가 stale/spoof되므로 stale/거리 검증을 우회하고 pass.
+  // 후속 movement 가드(silentPushTask)가 speed/accuracy/motion으로 정적 misfire를 추가 차단한다.
+  if (isSubsurfaceBypass(input)) {
+    return {
+      pass: true,
+      passReason: 'subsurface-bypass',
+      locationSource: pos.source,
+      locationAgeMs: pos.ageMs,
+      ...motionFields,
+    };
   }
 
   if (pos.ageMs > LOCATION_CACHE_TTL_MS) {
@@ -215,10 +257,6 @@ export async function checkSilentPushLocationGate(
   }
 
   const isLockless = input.isLockless === true;
-  const motionFields = {
-    ...(pos.speedMps == null ? {} : { speedMps: pos.speedMps }),
-    ...(pos.accuracyM == null ? {} : { accuracyM: pos.accuracyM }),
-  };
 
   // #1209 D3 — lockless + intermediate + hop window 매치 시 거리 검증 우회.
   // D1 estimator의 hop이 payload hop과 ±1 이내라면 GPS 좌표가 drift해도 같은 leg로 간주.
