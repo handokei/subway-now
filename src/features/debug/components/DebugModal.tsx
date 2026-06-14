@@ -65,6 +65,7 @@ import type { FusionConfidence, FusionSource } from '../../../shared/types/fusio
 import type { NearestStationResult } from '../../../shared/types/station';
 import { useTheme, spacing, radius, typography } from '../../../shared/theme';
 import { useBarometer } from '../../../shared/hooks/useBarometer';
+import { useLowPowerMode } from '../../../shared/hooks/useLowPowerMode';
 
 /**
  * #1215 (D9) — DebugModal 상태 가시화 신규 prop 묶음.
@@ -215,6 +216,7 @@ function silentPushDiagRows(
   d: SilentPushDiagnostics,
   logs: readonly AlarmLogEntry[],
   locklessOn: boolean,
+  lowPowerMode: boolean,
 ): { uiLabel: string; dumpKey: string; value: string }[] {
   const task = d.taskRegistrationError
     ? `${d.taskRegistrationState} (${d.taskRegistrationError})`
@@ -223,6 +225,9 @@ function silentPushDiagRows(
   const receivedValue = buildSilentPushCountValue(silentCounts.received, formatAt(d.lastReceivedAt));
   const firedValue = buildSilentPushCountValue(silentCounts.fired, formatAt(d.lastFiredAt));
   const toggleValue = locklessOn ? SILENT_PUSH_LABELS.toggleOn : SILENT_PUSH_LABELS.toggleOff;
+  // #1308 — LPM은 silent push를 throttle/drop 한다. received 카운트 옆에 두어 "LPM ON인데
+  // received가 안 늘어남"을 한눈에 보고 측정할 수 있게 한다.
+  const lowPowerValue = lowPowerMode ? 'ON' : 'off';
   return [
     { uiLabel: 'permission', dumpKey: 'permission', value: d.permissionStatus ?? '(unknown)' },
     { uiLabel: 'apnsToken', dumpKey: 'apnsToken', value: formatTokenTail(d.apnsToken) },
@@ -248,6 +253,7 @@ function silentPushDiagRows(
       dumpKey: SILENT_PUSH_LABELS.toggleKey,
       value: toggleValue,
     },
+    { uiLabel: 'lowPower', dumpKey: 'lowPowerMode', value: lowPowerValue },
   ];
 }
 
@@ -334,6 +340,8 @@ function buildDumpText(args: {
   // #856: lockless station-passed toggle ON/OFF — Silent Push 섹션 row의 SSOT.
   // optional — DebugModal 본체는 항상 전달, 단순 dump 단위 테스트는 생략 가능(기본 false).
   locklessOn?: boolean;
+  // #1308: iOS 저전력 모드. optional — 미전달 시 false(off). silent push 측정용.
+  lowPowerMode?: boolean;
   // #756: OS 큐 dump. 미전달/null = DebugModal에서 한 번도 Refresh 안 한 상태.
   scheduledDump?: ScheduledNotificationDumpEntry[] | null;
   // #1215 (D9) — 추가 상태 가시화. 모두 optional — 미전달 시 dump의 해당 라인은 '—' 표기.
@@ -413,7 +421,12 @@ function buildDumpText(args: {
   lines.push('', '## Arrival', args.arrivalSummary);
   if (args.isMock) lines.push('(MOCK)');
   lines.push('', '## Silent Push');
-  for (const { dumpKey, value } of silentPushDiagRows(args.silentPush, args.logs, args.locklessOn ?? false)) {
+  for (const { dumpKey, value } of silentPushDiagRows(
+    args.silentPush,
+    args.logs,
+    args.locklessOn ?? false,
+    args.lowPowerMode ?? false,
+  )) {
     lines.push(`${dumpKey}=${value}`);
   }
   lines.push('');
@@ -572,6 +585,8 @@ function DebugModalInner({
   // #1215 (D9) — 기압계 subsurface. useBarometer는 shared/hooks이라 의존 위배 없음.
   // useFusedNearestStation 내부 useBarometer와 별개 listener — DebugModal 관찰자 효과 허용 범위.
   const { subsurface: barometerSubsurface } = useBarometer();
+  // #1308 — iOS 저전력 모드. silent push throttle 측정용 텔레메트리 (동작 변경 없음).
+  const lowPowerMode = useLowPowerMode();
   const fusedLabel = formatStationLabel(result);
   const gpsLabel = formatStationLabel(gpsResult);
   const differs = fusedDiffersFromGps(result, gpsResult);
@@ -710,6 +725,7 @@ function DebugModalInner({
       silentPush,
       logs,
       locklessOn,
+      lowPowerMode,
       scheduledDump,
       barometerSubsurface,
       fusionDetection,
@@ -738,6 +754,7 @@ function DebugModalInner({
     silentPush,
     logs,
     locklessOn,
+    lowPowerMode,
     scheduledDump,
     barometerSubsurface,
     fusionDetection,
@@ -898,9 +915,11 @@ function DebugModalInner({
           </Section>
 
           <Section title="Silent Push" colors={colors}>
-            {silentPushDiagRows(silentPush, logs, locklessOn).map(({ uiLabel, value }) => (
-              <KeyValue key={uiLabel} label={uiLabel} value={value} colors={colors} />
-            ))}
+            {silentPushDiagRows(silentPush, logs, locklessOn, lowPowerMode).map(
+              ({ uiLabel, value }) => (
+                <KeyValue key={uiLabel} label={uiLabel} value={value} colors={colors} />
+              ),
+            )}
           </Section>
 
           <BoardingLockSection lock={lock} colors={colors} />
