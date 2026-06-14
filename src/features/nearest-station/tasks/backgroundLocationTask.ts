@@ -24,8 +24,15 @@ import { evaluateMovement } from '../utils/movementGate';
 // #1237 — BG tick에서도 위젯 SSOT(App Groups UserDefaults)를 갱신해 FG 진입 전까지 stale로 남지 않게 한다.
 // cross-feature import는 파일 헤더의 file-level eslint-disable로 옵트인 (orchestrator 본질).
 import { saveStationToWidget } from '../../widget/api/widgetStorage';
+// #1281 — BG 환승 자동 detect. FG `useTransferAutoDetect`와 같은 `evaluateTransferSwap` pure 결정을
+// 공유하는 route 슬라이스 orchestrator. cross-feature import는 본 파일 헤더 file-level disable로 옵트인.
+import { evaluateBackgroundTransferSwap } from '../../route/utils/backgroundTransferSwap';
+import { createArrivalProvider } from '../../arrival/providers/factory';
+import { findNearestStations } from '../utils/findNearestStation';
+import { syncBoardingLock } from '../api/boardingLockSync';
+import { getBoardingLock } from '../../alarm/utils/boardingLockStorage';
 import type { Route } from '../../../shared/utils/stationRoute';
-import { isValidGpsSpeedMps } from '../../../shared/constants/location';
+import { isValidGpsSpeedMps, MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
 import type { Station } from '../../../shared/types/station';
 
 const logger = createLogger('BackgroundLocation');
@@ -230,6 +237,31 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
       // + FRESHNESS_REFRESH_MS는 FG/BG 같은 인스턴스라 자연 동작. null nearest는 호출 X
       // (FG/BG transient null로 widget zap 방지, Phase 3 clear 정책 완화와 정합성).
       await saveStationToWidget(nearest.station, nearest.distanceKm);
+    }
+
+    // #1281 — BG 환승 자동 detect. 주머니 속 환승에서 FG hook 진입점이 없어 옛 노선 lock이
+    // 얼어붙던 회귀를 차단한다. lock 활성 + 환승역 + 다른 노선 임박 + walking이 모두 충족될 때만
+    // 새 노선 trainCode를 backend `/boarding-lock/sync`에 통보 → W1(#1271) swap 경로로 hydrate.
+    // apnsToken 부재(트립 미등록 등)는 함수 내부 게이트가 graceful no-op 처리.
+    const swapLock = await getBoardingLock();
+    if (apnsToken && swapLock) {
+      await evaluateBackgroundTransferSwap(
+        {
+          lat,
+          lng,
+          accuracy: accuracy ?? 0,
+          observedAtMs: latest.timestamp,
+          apnsToken,
+          lock: swapLock,
+          motionStationary: motionStationary === true,
+          destinationName: destination.name,
+        },
+        {
+          findNearestStations: (la, ln) => findNearestStations(la, ln, MAX_STATION_DISTANCE_KM),
+          arrivalProvider: createArrivalProvider(),
+          syncBoardingLock,
+        },
+      );
     }
 
     logger.info('백그라운드 위치 업데이트 완료:', lat.toFixed(4), lng.toFixed(4));

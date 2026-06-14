@@ -70,6 +70,28 @@ jest.mock('../../../widget/api/widgetStorage', () => ({
   saveStationToWidget: (...args: unknown[]) => mockSaveStationToWidget(...args),
 }));
 
+// ── #1281 BG 환승 자동 detect 모킹 (결정 로직은 backgroundTransferSwap.test.ts에서 별도 검증) ──
+const mockEvaluateBackgroundTransferSwap = jest.fn();
+jest.mock('../../../route/utils/backgroundTransferSwap', () => ({
+  evaluateBackgroundTransferSwap: (...args: unknown[]) => mockEvaluateBackgroundTransferSwap(...args),
+}));
+const mockArrivalProvider = { getArrival: jest.fn() };
+jest.mock('../../../arrival/providers/factory', () => ({
+  createArrivalProvider: () => mockArrivalProvider,
+}));
+const mockFindNearestStations = jest.fn();
+jest.mock('../../utils/findNearestStation', () => ({
+  findNearestStations: (...args: unknown[]) => mockFindNearestStations(...args),
+}));
+const mockSyncBoardingLock = jest.fn();
+jest.mock('../../api/boardingLockSync', () => ({
+  syncBoardingLock: (...args: unknown[]) => mockSyncBoardingLock(...args),
+}));
+const mockGetBoardingLock = jest.fn();
+jest.mock('../../../alarm/utils/boardingLockStorage', () => ({
+  getBoardingLock: () => mockGetBoardingLock(),
+}));
+
 // ── logger 모킹 ──
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -175,6 +197,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockGetCurrentMotionStationary.mockReturnValue(false);
     mockGetLatestAccelSummary.mockReturnValue(null);
     mockSaveStationToWidget.mockResolvedValue(undefined);
+    mockGetBoardingLock.mockResolvedValue(null);
+    mockEvaluateBackgroundTransferSwap.mockResolvedValue({ fired: false });
+    mockFindNearestStations.mockReturnValue(null);
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -992,6 +1017,93 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
       expect(mockUploadPosition).toHaveBeenCalledWith(expect.objectContaining({ motion: 'stationary' }));
       expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('#1281 — BG 환승 자동 detect wire', () => {
+    const swapLock = {
+      destinationId: 'station-2',
+      trainCode: 'T-7-old',
+      boardingStationId: 'station-7',
+      boardingLine: '7' as const,
+      boardedAt: Date.now(),
+      expectedDurationMs: 30 * 60_000,
+    };
+
+    /** mockStorageValues 4개 후 BG_LAST_FIX(null) + APNS_TOKEN을 chain. */
+    function stubApnsTokenAfterStorage(token: string | null): void {
+      (AsyncStorage.getItem as jest.Mock)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(token);
+    }
+
+    it('lock 활성 + apnsToken 있으면 evaluateBackgroundTransferSwap을 컨텍스트와 함께 호출', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+      mockProcessLocationUpdate.mockResolvedValue({
+        alarmEvent: null,
+        nearest: { station: mockStation, distanceKm: 0.1 },
+      });
+      mockGetBoardingLock.mockResolvedValue(swapLock);
+      mockGetCurrentMotionStationary.mockReturnValue(false);
+
+      const fixTs = Date.now();
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      loc.timestamp = fixTs;
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      expect(mockEvaluateBackgroundTransferSwap).toHaveBeenCalledTimes(1);
+      const [input, deps] = mockEvaluateBackgroundTransferSwap.mock.calls[0];
+      expect(input).toMatchObject({
+        lat: 37.498,
+        lng: 127.028,
+        accuracy: 10,
+        observedAtMs: fixTs,
+        apnsToken: 'apns-tok-1',
+        lock: swapLock,
+        motionStationary: false,
+        destinationName: '시청',
+      });
+      // 주입된 의존성이 실제 모듈로 연결됐는지 확인.
+      expect(deps.arrivalProvider).toBe(mockArrivalProvider);
+      deps.syncBoardingLock({ token: 't', observedStationName: 's', observedAtMs: 0, accuracy: 0, trainCode: 'c', boardingLine: '2' });
+      expect(mockSyncBoardingLock).toHaveBeenCalled();
+      deps.findNearestStations(1, 2);
+      expect(mockFindNearestStations).toHaveBeenCalledWith(1, 2, expect.any(Number));
+    });
+
+    it('accuracy null fix는 swap input.accuracy=0으로 강등', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+      mockGetBoardingLock.mockResolvedValue(swapLock);
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: null });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      const [input] = mockEvaluateBackgroundTransferSwap.mock.calls[0];
+      expect(input.accuracy).toBe(0);
+    });
+
+    it('lock 없으면 evaluateBackgroundTransferSwap 미호출', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+      mockGetBoardingLock.mockResolvedValue(null);
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      expect(mockEvaluateBackgroundTransferSwap).not.toHaveBeenCalled();
+    });
+
+    it('apnsToken 없으면 evaluateBackgroundTransferSwap 미호출', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage(null);
+      mockGetBoardingLock.mockResolvedValue(swapLock);
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      expect(mockEvaluateBackgroundTransferSwap).not.toHaveBeenCalled();
     });
   });
 });
