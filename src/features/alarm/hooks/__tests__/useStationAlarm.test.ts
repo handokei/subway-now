@@ -3582,4 +3582,195 @@ describe('useStationAlarm', () => {
       expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
     });
   });
+
+  // #1290/#1298 — subsurfaceStationDetected verdict 기반 station-passed 발사.
+  // GPS 거리/정확도 게이트 우회 — fusion 레이어가 이미 ≥2 신호 합의 + 역 근접 통과시킨 신호.
+  describe('#1298 subsurfaceStationDetected → station-passed 발사', () => {
+    const routeDirect = makeDirectRoute(3, '2');
+    const onRouteStation = makeStation('S-SUB', '봉은사', 37.5, 127.0);
+
+    function subsurfaceInputs(
+      overrides: Partial<UseStationAlarmInputs> = {},
+    ): UseStationAlarmInputs {
+      return defaultInputs({
+        route: routeDirect,
+        destination,
+        nearestStation: onRouteStation,
+        // GPS 게이트 차단 상태 (accuracy 불량) — subsurface path는 이 게이트를 우회해야 함
+        accuracyMeters: 500,
+        userLocation: null,
+        speedMps: null,
+        subsurfaceStationDetected: true,
+        ...overrides,
+      });
+    }
+
+    it('subsurfaceStationDetected=true + 새 station → station-passed 발사 (GPS 게이트 무관)', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      });
+
+      renderHook(() => useStationAlarm(subsurfaceInputs()));
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      // GPS phase 알람은 accuracyMeters=500으로 차단
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+
+    it('subsurfaceStationDetected=true + 이미 발사한 station → dedup으로 미발사', async () => {
+      // lastNotifiedStationId가 이미 onRouteStation.id → 중복 차단
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+
+      renderHook(() => useStationAlarm(subsurfaceInputs()));
+
+      await waitFor(() => expect(mockLogSuppressedDedupStation).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('subsurfaceStationDetected=false → 기존 GPS path 동작 유지 (회귀 없음)', () => {
+      renderHook(() =>
+        useStationAlarm(
+          subsurfaceInputs({
+            subsurfaceStationDetected: false,
+          }),
+        ),
+      );
+
+      // GPS 게이트 차단(accuracyMeters=500) + subsurface=false → 어떤 경로도 발화 안 함
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+
+    it('subsurfaceStationDetected 미전달(undefined) → 기존 동작 유지 (graceful fallback)', () => {
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirect,
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 500,
+          }),
+        ),
+      );
+
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('subsurfaceStationDetected=true + nearestStation이 route 위에 없음(다른 노선) → 미발사', async () => {
+      // routeDirect는 line='2' 기반. 다른 노선 역은 isStationOnRoute에서 false.
+      const offRouteStation: Station = { ...makeStation('S-OFF', '노원', 37.655, 127.061), line: '7' };
+
+      renderHook(() =>
+        useStationAlarm(
+          subsurfaceInputs({
+            nearestStation: offRouteStation,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('subsurfaceStationDetected=true + route=null → 미발사 (guard)', async () => {
+      renderHook(() =>
+        useStationAlarm(
+          subsurfaceInputs({
+            route: null,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('subsurfaceStationDetected=true + destination=null → 미발사 (guard)', async () => {
+      renderHook(() =>
+        useStationAlarm(
+          subsurfaceInputs({
+            destination: null,
+          }),
+        ),
+      );
+
+      // destination=null이면 hydration도 complete되지 않으므로 waitFor 없이 검증
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('subsurfaceStationDetected=true + nearestStation=null → 미발사 (guard)', async () => {
+      renderHook(() =>
+        useStationAlarm(
+          subsurfaceInputs({
+            nearestStation: null,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('subsurfaceStationDetected=true + hydrationPhase 미완료(pre-hydrate) → 미발사', () => {
+      // awaitInitialScheduledAlarmDrain을 pending 상태로 두면 hydrationPhase가 ready 미진입
+      mockAwaitInitialScheduledAlarmDrain.mockReturnValue(new Promise(() => {}));
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+
+      renderHook(() => useStationAlarm(subsurfaceInputs()));
+
+      // hydration 미완료이므로 발사 안 됨
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('subsurfaceStationDetected=true + destination 교체 직후(ref mismatch) → logRefMismatch + 미발사', async () => {
+      // 1) 첫 destination hydration 완료 후 subsurface 발사 확인.
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      });
+
+      const { rerender } = renderHook(
+        ({ dest }: { dest: Station }) =>
+          useStationAlarm(subsurfaceInputs({ destination: dest })),
+        { initialProps: { dest: destination } },
+      );
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+
+      // 2) destination 교체 → hydration 리셋(pre-hydrate). pending getFiredAlarms로 ready 미진입.
+      mockGetFiredAlarms.mockReturnValue(new Promise(() => {}));
+      mockSendStationPassedNotification.mockClear();
+      mockLogRefMismatch.mockClear();
+
+      rerender({ dest: altDestination });
+      // hydration이 pending이라 ref는 아직 destination.id. subsurface effect가 altDestination.id ≠ ref → logRefMismatch.
+      await waitFor(() => expect(mockLogRefMismatch).toHaveBeenCalled());
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('subsurfaceStationDetected=true + IIFE 중 cleanup → 후속 dispatch 미실행 (cancelled guard)', async () => {
+      const resolvers: Array<(v: null) => void> = [];
+      mockGetBoardingLock.mockImplementation(
+        () =>
+          new Promise<null>((r) => {
+            resolvers.push(r);
+          }),
+      );
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+
+      const { unmount } = renderHook(() => useStationAlarm(subsurfaceInputs()));
+      await waitFor(() => expect(mockGetBoardingLock).toHaveBeenCalled());
+      unmount();
+      resolvers.forEach((r) => r(null));
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+  });
 });

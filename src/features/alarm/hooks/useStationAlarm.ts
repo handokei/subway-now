@@ -319,6 +319,13 @@ export interface UseStationAlarmInputs {
    * 빈 배열/미전달이면 게이트 미적용(graceful).
    */
   arcStations?: readonly Station[];
+  /**
+   * #1290/#1298 — useFusedNearestStation.subsurfaceStationDetected 패스스루.
+   * true이면 지하(subsurface=true) + barometer-stop/motion-stationary/arvlcd-arrived ≥2 합의 +
+   * 역 근접 게이트를 모두 통과한 상태. GPS/arrival 게이트와 독립적으로 station-passed 발사 트리거.
+   * 미전달/false면 기존 동작 유지(graceful fallback).
+   */
+  subsurfaceStationDetected?: boolean;
 }
 
 export function useStationAlarm({
@@ -337,6 +344,7 @@ export function useStationAlarm({
   skipWarmupGuard = false,
   currentHopIndex = null,
   arcStations,
+  subsurfaceStationDetected = false,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
   // #699: firedAlarmsRef의 내용이 어느 destinationId에 속하는지 추적.
@@ -1033,5 +1041,66 @@ export function useStationAlarm({
     currentHopIndex,
     // #1266 — fast-path hop window 게이트 입력. arcStations 변화 시(환승 후 leg 전환 등) 재평가.
     arcStations,
+  ]);
+
+  // #1290/#1298 — subsurface verdict 기반 station-passed 발사.
+  // subsurfaceStationDetected=true: 지하(subsurface=true) + ≥2 신호 합의(barometer-stop/
+  // motion-stationary/arvlcd-arrived) + 역 근접 게이트를 useFusedNearestStation이 이미 통과시킨 상태.
+  // GPS 거리/정확도 게이트가 이미 fusion 레이어에서 무효화된 신호이므로 여기서 재적용하지 않는다.
+  // dedup: lastNotifiedStationId 단일 출처 — GPS/FG-arvlcd/subsurface 세 경로 중 첫 발사 이후 나머지 자동 dedup.
+  useEffect(() => {
+    if (!subsurfaceStationDetected) return;
+    if (hydrationPhase !== 'ready') return;
+    if (!route || !destination) return;
+    if (!nearestStation) return;
+    if (firedAlarmsRefDestIdRef.current !== destination.id) {
+      logRefMismatch(destination.id, firedAlarmsRefDestIdRef.current);
+      return;
+    }
+    if (!isStationOnRoute(nearestStation, route)) return;
+
+    const candidateStation = nearestStation;
+    const capturedRoute = route;
+    const capturedDestinationId = destination.id;
+    const capturedDestinationName = destination.name;
+
+    let cancelled = false;
+    void (async () => {
+      const lock = await getBoardingLock();
+      if (cancelled) return;
+      await runSilenceGateAndDispatch({
+        source: 'fg',
+        candidateStation,
+        capturedRoute,
+        capturedDestinationId,
+        capturedDestinationName,
+        notificationSource,
+        isCancelled: () => cancelled,
+        errorLogPrefix: 'subsurface station-passed 알림 실패:',
+        dismissSilence,
+        userLocation,
+        clearDismissSilenceAction,
+        sleepMode: sleepModeRef.current,
+        currentHopIndex,
+        lock,
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    subsurfaceStationDetected,
+    hydrationPhase,
+    route,
+    destination?.id,
+    destination?.name,
+    nearestStation?.id,
+    dismissSilence,
+    clearDismissSilenceAction,
+    userLocation?.lat,
+    userLocation?.lng,
+    notificationSource,
+    currentHopIndex,
   ]);
 }
