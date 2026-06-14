@@ -337,4 +337,59 @@ describe('cleanupTripWithLa', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(await kv.get('trip:devtoken')).toBeNull();
   });
+
+  // #1283 — trip-ended push도 다른 push 경로와 동일하게 env-heal 적용.
+  it('trip-ended push self-heals on BadDeviceToken (opposite-host retry)', async () => {
+    const kv = new InMemoryKV();
+    // activityPushToken 없음 → dismissal skip, trip-ended push만 발사돼 호출을 격리.
+    const trip = makeTrip({ activityPushToken: undefined, apnsEnv: 'sandbox' });
+    await kv.put('trip:devtoken', JSON.stringify(trip));
+    const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+    const calls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string) => {
+      calls.push(url);
+      // 1차 sandbox host → BadDeviceToken, 2차 production host → 성공.
+      if (url.includes(APNS_HOSTS.sandbox)) {
+        return new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 });
+      }
+      return new Response('', { status: 200 });
+    });
+    await cleanupTripWithLa(
+      trip,
+      env,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeStats(),
+      NOW,
+      () => undefined,
+      'eta-missing',
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(calls[0]).toContain(APNS_HOSTS.sandbox);
+    expect(calls[1]).toContain(APNS_HOSTS.production);
+    expect(await kv.get('trip:devtoken')).toBeNull();
+  });
+
+  it('trip-ended push logs failure when both hosts reject (env mismatch exhausted)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({ activityPushToken: undefined, apnsEnv: 'sandbox' });
+    await kv.put('trip:devtoken', JSON.stringify(trip));
+    const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+    );
+    const logs: string[] = [];
+    await cleanupTripWithLa(
+      trip,
+      env,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeStats(),
+      NOW,
+      (msg) => logs.push(msg),
+      'eta-missing',
+    );
+    // 1차 + retry 모두 호출, 둘 다 실패 → 'trip-ended push failed' 로그.
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(logs).toContain('trip-ended push failed');
+    expect(await kv.get('trip:devtoken')).toBeNull();
+  });
 });

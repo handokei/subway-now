@@ -9,9 +9,8 @@ import {
   sendReschedulePush,
   sendSilentPush,
   type ApnsConfig,
-  type SendPushResult,
 } from './apns';
-import { flipApnsEnv, pickApnsHost } from './apnsHost';
+import { flipApnsEnv, pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import {
   attemptAutoLock,
   AUTO_PROMPT_DEDUP_WINDOW_MS,
@@ -125,51 +124,6 @@ export function resolveEtaMissingThreshold(trip: Pick<Trip, 'subsurface'>): numb
  * 런타임에서 `Invalid cache_ttl` 던짐(#770 hotfix).
  */
 const CRON_PROGRESS_CACHE_TTL_SEC = 30;
-
-export interface EnvHealResult {
-  result: SendPushResult;
-  /** retry로 정정된 새 env. 정정 발생 시에만 set. */
-  correctedEnv?: ApnsEnv;
-  /** 양쪽 host 모두 BadDeviceToken — 토큰 자체 무효 신호. */
-  envMismatchExhausted: boolean;
-}
-
-/**
- * APNs env mismatch self-heal (#482). 1차 호출 → BadDeviceToken이면 opposite host로 1회 retry.
- * `sender`는 host를 받아 push를 보내는 클로저 — phase push / reschedule push 양쪽에서 재사용.
- *
- * 호출자 책임:
- *   - correctedEnv set → trip.apnsEnv 갱신 + envCorrected stat 카운트
- *   - envMismatchExhausted true → trip 삭제
- *   - result.ok / !ok 분기는 각 경로별 후처리에 맡김
- */
-export async function sendWithEnvHeal(
-  sender: (host: string) => Promise<SendPushResult>,
-  currentEnv: ApnsEnv | undefined,
-  apnsHosts: Record<ApnsEnv, string>,
-  log: Logger,
-  tokenForLog: string,
-): Promise<EnvHealResult> {
-  const initial = await sender(pickApnsHost(currentEnv, apnsHosts));
-  if (initial.ok || !isApnsEnvMismatch(initial.status, initial.reason)) {
-    return { result: initial, envMismatchExhausted: false };
-  }
-  const corrected = flipApnsEnv(currentEnv);
-  log('apns env mismatch — retry with opposite host', {
-    token: tokenForLog,
-    from: currentEnv ?? 'sandbox',
-    to: corrected,
-  });
-  const retry = await sender(apnsHosts[corrected]);
-  if (retry.ok) {
-    log('apns env corrected', { token: tokenForLog, to: corrected });
-    return { result: retry, correctedEnv: corrected, envMismatchExhausted: false };
-  }
-  return {
-    result: retry,
-    envMismatchExhausted: isApnsEnvMismatch(retry.status, retry.reason),
-  };
-}
 
 type Logger = (message: string, meta?: Record<string, unknown>) => void;
 
@@ -1444,10 +1398,6 @@ function isUnrecoverableApnsError(status: number, _reason: string | undefined): 
  * APNs 토큰 환경(sandbox/production)과 host가 어긋났을 때 Apple이 내는 시그널.
  * 이 조건에 한해서만 self-heal retry를 시도한다.
  */
-function isApnsEnvMismatch(status: number, reason: string | undefined): boolean {
-  return status === 400 && reason === 'BadDeviceToken';
-}
-
 /**
  * "탑승했냐?" 푸시 평가 + 발사 (#819 B 슬라이스).
  *
