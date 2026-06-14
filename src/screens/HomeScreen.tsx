@@ -52,6 +52,7 @@ import { useBoardingLockAdvancer } from '../features/alarm/hooks/useBoardingLock
 import { useBoardingLockAutoRelease } from '../features/alarm/hooks/useBoardingLockAutoRelease';
 import { useDestinationAutoClear } from '../features/alarm/hooks/useDestinationAutoClear';
 import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
+import { useFgPositionUpload } from '../features/alarm/hooks/useFgPositionUpload';
 import { useCurrentStationConfirmModal } from '../features/nearest-station/hooks/useCurrentStationConfirmModal';
 import { useWifiStation } from '../features/nearest-station/hooks/useWifiStation';
 import { CurrentStationConfirmModal } from '../features/nearest-station/components/CurrentStationConfirmModal';
@@ -407,6 +408,15 @@ export default function HomeScreen() {
     boardingLockTrainCode: boardingLock?.trainCode ?? null,
     boardingLockLine: boardingLock?.boardingLine ?? null,
     onAutoLockCandidate: hydrateLockFromCandidate,
+  });
+  // #1280 — FG(WhileInUse) 위치 채널. BG task가 안 도는 WhileInUse 권한에서 FG fix-watch가
+  // ~10s throttle로 좌표를 backend에 송신해 POST /position 0건 회귀를 메운다. useBoardingLockSync와
+  // 동일하게 trip 활성 + 좋은 fix(≤50m) 게이트. fire-and-forget(URL 미설정/네트워크 실패 graceful).
+  useFgPositionUpload({
+    userLocation,
+    accuracyMeters: accuracyMeters ?? null,
+    tripActive: Boolean(destination && route),
+    motionStationary,
   });
   useBoardingLockScheduler({
     lock: boardingLock,

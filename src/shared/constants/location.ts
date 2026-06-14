@@ -21,6 +21,12 @@ export const MAX_PLAUSIBLE_SPEED_MPS = 50;
 // 차단이 발생하는 것을 막는다. 21:29 사고(25km)는 이 임계값보다 한참 위라 영향 없음.
 export const MIN_JUMP_DISTANCE_M = 100;
 
+// #1280 — foreground(WhileInUse) 위치 업로드 throttle 간격.
+// BG 위치 task가 못 도는 WhileInUse 권한에서 FG fix-watch가 ~10s마다 backend로 좌표를 송신해
+// POST /position 채널을 점등한다. BG `timeInterval`(30s)보다 짧아 FG 활성 동안은 더 촘촘히
+// 위치 지능을 먹인다. 연속 fix가 이 간격보다 자주 들어와도 1회로 묶인다.
+export const FG_POSITION_UPLOAD_THROTTLE_MS = 10_000;
+
 // iOS CoreLocation은 속도를 측정할 수 없을 때 음수(보통 -1)를 반환한다.
 // stationary/indoor/cold-start 등에서 자주 발생 — null로 정규화해 다운스트림이
 // "측정 불가"와 "정지(0 m/s)"를 명확히 구분하도록 한다.
