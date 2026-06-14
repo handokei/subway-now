@@ -136,6 +136,28 @@ describe('useFusedNearestStation — #1286 WiFi SSID fusion', () => {
       expect(result.current.gpsResult?.station.id).toBe(MOCK_STATIONS.gangnam.id);
       expect(result.current.source).toBe('wifi-ssid');
     });
+
+    it('GPS userLocation=null(완전 dead)이어도 wifi-ssid 채택 — distanceKm=0', () => {
+      // 지하 GPS 완전 실패(좌표 자체 없음). wifi가 잡히면 거리 산정 없이 wifi 역 채택.
+      mockUseNearest.mockReturnValue(gpsBase({ userLocation: null, result: null }));
+      mockFindTop.mockReturnValue([]);
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { subsurface: true },
+          yongmasan,
+        ),
+      );
+      expect(result.current.confidence).toBe('wifi-ssid');
+      expect(result.current.result?.station.id).toBe(yongmasan.id);
+      expect(result.current.result?.distanceKm).toBe(0);
+    });
   });
 
   describe('지상(subsurface=false) — WiFi 무시, 기존 cascade', () => {
