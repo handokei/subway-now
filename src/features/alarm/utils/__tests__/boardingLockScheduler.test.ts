@@ -873,27 +873,28 @@ describe('setRegisteredBlRouteSig / getRegisteredBlRouteSig / clearRegisteredBlR
   });
 });
 
-// #1282 — cancelAllHopsForLock이 route-sig 변경 시 clearRegisteredBlRouteSig를 호출하는 통합 검증.
-describe('cancelAllHopsForLock: route-sig cleanup (#1282)', () => {
-  it('취소 대상이 있어도 clearRegisteredBlRouteSig를 호출한다', async () => {
-    mockedGet.mockResolvedValueOnce(['bl:T-100:0:early:강남', 'bl:T-100:0:imminent:강남']);
-    await cancelAllHopsForLock(lock);
-    // clearRegisteredBlRouteSig는 BOARDING_LOCK_ROUTE_SIG_KEY를 removeItem
-    expect(mockAsyncRemoveItem).toHaveBeenCalledWith('subway-now:boarding-lock-route-sig');
-  });
-
-  it('취소 대상이 없어도 clearRegisteredBlRouteSig를 호출한다', async () => {
-    mockedGet.mockResolvedValueOnce([]);
-    await cancelAllHopsForLock(lock);
-    expect(mockAsyncRemoveItem).toHaveBeenCalledWith('subway-now:boarding-lock-route-sig');
-  });
-});
-
-// #1282 — purgeBoardingLockSchedulerQueue도 clearRegisteredBlRouteSig를 호출하는 통합 검증.
-describe('purgeBoardingLockSchedulerQueue: route-sig cleanup (#1282)', () => {
-  it('purge 시 clearRegisteredBlRouteSig를 호출한다', async () => {
-    mockedGet.mockResolvedValueOnce([]);
-    await purgeBoardingLockSchedulerQueue();
+// #1282 — cancel/purge 경로가 항상 clearRegisteredBlRouteSig(=BOARDING_LOCK_ROUTE_SIG_KEY
+// removeItem)를 호출하는지 통합 검증. 호출자/큐 상태만 다르고 단언이 동일하므로 it.each로 통합.
+describe('route-sig cleanup 통합 (#1282)', () => {
+  it.each([
+    {
+      name: 'cancelAllHopsForLock: 취소 대상이 있어도',
+      queued: ['bl:T-100:0:early:강남', 'bl:T-100:0:imminent:강남'],
+      run: () => cancelAllHopsForLock(lock),
+    },
+    {
+      name: 'cancelAllHopsForLock: 취소 대상이 없어도',
+      queued: [],
+      run: () => cancelAllHopsForLock(lock),
+    },
+    {
+      name: 'purgeBoardingLockSchedulerQueue',
+      queued: [],
+      run: () => purgeBoardingLockSchedulerQueue(),
+    },
+  ])('$name clearRegisteredBlRouteSig를 호출한다', async ({ queued, run }) => {
+    mockedGet.mockResolvedValueOnce(queued);
+    await run();
     expect(mockAsyncRemoveItem).toHaveBeenCalledWith('subway-now:boarding-lock-route-sig');
   });
 });
