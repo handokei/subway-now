@@ -26,7 +26,7 @@ import { registerActiveTrip, clearActiveTrip, type AlarmBoardingLock } from '../
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import { buildBoardingLockMeta } from '../utils/buildBoardingLockMeta';
 import { cancelTripBoundAlarms } from '../utils/tripBoundScheduler';
-import { buildBoardingPromptContext } from '../utils/boardingPromptContext';
+import { buildBoardingPromptContext, type BoardingPromptContext } from '../utils/boardingPromptContext';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../shared/constants/boardingLock';
 import { createLogger } from '../../../shared/utils/logger';
@@ -86,6 +86,12 @@ interface RegisterCallInputs {
   subsurface: boolean;
   /** 같은 trip 세션 동안 고정되는 epoch ms. backend `isSameSession` 판정 키(#589). */
   createdAt: number;
+  /**
+   * #1284 — 직전 사이클에서 성공적으로 빌드된 boarding-prompt 컨텍스트 캐시.
+   * currentStation이 BG GPS 누락으로 일시 null이 됐을 때 fallback으로 사용해
+   * backend cron 진입 시점에 컨텍스트가 반드시 존재하도록 보장한다.
+   */
+  cachedPromptContext: BoardingPromptContext | null;
 }
 
 /**
@@ -113,13 +119,15 @@ async function callRegister(input: RegisterCallInputs) {
     }
   }
 
-  // #1028: boarding-prompt 평가 컨텍스트 (#819). 둘 다 있어야 backend가 9단 게이트를 돌리므로
-  // 항상 함께 송신. currentStation/route lookup 실패 시 null → 필드 누락 → backend 자동 skip.
-  const promptContext = buildBoardingPromptContext({
+  // #1028 / #1284: boarding-prompt 평가 컨텍스트 (#819). 둘 다 있어야 backend가 9단 게이트를
+  // 돌리므로 항상 함께 송신. currentStation이 BG GPS 누락으로 일시 null이면 캐시된 컨텍스트를
+  // fallback으로 사용 — backend cron 진입 전 최소 한 번은 컨텍스트가 stamped되도록 보장.
+  const freshContext = buildBoardingPromptContext({
     route: input.route,
     currentStation: input.currentStation,
     destination: input.destination,
   });
+  const promptContext = freshContext ?? input.cachedPromptContext;
 
   return registerActiveTrip({
     token: input.token,
@@ -182,6 +190,12 @@ export function useApnsTripRegistration({
   // (non-null → null → 새 lock 3 POST) 판정에 사용. 첫 register 시 null로 시작.
   const lastSentLockSigRef = useRef<string | null>(null);
 
+  // #1284 — 직전 사이클에서 성공적으로 빌드된 boarding-prompt 컨텍스트 캐시.
+  // destination이 변경(null→non-null 포함)되면 useEffect deps(destination?.id)가 재실행되어
+  // 자동으로 최신 컨텍스트로 덮어쓰인다. destination이 같은 trip 안에서 일시 null이 되는 경우는
+  // 없으므로 stale context를 잘못된 destination에 stamp할 위험이 없다.
+  const lastPromptContextRef = useRef<BoardingPromptContext | null>(null);
+
   // #1264 (N3) — 직전 effect cycle의 routeSig. routeSig가 전환되면 이전 trip의 사전 예약된
   // `tba:` 알람을 cancel — backend가 보낸 정정 silent push가 stale identifier에 매칭되어
   // 50분간 `revalidate-route-sig-mismatch`로 누락되는 회귀(2026-06-12 user trip)를 차단한다.
@@ -240,6 +254,7 @@ export function useApnsTripRegistration({
           locklessStationPassed: lsp,
           subsurface: sub,
           createdAt: resolveTripCreatedAt(sessionKey),
+          cachedPromptContext: lastPromptContextRef.current,
         });
         // #767 — main effect와 동일 기준으로 lock sig를 추적해야 다음 cycle의 release 판정 정확도
         // 유지. token-refresh는 deps cycle을 거치지 않는 별경로지만 backend엔 동일 POST를 보내므로.
@@ -277,6 +292,9 @@ export function useApnsTripRegistration({
         // #1264 (N3): trip 종료 시 routeSig 추적도 reset — 다음 trip 시작 시 첫 routeSig는
         // 신규로 취급되어 cancel skip(불필요한 OS 호출 방지).
         lastRouteSigRef.current = null;
+        // #1284: trip 종료 시 prompt context 캐시 reset — 다음 trip이 이전 trip의
+        // 출발역 컨텍스트를 stamp하는 오염 방지.
+        lastPromptContextRef.current = null;
         return;
       }
 
@@ -301,6 +319,10 @@ export function useApnsTripRegistration({
       }
 
       const sessionKey = `${token}:${routeSig}:${destination.id}`;
+      // #1284 — buildBoardingPromptContext가 성공하면 캐시 갱신. 이후 currentStation이
+      // 일시 null이 돼도 cachedPromptContext로 fallback하여 backend 9단 게이트가 계속 진입 가능.
+      const freshCtx = buildBoardingPromptContext({ route, currentStation, destination });
+      if (freshCtx) lastPromptContextRef.current = freshCtx;
       const result = await callRegister({
         token,
         route,
@@ -311,6 +333,7 @@ export function useApnsTripRegistration({
         locklessStationPassed,
         subsurface,
         createdAt: resolveTripCreatedAt(sessionKey),
+        cachedPromptContext: lastPromptContextRef.current,
       });
       // POST 발사 직후(성공/실패 무관) 송신된 lock sig를 기록 — 다음 cycle이 "직전 송신 = lock,
       // 신규 = null" 패턴인지 판정해 race 차단.

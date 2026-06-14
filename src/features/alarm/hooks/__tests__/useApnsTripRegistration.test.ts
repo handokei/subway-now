@@ -1070,6 +1070,127 @@ describe('useApnsTripRegistration', () => {
       expect(args.promptGeoContext).toBeUndefined();
       expect(args.promptDisplay).toBeUndefined();
     });
+
+    // #1284 — boarding-prompt 컨텍스트 캐싱 (currentStation 일시 null 회귀 방지)
+    describe('#1284 — prompt context 캐싱', () => {
+      // 단조 3호선 대화(3-001) → 정발산(3-003): buildBoardingPromptContext non-null 반환 보장.
+      const origin: Station = {
+        id: '3-001',
+        name: '대화',
+        line: '3',
+        lat: 37.676087,
+        lng: 126.747569,
+        lineColor: '#EF7C1C',
+      };
+      const dest: Station = {
+        id: '3-003',
+        name: '정발산',
+        line: '3',
+        lat: 37.659477,
+        lng: 126.773359,
+        lineColor: '#EF7C1C',
+      };
+      const route3 = makeDirectRoute(2, '3');
+
+      it('currentStation이 일시 null → 직전 캐시된 컨텍스트를 payload에 포함', async () => {
+        // 1st render: currentStation=origin → 컨텍스트 빌드 + 캐시
+        const { rerender } = renderHook(
+          ({ cs }: { cs: Station | null }) =>
+            useApnsTripRegistration({
+              route: route3,
+              destination: dest,
+              nextStationEtaSeconds: 120,
+              currentStation: cs,
+            }),
+          { initialProps: { cs: origin as Station | null } },
+        );
+        await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+        // 첫 register: 컨텍스트 있음
+        expect(mockRegister.mock.calls[0][0].promptGeoContext).toBeDefined();
+        expect(mockRegister.mock.calls[0][0].promptDisplay).toBeDefined();
+
+        // currentStation → null (BG GPS 누락 시뮬레이션). deps에 포함 안 됐으므로
+        // register 재호출 안 됨 (#703). token-refresh나 다음 locklessStationPassed toggle 등으로
+        // re-register 시 캐시 활용 여부를 아래 token-refresh 경로로 검증.
+        rerender({ cs: null });
+        // 재등록 미발생 (currentStation은 deps 아님) — 캐시 검증은 token-refresh로 진행
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(mockRegister).toHaveBeenCalledTimes(1);
+
+        // token-refresh 경로: currentStation=null 상태에서도 캐시된 컨텍스트를 사용해야 함
+        const listener = mockAddPushTokenListener.mock.calls[0][0];
+        await act(async () => {
+          listener({ data: 'token-REFRESH' });
+          await Promise.resolve();
+          await Promise.resolve();
+        });
+        await waitFor(() =>
+          expect(mockRegister).toHaveBeenCalledWith(
+            expect.objectContaining({ token: 'token-REFRESH' }),
+          ),
+        );
+        const refreshed = mockRegister.mock.calls.find(
+          (c) => (c[0] as { token: string }).token === 'token-REFRESH',
+        );
+        // 캐시에서 복원된 컨텍스트가 payload에 포함되어야 한다.
+        expect(refreshed?.[0].promptGeoContext).toBeDefined();
+        expect(refreshed?.[0].promptDisplay).toEqual({ originStation: '대화', line: '3' });
+      });
+
+      it('route + destination 모두 없는 경우(trip 없음) → null 반환 (false stamp 없음)', async () => {
+        renderHook(() =>
+          useApnsTripRegistration({
+            route: null,
+            destination: null,
+            nextStationEtaSeconds: null,
+          }),
+        );
+        await act(async () => {
+          await Promise.resolve();
+        });
+        // register 호출 없음 — false stamp 없음
+        expect(mockRegister).not.toHaveBeenCalled();
+      });
+
+      it('trip 종료 후 새 trip 시작 시 캐시 reset — 이전 origin이 새 trip에 누출 안 됨', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) return 'token-abc';
+          if (key === ACTIVE_TRIP_KEY) return 'token-abc';
+          return null;
+        });
+
+        // 1st trip: 대화→정발산, origin 컨텍스트 캐시
+        const { rerender } = renderHook(
+          ({ r, d, cs }: { r: Route | null; d: Station | null; cs: Station | null }) =>
+            useApnsTripRegistration({
+              route: r,
+              destination: d,
+              nextStationEtaSeconds: 120,
+              currentStation: cs,
+            }),
+          { initialProps: { r: route3 as Route | null, d: dest as Station | null, cs: origin as Station | null } },
+        );
+        await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+        expect(mockRegister.mock.calls[0][0].promptDisplay).toEqual({ originStation: '대화', line: '3' });
+
+        // trip 종료: 캐시 reset 트리거
+        rerender({ r: null, d: null, cs: null });
+        await waitFor(() => expect(mockClear).toHaveBeenCalled());
+
+        // 2nd trip: 새 노선 + currentStation=null (GPS 아직 없음)
+        rerender({ r: directRoute as Route | null, d: station as Station | null, cs: null });
+        await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(2));
+        const secondArgs = mockRegister.mock.calls[1][0] as {
+          promptGeoContext?: unknown;
+          promptDisplay?: unknown;
+        };
+        // 캐시가 reset됐으므로 이전 origin 컨텍스트가 누출 안 됨
+        expect(secondArgs.promptGeoContext).toBeUndefined();
+        expect(secondArgs.promptDisplay).toBeUndefined();
+      });
+    });
   });
 
   // #1264 (N3) — routeSig 전환 시 사전 예약된 tba: 알람 cancel.
