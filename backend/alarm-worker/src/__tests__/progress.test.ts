@@ -60,4 +60,32 @@ describe('progress KV (#705)', () => {
     await deleteProgress(kv, 'tok');
     expect(await getProgress(kv, 'tok')).toBeNull();
   });
+
+  // #1285 — lockless progress 지원
+  it('getProgress accepts lockless entry (lockless=true, no trainCode)', async () => {
+    const kv = makeKv();
+    const locklessProgress: TripProgress = { lockless: true, shiftedCount: 1 };
+    await putProgress(kv, 'lockless-tok', locklessProgress, 3600);
+    const result = await getProgress(kv, 'lockless-tok');
+    expect(result).not.toBeNull();
+    expect(result?.lockless).toBe(true);
+    expect(result?.shiftedCount).toBe(1);
+    expect(result?.trainCode).toBeUndefined();
+  });
+
+  it('getProgress rejects entry with neither trainCode nor lockless=true', async () => {
+    const kv = makeKv();
+    await kv.put('progress:tok', JSON.stringify({ shiftedCount: 1 }));
+    expect(await getProgress(kv, 'tok')).toBeNull();
+  });
+
+  it('getProgress rejects entry where lockless=true but trainCode also present (ambiguous)', async () => {
+    const kv = makeKv();
+    // lockless=true + trainCode 동시 존재 — trainCode 있으면 validTrainCode=true로 통과 (lock 우선)
+    await kv.put('progress:tok', JSON.stringify({ lockless: true, trainCode: 'T1', shiftedCount: 2 }));
+    const result = await getProgress(kv, 'tok');
+    // trainCode가 문자열이면 validTrainCode=true → 통과 (lock 경로로 처리)
+    expect(result).not.toBeNull();
+    expect(result?.trainCode).toBe('T1');
+  });
 });

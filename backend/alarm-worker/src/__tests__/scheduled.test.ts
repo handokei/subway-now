@@ -660,6 +660,57 @@ describe('runScheduled', () => {
       expect(parsed.waypoints[0].stationName).toBe('역삼');
       expect(parsed.lastFiredPhase).toBeUndefined();
     });
+
+    // #1285 — lockless waypoint shift → progress KV mirror
+    it('#1285 — 발사 성공 시 progress KV에 lockless shiftedCount=1 저장', async () => {
+      const { kv } = await runLocklessCycle({
+        trip: makeTrip({
+          waypoints: [
+            { stationName: '중곡', line: '5', kind: 'intermediate' },
+            { stationName: '군자', line: '5', kind: 'destination' },
+          ],
+          locklessStationPassed: true,
+        }),
+        arrivals: [ARVL_ARRIVED],
+        apnsOk: true,
+      });
+      const progressRaw = await (kv as unknown as KVNamespace).get('progress:tok');
+      expect(progressRaw).not.toBeNull();
+      const progress = JSON.parse(progressRaw as string);
+      expect(progress.lockless).toBe(true);
+      expect(progress.shiftedCount).toBe(1);
+      expect(progress.trainCode).toBeUndefined();
+    });
+
+    it('#1285 — 두 번째 발사 시 progress.shiftedCount 누적 (2)', async () => {
+      const kv = new InMemoryKV();
+      // 첫 발사 후 progress.shiftedCount=1 존재하는 상황
+      await (kv as unknown as KVNamespace).put(
+        'progress:tok',
+        JSON.stringify({ lockless: true, shiftedCount: 1 }),
+      );
+      const trip = makeTrip({
+        waypoints: [
+          { stationName: '군자', line: '5', kind: 'intermediate' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+        locklessStationPassed: true,
+      });
+      await putTrip(kv as unknown as KVNamespace, trip);
+      const seoul = makeSeoul([ARVL_ARRIVED]);
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+      await runScheduled(makeEnv(kv), {
+        seoul,
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+      });
+      const progressRaw = await (kv as unknown as KVNamespace).get('progress:tok');
+      const progress = JSON.parse(progressRaw as string);
+      expect(progress.lockless).toBe(true);
+      expect(progress.shiftedCount).toBe(2);
+    });
   });
 });
 

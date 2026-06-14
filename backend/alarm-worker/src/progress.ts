@@ -22,8 +22,11 @@
 const PROGRESS_PREFIX = 'progress:';
 
 export interface TripProgress {
-  /** trainCode stamp. POST 시 incoming lock과 비교해 다른 열차면 progress 폐기. */
-  trainCode: string;
+  /** trainCode stamp. POST 시 incoming lock과 비교해 다른 열차면 progress 폐기.
+   *  lockless trip은 trainCode 없이 token 기준으로만 매칭 — undefined 허용. */
+  trainCode?: string;
+  /** #1285 — lockless opt-in trip 진행 보존 마커. trainCode 없이 token 기준으로 progress를 유지한다. */
+  lockless?: true;
   /** advance로 shift한 waypoint 개수. POST의 incoming.waypoints에 slice(shiftedCount) 적용. */
   shiftedCount: number;
   /** Trip의 lastTrackedArrivalEpoch 사본 — race-isolated. */
@@ -58,7 +61,10 @@ export async function getProgress(
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as TripProgress;
-    if (typeof parsed.trainCode !== 'string' || typeof parsed.shiftedCount !== 'number') {
+    // lockless progress: lockless===true, trainCode 없음. lock progress: trainCode 문자열 필수.
+    const validTrainCode = typeof parsed.trainCode === 'string';
+    const validLockless = parsed.lockless === true && parsed.trainCode === undefined;
+    if ((!validTrainCode && !validLockless) || typeof parsed.shiftedCount !== 'number') {
       return null;
     }
     return parsed;

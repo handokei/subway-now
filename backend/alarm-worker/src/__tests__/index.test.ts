@@ -923,6 +923,83 @@ describe('POST /trips — #705 progress KV preserves advance across POST race', 
   });
 });
 
+// #1285 — lockless trip POST /trips 재등록 시 waypoint 진행 보존
+describe('POST /trips — #1285 lockless progress KV 재등록 시 진행 보존', () => {
+  const LOCKLESS_TOKEN = 'tok-1285';
+  const LOCKLESS_WAYPOINTS = [
+    { stationName: '중곡', line: '5', kind: 'intermediate' },
+    { stationName: '군자', line: '5', kind: 'intermediate' },
+    { stationName: '아차산', line: '5', kind: 'destination' },
+  ];
+
+  function locklessTripBody(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
+    return {
+      ...base(),
+      token: LOCKLESS_TOKEN,
+      createdAt: SESSION_CREATED,
+      locklessStationPassed: true,
+      waypoints: LOCKLESS_WAYPOINTS,
+      ...overrides,
+    };
+  }
+
+  async function readLocklessTrip(env: Env): Promise<Record<string, unknown>> {
+    return JSON.parse((await env.TRIPS.get(`trip:${LOCKLESS_TOKEN}`)) as string);
+  }
+
+  async function seedLocklessProgress(env: Env, shiftedCount: number): Promise<void> {
+    await env.TRIPS.put(
+      `progress:${LOCKLESS_TOKEN}`,
+      JSON.stringify({ lockless: true, shiftedCount }),
+    );
+  }
+
+  it('lockless trip 재등록 시 progress.shiftedCount=1 → 중곡 제거, 군자가 첫 waypoint', async () => {
+    const env = makeKvEnv();
+    // 첫 등록
+    await post('/trips', locklessTripBody(), env);
+    // 서버가 중곡 발사 후 progress.shiftedCount=1 기록
+    await seedLocklessProgress(env, 1);
+    // 디바이스 재등록 (GPS 동결로 중곡 포함 full route 재전송)
+    await post('/trips', locklessTripBody({ createdAt: SESSION_CREATED + 50_000 }), env);
+    const finalTrip = await readLocklessTrip(env);
+    expect((finalTrip.waypoints as Array<{ stationName: string }>)).toHaveLength(2);
+    expect((finalTrip.waypoints as Array<{ stationName: string }>)[0].stationName).toBe('군자');
+  });
+
+  it('lockless progress 보존 후 중곡 재발사 안 됨 — waypoint가 군자로 advance 유지', async () => {
+    const env = makeKvEnv();
+    await post('/trips', locklessTripBody(), env);
+    await seedLocklessProgress(env, 1);
+    // 재등록 후에도 진행분 보존 검증
+    await post('/trips', locklessTripBody(), env);
+    const finalTrip = await readLocklessTrip(env);
+    expect((finalTrip.waypoints as Array<{ stationName: string }>)[0].stationName).toBe('군자');
+  });
+
+  it('lockless progress가 있어도 locklessStationPassed=false면 progress 폐기', async () => {
+    const env = makeKvEnv();
+    await post('/trips', locklessTripBody(), env);
+    await seedLocklessProgress(env, 1);
+    // locklessStationPassed가 false인 재등록 — progress 미적용
+    await post('/trips', locklessTripBody({ locklessStationPassed: false }), env);
+    expect(await env.TRIPS.get(`progress:${LOCKLESS_TOKEN}`)).toBeNull();
+  });
+
+  it('lock-mode progress(trainCode stamp)가 lockless 재등록 시 폐기됨', async () => {
+    const env = makeKvEnv();
+    await post('/trips', locklessTripBody(), env);
+    // lock 경로가 남긴 progress (lockless 마커 없음)
+    await env.TRIPS.put(
+      `progress:${LOCKLESS_TOKEN}`,
+      JSON.stringify({ trainCode: 'SOME_TRAIN', shiftedCount: 1 }),
+    );
+    await post('/trips', locklessTripBody(), env);
+    // trainCode 기반 progress는 lockless 재등록 시 progressApplies=false → 삭제
+    expect(await env.TRIPS.get(`progress:${LOCKLESS_TOKEN}`)).toBeNull();
+  });
+});
+
 /**
  * 4 tests 공통 패턴 — TELEMETRY 적재형 POST endpoint(/telemetry/silent-push,
  * /metrics/boarding-prompt, /telemetry/recall)는 모두 (1) invalid JSON 400,
