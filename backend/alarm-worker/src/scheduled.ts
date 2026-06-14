@@ -73,7 +73,7 @@ const POLLING_WINDOW_MS = 5 * 60 * 1000;
 export const RESCHEDULE_THRESHOLD_MS = 15_000;
 
 /** boardingLock fallback에서 hop당 기본 소요(90s). 환승역 등 실제 hop은 후속 데이터로 정밀화. */
-const FALLBACK_HOP_SEC = 90;
+export const FALLBACK_HOP_SEC = 90;
 
 /**
  * LA update push 발사 임계치 (#586 D). reschedule push의 15s 임계와는 별개 — LA는 화면 표시용이라
@@ -555,6 +555,14 @@ async function mirrorLocklessProgress(kv: KVNamespace, trip: Trip): Promise<void
 export const VANISH_RE_ATTACH_THRESHOLD = 2;
 
 /**
+ * #1277 — vanish-swap 실패 후 시간 기반 waypoint advance를 시도하기까지의 추가 grace cycle 수.
+ * VANISH_RE_ATTACH_THRESHOLD(2회) 시도 후 이 grace만큼 더 인내하다가 advance 또는 lock release.
+ * swap 시도(2회)와 grace(1회) 합산 총 3회 miss → 시간 게이트를 통과하면 waypoint 전진.
+ * subsurface grace(10회)와 무관하게 적용 — 지하에서도 무한 동결은 막는다.
+ */
+export const FALLBACK_ADVANCE_GRACE_CYCLES = 1;
+
+/**
  * #917 A2 — 매역 알림 dedup KV TTL(초).
  * 같은 trainCode가 같은 역의 arvlCd∈{0,1} 신호를 cron 60s × Seoul API 갱신 지연으로 2~3 cycle
  * 반복 노출하는데, 그 윈도우 동안 push가 중복 발사되지 않도록 차단한다.
@@ -757,6 +765,11 @@ async function attemptVanishSwap(
 /**
  * estimate가 null로 끝난 cycle 처리 — etaMissing 카운터 누적 + 임계 초과 시 trip 자동 종료.
  * runTrainCodeTracking의 cognitive complexity 분담용 추출 (Sonar S3776).
+ *
+ * #1277 — vanish-swap 후보 없음(지하 dead zone)으로 freeze 방지:
+ *   VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES miss 도달 시
+ *   lastTrackedArrivalEpoch 기준 hop 시간 경과를 확인해 waypoint optimistic advance를 시도.
+ *   경과 미달이면 lock release해 lockless/boardingPrompt가 인계받게 함.
  */
 interface HandleEtaMissingInputs {
   trip: Trip;
@@ -779,6 +792,46 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
     station: waypoint.stationName,
     consecutiveEtaMissing: nextMissCount,
   });
+
+  // #1277 — vanish-swap(VANISH_RE_ATTACH_THRESHOLD 도달 시 한 번 시도)이 실패한 후
+  // FALLBACK_ADVANCE_GRACE_CYCLES grace를 더 기다린 시점에서 시간 기반 fallback.
+  // lastTrackedArrivalEpoch가 있을 때만 활성화 — 한 번도 추적된 적 없는 trip(새벽 무운행 등)은
+  // 기존 auto-end 임계 경로로 처리한다.
+  // 이 분기는 auto-end 임계(threshold) 전에 평가되어 무한 동결을 막는다.
+  const fallbackTrigger = VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES;
+  const lastEpoch = trip.lastTrackedArrivalEpoch;
+  if (nextMissCount >= fallbackTrigger && lastEpoch !== undefined) {
+    const hopElapsed = now >= lastEpoch + FALLBACK_HOP_SEC * 1000;
+    if (hopElapsed) {
+      // hop 시간 경과 → optimistic waypoint advance.
+      // advance 내부에서 destination 도착이면 cleanupTripWithLa, 그 외엔 waypoints.shift().
+      log('boarding-lock: trainCode vanished — time-based waypoint advance fallback', {
+        token: trip.token.slice(0, 8),
+        trainCode: activeLock.trainCode,
+        station: waypoint.stationName,
+        consecutiveEtaMissing: nextMissCount,
+        lastTrackedArrivalEpoch: lastEpoch,
+      });
+      trip.consecutiveEtaMissing = 0;
+      await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log);
+      return;
+    }
+    // hop 시간 미경과 → lock release해 lockless/boardingPrompt가 인계받도록.
+    // isBoardingLockActive=false가 되는 즉시 다음 cycle의 evaluateAndMaybeFireBoardingPrompt 경로 복구.
+    log('boarding-lock: trainCode vanished — releasing lock (hop time not yet elapsed)', {
+      token: trip.token.slice(0, 8),
+      trainCode: activeLock.trainCode,
+      station: waypoint.stationName,
+      consecutiveEtaMissing: nextMissCount,
+      lastTrackedArrivalEpoch: lastEpoch,
+    });
+    trip.boardingLock = undefined;
+    trip.consecutiveEtaMissing = 0;
+    await deleteProgress(env.TRIPS, trip.token);
+    await putTrip(env.TRIPS, trip);
+    return;
+  }
+
   // #903 (Seam G) — subsurface=true trip은 인내 임계(10)로 분기. 지하 dead zone GPS/trainCode 일시 누락 인내.
   const threshold = resolveEtaMissingThreshold(trip);
   if (nextMissCount >= threshold) {
