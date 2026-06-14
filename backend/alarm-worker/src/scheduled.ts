@@ -566,6 +566,23 @@ async function mirrorProgress(
 }
 
 /**
+ * #1285 — lockless trip의 waypoint shift를 progress KV에 mirror해 POST /trips 재등록 race 보존.
+ * trip.waypoints는 이미 shift() 완료된 상태로 전달된다 — shiftedCount는 (totalWaypoints - remaining).
+ * mirrorProgress(lock 경로)와 동형이지만 trainCode 없이 lockless===true 마커로 저장.
+ */
+async function mirrorLocklessProgress(kv: KVNamespace, trip: Trip): Promise<void> {
+  // #766 — cron path는 cacheTtl=10s로 PUT 직후 stale read 방지.
+  const existing = await getProgress(kv, trip.token, { cacheTtl: CRON_PROGRESS_CACHE_TTL_SEC });
+  const prevShifted = existing?.lockless === true ? existing.shiftedCount : 0;
+  const next: TripProgress = {
+    lockless: true,
+    shiftedCount: prevShifted + 1,
+  };
+  const ttlSec = Math.max(60, Math.floor((trip.expiresAt - Date.now()) / 1000));
+  await putProgress(kv, trip.token, next, ttlSec);
+}
+
+/**
  * boardingLock trip 추적 (#585).
  *
  * 3단계로 분리: estimate → arrival 시 waypoint 진행(early return) → 아니면 reschedule push.
@@ -1348,6 +1365,9 @@ export async function runLocklessIntermediate(
   }
   // 다음 waypoint를 위해 dedup stamp reset (위 shift 직후 첫 waypoint는 새 발사 대상).
   trip.lastFiredPhase = undefined;
+  // #1285 — lockless shift를 progress KV에 mirror해 POST /trips 재등록 race로부터 진행분 보존.
+  // lock 경로의 mirrorProgress와 동형 — token 기준 lockless 마커로 저장.
+  await mirrorLocklessProgress(env.TRIPS, trip);
   await putTrip(env.TRIPS, trip);
 }
 
