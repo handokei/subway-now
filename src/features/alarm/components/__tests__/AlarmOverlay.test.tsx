@@ -2,6 +2,9 @@ import React from 'react';
 import { render, fireEvent, waitFor } from '@testing-library/react-native';
 import { AlarmOverlay } from '../AlarmOverlay';
 import type { AlarmEvent } from '../../../../shared/types/alarm';
+import type { LineNumber } from '../../../../shared/types/station';
+import type { ExitInfoProvider } from '../../../exit-info/providers/types';
+import type { ExitInfo } from '../../../../shared/types/exitInfo';
 
 const mockKillAllAlarms = jest.fn().mockResolvedValue(undefined);
 const mockClearAlarmNotification = jest.fn().mockResolvedValue(undefined);
@@ -15,13 +18,18 @@ jest.mock('../../utils/stationNotification', () => ({
 
 const mockDismiss = jest.fn();
 
+function makeExitProvider(exits: ExitInfo[]): ExitInfoProvider {
+  return { getExits: jest.fn(async () => exits) };
+}
+
 function renderAlarm(
   type: AlarmEvent['type'],
   stationName: string,
   phaseId: AlarmEvent['phaseId'] = 'early',
+  line?: LineNumber | null,
 ) {
   const event: AlarmEvent = { phaseId, type, stationName };
-  return render(<AlarmOverlay event={event} onDismiss={mockDismiss} />);
+  return render(<AlarmOverlay event={event} onDismiss={mockDismiss} line={line} />);
 }
 
 async function triggerModalClose(rendered: ReturnType<typeof renderAlarm>) {
@@ -87,6 +95,29 @@ describe('AlarmOverlay', () => {
 
   it('#741 도착 알람의 메인 버튼도 "알람 끄기" 텍스트 — 라벨 통일', () => {
     expect(renderAlarm('destination', '강남').getByText('알람 끄기')).toBeTruthy();
+  });
+
+  describe('#1289 출구 안내 (StationExitCard) 마운트', () => {
+    it('line 미전달 시 출구 안내 섹션이 렌더되지 않는다', () => {
+      const { queryByTestId } = renderAlarm('destination', '강남', 'early');
+      expect(queryByTestId('alarm-overlay-exit-section')).toBeNull();
+    });
+
+    it('line=null 시 출구 안내 섹션이 렌더되지 않는다', () => {
+      const { queryByTestId } = renderAlarm('destination', '강남', 'early', null);
+      expect(queryByTestId('alarm-overlay-exit-section')).toBeNull();
+    });
+
+    it('line 전달 시 출구 안내 섹션이 렌더되고 출구 카드가 나타난다', async () => {
+      const event: AlarmEvent = { phaseId: 'early', type: 'destination', stationName: '강남' };
+      const { getByTestId, findByTestId } = render(
+        <AlarmOverlay event={event} onDismiss={mockDismiss} line="2" />,
+      );
+      // exit section은 즉시 렌더됨 (line이 있으면)
+      expect(getByTestId('alarm-overlay-exit-section')).toBeTruthy();
+      // StationExitCard는 MockExitInfoProvider 기본값(강남 2호선 샘플)으로 로드 후 나타남
+      await findByTestId('station-exit-card');
+    });
   });
 
   describe('#741 보조 버튼 제거 — 단일 액션 UX', () => {
