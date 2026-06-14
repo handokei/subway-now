@@ -1448,4 +1448,115 @@ describe('useFusedNearestStation', () => {
       expect(pickArrivalForStationName('충무로', '3', [])).toBeNull();
     });
   });
+
+  describe('#1290 subsurfaceStationDetected cascade', () => {
+    // 기본 GPS + 후보 1개 setup (subsurfaceStationDetected 케이스 공유).
+    // distanceKm=0.1 → MAX_FUSION_DISTANCE_KM(0.6) 이내 → 근접 게이트 통과.
+    beforeEach(() => {
+      mockUseNearest.mockReturnValue(gpsBase());
+      mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions.mockReturnValue(positionRet(null));
+    });
+
+    it('subsurface=true + barometer-stop + motion-stationary (≥2 합의) → subsurfaceStationDetected=true', () => {
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          null,
+          null,
+          /* motionStationary */ true,
+          { subsurface: true, signal: { subsurface: true, stop: true } },
+        ),
+      );
+      expect(result.current.subsurfaceStationDetected).toBe(true);
+    });
+
+    it('subsurface=true + 단일 신호(barometer-stop)만 합의 → subsurfaceStationDetected=false (≥2 미달)', () => {
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          null,
+          null,
+          /* motionStationary */ undefined,
+          { subsurface: true, signal: { subsurface: true, stop: true } },
+        ),
+      );
+      expect(result.current.subsurfaceStationDetected).toBe(false);
+    });
+
+    it('subsurface=false + ≥2 신호 합의여도 → subsurfaceStationDetected=false (지하 아님)', () => {
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          null,
+          null,
+          /* motionStationary */ true,
+          { subsurface: false, signal: { subsurface: false, stop: true } },
+        ),
+      );
+      expect(result.current.subsurfaceStationDetected).toBe(false);
+    });
+
+    it('subsurface 미전달 + ≥2 신호 합의여도 → subsurfaceStationDetected=false', () => {
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          null,
+          null,
+          /* motionStationary */ true,
+          { signal: { subsurface: false, stop: true } },
+        ),
+      );
+      expect(result.current.subsurfaceStationDetected).toBe(false);
+    });
+
+    it('subsurface=true + ≥2 합의 + 근접 게이트 미달(distanceKm>MAX) → subsurfaceStationDetected=false', () => {
+      // distanceKm=0.7 > MAX_FUSION_DISTANCE_KM(0.6) → 근접 게이트 탈락.
+      mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.7 }]);
+      // GPS result를 gangnam으로, distanceKm=0.7 세팅.
+      mockUseNearest.mockReturnValue(
+        gpsBase({
+          result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.7 },
+        }),
+      );
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          null,
+          null,
+          /* motionStationary */ true,
+          { subsurface: true, signal: { subsurface: true, stop: true } },
+        ),
+      );
+      expect(result.current.subsurfaceStationDetected).toBe(false);
+    });
+
+    it('subsurface=true + ≥2 합의 + result=null → subsurfaceStationDetected=false', () => {
+      mockUseNearest.mockReturnValue(gpsBase({ userLocation: null, result: null }));
+      mockFindTop.mockReturnValue([]);
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          null,
+          null,
+          /* motionStationary */ true,
+          { subsurface: true, signal: { subsurface: true, stop: true } },
+        ),
+      );
+      expect(result.current.subsurfaceStationDetected).toBe(false);
+    });
+  });
 });

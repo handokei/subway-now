@@ -123,6 +123,13 @@ interface UseFusedNearestStationReturn {
    * 미전달이면 undefined.
    */
   subsurface: boolean | undefined;
+  /**
+   * #1290 — 지하(subsurface=true) + fusion verdict detected(≥2 신호 합의) + 역 근접 게이트 통과.
+   * true일 때 호출자는 GPS/arrival 독립적으로 station-passed 발사 트리거로 사용 가능.
+   * false positive 방어: ≥2 신호 합의(barometer-stop/motion-stationary/arvlcd-arrived)
+   * + result.distanceKm ≤ MAX_FUSION_DISTANCE_KM 근접 게이트 동시 충족 필요.
+   */
+  subsurfaceStationDetected: boolean;
   refresh: () => Promise<void>;
 }
 
@@ -754,6 +761,18 @@ export function useFusedNearestStation(
   );
   const detectionVerdict = useFusedStationDetection(detectionInput);
 
+  // #1290 — 지하 도착 확정 cascade.
+  // subsurface=true(지하 진입 확정) + fusion verdict detected(≥2 신호 합의) + 역 근접 게이트 통과
+  // → station-passed 발사 트리거. GPS/arrival 독립 경로 — 지하 GPS 동결 구간에서도 발사 가능.
+  // false positive 방어:
+  //   1. ≥2 신호 합의(AGREEMENT_THRESHOLD) — 단일 오발 차단.
+  //   2. result.distanceKm ≤ MAX_FUSION_DISTANCE_KM — 현재역이 실제로 가까운 역임을 보장.
+  const subsurfaceStationDetected =
+    barometerSubsurface === true &&
+    detectionVerdict.detected &&
+    result != null &&
+    result.distanceKm <= MAX_FUSION_DISTANCE_KM;
+
   // #1025 — Estimator 전략 변화 시 debug buffer에 push.
   // estimate key: strategy|stationId|arcIndex. null estimate는 strategy=null로 기록.
   // estimateRef: effect 내부에서 estimate를 deps 없이 최신값으로 읽기 위한 ref.
@@ -866,6 +885,7 @@ export function useFusedNearestStation(
     detectionTier: detectionVerdict.confidence,
     detectionSignalMask: detectionVerdict.signalMask,
     subsurface: barometerSubsurface,
+    subsurfaceStationDetected,
     refresh: gps.refresh,
   };
 }
