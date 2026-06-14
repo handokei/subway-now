@@ -67,6 +67,8 @@ export type AlarmLogReason =
   | 'gate-age'
   | 'gate-accuracy'
   | 'gate-jump'
+  // #1291 — BG 알람 경로에서 motionStationary=true(주머니 정지) 확정 시 오발사 차단.
+  | 'gate-motion-stationary'
   | 'gate-unknown-station'
   | 'gate-no-location'
   | 'gate-stale-location'
@@ -680,7 +682,7 @@ export function countSilentPushOutcomes(
 }
 
 export function logSuppressedGate(
-  reason: 'gate-age' | 'gate-accuracy' | 'gate-jump',
+  reason: 'gate-age' | 'gate-accuracy' | 'gate-jump' | 'gate-motion-stationary',
   location: AlarmLogLocation,
 ): void {
   appendAlarmLog({
