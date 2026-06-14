@@ -53,6 +53,8 @@ import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from '../utils/dismissSilenceStorage';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
 import { getCurrentMotionStationary } from '../../nearest-station/utils/motionActivity';
+import { uploadPosition, type PositionMotion } from '../../nearest-station/api/positionUpload';
+import * as Location from 'expo-location';
 import { addFiredPushId } from '../utils/firedPushIds';
 import {
   checkSilentPushLocationGate,
@@ -462,6 +464,35 @@ async function loadLocklessOptIn(): Promise<boolean> {
 }
 
 /**
+ * #1280 — silent push wakeup을 위치 채널로 재활용 (트레이드오프 A).
+ *
+ * WhileInUse 권한에선 BG 위치 task(backgroundLocationTask)가 fire되지 않아 POST /position이
+ * 영구 0건 → backend 위치 지능(Kalman/phase/lock advance/boarding-prompt window)이 굶는다.
+ * backend가 매 cron 보내는 silent push가 device를 깨운 이 시점에, 마지막 좋은 fix를 backend로
+ * upload해 Always 권한 없이도 위치 채널을 점등한다.
+ *
+ * getLastKnownPositionAsync는 즉답(콜드 fetch 아님)이라 짧은 BG 윈도우에 안전. fire-and-forget —
+ * 위치 미준비/오류/URL 미설정 모두 graceful(다음 push에서 자연 retry).
+ */
+async function uploadPositionFromSilentPush(apnsToken: string): Promise<void> {
+  try {
+    const last = await Location.getLastKnownPositionAsync({ maxAge: 60_000 });
+    if (!last) return;
+    const motion: PositionMotion = getCurrentMotionStationary() ? 'stationary' : 'unknown';
+    void uploadPosition({
+      token: apnsToken,
+      lat: last.coords.latitude,
+      lng: last.coords.longitude,
+      accuracy: last.coords.accuracy ?? 0,
+      ts: last.timestamp,
+      motion,
+    });
+  } catch {
+    // graceful — BG 위치 미준비/오류는 무시.
+  }
+}
+
+/**
  * Task 콜백 본체 — 단위 테스트가 직접 호출할 수 있도록 export.
  */
 export async function handleSilentPush(input: NotificationBackgroundTaskData): Promise<void> {
@@ -788,6 +819,11 @@ async function fireWithGate(
   // #1273 D3 — payloadHopIndex는 백엔드 silent push payload의 절대 시퀀스 SSOT. wire.
   // currentHopIndex는 D1(#1207) hop estimator 미연결 단계라 undefined — 둘 중 하나라도
   // 없으면 gate가 거리 기반 widened fallback 경로로 동작한다.
+  // #1280 — silent push로 깨어난 이 시점에 마지막 좋은 fix를 backend로 upload (WhileInUse 위치 채널).
+  if (apnsToken) {
+    await uploadPositionFromSilentPush(apnsToken);
+  }
+
   // #1278 — 지하(subsurface) 여부를 stamp(#1279)에서 읽어 게이트에 전달.
   // true + intermediate면 게이트가 GPS 거리 검증을 우회하고 backend push를 신뢰한다.
   const subsurface = await getSubsurfaceState();

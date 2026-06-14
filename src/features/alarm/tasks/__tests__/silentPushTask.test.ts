@@ -99,6 +99,22 @@ jest.mock('../../../nearest-station/utils/motionActivity', () => ({
   getCurrentMotionStationary: () => mockGetMotionStationary(),
 }));
 
+// #1280 — silent-push-driven position upload. expo-location 마지막 fix + uploadPosition mock.
+const mockGetLastKnownPositionAsync = jest.fn();
+jest.mock('expo-location', () => ({
+  getLastKnownPositionAsync: (...args: unknown[]) => mockGetLastKnownPositionAsync(...args),
+}));
+const mockUploadPosition = jest.fn();
+jest.mock('../../../nearest-station/api/positionUpload', () => ({
+  uploadPosition: (...args: unknown[]) => mockUploadPosition(...args),
+}));
+
+// #1278 — subsurface stamp. 기본 false (지상), 특정 테스트에서 override.
+const mockGetSubsurfaceState = jest.fn(async (): Promise<boolean> => false);
+jest.mock('../../../../shared/utils/subsurfaceState', () => ({
+  getSubsurfaceState: () => mockGetSubsurfaceState(),
+}));
+
 const mockGetBoardingLock = jest.fn();
 jest.mock('../../utils/boardingLockStorage', () => ({
   getBoardingLock: (...args: unknown[]) => mockGetBoardingLock(...args),
@@ -226,6 +242,12 @@ describe('silentPushTask', () => {
     mockCheckGate.mockResolvedValue(PASSING_GATE);
     mockGetFiredAlarms.mockResolvedValue(new Set<string>());
     mockSetFiredAlarms.mockResolvedValue(undefined);
+    // #1280 / #1278 기본값.
+    mockGetLastKnownPositionAsync.mockResolvedValue(null);
+    mockUploadPosition.mockReturnValue(undefined);
+    mockGetSubsurfaceState.mockResolvedValue(false);
+    // motion 기본 false — 테스트에서 true override 시 다음 테스트로 누수 방지.
+    mockGetMotionStationary.mockReturnValue(false);
     (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
       if (key === DESTINATION_KEY) return JSON.stringify(destStation);
       if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
@@ -665,6 +687,51 @@ describe('silentPushTask', () => {
       );
       expect(mockCheckGate).not.toHaveBeenCalled();
       expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+    });
+
+    // #1280 — silent push로 깨어나면 마지막 좋은 fix를 backend로 upload (WhileInUse 위치 채널).
+    it('#1280 마지막 fix가 있으면 backend로 uploadPosition (silent-push-driven)', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue({
+        coords: { latitude: 37.4979, longitude: 127.0276, accuracy: 18 },
+        timestamp: 1_700_000_000_000,
+      });
+      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+      expect(mockUploadPosition).toHaveBeenCalledWith(
+        expect.objectContaining({
+          token: DEFAULT_APNS_TOKEN,
+          lat: 37.4979,
+          lng: 127.0276,
+          accuracy: 18,
+          ts: 1_700_000_000_000,
+          motion: 'unknown',
+        }),
+      );
+    });
+
+    it('#1280 motion stationary + accuracy 없으면 motion=stationary, accuracy=0', async () => {
+      mockGetMotionStationary.mockReturnValue(true);
+      mockGetLastKnownPositionAsync.mockResolvedValue({
+        coords: { latitude: 37.4979, longitude: 127.0276 },
+        timestamp: 1_700_000_000_000,
+      });
+      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+      expect(mockUploadPosition).toHaveBeenCalledWith(
+        expect.objectContaining({ motion: 'stationary', accuracy: 0 }),
+      );
+    });
+
+    it('#1280 마지막 fix가 없으면 uploadPosition 호출 안 함', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(null);
+      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+      expect(mockUploadPosition).not.toHaveBeenCalled();
+    });
+
+    it('#1280 위치 조회 throw해도 graceful (전체 흐름 계속)', async () => {
+      mockGetLastKnownPositionAsync.mockRejectedValue(new Error('loc fail'));
+      await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+      // 발사 흐름은 정상 진행.
+      expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
+      expect(mockUploadPosition).not.toHaveBeenCalled();
     });
 
     it('게이트 통과 시 destination 즉시 발사 + fired 로그 + FIRED_ALARMS 갱신', async () => {
