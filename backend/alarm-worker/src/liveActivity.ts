@@ -18,7 +18,7 @@ import {
   sendTripEndedPush,
   type LiveActivityContentState,
 } from './apns';
-import { pickApnsHost } from './apnsHost';
+import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
 import { deleteTrip } from './trips';
@@ -214,29 +214,38 @@ async function fireTripEndedPush(
   now: number,
   log: Logger,
 ): Promise<void> {
-  const host = pickApnsHost(trip.apnsEnv, deps.apnsHosts);
   const pushId = crypto.randomUUID();
   // JWT 서명 / network reject 등의 throw가 cleanup 흐름을 차단하지 않도록 swallow.
   // trip-ended push는 graceful fail-soft — graceful loss 시 클라는 다음 FG hydrate에서 회복.
   try {
-    const result = await sendTripEndedPush({
-      deviceToken: trip.token,
-      pushId,
-      reason,
-      sentAt: now,
-      // race 가드(#868 P1-2) — push 도착 시점에 클라가 trip 갈아탔으면 ACTIVE_TRIP_KEY 불일치로 cleanup skip.
-      tripToken: trip.token,
-      config: deps.apnsConfig,
-      host,
-      fetchImpl: deps.fetchImpl,
-      now,
-    });
-    if (!result.ok) {
+    // #1283 — 다른 push 경로(reschedule/lockless/arvlcd)와 동일하게 env-heal 적용.
+    // trip.apnsEnv가 stale/오설정이면 BadDeviceToken → opposite host 1회 retry로 종료 푸시 도달.
+    // trip은 곧 deleteTrip되므로 correctedEnv KV 반영은 불필요 — retry 성공만으로 충분(로그만 남김).
+    const heal = await sendWithEnvHeal(
+      (host) =>
+        sendTripEndedPush({
+          deviceToken: trip.token,
+          pushId,
+          reason,
+          sentAt: now,
+          // race 가드(#868 P1-2) — push 도착 시점에 클라가 trip 갈아탔으면 ACTIVE_TRIP_KEY 불일치로 cleanup skip.
+          tripToken: trip.token,
+          config: deps.apnsConfig,
+          host,
+          fetchImpl: deps.fetchImpl,
+          now,
+        }),
+      trip.apnsEnv,
+      deps.apnsHosts,
+      log,
+      trip.token.slice(0, 8),
+    );
+    if (!heal.result.ok) {
       log('trip-ended push failed', {
         token: trip.token.slice(0, 8),
         reason,
-        status: result.status,
-        pushReason: result.reason,
+        status: heal.result.status,
+        pushReason: heal.result.reason,
       });
     }
   } catch (e) {
