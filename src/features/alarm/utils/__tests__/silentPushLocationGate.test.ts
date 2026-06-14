@@ -64,6 +64,48 @@ describe('checkSilentPushLocationGate', () => {
     expect(mockGetLastKnownPositionAsync).not.toHaveBeenCalled();
   });
 
+  it('#1278 subsurface=true + intermediate면 GPS 해석 없이 우회 pass', async () => {
+    const result = await checkSilentPushLocationGate({
+      stationName: '강남',
+      kind: 'intermediate',
+      phase: 'imminent',
+      subsurface: true,
+    });
+    expect(result.pass).toBe(true);
+    expect(result.passReason).toBe('subsurface-bypass');
+    // GPS 해석 자체를 건너뛴다.
+    expect(mockGetLastKnownPositionAsync).not.toHaveBeenCalled();
+  });
+
+  it('#1278 subsurface=true여도 destination은 우회 안 함 (GPS 거리 평가 유지)', async () => {
+    mockGetLastKnownPositionAsync.mockResolvedValue(
+      makePosition(FAR_FROM_GANGNAM.lat, FAR_FROM_GANGNAM.lng, 5_000),
+    );
+    const result = await checkSilentPushLocationGate({
+      stationName: '강남',
+      kind: 'destination',
+      phase: 'imminent',
+      subsurface: true,
+    });
+    expect(result.pass).toBe(false);
+    expect(result.reason).toBe('out-of-range');
+  });
+
+  it('#1278 subsurface=false intermediate는 기존 GPS 경로 (회귀 없음)', async () => {
+    mockGetLastKnownPositionAsync.mockResolvedValue(
+      makePosition(FAR_FROM_GANGNAM.lat, FAR_FROM_GANGNAM.lng, 5_000),
+    );
+    const result = await checkSilentPushLocationGate({
+      stationName: '강남',
+      kind: 'intermediate',
+      phase: 'imminent',
+      subsurface: false,
+    });
+    expect(result.pass).toBe(false);
+    expect(result.reason).toBe('out-of-range');
+    expect(mockGetLastKnownPositionAsync).toHaveBeenCalled();
+  });
+
   it('캐시 위치가 가까우면 pass (cache source, distance 표기)', async () => {
     mockGetLastKnownPositionAsync.mockResolvedValue(
       makePosition(NEAR_GANGNAM.lat, NEAR_GANGNAM.lng, 10_000),
