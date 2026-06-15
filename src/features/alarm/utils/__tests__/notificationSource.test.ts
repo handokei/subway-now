@@ -6,6 +6,11 @@ import {
 } from '../notificationSource';
 import type { FusionSource } from '../../../../shared/types/fusion';
 
+const mockIsDebugModalEnabled = jest.fn();
+jest.mock('../../../../shared/constants/debugFlags', () => ({
+  isDebugModalEnabled: () => mockIsDebugModalEnabled(),
+}));
+
 describe('resolveNotificationSource', () => {
   it.each<[FusionSource, NotificationSource]>([
     ['boarding-lock', 'positionTrain'],
@@ -42,12 +47,25 @@ describe('notificationSourceI18nKey', () => {
 });
 
 describe('shouldDiscloseNotificationSource', () => {
-  it.each<[NotificationSource, boolean]>([
-    ['gpsOnly', true],
-    ['uncertain', true],
-    ['positionTrain', false],
-    ['routeProgress', false],
-  ])('%s → %s (사용자 자백 대상 여부)', (key, expected) => {
-    expect(shouldDiscloseNotificationSource(key)).toBe(expected);
+  describe('debug 빌드(isDebugModalEnabled=true)', () => {
+    beforeEach(() => mockIsDebugModalEnabled.mockReturnValue(true));
+    it.each<[NotificationSource, boolean]>([
+      ['gpsOnly', true],
+      ['uncertain', true],
+      ['positionTrain', false],
+      ['routeProgress', false],
+    ])('%s → %s (사용자 자백 대상 여부)', (key, expected) => {
+      expect(shouldDiscloseNotificationSource(key)).toBe(expected);
+    });
+  });
+
+  describe('production 빌드(isDebugModalEnabled=false) — #1327', () => {
+    beforeEach(() => mockIsDebugModalEnabled.mockReturnValue(false));
+    it.each<NotificationSource>(['gpsOnly', 'uncertain', 'positionTrain', 'routeProgress'])(
+      '%s → false (추정-근거 debug 문구 미노출)',
+      (key) => {
+        expect(shouldDiscloseNotificationSource(key)).toBe(false);
+      },
+    );
   });
 });

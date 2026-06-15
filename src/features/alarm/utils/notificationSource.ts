@@ -1,4 +1,5 @@
 import type { FusionSource } from '../../../shared/types/fusion';
+import { isDebugModalEnabled } from '../../../shared/constants/debugFlags';
 
 /**
  * 사용자에게 노출되는 데이터 출처 그룹 (#327 Phase B).
@@ -60,7 +61,12 @@ export function notificationSourceI18nKey(key: NotificationSource): SourceI18nKe
  * gpsOnly/uncertain은 신뢰도가 낮아 사용자가 의심해야 하므로 표시.
  *
  * 모든 표면(SourceBadge / 알람 본문 suffix / LA sourceLabel)에서 이 룰을 공유한다.
+ *
+ * #1327: "추정-근거" 자백은 개발용 진단 정보다. production 빌드(debug flag 없음)에서는 항상 false로
+ * 게이팅해 노출하지 않고, debug 빌드(__DEV__ 또는 EXPO_PUBLIC_DEBUG_MODAL=true)에서만 기존 룰대로
+ * 노출한다. 단일 chokepoint이므로 3개 표면이 동시에 게이팅된다.
  */
 export function shouldDiscloseNotificationSource(key: NotificationSource): boolean {
+  if (!isDebugModalEnabled()) return false;
   return key === 'gpsOnly' || key === 'uncertain';
 }
