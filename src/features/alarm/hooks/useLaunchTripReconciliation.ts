@@ -15,14 +15,22 @@
  *   1) ACTIVE_TRIP_KEY 조회. 없으면 미트립 — skip.
  *   2) tripEndedSentinel 확인. 이미 기록 있음 = silent push가 잘 도달한 케이스 — skip.
  *   3) `fetchTripStatus` 호출.
- *      - status='ended' → notification 발사 + sentinel 기록 + active trip clear.
- *        useStateRehydration이 sentinel을 보고 destination/lock store reset을 수행한다.
+ *      - status='ended' → notification 발사 + trip-end recall + storage cleanup + sentinel 기록 +
+ *        active trip clear. silent push handler와 같은 cleanup 시퀀스를 그대로 따라
+ *        사전예약/route/destination 잔존을 차단한다 (#1351 R1).
  *      - null(404/410) → active trip clear만. notification은 발사하지 않는다 (이미 정리됨,
  *        과거 notification은 다른 채널로 도달했을 가능성 또는 retention 만료).
  *      - status='active' → 변경 없음.
  *   4) 네트워크 에러 → silent fail. 다음 launch에서 재시도.
  *
  * 멱등성: sentinel이 기록되면 step 2에서 skip되므로 같은 trip에 대해 notification은 최대 1회.
+ * triggerTripEndRecall/runTripBoundCleanups 자체도 멱등이라 silent push handler와 중복 호출 안전.
+ *
+ * 호출 순서: sendTripEndedNotification → triggerTripEndRecall → runTripBoundCleanups →
+ * setTripEndedSentinel → removeItem(ACTIVE_TRIP_KEY). recall이 cleanup보다 먼저여야 한다 —
+ * cleanup이 ROUTE_KEY/DESTINATION_KEY/TRIP_ORIGIN_KEY/TRIP_STARTED_AT_KEY를 제거하므로
+ * 그 뒤에 recall이 돌면 입력이 비어 'empty'/'no-trip-start'로 skip된다
+ * (triggerTripEndRecall.ts 헤더 주석 명시).
  *
  * 호출 시점: app/_layout.tsx에서 마운트 1회. cold-launch backstop이라 AppState 'active'
  * 재진입 시 반복 fetch는 불필요 (silent push가 살아있다면 그쪽이 우선).
@@ -37,6 +45,8 @@ import {
 } from '../utils/tripEndedSentinel';
 import { sendTripEndedNotification } from '../utils/stationNotification';
 import { fetchTripStatus } from '../api/tripStatus';
+import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
+import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useLaunchTripReconciliation');
@@ -100,6 +110,12 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       `trip ended on backend — surface notification reason=${reason} endedAt=${endedAt}`,
     );
     await sendTripEndedNotification(reason);
+    // #1351 R1 — silent push handler와 동일한 cleanup 시퀀스. alert payload trip-ended가
+    // BG handler를 호출하지 않아 cleanup이 누락된 경우 launch backstop으로 복구.
+    // recall은 cleanup이 storage를 비우기 전에 호출되어야 입력을 읽을 수 있다.
+    // 두 호출 모두 멱등 — silent push handler와 중복 호출 안전.
+    await triggerTripEndRecall();
+    await runTripBoundCleanups();
     await setTripEndedSentinel(endedAt);
     await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
   } catch (e) {

@@ -25,6 +25,11 @@ jest.mock('../../infra/monitoring/breadcrumb', () => ({
   addDomainBreadcrumb: (...args: unknown[]) => mockAddDomainBreadcrumb(...args),
 }));
 
+const mockRunTripBoundCleanups = jest.fn();
+jest.mock('../../../features/alarm/store/tripBoundCleanups', () => ({
+  runTripBoundCleanups: (...args: unknown[]) => mockRunTripBoundCleanups(...args),
+}));
+
 // destination store cross-feature import는 storage helper 안에서 일어나므로 spy로 충분.
 // useDestinationStore.getState()를 그대로 사용한다 (실제 store)
 
@@ -32,6 +37,7 @@ const mockSetDestination = jest.fn();
 const mockLoadDestination = jest.fn();
 const mockLoadCustomOrigin = jest.fn();
 const mockLoadTripOrigin = jest.fn();
+const mockSetState = jest.fn();
 
 const mockReleaseLock = jest.fn();
 const mockLoadLock = jest.fn();
@@ -46,12 +52,16 @@ beforeEach(() => {
   mockLoadTripOrigin.mockResolvedValue(undefined);
   mockReleaseLock.mockResolvedValue(undefined);
   mockLoadLock.mockResolvedValue(undefined);
+  mockRunTripBoundCleanups.mockResolvedValue(undefined);
   jest.spyOn(useDestinationStore, 'getState').mockReturnValue({
     setDestination: mockSetDestination,
     loadDestination: mockLoadDestination,
     loadCustomOrigin: mockLoadCustomOrigin,
     loadTripOrigin: mockLoadTripOrigin,
   } as unknown as ReturnType<typeof useDestinationStore.getState>);
+  jest.spyOn(useDestinationStore, 'setState').mockImplementation((...args: unknown[]) => {
+    mockSetState(...args);
+  });
   jest.spyOn(useBoardingLockStore, 'getState').mockReturnValue({
     releaseLock: mockReleaseLock,
     loadLock: mockLoadLock,
@@ -86,23 +96,56 @@ describe('useStateRehydration', () => {
     });
   });
 
-  it('sentinel 없음 — store reset 호출 안 함', async () => {
+  it('sentinel 없음 — cleanup/store reset/lock release 모두 호출 안 함 (회귀 0)', async () => {
     mockGetSentinel.mockResolvedValue(null);
     mockAppState();
     renderHook(() => useStateRehydration());
     await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
-    expect(mockSetDestination).not.toHaveBeenCalled();
+    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+    expect(mockSetState).not.toHaveBeenCalled();
     expect(mockReleaseLock).not.toHaveBeenCalled();
     expect(mockClearSentinel).not.toHaveBeenCalled();
+    expect(mockAddDomainBreadcrumb).not.toHaveBeenCalledWith(
+      'trip',
+      'end',
+      expect.anything(),
+    );
   });
 
-  it('sentinel 있음 — setDestination(null) + releaseLock + sentinel clear', async () => {
+  it('sentinel 있음 — runTripBoundCleanups 직접 호출 + setState로 메모리 reset + breadcrumb + releaseLock + sentinel clear', async () => {
     mockGetSentinel.mockResolvedValue(1_700_000_000_000);
     mockAppState();
     renderHook(() => useStateRehydration());
     await waitFor(() => expect(mockClearSentinel).toHaveBeenCalled());
-    expect(mockSetDestination).toHaveBeenCalledWith(null);
+    // #1351 R2: setDestination(null)이 아니라 runTripBoundCleanups 직접 호출.
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+    expect(mockSetDestination).not.toHaveBeenCalled();
+    // 메모리 store는 setState로 atomic reset.
+    expect(mockSetState).toHaveBeenCalledWith({
+      destination: null,
+      customOrigin: null,
+      tripOrigin: null,
+    });
+    expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
+      reason: 'sentinel-rehydration',
+    });
     expect(mockReleaseLock).toHaveBeenCalled();
+  });
+
+  it('sentinel 있음 + prev destination null (isSwitch=false) — cleanup 정상 실행 (R2 핵심 회귀)', async () => {
+    // 이전 동작: setDestination(null)을 호출하면 store의 isSwitch가 false라서 cleanup chain이
+    // 실행되지 않았음. 새 동작은 runTripBoundCleanups를 직접 호출하므로 prev 상태 무관 cleanup 보장.
+    mockGetSentinel.mockResolvedValue(1_700_000_000_001);
+    // destination=null 기본 상태 (prev=null) 시뮬레이션 — 기본 mockReturnValue는 setDestination만
+    // 갖고 있어 prev 조회 불가하지만, runTripBoundCleanups가 store에 의존하지 않고 호출되는지가 핵심.
+    mockAppState();
+    renderHook(() => useStateRehydration());
+    await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1));
+    expect(mockSetState).toHaveBeenCalledWith({
+      destination: null,
+      customOrigin: null,
+      tripOrigin: null,
+    });
   });
 
   it("AppState 'active' 진입 시 재실행", async () => {
@@ -155,16 +198,22 @@ describe('useStateRehydration', () => {
     expect(app.remove).toHaveBeenCalled();
   });
 
-  it('active 진입에서도 sentinel 있으면 reset 호출', async () => {
+  it('active 진입에서도 sentinel 있으면 cleanup + setState reset 호출', async () => {
     const app = mockAppState();
     mockGetSentinel.mockResolvedValueOnce(null);
     renderHook(() => useStateRehydration());
     await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
-    expect(mockSetDestination).not.toHaveBeenCalled();
+    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+    expect(mockSetState).not.toHaveBeenCalled();
 
     mockGetSentinel.mockResolvedValueOnce(1_700_000_000_001);
     app.emit('active');
-    await waitFor(() => expect(mockSetDestination).toHaveBeenCalledWith(null));
+    await waitFor(() => expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1));
+    expect(mockSetState).toHaveBeenCalledWith({
+      destination: null,
+      customOrigin: null,
+      tripOrigin: null,
+    });
     expect(mockReleaseLock).toHaveBeenCalled();
   });
 });
