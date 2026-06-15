@@ -1820,9 +1820,13 @@ describe('useStationAlarm', () => {
     });
   });
 
-  describe('#670/#672 첫 evaluation suppress 가드', () => {
+  // #670/#672/#1316 — phase 알람 warmup 가드. 하이드레이션 완료 후 HYDRATE_WARMUP_MS(30s) 시간 window
+  // 동안 phase 평가를 보류한다. #1316 이전엔 첫 eval 1회만 suppress(isFirstAlarmEvalRef)했으나, 2번째
+  // eval이 GPS/ETA 안정화 전 destination/transfer early를 발사 → firedAlarms 슬롯 점유로 실제 도착이
+  // dedup되는 회귀(08:24:31 성수)가 있었다. station-passed(#1010)와 동일한 시간 window로 통일한다.
+  describe('#670/#672/#1316 phase warmup window 가드', () => {
     const route = makeDirectRoute(3, '2');
-    // skipWarmupGuard 미전달 → production default(false) 적용. 첫 evaluation 보류 동작 확인.
+    // skipWarmupGuard 미전달 → production default(false) 적용. warmup window 보류 동작 확인.
     function inputsWithGuardDefault(loc: { lat: number; lng: number }): UseStationAlarmInputs {
       return {
         route,
@@ -1840,7 +1844,9 @@ describe('useStationAlarm', () => {
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
     });
 
-    it('다음 deps 변경(좌표 갱신) 후 evaluate 호출됨', async () => {
+    it('warmup window 내에서는 좌표가 갱신돼도 계속 suppress (단발 아님 — #1316)', async () => {
+      const baseTs = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(baseTs);
       const { rerender } = renderHook(
         ({ loc }: { loc: { lat: number; lng: number } }) =>
           useStationAlarm(inputsWithGuardDefault(loc)),
@@ -1848,9 +1854,94 @@ describe('useStationAlarm', () => {
       );
       await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
       expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
-      // 첫 suppress 이후 좌표가 한 번 더 갱신되면 evaluate 진입.
+      // 좌표가 한 번 더 갱신돼도 (window 안, Date.now 불변) 여전히 보류 — 단발 suppress라면 여기서
+      // evaluate가 호출됐을 것. 시간 window라 계속 차단된다.
+      rerender({ loc: { lat: 37.41, lng: 127.01 } });
+      await waitFor(() =>
+        expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith('gate-phase-warmup', destination.name),
+      );
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+    });
+
+    it('warmup window 경과 후 좌표 갱신 시 evaluate 호출됨 (hydratedAt + 30s 이후)', async () => {
+      const baseTs = 1_700_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      const { rerender } = renderHook(
+        ({ loc }: { loc: { lat: number; lng: number } }) =>
+          useStationAlarm(inputsWithGuardDefault(loc)),
+        { initialProps: { loc: { lat: 37.4, lng: 127.0 } } },
+      );
+      await waitFor(() => expect(mockGetFiredAlarms).toHaveBeenCalled());
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+      // window 경과 후(30s + 1ms) 좌표 갱신 → 안정된 입력으로 평가 진입.
+      nowSpy.mockReturnValue(baseTs + 30_001);
       rerender({ loc: { lat: 37.41, lng: 127.01 } });
       await waitFor(() => expect(mockEvaluateAlarmPhase).toHaveBeenCalled());
+    });
+  });
+
+  // #1316 — 조기 발사가 dedup을 오염시켜 실제 도착 알람이 누락되는 회귀 재현.
+  // device evidence: 08:24:31 트립 생성 직후 destination early(성수, 6역 전) 조기 발사 →
+  // firedAlarms 슬롯 점유 → 08:40:53 실제 도착 시 dedup-alarm으로 억제.
+  // warmup window가 단발 suppress(2번째 eval 발사 가능)였던 게 root cause.
+  // 시간 window 전환 후: window 동안 발사 0 → firedAlarms 청결 → window 경과 후 도착 시 정상 발사.
+  describe('#1316 조기 발사 dedup 오염 방지', () => {
+    const route = makeDirectRoute(6, '2');
+
+    function inputsNearDestination(): UseStationAlarmInputs {
+      return {
+        route,
+        destination,
+        nearestStation: makeStation('S1', '역삼'),
+        userLocation: { lat: 37.498, lng: 127.028 },
+        speedMps: 10,
+        accuracyMeters: 100,
+      };
+    }
+
+    it('warmup window 내 destination early 발사 보류 → firedAlarms 슬롯 미점유', async () => {
+      const baseTs = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      // 트립 시작 직후 evaluateAlarmPhase가 early destination을 반환하려 해도(straight-line ETA 과소추정
+      // 등) warmup이 evaluate 진입 자체를 막아야 한다.
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+      renderHook(() => useStationAlarm(inputsNearDestination()));
+
+      await waitFor(() =>
+        expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith('gate-phase-warmup', destination.name),
+      );
+      // 핵심: evaluate 진입 차단 → firedAlarms 슬롯 점유 없음(setFiredAlarms 미호출) → 발사 없음.
+      expect(mockEvaluateAlarmPhase).not.toHaveBeenCalled();
+      expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('조기 발사로 오염되지 않아 window 경과 후 실제 도착에서 destination 정상 발사', async () => {
+      const baseTs = 1_700_000_000_000;
+      const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(baseTs);
+      mockGetBoardingLock.mockResolvedValue(null);
+      // 트립 시작 시점: early destination 조건 매칭(조기 발사 시도).
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+
+      const { rerender } = renderHook(
+        ({ loc }: { loc: { lat: number; lng: number } }) =>
+          useStationAlarm({ ...inputsNearDestination(), userLocation: loc }),
+        { initialProps: { loc: { lat: 37.4, lng: 127.0 } } },
+      );
+
+      // window 내 — 조기 발사 차단 확인.
+      await waitFor(() =>
+        expect(mockLogSuppressedPhaseGate).toHaveBeenCalledWith('gate-phase-warmup', destination.name),
+      );
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+
+      // 실제 도착 시점: window 경과 + 좌표 갱신. firedAlarms가 비어 있으므로 dedup 없이 발사돼야 한다.
+      nowSpy.mockReturnValue(baseTs + 30_001);
+      rerender({ loc: { lat: 37.498, lng: 127.028 } });
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(mockLogFiredAlarm).toHaveBeenCalledWith('fg', earlyDest, 'eta');
     });
   });
 
