@@ -312,7 +312,23 @@ function buildGpsRows(args: {
   ];
 }
 
-function buildDumpText(args: {
+/**
+ * #1346 — Share dump 섹션 SSOT.
+ *
+ * 변경 전: `buildDumpText` 함수 본체에 섹션 11개가 하드코딩 → 새 섹션 추가 시 매번 함수를
+ *   고쳐야 하고, fusion log처럼 신규 buffer가 누락된 게 사고 후에야 발견됨.
+ * 변경 후: 각 섹션 builder를 함수로 분리하고 `SHARE_SECTIONS`에 등록. 새 buffer를 추가하면
+ *   1) builder 함수 작성 → 2) 이 배열에 한 줄 등록만 하면 dump/UI 양쪽에 자동 노출된다.
+ *
+ * 각 builder는 `(args) => string[]` — 빈 섹션(예: Gates에 suppressed reason 0건)이면 빈
+ * 배열을 반환해 호출부가 헤더 자체를 생략한다. 출력 텍스트 포맷은 기존과 1:1로 일치한다.
+ */
+
+/**
+ * 공유 dump의 단일 args 타입. SSOT 배열의 모든 builder가 같은 args를 받는다.
+ * 새 섹션이 의존하는 필드는 여기에 optional로 추가하면 된다.
+ */
+interface BuildDumpArgs {
   userLocation: { lat: number; lng: number } | null;
   speedMps: number | null;
   accuracyMeters: number | null;
@@ -349,47 +365,58 @@ function buildDumpText(args: {
   fusionDetection?: FusionDetectionSummary | null;
   trip?: TripDebugState | null;
   sleep?: SleepDebugState | null;
-}): string {
-  const lines: string[] = [];
-  // SonarCloud S7778: 인접한 정적 push 호출은 다인자 단일 호출로 묶는다.
+  /**
+   * #1346 — Fusion log 채널을 share 텍스트에도 포함하기 위해 entries를 명시 주입.
+   * fusionDebugBuffer는 module-level singleton이지만 함수 순수성 유지를 위해 인자로 받는다.
+   * 미전달 시 (empty)로 출력 — 단위 테스트에서 fusion log를 다루지 않는 경우 호환.
+   */
+  fusionLog?: readonly FusionDebugEntry[];
+}
+
+/** dump 본체에서 사용하는 single builder 시그니처 — 본문 줄 배열을 반환. */
+type SectionBuilder = (args: BuildDumpArgs) => string[];
+
+function buildGpsSection(args: BuildDumpArgs): string[] {
   // #852: watch 구독 상태 + 마지막 fix 시각. 'bg'면 watch가 정지된 상태(silent push wake 등).
   // #853: fused speed signal. userLocation 있는 경우만 라인 노출, 미전달 시 NO_FUSED_SIGNAL_LABEL.
   // 호출자 호환을 위해 두 필드 모두 optional — 미전달 시 'fg'/(never)/(no fused signal)로 표기.
-  const gpsLines: string[] = [];
+  const lines: string[] = [];
   if (args.userLocation) {
     const fusedDump = args.fusedSpeed
       ? `${args.fusedSpeed.kmh.toFixed(1)} km/h (${args.fusedSpeed.source})`
       : NO_FUSED_SIGNAL_LABEL;
-    gpsLines.push(
+    lines.push(
       `lat=${args.userLocation.lat}, lng=${args.userLocation.lng}, speed=${args.speedMps ?? '-'} m/s, accuracy=${args.accuracyMeters ?? '-'} m`,
       `fused=${fusedDump}`,
     );
   } else {
-    gpsLines.push('(no location)');
+    lines.push('(no location)');
   }
   lines.push(
-    `[Subway debug] ${new Date().toISOString()}`,
-    '',
-    '## GPS',
-    ...gpsLines,
     `state=${args.gpsActive ?? 'fg'}, lastFix=${formatClockTimeWithSeconds(args.lastFixAtMs ?? null)}`,
     `subsurface=${formatOptionalBool(args.barometerSubsurface)}`,
-    '',
-    '## Nearest',
+  );
+  return lines;
+}
+
+function buildNearestSection(args: BuildDumpArgs): string[] {
+  const lines: string[] = [
     args.nearestName
       ? `${args.nearestName} · ${args.nearestDistanceM ?? '-'} m`
       : '(no nearest station)',
-  );
+  ];
   if (args.variants.length > 0) {
     lines.push(`variants: ${args.variants.join(', ')}`);
   }
-  lines.push(
-    '',
-    '## Fusion',
+  return lines;
+}
+
+function buildFusionSection(args: BuildDumpArgs): string[] {
+  const lines: string[] = [
     `confidence=${args.fusion.confidence}, source=${args.fusion.source}`,
     `fused: ${args.fusion.fusedLabel}`,
     `gps:   ${args.fusion.gpsLabel}`,
-  );
+  ];
   if (args.fusion.differs) lines.push('(fused != gps)');
   if (args.fusion.candidateTrains) {
     lines.push(
@@ -401,58 +428,133 @@ function buildDumpText(args: {
     `tier=${formatOptionalString(args.fusionDetection?.tier)}`,
     `signalMask=${formatOptionalString(args.fusionDetection?.signalMask)}`,
   );
-  // #1215 (D9) — Trip 섹션
-  lines.push(
-    '',
-    '## Trip',
+  return lines;
+}
+
+function buildTripSection(args: BuildDumpArgs): string[] {
+  return [
     `lockless=${formatOptionalBool(args.trip?.lockless)}`,
     `tripStartedAt=${formatOptionalTs(args.trip?.tripStartedAt ?? null)}`,
     `currentHopIndex=${formatOptionalNumber(args.trip?.currentHopIndex)}`,
     `route hop count=${formatOptionalNumber(args.trip?.routeHopCount ?? null)}`,
-  );
-  // #1215 (D9) — Sleep 섹션
+  ];
+}
+
+function buildSleepSection(args: BuildDumpArgs): string[] {
   const sleepModeText = args.sleep ? (args.sleep.sleepMode ? 'on' : 'off') : UNKNOWN_LABEL;
-  lines.push(
-    '',
-    '## Sleep',
+  return [
     `sleepMode=${sleepModeText}`,
     `firstHopApproaching=${formatOptionalBool(args.sleep?.firstHopApproaching)}`,
-  );
-  lines.push('', '## Arrival', args.arrivalSummary);
+  ];
+}
+
+function buildArrivalSection(args: BuildDumpArgs): string[] {
+  const lines: string[] = [args.arrivalSummary];
   if (args.isMock) lines.push('(MOCK)');
-  lines.push('', '## Silent Push');
-  for (const { dumpKey, value } of silentPushDiagRows(
+  return lines;
+}
+
+function buildSilentPushSection(args: BuildDumpArgs): string[] {
+  return silentPushDiagRows(
     args.silentPush,
     args.logs,
     args.locklessOn ?? false,
     args.lowPowerMode ?? false,
-  )) {
-    lines.push(`${dumpKey}=${value}`);
-  }
-  lines.push('');
+  ).map(({ dumpKey, value }) => `${dumpKey}=${value}`);
+}
+
+function buildScheduledQueueSection(args: BuildDumpArgs): string[] {
   // #756: 사용자가 Refresh 안 했으면 dump 섹션 자체를 "(not loaded)"로 명시해
   // "비어있음"과 "load 안 함"을 dump 텍스트만 보고도 구분 가능하게.
   // optional 필드 — undefined 도 null 과 동일 처리.
-  if (args.scheduledDump == null) {
-    lines.push('## Scheduled queue', '(not loaded)');
-  } else {
-    lines.push(
-      `## Scheduled queue (${args.scheduledDump.length})`,
-      ...args.scheduledDump.map(formatScheduledNotificationLine),
-    );
-  }
-  lines.push('');
-  // #1019 — ## Gates
+  if (args.scheduledDump == null) return ['(not loaded)'];
+  return args.scheduledDump.map(formatScheduledNotificationLine);
+}
+
+function buildGatesSection(args: BuildDumpArgs): string[] {
+  // #1019 — suppressed reason 0건이면 빈 배열 → 호출부에서 헤더 자체 생략.
   const reasonLine = formatReasonCountsLine(args.logs);
-  if (reasonLine) {
-    lines.push('## Gates', reasonLine, '');
-  }
-  lines.push(`## Alarm log (${args.logs.length})`);
+  return reasonLine ? [reasonLine] : [];
+}
+
+function buildAlarmLogSection(args: BuildDumpArgs): string[] {
+  const lines: string[] = [];
   // #564 — source별 카운트 헤더(UI와 동일 포매터 공유). 빈 문자열이면 헤더 생략.
   const sourcesLine = formatSourceCountsLine(args.logs);
   if (sourcesLine) lines.push(`sources: ${sourcesLine}`);
   for (const entry of [...args.logs].reverse()) {
     lines.push(formatLogLine(entry));
+  }
+  return lines;
+}
+
+/**
+ * #1346 — Fusion log 섹션. 빈 buffer일 때 (empty)로 명시 출력해 "한 번도 push 안 됨"과
+ * "load 안 함"을 구분한다(scheduled queue 컨벤션 따라).
+ */
+function buildFusionLogSection(args: BuildDumpArgs): string[] {
+  const entries = args.fusionLog ?? [];
+  if (entries.length === 0) return ['(empty)'];
+  // 최신이 위로 — Alarm log와 동일 정렬.
+  return [...entries].reverse().map(formatFusionDebugLine);
+}
+
+/**
+ * #1346 — Share dump SSOT.
+ *
+ * 출력 형식: `## ${title}` + 본문 줄 + 다음 섹션 사이 빈 줄.
+ *
+ * suffix 옵션:
+ *  - `suffix: '(scheduledDump-count)'` 처럼 dynamic 카운트를 헤더에 붙이는 섹션은
+ *    builder가 본문만 만들고, 헤더 suffix는 별도 함수가 계산한다(섹션 본체에 dependency 안 흘림).
+ *
+ * include 옵션:
+ *  - Gates 같이 빈 본문이면 헤더까지 생략해야 하는 섹션은 `omitIfEmpty: true` 지정.
+ */
+interface ShareSectionSpec {
+  title: string;
+  build: SectionBuilder;
+  /** dynamic 헤더 suffix(예: 카운트). 미정의 시 헤더는 title 그대로. */
+  suffix?: (args: BuildDumpArgs) => string;
+  /** 본문이 빈 배열이면 헤더까지 출력 안 함 (Gates). 기본 false — 빈 본문도 헤더 노출. */
+  omitIfEmpty?: boolean;
+}
+
+const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
+  { title: 'GPS', build: buildGpsSection },
+  { title: 'Nearest', build: buildNearestSection },
+  { title: 'Fusion', build: buildFusionSection },
+  { title: 'Trip', build: buildTripSection },
+  { title: 'Sleep', build: buildSleepSection },
+  { title: 'Arrival', build: buildArrivalSection },
+  { title: 'Silent Push', build: buildSilentPushSection },
+  {
+    title: 'Scheduled queue',
+    build: buildScheduledQueueSection,
+    // null/undefined면 카운트 없음, 그 외 N건은 헤더에 `(N)` suffix.
+    suffix: (args) => (args.scheduledDump == null ? '' : ` (${args.scheduledDump.length})`),
+  },
+  { title: 'Gates', build: buildGatesSection, omitIfEmpty: true },
+  {
+    title: 'Alarm log',
+    build: buildAlarmLogSection,
+    suffix: (args) => ` (${args.logs.length})`,
+  },
+  // #1346 — fusion log를 share에 포함. 누락 시 sticky cascade 같은 회귀를 사후 재구성 불가.
+  {
+    title: 'Fusion log',
+    build: buildFusionLogSection,
+    suffix: (args) => ` (${args.fusionLog?.length ?? 0})`,
+  },
+];
+
+function buildDumpText(args: BuildDumpArgs): string {
+  const lines: string[] = [`[Subway debug] ${new Date().toISOString()}`];
+  for (const spec of SHARE_SECTIONS) {
+    const body = spec.build(args);
+    if (spec.omitIfEmpty && body.length === 0) continue;
+    const suffix = spec.suffix ? spec.suffix(args) : '';
+    lines.push('', `## ${spec.title}${suffix}`, ...body);
   }
   return lines.join('\n');
 }
@@ -731,6 +833,8 @@ function DebugModalInner({
       fusionDetection,
       trip,
       sleep,
+      // #1346 — fusion log entries를 share에 포함. sticky cascade 같은 회귀 사후 재구성용.
+      fusionLog: fusionLogs,
     });
     void Share.share({ message });
   }, [
@@ -760,6 +864,8 @@ function DebugModalInner({
     fusionDetection,
     trip,
     sleep,
+    // #1346 — fusion log 신규 캡쳐.
+    fusionLogs,
   ]);
 
   return (

@@ -2176,6 +2176,172 @@ describe('DebugModal — Gates 섹션 (#1025)', () => {
   });
 });
 
+// #1346 — Share build SSOT. 모든 섹션이 한 배열에서 enumerate되므로 누락 없이 출력된다.
+describe('DebugModal share SSOT (#1346)', () => {
+  // outer scope factory — SonarCloud nested function 회피.
+  type DumpArgs = Parameters<typeof __test__.buildDumpText>[0];
+  const ssotBaseline: DumpArgs = {
+    userLocation: null,
+    speedMps: null,
+    accuracyMeters: null,
+    nearestName: null,
+    nearestDistanceM: null,
+    variants: [],
+    fusion: {
+      confidence: 'gps-only' as const,
+      source: 'gps' as const,
+      fusedLabel: '-',
+      gpsLabel: '-',
+      differs: false,
+      candidateTrains: null,
+    },
+    arrivalSummary: '-',
+    isMock: false,
+    silentPush: {
+      apnsToken: null,
+      activeTripToken: null,
+      apnsEnv: 'sandbox' as const,
+      permissionStatus: null,
+      taskRegistrationState: 'unknown' as const,
+      taskRegistrationError: null,
+      lastReceivedAt: null,
+      lastFiredAt: null,
+      lastSkippedAt: null,
+      hasRoute: false,
+      destinationId: null,
+      lastNotifiedStationId: null,
+    },
+    logs: [],
+  };
+  const makeSsotArgs = (overrides: Partial<DumpArgs> = {}): DumpArgs => ({
+    ...ssotBaseline,
+    ...overrides,
+  });
+
+  it('모든 SSOT 섹션 헤더가 share 텍스트에 포함된다 (Gates 제외, suppressed 없음 시)', () => {
+    const dump = __test__.buildDumpText(makeSsotArgs());
+    expect(dump).toContain('## GPS');
+    expect(dump).toContain('## Nearest');
+    expect(dump).toContain('## Fusion');
+    expect(dump).toContain('## Trip');
+    expect(dump).toContain('## Sleep');
+    expect(dump).toContain('## Arrival');
+    expect(dump).toContain('## Silent Push');
+    expect(dump).toContain('## Scheduled queue');
+    expect(dump).toContain('## Alarm log');
+    expect(dump).toContain('## Fusion log');
+    // suppressed reason 없으면 Gates 헤더 자체 생략(omitIfEmpty=true).
+    expect(dump).not.toContain('## Gates');
+  });
+
+  it('Fusion log 섹션이 Alarm log 섹션 *다음*에 위치한다', () => {
+    const dump = __test__.buildDumpText(makeSsotArgs());
+    const alarmIdx = dump.indexOf('## Alarm log');
+    const fusionLogIdx = dump.indexOf('## Fusion log');
+    expect(alarmIdx).toBeGreaterThan(-1);
+    expect(fusionLogIdx).toBeGreaterThan(alarmIdx);
+  });
+
+  it('Fusion log: fusionLog 미전달 시 카운트 0 + (empty) 표시', () => {
+    const dump = __test__.buildDumpText(makeSsotArgs());
+    expect(dump).toContain('## Fusion log (0)');
+    // 본문 라인 — Alarm log 비어있을 때도 (empty)이지만 fusion log 섹션은 항상 한 줄.
+    const fusionSection = dump.slice(dump.indexOf('## Fusion log'));
+    expect(fusionSection).toContain('(empty)');
+  });
+
+  it('Fusion log: fusionLog 빈 배열도 (empty) 출력', () => {
+    const dump = __test__.buildDumpText(makeSsotArgs({ fusionLog: [] }));
+    expect(dump).toContain('## Fusion log (0)');
+    const fusionSection = dump.slice(dump.indexOf('## Fusion log'));
+    expect(fusionSection).toContain('(empty)');
+  });
+
+  it('Fusion log: 3건 데이터 → 3줄로 직렬화(최신 먼저)', () => {
+    const ts1 = new Date('2026-06-15T10:00:00Z').getTime();
+    const ts2 = new Date('2026-06-15T10:00:10Z').getTime();
+    const ts3 = new Date('2026-06-15T10:00:20Z').getTime();
+    const dump = __test__.buildDumpText(
+      makeSsotArgs({
+        fusionLog: [
+          {
+            kind: 'gps',
+            event: 'gps-fix',
+            ts: ts1,
+            lat: 37.5,
+            lng: 127,
+            accuracyMeters: 20,
+            speedMps: 0,
+            nearestStation: '용마산',
+            nearestLine: '7',
+            nearestDistanceKm: 0.05,
+          },
+          {
+            kind: 'sticky',
+            event: 'locked',
+            ts: ts2,
+            stationName: '용마산',
+            line: '7',
+            accuracyMeters: 50,
+            speedMps: 0.2,
+          },
+          {
+            kind: 'fusion',
+            ts: ts3,
+            source: 'position-train',
+            confidence: 'position-train',
+            stationName: '사가정',
+            line: '7',
+            distanceKm: 0.8,
+            gpsAccuracyAtPushMeters: 25,
+            candidates: [
+              { key: 'positionTrain', stationName: '사가정', line: '7' },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(dump).toContain('## Fusion log (3)');
+    // 최신(ts3) 먼저 — Alarm log와 동일 정렬.
+    const fusionSection = dump.slice(dump.indexOf('## Fusion log'));
+    expect(fusionSection).toContain('src=position-train');
+    expect(fusionSection).toContain('gps-fix');
+    expect(fusionSection).toContain('sticky:locked');
+    // 본문 라인 3건 — 헤더 다음의 줄 수가 3.
+    const bodyLines = fusionSection.split('\n').slice(1).filter((l) => l.length > 0);
+    expect(bodyLines).toHaveLength(3);
+  });
+
+  it('DebugModal share button: fusion log buffer가 share 텍스트에 흐른다 (#1346)', async () => {
+    const { pushFusionDebugEntry, clearFusionDebugEntries } = jest.requireActual(
+      '../../../nearest-station/utils/fusionDebugBuffer',
+    );
+    clearFusionDebugEntries();
+    setupHookDefaults();
+    pushFusionDebugEntry({
+      kind: 'sticky',
+      event: 'locked',
+      ts: new Date('2026-06-15T10:00:00Z').getTime(),
+      stationName: '용마산',
+      line: '7',
+      accuracyMeters: 50,
+      speedMps: 0.2,
+    });
+
+    const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    fireEvent.press(screen.getByTestId('debug-share-dump'));
+    await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+    const msg = shareSpy.mock.calls[0][0].message;
+    expect(msg).toContain('## Fusion log (1)');
+    expect(msg).toContain('sticky:locked');
+    expect(msg).toContain('용마산(7)');
+    shareSpy.mockRestore();
+    clearFusionDebugEntries();
+  });
+});
+
 describe('DebugModal helpers — formatEstimatorLine (#1025)', () => {
   const { formatEstimatorLine: fmt } = __test__;
   // 3개 케이스가 동일 구조 — it.each로 묶어 CPD 토큰 반복 제거.

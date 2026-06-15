@@ -840,10 +840,119 @@ describe('useDestinationStore', () => {
       });
     });
 
-    it('같은 destination 재설정은 noise 방지를 위해 breadcrumb 없음', () => {
+    it('같은 destination 재설정은 trip start/end noise 방지 — switch breadcrumb 없음', () => {
+      // #1346 — `setDestination-call` trace breadcrumb는 항상 발사돼 caller stamp를 남기지만,
+      // `start`/`end` 같은 switch-specific breadcrumb는 noise 방지를 위해 isSwitch=false면 생략된다.
       useDestinationStore.setState({ destination: mockStation });
       useDestinationStore.getState().setDestination(mockStation);
-      expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
+      expect(mockAddDomainBreadcrumb).not.toHaveBeenCalledWith(
+        'trip',
+        'start',
+        expect.anything(),
+      );
+      expect(mockAddDomainBreadcrumb).not.toHaveBeenCalledWith(
+        'trip',
+        'end',
+        expect.anything(),
+      );
+    });
+  });
+
+  // #1346 — setDestination 호출자 trace. lockless trip 잔존(tripStartedAt 9시간) 분석 시
+  // 어느 컴포넌트/훅이 마지막으로 호출했는지 사후 재구성 가능. caller 추출은 환경변수 게이트.
+  describe('setDestination-call trace (#1346)', () => {
+    const originalEnv = process.env.EXPO_PUBLIC_DEBUG_MODAL;
+    beforeEach(() => {
+      mockAddDomainBreadcrumb.mockClear();
+      useDestinationStore.setState({ destination: null });
+    });
+    afterEach(() => {
+      // env 복구. undefined로 다시 두는 게 더 정확하지만 jest의 env mutation은 string만 보장.
+      if (originalEnv === undefined) {
+        delete process.env.EXPO_PUBLIC_DEBUG_MODAL;
+      } else {
+        process.env.EXPO_PUBLIC_DEBUG_MODAL = originalEnv;
+      }
+    });
+
+    it('isSwitch=true → setDestination-call breadcrumb 1건 + caller 정보', () => {
+      process.env.EXPO_PUBLIC_DEBUG_MODAL = 'true';
+      useDestinationStore.getState().setDestination(mockStation);
+      const call = mockAddDomainBreadcrumb.mock.calls.find(
+        ([_category, message]) => message === 'setDestination-call',
+      );
+      expect(call).toBeDefined();
+      const data = call?.[2] as Record<string, unknown> | undefined;
+      expect(data).toMatchObject({
+        prevId: null,
+        nextId: '2-022',
+        isSwitch: true,
+      });
+      // caller는 stack trace 추출 결과 — jest 환경에서 보통 path:line:col 형태로 매칭.
+      expect(typeof data?.caller === 'string' || data?.caller === undefined).toBe(true);
+    });
+
+    it('isSwitch=false(같은 destination 재설정)에도 trace는 발사된다', () => {
+      process.env.EXPO_PUBLIC_DEBUG_MODAL = 'true';
+      useDestinationStore.setState({ destination: mockStation });
+      mockAddDomainBreadcrumb.mockClear();
+
+      useDestinationStore.getState().setDestination(mockStation);
+
+      const call = mockAddDomainBreadcrumb.mock.calls.find(
+        ([_category, message]) => message === 'setDestination-call',
+      );
+      expect(call).toBeDefined();
+      const data = call?.[2] as Record<string, unknown> | undefined;
+      expect(data).toMatchObject({
+        prevId: '2-022',
+        nextId: '2-022',
+        isSwitch: false,
+      });
+    });
+
+    it('ENV OFF(EXPO_PUBLIC_DEBUG_MODAL≠true)면 caller=undefined로 발사', () => {
+      delete process.env.EXPO_PUBLIC_DEBUG_MODAL;
+      useDestinationStore.getState().setDestination(mockStation);
+      const call = mockAddDomainBreadcrumb.mock.calls.find(
+        ([_category, message]) => message === 'setDestination-call',
+      );
+      expect(call).toBeDefined();
+      const data = call?.[2] as Record<string, unknown> | undefined;
+      expect(data?.caller).toBeUndefined();
+    });
+
+    it('null 해제(trip end)에도 trace는 발사된다', () => {
+      process.env.EXPO_PUBLIC_DEBUG_MODAL = 'true';
+      useDestinationStore.setState({ destination: mockStation });
+      mockAddDomainBreadcrumb.mockClear();
+
+      useDestinationStore.getState().setDestination(null);
+
+      const call = mockAddDomainBreadcrumb.mock.calls.find(
+        ([_category, message]) => message === 'setDestination-call',
+      );
+      expect(call).toBeDefined();
+      const data = call?.[2] as Record<string, unknown> | undefined;
+      expect(data).toMatchObject({
+        prevId: '2-022',
+        nextId: null,
+        isSwitch: true,
+      });
+    });
+
+    it('degenerate destination(customOrigin==station)이면 차단되어 trace 발사 안 됨', () => {
+      process.env.EXPO_PUBLIC_DEBUG_MODAL = 'true';
+      useDestinationStore.getState().setCustomOrigin(mockStation);
+      mockAddDomainBreadcrumb.mockClear();
+
+      useDestinationStore.getState().setDestination(mockStation);
+
+      const call = mockAddDomainBreadcrumb.mock.calls.find(
+        ([_category, message]) => message === 'setDestination-call',
+      );
+      // 차단 분기에서는 setDestination-call breadcrumb 자체가 발사되지 않는다(이미 degenerate breadcrumb).
+      expect(call).toBeUndefined();
     });
   });
 });
