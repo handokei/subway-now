@@ -4219,6 +4219,21 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     if (expectPresent) expect(data.subsurface).toBe(true);
   });
 
+  // #1322 — lock-path fire는 boardingLine/trainCode를 self-describing으로 실어 보낸다.
+  // 디바이스가 로컬 lock 없이도 line sanity-guard를 돌려 transfer/destination push를 발사할 수 있게 한다.
+  it('payload.boardingLine/trainCode 포함 — lock.line/lock.trainCode가 그대로 forward (#1322)', async () => {
+    const { apnsFetch } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      pushId: 'p-arvl-line',
+    });
+    const data = parseStationPassedData(getStationPassedCalls(apnsFetch)[0]) as Record<
+      string,
+      unknown
+    >;
+    expect(data.boardingLine).toBe('7');
+    expect(data.trainCode).toBe('7246');
+  });
+
   it('arvlCd=0(ENTERING) → 매역 push 발사 (arvlCd=0 dedup key)', async () => {
     const { stats, kv } = await runArvlScheduled({
       seoul: makeArrivalSeoul('중곡', 0, 0),

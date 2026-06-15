@@ -27,7 +27,7 @@ import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
-import type { Station } from '../../../shared/types/station';
+import type { LineNumber, Station } from '../../../shared/types/station';
 import {
   APNS_TOKEN_KEY,
   ACTIVE_TRIP_KEY,
@@ -109,6 +109,14 @@ export interface SilentPushPayload {
    * 지하 stale/spoof GPS로 인한 out-of-range 오거부를 막는다. 구 backend 호환 위해 optional.
    */
   subsurface?: boolean;
+  /**
+   * #1322 — backend lock-path fire가 실어 보내는 boardingLock 노선 (server-authoritative).
+   * 로컬 lock이 없을 때(지하 auto-lock hydration window) 이 line으로 sanity-guard를 돌려
+   * non-intermediate push도 발사한다 (`fireWithGate`). backend가 선택해 발사한 push이므로
+   * authoritative — 디바이스는 자체 lock 없이도 honor한다. 구 backend 호환 위해 optional —
+   * 누락 시 기존 보수 동작(lock 없으면 non-intermediate skip)으로 fallback.
+   */
+  boardingLine?: string;
 }
 
 /**
@@ -280,9 +288,10 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
   // standard 경로. findFieldsLayer는 isStandardCandidate(nextWaypoint non-empty) 또는
   // isRescheduleCandidate(kind='reschedule') 중 하나로 통과시키지만, kind='reschedule'
   // 케이스는 위 분기에서 잡혔으므로 잔여 케이스는 isStandardCandidate가 보증한 것 — nextWaypoint 보장.
-  const { nextWaypoint, etaSeconds, phase, kind, sentAt, pushId, hopIndex, subsurface } = obj as {
-    nextWaypoint: string;
-  } & Record<string, unknown>;
+  const { nextWaypoint, etaSeconds, phase, kind, sentAt, pushId, hopIndex, subsurface, boardingLine } =
+    obj as {
+      nextWaypoint: string;
+    } & Record<string, unknown>;
   if (typeof etaSeconds !== 'number' || !Number.isFinite(etaSeconds)) return null;
   if (phase !== 'early' && phase !== 'imminent') return null;
   const validKind =
@@ -296,7 +305,17 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     pushId: validPushId(pushId),
     hopIndex: validHopIndex(hopIndex),
     subsurface: validSubsurface(subsurface),
+    boardingLine: validBoardingLine(boardingLine),
   };
+}
+
+/**
+ * #1322 — payload.boardingLine 검증. 비어있지 않은 string만 통과 (LineNumber 표기).
+ * backend는 lock-path fire에서만 wire하므로 누락/형식 오류는 undefined로 정규화 →
+ * `fireWithGate`가 lock 없을 때 기존 보수 동작(non-intermediate skip)으로 fallback.
+ */
+function validBoardingLine(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 /**
@@ -723,14 +742,19 @@ async function fireWithGate(
   payload: SilentPushPayload & { kind: NonNullable<SilentPushPayload['kind']> },
   apnsToken: string | null,
 ): Promise<void> {
-  // #707: BoardingLock 활성 시 nextWaypoint가 lock.boardingLine에 정차하는지 검증.
-  // 백엔드 SilentPushPayload(alarm-worker/src/apns.ts)는 line/expectedLine 필드를 보내지 않으므로
+  // #707/#1322: line sanity-guard. nextWaypoint가 boarding 노선에 정차하는지 검증한다.
+  // 노선 출처는 (1) 로컬 BoardingLock, 또는 (2) #1322 — backend lock-path fire가 실어 보낸
+  // payload.boardingLine (지하 auto-lock hydration window 등으로 로컬 lock이 없는 경우).
   // 환승역 등에서 같은 nextWaypoint name이 여러 line stop을 가질 수 있다 — stations.json 매칭으로
   // 다른 line stop만 존재하면 다른 leg/노선의 silent push로 판정해 차단.
   // station name 자체가 stations.json에 없으면 line 가드는 통과시키고 일반 게이트의 unknown-station로 위임.
   const lock = await getBoardingLock();
-  if (lock) {
-    const onBoardingLine = findStationByNameAndLine(payload.nextWaypoint, lock.boardingLine);
+  // guardLine 출처가 로컬 lock(LineNumber)이거나 wire payload(string)라 타입은 string으로 합쳐진다.
+  // findStationByNameAndLine은 `s.line === line` 엄격 비교라 LineNumber가 아닌 임의 문자열은
+  // 어떤 station에도 매칭되지 않아 안전하게 no-match(null)된다 → LineNumber로 좁혀도 무해.
+  const guardLine = (lock ? lock.boardingLine : payload.boardingLine) as LineNumber | undefined;
+  if (guardLine !== undefined) {
+    const onBoardingLine = findStationByNameAndLine(payload.nextWaypoint, guardLine);
     if (!onBoardingLine && findStationByName(payload.nextWaypoint)) {
       const logKind = payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
       logSilentPushSkipped({
@@ -741,12 +765,15 @@ async function fireWithGate(
       });
       ackOutcome(payload.pushId, apnsToken, 'skipped', 'lock-line-mismatch');
       logger.info(
-        `lock line mismatch skip: nextWaypoint=${payload.nextWaypoint} boardingLine=${lock.boardingLine}`,
+        `lock line mismatch skip: nextWaypoint=${payload.nextWaypoint} boardingLine=${guardLine}`,
       );
       return;
     }
+    // #1322 — 로컬 lock 없이 payload.boardingLine만으로 통과한 경우: backend가 train을 선택해
+    // 발사한 lock-path push이므로 authoritative. lockless opt-in 토글은 lock 없는 trip 전용이라
+    // 적용하지 않고(backend lock 보유) line 가드 통과 후 바로 위치/movement 게이트로 진행한다.
   } else {
-    // #816 C — lock 없는 trip의 lockless 분기.
+    // #816 C — lock 없고 payload line도 없는 진짜 lockless 분기.
     // backend가 lockless trip의 station-passed(intermediate)만 발사하지만, race로 transfer/destination이
     // 도착하거나 토글 OFF로 변경된 직후의 push가 도달할 수 있어 client에서 추가 가드.
     //   1) intermediate가 아니면 skip (trainCode 없이 알람 위치 보장 불가)

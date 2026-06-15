@@ -239,6 +239,60 @@ describe('sendSilentPush', () => {
     if (expectPresent) expect(body.data.subsurface).toBe(true);
   });
 
+  // #1322 — payload.boardingLine/trainCode wire 검증 (lock-path self-describing fire).
+  // 지정 시 wire, 미지정은 byte-level 호환 위해 omit.
+  it.each([
+    ['지정 시 body.data.boardingLine으로 전달', '7', true],
+    ['미지정이면 body.data에서 omit (구 client/backend 호환)', undefined, false],
+  ])('boardingLine %s (#1322)', async (_label, input, expectPresent) => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: {
+        nextWaypoint: '군자',
+        etaSeconds: 0,
+        phase: 'imminent',
+        kind: 'transfer',
+        sentAt: 1_700_000_000_000,
+        pushId: 'p',
+        ...(input === undefined ? {} : { boardingLine: input }),
+      },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('boardingLine' in body.data).toBe(expectPresent);
+    if (expectPresent) expect(body.data.boardingLine).toBe('7');
+  });
+
+  it.each([
+    ['지정 시 body.data.trainCode로 전달', '7246', true],
+    ['미지정이면 body.data에서 omit', undefined, false],
+  ])('trainCode %s (#1322)', async (_label, input, expectPresent) => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: {
+        nextWaypoint: '군자',
+        etaSeconds: 0,
+        phase: 'imminent',
+        kind: 'transfer',
+        sentAt: 1_700_000_000_000,
+        pushId: 'p',
+        ...(input === undefined ? {} : { trainCode: input }),
+      },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('trainCode' in body.data).toBe(expectPresent);
+    if (expectPresent) expect(body.data.trainCode).toBe('7246');
+  });
+
   it('uses sandbox host when provided', async () => {
     const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response('', { status: 200 }),

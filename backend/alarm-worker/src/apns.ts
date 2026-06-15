@@ -77,6 +77,20 @@ export interface SilentPushPayload {
    * 클라이언트는 기존 거리 게이트로 동작.
    */
   subsurface?: boolean;
+  /**
+   * #1322 — lock-path fire의 boardingLock 노선(`BoardingLockMeta.line`). server-authoritative.
+   * 디바이스가 로컬 lock 없이도(지하 auto-lock hydration window 등) lock-path push(transfer/
+   * destination/imminent)의 line sanity-guard를 돌려 발사할 수 있게 한다. 이게 없으면 디바이스는
+   * 로컬 lock 부재 + non-intermediate push를 stale race로 보고 `lockless-non-intermediate` drop한다.
+   * 구 backend 호환 위해 optional — 미전달 시 wire에서 누락, 디바이스는 기존 보수 동작으로 fallback.
+   */
+  boardingLine?: string;
+  /**
+   * #1322 — lock-path fire의 boardingLock trainCode. server가 선택한 열차 식별자.
+   * boardingLine과 함께 디바이스에 어떤 열차/노선 발사인지 알린다(진단/로그용). 구 backend 호환 위해
+   * optional — 미전달 시 wire에서 누락.
+   */
+  trainCode?: string;
 }
 
 export async function buildApnsJwt(config: ApnsConfig, now: number = Date.now()): Promise<string> {
@@ -135,6 +149,12 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
       // #1307 — subsurface는 true일 때만 wire. false/undefined는 JSON에서 자연 누락 →
       // 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
       ...(options.payload.subsurface === true ? { subsurface: true } : {}),
+      // #1322 — boardingLine/trainCode는 정의된 경우에만 wire (lock-path fire). 미전달 시
+      // JSON에서 자연 누락 → 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
+      ...(options.payload.boardingLine === undefined
+        ? {}
+        : { boardingLine: options.payload.boardingLine }),
+      ...(options.payload.trainCode === undefined ? {} : { trainCode: options.payload.trainCode }),
     },
   });
 
