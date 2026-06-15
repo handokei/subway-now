@@ -68,9 +68,19 @@ import { resolveNotificationSource, type NotificationSource } from '../utils/not
 
 const logger = createLogger('StationAlarm');
 
-// #1010 — station-passed hydration warmup. lock hydrate 완료 후 이 기간 동안 station-passed 차단.
-// 하이드레이션 직후 firedAlarms가 복원되기 전 GPS 신호와 동기화되는 과도 구간 false alarm 방지.
-const STATION_PASSED_HYDRATE_WARMUP_MS = 30_000;
+// #1010/#1316 — 하이드레이션 warmup. lock hydrate 완료 후 이 기간 동안 알람 발사를 차단한다.
+// 하이드레이션 직후 firedAlarms가 복원되기 전 GPS/ETA 신호와 동기화되는 과도 구간 false alarm 방지.
+// station-passed effect(#1010)와 phase 알람 effect(#1316) 양쪽이 같은 window를 공유한다.
+const HYDRATE_WARMUP_MS = 30_000;
+
+/**
+ * #1010/#1316 — 하이드레이션 완료(hydratedAt) 후 HYDRATE_WARMUP_MS 시간 window 안인지 판정.
+ * hydratedAt=null(미완료)이면 false — 발사 보류는 호출부의 hydrationPhase!=='ready' 가드가 담당하므로
+ * 여기선 window 시작 전을 window 밖으로 본다. phase/station-passed 두 effect가 동일 판정을 공유한다.
+ */
+function isWithinHydrateWarmup(hydratedAt: number | null, now: number): boolean {
+  return hydratedAt !== null && now - hydratedAt < HYDRATE_WARMUP_MS;
+}
 
 /**
  * #746 — dismiss silence 게이트 판정 + 만료 시 store clear 호출.
@@ -353,14 +363,13 @@ export function useStationAlarm({
   // 클로저로 진입한다. ref id가 현재 destinationId와 다르면 stale state — phase 평가를 보류해
   // 옛 ref로 새 destination에 잘못된 알람을 발사하는 race를 차단한다.
   const firedAlarmsRefDestIdRef = useRef<string | null>(null);
-  // #670/#672: ETA 평가 effect의 첫 trigger를 suppress.
-  // fg-hydrate 직후 hydrate된 stale firedAlarms·nearestStation과 새 GPS 좌표가 동기화되기 전
-  // 즉시 평가 분기로 진입하면 잘못된 phase 알람이 발사됨. 한 cycle 보류로 다음 deps 변경(좌표/
-  // hydrate state 갱신) 시 안정된 입력으로 평가.
-  const isFirstAlarmEvalRef = useRef(true);
-  // #1010: station-passed hydration warmup — 하이드레이션 완료 시각(ms). null이면 미완료.
-  // warmup window 동안 station-passed effect가 즉시 차단된다.
-  const stationPassedHydratedAtRef = useRef<number | null>(null);
+  // #1010/#1316: 하이드레이션 완료 시각(ms). null이면 미완료.
+  // warmup window(HYDRATE_WARMUP_MS) 동안 station-passed effect(#1010)와 phase 알람 effect(#1316)가
+  // 즉시 차단된다. #1316 — phase 알람은 기존 isFirstAlarmEvalRef 단발 suppress(첫 eval만 차단)였으나,
+  // 2번째 eval(~1초 후)이 GPS/ETA 안정화 전 destination/transfer early를 발사 → 조기 발사가 firedAlarms
+  // 슬롯을 점유해 실제 도착 발사가 dedup되는 회귀(08:24:31 성수)가 있었다. station-passed와 동일한
+  // 시간 window로 통일한다.
+  const hydratedAtRef = useRef<number | null>(null);
   // firedAlarms hydration: BG가 AsyncStorage(FIRED_ALARMS_KEY)에 쓴 dedup 상태를
   // destination별로 격리해 복원한다(#462).
   //
@@ -440,7 +449,7 @@ export function useStationAlarm({
   // → cross-trip stale state가 새 trip의 evaluator를 오염시키지 않는다.
   useEffect(() => {
     let cancelled = false;
-    stationPassedHydratedAtRef.current = null;
+    hydratedAtRef.current = null;
     // #1012 (H5) — Phase 1: pre-hydrate 리셋. destination 전환마다 state machine 재시작.
     setHydrationPhase('pre-hydrate');
     logHydrationTransition('pre-hydrate', destinationId);
@@ -461,8 +470,8 @@ export function useStationAlarm({
       firedAlarmsRefDestIdRef.current = destinationId;
       // #580: hydration 시점 진단 — 같은 destinationId에서 size가 다시 0으로 떨어지면 storage race.
       logFiredAlarmsHydrate(destinationId, stored.size);
-      // #1010: station-passed warmup 시작 — 하이드레이션 완료 시각 기록.
-      stationPassedHydratedAtRef.current = Date.now();
+      // #1010/#1316: warmup 시작 — 하이드레이션 완료 시각 기록. station-passed/phase 알람 effect 공용.
+      hydratedAtRef.current = Date.now();
       // #1012 (H5) — Phase 4: ready. ref 셋업 + warmup 시각 기록 완료 후 phase 평가 허용.
       setHydrationPhase('ready');
       logHydrationTransition('ready', destinationId);
@@ -576,9 +585,13 @@ export function useStationAlarm({
       return;
     }
 
-    // #670/#672: 첫 trigger suppress — fg-hydrate 직후 stale state 발사 차단.
-    if (!skipWarmupGuard && isFirstAlarmEvalRef.current) {
-      isFirstAlarmEvalRef.current = false;
+    // #670/#672/#1316: 하이드레이션 직후 warmup window 동안 발사 보류 — stale firedAlarms·
+    // nearestStation과 새 GPS/ETA 좌표가 동기화되기 전 조기 발사 차단. station-passed effect(#1010)와
+    // 동일한 HYDRATE_WARMUP_MS 시간 window를 공유한다.
+    // #1316 — 기존엔 isFirstAlarmEvalRef로 첫 eval 1회만 suppress했으나, 2번째 eval(~1초 후)이 GPS/ETA
+    // 안정화 전 destination/transfer early를 발사 → 그 조기 발사가 firedAlarms 슬롯을 점유해 실제 도착
+    // 발사가 dedup으로 억제되는 회귀(08:24:31 성수)가 있었다. 시간 window로 전환해 해소.
+    if (!skipWarmupGuard && isWithinHydrateWarmup(hydratedAtRef.current, Date.now())) {
       logSuppressedPhaseGate('gate-phase-warmup', destination.name);
       return;
     }
@@ -812,12 +825,9 @@ export function useStationAlarm({
     // #1010: firedAlarms 복원 완료 전에는 발사 보류.
     if (hydrationPhase !== 'ready') return;
     // #1010: hydration 완료 후 30s warmup window 동안 발사 보류.
-    if (!skipWarmupGuard) {
-      const hydratedAt = stationPassedHydratedAtRef.current;
-      if (hydratedAt !== null && Date.now() - hydratedAt < STATION_PASSED_HYDRATE_WARMUP_MS) {
-        logSuppressedStationPassedWarmup(nearestStation?.name);
-        return;
-      }
+    if (!skipWarmupGuard && isWithinHydrateWarmup(hydratedAtRef.current, Date.now())) {
+      logSuppressedStationPassedWarmup(nearestStation?.name);
+      return;
     }
 
     if (!accuracyOk && !arrivalConfirmed) return;
