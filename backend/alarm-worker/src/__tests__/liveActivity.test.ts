@@ -393,7 +393,7 @@ describe('cleanupTripWithLa', () => {
     expect(await kv.get('trip:devtoken')).toBeNull();
   });
 
-  // #1337 — KV `tripEndedAlert:{tripToken}` set-if-absent gate. 같은 trip의 cleanup이 race로
+  // #1337 — KV `tripEndedAlert:{tripToken}:{createdAt}` set-if-absent gate. 같은 trip의 cleanup이 race로
   // 두 번 호출돼도 alert가 1회만 발사된다. 실패 push는 stamp X → 다음 cycle 재시도 허용.
   describe('trip-ended alert KV dedup gate (#1337)', () => {
     it('success 시 dedup stamp 저장 → 동일 trip 재 cleanup 호출 시 alert push skip', async () => {
@@ -413,7 +413,7 @@ describe('cleanupTripWithLa', () => {
         'eta-missing',
       );
       expect(fetchImpl).toHaveBeenCalledTimes(1);
-      expect(await kv.get('tripEndedAlert:devtoken')).toBe('1');
+      expect(await kv.get(`tripEndedAlert:devtoken:${NOW}`)).toBe('1');
 
       // 2차 cleanup (예: 동일 cron 사이클 내 race) — dedup으로 push skip
       const trip2 = makeTrip({ activityPushToken: undefined });
@@ -451,7 +451,7 @@ describe('cleanupTripWithLa', () => {
       );
       // env-heal 1차+retry 둘 다 호출되지만 둘 다 실패.
       expect(fetchImpl).toHaveBeenCalledTimes(2);
-      expect(await kv.get('tripEndedAlert:devtoken')).toBeNull();
+      expect(await kv.get(`tripEndedAlert:devtoken:${NOW}`)).toBeNull();
     });
 
     it('throw 발생 시 dedup stamp 저장 X', async () => {
@@ -471,9 +471,50 @@ describe('cleanupTripWithLa', () => {
         () => undefined,
         'expired',
       );
-      expect(await kv.get('tripEndedAlert:devtoken')).toBeNull();
+      expect(await kv.get(`tripEndedAlert:devtoken:${NOW}`)).toBeNull();
       // throw 흡수 후 cleanup 흐름 계속 → trip 삭제됨
       expect(await kv.get('trip:devtoken')).toBeNull();
+    });
+
+    // 회귀 가드: trip.token = device APNs token 이라 같은 디바이스의 후속 trip이 동일 token을
+    // 재사용한다. dedup key가 token만으로 구성되면 trip A 종료 후 곧이어 시작한 trip B의 종료
+    // alert가 stale stamp에 막혀 사라진다(#1337 acceptance 회귀). (token, createdAt) 페어로
+    // trip-instance 단위 격리하는지 검증.
+    it('동일 device(token)의 다른 trip-instance(createdAt) 는 dedup 안 됨 (각자 alert 발사)', async () => {
+      const kv = new InMemoryKV();
+      const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+
+      // Trip A: createdAt=NOW
+      const tripA = makeTrip({ activityPushToken: undefined, createdAt: NOW });
+      await kv.put('trip:devtoken', JSON.stringify(tripA));
+      await cleanupTripWithLa(
+        tripA,
+        env,
+        makeDeps(fetchImpl as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        'destination-arrived',
+      );
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+      // Trip B: same token, 다른 createdAt (예: 1분 뒤 새 trip 등록)
+      const tripB = makeTrip({ activityPushToken: undefined, createdAt: NOW + 60_000 });
+      await kv.put('trip:devtoken', JSON.stringify(tripB));
+      await cleanupTripWithLa(
+        tripB,
+        env,
+        makeDeps(fetchImpl as unknown as typeof fetch),
+        makeStats(),
+        NOW + 60_000,
+        () => undefined,
+        'eta-missing',
+      );
+      // Trip B의 alert도 발사돼야 함 (총 2회)
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(await kv.get(`tripEndedAlert:devtoken:${NOW}`)).toBe('1');
+      expect(await kv.get(`tripEndedAlert:devtoken:${NOW + 60_000}`)).toBe('1');
     });
   });
 });

@@ -173,18 +173,22 @@ export async function fireLiveActivityDismissal(
 }
 
 /**
- * trip-ended alert push의 KV dedup 키. trip token 단위로 1회만 발사한다.
- * cron이 expired/eta-missing/destination-arrived/push-unrecoverable 여러 경로로 동일 trip을
- * 정리하려 시도할 수 있어도(예: HTTP DELETE 직전 cron이 한 번 더 발사하는 race) alert가 1건으로 묶인다.
+ * trip-ended alert push의 KV dedup 키. (tripToken, createdAt) 단위로 1회만 발사한다.
  *
- * TTL 1h — trip의 자연 expiresAt이 1h 이내로 끝나기 때문에 그 윈도우만 보호하면 충분하고,
- * 같은 token이 새 trip으로 재등록되는 흔치 않은 케이스도 1h 후 자연 해제된다.
+ * `trip.token`은 device APNs token이라 같은 디바이스의 후속 trip이 동일 token을 재사용한다.
+ * dedup을 token만으로 잡으면 사용자가 trip A 종료 후 곧이어 시작한 trip B의 종료 alert가
+ * stale stamp에 막혀 사라진다(#1337 acceptance 회귀). createdAt까지 포함해 trip-instance 단위로
+ * 격리한다.
+ *
+ * TTL은 cron race(이전 cycle이 늦게 끝나는 동안 다음 cycle 시작) 윈도우만 보호하면 충분 →
+ * 10분으로 짧게 잡아 KV bloat도 줄인다. trip이 끝나면 곧 deleteTrip되므로 같은
+ * (token, createdAt) 페어가 10분 후에 다시 cleanup 대상이 될 가능성은 사실상 0.
  */
 const TRIP_ENDED_ALERT_DEDUP_KEY_PREFIX = 'tripEndedAlert:';
-const TRIP_ENDED_ALERT_DEDUP_TTL_SEC = 60 * 60;
+const TRIP_ENDED_ALERT_DEDUP_TTL_SEC = 10 * 60;
 
-function tripEndedAlertDedupKey(tripToken: string): string {
-  return `${TRIP_ENDED_ALERT_DEDUP_KEY_PREFIX}${tripToken}`;
+function tripEndedAlertDedupKey(tripToken: string, createdAt: number): string {
+  return `${TRIP_ENDED_ALERT_DEDUP_KEY_PREFIX}${tripToken}:${createdAt}`;
 }
 
 /**
@@ -235,7 +239,7 @@ async function fireTripEndedAlertPush(
   now: number,
   log: Logger,
 ): Promise<void> {
-  const dedupKey = tripEndedAlertDedupKey(trip.token);
+  const dedupKey = tripEndedAlertDedupKey(trip.token, trip.createdAt);
   const existing = await env.TRIPS.get(dedupKey);
   if (existing !== null) {
     log('trip-ended alert: dedup skip', {

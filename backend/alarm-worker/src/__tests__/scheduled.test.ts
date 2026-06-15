@@ -456,7 +456,7 @@ describe('runScheduled', () => {
       makeTrip({ expiresAt: NOW + 5_000, alarmAtEpochMs: NOW - 1 }),
     );
     // expire 이전이지만 다음 시점은 expire 이후
-    // #868 — expired 경로는 trip-ended silent push도 발사 시도하므로 fetch mock 필요.
+    // #1337 — expired 경로는 trip-ended alert push도 발사 시도하므로 fetch mock 필요.
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runScheduled(makeEnv(kv), {
       seoul: makeSeoul([]),
@@ -466,10 +466,10 @@ describe('runScheduled', () => {
       now: () => NOW + 10_000,
     });
     expect(stats.polled).toBe(0);
-    // #1337 — alert push 성공 시 dedup key(`tripEndedAlert:{tripToken}` TTL 1h)가 KV에 남는다.
+    // #1337 — alert push 성공 시 dedup key(`tripEndedAlert:{tripToken}:{createdAt}` TTL 10m)가 KV에 남는다.
     // trip 객체 자체는 삭제됐는지 따로 단언한다.
     expect(await kv.get('trip:tok')).toBeNull();
-    expect(await kv.get('tripEndedAlert:tok')).toBe('1');
+    expect(await kv.get(`tripEndedAlert:tok:${NOW}`)).toBe('1');
   });
 
   // #640 — BoardingLock 게이트. 사용자가 열차를 선택하지 않은 trip(lock 부재)은
@@ -2202,7 +2202,7 @@ describe('runScheduled — trip-ended alert push (#1337)', () => {
     expect(apsBody.aps.sound).toBe('default');
     // trip은 KV에서 삭제돼야 함 (#706 cleanup).
     expect(await kv.get('trip:end-tok')).toBeNull();
-    expect(await kv.get('tripEndedAlert:end-tok')).toBe('1');
+    expect(await kv.get(`tripEndedAlert:end-tok:${NOW}`)).toBe('1');
   });
 
   it('fires trip-ended push (reason=destination-arrived) when destination waypoint ARRIVED', async () => {
