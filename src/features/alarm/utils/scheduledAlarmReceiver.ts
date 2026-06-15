@@ -205,7 +205,13 @@ export async function reconcileScheduledAlarmDelivery(
   const parsed = parseAlarmIdentifier(identifier);
   if (!parsed) return;
 
-  if ((await revalidateByPrefix(parsed)) === 'suppress') return;
+  if ((await revalidateByPrefix(parsed)) === 'suppress') {
+    // #1354 — suppress 시 OS scheduled queue에 동일 identifier가 남아 다음 ETA에 또
+    // 발사되어 정적 misfire가 영구 재발한다. 사전 예약은 fire-and-forget이므로 명시 cancel 필요.
+    // cancelScheduledNotificationAsync는 이미 발사된 항목에도 안전 (tripBoundScheduler.ts:681).
+    await Notifications.cancelScheduledNotificationAsync(identifier);
+    return;
+  }
 
   const destinationId = await getCurrentDestinationId();
   // destinationId가 없으면 이미 trip이 종료/변경된 알람의 잔여 발화 — 상태 갱신 스킵.
@@ -246,7 +252,12 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
   for (const n of presented) {
     const parsed = parseAlarmIdentifier(n.request.identifier);
     if (!parsed) continue;
-    if ((await revalidateByPrefix(parsed)) === 'suppress') continue;
+    if ((await revalidateByPrefix(parsed)) === 'suppress') {
+      // #1354 — drain 경로도 reconcile과 동형으로 suppress 시 OS queue cancel. 같은 identifier를
+      // OS가 보존하면 다음 ETA마다 재발사되어 영구 misfire 재발.
+      await Notifications.cancelScheduledNotificationAsync(n.request.identifier);
+      continue;
+    }
     accepted.push(parsed);
   }
 
