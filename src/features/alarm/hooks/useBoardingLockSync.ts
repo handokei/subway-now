@@ -53,6 +53,14 @@ export interface UseBoardingLockSyncOptions {
   /** Seam G subsurface 신호 (옵션) — backend 로그에 진단 라벨로 첨부. */
   subsurface?: boolean;
   /**
+   * #1286 — 현재역이 WiFi SSID 매칭으로 확정됐는지 (fusion confidence==='wifi-ssid').
+   * true면 `accuracyMeters > GOOD_FIX_ACCURACY_MAX_M` 게이트를 우회한다 — WiFi SSID는 GPS 정확도와
+   * 무관하게 역을 확정하므로(지하 GPS dead zone에서 accuracy>50m가 정상), ≤50m fix가 없어도 sync한다.
+   * 일반 GPS 유도 역(false/미전달)에는 ≤50m 게이트를 그대로 유지 — 부정확한 fix로 잘못된 정정 차단.
+   * accuracy=null(관측 자체 부재)은 WiFi 여부와 무관하게 여전히 no-op (payload accuracy 필드 요구).
+   */
+  stationFromWifi?: boolean;
+  /**
    * D4 (#1210) — 현재 활성 boarding lock의 trainCode. 있으면 sync payload에 동봉돼
    * backend가 환승 leg trainCode 변경을 즉시 인식하고 `consecutiveEtaMissing` 자동 종료를 차단한다.
    * null/undefined면 payload에 trainCode 미포함 (구버전 backend / lock 없는 trip 호환).
@@ -83,6 +91,7 @@ export function useBoardingLockSync({
   tripActive,
   forceTriggerKey,
   subsurface,
+  stationFromWifi,
   boardingLockTrainCode,
   boardingLockLine,
   onAutoLockCandidate,
@@ -117,7 +126,8 @@ export function useBoardingLockSync({
     if (!tripActive) return;
     if (!currentStationName) return;
     if (accuracyMeters === null) return;
-    if (accuracyMeters > GOOD_FIX_ACCURACY_MAX_M) return;
+    // #1286 — WiFi SSID 확정 역은 GPS 정확도 게이트를 우회 (지하 GPS dead zone에서 accuracy>50m가 정상).
+    if (!stationFromWifi && accuracyMeters > GOOD_FIX_ACCURACY_MAX_M) return;
     const trainCodeForFire = boardingLockTrainCode ?? null;
     const stationUnchanged = lastSentStationRef.current === currentStationName;
     const trainCodeUnchanged = lastSentTrainCodeRef.current === trainCodeForFire;
@@ -153,6 +163,7 @@ export function useBoardingLockSync({
     currentStationName,
     accuracyMeters,
     subsurface,
+    stationFromWifi,
     boardingLockTrainCode,
     boardingLockLine,
   ]);
@@ -164,7 +175,8 @@ export function useBoardingLockSync({
     if (lastForceKeyRef.current === forceTriggerKey) return;
     if (!currentStationName) return;
     if (accuracyMeters === null) return;
-    if (accuracyMeters > GOOD_FIX_ACCURACY_MAX_M) return;
+    // #1286 — WiFi SSID 확정 역은 GPS 정확도 게이트를 우회 (effect 1과 동일).
+    if (!stationFromWifi && accuracyMeters > GOOD_FIX_ACCURACY_MAX_M) return;
 
     lastForceKeyRef.current = forceTriggerKey;
     // lastSent ref들을 즉시 동기로 set — effect 1의 debounce timer가 같은 station/trainCode로
@@ -187,6 +199,7 @@ export function useBoardingLockSync({
     currentStationName,
     accuracyMeters,
     subsurface,
+    stationFromWifi,
     boardingLockTrainCode,
     boardingLockLine,
   ]);

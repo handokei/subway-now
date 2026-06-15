@@ -173,13 +173,15 @@ export default function HomeScreen() {
   //   2) useApnsTripRegistration: backend payload subsurface 동봉(threshold 5→10).
   const barometerSignal = useBarometer();
   const { subsurface: barometerSubsurface } = barometerSignal;
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal });
+  // #913 (F2) — wifiStation: 네이티브 SSID 브릿지(NEHotspotNetwork / WifiManager) → lookupStationBySsid.
+  //   1) useFusedNearestStation: subsurface=true(지하 GPS dead zone)일 때 fusion cascade 최우선 채택(#1286).
+  //   2) useCurrentStationConfirmModal: 매칭되면 useStationCandidates가 단일 후보로 자동 확정(#914 F4).
+  // useFusedNearestStation 호출(아래) 전에 선언해 8번째 인자로 전달한다.
+  const wifiStation = useWifiStation();
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation);
 
   // #914 (F4) — 1탭 현재역 확정 모달. 자동 추정이 locationUncertain으로 길어지면 후보 1~3개를
   // 카드로 노출, 1탭 = customOrigin 적용.
-  // #913 (F2) — wifiStation: 네이티브 SSID 브릿지(NEHotspotNetwork / WifiManager) → lookupStationBySsid.
-  // 매칭되면 useStationCandidates가 단일 후보로 자동 확정.
-  const wifiStation = useWifiStation();
   const [confirmAutoToast, setConfirmAutoToast] = useState<string | null>(null);
   // #1166 — backend가 사용자 탭과 다른 trainCode로 lock을 확정했을 때 노출하는 정정 toast.
   // BoardingTrainList의 onLockCorrected callback이 채워주며, 같은 메시지가 두 인스턴스(현재역/환승)에
@@ -405,6 +407,9 @@ export default function HomeScreen() {
     accuracyMeters: accuracyMeters ?? null,
     tripActive: Boolean(destination && route),
     subsurface: barometerSubsurface,
+    // #1286 — 지하 GPS dead zone에서 WiFi SSID로 확정된 역(confidence='wifi-ssid')은 accuracy>50m라도
+    // backend로 sync. WiFi SSID가 GPS 정확도와 독립적으로 역을 확정하므로 ≤50m 게이트를 우회한다.
+    stationFromWifi: confidence === 'wifi-ssid',
     boardingLockTrainCode: boardingLock?.trainCode ?? null,
     boardingLockLine: boardingLock?.boardingLine ?? null,
     onAutoLockCandidate: hydrateLockFromCandidate,
