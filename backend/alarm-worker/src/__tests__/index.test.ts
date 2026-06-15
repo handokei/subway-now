@@ -86,6 +86,19 @@ describe('validateTrip', () => {
     expect(validateTrip({ ...base(), waypoints: [] })).toBeNull();
   });
 
+  // #1324 — degenerate trip(출발역 == 목적지)은 client가 `{ type: 'direct', stops: 0 }` 경로를
+  // 만든다 → 진행할 hop 없음 → 방향 null/빈 탑승목록/skip-cycle(사가정 trip 사고). backend 거부.
+  it('rejects degenerate 0-stop direct route (#1324)', () => {
+    expect(
+      validateTrip({ ...base(), route: { type: 'direct', line: '2', stops: 0 } }),
+    ).toBeNull();
+  });
+
+  it('accepts 1-stop direct route (#1324 — 인접역 trip은 정상)', () => {
+    const trip = validateTrip({ ...base(), route: { type: 'direct', line: '2', stops: 1 } });
+    expect(trip).not.toBeNull();
+  });
+
   it('rejects invalid waypoint kind', () => {
     expect(
       validateTrip({
@@ -708,18 +721,23 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     expect(finalTrip.subsurface).toBe(expectedSubsurface);
   });
 
-  it('returns 400 on invalid JSON', async () => {
+  // POST /trips 거부 케이스 — 동일한 400 + error-code shape를 테이블로 검증(중복 제거).
+  // #1324 degenerate(0-stop direct) row는 KV에 trip이 쓰이지 않았는지까지 추가 확인한다.
+  it.each<[string, unknown, string, boolean]>([
+    ['invalid JSON', 'not-json{', 'invalid_json', false],
+    ['invalid trip body', { token: '' }, 'invalid_trip', false],
+    [
+      'degenerate 0-stop direct route (#1324)',
+      tripBody({ route: { type: 'direct', line: '2', stops: 0 } }),
+      'invalid_trip',
+      true,
+    ],
+  ])('returns 400 on %s', async (_name, body, expectedError, expectNoTrip) => {
     const env = makeKvEnv();
-    const res = await post('/trips', 'not-json{', env);
+    const res = await post('/trips', body, env);
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'invalid_json' });
-  });
-
-  it('returns 400 on invalid trip body', async () => {
-    const env = makeKvEnv();
-    const res = await post('/trips', { token: '' }, env);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'invalid_trip' });
+    expect(await res.json()).toEqual({ error: expectedError });
+    if (expectNoTrip) expect(await env.TRIPS.get('trip:tok-578')).toBeNull();
   });
 });
 

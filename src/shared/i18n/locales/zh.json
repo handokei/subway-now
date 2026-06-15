@@ -166,7 +166,8 @@
     "originTitle": "选择当前车站",
     "searchPlaceholder": "搜索车站名称",
     "assignSlot": "添加{{label}}",
-    "pendingSlot": "下次选择的车站将保存为{{label}}"
+    "pendingSlot": "下次选择的车站将保存为{{label}}",
+    "sameAsOrigin": "当前车站不能设为目的地"
   },
   "currentStationConfirm": {
     "title": "请确认当前车站",

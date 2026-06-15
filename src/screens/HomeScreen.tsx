@@ -59,6 +59,7 @@ import { CurrentStationConfirmModal } from '../features/nearest-station/componen
 import { MisBoardingBanner } from '../features/route/components/MisBoardingBanner';
 import { MisBoardingReselectModal } from '../features/route/components/MisBoardingReselectModal';
 import { ShareTripButton } from '../features/route/components/ShareTripButton';
+import { isDegenerateDestination } from '../features/route/utils/isDegenerateDestination';
 import { Toast } from '../shared/ui/Toast';
 import { useMisBoardingDetector } from '../features/route/hooks/useMisBoardingDetector';
 import { useTrainPositions } from '../features/route/hooks/useTrainPositions';
@@ -187,6 +188,8 @@ export default function HomeScreen() {
   // BoardingTrainList의 onLockCorrected callback이 채워주며, 같은 메시지가 두 인스턴스(현재역/환승)에
   // 공통 적용된다. dismiss는 Toast의 5초 timer 또는 사용자 tap.
   const [lockCorrectionToast, setLockCorrectionToast] = useState<string | null>(null);
+  // #1324 — 목적지 == 현재역(degenerate trip) 선택을 차단했을 때 노출하는 경고 toast.
+  const [sameOriginToast, setSameOriginToast] = useState<string | null>(null);
   const handleConfirmStation = useCallback(
     (station: Station) => {
       setCustomOrigin(station);
@@ -252,6 +255,22 @@ export default function HomeScreen() {
   const isCustomOrigin = customOrigin !== null;
   const effectiveOrigin = customOrigin ?? result?.station ?? null;
   useTripOrigin(destination, effectiveOrigin, setTripOrigin, tripOrigin);
+  const handleSameOriginToastDismiss = useCallback(() => setSameOriginToast(null), []);
+  // #1324 — 목적지 선택 단일 진입점. 현재역(effectiveOrigin)과 같은 역이면 degenerate trip을
+  // 만들지 않고 경고 toast만 노출한다. picker / 최근 목적지 tap 모두 이 핸들러를 거친다.
+  // 반환값: 목적지를 실제로 설정했으면 true(picker가 닫아야 함), 차단했으면 false(picker 유지).
+  const handleSelectDestination = useCallback(
+    (station: Station): boolean => {
+      if (isDegenerateDestination(effectiveOrigin, station)) {
+        setSameOriginToast(t('destinationPicker.sameAsOrigin'));
+        return false;
+      }
+      addRecentDestination(station);
+      setDestination(station);
+      return true;
+    },
+    [effectiveOrigin, t, addRecentDestination, setDestination],
+  );
   // #797: 환승역에서 nearest.station.line이 trip 방향과 어긋나는 회귀 차단.
   // BoardingLock(사용자 선택) > Route(구조적 SSOT) > station.line fallback.
   const approachLine = getApproachLine(route, fusionBoardingLock, effectiveOrigin);
@@ -1151,7 +1170,7 @@ export default function HomeScreen() {
                       >
                         <TouchableOpacity
                           style={styles.recentDestinationTapArea}
-                          onPress={() => setDestination(recent)}
+                          onPress={() => handleSelectDestination(recent)}
                           testID={`recent-destination-button-${recent.id}`}
                         >
                           <View style={styles.recentDestinationRow}>
@@ -1308,13 +1327,18 @@ export default function HomeScreen() {
         onDismiss={handleLockCorrectionToastDismiss}
         testID="lock-correction-toast"
       />
+      {/* #1324 — 목적지 == 현재역 차단 경고. 5초 자동 dismiss + tap 닫기. */}
+      <Toast
+        visible={sameOriginToast !== null}
+        message={sameOriginToast ?? ''}
+        onDismiss={handleSameOriginToastDismiss}
+        testID="same-origin-toast"
+      />
 
       <DestinationPicker
         visible={pickerVisible}
         onSelect={(station) => {
-          addRecentDestination(station);
-          setDestination(station);
-          setPickerVisible(false);
+          if (handleSelectDestination(station)) setPickerVisible(false);
         }}
         onClose={() => setPickerVisible(false)}
         favorites={favorites}

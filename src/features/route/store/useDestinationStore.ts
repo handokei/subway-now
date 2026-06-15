@@ -23,6 +23,7 @@ import { triggerTripEndRecall } from '../../alarm/utils/triggerTripEndRecall';
 import { useAlarmEventStore } from '../../alarm/store/useAlarmEventStore';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../../../shared/utils/stationRoute';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
+import { isDegenerateDestination } from '../utils/isDegenerateDestination';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 const noop = (): void => {};
@@ -94,6 +95,16 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
   routePreference: 'optimal' as RoutePreference,
 
   setDestination: (station: Station | null) => {
+    // #1324 — 목적지 == 출발역이면 degenerate trip(0-waypoint → 방향 null → 빈 탑승목록)이
+    // 생성된다. UX 경계(DestinationPicker.onSelect)에서 effectiveOrigin(=customOrigin ∪ GPS)을
+    // 기준으로 우선 차단하지만, store가 권위적으로 아는 customOrigin과 같은 역을 목적지로
+    // 지정하는 모든 경로(최근 목적지 탭/맵 탭/프로그램적 호출)에 대한 방어선으로 여기서도 거부한다.
+    if (station && isDegenerateDestination(get().customOrigin, station)) {
+      addDomainBreadcrumb('trip', 'degenerate-destination-blocked', {
+        station: station.name,
+      });
+      return;
+    }
     const prev = get().destination;
     const isSwitch = (prev?.id ?? null) !== (station?.id ?? null);
     set({ destination: station });

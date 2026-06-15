@@ -166,7 +166,8 @@
     "originTitle": "Choose current station",
     "searchPlaceholder": "Search station name",
     "assignSlot": "Add {{label}}",
-    "pendingSlot": "The next station you pick will be saved as {{label}}"
+    "pendingSlot": "The next station you pick will be saved as {{label}}",
+    "sameAsOrigin": "You can't set your current station as the destination"
   },
   "currentStationConfirm": {
     "title": "Confirm your current station",

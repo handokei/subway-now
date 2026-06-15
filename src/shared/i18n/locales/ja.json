@@ -166,7 +166,8 @@
     "originTitle": "現在の駅を選択",
     "searchPlaceholder": "駅名を検索",
     "assignSlot": "{{label}}を追加",
-    "pendingSlot": "次に選ぶ駅を{{label}}として保存します"
+    "pendingSlot": "次に選ぶ駅を{{label}}として保存します",
+    "sameAsOrigin": "現在の駅は目的地に設定できません"
   },
   "currentStationConfirm": {
     "title": "現在の駅を確認してください",
