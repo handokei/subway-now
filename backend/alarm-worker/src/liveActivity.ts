@@ -23,6 +23,7 @@ import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
 import { deleteTrip } from './trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from './types';
+import { writeTripEndedStatus } from './tripStatus';
 
 /**
  * stale-date까지 클라이언트가 last content-state를 신뢰할 수 있는 시간(초).
@@ -215,6 +216,19 @@ export async function cleanupTripWithLa(
   await fireLiveActivityDismissal(trip, deps, stats, now, log);
   if (reason) {
     await fireTripEndedAlertPush(trip, reason, env, deps, now, log);
+    // #1339 — launch reconciliation 백스톱. alert push가 APNs drop/디바이스 오프라인으로
+    // 누락된 케이스에서 디바이스가 다음 launch 시 GET /trips/:token/status로 종료 사실을
+    // 확인하고 자체 cleanup한다. KV write 실패는 cleanup 흐름을 차단하지 않는다 —
+    // alert push가 best-effort라면 retention도 best-effort.
+    try {
+      await writeTripEndedStatus(env.TRIPS, trip.token, reason, now);
+    } catch (e) {
+      log('trip-status write failed', {
+        token: trip.token.slice(0, 8),
+        reason,
+        error: String(e),
+      });
+    }
   }
   await deleteTrip(env.TRIPS, trip.token);
   // #705 — trip을 폐기할 때 progress entry도 함께 제거. TTL이 자연 만료를 보장하지만

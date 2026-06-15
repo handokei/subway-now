@@ -466,10 +466,14 @@ describe('runScheduled', () => {
       now: () => NOW + 10_000,
     });
     expect(stats.polled).toBe(0);
-    // #1337 — alert push 성공 시 dedup key(`tripEndedAlert:{tripToken}:{createdAt}` TTL 10m)가 KV에 남는다.
-    // trip 객체 자체는 삭제됐는지 따로 단언한다.
+    // trip 자체는 삭제된다.
     expect(await kv.get('trip:tok')).toBeNull();
+    // #1337 — alert push 성공 시 dedup key(`tripEndedAlert:{tripToken}:{createdAt}` TTL 10m)가 KV에 남는다.
     expect(await kv.get(`tripEndedAlert:tok:${NOW}`)).toBe('1');
+    // #1339 — launch reconciliation을 위한 tripStatus marker도 남는다.
+    const statusEntry = kv.store.get('tripStatus:tok');
+    expect(statusEntry).toBeDefined();
+    expect(JSON.parse(statusEntry!.value)).toMatchObject({ endReason: 'expired' });
   });
 
   // #640 — BoardingLock 게이트. 사용자가 열차를 선택하지 않은 trip(lock 부재)은

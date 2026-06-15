@@ -76,6 +76,10 @@ import {
   writeRegressionDataPoints,
 } from './regressionTelemetry';
 import { getTrip, putTrip } from './trips';
+import {
+  TRIP_STATUS_RETENTION_MS,
+  readTripEndedStatus,
+} from './tripStatus';
 import { getQuotaStatus, incrementDailyRequestCount } from './quotaTracker';
 import type {
   AccelSummary,
@@ -1183,6 +1187,53 @@ export function validateLiveActivityRegister(
   }
   return { tripToken: obj.tripToken, activityPushToken: obj.activityPushToken };
 }
+
+/**
+ * Trip status — killed-app launch reconciliation (#1339, Epic #1204).
+ *
+ * 디바이스가 다음 launch에서 trip 상태를 backend에 질의 → ended 응답이면 alert/sentinel 누락
+ * 백스톱으로 stale route/destination/lock state를 자체 cleanup한다.
+ *
+ * 응답 모델:
+ *   200 active     — KV에 trip이 살아 있음
+ *   200 ended      — trip은 사라졌지만 종료 마커가 있고 retention(`TRIP_STATUS_RETENTION_MS`) 내
+ *   404            — trip도 마커도 없음 (등록된 적 없거나 KV TTL 자연 폐기)
+ *   410            — 마커는 있으나 retention 만료(expired-retention) — body로 사유 명시
+ *
+ * Privacy: tripToken은 디바이스가 자신의 token을 echo하는 케이스라 인증 없이 노출 가능 — 다른
+ * 디바이스의 token을 추측 brute-force할 risk는 사실상 0(UUID 공간).
+ */
+app.get('/trips/:tripToken/status', async (c) => {
+  const tripToken = c.req.param('tripToken');
+  if (!tripToken) return c.json({ error: 'missing_token' }, 400);
+
+  const now = Date.now();
+  const trip = await getTrip(c.env.TRIPS, tripToken);
+  if (trip) {
+    return c.json({
+      tripToken,
+      status: 'active' as const,
+      endedAt: null,
+      endReason: null,
+    });
+  }
+
+  const ended = await readTripEndedStatus(c.env.TRIPS, tripToken);
+  if (!ended) {
+    return c.json({ error: 'trip_not_found' }, 404);
+  }
+
+  if (now - ended.endedAt > TRIP_STATUS_RETENTION_MS) {
+    return c.json({ tripToken, status: 'expired-retention' as const }, 410);
+  }
+
+  return c.json({
+    tripToken,
+    status: 'ended' as const,
+    endedAt: ended.endedAt,
+    endReason: ended.endReason,
+  });
+});
 
 app.delete('/trips/:token', async (c) => {
   const token = c.req.param('token');

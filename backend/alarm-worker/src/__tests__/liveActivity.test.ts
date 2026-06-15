@@ -517,4 +517,83 @@ describe('cleanupTripWithLa', () => {
       expect(await kv.get(`tripEndedAlert:devtoken:${NOW + 60_000}`)).toBe('1');
     });
   });
+
+  // #1339 — launch reconciliation 백스톱. cleanupTripWithLa가 reason과 함께 호출되면
+  // 모든 trip-ended 경로(scheduled.ts의 4 발사 지점)가 자동으로 status marker를 KV에 적재한다.
+  describe('writes trip-ended status marker for launch reconciliation (#1339)', () => {
+    const reasonMatrix = [
+      { reason: 'expired' as const, expected: 'expired' },
+      { reason: 'eta-missing' as const, expected: 'eta-missing' },
+      { reason: 'destination-arrived' as const, expected: 'destination' },
+      { reason: 'push-unrecoverable' as const, expected: 'push-unrecoverable' },
+    ];
+
+    for (const { reason, expected } of reasonMatrix) {
+      it(`writes status=${expected} when cleanup called with reason ${reason}`, async () => {
+        const kv = new InMemoryKV();
+        const trip = makeTrip({ activityPushToken: undefined });
+        await kv.put('trip:devtoken', JSON.stringify(trip));
+        const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+        const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+        await cleanupTripWithLa(
+          trip,
+          env,
+          makeDeps(fetchImpl as unknown as typeof fetch),
+          makeStats(),
+          NOW,
+          () => undefined,
+          reason,
+        );
+        const raw = kv.store.get('tripStatus:devtoken');
+        expect(raw).toBeDefined();
+        expect(JSON.parse(raw!.value)).toEqual({ endedAt: NOW, endReason: expected });
+        // trip 자체는 여전히 삭제됨.
+        expect(await kv.get('trip:devtoken')).toBeNull();
+      });
+    }
+
+    it('does not write a marker when reason is omitted (HTTP DELETE path)', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn() as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+      );
+      expect(kv.store.has('tripStatus:devtoken')).toBe(false);
+    });
+
+    it('logs but does not throw when status write fails (cleanup continues)', async () => {
+      // KV.put이 throw하는 broken 환경. cleanup 흐름은 끝까지 진행돼야 한다.
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      const brokenKv = {
+        get: kv.get.bind(kv),
+        put: vi.fn(async (key: string) => {
+          if (key.startsWith('tripStatus:')) throw new Error('kv down');
+          return undefined;
+        }),
+        delete: kv.delete.bind(kv),
+        list: kv.list.bind(kv),
+      };
+      const env = { TRIPS: brokenKv as unknown as KVNamespace } as Env;
+      const logs: string[] = [];
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(vi.fn(async () => new Response('', { status: 200 })) as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        (msg) => logs.push(msg),
+        'expired',
+      );
+      expect(logs).toContain('trip-status write failed');
+    });
+  });
 });
