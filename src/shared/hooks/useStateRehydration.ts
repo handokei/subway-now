@@ -13,6 +13,7 @@ import {
   clearTripEndedSentinel,
   getTripEndedSentinel,
 } from '../../features/alarm/utils/tripEndedSentinel';
+import { runTripBoundCleanups } from '../../features/alarm/store/tripBoundCleanups';
 import { createLogger } from '../utils/logger';
 import { addDomainBreadcrumb } from '../infra/monitoring/breadcrumb';
 
@@ -57,9 +58,17 @@ async function runRehydration(trigger: 'mount' | 'active'): Promise<void> {
   const sentinel = await getTripEndedSentinel();
   if (sentinel !== null) {
     logger.info(`trigger=${trigger} trip-ended sentinel=${sentinel} → store reset`);
-    // setDestination(null)이 customOrigin/tripOrigin 메모리 동기화 + tripBoundCleanups
-    // 호출까지 atomic하게 처리한다 — storage는 이미 BG에서 cleanup됐지만 멱등.
-    useDestinationStore.getState().setDestination(null);
+    // #1351 R2 — 과거에는 setDestination(null)을 trigger로 사용했지만, prev=null인 경우
+    // isSwitch=false로 평가되어 cleanup chain이 실행되지 않는 버그가 있었다.
+    // isSwitch 의존 없이 storage cleanup을 직접 호출. 멱등이므로 Fix 1 / silent push handler와
+    // 중복 호출 안전. 메모리 store도 setState로 즉시 reset해 stale state가 노출되지 않게 한다.
+    await runTripBoundCleanups();
+    useDestinationStore.setState({
+      destination: null,
+      customOrigin: null,
+      tripOrigin: null,
+    });
+    addDomainBreadcrumb('trip', 'end', { reason: 'sentinel-rehydration' });
     await useBoardingLockStore.getState().releaseLock();
     await clearTripEndedSentinel();
   }

@@ -24,6 +24,16 @@ jest.mock('../../utils/stationNotification', () => ({
   sendTripEndedNotification: (...args: unknown[]) => mockSendTripEnded(...args),
 }));
 
+const mockTriggerTripEndRecall = jest.fn();
+jest.mock('../../utils/triggerTripEndRecall', () => ({
+  triggerTripEndRecall: (...args: unknown[]) => mockTriggerTripEndRecall(...args),
+}));
+
+const mockRunTripBoundCleanups = jest.fn();
+jest.mock('../../store/tripBoundCleanups', () => ({
+  runTripBoundCleanups: (...args: unknown[]) => mockRunTripBoundCleanups(...args),
+}));
+
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -39,6 +49,8 @@ beforeEach(async () => {
   mockGetSentinel.mockResolvedValue(null);
   mockSetSentinel.mockResolvedValue(undefined);
   mockSendTripEnded.mockResolvedValue(undefined);
+  mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
+  mockRunTripBoundCleanups.mockResolvedValue(undefined);
   process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
 });
 
@@ -67,7 +79,7 @@ describe('runLaunchTripReconciliation', () => {
     expect(mockSendTripEnded).not.toHaveBeenCalled();
   });
 
-  it('status ended → notification + sentinel + active trip clear', async () => {
+  it('status ended → notification + recall + cleanup + sentinel + active trip clear', async () => {
     await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
     mockFetchTripStatus.mockResolvedValue({
       status: 'ended',
@@ -77,7 +89,33 @@ describe('runLaunchTripReconciliation', () => {
     await runLaunchTripReconciliation();
     expect(mockFetchTripStatus).toHaveBeenCalledWith('tk', 'https://api.test.dev');
     expect(mockSendTripEnded).toHaveBeenCalledWith('destination-arrived');
+    expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
+    expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
     expect(mockSetSentinel).toHaveBeenCalledWith(1_700_000_000_000);
+    expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
+  });
+
+  it('status ended — 호출 순서: sendTripEndedNotification → triggerTripEndRecall → runTripBoundCleanups → setTripEndedSentinel → removeItem(ACTIVE_TRIP_KEY)', async () => {
+    await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+    mockFetchTripStatus.mockResolvedValue({
+      status: 'ended',
+      endedAt: 1_700_000_000_000,
+      endReason: 'destination-arrived',
+    });
+
+    // jest invocationCallOrder로 mock fn 호출 순서를 검증.
+    // ACTIVE_TRIP_KEY removeItem은 AsyncStorage 직접 호출이라 mock fn order에 잡히지 않으므로
+    // setSentinel 직후 storage가 비어 있음을 확인.
+    await runLaunchTripReconciliation();
+
+    const notifyOrder = mockSendTripEnded.mock.invocationCallOrder[0];
+    const recallOrder = mockTriggerTripEndRecall.mock.invocationCallOrder[0];
+    const cleanupOrder = mockRunTripBoundCleanups.mock.invocationCallOrder[0];
+    const sentinelOrder = mockSetSentinel.mock.invocationCallOrder[0];
+
+    expect(notifyOrder).toBeLessThan(recallOrder);
+    expect(recallOrder).toBeLessThan(cleanupOrder);
+    expect(cleanupOrder).toBeLessThan(sentinelOrder);
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
   });
 
@@ -105,7 +143,7 @@ describe('runLaunchTripReconciliation', () => {
     expect(mockSendTripEnded).toHaveBeenCalledWith('unknown');
   });
 
-  it('status active → 변경 없음', async () => {
+  it('status active → 변경 없음 + cleanup/recall 호출 안 함 (회귀 0)', async () => {
     await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
     mockFetchTripStatus.mockResolvedValue({
       status: 'active',
@@ -114,15 +152,19 @@ describe('runLaunchTripReconciliation', () => {
     });
     await runLaunchTripReconciliation();
     expect(mockSendTripEnded).not.toHaveBeenCalled();
+    expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
+    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
     expect(mockSetSentinel).not.toHaveBeenCalled();
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBe('tk');
   });
 
-  it('404/410 (null) → active trip clear만, notification X', async () => {
+  it('404/410 (null) → active trip clear만, notification/cleanup/recall X (기존 동작 유지)', async () => {
     await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
     mockFetchTripStatus.mockResolvedValue(null);
     await runLaunchTripReconciliation();
     expect(mockSendTripEnded).not.toHaveBeenCalled();
+    expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
+    expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
     expect(mockSetSentinel).not.toHaveBeenCalled();
     expect(await AsyncStorage.getItem(ACTIVE_TRIP_KEY)).toBeNull();
   });
