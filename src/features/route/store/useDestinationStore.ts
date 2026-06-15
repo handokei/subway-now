@@ -113,7 +113,7 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
     // EXPO_PUBLIC_DEBUG_MODAL 게이트 안에서만 — 운영 빌드는 stack trace 비용 0.
     const caller =
       process.env.EXPO_PUBLIC_DEBUG_MODAL === 'true'
-        ? extractCallerFrame(new Error())
+        ? extractCallerFrame(new Error('caller-trace'))
         : undefined;
     addDomainBreadcrumb('trip', 'setDestination-call', {
       prevId: prev?.id ?? null,

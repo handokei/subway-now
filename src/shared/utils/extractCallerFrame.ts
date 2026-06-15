@@ -27,7 +27,8 @@ export function extractCallerFrame(error: Error, skip = 2): string | undefined {
   if (!frameLine) return undefined;
 
   // 양쪽 형식 모두 `file:line:col` 토큰을 캡쳐. 가장 마지막 토큰을 우선시(괄호 안에 위치).
-  const match = /(?:\(|@| )([^()\s]+:\d+:\d+)\)?$/.exec(frameLine.trim());
+  // path part는 콜론을 제외해 backtracking을 차단(S5852/S6035 회피).
+  const match = /[(@ ]([^()\s:]+:\d+:\d+)\)?$/.exec(frameLine.trim());
   if (!match) return undefined;
   return match[1];
 }
