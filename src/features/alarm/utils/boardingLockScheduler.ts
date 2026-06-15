@@ -317,37 +317,37 @@ export async function cancelAllHopsForLock(lock: BoardingLock): Promise<void> {
 }
 
 /**
- * #1355 D1 — silent push reschedule cross-channel cancel.
+ * #1356 E1 / #1355 D1 — 추적 큐에서 같은 station + phase의 `bl:` 사전 예약을 cancel + 큐에서 제거.
  *
- * 같은 (stationName, phaseId)에 해당하는 `bl:` 사전 예약을 모두 cancel한다. 반대 채널(`tba:`)의
- * `applyRescheduleTba`가 진입 시점에 호출 — 한쪽 채널이 정정될 때 다른 채널의 stale 사전 예약이
- * OS 큐에 잔존해 ETA 도달 시 중복 banner fire되는 회귀를 차단한다.
+ * 두 가지 사용처:
+ *   1) #1356 E1 — silent push가 motion=stationary 또는 location gate에서 suppress될 때 호출.
+ *      backend는 정적 상태를 인식해 silent push를 새로 발사하지 않지만, 이미 OS queue에 들어있는
+ *      같은 station의 `bl:` 사전 예약은 시간이 되면 자체적으로 발사된다 — 그 stale fire 차단.
+ *   2) #1355 D1 — silent push reschedule cross-channel cancel. 반대 채널(`tba:`)의 `applyRescheduleTba`가
+ *      진입 시점에 호출 — 한쪽 채널이 정정될 때 다른 채널의 stale 사전 예약이 OS 큐에 잔존해 ETA
+ *      도달 시 중복 banner fire되는 회귀를 차단한다.
  *
- * stationName 비교는 `isSameStationName`(canonical 정규화)로 표기 차이를 흡수한다.
- * trainCode/hopIndex는 무시 — cross-channel 정정 시점에서 lock 식별이 불필요하다
- * (해당 (stationName, phaseId)에 대응하는 모든 `bl:` 항목이 stale).
- *
- * OS queue cancel + 추적 큐(SCHEDULED_NOTIFICATIONS)에서 제거. 매칭이 없으면 safe no-op.
+ * 매칭 대상: `bl:*:*:*:${stationName}` (trainCode/hopIndex 무관, phase 일치). lock identity가 바뀌어도
+ * 같은 station+phase 알람은 잘못된 fire이므로 정리. {@link parseBoardingLockAlarmIdentifier}로 station
+ * 매칭은 `isSameStationName`을 거쳐 노선별 부제(예: '서울대입구역(관악구청)') 차이도 수용한다.
  */
 export async function cancelBlByStationPhase(
   stationName: string,
-  phaseId: AlarmPhaseId,
-): Promise<number> {
-  const all = await Notifications.getAllScheduledNotificationsAsync();
-  const toCancel: string[] = [];
-  for (const req of all) {
-    if (!req.identifier.startsWith(BOARDING_LOCK_ALARM_PREFIX)) continue;
-    const parsed = parseBoardingLockAlarmIdentifier(req.identifier);
-    if (parsed === null) continue;
-    if (parsed.phase !== phaseId) continue;
-    if (!isSameStationName(parsed.stationName, stationName)) continue;
-    toCancel.push(req.identifier);
-  }
-  if (toCancel.length > 0) {
-    await cancelAndDismiss(toCancel);
-    await removeScheduledNotificationIds(toCancel);
-  }
-  return toCancel.length;
+  phase: AlarmPhaseId,
+): Promise<void> {
+  const current = await getScheduledNotificationIds();
+  const toCancel = current.filter((id) => {
+    const parsed = parseBoardingLockAlarmIdentifier(id);
+    if (!parsed) return false;
+    if (parsed.phase !== phase) return false;
+    return isSameStationName(parsed.stationName, stationName);
+  });
+  if (toCancel.length === 0) return;
+  await cancelAndDismiss(toCancel);
+  await removeScheduledNotificationIds(toCancel);
+  logger.info(
+    `cancelled ${toCancel.length} bl alarms for station=${stationName} phase=${phase}`,
+  );
 }
 
 /**

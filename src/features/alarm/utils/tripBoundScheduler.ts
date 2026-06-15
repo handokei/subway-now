@@ -506,6 +506,46 @@ function findOccurrenceIndex(
   return -1;
 }
 
+/**
+ * #1356 E1 / #1355 D1 — 같은 station + phase의 `tba:` 사전 예약을 cancel.
+ *
+ * 두 가지 사용처:
+ *   1) #1356 E1 — silent push가 motion=stationary 또는 location gate에서 suppress될 때 호출.
+ *      backend는 정적 상태를 인식해 silent push를 새로 발사하지 않지만, 이미 OS queue에 들어있는
+ *      같은 station+phase의 `tba:` 사전 예약은 시간이 되면 자체적으로 발사된다 — 그 stale fire 차단.
+ *   2) #1355 D1 — silent push reschedule cross-channel cancel. 반대 채널(`bl:`)의 `applyRescheduleBl`가
+ *      진입 시점에 호출 — 한쪽 채널이 정정될 때 다른 채널의 stale 사전 예약이 OS 큐에 잔존해 ETA
+ *      도달 시 중복 banner fire되는 회귀를 차단한다.
+ *
+ * 매칭: `parsed.stationName`을 `isSameStationName`으로 stationName과 비교, `parsed.phaseId`와 phase
+ * 일치. 같은 station이 중복 등장하는 경우 모든 occurrence의 해당 phase가 cancel — cross-channel/정지
+ * 상태에서 같은 station의 사전 예약은 occurrence 관계없이 모두 stale.
+ *
+ * scheduler queue API(`getAllScheduledNotificationsAsync`)를 직접 조회. SCHEDULED_NOTIFICATIONS
+ * 추적 큐(`bl:` 용)와 별도 — `tba:`는 OS API에 단일 SSOT.
+ */
+export async function cancelTbaByStationPhase(
+  stationName: string,
+  phase: AlarmPhaseId,
+): Promise<void> {
+  const all = await Notifications.getAllScheduledNotificationsAsync();
+  let cancelled = 0;
+  for (const req of all) {
+    if (!req.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) continue;
+    const parsed = parseTripBoundAlarmIdentifier(req.identifier);
+    if (parsed === null) continue;
+    if (parsed.phaseId !== phase) continue;
+    if (!isSameStationName(parsed.stationName, stationName)) continue;
+    await Notifications.cancelScheduledNotificationAsync(req.identifier);
+    cancelled++;
+  }
+  if (cancelled > 0) {
+    logger.info(
+      `cancelled ${cancelled} tba alarms for station=${stationName} phase=${phase}`,
+    );
+  }
+}
+
 export interface RescheduleTripBoundAlarmParams {
   /** 정정 대상 stop의 canonical 역명 (silent push payload.nextStation과 동일 비교). */
   stationName: string;
@@ -672,37 +712,6 @@ export async function rescheduleTripBoundAlarm(
     `reschedule done: station=${canonicalName} occurrence=${occurrenceIdx} cancelled=${cancelled} scheduled=${scheduled} newArrivalMs=${newArrivalMs}`,
   );
   return { cancelled, scheduled };
-}
-
-/**
- * #1355 D1 — silent push reschedule cross-channel cancel.
- *
- * 같은 (stationName, phaseId)에 해당하는 `tba:` 사전 예약을 모두 cancel한다. 반대 채널(`bl:`)의
- * `applyRescheduleBl`가 진입 시점에 호출 — 한쪽 채널이 정정될 때 다른 채널의 stale 사전 예약이
- * OS 큐에 잔존해 ETA 도달 시 중복 banner fire되는 회귀를 차단한다.
- *
- * stationName 비교는 `isSameStationName`(canonical 정규화)로 표기 차이를 흡수한다.
- * occurrenceIdx는 무시 — 같은 stationName + phaseId의 모든 occurrence를 cancel한다
- * (cross-channel 정정 시 동일 stop의 모든 occurrence가 stale로 간주되는 게 안전).
- *
- * 매칭되는 항목이 없으면 safe no-op(0건 cancel).
- */
-export async function cancelTbaByStationPhase(
-  stationName: string,
-  phaseId: AlarmPhaseId,
-): Promise<number> {
-  const all = await Notifications.getAllScheduledNotificationsAsync();
-  let cancelled = 0;
-  for (const req of all) {
-    if (!req.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) continue;
-    const parsed = parseTripBoundAlarmIdentifier(req.identifier);
-    if (parsed === null) continue;
-    if (parsed.phaseId !== phaseId) continue;
-    if (!isSameStationName(parsed.stationName, stationName)) continue;
-    await Notifications.cancelScheduledNotificationAsync(req.identifier);
-    cancelled++;
-  }
-  return cancelled;
 }
 
 /**

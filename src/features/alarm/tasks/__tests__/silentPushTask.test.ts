@@ -123,8 +123,9 @@ jest.mock('../../utils/boardingLockStorage', () => ({
 
 // #698 — reschedule silent push 분기에서 호출. mock으로 호출 인자/횟수만 검증.
 const mockRescheduleHopForLock = jest.fn();
-// #1355 D1 — cross-channel cancel helper.
-const mockCancelBlByStationPhase = jest.fn();
+// #1356 E1 — suppress 분기에서 같은 station+phase의 bl: 사전 예약을 cancel.
+// #1355 D1 — cross-channel cancel helper (reschedule 분기에서 반대 채널 stale 사전 예약 정리).
+const mockCancelBlByStationPhase = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/boardingLockScheduler', () => ({
   rescheduleHopForLock: (...args: unknown[]) => mockRescheduleHopForLock(...args),
   cancelBlByStationPhase: (...args: unknown[]) => mockCancelBlByStationPhase(...args),
@@ -132,8 +133,9 @@ jest.mock('../../utils/boardingLockScheduler', () => ({
 
 // #918 A3 PR4 — tba 채널 reschedule. mock으로 호출 인자/횟수만 검증.
 const mockRescheduleTripBoundAlarm = jest.fn();
-// #1355 D1 — cross-channel cancel helper.
-const mockCancelTbaByStationPhase = jest.fn();
+// #1356 E1 — suppress 분기에서 같은 station+phase의 tba: 사전 예약을 cancel.
+// #1355 D1 — cross-channel cancel helper (reschedule 분기에서 반대 채널 stale 사전 예약 정리).
+const mockCancelTbaByStationPhase = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/tripBoundScheduler', () => ({
   rescheduleTripBoundAlarm: (...args: unknown[]) => mockRescheduleTripBoundAlarm(...args),
   cancelTbaByStationPhase: (...args: unknown[]) => mockCancelTbaByStationPhase(...args),
@@ -1484,6 +1486,82 @@ describe('silentPushTask', () => {
         expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
           expect.objectContaining({ reason: 'movement-motion-stationary' }),
         );
+      });
+    });
+
+    // #1356 E1 — silent push suppress 분기에서 같은 station+phase의 사전 예약(tba: / bl:)도 cancel.
+    // backend는 정적/out-of-range를 인식해 다음 silent push를 발사하지 않지만, 이미 OS queue에 있는
+    // 사전 예약은 시간이 되면 자체 발사 → stale "다음 역" 알람. 단건 cancel(해당 station+phase만).
+    describe('#1356 E1 — suppress 시 같은 station 사전 예약 cancel', () => {
+      it('motion=stationary suppress 시 cancelTbaByStationPhase + cancelBlByStationPhase가 1회씩 호출된다', async () => {
+        mockGetMotionStationary.mockReturnValue(true);
+        mockCheckGate.mockResolvedValue({
+          ...PASSING_GATE,
+          speedMps: 0.69,
+          accuracyM: 30,
+        });
+
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'motion-cancel' }),
+        );
+
+        expect(mockCancelTbaByStationPhase).toHaveBeenCalledTimes(1);
+        expect(mockCancelTbaByStationPhase).toHaveBeenCalledWith('강남', 'imminent');
+        expect(mockCancelBlByStationPhase).toHaveBeenCalledTimes(1);
+        expect(mockCancelBlByStationPhase).toHaveBeenCalledWith('강남', 'imminent');
+      });
+
+      it('gate-out-of-range suppress 시 cancelTbaByStationPhase + cancelBlByStationPhase가 1회씩 호출된다', async () => {
+        mockCheckGate.mockResolvedValue({
+          pass: false,
+          reason: 'out-of-range',
+          distanceM: 1500,
+          thresholdM: 800,
+          locationSource: 'cache' as const,
+          locationAgeMs: 10_000,
+        });
+
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'early', pushId: 'gate-cancel' }),
+        );
+
+        expect(mockCancelTbaByStationPhase).toHaveBeenCalledTimes(1);
+        expect(mockCancelTbaByStationPhase).toHaveBeenCalledWith('강남', 'early');
+        expect(mockCancelBlByStationPhase).toHaveBeenCalledTimes(1);
+        expect(mockCancelBlByStationPhase).toHaveBeenCalledWith('강남', 'early');
+      });
+
+      it('valid silent push pass (정상 발사) 시 cancel은 호출되지 않는다 (회귀)', async () => {
+        mockGetMotionStationary.mockReturnValue(false);
+        mockCheckGate.mockResolvedValue({
+          ...PASSING_GATE,
+          speedMps: 5,
+          accuracyM: 30,
+        });
+
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+        expect(mockCancelTbaByStationPhase).not.toHaveBeenCalled();
+        expect(mockCancelBlByStationPhase).not.toHaveBeenCalled();
+      });
+
+      it('line 가드 suppress(lock-line-mismatch) 등 다른 분기는 cancel 미호출 (out of scope 가드)', async () => {
+        // payload.boardingLine='3' 으로 lock(boardingLine='2') 노선과 mismatch.
+        // findStationByNameAndLine은 null, findStationByName은 어떤 station 반환.
+        mockFindStationByNameAndLine.mockReturnValue(null);
+        mockFindStationByName.mockReturnValue({ name: '강남', line: '3', lat: 37.5, lng: 127.0 });
+
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'line-mismatch' }),
+        );
+
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'lock-line-mismatch' }),
+        );
+        // E1 cancel은 motion/gate suppress 분기만 적용. 다른 suppress는 변경 없음.
+        expect(mockCancelTbaByStationPhase).not.toHaveBeenCalled();
+        expect(mockCancelBlByStationPhase).not.toHaveBeenCalled();
       });
     });
 
