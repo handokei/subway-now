@@ -2070,6 +2070,118 @@ describe('silentPushTask', () => {
           });
         });
       });
+
+      // #1337 PR1 — backend가 alert payload(`aps.alert`)로 trip-ended를 발사하면
+      // iOS가 killed 앱에도 시스템 banner를 직접 표시한다. 디바이스는 surface skip하되
+      // sentinel/cleanup/ack는 silent path와 동일하게 수행. dedup용 pushId 기록은 유지.
+      describe('#1337 PR1 — alert payload trip-ended path', () => {
+        function alertTripEndedPayload(extra: Record<string, unknown> = {}) {
+          return {
+            data: {
+              data: {
+                data: { kind: 'trip-ended', reason: 'eta-missing', ...extra },
+                dataString: null,
+              },
+              // alert payload는 Swift transformer가 notification을 non-null로 채운다.
+              notification: { request: { content: { title: '안내 종료', body: '경로 안내를 종료했어요' } } },
+              aps: { alert: { title: '안내 종료', body: '경로 안내를 종료했어요' }, sound: 'default' },
+            },
+          };
+        }
+
+        it('alert payload → sendTripEndedNotification 호출 안 함(OS가 banner 표시)', async () => {
+          await handleSilentPush(alertTripEndedPayload({ pushId: 'a-uuid', reason: 'expired' }));
+          expect(mockSendTripEndedNotification).not.toHaveBeenCalled();
+        });
+
+        it('alert payload → setTripEndedSentinel 호출(silent path와 동일)', async () => {
+          await handleSilentPush(alertTripEndedPayload({ pushId: 'a-uuid' }));
+          expect(mockSetTripEndedSentinel).toHaveBeenCalledTimes(1);
+          expect(mockSetTripEndedSentinel).toHaveBeenCalledWith(expect.any(Number));
+        });
+
+        it('alert payload → runTripBoundCleanups 호출(active trip clear)', async () => {
+          await handleSilentPush(alertTripEndedPayload({ pushId: 'a-uuid' }));
+          expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+        });
+
+        it('alert payload → triggerTripEndRecall도 cleanup 이전에 호출', async () => {
+          const callOrder: string[] = [];
+          mockTriggerTripEndRecall.mockImplementation(async () => {
+            callOrder.push('trigger');
+            return { uploaded: false };
+          });
+          mockRunTripBoundCleanups.mockImplementation(async () => {
+            callOrder.push('cleanup');
+          });
+          await handleSilentPush(alertTripEndedPayload({ pushId: 'a-uuid' }));
+          expect(callOrder).toEqual(['trigger', 'cleanup']);
+        });
+
+        it('alert payload → pushId를 FIRED_PUSH_IDS에 기록(silent backstop race dedup)', async () => {
+          await handleSilentPush(alertTripEndedPayload({ pushId: 'a-uuid' }));
+          expect(mockAddFiredPushId).toHaveBeenCalledWith('a-uuid');
+        });
+
+        it('alert payload + pushId 없으면 dedup 기록 skip — 나머지 흐름은 동일', async () => {
+          await handleSilentPush(alertTripEndedPayload());
+          expect(mockAddFiredPushId).not.toHaveBeenCalled();
+          expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+          expect(mockSetTripEndedSentinel).toHaveBeenCalledTimes(1);
+        });
+
+        it('alert payload + 동일 pushId 재도달 → dedup hasFiredPushId 경로는 surface가 아니라 skip 게이트만 적용; addFiredPushId는 무조건 호출', async () => {
+          // alert path는 surface가 없으므로 hasFiredPushId 체크는 surfaceTripEnded에서만 의미가 있다.
+          // 여기서는 pushId 기록이 idempotent하다는 사실(addFiredPushId 중복 호출 허용)을 검증.
+          mockHasFiredPushId.mockResolvedValue(true);
+          await handleSilentPush(alertTripEndedPayload({ pushId: 'a-uuid' }));
+          expect(mockSendTripEndedNotification).not.toHaveBeenCalled();
+          expect(mockAddFiredPushId).toHaveBeenCalledWith('a-uuid');
+        });
+
+        it.each([
+          ['eta-missing'],
+          ['destination-arrived'],
+          ['expired'],
+          ['push-unrecoverable'],
+        ])('alert payload reason=%s → surface skip + cleanup/sentinel 진행', async (reason) => {
+          await handleSilentPush(alertTripEndedPayload({ pushId: 'a-uuid', reason }));
+          expect(mockSendTripEndedNotification).not.toHaveBeenCalled();
+          expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+          expect(mockSetTripEndedSentinel).toHaveBeenCalledTimes(1);
+        });
+
+        it('alert payload → ack(fired, trip-ended:reason) 전송(silent path와 동일)', async () => {
+          await handleSilentPush(alertTripEndedPayload({ pushId: 'a-uuid', reason: 'destination-arrived' }));
+          expect(mockSendPushAck).toHaveBeenCalledWith({
+            pushId: 'a-uuid',
+            token: DEFAULT_APNS_TOKEN,
+            outcome: 'fired',
+            reason: 'trip-ended:destination-arrived',
+          });
+        });
+
+        it('alert payload + tripToken mismatch → cleanup/sentinel/surface 모두 skip(token-mismatch ack)', async () => {
+          (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+            if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+            if (key === ACTIVE_TRIP_KEY) return 'NEW-TRIP-TOKEN';
+            return null;
+          });
+          await handleSilentPush(
+            alertTripEndedPayload({ pushId: 'a-uuid', tripToken: 'OLD-TRIP-TOKEN' }),
+          );
+          expect(mockRunTripBoundCleanups).not.toHaveBeenCalled();
+          expect(mockSetTripEndedSentinel).not.toHaveBeenCalled();
+          expect(mockSendTripEndedNotification).not.toHaveBeenCalled();
+          expect(mockAddFiredPushId).not.toHaveBeenCalled();
+          expect(mockSendPushAck).toHaveBeenCalledWith({
+            pushId: 'a-uuid',
+            token: DEFAULT_APNS_TOKEN,
+            outcome: 'fired',
+            reason: expect.stringContaining('token-mismatch') as unknown as string,
+          });
+        });
+      });
     });
 
     describe('#746 dismiss silence 게이트 (BG silent push)', () => {
