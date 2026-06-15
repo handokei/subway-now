@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildAlertContent } from '../alertContent';
+import {
+  buildAlertContent,
+  TRIP_ENDED_ALERT_BODY,
+  TRIP_ENDED_ALERT_TITLE,
+} from '../alertContent';
 import type { AlarmPhase } from '../alarm';
 
 describe('buildAlertContent (#570 P2d)', () => {
@@ -57,5 +61,16 @@ describe('buildAlertContent (#570 P2d)', () => {
       title: '도착 임박',
       body: '곧 Apgujeong에 도착합니다. 하차 준비하세요!',
     });
+  });
+});
+
+// #1337 — trip-ended alert push 본문 상수. 디바이스 ko.json과 byte-identical 보장.
+// 어긋나면 banner에 silent push 시점 본문과 다른 문구가 떠 운영 사고 직결.
+describe('TRIP_ENDED_ALERT_* 상수 (#1337)', () => {
+  it('TRIP_ENDED_ALERT_TITLE === ko.json route.tripEndedTitle', () => {
+    expect(TRIP_ENDED_ALERT_TITLE).toBe('안내 종료');
+  });
+  it('TRIP_ENDED_ALERT_BODY === ko.json route.tripEndedBody', () => {
+    expect(TRIP_ENDED_ALERT_BODY).toBe('경로 안내를 종료했어요');
   });
 });

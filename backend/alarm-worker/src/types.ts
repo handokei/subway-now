@@ -326,24 +326,23 @@ export type TripEndedReason =
   | 'push-unrecoverable';
 
 /**
- * Trip ended silent push payload (#868).
- * backend가 server-side로 trip을 자동 종료(eta-missing/destination-arrived/expired/push-unrecoverable)
- * 했을 때 클라이언트의 route/destination/lock state를 동기화하기 위해 발사한다.
+ * Trip ended alert push payload (#1337). server-side trip 자동 종료 시 발사되는 alert push의
+ * `data` 필드. 구 silent push payload(`TripEndedPushPayload`)는 force-quit 앱에 전달되지 않아
+ * killed 상태 알림 누락 사고가 있어 alert로 전환됐다(#1337).
  *
- * client는 이 payload 수신 시 trip-bound storage(route, destination, boardingLock, activeTrip 등)를
- * 일괄 cleanup한다. cleanup만 하므로 alert fallback 대상이 아니며 pushId echo 의무도 없다 (graceful loss
- * 시에는 다음 FG 진입 시 useTripsBackendSync 등이 종국에는 hydrate로 복구).
+ * client BG 핸들러는 alert 수신 시(`aps.alert` 존재) OS가 이미 banner를 띄웠으므로 추가 로컬
+ * 알림을 발사하지 않고, `data.pushId`/`data.tripToken`을 sentinel/dedup에만 사용한다.
  *
  * `tripToken`은 race 가드용 — backend가 trip A에 대해 push를 발사한 후 APNs latency 동안
  * 사용자가 trip B를 새로 시작했다면, 클라는 tripToken과 현재 ACTIVE_TRIP_KEY를 비교해
  * 불일치 시 cleanup을 skip (trip B의 storage를 잘못 파괴하는 것을 방지).
  */
-export interface TripEndedPushPayload {
+export interface TripEndedAlertPushPayload {
   pushId: string;
   kind: 'trip-ended';
+  tripToken: string;
   reason: TripEndedReason;
   sentAt: number;
-  tripToken: string;
 }
 
 /** APNs 토큰 환경. sandbox는 dev/preview/internal 빌드, production은 App Store/TestFlight. */

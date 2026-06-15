@@ -2831,8 +2831,8 @@ describe('GET /trips/:tripToken/status (#1339 launch reconciliation)', () => {
     const got = await getStatus(env, 'tok');
     const body = (await got.json()) as Record<string, unknown>;
     expect(Object.keys(body).sort((a, b) => a.localeCompare(b))).toEqual([
-      'endReason',
       'endedAt',
+      'endReason',
       'status',
       'tripToken',
     ]);

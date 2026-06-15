@@ -15,7 +15,7 @@
 
 import {
   sendLiveActivityUpdate,
-  sendTripEndedPush,
+  sendTripEndedAlertPush,
   type LiveActivityContentState,
 } from './apns';
 import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
@@ -174,11 +174,31 @@ export async function fireLiveActivityDismissal(
 }
 
 /**
+ * trip-ended alert push의 KV dedup 키. (tripToken, createdAt) 단위로 1회만 발사한다.
+ *
+ * `trip.token`은 device APNs token이라 같은 디바이스의 후속 trip이 동일 token을 재사용한다.
+ * dedup을 token만으로 잡으면 사용자가 trip A 종료 후 곧이어 시작한 trip B의 종료 alert가
+ * stale stamp에 막혀 사라진다(#1337 acceptance 회귀). createdAt까지 포함해 trip-instance 단위로
+ * 격리한다.
+ *
+ * TTL은 cron race(이전 cycle이 늦게 끝나는 동안 다음 cycle 시작) 윈도우만 보호하면 충분 →
+ * 10분으로 짧게 잡아 KV bloat도 줄인다. trip이 끝나면 곧 deleteTrip되므로 같은
+ * (token, createdAt) 페어가 10분 후에 다시 cleanup 대상이 될 가능성은 사실상 0.
+ */
+const TRIP_ENDED_ALERT_DEDUP_KEY_PREFIX = 'tripEndedAlert:';
+const TRIP_ENDED_ALERT_DEDUP_TTL_SEC = 10 * 60;
+
+function tripEndedAlertDedupKey(tripToken: string, createdAt: number): string {
+  return `${TRIP_ENDED_ALERT_DEDUP_KEY_PREFIX}${tripToken}:${createdAt}`;
+}
+
+/**
  * trip 정리 wrapper — LA dismissal(있을 때만) + deleteTrip을 단일 진입점으로.
  * scheduled.ts의 모든 deleteTrip 호출 + HTTP DELETE /trips/:token이 공유.
  *
- * #868 — reason 지정 시 trip-ended silent push 발사. server-side auto-end 경로(scheduled.ts의
- * cron 호출자)는 reason을 명시 전달해 클라 route/destination/lock state를 동기화한다.
+ * #1337 — reason 지정 시 trip-ended **alert** push 발사 (구 silent → alert 전환). server-side
+ * auto-end 경로(scheduled.ts의 cron 호출자)는 reason을 명시 전달해 killed 앱 사용자에게도 OS
+ * banner로 "안내 종료"를 즉시 표시하고 클라 route/destination/lock state를 동기화한다.
  * HTTP DELETE 경로는 reason 미지정 — 이미 사용자가 destination을 clear한 시점이라 push 불필요.
  *
  * push는 LA dismissal과 별개의 budget(분당 0~1건 trip 종료 수준)이라 LA push와 직렬 발사로 충분.
@@ -195,10 +215,11 @@ export async function cleanupTripWithLa(
 ): Promise<void> {
   await fireLiveActivityDismissal(trip, deps, stats, now, log);
   if (reason) {
-    await fireTripEndedPush(trip, reason, deps, now, log);
-    // #1339 — launch reconciliation 백스톱. silent push가 누락된 killed-app 케이스에서
-    // 디바이스가 다음 launch 시 GET /trips/:token/status로 종료 사실을 확인하고 자체 cleanup한다.
-    // KV write 실패는 cleanup 흐름을 차단하지 않는다 — 본 push가 best-effort라면 retention도 best-effort.
+    await fireTripEndedAlertPush(trip, reason, env, deps, now, log);
+    // #1339 — launch reconciliation 백스톱. alert push가 APNs drop/디바이스 오프라인으로
+    // 누락된 케이스에서 디바이스가 다음 launch 시 GET /trips/:token/status로 종료 사실을
+    // 확인하고 자체 cleanup한다. KV write 실패는 cleanup 흐름을 차단하지 않는다 —
+    // alert push가 best-effort라면 retention도 best-effort.
     try {
       await writeTripEndedStatus(env.TRIPS, trip.token, reason, now);
     } catch (e) {
@@ -216,17 +237,31 @@ export async function cleanupTripWithLa(
 }
 
 /**
- * trip-ended silent push 발사 (#868). LA dismissal과 직렬로 1회 발사.
- * 실패는 fire-and-forget 성격이지만 흐름 일관성을 위해 await — APNs latency는 cron 1 cycle 안에서 흡수.
- * fireLiveActivityDismissal과 마찬가지로 trip 상태 변경 없이 best-effort.
+ * trip-ended alert push 발사 (#1337). LA dismissal과 직렬로 1회 발사.
+ *
+ * KV `tripEndedAlert:{tripToken}` set-if-absent 게이트로 같은 trip의 종료 alert가 cron race로
+ * 중복 발사되는 것을 차단. 이미 발사 기록이 있으면 silent skip.
+ *
+ * 실패는 fire-and-forget 성격이지만 흐름 일관성을 위해 await — APNs latency는 cron 1 cycle 안에서
+ * 흡수. fireLiveActivityDismissal과 마찬가지로 trip 상태 변경 없이 best-effort.
  */
-async function fireTripEndedPush(
+async function fireTripEndedAlertPush(
   trip: Trip,
   reason: TripEndedReason,
+  env: Env,
   deps: LiveActivityDeps,
   now: number,
   log: Logger,
 ): Promise<void> {
+  const dedupKey = tripEndedAlertDedupKey(trip.token, trip.createdAt);
+  const existing = await env.TRIPS.get(dedupKey);
+  if (existing !== null) {
+    log('trip-ended alert: dedup skip', {
+      token: trip.token.slice(0, 8),
+      reason,
+    });
+    return;
+  }
   const pushId = crypto.randomUUID();
   // JWT 서명 / network reject 등의 throw가 cleanup 흐름을 차단하지 않도록 swallow.
   // trip-ended push는 graceful fail-soft — graceful loss 시 클라는 다음 FG hydrate에서 회복.
@@ -236,7 +271,7 @@ async function fireTripEndedPush(
     // trip은 곧 deleteTrip되므로 correctedEnv KV 반영은 불필요 — retry 성공만으로 충분(로그만 남김).
     const heal = await sendWithEnvHeal(
       (host) =>
-        sendTripEndedPush({
+        sendTripEndedAlertPush({
           deviceToken: trip.token,
           pushId,
           reason,
@@ -260,6 +295,8 @@ async function fireTripEndedPush(
         status: heal.result.status,
         pushReason: heal.result.reason,
       });
+      // 실패 시에는 dedup stamp를 남기지 않아 다음 cron cycle에서 재시도 허용.
+      return;
     }
   } catch (e) {
     log('trip-ended push threw', {
@@ -267,6 +304,9 @@ async function fireTripEndedPush(
       reason,
       error: String(e),
     });
+    return;
   }
+  // 성공 push만 dedup stamp — 같은 trip의 후속 cleanup race가 중복 alert를 발사하지 못하도록.
+  await env.TRIPS.put(dedupKey, '1', { expirationTtl: TRIP_ENDED_ALERT_DEDUP_TTL_SEC });
 }
 

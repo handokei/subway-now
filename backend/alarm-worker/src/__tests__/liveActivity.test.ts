@@ -10,7 +10,7 @@ import {
   type LiveActivityDeps,
   type LiveActivityStats,
 } from '../liveActivity';
-import type { ApnsEnv, Env, Trip, Waypoint } from '../types';
+import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
 let apnsConfig: ApnsConfig;
@@ -391,6 +391,93 @@ describe('cleanupTripWithLa', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
     expect(logs).toContain('trip-ended push failed');
     expect(await kv.get('trip:devtoken')).toBeNull();
+  });
+
+  // #1337 — KV `tripEndedAlert:{tripToken}:{createdAt}` set-if-absent gate. 같은 trip의 cleanup이 race로
+  // 두 번 호출돼도 alert가 1회만 발사된다. 실패 push는 stamp X → 다음 cycle 재시도 허용.
+  describe('trip-ended alert KV dedup gate (#1337)', () => {
+    type FetchFn = ReturnType<typeof vi.fn>;
+    const arrange = async (fetchImpl: FetchFn, tripOverrides: Partial<Trip> = {}) => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined, ...tripOverrides });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+      return { kv, trip, env, fetchImpl };
+    };
+    const runCleanup = (
+      ctx: { trip: Trip; env: Env; fetchImpl: FetchFn },
+      reason: TripEndedReason,
+      log: (message: string, meta?: Record<string, unknown>) => void = () => undefined,
+      atNow: number = NOW,
+    ) =>
+      cleanupTripWithLa(
+        ctx.trip,
+        ctx.env,
+        makeDeps(ctx.fetchImpl as unknown as typeof fetch),
+        makeStats(),
+        atNow,
+        log,
+        reason,
+      );
+
+    it('success 시 dedup stamp 저장 → 동일 trip 재 cleanup 호출 시 alert push skip', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      const ctx = await arrange(fetchImpl);
+      await runCleanup(ctx, 'eta-missing');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(await ctx.kv.get(`tripEndedAlert:devtoken:${NOW}`)).toBe('1');
+
+      // 2차 cleanup (동일 cron 사이클 내 race) — dedup으로 push skip
+      const trip2 = makeTrip({ activityPushToken: undefined });
+      await ctx.kv.put('trip:devtoken', JSON.stringify(trip2));
+      const logs: string[] = [];
+      await runCleanup({ ...ctx, trip: trip2 }, 'destination-arrived', (m) => logs.push(m));
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(logs).toContain('trip-ended alert: dedup skip');
+    });
+
+    it('실패 push (양쪽 host 모두 reject) 시 dedup stamp 저장 X → 다음 사이클 재시도 허용', async () => {
+      const fetchImpl = vi.fn(
+        async () => new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+      );
+      const ctx = await arrange(fetchImpl);
+      await runCleanup(ctx, 'eta-missing');
+      // env-heal 1차+retry 둘 다 호출되지만 둘 다 실패.
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(await ctx.kv.get(`tripEndedAlert:devtoken:${NOW}`)).toBeNull();
+    });
+
+    it('throw 발생 시 dedup stamp 저장 X', async () => {
+      const fetchImpl = vi.fn(async () => {
+        throw new Error('network down');
+      });
+      const ctx = await arrange(fetchImpl);
+      await runCleanup(ctx, 'expired');
+      expect(await ctx.kv.get(`tripEndedAlert:devtoken:${NOW}`)).toBeNull();
+      // throw 흡수 후 cleanup 흐름 계속 → trip 삭제됨
+      expect(await ctx.kv.get('trip:devtoken')).toBeNull();
+    });
+
+    // 회귀 가드: trip.token = device APNs token 이라 같은 디바이스의 후속 trip이 동일 token을
+    // 재사용한다. dedup key가 token만으로 구성되면 trip A 종료 후 곧이어 시작한 trip B의 종료
+    // alert가 stale stamp에 막혀 사라진다(#1337 acceptance 회귀). (token, createdAt) 페어로
+    // trip-instance 단위 격리하는지 검증.
+    it('동일 device(token)의 다른 trip-instance(createdAt) 는 dedup 안 됨 (각자 alert 발사)', async () => {
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      // Trip A: createdAt=NOW
+      const ctxA = await arrange(fetchImpl, { createdAt: NOW });
+      await runCleanup(ctxA, 'destination-arrived');
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+      // Trip B: same token, 다른 createdAt (예: 1분 뒤 새 trip 등록)
+      const tripB = makeTrip({ activityPushToken: undefined, createdAt: NOW + 60_000 });
+      await ctxA.kv.put('trip:devtoken', JSON.stringify(tripB));
+      await runCleanup({ ...ctxA, trip: tripB }, 'eta-missing', undefined, NOW + 60_000);
+      // Trip B의 alert도 발사돼야 함 (총 2회)
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(await ctxA.kv.get(`tripEndedAlert:devtoken:${NOW}`)).toBe('1');
+      expect(await ctxA.kv.get(`tripEndedAlert:devtoken:${NOW + 60_000}`)).toBe('1');
+    });
   });
 
   // #1339 — launch reconciliation 백스톱. cleanupTripWithLa가 reason과 함께 호출되면

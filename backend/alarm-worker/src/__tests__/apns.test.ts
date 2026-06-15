@@ -9,8 +9,10 @@ import {
   sendLiveActivityUpdate,
   sendReschedulePush,
   sendSilentPush,
+  sendTripEndedAlertPush,
   type ApnsConfig,
 } from '../apns';
+import { TRIP_ENDED_ALERT_BODY, TRIP_ENDED_ALERT_TITLE } from '../alertContent';
 
 let privateKeyPem = '';
 
@@ -627,5 +629,93 @@ describe('sendBoardingPromptPush (#819)', () => {
       fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     expect(result).toEqual({ ok: false, status: 410, reason: 'BadDeviceToken' });
+  });
+});
+
+// #1337 — trip-ended를 silent → alert로 전환. killed 앱에 OS banner로 즉시 표시.
+// headers/payload는 PR2 디바이스 핸들러와 byte-level 정렬 (kind='trip-ended', tripToken, reason, sentAt, pushId).
+describe('sendTripEndedAlertPush (#1337)', () => {
+  beforeEach(() => resetApnsJwtCache());
+
+  type TripEndedReason = 'eta-missing' | 'expired' | 'push-unrecoverable' | 'destination-arrived';
+  type TripEndedOverrides = Partial<{
+    deviceToken: string;
+    pushId: string;
+    reason: TripEndedReason;
+    sentAt: number;
+    tripToken: string;
+  }>;
+  const runTripEndedAlertPush = (fetchImpl: ReturnType<typeof vi.fn>, o: TripEndedOverrides = {}) =>
+    sendTripEndedAlertPush({
+      deviceToken: o.deviceToken ?? 't',
+      pushId: o.pushId ?? 'p',
+      reason: o.reason ?? 'expired',
+      sentAt: o.sentAt ?? 0,
+      tripToken: o.tripToken ?? 'trip-x',
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+  it('posts alert-type headers + aps.alert(trip-ended 본문) + aps.sound + data byte-level contract', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const result = await runTripEndedAlertPush(fetchImpl, {
+      deviceToken: 'devicetoken-hex',
+      pushId: 'pid-end-1',
+      reason: 'destination-arrived',
+      sentAt: 1_700_000_000_000,
+      tripToken: 'trip-abc',
+    });
+    expect(result.ok).toBe(true);
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(call[0]).toBe(`https://${TEST_HOST}/3/device/devicetoken-hex`);
+    expect(call[1].headers).toMatchObject({
+      'apns-topic': 'com.example.app',
+      'apns-push-type': 'alert',
+      'apns-priority': '10',
+      'content-type': 'application/json',
+    });
+    const body = JSON.parse(call[1].body as string);
+    expect(body.aps.alert).toEqual({
+      title: TRIP_ENDED_ALERT_TITLE,
+      body: TRIP_ENDED_ALERT_BODY,
+    });
+    expect(body.aps.sound).toBe('default');
+    expect(body.data).toEqual({
+      pushId: 'pid-end-1',
+      kind: 'trip-ended',
+      tripToken: 'trip-abc',
+      reason: 'destination-arrived',
+      sentAt: 1_700_000_000_000,
+    });
+  });
+
+  it.each<{ reason: TripEndedReason }>([
+    { reason: 'eta-missing' },
+    { reason: 'expired' },
+    { reason: 'push-unrecoverable' },
+    { reason: 'destination-arrived' },
+  ])('reason=$reason 가 data에 그대로 전달된다', async ({ reason }) => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await runTripEndedAlertPush(fetchImpl, { reason });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.reason).toBe(reason);
+  });
+
+  it('returns parseApnsError result on 4xx with JSON reason', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+    );
+    const result = await runTripEndedAlertPush(fetchImpl, { reason: 'expired' });
+    expect(result).toEqual({ ok: false, status: 400, reason: 'BadDeviceToken' });
+  });
+
+  it('returns parseApnsError result on 5xx with non-json body (reason undefined)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('upstream broken', { status: 503 }));
+    const result = await runTripEndedAlertPush(fetchImpl, { reason: 'eta-missing' });
+    expect(result.ok).toBe(false);
+    expect(result.status).toBe(503);
+    expect(result.reason).toBeUndefined();
   });
 });

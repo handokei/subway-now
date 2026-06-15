@@ -12,6 +12,7 @@
  *   - transfer/early      ↔ ko.json notifications.transferEarlyTitle + alarms.earlyTransferBody
  *   - transfer/imminent   ↔ ko.json notifications.transferImminentTitle + alarms.imminentTransferBody
  *   - intermediate        ↔ ko.json route.intermediatePassedTitle + route.intermediatePassedBody
+ *   - trip-ended          ↔ ko.json route.tripEndedTitle + route.tripEndedBody
  *
  * 백엔드에는 i18next가 없고 사용자 locale도 알 수 없어 한국어 정적 문자열로 고정.
  * 영문 locale 지원이 필요해지면 디바이스 register 시점에 locale을 trip에 함께 저장하고
@@ -64,6 +65,14 @@ const ARRIVAL_BODY: Record<
 
 const INTERMEDIATE_TITLE = '역 통과';
 const intermediateBody = (s: string) => `${s}역을 지나고 있어요`;
+
+/**
+ * Trip-ended alert push 본문 상수 (#1337). server-side trip 종료를 killed 앱에도 즉시
+ * 표시하기 위해 silent → alert 전환(`sendTripEndedAlertPush`)할 때 사용한다.
+ * 디바이스 i18n(`ko.json` `route.tripEndedTitle` / `route.tripEndedBody`)과 byte-identical.
+ */
+export const TRIP_ENDED_ALERT_TITLE = '안내 종료';
+export const TRIP_ENDED_ALERT_BODY = '경로 안내를 종료했어요';
 
 export function buildAlertContent(input: AlertContentInput): AlertContent {
   if (input.kind === 'intermediate') {

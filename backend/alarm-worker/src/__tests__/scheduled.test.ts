@@ -456,7 +456,7 @@ describe('runScheduled', () => {
       makeTrip({ expiresAt: NOW + 5_000, alarmAtEpochMs: NOW - 1 }),
     );
     // expire 이전이지만 다음 시점은 expire 이후
-    // #868 — expired 경로는 trip-ended silent push도 발사 시도하므로 fetch mock 필요.
+    // #1337 — expired 경로는 trip-ended alert push도 발사 시도하므로 fetch mock 필요.
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
     const stats = await runScheduled(makeEnv(kv), {
       seoul: makeSeoul([]),
@@ -466,8 +466,11 @@ describe('runScheduled', () => {
       now: () => NOW + 10_000,
     });
     expect(stats.polled).toBe(0);
-    // #1339 — trip 자체는 삭제되지만 launch reconciliation을 위한 tripStatus marker가 남는다.
-    expect(kv.store.has('trip:tok')).toBe(false);
+    // trip 자체는 삭제된다.
+    expect(await kv.get('trip:tok')).toBeNull();
+    // #1337 — alert push 성공 시 dedup key(`tripEndedAlert:{tripToken}:{createdAt}` TTL 10m)가 KV에 남는다.
+    expect(await kv.get(`tripEndedAlert:tok:${NOW}`)).toBe('1');
+    // #1339 — launch reconciliation을 위한 tripStatus marker도 남는다.
     const statusEntry = kv.store.get('tripStatus:tok');
     expect(statusEntry).toBeDefined();
     expect(JSON.parse(statusEntry!.value)).toMatchObject({ endReason: 'expired' });
@@ -2111,16 +2114,17 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
   });
 });
 
-// #868 — server-side trip auto-end 경로에서 클라 state sync용 trip-ended silent push가 발사되는지.
-// LA dismissal과 별개 budget(분당 0~1건)이라 trip 종료 cleanup 1건당 1회 발사가 기대 동작.
-describe('runScheduled — trip-ended silent push (#868)', () => {
-  /** APNs silent push (trip-ended kind) 호출만 추출 — LA push와 분리해 단언. */
+// #1337 — server-side trip auto-end 경로에서 클라 state sync용 trip-ended alert push가 발사되는지.
+// 구 #868 silent push는 force-quit 앱 미전달 사고(#1337)로 alert 전환. LA dismissal과 별개 budget
+// (분당 0~1건)이라 trip 종료 cleanup 1건당 1회 발사가 기대 동작이며 KV dedup이 1회를 보장한다.
+describe('runScheduled — trip-ended alert push (#1337)', () => {
+  /** APNs alert push (trip-ended kind) 호출만 추출 — LA push와 분리해 단언. */
   function getTripEndedCalls(
     fetchImpl: ReturnType<typeof vi.fn>,
   ): [string, RequestInit][] {
     return (fetchImpl.mock.calls as unknown as [string, RequestInit][]).filter((c) => {
       const headers = (c[1]?.headers ?? {}) as Record<string, string>;
-      if (headers['apns-push-type'] !== 'background') return false;
+      if (headers['apns-push-type'] !== 'alert') return false;
       try {
         const body = JSON.parse(c[1]?.body as string) as { data?: { kind?: string } };
         return body?.data?.kind === 'trip-ended';
@@ -2193,8 +2197,16 @@ describe('runScheduled — trip-ended silent push (#868)', () => {
     expect(data.pushId.length).toBeGreaterThan(0);
     // #868 P1-2 race 가드 — payload에 tripToken 포함되어야 클라가 ACTIVE_TRIP_KEY와 매칭 가능.
     expect(data.tripToken).toBe('end-tok');
+    // #1337 — alert push headers + KV dedup stamp.
+    const headers = (calls[0][1].headers ?? {}) as Record<string, string>;
+    expect(headers['apns-push-type']).toBe('alert');
+    expect(headers['apns-priority']).toBe('10');
+    const apsBody = JSON.parse(calls[0][1].body as string) as { aps: { alert: { title: string; body: string }; sound: string } };
+    expect(apsBody.aps.alert).toEqual({ title: '안내 종료', body: '경로 안내를 종료했어요' });
+    expect(apsBody.aps.sound).toBe('default');
     // trip은 KV에서 삭제돼야 함 (#706 cleanup).
     expect(await kv.get('trip:end-tok')).toBeNull();
+    expect(await kv.get(`tripEndedAlert:end-tok:${NOW}`)).toBe('1');
   });
 
   it('fires trip-ended push (reason=destination-arrived) when destination waypoint ARRIVED', async () => {
