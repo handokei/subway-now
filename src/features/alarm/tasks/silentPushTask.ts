@@ -57,8 +57,15 @@ import {
   checkSilentPushLocationGate,
   type GateSkipReason,
 } from '../utils/silentPushLocationGate';
-import { rescheduleHopForLock } from '../utils/boardingLockScheduler';
-import { rescheduleTripBoundAlarm } from '../utils/tripBoundScheduler';
+import {
+  rescheduleHopForLock,
+  cancelBlByStationPhase,
+} from '../utils/boardingLockScheduler';
+import {
+  rescheduleTripBoundAlarm,
+  cancelTbaByStationPhase,
+} from '../utils/tripBoundScheduler';
+import { ALARM_PHASES } from '../utils/alarmPhases';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
@@ -728,15 +735,7 @@ async function applyReschedule(
     }
     // tba 채널 (#918 A3 PR4) — lock-free trip-bound 사전 예약 정정.
     if (channels.includes('tba')) {
-      await rescheduleTripBoundAlarm({
-        stationName: payload.nextStation,
-        newArrivalMs: payload.newArrivalTimeEpoch,
-        route,
-        destinationName,
-        now: receivedAt,
-        // #1193 — 중복역 trip은 backend가 occurrenceIdx를 명시. 미지정 시 0(첫 등장).
-        occurrenceIdx: payload.occurrenceIdx,
-      });
+      await applyRescheduleTba(payload, route, destinationName, receivedAt);
     }
   } catch (e) {
     logger.error('reschedule apply 실패:', e);
@@ -764,6 +763,12 @@ async function applyRescheduleBl(
     );
     return;
   }
+  // #1355 D1 — cross-channel cancel: 같은 station+phase의 `tba:` 사전 예약 제거.
+  // bl 채널이 정정 신호의 source-of-truth가 되므로 반대 채널의 stale 항목이 OS 큐에 잔존해
+  // 같은 ETA에 중복 banner fire되는 회귀를 차단한다.
+  for (const phase of ALARM_PHASES) {
+    await cancelTbaByStationPhase(payload.nextStation, phase.id);
+  }
   await rescheduleHopForLock({
     lock,
     route,
@@ -771,6 +776,31 @@ async function applyRescheduleBl(
     nextStation: payload.nextStation,
     newArrivalMs: payload.newArrivalTimeEpoch,
     now: receivedAt,
+  });
+}
+
+/**
+ * tba(trip-bound) 채널 정정 — lock 의존 없음. cross-channel `bl:` 사전 예약을 먼저 cleanup하고
+ * `rescheduleTripBoundAlarm`에 위임한다.
+ */
+async function applyRescheduleTba(
+  payload: RescheduleSilentPushPayload,
+  route: NonNullable<Route>,
+  destinationName: string,
+  receivedAt: number,
+): Promise<void> {
+  // #1355 D1 — cross-channel cancel: 같은 station+phase의 `bl:` 사전 예약 제거.
+  for (const phase of ALARM_PHASES) {
+    await cancelBlByStationPhase(payload.nextStation, phase.id);
+  }
+  await rescheduleTripBoundAlarm({
+    stationName: payload.nextStation,
+    newArrivalMs: payload.newArrivalTimeEpoch,
+    route,
+    destinationName,
+    now: receivedAt,
+    // #1193 — 중복역 trip은 backend가 occurrenceIdx를 명시. 미지정 시 0(첫 등장).
+    occurrenceIdx: payload.occurrenceIdx,
   });
 }
 

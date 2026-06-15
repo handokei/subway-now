@@ -317,6 +317,40 @@ export async function cancelAllHopsForLock(lock: BoardingLock): Promise<void> {
 }
 
 /**
+ * #1355 D1 — silent push reschedule cross-channel cancel.
+ *
+ * 같은 (stationName, phaseId)에 해당하는 `bl:` 사전 예약을 모두 cancel한다. 반대 채널(`tba:`)의
+ * `applyRescheduleTba`가 진입 시점에 호출 — 한쪽 채널이 정정될 때 다른 채널의 stale 사전 예약이
+ * OS 큐에 잔존해 ETA 도달 시 중복 banner fire되는 회귀를 차단한다.
+ *
+ * stationName 비교는 `isSameStationName`(canonical 정규화)로 표기 차이를 흡수한다.
+ * trainCode/hopIndex는 무시 — cross-channel 정정 시점에서 lock 식별이 불필요하다
+ * (해당 (stationName, phaseId)에 대응하는 모든 `bl:` 항목이 stale).
+ *
+ * OS queue cancel + 추적 큐(SCHEDULED_NOTIFICATIONS)에서 제거. 매칭이 없으면 safe no-op.
+ */
+export async function cancelBlByStationPhase(
+  stationName: string,
+  phaseId: AlarmPhaseId,
+): Promise<number> {
+  const all = await Notifications.getAllScheduledNotificationsAsync();
+  const toCancel: string[] = [];
+  for (const req of all) {
+    if (!req.identifier.startsWith(BOARDING_LOCK_ALARM_PREFIX)) continue;
+    const parsed = parseBoardingLockAlarmIdentifier(req.identifier);
+    if (parsed === null) continue;
+    if (parsed.phase !== phaseId) continue;
+    if (!isSameStationName(parsed.stationName, stationName)) continue;
+    toCancel.push(req.identifier);
+  }
+  if (toCancel.length > 0) {
+    await cancelAndDismiss(toCancel);
+    await removeScheduledNotificationIds(toCancel);
+  }
+  return toCancel.length;
+}
+
+/**
  * 큐 전체를 비운다 — SCHEDULED_NOTIFICATIONS 키 안의 `bl:` prefix 항목만.
  * 마운트 시점 위생 처리용 (예: app restart 후 stale 큐 정리). cancelAllHopsForLock과 동일하게
  * 발사된 알람은 dismiss까지 시도한다.

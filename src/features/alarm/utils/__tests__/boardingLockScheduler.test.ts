@@ -5,6 +5,7 @@ import {
   advanceHopWindow,
   boardingLockAlarmIdentifier,
   cancelAllHopsForLock,
+  cancelBlByStationPhase,
   clearRegisteredBlRouteSig,
   getRegisteredBlRouteSig,
   parseBoardingLockAlarmIdentifier,
@@ -326,6 +327,96 @@ describe('cancelAllHopsForLock', () => {
     mockedDismiss.mockRejectedValueOnce(new Error('not delivered'));
     await expect(cancelAllHopsForLock(lock)).resolves.toBeUndefined();
     expect(mockedCancel).toHaveBeenCalled();
+  });
+});
+
+// #1355 D1 — silent push reschedule cross-channel cancel helper.
+describe('cancelBlByStationPhase (#1355 D1)', () => {
+  const mockedGetAll =
+    Notifications.getAllScheduledNotificationsAsync as jest.MockedFunction<
+      typeof Notifications.getAllScheduledNotificationsAsync
+    >;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('같은 stationName + phase의 `bl:` 사전 예약만 cancel하고 추적 큐에서 제거', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'bl:T-100:0:early:강남' },
+      { identifier: 'bl:T-100:0:imminent:강남' },
+      { identifier: 'bl:T-100:1:early:사가정' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+
+    const cancelled = await cancelBlByStationPhase('강남', 'early');
+
+    expect(cancelled).toBe(1);
+    expect(mockedCancel).toHaveBeenCalledTimes(1);
+    expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:early:강남');
+    expect(mockedRemove).toHaveBeenCalledWith(['bl:T-100:0:early:강남']);
+  });
+
+  it('반대 prefix(`tba:`/`alarm:`)는 건드리지 않는다 (정밀성)', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:early:강남' },
+      { identifier: 'alarm:early:강남' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+
+    const cancelled = await cancelBlByStationPhase('강남', 'early');
+
+    expect(cancelled).toBe(0);
+    expect(mockedCancel).not.toHaveBeenCalled();
+    expect(mockedRemove).not.toHaveBeenCalled();
+  });
+
+  it('다른 trainCode/hopIndex라도 같은 station+phase면 모두 cancel — cross-channel은 lock 식별 무시', async () => {
+    // 환승/lock 전환 race로 같은 station+phase의 다른 trainCode 잔재가 있을 수 있다.
+    // cross-channel 정정 시점에서는 모두 stale.
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'bl:T-100:0:early:강남' },
+      { identifier: 'bl:T-200:3:early:강남' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+
+    const cancelled = await cancelBlByStationPhase('강남', 'early');
+
+    expect(cancelled).toBe(2);
+    expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:early:강남');
+    expect(mockedCancel).toHaveBeenCalledWith('bl:T-200:3:early:강남');
+  });
+
+  it('다른 phase는 보존', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'bl:T-100:0:imminent:강남' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+
+    const cancelled = await cancelBlByStationPhase('강남', 'early');
+
+    expect(cancelled).toBe(0);
+    expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
+  it('parse 실패 identifier는 graceful skip', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'bl:malformed' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+
+    const cancelled = await cancelBlByStationPhase('강남', 'early');
+
+    expect(cancelled).toBe(0);
+    expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
+  it('OS 큐가 비어 있으면 safe no-op (cancel/remove 미호출)', async () => {
+    mockedGetAll.mockResolvedValue([]);
+    const cancelled = await cancelBlByStationPhase('강남', 'early');
+    expect(cancelled).toBe(0);
+    expect(mockedCancel).not.toHaveBeenCalled();
+    expect(mockedRemove).not.toHaveBeenCalled();
   });
 });
 

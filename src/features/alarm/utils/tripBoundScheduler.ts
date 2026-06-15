@@ -675,6 +675,37 @@ export async function rescheduleTripBoundAlarm(
 }
 
 /**
+ * #1355 D1 — silent push reschedule cross-channel cancel.
+ *
+ * 같은 (stationName, phaseId)에 해당하는 `tba:` 사전 예약을 모두 cancel한다. 반대 채널(`bl:`)의
+ * `applyRescheduleBl`가 진입 시점에 호출 — 한쪽 채널이 정정될 때 다른 채널의 stale 사전 예약이
+ * OS 큐에 잔존해 ETA 도달 시 중복 banner fire되는 회귀를 차단한다.
+ *
+ * stationName 비교는 `isSameStationName`(canonical 정규화)로 표기 차이를 흡수한다.
+ * occurrenceIdx는 무시 — 같은 stationName + phaseId의 모든 occurrence를 cancel한다
+ * (cross-channel 정정 시 동일 stop의 모든 occurrence가 stale로 간주되는 게 안전).
+ *
+ * 매칭되는 항목이 없으면 safe no-op(0건 cancel).
+ */
+export async function cancelTbaByStationPhase(
+  stationName: string,
+  phaseId: AlarmPhaseId,
+): Promise<number> {
+  const all = await Notifications.getAllScheduledNotificationsAsync();
+  let cancelled = 0;
+  for (const req of all) {
+    if (!req.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) continue;
+    const parsed = parseTripBoundAlarmIdentifier(req.identifier);
+    if (parsed === null) continue;
+    if (parsed.phaseId !== phaseId) continue;
+    if (!isSameStationName(parsed.stationName, stationName)) continue;
+    await Notifications.cancelScheduledNotificationAsync(req.identifier);
+    cancelled++;
+  }
+  return cancelled;
+}
+
+/**
  * trip 종료(release / 목적지 도착 / 사용자 취소) 시 호출 — `tba:` prefix를 가진 모든 사전
  * 예약 알람을 OS 큐에서 제거한다. 다른 prefix(alarm:, bl:)는 건드리지 않는다.
  *
