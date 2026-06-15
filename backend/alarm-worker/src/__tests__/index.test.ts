@@ -2760,3 +2760,81 @@ describe('GET /admin/telemetry/regressions (#1261)', () => {
     expect(body.counts['8'].today).toBe(3);
   });
 });
+
+describe('GET /trips/:tripToken/status (#1339 launch reconciliation)', () => {
+  async function getStatus(env: Env, token: string): Promise<Response> {
+    return app.fetch(
+      new Request(`http://example.com/trips/${token}/status`, { method: 'GET' }),
+      env,
+    );
+  }
+
+  it('returns active when the trip exists in KV', async () => {
+    const env = makeKvEnv();
+    const res = await post('/trips', base(), env);
+    expect(res.status).toBe(200);
+
+    const got = await getStatus(env, 'tok');
+    expect(got.status).toBe(200);
+    expect(await got.json()).toEqual({
+      tripToken: 'tok',
+      status: 'active',
+      endedAt: null,
+      endReason: null,
+    });
+  });
+
+  it('returns ended with endedAt + endReason when a recent status marker exists', async () => {
+    const env = makeKvEnv();
+    const kv = env.TRIPS as unknown as InMemoryKV;
+    const endedAt = Date.now() - 5_000;
+    kv.store.set('tripStatus:abc', {
+      value: JSON.stringify({ endedAt, endReason: 'destination' }),
+    });
+
+    const res = await getStatus(env, 'abc');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      tripToken: 'abc',
+      status: 'ended',
+      endedAt,
+      endReason: 'destination',
+    });
+  });
+
+  it('returns 404 when neither the trip nor a status marker exists', async () => {
+    const env = makeKvEnv();
+    const res = await getStatus(env, 'missing');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'trip_not_found' });
+  });
+
+  it('returns 410 expired-retention when the marker is older than the retention window', async () => {
+    const env = makeKvEnv();
+    const kv = env.TRIPS as unknown as InMemoryKV;
+    const endedAt = Date.now() - 60 * 60 * 1000 - 1_000; // > 1h
+    kv.store.set('tripStatus:old', {
+      value: JSON.stringify({ endedAt, endReason: 'expired' }),
+    });
+
+    const res = await getStatus(env, 'old');
+    expect(res.status).toBe(410);
+    expect(await res.json()).toEqual({
+      tripToken: 'old',
+      status: 'expired-retention',
+    });
+  });
+
+  it('emits only the documented response fields', async () => {
+    const env = makeKvEnv();
+    await post('/trips', base(), env);
+    const got = await getStatus(env, 'tok');
+    const body = (await got.json()) as Record<string, unknown>;
+    expect(Object.keys(body).sort((a, b) => a.localeCompare(b))).toEqual([
+      'endReason',
+      'endedAt',
+      'status',
+      'tripToken',
+    ]);
+  });
+});
