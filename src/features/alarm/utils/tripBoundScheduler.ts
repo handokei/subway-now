@@ -190,7 +190,7 @@ export async function prescheduleStationAlerts(
   const motionStationary = getCurrentMotionStationary();
   const movement = evaluateMovement({}, undefined, undefined, motionStationary);
   if (!movement.reliable && isStaticMovementResult(movement.reason)) {
-    const destinationName = routeStops[routeStops.length - 1]?.stationName;
+    const destinationName = routeStops.at(-1)?.stationName;
     logScheduleSkipped({
       channel: 'tba',
       reason: 'motion-stationary',
