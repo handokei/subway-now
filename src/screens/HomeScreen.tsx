@@ -274,7 +274,7 @@ export default function HomeScreen() {
   // #797: 환승역에서 nearest.station.line이 trip 방향과 어긋나는 회귀 차단.
   // BoardingLock(사용자 선택) > Route(구조적 SSOT) > station.line fallback.
   const approachLine = getApproachLine(route, fusionBoardingLock, effectiveOrigin);
-  // D7 (#1213) ETA provider SSOT — 현재역 BoardingTrainList(via directionalArrivals)와
+  // D7 (#1213) ETA provider SSOT — 현재역 BoardingTrainList(via boardingListArrivals)와
   // 정상 Arrival 표시(EditorialArrivalRow via ArrivalDirectionGroup)는 둘 다 아래 `arrival`을
   // 출처로 사용한다. 절대 시각 anchor도 arrivalAt(item)으로 통일(#897 Seam A). 따라서 두 surface의
   // ETA는 같은 시점에 항상 동일해야 한다. 회귀 게이트: etaProviderConsistency.test.ts.
@@ -402,7 +402,7 @@ export default function HomeScreen() {
   // alarm/Fusion과의 wiring은 후속 PR C/D에서 활성화된다.
   const {
     lock: boardingLock,
-    directionalArrivals,
+    boardingListArrivals,
     createLockFromTrain,
     hydrateLockFromCandidate,
     releaseLock: releaseBoardingLock,
@@ -805,7 +805,7 @@ export default function HomeScreen() {
       {/* line이 정해져야 list를 렌더 가능 — line null이면 모달 자체를 띄우지 않음 (빈 sheet 회피). */}
       <MisBoardingReselectModal
         visible={misBoardingModalVisible && effectiveOrigin?.line != null}
-        arrivals={directionalArrivals}
+        arrivals={boardingListArrivals}
         line={effectiveOrigin?.line ?? null}
         onSelect={handleMisBoardingReselect}
         onClose={handleMisBoardingModalClose}
@@ -998,7 +998,9 @@ export default function HomeScreen() {
                             if (i === 0 && stop.mark === 'filled' && boardingLock) {
                               // #897 Seam A: lock.trainCode 매칭 train의 잔여 ETA → 지연 칩 계산 input.
                               // 매칭 없으면 undefined → 칩 미노출 (graceful).
-                              const matchedTrain = directionalArrivals.find(
+                              // #1326: 표시 전용 lookup이라 boardingListArrivals 사용(Gate 1 무관). 방향 폴백
+                              //   list에서 탭한 lock도 매칭돼 지연 칩이 살아난다(strict면 폴백 시 영구 미노출).
+                              const matchedTrain = boardingListArrivals.find(
                                 (t) => t.trainCode === boardingLock.trainCode,
                               );
                               return (
@@ -1040,7 +1042,7 @@ export default function HomeScreen() {
                               // 사용자가 BoardingTrainList에서 열차를 탭해야 lock이 생성되고, 이후 폴링에서 칩이 활성화된다.
                               return (
                                 <BoardingTrainList
-                                  arrivals={directionalArrivals}
+                                  arrivals={boardingListArrivals}
                                   // #797: approachLine 우선 — 환승역에서 effectiveOrigin.line이 trip 방향과
                                   // 어긋날 때 BoardingLock·route SSOT로 정확한 호선 표시.
                                   line={approachLine ?? effectiveOrigin.line}
