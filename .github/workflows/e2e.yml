@@ -1,6 +1,6 @@
 name: E2E Nightly (Maestro gps + scenario)
 
-# nightly cron + 수동 실행 전용. PR 게이트는 ci.yml의 e2e-smoke가 담당.
+# nightly cron + 수동 실행 전용. PR 게이트 아님 (#1335 — ci.yml은 type-check+unit만).
 # 본 워크플로는 실제 GPS / 알람 / 지도 / 다크모드 등 시뮬레이터 의존 시나리오를 회귀 검증.
 on:
   workflow_dispatch:
@@ -102,7 +102,7 @@ jobs:
       - name: Maestro gps 실행
         id: gps
         continue-on-error: true
-        # #852 cifix: ci.yml smoke와 동일 — cold start 대비 driver startup timeout 확대.
+        # #852 cifix: cold start 대비 xcuitest driver startup timeout 확대 (ms, 4분).
         env:
           MAESTRO_DRIVER_STARTUP_TIMEOUT: '240000'
         run: maestro test .maestro/flows/gps/ --format junit --output maestro-gps.xml --debug-output ./maestro-debug-gps
@@ -117,7 +117,7 @@ jobs:
       - name: Maestro scenario 실행
         id: scenario
         continue-on-error: true
-        # #852 cifix: ci.yml smoke와 동일 — cold start 대비 driver startup timeout 확대.
+        # #852 cifix: cold start 대비 xcuitest driver startup timeout 확대 (ms, 4분).
         env:
           MAESTRO_DRIVER_STARTUP_TIMEOUT: '240000'
         run: maestro test .maestro/flows/scenario/ --format junit --output maestro-scenario.xml --debug-output ./maestro-debug-scenario

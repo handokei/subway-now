@@ -226,13 +226,15 @@ perf/#이슈번호-대상         예: perf/#139-map-clustering
 3. `npm test` 커버리지 100% 확인
 4. `npm run type-check` 통과 확인
 5. `dev`를 base로 PR 생성 — 본문에 `Closes #이슈번호` 포함
-6. GitHub Actions `CI / Type Check & Test` 체크 통과 확인 후 머지
+6. GitHub Actions `CI / Data Validation` + `CI / Type Check & Test` 체크 통과 확인 후 머지
 
 ### PR 머지 규칙
-- **CI 통과 필수 확인** — `gh pr checks <PR번호>`로 `Type Check & Test` pass 확인 후 머지
-- `E2E Smoke (mock mode)`는 ci.yml의 `changes` job이 UI 영향 경로 변경을 감지한 PR에서만 실행 (i18n/백엔드/문서 PR은 자동 스킵). 안정화 후 branch protection required로 승격 예정 (Phase 4)
-- E2E 스킵 기준 경로 (변경되어도 smoke 미실행): `src/shared/i18n/`, `src/shared/types/`, `src/testUtils/`, `src/data/`, `src/features/<slice>/types/`, `src/features/<slice>/tasks/`, `src/**/__tests__/`, `backend/`, `docs/`, `scripts/`, `tasks/`, `img/`, `subway/`, `locales/`(top), `__mocks__/`, `.maestro/manual/`, `.maestro/flows/{gps,scenario}/`, `.github/workflows/{e2e,ci}.yml`, `eas.json`, `jest.setup.js`, `sonar-project.properties`, `.env.example`, `.gitignore`, `.prettierrc*`, `.eslintrc*`, `.editorconfig`, `*.md`, `*.txt`
-- nightly의 gps/scenario(`e2e.yml`)는 PR 게이트 아님. 실기기 수동 회귀는 `.maestro/manual/`
+- **CI 통과 필수 확인** — `gh pr checks <PR번호>`로 `Data Validation` + `Type Check & Test` pass 확인 후 머지
+- **Branch protection의 required status check** — `Data Validation`, `Type Check & Test` (구 `E2E Smoke (mock mode)` 제거됨, #1335). repo settings에서 수동 갱신 필요
+- **CI 범위 = 정적 검증만**. type-check + unit(coverage 100%) + stations.json 정합성. iOS Release 빌드/시뮬레이터 실행/Maestro는 CI에 없음 (#1335)
+- **빌드/실기기 검증은 사용자 책임** — prebuild drift / Pods 충돌 / native compile 깨짐은 사용자가 다음 로컬 빌드(`npm run ios` / EAS) 시 발견. CI가 미리 막아주지 않음
+- **에이전트 PR은 device 검증 갭 존재** — 에이전트는 type-check + unit만 검증. runtime/native/위젯/LA/지하 등 device-only 회귀는 에이전트가 검증 불가. 사용자가 머지 전 결정 권한자이며, 의심 PR은 본인 실기기 빌드 후 머지
+- nightly gps/scenario(`e2e.yml`)는 PR 게이트 아님. 실기기 수동 회귀는 `.maestro/manual/`
 
 ---
 
