@@ -5,6 +5,7 @@ import { AppState } from 'react-native';
 jest.mock('expo-notifications', () => ({
   addNotificationReceivedListener: jest.fn(),
   getPresentedNotificationsAsync: jest.fn(),
+  cancelScheduledNotificationAsync: jest.fn(),
 }));
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -86,6 +87,7 @@ const mockSetFiredAlarms = setFiredAlarms as jest.Mock;
 const mockSetLastFiredAlarmStationName = setLastFiredAlarmStationName as jest.Mock;
 const mockAddListener = Notifications.addNotificationReceivedListener as jest.Mock;
 const mockGetPresented = Notifications.getPresentedNotificationsAsync as jest.Mock;
+const mockCancelScheduled = Notifications.cancelScheduledNotificationAsync as jest.Mock;
 const mockAsyncGetItem = AsyncStorage.getItem as jest.Mock;
 
 const DEST_JSON = JSON.stringify({ id: 'dest-1', name: '강남' });
@@ -150,6 +152,8 @@ beforeEach(async () => {
   mockSetLastFiredAlarmStationName.mockResolvedValue(undefined);
   mockGetPresented.mockResolvedValue([]);
   mockAsyncGetItem.mockResolvedValue(DEST_JSON);
+  mockCancelScheduled.mockReset();
+  mockCancelScheduled.mockResolvedValue(undefined);
   // 모든 케이스 공통: addNotificationReceivedListener 기본 핸들. 콜백 캡쳐가 필요한 케이스는 mockImplementationOnce로 override.
   mockAddListener.mockReturnValue({ remove: jest.fn() });
 });
@@ -815,5 +819,96 @@ describe('bl: fire-time 재검증 (#1282)', () => {
       expect(blChannel.registeredSigMock).not.toHaveBeenCalled();
       handle.remove();
     });
+  });
+});
+
+// #1354 — suppress 결정 시 OS scheduled queue cancel. 안 그러면 같은 identifier가 잔존해
+// 다음 ETA마다 다시 fire → 영구 misfire 재발 (dump A/B evidence).
+describe('#1354 suppress 시 OS scheduled queue cancel', () => {
+  beforeEach(() => {
+    setStorageMap({
+      'subway-now:destination': DEST_JSON,
+      'subway-now:route': ROUTE_JSON,
+    });
+  });
+
+  it('reconcileScheduledAlarmDelivery suppress 시 cancelScheduledNotificationAsync(identifier) 1회 호출', async () => {
+    mockGetRegisteredTripRouteSig.mockResolvedValueOnce('SIG-OLD');
+    mockRouteSignature.mockReturnValueOnce('SIG-NEW');
+
+    await reconcileScheduledAlarmDelivery('tba:imminent:강남');
+
+    expect(mockCancelScheduled).toHaveBeenCalledTimes(1);
+    expect(mockCancelScheduled).toHaveBeenCalledWith('tba:imminent:강남');
+  });
+
+  it('drainDeliveredScheduledAlarms 5건 중 3건 suppress 시 cancel 3회 + accepted 2건', async () => {
+    // 첫 3건 suppress (sig mismatch), 마지막 2건 pass.
+    mockGetRegisteredTripRouteSig
+      .mockResolvedValueOnce('SIG-OLD') // suppress
+      .mockResolvedValueOnce('SIG-OLD') // suppress
+      .mockResolvedValueOnce('SIG-OLD') // suppress
+      .mockResolvedValueOnce('SIG-A') // pass
+      .mockResolvedValueOnce('SIG-A'); // pass
+    mockRouteSignature
+      .mockReturnValueOnce('SIG-NEW')
+      .mockReturnValueOnce('SIG-NEW')
+      .mockReturnValueOnce('SIG-NEW')
+      .mockReturnValueOnce('SIG-A')
+      .mockReturnValueOnce('SIG-A');
+    mockGetPresented.mockResolvedValueOnce([
+      { date: 1, request: { identifier: 'tba:early:성수' } },
+      { date: 2, request: { identifier: 'tba:imminent:성수' } },
+      { date: 3, request: { identifier: 'tba:early:왕십리' } },
+      { date: 4, request: { identifier: 'tba:imminent:강남' } },
+      { date: 5, request: { identifier: 'tba:early:시청' } },
+    ]);
+    mockGetFiredAlarms.mockResolvedValueOnce(new Set());
+
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+
+    expect(mockCancelScheduled).toHaveBeenCalledTimes(3);
+    expect(mockCancelScheduled).toHaveBeenCalledWith('tba:early:성수');
+    expect(mockCancelScheduled).toHaveBeenCalledWith('tba:imminent:성수');
+    expect(mockCancelScheduled).toHaveBeenCalledWith('tba:early:왕십리');
+    // accepted 2건만 fired set에 적재.
+    expect(mockSetFiredAlarms).toHaveBeenCalledWith(
+      'dest-1',
+      new Set(['imminent:강남', 'early:시청']),
+    );
+    handle.remove();
+  });
+
+  it("'pass' 경로에는 cancel 호출 0회 (회귀 가드)", async () => {
+    // reconcile pass.
+    await reconcileScheduledAlarmDelivery('tba:early:강남');
+    expect(mockCancelScheduled).not.toHaveBeenCalled();
+
+    // drain pass.
+    mockGetPresented.mockResolvedValueOnce([
+      { date: 1, request: { identifier: 'tba:early:강남' } },
+      { date: 2, request: { identifier: 'alarm:imminent:시청' } },
+    ]);
+    mockGetFiredAlarms.mockResolvedValueOnce(new Set());
+
+    const handle = registerScheduledAlarmListener();
+    await awaitInitialScheduledAlarmDrain();
+
+    expect(mockCancelScheduled).not.toHaveBeenCalled();
+    handle.remove();
+  });
+
+  it('기존 fired set / lastStationName 동작은 회귀 없음 (suppress된 항목은 fired set/lastStationName에 영향 X)', async () => {
+    mockGetRegisteredTripRouteSig.mockResolvedValueOnce('SIG-OLD');
+    mockRouteSignature.mockReturnValueOnce('SIG-NEW');
+
+    await reconcileScheduledAlarmDelivery('tba:imminent:강남');
+
+    // suppress 시 fired set/lastStationName 갱신 없음.
+    expect(mockSetFiredAlarms).not.toHaveBeenCalled();
+    expect(mockSetLastFiredAlarmStationName).not.toHaveBeenCalled();
+    // cancel만 발생.
+    expect(mockCancelScheduled).toHaveBeenCalledWith('tba:imminent:강남');
   });
 });
