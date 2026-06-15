@@ -247,6 +247,18 @@ describe('liveActivityPushChannel', () => {
       await jest.advanceTimersByTimeAsync(500);
       expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(2);
     });
+
+    // 회귀 가드: status 없는 실패 응답도 log 분기 처리 (status=none 출력)
+    it('register status 미지정 실패 응답도 graceful', async () => {
+      const handle = setupListener();
+      mockRegisterLiveActivityToken
+        .mockResolvedValueOnce({ ok: false })
+        .mockResolvedValueOnce({ ok: true });
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      await jest.advanceTimersByTimeAsync(500);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(2);
+    });
   });
 
   describe('ensureLiveActivityRegistered (#1288)', () => {
