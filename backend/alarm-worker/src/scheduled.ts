@@ -723,6 +723,10 @@ export async function fireArvlCdStationPush(
           // #1307 — server-authoritative subsurface. 지하 trip의 intermediate push는
           // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
           subsurface: trip.subsurface === true,
+          // #1322 — lock-path fire의 노선/열차를 self-describing으로 전달. 디바이스가 로컬 lock
+          // 없이도(지하 auto-lock hydration window) line sanity-guard를 돌려 발사할 수 있게 한다.
+          boardingLine: lock.line,
+          trainCode: lock.trainCode,
         },
         config: deps.apnsConfig,
         host,

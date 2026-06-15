@@ -451,6 +451,33 @@ describe('silentPushTask', () => {
       });
     });
 
+    // #1322 — backend lock-path fire가 실어 보내는 boardingLine(server-authoritative).
+    describe('boardingLine (#1322)', () => {
+      it('비어있지 않은 string이면 그대로 전달', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', boardingLine: '7' }),
+          ),
+        ).toMatchObject({ boardingLine: '7' });
+      });
+
+      it('누락/빈문자열/비string이면 undefined (lock 없을 때 보수 동작 fallback)', () => {
+        expect(
+          extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early' })),
+        ).toMatchObject({ boardingLine: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', boardingLine: '' }),
+          ),
+        ).toMatchObject({ boardingLine: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', boardingLine: 7 }),
+          ),
+        ).toMatchObject({ boardingLine: undefined });
+      });
+    });
+
     // #725 — reschedule schema는 standard와 다르므로 별도 분기 검증.
     describe('reschedule kind (#725)', () => {
       it('정상 reschedule payload → RescheduleSilentPushPayload', () => {
@@ -1086,6 +1113,94 @@ describe('silentPushTask', () => {
           expect.objectContaining({ subsurface: expected }),
         );
         expect(mockGetSubsurfaceState).toHaveBeenCalledTimes(stampQueried ? 1 : 0);
+      });
+    });
+
+    // #1322 — 로컬 lock 없이 payload.boardingLine(self-describing push)으로 line 가드 수행.
+    // 지하 auto-lock hydration window에서 backend lock-path push(transfer/destination)를 발사.
+    describe('#1322 — self-describing push (lock 없음 + payload.boardingLine)', () => {
+      // lockless opt-in 토글 상태를 세팅 — 이 분기들은 토글과 무관히 동작해야 함을 검증하기 위함.
+      function setLocklessToggle(value: boolean) {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === LOCKLESS_STATION_PASSED_KEY) return JSON.stringify(value);
+          return null;
+        });
+      }
+
+      beforeEach(() => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        setLocklessToggle(true);
+      });
+
+      it('lock 없음 + payload.boardingLine에 정차하는 transfer → line 가드 통과 후 발사', async () => {
+        // payload.boardingLine='7'에 nextWaypoint가 정차 → 정상 lock-path fire.
+        mockFindStationByNameAndLine.mockReturnValue({ id: 'stop-on-7', name: '강남', line: '7' });
+
+        await handleSilentPush(
+          payload({ kind: 'transfer', phase: 'imminent', boardingLine: '7', pushId: 'p-self' }),
+        );
+
+        expect(mockFindStationByNameAndLine).toHaveBeenCalledWith('강남', '7');
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+
+      it('lock 없음 + payload.boardingLine line-mismatch → skip + ack(lock-line-mismatch)', async () => {
+        // line 7에는 없고 다른 line에만 존재 → mismatch.
+        mockFindStationByNameAndLine.mockReturnValue(null);
+        mockFindStationByName.mockReturnValue({ id: 'other', name: '강남', line: '2' });
+
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', boardingLine: '7', pushId: 'p-mm' }),
+        );
+
+        expect(mockFindStationByNameAndLine).toHaveBeenCalledWith('강남', '7');
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'lock-line-mismatch', kind: 'destination' }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-mm',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'lock-line-mismatch',
+        });
+      });
+
+      it('lock 없음 + payload.boardingLine + nextWaypoint가 stations.json 부재 → 가드 통과 후 발사', async () => {
+        // 양쪽 lookup 모두 null → graceful pass(일반 게이트로 위임), 게이트 통과 가정 → 발사.
+        mockFindStationByNameAndLine.mockReturnValue(null);
+        mockFindStationByName.mockReturnValue(null);
+
+        await handleSilentPush(payload({ kind: 'transfer', phase: 'imminent', boardingLine: '7' }));
+
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+
+      it('lock 없음 + payload.boardingLine 통과 시 lockless opt-in 토글 미적용 (토글 OFF여도 발사)', async () => {
+        // 토글 OFF — backend가 lock을 보유한 lock-path fire이므로 lockless opt-in과 무관히 발사.
+        setLocklessToggle(false);
+        mockFindStationByNameAndLine.mockReturnValue({ id: 'stop-on-7', name: '강남', line: '7' });
+
+        await handleSilentPush(payload({ kind: 'transfer', phase: 'imminent', boardingLine: '7' }));
+
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+
+      it('lock 없음 + payload.boardingLine 부재 + non-intermediate → 기존 보수 skip(lockless-non-intermediate)', async () => {
+        await handleSilentPush(
+          payload({ kind: 'transfer', phase: 'imminent', pushId: 'p-nolock-noline' }),
+        );
+
+        expect(mockFindStationByNameAndLine).not.toHaveBeenCalled();
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'lockless-non-intermediate', kind: 'transfer' }),
+        );
       });
     });
 
