@@ -213,6 +213,22 @@ interface NotificationBackgroundTaskData {
 }
 
 /**
+ * #1337 — APNs alert payload 여부 판정.
+ *
+ * Swift `BackgroundEventTransformer`가 `aps.alert`를 동반한 push를 받으면
+ * `taskData.data.notification`을 non-null로 채워 BG task에 전달한다(silent push는 null).
+ * trip-ended는 #1337 PR1에서 silent→alert로 전환됐고, alert 수신 시 iOS가 시스템 banner를
+ * 직접 표시하므로 디바이스가 `presentTripEndedNotification`을 추가 발사하면 중복이 된다.
+ * 이 판정 함수는 surface skip 게이트 단일 출처(SSOT).
+ *
+ * Swift transformer 출력 위치는 `taskData.data.notification`(L202 기존 주석과 동일).
+ */
+function isAlertPayload(input: NotificationBackgroundTaskData): boolean {
+  const data = asPlainObject(input.data);
+  return data != null && data.notification != null;
+}
+
+/**
  * payload 안에서 fields 레이어를 찾는다.
  *   - `taskData.data.data` (production: backend가 `data: { fields }` 발사 → Swift 변환 후 한 단계 더 nested)
  *   - `taskData.data` (backend가 flat payload 발사 시)
@@ -577,8 +593,12 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     // ack outcome='fired'는 backend pendingPushes 입장에서는 "처리 완료, alert fallback 발사 마라"
     // 신호. trip-ended는 alert fallback 대상이 아니지만 호환을 위해 일반 silent push와 같은 의미로 ack.
     if (payload.kind === 'trip-ended') {
+      // #1337 PR1 — backend가 alert payload(`aps.alert`)로 발사하면 iOS가 killed 앱에도
+      // 시스템 banner를 직접 표시한다. 디바이스가 `presentTripEndedNotification`을 또 발사하면
+      // 중복이 되므로 alert path에서는 surface를 skip한다(cleanup/sentinel/ack는 그대로).
+      const isAlert = isAlertPayload(input);
       logger.info(
-        `trip-ended received: reason=${payload.reason} tripToken=${payload.tripToken?.slice(0, 8) ?? 'unknown'} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'}`,
+        `trip-ended received: reason=${payload.reason} tripToken=${payload.tripToken?.slice(0, 8) ?? 'unknown'} sentAt=${payload.sentAt ?? 'unknown'} pushId=${payload.pushId ?? 'unknown'} alert=${isAlert}`,
       );
       // race 가드(#868 P1-2). 신규 backend는 tripToken을 항상 보냄. 구버전(undefined)은
       // 호환 위해 cleanup 진행 — race 가능성은 있지만 backend 배포 후 사라짐.
@@ -605,12 +625,17 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       // #899 (Seam C) — BG에서는 zustand store에 접근 불가. FG 복귀 시점에
       // useStateRehydration이 이 sentinel을 보고 destination/lock store도 reset.
       await setTripEndedSentinel(receivedAt);
-      // #1323 — trip 종료 user-facing surface. backend trip-ended push는 silent라
-      // 수신해도 알림이 뜨지 않아 사용자가 종료를 인지하지 못했다(실기기 회귀).
-      // backend가 모든 종료 경로(도착/환승 후 도착/eta-missing/만료)에서 동일 push를
-      // 발사하므로, 여기서 reason-gated 알림 1회 present로 BG/취침/환승 종료를 모두 커버.
-      // 동일 push 재전송(backend retry) 시 pushId 기준 dedup으로 중복 알림 차단.
-      await surfaceTripEnded(payload.reason, payload.pushId);
+      // #1323 — trip 종료 user-facing surface. running/backgrounded 앱 backstop 경로.
+      // #1337 PR1 — alert payload는 iOS가 시스템 banner를 직접 표시하므로 surface skip;
+      // 단 동일 pushId의 silent backstop이 race로 도달해도 중복 surface 안 되도록 dedup store에는 기록.
+      if (isAlert) {
+        if (payload.pushId) await addFiredPushId(payload.pushId);
+      } else {
+        // backend가 모든 종료 경로(도착/환승 후 도착/eta-missing/만료)에서 동일 push를
+        // 발사하므로, 여기서 reason-gated 알림 1회 present로 BG/취침/환승 종료를 모두 커버.
+        // 동일 push 재전송(backend retry) 시 pushId 기준 dedup으로 중복 알림 차단.
+        await surfaceTripEnded(payload.reason, payload.pushId);
+      }
       ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}`);
       return;
     }
