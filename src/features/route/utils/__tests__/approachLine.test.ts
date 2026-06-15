@@ -87,7 +87,8 @@ describe('getApproachLine', () => {
 
   describe('Route 기반 (우선순위 2)', () => {
     it('direct route → route.line', () => {
-      expect(getApproachLine(makeDirect('7'), null, makeStation('2'))).toBe('7');
+      // 군자는 7호선 정차역 → #1325 가드 통과 (currentStation이 후보 line 서비스).
+      expect(getApproachLine(makeDirect('7'), null, makeStation('7', { name: '군자' }))).toBe('7');
     });
 
     it('transfer route, stopsToTransfer > 0 → fromLine (환승 전)', () => {
@@ -142,6 +143,34 @@ describe('getApproachLine', () => {
 
     it('route null + lock null + station null → null', () => {
       expect(getApproachLine(null, null, null)).toBeNull();
+    });
+  });
+
+  describe('현재역 line 검증 가드 (#1325)', () => {
+    it('후보 line을 현재역이 실제 서비스하면 그대로 반환', () => {
+      // 신당은 2,6호선 정차 → boardingLine 6호선이면 검증 통과.
+      const lock = makeLock('6');
+      const station = makeStation('2', { name: '신당' });
+      expect(getApproachLine(null, lock, station)).toBe('6');
+    });
+
+    it('후보 line을 현재역이 서비스 안 하면 currentStation.line으로 fallback (잘못 탑승/데시싱크)', () => {
+      // 신당은 2,6호선만 정차(7호선 없음). desync route의 7호선 leg가 새도 신당 라벨로 안 씀.
+      const lock = makeLock('7');
+      const station = makeStation('2', { name: '신당' });
+      expect(getApproachLine(null, lock, station)).toBe('2');
+    });
+
+    it('route 파생 line(transfer fromLine)도 현재역 미서비스면 fallback', () => {
+      // makeTransfer fromLine 7호선이 신당으로 새는 케이스를 route 경로로도 커버.
+      const route = makeTransfer('7', '5', 3);
+      const station = makeStation('6', { name: '신당' });
+      expect(getApproachLine(route, null, station)).toBe('6');
+    });
+
+    it('후보 line 존재 + currentStation null → 검증 스킵, 후보 그대로 반환', () => {
+      // currentStation이 없으면 검증할 대상이 없어 기존 동작 유지.
+      expect(getApproachLine(null, makeLock('7'), null)).toBe('7');
     });
   });
 });
