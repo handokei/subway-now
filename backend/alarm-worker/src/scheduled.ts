@@ -107,6 +107,30 @@ export const MAX_CONSECUTIVE_ETA_MISSING = 5;
 export const SUBSURFACE_ETA_MISSING_TOLERANCE = 10;
 
 /**
+ * #1315 — lockless trip에서 trainCode를 확보하지 못한 cycle의 bare-arvlCd advance 보수 게이트.
+ *
+ * 배경(2026-06-15 trip): 사용자가 정적(용마산 근처)인데 backend가 waypoint 역의 "아무 열차"
+ * arvlCd=ARRIVED만 보고 다음 역으로 advance → false positive + 알림 레이스. `pickBestArrivalSignal`
+ * 은 trainCode를 바인딩하지 않으므로, 그 신호가 *사용자가 탄 열차*가 통과했다는 ground truth가
+ * 아니다(다른 열차/반대 방향일 수 있음).
+ *
+ * 정책(ADR-010 "false positive / miss 동급" + "나쁜 신호 거부" 실시간성 정책): trainCode
+ * 미확보 cycle에서는 GPS motion이 **실제 이동**(walking/automotive)을 positive하게 보일 때만
+ * bare-arvlCd advance를 허용한다. `stationary`/`unknown`(샘플 없음 포함)은 보류 — 사용자가
+ * 그 구간을 실제로 지났다는 독립 확증이 없다.
+ *
+ * 트레이드오프(PR 본문 FLAG): 지하(subsurface)에서 GPS가 끊겨 motion=unknown인 채로 사용자가
+ * 실제 이동 중이면 이 게이트가 정당한 advance를 miss한다. trainCode 바인딩(우선 경로)이 그 miss를
+ * 메우지만, 바인딩 자체가 9단 게이트(이동 필요)에 의존하므로 지하 정적 케이스는 여전히 사각이다.
+ * 임계 완화 대신 후속 보강(예: subsurface trainCode 추론)으로 결정 — 본 PR은 false positive
+ * 제거를 우선한다.
+ */
+export const LOCKLESS_ADVANCE_MOTION_MODES: ReadonlySet<PositionPoint['motion']> = new Set([
+  'walking',
+  'automotive',
+]);
+
+/**
  * trip별 etaMissing 임계 결정. subsurface=true면 늘려 잡고, 그 외엔 기본값.
  * 클라가 매 register POST에 기압계 신호를 동봉하므로 한 trip 내에서 지상→지하 전이 시
  * threshold가 자연 갱신된다(stale 가능 윈도우는 다음 register 까지 ≤ ALARM_TIME_BUCKET_MS).
@@ -151,6 +175,13 @@ export interface ScheduledStats extends LiveActivityStats {
    * (lockMissing은 토글 OFF로 게이트 차단된 trip만 카운트되도록 유지 — 두 stat은 disjoint.)
    */
   locklessIntermediateFired: number;
+  /**
+   * #1315 — lockless cycle에서 trainCode 미확보 + GPS motion이 실제 이동(walking/automotive)이
+   * 아니어서 bare-arvlCd advance를 보류한 누적 횟수 (`LOCKLESS_ADVANCE_MOTION_MODES` 게이트).
+   * false positive(정적 상태 잘못된 station-passed) 방어 효과 측정 — 정상 운영에서 0이 아니면
+   * trainCode 바인딩이 닿지 않는 lockless 정적 구간이 그만큼 있었다는 신호.
+   */
+  locklessMotionGateBlocked: number;
   /** #819 — boarding-prompt 게이트 평가가 한 번이라도 시도된 trip 수 (lockMissing 부분집합). */
   boardingPromptEvaluated: number;
   /** #819 — 9단 AND 게이트를 모두 통과해 alert push가 발사된 횟수 (측정 인프라). */
@@ -248,6 +279,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     envCorrected: 0,
     lockMissing: 0,
     locklessIntermediateFired: 0,
+    locklessMotionGateBlocked: 0,
     laPushSent: 0,
     laPushFailed: 0,
     laTokenCleared: 0,
@@ -1236,13 +1268,96 @@ export async function maybeReschedulePush(
 }
 
 /**
- * #816 C — lockless trip (사용자 opt-in)에서 intermediate waypoint 통과를 추적하고 station-passed
- * push를 발사한다. BoardingLock 없으니 trainCode 추적은 불가 — Seoul arrivals 중 best signal로
- * "그 역에 어느 열차가 진입/도착했다"만 판정한다.
+ * #1315 — lockless trip에서 탑승 열차의 trainCode를 확보해 `trip.boardingLock`을 부착 시도한다.
  *
- * 발사 조건:
+ * `evaluateAndMaybeFireBoardingPrompt`의 auto-lock 경로(#916 A1)와 동일한 9단 게이트
+ * (`evaluateBoardingPromptGates`) + `attemptAutoLock`을 재사용한다 — 게이트가 통과하는 시점
+ * (사용자가 실제 이동 중 + 단일 후보 trainCode)에만 lock을 합성한다. 부착 성공 시 다음 cron
+ * 사이클의 `isBoardingLockActive` 게이트가 trip을 `runTrainCodeTracking`으로 라우팅 →
+ * lock 경로와 동일하게 `arrivals.find(a => a.trainCode === lock.trainCode)`로 *그 열차*만 추적한다.
+ *
+ * 좌표 컨텍스트(`promptGeoContext`/`promptDisplay`) 부재 시 바인딩 자체가 불가하므로 false 반환
+ * (backend는 stations 좌표를 갖지 않아 게이트 평가 불가 — 기존 boarding-prompt 정책과 동일).
+ *
+ * 반환: lock을 부착하고 putTrip까지 완료했으면 true (호출자는 즉시 return — 이번 cycle은 발사 안 함).
+ * 부착 못 했으면 false (호출자는 기존 bare-arvlCd 경로로 진행하되 motion 게이트로 보수 차단).
+ *
+ * 본 함수는 `fusion`을 재사용해 중복 KV read를 피한다(arrivals fetch는 attemptAutoLock 내부 1회).
+ */
+async function maybeBindLocklessTrainCode(
+  trip: Trip,
+  waypoint: Waypoint,
+  fusion: FusionStepResult,
+  env: Env,
+  deps: ScheduledDeps,
+  stats: ScheduledStats,
+  now: number,
+  log: Logger,
+): Promise<boolean> {
+  const geo = trip.promptGeoContext;
+  const display = trip.promptDisplay;
+  if (!geo || !display) return false;
+
+  // 9단 AND 게이트 — 사용자가 실제 이동 중일 때만 통과 (정적/저신뢰는 false positive 차단).
+  // boarding-prompt 경로와 동일하게 fusion 결과(series/kalman/metrics)를 그대로 입력으로 전달.
+  const outcome = evaluateBoardingPromptGates({
+    series: fusion.series,
+    origin: geo.origin,
+    nextStation: geo.nextStation,
+    now,
+    promptState: trip.boardingPromptState,
+    kalmanKmh: fusion.kalmanKmh,
+    metrics: fusion.posMetrics,
+  });
+  if (!outcome.pass) return false;
+
+  const autoLockResult = await attemptAutoLock({
+    trip,
+    targetWaypoint: waypoint,
+    originStation: display.originStation,
+    direction: geo.direction,
+    seoul: deps.seoul,
+    now,
+    boardingPromptState: trip.boardingPromptState,
+    lastMotionAt: fusion.series[fusion.series.length - 1]?.ts,
+  });
+  if (autoLockResult.confidenceTrace && env.TELEMETRY) {
+    recordAutoLockConfidence(env.TELEMETRY, trip.token, autoLockResult.confidenceTrace);
+  }
+  const autoLock = autoLockResult.lock;
+  if (!autoLock) return false;
+
+  // boarding-prompt auto-lock 성공 블록과 동형 — lock 부착 + dedup 마커 + 카운터.
+  trip.boardingLock = autoLock;
+  trip.boardingPromptState = markPromptFired(now);
+  trip.lastAutoPromptedAt = now;
+  trip.consecutiveEtaMissing = 0;
+  stats.autoLockSuccess += 1;
+  log('lockless: auto-lock attached', {
+    token: trip.token.slice(0, 8),
+    trainCode: autoLock.trainCode,
+    line: autoLock.line,
+    originStation: display.originStation,
+  });
+  await putTrip(env.TRIPS, trip);
+  return true;
+}
+
+/**
+ * #816 C — lockless trip (사용자 opt-in)에서 intermediate waypoint 통과를 추적하고 station-passed
+ * push를 발사한다.
+ *
+ * #1315 — 우선 `maybeBindLocklessTrainCode`로 탑승 열차의 trainCode 확보를 시도한다(9단 게이트
+ * 통과 시). 확보되면 다음 cycle이 lock 경로(trainCode 매칭)로 *그 열차*만 추적 — lockless 안정성의
+ * 핵심. trainCode 미확보 cycle에서만 아래 bare-arvlCd 경로로 진행하되, GPS motion이 실제 이동
+ * (walking/automotive)을 보일 때만 advance를 허용한다(`LOCKLESS_ADVANCE_MOTION_MODES`). 정적/
+ * 저신뢰 cycle은 보류 — `pickBestArrivalSignal`의 "아무 열차" arvlCd는 *사용자 열차* ground truth가
+ * 아니므로 false positive(2026-06-15 용마산 정적 false advance) 차단.
+ *
+ * 발사 조건(trainCode 미확보 cycle):
  *   1. arrivals 중 best signal의 arvlCd가 ARRIVED(1) 또는 ENTERING(0)
- *   2. dedup: 같은 waypoint에서 이미 한 번 발사한 경우 (lastFiredPhase='imminent') skip
+ *   2. GPS motion ∈ {walking, automotive} (실제 이동 확증)
+ *   3. dedup: 같은 waypoint에서 이미 한 번 발사한 경우 (lastFiredPhase='imminent') skip
  *
  * 발사 성공 시: waypoint shift + lastFiredPhase reset + trip 저장. waypoint 0이면 trip cleanup.
  * 사양상 transfer/destination kind는 호출 전에 분기로 차단됨 — 이 함수는 intermediate에 한정.
@@ -1268,6 +1383,11 @@ export async function runLocklessIntermediate(
   if (fusion.phaseState) {
     trip.stationPhase = fusion.phaseState;
     dirty = true;
+  }
+  // #1315 — bare-arvlCd 발사 전에 탑승 열차 trainCode 확보를 우선 시도한다. 성공 시 lock이
+  // 부착되고(putTrip 완료) 다음 cron 사이클이 lock 경로로 *그 열차*만 추적 — 이번 cycle은 발사 안 함.
+  if (await maybeBindLocklessTrainCode(trip, waypoint, fusion, env, deps, stats, now, log)) {
+    return;
   }
   const arrivals = await deps.seoul.fetchArrivals(waypoint.stationName);
   const signal = pickBestArrivalSignal(arrivals, waypoint);
@@ -1303,6 +1423,21 @@ export async function runLocklessIntermediate(
       station: waypoint.stationName,
       phase: fusion.phaseState?.current,
       confidence: fusion.phaseState?.confidence,
+    });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+  // #1315 — trainCode 미확보 cycle의 보수 게이트. `pickBestArrivalSignal`의 arvlCd는 waypoint
+  // 역의 "아무 열차" 신호라 *사용자 열차*가 통과했다는 ground truth가 아니다. GPS motion이 실제
+  // 이동(walking/automotive)을 positive하게 보일 때만 advance를 허용 — 정적/저신뢰(stationary/
+  // unknown, 샘플 없음 포함)는 보류해 false positive(정적 false advance + 알림 레이스)를 차단한다.
+  if (!LOCKLESS_ADVANCE_MOTION_MODES.has(fusion.posMetrics.motion)) {
+    stats.locklessMotionGateBlocked += 1;
+    log('lockless: motion gate blocked (no trainCode, not moving)', {
+      token: trip.token.slice(0, 8),
+      station: waypoint.stationName,
+      motion: fusion.posMetrics.motion,
+      arvlCd: signal.arvlCd,
     });
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
