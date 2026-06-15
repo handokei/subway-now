@@ -1,4 +1,9 @@
-import { formatArrivalTime, formatClockTime, formatClockTimeWithSeconds } from '../formatTime';
+import {
+  formatArrivalTime,
+  formatClockTime,
+  formatClockTimeWithSeconds,
+  formatLineTime,
+} from '../formatTime';
 
 describe('formatArrivalTime', () => {
   it('0초 이하이면 "곧 도착"을 반환한다', () => {
@@ -49,5 +54,18 @@ describe('formatClockTimeWithSeconds (#852)', () => {
   it('두 자리 시/분/초를 그대로 표기', () => {
     const d = new Date(2026, 5, 3, 14, 30, 45);
     expect(formatClockTimeWithSeconds(d.getTime())).toBe('14:30:45');
+  });
+});
+
+describe('formatLineTime (#1348)', () => {
+  it('HH:mm:ss en-GB 포맷', () => {
+    const d = new Date(2026, 5, 16, 14, 36, 46);
+    // en-GB locale은 24h HH:mm:ss로 안정.
+    expect(formatLineTime(d.getTime())).toBe('14:36:46');
+  });
+
+  it('한 자리 시/분/초도 두 자리로 패딩 (en-GB 표준)', () => {
+    const d = new Date(2026, 5, 16, 3, 5, 7);
+    expect(formatLineTime(d.getTime())).toBe('03:05:07');
   });
 });

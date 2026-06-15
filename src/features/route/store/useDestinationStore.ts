@@ -23,6 +23,7 @@ import { triggerTripEndRecall } from '../../alarm/utils/triggerTripEndRecall';
 import { useAlarmEventStore } from '../../alarm/store/useAlarmEventStore';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../../../shared/utils/stationRoute';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
+import { captureCallerStack } from '../../../shared/utils/captureCallerStack';
 import { isDegenerateDestination } from '../utils/isDegenerateDestination';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function
@@ -95,6 +96,10 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
   routePreference: 'optimal' as RoutePreference,
 
   setDestination: (station: Station | null) => {
+    // #1348 — caller stack 캡처. setDestination은 사용자 action 빈도(hot path 아님)라
+    // Error 생성 비용이 무시 가능. 직접 탭 / hook 자동 호출 / silent push reconcile 등
+    // 진입 경로를 사후 재구성하기 위함(예: 14:36:46 미식별 호출 evidence).
+    const caller = captureCallerStack();
     // #1324 — 목적지 == 출발역이면 degenerate trip(0-waypoint → 방향 null → 빈 탑승목록)이
     // 생성된다. UX 경계(DestinationPicker.onSelect)에서 effectiveOrigin(=customOrigin ∪ GPS)을
     // 기준으로 우선 차단하지만, store가 권위적으로 아는 customOrigin과 같은 역을 목적지로
@@ -102,6 +107,7 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
     if (station && isDegenerateDestination(get().customOrigin, station)) {
       addDomainBreadcrumb('trip', 'degenerate-destination-blocked', {
         station: station.name,
+        caller,
       });
       return;
     }
@@ -123,10 +129,11 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
     if (isSwitch) {
       // 도메인 이벤트 breadcrumb — trip start(새 destination 지정) / end(null로 해제).
       // 같은 destination 재설정은 isSwitch=false로 여기 진입하지 않으므로 noise 방지됨.
+      // #1348 — caller stack을 첨부해 evidence 수집(미식별 호출 추적용).
       if (station) {
-        addDomainBreadcrumb('trip', 'start', { destination: station.name });
+        addDomainBreadcrumb('trip', 'start', { destination: station.name, caller });
       } else {
-        addDomainBreadcrumb('trip', 'end', { reason: 'user-clear' });
+        addDomainBreadcrumb('trip', 'end', { reason: 'user-clear', caller });
       }
       // #919 + cleanup + 새 trip 기록을 순서대로 chain. 각 단계는 자체 catch를 가져
       // 한 단계 실패가 다음 단계를 막지 않도록 한다 — 측정 인프라가 cleanup의 critical

@@ -106,9 +106,12 @@ describe('useDestinationStore', () => {
       'subway-now:destination',
       expect.anything(),
     );
-    expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'degenerate-destination-blocked', {
-      station: '강남',
-    });
+    // #1348 — degenerate 거부 breadcrumb에 caller 첨부. 본 테스트는 station만 확인 (caller는 별도 case).
+    expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith(
+      'trip',
+      'degenerate-destination-blocked',
+      expect.objectContaining({ station: '강남' }),
+    );
   });
 
   it('setDestination(#1324): customOrigin과 다른 역은 정상 설정된다', () => {
@@ -825,25 +828,62 @@ describe('useDestinationStore', () => {
       useDestinationStore.setState({ destination: null });
     });
 
-    it('새 destination 지정 시 trip/start breadcrumb', () => {
+    it('새 destination 지정 시 trip/start breadcrumb (#1348 caller 첨부)', () => {
       useDestinationStore.getState().setDestination(mockStation);
-      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'start', {
-        destination: mockStation.name,
-      });
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith(
+        'trip',
+        'start',
+        expect.objectContaining({
+          destination: mockStation.name,
+          // #1348 — caller stack은 captureCallerStack 결과 (배열 또는 null).
+          caller: expect.anything(),
+        }),
+      );
+      // caller가 setDestination 내부 frame을 포함하지 않아야 한다 (helper self-skip).
+      const callerArg = (mockAddDomainBreadcrumb.mock.calls[0][2] as { caller: unknown }).caller;
+      if (callerArg !== null) {
+        expect(callerArg).toBeInstanceOf(Array);
+        for (const frame of callerArg as string[]) {
+          expect(frame).not.toMatch(/captureCallerStack/);
+        }
+      }
     });
 
-    it('destination=null 해제 시 trip/end breadcrumb', () => {
+    it('destination=null 해제 시 trip/end breadcrumb (#1348 caller 첨부)', () => {
       useDestinationStore.setState({ destination: mockStation });
       useDestinationStore.getState().setDestination(null);
-      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
-        reason: 'user-clear',
-      });
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith(
+        'trip',
+        'end',
+        expect.objectContaining({
+          reason: 'user-clear',
+          caller: expect.anything(),
+        }),
+      );
     });
 
     it('같은 destination 재설정은 noise 방지를 위해 breadcrumb 없음', () => {
       useDestinationStore.setState({ destination: mockStation });
       useDestinationStore.getState().setDestination(mockStation);
       expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
+    });
+
+    // #1348 — degenerate destination 거부도 caller stack을 첨부해 호출 경로 추적 가능해야 한다.
+    it('degenerate destination 거부 시 caller 첨부 breadcrumb', () => {
+      const { setDestination, setCustomOrigin } = useDestinationStore.getState();
+      setCustomOrigin(mockStation);
+      mockAddDomainBreadcrumb.mockClear();
+
+      setDestination(mockStation);
+
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith(
+        'trip',
+        'degenerate-destination-blocked',
+        expect.objectContaining({
+          station: mockStation.name,
+          caller: expect.anything(),
+        }),
+      );
     });
   });
 });

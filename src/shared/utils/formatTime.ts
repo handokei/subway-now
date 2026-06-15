@@ -32,3 +32,12 @@ export function formatClockTimeWithSeconds(epochMs: number | null): string {
   const ss = String(d.getSeconds()).padStart(2, '0');
   return `${hh}:${mm}:${ss}`;
 }
+
+/**
+ * #1348 — debug buffer 라인 포맷용 짧은 시각(`HH:mm:ss`). en-GB locale로 데이터셋 무관 안정.
+ * formatClockTimeWithSeconds는 (never) 분기가 있어 epoch ms가 항상 유효한 buffer 라인에는 부적합.
+ */
+export function formatLineTime(epochMs: number): string {
+  const d = new Date(epochMs);
+  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}

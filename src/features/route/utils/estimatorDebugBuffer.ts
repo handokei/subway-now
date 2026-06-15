@@ -4,6 +4,8 @@
  */
 import type { StationProgressStrategy } from './stationProgressEstimator';
 import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
+import { registerDebugBuffer } from '../../../shared/utils/debugBufferRegistry';
+import { formatLineTime } from '../../../shared/utils/formatTime';
 
 export const ESTIMATOR_DEBUG_BUFFER_CAPACITY = 50;
 
@@ -32,3 +34,20 @@ export function clearEstimatorEntries(): void {
 export function subscribeEstimatorDebug(cb: () => void): () => void {
   return db.subscribe(cb);
 }
+
+/** #1348 — estimator 엔트리 한 줄 텍스트 포맷. share dump / UI 양쪽 SSOT. */
+export function formatEstimatorLine(entry: EstimatorDebugEntry): string {
+  const time = formatLineTime(entry.ts);
+  const strategy = entry.strategy ?? 'none';
+  const station = entry.stationName
+    ? `${entry.stationName}(${entry.stationLine ?? '-'})`
+    : '-';
+  const idx = entry.arcIndex != null ? `idx=${entry.arcIndex}` : 'idx=-';
+  return `${time} | ${strategy} | ${station} ${idx}`;
+}
+
+// #1348 — share dump SSOT 등록. module import 시점에 한 번 호출돼 자동 enumerate.
+registerDebugBuffer({
+  key: 'Estimator State',
+  dumpLines: () => getEstimatorEntries().map(formatEstimatorLine),
+});

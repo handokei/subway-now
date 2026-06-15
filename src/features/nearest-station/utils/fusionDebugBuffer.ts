@@ -1,5 +1,7 @@
 import type { FusionConfidence, FusionSource } from './pickFusedStation';
 import { createDebugBuffer } from '../../../shared/utils/createDebugBuffer';
+import { registerDebugBuffer } from '../../../shared/utils/debugBufferRegistry';
+import { formatLineTime } from '../../../shared/utils/formatTime';
 
 // 측정 인프라(#443): fusion 결정/GPS fix 이벤트를 in-memory ring buffer에 보관.
 // 외부 도구(Metro/Xcode) 없이 DebugModal에서 사후 재구성하기 위한 채널.
@@ -106,3 +108,48 @@ export function clearFusionDebugEntries(): void {
 export function subscribeFusionDebug(listener: () => void): () => void {
   return db.subscribe(listener);
 }
+
+/** candidates key → 짧은 접두어. 새 key 추가 시 여기 한 줄만. */
+const CANDIDATE_SHORT: Record<string, string> = {
+  positionTrain: 'pt',
+  fused: 'fu',
+  route: 'rt',
+  gps: 'gp',
+};
+
+/** #1348 — fusion 엔트리 한 줄 텍스트 포맷. share dump / UI 양쪽 SSOT. */
+export function formatFusionDebugLine(entry: FusionDebugEntry): string {
+  const time = formatLineTime(entry.ts);
+  if (entry.kind === 'gps') {
+    const station = entry.nearestStation
+      ? `${entry.nearestStation}(${entry.nearestLine ?? '-'})`
+      : '-';
+    const d = entry.nearestDistanceKm != null ? `${Math.round(entry.nearestDistanceKm * 1000)}m` : '-';
+    const acc = entry.accuracyMeters != null ? `${Math.round(entry.accuracyMeters)}m` : '-';
+    const reason = entry.dropReason ? ` reason=${entry.dropReason}` : '';
+    return `${time} | ${entry.event} | ${station} d=${d} acc=${acc}${reason}`;
+  }
+  if (entry.kind === 'sticky') {
+    const acc = entry.accuracyMeters != null ? `${Math.round(entry.accuracyMeters)}m` : '-';
+    const sp = entry.speedMps != null ? `${entry.speedMps.toFixed(1)}m/s` : '-';
+    return `${time} | sticky:${entry.event} | ${entry.stationName}(${entry.line}) acc=${acc} sp=${sp}`;
+  }
+  const station = entry.stationName ? `${entry.stationName}(${entry.line ?? '-'})` : '-';
+  const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';
+  const acc =
+    entry.gpsAccuracyAtPushMeters != null ? `${Math.round(entry.gpsAccuracyAtPushMeters)}m` : '-';
+  const cand = entry.candidates
+    .map((c) => {
+      const base = `${CANDIDATE_SHORT[c.key] ?? c.key}=${c.stationName}`;
+      return c.extra?.lockMatch === true ? `${base}[LOCK]` : base;
+    })
+    .join(' ');
+  const candPart = cand.length > 0 ? cand : '-';
+  return `${time} | src=${entry.source} conf=${entry.confidence} | ${station} d=${d} acc=${acc} | ${candPart}`;
+}
+
+// #1348 — share dump SSOT 등록. module import 시점에 한 번 호출돼 자동 enumerate.
+registerDebugBuffer({
+  key: 'Fusion log',
+  dumpLines: () => getFusionDebugEntries().map(formatFusionDebugLine),
+});

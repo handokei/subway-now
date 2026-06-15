@@ -4,7 +4,9 @@ import {
   clearEstimatorEntries,
   subscribeEstimatorDebug,
   ESTIMATOR_DEBUG_BUFFER_CAPACITY,
+  formatEstimatorLine,
 } from '../estimatorDebugBuffer';
+import { getRegisteredDebugBuffers } from '../../../../shared/utils/debugBufferRegistry';
 
 function makeEntry(ts: number) {
   return {
@@ -83,5 +85,68 @@ describe('estimatorDebugBuffer', () => {
     const entries = getEstimatorEntries();
     expect(entries).toHaveLength(1);
     expect(entries[0].strategy).toBeNull();
+  });
+
+  // #1348 — formatter SSOT (DebugModal UI + share dump 양쪽에서 공유).
+  describe('formatEstimatorLine (#1348)', () => {
+    it('strategy + station + arcIndex 포함', () => {
+      const line = formatEstimatorLine({
+        ts: new Date('2026-06-16T12:00:00Z').getTime(),
+        strategy: 'live-position',
+        stationName: '강남',
+        stationLine: '2',
+        arcIndex: 3,
+      });
+      expect(line).toMatch(/live-position/);
+      expect(line).toMatch(/강남\(2\)/);
+      expect(line).toMatch(/idx=3/);
+    });
+
+    it('strategy null이면 none으로 표기', () => {
+      const line = formatEstimatorLine({
+        ts: 0,
+        strategy: null,
+        stationName: null,
+        stationLine: null,
+        arcIndex: null,
+      });
+      expect(line).toMatch(/\| none \| - idx=-/);
+    });
+
+    it('stationLine null이면 - 표기', () => {
+      const line = formatEstimatorLine({
+        ts: 0,
+        strategy: 'live-position',
+        stationName: '강남',
+        stationLine: null,
+        arcIndex: 0,
+      });
+      expect(line).toMatch(/강남\(-\)/);
+      expect(line).toMatch(/idx=0/);
+    });
+  });
+
+  describe('registerDebugBuffer wiring (#1348)', () => {
+    it('module import 시 share dump registry에 등록된다', () => {
+      const sources = getRegisteredDebugBuffers();
+      const est = sources.find((s) => s.key === 'Estimator State');
+      expect(est).toBeDefined();
+    });
+
+    it('등록된 dumpLines가 현재 buffer 엔트리들을 포맷한다', () => {
+      pushEstimatorEntry({
+        ts: 0,
+        strategy: 'live-position',
+        stationName: '잠실',
+        stationLine: '2',
+        arcIndex: 2,
+      });
+      const sources = getRegisteredDebugBuffers();
+      const est = sources.find((s) => s.key === 'Estimator State');
+      const lines = est?.dumpLines() ?? [];
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toMatch(/잠실\(2\)/);
+      expect(lines[0]).toMatch(/idx=2/);
+    });
   });
 });

@@ -45,6 +45,7 @@ import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingL
 import { isBoardingLockExpired } from '../../../shared/types/boardingLock';
 import {
   clearEstimatorEntries,
+  formatEstimatorLine,
   getEstimatorEntries,
   subscribeEstimatorDebug,
   type EstimatorDebugEntry,
@@ -52,10 +53,12 @@ import {
 import { SILENT_PUSH_LABELS, buildSilentPushCountValue } from '../../../shared/constants/labels';
 import {
   clearFusionDebugEntries,
+  formatFusionDebugLine,
   getFusionDebugEntries,
   subscribeFusionDebug,
   type FusionDebugEntry,
 } from '../../../features/nearest-station/utils/fusionDebugBuffer';
+import { getRegisteredDebugBuffers } from '../../../shared/utils/debugBufferRegistry';
 import {
   dumpScheduledNotifications,
   formatScheduledNotificationLine,
@@ -146,45 +149,6 @@ function formatLogLine(entry: AlarmLogEntry): string {
   if (entry.expectedStationAtFire) parts.push(`exp=${entry.expectedStationAtFire}`);
   if (entry.actualLastNotifiedStation) parts.push(`last=${entry.actualLastNotifiedStation}`);
   return parts.join(' | ');
-}
-
-/** candidates key → 짧은 접두어. 새 key가 늘면 여기 한 줄만 추가하면 됨. */
-const CANDIDATE_SHORT: Record<string, string> = {
-  positionTrain: 'pt',
-  fused: 'fu',
-  route: 'rt',
-  gps: 'gp',
-};
-
-function formatFusionDebugLine(entry: FusionDebugEntry): string {
-  const time = formatTime(entry.ts);
-  if (entry.kind === 'gps') {
-    const station = entry.nearestStation
-      ? `${entry.nearestStation}(${entry.nearestLine ?? '-'})`
-      : '-';
-    const d = entry.nearestDistanceKm != null ? `${Math.round(entry.nearestDistanceKm * 1000)}m` : '-';
-    const acc = entry.accuracyMeters != null ? `${Math.round(entry.accuracyMeters)}m` : '-';
-    const reason = entry.dropReason ? ` reason=${entry.dropReason}` : '';
-    return `${time} | ${entry.event} | ${station} d=${d} acc=${acc}${reason}`;
-  }
-  if (entry.kind === 'sticky') {
-    const acc = entry.accuracyMeters != null ? `${Math.round(entry.accuracyMeters)}m` : '-';
-    const sp = entry.speedMps != null ? `${entry.speedMps.toFixed(1)}m/s` : '-';
-    return `${time} | sticky:${entry.event} | ${entry.stationName}(${entry.line}) acc=${acc} sp=${sp}`;
-  }
-  const station = entry.stationName ? `${entry.stationName}(${entry.line ?? '-'})` : '-';
-  const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';
-  const acc =
-    entry.gpsAccuracyAtPushMeters != null ? `${Math.round(entry.gpsAccuracyAtPushMeters)}m` : '-';
-  const cand = entry.candidates
-    .map((c) => {
-      const base = `${CANDIDATE_SHORT[c.key] ?? c.key}=${c.stationName}`;
-      // boarding-lock 매칭 표기 — positionTrain candidate에 lockMatch=true가 찍히면 한눈에 식별.
-      return c.extra?.lockMatch === true ? `${base}[LOCK]` : base;
-    })
-    .join(' ');
-  const candPart = cand.length > 0 ? cand : '-';
-  return `${time} | src=${entry.source} conf=${entry.confidence} | ${station} d=${d} acc=${acc} | ${candPart}`;
 }
 
 /**
@@ -442,6 +406,22 @@ function buildDumpText(args: {
     );
   }
   lines.push('');
+  // #1348 — debug buffer registry SSOT enumerate.
+  // fusionDebugBuffer / estimatorDebugBuffer 등 in-memory ring buffer가 module import 시점에
+  // self-register돼 있다. 신규 buffer 추가 시 buffer 측에서 `registerDebugBuffer` 한 줄만
+  // 호출하면 자동 share dump에 포함된다 — 본 share 함수는 수정 불필요.
+  for (const source of getRegisteredDebugBuffers()) {
+    const sourceLines = source.dumpLines();
+    if (sourceLines.length === 0) {
+      lines.push(`## ${source.key} (0)`, '(empty)', '');
+    } else {
+      lines.push(
+        `## ${source.key} (${sourceLines.length})`,
+        ...[...sourceLines].reverse(),
+        '',
+      );
+    }
+  }
   // #1019 — ## Gates
   const reasonLine = formatReasonCountsLine(args.logs);
   if (reasonLine) {
@@ -1171,17 +1151,6 @@ function BoardingLockSection({
       )}
     </Section>
   );
-}
-
-/** Estimator 엔트리를 한 줄 텍스트로 포맷 (#1025). */
-export function formatEstimatorLine(entry: EstimatorDebugEntry): string {
-  const time = formatTime(entry.ts);
-  const strategy = entry.strategy ?? 'none';
-  const station = entry.stationName
-    ? `${entry.stationName}(${entry.stationLine ?? '-'})`
-    : '-';
-  const idx = entry.arcIndex != null ? `idx=${entry.arcIndex}` : 'idx=-';
-  return `${time} | ${strategy} | ${station} ${idx}`;
 }
 
 /** Gates 섹션 — gate 7종 + movement 6종 reason 분포 (#1025). */

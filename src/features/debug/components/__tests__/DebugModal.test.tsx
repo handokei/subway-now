@@ -6,6 +6,14 @@ import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import type { AlarmLogEntry } from '../../../../features/alarm/utils/alarmLog';
+import {
+  clearFusionDebugEntries,
+  pushFusionDebugEntry,
+} from '../../../nearest-station/utils/fusionDebugBuffer';
+import {
+  clearEstimatorEntries,
+  pushEstimatorEntry,
+} from '../../../route/utils/estimatorDebugBuffer';
 import type { Station, NearestStationResult } from '../../../../shared/types/station';
 import type { StationArrival } from '../../../../shared/types/arrival';
 
@@ -872,6 +880,55 @@ describe('DebugModal helpers', () => {
     });
     expect(line).not.toContain('acc=');
     expect(line).not.toContain('age=');
+  });
+
+  // #1348 — share dump SSOT: registry에 self-register된 fusion/estimator buffer가 자동 enumerate.
+  describe('buildDumpText debug buffer registry (#1348)', () => {
+    beforeEach(() => {
+      clearFusionDebugEntries();
+      clearEstimatorEntries();
+    });
+
+    it('등록된 fusion log buffer는 share dump에 자동 포함된다', () => {
+      pushFusionDebugEntry({
+        kind: 'fusion',
+        ts: 0,
+        source: 'gps',
+        confidence: 'gps-only',
+        stationName: '용마산',
+        line: '7',
+        distanceKm: 0.05,
+        gpsAccuracyAtPushMeters: 30,
+        candidates: [],
+      });
+      const dump = __test__.buildDumpText(makeDumpArgs());
+      expect(dump).toContain('## Fusion log (1)');
+      expect(dump).toContain('용마산(7)');
+    });
+
+    it('등록된 estimator buffer는 share dump에 자동 포함된다', () => {
+      pushEstimatorEntry({
+        ts: 0,
+        strategy: 'live-position',
+        stationName: '강남',
+        stationLine: '2',
+        arcIndex: 1,
+      });
+      const dump = __test__.buildDumpText(makeDumpArgs());
+      expect(dump).toContain('## Estimator State (1)');
+      expect(dump).toContain('강남(2)');
+      expect(dump).toContain('idx=1');
+    });
+
+    it('비어있는 buffer는 (empty) placeholder로 표기 — load 안 함과 구분', () => {
+      const dump = __test__.buildDumpText(makeDumpArgs());
+      expect(dump).toContain('## Fusion log (0)');
+      expect(dump).toContain('## Estimator State (0)');
+      // section body는 '(empty)' — 빈 buffer를 명시.
+      const fusionIdx = dump.indexOf('## Fusion log (0)');
+      const after = dump.slice(fusionIdx, fusionIdx + 100);
+      expect(after).toContain('(empty)');
+    });
   });
 });
 
