@@ -466,7 +466,11 @@ describe('runScheduled', () => {
       now: () => NOW + 10_000,
     });
     expect(stats.polled).toBe(0);
-    expect(kv.store.size).toBe(0);
+    // #1339 — trip 자체는 삭제되지만 launch reconciliation을 위한 tripStatus marker가 남는다.
+    expect(kv.store.has('trip:tok')).toBe(false);
+    const statusEntry = kv.store.get('tripStatus:tok');
+    expect(statusEntry).toBeDefined();
+    expect(JSON.parse(statusEntry!.value)).toMatchObject({ endReason: 'expired' });
   });
 
   // #640 — BoardingLock 게이트. 사용자가 열차를 선택하지 않은 trip(lock 부재)은
