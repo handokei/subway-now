@@ -472,6 +472,18 @@ describe('cancelTbaByStationPhase (#1356 E1)', () => {
     await cancelTbaByStationPhase('강남', 'early');
     expect(mockedCancel).not.toHaveBeenCalled();
   });
+
+  it('tba: prefix이지만 malformed identifier는 skip (parsed === null 가드)', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:onlyphase' },     // parse 실패 → skip
+      { identifier: 'tba::강남' },          // parse 실패 → skip
+      { identifier: 'tba:early:강남' },     // 정상 매칭
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    await cancelTbaByStationPhase('강남', 'early');
+    expect(mockedCancel).toHaveBeenCalledTimes(1);
+    expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남');
+  });
 });
 
 // #918 (A3 후속) — useTripBoundAlarmScheduler가 호출하는 caller-side helper.
