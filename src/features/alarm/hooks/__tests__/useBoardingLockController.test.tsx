@@ -157,6 +157,52 @@ describe('useBoardingLockController', () => {
     });
   });
 
+  describe('boardingListArrivals (#1326)', () => {
+    it('방향 필터 결과가 있으면 directionalArrivals 그대로 — 방향 필터 유지', () => {
+      mockResolveTripDirection.mockReturnValue('up');
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      expect(result.current.boardingListArrivals).toEqual([upTrain]);
+    });
+
+    it('방향 필터가 빈 쪽을 고르면 반대 방향으로 폴백 — "선택할 열차 없음" 회귀 차단', () => {
+      mockResolveTripDirection.mockReturnValue('up');
+      const onlyDown: StationArrival = { up: [], down: [downTrain] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: onlyDown }),
+      );
+      // 엄격 list(Gate 1용)는 그대로 비어있고, UI list만 폴백으로 노출된다.
+      expect(result.current.directionalArrivals).toEqual([]);
+      expect(result.current.boardingListArrivals).toEqual([downTrain]);
+    });
+
+    it('arrival null이면 빈 배열', () => {
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: null }),
+      );
+      expect(result.current.boardingListArrivals).toEqual([]);
+    });
+
+    it('양방향 모두 비면 빈 목록 — 진짜 도착 없음(empty-state)', () => {
+      mockResolveTripDirection.mockReturnValue('up');
+      const empty: StationArrival = { up: [], down: [] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: empty }),
+      );
+      expect(result.current.boardingListArrivals).toEqual([]);
+    });
+
+    it('폴백 시에도 음수 arrivalSeconds(지나간 열차)는 제외', () => {
+      mockResolveTripDirection.mockReturnValue('up');
+      const passed = makeTrain({ trainCode: 'PASSED', arrivalSeconds: -10 });
+      const future = makeTrain({ trainCode: 'FUTURE', arrivalSeconds: 180 });
+      const onlyDownMixed: StationArrival = { up: [], down: [passed, future] };
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, arrival: onlyDownMixed }),
+      );
+      expect(result.current.boardingListArrivals).toEqual([future]);
+    });
+  });
+
   describe('createLockFromTrain', () => {
     beforeEach(() => {
       jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);

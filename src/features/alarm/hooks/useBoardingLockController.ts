@@ -49,8 +49,17 @@ export interface UseBoardingLockControllerInputs {
 
 export interface UseBoardingLockControllerResult {
   lock: BoardingLock | null;
-  /** route 진행 방향으로 필터된 도착 list. 방향 미상이면 up+down 합집합. */
+  /**
+   * route 진행 방향으로 필터된 도착 list. 방향 미상이면 up+down 합집합.
+   * hydrateLockFromCandidate Gate 1(#1014)의 방향 일치 검증에 쓰이므로 방향 엄격성을 유지한다.
+   */
   directionalArrivals: ArrivalInfo[];
+  /**
+   * BoardingTrainList(사용자 직접 선택) 전용 도착 list — #1326.
+   * directionalArrivals가 비어도(방향 필터가 populated side를 거름) 반대 방향 열차가 있으면 합쳐 노출한다.
+   * 양쪽 모두 비어야 빈 목록. 빈 list "선택할 열차 없음" 회귀를 막되 Gate 1 엄격성은 건드리지 않는다.
+   */
+  boardingListArrivals: ArrivalInfo[];
   /** 사용자가 도착 list에서 열차 탭 시 호출. lock 생성을 위한 컨텍스트가 부족하면 no-op. */
   createLockFromTrain: (train: ArrivalInfo) => void;
   /**
@@ -76,6 +85,14 @@ const VALID_LINES: ReadonlyArray<LineNumber> = [
 function asLineNumber(raw: string): LineNumber | null {
   return (VALID_LINES as ReadonlyArray<string>).includes(raw) ? (raw as LineNumber) : null;
 }
+
+/**
+ * 도착 list 필터 술어 — #897 (Seam A). arrivalSeconds 음수(이미 지나간 열차)만 제외하고 임박(0초)은
+ * 유지한다. 0초 행이 useArrivalCountdown tick으로 사라지면 사용자가 다음 차를 같은 차로 오인하는 회귀가
+ * 있어 음수만 차단. 음수 train은 createLockFromTrain에서도 의미가 없어 #666 가드를 갈음한다.
+ * directionalArrivals / boardingListArrivals 두 파생값이 같은 정책을 공유하는 SSOT.
+ */
+const isReachable = (train: ArrivalInfo): boolean => train.arrivalSeconds >= 0;
 
 /**
  * BoardingLock 제어 hook (#584 PR B).
@@ -138,14 +155,23 @@ export function useBoardingLockController({
 
   const directionalArrivals = useMemo<ArrivalInfo[]>(() => {
     if (!arrival) return [];
-    // #897 (Seam A): 임박(arrivalSeconds=0) 열차도 list에 유지 — useArrivalCountdown tick으로 0초가
-    // 되어 행이 사라지면 사용자가 다음 차를 같은 차로 오인하는 회귀가 발생. 음수(이미 지나간)만 차단.
-    // 음수 train은 createLockFromTrain에서도 의미가 없어 #666 가드를 갈음한다.
-    const reachable = (t: ArrivalInfo): boolean => t.arrivalSeconds >= 0;
-    if (direction === 'up') return arrival.up.filter(reachable);
-    if (direction === 'down') return arrival.down.filter(reachable);
-    return [...arrival.up, ...arrival.down].filter(reachable);
+    if (direction === 'up') return arrival.up.filter(isReachable);
+    if (direction === 'down') return arrival.down.filter(isReachable);
+    return [...arrival.up, ...arrival.down].filter(isReachable);
   }, [arrival, direction]);
+
+  // #1326: BoardingTrainList 전용 — 방향 필터 결과가 비면 빈 목록 대신 양방향 합집합으로 폴백.
+  //
+  // directionalArrivals는 hydrateLockFromCandidate Gate 1(#1014)의 false-positive 방어용이라 방향을
+  // 엄격히 유지해야 한다. 하지만 사용자가 직접 탭하는 BoardingTrainList에서는 resolveTripDirection이
+  // (환승역/환상선/index 기반 한계로) 잘못된 방향을 골라 그 쪽 arrival이 비면 "선택할 열차 없음"이 뜨는
+  // 회귀가 있었다. 도착 열차가 실제로 존재하면 빈 목록을 피하는 게 우선이므로, 방향 필터 결과가 비면
+  // 반대 방향까지 합쳐 노출한다. 양쪽 모두 비면 그대로 빈 목록(진짜 도착 없음 → 컴포넌트 empty-state).
+  const boardingListArrivals = useMemo<ArrivalInfo[]>(() => {
+    if (directionalArrivals.length > 0) return directionalArrivals;
+    if (!arrival) return [];
+    return [...arrival.up, ...arrival.down].filter(isReachable);
+  }, [directionalArrivals, arrival]);
 
   const createLockFromTrain = useCallback(
     (train: ArrivalInfo) => {
@@ -267,6 +293,7 @@ export function useBoardingLockController({
   return {
     lock,
     directionalArrivals,
+    boardingListArrivals,
     createLockFromTrain,
     hydrateLockFromCandidate,
     releaseLock: release,
