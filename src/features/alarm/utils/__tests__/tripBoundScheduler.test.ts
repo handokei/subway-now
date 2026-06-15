@@ -439,7 +439,8 @@ describe('cancelTripBoundAlarms', () => {
   });
 });
 
-describe('cancelTbaByStationPhase (#1356 E1)', () => {
+// #1356 E1 / #1355 D1 — silent push suppress & cross-channel cancel helper.
+describe('cancelTbaByStationPhase (#1356 E1 / #1355 D1)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockLoggerInfo.mockClear();

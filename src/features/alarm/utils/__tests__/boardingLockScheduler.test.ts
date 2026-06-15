@@ -339,7 +339,8 @@ describe('cancelAllHopsForLock', () => {
   });
 });
 
-describe('cancelBlByStationPhase (#1356 E1)', () => {
+// #1356 E1 / #1355 D1 — silent push suppress & cross-channel cancel helper.
+describe('cancelBlByStationPhase (#1356 E1 / #1355 D1)', () => {
   it('같은 stationName + phase 매칭만 cancel + remove (trainCode/hopIndex 무관)', async () => {
     mockedGet.mockResolvedValueOnce([
       'bl:T-100:0:early:강남',     // 매칭

@@ -124,6 +124,7 @@ jest.mock('../../utils/boardingLockStorage', () => ({
 // #698 — reschedule silent push 분기에서 호출. mock으로 호출 인자/횟수만 검증.
 const mockRescheduleHopForLock = jest.fn();
 // #1356 E1 — suppress 분기에서 같은 station+phase의 bl: 사전 예약을 cancel.
+// #1355 D1 — cross-channel cancel helper (reschedule 분기에서 반대 채널 stale 사전 예약 정리).
 const mockCancelBlByStationPhase = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/boardingLockScheduler', () => ({
   rescheduleHopForLock: (...args: unknown[]) => mockRescheduleHopForLock(...args),
@@ -133,6 +134,7 @@ jest.mock('../../utils/boardingLockScheduler', () => ({
 // #918 A3 PR4 — tba 채널 reschedule. mock으로 호출 인자/횟수만 검증.
 const mockRescheduleTripBoundAlarm = jest.fn();
 // #1356 E1 — suppress 분기에서 같은 station+phase의 tba: 사전 예약을 cancel.
+// #1355 D1 — cross-channel cancel helper (reschedule 분기에서 반대 채널 stale 사전 예약 정리).
 const mockCancelTbaByStationPhase = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/tripBoundScheduler', () => ({
   rescheduleTripBoundAlarm: (...args: unknown[]) => mockRescheduleTripBoundAlarm(...args),
@@ -268,6 +270,11 @@ describe('silentPushTask', () => {
     mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
     // #698 — 기본 graceful: 1건 cancel + 1건 schedule. 개별 테스트에서 override.
     mockRescheduleHopForLock.mockResolvedValue({ cancelled: 1, scheduled: 1 });
+    // #918 A3 PR4 — tba reschedule 기본 graceful.
+    mockRescheduleTripBoundAlarm.mockResolvedValue({ cancelled: 0, scheduled: 0 });
+    // #1355 D1 — cross-channel cancel 기본 0건.
+    mockCancelTbaByStationPhase.mockResolvedValue(0);
+    mockCancelBlByStationPhase.mockResolvedValue(0);
     // #1323 — trip-ended surface 기본값. dedup은 기본 미발사(false).
     mockSendTripEndedNotification.mockResolvedValue(undefined);
     mockHasFiredPushId.mockResolvedValue(false);
@@ -1882,6 +1889,77 @@ describe('silentPushTask', () => {
             expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
             const tbaArg = mockRescheduleTripBoundAlarm.mock.calls[0][0];
             expect(tbaArg.occurrenceIdx).toBeUndefined();
+          });
+        });
+
+        // #1355 D1 — silent push reschedule cross-channel cancel.
+        // bl reschedule → 반대 채널(tba) 같은 station+phase 사전 예약 cancel,
+        // tba reschedule → 반대 채널(bl) 같은 station+phase 사전 예약 cancel.
+        // payload 한 건당 ALARM_PHASES(early + imminent) 모두에 대해 1회씩 호출되도록 fan-out.
+        describe('cross-channel cancel (#1355 D1)', () => {
+          it('applyRescheduleBl 진입 시 같은 station+phase의 tba 사전 예약을 phase별 1회씩 cancel', async () => {
+            setStorage();
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: ['bl'],
+              }),
+            );
+            // ALARM_PHASES = [early, imminent] → 2회 호출, 모두 nextStation='사가정' 대상.
+            expect(mockCancelTbaByStationPhase).toHaveBeenCalledTimes(2);
+            expect(mockCancelTbaByStationPhase).toHaveBeenNthCalledWith(1, '사가정', 'early');
+            expect(mockCancelTbaByStationPhase).toHaveBeenNthCalledWith(2, '사가정', 'imminent');
+            // 반대 채널(bl) cancel은 호출되지 않아야 함 (정밀성).
+            expect(mockCancelBlByStationPhase).not.toHaveBeenCalled();
+          });
+
+          it('applyRescheduleTba 진입 시 같은 station+phase의 bl 사전 예약을 phase별 1회씩 cancel', async () => {
+            setStorage();
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: ['tba'],
+              }),
+            );
+            expect(mockCancelBlByStationPhase).toHaveBeenCalledTimes(2);
+            expect(mockCancelBlByStationPhase).toHaveBeenNthCalledWith(1, '사가정', 'early');
+            expect(mockCancelBlByStationPhase).toHaveBeenNthCalledWith(2, '사가정', 'imminent');
+            // 반대 채널(tba) cancel은 호출되지 않아야 함.
+            expect(mockCancelTbaByStationPhase).not.toHaveBeenCalled();
+          });
+
+          it('bl skip path(lock 없음)에서는 cross-cancel도 미호출 (정밀성)', async () => {
+            // lock null이면 applyRescheduleBl는 cross-cancel 전에 early-return.
+            // 다른 station/phase의 사전 예약이 잘못 cancel되지 않도록 보장.
+            setStorage({ lock: null });
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: ['bl'],
+              }),
+            );
+            expect(mockRescheduleHopForLock).not.toHaveBeenCalled();
+            expect(mockCancelTbaByStationPhase).not.toHaveBeenCalled();
+            expect(mockCancelBlByStationPhase).not.toHaveBeenCalled();
+          });
+
+          it('반대 채널 사전 예약이 없을 때 safe no-op (helper 0 반환에 대해 throw 없이 진행)', async () => {
+            setStorage();
+            // helper가 0건 cancel 반환 — 정상 reschedule 흐름이 그대로 이어져야 함.
+            mockCancelTbaByStationPhase.mockResolvedValue(0);
+            mockCancelBlByStationPhase.mockResolvedValue(0);
+            await handleSilentPush(
+              reschedulePayload({
+                newArrivalTimeEpoch: 9_999_999_999_999,
+                channels: ['bl', 'tba'],
+              }),
+            );
+            // 두 채널 모두 reschedule이 정상 진행됨.
+            expect(mockRescheduleHopForLock).toHaveBeenCalledTimes(1);
+            expect(mockRescheduleTripBoundAlarm).toHaveBeenCalledTimes(1);
+            // 각 reschedule이 두 phase에 대해 cross-cancel을 호출.
+            expect(mockCancelTbaByStationPhase).toHaveBeenCalledTimes(2);
+            expect(mockCancelBlByStationPhase).toHaveBeenCalledTimes(2);
           });
         });
       });

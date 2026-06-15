@@ -342,11 +342,15 @@ export async function cancelAllHopsForLock(lock: BoardingLock): Promise<void> {
 }
 
 /**
- * #1356 E1 — 추적 큐에서 같은 station + phase의 `bl:` 사전 예약을 cancel + 큐에서 제거.
+ * #1356 E1 / #1355 D1 — 추적 큐에서 같은 station + phase의 `bl:` 사전 예약을 cancel + 큐에서 제거.
  *
- * silent push가 motion=stationary 또는 location gate 게이트에서 suppress될 때 호출. backend는
- * 정적 상태를 인식해 silent push를 새로 발사하지 않지만, 이미 OS queue에 들어있는 같은 station의
- * `bl:` 사전 예약은 시간이 되면 자체적으로 발사된다 — 그 stale fire를 차단한다.
+ * 두 가지 사용처:
+ *   1) #1356 E1 — silent push가 motion=stationary 또는 location gate에서 suppress될 때 호출.
+ *      backend는 정적 상태를 인식해 silent push를 새로 발사하지 않지만, 이미 OS queue에 들어있는
+ *      같은 station의 `bl:` 사전 예약은 시간이 되면 자체적으로 발사된다 — 그 stale fire 차단.
+ *   2) #1355 D1 — silent push reschedule cross-channel cancel. 반대 채널(`tba:`)의 `applyRescheduleTba`가
+ *      진입 시점에 호출 — 한쪽 채널이 정정될 때 다른 채널의 stale 사전 예약이 OS 큐에 잔존해 ETA
+ *      도달 시 중복 banner fire되는 회귀를 차단한다.
  *
  * 매칭 대상: `bl:*:*:*:${stationName}` (trainCode/hopIndex 무관, phase 일치). lock identity가 바뀌어도
  * 같은 station+phase 알람은 잘못된 fire이므로 정리. {@link parseBoardingLockAlarmIdentifier}로 station

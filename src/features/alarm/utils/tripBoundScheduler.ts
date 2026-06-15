@@ -538,15 +538,19 @@ function findOccurrenceIndex(
 }
 
 /**
- * #1356 E1 — 같은 station + phase의 `tba:` 사전 예약을 cancel.
+ * #1356 E1 / #1355 D1 — 같은 station + phase의 `tba:` 사전 예약을 cancel.
  *
- * silent push가 motion=stationary 또는 location gate 게이트에서 suppress될 때 호출. backend는
- * 정적 상태를 인식해 silent push를 새로 발사하지 않지만, 이미 OS queue에 들어있는 같은 station+phase
- * 의 `tba:` 사전 예약은 시간이 되면 자체적으로 발사된다 — 그 stale fire를 차단한다.
+ * 두 가지 사용처:
+ *   1) #1356 E1 — silent push가 motion=stationary 또는 location gate에서 suppress될 때 호출.
+ *      backend는 정적 상태를 인식해 silent push를 새로 발사하지 않지만, 이미 OS queue에 들어있는
+ *      같은 station+phase의 `tba:` 사전 예약은 시간이 되면 자체적으로 발사된다 — 그 stale fire 차단.
+ *   2) #1355 D1 — silent push reschedule cross-channel cancel. 반대 채널(`bl:`)의 `applyRescheduleBl`가
+ *      진입 시점에 호출 — 한쪽 채널이 정정될 때 다른 채널의 stale 사전 예약이 OS 큐에 잔존해 ETA
+ *      도달 시 중복 banner fire되는 회귀를 차단한다.
  *
  * 매칭: `parsed.stationName`을 `isSameStationName`으로 stationName과 비교, `parsed.phaseId`와 phase
- * 일치. 같은 station이 중복 등장하는 경우 모든 occurrence의 해당 phase가 cancel — 정지 상태에서 같은
- * station의 사전 예약은 occurrence 관계없이 모두 stale.
+ * 일치. 같은 station이 중복 등장하는 경우 모든 occurrence의 해당 phase가 cancel — cross-channel/정지
+ * 상태에서 같은 station의 사전 예약은 occurrence 관계없이 모두 stale.
  *
  * scheduler queue API(`getAllScheduledNotificationsAsync`)를 직접 조회. SCHEDULED_NOTIFICATIONS
  * 추적 큐(`bl:` 용)와 별도 — `tba:`는 OS API에 단일 SSOT.
