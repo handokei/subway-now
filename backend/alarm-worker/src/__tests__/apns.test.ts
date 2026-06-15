@@ -637,26 +637,44 @@ describe('sendBoardingPromptPush (#819)', () => {
 describe('sendTripEndedAlertPush (#1337)', () => {
   beforeEach(() => resetApnsJwtCache());
 
+  type TripEndedReason = 'eta-missing' | 'expired' | 'push-unrecoverable' | 'destination-arrived';
+  type TripEndedOverrides = Partial<{
+    deviceToken: string;
+    pushId: string;
+    reason: TripEndedReason;
+    sentAt: number;
+    tripToken: string;
+  }>;
+  const runTripEndedAlertPush = (fetchImpl: ReturnType<typeof vi.fn>, o: TripEndedOverrides = {}) =>
+    sendTripEndedAlertPush({
+      deviceToken: o.deviceToken ?? 't',
+      pushId: o.pushId ?? 'p',
+      reason: o.reason ?? 'expired',
+      sentAt: o.sentAt ?? 0,
+      tripToken: o.tripToken ?? 'trip-x',
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
   it('posts alert-type headers + aps.alert(trip-ended 본문) + aps.sound + data byte-level contract', async () => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const result = await sendTripEndedAlertPush({
+    const result = await runTripEndedAlertPush(fetchImpl, {
       deviceToken: 'devicetoken-hex',
       pushId: 'pid-end-1',
       reason: 'destination-arrived',
       sentAt: 1_700_000_000_000,
       tripToken: 'trip-abc',
-      config: makeConfig(),
-      host: TEST_HOST,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
     });
     expect(result.ok).toBe(true);
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     expect(call[0]).toBe(`https://${TEST_HOST}/3/device/devicetoken-hex`);
-    const headers = call[1].headers as Record<string, string>;
-    expect(headers['apns-topic']).toBe('com.example.app');
-    expect(headers['apns-push-type']).toBe('alert');
-    expect(headers['apns-priority']).toBe('10');
-    expect(headers['content-type']).toBe('application/json');
+    expect(call[1].headers).toMatchObject({
+      'apns-topic': 'com.example.app',
+      'apns-push-type': 'alert',
+      'apns-priority': '10',
+      'content-type': 'application/json',
+    });
     const body = JSON.parse(call[1].body as string);
     expect(body.aps.alert).toEqual({
       title: TRIP_ENDED_ALERT_TITLE,
@@ -672,23 +690,14 @@ describe('sendTripEndedAlertPush (#1337)', () => {
     });
   });
 
-  it.each<{ reason: 'eta-missing' | 'expired' | 'push-unrecoverable' | 'destination-arrived' }>([
+  it.each<{ reason: TripEndedReason }>([
     { reason: 'eta-missing' },
     { reason: 'expired' },
     { reason: 'push-unrecoverable' },
     { reason: 'destination-arrived' },
   ])('reason=$reason 가 data에 그대로 전달된다', async ({ reason }) => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    await sendTripEndedAlertPush({
-      deviceToken: 't',
-      pushId: 'p',
-      reason,
-      sentAt: 0,
-      tripToken: 'trip-x',
-      config: makeConfig(),
-      host: TEST_HOST,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    });
+    await runTripEndedAlertPush(fetchImpl, { reason });
     const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(call[1].body as string);
     expect(body.data.reason).toBe(reason);
@@ -698,31 +707,13 @@ describe('sendTripEndedAlertPush (#1337)', () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
     );
-    const result = await sendTripEndedAlertPush({
-      deviceToken: 't',
-      pushId: 'p',
-      reason: 'expired',
-      sentAt: 0,
-      tripToken: 'trip-x',
-      config: makeConfig(),
-      host: TEST_HOST,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    });
+    const result = await runTripEndedAlertPush(fetchImpl, { reason: 'expired' });
     expect(result).toEqual({ ok: false, status: 400, reason: 'BadDeviceToken' });
   });
 
   it('returns parseApnsError result on 5xx with non-json body (reason undefined)', async () => {
     const fetchImpl = vi.fn(async () => new Response('upstream broken', { status: 503 }));
-    const result = await sendTripEndedAlertPush({
-      deviceToken: 't',
-      pushId: 'p',
-      reason: 'eta-missing',
-      sentAt: 0,
-      tripToken: 'trip-x',
-      config: makeConfig(),
-      host: TEST_HOST,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
-    });
+    const result = await runTripEndedAlertPush(fetchImpl, { reason: 'eta-missing' });
     expect(result.ok).toBe(false);
     expect(result.status).toBe(503);
     expect(result.reason).toBeUndefined();
