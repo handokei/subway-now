@@ -287,7 +287,7 @@ export function useStickyStation(
     // effect가 매번 실행되고, locked 상태에서 같은 candidate가 N회 도달할 때마다
     // emit/write/setLocked cascade가 발생(9시간 ~16만회). lockedAtRef는 TTL renewal 의도로
     // silent 갱신하고 카운터만 리셋해 cascade는 차단한다.
-    if (locked && locked.id === candidate.station.id) {
+    if (locked?.id === candidate.station.id) {
       lockedAtRef.current = now;
       candidateCountRef.current = 0;
       movedAwayCountRef.current = 0;

@@ -463,6 +463,21 @@ describe('useStickyStation (#876)', () => {
       return hook;
     };
 
+    // cascade 차단 검증: locked emit 0 + AsyncStorage setItem 0.
+    const expectStickyCascadeSuppressed = (
+      pushSpy: jest.SpyInstance,
+      setSpy: jest.SpyInstance,
+    ) => {
+      const lockedEvents = pushSpy.mock.calls.filter(
+        ([entry]) => entry?.kind === 'sticky' && entry?.event === 'locked',
+      );
+      expect(lockedEvents).toHaveLength(0);
+      const setItemCalls = setSpy.mock.calls.filter(
+        ([key]) => key === STICKY_STATION_KEY,
+      );
+      expect(setItemCalls).toHaveLength(0);
+    };
+
     it('lock 후 같은 station 후속 N회 → emit/write/setLocked 추가 0회', async () => {
       const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
       const setSpy = jest.spyOn(AsyncStorage, 'setItem');
@@ -475,14 +490,7 @@ describe('useStickyStation (#876)', () => {
         rerender({ fix: fixAt(seoul) });
       }
       expect(result.current.locked).toBe(stationRef); // setLocked 안 호출 → 같은 ref
-      const lockedEvents = pushSpy.mock.calls.filter(
-        ([entry]) => entry?.kind === 'sticky' && entry?.event === 'locked',
-      );
-      expect(lockedEvents).toHaveLength(0);
-      const setItemCalls = setSpy.mock.calls.filter(
-        ([key]) => key === STICKY_STATION_KEY,
-      );
-      expect(setItemCalls).toHaveLength(0);
+      expectStickyCascadeSuppressed(pushSpy, setSpy);
     });
 
     it('lock 후 신호 단절(나쁜 fix) → 같은 station 복귀 N회 → cascade 0회 (재lock emit 없음)', async () => {
@@ -497,14 +505,7 @@ describe('useStickyStation (#876)', () => {
         rerender({ fix: fixAt(seoul) });
       }
       expect(result.current.locked?.id).toBe(seoul.id);
-      const lockedEvents = pushSpy.mock.calls.filter(
-        ([entry]) => entry?.kind === 'sticky' && entry?.event === 'locked',
-      );
-      expect(lockedEvents).toHaveLength(0);
-      const setItemCalls = setSpy.mock.calls.filter(
-        ([key]) => key === STICKY_STATION_KEY,
-      );
-      expect(setItemCalls).toHaveLength(0);
+      expectStickyCascadeSuppressed(pushSpy, setSpy);
     });
 
     it('same-lock guard에서 lockedAtRef silent 갱신 → TTL renewal 동작 (30분 직전엔 unlock 안 됨)', async () => {
