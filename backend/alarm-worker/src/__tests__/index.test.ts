@@ -86,6 +86,19 @@ describe('validateTrip', () => {
     expect(validateTrip({ ...base(), waypoints: [] })).toBeNull();
   });
 
+  // #1324 — degenerate trip(출발역 == 목적지)은 client가 `{ type: 'direct', stops: 0 }` 경로를
+  // 만든다 → 진행할 hop 없음 → 방향 null/빈 탑승목록/skip-cycle(사가정 trip 사고). backend 거부.
+  it('rejects degenerate 0-stop direct route (#1324)', () => {
+    expect(
+      validateTrip({ ...base(), route: { type: 'direct', line: '2', stops: 0 } }),
+    ).toBeNull();
+  });
+
+  it('accepts 1-stop direct route (#1324 — 인접역 trip은 정상)', () => {
+    const trip = validateTrip({ ...base(), route: { type: 'direct', line: '2', stops: 1 } });
+    expect(trip).not.toBeNull();
+  });
+
   it('rejects invalid waypoint kind', () => {
     expect(
       validateTrip({
@@ -720,6 +733,19 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     const res = await post('/trips', { token: '' }, env);
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'invalid_trip' });
+  });
+
+  // #1324 — degenerate trip(출발역 == 목적지, 0-stop direct)은 등록 자체를 거부한다.
+  it('returns 400 on degenerate 0-stop direct route (#1324)', async () => {
+    const env = makeKvEnv();
+    const res = await post(
+      '/trips',
+      tripBody({ route: { type: 'direct', line: '2', stops: 0 } }),
+      env,
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_trip' });
+    expect(await env.TRIPS.get('trip:tok-578')).toBeNull();
   });
 });
 

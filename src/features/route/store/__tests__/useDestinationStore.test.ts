@@ -92,6 +92,34 @@ describe('useDestinationStore', () => {
     expect(destination).toBeNull();
   });
 
+  // #1324 — 목적지 == customOrigin(store가 권위적으로 아는 출발역)이면 degenerate trip을
+  // 만들지 않고 거부한다 (방향 null/빈 탑승목록 회귀 차단). breadcrumb로 관측 가능.
+  it('setDestination(#1324): customOrigin과 같은 역을 목적지로 지정하면 거부하고 상태 불변', () => {
+    const { setDestination, setCustomOrigin } = useDestinationStore.getState();
+    setCustomOrigin(mockStation);
+    jest.clearAllMocks();
+
+    setDestination(mockStation);
+
+    expect(useDestinationStore.getState().destination).toBeNull();
+    expect(AsyncStorage.setItem).not.toHaveBeenCalledWith(
+      'subway-now:destination',
+      expect.anything(),
+    );
+    expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'degenerate-destination-blocked', {
+      station: '강남',
+    });
+  });
+
+  it('setDestination(#1324): customOrigin과 다른 역은 정상 설정된다', () => {
+    const { setDestination, setCustomOrigin } = useDestinationStore.getState();
+    setCustomOrigin(mockStation);
+
+    setDestination(mockStation2);
+
+    expect(useDestinationStore.getState().destination?.id).toBe('2-021');
+  });
+
   it('setDestination: 역 설정 시 AsyncStorage에 저장하고 null 시 삭제한다', async () => {
     const { setDestination } = useDestinationStore.getState();
     setDestination(mockStation);
@@ -257,7 +285,17 @@ describe('useDestinationStore', () => {
     setCustomOrigin(mockStation2);
     expect(useDestinationStore.getState().customOrigin?.id).toBe('2-021');
 
-    setDestination(mockStation2);
+    // #1324 — 새 목적지는 customOrigin(역삼)과 달라야 한다(같으면 degenerate로 거부됨).
+    // switch 시 customOrigin이 클리어되는지 검증하려는 본 테스트 의도 유지.
+    const mockStation3: Station = {
+      id: '2-020',
+      name: '선릉',
+      line: '2',
+      lineColor: '#009D3E',
+      lat: 37.5045,
+      lng: 127.0492,
+    };
+    setDestination(mockStation3);
 
     expect(useDestinationStore.getState().customOrigin).toBeNull();
   });

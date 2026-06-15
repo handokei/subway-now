@@ -166,7 +166,8 @@
     "originTitle": "현재 역 선택",
     "searchPlaceholder": "역 이름 검색",
     "assignSlot": "{{label}} 추가",
-    "pendingSlot": "다음에 선택하는 역을 {{label}}로 저장합니다"
+    "pendingSlot": "다음에 선택하는 역을 {{label}}로 저장합니다",
+    "sameAsOrigin": "현재 역은 목적지로 설정할 수 없습니다"
   },
   "currentStationConfirm": {
     "title": "현재 역을 확인해 주세요",

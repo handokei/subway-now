@@ -14,6 +14,8 @@ import { useTheme, spacing, radius } from '../shared/theme';
 import { useFavoritesStore } from '../features/favorites/store/useFavoritesStore';
 import { useDestinationStore } from '../features/route/store/useDestinationStore';
 import { LineBadge } from '../shared/ui/LineBadge';
+import { Toast } from '../shared/ui/Toast';
+import { isDegenerateDestination } from '../features/route/utils/isDegenerateDestination';
 import { getStationDisplayName } from '../shared/utils/stationDisplay';
 import { routeToCoordinates, type RouteCoordinatePath } from '../features/route/utils/routeToCoordinates';
 import type { Route } from '../shared/utils/stationRoute';
@@ -38,6 +40,8 @@ export default function MapScreen() {
   const favorites = useFavoritesStore((s) => s.favorites);
   const setSlotFavorite = useFavoritesStore((s) => s.setSlotFavorite);
   const [selectedStation, setSelectedStation] = useState<Station | null>(null);
+  // #1324 — 목적지 == 현재역(degenerate trip) 선택 차단 경고 toast.
+  const [sameOriginToast, setSameOriginToast] = useState<string | null>(null);
   const [focusStation, setFocusStation] = useState<Station | null>(null);
   const [focusNonce, setFocusNonce] = useState(0);
   const [recenterNonce, setRecenterNonce] = useState(0);
@@ -180,6 +184,11 @@ export default function MapScreen() {
             <TouchableOpacity
               style={[styles.selectionButton, { borderWidth: 1, borderColor: colors.accent }]}
               onPress={() => {
+                // #1324 — 현재역(customOrigin ∪ GPS)과 같은 역은 목적지로 설정하지 않는다.
+                if (isDegenerateDestination(customOrigin ?? result?.station ?? null, selectedStation)) {
+                  setSameOriginToast(t('destinationPicker.sameAsOrigin'));
+                  return;
+                }
                 addRecentDestination(selectedStation);
                 setDestination(selectedStation);
                 setSelectedStation(null);
@@ -216,6 +225,13 @@ export default function MapScreen() {
         </View>
       )}
 
+      {/* #1324 — 목적지 == 현재역 차단 경고. 5초 자동 dismiss + tap 닫기. */}
+      <Toast
+        visible={sameOriginToast !== null}
+        message={sameOriginToast ?? ''}
+        onDismiss={() => setSameOriginToast(null)}
+        testID="same-origin-toast"
+      />
     </SafeAreaView>
   );
 }

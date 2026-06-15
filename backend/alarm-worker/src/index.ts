@@ -1262,6 +1262,13 @@ export function validateTrip(input: unknown): Trip | null {
   if (typeof obj.expiresAt !== 'number' || obj.expiresAt <= Date.now()) return null;
   if (typeof obj.alarmAtEpochMs !== 'number') return null;
 
+  // #1324 — degenerate trip 방어: 출발역 == 목적지면 client(stationRoute.findRoutes)가
+  // `{ type: 'direct', stops: 0 }` 경로를 만든다 — 진행할 hop이 없어 방향 null/빈 탑승목록/
+  // skip-cycle로 이어진다(사가정 trip 사고). frontend 경계가 1차 차단하지만, 0-stop direct
+  // 경로는 backend도 거부해 어떤 client에서도 이런 trip이 등록되지 않게 한다.
+  const route = obj.route as Record<string, unknown>;
+  if (route.type === 'direct' && route.stops === 0) return null;
+
   // waypoints 검증
   for (const w of obj.waypoints) {
     if (!w || typeof w !== 'object') return null;
