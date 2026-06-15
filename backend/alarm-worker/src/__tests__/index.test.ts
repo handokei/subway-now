@@ -721,31 +721,23 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     expect(finalTrip.subsurface).toBe(expectedSubsurface);
   });
 
-  it('returns 400 on invalid JSON', async () => {
-    const env = makeKvEnv();
-    const res = await post('/trips', 'not-json{', env);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'invalid_json' });
-  });
-
-  it('returns 400 on invalid trip body', async () => {
-    const env = makeKvEnv();
-    const res = await post('/trips', { token: '' }, env);
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'invalid_trip' });
-  });
-
-  // #1324 — degenerate trip(출발역 == 목적지, 0-stop direct)은 등록 자체를 거부한다.
-  it('returns 400 on degenerate 0-stop direct route (#1324)', async () => {
-    const env = makeKvEnv();
-    const res = await post(
-      '/trips',
+  // POST /trips 거부 케이스 — 동일한 400 + error-code shape를 테이블로 검증(중복 제거).
+  // #1324 degenerate(0-stop direct) row는 KV에 trip이 쓰이지 않았는지까지 추가 확인한다.
+  it.each<[string, unknown, string, boolean]>([
+    ['invalid JSON', 'not-json{', 'invalid_json', false],
+    ['invalid trip body', { token: '' }, 'invalid_trip', false],
+    [
+      'degenerate 0-stop direct route (#1324)',
       tripBody({ route: { type: 'direct', line: '2', stops: 0 } }),
-      env,
-    );
+      'invalid_trip',
+      true,
+    ],
+  ])('returns 400 on %s', async (_name, body, expectedError, expectNoTrip) => {
+    const env = makeKvEnv();
+    const res = await post('/trips', body, env);
     expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'invalid_trip' });
-    expect(await env.TRIPS.get('trip:tok-578')).toBeNull();
+    expect(await res.json()).toEqual({ error: expectedError });
+    if (expectNoTrip) expect(await env.TRIPS.get('trip:tok-578')).toBeNull();
   });
 });
 
