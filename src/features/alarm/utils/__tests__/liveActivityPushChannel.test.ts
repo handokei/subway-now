@@ -1,9 +1,11 @@
 const mockStartLiveActivity = jest.fn();
+const mockUpdateLiveActivity = jest.fn();
 const mockEndLiveActivity = jest.fn();
 const mockAddPushTokenListener = jest.fn();
 
 jest.mock('../../../../../modules/live-activity', () => ({
   startLiveActivity: (...args: unknown[]) => mockStartLiveActivity(...args),
+  updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
   endLiveActivity: () => mockEndLiveActivity(),
   addPushTokenListener: (...args: unknown[]) =>
     mockAddPushTokenListener(...args),
@@ -22,6 +24,7 @@ jest.mock('../../api/alarmBackend', () => ({
 import {
   __resetLiveActivityPushChannelForTests,
   endLiveActivityWithDeregister,
+  ensureLiveActivityRegistered,
   startLiveActivityWithRegistration,
 } from '../liveActivityPushChannel';
 
@@ -55,11 +58,13 @@ describe('liveActivityPushChannel', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     mockStartLiveActivity.mockReset();
+    mockUpdateLiveActivity.mockReset();
     mockEndLiveActivity.mockReset();
     mockAddPushTokenListener.mockReset();
     mockRegisterLiveActivityToken.mockReset();
     mockClearLiveActivityToken.mockReset();
     mockStartLiveActivity.mockResolvedValue(undefined);
+    mockUpdateLiveActivity.mockResolvedValue(undefined);
     mockEndLiveActivity.mockResolvedValue(undefined);
     mockRegisterLiveActivityToken.mockResolvedValue({ ok: true });
     mockClearLiveActivityToken.mockResolvedValue({ ok: true });
@@ -204,6 +209,88 @@ describe('liveActivityPushChannel', () => {
       mockClearLiveActivityToken.mockRejectedValue(new Error('net'));
       await endLiveActivityWithDeregister('trip-1');
       expect(mockEndLiveActivity).toHaveBeenCalled();
+    });
+  });
+
+  describe('register retry (#1288)', () => {
+    it('register가 status!ok 응답이면 재시도 후 성공', async () => {
+      const handle = setupListener();
+      mockRegisterLiveActivityToken
+        .mockResolvedValueOnce({ ok: false, status: 503 })
+        .mockResolvedValueOnce({ ok: true });
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      // 첫 호출이 동기적으로 발사된다
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(1);
+      // 첫 backoff sleep을 진행
+      await jest.advanceTimersByTimeAsync(500);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(2);
+    });
+
+    it('register가 3회 모두 실패해도 throw 없이 silent log', async () => {
+      const handle = setupListener();
+      mockRegisterLiveActivityToken.mockResolvedValue({ ok: false, status: 500 });
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      await jest.advanceTimersByTimeAsync(500);
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(3);
+    });
+
+    it('register throw 후 재시도 → 마지막은 성공', async () => {
+      const handle = setupListener();
+      mockRegisterLiveActivityToken
+        .mockRejectedValueOnce(new Error('net'))
+        .mockResolvedValueOnce({ ok: true });
+      await startLiveActivityWithRegistration('trip-1', SAMPLE_DATA);
+      handle.emit('tok');
+      await jest.advanceTimersByTimeAsync(500);
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('ensureLiveActivityRegistered (#1288)', () => {
+    it('활성 세션 없으면 startLiveActivityWithRegistration 경로 사용', async () => {
+      const handle = setupListener();
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      expect(mockStartLiveActivity).toHaveBeenCalledWith(SAMPLE_DATA);
+      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+      handle.emit('tok');
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-1', 'tok');
+    });
+
+    it('동일 tripToken으로 재호출 시 native update만 — subscription 보존', async () => {
+      const handle = setupListener();
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      expect(mockStartLiveActivity).toHaveBeenCalledTimes(1);
+      expect(mockUpdateLiveActivity).toHaveBeenCalledTimes(1);
+      handle.emit('tok');
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-1', 'tok');
+      expect(handle.remove).not.toHaveBeenCalled();
+    });
+
+    it('다른 tripToken으로 호출 시 이전 세션 deregister 후 새 세션 시작', async () => {
+      const first = setupListener();
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      const second = setupListener();
+      await ensureLiveActivityRegistered('trip-2', SAMPLE_DATA);
+      expect(mockEndLiveActivity).toHaveBeenCalled();
+      expect(mockClearLiveActivityToken).toHaveBeenCalledWith('trip-1');
+      expect(first.remove).toHaveBeenCalledTimes(1);
+      second.emit('tok');
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-2', 'tok');
+    });
+
+    it('이전 세션 deregister가 throw해도 새 세션은 시작', async () => {
+      setupListener();
+      await ensureLiveActivityRegistered('trip-1', SAMPLE_DATA);
+      mockEndLiveActivity.mockRejectedValueOnce(new Error('end failed'));
+      const second = setupListener();
+      await ensureLiveActivityRegistered('trip-2', SAMPLE_DATA);
+      expect(mockStartLiveActivity).toHaveBeenCalledTimes(2);
+      second.emit('tok');
+      expect(mockRegisterLiveActivityToken).toHaveBeenCalledWith('trip-2', 'tok');
     });
   });
 

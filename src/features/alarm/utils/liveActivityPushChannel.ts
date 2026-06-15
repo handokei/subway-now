@@ -19,6 +19,7 @@ import {
   addPushTokenListener,
   endLiveActivity,
   startLiveActivity,
+  updateLiveActivity,
   type LiveActivityData,
   type PushTokenEvent,
 } from '../../../../modules/live-activity';
@@ -33,8 +34,42 @@ const log = createLogger('liveActivityPushChannel');
 /** 첫 token이 안 올 때 로그만 남기는 안전 timeout. subscription은 끊지 않는다. */
 const PUSH_TOKEN_FIRST_EMIT_TIMEOUT_MS = 5000;
 
+/** backend register 재시도(#1288). emit→register race + 일시 network 실패 graceful. */
+const REGISTER_RETRY_MAX_ATTEMPTS = 3;
+const REGISTER_RETRY_BASE_DELAY_MS = 500;
+
 /** 현재 LA 세션의 teardown 함수. 단일 LA만 동시 운영한다는 전제. */
 let activeTeardown: (() => void) | null = null;
+/** 현재 활성 LA 세션의 tripToken. ensureLiveActivityRegistered가 start vs update 판정에 사용. */
+let activeTripToken: string | null = null;
+
+/** 테스트용 sleep — fake timer와 호환되도록 setTimeout 사용. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * backend `registerLiveActivityToken`을 exponential backoff로 재시도(#1288).
+ * 모든 시도 실패 시 silent log — caller(subscription 콜백)는 throw하지 않는다.
+ */
+async function registerWithRetry(
+  tripToken: string,
+  activityPushToken: string,
+): Promise<void> {
+  for (let attempt = 1; attempt <= REGISTER_RETRY_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      const result = await registerLiveActivityToken(tripToken, activityPushToken);
+      if (result.ok) return;
+      log.warn(`LA register attempt ${attempt} not ok status=${result.status ?? 'none'}`);
+    } catch (e) {
+      log.warn(`LA register attempt ${attempt} threw`, e);
+    }
+    if (attempt < REGISTER_RETRY_MAX_ATTEMPTS) {
+      await sleep(REGISTER_RETRY_BASE_DELAY_MS * 2 ** (attempt - 1));
+    }
+  }
+  log.warn('LA register exhausted retries — giving up (will retry on next token emit)');
+}
 
 /**
  * Activity 시작과 동시에 token 구독을 LA 세션 동안 유지.
@@ -50,6 +85,7 @@ export async function startLiveActivityWithRegistration(
     activeTeardown();
     activeTeardown = null;
   }
+  activeTripToken = tripToken;
 
   let lastToken: string | null = null;
   let firstEmitTimer: ReturnType<typeof setTimeout> | null = null;
@@ -64,9 +100,7 @@ export async function startLiveActivityWithRegistration(
       return;
     }
     lastToken = event.token;
-    void registerLiveActivityToken(tripToken, event.token).catch((e) => {
-      log.warn('LA register threw', e);
-    });
+    void registerWithRetry(tripToken, event.token);
   });
 
   firstEmitTimer = setTimeout(() => {
@@ -92,9 +126,36 @@ export async function startLiveActivityWithRegistration(
     teardown();
     if (activeTeardown === teardown) {
       activeTeardown = null;
+      activeTripToken = null;
     }
     throw e;
   }
+}
+
+/**
+ * stationNotification 등 LA 업데이트 호출자가 사용하는 단일 진입점(#1288).
+ * - 활성 세션 없음 → `startLiveActivityWithRegistration` 호출(token 구독 + native start).
+ * - 활성 세션 + 동일 tripToken → native `updateLiveActivity`만 호출(기존 subscription 보존).
+ * - 활성 세션 + 다른 tripToken → 이전 정리 후 새 세션 시작(이전 trip의 LA token deregister).
+ *
+ * 호출자 회귀 안전: throw 시 caller가 fallback(일반 알림)로 분기할 수 있도록 그대로 전파한다.
+ */
+export async function ensureLiveActivityRegistered(
+  tripToken: string,
+  data: LiveActivityData,
+): Promise<void> {
+  if (activeTeardown !== null && activeTripToken === tripToken) {
+    await updateLiveActivity(data);
+    return;
+  }
+  if (activeTeardown !== null && activeTripToken !== null && activeTripToken !== tripToken) {
+    // tripToken 변경 — 이전 trip의 LA token을 backend에서도 정리.
+    const prev = activeTripToken;
+    await endLiveActivityWithDeregister(prev).catch((e) => {
+      log.warn('previous LA deregister failed', e);
+    });
+  }
+  await startLiveActivityWithRegistration(tripToken, data);
 }
 
 /**
@@ -109,6 +170,7 @@ export async function endLiveActivityWithDeregister(
     activeTeardown();
     activeTeardown = null;
   }
+  activeTripToken = null;
   try {
     await endLiveActivity();
   } finally {
@@ -127,4 +189,5 @@ export function __resetLiveActivityPushChannelForTests(): void {
     activeTeardown();
     activeTeardown = null;
   }
+  activeTripToken = null;
 }

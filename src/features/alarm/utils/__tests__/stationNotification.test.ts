@@ -52,6 +52,18 @@ jest.mock('../../../../../modules/live-activity', () => ({
   isLiveActivityEnabled: () => mockIsLiveActivityEnabled(),
 }));
 
+const mockEnsureLiveActivityRegistered = jest.fn().mockResolvedValue(undefined);
+const mockEndLiveActivityWithDeregister = jest.fn().mockResolvedValue(undefined);
+jest.mock('../liveActivityPushChannel', () => ({
+  ensureLiveActivityRegistered: (...args: unknown[]) =>
+    mockEnsureLiveActivityRegistered(...args),
+  endLiveActivityWithDeregister: (...args: unknown[]) =>
+    mockEndLiveActivityWithDeregister(...args),
+}));
+
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ACTIVE_TRIP_KEY } from '../../../../shared/constants/storageKeys';
+
 const mockHasFiredPushId = jest.fn();
 jest.mock('../firedPushIds', () => ({
   hasFiredPushId: (...args: unknown[]) => mockHasFiredPushId(...args),
@@ -287,6 +299,26 @@ describe('stationNotification', () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       jest.clearAllMocks();
       mockIsLiveActivityEnabled.mockReturnValue(true);
+      await AsyncStorage.clear();
+      mockEnsureLiveActivityRegistered.mockResolvedValue(undefined);
+      mockEndLiveActivityWithDeregister.mockResolvedValue(undefined);
+    });
+
+    it('#1288 — ACTIVE_TRIP_KEY가 있으면 ensureLiveActivityRegistered 경로 사용', async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+      await updateStationNotification(mockStation, 154);
+      expect(mockEnsureLiveActivityRegistered).toHaveBeenCalledWith(
+        'apns-token-abc',
+        expect.objectContaining({ stationName: '시청', distanceM: 154 }),
+      );
+      expect(mockUpdateLiveActivity).not.toHaveBeenCalled();
+    });
+
+    it('#1288 — ensureLiveActivityRegistered 실패 시 expo-notifications fallback', async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+      mockEnsureLiveActivityRegistered.mockRejectedValueOnce(new Error('LA 등록 실패'));
+      await updateStationNotification(mockStation, 154);
+      expectNotificationContent('시청역', '1호선 · 약 154m');
     });
 
     it('updateLiveActivity를 호출한다', async () => {
@@ -582,6 +614,13 @@ describe('stationNotification', () => {
   });
 
   describe('clearStationNotification', () => {
+    beforeEach(async () => {
+      jest.clearAllMocks();
+      await AsyncStorage.clear();
+      mockEnsureLiveActivityRegistered.mockResolvedValue(undefined);
+      mockEndLiveActivityWithDeregister.mockResolvedValue(undefined);
+    });
+
     it('iOS에서 endLiveActivity를 호출하고 station-passed 알림도 해제한다', async () => {
       jest.replaceProperty(Platform, 'OS', 'ios');
       mockIsLiveActivityEnabled.mockReturnValue(true);
@@ -589,6 +628,16 @@ describe('stationNotification', () => {
       await clearStationNotification();
       expect(mockEndLiveActivity).toHaveBeenCalled();
       expect(Notifications.dismissNotificationAsync).toHaveBeenCalledWith('station-passed');
+    });
+
+    it('#1288 — ACTIVE_TRIP_KEY가 있으면 endLiveActivityWithDeregister 사용', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      mockIsLiveActivityEnabled.mockReturnValue(true);
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'apns-token-abc');
+
+      await clearStationNotification();
+      expect(mockEndLiveActivityWithDeregister).toHaveBeenCalledWith('apns-token-abc');
+      expect(mockEndLiveActivity).not.toHaveBeenCalled();
     });
 
     it('iOS에서 endLiveActivity가 실패해도 에러를 던지지 않는다', async () => {
