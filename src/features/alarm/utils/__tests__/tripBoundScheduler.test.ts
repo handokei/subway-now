@@ -1069,18 +1069,18 @@ describe('prescheduleStationAlerts #1357 (S1) motion gate', () => {
   it('motion=stationary 시 alarm_log에 schedule-skipped-motion-stationary 적재 (channel=tba)', async () => {
     mockGetCurrentMotionStationary.mockReturnValue(true);
     await prescheduleWith();
-    const { getAlarmLog } = jest.requireActual('../alarmLog');
-    const entries = await getAlarmLog();
-    const skips = entries.filter(
-      (e: { reason?: string }) => e.reason === 'schedule-skipped-motion-stationary',
+    const entries = await jest.requireActual('../alarmLog').getAlarmLog();
+    // channel:destinationName 인코딩 — defaultStops 마지막 stop이 '강남'.
+    expect(entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: 'schedule-skipped-motion-stationary',
+          source: 'bg-scheduled',
+          outcome: 'suppressed',
+          stationName: 'tba:강남',
+        }),
+      ]),
     );
-    expect(skips).toHaveLength(1);
-    expect(skips[0]).toMatchObject({
-      source: 'bg-scheduled',
-      outcome: 'suppressed',
-      // channel:destinationName 인코딩 — defaultStops 마지막 stop이 '강남'.
-      stationName: 'tba:강남',
-    });
   });
 
   it('motion=false (이동 중)이면 정상 schedule 진행', async () => {

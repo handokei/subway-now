@@ -935,17 +935,17 @@ describe('scheduleHopsForLock #1357 (S1) motion gate', () => {
       destinationName: '강남',
       now: NOW,
     });
-    const { getAlarmLog } = jest.requireActual('../alarmLog');
-    const entries = await getAlarmLog();
-    const skips = entries.filter(
-      (e: { reason?: string }) => e.reason === 'schedule-skipped-motion-stationary',
+    const entries = await jest.requireActual('../alarmLog').getAlarmLog();
+    expect(entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: 'schedule-skipped-motion-stationary',
+          source: 'bg-scheduled',
+          outcome: 'suppressed',
+          stationName: 'bl:강남',
+        }),
+      ]),
     );
-    expect(skips).toHaveLength(1);
-    expect(skips[0]).toMatchObject({
-      source: 'bg-scheduled',
-      outcome: 'suppressed',
-      stationName: 'bl:강남',
-    });
   });
 
   it('motion=false (이동 중)이면 정상 schedule 진행', async () => {
