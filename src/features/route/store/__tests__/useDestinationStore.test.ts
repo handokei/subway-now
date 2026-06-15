@@ -49,7 +49,10 @@ const mockStation2: Station = {
 };
 
 describe('useDestinationStore', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    // #1321 — setDestination chain은 tripTransitionQueue에 직렬화된다. 직전 테스트의 잔여
+    // chain이 현재 테스트의 (clear된) mock으로 늦게 발사돼 카운트를 오염시키지 않도록 먼저 drain.
+    await flushMicrotasks();
     useDestinationStore.setState({
       destination: null,
       recentDestinations: [],
@@ -718,6 +721,64 @@ describe('useDestinationStore', () => {
     useDestinationStore.getState().setDestination(mockStation);
     await flushMicrotasks();
     expect(useDestinationStore.getState().destination?.id).toBe('2-022');
+  });
+
+  // ── #1321 delete→recreate race: cleanup 직렬화 ──
+
+  it('setDestination(#1321): delete 직후 recreate 시 옛 cleanup이 끝난 뒤에야 새 tripStart 기록', async () => {
+    // 시나리오: setDestination(null)(delete)로 옛 route cleanup이 in-flight인 동안
+    // setDestination(mockStation2)(recreate)가 곧바로 들어온다. 직렬화가 없으면 recreate의
+    // setTripStartedAt이 delete cleanup 도중에 실행돼 hook이 옛 알람과 interleave한 채 새
+    // route를 preschedule → revalidate-route-sig-mismatch 폭주. 직렬화가 있으면 delete의
+    // cleanup이 완전히 settle한 뒤에만 recreate cleanup + setTripStartedAt이 시작된다.
+    useDestinationStore.setState({ destination: mockStation });
+
+    const order: string[] = [];
+    let triggerCount = 0;
+    (triggerTripEndRecall as jest.Mock).mockImplementation(async () => {
+      order.push(`trigger#${++triggerCount}`);
+      return { uploaded: false };
+    });
+    (setTripStartedAt as jest.Mock).mockImplementation(async () => {
+      order.push('setTripStartedAt');
+    });
+    // delete leg cleanup(첫 removeItem 진입)을 deferred로 묶어 interleave 창을 강제한다.
+    let releaseDeleteCleanup: () => void = () => undefined;
+    const deleteCleanupGate = new Promise<void>((resolve) => {
+      releaseDeleteCleanup = resolve;
+    });
+    let removeItemCalls = 0;
+    (AsyncStorage.removeItem as jest.Mock).mockImplementation(async () => {
+      removeItemCalls += 1;
+      // 첫 cleanup leg(delete)의 첫 removeItem만 gate에 묶고 마커 기록.
+      if (removeItemCalls === 1) {
+        order.push('delete-cleanup-start');
+        await deleteCleanupGate;
+        order.push('delete-cleanup-end');
+      }
+      return undefined;
+    });
+
+    // delete → recreate를 동기적으로 연달아 호출 (사용자가 빠르게 삭제+재생성).
+    useDestinationStore.getState().setDestination(null);
+    useDestinationStore.getState().setDestination(mockStation2);
+
+    // delete cleanup이 gate에서 멈춘 상태로 microtask를 일부 흘려보낸다 — 직렬화가 없으면
+    // 이 시점에 recreate의 setTripStartedAt이 이미 기록됐을 것.
+    await flushMicrotasks();
+    expect(order).not.toContain('setTripStartedAt');
+
+    // delete cleanup 완료 → 큐가 recreate chain을 진행.
+    releaseDeleteCleanup();
+    await flushMicrotasks();
+
+    // 직렬화 보장: delete cleanup이 끝난 뒤에야 recreate의 setTripStartedAt이 실행된다.
+    const deleteEndIdx = order.indexOf('delete-cleanup-end');
+    const setTripIdx = order.indexOf('setTripStartedAt');
+    expect(deleteEndIdx).toBeGreaterThanOrEqual(0);
+    expect(setTripIdx).toBeGreaterThan(deleteEndIdx);
+    // recreate(2번째 transition)에서만 tripStart를 기록 (delete는 null이라 미기록).
+    expect(order.filter((o) => o === 'setTripStartedAt')).toHaveLength(1);
   });
 
   describe('trip breadcrumb', () => {
