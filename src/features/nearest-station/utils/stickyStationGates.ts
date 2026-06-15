@@ -8,6 +8,7 @@
 import type { Station } from '../../../shared/types/station';
 import { haversine } from '../../../shared/utils/haversine';
 import {
+  STICKY_DEGRADED_UNLOCK_ACCURACY_M,
   STICKY_GOOD_FIX_ACCURACY_M,
   STICKY_GOOD_FIX_SPEED_MAX_MPS,
   STICKY_TTL_MS,
@@ -68,6 +69,33 @@ export function shouldUnlockByDistance(locked: Station, fix: StickyPositionInput
   if (accuracyMeters == null || accuracyMeters > STICKY_GOOD_FIX_ACCURACY_M) return false;
   // D6 (#1212) — trip 활성 + 지하면 GPS 1km+ 점프는 dead-zone 부정확 좌표 가능성이 높다.
   // 지상 trip은 그대로 평가(차로 1km 이동 가능).
+  if (fix.tripActive === true && fix.subsurface === true) return false;
+  const distanceKm = haversine(locked.lat, locked.lng, fix.lat, fix.lng);
+  return distanceKm > STICKY_UNLOCK_DISTANCE_KM;
+}
+
+/**
+ * #1317 — 저품질 GPS 내성 "멀어짐" 증거 판정 (한 fix 단위).
+ *
+ * shouldUnlockByDistance는 accuracy ≤ 50m를 요구해 지하·도심 협곡(50~250m)에서 발동하지
+ * 못하고 출발역 lock이 고착된다. 이 함수는 "한 fix가 lock된 역에서 멀어짐(>1km)의 증거인가"만
+ * 판정한다 — 즉시 unlock하지 않는다. 호출자(useStickyStation)가 이런 fix를 N회 연속 누적해야
+ * unlock한다(단발성 부정확 fix로 풀리는 반대 회귀 방지).
+ *
+ * 조건:
+ *   - accuracy non-null이고 ≤ STICKY_DEGRADED_UNLOCK_ACCURACY_M(250m) — 쓰레기 좌표는 거부.
+ *   - 후보 역이 lock된 역과 다른 역 — 같은 역이면 "멀어짐"이 아니다.
+ *   - lock된 역에서 STICKY_UNLOCK_DISTANCE_KM(1km) 초과로 떨어짐.
+ *   - D6(#1212) — trip 활성 + 지하 조합에서는 보류(strict distance 게이트와 동일 hold).
+ *     지하 dead-zone GPS의 1km+ 점프는 부정확 좌표 가능성이 높다.
+ */
+export function shouldCountAsMovedAway(
+  locked: Station,
+  fix: StickyPositionInput & { candidateId: string | null },
+): boolean {
+  const { accuracyMeters, candidateId } = fix;
+  if (accuracyMeters == null || accuracyMeters > STICKY_DEGRADED_UNLOCK_ACCURACY_M) return false;
+  if (candidateId == null || candidateId === locked.id) return false;
   if (fix.tripActive === true && fix.subsurface === true) return false;
   const distanceKm = haversine(locked.lat, locked.lng, fix.lat, fix.lng);
   return distanceKm > STICKY_UNLOCK_DISTANCE_KM;

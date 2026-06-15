@@ -12,9 +12,12 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { renderHook, waitFor } from '@testing-library/react-native';
+import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { useStickyStation, type StickyFixInput, type StickyMotionInput } from '../useStickyStation';
-import { STICKY_TTL_MS } from '../../../../shared/constants/stickyStation';
+import {
+  STICKY_DEGRADED_UNLOCK_COUNT,
+  STICKY_TTL_MS,
+} from '../../../../shared/constants/stickyStation';
 import { STICKY_STATION_KEY } from '../../../../shared/constants/storageKeys';
 import * as fusionDebugBuffer from '../../utils/fusionDebugBuffer';
 import type { Station } from '../../../../shared/types/station';
@@ -34,6 +37,20 @@ const seoulNearby: Station = {
 const gangnam: Station = {
   id: '0222', name: '강남', line: '2', lineColor: '#00a84d', lat: 37.4979, lng: 127.0276,
 };
+// #1317 — 용마산 trip의 "여러 역 통과"(군자/건대입구/성수)를 모사하는 distinct far 역들.
+// 모두 서울역에서 1km+ 떨어진 다른 역. 저품질 accuracy(52.7m)와 함께 사용.
+const gunja: Station = {
+  id: '5-616', name: '군자', line: '5', lineColor: '#996cac', lat: 37.557345, lng: 127.079527,
+};
+const konkuk: Station = {
+  id: '2-212', name: '건대입구', line: '2', lineColor: '#00a84d', lat: 37.540408, lng: 127.070061,
+};
+const seongsu: Station = {
+  id: '2-211', name: '성수', line: '2', lineColor: '#00a84d', lat: 37.544581, lng: 127.055961,
+};
+// 용마산 trip의 저품질 GPS(accuracy 52.7m, strict 게이트 50m 초과)를 모사한 fix.
+const degradedFixAt = (station: Station | null) =>
+  fixAt(station, { accuracy: 52.7 });
 
 const fixAt = (
   station: Station | null,
@@ -316,6 +333,97 @@ describe('useStickyStation (#876)', () => {
       const { result, rerender } = await lockSeoul({});
       rerender({ fix: fixAt(seoul), motion: { automotive: true, subsurface: false, tripActive: true } });
       await waitFor(() => expect(result.current.locked).toBeNull());
+    });
+  });
+
+  // #1317 — 저품질 GPS에서 출발역 sticky 고착 회귀 + 명시적 unlock.
+  describe('#1317 — 저품질 GPS moved-away unlock', () => {
+    // 서울역에 lock된 상태를 만드는 헬퍼(좋은 fix 3회).
+    const lockSeoul = async () => {
+      const hook = renderSticky({ fix: fixAt(seoul) });
+      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      hook.rerender({ fix: fixAt(seoul) });
+      hook.rerender({ fix: fixAt(seoul) });
+      await waitFor(() => expect(hook.result.current.locked?.id).toBe(seoul.id));
+      return hook;
+    };
+
+    it('lock역에서 1km+ 이동 + 여러 역 통과(저품질) → moved-away unlock', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      const { result, rerender } = await lockSeoul();
+      pushSpy.mockClear();
+
+      // 저품질(52.7m) far 역 fix를 N회 연속 — 군자/건대입구/성수 통과 모사.
+      // strict distance/better-fix는 ≤50m를 요구해 막히지만 moved-away는 누적된다.
+      const movedFixes = [gunja, konkuk, seongsu];
+      for (let i = 0; i < STICKY_DEGRADED_UNLOCK_COUNT; i += 1) {
+        rerender({ fix: degradedFixAt(movedFixes[i % movedFixes.length]) });
+      }
+      await waitFor(() => expect(result.current.locked).toBeNull());
+      expect(pushSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'sticky', event: 'unlocked-moved-away' }),
+      );
+    });
+
+    it('단발성 far fix 1회로는 unlock하지 않음 (false unlock 방지)', async () => {
+      const { result, rerender } = await lockSeoul();
+      // 저품질 far fix 1회만 — 임계(N) 미만이라 lock 유지.
+      rerender({ fix: degradedFixAt(gunja) });
+      expect(result.current.locked?.id).toBe(seoul.id);
+    });
+
+    it('far fix 사이에 lock역 근처 fix가 끼면 카운터 리셋 → unlock 안 됨', async () => {
+      const { result, rerender } = await lockSeoul();
+      // far(군자) → 근처(서울) → far(건대) 패턴: 연속이 끊겨 카운터가 리셋된다.
+      rerender({ fix: degradedFixAt(gunja) });
+      rerender({ fix: degradedFixAt(seoul) }); // 같은 역 → moved-away 아님 → 리셋
+      rerender({ fix: degradedFixAt(konkuk) });
+      // 누적이 1로 떨어져 임계 미달 — lock 유지.
+      expect(result.current.locked?.id).toBe(seoul.id);
+    });
+
+    it('지하 + trip 활성에서는 저품질 far fix가 누적돼도 moved-away 보류 (D6 hold)', async () => {
+      const motion: StickyMotionInput = { subsurface: true, tripActive: true };
+      const hook = renderSticky({ fix: fixAt(seoul), motion });
+      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      hook.rerender({ fix: fixAt(seoul), motion });
+      hook.rerender({ fix: fixAt(seoul), motion });
+      await waitFor(() => expect(hook.result.current.locked?.id).toBe(seoul.id));
+
+      const movedFixes = [gunja, konkuk, seongsu];
+      for (let i = 0; i < STICKY_DEGRADED_UNLOCK_COUNT; i += 1) {
+        hook.rerender({ fix: degradedFixAt(movedFixes[i % movedFixes.length]), motion });
+      }
+      // 지하 dead-zone 의심 → 누적해도 unlock 안 함.
+      expect(hook.result.current.locked?.id).toBe(seoul.id);
+    });
+
+    it('releaseLock() 호출 → 즉시 unlock + unlocked-manual 이벤트', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      const { result, rerender } = await lockSeoul();
+      pushSpy.mockClear();
+
+      act(() => { result.current.releaseLock(); });
+      await waitFor(() => expect(result.current.locked).toBeNull());
+      expect(pushSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'sticky', event: 'unlocked-manual', stationName: '서울역' }),
+      );
+      // unlock 후 persistence도 정리.
+      rerender({ fix: fixAt(null) });
+      await waitFor(() => expect(AsyncStorage.removeItem).toHaveBeenCalledWith(STICKY_STATION_KEY));
+    });
+
+    it('releaseLock() — lock 없을 때 no-op (이벤트 emit 안 함)', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      const { result } = renderSticky({ fix: fixAt(null) });
+      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      pushSpy.mockClear();
+
+      act(() => { result.current.releaseLock(); });
+      expect(result.current.locked).toBeNull();
+      expect(pushSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'unlocked-manual' }),
+      );
     });
   });
 

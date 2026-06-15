@@ -26,7 +26,7 @@ import {
 } from '../shared/types/station';
 
 export default function MapScreen() {
-  const { userLocation, result, loading, error, permissionDenied, refresh, accuracyMeters, locationUncertain } =
+  const { userLocation, result, loading, error, permissionDenied, refresh, requestCurrentLocation, accuracyMeters, locationUncertain } =
     useNearestStation();
   const allStations = stationsData as Station[];
   const { colors } = useTheme();
@@ -138,8 +138,10 @@ export default function MapScreen() {
           },
         ]}
         onPress={() => {
-          // 카메라 이동만으로는 stale userLocation에서 벗어날 수 없으므로 fresh GPS fix를 함께 요청.
-          void refresh();
+          // #1317 — 카메라 이동만으로는 stale userLocation에서 벗어날 수 없고, sticky lock이 남아
+          // 있으면 현재역이 lock된 역(예: 출발역)으로 회귀한다. sticky를 비우고 fresh GPS fix를
+          // 함께 요청하는 명시적 "현재위치" 경로를 사용한다.
+          void requestCurrentLocation();
           setRecenterNonce((n) => n + 1);
         }}
         accessibilityLabel={t('map.recenter')}

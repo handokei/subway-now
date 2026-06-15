@@ -86,6 +86,9 @@ interface UseNearestStationReturn {
   // 호출자가 출처별 UX(예: 라벨 "탑승 전 추정")로 분기 가능. 알람 트리거에는 영향 없음.
   source: NearestStationSource;
   refresh: () => Promise<void>;
+  // #1317: 사용자가 지도탭 "현재위치"를 명시적으로 탭할 때 호출. sticky lock을 비우고 fresh
+  // GPS fix를 요청해 live fused 위치를 노출한다. 일반 refresh(FG 복귀 등)는 sticky를 유지한다.
+  requestCurrentLocation: () => Promise<void>;
 }
 
 // #711: BG task가 최근 평가한 nearest station. FG 복귀 직후 fresh fix 도착 전 임시 hydrate에 사용.
@@ -458,6 +461,16 @@ export function useNearestStation(
     },
   );
 
+  // #1317 — 지도탭 "현재위치" 명시 탭 경로. sticky lock을 즉시 비운 뒤 fresh GPS fix를 요청해
+  // live fused 위치를 노출한다. refresh()만으로는 sticky override가 남아 현재역이 lock된 역
+  // (예: 출발역 용마산)으로 회귀하므로, sticky 해제를 함께 수행한다. FG 복귀 시의 일반 refresh는
+  // sticky를 유지해야 하므로(D6 — 탑승 중 노선 정보 보존) 이 경로를 별도로 분리한다.
+  const { releaseLock } = sticky;
+  const requestCurrentLocation = useCallback(async () => {
+    releaseLock();
+    await refresh();
+  }, [releaseLock, refresh]);
+
   const exposed = useMemo<{ result: NearestStationResult | null; source: NearestStationSource }>(
     () => {
       // sticky 비활성 또는 sticky가 live와 같은 역이면 live 결과 그대로 — reference 유지로
@@ -491,5 +504,6 @@ export function useNearestStation(
     lastFixAtMs,
     source: exposed.source,
     refresh,
+    requestCurrentLocation,
   };
 }

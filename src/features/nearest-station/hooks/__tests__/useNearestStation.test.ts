@@ -1030,6 +1030,32 @@ describe('useNearestStation — #876 sticky station integration', () => {
     // distanceKm은 userLocation 기준 재계산 (효창 ↔ 강남 ≈ 10km+)
     expect(result.current.result?.distanceKm).toBeGreaterThan(5);
   });
+
+  // #1317 — 지도탭 "현재위치" 명시 탭은 sticky를 비우고 live 위치를 노출.
+  it('requestCurrentLocation 호출 시 sticky를 비우고 live 위치로 복귀한다', async () => {
+    // 효창공원앞 lock 미리 저장. GPS는 강남 → 초기엔 sticky override.
+    const hyochang = { id: '6-019', name: '효창공원앞', line: '6', lineColor: '#cd7c2f',
+      lat: 37.539252, lng: 126.961392 };
+    await AsyncStorage.setItem(
+      'subway-now:sticky-station',
+      JSON.stringify({ station: hyochang, lockedAt: Date.now() - 60_000 }),
+    );
+    mockGranted();
+    mockLocation(37.4980, 127.0277, { accuracy: 100 }); // refresh가 받을 강남 좌표
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+    simulateGps(37.4980, 127.0277, { accuracy: 100 });
+    await waitFor(() => expect(result.current.source).toBe('sticky'));
+
+    // "현재위치" 탭 → releaseLock + refresh. sticky가 비워져 live(강남)로 복귀.
+    await act(async () => {
+      await result.current.requestCurrentLocation();
+    });
+    await waitFor(() => expect(result.current.source).toBe('live'));
+    expect(result.current.result?.station.name).toBe('강남');
+    // refresh 경로로 fresh GPS도 요청됐다.
+    expect(Location.getCurrentPositionAsync).toHaveBeenCalled();
+  });
 });
 
 describe('useNearestStation — E2E mock mode', () => {
