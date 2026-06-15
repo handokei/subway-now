@@ -1,4 +1,4 @@
-import type { Route } from '../../../shared/utils/stationRoute';
+import { findStationByNameAndLine, type Route } from '../../../shared/utils/stationRoute';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { LineNumber, Station } from '../../../shared/types/station';
 
@@ -17,12 +17,29 @@ import type { LineNumber, Station } from '../../../shared/types/station';
  * stopsToTransfer===0의 의미 모호성(환승역 정확 도착 vs 환승 완료)은 BoardingLock이 있으면 1번에서
  * 해소된다. lock 없는 케이스는 "transferring or transferred"로 추정 → toLine 안내가 더 유용
  * (사용자가 다음 leg arrivals를 봐야 함).
+ *
+ * #1325 방어 가드: route/lock에서 산출한 line이 currentStation이 실제 정차하는 노선이 아니면
+ * (잘못 탑승 / route 데시싱크로 다른 leg line이 샘) 현재역 라벨로 쓰지 않고 currentStation.line으로
+ * fallback한다. upstream fusion(#1317)을 고치기 전에도 혼동 라벨을 차단하는 독립 가드.
  */
 export function getApproachLine(
   route: Route,
   boardingLock: BoardingLock | null,
   currentStation: Station | null,
 ): LineNumber | null {
+  const candidate = resolveCandidateLine(route, boardingLock);
+
+  if (candidate && currentStation) {
+    return findStationByNameAndLine(currentStation.name, candidate)
+      ? candidate
+      : currentStation.line;
+  }
+
+  return candidate ?? currentStation?.line ?? null;
+}
+
+/** route + BoardingLock SSOT로 우선순위에 따라 노선을 산출한다 (검증 전 raw 후보). */
+function resolveCandidateLine(route: Route, boardingLock: BoardingLock | null): LineNumber | null {
   if (boardingLock) return boardingLock.boardingLine;
 
   if (route) {
@@ -40,5 +57,5 @@ export function getApproachLine(
     if (last) return last.toLine;
   }
 
-  return currentStation?.line ?? null;
+  return null;
 }
