@@ -523,6 +523,75 @@ describe('useBoardingLockSync (#901)', () => {
     });
   });
 
+  // #1286 — WiFi SSID 확정 역(stationFromWifi=true)은 accuracy>50m 게이트 우회.
+  describe('stationFromWifi accuracy 게이트 우회 (#1286)', () => {
+    it('stationFromWifi=true + accuracy>50m → debounce 후 발사 (게이트 우회)', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '용마산',
+          accuracyMeters: GOOD_FIX_ACCURACY_MAX_M + 150,
+          tripActive: true,
+          stationFromWifi: true,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+      expect(mockedSync.mock.calls[0][0]).toEqual(
+        expect.objectContaining({
+          observedStationName: '용마산',
+          accuracy: GOOD_FIX_ACCURACY_MAX_M + 150,
+        }),
+      );
+    });
+
+    it('stationFromWifi=true + force-trigger + accuracy>50m → 즉시 발사 (게이트 우회)', async () => {
+      const { rerender } = renderHook(
+        ({ key }: { key: string | null }) =>
+          useBoardingLockSync({
+            currentStationName: '용마산',
+            accuracyMeters: GOOD_FIX_ACCURACY_MAX_M + 150,
+            tripActive: true,
+            stationFromWifi: true,
+            forceTriggerKey: key,
+          }),
+        { initialProps: { key: null as string | null } },
+      );
+      expect(mockedSync).not.toHaveBeenCalled();
+      rerender({ key: 'wifi-underground' });
+      await flushAsyncStorage();
+      expect(mockedSync).toHaveBeenCalledTimes(1);
+    });
+
+    it('stationFromWifi=false(GPS 역) + accuracy>50m → 미발사 (게이트 유지)', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '강남',
+          accuracyMeters: GOOD_FIX_ACCURACY_MAX_M + 150,
+          tripActive: true,
+          stationFromWifi: false,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).not.toHaveBeenCalled();
+    });
+
+    it('stationFromWifi=true + accuracy=null → 여전히 미발사 (관측 부재)', async () => {
+      renderHook(() =>
+        useBoardingLockSync({
+          currentStationName: '용마산',
+          accuracyMeters: null,
+          tripActive: true,
+          stationFromWifi: true,
+        }),
+      );
+      act(() => jest.advanceTimersByTime(SYNC_DEBOUNCE_MS + 100));
+      await flushAsyncStorage();
+      expect(mockedSync).not.toHaveBeenCalled();
+    });
+  });
+
   it('debounce timer cleanup — unmount 시 미발사', async () => {
     const { unmount } = renderHook(() =>
       useBoardingLockSync({
