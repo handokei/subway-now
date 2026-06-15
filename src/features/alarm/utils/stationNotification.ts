@@ -16,6 +16,12 @@ import type { AlarmEvent } from './stationAlarm';
 import type { NextTarget } from './stationPipeline';
 import type { TripEndedReason } from '../tasks/silentPushTask';
 import * as LiveActivity from 'live-activity';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
+import {
+  ensureLiveActivityRegistered,
+  endLiveActivityWithDeregister,
+} from './liveActivityPushChannel';
 import { vibrateAlarm, stopVibration } from './alarmSound';
 import { speakAlarm } from './tts';
 import { createLogger } from '../../../shared/utils/logger';
@@ -403,7 +409,14 @@ export async function updateStationNotification(
     const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock, alarmEvent, source);
     try {
       liveActivityLogger.info('업데이트 요청');
-      await LiveActivity.updateLiveActivity(data);
+      // #1288 — 활성 trip이 있으면 LA push 토큰 등록 채널을 거친다. 활성 trip이 없으면
+      // 기존처럼 update만 호출(LA push 미등록은 silent, LA 자체는 정상 동작).
+      const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+      if (tripToken) {
+        await ensureLiveActivityRegistered(tripToken, data);
+      } else {
+        await LiveActivity.updateLiveActivity(data);
+      }
       liveActivityLogger.info('업데이트 성공');
     } catch (e) {
       liveActivityLogger.error('업데이트 실패:', e);
@@ -438,7 +451,14 @@ export async function clearStationNotification(): Promise<void> {
     }
     try {
       liveActivityLogger.info('종료 요청');
-      await LiveActivity.endLiveActivity();
+      // #1288 — 활성 trip이 있으면 backend deregister까지 함께 수행. 활성 trip이 없으면
+      // 기존처럼 native end만 호출.
+      const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+      if (tripToken) {
+        await endLiveActivityWithDeregister(tripToken);
+      } else {
+        await LiveActivity.endLiveActivity();
+      }
       liveActivityLogger.info('종료 성공');
     } catch (e) {
       liveActivityLogger.error('종료 실패:', e);
