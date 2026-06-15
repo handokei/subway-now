@@ -28,6 +28,22 @@ import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb
 const noop = (): void => {};
 
 /**
+ * #1321 — trip transition(목적지 switch/null) cleanup 직렬화 큐.
+ *
+ * setDestination은 동기 액션이라 cleanup chain(triggerTripEndRecall → runTripBoundCleanups →
+ * setTripStartedAt)을 fire-and-forget으로 띄운다. 사용자가 trip을 삭제(setDestination(null))한 직후
+ * 곧바로 재생성(setDestination(newStation))하면 두 chain이 interleave한다:
+ *   - delete chain의 runTripBoundCleanups(옛 `tba:`/`bl:` 사전 예약 cancel)가 아직 in-flight인 동안
+ *   - recreate chain이 setTripStartedAt을 기록 → hook들이 새 route를 preschedule
+ * → 옛 알람이 잔존하거나 새/옛 cancel 순서가 비결정적 → 매 cron마다 revalidate-route-sig-mismatch 폭주.
+ *
+ * 연속 transition을 이 promise에 chain해 직렬화한다. recreate의 cleanup + setTripStartedAt은
+ * 직전 delete의 cleanup이 완전히 settle한 뒤에야 시작되므로, hook이 새 trip을 preschedule할 시점에는
+ * 옛 알람이 이미 정리돼 있고 이후 어떤 cleanup도 새 알람을 쓸어가지 않는다.
+ */
+let tripTransitionQueue: Promise<unknown> = Promise.resolve();
+
+/**
  * Destination/route 상태 store — ADR 후속 Step 6 (#892).
  *
  * 책임:
@@ -111,7 +127,11 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       //    LAST_FIRED_ALARM_STATION_NAME_KEY, #746 dismissSilence 등 누락 사례 재발 방지.)
       // 3) 새 trip(station != null)이면 새 tripStart를 기록 — cleanup이 직전에 이전 키를 제거했으니
       //    여기서 set하면 다음 trip 측정 가능. station === null(trip 종료) 경로에서는 set 안 함.
-      triggerTripEndRecall()
+      // #1321 — delete→recreate race 차단: tripTransitionQueue에 chain해 직렬화한다.
+      // 직전 transition(예: delete)의 cleanup이 완전히 끝난 뒤에야 이번 transition(예: recreate)의
+      // cleanup + setTripStartedAt이 시작된다.
+      tripTransitionQueue = tripTransitionQueue
+        .then(() => triggerTripEndRecall())
         .catch(noop)
         .then(() => runTripBoundCleanups())
         .catch(noop)

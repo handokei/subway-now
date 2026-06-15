@@ -99,8 +99,20 @@ const otherStation: Station = {
   lng: 127.0366,
 };
 
+// #1321 — setDestination chain(triggerTripEndRecall → runTripBoundCleanups → setTripStartedAt)이
+// tripTransitionQueue에 직렬화돼 시작이 한 microtask 늦고 단계 사이 .catch가 microtask를 더한다.
+// 넉넉히 flush해 chain을 끝까지 진행시킨다(주 store 테스트의 flushMicrotasks와 동일 패턴).
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 30; i += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe('#1176 tripBoundCleanups audit — lockless ↔ lock 전이 회귀 가드', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    // #1321 — 직전 테스트가 enqueue한 tripTransitionQueue chain이 남아 있으면 다음 테스트의
+    // (clear된) mock으로 늦게 발사돼 호출 카운트를 오염시킨다. clearAllMocks 전에 먼저 drain.
+    await flushMicrotasks();
     jest.clearAllMocks();
     (AsyncStorage.removeItem as jest.Mock).mockResolvedValue(undefined);
     (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
@@ -138,10 +150,8 @@ describe('#1176 tripBoundCleanups audit — lockless ↔ lock 전이 회귀 가�
   it('case 5a: setDestination(null) (trip 종료) — triggerTripEndRecall → runTripBoundCleanups 순서로 호출되고 setTripStartedAt은 호출되지 않는다', async () => {
     useDestinationStore.setState({ destination: station });
     useDestinationStore.getState().setDestination(null);
-    // chain은 마이크로태스크 — flush.
-    await Promise.resolve();
-    await Promise.resolve();
-    await Promise.resolve();
+    // #1321 — chain이 tripTransitionQueue에 enqueue돼 한 microtask 늦게 시작하므로 넉넉히 flush.
+    await flushMicrotasks();
 
     expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
     expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
@@ -152,11 +162,9 @@ describe('#1176 tripBoundCleanups audit — lockless ↔ lock 전이 회귀 가�
   it('case 5b: setDestination(switch) (목적지 교체) — runTripBoundCleanups + setTripStartedAt 모두 호출된다', async () => {
     useDestinationStore.setState({ destination: station });
     useDestinationStore.getState().setDestination(otherStation);
-    // chain은 triggerTripEndRecall → runTripBoundCleanups → setTripStartedAt 3단 await.
-    // 각 단계 사이에 .catch가 끼어 추가 마이크로태스크가 필요하므로 넉넉히 flush.
-    for (let i = 0; i < 8; i += 1) {
-      await Promise.resolve();
-    }
+    // #1321 — chain은 triggerTripEndRecall → runTripBoundCleanups → setTripStartedAt 3단 await이며
+    // tripTransitionQueue 직렬화로 시작이 한 hop 늦다. 넉넉히 flush해 끝까지 진행시킨다.
+    await flushMicrotasks();
 
     expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
     expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
