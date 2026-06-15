@@ -450,56 +450,41 @@ describe('cancelTbaByStationPhase (#1355 D1)', () => {
     expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남');
   });
 
-  it('반대 prefix(`bl:`/`alarm:`)는 건드리지 않는다 (정밀성)', async () => {
-    mockedGetAll.mockResolvedValue([
-      { identifier: 'bl:T1:0:early:강남' },
-      { identifier: 'alarm:early:강남' },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ] as any);
-
+  it.each([
+    {
+      name: '반대 prefix(`bl:`/`alarm:`)는 건드리지 않는다 (정밀성)',
+      ids: ['bl:T1:0:early:강남', 'alarm:early:강남'],
+      expectedCancelled: 0,
+      expectedCalls: [] as string[],
+    },
+    {
+      name: '다른 station/phase는 보존',
+      ids: ['tba:imminent:강남', 'tba:early:사가정'],
+      expectedCancelled: 0,
+      expectedCalls: [],
+    },
+    {
+      name: '중복역(:n suffix)도 같은 stationName이면 모두 cancel — cross-channel은 모든 occurrence stale',
+      ids: ['tba:early:강남', 'tba:early:강남:1'],
+      expectedCancelled: 2,
+      expectedCalls: ['tba:early:강남', 'tba:early:강남:1'],
+    },
+    {
+      name: 'parse 실패 identifier는 graceful skip',
+      ids: ['tba:malformed'],
+      expectedCancelled: 0,
+      expectedCalls: [],
+    },
+  ])('$name', async ({ ids, expectedCancelled, expectedCalls }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockedGetAll.mockResolvedValue(ids.map((identifier) => ({ identifier })) as any);
     const cancelled = await cancelTbaByStationPhase('강남', 'early');
-
-    expect(cancelled).toBe(0);
-    expect(mockedCancel).not.toHaveBeenCalled();
-  });
-
-  it('다른 station/phase는 보존', async () => {
-    mockedGetAll.mockResolvedValue([
-      { identifier: 'tba:imminent:강남' }, // 다른 phase
-      { identifier: 'tba:early:사가정' }, // 다른 station
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ] as any);
-
-    const cancelled = await cancelTbaByStationPhase('강남', 'early');
-
-    expect(cancelled).toBe(0);
-    expect(mockedCancel).not.toHaveBeenCalled();
-  });
-
-  it('중복역(:n suffix)도 같은 stationName이면 모두 cancel — cross-channel은 모든 occurrence stale', async () => {
-    mockedGetAll.mockResolvedValue([
-      { identifier: 'tba:early:강남' }, // occurrenceIdx=0
-      { identifier: 'tba:early:강남:1' }, // occurrenceIdx=1
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ] as any);
-
-    const cancelled = await cancelTbaByStationPhase('강남', 'early');
-
-    expect(cancelled).toBe(2);
-    expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남');
-    expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남:1');
-  });
-
-  it('parse 실패 identifier는 graceful skip', async () => {
-    mockedGetAll.mockResolvedValue([
-      { identifier: 'tba:malformed' }, // parseTripBoundAlarmIdentifier가 null 반환
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ] as any);
-
-    const cancelled = await cancelTbaByStationPhase('강남', 'early');
-
-    expect(cancelled).toBe(0);
-    expect(mockedCancel).not.toHaveBeenCalled();
+    expect(cancelled).toBe(expectedCancelled);
+    if (expectedCalls.length === 0) {
+      expect(mockedCancel).not.toHaveBeenCalled();
+    } else {
+      for (const id of expectedCalls) expect(mockedCancel).toHaveBeenCalledWith(id);
+    }
   });
 
   it('OS 큐가 비어 있으면 safe no-op', async () => {
