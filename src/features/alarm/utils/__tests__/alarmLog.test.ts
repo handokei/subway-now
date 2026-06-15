@@ -57,6 +57,7 @@ import {
   countBoardingPromptByWindow,
   logBoardingPromptAutoLock,
   countBoardingPromptAutoLockOutcomes,
+  logScheduleSkipped,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -1720,6 +1721,35 @@ describe('alarmLog', () => {
         outcome: 'received',
         reason,
       });
+    });
+  });
+
+  describe('logScheduleSkipped (#1357 S1)', () => {
+    beforeEach(() => {
+      resetAlarmLogForTest();
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+    });
+
+    it('channel + destinationName을 stationName 슬롯에 인코딩해 적재', async () => {
+      logScheduleSkipped({ channel: 'tba', reason: 'motion-stationary', destinationName: '강남' });
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved = JSON.parse(savedJson);
+      expect(saved).toHaveLength(1);
+      expect(saved[0]).toMatchObject({
+        source: 'bg-scheduled',
+        outcome: 'suppressed',
+        reason: 'schedule-skipped-motion-stationary',
+        stationName: 'tba:강남',
+      });
+    });
+
+    it('channel=bl + destinationName 미상이면 channel만 stationName으로 기록', async () => {
+      logScheduleSkipped({ channel: 'bl', reason: 'motion-stationary' });
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved = JSON.parse(savedJson);
+      expect(saved[0].stationName).toBe('bl');
     });
   });
 

@@ -141,7 +141,11 @@ export type AlarmLogReason =
   //   'response-boarded': [탑승] 또는 default 탭 액션.
   //   'response-dismissed': [미탑승] 또는 dismiss.
   | 'response-boarded'
-  | 'response-dismissed';
+  | 'response-dismissed'
+  // #1357 (S1) — preschedule 진입 시 motion=stationary 확정으로 사전예약 schedule을 skip한 경우.
+  // boardingLock/lockless 양쪽 path 공통. OS scheduleNotificationAsync 0회로 정적 trip 시작의
+  // 첫 banner 발사를 차단한다. share dump에서 'schedule-skipped-motion-stationary' 카운트로 추적.
+  | 'schedule-skipped-motion-stationary';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -900,6 +904,32 @@ export function logSuppressedTbaRevalidation(input: {
     reason: input.reason,
     stationName: input.stationName,
     phaseId: input.phaseId,
+  });
+}
+
+/**
+ * #1357 (S1) — preschedule 시점 motion gate가 사전예약을 skip한 1건 적재.
+ *
+ * `prescheduleStationAlerts` / `scheduleHopsForLock` 진입 직후 motion=stationary 확정 시 호출.
+ * source는 'bg-scheduled'로 통일(다른 preschedule path log와 동일 source).
+ * channel은 stationName 슬롯에 'tba'|'bl'로 인코딩해 두 path 분포를 같은 reason 카운터에서 구분 가능.
+ */
+export function logScheduleSkipped(input: {
+  channel: 'tba' | 'bl';
+  reason: 'motion-stationary';
+  destinationName?: string;
+}): void {
+  // channel + destinationName을 stationName 슬롯에 인코딩 — 새 컬럼 추가 없이 share dump 가시화.
+  // destinationName 미상이면 channel만 기록.
+  const stationName = input.destinationName
+    ? `${input.channel}:${input.destinationName}`
+    : input.channel;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'bg-scheduled',
+    outcome: 'suppressed',
+    reason: 'schedule-skipped-motion-stationary',
+    stationName,
   });
 }
 

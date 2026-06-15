@@ -10,6 +10,12 @@ import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
 import { TRIP_BOUND_ROUTE_SIG_KEY } from '../../../shared/constants/storageKeys';
 import { createLogger } from '../../../shared/utils/logger';
 import { recordScheduledAlarm } from './prescheduledMetrics';
+// #1357 (S1) — preschedule 진입 시 motion gate. silentPushTask와 같은 evaluateMovement 재사용.
+// eslint-disable-next-line import/no-restricted-paths -- cross-feature movement gate SSOT (silentPushTask와 동일 패턴).
+import { evaluateMovement, isStaticMovementResult } from '../../nearest-station/utils/movementGate';
+// eslint-disable-next-line import/no-restricted-paths -- BG에서 motion 신호를 읽는 단일 helper.
+import { getCurrentMotionStationary } from '../../nearest-station/utils/motionActivity';
+import { logScheduleSkipped } from './alarmLog';
 
 const logger = createLogger('TripBoundScheduler');
 
@@ -168,6 +174,31 @@ export async function prescheduleStationAlerts(
     return [];
   }
   if (routeStops.length === 0) {
+    return [];
+  }
+
+  // #1357 (S1) — preschedule 시점 motion gate.
+  // 정적 trip 시작 시 즉시 ETA 시각 OS local notification이 박혀 첫 banner가 1회 발사되는 회귀를 차단.
+  // evaluateMovement에 loc={}(no-location 가드 우회용 빈 객체)을 넘기고 motion 신호만 평가한다 —
+  // preschedule path는 호출 시점에 GPS speed/accuracy를 신뢰성 있게 알기 어려워(BG cold restart 등)
+  // motion=stationary(CMMotionActivity 가속도계) 단일 신호로 결정한다.
+  //
+  // motion=unknown(권한 X / 미초기화) 또는 false면 reliable=true 또는 motion-warmup → schedule 진행
+  // (false negative 회피, ADR-010: false positive == miss 동급).
+  // sleepMode는 별도 gate(shouldSkipFirstTransferForSleep)에서 처리 — 본 게이트는 sleepMode 무관.
+  // top-up 진입(startStopIndex>0)도 동일 게이트 적용 — 정적 상태에서 추가 윈도우 채움도 차단.
+  const motionStationary = getCurrentMotionStationary();
+  const movement = evaluateMovement({}, undefined, undefined, motionStationary);
+  if (!movement.reliable && isStaticMovementResult(movement.reason)) {
+    const destinationName = routeStops.at(-1)?.stationName;
+    logScheduleSkipped({
+      channel: 'tba',
+      reason: 'motion-stationary',
+      destinationName,
+    });
+    logger.info(
+      `preschedule skip reason=${movement.reason} stops=${routeStops.length} startStopIndex=${startStopIndex}`,
+    );
     return [];
   }
 

@@ -30,6 +30,14 @@ import {
 
 jest.mock('expo-notifications');
 
+// #1357 (S1) — preschedule 진입 시 motion gate가 getCurrentMotionStationary()를 호출.
+// 기본은 false(jest 환경에서 native module 부재와 동등 — 기존 테스트 동작 보존).
+// motion=true 케이스만 본 PR S1 describe에서 override.
+const mockGetCurrentMotionStationary = jest.fn<boolean, []>(() => false);
+jest.mock('../../../nearest-station/utils/motionActivity', () => ({
+  getCurrentMotionStationary: () => mockGetCurrentMotionStationary(),
+}));
+
 const mockLoggerWarn = jest.fn();
 const mockLoggerInfo = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -87,6 +95,8 @@ const setupIosFakeTimers = () => {
   mockLoggerWarn.mockClear();
   mockLoggerInfo.mockClear();
   mockedSchedule.mockResolvedValue('id');
+  // #1357 (S1) — motion stationary 기본 false 복원 (clearAllMocks가 impl 지우므로).
+  mockGetCurrentMotionStationary.mockReturnValue(false);
   jest.replaceProperty(Platform, 'OS', 'ios');
   jest.useFakeTimers().setSystemTime(NOW);
 };
@@ -1093,5 +1103,72 @@ describe('topUpTripBoundWindow 중복역 occurrence 격리 (#1193)', () => {
     expect(mockedCancel).not.toHaveBeenCalledWith('tba:early:A:1');
     expect(mockedCancel).not.toHaveBeenCalledWith('tba:imminent:A:1');
     expect(r.cancelled).toBe(2);
+  });
+});
+
+describe('prescheduleStationAlerts #1357 (S1) motion gate', () => {
+  beforeEach(setupIosFakeTimers);
+  afterEach(teardownFakeTimers);
+
+  // alarmLog는 in-memory pending에 push만 — getAlarmLog가 pending까지 병합 반환하므로 별도 flush 불필요.
+  // 다른 describe와 isolation 보장 위해 매 테스트 시작 시 reset.
+  beforeEach(() => {
+    const { resetAlarmLogForTest } = jest.requireActual('../alarmLog');
+    resetAlarmLogForTest();
+  });
+
+  it('motion=stationary 확정이면 schedule을 skip하고 0건 반환', async () => {
+    mockGetCurrentMotionStationary.mockReturnValue(true);
+    const result = await prescheduleWith();
+    expect(result).toEqual([]);
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('motion=stationary 시 alarm_log에 schedule-skipped-motion-stationary 적재 (channel=tba)', async () => {
+    mockGetCurrentMotionStationary.mockReturnValue(true);
+    await prescheduleWith();
+    const entries = await jest.requireActual('../alarmLog').getAlarmLog();
+    // channel:destinationName 인코딩 — defaultStops 마지막 stop이 '강남'.
+    expect(entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: 'schedule-skipped-motion-stationary',
+          source: 'bg-scheduled',
+          outcome: 'suppressed',
+          stationName: 'tba:강남',
+        }),
+      ]),
+    );
+  });
+
+  it('motion=false (이동 중)이면 정상 schedule 진행', async () => {
+    mockGetCurrentMotionStationary.mockReturnValue(false);
+    const result = await prescheduleWith();
+    expect(result.length).toBeGreaterThan(0);
+    expect(mockedSchedule).toHaveBeenCalled();
+  });
+
+  it('motion=stationary + top-up 진입(startStopIndex>0)도 동일하게 skip', async () => {
+    mockGetCurrentMotionStationary.mockReturnValue(true);
+    const result = await prescheduleWith({ startStopIndex: 1, windowSize: 2 });
+    expect(result).toEqual([]);
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('motion=stationary 적재 entry는 burst counter로 같은 channel:dest를 dedup하지 않는다 (idempotent)', async () => {
+    // 같은 motion=stationary 상태로 2번 진입 시 inline counter 또는 별도 entry로 모두 측정돼야
+    // share dump에서 시도 횟수가 보존된다. appendAlarmLog의 burst inline counter 정책상 같은
+    // (source/reason/stationName) 연속 호출은 count++로 합쳐진다 — entry 1건 + count=2가 정상.
+    mockGetCurrentMotionStationary.mockReturnValue(true);
+    await prescheduleWith();
+    await prescheduleWith();
+    const { getAlarmLog } = jest.requireActual('../alarmLog');
+    const entries = await getAlarmLog();
+    const skips = entries.filter(
+      (e: { reason?: string }) => e.reason === 'schedule-skipped-motion-stationary',
+    );
+    // 1건 + count=2 (burst inline counter) — share dump에서 시도 횟수가 보존됨을 확인.
+    expect(skips).toHaveLength(1);
+    expect(skips[0].count).toBe(2);
   });
 });
