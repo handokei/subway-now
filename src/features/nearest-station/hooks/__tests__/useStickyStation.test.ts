@@ -16,6 +16,7 @@ import { act, renderHook, waitFor } from '@testing-library/react-native';
 import { useStickyStation, type StickyFixInput, type StickyMotionInput } from '../useStickyStation';
 import {
   STICKY_DEGRADED_UNLOCK_COUNT,
+  STICKY_LOCK_CONSECUTIVE_COUNT,
   STICKY_TTL_MS,
 } from '../../../../shared/constants/stickyStation';
 import { STICKY_STATION_KEY } from '../../../../shared/constants/storageKeys';
@@ -433,5 +434,152 @@ describe('useStickyStation (#876)', () => {
     rerender({ fix: fixAt(null) });
     rerender({ fix: fixAt(null) });
     expect(result.current.locked).toBeNull();
+  });
+
+  // #1345 — same-lock guard. lock된 상태에서 같은 candidate가 N회 도달할 때마다 발생하던
+  // emit/write/setLocked cascade(9시간 ~16만회 발화) 차단. lockedAtRef는 silent 갱신.
+  describe('#1345 — same-lock guard (emit cascade 차단)', () => {
+    // lock 직후 spy를 clear해서 후속 cascade만 측정한다.
+    // pushSpy/setSpy는 spy 객체가 누적될 수 있어 매 it 시작 시 mockClear로 초기화 보장.
+    const lockSeoulAndClear = async (
+      pushSpy: jest.SpyInstance,
+      setSpy: jest.SpyInstance,
+    ) => {
+      pushSpy.mockClear();
+      setSpy.mockClear();
+      const hook = renderSticky({ fix: fixAt(seoul) });
+      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      hook.rerender({ fix: fixAt(seoul) });
+      hook.rerender({ fix: fixAt(seoul) });
+      await waitFor(() => expect(hook.result.current.locked?.id).toBe(seoul.id));
+      // 첫 lock의 emit 1회 검증 후 spy clear (이후 측정은 cascade만).
+      expect(
+        pushSpy.mock.calls.filter(
+          ([entry]) => entry?.kind === 'sticky' && entry?.event === 'locked',
+        ),
+      ).toHaveLength(1);
+      pushSpy.mockClear();
+      setSpy.mockClear();
+      return hook;
+    };
+
+    it('lock 후 같은 station 후속 N회 → emit/write/setLocked 추가 0회', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      const setSpy = jest.spyOn(AsyncStorage, 'setItem');
+      const { result, rerender } = await lockSeoulAndClear(pushSpy, setSpy);
+      // lock 직후 reference로 stable 비교용 captured.
+      const stationRef = result.current.locked;
+
+      // 같은 candidate를 N*2회 추가 → 같은 lock이 유지되고 cascade emit 0회.
+      for (let i = 0; i < STICKY_LOCK_CONSECUTIVE_COUNT * 2; i += 1) {
+        rerender({ fix: fixAt(seoul) });
+      }
+      expect(result.current.locked).toBe(stationRef); // setLocked 안 호출 → 같은 ref
+      const lockedEvents = pushSpy.mock.calls.filter(
+        ([entry]) => entry?.kind === 'sticky' && entry?.event === 'locked',
+      );
+      expect(lockedEvents).toHaveLength(0);
+      const setItemCalls = setSpy.mock.calls.filter(
+        ([key]) => key === STICKY_STATION_KEY,
+      );
+      expect(setItemCalls).toHaveLength(0);
+    });
+
+    it('lock 후 신호 단절(나쁜 fix) → 같은 station 복귀 N회 → cascade 0회 (재lock emit 없음)', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      const setSpy = jest.spyOn(AsyncStorage, 'setItem');
+      const { result, rerender } = await lockSeoulAndClear(pushSpy, setSpy);
+
+      // 신호 단절(accuracy>50m) → candidateCountRef 리셋.
+      rerender({ fix: fixAt(seoul, { accuracy: 80 }) });
+      // 같은 station 좋은 fix N회 복귀 → guard 작동, emit 추가 0회.
+      for (let i = 0; i < STICKY_LOCK_CONSECUTIVE_COUNT; i += 1) {
+        rerender({ fix: fixAt(seoul) });
+      }
+      expect(result.current.locked?.id).toBe(seoul.id);
+      const lockedEvents = pushSpy.mock.calls.filter(
+        ([entry]) => entry?.kind === 'sticky' && entry?.event === 'locked',
+      );
+      expect(lockedEvents).toHaveLength(0);
+      const setItemCalls = setSpy.mock.calls.filter(
+        ([key]) => key === STICKY_STATION_KEY,
+      );
+      expect(setItemCalls).toHaveLength(0);
+    });
+
+    it('same-lock guard에서 lockedAtRef silent 갱신 → TTL renewal 동작 (30분 직전엔 unlock 안 됨)', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      const setSpy = jest.spyOn(AsyncStorage, 'setItem');
+      const realNow = Date.now();
+      jest.setSystemTime(realNow);
+      const { result, rerender } = await lockSeoulAndClear(pushSpy, setSpy);
+
+      // TTL 직전 시점(29분)에서 같은 station N회 → guard가 lockedAtRef를 갱신.
+      jest.setSystemTime(realNow + STICKY_TTL_MS - 60_000);
+      for (let i = 0; i < STICKY_LOCK_CONSECUTIVE_COUNT; i += 1) {
+        rerender({ fix: fixAt(seoul) });
+      }
+      // renew 직후로부터 29분 경과(원 lockedAt 기준 ~58분) → renewal이 동작했다면 unlock 안 됨.
+      jest.setSystemTime(realNow + STICKY_TTL_MS * 2 - 120_000);
+      rerender({ fix: fixAt(seoul) });
+      expect(result.current.locked?.id).toBe(seoul.id);
+      const ttlEvents = pushSpy.mock.calls.filter(
+        ([entry]) => entry?.kind === 'sticky' && entry?.event === 'unlocked-ttl',
+      );
+      expect(ttlEvents).toHaveLength(0);
+    });
+
+    it('same-lock guard 후 better-fix(다른 station N회) → 기존 unlock-better-fix + 새 lock 정상 emit', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      const setSpy = jest.spyOn(AsyncStorage, 'setItem');
+      const { result, rerender } = await lockSeoulAndClear(pushSpy, setSpy);
+
+      // 같은 station N회 (guard 작동, cascade 차단)
+      for (let i = 0; i < STICKY_LOCK_CONSECUTIVE_COUNT; i += 1) {
+        rerender({ fix: fixAt(seoul) });
+      }
+      // 다른 station(seoulNearby) N회 → 정상 better-fix 갱신.
+      for (let i = 0; i < STICKY_LOCK_CONSECUTIVE_COUNT; i += 1) {
+        rerender({ fix: fixAt(seoulNearby) });
+      }
+      await waitFor(() => expect(result.current.locked?.id).toBe(seoulNearby.id));
+      const betterFixEvents = pushSpy.mock.calls.filter(
+        ([entry]) => entry?.kind === 'sticky' && entry?.event === 'unlocked-better-fix',
+      );
+      expect(betterFixEvents).toHaveLength(1);
+      const newLockedEvents = pushSpy.mock.calls.filter(
+        ([entry]) =>
+          entry?.kind === 'sticky' && entry?.event === 'locked' && entry?.stationName === '서울역인접',
+      );
+      expect(newLockedEvents).toHaveLength(1);
+    });
+
+    it('same-lock guard에서 movedAwayCountRef 리셋 → 이전 누적이 leak 안 됨', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      const setSpy = jest.spyOn(AsyncStorage, 'setItem');
+      const { result, rerender } = await lockSeoulAndClear(pushSpy, setSpy);
+
+      // 저품질 far fix를 (N-1)회 — moved-away 누적은 임계 미만.
+      const movedFixes = [gunja, konkuk];
+      for (let i = 0; i < STICKY_DEGRADED_UNLOCK_COUNT - 1; i += 1) {
+        rerender({ fix: degradedFixAt(movedFixes[i % movedFixes.length]) });
+      }
+      expect(result.current.locked?.id).toBe(seoul.id);
+
+      // 같은 station(seoul) 좋은 fix N회 → guard 발동 시 movedAwayCountRef = 0 으로 리셋.
+      for (let i = 0; i < STICKY_LOCK_CONSECUTIVE_COUNT; i += 1) {
+        rerender({ fix: fixAt(seoul) });
+      }
+
+      // 다시 저품질 far fix를 (N-1)회 — 누적이 leak되지 않았다면 임계 미만이라 unlock 안 됨.
+      for (let i = 0; i < STICKY_DEGRADED_UNLOCK_COUNT - 1; i += 1) {
+        rerender({ fix: degradedFixAt(movedFixes[i % movedFixes.length]) });
+      }
+      expect(result.current.locked?.id).toBe(seoul.id);
+      const movedAwayEvents = pushSpy.mock.calls.filter(
+        ([entry]) => entry?.kind === 'sticky' && entry?.event === 'unlocked-moved-away',
+      );
+      expect(movedAwayEvents).toHaveLength(0);
+    });
   });
 });
