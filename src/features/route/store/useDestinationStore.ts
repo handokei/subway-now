@@ -23,6 +23,7 @@ import { triggerTripEndRecall } from '../../alarm/utils/triggerTripEndRecall';
 import { useAlarmEventStore } from '../../alarm/store/useAlarmEventStore';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../../../shared/utils/stationRoute';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
+import { extractCallerFrame } from '../../../shared/utils/extractCallerFrame';
 import { isDegenerateDestination } from '../utils/isDegenerateDestination';
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function
@@ -107,6 +108,19 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
     }
     const prev = get().destination;
     const isSwitch = (prev?.id ?? null) !== (station?.id ?? null);
+    // #1346 — 모든 setDestination 호출에 caller stamp breadcrumb. lockless trip 잔존(tripStartedAt
+    // 9시간) 분석 시 어느 컴포넌트가 마지막으로 호출했는지 사후 재구성용. caller 추출은
+    // EXPO_PUBLIC_DEBUG_MODAL 게이트 안에서만 — 운영 빌드는 stack trace 비용 0.
+    const caller =
+      process.env.EXPO_PUBLIC_DEBUG_MODAL === 'true'
+        ? extractCallerFrame(new Error('caller-trace'))
+        : undefined;
+    addDomainBreadcrumb('trip', 'setDestination-call', {
+      prevId: prev?.id ?? null,
+      nextId: station?.id ?? null,
+      isSwitch,
+      caller,
+    });
     set({ destination: station });
     if (station) {
       AsyncStorage.setItem(DESTINATION_KEY, JSON.stringify(station)).catch(noop);
