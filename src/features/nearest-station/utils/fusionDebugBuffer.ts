@@ -70,7 +70,11 @@ export type StickyStationEvent =
   | 'unlocked-distance'
   | 'unlocked-motion'
   | 'unlocked-ttl'
-  | 'unlocked-better-fix';
+  | 'unlocked-better-fix'
+  // #1317 — 저품질 GPS에서 1km+ 멀어진 다른 역 fix가 N회 연속 관찰돼 unlock.
+  | 'unlocked-moved-away'
+  // #1317 — 사용자가 지도탭 "현재위치"를 명시적으로 탭해 unlock(live 위치 요청).
+  | 'unlocked-manual';
 
 export interface StickyStationEntry {
   kind: 'sticky';

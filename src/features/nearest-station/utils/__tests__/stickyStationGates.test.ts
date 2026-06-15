@@ -10,6 +10,7 @@
 
 import type { Station } from '../../../../shared/types/station';
 import {
+  STICKY_DEGRADED_UNLOCK_ACCURACY_M,
   STICKY_GOOD_FIX_ACCURACY_M,
   STICKY_GOOD_FIX_SPEED_MAX_MPS,
   STICKY_TTL_MS,
@@ -17,6 +18,7 @@ import {
 } from '../../../../shared/constants/stickyStation';
 import {
   isGoodFix,
+  shouldCountAsMovedAway,
   shouldUnlockByDistance,
   shouldUnlockByTtl,
   shouldUnlockByMotion,
@@ -113,6 +115,71 @@ describe('shouldUnlockByDistance', () => {
     expect(
       shouldUnlockByDistance(seoulStation, { ...farFromLocked, ...flags }),
     ).toBe(expected);
+  });
+});
+
+describe('shouldCountAsMovedAway (#1317)', () => {
+  // 강남역 좌표 — 서울역에서 약 10km, 다른 역 id. accuracy는 strict 게이트(50m) 초과지만
+  // degraded 게이트(250m) 이내인 저품질 fix(용마산 trip의 52.7m를 모사).
+  const degradedFarFix = {
+    lat: 37.4979,
+    lng: 127.0276,
+    accuracyMeters: 52.7,
+    candidateId: '0222',
+  };
+
+  it('저품질(>50m, ≤250m) + 1km+ + 다른 역 → true (strict distance는 막히는 케이스)', () => {
+    expect(shouldUnlockByDistance(seoulStation, degradedFarFix)).toBe(false); // strict는 막힘
+    expect(shouldCountAsMovedAway(seoulStation, degradedFarFix)).toBe(true); // degraded는 카운트
+  });
+
+  it('accuracy null → false (좌표 신뢰 불가)', () => {
+    expect(
+      shouldCountAsMovedAway(seoulStation, { ...degradedFarFix, accuracyMeters: null }),
+    ).toBe(false);
+  });
+
+  it('accuracy가 degraded 임계(250m) 초과 → false (쓰레기 좌표 거부)', () => {
+    expect(
+      shouldCountAsMovedAway(seoulStation, {
+        ...degradedFarFix,
+        accuracyMeters: STICKY_DEGRADED_UNLOCK_ACCURACY_M + 1,
+      }),
+    ).toBe(false);
+  });
+
+  it('후보 역 id가 lock된 역과 동일 → false (멀어짐 아님)', () => {
+    expect(
+      shouldCountAsMovedAway(seoulStation, { ...degradedFarFix, candidateId: seoulStation.id }),
+    ).toBe(false);
+  });
+
+  it('후보 역 id가 null → false', () => {
+    expect(
+      shouldCountAsMovedAway(seoulStation, { ...degradedFarFix, candidateId: null }),
+    ).toBe(false);
+  });
+
+  it('1km 이내(근처) 다른 역 → false', () => {
+    // 서울역 근방 좌표 — 1km 미만.
+    expect(
+      shouldCountAsMovedAway(seoulStation, {
+        lat: 37.5565,
+        lng: 126.9707,
+        accuracyMeters: 52.7,
+        candidateId: '0150B',
+      }),
+    ).toBe(false);
+  });
+
+  // D6 (#1212) — degraded 게이트도 strict distance와 동일하게 지하 dead-zone hold를 따른다.
+  it.each<[string, { subsurface?: boolean; tripActive?: boolean }, boolean]>([
+    ['subsurface=true + tripActive=true → 지하 dead-zone 의심 → false', { subsurface: true, tripActive: true }, false],
+    ['subsurface=true + tripActive=false → 지하지만 trip 미활성 → true', { subsurface: true, tripActive: false }, true],
+    ['subsurface=false + tripActive=true → 지상 trip → true', { subsurface: false, tripActive: true }, true],
+    ['둘 다 미정의 → 기존 동작 → true', {}, true],
+  ])('%s', (_label, flags, expected) => {
+    expect(shouldCountAsMovedAway(seoulStation, { ...degradedFarFix, ...flags })).toBe(expected);
   });
 });
 
