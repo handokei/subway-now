@@ -4,6 +4,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   TRIPBOUND_WINDOW_SIZE,
   TRIP_BOUND_ALARM_PREFIX,
+  cancelTbaByStationPhase,
   cancelTripBoundAlarms,
   clearRegisteredTripRouteSig,
   deriveTripBoundStops,
@@ -425,6 +426,63 @@ describe('cancelTripBoundAlarms', () => {
     await cancelTripBoundAlarms();
     expect(removeSpy).toHaveBeenCalledWith(TRIP_BOUND_ROUTE_SIG_KEY);
     removeSpy.mockRestore();
+  });
+});
+
+describe('cancelTbaByStationPhase (#1356 E1)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockLoggerInfo.mockClear();
+  });
+
+  it('같은 stationName + phaseId 매칭만 cancel (다른 phase / 다른 station / 다른 prefix 보존)', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:early:강남' },         // 매칭
+      { identifier: 'tba:early:강남:1' },       // 매칭 (중복 occurrence)
+      { identifier: 'tba:imminent:강남' },      // 다른 phase
+      { identifier: 'tba:early:역삼' },         // 다른 station
+      { identifier: 'alarm:early:강남' },       // 다른 prefix
+      { identifier: 'bl:T1:0:early:강남' },     // 다른 prefix
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+
+    await cancelTbaByStationPhase('강남', 'early');
+
+    expect(mockedCancel).toHaveBeenCalledTimes(2);
+    expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남');
+    expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남:1');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:imminent:강남');
+    expect(mockedCancel).not.toHaveBeenCalledWith('tba:early:역삼');
+    expect(mockedCancel).not.toHaveBeenCalledWith('alarm:early:강남');
+    expect(mockedCancel).not.toHaveBeenCalledWith('bl:T1:0:early:강남');
+  });
+
+  it('매칭 없으면 cancel 호출 안 함 (safe no-op)', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:imminent:강남' },
+      { identifier: 'alarm:early:강남' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    await cancelTbaByStationPhase('강남', 'early');
+    expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
+  it('OS 큐가 빈 경우 no-op', async () => {
+    mockedGetAll.mockResolvedValue([]);
+    await cancelTbaByStationPhase('강남', 'early');
+    expect(mockedCancel).not.toHaveBeenCalled();
+  });
+
+  it('tba: prefix이지만 malformed identifier는 skip (parsed === null 가드)', async () => {
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:onlyphase' },     // parse 실패 → skip
+      { identifier: 'tba::강남' },          // parse 실패 → skip
+      { identifier: 'tba:early:강남' },     // 정상 매칭
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    await cancelTbaByStationPhase('강남', 'early');
+    expect(mockedCancel).toHaveBeenCalledTimes(1);
+    expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남');
   });
 });
 

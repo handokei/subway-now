@@ -57,8 +57,8 @@ import {
   checkSilentPushLocationGate,
   type GateSkipReason,
 } from '../utils/silentPushLocationGate';
-import { rescheduleHopForLock } from '../utils/boardingLockScheduler';
-import { rescheduleTripBoundAlarm } from '../utils/tripBoundScheduler';
+import { cancelBlByStationPhase, rescheduleHopForLock } from '../utils/boardingLockScheduler';
+import { cancelTbaByStationPhase, rescheduleTripBoundAlarm } from '../utils/tripBoundScheduler';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
@@ -917,6 +917,12 @@ async function fireWithGate(
     });
     ackOutcome(payload.pushId, apnsToken, 'skipped', reason);
     logger.info(`gate skip reason=${gate.reason} distance=${gate.distanceM ?? '-'}`);
+    // #1356 E1 — silent fire가 suppress되는 동안 같은 station의 사전 예약(`tba:`/`bl:`)도 OS queue
+    // 에서 cancel. backend는 정적/out-of-range를 인식해 다음 silent push를 발사하지 않지만, OS queue에
+    // 잔존한 사전 예약은 시간이 되면 자체 발사 → stale "다음 역" 알람. nextWaypoint/phase는 본 분기
+    // 에서 항상 존재(SilentPushPayload 필수 필드).
+    await cancelTbaByStationPhase(payload.nextWaypoint, payload.phase);
+    await cancelBlByStationPhase(payload.nextWaypoint, payload.phase);
     return;
   }
 
@@ -952,6 +958,9 @@ async function fireWithGate(
     logger.info(
       `movement skip: reason=${movementReason} speed=${gate.speedMps ?? '-'} accuracy=${gate.accuracyM ?? '-'}`,
     );
+    // #1356 E1 — motion=stationary suppress 동안 같은 station 사전 예약도 cancel. (gate 분기와 동일 의도)
+    await cancelTbaByStationPhase(payload.nextWaypoint, payload.phase);
+    await cancelBlByStationPhase(payload.nextWaypoint, payload.phase);
     return;
   }
 

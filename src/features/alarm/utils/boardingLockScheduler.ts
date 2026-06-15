@@ -317,6 +317,36 @@ export async function cancelAllHopsForLock(lock: BoardingLock): Promise<void> {
 }
 
 /**
+ * #1356 E1 — 추적 큐에서 같은 station + phase의 `bl:` 사전 예약을 cancel + 큐에서 제거.
+ *
+ * silent push가 motion=stationary 또는 location gate 게이트에서 suppress될 때 호출. backend는
+ * 정적 상태를 인식해 silent push를 새로 발사하지 않지만, 이미 OS queue에 들어있는 같은 station의
+ * `bl:` 사전 예약은 시간이 되면 자체적으로 발사된다 — 그 stale fire를 차단한다.
+ *
+ * 매칭 대상: `bl:*:*:*:${stationName}` (trainCode/hopIndex 무관, phase 일치). lock identity가 바뀌어도
+ * 같은 station+phase 알람은 잘못된 fire이므로 정리. {@link parseBoardingLockAlarmIdentifier}로 station
+ * 매칭은 `isSameStationName`을 거쳐 노선별 부제(예: '서울대입구역(관악구청)') 차이도 수용한다.
+ */
+export async function cancelBlByStationPhase(
+  stationName: string,
+  phase: AlarmPhaseId,
+): Promise<void> {
+  const current = await getScheduledNotificationIds();
+  const toCancel = current.filter((id) => {
+    const parsed = parseBoardingLockAlarmIdentifier(id);
+    if (!parsed) return false;
+    if (parsed.phase !== phase) return false;
+    return isSameStationName(parsed.stationName, stationName);
+  });
+  if (toCancel.length === 0) return;
+  await cancelAndDismiss(toCancel);
+  await removeScheduledNotificationIds(toCancel);
+  logger.info(
+    `cancelled ${toCancel.length} bl alarms for station=${stationName} phase=${phase}`,
+  );
+}
+
+/**
  * 큐 전체를 비운다 — SCHEDULED_NOTIFICATIONS 키 안의 `bl:` prefix 항목만.
  * 마운트 시점 위생 처리용 (예: app restart 후 stale 큐 정리). cancelAllHopsForLock과 동일하게
  * 발사된 알람은 dismiss까지 시도한다.

@@ -5,6 +5,7 @@ import {
   advanceHopWindow,
   boardingLockAlarmIdentifier,
   cancelAllHopsForLock,
+  cancelBlByStationPhase,
   clearRegisteredBlRouteSig,
   getRegisteredBlRouteSig,
   parseBoardingLockAlarmIdentifier,
@@ -326,6 +327,45 @@ describe('cancelAllHopsForLock', () => {
     mockedDismiss.mockRejectedValueOnce(new Error('not delivered'));
     await expect(cancelAllHopsForLock(lock)).resolves.toBeUndefined();
     expect(mockedCancel).toHaveBeenCalled();
+  });
+});
+
+describe('cancelBlByStationPhase (#1356 E1)', () => {
+  it('같은 stationName + phase 매칭만 cancel + remove (trainCode/hopIndex 무관)', async () => {
+    mockedGet.mockResolvedValueOnce([
+      'bl:T-100:0:early:강남',     // 매칭
+      'bl:T-100:1:early:강남',     // 매칭 (다른 hopIndex)
+      'bl:T-200:0:early:강남',     // 매칭 (다른 trainCode)
+      'bl:T-100:0:imminent:강남',  // 다른 phase
+      'bl:T-100:2:early:역삼',     // 다른 station
+      'alarm:early:강남',           // 다른 prefix
+    ]);
+
+    await cancelBlByStationPhase('강남', 'early');
+
+    expect(mockedCancel).toHaveBeenCalledTimes(3);
+    expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:early:강남');
+    expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:1:early:강남');
+    expect(mockedCancel).toHaveBeenCalledWith('bl:T-200:0:early:강남');
+    expect(mockedRemove).toHaveBeenCalledWith([
+      'bl:T-100:0:early:강남',
+      'bl:T-100:1:early:강남',
+      'bl:T-200:0:early:강남',
+    ]);
+  });
+
+  it('매칭 없으면 cancel/remove 호출 안 함 (safe no-op)', async () => {
+    mockedGet.mockResolvedValueOnce(['bl:T-100:0:imminent:강남', 'alarm:early:강남']);
+    await cancelBlByStationPhase('강남', 'early');
+    expect(mockedCancel).not.toHaveBeenCalled();
+    expect(mockedRemove).not.toHaveBeenCalled();
+  });
+
+  it('큐가 빈 경우 no-op', async () => {
+    mockedGet.mockResolvedValueOnce([]);
+    await cancelBlByStationPhase('강남', 'early');
+    expect(mockedCancel).not.toHaveBeenCalled();
+    expect(mockedRemove).not.toHaveBeenCalled();
   });
 });
 
