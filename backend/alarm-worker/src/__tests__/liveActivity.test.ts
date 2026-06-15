@@ -392,4 +392,88 @@ describe('cleanupTripWithLa', () => {
     expect(logs).toContain('trip-ended push failed');
     expect(await kv.get('trip:devtoken')).toBeNull();
   });
+
+  // #1337 — KV `tripEndedAlert:{tripToken}` set-if-absent gate. 같은 trip의 cleanup이 race로
+  // 두 번 호출돼도 alert가 1회만 발사된다. 실패 push는 stamp X → 다음 cycle 재시도 허용.
+  describe('trip-ended alert KV dedup gate (#1337)', () => {
+    it('success 시 dedup stamp 저장 → 동일 trip 재 cleanup 호출 시 alert push skip', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+      const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+      // 1차 cleanup
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(fetchImpl as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        'eta-missing',
+      );
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(await kv.get('tripEndedAlert:devtoken')).toBe('1');
+
+      // 2차 cleanup (예: 동일 cron 사이클 내 race) — dedup으로 push skip
+      const trip2 = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip2));
+      const logs: string[] = [];
+      await cleanupTripWithLa(
+        trip2,
+        env,
+        makeDeps(fetchImpl as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        (msg) => logs.push(msg),
+        'destination-arrived',
+      );
+      expect(fetchImpl).toHaveBeenCalledTimes(1); // 그대로 1회
+      expect(logs).toContain('trip-ended alert: dedup skip');
+    });
+
+    it('실패 push (양쪽 host 모두 reject) 시 dedup stamp 저장 X → 다음 사이클 재시도 허용', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+      const fetchImpl = vi.fn(
+        async () => new Response(JSON.stringify({ reason: 'BadDeviceToken' }), { status: 400 }),
+      );
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(fetchImpl as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        'eta-missing',
+      );
+      // env-heal 1차+retry 둘 다 호출되지만 둘 다 실패.
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(await kv.get('tripEndedAlert:devtoken')).toBeNull();
+    });
+
+    it('throw 발생 시 dedup stamp 저장 X', async () => {
+      const kv = new InMemoryKV();
+      const trip = makeTrip({ activityPushToken: undefined });
+      await kv.put('trip:devtoken', JSON.stringify(trip));
+      const env = { TRIPS: kv as unknown as KVNamespace } as Env;
+      const fetchImpl = vi.fn(async () => {
+        throw new Error('network down');
+      });
+      await cleanupTripWithLa(
+        trip,
+        env,
+        makeDeps(fetchImpl as unknown as typeof fetch),
+        makeStats(),
+        NOW,
+        () => undefined,
+        'expired',
+      );
+      expect(await kv.get('tripEndedAlert:devtoken')).toBeNull();
+      // throw 흡수 후 cleanup 흐름 계속 → trip 삭제됨
+      expect(await kv.get('trip:devtoken')).toBeNull();
+    });
+  });
 });

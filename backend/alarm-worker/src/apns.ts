@@ -7,11 +7,12 @@
 
 import { importPKCS8, SignJWT } from 'jose';
 import type { AlarmPhase } from './alarm';
+import { TRIP_ENDED_ALERT_BODY, TRIP_ENDED_ALERT_TITLE } from './alertContent';
 import type {
   BoardingPromptPushPayload,
   RescheduleChannel,
   ReschedulePushPayload,
-  TripEndedPushPayload,
+  TripEndedAlertPushPayload,
   TripEndedReason,
 } from './types';
 
@@ -299,13 +300,23 @@ export async function sendReschedulePush(
 }
 
 /**
- * Trip ended silent push (#868). server-side trip auto-end 시 클라이언트 state sync 신호.
+ * Trip ended alert push (#1337). server-side trip auto-end 시 사용자에게 즉시 표시되는 alert.
  *
- * silent push와 동일 헤더(background, priority 5)지만 payload의 `kind: 'trip-ended'`로 구분.
- * - alert fallback 대상이 아니다 — graceful loss 시 다음 FG 진입에서 trip 상태 재동기화 경로가 보강.
- * - 발사 비용은 trip 종료 1건당 1회로 극소 (분당 0~1건 수준) — APNs budget 영향 무시 가능.
+ * 구 silent push(`content-available: 1`, priority 5)는 force-quit된 앱에 전달되지 않아 killed
+ * 상태에서 "안내 종료" 알림이 누락됐다(#1337 evidence). alert push로 전환하면 OS가 직접 banner
+ * 를 띄워 killed 상태에서도 즉시 표시된다. running 앱은 OS banner를 보고, BG 핸들러가 `data`
+ * payload로 sentinel/dedup을 처리한다(디바이스 PR2 #1338).
+ *
+ * 헤더/payload:
+ *   - apns-push-type: alert  (silent은 background)
+ *   - apns-priority: 10      (silent은 5)
+ *   - aps.alert: { title, body } + aps.sound: 'default'
+ *   - data: { pushId, kind:'trip-ended', tripToken, reason, sentAt }
+ *
+ * dedup은 호출자(KV `tripEndedAlert:{tripToken}` 1h TTL)가 담당 — 같은 trip 종료가 cron
+ * 사이클마다 alert로 떠 노이즈가 되는 것을 1회 발사로 막는다.
  */
-export interface SendTripEndedPushOptions {
+export interface SendTripEndedAlertPushOptions {
   deviceToken: string;
   pushId: string;
   reason: TripEndedReason;
@@ -318,30 +329,36 @@ export interface SendTripEndedPushOptions {
   now?: number;
 }
 
-export async function sendTripEndedPush(
-  options: SendTripEndedPushOptions,
+export async function sendTripEndedAlertPush(
+  options: SendTripEndedAlertPushOptions,
 ): Promise<SendPushResult> {
   const jwt = await buildApnsJwt(options.config, options.now);
   const fetchImpl = options.fetchImpl ?? fetch;
   const url = `https://${options.host}/3/device/${options.deviceToken}`;
 
-  const payload: TripEndedPushPayload = {
+  const data: TripEndedAlertPushPayload = {
     pushId: options.pushId,
     kind: 'trip-ended',
+    tripToken: options.tripToken,
     reason: options.reason,
     sentAt: options.sentAt,
-    tripToken: options.tripToken,
   };
 
-  const body = JSON.stringify({ aps: { 'content-available': 1 }, data: payload });
+  const body = JSON.stringify({
+    aps: {
+      alert: { title: TRIP_ENDED_ALERT_TITLE, body: TRIP_ENDED_ALERT_BODY },
+      sound: 'default',
+    },
+    data,
+  });
 
   const response = await fetchImpl(url, {
     method: 'POST',
     headers: {
       authorization: `bearer ${jwt}`,
       'apns-topic': options.config.bundleId,
-      'apns-push-type': 'background',
-      'apns-priority': '5',
+      'apns-push-type': 'alert',
+      'apns-priority': '10',
       'content-type': 'application/json',
     },
     body,
