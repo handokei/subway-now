@@ -28,7 +28,7 @@ import {
 } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
-import type { BoardingLockMeta, Env, Trip, Waypoint } from '../types';
+import type { BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
 let apnsConfig: ApnsConfig;
@@ -238,6 +238,28 @@ async function seedHappyGateSeries(kv: InMemoryKV, token: string): Promise<void>
     { lat: 0, lng: 0.0008, accuracy: 10, ts: NOW, motion: 'automotive' },
   ];
   await kv.put(`pos:${token}`, JSON.stringify(series));
+}
+
+// #1315 — lockless motion 게이트 테스트 공용 3-sample series. 게이트는 posMetrics.motion만 읽으므로
+// motion을 파라미터로 받고, nearestStationDistanceM이 있으면 phaseState stamp(dirty)도 발생시킨다.
+async function seedLocklessMotionSeries(
+  kv: InMemoryKV,
+  token: string,
+  motion: PositionPoint['motion'],
+  nearestStationDistanceM?: number,
+): Promise<void> {
+  const base = (ts: number, lng: number) => ({
+    lat: 0,
+    lng,
+    accuracy: 10,
+    ts,
+    motion,
+    ...(nearestStationDistanceM === undefined ? {} : { nearestStationDistanceM }),
+  });
+  await kv.put(
+    `pos:${token}`,
+    JSON.stringify([base(NOW - 40_000, 0), base(NOW - 20_000, 0.0002), base(NOW, 0.0004)]),
+  );
 }
 
 // #916 auto-lock 테스트용 trip 시드. promptGeoContext + promptDisplay + waypoints 9단 게이트 통과 형태.
@@ -503,13 +525,21 @@ describe('runScheduled', () => {
      *     (lockMissing 게이트 등으로 Seoul 호출 자체가 일어나면 안 되는 시나리오용)
      *   - 배열 (빈 배열 포함): makeSeoul로 실제 응답 — 빈 배열은 etaMissing 트리거
      */
+    // #1315 — lockless bare-arvlCd advance는 GPS motion이 walking/automotive일 때만 허용된다.
+    // 발사를 기대하는 케이스는 `motion='automotive'`(default)로 이동 series를 시드한다. 정적
+    // (false advance 회귀)을 검증하는 케이스는 'stationary' / 'unknown' 또는 'none'(series 미시드)을 준다.
     async function runLocklessCycle(input: {
       trip: Trip;
       arrivals?: ArrivalEntry[];
       apnsOk?: boolean;
+      motion?: PositionPoint['motion'] | 'none';
     }) {
       const kv = new InMemoryKV();
       await putTrip(kv as unknown as KVNamespace, input.trip);
+      const motion = input.motion ?? 'automotive';
+      if (motion !== 'none') {
+        await seedLocklessMotionSeries(kv, input.trip.token, motion);
+      }
       const seoulFetch = vi.fn();
       const seoul = input.arrivals
         ? makeSeoul(input.arrivals)
@@ -727,6 +757,8 @@ describe('runScheduled', () => {
         locklessStationPassed: true,
       });
       await putTrip(kv as unknown as KVNamespace, trip);
+      // #1315 — bare-arvlCd advance는 motion=walking/automotive에서만 허용 → 이동 series 시드.
+      await seedLocklessMotionSeries(kv, trip.token, 'automotive');
       const seoul = makeSeoul([ARVL_ARRIVED]);
       const apnsFetch = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
       await runScheduled(makeEnv(kv), {
@@ -740,6 +772,257 @@ describe('runScheduled', () => {
       const progress = JSON.parse(progressRaw as string);
       expect(progress.lockless).toBe(true);
       expect(progress.shiftedCount).toBe(2);
+    });
+
+    // #1315 — trainCode 미확보 cycle의 보수 motion 게이트 + trainCode 바인딩.
+    // 정적(용마산 false advance 회귀)에서는 waypoint 역의 "아무 열차" arvlCd가 와도 advance 안 함.
+    describe('#1315 — trainCode 바인딩 + 보수 motion 게이트', () => {
+      async function storedFirstWaypoint(kv: InMemoryKV): Promise<string> {
+        const raw = await (kv as unknown as KVNamespace).get('trip:tok');
+        return JSON.parse(raw as string).waypoints[0].stationName;
+      }
+
+      // 다른 열차(trainCode=9999, arvlCd=ARRIVED)가 다음 waypoint에 도착 — 사용자 열차 아님.
+      const OTHER_TRAIN_ARRIVED: ArrivalEntry = { ...ARVL_ARRIVED, trainCode: '9999' };
+
+      // 보수 게이트 케이스: motion이 실제 이동(walking/automotive)이면 발사, 그 외(stationary/
+      // unknown/series 미시드)면 보류. arrivals는 모두 ARRIVED(=bare arvlCd 신호) — trainCode 바인딩
+      // 불가(promptGeoContext 부재) 상태에서 motion만으로 advance 여부가 갈리는지 검증.
+      type MotionGateCase = {
+        label: string;
+        motion: PositionPoint['motion'] | 'none';
+        fires: boolean;
+      };
+      const motionGateCases: MotionGateCase[] = [
+        { label: 'stationary → advance 안 함', motion: 'stationary', fires: false },
+        { label: 'unknown → advance 안 함', motion: 'unknown', fires: false },
+        { label: 'series 미시드(unknown) → advance 안 함', motion: 'none', fires: false },
+        { label: 'automotive → 발사', motion: 'automotive', fires: true },
+        { label: 'walking → 발사', motion: 'walking', fires: true },
+      ];
+
+      it.each(motionGateCases)(
+        'trainCode 미확보 + 다른 열차 ARRIVED + motion=$motion → $label',
+        async ({ motion, fires }) => {
+          const { kv, stats, apnsFetch } = await runLocklessCycle({
+            trip: intermediateTrip(),
+            arrivals: [OTHER_TRAIN_ARRIVED],
+            apnsOk: fires,
+            motion,
+          });
+          expect(stats.locklessIntermediateFired).toBe(fires ? 1 : 0);
+          expect(stats.pushed).toBe(fires ? 1 : 0);
+          expect(stats.locklessMotionGateBlocked).toBe(fires ? 0 : 1);
+          // 발사 안 하면 첫 waypoint(강남) 유지 — multi/단일 advance 모두 차단.
+          expect(await storedFirstWaypoint(kv)).toBe(fires ? '역삼' : '강남');
+          if (fires) {
+            expect(apnsFetch).toHaveBeenCalled();
+          } else {
+            expect(apnsFetch).not.toHaveBeenCalled();
+          }
+        },
+      );
+
+      // 레이스 가드: 정적 상태에서 연속 2 cycle 모두 bare-arvlCd가 와도 advance 0건.
+      // (2026-06-15 군자→어린이대공원→건대입구 44초 레이스의 근원 — 정적인데 다중 advance.)
+      it('정적 상태 연속 2 cycle → 다중 waypoint advance 0건 (레이스 차단)', async () => {
+        const kv = new InMemoryKV();
+        const trip = makeTrip({
+          waypoints: [
+            { stationName: '군자', line: '2', kind: 'intermediate' },
+            { stationName: '어린이대공원', line: '2', kind: 'intermediate' },
+            { stationName: '건대입구', line: '2', kind: 'destination' },
+          ],
+          locklessStationPassed: true,
+        });
+        await putTrip(kv as unknown as KVNamespace, trip);
+        await seedLocklessMotionSeries(kv, trip.token, 'stationary');
+        const seoul = makeSeoul([OTHER_TRAIN_ARRIVED]);
+        const apnsFetch = vi.fn();
+        const deps = {
+          seoul,
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+        };
+        await runScheduled(makeEnv(kv), deps);
+        await runScheduled(makeEnv(kv), deps);
+        expect(apnsFetch).not.toHaveBeenCalled();
+        expect(await storedFirstWaypoint(kv)).toBe('군자');
+      });
+
+      // motion 게이트 보류 시에도 phase 분류 결과(dirty)는 persist — nearestStationDistanceM이 있어
+      // phaseState가 stamp된 cycle에서 정적이라 advance는 보류하되 trip은 저장돼야 한다.
+      it('정적 + phaseState stamp → advance 보류 + trip에 stationPhase 저장', async () => {
+        const kv = new InMemoryKV();
+        const trip = intermediateTrip();
+        await putTrip(kv as unknown as KVNamespace, trip);
+        // 정거장 30m + 정지 → DWELLING(confidence<0.7, phase 게이트 통과) + motion=stationary.
+        await seedLocklessMotionSeries(kv, trip.token, 'stationary', 30);
+        const apnsFetch = vi.fn();
+        const stats = await runScheduled(makeEnv(kv), {
+          seoul: makeSeoul([OTHER_TRAIN_ARRIVED]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+        });
+        expect(stats.locklessMotionGateBlocked).toBe(1);
+        expect(stats.locklessIntermediateFired).toBe(0);
+        expect(apnsFetch).not.toHaveBeenCalled();
+        const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:tok')) as string);
+        expect(stored.stationPhase?.current).toBe('DWELLING');
+        expect(stored.waypoints[0].stationName).toBe('강남');
+      });
+
+      // trainCode 바인딩: 9단 게이트 통과(이동 + 단일 후보) → lock 부착, 이번 cycle은 station-passed
+      // 발사 안 함(다음 cron 사이클이 lock 경로로 *그 trainCode*만 추적 — lockless 안정성 핵심).
+      function geoLocklessTrip(overrides: Partial<Trip> = {}): Trip {
+        return makeTrip({
+          waypoints: [
+            { stationName: '역삼', line: '2', kind: 'intermediate' },
+            { stationName: '선릉', line: '2', kind: 'destination' },
+          ],
+          locklessStationPassed: true,
+          promptGeoContext: {
+            origin: { lat: 0, lng: 0 },
+            nextStation: { lat: 0, lng: 0.01 },
+            direction: 'up',
+          },
+          promptDisplay: { originStation: '강남', line: '2' },
+          ...overrides,
+        });
+      }
+
+      it('이동 + 단일 후보 trainCode → auto-lock 부착 + 이번 cycle 발사 안 함', async () => {
+        const { kv, stats, apnsFetch } = await runLocklessCycle({
+          trip: geoLocklessTrip(),
+          arrivals: [ARVL_ARRIVED], // trainCode=7246 단일 후보, arvlCd=ARRIVED.
+          apnsOk: false,
+          motion: 'automotive',
+        });
+        expect(stats.autoLockSuccess).toBe(1);
+        expect(stats.locklessIntermediateFired).toBe(0);
+        expect(apnsFetch).not.toHaveBeenCalled();
+        const stored = JSON.parse((await (kv as unknown as KVNamespace).get('trip:tok')) as string);
+        expect(stored.boardingLock?.trainCode).toBe('7246');
+        expect(stored.boardingLock?.autoLockedAt).toBe(NOW);
+        // 바인딩만 — waypoint는 아직 advance 안 함(다음 cycle lock 경로가 처리).
+        expect(stored.waypoints[0].stationName).toBe('역삼');
+      });
+
+      it('바인딩된 trainCode의 ARRIVED → 다음 cycle lock 경로(runTrainCodeTracking)가 그 열차로 추적', async () => {
+        // 1 cycle: 바인딩. 2 cycle: lock 활성 → trainCode 매칭 도착 시 매역 fire.
+        const kv = new InMemoryKV();
+        await putTrip(kv as unknown as KVNamespace, geoLocklessTrip());
+        await seedHappyGateSeries(kv, 'tok');
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }) as unknown as Response);
+        const deps = {
+          seoul: makeSeoul([ARVL_ARRIVED]),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+        };
+        const first = await runScheduled(makeEnv(kv), deps);
+        expect(first.autoLockSuccess).toBe(1);
+        const second = await runScheduled(makeEnv(kv), deps);
+        // lock 활성이므로 lockMissing/lockless 경로가 아니라 trainCode 추적 경로로 polled.
+        expect(second.polled).toBe(1);
+        expect(second.lockMissing).toBe(0);
+        // trainCode=7246의 ARRIVED → 매역 arvlCd fire (lock 경로 SSOT).
+        expect(second.arvlCdFireSuccess).toBe(1);
+      });
+
+      it('promptGeoContext 부재면 바인딩 시도 안 함 → 이동 시 기존 bare-arvlCd 발사 유지', async () => {
+        const { stats } = await runLocklessCycle({
+          trip: intermediateTrip(), // geo 컨텍스트 없음.
+          arrivals: [ARVL_ARRIVED],
+          apnsOk: true,
+          motion: 'automotive',
+        });
+        expect(stats.autoLockSuccess).toBe(0);
+        expect(stats.locklessIntermediateFired).toBe(1);
+      });
+
+      it('geo 있음 + 9단 게이트 실패(정적) → 바인딩 안 함 + motion 게이트로 보류', async () => {
+        const { stats, apnsFetch } = await runLocklessCycle({
+          trip: geoLocklessTrip(),
+          arrivals: [ARVL_ARRIVED],
+          apnsOk: false,
+          motion: 'stationary', // 게이트 #8 motion-not-moving로 차단.
+        });
+        expect(stats.autoLockSuccess).toBe(0);
+        expect(stats.locklessIntermediateFired).toBe(0);
+        expect(stats.locklessMotionGateBlocked).toBe(1);
+        expect(apnsFetch).not.toHaveBeenCalled();
+      });
+
+      it('geo 있음 + 게이트 통과 + 후보 ambiguity → 바인딩 null, 이동이므로 bare-arvlCd 발사', async () => {
+        // 같은 방향(up) line-2 ARRIVED 후보 2개 → pickAutoTrainCode ambiguity → autoLock null.
+        const { stats } = await runLocklessCycle({
+          trip: geoLocklessTrip(),
+          arrivals: [
+            { ...ARVL_ARRIVED, trainCode: 'A1' },
+            { ...ARVL_ARRIVED, trainCode: 'A2' },
+          ],
+          apnsOk: true,
+          motion: 'automotive',
+        });
+        expect(stats.autoLockSuccess).toBe(0);
+        expect(stats.locklessIntermediateFired).toBe(1);
+      });
+
+      it('arvlCd=2(출발) 단일 후보 + origin 확인 → confidence trace를 TELEMETRY에 적재', async () => {
+        // RC1 confidence gate(arvlCd=2 branch) 평가 → trace set → recordAutoLockConfidence 호출.
+        const kv = new InMemoryKV();
+        await putTrip(kv as unknown as KVNamespace, geoLocklessTrip());
+        await seedHappyGateSeries(kv, 'tok');
+        // 역삼(next-waypoint): T2 arvlCd=2(출발). 강남(origin): 동일 T2 → confidence +2 → 통과.
+        const seoul = new SeoulArrivalClient({
+          apiKey: 'K',
+          host: 'h',
+          now: () => NOW,
+          fetchImpl: (async (url: string) => {
+            const station = decodeURIComponent(url).includes('강남') ? '강남' : '역삼';
+            return new Response(
+              JSON.stringify({
+                realtimeArrivalList: [
+                  {
+                    barvlDt: '30',
+                    recptnDt: '',
+                    updnLine: '상행',
+                    trainLineNm: station,
+                    btrainNo: 'T2',
+                    subwayNm: '지하철2호선',
+                    arvlCd: 2,
+                  },
+                ],
+              }),
+              { status: 200 },
+            );
+          }) as unknown as typeof fetch,
+        });
+        const points: { blobs?: string[]; doubles?: number[] }[] = [];
+        const env: Env = {
+          ...makeEnv(kv),
+          TELEMETRY: { writeDataPoint: (p) => points.push(p) },
+        };
+        const stats = await runScheduled(env, {
+          seoul,
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+          now: () => NOW,
+        });
+        expect(stats.autoLockSuccess).toBe(1);
+        // autoLockConfidenceBreakdown histogram이 적재됐는지(=recordAutoLockConfidence 호출) 확인.
+        const confidencePoints = points.filter((p) =>
+          p.blobs?.some((b) => b.includes('autoLockConfidenceBreakdown')),
+        );
+        expect(confidencePoints.length).toBeGreaterThan(0);
+      });
     });
   });
 });
