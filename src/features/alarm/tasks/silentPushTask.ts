@@ -52,7 +52,7 @@ import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from '../utils/dismissSilenceStorage';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
 import { getCurrentMotionStationary } from '../../nearest-station/utils/motionActivity';
-import { addFiredPushId } from '../utils/firedPushIds';
+import { addFiredPushId, hasFiredPushId } from '../utils/firedPushIds';
 import {
   checkSilentPushLocationGate,
   type GateSkipReason,
@@ -62,7 +62,7 @@ import { rescheduleTripBoundAlarm } from '../utils/tripBoundScheduler';
 import { ROUTE_KEY } from '../../../shared/constants/storageKeys';
 import type { Route } from '../../../shared/utils/stationRoute';
 import { alarmKey, type AlarmEvent } from '../utils/stationAlarm';
-import { buildAlarmContent } from '../utils/stationNotification';
+import { buildAlarmContent, sendTripEndedNotification } from '../utils/stationNotification';
 import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveActivityFromBackgroundContext';
 import { type NotificationSource } from '../utils/notificationSource';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
@@ -418,6 +418,34 @@ function normalizeTripEndedReason(reason: unknown): TripEndedReason {
     : 'unknown';
 }
 
+/**
+ * #1323 — trip 종료 user-facing 알림 1회 present.
+ *
+ * backend trip-ended push는 silent(`content-available`)라 수신해도 알림이 뜨지 않는다.
+ * cleanup/sentinel 직후 이 함수가 reason-gated 알림을 발사해 사용자가 종료를 인지하게 한다.
+ *
+ * dedup: 동일 pushId의 trip-ended push가 backend retry로 재도달하면 중복 present를 차단한다
+ * (FIRED_PUSH_IDS 공유 — alert fallback dedup과 동일 store). pushId 부재(구버전 backend)면
+ * dedup 없이 present — trip 종료는 1회성 이벤트라 회귀 위험이 낮고, 미표시가 더 나쁜 회귀다.
+ *
+ * 알림 발사 실패는 swallow — 측정/cleanup 흐름(호출자)을 차단하지 않는다.
+ */
+async function surfaceTripEnded(
+  reason: TripEndedReason,
+  pushId: string | undefined,
+): Promise<void> {
+  try {
+    if (pushId && (await hasFiredPushId(pushId))) {
+      logger.info(`trip-ended surface skip: pushId already surfaced ${pushId}`);
+      return;
+    }
+    await sendTripEndedNotification(reason);
+    if (pushId) await addFiredPushId(pushId);
+  } catch (e) {
+    logger.error('trip-ended surface 실패:', e);
+  }
+}
+
 function validSentAt(sentAt: unknown): number | undefined {
   return typeof sentAt === 'number' && Number.isFinite(sentAt) ? sentAt : undefined;
 }
@@ -577,6 +605,12 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       // #899 (Seam C) — BG에서는 zustand store에 접근 불가. FG 복귀 시점에
       // useStateRehydration이 이 sentinel을 보고 destination/lock store도 reset.
       await setTripEndedSentinel(receivedAt);
+      // #1323 — trip 종료 user-facing surface. backend trip-ended push는 silent라
+      // 수신해도 알림이 뜨지 않아 사용자가 종료를 인지하지 못했다(실기기 회귀).
+      // backend가 모든 종료 경로(도착/환승 후 도착/eta-missing/만료)에서 동일 push를
+      // 발사하므로, 여기서 reason-gated 알림 1회 present로 BG/취침/환승 종료를 모두 커버.
+      // 동일 push 재전송(backend retry) 시 pushId 기준 dedup으로 중복 알림 차단.
+      await surfaceTripEnded(payload.reason, payload.pushId);
       ackOutcome(payload.pushId, apnsToken, 'fired', `trip-ended:${payload.reason}`);
       return;
     }

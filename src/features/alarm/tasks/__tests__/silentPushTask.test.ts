@@ -75,8 +75,19 @@ const mockBuildAlarmContent = jest.fn((event: { stationName: string; type: strin
   title: `[${event.type}/${event.phaseId}]`,
   body: `${event.stationName} 알람`,
 }));
+// #1323 — trip 종료 user-facing surface. mock으로 호출 인자/횟수만 검증.
+const mockSendTripEndedNotification = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/stationNotification', () => ({
   buildAlarmContent: (...args: unknown[]) => mockBuildAlarmContent(...(args as Parameters<typeof mockBuildAlarmContent>)),
+  sendTripEndedNotification: (...args: unknown[]) => mockSendTripEndedNotification(...args),
+}));
+
+// #574 P2e / #1323 — fired pushId dedup store. trip-ended surface dedup도 이 store 공유.
+const mockAddFiredPushId = jest.fn().mockResolvedValue(undefined);
+const mockHasFiredPushId = jest.fn().mockResolvedValue(false);
+jest.mock('../../utils/firedPushIds', () => ({
+  addFiredPushId: (...args: unknown[]) => mockAddFiredPushId(...args),
+  hasFiredPushId: (...args: unknown[]) => mockHasFiredPushId(...args),
 }));
 
 // #900 Seam D — silent push finally에서 호출하는 LA refresh. mock로 호출 횟수만 검증.
@@ -251,6 +262,10 @@ describe('silentPushTask', () => {
     mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
     // #698 — 기본 graceful: 1건 cancel + 1건 schedule. 개별 테스트에서 override.
     mockRescheduleHopForLock.mockResolvedValue({ cancelled: 1, scheduled: 1 });
+    // #1323 — trip-ended surface 기본값. dedup은 기본 미발사(false).
+    mockSendTripEndedNotification.mockResolvedValue(undefined);
+    mockHasFiredPushId.mockResolvedValue(false);
+    mockAddFiredPushId.mockResolvedValue(undefined);
   });
 
   it('defineTask가 SILENT_PUSH_TASK 이름으로 콜백을 등록한다', () => {
@@ -1978,6 +1993,82 @@ describe('silentPushTask', () => {
           tripEndedPayload({ pushId: 'te-uuid', tripToken: 'OLD-TRIP-TOKEN' }),
         );
         expect(mockTriggerTripEndRecall).not.toHaveBeenCalled();
+      });
+
+      // #1323 — trip 종료 user-facing surface. backend trip-ended push가 silent라 알림이 안 뜨던
+      // 회귀를 차단. sentinel/cleanup 직후 reason-gated 알림 1회 present.
+      describe('#1323 — trip-ended user-facing surface', () => {
+        it('trip-ended 수신 → sendTripEndedNotification(reason) 1회 호출', async () => {
+          await handleSilentPush(tripEndedPayload({ reason: 'destination-arrived' }));
+          expect(mockSendTripEndedNotification).toHaveBeenCalledTimes(1);
+          expect(mockSendTripEndedNotification).toHaveBeenCalledWith('destination-arrived');
+        });
+
+        it.each([
+          ['eta-missing'],
+          ['destination-arrived'],
+          ['expired'],
+          ['push-unrecoverable'],
+        ])('known reason %s → surface에 reason 그대로 전달', async (reason) => {
+          await handleSilentPush(tripEndedPayload({ reason }));
+          expect(mockSendTripEndedNotification).toHaveBeenCalledWith(reason);
+        });
+
+        it('알 수 없는 reason도 정규화(unknown)되어 surface 호출', async () => {
+          await handleSilentPush(tripEndedPayload({ reason: 'future-reason' }));
+          expect(mockSendTripEndedNotification).toHaveBeenCalledWith('unknown');
+        });
+
+        it('surface 후 pushId를 FIRED_PUSH_IDS에 기록(dedup용)', async () => {
+          await handleSilentPush(tripEndedPayload({ pushId: 'te-uuid' }));
+          expect(mockSendTripEndedNotification).toHaveBeenCalledTimes(1);
+          expect(mockAddFiredPushId).toHaveBeenCalledWith('te-uuid');
+        });
+
+        it('pushId 없으면 dedup 기록 안 함 — surface는 그대로', async () => {
+          await handleSilentPush(tripEndedPayload());
+          expect(mockSendTripEndedNotification).toHaveBeenCalledTimes(1);
+          expect(mockAddFiredPushId).not.toHaveBeenCalled();
+        });
+
+        it('동일 pushId 재도달(backend retry) → hasFiredPushId true면 surface skip', async () => {
+          mockHasFiredPushId.mockResolvedValue(true);
+          await handleSilentPush(tripEndedPayload({ pushId: 'te-uuid' }));
+          expect(mockHasFiredPushId).toHaveBeenCalledWith('te-uuid');
+          expect(mockSendTripEndedNotification).not.toHaveBeenCalled();
+          // 이미 기록돼 있으므로 재기록도 하지 않음.
+          expect(mockAddFiredPushId).not.toHaveBeenCalled();
+          // cleanup/ack 흐름은 그대로 진행.
+          expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+        });
+
+        it('tripToken mismatch로 cleanup skip 시 surface도 호출 안 함', async () => {
+          (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+            if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+            if (key === ACTIVE_TRIP_KEY) return 'NEW-TRIP-TOKEN';
+            return null;
+          });
+          await handleSilentPush(
+            tripEndedPayload({ pushId: 'te-uuid', tripToken: 'OLD-TRIP-TOKEN' }),
+          );
+          expect(mockSendTripEndedNotification).not.toHaveBeenCalled();
+        });
+
+        it('surface 발사 throw 시 graceful — cleanup/ack 흐름 계속(전체 throw 안 함)', async () => {
+          mockSendTripEndedNotification.mockRejectedValue(new Error('present boom'));
+          await expect(
+            handleSilentPush(tripEndedPayload({ pushId: 'te-uuid', reason: 'expired' })),
+          ).resolves.toBeUndefined();
+          expect(mockRunTripBoundCleanups).toHaveBeenCalledTimes(1);
+          // surface 실패 시 dedup 기록은 건너뛴다(재시도 여지).
+          expect(mockAddFiredPushId).not.toHaveBeenCalled();
+          expect(mockSendPushAck).toHaveBeenCalledWith({
+            pushId: 'te-uuid',
+            token: DEFAULT_APNS_TOKEN,
+            outcome: 'fired',
+            reason: 'trip-ended:expired',
+          });
+        });
       });
     });
 

@@ -8,6 +8,7 @@ import {
   sendAlarmNotification,
   clearAlarmNotification,
   sendStationPassedNotification,
+  sendTripEndedNotification,
   buildAlarmContent,
 } from '../stationNotification';
 import { Station } from '../../../../shared/types/station';
@@ -907,6 +908,58 @@ describe('stationNotification', () => {
         'station-passed',
         expect.objectContaining({ sound: null, enableVibrate: false }),
       );
+    });
+  });
+
+  // #1323 — trip 종료 user-facing surface. backend trip-ended push가 silent라 알림이 안 뜨던 회귀 차단.
+  describe('sendTripEndedNotification', () => {
+    it('destination-arrived → "목적지 도착" 제목 + 종료 본문 (iOS, sound: false)', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendTripEndedNotification('destination-arrived');
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'trip-ended',
+        content: { title: '목적지 도착', body: '경로 안내를 종료했어요', sound: false },
+        trigger: null,
+      });
+    });
+
+    it.each([
+      ['eta-missing'],
+      ['expired'],
+      ['push-unrecoverable'],
+      ['unknown'],
+    ] as const)('non-arrived reason %s → 중립 "안내 종료" 제목', async (reason) => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendTripEndedNotification(reason);
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'trip-ended',
+        content: { title: '안내 종료', body: '경로 안내를 종료했어요', sound: false },
+        trigger: null,
+      });
+    });
+
+    it('Android에서는 station-passed 채널 + priority DEFAULT (잠 안 깨우기)', async () => {
+      jest.replaceProperty(Platform, 'OS', 'android');
+      await sendTripEndedNotification('destination-arrived');
+      expect(Notifications.scheduleNotificationAsync).toHaveBeenCalledWith({
+        identifier: 'trip-ended',
+        content: {
+          title: '목적지 도착',
+          body: '경로 안내를 종료했어요',
+          sound: false,
+          channelId: 'station-passed',
+          priority: 'default',
+        },
+        trigger: null,
+      });
+    });
+
+    it('종료 surface 시 domain breadcrumb(trip-ended-surface)를 남긴다', async () => {
+      jest.replaceProperty(Platform, 'OS', 'ios');
+      await sendTripEndedNotification('eta-missing');
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('alarm', 'trip-ended-surface', {
+        reason: 'eta-missing',
+      });
     });
   });
 
