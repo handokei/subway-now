@@ -15,8 +15,13 @@ import {
 import { createLogger } from '../../../shared/utils/logger';
 import { HOP_TIME_MS } from '../../../shared/constants/boardingLock';
 import { shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
-import { logSuppressedSleepFirstTransfer } from './alarmLog';
+import { logScheduleSkipped, logSuppressedSleepFirstTransfer } from './alarmLog';
 import { BOARDING_LOCK_ROUTE_SIG_KEY } from '../../../shared/constants/storageKeys';
+// #1357 (S1) — preschedule 진입 시 motion gate. tripBoundScheduler와 동일 패턴.
+// eslint-disable-next-line import/no-restricted-paths -- cross-feature movement gate SSOT.
+import { evaluateMovement, isStaticMovementResult } from '../../nearest-station/utils/movementGate';
+// eslint-disable-next-line import/no-restricted-paths -- BG motion 신호 단일 helper.
+import { getCurrentMotionStationary } from '../../nearest-station/utils/motionActivity';
 
 const logger = createLogger('BoardingLockScheduler');
 
@@ -269,6 +274,26 @@ export async function scheduleHopsForLock(params: ScheduleHopsParams): Promise<s
   const { lock, route, destinationName, now, windowSize = DEFAULT_WINDOW_SIZE, sleepMode = false } =
     params;
   const observedMs = now ?? lock.boardedAt;
+
+  // #1357 (S1) — preschedule 시점 motion gate. tripBoundScheduler와 동형.
+  // 정적 상태에서 사용자가 lock 활성(boardingPrompt 응답 / 직접 탭)했을 때 즉시 사전예약 OS local
+  // notification이 박혀 ETA 시각 첫 banner 발사되는 회귀를 차단. motion=stationary만 보고 결정 —
+  // motion=unknown / false면 schedule 진행(false negative 회피, ADR-010 동급 원칙).
+  // sleepMode 별도 게이트(shouldSkipFirstTransferForSleep)는 본 게이트 통과 후 hop 루프 안에서 적용.
+  const motionStationary = getCurrentMotionStationary();
+  const movement = evaluateMovement({}, undefined, undefined, motionStationary);
+  if (!movement.reliable && isStaticMovementResult(movement.reason)) {
+    logScheduleSkipped({
+      channel: 'bl',
+      reason: 'motion-stationary',
+      destinationName,
+    });
+    logger.info(
+      `scheduleHopsForLock skip reason=${movement.reason} trainCode=${lock.trainCode}`,
+    );
+    return [];
+  }
+
   const allTargets = resolveAllTargets(route, destinationName);
   const timings = computeHopTimings(lock, route, allTargets);
   const lastIdx = Math.min(windowSize, allTargets.length);

@@ -29,6 +29,13 @@ import {
 } from '../../../../testUtils/routeFixtures';
 
 jest.mock('expo-notifications');
+
+// #1357 (S1) — preschedule 진입 시 motion gate가 getCurrentMotionStationary()를 호출.
+// 기본 false(jest 환경에서 native module 부재 동등) — 기존 테스트 동작 보존.
+const mockGetCurrentMotionStationary = jest.fn<boolean, []>(() => false);
+jest.mock('../../../nearest-station/utils/motionActivity', () => ({
+  getCurrentMotionStationary: () => mockGetCurrentMotionStationary(),
+}));
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
   setItem: jest.fn(),
@@ -115,6 +122,8 @@ beforeEach(() => {
   mockAsyncGetItem.mockResolvedValue(null);
   mockAsyncSetItem.mockResolvedValue(undefined);
   mockAsyncRemoveItem.mockResolvedValue(undefined);
+  // #1357 (S1) — motion 기본 false 복원 (clearAllMocks가 impl 지움).
+  mockGetCurrentMotionStationary.mockReturnValue(false);
   Object.defineProperty(Platform, 'OS', { configurable: true, value: 'ios' });
 });
 
@@ -896,5 +905,73 @@ describe('route-sig cleanup 통합 (#1282)', () => {
     mockedGet.mockResolvedValueOnce(queued);
     await run();
     expect(mockAsyncRemoveItem).toHaveBeenCalledWith('subway-now:boarding-lock-route-sig');
+  });
+});
+
+describe('scheduleHopsForLock #1357 (S1) motion gate', () => {
+  beforeEach(() => {
+    const { resetAlarmLogForTest } = jest.requireActual('../alarmLog');
+    resetAlarmLogForTest();
+  });
+
+  it('motion=stationary 확정이면 schedule을 skip하고 [] 반환', async () => {
+    mockGetCurrentMotionStationary.mockReturnValue(true);
+    const ids = await scheduleHopsForLock({
+      lock,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW,
+    });
+    expect(ids).toEqual([]);
+    expect(mockedSchedule).not.toHaveBeenCalled();
+    expect(mockedAdd).not.toHaveBeenCalled();
+  });
+
+  it('motion=stationary 시 alarm_log에 schedule-skipped-motion-stationary 적재 (channel=bl)', async () => {
+    mockGetCurrentMotionStationary.mockReturnValue(true);
+    await scheduleHopsForLock({
+      lock,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW,
+    });
+    const { getAlarmLog } = jest.requireActual('../alarmLog');
+    const entries = await getAlarmLog();
+    const skips = entries.filter(
+      (e: { reason?: string }) => e.reason === 'schedule-skipped-motion-stationary',
+    );
+    expect(skips).toHaveLength(1);
+    expect(skips[0]).toMatchObject({
+      source: 'bg-scheduled',
+      outcome: 'suppressed',
+      stationName: 'bl:강남',
+    });
+  });
+
+  it('motion=false (이동 중)이면 정상 schedule 진행', async () => {
+    mockGetCurrentMotionStationary.mockReturnValue(false);
+    const ids = await scheduleHopsForLock({
+      lock,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW,
+    });
+    expect(ids.length).toBeGreaterThan(0);
+    expect(mockedSchedule).toHaveBeenCalled();
+  });
+
+  it('sleepMode ON + motion=stationary면 motion gate가 먼저 동작 — sleep 별도 게이트 진입 전 skip', async () => {
+    // motion gate가 hop 루프 진입 전 차단하므로 sleep first-transfer 게이트와 무관.
+    // 본 테스트는 게이트 평가 순서 보장 — sleep flow는 기존 #632 describe에서 검증.
+    mockGetCurrentMotionStationary.mockReturnValue(true);
+    const ids = await scheduleHopsForLock({
+      lock,
+      route: transferRoute,
+      destinationName: '강남',
+      now: NOW,
+      sleepMode: true,
+    });
+    expect(ids).toEqual([]);
+    expect(mockedSchedule).not.toHaveBeenCalled();
   });
 });

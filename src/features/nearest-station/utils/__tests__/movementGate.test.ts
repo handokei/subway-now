@@ -1,6 +1,7 @@
 import {
   evaluateMovement,
   isFusionDowngradeTarget,
+  isStaticMovementResult,
   isStaticSpeedSignal,
   shouldDowngradeFusion,
   MOVEMENT_TO_ALARM_LOG_REASON,
@@ -508,6 +509,29 @@ describe('movementGate', () => {
           motionStationary: false,
         }),
       ).toBe(false);
+    });
+  });
+
+  describe('#1357 (S1) — isStaticMovementResult', () => {
+    it.each([
+      ['motion-stationary' as const],
+      ['static-speed' as const],
+      ['static-position' as const],
+    ])('정적 확정 reason "%s"에 대해 true', (reason) => {
+      expect(isStaticMovementResult(reason)).toBe(true);
+    });
+
+    it.each([
+      ['no-location' as const],
+      ['stale-timestamp' as const],
+      ['low-accuracy' as const],
+      ['motion-warmup' as const],
+    ])('정적 확정 아닌 reason "%s"에 대해 false', (reason) => {
+      expect(isStaticMovementResult(reason)).toBe(false);
+    });
+
+    it('reason=undefined(reliable=true 결과)에 대해 false', () => {
+      expect(isStaticMovementResult(undefined)).toBe(false);
     });
   });
 });

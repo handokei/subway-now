@@ -78,6 +78,36 @@ export type MovementSignal =
   | ({ reliable: false; reason: MovementReason } & MovementSignalShared);
 
 /**
+ * #1357 (S1) — preschedule 시점 motion gate에서 "정적 확정" 신호를 판정하는 helper.
+ *
+ * 사전예약 schedule 진입 직후 호출자가 `evaluateMovement` 결과를 본 helper에 통과시켜
+ * `true`면 schedule을 skip한다. preschedule path는 OS local notification이 ETA 시점에
+ * OS 레벨로 발사되므로, JS가 fire 시점에 가로채지 못한다 — 진입 시점 차단이 유일한 게이트.
+ *
+ * 포함되는 reason (정적 확정 카테고리):
+ *   - `motion-stationary`: OS 가속도계(CMMotionActivity) 정적 신호 — 가장 강한 정적 증거
+ *   - `static-speed`: GPS speed < 0.5 m/s
+ *   - `static-position`: speed 미측정 + positionStability='static'
+ *
+ * 명시적으로 포함되지 않는 reason (신호 부재 / 다른 원인):
+ *   - `no-location`, `stale-timestamp`, `low-accuracy`: 신호 신뢰성 부족이지 정적 확정 아님
+ *   - `motion-warmup`: warmup window 한시 차단으로 정적 확정 아님 — preschedule은 진행
+ *
+ * 호출자가 가드 없이 reason에 접근하면 컴파일 에러 (discriminated union) — 미정의 reason
+ * 추가 시 본 helper도 함께 갱신해야 한다.
+ */
+const STATIC_MOVEMENT_REASONS = new Set<MovementReason>([
+  'motion-stationary',
+  'static-speed',
+  'static-position',
+]);
+
+export function isStaticMovementResult(reason: MovementReason | undefined): boolean {
+  if (reason === undefined) return false;
+  return STATIC_MOVEMENT_REASONS.has(reason);
+}
+
+/**
  * MovementReason → AlarmLogReason 매핑. 가드가 차단한 알람을 alarmLog에 적재할 때 사용.
  * 'movement-' 접두사로 일관 — 다른 gate-/dedup- reason과 시각적으로 구분.
  */
