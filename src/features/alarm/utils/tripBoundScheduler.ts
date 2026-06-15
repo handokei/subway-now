@@ -506,6 +506,42 @@ function findOccurrenceIndex(
   return -1;
 }
 
+/**
+ * #1356 E1 — 같은 station + phase의 `tba:` 사전 예약을 cancel.
+ *
+ * silent push가 motion=stationary 또는 location gate 게이트에서 suppress될 때 호출. backend는
+ * 정적 상태를 인식해 silent push를 새로 발사하지 않지만, 이미 OS queue에 들어있는 같은 station+phase
+ * 의 `tba:` 사전 예약은 시간이 되면 자체적으로 발사된다 — 그 stale fire를 차단한다.
+ *
+ * 매칭: `parsed.stationName`을 `isSameStationName`으로 stationName과 비교, `parsed.phaseId`와 phase
+ * 일치. 같은 station이 중복 등장하는 경우 모든 occurrence의 해당 phase가 cancel — 정지 상태에서 같은
+ * station의 사전 예약은 occurrence 관계없이 모두 stale.
+ *
+ * scheduler queue API(`getAllScheduledNotificationsAsync`)를 직접 조회. SCHEDULED_NOTIFICATIONS
+ * 추적 큐(`bl:` 용)와 별도 — `tba:`는 OS API에 단일 SSOT.
+ */
+export async function cancelTbaByStationPhase(
+  stationName: string,
+  phase: AlarmPhaseId,
+): Promise<void> {
+  const all = await Notifications.getAllScheduledNotificationsAsync();
+  let cancelled = 0;
+  for (const req of all) {
+    if (!req.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) continue;
+    const parsed = parseTripBoundAlarmIdentifier(req.identifier);
+    if (parsed === null) continue;
+    if (parsed.phaseId !== phase) continue;
+    if (!isSameStationName(parsed.stationName, stationName)) continue;
+    await Notifications.cancelScheduledNotificationAsync(req.identifier);
+    cancelled++;
+  }
+  if (cancelled > 0) {
+    logger.info(
+      `cancelled ${cancelled} tba alarms for station=${stationName} phase=${phase}`,
+    );
+  }
+}
+
 export interface RescheduleTripBoundAlarmParams {
   /** 정정 대상 stop의 canonical 역명 (silent push payload.nextStation과 동일 비교). */
   stationName: string;
