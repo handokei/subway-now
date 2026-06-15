@@ -25,6 +25,7 @@ import { stopVibration } from '../src/features/alarm/utils/alarmSound';
 import { setupBoardingPromptCategory } from '../src/features/alarm/utils/notificationCategory';
 import { useBoardingPromptResponder } from '../src/features/alarm/hooks/useBoardingPromptResponder';
 import { useStateRehydration } from '../src/shared/hooks/useStateRehydration';
+import { useLaunchTripReconciliation } from '../src/features/alarm/hooks/useLaunchTripReconciliation';
 import { fetchArrivalInfo } from '../src/features/arrival/api/arrivalApi';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../src/shared/constants/boardingLock';
 import { initSentryIfOptedIn } from '../src/shared/infra/monitoring/sentryInit';
@@ -94,6 +95,11 @@ function RootContent() {
   // destination/customOrigin/tripOrigin/lock을 storage에서 재수화하고, BG silent push가
   // trip-ended sentinel을 남겼다면 destination/lock store를 reset해 stale UI를 차단.
   useStateRehydration();
+
+  // #1339 PR2 — silent push 누락(killed-app + push 미도달 등) backstop.
+  // cold-launch 시 backend `GET /trips/:tripToken/status`로 trip 종료 여부 확인 후
+  // 누락된 user-facing notification + sentinel을 복구한다. sentinel이 이미 있으면 no-op.
+  useLaunchTripReconciliation();
 
   useEffect(() => {
     loadLocalePreference();
