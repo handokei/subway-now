@@ -71,15 +71,39 @@ describe('trips KV CRUD', () => {
     expect(tokens).toEqual(['good']);
   });
 
-  // #1364 — cron read는 cacheTtl=0으로 origin 조회를 강제해 propagation 지연 회피.
-  it('listTrips passes cacheTtl=0 to kv.get (#1364 stale read 방어)', async () => {
+  // #766/#770/#1381 — cron read는 KV 최소 제약(30s)을 지키면서 첫 사이클 stale window를 차단.
+  it('listTrips passes cacheTtl=30 to kv.get (#1381 KV 최소 제약 준수)', async () => {
     await putTrip(kv as unknown as KVNamespace, makeTrip({ token: 'a' }));
     const spy = vi.spyOn(kv, 'get');
     for await (const _t of listTrips(kv as unknown as KVNamespace)) {
       // consume
     }
     const tripGetCall = spy.mock.calls.find(([key]) => key === 'trip:a');
-    expect(tripGetCall?.[1]).toEqual({ cacheTtl: 0 });
+    expect(tripGetCall?.[1]).toEqual({ cacheTtl: 30 });
+  });
+
+  // #1381 회귀 가드 — Cloudflare KV runtime은 cacheTtl<30 요청을 throw한다.
+  // production runtime을 mimic하는 InMemoryKV wrapping으로 listTrips가 throw 없이
+  // 완주하는지 확인 (CRON_READ_CACHE_TTL_SEC=0 회귀 시 즉시 fail).
+  it('listTrips does not violate Cloudflare KV cacheTtl>=30 constraint (#1381 회귀 가드)', async () => {
+    await putTrip(kv as unknown as KVNamespace, makeTrip({ token: 'a' }));
+    const guardedKv = {
+      ...kv,
+      get: vi.fn(async (key: string, options?: { cacheTtl?: number }) => {
+        if (options?.cacheTtl !== undefined && options.cacheTtl < 30) {
+          throw new Error(
+            `KV GET failed: 400 Invalid cache_ttl of ${options.cacheTtl}. Cache TTL must be at least 30.`,
+          );
+        }
+        return kv.get(key, options);
+      }),
+      list: kv.list.bind(kv),
+    };
+    const tokens: string[] = [];
+    for await (const t of listTrips(guardedKv as unknown as KVNamespace)) {
+      tokens.push(t.token);
+    }
+    expect(tokens).toEqual(['a']);
   });
 
   // #1364 — getTrip은 caller가 cacheTtl 지정 가능. read-after-write verification 경로.

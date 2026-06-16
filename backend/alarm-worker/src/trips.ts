@@ -10,19 +10,24 @@ import type { Trip } from './types';
 const TRIP_PREFIX = 'trip:';
 
 /**
- * cron read의 KV cacheTtl (#1364, 구 #766/#770).
+ * cron read의 KV cacheTtl (#766/#770 → #1364 → #1381).
  *
  * #765 evidence: sync handler `putTrip` 직후 다음 cron(43~60s 후)의 `kv.get`이 옛 캐시를
  * 읽어 `boardingLock.expiresAt`이 갱신 전 값으로 노출 → `isBoardingLockActive` false-negative
  * → "lock missing or expired" 회귀.
  *
- * #1364 deep RCA: cacheTtl=30s 단축으로 첫 cron 사이클의 캐시 window는 사라졌으나, KV의
- * region간 eventually-consistent propagation(최대 60s)은 별개 윈도우 — 30s 캐시가 만료돼도
- * 다른 region replica가 아직 옛 값을 반환할 수 있다. cron read를 cacheTtl=0으로 두어
- * 매 사이클 origin 조회를 강제하고, sync handler 측에서 read-after-write verification으로
- * propagation을 능동 확인한다 (index.ts /boarding-lock/sync).
+ * #1364 propagation 회피 의도: cron read를 origin 강제 조회하려 `cacheTtl=0`을 시도했으나
+ * Cloudflare KV runtime은 `cacheTtl < 30` 요청을 거절한다 — 매 cron 사이클 `Invalid
+ * cache_ttl of 0. Cache TTL must be at least 30.` throw로 `listTrips`가 첫 trip iterate
+ * 시점에 abort되어 silent push 발사 0건 회귀(#1381 evidence).
+ *
+ * Resolution: cron path는 KV 최소 제약(30s)을 준수하고, region propagation 정합성은
+ * sync handler가 책임진다 — `index.ts:/boarding-lock/sync`의 `verifyBoardingLockPersisted`
+ * 는 단일 키 read-after-write 검증이라 cacheTtl 제약 사이드를 다르게 다룬다.
+ * 본 상수는 `pendingPushes.ts:CRON_READ_CACHE_TTL_SEC(30)` /
+ * `progress.ts`(10/cron, 60/POST handler)와 일관한 cron-read 정책으로 정렬한다.
  */
-const CRON_READ_CACHE_TTL_SEC = 0;
+const CRON_READ_CACHE_TTL_SEC = 30;
 
 export function tripKey(token: string): string {
   return `${TRIP_PREFIX}${token}`;
@@ -69,9 +74,9 @@ export async function* listTrips(kv: KVNamespace): AsyncGenerator<Trip> {
   do {
     const result = await kv.list({ prefix: TRIP_PREFIX, cursor });
     for (const key of result.keys) {
-      // #1364 — cron read cacheTtl=0. 30s 캐시 + KV propagation 60s 합쳐 90s stale window가
-      // cron(*/1) 한 사이클 안에 들어가 false-negative "lock missing or expired"를 발생시켰다.
-      // 매 cron 사이클 origin 조회로 propagation 지연을 회피한다.
+      // #766/#770/#1381 — cron read cacheTtl 30s. Cloudflare KV 최소 제약(<30 throw)을 지키면서
+      // 동시에 putTrip 직후 첫 cron 사이클의 옛 캐시 window를 차단한다. region propagation
+      // 정합성은 sync handler의 verifyBoardingLockPersisted가 read-after-write 검증으로 책임.
       const raw = await kv.get(key.name, { cacheTtl: CRON_READ_CACHE_TTL_SEC });
       if (!raw) continue;
       try {
