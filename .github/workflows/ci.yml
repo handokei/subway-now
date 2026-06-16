@@ -3,8 +3,9 @@ name: CI
 on:
   push:
     branches: [main, dev]
+  # #1389 — stacked PR(base가 dev/main 아닌 경우)에도 CI 게이트가 동작하도록 branches 필터 미적용.
+  # required CI(Data Validation + Type Check & Test)는 모든 PR에 동등 적용해야 머지 전 검증이 깨지지 않는다.
   pull_request:
-    branches: [main, dev]
 
 jobs:
   data-validation:
