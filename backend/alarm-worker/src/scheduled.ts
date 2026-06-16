@@ -131,6 +131,35 @@ export const LOCKLESS_ADVANCE_MOTION_MODES: ReadonlySet<PositionPoint['motion']>
 ]);
 
 /**
+ * #1315 — lockless 경로 motion 게이트(엄격). positive 이동(walking/automotive)일 때만 advance 허용.
+ * stationary/unknown은 보류. 정적 false advance + 알림 레이스 차단이 1차 목표.
+ */
+export function isAdvanceAllowedByMotion(motion: PositionPoint['motion']): boolean {
+  return LOCKLESS_ADVANCE_MOTION_MODES.has(motion);
+}
+
+/**
+ * #1386 — lock-active vanish fallback advance(`handleEtaMissing` time-based) 전용 motion 게이트.
+ *
+ * lockless 경로(`isAdvanceAllowedByMotion`)는 엄격(walking/automotive만 허용)이지만, 이 분기는
+ * trip이 한 번이라도 정상 추적된 적이 있고(`lastTrackedArrivalEpoch !== undefined`) hop 시간을
+ * 채웠다는 약한 ground truth가 이미 있다. 그래서 보수의 결을 다르게 잡는다:
+ *
+ * - `stationary` (사용자가 명확히 정지 중) → 보류 (false positive 1차 방어).
+ * - `walking` / `automotive` (실제 이동) → 진행 (기존 동작).
+ * - `unknown` (센서 미지원/권한 거절/샘플 없음) → 진행 (기존 동작 유지, 사용자 가시성 트레이드오프).
+ *   `unknown`까지 보류하면 motion 신호 없는 다수 사용자의 trip이 무한 freeze에 가까워지므로
+ *   기존 hop-elapsed advance를 유지한다. positive stationary 신호가 있는 경우만 게이트 진입.
+ *
+ * 트레이드오프(이슈 #1386): `unknown` 중 실제 정지인 케이스는 못 잡는다 — 대신 false negative
+ * (정상 이동 trip을 잘못 동결)를 피한다. 사용자가 진짜 정지일 땐 device가 stationary로 송신하므로
+ * (`backgroundLocationTask.ts:150` / `useFgPositionUpload.ts`) 실측 신호 도달 시 게이트 발동.
+ */
+export function isFallbackAdvanceBlockedByMotion(motion: PositionPoint['motion']): boolean {
+  return motion === 'stationary';
+}
+
+/**
  * trip별 etaMissing 임계 결정. subsurface=true면 늘려 잡고, 그 외엔 기본값.
  * 클라가 매 register POST에 기압계 신호를 동봉하므로 한 trip 내에서 지상→지하 전이 시
  * threshold가 자연 갱신된다(stale 가능 윈도우는 다음 register 까지 ≤ ALARM_TIME_BUCKET_MS).
@@ -252,6 +281,14 @@ export interface ScheduledStats extends LiveActivityStats {
    * 토글 OFF였지만 vanish recovery로 매역 push가 복구된 trip 수.
    */
   vanishLocklessTakeover: number;
+  /**
+   * #1386 — lock-active fallback advance(handleEtaMissing time-based) 진입 시점에 device
+   * positionSeries의 motion이 실제 이동(walking/automotive)이 아니어서 advance + station-passed
+   * push를 보류한 누적 횟수. lockless 경로(`locklessMotionGateBlocked`)와 동일 정책의
+   * lock-active 버전 — 사용자가 정지 중인데 backend가 hop 시간 적분만으로 false station-passed를
+   * 발사하던 회귀(2026-06-16 용마산 정지 trip)를 차단한다.
+   */
+  vanishFallbackMotionGateBlocked: number;
 }
 
 /**
@@ -309,6 +346,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     arvlCdFireMismatch: 0,
     vanishFallbackFired: 0,
     vanishLocklessTakeover: 0,
+    vanishFallbackMotionGateBlocked: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
@@ -1013,6 +1051,29 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
   if (nextMissCount >= fallbackTrigger && lastEpoch !== undefined) {
     const hopElapsed = now >= lastEpoch + FALLBACK_HOP_SEC * 1000;
     if (hopElapsed) {
+      // #1386 — hop 시간이 경과했더라도 device motion이 명확히 stationary면 advance 보류.
+      // 2026-06-16 용마산 정지 trip 회귀: 사용자가 정지 중인데 backend가 hop 시간만 보고 false
+      // station-passed를 발사. lockless 경로(#1315)는 stationary/unknown 모두 보류로 더 엄격이지만,
+      // lock-active fallback은 한 번이라도 정상 추적된 trip이라 unknown(센서 미지원/권한 거절)을
+      // 보류하면 다수 사용자가 freeze. `stationary` 신호가 있을 때만 게이트 진입(이슈 #1386).
+      // 카운터(consecutiveEtaMissing)는 누적 유지 — motion이 회복되면 다음 cycle에서 정상 advance,
+      // 회복 안 되면 기존 auto-end 임계(`resolveEtaMissingThreshold`) 경로가 종료를 보장한다.
+      const positionSeries = await readSeries(env.TRIPS, trip.token);
+      const fallbackMotion = evaluateWindow(positionSeries, now).motion;
+      if (isFallbackAdvanceBlockedByMotion(fallbackMotion)) {
+        stats.vanishFallbackMotionGateBlocked += 1;
+        log('boarding-lock: vanish fallback motion gate blocked (not moving)', {
+          token: trip.token.slice(0, 8),
+          trainCode: activeLock.trainCode,
+          station: waypoint.stationName,
+          consecutiveEtaMissing: nextMissCount,
+          lastTrackedArrivalEpoch: lastEpoch,
+          motion: fallbackMotion,
+        });
+        trip.consecutiveEtaMissing = nextMissCount;
+        await putTrip(env.TRIPS, trip);
+        return;
+      }
       // hop 시간 경과 → optimistic waypoint advance.
       // advance 내부에서 destination 도착이면 cleanupTripWithLa, 그 외엔 waypoints.shift().
       log('boarding-lock: trainCode vanished — time-based waypoint advance fallback', {
@@ -1021,6 +1082,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
         station: waypoint.stationName,
         consecutiveEtaMissing: nextMissCount,
         lastTrackedArrivalEpoch: lastEpoch,
+        motion: fallbackMotion,
       });
       trip.consecutiveEtaMissing = 0;
       // #1370 L2 — fallback advance 전에 station-passed silent push를 발사한다.
@@ -1645,7 +1707,8 @@ export async function runLocklessIntermediate(
   // 역의 "아무 열차" 신호라 *사용자 열차*가 통과했다는 ground truth가 아니다. GPS motion이 실제
   // 이동(walking/automotive)을 positive하게 보일 때만 advance를 허용 — 정적/저신뢰(stationary/
   // unknown, 샘플 없음 포함)는 보류해 false positive(정적 false advance + 알림 레이스)를 차단한다.
-  if (!LOCKLESS_ADVANCE_MOTION_MODES.has(fusion.posMetrics.motion)) {
+  // #1386 — lock-active vanish fallback도 같은 헬퍼(`isAdvanceAllowedByMotion`)를 공유한다.
+  if (!isAdvanceAllowedByMotion(fusion.posMetrics.motion)) {
     stats.locklessMotionGateBlocked += 1;
     log('lockless: motion gate blocked (no trainCode, not moving)', {
       token: trip.token.slice(0, 8),

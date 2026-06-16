@@ -1616,6 +1616,104 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expect(stored.waypoints[0].stationName).toBe('군자');
       expect(stored.consecutiveEtaMissing).toBe(0);
     });
+
+    // #1386 — lock-active vanish fallback motion 게이트.
+    // hop 시간 경과 + fallbackTrigger 도달 상태에서 device motion에 따른 분기 검증.
+    describe('#1386 motion gate (stationary 보류, walking/automotive/unknown 진행)', () => {
+      /**
+       * #1386 motion 게이트 시나리오 표준 setup. 5개 케이스 공통 boilerplate
+       * (FALLBACK_TRIGGER - 1 lock trip + motion series seed + runScheduled wiring)을
+       * 단일 진입점으로 압축. 각 it은 motion/hopElapsed/추가 trip override만 명시한다.
+       */
+      async function runFallbackMotionScenario(setup: {
+        motion: PositionPoint['motion'];
+        hopElapsed: boolean;
+        pushId: string;
+        tripOverrides?: Partial<Trip>;
+        apnsFetch?: ReturnType<typeof vi.fn>;
+      }) {
+        const kv = new InMemoryKV();
+        await putTrip(
+          kv as unknown as KVNamespace,
+          makeLockTrip({
+            consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+            lastTrackedArrivalEpoch: setup.hopElapsed ? LAST_EPOCH_ELAPSED : LAST_EPOCH_NOT_ELAPSED,
+            ...setup.tripOverrides,
+          }),
+        );
+        await seedLocklessMotionSeries(kv, 'lock-tok', setup.motion);
+        const apnsFetch = setup.apnsFetch ?? makeOkFetch();
+        const stats = await runScheduled(makeEnv(kv), {
+          seoul: makeSeoulCombo([], []),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+          generatePushId: () => setup.pushId,
+        });
+        const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
+        return { stats, stored, apnsFetch };
+      }
+
+      it('motion=stationary → fallback advance 보류 + station-passed push X (카운터 누적)', async () => {
+        // 사용자 정지 trip — backend가 hop 시간만 보고 false station-passed를 발사하던 회귀 차단.
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+        const { stats, stored } = await runFallbackMotionScenario({
+          motion: 'stationary',
+          hopElapsed: true,
+          pushId: 'p1386-stationary',
+          apnsFetch,
+        });
+        expect(stats.vanishFallbackMotionGateBlocked).toBe(1);
+        expect(stats.vanishFallbackFired).toBe(0);
+        // station-passed push가 발사되지 않아야 함
+        const stationPassedCalls = apnsFetch.mock.calls.filter((c) => {
+          const body = JSON.parse((c[1] as RequestInit).body as string);
+          return body.data?.phase === 'imminent';
+        });
+        expect(stationPassedCalls.length).toBe(0);
+        // waypoint 유지 — advance 안 됨
+        expect(stored.waypoints[0].stationName).toBe('중곡');
+        expect(stored.boardingLock).toBeDefined();
+        // 카운터 누적 유지 — motion 회복 시 다음 cycle에서 정상 advance, 회복 안 되면 auto-end가 종료 보장
+        expect(stored.consecutiveEtaMissing).toBe(FALLBACK_TRIGGER);
+      });
+
+      // walking/automotive — positive 비정지 신호 → advance 진행.
+      // unknown — 센서 미지원/권한 거절 사용자 freeze 방지 트레이드오프 (lockless보다 약한 보수).
+      it.each<[PositionPoint['motion'], string]>([
+        ['walking', 'p1386-walking'],
+        ['automotive', 'p1386-auto'],
+        ['unknown', 'p1386-unknown'],
+      ])('motion=%s → fallback advance 진행 (waypoint shift)', async (motion, pushId) => {
+        const { stats, stored } = await runFallbackMotionScenario({
+          motion,
+          hopElapsed: true,
+          pushId,
+        });
+        expect(stats.vanishFallbackMotionGateBlocked).toBe(0);
+        expect(stats.vanishFallbackFired).toBe(1);
+        expect(stored.waypoints[0].stationName).toBe('군자');
+        expect(stored.consecutiveEtaMissing).toBe(0);
+      });
+
+      it('hop 시간 미경과 → motion 게이트 진입 전 (lock release 경로 유지)', async () => {
+        // 게이트는 hopElapsed 분기 안에서만 평가 — 미경과면 motion=stationary여도 lock release.
+        // #1370 L3 동작과 충돌하지 않음 점검.
+        const { stats, stored } = await runFallbackMotionScenario({
+          motion: 'stationary',
+          hopElapsed: false,
+          pushId: 'p1386-not-elapsed',
+          tripOverrides: { locklessStationPassed: false },
+        });
+        // motion gate 미진입
+        expect(stats.vanishFallbackMotionGateBlocked).toBe(0);
+        // lock release + lockless takeover 경로 활성
+        expect(stats.vanishLocklessTakeover).toBe(1);
+        expect(stored.boardingLock).toBeUndefined();
+        expect(stored.locklessStationPassed).toBe(true);
+      });
+    });
   });
 
   it('advances waypoint and resets baseline when trainCode arrived (arvlCd=1)', async () => {
