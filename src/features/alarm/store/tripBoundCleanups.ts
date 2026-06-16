@@ -95,5 +95,23 @@ export function runTripBoundCleanups(): Promise<void> {
   return Promise.allSettled(TRIP_BOUND_CLEANUPS.map((cleanup) => cleanup())).then(noop);
 }
 
+/**
+ * #1370 L4 — OS scheduled notification queue만 즉시 cancel하는 정밀 helper.
+ *
+ * 종착역 도착 silent push 수신 시 ROUTE_KEY/DESTINATION_KEY 등 storage 정리에 앞서
+ * OS 큐의 `bl:` / `tba:` 사전 예약 알람을 우선 제거해 burst fire race를 좁힌다.
+ * runTripBoundCleanups 전체 흐름은 그대로 유지하며(triggerTripEndRecall은 ROUTE_KEY를
+ * 읽어야 해 storage 정리는 그 뒤에 와야 함), 본 helper는 storage를 건드리지 않는다.
+ *
+ * 멱등 — runTripBoundCleanups가 후속에서 동일 OS API를 다시 호출해도 이미 비어 있어 안전.
+ * 두 cancel은 독립적이라 allSettled로 묶어 한쪽 실패가 다른 쪽 실행을 막지 않도록 한다.
+ */
+export function cancelTripBoundOsQueue(): Promise<void> {
+  return Promise.allSettled([
+    purgeBoardingLockSchedulerQueue(),
+    cancelTripBoundAlarms(),
+  ]).then(noop);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-empty-function
 function noop(): void {}

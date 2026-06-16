@@ -1,6 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import { TRIP_BOUND_CLEANUPS, runTripBoundCleanups } from '../tripBoundCleanups';
+import {
+  TRIP_BOUND_CLEANUPS,
+  runTripBoundCleanups,
+  cancelTripBoundOsQueue,
+} from '../tripBoundCleanups';
 import {
   DESTINATION_KEY,
   ROUTE_KEY,
@@ -106,6 +110,48 @@ describe('tripBoundCleanups', () => {
   it('runTripBoundCleanups: AsyncStorage가 reject해도 reject를 던지지 않는다 (graceful)', async () => {
     (AsyncStorage.removeItem as jest.Mock).mockRejectedValue(new Error('boom'));
     await expect(runTripBoundCleanups()).resolves.toBeUndefined();
+  });
+
+  it('#1370 L4 — cancelTripBoundOsQueue: bl:/tba: 사전 예약을 OS 큐에서 cancel한다 (종착역 burst 차단)', async () => {
+    // backend trip-ended push 수신 즉시 호출되는 정밀 helper. storage는 건드리지 않고
+    // OS queue 두 채널만 우선 cancel — race window 차단.
+    const blIds = ['bl:T-7172:0:early:용마산', 'bl:T-7172:0:imminent:용마산'];
+    await AsyncStorage.setItem(SCHEDULED_NOTIFICATIONS_KEY, JSON.stringify(blIds));
+    (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockResolvedValue([
+      { identifier: 'tba:imminent:용마산' },
+    ]);
+    (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockResolvedValue(undefined);
+    (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
+
+    await cancelTripBoundOsQueue();
+
+    const cancelled = (Notifications.cancelScheduledNotificationAsync as jest.Mock).mock.calls.map(
+      (c) => c[0] as string,
+    );
+    expect(cancelled).toContain('bl:T-7172:0:early:용마산');
+    expect(cancelled).toContain('bl:T-7172:0:imminent:용마산');
+    expect(cancelled).toContain('tba:imminent:용마산');
+  });
+
+  it('#1370 L4 — cancelTripBoundOsQueue: 한쪽 채널이 reject해도 다른 채널은 실행되고 호출자에 reject 전파 안 함', async () => {
+    // 두 cancel은 독립적 — allSettled로 묶여 한쪽 실패가 다른 쪽 또는 호출자(trip-ended handler)에
+    // 전파되면 안 된다.
+    await AsyncStorage.setItem(
+      SCHEDULED_NOTIFICATIONS_KEY,
+      JSON.stringify(['bl:T-7172:0:imminent:용마산']),
+    );
+    (Notifications.getAllScheduledNotificationsAsync as jest.Mock).mockRejectedValue(
+      new Error('boom'),
+    );
+    (Notifications.cancelScheduledNotificationAsync as jest.Mock).mockResolvedValue(undefined);
+    (Notifications.dismissNotificationAsync as jest.Mock).mockResolvedValue(undefined);
+
+    await expect(cancelTripBoundOsQueue()).resolves.toBeUndefined();
+    // bl 채널은 정상 cancel 호출됐어야 함.
+    const cancelled = (Notifications.cancelScheduledNotificationAsync as jest.Mock).mock.calls.map(
+      (c) => c[0] as string,
+    );
+    expect(cancelled).toContain('bl:T-7172:0:imminent:용마산');
   });
 
   it('runTripBoundCleanups: 한 항목이 reject해도 나머지 항목이 모두 실행된다', async () => {

@@ -37,8 +37,11 @@ jest.mock('../../utils/alarmLog', () => ({
 
 // #868 — trip-ended payload 수신 시 trip-bound storage cleanup.
 const mockRunTripBoundCleanups = jest.fn().mockResolvedValue(undefined);
+// #1370 L4 — trip-ended 수신 즉시 OS queue cancel.
+const mockCancelTripBoundOsQueue = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../store/tripBoundCleanups', () => ({
   runTripBoundCleanups: () => mockRunTripBoundCleanups(),
+  cancelTripBoundOsQueue: () => mockCancelTripBoundOsQueue(),
 }));
 
 // #899 (Seam C) — trip-ended 분기는 FG 복귀를 위한 sentinel을 작성한다.
@@ -272,6 +275,10 @@ describe('silentPushTask', () => {
     mockRescheduleHopForLock.mockResolvedValue({ cancelled: 1, scheduled: 1 });
     // #918 A3 PR4 — tba reschedule 기본 graceful.
     mockRescheduleTripBoundAlarm.mockResolvedValue({ cancelled: 0, scheduled: 0 });
+    // #1370 L4 — trip-ended OS queue cancel 기본 graceful (mockImplementation 잔류 차단).
+    mockCancelTripBoundOsQueue.mockResolvedValue(undefined);
+    // #919 / #1370 — clearAllMocks가 mockImplementation을 reset하지 않으므로 명시 복구.
+    mockRunTripBoundCleanups.mockResolvedValue(undefined);
     // #1355 D1 — cross-channel cancel 기본 0건.
     mockCancelTbaByStationPhase.mockResolvedValue(0);
     mockCancelBlByStationPhase.mockResolvedValue(0);
@@ -2211,6 +2218,40 @@ describe('silentPushTask', () => {
 
         expect(mockTriggerTripEndRecall).toHaveBeenCalledTimes(1);
         expect(callOrder).toEqual(['trigger', 'cleanup']);
+      });
+
+      // #1370 L4 — 종착역 도착 시 device 로컬 OS queue burst fire 차단.
+      // trip-ended push 수신 즉시 cancelTripBoundOsQueue를 호출해 race window를 좁힌다.
+      // triggerTripEndRecall은 network upload로 수 초 stall 가능 — 그 전에 OS 큐 cancel 진행.
+      it('#1370 L4 — trip-ended 수신 즉시 cancelTripBoundOsQueue 호출 (trigger/cleanup *이전*)', async () => {
+        const callOrder: string[] = [];
+        mockCancelTripBoundOsQueue.mockImplementation(async () => {
+          callOrder.push('os-cancel');
+        });
+        mockTriggerTripEndRecall.mockImplementation(async () => {
+          callOrder.push('trigger');
+          return { uploaded: false };
+        });
+        mockRunTripBoundCleanups.mockImplementation(async () => {
+          callOrder.push('cleanup');
+        });
+
+        await handleSilentPush(tripEndedPayload({ reason: 'destination-arrived' }));
+
+        expect(mockCancelTripBoundOsQueue).toHaveBeenCalledTimes(1);
+        expect(callOrder).toEqual(['os-cancel', 'trigger', 'cleanup']);
+      });
+
+      it('#1370 L4 — tripToken mismatch 시 OS queue cancel도 호출 안 함 (다른 trip의 push)', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === ACTIVE_TRIP_KEY) return 'NEW-TRIP-TOKEN';
+          return null;
+        });
+        await handleSilentPush(
+          tripEndedPayload({ pushId: 'te-uuid', tripToken: 'OLD-TRIP-TOKEN' }),
+        );
+        expect(mockCancelTripBoundOsQueue).not.toHaveBeenCalled();
       });
 
       it('#919 — tripToken mismatch로 cleanup skip 시 recall trigger도 호출 안 함', async () => {
