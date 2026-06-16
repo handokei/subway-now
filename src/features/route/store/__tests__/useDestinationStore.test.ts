@@ -92,6 +92,20 @@ describe('useDestinationStore', () => {
     expect(destination).toBeNull();
   });
 
+  // #1379 — !isSwitch + !station: 이미 null인 destination에 null을 재설정하는 경우.
+  // isSwitch=false이므로 cleanup chain을 건드리지 않고 inline removeItem만 호출.
+  it('setDestination(null): 이미 null인 destination에 null을 재설정해도 removeItem 호출', () => {
+    // initial state: destination=null (already set in beforeEach)
+    const { setDestination } = useDestinationStore.getState();
+    setDestination(null);
+
+    // isSwitch=false (null→null), station=null → removeItem 경로
+    expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:destination');
+    // isSwitch=false이므로 cleanup chain은 실행되지 않는다 (triggerTripEndRecall 미호출).
+    expect(triggerTripEndRecall).not.toHaveBeenCalled();
+    expect(useDestinationStore.getState().destination).toBeNull();
+  });
+
   // #1324 — 목적지 == customOrigin(store가 권위적으로 아는 출발역)이면 degenerate trip을
   // 만들지 않고 거부한다 (방향 null/빈 탑승목록 회귀 차단). breadcrumb로 관측 가능.
   it('setDestination(#1324): customOrigin과 같은 역을 목적지로 지정하면 거부하고 상태 불변', () => {
@@ -123,6 +137,9 @@ describe('useDestinationStore', () => {
   it('setDestination: 역 설정 시 AsyncStorage에 저장하고 null 시 삭제한다', async () => {
     const { setDestination } = useDestinationStore.getState();
     setDestination(mockStation);
+    // #1379 — isSwitch 경로(prev=null→station)에서는 setItem이 cleanup chain 이후로 직렬화되므로
+    // microtask flush 후 검증한다 (구 코드는 inline 동기였으나 race 차단을 위해 이동됨).
+    await flushMicrotasks();
     expect(AsyncStorage.setItem).toHaveBeenCalledWith(
       'subway-now:destination',
       JSON.stringify(mockStation),
@@ -183,8 +200,9 @@ describe('useDestinationStore', () => {
     // #919 — setDestination이 triggerTripEndRecall → runTripBoundCleanups → setTripStartedAt
     // 세 단계 then-chain을 돌리는데 cleanup 안에서 Promise.allSettled가 추가 microtask를 만든다.
     // #773 — purgeBoardingLockSchedulerQueue가 getScheduledNotificationIds + clearScheduledNotificationIds
-    // (각각 AsyncStorage await 2회 포함)를 추가하므로 microtask depth가 더 깊다. 넉넉하게 flush.
-    for (let i = 0; i < 30; i++) {
+    // (각각 AsyncStorage await 2회 포함)를 추가하므로 microtask depth가 더 깊다.
+    // #1379 — isSwitch 경로에 setItem(DESTINATION_KEY) 단계가 추가되었으므로 50회로 증가.
+    for (let i = 0; i < 50; i++) {
       await Promise.resolve();
     }
   }

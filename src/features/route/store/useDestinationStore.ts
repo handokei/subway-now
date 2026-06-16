@@ -122,13 +122,24 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       caller,
     });
     set({ destination: station });
-    if (station) {
-      AsyncStorage.setItem(DESTINATION_KEY, JSON.stringify(station)).catch(noop);
-    } else {
-      // #700 — trip 종료 시 tripOrigin도 atomic하게 클리어. destination만 남기면
-      // 다음 trip 시작 시 stale origin이 잠깐 노출돼 route 계산이 흔들린다.
+    // #700 — trip 종료 시 tripOrigin도 atomic하게 클리어. destination만 남기면
+    // 다음 trip 시작 시 stale origin이 잠깐 노출돼 route 계산이 흔들린다.
+    if (!station) {
       set({ tripOrigin: null });
-      AsyncStorage.removeItem(DESTINATION_KEY).catch(noop);
+    }
+    // #1379 — DESTINATION_KEY storage race 차단.
+    // isSwitch 경로에서는 아래 tripTransitionQueue가 runTripBoundCleanups를 호출하며
+    // DESTINATION_KEY를 removeItem한다. 여기서 inline setItem을 fire-and-forget하면
+    // cleanup의 removeItem이 뒤에 도착해 storage 최종 상태가 null이 되는 회귀 발생
+    // (실기기 2026-06-16 trip 도중 일괄 손실 사고). isSwitch 경로는 storage write를
+    // cleanup chain 이후로 이동시켜 직렬화한다. 같은 destination 재지정(!isSwitch)은
+    // cleanup chain이 안 돌므로 inline write 그대로.
+    if (!isSwitch) {
+      if (station) {
+        AsyncStorage.setItem(DESTINATION_KEY, JSON.stringify(station)).catch(noop);
+      } else {
+        AsyncStorage.removeItem(DESTINATION_KEY).catch(noop);
+      }
     }
     // destination switch(목적지 자체가 바뀌었을 때) — 부수 상태/storage 자동 클리어.
     // 같은 destination 재설정 시에는 진행 중인 trip/lock/스케줄을 유지한다.
@@ -159,6 +170,14 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
         .then(() => triggerTripEndRecall())
         .catch(noop)
         .then(() => runTripBoundCleanups())
+        .catch(noop)
+        // #1379 — cleanup이 DESTINATION_KEY를 removeItem한 뒤 새 trip의 destination을 write.
+        // 분기 순서를 직렬화해 storage 최종 상태가 station(new trip) 또는 null(end)으로 결정적.
+        .then(() =>
+          station
+            ? AsyncStorage.setItem(DESTINATION_KEY, JSON.stringify(station))
+            : undefined,
+        )
         .catch(noop)
         .then(() => (station ? setTripStartedAt() : undefined))
         .catch(noop);

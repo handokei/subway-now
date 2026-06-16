@@ -14,7 +14,7 @@ import { useDestinationStore } from '../features/route/store/useDestinationStore
 import { useAlarmEventStore } from '../features/alarm/store/useAlarmEventStore';
 import { useBoardingLockStore } from '../features/alarm/store/useBoardingLockStore';
 import { DestinationPicker } from '../features/route/components/DestinationPicker';
-import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
+import { findRouteCandidatesByCategory, buildJourneyDisplay, calculateETA, calculateStaticETA, getNextStationName, getStationById, routeSignature, type Route, type CategorizedRoute, type RoutePreference } from '../shared/utils/stationRoute';
 import { pickArrivalAtOrigin } from '../features/arrival/utils/pickArrivalAtOrigin';
 import { EditorialTimeline } from '../features/arrival/components/EditorialTimeline';
 import { arrivalInfoToArrivalTrain, journeyDisplayToStops, nearestResultToNearest } from '../features/route/utils/journeyAdapter';
@@ -253,7 +253,23 @@ export default function HomeScreen() {
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
   const isCustomOrigin = customOrigin !== null;
-  const effectiveOrigin = customOrigin ?? result?.station ?? null;
+  // #1379: effectiveOrigin은 trip 생명선이다. GPS pause(BG 진입/지하 dead zone)로 result?.station이
+  // 일시 null이 되면 아래 storage/effect들이 trip을 종료한 것으로 오인해 ROUTE_KEY removeItem →
+  // useApnsTripRegistration이 backend ACTIVE_TRIP cleanup을 발사하는 cascade가 일어난다.
+  // stale-while-revalidate 마지막 fused station + 활성 boardingLock의 boardingStation +
+  // tripOrigin까지 4단 fallback해 trip 종료 신호와 GPS 일시 누락을 구분한다.
+  const lastFusedStationRef = useRef<Station | null>(null);
+  if (result?.station) lastFusedStationRef.current = result.station;
+  const boardingLockStation = fusionBoardingLock
+    ? getStationById(fusionBoardingLock.boardingStationId) ?? null
+    : null;
+  const effectiveOrigin =
+    customOrigin ??
+    result?.station ??
+    lastFusedStationRef.current ??
+    boardingLockStation ??
+    tripOrigin ??
+    null;
   useTripOrigin(destination, effectiveOrigin, setTripOrigin, tripOrigin);
   const handleSameOriginToastDismiss = useCallback(() => setSameOriginToast(null), []);
   // #1324 — 목적지 선택 단일 진입점. 현재역(effectiveOrigin)과 같은 역이면 degenerate trip을
@@ -302,9 +318,14 @@ export default function HomeScreen() {
   const variantIds = originVariants.map((v) => v.id).join(',');
 
   useEffect(() => {
-    if (!effectiveOrigin || !destination) {
+    // #1379: destination 종료(=실제 trip 종료)일 때만 ROUTE_KEY removeItem.
+    // effectiveOrigin null은 GPS 일시 누락일 수 있으므로 storage는 보존하고 계산만 skip한다.
+    if (!destination) {
       setCategorized([]);
       AsyncStorage.removeItem(ROUTE_KEY).catch(() => {});
+      return;
+    }
+    if (!effectiveOrigin) {
       return;
     }
     const interactionStart = performance.now();
