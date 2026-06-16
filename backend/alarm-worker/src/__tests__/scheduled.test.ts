@@ -1679,42 +1679,22 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expect(stored.consecutiveEtaMissing).toBe(FALLBACK_TRIGGER);
       });
 
-      it('motion=walking → fallback advance 진행 (waypoint shift)', async () => {
-        // 사용자가 실제로 걷는 중 — hop 시간 경과 시 advance 허용.
+      // walking/automotive — positive 비정지 신호 → advance 진행.
+      // unknown — 센서 미지원/권한 거절 사용자 freeze 방지 트레이드오프 (lockless보다 약한 보수).
+      it.each<[PositionPoint['motion'], string]>([
+        ['walking', 'p1386-walking'],
+        ['automotive', 'p1386-auto'],
+        ['unknown', 'p1386-unknown'],
+      ])('motion=%s → fallback advance 진행 (waypoint shift)', async (motion, pushId) => {
         const { stats, stored } = await runFallbackMotionScenario({
-          motion: 'walking',
+          motion,
           hopElapsed: true,
-          pushId: 'p1386-walking',
+          pushId,
         });
         expect(stats.vanishFallbackMotionGateBlocked).toBe(0);
         expect(stats.vanishFallbackFired).toBe(1);
         expect(stored.waypoints[0].stationName).toBe('군자');
         expect(stored.consecutiveEtaMissing).toBe(0);
-      });
-
-      it('motion=automotive → fallback advance 진행 (waypoint shift)', async () => {
-        // 사용자가 실제로 이동 중 — hop 시간 경과 시 advance 허용.
-        const { stats, stored } = await runFallbackMotionScenario({
-          motion: 'automotive',
-          hopElapsed: true,
-          pushId: 'p1386-auto',
-        });
-        expect(stats.vanishFallbackMotionGateBlocked).toBe(0);
-        expect(stats.vanishFallbackFired).toBe(1);
-        expect(stored.waypoints[0].stationName).toBe('군자');
-      });
-
-      it('motion=unknown (센서 미지원) → fallback advance 진행 (트레이드오프: lockless보다 약한 보수)', async () => {
-        // 권한 거절/센서 미지원 사용자가 freeze되지 않도록 unknown은 기존 동작 유지.
-        // positive stationary 신호가 있을 때만 게이트가 진입한다는 정책 점검.
-        const { stats, stored } = await runFallbackMotionScenario({
-          motion: 'unknown',
-          hopElapsed: true,
-          pushId: 'p1386-unknown',
-        });
-        expect(stats.vanishFallbackMotionGateBlocked).toBe(0);
-        expect(stats.vanishFallbackFired).toBe(1);
-        expect(stored.waypoints[0].stationName).toBe('군자');
       });
 
       it('hop 시간 미경과 → motion 게이트 진입 전 (lock release 경로 유지)', async () => {
