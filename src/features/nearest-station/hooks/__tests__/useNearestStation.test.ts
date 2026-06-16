@@ -1031,6 +1031,23 @@ describe('useNearestStation — #876 sticky station integration', () => {
     expect(result.current.result?.distanceKm).toBeGreaterThan(5);
   });
 
+  // #876 — sticky.locked와 result.station이 같은 역이면 source='sticky'지만 result는 live 객체 그대로 반환.
+  it('sticky lock과 GPS 결과가 같은 역이면 source=sticky + result는 live 그대로', async () => {
+    // 강남 lock 미리 저장. GPS도 강남 좌표 → exposed memo의 same-station 분기 진입.
+    const gangnam = { id: '2-022', name: '강남', line: '2', lineColor: '#009D3E',
+      lat: 37.49799, lng: 127.027912 };
+    await AsyncStorage.setItem(
+      'subway-now:sticky-station',
+      JSON.stringify({ station: gangnam, lockedAt: Date.now() - 60_000 }),
+    );
+    mockGranted();
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+    simulateGps(37.4980, 127.0277, { accuracy: 20 });
+    await waitFor(() => expect(result.current.result?.station.name).toBe('강남'));
+    expect(result.current.source).toBe('sticky');
+  });
+
   // #1317 — 지도탭 "현재위치" 명시 탭은 sticky를 비우고 live 위치를 노출.
   it('requestCurrentLocation 호출 시 sticky를 비우고 live 위치로 복귀한다', async () => {
     // 효창공원앞 lock 미리 저장. GPS는 강남 → 초기엔 sticky override.
@@ -1362,5 +1379,66 @@ describe('useNearestStation — #1313 subsurface GPS throttle', () => {
     (AppState as { currentState: string }).currentState = 'active';
     await act(async () => { appStateCallback?.('active'); });
     await waitFor(() => expect(lastWatchOptions()).toEqual(SUBSURFACE_OPTIONS));
+  });
+});
+
+describe('useNearestStation — #1363 sticky input memo 안정성 (cascade 차단)', () => {
+  // useStickyStation에 전달되는 fix/motion object가 inline literal이면 매 render 새 ref가 되어
+  // sticky 평가 effect가 매 render 재실행 → 9시간 trip ~16만회 emit. useMemo로 안정화되면
+  // 입력 값이 동일한 한 같은 reference를 유지해야 한다.
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    await AsyncStorage.clear();
+    appStateCallback = null;
+    watchCallback = null;
+    mockNoLastKnownLocation();
+    mockSubscription.remove.mockClear();
+    (Location.watchPositionAsync as jest.Mock).mockImplementation(
+      async (_options: unknown, callback: typeof watchCallback) => {
+        watchCallback = callback;
+        return mockSubscription;
+      },
+    );
+    mockGranted();
+  });
+
+  it('inputs 값이 그대로(같은 값)면 sticky 입력 fix/motion reference가 유지된다', async () => {
+    const spy = jest.spyOn(useStickyStationModule, 'useStickyStation');
+    const { rerender } = renderHook(
+      ({ sub, trip }: { sub: boolean; trip: boolean }) =>
+        useNearestStation({ barometerSubsurface: sub, tripActive: trip }),
+      { initialProps: { sub: false, trip: false } },
+    );
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+
+    const initialCallCount = spy.mock.calls.length;
+    const initialFixRef = spy.mock.calls[initialCallCount - 1][0];
+    const initialMotionRef = spy.mock.calls[initialCallCount - 1][1];
+
+    // 같은 inputs로 N번 rerender — memo 키가 안 바뀌므로 같은 ref여야 한다.
+    for (let i = 0; i < 5; i += 1) {
+      rerender({ sub: false, trip: false });
+    }
+    const lastCall = spy.mock.calls[spy.mock.calls.length - 1];
+    expect(lastCall[0]).toBe(initialFixRef);
+    expect(lastCall[1]).toBe(initialMotionRef);
+    spy.mockRestore();
+  });
+
+  it('inputs 값이 바뀌면 motion ref가 새로 생성된다 (정상 갱신)', async () => {
+    const spy = jest.spyOn(useStickyStationModule, 'useStickyStation');
+    const { rerender } = renderHook(
+      ({ sub }: { sub: boolean }) => useNearestStation({ barometerSubsurface: sub }),
+      { initialProps: { sub: false } },
+    );
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    const initialMotionRef = spy.mock.calls[spy.mock.calls.length - 1][1];
+
+    // subsurface=true로 변경 → memo deps 변경 → 새 ref.
+    rerender({ sub: true });
+    const nextMotionRef = spy.mock.calls[spy.mock.calls.length - 1][1];
+    expect(nextMotionRef).not.toBe(initialMotionRef);
+    expect(nextMotionRef).toEqual({ automotive: true, subsurface: true, tripActive: false });
+    spy.mockRestore();
   });
 });

@@ -125,4 +125,25 @@ describe('useFgPositionUpload (#1280)', () => {
     await flushAsyncStorage();
     expect(mockedUpload).not.toHaveBeenCalled();
   });
+
+  describe('#1363 — currentStationName payload (log 진단 이원화)', () => {
+    it('currentStationName 전달 → payload에 그대로 송신', async () => {
+      renderUpload({ currentStationName: '강남' });
+      await flushAsyncStorage();
+      expect(mockedUpload.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ currentStationName: '강남' }),
+      );
+    });
+
+    it.each([
+      { label: 'null', value: null },
+      { label: 'undefined', value: undefined },
+      { label: '빈 문자열', value: '' },
+    ])('currentStationName=$label → payload omit (트래픽 절감)', async ({ value }) => {
+      renderUpload({ currentStationName: value });
+      await flushAsyncStorage();
+      const payload = mockedUpload.mock.calls[0][0];
+      expect(payload.currentStationName).toBeUndefined();
+    });
+  });
 });

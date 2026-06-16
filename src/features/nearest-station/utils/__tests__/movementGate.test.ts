@@ -198,39 +198,69 @@ describe('movementGate', () => {
   });
 
   describe('shouldDowngradeFusion', () => {
-    it('승격 라벨 + 정적 신호면 true', () => {
+    it('#1363 — 승격 라벨 + ≥2 정적 신호 합의면 true (consensus 게이트)', () => {
+      // speed + motionStationary 합의
       expect(
-        shouldDowngradeFusion({ confidence: 'position-train', speedMps: 0, accuracyM: 50 }),
+        shouldDowngradeFusion({
+          confidence: 'position-train',
+          speedMps: 0,
+          accuracyM: 50,
+          motionStationary: true,
+        }),
       ).toBe(true);
+      // speed + positionStability 합의
       expect(
-        shouldDowngradeFusion({ confidence: 'boarding-lock', speedMps: 0.1, accuracyM: 30 }),
+        shouldDowngradeFusion({
+          confidence: 'boarding-lock',
+          speedMps: 0.1,
+          accuracyM: 30,
+          positionStability: 'static',
+        }),
       ).toBe(true);
+      // motionStationary + positionStability 합의 (speed 미측정)
       expect(
         shouldDowngradeFusion({
           confidence: 'boarding-lock-interp',
-          speedMps: 0,
+          speedMps: null,
           accuracyM: 30,
+          motionStationary: true,
+          positionStability: 'static',
         }),
       ).toBe(true);
     });
 
-    it('#733 — arrival-arriving + 정적 신호면 true (snapshot 2 회귀 fix)', () => {
+    it('#1363 — single signal alone은 강등 안 함 (fu jumping 회귀 차단)', () => {
+      // speed 단독 — motion/positionStability 미보고(warmup) → 보류
+      expect(
+        shouldDowngradeFusion({ confidence: 'position-train', speedMps: 0, accuracyM: 50 }),
+      ).toBe(false);
+      // motionStationary 단독 — speed null + positionStability 미보고
       expect(
         shouldDowngradeFusion({
-          confidence: 'arrival-arriving',
-          speedMps: 0,
+          confidence: 'position-train',
+          speedMps: null,
           accuracyM: 50,
+          motionStationary: true,
         }),
-      ).toBe(true);
-    });
-
-    it('#733 — arrival-arriving + speed=null + positionStability=static이면 true', () => {
+      ).toBe(false);
+      // positionStability 단독 — speed null + motion 미보고
       expect(
         shouldDowngradeFusion({
           confidence: 'arrival-arriving',
           speedMps: null,
           accuracyM: 50,
           positionStability: 'static',
+        }),
+      ).toBe(false);
+    });
+
+    it('#733 — arrival-arriving + 합의 정적 신호면 true (snapshot 2 회귀 fix)', () => {
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'arrival-arriving',
+          speedMps: 0,
+          accuracyM: 50,
+          motionStationary: true,
         }),
       ).toBe(true);
     });
@@ -239,38 +269,55 @@ describe('movementGate', () => {
       expect(
         shouldDowngradeFusion({ confidence: 'position-train', speedMps: 5, accuracyM: 50 }),
       ).toBe(false);
-      // accuracy noise → 정적 신호 인정 안 함
+      // accuracy noise → 정적 신호 인정 안 함 (합의 신호여도 차단)
       expect(
-        shouldDowngradeFusion({ confidence: 'position-train', speedMps: 0, accuracyM: 1500 }),
+        shouldDowngradeFusion({
+          confidence: 'position-train',
+          speedMps: 0,
+          accuracyM: 1500,
+          motionStationary: true,
+          positionStability: 'static',
+        }),
       ).toBe(false);
     });
 
     it('정적 신호여도 승격 라벨 아니면 false', () => {
       expect(
-        shouldDowngradeFusion({ confidence: 'gps-only', speedMps: 0, accuracyM: 50 }),
+        shouldDowngradeFusion({
+          confidence: 'gps-only',
+          speedMps: 0,
+          accuracyM: 50,
+          motionStationary: true,
+        }),
       ).toBe(false);
-      expect(
-        shouldDowngradeFusion({ confidence: 'arrival-confirmed', speedMps: 0, accuracyM: 50 }),
-      ).toBe(false);
-    });
-
-    it('#733 — 승격 라벨 + speed=null + positionStability 없으면 false (보수)', () => {
       expect(
         shouldDowngradeFusion({
-          confidence: 'position-train',
-          speedMps: null,
+          confidence: 'arrival-confirmed',
+          speedMps: 0,
           accuracyM: 50,
+          motionStationary: true,
         }),
       ).toBe(false);
     });
 
-    it('#733 — 승격 라벨 + speed=null + positionStability=moving이면 false', () => {
+    it('#1363 — positionStability=moving이면 정적 후보가 1개여도 false', () => {
       expect(
         shouldDowngradeFusion({
           confidence: 'position-train',
-          speedMps: null,
+          speedMps: 0,
           accuracyM: 50,
           positionStability: 'moving',
+        }),
+      ).toBe(false);
+    });
+
+    it('#1363 — motionStationary=false + speed 정적 단독은 false (consensus 미달)', () => {
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'position-train',
+          speedMps: 0,
+          accuracyM: 50,
+          motionStationary: false,
         }),
       ).toBe(false);
     });
@@ -477,25 +524,27 @@ describe('movementGate', () => {
     });
   });
 
-  describe('#728 — shouldDowngradeFusion motionStationary', () => {
-    it('승격 라벨 + motionStationary=true (speed=null) → true', () => {
+  describe('#728/#1363 — shouldDowngradeFusion motionStationary + consensus', () => {
+    it('승격 라벨 + motionStationary=true + positionStability=static (speed=null) → true', () => {
       expect(
         shouldDowngradeFusion({
           confidence: 'position-train',
           speedMps: null,
           accuracyM: 50,
           motionStationary: true,
+          positionStability: 'static',
         }),
       ).toBe(true);
     });
 
-    it('승격 라벨 아니면 motionStationary=true여도 false', () => {
+    it('승격 라벨 아니면 합의 정적 신호여도 false', () => {
       expect(
         shouldDowngradeFusion({
           confidence: 'gps-only',
           speedMps: null,
           accuracyM: 50,
           motionStationary: true,
+          positionStability: 'static',
         }),
       ).toBe(false);
     });

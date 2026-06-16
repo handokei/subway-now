@@ -441,6 +441,8 @@ export default function HomeScreen() {
     accuracyMeters: accuracyMeters ?? null,
     tripActive: Boolean(destination && route),
     motionStationary,
+    // #1363 — 사용자 추정 현재역 이름. backend 진단 log에서 trip waypoint와 명시 구분.
+    currentStationName: result?.station.name ?? null,
   });
   useBoardingLockScheduler({
     lock: boardingLock,

@@ -21,6 +21,7 @@ import {
   pickActiveWaypoint,
   pickApnsHost,
   pickBestArrivalSignal,
+  pickLatestCurrentStationName,
   resolveEtaMissingThreshold,
   runScheduled,
   type ScheduledDeps,
@@ -4397,5 +4398,39 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(stats.arvlCdFireSuccess).toBe(0);
     expect(stats.arvlCdFireMismatch).toBe(0); // 게이트 위 차단이라 fire 경로 미진입
     expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
+  });
+});
+
+
+describe('#1363 — pickLatestCurrentStationName (log 진단 이원화 helper)', () => {
+  const base = { lat: 37.5, lng: 127.0, accuracy: 10, ts: 1000, motion: 'walking' } as const;
+
+  it('빈 시리즈 → undefined', () => {
+    expect(pickLatestCurrentStationName([])).toBeUndefined();
+  });
+
+  it('어떤 sample도 currentStationName이 없으면 → undefined', () => {
+    const series: PositionPoint[] = [
+      { ...base, ts: 1000 },
+      { ...base, ts: 2000 },
+    ];
+    expect(pickLatestCurrentStationName(series)).toBeUndefined();
+  });
+
+  it('가장 최근 sample에 있으면 그대로 반환', () => {
+    const series: PositionPoint[] = [
+      { ...base, ts: 1000 },
+      { ...base, ts: 2000, currentStationName: '강남' },
+    ];
+    expect(pickLatestCurrentStationName(series)).toBe('강남');
+  });
+
+  it('최근 sample이 누락하면 직전 sample에서 backfill', () => {
+    const series: PositionPoint[] = [
+      { ...base, ts: 1000, currentStationName: '용마산' },
+      { ...base, ts: 2000 },
+      { ...base, ts: 3000 },
+    ];
+    expect(pickLatestCurrentStationName(series)).toBe('용마산');
   });
 });

@@ -191,13 +191,33 @@ export function shouldDowngradeFusion(input: {
   motionStationary?: boolean;
 }): boolean {
   if (!isFusionDowngradeTarget(input.confidence)) return false;
-  return isStaticSpeedSignal(
-    input.speedMps,
-    input.accuracyM,
-    input.positionStability,
-    input.motionStationary,
-  );
+  // accuracy 가드: GPS lock이 끊긴 노이즈는 정적 신호로 보지 않는다(기존 정책 유지).
+  if (input.accuracyM != null && input.accuracyM > MAX_ACCURACY_M) return false;
+
+  // #1363 — single-signal downgrade 회귀(fu jumping) 차단. consensus 게이트(≥2 신호).
+  // 회귀 패턴: iOS에서 motion=null/unknown이 자주 발생 → 단일 신호(speed alone)로 fusion-elevated
+  // confidence(position-train / boarding-lock / arrival-arriving)가 gps-only로 강등됐다가 다음
+  // tick에 재승격 → 사용자 화면에서 현재역(fu)이 튄다.
+  //
+  // 합의 후보(독립 신호):
+  //   1. speedMps < STATIC_SPEED_THRESHOLD_MPS — GPS 속도 정적
+  //   2. motionStationary === true            — CMMotionActivity 정적
+  //   3. positionStability === 'static'       — 좌표 이력 60s 정적
+  // motionStationary === undefined / positionStability === undefined는 warmup으로 간주해 합의에
+  // 포함하지 않는다(neutral). 강등은 ≥2 합의 시에만 허용. positionStability === 'moving'이거나
+  // motionStationary === false는 명시 비-정적 신호로 합의 카운트를 차감하지 않지만, 어떤 정적
+  // 후보도 active하지 않으면 자연스럽게 강등 보류된다.
+  let staticSignalCount = 0;
+  if (typeof input.speedMps === 'number' && input.speedMps < STATIC_SPEED_THRESHOLD_MPS) {
+    staticSignalCount += 1;
+  }
+  if (input.motionStationary === true) staticSignalCount += 1;
+  if (input.positionStability === 'static') staticSignalCount += 1;
+  return staticSignalCount >= FUSION_DOWNGRADE_CONSENSUS_MIN;
 }
+
+/** #1363 — fusion downgrade 합의 최소 신호 수(2). 단일 신호 강등 회귀 차단. */
+export const FUSION_DOWNGRADE_CONSENSUS_MIN = 2;
 
 export interface LocationSignalInput {
   /** epoch ms — 없으면 stale-timestamp 검증 skip. */

@@ -427,6 +427,50 @@ describe('positionSeries — nearestStationDistanceM field validation (#825)', (
   });
 });
 
+describe('positionSeries — currentStationName field validation (#1363)', () => {
+  it('currentStationName 정상값(비어있지 않은 string) → series에 정상 적재', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      { lat: 37.5, lng: 127.0, accuracy: 5, ts: 1000, motion: 'walking', currentStationName: '강남' },
+    ]);
+    await kv.put('pos:tok', raw);
+    const series = await readSeries(kv, 'tok');
+    expect(series).toHaveLength(1);
+    expect(series[0].currentStationName).toBe('강남');
+  });
+
+  it('빈 문자열 → filter됨 (graceful 거부 — 의미 없는 라벨)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      { lat: 37.5, lng: 127.0, accuracy: 5, ts: 1000, motion: 'walking', currentStationName: '' },
+    ]);
+    await kv.put('pos:tok', raw);
+    const series = await readSeries(kv, 'tok');
+    expect(series).toHaveLength(0);
+  });
+
+  it('non-string 타입 → filter됨', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      { lat: 37.5, lng: 127.0, accuracy: 5, ts: 1000, motion: 'walking', currentStationName: 123 },
+    ]);
+    await kv.put('pos:tok', raw);
+    const series = await readSeries(kv, 'tok');
+    expect(series).toHaveLength(0);
+  });
+
+  it('필드 부재 → 정상 적재 (옵션)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      { lat: 37.5, lng: 127.0, accuracy: 5, ts: 1000, motion: 'walking' },
+    ]);
+    await kv.put('pos:tok', raw);
+    const series = await readSeries(kv, 'tok');
+    expect(series).toHaveLength(1);
+    expect(series[0].currentStationName).toBeUndefined();
+  });
+});
+
 describe('cosineDirection', () => {
   it('같은 방향 → 1', () => {
     // 동→서 두 vector 동일 방향

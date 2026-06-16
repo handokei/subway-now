@@ -90,12 +90,20 @@ describe('useFusedNearestStation — #727 fusion downgrade', () => {
     });
   });
 
+  // #1363 — consensus 게이트(≥2 정적 신호). speed 단독으로는 더 이상 강등하지 않는다.
+  // useFusedNearestStation positional 인자(6): motionStationary. 6번째 인자로 합의 신호 추가.
   // 강등 동작은 confidence/source 한 쌍 결과만 본다. result 검증(gangnam으로 복원)은 첫 케이스만.
   it.each([
-    ['speed=0 + accuracy 정상 → 강등', 0, 50, null, 'gps-only', 'gps'],
-    ['speed=0.1 + accuracy 정상 + boarding-lock → 강등', 0.1, 30, 'T-1', 'gps-only', 'gps'],
-    ['speed=2 이동 중 → 유지', 2, 50, null, 'position-train', 'position-train'],
-    ['speed=0 + accuracy>100m 지하 noise → 유지', 0, 1500, null, 'position-train', 'position-train'],
+    // speed=0 + motion=true → 2 신호 합의 → 강등
+    ['speed=0 + motion=true 합의 → 강등', 0, 50, null, true, 'gps-only', 'gps'],
+    // speed=0.1 + motion=true + boarding-lock → 2 신호 합의 → 강등
+    ['speed=0.1 + motion=true + boarding-lock → 강등', 0.1, 30, 'T-1', true, 'gps-only', 'gps'],
+    // speed=2 이동 중 → 유지(정적 신호 0)
+    ['speed=2 이동 중 → 유지', 2, 50, null, false, 'position-train', 'position-train'],
+    // speed=0 단독(motion=undefined) → 1 신호 → 유지 (#1363 회귀 차단)
+    ['speed=0 단독(motion 미보고) → 유지 (consensus 미달)', 0, 50, null, undefined, 'position-train', 'position-train'],
+    // speed=0 + accuracy>100m 지하 noise → 유지(accuracy 가드)
+    ['speed=0 + motion=true + accuracy>100m → 유지', 0, 1500, null, true, 'position-train', 'position-train'],
   ])(
     '%s',
     (
@@ -103,13 +111,21 @@ describe('useFusedNearestStation — #727 fusion downgrade', () => {
       speed: number,
       accuracy: number,
       lockedTrainCode: string | null,
+      motionStationary: boolean | undefined,
       expectedConfidence: string,
       expectedSource: string,
     ) => {
       mockUseNearest.mockReturnValue(gpsBase(speed, accuracy));
 
       const { result } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, undefined, lockedTrainCode),
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          lockedTrainCode,
+          null,
+          motionStationary,
+        ),
       );
 
       expect(result.current.confidence).toBe(expectedConfidence);
@@ -120,21 +136,21 @@ describe('useFusedNearestStation — #727 fusion downgrade', () => {
   it('강등 시 result도 GPS 원본(강남)으로 복원', () => {
     mockUseNearest.mockReturnValue(gpsBase(0, 50));
 
-    const { result } = renderHook(() => useFusedNearestStation());
+    const { result } = renderHook(() =>
+      useFusedNearestStation(undefined, undefined, undefined, null, null, true),
+    );
 
     expect(result.current.result?.station.name).toBe(MOCK_STATIONS.gangnam.name);
   });
 
-  // #728 — motionStationary 신호로 speed=null 경로의 강등.
-  // useFusedNearestStation 6번째 positional 인자: motionStationary.
-  describe('#728 motionStationary downgrade', () => {
-    it('speed=null + motionStationary=true → 강등 (positionStability 없이)', () => {
+  // #728/#1363 — motionStationary + 추가 정적 신호 합의로 speed=null 경로의 강등.
+  describe('#728/#1363 motionStationary consensus downgrade', () => {
+    it('speed=null + motionStationary=true 단독은 강등 안 함 (#1363 consensus)', () => {
       mockUseNearest.mockReturnValue(gpsBase(null, 50));
       const { result } = renderHook(() =>
         useFusedNearestStation(undefined, undefined, undefined, null, null, true),
       );
-      expect(result.current.confidence).toBe('gps-only');
-      expect(result.current.source).toBe('gps');
+      expect(result.current.confidence).toBe('position-train');
     });
 
     it('speed=null + motionStationary=false → 유지', () => {

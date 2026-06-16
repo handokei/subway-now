@@ -805,6 +805,12 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
     obj.nearestStationDistanceM >= 0
       ? obj.nearestStationDistanceM
       : undefined;
+  // #1363 — diag log 이원화. 클라가 산출한 사용자 현재역 이름. log 라벨링 전용(게이트 입력 X).
+  // 빈 문자열은 omit으로 강등 (graceful).
+  const currentStationName =
+    typeof obj.currentStationName === 'string' && obj.currentStationName.length > 0
+      ? obj.currentStationName
+      : undefined;
   return {
     token: obj.token,
     point: {
@@ -815,6 +821,7 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
       motion,
       ...(hasPair ? { mapMatchedLine, mapMatchedArcM } : {}),
       ...(nearestStationDistanceM !== undefined ? { nearestStationDistanceM } : {}),
+      ...(currentStationName !== undefined ? { currentStationName } : {}),
     },
     accelSummary,
   };
