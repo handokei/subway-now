@@ -688,6 +688,47 @@ export function evaluateArvlCdFireGate(
 }
 
 /**
+ * #1370 — station-passed imminent push payload 빌더. arvlCd path와 vanish-fallback path가
+ * 같은 payload 모양을 공유 (lock self-describing, subsurface flag, hopIndex forward 등). SonarCloud
+ * 중복 차단 + 새 필드 추가 시 단일 지점 갱신을 위해 헬퍼로 추출.
+ */
+interface BuildStationPassedImminentPayloadInputs {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  pushId: string;
+  now: number;
+}
+function buildStationPassedImminentPayload(
+  inputs: BuildStationPassedImminentPayloadInputs,
+): Parameters<typeof sendSilentPush>[0]['payload'] {
+  const { trip, waypoint, lock, pushId, now } = inputs;
+  return {
+    nextWaypoint: waypoint.stationName,
+    // arvlCd∈{0,1}은 "지금 진입/도착" 신호 — eta는 사실상 0. vanish-fallback도 동일 의미.
+    etaSeconds: 0,
+    phase: 'imminent',
+    kind: waypoint.kind,
+    sentAt: now,
+    pushId,
+    // Epic #1204 그룹 2 D3 (#1273) — validateTrip stamp 결과를 forward.
+    // 클라이언트 `silentPushLocationGate`가 D1 estimator currentHopIndex와 매칭 시
+    // 거리 검증 우회/`gate-no-location` fallback에 사용. 구 trip(부재) → undefined.
+    hopIndex: waypoint.hopIndex,
+    // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
+    // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
+    occupiedLine: waypoint.line,
+    // #1307 — server-authoritative subsurface. 지하 trip의 intermediate push는
+    // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
+    subsurface: trip.subsurface === true,
+    // #1322 — lock-path fire의 노선/열차를 self-describing으로 전달. 디바이스가 로컬 lock
+    // 없이도(지하 auto-lock hydration window) line sanity-guard를 돌려 발사할 수 있게 한다.
+    boardingLine: lock.line,
+    trainCode: lock.trainCode,
+  };
+}
+
+/**
  * #917 A2 — boardingLock trip에서 arvlCd∈{0,1} 신호 관측 시 매역 station-passed silent push 발사.
  *
  * 호출 시점: runTrainCodeTracking이 estimate.arrived=true를 얻은 직후 advanceBoardingLockWaypoint
@@ -765,29 +806,7 @@ export async function fireArvlCdStationPush(
     (host) =>
       sendSilentPush({
         deviceToken: trip.token,
-        payload: {
-          nextWaypoint: waypoint.stationName,
-          // arvlCd∈{0,1}은 "지금 진입/도착" 신호 — eta는 사실상 0.
-          etaSeconds: 0,
-          phase: 'imminent',
-          kind: waypoint.kind,
-          sentAt: now,
-          pushId,
-          // Epic #1204 그룹 2 D3 (#1273) — validateTrip stamp 결과를 forward.
-          // 클라이언트 `silentPushLocationGate`가 D1 estimator currentHopIndex와 매칭 시
-          // 거리 검증 우회/`gate-no-location` fallback에 사용. 구 trip(부재) → undefined.
-          hopIndex: waypoint.hopIndex,
-          // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
-          // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
-          occupiedLine: waypoint.line,
-          // #1307 — server-authoritative subsurface. 지하 trip의 intermediate push는
-          // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
-          subsurface: trip.subsurface === true,
-          // #1322 — lock-path fire의 노선/열차를 self-describing으로 전달. 디바이스가 로컬 lock
-          // 없이도(지하 auto-lock hydration window) line sanity-guard를 돌려 발사할 수 있게 한다.
-          boardingLine: lock.line,
-          trainCode: lock.trainCode,
-        },
+        payload: buildStationPassedImminentPayload({ trip, waypoint, lock, pushId, now }),
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -882,18 +901,7 @@ export async function fireVanishFallbackStationPush(
     (host) =>
       sendSilentPush({
         deviceToken: trip.token,
-        payload: {
-          nextWaypoint: waypoint.stationName,
-          etaSeconds: 0,
-          phase: 'imminent',
-          kind: waypoint.kind,
-          sentAt: now,
-          pushId,
-          hopIndex: waypoint.hopIndex,
-          subsurface: trip.subsurface === true,
-          boardingLine: lock.line,
-          trainCode: lock.trainCode,
-        },
+        payload: buildStationPassedImminentPayload({ trip, waypoint, lock, pushId, now }),
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,

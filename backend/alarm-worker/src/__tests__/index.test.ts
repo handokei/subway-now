@@ -2632,7 +2632,6 @@ describe('verifyBoardingLockPersisted (#1364)', () => {
 describe('POST /boarding-lock/sync verification failure (#1364)', () => {
   it('putTrip이 전부 drop돼 stale snapshot 반환 → 1회 retry 후 503', async () => {
     const inner = new InMemoryKV();
-    const FUTURE_LOCK = Date.now() + 30 * 60 * 1000;
     // 초기 trip을 직접 KV에 적재 (POST /trips 우회) — lock TTL refresh 전 값으로 두어
     // sync handler가 expiresAt을 갱신하려 putTrip 시도 → wrapper put이 drop → verification 실패.
     const initial = {

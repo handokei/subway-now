@@ -1465,16 +1465,7 @@ export function validateTrip(input: unknown): Trip | null {
       ? obj.lastFiredPhase
       : undefined,
     // #1367 — cross-station dedup marker 복원. 두 필드가 모두 valid해야 채택 (KV 직렬화 신뢰).
-    lastFiredStation:
-      obj.lastFiredStation !== null &&
-      typeof obj.lastFiredStation === 'object' &&
-      typeof obj.lastFiredStation.stationName === 'string' &&
-      typeof obj.lastFiredStation.epochMs === 'number'
-        ? {
-            stationName: obj.lastFiredStation.stationName,
-            epochMs: obj.lastFiredStation.epochMs,
-          }
-        : undefined,
+    lastFiredStation: parseLastFiredStation(obj.lastFiredStation),
     lastEtaSeconds: typeof obj.lastEtaSeconds === 'number' ? obj.lastEtaSeconds : undefined,
     apnsEnv: obj.apnsEnv === 'sandbox' || obj.apnsEnv === 'production' ? obj.apnsEnv : undefined,
     boardingLock: parseBoardingLock(obj.boardingLock),
@@ -1525,6 +1516,17 @@ function parsePromptDisplay(raw: unknown): PromptDisplay | undefined {
   if (typeof o.originStation !== 'string' || o.originStation.length === 0) return undefined;
   if (typeof o.line !== 'string' || o.line.length === 0) return undefined;
   return { originStation: o.originStation, line: o.line };
+}
+
+/**
+ * #1367 — lastFiredStation marker 파싱. KV 직렬화 신뢰. 두 필드 모두 valid 시에만 채택.
+ */
+function parseLastFiredStation(raw: unknown): { stationName: string; epochMs: number } | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.stationName !== 'string') return undefined;
+  if (typeof o.epochMs !== 'number') return undefined;
+  return { stationName: o.stationName, epochMs: o.epochMs };
 }
 
 /**
