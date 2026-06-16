@@ -57,6 +57,12 @@ import type {
   Waypoint,
 } from './types';
 import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
+import {
+  evaluatePushConsistency,
+  type ConsistencyResult,
+  type PushTarget,
+} from './pushConsistency';
+import { buildPushConsistencyContextFromSeries } from './pushConsistencyContext';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -289,7 +295,30 @@ export interface ScheduledStats extends LiveActivityStats {
    * 발사하던 회귀(2026-06-16 용마산 정지 trip)를 차단한다.
    */
   vanishFallbackMotionGateBlocked: number;
+  /**
+   * #1389 — backend 발사 사이트(arvlCd / vanish-fallback / reschedule / lockless-intermediate /
+   * boarding-prompt)에서 `evaluatePushConsistency`가 차단한 누적 횟수. device의 currentStationName /
+   * motion / WiFi 와 target waypoint가 모순(예: motion=stationary + device 2 hop behind)일 때 발사 차단.
+   * 정지 trip false push 회귀(2026-06-16 용마산 → 중곡) 1차 방어 신호 — 0이 아니면 그만큼 헛 push가 막혔다는 뜻.
+   */
+  pushConsistencyBlocked: number;
+  /**
+   * #1389 — `pushConsistencyBlocked`의 reason별 분포. helper(`pushConsistency.ts`)가 산출하는
+   * 4가지 reason 카운트를 분리해 운영 triage(차단의 dominant 원인이 무엇인지)에 사용한다.
+   * `pushConsistencyBlocked = sum(reasons)`가 invariant. 타입은 helper의 `ConsistencyResult`에서
+   * derive해 drift 차단(reason union을 helper와 stats가 따로 선언하지 않음).
+   */
+  pushConsistencyBlockedByReason: Record<PushConsistencyBlockReason, number>;
 }
+
+/**
+ * #1389 — `pushConsistencyBlockedByReason` 키 타입. helper의 reason union을 derive해 한쪽만 갱신했을 때
+ * type 충돌로 잡히도록 한다(reason 추가/제거 시 stats 키도 자동 추가/제거 필요).
+ */
+export type PushConsistencyBlockReason = Extract<
+  ConsistencyResult,
+  { allowed: false }
+>['reason'];
 
 /**
  * BoardingLock이 활성 상태인지 (#640 게이트).
@@ -315,11 +344,12 @@ export interface ScheduledDeps {
   generatePushId?: () => string;
 }
 
-export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
-  const now = deps.now?.() ?? Date.now();
-  const log = deps.log ?? (() => undefined);
-  const generatePushId = deps.generatePushId ?? (() => crypto.randomUUID());
-  const stats: ScheduledStats = {
+/**
+ * #1389 — `ScheduledStats` 빈 초기값 생성. runScheduled 시작 시점 + 테스트 wrapper에서 공유한다
+ * (SonarCloud CPD 방지). 새 카운터 추가 시 본 함수 1곳만 갱신하면 invariant 자동 동기화.
+ */
+export function createInitialScheduledStats(): ScheduledStats {
+  return {
     scanned: 0,
     polled: 0,
     pushed: 0,
@@ -347,7 +377,21 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     vanishFallbackFired: 0,
     vanishLocklessTakeover: 0,
     vanishFallbackMotionGateBlocked: 0,
+    pushConsistencyBlocked: 0,
+    pushConsistencyBlockedByReason: {
+      'wifi-mismatch': 0,
+      'motion-stationary-far-behind': 0,
+      'device-station-mismatch': 0,
+      'device-ahead-of-target': 0,
+    },
   };
+}
+
+export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
+  const now = deps.now?.() ?? Date.now();
+  const log = deps.log ?? (() => undefined);
+  const generatePushId = deps.generatePushId ?? (() => crypto.randomUUID());
+  const stats: ScheduledStats = createInitialScheduledStats();
 
   for await (const trip of listTrips(env.TRIPS)) {
     stats.scanned += 1;
@@ -433,6 +477,63 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     seoulCalls: deps.seoul.stats.callCount,
   });
   return stats;
+}
+
+/**
+ * #1389 — 발사 사이트 공통 정합성 게이트.
+ *
+ * 모든 backend 발사 사이트가 동일한 평가/카운터/로그 형식을 갖도록 1 helper에서 처리한다.
+ * 차단 시 `stats.pushConsistencyBlocked` + reason별 sub-counter 증가 + 표준 log 발사.
+ * 호출자는 반환된 `ConsistencyResult`로 분기만 한다.
+ *
+ *   ```ts
+ *   const series = await readSeries(env.TRIPS, trip.token);
+ *   const decision = evaluatePushConsistencyForSite({
+ *     siteName: 'arvlcd-fire',
+ *     trip, lock, target, series, stats, now, log,
+ *   });
+ *   if (!decision.allowed) return;
+ *   ```
+ *
+ * lock 없는 경로(boarding-prompt / lockless)는 `lock=undefined`로 호출 — `TripContext`가
+ * `deviceHopsBehindTarget=null`로 평가돼 helper §5 fallback(허용)이 적용된다(false positive 차단 X,
+ * lockless trip을 갑자기 다 막지 않도록).
+ */
+interface EvaluatePushConsistencyForSiteInputs {
+  siteName: string;
+  trip: Pick<Trip, 'token'>;
+  lock: Pick<BoardingLockMeta, 'segmentStations'> | undefined;
+  target: PushTarget;
+  series: readonly PositionPoint[];
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  extraLog?: Record<string, unknown>;
+}
+
+export function evaluatePushConsistencyForSite(
+  inputs: EvaluatePushConsistencyForSiteInputs,
+): ConsistencyResult {
+  const { siteName, trip, lock, target, series, stats, now, log, extraLog } = inputs;
+  const ctx = buildPushConsistencyContextFromSeries(series, lock, target, now);
+  const result = evaluatePushConsistency(ctx.device, target, ctx.trip, now);
+  if (!result.allowed) {
+    stats.pushConsistencyBlocked += 1;
+    stats.pushConsistencyBlockedByReason[result.reason] += 1;
+    // extraLog를 먼저 spread해 호출자가 임의 키로 정합성 진단 필드(site/reason/token/target/...)를
+    // 덮어쓰지 못하도록 한다 (P1 — 진단 log 오염 차단).
+    log('push-consistency: blocked', {
+      ...extraLog,
+      site: siteName,
+      reason: result.reason,
+      token: trip.token.slice(0, 8),
+      target,
+      deviceStation: ctx.device.currentStationName,
+      motion: ctx.device.motion,
+      hops: ctx.trip.deviceHopsBehindTarget,
+    });
+  }
+  return result;
 }
 
 /**
@@ -832,6 +933,24 @@ export async function fireArvlCdStationPush(
     });
     return { dirty: false };
   }
+  // #1389 — 발사 직전 정합성 게이트. device positionSeries(currentStationName/motion)와 target waypoint가
+  // 모순일 때 차단(false positive 1차 방어). lock segmentStations가 있어 hops 산출 가능.
+  const series = await readSeries(env.TRIPS, trip.token);
+  const consistency = evaluatePushConsistencyForSite({
+    siteName: 'arvlcd-fire',
+    trip,
+    lock,
+    target: { stationName: waypoint.stationName, line: waypoint.line },
+    series,
+    stats,
+    now,
+    log,
+    extraLog: { trainCode: lock.trainCode, arvlCd, kind: waypoint.kind },
+  });
+  if (!consistency.allowed) {
+    // 차단 시 dedup KV는 stamp하지 않는다 — 다음 cycle에 motion이 회복되면 정상 발사 허용.
+    return { dirty: false };
+  }
   const pushId = generatePushId();
   log('arvlcd-fire: station-passed push', {
     token: trip.token.slice(0, 8),
@@ -926,6 +1045,25 @@ export async function fireVanishFallbackStationPush(
       trainCode: lock.trainCode,
       station: waypoint.stationName,
     });
+    return;
+  }
+  // #1389 — vanish fallback도 #1386 motion 가드 위에 정합성 게이트 추가 보강. lock 활성 trip이므로
+  // segmentStations로 device hops 산출. motion 가드가 stationary만 보지만 정합성 게이트는
+  // device-station-mismatch / device-ahead-of-target까지 잡는다.
+  const series = await readSeries(env.TRIPS, trip.token);
+  const consistency = evaluatePushConsistencyForSite({
+    siteName: 'vanish-fallback-fire',
+    trip,
+    lock,
+    target: { stationName: waypoint.stationName, line: waypoint.line },
+    series,
+    stats,
+    now,
+    log,
+    extraLog: { trainCode: lock.trainCode, kind: waypoint.kind },
+  });
+  if (!consistency.allowed) {
+    // dedup KV 미stamp — 다음 cycle 재시도 허용.
     return;
   }
   const pushId = generatePushId();
@@ -1468,6 +1606,25 @@ export async function maybeReschedulePush(
     return { cleanedUp: false };
   }
 
+  // #1389 — 정합성 게이트. reschedule push는 device 사전예약(`bl:`/`tba:`)을 정정하므로
+  // device가 명백히 target과 다른 위치를 확증할 때만 차단해야 한다(false positive 방어 우선).
+  // lastTrackedArrivalEpoch는 갱신하지 않아 다음 cycle 재발사 허용.
+  const series = await readSeries(env.TRIPS, trip.token);
+  const consistency = evaluatePushConsistencyForSite({
+    siteName: 'reschedule',
+    trip,
+    lock,
+    target: { stationName: waypoint.stationName, line: waypoint.line },
+    series,
+    stats,
+    now,
+    log,
+    extraLog: { trainCode: lock.trainCode, newArrivalTimeEpoch: newArrivalEpoch },
+  });
+  if (!consistency.allowed) {
+    return { cleanedUp: false };
+  }
+
   const pushId = generatePushId();
   log('reschedule push', {
     token: trip.token.slice(0, 8),
@@ -1717,6 +1874,24 @@ export async function runLocklessIntermediate(
       motion: fusion.posMetrics.motion,
       arvlCd: signal.arvlCd,
     });
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
+  }
+  // #1389 — 정합성 게이트. lockless는 lock 부재라 segmentStations 없이 평가 — TripContext.hops=null
+  // fallback(허용). 하지만 WiFi mismatch / 모순 신호(stationary가 아닌데 WiFi !=) 는 평가됨.
+  // 추가로 motion=stationary는 이미 위 게이트가 잡았지만 WiFi mismatch(motion=stationary)는 보강 차단.
+  const locklessConsistency = evaluatePushConsistencyForSite({
+    siteName: 'lockless-intermediate',
+    trip,
+    lock: undefined,
+    target: { stationName: waypoint.stationName, line: waypoint.line },
+    series: fusion.series,
+    stats,
+    now,
+    log,
+    extraLog: { arvlCd: signal.arvlCd, kind: waypoint.kind },
+  });
+  if (!locklessConsistency.allowed) {
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
   }
@@ -2017,6 +2192,30 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       await putTrip(env.TRIPS, trip);
       return;
     }
+  }
+
+  // #1389 — 9단 게이트 + auto-lock 실패 후 정합성 게이트 추가 보강. boarding-prompt의 target은
+  // 출발역(originStation). lock 부재라 hops=null fallback이지만, device가 명백히 다른 station을
+  // 확증(WiFi mismatch + stationary)하면 차단. 사용자가 출발역과 다른 곳에 있는데 "탑승했냐?" 묻는 헛 push 방어.
+  // fusion이 이미 series 읽었으므로 추가 KV read 없이 재사용.
+  const promptConsistency = evaluatePushConsistencyForSite({
+    siteName: 'boarding-prompt',
+    trip,
+    lock: undefined,
+    target: { stationName: display.originStation, line: display.line },
+    series: fusion.series,
+    stats,
+    now,
+    log,
+    extraLog: { originStation: display.originStation },
+  });
+  if (!promptConsistency.allowed) {
+    // boardingPromptEvaluated는 이미 +1 됐다. 운영 KPI invariant
+    // (evaluated = fired + blocked + autoLockSuccess + autoDeduped + consistency-blocked) 유지를 위해
+    // 정합성 차단도 boardingPromptBlocked에 카운트한다(상세 reason은 push-consistency:blocked log 참조).
+    stats.boardingPromptBlocked += 1;
+    if (dirty) await putTrip(env.TRIPS, trip);
+    return;
   }
 
   // 9단 통과 — alert push 발사.
