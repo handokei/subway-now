@@ -745,10 +745,15 @@ export function useFusedNearestStation(
       const gpsNearestLine = candidates[0]?.station.line ?? null;
       withinLineGuard = estimate.station.line === gpsNearestLine;
     }
+    // #1382 — motion 명시 정지(true) 시 시간 적분 forward ratchet 보류. undefined(warmup) /
+    // false(이동·미지원)는 기존 동작. consensus 게이트(#1363, movementGate.ts)는 confidence
+    // 라벨 안정성을 별도 책임 — 라벨/forward 이동을 분리. 정지 trip에서 origin chip / 위젯
+    // mirror가 잘못된 다음 역으로 forward 표시되는 회귀(2026-06-16 18:11~18:12) 차단.
     if (
       (chosenIdx === -1 || estimate.index > chosenIdx) &&
       withinObservationCeiling &&
-      withinLineGuard
+      withinLineGuard &&
+      motionStationary !== true
     ) {
       const distanceKm = gps.userLocation
         ? haversine(

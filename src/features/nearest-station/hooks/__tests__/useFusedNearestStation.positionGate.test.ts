@@ -486,4 +486,64 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       expect(result.current.source).toBe('boarding-lock-interp');
     });
   });
+
+  // #1382 — lock-interp adoption 게이트에 motion=stationary 가드 추가.
+  // 정지 trip에서 시간 적분 forward ratchet 보류. consensus 게이트(#1363)와 분리 책임.
+  describe('#1382 lock-interp forward ratchet — motion=stationary 보류', () => {
+    function runLockedScenario(motionStationary: boolean | undefined) {
+      jest.useFakeTimers();
+      const T0 = 1_700_000_000_000;
+      jest.setSystemTime(T0);
+
+      const routeCtx = { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk };
+      const lock = makeLock({
+        trainCode: 'T-MOTION',
+        boardingStationId: yongmasan.id,
+        boardingLine: '7',
+        boardedAt: T0,
+        expectedDurationMs: 600_000,
+      });
+
+      mockNearest.mockReturnValue(gpsBase());
+      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+
+      const { result, rerender } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          routeCtx,
+          'T-MOTION',
+          lock,
+          motionStationary,
+        ),
+      );
+
+      // 90s 후 default-hop이 forward로 ratchet 가능한 상태.
+      jest.setSystemTime(T0 + 90_000);
+      rerender({});
+
+      jest.useRealTimers();
+      return result;
+    }
+
+    it('motionStationary=true → forward ratchet 보류 (lock-interp 미채택)', () => {
+      // estimator는 다음 hop을 가리키지만, 사용자가 명시적 정지 상태.
+      // 게이트 차단 → result/source가 boarding-lock-interp로 승격되지 않음.
+      const result = runLockedScenario(true);
+      expect(result.current.source).not.toBe('boarding-lock-interp');
+    });
+
+    it('motionStationary=undefined(warmup) → 기존 ratchet 동작 유지', () => {
+      // motion warmup 상태(fg-hydrate 직후 ~30s)는 기존 동작 유지 — 정지 신호 미확정.
+      const result = runLockedScenario(undefined);
+      expect(result.current.source).toBe('boarding-lock-interp');
+    });
+
+    it('motionStationary=false → 기존 ratchet 동작 유지 (이동 또는 미지원)', () => {
+      // motion 신호가 이동 중이라고 보고하거나 디바이스 미지원으로 false fallback.
+      // forward ratchet 정상.
+      const result = runLockedScenario(false);
+      expect(result.current.source).toBe('boarding-lock-interp');
+    });
+  });
 });
