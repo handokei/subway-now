@@ -587,6 +587,22 @@ describe('useApnsTripRegistration', () => {
       expect(args.boardingLock.segmentStations.length).toBeGreaterThan(0);
     });
 
+    it('#1366 boardingLock line ↔ route line 불일치 시 metadata skip (transient transfer state)', async () => {
+      const mismatchedLock = { ...lockFor7, boardingLine: '7' as const };
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute, // line='2'
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+          boardingLock: mismatchedLock,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
+      const args = mockRegister.mock.calls[0][0];
+      expect(args.boardingLock).toBeUndefined();
+    });
+
     it('boardingLock null이면 payload.boardingLock 누락', async () => {
       renderHook(() =>
         useApnsTripRegistration({
@@ -1297,5 +1313,127 @@ describe('useApnsTripRegistration', () => {
       });
       expect(mockRegister).not.toHaveBeenCalled();
     });
+  });
+});
+
+// #1366 Layer 2 — route ↔ lock line 일치 검증 헬퍼.
+describe('isLockConsistentWithRoute (#1366 Layer 2)', () => {
+  const { isLockConsistentWithRoute } = jest.requireActual<{
+    isLockConsistentWithRoute: (lock: unknown, route: unknown) => boolean;
+  }>('../useApnsTripRegistration');
+
+  function makeLock(boardingLine: string): unknown {
+    return {
+      trainCode: 'TC',
+      boardingLine,
+      boardingStationId: 'S1',
+      boardedAt: 0,
+    };
+  }
+
+  it('lock null이면 항상 통과', () => {
+    expect(isLockConsistentWithRoute(null, { type: 'direct', line: '2', stops: 3, travelSeconds: 0 })).toBe(true);
+  });
+
+  it('route null이면 항상 통과', () => {
+    expect(isLockConsistentWithRoute(makeLock('2'), null)).toBe(true);
+  });
+
+  it('direct route line == lock.boardingLine → 통과', () => {
+    expect(
+      isLockConsistentWithRoute(makeLock('2'), { type: 'direct', line: '2', stops: 3, travelSeconds: 0 }),
+    ).toBe(true);
+  });
+
+  it('direct route line != lock.boardingLine → 불일치 (stale state)', () => {
+    expect(
+      isLockConsistentWithRoute(makeLock('2'), { type: 'direct', line: '7', stops: 3, travelSeconds: 0 }),
+    ).toBe(false);
+  });
+
+  it('transfer route fromLine == lock.boardingLine → 통과', () => {
+    expect(
+      isLockConsistentWithRoute(makeLock('7'), {
+        type: 'transfer',
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 1,
+        secondsToTransfer: 0,
+        secondsFromTransfer: 0,
+      }),
+    ).toBe(true);
+  });
+
+  it('transfer route fromLine != lock.boardingLine → 불일치 (환승 후 stale)', () => {
+    expect(
+      isLockConsistentWithRoute(makeLock('2'), {
+        type: 'transfer',
+        transferName: '건대입구',
+        fromLine: '7',
+        toLine: '2',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 1,
+        secondsToTransfer: 0,
+        secondsFromTransfer: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it('multi-transfer route — transfers[0].fromLine == lock.boardingLine → 통과', () => {
+    expect(
+      isLockConsistentWithRoute(makeLock('7'), {
+        type: 'multi-transfer',
+        transfers: [
+          {
+            transferName: '건대입구',
+            fromLine: '7',
+            toLine: '2',
+            stopsToTransfer: 2,
+            secondsToTransfer: 0,
+          },
+          {
+            transferName: '왕십리',
+            fromLine: '2',
+            toLine: '5',
+            stopsToTransfer: 3,
+            secondsToTransfer: 0,
+          },
+        ],
+        stopsAfterLastTransfer: 1,
+        secondsAfterLastTransfer: 0,
+      }),
+    ).toBe(true);
+  });
+
+  it('multi-transfer route — transfers[0].fromLine != lock.boardingLine → 불일치', () => {
+    expect(
+      isLockConsistentWithRoute(makeLock('2'), {
+        type: 'multi-transfer',
+        transfers: [
+          {
+            transferName: '건대입구',
+            fromLine: '7',
+            toLine: '2',
+            stopsToTransfer: 2,
+            secondsToTransfer: 0,
+          },
+        ],
+        stopsAfterLastTransfer: 1,
+        secondsAfterLastTransfer: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it('multi-transfer route — transfers 배열이 비어 있으면 검증 대상 없음 → 통과', () => {
+    expect(
+      isLockConsistentWithRoute(makeLock('7'), {
+        type: 'multi-transfer',
+        transfers: [],
+        stopsAfterLastTransfer: 1,
+        secondsAfterLastTransfer: 0,
+      }),
+    ).toBe(true);
   });
 });

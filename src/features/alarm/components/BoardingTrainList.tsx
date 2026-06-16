@@ -50,6 +50,18 @@ const PENDING_TIMEOUT_MS_DEFAULT = 5000;
 const PENDING_BORDER_WIDTH = 2;
 
 /**
+ * #1366 Layer 1 — release-after-tap 보호 윈도우(ms).
+ *
+ * 사용자가 하차/재탑승을 짧은 간격으로 반복할 때(item 4 8:33 환승역 trip) lockedTrainCode가
+ * 비동기로 null로 전환되면서 pending 상태가 잠깐 풀려 새 탭이 즉시 발사되는 race가 관측됐다.
+ * lockedTrainCode가 non-null → null로 전환된 직후 이 시간 동안 handlePress를 차단해
+ * 직전 release/cron round-trip이 완료될 시간을 보장한다.
+ *
+ * 너무 길면 의도된 재탑승이 막히므로 백엔드 round-trip P95(~3s)를 고려해 짧게 잡는다.
+ */
+const RELEASE_GUARD_MS = 800;
+
+/**
  * Loading skeleton row 개수 — #1177. 첫 폴링 응답 도착 전 시각적 placeholder.
  *
  * 도착 list는 일반적으로 1~3건이 도착하므로 3행이면 실제 데이터와 시각적 부피 차이가 적어
@@ -181,6 +193,13 @@ export function BoardingTrainList({
   // pendingTrainCode가 set되어 있으면 그 row가 pending highlight, 다른 row는 disabled.
   const [pendingTrainCode, setPendingTrainCode] = useState<string | null>(null);
   const rollbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // #1366 Layer 1 — release-after-tap 보호. lockedTrainCode가 non-null → null로 전환되면
+  // 이 ref에 epoch ms를 기록하고, handlePress는 RELEASE_GUARD_MS 안의 탭을 무시한다.
+  // 사용자가 빠르게 하차→재탑승할 때 backend round-trip이 끝나기 전 stale state로 새 lock이
+  // POST되어 cron "trainCode not found" 회귀로 이어지는 race(item 4)를 차단한다.
+  const isReleasingRef = useRef<boolean>(false);
+  const releaseGuardTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prevLockedTrainCodeRef = useRef<string | null | undefined>(lockedTrainCode);
 
   const clearRollbackTimer = useCallback(() => {
     if (rollbackTimerRef.current != null) {
@@ -210,8 +229,38 @@ export function BoardingTrainList({
   // unmount 시 timer 정리.
   useEffect(() => clearRollbackTimer, [clearRollbackTimer]);
 
+  // #1366 Layer 1 — lockedTrainCode가 non-null → null로 전환되면 RELEASE_GUARD_MS 동안
+  // handlePress를 차단. 사용자 명시 release/하차/auto-release 어느 경로든 동일 윈도우 적용.
+  useEffect(() => {
+    const prev = prevLockedTrainCodeRef.current;
+    prevLockedTrainCodeRef.current = lockedTrainCode;
+    if (prev != null && lockedTrainCode == null) {
+      isReleasingRef.current = true;
+      if (releaseGuardTimerRef.current != null) {
+        clearTimeout(releaseGuardTimerRef.current);
+      }
+      releaseGuardTimerRef.current = setTimeout(() => {
+        isReleasingRef.current = false;
+        releaseGuardTimerRef.current = null;
+      }, RELEASE_GUARD_MS);
+    }
+  }, [lockedTrainCode]);
+
+  // unmount 시 release guard timer도 정리.
+  useEffect(() => {
+    return () => {
+      if (releaseGuardTimerRef.current != null) {
+        clearTimeout(releaseGuardTimerRef.current);
+        releaseGuardTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const handlePress = useCallback(
     (train: ArrivalInfo) => {
+      // #1366 Layer 1 — 직전 release 후 보호 윈도우 안이면 무시. backend round-trip이 끝나기 전
+      // stale state로 새 lock POST → cron "trainCode not found" 회귀(item 4) 차단.
+      if (isReleasingRef.current) return;
       // 이미 다른 row가 pending이면 무시(중복 탭 방지). 같은 row 재탭도 무시.
       if (pendingTrainCode != null) return;
       setPendingTrainCode(train.trainCode);
