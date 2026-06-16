@@ -281,7 +281,8 @@
     "summaryWithTransfer_one": "→ {{destination}} · Transfer at {{name}} in {{count}} stop{{etaSuffix}}",
     "summaryWithTransfer_other": "→ {{destination}} · Transfer at {{name}} in {{count}} stops{{etaSuffix}}",
     "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
-    "etaSuffix": " · ~{{min}} min"
+    "etaSuffix": " · ~{{min}} min",
+    "unconfirmedLocation": "Location unconfirmed"
   },
   "direction": {
     "boundFor": "Bound for {{name}}",

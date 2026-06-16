@@ -269,6 +269,12 @@ export function buildLiveActivityData(
   isMock?: boolean,
   alarmEvent?: AlarmEvent | null,
   source?: NotificationSource,
+  /**
+   * #1389 PR-4 — 정합성 fallback 표시 모드. 호출자(FG/BG silent push refresh)가 device signal
+   * 기반 정합성 평가로 결정해 주입. 'unconfirmed'면 위젯이 station/eta 자리를 i18n fallback
+   * 문구로 치환한다. 미지정/'confirmed'면 기존 동작 그대로 (회귀 안전).
+   */
+  displayMode: LiveActivity.LaDisplayMode = LiveActivity.LA_DISPLAY_MODE.CONFIRMED,
 ): LiveActivity.LiveActivityData {
   // station layer: 항상 포함. Live Activity는 사용자 노출이므로 현재 언어로 표시.
   const data: LiveActivity.LiveActivityData = {
@@ -277,6 +283,12 @@ export function buildLiveActivityData(
     lineColorHex: LINE_COLORS[currentStation.line],
     distanceM,
   };
+  if (displayMode === LiveActivity.LA_DISPLAY_MODE.UNCONFIRMED) {
+    // 위젯이 universal placeholder("—") 대신 i18n 문구를 표시할 수 있도록 fallback 텍스트 동봉.
+    // displayMode 플래그 자체가 위젯 분기 게이트 — 텍스트는 보조 (Swift 측 nil 폴백 안전).
+    data.displayMode = LiveActivity.LA_DISPLAY_MODE.UNCONFIRMED;
+    data.unconfirmedText = i18next.t('liveActivity.unconfirmedLocation');
+  }
 
   // destination layer: 목적지 있으면 독립적으로 포함
   if (destination) {
@@ -392,6 +404,12 @@ export async function updateStationNotification(
   isMock?: boolean,
   alarmEvent?: AlarmEvent | null,
   source?: NotificationSource,
+  /**
+   * #1389 PR-4 — 호출자가 device signal 기반 정합성 평가로 결정한 LA 표시 모드.
+   * 기본 'confirmed'(기존 동작). 'unconfirmed'면 위젯이 station 자리에 i18n fallback 문구 표시.
+   * 후속 PR(frontend inline 게이트)에서 호출자가 evaluatePushConsistency 결과로 결정해 주입한다.
+   */
+  displayMode: LiveActivity.LaDisplayMode = LiveActivity.LA_DISPLAY_MODE.CONFIRMED,
 ): Promise<void> {
   notifLogger.info('updateStation:', currentStation.name, `${distanceM}m`, destination ? `→ ${destination.name}` : '');
 
@@ -406,7 +424,7 @@ export async function updateStationNotification(
       notifLogger.info('알림 예약 완료:', title, body);
       return;
     }
-    const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock, alarmEvent, source);
+    const data = buildLiveActivityData(currentStation, distanceM, destination, route, etaMinutes, isMock, alarmEvent, source, displayMode);
     try {
       liveActivityLogger.info('업데이트 요청');
       // #1288 — 활성 trip이 있으면 LA push 토큰 등록 채널을 거친다. 활성 trip이 없으면

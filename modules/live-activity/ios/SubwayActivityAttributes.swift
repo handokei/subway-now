@@ -37,6 +37,17 @@ struct SubwayActivityAttributes: ActivityAttributes {
         // 데이터 출처 자백 라벨 (#327). JS에서 i18n으로 빌드된 사용자 노출 텍스트.
         // 누락 시 위젯은 라벨 표시 생략 — 기존 LA 인스턴스 호환 안전.
         var sourceLabel: String?
+        // #1389 PR-4 — 정합성 게이트가 device signal과 target station의 모순을 감지했을 때
+        // 위젯이 station/eta를 "현재 위치 미확정" fallback으로 렌더링하도록 알리는 플래그.
+        //  - nil 또는 "confirmed": 정상 (회귀 안전 기본값)
+        //  - "unconfirmed": fallback display
+        // 위젯이 i18n 텍스트 없이도 안전하게 렌더링할 수 있도록 station을 "—" 로 치환하고
+        // alarmType 기반 긴급 강조를 비활성화한다. JS init 경로는 `unconfirmedText`에
+        // 로캘별 fallback 문구(예: "현재 위치 미확정")를 채워 보낸다.
+        var displayMode: String?
+        // JS에서 i18n으로 빌드된 fallback 문구. displayMode == "unconfirmed" 일 때만 사용한다.
+        // 누락 시 위젯은 universal placeholder("—")로 폴백 — 한국어 강제 위험이 없다.
+        var unconfirmedText: String?
     }
 }
 

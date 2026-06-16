@@ -109,7 +109,14 @@ function buildLaDeps(env: Env): LiveActivityDeps {
 
 /** scheduled cycle 통계와 분리된, 단일 HTTP 정리용 throwaway stats. */
 function makeLaStats(): LiveActivityStats {
-  return { laPushSent: 0, laPushFailed: 0, laTokenCleared: 0 };
+  // #1389 PR-4 — pushConsistencyLAFallback 추가. HTTP DELETE/cleanup 경로는 fallback display
+  // 평가 대상이 아니지만 type-level alignment를 위해 0으로 초기화한다.
+  return {
+    laPushSent: 0,
+    laPushFailed: 0,
+    laTokenCleared: 0,
+    pushConsistencyLAFallback: 0,
+  };
 }
 
 export const app = new Hono<{ Bindings: Env }>();

@@ -281,7 +281,8 @@
     "summaryWithTransfer_one": "→ {{destination}} · {{count}}站后在{{name}}换乘{{etaSuffix}}",
     "summaryWithTransfer_other": "→ {{destination}} · {{count}}站后在{{name}}换乘{{etaSuffix}}",
     "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
-    "etaSuffix": " · 约{{min}}分钟"
+    "etaSuffix": " · 约{{min}}分钟",
+    "unconfirmedLocation": "当前位置未确定"
   },
   "direction": {
     "boundFor": "开往{{name}}",

@@ -13,20 +13,30 @@ struct SubwayLiveActivityWidget: Widget {
             DynamicIsland {
                 // Expanded
                 DynamicIslandExpandedRegion(.leading) {
+                    // 정합성 fallback에서는 alarmType이 있어도 긴급 색상 강조를 끄고
+                    // 노선 색을 grey로 폴백 — 사용자가 잘못된 정보에 액션하지 않도록.
                     Circle()
-                        .fill(context.state.alarmType != nil
-                              ? (context.state.alarmType == "destination" ? Color.red : Color.orange)
-                              : (Color(hex: context.state.lineColorHex) ?? .gray))
+                        .fill(context.state.isUnconfirmed
+                              ? Color.gray
+                              : (context.state.alarmType != nil
+                                 ? (context.state.alarmType == "destination" ? Color.red : Color.orange)
+                                 : (Color(hex: context.state.lineColorHex) ?? .gray)))
                         .frame(width: 12, height: 12)
                         .padding(.leading, 4)
                 }
                 DynamicIslandExpandedRegion(.center) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(context.state.stationName)
+                        // station 자리 — fallback 시 placeholder
+                        Text(context.state.isUnconfirmed
+                             ? context.state.unconfirmedStationLabel
+                             : context.state.stationName)
                             .font(.headline)
                             .fontWeight(.bold)
                             .foregroundColor(.white)
-                        if let alarmType = context.state.alarmType,
+                        // 보조 라인 — fallback 모드는 정보 표시 보류 (잘못된 station 기준의 거리/route)
+                        if context.state.isUnconfirmed {
+                            EmptyView()
+                        } else if let alarmType = context.state.alarmType,
                            let alarmBody = context.state.alarmBody {
                             Text(alarmBody)
                                 .font(.caption)
@@ -45,25 +55,50 @@ struct SubwayLiveActivityWidget: Widget {
                 }
             } compactLeading: {
                 Circle()
-                    .fill(context.state.alarmType != nil
-                          ? (context.state.alarmType == "destination" ? Color.red : Color.orange)
-                          : (Color(hex: context.state.lineColorHex) ?? .gray))
+                    .fill(context.state.isUnconfirmed
+                          ? Color.gray
+                          : (context.state.alarmType != nil
+                             ? (context.state.alarmType == "destination" ? Color.red : Color.orange)
+                             : (Color(hex: context.state.lineColorHex) ?? .gray)))
                     .frame(width: 10, height: 10)
                     .padding(.leading, 2)
             } compactTrailing: {
-                Text(context.state.stationName)
+                Text(context.state.isUnconfirmed
+                     ? context.state.unconfirmedStationLabel
+                     : context.state.stationName)
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundColor(.white)
                     .lineLimit(1)
             } minimal: {
                 Circle()
-                    .fill(context.state.alarmType != nil
-                          ? (context.state.alarmType == "destination" ? Color.red : Color.orange)
-                          : (Color(hex: context.state.lineColorHex) ?? .gray))
+                    .fill(context.state.isUnconfirmed
+                          ? Color.gray
+                          : (context.state.alarmType != nil
+                             ? (context.state.alarmType == "destination" ? Color.red : Color.orange)
+                             : (Color(hex: context.state.lineColorHex) ?? .gray)))
                     .frame(width: 10, height: 10)
             }
         }
+    }
+}
+
+// #1389 PR-4 — Live Activity 정합성 fallback 정책.
+// 위젯이 i18n 인프라 없이도 station/eta 자리를 안전하게 렌더링할 수 있도록 universal symbol을 둔다.
+//  - JS init/update 경로가 `unconfirmedText`에 로캘 문구를 채워 주면 그 값을 표시
+//  - backend partial update 경로(텍스트 미충전)는 universal placeholder로 폴백
+private let UNCONFIRMED_DISPLAY_PLACEHOLDER = "—"
+
+@available(iOS 16.1, *)
+extension SubwayActivityAttributes.ContentState {
+    /// `displayMode == "unconfirmed"` 인지 여부. 위젯/Dynamic Island의 모든 surface 공통 게이트.
+    var isUnconfirmed: Bool {
+        return displayMode == "unconfirmed"
+    }
+
+    /// fallback 모드에서 station 자리 텍스트. JS i18n 우선, 누락 시 universal placeholder.
+    var unconfirmedStationLabel: String {
+        return unconfirmedText ?? UNCONFIRMED_DISPLAY_PLACEHOLDER
     }
 }
 
@@ -75,8 +110,11 @@ private struct LockScreenView: View {
         Color(hex: state.lineColorHex) ?? .gray
     }
 
+    // 정합성 fallback 모드에서는 alarmType이 있어도 긴급 강조를 비활성화 — 잘못된 station
+    // 으로 사용자에게 "지금 하차" 같은 액션을 강요하지 않기 위함.
     var isUrgent: Bool {
-        state.alarmType != nil
+        if state.isUnconfirmed { return false }
+        return state.alarmType != nil
     }
 
     var urgentColor: Color {
@@ -148,14 +186,17 @@ private struct LockScreenView: View {
                         .background(lineColor)
                         .cornerRadius(10)
 
-                    // 역 이름
-                    Text(state.stationName)
+                    // 역 이름 (정합성 fallback 시 placeholder)
+                    Text(state.isUnconfirmed ? state.unconfirmedStationLabel : state.stationName)
                         .font(.title2)
                         .fontWeight(.black)
                         .foregroundColor(.white)
 
-                    // 목적지 / 거리
-                    if state.destinationName != nil {
+                    // 목적지 / 거리 — fallback 모드에서는 distance/route 자리 모두 표시 보류
+                    // (잘못된 station 기준 거리는 무의미하고, route subtext는 다음 hop 기준이라 stale).
+                    if state.isUnconfirmed {
+                        EmptyView()
+                    } else if state.destinationName != nil {
                         LockScreenRouteView(state: state)
                     } else {
                         Text(state.resolvedDistanceText ?? "")
@@ -173,7 +214,8 @@ private struct LockScreenView: View {
 
                 Spacer()
 
-                if let etaText = state.etaText {
+                // 정합성 fallback에서는 ETA 텍스트도 잘못된 station 기준이므로 숨긴다.
+                if !state.isUnconfirmed, let etaText = state.etaText {
                     VStack(spacing: 2) {
                         Text(etaText)
                             .font(.title3)

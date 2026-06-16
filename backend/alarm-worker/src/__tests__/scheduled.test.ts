@@ -19,6 +19,7 @@ import {
   evaluateArvlCdFireGate,
   flipApnsEnv,
   maybeCountDrift,
+  maybeFireLiveActivityUpdate,
   pickActiveWaypoint,
   pickApnsHost,
   pickBestArrivalSignal,
@@ -28,6 +29,7 @@ import {
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
+import { LA_DISPLAY_MODE } from '../liveActivity';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
 import type { BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
@@ -2352,6 +2354,213 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     // shift 시 lastLaPushEpoch는 reset되어 다음 polling cycle의 첫 estimate가 임계 검사 없이 push되도록 보장.
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBeUndefined();
+  });
+});
+
+// #1389 PR-4 — maybeFireLiveActivityUpdate의 displayMode 파라미터 동작 검증.
+// 정합성 게이트가 device signal과 target station의 모순을 감지했을 때 LA 발사를 "차단"하지 않고
+// fallback display mode로 변환해 발사한다는 정책(#1389 §3).
+describe('maybeFireLiveActivityUpdate — #1389 PR-4 displayMode', () => {
+  const LA_TRIP_TOKEN = 'la-disp-tok';
+
+  function makeDeps(fetchImpl: typeof fetch): ScheduledDeps {
+    // maybeFireLiveActivityUpdate는 deps.seoul을 호출하지 않으므로 빈 클라이언트로 충분.
+    return {
+      seoul: makeSeoul([]),
+      apnsConfig,
+      apnsHosts: { production: 'api.push.apple.com', sandbox: 'api.sandbox.push.apple.com' },
+      fetchImpl,
+    };
+  }
+
+  function makeBaseStats(): ScheduledStats {
+    // ScheduledStats는 LiveActivityStats를 extend하므로 새 카운터(pushConsistencyLAFallback) 포함.
+    // 다른 카운터는 maybeFireLiveActivityUpdate가 건드리지 않으므로 0 초기화로 충분.
+    return {
+      scanned: 0,
+      polled: 0,
+      pushed: 0,
+      errors: 0,
+      etaMissing: 0,
+      envCorrected: 0,
+      lockMissing: 0,
+      locklessIntermediateFired: 0,
+      locklessMotionGateBlocked: 0,
+      laPushSent: 0,
+      laPushFailed: 0,
+      laTokenCleared: 0,
+      pushConsistencyLAFallback: 0,
+      boardingPromptEvaluated: 0,
+      boardingPromptFired: 0,
+      boardingPromptBlocked: 0,
+      phaseImminentBlocked: 0,
+      kalmanReset: 0,
+      kalmanDriftWarning: 0,
+      autoLockSuccess: 0,
+      autoLockFalsePositive: 0,
+      boardingPromptAutoDeduped: 0,
+      arvlCdFireSuccess: 0,
+      arvlCdFireDedup: 0,
+      arvlCdFireMismatch: 0,
+      vanishFallbackFired: 0,
+      vanishLocklessTakeover: 0,
+      vanishFallbackMotionGateBlocked: 0,
+    };
+  }
+
+  function makeTripWithLa(overrides: Partial<Trip> = {}): Trip {
+    return {
+      token: LA_TRIP_TOKEN,
+      route: { type: 'direct', line: '2', stops: 1 },
+      destination: 'dst',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      expiresAt: NOW + 3_600_000,
+      createdAt: NOW,
+      alarmAtEpochMs: NOW + 60_000,
+      activityPushToken: 'la-token',
+      activityState: 'live',
+      apnsEnv: 'sandbox',
+      ...overrides,
+    };
+  }
+
+  const WAYPOINT: Waypoint = { stationName: '강남', line: '2', kind: 'destination' };
+
+  it('기본(displayMode 미지정) — content-state에 displayMode 키 omit, fallback counter 미증가', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = makeBaseStats();
+    const trip = makeTripWithLa();
+    const fired = await maybeFireLiveActivityUpdate(
+      trip,
+      WAYPOINT,
+      NOW + 120_000,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+    );
+    expect(fired).toBe(true);
+    expect(stats.laPushSent).toBe(1);
+    expect(stats.pushConsistencyLAFallback).toBe(0);
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    const cs = body.aps['content-state'] as Record<string, unknown>;
+    expect(cs).not.toHaveProperty('displayMode');
+  });
+
+  it('displayMode=confirmed 명시 — 기본과 동일 (displayMode 키 omit)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = makeBaseStats();
+    const trip = makeTripWithLa();
+    await maybeFireLiveActivityUpdate(
+      trip,
+      WAYPOINT,
+      NOW + 120_000,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+      LA_DISPLAY_MODE.CONFIRMED,
+    );
+    expect(stats.pushConsistencyLAFallback).toBe(0);
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    const cs = body.aps['content-state'] as Record<string, unknown>;
+    expect(cs).not.toHaveProperty('displayMode');
+  });
+
+  it('displayMode=unconfirmed — content-state에 displayMode=unconfirmed 박힘 + counter +1', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = makeBaseStats();
+    const trip = makeTripWithLa();
+    const logs: string[] = [];
+    const fired = await maybeFireLiveActivityUpdate(
+      trip,
+      WAYPOINT,
+      NOW + 120_000,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      (msg) => logs.push(msg),
+      LA_DISPLAY_MODE.UNCONFIRMED,
+    );
+    expect(fired).toBe(true);
+    expect(stats.laPushSent).toBe(1);
+    expect(stats.pushConsistencyLAFallback).toBe(1);
+    expect(logs).toContain('la update: unconfirmed fallback');
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    const cs = body.aps['content-state'] as Record<string, unknown>;
+    expect(cs.displayMode).toBe('unconfirmed');
+    // station/etaMinutes는 backend가 그대로 채워 보낸다 — 위젯이 displayMode 분기로 치환.
+    expect(cs.stationName).toBe('강남');
+    expect(cs.etaMinutes).toBe(2);
+  });
+
+  it('displayMode=unconfirmed는 ΔETA 임계 미달이어도 즉시 발사 (fallback 전환은 노출 우선)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = makeBaseStats();
+    // ΔETA가 임계(30s) 미달 + heartbeat도 due 아님 — 기존이라면 skip이지만,
+    // unconfirmed는 즉시 발사로 station fallback을 노출.
+    const trip = makeTripWithLa({
+      lastLaPushEpoch: NOW + 115_000,
+      lastLaPushAt: NOW - 10_000,
+    });
+    const fired = await maybeFireLiveActivityUpdate(
+      trip,
+      WAYPOINT,
+      NOW + 120_000,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+      LA_DISPLAY_MODE.UNCONFIRMED,
+    );
+    expect(fired).toBe(true);
+    expect(stats.laPushSent).toBe(1);
+    expect(stats.pushConsistencyLAFallback).toBe(1);
+  });
+
+  it('displayMode=confirmed + ΔETA 임계 미달 — 발사 skip (기존 동작 회귀 안전)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = makeBaseStats();
+    const trip = makeTripWithLa({
+      lastLaPushEpoch: NOW + 115_000,
+      lastLaPushAt: NOW - 10_000,
+    });
+    const fired = await maybeFireLiveActivityUpdate(
+      trip,
+      WAYPOINT,
+      NOW + 120_000,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+      LA_DISPLAY_MODE.CONFIRMED,
+    );
+    expect(fired).toBe(false);
+    expect(stats.laPushSent).toBe(0);
+    expect(stats.pushConsistencyLAFallback).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('activityPushToken 부재 — displayMode 무관 no-op', async () => {
+    const fetchImpl = vi.fn();
+    const stats = makeBaseStats();
+    const trip = makeTripWithLa({ activityPushToken: undefined });
+    const fired = await maybeFireLiveActivityUpdate(
+      trip,
+      WAYPOINT,
+      NOW + 120_000,
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      stats,
+      NOW,
+      () => undefined,
+      LA_DISPLAY_MODE.UNCONFIRMED,
+    );
+    expect(fired).toBe(false);
+    expect(stats.pushConsistencyLAFallback).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 

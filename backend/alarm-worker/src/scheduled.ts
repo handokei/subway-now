@@ -31,9 +31,11 @@ import {
   writeKalmanState,
 } from './kalmanFilter';
 import {
+  LA_DISPLAY_MODE,
   buildLiveActivityContentState,
   cleanupTripWithLa,
   fireLiveActivityUpdate,
+  type LaDisplayMode,
   type LiveActivityStats,
 } from './liveActivity';
 import { matchLine } from './lineAlias';
@@ -332,6 +334,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     laPushSent: 0,
     laPushFailed: 0,
     laTokenCleared: 0,
+    pushConsistencyLAFallback: 0,
     boardingPromptEvaluated: 0,
     boardingPromptFired: 0,
     boardingPromptBlocked: 0,
@@ -1412,6 +1415,13 @@ export async function maybeFireLiveActivityUpdate(
   stats: ScheduledStats,
   now: number,
   log: Logger,
+  /**
+   * #1389 PR-4 — 호출자가 device signal 기반 정합성 평가로 결정한 표시 모드를 주입.
+   * 미지정 시 기본 'confirmed' — 기존 호출 사이트 회귀 안전. 'unconfirmed'면 LA payload에
+   * displayMode 플래그를 박아 위젯이 station/eta를 fallback으로 렌더링하도록 한다.
+   * 차단 X — LA는 "안 보내는" 게 아니라 "옳은 fallback 정보로 보내야" 한다는 정책(#1389).
+   */
+  displayMode: LaDisplayMode = LA_DISPLAY_MODE.CONFIRMED,
 ): Promise<boolean> {
   if (!trip.activityPushToken || trip.activityState !== 'live') return false;
   const last = trip.lastLaPushEpoch;
@@ -1419,7 +1429,13 @@ export async function maybeFireLiveActivityUpdate(
   //   (a) ΔETA ≥ LA_PUSH_THRESHOLD_MS (변동 발사)
   //   (b) heartbeat: (now − lastLaPushAt) ≥ LA_HEARTBEAT_INTERVAL_MS (정체 안전망)
   // last/lastLaPushAt이 둘 다 undefined인 첫 push는 (a) 분기에서 통과 (기존 동작).
-  if (last !== undefined && Math.abs(newArrivalEpoch - last) < LA_PUSH_THRESHOLD_MS) {
+  // #1389 PR-4 — 정합성 fallback 모드 전환은 임계와 무관하게 즉시 반영해야 사용자가
+  // 잘못된 station을 계속 보지 않는다. 'unconfirmed'면 threshold 게이트 우회.
+  if (
+    displayMode !== LA_DISPLAY_MODE.UNCONFIRMED &&
+    last !== undefined &&
+    Math.abs(newArrivalEpoch - last) < LA_PUSH_THRESHOLD_MS
+  ) {
     const heartbeatDue =
       trip.lastLaPushAt !== undefined && now - trip.lastLaPushAt >= LA_HEARTBEAT_INTERVAL_MS;
     if (!heartbeatDue) return false;
@@ -1429,7 +1445,15 @@ export async function maybeFireLiveActivityUpdate(
     waypoint,
     etaSeconds,
     trip.waypoints.length,
+    displayMode,
   );
+  if (displayMode === LA_DISPLAY_MODE.UNCONFIRMED) {
+    stats.pushConsistencyLAFallback += 1;
+    log('la update: unconfirmed fallback', {
+      token: trip.token.slice(0, 8),
+      waypoint: waypoint.stationName,
+    });
+  }
   const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log);
   if (result.dirty) {
     // 410 분기 — token이 비워졌으므로 lastLaPushEpoch/lastLaPushAt은 갱신하지 않는다.

@@ -281,7 +281,8 @@
     "summaryWithTransfer_one": "→ {{destination}} · {{count}}역 후 {{name}} 환승{{etaSuffix}}",
     "summaryWithTransfer_other": "→ {{destination}} · {{count}}역 후 {{name}} 환승{{etaSuffix}}",
     "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
-    "etaSuffix": " · 약 {{min}}분"
+    "etaSuffix": " · 약 {{min}}분",
+    "unconfirmedLocation": "현재 위치 미확정"
   },
   "direction": {
     "boundFor": "{{name}}행",

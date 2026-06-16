@@ -2,6 +2,7 @@ import { generateKeyPair, exportPKCS8 } from 'jose';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetApnsJwtCache, type ApnsConfig } from '../apns';
 import {
+  LA_DISPLAY_MODE,
   LA_STALE_DURATION_SEC,
   buildLiveActivityContentState,
   cleanupTripWithLa,
@@ -35,7 +36,12 @@ const APNS_HOSTS: Record<ApnsEnv, string> = {
 };
 
 function makeStats(): LiveActivityStats {
-  return { laPushSent: 0, laPushFailed: 0, laTokenCleared: 0 };
+  return {
+    laPushSent: 0,
+    laPushFailed: 0,
+    laTokenCleared: 0,
+    pushConsistencyLAFallback: 0,
+  };
 }
 
 function makeDeps(fetchImpl: typeof fetch): LiveActivityDeps {
@@ -100,6 +106,41 @@ describe('buildLiveActivityContentState (#613)', () => {
     expect(cs).not.toHaveProperty('arrivalAtSec');
     expect(cs).not.toHaveProperty('alarmType');
     expect(cs).not.toHaveProperty('alarmStationName');
+  });
+
+  // #1389 PR-4 — 정합성 fallback 표시 모드.
+  describe('displayMode (#1389 PR-4)', () => {
+    it('omits displayMode key when default (confirmed) — 기존 LA 인스턴스 회귀 안전', () => {
+      const cs = buildLiveActivityContentState(WAYPOINT, 90, 3);
+      expect(cs).not.toHaveProperty('displayMode');
+    });
+
+    it('omits displayMode key when explicit confirmed', () => {
+      const cs = buildLiveActivityContentState(
+        WAYPOINT,
+        90,
+        3,
+        LA_DISPLAY_MODE.CONFIRMED,
+      );
+      expect(cs).not.toHaveProperty('displayMode');
+    });
+
+    it('includes displayMode=unconfirmed when explicitly set', () => {
+      const cs = buildLiveActivityContentState(
+        WAYPOINT,
+        90,
+        3,
+        LA_DISPLAY_MODE.UNCONFIRMED,
+      );
+      expect(cs.displayMode).toBe(LA_DISPLAY_MODE.UNCONFIRMED);
+    });
+
+    it('LA_DISPLAY_MODE wire format values are stable', () => {
+      // Swift mirror(`targets/subway-widget/_shared/SubwayActivityAttributes.swift`)에서
+      // 동일 문자열을 case 분기 — 값이 바뀌면 widget UI 분기가 끊긴다 (회귀 가드).
+      expect(LA_DISPLAY_MODE.CONFIRMED).toBe('confirmed');
+      expect(LA_DISPLAY_MODE.UNCONFIRMED).toBe('unconfirmed');
+    });
   });
 });
 

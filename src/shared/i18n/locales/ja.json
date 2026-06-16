@@ -281,7 +281,8 @@
     "summaryWithTransfer_one": "→ {{destination}} · {{count}}駅先の{{name}}で乗換{{etaSuffix}}",
     "summaryWithTransfer_other": "→ {{destination}} · {{count}}駅先の{{name}}で乗換{{etaSuffix}}",
     "summaryDestinationOnly": "→ {{destination}}{{etaSuffix}}",
-    "etaSuffix": " · 約{{min}}分"
+    "etaSuffix": " · 約{{min}}分",
+    "unconfirmedLocation": "現在地未確定"
   },
   "direction": {
     "boundFor": "{{name}}行き",
