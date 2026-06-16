@@ -206,6 +206,24 @@ function isSubsurfaceBypass(input: SilentPushLocationGateInput): boolean {
   return input.subsurface === true && input.kind === 'intermediate';
 }
 
+// 위치 미획득 fallback. 본 경로의 3-way 분기를 호출자에서 추출해 cognitive complexity 분산.
+// 1) lockless intermediate + hop window 매치 → hop 기반 pass (#1273)
+// 2) subsurface intermediate → server SSOT 신뢰 pass (#1307)
+// 3) 그 외 → no-location skip
+function resolveNoPositionFallback(input: SilentPushLocationGateInput): GateResult {
+  if (
+    input.isLockless === true &&
+    input.kind === 'intermediate' &&
+    isHopWindowMatch(input.currentHopIndex, input.payloadHopIndex)
+  ) {
+    return { pass: true, passReason: 'hop-window-match' };
+  }
+  if (isSubsurfaceBypass(input)) {
+    return { pass: true, passReason: 'subsurface-bypass' };
+  }
+  return { pass: false, reason: 'no-location' };
+}
+
 /**
  * silent push 수신 시 "사용자가 실제로 그 역 근처에 있는지" 확인하는 게이트.
  * pass=true면 알림 발사, false면 skip + alarmLog에 skipReason 기록.
@@ -242,22 +260,7 @@ export async function checkSilentPushLocationGate(
 
   const pos = await resolveUserPosition();
   if (!pos) {
-    // Epic #1204 그룹 2 D3 (#1273) — BG 깨움 직후 GPS 미준비 fallback.
-    // lockless intermediate + D1 estimator currentHopIndex가 payload hopIndex와 매칭되면
-    // 거리 게이트 우회하고 hop 매칭만으로 pass. (사용자 피드백 14/15: 14건 received / 0건 fired)
-    // 측정 가시성을 위해 locationSource는 부재로 두고 passReason='hop-window-match'만 노출.
-    if (
-      input.isLockless === true &&
-      input.kind === 'intermediate' &&
-      isHopWindowMatch(input.currentHopIndex, input.payloadHopIndex)
-    ) {
-      return { pass: true, passReason: 'hop-window-match' };
-    }
-    // #1307 — 지하 intermediate는 GPS 미준비여도 server SSOT를 신뢰해 pass.
-    if (isSubsurfaceBypass(input)) {
-      return { pass: true, passReason: 'subsurface-bypass' };
-    }
-    return { pass: false, reason: 'no-location' };
+    return resolveNoPositionFallback(input);
   }
 
   const motionFields = {
