@@ -4,7 +4,7 @@
  */
 import { AppState, type NativeEventSubscription } from 'react-native';
 import { renderHook, waitFor } from '@testing-library/react-native';
-import { useTripBoundAlarmScheduler } from '../useTripBoundAlarmScheduler';
+import { useTripBoundAlarmScheduler, resolveBoardingStation } from '../useTripBoundAlarmScheduler';
 import type { ScheduledTripBoundAlarm } from '../../utils/tripBoundScheduler';
 import {
   cancelTripBoundAlarms,
@@ -550,6 +550,41 @@ describe('useTripBoundAlarmScheduler', () => {
     unmount();
     expect(remove).toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+// #1389 — resolveBoardingStation helper. lock=null / 매핑 실패 / 매핑 성공 3분기.
+describe('resolveBoardingStation (#1389)', () => {
+  // helper는 getStationById를 stationRoute에서 import — 실제 stations.json 데이터 조회.
+
+  it('lock === null → null 반환 (lockless / 컨텍스트 부재)', () => {
+    expect(resolveBoardingStation(null)).toBeNull();
+  });
+
+  it('lock 있으나 boardingStationId가 stations.json에 없음 → null (graceful)', () => {
+    const lock: BoardingLock = {
+      destinationId: 'dest-1',
+      trainCode: 'T-1',
+      boardingStationId: 'non-existent-id',
+      boardingLine: '2',
+      boardedAt: 1_750_000_000_000,
+      expectedDurationMs: 600_000,
+    };
+    expect(resolveBoardingStation(lock)).toBeNull();
+  });
+
+  it('lock + getStationById 매핑 성공 → { stationName, line } 반환', () => {
+    // stations.json에 존재하는 id를 사용 — '1-001' (소요산, line 1).
+    const lock: BoardingLock = {
+      destinationId: 'dest-1',
+      trainCode: 'T-1',
+      boardingStationId: '1-001',
+      boardingLine: '1',
+      boardedAt: 1_750_000_000_000,
+      expectedDurationMs: 600_000,
+    };
+    const result = resolveBoardingStation(lock);
+    expect(result).toEqual({ stationName: '소요산', line: '1' });
   });
 });
 

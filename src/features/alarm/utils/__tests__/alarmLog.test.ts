@@ -58,6 +58,7 @@ import {
   logBoardingPromptAutoLock,
   countBoardingPromptAutoLockOutcomes,
   logScheduleSkipped,
+  logLocalFireConsistencyBlocked,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
   type AlarmLogStamp,
@@ -1750,6 +1751,56 @@ describe('alarmLog', () => {
       const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
       const saved = JSON.parse(savedJson);
       expect(saved[0].stationName).toBe('bl');
+    });
+  });
+
+  // #1389 — local fire consistency block log.
+  describe('logLocalFireConsistencyBlocked', () => {
+    it.each([
+      ['wifi-mismatch', 'consistency-wifi-mismatch'],
+      ['motion-stationary-far-behind', 'consistency-motion-stationary-far-behind'],
+      ['device-station-mismatch', 'consistency-device-station-mismatch'],
+      ['device-ahead-of-target', 'consistency-device-ahead-of-target'],
+    ])('reason=%s → mappedReason=%s 로 기록', async (reason, mapped) => {
+      logLocalFireConsistencyBlocked({
+        source: 'silent-push-skipped',
+        stationName: '중곡',
+        reason: reason as
+          | 'wifi-mismatch'
+          | 'motion-stationary-far-behind'
+          | 'device-station-mismatch'
+          | 'device-ahead-of-target',
+        kind: 'station-passed',
+        phaseId: 'imminent',
+      });
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'silent-push-skipped',
+        outcome: 'suppressed',
+        reason: mapped,
+        stationName: '중곡',
+        kind: 'station-passed',
+        phaseId: 'imminent',
+      });
+    });
+
+    it('burst dedup — 동일 reason+stationName 연속 호출은 첫 1건만 기록', async () => {
+      logLocalFireConsistencyBlocked({
+        source: 'fg',
+        stationName: '중곡',
+        reason: 'motion-stationary-far-behind',
+      });
+      logLocalFireConsistencyBlocked({
+        source: 'fg',
+        stationName: '중곡',
+        reason: 'motion-stationary-far-behind',
+      });
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved = JSON.parse(savedJson);
+      expect(saved).toHaveLength(1);
     });
   });
 

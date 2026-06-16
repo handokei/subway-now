@@ -52,6 +52,9 @@ import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from '../utils/dismissSilenceStorage';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
 import { getCurrentMotionStationary } from '../../nearest-station/utils/motionActivity';
+// #1389 — 정합성 게이트. silent push 수신 시점 device 신호와 target 간 모순 차단.
+import { evaluateSilentPushConsistency } from '../utils/silentPushConsistencyGate';
+import { logLocalFireConsistencyBlocked } from '../utils/alarmLog';
 import { addFiredPushId, hasFiredPushId } from '../utils/firedPushIds';
 import {
   checkSilentPushLocationGate,
@@ -1036,6 +1039,32 @@ async function fireWithGate(
       `movement skip: reason=${movementReason} speed=${gate.speedMps ?? '-'} accuracy=${gate.accuracyM ?? '-'}`,
     );
     // #1356 E1 — motion=stationary suppress 동안 같은 station 사전 예약도 cancel. (gate 분기와 동일 의도)
+    await cancelTbaByStationPhase(payload.nextWaypoint, payload.phase);
+    await cancelBlByStationPhase(payload.nextWaypoint, payload.phase);
+    return;
+  }
+
+  // #1389 — 정합성 게이트. motion/WiFi 신호가 명백히 target과 다른 device를 가리키면 차단.
+  // arcStations/currentStationName은 BG 컨텍스트에서 비싸므로 hops=null fallback — WiFi vs motion-stationary
+  // 모순만 검출. backend가 헛 push를 보낸 evidence(20:06:54 중곡 imminent)를 차단하는 핵심 사이트.
+  // guardLine은 위 line-mismatch 가드에서 이미 산출된 target line — 재사용.
+  const consistencyResult = await evaluateSilentPushConsistency({
+    targetStationName: payload.nextWaypoint,
+    targetLine: guardLine ?? payload.occupiedLine ?? '',
+    motionStationary,
+  });
+  if (!consistencyResult.allowed) {
+    logLocalFireConsistencyBlocked({
+      source: 'silent-push-skipped',
+      stationName: payload.nextWaypoint,
+      reason: consistencyResult.reason,
+      kind: payload.kind === 'intermediate' ? 'station-passed' : payload.kind,
+      phaseId: payload.phase,
+    });
+    ackOutcome(payload.pushId, apnsToken, 'skipped', `consistency-${consistencyResult.reason}`);
+    logger.info(
+      `consistency skip: reason=${consistencyResult.reason} target=${payload.nextWaypoint}`,
+    );
     await cancelTbaByStationPhase(payload.nextWaypoint, payload.phase);
     await cancelBlByStationPhase(payload.nextWaypoint, payload.phase);
     return;

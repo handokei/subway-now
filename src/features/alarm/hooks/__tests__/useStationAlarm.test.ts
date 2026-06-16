@@ -108,6 +108,19 @@ jest.mock('../../utils/boardingLockStorage', () => ({
   getBoardingLock: () => mockGetBoardingLock(),
 }));
 
+// #1389 — FG fire 정합성 게이트 helper. 기본 allow — 기존 fire 테스트 동작 보존.
+// 차단 시나리오만 본 PR 신규 describe에서 disallowed override.
+const mockEvaluateLocalFireConsistency = jest.fn(() => ({ allowed: true } as
+  | { allowed: true }
+  | { allowed: false }));
+const mockResolveTargetLine = jest.fn((_target: string, _arc, near) =>
+  near?.line ?? '',
+);
+jest.mock('../../utils/localFireConsistencyGate', () => ({
+  evaluateLocalFireConsistency: (input: unknown) => mockEvaluateLocalFireConsistency(),
+  resolveTargetLine: (...args: unknown[]) => mockResolveTargetLine(args[0] as string, args[1] as never, args[2] as never),
+}));
+
 const mockAwaitInitialScheduledAlarmDrain = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/scheduledAlarmReceiver', () => ({
   awaitInitialScheduledAlarmDrain: () => mockAwaitInitialScheduledAlarmDrain(),
@@ -182,6 +195,8 @@ describe('useStationAlarm', () => {
     mockGetBoardingLock.mockResolvedValue(null);
     mockFindFgArvlCdFireSignal.mockReturnValue(null);
     mockAwaitInitialScheduledAlarmDrain.mockResolvedValue(undefined);
+    // #1389 — 정합성 게이트 기본 allow (clearAllMocks가 impl 지움).
+    mockEvaluateLocalFireConsistency.mockReturnValue({ allowed: true });
   });
 
   it('does not evaluate when route is null', () => {
@@ -3861,6 +3876,133 @@ describe('useStationAlarm', () => {
       resolvers.forEach((r) => r(null));
       for (let i = 0; i < 8; i++) await Promise.resolve();
 
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+  });
+
+  // #1389 — 5개 callsite의 정합성 게이트 disallow 경로 검증.
+  // helper 본체는 localFireConsistencyGate.test.ts에서 분기별로 검증. 본 describe는 callsite에서
+  // helper false 반환 시 fire site가 정상 차단되는지(early return)만 확인.
+  describe('#1389 정합성 게이트 callsite 차단', () => {
+    beforeEach(() => {
+      mockEvaluateLocalFireConsistency.mockReturnValue({ allowed: false });
+    });
+
+    it('phase ETA: consistency=false → fire skip', async () => {
+      const route = makeDirectRoute(1, '2');
+      mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+      renderHook(() => useStationAlarm(defaultInputs({ route, destination })));
+      // helper false → sendAlarmNotification 호출 안 됨
+      await new Promise((r) => setTimeout(r, 30));
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('API imminent: consistency=false → fire skip', async () => {
+      const route = makeDirectRoute(1, '2');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+      mockUseArrivalInfo.mockReturnValue({
+        arrival: {
+          destination: [
+            {
+              stationName: '강남',
+              arrivalCode: '0',
+              barvlDt: '60',
+              trainCode: 'T-1',
+              ord: 1,
+            },
+          ],
+        },
+        loading: false,
+        isMock: false,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: makeStation('S1', '역삼'),
+            accuracyMeters: 30,
+            speedMps: 10,
+            userLocation: { lat: destination.lat, lng: destination.lng },
+          }),
+        ),
+      );
+      await new Promise((r) => setTimeout(r, 30));
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('station-passed (GPS): consistency=false → station-passed fire skip', async () => {
+      const route = makeDirectRoute(2, '2');
+      const station = makeStation('S2', '역삼');
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            accuracyMeters: 30,
+          }),
+        ),
+      );
+      await new Promise((r) => setTimeout(r, 30));
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('fast-path arvlcd: consistency=false → station-passed fire skip', async () => {
+      // 기존 fast path test의 onRouteStation/route/dummyArrival 셋업을 모방해 effect 진입 보장.
+      const localRoute = makeDirectRoute(3, '2');
+      const onRoute: Station = makeStation('s-onroute', '역삼');
+      const dummy = { up: [], down: [] } as unknown as Parameters<
+        typeof useStationAlarm
+      >[0]['currentStationArrival'];
+      mockFindFgArvlCdFireSignal.mockReturnValue({
+        candidateStation: onRoute,
+        boardingLine: '2',
+        signalCode: 0,
+      });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockGetBoardingLock.mockResolvedValue({
+        destinationId: 'D1',
+        trainCode: 'T-1',
+        boardingStationId: '1-001',
+        boardingLine: '2',
+        boardedAt: 1_750_000_000_000,
+        expectedDurationMs: 600_000,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: localRoute,
+            destination,
+            nearestStation: onRoute,
+            speedMps: 5,
+            accuracyMeters: 50,
+            currentStationArrival: dummy,
+          }),
+        ),
+      );
+      await new Promise((r) => setTimeout(r, 30));
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('subsurface station-passed: consistency=false → fire skip', async () => {
+      const route = makeDirectRoute(2, '2');
+      const station = makeStation('S2', '역삼');
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockGetBoardingLock.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: station,
+            subsurfaceStationDetected: true,
+          }),
+        ),
+      );
+      await new Promise((r) => setTimeout(r, 30));
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
     });
   });

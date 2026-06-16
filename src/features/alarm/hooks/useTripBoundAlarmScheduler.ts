@@ -17,10 +17,28 @@ import {
   setRegisteredTripRouteSig,
   topUpTripBoundWindow,
 } from '../utils/tripBoundScheduler';
+import { getStationById } from '../../../shared/utils/stationRoute';
 import { getTripStartedAt } from '../utils/tripStartStorage';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useTripBoundAlarmScheduler');
+
+/**
+ * #1389 — preschedule 정합성 게이트 입력 normalization.
+ *
+ * lock 있음 + getStationById 매핑 성공 → { stationName, line } 전달 (helper 평가).
+ * lock 없음 또는 매핑 실패 → null (helper 자연 fallback 허용).
+ *
+ * 본 함수는 export — useTripBoundAlarmScheduler 단독 테스트에서 직접 호출해 모든 분기 커버.
+ */
+export function resolveBoardingStation(
+  lock: BoardingLock | null,
+): { stationName: string; line: string } | null {
+  if (lock === null) return null;
+  const station = getStationById(lock.boardingStationId);
+  if (!station) return null;
+  return { stationName: station.name, line: lock.boardingLine as string };
+}
 
 export interface UseTripBoundAlarmSchedulerInputs {
   /** 현재 trip의 boarding lock. 있으면 `boardedAt`을 startTime으로 사용. */
@@ -122,11 +140,14 @@ export function useTripBoundAlarmScheduler({
         return;
       }
       const { routeStops, estimatedHopTimesMs } = deriveTripBoundStops(route, destinationName);
+      // #1389 — 정합성 게이트 입력. lock 있으면 boardingStation 결정 시도, 없거나 매핑 실패면 null → helper fallback 허용.
+      const boardingStation = resolveBoardingStation(lock);
       await prescheduleStationAlerts({
         routeStops,
         estimatedHopTimesMs,
         startTime: tripStart,
         windowSize: TRIPBOUND_WINDOW_SIZE,
+        boardingStation,
       });
       // #918 A3 PR2 (#729 흡수): fire-time 재검증을 위해 route signature 영속화.
       // canSchedule=true 경로는 hasRouteAndDest=true → routeSignature는 항상 string 반환 → nextSig non-null.

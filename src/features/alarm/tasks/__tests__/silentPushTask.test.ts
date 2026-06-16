@@ -24,6 +24,8 @@ const mockLogSilentPushTripEndedReceived = jest.fn();
 const mockLogSilentPushFired = jest.fn();
 const mockLogSilentPushSkipped = jest.fn();
 const mockFlushAlarmLog = jest.fn().mockResolvedValue(undefined);
+// #1389 — consistency block log.
+const mockLogLocalFireConsistencyBlocked = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
   logSilentPushRescheduleReceived: (...args: unknown[]) =>
@@ -32,7 +34,27 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSilentPushTripEndedReceived(...args),
   logSilentPushFired: (...args: unknown[]) => mockLogSilentPushFired(...args),
   logSilentPushSkipped: (...args: unknown[]) => mockLogSilentPushSkipped(...args),
+  logLocalFireConsistencyBlocked: (...args: unknown[]) =>
+    mockLogLocalFireConsistencyBlocked(...args),
   flushAlarmLog: () => mockFlushAlarmLog(),
+}));
+
+// #1389 — silent push 정합성 게이트 helper. 기본 allow — 기존 테스트 동작 보존.
+// 차단 시나리오만 본 PR 신규 describe에서 disallowed override.
+const mockEvaluateSilentPushConsistency = jest.fn(() =>
+  Promise.resolve({ allowed: true } as
+    | { allowed: true }
+    | {
+        allowed: false;
+        reason:
+          | 'wifi-mismatch'
+          | 'motion-stationary-far-behind'
+          | 'device-station-mismatch'
+          | 'device-ahead-of-target';
+      }),
+);
+jest.mock('../../utils/silentPushConsistencyGate', () => ({
+  evaluateSilentPushConsistency: () => mockEvaluateSilentPushConsistency(),
 }));
 
 // #868 — trip-ended payload 수신 시 trip-bound storage cleanup.
@@ -264,6 +286,8 @@ describe('silentPushTask', () => {
     jest.clearAllMocks();
     mockScheduleNotificationAsync.mockResolvedValue('id');
     mockCheckGate.mockResolvedValue(PASSING_GATE);
+    // #1389 — 기본 consistency=allow (clearAllMocks가 impl 지움).
+    mockEvaluateSilentPushConsistency.mockResolvedValue({ allowed: true });
     mockGetSubsurfaceState.mockResolvedValue(false);
     mockGetFiredAlarms.mockResolvedValue(new Set<string>());
     mockSetFiredAlarms.mockResolvedValue(undefined);
@@ -1650,6 +1674,83 @@ describe('silentPushTask', () => {
         expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
           expect.objectContaining({ reason: 'movement-motion-stationary' }),
         );
+      });
+    });
+
+    // #1389 — silent push 정합성 게이트가 차단(allowed=false) 반환 시 ack=skipped + cancel + return.
+    // helper 본문은 silentPushConsistencyGate에서 별도 테스트. 본 describe는 callsite 흡수 경로(라우팅) 검증.
+    describe('#1389 정합성 게이트 (consistency)', () => {
+      beforeEach(() => {
+        mockLogLocalFireConsistencyBlocked.mockClear();
+        mockEvaluateSilentPushConsistency.mockResolvedValue({ allowed: true });
+        // 이전 #728 test에서 mockGetMotionStationary가 true로 set된 상태가 jest.clearAllMocks로 reset되지
+        // 않으므로 명시적으로 false로 reset — consistency 게이트 도달 전 motion gate를 통과시켜야 함.
+        mockGetMotionStationary.mockReturnValue(false);
+      });
+
+      it('consistency=disallowed(wifi-mismatch) → log + ack skipped + cancel TBA/BL + return', async () => {
+        mockEvaluateSilentPushConsistency.mockResolvedValueOnce({
+          allowed: false,
+          reason: 'wifi-mismatch',
+        });
+
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            pushId: 'consistency-skip',
+          }),
+        );
+
+        expect(mockLogLocalFireConsistencyBlocked).toHaveBeenCalledWith({
+          source: 'silent-push-skipped',
+          stationName: '강남',
+          reason: 'wifi-mismatch',
+          kind: 'destination',
+          phaseId: 'imminent',
+        });
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('consistency-skip', 'skipped', 'consistency-wifi-mismatch'),
+        );
+        expect(mockCancelTbaByStationPhase).toHaveBeenCalledWith('강남', 'imminent');
+        expect(mockCancelBlByStationPhase).toHaveBeenCalledWith('강남', 'imminent');
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushFired).not.toHaveBeenCalled();
+      });
+
+      it('kind=intermediate일 때는 log에 kind="station-passed"로 매핑', async () => {
+        mockEvaluateSilentPushConsistency.mockResolvedValueOnce({
+          allowed: false,
+          reason: 'device-station-mismatch',
+        });
+
+        await handleSilentPush(
+          payload({
+            kind: 'intermediate',
+            phase: 'imminent',
+            pushId: 'consistency-int',
+          }),
+        );
+
+        expect(mockLogLocalFireConsistencyBlocked).toHaveBeenCalledWith(
+          expect.objectContaining({
+            reason: 'device-station-mismatch',
+            kind: 'station-passed',
+            phaseId: 'imminent',
+          }),
+        );
+      });
+
+      it('consistency=allowed → 통상 발사 경로로 진행', async () => {
+        // 기본 mockResolvedValue가 allowed=true — handler가 정상 발사.
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            pushId: 'consistency-allow',
+          }),
+        );
+        expect(mockLogLocalFireConsistencyBlocked).not.toHaveBeenCalled();
       });
     });
 
