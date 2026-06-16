@@ -1,4 +1,4 @@
-import { alarmKey, evaluateAlarmPhase, resolveAllTargets, type AlarmEvent, type AlarmSource } from '../stationAlarm';
+import { alarmKey, parseAlarmKey, evaluateAlarmPhase, resolveAllTargets, type AlarmEvent, type AlarmSource } from '../stationAlarm';
 import type { TransferRoute, MultiTransferRoute } from '../../../../shared/utils/stationRoute';
 import type { LineNumber } from '../../../../shared/types/station';
 import {
@@ -62,6 +62,62 @@ describe('alarmKey', () => {
 
   it('differentiates phases for the same station', () => {
     expect(alarmKey({ phaseId: 'imminent', stationName: '강남' })).toBe('imminent:강남');
+  });
+
+  // #1367 — cross-station 다중 알림 방지: 같은 stationName이 route에 중복 등장하는 hop(순환선)을
+  // occurrenceIdx로 분리해 dedup이 collide하지 않게 한다. 0(default)은 legacy 형식 보존.
+  it('#1367 — occurrenceIdx=0 (default)에는 suffix를 붙이지 않는다 (legacy key 호환)', () => {
+    expect(alarmKey({ phaseId: 'early', stationName: '강남', occurrenceIdx: 0 })).toBe('early:강남');
+  });
+
+  it('#1367 — occurrenceIdx>=1이면 `#n` suffix로 hop별 dedup key 분리', () => {
+    expect(alarmKey({ phaseId: 'early', stationName: '강남', occurrenceIdx: 1 })).toBe('early:강남#1');
+    expect(alarmKey({ phaseId: 'imminent', stationName: '강남', occurrenceIdx: 2 })).toBe(
+      'imminent:강남#2',
+    );
+  });
+});
+
+describe('parseAlarmKey (#1367)', () => {
+  it('legacy key(`phase:station`)를 occurrenceIdx=0으로 정규화한다', () => {
+    expect(parseAlarmKey('early:강남')).toEqual({
+      phaseId: 'early',
+      stationName: '강남',
+      occurrenceIdx: 0,
+    });
+  });
+
+  it('`phase:station#n` 형식에서 occurrenceIdx를 추출한다', () => {
+    expect(parseAlarmKey('imminent:강남#2')).toEqual({
+      phaseId: 'imminent',
+      stationName: '강남',
+      occurrenceIdx: 2,
+    });
+  });
+
+  it('알람 round-trip: alarmKey → parseAlarmKey 일치', () => {
+    const input = { phaseId: 'early', stationName: '용마산', occurrenceIdx: 3 };
+    expect(parseAlarmKey(alarmKey(input))).toEqual(input);
+  });
+
+  it('잘못된 key(콜론 없음)는 null', () => {
+    expect(parseAlarmKey('invalid')).toBeNull();
+  });
+
+  it('`#` 뒤가 정수가 아니면 stationName 전체를 그대로 유지 (occurrenceIdx=0)', () => {
+    expect(parseAlarmKey('early:강남#abc')).toEqual({
+      phaseId: 'early',
+      stationName: '강남#abc',
+      occurrenceIdx: 0,
+    });
+  });
+
+  it('`#` 뒤가 음수면 0으로 fallback (방어)', () => {
+    expect(parseAlarmKey('early:강남#-1')).toEqual({
+      phaseId: 'early',
+      stationName: '강남#-1',
+      occurrenceIdx: 0,
+    });
   });
 });
 

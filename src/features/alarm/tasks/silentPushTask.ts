@@ -1020,12 +1020,19 @@ async function fireWithGate(
   }
 
   // FIRED_ALARMS dedup — destination scope. intermediate는 dedup 대상 아님(통과는 1회성).
-  // dedup 키는 alarmKey({phaseId, stationName}) — FG GPS 발화와 동일 출처 공유.
+  // dedup 키는 alarmKey({phaseId, stationName, occurrenceIdx}) — FG GPS·OS scheduled fire와 동일
+  // 출처 공유. #1367 — payload.hopIndex로 같은 stationName이 route에 중복 등장하는 trip에서
+  // hop별 dedup이 collide하지 않도록 occurrenceIdx로 분리. backend가 hopIndex를 보내지 않는 구
+  // 호환 분기는 occurrenceIdx=0 (legacy 동작 보존).
   const destinationId = await loadDestinationId();
   const dedupKey =
     payload.kind === 'intermediate'
       ? null
-      : alarmKey({ phaseId: payload.phase, stationName: payload.nextWaypoint });
+      : alarmKey({
+          phaseId: payload.phase,
+          stationName: payload.nextWaypoint,
+          occurrenceIdx: payload.hopIndex ?? 0,
+        });
 
   if (dedupKey && destinationId) {
     const fired = await getFiredAlarms(destinationId);

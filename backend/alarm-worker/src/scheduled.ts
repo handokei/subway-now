@@ -617,6 +617,14 @@ export const FALLBACK_ADVANCE_GRACE_CYCLES = 1;
 export const ARVLCD_FIRE_DEDUP_TTL_SEC = 60 * 60;
 
 /**
+ * #1367 — cross-station 동일 phase 다중 banner 차단 윈도우(ms).
+ * 짧은 cron 간격(60s)에서 hop이 advance한 직후 다음 hop의 첫 fire가 즉시 또 발사되어 device에서
+ * "같은 분에 두 알림" 패턴이 발생하던 회귀(이슈 evidence) 차단용. 윈도우 안이면 한 번만 통과한다.
+ * 60s 이상 hop이 진행됐다면 정상 시퀀스이므로 통과 — 사용자 가치 손실 없음.
+ */
+export const SAME_PHASE_STATION_DEDUP_WINDOW_MS = 45_000;
+
+/**
  * #917 A2 — 매역 알림 dedup KV key prefix.
  * Key 형식: `${prefix}${token}|${trainCode}|${stationName}|${arvlCd}`
  *
@@ -710,6 +718,27 @@ export async function fireArvlCdStationPush(
     });
     return { dirty: false };
   }
+
+  // #1367 — cross-station 동시 fire 차단. 같은 trip에서 이전 station-passed push로부터
+  // SAME_PHASE_STATION_DEDUP_WINDOW_MS 이내에 *다른* station 발사는 보류 (client 채널 2 banner 회귀 차단).
+  // 같은 station 재발사는 위 per-(token,trainCode,station,arvlCd) 게이트가 처리하므로 여기선 다른 station만 본다.
+  const lastFired = trip.lastFiredStation;
+  if (
+    lastFired !== undefined &&
+    lastFired.stationName !== waypoint.stationName &&
+    now - lastFired.epochMs < SAME_PHASE_STATION_DEDUP_WINDOW_MS
+  ) {
+    stats.arvlCdFireDedup += 1;
+    log('arvlcd-fire: cross-station dedup skip', {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+      previousStation: lastFired.stationName,
+      sinceMs: now - lastFired.epochMs,
+      arvlCd,
+    });
+    return { dirty: false };
+  }
   const pushId = generatePushId();
   log('arvlcd-fire: station-passed push', {
     token: trip.token.slice(0, 8),
@@ -775,6 +804,9 @@ export async function fireArvlCdStationPush(
   stats.pushed += 1;
   // dedup stamp — 같은 cycle에서 Seoul API 갱신 지연으로 같은 신호가 재노출돼도 차단.
   await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
+  // #1367 — cross-station dedup용 마지막 fire 마커. 성공 시에만 stamp(실패는 다음 cycle 재시도 허용).
+  trip.lastFiredStation = { stationName: waypoint.stationName, epochMs: now };
+  dirty = true;
   return { dirty };
 }
 

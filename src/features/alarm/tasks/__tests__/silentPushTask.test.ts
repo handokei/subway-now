@@ -1307,6 +1307,44 @@ describe('silentPushTask', () => {
         });
       });
 
+      // #1367 — hopIndex>=1이면 alarmKey가 `phase:station#n` 형식이라 default(0) dedup과 collide하지 않는다.
+      it('#1367 hopIndex>=1 silent push는 default dedup key(`phase:station`)와 collide하지 않음 — 발사 진행', async () => {
+        mockGetFiredAlarms.mockResolvedValue(new Set(['imminent:강남']));
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            pushId: 'p-hop-1',
+            hopIndex: 1,
+          }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-hop-1',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'fired',
+        });
+      });
+
+      // #1367 cross-channel — OS scheduled receiver가 hopIndex=2로 fire 후 fired set에 등록되어 있을 때
+      // 같은 hopIndex의 silent push가 도달하면 dedup 적중 (silent push + OS queue 통합 공간).
+      it('#1367 cross-channel — fired set에 `phase:station#n` 등록 시 같은 hopIndex silent push는 dedup', async () => {
+        mockGetFiredAlarms.mockResolvedValue(new Set(['imminent:강남#2']));
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            pushId: 'p-cross-channel',
+            hopIndex: 2,
+          }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-cross-channel',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'dedup-already-fired',
+        });
+      });
+
       it('payload-missing-kind 시 sendPushAck(outcome=skipped, reason=payload-missing-kind)', async () => {
         await handleSilentPush({
           data: bgTaskData({
