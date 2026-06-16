@@ -4,6 +4,21 @@ import {
 } from 'expo-modules-core';
 import { Platform } from 'react-native';
 
+/**
+ * #1389 PR-4 — Live Activity 정합성 fallback 표시 모드 enum.
+ *
+ * Swift mirror: `targets/subway-widget/_shared/SubwayActivityAttributes.swift` 의 `displayMode`
+ * 필드와 동일 값 스트링. JS는 wire format 침범 없이 enum-typed 키만 사용.
+ *  - 'confirmed' (기본): 위젯이 stationName/etaText를 그대로 표시
+ *  - 'unconfirmed': 위젯이 station 자리에 `unconfirmedText` (또는 universal "—") 표시,
+ *    alarm 긴급 강조 비활성화
+ */
+export const LA_DISPLAY_MODE = {
+  CONFIRMED: 'confirmed',
+  UNCONFIRMED: 'unconfirmed',
+} as const;
+export type LaDisplayMode = (typeof LA_DISPLAY_MODE)[keyof typeof LA_DISPLAY_MODE];
+
 export interface LiveActivityData {
   stationName: string;
   lineName: string;
@@ -36,6 +51,16 @@ export interface LiveActivityData {
   // 데이터 출처 자백 라벨 (#327). JS에서 i18n으로 빌드해 전달.
   // 누락 시 위젯/LA는 라벨 표시 생략 — 기존 인스턴스 호환 안전.
   sourceLabel?: string;
+  /**
+   * #1389 PR-4 — 정합성 fallback 플래그. 기본 누락 = 'confirmed' 동작.
+   * 'unconfirmed'면 위젯이 station/eta 자리를 placeholder로 렌더링한다.
+   */
+  displayMode?: LaDisplayMode;
+  /**
+   * #1389 PR-4 — fallback 모드에서 station 자리에 표시할 i18n 문구.
+   * JS init/update가 채워 보내며, 누락 시 위젯은 universal "—" 로 폴백.
+   */
+  unconfirmedText?: string;
 }
 
 const LiveActivityModule =

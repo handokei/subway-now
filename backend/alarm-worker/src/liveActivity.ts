@@ -32,12 +32,31 @@ import { writeTripEndedStatus } from './tripStatus';
  */
 export const LA_STALE_DURATION_SEC = 90;
 
+/**
+ * #1389 PR-4 — Live Activity 정합성 fallback 표시 모드.
+ *
+ * Wire format이 string literal로 직접 박히지 않도록 enum 상수화 (frontend mirror와 동일 값).
+ * `confirmed`는 기본값 — content-state에 displayMode 키 자체를 포함시키지 않는다(회귀 안전).
+ * `unconfirmed`는 정합성 게이트가 device signal과 target station의 모순을 감지했을 때 사용한다.
+ */
+export const LA_DISPLAY_MODE = {
+  CONFIRMED: 'confirmed',
+  UNCONFIRMED: 'unconfirmed',
+} as const;
+export type LaDisplayMode = (typeof LA_DISPLAY_MODE)[keyof typeof LA_DISPLAY_MODE];
+
 type Logger = (message: string, meta?: Record<string, unknown>) => void;
 
 export interface LiveActivityStats {
   laPushSent: number;
   laPushFailed: number;
   laTokenCleared: number;
+  /**
+   * #1389 PR-4 — LA update가 정합성 위반으로 fallback display mode(`unconfirmed`)로 발사된 누적 횟수.
+   * 정상 cycle에서는 0이 정상. 0이 아니면 backend가 device signal과 모순된 target을 표시
+   * 차단(fallback)했다는 의미 — false positive 측정 + LA UX 정확성 지표.
+   */
+  pushConsistencyLAFallback: number;
 }
 
 export interface LiveActivityDeps {
@@ -61,9 +80,18 @@ export function buildLiveActivityContentState(
   waypoint: Waypoint,
   etaSeconds: number,
   stopsRemaining: number,
+  /**
+   * #1389 PR-4 — 정합성 게이트가 device signal과 target station의 모순을 감지했을 때
+   * 위젯이 station/eta를 fallback으로 렌더링하도록 알리는 플래그.
+   *  - 미지정 또는 'confirmed' → 키 자체 omit (회귀 안전)
+   *  - 'unconfirmed' → 위젯이 station 자리에 placeholder 표시, alarm 긴급 강조 비활성
+   * backend는 device locale을 모르므로 fallback 문구(`unconfirmedText`)는 채우지 않는다 —
+   * 위젯이 universal placeholder("—")로 폴백한다.
+   */
+  displayMode: LaDisplayMode = LA_DISPLAY_MODE.CONFIRMED,
 ): LiveActivityContentState {
   const meta = LINE_META[waypoint.line];
-  return {
+  const base: LiveActivityContentState = {
     stationName: waypoint.stationName,
     // LINE_META는 13개 노선을 모두 커버하지만, stations.json에 없는 신규 line code가 들어와도
     // widget의 non-optional 필드가 비지 않도록 raw line code를 fallback으로 사용한다.
@@ -72,6 +100,10 @@ export function buildLiveActivityContentState(
     stopsRemaining,
     etaMinutes: Math.max(0, Math.round(etaSeconds / 60)),
   };
+  if (displayMode === LA_DISPLAY_MODE.UNCONFIRMED) {
+    base.displayMode = LA_DISPLAY_MODE.UNCONFIRMED;
+  }
+  return base;
 }
 
 export interface LiveActivityFireResult {

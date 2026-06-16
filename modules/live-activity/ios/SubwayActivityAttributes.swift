@@ -37,6 +37,9 @@ struct SubwayActivityAttributes: ActivityAttributes {
         // 데이터 출처 자백 라벨 (#327). JS에서 i18n으로 빌드된 사용자 노출 텍스트.
         // 누락 시 위젯은 라벨 표시 생략 — 기존 LA 인스턴스 호환 안전.
         var sourceLabel: String?
+        // #1389 PR-4 — 정합성 fallback wire format (widget mirror 참조).
+        var displayMode: String?
+        var unconfirmedText: String?
     }
 }
 

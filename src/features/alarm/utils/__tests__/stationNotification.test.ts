@@ -10,6 +10,7 @@ import {
   sendStationPassedNotification,
   sendTripEndedNotification,
   buildAlarmContent,
+  buildLiveActivityData,
 } from '../stationNotification';
 import { Station } from '../../../../shared/types/station';
 import {
@@ -50,6 +51,12 @@ jest.mock('../../../../../modules/live-activity', () => ({
   updateLiveActivity: (...args: unknown[]) => mockUpdateLiveActivity(...args),
   endLiveActivity: () => mockEndLiveActivity(),
   isLiveActivityEnabled: () => mockIsLiveActivityEnabled(),
+  // #1389 PR-4 — buildLiveActivityData가 LA_DISPLAY_MODE.CONFIRMED를 default로 참조하므로
+  // 모킹 시에도 동일 enum 값을 노출. Swift mirror와 동기화된 wire format 상수.
+  LA_DISPLAY_MODE: {
+    CONFIRMED: 'confirmed',
+    UNCONFIRMED: 'unconfirmed',
+  },
 }));
 
 const mockEnsureLiveActivityRegistered = jest.fn().mockResolvedValue(undefined);
@@ -550,6 +557,63 @@ describe('stationNotification', () => {
       expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
         expect.not.objectContaining({ sourceLabel: expect.anything() }),
       );
+    });
+
+    // #1389 PR-4 — 정합성 fallback 표시 모드 wire-through.
+    describe('정합성 fallback display 모드 (#1389 PR-4)', () => {
+      it('buildLiveActivityData(displayMode 인자 생략) — default confirmed 분기로 displayMode 키 omit', () => {
+        // updateStationNotification은 default를 통과시키므로 default 분기 cover 불가능 —
+        // builder 직접 호출로 default 매개변수 분기를 명시 cover.
+        const data = buildLiveActivityData(mockStation, 154);
+        expect(data).not.toHaveProperty('displayMode');
+        expect(data).not.toHaveProperty('unconfirmedText');
+      });
+
+      it('displayMode 미지정 (updateStationNotification 경로) — payload에 displayMode/unconfirmedText 누락', async () => {
+        await updateStationNotification(mockStation, 154);
+        expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+          expect.not.objectContaining({ displayMode: expect.anything() }),
+        );
+        expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+          expect.not.objectContaining({ unconfirmedText: expect.anything() }),
+        );
+      });
+
+      it('displayMode=unconfirmed — payload에 displayMode + i18n unconfirmedText 포함', async () => {
+        await updateStationNotification(
+          mockStation,
+          154,
+          null,
+          null,
+          null,
+          false,
+          null,
+          undefined,
+          'unconfirmed',
+        );
+        const callArgs = mockUpdateLiveActivity.mock.calls[0][0];
+        expect(callArgs.displayMode).toBe('unconfirmed');
+        // i18n 기본 ko locale 가정 — 테스트 환경 i18next 초기 ko.
+        expect(typeof callArgs.unconfirmedText).toBe('string');
+        expect((callArgs.unconfirmedText as string).length).toBeGreaterThan(0);
+      });
+
+      it('displayMode=confirmed 명시 — 기본과 동일 (omit)', async () => {
+        await updateStationNotification(
+          mockStation,
+          154,
+          null,
+          null,
+          null,
+          false,
+          null,
+          undefined,
+          'confirmed',
+        );
+        expect(mockUpdateLiveActivity).toHaveBeenCalledWith(
+          expect.not.objectContaining({ displayMode: expect.anything() }),
+        );
+      });
     });
   });
 

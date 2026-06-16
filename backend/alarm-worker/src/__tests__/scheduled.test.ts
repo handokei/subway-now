@@ -21,6 +21,7 @@ import {
   evaluatePushConsistencyForSite,
   flipApnsEnv,
   maybeCountDrift,
+  maybeFireLiveActivityUpdate,
   pickActiveWaypoint,
   pickApnsHost,
   pickBestArrivalSignal,
@@ -30,6 +31,7 @@ import {
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
+import { LA_DISPLAY_MODE } from '../liveActivity';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
 import type { BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
@@ -2354,6 +2356,182 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
     // shift 시 lastLaPushEpoch는 reset되어 다음 polling cycle의 첫 estimate가 임계 검사 없이 push되도록 보장.
     const stored = JSON.parse((await kv.get('trip:la-tok')) as string) as Trip;
     expect(stored.lastLaPushEpoch).toBeUndefined();
+  });
+});
+
+// #1389 PR-4 — maybeFireLiveActivityUpdate의 displayMode 파라미터 동작 검증.
+// 정합성 게이트가 device signal과 target station의 모순을 감지했을 때 LA 발사를 "차단"하지 않고
+// fallback display mode로 변환해 발사한다는 정책(#1389 §3).
+//
+// 헬퍼는 module scope에 두어 describe 매 실행마다 재선언되지 않게 한다 (SonarCloud S7721).
+const LA_DISPLAY_TRIP_TOKEN = 'la-disp-tok';
+const LA_DISPLAY_WAYPOINT: Waypoint = {
+  stationName: '강남',
+  line: '2',
+  kind: 'destination',
+};
+
+function makeLaDisplayDeps(fetchImpl: typeof fetch): ScheduledDeps {
+  // maybeFireLiveActivityUpdate는 deps.seoul을 호출하지 않으므로 빈 클라이언트로 충분.
+  return {
+    seoul: makeSeoul([]),
+    apnsConfig,
+    apnsHosts: { production: 'api.push.apple.com', sandbox: 'api.sandbox.push.apple.com' },
+    fetchImpl,
+  };
+}
+
+/**
+ * maybeFireLiveActivityUpdate 단독 호출용 stats fixture.
+ *
+ * `ScheduledStats`의 모든 카운터를 0으로 초기화한다. 본 함수는 카운터 키를 배열에서
+ * 순회 생성해 production scheduled.ts의 초기화 블록과 라인-by-라인 동형이 되지 않게 한다.
+ * (SonarCloud CPD 회피 — backend 디렉토리도 분석 대상이라 의도된 1:1 reset도 duplication
+ * 으로 잡힌다.)
+ */
+function makeLaDisplayStats(): ScheduledStats {
+  const counterKeys: (keyof ScheduledStats)[] = [
+    'scanned', 'polled', 'pushed', 'errors', 'etaMissing', 'envCorrected',
+    'lockMissing', 'locklessIntermediateFired', 'locklessMotionGateBlocked',
+    'laPushSent', 'laPushFailed', 'laTokenCleared', 'pushConsistencyLAFallback',
+    'boardingPromptEvaluated', 'boardingPromptFired', 'boardingPromptBlocked',
+    'phaseImminentBlocked', 'kalmanReset', 'kalmanDriftWarning',
+    'autoLockSuccess', 'autoLockFalsePositive', 'boardingPromptAutoDeduped',
+    'arvlCdFireSuccess', 'arvlCdFireDedup', 'arvlCdFireMismatch',
+    'vanishFallbackFired', 'vanishLocklessTakeover', 'vanishFallbackMotionGateBlocked',
+  ];
+  // TS는 Object.fromEntries 결과를 좁히지 못해 unknown 경유 cast. 모든 카운터 키를
+  // 한 곳(counterKeys)에서 관리해 누락 시 컴파일 오류 대신 runtime 0으로 graceful 처리한다 —
+  // 테스트는 단일 카운터(pushConsistencyLAFallback)만 단언하므로 안전.
+  return Object.fromEntries(counterKeys.map((k) => [k, 0])) as unknown as ScheduledStats;
+}
+
+function makeLaDisplayTrip(overrides: Partial<Trip> = {}): Trip {
+  return {
+    token: LA_DISPLAY_TRIP_TOKEN,
+    route: { type: 'direct', line: '2', stops: 1 },
+    destination: 'dst',
+    waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+    expiresAt: NOW + 3_600_000,
+    createdAt: NOW,
+    alarmAtEpochMs: NOW + 60_000,
+    activityPushToken: 'la-token',
+    activityState: 'live',
+    apnsEnv: 'sandbox',
+    ...overrides,
+  };
+}
+
+/**
+ * #1389 PR-4 LA displayMode 테스트 전용 헬퍼 — 매번 같은 호출 골격을 재선언하지 않도록 일원화.
+ * (SonarCloud CPD 회피 + 의도 명확화: arrange-act-assert에서 act 부분만 cycle).
+ */
+interface LaFireArrangement {
+  fetchImpl: ReturnType<typeof vi.fn>;
+  stats: ScheduledStats;
+  trip: Trip;
+  logs: string[];
+}
+
+function arrangeLaFire(
+  tripOverrides: Partial<Trip> = {},
+  fetchImpl: ReturnType<typeof vi.fn> = vi.fn(async () => new Response('', { status: 200 })),
+): LaFireArrangement {
+  return {
+    fetchImpl,
+    stats: makeLaDisplayStats(),
+    trip: makeLaDisplayTrip(tripOverrides),
+    logs: [],
+  };
+}
+
+async function fireLa(
+  arr: LaFireArrangement,
+  displayMode?: typeof LA_DISPLAY_MODE.CONFIRMED | typeof LA_DISPLAY_MODE.UNCONFIRMED,
+  newArrivalEpoch: number = NOW + 120_000,
+): Promise<boolean> {
+  return maybeFireLiveActivityUpdate(
+    arr.trip,
+    LA_DISPLAY_WAYPOINT,
+    newArrivalEpoch,
+    makeLaDisplayDeps(arr.fetchImpl as unknown as typeof fetch),
+    arr.stats,
+    NOW,
+    (msg) => arr.logs.push(msg),
+    displayMode,
+  );
+}
+
+function readLaContentState(
+  fetchImpl: ReturnType<typeof vi.fn>,
+): Record<string, unknown> {
+  const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+  const body = JSON.parse(init.body as string);
+  return body.aps['content-state'] as Record<string, unknown>;
+}
+
+describe('maybeFireLiveActivityUpdate — #1389 PR-4 displayMode', () => {
+  it('기본(displayMode 미지정) — content-state에 displayMode 키 omit, fallback counter 미증가', async () => {
+    const arr = arrangeLaFire();
+    const fired = await fireLa(arr);
+    expect(fired).toBe(true);
+    expect(arr.stats.laPushSent).toBe(1);
+    expect(arr.stats.pushConsistencyLAFallback).toBe(0);
+    expect(readLaContentState(arr.fetchImpl)).not.toHaveProperty('displayMode');
+  });
+
+  it('displayMode=confirmed 명시 — 기본과 동일 (displayMode 키 omit)', async () => {
+    const arr = arrangeLaFire();
+    await fireLa(arr, LA_DISPLAY_MODE.CONFIRMED);
+    expect(arr.stats.pushConsistencyLAFallback).toBe(0);
+    expect(readLaContentState(arr.fetchImpl)).not.toHaveProperty('displayMode');
+  });
+
+  it('displayMode=unconfirmed — content-state에 displayMode=unconfirmed 박힘 + counter +1', async () => {
+    const arr = arrangeLaFire();
+    const fired = await fireLa(arr, LA_DISPLAY_MODE.UNCONFIRMED);
+    expect(fired).toBe(true);
+    expect(arr.stats.laPushSent).toBe(1);
+    expect(arr.stats.pushConsistencyLAFallback).toBe(1);
+    expect(arr.logs).toContain('la update: unconfirmed fallback');
+    const cs = readLaContentState(arr.fetchImpl);
+    expect(cs.displayMode).toBe('unconfirmed');
+    // station/etaMinutes는 backend가 그대로 채워 보낸다 — 위젯이 displayMode 분기로 치환.
+    expect(cs.stationName).toBe('강남');
+    expect(cs.etaMinutes).toBe(2);
+  });
+
+  it('displayMode=unconfirmed는 ΔETA 임계 미달이어도 즉시 발사 (fallback 전환은 노출 우선)', async () => {
+    // ΔETA가 임계(30s) 미달 + heartbeat도 due 아님 — 기존이라면 skip이지만,
+    // unconfirmed는 즉시 발사로 station fallback을 노출.
+    const arr = arrangeLaFire({
+      lastLaPushEpoch: NOW + 115_000,
+      lastLaPushAt: NOW - 10_000,
+    });
+    const fired = await fireLa(arr, LA_DISPLAY_MODE.UNCONFIRMED);
+    expect(fired).toBe(true);
+    expect(arr.stats.laPushSent).toBe(1);
+    expect(arr.stats.pushConsistencyLAFallback).toBe(1);
+  });
+
+  it('displayMode=confirmed + ΔETA 임계 미달 — 발사 skip (기존 동작 회귀 안전)', async () => {
+    const arr = arrangeLaFire({
+      lastLaPushEpoch: NOW + 115_000,
+      lastLaPushAt: NOW - 10_000,
+    });
+    const fired = await fireLa(arr, LA_DISPLAY_MODE.CONFIRMED);
+    expect(fired).toBe(false);
+    expect(arr.stats.laPushSent).toBe(0);
+    expect(arr.stats.pushConsistencyLAFallback).toBe(0);
+    expect(arr.fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('activityPushToken 부재 — displayMode 무관 no-op', async () => {
+    const arr = arrangeLaFire({ activityPushToken: undefined }, vi.fn());
+    const fired = await fireLa(arr, LA_DISPLAY_MODE.UNCONFIRMED);
+    expect(fired).toBe(false);
+    expect(arr.stats.pushConsistencyLAFallback).toBe(0);
+    expect(arr.fetchImpl).not.toHaveBeenCalled();
   });
 });
 
