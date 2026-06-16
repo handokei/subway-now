@@ -40,10 +40,22 @@ function extractNamedExports(src: string): Set<string> {
   return names;
 }
 
-/** SIGNAL_STALE_MS 의 리터럴 표현을 추출 (값 동일 검증용). */
+/**
+ * SIGNAL_STALE_MS 의 리터럴 표현을 추출 (값 동일 검증용).
+ *
+ * 정규식 backtracking 회피를 위해 string split 기반으로 구현.
+ */
 function extractStaleMsExpression(src: string): string | null {
-  const m = /export\s+const\s+SIGNAL_STALE_MS\s*(?::\s*[\w<>]+\s*)?=\s*([^;]+);/.exec(src);
-  return m ? m[1].trim() : null;
+  const marker = 'SIGNAL_STALE_MS';
+  const markerIdx = src.indexOf(marker);
+  if (markerIdx < 0) return null;
+  const afterMarker = src.slice(markerIdx + marker.length);
+  const eqIdx = afterMarker.indexOf('=');
+  if (eqIdx < 0) return null;
+  const afterEq = afterMarker.slice(eqIdx + 1);
+  const semiIdx = afterEq.indexOf(';');
+  if (semiIdx < 0) return null;
+  return afterEq.slice(0, semiIdx).trim();
 }
 
 /**
@@ -51,16 +63,28 @@ function extractStaleMsExpression(src: string): string | null {
  *
  * 두 파일은 wording 이 다를 수 있지만 (예: "stationary" vs "정지") **결정 자체**는 동일해야 한다.
  * 검증 대상: step 번호 1~10 각각의 verdict(allow/block) 매트릭스가 두 파일에서 일치.
+ *
+ * 정규식 backtracking 회피를 위해 line split 후 라인별 단순 매치로 구현.
  */
 function extractStepVerdicts(src: string): Array<{ step: number; verdict: string }> {
-  // " * N. <body> → allow/block ..." 형태에서 verdict 만 추출.
+  // 라인 단위로 분해한 뒤 라인별로 단순한 anchored regex 적용.
   const out = new Map<number, string>();
-  const re = /^\s*\*?\s*(\d+)\.\s*[^\n]*?→\s*(allow|block)/gim;
-  for (let m = re.exec(src); m !== null; m = re.exec(src)) {
+  const lineStartRe = /^[\s*]*(\d+)\./;
+  for (const line of src.split('\n')) {
+    const m = lineStartRe.exec(line);
+    if (!m) continue;
     const step = Number(m[1]);
     if (step < 1 || step > 10) continue;
-    if (out.has(step)) continue; // 첫 등장만
-    out.set(step, m[2].toLowerCase());
+    if (out.has(step)) continue; // 첫 등장만 (헤더 doc)
+    // verdict 는 라인에 'allow' 또는 'block' 단어가 등장하는지로 판정.
+    // 두 단어가 모두 나오는 라인은 우리 doc 패턴에 없음 (실제로는 → 뒤 하나만).
+    const hasAllow = line.includes(' allow') || line.endsWith('allow');
+    const hasBlock = line.includes(' block') || line.endsWith('block');
+    if (hasAllow && !hasBlock) {
+      out.set(step, 'allow');
+    } else if (hasBlock && !hasAllow) {
+      out.set(step, 'block');
+    }
   }
   return [...out.entries()]
     .map(([step, verdict]) => ({ step, verdict }))
