@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { ALARM_PHASES, type AlarmPhaseId } from './alarmPhases';
 import { resolveAllTargets, type AlarmEvent, type CurrentTarget } from './stationAlarm';
-import { isSameStationName, type Route } from '../../../shared/utils/stationRoute';
+import { isSameStationName, type Route, getStationById } from '../../../shared/utils/stationRoute';
 import { buildAlarmContent } from './stationNotification';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
 import {
@@ -22,6 +22,8 @@ import { BOARDING_LOCK_ROUTE_SIG_KEY } from '../../../shared/constants/storageKe
 import { evaluateMovement, isStaticMovementResult } from '../../nearest-station/utils/movementGate';
 // eslint-disable-next-line import/no-restricted-paths -- BG motion 신호 단일 helper.
 import { getCurrentMotionStationary } from '../../nearest-station/utils/motionActivity';
+// #1389 — preschedule 시점 정합성 게이트. tripBoundScheduler와 공유 helper 사용.
+import { evaluatePreScheduleConsistency } from './preScheduleConsistencyGate';
 
 const logger = createLogger('BoardingLockScheduler');
 
@@ -293,6 +295,22 @@ export async function scheduleHopsForLock(params: ScheduleHopsParams): Promise<s
     );
     return [];
   }
+
+  // #1389 — 정합성 게이트 (preschedule 시점). WiFi가 boarding 노선과 다른 station을 확증할 때
+  // schedule을 거부. target은 boardingStation으로 평가 — 사용자가 거기 있는지 확인하는 의미.
+  // 결과 not-allowed면 전체 schedule 거부 (개별 hop별 분리 X — 사용자 자체가 잘못된 위치).
+  // helper의 fallback 정책상 WiFi 미상이면 자연 allow → graceful (지하/권한 X 등).
+  // boardingStationId → Station 매핑. 매핑 실패 시 boardingStation=null → helper가 자연 allow.
+  const boardingStationRecord = getStationById(lock.boardingStationId) ?? null;
+  const consistencyOk = await evaluatePreScheduleConsistency({
+    boardingStation: boardingStationRecord
+      ? { stationName: boardingStationRecord.name, line: lock.boardingLine as string }
+      : null,
+    motionStationary,
+    channel: 'bl',
+    destinationName,
+  });
+  if (!consistencyOk) return [];
 
   const allTargets = resolveAllTargets(route, destinationName);
   const timings = computeHopTimings(lock, route, allTargets);

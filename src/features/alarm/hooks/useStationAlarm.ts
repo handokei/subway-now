@@ -58,6 +58,11 @@ import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { LineNumber } from '../../../shared/types/station';
 import { isStationPassedFirstHop, shouldSuppressBySleepRule } from '../utils/shouldSuppressBySleepRule';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
+// #1389 — FG fire site 공통 정합성 게이트 helper. silentPushTask / scheduler와 동일 SSOT.
+import {
+  evaluateLocalFireConsistency,
+  resolveTargetLine,
+} from '../utils/localFireConsistencyGate';
 import type { PositionStability } from '../../nearest-station/utils/positionStaticDetector';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { useAlarmEventStore } from '../store/useAlarmEventStore';
@@ -335,6 +340,12 @@ export interface UseStationAlarmInputs {
    * 미전달/false면 기존 동작 유지(graceful fallback).
    */
   subsurfaceStationDetected?: boolean;
+  /**
+   * #1389 — 정합성 게이트 입력. WiFi SSID 매칭으로 확정된 현재역.
+   * 호출자가 `useWifiStation()` 결과를 그대로 전달. null이면 WiFi 확증 없음 → 게이트가 다른 신호로 평가.
+   * 미전달이면 게이트의 WiFi 분기는 자연 skip(허용 fallback).
+   */
+  wifiStation?: Station | null;
 }
 
 export function useStationAlarm({
@@ -354,6 +365,7 @@ export function useStationAlarm({
   currentHopIndex = null,
   arcStations,
   subsurfaceStationDetected = false,
+  wifiStation = null,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
   // #699: firedAlarmsRef의 내용이 어느 destinationId에 속하는지 추적.
@@ -670,6 +682,22 @@ export function useStationAlarm({
         });
         return;
       }
+      // #1389 — 정합성 게이트. target line은 arcStations에서 동일 이름 stop의 line 사용
+      // (arcStations 미전달 시 nearestStation.line fallback — 같은 라인 가정).
+      const targetLine = resolveTargetLine(rawEvent.stationName, arcStations, nearestStation);
+      const consistency = evaluateLocalFireConsistency({
+        targetStationName: rawEvent.stationName,
+        targetLine,
+        source: 'fg',
+        kind: rawEvent.type,
+        phaseId: rawEvent.phaseId,
+        nearestStation,
+        motionStationary,
+        wifiStation,
+        arcStations,
+        now: Date.now(),
+      });
+      if (!consistency.allowed) return;
       void fireAndLog(rawEvent, 'eta', route, destination);
     }
   }, [
@@ -696,6 +724,9 @@ export function useStationAlarm({
     // #903 — degraded 평가는 arrivalConfidence에서 파생. 지하 진입으로 'gps-only'→
     // 'gps-only-underground' 단독 전환 시(다른 deps 정적) 본 effect 재실행되어 차단 정책 즉시 반영.
     arrivalConfidence,
+    // #1389 — 정합성 게이트 신호 변경 시 재평가 (wifi 매칭, arc 갱신, nearest 갱신).
+    wifiStation?.name,
+    arcStations,
   ]);
 
   // #396: 도착정보 API 신호로 imminent 발사.
@@ -762,6 +793,21 @@ export function useStationAlarm({
       return;
     }
 
+    // #1389 — 정합성 게이트. destination line은 destination.line.
+    const consistency = evaluateLocalFireConsistency({
+      targetStationName: destination.name,
+      targetLine: destination.line,
+      source: 'fg',
+      kind: 'destination',
+      phaseId: 'imminent',
+      nearestStation,
+      motionStationary,
+      wifiStation,
+      arcStations,
+      now: Date.now(),
+    });
+    if (!consistency.allowed) return;
+
     const rawEvent: AlarmEvent = { phaseId: 'imminent', type: 'destination', stationName: destination.name };
     // #699: setFiredAlarms 영속화 완료를 await — silent push BG 핸들러가 같은 imminent를
     // 재발사하지 않도록 storage가 sync된 후 다음 cycle 진입.
@@ -771,6 +817,7 @@ export function useStationAlarm({
     route,
     destination?.id,
     destination?.name,
+    destination?.line,
     destinationArrival,
     trackedTrainCode,
     setAlarmEvent,
@@ -785,6 +832,9 @@ export function useStationAlarm({
     userLocation?.lng,
     // #903 — 위 ETA effect와 동일 사유. degraded 단독 전환에 본 API-신호 effect도 즉시 반응.
     arrivalConfidence,
+    // #1389 — 정합성 게이트 신호 변경 시 재평가.
+    wifiStation?.name,
+    arcStations,
   ]);
 
   // Station-passed 알림 효과: 경로상 역 변경 시 dedup된 per-station 알림.
@@ -878,6 +928,21 @@ export function useStationAlarm({
         return;
       }
 
+      // #1389 — 정합성 게이트. station-passed의 target은 candidateStation 자체.
+      // arrivalConfirmed(arrival API 강신호)에서도 정합성은 적용 — WiFi/motion 모순은 신호 종류 무관.
+      const consistency = evaluateLocalFireConsistency({
+        targetStationName: candidateStation.name,
+        targetLine: candidateStation.line,
+        source: 'fg',
+        kind: 'station-passed',
+        nearestStation,
+        motionStationary,
+        wifiStation,
+        arcStations,
+        now: Date.now(),
+      });
+      if (!consistency.allowed) return;
+
       // #746 — dismiss silence 게이트 + dispatch는 helper로 통합 (Sonar cpd 회피).
       // userLocation 없이도 시간 조건만 평가 가능 — null 좌표 그대로 전달.
       // #1236 — sleep 룰 게이트는 helper 내부에서 처리. lock은 IIFE에서 async fetch.
@@ -911,6 +976,7 @@ export function useStationAlarm({
     destination?.id,
     destination?.name,
     nearestStation?.id,
+    nearestStation?.line,
     hydrationPhase,
     accuracyOk,
     arrivalConfirmed,
@@ -921,6 +987,9 @@ export function useStationAlarm({
     userLocation?.lng,
     currentHopIndex,
     arcStations,
+    // #1389 — 정합성 게이트 신호 변경 시 재평가.
+    motionStationary,
+    wifiStation?.name,
   ]);
 
   // #917 A2 follow-up — FG fast path: lock.trainCode가 currentStationArrival의 row에
@@ -1007,6 +1076,20 @@ export function useStationAlarm({
         }
       }
 
+      // #1389 — 정합성 게이트. arvlcd 강신호도 device 신호와 모순 시 차단.
+      const consistency = evaluateLocalFireConsistency({
+        targetStationName: candidateStation.name,
+        targetLine: candidateStation.line,
+        source: 'fg-arvlcd',
+        kind: 'station-passed',
+        nearestStation,
+        motionStationary,
+        wifiStation,
+        arcStations,
+        now: Date.now(),
+      });
+      if (!consistency.allowed) return;
+
       // #746 silence gate + dispatch는 helper로 통합 (Sonar cpd 회피).
       // lastNotifiedStationId 공유 dedup. cancelled 재확인 — getBoardingLock 후 effect cleanup 가능.
       // #1236 — sleep 룰 게이트 context. lock은 위에서 이미 fetch.
@@ -1050,6 +1133,9 @@ export function useStationAlarm({
     currentHopIndex,
     // #1266 — fast-path hop window 게이트 입력. arcStations 변화 시(환승 후 leg 전환 등) 재평가.
     arcStations,
+    // #1389 — 정합성 게이트 신호 변경 시 재평가.
+    motionStationary,
+    wifiStation?.name,
   ]);
 
   // #1290/#1298 — subsurface verdict 기반 station-passed 발사.
@@ -1074,6 +1160,21 @@ export function useStationAlarm({
     const capturedDestinationName = destination.name;
 
     let cancelled = false;
+    // #1389 — 정합성 게이트. subsurfaceStationDetected는 fusion이 이미 ≥2 신호 합의로 통과시킨 상태라
+    // 게이트가 추가로 모순(wifi != target 등)을 잡으면 fusion 결정과 부딪힌다. 그러나 정합성은 모든 fire
+    // site에 동일 적용이 spec(#1389)이라 본 경로도 예외 없이 평가 — 거의 항상 allow가 기대값.
+    const consistency = evaluateLocalFireConsistency({
+      targetStationName: candidateStation.name,
+      targetLine: candidateStation.line,
+      source: 'fg',
+      kind: 'station-passed',
+      nearestStation,
+      motionStationary,
+      wifiStation,
+      arcStations,
+      now: Date.now(),
+    });
+    if (!consistency.allowed) return;
     void (async () => {
       const lock = await getBoardingLock();
       if (cancelled) return;
@@ -1105,11 +1206,16 @@ export function useStationAlarm({
     destination?.id,
     destination?.name,
     nearestStation?.id,
+    nearestStation?.line,
     dismissSilence,
     clearDismissSilenceAction,
     userLocation?.lat,
     userLocation?.lng,
     notificationSource,
     currentHopIndex,
+    // #1389 — 정합성 게이트 신호 변경 시 재평가.
+    motionStationary,
+    wifiStation?.name,
+    arcStations,
   ]);
 }

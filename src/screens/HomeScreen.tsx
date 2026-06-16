@@ -417,6 +417,8 @@ export default function HomeScreen() {
     // D1 estimator(LocklessRouteHop 포함)의 현재 hop index와 arcStations를 그대로 전달.
     currentHopIndex,
     arcStations,
+    // #1389 — 정합성 게이트 입력. WiFi SSID 매칭 결과를 전달해 device 신호와 target 모순 차단.
+    wifiStation,
   });
 
   // #584 PR B — BoardingLock 진입점. UI 렌더링/lock 생성만 담당하며,

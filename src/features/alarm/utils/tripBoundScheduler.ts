@@ -15,6 +15,8 @@ import { recordScheduledAlarm } from './prescheduledMetrics';
 import { evaluateMovement, isStaticMovementResult } from '../../nearest-station/utils/movementGate';
 // eslint-disable-next-line import/no-restricted-paths -- BG에서 motion 신호를 읽는 단일 helper.
 import { getCurrentMotionStationary } from '../../nearest-station/utils/motionActivity';
+// #1389 — preschedule 시점 정합성 게이트. boardingLockScheduler와 공유 helper 사용.
+import { evaluatePreScheduleConsistency } from './preScheduleConsistencyGate';
 import { logScheduleSkipped } from './alarmLog';
 
 const logger = createLogger('TripBoundScheduler');
@@ -93,6 +95,11 @@ export interface PrescheduleParams {
    * 누적 오차가 쌓여 imminent가 실제 도착 시각과 어긋난다.
    */
   startStopIndex?: number;
+  /**
+   * #1389 — 정합성 게이트 입력. 사용자가 탑승 시점에 있어야 할 station (lock 있으면 boardingStation).
+   * 미전달이면 정합성 게이트 fallback 허용 (lockless / 진입 컨텍스트 부재).
+   */
+  boardingStation?: { stationName: string; line: string } | null;
 }
 
 export interface ScheduledTripBoundAlarm {
@@ -201,6 +208,16 @@ export async function prescheduleStationAlerts(
     );
     return [];
   }
+
+  // #1389 — 정합성 게이트 (preschedule 시점). boardingStation이 명시되었다면 WiFi 매칭 확인.
+  // boardingStation 미전달 시 게이트 자연 fallback (lockless / 진입 컨텍스트 부재).
+  const consistencyOk = await evaluatePreScheduleConsistency({
+    boardingStation: params.boardingStation ?? null,
+    motionStationary,
+    channel: 'tba',
+    destinationName: routeStops.at(-1)?.stationName,
+  });
+  if (!consistencyOk) return [];
 
   // window 상한 — 미지정이면 전체. 호출자가 명시한 음수/0이면 0 stop schedule(자연스럽게 no-op).
   // startStopIndex 음수 입력은 0으로 clamp — caller(top-up) bug 흡수.

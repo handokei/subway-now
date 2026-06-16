@@ -38,6 +38,14 @@ jest.mock('../../../nearest-station/utils/motionActivity', () => ({
   getCurrentMotionStationary: () => mockGetCurrentMotionStationary(),
 }));
 
+// #1389 — preschedule 정합성 게이트 helper. 기본 true (allow) — 기존 테스트 동작 보존.
+const mockEvaluatePreScheduleConsistency = jest.fn<Promise<boolean>, [unknown]>(() =>
+  Promise.resolve(true),
+);
+jest.mock('../preScheduleConsistencyGate', () => ({
+  evaluatePreScheduleConsistency: (input: unknown) => mockEvaluatePreScheduleConsistency(input),
+}));
+
 const mockLoggerWarn = jest.fn();
 const mockLoggerInfo = jest.fn();
 jest.mock('../../../../shared/utils/logger', () => ({
@@ -1171,5 +1179,43 @@ describe('prescheduleStationAlerts #1357 (S1) motion gate', () => {
     // 1건 + count=2 (burst inline counter) — share dump에서 시도 횟수가 보존됨을 확인.
     expect(skips).toHaveLength(1);
     expect(skips[0].count).toBe(2);
+  });
+});
+
+// #1389 — preschedule 정합성 게이트가 차단(false) 반환 시 schedule이 [] 반환되는지 검증.
+// helper 자체 분기는 preScheduleConsistencyGate.test.ts에서 평가 — 본 describe는 callsite 흡수 경로만.
+describe('prescheduleStationAlerts #1389 consistency gate', () => {
+  beforeEach(() => {
+    setupIosFakeTimers();
+    mockEvaluatePreScheduleConsistency.mockResolvedValue(true);
+  });
+  afterEach(teardownFakeTimers);
+
+  it('consistency gate가 false 반환 시 schedule을 skip하고 [] 반환', async () => {
+    mockEvaluatePreScheduleConsistency.mockResolvedValueOnce(false);
+    const result = await prescheduleWith({
+      boardingStation: { stationName: '중곡', line: '7' },
+    });
+    expect(result).toEqual([]);
+    expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+
+  it('boardingStation 미전달 → helper에 null 전달 (lockless / 컨텍스트 부재)', async () => {
+    await prescheduleWith();
+    expect(mockEvaluatePreScheduleConsistency).toHaveBeenCalledWith(
+      expect.objectContaining({ boardingStation: null, channel: 'tba' }),
+    );
+  });
+
+  it('boardingStation 전달 → helper에 그대로 전달 (channel=tba)', async () => {
+    await prescheduleWith({
+      boardingStation: { stationName: '중곡', line: '7' },
+    });
+    expect(mockEvaluatePreScheduleConsistency).toHaveBeenCalledWith(
+      expect.objectContaining({
+        boardingStation: { stationName: '중곡', line: '7' },
+        channel: 'tba',
+      }),
+    );
   });
 });

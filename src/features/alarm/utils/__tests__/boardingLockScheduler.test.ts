@@ -37,6 +37,13 @@ const mockGetCurrentMotionStationary = jest.fn<boolean, []>(() => false);
 jest.mock('../../../nearest-station/utils/motionActivity', () => ({
   getCurrentMotionStationary: () => mockGetCurrentMotionStationary(),
 }));
+
+// #1389 — preschedule 정합성 게이트 helper. 기본 true (allow) — 기존 테스트 동작 보존.
+// 차단 시나리오만 본 PR 신규 describe에서 false override.
+const mockEvaluatePreScheduleConsistency = jest.fn<Promise<boolean>, [unknown]>(() => Promise.resolve(true));
+jest.mock('../preScheduleConsistencyGate', () => ({
+  evaluatePreScheduleConsistency: (input: unknown) => mockEvaluatePreScheduleConsistency(input),
+}));
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
   setItem: jest.fn(),
@@ -1014,5 +1021,56 @@ describe('scheduleHopsForLock #1357 (S1) motion gate', () => {
     });
     expect(ids).toEqual([]);
     expect(mockedSchedule).not.toHaveBeenCalled();
+  });
+});
+
+// #1389 — preschedule 정합성 게이트가 차단(false) 반환 시 schedule이 [] 반환되는지 검증.
+// helper 자체 분기는 preScheduleConsistencyGate.test.ts에서 평가 — 본 describe는 callsite의 흡수 경로만 본다.
+describe('scheduleHopsForLock #1389 consistency gate', () => {
+  it('consistency gate가 false 반환 시 schedule을 skip하고 [] 반환', async () => {
+    mockEvaluatePreScheduleConsistency.mockResolvedValueOnce(false);
+    const ids = await scheduleHopsForLock({
+      lock,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW,
+    });
+    expect(ids).toEqual([]);
+    expect(mockedSchedule).not.toHaveBeenCalled();
+    expect(mockedAdd).not.toHaveBeenCalled();
+  });
+
+  it('boardingStationId가 stations.json에 없으면 helper에 boardingStation=null 전달 (graceful)', async () => {
+    // lock.boardingStationId='stn-A'는 stations.json에 없는 임의 id — getStationById null 반환.
+    await scheduleHopsForLock({
+      lock,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW,
+    });
+    expect(mockEvaluatePreScheduleConsistency).toHaveBeenCalledWith(
+      expect.objectContaining({ boardingStation: null, channel: 'bl' }),
+    );
+  });
+
+  it('boardingStationId가 stations.json에 있으면 helper에 { stationName, line } 전달', async () => {
+    // '1-001' = 소요산, line 1 (stations.json에 존재).
+    const lockWithRealId: BoardingLock = {
+      ...lock,
+      boardingStationId: '1-001',
+      boardingLine: '1',
+    };
+    await scheduleHopsForLock({
+      lock: lockWithRealId,
+      route: directRoute,
+      destinationName: '강남',
+      now: NOW,
+    });
+    expect(mockEvaluatePreScheduleConsistency).toHaveBeenCalledWith(
+      expect.objectContaining({
+        boardingStation: { stationName: '소요산', line: '1' },
+        channel: 'bl',
+      }),
+    );
   });
 });

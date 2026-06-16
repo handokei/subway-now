@@ -148,7 +148,17 @@ export type AlarmLogReason =
   // #1357 (S1) — preschedule 진입 시 motion=stationary 확정으로 사전예약 schedule을 skip한 경우.
   // boardingLock/lockless 양쪽 path 공통. OS scheduleNotificationAsync 0회로 정적 trip 시작의
   // 첫 banner 발사를 차단한다. share dump에서 'schedule-skipped-motion-stationary' 카운트로 추적.
-  | 'schedule-skipped-motion-stationary';
+  | 'schedule-skipped-motion-stationary'
+  // #1389 — 정합성 게이트(`evaluatePushConsistency`)가 device 신호와 target 모순으로 차단한 발사.
+  // 4가지 reason을 단일 reason+suffix로 인코딩(stationName 슬롯에 reason 부착) 대신 reason 자체에 매핑.
+  //   'consistency-wifi-mismatch': WiFi != target && motion=stationary.
+  //   'consistency-motion-stationary-far-behind': hops==1 + motion=stationary.
+  //   'consistency-device-station-mismatch': hops>=2 (device가 target보다 2 hop 이상 뒤).
+  //   'consistency-device-ahead-of-target': hops<0 (device가 target보다 앞).
+  | 'consistency-wifi-mismatch'
+  | 'consistency-motion-stationary-far-behind'
+  | 'consistency-device-station-mismatch'
+  | 'consistency-device-ahead-of-target';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -933,6 +943,53 @@ export function logScheduleSkipped(input: {
     outcome: 'suppressed',
     reason: 'schedule-skipped-motion-stationary',
     stationName,
+  });
+}
+
+/**
+ * #1389 — 정합성 게이트(`evaluatePushConsistency`)가 차단한 fire 1건 적재.
+ *
+ * 4개 fire site(silentPushTask / boardingLockScheduler / tripBoundScheduler / useStationAlarm)가
+ * 공통 호출. reason은 helper가 반환한 4개 차단 사유 중 하나에 'consistency-' prefix 매핑.
+ *   - 'wifi-mismatch'                → 'consistency-wifi-mismatch'
+ *   - 'motion-stationary-far-behind' → 'consistency-motion-stationary-far-behind'
+ *   - 'device-station-mismatch'      → 'consistency-device-station-mismatch'
+ *   - 'device-ahead-of-target'       → 'consistency-device-ahead-of-target'
+ *
+ * source는 호출 path 식별: FG = 'fg', silent push = 'silent-push-skipped', schedule path = 'bg-scheduled'.
+ * isBurstDuplicate로 같은 reason+station 5초 내 중복 drop — FG polling cycle이 같은 정적 trip을
+ * 반복 평가해도 로그 버퍼를 잠식하지 않게 한다.
+ */
+export type PushConsistencyBlockReason =
+  | 'wifi-mismatch'
+  | 'motion-stationary-far-behind'
+  | 'device-station-mismatch'
+  | 'device-ahead-of-target';
+
+const CONSISTENCY_REASON_MAP: Record<PushConsistencyBlockReason, AlarmLogReason> = {
+  'wifi-mismatch': 'consistency-wifi-mismatch',
+  'motion-stationary-far-behind': 'consistency-motion-stationary-far-behind',
+  'device-station-mismatch': 'consistency-device-station-mismatch',
+  'device-ahead-of-target': 'consistency-device-ahead-of-target',
+};
+
+export function logLocalFireConsistencyBlocked(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  reason: PushConsistencyBlockReason;
+  kind?: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+}): void {
+  const mappedReason = CONSISTENCY_REASON_MAP[input.reason];
+  if (isBurstDuplicate(mappedReason, input.stationName)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: mappedReason,
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
   });
 }
 
