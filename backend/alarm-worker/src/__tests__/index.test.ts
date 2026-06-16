@@ -680,6 +680,29 @@ describe('POST /trips (#578 — preserve advance progress on re-register)', () =
     expect(finalTrip.apnsEnv).toBe('production');
   });
 
+  // #1370 L1 — self-heal로 정정된 apnsEnv는 같은 token이면 새 session(환승 후 새 trainCode 등)에서도 보존.
+  // 보존 안 하면 매 새 session 첫 push마다 mismatch retry가 반복돼 첫 push latency + 일부 drop 위험.
+  it('preserves backend-corrected apnsEnv across new session re-register (#1370)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody({ apnsEnv: 'production' }), env);
+    // backend self-heal로 sandbox로 정정된 상태 시뮬레이션
+    const existing = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    existing.apnsEnv = 'sandbox';
+    await env.TRIPS.put('trip:tok-578', JSON.stringify(existing));
+    // 환승 후 새 trainCode + createdAt drift → !isSameSession 분기. client는 다시 production 송신.
+    await post('/trips', tripBody({ createdAt: CREATED + 10_000, apnsEnv: 'production' }), env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(finalTrip.apnsEnv).toBe('sandbox');
+  });
+
+  // existing 부재(brand-new token) 또는 existing.apnsEnv 부재(legacy trip) → incoming 값으로 fallback.
+  it('uses incoming apnsEnv on brand-new token (no existing trip)', async () => {
+    const env = makeKvEnv();
+    await post('/trips', tripBody({ apnsEnv: 'production' }), env);
+    const finalTrip = JSON.parse((await env.TRIPS.get('trip:tok-578')) as string);
+    expect(finalTrip.apnsEnv).toBe('production');
+  });
+
   // #706 — re-register가 누적된 consecutiveEtaMissing을 0으로 지우면 자동 종료가 영원히 못 발동.
   it('preserves backend-accumulated consecutiveEtaMissing on same-session re-register', async () => {
     const env = makeKvEnv();
