@@ -124,6 +124,12 @@ export interface SilentPushPayload {
    * 누락 시 기존 보수 동작(lock 없으면 non-intermediate skip)으로 fallback.
    */
   boardingLine?: string;
+  /**
+   * #1365 — backend가 forward한 발사 시점 waypoint의 line. 환승역(같은 hop index에 line 다른
+   * stop) misfire 차단용 — `silentPushLocationGate`가 디바이스 현재 line과 cross-validation.
+   * 구 backend 호환 위해 optional — 누락 시 cross-check 자연 skip(graceful).
+   */
+  occupiedLine?: string;
 }
 
 /**
@@ -311,10 +317,20 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
   // standard 경로. findFieldsLayer는 isStandardCandidate(nextWaypoint non-empty) 또는
   // isRescheduleCandidate(kind='reschedule') 중 하나로 통과시키지만, kind='reschedule'
   // 케이스는 위 분기에서 잡혔으므로 잔여 케이스는 isStandardCandidate가 보증한 것 — nextWaypoint 보장.
-  const { nextWaypoint, etaSeconds, phase, kind, sentAt, pushId, hopIndex, subsurface, boardingLine } =
-    obj as {
-      nextWaypoint: string;
-    } & Record<string, unknown>;
+  const {
+    nextWaypoint,
+    etaSeconds,
+    phase,
+    kind,
+    sentAt,
+    pushId,
+    hopIndex,
+    subsurface,
+    boardingLine,
+    occupiedLine,
+  } = obj as {
+    nextWaypoint: string;
+  } & Record<string, unknown>;
   if (typeof etaSeconds !== 'number' || !Number.isFinite(etaSeconds)) return null;
   if (phase !== 'early' && phase !== 'imminent') return null;
   const validKind =
@@ -329,6 +345,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     hopIndex: validHopIndex(hopIndex),
     subsurface: validSubsurface(subsurface),
     boardingLine: validBoardingLine(boardingLine),
+    occupiedLine: validBoardingLine(occupiedLine),
   };
 }
 
@@ -491,6 +508,8 @@ function mapGateReason(reason: GateSkipReason): AlarmLogReason {
       return 'gate-stale-location';
     case 'out-of-range':
       return 'gate-out-of-range';
+    case 'line-mismatch':
+      return 'gate-line-mismatch';
   }
 }
 
@@ -924,6 +943,10 @@ async function fireWithGate(
   // 로컬 stamp로 fallback한다. server flag가 이겨야 FG-only stamp가 BG에서 stale 되어도
   // 지하 intermediate 우회가 동작한다.
   const subsurface = payload.subsurface ?? (await getSubsurfaceState());
+  // #1365 — estimatorLine. lock 활성 시 lock.boardingLine을 신뢰(사용자 명시 탭). lock 부재 시
+  // 디바이스에 결정적 line SSOT가 없으므로 undefined — gate cross-check 자연 skip(graceful).
+  // 추후 lockless도 fusion result line이 BG로 전파되면 그 값을 사용.
+  const estimatorLine = lock?.boardingLine;
   const gate = await checkSilentPushLocationGate({
     stationName: payload.nextWaypoint,
     kind: payload.kind,
@@ -931,6 +954,8 @@ async function fireWithGate(
     isLockless: !lock,
     payloadHopIndex: payload.hopIndex,
     subsurface,
+    occupiedLine: payload.occupiedLine,
+    estimatorLine,
   });
 
   if (!gate.pass) {

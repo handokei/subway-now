@@ -69,6 +69,13 @@ export interface SilentPushPayload {
    */
   hopIndex?: number;
   /**
+   * #1365 — 발사 시점 waypoint의 line(`Waypoint.line`). server-authoritative.
+   * 환승역에서 같은 hop index에 line이 다른 stop이 존재할 수 있어, 디바이스 `silentPushLocationGate`가
+   * D1 estimator의 currentLine과 cross-validation해 잘못된 line의 알람 발사를 차단한다.
+   * 구 backend 호환을 위해 optional — 미전달 시 클라이언트는 line cross-check를 자연 skip한다.
+   */
+  occupiedLine?: string;
+  /**
    * #1307 — 발사 시점 trip의 지하(subsurface) 판정. server-authoritative.
    * 지하에서는 WiFi/cell 보정으로 GPS가 stale/spoof되어 디바이스 위치 게이트가
    * 정상 intermediate push를 out-of-range로 오거부한다. 클라이언트는 이 flag로
@@ -147,6 +154,11 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
       // Epic #1204 그룹 2 D3 (#1273) — payload.hopIndex가 정의된 경우에만 wire.
       // 구 backend 호환을 위해 optional이라 undefined일 땐 JSON에서 자연 누락된다.
       ...(options.payload.hopIndex === undefined ? {} : { hopIndex: options.payload.hopIndex }),
+      // #1365 — occupiedLine은 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 →
+      // 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
+      ...(options.payload.occupiedLine === undefined
+        ? {}
+        : { occupiedLine: options.payload.occupiedLine }),
       // #1307 — subsurface는 true일 때만 wire. false/undefined는 JSON에서 자연 누락 →
       // 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
       ...(options.payload.subsurface === true ? { subsurface: true } : {}),

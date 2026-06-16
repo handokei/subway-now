@@ -734,6 +734,9 @@ export async function fireArvlCdStationPush(
           // 클라이언트 `silentPushLocationGate`가 D1 estimator currentHopIndex와 매칭 시
           // 거리 검증 우회/`gate-no-location` fallback에 사용. 구 trip(부재) → undefined.
           hopIndex: waypoint.hopIndex,
+          // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
+          // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
+          occupiedLine: waypoint.line,
           // #1307 — server-authoritative subsurface. 지하 trip의 intermediate push는
           // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
           subsurface: trip.subsurface === true,
@@ -1487,6 +1490,9 @@ export async function runLocklessIntermediate(
           // Epic #1204 그룹 2 D3 (#1273) — lockless intermediate도 waypoint.hopIndex forward.
           // D1 estimator의 currentHopIndex와 ±tolerance 매칭 시 거리 검증 우회 + GPS 미준비 fallback.
           hopIndex: waypoint.hopIndex,
+          // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
+          // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
+          occupiedLine: waypoint.line,
           // #1307 — server-authoritative subsurface. lockless intermediate도 지하에선
           // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
           subsurface: trip.subsurface === true,

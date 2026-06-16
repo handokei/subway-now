@@ -22,7 +22,12 @@ export const FRESH_FETCH_TIMEOUT_MS = 3_000;
 export type GateKind = 'transfer' | 'destination' | 'intermediate';
 export type GatePhase = 'early' | 'imminent';
 
-export type GateSkipReason = 'unknown-station' | 'no-location' | 'stale-location' | 'out-of-range';
+export type GateSkipReason =
+  | 'unknown-station'
+  | 'no-location'
+  | 'stale-location'
+  | 'out-of-range'
+  | 'line-mismatch';
 /**
  * pass=true일 때 어떤 경로로 통과했는지 식별. 운영 측정/디버깅용.
  * - 'within-threshold': 거리 임계값 이내 (기존 경로)
@@ -62,6 +67,19 @@ export interface SilentPushLocationGateInput {
    * silent push payload가 명시한 hop index. 백엔드 schema에 추가되기 전까지 undefined.
    */
   payloadHopIndex?: number;
+  /**
+   * #1365 — backend silent push payload의 `occupiedLine`. 발사 시점 waypoint의 line.
+   * 환승역(예: 건대입구는 2호선/7호선)에서 같은 hop index에 line이 다른 stop이 존재할 수 있어
+   * 디바이스 현재 line(`estimatorLine`)과 cross-validation해 잘못된 line의 알람을 차단한다.
+   * 구 backend(미전달)면 undefined → cross-check 자연 skip(graceful).
+   */
+  occupiedLine?: string;
+  /**
+   * #1365 — 디바이스 fusion result가 채택한 현재 line. lock 활성 시 lock.boardingLine,
+   * lockless면 fusion result(또는 GPS nearest) line. occupiedLine과 양쪽 모두 정의된 경우에만
+   * mismatch 시 `line-mismatch` skip. 미연결(둘 중 하나라도 undefined)이면 graceful pass.
+   */
+  estimatorLine?: string;
   /**
    * 지하(subsurface) 여부. #1307. 호출자가 server payload.subsurface를 우선,
    * 부재 시 디바이스 로컬 stamp(getSubsurfaceState)로 fallback해 해석한 boolean을 넘긴다.
@@ -188,6 +206,24 @@ function isSubsurfaceBypass(input: SilentPushLocationGateInput): boolean {
   return input.subsurface === true && input.kind === 'intermediate';
 }
 
+// 위치 미획득 fallback. 본 경로의 3-way 분기를 호출자에서 추출해 cognitive complexity 분산.
+// 1) lockless intermediate + hop window 매치 → hop 기반 pass (#1273)
+// 2) subsurface intermediate → server SSOT 신뢰 pass (#1307)
+// 3) 그 외 → no-location skip
+function resolveNoPositionFallback(input: SilentPushLocationGateInput): GateResult {
+  if (
+    input.isLockless === true &&
+    input.kind === 'intermediate' &&
+    isHopWindowMatch(input.currentHopIndex, input.payloadHopIndex)
+  ) {
+    return { pass: true, passReason: 'hop-window-match' };
+  }
+  if (isSubsurfaceBypass(input)) {
+    return { pass: true, passReason: 'subsurface-bypass' };
+  }
+  return { pass: false, reason: 'no-location' };
+}
+
 /**
  * silent push 수신 시 "사용자가 실제로 그 역 근처에 있는지" 확인하는 게이트.
  * pass=true면 알림 발사, false면 skip + alarmLog에 skipReason 기록.
@@ -210,24 +246,21 @@ export async function checkSilentPushLocationGate(
     return { pass: false, reason: 'unknown-station' };
   }
 
+  // #1365 — line cross-validation. backend `occupiedLine`과 device `estimatorLine`이 양쪽 모두
+  // 정의되고 mismatch면 skip. 환승역(같은 hop index에 line 다른 stop 존재)에서 잘못된 line의
+  // station-passed/destination/transfer 알람 발사 차단. 구 backend 호환 위해 둘 중 하나라도
+  // undefined면 cross-check 자연 skip(graceful) — 기존 거리/hop 게이트만 동작.
+  if (
+    input.occupiedLine != null &&
+    input.estimatorLine != null &&
+    input.occupiedLine !== input.estimatorLine
+  ) {
+    return { pass: false, reason: 'line-mismatch' };
+  }
+
   const pos = await resolveUserPosition();
   if (!pos) {
-    // Epic #1204 그룹 2 D3 (#1273) — BG 깨움 직후 GPS 미준비 fallback.
-    // lockless intermediate + D1 estimator currentHopIndex가 payload hopIndex와 매칭되면
-    // 거리 게이트 우회하고 hop 매칭만으로 pass. (사용자 피드백 14/15: 14건 received / 0건 fired)
-    // 측정 가시성을 위해 locationSource는 부재로 두고 passReason='hop-window-match'만 노출.
-    if (
-      input.isLockless === true &&
-      input.kind === 'intermediate' &&
-      isHopWindowMatch(input.currentHopIndex, input.payloadHopIndex)
-    ) {
-      return { pass: true, passReason: 'hop-window-match' };
-    }
-    // #1307 — 지하 intermediate는 GPS 미준비여도 server SSOT를 신뢰해 pass.
-    if (isSubsurfaceBypass(input)) {
-      return { pass: true, passReason: 'subsurface-bypass' };
-    }
-    return { pass: false, reason: 'no-location' };
+    return resolveNoPositionFallback(input);
   }
 
   const motionFields = {
