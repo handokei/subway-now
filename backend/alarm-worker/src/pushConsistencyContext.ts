@@ -49,7 +49,7 @@ export function extractDeviceSignal(
   const metrics = evaluateWindow(series, now);
 
   // lastUpdateMs — 가장 마지막 sample의 ts. 빈 시리즈는 0 (게이트 #3 stale 분기 → 허용).
-  const last = series[series.length - 1];
+  const last = series.at(-1);
   const lastUpdateMs = last ? last.ts : 0;
 
   return {

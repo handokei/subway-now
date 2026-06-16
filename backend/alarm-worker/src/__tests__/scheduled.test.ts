@@ -4749,37 +4749,61 @@ describe('#1363 — pickLatestCurrentStationName (log 진단 이원화 helper)',
  *   - positionSeries: motion='automotive' + currentStationName='중곡' (target='중곡' 일치)
  *   - 결과: allowed → 기존 fire path 회귀 0건
  */
+
+// #1389 — describe 외부의 file-scope helpers (SonarCloud: avoid nested function declarations).
+const CONSISTENCY_SEG = ['용마산', '중곡', '군자'];
+
+/** target=중곡 기준 1 hop behind + stationary 시드 (정합성 위반 케이스). */
+async function seedStationaryBehindSeries(kv: InMemoryKV, token: string): Promise<void> {
+  const series: PositionPoint[] = [
+    { lat: 0, lng: 0, accuracy: 10, ts: NOW - 40_000, motion: 'stationary', currentStationName: '용마산' },
+    { lat: 0, lng: 0, accuracy: 10, ts: NOW - 20_000, motion: 'stationary', currentStationName: '용마산' },
+    { lat: 0, lng: 0, accuracy: 10, ts: NOW, motion: 'stationary', currentStationName: '용마산' },
+  ];
+  await kv.put(`pos:${token}`, JSON.stringify(series));
+}
+
+/** target=중곡 기준 device==target + automotive 시드 (정상 trip 케이스). */
+async function seedMovingAtTargetSeries(kv: InMemoryKV, token: string): Promise<void> {
+  const series: PositionPoint[] = [
+    { lat: 0, lng: 0, accuracy: 10, ts: NOW - 40_000, motion: 'automotive', currentStationName: '중곡' },
+    { lat: 0, lng: 0, accuracy: 10, ts: NOW - 20_000, motion: 'automotive', currentStationName: '중곡' },
+    { lat: 0, lng: 0, accuracy: 10, ts: NOW, motion: 'automotive', currentStationName: '중곡' },
+  ];
+  await kv.put(`pos:${token}`, JSON.stringify(series));
+}
+
+/** 7호선 용마산→중곡→군자 leg + arvlCd lock fixture. */
+function makeArvlFireTrip(): Trip {
+  return makeLockTripFixture('cons-arvl-tok', {
+    boardingLock: makeBoardingLock({ segmentStations: CONSISTENCY_SEG }),
+  });
+}
+
+/**
+ * #1370 L2 fallback advance를 트리거: lastTrackedArrivalEpoch + FALLBACK_HOP_SEC 경과 + Seoul arrivals 빈 응답
+ * + consecutiveEtaMissing이 fallbackTrigger 도달.
+ */
+function makeVanishTrip(consecutiveMissOverride?: number): Trip {
+  const fallbackTrigger = VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES;
+  return makeLockTripFixture('cons-vanish-tok', {
+    boardingLock: makeBoardingLock({ segmentStations: CONSISTENCY_SEG }),
+    lastTrackedArrivalEpoch: NOW - (FALLBACK_HOP_SEC + 10) * 1000,
+    consecutiveEtaMissing: consecutiveMissOverride ?? fallbackTrigger - 1,
+  });
+}
+
+function emptyArrivalsSeoul(): SeoulArrivalClient {
+  return new SeoulArrivalClient({
+    apiKey: 'K',
+    host: 'h',
+    now: () => NOW,
+    fetchImpl: (async () =>
+      new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+  });
+}
+
 describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
-  // segmentStations 공용 — 용마산→중곡→군자 leg.
-  const SEG = ['용마산', '중곡', '군자'];
-
-  /** target=중곡 기준 1 hop behind + stationary 시드 (정합성 위반 케이스). */
-  async function seedStationaryBehindSeries(kv: InMemoryKV, token: string): Promise<void> {
-    const series: PositionPoint[] = [
-      { lat: 0, lng: 0, accuracy: 10, ts: NOW - 40_000, motion: 'stationary', currentStationName: '용마산' },
-      { lat: 0, lng: 0, accuracy: 10, ts: NOW - 20_000, motion: 'stationary', currentStationName: '용마산' },
-      { lat: 0, lng: 0, accuracy: 10, ts: NOW, motion: 'stationary', currentStationName: '용마산' },
-    ];
-    await kv.put(`pos:${token}`, JSON.stringify(series));
-  }
-
-  /** target=중곡 기준 device==target + automotive 시드 (정상 trip 케이스). */
-  async function seedMovingAtTargetSeries(kv: InMemoryKV, token: string): Promise<void> {
-    const series: PositionPoint[] = [
-      { lat: 0, lng: 0, accuracy: 10, ts: NOW - 40_000, motion: 'automotive', currentStationName: '중곡' },
-      { lat: 0, lng: 0, accuracy: 10, ts: NOW - 20_000, motion: 'automotive', currentStationName: '중곡' },
-      { lat: 0, lng: 0, accuracy: 10, ts: NOW, motion: 'automotive', currentStationName: '중곡' },
-    ];
-    await kv.put(`pos:${token}`, JSON.stringify(series));
-  }
-
-  /** 7호선 용마산→중곡→군자 leg + arvlCd lock fixture. */
-  function makeArvlFireTrip(): Trip {
-    return makeLockTripFixture('cons-arvl-tok', {
-      boardingLock: makeBoardingLock({ segmentStations: SEG }),
-    });
-  }
-
   describe('Site 1: arvlCd fire', () => {
     it('정합성 위반(motion=stationary, device 1 hop behind) → push 0건 + pushConsistencyBlocked++', async () => {
       const trip = makeArvlFireTrip();
@@ -4824,29 +4848,6 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
   });
 
   describe('Site 2: vanish-fallback fire', () => {
-    /**
-     * #1370 L2 fallback advance를 트리거: lastTrackedArrivalEpoch + FALLBACK_HOP_SEC 경과 + Seoul arrivals 빈 응답
-     * + consecutiveEtaMissing이 fallbackTrigger 도달.
-     */
-    function makeVanishTrip(consecutiveMissOverride?: number): Trip {
-      const fallbackTrigger = VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES;
-      return makeLockTripFixture('cons-vanish-tok', {
-        boardingLock: makeBoardingLock({ segmentStations: SEG }),
-        lastTrackedArrivalEpoch: NOW - (FALLBACK_HOP_SEC + 10) * 1000,
-        consecutiveEtaMissing: consecutiveMissOverride ?? fallbackTrigger - 1,
-      });
-    }
-
-    function emptyArrivalsSeoul(): SeoulArrivalClient {
-      return new SeoulArrivalClient({
-        apiKey: 'K',
-        host: 'h',
-        now: () => NOW,
-        fetchImpl: (async () =>
-          new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
-      });
-    }
-
     it('정합성 위반(stationary 가드 이미 #1386이 차단) → 정합성 게이트 진입 전 motion 가드가 먼저 막음', async () => {
       // 이 케이스는 #1386 motion 가드가 fire 함수 진입 전(handleEtaMissing 안)에서 advance를 막으므로
       // 정합성 게이트는 호출되지 않는다. vanishFallbackMotionGateBlocked가 증가하는 것이 정상.
@@ -4906,7 +4907,7 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
       // motion=unknown은 #1386 가드 통과 + 정합성 게이트 §9 (hops==1 && motion!=stationary) allow.
       // 즉 옳은 trip의 fallback advance가 차단되지 않음을 보장.
       const trip = makeLockTripFixture('cons-vanish-ok', {
-        boardingLock: makeBoardingLock({ segmentStations: SEG }),
+        boardingLock: makeBoardingLock({ segmentStations: CONSISTENCY_SEG }),
         lastTrackedArrivalEpoch: NOW - (FALLBACK_HOP_SEC + 10) * 1000,
         consecutiveEtaMissing: VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES - 1,
         waypoints: [
@@ -4939,7 +4940,7 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
   describe('Site 3: reschedule push', () => {
     it('정합성 위반(motion=stationary, device 1 hop behind) → reschedule push 0건 + 카운터 증가', async () => {
       const trip = makeLockTripFixture('cons-resched-tok', {
-        boardingLock: makeBoardingLock({ segmentStations: SEG }),
+        boardingLock: makeBoardingLock({ segmentStations: CONSISTENCY_SEG }),
         lastTrackedArrivalEpoch: NOW + 120 * 1000, // 임계 초과 변동 보장 baseline
       });
       const kv = new InMemoryKV();
@@ -5068,51 +5069,52 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
  * runScheduled integration 테스트로 cover하기 어려운 edge(extraLog override 방어,
  * lock=undefined 경로, allow 경로 무카운트) 검증.
  */
-describe('evaluatePushConsistencyForSite (#1389 wrapper)', () => {
-  function makeStats(): ScheduledStats {
-    return {
-      scanned: 0,
-      polled: 0,
-      pushed: 0,
-      errors: 0,
-      etaMissing: 0,
-      envCorrected: 0,
-      lockMissing: 0,
-      locklessIntermediateFired: 0,
-      locklessMotionGateBlocked: 0,
-      laPushSent: 0,
-      laPushFailed: 0,
-      laTokenCleared: 0,
-      boardingPromptEvaluated: 0,
-      boardingPromptFired: 0,
-      boardingPromptBlocked: 0,
-      phaseImminentBlocked: 0,
-      kalmanReset: 0,
-      kalmanDriftWarning: 0,
-      autoLockSuccess: 0,
-      autoLockFalsePositive: 0,
-      boardingPromptAutoDeduped: 0,
-      arvlCdFireSuccess: 0,
-      arvlCdFireDedup: 0,
-      arvlCdFireMismatch: 0,
-      vanishFallbackFired: 0,
-      vanishLocklessTakeover: 0,
-      vanishFallbackMotionGateBlocked: 0,
-      pushConsistencyBlocked: 0,
-      pushConsistencyBlockedByReason: {
-        'wifi-mismatch': 0,
-        'motion-stationary-far-behind': 0,
-        'device-station-mismatch': 0,
-        'device-ahead-of-target': 0,
-      },
-    };
-  }
+// #1389 wrapper unit test 공용 fixture — describe 외부(SonarCloud: avoid nested function declarations).
+function makeWrapperStats(): ScheduledStats {
+  return {
+    scanned: 0,
+    polled: 0,
+    pushed: 0,
+    errors: 0,
+    etaMissing: 0,
+    envCorrected: 0,
+    lockMissing: 0,
+    locklessIntermediateFired: 0,
+    locklessMotionGateBlocked: 0,
+    laPushSent: 0,
+    laPushFailed: 0,
+    laTokenCleared: 0,
+    boardingPromptEvaluated: 0,
+    boardingPromptFired: 0,
+    boardingPromptBlocked: 0,
+    phaseImminentBlocked: 0,
+    kalmanReset: 0,
+    kalmanDriftWarning: 0,
+    autoLockSuccess: 0,
+    autoLockFalsePositive: 0,
+    boardingPromptAutoDeduped: 0,
+    arvlCdFireSuccess: 0,
+    arvlCdFireDedup: 0,
+    arvlCdFireMismatch: 0,
+    vanishFallbackFired: 0,
+    vanishLocklessTakeover: 0,
+    vanishFallbackMotionGateBlocked: 0,
+    pushConsistencyBlocked: 0,
+    pushConsistencyBlockedByReason: {
+      'wifi-mismatch': 0,
+      'motion-stationary-far-behind': 0,
+      'device-station-mismatch': 0,
+      'device-ahead-of-target': 0,
+    },
+  };
+}
 
+describe('evaluatePushConsistencyForSite (#1389 wrapper)', () => {
   const target = { stationName: '중곡', line: '7' };
   const lock = { segmentStations: ['용마산', '중곡', '군자', '어린이대공원'] };
 
   it('차단(motion=stationary + hops=1) → result.allowed=false + stats 누적 + log 발사', () => {
-    const stats = makeStats();
+    const stats = makeWrapperStats();
     const logs: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
     const log = (msg: string, meta?: Record<string, unknown>) => {
       logs.push({ msg, meta });
@@ -5147,7 +5149,7 @@ describe('evaluatePushConsistencyForSite (#1389 wrapper)', () => {
   });
 
   it('허용(motion=automotive + hops=0) → result.allowed=true + 카운터/log 무변동', () => {
-    const stats = makeStats();
+    const stats = makeWrapperStats();
     const logs: Array<{ msg: string }> = [];
     const log = (msg: string) => {
       logs.push({ msg });
@@ -5172,7 +5174,7 @@ describe('evaluatePushConsistencyForSite (#1389 wrapper)', () => {
   });
 
   it('extraLog override 방어 — 호출자가 site/reason/token 키를 넣어도 wrapper 기본 값이 우선', () => {
-    const stats = makeStats();
+    const stats = makeWrapperStats();
     const logs: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
     const log = (msg: string, meta?: Record<string, unknown>) => {
       logs.push({ msg, meta });
@@ -5205,7 +5207,7 @@ describe('evaluatePushConsistencyForSite (#1389 wrapper)', () => {
   });
 
   it('lock=undefined → hops=null fallback → §5 allow (lockless 경로 회귀 0건)', () => {
-    const stats = makeStats();
+    const stats = makeWrapperStats();
     const log = () => undefined;
     const series: PositionPoint[] = [
       { lat: 0, lng: 0, accuracy: 10, ts: NOW, motion: 'walking', currentStationName: '강남' },

@@ -515,7 +515,7 @@ export function evaluatePushConsistencyForSite(
     // extraLog를 먼저 spread해 호출자가 임의 키로 정합성 진단 필드(site/reason/token/target/...)를
     // 덮어쓰지 못하도록 한다 (P1 — 진단 log 오염 차단).
     log('push-consistency: blocked', {
-      ...(extraLog ?? {}),
+      ...extraLog,
       site: siteName,
       reason: result.reason,
       token: trip.token.slice(0, 8),
