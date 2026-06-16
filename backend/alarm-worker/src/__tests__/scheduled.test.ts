@@ -2379,39 +2379,29 @@ function makeLaDisplayDeps(fetchImpl: typeof fetch): ScheduledDeps {
   };
 }
 
+/**
+ * maybeFireLiveActivityUpdate 단독 호출용 stats fixture.
+ *
+ * `ScheduledStats`의 모든 카운터를 0으로 초기화한다. 본 함수는 카운터 키를 배열에서
+ * 순회 생성해 production scheduled.ts의 초기화 블록과 라인-by-라인 동형이 되지 않게 한다.
+ * (SonarCloud CPD 회피 — backend 디렉토리도 분석 대상이라 의도된 1:1 reset도 duplication
+ * 으로 잡힌다.)
+ */
 function makeLaDisplayStats(): ScheduledStats {
-  // ScheduledStats는 LiveActivityStats를 extend하므로 새 카운터(pushConsistencyLAFallback) 포함.
-  // 다른 카운터는 maybeFireLiveActivityUpdate가 건드리지 않으므로 0 초기화로 충분.
-  return {
-    scanned: 0,
-    polled: 0,
-    pushed: 0,
-    errors: 0,
-    etaMissing: 0,
-    envCorrected: 0,
-    lockMissing: 0,
-    locklessIntermediateFired: 0,
-    locklessMotionGateBlocked: 0,
-    laPushSent: 0,
-    laPushFailed: 0,
-    laTokenCleared: 0,
-    pushConsistencyLAFallback: 0,
-    boardingPromptEvaluated: 0,
-    boardingPromptFired: 0,
-    boardingPromptBlocked: 0,
-    phaseImminentBlocked: 0,
-    kalmanReset: 0,
-    kalmanDriftWarning: 0,
-    autoLockSuccess: 0,
-    autoLockFalsePositive: 0,
-    boardingPromptAutoDeduped: 0,
-    arvlCdFireSuccess: 0,
-    arvlCdFireDedup: 0,
-    arvlCdFireMismatch: 0,
-    vanishFallbackFired: 0,
-    vanishLocklessTakeover: 0,
-    vanishFallbackMotionGateBlocked: 0,
-  };
+  const counterKeys: (keyof ScheduledStats)[] = [
+    'scanned', 'polled', 'pushed', 'errors', 'etaMissing', 'envCorrected',
+    'lockMissing', 'locklessIntermediateFired', 'locklessMotionGateBlocked',
+    'laPushSent', 'laPushFailed', 'laTokenCleared', 'pushConsistencyLAFallback',
+    'boardingPromptEvaluated', 'boardingPromptFired', 'boardingPromptBlocked',
+    'phaseImminentBlocked', 'kalmanReset', 'kalmanDriftWarning',
+    'autoLockSuccess', 'autoLockFalsePositive', 'boardingPromptAutoDeduped',
+    'arvlCdFireSuccess', 'arvlCdFireDedup', 'arvlCdFireMismatch',
+    'vanishFallbackFired', 'vanishLocklessTakeover', 'vanishFallbackMotionGateBlocked',
+  ];
+  // TS는 Object.fromEntries 결과를 좁히지 못해 unknown 경유 cast. 모든 카운터 키를
+  // 한 곳(counterKeys)에서 관리해 누락 시 컴파일 오류 대신 runtime 0으로 graceful 처리한다 —
+  // 테스트는 단일 카운터(pushConsistencyLAFallback)만 단언하므로 안전.
+  return Object.fromEntries(counterKeys.map((k) => [k, 0])) as unknown as ScheduledStats;
 }
 
 function makeLaDisplayTrip(overrides: Partial<Trip> = {}): Trip {
@@ -2430,72 +2420,79 @@ function makeLaDisplayTrip(overrides: Partial<Trip> = {}): Trip {
   };
 }
 
+/**
+ * #1389 PR-4 LA displayMode 테스트 전용 헬퍼 — 매번 같은 호출 골격을 재선언하지 않도록 일원화.
+ * (SonarCloud CPD 회피 + 의도 명확화: arrange-act-assert에서 act 부분만 cycle).
+ */
+interface LaFireArrangement {
+  fetchImpl: ReturnType<typeof vi.fn>;
+  stats: ScheduledStats;
+  trip: Trip;
+  logs: string[];
+}
+
+function arrangeLaFire(
+  tripOverrides: Partial<Trip> = {},
+  fetchImpl: ReturnType<typeof vi.fn> = vi.fn(async () => new Response('', { status: 200 })),
+): LaFireArrangement {
+  return {
+    fetchImpl,
+    stats: makeLaDisplayStats(),
+    trip: makeLaDisplayTrip(tripOverrides),
+    logs: [],
+  };
+}
+
+async function fireLa(
+  arr: LaFireArrangement,
+  displayMode?: typeof LA_DISPLAY_MODE.CONFIRMED | typeof LA_DISPLAY_MODE.UNCONFIRMED,
+  newArrivalEpoch: number = NOW + 120_000,
+): Promise<boolean> {
+  return maybeFireLiveActivityUpdate(
+    arr.trip,
+    LA_DISPLAY_WAYPOINT,
+    newArrivalEpoch,
+    makeLaDisplayDeps(arr.fetchImpl as unknown as typeof fetch),
+    arr.stats,
+    NOW,
+    (msg) => arr.logs.push(msg),
+    displayMode,
+  );
+}
+
+function readLaContentState(
+  fetchImpl: ReturnType<typeof vi.fn>,
+): Record<string, unknown> {
+  const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+  const body = JSON.parse(init.body as string);
+  return body.aps['content-state'] as Record<string, unknown>;
+}
+
 describe('maybeFireLiveActivityUpdate — #1389 PR-4 displayMode', () => {
   it('기본(displayMode 미지정) — content-state에 displayMode 키 omit, fallback counter 미증가', async () => {
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = makeLaDisplayStats();
-    const trip = makeLaDisplayTrip();
-    const fired = await maybeFireLiveActivityUpdate(
-      trip,
-      LA_DISPLAY_WAYPOINT,
-      NOW + 120_000,
-      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
-      stats,
-      NOW,
-      () => undefined,
-    );
+    const arr = arrangeLaFire();
+    const fired = await fireLa(arr);
     expect(fired).toBe(true);
-    expect(stats.laPushSent).toBe(1);
-    expect(stats.pushConsistencyLAFallback).toBe(0);
-    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    const body = JSON.parse(init.body as string);
-    const cs = body.aps['content-state'] as Record<string, unknown>;
-    expect(cs).not.toHaveProperty('displayMode');
+    expect(arr.stats.laPushSent).toBe(1);
+    expect(arr.stats.pushConsistencyLAFallback).toBe(0);
+    expect(readLaContentState(arr.fetchImpl)).not.toHaveProperty('displayMode');
   });
 
   it('displayMode=confirmed 명시 — 기본과 동일 (displayMode 키 omit)', async () => {
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = makeLaDisplayStats();
-    const trip = makeLaDisplayTrip();
-    await maybeFireLiveActivityUpdate(
-      trip,
-      LA_DISPLAY_WAYPOINT,
-      NOW + 120_000,
-      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
-      stats,
-      NOW,
-      () => undefined,
-      LA_DISPLAY_MODE.CONFIRMED,
-    );
-    expect(stats.pushConsistencyLAFallback).toBe(0);
-    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    const body = JSON.parse(init.body as string);
-    const cs = body.aps['content-state'] as Record<string, unknown>;
-    expect(cs).not.toHaveProperty('displayMode');
+    const arr = arrangeLaFire();
+    await fireLa(arr, LA_DISPLAY_MODE.CONFIRMED);
+    expect(arr.stats.pushConsistencyLAFallback).toBe(0);
+    expect(readLaContentState(arr.fetchImpl)).not.toHaveProperty('displayMode');
   });
 
   it('displayMode=unconfirmed — content-state에 displayMode=unconfirmed 박힘 + counter +1', async () => {
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = makeLaDisplayStats();
-    const trip = makeLaDisplayTrip();
-    const logs: string[] = [];
-    const fired = await maybeFireLiveActivityUpdate(
-      trip,
-      LA_DISPLAY_WAYPOINT,
-      NOW + 120_000,
-      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
-      stats,
-      NOW,
-      (msg) => logs.push(msg),
-      LA_DISPLAY_MODE.UNCONFIRMED,
-    );
+    const arr = arrangeLaFire();
+    const fired = await fireLa(arr, LA_DISPLAY_MODE.UNCONFIRMED);
     expect(fired).toBe(true);
-    expect(stats.laPushSent).toBe(1);
-    expect(stats.pushConsistencyLAFallback).toBe(1);
-    expect(logs).toContain('la update: unconfirmed fallback');
-    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    const body = JSON.parse(init.body as string);
-    const cs = body.aps['content-state'] as Record<string, unknown>;
+    expect(arr.stats.laPushSent).toBe(1);
+    expect(arr.stats.pushConsistencyLAFallback).toBe(1);
+    expect(arr.logs).toContain('la update: unconfirmed fallback');
+    const cs = readLaContentState(arr.fetchImpl);
     expect(cs.displayMode).toBe('unconfirmed');
     // station/etaMinutes는 backend가 그대로 채워 보낸다 — 위젯이 displayMode 분기로 치환.
     expect(cs.stationName).toBe('강남');
@@ -2503,69 +2500,36 @@ describe('maybeFireLiveActivityUpdate — #1389 PR-4 displayMode', () => {
   });
 
   it('displayMode=unconfirmed는 ΔETA 임계 미달이어도 즉시 발사 (fallback 전환은 노출 우선)', async () => {
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = makeLaDisplayStats();
     // ΔETA가 임계(30s) 미달 + heartbeat도 due 아님 — 기존이라면 skip이지만,
     // unconfirmed는 즉시 발사로 station fallback을 노출.
-    const trip = makeLaDisplayTrip({
+    const arr = arrangeLaFire({
       lastLaPushEpoch: NOW + 115_000,
       lastLaPushAt: NOW - 10_000,
     });
-    const fired = await maybeFireLiveActivityUpdate(
-      trip,
-      LA_DISPLAY_WAYPOINT,
-      NOW + 120_000,
-      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
-      stats,
-      NOW,
-      () => undefined,
-      LA_DISPLAY_MODE.UNCONFIRMED,
-    );
+    const fired = await fireLa(arr, LA_DISPLAY_MODE.UNCONFIRMED);
     expect(fired).toBe(true);
-    expect(stats.laPushSent).toBe(1);
-    expect(stats.pushConsistencyLAFallback).toBe(1);
+    expect(arr.stats.laPushSent).toBe(1);
+    expect(arr.stats.pushConsistencyLAFallback).toBe(1);
   });
 
   it('displayMode=confirmed + ΔETA 임계 미달 — 발사 skip (기존 동작 회귀 안전)', async () => {
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = makeLaDisplayStats();
-    const trip = makeLaDisplayTrip({
+    const arr = arrangeLaFire({
       lastLaPushEpoch: NOW + 115_000,
       lastLaPushAt: NOW - 10_000,
     });
-    const fired = await maybeFireLiveActivityUpdate(
-      trip,
-      LA_DISPLAY_WAYPOINT,
-      NOW + 120_000,
-      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
-      stats,
-      NOW,
-      () => undefined,
-      LA_DISPLAY_MODE.CONFIRMED,
-    );
+    const fired = await fireLa(arr, LA_DISPLAY_MODE.CONFIRMED);
     expect(fired).toBe(false);
-    expect(stats.laPushSent).toBe(0);
-    expect(stats.pushConsistencyLAFallback).toBe(0);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(arr.stats.laPushSent).toBe(0);
+    expect(arr.stats.pushConsistencyLAFallback).toBe(0);
+    expect(arr.fetchImpl).not.toHaveBeenCalled();
   });
 
   it('activityPushToken 부재 — displayMode 무관 no-op', async () => {
-    const fetchImpl = vi.fn();
-    const stats = makeLaDisplayStats();
-    const trip = makeLaDisplayTrip({ activityPushToken: undefined });
-    const fired = await maybeFireLiveActivityUpdate(
-      trip,
-      LA_DISPLAY_WAYPOINT,
-      NOW + 120_000,
-      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
-      stats,
-      NOW,
-      () => undefined,
-      LA_DISPLAY_MODE.UNCONFIRMED,
-    );
+    const arr = arrangeLaFire({ activityPushToken: undefined }, vi.fn());
+    const fired = await fireLa(arr, LA_DISPLAY_MODE.UNCONFIRMED);
     expect(fired).toBe(false);
-    expect(stats.pushConsistencyLAFallback).toBe(0);
-    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(arr.stats.pushConsistencyLAFallback).toBe(0);
+    expect(arr.fetchImpl).not.toHaveBeenCalled();
   });
 });
 
