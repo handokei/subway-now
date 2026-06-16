@@ -132,6 +132,79 @@ export async function removePending(
 }
 
 /**
+ * #1370 L5 — silent push 도달률 observability stamp.
+ *
+ * 디바이스가 push 수신 시점에 `outcome: 'received'`로 ack를 보내면 이 함수가 호출된다.
+ * outcome ack(fired/skipped)와 달리 pending entry를 삭제하지 않는다 — 게이트 평가가 아직
+ * 끝나지 않았기 때문(P2c fallback 결정은 이후 fired/skipped ack로 처리).
+ *
+ * 단순 KV stamp로 "이 pushId가 디바이스에 도달했다"는 사실만 기록한다. 백엔드 tail에는
+ * `reschedule push → 어린이대공원` 같은 pushed 이벤트가 남아 있고, 사용자/agent가 RCA 시
+ * `received:<pushId>` stamp 존재 여부로 pushed vs received를 1:1 비교할 수 있다.
+ *
+ * TTL 1h — 회귀 분석 윈도우. KV cacheTtl 최소값(30s)과 무관하게 stamp는 1h 보존.
+ */
+const RECEIVED_PREFIX = 'received:';
+export const RECEIVED_TTL_SEC = 60 * 60;
+
+export function receivedKey(pushId: string): string {
+  return `${RECEIVED_PREFIX}${pushId}`;
+}
+
+/**
+ * `outcome: 'received'` ack 처리 결과. 임의 echo 차단을 위해 outcome ack와 동일하게
+ * pending.token 매칭을 요구한다.
+ *  - `stamped: true` — pending entry 매칭 + stamp 적재
+ *  - `stamped: false, reason: 'not-found'` — pending entry 부재 (TTL 초과 / 잘못된 pushId)
+ *  - `stamped: false, reason: 'token-mismatch'` — 다른 디바이스가 임의 echo
+ */
+export interface ReceivedAckResult {
+  stamped: boolean;
+  reason?: 'not-found' | 'token-mismatch';
+}
+
+export async function stampReceived(
+  kv: KVNamespace | undefined,
+  pushId: string,
+  token: string,
+  receivedAt: number,
+): Promise<ReceivedAckResult> {
+  if (!kv) return { stamped: false, reason: 'not-found' };
+  const entry = await getPending(kv, pushId);
+  if (!entry) return { stamped: false, reason: 'not-found' };
+  if (entry.token !== token) return { stamped: false, reason: 'token-mismatch' };
+  await kv.put(
+    receivedKey(pushId),
+    JSON.stringify({ pushId, receivedAt, stationName: entry.stationName, phase: entry.phase }),
+    { expirationTtl: RECEIVED_TTL_SEC },
+  );
+  return { stamped: true };
+}
+
+/**
+ * #1370 L5 — RCA 시 `received:<pushId>` stamp 조회. stamp 부재 = push가 디바이스에
+ * 도달하지 않음(또는 도달 후 task 시작 전 OS suspend).
+ */
+export async function getReceivedStamp(
+  kv: KVNamespace | undefined,
+  pushId: string,
+): Promise<{ pushId: string; receivedAt: number; stationName: string; phase: AlarmPhase } | null> {
+  if (!kv) return null;
+  const raw = await kv.get(receivedKey(pushId));
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as {
+      pushId: string;
+      receivedAt: number;
+      stationName: string;
+      phase: AlarmPhase;
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * ACK 처리. caller가 device token도 함께 보내야 임의 pushId echo로 인한 fallback 무력화를 차단한다.
  * KV에 저장된 pending.token과 매칭하지 않으면 삭제하지 않는다.
  */

@@ -39,7 +39,7 @@ import {
   type LiveActivityDeps,
   type LiveActivityStats,
 } from './liveActivity';
-import { ackPending } from './pendingPushes';
+import { ackPending, stampReceived } from './pendingPushes';
 import { appendPositionPoint } from './positionSeries';
 import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
@@ -727,6 +727,18 @@ app.post('/push/ack', async (c) => {
   const ack = validatePushAck(body);
   if (!ack) return c.json({ error: 'invalid_payload' }, 400);
 
+  // #1370 L5 — `received` outcome은 도달률 측정용 stamp만 적재. pending entry는 보존해
+  //   후속 fired/skipped ack가 P2c fallback을 정상 차단할 수 있게 한다.
+  if (ack.outcome === 'received') {
+    const stampResult = await stampReceived(
+      c.env.PENDING_PUSHES,
+      ack.pushId,
+      ack.token,
+      Date.now(),
+    );
+    return c.json({ ok: true, ...stampResult });
+  }
+
   const result = await ackPending(c.env.PENDING_PUSHES, ack.pushId, ack.token);
   return c.json({ ok: true, ...result });
 });
@@ -1162,7 +1174,8 @@ async function maybeMirrorLockSyncProgress(
 interface PushAckPayload {
   pushId: string;
   token: string;
-  outcome: 'fired' | 'skipped';
+  // #1370 L5 — `received`는 도달률 stamp 전용. fired/skipped는 outcome 분리 후 pending entry 삭제.
+  outcome: 'received' | 'fired' | 'skipped';
   reason?: string;
 }
 
@@ -1171,7 +1184,9 @@ export function validatePushAck(input: unknown): PushAckPayload | null {
   const obj = input as Record<string, unknown>;
   if (typeof obj.pushId !== 'string' || obj.pushId.length === 0) return null;
   if (typeof obj.token !== 'string' || obj.token.length === 0) return null;
-  if (obj.outcome !== 'fired' && obj.outcome !== 'skipped') return null;
+  if (obj.outcome !== 'received' && obj.outcome !== 'fired' && obj.outcome !== 'skipped') {
+    return null;
+  }
   const out: PushAckPayload = { pushId: obj.pushId, token: obj.token, outcome: obj.outcome };
   if (typeof obj.reason === 'string') out.reason = obj.reason;
   return out;

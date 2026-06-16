@@ -1323,6 +1323,109 @@ describe('silentPushTask', () => {
       });
     });
 
+    describe('#1370 L5 — silent push 도달 stamp (received outcome)', () => {
+      it('standard payload + pushId + apnsToken 모두 있으면 gate 평가 전 received ack 발사', async () => {
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-recv' }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-recv',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'received',
+        });
+        // 후속 outcome(fired) ack도 그대로 발사 — 별개 호출.
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-recv',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'fired',
+        });
+      });
+
+      it('게이트 fail로 outcome=skipped여도 received ack는 먼저 발사', async () => {
+        mockCheckGate.mockResolvedValue({
+          pass: false,
+          reason: 'out-of-range',
+          distanceM: 5_000,
+          thresholdM: 400,
+        });
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-recv-skip' }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-recv-skip',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'received',
+        });
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'p-recv-skip',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'skipped',
+          reason: 'gate-out-of-range',
+        });
+      });
+
+      it('pushId 없으면 received ack도 skip (구 backend 호환)', async () => {
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockSendPushAck).not.toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: 'received' }),
+        );
+      });
+
+      it('apnsToken null이면 received ack도 skip', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return null;
+          return null;
+        });
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-no-tok' }),
+        );
+        expect(mockSendPushAck).not.toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: 'received' }),
+        );
+      });
+
+      it('reschedule payload도 received ack 발사', async () => {
+        await handleSilentPush({
+          data: {
+            data: {
+              data: {
+                kind: 'reschedule',
+                nextStation: '사가정',
+                newArrivalTimeEpoch: Date.now() + 60_000,
+                trainCode: '7610',
+                pushId: 'rs-recv',
+              },
+            },
+          },
+        });
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'rs-recv',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'received',
+        });
+      });
+
+      it('trip-ended payload도 received ack 발사', async () => {
+        await handleSilentPush({
+          data: {
+            data: {
+              data: {
+                kind: 'trip-ended',
+                reason: 'expired',
+                pushId: 'te-recv',
+              },
+            },
+          },
+        });
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'te-recv',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'received',
+        });
+      });
+    });
+
     describe('#727 정적 misfire 가드 (movement)', () => {
       it('gate가 speed=0 노출하면 movement-static-speed로 skip + 발사 안 함', async () => {
         mockCheckGate.mockResolvedValue({

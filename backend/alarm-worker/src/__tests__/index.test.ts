@@ -1134,6 +1134,14 @@ describe('validatePushAck (#566 P2a)', () => {
     const ack = validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'skipped', reason: 123 });
     expect(ack).toEqual({ pushId: 'p1', token: 'tok', outcome: 'skipped' });
   });
+
+  it('#1370 L5 — accepts received outcome', () => {
+    expect(validatePushAck({ pushId: 'p1', token: 'tok', outcome: 'received' })).toEqual({
+      pushId: 'p1',
+      token: 'tok',
+      outcome: 'received',
+    });
+  });
 });
 
 describe('POST /push/ack (#566 P2a)', () => {
@@ -1198,6 +1206,63 @@ describe('POST /push/ack (#566 P2a)', () => {
     const res = await post('/push/ack', { pushId: 'p1', token: 'tok', outcome: 'fired' }, env);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, deleted: false, reason: 'not-found' });
+  });
+
+  describe('#1370 L5 — received outcome', () => {
+    it('token 매칭 시 stamped=true, pending entry는 보존', async () => {
+      await kv.put(
+        pendingKey('p1'),
+        JSON.stringify({
+          pushId: 'p1',
+          token: 'real-token',
+          stationName: '어린이대공원',
+          phase: 'early',
+        }),
+      );
+      const env = makeEnv({ PENDING_PUSHES: kv as unknown as KVNamespace });
+      const res = await post(
+        '/push/ack',
+        { pushId: 'p1', token: 'real-token', outcome: 'received' },
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, stamped: true });
+      // pending entry는 보존 — fired/skipped 후속 ack가 P2c fallback 결정에 사용.
+      expect(kv.store.has(pendingKey('p1'))).toBe(true);
+      // received: stamp 적재.
+      expect(kv.store.has('received:p1')).toBe(true);
+    });
+
+    it('token 불일치 시 stamped=false, reason=token-mismatch', async () => {
+      await kv.put(
+        pendingKey('p1'),
+        JSON.stringify({ pushId: 'p1', token: 'real-token', stationName: '강남', phase: 'early' }),
+      );
+      const env = makeEnv({ PENDING_PUSHES: kv as unknown as KVNamespace });
+      const res = await post(
+        '/push/ack',
+        { pushId: 'p1', token: 'attacker', outcome: 'received' },
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ok: true,
+        stamped: false,
+        reason: 'token-mismatch',
+      });
+      expect(kv.store.has('received:p1')).toBe(false);
+    });
+
+    it('PENDING_PUSHES 미바인딩 시 stamped=false, reason=not-found', async () => {
+      const env = makeEnv();
+      const res = await post(
+        '/push/ack',
+        { pushId: 'p1', token: 'tok', outcome: 'received' },
+        env,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ ok: true, stamped: false, reason: 'not-found' });
+    });
   });
 });
 
