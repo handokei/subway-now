@@ -344,11 +344,12 @@ export interface ScheduledDeps {
   generatePushId?: () => string;
 }
 
-export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
-  const now = deps.now?.() ?? Date.now();
-  const log = deps.log ?? (() => undefined);
-  const generatePushId = deps.generatePushId ?? (() => crypto.randomUUID());
-  const stats: ScheduledStats = {
+/**
+ * #1389 — `ScheduledStats` 빈 초기값 생성. runScheduled 시작 시점 + 테스트 wrapper에서 공유한다
+ * (SonarCloud CPD 방지). 새 카운터 추가 시 본 함수 1곳만 갱신하면 invariant 자동 동기화.
+ */
+export function createInitialScheduledStats(): ScheduledStats {
+  return {
     scanned: 0,
     polled: 0,
     pushed: 0,
@@ -384,6 +385,13 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       'device-ahead-of-target': 0,
     },
   };
+}
+
+export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
+  const now = deps.now?.() ?? Date.now();
+  const log = deps.log ?? (() => undefined);
+  const generatePushId = deps.generatePushId ?? (() => crypto.randomUUID());
+  const stats: ScheduledStats = createInitialScheduledStats();
 
   for await (const trip of listTrips(env.TRIPS)) {
     stats.scanned += 1;

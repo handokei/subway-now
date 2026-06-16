@@ -14,6 +14,7 @@ import {
   SUBSURFACE_ETA_MISSING_TOLERANCE,
   VANISH_RE_ATTACH_THRESHOLD,
   arvlCdFireKey,
+  createInitialScheduledStats,
   estimateArrivalFromPosition,
   estimateBoardingLockArrival,
   evaluateArvlCdFireGate,
@@ -4803,21 +4804,39 @@ function emptyArrivalsSeoul(): SeoulArrivalClient {
   });
 }
 
+/**
+ * #1389 fire site integration helper — kv setup + putTrip + (옵션 series seed) + runScheduled를 1줄로.
+ * Sonar CPD 방지(각 사이트별로 동일 boilerplate 반복 차단). 호출자는 trip + seoul + 선택적 seed 함수만 전달.
+ */
+async function runConsistencyCycle(input: {
+  trip: Trip;
+  seoul: SeoulArrivalClient;
+  seedSeries?: (kv: InMemoryKV, token: string) => Promise<void>;
+  pushId?: string;
+}): Promise<{ stats: ScheduledStats; kv: InMemoryKV; apnsFetch: ReturnType<typeof vi.fn> }> {
+  const kv = new InMemoryKV();
+  await putTrip(kv as unknown as KVNamespace, input.trip);
+  if (input.seedSeries) await input.seedSeries(kv, input.trip.token);
+  const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+  const stats = await runScheduled(makeEnv(kv), {
+    seoul: input.seoul,
+    apnsConfig,
+    apnsHosts: APNS_HOSTS,
+    fetchImpl: apnsFetch as unknown as typeof fetch,
+    now: () => NOW,
+    ...(input.pushId ? { generatePushId: () => input.pushId! } : {}),
+  });
+  return { stats, kv, apnsFetch };
+}
+
 describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
   describe('Site 1: arvlCd fire', () => {
     it('정합성 위반(motion=stationary, device 1 hop behind) → push 0건 + pushConsistencyBlocked++', async () => {
-      const trip = makeArvlFireTrip();
-      const kv = new InMemoryKV();
-      await putTrip(kv as unknown as KVNamespace, trip);
-      await seedStationaryBehindSeries(kv, trip.token);
-      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-      const stats = await runScheduled(makeEnv(kv), {
+      const { stats, kv, apnsFetch } = await runConsistencyCycle({
+        trip: makeArvlFireTrip(),
         seoul: makeArvlCdFireSeoul('중곡', 0, 1),
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: apnsFetch as unknown as typeof fetch,
-        now: () => NOW,
-        generatePushId: () => 'p-cons-arvl-blocked',
+        seedSeries: seedStationaryBehindSeries,
+        pushId: 'p-cons-arvl-blocked',
       });
       expect(stats.arvlCdFireSuccess).toBe(0);
       expect(stats.pushConsistencyBlocked).toBeGreaterThanOrEqual(1);
@@ -4828,18 +4847,11 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
     });
 
     it('정상 trip(motion=automotive, device==target) → 발사 1건 (회귀 0건)', async () => {
-      const trip = makeArvlFireTrip();
-      const kv = new InMemoryKV();
-      await putTrip(kv as unknown as KVNamespace, trip);
-      await seedMovingAtTargetSeries(kv, trip.token);
-      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-      const stats = await runScheduled(makeEnv(kv), {
+      const { stats, apnsFetch } = await runConsistencyCycle({
+        trip: makeArvlFireTrip(),
         seoul: makeArvlCdFireSeoul('중곡', 0, 1),
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: apnsFetch as unknown as typeof fetch,
-        now: () => NOW,
-        generatePushId: () => 'p-cons-arvl-ok',
+        seedSeries: seedMovingAtTargetSeries,
+        pushId: 'p-cons-arvl-ok',
       });
       expect(stats.arvlCdFireSuccess).toBe(1);
       expect(stats.pushConsistencyBlocked).toBe(0);
@@ -4848,20 +4860,27 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
   });
 
   describe('Site 2: vanish-fallback fire', () => {
+    /** motion 지정 + (선택) device currentStationName으로 vanish fallback 시리즈 시드. */
+    function seedVanishSeries(
+      motion: PositionPoint['motion'],
+      deviceStation: string,
+    ): (kv: InMemoryKV, token: string) => Promise<void> {
+      return async (kv, token) => {
+        const series: PositionPoint[] = [
+          { lat: 0, lng: 0, accuracy: 10, ts: NOW - 40_000, motion, currentStationName: deviceStation },
+          { lat: 0, lng: 0, accuracy: 10, ts: NOW - 20_000, motion, currentStationName: deviceStation },
+          { lat: 0, lng: 0, accuracy: 10, ts: NOW, motion, currentStationName: deviceStation },
+        ];
+        await kv.put(`pos:${token}`, JSON.stringify(series));
+      };
+    }
+
     it('정합성 위반(stationary 가드 이미 #1386이 차단) → 정합성 게이트 진입 전 motion 가드가 먼저 막음', async () => {
-      // 이 케이스는 #1386 motion 가드가 fire 함수 진입 전(handleEtaMissing 안)에서 advance를 막으므로
-      // 정합성 게이트는 호출되지 않는다. vanishFallbackMotionGateBlocked가 증가하는 것이 정상.
-      const trip = makeVanishTrip();
-      const kv = new InMemoryKV();
-      await putTrip(kv as unknown as KVNamespace, trip);
-      await seedStationaryBehindSeries(kv, trip.token);
-      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-      const stats = await runScheduled(makeEnv(kv), {
+      // #1386 motion 가드가 fire 함수 진입 전(handleEtaMissing)에서 advance를 막아 정합성 게이트는 호출 안 됨.
+      const { stats, apnsFetch } = await runConsistencyCycle({
+        trip: makeVanishTrip(),
         seoul: emptyArrivalsSeoul(),
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: apnsFetch as unknown as typeof fetch,
-        now: () => NOW,
+        seedSeries: seedStationaryBehindSeries,
       });
       expect(stats.vanishFallbackFired).toBe(0);
       expect(stats.vanishFallbackMotionGateBlocked).toBeGreaterThanOrEqual(1);
@@ -4871,9 +4890,10 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
     it('정합성 게이트 §10 차단(motion=automotive + device 2 hops behind target) → vanish-fallback fire 0건 + pushConsistencyBlocked++', async () => {
       // device=용마산, target=군자 → hops=2. motion=automotive로 #1386 motion 가드 통과,
       // 정합성 게이트 §10(hops>=2 device-station-mismatch) 차단.
-      const segLong = ['용마산', '중곡', '군자', '어린이대공원'];
       const trip = makeLockTripFixture('cons-vanish-mismatch', {
-        boardingLock: makeBoardingLock({ segmentStations: segLong }),
+        boardingLock: makeBoardingLock({
+          segmentStations: ['용마산', '중곡', '군자', '어린이대공원'],
+        }),
         lastTrackedArrivalEpoch: NOW - (FALLBACK_HOP_SEC + 10) * 1000,
         consecutiveEtaMissing: VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES - 1,
         waypoints: [
@@ -4882,21 +4902,10 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
           { stationName: '어린이대공원', line: '7', kind: 'destination' },
         ],
       });
-      const kv = new InMemoryKV();
-      await putTrip(kv as unknown as KVNamespace, trip);
-      const series: PositionPoint[] = [
-        { lat: 0, lng: 0, accuracy: 10, ts: NOW - 40_000, motion: 'automotive', currentStationName: '용마산' },
-        { lat: 0, lng: 0, accuracy: 10, ts: NOW - 20_000, motion: 'automotive', currentStationName: '용마산' },
-        { lat: 0, lng: 0, accuracy: 10, ts: NOW, motion: 'automotive', currentStationName: '용마산' },
-      ];
-      await kv.put(`pos:${trip.token}`, JSON.stringify(series));
-      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-      const stats = await runScheduled(makeEnv(kv), {
+      const { stats } = await runConsistencyCycle({
+        trip,
         seoul: emptyArrivalsSeoul(),
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: apnsFetch as unknown as typeof fetch,
-        now: () => NOW,
+        seedSeries: seedVanishSeries('automotive', '용마산'),
       });
       expect(stats.vanishFallbackFired).toBe(0);
       expect(stats.pushConsistencyBlocked).toBeGreaterThanOrEqual(1);
@@ -4905,7 +4914,6 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
 
     it('회귀 0건(motion=unknown + hops=1) — 정합성 게이트 §9 allow → vanish-fallback fire 발사 정상', async () => {
       // motion=unknown은 #1386 가드 통과 + 정합성 게이트 §9 (hops==1 && motion!=stationary) allow.
-      // 즉 옳은 trip의 fallback advance가 차단되지 않음을 보장.
       const trip = makeLockTripFixture('cons-vanish-ok', {
         boardingLock: makeBoardingLock({ segmentStations: CONSISTENCY_SEG }),
         lastTrackedArrivalEpoch: NOW - (FALLBACK_HOP_SEC + 10) * 1000,
@@ -4915,24 +4923,12 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
           { stationName: '군자', line: '7', kind: 'destination' },
         ],
       });
-      const kv = new InMemoryKV();
-      await putTrip(kv as unknown as KVNamespace, trip);
-      const series: PositionPoint[] = [
-        { lat: 0, lng: 0, accuracy: 10, ts: NOW - 40_000, motion: 'unknown', currentStationName: '용마산' },
-        { lat: 0, lng: 0, accuracy: 10, ts: NOW - 20_000, motion: 'unknown', currentStationName: '용마산' },
-        { lat: 0, lng: 0, accuracy: 10, ts: NOW, motion: 'unknown', currentStationName: '용마산' },
-      ];
-      await kv.put(`pos:${trip.token}`, JSON.stringify(series));
-      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-      const stats = await runScheduled(makeEnv(kv), {
+      const { stats } = await runConsistencyCycle({
+        trip,
         seoul: emptyArrivalsSeoul(),
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: apnsFetch as unknown as typeof fetch,
-        now: () => NOW,
+        seedSeries: seedVanishSeries('unknown', '용마산'),
       });
       expect(stats.vanishFallbackFired).toBe(1);
-      // 정합성 게이트는 합법적인 advance를 차단하지 않음 (회귀 0건 보장).
       expect(stats.pushConsistencyBlocked).toBe(0);
     });
   });
@@ -4943,30 +4939,21 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
         boardingLock: makeBoardingLock({ segmentStations: CONSISTENCY_SEG }),
         lastTrackedArrivalEpoch: NOW + 120 * 1000, // 임계 초과 변동 보장 baseline
       });
-      const kv = new InMemoryKV();
-      await putTrip(kv as unknown as KVNamespace, trip);
-      await seedStationaryBehindSeries(kv, trip.token);
       // arvlCd=null + arrival 30s — estimate.arrived=false 경로 → maybeReschedulePush 호출.
-      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-      const stats = await runScheduled(makeEnv(kv), {
+      const { stats } = await runConsistencyCycle({
+        trip,
         seoul: makeArvlCdFireSeoul('중곡', 30, null),
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: apnsFetch as unknown as typeof fetch,
-        now: () => NOW,
+        seedSeries: seedStationaryBehindSeries,
       });
       expect(stats.pushConsistencyBlocked).toBeGreaterThanOrEqual(1);
-      // reschedule push 발사 0건. 다른 경로 push(LA 등)는 통과될 수 있으므로 전체 pushed가 아닌 reschedule 직접 검증은 어려움 —
-      // 대신 정합성 차단 reason 검증으로 차단을 확정.
       expect(stats.pushConsistencyBlockedByReason['motion-stationary-far-behind']).toBeGreaterThanOrEqual(1);
     });
   });
 
   describe('Site 4: lockless-intermediate fire', () => {
-    it('정합성 위반(WiFi mismatch + stationary 합성) → 차단', async () => {
-      // lockless 경로는 lock=undefined → hops=null → 기본 fallback 허용. 그러나 motion 가드 자체가 stationary 차단.
-      // 본 사이트의 정합성 게이트 보강은 주로 'WiFi mismatch' 보강 — 본 PR에서 WiFi는 항상 null이라
-      // 본 테스트는 motion 가드가 lockless 경로에서도 정합성 차단을 작동시키는지 확인하는 형태.
+    it('motion 가드가 stationary를 차단 → 정합성 게이트는 호출 안 됨 (회귀 0건)', async () => {
+      // lockless 경로는 lock=undefined → hops=null → 정합성 게이트 §5 fallback allow.
+      // 본 시나리오는 motion 가드만 활성. 정합성 게이트가 motion 차단을 우회하지 않음을 보장.
       const trip = makeTrip({
         token: 'cons-lockless-tok',
         waypoints: [
@@ -4975,35 +4962,19 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
         ],
         locklessStationPassed: true,
       });
-      const kv = new InMemoryKV();
-      await putTrip(kv as unknown as KVNamespace, trip);
-      // 사용자가 강남 1 hop 전(currentStationName='용마산') + stationary — motion 가드가 먼저 차단.
-      // 본 테스트는 회귀 0건 확인(차단되어 발사가 일어나지 않음).
-      const series: PositionPoint[] = [
-        { lat: 0, lng: 0, accuracy: 10, ts: NOW - 40_000, motion: 'stationary', currentStationName: '용마산' },
-        { lat: 0, lng: 0, accuracy: 10, ts: NOW - 20_000, motion: 'stationary', currentStationName: '용마산' },
-        { lat: 0, lng: 0, accuracy: 10, ts: NOW, motion: 'stationary', currentStationName: '용마산' },
-      ];
-      await kv.put(`pos:${trip.token}`, JSON.stringify(series));
-      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-      const stats = await runScheduled(makeEnv(kv), {
-        seoul: makeSeoul([
-          {
-            destination: '강남행',
-            arrivalSeconds: 30,
-            trainCode: '7246',
-            isUp: true,
-            subwayNm: '지하철2호선',
-            arvlCd: 1,
-          },
-        ]),
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: apnsFetch as unknown as typeof fetch,
-        now: () => NOW,
+      const arrivedSignal: ArrivalEntry = {
+        destination: '강남행',
+        arrivalSeconds: 30,
+        trainCode: '7246',
+        isUp: true,
+        subwayNm: '지하철2호선',
+        arvlCd: 1,
+      };
+      const { stats } = await runConsistencyCycle({
+        trip,
+        seoul: makeSeoul([arrivedSignal]),
+        seedSeries: seedStationaryBehindSeries,
       });
-      // motion 가드가 stationary를 먼저 차단 → 정합성 게이트는 호출 안 됨.
-      // (lockless 경로의 정합성 게이트는 lock=undefined → hops=null fallback이라 본 시나리오는 motion만 활성)
       expect(stats.locklessIntermediateFired).toBe(0);
       expect(stats.locklessMotionGateBlocked).toBeGreaterThanOrEqual(1);
       expect(stats.pushConsistencyBlocked).toBe(0);
@@ -5013,32 +4984,13 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
   describe('Site 5: boarding-prompt fire', () => {
     // 9단 게이트 happy path(seedHappyGateSeries)는 origin=(0,0), motion=automotive로 시드되어 있어
     // 정합성 게이트의 currentStationName이 부재(seed에 미스탬프). currentStationName=null + motion=automotive
-    // → 정합성 게이트 #4(모든 신호 null이 아님 — motion!=unknown) 통과 후 hops=null → §5 fallback allow.
-    // 따라서 happy path는 회귀 0건 (정합성 게이트가 발사를 막지 않음).
+    // → §4 통과 → hops=null → §5 fallback allow. happy path 회귀 0건.
     it('happy 9단 게이트 통과 trip → 정합성 게이트 통과 + boardingPromptFired 회귀 0건', async () => {
-      const kv = new InMemoryKV();
-      const trip = makePromptTrip();
-      await putTrip(kv as unknown as KVNamespace, trip);
-      await seedHappyGateSeries(kv, trip.token);
-      // attemptAutoLock이 사용하는 arrivals — 빈 응답으로 auto-lock 실패시켜 prompt fallback 경로 진입.
-      const seoul = new SeoulArrivalClient({
-        apiKey: 'K',
-        host: 'h',
-        now: () => NOW,
-        fetchImpl: (async () =>
-          new Response(JSON.stringify({ realtimeArrivalList: [] }), {
-            status: 200,
-          })) as unknown as typeof fetch,
+      const { stats } = await runConsistencyCycle({
+        trip: makePromptTrip(),
+        seoul: emptyArrivalsSeoul(),
+        seedSeries: seedHappyGateSeries,
       });
-      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-      const stats = await runScheduled(makeEnv(kv), {
-        seoul,
-        apnsConfig,
-        apnsHosts: APNS_HOSTS,
-        fetchImpl: apnsFetch as unknown as typeof fetch,
-        now: () => NOW,
-      });
-      // happy path에서 정합성 게이트가 prompt를 차단하지 않음.
       expect(stats.pushConsistencyBlocked).toBe(0);
     });
   });
@@ -5069,52 +5021,12 @@ describe('runScheduled — #1389 push consistency gate (5 fire sites)', () => {
  * runScheduled integration 테스트로 cover하기 어려운 edge(extraLog override 방어,
  * lock=undefined 경로, allow 경로 무카운트) 검증.
  */
-// #1389 wrapper unit test 공용 fixture — describe 외부(SonarCloud: avoid nested function declarations).
-function makeWrapperStats(): ScheduledStats {
-  return {
-    scanned: 0,
-    polled: 0,
-    pushed: 0,
-    errors: 0,
-    etaMissing: 0,
-    envCorrected: 0,
-    lockMissing: 0,
-    locklessIntermediateFired: 0,
-    locklessMotionGateBlocked: 0,
-    laPushSent: 0,
-    laPushFailed: 0,
-    laTokenCleared: 0,
-    boardingPromptEvaluated: 0,
-    boardingPromptFired: 0,
-    boardingPromptBlocked: 0,
-    phaseImminentBlocked: 0,
-    kalmanReset: 0,
-    kalmanDriftWarning: 0,
-    autoLockSuccess: 0,
-    autoLockFalsePositive: 0,
-    boardingPromptAutoDeduped: 0,
-    arvlCdFireSuccess: 0,
-    arvlCdFireDedup: 0,
-    arvlCdFireMismatch: 0,
-    vanishFallbackFired: 0,
-    vanishLocklessTakeover: 0,
-    vanishFallbackMotionGateBlocked: 0,
-    pushConsistencyBlocked: 0,
-    pushConsistencyBlockedByReason: {
-      'wifi-mismatch': 0,
-      'motion-stationary-far-behind': 0,
-      'device-station-mismatch': 0,
-      'device-ahead-of-target': 0,
-    },
-  };
-}
-
 describe('evaluatePushConsistencyForSite (#1389 wrapper)', () => {
   const target = { stationName: '중곡', line: '7' };
   const lock = { segmentStations: ['용마산', '중곡', '군자', '어린이대공원'] };
 
   it('차단(motion=stationary + hops=1) → result.allowed=false + stats 누적 + log 발사', () => {
-    const stats = makeWrapperStats();
+    const stats = createInitialScheduledStats();
     const logs: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
     const log = (msg: string, meta?: Record<string, unknown>) => {
       logs.push({ msg, meta });
@@ -5149,7 +5061,7 @@ describe('evaluatePushConsistencyForSite (#1389 wrapper)', () => {
   });
 
   it('허용(motion=automotive + hops=0) → result.allowed=true + 카운터/log 무변동', () => {
-    const stats = makeWrapperStats();
+    const stats = createInitialScheduledStats();
     const logs: Array<{ msg: string }> = [];
     const log = (msg: string) => {
       logs.push({ msg });
@@ -5174,7 +5086,7 @@ describe('evaluatePushConsistencyForSite (#1389 wrapper)', () => {
   });
 
   it('extraLog override 방어 — 호출자가 site/reason/token 키를 넣어도 wrapper 기본 값이 우선', () => {
-    const stats = makeWrapperStats();
+    const stats = createInitialScheduledStats();
     const logs: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
     const log = (msg: string, meta?: Record<string, unknown>) => {
       logs.push({ msg, meta });
@@ -5207,7 +5119,7 @@ describe('evaluatePushConsistencyForSite (#1389 wrapper)', () => {
   });
 
   it('lock=undefined → hops=null fallback → §5 allow (lockless 경로 회귀 0건)', () => {
-    const stats = makeWrapperStats();
+    const stats = createInitialScheduledStats();
     const log = () => undefined;
     const series: PositionPoint[] = [
       { lat: 0, lng: 0, accuracy: 10, ts: NOW, motion: 'walking', currentStationName: '강남' },
