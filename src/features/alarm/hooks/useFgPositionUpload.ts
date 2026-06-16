@@ -45,6 +45,11 @@ export interface UseFgPositionUploadOptions {
   tripActive: boolean;
   /** 모션 stationary 확정 여부(graceful false). payload.motion 산출용. */
   motionStationary?: boolean;
+  /**
+   * #1363 — 클라가 추정한 사용자 현재역 이름. payload `currentStationName`으로 송신되어 backend
+   * 진단 log가 `waypoint`(trip 다음 정거장)와 분리해 출력한다. 비어있으면 omit (graceful).
+   */
+  currentStationName?: string | null;
 }
 
 /**
@@ -58,6 +63,7 @@ export function useFgPositionUpload({
   accuracyMeters,
   tripActive,
   motionStationary,
+  currentStationName,
 }: UseFgPositionUploadOptions): void {
   // 마지막 업로드 시각(epoch ms). throttle 판정용. null = 미발사(첫 fix 즉시 발사).
   const lastUploadedAtRef = useRef<number | null>(null);
@@ -86,8 +92,10 @@ export function useFgPositionUpload({
       accuracy: accuracyMeters,
       ts: now,
       motionStationary: motionStationary === true,
+      // #1363 — backend log 진단 이원화용. null/빈 문자열은 fireUpload에서 omit.
+      currentStationName: currentStationName ?? undefined,
     });
-  }, [tripActive, userLocation, accuracyMeters, motionStationary]);
+  }, [tripActive, userLocation, accuracyMeters, motionStationary, currentStationName]);
 }
 
 interface FireUploadInput {
@@ -96,6 +104,8 @@ interface FireUploadInput {
   accuracy: number;
   ts: number;
   motionStationary: boolean;
+  /** #1363 — backend 진단 log 라벨링 전용. 비어있으면 payload에서 omit. */
+  currentStationName?: string;
 }
 
 /**
@@ -110,6 +120,7 @@ async function fireUpload(input: FireUploadInput): Promise<void> {
     return;
   }
   const motion: PositionMotion = input.motionStationary ? 'stationary' : 'unknown';
+  const stationName = input.currentStationName;
   void uploadPosition({
     token,
     lat: input.lat,
@@ -117,5 +128,9 @@ async function fireUpload(input: FireUploadInput): Promise<void> {
     accuracy: input.accuracy,
     ts: input.ts,
     motion,
+    // #1363 — 비어있으면 omit. 빈 문자열을 보내면 backend가 graceful drop하지만 트래픽 절감.
+    ...(typeof stationName === 'string' && stationName.length > 0
+      ? { currentStationName: stationName }
+      : {}),
   });
 }

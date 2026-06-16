@@ -383,6 +383,20 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
   return stats;
 }
 
+/**
+ * #1363 — 시리즈에서 가장 최근 `currentStationName`을 추출. log 진단(`waypoint` vs
+ * `currentStation`) 이원화 용도. 클라가 stamp한 사용자 현재 추정역 이름이고, 가장 최근 sample이
+ * 누락한 경우 직전 sample에서 backfill한다(클라가 fix마다 매번 stamp하지 않는 케이스 대응).
+ * 시리즈 전체에서 stamp가 한 번도 없으면 undefined → log 키 자체 omit (graceful).
+ */
+export function pickLatestCurrentStationName(series: readonly PositionPoint[]): string | undefined {
+  for (let i = series.length - 1; i >= 0; i--) {
+    const name = series[i].currentStationName;
+    if (typeof name === 'string' && name.length > 0) return name;
+  }
+  return undefined;
+}
+
 /** runFusionStep 반환값 — boarding-prompt / lockless-intermediate 분기에서 공통 사용. */
 interface FusionStepResult {
   /** 원본 positionSeries (호출자가 evaluateBoardingPromptGates 등에 그대로 전달). */
@@ -1420,11 +1434,15 @@ export async function runLocklessIntermediate(
   }
   // #825 — high-confidence non-APPROACHING phase면 차단 (false positive 1차).
   // 신호 부재/낮은 신뢰는 기존 동작 그대로 (회귀 없음, #834 wire 전까지 자연 skip).
+  // #1363 — log 진단 이원화. `waypoint`(trip 다음 정거장) ↔ `currentStation`(사용자 추정 현재역)
+  // 혼동 방지. 클라가 송신한 latest point의 currentStationName을 추출(있으면), log object에 동시 적재.
+  const currentStationName = pickLatestCurrentStationName(fusion.series);
   if (!phaseAllowsImminentFiring(fusion.phaseState)) {
     stats.phaseImminentBlocked += 1;
     log('lockless: phase gate blocked', {
       token: trip.token.slice(0, 8),
-      station: waypoint.stationName,
+      waypoint: waypoint.stationName,
+      ...(currentStationName !== undefined ? { currentStation: currentStationName } : {}),
       phase: fusion.phaseState?.current,
       confidence: fusion.phaseState?.confidence,
     });
@@ -1439,7 +1457,8 @@ export async function runLocklessIntermediate(
     stats.locklessMotionGateBlocked += 1;
     log('lockless: motion gate blocked (no trainCode, not moving)', {
       token: trip.token.slice(0, 8),
-      station: waypoint.stationName,
+      waypoint: waypoint.stationName,
+      ...(currentStationName !== undefined ? { currentStation: currentStationName } : {}),
       motion: fusion.posMetrics.motion,
       arvlCd: signal.arvlCd,
     });
@@ -1449,7 +1468,8 @@ export async function runLocklessIntermediate(
   const pushId = generatePushId();
   log('lockless: station-passed push', {
     token: trip.token.slice(0, 8),
-    station: waypoint.stationName,
+    waypoint: waypoint.stationName,
+    ...(currentStationName !== undefined ? { currentStation: currentStationName } : {}),
     arvlCd: signal.arvlCd,
     etaSeconds: signal.etaSeconds,
   });

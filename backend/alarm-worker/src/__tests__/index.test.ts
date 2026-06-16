@@ -1591,6 +1591,41 @@ describe('POST /position (#819)', () => {
       expect(stored[0].nearestStationDistanceM).toBeUndefined();
     });
   });
+
+  describe('#1363 — currentStationName 옵션 필드 (log 진단 이원화)', () => {
+    const BASE_POS = { token: 'tok-csn', lat: 1, lng: 2, accuracy: 5, ts: 1234, motion: 'walking' as const };
+
+    it('정상 문자열 → point.currentStationName에 set (waypoint와 구분된 log 라벨용)', async () => {
+      const env = makeKvEnv();
+      const res = await post('/position', { ...BASE_POS, currentStationName: '강남' }, env);
+      expect(res.status).toBe(200);
+      const stored = JSON.parse((await env.TRIPS.get('pos:tok-csn'))!) as Array<Record<string, unknown>>;
+      expect(stored[0].currentStationName).toBe('강남');
+    });
+
+    it('빈 문자열 → undefined로 graceful skip (payload 거부 X)', async () => {
+      const env = makeKvEnv();
+      const res = await post('/position', { ...BASE_POS, currentStationName: '' }, env);
+      expect(res.status).toBe(200);
+      const stored = JSON.parse((await env.TRIPS.get('pos:tok-csn'))!) as Array<Record<string, unknown>>;
+      expect(stored[0].currentStationName).toBeUndefined();
+    });
+
+    it('non-string → undefined로 graceful skip', async () => {
+      const env = makeKvEnv();
+      const res = await post('/position', { ...BASE_POS, currentStationName: 123 }, env);
+      expect(res.status).toBe(200);
+      const stored = JSON.parse((await env.TRIPS.get('pos:tok-csn'))!) as Array<Record<string, unknown>>;
+      expect(stored[0].currentStationName).toBeUndefined();
+    });
+
+    it('필드 없음 → undefined (회귀 없음)', async () => {
+      const env = makeKvEnv();
+      await post('/position', BASE_POS, env);
+      const stored = JSON.parse((await env.TRIPS.get('pos:tok-csn'))!) as Array<Record<string, unknown>>;
+      expect(stored[0].currentStationName).toBeUndefined();
+    });
+  });
 });
 
 describe('POST /boarding-prompt/dismiss (#819)', () => {

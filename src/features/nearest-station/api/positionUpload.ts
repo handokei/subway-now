@@ -86,6 +86,14 @@ export interface PositionUploadPayload {
    * 음수/NaN/Infinity는 backend가 series 단계에서 거부.
    */
   nearestStationDistanceM?: number;
+  /**
+   * #1363 — 클라가 산출한 "사용자 현재 추정 역" 이름. backend 진단 log(`scheduled.ts`)가
+   * `waypoint`(trip 다음 정거장)와 명시적으로 구분해 출력하기 위한 라벨링 전용 필드.
+   * 게이트/푸시 결정에는 사용되지 않는다 — 야간 RCA에서 backend 로그가 `station=중곡`이
+   * 사용자 실제 위치인지 trip 목표 정거장인지 모호하던 회귀를 해소.
+   * undefined/빈 문자열은 backend가 graceful drop (회귀 없음).
+   */
+  currentStationName?: string;
 }
 
 export interface PositionUploadResult {

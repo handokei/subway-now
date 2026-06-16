@@ -122,6 +122,11 @@ function isPositionPoint(value: unknown): value is PositionPoint {
     if (!Number.isFinite(o.nearestStationDistanceM)) return false;
     if (o.nearestStationDistanceM < 0) return false;
   }
+  // #1363 — currentStationName은 옵션. 값이 있다면 비어있지 않은 string 필수 (graceful).
+  if (o.currentStationName !== undefined) {
+    if (typeof o.currentStationName !== 'string') return false;
+    if (o.currentStationName.length === 0) return false;
+  }
   return true;
 }
 

@@ -386,6 +386,13 @@ export interface PositionPoint {
    * (mapMatchedLine/ArcM과 동일 패턴).
    */
   nearestStationDistanceM?: number;
+  /**
+   * #1363 — 클라이언트가 산출한 "사용자 현재 추정 역" 이름. backend log 진단(`scheduled.ts`)에서
+   * `waypoint`(trip 다음 정거장)과 명시적으로 구분하기 위한 필드. backend는 게이트 결정에
+   * 사용하지 않고 log 라벨링에만 활용한다 — RCA 시 사용자 실제 위치 ↔ trip 목표 정거장의 혼동을
+   * 차단한다. 미전달 시 log에서 `currentStation` 키가 omit (graceful, 회귀 없음).
+   */
+  currentStationName?: string;
 }
 
 /**

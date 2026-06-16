@@ -446,20 +446,26 @@ export function useNearestStation(
   // 지하 진입은 차/지하철 이동 확정과 동등한 unlock 트리거(사용자가 이미 지상 sticky를 떠나 이동 중).
   // CMMotionActivity native bridge가 자동차 신호를 노출하지 않아 sticky가 motion unlock 미작동
   // 상태였던 회귀 해소.
-  const sticky = useStickyStation(
-    {
-      candidate: result,
-      accuracyMeters,
-      speedMps,
-    },
-    {
+  // #1363 — sticky cascade emit 16만회 회귀 차단.
+  // useStickyStation 호출에 inline object literal을 그대로 넘기면 매 render마다 새 reference가
+  // 생성돼 effect deps([fix, motion, ...])가 매번 변경된 것으로 평가된다. 9시간 trip에서 약
+  // ~16만회 effect 재실행 → emit/AsyncStorage write/log churn. candidate identity(station.id)와
+  // 측정 가능한 숫자 신호로만 memo 키를 잡아 effect를 안정화한다.
+  const stickyFix = useMemo(
+    () => ({ candidate: result, accuracyMeters, speedMps }),
+    [result, accuracyMeters, speedMps],
+  );
+  const stickyMotion = useMemo(
+    () => ({
       automotive: inputs.barometerSubsurface === true,
       // D6 (#1212) — subsurface + tripActive를 sticky 게이트에 직접 전달.
       // automotive=subsurface 매핑은 유지하되, 지하 + trip 활성 조합에서는 unlock 보류.
       subsurface: inputs.barometerSubsurface === true,
       tripActive: inputs.tripActive === true,
-    },
+    }),
+    [inputs.barometerSubsurface, inputs.tripActive],
   );
+  const sticky = useStickyStation(stickyFix, stickyMotion);
 
   // #1317 — 지도탭 "현재위치" 명시 탭 경로. sticky lock을 즉시 비운 뒤 fresh GPS fix를 요청해
   // live fused 위치를 노출한다. refresh()만으로는 sticky override가 남아 현재역이 lock된 역
