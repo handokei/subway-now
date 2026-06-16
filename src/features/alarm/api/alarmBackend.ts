@@ -324,7 +324,10 @@ export function registerActiveTrip(
 export interface PushAckPayload {
   pushId: string;
   token: string;
-  outcome: 'fired' | 'skipped';
+  // #1370 L5 — `received` outcome은 게이트 평가 전 push 도달 stamp만 기록한다.
+  //   backend는 pending entry를 삭제하지 않고 KV에 `received:<pushId>` stamp만 저장 →
+  //   RCA 시 pushed(backend tail) vs received(stamp) 1:1 비교 가능.
+  outcome: 'received' | 'fired' | 'skipped';
   reason?: string;
 }
 

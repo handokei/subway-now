@@ -3,11 +3,15 @@ import {
   ackPending,
   buildAlarmKey,
   getPending,
+  getReceivedStamp,
   listPending,
   pendingKey,
   PENDING_TTL_SEC,
   putPending,
+  receivedKey,
+  RECEIVED_TTL_SEC,
   removePending,
+  stampReceived,
   type PendingPush,
 } from '../pendingPushes';
 
@@ -155,6 +159,98 @@ describe('pendingPushes (#566 P2a)', () => {
         deleted: false,
         reason: 'not-found',
       });
+    });
+  });
+
+  describe('stampReceived / getReceivedStamp (#1370 L5)', () => {
+    it('receivedKey: received: 접두어를 붙인다', () => {
+      expect(receivedKey('abc-def')).toBe('received:abc-def');
+    });
+
+    it('RECEIVED_TTL_SEC = 3600 (1시간)', () => {
+      expect(RECEIVED_TTL_SEC).toBe(60 * 60);
+    });
+
+    it('token 매칭 시 stamp 적재 + pending entry는 보존 + stamped=true', async () => {
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p1', token: 'devicetoken-hex', stationName: '강남', phase: 'early' }),
+      );
+      const result = await stampReceived(
+        kv as unknown as KVNamespace,
+        'p1',
+        'devicetoken-hex',
+        1_700_000_001_000,
+      );
+      expect(result).toEqual({ stamped: true });
+      expect(kv.store.has('pending:p1')).toBe(true);
+      const entry = kv.store.get('received:p1');
+      expect(entry).toBeDefined();
+      const parsed = JSON.parse(entry!.value) as { pushId: string; receivedAt: number; stationName: string; phase: string };
+      expect(parsed.pushId).toBe('p1');
+      expect(parsed.receivedAt).toBe(1_700_000_001_000);
+      expect(parsed.stationName).toBe('강남');
+      expect(parsed.phase).toBe('early');
+    });
+
+    it('token 불일치면 stamp 미적재 + reason=token-mismatch', async () => {
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p1', token: 'real-token' }),
+      );
+      const result = await stampReceived(
+        kv as unknown as KVNamespace,
+        'p1',
+        'attacker',
+        Date.now(),
+      );
+      expect(result).toEqual({ stamped: false, reason: 'token-mismatch' });
+      expect(kv.store.has('received:p1')).toBe(false);
+    });
+
+    it('미존재 pushId는 reason=not-found', async () => {
+      const result = await stampReceived(
+        kv as unknown as KVNamespace,
+        'missing',
+        'tok',
+        Date.now(),
+      );
+      expect(result).toEqual({ stamped: false, reason: 'not-found' });
+    });
+
+    it('kv === undefined면 reason=not-found', async () => {
+      expect(await stampReceived(undefined, 'p1', 'tok', Date.now())).toEqual({
+        stamped: false,
+        reason: 'not-found',
+      });
+    });
+
+    it('getReceivedStamp: stamp 존재 시 parsed entry 반환', async () => {
+      await putPending(
+        kv as unknown as KVNamespace,
+        makeEntry({ pushId: 'p1', token: 'tok', stationName: '시청', phase: 'imminent' }),
+      );
+      await stampReceived(kv as unknown as KVNamespace, 'p1', 'tok', 1_700_000_500_000);
+      const stamp = await getReceivedStamp(kv as unknown as KVNamespace, 'p1');
+      expect(stamp).toEqual({
+        pushId: 'p1',
+        receivedAt: 1_700_000_500_000,
+        stationName: '시청',
+        phase: 'imminent',
+      });
+    });
+
+    it('getReceivedStamp: stamp 없으면 null', async () => {
+      expect(await getReceivedStamp(kv as unknown as KVNamespace, 'missing')).toBeNull();
+    });
+
+    it('getReceivedStamp: 손상된 JSON은 null', async () => {
+      await kv.put('received:p1', '{broken');
+      expect(await getReceivedStamp(kv as unknown as KVNamespace, 'p1')).toBeNull();
+    });
+
+    it('getReceivedStamp: kv === undefined면 null', async () => {
+      expect(await getReceivedStamp(undefined, 'p1')).toBeNull();
     });
   });
 });

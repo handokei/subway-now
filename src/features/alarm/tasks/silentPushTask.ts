@@ -536,7 +536,7 @@ function buildIntermediateContent(stationName: string): { title: string; body: s
 function ackOutcome(
   pushId: string | undefined,
   token: string | null,
-  outcome: 'fired' | 'skipped',
+  outcome: 'received' | 'fired' | 'skipped',
   reason?: string,
 ): void {
   if (!pushId || !token) return;
@@ -586,6 +586,19 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     const receivedAt = Date.now();
     addDomainBreadcrumb('push', 'silent-push', { kind: payload.kind ?? 'fire' });
     const apnsToken = await loadApnsToken();
+
+    // #1370 L5 — silent push 도달률 observability stamp.
+    //
+    // 게이트 평가 이전, payload가 유효한 시점에 도달 신호를 backend로 보낸다.
+    // backend는 KV에 `received:<pushId>` stamp만 적재하고 pending entry는 보존 — 후속
+    // fired/skipped ack가 P2c fallback 결정을 그대로 처리한다.
+    //
+    // 효과: backend tail의 `reschedule push → 어린이대공원` pushed 이벤트와 device received
+    // stamp를 1:1 비교 가능. stamp 부재 = APNs 전달 실패 또는 OS suspend로 task 미시작.
+    //
+    // pushId/token 둘 다 있어야 임의 echo 차단 정책을 지킬 수 있으므로 ackOutcome과 동일하게
+    // 누락 시 skip한다 (구 backend 호환 경로).
+    ackOutcome(payload.pushId, apnsToken, 'received');
 
     // reschedule 분기 (#725). 백엔드는 사전 예약 알람(#584) 시각을 정정하려고 이 push를 보낸다.
     // - 수신 신호는 받았다 알리고(`lastReceivedAt` 갱신)

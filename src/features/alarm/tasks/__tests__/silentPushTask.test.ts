@@ -193,6 +193,18 @@ import {
 
 const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
 
+// #1370 L5 — sendPushAck 호출 매칭 헬퍼. ack outcome별로 같은 token/pushId 페이로드를 반복 검증하는
+// 패턴이 다발해 SonarCloud 중복으로 잡힘. 호출 한 줄로 압축해 중복 차단.
+function ackCall(
+  pushId: string,
+  outcome: 'received' | 'fired' | 'skipped',
+  reason?: string,
+): { pushId: string; token: string; outcome: string; reason?: string } {
+  return reason === undefined
+    ? { pushId, token: DEFAULT_APNS_TOKEN, outcome }
+    : { pushId, token: DEFAULT_APNS_TOKEN, outcome, reason };
+}
+
 const destStation = { id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 };
 
 /**
@@ -1276,11 +1288,7 @@ describe('silentPushTask', () => {
         await handleSilentPush(
           payload({ kind: 'destination', phase: 'imminent', pushId: 'p-fire' }),
         );
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'p-fire',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'fired',
-        });
+        expect(mockSendPushAck).toHaveBeenCalledWith(ackCall('p-fire', 'fired'));
       });
 
       it('게이트 fail 시 sendPushAck(outcome=skipped, reason=게이트사유)', async () => {
@@ -1293,12 +1301,9 @@ describe('silentPushTask', () => {
         await handleSilentPush(
           payload({ kind: 'destination', phase: 'imminent', pushId: 'p-gate' }),
         );
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'p-gate',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'skipped',
-          reason: 'gate-out-of-range',
-        });
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-gate', 'skipped', 'gate-out-of-range'),
+        );
       });
 
       it('FIRED_ALARMS dedup 시 sendPushAck(outcome=skipped, reason=dedup-already-fired)', async () => {
@@ -1306,12 +1311,9 @@ describe('silentPushTask', () => {
         await handleSilentPush(
           payload({ kind: 'destination', phase: 'imminent', pushId: 'p-dedup' }),
         );
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'p-dedup',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'skipped',
-          reason: 'dedup-already-fired',
-        });
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-dedup', 'skipped', 'dedup-already-fired'),
+        );
       });
 
       // #1367 — hopIndex>=1이면 alarmKey가 `phase:station#n` 형식이라 default(0) dedup과 collide하지 않는다.
@@ -1361,12 +1363,9 @@ describe('silentPushTask', () => {
             pushId: 'p-kind',
           }),
         });
-        expect(mockSendPushAck).toHaveBeenCalledWith({
-          pushId: 'p-kind',
-          token: DEFAULT_APNS_TOKEN,
-          outcome: 'skipped',
-          reason: 'payload-missing-kind',
-        });
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-kind', 'skipped', 'payload-missing-kind'),
+        );
       });
 
       it('pushId 누락(구 백엔드)이면 ACK skip', async () => {
@@ -1397,6 +1396,94 @@ describe('silentPushTask', () => {
         );
         expect(mockScheduleNotificationAsync).toHaveBeenCalled();
         expect(mockSendPushAck).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('#1370 L5 — silent push 도달 stamp (received outcome)', () => {
+      it('standard payload + pushId + apnsToken 모두 있으면 gate 평가 전 received ack 발사', async () => {
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-recv' }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith(ackCall('p-recv', 'received'));
+        // 후속 outcome(fired) ack도 그대로 발사 — 별개 호출.
+        expect(mockSendPushAck).toHaveBeenCalledWith(ackCall('p-recv', 'fired'));
+      });
+
+      it('게이트 fail로 outcome=skipped여도 received ack는 먼저 발사', async () => {
+        mockCheckGate.mockResolvedValue({
+          pass: false,
+          reason: 'out-of-range',
+          distanceM: 5_000,
+          thresholdM: 400,
+        });
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-recv-skip' }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith(ackCall('p-recv-skip', 'received'));
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-recv-skip', 'skipped', 'gate-out-of-range'),
+        );
+      });
+
+      it('pushId 없으면 received ack도 skip (구 backend 호환)', async () => {
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockSendPushAck).not.toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: 'received' }),
+        );
+      });
+
+      it('apnsToken null이면 received ack도 skip', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return null;
+          return null;
+        });
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', pushId: 'p-no-tok' }),
+        );
+        expect(mockSendPushAck).not.toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: 'received' }),
+        );
+      });
+
+      it('reschedule payload도 received ack 발사', async () => {
+        await handleSilentPush({
+          data: {
+            data: {
+              data: {
+                kind: 'reschedule',
+                nextStation: '사가정',
+                newArrivalTimeEpoch: Date.now() + 60_000,
+                trainCode: '7610',
+                pushId: 'rs-recv',
+              },
+            },
+          },
+        });
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'rs-recv',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'received',
+        });
+      });
+
+      it('trip-ended payload도 received ack 발사', async () => {
+        await handleSilentPush({
+          data: {
+            data: {
+              data: {
+                kind: 'trip-ended',
+                reason: 'expired',
+                pushId: 'te-recv',
+              },
+            },
+          },
+        });
+        expect(mockSendPushAck).toHaveBeenCalledWith({
+          pushId: 'te-recv',
+          token: DEFAULT_APNS_TOKEN,
+          outcome: 'received',
+        });
       });
     });
 
