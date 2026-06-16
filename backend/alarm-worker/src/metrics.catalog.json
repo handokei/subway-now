@@ -156,6 +156,13 @@
       "format": "histogram",
       "display": "numeric",
       "description": "#1174 Epic C B5 — server BffProgressResponse.waypointIndex와 local stationProgressEstimator(Stage 1-3) 결과의 arc-index 차이 절댓값(|serverIdx - estimatorIdx|, 단위=hop). 1주 baseline 운영으로 P50/P95 산출 → B5(server progress) optional→required 승격 시 P95 임계 결정 근거. Phase 4 결정 게이트 아님 — 운영 측정 KPI(운영 임계는 P95 baseline 확정 후 별도 const로 카탈로그에 추가)."
+    },
+    {
+      "key": "pushConsistencyBlocked",
+      "constantName": "PUSH_CONSISTENCY_BLOCKED",
+      "format": "rate",
+      "display": "percentage",
+      "description": "#1389 — backend 발사 사이트(arvlCd / vanish-fallback / reschedule / lockless-intermediate / boarding-prompt)에서 evaluatePushConsistency가 차단(allowed=false)한 비율. hit=차단된 push 수, total=평가된 push 수. 사용자 device 신호(currentStationName / motion / WiFi)와 backend target waypoint가 모순될 때 차단. reason별 sub-counter는 stats(pushConsistencyBlockedByReason)로 분리 적재. 운영 KPI(Phase 4 결정 게이트 아님) — 정지 trip false push 회귀 차단 효과 측정."
     }
   ]
 }
