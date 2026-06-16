@@ -319,6 +319,29 @@ app.post('/trips', async (c) => {
   const incoming = validateTrip(body);
   if (!incoming) return c.json({ error: 'invalid_trip' }, 400);
 
+  // #1366 Layer 3 — incoming boardingLock metadata cross-validation.
+  // Frontend가 환승 hop 진입 시 store 업데이트 race로 trainCode/line(새 leg) +
+  // segmentStations(이전 leg) 조합의 stale metadata를 전송하면 cron에서
+  // "trainCode not found in arrivals" 회귀 → consecutiveEtaMissing 누적 → trip auto-end.
+  // waypoint와의 (line, stationName) 일치를 검사해 불일치하면 boardingLock 필드만 drop —
+  // trip 본체는 그대로 받아 backend는 기존 anchor waypoint 폴링으로 fallback.
+  if (
+    incoming.boardingLock &&
+    !isBoardingLockConsistentWithWaypoints(incoming.boardingLock, incoming.waypoints)
+  ) {
+    console.log(
+      JSON.stringify({
+        msg: 'boarding-lock: rejected (stale metadata, line/segment mismatch)',
+        tokenPrefix: tokenPrefix(incoming.token),
+        lockTrainCode: incoming.boardingLock.trainCode,
+        lockLine: incoming.boardingLock.line,
+        lockFirstSegment: incoming.boardingLock.segmentStations[0],
+        waypointLines: incoming.waypoints.map((w) => w.line).slice(0, 4),
+      }),
+    );
+    incoming.boardingLock = undefined;
+  }
+
   // #578/#704: 디바이스가 동일 trip을 반복 POST해도(예: GPS update마다 register, 또는 cold restart
   // 후 같은 trip 재등록) backend가 이미 advance한 waypoints / 추적 baseline을 덮어쓰지 않는다.
   //
@@ -1273,6 +1296,31 @@ export function evaluateSameSession(existing: Trip, incoming: Trip): boolean {
     return existingCode === incomingCode;
   }
   return Math.abs(existing.createdAt - incoming.createdAt) <= SESSION_DRIFT_WINDOW_MS;
+}
+
+/**
+ * #1366 Layer 3 — boardingLock cross-validation (POST /trips merge 시점).
+ *
+ * Frontend가 환승 hop 진입 시 store 업데이트 race로 새 line의 trainCode를 직전 leg의
+ * segmentStations와 결합해 stale metadata로 전송하는 케이스가 관측됐다
+ * (item 4 8:33 환승역 즉시 재탑승 trip — lock.line='7' + waypoints는 전부 2호선).
+ *
+ * 게이트: lock.line이 incoming.waypoints의 어느 waypoint.line과도 일치하지 않으면
+ * lock metadata는 거짓 — backend가 채택하지 않고 lock 필드만 drop한다 (trip 본체는 살림).
+ *
+ * 좁은 (stationName + line) 매칭 대신 line-level 매칭만 보는 이유:
+ *  - Lock의 segmentStations[0]은 사용자가 탑승한 출발역. waypoints는 transfer/destination
+ *    anchor만 포함하므로 출발역이 waypoint에 직접 등장하지 않을 수 있다.
+ *  - 사용자가 실제 탑승한 line은 반드시 trip route의 어딘가에 등장해야 한다 — 등장하지
+ *    않는다면 stale metadata로 단정한다.
+ *
+ * waypoints가 비어 있으면 (validateTrip이 미리 차단) false로 평가된다.
+ */
+export function isBoardingLockConsistentWithWaypoints(
+  lock: BoardingLockMeta,
+  waypoints: Trip['waypoints'],
+): boolean {
+  return waypoints.some((wp) => wp.line === lock.line);
 }
 
 /**

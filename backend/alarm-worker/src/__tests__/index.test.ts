@@ -363,6 +363,11 @@ describe('POST /trips — boardingLock merge (#585)', () => {
       ...base(),
       token: 'tok-585',
       createdAt: CREATED,
+      // #1366: lock 검증을 통과하도록 lock.line(='7')과 일치하는 waypoint를 포함.
+      waypoints: [
+        { stationName: '군자', line: '7', kind: 'transfer' },
+        { stationName: '강남', line: '2', kind: 'destination' },
+      ],
     };
     if (lockOverride !== null) {
       body.boardingLock = {
@@ -448,6 +453,11 @@ describe('POST /trips — server-set auto-lock 보존 (#916 follow-up A)', () =>
       ...base(),
       token: TOKEN,
       createdAt: CREATED,
+      // #1366: lock validation 통과 — lock.line='7'과 일치하는 waypoint 포함.
+      waypoints: [
+        { stationName: '군자', line: '7', kind: 'transfer' },
+        { stationName: '강남', line: '2', kind: 'destination' },
+      ],
       ...overrides,
     };
   }
@@ -2836,5 +2846,144 @@ describe('GET /trips/:tripToken/status (#1339 launch reconciliation)', () => {
       'status',
       'tripToken',
     ]);
+  });
+});
+
+// #1366 Layer 3 — POST /trips boardingLock metadata cross-validation.
+// Frontend가 환승 hop 진입 시 race로 trainCode/line(새 leg) + segmentStations(이전 leg)
+// stale 결합으로 전송하면 cron "trainCode not found" → consecutiveEtaMissing → trip auto-end.
+// waypoint와 (line, stationName) 일치를 검사해 불일치하면 boardingLock 필드만 drop, trip 본체는 살린다.
+describe('POST /trips — #1366 boardingLock metadata cross-validation', () => {
+  const CREATED = 1_700_000_000_000;
+
+  function bodyWithLock(
+    lock: Record<string, unknown>,
+    waypoints: Array<Record<string, unknown>>,
+  ): Record<string, unknown> {
+    return {
+      ...base(),
+      token: 'tok-1366',
+      createdAt: CREATED,
+      waypoints,
+      boardingLock: {
+        trainCode: 'TC',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: CREATED,
+        segmentStations: ['건대입구', '성수'],
+        expiresAt: FUTURE,
+        ...lock,
+      },
+    };
+  }
+
+  it('keeps boardingLock when first segment matches a waypoint (line + stationName)', async () => {
+    const env = makeKvEnv();
+    await post(
+      '/trips',
+      bodyWithLock(
+        {},
+        [
+          { stationName: '건대입구', line: '2', kind: 'intermediate' },
+          { stationName: '성수', line: '2', kind: 'destination' },
+        ],
+      ),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1366')) as string);
+    expect(stored.boardingLock?.trainCode).toBe('TC');
+  });
+
+  it('drops boardingLock when lock.line mismatches the waypoint at segmentStations[0]', async () => {
+    const env = makeKvEnv();
+    // lock.line='2' + segmentStations[0]='건대입구', waypoint 건대입구는 7호선 → 불일치
+    await post(
+      '/trips',
+      bodyWithLock(
+        { line: '2' },
+        [
+          { stationName: '건대입구', line: '7', kind: 'intermediate' },
+          { stationName: '뚝섬유원지', line: '7', kind: 'destination' },
+        ],
+      ),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1366')) as string);
+    expect(stored.boardingLock).toBeUndefined();
+    // trip 본체는 살아 있어야 한다 — backend는 anchor 폴링으로 fallback
+    expect(stored.token).toBe('tok-1366');
+    expect(stored.waypoints).toHaveLength(2);
+  });
+
+  it('drops boardingLock when lock.line is absent from every waypoint (stale leg)', async () => {
+    const env = makeKvEnv();
+    // lock.line='7' but all waypoints are line='2' — frontend race(7→2 환승) 시뮬레이션
+    await post(
+      '/trips',
+      bodyWithLock(
+        { line: '7', segmentStations: ['용마산', '중곡'] },
+        [
+          { stationName: '강남', line: '2', kind: 'intermediate' },
+          { stationName: '잠실', line: '2', kind: 'destination' },
+        ],
+      ),
+      env,
+    );
+    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1366')) as string);
+    expect(stored.boardingLock).toBeUndefined();
+    expect(stored.token).toBe('tok-1366');
+  });
+
+  it('isBoardingLockConsistentWithWaypoints — direct helper coverage', async () => {
+    const { isBoardingLockConsistentWithWaypoints } = await import('../index');
+    // line 일치하는 waypoint가 있으면 통과
+    expect(
+      isBoardingLockConsistentWithWaypoints(
+        {
+          trainCode: 'X',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: 0,
+          segmentStations: ['건대입구', '성수'],
+          expiresAt: FUTURE,
+        },
+        [
+          { stationName: '건대입구', line: '2', kind: 'intermediate' },
+          { stationName: '성수', line: '2', kind: 'destination' },
+        ],
+      ),
+    ).toBe(true);
+    // line이 어떤 waypoint와도 일치 X — stale 판정
+    expect(
+      isBoardingLockConsistentWithWaypoints(
+        {
+          trainCode: 'X',
+          line: '2',
+          subwayId: '1002',
+          selectedDepartureTime: 0,
+          segmentStations: ['건대입구'],
+          expiresAt: FUTURE,
+        },
+        [{ stationName: '건대입구', line: '7', kind: 'destination' }],
+      ),
+    ).toBe(false);
+    // 환승 경로 — fromLine waypoint(transfer)와 lock.line 일치하면 통과 (segmentStations[0]은
+    // waypoint에 직접 등장하지 않아도 OK)
+    expect(
+      isBoardingLockConsistentWithWaypoints(
+        {
+          trainCode: 'X',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: 0,
+          segmentStations: ['용마산', '중곡', '군자'],
+          expiresAt: FUTURE,
+        },
+        [
+          { stationName: '건대입구', line: '7', kind: 'transfer' },
+          { stationName: '성수', line: '2', kind: 'destination' },
+        ],
+      ),
+    ).toBe(true);
   });
 });

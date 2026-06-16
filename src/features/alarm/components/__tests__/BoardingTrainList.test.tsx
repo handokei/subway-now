@@ -753,32 +753,42 @@ describe('BoardingTrainList', () => {
     });
 
     it('정정 후 lock 해제되면 같은 row를 다시 탭해 새 pending 진입 가능 (rollback timer 해제 확인)', () => {
-      const train = makeTrain({ trainCode: 'T-RETAP' });
-      const onSelect = jest.fn();
-      const { getByTestId, rerender } = renderWithTheme(
-        <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} />,
-      );
-      fireEvent.press(getByTestId('boarding-train-row-T-RETAP'));
-      rerender(
-        <BoardingTrainList
-          arrivals={[train]}
-          line="2"
-          onSelect={onSelect}
-          lockedTrainCode="T-X"
-        />,
-      );
-      // 정정 후 lockedTrainCode가 다시 null로 풀린 상태(사용자 명시 해제 등)에서 재탭이 새 pending 진입.
-      rerender(
-        <BoardingTrainList
-          arrivals={[train]}
-          line="2"
-          onSelect={onSelect}
-          lockedTrainCode={null}
-        />,
-      );
-      fireEvent.press(getByTestId('boarding-train-row-T-RETAP'));
-      expect(onSelect).toHaveBeenCalledTimes(2);
-      expect(getByTestId('boarding-train-pending-T-RETAP')).toBeTruthy();
+      jest.useFakeTimers();
+      try {
+        const train = makeTrain({ trainCode: 'T-RETAP' });
+        const onSelect = jest.fn();
+        const { getByTestId, rerender } = renderWithTheme(
+          <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} />,
+        );
+        fireEvent.press(getByTestId('boarding-train-row-T-RETAP'));
+        rerender(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={onSelect}
+            lockedTrainCode="T-X"
+          />,
+        );
+        // 정정 후 lockedTrainCode가 다시 null로 풀린 상태(사용자 명시 해제 등)에서 재탭이 새 pending 진입.
+        rerender(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={onSelect}
+            lockedTrainCode={null}
+          />,
+        );
+        // #1366 Layer 1 — lockedTrainCode가 non-null → null로 전환되면 800ms release guard가 걸린다.
+        // 이 테스트는 guard 만료 후 재탭이 성공함을 검증.
+        act(() => {
+          jest.advanceTimersByTime(900);
+        });
+        fireEvent.press(getByTestId('boarding-train-row-T-RETAP'));
+        expect(onSelect).toHaveBeenCalledTimes(2);
+        expect(getByTestId('boarding-train-pending-T-RETAP')).toBeTruthy();
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('lockedTrainCode만 set이고 pending이 없으면 정정 신호 무시 (외부 lock — 별 채널)', () => {
@@ -991,6 +1001,115 @@ describe('BoardingTrainList', () => {
       const container = getByTestId('boarding-train-list-error');
       expect(container.props.accessibilityRole).toBe('alert');
       expect(container.props.accessibilityLabel).toBe('도착 정보를 불러올 수 없음');
+    });
+  });
+
+  // #1366 Layer 1 — release-after-tap 보호 윈도우.
+  // lockedTrainCode가 non-null → null로 전환된 직후 RELEASE_GUARD_MS(800ms) 동안 handlePress 차단.
+  // 사용자가 빠르게 하차→재탑승하는 트립(8:33 환승역 즉시 재탑) race로 stale state POST → cron
+  // "trainCode not found" 회귀를 방지.
+  describe('#1366 Layer 1 — release guard window', () => {
+    it('lockedTrainCode non-null → null 직후 탭은 무시 (guard ON)', () => {
+      jest.useFakeTimers();
+      try {
+        const train = makeTrain({ trainCode: 'T-GUARD' });
+        const onSelect = jest.fn();
+        const { getByTestId, rerender } = renderWithTheme(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={onSelect}
+            lockedTrainCode="T-GUARD"
+          />,
+        );
+        // lock 해제
+        rerender(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={onSelect}
+            lockedTrainCode={null}
+          />,
+        );
+        // 즉시 재탭 — guard로 차단되어야 함
+        fireEvent.press(getByTestId('boarding-train-row-T-GUARD'));
+        expect(onSelect).not.toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('guard 만료(800ms) 후 탭은 정상 진행', () => {
+      jest.useFakeTimers();
+      try {
+        const train = makeTrain({ trainCode: 'T-GUARD2' });
+        const onSelect = jest.fn();
+        const { getByTestId, rerender } = renderWithTheme(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={onSelect}
+            lockedTrainCode="T-GUARD2"
+          />,
+        );
+        rerender(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={onSelect}
+            lockedTrainCode={null}
+          />,
+        );
+        act(() => {
+          jest.advanceTimersByTime(900);
+        });
+        fireEvent.press(getByTestId('boarding-train-row-T-GUARD2'));
+        expect(onSelect).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('lockedTrainCode가 처음부터 null(트립 시작 직후)이면 guard 미적용 — 즉시 탭 가능', () => {
+      const train = makeTrain({ trainCode: 'T-FIRST' });
+      const onSelect = jest.fn();
+      const { getByTestId } = renderWithTheme(
+        <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} />,
+      );
+      fireEvent.press(getByTestId('boarding-train-row-T-FIRST'));
+      expect(onSelect).toHaveBeenCalledTimes(1);
+    });
+
+    it('unmount 시 guard timer cleanup (메모리 누수 방지)', () => {
+      jest.useFakeTimers();
+      try {
+        const train = makeTrain({ trainCode: 'T-UNMOUNT-GUARD' });
+        const { rerender, unmount } = renderWithTheme(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={() => {}}
+            lockedTrainCode="T-UNMOUNT-GUARD"
+          />,
+        );
+        rerender(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={() => {}}
+            lockedTrainCode={null}
+          />,
+        );
+        unmount();
+        // 후속 timer 진행 시 throw 안 함 — guard timer가 unmount cleanup으로 cleared.
+        expect(() => {
+          act(() => {
+            jest.advanceTimersByTime(2000);
+          });
+        }).not.toThrow();
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 });
