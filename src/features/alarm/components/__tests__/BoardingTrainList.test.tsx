@@ -1070,6 +1070,57 @@ describe('BoardingTrainList', () => {
       }
     });
 
+    it('연속 release(guard 만료 전 재lock → 재release)는 기존 timer를 clear하고 새로 시작', () => {
+      jest.useFakeTimers();
+      try {
+        const train = makeTrain({ trainCode: 'T-RECLR' });
+        const onSelect = jest.fn();
+        const { getByTestId, rerender } = renderWithTheme(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={onSelect}
+            lockedTrainCode="T-RECLR"
+          />,
+        );
+        // 1차 release — timer 시작
+        rerender(
+          <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} lockedTrainCode={null} />,
+        );
+        // 400ms 경과 (guard 아직 ON)
+        act(() => {
+          jest.advanceTimersByTime(400);
+        });
+        // 재lock
+        rerender(
+          <BoardingTrainList
+            arrivals={[train]}
+            line="2"
+            onSelect={onSelect}
+            lockedTrainCode="T-RECLR"
+          />,
+        );
+        // 2차 release — 기존 timer clear 후 새 timer 시작 (line 240 도달)
+        rerender(
+          <BoardingTrainList arrivals={[train]} line="2" onSelect={onSelect} lockedTrainCode={null} />,
+        );
+        // 1차 timer 만료 시각(원래 800ms)에서는 guard 여전히 ON
+        act(() => {
+          jest.advanceTimersByTime(500);
+        });
+        fireEvent.press(getByTestId('boarding-train-row-T-RECLR'));
+        expect(onSelect).not.toHaveBeenCalled();
+        // 2차 timer 만료 후엔 탭 가능
+        act(() => {
+          jest.advanceTimersByTime(400);
+        });
+        fireEvent.press(getByTestId('boarding-train-row-T-RECLR'));
+        expect(onSelect).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('lockedTrainCode가 처음부터 null(트립 시작 직후)이면 guard 미적용 — 즉시 탭 가능', () => {
       const train = makeTrain({ trainCode: 'T-FIRST' });
       const onSelect = jest.fn();

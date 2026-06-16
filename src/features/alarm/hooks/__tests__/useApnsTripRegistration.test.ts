@@ -587,6 +587,22 @@ describe('useApnsTripRegistration', () => {
       expect(args.boardingLock.segmentStations.length).toBeGreaterThan(0);
     });
 
+    it('#1366 boardingLock line ↔ route line 불일치 시 metadata skip (transient transfer state)', async () => {
+      const mismatchedLock = { ...lockFor7, boardingLine: '7' as const };
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute, // line='2'
+          destination: station,
+          nextStationEtaSeconds: 120,
+          currentStation: station,
+          boardingLock: mismatchedLock,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalled());
+      const args = mockRegister.mock.calls[0][0];
+      expect(args.boardingLock).toBeUndefined();
+    });
+
     it('boardingLock null이면 payload.boardingLock 누락', async () => {
       renderHook(() =>
         useApnsTripRegistration({
