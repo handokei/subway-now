@@ -240,6 +240,18 @@ export interface ScheduledStats extends LiveActivityStats {
    * 경로를 측정한다. #640 회귀(lock 없는 trip 발사) 방어 신호 — 정상 운영에서는 0이어야 한다.
    */
   arvlCdFireMismatch: number;
+  /**
+   * #1370 L2 — trainCode vanish 후 시간 기반 fallback advance 직전에 station-passed silent push가
+   * 발사된 누적 횟수. fallback path가 어린이대공원/군자/중곡 같은 intermediate를 "지났음" 신호 없이
+   * 통과하던 회귀(silent push 0건)를 닫는다.
+   */
+  vanishFallbackFired: number;
+  /**
+   * #1370 L3 — vanish 후 hop 시간 미경과로 lock release할 때 trip.locklessStationPassed가
+   * false였던 trip을 강제 enable해 lockless 인계 경로를 살린 횟수. 0이 아니면 사용자가 opt-in
+   * 토글 OFF였지만 vanish recovery로 매역 push가 복구된 trip 수.
+   */
+  vanishLocklessTakeover: number;
 }
 
 /**
@@ -295,6 +307,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
+    vanishFallbackFired: 0,
+    vanishLocklessTakeover: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
@@ -811,6 +825,105 @@ export async function fireArvlCdStationPush(
 }
 
 /**
+ * #1370 L2 — trainCode vanish 후 시간 기반 fallback advance 직전에 발사하는 station-passed silent push.
+ *
+ * arvlCd fire 경로와 모양은 같지만 SSOT가 다르다 — arvlCd∈{0,1}이 아니라 "trainCode 사라짐 + hop 시간
+ * 경과 = optimistic 통과"를 신호로 채택. 디바이스 payload는 `arvlCd=null` (vanish-fallback 표식)으로
+ * 보내되 phase/kind는 imminent + 원본 waypoint.kind. dedup key는 arvlCd path와 분리 namespace
+ * (`vanish:`)을 사용해 cross-pollute 차단.
+ *
+ * 실패 분기 정책: arvlCd path와 동일 — push 실패는 stats.errors++만 누적, trip 자체는 호출자
+ * (`advanceBoardingLockWaypoint`)가 계속 진행한다. 추가 cleanup 분기 없음.
+ */
+interface FireVanishFallbackStationPushInputs {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+}
+
+export const VANISH_FALLBACK_FIRE_KEY_PREFIX = 'vanish-fallback-fire:';
+
+export function vanishFallbackFireKey(
+  token: string,
+  trainCode: string,
+  stationName: string,
+): string {
+  return `${VANISH_FALLBACK_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
+}
+
+export async function fireVanishFallbackStationPush(
+  inputs: FireVanishFallbackStationPushInputs,
+): Promise<void> {
+  const { trip, waypoint, lock, env, deps, stats, now, log, generatePushId } = inputs;
+  const key = vanishFallbackFireKey(trip.token, lock.trainCode, waypoint.stationName);
+  const existing = await env.TRIPS.get(key);
+  if (existing !== null) {
+    log('vanish-fallback-fire: dedup skip', {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+    });
+    return;
+  }
+  const pushId = generatePushId();
+  log('vanish-fallback-fire: station-passed push', {
+    token: trip.token.slice(0, 8),
+    trainCode: lock.trainCode,
+    station: waypoint.stationName,
+    kind: waypoint.kind,
+  });
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendSilentPush({
+        deviceToken: trip.token,
+        payload: {
+          nextWaypoint: waypoint.stationName,
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: waypoint.kind,
+          sentAt: now,
+          pushId,
+          hopIndex: waypoint.hopIndex,
+          subsurface: trip.subsurface === true,
+          boardingLine: lock.line,
+          trainCode: lock.trainCode,
+        },
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+  );
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    stats.envCorrected += 1;
+  }
+  if (!heal.result.ok) {
+    stats.errors += 1;
+    log('vanish-fallback-fire: push failed', {
+      status: heal.result.status,
+      reason: heal.result.reason,
+      token: trip.token.slice(0, 8),
+    });
+    // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
+    return;
+  }
+  stats.pushed += 1;
+  stats.vanishFallbackFired += 1;
+  await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
+}
+
+/**
  * #902 Seam F — trainCode 사라짐 후 swap. previous+이번 미스 = VANISH_RE_ATTACH_THRESHOLD 도달 시 시도.
  * 같은 station에 같은 line 신규 trainCode가 보이면 activeLock 교체. 호출자는 swap 결과를 사용해 재estimate.
  * `runTrainCodeTracking`의 cognitive complexity 분담용 추출 (Sonar S3776).
@@ -868,9 +981,10 @@ interface HandleEtaMissingInputs {
   stats: ScheduledStats;
   now: number;
   log: Logger;
+  generatePushId: () => string;
 }
 async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
-  const { trip, waypoint, activeLock, env, deps, stats, now, log } = inputs;
+  const { trip, waypoint, activeLock, env, deps, stats, now, log, generatePushId } = inputs;
   stats.etaMissing += 1;
   const previousMissCount = trip.consecutiveEtaMissing ?? 0;
   const nextMissCount = previousMissCount + 1;
@@ -901,20 +1015,45 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
         lastTrackedArrivalEpoch: lastEpoch,
       });
       trip.consecutiveEtaMissing = 0;
+      // #1370 L2 — fallback advance 전에 station-passed silent push를 발사한다.
+      // advanceBoardingLockWaypoint는 LA update + (destination 시) trip-ended push만 발사하므로
+      // intermediate/transfer waypoint를 "지났다"는 신호가 사용자에게 도달하지 않는 회귀가 있었다
+      // (어린이대공원/군자/중곡 silent push 0건). vanish fallback도 ground truth 신호로 취급해
+      // arvlCd∈{0,1}과 동등하게 station-passed push를 발사한다.
+      if (waypoint.kind !== 'destination') {
+        await fireVanishFallbackStationPush({
+          trip,
+          waypoint,
+          lock: activeLock,
+          env,
+          deps,
+          stats,
+          now,
+          log,
+          generatePushId,
+        });
+      }
       await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log);
       return;
     }
     // hop 시간 미경과 → lock release해 lockless/boardingPrompt가 인계받도록.
     // isBoardingLockActive=false가 되는 즉시 다음 cycle의 evaluateAndMaybeFireBoardingPrompt 경로 복구.
+    // #1370 L3 — lock release 후 lockless 인계가 실제로 작동하려면 trip.locklessStationPassed가
+    // true여야 한다(`if (!isBoardingLockActive) → if (trip.locklessStationPassed && intermediate)`).
+    // OFF인 trip은 다음 cycle에서 lockMissing으로 spin하며 군자/중곡까지 push 0건. vanish fallback은
+    // 시스템이 trainCode를 잃은 상황이므로 lockless 인계를 강제 enable해 매역 push 경로를 복구한다.
     log('boarding-lock: trainCode vanished — releasing lock (hop time not yet elapsed)', {
       token: trip.token.slice(0, 8),
       trainCode: activeLock.trainCode,
       station: waypoint.stationName,
       consecutiveEtaMissing: nextMissCount,
       lastTrackedArrivalEpoch: lastEpoch,
+      locklessTakeoverEnabled: trip.locklessStationPassed !== true,
     });
     trip.boardingLock = undefined;
     trip.consecutiveEtaMissing = 0;
+    trip.locklessStationPassed = true;
+    stats.vanishLocklessTakeover += 1;
     await deleteProgress(env.TRIPS, trip.token);
     await putTrip(env.TRIPS, trip);
     return;
@@ -961,7 +1100,17 @@ export async function runTrainCodeTracking(
     }
   }
   if (estimate === null) {
-    await handleEtaMissing({ trip, waypoint, activeLock, env, deps, stats, now, log });
+    await handleEtaMissing({
+      trip,
+      waypoint,
+      activeLock,
+      env,
+      deps,
+      stats,
+      now,
+      log,
+      generatePushId,
+    });
     return;
   }
 

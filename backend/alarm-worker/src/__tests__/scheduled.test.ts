@@ -1404,6 +1404,147 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       // lock release → isBoardingLockActive=false
       expect(stored.boardingLock).toBeUndefined();
       expect(stored.consecutiveEtaMissing).toBe(0);
+      // #1370 L3 — lockless 인계가 실제로 작동하도록 강제 enable + stat 기록
+      expect(stored.locklessStationPassed).toBe(true);
+    });
+
+    it('#1370 L2 — fallback advance 직전 station-passed silent push 발사 (intermediate)', async () => {
+      // hop 시간 경과 + intermediate waypoint(중곡) — advanceBoardingLockWaypoint 호출 전에
+      // station-passed silent push가 발사되어야 한다.
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p1370-l2',
+      });
+      // push 발사 검증
+      expect(stats.vanishFallbackFired).toBe(1);
+      expect(stats.pushed).toBeGreaterThanOrEqual(1);
+      expect(apnsFetch).toHaveBeenCalled();
+      const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
+      const stationPassedCall = calls.find((c) => {
+        const body = JSON.parse(c[1].body as string);
+        return body.data?.nextWaypoint === '중곡' && body.data?.phase === 'imminent';
+      });
+      expect(stationPassedCall).toBeDefined();
+      // waypoint shift 확인
+      const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
+      expect(stored.waypoints[0].stationName).toBe('군자');
+    });
+
+    it('#1370 L2 — destination waypoint는 station-passed push 발사 안 함', async () => {
+      // destination kind는 cleanupTripWithLa 내부에서 trip-ended push가 발사되므로
+      // 추가 station-passed push 발사를 차단해야 한다.
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          waypoints: [{ stationName: '군자', line: '7', kind: 'destination' }],
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: makeOkFetch() as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p1370-l2-dest',
+      });
+      expect(stats.vanishFallbackFired).toBe(0);
+    });
+
+    it('#1370 L2 — vanish fallback push dedup (같은 station 두 번 발사 안 됨)', async () => {
+      // 같은 waypoint에 대해 다시 vanish fallback이 trigger돼도 dedup KV로 차단.
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+      const deps = {
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p1370-dup',
+      };
+      await runScheduled(makeEnv(kv), deps);
+      const callsAfterFirst = apnsFetch.mock.calls.length;
+      // 두 번째 cycle도 같은 station에 fallback이 trigger되도록 trip을 다시 set up
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      const stats2 = await runScheduled(makeEnv(kv), deps);
+      // dedup → push 추가 발사 X
+      expect(stats2.vanishFallbackFired).toBe(0);
+      expect(apnsFetch.mock.calls.length).toBe(callsAfterFirst);
+    });
+
+    it('#1370 L2 — push 실패 시 dedup KV stamp 안 함 (다음 cycle 재시도 허용)', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+        }),
+      );
+      // 503 retryable failure
+      const apnsFetch = vi.fn(async () => new Response('{"reason":"InternalServerError"}', { status: 503 }));
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: apnsFetch as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p1370-fail',
+      });
+      expect(stats.vanishFallbackFired).toBe(0);
+      expect(stats.errors).toBeGreaterThanOrEqual(1);
+    });
+
+    it('#1370 L3 — lock release 시 locklessStationPassed 강제 enable + stat 기록', async () => {
+      const kv = new InMemoryKV();
+      await putTrip(
+        kv as unknown as KVNamespace,
+        makeLockTrip({
+          consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+          lastTrackedArrivalEpoch: LAST_EPOCH_NOT_ELAPSED,
+          locklessStationPassed: false,
+        }),
+      );
+      const stats = await runScheduled(makeEnv(kv), {
+        seoul: makeSeoulCombo([], []),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: makeOkFetch() as unknown as typeof fetch,
+        now: () => NOW,
+        generatePushId: () => 'p1370-l3',
+      });
+      const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
+      expect(stored.locklessStationPassed).toBe(true);
+      expect(stats.vanishLocklessTakeover).toBe(1);
     });
 
     it('lastTrackedArrivalEpoch 없음 → fallback 미발동, 기존 auto-end 경로 유지', async () => {
