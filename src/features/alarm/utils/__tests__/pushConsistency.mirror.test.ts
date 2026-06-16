@@ -8,8 +8,8 @@
  * 한쪽만 수정해서 정합성 게이트 자체가 정합성을 잃는 회귀를 차단.
  */
 
-import { readFileSync } from 'fs';
-import { resolve } from 'path';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const FRONTEND_PATH = resolve(__dirname, '../pushConsistency.ts');
 const BACKEND_PATH = resolve(
@@ -19,8 +19,9 @@ const BACKEND_PATH = resolve(
 
 // 첫 번째 doc 주석 블록만 잘라낸다. 헤더는 backend/frontend 경로를 가리키므로
 // 다르지만 그 외 본문은 동일해야 한다.
+const HEADER_DOC_RE = /^\/\*\*[\s\S]*?\*\/\s*/;
 function stripHeaderDocComment(src: string): string {
-  const match = src.match(/^\/\*\*[\s\S]*?\*\/\s*/);
+  const match = HEADER_DOC_RE.exec(src);
   return match ? src.slice(match[0].length) : src;
 }
 
