@@ -442,61 +442,48 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
   // 환승역(예: 건대입구는 2호선/7호선)에서 같은 hop index에 다른 line의 stop이 존재할 수 있어
   // 시간 적분 결과가 stale interp일 때 잘못된 line의 station을 채택할 위험.
   describe('#1365 lockless-route-hop line cross-validation', () => {
-    it('estimatedLine ≠ gpsNearestLine + nextArcLine 미정의 → fallback to GPS', () => {
-      // lockless trip (lock 없음) + routeCtx 7호선 → estimator는 lockless-route-hop 채택.
-      // GPS 최근접은 다른 line(충무로 3호선). currentIdxHint=null (lastObserved 부재).
-      // → estimatedLine='7' vs gpsNearestLine='3' mismatch + nextArcLine null → fallback.
+    // 두 시나리오의 공통 setup — 같은 routeCtx에서 GPS 최근접 station만 바꿔 line cross-check 진입.
+    function runLine7LocklessRouteScenario(gpsNearest: ReturnType<typeof gpsBase>) {
       jest.useFakeTimers();
       const T0 = 1_700_000_000_000;
       jest.setSystemTime(T0);
 
       const routeCtx = { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk };
+      mockNearest.mockReturnValue(gpsNearest);
+      mockFindTop.mockReturnValue([{ station: gpsNearest.result.station, distanceKm: 0 }]);
 
+      const { result, rerender } = renderHook(() =>
+        useFusedNearestStation(undefined, undefined, routeCtx),
+      );
+
+      jest.setSystemTime(T0 + 5 * 60_000);
+      rerender({});
+
+      jest.useRealTimers();
+      return result;
+    }
+
+    it('estimatedLine ≠ gpsNearestLine + nextArcLine 미정의 → fallback to GPS', () => {
       // GPS는 충무로(3호선) 최근접으로 보고 — 환승역 stale interp 시뮬레이션.
-      mockNearest.mockReturnValue(
+      // → estimatedLine='7' vs gpsNearestLine='3' mismatch + nextArcLine null → fallback.
+      const result = runLine7LocklessRouteScenario(
         gpsBase({
           result: { station: chungmuro3, distanceKm: 0 },
           userLocation: { lat: chungmuro3.lat, lng: chungmuro3.lng },
         }),
       );
-      mockFindTop.mockReturnValue([{ station: chungmuro3, distanceKm: 0 }]);
-
-      const { result, rerender } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, routeCtx),
-      );
-
-      // 시간이 흘러 estimator가 적분 결과를 만들 수 있도록.
-      jest.setSystemTime(T0 + 5 * 60_000);
-      rerender({});
 
       // line guard 차단 → estimator override 비채택 → GPS 원본 결과 유지.
       expect(result.current.source).not.toBe('boarding-lock-interp');
       expect(result.current.result?.station.id).toBe(chungmuro3.id);
-
-      jest.useRealTimers();
     });
 
     it('estimatedLine = gpsNearestLine → line guard 통과 (estimator 채택)', () => {
       // 회귀 차단: 같은 line이면 기존 동작 (lockless-route-hop 채택)이 유지되어야 한다.
-      jest.useFakeTimers();
-      const T0 = 1_700_000_000_000;
-      jest.setSystemTime(T0);
-
-      const routeCtx = { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk };
-      mockNearest.mockReturnValue(gpsBase());
-      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-
-      const { result, rerender } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, routeCtx),
-      );
-
-      jest.setSystemTime(T0 + 5 * 60_000);
-      rerender({});
+      const result = runLine7LocklessRouteScenario(gpsBase());
 
       // 같은 line('7') → line guard 통과 → estimator override 채택.
       expect(result.current.source).toBe('boarding-lock-interp');
-
-      jest.useRealTimers();
     });
   });
 });
