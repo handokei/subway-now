@@ -8,6 +8,7 @@ import {
   validateLiveActivityRegister,
   validatePushAck,
   validateTrip,
+  verifyBoardingLockPersisted,
 } from '../index';
 import { progressKey, type TripProgress } from '../progress';
 import { pendingKey } from '../pendingPushes';
@@ -2089,15 +2090,23 @@ describe('POST /boarding-lock/sync (#901)', () => {
       env,
     );
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toEqual({
-      ok: true,
-      advanced: true,
-      currentWaypoint: '역삼',
-      nextStation: '역삼',
-      // #916 — tripWithLock fixture에 boardingLock이 미리 설정돼 있으므로 candidate로 노출.
-      autoLockCandidate: { trainCode: 'T-1', line: '2', subwayId: '1002' },
-    });
+    const body = (await res.json()) as {
+      ok: boolean;
+      advanced: boolean;
+      currentWaypoint: string | null;
+      nextStation: string | null;
+      autoLockCandidate: { trainCode: string; line: string; subwayId: string; expiresAt: number };
+    };
+    expect(body.ok).toBe(true);
+    expect(body.advanced).toBe(true);
+    expect(body.currentWaypoint).toBe('역삼');
+    expect(body.nextStation).toBe('역삼');
+    // #916 — tripWithLock fixture에 boardingLock이 미리 설정돼 있으므로 candidate로 노출.
+    // #1364 P1 — expiresAt도 함께 노출 (client local store 동기화용).
+    expect(body.autoLockCandidate.trainCode).toBe('T-1');
+    expect(body.autoLockCandidate.line).toBe('2');
+    expect(body.autoLockCandidate.subwayId).toBe('1002');
+    expect(typeof body.autoLockCandidate.expiresAt).toBe('number');
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
     expect(stored.waypoints.map((w: { stationName: string }) => w.stationName)).toEqual([
       '역삼',
@@ -2271,9 +2280,13 @@ describe('POST /boarding-lock/sync (#901)', () => {
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      autoLockCandidate: { trainCode: string; line: string; subwayId: string } | null;
+      autoLockCandidate: { trainCode: string; line: string; subwayId: string; expiresAt: number } | null;
     };
-    expect(body.autoLockCandidate).toEqual({ trainCode: 'T-1', line: '2', subwayId: '1002' });
+    // #1364 P1 — autoLockCandidate에 expiresAt 포함 (client TTL 동기화).
+    expect(body.autoLockCandidate?.trainCode).toBe('T-1');
+    expect(body.autoLockCandidate?.line).toBe('2');
+    expect(body.autoLockCandidate?.subwayId).toBe('1002');
+    expect(typeof body.autoLockCandidate?.expiresAt).toBe('number');
   });
 
   it('boardingLock 없는 trip → autoLockCandidate=null', async () => {
@@ -2452,6 +2465,154 @@ describe('POST /boarding-lock/sync (#901)', () => {
       const stored = JSON.parse((await env.TRIPS.get('trip:tok-sync')) as string);
       expect(stored.boardingLock).toBeUndefined();
     });
+  });
+
+  // #1364 — read-after-write verification + expiresAt response field.
+  //
+  // sync handler가 putTrip 후 cacheTtl=0으로 KV propagation을 확인한다. 정상 path는 1회로
+  // 통과해야 하며, verification failure 경로는 verifyBoardingLockPersisted 단위 테스트로 커버.
+  describe('read-after-write verification (#1364)', () => {
+    it('정상 path → 200 + autoLockCandidate.expiresAt 노출', async () => {
+      const env = makeKvEnv();
+      await post('/trips', tripWithLock(), env);
+      const res = await post(
+        '/boarding-lock/sync',
+        { token: 'tok-sync', observedStationName: '신촌', observedAtMs: 1, accuracy: 5 },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        autoLockCandidate: { expiresAt: number };
+      };
+      // refresh 후 expiresAt이 LOCK_TTL_REFRESH_MS 이상 미래 (P1 response sync).
+      expect(body.autoLockCandidate.expiresAt).toBeGreaterThan(Date.now());
+    });
+  });
+});
+
+// #1364 — verifyBoardingLockPersisted 단위 테스트 (sync handler retry/5xx 게이트의 분기).
+describe('verifyBoardingLockPersisted (#1364)', () => {
+  function lockedTrip(expiresAt: number) {
+    return {
+      token: 'tok-v',
+      route: { type: 'direct' as const, line: '2', stops: 3 },
+      destination: 'dst',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' as const }],
+      expiresAt: Date.now() + 3600_000,
+      createdAt: Date.now(),
+      alarmAtEpochMs: Date.now() + 1800_000,
+      boardingLock: {
+        trainCode: 'T-1',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: 1,
+        segmentStations: ['강남'],
+        expiresAt,
+      },
+    };
+  }
+
+  it('KV에 동일 expiresAt 저장됨 → true', async () => {
+    const kv = new InMemoryKV();
+    const trip = lockedTrip(Date.now() + 60_000);
+    await kv.put('trip:tok-v', JSON.stringify(trip));
+    expect(await verifyBoardingLockPersisted(kv as unknown as KVNamespace, trip)).toBe(true);
+  });
+
+  it('KV의 expiresAt이 expected보다 작음(stale) → false', async () => {
+    const kv = new InMemoryKV();
+    const expected = lockedTrip(Date.now() + 120_000);
+    const stale = lockedTrip(Date.now() + 30_000);
+    await kv.put('trip:tok-v', JSON.stringify(stale));
+    expect(await verifyBoardingLockPersisted(kv as unknown as KVNamespace, expected)).toBe(false);
+  });
+
+  it('KV에 trip 자체가 없음 → false', async () => {
+    const kv = new InMemoryKV();
+    const expected = lockedTrip(Date.now() + 60_000);
+    expect(await verifyBoardingLockPersisted(kv as unknown as KVNamespace, expected)).toBe(false);
+  });
+
+  it('expected가 lock 없는 trip → KV에 trip만 있으면 true (lock 검증 생략)', async () => {
+    const kv = new InMemoryKV();
+    const expected = lockedTrip(Date.now() + 60_000);
+    delete (expected as { boardingLock?: unknown }).boardingLock;
+    await kv.put('trip:tok-v', JSON.stringify(expected));
+    expect(await verifyBoardingLockPersisted(kv as unknown as KVNamespace, expected)).toBe(true);
+  });
+
+  it('expected는 lock 있는데 KV trip은 lock 없음 → false', async () => {
+    const kv = new InMemoryKV();
+    const expected = lockedTrip(Date.now() + 60_000);
+    const noLock = { ...expected, boardingLock: undefined };
+    await kv.put('trip:tok-v', JSON.stringify(noLock));
+    expect(await verifyBoardingLockPersisted(kv as unknown as KVNamespace, expected)).toBe(false);
+  });
+
+  it('verify는 cacheTtl=0으로 origin 조회', async () => {
+    const kv = new InMemoryKV();
+    const trip = lockedTrip(Date.now() + 60_000);
+    await kv.put('trip:tok-v', JSON.stringify(trip));
+    const spy = vi.spyOn(kv, 'get');
+    await verifyBoardingLockPersisted(kv as unknown as KVNamespace, trip);
+    expect(spy).toHaveBeenCalledWith('trip:tok-v', { cacheTtl: 0 });
+  });
+});
+
+// #1364 — sync verification failure → 503 + retry path.
+// stale snapshot을 반환하는 fake KV로 verification 분기 검증.
+describe('POST /boarding-lock/sync verification failure (#1364)', () => {
+  it('putTrip이 전부 drop돼 stale snapshot 반환 → 1회 retry 후 503', async () => {
+    const inner = new InMemoryKV();
+    const FUTURE_LOCK = Date.now() + 30 * 60 * 1000;
+    // 초기 trip을 직접 KV에 적재 (POST /trips 우회) — lock TTL refresh 전 값으로 두어
+    // sync handler가 expiresAt을 갱신하려 putTrip 시도 → wrapper put이 drop → verification 실패.
+    const initial = {
+      token: 'tok-503',
+      route: { type: 'direct' as const, line: '2', stops: 3 },
+      destination: 'dst',
+      waypoints: [
+        { stationName: '강남', line: '2', kind: 'intermediate' as const },
+        { stationName: '역삼', line: '2', kind: 'destination' as const },
+      ],
+      expiresAt: FUTURE,
+      alarmAtEpochMs: FUTURE - 30 * 60 * 1000,
+      boardingLock: {
+        trainCode: 'T-1',
+        line: '2',
+        subwayId: '1002',
+        selectedDepartureTime: 1,
+        segmentStations: ['강남', '역삼'],
+        // 짧은 expiresAt — sync가 LOCK_TTL_REFRESH_MS로 연장하려 한다.
+        expiresAt: Date.now() + 60_000,
+      },
+    };
+    await inner.put('trip:tok-503', JSON.stringify(initial));
+
+    // Wrapper: get/list만 inner로 위임, put은 silently drop. retry까지 모두 실패하게 한다.
+    const putCalls: number[] = [];
+    const kv = {
+      get: (key: string, opts?: { cacheTtl?: number }) => inner.get(key, opts),
+      put: () => {
+        putCalls.push(1);
+        return Promise.resolve();
+      },
+      delete: (key: string) => inner.delete(key),
+      list: (opts?: { prefix?: string; cursor?: string }) => inner.list(opts),
+    };
+    const env = makeEnv({ TRIPS: kv as unknown as Env['TRIPS'] });
+
+    const res = await post(
+      '/boarding-lock/sync',
+      { token: 'tok-503', observedStationName: '강남', observedAtMs: 1, accuracy: 5 },
+      env,
+    );
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as { ok: boolean; reason: string };
+    expect(body.ok).toBe(false);
+    expect(body.reason).toBe('sync-verification-failed');
+    // retry로 putTrip이 두 번(원래 + retry) 호출됐어야 함.
+    expect(putCalls.length).toBeGreaterThanOrEqual(2);
   });
 });
 

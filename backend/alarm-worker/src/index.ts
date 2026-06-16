@@ -948,6 +948,20 @@ app.post('/boarding-lock/sync', async (c) => {
 
   await putTrip(c.env.TRIPS, working);
 
+  // #1364 — read-after-write verification. Workers KV는 region간 eventually consistent —
+  // PUT 직후 다른 region replica가 옛 값을 반환하면 다음 cron(43~60s 후)이 stale
+  // `boardingLock.expiresAt`을 읽어 false-negative "lock missing or expired"가 발생한다(#765 회귀).
+  // cacheTtl=0으로 origin 조회 강제. 1회 retry 후에도 propagation 확인 실패 시 5xx 반환 —
+  // client가 다음 fix에서 재시도해 데이터 정합성 회복 기회를 확보한다.
+  const verifyOk = await verifyBoardingLockPersisted(c.env.TRIPS, working);
+  if (!verifyOk) {
+    await putTrip(c.env.TRIPS, working);
+    const retryOk = await verifyBoardingLockPersisted(c.env.TRIPS, working);
+    if (!retryOk) {
+      return c.json({ ok: false, reason: 'sync-verification-failed' }, 503);
+    }
+  }
+
   const head = working.waypoints[0];
   return c.json({
     ok: true,
@@ -957,17 +971,39 @@ app.post('/boarding-lock/sync', async (c) => {
     // #916 A1 — cron auto-lock(또는 사용자 명시 lock)이 trip에 부착돼 있으면 그 메타를
     // candidate로 노출. client가 이 값으로 boardingLock UI/state를 hydrate한다.
     // segmentStations/expiresAt 등 내부 필드는 client가 트래킹할 필요가 없어 공개 표면 최소화.
+    // #1364 P1 — `expiresAt`을 노출해 client local store가 backend 갱신값과 동기화되도록 한다.
     autoLockCandidate: working.boardingLock
       ? {
           trainCode: working.boardingLock.trainCode,
           line: working.boardingLock.line,
           subwayId: working.boardingLock.subwayId,
+          expiresAt: working.boardingLock.expiresAt,
           // W1 (#1271): client motion gate 우회 hint — swap 발생 시에만 첨부.
           ...(transferSwapApplied ? { from: 'transfer-swap' as const } : {}),
         }
       : null,
   });
 });
+
+/**
+ * #1364 — KV `putTrip` 직후 boardingLock이 실제로 propagation됐는지 확인.
+ *
+ * `cacheTtl: 0`으로 origin 조회를 강제하고, 다음 두 조건이 모두 만족할 때 true:
+ *   1) 저장한 trip이 read되어야 함 (lock 없는 trip은 lock 검증 생략)
+ *   2) `boardingLock.expiresAt`이 기대치 이상(propagation 완료)
+ *
+ * lock이 없는 trip의 경우 verification은 "trip 자체가 read 가능한가"만 본다.
+ */
+export async function verifyBoardingLockPersisted(
+  kv: KVNamespace,
+  expected: Trip,
+): Promise<boolean> {
+  const verified = await getTrip(kv, expected.token, { cacheTtl: 0 });
+  if (!verified) return false;
+  if (!expected.boardingLock) return true;
+  if (!verified.boardingLock) return false;
+  return verified.boardingLock.expiresAt >= expected.boardingLock.expiresAt;
+}
 
 /** Seam E 정정으로 lock TTL을 연장하는 길이. cron 주기 60s × 30 cycles 마진. */
 export const LOCK_TTL_REFRESH_MS = 30 * 60 * 1000;
