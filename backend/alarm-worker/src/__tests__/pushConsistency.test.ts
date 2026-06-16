@@ -9,292 +9,306 @@ import {
   evaluatePushConsistency,
 } from '../pushConsistency';
 
-// ---- fixtures ---------------------------------------------------------------
-const NOW = 1_750_000_000_000;
+/**
+ * Backend pushConsistency unit test (#1389).
+ *
+ * 작성 패턴: vitest `it.each` 테이블 드라이븐.
+ * Frontend(jest) mirror test 와 동일한 9-branch matrix 를 다른 시각화로 검증한다.
+ * (분기 검증 동등성 유지 + textual duplication 회피 목적.)
+ */
 
-const makeDevice = (overrides: Partial<DeviceSignal> = {}): DeviceSignal => ({
+const T0 = 1_750_000_000_000;
+const STALE_GAP = SIGNAL_STALE_MS + 1;
+
+/** DeviceSignal 빌더 (overrides 머지). default = 중곡/automotive/WiFi 없음/now). */
+const signal = (over: Partial<DeviceSignal> = {}): DeviceSignal => ({
   currentStationName: '중곡',
   motion: 'automotive',
   wifiStation: null,
-  lastUpdateMs: NOW,
-  ...overrides,
+  lastUpdateMs: T0,
+  ...over,
 });
 
-const makeTarget = (overrides: Partial<PushTarget> = {}): PushTarget => ({
+/** PushTarget 빌더. default = 중곡 7호선. */
+const pushFor = (over: Partial<PushTarget> = {}): PushTarget => ({
   stationName: '중곡',
   line: '7호선',
-  ...overrides,
+  ...over,
 });
 
-const trip = (deviceHopsBehindTarget: number | null): TripContext => ({
-  deviceHopsBehindTarget,
+/** TripContext 빌더 (hops 명시). null = trip 모름 fallback. */
+const arc = (hops: number | null): TripContext => ({
+  deviceHopsBehindTarget: hops,
 });
 
-const expectAllowed = (r: ConsistencyResult): void => {
-  expect(r).toEqual({ allowed: true });
-};
-const expectBlocked = (
+/** Allowed 결과만 통과시키는 검증자. */
+function assertAllow(r: ConsistencyResult): void {
+  if (r.allowed !== true) {
+    throw new Error(`expected allow, got blocked: ${r.reason}`);
+  }
+  expect(r.allowed).toBe(true);
+}
+
+/** Blocked 결과 + reason 정확 매치 검증자. */
+function assertBlock(
   r: ConsistencyResult,
-  reason: Extract<ConsistencyResult, { allowed: false }>['reason'],
-): void => {
-  expect(r).toEqual({ allowed: false, reason });
+  expected: Extract<ConsistencyResult, { allowed: false }>['reason'],
+): void {
+  if (r.allowed !== false) {
+    throw new Error(`expected block(${expected}), got allow`);
+  }
+  expect(r.reason).toBe(expected);
+}
+
+// ============================================================================
+// Allow 케이스 테이블 (9-branch matrix 중 allow 분기 + edge)
+// ============================================================================
+type AllowRow = {
+  name: string;
+  device: Partial<DeviceSignal>;
+  target?: Partial<PushTarget>;
+  hops: number | null;
+  /** now offset from device.lastUpdateMs (0 means current). */
+  nowAt?: number;
 };
 
-// ---- 9-branch matrix --------------------------------------------------------
-describe('evaluatePushConsistency — 9-branch matrix (#1389)', () => {
-  it('1) WiFi == target → allow (강 확증, motion/hops 무시)', () => {
-    const result = evaluatePushConsistency(
-      makeDevice({
-        wifiStation: { stationName: '중곡', line: '7호선' },
-        motion: 'stationary',
-      }),
-      makeTarget(),
-      trip(5), // 5 hops behind인데도 WiFi가 우선
-      NOW,
-    );
-    expectAllowed(result);
-  });
+const allowMatrix: AllowRow[] = [
+  {
+    name: '[1] WiFi == target → 강 확증 (motion/hops 무시)',
+    device: {
+      wifiStation: { stationName: '중곡', line: '7호선' },
+      motion: 'stationary',
+    },
+    hops: 5,
+  },
+  {
+    name: '[2-alt] WiFi mismatch + motion=walking → 이동 중 허용',
+    device: {
+      wifiStation: { stationName: '용마산', line: '7호선' },
+      motion: 'walking',
+    },
+    hops: 0,
+  },
+  {
+    name: '[3] signal stale (>5분) → 정보 부재 처리',
+    device: {
+      lastUpdateMs: T0,
+      motion: 'stationary',
+    },
+    nowAt: STALE_GAP,
+    hops: 5,
+  },
+  {
+    name: '[3-edge] signal age == 정확히 5분 → boundary, 아직 stale 아님',
+    device: { lastUpdateMs: T0 },
+    nowAt: SIGNAL_STALE_MS,
+    hops: 0,
+  },
+  {
+    name: '[4] 모든 signal null/unknown → 지하 보호',
+    device: {
+      currentStationName: null,
+      motion: 'unknown',
+      wifiStation: null,
+    },
+    hops: 99,
+  },
+  {
+    name: '[5] trip context 부재 (hops=null) → fallback',
+    device: { motion: 'stationary' },
+    hops: null,
+  },
+  {
+    name: '[6] hops == 0 (device == target) → 정상',
+    device: { motion: 'stationary' },
+    hops: 0,
+  },
+];
 
-  it('2) WiFi != target && motion=stationary → block (wifi-mismatch)', () => {
+describe('evaluatePushConsistency — allow branches', () => {
+  it.each(allowMatrix)('$name', ({ device, target, hops, nowAt }) => {
+    const now = T0 + (nowAt ?? 0);
     const result = evaluatePushConsistency(
-      makeDevice({
-        wifiStation: { stationName: '용마산', line: '7호선' },
-        motion: 'stationary',
-      }),
-      makeTarget(),
-      trip(0),
-      NOW,
+      signal(device),
+      pushFor(target),
+      arc(hops),
+      now,
     );
-    expectBlocked(result, 'wifi-mismatch');
+    assertAllow(result);
   });
+});
 
-  it('2-alt) WiFi != target && motion=walking → allow (WiFi mismatch 차단 X, 이동 중)', () => {
-    // motion이 stationary가 아니면 WiFi mismatch만으로는 차단 안 함 → 후속 분기 평가
-    const result = evaluatePushConsistency(
-      makeDevice({
-        wifiStation: { stationName: '용마산', line: '7호선' },
-        motion: 'walking',
-      }),
-      makeTarget(),
-      trip(0),
-      NOW,
-    );
-    expectAllowed(result);
-  });
-
-  it('3) signal stale (lastUpdate > 5분 전) → allow', () => {
-    const result = evaluatePushConsistency(
-      makeDevice({
-        lastUpdateMs: NOW - SIGNAL_STALE_MS - 1,
-        motion: 'stationary', // stale이면 motion 무관 허용
-      }),
-      makeTarget(),
-      trip(5),
-      NOW,
-    );
-    expectAllowed(result);
-  });
-
-  it('3-edge) signal age == 정확히 5분 → 아직 stale 아님 (boundary)', () => {
-    // age == SIGNAL_STALE_MS 는 stale 아님 (strict >). hops==0 정상 trip.
-    const result = evaluatePushConsistency(
-      makeDevice({ lastUpdateMs: NOW - SIGNAL_STALE_MS }),
-      makeTarget(),
-      trip(0),
-      NOW,
-    );
-    expectAllowed(result);
-  });
-
-  it('4) 모든 signal null/unknown → allow (지하 보호)', () => {
-    const result = evaluatePushConsistency(
-      makeDevice({
-        currentStationName: null,
-        motion: 'unknown',
-        wifiStation: null,
-      }),
-      makeTarget(),
-      trip(99), // hops가 멀어도 모든 signal 부재면 허용
-      NOW,
-    );
-    expectAllowed(result);
-  });
-
-  it('5) trip context 부재 (hops=null) → allow (fallback)', () => {
-    const result = evaluatePushConsistency(
-      makeDevice({ motion: 'stationary' }),
-      makeTarget(),
-      trip(null),
-      NOW,
-    );
-    expectAllowed(result);
-  });
-
-  it('6) hops == 0 (device == target) → allow', () => {
-    const result = evaluatePushConsistency(
-      makeDevice({ motion: 'stationary' }),
-      makeTarget(),
-      trip(0),
-      NOW,
-    );
-    expectAllowed(result);
-  });
-
-  it('7) hops < 0 (device ahead of target) → block (device-ahead-of-target)', () => {
-    const result = evaluatePushConsistency(
-      makeDevice(),
-      makeTarget(),
-      trip(-1),
-      NOW,
-    );
-    expectBlocked(result, 'device-ahead-of-target');
-  });
-
-  it('7-alt) hops = -5 (멀리 ahead) → block (device-ahead-of-target)', () => {
-    const result = evaluatePushConsistency(
-      makeDevice(),
-      makeTarget(),
-      trip(-5),
-      NOW,
-    );
-    expectBlocked(result, 'device-ahead-of-target');
-  });
-
-  it('8) hops == 1 && motion=stationary → block (motion-stationary-far-behind)', () => {
-    const result = evaluatePushConsistency(
-      makeDevice({ motion: 'stationary' }),
-      makeTarget(),
-      trip(1),
-      NOW,
-    );
-    expectBlocked(result, 'motion-stationary-far-behind');
-  });
-
-  it.each<[Motion]>([['walking'], ['automotive'], ['unknown']])(
-    '9) hops == 1 && motion=%s → allow (추격 중)',
+// ============================================================================
+// hops==1 motion 분기 (9번 — walking/automotive/unknown 추격 중 허용)
+// ============================================================================
+describe('evaluatePushConsistency — hops==1 motion 분기 (case 9)', () => {
+  const chaseMotions: Motion[] = ['walking', 'automotive', 'unknown'];
+  it.each(chaseMotions)(
+    '[9] hops=1 + motion=%s → 추격 중 허용',
     (motion) => {
       const result = evaluatePushConsistency(
-        makeDevice({ motion }),
-        makeTarget(),
-        trip(1),
-        NOW,
+        signal({ motion }),
+        pushFor(),
+        arc(1),
+        T0,
       );
-      expectAllowed(result);
+      assertAllow(result);
     },
   );
+});
 
-  it('10) hops == 2 → block (device-station-mismatch)', () => {
-    const result = evaluatePushConsistency(
-      makeDevice({ motion: 'walking' }),
-      makeTarget(),
-      trip(2),
-      NOW,
-    );
-    expectBlocked(result, 'device-station-mismatch');
-  });
+// ============================================================================
+// Block 케이스 테이블 (9-branch matrix 중 block 분기 + reason 매트릭스)
+// ============================================================================
+type BlockRow = {
+  name: string;
+  device: Partial<DeviceSignal>;
+  target?: Partial<PushTarget>;
+  hops: number | null;
+  reason: Extract<ConsistencyResult, { allowed: false }>['reason'];
+};
 
-  it('10-alt) hops == 10 → block (device-station-mismatch, motion 무관)', () => {
+const blockMatrix: BlockRow[] = [
+  {
+    name: '[2] WiFi mismatch + stationary → wifi-mismatch',
+    device: {
+      wifiStation: { stationName: '용마산', line: '7호선' },
+      motion: 'stationary',
+    },
+    hops: 0,
+    reason: 'wifi-mismatch',
+  },
+  {
+    name: '[7] hops < 0 (-1) → device-ahead-of-target',
+    device: {},
+    hops: -1,
+    reason: 'device-ahead-of-target',
+  },
+  {
+    name: '[7-alt] hops < 0 (-5, 멀리 ahead) → device-ahead-of-target',
+    device: {},
+    hops: -5,
+    reason: 'device-ahead-of-target',
+  },
+  {
+    name: '[8] hops=1 + motion=stationary → motion-stationary-far-behind',
+    device: { motion: 'stationary' },
+    hops: 1,
+    reason: 'motion-stationary-far-behind',
+  },
+  {
+    name: '[10] hops=2 + motion=walking → device-station-mismatch',
+    device: { motion: 'walking' },
+    hops: 2,
+    reason: 'device-station-mismatch',
+  },
+  {
+    name: '[10-alt] hops=10 + motion=automotive → device-station-mismatch',
+    device: { motion: 'automotive' },
+    hops: 10,
+    reason: 'device-station-mismatch',
+  },
+];
+
+describe('evaluatePushConsistency — block branches', () => {
+  it.each(blockMatrix)('$name', ({ device, target, hops, reason }) => {
     const result = evaluatePushConsistency(
-      makeDevice({ motion: 'automotive' }),
-      makeTarget(),
-      trip(10),
-      NOW,
+      signal(device),
+      pushFor(target),
+      arc(hops),
+      T0,
     );
-    expectBlocked(result, 'device-station-mismatch');
+    assertBlock(result, reason);
   });
 });
 
-// ---- WiFi priority over hops ------------------------------------------------
-describe('evaluatePushConsistency — priority ordering', () => {
-  it('WiFi == target 은 hops 부정합/stale/null currentStation 모두 override (강 확증)', () => {
-    const result = evaluatePushConsistency(
-      makeDevice({
+// ============================================================================
+// 우선순위 / edge isolation (다른 분기 동시 trigger 시 어느 step이 결정?)
+// ============================================================================
+describe('evaluatePushConsistency — step priority', () => {
+  it('WiFi==target 은 hops 불일치/stale/null currentStation 모두 override', () => {
+    const out = evaluatePushConsistency(
+      signal({
         currentStationName: null,
         motion: 'stationary',
         wifiStation: { stationName: '중곡', line: '7호선' },
-        lastUpdateMs: NOW - SIGNAL_STALE_MS - 1, // stale도 무관
+        lastUpdateMs: T0 - STALE_GAP,
       }),
-      makeTarget(),
-      trip(7),
-      NOW,
+      pushFor(),
+      arc(7),
+      T0,
     );
-    expectAllowed(result);
+    assertAllow(out);
   });
 
-  it('WiFi mismatch는 line 다르면 stationName 같아도 mismatch', () => {
-    const result = evaluatePushConsistency(
-      makeDevice({
-        wifiStation: { stationName: '중곡', line: '5호선' }, // line 다름
+  it('WiFi==target + hops<0 → WiFi 우선이라 ahead 판단 override', () => {
+    const out = evaluatePushConsistency(
+      signal({ wifiStation: { stationName: '중곡', line: '7호선' } }),
+      pushFor(),
+      arc(-3),
+      T0,
+    );
+    assertAllow(out);
+  });
+
+  it('WiFi line 다르면 stationName 같아도 mismatch', () => {
+    const out = evaluatePushConsistency(
+      signal({
+        wifiStation: { stationName: '중곡', line: '5호선' },
         motion: 'stationary',
       }),
-      makeTarget({ stationName: '중곡', line: '7호선' }),
-      trip(0),
-      NOW,
+      pushFor({ stationName: '중곡', line: '7호선' }),
+      arc(0),
+      T0,
     );
-    expectBlocked(result, 'wifi-mismatch');
+    assertBlock(out, 'wifi-mismatch');
   });
-});
 
-// ---- 사용자 evidence 재현 (2026-06-16 20:06:54 KST 용마산 정지) ---------------
-describe('evaluatePushConsistency — 사용자 evidence (#1389)', () => {
-  it('용마산 정지 (motion=stationary, currentStation=용마산) 상태에서 중곡 imminent push → block', () => {
-    // 용마산 → 중곡: 7호선 인접 (1 hop). device는 용마산에 정지.
-    const result = evaluatePushConsistency(
-      makeDevice({
-        currentStationName: '용마산',
-        motion: 'stationary',
-        wifiStation: null,
-        lastUpdateMs: NOW,
-      }),
-      makeTarget({ stationName: '중곡', line: '7호선' }),
-      trip(1),
-      NOW,
-    );
-    expectBlocked(result, 'motion-stationary-far-behind');
-  });
-});
-
-// ---- 추가 edge — reviewer 권고 P2-5 (priority/transitive isolation) ---------
-describe('evaluatePushConsistency — edge isolation', () => {
-  it('stale + WiFi mismatch + stationary → WiFi 우선이라 wifi-mismatch (stale check 도달 전)', () => {
-    const result = evaluatePushConsistency(
-      makeDevice({
+  it('stale + WiFi mismatch + stationary → step1/2가 step3보다 먼저라 wifi-mismatch', () => {
+    const out = evaluatePushConsistency(
+      signal({
         wifiStation: { stationName: '용마산', line: '7호선' },
         motion: 'stationary',
-        lastUpdateMs: NOW - SIGNAL_STALE_MS - 1, // stale이지만 step 1/2가 먼저
+        lastUpdateMs: T0 - STALE_GAP,
       }),
-      makeTarget(),
-      trip(0),
-      NOW,
+      pushFor(),
+      arc(0),
+      T0,
     );
-    expectBlocked(result, 'wifi-mismatch');
+    assertBlock(out, 'wifi-mismatch');
   });
 
-  it('WiFi == target + hops<0 → WiFi 우선이라 allow (ahead 판단 override)', () => {
-    const result = evaluatePushConsistency(
-      makeDevice({
-        wifiStation: { stationName: '중곡', line: '7호선' },
-      }),
-      makeTarget(),
-      trip(-3),
-      NOW,
-    );
-    expectAllowed(result);
-  });
-
-  it('hops=null + motion=stationary + wifi=null + currentStation 존재 → step 5 fallback allow', () => {
-    // step 1/2: wifi null이라 skip. step 3: not stale. step 4: currentStation 존재라 skip.
-    // step 5: hops==null로 trigger되어 allow.
-    const result = evaluatePushConsistency(
-      makeDevice({
+  it('hops=null + motion=stationary + wifi=null + currentStation 존재 → step5 fallback allow', () => {
+    const out = evaluatePushConsistency(
+      signal({
         currentStationName: '용마산',
         motion: 'stationary',
         wifiStation: null,
       }),
-      makeTarget(),
-      trip(null),
-      NOW,
+      pushFor(),
+      arc(null),
+      T0,
     );
-    expectAllowed(result);
+    assertAllow(out);
+  });
+});
+
+// ============================================================================
+// 사용자 evidence 재현 (2026-06-16 20:06:54 KST 용마산 정지)
+// ============================================================================
+describe('evaluatePushConsistency — user trip evidence (#1389)', () => {
+  it('용마산 정지 상태 + 중곡 imminent push (1 hop behind, stationary) → block', () => {
+    const out = evaluatePushConsistency(
+      signal({
+        currentStationName: '용마산',
+        motion: 'stationary',
+        wifiStation: null,
+        lastUpdateMs: T0,
+      }),
+      pushFor({ stationName: '중곡', line: '7호선' }),
+      arc(1),
+      T0,
+    );
+    assertBlock(out, 'motion-stationary-far-behind');
   });
 });
