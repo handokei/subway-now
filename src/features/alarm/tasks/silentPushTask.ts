@@ -45,7 +45,7 @@ import {
   logSilentPushSkipped,
   type AlarmLogReason,
 } from '../utils/alarmLog';
-import { runTripBoundCleanups } from '../store/tripBoundCleanups';
+import { runTripBoundCleanups, cancelTripBoundOsQueue } from '../store/tripBoundCleanups';
 import { setTripEndedSentinel } from '../utils/tripEndedSentinel';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
@@ -624,6 +624,15 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         sentAt: payload.sentAt,
         receivedAt,
       });
+      // #1370 L4 — OS scheduled queue burst fire 차단. 종착역 도착 시 backend trip-ended push가
+      // 도달할 때 device 로컬 OS queue(`bl:`/`tba:`)에 잔존한 사전 예약 알람이 동시에 발사돼
+      // 사용자가 "용마산 도착 후 한꺼번에 받음"으로 인지하는 회귀.
+      //
+      // runTripBoundCleanups가 결국 OS queue를 cancel하지만, 그 전에 triggerTripEndRecall이
+      // routeStops 구성 + network upload로 수 초 stall할 수 있어 race window가 열린다.
+      // OS queue cancel만 별도 helper로 분리해 trip-ended 진입 즉시 호출 — recall/cleanup 흐름은
+      // 그대로 유지. cancel 자체는 멱등하므로 runTripBoundCleanups의 중복 cancel은 안전 통과.
+      await cancelTripBoundOsQueue();
       // #919 — trip-end recall KPI upload. *반드시* cleanup 전에 호출해야 한다 — trigger가
       // ROUTE_KEY/DESTINATION_KEY/TRIP_STARTED_AT_KEY를 읽어 routeStops를 구성하기 때문.
       // trigger는 throw하지 않으므로 후속 cleanup/sentinel 흐름 차단 없음.
