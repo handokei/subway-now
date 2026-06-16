@@ -506,6 +506,33 @@ describe('silentPushTask', () => {
       });
     });
 
+    // #1365 — backend가 forward한 발사 시점 waypoint의 line(occupiedLine).
+    describe('occupiedLine (#1365)', () => {
+      it('비어있지 않은 string이면 그대로 전달', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', occupiedLine: '7' }),
+          ),
+        ).toMatchObject({ occupiedLine: '7' });
+      });
+
+      it('누락/빈문자열/비string이면 undefined (구 backend 호환 graceful pass)', () => {
+        expect(
+          extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early' })),
+        ).toMatchObject({ occupiedLine: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', occupiedLine: '' }),
+          ),
+        ).toMatchObject({ occupiedLine: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 1, phase: 'early', occupiedLine: 7 }),
+          ),
+        ).toMatchObject({ occupiedLine: undefined });
+      });
+    });
+
     // #725 — reschedule schema는 standard와 다르므로 별도 분기 검증.
     describe('reschedule kind (#725)', () => {
       it('정상 reschedule payload → RescheduleSilentPushPayload', () => {
@@ -766,6 +793,9 @@ describe('silentPushTask', () => {
         isLockless: false,
         payloadHopIndex: undefined,
         subsurface: false,
+        occupiedLine: undefined,
+        // #1365 — lock 활성 시 lock.boardingLine을 estimatorLine으로 전달.
+        estimatorLine: '2',
       });
       expect(mockScheduleNotificationAsync).toHaveBeenCalledTimes(1);
       const call = mockScheduleNotificationAsync.mock.calls[0][0];
@@ -846,6 +876,8 @@ describe('silentPushTask', () => {
       ['no-location', 'gate-no-location'],
       ['stale-location', 'gate-stale-location'],
       ['out-of-range', 'gate-out-of-range'],
+      // #1365 — line-mismatch는 환승역 line cross-validation 실패로 차단된 케이스.
+      ['line-mismatch', 'gate-line-mismatch'],
     ])('게이트 reason=%s → logSkipped reason=%s', async (gateReason, logReason) => {
       mockCheckGate.mockResolvedValue({ pass: false, reason: gateReason });
       await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));

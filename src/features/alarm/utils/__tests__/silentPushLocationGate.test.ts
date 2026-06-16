@@ -765,4 +765,93 @@ describe('checkSilentPushLocationGate', () => {
       expect(result.reason).toBe('out-of-range');
     });
   });
+
+  // #1365 — 환승역 line cross-validation. backend `occupiedLine`과 device `estimatorLine`이
+  // 양쪽 정의된 상태에서 mismatch면 거리/hop 게이트 전에 즉시 skip. 한 쪽이라도 undefined면
+  // 기존 동작(graceful pass) 유지 — 구 backend 호환.
+  describe('line cross-validation (#1365)', () => {
+    it('occupiedLine + estimatorLine mismatch → line-mismatch skip (거리 게이트 진행 안 함)', async () => {
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: false,
+        occupiedLine: '7',
+        estimatorLine: '2',
+      });
+      expect(result.pass).toBe(false);
+      expect(result.reason).toBe('line-mismatch');
+      // 거리 진행 안 함 → location 호출 자체가 발생하지 않음
+      expect(mockGetLastKnownPositionAsync).not.toHaveBeenCalled();
+    });
+
+    it('occupiedLine + estimatorLine match면 cross-check 통과 후 기존 거리 게이트 진행', async () => {
+      // phase=early → intermediate 임계 600m. NEAR_GANGNAM(~330m)는 통과 영역.
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(NEAR_GANGNAM.lat, NEAR_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'early',
+        isLockless: false,
+        occupiedLine: '2',
+        estimatorLine: '2',
+      });
+      expect(result.pass).toBe(true);
+      expect(result.passReason).toBe('within-threshold');
+    });
+
+    it.each([
+      ['estimatorLine 미제공 → graceful pass', { occupiedLine: '7' }],
+      ['occupiedLine 미제공 → graceful pass (구 backend 호환)', { estimatorLine: '2' }],
+      ['둘 다 미제공 → graceful pass', {}],
+    ])('한 쪽이라도 undefined면 cross-check skip — %s', async (_label, overrides) => {
+      // phase=early → 600m threshold. NEAR_GANGNAM(~330m)는 통과 영역. cross-check skip 후
+      // 거리 게이트를 정상 진행해야 한다는 점만 검증 — pass 자체가 목표.
+      mockGetLastKnownPositionAsync.mockResolvedValue(
+        makePosition(NEAR_GANGNAM.lat, NEAR_GANGNAM.lng, 5_000),
+      );
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'early',
+        isLockless: false,
+        ...overrides,
+      });
+      expect(result.pass).toBe(true);
+      expect(result.reason).toBeUndefined();
+    });
+
+    it('line mismatch는 subsurface bypass보다 우선 (지하 환승역 잘못된 line 차단)', async () => {
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: true,
+        subsurface: true,
+        occupiedLine: '7',
+        estimatorLine: '2',
+      });
+      expect(result.pass).toBe(false);
+      expect(result.reason).toBe('line-mismatch');
+    });
+
+    it('line mismatch는 hop-window-match보다 우선 (no-location fallback도 차단)', async () => {
+      mockGetLastKnownPositionAsync.mockResolvedValue(null);
+      mockGetCurrentPositionAsync.mockRejectedValue(new Error('denied'));
+      const result = await checkSilentPushLocationGate({
+        stationName: '강남',
+        kind: 'intermediate',
+        phase: 'imminent',
+        isLockless: true,
+        currentHopIndex: 4,
+        payloadHopIndex: 4,
+        occupiedLine: '7',
+        estimatorLine: '2',
+      });
+      expect(result.pass).toBe(false);
+      expect(result.reason).toBe('line-mismatch');
+    });
+  });
 });

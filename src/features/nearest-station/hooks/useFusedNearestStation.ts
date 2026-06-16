@@ -734,7 +734,22 @@ export function useFusedNearestStation(
       );
       withinObservationCeiling = estimate.index <= lastRealObservedIdx + 1;
     }
-    if ((chosenIdx === -1 || estimate.index > chosenIdx) && withinObservationCeiling) {
+    // #1365 — lockless-route-hop은 ceiling 면제(시간 적분 SSOT)지만 환승역에서 같은
+    // hop index에 다른 line의 stop이 존재할 수 있다. 채택 전 line 검증: GPS 최근접
+    // (candidates[0]) line과 일치하지 않으면 fallback(GPS) — 잘못된 line의 station-passed/
+    // destination 알람 차단. 다른 strategy(live-position / arrival-eta)는 fusion 자체가 실시간
+    // 신호로 line이 강제되므로 면제. lockless trip은 lock 부재로 lastObservedRef도 anchor되지
+    // 않아 currentIdxHint를 SSOT로 신뢰할 수 없으므로 GPS 최근접만 cross-check 기준.
+    let withinLineGuard = true;
+    if (estimate.strategy === 'lockless-route-hop') {
+      const gpsNearestLine = candidates[0]?.station.line ?? null;
+      withinLineGuard = estimate.station.line === gpsNearestLine;
+    }
+    if (
+      (chosenIdx === -1 || estimate.index > chosenIdx) &&
+      withinObservationCeiling &&
+      withinLineGuard
+    ) {
       const distanceKm = gps.userLocation
         ? haversine(
             gps.userLocation.lat,

@@ -73,6 +73,9 @@ export type AlarmLogReason =
   | 'gate-no-location'
   | 'gate-stale-location'
   | 'gate-out-of-range'
+  // #1365 — backend `occupiedLine`과 device `estimatorLine` mismatch로 차단된 발사.
+  // 환승역(같은 hop index에 line 다른 stop) misfire 차단.
+  | 'gate-line-mismatch'
   | 'lock-line-mismatch'
   | 'payload-missing-kind'
   // #727 — 정적 misfire 가드(movementGate.ts)가 차단한 발사.
