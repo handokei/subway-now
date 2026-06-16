@@ -24,6 +24,7 @@ import { unregisterAlarmRefreshTask } from '../src/features/alarm/tasks/alarmRef
 import { stopVibration } from '../src/features/alarm/utils/alarmSound';
 import { setupBoardingPromptCategory } from '../src/features/alarm/utils/notificationCategory';
 import { useBoardingPromptResponder } from '../src/features/alarm/hooks/useBoardingPromptResponder';
+import { useBoardingPromptDisplayLogger } from '../src/features/alarm/hooks/useBoardingPromptDisplayLogger';
 import { useStateRehydration } from '../src/shared/hooks/useStateRehydration';
 import { useLaunchTripReconciliation } from '../src/features/alarm/hooks/useLaunchTripReconciliation';
 import { fetchArrivalInfo } from '../src/features/arrival/api/arrivalApi';
@@ -90,6 +91,10 @@ function RootContent() {
     destinationId,
     expectedDurationMs: FALLBACK_BOARDING_DURATION_MINUTES * 60_000,
   });
+
+  // #1385 — boardingPrompt displayed 카운트. FG에서 actionable notification 수신 시 즉시
+  // alarm log에 fired 1건 적재한다. responder의 cold-start 보완과 dedup된다.
+  useBoardingPromptDisplayLogger();
 
   // #899 (Seam C) — trip-bound 상태 단일 hydration seam. AppState 'active' 진입 시
   // destination/customOrigin/tripOrigin/lock을 storage에서 재수화하고, BG silent push가

@@ -28,13 +28,22 @@ import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival'
 import { dismissBoardingPrompt } from '../../nearest-station/api/positionUpload';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { pickAutoTrainCodeFromArrivals } from '../utils/boardingPromptAutoLock';
-import { logBoardingPromptAutoLock, logBoardingPromptResponded } from '../utils/alarmLog';
+import {
+  logBoardingPromptAutoLock,
+  logBoardingPromptFired,
+  logBoardingPromptResponded,
+} from '../utils/alarmLog';
 import {
   BOARDING_PROMPT_ACTION_BOARDED,
   BOARDING_PROMPT_ACTION_NOT_BOARDED,
+  BOARDING_PROMPT_CATEGORY,
 } from '../utils/notificationCategory';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { createLogger } from '../../../shared/utils/logger';
+import {
+  markBoardingPromptDisplayed,
+  wasBoardingPromptDisplayed,
+} from './useBoardingPromptDisplayLogger';
 
 const log = createLogger('boardingPromptResponder');
 
@@ -87,10 +96,28 @@ export function useBoardingPromptResponder(deps: UseBoardingPromptResponderDeps)
 
   useEffect(() => {
     const sub = Notifications.addNotificationResponseReceivedListener((response) => {
-      const payload = extractBoardingPromptPayload(
-        response.notification.request.content.data,
-      );
+      const request = response.notification.request;
+      const payload = extractBoardingPromptPayload(request.content.data);
       if (!payload) return;
+      // #1385 — BG cold-start fired 보완. FG receive listener가 못 잡은 케이스(killed-app 상태에서
+      // prompt 표시 → 사용자가 곧장 응답)에서도 displayed 카운트를 살린다. dedup은
+      // notification.request.identifier 기준 — FG receive가 먼저 적재했으면 skip.
+      const identifier = request.identifier;
+      if (typeof identifier === 'string' && identifier.length > 0) {
+        const isBoardingPromptCategory =
+          request.content.categoryIdentifier === BOARDING_PROMPT_CATEGORY;
+        // categoryIdentifier 미수신 OS(예: Android)에서도 payload schema가 일치하면 fired 적재.
+        const shouldLog =
+          (isBoardingPromptCategory || request.content.categoryIdentifier == null) &&
+          !wasBoardingPromptDisplayed(identifier);
+        if (shouldLog) {
+          markBoardingPromptDisplayed(identifier);
+          logBoardingPromptFired({
+            originStation: payload.originStation,
+            line: payload.line,
+          });
+        }
+      }
       void handleResponse(response.actionIdentifier, payload, {
         ...deps,
         createLock,

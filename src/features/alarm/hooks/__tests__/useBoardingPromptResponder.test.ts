@@ -33,7 +33,18 @@ jest.mock('../../../../shared/utils/stationLookup', () => ({
 jest.mock('../../utils/alarmLog', () => ({
   logBoardingPromptAutoLock: jest.fn(),
   logBoardingPromptResponded: jest.fn(),
+  logBoardingPromptFired: jest.fn(),
 }));
+jest.mock('../useBoardingPromptDisplayLogger', () => {
+  const seen = new Set<string>();
+  return {
+    wasBoardingPromptDisplayed: jest.fn((id: string) => seen.has(id)),
+    markBoardingPromptDisplayed: jest.fn((id: string) => {
+      seen.add(id);
+    }),
+    __resetMockDedup: () => seen.clear(),
+  };
+});
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -61,10 +72,15 @@ jest.mock('../../store/useBoardingLockStore', () => {
 });
 
 const { findStationByNameAndLine } = jest.requireMock('../../../../shared/utils/stationLookup');
-const { logBoardingPromptAutoLock, logBoardingPromptResponded } = jest.requireMock('../../utils/alarmLog');
+const {
+  logBoardingPromptAutoLock,
+  logBoardingPromptResponded,
+  logBoardingPromptFired,
+} = jest.requireMock('../../utils/alarmLog');
 const { __mockCreateLock: createLockMock } = jest.requireMock(
   '../../store/useBoardingLockStore',
 );
+const displayLoggerMock = jest.requireMock('../useBoardingPromptDisplayLogger');
 
 type UpEntry = StationArrival['up'][number];
 
@@ -327,6 +343,7 @@ describe('useBoardingPromptResponder hook wiring', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     registeredHandler = null;
+    displayLoggerMock.__resetMockDedup();
     (Notifications.addNotificationResponseReceivedListener as jest.Mock).mockImplementation(
       (handler) => {
         registeredHandler = handler;
@@ -394,6 +411,112 @@ describe('useBoardingPromptResponder hook wiring', () => {
     // hook의 비동기 handleResponse 처리 후 검증
     await new Promise((r) => setTimeout(r, 0));
     expect(createLockMock).toHaveBeenCalled();
+  });
+});
+
+describe('useBoardingPromptResponder #1385 — cold-start fired 보완 + dedup', () => {
+  let registeredHandler: ((response: any) => void) | null = null;
+
+  function makeResponse(overrides: {
+    identifier?: string;
+    categoryIdentifier?: string | null | undefined;
+    data?: unknown;
+    actionIdentifier?: string;
+  }) {
+    return {
+      actionIdentifier:
+        overrides.actionIdentifier ?? Notifications.DEFAULT_ACTION_IDENTIFIER,
+      notification: {
+        request: {
+          identifier: overrides.identifier ?? 'noti-cold-1',
+          content: {
+            categoryIdentifier:
+              overrides.categoryIdentifier === undefined
+                ? 'BOARDING_PROMPT'
+                : overrides.categoryIdentifier,
+            data:
+              overrides.data ?? {
+                kind: 'boarding-prompt',
+                originStation: '강남',
+                line: '2',
+                tripToken: 'tok',
+              },
+          },
+        },
+      },
+    };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    registeredHandler = null;
+    displayLoggerMock.__resetMockDedup();
+    (findStationByNameAndLine as jest.Mock).mockReturnValue({
+      id: 'S1',
+      line: '2',
+      name: '강남',
+    });
+    (Notifications.addNotificationResponseReceivedListener as jest.Mock).mockImplementation(
+      (handler) => {
+        registeredHandler = handler;
+        return { remove: jest.fn() };
+      },
+    );
+    renderHook(() =>
+      useBoardingPromptResponder({
+        fetchArrivalsForStation: async () => null,
+        destinationId: 'dst',
+        expectedDurationMs: 600_000,
+      }),
+    );
+  });
+
+  it('FG receive 못 잡은 cold-start 응답 → logBoardingPromptFired 호출 후 logBoardingPromptResponded', async () => {
+    await registeredHandler!(makeResponse({}));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(logBoardingPromptFired).toHaveBeenCalledWith({
+      originStation: '강남',
+      line: '2',
+    });
+    expect(logBoardingPromptResponded).toHaveBeenCalled();
+  });
+
+  it('FG receive 가 먼저 적재 → response 진입 시 dedup으로 fired 추가 호출 없음', async () => {
+    // FG receive가 이미 적재한 상태를 시뮬레이션.
+    displayLoggerMock.markBoardingPromptDisplayed('noti-cold-1');
+    await registeredHandler!(makeResponse({ identifier: 'noti-cold-1' }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(logBoardingPromptFired).not.toHaveBeenCalled();
+    // responded는 dedup과 무관하게 호출되어야 한다.
+    expect(logBoardingPromptResponded).toHaveBeenCalled();
+  });
+
+  it('categoryIdentifier null (Android 등)이어도 payload 일치 시 cold-start fired 적재', async () => {
+    await registeredHandler!(makeResponse({ categoryIdentifier: null }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(logBoardingPromptFired).toHaveBeenCalledTimes(1);
+  });
+
+  it('categoryIdentifier가 BOARDING_PROMPT가 아니고 payload만 일치 → cold-start fired 적재 안 함', async () => {
+    await registeredHandler!(makeResponse({ categoryIdentifier: 'OTHER_CATEGORY' }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(logBoardingPromptFired).not.toHaveBeenCalled();
+    // payload는 valid → responded는 정상 처리.
+    expect(logBoardingPromptResponded).toHaveBeenCalled();
+  });
+
+  it('identifier 누락 → cold-start fired 적재 skip (responded는 정상)', async () => {
+    await registeredHandler!(makeResponse({ identifier: '' }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(logBoardingPromptFired).not.toHaveBeenCalled();
+    expect(logBoardingPromptResponded).toHaveBeenCalled();
+  });
+
+  it('같은 response identifier 재진입 → fired 1건만 (dedup)', async () => {
+    await registeredHandler!(makeResponse({ identifier: 'dup-1' }));
+    await registeredHandler!(makeResponse({ identifier: 'dup-1' }));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(logBoardingPromptFired).toHaveBeenCalledTimes(1);
   });
 });
 
