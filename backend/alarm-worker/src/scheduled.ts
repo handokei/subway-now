@@ -240,6 +240,18 @@ export interface ScheduledStats extends LiveActivityStats {
    * 경로를 측정한다. #640 회귀(lock 없는 trip 발사) 방어 신호 — 정상 운영에서는 0이어야 한다.
    */
   arvlCdFireMismatch: number;
+  /**
+   * #1370 L2 — trainCode vanish 후 시간 기반 fallback advance 직전에 station-passed silent push가
+   * 발사된 누적 횟수. fallback path가 어린이대공원/군자/중곡 같은 intermediate를 "지났음" 신호 없이
+   * 통과하던 회귀(silent push 0건)를 닫는다.
+   */
+  vanishFallbackFired: number;
+  /**
+   * #1370 L3 — vanish 후 hop 시간 미경과로 lock release할 때 trip.locklessStationPassed가
+   * false였던 trip을 강제 enable해 lockless 인계 경로를 살린 횟수. 0이 아니면 사용자가 opt-in
+   * 토글 OFF였지만 vanish recovery로 매역 push가 복구된 trip 수.
+   */
+  vanishLocklessTakeover: number;
 }
 
 /**
@@ -295,6 +307,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
+    vanishFallbackFired: 0,
+    vanishLocklessTakeover: 0,
   };
 
   for await (const trip of listTrips(env.TRIPS)) {
@@ -674,6 +688,47 @@ export function evaluateArvlCdFireGate(
 }
 
 /**
+ * #1370 — station-passed imminent push payload 빌더. arvlCd path와 vanish-fallback path가
+ * 같은 payload 모양을 공유 (lock self-describing, subsurface flag, hopIndex forward 등). SonarCloud
+ * 중복 차단 + 새 필드 추가 시 단일 지점 갱신을 위해 헬퍼로 추출.
+ */
+interface BuildStationPassedImminentPayloadInputs {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  pushId: string;
+  now: number;
+}
+function buildStationPassedImminentPayload(
+  inputs: BuildStationPassedImminentPayloadInputs,
+): Parameters<typeof sendSilentPush>[0]['payload'] {
+  const { trip, waypoint, lock, pushId, now } = inputs;
+  return {
+    nextWaypoint: waypoint.stationName,
+    // arvlCd∈{0,1}은 "지금 진입/도착" 신호 — eta는 사실상 0. vanish-fallback도 동일 의미.
+    etaSeconds: 0,
+    phase: 'imminent',
+    kind: waypoint.kind,
+    sentAt: now,
+    pushId,
+    // Epic #1204 그룹 2 D3 (#1273) — validateTrip stamp 결과를 forward.
+    // 클라이언트 `silentPushLocationGate`가 D1 estimator currentHopIndex와 매칭 시
+    // 거리 검증 우회/`gate-no-location` fallback에 사용. 구 trip(부재) → undefined.
+    hopIndex: waypoint.hopIndex,
+    // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
+    // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
+    occupiedLine: waypoint.line,
+    // #1307 — server-authoritative subsurface. 지하 trip의 intermediate push는
+    // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
+    subsurface: trip.subsurface === true,
+    // #1322 — lock-path fire의 노선/열차를 self-describing으로 전달. 디바이스가 로컬 lock
+    // 없이도(지하 auto-lock hydration window) line sanity-guard를 돌려 발사할 수 있게 한다.
+    boardingLine: lock.line,
+    trainCode: lock.trainCode,
+  };
+}
+
+/**
  * #917 A2 — boardingLock trip에서 arvlCd∈{0,1} 신호 관측 시 매역 station-passed silent push 발사.
  *
  * 호출 시점: runTrainCodeTracking이 estimate.arrived=true를 얻은 직후 advanceBoardingLockWaypoint
@@ -751,29 +806,7 @@ export async function fireArvlCdStationPush(
     (host) =>
       sendSilentPush({
         deviceToken: trip.token,
-        payload: {
-          nextWaypoint: waypoint.stationName,
-          // arvlCd∈{0,1}은 "지금 진입/도착" 신호 — eta는 사실상 0.
-          etaSeconds: 0,
-          phase: 'imminent',
-          kind: waypoint.kind,
-          sentAt: now,
-          pushId,
-          // Epic #1204 그룹 2 D3 (#1273) — validateTrip stamp 결과를 forward.
-          // 클라이언트 `silentPushLocationGate`가 D1 estimator currentHopIndex와 매칭 시
-          // 거리 검증 우회/`gate-no-location` fallback에 사용. 구 trip(부재) → undefined.
-          hopIndex: waypoint.hopIndex,
-          // #1365 — server-authoritative occupiedLine. 환승역에서 디바이스가 같은 hop index에
-          // 다른 line의 stop과 cross-validation 가능. waypoint.line을 그대로 forward.
-          occupiedLine: waypoint.line,
-          // #1307 — server-authoritative subsurface. 지하 trip의 intermediate push는
-          // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
-          subsurface: trip.subsurface === true,
-          // #1322 — lock-path fire의 노선/열차를 self-describing으로 전달. 디바이스가 로컬 lock
-          // 없이도(지하 auto-lock hydration window) line sanity-guard를 돌려 발사할 수 있게 한다.
-          boardingLine: lock.line,
-          trainCode: lock.trainCode,
-        },
+        payload: buildStationPassedImminentPayload({ trip, waypoint, lock, pushId, now }),
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -808,6 +841,94 @@ export async function fireArvlCdStationPush(
   trip.lastFiredStation = { stationName: waypoint.stationName, epochMs: now };
   dirty = true;
   return { dirty };
+}
+
+/**
+ * #1370 L2 — trainCode vanish 후 시간 기반 fallback advance 직전에 발사하는 station-passed silent push.
+ *
+ * arvlCd fire 경로와 모양은 같지만 SSOT가 다르다 — arvlCd∈{0,1}이 아니라 "trainCode 사라짐 + hop 시간
+ * 경과 = optimistic 통과"를 신호로 채택. 디바이스 payload는 `arvlCd=null` (vanish-fallback 표식)으로
+ * 보내되 phase/kind는 imminent + 원본 waypoint.kind. dedup key는 arvlCd path와 분리 namespace
+ * (`vanish:`)을 사용해 cross-pollute 차단.
+ *
+ * 실패 분기 정책: arvlCd path와 동일 — push 실패는 stats.errors++만 누적, trip 자체는 호출자
+ * (`advanceBoardingLockWaypoint`)가 계속 진행한다. 추가 cleanup 분기 없음.
+ */
+interface FireVanishFallbackStationPushInputs {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+}
+
+export const VANISH_FALLBACK_FIRE_KEY_PREFIX = 'vanish-fallback-fire:';
+
+export function vanishFallbackFireKey(
+  token: string,
+  trainCode: string,
+  stationName: string,
+): string {
+  return `${VANISH_FALLBACK_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
+}
+
+export async function fireVanishFallbackStationPush(
+  inputs: FireVanishFallbackStationPushInputs,
+): Promise<void> {
+  const { trip, waypoint, lock, env, deps, stats, now, log, generatePushId } = inputs;
+  const key = vanishFallbackFireKey(trip.token, lock.trainCode, waypoint.stationName);
+  const existing = await env.TRIPS.get(key);
+  if (existing !== null) {
+    log('vanish-fallback-fire: dedup skip', {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+    });
+    return;
+  }
+  const pushId = generatePushId();
+  log('vanish-fallback-fire: station-passed push', {
+    token: trip.token.slice(0, 8),
+    trainCode: lock.trainCode,
+    station: waypoint.stationName,
+    kind: waypoint.kind,
+  });
+  const heal = await sendWithEnvHeal(
+    (host) =>
+      sendSilentPush({
+        deviceToken: trip.token,
+        payload: buildStationPassedImminentPayload({ trip, waypoint, lock, pushId, now }),
+        config: deps.apnsConfig,
+        host,
+        fetchImpl: deps.fetchImpl,
+        now,
+      }),
+    trip.apnsEnv,
+    deps.apnsHosts,
+    log,
+    trip.token.slice(0, 8),
+  );
+  if (heal.correctedEnv) {
+    trip.apnsEnv = heal.correctedEnv;
+    stats.envCorrected += 1;
+  }
+  if (!heal.result.ok) {
+    stats.errors += 1;
+    log('vanish-fallback-fire: push failed', {
+      status: heal.result.status,
+      reason: heal.result.reason,
+      token: trip.token.slice(0, 8),
+    });
+    // dedup KV는 성공 시에만 stamp — 실패 push는 다음 cycle 재시도 허용.
+    return;
+  }
+  stats.pushed += 1;
+  stats.vanishFallbackFired += 1;
+  await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
 }
 
 /**
@@ -868,9 +989,10 @@ interface HandleEtaMissingInputs {
   stats: ScheduledStats;
   now: number;
   log: Logger;
+  generatePushId: () => string;
 }
 async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
-  const { trip, waypoint, activeLock, env, deps, stats, now, log } = inputs;
+  const { trip, waypoint, activeLock, env, deps, stats, now, log, generatePushId } = inputs;
   stats.etaMissing += 1;
   const previousMissCount = trip.consecutiveEtaMissing ?? 0;
   const nextMissCount = previousMissCount + 1;
@@ -901,20 +1023,45 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
         lastTrackedArrivalEpoch: lastEpoch,
       });
       trip.consecutiveEtaMissing = 0;
+      // #1370 L2 — fallback advance 전에 station-passed silent push를 발사한다.
+      // advanceBoardingLockWaypoint는 LA update + (destination 시) trip-ended push만 발사하므로
+      // intermediate/transfer waypoint를 "지났다"는 신호가 사용자에게 도달하지 않는 회귀가 있었다
+      // (어린이대공원/군자/중곡 silent push 0건). vanish fallback도 ground truth 신호로 취급해
+      // arvlCd∈{0,1}과 동등하게 station-passed push를 발사한다.
+      if (waypoint.kind !== 'destination') {
+        await fireVanishFallbackStationPush({
+          trip,
+          waypoint,
+          lock: activeLock,
+          env,
+          deps,
+          stats,
+          now,
+          log,
+          generatePushId,
+        });
+      }
       await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log);
       return;
     }
     // hop 시간 미경과 → lock release해 lockless/boardingPrompt가 인계받도록.
     // isBoardingLockActive=false가 되는 즉시 다음 cycle의 evaluateAndMaybeFireBoardingPrompt 경로 복구.
+    // #1370 L3 — lock release 후 lockless 인계가 실제로 작동하려면 trip.locklessStationPassed가
+    // true여야 한다(`if (!isBoardingLockActive) → if (trip.locklessStationPassed && intermediate)`).
+    // OFF인 trip은 다음 cycle에서 lockMissing으로 spin하며 군자/중곡까지 push 0건. vanish fallback은
+    // 시스템이 trainCode를 잃은 상황이므로 lockless 인계를 강제 enable해 매역 push 경로를 복구한다.
     log('boarding-lock: trainCode vanished — releasing lock (hop time not yet elapsed)', {
       token: trip.token.slice(0, 8),
       trainCode: activeLock.trainCode,
       station: waypoint.stationName,
       consecutiveEtaMissing: nextMissCount,
       lastTrackedArrivalEpoch: lastEpoch,
+      locklessTakeoverEnabled: trip.locklessStationPassed !== true,
     });
     trip.boardingLock = undefined;
     trip.consecutiveEtaMissing = 0;
+    trip.locklessStationPassed = true;
+    stats.vanishLocklessTakeover += 1;
     await deleteProgress(env.TRIPS, trip.token);
     await putTrip(env.TRIPS, trip);
     return;
@@ -961,7 +1108,17 @@ export async function runTrainCodeTracking(
     }
   }
   if (estimate === null) {
-    await handleEtaMissing({ trip, waypoint, activeLock, env, deps, stats, now, log });
+    await handleEtaMissing({
+      trip,
+      waypoint,
+      activeLock,
+      env,
+      deps,
+      stats,
+      now,
+      log,
+      generatePushId,
+    });
     return;
   }
 
