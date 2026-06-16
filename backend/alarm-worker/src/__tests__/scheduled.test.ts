@@ -2360,81 +2360,86 @@ describe('runScheduled — Live Activity push integration (#586 D / #612)', () =
 // #1389 PR-4 — maybeFireLiveActivityUpdate의 displayMode 파라미터 동작 검증.
 // 정합성 게이트가 device signal과 target station의 모순을 감지했을 때 LA 발사를 "차단"하지 않고
 // fallback display mode로 변환해 발사한다는 정책(#1389 §3).
+//
+// 헬퍼는 module scope에 두어 describe 매 실행마다 재선언되지 않게 한다 (SonarCloud S7721).
+const LA_DISPLAY_TRIP_TOKEN = 'la-disp-tok';
+const LA_DISPLAY_WAYPOINT: Waypoint = {
+  stationName: '강남',
+  line: '2',
+  kind: 'destination',
+};
+
+function makeLaDisplayDeps(fetchImpl: typeof fetch): ScheduledDeps {
+  // maybeFireLiveActivityUpdate는 deps.seoul을 호출하지 않으므로 빈 클라이언트로 충분.
+  return {
+    seoul: makeSeoul([]),
+    apnsConfig,
+    apnsHosts: { production: 'api.push.apple.com', sandbox: 'api.sandbox.push.apple.com' },
+    fetchImpl,
+  };
+}
+
+function makeLaDisplayStats(): ScheduledStats {
+  // ScheduledStats는 LiveActivityStats를 extend하므로 새 카운터(pushConsistencyLAFallback) 포함.
+  // 다른 카운터는 maybeFireLiveActivityUpdate가 건드리지 않으므로 0 초기화로 충분.
+  return {
+    scanned: 0,
+    polled: 0,
+    pushed: 0,
+    errors: 0,
+    etaMissing: 0,
+    envCorrected: 0,
+    lockMissing: 0,
+    locklessIntermediateFired: 0,
+    locklessMotionGateBlocked: 0,
+    laPushSent: 0,
+    laPushFailed: 0,
+    laTokenCleared: 0,
+    pushConsistencyLAFallback: 0,
+    boardingPromptEvaluated: 0,
+    boardingPromptFired: 0,
+    boardingPromptBlocked: 0,
+    phaseImminentBlocked: 0,
+    kalmanReset: 0,
+    kalmanDriftWarning: 0,
+    autoLockSuccess: 0,
+    autoLockFalsePositive: 0,
+    boardingPromptAutoDeduped: 0,
+    arvlCdFireSuccess: 0,
+    arvlCdFireDedup: 0,
+    arvlCdFireMismatch: 0,
+    vanishFallbackFired: 0,
+    vanishLocklessTakeover: 0,
+    vanishFallbackMotionGateBlocked: 0,
+  };
+}
+
+function makeLaDisplayTrip(overrides: Partial<Trip> = {}): Trip {
+  return {
+    token: LA_DISPLAY_TRIP_TOKEN,
+    route: { type: 'direct', line: '2', stops: 1 },
+    destination: 'dst',
+    waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+    expiresAt: NOW + 3_600_000,
+    createdAt: NOW,
+    alarmAtEpochMs: NOW + 60_000,
+    activityPushToken: 'la-token',
+    activityState: 'live',
+    apnsEnv: 'sandbox',
+    ...overrides,
+  };
+}
+
 describe('maybeFireLiveActivityUpdate — #1389 PR-4 displayMode', () => {
-  const LA_TRIP_TOKEN = 'la-disp-tok';
-
-  function makeDeps(fetchImpl: typeof fetch): ScheduledDeps {
-    // maybeFireLiveActivityUpdate는 deps.seoul을 호출하지 않으므로 빈 클라이언트로 충분.
-    return {
-      seoul: makeSeoul([]),
-      apnsConfig,
-      apnsHosts: { production: 'api.push.apple.com', sandbox: 'api.sandbox.push.apple.com' },
-      fetchImpl,
-    };
-  }
-
-  function makeBaseStats(): ScheduledStats {
-    // ScheduledStats는 LiveActivityStats를 extend하므로 새 카운터(pushConsistencyLAFallback) 포함.
-    // 다른 카운터는 maybeFireLiveActivityUpdate가 건드리지 않으므로 0 초기화로 충분.
-    return {
-      scanned: 0,
-      polled: 0,
-      pushed: 0,
-      errors: 0,
-      etaMissing: 0,
-      envCorrected: 0,
-      lockMissing: 0,
-      locklessIntermediateFired: 0,
-      locklessMotionGateBlocked: 0,
-      laPushSent: 0,
-      laPushFailed: 0,
-      laTokenCleared: 0,
-      pushConsistencyLAFallback: 0,
-      boardingPromptEvaluated: 0,
-      boardingPromptFired: 0,
-      boardingPromptBlocked: 0,
-      phaseImminentBlocked: 0,
-      kalmanReset: 0,
-      kalmanDriftWarning: 0,
-      autoLockSuccess: 0,
-      autoLockFalsePositive: 0,
-      boardingPromptAutoDeduped: 0,
-      arvlCdFireSuccess: 0,
-      arvlCdFireDedup: 0,
-      arvlCdFireMismatch: 0,
-      vanishFallbackFired: 0,
-      vanishLocklessTakeover: 0,
-      vanishFallbackMotionGateBlocked: 0,
-    };
-  }
-
-  function makeTripWithLa(overrides: Partial<Trip> = {}): Trip {
-    return {
-      token: LA_TRIP_TOKEN,
-      route: { type: 'direct', line: '2', stops: 1 },
-      destination: 'dst',
-      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
-      expiresAt: NOW + 3_600_000,
-      createdAt: NOW,
-      alarmAtEpochMs: NOW + 60_000,
-      activityPushToken: 'la-token',
-      activityState: 'live',
-      apnsEnv: 'sandbox',
-      ...overrides,
-    };
-  }
-
-  const WAYPOINT: Waypoint = { stationName: '강남', line: '2', kind: 'destination' };
-
   it('기본(displayMode 미지정) — content-state에 displayMode 키 omit, fallback counter 미증가', async () => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = makeBaseStats();
-    const trip = makeTripWithLa();
+    const stats = makeLaDisplayStats();
+    const trip = makeLaDisplayTrip();
     const fired = await maybeFireLiveActivityUpdate(
       trip,
-      WAYPOINT,
+      LA_DISPLAY_WAYPOINT,
       NOW + 120_000,
-      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
       stats,
       NOW,
       () => undefined,
@@ -2450,13 +2455,13 @@ describe('maybeFireLiveActivityUpdate — #1389 PR-4 displayMode', () => {
 
   it('displayMode=confirmed 명시 — 기본과 동일 (displayMode 키 omit)', async () => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = makeBaseStats();
-    const trip = makeTripWithLa();
+    const stats = makeLaDisplayStats();
+    const trip = makeLaDisplayTrip();
     await maybeFireLiveActivityUpdate(
       trip,
-      WAYPOINT,
+      LA_DISPLAY_WAYPOINT,
       NOW + 120_000,
-      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
       stats,
       NOW,
       () => undefined,
@@ -2471,14 +2476,14 @@ describe('maybeFireLiveActivityUpdate — #1389 PR-4 displayMode', () => {
 
   it('displayMode=unconfirmed — content-state에 displayMode=unconfirmed 박힘 + counter +1', async () => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = makeBaseStats();
-    const trip = makeTripWithLa();
+    const stats = makeLaDisplayStats();
+    const trip = makeLaDisplayTrip();
     const logs: string[] = [];
     const fired = await maybeFireLiveActivityUpdate(
       trip,
-      WAYPOINT,
+      LA_DISPLAY_WAYPOINT,
       NOW + 120_000,
-      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
       stats,
       NOW,
       (msg) => logs.push(msg),
@@ -2499,18 +2504,18 @@ describe('maybeFireLiveActivityUpdate — #1389 PR-4 displayMode', () => {
 
   it('displayMode=unconfirmed는 ΔETA 임계 미달이어도 즉시 발사 (fallback 전환은 노출 우선)', async () => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = makeBaseStats();
+    const stats = makeLaDisplayStats();
     // ΔETA가 임계(30s) 미달 + heartbeat도 due 아님 — 기존이라면 skip이지만,
     // unconfirmed는 즉시 발사로 station fallback을 노출.
-    const trip = makeTripWithLa({
+    const trip = makeLaDisplayTrip({
       lastLaPushEpoch: NOW + 115_000,
       lastLaPushAt: NOW - 10_000,
     });
     const fired = await maybeFireLiveActivityUpdate(
       trip,
-      WAYPOINT,
+      LA_DISPLAY_WAYPOINT,
       NOW + 120_000,
-      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
       stats,
       NOW,
       () => undefined,
@@ -2523,16 +2528,16 @@ describe('maybeFireLiveActivityUpdate — #1389 PR-4 displayMode', () => {
 
   it('displayMode=confirmed + ΔETA 임계 미달 — 발사 skip (기존 동작 회귀 안전)', async () => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    const stats = makeBaseStats();
-    const trip = makeTripWithLa({
+    const stats = makeLaDisplayStats();
+    const trip = makeLaDisplayTrip({
       lastLaPushEpoch: NOW + 115_000,
       lastLaPushAt: NOW - 10_000,
     });
     const fired = await maybeFireLiveActivityUpdate(
       trip,
-      WAYPOINT,
+      LA_DISPLAY_WAYPOINT,
       NOW + 120_000,
-      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
       stats,
       NOW,
       () => undefined,
@@ -2546,13 +2551,13 @@ describe('maybeFireLiveActivityUpdate — #1389 PR-4 displayMode', () => {
 
   it('activityPushToken 부재 — displayMode 무관 no-op', async () => {
     const fetchImpl = vi.fn();
-    const stats = makeBaseStats();
-    const trip = makeTripWithLa({ activityPushToken: undefined });
+    const stats = makeLaDisplayStats();
+    const trip = makeLaDisplayTrip({ activityPushToken: undefined });
     const fired = await maybeFireLiveActivityUpdate(
       trip,
-      WAYPOINT,
+      LA_DISPLAY_WAYPOINT,
       NOW + 120_000,
-      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeLaDisplayDeps(fetchImpl as unknown as typeof fetch),
       stats,
       NOW,
       () => undefined,
