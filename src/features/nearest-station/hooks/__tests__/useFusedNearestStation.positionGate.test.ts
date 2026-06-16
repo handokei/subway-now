@@ -100,33 +100,49 @@ function setup({
   return renderHook(() => useFusedNearestStation(undefined, undefined, routeCtx, trainCode, lock));
 }
 
-// #1382 — motion=stationary 게이트 시나리오. lock 활성 + 90s 경과(default-hop forward ratchet 가능).
-function runLockedMotionScenario(motionStationary: boolean | undefined) {
+// Lock-interp / lockless estimator 공통 시나리오:
+// fake timer T0에서 1회 render → elapsedMs 진행 후 rerender → result 반환.
+// lock 활성/lockless / motion 신호 / 경과시간 차이만 옵션으로 받는다.
+const ESTIMATOR_T0 = 1_700_000_000_000;
+function runEstimatorScenario(opts: {
+  lock?: BoardingLock;
+  trainCode?: string;
+  motionStationary?: boolean;
+  elapsedMs?: number;
+} = {}) {
+  const { lock, trainCode, motionStationary, elapsedMs = 90_000 } = opts;
+
   jest.useFakeTimers();
-  const T0 = 1_700_000_000_000;
-  jest.setSystemTime(T0);
+  jest.setSystemTime(ESTIMATOR_T0);
 
   const routeCtx = { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk };
-  const lock = makeLock({
-    trainCode: 'T-MOTION',
-    boardingStationId: yongmasan.id,
-    boardingLine: '7',
-    boardedAt: T0,
-    expectedDurationMs: 600_000,
-  });
-
   mockNearest.mockReturnValue(gpsBase());
   mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
 
   const { result, rerender } = renderHook(() =>
-    useFusedNearestStation(undefined, undefined, routeCtx, 'T-MOTION', lock, motionStationary),
+    useFusedNearestStation(undefined, undefined, routeCtx, trainCode, lock, motionStationary),
   );
 
-  jest.setSystemTime(T0 + 90_000);
+  jest.setSystemTime(ESTIMATOR_T0 + elapsedMs);
   rerender({});
 
   jest.useRealTimers();
   return result;
+}
+
+// #1382 — lock 활성 + 90s 경과 + motion 옵션.
+function runLockedMotionScenario(motionStationary: boolean | undefined) {
+  return runEstimatorScenario({
+    lock: makeLock({
+      trainCode: 'T-MOTION',
+      boardingStationId: yongmasan.id,
+      boardingLine: '7',
+      boardedAt: ESTIMATOR_T0,
+      expectedDurationMs: 600_000,
+    }),
+    trainCode: 'T-MOTION',
+    motionStationary,
+  });
 }
 
 beforeEach(() => {
@@ -400,33 +416,14 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
     });
 
     it('lock 없음 + routeCtx + 시간 경과 → lockless-route-hop이 arc hop time lookup closure 호출', () => {
-      // lock 없음 + routeCtx 있음 → 첫 render에 locklessTripStartRef 캡처.
-      // 시간 경과 후 rerender → hopsElapsedFrom이 hopTimeMsForHop 호출 → arc 노선 lookup 실행.
+      // lock 없음 + routeCtx 있음 → 첫 render에 locklessTripStartRef 캡처(=T0).
+      // 5분 경과 → hopsElapsedFrom이 0번 hop의 시작 노선('7') lookup → hopTimeMsForHop 호출.
       // Closure 내부 (segmentLine = arc[fromIdx].line) 경로 커버.
-      jest.useFakeTimers();
-      const T0 = 1_700_000_000_000;
-      jest.setSystemTime(T0);
-
-      const routeCtx = { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk };
-
-      mockNearest.mockReturnValue(gpsBase());
-      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-      // 열차 위치 없음 → trainProgress null → positionTrainResult null.
-      // mockPos는 beforeEach에서 null로 설정됨.
-
-      const { result, rerender } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, routeCtx),
-      );
-
-      // 첫 render 시 tripStartedAt = T0 캡처.
-      // 5분 경과 → hopsElapsedFrom이 0번 hop의 시작 노선('7') lookup → hopTimeMsAt 호출.
-      jest.setSystemTime(T0 + 5 * 60_000);
-      rerender({});
+      // (mockPos는 beforeEach에서 null → trainProgress null → positionTrainResult null.)
+      const result = runEstimatorScenario({ elapsedMs: 5 * 60_000 });
 
       // lock 없음 + estimator 채택 → boarding-lock-interp.
       expect(result.current.source).toBe('boarding-lock-interp');
-
-      jest.useRealTimers();
     });
   });
 
@@ -434,36 +431,19 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
     it('interpolated estimate + positionTrainResult null → livePositionIdx=-1 분기 통과', () => {
       // boardingLock 활성 + 90s 경과 → estimator default-hop 채택 (isInterpolated=true).
       // 열차 위치 없음 → positionTrainResult null → line 564 ternary false branch(: -1) 실행.
-      jest.useFakeTimers();
-      const T0 = 1_700_000_000_000;
-      jest.setSystemTime(T0);
-
-      const routeCtx = { route: makeDirectRoute(4, '7'), origin: yongmasan, destination: konkuk };
-      const lock = makeLock({
+      // (mockPos는 beforeEach에서 null로 설정됨 → trainProgress null → positionTrainResult null.)
+      const result = runEstimatorScenario({
+        lock: makeLock({
+          trainCode: 'T-INTERP',
+          boardingStationId: yongmasan.id,
+          boardingLine: '7',
+          boardedAt: ESTIMATOR_T0,
+          expectedDurationMs: 600_000,
+        }),
         trainCode: 'T-INTERP',
-        boardingStationId: yongmasan.id,
-        boardingLine: '7',
-        boardedAt: T0,
-        expectedDurationMs: 600_000,
       });
 
-      mockNearest.mockReturnValue(gpsBase());
-      mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-      // 열차 위치 없음 → trainProgress null → positionTrainResult null.
-      // mockPos는 beforeEach에서 null로 설정됨.
-
-      const { result, rerender } = renderHook(() =>
-        useFusedNearestStation(undefined, undefined, routeCtx, 'T-INTERP', lock),
-      );
-
-      // 90s 후 default-hop이 중곡(arc idx 1)을 채택. positionTrainResult null.
-      // → line 564 positionTrainResult ? ... : -1 의 false branch 실행.
-      jest.setSystemTime(T0 + 90_000);
-      rerender({});
-
       expect(result.current.source).toBe('boarding-lock-interp');
-
-      jest.useRealTimers();
     });
   });
 
