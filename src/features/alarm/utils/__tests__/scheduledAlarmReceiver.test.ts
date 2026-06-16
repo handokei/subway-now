@@ -54,6 +54,12 @@ jest.mock('../boardingLockScheduler', () => {
 const mockResolveAllTargets = jest.fn();
 jest.mock('../stationAlarm', () => ({
   resolveAllTargets: (...args: unknown[]) => mockResolveAllTargets(...args),
+  // #1367 — silent push 채널과 unified dedup key 공간. occurrenceIdx>0면 `#n` suffix.
+  alarmKey: ({ phaseId, stationName, occurrenceIdx }: { phaseId: string; stationName: string; occurrenceIdx?: number }) => {
+    const occ = occurrenceIdx ?? 0;
+    const base = `${phaseId}:${stationName}`;
+    return occ > 0 ? `${base}#${occ}` : base;
+  },
 }));
 
 const mockLogSuppressedTbaRevalidation = jest.fn();
@@ -284,6 +290,7 @@ describe('registerScheduledAlarmListener', () => {
     handle.remove();
   });
 
+
   it('destinationId 미설정이면 drain은 fired set 갱신을 스킵하고 lastStationName만 갱신한다 (#462)', async () => {
     mockAsyncGetItem.mockResolvedValue(null);
     mockGetPresented.mockResolvedValueOnce([
@@ -448,6 +455,17 @@ describe('tba: fire-time 재검증 (#918 A3 PR2)', () => {
       expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:강남']));
       expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
       expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalled();
+    });
+
+    // #1367 — occurrenceIdx>=1인 `tba:phase:station:n` identifier는 fired set에 `phase:station#n` 형식으로 등록.
+    // silent push 채널과 unified dedup key 공간 공유 → 같은 hopIndex의 silent push가 dedup 적중.
+    it('#1367 occurrenceIdx>=1 (`tba:phase:station:n`) → fired set에 `phase:station#n` 형식으로 등록', async () => {
+      mockGetFiredAlarms.mockResolvedValueOnce(new Set());
+
+      await reconcileScheduledAlarmDelivery('tba:early:강남:2');
+
+      expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:강남#2']));
+      expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
     });
 
     it('tripStart 미존재 시 revalidate-no-trip 적재 후 상태 갱신 skip', async () => {
@@ -649,6 +667,21 @@ describe('tba: fire-time 재검증 (#918 A3 PR2)', () => {
       expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:강남']));
       expect(mockGetTripStartedAt).not.toHaveBeenCalled();
       expect(mockLogSuppressedTbaRevalidation).not.toHaveBeenCalled();
+      handle.remove();
+    });
+
+    // #1367 — drain 경로도 occurrenceIdx>=1을 보존해 fired set에 `phase:station#n` 등록.
+    it('#1367 drain — `tba:phase:station:n` (n>=1) → fired set에 `phase:station#n` 형식 등록', async () => {
+      mockGetPresented.mockResolvedValueOnce([
+        { date: 1, request: { identifier: 'tba:early:강남:3' } },
+      ]);
+      mockGetFiredAlarms.mockResolvedValueOnce(new Set());
+
+      const handle = registerScheduledAlarmListener();
+      await awaitInitialScheduledAlarmDrain();
+
+      expect(mockSetFiredAlarms).toHaveBeenCalledWith('dest-1', new Set(['early:강남#3']));
+      expect(mockSetLastFiredAlarmStationName).toHaveBeenCalledWith('강남');
       handle.remove();
     });
 

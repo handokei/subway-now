@@ -6,6 +6,7 @@ import type { WindowedMetrics } from '../positionSeries';
 import {
   ARVLCD_FIRE_DEDUP_TTL_SEC,
   ARVLCD_FIRE_KEY_PREFIX,
+  SAME_PHASE_STATION_DEDUP_WINDOW_MS,
   FALLBACK_ADVANCE_GRACE_CYCLES,
   FALLBACK_HOP_SEC,
   MAX_CONSECUTIVE_ETA_MISSING,
@@ -4397,5 +4398,63 @@ describe('runScheduled — #917 A2 arvlCd∈{0,1} 매역 알림 발사', () => {
     expect(stats.arvlCdFireSuccess).toBe(0);
     expect(stats.arvlCdFireMismatch).toBe(0); // 게이트 위 차단이라 fire 경로 미진입
     expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
+  });
+
+  // #1367 — cross-station 동시 fire 차단. 같은 trip에서 직전 다른 station의 fire가 있고
+  // SAME_PHASE_STATION_DEDUP_WINDOW_MS 안이면 다음 station의 fire를 보류한다 (client 동시 banner 차단).
+  it('#1367 cross-station — 직전 다른 station fire 후 윈도우 내 다음 station fire는 dedup', async () => {
+    const tripWithRecentFire = makeLockTrip({
+      lastFiredStation: { stationName: '건대입구', epochMs: NOW - 1_000 },
+    });
+    const { stats, apnsFetch } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      trip: tripWithRecentFire,
+      pushId: 'p-arvl-cross',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(0);
+    expect(stats.arvlCdFireDedup).toBe(1);
+    expect(getStationPassedCalls(apnsFetch)).toHaveLength(0);
+  });
+
+  it('#1367 cross-station — 윈도우 밖(SAME_PHASE_STATION_DEDUP_WINDOW_MS+1)이면 정상 fire', async () => {
+    const tripOldFire = makeLockTrip({
+      lastFiredStation: {
+        stationName: '건대입구',
+        epochMs: NOW - SAME_PHASE_STATION_DEDUP_WINDOW_MS - 1,
+      },
+    });
+    const { stats } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      trip: tripOldFire,
+      pushId: 'p-arvl-cross-ok',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    expect(stats.arvlCdFireDedup).toBe(0);
+  });
+
+  it('#1367 cross-station — 같은 station(직전과 동일)은 cross-station 게이트와 무관 — per-(token,trainCode,station,arvlCd) 게이트가 처리', async () => {
+    // 같은 station이지만 다른 arvlCd면 cross-station 게이트는 통과 (per-arvlCd dedup KV는 별 entry).
+    const tripSameStation = makeLockTrip({
+      lastFiredStation: { stationName: '중곡', epochMs: NOW - 1_000 },
+    });
+    const { stats } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      trip: tripSameStation,
+      pushId: 'p-arvl-cross-same',
+    });
+    // cross-station 분기는 stationName이 같으면 무시 — fire 진행.
+    expect(stats.arvlCdFireSuccess).toBe(1);
+  });
+
+  it('#1367 cross-station — fire 성공 시 trip.lastFiredStation을 stamp하여 다음 cycle dedup 활성화', async () => {
+    const { stats, kv } = await runArvlScheduled({
+      seoul: makeArrivalSeoul('중곡', 0, 1),
+      pushId: 'p-arvl-stamp',
+    });
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    const raw = await kv.get('trip:arvl-tok');
+    expect(raw).not.toBeNull();
+    const parsed = JSON.parse(raw!);
+    expect(parsed.lastFiredStation).toEqual({ stationName: '중곡', epochMs: NOW });
   });
 });

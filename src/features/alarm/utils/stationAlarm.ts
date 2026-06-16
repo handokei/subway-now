@@ -8,8 +8,52 @@ import { ALARM_PHASES, type AlarmContext, type AlarmPhase, type AlarmPhaseId } f
 // 기존 호출자 호환을 위해 re-export 유지.
 export type { AlarmType, AlarmEvent };
 
-export function alarmKey(event: Pick<AlarmEvent, 'phaseId' | 'stationName'>): string {
-  return `${event.phaseId}:${event.stationName}`;
+/**
+ * #1367 — FIRED_ALARMS dedup key.
+ *
+ * 기본 형식: `${phaseId}:${stationName}` (FG GPS·OS scheduled의 default occurrenceIdx=0).
+ * `occurrenceIdx >= 1`인 경우 `:${stationName}#${n}` suffix를 붙여 같은 stationName이 route에
+ * 중복 등장하는 trip(2호선 순환 등)에서 hop별 dedup이 collide하지 않도록 분리한다. silent push
+ * (`payload.hopIndex`)와 OS scheduled identifier(`tba:phase:station[:n]`)의 occurrence 표기를
+ * 단일 dedup key 공간에 통합한다 — cross-channel(silent push + OS scheduled) 동일 hop fire가
+ * 한 번만 banner로 노출되도록 한다.
+ *
+ * 파싱 호환: `stationName`에 `#`은 stations.json에 등장하지 않으므로 `key.lastIndexOf('#')`로
+ * 안전하게 occurrence 분리 가능. occurrence 미포함 키(legacy)는 parser가 `#` 부재로 0 fallback.
+ */
+export interface AlarmKeyInput {
+  phaseId: string;
+  stationName: string;
+  occurrenceIdx?: number;
+}
+
+export function alarmKey(event: AlarmKeyInput): string {
+  const occ = event.occurrenceIdx ?? 0;
+  const base = `${event.phaseId}:${event.stationName}`;
+  return occ > 0 ? `${base}#${occ}` : base;
+}
+
+/**
+ * #1367 — alarmKey()의 역연산. parsed shape으로 phase/station/occurrenceIdx를 분리한다.
+ * `#` 없는 legacy key는 occurrenceIdx=0으로 정규화. 잘못된 key(phaseId 콜론 없음)는 null.
+ */
+export function parseAlarmKey(
+  key: string,
+): { phaseId: string; stationName: string; occurrenceIdx: number } | null {
+  const sep = key.indexOf(':');
+  if (sep === -1) return null;
+  const phaseId = key.slice(0, sep);
+  const rest = key.slice(sep + 1);
+  const hash = rest.lastIndexOf('#');
+  if (hash === -1) {
+    return { phaseId, stationName: rest, occurrenceIdx: 0 };
+  }
+  const suffix = rest.slice(hash + 1);
+  const occ = Number(suffix);
+  if (!Number.isInteger(occ) || occ < 0) {
+    return { phaseId, stationName: rest, occurrenceIdx: 0 };
+  }
+  return { phaseId, stationName: rest.slice(0, hash), occurrenceIdx: occ };
 }
 
 export interface CurrentTarget {

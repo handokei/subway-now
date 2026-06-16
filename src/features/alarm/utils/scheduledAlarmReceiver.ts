@@ -16,7 +16,7 @@ import {
   parseTripBoundAlarmIdentifier,
 } from './tripBoundScheduler';
 import { getTripStartedAt } from './tripStartStorage';
-import { resolveAllTargets } from './stationAlarm';
+import { alarmKey, resolveAllTargets } from './stationAlarm';
 import {
   parseBoardingLockAlarmIdentifier,
   routeSignature,
@@ -48,6 +48,12 @@ interface ParsedAlarmIdentifier {
   prefix: 'alarm' | 'tba' | 'bl';
   phaseId: string;
   stationName: string;
+  /**
+   * #1367 — 같은 stationName이 route에 중복 등장하는 trip(순환선)에서 hop별 dedup이 collide하지
+   * 않도록 보존되는 0-based occurrence. `tba:` parser만 suffix를 분리해 채우고, `alarm:`/`bl:`는
+   * occurrence 표기가 없으므로 항상 0 — silent push 채널과 통합 dedup key 공간을 공유한다.
+   */
+  occurrenceIdx: number;
 }
 
 /**
@@ -57,14 +63,25 @@ interface ParsedAlarmIdentifier {
 function parseAlarmIdentifier(identifier: string): ParsedAlarmIdentifier | null {
   if (identifier.startsWith(BOARDING_LOCK_ALARM_PREFIX)) {
     const p = parseBoardingLockAlarmIdentifier(identifier);
-    return p ? { prefix: 'bl', phaseId: p.phase, stationName: p.stationName } : null;
+    return p
+      ? { prefix: 'bl', phaseId: p.phase, stationName: p.stationName, occurrenceIdx: 0 }
+      : null;
   }
   if (identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) {
     const p = parseTripBoundAlarmIdentifier(identifier);
-    return p ? { prefix: 'tba', phaseId: p.phaseId, stationName: p.stationName } : null;
+    return p
+      ? {
+          prefix: 'tba',
+          phaseId: p.phaseId,
+          stationName: p.stationName,
+          occurrenceIdx: p.occurrenceIdx,
+        }
+      : null;
   }
   const p = parseScheduledAlarmIdentifier(identifier);
-  return p ? { prefix: 'alarm', phaseId: p.phaseId, stationName: p.stationName } : null;
+  return p
+    ? { prefix: 'alarm', phaseId: p.phaseId, stationName: p.stationName, occurrenceIdx: 0 }
+    : null;
 }
 
 function safeParseRoute(raw: string | null): Route {
@@ -218,7 +235,15 @@ export async function reconcileScheduledAlarmDelivery(
   // setLastFiredAlarmStationName은 trip 종속성이 약하므로 유지한다(다음 사이클 기준역 갱신용).
   if (destinationId) {
     const fired = await getFiredAlarms(destinationId);
-    fired.add(`${parsed.phaseId}:${parsed.stationName}`);
+    // #1367 — alarmKey()로 silent push 채널과 동일 dedup key 공간 공유. occurrenceIdx>0 OS scheduled
+    // 알람도 phaseId:station#n 형식으로 등록 → 후속 silent push가 같은 hop 발사 시 dedup 적중.
+    fired.add(
+      alarmKey({
+        phaseId: parsed.phaseId,
+        stationName: parsed.stationName,
+        occurrenceIdx: parsed.occurrenceIdx,
+      }),
+    );
     await setFiredAlarms(destinationId, fired);
   }
   await setLastFiredAlarmStationName(parsed.stationName);
@@ -267,7 +292,12 @@ async function drainDeliveredScheduledAlarms(): Promise<void> {
     const fired = await getFiredAlarms(destinationId);
     let firedChanged = false;
     for (const parsed of accepted) {
-      const key = `${parsed.phaseId}:${parsed.stationName}`;
+      // #1367 — unified dedup key (silent push와 동일 공간). occurrenceIdx>0면 `#n` suffix.
+      const key = alarmKey({
+        phaseId: parsed.phaseId,
+        stationName: parsed.stationName,
+        occurrenceIdx: parsed.occurrenceIdx,
+      });
       if (!fired.has(key)) {
         fired.add(key);
         firedChanged = true;

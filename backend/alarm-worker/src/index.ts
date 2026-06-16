@@ -378,6 +378,9 @@ app.post('/trips', async (c) => {
         ...incoming,
         waypoints: existing.waypoints,
         lastFiredPhase: existing.lastFiredPhase,
+        // #1367 — cross-station dedup marker는 token 단위로 보존돼야 같은 trip 재등록 race에서
+        // 윈도우 안 fire가 다시 통과하지 않는다.
+        lastFiredStation: existing.lastFiredStation,
         lastEtaSeconds: existing.lastEtaSeconds,
         apnsEnv: existing.apnsEnv ?? incoming.apnsEnv,
         // #916 follow-up A — server-set auto-lock 보존.
@@ -1448,6 +1451,17 @@ export function validateTrip(input: unknown): Trip | null {
     lastFiredPhase: obj.lastFiredPhase === 'early' || obj.lastFiredPhase === 'imminent'
       ? obj.lastFiredPhase
       : undefined,
+    // #1367 — cross-station dedup marker 복원. 두 필드가 모두 valid해야 채택 (KV 직렬화 신뢰).
+    lastFiredStation:
+      obj.lastFiredStation !== null &&
+      typeof obj.lastFiredStation === 'object' &&
+      typeof obj.lastFiredStation.stationName === 'string' &&
+      typeof obj.lastFiredStation.epochMs === 'number'
+        ? {
+            stationName: obj.lastFiredStation.stationName,
+            epochMs: obj.lastFiredStation.epochMs,
+          }
+        : undefined,
     lastEtaSeconds: typeof obj.lastEtaSeconds === 'number' ? obj.lastEtaSeconds : undefined,
     apnsEnv: obj.apnsEnv === 'sandbox' || obj.apnsEnv === 'production' ? obj.apnsEnv : undefined,
     boardingLock: parseBoardingLock(obj.boardingLock),

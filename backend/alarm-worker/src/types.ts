@@ -86,6 +86,14 @@ export interface Trip {
   alarmAtEpochMs: number;
   /** 마지막으로 발사한 phase. dedup용. */
   lastFiredPhase?: 'early' | 'imminent';
+  /**
+   * #1367 — cross-station 동시 fire 차단용. 마지막 station-passed (arvlCd) push의 (stationName,
+   * epoch ms). 같은 cron tick 또는 짧은 윈도우(SAME_PHASE_STATION_DEDUP_WINDOW_MS) 안에
+   * 다른 station의 동일 신호가 도달해도 client 채널에서 두 banner가 동시기로 뜨지 않도록
+   * backend side에서 한 번 더 게이트한다. 이전 PR들의 per-station `arvlCdFireKey` dedup은
+   * 같은 (token, trainCode, station, arvlCd) 조합 재발사만 막아 cross-station은 통과시킨다.
+   */
+  lastFiredStation?: { stationName: string; epochMs: number };
   /** 마지막 폴링 시 관측 ETA(seconds). 변동 감지용. */
   lastEtaSeconds?: number;
   /**

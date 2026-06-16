@@ -16,7 +16,7 @@ import {
 } from '../../../shared/utils/stationRoute';
 import type { Route } from '../../../shared/utils/stationRoute';
 import type { Station } from '../../../shared/types/station';
-import { alarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
+import { alarmKey, parseAlarmKey, evaluateAlarmPhase, type AlarmEvent } from '../utils/stationAlarm';
 import { resolveAlarmDirection } from '../utils/alarmDirection';
 import { distanceMetersBetween, estimateEtaSeconds } from '../../../shared/utils/stationEta';
 import { resolveNextTarget } from '../utils/stationPipeline';
@@ -260,11 +260,10 @@ function inferHopIndexFromFiredAlarms(
 ): number {
   let maxIdx = -1;
   for (const key of firedAlarms) {
-    const sep = key.indexOf(':');
-    /* istanbul ignore next — alarmKey()가 항상 `${phaseId}:${stationName}` 형식이라 sep=-1는 도달 불가, 잘못된 key 데이터 방어용 */
-    if (sep === -1) continue;
-    const stationName = key.slice(sep + 1);
-    const idx = arcStations.findIndex((s) => isSameStationName(s.name, stationName));
+    const parsed = parseAlarmKey(key);
+    /* istanbul ignore next — alarmKey()가 항상 `${phaseId}:${stationName}[#occ]` 형식이라 parsed=null은 도달 불가, 잘못된 key 데이터 방어용 */
+    if (!parsed) continue;
+    const idx = arcStations.findIndex((s) => isSameStationName(s.name, parsed.stationName));
     if (idx > maxIdx) maxIdx = idx;
   }
   if (maxIdx === -1) return -1;
