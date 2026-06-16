@@ -431,6 +431,12 @@ app.post('/trips', async (c) => {
         // 같은 token + window 안이면 auto-prompt dedup 마커는 보존. backend가 직전에 auto-lock 시도/
         // 발사한 trip 컨텍스트의 재발사 ping-pong을 차단한다.
         lastAutoPromptedAt: preservedLastAutoPromptedAt,
+        // #1370 L1 — corrected apnsEnv 보존. 같은 token = 같은 디바이스 = 같은 APNs env이므로
+        // session 경계(환승 후 새 trainCode 등)와 무관하게 self-heal로 정정된 env가 유지돼야 한다.
+        // 보존 안 하면 새 session 첫 push마다 mismatch retry가 반복돼 첫 push latency + 일부 drop 위험
+        // (#1370 evidence: 환승 후 7호선 매역 silent push 손실).
+        // existing 부재(brand-new token) 또는 existing.apnsEnv 부재(legacy trip)면 incoming 값으로 자연 fallback.
+        apnsEnv: existing?.apnsEnv ?? incoming.apnsEnv,
       };
 
   // #705 — progress KV가 우선. 같은 trainCode면 incoming.waypoints에서 shift된 만큼 잘라낸다.
