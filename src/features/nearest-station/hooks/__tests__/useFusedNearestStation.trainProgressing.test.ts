@@ -4,14 +4,21 @@
  * 옵트인 처리.
  */
 /**
- * #1401 (Epic #1396 sub 5/6) — useFusedNearestStation.trainProgressing 신호 검증.
+ * useFusedNearestStation fusion 통합 테스트.
  *
- * arc 위 fusion result.station idx가 prev → cur로 증가했는지(forward-only) 호출자에게 export.
- *   - 첫 tick: prev 없음 → false.
- *   - 같은 arcKey 안에서 idx 증가: true.
- *   - 같은 idx / 감소: false (forward-only).
- *   - arcKey 변경(새 trip): prev 리셋 → 첫 tick false.
- *   - arc 없음(arcStations.length=0) / result null: false.
+ * 두 시나리오를 한 파일에 묶음 (mock 블록 중복 제거 — SonarCloud CPD 6.2% → 0).
+ *
+ * 1) #1401 (Epic #1396 sub 5/6) — trainProgressing 신호 검증.
+ *    arc 위 fusion result.station idx가 prev → cur로 증가했는지(forward-only) 호출자에게 export.
+ *      - 첫 tick: prev 없음 → false.
+ *      - 같은 arcKey 안에서 idx 증가: true.
+ *      - 같은 idx / 감소: false (forward-only).
+ *      - arcKey 변경(새 trip): prev 리셋 → 첫 tick false.
+ *      - arc 없음(arcStations.length=0) / result null: false.
+ *
+ * 2) #1015 — fusion forward-only 검증.
+ *    boardingLock + arc(arcStations) 활성 시 positionTrainResult의 station이
+ *    boarding index보다 backward(이전)면 null 반환 → fusion이 GPS fallback으로 내려가는지 검증.
  *
  * positionTrainResult / fusionDistanceGate / pickFusedStation / trackTrainProgress를 mock해
  * 시나리오별 station만 격리.
@@ -57,6 +64,8 @@ import { findActiveLines } from '../../../route/utils/findActiveLines';
 import { trackTrainProgress } from '../../../route/utils/trackTrainProgress';
 import { pickCandidateTrains } from '../../../arrival/utils/pickCandidateTrains';
 import { computeRouteArc } from '../../../route/utils/routeProgress';
+import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
+import type { BoardingLock } from '../../../../shared/types/boardingLock';
 import { makeArcFixture, makeArcGpsBase, makeTrainProgressFor } from '../../../../testUtils/arcTestFixtures';
 
 const mockUseNearest = useNearestStation as jest.Mock;
@@ -202,5 +211,158 @@ describe('useFusedNearestStation — #1401 trainProgressing 신호', () => {
       rerender({});
     });
     expect(result.current.trainProgressing).toBe(true);
+  });
+});
+
+/**
+ * arc: [역A(idx=0), 역B(idx=1, 탑승역), 역C(idx=2)]
+ * boardingStation = 역B(idx=1) — forward-only 가드의 기준점.
+ */
+const {
+  ARC_STATIONS: FWD_ARC_STATIONS,
+  BOARDING_LOCK: FWD_BOARDING_LOCK,
+  routeContext: fwdRouteContext,
+} = makeArcFixture('fwd-', 1);
+const [FWD_ARC_STATION_A, FWD_ARC_STATION_B, FWD_ARC_STATION_C] = FWD_ARC_STATIONS;
+
+describe('useFusedNearestStation — #1015 forward-only 검증', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockUseNearest.mockReturnValue(gpsBase());
+    mockFindTop.mockReturnValue([{ station: FWD_ARC_STATION_B, distanceKm: 0.1 }]);
+    mockFindLines.mockReturnValue(['2']);
+    mockUseArrival.mockReturnValue({ arrival: null, loading: false, isMock: false });
+    mockUsePositions.mockReturnValue({ positions: null, loading: false, isMock: false });
+    mockPickCandidates.mockReturnValue([]);
+    mockComputeRouteArc.mockReturnValue({ stations: FWD_ARC_STATIONS });
+  });
+
+  describe('backward jump — positionTrainResult null → GPS fallback', () => {
+    it.each([
+      ['station이 탑승역(idx=1)보다 이전(idx=0) — backward', FWD_ARC_STATION_A],
+    ])('%s', (_label, backwardStation) => {
+      mockTrackProgress.mockReturnValue(trainProgressFor(backwardStation));
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          fwdRouteContext,
+          'T-2',
+          FWD_BOARDING_LOCK,
+        ),
+      );
+
+      // positionTrainResult가 null로 차단 → GPS fallback
+      expect(result.current.source).toBe('gps');
+      expect(result.current.confidence).toBe('gps-only');
+    });
+  });
+
+  describe('forward/on-boarding — positionTrainResult 정상 채택', () => {
+    it.each([
+      ['station이 탑승역(idx=1)과 동일 — on-boarding index', FWD_ARC_STATION_B],
+      ['station이 탑승역(idx=1)보다 앞(idx=2) — forward', FWD_ARC_STATION_C],
+    ])('%s', (_label, forwardStation) => {
+      mockTrackProgress.mockReturnValue(trainProgressFor(forwardStation));
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          fwdRouteContext,
+          'T-2',
+          FWD_BOARDING_LOCK,
+        ),
+      );
+
+      // positionTrainResult 채택 → boarding-lock (trainCode 매칭)
+      expect(result.current.source).toBe('boarding-lock');
+      expect(result.current.confidence).toBe('boarding-lock');
+    });
+  });
+
+  describe('boardingLock 없으면 forward-only 가드 미적용', () => {
+    it('boardingLock=null일 때 backward station도 position-train으로 채택됨', () => {
+      mockTrackProgress.mockReturnValue(trainProgressFor(FWD_ARC_STATION_A));
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          fwdRouteContext,
+          null,
+          null,
+        ),
+      );
+
+      // lock 없으면 가드 미작동 → position-train 채택
+      expect(result.current.source).toBe('position-train');
+    });
+  });
+
+  describe('arcStations 비어있으면 forward-only 가드 미적용', () => {
+    it('computeRouteArc=null(arc 없음)이면 positionTrainResult 정상 채택', () => {
+      mockComputeRouteArc.mockReturnValue(null);
+      mockTrackProgress.mockReturnValue(trainProgressFor(FWD_ARC_STATION_A));
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          fwdRouteContext,
+          'T-2',
+          FWD_BOARDING_LOCK,
+        ),
+      );
+
+      // arc 없으면 arcStations=[] → 가드 조건 미충족 → boarding-lock 채택
+      expect(result.current.source).toBe('boarding-lock');
+    });
+  });
+
+  describe('station이 arc 밖(stationIdx=-1)이면 forward-only 가드 통과', () => {
+    it('arc에 없는 station은 backward 가드 대상 아님', () => {
+      // MOCK_STATIONS.gangnam id('0201')는 ARC_STATIONS에 없어 arcIndexOfStation이 -1 반환.
+      // gangnam.line='2'는 BOARDING_LOCK.boardingLine='2'와 일치 → #662 가드 통과.
+      mockTrackProgress.mockReturnValue(trainProgressFor(MOCK_STATIONS.gangnam));
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          fwdRouteContext,
+          'T-2',
+          FWD_BOARDING_LOCK,
+        ),
+      );
+
+      // arc 밖(idx=-1)은 forward-only 가드 대상 아님 → boarding-lock 채택
+      expect(['position-train', 'boarding-lock']).toContain(result.current.source);
+    });
+  });
+
+  describe('boardingStationId가 arc에 없으면(boardingIdx=-1) forward-only 가드 미적용', () => {
+    it('boardingStationId가 arcStations에 없으면 backward 역도 채택됨', () => {
+      // boardingStationId='unknown-id' → arc에서 findIndex가 -1 → boardingIdx=-1 → 가드 스킵.
+      const lockWithUnknownBoarding: BoardingLock = {
+        ...FWD_BOARDING_LOCK,
+        boardingStationId: 'unknown-id',
+      };
+      mockTrackProgress.mockReturnValue(trainProgressFor(FWD_ARC_STATION_A));
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          fwdRouteContext,
+          'T-2',
+          lockWithUnknownBoarding,
+        ),
+      );
+
+      // boardingIdx=-1 → 가드 조건 미충족 → position-train 또는 boarding-lock 채택
+      expect(['position-train', 'boarding-lock']).toContain(result.current.source);
+    });
   });
 });
