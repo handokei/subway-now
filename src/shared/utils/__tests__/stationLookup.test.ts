@@ -75,4 +75,20 @@ describe('findStationByNameAndLine (#707)', () => {
   it('없는 역명은 null', () => {
     expect(findStationByNameAndLine('없는역', '2')).toBeNull();
   });
+
+  it('#1405: base 이름(자양) + line=7 → 정식명(자양(뚝섬한강공원)) canonical fallback 매칭', () => {
+    const result = findStationByNameAndLine('자양', '7');
+    expect(result?.id).toBe('7-020');
+    expect(result?.name).toBe('자양(뚝섬한강공원)');
+  });
+
+  it('#1405: 옛 boardingLock(뚝섬유원지) + line=7 → alias → canonical → 정식명 매칭', () => {
+    const result = findStationByNameAndLine('뚝섬유원지', '7');
+    expect(result?.id).toBe('7-020');
+  });
+
+  it('#1405: canonical 매칭되어도 line 불일치면 null (호선 정확성 유지)', () => {
+    // 뚝섬유원지는 alias로 자양에 매칭되지만, 자양은 7호선만이라 line=2 조회는 null.
+    expect(findStationByNameAndLine('뚝섬유원지', '2')).toBeNull();
+  });
 });

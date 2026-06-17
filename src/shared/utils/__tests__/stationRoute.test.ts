@@ -90,8 +90,8 @@ describe('findRoute', () => {
     const line2 = getStationsOnLine('2');
     const line3 = getStationsOnLine('3');
     // 교대역: line2에 있고 line3에도 있음
-    const gyodae2 = line2.find((s) => s.name === '교대');
-    const gyodae3 = line3.find((s) => s.name === '교대');
+    const gyodae2 = line2.find((s) => s.name === '교대(법원.검찰청)');
+    const gyodae3 = line3.find((s) => s.name === '교대(법원.검찰청)');
 
     if (gyodae2 && gyodae3) {
       // 강남(2호선) → 교대 바로 다음 3호선 역으로 라우팅
@@ -100,7 +100,7 @@ describe('findRoute', () => {
         const route = findRoute(gyodae2.id, destStation.id);
         expect(route?.type).toBe('transfer');
         if (route?.type === 'transfer') {
-          expect(route.transferName).toBe('교대');
+          expect(route.transferName).toBe('교대(법원.검찰청)');
           expect(route.fromLine).toBe('2');
           expect(route.toLine).toBe('3');
           expect(route.stopsToTransfer).toBe(0); // 이미 환승역에 있음
@@ -205,22 +205,22 @@ describe('findRoute', () => {
     // 9호선 올림픽공원이 stations.json에 등록되면 5호선/8호선을 경유한
     // 4호선↔9호선 multi-transfer 후보 셋에 "올림픽공원"이 반드시 포함되어야 한다.
     const line9 = getStationsOnLine('9');
-    const olympic9 = line9.find((s) => s.name === '올림픽공원');
+    const olympic9 = line9.find((s) => s.name === '올림픽공원(한국체대)');
     const line5 = getStationsOnLine('5');
-    const olympic5 = line5.find((s) => s.name === '올림픽공원');
+    const olympic5 = line5.find((s) => s.name === '올림픽공원(한국체대)');
     expect(olympic9).toBeDefined();
     expect(olympic5).toBeDefined();
     // 5호선 올림픽공원과 9호선 올림픽공원이 같은 이름 → 환승 그래프에서 자동 연결.
     // findStationByNameAndLine으로 두 노선에 모두 존재함을 검증.
-    expect(findStationByNameAndLine('올림픽공원', '5')).toBeDefined();
-    expect(findStationByNameAndLine('올림픽공원', '9')).toBeDefined();
+    expect(findStationByNameAndLine('올림픽공원(한국체대)', '5')).toBeDefined();
+    expect(findStationByNameAndLine('올림픽공원(한국체대)', '9')).toBeDefined();
   });
 
   it('8호선↔수인분당선 복정 환승 경로를 찾는다 (#652 누락 환승역 보강)', () => {
     // 8호선 잠실 → 수인분당 수서: 복정 환승이 최단(잠실~복정~수서).
     const line8 = getStationsOnLine('8');
     const bundang = getStationsOnLine('bundang');
-    const jamsil = line8.find((s) => s.name === '잠실');
+    const jamsil = line8.find((s) => s.name === '잠실(송파구청)');
     const suseo = bundang.find((s) => s.name === '수서');
     expect(jamsil).toBeDefined();
     expect(suseo).toBeDefined();
@@ -260,13 +260,13 @@ describe('buildJourneyDisplay', () => {
   it('DirectRoute이면 세그먼트 1개를 반환한다', () => {
     const route: DirectRoute = makeDirectRoute(3, '2');
     const current = mockStation({ id: '2-022', name: '강남' });
-    const dest = mockStation({ id: '2-025', name: '잠실' });
+    const dest = mockStation({ id: '2-025', name: '잠실(송파구청)' });
 
     const result = buildJourneyDisplay(route, current, dest);
     expect(result).not.toBeNull();
     expect(result!.segments).toHaveLength(1);
     expect(result!.segments[0].fromName).toBe('강남');
-    expect(result!.segments[0].toName).toBe('잠실');
+    expect(result!.segments[0].toName).toBe('잠실(송파구청)');
     expect(result!.segments[0].line).toBe('2');
     expect(result!.segments[0].lineColor).toBe('#009D3E');
     expect(result!.segments[0].stops).toBe(3);
@@ -299,7 +299,7 @@ describe('buildJourneyDisplay', () => {
   it('MultiTransferRoute이면 세그먼트 3개를 반환한다', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
@@ -312,11 +312,11 @@ describe('buildJourneyDisplay', () => {
     expect(result!.segments).toHaveLength(3);
 
     expect(result!.segments[0].fromName).toBe('암사');
-    expect(result!.segments[0].toName).toBe('잠실');
+    expect(result!.segments[0].toName).toBe('잠실(송파구청)');
     expect(result!.segments[0].line).toBe('8');
     expect(result!.segments[0].stops).toBe(3);
 
-    expect(result!.segments[1].fromName).toBe('잠실');
+    expect(result!.segments[1].fromName).toBe('잠실(송파구청)');
     expect(result!.segments[1].toName).toBe('시청');
     expect(result!.segments[1].line).toBe('2');
     expect(result!.segments[1].stops).toBe(5);
@@ -331,7 +331,7 @@ describe('buildJourneyDisplay', () => {
 
   it('TransferRoute이면 세그먼트 2개를 반환한다', () => {
     const route: TransferRoute = makeTransferRoute({
-      transferName: '교대',
+      transferName: '교대(법원.검찰청)',
       fromLine: '2',
       toLine: '3',
       stopsToTransfer: 1,
@@ -345,11 +345,11 @@ describe('buildJourneyDisplay', () => {
     expect(result!.segments).toHaveLength(2);
 
     expect(result!.segments[0].fromName).toBe('강남');
-    expect(result!.segments[0].toName).toBe('교대');
+    expect(result!.segments[0].toName).toBe('교대(법원.검찰청)');
     expect(result!.segments[0].line).toBe('2');
     expect(result!.segments[0].stops).toBe(1);
 
-    expect(result!.segments[1].fromName).toBe('교대');
+    expect(result!.segments[1].fromName).toBe('교대(법원.검찰청)');
     expect(result!.segments[1].toName).toBe('경복궁');
     expect(result!.segments[1].line).toBe('3');
     expect(result!.segments[1].stops).toBe(5);
@@ -367,7 +367,7 @@ describe('calculateETA', () => {
 
   it('TransferRoute일 때 출발 대기 + 운행 + 환승 leg 대기(#851)를 모두 합산한다', () => {
     const route: TransferRoute = makeTransferRoute({
-      transferName: '교대',
+      transferName: '교대(법원.검찰청)',
       fromLine: '2',
       toLine: '3',
       stopsToTransfer: 1,
@@ -380,7 +380,7 @@ describe('calculateETA', () => {
   it('MultiTransferRoute일 때 leg 수만큼 환승 대기가 합산된다(#851)', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
@@ -418,7 +418,7 @@ describe('calculateStaticETA', () => {
 
   it('TransferRoute일 때 기본대기3분 + 정거장*2분 + 실측 환승시간을 반환한다', () => {
     const route: TransferRoute = makeTransferRoute({
-      transferName: '교대',
+      transferName: '교대(법원.검찰청)',
       fromLine: '2',
       toLine: '3',
       stopsToTransfer: 1,
@@ -431,7 +431,7 @@ describe('calculateStaticETA', () => {
   it('MultiTransferRoute일 때 기본대기3분 + 환승별 실측 시간 합산을 반환한다', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
@@ -643,11 +643,11 @@ describe('환승역별 실측 환승시간 반영', () => {
   // 교대(2↔3) 63초 vs 잠실(8↔2) 158초 — 같은 stops여도 travelMinutes 차이 발생
   it('동일 stops·다른 환승역이면 환승시간 차이가 travelMinutes에 반영된다', () => {
     const fast: TransferRoute = makeTransferRoute({
-      transferName: '교대', fromLine: '2', toLine: '3',
+      transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
       stopsToTransfer: 2, stopsFromTransfer: 2,
     });
     const slow: TransferRoute = makeTransferRoute({
-      transferName: '잠실', fromLine: '8', toLine: '2',
+      transferName: '잠실(송파구청)', fromLine: '8', toLine: '2',
       stopsToTransfer: 2, stopsFromTransfer: 2,
     });
     // 둘 다 4 stops 동일. 교대 63초 round(9.05)=9, 잠실 158초 round(10.6333)=11. 차이 2분.
@@ -667,7 +667,7 @@ describe('환승역별 실측 환승시간 반영', () => {
   it('multi-transfer는 환승역별 실측 시간을 누적 합산한다', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 1 },
+        { transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3', stopsToTransfer: 1 },
         { transferName: '서울역', fromLine: '1', toLine: '4', stopsToTransfer: 2 },
       ],
       stopsAfterLastTransfer: 3,
@@ -682,7 +682,7 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
 
   it('TransferRoute에서 arrivalsAtTransfers[0] fresh이면 동적 대기로 사용', () => {
     const route: TransferRoute = makeTransferRoute({
-      transferName: '교대', fromLine: '2', toLine: '3',
+      transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
       stopsToTransfer: 1, stopsFromTransfer: 5,
     });
     // 출발 3분(fallback) + 환승 leg 5분(arrivalSeconds=300) + travel 13 = 21
@@ -697,7 +697,7 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
   it('MultiTransferRoute에서 각 leg마다 동적 합산', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
@@ -717,7 +717,7 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
   it('일부 leg만 제공 시 누락 element는 leg당 DEFAULT_WAIT_MINUTES fallback', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
@@ -733,7 +733,7 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
 
   it('arrivalsAtTransfers 빈 배열이면 leg마다 fallback (회귀 없음)', () => {
     const route: TransferRoute = makeTransferRoute({
-      transferName: '교대', fromLine: '2', toLine: '3',
+      transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
       stopsToTransfer: 1, stopsFromTransfer: 5,
     });
     // 출발 3분 + 환승 3분(빈 배열 → undefined → fallback) + travel 13 = 19
@@ -755,7 +755,7 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
 
   it('stale element는 그 leg만 fallback', () => {
     const route: TransferRoute = makeTransferRoute({
-      transferName: '교대', fromLine: '2', toLine: '3',
+      transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
       stopsToTransfer: 1, stopsFromTransfer: 5,
     });
     // 60_001ms 경과 → stale → fallback. 출발 3 + 환승 3 + travel 13 = 19
@@ -770,7 +770,7 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
   it('합산 round 정책 — 개별 round했다면 +1되었을 케이스', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
@@ -831,7 +831,7 @@ describe('calculateRemainingLegETA', () => {
 
   it('TransferRoute completedTransferIdx=0: 잔여 ride만 (stopsFromTransfer*2, wait 미포함)', () => {
     const route: TransferRoute = makeTransferRoute({
-      transferName: '교대',
+      transferName: '교대(법원.검찰청)',
       fromLine: '2',
       toLine: '3',
       stopsToTransfer: 1,
@@ -843,7 +843,7 @@ describe('calculateRemainingLegETA', () => {
 
   it('TransferRoute에서 completedTransferIdx가 범위 밖이면 null', () => {
     const route: TransferRoute = makeTransferRoute({
-      transferName: '교대',
+      transferName: '교대(법원.검찰청)',
       fromLine: '2',
       toLine: '3',
       stopsToTransfer: 1,
@@ -856,7 +856,7 @@ describe('calculateRemainingLegETA', () => {
   it('MultiTransferRoute 첫 환승 직후(idx=0): 잔여 시청 환승 + 잔여 stops', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
@@ -868,7 +868,7 @@ describe('calculateRemainingLegETA', () => {
   it('MultiTransferRoute 마지막 환승 직후: 환승 0회 + stopsAfterLastTransfer만', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
@@ -880,7 +880,7 @@ describe('calculateRemainingLegETA', () => {
   it('MultiTransferRoute 환승 3회 중 첫 환승 직후: 잔여 환승 2회 산식 검증', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
         { transferName: '서울역', fromLine: '1', toLine: '4', stopsToTransfer: 2 },
       ],
@@ -895,7 +895,7 @@ describe('calculateRemainingLegETA', () => {
   it('MultiTransferRoute에서 범위 밖 인덱스는 null', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
@@ -927,24 +927,24 @@ describe('routeSignature', () => {
 
   it('TransferRoute는 transferName/노선/정거장수를 모두 반영한다', () => {
     const route: TransferRoute = makeTransferRoute({
-      transferName: '교대',
+      transferName: '교대(법원.검찰청)',
       fromLine: '2',
       toLine: '3',
       stopsToTransfer: 1,
       stopsFromTransfer: 5,
     });
-    expect(routeSignature(route)).toBe(['t', '2', '3', '교대', 1, 5].join(SEP));
+    expect(routeSignature(route)).toBe(['t', '2', '3', '교대(법원.검찰청)', 1, 5].join(SEP));
   });
 
   it('MultiTransferRoute는 모든 환승 segment + 마지막 정거장수를 반영한다', () => {
     const route: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
       ],
       stopsAfterLastTransfer: 4,
     });
-    const segs = ['8', '2', '잠실', 3].join(SEP) + SEP + ['2', '1', '시청', 5].join(SEP);
+    const segs = ['8', '2', '잠실(송파구청)', 3].join(SEP) + SEP + ['2', '1', '시청', 5].join(SEP);
     expect(routeSignature(route)).toBe(['m', segs, 4].join(SEP));
   });
 });
@@ -1045,29 +1045,29 @@ describe('getNextStationName', () => {
       const line2 = getStationsOnLine('2');
       const line3 = getStationsOnLine('3');
       const gangnam = line2.find((s) => s.name === '강남')!;
-      const gyodae3 = line3.find((s) => s.name === '교대')!;
+      const gyodae3 = line3.find((s) => s.name === '교대(법원.검찰청)')!;
       const destStation = line3[line3.indexOf(gyodae3) + 1];
 
       const route: TransferRoute = makeTransferRoute({
-        transferName: '교대',
+        transferName: '교대(법원.검찰청)',
         fromLine: '2',
         toLine: '3',
         stopsToTransfer: 1,
         stopsFromTransfer: 1,
       });
       const next = getNextStationName(gangnam.id, destStation.id, route);
-      expect(next).toBe('교대');
+      expect(next).toBe('교대(법원.검찰청)');
     });
 
     it('stopsToTransfer === 0이면 toLine에서 목적지 방향 다음 역을 반환한다', () => {
       // 현재 교대역(3호선)에서 목적지 방향으로
       const line3 = getStationsOnLine('3');
-      const gyodae3 = line3.find((s) => s.name === '교대')!;
+      const gyodae3 = line3.find((s) => s.name === '교대(법원.검찰청)')!;
       const gyodaeIdx = line3.indexOf(gyodae3);
       const destStation = line3[gyodaeIdx + 2]; // 교대에서 2칸 뒤
 
       const route: TransferRoute = makeTransferRoute({
-        transferName: '교대',
+        transferName: '교대(법원.검찰청)',
         fromLine: '2',
         toLine: '3',
         stopsToTransfer: 0,
@@ -1191,7 +1191,7 @@ describe('pickRouteByPreference', () => {
     travelMinutes: 6,
   };
   const c2: RouteCandidate = {
-    route: makeTransferRoute({ transferName: '교대', fromLine: '2', toLine: '3', stopsToTransfer: 2, stopsFromTransfer: 3 }),
+    route: makeTransferRoute({ transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3', stopsToTransfer: 2, stopsFromTransfer: 3 }),
     totalStops: 5,
     transferCount: 1,
     travelMinutes: 13,
@@ -1296,17 +1296,17 @@ describe('ROUTE_CATEGORIES comparators', () => {
 
 describe('findStationByNameAndLine', () => {
   it('이름과 노선이 일치하는 역을 반환한다', () => {
-    const station = findStationByNameAndLine('교대', '2');
+    const station = findStationByNameAndLine('교대(법원.검찰청)', '2');
     expect(station).toBeDefined();
-    expect(station?.name).toBe('교대');
+    expect(station?.name).toBe('교대(법원.검찰청)');
     expect(station?.line).toBe('2');
     expect(station?.id).toBe('2-023');
   });
 
   it('다른 노선에 있는 같은 이름의 역을 반환한다', () => {
-    const station = findStationByNameAndLine('교대', '3');
+    const station = findStationByNameAndLine('교대(법원.검찰청)', '3');
     expect(station).toBeDefined();
-    expect(station?.name).toBe('교대');
+    expect(station?.name).toBe('교대(법원.검찰청)');
     expect(station?.line).toBe('3');
     expect(station?.id).toBe('3-032');
   });
@@ -1317,7 +1317,7 @@ describe('findStationByNameAndLine', () => {
 
   it('해당 노선에 없는 역이면 undefined를 반환한다 (다른 노선에는 있어도)', () => {
     // 교대역은 1호선에 없음
-    expect(findStationByNameAndLine('교대', '1')).toBeUndefined();
+    expect(findStationByNameAndLine('교대(법원.검찰청)', '1')).toBeUndefined();
   });
 });
 
@@ -1355,11 +1355,11 @@ describe('updateRouteFromPosition', () => {
 
   // ── TransferRoute ──
   describe('TransferRoute', () => {
-    // fromLine: '2', toLine: '3', transferName: '교대'
+    // fromLine: '2', toLine: '3', transferName: '교대(법원.검찰청)'
     // 교대(2호선): 2-023, 교대(3호선): 3-032
     // 목적지: 3호선 양재 3-034
     const storedTransferRoute: TransferRoute = makeTransferRoute({
-      transferName: '교대',
+      transferName: '교대(법원.검찰청)',
       fromLine: '2',
       toLine: '3',
       stopsToTransfer: 1,
@@ -1395,7 +1395,7 @@ describe('updateRouteFromPosition', () => {
     it('fromLine에 있고 transferName은 있지만 nearestStation ID가 유효하지 않으면 null을 반환한다', () => {
       // nearestStation의 id가 유효하지 않으면 getRemainingStops가 null을 반환
       const route: TransferRoute = makeTransferRoute({
-        transferName: '교대',
+        transferName: '교대(법원.검찰청)',
         fromLine: '2',
         toLine: '3',
         stopsToTransfer: 1,
@@ -1408,7 +1408,7 @@ describe('updateRouteFromPosition', () => {
 
     it('toLine에 있으면 stopsToTransfer=0, 목적지까지 stopsFromTransfer를 업데이트한다', () => {
       // 교대(3-032)에서 양재(3-034)까지 2 stops
-      const gyodae3 = getStationsOnLine('3').find((s) => s.name === '교대')!;
+      const gyodae3 = getStationsOnLine('3').find((s) => s.name === '교대(법원.검찰청)')!;
       const result = updateRouteFromPosition(storedTransferRoute, gyodae3, '3-034');
       expect(result).not.toBeNull();
       expect(result?.type).toBe('transfer');
@@ -1420,7 +1420,7 @@ describe('updateRouteFromPosition', () => {
 
     it('toLine에 있지만 destinationId가 다른 노선이면 null을 반환한다', () => {
       // 교대(3호선)에 있지만 목적지가 1호선 역
-      const gyodae3 = getStationsOnLine('3').find((s) => s.name === '교대')!;
+      const gyodae3 = getStationsOnLine('3').find((s) => s.name === '교대(법원.검찰청)')!;
       const result = updateRouteFromPosition(storedTransferRoute, gyodae3, '1-001');
       expect(result).toBeNull();
     });
@@ -1436,11 +1436,11 @@ describe('updateRouteFromPosition', () => {
   // ── MultiTransferRoute ──
   describe('MultiTransferRoute', () => {
     // 8호선 → 2호선(잠실) → 1호선
-    // t1: 8호선 → 2호선, transferName: '잠실'
+    // t1: 8호선 → 2호선, transferName: '잠실(송파구청)'
     // t2: 2호선 → 1호선, transferName: '시청'
     const storedMultiRoute: MultiTransferRoute = makeMultiTransferRoute({
       transfers: [
-        { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 4 },
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 4 },
         { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 10 },
       ],
       stopsAfterLastTransfer: 5,
@@ -1479,7 +1479,7 @@ describe('updateRouteFromPosition', () => {
 
     it('t1.toLine(2호선, 즉 t2.fromLine)에 있으면 t1=0, t2.stopsToTransfer를 업데이트한다', () => {
       // 2호선 잠실(2-016)에서 시청(2-001)까지의 stops
-      const jamsil2 = getStationsOnLine('2').find((s) => s.name === '잠실')!;
+      const jamsil2 = getStationsOnLine('2').find((s) => s.name === '잠실(송파구청)')!;
       const result = updateRouteFromPosition(storedMultiRoute, jamsil2, '1-001');
       expect(result).not.toBeNull();
       expect(result?.type).toBe('multi-transfer');
@@ -1492,12 +1492,12 @@ describe('updateRouteFromPosition', () => {
     it('t1.toLine에 있지만 t2.transferName이 해당 노선에 없으면 null을 반환한다', () => {
       const invalidMultiRoute: MultiTransferRoute = makeMultiTransferRoute({
         transfers: [
-          { transferName: '잠실', fromLine: '8', toLine: '2', stopsToTransfer: 4 },
+          { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 4 },
           { transferName: '존재하지않는역', fromLine: '2', toLine: '1', stopsToTransfer: 10 },
         ],
         stopsAfterLastTransfer: 5,
       });
-      const jamsil2 = getStationsOnLine('2').find((s) => s.name === '잠실')!;
+      const jamsil2 = getStationsOnLine('2').find((s) => s.name === '잠실(송파구청)')!;
       const result = updateRouteFromPosition(invalidMultiRoute, jamsil2, '1-001');
       expect(result).toBeNull();
     });

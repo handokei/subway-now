@@ -48,12 +48,12 @@ describe('lookupStationBySsid', () => {
       expect(result?.name).toBe('용마산');
     });
 
-    it('이수 별칭 — "T_subway_총신대입구" SSID도 이수 entry로 매칭되며 canonical(총신대입구)로 정규화', () => {
+    it('이수 별칭 — "T_subway_총신대입구" SSID도 이수 entry로 매칭되며 canonical(총신대입구(이수))로 정규화', () => {
       // STATION_ALIASES: 이수 → 총신대입구. JSON entry는 "이수"로 적혀 있지만
       // stations.json 매칭은 canonical 표기를 따른다.
       const result = lookupStationBySsid('T_subway_총신대입구');
       expect(result).not.toBeNull();
-      expect(result?.name).toBe('총신대입구');
+      expect(result?.name).toBe('총신대입구(이수)');
     });
   });
 
