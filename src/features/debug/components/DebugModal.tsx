@@ -812,6 +812,10 @@ function DebugModalInner({
     arcStations,
     detectionTier,
     detectionSignalMask,
+    // #1418 — 환경 인지 fusion arbitration. Tier 1 SSOT 합의 활성 + 추정 환경 노출.
+    environment,
+    surfaceSSOTActive,
+    undergroundSSOTActive,
   } = useFusedNearestStation();
   // arc 길이 = trip의 hop 총 수. trip 미설정이면 0.
   const routeHopCount = arcStations.length;
@@ -1085,6 +1089,19 @@ function DebugModalInner({
             <KeyValue label="source" value={source} colors={colors} />
             <KeyValue label="fused" value={fusedLabel} colors={colors} />
             <KeyValue label="gps" value={gpsLabel} colors={colors} />
+            {/* #1418 — 환경 인지 fusion arbitration. surface/underground SSOT 합의 활성 여부와
+                추정 환경. Tier 5(시간 적분) reject 게이트가 어느 신호에 막혔는지 사후 재구성 가능. */}
+            <KeyValue label="environment" value={environment} colors={colors} />
+            <KeyValue
+              label="surfaceSSOT"
+              value={surfaceSSOTActive ? 'active' : 'null'}
+              colors={colors}
+            />
+            <KeyValue
+              label="undergroundSSOT"
+              value={undergroundSSOTActive ? 'active' : 'null'}
+              colors={colors}
+            />
             {differs && (
               <Text
                 style={[typography.mono, { color: colors.warn, marginTop: spacing.xs }]}
