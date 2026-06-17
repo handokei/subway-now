@@ -1,3 +1,4 @@
+import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL } from './kvConsistency';
 import type { Trip } from './types';
 
 /**
@@ -27,7 +28,7 @@ const TRIP_PREFIX = 'trip:';
  * 본 상수는 `pendingPushes.ts:CRON_READ_CACHE_TTL_SEC(30)` /
  * `progress.ts`(10/cron, 60/POST handler)와 일관한 cron-read 정책으로 정렬한다.
  */
-const CRON_READ_CACHE_TTL_SEC = 30;
+const CRON_READ_CACHE_TTL_SEC = SHARED_CRON_TTL;
 
 export function tripKey(token: string): string {
   return `${TRIP_PREFIX}${token}`;
@@ -77,6 +78,8 @@ export async function* listTrips(kv: KVNamespace): AsyncGenerator<Trip> {
       // #766/#770/#1381 — cron read cacheTtl 30s. Cloudflare KV 최소 제약(<30 throw)을 지키면서
       // 동시에 putTrip 직후 첫 cron 사이클의 옛 캐시 window를 차단한다. region propagation
       // 정합성은 sync handler의 verifyBoardingLockPersisted가 read-after-write 검증으로 책임.
+      // #1402 — 신규 callsite가 0/10 같은 값을 silently 쓰지 못하도록 caller 단계에서 guard.
+      assertCronCacheTtl(CRON_READ_CACHE_TTL_SEC);
       const raw = await kv.get(key.name, { cacheTtl: CRON_READ_CACHE_TTL_SEC });
       if (!raw) continue;
       try {
