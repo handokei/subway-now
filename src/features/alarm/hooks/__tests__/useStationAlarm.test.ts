@@ -2231,24 +2231,36 @@ describe('useStationAlarm', () => {
     const route = makeDirectRoute(1, '2');
     const onRouteStation = makeStation('S2-DST', '강남');
 
-    it('API imminent + motionStationary=true + trainProgressing=true → device 정적 가드 우회 → 정상 발사', async () => {
-      // 역삼 회귀 시나리오: motion=stationary지만 fusion arc advance가 확인되면 발사 허용.
-      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
-      mockIsImminentByArrivalCode.mockReturnValue(true);
-
-      renderHook(() =>
+    /**
+     * 7 케이스 모두 동일한 base inputs(route + destination + nearestStation) + 케이스별 overrides로
+     * useStationAlarm을 렌더 → Sonar CPD. helper로 추출.
+     */
+    function renderTrainProgressingAlarm(
+      overrides: Partial<UseStationAlarmInputs>,
+    ): ReturnType<typeof renderHook<unknown, unknown>> {
+      return renderHook(() =>
         useStationAlarm(
           defaultInputs({
             route,
             destination,
             nearestStation: onRouteStation,
-            speedMps: 0.69,
-            accuracyMeters: 50,
-            motionStationary: true,
-            trainProgressing: true,
+            ...overrides,
           }),
         ),
       );
+    }
+
+    it('API imminent + motionStationary=true + trainProgressing=true → device 정적 가드 우회 → 정상 발사', async () => {
+      // 역삼 회귀 시나리오: motion=stationary지만 fusion arc advance가 확인되면 발사 허용.
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderTrainProgressingAlarm({
+        speedMps: 0.69,
+        accuracyMeters: 50,
+        motionStationary: true,
+        trainProgressing: true,
+      });
 
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
       expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
@@ -2260,18 +2272,11 @@ describe('useStationAlarm', () => {
       mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
       mockIsImminentByArrivalCode.mockReturnValue(true);
 
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: onRouteStation,
-            speedMps: 0,
-            accuracyMeters: 50,
-            trainProgressing: true,
-          }),
-        ),
-      );
+      renderTrainProgressingAlarm({
+        speedMps: 0,
+        accuracyMeters: 50,
+        trainProgressing: true,
+      });
 
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
       expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
@@ -2284,19 +2289,12 @@ describe('useStationAlarm', () => {
       mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
       mockIsImminentByArrivalCode.mockReturnValue(true);
 
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: onRouteStation,
-            speedMps: null,
-            accuracyMeters: 50,
-            positionStability: 'static',
-            trainProgressing: true,
-          }),
-        ),
-      );
+      renderTrainProgressingAlarm({
+        speedMps: null,
+        accuracyMeters: 50,
+        positionStability: 'static',
+        trainProgressing: true,
+      });
 
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
       expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
@@ -2311,20 +2309,13 @@ describe('useStationAlarm', () => {
         stationName: '강남',
       });
 
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: onRouteStation,
-            userLocation: { lat: 37.4, lng: 127 },
-            speedMps: 1.5,
-            accuracyMeters: 50,
-            motionStationary: true,
-            trainProgressing: true,
-          }),
-        ),
-      );
+      renderTrainProgressingAlarm({
+        userLocation: { lat: 37.4, lng: 127 },
+        speedMps: 1.5,
+        accuracyMeters: 50,
+        motionStationary: true,
+        trainProgressing: true,
+      });
 
       await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
     });
@@ -2332,19 +2323,12 @@ describe('useStationAlarm', () => {
     it('station-passed + motionStationary=true + trainProgressing=true → 정상 발사', async () => {
       mockGetLastNotifiedStationId.mockResolvedValue(null);
 
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: onRouteStation,
-            speedMps: 0.69,
-            accuracyMeters: 50,
-            motionStationary: true,
-            trainProgressing: true,
-          }),
-        ),
-      );
+      renderTrainProgressingAlarm({
+        speedMps: 0.69,
+        accuracyMeters: 50,
+        motionStationary: true,
+        trainProgressing: true,
+      });
 
       await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
     });
@@ -2353,19 +2337,12 @@ describe('useStationAlarm', () => {
       mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
       mockIsImminentByArrivalCode.mockReturnValue(true);
 
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: onRouteStation,
-            speedMps: 0.69,
-            accuracyMeters: 50,
-            motionStationary: true,
-            trainProgressing: false,
-          }),
-        ),
-      );
+      renderTrainProgressingAlarm({
+        speedMps: 0.69,
+        accuracyMeters: 50,
+        motionStationary: true,
+        trainProgressing: false,
+      });
 
       await waitFor(() => {
         expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
@@ -2379,18 +2356,11 @@ describe('useStationAlarm', () => {
       mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
       mockIsImminentByArrivalCode.mockReturnValue(true);
 
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route,
-            destination,
-            nearestStation: onRouteStation,
-            speedMps: 0,
-            accuracyMeters: 50,
-            // trainProgressing 미전달 — 기본값 false → 기존 정적 가드 그대로.
-          }),
-        ),
-      );
+      renderTrainProgressingAlarm({
+        speedMps: 0,
+        accuracyMeters: 50,
+        // trainProgressing 미전달 — 기본값 false → 기존 정적 가드 그대로.
+      });
 
       await waitFor(() => {
         expect(mockLogSuppressedMovement).toHaveBeenCalledWith(

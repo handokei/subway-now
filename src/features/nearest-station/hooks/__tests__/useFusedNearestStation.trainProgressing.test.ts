@@ -76,7 +76,7 @@ const mockComputeRouteArc = computeRouteArc as jest.Mock;
  * positionTrainResult가 이 arc 위에서 forward advance하는 시나리오만 사용.
  */
 const ARC_STATION_A: Station = {
-  id: 'tp-A', name: '역A', line: '2', lineColor: '#009D3E', lat: 37.5, lng: 127.0,
+  id: 'tp-A', name: '역A', line: '2', lineColor: '#009D3E', lat: 37.5, lng: 127,
 };
 const ARC_STATION_B: Station = {
   id: 'tp-B', name: '역B', line: '2', lineColor: '#009D3E', lat: 37.5, lng: 127.1,
@@ -105,7 +105,7 @@ function gpsBase() {
   return {
     result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
     variants: [MOCK_STATIONS.gangnam],
-    userLocation: { lat: 37.5, lng: 127.0 },
+    userLocation: { lat: 37.5, lng: 127 },
     speedMps: 2,
     accuracyMeters: 50,
     loading: false,
@@ -127,6 +127,24 @@ function trainProgressFor(station: Station) {
   };
 }
 
+/**
+ * 6 케이스 모두 동일 인자(routeContext + BOARDING_LOCK)로 useFusedNearestStation을 렌더 →
+ * Sonar CPD. helper로 추출해 매 케이스 한 줄.
+ */
+function renderTrainProgressingHook(): ReturnType<
+  typeof renderHook<ReturnType<typeof useFusedNearestStation>, unknown>
+> {
+  return renderHook(() =>
+    useFusedNearestStation(
+      undefined,
+      undefined,
+      routeContext,
+      BOARDING_LOCK.trainCode,
+      BOARDING_LOCK,
+    ),
+  );
+}
+
 describe('useFusedNearestStation — #1401 trainProgressing 신호', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -142,15 +160,7 @@ describe('useFusedNearestStation — #1401 trainProgressing 신호', () => {
   it('첫 tick(prev 없음)은 trainProgressing=false', () => {
     mockTrackProgress.mockReturnValue(trainProgressFor(ARC_STATION_A));
 
-    const { result } = renderHook(() =>
-      useFusedNearestStation(
-        undefined,
-        undefined,
-        routeContext,
-        BOARDING_LOCK.trainCode,
-        BOARDING_LOCK,
-      ),
-    );
+    const { result } = renderTrainProgressingHook();
 
     expect(result.current.trainProgressing).toBe(false);
   });
@@ -158,17 +168,9 @@ describe('useFusedNearestStation — #1401 trainProgressing 신호', () => {
   it('같은 arcKey에서 idx 증가(A→B) → trainProgressing=true', () => {
     mockTrackProgress.mockReturnValue(trainProgressFor(ARC_STATION_A));
     // userLocation을 매 tick 다르게 줘 trainProgress useMemo deps 무효화.
-    mockUseNearest.mockReturnValue({ ...gpsBase(), userLocation: { lat: 37.5, lng: 127.0 } });
+    mockUseNearest.mockReturnValue({ ...gpsBase(), userLocation: { lat: 37.5, lng: 127 } });
 
-    const { result, rerender } = renderHook(() =>
-      useFusedNearestStation(
-        undefined,
-        undefined,
-        routeContext,
-        BOARDING_LOCK.trainCode,
-        BOARDING_LOCK,
-      ),
-    );
+    const { result, rerender } = renderTrainProgressingHook();
 
     // 첫 tick은 false (prev=A 저장 effect).
     expect(result.current.trainProgressing).toBe(false);
@@ -188,15 +190,7 @@ describe('useFusedNearestStation — #1401 trainProgressing 신호', () => {
   it('같은 idx 유지(A→A) → trainProgressing=false (forward-only)', () => {
     mockTrackProgress.mockReturnValue(trainProgressFor(ARC_STATION_A));
 
-    const { result, rerender } = renderHook(() =>
-      useFusedNearestStation(
-        undefined,
-        undefined,
-        routeContext,
-        BOARDING_LOCK.trainCode,
-        BOARDING_LOCK,
-      ),
-    );
+    const { result, rerender } = renderTrainProgressingHook();
 
     expect(result.current.trainProgressing).toBe(false);
 
@@ -212,15 +206,7 @@ describe('useFusedNearestStation — #1401 trainProgressing 신호', () => {
     // 첫 tick에서 idx=1(역B)로 시작.
     mockTrackProgress.mockReturnValue(trainProgressFor(ARC_STATION_B));
 
-    const { result, rerender } = renderHook(() =>
-      useFusedNearestStation(
-        undefined,
-        undefined,
-        routeContext,
-        BOARDING_LOCK.trainCode,
-        BOARDING_LOCK,
-      ),
-    );
+    const { result, rerender } = renderTrainProgressingHook();
 
     // 첫 tick → false (prev 없음).
     expect(result.current.trainProgressing).toBe(false);
@@ -239,32 +225,16 @@ describe('useFusedNearestStation — #1401 trainProgressing 신호', () => {
     mockComputeRouteArc.mockReturnValue(null);
     mockTrackProgress.mockReturnValue(trainProgressFor(ARC_STATION_A));
 
-    const { result } = renderHook(() =>
-      useFusedNearestStation(
-        undefined,
-        undefined,
-        routeContext,
-        BOARDING_LOCK.trainCode,
-        BOARDING_LOCK,
-      ),
-    );
+    const { result } = renderTrainProgressingHook();
 
     expect(result.current.trainProgressing).toBe(false);
   });
 
   it('연속 advance(A→B→C) → 매 tick trainProgressing=true', () => {
     mockTrackProgress.mockReturnValue(trainProgressFor(ARC_STATION_A));
-    mockUseNearest.mockReturnValue({ ...gpsBase(), userLocation: { lat: 37.5, lng: 127.0 } });
+    mockUseNearest.mockReturnValue({ ...gpsBase(), userLocation: { lat: 37.5, lng: 127 } });
 
-    const { result, rerender } = renderHook(() =>
-      useFusedNearestStation(
-        undefined,
-        undefined,
-        routeContext,
-        BOARDING_LOCK.trainCode,
-        BOARDING_LOCK,
-      ),
-    );
+    const { result, rerender } = renderTrainProgressingHook();
 
     expect(result.current.trainProgressing).toBe(false);
 
