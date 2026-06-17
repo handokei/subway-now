@@ -632,6 +632,11 @@ export function useStationAlarm({
     const suppressed: AlarmEvent[] = [];
     // #903 (Seam G) — 기압계 강등 시 evaluateAlarmPhase가 early/transfer 알람을 보류.
     // arrivalConfidence는 useFusedNearestStation이 'gps-only-underground'로 강등한 값을 그대로 흘려보냄.
+    //
+    // #1398 — detection-fused는 verdict ≥2 신호 합의 + 근접 게이트가 결합된 라벨.
+    //   gps-only-underground 상태에서 verdict가 결합되면 detection-fused로 승격되어 degraded=false →
+    //   early/transfer 알람 게이트 자동 해제. 의도된 cascade 결합 효과(verdict가 알람 발사에 실제 기여).
+    //   false positive 방어는 subsurfaceStationDetected의 ≥2 합의 + 근접 조건이 담당.
     const degraded = arrivalConfidence === 'gps-only-underground';
     const rawEvent = evaluateAlarmPhase(
       {

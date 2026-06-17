@@ -189,6 +189,7 @@ import {
   DESTINATION_KEY,
   LOCKLESS_STATION_PASSED_KEY,
   ROUTE_KEY,
+  SLEEP_MODE_KEY,
 } from '../../../../shared/constants/storageKeys';
 
 const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
@@ -206,6 +207,30 @@ function ackCall(
 }
 
 const destStation = { id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 };
+
+/**
+ * #1399 — silentPushTask 테스트는 AsyncStorage.getItem을 mockImplementation으로 분기시키는
+ * 패턴이 다발한다(SonarCloud cpd + nested function code smell). 하나의 헬퍼로 압축.
+ *
+ * - `DESTINATION_KEY` / `APNS_TOKEN_KEY`는 항상 기본값 반환(테스트 기본 환경).
+ * - 추가 key는 `overrides` 맵으로 주입. value가 `Error`면 해당 key 조회 시 throw(read 오류 시뮬).
+ * - 그 외 key는 null.
+ */
+const THROW = Symbol('throw');
+function setAsyncStorageMap(
+  overrides: Record<string, string | null | typeof THROW>,
+): void {
+  (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+    if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+    if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+    if (key in overrides) {
+      const v = overrides[key];
+      if (v === THROW) throw new Error('storage-fail');
+      return v;
+    }
+    return null;
+  });
+}
 
 /**
  * expo-notifications iOS BG task payload 모양을 그대로 재현 (#641).
@@ -1071,26 +1096,13 @@ describe('silentPushTask', () => {
         kind: 'destination' | 'transfer' | 'intermediate';
         storage: LocklessStorage;
         pushId?: string;
-        reason: 'lockless-non-intermediate' | 'lockless-opt-out';
+        reason: 'lockless-opt-out';
         logKind: 'destination' | 'transfer' | 'station-passed';
       };
 
+      // #1399 — lockless kind 가드 제거. 사용자 명시 의향 trip(C 토글 ON)은 lock 활성 동급으로
+      // destination/transfer도 발사. opt-in 토글 OFF/부재/read fail 케이스만 skip(보수적 fallback).
       const skipCases: SkipCase[] = [
-        {
-          name: 'destination kind → lockless-non-intermediate + ack',
-          kind: 'destination',
-          storage: 'on',
-          pushId: 'p-dest',
-          reason: 'lockless-non-intermediate',
-          logKind: 'destination',
-        },
-        {
-          name: 'transfer kind → lockless-non-intermediate',
-          kind: 'transfer',
-          storage: 'on',
-          reason: 'lockless-non-intermediate',
-          logKind: 'transfer',
-        },
         {
           name: 'intermediate + 토글 OFF → lockless-opt-out + ack',
           kind: 'intermediate',
@@ -1112,6 +1124,22 @@ describe('silentPushTask', () => {
           storage: 'throw',
           reason: 'lockless-opt-out',
           logKind: 'station-passed',
+        },
+        {
+          name: 'transfer + 토글 OFF → lockless-opt-out (kind 무관, 토글 게이트만 적용)',
+          kind: 'transfer',
+          storage: 'off',
+          pushId: 'p-off-transfer',
+          reason: 'lockless-opt-out',
+          logKind: 'transfer',
+        },
+        {
+          name: 'destination + 토글 OFF → lockless-opt-out (kind 무관, 토글 게이트만 적용)',
+          kind: 'destination',
+          storage: 'off',
+          pushId: 'p-off-dest',
+          reason: 'lockless-opt-out',
+          logKind: 'destination',
         },
       ];
 
@@ -1137,6 +1165,24 @@ describe('silentPushTask', () => {
         mockGetBoardingLock.mockResolvedValue(null);
         mockLocklessStorage('on');
         await handleSilentPush(payload({ kind: 'intermediate', phase: 'imminent' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+
+      // #1399 — lockless destination/transfer 확장. 토글 ON 시 lock 활성 동급으로 발사 통과.
+      it('lock 없음 + destination + 토글 ON → 일반 게이트로 진행 후 발사 (#1399)', async () => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        mockLocklessStorage('on');
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+
+      it('lock 없음 + transfer + 토글 ON + hopIndex>0 → 일반 게이트로 진행 후 발사 (#1399)', async () => {
+        mockGetBoardingLock.mockResolvedValue(null);
+        mockLocklessStorage('on');
+        // hopIndex=1 (first hop 아님) — sleep first-transfer 게이트 비적용.
+        await handleSilentPush(payload({ kind: 'transfer', phase: 'imminent', hopIndex: 1 }));
         expect(mockScheduleNotificationAsync).toHaveBeenCalled();
         expect(mockLogSilentPushFired).toHaveBeenCalled();
       });
@@ -1270,16 +1316,154 @@ describe('silentPushTask', () => {
         expect(mockLogSilentPushFired).toHaveBeenCalled();
       });
 
-      it('lock 없음 + payload.boardingLine 부재 + non-intermediate → 기존 보수 skip(lockless-non-intermediate)', async () => {
+      it('lock 없음 + payload.boardingLine 부재 + non-intermediate (#1399 토글 ON에서 발사 진행)', async () => {
+        // #1399 — kind 가드 제거. 토글 ON + lock 없음 + payload.boardingLine 부재면
+        // line 가드 우회(else 분기) → 일반 게이트로 진행 → 발사. 기존엔 lockless-non-intermediate skip이었음.
         await handleSilentPush(
           payload({ kind: 'transfer', phase: 'imminent', pushId: 'p-nolock-noline' }),
         );
 
         expect(mockFindStationByNameAndLine).not.toHaveBeenCalled();
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+    });
+
+    // #1399 — 좀비 알림 cleanup: tripToken stamp + ACTIVE_TRIP_KEY mismatch drop.
+    describe('#1399 — tripToken mismatch 가드 (좀비 알림 cleanup)', () => {
+      it('payload.tripToken === ACTIVE_TRIP_KEY → 가드 통과 후 발사', async () => {
+        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: 'active-token-123' });
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            tripToken: 'active-token-123',
+            pushId: 'p-match',
+          }),
+        );
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+
+      it('payload.tripToken 다른 token → trip-token-mismatch skip', async () => {
+        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: 'active-token-NEW' });
+        await handleSilentPush(
+          payload({
+            kind: 'intermediate',
+            phase: 'imminent',
+            tripToken: 'stale-token-OLD',
+            pushId: 'p-stale',
+          }),
+        );
         expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
         expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
-          expect.objectContaining({ reason: 'lockless-non-intermediate', kind: 'transfer' }),
+          expect.objectContaining({ reason: 'trip-token-mismatch', kind: 'station-passed' }),
         );
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-stale', 'skipped', 'trip-token-mismatch'),
+        );
+      });
+
+      it('ACTIVE_TRIP_KEY null (이미 cleanup됨) + payload.tripToken 있음 → drop', async () => {
+        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: null });
+        await handleSilentPush(
+          payload({
+            kind: 'transfer',
+            phase: 'imminent',
+            tripToken: 'orphan-token',
+            pushId: 'p-orphan',
+          }),
+        );
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'trip-token-mismatch', kind: 'transfer' }),
+        );
+      });
+
+      it('payload.tripToken 미전달 (구 backend) → 가드 skip, 발사 진행', async () => {
+        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: 'active-token-x' });
+        // payload에 tripToken 미전달 → undefined → 가드 자연 skip.
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+      });
+    });
+
+    // #1399 — lockless 분기 sleep mode 회귀 차단.
+    describe('#1399 — lockless sleep-first-transfer 가드', () => {
+      beforeEach(() => {
+        mockGetBoardingLock.mockResolvedValue(null);
+      });
+
+      it('sleep ON + transfer + hopIndex=0 (first hop) → sleep-first-transfer skip', async () => {
+        setAsyncStorageMap({
+          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [SLEEP_MODE_KEY]: JSON.stringify(true),
+        });
+        await handleSilentPush(
+          payload({ kind: 'transfer', phase: 'imminent', hopIndex: 0, pushId: 'p-sleep-tx' }),
+        );
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+        expect(mockLogSilentPushSkipped).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'sleep-first-transfer', kind: 'transfer' }),
+        );
+        expect(mockSendPushAck).toHaveBeenCalledWith(
+          ackCall('p-sleep-tx', 'skipped', 'sleep-first-transfer'),
+        );
+      });
+
+      it('sleep ON + destination + hopIndex=0 → 통과 (destination은 절대 suppress 안 함)', async () => {
+        setAsyncStorageMap({
+          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [SLEEP_MODE_KEY]: JSON.stringify(true),
+        });
+        await handleSilentPush(
+          payload({ kind: 'destination', phase: 'imminent', hopIndex: 0 }),
+        );
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+        expect(mockLogSilentPushFired).toHaveBeenCalled();
+      });
+
+      it('sleep ON + transfer + hopIndex>0 → 통과 (first hop 아님)', async () => {
+        setAsyncStorageMap({
+          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [SLEEP_MODE_KEY]: JSON.stringify(true),
+        });
+        await handleSilentPush(
+          payload({ kind: 'transfer', phase: 'imminent', hopIndex: 1 }),
+        );
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+      });
+
+      it('sleep OFF + transfer + hopIndex=0 → 통과', async () => {
+        setAsyncStorageMap({
+          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [SLEEP_MODE_KEY]: JSON.stringify(false),
+        });
+        await handleSilentPush(
+          payload({ kind: 'transfer', phase: 'imminent', hopIndex: 0 }),
+        );
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+      });
+
+      it('SLEEP_MODE_KEY AsyncStorage read 오류 → 가드 자연 skip (안전 fallback)', async () => {
+        setAsyncStorageMap({
+          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [SLEEP_MODE_KEY]: THROW,
+        });
+        await handleSilentPush(
+          payload({ kind: 'transfer', phase: 'imminent', hopIndex: 0 }),
+        );
+        // sleep=false fallback → 가드 비활성 → 정상 발사 흐름 진입.
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
+      });
+
+      it('SLEEP_MODE_KEY 부재 (key 자체 없음) → 가드 자연 skip (기본 OFF)', async () => {
+        // SLEEP_MODE_KEY override 없음 → 기본 null 반환 → loadSleepModeFlag가 false return.
+        setAsyncStorageMap({ [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true) });
+        await handleSilentPush(
+          payload({ kind: 'transfer', phase: 'imminent', hopIndex: 0 }),
+        );
+        expect(mockScheduleNotificationAsync).toHaveBeenCalled();
       });
     });
 

@@ -7,11 +7,18 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 /**
- * #1286 — WiFi SSID fusion cascade 격리 검증.
+ * #1286/#1398 — WiFi SSID fusion cascade 격리 검증.
  *
- * - barometerSubsurface=true + wifiStation 있음 → result = wifiStation (최우선)
- * - barometerSubsurface=false(지상) → wifi 무시 → 기존 cascade(GPS fallback)
- * - wifiStation=null → wifi 무시 → 기존 cascade
+ * #1398에서 barometer SPOF 분리:
+ * - 기존: `barometerSubsurface===true` 일 때만 wifi 채택
+ * - 변경: barometerSubsurface 무관, wifi 매칭이 GPS와 거리 정합(WIFI_SSID_MAX_DISTANCE_KM 이내)이면 채택.
+ *         GPS userLocation=null(지하 dead zone)이면 거리 면제.
+ *         WiFi 결과가 GPS와 너무 멀면(false positive 의심) 거부 — 기존 cascade로 fallback.
+ *
+ * - 정상 매칭 (gps와 인접): wifi-ssid 채택 (subsurface 무관, #1398)
+ * - GPS 완전 dead(null): wifi-ssid 채택
+ * - wifi=null: 기존 cascade
+ * - WiFi 결과가 GPS와 너무 멀면: 거부 (false positive 방어)
  * - 환승역: boardingLock.boardingLine으로 호선 보정
  * - 디버그: wifiSsid candidate가 entries에 기록
  */
@@ -73,11 +80,19 @@ const yongmasan: Station = {
 // 환승역 — 충무로(3호선). 4호선에도 존재.
 const chungmuro3: Station = MOCK_STATIONS.chungmuro; // line='3'
 
+/**
+ * #1398 — SPOF 분리 후 GPS 좌표는 WiFi 결과 인근(거리 정합)이어야 wifi-ssid 채택.
+ *   - 정상 케이스: 사용자가 그 역 근처에 있어서 WiFi가 잡혔다 = GPS도 그 인근으로 알려진다.
+ *   - 거리 mismatch: 강남 근처 GPS인데 용마산 WiFi 잡힘 = 카페/지하상가 false positive → 거부.
+ *
+ * baseline은 yongmasan과 가까운(거리 ≪ WIFI_SSID_MAX_DISTANCE_KM=1.5km) 좌표 사용.
+ */
 function gpsBase(overrides?: Record<string, unknown>) {
   return {
-    result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
-    variants: [MOCK_STATIONS.gangnam],
-    userLocation: { lat: 37.5, lng: 127.0 },
+    // GPS가 용마산 인근. WiFi 매칭이 yongmasan일 때 거리 정합.
+    result: { station: yongmasan, distanceKm: 0.05 },
+    variants: [yongmasan],
+    userLocation: { lat: yongmasan.lat + 0.0005, lng: yongmasan.lng + 0.0005 },
     speedMps: 1,
     accuracyMeters: 50,
     loading: false,
@@ -89,12 +104,13 @@ function gpsBase(overrides?: Record<string, unknown>) {
   };
 }
 
-describe('useFusedNearestStation — #1286 WiFi SSID fusion', () => {
+describe('useFusedNearestStation — #1286/#1398 WiFi SSID fusion', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockUseNearest.mockReturnValue(gpsBase());
-    mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
-    mockFindLines.mockReturnValue(['2']);
+    // #1398 — GPS top 후보도 yongmasan 인근으로 정렬 — gpsBase와 정합.
+    mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0.05 }]);
+    mockFindLines.mockReturnValue(['7']);
     mockUseArrival.mockReturnValue({ arrival: null, loading: false, isMock: false });
     mockUsePositions.mockReturnValue({ positions: null, loading: false, isMock: false });
   });
@@ -132,8 +148,8 @@ describe('useFusedNearestStation — #1286 WiFi SSID fusion', () => {
           yongmasan,
         ),
       );
-      // gpsResult는 GPS 원본 그대로
-      expect(result.current.gpsResult?.station.id).toBe(MOCK_STATIONS.gangnam.id);
+      // gpsResult는 GPS 원본 그대로 (gpsBase가 yongmasan을 반환 — 거리 정합 fixture).
+      expect(result.current.gpsResult?.station.id).toBe(yongmasan.id);
       expect(result.current.source).toBe('wifi-ssid');
     });
 
@@ -160,8 +176,9 @@ describe('useFusedNearestStation — #1286 WiFi SSID fusion', () => {
     });
   });
 
-  describe('지상(subsurface=false) — WiFi 무시, 기존 cascade', () => {
-    it('subsurface=false + wifiStation 있어도 GPS fallback(gps-only)', () => {
+  describe('#1398 SPOF 분리 — barometer 무관, WiFi 매칭 자체 신뢰도로 채택', () => {
+    it('subsurface=false + wifiStation 매칭 + GPS 거리 정합 → wifi-ssid 채택 (기압계 unavailable여도)', () => {
+      // #1398 acceptance: 기압계 unavailable(subsurface=false)이어도 WiFi 신선 매칭 시 현재역 유지.
       const { result } = renderHook(() =>
         useFusedNearestStation(
           undefined,
@@ -174,11 +191,11 @@ describe('useFusedNearestStation — #1286 WiFi SSID fusion', () => {
           yongmasan,
         ),
       );
-      expect(result.current.confidence).toBe('gps-only');
-      expect(result.current.result?.station.id).toBe(MOCK_STATIONS.gangnam.id);
+      expect(result.current.confidence).toBe('wifi-ssid');
+      expect(result.current.result?.station.id).toBe(yongmasan.id);
     });
 
-    it('subsurface 미전달(undefined) + wifiStation 있어도 GPS fallback', () => {
+    it('subsurface 미전달(undefined) + wifiStation 매칭 → wifi-ssid 채택 (기압계 미지원 호환)', () => {
       const { result } = renderHook(() =>
         useFusedNearestStation(
           undefined,
@@ -191,7 +208,43 @@ describe('useFusedNearestStation — #1286 WiFi SSID fusion', () => {
           yongmasan,
         ),
       );
+      expect(result.current.confidence).toBe('wifi-ssid');
+      expect(result.current.result?.station.id).toBe(yongmasan.id);
+    });
+
+    it('WiFi 결과가 GPS와 거리 mismatch (>WIFI_SSID_MAX_DISTANCE_KM) → 거부, 기존 cascade fallback', () => {
+      // false positive 방어: 강남 근처 GPS인데 용마산 WiFi 잡힘 = 카페/지하상가.
+      // SPOF 분리 후에도 거리 게이트로 차단되어야 한다.
+      mockUseNearest.mockReturnValue({
+        result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
+        variants: [MOCK_STATIONS.gangnam],
+        userLocation: { lat: 37.5, lng: 127.0 },
+        speedMps: 1,
+        accuracyMeters: 50,
+        loading: false,
+        error: null,
+        permissionDenied: false,
+        locationUncertain: false,
+        refresh: jest.fn(),
+      });
+      mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
+      mockFindLines.mockReturnValue(['2']);
+
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { subsurface: false },
+          yongmasan,
+        ),
+      );
+      // WiFi 거리 mismatch → wifi-ssid 거부 → gps-only fallback.
       expect(result.current.confidence).toBe('gps-only');
+      expect(result.current.result?.station.id).toBe(MOCK_STATIONS.gangnam.id);
     });
   });
 
@@ -242,6 +295,20 @@ describe('useFusedNearestStation — #1286 WiFi SSID fusion', () => {
         boardingStationId: '0401',
         boardedAt: 1000,
       };
+
+      // #1398 SPOF 분리 후 거리 게이트: GPS를 chungmuro 인근으로 설정해 정합 케이스.
+      mockUseNearest.mockReturnValue({
+        result: { station: chungmuro3, distanceKm: 0.05 },
+        variants: [chungmuro3],
+        userLocation: { lat: chungmuro3.lat + 0.0005, lng: chungmuro3.lng + 0.0005 },
+        speedMps: 1,
+        accuracyMeters: 50,
+        loading: false,
+        error: null,
+        permissionDenied: false,
+        locationUncertain: false,
+        refresh: jest.fn(),
+      });
 
       const { result } = renderHook(() =>
         useFusedNearestStation(
@@ -366,7 +433,8 @@ describe('useFusedNearestStation — #1286 WiFi SSID fusion', () => {
       expect(wifiCandidate?.line).toBe(yongmasan.line);
     });
 
-    it('wifi 미채택(subsurface=false) 시 wifiSsid candidate 없음', () => {
+    it('#1398 — WiFi 거리 mismatch 시 wifiSsid candidate 없음', () => {
+      // SPOF 분리 후: subsurface=false 자체로는 wifi 무시 안 함. 거리 mismatch가 진짜 차단.
       const {
         clearFusionDebugEntries,
         getFusionDebugEntries,
@@ -374,6 +442,21 @@ describe('useFusedNearestStation — #1286 WiFi SSID fusion', () => {
         '../../utils/fusionDebugBuffer',
       ) as typeof import('../../utils/fusionDebugBuffer');
       clearFusionDebugEntries();
+
+      // GPS가 강남, WiFi는 용마산 (>1.5km mismatch) → 거리 게이트 거부.
+      mockUseNearest.mockReturnValue({
+        result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
+        variants: [MOCK_STATIONS.gangnam],
+        userLocation: { lat: 37.5, lng: 127 },
+        speedMps: 1,
+        accuracyMeters: 50,
+        loading: false,
+        error: null,
+        permissionDenied: false,
+        locationUncertain: false,
+        refresh: jest.fn(),
+      });
+      mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
 
       renderHook(() =>
         useFusedNearestStation(

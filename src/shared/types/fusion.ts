@@ -18,6 +18,12 @@
  * #913 (Epic #912) — 'wifi-ssid' 추가. 지하에서 wifi가 잡힐 때 SSID 패턴 직접 매칭으로
  * 역을 확정한다(예: `T_subway_용마산`). GPS 무관 100% 확정 신호이므로 cascade의
  * 첫 단계로 사용되며 boarding-lock과 동급 신뢰로 취급(별도 source 필드로 식별).
+ *
+ * #1398 — 'detection-fused' 추가. `gps-only-underground` 강등 결과에 #921 verdict
+ * (≥2 신호 합의: barometer-stop / motion-stationary / arvlcd-arrived)가 결합되면 승격된다.
+ * 즉 GPS 좌표 자체는 동일(지하 fix)이지만 verdict가 "이 역에 정차/도착" 합의를 만들면
+ * cascade가 verdict를 인식한 결과로 표시. station-passed 발사는 이미 `subsurfaceStationDetected`
+ * 별도 트리거. 본 라벨은 cascade의 confidence 표시 단에서 verdict 기여를 명확히 표기한다.
  */
 export type FusionConfidence =
   | 'boarding-lock'
@@ -28,7 +34,8 @@ export type FusionConfidence =
   | 'route-progress'
   | 'gps-only'
   | 'gps-only-underground'
-  | 'wifi-ssid';
+  | 'wifi-ssid'
+  | 'detection-fused';
 
 /**
  * fusion 신호 출처. position-train이 가장 정확(특정 trainNo 추적 → 현재역),
