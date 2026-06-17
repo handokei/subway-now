@@ -210,12 +210,25 @@ describe('scheduleHopsForLock', () => {
     expect(ids).toContain('bl:T-100:1:imminent:오금');
   });
 
-  it('multi-transfer: windowSize 3으로 잘림 — 4번째 waypoint(목적지)는 예약 안 됨', async () => {
+  it('multi-transfer: windowSize 기본=10이라 4 waypoint 모두 예약됨 (#1399)', async () => {
     await scheduleHopsForLock({ lock, route: multiRoute, destinationName: '온수' });
-    // targets = 교대, 약수, 한강진, 온수. window=3 → 온수 skip
+    // targets = 교대, 약수, 한강진, 온수. window=10 (#1399) → 모두 예약 → destination floor 보장.
     const ids = mockedSchedule.mock.calls.map((c) => c[0].identifier ?? '');
     expect(ids.some((id) => id.includes(':2:'))).toBe(true); // 한강진(idx=2)
-    expect(ids.some((id) => id.includes(':3:'))).toBe(false); // 온수(idx=3) skip
+    expect(ids.some((id) => id.includes(':3:'))).toBe(true); // 온수(idx=3) destination도 floor
+  });
+
+  it('multi-transfer: windowSize=3으로 명시 시 4번째 waypoint(목적지) skip', async () => {
+    // 기존 windowSize=3 동작 보존 — 명시 지정 시 그대로 적용. (advance 시 다음 hop 채워짐 가정 흐름)
+    await scheduleHopsForLock({
+      lock,
+      route: multiRoute,
+      destinationName: '온수',
+      windowSize: 3,
+    });
+    const ids = mockedSchedule.mock.calls.map((c) => c[0].identifier ?? '');
+    expect(ids.some((id) => id.includes(':2:'))).toBe(true);
+    expect(ids.some((id) => id.includes(':3:'))).toBe(false);
   });
 
   it('windowSize 인자로 더 작게 지정 가능', async () => {

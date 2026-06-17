@@ -99,6 +99,15 @@ export interface SilentPushPayload {
    * optional — 미전달 시 wire에서 누락.
    */
   trainCode?: string;
+  /**
+   * #1399 — 좀비 알림 cleanup. push 발사 시점의 active trip token.
+   * 디바이스가 `ACTIVE_TRIP_KEY`와 비교해 mismatch 시 발사 차단(만료 token push drop).
+   *
+   * 사용 시나리오: backend vanish + GPS 동결 + trip 종료 → trip-ended cleanup → 지상 재진입 시
+   * OS queue/네트워크에 잔존하던 stale silent push가 늦게 도착해도 active token이 다른 trip이거나
+   * null이면 발사 차단(S8 14:19 회귀). 구 backend 호환 위해 optional — 미전달 시 가드 자연 skip.
+   */
+  tripToken?: string;
 }
 
 export async function buildApnsJwt(config: ApnsConfig, now: number = Date.now()): Promise<string> {
@@ -168,6 +177,9 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
         ? {}
         : { boardingLine: options.payload.boardingLine }),
       ...(options.payload.trainCode === undefined ? {} : { trainCode: options.payload.trainCode }),
+      // #1399 — tripToken은 정의된 경우에만 wire (좀비 알림 cleanup). 미전달 시 JSON에서 자연
+      // 누락 → 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
+      ...(options.payload.tripToken === undefined ? {} : { tripToken: options.payload.tripToken }),
     },
   });
 
