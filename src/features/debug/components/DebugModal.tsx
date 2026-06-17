@@ -42,7 +42,11 @@ import {
   exportRecentDays,
 } from '../../../features/alarm/utils/boardingPromptMonitor';
 import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingLockStore';
-import { isBoardingLockExpired } from '../../../shared/types/boardingLock';
+import {
+  BOARDING_LOCK_EXPIRY_FACTOR,
+  isBoardingLockExpired,
+  type BoardingLock,
+} from '../../../shared/types/boardingLock';
 import {
   clearEstimatorEntries,
   getEstimatorEntries,
@@ -381,6 +385,20 @@ interface BuildDumpArgs {
    * 미전달 시 (empty)로 출력 — 단위 테스트에서 fusion log를 다루지 않는 경우 호환.
    */
   fusionLog?: readonly FusionDebugEntry[];
+  /**
+   * #1413 — BoardingLock 섹션 dump 입력. lock 활성/trainCode/boardingLine/expiresAt.
+   * 미전달이면 lock=null과 동일(active=no)로 출력.
+   */
+  boardingLock?: BoardingLock | null;
+  /**
+   * #1413 — Estimator State buffer entries. 미전달/빈 배열은 (empty)로 출력.
+   */
+  estimatorLog?: readonly EstimatorDebugEntry[];
+  /**
+   * #1413 — boardingPrompt 카운터·acceptance / Counters 등 시간 기반 집계의 기준 시각.
+   * 미전달 시 `Date.now()` 사용. 테스트에서 결정적 출력 확보용.
+   */
+  nowMs?: number;
 }
 
 /** dump 본체에서 사용하는 single builder 시그니처 — 본문 줄 배열을 반환. */
@@ -535,6 +553,77 @@ function buildFusionLogSection(args: BuildDumpArgs): string[] {
 }
 
 /**
+ * #1413 — BoardingLock 섹션. UI BoardingLockSection과 동일 필드를 dump key=value 형태로.
+ * lock 없으면 `active=no` 1줄만.
+ */
+function buildBoardingLockSection(args: BuildDumpArgs): string[] {
+  const lock = args.boardingLock ?? null;
+  const now = args.nowMs ?? Date.now();
+  const active = lock !== null && !isBoardingLockExpired(lock, now);
+  const lines: string[] = [`active=${active ? 'yes' : 'no'}`];
+  if (lock) {
+    lines.push(
+      `trainCode=${lock.trainCode}`,
+      `line=${lock.boardingLine}`,
+      `expiresAt=${formatAt(lock.boardedAt + lock.expectedDurationMs * BOARDING_LOCK_EXPIRY_FACTOR)}`,
+      `boardedAt=${formatAt(lock.boardedAt)}`,
+    );
+    if (lock.hydratedFromSentinel) lines.push('sentinel=yes');
+  }
+  return lines;
+}
+
+/**
+ * #1413 — Estimator State 섹션. Fusion log와 동일 컨벤션 (빈 buffer=(empty), 최신이 위).
+ */
+function buildEstimatorSection(args: BuildDumpArgs): string[] {
+  const entries = args.estimatorLog ?? [];
+  if (entries.length === 0) return ['(empty)'];
+  return [...entries].reverse().map(formatEstimatorLine);
+}
+
+/**
+ * #1413 — Boarding Prompt 발사 빈도 카운터 (5m / 1h / all).
+ */
+function buildBoardingPromptSection(args: BuildDumpArgs): string[] {
+  const counts = countBoardingPromptByWindow(args.logs, args.nowMs ?? Date.now());
+  return BOARDING_PROMPT_WINDOWS.map(({ key, label }) => `boardingPrompt(${label})=${counts[key]}`);
+}
+
+/**
+ * #1413 — Boarding Prompt Acceptance dashboard.
+ * displayed/responded/boarded/dismissed + 응답률·탑승률 + 최근 7일 시계열.
+ */
+function buildBoardingPromptAcceptanceSection(args: BuildDumpArgs): string[] {
+  const stats = computeBoardingPromptMonitor(args.logs);
+  const rows = exportRecentDays(stats, RECENT_DAYS, args.nowMs ?? Date.now());
+  const lines: string[] = [
+    `displayed=${stats.displayed}`,
+    `responded=${stats.responded}`,
+    `boarded=${stats.boarded}`,
+    `dismissed=${stats.dismissed}`,
+    `responseRate=${formatRatePct(stats.responseRatePct)}`,
+    `boardedRate=${formatRatePct(stats.boardedRatePct)}`,
+    `recent ${RECENT_DAYS}d (day / disp / resp / brd / dis):`,
+  ];
+  for (const row of rows) {
+    lines.push(
+      `${row.dayKey} | ${row.displayed} / ${row.responded} / ${row.boarded} / ${row.dismissed}`,
+    );
+  }
+  return lines;
+}
+
+/**
+ * #1413 — Counters 섹션. reason별 누적 + 마지막 발생 시각.
+ */
+function buildCountersSection(args: BuildDumpArgs): string[] {
+  const counters = summarizeAlarmLogCounters(args.logs);
+  if (counters.length === 0) return ['(empty)'];
+  return counters.map(({ reason, count, lastTs }) => `${reason}=${count}x (${formatTime(lastTs)})`);
+}
+
+/**
  * #1346 — Share dump SSOT.
  *
  * 출력 형식: `## ${title}` + 본문 줄 + 다음 섹션 사이 빈 줄.
@@ -570,6 +659,14 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     suffix: (args) => (args.scheduledDump == null ? '' : ` (${args.scheduledDump.length})`),
   },
   { title: 'Gates', build: buildGatesSection, omitIfEmpty: true },
+  // #1413 — BoardingLock dump. lock vs lockless 구분이 dump 본문만으로 확인 가능해야 한다.
+  { title: 'BoardingLock', build: buildBoardingLockSection },
+  // #1413 — Estimator buffer. lockless trip 진행도 사후 재구성용.
+  {
+    title: 'Estimator State',
+    build: buildEstimatorSection,
+    suffix: (args) => ` (${args.estimatorLog?.length ?? 0})`,
+  },
   {
     title: 'Alarm log',
     build: buildAlarmLogSection,
@@ -581,6 +678,12 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     build: buildFusionLogSection,
     suffix: (args) => ` (${args.fusionLog?.length ?? 0})`,
   },
+  // #1413 — boardingPrompt 발사 빈도 카운터(5m/1h/all).
+  { title: 'Boarding Prompt', build: buildBoardingPromptSection },
+  // #1413 — boardingPrompt acceptance dashboard (displayed/responded/rates + 7일 시계열).
+  { title: 'Boarding Prompt Acceptance', build: buildBoardingPromptAcceptanceSection },
+  // #1413 — reason별 누적 + 마지막 발생 시각.
+  { title: 'Counters', build: buildCountersSection },
 ];
 
 function buildDumpText(args: BuildDumpArgs): string {
@@ -878,6 +981,9 @@ function DebugModalInner({
       sleep,
       // #1346 — fusion log entries를 share에 포함. sticky cascade 같은 회귀 사후 재구성용.
       fusionLog: fusionLogs,
+      // #1413 — UI에만 노출되던 BoardingLock/Estimator/Boarding Prompt(+Acceptance)/Counters를 share에 포함.
+      boardingLock: lock,
+      estimatorLog: estimatorLogs,
     });
     void Share.share({ message });
   }, [
@@ -912,6 +1018,9 @@ function DebugModalInner({
     sleep,
     // #1346 — fusion log 신규 캡쳐.
     fusionLogs,
+    // #1413 — BoardingLock/Estimator 신규 캡쳐.
+    lock,
+    estimatorLogs,
   ]);
 
   return (
@@ -1320,7 +1429,7 @@ function BoardingLockSection({
           <KeyValue
             label="expiresAt"
             value={formatAt(
-              lock.boardedAt + lock.expectedDurationMs * 1.5,
+              lock.boardedAt + lock.expectedDurationMs * BOARDING_LOCK_EXPIRY_FACTOR,
             )}
             colors={colors}
           />
