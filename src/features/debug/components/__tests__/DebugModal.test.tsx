@@ -2958,3 +2958,200 @@ describe('DebugModal helpers — formatEstimatorLine (#1025)', () => {
     for (const token of expected) expect(line).toContain(token);
   });
 });
+
+// #1430 — Environment Distribution 측정 인프라. PR #1427 (Auto-lock) 패턴과 동일하게
+// CPD 회피 (lesson_sonarcloud_dup_prevention): outer scope factory + it.each + wrapper.
+describe('DebugModal helpers — #1430 environment distribution', () => {
+  const { deriveEnvironmentState, formatPercentage, formatDurationMs } = __test__;
+
+  describe('deriveEnvironmentState', () => {
+    it.each([
+      [{ surfaceSSOTActive: true, undergroundSSOTActive: true }, 'hybrid'],
+      [{ surfaceSSOTActive: true, undergroundSSOTActive: false }, 'surface'],
+      [{ surfaceSSOTActive: false, undergroundSSOTActive: true }, 'underground'],
+      [{ surfaceSSOTActive: false, undergroundSSOTActive: false }, 'unknown'],
+    ] as const)('%j → %p', (input, expected) => {
+      expect(deriveEnvironmentState(input)).toBe(expected);
+    });
+  });
+
+  describe('formatPercentage', () => {
+    it.each([
+      [0, '0.0%'],
+      [42.3, '42.3%'],
+      [100, '100.0%'],
+      [99.999, '100.0%'],
+    ])('%p → %p', (input, expected) => {
+      expect(formatPercentage(input)).toBe(expected);
+    });
+  });
+
+  describe('formatDurationMs', () => {
+    it.each([
+      [0, '0s'],
+      [999, '0s'], // sub-second → 0s
+      [58_000, '58s'],
+      [60_000, '1m0s'],
+      [90_500, '1m30s'],
+      [3_600_000, '60m0s'],
+      [1_800_000, '30m0s'],
+    ])('%p ms → %p', (input, expected) => {
+      expect(formatDurationMs(input)).toBe(expected);
+    });
+  });
+});
+
+// #1430 — buildDumpText Environment Distribution 섹션. PR #1427 Auto-lock 섹션과 동일하게
+// it.each + wrapper로 CPD 회피.
+describe('DebugModal buildDumpText — #1430 Environment Distribution 섹션', () => {
+  type DumpArgs = Parameters<typeof __test__.buildDumpText>[0];
+  type EnvSnapshot = NonNullable<DumpArgs['envDistribution']>;
+
+  const baseDumpArgs: DumpArgs = {
+    userLocation: null,
+    speedMps: null,
+    accuracyMeters: null,
+    nearestName: null,
+    nearestDistanceM: null,
+    variants: [],
+    fusion: baseFusion,
+    arrivalSummary: '-',
+    isMock: false,
+    silentPush: baseSilentPush,
+    logs: [],
+  };
+
+  const dumpEnvSection = (envDistribution?: EnvSnapshot): string => {
+    const dump = __test__.buildDumpText({
+      ...baseDumpArgs,
+      ...(envDistribution ? { envDistribution } : {}),
+    });
+    return dump.slice(dump.indexOf('## Environment Distribution'));
+  };
+
+  it.each<{
+    readonly name: string;
+    readonly envDistribution: EnvSnapshot | undefined;
+    readonly contains: readonly string[];
+  }>([
+    {
+      name: 'envDistribution 미전달 시 (n/a) 출력',
+      envDistribution: undefined,
+      contains: ['(n/a)'],
+    },
+    {
+      name: 'observedMs=0 + 빈 totals → 모든 state 0.0% + observed=0s',
+      envDistribution: {
+        totals: { surface: 0, underground: 0, hybrid: 0, unknown: 0 },
+        percentages: { surface: 0, underground: 0, hybrid: 0, unknown: 0 },
+        transitions: 0,
+        observedMs: 0,
+      },
+      contains: [
+        'surface=0.0% underground=0.0% hybrid=0.0% unknown=0.0%',
+        'totals: surface=0s underground=0s hybrid=0s unknown=0s',
+        'transitions=0',
+        'observed=0s',
+      ],
+    },
+    {
+      name: '4 state 분포 (예시 시나리오) → percentages + totals + transitions + observed',
+      envDistribution: {
+        totals: {
+          surface: 12 * 60_000 + 30_000, // 12m30s
+          underground: 5 * 60_000 + 24_000, // 5m24s
+          hybrid: 58_000, // 58s
+          unknown: 10 * 60_000 + 54_000, // 10m54s
+        },
+        percentages: { surface: 42.3, underground: 18.1, hybrid: 3.2, unknown: 36.4 },
+        transitions: 5,
+        observedMs: 30 * 60_000 + 46_000, // 30m46s
+      },
+      contains: [
+        'surface=42.3% underground=18.1% hybrid=3.2% unknown=36.4%',
+        'totals: surface=12m30s underground=5m24s hybrid=58s unknown=10m54s',
+        'transitions=5',
+        'observed=30m46s',
+      ],
+    },
+    {
+      name: 'surface 100% 단일 state → 다른 state 0.0%',
+      envDistribution: {
+        totals: { surface: 60_000, underground: 0, hybrid: 0, unknown: 0 },
+        percentages: { surface: 100, underground: 0, hybrid: 0, unknown: 0 },
+        transitions: 0,
+        observedMs: 60_000,
+      },
+      contains: ['surface=100.0% underground=0.0% hybrid=0.0% unknown=0.0%', 'transitions=0'],
+    },
+  ])('$name', ({ envDistribution, contains }) => {
+    const section = dumpEnvSection(envDistribution);
+    for (const expected of contains) {
+      expect(section).toContain(expected);
+    }
+  });
+
+  it('SHARE_SECTIONS에 Environment Distribution 헤더가 한 번만 등장 + Auto-lock Candidate 다음에 위치', () => {
+    const dump = __test__.buildDumpText(baseDumpArgs);
+    const autoLockIdx = dump.indexOf('## Auto-lock Candidate');
+    const envIdx = dump.indexOf('## Environment Distribution');
+    expect(autoLockIdx).toBeGreaterThan(-1);
+    expect(envIdx).toBeGreaterThan(autoLockIdx);
+    // 헤더가 한 번만 노출되는지(중복 등록 회귀 방지).
+    expect(dump.split('## Environment Distribution').length - 1).toBe(1);
+  });
+});
+
+// #1430 — DebugModalInner render time SSOT cascade로 env counter tick → snapshot이 share dump에
+// 흘러가는 통합 케이스. PR #1421 Auto-lock과 동일한 mock 패턴.
+describe('DebugModal — #1430 환경 분포 share dump 통합', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    setupHookDefaults();
+    jest.spyOn(AppState, 'addEventListener').mockReturnValue({
+      remove: jest.fn(),
+    } as unknown as ReturnType<typeof AppState.addEventListener>);
+  });
+
+  // SSOT 활성 → state 분류 → share text에 토큰 노출. it.each + 헬퍼로 CPD 회피.
+  it.each([
+    {
+      name: 'surface SSOT 활성',
+      surfaceSSOTActive: true,
+      undergroundSSOTActive: false,
+      // 첫 tick은 진입 기록만 → 누적은 0이지만 헤더와 4줄은 항상 dump.
+    },
+    {
+      name: 'underground SSOT 활성',
+      surfaceSSOTActive: false,
+      undergroundSSOTActive: true,
+    },
+    {
+      name: 'hybrid (둘 다 활성)',
+      surfaceSSOTActive: true,
+      undergroundSSOTActive: true,
+    },
+    {
+      name: 'unknown (둘 다 비활성)',
+      surfaceSSOTActive: false,
+      undergroundSSOTActive: false,
+    },
+  ])('Environment Distribution 섹션이 share dump에 노출 ($name)', async ({
+    surfaceSSOTActive,
+    undergroundSSOTActive,
+  }) => {
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({ surfaceSSOTActive, undergroundSSOTActive }),
+    );
+    const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    fireEvent.press(screen.getByTestId('debug-share-dump'));
+    await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+    const msg = shareSpy.mock.calls[0][0].message;
+    expect(msg).toContain('## Environment Distribution');
+    expect(msg).toContain('transitions=');
+    expect(msg).toContain('observed=');
+    shareSpy.mockRestore();
+  });
+});
