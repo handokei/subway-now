@@ -8,8 +8,14 @@
  * #921 — 신호 fusion wire-up (B1 후속 PR).
  *
  * 알고리즘(`fuseStationDetectionSignals`)이 dormant 상태였던 것을 실제 호출자로 연결.
- * 본 hook 자체는 cascade에 영향을 주지 않는다 — verdict만 반환. 호출자(useFusedNearestStation)는
- * 디버그 entry에 첨부해 측정·튜닝 단계를 거친 뒤 후속 PR에서 cascade에 결합한다.
+ *
+ * #1398 — cascade 결합 (verdict가 cascade의 지하 보정 단계에 실제 기여).
+ *   1. `subsurfaceStationDetected` (≥2 신호 합의 + subsurface + 근접 게이트) → useStationAlarm의
+ *      station-passed 발사 트리거. GPS dead zone에서도 발사 가능.
+ *   2. `gps-only-underground` 강등 라벨이 붙은 결과에 verdict.detected가 결합되면
+ *      `detection-fused`로 confidence 라벨 승격 (호출자 useFusedNearestStation).
+ *      cascade가 verdict를 인식한다는 사실을 측정/dump에서 명확히 표시.
+ *      ADR-010 첫 줄: false positive / miss 비대칭 아님 → 임계는 ≥2 합의 + 근접 게이트로 동급 보호.
  *
  * 신호 변환 규약:
  *   - 'barometer-stop'    ← BarometerSignal.stop (undefined → unavailable)

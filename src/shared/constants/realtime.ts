@@ -20,3 +20,19 @@ export const POSITION_TRAIN_TTL_MS = 60_000;
 // 역을 채택하는 false positive를 차단한다. 인접역 간 평균 주행 시간(90s) × TTL(60s) 기준으로
 // 한 사이클에 1~2 hop이 최대 — 여유 margin 포함 3 hops.
 export const LOCK_NEXT_HOP_WINDOW = 3;
+
+/**
+ * #1398 — WiFi SSID 매칭 결과 거리 게이트.
+ *
+ * SPOF 분리(barometer subsurface 의존 제거) 후 false positive 방어 두 번째 layer.
+ * WiFi 매칭이 GPS 좌표와 이 거리 이상 떨어지면 거부한다 — 지상에서 카페/지하상가 WiFi가
+ * 인접 역 WiFi로 매칭되는 사고 차단.
+ *
+ * 인접 역 평균 800m + 환승 통로 길이 + GPS 정확도 ~150m 여유 → 1.5km. fusion 본 거리 게이트
+ * (MAX_FUSION_DISTANCE_KM 0.6)보다 넉넉 — WiFi는 SSID 매칭 자체가 강한 신호(정규식 + 지하철
+ * SSID 패턴)라 거리만으로 거부할 때는 명백한 mismatch만 차단한다.
+ *
+ * GPS userLocation 자체가 없는 케이스(지하 GPS dead zone)는 거리 검증을 자동 면제 — WiFi가
+ * 유일한 신호이므로 통과시킨다.
+ */
+export const WIFI_SSID_MAX_DISTANCE_KM = 1.5;

@@ -1559,4 +1559,57 @@ describe('useFusedNearestStation', () => {
       expect(result.current.subsurfaceStationDetected).toBe(false);
     });
   });
+
+  describe('#1398 cascade verdict 결합 — detection-fused 라벨 승격', () => {
+    // gps-only-underground 상태에서 ≥2 신호 합의 + 근접 게이트 통과 시 confidence를 'detection-fused'로 승격.
+    // source는 'gps' 유지(좌표 신호원 동일). 측정/dump에서 cascade가 verdict를 인식한 사실을 명확히 표시.
+    beforeEach(() => {
+      mockUseNearest.mockReturnValue(gpsBase());
+      mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions.mockReturnValue(positionRet(null));
+    });
+
+    // 3 케이스가 동일한 renderHook 7-인자 형태 + .confidence 검증을 반복 → Sonar cpd.
+    // motionStationary/barometer signal만 다르고 expected confidence/source만 분기 → 테이블화.
+    function renderDetectionCascade(
+      motionStationary: boolean | undefined,
+      baro: { subsurface: boolean; signal: { subsurface: boolean; stop: boolean } },
+    ): ReturnType<typeof renderHook<ReturnType<typeof useFusedNearestStation>, unknown>>['result'] {
+      return renderHook(() =>
+        useFusedNearestStation(undefined, undefined, undefined, null, null, motionStationary, baro),
+      ).result;
+    }
+
+    it.each<{
+      label: string;
+      motionStationary: boolean | undefined;
+      baro: { subsurface: boolean; signal: { subsurface: boolean; stop: boolean } };
+      expectedConfidence: string;
+    }>([
+      {
+        label: 'gps-only-underground + ≥2 신호 합의 + 근접 → detection-fused 승격',
+        motionStationary: true,
+        baro: { subsurface: true, signal: { subsurface: true, stop: true } },
+        expectedConfidence: 'detection-fused',
+      },
+      {
+        label: 'gps-only-underground + 단일 신호 합의 (≥2 미달) → detection-fused 미승격, gps-only-underground 유지',
+        motionStationary: undefined,
+        baro: { subsurface: true, signal: { subsurface: true, stop: true } },
+        expectedConfidence: 'gps-only-underground',
+      },
+      {
+        label: 'subsurface=false (지상) → cascade 진입 X, 기존 gps-only',
+        motionStationary: true,
+        baro: { subsurface: false, signal: { subsurface: false, stop: true } },
+        expectedConfidence: 'gps-only',
+      },
+    ])('$label', ({ motionStationary, baro, expectedConfidence }) => {
+      const result = renderDetectionCascade(motionStationary, baro);
+      expect(result.current.confidence).toBe(expectedConfidence);
+      // source는 모든 케이스에서 'gps' — 좌표 신호원 자체는 GPS.
+      expect(result.current.source).toBe('gps');
+    });
+  });
 });
