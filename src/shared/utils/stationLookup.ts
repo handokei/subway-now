@@ -1,25 +1,46 @@
 import stationsData from '../../data/stations.json';
+import { applyStationAlias } from '../../data/stationAliases';
 import type { LineNumber, Station } from '../types/station';
+import { normalizeStationName } from './normalizeStationName';
 
 const stations = stationsData as Station[];
+
+/**
+ * 노선별 표기 차이/개명/병기역명을 흡수한 canonical 비교 키.
+ *   "자양(뚝섬한강공원)" → normalize → "자양" → alias → "자양"
+ *   "뚝섬유원지" (옛 boardingLock) → normalize → "뚝섬유원지" → alias → "자양"
+ * 두 경우가 같은 키로 떨어지므로 정확 매칭 외에 정규화 fallback이 가능하다.
+ */
+function canonicalKey(name: string): string {
+  return applyStationAlias(normalizeStationName(name));
+}
 
 /**
  * 역명으로 첫 매칭되는 호선을 반환한다.
  * 환승역의 경우 stations.json 등록 순서상 첫 호선이 반환된다 — schedule fallback은
  * trip 전 화면에서만 의미가 있으므로 단일 호선 기준 표시로 충분하다.
+ * #1397: stations.json이 정식 표기(예: "자양(뚝섬한강공원)")를 가져도 옛 boardingLock
+ * /favorites/widget의 base/옛 이름으로도 매칭되도록 canonical fallback을 적용.
  */
 export function findLineByStationName(name: string): LineNumber | null {
-  const match = stations.find((s) => s.name === name);
-  return match ? match.line : null;
+  const exact = stations.find((s) => s.name === name);
+  if (exact) return exact.line;
+  const key = canonicalKey(name);
+  const fallback = stations.find((s) => canonicalKey(s.name) === key);
+  return fallback ? fallback.line : null;
 }
 
 /**
  * 역명으로 첫 매칭되는 Station(좌표 포함)을 반환한다.
  * 환승역은 호선별 lat/lng가 동일하므로 첫 매칭으로 충분하다.
  * silent push 위치 게이트(#478)에서 사용.
+ * #1397: findLineByStationName과 동일한 canonical fallback 적용.
  */
 export function findStationByName(name: string): Station | null {
-  return stations.find((s) => s.name === name) ?? null;
+  const exact = stations.find((s) => s.name === name);
+  if (exact) return exact;
+  const key = canonicalKey(name);
+  return stations.find((s) => canonicalKey(s.name) === key) ?? null;
 }
 
 /**

@@ -2787,13 +2787,14 @@
   },
   {
     "id": "7-020",
-    "name": "뚝섬유원지",
+    "name": "자양(뚝섬한강공원)",
     "line": "7",
     "lineColor": "#747F00",
     "lat": 37.53154,
     "lng": 127.066704,
-    "nameEn": "Ttukseom Resort",
-    "nameJa": "トゥクソムユウォンジ"
+    "nameEn": "Jayang(Ttukseom Hangang Park)",
+    "nameJa": "チャヤン(トゥクソム漢江公園)",
+    "nameHanja": "紫陽(纛島漢江公園)"
   },
   {
     "id": "7-021",

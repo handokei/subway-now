@@ -8,6 +8,8 @@ jest.mock('../../../data/stations.json', () => [
   { id: '1-001', name: '서울역', line: '1', lineColor: '#0052A4', lat: 37.5547, lng: 126.9706 },
   { id: '4-001', name: '서울역', line: '4', lineColor: '#00A5DE', lat: 37.5547, lng: 126.9706 },
   { id: '2-001', name: '강남', line: '2', lineColor: '#00A84D', lat: 37.4979, lng: 127.0276 },
+  // #1397: 정식 표기(괄호 부제 포함)역 — canonical fallback 검증용
+  { id: '7-020', name: '자양(뚝섬한강공원)', line: '7', lineColor: '#747F00', lat: 37.531, lng: 127.066 },
 ]);
 
 describe('findLineByStationName', () => {
@@ -21,6 +23,14 @@ describe('findLineByStationName', () => {
 
   it('returns null for unknown station names', () => {
     expect(findLineByStationName('없는역')).toBeNull();
+  });
+
+  it('#1397: 정식명에 괄호 부제가 있어도 base 이름으로 lookup 성공', () => {
+    expect(findLineByStationName('자양')).toBe('7');
+  });
+
+  it('#1397: 옛 이름(뚝섬유원지)도 alias로 정식명에 fallback', () => {
+    expect(findLineByStationName('뚝섬유원지')).toBe('7');
   });
 });
 
@@ -37,6 +47,17 @@ describe('findStationByName', () => {
 
   it('없는 역명은 null', () => {
     expect(findStationByName('없는역')).toBeNull();
+  });
+
+  it('#1397: base 이름(자양)으로 정식명(자양(뚝섬한강공원)) 매칭', () => {
+    const result = findStationByName('자양');
+    expect(result?.id).toBe('7-020');
+    expect(result?.name).toBe('자양(뚝섬한강공원)');
+  });
+
+  it('#1397: 옛 이름(뚝섬유원지) → alias → canonical → 정식명 매칭', () => {
+    const result = findStationByName('뚝섬유원지');
+    expect(result?.id).toBe('7-020');
   });
 });
 

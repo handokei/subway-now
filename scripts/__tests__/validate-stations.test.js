@@ -10,6 +10,8 @@ const {
   LAT_MAX,
   LNG_MIN,
   LNG_MAX,
+  ADJACENT_DISTANCE_MAX_METERS,
+  haversineMeters,
   validate,
   main,
 } = require('../validate-stations');
@@ -32,9 +34,10 @@ const validTopology = (overrides = {}) => ({
 
 describe('validate()', () => {
   it('passes for clean stations + topology', () => {
+    // #1397: 인접 거리 sanity가 추가되어 좌표를 인접하게(같은 호선 ≤ 8km) 유지한다.
     const stations = [
-      validStation({ id: '3-001', name: '대화', line: '3' }),
-      validStation({ id: '3-002', name: '오금', line: '3', lat: 37.5, lng: 127.1 }),
+      validStation({ id: '3-001', name: '대화', line: '3', lat: 37.50, lng: 127.00 }),
+      validStation({ id: '3-002', name: '오금', line: '3', lat: 37.51, lng: 127.01 }),
     ];
     const res = validate({ stations, topology: validTopology() });
     expect(res.errors).toEqual([]);
@@ -206,6 +209,61 @@ describe('validate()', () => {
     expect(res.errors.some((e) => /name이 비어있/.test(e))).toBe(true);
     expect(res.warnings.every((w) => !/name ".*"이.*중복/.test(w))).toBe(true);
   });
+
+  it('warns when adjacent stops exceed ADJACENT_DISTANCE_MAX_METERS (#1397)', () => {
+    // 대화(37.6754, 126.7657) → 오금(37.5022, 127.1276): ≈ 41km 차이 → warning 트리거
+    const res = validate({
+      stations: [
+        validStation({ id: '3-001', name: '대화', line: '3', lat: 37.6754, lng: 126.7657 }),
+        validStation({ id: '3-002', name: '오금', line: '3', lat: 37.5022, lng: 127.1276 }),
+      ],
+      topology: validTopology(),
+    });
+    expect(res.errors).toEqual([]);
+    expect(
+      res.warnings.some((w) => /인접 hop "대화" → "오금".*누락된 중간역 의심/.test(w)),
+    ).toBe(true);
+  });
+
+  it('does not warn when adjacent stops are within tolerance', () => {
+    // 인접 짧은 거리 (≈ 1km)
+    const res = validate({
+      stations: [
+        validStation({ id: '3-001', name: '대화', line: '3', lat: 37.50, lng: 127.00 }),
+        validStation({ id: '3-002', name: '오금', line: '3', lat: 37.51, lng: 127.00 }),
+      ],
+      topology: validTopology(),
+    });
+    expect(res.warnings.every((w) => !/인접 hop/.test(w))).toBe(true);
+  });
+
+  it('skips adjacent distance check when coordinates are non-finite', () => {
+    // 좌표가 NaN인 경우 — 이미 lat 에러는 다른 룰에서 잡힘. distance 룰은 silently skip.
+    const res = validate({
+      stations: [
+        validStation({ id: '3-001', name: '대화', line: '3', lat: Number.NaN, lng: 127.00 }),
+        validStation({ id: '3-002', name: '오금', line: '3', lat: 37.51, lng: 127.00 }),
+      ],
+      topology: validTopology(),
+    });
+    expect(res.warnings.every((w) => !/인접 hop/.test(w))).toBe(true);
+  });
+});
+
+describe('haversineMeters', () => {
+  it('동일 좌표는 0', () => {
+    expect(haversineMeters(37, 127, 37, 127)).toBe(0);
+  });
+
+  it('1도 위도 차이는 ~111km', () => {
+    const d = haversineMeters(37, 127, 38, 127);
+    expect(d).toBeGreaterThan(110000);
+    expect(d).toBeLessThan(112000);
+  });
+
+  it('상수가 export됨', () => {
+    expect(ADJACENT_DISTANCE_MAX_METERS).toBeGreaterThan(0);
+  });
 });
 
 describe('main()', () => {
@@ -219,9 +277,10 @@ describe('main()', () => {
   it('returns 0 and prints success summary for valid input', () => {
     const outs = [];
     const errs = [];
+    // #1397: 인접 hop sanity 발동 회피 위해 좌표를 인접하게 유지.
     const stationsPath = writeJson('s-ok.json', [
-      validStation({ id: '3-001', name: '대화', line: '3' }),
-      validStation({ id: '3-002', name: '오금', line: '3', lat: 37.5, lng: 127.1 }),
+      validStation({ id: '3-001', name: '대화', line: '3', lat: 37.50, lng: 127.00 }),
+      validStation({ id: '3-002', name: '오금', line: '3', lat: 37.51, lng: 127.01 }),
     ]);
     const topologyPath = writeJson('t-ok.json', validTopology());
     const code = main([], {
@@ -237,9 +296,10 @@ describe('main()', () => {
 
   it('returns 0 with warning count in summary when warnings present', () => {
     const outs = [];
+    // #1397: 인접 hop sanity 발동 회피 위해 좌표 인접 유지. 2 warnings는 endpoints 미스매치 2건.
     const stationsPath = writeJson('s-warn.json', [
-      validStation({ id: '3-001', name: '실제첫역', line: '3' }),
-      validStation({ id: '3-002', name: '실제마지막', line: '3', lat: 37.5, lng: 127.1 }),
+      validStation({ id: '3-001', name: '실제첫역', line: '3', lat: 37.50, lng: 127.00 }),
+      validStation({ id: '3-002', name: '실제마지막', line: '3', lat: 37.51, lng: 127.01 }),
     ]);
     const topologyPath = writeJson('t-warn.json', validTopology());
     const code = main([], {
