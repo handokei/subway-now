@@ -1,9 +1,10 @@
 /* eslint-disable import/no-restricted-paths --
  * Cross-feature orchestration test — Phase 5 file-level disable opt-in.
- * (#1385)
+ * (#1385 / #1419)
  */
 import * as Notifications from 'expo-notifications';
-import { renderHook } from '@testing-library/react-native';
+import { AppState, type AppStateStatus } from 'react-native';
+import { renderHook, waitFor } from '@testing-library/react-native';
 import {
   useBoardingPromptDisplayLogger,
   wasBoardingPromptDisplayed,
@@ -14,6 +15,7 @@ import { BOARDING_PROMPT_CATEGORY } from '../../utils/notificationCategory';
 
 jest.mock('expo-notifications', () => ({
   addNotificationReceivedListener: jest.fn(),
+  getPresentedNotificationsAsync: jest.fn().mockResolvedValue([]),
 }));
 jest.mock('../../utils/alarmLog', () => ({
   logBoardingPromptFired: jest.fn(),
@@ -56,13 +58,16 @@ function makeNotification(overrides: {
   };
 }
 
-describe('useBoardingPromptDisplayLogger (#1385)', () => {
+describe('useBoardingPromptDisplayLogger (#1385 / #1419)', () => {
   let registeredHandler: ((notification: any) => void) | null = null;
+  let appStateHandler: ((state: AppStateStatus) => void) | null = null;
   const subscriptionRemove = jest.fn();
+  const appStateRemove = jest.fn();
 
   beforeEach(() => {
     jest.clearAllMocks();
     registeredHandler = null;
+    appStateHandler = null;
     __resetBoardingPromptDisplayedDedup();
     (Notifications.addNotificationReceivedListener as jest.Mock).mockImplementation(
       (handler) => {
@@ -70,6 +75,16 @@ describe('useBoardingPromptDisplayLogger (#1385)', () => {
         return { remove: subscriptionRemove };
       },
     );
+    (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([]);
+    jest
+      .spyOn(AppState, 'addEventListener')
+      .mockImplementation(((
+        _event: string,
+        handler: (state: AppStateStatus) => void,
+      ) => {
+        appStateHandler = handler;
+        return { remove: appStateRemove };
+      }) as unknown as typeof AppState.addEventListener);
   });
 
   it('FG receive listener를 등록한다', () => {
@@ -78,10 +93,11 @@ describe('useBoardingPromptDisplayLogger (#1385)', () => {
     expect(registeredHandler).not.toBeNull();
   });
 
-  it('unmount 시 subscription remove', () => {
+  it('unmount 시 subscription + AppState listener 둘 다 remove', () => {
     const { unmount } = renderHook(() => useBoardingPromptDisplayLogger());
     unmount();
     expect(subscriptionRemove).toHaveBeenCalled();
+    expect(appStateRemove).toHaveBeenCalled();
   });
 
   it('BOARDING_PROMPT category notification 수신 시 logBoardingPromptFired 호출', () => {
@@ -163,5 +179,75 @@ describe('useBoardingPromptDisplayLogger (#1385)', () => {
     expect(wasBoardingPromptDisplayed('m-2')).toBe(true);
     __resetBoardingPromptDisplayedDedup();
     expect(wasBoardingPromptDisplayed('m-2')).toBe(false);
+  });
+
+  // #1419 — BG 발사 drain (presented tray)
+  it('마운트 시 presented tray drain 1회 호출 + BOARDING_PROMPT 적재', async () => {
+    (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+      makeNotification({ identifier: 'bg-1' }),
+    ]);
+    renderHook(() => useBoardingPromptDisplayLogger());
+    await waitFor(() => {
+      expect(logBoardingPromptFired).toHaveBeenCalledTimes(1);
+    });
+    expect(wasBoardingPromptDisplayed('bg-1')).toBe(true);
+  });
+
+  it('AppState active 진입 시 drain — BG로 받은 prompt가 displayed로 적재', async () => {
+    renderHook(() => useBoardingPromptDisplayLogger());
+    await waitFor(() => expect(appStateHandler).not.toBeNull());
+    (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+      makeNotification({ identifier: 'bg-2' }),
+    ]);
+    appStateHandler!('active');
+    await waitFor(() => {
+      expect(logBoardingPromptFired).toHaveBeenCalledWith({ originStation: '강남', line: '2' });
+    });
+    expect(wasBoardingPromptDisplayed('bg-2')).toBe(true);
+  });
+
+  it('AppState background 진입 시에는 drain 안 함', async () => {
+    renderHook(() => useBoardingPromptDisplayLogger());
+    await waitFor(() => expect(appStateHandler).not.toBeNull());
+    (Notifications.getPresentedNotificationsAsync as jest.Mock).mockClear();
+    appStateHandler!('background');
+    expect(Notifications.getPresentedNotificationsAsync).not.toHaveBeenCalled();
+  });
+
+  it('drain — FG receive와 동일 identifier는 dedup으로 중복 적재 X', async () => {
+    renderHook(() => useBoardingPromptDisplayLogger());
+    await waitFor(() => expect(registeredHandler).not.toBeNull());
+    registeredHandler!(makeNotification({ identifier: 'dup-1' }));
+    expect(logBoardingPromptFired).toHaveBeenCalledTimes(1);
+    (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+      makeNotification({ identifier: 'dup-1' }),
+    ]);
+    appStateHandler!('active');
+    await waitFor(() => {
+      // 추가 호출 없음 — 첫 호출 1회만 유지.
+      expect(logBoardingPromptFired).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('drain — BOARDING_PROMPT 외 category는 skip', async () => {
+    (Notifications.getPresentedNotificationsAsync as jest.Mock).mockResolvedValue([
+      makeNotification({ identifier: 'other-1', categoryIdentifier: 'OTHER_CATEGORY' }),
+    ]);
+    renderHook(() => useBoardingPromptDisplayLogger());
+    await waitFor(() => {
+      expect(Notifications.getPresentedNotificationsAsync).toHaveBeenCalled();
+    });
+    expect(logBoardingPromptFired).not.toHaveBeenCalled();
+  });
+
+  it('drain — getPresentedNotificationsAsync 예외 swallow', async () => {
+    (Notifications.getPresentedNotificationsAsync as jest.Mock).mockRejectedValue(
+      new Error('tray boom'),
+    );
+    expect(() => renderHook(() => useBoardingPromptDisplayLogger())).not.toThrow();
+    await waitFor(() => {
+      expect(Notifications.getPresentedNotificationsAsync).toHaveBeenCalled();
+    });
+    expect(logBoardingPromptFired).not.toHaveBeenCalled();
   });
 });

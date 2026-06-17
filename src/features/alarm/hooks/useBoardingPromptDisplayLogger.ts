@@ -6,7 +6,7 @@
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
 /**
- * #1385 — boardingPrompt displayed wire-up.
+ * #1385 / #1419 — boardingPrompt displayed wire-up.
  *
  * #1021에서 추가된 `logBoardingPromptFired`가 production 호출자가 없어 DebugModal
  * "Boarding Prompt" 카운터와 acceptance dashboard(displayed 의존)가 영원히 0/null로
@@ -16,12 +16,17 @@
  *      BOARDING_PROMPT_CATEGORY면 `logBoardingPromptFired` 호출 + dedup set 등록.
  *   2) BG cold-start로 FG receive를 못 잡은 케이스는 `useBoardingPromptResponder`의 response
  *      listener에서 dedup set 체크 후 보완 적재 (이 파일이 export하는 helper 사용).
+ *   3) #1419 — BG 수신분은 addNotificationReceivedListener가 replay하지 않는다. AppState 'active'
+ *      진입 시 `getPresentedNotificationsAsync` 로 tray를 drain해 미적재 BOARDING_PROMPT를 흡수.
+ *      `scheduledAlarmReceiver.drainDeliveredScheduledAlarms`와 동형 패턴. 7일간 displayed=0
+ *      회귀의 root cause는 (2)에서 사용자가 응답 안 한 BG 수신분이 모두 누락되던 케이스.
  *
  * dedup key는 `notification.request.identifier`. set은 모듈 스코프 in-memory — 앱 재시작 시
  * reset되지만 fired entry는 영구 alarm log AsyncStorage에 적재되므로 누적 손실 없음.
  */
 
 import { useEffect } from 'react';
+import { AppState, type AppStateStatus } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { BOARDING_PROMPT_CATEGORY } from '../utils/notificationCategory';
 import { logBoardingPromptFired } from '../utils/alarmLog';
@@ -59,34 +64,73 @@ export function __resetBoardingPromptDisplayedDedup(): void {
 }
 
 /**
- * FG receive listener — BOARDING_PROMPT category notification 수신 시 displayed 적재.
+ * notification 1건에 대해 displayed 적재(+dedup). FG receive listener와 BG drain 양쪽이 공유.
+ *
+ * categoryIdentifier가 null인 케이스(Android 등)는 FG receive에서는 skip 하지만 drain에서는
+ * payload schema가 일치하면 적재한다. drain은 명시적으로 BOARDING_PROMPT만 필터링하므로
+ * 호출 전 caller가 category를 검증한다.
+ */
+function tryLogDisplayed(notification: Notifications.Notification): void {
+  try {
+    const request = notification.request;
+    const content = request.content;
+    if (content.categoryIdentifier !== BOARDING_PROMPT_CATEGORY) return;
+    const payload = extractBoardingPromptPayload(content.data);
+    if (!payload) return;
+    const identifier = request.identifier;
+    if (typeof identifier !== 'string' || identifier.length === 0) return;
+    if (displayedIdentifiers.has(identifier)) return;
+    displayedIdentifiers.add(identifier);
+    logBoardingPromptFired({
+      originStation: payload.originStation,
+      line: payload.line,
+    });
+  } catch (err) {
+    // listener/drain 콜백은 절대 throw 금지 — 오작동 시 silent log만.
+    log.warn('boarding-prompt displayed 적재 실패', err as Error);
+  }
+}
+
+/**
+ * #1419 — BG 발사 drain. presented tray에서 BOARDING_PROMPT_CATEGORY notification을 읽어
+ * 미적재 분만 displayed로 누적한다. AppState 'active' 진입 시점 + 마운트 시점에 호출한다.
+ *
+ * `scheduledAlarmReceiver.drainDeliveredScheduledAlarms`와 동형 — addNotificationReceivedListener는
+ * BG 수신분을 replay하지 않으므로 displayed 카운터가 0으로 굳는 회귀를 해결한다.
+ */
+async function drainPresentedBoardingPrompts(): Promise<void> {
+  let presented: Notifications.Notification[];
+  try {
+    presented = await Notifications.getPresentedNotificationsAsync();
+  } catch (err) {
+    log.warn('presented tray 조회 실패', err as Error);
+    return;
+  }
+  for (const n of presented) {
+    tryLogDisplayed(n);
+  }
+}
+
+/**
+ * FG receive listener + AppState 'active' drain — BOARDING_PROMPT category notification의
+ * displayed 카운터를 살린다.
  *
  * app/_layout.tsx에서 useBoardingPromptResponder 옆에 같이 호출한다. deps 없음.
  */
 export function useBoardingPromptDisplayLogger(): void {
   useEffect(() => {
     const sub = Notifications.addNotificationReceivedListener((notification) => {
-      try {
-        const request = notification.request;
-        const content = request.content;
-        // iOS에서만 categoryIdentifier가 채워진다 (Android는 무시). BOARDING_PROMPT 외 카테고리는 skip.
-        if (content.categoryIdentifier !== BOARDING_PROMPT_CATEGORY) return;
-        // payload schema 검증 — 형식이 다른 push가 같은 category를 재사용해도 displayed 오적재 차단.
-        const payload = extractBoardingPromptPayload(content.data);
-        if (!payload) return;
-        const identifier = request.identifier;
-        if (typeof identifier !== 'string' || identifier.length === 0) return;
-        if (displayedIdentifiers.has(identifier)) return;
-        displayedIdentifiers.add(identifier);
-        logBoardingPromptFired({
-          originStation: payload.originStation,
-          line: payload.line,
-        });
-      } catch (err) {
-        // listener 콜백은 절대 throw 금지 — 오작동 시 silent log만.
-        log.warn('boarding-prompt displayed 적재 실패', err as Error);
-      }
+      tryLogDisplayed(notification);
     });
-    return () => sub.remove();
+    // 마운트 시점에 1회 drain — cold start로 진입한 경우 tray에 이미 표시된 prompt를 흡수.
+    void drainPresentedBoardingPrompts();
+    const onAppStateChange = (state: AppStateStatus): void => {
+      if (state === 'active') void drainPresentedBoardingPrompts();
+    };
+    const appStateSub = AppState.addEventListener('change', onAppStateChange);
+    return () => {
+      sub.remove();
+      appStateSub.remove();
+    };
   }, []);
 }
