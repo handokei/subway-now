@@ -335,6 +335,13 @@ export interface UseStationAlarmInputs {
    * 미전달/false면 기존 동작 유지(graceful fallback).
    */
   subsurfaceStationDetected?: boolean;
+  /**
+   * #1401 — useFusedNearestStation.trainProgressing 패스스루. 직전 tick 대비 fusion result가
+   * arc 위에서 advance(idx 증가)했음을 의미. true면 evaluateMovement가 device 모션/GPS speed
+   * 정적 신호 가드(motion-stationary / static-speed / static-position) 우회 — 지상/지하 미발사
+   * 회귀(역삼 13:37) 차단. 미전달/false면 기존 동작 유지.
+   */
+  trainProgressing?: boolean;
 }
 
 export function useStationAlarm({
@@ -354,6 +361,7 @@ export function useStationAlarm({
   currentHopIndex = null,
   arcStations,
   subsurfaceStationDetected = false,
+  trainProgressing = false,
 }: UseStationAlarmInputs): void {
   const firedAlarmsRef = useRef<Set<string>>(new Set());
   // #699: firedAlarmsRef의 내용이 어느 destinationId에 속하는지 추적.
@@ -651,6 +659,8 @@ export function useStationAlarm({
       // 검사하므로 fusion이 인접역으로 jitter하면 즉시 발사. snapshot 1/2에서 관측된 20:07:48 등
       // 정적 transfer-early 회귀 차단.
       // #728 — motionStationary 추가. speed=0.69 m/s 임계 우회 phantom과 destination/transfer 카테고리 보호.
+      // #1401 — trainProgressing 추가. fusion arc advance가 확인되면 device 모션/GPS speed 정적
+      // 신호 가드를 우회해 미발사 회귀(역삼 13:37) 차단.
       const movement = evaluateMovement(
         {
           speedMps: speedMps ?? undefined,
@@ -659,6 +669,7 @@ export function useStationAlarm({
         undefined,
         positionStability,
         motionStationary,
+        trainProgressing,
       );
       if (!movement.reliable && movement.reason) {
         logSuppressedMovement({
@@ -690,6 +701,7 @@ export function useStationAlarm({
     currentLockLine,
     positionStability,
     motionStationary,
+    trainProgressing,
     skipWarmupGuard,
     dismissSilence,
     clearDismissSilenceAction,
@@ -742,6 +754,7 @@ export function useStationAlarm({
     // #727 정적 misfire 가드 — useStationAlarm은 timestamp 입력이 없으므로 speed/accuracy만 평가.
     // #733 — speed=null 시 positionStability fallback 사용.
     // #728 — motionStationary 추가. API imminent 경로의 destination 카테고리 보호 (13:53:53 회귀).
+    // #1401 — trainProgressing 추가. fusion arc advance 시 device 정적 신호 우회.
     const movement = evaluateMovement(
       {
         speedMps: speedMps ?? undefined,
@@ -750,6 +763,7 @@ export function useStationAlarm({
       undefined,
       positionStability,
       motionStationary,
+      trainProgressing,
     );
     if (!movement.reliable && movement.reason) {
       logSuppressedMovement({
@@ -779,6 +793,7 @@ export function useStationAlarm({
     accuracyMeters,
     positionStability,
     motionStationary,
+    trainProgressing,
     dismissSilence,
     clearDismissSilenceAction,
     userLocation?.lat,
@@ -804,6 +819,7 @@ export function useStationAlarm({
   // 같은 reason 문자열은 Object.is로 동일하게 비교되어 동일 분류 안에선 effect 재실행 안 함.
   // 타입은 MOVEMENT_TO_ALARM_LOG_REASON 추론에 위임 — SSOT가 movementGate.ts (새 reason 추가 시
   // 본 위치 수정 불필요, 컴파일러가 자동 cascade).
+  // #1401 — trainProgressing 추가. fusion arc advance 시 정적 가드 우회.
   const movementSuppressionReason = useMemo(() => {
     const m = evaluateMovement(
       {
@@ -813,9 +829,10 @@ export function useStationAlarm({
       undefined,
       positionStability,
       motionStationary,
+      trainProgressing,
     );
     return m.reliable ? null : MOVEMENT_TO_ALARM_LOG_REASON[m.reason];
-  }, [speedMps, accuracyMeters, positionStability, motionStationary]);
+  }, [speedMps, accuracyMeters, positionStability, motionStationary, trainProgressing]);
 
   useEffect(() => {
     let cancelled = false;

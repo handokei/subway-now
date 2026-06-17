@@ -179,7 +179,7 @@ export default function HomeScreen() {
   //   2) useCurrentStationConfirmModal: 매칭되면 useStationCandidates가 단일 후보로 자동 확정(#914 F4).
   // useFusedNearestStation 호출(아래) 전에 선언해 8번째 인자로 전달한다.
   const wifiStation = useWifiStation();
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation);
+  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation);
 
   // #914 (F4) — 1탭 현재역 확정 모달. 자동 추정이 locationUncertain으로 길어지면 후보 1~3개를
   // 카드로 노출, 1탭 = customOrigin 적용.
@@ -417,6 +417,9 @@ export default function HomeScreen() {
     // D1 estimator(LocklessRouteHop 포함)의 현재 hop index와 arcStations를 그대로 전달.
     currentHopIndex,
     arcStations,
+    // #1401 — 열차 진행 신호. fusion arc advance가 확인되면 evaluateMovement가 device 모션/GPS
+    // speed 정적 가드를 우회 — 지하철 내부에서 device 신호 불신뢰성 보완(역삼 13:37 미발사 회귀).
+    trainProgressing,
   });
 
   // #584 PR B — BoardingLock 진입점. UI 렌더링/lock 생성만 담당하며,
