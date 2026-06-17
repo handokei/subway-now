@@ -77,6 +77,7 @@ import { verifyTrainDirection } from '../../nearest-station/utils/verifyTrainDir
 import {
   inferAutoLockCandidate,
   type DeviceAutoLockCandidate,
+  type InferAutoLockCandidateInput,
 } from '../../nearest-station/utils/inferAutoLockCandidate';
 import type {
   ConsensusStabilitySnapshot,
@@ -678,13 +679,17 @@ function buildAutoLockSection(args: BuildDumpArgs): string[] {
   if (!m) return ['(n/a)'];
   const ssotLine = `ssot=${formatSSOTLabel(m.surfaceSSOTActive, m.undergroundSSOTActive)}`;
   const stabilityLine = `stability=${m.stability.stable ? 'stable' : 'pending'} count=${m.stability.count} stationId=${m.stability.stationId ?? UNKNOWN_LABEL}`;
-  const directionLine = m.direction
-    ? `direction=${m.direction.matched ? 'matched' : 'mismatch'} reason=${m.direction.reason}`
-    : `direction=${UNKNOWN_LABEL}`;
+  const directionLine = formatDirectionLine(m.direction);
   const candidateLine = m.candidate
     ? `candidate=trainCode=${m.candidate.candidate.trainCode} line=${m.candidate.candidate.line} source=${m.candidate.source}`
     : `candidate=null reason=${m.nullReason ?? UNKNOWN_LABEL}`;
   return [ssotLine, stabilityLine, directionLine, candidateLine];
+}
+
+function formatDirectionLine(direction: VerifyTrainDirectionResult | null): string {
+  if (!direction) return `direction=${UNKNOWN_LABEL}`;
+  const matchLabel = direction.matched ? 'matched' : 'mismatch';
+  return `direction=${matchLabel} reason=${direction.reason}`;
 }
 
 function formatSSOTLabel(surface: boolean, underground: boolean): string {
@@ -726,6 +731,58 @@ function computeAutoLockNullReason(
   /* istanbul ignore next -- 3 게이트 모두 통과면 hasCandidate=true가 보장됨 — buildCandidate
      실패는 lineToSubwayId null 케이스로 valid LineNumber에서 도달 불능. 방어 fallback. */
   return null;
+}
+
+/**
+ * #1421 — PR-AutoLock-1 측정 파이프라인. DebugModalInner의 render-time 산출 로직을
+ * 순수 함수로 분리 — SSOT 활성 cascade, stability push, direction verify, candidate 산출까지
+ * 한 곳에 모은다. DebugModalInner는 1줄 호출로 cognitive complexity 유지.
+ */
+function buildAutoLockMeta(input: {
+  readonly surfaceSSOT: InferAutoLockCandidateInput['surfaceSSOT'];
+  readonly undergroundSSOT: InferAutoLockCandidateInput['undergroundSSOT'];
+  readonly arrival: Parameters<typeof findArrivalTerminal>[0];
+  readonly result: NearestStationResult | null;
+  readonly arcStations: Parameters<typeof verifyTrainDirection>[0]['routeStations'];
+  readonly stabilityBuffer: ReturnType<typeof createConsensusStabilityBuffer>;
+}): AutoLockDebugMeta {
+  const { surfaceSSOT, undergroundSSOT, arrival, result, arcStations, stabilityBuffer } = input;
+  const activeSSOT = surfaceSSOT ?? undergroundSSOT;
+  const stability = stabilityBuffer.push(activeSSOT?.station.id ?? null);
+  const trainTerminalStationName = activeSSOT
+    ? findArrivalTerminal(arrival, activeSSOT.trainCode)
+    : null;
+  const currentIdx = result
+    ? arcStations.findIndex((s) => s.id === result.station.id)
+    : -1;
+  const destinationIdx = arcStations.length - 1;
+  const direction = activeSSOT
+    ? verifyTrainDirection({
+        routeStations: arcStations,
+        currentIdx,
+        destinationIdx,
+        trainTerminalStationName,
+      })
+    : null;
+  const candidate = inferAutoLockCandidate({
+    surfaceSSOT,
+    undergroundSSOT,
+    stabilityStable: stability.stable,
+    directionMatched: direction?.matched ?? false,
+  });
+  return {
+    surfaceSSOTActive: surfaceSSOT !== null,
+    undergroundSSOTActive: undergroundSSOT !== null,
+    stability,
+    direction,
+    candidate,
+    nullReason: computeAutoLockNullReason(
+      surfaceSSOT !== null || undergroundSSOT !== null,
+      stability.stable,
+      direction?.matched ?? false,
+      candidate !== null,
+    ),
+  };
 }
 
 /**
@@ -1000,53 +1057,17 @@ function DebugModalInner({
     [sleepProp, sleepMode, locklessTrip, currentHopIndex],
   );
 
-  // #1421 — PR-AutoLock-1 측정 인프라.
-  // DebugModal 인스턴스마다 buffer 1개 — 모달이 열린 동안만 누적된다(관찰자 효과 최소화).
+  // #1421 — PR-AutoLock-1 측정 인프라. buffer는 모달이 열린 동안만 누적(관찰자 효과 최소화).
+  // 산출 로직은 `buildAutoLockMeta`에 위임 — DebugModalInner는 호출 1줄.
   const stabilityBufferRef = useRef(createConsensusStabilityBuffer());
-  // 매 render에서 SSOT 활성 시 stationId를 push, 비활성이면 null no-op.
-  // useEffect 대신 render-time 호출 — buffer는 effect에 의존하지 않는 순수 push (의존성: SSOT 객체 ref).
-  const activeSSOT = surfaceSSOT ?? undergroundSSOT;
-  const stability = stabilityBufferRef.current.push(activeSSOT?.station.id ?? null);
-
-  // 방향 검증: SSOT trainCode와 동일 trainCode arrival row를 찾아 그 row의 destination(종착명)을
-  // trainTerminalStationName으로 사용. 같은 trainCode가 arrival에 없으면 null → no-terminal.
-  const trainTerminalStationName = activeSSOT
-    ? findArrivalTerminal(arrival, activeSSOT.trainCode)
-    : null;
-  // arcStations 빈 경우 verifyTrainDirection이 routeStations.length=0으로 즉시 no-route 반환 →
-  // currentIdx/destinationIdx 입력은 사용되지 않는다. 0 fallback은 dead branch라 -1 그대로 전달.
-  const currentIdx = result
-    ? arcStations.findIndex((s) => s.id === result.station.id)
-    : -1;
-  const destinationIdx = arcStations.length - 1;
-  const direction = activeSSOT
-    ? verifyTrainDirection({
-        routeStations: arcStations,
-        currentIdx,
-        destinationIdx,
-        trainTerminalStationName,
-      })
-    : null;
-
-  const candidate = inferAutoLockCandidate({
+  const autoLockMeta = buildAutoLockMeta({
     surfaceSSOT,
     undergroundSSOT,
-    stabilityStable: stability.stable,
-    directionMatched: direction?.matched ?? false,
+    arrival,
+    result,
+    arcStations,
+    stabilityBuffer: stabilityBufferRef.current,
   });
-  const autoLockMeta: AutoLockDebugMeta = {
-    surfaceSSOTActive: surfaceSSOT !== null,
-    undergroundSSOTActive: undergroundSSOT !== null,
-    stability,
-    direction,
-    candidate,
-    nullReason: computeAutoLockNullReason(
-      surfaceSSOT !== null || undergroundSSOT !== null,
-      stability.stable,
-      direction?.matched ?? false,
-      candidate !== null,
-    ),
-  };
 
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
   const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
