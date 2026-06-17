@@ -23,15 +23,37 @@ export interface ScheduledNotificationDumpEntry {
 
 /**
  * iOS notification trigger는 union 타입이라 fire 시각 추출에 narrow가 필요하다.
- * DATE 타입은 `value: number(epoch ms)` 또는 `value: Date`로 보고된다 — 둘 다 흡수.
- * 다른 타입(time-interval/calendar 등)은 본 dump에서 fire 시각을 알 수 없어 null.
+ *
+ * 두 경우 모두 흡수해야 fire 시각 추출 가능 (#1422):
+ *  - `{ type: 'date', date: number(epoch ms) | Date }`
+ *      - JS 입력 `DateTriggerInput` 형태(`{ type: SchedulableTriggerInputTypes.DATE, date }`)
+ *        그대로 보존되는 환경(테스트 mock / 일부 플랫폼).
+ *  - `{ type: 'timeInterval', seconds: number, repeats: boolean }`
+ *      - iOS native 직렬화. `scheduleNotificationAsync({ type: DATE, date })`로 등록해도
+ *        UN side에서 `UNTimeIntervalNotificationTrigger`로 변환되고, dump 시점에
+ *        `EXNotificationSerializer`가 `{ type: 'timeInterval', seconds, repeats }`로
+ *        직렬화한다. `seconds`는 dump 호출 시점부터의 잔여 시간 → `Date.now() + seconds*1000`.
+ *
+ * 다른 타입(calendar/daily/weekly 등)은 본 dump에서 fire 시각을 단정할 수 없어 null.
  */
-function extractFireAtMs(trigger: Notifications.NotificationTrigger | null): number | null {
-  if (!trigger || typeof trigger !== 'object') return null;
-  if (!('type' in trigger) || trigger.type !== 'date') return null;
-  const value = (trigger as { value?: unknown }).value;
-  if (typeof value === 'number' && Number.isFinite(value)) return value;
-  if (value instanceof Date) return value.getTime();
+function extractFireAtMs(
+  trigger: Notifications.NotificationTrigger | null,
+  nowMs: number,
+): number | null {
+  if (!trigger || typeof trigger !== 'object' || !('type' in trigger)) return null;
+  if (trigger.type === 'date') {
+    const { date } = trigger as { date?: unknown };
+    if (typeof date === 'number' && Number.isFinite(date)) return date;
+    if (date instanceof Date) return date.getTime();
+    return null;
+  }
+  if (trigger.type === 'timeInterval') {
+    const { seconds } = trigger as Notifications.TimeIntervalNotificationTrigger;
+    if (typeof seconds === 'number' && Number.isFinite(seconds)) {
+      return nowMs + seconds * 1000;
+    }
+    return null;
+  }
   return null;
 }
 
@@ -47,9 +69,12 @@ export async function dumpScheduledNotifications(): Promise<ScheduledNotificatio
   } catch {
     return [];
   }
+  // timeInterval trigger의 잔여 seconds를 절대 시각으로 환산할 때 모든 entry가 같은
+  // base time을 쓰도록 한 번만 캡처 — entry 간 정렬 안정성 보장.
+  const nowMs = Date.now();
   const entries = requests.map<ScheduledNotificationDumpEntry>((req) => ({
     identifier: req.identifier,
-    fireAtMs: extractFireAtMs(req.trigger),
+    fireAtMs: extractFireAtMs(req.trigger, nowMs),
     title: req.content.title ?? '',
     body: req.content.body ?? '',
   }));
