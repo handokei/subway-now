@@ -165,6 +165,13 @@ interface UseFusedNearestStationReturn {
   surfaceSSOTActive: boolean;
   /** #1418 — 지하 Tier 1 SSOT(WiFi/Position-Train + Arrival) 합의 활성 여부. */
   undergroundSSOTActive: boolean;
+  /**
+   * #1421 — PR-AutoLock-1 측정 인프라. SSOT 합의 객체 그대로 노출 (boolean만으로는 trainCode/
+   * stationId가 누락돼 device-side auto-lock candidate 산출이 불가). DebugModal Auto-lock 섹션이
+   * 직접 inferAutoLockCandidate에 넘긴다. 본 PR은 측정만 — lock 산출/sync 호출 없음.
+   */
+  surfaceSSOT: { station: import('../../../shared/types/station').Station; trainCode: string } | null;
+  undergroundSSOT: { station: import('../../../shared/types/station').Station; trainCode: string } | null;
   refresh: () => Promise<void>;
 }
 
@@ -1120,6 +1127,9 @@ export function useFusedNearestStation(
     environment,
     surfaceSSOTActive: surfaceSSOT !== null,
     undergroundSSOTActive: undergroundSSOT !== null,
+    // #1421 — DebugModal Auto-lock 측정 섹션이 SSOT 객체를 inferAutoLockCandidate에 직접 전달.
+    surfaceSSOT,
+    undergroundSSOT,
     refresh: gps.refresh,
   };
 }
