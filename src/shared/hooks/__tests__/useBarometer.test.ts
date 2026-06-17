@@ -170,6 +170,35 @@ describe('useBarometer (#875)', () => {
     expect(mockRequestPermissions).not.toHaveBeenCalled();
   });
 
+  it('#1398 — unmount가 권한 응답 직후·listener 등록 전에 일어나면 listener 등록 X (cancelled-after-permission)', async () => {
+    // safeRequestPermission이 resolve하고 다음 라인에서 `if (cancelled) return;`을 타는 경로.
+    // requestPermissions를 deferred로 잡아 두고 unmount(cancelled=true) 후에 resolve해서
+    // line 131 guard branch를 커버한다.
+    mockIsAvailable.mockResolvedValue(true);
+    let resolvePermission: (value: { granted: boolean }) => void = () => {};
+    mockRequestPermissions.mockImplementation(
+      () =>
+        new Promise<{ granted: boolean }>((resolve) => {
+          resolvePermission = resolve;
+        }),
+    );
+
+    const { unmount } = renderHook(() => useBarometer());
+    // isAvailable resolve 진행 + requestPermissions가 deferred에서 멈춘 상태로 진입.
+    await flush();
+    expect(mockRequestPermissions).toHaveBeenCalledTimes(1);
+
+    // 권한 promise가 pending인 동안 unmount → cleanup이 cancelled=true 셋.
+    unmount();
+
+    // 이제 권한 promise resolve → init이 깨어나며 `if (cancelled) return;` 한 줄로 종료.
+    resolvePermission({ granted: true });
+    await flush();
+
+    expect(mockSetUpdateInterval).not.toHaveBeenCalled();
+    expect(mockAddListener).not.toHaveBeenCalled();
+  });
+
   it('#903 — 초기 subsurface=false', async () => {
     mockIsAvailable.mockResolvedValue(false);
     const { result } = renderHook(() => useBarometer());
