@@ -350,6 +350,34 @@ app.post('/trips', async (c) => {
   //   1) boardingLock.trainCode가 양쪽 모두 같으면 같은 세션 (cold restart 후 createdAt이 바뀌어도 OK)
   //   2) trainCode가 한쪽이라도 없으면 createdAt drift 5s 이내일 때만 같은 세션 (lock 등록 전 단계)
   //   3) 그 외 (다른 trainCode 또는 큰 drift) → 새 세션, 전면 교체
+  // #1425 — trip-ended retention(1시간) 안에 같은 token 재등록 차단.
+  // silent push `trip-ended:eta-missing`(scheduled.ts:878) 후 device가 자동 재시도(또는
+  // BG 5h 후 FG 복귀 시 useStateRehydration 보조 trigger)로 같은 token POST하면 기존 코드는
+  // `getTrip()` 결과(=null, 이미 삭제됨)만 확인하고 무조건 새 trip으로 처리 → backend auto-revive
+  // → dedup state reset → false fire 회귀.
+  //
+  // 사용자 명시 액션 trip(boardingPrompt 응답 / BoardingTrainList 직접 탭 / 새 목적지)은 client
+  // 정책상 새 token으로 생성되므로 영향 없다. 같은 token 재등록 = device race or 자동 재시도 =
+  // reject가 정확.
+  //
+  // `Date.now()` 기준 — device 시계 drift 위험을 피하려면 backend wall clock 사용해야 한다.
+  const recentlyEnded = await readTripEndedStatus(c.env.TRIPS, incoming.token);
+  if (recentlyEnded && Date.now() - recentlyEnded.endedAt < TRIP_STATUS_RETENTION_MS) {
+    console.log(
+      JSON.stringify({
+        msg: 'trip-recently-ended: reject re-register (#1425)',
+        tokenPrefix: tokenPrefix(incoming.token),
+        endedAt: recentlyEnded.endedAt,
+        endReason: recentlyEnded.endReason,
+        ageMs: Date.now() - recentlyEnded.endedAt,
+      }),
+    );
+    return c.json(
+      { error: 'trip-recently-ended', reason: recentlyEnded.endReason },
+      400,
+    );
+  }
+
   const existing = await getTrip(c.env.TRIPS, incoming.token);
   const isSameSession = existing !== null && evaluateSameSession(existing, incoming);
   // #916 follow-up B — auto-prompt dedup 마커 보존. boardingPromptState와 달리 isSameSession=false
