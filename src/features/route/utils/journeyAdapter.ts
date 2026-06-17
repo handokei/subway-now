@@ -138,10 +138,15 @@ export function arrivalInfoToArrivalTrain(
   /** #1035 — 막차 시각 lookup 컨텍스트. 호출자가 알면 전달, 없으면 시각 미표기 fallback. */
   context?: { stationName?: string; directionKey?: 'up' | 'down' },
 ): ArrivalTrain[] {
+  // #1400 — 환승역에서 같은 statnNm 응답에 다른 노선 열차가 섞이는 회귀가 관측됐다("논현인데
+  // 3호선 신사행" 등). 호출자가 line 파라미터를 명시한 컨텍스트에서는 그 line과 다른 row를
+  // 노출 자체에서 제외해 잘못된 방면/지난 호선 시간표가 사용자에게 보이지 않도록 한다. BFF가
+  // line을 정확히 채우면 본 필터는 no-op(정상 응답)이며, line이 어긋난 row만 차단한다.
+  const filteredItems = items.filter((item) => item.line === line);
   // item.destination은 서울 열린데이터 API의 trainLineNm 기반("소요산행", "내선순환" 등 방면 표현).
   // parseTrainLineDirection이 패턴(역명+행, 내선/외선순환)을 인식해 현재 언어로 표시한다.
   // #897 Seam A: arrivalAt(item) — BoardingTrainList와 동일한 anchor. useArrivalCountdown tick과 동기.
-  return items.map((item) => ({
+  return filteredItems.map((item) => ({
     direction: item.destination
       ? parseTrainLineDirection(item.destination, allStations)
       : direction,

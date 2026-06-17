@@ -39,8 +39,10 @@ function boardingTrainListClock(item: { arrivalSeconds: number }): string {
 
 function arrivalRowAnchor(item: { arrivalSeconds: number }): number {
   // EditorialArrivalRow는 train.arrivalAtMs를 useCountdown에 전달 — arrivalAtMs = arrivalAt(item).
+  // #1400 — arrivalInfoToArrivalTrain은 line 필터를 적용하므로 makeArrivalInfo의 line을 '6'으로
+  // 맞춰 6호선 봉화산행 row가 결과에 포함되도록 한다.
   const [train] = arrivalInfoToArrivalTrain(
-    [makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: item.arrivalSeconds })],
+    [makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: item.arrivalSeconds, line: '6' })],
     '상행',
     '6',
   );
@@ -101,8 +103,9 @@ describe('D7 #1213 ETA provider consistency', () => {
     // 현재역 BoardingTrainList는 useBoardingLockController가 arrival.up/down을 그대로 필터해
     // directionalArrivals로 노출 — 새 source가 아니다. 같은 reference의 ArrivalInfo는 두 surface
     // 모두에서 같은 arrivalAt(item) 결과를 가진다.
+    // #1400 — arrivalInfoToArrivalTrain은 line 필터를 적용하므로 6호선 row를 사용.
     setNow(FIXED_T0);
-    const shared = makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134 });
+    const shared = makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134, line: '6' });
     // BoardingTrainList path
     const boardingMs = arrivalAt(shared);
     // EditorialArrivalRow path
