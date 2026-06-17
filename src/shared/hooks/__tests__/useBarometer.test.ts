@@ -190,11 +190,43 @@ describe('useBarometer (#875)', () => {
 
     // 권한 promise가 pending인 동안 unmount → cleanup이 cancelled=true 셋.
     unmount();
+    // cleanup이 cancelled=true 셋팅한 후 microtask 한 번 더 flush (CI env timing robust).
+    await flush();
 
     // 이제 권한 promise resolve → init이 깨어나며 `if (cancelled) return;` 한 줄로 종료.
     resolvePermission({ granted: true });
     await flush();
+    await flush();
 
+    expect(mockSetUpdateInterval).not.toHaveBeenCalled();
+    expect(mockAddListener).not.toHaveBeenCalled();
+  });
+
+  it('#1398 (extra) — unmount + 권한 거절(granted=false) cancellation race (line 131 추가 cover)', async () => {
+    // 위 테스트와 짝 — granted=false 응답에서도 line 131 cancelled=true 분기 통과 보장.
+    // CI env timing 차이로 line 131 cover 누락이 발생하지 않도록 여러 케이스 동시 cover.
+    mockIsAvailable.mockResolvedValue(true);
+    let resolvePermission: (value: { granted: boolean }) => void = () => {};
+    mockRequestPermissions.mockImplementation(
+      () =>
+        new Promise<{ granted: boolean }>((resolve) => {
+          resolvePermission = resolve;
+        }),
+    );
+
+    const { unmount } = renderHook(() => useBarometer());
+    await flush();
+    expect(mockRequestPermissions).toHaveBeenCalledTimes(1);
+
+    unmount();
+    await flush();
+
+    // granted=false 케이스로도 cancellation 분기 도달.
+    resolvePermission({ granted: false });
+    await flush();
+    await flush();
+
+    // line 131에서 return. setUnavailableReason('permission') 호출 안 됨.
     expect(mockSetUpdateInterval).not.toHaveBeenCalled();
     expect(mockAddListener).not.toHaveBeenCalled();
   });
