@@ -76,7 +76,7 @@ export interface BarometerSignal {
    * optional: 기존 호출자/테스트 픽스처 호환. useBarometer가 반환하는 production 객체는
    * 항상 키를 채우지만, fusion 입력 mock에서는 stop만 주입해도 동작한다 (스키마 호환).
    */
-  unavailableReason?: BarometerUnavailableReason | undefined;
+  unavailableReason?: BarometerUnavailableReason;
   /**
    * #1398 — 현재 ring buffer에 누적된 reading 수. dump 진단용.
    *

@@ -447,7 +447,7 @@ describe('useFusedNearestStation — #1286/#1398 WiFi SSID fusion', () => {
       mockUseNearest.mockReturnValue({
         result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
         variants: [MOCK_STATIONS.gangnam],
-        userLocation: { lat: 37.5, lng: 127.0 },
+        userLocation: { lat: 37.5, lng: 127 },
         speedMps: 1,
         accuracyMeters: 50,
         loading: false,

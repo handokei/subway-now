@@ -83,24 +83,27 @@ describe('fusionTierPriority (R-10, #1168)', () => {
   });
 
   describe('tier 비교 — spec §1.4 trust 순서', () => {
-    it('position-train > fused-position', () => {
-      expect(getTierRank('position-train')).toBeLessThan(getTierRank('fused-position'));
-    });
-
-    it('fused-position > fused-arrival-confirmed', () => {
-      expect(getTierRank('fused-position')).toBeLessThan(getTierRank('fused-arrival-confirmed'));
-    });
-
-    it('route-progress > gps-only', () => {
-      expect(getTierRank('route-progress')).toBeLessThan(getTierRank('gps-only'));
-    });
-
-    it('gps-only-underground > gps-only — 지하 라벨이 한 단계 위', () => {
-      expect(getTierRank('gps-only-underground')).toBeLessThan(getTierRank('gps-only'));
-    });
-
-    it('#1398 — detection-fused > gps-only-underground — verdict 결합 라벨이 단순 강등보다 신뢰', () => {
-      expect(getTierRank('detection-fused')).toBeLessThan(getTierRank('gps-only-underground'));
+    // 5 케이스 모두 동일 단언 패턴 — getTierRank(상위) < getTierRank(하위). cpd 방지로 테이블화.
+    it.each<{ label: string; higher: FusionTier; lower: FusionTier }>([
+      { label: 'position-train > fused-position', higher: 'position-train', lower: 'fused-position' },
+      {
+        label: 'fused-position > fused-arrival-confirmed',
+        higher: 'fused-position',
+        lower: 'fused-arrival-confirmed',
+      },
+      { label: 'route-progress > gps-only', higher: 'route-progress', lower: 'gps-only' },
+      {
+        label: 'gps-only-underground > gps-only — 지하 라벨이 한 단계 위',
+        higher: 'gps-only-underground',
+        lower: 'gps-only',
+      },
+      {
+        label: '#1398 — detection-fused > gps-only-underground — verdict 결합 라벨이 단순 강등보다 신뢰',
+        higher: 'detection-fused',
+        lower: 'gps-only-underground',
+      },
+    ])('$label', ({ higher, lower }) => {
+      expect(getTierRank(higher)).toBeLessThan(getTierRank(lower));
     });
   });
 });

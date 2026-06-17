@@ -366,12 +366,12 @@ interface BuildDumpArgs {
    * #1398 — `stop=undefined`(평가 불가)일 때의 원인. undefined면 정상(stop이 boolean 결정).
    * SPOF 분리 효과 측정용. 미전달 시 dump 미노출 (graceful — 기존 호출자 호환).
    */
-  barometerUnavailableReason?: import('../../../shared/hooks/useBarometer').BarometerUnavailableReason | undefined;
+  barometerUnavailableReason?: import('../../../shared/hooks/useBarometer').BarometerUnavailableReason;
   /**
    * #1398 — ring buffer에 누적된 reading 수. warm-up 인지/sensor 활성 판단용.
    * 미전달 시 dump 미노출 (graceful).
    */
-  barometerReadingCount?: number | undefined;
+  barometerReadingCount?: number;
   fusionDetection?: FusionDetectionSummary | null;
   trip?: TripDebugState | null;
   sleep?: SleepDebugState | null;
