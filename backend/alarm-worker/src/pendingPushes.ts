@@ -12,6 +12,7 @@
  */
 
 import type { AlarmPhase } from './alarm';
+import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL } from './kvConsistency';
 import type { ApnsEnv } from './types';
 
 const PENDING_PREFIX = 'pending:';
@@ -23,7 +24,7 @@ export const PENDING_TTL_SEC = 60;
  * 기본 60s는 fallback이 막 발사된 push의 sentAt을 못 봐 임계 평가가 어긋날 위험이 있다.
  * Cloudflare KV cacheTtl 최소값은 30s(#770 hotfix) — 그보다 작으면 런타임에서 `Invalid cache_ttl` 던짐.
  */
-const CRON_READ_CACHE_TTL_SEC = 30;
+const CRON_READ_CACHE_TTL_SEC = SHARED_CRON_TTL;
 
 /** silent push 발사 1건의 추적 정보. P2c가 alert fallback 결정에 사용. */
 export interface PendingPush {
@@ -105,8 +106,9 @@ export async function* listPending(
   do {
     const result = await kv.list({ prefix: PENDING_PREFIX, cursor });
     for (const key of result.keys) {
-      // #766 — cacheTtl=10s로 putPending 직후 옛 캐시 read 차단. cron 전용 enumerate라
-      // POST 경로 영향 없음.
+      // #766/#1402 — cacheTtl=30s로 putPending 직후 옛 캐시 read 차단(<30 KV runtime throw).
+      // cron 전용 enumerate라 POST 경로 영향 없음. assertCronCacheTtl이 신규 callsite 회귀 차단.
+      assertCronCacheTtl(CRON_READ_CACHE_TTL_SEC);
       const raw = await kv.get(key.name, { cacheTtl: CRON_READ_CACHE_TTL_SEC });
       if (!raw) continue;
       try {

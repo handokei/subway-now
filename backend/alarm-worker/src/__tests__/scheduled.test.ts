@@ -1636,6 +1636,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         pushId: string;
         tripOverrides?: Partial<Trip>;
         apnsFetch?: ReturnType<typeof vi.fn>;
+        pending?: InMemoryKV;
       }) {
         const kv = new InMemoryKV();
         await putTrip(
@@ -1648,7 +1649,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         );
         await seedLocklessMotionSeries(kv, 'lock-tok', setup.motion);
         const apnsFetch = setup.apnsFetch ?? makeOkFetch();
-        const stats = await runScheduled(makeEnv(kv), {
+        const stats = await runScheduled(makeEnv(kv, setup.pending), {
           seoul: makeSeoulCombo([], []),
           apnsConfig,
           apnsHosts: APNS_HOSTS,
@@ -1702,18 +1703,62 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expect(stored.consecutiveEtaMissing).toBe(0);
       });
 
-      it('hop 시간 미경과 → motion 게이트 진입 전 (lock release 경로 유지)', async () => {
-        // 게이트는 hopElapsed 분기 안에서만 평가 — 미경과면 motion=stationary여도 lock release.
-        // #1370 L3 동작과 충돌하지 않음 점검.
+      it('#1402 hop 시간 미경과 + motion=automotive → release floor fire 발사 + PENDING_PUSHES 등록', async () => {
+        // release 경로의 floor fire는 motion gate(stationary 차단)를 통과한 경우에만 fire.
+        // 발사 성공 시 PENDING_PUSHES에 등록돼 30s 내 ACK 없으면 alert fallback 가동.
+        const pending = new InMemoryKV();
+        const { stats, stored } = await runFallbackMotionScenario({
+          motion: 'automotive',
+          hopElapsed: false,
+          pushId: 'p1402-release',
+          pending,
+        });
+        // floor fire 발사 (release 경로)
+        expect(stats.vanishReleaseFired).toBe(1);
+        expect(stats.vanishFallbackFired).toBe(0);
+        expect(stats.pushed).toBeGreaterThanOrEqual(1);
+        // PENDING_PUSHES에 30s alert fallback 안전망 entry 등록
+        const pendingEntry = await pending.get('pending:p1402-release');
+        expect(pendingEntry).not.toBeNull();
+        const parsed = JSON.parse(pendingEntry!) as { stationName: string; phase: string };
+        expect(parsed.stationName).toBe('중곡');
+        expect(parsed.phase).toBe('imminent');
+        // lock release는 정상 진행
+        expect(stored.boardingLock).toBeUndefined();
+      });
+
+      it('#1402 release floor fire 페이로드에 origin=vanish-release stamp', async () => {
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+        await runFallbackMotionScenario({
+          motion: 'automotive',
+          hopElapsed: false,
+          pushId: 'p1402-origin',
+          apnsFetch,
+        });
+        const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
+        const releaseCall = calls.find((c) => {
+          const body = JSON.parse(c[1].body as string);
+          return body.data?.pushId === 'p1402-origin';
+        });
+        expect(releaseCall).toBeDefined();
+        const body = JSON.parse((releaseCall![1] as RequestInit).body as string);
+        expect(body.data.origin).toBe('vanish-release');
+      });
+
+      it('hop 시간 미경과 + motion=stationary → release floor fire 보류 + lock release 유지', async () => {
+        // #1402 — release 경로도 ADR-010 "false positive / miss 동급" 게이트를 통과해야 fire.
+        // motion=stationary이면 floor fire는 보류(motion gate 증가)되지만, lock release는
+        // 그대로 진행 — #1370 L3 lockless takeover와 floor fire는 독립.
         const { stats, stored } = await runFallbackMotionScenario({
           motion: 'stationary',
           hopElapsed: false,
           pushId: 'p1386-not-elapsed',
           tripOverrides: { locklessStationPassed: false },
         });
-        // motion gate 미진입
-        expect(stats.vanishFallbackMotionGateBlocked).toBe(0);
-        // lock release + lockless takeover 경로 활성
+        // floor fire 차단 (release 경로 motion gate)
+        expect(stats.vanishFallbackMotionGateBlocked).toBe(1);
+        expect(stats.vanishReleaseFired).toBe(0);
+        // lock release + lockless takeover 경로 활성 — gate와 무관하게 진행
         expect(stats.vanishLocklessTakeover).toBe(1);
         expect(stored.boardingLock).toBeUndefined();
         expect(stored.locklessStationPassed).toBe(true);
@@ -4735,5 +4780,102 @@ describe('#1363 — pickLatestCurrentStationName (log 진단 이원화 helper)',
       { ...base, ts: 3000 },
     ];
     expect(pickLatestCurrentStationName(series)).toBe('용마산');
+  });
+});
+
+describe('runScheduled — #1402 인프라 안전망 (pendingPushes wire-up + payload.origin)', () => {
+  // 공용 helper — #1402 테스트 3건이 공유하던 SeoulArrivalClient 빌드 / runScheduled 호출 /
+  // apnsFetch.mock.calls payload 추출 boilerplate를 압축. arvlCd / vanish-fallback / release
+  // 시나리오는 입력 차이(arrival arvlCd 유무, trip override)만 명시한다.
+  async function runArvlCdScenario(opts: {
+    token: string;
+    pushId: string;
+    pending?: InMemoryKV;
+    apnsFetch?: ReturnType<typeof vi.fn>;
+  }): Promise<{ stats: ScheduledStats; pending?: InMemoryKV; apnsFetch?: ReturnType<typeof vi.fn> }> {
+    const kv = new InMemoryKV();
+    await putTrip(kv as unknown as KVNamespace, makeLockTripFixture(opts.token));
+    const fetchImpl = (opts.apnsFetch ??
+      (async () => new Response('', { status: 200 }))) as unknown as typeof fetch;
+    const stats = await runScheduled(makeEnv(kv, opts.pending), {
+      seoul: makeEstimateArrivalSeoul(1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl,
+      now: () => NOW,
+      generatePushId: () => opts.pushId,
+    });
+    return { stats, pending: opts.pending, apnsFetch: opts.apnsFetch };
+  }
+
+  function findApnsCallByPushId(
+    apnsFetch: ReturnType<typeof vi.fn>,
+    pushId: string,
+  ): Record<string, unknown> {
+    const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
+    const match = calls.find((c) => {
+      const body = JSON.parse(c[1].body as string);
+      return body.data?.pushId === pushId;
+    });
+    expect(match).toBeDefined();
+    return JSON.parse(match![1].body as string);
+  }
+
+  it('arvlCd 발사 성공 시 PENDING_PUSHES에 30s alert fallback entry 등록', async () => {
+    const pending = new InMemoryKV();
+    const { stats } = await runArvlCdScenario({
+      token: 'arvl-1402',
+      pushId: 'p1402-arvl',
+      pending,
+    });
+    expect(stats.arvlCdFireSuccess).toBe(1);
+    const entry = await pending.get('pending:p1402-arvl');
+    expect(entry).not.toBeNull();
+    const parsed = JSON.parse(entry!) as {
+      stationName: string; phase: string; kind: string; sentAt: number;
+    };
+    expect(parsed.stationName).toBe('중곡');
+    expect(parsed.phase).toBe('imminent');
+    expect(parsed.sentAt).toBe(NOW);
+  });
+
+  it('arvlCd 페이로드에 origin=arvlcd stamp', async () => {
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runArvlCdScenario({
+      token: 'arvl-1402b',
+      pushId: 'p1402-arvl-origin',
+      apnsFetch,
+    });
+    const body = findApnsCallByPushId(apnsFetch, 'p1402-arvl-origin');
+    expect((body.data as { origin: string }).origin).toBe('arvlcd');
+  });
+
+  it('vanish-fallback advance(hop-elapsed) 페이로드에 origin=vanish-fallback stamp', async () => {
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTripFixture('lock-tok', {
+        consecutiveEtaMissing: VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES - 1,
+        lastTrackedArrivalEpoch: NOW - FALLBACK_HOP_SEC * 1000,
+      }),
+    );
+    // arrivals/positions 모두 empty → vanish, hopElapsed=true → fallback advance fire
+    await runScheduled(makeEnv(kv), {
+      seoul: new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => NOW,
+        fetchImpl: (async () =>
+          new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+      }),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p1402-vf',
+    });
+    const body = findApnsCallByPushId(apnsFetch, 'p1402-vf');
+    expect((body.data as { origin: string }).origin).toBe('vanish-fallback');
   });
 });

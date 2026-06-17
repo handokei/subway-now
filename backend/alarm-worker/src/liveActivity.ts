@@ -29,8 +29,27 @@ import { writeTripEndedStatus } from './tripStatus';
  * stale-date까지 클라이언트가 last content-state를 신뢰할 수 있는 시간(초).
  * cron 주기(60s)의 약 1.5배 — 한 사이클 누락(네트워크 일시 단절 등)을 흡수.
  * cron 주기가 바뀌면 함께 검토 대상.
+ *
+ * `LA_STALE_DURATION_SEC`는 기존 호출자(waypoint 미상)·dismissal 경로의 기본값.
+ * waypoint kind를 알 수 있는 update 경로는 `staleDurationSecForKind`로 정합 강화 (#1402):
+ * destination은 사용자가 하차 직전이라 stale UI 표시를 더 빨리 발동시켜 잘못된
+ * "도착 임박" 정체 표시를 차단(짧음). transfer는 환승 hop 길이 평균을 고려해 중간.
+ * intermediate는 기존 1.5 cycle 폭 유지.
+ *
+ * 표는 데이터 주도 — 새 kind 추가 시 매핑만 확장하면 된다.
  */
 export const LA_STALE_DURATION_SEC = 90;
+
+const LA_STALE_BY_KIND: Record<Waypoint['kind'], number> = {
+  destination: 45,
+  transfer: 75,
+  intermediate: 90,
+};
+
+export function staleDurationSecForKind(kind: Waypoint['kind'] | undefined): number {
+  if (kind === undefined) return LA_STALE_DURATION_SEC;
+  return LA_STALE_BY_KIND[kind];
+}
 
 type Logger = (message: string, meta?: Record<string, unknown>) => void;
 
@@ -94,6 +113,7 @@ export async function fireLiveActivityUpdate(
   stats: LiveActivityStats,
   now: number,
   log: Logger,
+  waypointKind?: Waypoint['kind'],
 ): Promise<LiveActivityFireResult> {
   if (!trip.activityPushToken || trip.activityState !== 'live') {
     return { dirty: false };
@@ -103,7 +123,7 @@ export async function fireLiveActivityUpdate(
     activityToken: trip.activityPushToken,
     contentState,
     event: 'update',
-    staleDate: Math.floor(now / 1000) + LA_STALE_DURATION_SEC,
+    staleDate: Math.floor(now / 1000) + staleDurationSecForKind(waypointKind),
     config: deps.apnsConfig,
     host,
     fetchImpl: deps.fetchImpl,

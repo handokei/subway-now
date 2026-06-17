@@ -108,7 +108,40 @@ export interface SilentPushPayload {
    * null이면 발사 차단(S8 14:19 회귀). 구 backend 호환 위해 optional — 미전달 시 가드 자연 skip.
    */
   tripToken?: string;
+  /**
+   * #1402 — push 발사 경로(origin) 계측 필드. 좀비 알림 RCA용.
+   *
+   * 14:19 지상 좀비 회귀(군자/용마산 trip 종료 후 stale push)는 device OS 큐(`bl:`/`tba:`)
+   * 잔존인지 backend alert fallback 지연인지 구분이 불가능했다. payload에 발사 경로를 stamp
+   * 해두면 device가 alarmLog에 `pushOrigin` 필드를 기록하고, backend tail에도 같은 값이
+   * `arvlcd-fire`/`vanish-fallback-fire`/`lockless` 등 prefix와 함께 남아 1:1 매핑으로
+   * "어느 경로의 push가 좀비가 됐는지" 즉시 판별 가능. 구 backend 호환 위해 optional —
+   * 미전달 시 device는 `'unknown'`으로 기록한다.
+   */
+  origin?: PushOrigin;
 }
+
+/**
+ * #1402 — silent push 발사 경로(origin) 식별자.
+ *
+ * | value                | 발사 위치                                                  |
+ * |----------------------|------------------------------------------------------------|
+ * | `arvlcd`             | arvlCd∈{0,1} 정상 station-passed (`fireArvlCdStationPush`) |
+ * | `vanish-fallback`    | trainCode 소실 + hop 시간 경과 fallback advance 직전 fire  |
+ * | `vanish-release`     | trainCode 소실 + hop 미경과 lock release 직전 floor fire   |
+ * | `lockless`           | lockless intermediate fire                                  |
+ * | `reschedule`         | ETA shift threshold 초과 reschedule push                    |
+ * | `alert-fallback`     | 30s ACK 미수신 후 alert push fallback                       |
+ *
+ * 새 origin 추가 시 device alarmLog의 expected enum도 함께 갱신해야 한다.
+ */
+export type PushOrigin =
+  | 'arvlcd'
+  | 'vanish-fallback'
+  | 'vanish-release'
+  | 'lockless'
+  | 'reschedule'
+  | 'alert-fallback';
 
 export async function buildApnsJwt(config: ApnsConfig, now: number = Date.now()): Promise<string> {
   if (jwtCache && jwtCache.expiresAt > now + 60_000) {
@@ -180,6 +213,9 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
       // #1399 — tripToken은 정의된 경우에만 wire (좀비 알림 cleanup). 미전달 시 JSON에서 자연
       // 누락 → 구 client(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
       ...(options.payload.tripToken === undefined ? {} : { tripToken: options.payload.tripToken }),
+      // #1402 — origin은 정의된 경우에만 wire (좀비 알림 RCA). 구 backend 호환을 위해 optional —
+      // 미전달 시 JSON에서 자연 누락, device는 `'unknown'`으로 분류.
+      ...(options.payload.origin === undefined ? {} : { origin: options.payload.origin }),
     },
   });
 

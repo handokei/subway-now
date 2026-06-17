@@ -7,6 +7,7 @@ import {
   cleanupTripWithLa,
   fireLiveActivityDismissal,
   fireLiveActivityUpdate,
+  staleDurationSecForKind,
   type LiveActivityDeps,
   type LiveActivityStats,
 } from '../liveActivity';
@@ -157,6 +158,40 @@ describe('fireLiveActivityUpdate', () => {
     expect(body.aps['stale-date']).toBe(Math.floor(NOW / 1000) + LA_STALE_DURATION_SEC);
     expect(stats.laPushSent).toBe(1);
     expect(stats.laPushFailed).toBe(0);
+  });
+
+  // #1402 — waypoint kind별 staleDate 정합. destination은 짧고(45s) transfer 중간(75s)
+  // intermediate 기본(90s). undefined는 legacy 기본값 90s 유지 — 기존 호출자 무영향.
+  it.each<[Waypoint['kind'], number]>([
+    ['destination', 45],
+    ['transfer', 75],
+    ['intermediate', 90],
+  ])('#1402 staleDate = now + %s-specific seconds (%i)', (kind, expectedSec) => {
+    expect(staleDurationSecForKind(kind)).toBe(expectedSec);
+  });
+
+  it('#1402 staleDurationSecForKind(undefined) falls back to legacy default', () => {
+    expect(staleDurationSecForKind(undefined)).toBe(LA_STALE_DURATION_SEC);
+  });
+
+  // #1402 — waypoint kind가 APNs stale-date에 반영되는지 e2e 검증 (helper로 dedup).
+  it.each<[Waypoint['kind'], number]>([
+    ['destination', 45],
+    ['transfer', 75],
+  ])('#1402 passes waypoint kind=%s → APNs stale-date = now + %i', async (kind, expectedSec) => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await fireLiveActivityUpdate(
+      makeTrip(),
+      {},
+      makeDeps(fetchImpl as unknown as typeof fetch),
+      makeStats(),
+      NOW,
+      () => undefined,
+      kind,
+    );
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.aps['stale-date']).toBe(Math.floor(NOW / 1000) + expectedSec);
   });
 
   it('uses production host when apnsEnv=production', async () => {
