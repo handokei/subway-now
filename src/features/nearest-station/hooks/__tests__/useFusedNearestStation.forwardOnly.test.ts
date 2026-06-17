@@ -59,8 +59,7 @@ import { pickCandidateTrains } from '../../../arrival/utils/pickCandidateTrains'
 import { computeRouteArc } from '../../../route/utils/routeProgress';
 import { MOCK_STATIONS } from '../../../../testUtils/fixtures';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
-import type { Station } from '../../../../shared/types/station';
-import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
+import { makeArcFixture, makeArcGpsBase, makeTrainProgressFor } from '../../../../testUtils/arcTestFixtures';
 
 const mockUseNearest = useNearestStation as jest.Mock;
 const mockUseArrival = useArrivalInfo as jest.Mock;
@@ -75,57 +74,10 @@ const mockComputeRouteArc = computeRouteArc as jest.Mock;
  * arc: [역A(idx=0), 역B(idx=1, 탑승역), 역C(idx=2)]
  * boardingStation = 역B(idx=1) — forward-only 가드의 기준점.
  */
-const ARC_STATION_A: Station = {
-  id: 'fwd-A', name: '역A', line: '2', lineColor: '#009D3E', lat: 37.5, lng: 127.0,
-};
-const ARC_STATION_B: Station = {
-  id: 'fwd-B', name: '역B', line: '2', lineColor: '#009D3E', lat: 37.5, lng: 127.1,
-};
-const ARC_STATION_C: Station = {
-  id: 'fwd-C', name: '역C', line: '2', lineColor: '#009D3E', lat: 37.5, lng: 127.2,
-};
-const ARC_STATIONS = [ARC_STATION_A, ARC_STATION_B, ARC_STATION_C];
-
-const BOARDING_LOCK: BoardingLock = {
-  destinationId: 'dest-1',
-  trainCode: 'T-2',
-  boardingStationId: 'fwd-B', // 탑승역 = 역B (arc idx=1)
-  boardingLine: '2',
-  boardedAt: Date.now(),
-  expectedDurationMs: 1_800_000,
-};
-
-const routeContext = {
-  route: makeDirectRoute(2, '2'),
-  origin: ARC_STATION_A,
-  destination: ARC_STATION_C,
-};
-
-function gpsBase() {
-  return {
-    result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
-    variants: [MOCK_STATIONS.gangnam],
-    userLocation: { lat: 37.5, lng: 127.0 },
-    speedMps: 2,
-    accuracyMeters: 50,
-    loading: false,
-    error: null,
-    permissionDenied: false,
-    locationUncertain: false,
-    gpsActive: 'active' as const,
-    lastFixAtMs: Date.now(),
-    refresh: jest.fn(),
-  };
-}
-
-function trainProgressFor(station: Station) {
-  return {
-    trainNo: 'T-2',
-    currentStation: station,
-    trainStatus: 1,
-    confidence: 'single' as const,
-  };
-}
+const { ARC_STATIONS, BOARDING_LOCK, routeContext } = makeArcFixture('fwd-', 1);
+const [ARC_STATION_A, ARC_STATION_B, ARC_STATION_C] = ARC_STATIONS;
+const gpsBase = makeArcGpsBase;
+const trainProgressFor = makeTrainProgressFor;
 
 describe('useFusedNearestStation — #1015 forward-only 검증', () => {
   beforeEach(() => {
