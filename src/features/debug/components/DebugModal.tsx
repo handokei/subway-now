@@ -83,6 +83,13 @@ import type {
   ConsensusStabilitySnapshot,
 } from '../../nearest-station/utils/consensusStabilityBuffer';
 import type { VerifyTrainDirectionResult } from '../../nearest-station/utils/verifyTrainDirection';
+// #1430 — 환경 분포 측정 인프라. SSOT 활성 cascade → state 결정 → time-based counter tick.
+// 동작 변경 0: 측정만. PR #1427(autoLockMeta)와 동일 helper 패턴(buildEnvironmentDistributionMeta).
+import {
+  createEnvironmentDistributionCounter,
+  type EnvironmentDistributionSnapshot,
+  type EnvironmentDistributionState,
+} from '../../nearest-station/utils/environmentDistributionCounter';
 
 /**
  * #1215 (D9) — DebugModal 상태 가시화 신규 prop 묶음.
@@ -444,6 +451,12 @@ interface BuildDumpArgs {
    * 계산해 주입한다. 본 PR은 측정만 — 동작 변경 없음.
    */
   autoLockMeta?: AutoLockDebugMeta;
+  /**
+   * #1430 — Environment Distribution 측정 스냅샷. 미전달 시 섹션은 (n/a) 표기.
+   * DebugModalInner가 매 render에서 SSOT 활성 cascade → state 결정 → counter tick → snapshot.
+   * 본 PR은 측정만 — 동작 변경 없음.
+   */
+  envDistribution?: EnvironmentDistributionSnapshot;
 }
 
 /** dump 본체에서 사용하는 single builder 시그니처 — 본문 줄 배열을 반환. */
@@ -700,6 +713,85 @@ function formatSSOTLabel(surface: boolean, underground: boolean): string {
 }
 
 /**
+ * #1430 — Environment Distribution 섹션. SSOT 활성 cascade로 결정한 state별 누적 시간을
+ * percentages + totals(분/초) + transitions + observed 4줄로 dump.
+ *
+ * meta 미전달 시 (n/a) — DebugModal에서 counter 미주입 (off-state).
+ *
+ * 본문 형식:
+ *   surface=42.3% underground=18.1% hybrid=3.2% unknown=36.4%
+ *   totals: surface=12m30s underground=5m24s hybrid=58s unknown=10m54s
+ *   transitions=5
+ *   observed=30m0s
+ */
+function buildEnvironmentDistributionSection(args: BuildDumpArgs): string[] {
+  const snap = args.envDistribution;
+  if (!snap) return ['(n/a)'];
+  const pct = snap.percentages;
+  const t = snap.totals;
+  return [
+    `surface=${formatPercentage(pct.surface)} underground=${formatPercentage(pct.underground)} hybrid=${formatPercentage(pct.hybrid)} unknown=${formatPercentage(pct.unknown)}`,
+    `totals: surface=${formatDurationMs(t.surface)} underground=${formatDurationMs(t.underground)} hybrid=${formatDurationMs(t.hybrid)} unknown=${formatDurationMs(t.unknown)}`,
+    `transitions=${snap.transitions}`,
+    `observed=${formatDurationMs(snap.observedMs)}`,
+  ];
+}
+
+/** Percentage 표기 — 소수 1자리 고정. */
+function formatPercentage(value: number): string {
+  return `${value.toFixed(1)}%`;
+}
+
+/**
+ * ms 누적값을 dump-friendly 형태로 포맷.
+ *   - <60s    → `Xs` (소수 0자리)
+ *   - <60m    → `XmYs`
+ *   - 그 이상 → `XmYs` (분 단위 누적)
+ *
+ * Acceptance: 0ms는 `0s` — `(empty)`/`—`와 구분되도록 명시 숫자 노출.
+ */
+function formatDurationMs(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds - minutes * 60;
+  return `${minutes}m${seconds}s`;
+}
+
+/**
+ * #1430 — SSOT 활성 cascade로 환경 state 결정. PR #1427의 `surfaceSSOTActive`/`undergroundSSOTActive`를
+ * 그대로 입력으로 받아 1줄로 분류.
+ */
+function deriveEnvironmentState(input: {
+  readonly surfaceSSOTActive: boolean;
+  readonly undergroundSSOTActive: boolean;
+}): EnvironmentDistributionState {
+  const { surfaceSSOTActive, undergroundSSOTActive } = input;
+  if (surfaceSSOTActive && undergroundSSOTActive) return 'hybrid';
+  if (surfaceSSOTActive) return 'surface';
+  if (undergroundSSOTActive) return 'underground';
+  return 'unknown';
+}
+
+/**
+ * #1430 — Environment distribution counter tick + snapshot 묶음. DebugModalInner는
+ * 호출 1줄로 cognitive complexity 유지(PR #1427 `buildAutoLockMeta`와 동일 패턴).
+ */
+function buildEnvironmentDistributionMeta(input: {
+  readonly surfaceSSOTActive: boolean;
+  readonly undergroundSSOTActive: boolean;
+  readonly counter: ReturnType<typeof createEnvironmentDistributionCounter>;
+  readonly nowMs: number;
+}): EnvironmentDistributionSnapshot {
+  const state = deriveEnvironmentState({
+    surfaceSSOTActive: input.surfaceSSOTActive,
+    undergroundSSOTActive: input.undergroundSSOTActive,
+  });
+  input.counter.tick(state, input.nowMs);
+  return input.counter.snapshot(input.nowMs);
+}
+
+/**
  * #1421 — arrival에서 trainCode에 매칭되는 row의 destination(종착명) 반환.
  * 매칭 없으면 null. verifyTrainDirection 입력 trainTerminalStationName 산출용.
  */
@@ -848,6 +940,8 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
   { title: 'Counters', build: buildCountersSection },
   // #1421 — PR-AutoLock-1 측정 인프라. SSOT consensus → stability → direction → candidate 4줄.
   { title: 'Auto-lock Candidate', build: buildAutoLockSection },
+  // #1430 — 환경 분포 측정 인프라. SSOT 활성 cascade → state별 누적 시간 + transition 카운트.
+  { title: 'Environment Distribution', build: buildEnvironmentDistributionSection },
 ];
 
 function buildDumpText(args: BuildDumpArgs): string {
@@ -1069,6 +1163,16 @@ function DebugModalInner({
     stabilityBuffer: stabilityBufferRef.current,
   });
 
+  // #1430 — 환경 분포 측정 인프라. counter도 모달이 열린 동안만 누적(관찰자 효과 최소화).
+  // 산출 로직은 `buildEnvironmentDistributionMeta`에 위임 — DebugModalInner는 호출 1줄.
+  const envDistributionCounterRef = useRef(createEnvironmentDistributionCounter());
+  const envDistribution = buildEnvironmentDistributionMeta({
+    surfaceSSOTActive,
+    undergroundSSOTActive,
+    counter: envDistributionCounterRef.current,
+    nowMs: Date.now(),
+  });
+
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
   const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
     getFusionDebugEntries(),
@@ -1169,6 +1273,8 @@ function DebugModalInner({
       estimatorLog: estimatorLogs,
       // #1421 — PR-AutoLock-1 측정 인프라. SSOT/stability/direction/candidate 4줄.
       autoLockMeta,
+      // #1430 — 환경 분포 측정 인프라. state별 누적 ms + transition 카운트.
+      envDistribution,
     });
     void Share.share({ message });
   }, [
@@ -1208,6 +1314,8 @@ function DebugModalInner({
     estimatorLogs,
     // #1421 — auto-lock meta는 render-time 산출. 의존성으로 추가해 stability flip 시 share 갱신.
     autoLockMeta,
+    // #1430 — env distribution snapshot도 render-time 산출. state flip 시 share 텍스트 갱신.
+    envDistribution,
   ]);
 
   return (
@@ -1856,6 +1964,10 @@ export const __test__ = {
   // #1421 — Auto-lock 측정 인프라 내부 헬퍼. 호출자는 DebugModal 자체에서 render-time 산출.
   findArrivalTerminal,
   computeAutoLockNullReason,
+  // #1430 — 환경 분포 측정 인프라 내부 헬퍼. render-time SSOT cascade → state 결정.
+  deriveEnvironmentState,
+  formatPercentage,
+  formatDurationMs,
 };
 
 const styles = StyleSheet.create({
