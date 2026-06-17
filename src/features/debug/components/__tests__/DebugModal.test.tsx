@@ -101,6 +101,9 @@ const fusedReturnFixture = (overrides: Record<string, unknown> = {}) => ({
   environment: 'unknown' as const,
   surfaceSSOTActive: false,
   undergroundSSOTActive: false,
+  // #1421 — PR-AutoLock-1 측정 인프라 신규 노출 필드 기본값.
+  surfaceSSOT: null,
+  undergroundSSOT: null,
   ...overrides,
 });
 const arrivalDefaults = {
@@ -140,6 +143,9 @@ const setupHookDefaults = () => {
     environment: 'unknown',
     surfaceSSOTActive: false,
     undergroundSSOTActive: false,
+    // #1421 — PR-AutoLock-1 측정 인프라.
+    surfaceSSOT: null,
+    undergroundSSOT: null,
   });
   mockUseArrivalInfo.mockReturnValue({ arrival: baseArrival, loading: false, isMock: false });
   mockUseSilentPushDiagnostics.mockReturnValue({
@@ -303,6 +309,59 @@ describe('DebugModal', () => {
     expect(screen.getByText('surface')).toBeTruthy();
     // 'active' 라벨이 surfaceSSOT/undergroundSSOT row에 노출.
     expect(screen.getAllByText('active').length).toBeGreaterThanOrEqual(2);
+  });
+
+  // #1421 — render-time auto-lock 측정 인프라가 SSOT 객체를 받아 share dump에 흘러간다.
+  it('#1421 — surfaceSSOT 객체 활성 시 share dump의 Auto-lock 섹션에 ssot=surface 노출', async () => {
+    const ssot = { station: baseResult.station, trainCode: 'U1' };
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        surfaceSSOTActive: true,
+        surfaceSSOT: ssot,
+      }),
+    );
+    const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    fireEvent.press(screen.getByTestId('debug-share-dump'));
+    await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+    const msg = shareSpy.mock.calls[0][0].message;
+    expect(msg).toContain('## Auto-lock Candidate');
+    expect(msg).toContain('ssot=surface');
+    // arcStations 빈 fixture → verifyTrainDirection이 no-route 반환 (matched=false).
+    expect(msg).toContain('direction=mismatch reason=no-route');
+    shareSpy.mockRestore();
+  });
+
+  it('#1421 — undergroundSSOT 객체만 활성 시 ssot=underground 노출', async () => {
+    const ssot = { station: baseResult.station, trainCode: 'U1' };
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        undergroundSSOTActive: true,
+        undergroundSSOT: ssot,
+        surfaceSSOT: null,
+      }),
+    );
+    const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    fireEvent.press(screen.getByTestId('debug-share-dump'));
+    await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+    const msg = shareSpy.mock.calls[0][0].message;
+    expect(msg).toContain('ssot=underground');
+    shareSpy.mockRestore();
+  });
+
+  it('#1421 — SSOT 모두 null이면 ssot=none, candidate=null reason=no-ssot', async () => {
+    const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    fireEvent.press(screen.getByTestId('debug-share-dump'));
+    await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+    const msg = shareSpy.mock.calls[0][0].message;
+    expect(msg).toContain('ssot=none');
+    expect(msg).toContain('candidate=null reason=no-ssot');
+    shareSpy.mockRestore();
   });
 
   it('arrival이 null이면 no arrival data를 표시한다', () => {
@@ -2350,6 +2409,8 @@ describe('DebugModal share SSOT (#1346)', () => {
     expect(dump).toContain('## Boarding Prompt');
     expect(dump).toContain('## Boarding Prompt Acceptance');
     expect(dump).toContain('## Counters');
+    // #1421 — PR-AutoLock-1 측정 인프라.
+    expect(dump).toContain('## Auto-lock Candidate');
     // suppressed reason 없으면 Gates 헤더 자체 생략(omitIfEmpty=true).
     expect(dump).not.toContain('## Gates');
   });
@@ -2638,6 +2699,152 @@ describe('DebugModal share SSOT (#1346)', () => {
     });
   });
 
+  // #1421 — PR-AutoLock-1 측정 인프라. SSOT/stability/direction/candidate 4줄 dump.
+  // CPD 회피 (lesson_sonarcloud_dup_prevention): it.each + factory + wrapper 패턴.
+  describe('#1421 Auto-lock Candidate 섹션', () => {
+    const STABLE_SNAPSHOT = { stable: true, stationId: '0201', count: 3 };
+    const PENDING_SNAPSHOT = { stable: false, stationId: '0201', count: 1 };
+    const EMPTY_SNAPSHOT = { stable: false, stationId: null, count: 0 };
+    const FORWARD = { matched: true, reason: 'forward' as const };
+    const REVERSE = { matched: false, reason: 'reverse' as const };
+    const SAMPLE_CANDIDATE = {
+      candidate: { trainCode: '2001', line: '2', subwayId: '1002' },
+      source: 'device-ssot' as const,
+      stationId: '0201',
+    };
+
+    type AutoLockMeta = NonNullable<Parameters<typeof __test__.buildDumpText>[0]['autoLockMeta']>;
+    const dumpAutoLockSection = (meta?: AutoLockMeta): string => {
+      const dump = __test__.buildDumpText(
+        makeSsotArgs(meta ? { autoLockMeta: meta } : undefined),
+      );
+      return dump.slice(dump.indexOf('## Auto-lock Candidate'));
+    };
+
+    it.each<{
+      readonly name: string;
+      readonly meta: AutoLockMeta | undefined;
+      readonly contains: readonly string[];
+    }>([
+      {
+        name: 'autoLockMeta 미전달 시 (n/a) 출력',
+        meta: undefined,
+        contains: ['(n/a)'],
+      },
+      {
+        name: 'SSOT none + stability empty → ssot=none, candidate=null reason=no-ssot',
+        meta: {
+          surfaceSSOTActive: false,
+          undergroundSSOTActive: false,
+          stability: EMPTY_SNAPSHOT,
+          direction: null,
+          candidate: null,
+          nullReason: 'no-ssot',
+        },
+        contains: ['ssot=none', 'stability=pending count=0', 'candidate=null reason=no-ssot'],
+      },
+      {
+        name: 'surface SSOT 활성 + stability pending → reason=stability-pending',
+        meta: {
+          surfaceSSOTActive: true,
+          undergroundSSOTActive: false,
+          stability: PENDING_SNAPSHOT,
+          direction: FORWARD,
+          candidate: null,
+          nullReason: 'stability-pending',
+        },
+        contains: [
+          'ssot=surface',
+          'stability=pending count=1 stationId=0201',
+          'direction=matched reason=forward',
+          'reason=stability-pending',
+        ],
+      },
+      {
+        name: 'underground SSOT 활성 + 모든 게이트 통과 → candidate 노출',
+        meta: {
+          surfaceSSOTActive: false,
+          undergroundSSOTActive: true,
+          stability: STABLE_SNAPSHOT,
+          direction: FORWARD,
+          candidate: SAMPLE_CANDIDATE,
+          nullReason: null,
+        },
+        contains: [
+          'ssot=underground',
+          'stability=stable count=3',
+          'candidate=trainCode=2001 line=2 source=device-ssot',
+        ],
+      },
+      {
+        name: '두 SSOT 모두 활성이면 ssot=surface+underground',
+        meta: {
+          surfaceSSOTActive: true,
+          undergroundSSOTActive: true,
+          stability: STABLE_SNAPSHOT,
+          direction: FORWARD,
+          candidate: SAMPLE_CANDIDATE,
+          nullReason: null,
+        },
+        contains: ['ssot=surface+underground'],
+      },
+      {
+        name: 'direction mismatch → reason=direction-mismatch',
+        meta: {
+          surfaceSSOTActive: true,
+          undergroundSSOTActive: false,
+          stability: STABLE_SNAPSHOT,
+          direction: REVERSE,
+          candidate: null,
+          nullReason: 'direction-mismatch',
+        },
+        contains: ['direction=mismatch reason=reverse', 'reason=direction-mismatch'],
+      },
+      {
+        name: 'direction=null (SSOT 미합의)이면 direction=—',
+        meta: {
+          surfaceSSOTActive: false,
+          undergroundSSOTActive: false,
+          stability: EMPTY_SNAPSHOT,
+          direction: null,
+          candidate: null,
+          nullReason: 'no-ssot',
+        },
+        contains: ['direction=—'],
+      },
+      {
+        name: 'stability stationId=null이면 stationId=— (빈 buffer)',
+        meta: {
+          surfaceSSOTActive: false,
+          undergroundSSOTActive: false,
+          stability: EMPTY_SNAPSHOT,
+          direction: null,
+          candidate: null,
+          nullReason: 'no-ssot',
+        },
+        contains: ['stationId=—'],
+      },
+      {
+        // 호출자가 inconsistent state 주입 시 graceful 표기 보장 (cascade 어디서도 분류 안 됐을 때).
+        name: 'nullReason=null + candidate=null 동시(방어 fallback) → reason=—',
+        meta: {
+          surfaceSSOTActive: false,
+          undergroundSSOTActive: false,
+          stability: EMPTY_SNAPSHOT,
+          direction: null,
+          candidate: null,
+          nullReason: null,
+        },
+        contains: ['candidate=null reason=—'],
+      },
+    ])('$name', ({ meta, contains }) => {
+      const section = dumpAutoLockSection(meta);
+      for (const expected of contains) {
+        expect(section).toContain(expected);
+      }
+    });
+  });
+
   it('DebugModal share button: fusion log buffer가 share 텍스트에 흐른다 (#1346)', async () => {
     const { pushFusionDebugEntry, clearFusionDebugEntries } = jest.requireActual(
       '../../../nearest-station/utils/fusionDebugBuffer',
@@ -2665,6 +2872,77 @@ describe('DebugModal share SSOT (#1346)', () => {
     expect(msg).toContain('용마산(7)');
     shareSpy.mockRestore();
     clearFusionDebugEntries();
+  });
+});
+
+// #1421 — Auto-lock 측정 인프라 내부 헬퍼. DebugModalInner의 render-time 산출 로직 단위 검증.
+describe('DebugModal helpers — #1421 auto-lock', () => {
+  const { findArrivalTerminal, computeAutoLockNullReason } = __test__;
+
+  describe('findArrivalTerminal', () => {
+    it('arrival null이면 null 반환', () => {
+      expect(findArrivalTerminal(null, 'X')).toBeNull();
+    });
+
+    it('matching trainCode의 destination 반환 (up 슬롯)', () => {
+      const arrival: StationArrival = {
+        up: [
+          { ...arrivalDefaults, destination: '한성대입구', arrivalSeconds: 30, statusMessage: '', trainCode: 'T1', arrivalMinutes: 1 },
+        ],
+        down: [],
+      };
+      expect(findArrivalTerminal(arrival, 'T1')).toBe('한성대입구');
+    });
+
+    it('matching trainCode의 destination 반환 (down 슬롯)', () => {
+      const arrival: StationArrival = {
+        up: [],
+        down: [
+          { ...arrivalDefaults, destination: '오이도', arrivalSeconds: 60, statusMessage: '', trainCode: 'T2', arrivalMinutes: 1 },
+        ],
+      };
+      expect(findArrivalTerminal(arrival, 'T2')).toBe('오이도');
+    });
+
+    it('matching trainCode 없으면 null', () => {
+      const arrival: StationArrival = {
+        up: [{ ...arrivalDefaults, destination: '한성대입구', arrivalSeconds: 30, statusMessage: '', trainCode: 'T1', arrivalMinutes: 1 }],
+        down: [],
+      };
+      expect(findArrivalTerminal(arrival, 'OTHER')).toBeNull();
+    });
+
+    it('destination이 빈 문자열이면 null (falsy fallback)', () => {
+      const arrival: StationArrival = {
+        up: [{ ...arrivalDefaults, destination: '', arrivalSeconds: 30, statusMessage: '', trainCode: 'T1', arrivalMinutes: 1 }],
+        down: [],
+      };
+      expect(findArrivalTerminal(arrival, 'T1')).toBeNull();
+    });
+  });
+
+  describe('computeAutoLockNullReason', () => {
+    it('candidate 있으면 null 반환', () => {
+      expect(computeAutoLockNullReason(true, true, true, true)).toBeNull();
+    });
+
+    it('SSOT 없으면 no-ssot', () => {
+      expect(computeAutoLockNullReason(false, false, false, false)).toBe('no-ssot');
+    });
+
+    it('SSOT 있고 stable 아니면 stability-pending', () => {
+      expect(computeAutoLockNullReason(true, false, false, false)).toBe('stability-pending');
+    });
+
+    it('SSOT + stable이지만 direction 미일치면 direction-mismatch', () => {
+      expect(computeAutoLockNullReason(true, true, false, false)).toBe('direction-mismatch');
+    });
+
+    it('3 게이트 모두 통과 + hasCandidate=false (inconsistent state) → fallback null', () => {
+      // buildCandidate가 lineToSubwayId null 반환 시 도달 가능 — valid LineNumber에선 미도달.
+      // 방어 fallback 분기 자체를 검증.
+      expect(computeAutoLockNullReason(true, true, true, false)).toBeNull();
+    });
   });
 });
 

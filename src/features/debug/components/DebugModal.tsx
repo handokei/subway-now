@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AppState,
   Modal,
@@ -70,6 +70,19 @@ import type { NearestStationResult } from '../../../shared/types/station';
 import { useTheme, spacing, radius, typography } from '../../../shared/theme';
 import { useBarometer } from '../../../shared/hooks/useBarometer';
 import { useLowPowerMode } from '../../../shared/hooks/useLowPowerMode';
+// #1421 — PR-AutoLock-1 측정 인프라. DebugModal이 SSOT consensus → stability buffer → direction verify
+// → inferAutoLockCandidate 결과를 dump에 노출. 동작 변경 0: lock 산출/sync 호출 없음.
+import { createConsensusStabilityBuffer } from '../../nearest-station/utils/consensusStabilityBuffer';
+import { verifyTrainDirection } from '../../nearest-station/utils/verifyTrainDirection';
+import {
+  inferAutoLockCandidate,
+  type DeviceAutoLockCandidate,
+  type InferAutoLockCandidateInput,
+} from '../../nearest-station/utils/inferAutoLockCandidate';
+import type {
+  ConsensusStabilitySnapshot,
+} from '../../nearest-station/utils/consensusStabilityBuffer';
+import type { VerifyTrainDirectionResult } from '../../nearest-station/utils/verifyTrainDirection';
 
 /**
  * #1215 (D9) — DebugModal 상태 가시화 신규 prop 묶음.
@@ -98,6 +111,32 @@ export interface SleepDebugState {
   sleepMode: boolean;
   /** shouldSuppressBySleepRule의 isFirstHop 입력 — 첫 hop 향하는 중인가. */
   firstHopApproaching: boolean;
+}
+
+/**
+ * #1421 — PR-AutoLock-1 측정 인프라. DebugModal에 노출할 device-side auto-lock 산출 상태 스냅샷.
+ *
+ * 본 PR은 측정만 — lock 산출/sync 호출 X. 모든 필드는 SSOT consensus → stability → direction
+ * 검증 → inferAutoLockCandidate 파이프라인의 현재 상태를 그대로 시각화한다.
+ *
+ * candidate null 사유는 다음 한 줄에 명시:
+ *   - 'no-ssot'           : surface/underground SSOT 둘 다 미합의 (Tier 1 신호 부재)
+ *   - 'stability-pending' : SSOT 합의되었으나 stability buffer threshold 미달
+ *   - 'direction-mismatch': SSOT + stability 통과했으나 trainCode 방향이 route와 불일치
+ *   - null                : candidate 산출됨
+ */
+export interface AutoLockDebugMeta {
+  /** SSOT 활성 — surface 또는 underground. */
+  surfaceSSOTActive: boolean;
+  undergroundSSOTActive: boolean;
+  /** Stability buffer 현재 snapshot. */
+  stability: ConsensusStabilitySnapshot;
+  /** verifyTrainDirection 결과 — SSOT 미합의 시 null. */
+  direction: VerifyTrainDirectionResult | null;
+  /** 최종 산출 후보 — 3 게이트 모두 통과 시 non-null. */
+  candidate: DeviceAutoLockCandidate | null;
+  /** candidate=null 시 사유. candidate 있으면 null. */
+  nullReason: 'no-ssot' | 'stability-pending' | 'direction-mismatch' | null;
 }
 
 const UNKNOWN_LABEL = '—';
@@ -399,6 +438,12 @@ interface BuildDumpArgs {
    * 미전달 시 `Date.now()` 사용. 테스트에서 결정적 출력 확보용.
    */
   nowMs?: number;
+  /**
+   * #1421 — Auto-lock Candidate 측정 스냅샷. 미전달 시 섹션은 (n/a) 표기.
+   * DebugModalInner가 매 render에서 useFusedNearestStation SSOT + stability buffer + direction을
+   * 계산해 주입한다. 본 PR은 측정만 — 동작 변경 없음.
+   */
+  autoLockMeta?: AutoLockDebugMeta;
 }
 
 /** dump 본체에서 사용하는 single builder 시그니처 — 본문 줄 배열을 반환. */
@@ -624,6 +669,123 @@ function buildCountersSection(args: BuildDumpArgs): string[] {
 }
 
 /**
+ * #1421 — Auto-lock Candidate 섹션. SSOT/stability/direction/candidate 4개 라인으로
+ * device-side auto-lock 측정 상태를 dump.
+ *
+ * meta 미전달 시 (n/a) — 호출자가 측정 비활성 또는 SSOT 객체 미주입.
+ */
+function buildAutoLockSection(args: BuildDumpArgs): string[] {
+  const m = args.autoLockMeta;
+  if (!m) return ['(n/a)'];
+  const ssotLine = `ssot=${formatSSOTLabel(m.surfaceSSOTActive, m.undergroundSSOTActive)}`;
+  const stabilityLine = `stability=${m.stability.stable ? 'stable' : 'pending'} count=${m.stability.count} stationId=${m.stability.stationId ?? UNKNOWN_LABEL}`;
+  const directionLine = formatDirectionLine(m.direction);
+  const candidateLine = m.candidate
+    ? `candidate=trainCode=${m.candidate.candidate.trainCode} line=${m.candidate.candidate.line} source=${m.candidate.source}`
+    : `candidate=null reason=${m.nullReason ?? UNKNOWN_LABEL}`;
+  return [ssotLine, stabilityLine, directionLine, candidateLine];
+}
+
+function formatDirectionLine(direction: VerifyTrainDirectionResult | null): string {
+  if (!direction) return `direction=${UNKNOWN_LABEL}`;
+  const matchLabel = direction.matched ? 'matched' : 'mismatch';
+  return `direction=${matchLabel} reason=${direction.reason}`;
+}
+
+function formatSSOTLabel(surface: boolean, underground: boolean): string {
+  if (surface && underground) return 'surface+underground';
+  if (surface) return 'surface';
+  if (underground) return 'underground';
+  return 'none';
+}
+
+/**
+ * #1421 — arrival에서 trainCode에 매칭되는 row의 destination(종착명) 반환.
+ * 매칭 없으면 null. verifyTrainDirection 입력 trainTerminalStationName 산출용.
+ */
+function findArrivalTerminal(
+  arrival: import('../../../shared/types/arrival').StationArrival | null,
+  trainCode: string,
+): string | null {
+  if (!arrival) return null;
+  const allRows = [...arrival.up, ...arrival.down];
+  for (const row of allRows) {
+    if (row.trainCode === trainCode) return row.destination || null;
+  }
+  return null;
+}
+
+/**
+ * #1421 — candidate=null 사유 분류. 4단 cascade 중 첫 미달 게이트를 노출.
+ */
+function computeAutoLockNullReason(
+  hasSSOT: boolean,
+  stable: boolean,
+  directionMatched: boolean,
+  hasCandidate: boolean,
+): AutoLockDebugMeta['nullReason'] {
+  if (hasCandidate) return null;
+  if (!hasSSOT) return 'no-ssot';
+  if (!stable) return 'stability-pending';
+  if (!directionMatched) return 'direction-mismatch';
+  /* istanbul ignore next -- 3 게이트 모두 통과면 hasCandidate=true가 보장됨 — buildCandidate
+     실패는 lineToSubwayId null 케이스로 valid LineNumber에서 도달 불능. 방어 fallback. */
+  return null;
+}
+
+/**
+ * #1421 — PR-AutoLock-1 측정 파이프라인. DebugModalInner의 render-time 산출 로직을
+ * 순수 함수로 분리 — SSOT 활성 cascade, stability push, direction verify, candidate 산출까지
+ * 한 곳에 모은다. DebugModalInner는 1줄 호출로 cognitive complexity 유지.
+ */
+function buildAutoLockMeta(input: {
+  readonly surfaceSSOT: InferAutoLockCandidateInput['surfaceSSOT'];
+  readonly undergroundSSOT: InferAutoLockCandidateInput['undergroundSSOT'];
+  readonly arrival: Parameters<typeof findArrivalTerminal>[0];
+  readonly result: NearestStationResult | null;
+  readonly arcStations: Parameters<typeof verifyTrainDirection>[0]['routeStations'];
+  readonly stabilityBuffer: ReturnType<typeof createConsensusStabilityBuffer>;
+}): AutoLockDebugMeta {
+  const { surfaceSSOT, undergroundSSOT, arrival, result, arcStations, stabilityBuffer } = input;
+  const activeSSOT = surfaceSSOT ?? undergroundSSOT;
+  const stability = stabilityBuffer.push(activeSSOT?.station.id ?? null);
+  const trainTerminalStationName = activeSSOT
+    ? findArrivalTerminal(arrival, activeSSOT.trainCode)
+    : null;
+  const currentIdx = result
+    ? arcStations.findIndex((s) => s.id === result.station.id)
+    : -1;
+  const destinationIdx = arcStations.length - 1;
+  const direction = activeSSOT
+    ? verifyTrainDirection({
+        routeStations: arcStations,
+        currentIdx,
+        destinationIdx,
+        trainTerminalStationName,
+      })
+    : null;
+  const candidate = inferAutoLockCandidate({
+    surfaceSSOT,
+    undergroundSSOT,
+    stabilityStable: stability.stable,
+    directionMatched: direction?.matched ?? false,
+  });
+  return {
+    surfaceSSOTActive: surfaceSSOT !== null,
+    undergroundSSOTActive: undergroundSSOT !== null,
+    stability,
+    direction,
+    candidate,
+    nullReason: computeAutoLockNullReason(
+      surfaceSSOT !== null || undergroundSSOT !== null,
+      stability.stable,
+      direction?.matched ?? false,
+      candidate !== null,
+    ),
+  };
+}
+
+/**
  * #1346 — Share dump SSOT.
  *
  * 출력 형식: `## ${title}` + 본문 줄 + 다음 섹션 사이 빈 줄.
@@ -684,6 +846,8 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
   { title: 'Boarding Prompt Acceptance', build: buildBoardingPromptAcceptanceSection },
   // #1413 — reason별 누적 + 마지막 발생 시각.
   { title: 'Counters', build: buildCountersSection },
+  // #1421 — PR-AutoLock-1 측정 인프라. SSOT consensus → stability → direction → candidate 4줄.
+  { title: 'Auto-lock Candidate', build: buildAutoLockSection },
 ];
 
 function buildDumpText(args: BuildDumpArgs): string {
@@ -816,6 +980,9 @@ function DebugModalInner({
     environment,
     surfaceSSOTActive,
     undergroundSSOTActive,
+    // #1421 — PR-AutoLock-1 측정 인프라. SSOT 객체 직접 받아 inferAutoLockCandidate에 전달.
+    surfaceSSOT,
+    undergroundSSOT,
   } = useFusedNearestStation();
   // arc 길이 = trip의 hop 총 수. trip 미설정이면 0.
   const routeHopCount = arcStations.length;
@@ -889,6 +1056,18 @@ function DebugModalInner({
       },
     [sleepProp, sleepMode, locklessTrip, currentHopIndex],
   );
+
+  // #1421 — PR-AutoLock-1 측정 인프라. buffer는 모달이 열린 동안만 누적(관찰자 효과 최소화).
+  // 산출 로직은 `buildAutoLockMeta`에 위임 — DebugModalInner는 호출 1줄.
+  const stabilityBufferRef = useRef(createConsensusStabilityBuffer());
+  const autoLockMeta = buildAutoLockMeta({
+    surfaceSSOT,
+    undergroundSSOT,
+    arrival,
+    result,
+    arcStations,
+    stabilityBuffer: stabilityBufferRef.current,
+  });
 
   const [logs, setLogs] = useState<AlarmLogEntry[]>([]);
   const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
@@ -988,6 +1167,8 @@ function DebugModalInner({
       // #1413 — UI에만 노출되던 BoardingLock/Estimator/Boarding Prompt(+Acceptance)/Counters를 share에 포함.
       boardingLock: lock,
       estimatorLog: estimatorLogs,
+      // #1421 — PR-AutoLock-1 측정 인프라. SSOT/stability/direction/candidate 4줄.
+      autoLockMeta,
     });
     void Share.share({ message });
   }, [
@@ -1025,6 +1206,8 @@ function DebugModalInner({
     // #1413 — BoardingLock/Estimator 신규 캡쳐.
     lock,
     estimatorLogs,
+    // #1421 — auto-lock meta는 render-time 산출. 의존성으로 추가해 stability flip 시 share 갱신.
+    autoLockMeta,
   ]);
 
   return (
@@ -1670,6 +1853,9 @@ export const __test__ = {
   formatOptionalNumber,
   formatOptionalTs,
   UNKNOWN_LABEL,
+  // #1421 — Auto-lock 측정 인프라 내부 헬퍼. 호출자는 DebugModal 자체에서 render-time 산출.
+  findArrivalTerminal,
+  computeAutoLockNullReason,
 };
 
 const styles = StyleSheet.create({
