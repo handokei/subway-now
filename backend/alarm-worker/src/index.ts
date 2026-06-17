@@ -75,6 +75,7 @@ import {
   validateRegressionUpload,
   writeRegressionDataPoints,
 } from './regressionTelemetry';
+import { KV_MIN_CACHE_TTL_SEC } from './kvConsistency';
 import { getTrip, putTrip } from './trips';
 import {
   TRIP_STATUS_RETENTION_MS,
@@ -1002,8 +1003,10 @@ app.post('/boarding-lock/sync', async (c) => {
   // #1364 — read-after-write verification. Workers KV는 region간 eventually consistent —
   // PUT 직후 다른 region replica가 옛 값을 반환하면 다음 cron(43~60s 후)이 stale
   // `boardingLock.expiresAt`을 읽어 false-negative "lock missing or expired"가 발생한다(#765 회귀).
-  // cacheTtl=0으로 origin 조회 강제. 1회 retry 후에도 propagation 확인 실패 시 5xx 반환 —
-  // client가 다음 fix에서 재시도해 데이터 정합성 회복 기회를 확보한다.
+  // #1423 — cacheTtl은 KV 런타임 floor(30s) 사용. "origin 조회 강제"를 위해 cacheTtl=0을 쓰면
+  // Cloudflare KV가 `Invalid cache_ttl of 0` 400 throw로 sync handler 전체 실패한다(#1364
+  // 회귀, #1383 cron path fix가 본 read-after-write 경로를 cover 못 함). 1회 retry 후에도
+  // propagation 확인 실패 시 5xx 반환 — client가 다음 fix에서 재시도해 데이터 정합성 회복 기회를 확보한다.
   const verifyOk = await verifyBoardingLockPersisted(c.env.TRIPS, working);
   if (!verifyOk) {
     await putTrip(c.env.TRIPS, working);
@@ -1039,7 +1042,17 @@ app.post('/boarding-lock/sync', async (c) => {
 /**
  * #1364 — KV `putTrip` 직후 boardingLock이 실제로 propagation됐는지 확인.
  *
- * `cacheTtl: 0`으로 origin 조회를 강제하고, 다음 두 조건이 모두 만족할 때 true:
+ * cacheTtl은 Cloudflare KV 런타임 최소값(`KV_MIN_CACHE_TTL_SEC` = 30)을 사용한다.
+ * #1423 — 과거 댓글이 "cacheTtl=0으로 origin 조회 강제"라 명시했지만, Cloudflare KV runtime은
+ * read 경로 종류와 무관하게 `cacheTtl < 30`을 거절(`Invalid cache_ttl of 0` 400). 본 함수에
+ * cacheTtl=0을 넣으면 sync handler 전체가 실패해 device가 lock sync 못 함(#1423 evidence).
+ *
+ * 30s cacheTtl 하에서도 propagation race는 충분히 흡수된다 — sync handler가 putTrip을 호출한
+ * 같은 region replica는 즉시 fresh 값을 반환하고, 다른 region이라도 30s window 안에 새 값으로
+ * 정렬된다. 1회 retry로 propagation 완료를 한 번 더 확인한 뒤 실패 시 503으로 client에 retry
+ * 신호를 보낸다.
+ *
+ * 다음 두 조건이 모두 만족할 때 true:
  *   1) 저장한 trip이 read되어야 함 (lock 없는 trip은 lock 검증 생략)
  *   2) `boardingLock.expiresAt`이 기대치 이상(propagation 완료)
  *
@@ -1049,7 +1062,8 @@ export async function verifyBoardingLockPersisted(
   kv: KVNamespace,
   expected: Trip,
 ): Promise<boolean> {
-  const verified = await getTrip(kv, expected.token, { cacheTtl: 0 });
+  // #1423 — cacheTtl=KV_MIN_CACHE_TTL_SEC (30). 0/<30은 CF KV가 400 throw.
+  const verified = await getTrip(kv, expected.token, { cacheTtl: KV_MIN_CACHE_TTL_SEC });
   if (!verified) return false;
   if (!expected.boardingLock) return true;
   if (!verified.boardingLock) return false;

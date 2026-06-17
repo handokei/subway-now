@@ -1,4 +1,8 @@
-import { assertCronCacheTtl, CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL } from './kvConsistency';
+import {
+  assertCronCacheTtl,
+  assertKvCacheTtl,
+  CRON_READ_CACHE_TTL_SEC as SHARED_CRON_TTL,
+} from './kvConsistency';
 import type { Trip } from './types';
 
 /**
@@ -22,11 +26,11 @@ const TRIP_PREFIX = 'trip:';
  * cache_ttl of 0. Cache TTL must be at least 30.` throw로 `listTrips`가 첫 trip iterate
  * 시점에 abort되어 silent push 발사 0건 회귀(#1381 evidence).
  *
- * Resolution: cron path는 KV 최소 제약(30s)을 준수하고, region propagation 정합성은
- * sync handler가 책임진다 — `index.ts:/boarding-lock/sync`의 `verifyBoardingLockPersisted`
- * 는 단일 키 read-after-write 검증이라 cacheTtl 제약 사이드를 다르게 다룬다.
- * 본 상수는 `pendingPushes.ts:CRON_READ_CACHE_TTL_SEC(30)` /
- * `progress.ts`(10/cron, 60/POST handler)와 일관한 cron-read 정책으로 정렬한다.
+ * Resolution: 모든 KV read 경로(cron / read-after-write)는 KV 최소 제약(30s)을 준수한다.
+ * #1423 — 과거 본 파일 주석이 "sync handler는 cacheTtl=0 허용"이라 명시해 `index.ts:1052`
+ * `verifyBoardingLockPersisted`가 같은 함정에 재발 (`/boarding-lock/sync` 전체 400 fail).
+ * 이제 `getTrip`은 caller가 `cacheTtl`을 명시할 때 `assertKvCacheTtl`로 floor 검증한다 —
+ * caller 단계에서 명시 실패시켜 다음 callsite가 같은 회귀를 못 만들도록 차단.
  */
 const CRON_READ_CACHE_TTL_SEC = SHARED_CRON_TTL;
 
@@ -40,17 +44,24 @@ export async function putTrip(kv: KVNamespace, trip: Trip): Promise<void> {
 }
 
 /**
- * #1364 — getTrip은 caller가 cacheTtl을 지정해 stale read window를 명시 제어한다.
+ * getTrip은 caller가 cacheTtl을 지정해 stale read window를 명시 제어한다.
  *
  * 기본(미지정): 기본 KV cacheTtl(60s) 사용. read 경로 일반.
- * `cacheTtl: 0`: read-after-write verification 경로 — sync handler가 putTrip 직후
- *   propagation 확인 시 사용. origin 조회 강제로 stale snapshot 차단.
+ * `cacheTtl: 30+`: read-after-write verification 경로 — sync handler가 putTrip 직후
+ *   propagation 확인 시 사용. 30s window 안에 region propagation이 정렬되며, retry로 한 번 더
+ *   확인 후 실패 시 503 반환.
+ *
+ * #1423 — `cacheTtl < 30`은 `assertKvCacheTtl`이 caller 단계에서 RangeError throw.
+ * Cloudflare KV runtime이 throw하는 `Invalid cache_ttl` 사고(#1364/#1381)는 첫 iterate
+ * 시점에서야 발생해 root cause가 가려지지만, 본 가드는 호출 자체를 막아 명시적으로 실패시킨다.
  */
 export async function getTrip(
   kv: KVNamespace,
   token: string,
   options?: { cacheTtl?: number },
 ): Promise<Trip | null> {
+  // #1423 — caller가 cacheTtl 명시했으면 floor 검증. undefined는 KV 기본(60s) 사용 → 통과.
+  assertKvCacheTtl(options?.cacheTtl);
   const raw =
     options?.cacheTtl !== undefined
       ? await kv.get(tripKey(token), { cacheTtl: options.cacheTtl })
