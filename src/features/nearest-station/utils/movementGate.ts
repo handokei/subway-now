@@ -33,6 +33,20 @@
  *   - 평가 순서 확장: stale > accuracy > motion-stationary(=true) > speed > position > **motion-warmup**
  *     (motion=undefined + speed=null + positionStability=unknown일 때 마지막 보호막).
  *
+ * #1401 (Epic #1396) — 열차 진행(trainProgressing) 신호 추가:
+ *   - device 모션(CMMotionActivity) + GPS speed는 지하철 내부에서 불신뢰. iOS Core Location은
+ *     정적 사용자에게 speed=-1(미측정)을 보고하기도 하고, CMMotionActivity는 지하철에서
+ *     stationary/automotive를 애매하게 보고한다. 결과: 실제 이동 중인데 "정적"으로 판정해
+ *     도착 알람을 누락(역삼 13:37 회귀).
+ *   - 반면 fusion 결과가 arc 위에서 advance(prev → cur idx 증가)하면, 열차는 device 모션과
+ *     무관하게 물리적으로 진행 중. 호출자가 `trainProgressing=true`를 전달하면 정적 reason
+ *     3종(motion-stationary / static-speed / static-position) 가드를 우회한다.
+ *   - 유지되는 reason: no-location / stale-timestamp / low-accuracy / motion-warmup —
+ *     fusion advance는 device 신호 신뢰성을 보장하지 않으므로 GPS lock·warmup·신호 부재 분기는 유지.
+ *   - false positive 방어: trainProgressing 판정은 호출자(useFusedNearestStation) 책임 —
+ *     arc 위 idx 증가만 신호로 사용(forward-only, monotone). fusion이 잘못된 lock에 흔들려도
+ *     arc 진행은 정의상 명시적 trip arc 위에서만 일어나므로 false positive 위험 작다.
+ *
  * 입력 필드는 모두 옵션 — 호출자가 측정 가능한 신호만 전달하면 된다. 누락된 신호는
  * 해당 분기 검증을 skip (false negative보다 false positive 차단 우선).
  */
@@ -142,14 +156,21 @@ export const MOVEMENT_TO_ALARM_LOG_REASON = {
  * #728 — speedMps가 null/undefined인 경우 motionStationary(CMMotionActivity) 신호를 positionStability보다
  * 우선 적용. motion=true면 즉시 정적 확정. motion 신호는 OS 가속도계 기반이라 GPS 좌표 이력보다
  * 신뢰성 있다. accuracy 가드는 motion fallback 경로에도 동일 적용 (지하 GPS 노이즈 보호).
+ *
+ * #1401 — `trainProgressing=true` 시 즉시 false (정적 신호 무효화). 열차 진행이 확인된 상황에서는
+ * device 모션/GPS speed 정적 신호가 noise이므로 fusion downgrade 금지. accuracy 가드는 별도로
+ * 우선 평가 — accuracy noise는 trainProgressing과 무관하게 GPS 자체 신뢰 불가.
  */
 export function isStaticSpeedSignal(
   speedMps: number | null | undefined,
   accuracyM?: number | null,
   positionStability?: PositionStability,
   motionStationary?: boolean,
+  trainProgressing?: boolean,
 ): boolean {
   if (accuracyM != null && accuracyM > MAX_ACCURACY_M) return false;
+  // #1401 — 열차 진행이 확인되면 device 신호 단독으로 정적 판정 금지.
+  if (trainProgressing === true) return false;
   if (speedMps != null) {
     return speedMps < STATIC_SPEED_THRESHOLD_MPS;
   }
@@ -189,10 +210,17 @@ export function shouldDowngradeFusion(input: {
   positionStability?: PositionStability;
   /** #728 — CMMotionActivity stationary 신호. speed=null 경로에서 positionStability보다 우선. */
   motionStationary?: boolean;
+  /**
+   * #1401 — 호출자가 직전 tick 대비 fusion result가 arc 위에서 advance했음을 확인한 신호.
+   * true면 device 모션/GPS speed 정적 신호가 noise로 간주되어 강등 금지. accuracy 가드는 별도 적용.
+   */
+  trainProgressing?: boolean;
 }): boolean {
   if (!isFusionDowngradeTarget(input.confidence)) return false;
   // accuracy 가드: GPS lock이 끊긴 노이즈는 정적 신호로 보지 않는다(기존 정책 유지).
   if (input.accuracyM != null && input.accuracyM > MAX_ACCURACY_M) return false;
+  // #1401 — 열차 진행 확정 시 정적 신호 합의해도 강등 금지(false positive 차단).
+  if (input.trainProgressing === true) return false;
 
   // #1363 — single-signal downgrade 회귀(fu jumping) 차단. consensus 게이트(≥2 신호).
   // 회귀 패턴: iOS에서 motion=null/unknown이 자주 발생 → 단일 신호(speed alone)로 fusion-elevated
@@ -235,14 +263,18 @@ export interface LocationSignalInput {
  *   1. loc === null → 'no-location'
  *   2. timestamp 있으면서 (now - timestamp) > STALE_AGE_MS → 'stale-timestamp'
  *   3. accuracyM 있으면서 > MAX_ACCURACY_M → 'low-accuracy'
- *   4. (#728) motionStationary === true → 'motion-stationary'
+ *   4. (#1401) trainProgressing === true → 정적 가드 3종(4·5·6) 우회. fusion arc advance가 확인되면
+ *      device 모션/GPS speed 정적 신호는 noise로 간주.
+ *   5. (#728) motionStationary === true → 'motion-stationary'
  *      - speed/position 신호보다 우선. 16:14:22 회귀(speed=0.69 임계 우회)와
  *        destination/transfer 카테고리 무방비를 동시 차단하는 핵심 신호.
- *   5. speedMps 있으면서 < STATIC_SPEED_THRESHOLD_MPS → 'static-speed'
- *   6. (#733) speedMps 없고 positionStability='static' → 'static-position'
- *   7. (#1013) motionStationary=undefined + speedMps=null + positionStability='unknown' → 'motion-warmup'
+ *   6. speedMps 있으면서 < STATIC_SPEED_THRESHOLD_MPS → 'static-speed'
+ *   7. (#733) speedMps 없고 positionStability='static' → 'static-position'
+ *   8. (#1013) motionStationary=undefined + speedMps=null + positionStability='unknown' → 'motion-warmup'
  *      - fg-hydrate 직후 warmup window. 모든 신호가 부재할 때 한시적 차단.
- *   8. 그 외 → reliable=true
+ *      - trainProgressing=true여도 평가 도달 X — 평가 순서상 (4)에서 정적 가드만 우회되고
+ *        warmup은 신호 부재(GPS lock도 안 잡힘) 분기라 별도 유지.
+ *   9. 그 외 → reliable=true
  *
  * 호출자는 결과의 reason으로 logSuppressedGate/logSilentPushSkipped 등 적재.
  */
@@ -258,6 +290,13 @@ export function evaluateMovement(
    *                   동시 발생 시 'motion-warmup'으로 차단해 신호 부재 구간 게이트 우회 방지 (#1013).
    */
   motionStationary?: boolean,
+  /**
+   * #1401 — 열차 진행(arc advance) 신호. true면 정적 reason 3종(motion-stationary / static-speed /
+   * static-position) 가드를 우회한다. device 모션/GPS speed가 지하철 내부에서 불신뢰하므로,
+   * fusion arc advance가 확인되면 그쪽이 더 강한 진행 신호. 단 stale/low-accuracy/warmup은
+   * fusion advance와 무관한 GPS 자체 신뢰성 분기라 그대로 유지.
+   */
+  trainProgressing?: boolean,
 ): MovementSignal {
   if (!loc) return { reliable: false, reason: 'no-location' };
 
@@ -270,6 +309,17 @@ export function evaluateMovement(
 
   if (loc.accuracyM != null && loc.accuracyM > MAX_ACCURACY_M) {
     return { reliable: false, reason: 'low-accuracy', accuracyM: loc.accuracyM };
+  }
+
+  // #1401 — 열차 진행 확정 시 device 정적 신호 우회. fusion advance가 device 모션/GPS speed보다
+  // 강한 진행 증거이므로 motion-stationary / static-speed / static-position 가드 모두 skip.
+  // stale/low-accuracy/motion-warmup은 이 분기 도달 전 처리되므로 영향 없음.
+  if (trainProgressing === true) {
+    const result: MovementSignal = { reliable: true };
+    if (loc.speedMps != null) result.speedMps = loc.speedMps;
+    if (loc.accuracyM != null) result.accuracyM = loc.accuracyM;
+    if (loc.timestamp != null) result.ageMs = now - loc.timestamp;
+    return result;
   }
 
   // #728 — CMMotionActivity 정적 신호. speed/position보다 우선.

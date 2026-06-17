@@ -561,6 +561,224 @@ describe('movementGate', () => {
     });
   });
 
+  // #1401 — 열차 진행(trainProgressing) 신호가 정적 가드 3종(motion-stationary / static-speed /
+  // static-position)을 우회시키는지 검증. device 모션/GPS speed가 지하철 내부에서 불신뢰하므로
+  // fusion arc advance가 확인되면 reliable=true로 통과.
+  describe('#1401 — evaluateMovement trainProgressing 우회', () => {
+    it('trainProgressing=true + motionStationary=true(임계 우회 phantom)면 reliable=true (motion-stationary 우회)', () => {
+      // 16:14:22 phantom 회귀와 같은 조건 + 열차 진행 확인 → device 정적 신호 무시.
+      const now = 1_000_000;
+      const m = evaluateMovement(
+        { timestamp: now, accuracyM: 50, speedMps: 0.69 },
+        now,
+        undefined,
+        true, // motionStationary
+        true, // trainProgressing
+      );
+      expect(m.reliable).toBe(true);
+      expect(m.speedMps).toBe(0.69);
+      expect(m.accuracyM).toBe(50);
+    });
+
+    it('trainProgressing=true + speedMps=0(static-speed)이면 reliable=true', () => {
+      // GPS speed=0인데 열차 진행 확인 → device 정적 무시.
+      const now = 1_000_000;
+      const m = evaluateMovement(
+        { timestamp: now, accuracyM: 50, speedMps: 0 },
+        now,
+        undefined,
+        undefined,
+        true,
+      );
+      expect(m.reliable).toBe(true);
+      expect(m.speedMps).toBe(0);
+    });
+
+    it('trainProgressing=true + speedMps=null + positionStability=static이면 reliable=true (static-position 우회)', () => {
+      // 역삼 13:37 회귀와 같은 조건: GPS speed null + position=static 정적 판정 → 열차 진행 확인 시 우회.
+      const m = evaluateMovement(
+        { accuracyM: 50 },
+        undefined,
+        'static',
+        undefined,
+        true,
+      );
+      expect(m.reliable).toBe(true);
+    });
+
+    it('trainProgressing=true + speedMps=null + motionStationary=true이면 reliable=true', () => {
+      // CMMotionActivity stationary 동시 + fusion advance 확인 → 우회.
+      const m = evaluateMovement(
+        { accuracyM: 50 },
+        undefined,
+        undefined,
+        true,
+        true,
+      );
+      expect(m.reliable).toBe(true);
+    });
+
+    it('trainProgressing=true여도 stale-timestamp는 차단 유지 (GPS 신뢰성 분리)', () => {
+      // GPS lock 자체가 stale → fusion advance가 노이즈일 수 있으므로 stale 가드 유지.
+      const now = 2_000_000;
+      const m = evaluateMovement(
+        { timestamp: now - STALE_AGE_MS - 1, accuracyM: 50, speedMps: 0 },
+        now,
+        undefined,
+        true,
+        true,
+      );
+      expect(m.reliable).toBe(false);
+      expect(m.reason).toBe('stale-timestamp');
+    });
+
+    it('trainProgressing=true여도 low-accuracy는 차단 유지', () => {
+      // accuracy noise는 fusion advance와 무관하게 GPS 자체 신뢰 불가 → 가드 유지.
+      const now = 1_000_000;
+      const m = evaluateMovement(
+        { timestamp: now, accuracyM: MAX_ACCURACY_M + 1, speedMps: 0 },
+        now,
+        undefined,
+        true,
+        true,
+      );
+      expect(m.reliable).toBe(false);
+      expect(m.reason).toBe('low-accuracy');
+    });
+
+    it('trainProgressing=true여도 no-location은 차단 유지', () => {
+      // loc=null이면 fusion advance 평가 자체 불가 → no-location 우선.
+      const m = evaluateMovement(null, undefined, undefined, undefined, true);
+      expect(m.reliable).toBe(false);
+      expect(m.reason).toBe('no-location');
+    });
+
+    it('trainProgressing=false면 기존 동작 그대로 (motion-stationary 차단)', () => {
+      // false 명시 시 우회 X → device 정적 가드 그대로 동작.
+      const now = 1_000_000;
+      const m = evaluateMovement(
+        { timestamp: now, accuracyM: 50, speedMps: 0.69 },
+        now,
+        undefined,
+        true,
+        false,
+      );
+      expect(m.reliable).toBe(false);
+      expect(m.reason).toBe('motion-stationary');
+    });
+
+    it('trainProgressing=undefined면 기존 동작 그대로 (기본값 graceful)', () => {
+      // 호출자가 미전달이면 기존 호출자와 호환 — 정적 가드 그대로.
+      const now = 1_000_000;
+      const m = evaluateMovement(
+        { timestamp: now, accuracyM: 50, speedMps: 0 },
+        now,
+      );
+      expect(m.reliable).toBe(false);
+      expect(m.reason).toBe('static-speed');
+    });
+
+    it('trainProgressing=true + loc 최소 필드(모두 미전달)면 reliable=true (선택 필드 미주입)', () => {
+      // 우회 분기 안에서 result에 timestamp/accuracy/speed가 conditional로 들어가는 분기 커버.
+      // loc={} → 모든 선택 필드 미전달 → result에 아무 신호도 첨부되지 않음.
+      const m = evaluateMovement({}, undefined, undefined, undefined, true);
+      expect(m.reliable).toBe(true);
+      expect(m.speedMps).toBeUndefined();
+      expect(m.accuracyM).toBeUndefined();
+      expect(m.ageMs).toBeUndefined();
+    });
+  });
+
+  describe('#1401 — isStaticSpeedSignal trainProgressing 우회', () => {
+    it('trainProgressing=true이면 speedMps=0(정적)이어도 false', () => {
+      // fusion downgrade 강등 금지 — 열차 진행 확인되면 정적 신호 무효.
+      expect(isStaticSpeedSignal(0, 50, undefined, undefined, true)).toBe(false);
+      expect(isStaticSpeedSignal(0.3, 50, undefined, undefined, true)).toBe(false);
+    });
+
+    it('trainProgressing=true이면 motionStationary=true여도 false', () => {
+      expect(isStaticSpeedSignal(null, 50, undefined, true, true)).toBe(false);
+    });
+
+    it('trainProgressing=true이면 positionStability=static이어도 false', () => {
+      expect(isStaticSpeedSignal(null, 50, 'static', undefined, true)).toBe(false);
+    });
+
+    it('trainProgressing=true여도 accuracy noise(>MAX_ACCURACY_M)면 false 유지 (accuracy 우선)', () => {
+      // accuracy 노이즈는 GPS 자체 신뢰 불가 → fusion advance 무관 false (정적 신호도 false).
+      expect(isStaticSpeedSignal(0, MAX_ACCURACY_M + 1, undefined, undefined, true)).toBe(false);
+    });
+
+    it('trainProgressing=false면 기존 동작 (정적 신호 그대로)', () => {
+      expect(isStaticSpeedSignal(0, 50, undefined, undefined, false)).toBe(true);
+    });
+
+    it('trainProgressing=undefined면 기존 동작 (기본값 graceful)', () => {
+      expect(isStaticSpeedSignal(0, 50)).toBe(true);
+    });
+  });
+
+  describe('#1401 — shouldDowngradeFusion trainProgressing 우회', () => {
+    it('승격 라벨 + 합의 정적 신호 + trainProgressing=true → false (강등 금지)', () => {
+      // fu jumping과 비슷한 합의 정적 입력이지만 fusion advance 확인 → 강등 금지.
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'position-train',
+          speedMps: 0,
+          accuracyM: 50,
+          motionStationary: true,
+          trainProgressing: true,
+        }),
+      ).toBe(false);
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'boarding-lock-interp',
+          speedMps: null,
+          accuracyM: 50,
+          motionStationary: true,
+          positionStability: 'static',
+          trainProgressing: true,
+        }),
+      ).toBe(false);
+    });
+
+    it('승격 라벨 + 합의 정적 신호 + trainProgressing=false → 기존 동작 (강등 적용)', () => {
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'position-train',
+          speedMps: 0,
+          accuracyM: 50,
+          motionStationary: true,
+          trainProgressing: false,
+        }),
+      ).toBe(true);
+    });
+
+    it('승격 라벨 + 합의 정적 신호 + trainProgressing=undefined → 기존 동작 (graceful)', () => {
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'position-train',
+          speedMps: 0,
+          accuracyM: 50,
+          motionStationary: true,
+        }),
+      ).toBe(true);
+    });
+
+    it('trainProgressing=true여도 accuracy noise면 false (accuracy 가드 우선)', () => {
+      // accuracy 가드는 trainProgressing 평가 전 — fusion advance와 무관하게 강등 보류 (기본 false).
+      expect(
+        shouldDowngradeFusion({
+          confidence: 'position-train',
+          speedMps: 0,
+          accuracyM: 1500,
+          motionStationary: true,
+          trainProgressing: true,
+        }),
+      ).toBe(false);
+    });
+  });
+
   describe('#1357 (S1) — isStaticMovementResult', () => {
     it.each([
       ['motion-stationary' as const],

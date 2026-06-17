@@ -132,6 +132,27 @@ interface UseFusedNearestStationReturn {
    * + result.distanceKm ≤ MAX_FUSION_DISTANCE_KM 근접 게이트 동시 충족 필요.
    */
   subsurfaceStationDetected: boolean;
+  /**
+   * #1401 (Epic #1396 sub 5/6) — 직전 tick 대비 fusion result가 arc 위에서 advance(idx 증가)했는지.
+   * true일 때 호출자(useStationAlarm/silentPushTask/backgroundLocationTask)는 evaluateMovement에
+   * trainProgressing=true로 전달해 device 모션/GPS speed 정적 신호 가드를 우회시킨다.
+   *
+   * 판정 조건(모두 충족):
+   *   1. arcStations.length > 0 (활성 trip)
+   *   2. 직전 tick에 채택된 result의 arc idx가 있었음 (첫 tick은 false)
+   *   3. 현재 result의 arc idx > 직전 arc idx
+   *
+   * forward-only(idx 증가만). idx 감소/동일은 false.
+   * arcKey(trip arc id pair) 변경 시 리셋 — 새 trip의 첫 tick은 false.
+   *
+   * false positive 방어:
+   *   - arc는 명시적 trip 경로(origin→destination, 또는 transfer leg) 위 station 배열 — 자유 fusion이
+   *     아니라 lock/origin/destination 컨텍스트가 산출한 segment. arc 위에서 idx가 증가하는 건
+   *     사용자가 실제 진행했거나, 잘못된 lock으로 인한 false advance 둘 중 하나인데, 후자는 #1400
+   *     (route/lock 정확성)이 일차 방어선. 본 게이트는 device 신호의 *잘못된 정적 판정*을 무효화하는
+   *     것이지 lock 무결성을 보장하지 않는다 — ADR-010 두 실패 모드 동급 원칙에 따른 분리 책임.
+   */
+  trainProgressing: boolean;
   refresh: () => Promise<void>;
 }
 
@@ -785,11 +806,35 @@ export function useFusedNearestStation(
     }
   }
 
+  // #1401 — 열차 진행(trainProgressing) 신호. 직전 tick 대비 fusion result.station이 arc 위에서
+  // advance(idx 증가)했는지. forward-only: 동일/감소는 false. arcKey 변경(새 trip arc) 시 리셋 —
+  // 새 trip 첫 tick은 false. 본 신호는 호출자(useStationAlarm 등)가 evaluateMovement에
+  // trainProgressing=true로 전달해 device 모션/GPS speed 정적 신호 가드를 우회시킨다.
+  // 지하철 내부에서 device 신호 불신뢰성 보완(13:37 역삼 미발사 회귀).
+  //
+  // 강등(shouldDowngradeFusion) 전의 result를 기준으로 판정 — 강등이 일어나면 그 자체가
+  // 정적 판정이라 trainProgressing 우회와 모순되지 않게, 강등 *입력*으로 미리 판정.
+  // (모순 회피: trainProgressing=true → shouldDowngradeFusion=false → 강등 X.
+  //  trainProgressing=false → 기존 정책 그대로 동작.)
+  const currentResultArcIdx =
+    result != null && arcStations.length > 0
+      ? arcIndexOfStation(arcStations, result.station)
+      : -1;
+  const prevArcIdxRef = useRef<number>(-1);
+  const prevArcKeyForProgressRef = useRef<string | null>(null);
+  const trainProgressing =
+    arcStations.length > 0 &&
+    arcKey === prevArcKeyForProgressRef.current &&
+    prevArcIdxRef.current !== -1 &&
+    currentResultArcIdx !== -1 &&
+    currentResultArcIdx > prevArcIdxRef.current;
+
   // #727 정적 misfire 가드 — shouldDowngradeFusion이 isStaticSpeedSignal + confidence가 fusion
   // 승격 라벨(position-train / boarding-lock / boarding-lock-interp / arrival-arriving #733)인지 한 번에 평가.
   // 정적+accuracy 정상이면 gps-only로 강등 + result/source도 GPS 원본으로 되돌림.
   //
   // #733 — speedMps=null인 정적 사용자(iOS Core Location 미보고) 케이스에 positionStability 신호 fallback.
+  // #1401 — trainProgressing=true면 정적 신호 합의여도 강등 금지(arc advance 우선).
   if (
     shouldDowngradeFusion({
       confidence,
@@ -797,12 +842,31 @@ export function useFusedNearestStation(
       accuracyM: gps.accuracyMeters,
       positionStability,
       motionStationary,
+      trainProgressing,
     })
   ) {
     confidence = 'gps-only';
     source = 'gps';
     result = gps.result;
   }
+
+  // #1401 — prev arc idx 갱신. 최종 result 결정 후(강등 후 station이 바뀌었을 수 있음) idx 다시 계산.
+  // arcKey 변경 시 신규 trip 진입으로 ref 리셋 — 첫 tick의 trainProgressing은 false 보장.
+  // forward-only: backward jump는 prev 보존(다음 tick에 다시 forward해야 progressing=true).
+  const finalResultArcIdx =
+    result != null && arcStations.length > 0
+      ? arcIndexOfStation(arcStations, result.station)
+      : -1;
+  useEffect(() => {
+    if (prevArcKeyForProgressRef.current !== arcKey) {
+      prevArcKeyForProgressRef.current = arcKey;
+      prevArcIdxRef.current = finalResultArcIdx;
+      return;
+    }
+    if (finalResultArcIdx > prevArcIdxRef.current) {
+      prevArcIdxRef.current = finalResultArcIdx;
+    }
+  }, [arcKey, finalResultArcIdx]);
 
   // #903 (Seam G) — GPS-only 결과인데 기압계 dP/dt가 지하 진입을 시사하면 'gps-only-underground'로 강등.
   // 지하 GPS fix는 wifi/cell 삼각측량 fallback이 보고된 좌표일 가능성이 높아 stationAlarm 게이트에서
@@ -978,6 +1042,7 @@ export function useFusedNearestStation(
     detectionSignalMask: detectionVerdict.signalMask,
     subsurface: barometerSubsurface,
     subsurfaceStationDetected,
+    trainProgressing,
     refresh: gps.refresh,
   };
 }

@@ -2223,6 +2223,154 @@ describe('useStationAlarm', () => {
     });
   });
 
+  // #1401 (Epic #1396 sub 5/6) — trainProgressing 신호가 정적 가드 3종을 우회시키는지 검증.
+  // 본 테스트는 useFusedNearestStation에서 도출된 trainProgressing이 useStationAlarm으로 전달되어
+  // evaluateMovement의 motion-stationary / static-speed / static-position 차단을 모두 우회시키는 것을 검증.
+  // 사용자 증상: 역삼 13:37 미발사 회귀 — GPS speed null + motion=stationary 정적 판정으로 도착 알람 누락.
+  describe('#1401 trainProgressing 우회', () => {
+    const route = makeDirectRoute(1, '2');
+    const onRouteStation = makeStation('S2-DST', '강남');
+
+    /**
+     * 7 케이스 모두 동일한 base inputs(route + destination + nearestStation) + 케이스별 overrides로
+     * useStationAlarm을 렌더 → Sonar CPD. helper로 추출.
+     */
+    function renderTrainProgressingAlarm(
+      overrides: Partial<UseStationAlarmInputs>,
+    ): ReturnType<typeof renderHook<unknown, unknown>> {
+      return renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route,
+            destination,
+            nearestStation: onRouteStation,
+            ...overrides,
+          }),
+        ),
+      );
+    }
+
+    it('API imminent + motionStationary=true + trainProgressing=true → device 정적 가드 우회 → 정상 발사', async () => {
+      // 역삼 회귀 시나리오: motion=stationary지만 fusion arc advance가 확인되면 발사 허용.
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderTrainProgressingAlarm({
+        speedMps: 0.69,
+        accuracyMeters: 50,
+        motionStationary: true,
+        trainProgressing: true,
+      });
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'movement-motion-stationary' }),
+      );
+    });
+
+    it('API imminent + speed=0(static-speed) + trainProgressing=true → 정상 발사', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderTrainProgressingAlarm({
+        speedMps: 0,
+        accuracyMeters: 50,
+        trainProgressing: true,
+      });
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'movement-static-speed' }),
+      );
+    });
+
+    it('API imminent + speed=null + positionStability=static + trainProgressing=true → 정상 발사 (역삼 회귀)', async () => {
+      // 역삼 13:37 정확 시나리오: GPS speed=null + position=static → 기존엔 static-position 차단.
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderTrainProgressingAlarm({
+        speedMps: null,
+        accuracyMeters: 50,
+        positionStability: 'static',
+        trainProgressing: true,
+      });
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedMovement).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'movement-static-position' }),
+      );
+    });
+
+    it('Phase rawEvent (early destination) + motionStationary=true + trainProgressing=true → 정상 발사', async () => {
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'early',
+        type: 'destination',
+        stationName: '강남',
+      });
+
+      renderTrainProgressingAlarm({
+        userLocation: { lat: 37.4, lng: 127 },
+        speedMps: 1.5,
+        accuracyMeters: 50,
+        motionStationary: true,
+        trainProgressing: true,
+      });
+
+      await waitFor(() => expect(mockSendAlarmNotification).toHaveBeenCalled());
+    });
+
+    it('station-passed + motionStationary=true + trainProgressing=true → 정상 발사', async () => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+
+      renderTrainProgressingAlarm({
+        speedMps: 0.69,
+        accuracyMeters: 50,
+        motionStationary: true,
+        trainProgressing: true,
+      });
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+    });
+
+    it('trainProgressing=false면 기존 동작 (motion=stationary 차단 그대로)', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderTrainProgressingAlarm({
+        speedMps: 0.69,
+        accuracyMeters: 50,
+        motionStationary: true,
+        trainProgressing: false,
+      });
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'movement-motion-stationary' }),
+        );
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('trainProgressing=undefined(기본값)면 기존 동작 (graceful fallback)', async () => {
+      mockGetStoredTripTrainCode.mockResolvedValue('TRAIN-1');
+      mockIsImminentByArrivalCode.mockReturnValue(true);
+
+      renderTrainProgressingAlarm({
+        speedMps: 0,
+        accuracyMeters: 50,
+        // trainProgressing 미전달 — 기본값 false → 기존 정적 가드 그대로.
+      });
+
+      await waitFor(() => {
+        expect(mockLogSuppressedMovement).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'movement-static-speed' }),
+        );
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+  });
+
   // #1010 — station-passed firedHydrated 가드 + 30s hydration warmup.
   // lock hydrate 직후 GPS가 stabilize되기 전 false alarm 방지.
   describe('#1010 station-passed hydration warmup guard', () => {
