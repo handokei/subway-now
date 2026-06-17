@@ -3287,3 +3287,70 @@ describe('POST /trips — #1366 boardingLock metadata cross-validation', () => {
     ).toBe(true);
   });
 });
+
+// #1425 — POST /trips trip-ended retention 안 같은 token 재등록 차단.
+// silent push `trip-ended:eta-missing` 후 device 자동 재시도/재하이드레이션이 backend에 도달하면
+// 기존 코드는 `getTrip()`만 확인(=null, 이미 삭제됨)하고 무조건 새 trip을 만들어 → backend
+// auto-revive → dedup state reset → false fire 회귀. retention(1h) 안에서는 race로 간주하고 reject.
+describe('POST /trips — #1425 trip-recently-ended reject', () => {
+  function seedTripEnded(
+    env: Env,
+    token: string,
+    endedAt: number,
+    endReason: 'expired' | 'eta-missing' | 'destination' | 'push-unrecoverable' = 'eta-missing',
+  ): void {
+    const kv = env.TRIPS as unknown as InMemoryKV;
+    kv.store.set(`tripStatus:${token}`, {
+      value: JSON.stringify({ endedAt, endReason }),
+    });
+  }
+
+  it('rejects re-register with 400 + body when same token is recently ended (within retention)', async () => {
+    const env = makeKvEnv();
+    seedTripEnded(env, 'tok', Date.now() - 5_000, 'eta-missing');
+
+    const res = await post('/trips', base(), env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'trip-recently-ended',
+      reason: 'eta-missing',
+    });
+  });
+
+  it('does not create the trip KV entry when rejected', async () => {
+    const env = makeKvEnv();
+    seedTripEnded(env, 'tok', Date.now() - 5_000, 'eta-missing');
+
+    await post('/trips', base(), env);
+    // trip:<token> KV는 작성되지 않아야 한다 — auto-revive 차단.
+    expect(await env.TRIPS.get('trip:tok')).toBeNull();
+  });
+
+  it('accepts re-register when retention window has elapsed (> 1h)', async () => {
+    const env = makeKvEnv();
+    // 1h 1s 전에 종료된 마커 — retention 윈도우 밖이므로 정상 등록.
+    seedTripEnded(env, 'tok', Date.now() - (60 * 60 * 1000 + 1_000), 'eta-missing');
+
+    const res = await post('/trips', base(), env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, token: 'tok' });
+    expect(await env.TRIPS.get('trip:tok')).not.toBeNull();
+  });
+
+  it('accepts re-register when no trip-ended marker exists (default behavior preserved)', async () => {
+    const env = makeKvEnv();
+    const res = await post('/trips', base(), env);
+    expect(res.status).toBe(200);
+    expect(await env.TRIPS.get('trip:tok')).not.toBeNull();
+  });
+
+  it('does not affect a different token when one token is recently ended', async () => {
+    const env = makeKvEnv();
+    seedTripEnded(env, 'ended-token', Date.now() - 5_000, 'destination');
+
+    // 다른 token으로 등록 → 정상 처리되어야 함 (token 단위 격리).
+    const res = await post('/trips', { ...base(), token: 'fresh-token' }, env);
+    expect(res.status).toBe(200);
+    expect(await env.TRIPS.get('trip:fresh-token')).not.toBeNull();
+  });
+});
