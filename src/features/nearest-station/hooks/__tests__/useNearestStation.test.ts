@@ -226,7 +226,9 @@ describe('useNearestStation', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2);
   });
 
-  it('watchPositionAsync에 High·distanceInterval:0·timeInterval:2000을 전달한다', async () => {
+  it('watchPositionAsync에 High·distanceInterval:5·timeInterval:2000을 전달한다', async () => {
+    // #1416 — surface는 distanceInterval=5(m)로 GPS jitter callback을 native에서 차단한다.
+    // BG task TRACKING_DISTANCE_INTERVAL_M=20m 패턴 검증 후 보수적 적용.
     mockGranted();
 
     renderHook(() => useNearestStation());
@@ -236,7 +238,7 @@ describe('useNearestStation', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalledWith(
       {
         accuracy: Location.Accuracy.High,
-        distanceInterval: 0,
+        distanceInterval: 5,
         timeInterval: 2000,
       },
       expect.any(Function),
@@ -1265,7 +1267,7 @@ describe('useNearestStation — #1313 subsurface GPS throttle', () => {
   // 지상 기본값: High@2s. 지하 throttle: Balanced@12s. interval은 상수에서 가져와 매직넘버 회피.
   const SURFACE_OPTIONS = {
     accuracy: Location.Accuracy.High,
-    distanceInterval: 0,
+    distanceInterval: 5,
     timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
   };
   const SUBSURFACE_OPTIONS = {
