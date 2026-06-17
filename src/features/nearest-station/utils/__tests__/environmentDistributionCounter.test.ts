@@ -170,10 +170,10 @@ describe('createEnvironmentDistributionCounter', () => {
     counter.tick('surface', T0);
     const snap: EnvironmentDistributionSnapshot = counter.snapshot(T0 + 1000);
     // 컴파일 타임 타입 보장 + 런타임 키 존재 확인.
-    expect(Object.keys(snap.totals).sort()).toEqual(
+    expect(Object.keys(snap.totals).sort((a, b) => a.localeCompare(b))).toEqual(
       ['hybrid', 'surface', 'underground', 'unknown'],
     );
-    expect(Object.keys(snap.percentages).sort()).toEqual(
+    expect(Object.keys(snap.percentages).sort((a, b) => a.localeCompare(b))).toEqual(
       ['hybrid', 'surface', 'underground', 'unknown'],
     );
     expect(typeof snap.transitions).toBe('number');
