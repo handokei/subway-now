@@ -1636,6 +1636,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         pushId: string;
         tripOverrides?: Partial<Trip>;
         apnsFetch?: ReturnType<typeof vi.fn>;
+        pending?: InMemoryKV;
       }) {
         const kv = new InMemoryKV();
         await putTrip(
@@ -1648,7 +1649,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         );
         await seedLocklessMotionSeries(kv, 'lock-tok', setup.motion);
         const apnsFetch = setup.apnsFetch ?? makeOkFetch();
-        const stats = await runScheduled(makeEnv(kv), {
+        const stats = await runScheduled(makeEnv(kv, setup.pending), {
           seoul: makeSeoulCombo([], []),
           apnsConfig,
           apnsHosts: APNS_HOSTS,
@@ -1706,22 +1707,11 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         // release 경로의 floor fire는 motion gate(stationary 차단)를 통과한 경우에만 fire.
         // 발사 성공 시 PENDING_PUSHES에 등록돼 30s 내 ACK 없으면 alert fallback 가동.
         const pending = new InMemoryKV();
-        const kv = new InMemoryKV();
-        await putTrip(
-          kv as unknown as KVNamespace,
-          makeLockTrip({
-            consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
-            lastTrackedArrivalEpoch: LAST_EPOCH_NOT_ELAPSED,
-          }),
-        );
-        await seedLocklessMotionSeries(kv, 'lock-tok', 'automotive');
-        const stats = await runScheduled(makeEnv(kv, pending), {
-          seoul: makeSeoulCombo([], []),
-          apnsConfig,
-          apnsHosts: APNS_HOSTS,
-          fetchImpl: makeOkFetch() as unknown as typeof fetch,
-          now: () => NOW,
-          generatePushId: () => 'p1402-release',
+        const { stats, stored } = await runFallbackMotionScenario({
+          motion: 'automotive',
+          hopElapsed: false,
+          pushId: 'p1402-release',
+          pending,
         });
         // floor fire 발사 (release 경로)
         expect(stats.vanishReleaseFired).toBe(1);
@@ -1734,28 +1724,16 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expect(parsed.stationName).toBe('중곡');
         expect(parsed.phase).toBe('imminent');
         // lock release는 정상 진행
-        const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
         expect(stored.boardingLock).toBeUndefined();
       });
 
       it('#1402 release floor fire 페이로드에 origin=vanish-release stamp', async () => {
         const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-        const kv = new InMemoryKV();
-        await putTrip(
-          kv as unknown as KVNamespace,
-          makeLockTrip({
-            consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
-            lastTrackedArrivalEpoch: LAST_EPOCH_NOT_ELAPSED,
-          }),
-        );
-        await seedLocklessMotionSeries(kv, 'lock-tok', 'automotive');
-        await runScheduled(makeEnv(kv), {
-          seoul: makeSeoulCombo([], []),
-          apnsConfig,
-          apnsHosts: APNS_HOSTS,
-          fetchImpl: apnsFetch as unknown as typeof fetch,
-          now: () => NOW,
-          generatePushId: () => 'p1402-origin',
+        await runFallbackMotionScenario({
+          motion: 'automotive',
+          hopElapsed: false,
+          pushId: 'p1402-origin',
+          apnsFetch,
         });
         const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
         const releaseCall = calls.find((c) => {
@@ -4806,42 +4784,49 @@ describe('#1363 — pickLatestCurrentStationName (log 진단 이원화 helper)',
 });
 
 describe('runScheduled — #1402 인프라 안전망 (pendingPushes wire-up + payload.origin)', () => {
-  it('arvlCd 발사 성공 시 PENDING_PUSHES에 30s alert fallback entry 등록', async () => {
-    const pending = new InMemoryKV();
+  // 공용 helper — #1402 테스트 3건이 공유하던 SeoulArrivalClient 빌드 / runScheduled 호출 /
+  // apnsFetch.mock.calls payload 추출 boilerplate를 압축. arvlCd / vanish-fallback / release
+  // 시나리오는 입력 차이(arrival arvlCd 유무, trip override)만 명시한다.
+  async function runArvlCdScenario(opts: {
+    token: string;
+    pushId: string;
+    pending?: InMemoryKV;
+    apnsFetch?: ReturnType<typeof vi.fn>;
+  }): Promise<{ stats: ScheduledStats; pending?: InMemoryKV; apnsFetch?: ReturnType<typeof vi.fn> }> {
     const kv = new InMemoryKV();
-    await putTrip(
-      kv as unknown as KVNamespace,
-      makeLockTripFixture('arvl-1402'),
-    );
-    const seoul = new SeoulArrivalClient({
-      apiKey: 'K',
-      host: 'h',
-      now: () => NOW,
-      fetchImpl: (async () =>
-        new Response(
-          JSON.stringify({
-            realtimeArrivalList: [
-              {
-                barvlDt: '0',
-                recptnDt: '',
-                updnLine: '상행',
-                trainLineNm: '중곡',
-                btrainNo: '7246',
-                subwayNm: '지하철7호선',
-                arvlCd: 1,
-              },
-            ],
-          }),
-          { status: 200 },
-        )) as unknown as typeof fetch,
-    });
-    const stats = await runScheduled(makeEnv(kv, pending), {
-      seoul,
+    await putTrip(kv as unknown as KVNamespace, makeLockTripFixture(opts.token));
+    const fetchImpl = (opts.apnsFetch ??
+      (async () => new Response('', { status: 200 }))) as unknown as typeof fetch;
+    const stats = await runScheduled(makeEnv(kv, opts.pending), {
+      seoul: makeEstimateArrivalSeoul(1),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
-      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      fetchImpl,
       now: () => NOW,
-      generatePushId: () => 'p1402-arvl',
+      generatePushId: () => opts.pushId,
+    });
+    return { stats, pending: opts.pending, apnsFetch: opts.apnsFetch };
+  }
+
+  function findApnsCallByPushId(
+    apnsFetch: ReturnType<typeof vi.fn>,
+    pushId: string,
+  ): Record<string, unknown> {
+    const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
+    const match = calls.find((c) => {
+      const body = JSON.parse(c[1].body as string);
+      return body.data?.pushId === pushId;
+    });
+    expect(match).toBeDefined();
+    return JSON.parse(match![1].body as string);
+  }
+
+  it('arvlCd 발사 성공 시 PENDING_PUSHES에 30s alert fallback entry 등록', async () => {
+    const pending = new InMemoryKV();
+    const { stats } = await runArvlCdScenario({
+      token: 'arvl-1402',
+      pushId: 'p1402-arvl',
+      pending,
     });
     expect(stats.arvlCdFireSuccess).toBe(1);
     const entry = await pending.get('pending:p1402-arvl');
@@ -4856,49 +4841,13 @@ describe('runScheduled — #1402 인프라 안전망 (pendingPushes wire-up + pa
 
   it('arvlCd 페이로드에 origin=arvlcd stamp', async () => {
     const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-    const kv = new InMemoryKV();
-    await putTrip(
-      kv as unknown as KVNamespace,
-      makeLockTripFixture('arvl-1402b'),
-    );
-    const seoul = new SeoulArrivalClient({
-      apiKey: 'K',
-      host: 'h',
-      now: () => NOW,
-      fetchImpl: (async () =>
-        new Response(
-          JSON.stringify({
-            realtimeArrivalList: [
-              {
-                barvlDt: '0',
-                recptnDt: '',
-                updnLine: '상행',
-                trainLineNm: '중곡',
-                btrainNo: '7246',
-                subwayNm: '지하철7호선',
-                arvlCd: 1,
-              },
-            ],
-          }),
-          { status: 200 },
-        )) as unknown as typeof fetch,
+    await runArvlCdScenario({
+      token: 'arvl-1402b',
+      pushId: 'p1402-arvl-origin',
+      apnsFetch,
     });
-    await runScheduled(makeEnv(kv), {
-      seoul,
-      apnsConfig,
-      apnsHosts: APNS_HOSTS,
-      fetchImpl: apnsFetch as unknown as typeof fetch,
-      now: () => NOW,
-      generatePushId: () => 'p1402-arvl-origin',
-    });
-    const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
-    const stationCall = calls.find((c) => {
-      const body = JSON.parse(c[1].body as string);
-      return body.data?.pushId === 'p1402-arvl-origin';
-    });
-    expect(stationCall).toBeDefined();
-    const body = JSON.parse(stationCall![1].body as string);
-    expect(body.data.origin).toBe('arvlcd');
+    const body = findApnsCallByPushId(apnsFetch, 'p1402-arvl-origin');
+    expect((body.data as { origin: string }).origin).toBe('arvlcd');
   });
 
   it('vanish-fallback advance(hop-elapsed) 페이로드에 origin=vanish-fallback stamp', async () => {
@@ -4912,28 +4861,21 @@ describe('runScheduled — #1402 인프라 안전망 (pendingPushes wire-up + pa
       }),
     );
     // arrivals/positions 모두 empty → vanish, hopElapsed=true → fallback advance fire
-    const seoul = new SeoulArrivalClient({
-      apiKey: 'K',
-      host: 'h',
-      now: () => NOW,
-      fetchImpl: (async () =>
-        new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
-    });
     await runScheduled(makeEnv(kv), {
-      seoul,
+      seoul: new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => NOW,
+        fetchImpl: (async () =>
+          new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+      }),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       fetchImpl: apnsFetch as unknown as typeof fetch,
       now: () => NOW,
       generatePushId: () => 'p1402-vf',
     });
-    const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
-    const fallbackCall = calls.find((c) => {
-      const body = JSON.parse(c[1].body as string);
-      return body.data?.pushId === 'p1402-vf';
-    });
-    expect(fallbackCall).toBeDefined();
-    const body = JSON.parse(fallbackCall![1].body as string);
-    expect(body.data.origin).toBe('vanish-fallback');
+    const body = findApnsCallByPushId(apnsFetch, 'p1402-vf');
+    expect((body.data as { origin: string }).origin).toBe('vanish-fallback');
   });
 });
