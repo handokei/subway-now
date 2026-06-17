@@ -2700,6 +2700,7 @@ describe('DebugModal share SSOT (#1346)', () => {
   });
 
   // #1421 — PR-AutoLock-1 측정 인프라. SSOT/stability/direction/candidate 4줄 dump.
+  // CPD 회피 (lesson_sonarcloud_dup_prevention): it.each + factory + wrapper 패턴.
   describe('#1421 Auto-lock Candidate 섹션', () => {
     const STABLE_SNAPSHOT = { stable: true, stationId: '0201', count: 3 };
     const PENDING_SNAPSHOT = { stable: false, stationId: '0201', count: 1 };
@@ -2712,155 +2713,135 @@ describe('DebugModal share SSOT (#1346)', () => {
       stationId: '0201',
     };
 
-    it('autoLockMeta 미전달 시 (n/a) 출력', () => {
-      const dump = __test__.buildDumpText(makeSsotArgs());
-      const section = dump.slice(dump.indexOf('## Auto-lock Candidate'));
-      expect(section).toContain('(n/a)');
-    });
-
-    it('SSOT none + stability empty → ssot=none, candidate=null reason=no-ssot', () => {
+    type AutoLockMeta = NonNullable<Parameters<typeof __test__.buildDumpText>[0]['autoLockMeta']>;
+    const dumpAutoLockSection = (meta?: AutoLockMeta): string => {
       const dump = __test__.buildDumpText(
-        makeSsotArgs({
-          autoLockMeta: {
-            surfaceSSOTActive: false,
-            undergroundSSOTActive: false,
-            stability: EMPTY_SNAPSHOT,
-            direction: null,
-            candidate: null,
-            nullReason: 'no-ssot',
-          },
-        }),
+        makeSsotArgs(meta ? { autoLockMeta: meta } : undefined),
       );
-      const section = dump.slice(dump.indexOf('## Auto-lock Candidate'));
-      expect(section).toContain('ssot=none');
-      expect(section).toContain('stability=pending count=0');
-      expect(section).toContain('candidate=null reason=no-ssot');
-    });
+      return dump.slice(dump.indexOf('## Auto-lock Candidate'));
+    };
 
-    it('surface SSOT 활성 + stability pending → reason=stability-pending', () => {
-      const dump = __test__.buildDumpText(
-        makeSsotArgs({
-          autoLockMeta: {
-            surfaceSSOTActive: true,
-            undergroundSSOTActive: false,
-            stability: PENDING_SNAPSHOT,
-            direction: FORWARD,
-            candidate: null,
-            nullReason: 'stability-pending',
-          },
-        }),
-      );
-      const section = dump.slice(dump.indexOf('## Auto-lock Candidate'));
-      expect(section).toContain('ssot=surface');
-      expect(section).toContain('stability=pending count=1 stationId=0201');
-      expect(section).toContain('direction=matched reason=forward');
-      expect(section).toContain('reason=stability-pending');
-    });
-
-    it('underground SSOT 활성 + 모든 게이트 통과 → candidate 노출', () => {
-      const dump = __test__.buildDumpText(
-        makeSsotArgs({
-          autoLockMeta: {
-            surfaceSSOTActive: false,
-            undergroundSSOTActive: true,
-            stability: STABLE_SNAPSHOT,
-            direction: FORWARD,
-            candidate: SAMPLE_CANDIDATE,
-            nullReason: null,
-          },
-        }),
-      );
-      const section = dump.slice(dump.indexOf('## Auto-lock Candidate'));
-      expect(section).toContain('ssot=underground');
-      expect(section).toContain('stability=stable count=3');
-      expect(section).toContain('candidate=trainCode=2001 line=2 source=device-ssot');
-    });
-
-    it('두 SSOT 모두 활성이면 ssot=surface+underground', () => {
-      const dump = __test__.buildDumpText(
-        makeSsotArgs({
-          autoLockMeta: {
-            surfaceSSOTActive: true,
-            undergroundSSOTActive: true,
-            stability: STABLE_SNAPSHOT,
-            direction: FORWARD,
-            candidate: SAMPLE_CANDIDATE,
-            nullReason: null,
-          },
-        }),
-      );
-      const section = dump.slice(dump.indexOf('## Auto-lock Candidate'));
-      expect(section).toContain('ssot=surface+underground');
-    });
-
-    it('direction mismatch → reason=direction-mismatch', () => {
-      const dump = __test__.buildDumpText(
-        makeSsotArgs({
-          autoLockMeta: {
-            surfaceSSOTActive: true,
-            undergroundSSOTActive: false,
-            stability: STABLE_SNAPSHOT,
-            direction: REVERSE,
-            candidate: null,
-            nullReason: 'direction-mismatch',
-          },
-        }),
-      );
-      const section = dump.slice(dump.indexOf('## Auto-lock Candidate'));
-      expect(section).toContain('direction=mismatch reason=reverse');
-      expect(section).toContain('reason=direction-mismatch');
-    });
-
-    it('direction=null (SSOT 미합의)이면 direction=—', () => {
-      const dump = __test__.buildDumpText(
-        makeSsotArgs({
-          autoLockMeta: {
-            surfaceSSOTActive: false,
-            undergroundSSOTActive: false,
-            stability: EMPTY_SNAPSHOT,
-            direction: null,
-            candidate: null,
-            nullReason: 'no-ssot',
-          },
-        }),
-      );
-      const section = dump.slice(dump.indexOf('## Auto-lock Candidate'));
-      expect(section).toContain('direction=—');
-    });
-
-    it('stability stationId=null이면 stationId=— (빈 buffer)', () => {
-      const dump = __test__.buildDumpText(
-        makeSsotArgs({
-          autoLockMeta: {
-            surfaceSSOTActive: false,
-            undergroundSSOTActive: false,
-            stability: EMPTY_SNAPSHOT,
-            direction: null,
-            candidate: null,
-            nullReason: 'no-ssot',
-          },
-        }),
-      );
-      const section = dump.slice(dump.indexOf('## Auto-lock Candidate'));
-      expect(section).toContain('stationId=—');
-    });
-
-    it('nullReason=null + candidate=null 동시(방어 fallback) → reason=—', () => {
-      // 호출자가 inconsistent state 주입 시 graceful 표기 보장 (cascade 어디서도 분류 안 됐을 때).
-      const dump = __test__.buildDumpText(
-        makeSsotArgs({
-          autoLockMeta: {
-            surfaceSSOTActive: false,
-            undergroundSSOTActive: false,
-            stability: EMPTY_SNAPSHOT,
-            direction: null,
-            candidate: null,
-            nullReason: null,
-          },
-        }),
-      );
-      const section = dump.slice(dump.indexOf('## Auto-lock Candidate'));
-      expect(section).toContain('candidate=null reason=—');
+    it.each<{
+      readonly name: string;
+      readonly meta: AutoLockMeta | undefined;
+      readonly contains: readonly string[];
+    }>([
+      {
+        name: 'autoLockMeta 미전달 시 (n/a) 출력',
+        meta: undefined,
+        contains: ['(n/a)'],
+      },
+      {
+        name: 'SSOT none + stability empty → ssot=none, candidate=null reason=no-ssot',
+        meta: {
+          surfaceSSOTActive: false,
+          undergroundSSOTActive: false,
+          stability: EMPTY_SNAPSHOT,
+          direction: null,
+          candidate: null,
+          nullReason: 'no-ssot',
+        },
+        contains: ['ssot=none', 'stability=pending count=0', 'candidate=null reason=no-ssot'],
+      },
+      {
+        name: 'surface SSOT 활성 + stability pending → reason=stability-pending',
+        meta: {
+          surfaceSSOTActive: true,
+          undergroundSSOTActive: false,
+          stability: PENDING_SNAPSHOT,
+          direction: FORWARD,
+          candidate: null,
+          nullReason: 'stability-pending',
+        },
+        contains: [
+          'ssot=surface',
+          'stability=pending count=1 stationId=0201',
+          'direction=matched reason=forward',
+          'reason=stability-pending',
+        ],
+      },
+      {
+        name: 'underground SSOT 활성 + 모든 게이트 통과 → candidate 노출',
+        meta: {
+          surfaceSSOTActive: false,
+          undergroundSSOTActive: true,
+          stability: STABLE_SNAPSHOT,
+          direction: FORWARD,
+          candidate: SAMPLE_CANDIDATE,
+          nullReason: null,
+        },
+        contains: [
+          'ssot=underground',
+          'stability=stable count=3',
+          'candidate=trainCode=2001 line=2 source=device-ssot',
+        ],
+      },
+      {
+        name: '두 SSOT 모두 활성이면 ssot=surface+underground',
+        meta: {
+          surfaceSSOTActive: true,
+          undergroundSSOTActive: true,
+          stability: STABLE_SNAPSHOT,
+          direction: FORWARD,
+          candidate: SAMPLE_CANDIDATE,
+          nullReason: null,
+        },
+        contains: ['ssot=surface+underground'],
+      },
+      {
+        name: 'direction mismatch → reason=direction-mismatch',
+        meta: {
+          surfaceSSOTActive: true,
+          undergroundSSOTActive: false,
+          stability: STABLE_SNAPSHOT,
+          direction: REVERSE,
+          candidate: null,
+          nullReason: 'direction-mismatch',
+        },
+        contains: ['direction=mismatch reason=reverse', 'reason=direction-mismatch'],
+      },
+      {
+        name: 'direction=null (SSOT 미합의)이면 direction=—',
+        meta: {
+          surfaceSSOTActive: false,
+          undergroundSSOTActive: false,
+          stability: EMPTY_SNAPSHOT,
+          direction: null,
+          candidate: null,
+          nullReason: 'no-ssot',
+        },
+        contains: ['direction=—'],
+      },
+      {
+        name: 'stability stationId=null이면 stationId=— (빈 buffer)',
+        meta: {
+          surfaceSSOTActive: false,
+          undergroundSSOTActive: false,
+          stability: EMPTY_SNAPSHOT,
+          direction: null,
+          candidate: null,
+          nullReason: 'no-ssot',
+        },
+        contains: ['stationId=—'],
+      },
+      {
+        // 호출자가 inconsistent state 주입 시 graceful 표기 보장 (cascade 어디서도 분류 안 됐을 때).
+        name: 'nullReason=null + candidate=null 동시(방어 fallback) → reason=—',
+        meta: {
+          surfaceSSOTActive: false,
+          undergroundSSOTActive: false,
+          stability: EMPTY_SNAPSHOT,
+          direction: null,
+          candidate: null,
+          nullReason: null,
+        },
+        contains: ['candidate=null reason=—'],
+      },
+    ])('$name', ({ meta, contains }) => {
+      const section = dumpAutoLockSection(meta);
+      for (const expected of contains) {
+        expect(section).toContain(expected);
+      }
     });
   });
 
