@@ -1510,7 +1510,7 @@ export async function advanceBoardingLockWaypoint(
       0,
       trip.waypoints.length,
     );
-    await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log);
+    await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, nextWaypoint.kind);
   }
   await putTrip(env.TRIPS, trip);
   // #705 — shift된 진행분을 progress KV에 +1 누적. 이후 POST /trips race가 trip.waypoints를
@@ -1558,7 +1558,7 @@ export async function maybeFireLiveActivityUpdate(
     etaSeconds,
     trip.waypoints.length,
   );
-  const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log);
+  const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, waypoint.kind);
   if (result.dirty) {
     // 410 분기 — token이 비워졌으므로 lastLaPushEpoch/lastLaPushAt은 갱신하지 않는다.
     return true;
