@@ -52,7 +52,14 @@ export function findStationByName(name: string): Station | null {
  *  - silent push 게이트에서 nextWaypoint가 lock.boardingLine에 정차하는지 line-mismatch 가드.
  *
  * 매칭 실패(역명 없음 또는 해당 line에 정차 안 함) 시 null.
+ *
+ * #1405: findStationByName/findLineByStationName과 동일한 canonical fallback 적용.
+ * 옛 boardingLock(예: stationName='뚝섬유원지', line=7)이 새 stations.json
+ * ('자양(뚝섬한강공원)', line=7)과 정확 매칭 실패하는 lookup 일관성 부족 회귀 차단.
  */
 export function findStationByNameAndLine(name: string, line: LineNumber): Station | null {
-  return stations.find((s) => s.name === name && s.line === line) ?? null;
+  const exact = stations.find((s) => s.name === name && s.line === line);
+  if (exact) return exact;
+  const key = canonicalKey(name);
+  return stations.find((s) => canonicalKey(s.name) === key && s.line === line) ?? null;
 }
