@@ -2321,6 +2321,12 @@ describe('DebugModal share SSOT (#1346)', () => {
     expect(dump).toContain('## Scheduled queue');
     expect(dump).toContain('## Alarm log');
     expect(dump).toContain('## Fusion log');
+    // #1413 — UI에만 노출되던 5개 섹션이 share dump에 포함되어야 한다.
+    expect(dump).toContain('## BoardingLock');
+    expect(dump).toContain('## Estimator State');
+    expect(dump).toContain('## Boarding Prompt');
+    expect(dump).toContain('## Boarding Prompt Acceptance');
+    expect(dump).toContain('## Counters');
     // suppressed reason 없으면 Gates 헤더 자체 생략(omitIfEmpty=true).
     expect(dump).not.toContain('## Gates');
   });
@@ -2394,13 +2400,219 @@ describe('DebugModal share SSOT (#1346)', () => {
     );
     expect(dump).toContain('## Fusion log (3)');
     // 최신(ts3) 먼저 — Alarm log와 동일 정렬.
-    const fusionSection = dump.slice(dump.indexOf('## Fusion log'));
+    // #1413 — Fusion log 뒤에 추가된 섹션과 격리 위해 다음 `## ` 헤더까지로 자른다.
+    const fusionStart = dump.indexOf('## Fusion log');
+    const nextHeader = dump.indexOf('\n## ', fusionStart + 1);
+    const fusionSection = nextHeader === -1 ? dump.slice(fusionStart) : dump.slice(fusionStart, nextHeader);
     expect(fusionSection).toContain('src=position-train');
     expect(fusionSection).toContain('gps-fix');
     expect(fusionSection).toContain('sticky:locked');
     // 본문 라인 3건 — 헤더 다음의 줄 수가 3.
     const bodyLines = fusionSection.split('\n').slice(1).filter((l) => l.length > 0);
     expect(bodyLines).toHaveLength(3);
+  });
+
+  // #1413 — 누락된 5개 섹션이 dump 본문에 정확한 값으로 흐르는지 검증.
+  describe('#1413 누락 섹션', () => {
+    it('BoardingLock: lock=null이면 active=no만 출력', () => {
+      const dump = __test__.buildDumpText(makeSsotArgs());
+      const section = dump.slice(dump.indexOf('## BoardingLock'));
+      expect(section).toContain('active=no');
+      expect(section).not.toContain('trainCode=');
+    });
+
+    it('BoardingLock: lock 활성이면 trainCode/line/expiresAt/boardedAt 노출', () => {
+      const boardedAt = new Date('2026-06-17T13:00:00Z').getTime();
+      const dump = __test__.buildDumpText(
+        makeSsotArgs({
+          nowMs: boardedAt + 60_000,
+          boardingLock: {
+            trainCode: '7152',
+            boardingLine: '7',
+            boardedAt,
+            expectedDurationMs: 30 * 60 * 1000,
+            boardingStationId: '728',
+            destinationId: '2-022',
+          },
+        }),
+      );
+      const section = dump.slice(
+        dump.indexOf('## BoardingLock'),
+        dump.indexOf('## Estimator State'),
+      );
+      expect(section).toContain('active=yes');
+      expect(section).toContain('trainCode=7152');
+      expect(section).toContain('line=7');
+      expect(section).toContain('expiresAt=');
+      expect(section).toContain('boardedAt=');
+      expect(section).not.toContain('sentinel=yes');
+    });
+
+    it('BoardingLock: hydratedFromSentinel=true면 sentinel=yes 라인 추가', () => {
+      const boardedAt = new Date('2026-06-17T13:00:00Z').getTime();
+      const dump = __test__.buildDumpText(
+        makeSsotArgs({
+          nowMs: boardedAt + 60_000,
+          boardingLock: {
+            trainCode: '7152',
+            boardingLine: '7',
+            boardedAt,
+            expectedDurationMs: 30 * 60 * 1000,
+            boardingStationId: '728',
+            destinationId: '2-022',
+            hydratedFromSentinel: { destinationId: 'FREE_TRIP_SENTINEL', sentinelAt: 0 },
+          },
+        }),
+      );
+      const section = dump.slice(
+        dump.indexOf('## BoardingLock'),
+        dump.indexOf('## Estimator State'),
+      );
+      expect(section).toContain('sentinel=yes');
+    });
+
+    it('BoardingLock: lock 만료되었으면 active=no', () => {
+      const boardedAt = new Date('2026-06-17T13:00:00Z').getTime();
+      // expectedDurationMs * 1.5 = 45분. 1시간 후면 만료.
+      const dump = __test__.buildDumpText(
+        makeSsotArgs({
+          nowMs: boardedAt + 60 * 60 * 1000,
+          boardingLock: {
+            trainCode: '7152',
+            boardingLine: '7',
+            boardedAt,
+            expectedDurationMs: 30 * 60 * 1000,
+            boardingStationId: '728',
+            destinationId: '2-022',
+          },
+        }),
+      );
+      const section = dump.slice(
+        dump.indexOf('## BoardingLock'),
+        dump.indexOf('## Estimator State'),
+      );
+      expect(section).toContain('active=no');
+      // 만료여도 lock 본문은 출력 — 진단용.
+      expect(section).toContain('trainCode=7152');
+    });
+
+    it('Estimator State: 빈 buffer면 (empty) + 카운트 0', () => {
+      const dump = __test__.buildDumpText(makeSsotArgs());
+      expect(dump).toContain('## Estimator State (0)');
+      const section = dump.slice(
+        dump.indexOf('## Estimator State'),
+        dump.indexOf('## Alarm log'),
+      );
+      expect(section).toContain('(empty)');
+    });
+
+    it('Estimator State: 2건 데이터 → 최신이 위 (Fusion log와 동일 컨벤션)', () => {
+      const ts1 = new Date('2026-06-17T13:00:00Z').getTime();
+      const ts2 = new Date('2026-06-17T13:00:10Z').getTime();
+      const dump = __test__.buildDumpText(
+        makeSsotArgs({
+          estimatorLog: [
+            { ts: ts1, strategy: 'default-hop', stationName: '용마산', stationLine: '7', arcIndex: 0 },
+            { ts: ts2, strategy: 'reanchored-hop', stationName: '사가정', stationLine: '7', arcIndex: 1 },
+          ],
+        }),
+      );
+      expect(dump).toContain('## Estimator State (2)');
+      const section = dump.slice(
+        dump.indexOf('## Estimator State'),
+        dump.indexOf('## Alarm log'),
+      );
+      const lines = section.split('\n').filter((l) => l.includes('idx='));
+      expect(lines).toHaveLength(2);
+      // 최신(reanchored-hop / 사가정)이 위쪽.
+      expect(lines[0]).toContain('reanchored-hop');
+      expect(lines[1]).toContain('default-hop');
+    });
+
+    it('Boarding Prompt: 5m/1h/all 카운터를 dump에 노출', () => {
+      const now = new Date('2026-06-17T13:00:00Z').getTime();
+      const dump = __test__.buildDumpText(
+        makeSsotArgs({
+          nowMs: now,
+          logs: [
+            // 1m 전 fired (5m, 1h, all 모두 +1)
+            { ts: now - 60_000, source: 'boarding-prompt', outcome: 'fired', stationName: '7·용마산' },
+            // 30m 전 fired (1h, all +1)
+            { ts: now - 30 * 60_000, source: 'boarding-prompt', outcome: 'fired', stationName: '7·중곡' },
+          ],
+        }),
+      );
+      const section = dump.slice(
+        dump.indexOf('## Boarding Prompt\n'),
+        dump.indexOf('## Boarding Prompt Acceptance'),
+      );
+      expect(section).toContain('boardingPrompt(5m)=1');
+      expect(section).toContain('boardingPrompt(1h)=2');
+      expect(section).toContain('boardingPrompt(all)=2');
+    });
+
+    it('Boarding Prompt Acceptance: 응답률·탑승률 + 최근 7일 시계열', () => {
+      const now = new Date('2026-06-17T13:00:00Z').getTime();
+      const dump = __test__.buildDumpText(
+        makeSsotArgs({
+          nowMs: now,
+          logs: [
+            // 2 displayed, 1 boarded, 0 dismissed → responseRate=50%, boardedRate=100%
+            { ts: now - 60_000, source: 'boarding-prompt', outcome: 'fired', stationName: '7·용마산' },
+            { ts: now - 90_000, source: 'boarding-prompt', outcome: 'fired', stationName: '7·중곡' },
+            { ts: now - 30_000, source: 'boarding-prompt', outcome: 'received', reason: 'response-boarded' },
+          ],
+        }),
+      );
+      const section = dump.slice(
+        dump.indexOf('## Boarding Prompt Acceptance'),
+        dump.indexOf('## Counters'),
+      );
+      expect(section).toContain('displayed=2');
+      expect(section).toContain('responded=1');
+      expect(section).toContain('boarded=1');
+      expect(section).toContain('dismissed=0');
+      expect(section).toContain('responseRate=50.0%');
+      expect(section).toContain('boardedRate=100.0%');
+      expect(section).toContain('recent 7d (day / disp / resp / brd / dis):');
+      // 7일치 → 7줄 노출 (모두 출력, 0건 포함).
+      const dayLines = section.split('\n').filter((l) => /^\d{4}-\d{2}-\d{2} \|/.test(l));
+      expect(dayLines).toHaveLength(7);
+    });
+
+    it('Boarding Prompt Acceptance: displayed=0이면 rate 모두 — 표기', () => {
+      const dump = __test__.buildDumpText(makeSsotArgs());
+      const section = dump.slice(
+        dump.indexOf('## Boarding Prompt Acceptance'),
+        dump.indexOf('## Counters'),
+      );
+      expect(section).toContain('displayed=0');
+      expect(section).toContain('responseRate=—');
+      expect(section).toContain('boardedRate=—');
+    });
+
+    it('Counters: 비어있으면 (empty) 출력', () => {
+      const dump = __test__.buildDumpText(makeSsotArgs());
+      const section = dump.slice(dump.indexOf('## Counters'));
+      expect(section).toContain('(empty)');
+    });
+
+    it('Counters: reason별 누적 + 마지막 발생 시각 출력', () => {
+      const ts1 = new Date('2026-06-17T13:00:00Z').getTime();
+      const ts2 = new Date('2026-06-17T13:00:10Z').getTime();
+      const dump = __test__.buildDumpText(
+        makeSsotArgs({
+          logs: [
+            { ts: ts1, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+            { ts: ts2, source: 'bg', outcome: 'suppressed', reason: 'gate-out-of-range' },
+            { ts: ts2, source: 'fg', outcome: 'suppressed', reason: 'movement-static-speed' },
+          ],
+        }),
+      );
+      const section = dump.slice(dump.indexOf('## Counters'));
+      expect(section).toContain('gate-out-of-range=2x');
+      expect(section).toContain('movement-static-speed=1x');
+    });
   });
 
   it('DebugModal share button: fusion log buffer가 share 텍스트에 흐른다 (#1346)', async () => {
