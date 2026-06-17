@@ -973,6 +973,66 @@ describe('DebugModal buildDumpText — D9 sections (#1215)', () => {
     expect(dump).toContain('route hop count=5');
     expect(dump).toContain('sleepMode=off');
   });
+
+  describe('#1398 — 기압계 unavailable 원인 분해 dump', () => {
+    it('barometerUnavailableReason="sensor" + readingCount=0 → "(reason=sensor, readings=0)" 표기', () => {
+      const dump = __test__.buildDumpText(
+        makeDumpArgs({
+          barometerSubsurface: false,
+          barometerUnavailableReason: 'sensor',
+          barometerReadingCount: 0,
+        }),
+      );
+      expect(dump).toContain('subsurface=false (reason=sensor, readings=0)');
+    });
+
+    it('barometerUnavailableReason="permission" → "(reason=permission, readings=0)"', () => {
+      const dump = __test__.buildDumpText(
+        makeDumpArgs({
+          barometerSubsurface: false,
+          barometerUnavailableReason: 'permission',
+          barometerReadingCount: 0,
+        }),
+      );
+      expect(dump).toContain('reason=permission');
+    });
+
+    it('barometerUnavailableReason="readings" + readingCount=12 → warm-up 진단', () => {
+      const dump = __test__.buildDumpText(
+        makeDumpArgs({
+          barometerSubsurface: false,
+          barometerUnavailableReason: 'readings',
+          barometerReadingCount: 12,
+        }),
+      );
+      expect(dump).toContain('reason=readings');
+      expect(dump).toContain('readings=12');
+    });
+
+    it('정상 (reason=undefined) + readingCount=45 → "(readings=45)" 만 (reason 부분 없음)', () => {
+      const dump = __test__.buildDumpText(
+        makeDumpArgs({
+          barometerSubsurface: true,
+          barometerUnavailableReason: undefined,
+          barometerReadingCount: 45,
+        }),
+      );
+      expect(dump).toContain('subsurface=true (readings=45)');
+      expect(dump).not.toContain('reason=');
+    });
+
+    it('두 필드 모두 미전달 → 기존 동작 (reason/readings 부분 없음)', () => {
+      const dump = __test__.buildDumpText(
+        makeDumpArgs({
+          barometerSubsurface: true,
+        }),
+      );
+      // 기존 호출자 호환: 미전달 시 dump 라인은 raw subsurface만.
+      expect(dump).toContain('subsurface=true');
+      expect(dump).not.toContain('(reason=');
+      expect(dump).not.toContain('(readings=');
+    });
+  });
 });
 
 // #1215 (D9) — UI 렌더 분기. setupHookDefaults를 그대로 활용해 hook 입력은 최소화.
@@ -992,6 +1052,37 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     expect(screen.getByText('subsurface')).toBeTruthy();
     // KeyValue의 value 텍스트로 노출. 정확한 매칭은 row 내 텍스트 검색.
     expect(screen.getAllByText(expected).length).toBeGreaterThan(0);
+  });
+
+  it('#1398 GPS 섹션: subsurface reason / readings row 노출 (unavailableReason="sensor", readingCount=0)', async () => {
+    mockUseBarometer.mockReturnValue({
+      subsurface: false,
+      stop: undefined,
+      unavailableReason: 'sensor',
+      readingCount: 0,
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('subsurface reason')).toBeTruthy();
+    expect(screen.getByText('subsurface readings')).toBeTruthy();
+    // reason 값 'sensor' 노출 + readings 값 '0' 노출.
+    expect(screen.getAllByText('sensor').length).toBeGreaterThan(0);
+    // readings는 String(0) → '0'.
+    expect(screen.getAllByText('0').length).toBeGreaterThan(0);
+  });
+
+  it('#1398 GPS 섹션: reason=undefined(정상) → "—" 표기', async () => {
+    mockUseBarometer.mockReturnValue({
+      subsurface: true,
+      stop: true,
+      unavailableReason: undefined,
+      readingCount: 45,
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('subsurface reason')).toBeTruthy();
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('45').length).toBeGreaterThan(0);
   });
 
   it('fusionDetection 미전달 시 tier/signalMask = —', async () => {

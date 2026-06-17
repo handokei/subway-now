@@ -336,4 +336,81 @@ describe('useBarometer (#875)', () => {
     expect(getBarometerReadings()).toEqual([]);
     nowSpy.mockRestore();
   });
+
+  describe('#1398 — unavailable 원인 분해 + reading count 노출', () => {
+    it('isAvailable=false → unavailableReason="sensor"', async () => {
+      mockIsAvailable.mockResolvedValue(false);
+      const { result } = renderHook(() => useBarometer());
+      await flush();
+      expect(result.current.unavailableReason).toBe('sensor');
+      expect(result.current.readingCount).toBe(0);
+    });
+
+    it('권한 거절 → unavailableReason="permission"', async () => {
+      mockIsAvailable.mockResolvedValue(true);
+      mockRequestPermissions.mockResolvedValue({ granted: false });
+      const { result } = renderHook(() => useBarometer());
+      await flush();
+      expect(result.current.unavailableReason).toBe('permission');
+    });
+
+    it('게이트 통과 + reading 0건 → unavailableReason="readings" (warm-up 초기)', async () => {
+      mockIsAvailable.mockResolvedValue(true);
+      mockRequestPermissions.mockResolvedValue({ granted: true });
+      const { result } = renderHook(() => useBarometer());
+      await flush();
+      // listener 등록까지 진행됐지만 sample 미도착 → readings 단계.
+      expect(result.current.unavailableReason).toBe('readings');
+      expect(result.current.readingCount).toBe(0);
+    });
+
+    it('stop이 boolean 결정 → unavailableReason=undefined (정상) + readingCount > 0', async () => {
+      const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
+      // baseline + 30s 후 dP≈0 정상 stop 신호.
+      act(() => {
+        listener({ pressure: 1013, timestamp: 0 });
+      });
+      fireListenerWindow(listener, nowSpy, baseT, 3, () => 1013);
+      expect(result.current.stop).toBe(true);
+      expect(result.current.unavailableReason).toBeUndefined();
+      expect((result.current.readingCount ?? 0)).toBeGreaterThan(0);
+      nowSpy.mockRestore();
+    });
+
+    it('stop이 boolean 결정된 후 reading buffer reset → unavailableReason="readings"로 회귀', async () => {
+      const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
+      act(() => {
+        listener({ pressure: 1013, timestamp: 0 });
+      });
+      fireListenerWindow(listener, nowSpy, baseT, 3, () => 1013);
+      expect(result.current.stop).toBe(true);
+      expect(result.current.unavailableReason).toBeUndefined();
+
+      // ring buffer reset → 새 tick은 baseline 부재 → verdict null → readings.
+      resetBarometerState();
+      nowSpy.mockReturnValue(baseT + BAROMETER_DPDT_WINDOW_MS * 3);
+      act(() => {
+        listener({ pressure: 1013.5, timestamp: 100 });
+      });
+      expect(result.current.stop).toBeUndefined();
+      expect(result.current.unavailableReason).toBe('readings');
+      nowSpy.mockRestore();
+    });
+
+    it('unavailable 유지 (같은 undefined verdict 반복) → reason="readings" 그대로 유지', async () => {
+      const { result, listener, nowSpy, baseT } = await setupBarometerWithListener();
+      // baseline 1건 — 30s 윈도우 부족 → verdict null 유지.
+      act(() => {
+        listener({ pressure: 1013, timestamp: 0 });
+      });
+      // 그 후 1초 후 한 번 더 — 여전히 baseline 부재(첫 reading=30s 이전 아님) → verdict null.
+      nowSpy.mockReturnValue(baseT + 1_000);
+      act(() => {
+        listener({ pressure: 1013, timestamp: 1 });
+      });
+      expect(result.current.stop).toBeUndefined();
+      expect(result.current.unavailableReason).toBe('readings');
+      nowSpy.mockRestore();
+    });
+  });
 });

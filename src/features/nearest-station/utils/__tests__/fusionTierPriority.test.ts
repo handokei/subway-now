@@ -19,7 +19,7 @@ describe('fusionTierPriority (R-10, #1168)', () => {
       );
     });
 
-    it('position-train > fused-position > fused-arrival-* > route-progress > estimator-* > gps-*', () => {
+    it('position-train > fused-position > fused-arrival-* > route-progress > estimator-* > detection-fused > gps-*', () => {
       const order: FusionTier[] = [
         'position-train',
         'fused-position',
@@ -29,6 +29,7 @@ describe('fusionTierPriority (R-10, #1168)', () => {
         'estimator-live-position',
         'estimator-arrival-eta',
         'estimator-reanchored-hop',
+        'detection-fused',
         'gps-only-underground',
         'gps-only',
       ];
@@ -67,6 +68,8 @@ describe('fusionTierPriority (R-10, #1168)', () => {
       ['route-progress', 'route-progress', 'route-progress'],
       ['gps', 'gps-only', 'gps-only'],
       ['gps', 'gps-only-underground', 'gps-only-underground'],
+      // #1398 — detection-fused는 source='gps' 유지 + confidence 라벨만 승격.
+      ['gps', 'detection-fused', 'detection-fused'],
     ];
 
     it.each(cases)('source=%s + confidence=%s → tier=%s', (source, confidence, expected) => {
@@ -94,6 +97,10 @@ describe('fusionTierPriority (R-10, #1168)', () => {
 
     it('gps-only-underground > gps-only — 지하 라벨이 한 단계 위', () => {
       expect(getTierRank('gps-only-underground')).toBeLessThan(getTierRank('gps-only'));
+    });
+
+    it('#1398 — detection-fused > gps-only-underground — verdict 결합 라벨이 단순 강등보다 신뢰', () => {
+      expect(getTierRank('detection-fused')).toBeLessThan(getTierRank('gps-only-underground'));
     });
   });
 });

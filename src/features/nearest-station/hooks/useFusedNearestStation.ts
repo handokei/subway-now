@@ -42,6 +42,7 @@ import {
   MAX_FUSION_DELTA_KM,
   MAX_FUSION_DISTANCE_KM,
   POSITION_TRAIN_TTL_MS,
+  WIFI_SSID_MAX_DISTANCE_KM,
 } from '../../../shared/constants/realtime';
 import type { LinePositions } from '../api/positionApi';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
@@ -503,28 +504,43 @@ export function useFusedNearestStation(
     routeResult != null && passesFusionDistanceGate({ ...gateOpts, candidate: routeResult });
 
   // #1286 — WiFi SSID 역 매칭 → fusion cascade.
-  // barometerSubsurface===true(지하 GPS dead zone)이고 SSID 매칭이 성공했을 때 최우선 채택.
   // wifiSsidLookup은 역명 → 첫 번째 호선 Station을 반환하므로, 환승역 호선 보정:
   //   1) boardingLock.boardingLine — 사용자가 명시적으로 탑승한 노선 (가장 정확).
   //   2) 해당 보정 결과가 없으면 wifiStation 그대로 사용 (단일 호선 역 or 호선 미확정).
-  // 지상(subsurface=false) 또는 SSID 무매칭(null)이면 이 블록을 건너뛰고 기존 cascade로 fallback.
+  //
+  // #1398 — barometer subsurface SPOF 분리.
+  //   기존: `if (!barometerSubsurface || !wifiStation) return null;` — barometer가 unavailable이면
+  //         WiFi 매칭 자체가 무력화되어 dump1/dump2 케이스(signalMask 첫 글자 'U')에서 현재역 붕괴.
+  //   변경: WiFi SSID 매칭(정규식 + 네이티브 SSID) 자체 신뢰도만으로 채택. barometer는 보조 가중치.
+  //
+  // false positive 방어 (지상에서 카페/지하상가 WiFi 오매칭 차단):
+  //   1. SSID 매칭 신뢰도 — wifiSsidLookup의 정규식 패턴(`T_subway_<역명>` 등 지하철 SSID 명명규칙)이
+  //      이미 1차 게이트. 비-지하철 SSID는 매칭 자체가 안 됨.
+  //   2. 거리 게이트 — WiFi 결과가 GPS와 WIFI_SSID_MAX_DISTANCE_KM 이상 떨어지면 거부.
+  //      GPS userLocation 자체가 없으면(지하 dead zone) 면제 — WiFi가 유일 신호이므로 통과.
+  //
+  // 지상 + SSID 매칭 + 거리 정합 케이스: WiFi가 GPS보다 정확할 수 있으므로 채택 허용.
+  // SSID 무매칭(wifiStation=null) → null 반환(기존 cascade).
   const wifiStationResolved: NearestStationResult | null = (() => {
-    if (!barometerSubsurface || !wifiStation) return null;
+    if (!wifiStation) return null;
     // BoardingLock의 노선으로 환승역 호선 보정 시도.
     const targetLine = boardingLock?.boardingLine ?? null;
     const resolvedStation =
       targetLine && targetLine !== wifiStation.line
         ? (findStationByNameAndLine(wifiStation.name, targetLine) ?? wifiStation)
         : wifiStation;
-    const distanceKm = gps.userLocation
-      ? haversine(
-          gps.userLocation.lat,
-          gps.userLocation.lng,
-          resolvedStation.lat,
-          resolvedStation.lng,
-        )
-      : 0;
-    return { station: resolvedStation, distanceKm };
+    // 거리 게이트 — GPS가 있을 때만 적용. dead zone(null)은 자동 면제.
+    if (gps.userLocation) {
+      const distanceKm = haversine(
+        gps.userLocation.lat,
+        gps.userLocation.lng,
+        resolvedStation.lat,
+        resolvedStation.lng,
+      );
+      if (distanceKm > WIFI_SSID_MAX_DISTANCE_KM) return null;
+      return { station: resolvedStation, distanceKm };
+    }
+    return { station: resolvedStation, distanceKm: 0 };
   })();
 
   let result: NearestStationResult | null;
@@ -797,7 +813,10 @@ export function useFusedNearestStation(
   }
 
   // #921 — 신호 fusion(barometer-stop + motion-stationary + arvlcd-arrived) wire-up.
-  // 본 PR에서는 cascade 비결합 — verdict만 측정 entry에 첨부. 후속 PR(별도 이슈)에서 cascade 결합.
+  // #1398 — cascade 결합 (verdict가 confidence 라벨에 실제 기여).
+  //   `gps-only-underground` 강등 결과에 verdict.detected가 결합되면 → `detection-fused`로 승격
+  //   (`subsurfaceStationDetected` 충족 시). cascade가 verdict를 인식한다는 사실을 측정/dump에서
+  //   명확히 표시. station-passed 발사는 별도(useStationAlarm `subsurfaceStationDetected` 패스스루).
   //
   // arrival 입력: 채택된 result의 station name과 매칭되는 후보 슬롯의 arrival을 사용. result가
   // 어떤 후보(c0/c1/c2)에서 왔든 같은 station name이면 한 슬롯에서 lockedTrainCode를 찾을 수 있다.
@@ -832,6 +851,15 @@ export function useFusedNearestStation(
     detectionVerdict.detected &&
     result != null &&
     result.distanceKm <= MAX_FUSION_DISTANCE_KM;
+
+  // #1398 — cascade verdict 결합. `gps-only-underground` 강등 결과에 verdict 합의가 결합되면
+  //   `detection-fused`로 confidence 라벨 승격. source는 'gps' 유지(좌표 신호원 자체는 동일).
+  //   subsurfaceStationDetected에 이미 ≥2 신호 합의 + 근접 게이트가 포함되어 false positive 방어
+  //   동일 조건. 다른 confidence(boarding-lock / position-train / arrival-* / wifi-ssid)는
+  //   본인의 검증 신호로 우선 — 승격 대상 아님.
+  if (confidence === 'gps-only-underground' && subsurfaceStationDetected) {
+    confidence = 'detection-fused';
+  }
 
   // #1025 — Estimator 전략 변화 시 debug buffer에 push.
   // estimate key: strategy|stationId|arcIndex. null estimate는 strategy=null로 기록.

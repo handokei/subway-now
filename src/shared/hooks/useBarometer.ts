@@ -28,6 +28,7 @@ import {
   appendBarometerReading,
   evaluateLatestStop,
   evaluateLatestSubsurface,
+  getBarometerReadings,
   resetBarometerState,
 } from '../utils/barometerState';
 import { setSubsurfaceState } from '../utils/subsurfaceState';
@@ -36,6 +37,19 @@ import {
   BAROMETER_STOP_CONFIRM_SAMPLES,
   BAROMETER_SUBSURFACE_CONFIRM_SAMPLES,
 } from '../constants/barometer';
+
+/**
+ * #1398 — 기압계 unavailable 원인 분해.
+ *
+ * `stop=undefined`(평가 불가) 원인을 device dump에 노출하기 위한 진단 필드.
+ * 원인을 모르면 SPOF 회피 방향(WiFi 분리 / fusion verdict 결합) 튜닝이 불가능하다.
+ *
+ * - 'sensor'      : `Barometer.isAvailableAsync()` false (iPhone 6 이하 등 기기 미지원)
+ * - 'permission'  : NSMotionUsageDescription 권한 거절
+ * - 'readings'    : 센서 활성이지만 30s 윈도우를 채울 reading 부족 (warm-up 초기)
+ * - undefined     : 정상 (stop이 true|false로 결정됨)
+ */
+export type BarometerUnavailableReason = 'sensor' | 'permission' | 'readings';
 
 /**
  * #903 — 외부 소비자에 노출되는 보조 신호 스냅샷.
@@ -53,6 +67,24 @@ export interface BarometerSignal {
    * 그대로 전달되면 unavailable로 분류된다 — 다른 신호로 합의 가능.
    */
   stop: boolean | undefined;
+  /**
+   * #1398 — `stop=undefined`일 때의 원인. SPOF 분리 효과 측정용.
+   *
+   * stop이 boolean으로 결정되면 undefined. unavailable일 때만 셋. DebugModal이 GPS section
+   * `subsurface=` 라인에 함께 노출해 사용자/측정자가 dump 한 줄로 원인 분해를 본다.
+   *
+   * optional: 기존 호출자/테스트 픽스처 호환. useBarometer가 반환하는 production 객체는
+   * 항상 키를 채우지만, fusion 입력 mock에서는 stop만 주입해도 동작한다 (스키마 호환).
+   */
+  unavailableReason?: BarometerUnavailableReason | undefined;
+  /**
+   * #1398 — 현재 ring buffer에 누적된 reading 수. dump 진단용.
+   *
+   * 0이면 sensor/permission 게이트에서 차단됐거나 listener가 시작되지 않은 상태.
+   * 0 < n < ~30이면 warm-up 초기. ≥30이면 30s 윈도우를 채울 만큼은 누적된 상태.
+   * optional: 위와 동일한 호환성 이유.
+   */
+  readingCount?: number;
 }
 
 /**
@@ -66,6 +98,13 @@ export function useBarometer(): BarometerSignal {
   const [subsurface, setSubsurface] = useState<boolean>(false);
   // #921 — readings 부족 또는 unmount 직후는 undefined. fusion 입력 unavailable로 흘러간다.
   const [stop, setStop] = useState<boolean | undefined>(undefined);
+  // #1398 — stop=undefined일 때의 원인. 초기값 'sensor'(아직 게이트 미통과). 게이트 단계별로
+  // 'sensor' → 'permission' → 'readings' → undefined(정상)로 좁혀진다.
+  const [unavailableReason, setUnavailableReason] = useState<
+    BarometerUnavailableReason | undefined
+  >('sensor');
+  // #1398 — ring buffer 누적 reading 수. listener tick마다 갱신.
+  const [readingCount, setReadingCount] = useState<number>(0);
   // #903 — hysteresis: 임계 부근 노이즈 진동 흡수. lastEmitted와 다른 verdict가 N회 연속
   // 들어와야 state flip. lastEmitted과 같은 verdict가 들어오면 카운터 리셋.
   const lastSubsurfaceRef = useRef<boolean>(false);
@@ -82,9 +121,21 @@ export function useBarometer(): BarometerSignal {
 
     const init = async (): Promise<void> => {
       const available = await safeIsAvailable();
-      if (cancelled || !available) return;
+      if (cancelled) return;
+      if (!available) {
+        // #1398 — sensor 게이트 차단 (isAvailable=false 또는 throw). dump에 'sensor' 노출.
+        setUnavailableReason('sensor');
+        return;
+      }
       const granted = await safeRequestPermission();
-      if (cancelled || !granted) return;
+      if (cancelled) return;
+      if (!granted) {
+        // #1398 — permission 게이트 차단. dump에 'permission' 노출.
+        setUnavailableReason('permission');
+        return;
+      }
+      // 게이트 통과 — readings 부족 단계로 진입. 첫 tick까지 'readings'.
+      setUnavailableReason('readings');
 
       Barometer.setUpdateInterval(BAROMETER_SAMPLE_INTERVAL_MS);
       subscription = Barometer.addListener((m: BarometerMeasurement) => {
@@ -92,6 +143,8 @@ export function useBarometer(): BarometerSignal {
         // ring buffer는 epoch ms 윈도우로 평가하므로 Date.now()로 직접 stamp.
         const now = Date.now();
         appendBarometerReading({ t: now, pressureHpa: m.pressure });
+        // #1398 — reading 수 dump 노출. ring buffer는 60s TTL이라 안정 시 약 60.
+        setReadingCount(getBarometerReadings().length);
 
         const subVerdict = evaluateLatestSubsurface(now);
         const subDetected = subVerdict?.detected === true;
@@ -112,6 +165,8 @@ export function useBarometer(): BarometerSignal {
           stopVerdict === null ? undefined : stopVerdict.detected;
         if (stopDetected === lastStopRef.current) {
           stopPendingRef.current = 0;
+          // unavailable 상태가 유지될 때 reason도 'readings'로 유지.
+          if (stopDetected === undefined) setUnavailableReason('readings');
           return;
         }
         if (stopDetected === undefined) {
@@ -119,6 +174,8 @@ export function useBarometer(): BarometerSignal {
           lastStopRef.current = undefined;
           stopPendingRef.current = 0;
           setStop(undefined);
+          // #1398 — readings 게이트 단계. sensor/permission이 통과한 후의 unavailable.
+          setUnavailableReason('readings');
           return;
         }
         stopPendingRef.current += 1;
@@ -126,6 +183,8 @@ export function useBarometer(): BarometerSignal {
           lastStopRef.current = stopDetected;
           stopPendingRef.current = 0;
           setStop(stopDetected);
+          // #1398 — stop이 boolean으로 결정됨 → unavailable 해제.
+          setUnavailableReason(undefined);
         }
       });
     };
@@ -141,7 +200,7 @@ export function useBarometer(): BarometerSignal {
     };
   }, []);
 
-  return { subsurface, stop };
+  return { subsurface, stop, unavailableReason, readingCount };
 }
 
 /** isAvailableAsync 예외를 false로 폴백 — 일부 시뮬레이터에서 throw. */

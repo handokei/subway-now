@@ -36,12 +36,18 @@ export type FusionTier =
   | 'estimator-live-position'
   | 'estimator-arrival-eta'
   | 'estimator-reanchored-hop'
+  | 'detection-fused'
   | 'gps-only-underground'
   | 'gps-only';
 
 /**
  * 명시 trust table — 더 앞일수록 신뢰 우선.
  * spec `docs/research/r10-fusion-signal-priority.md` §4.2와 1:1 대응.
+ *
+ * #1398 — 'detection-fused'는 'gps-only-underground'보다 신뢰 우선.
+ *   verdict ≥2 신호 합의가 결합되어 cascade가 GPS-only-underground 단순 강등보다 더 강한
+ *   신호를 인식한 상태. 별도 source 필드 추가 없이 confidence 라벨만 승격되므로 source는
+ *   여전히 'gps'다.
  */
 export const FUSION_TIER_PRIORITY: readonly FusionTier[] = [
   'wifi-ssid',
@@ -55,6 +61,7 @@ export const FUSION_TIER_PRIORITY: readonly FusionTier[] = [
   'estimator-live-position',
   'estimator-arrival-eta',
   'estimator-reanchored-hop',
+  'detection-fused',
   'gps-only-underground',
   'gps-only',
 ] as const;
@@ -86,6 +93,7 @@ export function getTierRank(tier: FusionTier): number {
  * - source='arrival'           → confidence='arrival-confirmed' → 'fused-arrival-confirmed'
  *                              → confidence='arrival-arriving'  → 'fused-arrival-arriving'
  * - source='route-progress'    → 'route-progress'
+ * - source='gps' + confidence='detection-fused' → 'detection-fused' (#1398)
  * - source='gps' + confidence='gps-only-underground' → 'gps-only-underground'
  * - source='gps'               → 'gps-only'
  */
@@ -108,6 +116,8 @@ export function tierFor(source: FusionSource, confidence: FusionConfidence): Fus
     case 'route-progress':
       return 'route-progress';
     case 'gps':
-      return confidence === 'gps-only-underground' ? 'gps-only-underground' : 'gps-only';
+      if (confidence === 'detection-fused') return 'detection-fused';
+      if (confidence === 'gps-only-underground') return 'gps-only-underground';
+      return 'gps-only';
   }
 }

@@ -362,6 +362,16 @@ interface BuildDumpArgs {
   scheduledDump?: ScheduledNotificationDumpEntry[] | null;
   // #1215 (D9) — 추가 상태 가시화. 모두 optional — 미전달 시 dump의 해당 라인은 '—' 표기.
   barometerSubsurface?: boolean | null;
+  /**
+   * #1398 — `stop=undefined`(평가 불가)일 때의 원인. undefined면 정상(stop이 boolean 결정).
+   * SPOF 분리 효과 측정용. 미전달 시 dump 미노출 (graceful — 기존 호출자 호환).
+   */
+  barometerUnavailableReason?: import('../../../shared/hooks/useBarometer').BarometerUnavailableReason | undefined;
+  /**
+   * #1398 — ring buffer에 누적된 reading 수. warm-up 인지/sensor 활성 판단용.
+   * 미전달 시 dump 미노출 (graceful).
+   */
+  barometerReadingCount?: number | undefined;
   fusionDetection?: FusionDetectionSummary | null;
   trip?: TripDebugState | null;
   sleep?: SleepDebugState | null;
@@ -394,9 +404,34 @@ function buildGpsSection(args: BuildDumpArgs): string[] {
   }
   lines.push(
     `state=${args.gpsActive ?? 'fg'}, lastFix=${formatClockTimeWithSeconds(args.lastFixAtMs ?? null)}`,
-    `subsurface=${formatOptionalBool(args.barometerSubsurface)}`,
+    formatSubsurfaceDumpLine(args),
   );
   return lines;
+}
+
+/**
+ * #1398 — subsurface dump 라인 + 기압계 unavailable 원인 분해.
+ *
+ * 정상 (stop이 boolean 결정) → `subsurface=true|false`만 노출.
+ * unavailable (sensor/permission/readings) → `subsurface=... (reason=sensor, readings=12)` 포함.
+ *
+ * 진단 흐름:
+ *   - reason='sensor'     → iPhone 6 이하 등 기기 미지원. WiFi/GPS만 사용.
+ *   - reason='permission' → NSMotionUsageDescription 거절. 설정 안내 진입점.
+ *   - reason='readings'   → warm-up 초기 또는 sample 부족. ~30s 후 자연 해소.
+ *
+ * 미전달 시 (기존 호출자 호환) raw subsurface만 노출 — 진단 필드 graceful skip.
+ */
+function formatSubsurfaceDumpLine(args: BuildDumpArgs): string {
+  const subsurface = `subsurface=${formatOptionalBool(args.barometerSubsurface)}`;
+  const parts: string[] = [];
+  if (args.barometerUnavailableReason !== undefined) {
+    parts.push(`reason=${args.barometerUnavailableReason}`);
+  }
+  if (args.barometerReadingCount !== undefined) {
+    parts.push(`readings=${args.barometerReadingCount}`);
+  }
+  return parts.length > 0 ? `${subsurface} (${parts.join(', ')})` : subsurface;
 }
 
 function buildNearestSection(args: BuildDumpArgs): string[] {
@@ -686,7 +721,12 @@ function DebugModalInner({
   const locklessOn = useSettingsStore((s) => s.locklessStationPassed);
   // #1215 (D9) — 기압계 subsurface. useBarometer는 shared/hooks이라 의존 위배 없음.
   // useFusedNearestStation 내부 useBarometer와 별개 listener — DebugModal 관찰자 효과 허용 범위.
-  const { subsurface: barometerSubsurface } = useBarometer();
+  // #1398 — `stop=undefined` 원인(unavailableReason)과 readingCount도 dump에 노출.
+  const {
+    subsurface: barometerSubsurface,
+    unavailableReason: barometerUnavailableReason,
+    readingCount: barometerReadingCount,
+  } = useBarometer();
   // #1308 — iOS 저전력 모드. silent push throttle 측정용 텔레메트리 (동작 변경 없음).
   const lowPowerMode = useLowPowerMode();
   const fusedLabel = formatStationLabel(result);
@@ -830,6 +870,9 @@ function DebugModalInner({
       lowPowerMode,
       scheduledDump,
       barometerSubsurface,
+      // #1398 — 기압계 unavailable 원인/reading 수도 share dump에 포함.
+      barometerUnavailableReason,
+      barometerReadingCount,
       fusionDetection,
       trip,
       sleep,
@@ -861,6 +904,9 @@ function DebugModalInner({
     lowPowerMode,
     scheduledDump,
     barometerSubsurface,
+    // #1398 — 기압계 진단 필드 deps. reason flip 시 share 텍스트 자동 갱신.
+    barometerUnavailableReason,
+    barometerReadingCount,
     fusionDetection,
     trip,
     sleep,
@@ -908,6 +954,19 @@ function DebugModalInner({
             <KeyValue
               label="subsurface"
               value={formatOptionalBool(barometerSubsurface)}
+              colors={colors}
+            />
+            {/* #1398 — 기압계 unavailable 원인 분해. SPOF 분리 효과 측정용.
+                undefined(정상)면 ' — ' 표기 — stop이 boolean으로 결정된 상태.
+                readingCount도 undefined면 '—' — useBarometer mock/외부 주입자가 누락한 경우 graceful. */}
+            <KeyValue
+              label="subsurface reason"
+              value={barometerUnavailableReason ?? '—'}
+              colors={colors}
+            />
+            <KeyValue
+              label="subsurface readings"
+              value={barometerReadingCount === undefined ? '—' : String(barometerReadingCount)}
               colors={colors}
             />
           </Section>

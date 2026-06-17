@@ -1559,4 +1559,63 @@ describe('useFusedNearestStation', () => {
       expect(result.current.subsurfaceStationDetected).toBe(false);
     });
   });
+
+  describe('#1398 cascade verdict 결합 — detection-fused 라벨 승격', () => {
+    // gps-only-underground 상태에서 ≥2 신호 합의 + 근접 게이트 통과 시 confidence를 'detection-fused'로 승격.
+    // source는 'gps' 유지(좌표 신호원 동일). 측정/dump에서 cascade가 verdict를 인식한 사실을 명확히 표시.
+    beforeEach(() => {
+      mockUseNearest.mockReturnValue(gpsBase());
+      mockFindTop.mockReturnValue([{ station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }]);
+      mockUseArrival.mockReturnValue(arrivalRet(null));
+      mockUsePositions.mockReturnValue(positionRet(null));
+    });
+
+    it('gps-only-underground + ≥2 신호 합의 + 근접 → detection-fused 승격', () => {
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          null,
+          null,
+          /* motionStationary */ true,
+          { subsurface: true, signal: { subsurface: true, stop: true } },
+        ),
+      );
+      expect(result.current.confidence).toBe('detection-fused');
+      // source는 그대로 'gps' — 좌표 신호원 자체는 GPS.
+      expect(result.current.source).toBe('gps');
+    });
+
+    it('gps-only-underground + 단일 신호 합의 (≥2 미달) → detection-fused 미승격, gps-only-underground 유지', () => {
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          null,
+          null,
+          /* motionStationary */ undefined,
+          { subsurface: true, signal: { subsurface: true, stop: true } },
+        ),
+      );
+      expect(result.current.confidence).toBe('gps-only-underground');
+    });
+
+    it('subsurface=false (지상) → cascade 진입 X, 기존 gps-only', () => {
+      const { result } = renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          undefined,
+          null,
+          null,
+          /* motionStationary */ true,
+          { subsurface: false, signal: { subsurface: false, stop: true } },
+        ),
+      );
+      // gps-only-underground 자체에 진입하지 않으므로 detection-fused 승격도 X.
+      expect(result.current.confidence).toBe('gps-only');
+    });
+  });
 });
