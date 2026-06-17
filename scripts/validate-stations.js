@@ -29,6 +29,11 @@ const LAT_MAX = 39;
 const LNG_MIN = 124;
 const LNG_MAX = 132;
 
+// #1397: 단조 노선 인접 id 간 좌표 거리(haversine, m) sanity 한계.
+// 서울 지하철 평균 hop ≈ 1.0~1.5km, p99 ≈ 4km. 8km 초과는 누락된 중간역 강한 의심.
+// 9호선 김포공항(공항철도 환승) 같이 특수 구조 hop도 6~7km 수준이라 8km는 보수적 floor.
+const ADJACENT_DISTANCE_MAX_METERS = 8000;
+
 const STATIONS_PATH = path.resolve(__dirname, '..', 'src', 'data', 'stations.json');
 const TOPOLOGY_PATH = path.resolve(__dirname, '..', 'src', 'data', 'lineTopology.json');
 
@@ -38,6 +43,19 @@ function isNonEmptyString(v) {
 
 function isInRange(v, min, max) {
   return typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max;
+}
+
+// haversine 거리(미터). validate-stations 전용 단순 구현 — 다른 noses의 ETA 정밀도와 무관하므로
+// 의존성 그래프(SSOT shared/utils/haversine.ts) 도입 없이 inline 유지.
+function haversineMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (deg) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
 }
 
 /**
@@ -166,6 +184,28 @@ function validate(input) {
           warnings.push(`line "${line}": name "${name}"이 ${count}회 중복`);
         }
       }
+
+      // Warning: 단조 노선 인접 hop 거리가 ADJACENT_DISTANCE_MAX_METERS 초과면
+      // 누락된 중간역 의심(개명 누락이 시퀀스 gap을 만들 수 있다 — #1397 자양 케이스 같이).
+      // 좌표가 finite한 페어만 검사 (이미 다른 에러로 잡힘).
+      for (let i = 1; i < sorted.length; i++) {
+        const prev = sorted[i - 1];
+        const cur = sorted[i];
+        if (
+          !Number.isFinite(prev.lat) ||
+          !Number.isFinite(prev.lng) ||
+          !Number.isFinite(cur.lat) ||
+          !Number.isFinite(cur.lng)
+        ) {
+          continue;
+        }
+        const dist = haversineMeters(prev.lat, prev.lng, cur.lat, cur.lng);
+        if (dist > ADJACENT_DISTANCE_MAX_METERS) {
+          warnings.push(
+            `line "${line}": 인접 hop "${prev.name}" → "${cur.name}" 거리 ${Math.round(dist)}m > ${ADJACENT_DISTANCE_MAX_METERS}m (누락된 중간역 의심)`,
+          );
+        }
+      }
     }
   }
 
@@ -228,6 +268,8 @@ module.exports = {
   LAT_MAX,
   LNG_MIN,
   LNG_MAX,
+  ADJACENT_DISTANCE_MAX_METERS,
+  haversineMeters,
   validate,
   main,
 };
