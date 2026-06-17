@@ -97,6 +97,10 @@ const fusedReturnFixture = (overrides: Record<string, unknown> = {}) => ({
   arcStations: [],
   detectionTier: 'low' as const,
   detectionSignalMask: '',
+  // #1418 — 환경 인지 fusion arbitration 신규 노출 필드 기본값.
+  environment: 'unknown' as const,
+  surfaceSSOTActive: false,
+  undergroundSSOTActive: false,
   ...overrides,
 });
 const arrivalDefaults = {
@@ -132,6 +136,10 @@ const setupHookDefaults = () => {
     arcStations: [],
     detectionTier: 'low',
     detectionSignalMask: '',
+    // #1418 — 환경 인지 fusion arbitration 신규 필드.
+    environment: 'unknown',
+    surfaceSSOTActive: false,
+    undergroundSSOTActive: false,
   });
   mockUseArrivalInfo.mockReturnValue({ arrival: baseArrival, loading: false, isMock: false });
   mockUseSilentPushDiagnostics.mockReturnValue({
@@ -280,6 +288,21 @@ describe('DebugModal', () => {
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
     expect(screen.getByText('(no location)')).toBeTruthy();
     expect(screen.getByText('(no nearest)')).toBeTruthy();
+  });
+
+  it('#1418 — surfaceSSOT/undergroundSSOT 활성 시 active 라벨, environment 노출', () => {
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        environment: 'surface',
+        surfaceSSOTActive: true,
+        undergroundSSOTActive: true,
+      }),
+    );
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(screen.getByText('environment')).toBeTruthy();
+    expect(screen.getByText('surface')).toBeTruthy();
+    // 'active' 라벨이 surfaceSSOT/undergroundSSOT row에 노출.
+    expect(screen.getAllByText('active').length).toBeGreaterThanOrEqual(2);
   });
 
   it('arrival이 null이면 no arrival data를 표시한다', () => {

@@ -269,8 +269,9 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
     it('lock 없으면 arc 소속 검사 미작동 (gate 자체는 비활성)', () => {
       // fix(c)는 boardingLock 활성 시에만 동작 — 면목도 gate 통과.
       // #1207 (Epic #1204 D1): lock 없음 + routeCtx 있음 → lockless-route-hop estimator 활성.
-      // position-train 채택 후 estimator가 chosenIdx=-1(면목 off-arc) 조건에서 override →
-      // source='boarding-lock-interp'. gate 비활성과 estimator override는 분리 책임.
+      // #1418 — positionTrainResult(=Tier 4 실측)가 활성이면 lockless-route-hop(Tier 5)의
+      //         forward ratchet은 차단된다 → positionTrainResult 채택 결과(position-train) 유지.
+      //         (구 버전은 boarding-lock-interp로 override됐으나 그것이 #1415 회귀의 layer 2.)
       const myeonmok = findStationByNameAndLine('면목', '7')!;
       const { result } = setup({
         gps: { userLocation: { lat: yongmasan.lat, lng: yongmasan.lng }, accuracyMeters: 1500 },
@@ -278,9 +279,9 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
         routeCtx: routeContext,
       });
 
-      // lock 없으면 arc 검사 안 함 → 면목도 gate 통과 (position-train 일단 채택).
-      // 단 lockless estimator가 chosenIdx=-1로 override → 최종 source는 boarding-lock-interp.
-      expect(result.current.source).toBe('boarding-lock-interp');
+      // lock 없으면 arc 검사 안 함 → 면목도 gate 통과 (position-train 채택).
+      // #1418 Tier 5 reject 게이트 — positionTrainResult 활성 → lockless-route-hop override 차단.
+      expect(result.current.source).toBe('position-train');
     });
 
     it('arc 안에 있지만 LOCK_NEXT_HOP_WINDOW 초과 시 gate 탈락', () => {
@@ -344,9 +345,10 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
 
       // positionTrainResult = 용마산 → lockedTrainCode 매칭으로 source='boarding-lock' 채택.
       // #1207 (Epic #1204 D1): lock 없음 + routeCtx 있음 → lockless-route-hop estimator 활성.
-      // 용마산이 arc 밖이므로 chosenIdx=-1 → estimator override → source='boarding-lock-interp'.
-      // 앵커(lastObservedRef)는 arcIndexOfStation=-1 반환으로 미갱신 — line 487 early return은 유지.
-      expect(result.current.source).toBe('boarding-lock-interp');
+      // #1418 — positionTrainResult(=Tier 4 실측)가 활성이면 lockless-route-hop(Tier 5)의 forward
+      //         ratchet은 차단된다. 결과는 cascade가 산출한 'boarding-lock'(lockedTrainCode 매칭).
+      //         앵커(lastObservedRef)는 arcIndexOfStation=-1 반환으로 미갱신 — line 487 early return 유지.
+      expect(result.current.source).toBe('boarding-lock');
     });
   });
 

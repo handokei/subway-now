@@ -265,6 +265,12 @@ function tryDefaultHop(
  * lock이 없는 trip(사용자가 lock 없이 GPS만으로 진행)에서 estimator가 비활성되는 회귀(#1207)를 막기 위한 #1204 D1.
  * 사용자 명시 의향(lockless 토글 ON / boardingPrompt 응답) trip은 lock 활성과 동급 정확도 보장 의무 (ADR-013 §B3).
  *
+ * #1418 — fusion arbitration에서 본 strategy는 **Tier 5(시간 적분, dead zone fallback)** 로 다뤄진다.
+ * `useFusedNearestStation`의 forward ratchet 게이트가 Tier 1~4 실측 신호(surfaceSSOT/undergroundSSOT/
+ * lastObservedRef/boardingLock/positionTrainResult)가 하나라도 활성이면 본 strategy의 result override
+ * 자체를 차단해 lockless trip 정적 사용자에 대한 false fire(청담/중곡/사가정 류)를 막는다. strategy
+ * 자체 동작은 변경 없음 — dead zone에서만 채택되는 fallback 위치 유지.
+ *
  * Guard:
  *   - `arcStations` 빈 배열 → null (상위 가드에서도 차단되지만 방어적 cap)
  *   - `now < tripStartedAt`(시계 후진) → null

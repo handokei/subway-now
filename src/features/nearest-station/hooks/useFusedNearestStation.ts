@@ -29,6 +29,9 @@ import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
 import { haversine } from '../../../shared/utils/haversine';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { isWithinArcWindow, passesFusionDistanceGate } from '../utils/fusionDistanceGate';
+import { surfaceSSOTConsensus } from '../utils/surfaceSSotConsensus';
+import { undergroundSSOTConsensus } from '../utils/undergroundSSotConsensus';
+import { inferEnvironment, type Environment } from '../utils/inferEnvironment';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import {
   arcIndexOfStation,
@@ -153,6 +156,15 @@ interface UseFusedNearestStationReturn {
    *     것이지 lock 무결성을 보장하지 않는다 — ADR-010 두 실패 모드 동급 원칙에 따른 분리 책임.
    */
   trainProgressing: boolean;
+  /**
+   * #1418 — fusion arbitration이 추정한 환경.
+   * 'surface' / 'underground' / 'unknown'. DebugModal Environment Inference 섹션 표시용.
+   */
+  environment: Environment;
+  /** #1418 — 지상 Tier 1 SSOT(GPS+Arrival) 합의 활성 여부. */
+  surfaceSSOTActive: boolean;
+  /** #1418 — 지하 Tier 1 SSOT(WiFi/Position-Train + Arrival) 합의 활성 여부. */
+  undergroundSSOTActive: boolean;
   refresh: () => Promise<void>;
 }
 
@@ -594,6 +606,48 @@ export function useFusedNearestStation(
     source = 'gps';
   }
 
+  // #1418 — Tier 1 SSOT 합의 판정 + 환경 추정.
+  //
+  // 목적: lockless-route-hop / default-hop(시간 적분 = Tier 5)이 실측 신호가 살아 있는 동안
+  // forward ratchet으로 result를 덮어쓰는 회귀 차단.
+  //
+  // Tier 정의 (cascade는 그대로 두고, Tier 5 reject 게이트만 추가):
+  //   Tier 1 (지상) — surfaceSSOT: GPS(acc<30m) + Arrival(arvlCd 1/2/3/5) 합의
+  //   Tier 1 (지하) — undergroundSSOT: WiFi+Arrival / Position-Train+Arrival 합의
+  //   Tier 2~4     — lastObservedRef / boardingLock / positionTrainResult (cascade가 채택)
+  //   Tier 5       — 시간 적분 (lockless-route-hop / default-hop)
+  //
+  // Tier 5 reject 게이트: Tier 5 advance는 Tier 1~4 모두 null일 때만 허용.
+  // 실측 신호(SSOT/lastObserved/lock/position-train)가 하나라도 활성이면 시간 적분의 forward ratchet
+  // 자체를 차단해 청담/중곡/사가정 류 false fire를 막는다.
+  const arrivalSlots = [
+    { stationName: c0, line: h0, arrival: a0.arrival },
+    { stationName: c1, line: h1, arrival: a1.arrival },
+    { stationName: c2, line: h2, arrival: a2.arrival },
+  ];
+  const surfaceArrival = gps.result
+    ? pickArrivalForStationName(gps.result.station.name, gps.result.station.line, arrivalSlots)
+    : null;
+  const surfaceSSOT = surfaceSSOTConsensus({
+    gpsResult: gps.result,
+    gpsAccuracy: gps.accuracyMeters,
+    arrival: surfaceArrival,
+  });
+  const undergroundCandidate = wifiStationResolved?.station ?? positionTrainResult?.station ?? null;
+  const undergroundArrival = undergroundCandidate
+    ? pickArrivalForStationName(undergroundCandidate.name, undergroundCandidate.line, arrivalSlots)
+    : null;
+  const undergroundSSOT = undergroundSSOTConsensus({
+    wifiStation: wifiStationResolved?.station ?? null,
+    positionTrainResult,
+    arrival: undergroundArrival,
+  });
+  const environment: Environment = inferEnvironment({
+    subsurface: barometerSubsurface,
+    surfaceSSOT: surfaceSSOT !== null,
+    undergroundSSOT: undergroundSSOT !== null,
+  });
+
   // ADR-008 stationProgressEstimator — 시간 적분 → 관측 구동 전환 (#739).
   // arc상 추정 위치가 현 채택된 결과보다 앞이거나, 채택 결과가 arc 밖이면 override.
   // 채택 결과가 더 앞이면 그대로(실제 신호 우선) — 역행 방지(monotone forward).
@@ -786,11 +840,31 @@ export function useFusedNearestStation(
     // false(이동·미지원)는 기존 동작. consensus 게이트(#1363, movementGate.ts)는 confidence
     // 라벨 안정성을 별도 책임 — 라벨/forward 이동을 분리. 정지 trip에서 origin chip / 위젯
     // mirror가 잘못된 다음 역으로 forward 표시되는 회귀(2026-06-16 18:11~18:12) 차단.
+    //
+    // #1418 — Tier 5 reject 게이트. 시간 적분 strategy(lockless-route-hop / default-hop)는
+    // 실측 신호(SSOT / lastObservedRef / positionTrainResult)가 하나라도 활성이면 forward ratchet 차단.
+    //
+    // boardingLock 자체는 본 게이트에서 제외:
+    //   - default-hop은 boardingLock.boardedAt이 anchor라 lock 활성이 strategy의 *입력*이다.
+    //     lock 활성을 reject 신호로 쓰면 default-hop이 영구 차단되어 dead zone fallback이 무력화.
+    //   - lockless-route-hop은 lock 부재 상황이라 boardingLock 검사 자체가 무의미.
+    //
+    // 실시간 strategy(live-position / arrival-eta / reanchored-hop)는 strategy 자체가 실측 기반이라
+    // 면제 — 본 게이트는 isTimeIntegration=true 케이스에만 적용.
+    const isTimeIntegration =
+      estimate.strategy === 'lockless-route-hop' || estimate.strategy === 'default-hop';
+    const realtimeSignalActive =
+      surfaceSSOT !== null ||
+      undergroundSSOT !== null ||
+      lastObservedRef.current !== null ||
+      positionTrainResult !== null;
+    const passesTier5Gate = !isTimeIntegration || !realtimeSignalActive;
     if (
       (chosenIdx === -1 || estimate.index > chosenIdx) &&
       withinObservationCeiling &&
       withinLineGuard &&
-      motionStationary !== true
+      motionStationary !== true &&
+      passesTier5Gate
     ) {
       const distanceKm = gps.userLocation
         ? haversine(
@@ -1043,6 +1117,9 @@ export function useFusedNearestStation(
     subsurface: barometerSubsurface,
     subsurfaceStationDetected,
     trainProgressing,
+    environment,
+    surfaceSSOTActive: surfaceSSOT !== null,
+    undergroundSSOTActive: undergroundSSOT !== null,
     refresh: gps.refresh,
   };
 }
