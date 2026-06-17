@@ -821,8 +821,8 @@ describe('stationNotification', () => {
 
       it('transfer 알람이고 데이터가 있으면 "환승이 빠른 위치" 힌트가 붙는다', async () => {
         jest.replaceProperty(Platform, 'OS', 'ios');
-        await sendAlarmNotification({ phaseId: 'early', type: 'transfer', stationName: '왕십리' });
-        expectAlarmNotification('환승 알림', '다음 역 왕십리에서 환승하세요!\n환승이 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
+        await sendAlarmNotification({ phaseId: 'early', type: 'transfer', stationName: '왕십리(성동구청)' });
+        expectAlarmNotification('환승 알림', '다음 역 왕십리(성동구청)에서 환승하세요!\n환승이 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
       });
 
       it('알람 대상역이 stations.json에도 없으면 힌트 없이 본문만 표시한다', async () => {

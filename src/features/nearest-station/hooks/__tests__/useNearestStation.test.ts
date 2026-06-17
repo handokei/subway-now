@@ -363,9 +363,9 @@ describe('useNearestStation', () => {
 
     await waitFor(() => expect(result.current.result).not.toBeNull());
 
-    expect(result.current.result?.station.name).toBe('교대');
+    expect(result.current.result?.station.name).toBe('교대(법원.검찰청)');
     expect(result.current.variants.length).toBeGreaterThan(1);
-    expect(result.current.variants.every((v) => v.name === '교대')).toBe(true);
+    expect(result.current.variants.every((v) => v.name === '교대(법원.검찰청)')).toBe(true);
   });
 
   it('일반역 감지 시 variants가 1개이다', async () => {

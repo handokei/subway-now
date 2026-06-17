@@ -96,7 +96,7 @@ describe('routeToCoordinates', () => {
       });
       const origin = byId('2-022'); // 강남
       // 5호선에서 임의의 역
-      const destination = allStations.find((s) => s.line === '5' && s.name === '광화문')!;
+      const destination = allStations.find((s) => s.line === '5' && s.name === '광화문(세종문화회관)')!;
       const result = routeToCoordinates(route, origin, destination);
       expect(result).not.toBeNull();
       const roles = result!.keyStations.map((k) => k.role);
@@ -129,7 +129,7 @@ describe('routeToCoordinates', () => {
         stopsAfterLastTransfer: 1,
       });
       const origin = byId('2-022');
-      const destination = allStations.find((s) => s.line === '5' && s.name === '광화문')!;
+      const destination = allStations.find((s) => s.line === '5' && s.name === '광화문(세종문화회관)')!;
       expect(routeToCoordinates(route, origin, destination)).toBeNull();
     });
 

@@ -986,7 +986,7 @@ describe('useFusedNearestStation', () => {
         // GPS는 군자(arc idx 2). 7093이 군자에서 도착 — trainProgress → 군자, positionTrainResult 채택.
         jest.setSystemTime(T0 + 2 * 90_000);
         setupGpsAt(gunja);
-        const t7093 = train('군자', TRAIN_STATUS.ARRIVED, { trainNo: '7093' });
+        const t7093 = train('군자(능동)', TRAIN_STATUS.ARRIVED, { trainNo: '7093' });
         mockUsePositions.mockReturnValue(positionRet({ line: '7', trains: [t7093] }));
 
         const { result } = renderHook(() =>

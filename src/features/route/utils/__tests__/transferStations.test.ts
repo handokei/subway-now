@@ -67,9 +67,9 @@ describe('enumerateTransferStations', () => {
     expect(groups).toEqual([]);
   });
 
-  it('실제 stations.json — 73개 환승역 (양평 동명이역 제외) 모두 다른 line', () => {
+  it('실제 stations.json — 76개 환승역 (양평 동명이역 제외) 모두 다른 line', () => {
     const groups = enumerateTransferStations();
-    expect(groups).toHaveLength(73);
+    expect(groups).toHaveLength(76);
     for (const group of groups) {
       expect(group.variants.length).toBeGreaterThanOrEqual(2);
       const lines = new Set(group.variants.map((v) => v.line));

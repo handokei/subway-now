@@ -155,7 +155,7 @@ describe('useStationCandidates', () => {
         }),
       );
       const names = result.current.candidates.map((s) => s.name);
-      expect(names).toContain('잠실');
+      expect(names).toContain('잠실(송파구청)');
       expect(names).toContain('잠실나루');
     });
 
@@ -169,7 +169,7 @@ describe('useStationCandidates', () => {
         }),
       );
       const names = result.current.candidates.map((s) => s.name);
-      expect(names).toContain('잠실');
+      expect(names).toContain('잠실(송파구청)');
       expect(names).toContain('잠실나루');
     });
 
@@ -184,7 +184,7 @@ describe('useStationCandidates', () => {
         }),
       );
       const names = result.current.candidates.map((s) => s.name);
-      expect(names).toContain('잠실');
+      expect(names).toContain('잠실(송파구청)');
       expect(names).not.toContain('잠실나루');
     });
 
@@ -199,7 +199,7 @@ describe('useStationCandidates', () => {
         }),
       );
       const names = result.current.candidates.map((s) => s.name);
-      expect(names).toContain('잠실');
+      expect(names).toContain('잠실(송파구청)');
     });
 
     it('narrow 후 단일 후보 → isAutoConfirmed=true', () => {
@@ -215,7 +215,7 @@ describe('useStationCandidates', () => {
       if (result.current.candidates.length === 1) {
         expect(result.current.isAutoConfirmed).toBe(true);
       }
-      expect(result.current.topPick?.name).toBe('잠실');
+      expect(result.current.topPick?.name).toBe('잠실(송파구청)');
     });
 
     it('wifi가 있으면 F3 입력이 와도 wifi 우선', () => {
@@ -264,7 +264,7 @@ describe('useStationCandidates', () => {
         }),
       );
       expect(result.current.candidates.length).toBe(1);
-      expect(result.current.topPick?.name).toBe('광화문');
+      expect(result.current.topPick?.name).toBe('광화문(세종문화회관)');
       expect(result.current.isAutoConfirmed).toBe(true);
     });
 
@@ -280,7 +280,7 @@ describe('useStationCandidates', () => {
         }),
       );
       const names = result.current.candidates.map((s) => s.name);
-      expect(names).toContain('광화문');
+      expect(names).toContain('광화문(세종문화회관)');
       expect(names).toContain('종로3가');
     });
 
@@ -298,7 +298,7 @@ describe('useStationCandidates', () => {
         }),
       );
       const names = result.current.candidates.map((s) => s.name);
-      expect(names).toContain('광화문');
+      expect(names).toContain('광화문(세종문화회관)');
       expect(names).toContain('종로3가');
     });
 
@@ -325,20 +325,20 @@ describe('useStationCandidates', () => {
             barometerStable: true,
           }),
         );
-        expect(result.current.topPick?.name).toBe('광화문');
+        expect(result.current.topPick?.name).toBe('광화문(세종문화회관)');
         expect(result.current.isAutoConfirmed).toBe(true);
       });
 
       it('두 신호 미제공 → 결과는 narrow 함수 결정 (회귀 없음)', () => {
         const { result } = renderHook(() => useStationCandidates(BASE_INPUT));
-        expect(result.current.topPick?.name).toBe('광화문');
+        expect(result.current.topPick?.name).toBe('광화문(세종문화회관)');
       });
 
       it('motion만 true → narrow 함수로 전달되고 결과 일관성 유지', () => {
         const { result } = renderHook(() =>
           useStationCandidates({ ...BASE_INPUT, motionStationary: true }),
         );
-        expect(result.current.topPick?.name).toBe('광화문');
+        expect(result.current.topPick?.name).toBe('광화문(세종문화회관)');
       });
 
       it('동일 입력 rerender 시 참조 안정성 (signals deps 포함)', () => {

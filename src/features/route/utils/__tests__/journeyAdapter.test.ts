@@ -165,7 +165,7 @@ describe('journeyDisplayToStops', () => {
       const stops = journeyDisplayToStops(journey, { expanded: true });
       const intermediates = stops.filter((s) => s.mark === 'intermediate');
       expect(intermediates).toHaveLength(1);
-      expect(intermediates[0].station).toBe('교대');
+      expect(intermediates[0].station).toBe('교대(법원.검찰청)');
       expect(intermediates[0].line).toBe('2');
       // intermediate는 stopsFromPrev/note/arrivalContext가 없는 슬림 형태
       expect(intermediates[0].stopsFromPrev).toBeUndefined();
@@ -191,7 +191,7 @@ describe('journeyDisplayToStops', () => {
       };
       const stops = journeyDisplayToStops(journey, { expanded: true });
       const intermediates = stops.filter((s) => s.mark === 'intermediate');
-      expect(intermediates.map((s) => s.station)).toEqual(['교대']);
+      expect(intermediates.map((s) => s.station)).toEqual(['교대(법원.검찰청)']);
     });
 
     it('expanded: seg.stops가 실제 중간역 수와 불일치하면 fallback (invariant guard)', () => {

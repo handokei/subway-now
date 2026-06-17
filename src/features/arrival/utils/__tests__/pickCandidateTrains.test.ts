@@ -116,7 +116,7 @@ describe('pickCandidateTrains', () => {
       positions: [
         makeLine([
           makeTrain({ trainNo: 'A', statnNm: '시청' }),
-          makeTrain({ trainNo: 'B', statnNm: '강변' }),
+          makeTrain({ trainNo: 'B', statnNm: '강변(동서울터미널)' }),
         ]),
       ],
       line: LINE,
@@ -146,11 +146,11 @@ describe('pickCandidateTrains', () => {
         makeLine([
           makeTrain({ trainNo: '003', statnNm: '한양대' }), // |Δ|=1
           makeTrain({ trainNo: '001', statnNm: '한양대' }), // |Δ|=1
-          makeTrain({ trainNo: '002', statnNm: '왕십리' }), // |Δ|=0
+          makeTrain({ trainNo: '002', statnNm: '왕십리(성동구청)' }), // |Δ|=0
         ]),
       ],
       line: LINE,
-      anchorStationName: '왕십리',
+      anchorStationName: '왕십리(성동구청)',
       windowStations: 5,
     });
     expect(result.map((t) => t.trainNo)).toEqual(['002', '001', '003']);
@@ -161,7 +161,7 @@ describe('pickCandidateTrains', () => {
       positions: [
         makeLine([
           makeTrain({ trainNo: 'C', statnNm: '시청' }),
-          makeTrain({ trainNo: 'A', statnNm: '강변' }),
+          makeTrain({ trainNo: 'A', statnNm: '강변(동서울터미널)' }),
           makeTrain({ trainNo: 'B', statnNm: '뚝섬' }),
         ]),
       ],
