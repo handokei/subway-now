@@ -9,6 +9,7 @@ import {
   sendReschedulePush,
   sendSilentPush,
   type ApnsConfig,
+  type PushOrigin,
 } from './apns';
 import { flipApnsEnv, pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import {
@@ -43,6 +44,8 @@ import {
   readSeries,
   type WindowedMetrics,
 } from './positionSeries';
+import { assertCronCacheTtl } from './kvConsistency';
+import { buildAlarmKey, putPending } from './pendingPushes';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
@@ -177,6 +180,9 @@ export function resolveEtaMissingThreshold(trip: Pick<Trip, 'subsurface'>): numb
  * 런타임에서 `Invalid cache_ttl` 던짐(#770 hotfix).
  */
 const CRON_PROGRESS_CACHE_TTL_SEC = 30;
+// #1402 — load-time 회귀 가드. 컴파일 시 0/10 같은 값을 silently 넣지 못하도록 module load
+// 시점에 즉시 throw. 신규 callsite 추가 시 type-check + 첫 test run 양쪽에서 잡힌다.
+assertCronCacheTtl(CRON_PROGRESS_CACHE_TTL_SEC);
 
 type Logger = (message: string, meta?: Record<string, unknown>) => void;
 
@@ -276,6 +282,14 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   vanishFallbackFired: number;
   /**
+   * #1402 — trainCode vanish 후 hop 시간 미경과로 lock release 직전에 보장 발사한 floor
+   * station-passed silent push의 누적 횟수. fallback advance(hop-elapsed) 경로가 발사하던
+   * push가 release(hop-not-elapsed) 경로에서 빠져 device가 stale 채로 lock 인계되던 회귀
+   * (2026-06-17 군자/용마산 침묵)를 닫는다. 발사 성공 시 PENDING_PUSHES에 등록돼 30s 내
+   * ACK 없으면 alert fallback이 자동 발사된다.
+   */
+  vanishReleaseFired: number;
+  /**
    * #1370 L3 — vanish 후 hop 시간 미경과로 lock release할 때 trip.locklessStationPassed가
    * false였던 trip을 강제 enable해 lockless 인계 경로를 살린 횟수. 0이 아니면 사용자가 opt-in
    * 토글 OFF였지만 vanish recovery로 매역 push가 복구된 trip 수.
@@ -345,6 +359,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
     vanishFallbackFired: 0,
+    vanishReleaseFired: 0,
     vanishLocklessTakeover: 0,
     vanishFallbackMotionGateBlocked: 0,
   };
@@ -736,11 +751,17 @@ interface BuildStationPassedImminentPayloadInputs {
   lock: BoardingLockMeta;
   pushId: string;
   now: number;
+  /**
+   * #1402 — 발사 경로(origin) stamp. 좀비 알림 RCA + alarmLog `pushOrigin` 매핑용.
+   * arvlCd 경로 = 'arvlcd', vanish fallback advance 직전 = 'vanish-fallback',
+   * vanish lock release 직전 floor = 'vanish-release'.
+   */
+  origin: PushOrigin;
 }
 function buildStationPassedImminentPayload(
   inputs: BuildStationPassedImminentPayloadInputs,
 ): Parameters<typeof sendSilentPush>[0]['payload'] {
-  const { trip, waypoint, lock, pushId, now } = inputs;
+  const { trip, waypoint, lock, pushId, now, origin } = inputs;
   return {
     nextWaypoint: waypoint.stationName,
     // arvlCd∈{0,1}은 "지금 진입/도착" 신호 — eta는 사실상 0. vanish-fallback도 동일 의미.
@@ -767,6 +788,8 @@ function buildStationPassedImminentPayload(
     // ACTIVE_TRIP_KEY와 비교해 만료 token push를 drop. trip-ended cleanup 후 늦게 도착한
     // stale silent push 차단(S8 14:19 좀비 회귀).
     tripToken: trip.token,
+    // #1402 — 발사 경로 stamp. device alarmLog와 backend tail이 같은 값으로 1:1 매핑.
+    origin,
   };
 }
 
@@ -848,7 +871,14 @@ export async function fireArvlCdStationPush(
     (host) =>
       sendSilentPush({
         deviceToken: trip.token,
-        payload: buildStationPassedImminentPayload({ trip, waypoint, lock, pushId, now }),
+        payload: buildStationPassedImminentPayload({
+          trip,
+          waypoint,
+          lock,
+          pushId,
+          now,
+          origin: 'arvlcd',
+        }),
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -877,6 +907,20 @@ export async function fireArvlCdStationPush(
   }
   stats.arvlCdFireSuccess += 1;
   stats.pushed += 1;
+  // #1402 — 30s alert fallback 안전망 등록. silent push가 30s 내 ACK되지 않으면
+  // runFallbackPushes가 alert(소리) push를 발사. arvlCd 경로는 가장 흔한 발사 경로이므로
+  // 여기서도 안전망을 가동해 "하차 침묵 0" acceptance를 보강한다.
+  await putPending(env.PENDING_PUSHES, {
+    pushId,
+    token: trip.token,
+    alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
+    sentAt: now,
+    stationName: waypoint.stationName,
+    kind: waypoint.kind,
+    phase: 'imminent',
+    etaSeconds: 0,
+    apnsEnv: trip.apnsEnv ?? 'sandbox',
+  });
   // dedup stamp — 같은 cycle에서 Seoul API 갱신 지연으로 같은 신호가 재노출돼도 차단.
   await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
   // #1367 — cross-station dedup용 마지막 fire 마커. 성공 시에만 stamp(실패는 다음 cycle 재시도 허용).
@@ -906,9 +950,18 @@ interface FireVanishFallbackStationPushInputs {
   now: number;
   log: Logger;
   generatePushId: () => string;
+  /**
+   * #1402 — 발사 경로 식별자. 기존 hop-elapsed advance 직전 fire는 `'vanish-fallback'`,
+   * 신규 hop-not-elapsed lock release 직전 floor fire는 `'vanish-release'`. dedup key는
+   * origin별로 격리해 두 경로가 같은 station에서 둘 다 한 번씩 발사될 수 있게 한다 — release
+   * 후 lock 재부착(swap 성공)으로 같은 station에서 advance 경로가 추가 발사되는 시나리오를
+   * 차단하지 않기 위함.
+   */
+  origin: 'vanish-fallback' | 'vanish-release';
 }
 
 export const VANISH_FALLBACK_FIRE_KEY_PREFIX = 'vanish-fallback-fire:';
+export const VANISH_RELEASE_FIRE_KEY_PREFIX = 'vanish-release-fire:';
 
 export function vanishFallbackFireKey(
   token: string,
@@ -918,14 +971,26 @@ export function vanishFallbackFireKey(
   return `${VANISH_FALLBACK_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
 }
 
+export function vanishReleaseFireKey(
+  token: string,
+  trainCode: string,
+  stationName: string,
+): string {
+  return `${VANISH_RELEASE_FIRE_KEY_PREFIX}${token}|${trainCode}|${stationName}`;
+}
+
 export async function fireVanishFallbackStationPush(
   inputs: FireVanishFallbackStationPushInputs,
 ): Promise<void> {
-  const { trip, waypoint, lock, env, deps, stats, now, log, generatePushId } = inputs;
-  const key = vanishFallbackFireKey(trip.token, lock.trainCode, waypoint.stationName);
+  const { trip, waypoint, lock, env, deps, stats, now, log, generatePushId, origin } = inputs;
+  const key =
+    origin === 'vanish-release'
+      ? vanishReleaseFireKey(trip.token, lock.trainCode, waypoint.stationName)
+      : vanishFallbackFireKey(trip.token, lock.trainCode, waypoint.stationName);
+  const logPrefix = origin === 'vanish-release' ? 'vanish-release-fire' : 'vanish-fallback-fire';
   const existing = await env.TRIPS.get(key);
   if (existing !== null) {
-    log('vanish-fallback-fire: dedup skip', {
+    log(`${logPrefix}: dedup skip`, {
       token: trip.token.slice(0, 8),
       trainCode: lock.trainCode,
       station: waypoint.stationName,
@@ -933,17 +998,18 @@ export async function fireVanishFallbackStationPush(
     return;
   }
   const pushId = generatePushId();
-  log('vanish-fallback-fire: station-passed push', {
+  log(`${logPrefix}: station-passed push`, {
     token: trip.token.slice(0, 8),
     trainCode: lock.trainCode,
     station: waypoint.stationName,
     kind: waypoint.kind,
+    origin,
   });
   const heal = await sendWithEnvHeal(
     (host) =>
       sendSilentPush({
         deviceToken: trip.token,
-        payload: buildStationPassedImminentPayload({ trip, waypoint, lock, pushId, now }),
+        payload: buildStationPassedImminentPayload({ trip, waypoint, lock, pushId, now, origin }),
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -960,7 +1026,7 @@ export async function fireVanishFallbackStationPush(
   }
   if (!heal.result.ok) {
     stats.errors += 1;
-    log('vanish-fallback-fire: push failed', {
+    log(`${logPrefix}: push failed`, {
       status: heal.result.status,
       reason: heal.result.reason,
       token: trip.token.slice(0, 8),
@@ -969,7 +1035,26 @@ export async function fireVanishFallbackStationPush(
     return;
   }
   stats.pushed += 1;
-  stats.vanishFallbackFired += 1;
+  if (origin === 'vanish-release') {
+    stats.vanishReleaseFired += 1;
+  } else {
+    stats.vanishFallbackFired += 1;
+  }
+  // #1402 — 30s alert fallback 안전망 등록. listPending → runFallbackPushes가 30s 내 ACK
+  // 없으면 alert(소리) fallback 발사. vanish 경로는 silent push가 가장 잘 누락되는 경로라
+  // 안전망 가동이 acceptance("하차 침묵 0")의 핵심. PENDING_PUSHES 미바인딩(dev/test 호환)
+  // 시 putPending은 graceful no-op.
+  await putPending(env.PENDING_PUSHES, {
+    pushId,
+    token: trip.token,
+    alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
+    sentAt: now,
+    stationName: waypoint.stationName,
+    kind: waypoint.kind,
+    phase: 'imminent',
+    etaSeconds: 0,
+    apnsEnv: trip.apnsEnv ?? 'sandbox',
+  });
   await env.TRIPS.put(key, '1', { expirationTtl: ARVLCD_FIRE_DEDUP_TTL_SEC });
 }
 
@@ -1112,6 +1197,7 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
         now,
         log,
         generatePushId,
+        origin: 'vanish-fallback',
       });
       await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log);
       return;
@@ -1122,6 +1208,38 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
     // true여야 한다(`if (!isBoardingLockActive) → if (trip.locklessStationPassed && intermediate)`).
     // OFF인 trip은 다음 cycle에서 lockMissing으로 spin하며 군자/중곡까지 push 0건. vanish fallback은
     // 시스템이 trainCode를 잃은 상황이므로 lockless 인계를 강제 enable해 매역 push 경로를 복구한다.
+    //
+    // #1402 — lock release 전 floor station-passed push를 보장 발사한다. 종전 release 경로는
+    // push 0건으로 device가 stale 채로 lockless 인계만 받았고, lockless 인계 직후 GPS가 잠시라도
+    // 추가 누락되면 다음 station push까지 침묵 ≥ 1 cycle. release 직전 floor push 1건이
+    // PENDING_PUSHES에 등록되면 30s 내 ACK 없을 때 alert fallback이 자동 발사돼 "하차 침묵 0"
+    // acceptance를 충족(2026-06-17 군자/용마산 회귀). 발사 자체가 false positive를 만들 수
+    // 있어 ADR-010 "false positive / miss 동급" 원칙에 따라 lock-active fallback과 같은
+    // motion gate(`isFallbackAdvanceBlockedByMotion`)를 통과한 경우에만 fire.
+    const releaseMotionSeries = await readSeries(env.TRIPS, trip.token);
+    const releaseMotion = evaluateWindow(releaseMotionSeries, now).motion;
+    if (!isFallbackAdvanceBlockedByMotion(releaseMotion)) {
+      await fireVanishFallbackStationPush({
+        trip,
+        waypoint,
+        lock: activeLock,
+        env,
+        deps,
+        stats,
+        now,
+        log,
+        generatePushId,
+        origin: 'vanish-release',
+      });
+    } else {
+      stats.vanishFallbackMotionGateBlocked += 1;
+      log('vanish-release-fire: motion gate blocked (not moving)', {
+        token: trip.token.slice(0, 8),
+        trainCode: activeLock.trainCode,
+        station: waypoint.stationName,
+        motion: releaseMotion,
+      });
+    }
     log('boarding-lock: trainCode vanished — releasing lock (hop time not yet elapsed)', {
       token: trip.token.slice(0, 8),
       trainCode: activeLock.trainCode,
@@ -1761,6 +1879,8 @@ export async function runLocklessIntermediate(
           // #1399 — 좀비 알림 cleanup. lockless intermediate push에도 tripToken stamp.
           // trip-ended cleanup 후 늦게 도착한 stale push를 ACTIVE_TRIP_KEY mismatch로 drop.
           tripToken: trip.token,
+          // #1402 — 발사 경로 stamp. device alarmLog에 pushOrigin=lockless로 기록.
+          origin: 'lockless' as const,
         },
         config: deps.apnsConfig,
         host,
@@ -1798,6 +1918,20 @@ export async function runLocklessIntermediate(
   // 발사 성공 — waypoint 진행 + dedup stamp + 측정 카운터.
   stats.pushed += 1;
   stats.locklessIntermediateFired += 1;
+  // #1402 — 30s alert fallback 안전망 등록. shift 전 stationName으로 등록해 alert 본문이
+  // 사용자가 실제로 통과한 station을 가리키게 한다. lockless intermediate는 lock 경로보다
+  // device-side validation이 느슨해 silent push 누락 시 안전망 가동이 더 절실한 경로.
+  await putPending(env.PENDING_PUSHES, {
+    pushId,
+    token: trip.token,
+    alarmKey: buildAlarmKey(waypoint.stationName, 'imminent'),
+    sentAt: now,
+    stationName: waypoint.stationName,
+    kind: 'intermediate',
+    phase: 'imminent',
+    etaSeconds: signal.etaSeconds,
+    apnsEnv: trip.apnsEnv ?? 'sandbox',
+  });
   trip.lastFiredPhase = 'imminent';
   trip.waypoints.shift();
   if (trip.waypoints.length === 0) {
