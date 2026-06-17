@@ -174,7 +174,11 @@ describe('fireLiveActivityUpdate', () => {
     expect(staleDurationSecForKind(undefined)).toBe(LA_STALE_DURATION_SEC);
   });
 
-  it('#1402 passes waypoint kind=destination → APNs stale-date = now + 45', async () => {
+  // #1402 — waypoint kind가 APNs stale-date에 반영되는지 e2e 검증 (helper로 dedup).
+  it.each<[Waypoint['kind'], number]>([
+    ['destination', 45],
+    ['transfer', 75],
+  ])('#1402 passes waypoint kind=%s → APNs stale-date = now + %i', async (kind, expectedSec) => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
     await fireLiveActivityUpdate(
       makeTrip(),
@@ -183,27 +187,11 @@ describe('fireLiveActivityUpdate', () => {
       makeStats(),
       NOW,
       () => undefined,
-      'destination',
+      kind,
     );
     const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(init.body as string);
-    expect(body.aps['stale-date']).toBe(Math.floor(NOW / 1000) + 45);
-  });
-
-  it('#1402 passes waypoint kind=transfer → APNs stale-date = now + 75', async () => {
-    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
-    await fireLiveActivityUpdate(
-      makeTrip(),
-      {},
-      makeDeps(fetchImpl as unknown as typeof fetch),
-      makeStats(),
-      NOW,
-      () => undefined,
-      'transfer',
-    );
-    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    const body = JSON.parse(init.body as string);
-    expect(body.aps['stale-date']).toBe(Math.floor(NOW / 1000) + 75);
+    expect(body.aps['stale-date']).toBe(Math.floor(NOW / 1000) + expectedSec);
   });
 
   it('uses production host when apnsEnv=production', async () => {
