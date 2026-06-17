@@ -189,6 +189,7 @@ import {
   DESTINATION_KEY,
   LOCKLESS_STATION_PASSED_KEY,
   ROUTE_KEY,
+  SLEEP_MODE_KEY,
 } from '../../../../shared/constants/storageKeys';
 
 const DEFAULT_APNS_TOKEN = 'apns-tok-hex';
@@ -206,6 +207,30 @@ function ackCall(
 }
 
 const destStation = { id: '0228', name: '강남', line: '2', lat: 37.5, lng: 127.0 };
+
+/**
+ * #1399 — silentPushTask 테스트는 AsyncStorage.getItem을 mockImplementation으로 분기시키는
+ * 패턴이 다발한다(SonarCloud cpd + nested function code smell). 하나의 헬퍼로 압축.
+ *
+ * - `DESTINATION_KEY` / `APNS_TOKEN_KEY`는 항상 기본값 반환(테스트 기본 환경).
+ * - 추가 key는 `overrides` 맵으로 주입. value가 `Error`면 해당 key 조회 시 throw(read 오류 시뮬).
+ * - 그 외 key는 null.
+ */
+const THROW = Symbol('throw');
+function setAsyncStorageMap(
+  overrides: Record<string, string | null | typeof THROW>,
+): void {
+  (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+    if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+    if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+    if (key in overrides) {
+      const v = overrides[key];
+      if (v === THROW) throw new Error('storage-fail');
+      return v;
+    }
+    return null;
+  });
+}
 
 /**
  * expo-notifications iOS BG task payload 모양을 그대로 재현 (#641).
@@ -1306,17 +1331,8 @@ describe('silentPushTask', () => {
 
     // #1399 — 좀비 알림 cleanup: tripToken stamp + ACTIVE_TRIP_KEY mismatch drop.
     describe('#1399 — tripToken mismatch 가드 (좀비 알림 cleanup)', () => {
-      function mockActiveTripToken(value: string | null) {
-        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
-          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
-          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === 'subway-now:active-trip') return value;
-          return null;
-        });
-      }
-
       it('payload.tripToken === ACTIVE_TRIP_KEY → 가드 통과 후 발사', async () => {
-        mockActiveTripToken('active-token-123');
+        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: 'active-token-123' });
         await handleSilentPush(
           payload({
             kind: 'destination',
@@ -1330,7 +1346,7 @@ describe('silentPushTask', () => {
       });
 
       it('payload.tripToken 다른 token → trip-token-mismatch skip', async () => {
-        mockActiveTripToken('active-token-NEW');
+        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: 'active-token-NEW' });
         await handleSilentPush(
           payload({
             kind: 'intermediate',
@@ -1349,7 +1365,7 @@ describe('silentPushTask', () => {
       });
 
       it('ACTIVE_TRIP_KEY null (이미 cleanup됨) + payload.tripToken 있음 → drop', async () => {
-        mockActiveTripToken(null);
+        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: null });
         await handleSilentPush(
           payload({
             kind: 'transfer',
@@ -1365,7 +1381,7 @@ describe('silentPushTask', () => {
       });
 
       it('payload.tripToken 미전달 (구 backend) → 가드 skip, 발사 진행', async () => {
-        mockActiveTripToken('active-token-x');
+        setAsyncStorageMap({ [ACTIVE_TRIP_KEY]: 'active-token-x' });
         // payload에 tripToken 미전달 → undefined → 가드 자연 skip.
         await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
         expect(mockScheduleNotificationAsync).toHaveBeenCalled();
@@ -1374,22 +1390,15 @@ describe('silentPushTask', () => {
 
     // #1399 — lockless 분기 sleep mode 회귀 차단.
     describe('#1399 — lockless sleep-first-transfer 가드', () => {
-      function mockSleepAndToggle(sleep: boolean, optedIn: boolean) {
-        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
-          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
-          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === LOCKLESS_STATION_PASSED_KEY) return JSON.stringify(optedIn);
-          if (key === 'subway-now:sleep-mode') return JSON.stringify(sleep);
-          return null;
-        });
-      }
-
       beforeEach(() => {
         mockGetBoardingLock.mockResolvedValue(null);
       });
 
       it('sleep ON + transfer + hopIndex=0 (first hop) → sleep-first-transfer skip', async () => {
-        mockSleepAndToggle(true, true);
+        setAsyncStorageMap({
+          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [SLEEP_MODE_KEY]: JSON.stringify(true),
+        });
         await handleSilentPush(
           payload({ kind: 'transfer', phase: 'imminent', hopIndex: 0, pushId: 'p-sleep-tx' }),
         );
@@ -1403,7 +1412,10 @@ describe('silentPushTask', () => {
       });
 
       it('sleep ON + destination + hopIndex=0 → 통과 (destination은 절대 suppress 안 함)', async () => {
-        mockSleepAndToggle(true, true);
+        setAsyncStorageMap({
+          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [SLEEP_MODE_KEY]: JSON.stringify(true),
+        });
         await handleSilentPush(
           payload({ kind: 'destination', phase: 'imminent', hopIndex: 0 }),
         );
@@ -1412,7 +1424,10 @@ describe('silentPushTask', () => {
       });
 
       it('sleep ON + transfer + hopIndex>0 → 통과 (first hop 아님)', async () => {
-        mockSleepAndToggle(true, true);
+        setAsyncStorageMap({
+          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [SLEEP_MODE_KEY]: JSON.stringify(true),
+        });
         await handleSilentPush(
           payload({ kind: 'transfer', phase: 'imminent', hopIndex: 1 }),
         );
@@ -1420,7 +1435,10 @@ describe('silentPushTask', () => {
       });
 
       it('sleep OFF + transfer + hopIndex=0 → 통과', async () => {
-        mockSleepAndToggle(false, true);
+        setAsyncStorageMap({
+          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [SLEEP_MODE_KEY]: JSON.stringify(false),
+        });
         await handleSilentPush(
           payload({ kind: 'transfer', phase: 'imminent', hopIndex: 0 }),
         );
@@ -1428,12 +1446,9 @@ describe('silentPushTask', () => {
       });
 
       it('SLEEP_MODE_KEY AsyncStorage read 오류 → 가드 자연 skip (안전 fallback)', async () => {
-        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
-          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
-          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === LOCKLESS_STATION_PASSED_KEY) return JSON.stringify(true);
-          if (key === 'subway-now:sleep-mode') throw new Error('storage-fail');
-          return null;
+        setAsyncStorageMap({
+          [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true),
+          [SLEEP_MODE_KEY]: THROW,
         });
         await handleSilentPush(
           payload({ kind: 'transfer', phase: 'imminent', hopIndex: 0 }),
@@ -1443,14 +1458,8 @@ describe('silentPushTask', () => {
       });
 
       it('SLEEP_MODE_KEY 부재 (key 자체 없음) → 가드 자연 skip (기본 OFF)', async () => {
-        // SLEEP_MODE_KEY가 storage에 없음(getItem이 null 반환) → loadSleepModeFlag가 false return.
-        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
-          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
-          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
-          if (key === LOCKLESS_STATION_PASSED_KEY) return JSON.stringify(true);
-          // sleep key 없음 → null 반환
-          return null;
-        });
+        // SLEEP_MODE_KEY override 없음 → 기본 null 반환 → loadSleepModeFlag가 false return.
+        setAsyncStorageMap({ [LOCKLESS_STATION_PASSED_KEY]: JSON.stringify(true) });
         await handleSilentPush(
           payload({ kind: 'transfer', phase: 'imminent', hopIndex: 0 }),
         );
