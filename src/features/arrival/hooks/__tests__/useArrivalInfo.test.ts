@@ -481,4 +481,79 @@ describe('useArrivalInfo', () => {
 
     await waitFor(() => expect(result.current.arrival).toEqual(freshArrival));
   });
+
+  // #1400 — 캐시 키는 (stationName, lineHint) 튜플로 호선별 격리되어야 한다.
+  // BFF 실시간 응답은 호선 무관 동일하지만 schedule fallback은 호선별로 달라지므로
+  // 호선 무관 키로 캐싱하면 직전 호선의 fallback이 다음 호선 폴링에도 잔존한다.
+  describe('cache key by (stationName, lineHint) (#1400)', () => {
+    it('같은 stationName 다른 lineHint는 캐시를 공유하지 않는다 (호선별 격리)', async () => {
+      const arrivalLine2 = {
+        up: [{ destination: '내선순환', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'L2-A', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+        down: [],
+      };
+      const arrivalLine3 = {
+        up: [{ destination: '대화행', arrivalMinutes: 3, arrivalSeconds: 180, statusMessage: '', trainCode: 'L3-B', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+        down: [],
+      };
+
+      // line=2 prefetch — line=2 응답을 그 키에만 적재.
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(arrivalLine2);
+      await prefetchArrival('교대', '2');
+      const callsAfterLine2 = (arrivalApiModule.fetchArrivalInfo as jest.Mock).mock.calls.length;
+
+      // line=3 prefetch — line=2 캐시는 미적용. 다시 fetch가 발생해야 한다.
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(arrivalLine3);
+      await prefetchArrival('교대', '3');
+      expect((arrivalApiModule.fetchArrivalInfo as jest.Mock).mock.calls.length).toBeGreaterThan(callsAfterLine2);
+
+      // line=3로 마운트하면 line=3 캐시(arrivalLine3) hit이 노출되어야 함.
+      const { result } = renderHook(() => useArrivalInfo('교대', '3'));
+      expect(result.current.arrival).toEqual(arrivalLine3);
+    });
+
+    it('같은 (stationName, lineHint) 재사용은 캐시 hit', async () => {
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+      await prefetchArrival('교대', '2');
+      const callsAfterFirst = (arrivalApiModule.fetchArrivalInfo as jest.Mock).mock.calls.length;
+
+      // 같은 (stationName, lineHint) prefetch는 캐시 hit으로 fetch 미발생.
+      await prefetchArrival('교대', '2');
+      expect((arrivalApiModule.fetchArrivalInfo as jest.Mock).mock.calls.length).toBe(callsAfterFirst);
+    });
+
+    it('lineHint=null과 lineHint="2"는 서로 다른 캐시 키', async () => {
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(mockArrival);
+      await prefetchArrival('교대', null);
+      const callsAfterNull = (arrivalApiModule.fetchArrivalInfo as jest.Mock).mock.calls.length;
+
+      // null 캐시는 line='2'에 사용되지 않으므로 새 fetch가 발생.
+      await prefetchArrival('교대', '2');
+      expect((arrivalApiModule.fetchArrivalInfo as jest.Mock).mock.calls.length).toBeGreaterThan(callsAfterNull);
+    });
+
+    it('lineHint가 바뀌면 직전 호선의 캐시 데이터가 표시되지 않는다', async () => {
+      const arrivalLine2 = {
+        up: [{ destination: '내선순환', arrivalMinutes: 2, arrivalSeconds: 120, statusMessage: '', trainCode: 'L2-A', receivedAtMs: 0, arrivalCode: -1, isLastTrain: false, trainType: 'normal' }],
+        down: [],
+      };
+      // line=2 캐시 채워 둠.
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockResolvedValue(arrivalLine2);
+      await prefetchArrival('교대', '2');
+
+      // 같은 station을 line=3으로 mount — line=2 cache는 hit 안 됨.
+      // 그 사이 mock을 막혀(pending) 상태로 둬 cache가 진짜 비어있는지(loading=true) 확인.
+      let resolveLine3!: (v: typeof mockArrival) => void;
+      (arrivalApiModule.fetchArrivalInfo as jest.Mock).mockImplementation(
+        () => new Promise((r) => { resolveLine3 = r; })
+      );
+      const { result } = renderHook(() => useArrivalInfo('교대', '3'));
+      // 캐시 miss → loading=true, arrival=null.
+      expect(result.current.arrival).toBeNull();
+      expect(result.current.loading).toBe(true);
+
+      // fetch 완료 후 line=3 데이터로 표시.
+      await act(async () => { resolveLine3(mockArrival); });
+      expect(result.current.arrival).toEqual(mockArrival);
+    });
+  });
 });

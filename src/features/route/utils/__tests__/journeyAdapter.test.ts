@@ -220,7 +220,7 @@ describe('arrivalInfoToArrivalTrain', () => {
   afterEach(() => { jest.restoreAllMocks(); });
 
   it('should convert arrival info with destination', () => {
-    const items = [makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134 })];
+    const items = [makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134, line: '6' })];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
     expect(result).toEqual([
       {
@@ -239,7 +239,7 @@ describe('arrivalInfoToArrivalTrain', () => {
   });
 
   it('#1035 context 전달 시 stationName/directionKey가 ArrivalTrain에 포함된다', () => {
-    const items = [makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 60 })];
+    const items = [makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 60, line: '6' })];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6', {
       stationName: '응암',
       directionKey: 'up',
@@ -257,6 +257,7 @@ describe('arrivalInfoToArrivalTrain', () => {
         isLastTrain: true,
         trainType: 'express',
         arrivalCode: 1,
+        line: '6',
       }),
     ];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
@@ -266,21 +267,21 @@ describe('arrivalInfoToArrivalTrain', () => {
   });
 
   it('should use direction fallback when destination is empty', () => {
-    const items = [makeArrivalInfo({ destination: '', arrivalSeconds: 60 })];
+    const items = [makeArrivalInfo({ destination: '', arrivalSeconds: 60, line: '2' })];
     const result = arrivalInfoToArrivalTrain(items, '하행', '2');
     expect(result[0].direction).toBe('하행');
   });
 
   it('should include statusMessage as subtext when present', () => {
-    const items = [makeArrivalInfo({ destination: '응암행', arrivalSeconds: 271, statusMessage: '전역 출발' })];
+    const items = [makeArrivalInfo({ destination: '응암행', arrivalSeconds: 271, statusMessage: '전역 출발', line: '6' })];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
     expect(result[0].subtext).toBe('전역 출발');
   });
 
   it('should handle multiple items', () => {
     const items = [
-      makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134 }),
-      makeArrivalInfo({ destination: '응암행', arrivalSeconds: 271, statusMessage: '진입 중', trainCode: 'T002' }),
+      makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 134, line: '6' }),
+      makeArrivalInfo({ destination: '응암행', arrivalSeconds: 271, statusMessage: '진입 중', trainCode: 'T002', line: '6' }),
     ];
     const result = arrivalInfoToArrivalTrain(items, '상행', '6');
     expect(result).toHaveLength(2);
@@ -289,13 +290,33 @@ describe('arrivalInfoToArrivalTrain', () => {
   });
 
   it('should handle special line number', () => {
-    const items = [makeArrivalInfo({ destination: '인천공항행', arrivalSeconds: 600, trainCode: 'A001' })];
+    const items = [makeArrivalInfo({ destination: '인천공항행', arrivalSeconds: 600, trainCode: 'A001', line: 'airport' })];
     const result = arrivalInfoToArrivalTrain(items, '상행', 'airport');
     expect(result[0].line).toBe('airport');
   });
 
   it('should return empty array for empty items', () => {
     expect(arrivalInfoToArrivalTrain([], '상행', '1')).toEqual([]);
+  });
+
+  // #1400 — 환승역 statnNm 응답에 다른 호선 row가 섞이는 회귀(예: 논현 statnNm에 7호선/신분당선)
+  // 가 관측됐다. arrivalInfoToArrivalTrain은 호출자가 명시한 line과 다른 row를 제외해 잘못된
+  // 방면/지난 호선 시간표가 사용자에게 보이지 않도록 한다.
+  it('#1400 line 파라미터와 다른 item.line은 결과에서 제외된다', () => {
+    const items = [
+      makeArrivalInfo({ destination: '봉화산행', arrivalSeconds: 60, line: '6' }),
+      makeArrivalInfo({ destination: '응암행', arrivalSeconds: 120, trainCode: 'T-OTHER', line: '5' }),
+    ];
+    const result = arrivalInfoToArrivalTrain(items, '상행', '6');
+    expect(result).toHaveLength(1);
+    expect(result[0].direction).toBe('봉화산행');
+    expect(result[0].line).toBe('6');
+  });
+
+  it('#1400 모든 item.line이 line 파라미터와 어긋나면 빈 배열', () => {
+    const items = [makeArrivalInfo({ destination: '신사행', arrivalSeconds: 60, line: '3' })];
+    const result = arrivalInfoToArrivalTrain(items, '상행', '7');
+    expect(result).toEqual([]);
   });
 });
 
