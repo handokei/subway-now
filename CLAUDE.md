@@ -247,6 +247,7 @@ perf/#이슈번호-대상         예: perf/#139-map-clustering
 - 테마 의존 컴포넌트는 `renderWithTheme` (`src/testUtils/renderWithTheme.tsx`) 사용
 - 인터벌 테스트는 `jest.useFakeTimers()` 사용
 - barrel re-export 파일(`**/index.ts`)은 `collectCoverageFrom`에서 제외
+- 역명 hardcoding 금지 — base name(예: `'교대'`) assertion은 `canonicalStationName(base, line)` (`src/testUtils/canonicalStationName.ts`) 사용. stations.json BLDN_NM drift(#1410) 자동 흡수.
 
 ## 디렉토리 경계 룰 (ESLint)
 
