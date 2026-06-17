@@ -763,6 +763,10 @@ function buildStationPassedImminentPayload(
     // 없이도(지하 auto-lock hydration window) line sanity-guard를 돌려 발사할 수 있게 한다.
     boardingLine: lock.line,
     trainCode: lock.trainCode,
+    // #1399 — 좀비 알림 cleanup. push 발사 시점의 active trip token을 stamp해 device가
+    // ACTIVE_TRIP_KEY와 비교해 만료 token push를 drop. trip-ended cleanup 후 늦게 도착한
+    // stale silent push 차단(S8 14:19 좀비 회귀).
+    tripToken: trip.token,
   };
 }
 
@@ -1090,19 +1094,25 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
       // intermediate/transfer waypoint를 "지났다"는 신호가 사용자에게 도달하지 않는 회귀가 있었다
       // (어린이대공원/군자/중곡 silent push 0건). vanish fallback도 ground truth 신호로 취급해
       // arvlCd∈{0,1}과 동등하게 station-passed push를 발사한다.
-      if (waypoint.kind !== 'destination') {
-        await fireVanishFallbackStationPush({
-          trip,
-          waypoint,
-          lock: activeLock,
-          env,
-          deps,
-          stats,
-          now,
-          log,
-          generatePushId,
-        });
-      }
+      //
+      // #1399 — destination/transfer 포함 모든 kind에 대해 발사. 기존엔 destination을 skip해
+      // advanceBoardingLockWaypoint의 trip-ended push만 사용자에게 도달했으나, 그 경로는
+      // alert payload(`aps.alert`)로 system banner를 띄우는 데에 의존한다. vanish 상황(지하 +
+      // backend trainCode 누락)에서 trip-ended가 trip token 검증/cleanup race로 지연/소실되면
+      // 사용자는 종착역 하차 알림을 받지 못한다. station-passed imminent push를 destination에도
+      // 발사해 device 측 banner 발사 경로(채널 2)도 확보한다. surface 중복은 device 측
+      // pushId/firedPushIds dedup으로 흡수.
+      await fireVanishFallbackStationPush({
+        trip,
+        waypoint,
+        lock: activeLock,
+        env,
+        deps,
+        stats,
+        now,
+        log,
+        generatePushId,
+      });
       await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log);
       return;
     }
@@ -1748,6 +1758,9 @@ export async function runLocklessIntermediate(
           // #1307 — server-authoritative subsurface. lockless intermediate도 지하에선
           // 디바이스 GPS 게이트(out-of-range 오거부)를 우회하도록 flag를 전달.
           subsurface: trip.subsurface === true,
+          // #1399 — 좀비 알림 cleanup. lockless intermediate push에도 tripToken stamp.
+          // trip-ended cleanup 후 늦게 도착한 stale push를 ACTIVE_TRIP_KEY mismatch로 drop.
+          tripToken: trip.token,
         },
         config: deps.apnsConfig,
         host,

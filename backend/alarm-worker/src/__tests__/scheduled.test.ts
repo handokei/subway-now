@@ -1443,9 +1443,13 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expect(stored.waypoints[0].stationName).toBe('군자');
     });
 
-    it('#1370 L2 — destination waypoint는 station-passed push 발사 안 함', async () => {
-      // destination kind는 cleanupTripWithLa 내부에서 trip-ended push가 발사되므로
-      // 추가 station-passed push 발사를 차단해야 한다.
+    it('#1399 — destination waypoint도 vanish fallback station-passed push 발사 (하차 알림 floor 보장)', async () => {
+      // #1370 L2 시점에는 destination skip이었으나 #1399에서 destination 포함으로 확장.
+      // cleanupTripWithLa의 trip-ended push는 alert path로 system banner를 띄우지만, vanish
+      // 상황(지하 + backend trainCode 누락)에서 trip-ended가 cleanup race로 지연/소실되면
+      // 사용자가 종착역 하차 알림을 받지 못한다(S6/S8 13:54·14:10 군자/용마산 하차 누락 회귀).
+      // station-passed imminent push를 destination에도 발사해 device 측 banner 경로(채널 2)도
+      // 확보 — surface 중복은 device pushId/firedPushIds dedup으로 흡수.
       const kv = new InMemoryKV();
       await putTrip(
         kv as unknown as KVNamespace,
@@ -1461,9 +1465,10 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         apnsHosts: APNS_HOSTS,
         fetchImpl: makeOkFetch() as unknown as typeof fetch,
         now: () => NOW,
-        generatePushId: () => 'p1370-l2-dest',
+        generatePushId: () => 'p1399-dest',
       });
-      expect(stats.vanishFallbackFired).toBe(0);
+      // destination도 vanish fallback fire 1회 발사 (#1399).
+      expect(stats.vanishFallbackFired).toBe(1);
     });
 
     it('#1370 L2 — vanish fallback push dedup (같은 station 두 번 발사 안 됨)', async () => {

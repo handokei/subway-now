@@ -33,6 +33,7 @@ import {
   ACTIVE_TRIP_KEY,
   DESTINATION_KEY,
   LOCKLESS_STATION_PASSED_KEY,
+  SLEEP_MODE_KEY,
 } from '../../../shared/constants/storageKeys';
 import { sendPushAck } from '../api/alarmBackend';
 import { createLogger } from '../../../shared/utils/logger';
@@ -130,6 +131,17 @@ export interface SilentPushPayload {
    * 구 backend 호환 위해 optional — 누락 시 cross-check 자연 skip(graceful).
    */
   occupiedLine?: string;
+  /**
+   * #1399 — backend가 push 발사 시점에 stamp한 active trip token (좀비 알림 cleanup).
+   * 디바이스는 `ACTIVE_TRIP_KEY`와 비교해 mismatch면 즉시 drop (현재 trip이 아님 — 만료 token push).
+   *
+   * 사용 시나리오: 백엔드 vanish + GPS 동결 + 트립 종료 → 종료 push 도착 → device cleanup →
+   * 지상 재진입 후 OS queue/네트워크에 잔존하던 stale silent push가 늦게 도착해도 active trip이
+   * 이미 다른 token이거나 null이면 본 가드가 발사를 차단한다 (S8 14:19 좀비 회귀).
+   *
+   * 구 backend 호환 위해 optional — 누락 시 가드 자연 skip(기존 동작 보존).
+   */
+  tripToken?: string;
 }
 
 /**
@@ -328,6 +340,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     subsurface,
     boardingLine,
     occupiedLine,
+    tripToken,
   } = obj as {
     nextWaypoint: string;
   } & Record<string, unknown>;
@@ -346,7 +359,17 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     subsurface: validSubsurface(subsurface),
     boardingLine: validBoardingLine(boardingLine),
     occupiedLine: validBoardingLine(occupiedLine),
+    tripToken: validTripToken(tripToken),
   };
+}
+
+/**
+ * #1399 — payload.tripToken 검증. 비어있지 않은 string만 통과.
+ * backend가 push 발사 시점의 active trip token을 stamp해 device가 좀비 알림 cleanup에 사용.
+ * 구 backend는 누락 → undefined → 가드 자연 skip(기존 동작 보존).
+ */
+function validTripToken(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 /**
@@ -559,6 +582,24 @@ async function loadApnsToken(): Promise<string | null> {
 async function loadLocklessOptIn(): Promise<boolean> {
   try {
     const raw = await AsyncStorage.getItem(LOCKLESS_STATION_PASSED_KEY);
+    if (!raw) return false;
+    return JSON.parse(raw) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #1399 — 취침 모드 토글 현재값을 AsyncStorage에서 읽는다.
+ * BG task에서는 zustand store에 접근 불가하므로 useSettingsStore.setSleepMode가 기록한 키를
+ * 직접 read. lockless transfer/destination 확장(#1399)으로 도입된 sleep mode 회귀 차단용.
+ * 값이 없거나 파싱 실패면 OFF(false) — default 보수적(false negative, sleep 미적용).
+ *
+ * `backgroundLocationTask`도 같은 키를 같은 방식으로 read한다 (`:101,129`).
+ */
+async function loadSleepModeFlag(): Promise<boolean> {
+  try {
+    const raw = await AsyncStorage.getItem(SLEEP_MODE_KEY);
     if (!raw) return false;
     return JSON.parse(raw) === true;
   } catch {
@@ -872,6 +913,29 @@ async function fireWithGate(
   payload: SilentPushPayload & { kind: NonNullable<SilentPushPayload['kind']> },
   apnsToken: string | null,
 ): Promise<void> {
+  // #1399 — 좀비 알림 cleanup. backend가 push 발사 시점에 stamp한 active trip token이 device의
+  // ACTIVE_TRIP_KEY와 mismatch면 만료 token push로 판정해 drop. 시나리오: backend vanish + GPS
+  // 동결 + 트립 종료 → 종료 push 도착 → device cleanup → 지상 재진입 후 OS queue/네트워크에 잔존
+  // 하던 stale silent push가 늦게 도착해도 ACTIVE_TRIP_KEY가 null 또는 다른 token이면 발사 차단
+  // (S8 14:19 회귀). 구 backend(payload.tripToken 누락) 호환 — undefined면 가드 skip.
+  if (payload.tripToken !== undefined) {
+    const activeTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+    if (activeTripToken === null || activeTripToken !== payload.tripToken) {
+      const logKind = payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
+      logSilentPushSkipped({
+        stationName: payload.nextWaypoint,
+        kind: logKind,
+        phaseId: payload.phase,
+        reason: 'trip-token-mismatch',
+      });
+      ackOutcome(payload.pushId, apnsToken, 'skipped', 'trip-token-mismatch');
+      logger.info(
+        `trip-token mismatch skip: payload=${payload.tripToken.slice(0, 8)} active=${activeTripToken?.slice(0, 8) ?? 'null'} station=${payload.nextWaypoint}`,
+      );
+      return;
+    }
+  }
+
   // #707/#1322: line sanity-guard. nextWaypoint가 boarding 노선에 정차하는지 검증한다.
   // 노선 출처는 (1) 로컬 BoardingLock, 또는 (2) #1322 — backend lock-path fire가 실어 보낸
   // payload.boardingLine (지하 auto-lock hydration window 등으로 로컬 lock이 없는 경우).
@@ -906,33 +970,45 @@ async function fireWithGate(
     // #816 C — lock 없고 payload line도 없는 진짜 lockless 분기.
     // backend가 lockless trip의 station-passed(intermediate)만 발사하지만, race로 transfer/destination이
     // 도착하거나 토글 OFF로 변경된 직후의 push가 도달할 수 있어 client에서 추가 가드.
-    //   1) intermediate가 아니면 skip (trainCode 없이 알람 위치 보장 불가)
-    //   2) 토글 OFF면 skip (사용자 명시 동의 부재 → #640 회귀 차단)
-    // 둘 다 통과하면 line 가드 우회하고 일반 위치/movement 게이트로 진행.
-    if (payload.kind !== 'intermediate') {
-      logSilentPushSkipped({
-        stationName: payload.nextWaypoint,
-        kind: payload.kind,
-        phaseId: payload.phase,
-        reason: 'lockless-non-intermediate',
-      });
-      ackOutcome(payload.pushId, apnsToken, 'skipped', 'lockless-non-intermediate');
-      logger.info(
-        `lockless skip non-intermediate: kind=${payload.kind} station=${payload.nextWaypoint}`,
-      );
-      return;
-    }
+    //
+    // #1399 — kind 가드 제거. 사용자 명시 의향 trip(C 토글 ON / boardingPrompt 응답 /
+    // BoardingTrainList 직접 탭)은 lock 활성과 동급 정확도 보장 의무(ADR-013 §B3, ADR-014).
+    // 기존 `payload.kind !== 'intermediate'` skip은 lockless trip에서 destination/transfer 도착
+    // 알림을 구조적으로 차단했다 (S6/S8 14:10 군자/용마산 하차 알림 누락 회귀). lock 가드는
+    // 옵트인(loadLocklessOptIn) + 후속 line/위치/movement 게이트만으로도 충분 — kind 자체로
+    // 막지 않는다. backend도 본 PR에서 lockless destination/transfer를 발사하도록 함께 확장.
     const optedIn = await loadLocklessOptIn();
     if (!optedIn) {
+      const logKind = payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
       logSilentPushSkipped({
         stationName: payload.nextWaypoint,
-        kind: 'station-passed',
+        kind: logKind,
         phaseId: payload.phase,
         reason: 'lockless-opt-out',
       });
       ackOutcome(payload.pushId, apnsToken, 'skipped', 'lockless-opt-out');
       logger.info(`lockless skip opt-out: station=${payload.nextWaypoint}`);
       return;
+    }
+    // #1399 — lockless transfer/destination 확장으로 도입된 sleep mode 회귀 차단.
+    // 기존 lockless 분기는 `intermediate`만 통과해 sleep + first transfer suppress 정책이 자연
+    // 비활성이었다. 이제 lockless에서 transfer/destination이 도달할 수 있으므로 BG에서도 sleep
+    // 정책을 명시 적용한다. `destination`은 절대 통과(종착역 놓치지 않게 — shouldSuppressBySleepRule
+    // 정책과 일치). `transfer`만 sleep 게이트 진입. lockless 첫 hop 판정은 payload.hopIndex===0으로
+    // 산출 — backend `runLocklessIntermediate`/vanish-fallback이 forward한 절대 시퀀스 SSOT.
+    if (payload.kind === 'transfer' && payload.hopIndex === 0) {
+      const sleepMode = await loadSleepModeFlag();
+      if (sleepMode) {
+        logSilentPushSkipped({
+          stationName: payload.nextWaypoint,
+          kind: payload.kind,
+          phaseId: payload.phase,
+          reason: 'sleep-first-transfer',
+        });
+        ackOutcome(payload.pushId, apnsToken, 'skipped', 'sleep-first-transfer');
+        logger.info(`lockless skip sleep-first-transfer: station=${payload.nextWaypoint}`);
+        return;
+      }
     }
   }
 

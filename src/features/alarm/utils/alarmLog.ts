@@ -148,7 +148,10 @@ export type AlarmLogReason =
   // #1357 (S1) — preschedule 진입 시 motion=stationary 확정으로 사전예약 schedule을 skip한 경우.
   // boardingLock/lockless 양쪽 path 공통. OS scheduleNotificationAsync 0회로 정적 trip 시작의
   // 첫 banner 발사를 차단한다. share dump에서 'schedule-skipped-motion-stationary' 카운트로 추적.
-  | 'schedule-skipped-motion-stationary';
+  | 'schedule-skipped-motion-stationary'
+  // #1399 — backend가 push에 stamp한 tripToken이 device ACTIVE_TRIP_KEY와 mismatch.
+  // 좀비 알림 cleanup: trip 종료 후 늦게 도착한 stale silent push 발사 차단(S8 14:19 회귀).
+  | 'trip-token-mismatch';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
