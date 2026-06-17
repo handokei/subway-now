@@ -12,6 +12,7 @@ import {
 } from '../index';
 import { progressKey, type TripProgress } from '../progress';
 import { pendingKey } from '../pendingPushes';
+import { KV_MIN_CACHE_TTL_SEC } from '../kvConsistency';
 import type { AnalyticsEngineWriter, Env } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -2682,13 +2683,29 @@ describe('verifyBoardingLockPersisted (#1364)', () => {
     expect(await verifyBoardingLockPersisted(kv as unknown as KVNamespace, expected)).toBe(false);
   });
 
-  it('verify는 cacheTtl=0으로 origin 조회', async () => {
+  it('verify는 cacheTtl=KV_MIN_CACHE_TTL_SEC(30)으로 read (#1423: cacheTtl<30은 CF KV가 400 throw)', async () => {
     const kv = new InMemoryKV();
     const trip = lockedTrip(Date.now() + 60_000);
     await kv.put('trip:tok-v', JSON.stringify(trip));
     const spy = vi.spyOn(kv, 'get');
     await verifyBoardingLockPersisted(kv as unknown as KVNamespace, trip);
-    expect(spy).toHaveBeenCalledWith('trip:tok-v', { cacheTtl: 0 });
+    // #1423 회귀 가드 — 0/<30 절대 금지. 30은 KV 런타임 floor.
+    expect(spy).toHaveBeenCalledWith('trip:tok-v', { cacheTtl: KV_MIN_CACHE_TTL_SEC });
+  });
+
+  // #1423 — sync handler 통합 회귀 가드. 본 helper가 cacheTtl<30을 받으면 InMemoryKV가
+  // production CF KV와 동일하게 `Invalid cache_ttl` throw → 본 PR 이전엔 mock이 silently
+  // 통과해 회귀가 production으로 빠져나갔다.
+  it('mock InMemoryKV가 cacheTtl<30 throw 시뮬레이션 (lesson_test_mock_must_validate_runtime)', async () => {
+    const kv = new InMemoryKV();
+    await kv.put('trip:t', '{}');
+    await expect(kv.get('trip:t', { cacheTtl: 0 })).rejects.toThrow(/Invalid cache_ttl of 0/);
+    await expect(kv.get('trip:t', { cacheTtl: 15 })).rejects.toThrow(/Cache TTL must be at least 30/);
+    await expect(kv.get('trip:t', { cacheTtl: 29 })).rejects.toThrow(/Invalid cache_ttl of 29/);
+    // boundary + safe
+    await expect(kv.get('trip:t', { cacheTtl: 30 })).resolves.toBe('{}');
+    await expect(kv.get('trip:t', { cacheTtl: 60 })).resolves.toBe('{}');
+    await expect(kv.get('trip:t')).resolves.toBe('{}');
   });
 });
 

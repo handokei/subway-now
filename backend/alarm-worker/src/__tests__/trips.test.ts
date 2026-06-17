@@ -107,11 +107,12 @@ describe('trips KV CRUD', () => {
   });
 
   // #1364 — getTrip은 caller가 cacheTtl 지정 가능. read-after-write verification 경로.
-  it('getTrip forwards cacheTtl option to kv.get when provided (#1364)', async () => {
+  // #1423 — caller가 명시한 cacheTtl은 `assertKvCacheTtl`이 KV 런타임 floor 검증 후 forward.
+  it('getTrip forwards cacheTtl=30 option to kv.get when provided (#1364/#1423)', async () => {
     await putTrip(kv as unknown as KVNamespace, makeTrip());
     const spy = vi.spyOn(kv, 'get');
-    await getTrip(kv as unknown as KVNamespace, 'tok-1', { cacheTtl: 0 });
-    expect(spy).toHaveBeenCalledWith('trip:tok-1', { cacheTtl: 0 });
+    await getTrip(kv as unknown as KVNamespace, 'tok-1', { cacheTtl: 30 });
+    expect(spy).toHaveBeenCalledWith('trip:tok-1', { cacheTtl: 30 });
   });
 
   it('getTrip omits options arg when cacheTtl not specified (default KV cache)', async () => {
@@ -119,6 +120,28 @@ describe('trips KV CRUD', () => {
     const spy = vi.spyOn(kv, 'get');
     await getTrip(kv as unknown as KVNamespace, 'tok-1');
     expect(spy).toHaveBeenCalledWith('trip:tok-1');
+  });
+
+  // #1423 — getTrip은 caller가 cacheTtl<30을 넘기면 caller 단계에서 RangeError throw.
+  // production CF KV가 `Invalid cache_ttl` 400 throw하는 시점보다 한 단계 앞서 root cause를
+  // 분명히 한다. `verifyBoardingLockPersisted`가 cacheTtl=0으로 호출해 sync handler 전체를
+  // 실패시킨 회귀를 caller 단계에서 차단.
+  it.each([
+    ['0 (#1423 evidence)', 0],
+    ['15 (잘못된 cron 시도값)', 15],
+    ['29 (boundary)', 29],
+  ])('getTrip throws RangeError when cacheTtl=%s (< 30)', async (_label, ttl) => {
+    await putTrip(kv as unknown as KVNamespace, makeTrip());
+    await expect(getTrip(kv as unknown as KVNamespace, 'tok-1', { cacheTtl: ttl })).rejects.toThrow(
+      /cacheTtl >= 30s/,
+    );
+  });
+
+  it('getTrip allows cacheTtl=30 (boundary, KV 최소값)', async () => {
+    await putTrip(kv as unknown as KVNamespace, makeTrip());
+    await expect(
+      getTrip(kv as unknown as KVNamespace, 'tok-1', { cacheTtl: 30 }),
+    ).resolves.not.toBeNull();
   });
 
   // #1364 Layer 4 — stale lock auto-clear (line mismatch).

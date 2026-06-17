@@ -19,6 +19,8 @@
  *     lastTrackedArrivalEpoch, lastLaPushEpoch)도 progress에 mirror해 race에 무관하게 유지.
  */
 
+import { assertKvCacheTtl } from './kvConsistency';
+
 const PROGRESS_PREFIX = 'progress:';
 
 export interface TripProgress {
@@ -45,8 +47,9 @@ export function progressKey(token: string): string {
 
 /**
  * caller가 KV `cacheTtl`을 지정하기 위한 옵션.
- * cron path는 cacheTtl=10s를 명시해 PUT 직후 stale read를 방지한다 (#766).
+ * cron path는 cacheTtl=30s를 명시해 PUT 직후 stale read를 방지한다 (#766/#770).
  * POST handler는 인자 없이 호출 — 기본 cacheTtl(60s)이 적용된다.
+ * #1423 — `cacheTtl < 30`은 `assertKvCacheTtl`이 caller 단계에서 RangeError throw.
  */
 export interface GetProgressOptions {
   cacheTtl?: number;
@@ -57,6 +60,8 @@ export async function getProgress(
   token: string,
   options?: GetProgressOptions,
 ): Promise<TripProgress | null> {
+  // #1423 — caller가 cacheTtl 명시했으면 floor 검증.
+  assertKvCacheTtl(options?.cacheTtl);
   const raw = await kv.get(progressKey(token), options);
   if (!raw) return null;
   try {
