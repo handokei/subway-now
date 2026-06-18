@@ -22,13 +22,25 @@
  *      - 둘 다 `지하` → underground
  *      - 상행/하행 다름 → mixed
  *    출처: 공공데이터포털 — 국가철도공단_수도권9호선_승강장_정보 (#1460).
- * 4. **매칭 실패** → `unknown`. 표준 출력에 리스트 출력 (사용자 검수용).
+ * 4. **국가철도공단 외부 노선 CSV** — 동일 포맷의 운영기관 CSV를
+ *    `parseOperatorPlatformCsv(text, lineKey)`로 일괄 처리.
+ *    - 수인분당선(`bundang`) — `scripts/fixtures/bundang-platform.csv` (#1469).
+ *    - 신분당선(`sinbundang`) — `scripts/fixtures/sinbundang-platform.csv` (#1469).
+ *    - 공항철도(`airport`) — `scripts/fixtures/airport-platform.csv` (#1469).
+ *    - 경의중앙선(`gyeongui`) — `scripts/fixtures/krric-gyeongui-platform.csv`
+ *      (cp949 → utf-8 변환 박제, #1461). 51역.
+ *    출처: 국가철도공단 공개 CSV.
+ * 5. **매칭 실패** → `unknown`. 표준 출력에 리스트 출력 (사용자 검수용).
  *
  * ## 매칭 규칙
- * - CSV `호선` ↔ stations.json `line` 직접 비교 (둘 다 `"1"`~`"8"`).
+ * - 서울교통공사 CSV `호선` ↔ stations.json `line` 직접 비교 (둘 다 `"1"`~`"8"`).
+ * - 9호선 CSV는 line key를 `"9"`로 고정.
+ * - 외부 노선 CSV는 line 컬럼 무시 — 호출 시 명시한 `lineKey`로 매핑
+ *   (예: 수인분당 row → `bundang|<역명>`).
  * - 역명은 `normalizeStationName`으로 후행 괄호 부제 제거 후 매칭
- *   (예: stations.json "왕십리(성동구청)" ↔ CSV "왕십리").
- * - override는 (line, normalized name) 키. CSV보다 우선.
+ *   (예: stations.json "왕십리(성동구청)" ↔ CSV "왕십리",
+ *    CSV "양원(서울시북부병원)" ↔ stations.json "양원").
+ * - 우선순위: override > external CSV > 9호선 CSV > 서울교통공사 CSV > unknown.
  *
  * ## 결정성
  * 같은 입력 → 같은 출력. 위키 스크랩 같은 네트워크 의존 X. CI 안전.
@@ -40,7 +52,7 @@
  * ## 출력 통계
  *   surface / underground / mixed / unknown 카운트
  *   unknown 리스트 (검수용)
- *   override / csv / unknown source 분포
+ *   source 분포 (override / csv / line9 / bundang / sinbundang / airport / gyeongui / unknown)
  */
 
 'use strict';
@@ -57,13 +69,14 @@ const LINE9_CSV_PATH = path.join(__dirname, 'fixtures', 'line9-platform.csv');
 const BUNDANG_CSV_PATH = path.join(__dirname, 'fixtures', 'bundang-platform.csv');
 const SINBUNDANG_CSV_PATH = path.join(__dirname, 'fixtures', 'sinbundang-platform.csv');
 const AIRPORT_CSV_PATH = path.join(__dirname, 'fixtures', 'airport-platform.csv');
+const GYEONGUI_CSV_PATH = path.join(__dirname, 'fixtures', 'krric-gyeongui-platform.csv');
 
 const LINE9_KEY = '9';
 const LINE9_SURFACE_LABEL = '지상';
 const LINE9_UNDERGROUND_LABEL = '지하';
 
 /**
- * 외부 운영 노선 CSV → stations.json `line` 키 매핑 (#1469).
+ * 외부 운영 노선 CSV → stations.json `line` 키 매핑 (#1469 / #1461).
  *
  * 국가철도공단 표준 승강장 CSV (`철도운영기관명,선명,역명,승강장번호,상하행,
  * 지상구분,역층,...`)는 9호선과 동일 포맷. 각 CSV의 stations.json `line`
@@ -76,6 +89,7 @@ const EXTERNAL_LINE_CSV_KEYS = Object.freeze({
   BUNDANG: 'bundang',
   SINBUNDANG: 'sinbundang',
   AIRPORT: 'airport',
+  GYEONGUI: 'gyeongui',
 });
 
 const VALID_ENVIRONMENTS = new Set(['surface', 'underground', 'mixed', 'unknown']);
@@ -98,8 +112,21 @@ const ENVIRONMENT_OVERRIDES = Object.freeze({
   '2|왕십리': 'underground',
   '5|왕십리': 'underground',
   '5|마장': 'underground',
-  'gyeongui|왕십리': 'underground',
+  // 수인분당선 왕십리는 분리 지하 승강장 (외부 노선 CSV가 line 컬럼을 무시하므로 override 필요).
   'bundang|왕십리': 'underground',
+  // 경의중앙선 왕십리 분리 승강장은 국가철도공단 CSV 기준 지상.
+  // SSOT는 물리적 승강장 환경 → CSV(지상)가 정답이므로 override 없음.
+  // ---- 경의중앙선 — CSV(국가철도공단)에 누락된 환승/지방 종착역 ----
+  // 서울역 경의선 승강장은 KTX/1호선과 분리된 지하 승강장 (출처: 한국어 위키백과 "서울역 (경의선)").
+  'gyeongui|서울역': 'underground',
+  // 효창공원앞 경의중앙선 승강장은 지하 (출처: 한국어 위키백과 "효창공원앞역").
+  'gyeongui|효창공원앞': 'underground',
+  // 신촌(경의선)·외대앞·임진강·지평·화전은 지상 (출처: 한국어 위키백과 각 역 페이지 "구조" 절).
+  'gyeongui|신촌': 'surface',
+  'gyeongui|외대앞': 'surface',
+  'gyeongui|임진강': 'surface',
+  'gyeongui|지평': 'surface',
+  'gyeongui|화전': 'surface',
 });
 
 /**
@@ -159,7 +186,8 @@ function parseCsvRow(row) {
  * 일치하면 단일 값, 다르면 mixed로 그룹화한다.
  *
  * `lineKey` 인자로 stations.json `line` key를 지정한다 — 9호선(`"9"`),
- * 수인분당(`"bundang"`), 신분당(`"sinbundang"`), 공항철도(`"airport"`) 등.
+ * 수인분당(`"bundang"`), 신분당(`"sinbundang"`), 공항철도(`"airport"`),
+ * 경의중앙(`"gyeongui"`) 등.
  *
  * @param {string} csvText UTF-8 (cp949 입력은 호출 측에서 사전 변환)
  * @param {string} lineKey stations.json `line` 키 (예: `"9"`, `"bundang"`)
@@ -298,6 +326,7 @@ function main(argv, deps = {}) {
   const bundangCsvPath = deps.bundangCsvPath ?? BUNDANG_CSV_PATH;
   const sinbundangCsvPath = deps.sinbundangCsvPath ?? SINBUNDANG_CSV_PATH;
   const airportCsvPath = deps.airportCsvPath ?? AIRPORT_CSV_PATH;
+  const gyeonguiCsvPath = deps.gyeonguiCsvPath ?? GYEONGUI_CSV_PATH;
   const dryRun = argv.includes('--dry-run');
 
   let stations;
@@ -306,6 +335,7 @@ function main(argv, deps = {}) {
   let bundangCsvText;
   let sinbundangCsvText;
   let airportCsvText;
+  let gyeonguiCsvText;
   try {
     stations = JSON.parse(readFile(stationsPath));
   } catch (e) {
@@ -328,6 +358,7 @@ function main(argv, deps = {}) {
     bundangCsvText = readFile(bundangCsvPath);
     sinbundangCsvText = readFile(sinbundangCsvPath);
     airportCsvText = readFile(airportCsvPath);
+    gyeonguiCsvText = readFile(gyeonguiCsvPath);
   } catch (e) {
     writeErr(`build-station-environment: 외부 노선 CSV 읽기 실패 — ${e.message}`);
     return 1;
@@ -337,6 +368,7 @@ function main(argv, deps = {}) {
     { lineKey: EXTERNAL_LINE_CSV_KEYS.BUNDANG, csvText: bundangCsvText, source: 'bundang' },
     { lineKey: EXTERNAL_LINE_CSV_KEYS.SINBUNDANG, csvText: sinbundangCsvText, source: 'sinbundang' },
     { lineKey: EXTERNAL_LINE_CSV_KEYS.AIRPORT, csvText: airportCsvText, source: 'airport' },
+    { lineKey: EXTERNAL_LINE_CSV_KEYS.GYEONGUI, csvText: gyeonguiCsvText, source: 'gyeongui' },
   ];
 
   const { stations: nextStations, stats } = build({

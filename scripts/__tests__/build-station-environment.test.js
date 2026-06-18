@@ -135,6 +135,45 @@ describe('parseLine9Csv', () => {
   });
 });
 
+describe('parseOperatorPlatformCsv', () => {
+  it('parses generic operator platform CSV with given lineKey (#1469)', () => {
+    const csv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,수내(한국잡월드),1,하행,지하,1,Y,Y,Y\n' +
+      '코레일,수인분당,수내(한국잡월드),2,상행,지하,1,Y,Y,Y\n' +
+      '코레일,수인분당,죽전(단국대),1,하행,지상,1,Y,Y,Y\n' +
+      '코레일,수인분당,죽전(단국대),2,상행,지상,1,Y,Y,Y\n';
+    const map = parseOperatorPlatformCsv(csv, 'bundang');
+    expect(map.get('bundang|수내')).toBe('underground');
+    expect(map.get('bundang|죽전')).toBe('surface');
+  });
+
+  it('emits mixed when 상행/하행 differ for the same station', () => {
+    const csv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '네오트랜스주식회사,신분당,섞임역,1,상행,지상,1,Y,N,N\n' +
+      '네오트랜스주식회사,신분당,섞임역,2,하행,지하,2,Y,N,N\n';
+    expect(parseOperatorPlatformCsv(csv, 'sinbundang').get('sinbundang|섞임역')).toBe('mixed');
+  });
+
+  it('normalizes parenthesized station names (#1461)', () => {
+    const csv =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,양원(서울시북부병원),1,상행,지상,1\n' +
+      '코레일,경의중앙,양원(서울시북부병원),2,하행,지상,1\n';
+    const map = parseOperatorPlatformCsv(csv, 'gyeongui');
+    expect(map.has('gyeongui|양원')).toBe(true);
+    expect(map.has('gyeongui|양원(서울시북부병원)')).toBe(false);
+  });
+
+  it('skips rows with empty station name', () => {
+    const csv =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,,1,상행,지상,1\n';
+    expect(parseOperatorPlatformCsv(csv, 'gyeongui').size).toBe(0);
+  });
+});
+
 describe('build', () => {
   const csvText =
     '"hdr","x","x","x","x","x","x"\n' +
@@ -279,29 +318,7 @@ describe('build', () => {
   });
 });
 
-describe('parseOperatorPlatformCsv', () => {
-  it('parses generic operator platform CSV with given lineKey (#1469)', () => {
-    const csv =
-      '"hdr","x","x","x","x","x","x"\n' +
-      '코레일,수인분당,수내(한국잡월드),1,하행,지하,1,Y,Y,Y\n' +
-      '코레일,수인분당,수내(한국잡월드),2,상행,지하,1,Y,Y,Y\n' +
-      '코레일,수인분당,죽전(단국대),1,하행,지상,1,Y,Y,Y\n' +
-      '코레일,수인분당,죽전(단국대),2,상행,지상,1,Y,Y,Y\n';
-    const map = parseOperatorPlatformCsv(csv, 'bundang');
-    expect(map.get('bundang|수내')).toBe('underground');
-    expect(map.get('bundang|죽전')).toBe('surface');
-  });
-
-  it('emits mixed when 상행/하행 differ for the same station', () => {
-    const csv =
-      '"hdr","x","x","x","x","x","x"\n' +
-      '네오트랜스주식회사,신분당,섞임역,1,상행,지상,1,Y,N,N\n' +
-      '네오트랜스주식회사,신분당,섞임역,2,하행,지하,2,Y,N,N\n';
-    expect(parseOperatorPlatformCsv(csv, 'sinbundang').get('sinbundang|섞임역')).toBe('mixed');
-  });
-});
-
-describe('build with externalCsvs (#1469)', () => {
+describe('build with externalCsvs (#1469 / #1461)', () => {
   const csvText = '"hdr","x","x","x","x","x","x"\n';
 
   it('classifies external lines via externalCsvs entries', () => {
@@ -332,6 +349,38 @@ describe('build with externalCsvs (#1469)', () => {
     expect(stats.bySource.unknown).toBe(0);
   });
 
+  it('classifies gyeongui CSV via externalCsvs (#1461)', () => {
+    const gyeonguiCsv =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,공덕,1,상행,지하,2\n' +
+      '코레일,경의중앙,공덕,2,하행,지하,2\n';
+    const stations = [{ id: 'gyeongui-x', name: '공덕', line: 'gyeongui' }];
+    const { stations: out, stats } = build({
+      stations,
+      csvText,
+      externalCsvs: [{ lineKey: 'gyeongui', csvText: gyeonguiCsv, source: 'gyeongui' }],
+    });
+    expect(out[0].environment).toBe('underground');
+    expect(stats.bySource.gyeongui).toBe(1);
+    expect(stats.bySource.csv).toBe(0);
+    expect(stats.bySource.override).toBe(0);
+  });
+
+  it('gyeongui CSV mixed when 상행/하행 differ (#1461)', () => {
+    // 가좌 — 상행/하행 지상구분 다른 실제 케이스.
+    const gyeonguiCsv =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,가좌,1,상행,지상,1\n' +
+      '코레일,경의중앙,가좌,2,하행,지하,2\n';
+    const stations = [{ id: 'gyeongui-x', name: '가좌', line: 'gyeongui' }];
+    const { stations: out } = build({
+      stations,
+      csvText,
+      externalCsvs: [{ lineKey: 'gyeongui', csvText: gyeonguiCsv, source: 'gyeongui' }],
+    });
+    expect(out[0].environment).toBe('mixed');
+  });
+
   it('override wins over externalCsvs source', () => {
     const bundangCsv =
       '"hdr","x","x","x","x","x","x"\n' +
@@ -348,6 +397,22 @@ describe('build with externalCsvs (#1469)', () => {
     expect(out[0].environment).toBe('underground');
     expect(stats.bySource.override).toBe(1);
     expect(stats.bySource.bundang ?? 0).toBe(0);
+  });
+
+  it('override wins over gyeongui external CSV (#1461)', () => {
+    // override가 서울역=underground라고 했고, CSV에 같은 키가 (가상으로) 지상으로 있어도 override 우선.
+    const gyeonguiCsv =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,서울역,1,상행,지상,1\n' +
+      '코레일,경의중앙,서울역,2,하행,지상,1\n';
+    const stations = [{ id: 'gyeongui-x', name: '서울역', line: 'gyeongui' }];
+    const { stations: out, stats } = build({
+      stations,
+      csvText,
+      externalCsvs: [{ lineKey: 'gyeongui', csvText: gyeonguiCsv, source: 'gyeongui' }],
+    });
+    expect(out[0].environment).toBe('underground');
+    expect(stats.bySource.override).toBe(1);
   });
 
   it('externalCsvs unknown env keeps unknown source credit', () => {
@@ -375,11 +440,12 @@ describe('build with externalCsvs (#1469)', () => {
 });
 
 describe('EXTERNAL_LINE_CSV_KEYS', () => {
-  it('exposes bundang/sinbundang/airport keys matching stations.json line values', () => {
+  it('exposes bundang/sinbundang/airport/gyeongui keys matching stations.json line values', () => {
     expect(EXTERNAL_LINE_CSV_KEYS).toEqual({
       BUNDANG: 'bundang',
       SINBUNDANG: 'sinbundang',
       AIRPORT: 'airport',
+      GYEONGUI: 'gyeongui',
     });
   });
 
@@ -400,6 +466,7 @@ describe('VALID_ENVIRONMENTS', () => {
 describe('ENVIRONMENT_OVERRIDES', () => {
   it('covers all user-verification trip stations from ADR-015 §1', () => {
     // E1 acceptance: 사용자 trip 역들이 모두 명시 분류되어야 함.
+    // 경의중앙선 왕십리는 국가철도공단 CSV가 SSOT(지상) — override에서 제외.
     const expected = {
       '2|성수': 'surface',
       '2|뚝섬': 'surface',
@@ -407,8 +474,23 @@ describe('ENVIRONMENT_OVERRIDES', () => {
       '2|왕십리': 'underground',
       '5|왕십리': 'underground',
       '5|마장': 'underground',
-      'gyeongui|왕십리': 'underground',
       'bundang|왕십리': 'underground',
+    };
+    for (const [key, env] of Object.entries(expected)) {
+      expect(ENVIRONMENT_OVERRIDES[key]).toBe(env);
+    }
+  });
+
+  it('covers gyeongui stations missing from KRRIC CSV (#1461)', () => {
+    // 경의중앙선 CSV 누락 7개 환승/지방종착역.
+    const expected = {
+      'gyeongui|서울역': 'underground',
+      'gyeongui|효창공원앞': 'underground',
+      'gyeongui|신촌': 'surface',
+      'gyeongui|외대앞': 'surface',
+      'gyeongui|임진강': 'surface',
+      'gyeongui|지평': 'surface',
+      'gyeongui|화전': 'surface',
     };
     for (const [key, env] of Object.entries(expected)) {
       expect(ENVIRONMENT_OVERRIDES[key]).toBe(env);
@@ -524,7 +606,7 @@ describe('main()', () => {
     expect(d._captured.errs.some((s) => /9호선 CSV 읽기 실패.*no-line9/.test(s))).toBe(true);
   });
 
-  it('returns 1 when external-line CSV read fails (#1469)', () => {
+  it('returns 1 when external-line CSV read fails (#1469 / #1461)', () => {
     const d = deps({
       readFile: (p) => {
         if (p.includes('bundang')) throw new Error('no-bundang');
@@ -537,6 +619,19 @@ describe('main()', () => {
     expect(d._captured.errs.some((s) => /외부 노선 CSV 읽기 실패.*no-bundang/.test(s))).toBe(
       true,
     );
+  });
+
+  it('returns 1 when gyeongui CSV read fails (#1461)', () => {
+    const d = deps({
+      readFile: (p) => {
+        if (p.includes('gyeongui')) throw new Error('no-gy');
+        if (p.endsWith('.csv')) return csvText;
+        return stationsJson;
+      },
+    });
+    const code = main([], d);
+    expect(code).toBe(1);
+    expect(d._captured.errs.some((s) => /외부 노선 CSV 읽기 실패.*no-gy/.test(s))).toBe(true);
   });
 
   it('classifies external-line stations via externalCsvs in main() (#1469)', () => {
@@ -556,6 +651,25 @@ describe('main()', () => {
     const written = JSON.parse(d._captured.writes[0].c);
     expect(written[0].environment).toBe('underground');
     expect(d._captured.outs.some((s) => /source.*bundang=1/.test(s))).toBe(true);
+  });
+
+  it('classifies gyeongui stations via externalCsvs in main() (#1461)', () => {
+    const gyeonguiCsv =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,공덕,1,상행,지하,2\n' +
+      '코레일,경의중앙,공덕,2,하행,지하,2\n';
+    const d = deps({
+      readFile: (p) => {
+        if (p.includes('gyeongui')) return gyeonguiCsv;
+        if (p.endsWith('.csv')) return csvText;
+        return JSON.stringify([{ id: 'gyeongui-x', name: '공덕', line: 'gyeongui' }]);
+      },
+    });
+    const code = main([], d);
+    expect(code).toBe(0);
+    const written = JSON.parse(d._captured.writes[0].c);
+    expect(written[0].environment).toBe('underground');
+    expect(d._captured.outs.some((s) => /source.*gyeongui=1/.test(s))).toBe(true);
   });
 
   it('classifies 9호선 stations via line9 CSV in main()', () => {
