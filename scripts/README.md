@@ -57,3 +57,15 @@ stderr에 출력된다. 0건이 정상이라고 결론짓기 전에 raw tail에 
 
 `scripts/capture-tail.sh`. backend 전반 진단용 raw tail. boarding-prompt 특화 분석은
 위 `measure:blocked-reasons`를 사용.
+
+## tail-watchdog — 좀비 없는 장시간 tail (#1453)
+
+`scripts/tail-watchdog.sh`. `wrangler tail`이 inactivity/stream 죽음으로 빠지는 좀비를
+파일 mtime 기반으로 감지해 강제 재spawn. 10MB 도달 시 자동 회전. 운영/튜닝/LaunchAgent
+설치 절차는 `docs/agents/wrangler-tail-watchdog.md` 참조.
+
+## prune-wrangler-logs — wrangler CLI 로그 정리 (#1453)
+
+`scripts/prune-wrangler-logs.sh`. `~/Library/Preferences/.wrangler/logs/`에서 7일 이상 된
+`wrangler-*.log`를 삭제. `scripts/launchd/com.subway-now.wrangler-log-prune.plist`로
+매일 03:00 KST 자동 실행 가능.
