@@ -75,6 +75,7 @@ import { refreshLiveActivityFromBackgroundContext } from '../utils/refreshLiveAc
 import { type NotificationSource } from '../utils/notificationSource';
 import { getFiredAlarms, setFiredAlarms } from '../utils/notificationState';
 import { getBoardingLock } from '../utils/boardingLockStorage';
+import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { getSubsurfaceState } from '../../../shared/utils/subsurfaceState';
 import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
@@ -142,6 +143,14 @@ export interface SilentPushPayload {
    * 구 backend 호환 위해 optional — 누락 시 가드 자연 skip(기존 동작 보존).
    */
   tripToken?: string;
+  /**
+   * #1438 (E5) — backend → device lock release sync 채널. backend `apns.ts` `LockReleasedReason`과 1:1.
+   * 'transfer' = 환승 waypoint 통과로 backend가 lock release.
+   * 'vanish'   = trainCode 소실로 backend가 lock release floor fire 후 release.
+   * 디바이스는 본 신호를 받으면 즉시 `useBoardingLockStore.releaseLock()` 호출해 backend와 sync.
+   * 구 backend 호환 위해 optional — 누락 시 sync 자연 skip(기존 동작 보존).
+   */
+  lockReleasedReason?: 'transfer' | 'vanish';
 }
 
 /**
@@ -341,6 +350,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     boardingLine,
     occupiedLine,
     tripToken,
+    lockReleasedReason,
   } = obj as {
     nextWaypoint: string;
   } & Record<string, unknown>;
@@ -360,7 +370,16 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     boardingLine: validBoardingLine(boardingLine),
     occupiedLine: validBoardingLine(occupiedLine),
     tripToken: validTripToken(tripToken),
+    lockReleasedReason: validLockReleasedReason(lockReleasedReason),
   };
+}
+
+/**
+ * #1438 (E5) — payload.lockReleasedReason 검증. 'transfer'|'vanish' 만 통과.
+ * 그 외(누락/형식 오류/unknown 문자열)는 undefined로 정규화 → store sync 자연 skip (구 backend 호환).
+ */
+function validLockReleasedReason(value: unknown): 'transfer' | 'vanish' | undefined {
+  return value === 'transfer' || value === 'vanish' ? value : undefined;
 }
 
 /**
@@ -741,6 +760,21 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       sentAt: payload.sentAt,
       receivedAt,
     });
+
+    // #1438 (E5) — backend → device lock release sync. payload.lockReleasedReason이 있으면
+    // backend가 trip.boardingLock을 release했다는 신호 → 로컬 store도 같이 release한다. fire/skip
+    // 분기와 독립적으로 state sync만 수행. 'transfer' 시 다음 leg boardingPrompt 재요청을 유도하고,
+    // 'vanish'는 lockless 인계로 자연 fallback. store releaseLock은 멱등 — lock 없을 때 graceful.
+    if (payload.lockReleasedReason !== undefined) {
+      try {
+        await useBoardingLockStore.getState().releaseLock(payload.lockReleasedReason);
+        logger.info(
+          `lock-release sync: reason=${payload.lockReleasedReason} station=${payload.nextWaypoint}`,
+        );
+      } catch (e) {
+        logger.error('lock-release sync 실패:', e);
+      }
+    }
 
     // kind 미상은 발사 불가 — 알림 본문/dedup 키 결정 불가. 구 백엔드 호환은 received 로그에만.
     if (!payload.kind) {

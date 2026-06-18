@@ -1727,22 +1727,47 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expect(stored.boardingLock).toBeUndefined();
       });
 
-      it('#1402 release floor fire 페이로드에 origin=vanish-release stamp', async () => {
+      // vanish-release/vanish-fallback 양 origin의 push payload 검증용 헬퍼.
+      // SonarCloud duplication 차단: 시나리오 실행 + 매칭 call body 추출을 한 곳에 모음.
+      async function capturePushBody(setup: {
+        hopElapsed: boolean;
+        pushId: string;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }): Promise<{ data: any }> {
         const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
         await runFallbackMotionScenario({
           motion: 'automotive',
-          hopElapsed: false,
-          pushId: 'p1402-origin',
+          hopElapsed: setup.hopElapsed,
+          pushId: setup.pushId,
           apnsFetch,
         });
         const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
-        const releaseCall = calls.find((c) => {
+        const matchedCall = calls.find((c) => {
           const body = JSON.parse(c[1].body as string);
-          return body.data?.pushId === 'p1402-origin';
+          return body.data?.pushId === setup.pushId;
         });
-        expect(releaseCall).toBeDefined();
-        const body = JSON.parse((releaseCall![1] as RequestInit).body as string);
+        expect(matchedCall).toBeDefined();
+        return JSON.parse(matchedCall![1].body as string);
+      }
+
+      it('#1402 release floor fire 페이로드에 origin=vanish-release stamp', async () => {
+        const body = await capturePushBody({ hopElapsed: false, pushId: 'p1402-origin' });
         expect(body.data.origin).toBe('vanish-release');
+      });
+
+      // #1438 (E5) — vanish-release 경로는 floor fire 직후 lock을 release하므로 device가 즉시
+      // 로컬 store를 sync할 수 있도록 lockReleasedReason='vanish'를 forward.
+      it('#1438 (E5) vanish-release fire 페이로드에 lockReleasedReason=vanish stamp', async () => {
+        const body = await capturePushBody({ hopElapsed: false, pushId: 'p1438-vanish' });
+        expect(body.data.lockReleasedReason).toBe('vanish');
+      });
+
+      // vanish-fallback 경로(hop 시간 경과)는 caller(advanceBoardingLockWaypoint)가 별도 transfer
+      // release push를 보내므로 fallback 자체에는 lockReleasedReason을 stamp하지 않는다.
+      it('#1438 (E5) vanish-fallback origin은 lockReleasedReason omit', async () => {
+        const body = await capturePushBody({ hopElapsed: true, pushId: 'p1438-fallback' });
+        expect(body.data.origin).toBe('vanish-fallback');
+        expect('lockReleasedReason' in body.data).toBe(false);
       });
 
       it('hop 시간 미경과 + motion=stationary → release floor fire 보류 + lock release 유지', async () => {
@@ -1832,6 +1857,45 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     // P2-1: progress KV도 함께 정리 — token-refresh race에서 옛 trainCode가 progressApplies=true로
     // 진입해 backend에 옛 lock이 부활하는 회귀를 차단.
     expect(await kv.get('progress:lock-tok')).toBeNull();
+  });
+
+  // #1438 (E5) — backend → device lock release sync. transfer waypoint advance 시 device로
+  // silent push에 lockReleasedReason='transfer'를 실어 보내 로컬 useBoardingLockStore가 즉시 sync.
+  it('#1438 (E5) — transfer release 시 silent push payload에 lockReleasedReason=transfer 포함', async () => {
+    const kv = new InMemoryKV();
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeLockTrip({
+        waypoints: [
+          { stationName: '군자', line: '7', kind: 'transfer' },
+          { stationName: '아차산', line: '5', kind: 'destination' },
+        ],
+      }),
+    );
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoulCombo([arrivalForLock('군자', 0, 1)], []),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-transfer-1438',
+    });
+    // transfer-release silent push가 발사된 APNs fetch 호출 1건 이상 존재 + payload에 reason 포함.
+    const transferReleaseCall = fetchImpl.mock.calls.find((call) => {
+      const init = call[1] as RequestInit | undefined;
+      if (!init?.body) return false;
+      try {
+        const body = JSON.parse(init.body as string);
+        return body?.data?.lockReleasedReason === 'transfer';
+      } catch {
+        return false;
+      }
+    });
+    expect(transferReleaseCall).toBeDefined();
+    const body = JSON.parse((transferReleaseCall![1] as RequestInit).body as string);
+    expect(body.data.lockReleasedReason).toBe('transfer');
+    expect(body.data.origin).toBe('transfer-release');
   });
 
   it('#864 — intermediate waypoint advance 시 boardingLock은 유지 (같은 train 계속 추적)', async () => {

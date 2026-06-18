@@ -84,7 +84,7 @@ describe('useBoardingLockStore', () => {
       expect(mockClearBoardingLock).toHaveBeenCalled();
     });
 
-    it('release breadcrumb는 직전 lock이 있을 때만 추가', async () => {
+    it('release breadcrumb는 직전 lock이 있을 때만 추가 (default reason=user)', async () => {
       useBoardingLockStore.setState({ lock: sample });
       await act(async () => {
         await useBoardingLockStore.getState().releaseLock();
@@ -92,6 +92,7 @@ describe('useBoardingLockStore', () => {
       expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('boarding', 'lock-release', {
         trainCode: sample.trainCode,
         line: sample.boardingLine,
+        reason: 'user',
       });
     });
 
@@ -100,6 +101,30 @@ describe('useBoardingLockStore', () => {
         await useBoardingLockStore.getState().releaseLock();
       });
       expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
+    });
+
+    it('#1438 (E5) — reason 인자가 breadcrumb 메타에 stamp된다 (transfer)', async () => {
+      useBoardingLockStore.setState({ lock: sample });
+      await act(async () => {
+        await useBoardingLockStore.getState().releaseLock('transfer');
+      });
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('boarding', 'lock-release', {
+        trainCode: sample.trainCode,
+        line: sample.boardingLine,
+        reason: 'transfer',
+      });
+    });
+
+    it('#1438 (E5) — reason=vanish도 breadcrumb에 forward', async () => {
+      useBoardingLockStore.setState({ lock: sample });
+      await act(async () => {
+        await useBoardingLockStore.getState().releaseLock('vanish');
+      });
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('boarding', 'lock-release', {
+        trainCode: sample.trainCode,
+        line: sample.boardingLine,
+        reason: 'vanish',
+      });
     });
   });
 
