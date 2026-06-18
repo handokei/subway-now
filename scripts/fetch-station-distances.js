@@ -27,6 +27,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { normalizeStationName, buildNameIndex, lookupStationId } = require('./lib/stationNameIndex');
 
 const PAGE_SIZE = 1000;
 const SLEEP_MS = 200;
@@ -51,16 +52,6 @@ function normalizeLineName(raw) {
   if (!m) return null;
   const n = Number.parseInt(m[1], 10);
   return n >= 1 && n <= 8 ? String(n) : null;
-}
-
-function normalizeStationName(name) {
-  if (typeof name !== 'string') return '';
-  const trimmed = name.trim();
-  if (trimmed.endsWith(')')) {
-    const open = trimmed.lastIndexOf('(');
-    if (open > 0) return trimmed.slice(0, open).trimEnd();
-  }
-  return trimmed;
 }
 
 async function fetchPage(apiKey, start, end) {
@@ -88,28 +79,6 @@ async function fetchAll(apiKey) {
     await sleep(SLEEP_MS);
   }
   return all;
-}
-
-function buildNameIndex(stations) {
-  const byLine = new Map();
-  for (const s of stations) {
-    let m = byLine.get(s.line);
-    if (!m) {
-      m = new Map();
-      byLine.set(s.line, m);
-    }
-    const normalized = normalizeStationName(s.name);
-    m.set(s.name, s.id);
-    if (normalized !== s.name) m.set(normalized, s.id);
-  }
-  return byLine;
-}
-
-function lookupStationId(byLine, line, rawName) {
-  const idx = byLine.get(line);
-  if (!idx) return null;
-  const normalized = normalizeStationName(rawName);
-  return idx.get(rawName) || idx.get(normalized) || null;
 }
 
 function groupRowsByLine(rows) {

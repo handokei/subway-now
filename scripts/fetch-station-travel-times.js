@@ -25,6 +25,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { normalizeStationName, buildNameIndex, lookupStationId } = require('./lib/stationNameIndex');
 
 const PAGE_SIZE = 1000;
 const SLEEP_MS = 200;
@@ -50,17 +51,6 @@ function normalizeLineName(raw) {
   if (!m) return null;
   const n = Number.parseInt(m[1], 10);
   return n >= 1 && n <= 8 ? String(n) : null;
-}
-
-function normalizeStationName(name) {
-  if (typeof name !== 'string') return '';
-  const trimmed = name.trim();
-  // 후행 괄호 부제 제거 (예: "상봉(시외버스터미널)" → "상봉")
-  if (trimmed.endsWith(')')) {
-    const open = trimmed.lastIndexOf('(');
-    if (open > 0) return trimmed.slice(0, open).trimEnd();
-  }
-  return trimmed;
 }
 
 async function fetchPage(apiKey, start, end) {
@@ -91,28 +81,6 @@ async function fetchAll(apiKey) {
   return all;
 }
 
-function buildNameIndex(stations) {
-  // line → name → id
-  const byLine = new Map();
-  for (const s of stations) {
-    let m = byLine.get(s.line);
-    if (!m) {
-      m = new Map();
-      byLine.set(s.line, m);
-    }
-    const normalized = normalizeStationName(s.name);
-    m.set(s.name, s.id);
-    if (normalized !== s.name) m.set(normalized, s.id);
-  }
-  return byLine;
-}
-
-function lookupStationId(byLine, line, rawName) {
-  const idx = byLine.get(line);
-  if (!idx) return null;
-  const normalized = normalizeStationName(rawName);
-  return idx.get(rawName) || idx.get(normalized) || null;
-}
 
 function groupRowsByLine(rows) {
   // 노선별로 row를 그룹화. 각 그룹 내부 순서는 응답이 주는 순서 그대로(노선 끝에서 끝까지)를 보존.

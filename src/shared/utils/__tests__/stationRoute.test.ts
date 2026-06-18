@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, allowedLinesFromRoute } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, getStopSeconds, allowedLinesFromRoute } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 import {
@@ -834,6 +834,27 @@ describe('구간별 실측 운행시간 반영 (#655)', () => {
   it('실측 hop가 fallback보다 짧으면 calculateStaticETA도 짧아진다', () => {
     // 3분 대기 + round(180/60) = 3 + 3 = 6분 (fallback이면 3 + round(240/60) = 7분).
     expect(calculateStaticETA(findRoute('1-030', '1-032'))).toBe(6);
+  });
+});
+
+describe('getStopSeconds fallback 정밀화 (#1472)', () => {
+  it('실측 travelTimes hit이 1순위 (1호선 1-030↔1-032 두 hop 모두 실측)', () => {
+    // 1호선 1-030 → 1-031: 실측 데이터에 있음 → 거리 fallback 안 탐.
+    expect(getStopSeconds('1', '1-030', '1-031')).toBe(90);
+  });
+
+  it('travelTimes miss + distances hit이면 거리 × 평균속도 fallback', () => {
+    // 신분당선은 stationTravelTimes.json에 없고, build script로 stationDistances에 추가됨.
+    // sinbundang-016(신사) ↔ sinbundang-015(논현): 700m, 50 km/h → 700/(50000/3600) ≈ 50.4초.
+    const seconds = getStopSeconds('sinbundang', 'sinbundang-016', 'sinbundang-015');
+    expect(seconds).toBeGreaterThan(40);
+    expect(seconds).toBeLessThan(60);
+    // 120s 고정 fallback이 아님을 명시 검증.
+    expect(seconds).not.toBe(120);
+  });
+
+  it('travelTimes + distances 둘 다 miss면 120초 고정 fallback', () => {
+    expect(getStopSeconds('9', 'NOPE', 'NEITHER')).toBe(120);
   });
 });
 

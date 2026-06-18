@@ -10,6 +10,7 @@ import { createLogger } from './logger';
 import { normalizeStationName as baseNormalizeStationName } from './normalizeStationName';
 import { distanceMetersBetween, estimateEtaSeconds } from './stationEta';
 import { getTransferSeconds } from './transferTimes';
+import { getStopSecondsFromDistance } from './lineSpeeds';
 
 const logger = createLogger('StationRoute');
 
@@ -22,14 +23,22 @@ const STOP_FALLBACK_SECONDS = 120;
 
 /**
  * line의 fromId → toId 단일 hop 운행 시간(초). #655.
- * 실제 데이터는 서울 열린데이터 StationDstncReqreTimeHm을 양방향으로 저장하므로
- * 양 방향이 동일한 값을 돌려준다. lookup 실패 시 STOP_FALLBACK_SECONDS(=120, 2분).
- * miss는 logger.debug로 노출해 향후 데이터 보강(9호선/공항철도/경의중앙선 등) 추적에 사용.
+ * 우선순위:
+ *   1) `stationTravelTimes.json` 실측 (서울 열린데이터, 1~8호선)
+ *   2) #1472 — `stationDistances.json` 거리 × 노선 평균 속도 (KRRIC + 운영사 표정속도)
+ *   3) `STOP_FALLBACK_SECONDS`(=120, 2분) 최종 fallback
+ * miss는 logger.debug로 노출해 향후 데이터 보강(9호선/공항철도 등) 추적에 사용.
  */
 export function getStopSeconds(line: LineNumber, fromId: string, toId: string): number {
   const key = `${line}|${fromId}|${toId}`;
   const hit = stationTravelTimes[key];
   if (hit !== undefined) return hit;
+  const distM = stationDistances[key];
+  if (distM !== undefined) {
+    const seconds = getStopSecondsFromDistance(line, distM);
+    logger.debug(`getStopSeconds distance fallback: ${key} → ${seconds.toFixed(0)}s (${distM}m)`);
+    return seconds;
+  }
   logger.debug(`getStopSeconds miss: ${key} → fallback ${STOP_FALLBACK_SECONDS}s`);
   return STOP_FALLBACK_SECONDS;
 }
