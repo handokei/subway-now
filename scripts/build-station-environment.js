@@ -296,13 +296,14 @@ function diffSources(krricMap, seoulMap) {
  */
 function build({ stations, csvText, krricCsvTexts, line9CsvText, gyeonguiCsvText }) {
   const seoulMap = parseCsv(csvText);
-  // 역호환: line9CsvText/gyeonguiCsvText 단독 입력은 krricCsvTexts로 흡수.
-  const krricInput = { ...(krricCsvTexts ?? {}) };
-  if (typeof line9CsvText === 'string' && krricInput['9'] === undefined) {
-    krricInput['9'] = line9CsvText;
-  }
-  if (typeof gyeonguiCsvText === 'string' && krricInput.gyeongui === undefined) {
-    krricInput.gyeongui = gyeonguiCsvText;
+  // 역호환: line9CsvText/gyeonguiCsvText 단독 입력은 krricCsvTexts[key]로 흡수.
+  // 신규 lineKey 추가 시 legacyInputs에만 entry 추가 (글로벌 룰 #3 확장성).
+  const krricInput = { ...krricCsvTexts };
+  const legacyInputs = { '9': line9CsvText, gyeongui: gyeonguiCsvText };
+  for (const [lineKey, text] of Object.entries(legacyInputs)) {
+    if (typeof text === 'string' && krricInput[lineKey] === undefined) {
+      krricInput[lineKey] = text;
+    }
   }
   const krricMap = buildKrricMap(krricInput);
   const crossCheckDiffs = diffSources(krricMap, seoulMap);

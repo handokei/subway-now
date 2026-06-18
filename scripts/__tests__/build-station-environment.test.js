@@ -489,7 +489,7 @@ describe('KRRIC_SOURCES', () => {
   it('covers 1~9호선 + 분당선 + 경의중앙선 fixture mapping (#1461/#1466)', () => {
     const expectedKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'bundang', 'gyeongui'];
     const cmp = (a, b) => a.localeCompare(b);
-    expect(Object.keys(KRRIC_SOURCES).sort(cmp)).toEqual(expectedKeys.sort(cmp));
+    expect(Object.keys(KRRIC_SOURCES).toSorted(cmp)).toEqual(expectedKeys.toSorted(cmp));
     for (const f of Object.values(KRRIC_SOURCES)) {
       expect(f).toMatch(/\.csv$/u);
     }
