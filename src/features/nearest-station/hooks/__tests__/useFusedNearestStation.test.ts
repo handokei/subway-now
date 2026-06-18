@@ -852,9 +852,10 @@ describe('useFusedNearestStation', () => {
       mockUsePositions.mockReturnValue(positionRet(null));
     }
 
-    it('GPS stale(용마산) + 1 hop 경과 → interp(중곡)이 ratchet forward로 승격', () => {
-      // Seam B (#898): 라이브 관측 없는 dead-zone에선 boardingIdx+1까지만 허용.
-      // 본 시나리오는 lastObservedRef=null + boardingIdx=용마산(0) → cap=중곡(1).
+    it('#1437 (ADR-015 §2) GPS stale(용마산) + 1 hop 경과 → fire path는 GPS(용마산) 유지, estimator(중곡)는 displayOnly 채널에만', () => {
+      // 시간 적분 strategy(default-hop / lockless-route-hop / reanchored-hop)의 fire 권한 박탈.
+      // estimator override가 result/source를 덮어쓰지 않는다 — GPS가 fire path SSOT.
+      // UI 추적용 displayOnlyEstimate는 estimator 결과를 그대로 노출 (DebugModal에서 strategy 라벨 추적).
       jest.useFakeTimers();
       try {
         jest.setSystemTime(T0 + 90_000);
@@ -862,17 +863,20 @@ describe('useFusedNearestStation', () => {
         const { result } = renderHook(() =>
           useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
         );
-        expect(result.current.source).toBe('boarding-lock-interp');
-        expect(result.current.confidence).toBe('boarding-lock-interp');
-        expect(result.current.result?.station.id).toBe(junggok.id);
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+        expect(result.current.result?.station.id).toBe(yongmasan.id);
+        // displayOnly 채널은 estimator 결과 노출
+        expect(result.current.displayOnlyEstimate?.station.id).toBe(junggok.id);
+        expect(result.current.displayOnlyEstimate?.strategy).toBe('default-hop');
+        // fire path SSOT인 currentHopIndex는 시간 적분 strategy에서 박탈 (null)
+        expect(result.current.currentHopIndex).toBeNull();
       } finally {
         jest.useRealTimers();
       }
     });
 
-    it('Seam B (#898) — dead-zone 3 hop 경과해도 interp이 boardingIdx+1 초과 안 함', () => {
-      // 13:19:12 회귀 fixture 인자: LivePosition/ArrivalEta 모두 결손인 상황에서 적분이
-      // 물리 위치보다 여러 hop 앞서 가는 것을 차단. estimator 내부 cap + 외부 cap 이중 가드.
+    it('#1437 dead-zone 3 hop 경과해도 fire path는 GPS(용마산) 유지', () => {
+      // 정책 박탈 후: estimator가 어디까지 적분하더라도 fire path는 GPS SSOT.
       jest.useFakeTimers();
       try {
         jest.setSystemTime(T0 + 3 * 90_000);
@@ -880,7 +884,7 @@ describe('useFusedNearestStation', () => {
         const { result } = renderHook(() =>
           useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
         );
-        expect(result.current.result?.station.id).toBe(junggok.id);
+        expect(result.current.result?.station.id).toBe(yongmasan.id);
         expect(result.current.result?.station.id).not.toBe(oolinidae.id);
         expect(result.current.result?.station.id).not.toBe(konkuk.id);
       } finally {
@@ -948,8 +952,9 @@ describe('useFusedNearestStation', () => {
       }
     });
 
-    it('GPS가 arc 밖(서울역 공항철도) + lock 활성 → interp가 boardingIdx+1까지 채택', () => {
-      // Seam B (#898): GPS가 arc 밖이라도 라이브 관측은 여전히 없음 → cap=중곡(1).
+    it('#1437 GPS가 arc 밖(서울역 공항철도) + lock 활성 → estimator override 안 함, GPS 유지', () => {
+      // 정책 박탈 후: estimator가 hop을 산출해도 fire path는 GPS SSOT.
+      // arc 밖 GPS는 그대로 노출 — 호출자(useStationAlarm)가 hop window 게이트로 차단.
       jest.useFakeTimers();
       try {
         jest.setSystemTime(T0 + 2 * 90_000);
@@ -958,8 +963,11 @@ describe('useFusedNearestStation', () => {
         const { result } = renderHook(() =>
           useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
         );
-        expect(result.current.source).toBe('boarding-lock-interp');
-        expect(result.current.result?.station.id).toBe(junggok.id);
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+        // estimator override 박탈 — result.station이 estimator의 junggok이 아님.
+        expect(result.current.result?.station.id).not.toBe(junggok.id);
+        // estimator는 displayOnly에만
+        expect(result.current.displayOnlyEstimate?.station.id).toBe(junggok.id);
       } finally {
         jest.useRealTimers();
       }
@@ -1064,7 +1072,9 @@ describe('useFusedNearestStation', () => {
       }
     });
 
-    it('시간만 흐르면(부모 리렌더 없이) interp가 다음 hop으로 전진 — useMemo 캐시 회귀 가드', () => {
+    it('#1437 시간만 흐르면(부모 리렌더 없이) displayOnlyEstimate가 다음 hop 반영 — useMemo 캐시 회귀 가드', () => {
+      // 정책 박탈 후: estimator는 시간 경과로 추정 hop을 진전시키지만 fire path는 GPS 유지.
+      // displayOnlyEstimate가 새 hop을 반영하는지 (useMemo 캐시 회귀)만 검증.
       jest.useFakeTimers();
       try {
         jest.setSystemTime(T0);
@@ -1072,22 +1082,50 @@ describe('useFusedNearestStation', () => {
         const { result, rerender } = renderHook(() =>
           useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
         );
-        // 탑승 직후: interp=용마산(idx 0), GPS=용마산 → tied. GPS 유지.
         expect(result.current.result?.station.id).toBe(yongmasan.id);
+        expect(result.current.displayOnlyEstimate?.station.id).toBe(yongmasan.id);
 
-        // 시계만 진행. boardingLock/arcStations/GPS는 그대로 — 의존성이 안 바뀌어도
-        // interp이 새 now를 반영해야 한다. 부모 리렌더(rerender)는 한 번 발생시켜
-        // hook이 다시 호출되는 정상 사이클을 시뮬레이션. Seam B cap에 따라 +1 hop까지.
         jest.setSystemTime(T0 + 90_000);
         rerender(undefined);
-        expect(result.current.source).toBe('boarding-lock-interp');
-        expect(result.current.result?.station.id).toBe(junggok.id);
+        // fire path: GPS(용마산) 유지
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+        expect(result.current.result?.station.id).toBe(yongmasan.id);
+        // displayOnly: estimator 진전(중곡)
+        expect(result.current.displayOnlyEstimate?.station.id).toBe(junggok.id);
       } finally {
         jest.useRealTimers();
       }
     });
 
-    it('userLocation null + GPS result null → interp 단독 채택 (distanceKm=0)', () => {
+    it('#1437 회귀 가드 — 2026-06-18 13:25:26 시나리오 (gps=성수 + lock=뚝섬 시점 시간 적분) → fire path X', () => {
+      // trip dump L335 13:26:14 `interp 뚝섬 d=827m, gp=성수, rt=성수` 케이스 재현.
+      // lock 시점 시간 적분이 lockless-route-hop/default-hop으로 뚝섬을 가리켜도,
+      // fire path는 GPS(성수) 유지여야 한다. 사용자 실제 위치 추월 차단.
+      jest.useFakeTimers();
+      try {
+        jest.setSystemTime(T0 + 90_000);
+        // 사용자는 성수 정차 중 — GPS가 성수 보고. lock anchor는 출발 시 용마산이지만
+        // 시간이 흘러 estimator는 다음 hop을 추정한다.
+        // 본 케이스의 핵심: estimator 결과가 GPS와 다른 station을 가리키더라도 fire path 불승격.
+        setupGpsAt(gunja); // 군자 시뮬레이션 (lock 뚝섬, gps gunja 류 mismatch)
+        const { result } = renderHook(() =>
+          useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
+        );
+        // fire path source: GPS 또는 fused 실측 — 절대 boarding-lock-interp 아님.
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+        expect(result.current.confidence).not.toBe('boarding-lock-interp');
+        // dedup 누적 차단: currentHopIndex(시간 적분 SSOT)도 null로 박탈.
+        expect(result.current.currentHopIndex).toBeNull();
+        // UI 추적은 유지 — displayOnlyEstimate에 estimator 결과 그대로.
+        expect(result.current.displayOnlyEstimate).not.toBeNull();
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('#1437 userLocation null + GPS result null → fire path result도 null (estimator override 박탈)', () => {
+      // 정책 박탈 후: GPS가 없으면 fire path도 그대로 비어 있다. estimator가 채워주지 않는다.
+      // displayOnlyEstimate만 estimator 결과를 노출.
       jest.useFakeTimers();
       try {
         jest.setSystemTime(T0 + 90_000);
@@ -1100,9 +1138,9 @@ describe('useFusedNearestStation', () => {
         const { result } = renderHook(() =>
           useFusedNearestStation(undefined, undefined, routeContext, '7093', lock),
         );
-        expect(result.current.source).toBe('boarding-lock-interp');
-        expect(result.current.result?.station.id).toBe(junggok.id);
-        expect(result.current.result?.distanceKm).toBe(0);
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+        expect(result.current.result).toBeNull();
+        expect(result.current.displayOnlyEstimate?.station.id).toBe(junggok.id);
       } finally {
         jest.useRealTimers();
       }
@@ -1238,7 +1276,10 @@ describe('useFusedNearestStation', () => {
         }));
         jest.setSystemTime(opts.disconnectAtMs);
         rerender(undefined);
-        expect(result.current.source).toBe('boarding-lock-interp');
+        // #1437 — ReanchoredHop도 시간 적분이라 fire path 박탈. estimator는 displayOnly에만.
+        // fire path source는 GPS('gps')로 fallback. displayOnly에 reanchored-hop strategy 노출.
+        expect(result.current.source).not.toBe('boarding-lock-interp');
+        expect(result.current.displayOnlyEstimate?.strategy).toBe('reanchored-hop');
       } finally {
         jest.useRealTimers();
         mockUseArrival.mockReset();
