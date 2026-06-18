@@ -311,7 +311,7 @@
     "nameEn": "Dongmyo",
     "nameJa": "トンミョアプ",
     "nameHanja": "東廟앞",
-    "environment": "mixed"
+    "environment": "underground"
   },
   {
     "id": "1-029",
@@ -1218,7 +1218,7 @@
     "nameEn": "Kkachisan",
     "nameJa": "カチサン",
     "nameHanja": "까치山",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "2-205",
@@ -1671,7 +1671,7 @@
     "nameEn": "Hangnyeoul",
     "nameJa": "ハンニョウル",
     "nameHanja": "鶴여울",
-    "environment": "mixed"
+    "environment": "underground"
   },
   {
     "id": "3-039",
@@ -1753,7 +1753,7 @@
     "lng": 127.0863,
     "nameEn": "Danggogae",
     "nameJa": "タンゴゲ",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "4-002",
@@ -1950,7 +1950,7 @@
     "lng": 126.972556,
     "nameEn": "Seoul Station",
     "nameJa": "ソウル",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "4-019",
@@ -2308,7 +2308,7 @@
     "nameEn": "Gaehwasan",
     "nameJa": "ケファサン",
     "nameHanja": "開花山",
-    "environment": "mixed"
+    "environment": "underground"
   },
   {
     "id": "5-003",
@@ -2885,7 +2885,7 @@
     "nameEn": "Nowon",
     "nameJa": "ノウォン",
     "nameHanja": "蘆原",
-    "environment": "mixed"
+    "environment": "underground"
   },
   {
     "id": "7-006",
@@ -4261,7 +4261,7 @@
     "nameEn": "Seokgye",
     "nameJa": "ソッケ",
     "nameHanja": "石溪",
-    "environment": "mixed"
+    "environment": "underground"
   },
   {
     "id": "6-036",
@@ -4307,7 +4307,7 @@
     "nameEn": "Sinnae",
     "nameJa": "シンネ",
     "nameHanja": "新內",
-    "environment": "mixed"
+    "environment": "surface"
   },
   {
     "id": "8-001",
