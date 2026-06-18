@@ -112,6 +112,20 @@ export interface TripDebugState {
   currentHopIndex: number | null | undefined;
   /** 경로 arcStations 총 개수. */
   routeHopCount: number | null;
+  /**
+   * #1447 — `displayOnlyEstimate`의 채택 strategy 라벨. UI/Share dump 추적 SSOT.
+   *
+   * PR #1445(E4 / #1437)에서 estimator 시간 적분 결과의 fire 권한을 박탈하고 결과를
+   * `useFusedNearestStation.displayOnlyEstimate` 별 채널로 격리했다. 본 필드는 그 strategy를
+   * DebugModal Trip 섹션과 Share dump에 노출하기 위한 wire-up — strategy 산출 시 strategy 이름,
+   * displayOnlyEstimate=null이면 fallback 라벨로 항상 표시한다.
+   *
+   * "신호 없음(estimator null)"과 "표시 wire-up 자체 누락"이 dump만 보고 구분 가능해야
+   * 사용자 trip 사후 재구성이 가능하다 — strategy가 비어 있어도 항상 row를 노출하는 이유.
+   */
+  displayOnlyEstimateStrategy:
+    | import('../../route/utils/stationProgressEstimator').StationProgressStrategy
+    | null;
 }
 
 export interface SleepDebugState {
@@ -542,12 +556,33 @@ function buildFusionSection(args: BuildDumpArgs): string[] {
   return lines;
 }
 
+/**
+ * #1447 — `displayOnlyEstimate`가 null일 때 노출하는 fallback 라벨.
+ * "estimator 결과 자체 없음" 상태를 명시한다(표시 wire-up 누락과 구분).
+ */
+const DISPLAY_ONLY_ESTIMATE_NONE_LABEL = '(none)';
+
+/**
+ * #1447 — Trip 섹션 displayOnlyEstimate row 값 산출.
+ * trip 미전달/strategy=null → fallback. 모든 strategy(5종)는 그대로 노출.
+ */
+function formatDisplayOnlyEstimateStrategy(
+  strategy:
+    | import('../../route/utils/stationProgressEstimator').StationProgressStrategy
+    | null
+    | undefined,
+): string {
+  return strategy == null ? DISPLAY_ONLY_ESTIMATE_NONE_LABEL : strategy;
+}
+
 function buildTripSection(args: BuildDumpArgs): string[] {
   return [
     `lockless=${formatOptionalBool(args.trip?.lockless)}`,
     `tripStartedAt=${formatOptionalTs(args.trip?.tripStartedAt ?? null)}`,
     `currentHopIndex=${formatOptionalNumber(args.trip?.currentHopIndex)}`,
     `route hop count=${formatOptionalNumber(args.trip?.routeHopCount ?? null)}`,
+    // #1447 — displayOnlyEstimate.strategy 라벨. null 케이스도 fallback으로 항상 노출.
+    `displayOnlyEstimate=${formatDisplayOnlyEstimateStrategy(args.trip?.displayOnlyEstimateStrategy)}`,
   ];
 }
 
@@ -1077,6 +1112,9 @@ function DebugModalInner({
     // #1421 — PR-AutoLock-1 측정 인프라. SSOT 객체 직접 받아 inferAutoLockCandidate에 전달.
     surfaceSSOT,
     undergroundSSOT,
+    // #1447 — E4(#1437) 격리 후 노출된 별 채널. strategy 라벨을 Trip 섹션 + Share dump에 wire-up.
+    // null이면 fallback 라벨로 항상 표시(estimator 미산출 상태 명시).
+    displayOnlyEstimate,
   } = useFusedNearestStation();
   // arc 길이 = trip의 hop 총 수. trip 미설정이면 0.
   const routeHopCount = arcStations.length;
@@ -1137,8 +1175,18 @@ function DebugModalInner({
         currentHopIndex,
         // destination 있어야 routeHopCount 표기 의미. 없으면 null → '—' 표기.
         routeHopCount: destination ? routeHopCount : null,
+        // #1447 — displayOnlyEstimate가 없으면 null 전달 → UI/dump가 fallback 라벨 표시.
+        displayOnlyEstimateStrategy: displayOnlyEstimate?.strategy ?? null,
       },
-    [tripProp, locklessTrip, tripStartedAt, currentHopIndex, routeHopCount, destination],
+    [
+      tripProp,
+      locklessTrip,
+      tripStartedAt,
+      currentHopIndex,
+      routeHopCount,
+      destination,
+      displayOnlyEstimate,
+    ],
   );
   const sleep: SleepDebugState = useMemo(
     () =>
@@ -1444,6 +1492,13 @@ function DebugModalInner({
               label="route hop count"
               value={formatOptionalNumber(trip?.routeHopCount ?? null)}
               colors={colors}
+            />
+            {/* #1447 — displayOnlyEstimate.strategy 라벨. null이면 fallback "(none)"으로 항상 표시. */}
+            <KeyValue
+              label="displayOnlyEstimate"
+              value={formatDisplayOnlyEstimateStrategy(trip?.displayOnlyEstimateStrategy)}
+              colors={colors}
+              testID="debug-modal-display-only-estimate"
             />
           </Section>
 
@@ -1842,15 +1897,22 @@ function KeyValue({
   label,
   value,
   colors,
+  testID,
 }: {
   label: string;
   value: string;
   colors: ReturnType<typeof useTheme>['colors'];
+  /** #1447 — 특정 row를 테스트에서 식별할 때 optional testID. 미전달 시 무영향. */
+  testID?: string;
 }) {
   return (
     <View style={styles.kvRow}>
       <Text style={[typography.mono, { color: colors.subtle, width: 80 }]}>{label}</Text>
-      <Text style={[typography.mono, { color: colors.ink, flex: 1 }]} selectable>
+      <Text
+        style={[typography.mono, { color: colors.ink, flex: 1 }]}
+        selectable
+        testID={testID}
+      >
         {value}
       </Text>
     </View>
