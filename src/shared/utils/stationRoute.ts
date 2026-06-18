@@ -881,6 +881,14 @@ export interface StaticEtaOptions {
    * `transferTimes.json`은 도보만 포함 — 환승 후 다음 열차 대기는 본 필드로만 합산
    */
   arrivalsAtTransfers?: ReadonlyArray<{ arrivalSeconds: number; receivedAtMs: number } | null>;
+  /**
+   * #1480 — 각 환승역의 timetable boardable train 대기 시간(초).
+   * - features 쪽 `calculateBoardableTrainETA` 결과를 transfer 순서대로 배열로 주입.
+   * - arrivalsAtTransfers가 fresh하면 그쪽이 우선 (실시간 데이터). 누락/stale + timetable 값이
+   *   있으면 본 필드로 환승 leg wait 분 계산. 둘 다 부재면 DEFAULT_WAIT_MINUTES fallback.
+   * - 본 필드는 timetable 부재 노선(1~9 외) 또는 station alias mismatch 시 element가 `null`.
+   */
+  timetableBoardableWaitSecondsByLeg?: ReadonlyArray<number | null>;
   /** freshness 계산용 현재 시각(ms). 미지정 시 Date.now() — 테스트에서 monkeypatch. */
   nowMs?: number;
 }
@@ -898,17 +906,14 @@ function calculateWalkingMinutes(from: LatLng | undefined, to: LatLng | undefine
 }
 
 // arrivalAtOrigin이 fresh하면 arrivalSeconds(초)를 분으로, 아니면 DEFAULT_WAIT_MINUTES.
-// 게이트: receivedAtMs<=0(mock/누락), 나이>ARRIVAL_FRESHNESS_MS(stale), arrivalSeconds<0(비정상).
+// 게이트는 isFreshArrival와 공유 — 두 분기 모두 receivedAtMs<=0(mock/누락) / 나이>ARRIVAL_FRESHNESS_MS(stale) /
+// arrivalSeconds<0(비정상) 셋을 동일 의미로 거른다.
 function resolveWaitMinutes(
   arrivalAtOrigin: StaticEtaOptions['arrivalAtOrigin'],
   nowMs: number,
 ): number {
-  if (!arrivalAtOrigin) return DEFAULT_WAIT_MINUTES;
-  const { arrivalSeconds, receivedAtMs } = arrivalAtOrigin;
-  if (receivedAtMs <= 0) return DEFAULT_WAIT_MINUTES;
-  if (nowMs - receivedAtMs > ARRIVAL_FRESHNESS_MS) return DEFAULT_WAIT_MINUTES;
-  if (arrivalSeconds < 0) return DEFAULT_WAIT_MINUTES;
-  return arrivalSeconds / 60;
+  if (!isFreshArrival(arrivalAtOrigin, nowMs)) return DEFAULT_WAIT_MINUTES;
+  return arrivalAtOrigin.arrivalSeconds / 60;
 }
 
 // transfer 횟수: direct=0, transfer=1, multi-transfer=transfers.length.
@@ -929,18 +934,42 @@ function getTransferCount(route: NonNullable<Route>): number {
   }
 }
 
-// 환승 leg마다 fresh arrival이면 동적, 아니면 DEFAULT_WAIT_MINUTES — 합산해서 분으로 반환.
-// transferCount=0 (direct)이면 0. 누락 element는 fallback.
+// 환승 leg마다 fresh arrival이면 동적, 아니면 timetable boardable, 둘 다 부재면 DEFAULT_WAIT_MINUTES.
+// transferCount=0 (direct)이면 0. 누락 element는 다음 fallback으로.
+// #1480 — boardable timetable layer 추가 (arrivalsAtTransfers > timetable > DEFAULT cascade).
 function resolveTransferWaitMinutes(
   arrivalsAtTransfers: StaticEtaOptions['arrivalsAtTransfers'],
+  timetableBoardableWaitSecondsByLeg: StaticEtaOptions['timetableBoardableWaitSecondsByLeg'],
   transferCount: number,
   nowMs: number,
 ): number {
   let total = 0;
   for (let i = 0; i < transferCount; i++) {
-    total += resolveWaitMinutes(arrivalsAtTransfers?.[i] ?? undefined, nowMs);
+    const arrival = arrivalsAtTransfers?.[i] ?? undefined;
+    if (isFreshArrival(arrival, nowMs)) {
+      total += arrival.arrivalSeconds / 60;
+      continue;
+    }
+    const timetableSeconds = timetableBoardableWaitSecondsByLeg?.[i] ?? null;
+    if (timetableSeconds !== null && timetableSeconds >= 0) {
+      total += timetableSeconds / 60;
+      continue;
+    }
+    total += DEFAULT_WAIT_MINUTES;
   }
   return total;
+}
+
+// fresh 판정만 (#1480 cascade에서 isFresh 단독 사용). resolveWaitMinutes는 fresh + fallback을 합쳐 처리.
+function isFreshArrival(
+  arrival: { arrivalSeconds: number; receivedAtMs: number } | undefined,
+  nowMs: number,
+): arrival is { arrivalSeconds: number; receivedAtMs: number } {
+  if (!arrival) return false;
+  if (arrival.receivedAtMs <= 0) return false;
+  if (nowMs - arrival.receivedAtMs > ARRIVAL_FRESHNESS_MS) return false;
+  if (arrival.arrivalSeconds < 0) return false;
+  return true;
 }
 
 /**
@@ -968,6 +997,7 @@ export function calculateStaticETA(
   const originWaitMinutes = resolveWaitMinutes(options.arrivalAtOrigin, nowMs);
   const transferWaitMinutes = resolveTransferWaitMinutes(
     options.arrivalsAtTransfers,
+    options.timetableBoardableWaitSecondsByLeg,
     getTransferCount(route),
     nowMs,
   );
