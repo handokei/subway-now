@@ -149,7 +149,7 @@ function build({ stations, csvText }) {
     let environment = 'unknown';
     let source = 'unknown';
 
-    if (Object.prototype.hasOwnProperty.call(ENVIRONMENT_OVERRIDES, key)) {
+    if (Object.hasOwn(ENVIRONMENT_OVERRIDES, key)) {
       environment = ENVIRONMENT_OVERRIDES[key];
       source = 'override';
     } else if (csvMap.has(key)) {
@@ -160,9 +160,11 @@ function build({ stations, csvText }) {
     stats.bySource[source] += 1;
     stats.byEnv[environment] += 1;
     if (environment === 'unknown') {
+      const idVal = stn.id;
+      const nameVal = stn.name;
       stats.unknownEntries.push({
-        id: String(stn.id ?? ''),
-        name: String(stn.name ?? ''),
+        id: typeof idVal === 'string' || typeof idVal === 'number' ? String(idVal) : '',
+        name: typeof nameVal === 'string' || typeof nameVal === 'number' ? String(nameVal) : '',
         line,
       });
     }
@@ -215,11 +217,11 @@ function main(argv, deps = {}) {
     }
   }
 
-  if (!dryRun) {
+  if (dryRun) {
+    writeOut(`(dry-run) stations.json not written`);
+  } else {
     writeFile(stationsPath, JSON.stringify(nextStations, null, 2) + '\n');
     writeOut(`✏️  wrote ${stationsPath}`);
-  } else {
-    writeOut(`(dry-run) stations.json not written`);
   }
 
   return 0;

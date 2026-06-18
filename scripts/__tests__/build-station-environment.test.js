@@ -3,6 +3,8 @@
  * 단위 테스트. ADR-015 §1 Deterministic Environment SSOT.
  */
 
+const path = require('path');
+const os = require('os');
 const {
   classifyFloor,
   parseCsv,
@@ -12,6 +14,8 @@ const {
   VALID_ENVIRONMENTS,
   main,
 } = require('../build-station-environment');
+
+const TEST_TMP_DIR = path.join(os.tmpdir(), 'subway-now-test');
 
 describe('classifyFloor', () => {
   it.each([
@@ -102,7 +106,7 @@ describe('build', () => {
     // CSV says 한양대=surface but override could pick anything; we verify override wins.
     const localOverride = '2|한양대';
     // we cannot mutate frozen ENVIRONMENT_OVERRIDES, so verify override map contains user trip key.
-    expect(Object.prototype.hasOwnProperty.call(ENVIRONMENT_OVERRIDES, localOverride)).toBe(true);
+    expect(Object.hasOwn(ENVIRONMENT_OVERRIDES, localOverride)).toBe(true);
     const stations = [{ id: '2-009', name: '한양대', line: '2' }];
     const { stations: out, stats } = build({ stations, csvText });
     expect(out[0].environment).toBe(ENVIRONMENT_OVERRIDES[localOverride]);
@@ -168,8 +172,9 @@ describe('build', () => {
 
 describe('VALID_ENVIRONMENTS', () => {
   it('exposes the four enum values', () => {
-    expect([...VALID_ENVIRONMENTS].sort()).toEqual(
-      ['mixed', 'surface', 'underground', 'unknown'].sort(),
+    const cmp = (a, b) => a.localeCompare(b);
+    expect([...VALID_ENVIRONMENTS].sort(cmp)).toEqual(
+      ['mixed', 'surface', 'underground', 'unknown'].sort(cmp),
     );
   });
 });
@@ -215,8 +220,8 @@ describe('main()', () => {
       writeErr: (s) => errs.push(s),
       readFile: (p) => (p.endsWith('.csv') ? csvText : stationsJson),
       writeFile: (p, c) => writes.push({ p, c }),
-      stationsPath: '/tmp/s.json',
-      csvPath: '/tmp/c.csv',
+      stationsPath: path.join(TEST_TMP_DIR, 's.json'),
+      csvPath: path.join(TEST_TMP_DIR, 'c.csv'),
       ...extra,
       _captured: { outs, errs, writes },
     };
