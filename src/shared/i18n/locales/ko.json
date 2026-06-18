@@ -19,7 +19,11 @@
     "locating": "위치 확인 중...",
     "backgroundDeniedTitle": "백그라운드 위치 권한 필요",
     "backgroundDeniedBody": "백그라운드에서 알람을 받으려면 설정에서 위치 권한을 '항상 허용'으로 설정해 주세요.",
-    "openSettings": "설정 열기"
+    "openSettings": "설정 열기",
+    "changeRevokedTitle": "위치 권한이 회수되었어요",
+    "changeRevokedBody": "위치 권한이 꺼져 알람이 울리지 않을 수 있어요. 설정에서 권한을 다시 허용해 주세요.",
+    "changeDowngradedTitle": "백그라운드 위치 권한이 해제되었어요",
+    "changeDowngradedBody": "'항상 허용'이 '앱 사용 중'으로 바뀌어 백그라운드 알람이 누락될 수 있어요. 설정에서 '항상 허용'으로 다시 설정해 주세요."
   },
   "home": {
     "arrived": "도착!",

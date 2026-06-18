@@ -19,7 +19,11 @@
     "locating": "Locating...",
     "backgroundDeniedTitle": "Background location required",
     "backgroundDeniedBody": "To receive background alarms, set location access to \"Always\" in Settings.",
-    "openSettings": "Open Settings"
+    "openSettings": "Open Settings",
+    "changeRevokedTitle": "Location permission was revoked",
+    "changeRevokedBody": "Location access is off, so alarms may not fire. Please re-enable location access in Settings.",
+    "changeDowngradedTitle": "Background location was disabled",
+    "changeDowngradedBody": "\"Always\" was changed to \"While Using the App\", so background alarms may be missed. Please set access back to \"Always\" in Settings."
   },
   "home": {
     "arrived": "Arrived!",
