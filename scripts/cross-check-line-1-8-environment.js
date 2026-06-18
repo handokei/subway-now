@@ -69,7 +69,7 @@ function classifyDepthFloor(floor) {
  */
 function parseDepthRow(row) {
   // 첫 9개 컬럼은 모두 unquoted (숫자/한글, 쉼표 없음). 10번째 비고만 quote 가능.
-  const match = row.match(/^(\d+),(\d+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),(-?[\d.]+)/u);
+  const match = /^(\d+),(\d+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),(-?[\d.]+)/u.exec(row);
   if (!match) return null;
   const line = match[2];
   const name = normalizeStationName(match[3]);
