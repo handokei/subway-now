@@ -226,9 +226,9 @@ describe('useNearestStation', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalledTimes(2);
   });
 
-  it('watchPositionAsync에 High·distanceInterval:5·timeInterval:2000을 전달한다', async () => {
-    // #1416 — surface는 distanceInterval=5(m)로 GPS jitter callback을 native에서 차단한다.
-    // BG task TRACKING_DISTANCE_INTERVAL_M=20m 패턴 검증 후 보수적 적용.
+  it('watchPositionAsync에 High·distanceInterval:0·timeInterval:2000을 전달한다', async () => {
+    // #1440 — surface는 distanceInterval=0으로 정적 FG에서도 watch 이벤트가 흘러야 GPS acc가
+    // 회복된다. #1416에서 5m 적용 → 정적 30분 acc>30m stuck + 한양대 820m stuck fix 회귀로 되돌림.
     mockGranted();
 
     renderHook(() => useNearestStation());
@@ -238,11 +238,29 @@ describe('useNearestStation', () => {
     expect(Location.watchPositionAsync).toHaveBeenCalledWith(
       {
         accuracy: Location.Accuracy.High,
-        distanceInterval: 5,
+        distanceInterval: 0,
         timeInterval: 2000,
       },
       expect.any(Function),
     );
+  });
+
+  it('#1440 회귀: 정적 FG 시뮬레이션에서 distanceInterval=0이어야 acc 회복 콜백이 흘러간다', async () => {
+    // 회귀: #1416에서 distanceInterval=5로 throttle 후 정적 30분 동안 OS가 callback을 끊어
+    // GPS acc가 stale(>30m)인 채 고착되고 한양대 820m 같은 stuck fix가 fire를 유발했다.
+    // 본 테스트는 같은 좌표라도 acc 회복(>30m → ≤30m)을 위해 watch 옵션이 distanceInterval=0이어야
+    // 한다는 계약을 가드한다.
+    mockGranted();
+    renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    const [options] = (Location.watchPositionAsync as jest.Mock).mock.calls[0];
+    expect(options.distanceInterval).toBe(0);
+
+    // 정적 시뮬레이션: 동일 좌표 + acc 변화(50m → 20m)를 같은 lat/lng로 흘려도 distanceInterval=0이면
+    // OS가 callback을 차단하지 않는다. callback 자체는 expo-location mock이 처리하므로 본 테스트는
+    // 옵션 계약만 검증한다 (native throttle 동작은 단위테스트 범위 외).
+    expect(options.accuracy).toBe(Location.Accuracy.High);
   });
 
   it('언마운트 시 subscription.remove()가 호출된다', async () => {
@@ -1267,7 +1285,7 @@ describe('useNearestStation — #1313 subsurface GPS throttle', () => {
   // 지상 기본값: High@2s. 지하 throttle: Balanced@12s. interval은 상수에서 가져와 매직넘버 회피.
   const SURFACE_OPTIONS = {
     accuracy: Location.Accuracy.High,
-    distanceInterval: 5,
+    distanceInterval: 0,
     timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
   };
   const SUBSURFACE_OPTIONS = {
