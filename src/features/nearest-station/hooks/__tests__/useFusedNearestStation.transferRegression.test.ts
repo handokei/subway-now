@@ -41,8 +41,12 @@ const mockUsePositions = useTrainPositions as jest.Mock;
 const mockFindTop = findTopNearestStations as jest.Mock;
 
 function gpsAt(station: Station) {
+  const live = { station, distanceKm: 0 };
   return {
-    result: { station, distanceKm: 0 },
+    result: live,
+    // #1486 (ADR-015 §2) — sticky 비활성: liveResult=result, stickyDisplayOnly=null.
+    liveResult: live,
+    stickyDisplayOnly: null,
     variants: [station],
     userLocation: { lat: station.lat, lng: station.lng },
     speedMps: 0,

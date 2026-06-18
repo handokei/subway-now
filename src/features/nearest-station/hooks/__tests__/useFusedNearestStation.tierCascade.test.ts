@@ -57,8 +57,12 @@ function setupLocklessTripAtYongmasan({
   jest.setSystemTime(T0);
 
   // GPS 용마산 정적 보고. accuracy 변경으로 surfaceSSOT 활성/비활성 전환.
+  // #1486 — sticky 비활성: liveResult=result, stickyDisplayOnly=null.
+  const live = { station: yongmasan, distanceKm: 0 };
   mockNearest.mockReturnValue({
-    result: { station: yongmasan, distanceKm: 0 },
+    result: live,
+    liveResult: live,
+    stickyDisplayOnly: null,
     variants: [yongmasan],
     userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
     ...GPS_BASE_DEFAULTS,
