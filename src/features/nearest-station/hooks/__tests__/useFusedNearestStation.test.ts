@@ -1855,26 +1855,36 @@ describe('useFusedNearestStation', () => {
   // 보강 (ADR-015 §2 처방): useNearestStation에 `liveResult`/`stickyDisplayOnly` 별 채널 분리.
   // useFusedNearestStation cascade fallback은 `gps.liveResult`만 사용 → sticky가 fire path에 진입 불가.
   describe('#1486 sticky:locked fire path 격리 (ADR-015 §2)', () => {
-    it('sticky가 다른 역 lock + 다른 신호 미통과 → fire path result는 live GPS 결과 (sticky 무시)', () => {
-      // useNearestStation의 sticky override 시뮬레이션:
-      //   exposed.result = sticky.locked (효창공원앞) — sticky가 표시 채널을 override
-      //   liveResult = GPS 최근접 (강남)     — sticky 없는 실 위치
-      const stickyStation = MOCK_STATIONS.chungmuro; // sticky locked station (잘못된 lock)
-      const liveStation = MOCK_STATIONS.gangnam; // 실제 GPS 위치
+    // sticky override + live GPS 분리 setup helper — useNearestStation의 exposed 동작 시뮬레이션.
+    //   result          = sticky.locked로 override된 표시 채널
+    //   liveResult      = sticky override 없는 실 GPS 결과 (cascade fallback SSOT)
+    //   findTopNearest  = 다른 신호(wifi/positionTrain/fused/route) 미통과 가정
+    function renderWithStickyOverride(opts: {
+      stickyStation: (typeof MOCK_STATIONS)[keyof typeof MOCK_STATIONS];
+      liveStation: (typeof MOCK_STATIONS)[keyof typeof MOCK_STATIONS];
+      stickyDistance?: number;
+      liveDistance?: number;
+      accuracyMeters?: number;
+    }) {
+      const { stickyStation, liveStation, stickyDistance = 0.1, liveDistance = 0.1, accuracyMeters } = opts;
       mockUseNearest.mockReturnValue(
         gpsBase({
-          // result는 sticky.locked로 override된 상태 (useNearestStation의 exposed 동작 시뮬)
-          result: { station: stickyStation, distanceKm: 0.1 },
-          // liveResult는 sticky override 없는 실 GPS 결과
-          liveResult: { station: liveStation, distanceKm: 0.1 },
+          result: { station: stickyStation, distanceKm: stickyDistance },
+          liveResult: { station: liveStation, distanceKm: liveDistance },
           stickyDisplayOnly: stickyStation,
           source: 'sticky' as const,
+          ...(accuracyMeters != null ? { accuracyMeters } : {}),
         }),
       );
-      // 다른 신호(wifi/positionTrain/fused/route) 모두 미통과
-      mockFindTop.mockReturnValue([{ station: liveStation, distanceKm: 0.1 }]);
+      mockFindTop.mockReturnValue([{ station: liveStation, distanceKm: liveDistance }]);
+      return renderHook(() => useFusedNearestStation());
+    }
 
-      const { result } = renderHook(() => useFusedNearestStation());
+    it('sticky가 다른 역 lock + 다른 신호 미통과 → fire path result는 live GPS 결과 (sticky 무시)', () => {
+      // exposed.result = sticky.locked (효창공원앞) / liveResult = GPS 최근접 (강남)
+      const stickyStation = MOCK_STATIONS.chungmuro;
+      const liveStation = MOCK_STATIONS.gangnam;
+      const { result } = renderWithStickyOverride({ stickyStation, liveStation });
 
       // fire path SSOT — sticky가 아닌 live GPS 결과로 cascade fallback.
       expect(result.current.result?.station.id).toBe(liveStation.id);
@@ -1888,20 +1898,15 @@ describe('useFusedNearestStation', () => {
       // 2026-06-16 13:27:18 / 13:28:39 dump 재현:
       // sticky가 용마산(7) lock 상태에서 사용자가 사가정(7)으로 이동 → GPS 최근접은 사가정.
       // sticky better-fix 조건(N=3 좋은 fix 연속) 충족 전에는 sticky가 용마산 유지.
-      const stickyStation = MOCK_STATIONS.gangnam; // 사용자가 이전에 있던 station (stale lock)
-      const liveStation = MOCK_STATIONS.chungmuro; // 사용자가 이동한 현재 station
-      mockUseNearest.mockReturnValue(
-        gpsBase({
-          result: { station: stickyStation, distanceKm: 1 }, // sticky override
-          liveResult: { station: liveStation, distanceKm: 0.05 }, // 실 GPS
-          stickyDisplayOnly: stickyStation,
-          source: 'sticky' as const,
-          accuracyMeters: 50,
-        }),
-      );
-      mockFindTop.mockReturnValue([{ station: liveStation, distanceKm: 0.05 }]);
-
-      const { result } = renderHook(() => useFusedNearestStation());
+      const stickyStation = MOCK_STATIONS.gangnam;
+      const liveStation = MOCK_STATIONS.chungmuro;
+      const { result } = renderWithStickyOverride({
+        stickyStation,
+        liveStation,
+        stickyDistance: 1,
+        liveDistance: 0.05,
+        accuracyMeters: 50,
+      });
 
       // fire path는 sticky station에 false station-passed fire를 발사하지 않는다.
       expect(result.current.result?.station.id).toBe(liveStation.id);
@@ -1924,17 +1929,7 @@ describe('useFusedNearestStation', () => {
     it('표시 채널 stickyDisplayOnly — sticky lock된 station 그대로 패스스루', () => {
       const stickyStation = MOCK_STATIONS.chungmuro;
       const liveStation = MOCK_STATIONS.gangnam;
-      mockUseNearest.mockReturnValue(
-        gpsBase({
-          result: { station: stickyStation, distanceKm: 0.1 },
-          liveResult: { station: liveStation, distanceKm: 0.1 },
-          stickyDisplayOnly: stickyStation,
-          source: 'sticky' as const,
-        }),
-      );
-      mockFindTop.mockReturnValue([{ station: liveStation, distanceKm: 0.1 }]);
-
-      const { result } = renderHook(() => useFusedNearestStation());
+      const { result } = renderWithStickyOverride({ stickyStation, liveStation });
 
       // DebugModal/UI는 stickyDisplayOnly로 sticky 정보 노출.
       expect(result.current.stickyDisplayOnly).toEqual(stickyStation);
