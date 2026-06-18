@@ -32,6 +32,8 @@ import stationsData from '../../../data/stations.json';
 import type { ExitSide } from '../../../shared/types/exitSide';
 import { lookupExitSide } from '../../route/utils/exitSide';
 import { hasQuickExitData } from '../../route/utils/quickExit';
+import { lookupPlatformExitSide } from '../../../shared/utils/platformExitSideLookup';
+import { findStationByName } from '../../../shared/utils/stationLookup';
 import {
   notificationSourceI18nKey,
   shouldDiscloseNotificationSource,
@@ -185,9 +187,22 @@ function appendExitSide(body: string, side?: ExitSide | null): string {
   return `${body}\n${exitSideText(side)}`;
 }
 
+// 좌/우 하차 방향 해석 (#1504):
+//   1) Primary — `lookupExitSide(name, direction)` (사용자 검수형 direction-aware SSOT).
+//   2) Fallback — primary가 null이면 stations.json id로 `lookupPlatformExitSide(id)` 조회
+//      (승강장 구조 기반 static SSOT, direction 무관). #1482에서 추가된 265역 커버.
+//   3) 둘 다 null이면 기존처럼 좌/우 라인을 생략한다.
+//
+// fallback은 direction 부재(motion gate 미확정 등)나 사용자 검수 데이터 누락 케이스에서
+// 좌/우 안내를 살려준다. direction이 있는 경우에도 primary가 우선이라 정확도 회귀 없음.
 function resolveExitSide(event: AlarmEvent): ExitSide | null {
-  if (!event.direction) return null;
-  return lookupExitSide(event.stationName, event.direction);
+  const direct = event.direction
+    ? lookupExitSide(event.stationName, event.direction)
+    : null;
+  if (direct) return direct;
+  const station = findStationByName(event.stationName);
+  if (!station) return null;
+  return lookupPlatformExitSide(station.id);
 }
 
 // 알람 본문에 추상적 빠른하차 힌트를 붙일지 결정. 해당 역의 빠른하차 데이터가 있을 때만 표시한다.
