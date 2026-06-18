@@ -115,7 +115,9 @@ function loadLineTerminals() {
 //   2) 괄호 부제 제거(예: '청량리(서울시립대입구)' → '청량리')
 //   3) '역' 접미사 제거(예: '서울역' → '서울')
 function buildNameAliases(name) {
-  const baseName = name.replace(/\(.*?\)/g, '').trim();
+  // ReDoS-safe: `[^)]*`는 부정 character class라 backtracking이 발생하지 않는다.
+  // (lazy `.*?`는 입력에 따라 super-linear가 될 수 있어 SonarCloud S5852가 차단.)
+  const baseName = name.replace(/\([^)]*\)/g, '').trim();
   const aliases = new Set([name, baseName]);
   if (baseName.endsWith('역')) {
     aliases.add(baseName.slice(0, -1));
