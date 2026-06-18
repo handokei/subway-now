@@ -104,6 +104,8 @@ const fusedReturnFixture = (overrides: Record<string, unknown> = {}) => ({
   // #1421 — PR-AutoLock-1 측정 인프라 신규 노출 필드 기본값.
   surfaceSSOT: null,
   undergroundSSOT: null,
+  // #1447 — E4(#1437) 격리 후 별 채널. 기본값은 null(estimator 미산출).
+  displayOnlyEstimate: null,
   ...overrides,
 });
 const arrivalDefaults = {
@@ -146,6 +148,8 @@ const setupHookDefaults = () => {
     // #1421 — PR-AutoLock-1 측정 인프라.
     surfaceSSOT: null,
     undergroundSSOT: null,
+    // #1447 — E4(#1437) 격리 후 별 채널. 기본 setupHook은 estimator 미산출(null).
+    displayOnlyEstimate: null,
   });
   mockUseArrivalInfo.mockReturnValue({ arrival: baseArrival, loading: false, isMock: false });
   mockUseSilentPushDiagnostics.mockReturnValue({
@@ -1023,6 +1027,7 @@ describe('DebugModal buildDumpText — D9 sections (#1215)', () => {
           tripStartedAt,
           currentHopIndex: 2,
           routeHopCount: 7,
+          displayOnlyEstimateStrategy: null,
         },
         sleep: { sleepMode: true, firstHopApproaching: false },
       }),
@@ -1046,6 +1051,7 @@ describe('DebugModal buildDumpText — D9 sections (#1215)', () => {
           tripStartedAt: null,
           currentHopIndex: null,
           routeHopCount: 5,
+          displayOnlyEstimateStrategy: null,
         },
         sleep: { sleepMode: false, firstHopApproaching: false },
       }),
@@ -1054,6 +1060,53 @@ describe('DebugModal buildDumpText — D9 sections (#1215)', () => {
     expect(dump).toContain('currentHopIndex=—');
     expect(dump).toContain('route hop count=5');
     expect(dump).toContain('sleepMode=off');
+  });
+
+  // #1447 — displayOnlyEstimate strategy 라벨 wire-up + fallback.
+  // 5종 strategy + null + trip 미전달 케이스가 모두 항상 노출되는지(라벨 누락 0건).
+  describe('#1447 — displayOnlyEstimate strategy 라벨 wire-up + fallback', () => {
+    const strategies = [
+      'live-position',
+      'arrival-eta',
+      'reanchored-hop',
+      'default-hop',
+      'lockless-route-hop',
+    ] as const;
+
+    it.each(strategies)('strategy=%s → dump에 그대로 노출', (strategy) => {
+      const dump = __test__.buildDumpText(
+        makeDumpArgs({
+          trip: {
+            lockless: true,
+            tripStartedAt: null,
+            currentHopIndex: 1,
+            routeHopCount: 5,
+            displayOnlyEstimateStrategy: strategy,
+          },
+        }),
+      );
+      expect(dump).toContain(`displayOnlyEstimate=${strategy}`);
+    });
+
+    it('displayOnlyEstimateStrategy=null → "(none)" fallback 노출', () => {
+      const dump = __test__.buildDumpText(
+        makeDumpArgs({
+          trip: {
+            lockless: false,
+            tripStartedAt: null,
+            currentHopIndex: null,
+            routeHopCount: null,
+            displayOnlyEstimateStrategy: null,
+          },
+        }),
+      );
+      expect(dump).toContain('displayOnlyEstimate=(none)');
+    });
+
+    it('trip 자체 미전달 → "(none)" fallback 노출 (라벨 항상 표시)', () => {
+      const dump = __test__.buildDumpText(makeDumpArgs());
+      expect(dump).toContain('displayOnlyEstimate=(none)');
+    });
   });
 
   describe('#1398 — 기압계 unavailable 원인 분해 dump', () => {
@@ -1198,6 +1251,7 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
           tripStartedAt,
           currentHopIndex: 3,
           routeHopCount: 8,
+          displayOnlyEstimateStrategy: null,
         }}
       />,
     );
@@ -1211,6 +1265,76 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     expect(screen.getByText('8')).toBeTruthy();
   });
 
+  // #1447 — Trip 섹션에 displayOnlyEstimate row가 항상 노출돼야 한다(라벨/값 wire-up).
+  // 5종 strategy + null fallback 둘 다 UI에 나오는지 확인.
+  it.each([
+    ['live-position'],
+    ['arrival-eta'],
+    ['reanchored-hop'],
+    ['default-hop'],
+    ['lockless-route-hop'],
+  ] as const)(
+    'Trip 섹션 displayOnlyEstimate row: strategy=%s → 값 노출',
+    async (strategy) => {
+      renderWithTheme(
+        <DebugModal
+          onClose={jest.fn()}
+          trip={{
+            lockless: true,
+            tripStartedAt: null,
+            currentHopIndex: 0,
+            routeHopCount: 5,
+            displayOnlyEstimateStrategy: strategy,
+          }}
+        />,
+      );
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByText('displayOnlyEstimate')).toBeTruthy();
+      expect(screen.getByTestId('debug-modal-display-only-estimate').props.children).toBe(strategy);
+    },
+  );
+
+  it('Trip 섹션 displayOnlyEstimate row: null → "(none)" fallback 노출', async () => {
+    renderWithTheme(
+      <DebugModal
+        onClose={jest.fn()}
+        trip={{
+          lockless: false,
+          tripStartedAt: null,
+          currentHopIndex: null,
+          routeHopCount: null,
+          displayOnlyEstimateStrategy: null,
+        }}
+      />,
+    );
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByTestId('debug-modal-display-only-estimate').props.children).toBe('(none)');
+  });
+
+  it('Trip 섹션 displayOnlyEstimate row: trip prop 미전달 → hook displayOnlyEstimate=null SSOT 도출 → "(none)"', async () => {
+    // setupHookDefaults가 displayOnlyEstimate=null 주입 → fallback이 노출돼야 한다.
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByTestId('debug-modal-display-only-estimate').props.children).toBe('(none)');
+  });
+
+  it('Trip 섹션 displayOnlyEstimate row: hook displayOnlyEstimate.strategy SSOT 도출 → 라벨 노출', async () => {
+    mockUseFusedNearestStation.mockReturnValue(
+      fusedReturnFixture({
+        displayOnlyEstimate: {
+          station: { id: '2-001', name: '강남', line: '2', lineColor: '#009D3E', lat: 37.5, lng: 127 },
+          strategy: 'lockless-route-hop',
+          index: 2,
+        },
+      }),
+    );
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByTestId('debug-modal-display-only-estimate').props.children).toBe(
+      'lockless-route-hop',
+    );
+  });
+
   it('Trip 섹션: currentHopIndex undefined(D1 미머지) → —', async () => {
     renderWithTheme(
       <DebugModal
@@ -1220,6 +1344,7 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
           tripStartedAt: null,
           currentHopIndex: undefined,
           routeHopCount: null,
+          displayOnlyEstimateStrategy: null,
         }}
       />,
     );
@@ -1254,7 +1379,13 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
       <DebugModal
         onClose={jest.fn()}
         fusionDetection={{ tier: 'high', signalMask: 'TTT' }}
-        trip={{ lockless: true, tripStartedAt: null, currentHopIndex: 1, routeHopCount: 4 }}
+        trip={{
+          lockless: true,
+          tripStartedAt: null,
+          currentHopIndex: 1,
+          routeHopCount: 4,
+          displayOnlyEstimateStrategy: 'lockless-route-hop',
+        }}
         sleep={{ sleepMode: true, firstHopApproaching: true }}
       />,
     );
@@ -1270,6 +1401,8 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     expect(message).toContain('route hop count=4');
     expect(message).toContain('sleepMode=on');
     expect(message).toContain('firstHopApproaching=true');
+    // #1447 — displayOnlyEstimate strategy 라벨이 Share dump에 포함돼야 한다.
+    expect(message).toContain('displayOnlyEstimate=lockless-route-hop');
     shareSpy.mockRestore();
   });
 
