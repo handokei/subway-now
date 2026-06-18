@@ -1892,7 +1892,7 @@ describe('useFusedNearestStation', () => {
       const liveStation = MOCK_STATIONS.chungmuro; // 사용자가 이동한 현재 station
       mockUseNearest.mockReturnValue(
         gpsBase({
-          result: { station: stickyStation, distanceKm: 1.0 }, // sticky override
+          result: { station: stickyStation, distanceKm: 1 }, // sticky override
           liveResult: { station: liveStation, distanceKm: 0.05 }, // 실 GPS
           stickyDisplayOnly: stickyStation,
           source: 'sticky' as const,
