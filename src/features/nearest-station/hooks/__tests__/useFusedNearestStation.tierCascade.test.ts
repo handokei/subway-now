@@ -120,21 +120,24 @@ describe('#1418 Tier 5 reject — lockless-route-hop forward ratchet 차단', ()
     expect(result.result.current.surfaceSSOTActive).toBe(true);
   });
 
-  it('실측 신호 없음(arrival 없음) → Tier 5 fallback 허용 (dead zone)', () => {
-    // 진짜 dead zone: GPS만 있고 arrival 신호 없음 → surfaceSSOT 미합의.
-    // lockless-route-hop이 적분 결과로 forward ratchet 가능.
+  it('#1437 실측 신호 없음(arrival 없음) → estimator는 displayOnly만, fire path는 GPS', () => {
+    // 진짜 dead zone: GPS만 있고 arrival 신호 없음. 이전 정책에서는 lockless-route-hop이
+    // forward ratchet 했지만, ADR-015 §2 박탈로 fire path는 GPS('gps') 유지.
+    // estimator는 displayOnlyEstimate 채널로만 노출.
     const result = setupLocklessTripAtYongmasan({
       gpsAccuracy: 14,
       arrivalAtYongmasan: null,
     });
 
-    // 실측 신호 부재 → Tier 5 허용 → estimator override → boarding-lock-interp.
-    expect(result.result.current.source).toBe('boarding-lock-interp');
+    expect(result.result.current.source).not.toBe('boarding-lock-interp');
     expect(result.result.current.surfaceSSOTActive).toBe(false);
+    // 시간 적분 strategy는 currentHopIndex에서도 박탈
+    expect(result.result.current.currentHopIndex).toBeNull();
   });
 
-  it('GPS accuracy 너무 큼(>30m) → surfaceSSOT 미합의 → 실측 신호 부재 → Tier 5 허용', () => {
+  it('#1437 GPS accuracy 너무 큼(>30m) → surfaceSSOT 미합의여도 estimator override 박탈', () => {
     // 지하 fallback 등으로 accuracy 50m → Tier 1 surface 미충족.
+    // 이전엔 Tier 5 허용으로 override됐지만 ADR-015 §2 박탈.
     const result = setupLocklessTripAtYongmasan({
       gpsAccuracy: 50,
       arrivalAtYongmasan: makeArrivalInfo({
@@ -146,7 +149,7 @@ describe('#1418 Tier 5 reject — lockless-route-hop forward ratchet 차단', ()
     });
 
     expect(result.result.current.surfaceSSOTActive).toBe(false);
-    // Tier 5 허용 → estimator override.
-    expect(result.result.current.source).toBe('boarding-lock-interp');
+    expect(result.result.current.source).not.toBe('boarding-lock-interp');
+    expect(result.result.current.currentHopIndex).toBeNull();
   });
 });

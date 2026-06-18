@@ -103,8 +103,24 @@ interface UseFusedNearestStationReturn {
    * useStationAlarm이 station-passed 게이트(`isStationWithinHopWindow`)의 SSOT로 사용.
    * #1235 (D9 wire) — DebugModal Trip 섹션 currentHopIndex row의 SSOT도 동일.
    * estimator 미채택 시 null — 호출자가 firedAlarms 등의 fallback으로 추정.
+   *
+   * #1437 (E4 / ADR-015 §2) — 시간 적분 strategy(default-hop / lockless-route-hop / reanchored-hop)는
+   * 본 필드에서 박탈된다(null로 노출). 시간 적분이 fire path 게이트의 SSOT가 되면
+   * 사용자 실제 위치를 추월해 false station-passed fire/dedup 누적 회귀를 일으킨다.
+   * UI 추적용으로는 displayOnlyEstimate를 사용.
    */
   currentHopIndex: number | null;
+  /**
+   * #1437 (E4 / ADR-015 §2) — estimator 결과의 표시 전용 채널.
+   * DebugModal/UI 위치 추적용. fire path는 본 필드를 읽지 않는다 (시간 적분 결과의 fire 권한 박탈).
+   * 모든 strategy(live-position / arrival-eta / reanchored-hop / default-hop / lockless-route-hop)가
+   * 그대로 노출돼 디버그 인프라에서 strategy 라벨 추적이 가능하다.
+   */
+  displayOnlyEstimate: {
+    station: Station;
+    strategy: import('../../route/utils/stationProgressEstimator').StationProgressStrategy;
+    index: number;
+  } | null;
   /**
    * #1208 — 현재 trip의 arc(탑승역~다음 waypoint) station 배열.
    * useStationAlarm의 hop window 게이트 입력 및 firedAlarms 기반 fallback hop 계산용.
@@ -787,105 +803,30 @@ export function useFusedNearestStation(
     currentIdxHint,
   });
 
-  // #662 invariant: estimate가 boardingLock이 active일 때만 만들어지고 arcStations(route segment)
-  // 위로만 전진하므로 lock.boardingLine 외 노선이 들어올 수 없음 — #662 가드 별도 적용 불필요.
+  // #1437 (E4 / ADR-015 §2) — interp/sticky/route-hop fire 권한 영구 박탈.
   //
-  // ADR-008 #739 — monotone forward 가드 유지.
-  // 'station-passed' 알람은 lastNotifiedStationId로 dedup하나, 통과한 역 id가 바뀌면 새 알람을 발사한다.
-  // backward 정정 허용 시 이미 통과한 역의 알람이 재발사되어 사용자 혼란. ReanchoredHop이 적분을 1 hop으로
-  // 제한해 잘못된 forward를 구조적으로 막으므로 forward 가드만으로도 ADR §원인 ③의 누적 drift는 해소된다.
-  // LivePosition으로 fusion 자체가 이미 정정되는 경우(positionTrainResult branch)에는 estimator override
-  // 자체가 일어나지 않으므로 backward 정정 손실 없음.
-  if (estimate && arcStations.length > 0) {
-    const chosenIdx = arcIndexOfStation(arcStations, result?.station ?? null);
-    // Seam B (#898): hop-time 적분 전략(③④)에 forward observation ceiling 적용 —
-    // LivePosition/ArrivalEta dead-zone에서 적분이 물리 위치보다 앞서 발산하면 알람·LA·위젯이
-    // 모두 잘못된 "다음 역"을 소비(2026-06-05 13:19 transfer/early/건대입구 fired @ 성수).
-    // 실시간 신호(①LivePosition·②ArrivalEta) 외 모든 strategy는 cap 대상 — 부정형 분기로
-    // 신규 strategy(Seam G 등)가 추가될 때 기본 cap 적용 되도록 안전 방향 디폴트.
-    //
-    // #1207 (Epic #1204 D1) — lockless-route-hop은 boardingLock 없음 → boardingIdx=-1, lastObserved
-    // 미갱신 → lastRealObservedIdx=-1로 ceiling이 idx 0에 박혀 lockless trip이 영구 0번 hop에 정지.
-    // lockless 전략 자체가 시간 적분 SSOT(D2 hop window 게이트의 source of truth) — observation
-    // ceiling을 면제한다. 잘못된 forward 발산 방지는 lockless 분기 내 arc clamp + over-terminal cap이 담당.
-    const isInterpolated =
-      estimate.strategy !== 'live-position' &&
-      estimate.strategy !== 'arrival-eta' &&
-      estimate.strategy !== 'lockless-route-hop';
-    let withinObservationCeiling = true;
-    if (isInterpolated) {
-      // positionTrainResult non-null → freshTrainProgress non-null → tryLivePosition='live-position' →
-      // isInterpolated=false → 이 블록 도달 불가. positionTrainResult는 항상 null.
-      // 향후 새 전략(non-live/non-arrival)이 추가될 때를 대비한 future-proofing.
-      const livePositionIdx = /* istanbul ignore next */ positionTrainResult
-        ? /* istanbul ignore next */ arcIndexOfStation(arcStations, positionTrainResult.station)
-        : -1;
-      const reanchoredObservedIdx = lastObservedRef.current?.arcIndex ?? -1;
-      // estimate가 non-null이면 boardingLock도 non-null(estimator 245 가드) — false branch 도달 불가.
-      const boardingIdx = boardingLock
-        ? arcStations.findIndex((s) => s.id === boardingLock.boardingStationId)
-        : /* istanbul ignore next */ -1;
-      const lastRealObservedIdx = Math.max(
-        livePositionIdx,
-        reanchoredObservedIdx,
-        boardingIdx,
-      );
-      withinObservationCeiling = estimate.index <= lastRealObservedIdx + 1;
-    }
-    // #1365 — lockless-route-hop은 ceiling 면제(시간 적분 SSOT)지만 환승역에서 같은
-    // hop index에 다른 line의 stop이 존재할 수 있다. 채택 전 line 검증: GPS 최근접
-    // (candidates[0]) line과 일치하지 않으면 fallback(GPS) — 잘못된 line의 station-passed/
-    // destination 알람 차단. 다른 strategy(live-position / arrival-eta)는 fusion 자체가 실시간
-    // 신호로 line이 강제되므로 면제. lockless trip은 lock 부재로 lastObservedRef도 anchor되지
-    // 않아 currentIdxHint를 SSOT로 신뢰할 수 없으므로 GPS 최근접만 cross-check 기준.
-    let withinLineGuard = true;
-    if (estimate.strategy === 'lockless-route-hop') {
-      const gpsNearestLine = candidates[0]?.station.line ?? null;
-      withinLineGuard = estimate.station.line === gpsNearestLine;
-    }
-    // #1382 — motion 명시 정지(true) 시 시간 적분 forward ratchet 보류. undefined(warmup) /
-    // false(이동·미지원)는 기존 동작. consensus 게이트(#1363, movementGate.ts)는 confidence
-    // 라벨 안정성을 별도 책임 — 라벨/forward 이동을 분리. 정지 trip에서 origin chip / 위젯
-    // mirror가 잘못된 다음 역으로 forward 표시되는 회귀(2026-06-16 18:11~18:12) 차단.
-    //
-    // #1418 — Tier 5 reject 게이트. 시간 적분 strategy(lockless-route-hop / default-hop)는
-    // 실측 신호(SSOT / lastObservedRef / positionTrainResult)가 하나라도 활성이면 forward ratchet 차단.
-    //
-    // boardingLock 자체는 본 게이트에서 제외:
-    //   - default-hop은 boardingLock.boardedAt이 anchor라 lock 활성이 strategy의 *입력*이다.
-    //     lock 활성을 reject 신호로 쓰면 default-hop이 영구 차단되어 dead zone fallback이 무력화.
-    //   - lockless-route-hop은 lock 부재 상황이라 boardingLock 검사 자체가 무의미.
-    //
-    // 실시간 strategy(live-position / arrival-eta / reanchored-hop)는 strategy 자체가 실측 기반이라
-    // 면제 — 본 게이트는 isTimeIntegration=true 케이스에만 적용.
-    const isTimeIntegration =
-      estimate.strategy === 'lockless-route-hop' || estimate.strategy === 'default-hop';
-    const realtimeSignalActive =
-      surfaceSSOT !== null ||
-      undergroundSSOT !== null ||
-      lastObservedRef.current !== null ||
-      positionTrainResult !== null;
-    const passesTier5Gate = !isTimeIntegration || !realtimeSignalActive;
-    if (
-      (chosenIdx === -1 || estimate.index > chosenIdx) &&
-      withinObservationCeiling &&
-      withinLineGuard &&
-      motionStationary !== true &&
-      passesTier5Gate
-    ) {
-      const distanceKm = gps.userLocation
-        ? haversine(
-            gps.userLocation.lat,
-            gps.userLocation.lng,
-            estimate.station.lat,
-            estimate.station.lng,
-          )
-        : 0;
-      result = { station: estimate.station, distanceKm };
-      confidence = 'boarding-lock-interp';
-      source = 'boarding-lock-interp';
-    }
-  }
+  // estimator(default-hop / lockless-route-hop / reanchored-hop)는 모두 시간 적분 기반 추정 신호다.
+  // 2026-06-18 trip dump L335 13:26:14 `interp 뚝섬 d=827m, gp=성수, rt=성수` 케이스가 보여주듯,
+  // 시간 적분이 사용자 실제 위치를 추월해 false station-passed fire를 일으키고, dedup 누적으로
+  // 실측 신호 도착 시 알람이 빠지는 회귀를 만든다.
+  //
+  // ADR-015 §2: estimator 결과는 fire path 입력(result/confidence/source/currentHopIndex)에서 분리.
+  //   - fire path 입력: 실측 신호(SSOT / lastObservedRef / positionTrainResult / lock + arrival)만 채택.
+  //   - 표시 채널: estimator 결과는 `displayOnlyEstimate`로만 노출 — DebugModal/UI 추적에 유지.
+  //
+  // 이전 정책(#1418 Tier 5 reject 게이트, lockless/default만 reject + reanchored override 허용,
+  // #1207 D2 hop window 게이트가 estimate.index를 currentHopIndex로 사용) 모두 본 PR로 박탈.
+  // estimator 호출과 디버그 buffer push(아래)는 유지 — UI/측정 인프라용.
+  //
+  // 관련:
+  //   - lesson_lockless_route_hop_time_integration_ssot_assumption.md (시간 적분 SSOT 가정 결함)
+  //   - lesson_train_progressing_source_strategy_blindness.md (upstream fusion arbitration에서 차단)
+  const estimatorIsTimeIntegration =
+    estimate?.strategy === 'lockless-route-hop'
+    || estimate?.strategy === 'default-hop'
+    || estimate?.strategy === 'reanchored-hop';
+  const fireSafeHopIndex =
+    estimate != null && !estimatorIsTimeIntegration ? estimate.index : null;
 
   // #1401 — 열차 진행(trainProgressing) 신호. 직전 tick 대비 fusion result.station이 arc 위에서
   // advance(idx 증가)했는지. forward-only: 동일/감소는 false. arcKey 변경(새 trip arc) 시 리셋 —
@@ -1117,7 +1058,13 @@ export function useFusedNearestStation(
     positionStability,
     estimatorStrategy: estimate?.strategy ?? null,
     // D2(#1208) + #1235 (D9 wire) — useStationAlarm hop window 게이트 + DebugModal Trip/Fusion/GPS 섹션 SSOT.
-    currentHopIndex: estimate?.index ?? null,
+    // #1437 (E4 / ADR-015 §2) — 시간 적분 strategy(default-hop / lockless-route-hop / reanchored-hop)는
+    // fire path 입력에서 박탈. estimator 결과는 displayOnlyEstimate로만 노출.
+    currentHopIndex: fireSafeHopIndex,
+    // #1437 — UI/DebugModal 추적용 별 채널. fire path는 본 필드를 읽지 않는다.
+    displayOnlyEstimate: estimate
+      ? { station: estimate.station, strategy: estimate.strategy, index: estimate.index }
+      : null,
     arcStations,
     detectionTier: detectionVerdict.confidence,
     detectionSignalMask: detectionVerdict.signalMask,

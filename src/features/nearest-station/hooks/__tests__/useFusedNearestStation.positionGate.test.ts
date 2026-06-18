@@ -417,23 +417,18 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       tripStartStorage.getTripStartedAt.mockResolvedValue(null);
     });
 
-    it('lock 없음 + routeCtx + 시간 경과 → lockless-route-hop이 arc hop time lookup closure 호출', () => {
-      // lock 없음 + routeCtx 있음 → 첫 render에 locklessTripStartRef 캡처(=T0).
-      // 5분 경과 → hopsElapsedFrom이 0번 hop의 시작 노선('7') lookup → hopTimeMsForHop 호출.
-      // Closure 내부 (segmentLine = arc[fromIdx].line) 경로 커버.
-      // (mockPos는 beforeEach에서 null → trainProgress null → positionTrainResult null.)
+    it('#1437 lock 없음 + routeCtx + 시간 경과 → lockless-route-hop이 displayOnly 채널에 노출', () => {
+      // estimator closure 호출 경로 커버는 유지 — 다만 fire path는 GPS, estimator는 displayOnly.
       const result = runEstimatorScenario({ elapsedMs: 5 * 60_000 });
-
-      // lock 없음 + estimator 채택 → boarding-lock-interp.
-      expect(result.current.source).toBe('boarding-lock-interp');
+      expect(result.current.source).not.toBe('boarding-lock-interp');
+      expect(result.current.displayOnlyEstimate?.strategy).toBe('lockless-route-hop');
     });
   });
 
-  describe('observation ceiling — line 564 커버', () => {
-    it('interpolated estimate + positionTrainResult null → livePositionIdx=-1 분기 통과', () => {
+  describe('observation ceiling — estimator displayOnly 노출', () => {
+    it('#1437 interpolated estimate + positionTrainResult null → fire path는 GPS, estimator는 displayOnly', () => {
       // boardingLock 활성 + 90s 경과 → estimator default-hop 채택 (isInterpolated=true).
-      // 열차 위치 없음 → positionTrainResult null → line 564 ternary false branch(: -1) 실행.
-      // (mockPos는 beforeEach에서 null로 설정됨 → trainProgress null → positionTrainResult null.)
+      // ADR-015 §2 박탈로 fire path는 GPS('gps') 유지. displayOnly만 estimator strategy 노출.
       const result = runEstimatorScenario({
         lock: makeLock({
           trainCode: 'T-INTERP',
@@ -445,7 +440,8 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
         trainCode: 'T-INTERP',
       });
 
-      expect(result.current.source).toBe('boarding-lock-interp');
+      expect(result.current.source).not.toBe('boarding-lock-interp');
+      expect(result.current.displayOnlyEstimate?.strategy).toBe('default-hop');
     });
   });
 
@@ -489,36 +485,34 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       expect(result.current.result?.station.id).toBe(chungmuro3.id);
     });
 
-    it('estimatedLine = gpsNearestLine → line guard 통과 (estimator 채택)', () => {
-      // 회귀 차단: 같은 line이면 기존 동작 (lockless-route-hop 채택)이 유지되어야 한다.
+    it('#1437 estimatedLine = gpsNearestLine → estimator는 displayOnly에만 노출 (fire path 박탈)', () => {
+      // 같은 line('7')이어도 ADR-015 §2 박탈 — line guard 통과해도 fire path는 GPS.
       const result = runLine7LocklessRouteScenario(gpsBase());
 
-      // 같은 line('7') → line guard 통과 → estimator override 채택.
-      expect(result.current.source).toBe('boarding-lock-interp');
+      expect(result.current.source).not.toBe('boarding-lock-interp');
+      expect(result.current.displayOnlyEstimate?.strategy).toBe('lockless-route-hop');
     });
   });
 
   // #1382 — lock-interp adoption 게이트에 motion=stationary 가드 추가.
   // 정지 trip에서 시간 적분 forward ratchet 보류. consensus 게이트(#1363)와 분리 책임.
-  describe('#1382 lock-interp forward ratchet — motion=stationary 보류', () => {
-    it('motionStationary=true → forward ratchet 보류 (lock-interp 미채택)', () => {
-      // estimator는 다음 hop을 가리키지만, 사용자가 명시적 정지 상태.
-      // 게이트 차단 → result/source가 boarding-lock-interp로 승격되지 않음.
+  // #1437 (ADR-015 §2) — 시간 적분 strategy의 fire 권한 영구 박탈로 #1382 motion 가드는
+  // 본 cascade 단에서 무의미해졌다(어차피 ratchet 자체가 사라짐). motion 가드는 호출자(useStationAlarm)의
+  // station-passed evaluateMovement에서 별도 책임. 본 describe는 회귀 가드로만 유지.
+  describe('#1382 lock-interp forward ratchet — motion=stationary 보류 (#1437 박탈로 모두 미채택)', () => {
+    it('motionStationary=true → fire path 미승격', () => {
       const result = runLockedMotionScenario(true);
       expect(result.current.source).not.toBe('boarding-lock-interp');
     });
 
-    it('motionStationary=undefined(warmup) → 기존 ratchet 동작 유지', () => {
-      // motion warmup 상태(fg-hydrate 직후 ~30s)는 기존 동작 유지 — 정지 신호 미확정.
+    it('motionStationary=undefined(warmup) → fire path 미승격 (#1437 박탈)', () => {
       const result = runLockedMotionScenario(undefined);
-      expect(result.current.source).toBe('boarding-lock-interp');
+      expect(result.current.source).not.toBe('boarding-lock-interp');
     });
 
-    it('motionStationary=false → 기존 ratchet 동작 유지 (이동 또는 미지원)', () => {
-      // motion 신호가 이동 중이라고 보고하거나 디바이스 미지원으로 false fallback.
-      // forward ratchet 정상.
+    it('motionStationary=false → fire path 미승격 (#1437 박탈)', () => {
       const result = runLockedMotionScenario(false);
-      expect(result.current.source).toBe('boarding-lock-interp');
+      expect(result.current.source).not.toBe('boarding-lock-interp');
     });
   });
 });
