@@ -367,3 +367,43 @@ describe('recordAutoLockConfidence (#1171)', () => {
     );
   });
 });
+
+describe('attemptAutoLock allowedLines gate (#1439 ADR-015 §9)', () => {
+  it('targetWaypoint.line이 allowedLines 안 → lock 합성 허용', async () => {
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      allowedLines: new Set(['2', '5']),
+    });
+    expect(lock?.line).toBe('2');
+  });
+
+  it('targetWaypoint.line이 allowedLines 밖 → null (cross-line 매핑 reject)', async () => {
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target, // line=2
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      allowedLines: new Set(['5', '6']),
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('allowedLines 미전달 → 구 호출자 호환 (검증 skip)', async () => {
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+    });
+    expect(lock).not.toBeNull();
+  });
+});

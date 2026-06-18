@@ -15,9 +15,10 @@
  */
 
 import { pickAutoTrainCode } from './boardingPrompt';
+import { isLockLineAllowed } from './consensusGate';
 import { subwayIdForLine } from './lineAlias';
 import type { SeoulArrivalClient } from './seoul';
-import type { BoardingLockMeta, Trip, Waypoint } from './types';
+import type { BoardingLockMeta, LineNumber, Trip, Waypoint } from './types';
 
 /**
  * 자동 swap 후 새 lock의 TTL. 환승 직후엔 사용자가 즉시 새 lock을 client에서 보낼 가능성이
@@ -54,6 +55,12 @@ export interface AttachLockInputs {
   targetWaypoint: Waypoint;
   seoul: SeoulArrivalClient;
   now: number;
+  /**
+   * #1439 (E6, ADR-015 §9) — trip route allowedLines. `targetWaypoint.line`이 본 set 밖이면
+   * swap을 abort해 cross-line 잘못된 매핑(분당선 variant 같은 fusion 회귀)을 차단한다.
+   * 미전달 시 검증 skip(구 호출자 호환).
+   */
+  allowedLines?: Set<LineNumber>;
 }
 
 /**
@@ -71,10 +78,12 @@ export interface AttachLockInputs {
 export async function attachTrainCodeForLeg(
   inputs: AttachLockInputs,
 ): Promise<BoardingLockMeta | null> {
-  const { targetWaypoint, seoul, now, trip } = inputs;
+  const { targetWaypoint, seoul, now, trip, allowedLines } = inputs;
   const line = targetWaypoint.line;
   const subwayId = subwayIdForLine(line);
   if (!subwayId) return null;
+  // #1439 (E6, ADR-015 §9) — line이 trip route allowedLines 밖이면 swap abort.
+  if (allowedLines && !isLockLineAllowed({ line }, allowedLines)) return null;
 
   const segmentStations = buildLegSegmentStations(trip.waypoints, line);
   if (segmentStations.length === 0) return null;
