@@ -3,8 +3,8 @@
  * 단위 테스트. ADR-015 §1 Deterministic Environment SSOT.
  */
 
-const path = require('path');
-const os = require('os');
+const path = require('node:path');
+const os = require('node:os');
 const {
   classifyFloor,
   parseCsv,
