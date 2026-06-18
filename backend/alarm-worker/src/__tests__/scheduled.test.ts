@@ -1727,61 +1727,45 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expect(stored.boardingLock).toBeUndefined();
       });
 
-      it('#1402 release floor fire 페이로드에 origin=vanish-release stamp', async () => {
+      // vanish-release/vanish-fallback 양 origin의 push payload 검증용 헬퍼.
+      // SonarCloud duplication 차단: 시나리오 실행 + 매칭 call body 추출을 한 곳에 모음.
+      async function capturePushBody(setup: {
+        hopElapsed: boolean;
+        pushId: string;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      }): Promise<{ data: any }> {
         const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
         await runFallbackMotionScenario({
           motion: 'automotive',
-          hopElapsed: false,
-          pushId: 'p1402-origin',
+          hopElapsed: setup.hopElapsed,
+          pushId: setup.pushId,
           apnsFetch,
         });
         const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
-        const releaseCall = calls.find((c) => {
+        const matchedCall = calls.find((c) => {
           const body = JSON.parse(c[1].body as string);
-          return body.data?.pushId === 'p1402-origin';
+          return body.data?.pushId === setup.pushId;
         });
-        expect(releaseCall).toBeDefined();
-        const body = JSON.parse((releaseCall![1] as RequestInit).body as string);
+        expect(matchedCall).toBeDefined();
+        return JSON.parse(matchedCall![1].body as string);
+      }
+
+      it('#1402 release floor fire 페이로드에 origin=vanish-release stamp', async () => {
+        const body = await capturePushBody({ hopElapsed: false, pushId: 'p1402-origin' });
         expect(body.data.origin).toBe('vanish-release');
       });
 
       // #1438 (E5) — vanish-release 경로는 floor fire 직후 lock을 release하므로 device가 즉시
       // 로컬 store를 sync할 수 있도록 lockReleasedReason='vanish'를 forward.
       it('#1438 (E5) vanish-release fire 페이로드에 lockReleasedReason=vanish stamp', async () => {
-        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-        await runFallbackMotionScenario({
-          motion: 'automotive',
-          hopElapsed: false,
-          pushId: 'p1438-vanish',
-          apnsFetch,
-        });
-        const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
-        const releaseCall = calls.find((c) => {
-          const body = JSON.parse(c[1].body as string);
-          return body.data?.pushId === 'p1438-vanish';
-        });
-        expect(releaseCall).toBeDefined();
-        const body = JSON.parse(releaseCall![1].body as string);
+        const body = await capturePushBody({ hopElapsed: false, pushId: 'p1438-vanish' });
         expect(body.data.lockReleasedReason).toBe('vanish');
       });
 
       // vanish-fallback 경로(hop 시간 경과)는 caller(advanceBoardingLockWaypoint)가 별도 transfer
       // release push를 보내므로 fallback 자체에는 lockReleasedReason을 stamp하지 않는다.
       it('#1438 (E5) vanish-fallback origin은 lockReleasedReason omit', async () => {
-        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
-        await runFallbackMotionScenario({
-          motion: 'automotive',
-          hopElapsed: true,
-          pushId: 'p1438-fallback',
-          apnsFetch,
-        });
-        const calls = apnsFetch.mock.calls as unknown as Array<[string, RequestInit]>;
-        const fallbackCall = calls.find((c) => {
-          const body = JSON.parse(c[1].body as string);
-          return body.data?.pushId === 'p1438-fallback';
-        });
-        expect(fallbackCall).toBeDefined();
-        const body = JSON.parse(fallbackCall![1].body as string);
+        const body = await capturePushBody({ hopElapsed: true, pushId: 'p1438-fallback' });
         expect(body.data.origin).toBe('vanish-fallback');
         expect('lockReleasedReason' in body.data).toBe(false);
       });
