@@ -67,6 +67,7 @@ coverage-temp/
 
 # Project docs & data (별도 이슈로 관리)
 docs/*
+!docs/agents/
 !docs/ci/
 !docs/decisions/
 !docs/ops/
@@ -80,3 +81,15 @@ subway-now_icon.png
 # 데이터 덤프
 # (tasks/는 epic SSOT·작업 계획 문서를 repo로 관리하기로 결정 — 2026-06-11, #1008 SSOT 유실 건)
 scripts/CARD_SUBWAY_MONTH_*.csv
+
+# wrangler tail watchdog 산출물 (#1453)
+tasks/wrangler-tail-watchdog.jsonl
+tasks/wrangler-tail-watchdog.jsonl.*
+tasks/wrangler-tail-watchdog.err
+tasks/wrangler-tail-watchdog.alert
+tasks/wrangler-tail-*.jsonl
+tasks/tail-watchdog-stdout.log
+tasks/launchd-stdout.log
+tasks/launchd-stderr.log
+tasks/launchd-prune-stdout.log
+tasks/launchd-prune-stderr.log
