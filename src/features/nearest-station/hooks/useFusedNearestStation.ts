@@ -505,19 +505,19 @@ export function useFusedNearestStation(
   // 동일 ref면 발화하지 않아 TTL이 자연 만료된다. lockless trip에서는 기존 #445 sticky-락
   // 해제 동작이 유지되어야 하므로 본 refresh는 lock 활성 + lockedTrainCode 일치 시만 발화.
   // ADR-015 §3 지하 분기 strong C 합의 게이트.
-  const lockedTrainCodeAlive = useMemo(() => {
-    if (!boardingLock) return false;
-    const code = boardingLock.trainCode;
-    if (!code) return false;
-    return candidateTrains.some((c) => c.trainNo === code);
+  // boardingLock.trainCode가 이번 폴링 candidateTrains에서 관찰되면 strong C 살아있음.
+  // 두 값 중 하나라도 빠지면 null → effect는 비활성 + positionTrainResult TTL 게이트 정상 적용.
+  const aliveLockedTrainCode = useMemo<string | null>(() => {
+    const code = boardingLock?.trainCode;
+    if (code == null) return null;
+    return candidateTrains.some((c) => c.trainNo === code) ? code : null;
   }, [candidateTrains, boardingLock]);
+  const lockedTrainCodeAlive = aliveLockedTrainCode != null;
   useEffect(() => {
-    if (!lockedTrainCodeAlive) return;
+    if (aliveLockedTrainCode == null) return;
     lastProgressTsRef.current = Date.now();
-    if (boardingLock?.trainCode) {
-      lastConfirmedTrainNoRef.current = boardingLock.trainCode;
-    }
-  }, [lockedTrainCodeAlive, boardingLock]);
+    lastConfirmedTrainNoRef.current = aliveLockedTrainCode;
+  }, [aliveLockedTrainCode]);
 
   const positionTrainResult: NearestStationResult | null = useMemo(() => {
     if (!trainProgress) return null;
