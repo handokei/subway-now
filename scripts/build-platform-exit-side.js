@@ -18,8 +18,8 @@
 
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const ARCH_CSV_PATH = path.join(PROJECT_ROOT, 'scripts/fixtures/seoul-station-architecture.csv');
@@ -52,8 +52,7 @@ function parseCsvLine(line) {
   const cols = [];
   let cur = '';
   let inQuote = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
+  for (const ch of line) {
     if (ch === '"') {
       inQuote = !inQuote;
       continue;
@@ -151,6 +150,37 @@ function buildTerminalIndex(lineTerminals) {
   return index;
 }
 
+// 한 역의 하차문 방향을 결정한다.
+// 시종착역이면 분기/회차로 양쪽 문이 열리므로 무조건 'both'로 덮어쓴다.
+// CSV 매칭 실패 + 시종착도 아니면 null (caller가 unknown 누적).
+function resolveStationSide(station, archMap, depthMap, terminalIndex) {
+  const isTerminal = terminalIndex.has(`${station.line}|${station.name}`);
+  const lookup = lookupFormat(station.line, station.name, archMap, depthMap);
+  const csvSide = lookup ? mapFormatToSide(lookup.format) : null;
+  if (isTerminal) {
+    return { side: 'both', terminalOverride: true, lookup };
+  }
+  return { side: csvSide, terminalOverride: false, lookup };
+}
+
+function printBuildReport(supported, stats, unknownList) {
+  console.log('=== Platform Exit Side 빌드 완료 ===');
+  console.log(`출력: ${path.relative(PROJECT_ROOT, OUTPUT_PATH)}`);
+  console.log(`총 1~8호선 stations.json: ${supported.length}`);
+  console.log(`매핑 결정: ${supported.length - stats.unknown}`);
+  console.log(`  right: ${stats.right}`);
+  console.log(`  left:  ${stats.left}`);
+  console.log(`  both:  ${stats.both} (시종착 override ${stats.terminalOverride}건 포함)`);
+  console.log(`unknown: ${stats.unknown} (CSV 미수록 — 매핑 누락)`);
+
+  if (unknownList.length > 0) {
+    console.log('\n--- unknown 리스트 (사용자 검수 필요) ---');
+    for (const entry of unknownList) {
+      console.log(`  ${entry.id} ${entry.line}호선 ${entry.name}`);
+    }
+  }
+}
+
 function build() {
   const archMap = loadArchCsv();
   const depthMap = loadDepthCsv();
@@ -169,19 +199,13 @@ function build() {
     .sort((a, b) => a.id.localeCompare(b.id));
 
   for (const station of supported) {
-    const isTerminal = terminalIndex.has(`${station.line}|${station.name}`);
-    const lookup = lookupFormat(station.line, station.name, archMap, depthMap);
-
-    let side = lookup ? mapFormatToSide(lookup.format) : null;
-    if (isTerminal && side != null) {
-      // CSV에 있는데 시종착 override 적용
-      side = 'both';
-      stats.terminalOverride++;
-    } else if (isTerminal && side == null) {
-      // CSV에 없어도 시종착이면 both
-      side = 'both';
-      stats.terminalOverride++;
-    }
+    const { side, terminalOverride, lookup } = resolveStationSide(
+      station,
+      archMap,
+      depthMap,
+      terminalIndex,
+    );
+    if (terminalOverride) stats.terminalOverride++;
 
     if (side == null) {
       stats.unknown++;
@@ -202,22 +226,7 @@ function build() {
   // 파일 끝 newline 유지.
   fs.writeFileSync(OUTPUT_PATH, JSON.stringify(output, null, 2) + '\n', 'utf8');
 
-  // 콘솔 리포트
-  console.log('=== Platform Exit Side 빌드 완료 ===');
-  console.log(`출력: ${path.relative(PROJECT_ROOT, OUTPUT_PATH)}`);
-  console.log(`총 1~8호선 stations.json: ${supported.length}`);
-  console.log(`매핑 결정: ${supported.length - stats.unknown}`);
-  console.log(`  right: ${stats.right}`);
-  console.log(`  left:  ${stats.left}`);
-  console.log(`  both:  ${stats.both} (시종착 override ${stats.terminalOverride}건 포함)`);
-  console.log(`unknown: ${stats.unknown} (CSV 미수록 — 매핑 누락)`);
-
-  if (unknownList.length > 0) {
-    console.log('\n--- unknown 리스트 (사용자 검수 필요) ---');
-    for (const entry of unknownList) {
-      console.log(`  ${entry.id} ${entry.line}호선 ${entry.name}`);
-    }
-  }
+  printBuildReport(supported, stats, unknownList);
 
   return { output, stats, unknownList };
 }
