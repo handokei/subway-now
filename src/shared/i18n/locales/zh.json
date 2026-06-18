@@ -19,7 +19,11 @@
     "locating": "正在定位...",
     "backgroundDeniedTitle": "需要后台位置权限",
     "backgroundDeniedBody": "要在后台接收闹钟，请在设置中将位置访问设为\"始终允许\"。",
-    "openSettings": "打开设置"
+    "openSettings": "打开设置",
+    "changeRevokedTitle": "位置权限已被撤销",
+    "changeRevokedBody": "位置访问已关闭，闹钟可能不会响起。请在设置中重新允许位置访问。",
+    "changeDowngradedTitle": "后台位置权限已关闭",
+    "changeDowngradedBody": "\"始终允许\"已改为\"使用App时\"，后台闹钟可能会丢失。请在设置中重新设为\"始终允许\"。"
   },
   "home": {
     "arrived": "已到达!",

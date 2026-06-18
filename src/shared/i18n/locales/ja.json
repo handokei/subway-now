@@ -19,7 +19,11 @@
     "locating": "位置情報を取得中...",
     "backgroundDeniedTitle": "バックグラウンド位置情報の許可が必要です",
     "backgroundDeniedBody": "バックグラウンドでアラームを受け取るには、設定で位置情報を「常に許可」にしてください。",
-    "openSettings": "設定を開く"
+    "openSettings": "設定を開く",
+    "changeRevokedTitle": "位置情報の許可が取り消されました",
+    "changeRevokedBody": "位置情報がオフになり、アラームが鳴らない可能性があります。設定で位置情報の利用を再度許可してください。",
+    "changeDowngradedTitle": "バックグラウンドの位置情報が無効になりました",
+    "changeDowngradedBody": "「常に許可」が「Appの使用中のみ許可」に変更され、バックグラウンドアラームを受け取れない可能性があります。設定で「常に許可」に戻してください。"
   },
   "home": {
     "arrived": "到着!",

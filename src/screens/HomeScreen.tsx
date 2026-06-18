@@ -40,6 +40,8 @@ import { useTheme, typography, spacing, radius } from '../shared/theme';
 import { LineBadge } from '../shared/ui/LineBadge';
 import { LocationStateView } from '../shared/ui/LocationStateView';
 import { ServiceWindowBanner } from '../shared/ui/ServiceWindowBanner';
+import { PermissionChangeBanner } from '../shared/ui/PermissionChangeBanner';
+import { useLocationPermissionWatcher } from '../shared/hooks/useLocationPermissionWatcher';
 import { SourceBadge } from '../features/arrival/components/SourceBadge';
 import { resolveNotificationSource } from '../features/alarm/utils/notificationSource';
 import { ArrivalSourceNotice } from '../features/arrival/components/ArrivalSourceNotice';
@@ -611,6 +613,7 @@ export default function HomeScreen() {
     [selectTransferDetectLine],
   );
   useBackgroundLocation(destination);
+  const permissionWatcher = useLocationPermissionWatcher();
   useLiveActivityDismissBridge();
   useApnsTripRegistration({
     route,
@@ -862,6 +865,10 @@ export default function HomeScreen() {
                  wrapper로 padding을 두면 운행 중에도 phantom 여백이 남아 하단 레이아웃을
                  밀어내고 E2E scrollUntilVisible 회귀를 일으킨다(#1083). */}
             <ServiceWindowBanner stationName={effectiveOrigin.name} line={effectiveOrigin.line} />
+            <PermissionChangeBanner
+              change={permissionWatcher.change}
+              onAcknowledge={permissionWatcher.acknowledge}
+            />
             {/* Hero: origin station */}
             <View style={{ paddingHorizontal: spacing.xxl, paddingTop: spacing.xxxl - 4 }}>
               <Text
