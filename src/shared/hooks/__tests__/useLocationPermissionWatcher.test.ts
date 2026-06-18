@@ -20,6 +20,7 @@ jest.mock('react-native', () => ({
 import {
   classifyPermissionChange,
   useLocationPermissionWatcher,
+  type LocationPermissionChange,
 } from '../useLocationPermissionWatcher';
 
 type AppStateListener = (s: 'active' | 'background' | 'inactive') => void;
@@ -28,6 +29,28 @@ function captureAppStateListener(): AppStateListener {
   const last = mockAddEventListener.mock.calls.at(-1);
   if (!last) throw new Error('AppState.addEventListener not called');
   return last[1] as AppStateListener;
+}
+
+/**
+ * SonarCloud duplication 회피용 helper.
+ * setState 큐를 안정화하기 위해 두 cycle을 흘려보낸다.
+ * 여러 테스트에서 동일하게 반복되던 act+Promise 블록을 한 곳으로 모은다.
+ */
+async function flushTwoCycles() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+/** AppState 'active' 진입을 트리거하고 setState 큐를 비운다. */
+async function triggerAppStateActive() {
+  const listener = captureAppStateListener();
+  await act(async () => {
+    listener('active');
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 beforeEach(() => {
@@ -41,29 +64,19 @@ beforeEach(() => {
 });
 
 describe('classifyPermissionChange', () => {
-  it('unknown 관여 시 항상 none', () => {
-    expect(classifyPermissionChange('unknown', 'granted-always')).toBe('none');
-    expect(classifyPermissionChange('granted-always', 'unknown')).toBe('none');
-  });
-
-  it('같은 상태는 none', () => {
-    expect(classifyPermissionChange('granted-always', 'granted-always')).toBe('none');
-    expect(classifyPermissionChange('denied', 'denied')).toBe('none');
-  });
-
-  it('granted → denied는 revoked', () => {
-    expect(classifyPermissionChange('granted-always', 'denied')).toBe('revoked');
-    expect(classifyPermissionChange('granted-whileinuse', 'denied')).toBe('revoked');
-  });
-
-  it('granted-always → granted-whileinuse는 downgraded', () => {
-    expect(classifyPermissionChange('granted-always', 'granted-whileinuse')).toBe('downgraded');
-  });
-
-  it('상향(whileinuse → always)이나 denied → granted는 none', () => {
-    expect(classifyPermissionChange('granted-whileinuse', 'granted-always')).toBe('none');
-    expect(classifyPermissionChange('denied', 'granted-always')).toBe('none');
-    expect(classifyPermissionChange('denied', 'granted-whileinuse')).toBe('none');
+  it.each<[string, Parameters<typeof classifyPermissionChange>[0], Parameters<typeof classifyPermissionChange>[1], LocationPermissionChange]>([
+    ['unknown(prev) 관여', 'unknown', 'granted-always', 'none'],
+    ['unknown(next) 관여', 'granted-always', 'unknown', 'none'],
+    ['같은 always', 'granted-always', 'granted-always', 'none'],
+    ['같은 denied', 'denied', 'denied', 'none'],
+    ['always → denied', 'granted-always', 'denied', 'revoked'],
+    ['whileinuse → denied', 'granted-whileinuse', 'denied', 'revoked'],
+    ['always → whileinuse (downgrade)', 'granted-always', 'granted-whileinuse', 'downgraded'],
+    ['상향 whileinuse → always', 'granted-whileinuse', 'granted-always', 'none'],
+    ['denied → always 상향', 'denied', 'granted-always', 'none'],
+    ['denied → whileinuse 상향', 'denied', 'granted-whileinuse', 'none'],
+  ])('%s', (_, prev, next, expected) => {
+    expect(classifyPermissionChange(prev, next)).toBe(expected);
   });
 });
 
@@ -92,43 +105,27 @@ describe('useLocationPermissionWatcher', () => {
   it('FG 조회 예외 시 status=unknown 유지', async () => {
     mockGetForeground.mockRejectedValue(new Error('boom'));
     const { result } = renderHook(() => useLocationPermissionWatcher());
-    // 비동기 처리 완료를 기다리기 위해 한 cycle 흘려보낸다.
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await flushTwoCycles();
     expect(result.current.status).toBe('unknown');
     expect(result.current.change).toBe('none');
   });
 
-  it('AppState active 진입 시 재조회 + 변화 감지 (revoked)', async () => {
+  it.each<[LocationPermissionChange, 'denied' | 'granted', LocationPermissionChange]>([
+    ['revoked', 'denied', 'revoked'],
+    ['downgraded', 'granted', 'downgraded'],
+  ])('AppState active 진입 시 %s 감지', async (label, nextFgOrBg, expected) => {
     const { result } = renderHook(() => useLocationPermissionWatcher());
     await waitFor(() => expect(result.current.status).toBe('granted-always'));
 
-    mockGetForeground.mockResolvedValue({ status: 'denied' });
-    const listener = captureAppStateListener();
-    await act(async () => {
-      listener('active');
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(result.current.status).toBe('denied');
-    expect(result.current.change).toBe('revoked');
-  });
-
-  it('AppState active 진입 시 downgrade 감지', async () => {
-    const { result } = renderHook(() => useLocationPermissionWatcher());
-    await waitFor(() => expect(result.current.status).toBe('granted-always'));
-
-    mockGetBackground.mockResolvedValue({ status: 'denied' });
-    const listener = captureAppStateListener();
-    await act(async () => {
-      listener('active');
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-    expect(result.current.status).toBe('granted-whileinuse');
-    expect(result.current.change).toBe('downgraded');
+    // revoked: FG를 denied로 / downgraded: BG를 denied로 (FG는 granted 유지)
+    if (label === 'revoked') {
+      mockGetForeground.mockResolvedValue({ status: nextFgOrBg });
+    } else {
+      mockGetBackground.mockResolvedValue({ status: 'denied' });
+    }
+    await triggerAppStateActive();
+    expect(result.current.change).toBe(expected);
+    expect(result.current.status).toBe(label === 'revoked' ? 'denied' : 'granted-whileinuse');
   });
 
   it('AppState background/inactive 진입은 재조회하지 않는다', async () => {
@@ -149,12 +146,7 @@ describe('useLocationPermissionWatcher', () => {
     await waitFor(() => expect(result.current.status).toBe('granted-always'));
 
     mockGetForeground.mockResolvedValue({ status: 'denied' });
-    const listener = captureAppStateListener();
-    await act(async () => {
-      listener('active');
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await triggerAppStateActive();
     expect(result.current.change).toBe('revoked');
 
     act(() => result.current.acknowledge());
