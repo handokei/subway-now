@@ -51,7 +51,7 @@ const TIMETABLES_DIR = path.join(__dirname, '..', 'src', 'data', 'timetables');
 const STATION_CODES_OUT = path.join(__dirname, '..', 'src', 'data', 'stationCodes.json');
 const FIRST_LAST_OUT = path.join(__dirname, '..', 'src', 'data', 'firstLastTrainTimes.json');
 
-const TARGET_LINES = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
+const TARGET_LINES = new Set(['1', '2', '3', '4', '5', '6', '7', '8', '9']);
 
 // SearchInfoBySubwayNameService.LINE_NUM → stations.json.line 매핑.
 // 1~9호선은 두 자리 표기를 한 자리로 정규화. 외부 노선은 best-effort(노선 자체가 stations.json에 부분만 존재).
@@ -91,8 +91,8 @@ async function fetchOnePage(apiKey, start, end) {
   let json;
   try {
     json = JSON.parse(text);
-  } catch (_e) {
-    throw new Error(`JSON parse failed at ${start}/${end}: ${text.slice(0, 200)}`);
+  } catch (e) {
+    throw new Error(`JSON parse failed at ${start}/${end} (${e.message}): ${text.slice(0, 200)}`);
   }
   const wrapper = json[SEARCH_INFO_SERVICE];
   if (!wrapper) {
@@ -162,7 +162,7 @@ function buildStationCodesFromStations(stationsJson, codeIndex) {
     const entry = codeIndex.get(key);
     if (entry) {
       out[s.id] = entry;
-    } else if (TARGET_LINES.includes(s.line)) {
+    } else if (TARGET_LINES.has(s.line)) {
       missing.push(s);
     }
   }
@@ -190,28 +190,35 @@ function firstRunningEntry(times) {
 
 function lastRunningEntry(times) {
   if (!Array.isArray(times) || times.length === 0) return null;
-  return times[times.length - 1];
+  return times.at(-1) ?? null;
+}
+
+const DAYS = ['weekday', 'saturday', 'sunday'];
+const DIRECTIONS = ['up', 'down'];
+
+function formatOrNull(raw) {
+  return raw === null ? null : formatHHmm(raw);
+}
+
+function deriveDayDirections(dayTimetable) {
+  const dayOut = {};
+  for (const dir of DIRECTIONS) {
+    const times = dayTimetable[dir];
+    const first = firstRunningEntry(times);
+    const last = lastRunningEntry(times);
+    if (first === null && last === null) continue;
+    dayOut[dir] = { first: formatOrNull(first), last: formatOrNull(last) };
+  }
+  return dayOut;
 }
 
 function deriveFirstLast(timetable) {
   // timetable = { weekday: { up: [], down: [] }, saturday: ..., sunday: ... }
   const out = {};
-  const days = ['weekday', 'saturday', 'sunday'];
-  const directions = ['up', 'down'];
-  for (const day of days) {
+  for (const day of DAYS) {
     const dayTimetable = timetable[day];
     if (!dayTimetable) continue;
-    const dayOut = {};
-    for (const dir of directions) {
-      const times = dayTimetable[dir];
-      const first = firstRunningEntry(times);
-      const last = lastRunningEntry(times);
-      if (first === null && last === null) continue;
-      dayOut[dir] = {
-        first: first !== null ? formatHHmm(first) : null,
-        last: last !== null ? formatHHmm(last) : null,
-      };
-    }
+    const dayOut = deriveDayDirections(dayTimetable);
     if (Object.keys(dayOut).length > 0) {
       out[day] = dayOut;
     }
@@ -223,7 +230,7 @@ function buildFirstLastTimes(stationsJson) {
   const out = {};
   const missing = [];
   for (const s of stationsJson) {
-    if (!TARGET_LINES.includes(s.line)) continue;
+    if (!TARGET_LINES.has(s.line)) continue;
     const timetablePath = path.join(TIMETABLES_DIR, `line-${s.line}.json`);
     if (!fs.existsSync(timetablePath)) {
       missing.push({ ...s, reason: 'timetable file 없음' });
