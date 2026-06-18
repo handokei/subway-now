@@ -20,6 +20,12 @@ describe('transferTimes', () => {
       ['2', '8', '잠실'],
       ['3', '4', '충무로'],
       ['2', '3', '교대'],
+      // #1459: 신규 CSV 1024 row 적용으로 채워진 호선쌍 — 회귀 가드.
+      ['1', '6', '석계'],
+      ['6', '1', '석계'],
+      ['9', 'airport', '김포공항'],
+      ['airport', '9', '김포공항'],
+      ['bundang', 'sinbundang', '정자'],
     ] as const)('returns positive seconds for %s↔%s @ %s', (fromLine, toLine, station) => {
       const seconds = getTransferSeconds(fromLine, toLine, station);
       expect(seconds).toBeGreaterThan(0);
