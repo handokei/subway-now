@@ -700,6 +700,119 @@ describe('useFusedNearestStation', () => {
         mockUsePositions.mockReset();
       }
     });
+
+    it('#1450 (B2): lock 활성 + arrival 폴링 동일 trainCode 지속 → TTL 만료해도 traincode 강등 없음', () => {
+      // lock 활성 trip에서 polling 5회 사이 60s 경과해도 candidateTrains에 동일 trainCode가
+      // 계속 관찰되면 strong C가 살아있다고 보고 TTL 게이트 면제.
+      jest.useFakeTimers();
+      try {
+        const lock: import('../../../../shared/types/boardingLock').BoardingLock = {
+          destinationId: 'dest-1',
+          trainCode: 'T-LOCK-ALIVE',
+          boardingStationId: sagajeong.id,
+          boardingLine: '7',
+          boardedAt: Date.now(),
+          expectedDurationMs: 600_000,
+        };
+        // GPS = 사가정 실좌표 — lock 활성 + accuracy=50으로 거리 게이트 통과.
+        mockUseNearest.mockReturnValue(
+          gpsBase({
+            userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+            accuracyMeters: 50,
+            result: { station: sagajeong, distanceKm: 0 },
+          }),
+        );
+        mockFindTop.mockReturnValue([{ station: sagajeong, distanceKm: 0 }]);
+        mockUseArrival.mockReturnValue(arrivalRet(null));
+        mockUsePositions.mockImplementation((line: string | null) => {
+          if (line === '7') {
+            return positionRet({
+              line: '7',
+              trains: [
+                train(sagajeong.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-LOCK-ALIVE' }),
+              ],
+            });
+          }
+          return positionRet(null);
+        });
+
+        const { result, rerender } = renderHook(
+          ({ tick }: { tick: number }) =>
+            useFusedNearestStation(undefined, undefined, undefined, lock.trainCode, {
+              ...lock,
+              // boardedAt은 deps 변경용 — 실제 의미는 무관.
+              boardedAt: lock.boardedAt + tick,
+            }),
+          { initialProps: { tick: 0 } },
+        );
+        expect(result.current.source).toBe('boarding-lock');
+
+        // 5회 폴링 시뮬레이션 — 매 폴링마다 lock.trainCode가 candidateTrains에 살아있음.
+        for (let i = 0; i < 5; i += 1) {
+          jest.advanceTimersByTime(30_000);
+          mockUseNearest.mockReturnValue(
+            gpsBase({
+              userLocation: { lat: sagajeong.lat + 0.00001 * (i + 1), lng: sagajeong.lng },
+              accuracyMeters: 50,
+              result: { station: sagajeong, distanceKm: 0 },
+            }),
+          );
+          rerender({ tick: i + 1 });
+        }
+
+        // 150s 경과(TTL 60s의 2.5배) → 기존 동작이면 강등이지만, lock 동일 trainCode 지속이라 유지.
+        expect(result.current.source).toBe('boarding-lock');
+      } finally {
+        jest.useRealTimers();
+        mockUsePositions.mockReset();
+      }
+    });
+
+    it('#1450 (B2): lock 부재 시 동일 trainCode 지속이어도 기존 TTL 강등 동작 유지', () => {
+      // lockless trip에서는 본 fix가 발화하지 않아야 함 (lockless route hop 정확도 가정 결함 #1432).
+      jest.useFakeTimers();
+      try {
+        mockUseNearest.mockReturnValue(
+          gpsBase({
+            userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
+            accuracyMeters: 1500,
+            result: { station: yongmasan, distanceKm: 0 },
+          }),
+        );
+        mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+        mockUseArrival.mockReturnValue(arrivalRet(null));
+        mockUsePositions.mockImplementation((line: string | null) => {
+          if (line === '7') {
+            return positionRet({
+              line: '7',
+              trains: [
+                train(sagajeong.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-NOLOCK' }),
+              ],
+            });
+          }
+          return positionRet(null);
+        });
+
+        const { result, rerender } = renderHook(() => useFusedNearestStation());
+        expect(result.current.source).toBe('position-train');
+
+        jest.advanceTimersByTime(61_000);
+        mockUseNearest.mockReturnValue(
+          gpsBase({
+            userLocation: { lat: yongmasan.lat + 0.00001, lng: yongmasan.lng },
+            accuracyMeters: 1500,
+            result: { station: yongmasan, distanceKm: 0 },
+          }),
+        );
+        rerender(undefined);
+
+        // lock 없으니 TTL 게이트 그대로 발동 → 강등.
+        expect(result.current.source).not.toBe('position-train');
+      } finally {
+        jest.useRealTimers();
+        mockUsePositions.mockReset();
+      }
+    });
   });
 
   describe('#444 fused/route 거리 sanity gate', () => {

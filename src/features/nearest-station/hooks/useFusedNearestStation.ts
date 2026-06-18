@@ -499,6 +499,26 @@ export function useFusedNearestStation(
     lastProgressTsRef.current = now;
   }, [trainProgress]);
 
+  // #1450 (B2): lock 활성 trip에서 매 arrival 폴링마다 lock.trainCode와 동일한 후보가
+  // 계속 관찰되면 traincode strong C가 TTL 만료로 강등되는 사이클을 끊는다.
+  // 위 effect는 trainProgress 의존이라 trainProgress가 일시적으로 null(GPS 끊김 등)이거나
+  // 동일 ref면 발화하지 않아 TTL이 자연 만료된다. lockless trip에서는 기존 #445 sticky-락
+  // 해제 동작이 유지되어야 하므로 본 refresh는 lock 활성 + lockedTrainCode 일치 시만 발화.
+  // ADR-015 §3 지하 분기 strong C 합의 게이트.
+  const lockedTrainCodeAlive = useMemo(() => {
+    if (!boardingLock) return false;
+    const code = boardingLock.trainCode;
+    if (!code) return false;
+    return candidateTrains.some((c) => c.trainNo === code);
+  }, [candidateTrains, boardingLock]);
+  useEffect(() => {
+    if (!lockedTrainCodeAlive) return;
+    lastProgressTsRef.current = Date.now();
+    if (boardingLock?.trainCode) {
+      lastConfirmedTrainNoRef.current = boardingLock.trainCode;
+    }
+  }, [lockedTrainCodeAlive, boardingLock]);
+
   const positionTrainResult: NearestStationResult | null = useMemo(() => {
     if (!trainProgress) return null;
     // #1016 hole (a): userLocation 없으면 distanceKm=0 placeholder 대신 null 반환.
@@ -510,9 +530,12 @@ export function useFusedNearestStation(
 
     // #445 TTL: trainProgress가 신선해야 함. stale하면 강등.
     // ref가 0이면 effect가 첫 ts를 commit하기 전 — useMemo는 pure하게 두기 위해 면제.
+    // #1450 (B2): lock 활성 + lockedTrainCode가 이번 폴링 candidateTrains에서 관찰되면
+    // TTL 게이트 면제 — strong C 신호가 살아있다고 보고 강등하지 않는다. lockless trip은 기존대로.
     if (
       lastProgressTsRef.current !== 0 &&
-      Date.now() - lastProgressTsRef.current > POSITION_TRAIN_TTL_MS
+      Date.now() - lastProgressTsRef.current > POSITION_TRAIN_TTL_MS &&
+      !lockedTrainCodeAlive
     ) {
       return null;
     }
@@ -557,7 +580,7 @@ export function useFusedNearestStation(
       }
     }
     return candidate;
-  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock, arcStations]);
+  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock, arcStations, lockedTrainCodeAlive]);
 
   const routeResult: NearestStationResult | null = progress.position
     ? {
