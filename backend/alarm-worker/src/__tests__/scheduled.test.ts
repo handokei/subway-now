@@ -1761,7 +1761,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
           return body.data?.pushId === 'p1438-vanish';
         });
         expect(releaseCall).toBeDefined();
-        const body = JSON.parse((releaseCall![1] as RequestInit).body as string);
+        const body = JSON.parse(releaseCall![1].body as string);
         expect(body.data.lockReleasedReason).toBe('vanish');
       });
 
@@ -1781,7 +1781,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
           return body.data?.pushId === 'p1438-fallback';
         });
         expect(fallbackCall).toBeDefined();
-        const body = JSON.parse((fallbackCall![1] as RequestInit).body as string);
+        const body = JSON.parse(fallbackCall![1].body as string);
         expect(body.data.origin).toBe('vanish-fallback');
         expect('lockReleasedReason' in body.data).toBe(false);
       });
