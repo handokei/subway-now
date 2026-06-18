@@ -50,7 +50,7 @@ import {
 import type { LinePositions } from '../api/positionApi';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
-import type { NearestStationResult, Station } from '../../../shared/types/station';
+import type { LineNumber, NearestStationResult, Station } from '../../../shared/types/station';
 import type { ArrivalProvider } from '../../../shared/types/providers';
 import type { PositionProvider } from '../providers/types';
 import type { Route } from '../../../shared/utils/stationRoute';
@@ -276,6 +276,27 @@ export interface FusedRouteContext {
   destination: Station | null;
 }
 
+/**
+ * #1436 — trip route에 포함된 노선 집합. fusion 후보 단계에서 trip 외 노선 entry를 차단한다.
+ * route 형태별로 leg의 line을 모두 모은다. trip 비활성/route null이면 undefined.
+ */
+function allowedLinesFromRoute(route: Route | null | undefined): Set<LineNumber> | undefined {
+  if (!route) return undefined;
+  const lines = new Set<LineNumber>();
+  if (route.type === 'direct') {
+    lines.add(route.line);
+  } else if (route.type === 'transfer') {
+    lines.add(route.fromLine);
+    lines.add(route.toLine);
+  } else {
+    for (const t of route.transfers) {
+      lines.add(t.fromLine);
+      lines.add(t.toLine);
+    }
+  }
+  return lines;
+}
+
 export function useFusedNearestStation(
   arrivalProvider?: ArrivalProvider,
   positionProvider?: PositionProvider,
@@ -344,6 +365,13 @@ export function useFusedNearestStation(
     accuracyMeters: gps.accuracyMeters,
   });
 
+  // #1436 — trip route에 포함된 노선 집합. 후보 단계에서 trip 외 노선 entry 차단.
+  // trip 비활성(route 없음)이면 undefined → filter 미적용으로 자유 화면 동작 보존.
+  const allowedLines = useMemo(
+    () => allowedLinesFromRoute(routeContext?.route),
+    [routeContext?.route],
+  );
+
   // GPS 좌표 → 거리순 후보 N개. 좌표 갱신 시에만 재계산.
   const candidates = useMemo<NearestStationResult[]>(() => {
     if (!gps.userLocation) return [];
@@ -352,8 +380,9 @@ export function useFusedNearestStation(
       gps.userLocation.lng,
       FUSION_CANDIDATE_LIMIT,
       MAX_STATION_DISTANCE_KM,
+      allowedLines,
     );
-  }, [gps.userLocation]);
+  }, [gps.userLocation, allowedLines]);
 
   // arrival 폴링: 후보 역명 단위 K=3 고정.
   // 각 후보의 호선을 lineHint로 함께 전달해 schedule fallback이 환승역에서 정확한

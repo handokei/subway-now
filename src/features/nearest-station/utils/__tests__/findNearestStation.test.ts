@@ -225,4 +225,41 @@ describe('findTopNearestStations', () => {
     expect(result.length).toBeGreaterThan(0);
     expect(result.length).toBeLessThan(9999);
   });
+
+  // #1436 — allowedLines가 주어지면 trip route 외 line entry가 후보 단계에서 reject되어야 한다.
+  // 분당선 회귀(왕십리 좌표): trip route = {2, 5} → bundang-053(name="왕십리")이 같은 좌표
+  // 다른 이름이라 dedup을 우회하더라도 line filter로 차단되어야 한다.
+  it('allowedLines가 주어지면 해당 line의 entry만 후보로 통과한다 (분당선 회귀)', () => {
+    mockHaversine.mockReturnValue(0.1);
+    const result = findTopNearestStations(
+      37.561,
+      127.038,
+      50,
+      1.0,
+      new Set(['2', '5']),
+    );
+    expect(result.length).toBeGreaterThan(0);
+    for (const r of result) {
+      expect(['2', '5']).toContain(r.station.line);
+    }
+    // bundang/gyeongui variant는 후보에서 제거되어야 한다.
+    const lines = new Set(result.map((r) => r.station.line));
+    expect(lines.has('bundang')).toBe(false);
+    expect(lines.has('gyeongui')).toBe(false);
+  });
+
+  it('allowedLines=undefined면 line filter 미적용 (자유 화면 기존 동작 보존)', () => {
+    mockHaversine.mockReturnValue(0.1);
+    const result = findTopNearestStations(37.561, 127.038, 200, 1.0);
+    const lines = new Set(result.map((r) => r.station.line));
+    // line filter 없이는 분당선/경의중앙선 entry도 후보에 포함된다.
+    expect(lines.size).toBeGreaterThan(2);
+  });
+
+  it('allowedLines가 비어있어도 (Set 크기 0) 모든 entry가 reject되지 않고 일반 환승역은 그대로 통과한다', () => {
+    // 빈 Set이면 한 entry도 통과하지 않는다 — 호출자가 보장해야 함을 명시적으로 검증.
+    mockHaversine.mockReturnValue(0.1);
+    const result = findTopNearestStations(37.561, 127.038, 50, 1.0, new Set());
+    expect(result).toEqual([]);
+  });
 });
