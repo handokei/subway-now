@@ -13,6 +13,20 @@ const KST_WEEKDAY_NOON = new Date('2026-06-09T03:00:00.000Z'); // 화요일 12:0
 const KST_SATURDAY_NOON = new Date('2026-06-13T03:00:00.000Z'); // 토요일 12:00 KST
 const KST_SUNDAY_NOON = new Date('2026-06-14T03:00:00.000Z'); // 일요일 12:00 KST
 
+// 정적 mock으로 막차 직후 시각을 시뮬레이션. 실 timetable에 의존하지 않게 격리.
+function withMockedLine1(
+  stations: Record<string, unknown>,
+  call: (fn: typeof findBoardableDeparture) => void,
+): void {
+  jest.isolateModules(() => {
+    jest.doMock('../../../data/timetables/line-1.json', () => ({ stations }));
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { findBoardableDeparture: build } = require('../timetableShared');
+    call(build);
+  });
+  jest.resetModules();
+}
+
 describe('timetableShared - classifyDayTypeKst', () => {
   it.each([
     [KST_WEEKDAY_NOON, 'weekday'],
@@ -134,20 +148,6 @@ describe('timetableShared - findBoardableDeparture', () => {
   });
 
   describe('막차 후 → 다음 운행일 첫차 fallback', () => {
-    // 정적 mock으로 막차 직후 시각을 시뮬레이션. 실 timetable에 의존하지 않게 격리.
-    function withMockedLine1(
-      stations: Record<string, unknown>,
-      call: (fn: typeof findBoardableDeparture) => void,
-    ): void {
-      jest.isolateModules(() => {
-        jest.doMock('../../../data/timetables/line-1.json', () => ({ stations }));
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const { findBoardableDeparture: build } = require('../timetableShared');
-        call(build);
-      });
-      jest.resetModules();
-    }
-
     it('falls back to next-day first departure when current-day timetable exhausted', () => {
       const SIMPLE_TIMETABLE = {
         weekday: { up: ['0600', '2300'], down: ['0610', '2250'] },
@@ -246,7 +246,7 @@ describe('timetableShared - findBoardableDeparture', () => {
         stationName: '시청',
         line: '1',
         direction: 'up',
-        from: new Date(NaN),
+        from: new Date(Number.NaN),
       });
       expect(result.status).toBe('day-type-unknown');
     });

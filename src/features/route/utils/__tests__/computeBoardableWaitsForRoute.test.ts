@@ -132,7 +132,7 @@ describe('computeBoardableWaitsForRoute', () => {
     });
     expect(result.length).toBe(2);
     // 마지막 leg는 transferName=충무로 fallback → direction inference 실패 → null.
-    expect(result[result.length - 1]).toBeNull();
+    expect(result.at(-1)).toBeNull();
   });
 
   it('handles lookup failure status (no-timetable line) — element null', () => {
@@ -160,8 +160,9 @@ describe('totalBoardableWaitMinutes', () => {
   });
 
   it('skips null elements and sums seconds → minutes', () => {
+    // 60 + 120 + 30 = 210초 → 3.5분.
     expect(totalBoardableWaitMinutes([60, null, 120, null, 30])).toBe(
-      60 / 60 + 120 / 60 + 30 / 60,
+      (60 + 120 + 30) / 60,
     );
   });
 

@@ -57,8 +57,7 @@ export function computeBoardableWaitsForRoute(
   // 환승역 도착 시각은 (이전 leg 끝 시각 + 환승 도보 시간). 누적해서 진행.
   let cursorSeconds = initialWaitSeconds;
 
-  for (let i = 0; i < segments.length; i++) {
-    const segment = segments[i];
+  for (const segment of segments) {
     const cumulativeArrivalAt = new Date(
       startAt.getTime() + cursorSeconds * 1000 + segment.secondsToTransfer * 1000,
     );
