@@ -95,6 +95,14 @@ function setupPositionTrainTransferStation(trainNo: string): void {
     .mockReturnValueOnce(positionRet(null));
 }
 
+// #1436 routeContext allowedLines filter 테스트용 station helper (S7721 — outer scope).
+function originStation(): Station {
+  return MOCK_STATIONS.gangnam;
+}
+function destinationStation(): Station {
+  return MOCK_STATIONS.chungmuro;
+}
+
 describe('useFusedNearestStation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -1617,13 +1625,6 @@ describe('useFusedNearestStation', () => {
   // 좌표는 같지만 이름이 다른 entry(왕십리(성동구청) vs 왕십리)가 name dedup을 우회해
   // 분당선 variant가 fusion result로 흘러가던 회귀 차단.
   describe('routeContext allowedLines filter (#1436)', () => {
-    function originStation(): Station {
-      return MOCK_STATIONS.gangnam;
-    }
-    function destinationStation(): Station {
-      return MOCK_STATIONS.chungmuro;
-    }
-
     it('routeContext 없으면 allowedLines 미전달 (자유 화면 기존 동작)', () => {
       mockUseNearest.mockReturnValue(gpsBase());
       mockFindTop.mockReturnValue([]);
@@ -1644,7 +1645,7 @@ describe('useFusedNearestStation', () => {
       renderHook(() => useFusedNearestStation(undefined, undefined, routeContext));
       const allowed = mockFindTop.mock.calls[0][4] as Set<string>;
       expect(allowed).toBeInstanceOf(Set);
-      expect([...allowed].sort()).toEqual(['2']);
+      expect([...allowed].sort((a, b) => a.localeCompare(b))).toEqual(['2']);
     });
 
     it('transfer route → allowedLines = {fromLine, toLine} (왕십리 분당선 회귀 방어)', () => {
@@ -1663,10 +1664,10 @@ describe('useFusedNearestStation', () => {
       };
       renderHook(() => useFusedNearestStation(undefined, undefined, routeContext));
       const allowed = mockFindTop.mock.calls[0][4] as Set<string>;
-      expect([...allowed].sort()).toEqual(['2', '5']);
+      expect([...allowed].sort((a, b) => a.localeCompare(b))).toEqual(['2', '5']);
       // trip route 외 line(bundang/gyeongui)은 후보 단계에서 reject 대상.
-      expect(allowed.has('bundang' as never)).toBe(false);
-      expect(allowed.has('gyeongui' as never)).toBe(false);
+      expect(allowed.has('bundang')).toBe(false);
+      expect(allowed.has('gyeongui')).toBe(false);
     });
 
     it('multi-transfer route → 모든 segment의 fromLine/toLine 합집합', () => {
@@ -1685,7 +1686,7 @@ describe('useFusedNearestStation', () => {
       };
       renderHook(() => useFusedNearestStation(undefined, undefined, routeContext));
       const allowed = mockFindTop.mock.calls[0][4] as Set<string>;
-      expect([...allowed].sort()).toEqual(['2', '3', '5']);
+      expect([...allowed].sort((a, b) => a.localeCompare(b))).toEqual(['2', '3', '5']);
     });
 
     it('routeContext.route=null이면 allowedLines 미전달 (route 미설정 상태)', () => {

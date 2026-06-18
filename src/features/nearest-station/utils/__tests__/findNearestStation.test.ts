@@ -235,7 +235,7 @@ describe('findTopNearestStations', () => {
       37.561,
       127.038,
       50,
-      1.0,
+      1,
       new Set(['2', '5']),
     );
     expect(result.length).toBeGreaterThan(0);
@@ -250,7 +250,7 @@ describe('findTopNearestStations', () => {
 
   it('allowedLines=undefined면 line filter 미적용 (자유 화면 기존 동작 보존)', () => {
     mockHaversine.mockReturnValue(0.1);
-    const result = findTopNearestStations(37.561, 127.038, 200, 1.0);
+    const result = findTopNearestStations(37.561, 127.038, 200, 1);
     const lines = new Set(result.map((r) => r.station.line));
     // line filter 없이는 분당선/경의중앙선 entry도 후보에 포함된다.
     expect(lines.size).toBeGreaterThan(2);
@@ -259,7 +259,7 @@ describe('findTopNearestStations', () => {
   it('allowedLines가 비어있어도 (Set 크기 0) 모든 entry가 reject되지 않고 일반 환승역은 그대로 통과한다', () => {
     // 빈 Set이면 한 entry도 통과하지 않는다 — 호출자가 보장해야 함을 명시적으로 검증.
     mockHaversine.mockReturnValue(0.1);
-    const result = findTopNearestStations(37.561, 127.038, 50, 1.0, new Set());
+    const result = findTopNearestStations(37.561, 127.038, 50, 1, new Set());
     expect(result).toEqual([]);
   });
 });
