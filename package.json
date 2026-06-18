@@ -17,6 +17,7 @@
     "data:build-transfer-times": "node scripts/build-transfer-times.js",
     "data:build-environment": "node scripts/build-station-environment.js",
     "data:generate-ssid": "node scripts/generate-ssid-patterns.js",
+    "data:build-wifi-dataset": "node scripts/build-wifi-ssid-dataset.js",
     "validate:data": "node scripts/validate-stations.js",
     "check:infoplist": "bash scripts/check-infoplist-sync.sh",
     "tail:capture": "scripts/capture-tail.sh",
