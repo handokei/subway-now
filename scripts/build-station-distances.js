@@ -27,6 +27,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const iconv = require('iconv-lite');
+const { normalizeStationName, buildNameIndex, lookupStationId } = require('./lib/stationNameIndex');
 
 const STATIONS_PATH = path.join(__dirname, '..', 'src', 'data', 'stations.json');
 const OUT_PATH = path.join(__dirname, '..', 'src', 'data', 'stationDistances.json');
@@ -75,17 +76,6 @@ const CSV_FILES = [
   },
 ];
 
-// 부역명 제거: "광교(경기대)" → "광교".
-function normalizeStationName(name) {
-  if (typeof name !== 'string') return '';
-  const trimmed = name.trim();
-  if (trimmed.endsWith(')')) {
-    const open = trimmed.lastIndexOf('(');
-    if (open > 0) return trimmed.slice(0, open).trimEnd();
-  }
-  return trimmed;
-}
-
 // CSV 한 줄 → 필드 배열. KRRIC CSV는 따옴표 없음, 쉼표만 — 단순 split으로 충분.
 function parseCsvLine(line) {
   return line.split(',').map((s) => s.trim());
@@ -125,22 +115,6 @@ function parseDistKm(raw) {
   return n;
 }
 
-// stations.json → { line: Map<normalizedName, id> }
-function buildNameIndex(stations) {
-  const byLine = new Map();
-  for (const s of stations) {
-    let m = byLine.get(s.line);
-    if (!m) {
-      m = new Map();
-      byLine.set(s.line, m);
-    }
-    const normalized = normalizeStationName(s.name);
-    m.set(s.name, s.id);
-    if (normalized !== s.name) m.set(normalized, s.id);
-  }
-  return byLine;
-}
-
 function buildLineIdxMap(stations) {
   const byLine = new Map();
   for (const s of stations) {
@@ -159,13 +133,6 @@ function buildLineIdxMap(stations) {
     result.set(line, idxMap);
   }
   return result;
-}
-
-function lookupStationId(byLine, line, rawName) {
-  const idx = byLine.get(line);
-  if (!idx) return null;
-  const normalized = normalizeStationName(rawName);
-  return idx.get(rawName) || idx.get(normalized) || null;
 }
 
 // CSV 행들을 stationsLine 키로 grouping — 같은 노선 내 연속 row만 인접 hop으로 본다.
