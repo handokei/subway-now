@@ -323,6 +323,35 @@ describe('sendSilentPush', () => {
     if (expectPresent) expect(body.data.occupiedLine).toBe('7');
   });
 
+  // #1438 (E5) — payload.lockReleasedReason wire 검증 (backend → device lock release sync).
+  // 지정 시 wire, 미지정은 byte-level 호환 위해 omit.
+  it.each([
+    ['transfer 지정 시 body.data.lockReleasedReason으로 전달', 'transfer' as const, true],
+    ['vanish 지정 시 body.data.lockReleasedReason으로 전달', 'vanish' as const, true],
+    ['미지정이면 body.data에서 omit (구 client/backend 호환)', undefined, false],
+  ])('lockReleasedReason %s (#1438)', async (_label, input, expectPresent) => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: {
+        nextWaypoint: '군자',
+        etaSeconds: 0,
+        phase: 'imminent',
+        kind: 'transfer',
+        sentAt: 1_700_000_000_000,
+        pushId: 'p',
+        ...(input === undefined ? {} : { lockReleasedReason: input }),
+      },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('lockReleasedReason' in body.data).toBe(expectPresent);
+    if (expectPresent) expect(body.data.lockReleasedReason).toBe(input);
+  });
+
   it('uses sandbox host when provided', async () => {
     const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response('', { status: 200 }),

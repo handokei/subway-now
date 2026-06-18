@@ -119,7 +119,34 @@ export interface SilentPushPayload {
    * 미전달 시 device는 `'unknown'`으로 기록한다.
    */
   origin?: PushOrigin;
+  /**
+   * #1438 (E5) — backend → device lock release sync 채널.
+   *
+   * backend가 보유한 `trip.boardingLock`을 어떤 이유로 release했는지 device에 통보한다. device는
+   * 이 값을 보고 즉시 로컬 `useBoardingLockStore.releaseLock(reason)`을 호출해 backend와 state를
+   * sync한다. 부재 시 device는 기존 동작 보존(silent push 본 처리만 수행).
+   *
+   * | value      | 발사 위치                                                                |
+   * |------------|--------------------------------------------------------------------------|
+   * | 'transfer' | 환승 waypoint 통과로 lock release (`advanceBoardingLockWaypoint`)        |
+   * | 'vanish'   | trainCode 소실 + lock release floor fire (`vanish-release` 경로)         |
+   *
+   * 다른 release 경로(arrived/expired)는 별도 trip-ended alert push가 이미 클라 state를 sync하므로
+   * 본 silent push 채널은 lock-only release(trip은 살아있음) 시나리오에만 사용한다.
+   * 구 backend 호환 위해 optional — 미전달 시 wire에서 자연 누락.
+   */
+  lockReleasedReason?: LockReleasedReason;
 }
+
+/**
+ * #1438 (E5) — backend → device lock release 사유.
+ *
+ * silent push payload `lockReleasedReason`을 통해 backend가 device에 lock release를 알린다.
+ * device는 이 신호로 즉시 로컬 store를 sync해 환승 직후 leg 2 boardingPrompt 재요청을 트리거한다.
+ *
+ * arrived/expired는 별도 trip-ended alert push 경로가 처리 — 본 enum은 lock-only release 한정.
+ */
+export type LockReleasedReason = 'transfer' | 'vanish';
 
 /**
  * #1402 — silent push 발사 경로(origin) 식별자.
@@ -139,6 +166,7 @@ export type PushOrigin =
   | 'arvlcd'
   | 'vanish-fallback'
   | 'vanish-release'
+  | 'transfer-release'
   | 'lockless'
   | 'reschedule'
   | 'alert-fallback';
@@ -216,6 +244,11 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
       // #1402 — origin은 정의된 경우에만 wire (좀비 알림 RCA). 구 backend 호환을 위해 optional —
       // 미전달 시 JSON에서 자연 누락, device는 `'unknown'`으로 분류.
       ...(options.payload.origin === undefined ? {} : { origin: options.payload.origin }),
+      // #1438 (E5) — lockReleasedReason은 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 →
+      // 구 device(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환.
+      ...(options.payload.lockReleasedReason === undefined
+        ? {}
+        : { lockReleasedReason: options.payload.lockReleasedReason }),
     },
   });
 

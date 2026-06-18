@@ -124,6 +124,15 @@ jest.mock('../../utils/boardingLockStorage', () => ({
   getBoardingLock: (...args: unknown[]) => mockGetBoardingLock(...args),
 }));
 
+// #1438 (E5) — backend → device lock release sync. handleSilentPush가 payload.lockReleasedReason을
+// 보고 호출하는 store action만 mock으로 가로채 호출 여부/인자 검증.
+const mockStoreReleaseLock = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../store/useBoardingLockStore', () => ({
+  useBoardingLockStore: {
+    getState: () => ({ releaseLock: mockStoreReleaseLock }),
+  },
+}));
+
 // #698 — reschedule silent push 분기에서 호출. mock으로 호출 인자/횟수만 검증.
 const mockRescheduleHopForLock = jest.fn();
 // #1356 E1 — suppress 분기에서 같은 station+phase의 bl: 사전 예약을 cancel.
@@ -577,6 +586,61 @@ describe('silentPushTask', () => {
       });
     });
 
+    // #1438 (E5) — backend → device lock release sync 채널.
+    describe('lockReleasedReason (#1438)', () => {
+      it("'transfer' 그대로 통과", () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              nextWaypoint: 'A',
+              etaSeconds: 0,
+              phase: 'imminent',
+              lockReleasedReason: 'transfer',
+            }),
+          ),
+        ).toMatchObject({ lockReleasedReason: 'transfer' });
+      });
+
+      it("'vanish' 그대로 통과", () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              nextWaypoint: 'A',
+              etaSeconds: 0,
+              phase: 'imminent',
+              lockReleasedReason: 'vanish',
+            }),
+          ),
+        ).toMatchObject({ lockReleasedReason: 'vanish' });
+      });
+
+      it('누락/unknown 문자열/비string이면 undefined (구 backend 호환)', () => {
+        expect(
+          extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 0, phase: 'imminent' })),
+        ).toMatchObject({ lockReleasedReason: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({
+              nextWaypoint: 'A',
+              etaSeconds: 0,
+              phase: 'imminent',
+              lockReleasedReason: 'arrived',
+            }),
+          ),
+        ).toMatchObject({ lockReleasedReason: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({
+              nextWaypoint: 'A',
+              etaSeconds: 0,
+              phase: 'imminent',
+              lockReleasedReason: 1,
+            }),
+          ),
+        ).toMatchObject({ lockReleasedReason: undefined });
+      });
+    });
+
     // #725 — reschedule schema는 standard와 다르므로 별도 분기 검증.
     describe('reschedule kind (#725)', () => {
       it('정상 reschedule payload → RescheduleSilentPushPayload', () => {
@@ -813,6 +877,51 @@ describe('silentPushTask', () => {
       const arg = mockLogSilentPushReceived.mock.calls[0][0];
       expect(arg.sentAt).toBe(1_700_000_000_000);
       expect(typeof arg.receivedAt).toBe('number');
+    });
+
+    // #1438 (E5) — backend → device lock release sync 채널 통합.
+    describe('lockReleasedReason → store sync (#1438)', () => {
+      it("'transfer' payload면 useBoardingLockStore.releaseLock('transfer') 호출", async () => {
+        await handleSilentPush(
+          payload({
+            kind: 'transfer',
+            phase: 'imminent',
+            lockReleasedReason: 'transfer',
+            sentAt: 1_700_000_000_000,
+          }),
+        );
+        expect(mockStoreReleaseLock).toHaveBeenCalledWith('transfer');
+      });
+
+      it("'vanish' payload면 useBoardingLockStore.releaseLock('vanish') 호출", async () => {
+        await handleSilentPush(
+          payload({
+            kind: 'intermediate',
+            phase: 'imminent',
+            lockReleasedReason: 'vanish',
+            nextWaypoint: '중곡',
+          }),
+        );
+        expect(mockStoreReleaseLock).toHaveBeenCalledWith('vanish');
+      });
+
+      it('lockReleasedReason 누락이면 releaseLock 호출 없음 (구 backend 호환)', async () => {
+        await handleSilentPush(payload({ kind: 'destination', phase: 'imminent' }));
+        expect(mockStoreReleaseLock).not.toHaveBeenCalled();
+      });
+
+      it('releaseLock throw해도 본 처리 흐름은 계속 진행 (graceful)', async () => {
+        mockStoreReleaseLock.mockRejectedValueOnce(new Error('store-fail'));
+        await handleSilentPush(
+          payload({
+            kind: 'destination',
+            phase: 'imminent',
+            lockReleasedReason: 'transfer',
+          }),
+        );
+        // gate 평가까지 도달 = 본 처리 흐름 차단되지 않음.
+        expect(mockCheckGate).toHaveBeenCalled();
+      });
     });
 
     it('kind 미상(구 백엔드)이면 received 적재 후 skip 적재 + 발사 안 함', async () => {

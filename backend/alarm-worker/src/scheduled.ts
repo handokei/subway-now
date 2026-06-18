@@ -757,11 +757,18 @@ interface BuildStationPassedImminentPayloadInputs {
    * vanish lock release 직전 floor = 'vanish-release'.
    */
   origin: PushOrigin;
+  /**
+   * #1438 (E5) — backend → device lock release sync 채널. 이 push 발사와 동시에 backend가
+   * `trip.boardingLock`을 release한 경우 reason을 forward해 device가 즉시 store sync 가능.
+   * floor fire(vanish-release)에서만 'vanish'로 전달 — 다른 경로(arvlcd, vanish-fallback)는
+   * lock을 release하지 않으므로 undefined.
+   */
+  lockReleasedReason?: 'transfer' | 'vanish';
 }
 function buildStationPassedImminentPayload(
   inputs: BuildStationPassedImminentPayloadInputs,
 ): Parameters<typeof sendSilentPush>[0]['payload'] {
-  const { trip, waypoint, lock, pushId, now, origin } = inputs;
+  const { trip, waypoint, lock, pushId, now, origin, lockReleasedReason } = inputs;
   return {
     nextWaypoint: waypoint.stationName,
     // arvlCd∈{0,1}은 "지금 진입/도착" 신호 — eta는 사실상 0. vanish-fallback도 동일 의미.
@@ -790,6 +797,8 @@ function buildStationPassedImminentPayload(
     tripToken: trip.token,
     // #1402 — 발사 경로 stamp. device alarmLog와 backend tail이 같은 값으로 1:1 매핑.
     origin,
+    // #1438 (E5) — lock release sync. 정의된 경우에만 wire (apns.ts JSON serializer가 undefined 누락).
+    lockReleasedReason,
   };
 }
 
@@ -1005,11 +1014,23 @@ export async function fireVanishFallbackStationPush(
     kind: waypoint.kind,
     origin,
   });
+  // #1438 (E5) — vanish-release origin은 직후 caller가 `trip.boardingLock = undefined`로 lock을
+  // release하므로 device에 `lockReleasedReason='vanish'`를 forward해 store sync. vanish-fallback은
+  // 직후 `advanceBoardingLockWaypoint`로 흘러가 그 함수가 transfer 시 별도로 release를 통지한다.
+  const lockReleasedReason: 'vanish' | undefined = origin === 'vanish-release' ? 'vanish' : undefined;
   const heal = await sendWithEnvHeal(
     (host) =>
       sendSilentPush({
         deviceToken: trip.token,
-        payload: buildStationPassedImminentPayload({ trip, waypoint, lock, pushId, now, origin }),
+        payload: buildStationPassedImminentPayload({
+          trip,
+          waypoint,
+          lock,
+          pushId,
+          now,
+          origin,
+          lockReleasedReason,
+        }),
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,
@@ -1465,10 +1486,46 @@ export async function advanceBoardingLockWaypoint(
   // (`useApnsTripRegistration` `latestInputsRef` 옛 lock 보유) 윈도우에서 client 옛 lock POST 시
   // `progressApplies=true` 분기로 진입해 옛 lock이 backend에 다시 active로 복원되는 회귀가 가능.
   const lockReleasedOnTransfer = waypoint.kind === 'transfer' && trip.boardingLock !== undefined;
+  // #1438 (E5) — release 직전 lock 스냅샷. 직후 fire에서 buildStationPassedImminentPayload가
+  // line/trainCode self-describing 필드(boardingLine/trainCode)를 채우는 데 사용한다.
+  const releasedLockSnapshot = lockReleasedOnTransfer ? trip.boardingLock : undefined;
   if (lockReleasedOnTransfer) {
     trip.boardingLock = undefined;
     trip.consecutiveEtaMissing = 0;
     await deleteProgress(env.TRIPS, trip.token);
+  }
+  // #1438 (E5) — backend → device lock release sync. 환승 waypoint 통과로 backend가 lock을
+  // release한 즉시 device에 silent push로 통보해 로컬 useBoardingLockStore와 sync한다. 종전에는
+  // device가 backend release를 인지하지 못해 leg 1 lock이 21분간 잔존하다 자연 만료에 의존했고,
+  // 그 시간 동안 leg 2 boardingPrompt 발사가 차단됐다 (2026-06-18 evidence). 본 push는 station-passed
+  // 알림 본문(arvlCd/vanish path와 같은 payload 모양)이 아니라 lock-only sync 신호 — etaSeconds=0,
+  // phase='imminent', kind=waypoint.kind. device의 fireWithGate는 station-passed 동등 처리를 하지만,
+  // payload.lockReleasedReason='transfer'가 우선 처리돼 store sync 후 본 처리 흐름을 그대로 진행한다.
+  if (lockReleasedOnTransfer && releasedLockSnapshot !== undefined) {
+    const pushId = crypto.randomUUID();
+    await sendWithEnvHeal(
+      (host) =>
+        sendSilentPush({
+          deviceToken: trip.token,
+          payload: buildStationPassedImminentPayload({
+            trip,
+            waypoint,
+            lock: releasedLockSnapshot,
+            pushId,
+            now,
+            origin: 'transfer-release',
+            lockReleasedReason: 'transfer',
+          }),
+          config: deps.apnsConfig,
+          host,
+          fetchImpl: deps.fetchImpl,
+          now,
+        }),
+      trip.apnsEnv,
+      deps.apnsHosts,
+      log,
+      trip.token.slice(0, 8),
+    );
   }
   // #902 Seam F — 환승 직후 자동 trainCode swap. release한 lock 자리에 새 노선의 후보를
   // 동일 cycle 안에 부착해 다음 cycle의 lockMissing/boarding-prompt 우회 + 즉시 trainCode 추적.
