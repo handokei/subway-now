@@ -7,14 +7,13 @@ const path = require('node:path');
 const os = require('node:os');
 const {
   classifyFloor,
-  classifySurfaceColumn,
   parseCsv,
   parseCsvRow,
   parseLine9Csv,
-  parseGyeonguiCsv,
-  reduceEnvSet,
+  parseOperatorPlatformCsv,
   build,
   ENVIRONMENT_OVERRIDES,
+  EXTERNAL_LINE_CSV_KEYS,
   VALID_ENVIRONMENTS,
   main,
 } = require('../build-station-environment');
@@ -87,103 +86,6 @@ describe('parseCsv', () => {
   });
 });
 
-describe('classifySurfaceColumn (#1461)', () => {
-  it.each([
-    ['지상', 'surface'],
-    ['지하', 'underground'],
-    [' 지상 ', 'surface'],
-    [' 지하 ', 'underground'],
-    ['', 'unknown'],
-    ['지상부', 'unknown'],
-  ])('classifies %p → %s', (col, expected) => {
-    expect(classifySurfaceColumn(col)).toBe(expected);
-  });
-
-  it.each([[null], [undefined], [123], [{}]])(
-    'returns unknown for non-string (%p)',
-    (input) => {
-      expect(classifySurfaceColumn(input)).toBe('unknown');
-    },
-  );
-});
-
-describe('reduceEnvSet (#1461)', () => {
-  it.each([
-    [['surface'], 'surface'],
-    [['underground'], 'underground'],
-    [['surface', 'underground'], 'mixed'],
-    [['surface', 'unknown'], 'surface'],
-    [['underground', 'unknown'], 'underground'],
-    [['unknown'], 'unknown'],
-    [[], 'unknown'],
-  ])('reduces %p → %s', (arr, expected) => {
-    expect(reduceEnvSet(new Set(arr))).toBe(expected);
-  });
-});
-
-describe('parseGyeonguiCsv (#1461)', () => {
-  it('classifies dual surface row as surface', () => {
-    const csv =
-      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
-      '코레일,경의중앙,회기,1,하행,지상,1\n' +
-      '코레일,경의중앙,회기,2,상행,지상,1\n';
-    const map = parseGyeonguiCsv(csv);
-    expect(map.get('gyeongui|회기')).toBe('surface');
-  });
-
-  it('classifies dual underground row as underground', () => {
-    const csv =
-      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
-      '코레일,경의중앙,공덕,2,하행,지하,2\n' +
-      '코레일,경의중앙,공덕,1,상행,지하,2\n';
-    const map = parseGyeonguiCsv(csv);
-    expect(map.get('gyeongui|공덕')).toBe('underground');
-  });
-
-  it('classifies station with both surface and underground rows as mixed', () => {
-    // 가좌 — 상행/하행 지상구분 다른 실제 케이스.
-    const csv =
-      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
-      '코레일,경의중앙,가좌,1,상행,지상,1\n' +
-      '코레일,경의중앙,가좌,2,하행,지하,2\n';
-    const map = parseGyeonguiCsv(csv);
-    expect(map.get('gyeongui|가좌')).toBe('mixed');
-  });
-
-  it('normalizes parenthesized station names', () => {
-    const csv =
-      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
-      '코레일,경의중앙,양원(서울시북부병원),1,상행,지상,1\n';
-    const map = parseGyeonguiCsv(csv);
-    expect(map.has('gyeongui|양원')).toBe(true);
-    expect(map.has('gyeongui|양원(서울시북부병원)')).toBe(false);
-  });
-
-  it('skips rows with fewer than 6 columns', () => {
-    const csv =
-      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분\n' +
-      '코레일,경의중앙,공덕,1,상행\n';
-    const map = parseGyeonguiCsv(csv);
-    expect(map.size).toBe(0);
-  });
-
-  it('skips rows with empty station name', () => {
-    const csv =
-      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
-      '코레일,경의중앙,,1,상행,지상,1\n';
-    const map = parseGyeonguiCsv(csv);
-    expect(map.size).toBe(0);
-  });
-
-  it('handles CRLF', () => {
-    const csv =
-      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\r\n' +
-      '코레일,경의중앙,공덕,1,상행,지하,2\r\n';
-    const map = parseGyeonguiCsv(csv);
-    expect(map.get('gyeongui|공덕')).toBe('underground');
-  });
-});
-
 describe('parseLine9Csv', () => {
   it('groups 상행/하행 rows by station; same label → single env', () => {
     const csv =
@@ -230,6 +132,45 @@ describe('parseLine9Csv', () => {
       '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\r\n' +
       '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\r\n';
     expect(parseLine9Csv(csv).get('9|개화')).toBe('surface');
+  });
+});
+
+describe('parseOperatorPlatformCsv', () => {
+  it('parses generic operator platform CSV with given lineKey (#1469)', () => {
+    const csv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,수내(한국잡월드),1,하행,지하,1,Y,Y,Y\n' +
+      '코레일,수인분당,수내(한국잡월드),2,상행,지하,1,Y,Y,Y\n' +
+      '코레일,수인분당,죽전(단국대),1,하행,지상,1,Y,Y,Y\n' +
+      '코레일,수인분당,죽전(단국대),2,상행,지상,1,Y,Y,Y\n';
+    const map = parseOperatorPlatformCsv(csv, 'bundang');
+    expect(map.get('bundang|수내')).toBe('underground');
+    expect(map.get('bundang|죽전')).toBe('surface');
+  });
+
+  it('emits mixed when 상행/하행 differ for the same station', () => {
+    const csv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '네오트랜스주식회사,신분당,섞임역,1,상행,지상,1,Y,N,N\n' +
+      '네오트랜스주식회사,신분당,섞임역,2,하행,지하,2,Y,N,N\n';
+    expect(parseOperatorPlatformCsv(csv, 'sinbundang').get('sinbundang|섞임역')).toBe('mixed');
+  });
+
+  it('normalizes parenthesized station names (#1461)', () => {
+    const csv =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,양원(서울시북부병원),1,상행,지상,1\n' +
+      '코레일,경의중앙,양원(서울시북부병원),2,하행,지상,1\n';
+    const map = parseOperatorPlatformCsv(csv, 'gyeongui');
+    expect(map.has('gyeongui|양원')).toBe(true);
+    expect(map.has('gyeongui|양원(서울시북부병원)')).toBe(false);
+  });
+
+  it('skips rows with empty station name', () => {
+    const csv =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,,1,상행,지상,1\n';
+    expect(parseOperatorPlatformCsv(csv, 'gyeongui').size).toBe(0);
   });
 });
 
@@ -375,58 +316,141 @@ describe('build', () => {
     expect(stats.bySource.unknown).toBe(1);
     expect(stats.bySource.csv).toBe(0);
   });
+});
 
-  it('applies gyeongui CSV classification when no override and no seoul CSV match (#1461)', () => {
+describe('build with externalCsvs (#1469 / #1461)', () => {
+  const csvText = '"hdr","x","x","x","x","x","x"\n';
+
+  it('classifies external lines via externalCsvs entries', () => {
+    const bundangCsv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,수내,1,하행,지하,1,Y,Y,Y\n' +
+      '코레일,수인분당,수내,2,상행,지하,1,Y,Y,Y\n';
+    const airportCsv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '공항철도주식회사,공항,검암,1,하행,지상,2,Y,Y,Y\n' +
+      '공항철도주식회사,공항,검암,2,상행,지상,2,Y,Y,Y\n';
+    const stations = [
+      { id: 'bundang-034', name: '수내', line: 'bundang' },
+      { id: 'airport-005', name: '검암', line: 'airport' },
+    ];
+    const { stations: out, stats } = build({
+      stations,
+      csvText,
+      externalCsvs: [
+        { lineKey: 'bundang', csvText: bundangCsv, source: 'bundang' },
+        { lineKey: 'airport', csvText: airportCsv, source: 'airport' },
+      ],
+    });
+    expect(out[0].environment).toBe('underground');
+    expect(out[1].environment).toBe('surface');
+    expect(stats.bySource.bundang).toBe(1);
+    expect(stats.bySource.airport).toBe(1);
+    expect(stats.bySource.unknown).toBe(0);
+  });
+
+  it('classifies gyeongui CSV via externalCsvs (#1461)', () => {
     const gyeonguiCsv =
       '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
-      '코레일,경의중앙,공덕,1,상행,지하,2\n';
+      '코레일,경의중앙,공덕,1,상행,지하,2\n' +
+      '코레일,경의중앙,공덕,2,하행,지하,2\n';
     const stations = [{ id: 'gyeongui-x', name: '공덕', line: 'gyeongui' }];
     const { stations: out, stats } = build({
       stations,
       csvText,
-      gyeonguiCsvText: gyeonguiCsv,
+      externalCsvs: [{ lineKey: 'gyeongui', csvText: gyeonguiCsv, source: 'gyeongui' }],
     });
     expect(out[0].environment).toBe('underground');
-    expect(stats.bySource.gyeonguiCsv).toBe(1);
+    expect(stats.bySource.gyeongui).toBe(1);
     expect(stats.bySource.csv).toBe(0);
     expect(stats.bySource.override).toBe(0);
   });
 
-  it('treats gyeongui CSV row whose 지상구분 is invalid as unknown source (#1461)', () => {
+  it('gyeongui CSV mixed when 상행/하행 differ (#1461)', () => {
+    // 가좌 — 상행/하행 지상구분 다른 실제 케이스.
     const gyeonguiCsv =
       '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
-      '코레일,경의중앙,빈층,1,상행,?,1\n';
-    const stations = [{ id: 'gyeongui-x', name: '빈층', line: 'gyeongui' }];
+      '코레일,경의중앙,가좌,1,상행,지상,1\n' +
+      '코레일,경의중앙,가좌,2,하행,지하,2\n';
+    const stations = [{ id: 'gyeongui-x', name: '가좌', line: 'gyeongui' }];
+    const { stations: out } = build({
+      stations,
+      csvText,
+      externalCsvs: [{ lineKey: 'gyeongui', csvText: gyeonguiCsv, source: 'gyeongui' }],
+    });
+    expect(out[0].environment).toBe('mixed');
+  });
+
+  it('override wins over externalCsvs source', () => {
+    const bundangCsv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,왕십리,1,하행,지상,1,Y,Y,Y\n' +
+      '코레일,수인분당,왕십리,2,상행,지상,1,Y,Y,Y\n';
+    const stations = [{ id: 'bundang-052', name: '왕십리', line: 'bundang' }];
     const { stations: out, stats } = build({
       stations,
       csvText,
-      gyeonguiCsvText: gyeonguiCsv,
+      externalCsvs: [{ lineKey: 'bundang', csvText: bundangCsv, source: 'bundang' }],
     });
-    expect(out[0].environment).toBe('unknown');
-    expect(stats.bySource.unknown).toBe(1);
-    expect(stats.bySource.gyeonguiCsv).toBe(0);
+    // override says underground; CSV says surface — override must win.
+    expect(out[0].environment).toBe(ENVIRONMENT_OVERRIDES['bundang|왕십리']);
+    expect(out[0].environment).toBe('underground');
+    expect(stats.bySource.override).toBe(1);
+    expect(stats.bySource.bundang ?? 0).toBe(0);
   });
 
-  it('overrides take priority over gyeongui CSV (#1461)', () => {
+  it('override wins over gyeongui external CSV (#1461)', () => {
     // override가 서울역=underground라고 했고, CSV에 같은 키가 (가상으로) 지상으로 있어도 override 우선.
     const gyeonguiCsv =
       '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
-      '코레일,경의중앙,서울역,1,상행,지상,1\n';
+      '코레일,경의중앙,서울역,1,상행,지상,1\n' +
+      '코레일,경의중앙,서울역,2,하행,지상,1\n';
     const stations = [{ id: 'gyeongui-x', name: '서울역', line: 'gyeongui' }];
     const { stations: out, stats } = build({
       stations,
       csvText,
-      gyeonguiCsvText: gyeonguiCsv,
+      externalCsvs: [{ lineKey: 'gyeongui', csvText: gyeonguiCsv, source: 'gyeongui' }],
     });
     expect(out[0].environment).toBe('underground');
     expect(stats.bySource.override).toBe(1);
   });
 
-  it('skips gyeongui CSV when input omitted (back-compat)', () => {
-    const stations = [{ id: 'gyeongui-x', name: '공덕', line: 'gyeongui' }];
+  it('externalCsvs unknown env keeps unknown source credit', () => {
+    // platform CSV with unrecognized 지상구분 label → no entry → station stays unknown.
+    const bundangCsv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,개포동,1,하행,?,1,Y,Y,Y\n';
+    const stations = [{ id: 'bundang-043', name: '개포동', line: 'bundang' }];
+    const { stations: out, stats } = build({
+      stations,
+      csvText,
+      externalCsvs: [{ lineKey: 'bundang', csvText: bundangCsv, source: 'bundang' }],
+    });
+    expect(out[0].environment).toBe('unknown');
+    expect(stats.bySource.unknown).toBe(1);
+    expect(stats.bySource.bundang ?? 0).toBe(0);
+  });
+
+  it('omitting externalCsvs leaves external-line stations unknown (backward compat)', () => {
+    const stations = [{ id: 'sinbundang-001', name: '강남', line: 'sinbundang' }];
     const { stations: out, stats } = build({ stations, csvText });
     expect(out[0].environment).toBe('unknown');
-    expect(stats.bySource.gyeonguiCsv).toBe(0);
+    expect(stats.bySource.unknown).toBe(1);
+  });
+});
+
+describe('EXTERNAL_LINE_CSV_KEYS', () => {
+  it('exposes bundang/sinbundang/airport/gyeongui keys matching stations.json line values', () => {
+    expect(EXTERNAL_LINE_CSV_KEYS).toEqual({
+      BUNDANG: 'bundang',
+      SINBUNDANG: 'sinbundang',
+      AIRPORT: 'airport',
+      GYEONGUI: 'gyeongui',
+    });
+  });
+
+  it('is frozen', () => {
+    expect(Object.isFrozen(EXTERNAL_LINE_CSV_KEYS)).toBe(true);
   });
 });
 
@@ -482,10 +506,6 @@ describe('main()', () => {
   const csvText =
     '"hdr","x","x","x","x","x","x"\n' +
     '"2","한양대","상대식","205","2F","5974","1983"\n';
-  const line9CsvText = '"hdr","x","x","x","x","x","x"\n';
-  const gyeonguiCsvText =
-    '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
-    '코레일,경의중앙,공덕,1,상행,지하,2\n';
   const stationsJson = JSON.stringify([
     { id: '2-009', name: '한양대', line: '2' },
     { id: '9-001', name: '개화', line: '9' },
@@ -498,17 +518,10 @@ describe('main()', () => {
     return {
       writeOut: (s) => outs.push(s),
       writeErr: (s) => errs.push(s),
-      readFile: (p) => {
-        if (p.endsWith('gyeongui-platform.csv')) return gyeonguiCsvText;
-        if (p.includes('line9')) return line9CsvText;
-        if (p.endsWith('.csv')) return csvText;
-        return stationsJson;
-      },
+      readFile: (p) => (p.endsWith('.csv') ? csvText : stationsJson),
       writeFile: (p, c) => writes.push({ p, c }),
       stationsPath: path.join(TEST_TMP_DIR, 's.json'),
       csvPath: path.join(TEST_TMP_DIR, 'c.csv'),
-      line9CsvPath: path.join(TEST_TMP_DIR, 'line9-platform.csv'),
-      gyeonguiCsvPath: path.join(TEST_TMP_DIR, 'gyeongui-platform.csv'),
       ...extra,
       _captured: { outs, errs, writes },
     };
@@ -539,12 +552,10 @@ describe('main()', () => {
 
   it('omits manual-curation block when all stations matched', () => {
     const d = deps({
-      readFile: (p) => {
-        if (p.endsWith('gyeongui-platform.csv')) return gyeonguiCsvText;
-        if (p.includes('line9')) return line9CsvText;
-        if (p.endsWith('.csv')) return csvText;
-        return JSON.stringify([{ id: '2-009', name: '한양대', line: '2' }]);
-      },
+      readFile: (p) =>
+        p.endsWith('.csv')
+          ? csvText
+          : JSON.stringify([{ id: '2-009', name: '한양대', line: '2' }]),
     });
     const code = main(['--dry-run'], d);
     expect(code).toBe(0);
@@ -555,8 +566,6 @@ describe('main()', () => {
     const d = deps({
       readFile: (p) => {
         if (p.endsWith('.json')) throw new Error('boom');
-        if (p.endsWith('gyeongui-platform.csv')) return gyeonguiCsvText;
-        if (p.includes('line9')) return line9CsvText;
         return csvText;
       },
     });
@@ -568,9 +577,6 @@ describe('main()', () => {
   it('returns 1 when CSV read fails', () => {
     const d = deps({
       readFile: (p) => {
-        // 서울교통공사 CSV만 실패시키기 위해 다른 CSV 경로는 먼저 처리.
-        if (p.endsWith('gyeongui-platform.csv')) return gyeonguiCsvText;
-        if (p.includes('line9')) return line9CsvText;
         if (p.endsWith('.csv')) throw new Error('no-csv');
         return stationsJson;
       },
@@ -580,11 +586,17 @@ describe('main()', () => {
     expect(d._captured.errs.some((s) => /CSV 읽기 실패.*no-csv/.test(s))).toBe(true);
   });
 
+  it('prints line9 source counter in stats line (#1460)', () => {
+    const d = deps();
+    const code = main(['--dry-run'], d);
+    expect(code).toBe(0);
+    expect(d._captured.outs.some((s) => /source.*line9=/.test(s))).toBe(true);
+  });
+
   it('returns 1 when 9호선 CSV read fails', () => {
     const d = deps({
       readFile: (p) => {
         if (p.includes('line9')) throw new Error('no-line9');
-        if (p.endsWith('gyeongui-platform.csv')) return gyeonguiCsvText;
         if (p.endsWith('.csv')) return csvText;
         return stationsJson;
       },
@@ -594,32 +606,70 @@ describe('main()', () => {
     expect(d._captured.errs.some((s) => /9호선 CSV 읽기 실패.*no-line9/.test(s))).toBe(true);
   });
 
-  it('returns 1 when gyeongui CSV read fails', () => {
+  it('returns 1 when external-line CSV read fails (#1469 / #1461)', () => {
     const d = deps({
       readFile: (p) => {
-        if (p.endsWith('gyeongui-platform.csv')) throw new Error('no-gy');
-        if (p.includes('line9')) return line9CsvText;
+        if (p.includes('bundang')) throw new Error('no-bundang');
         if (p.endsWith('.csv')) return csvText;
         return stationsJson;
       },
     });
     const code = main([], d);
     expect(code).toBe(1);
-    expect(d._captured.errs.some((s) => /경의중앙선 CSV 읽기 실패.*no-gy/.test(s))).toBe(true);
+    expect(d._captured.errs.some((s) => /외부 노선 CSV 읽기 실패.*no-bundang/.test(s))).toBe(
+      true,
+    );
   });
 
-  it('prints line9 source counter in stats line (#1460)', () => {
-    const d = deps();
-    const code = main(['--dry-run'], d);
-    expect(code).toBe(0);
-    expect(d._captured.outs.some((s) => /source.*line9=/.test(s))).toBe(true);
+  it('returns 1 when gyeongui CSV read fails (#1461)', () => {
+    const d = deps({
+      readFile: (p) => {
+        if (p.includes('gyeongui')) throw new Error('no-gy');
+        if (p.endsWith('.csv')) return csvText;
+        return stationsJson;
+      },
+    });
+    const code = main([], d);
+    expect(code).toBe(1);
+    expect(d._captured.errs.some((s) => /외부 노선 CSV 읽기 실패.*no-gy/.test(s))).toBe(true);
   });
 
-  it('prints gyeonguiCsv source count in stats line', () => {
-    const d = deps();
-    const code = main(['--dry-run'], d);
+  it('classifies external-line stations via externalCsvs in main() (#1469)', () => {
+    const bundangCsv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,수내,1,하행,지하,1,Y,Y,Y\n' +
+      '코레일,수인분당,수내,2,상행,지하,1,Y,Y,Y\n';
+    const d = deps({
+      readFile: (p) => {
+        if (p.includes('bundang')) return bundangCsv;
+        if (p.endsWith('.csv')) return csvText;
+        return JSON.stringify([{ id: 'bundang-034', name: '수내', line: 'bundang' }]);
+      },
+    });
+    const code = main([], d);
     expect(code).toBe(0);
-    expect(d._captured.outs.some((s) => /gyeonguiCsv=/.test(s))).toBe(true);
+    const written = JSON.parse(d._captured.writes[0].c);
+    expect(written[0].environment).toBe('underground');
+    expect(d._captured.outs.some((s) => /source.*bundang=1/.test(s))).toBe(true);
+  });
+
+  it('classifies gyeongui stations via externalCsvs in main() (#1461)', () => {
+    const gyeonguiCsv =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,공덕,1,상행,지하,2\n' +
+      '코레일,경의중앙,공덕,2,하행,지하,2\n';
+    const d = deps({
+      readFile: (p) => {
+        if (p.includes('gyeongui')) return gyeonguiCsv;
+        if (p.endsWith('.csv')) return csvText;
+        return JSON.stringify([{ id: 'gyeongui-x', name: '공덕', line: 'gyeongui' }]);
+      },
+    });
+    const code = main([], d);
+    expect(code).toBe(0);
+    const written = JSON.parse(d._captured.writes[0].c);
+    expect(written[0].environment).toBe('underground');
+    expect(d._captured.outs.some((s) => /source.*gyeongui=1/.test(s))).toBe(true);
   });
 
   it('classifies 9호선 stations via line9 CSV in main()', () => {
@@ -630,7 +680,6 @@ describe('main()', () => {
     const d = deps({
       readFile: (p) => {
         if (p.includes('line9')) return line9Csv;
-        if (p.endsWith('gyeongui-platform.csv')) return gyeonguiCsvText;
         if (p.endsWith('.csv')) return csvText;
         return JSON.stringify([{ id: '9-001', name: '개화', line: '9' }]);
       },
