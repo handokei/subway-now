@@ -35,6 +35,10 @@ module.exports = {
       appleTeamId: '4755N5H4T4',
       entitlements: {
         'aps-environment': apsEnvironment,
+        // #1508 — Apple Developer Portal "Access WiFi Information" Capability 활성(2026-06-19) 후속.
+        // NEHotspotNetwork.fetchCurrent()가 SSID/BSSID를 노출하려면 본 entitlement 필요.
+        // B3-native(#1476) bridge가 이 값을 읽어 F2 SSID lookup(`lookupStationBySsid`)에 공급.
+        'com.apple.developer.networking.wifi-info': true,
       },
       infoPlist: {
         NSAppTransportSecurity: {
