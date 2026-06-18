@@ -65,7 +65,11 @@ import { useMisBoardingDetector } from '../features/route/hooks/useMisBoardingDe
 import { useTrainPositions } from '../features/route/hooks/useTrainPositions';
 import { useTransferTrainList } from '../features/route/hooks/useTransferTrainList';
 import { useTransferAutoDetect } from '../features/route/hooks/useTransferAutoDetect';
-import { TRANSFER_WALKING_BUFFER_SECONDS, BOARDING_PROXIMITY_THRESHOLD_M } from '../shared/constants/boardingLock';
+import {
+  BOARDING_PROXIMITY_THRESHOLD_M,
+  TRANSFER_WALKING_BUFFER_SECONDS,
+} from '../shared/constants/boardingLock';
+import { getTransferSeconds } from '../shared/utils/transferTimes';
 import { BoardingTrainList } from '../features/alarm/components/BoardingTrainList';
 import { BoardingLockHopCard } from '../features/alarm/components/BoardingLockHopCard';
 import { resolveNextAdjacentStationName } from '../features/route/utils/nextAdjacentStation';
@@ -1101,7 +1105,20 @@ export default function HomeScreen() {
                                   arrivals={transferArrivals}
                                   line={transferContext.nextLine}
                                   onSelect={createTransferLock}
-                                  walkingBufferSeconds={TRANSFER_WALKING_BUFFER_SECONDS}
+                                  walkingBufferSeconds={
+                                    // ADR-015 §6 — 호선쌍별 환승 도보 시간(#1435).
+                                    // lock.boardingLine = 환승 직전 leg의 노선 (fromLine).
+                                    // useTransferTrainList가 lock 활성 시에만 context를 노출하므로
+                                    // 정상 흐름에서는 lock이 항상 존재한다. ts narrowing이 불가능하므로
+                                    // optional chaining + `getTransferSeconds`의 fallback(=180s)에 위임한다.
+                                    boardingLock
+                                      ? getTransferSeconds(
+                                          boardingLock.boardingLine,
+                                          transferContext.nextLine,
+                                          transferContext.transferStationInToLine.name,
+                                        )
+                                      : TRANSFER_WALKING_BUFFER_SECONDS
+                                  }
                                   compact
                                   nextStationLabel={label}
                                   // #1166: 환승 leg lock도 같은 SSOT(fusionBoardingLock). 환승 row에서도

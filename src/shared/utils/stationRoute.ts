@@ -1,7 +1,6 @@
 import stations from '../../data/stations.json';
 import stationTravelTimesJson from '../../data/stationTravelTimes.json';
 import stationDistancesJson from '../../data/stationDistances.json';
-import transferTimes from '../../data/transferTimes.json';
 import type { Station } from '../types/station';
 import { LINE_COLORS } from '../constants/lineColors';
 import { WALKING_SPEED_M_PER_S, ARRIVAL_FRESHNESS_MS } from '../constants/eta';
@@ -10,6 +9,7 @@ import { applyStationAlias } from '../../data/stationAliases';
 import { createLogger } from './logger';
 import { normalizeStationName as baseNormalizeStationName } from './normalizeStationName';
 import { distanceMetersBetween, estimateEtaSeconds } from './stationEta';
+import { getTransferSeconds } from './transferTimes';
 
 const logger = createLogger('StationRoute');
 
@@ -706,22 +706,9 @@ function findMultiTransferRoute(
   return best;
 }
 
-// 환승역별 실제 소요시간 데이터(공공데이터포털 15044419, 보행속도 1.2 m/s 기준)에
-// 미등록된 환승역에 적용하는 fallback. 기존 균일 가정값 3분(=180초)을 유지.
-const FALLBACK_TRANSFER_SECONDS = 180;
-
-const transferTimeTable = transferTimes as Record<string, number>;
-
-// (fromLine, toLine, 환승역명) 조합에 대응하는 실제 환승 소요시간(초).
-// 미등록 시 FALLBACK_TRANSFER_SECONDS.
-function getTransferSeconds(
-  fromLine: LineNumber,
-  toLine: LineNumber,
-  stationName: string,
-): number {
-  const key = `${fromLine}|${toLine}|${normalizeStationName(stationName)}`;
-  return transferTimeTable[key] ?? FALLBACK_TRANSFER_SECONDS;
-}
+// 환승 도보 시간 lookup은 `./transferTimes.ts` (ADR-015 §6 SSOT)로 추출 — 동일 데이터셋을
+// `BoardingTrainList walkingBufferSeconds` 등 다른 호출자와 공유. fallback은 동일 모듈 안에서
+// `TRANSFER_WALKING_BUFFER_SECONDS`(180s)로 처리. import 위치는 파일 상단.
 
 export function buildJourneyDisplay(
   route: Route,
