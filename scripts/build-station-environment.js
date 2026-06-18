@@ -80,8 +80,9 @@ function classifyFloor(floor) {
   if (typeof floor !== 'string') return 'unknown';
   const trimmed = floor.trim();
   if (trimmed.length === 0) return 'unknown';
-  const hasUnderground = /B\d+/u.test(trimmed);
-  const hasSurface = /\d+F/u.test(trimmed);
+  // bounded quantifiers — CSV 층수 컬럼은 1~2자리. ReDoS 방어 (SonarCloud S5852).
+  const hasUnderground = /B\d{1,2}/u.test(trimmed);
+  const hasSurface = /\d{1,2}F/u.test(trimmed);
   if (hasUnderground && hasSurface) return 'mixed';
   if (hasUnderground) return 'underground';
   if (hasSurface) return 'surface';
