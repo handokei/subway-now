@@ -13,6 +13,7 @@ const mockStation: Station = {
   lineColor: '#009D3E',
   lat: 37.49799,
   lng: 127.027912,
+  environment: 'underground',
 };
 
 const defaultProps = {

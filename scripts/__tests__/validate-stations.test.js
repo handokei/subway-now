@@ -23,6 +23,7 @@ const validStation = (overrides = {}) => ({
   lineColor: '#0052A4',
   lat: 37.9481,
   lng: 127.061,
+  environment: 'underground',
   ...overrides,
 });
 
@@ -236,6 +237,41 @@ describe('validate()', () => {
     });
     expect(res.warnings.every((w) => !/인접 hop/.test(w))).toBe(true);
   });
+
+  it('flags missing environment field (#1434)', () => {
+    const stn = validStation();
+    delete stn.environment;
+    const res = validate({
+      stations: [stn],
+      topology: validTopology({ monotonicLines: [] }),
+    });
+    expect(
+      res.errors.some((e) =>
+        /environment가 surface\|underground\|mixed\|unknown 중 하나가 아님/.test(e),
+      ),
+    ).toBe(true);
+  });
+
+  it('flags invalid environment enum value (#1434)', () => {
+    const res = validate({
+      stations: [validStation({ environment: 'sky' })],
+      topology: validTopology({ monotonicLines: [] }),
+    });
+    expect(
+      res.errors.some((e) => /environment가.*"sky"/.test(e)),
+    ).toBe(true);
+  });
+
+  it.each(['surface', 'underground', 'mixed', 'unknown'])(
+    'accepts environment="%s" (#1434)',
+    (env) => {
+      const res = validate({
+        stations: [validStation({ environment: env })],
+        topology: validTopology({ monotonicLines: [] }),
+      });
+      expect(res.errors.every((e) => !/environment/.test(e))).toBe(true);
+    },
+  );
 
   it('skips adjacent distance check when coordinates are non-finite', () => {
     // 좌표가 NaN인 경우 — 이미 lat 에러는 다른 룰에서 잡힘. distance 룰은 silently skip.
