@@ -7,25 +7,32 @@
  * 사전 결정한다.
  *
  * ## 데이터 출처 + 우선순위
- * 1. **명시적 override** (이 파일 ENVIRONMENT_OVERRIDES) — 외부 노선(9/airport/
- *    gyeongui/bundang/sinbundang) + CSV 매칭 불가 케이스. 사용자 검증 trip의 역들
- *    (성수/뚝섬/한양대/왕십리/마장)은 모두 명시 — CSV 매칭과 cross-check 대상.
- * 2. **서울교통공사 역사건축정보 CSV** (`scripts/fixtures/seoul-station-architecture.csv`)
- *    — 1~8호선 약 275역. 층수 컬럼으로 자동 분류:
- *      - B prefix (B2, B3, B4...) → underground
- *      - F prefix (1F, 2F, 3F...) → surface
- *      - 둘 다 포함 (2FB3, 5FB2, 1FB5...) → mixed
- *    출처: 서울 열린데이터 광장 — 서울교통공사_역사건축정보.
- * 3. **국가철도공단 9호선 승강장 CSV** (`scripts/fixtures/line9-platform.csv`)
- *    — 9호선 38역. 상행/하행 2 row의 `지상구분`(지상/지하) 컬럼 그룹화:
+ * 1. **명시적 override** (이 파일 ENVIRONMENT_OVERRIDES) — 외부 노선 + CSV 매칭
+ *    불가 케이스. 사용자 검증 trip의 역들(성수/뚝섬/한양대/왕십리/마장)은 모두
+ *    명시 — CSV 매칭과 cross-check 대상.
+ * 2. **국가철도공단 승강장 CSV** (`scripts/fixtures/<lineKey>-platform.csv`)
+ *    — 1~9호선 + 분당선(수인분당) 등 KRRIC가 발행한 노선별 승강장 정보.
+ *    상행/하행 2 row의 `지상구분`(지상/지하) 컬럼 그룹화:
  *      - 둘 다 `지상` → surface
  *      - 둘 다 `지하` → underground
  *      - 상행/하행 다름 → mixed
- *    출처: 공공데이터포털 — 국가철도공단_수도권9호선_승강장_정보 (#1460).
+ *    출처: 공공데이터포털 — 국가철도공단_수도권<N>호선/분당선_승강장_정보.
+ *    (#1460 9호선, #1466 1~8호선 + 분당선 일괄)
+ * 3. **서울교통공사 역사건축정보 CSV** (`scripts/fixtures/seoul-station-architecture.csv`)
+ *    — 1~8호선 약 275역 (서울교통공사 운영 구간만, KORAIL 구간 누락).
+ *    층수 컬럼으로 자동 분류:
+ *      - B prefix (B2, B3, B4...) → underground
+ *      - F prefix (1F, 2F, 3F...) → surface
+ *      - 둘 다 포함 (2FB3, 5FB2, 1FB5...) → mixed
+ *    출처: 서울 열린데이터 광장 — 서울교통공사_역사건축정보. KRRIC CSV에서
+ *    누락된 entry의 fallback.
  * 4. **매칭 실패** → `unknown`. 표준 출력에 리스트 출력 (사용자 검수용).
  *
  * ## 매칭 규칙
- * - CSV `호선` ↔ stations.json `line` 직접 비교 (둘 다 `"1"`~`"8"`).
+ * - KRRIC CSV는 fixture file당 lineKey가 고정. CSV 선명 컬럼은 무시 (운영기관
+ *   별 표기 다양: "1호선" / "수인분당" / "9호선" 등 → stations.json line key는
+ *   `"1"`~`"9"`/`"bundang"`). lineKey 매핑은 `KRRIC_SOURCES` 테이블 단일 SSOT.
+ * - seoul CSV는 첫 컬럼이 호선 (`"1"`~`"8"`).
  * - 역명은 `normalizeStationName`으로 후행 괄호 부제 제거 후 매칭
  *   (예: stations.json "왕십리(성동구청)" ↔ CSV "왕십리").
  * - override는 (line, normalized name) 키. CSV보다 우선.
@@ -39,8 +46,9 @@
  *
  * ## 출력 통계
  *   surface / underground / mixed / unknown 카운트
+ *   source 분포 (override / krric / seoul / unknown)
  *   unknown 리스트 (검수용)
- *   override / csv / unknown source 분포
+ *   cross-check 차이 리포트 (KRRIC ↔ seoul 일치하지 않는 (line,name))
  */
 
 'use strict';
@@ -52,17 +60,37 @@ const { normalizeStationName } = require('../src/shared/utils/normalizeStationNa
 
 const ROOT = path.join(__dirname, '..');
 const STATIONS_PATH = path.join(ROOT, 'src', 'data', 'stations.json');
-const CSV_PATH = path.join(__dirname, 'fixtures', 'seoul-station-architecture.csv');
-const LINE9_CSV_PATH = path.join(__dirname, 'fixtures', 'line9-platform.csv');
+const SEOUL_CSV_PATH = path.join(__dirname, 'fixtures', 'seoul-station-architecture.csv');
 
-const LINE9_KEY = '9';
-const LINE9_SURFACE_LABEL = '지상';
-const LINE9_UNDERGROUND_LABEL = '지하';
+/**
+ * KRRIC CSV fixture 파일 매핑. 각 fixture는 cp949 → UTF-8 변환된 단일 노선 CSV.
+ * 키는 stations.json의 `line` 값과 일치한다.
+ *
+ * 새 노선 추가 절차:
+ *   1. cp949 → UTF-8 변환 후 `scripts/fixtures/<lineKey>-platform.csv` 저장
+ *   2. 본 테이블에 entry 추가
+ *   3. `npm run build:stations:environment`로 재생성
+ */
+const KRRIC_SOURCES = Object.freeze({
+  1: 'line1-platform.csv',
+  2: 'line2-platform.csv',
+  3: 'line3-platform.csv',
+  4: 'line4-platform.csv',
+  5: 'line5-platform.csv',
+  6: 'line6-platform.csv',
+  7: 'line7-platform.csv',
+  8: 'line8-platform.csv',
+  9: 'line9-platform.csv',
+  bundang: 'bundang-platform.csv',
+});
+
+const KRRIC_SURFACE_LABEL = '지상';
+const KRRIC_UNDERGROUND_LABEL = '지하';
 
 const VALID_ENVIRONMENTS = new Set(['surface', 'underground', 'mixed', 'unknown']);
 
 /**
- * 외부 노선(9/airport/gyeongui/bundang/sinbundang) + CSV에 없는 1~8호선 역 +
+ * 외부 노선(airport/gyeongui/sinbundang) + CSV에 없는 역 +
  * 사용자 검증 trip 역들의 명시적 분류.
  *
  * 출처: 한국어 위키백과/나무위키 각 역 페이지 "구조" 절 + 운영사 공식 안내도.
@@ -84,6 +112,7 @@ const ENVIRONMENT_OVERRIDES = Object.freeze({
 });
 
 /**
+ * seoul-station-architecture.csv 층수 분류.
  * @param {string} floor CSV 층수 컬럼 값 (예: "B2", "3F", "5FB2")
  * @returns {'surface'|'underground'|'mixed'|'unknown'}
  */
@@ -101,7 +130,7 @@ function classifyFloor(floor) {
 }
 
 /**
- * CSV row 배열을 (line, normalizedName) → environment 맵으로 변환.
+ * seoul-station-architecture.csv → (line|name) → env 맵.
  * @param {string} csvText UTF-8
  * @returns {Map<string, 'surface'|'underground'|'mixed'|'unknown'>}
  */
@@ -133,18 +162,20 @@ function parseCsvRow(row) {
 }
 
 /**
- * 국가철도공단 9호선 승강장 CSV → (line|name) → env 맵.
+ * 국가철도공단 승강장 CSV → (lineKey|name) → env 맵.
  *
  * CSV 컬럼: 철도운영기관명(0) / 선명(1) / 역명(2) / 승강장번호(3) / 상하행(4) /
- * 지상구분(5) / 역층(6) / ... 같은 역명에 상행/하행 2 row가 있고, 지상구분이
+ * 지상구분(5) / 역층(6) / ... 같은 역명에 상행/하행 row가 있고, 지상구분이
  * 일치하면 단일 값, 다르면 mixed로 그룹화한다.
  *
- * line key는 stations.json `line` 형식과 맞춰 `"9"` 사용.
+ * CSV 선명 컬럼은 운영기관마다 표기 다양 (`1호선` / `수인분당` / `9호선` 등) →
+ * 파싱 시 무시하고 호출 측 `lineKey`로 stations.json의 line 값과 직접 매칭한다.
  *
  * @param {string} csvText UTF-8 (cp949 입력은 호출 측에서 사전 변환)
+ * @param {string} lineKey stations.json `line` 값 (`"1"`~`"9"`/`"bundang"`)
  * @returns {Map<string, 'surface'|'underground'|'mixed'|'unknown'>}
  */
-function parseLine9Csv(csvText) {
+function parseKrricCsv(csvText, lineKey) {
   const lines = csvText.split(/\r?\n/u).filter((l) => l.length > 0);
   /** @type {Map<string, Set<string>>} */
   const byStation = new Map();
@@ -154,7 +185,7 @@ function parseLine9Csv(csvText) {
     const name = normalizeStationName(cols[2]);
     const label = cols[5];
     if (name.length === 0) continue;
-    if (label !== LINE9_SURFACE_LABEL && label !== LINE9_UNDERGROUND_LABEL) continue;
+    if (label !== KRRIC_SURFACE_LABEL && label !== KRRIC_UNDERGROUND_LABEL) continue;
     let bucket = byStation.get(name);
     if (!bucket) {
       bucket = new Set();
@@ -167,38 +198,90 @@ function parseLine9Csv(csvText) {
   for (const [name, labels] of byStation) {
     let env;
     if (labels.size > 1) env = 'mixed';
-    else if (labels.has(LINE9_SURFACE_LABEL)) env = 'surface';
-    else if (labels.has(LINE9_UNDERGROUND_LABEL)) env = 'underground';
-    else env = 'unknown';
-    out.set(`${LINE9_KEY}|${name}`, env);
+    else if (labels.has(KRRIC_SURFACE_LABEL)) env = 'surface';
+    else env = 'underground'; // labels Set은 위 필터로 지상/지하만 들어감 — size>0 && !surface → underground
+    out.set(`${lineKey}|${name}`, env);
   }
   return out;
+}
+
+/**
+ * 역호환 alias — #1460에서 도입된 이름. 신규 호출은 parseKrricCsv 권장.
+ * @param {string} csvText
+ * @returns {Map<string, 'surface'|'underground'|'mixed'|'unknown'>}
+ */
+function parseLine9Csv(csvText) {
+  return parseKrricCsv(csvText, '9');
+}
+
+/**
+ * KRRIC 텍스트 맵 → 모든 노선 합쳐진 (line|name) → env 맵.
+ * @param {Record<string, string>} krricCsvTexts lineKey → CSV UTF-8 text
+ * @returns {Map<string, 'surface'|'underground'|'mixed'|'unknown'>}
+ */
+function buildKrricMap(krricCsvTexts) {
+  const merged = new Map();
+  for (const [lineKey, text] of Object.entries(krricCsvTexts)) {
+    const m = parseKrricCsv(text, lineKey);
+    for (const [k, v] of m) merged.set(k, v);
+  }
+  return merged;
+}
+
+/**
+ * KRRIC ↔ seoul CSV cross-check 차이 리스트.
+ * 둘 다 매칭된 (line,name) 중 environment가 다른 entry만 반환.
+ * @param {Map<string, string>} krricMap
+ * @param {Map<string, string>} seoulMap
+ * @returns {Array<{ key: string, krric: string, seoul: string }>}
+ */
+function diffSources(krricMap, seoulMap) {
+  const diffs = [];
+  for (const [key, krric] of krricMap) {
+    if (!seoulMap.has(key)) continue;
+    const seoul = seoulMap.get(key);
+    if (seoul === 'unknown' || krric === 'unknown') continue;
+    if (seoul !== krric) diffs.push({ key, krric, seoul });
+  }
+  // 결정적 출력 (테스트 안정성)
+  diffs.sort((a, b) => a.key.localeCompare(b.key));
+  return diffs;
 }
 
 /**
  * @param {{
  *   stations: Array<Record<string, unknown>>,
  *   csvText: string,
+ *   krricCsvTexts?: Record<string, string>,
  *   line9CsvText?: string,
  * }} input
  * @returns {{
  *   stations: Array<Record<string, unknown>>,
  *   stats: {
  *     total: number,
- *     bySource: { override: number, csv: number, line9: number, unknown: number },
+ *     bySource: { override: number, krric: number, seoul: number, unknown: number },
  *     byEnv: { surface: number, underground: number, mixed: number, unknown: number },
  *     unknownEntries: Array<{ id: string, name: string, line: string }>,
+ *     crossCheckDiffs: Array<{ key: string, krric: string, seoul: string }>,
  *   },
  * }}
  */
-function build({ stations, csvText, line9CsvText }) {
-  const csvMap = parseCsv(csvText);
-  const line9Map = typeof line9CsvText === 'string' ? parseLine9Csv(line9CsvText) : new Map();
+function build({ stations, csvText, krricCsvTexts, line9CsvText }) {
+  const seoulMap = parseCsv(csvText);
+  // 역호환: line9CsvText 단독 입력은 { '9': ... }로 흡수.
+  const krricInput = { ...(krricCsvTexts ?? {}) };
+  if (typeof line9CsvText === 'string' && krricInput['9'] === undefined) {
+    krricInput['9'] = line9CsvText;
+  }
+  const krricMap = buildKrricMap(krricInput);
+  const crossCheckDiffs = diffSources(krricMap, seoulMap);
+
   const stats = {
     total: stations.length,
-    bySource: { override: 0, csv: 0, line9: 0, unknown: 0 },
+    bySource: { override: 0, krric: 0, seoul: 0, unknown: 0 },
     byEnv: { surface: 0, underground: 0, mixed: 0, unknown: 0 },
     unknownEntries: [],
+    crossCheckDiffs,
   };
 
   const next = stations.map((stn) => {
@@ -212,12 +295,12 @@ function build({ stations, csvText, line9CsvText }) {
     if (Object.hasOwn(ENVIRONMENT_OVERRIDES, key)) {
       environment = ENVIRONMENT_OVERRIDES[key];
       source = 'override';
-    } else if (line9Map.has(key)) {
-      environment = line9Map.get(key);
-      source = environment === 'unknown' ? 'unknown' : 'line9';
-    } else if (csvMap.has(key)) {
-      environment = csvMap.get(key);
-      source = environment === 'unknown' ? 'unknown' : 'csv';
+    } else if (krricMap.has(key)) {
+      environment = krricMap.get(key);
+      source = environment === 'unknown' ? 'unknown' : 'krric';
+    } else if (seoulMap.has(key)) {
+      environment = seoulMap.get(key);
+      source = environment === 'unknown' ? 'unknown' : 'seoul';
     }
 
     stats.bySource[source] += 1;
@@ -245,13 +328,15 @@ function main(argv, deps = {}) {
   const readFile = deps.readFile ?? ((p) => fs.readFileSync(p, 'utf8'));
   const writeFile = deps.writeFile ?? ((p, c) => fs.writeFileSync(p, c));
   const stationsPath = deps.stationsPath ?? STATIONS_PATH;
-  const csvPath = deps.csvPath ?? CSV_PATH;
-  const line9CsvPath = deps.line9CsvPath ?? LINE9_CSV_PATH;
+  const csvPath = deps.csvPath ?? SEOUL_CSV_PATH;
+  const krricSources = deps.krricSources ?? KRRIC_SOURCES;
+  const fixturesDir = deps.fixturesDir ?? path.join(__dirname, 'fixtures');
   const dryRun = argv.includes('--dry-run');
 
   let stations;
   let csvText;
-  let line9CsvText;
+  /** @type {Record<string, string>} */
+  const krricCsvTexts = {};
   try {
     stations = JSON.parse(readFile(stationsPath));
   } catch (e) {
@@ -264,22 +349,32 @@ function main(argv, deps = {}) {
     writeErr(`build-station-environment: CSV 읽기 실패 — ${e.message}`);
     return 1;
   }
-  try {
-    line9CsvText = readFile(line9CsvPath);
-  } catch (e) {
-    writeErr(`build-station-environment: 9호선 CSV 읽기 실패 — ${e.message}`);
-    return 1;
+  for (const [lineKey, fileName] of Object.entries(krricSources)) {
+    const p = path.join(fixturesDir, fileName);
+    try {
+      krricCsvTexts[lineKey] = readFile(p);
+    } catch (e) {
+      writeErr(`build-station-environment: KRRIC CSV(${lineKey}) 읽기 실패 — ${e.message}`);
+      return 1;
+    }
   }
 
-  const { stations: nextStations, stats } = build({ stations, csvText, line9CsvText });
+  const { stations: nextStations, stats } = build({ stations, csvText, krricCsvTexts });
 
   writeOut(`✅ ${stats.total} stations classified`);
   writeOut(
     `  byEnv  : surface=${stats.byEnv.surface} underground=${stats.byEnv.underground} mixed=${stats.byEnv.mixed} unknown=${stats.byEnv.unknown}`,
   );
   writeOut(
-    `  source : override=${stats.bySource.override} csv=${stats.bySource.csv} line9=${stats.bySource.line9} unknown=${stats.bySource.unknown}`,
+    `  source : override=${stats.bySource.override} krric=${stats.bySource.krric} seoul=${stats.bySource.seoul} unknown=${stats.bySource.unknown}`,
   );
+
+  if (stats.crossCheckDiffs.length > 0) {
+    writeOut(`ℹ️  ${stats.crossCheckDiffs.length} cross-check diffs (KRRIC vs seoul):`);
+    for (const d of stats.crossCheckDiffs) {
+      writeOut(`     ${d.key}\tkrric=${d.krric}\tseoul=${d.seoul}`);
+    }
+  }
 
   if (stats.unknownEntries.length > 0) {
     writeOut(`⚠️  ${stats.unknownEntries.length} stations need manual curation (environment=unknown):`);
@@ -302,9 +397,13 @@ module.exports = {
   classifyFloor,
   parseCsv,
   parseCsvRow,
+  parseKrricCsv,
   parseLine9Csv,
+  buildKrricMap,
+  diffSources,
   build,
   ENVIRONMENT_OVERRIDES,
+  KRRIC_SOURCES,
   VALID_ENVIRONMENTS,
   main,
 };

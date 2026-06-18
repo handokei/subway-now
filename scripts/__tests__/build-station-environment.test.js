@@ -1,6 +1,6 @@
 /**
- * build-station-environment (#1434) — classifyFloor / parseCsv / build / main
- * 단위 테스트. ADR-015 §1 Deterministic Environment SSOT.
+ * build-station-environment (#1434/#1460/#1466) — 단위 테스트.
+ * ADR-015 §1 Deterministic Environment SSOT.
  */
 
 const path = require('node:path');
@@ -9,9 +9,13 @@ const {
   classifyFloor,
   parseCsv,
   parseCsvRow,
+  parseKrricCsv,
   parseLine9Csv,
+  buildKrricMap,
+  diffSources,
   build,
   ENVIRONMENT_OVERRIDES,
+  KRRIC_SOURCES,
   VALID_ENVIRONMENTS,
   main,
 } = require('../build-station-environment');
@@ -84,7 +88,7 @@ describe('parseCsv', () => {
   });
 });
 
-describe('parseLine9Csv', () => {
+describe('parseKrricCsv', () => {
   it('groups 상행/하행 rows by station; same label → single env', () => {
     const csv =
       '"hdr","x","x","x","x","x","x"\n' +
@@ -92,9 +96,20 @@ describe('parseLine9Csv', () => {
       '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
       '서울시메트로9호선주식회사,9호선,김포공항,1,상행,지하,3,Y,Y,N\n' +
       '서울시메트로9호선주식회사,9호선,김포공항,2,하행,지하,4,Y,Y,N\n';
-    const map = parseLine9Csv(csv);
+    const map = parseKrricCsv(csv, '9');
     expect(map.get('9|개화')).toBe('surface');
     expect(map.get('9|김포공항')).toBe('underground');
+  });
+
+  it('uses lineKey arg as map key (ignores 선명 column)', () => {
+    // 분당선 CSV는 선명이 "수인분당"이지만 stations.json은 "bundang" line.
+    const csv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,왕십리,1,하행,지상,1,Y,N,N\n' +
+      '코레일,수인분당,왕십리,2,상행,지상,1,Y,N,N\n';
+    const map = parseKrricCsv(csv, 'bundang');
+    expect(map.get('bundang|왕십리')).toBe('surface');
+    expect(map.has('수인분당|왕십리')).toBe(false);
   });
 
   it('differing 지상구분 between 상행/하행 → mixed', () => {
@@ -102,26 +117,26 @@ describe('parseLine9Csv', () => {
       '"hdr","x","x","x","x","x","x"\n' +
       '서울시메트로9호선주식회사,9호선,섞임역,1,상행,지상,1,Y,N,N\n' +
       '서울시메트로9호선주식회사,9호선,섞임역,2,하행,지하,2,Y,N,N\n';
-    expect(parseLine9Csv(csv).get('9|섞임역')).toBe('mixed');
+    expect(parseKrricCsv(csv, '9').get('9|섞임역')).toBe('mixed');
   });
 
   it('skips rows with fewer than 6 columns', () => {
     const csv = '"hdr","x"\n서울시메트로9호선주식회사,9호선,개화\n';
-    expect(parseLine9Csv(csv).size).toBe(0);
+    expect(parseKrricCsv(csv, '9').size).toBe(0);
   });
 
   it('skips rows with unknown 지상구분 label', () => {
     const csv =
       '"hdr","x","x","x","x","x","x"\n' +
       '서울시메트로9호선주식회사,9호선,수상한역,1,상행,수상,1,Y,N,N\n';
-    expect(parseLine9Csv(csv).size).toBe(0);
+    expect(parseKrricCsv(csv, '9').size).toBe(0);
   });
 
   it('skips rows with empty station name', () => {
     const csv =
       '"hdr","x","x","x","x","x","x"\n' +
       '서울시메트로9호선주식회사,9호선,,1,상행,지상,1,Y,N,N\n';
-    expect(parseLine9Csv(csv).size).toBe(0);
+    expect(parseKrricCsv(csv, '9').size).toBe(0);
   });
 
   it('handles CRLF line endings', () => {
@@ -129,7 +144,72 @@ describe('parseLine9Csv', () => {
       '"hdr","x","x","x","x","x","x"\r\n' +
       '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\r\n' +
       '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\r\n';
+    expect(parseKrricCsv(csv, '9').get('9|개화')).toBe('surface');
+  });
+
+  it('parseLine9Csv alias forwards to parseKrricCsv with "9" key', () => {
+    const csv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
+      '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n';
     expect(parseLine9Csv(csv).get('9|개화')).toBe('surface');
+  });
+});
+
+describe('buildKrricMap', () => {
+  it('merges multiple lineKey CSV texts into single map', () => {
+    const csvLine1 =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,1호선,소요산,1,상행,지상,2,Y,N,N\n' +
+      '코레일,1호선,소요산,2,하행,지상,2,Y,N,N\n';
+    const csvBundang =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,왕십리,1,상행,지상,1,Y,N,N\n' +
+      '코레일,수인분당,왕십리,2,하행,지상,1,Y,N,N\n';
+    const merged = buildKrricMap({ 1: csvLine1, bundang: csvBundang });
+    expect(merged.get('1|소요산')).toBe('surface');
+    expect(merged.get('bundang|왕십리')).toBe('surface');
+    expect(merged.size).toBe(2);
+  });
+
+  it('returns empty map for empty input', () => {
+    expect(buildKrricMap({}).size).toBe(0);
+  });
+});
+
+describe('diffSources', () => {
+  it('reports only entries present in both maps with different env', () => {
+    const krric = new Map([
+      ['2|당산', 'underground'],
+      ['2|한양대', 'surface'],
+      ['9|개화', 'surface'],
+    ]);
+    const seoul = new Map([
+      ['2|당산', 'surface'],
+      ['2|한양대', 'surface'],
+    ]);
+    expect(diffSources(krric, seoul)).toEqual([
+      { key: '2|당산', krric: 'underground', seoul: 'surface' },
+    ]);
+  });
+
+  it('skips entries where either side is unknown', () => {
+    const krric = new Map([['2|x', 'underground']]);
+    const seoul = new Map([['2|x', 'unknown']]);
+    expect(diffSources(krric, seoul)).toEqual([]);
+  });
+
+  it('returns diffs sorted by key for deterministic output', () => {
+    const krric = new Map([
+      ['2|b', 'underground'],
+      ['2|a', 'underground'],
+    ]);
+    const seoul = new Map([
+      ['2|b', 'surface'],
+      ['2|a', 'surface'],
+    ]);
+    const result = diffSources(krric, seoul);
+    expect(result.map((d) => d.key)).toEqual(['2|a', '2|b']);
   });
 });
 
@@ -140,12 +220,11 @@ describe('build', () => {
     '"2","한양대","상대식","205","2F","5974","1983"\n' +
     '"1","동묘앞","상대식","210","5FB2","9894.75","2005"\n';
 
-  it('applies CSV classification for 1~8 stations not covered by overrides', () => {
-    // 1-동묘앞=mixed via CSV; override map covers 2호선 trip stations only.
+  it('applies seoul CSV classification for stations not covered by overrides/KRRIC', () => {
     const stations = [{ id: '1-029', name: '동묘앞', line: '1' }];
     const { stations: out, stats } = build({ stations, csvText });
     expect(out[0].environment).toBe('mixed');
-    expect(stats.bySource.csv).toBe(1);
+    expect(stats.bySource.seoul).toBe(1);
     expect(stats.bySource.override).toBe(0);
     expect(stats.bySource.unknown).toBe(0);
     expect(stats.byEnv).toEqual({ surface: 0, underground: 0, mixed: 1, unknown: 0 });
@@ -153,21 +232,19 @@ describe('build', () => {
   });
 
   it('applies overrides with priority over CSV', () => {
-    // CSV says 한양대=surface but override could pick anything; we verify override wins.
     const localOverride = '2|한양대';
-    // we cannot mutate frozen ENVIRONMENT_OVERRIDES, so verify override map contains user trip key.
     expect(Object.hasOwn(ENVIRONMENT_OVERRIDES, localOverride)).toBe(true);
     const stations = [{ id: '2-009', name: '한양대', line: '2' }];
     const { stations: out, stats } = build({ stations, csvText });
     expect(out[0].environment).toBe(ENVIRONMENT_OVERRIDES[localOverride]);
     expect(stats.bySource.override).toBe(1);
-    expect(stats.bySource.csv).toBe(0);
+    expect(stats.bySource.seoul).toBe(0);
   });
 
   it('marks unknown for unmatched stations and reports them', () => {
     const stations = [
       { id: '9-001', name: '개화', line: '9' },
-      { id: 'bundang-001', name: '인천', line: 'bundang' },
+      { id: 'sinbundang-001', name: '광교', line: 'sinbundang' },
     ];
     const { stations: out, stats } = build({ stations, csvText });
     expect(out[0].environment).toBe('unknown');
@@ -175,7 +252,7 @@ describe('build', () => {
     expect(stats.bySource.unknown).toBe(2);
     expect(stats.unknownEntries).toEqual([
       { id: '9-001', name: '개화', line: '9' },
-      { id: 'bundang-001', name: '인천', line: 'bundang' },
+      { id: 'sinbundang-001', name: '광교', line: 'sinbundang' },
     ]);
   });
 
@@ -208,61 +285,114 @@ describe('build', () => {
     });
   });
 
-  it('applies line9 CSV classification for 9호선 stations (#1460)', () => {
-    const line9CsvText =
-      '"hdr","x","x","x","x","x","x"\n' +
-      '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
-      '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n' +
-      '서울시메트로9호선주식회사,9호선,김포공항,1,상행,지하,3,Y,Y,N\n' +
-      '서울시메트로9호선주식회사,9호선,김포공항,2,하행,지하,4,Y,Y,N\n';
+  it('applies KRRIC classification via krricCsvTexts (#1466)', () => {
+    const krricCsvTexts = {
+      9:
+        '"hdr","x","x","x","x","x","x"\n' +
+        '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
+        '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n' +
+        '서울시메트로9호선주식회사,9호선,김포공항,1,상행,지하,3,Y,Y,N\n' +
+        '서울시메트로9호선주식회사,9호선,김포공항,2,하행,지하,4,Y,Y,N\n',
+      bundang:
+        '"hdr","x","x","x","x","x","x"\n' +
+        '코레일,수인분당,서울숲,1,상행,지하,4,Y,Y,N\n' +
+        '코레일,수인분당,서울숲,2,하행,지하,4,Y,Y,N\n',
+    };
     const stations = [
       { id: '9-001', name: '개화', line: '9' },
       { id: '9-002', name: '김포공항', line: '9' },
+      { id: 'bundang-x', name: '서울숲', line: 'bundang' },
     ];
-    const { stations: out, stats } = build({ stations, csvText, line9CsvText });
+    const { stations: out, stats } = build({ stations, csvText, krricCsvTexts });
     expect(out[0].environment).toBe('surface');
     expect(out[1].environment).toBe('underground');
-    expect(stats.bySource.line9).toBe(2);
-    expect(stats.bySource.csv).toBe(0);
+    expect(out[2].environment).toBe('underground');
+    expect(stats.bySource.krric).toBe(3);
+    expect(stats.bySource.seoul).toBe(0);
     expect(stats.bySource.unknown).toBe(0);
-    expect(stats.byEnv).toEqual({ surface: 1, underground: 1, mixed: 0, unknown: 0 });
+    expect(stats.byEnv).toEqual({ surface: 1, underground: 2, mixed: 0, unknown: 0 });
   });
 
-  it('override wins over line9 CSV when both match', () => {
-    // 9호선에 같은 키로 override를 두면 우선해야 함 (현재 override map엔 9호선 key 없음 — 추후 추가 시 가드).
-    const line9CsvText =
-      '"hdr","x","x","x","x","x","x"\n' +
-      '서울시메트로9호선주식회사,9호선,한양대,1,상행,지하,1,Y,N,N\n' +
-      '서울시메트로9호선주식회사,9호선,한양대,2,하행,지하,1,Y,N,N\n';
-    // 2|한양대 override는 surface. 9|한양대는 line9 CSV로 underground.
-    const stations = [
-      { id: '2-009', name: '한양대', line: '2' },
-      { id: '9-x', name: '한양대', line: '9' },
-    ];
-    const { stations: out, stats } = build({ stations, csvText, line9CsvText });
+  it('override wins over KRRIC when both match', () => {
+    const krricCsvTexts = {
+      2:
+        '"hdr","x","x","x","x","x","x"\n' +
+        '서울교통공사,2호선,한양대,1,상행,지하,1,Y,N,N\n' +
+        '서울교통공사,2호선,한양대,2,하행,지하,1,Y,N,N\n',
+    };
+    const stations = [{ id: '2-009', name: '한양대', line: '2' }];
+    const { stations: out, stats } = build({ stations, csvText, krricCsvTexts });
+    // override = surface, KRRIC = underground → override wins.
     expect(out[0].environment).toBe(ENVIRONMENT_OVERRIDES['2|한양대']);
-    expect(out[1].environment).toBe('underground');
     expect(stats.bySource.override).toBe(1);
-    expect(stats.bySource.line9).toBe(1);
+    expect(stats.bySource.krric).toBe(0);
   });
 
-  it('line9 CSV row with empty 지상구분 → station stays unknown (no line9 source credit)', () => {
-    // parseLine9Csv가 unknown label row를 skip하므로, 9호선 entry는 매칭 미스 → unknown.
+  it('KRRIC wins over seoul CSV when both match', () => {
+    // seoul says 동묘앞 = mixed (2FB3 layout), KRRIC overrides with underground.
+    const krricCsvTexts = {
+      1:
+        '"hdr","x","x","x","x","x","x"\n' +
+        '서울교통공사,1호선,동묘앞,1,상행,지하,2,Y,N,N\n' +
+        '서울교통공사,1호선,동묘앞,2,하행,지하,2,Y,N,N\n',
+    };
+    const stations = [{ id: '1-029', name: '동묘앞', line: '1' }];
+    const { stations: out, stats } = build({ stations, csvText, krricCsvTexts });
+    expect(out[0].environment).toBe('underground');
+    expect(stats.bySource.krric).toBe(1);
+    expect(stats.bySource.seoul).toBe(0);
+    // cross-check diff is reported
+    expect(stats.crossCheckDiffs).toEqual([
+      { key: '1|동묘앞', krric: 'underground', seoul: 'mixed' },
+    ]);
+  });
+
+  it('legacy line9CsvText input is absorbed as krricCsvTexts["9"] (backward compat)', () => {
     const line9CsvText =
       '"hdr","x","x","x","x","x","x"\n' +
-      '서울시메트로9호선주식회사,9호선,개화,1,상행,?,1,Y,N,N\n';
+      '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
+      '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n';
     const stations = [{ id: '9-001', name: '개화', line: '9' }];
     const { stations: out, stats } = build({ stations, csvText, line9CsvText });
+    expect(out[0].environment).toBe('surface');
+    expect(stats.bySource.krric).toBe(1);
+  });
+
+  it('legacy line9CsvText is ignored when krricCsvTexts["9"] already set', () => {
+    const line9CsvText =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
+      '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n';
+    const krricCsvTexts = {
+      9:
+        '"hdr","x","x","x","x","x","x"\n' +
+        '서울시메트로9호선주식회사,9호선,개화,1,상행,지하,1,Y,Y,N\n' +
+        '서울시메트로9호선주식회사,9호선,개화,2,하행,지하,1,Y,Y,N\n',
+    };
+    const stations = [{ id: '9-001', name: '개화', line: '9' }];
+    const { stations: out } = build({ stations, csvText, krricCsvTexts, line9CsvText });
+    // krricCsvTexts wins; line9CsvText ignored.
+    expect(out[0].environment).toBe('underground');
+  });
+
+  it('KRRIC row with empty 지상구분 → station stays unknown (no krric source credit)', () => {
+    const krricCsvTexts = {
+      9:
+        '"hdr","x","x","x","x","x","x"\n' +
+        '서울시메트로9호선주식회사,9호선,개화,1,상행,?,1,Y,N,N\n',
+    };
+    const stations = [{ id: '9-001', name: '개화', line: '9' }];
+    const { stations: out, stats } = build({ stations, csvText, krricCsvTexts });
     expect(out[0].environment).toBe('unknown');
-    expect(stats.bySource.line9).toBe(0);
+    expect(stats.bySource.krric).toBe(0);
     expect(stats.bySource.unknown).toBe(1);
   });
 
-  it('omitting line9CsvText leaves 9호선 entries unknown (backward compat)', () => {
+  it('omitting krricCsvTexts leaves 9호선 entries unknown (backward compat)', () => {
     const stations = [{ id: '9-001', name: '개화', line: '9' }];
     const { stations: out, stats } = build({ stations, csvText });
     expect(out[0].environment).toBe('unknown');
-    expect(stats.bySource.line9).toBe(0);
+    expect(stats.bySource.krric).toBe(0);
   });
 
   it('treats CSV row whose floor is empty as unknown source', () => {
@@ -273,7 +403,22 @@ describe('build', () => {
     const { stations: out, stats } = build({ stations, csvText: csv });
     expect(out[0].environment).toBe('unknown');
     expect(stats.bySource.unknown).toBe(1);
-    expect(stats.bySource.csv).toBe(0);
+    expect(stats.bySource.seoul).toBe(0);
+  });
+});
+
+describe('KRRIC_SOURCES', () => {
+  it('covers 1~9호선 + 분당선 fixture mapping (#1466)', () => {
+    const expectedKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'bundang'];
+    const cmp = (a, b) => a.localeCompare(b);
+    expect(Object.keys(KRRIC_SOURCES).sort(cmp)).toEqual(expectedKeys.sort(cmp));
+    for (const f of Object.values(KRRIC_SOURCES)) {
+      expect(f).toMatch(/-platform\.csv$/u);
+    }
+  });
+
+  it('is frozen', () => {
+    expect(Object.isFrozen(KRRIC_SOURCES)).toBe(true);
   });
 });
 
@@ -288,7 +433,6 @@ describe('VALID_ENVIRONMENTS', () => {
 
 describe('ENVIRONMENT_OVERRIDES', () => {
   it('covers all user-verification trip stations from ADR-015 §1', () => {
-    // E1 acceptance: 사용자 trip 역들이 모두 명시 분류되어야 함.
     const expected = {
       '2|성수': 'surface',
       '2|뚝섬': 'surface',
@@ -310,13 +454,17 @@ describe('ENVIRONMENT_OVERRIDES', () => {
 });
 
 describe('main()', () => {
-  const csvText =
+  const seoulCsvText =
     '"hdr","x","x","x","x","x","x"\n' +
     '"2","한양대","상대식","205","2F","5974","1983"\n';
   const stationsJson = JSON.stringify([
     { id: '2-009', name: '한양대', line: '2' },
     { id: '9-001', name: '개화', line: '9' },
   ]);
+  const krricLine9Csv =
+    '"hdr","x","x","x","x","x","x"\n' +
+    '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
+    '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n';
 
   function deps(extra = {}) {
     const outs = [];
@@ -325,10 +473,16 @@ describe('main()', () => {
     return {
       writeOut: (s) => outs.push(s),
       writeErr: (s) => errs.push(s),
-      readFile: (p) => (p.endsWith('.csv') ? csvText : stationsJson),
+      readFile: (p) => {
+        if (p.endsWith('.json')) return stationsJson;
+        if (p.includes('-platform.csv')) return krricLine9Csv;
+        return seoulCsvText;
+      },
       writeFile: (p, c) => writes.push({ p, c }),
       stationsPath: path.join(TEST_TMP_DIR, 's.json'),
       csvPath: path.join(TEST_TMP_DIR, 'c.csv'),
+      krricSources: { 9: 'line9-platform.csv' },
+      fixturesDir: path.join(TEST_TMP_DIR, 'fixtures'),
       ...extra,
       _captured: { outs, errs, writes },
     };
@@ -339,14 +493,12 @@ describe('main()', () => {
     const code = main([], d);
     expect(code).toBe(0);
     expect(d._captured.outs.some((s) => /2 stations classified/.test(s))).toBe(true);
-    expect(d._captured.outs.some((s) => /surface=1.*unknown=1/.test(s))).toBe(true);
-    expect(d._captured.outs.some((s) => /1 stations need manual curation/.test(s))).toBe(true);
+    expect(d._captured.outs.some((s) => /surface=2.*unknown=0/.test(s))).toBe(true);
     expect(d._captured.outs.some((s) => /wrote/.test(s))).toBe(true);
     expect(d._captured.writes.length).toBe(1);
-    // sanity: written content has environment field on both
     const written = JSON.parse(d._captured.writes[0].c);
     expect(written[0].environment).toBe('surface');
-    expect(written[1].environment).toBe('unknown');
+    expect(written[1].environment).toBe('surface');
   });
 
   it('--dry-run skips file write and prints dry-run notice', () => {
@@ -358,22 +510,32 @@ describe('main()', () => {
   });
 
   it('omits manual-curation block when all stations matched', () => {
-    const d = deps({
-      readFile: (p) =>
-        p.endsWith('.csv')
-          ? csvText
-          : JSON.stringify([{ id: '2-009', name: '한양대', line: '2' }]),
-    });
+    const d = deps();
     const code = main(['--dry-run'], d);
     expect(code).toBe(0);
     expect(d._captured.outs.every((s) => !/need manual curation/.test(s))).toBe(true);
+  });
+
+  it('lists unknown stations when present', () => {
+    const d = deps({
+      readFile: (p) => {
+        if (p.endsWith('.json'))
+          return JSON.stringify([{ id: 'sinbundang-001', name: '광교', line: 'sinbundang' }]);
+        if (p.includes('-platform.csv')) return krricLine9Csv;
+        return seoulCsvText;
+      },
+    });
+    const code = main(['--dry-run'], d);
+    expect(code).toBe(0);
+    expect(d._captured.outs.some((s) => /need manual curation/.test(s))).toBe(true);
+    expect(d._captured.outs.some((s) => /광교/.test(s))).toBe(true);
   });
 
   it('returns 1 when stations.json read fails', () => {
     const d = deps({
       readFile: (p) => {
         if (p.endsWith('.json')) throw new Error('boom');
-        return csvText;
+        return seoulCsvText;
       },
     });
     const code = main([], d);
@@ -381,11 +543,12 @@ describe('main()', () => {
     expect(d._captured.errs.some((s) => /stations\.json 읽기 실패.*boom/.test(s))).toBe(true);
   });
 
-  it('returns 1 when CSV read fails', () => {
+  it('returns 1 when seoul CSV read fails', () => {
     const d = deps({
       readFile: (p) => {
-        if (p.endsWith('.csv')) throw new Error('no-csv');
-        return stationsJson;
+        if (p.endsWith('.json')) return stationsJson;
+        if (p.includes('-platform.csv')) return krricLine9Csv;
+        throw new Error('no-csv');
       },
     });
     const code = main([], d);
@@ -393,41 +556,52 @@ describe('main()', () => {
     expect(d._captured.errs.some((s) => /CSV 읽기 실패.*no-csv/.test(s))).toBe(true);
   });
 
-  it('prints line9 source counter in stats line (#1460)', () => {
+  it('prints krric source counter in stats line (#1466)', () => {
     const d = deps();
     const code = main(['--dry-run'], d);
     expect(code).toBe(0);
-    expect(d._captured.outs.some((s) => /source.*line9=/.test(s))).toBe(true);
+    expect(d._captured.outs.some((s) => /source.*krric=/.test(s))).toBe(true);
   });
 
-  it('returns 1 when 9호선 CSV read fails', () => {
+  it('returns 1 when KRRIC CSV read fails', () => {
     const d = deps({
       readFile: (p) => {
-        if (p.includes('line9')) throw new Error('no-line9');
-        if (p.endsWith('.csv')) return csvText;
-        return stationsJson;
+        if (p.includes('-platform.csv')) throw new Error('no-krric');
+        if (p.endsWith('.json')) return stationsJson;
+        return seoulCsvText;
       },
     });
     const code = main([], d);
     expect(code).toBe(1);
-    expect(d._captured.errs.some((s) => /9호선 CSV 읽기 실패.*no-line9/.test(s))).toBe(true);
+    expect(d._captured.errs.some((s) => /KRRIC CSV\(9\) 읽기 실패.*no-krric/.test(s))).toBe(true);
   });
 
   it('classifies 9호선 stations via line9 CSV in main()', () => {
-    const line9Csv =
-      '"hdr","x","x","x","x","x","x"\n' +
-      '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
-      '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n';
-    const d = deps({
-      readFile: (p) => {
-        if (p.includes('line9')) return line9Csv;
-        if (p.endsWith('.csv')) return csvText;
-        return JSON.stringify([{ id: '9-001', name: '개화', line: '9' }]);
-      },
-    });
+    const d = deps();
     const code = main([], d);
     expect(code).toBe(0);
     const written = JSON.parse(d._captured.writes[0].c);
-    expect(written[0].environment).toBe('surface');
+    const line9 = written.find((s) => s.line === '9');
+    expect(line9.environment).toBe('surface');
+  });
+
+  it('prints cross-check diffs when KRRIC disagrees with seoul', () => {
+    // KRRIC: 개화 = surface (지상), seoul: 개화 = underground (B2) → diff.
+    const seoulMismatch =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '"9","개화","상대식","205","B2","100","2009"\n';
+    const d = deps({
+      readFile: (p) => {
+        if (p.endsWith('.json')) return JSON.stringify([{ id: '9-001', name: '개화', line: '9' }]);
+        if (p.includes('-platform.csv')) return krricLine9Csv;
+        return seoulMismatch;
+      },
+    });
+    const code = main(['--dry-run'], d);
+    expect(code).toBe(0);
+    expect(d._captured.outs.some((s) => /cross-check diffs/.test(s))).toBe(true);
+    expect(
+      d._captured.outs.some((s) => /9\|개화\s+krric=surface\s+seoul=underground/.test(s)),
+    ).toBe(true);
   });
 });
