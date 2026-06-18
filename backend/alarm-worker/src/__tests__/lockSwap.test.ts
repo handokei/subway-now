@@ -244,4 +244,28 @@ describe('attachTrainCodeForLeg', () => {
     });
     expect(lock?.segmentStations).toEqual(['중곡', '군자', '어린이대공원']);
   });
+
+  it('allowedLines 안 line → swap 허용 (#1439 §9)', async () => {
+    const seoul = makeSeoul([makeArrival('T1', 1)]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip([{ stationName: '중곡', line: '7', kind: 'destination' }]),
+      targetWaypoint: { stationName: '중곡', line: '7', kind: 'intermediate' },
+      seoul,
+      now: NOW,
+      allowedLines: new Set(['7']),
+    });
+    expect(lock).not.toBeNull();
+  });
+
+  it('allowedLines 밖 line → null (cross-line 매핑 reject, #1439 §9)', async () => {
+    const seoul = makeSeoul([makeArrival('T1', 1)]);
+    const lock = await attachTrainCodeForLeg({
+      trip: makeTrip([{ stationName: '중곡', line: '7', kind: 'destination' }]),
+      targetWaypoint: { stationName: '중곡', line: '7', kind: 'intermediate' },
+      seoul,
+      now: NOW,
+      allowedLines: new Set(['2', '5']),
+    });
+    expect(lock).toBeNull();
+  });
 });
