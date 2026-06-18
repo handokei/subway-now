@@ -16,7 +16,13 @@
  *      - F prefix (1F, 2F, 3F...) → surface
  *      - 둘 다 포함 (2FB3, 5FB2, 1FB5...) → mixed
  *    출처: 서울 열린데이터 광장 — 서울교통공사_역사건축정보.
- * 3. **매칭 실패** → `unknown`. 표준 출력에 리스트 출력 (사용자 검수용).
+ * 3. **국가철도공단 9호선 승강장 CSV** (`scripts/fixtures/line9-platform.csv`)
+ *    — 9호선 38역. 상행/하행 2 row의 `지상구분`(지상/지하) 컬럼 그룹화:
+ *      - 둘 다 `지상` → surface
+ *      - 둘 다 `지하` → underground
+ *      - 상행/하행 다름 → mixed
+ *    출처: 공공데이터포털 — 국가철도공단_수도권9호선_승강장_정보 (#1460).
+ * 4. **매칭 실패** → `unknown`. 표준 출력에 리스트 출력 (사용자 검수용).
  *
  * ## 매칭 규칙
  * - CSV `호선` ↔ stations.json `line` 직접 비교 (둘 다 `"1"`~`"8"`).
@@ -47,6 +53,11 @@ const { normalizeStationName } = require('../src/shared/utils/normalizeStationNa
 const ROOT = path.join(__dirname, '..');
 const STATIONS_PATH = path.join(ROOT, 'src', 'data', 'stations.json');
 const CSV_PATH = path.join(__dirname, 'fixtures', 'seoul-station-architecture.csv');
+const LINE9_CSV_PATH = path.join(__dirname, 'fixtures', 'line9-platform.csv');
+
+const LINE9_KEY = '9';
+const LINE9_SURFACE_LABEL = '지상';
+const LINE9_UNDERGROUND_LABEL = '지하';
 
 const VALID_ENVIRONMENTS = new Set(['surface', 'underground', 'mixed', 'unknown']);
 
@@ -122,22 +133,70 @@ function parseCsvRow(row) {
 }
 
 /**
- * @param {{ stations: Array<Record<string, unknown>>, csvText: string }} input
+ * 국가철도공단 9호선 승강장 CSV → (line|name) → env 맵.
+ *
+ * CSV 컬럼: 철도운영기관명(0) / 선명(1) / 역명(2) / 승강장번호(3) / 상하행(4) /
+ * 지상구분(5) / 역층(6) / ... 같은 역명에 상행/하행 2 row가 있고, 지상구분이
+ * 일치하면 단일 값, 다르면 mixed로 그룹화한다.
+ *
+ * line key는 stations.json `line` 형식과 맞춰 `"9"` 사용.
+ *
+ * @param {string} csvText UTF-8 (cp949 입력은 호출 측에서 사전 변환)
+ * @returns {Map<string, 'surface'|'underground'|'mixed'|'unknown'>}
+ */
+function parseLine9Csv(csvText) {
+  const lines = csvText.split(/\r?\n/u).filter((l) => l.length > 0);
+  /** @type {Map<string, Set<string>>} */
+  const byStation = new Map();
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',');
+    if (cols.length < 6) continue;
+    const name = normalizeStationName(cols[2]);
+    const label = cols[5];
+    if (name.length === 0) continue;
+    if (label !== LINE9_SURFACE_LABEL && label !== LINE9_UNDERGROUND_LABEL) continue;
+    let bucket = byStation.get(name);
+    if (!bucket) {
+      bucket = new Set();
+      byStation.set(name, bucket);
+    }
+    bucket.add(label);
+  }
+  /** @type {Map<string, 'surface'|'underground'|'mixed'|'unknown'>} */
+  const out = new Map();
+  for (const [name, labels] of byStation) {
+    let env;
+    if (labels.size > 1) env = 'mixed';
+    else if (labels.has(LINE9_SURFACE_LABEL)) env = 'surface';
+    else if (labels.has(LINE9_UNDERGROUND_LABEL)) env = 'underground';
+    else env = 'unknown';
+    out.set(`${LINE9_KEY}|${name}`, env);
+  }
+  return out;
+}
+
+/**
+ * @param {{
+ *   stations: Array<Record<string, unknown>>,
+ *   csvText: string,
+ *   line9CsvText?: string,
+ * }} input
  * @returns {{
  *   stations: Array<Record<string, unknown>>,
  *   stats: {
  *     total: number,
- *     bySource: { override: number, csv: number, unknown: number },
+ *     bySource: { override: number, csv: number, line9: number, unknown: number },
  *     byEnv: { surface: number, underground: number, mixed: number, unknown: number },
  *     unknownEntries: Array<{ id: string, name: string, line: string }>,
  *   },
  * }}
  */
-function build({ stations, csvText }) {
+function build({ stations, csvText, line9CsvText }) {
   const csvMap = parseCsv(csvText);
+  const line9Map = typeof line9CsvText === 'string' ? parseLine9Csv(line9CsvText) : new Map();
   const stats = {
     total: stations.length,
-    bySource: { override: 0, csv: 0, unknown: 0 },
+    bySource: { override: 0, csv: 0, line9: 0, unknown: 0 },
     byEnv: { surface: 0, underground: 0, mixed: 0, unknown: 0 },
     unknownEntries: [],
   };
@@ -153,6 +212,9 @@ function build({ stations, csvText }) {
     if (Object.hasOwn(ENVIRONMENT_OVERRIDES, key)) {
       environment = ENVIRONMENT_OVERRIDES[key];
       source = 'override';
+    } else if (line9Map.has(key)) {
+      environment = line9Map.get(key);
+      source = environment === 'unknown' ? 'unknown' : 'line9';
     } else if (csvMap.has(key)) {
       environment = csvMap.get(key);
       source = environment === 'unknown' ? 'unknown' : 'csv';
@@ -184,10 +246,12 @@ function main(argv, deps = {}) {
   const writeFile = deps.writeFile ?? ((p, c) => fs.writeFileSync(p, c));
   const stationsPath = deps.stationsPath ?? STATIONS_PATH;
   const csvPath = deps.csvPath ?? CSV_PATH;
+  const line9CsvPath = deps.line9CsvPath ?? LINE9_CSV_PATH;
   const dryRun = argv.includes('--dry-run');
 
   let stations;
   let csvText;
+  let line9CsvText;
   try {
     stations = JSON.parse(readFile(stationsPath));
   } catch (e) {
@@ -200,15 +264,21 @@ function main(argv, deps = {}) {
     writeErr(`build-station-environment: CSV 읽기 실패 — ${e.message}`);
     return 1;
   }
+  try {
+    line9CsvText = readFile(line9CsvPath);
+  } catch (e) {
+    writeErr(`build-station-environment: 9호선 CSV 읽기 실패 — ${e.message}`);
+    return 1;
+  }
 
-  const { stations: nextStations, stats } = build({ stations, csvText });
+  const { stations: nextStations, stats } = build({ stations, csvText, line9CsvText });
 
   writeOut(`✅ ${stats.total} stations classified`);
   writeOut(
     `  byEnv  : surface=${stats.byEnv.surface} underground=${stats.byEnv.underground} mixed=${stats.byEnv.mixed} unknown=${stats.byEnv.unknown}`,
   );
   writeOut(
-    `  source : override=${stats.bySource.override} csv=${stats.bySource.csv} unknown=${stats.bySource.unknown}`,
+    `  source : override=${stats.bySource.override} csv=${stats.bySource.csv} line9=${stats.bySource.line9} unknown=${stats.bySource.unknown}`,
   );
 
   if (stats.unknownEntries.length > 0) {
@@ -232,6 +302,7 @@ module.exports = {
   classifyFloor,
   parseCsv,
   parseCsvRow,
+  parseLine9Csv,
   build,
   ENVIRONMENT_OVERRIDES,
   VALID_ENVIRONMENTS,
