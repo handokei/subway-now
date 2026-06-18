@@ -376,7 +376,7 @@ describe('resolveFrCodeSets', () => {
 });
 
 describe('readExistingLine / writeLine', () => {
-  let tmpDir, originalOutDir;
+  let tmpDir;
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ftt-'));
   });
@@ -415,11 +415,9 @@ describe('readExistingLine / writeLine', () => {
   it('writeLine — sorted key + line-N.json 위치', () => {
     // OUT_DIR을 임시로 mock — writeFileSync를 capture
     const writes = [];
-    const realWrite = fs.writeFileSync;
     jest.spyOn(fs, 'writeFileSync').mockImplementation((p, content) => {
       writes.push({ p, content });
     });
-    const realMkdir = fs.mkdirSync;
     jest.spyOn(fs, 'mkdirSync').mockImplementation(() => {});
     jest.spyOn(fs, 'existsSync').mockReturnValue(true);
     try {
@@ -484,7 +482,7 @@ describe('processLine', () => {
       expect(r.added).toBe(1);
       expect(r.stationCount).toBe(2); // 기존역 + 마천
       const parsed = JSON.parse(writes[0].c);
-      expect(Object.keys(parsed.stations).sort()).toEqual(['기존역', '마천']);
+      expect(Object.keys(parsed.stations).sort((a, b) => a.localeCompare(b))).toEqual(['기존역', '마천']);
     } finally {
       fs.existsSync.mockRestore();
       fs.readFileSync.mockRestore();

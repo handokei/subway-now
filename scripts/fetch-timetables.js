@@ -244,7 +244,7 @@ async function processLine(apiKey, line, frCodes, { fetchImpl, sleepImpl, log } 
   }
   // 기존 데이터 merge — missing-only 모드 등 부분 갱신 케이스 보존
   const existing = readExistingLine(line);
-  const stations = { ...(existing.stations ?? {}) };
+  const stations = { ...existing.stations };
   let added = 0;
   const sortedCodes = [...frCodes].sort((a, b) => a.localeCompare(b, 'en'));
   for (const frCode of sortedCodes) {
