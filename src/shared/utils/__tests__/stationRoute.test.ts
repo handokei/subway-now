@@ -821,120 +821,77 @@ describe('calculateStaticETA — 환승 후 다음 열차 대기 (#778)', () => 
 
 describe('calculateStaticETA — timetable boardable wait fallback (#1480)', () => {
   const NOW = 1_700_000_000_000;
-
-  it('arrivalsAtTransfers 누락 + timetableBoardableWaitSecondsByLeg 제공 시 timetable 값 사용', () => {
-    const route: TransferRoute = makeTransferRoute({
+  // 모든 단일 환승 케이스 공통: 교대 2→3호선, stops 1→5. row factory로 중복 제거.
+  const buildRoute = (): TransferRoute =>
+    makeTransferRoute({
       transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
       stopsToTransfer: 1, stopsFromTransfer: 5,
     });
-    // 출발 3분 + 환승 leg = round(240/60)=4분 (timetable) + travel
+  const travelMinutes = (): number => {
     const t = getTransferSeconds('2', '3', '교대');
-    const travel = Math.round((1 + 5) * 2 + t / 60);
-    expect(
-      calculateStaticETA(route, {
-        timetableBoardableWaitSecondsByLeg: [240],
-        nowMs: NOW,
-      }),
-    ).toBe(3 + 4 + travel);
-  });
+    return Math.round((1 + 5) * 2 + t / 60);
+  };
 
-  it('arrivalsAtTransfers fresh > timetable cascade (실시간 데이터 우선)', () => {
-    const route: TransferRoute = makeTransferRoute({
-      transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
-      stopsToTransfer: 1, stopsFromTransfer: 5,
-    });
-    // arrivalsAtTransfers fresh = 60s (=1분), timetable = 600s (=10분).
-    // 실시간 우선 → 1분.
-    const t = getTransferSeconds('2', '3', '교대');
-    const travel = Math.round((1 + 5) * 2 + t / 60);
-    expect(
-      calculateStaticETA(route, {
+  type Opts = Parameters<typeof calculateStaticETA>[1];
+  type Row = readonly [label: string, opts: Opts, expectedWaitMinutes: number];
+
+  // initial=3분(default) + waitMinutes(leg별 합) + travel.
+  const cases: ReadonlyArray<Row> = [
+    [
+      'timetable only → timetable 값 사용',
+      { timetableBoardableWaitSecondsByLeg: [240], nowMs: NOW },
+      4,
+    ],
+    [
+      'arrivalsAtTransfers fresh > timetable cascade',
+      {
         arrivalsAtTransfers: [{ arrivalSeconds: 60, receivedAtMs: NOW }],
         timetableBoardableWaitSecondsByLeg: [600],
         nowMs: NOW,
-      }),
-    ).toBe(3 + 1 + travel);
-  });
-
-  it('arrivalsAtTransfers stale → timetable fallback (둘 다 있을 때)', () => {
-    const route: TransferRoute = makeTransferRoute({
-      transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
-      stopsToTransfer: 1, stopsFromTransfer: 5,
-    });
-    // 실시간 stale → timetable 240s (=4분).
-    const t = getTransferSeconds('2', '3', '교대');
-    const travel = Math.round((1 + 5) * 2 + t / 60);
-    expect(
-      calculateStaticETA(route, {
+      },
+      1,
+    ],
+    [
+      'arrivalsAtTransfers stale → timetable fallback',
+      {
         arrivalsAtTransfers: [{ arrivalSeconds: 300, receivedAtMs: NOW - 60_001 }],
         timetableBoardableWaitSecondsByLeg: [240],
         nowMs: NOW,
-      }),
-    ).toBe(3 + 4 + travel);
-  });
-
-  it('timetable element null → DEFAULT_WAIT_MINUTES fallback', () => {
-    const route: TransferRoute = makeTransferRoute({
-      transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
-      stopsToTransfer: 1, stopsFromTransfer: 5,
-    });
-    const t = getTransferSeconds('2', '3', '교대');
-    const travel = Math.round((1 + 5) * 2 + t / 60);
-    // timetable null → 3분 fallback.
-    expect(
-      calculateStaticETA(route, {
-        timetableBoardableWaitSecondsByLeg: [null],
-        nowMs: NOW,
-      }),
-    ).toBe(3 + 3 + travel);
-  });
-
-  it('timetable element 음수 → DEFAULT_WAIT_MINUTES fallback (방어)', () => {
-    const route: TransferRoute = makeTransferRoute({
-      transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
-      stopsToTransfer: 1, stopsFromTransfer: 5,
-    });
-    const t = getTransferSeconds('2', '3', '교대');
-    const travel = Math.round((1 + 5) * 2 + t / 60);
-    expect(
-      calculateStaticETA(route, {
-        timetableBoardableWaitSecondsByLeg: [-10],
-        nowMs: NOW,
-      }),
-    ).toBe(3 + 3 + travel);
-  });
-
-  it('arrival.arrivalSeconds 음수 → 다음 fallback (isFreshArrival 가드)', () => {
-    const route: TransferRoute = makeTransferRoute({
-      transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
-      stopsToTransfer: 1, stopsFromTransfer: 5,
-    });
-    const t = getTransferSeconds('2', '3', '교대');
-    const travel = Math.round((1 + 5) * 2 + t / 60);
-    // 음수 arrivalSeconds (비정상) → !isFresh → timetable 사용.
-    expect(
-      calculateStaticETA(route, {
+      },
+      4,
+    ],
+    [
+      'timetable element null → DEFAULT_WAIT_MINUTES fallback',
+      { timetableBoardableWaitSecondsByLeg: [null], nowMs: NOW },
+      3,
+    ],
+    [
+      'timetable element 음수 → DEFAULT_WAIT_MINUTES fallback',
+      { timetableBoardableWaitSecondsByLeg: [-10], nowMs: NOW },
+      3,
+    ],
+    [
+      'arrival.arrivalSeconds 음수 → !isFresh → timetable 사용',
+      {
         arrivalsAtTransfers: [{ arrivalSeconds: -10, receivedAtMs: NOW }],
         timetableBoardableWaitSecondsByLeg: [180],
         nowMs: NOW,
-      }),
-    ).toBe(3 + 3 + travel);
-  });
-
-  it('arrival.receivedAtMs=0 (mock) → !isFresh → timetable 사용', () => {
-    const route: TransferRoute = makeTransferRoute({
-      transferName: '교대(법원.검찰청)', fromLine: '2', toLine: '3',
-      stopsToTransfer: 1, stopsFromTransfer: 5,
-    });
-    const t = getTransferSeconds('2', '3', '교대');
-    const travel = Math.round((1 + 5) * 2 + t / 60);
-    expect(
-      calculateStaticETA(route, {
+      },
+      3,
+    ],
+    [
+      'arrival.receivedAtMs=0 (mock) → !isFresh → timetable 사용',
+      {
         arrivalsAtTransfers: [{ arrivalSeconds: 60, receivedAtMs: 0 }],
         timetableBoardableWaitSecondsByLeg: [180],
         nowMs: NOW,
-      }),
-    ).toBe(3 + 3 + travel);
+      },
+      3,
+    ],
+  ];
+
+  it.each(cases)('%s', (_label, opts, waitMinutes) => {
+    expect(calculateStaticETA(buildRoute(), opts)).toBe(3 + waitMinutes + travelMinutes());
   });
 
   it('multi-transfer mixed cascade — leg0 실시간, leg1 timetable, leg2 fallback', () => {
