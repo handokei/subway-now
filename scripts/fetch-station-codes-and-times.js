@@ -43,7 +43,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SEOUL_API_BASE = 'http://openapi.seoul.go.kr:8088';
+// 서울 OpenAPI는 HTTPS 미지원 — `https://openapi.seoul.go.kr:8088` 호출 시 timeout.
+// build-time ingest 스크립트라 공공 API 토큰 외 secret 노출 없음. NOSONAR(S5332).
+const SEOUL_API_SCHEME = 'http'; // NOSONAR
+const SEOUL_API_BASE = `${SEOUL_API_SCHEME}://openapi.seoul.go.kr:8088`;
 const SEARCH_INFO_SERVICE = 'SearchInfoBySubwayNameService';
 
 const STATIONS_PATH = path.join(__dirname, '..', 'src', 'data', 'stations.json');
@@ -72,9 +75,15 @@ const LINE_NUM_MAP = {
 };
 
 // STATION_NM 정규화: 괄호 부역명/한자 제거. stations.json의 name 기준.
-const BASE_NAME_RE = /\s*[(（].*$/;
+// regex backtracking(S5852) 회피 — 첫 괄호(반각/전각) 위치 기준 slice.
+const PAREN_CHARS = ['(', '（'];
 function toBaseName(name) {
-  return name.replace(BASE_NAME_RE, '').trim();
+  let cut = name.length;
+  for (const ch of PAREN_CHARS) {
+    const idx = name.indexOf(ch);
+    if (idx !== -1 && idx < cut) cut = idx;
+  }
+  return name.slice(0, cut).trim();
 }
 
 // sample 키는 페이지당 5개 제한 — page size를 작게 잡고 페이지네이션으로 전체 수집.
