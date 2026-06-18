@@ -846,39 +846,39 @@ describe('stationNotification', () => {
     });
 
     describe('빠른하차 힌트 (quickExit)', () => {
-      it('해당 역의 빠른하차 데이터가 없으면 본문에 힌트가 붙지 않는다', async () => {
+      // #1504 SonarCloud dedup — quickExit 분기 매트릭스를 it.each로 통합.
+      // 각 row: [phaseId, type, stationName, title, body].
+      // 잠실/왕십리는 platformExitSide fallback fixture가 있어 좌/우 라인이 함께 붙는다.
+      it.each([
+        [
+          '해당 역의 빠른하차 데이터가 없으면 본문에 힌트가 붙지 않는다',
+          'early', 'destination', '시청',
+          '하차 알림', '다음 역 시청에서 하차하세요!',
+        ],
+        [
+          'destination 알람이고 데이터가 있으면 "출구가 빠른 위치" 힌트가 붙는다',
+          'early', 'destination', '잠실',
+          '하차 알림', '다음 역 잠실에서 하차하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요',
+        ],
+        [
+          'transfer 알람이고 데이터가 있으면 "환승이 빠른 위치" 힌트가 붙는다',
+          'early', 'transfer', '왕십리(성동구청)',
+          '환승 알림', '다음 역 왕십리(성동구청)에서 환승하세요!\n양쪽 문이 열립니다\n환승이 빠른 위치에서 하차하세요',
+        ],
+        [
+          '알람 대상역이 stations.json에도 없으면 힌트 없이 본문만 표시한다',
+          'early', 'destination', '없는역',
+          '하차 알림', '다음 역 없는역에서 하차하세요!',
+        ],
+        [
+          '정규화 fallback — 괄호 부제가 붙은 이름이어도 매칭된다',
+          'imminent', 'destination', '잠실',
+          '도착 임박', '곧 잠실에 도착합니다. 하차 준비하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요',
+        ],
+      ] as const)('%s', async (_label, phaseId, type, stationName, title, body) => {
         jest.replaceProperty(Platform, 'OS', 'ios');
-        await sendAlarmNotification({ phaseId: 'early', type: 'destination', stationName: '시청' });
-        expectAlarmNotification('하차 알림', '다음 역 시청에서 하차하세요!', { interruptionLevel: 'timeSensitive' });
-      });
-
-      it('destination 알람이고 데이터가 있으면 "출구가 빠른 위치" 힌트가 붙는다', async () => {
-        jest.replaceProperty(Platform, 'OS', 'ios');
-        await sendAlarmNotification({ phaseId: 'early', type: 'destination', stationName: '잠실' });
-        // #1504 — 잠실(2-016) platformExitSide fallback이 발화해 좌/우 라인이 함께 붙는다.
-        expectAlarmNotification('하차 알림', '다음 역 잠실에서 하차하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
-      });
-
-      it('transfer 알람이고 데이터가 있으면 "환승이 빠른 위치" 힌트가 붙는다', async () => {
-        jest.replaceProperty(Platform, 'OS', 'ios');
-        await sendAlarmNotification({ phaseId: 'early', type: 'transfer', stationName: '왕십리(성동구청)' });
-        // #1504 — 왕십리(2-008) platformExitSide fallback이 발화해 양쪽 문 라인이 함께 붙는다.
-        expectAlarmNotification('환승 알림', '다음 역 왕십리(성동구청)에서 환승하세요!\n양쪽 문이 열립니다\n환승이 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
-      });
-
-      it('알람 대상역이 stations.json에도 없으면 힌트 없이 본문만 표시한다', async () => {
-        jest.replaceProperty(Platform, 'OS', 'ios');
-        await sendAlarmNotification({ phaseId: 'early', type: 'destination', stationName: '없는역' });
-        expectAlarmNotification('하차 알림', '다음 역 없는역에서 하차하세요!', { interruptionLevel: 'timeSensitive' });
-      });
-
-      it('정규화 fallback — 괄호 부제가 붙은 이름이어도 매칭된다', async () => {
-        jest.replaceProperty(Platform, 'OS', 'ios');
-        // 잠실(2-016)이 stations.json에 "잠실(송파구청)" 같은 형태로 등록돼 있지 않더라도
-        // 동일 케이스 보호. 잠실이 단일 이름이라 여기서는 정확 매칭으로 작동.
-        await sendAlarmNotification({ phaseId: 'imminent', type: 'destination', stationName: '잠실' });
-        // #1504 — platformExitSide fallback이 imminent 단계에도 동일하게 적용.
-        expectAlarmNotification('도착 임박', '곧 잠실에 도착합니다. 하차 준비하세요!\n오른쪽 문으로 하차하세요\n출구가 빠른 위치에서 하차하세요', { interruptionLevel: 'timeSensitive' });
+        await sendAlarmNotification({ phaseId, type, stationName });
+        expectAlarmNotification(title, body, { interruptionLevel: 'timeSensitive' });
       });
     });
 
