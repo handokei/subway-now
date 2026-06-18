@@ -56,8 +56,12 @@ const mockTrackProgress = trackTrainProgress as jest.Mock;
 const mockPickCandidates = pickCandidateTrains as jest.Mock;
 
 function gpsBase(speedMps: number | null, accuracyMeters: number | null) {
+  const live = { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 };
   return {
-    result: { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
+    result: live,
+    // #1486 (ADR-015 §2) — sticky 비활성 시 liveResult = result, stickyDisplayOnly = null.
+    liveResult: live,
+    stickyDisplayOnly: null,
     variants: [MOCK_STATIONS.gangnam],
     userLocation: { lat: 37.5, lng: 127 },
     speedMps,

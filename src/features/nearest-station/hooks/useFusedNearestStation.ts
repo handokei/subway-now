@@ -188,6 +188,16 @@ interface UseFusedNearestStationReturn {
    */
   surfaceSSOT: { station: import('../../../shared/types/station').Station; trainCode: string } | null;
   undergroundSSOT: { station: import('../../../shared/types/station').Station; trainCode: string } | null;
+  /**
+   * #1486 (ADR-015 §2) — sticky lock 정보 표시 전용 채널 (useNearestStation 패스스루).
+   *
+   * sticky lock 활성 시 lock된 station만 노출. 비활성/없음 시 null.
+   * fire path 진입 금지 — DebugModal/UI 추적 신호 표시에만 사용.
+   *
+   * displayOnlyEstimate(estimator 표시 채널)와 같은 패턴: 시간 적분/jitter 흡수 신호는
+   * fire path SSOT(result/confidence/source)에서 분리되어 표시 채널로만 노출된다.
+   */
+  stickyDisplayOnly: import('../../../shared/types/station').Station | null;
   refresh: () => Promise<void>;
 }
 
@@ -655,7 +665,13 @@ export function useFusedNearestStation(
     confidence = 'route-progress';
     source = 'route-progress';
   } else {
-    result = gps.result;
+    // #1486 (ADR-015 §2) — sticky:locked fire 권한 영구 박탈.
+    // useNearestStation은 sticky lock 활성 시 exposed.result를 sticky station으로 override한다
+    // (useNearestStation:487-504). 그대로 gps.result를 사용하면 sticky station이 fire path
+    // cascade fallback에 들어가 station-passed/imminent fire의 nearestStation 입력이 된다.
+    // gps.liveResult는 sticky override 없는 GPS 최근접 결과 — sticky:locked가 fire path 진입 차단.
+    // 표시 채널은 gps.stickyDisplayOnly로 별 노출(아래 return).
+    result = gps.liveResult;
     confidence = 'gps-only';
     source = 'gps';
   }
@@ -679,11 +695,14 @@ export function useFusedNearestStation(
     { stationName: c1, line: h1, arrival: a1.arrival },
     { stationName: c2, line: h2, arrival: a2.arrival },
   ];
-  const surfaceArrival = gps.result
-    ? pickArrivalForStationName(gps.result.station.name, gps.result.station.line, arrivalSlots)
+  // #1486 (ADR-015 §2) — surface SSOT 산출도 sticky 격리. sticky:locked가 gps.result에 들어가면
+  // 잘못된 station의 arrival을 pick해 consensus가 sticky station을 SSOT로 산출할 수 있다.
+  // gps.liveResult는 sticky override 없는 live GPS 최근접 — Tier 1 SSOT 산출의 fire path 영향 차단.
+  const surfaceArrival = gps.liveResult
+    ? pickArrivalForStationName(gps.liveResult.station.name, gps.liveResult.station.line, arrivalSlots)
     : null;
   const surfaceSSOT = surfaceSSOTConsensus({
-    gpsResult: gps.result,
+    gpsResult: gps.liveResult,
     gpsAccuracy: gps.accuracyMeters,
     arrival: surfaceArrival,
   });
@@ -900,7 +919,9 @@ export function useFusedNearestStation(
   ) {
     confidence = 'gps-only';
     source = 'gps';
-    result = gps.result;
+    // #1486 (ADR-015 §2) — 강등 후 GPS 원본 fallback도 sticky 격리.
+    // 위 cascade fallback과 동일 패턴: gps.liveResult가 sticky override 없는 GPS 최근접.
+    result = gps.liveResult;
   }
 
   // #1401 — prev arc idx 갱신. 최종 result 결정 후(강등 후 station이 바뀌었을 수 있음) idx 다시 계산.
@@ -1108,6 +1129,9 @@ export function useFusedNearestStation(
     // #1421 — DebugModal Auto-lock 측정 섹션이 SSOT 객체를 inferAutoLockCandidate에 직접 전달.
     surfaceSSOT,
     undergroundSSOT,
+    // #1486 (ADR-015 §2) — sticky 표시 채널 패스스루. useNearestStation이 sticky.locked를 노출하고
+    // 본 hook은 그대로 통과. fire path는 본 필드를 읽지 않는다.
+    stickyDisplayOnly: gps.stickyDisplayOnly,
     refresh: gps.refresh,
   };
 }

@@ -73,6 +73,28 @@ function fgWatchOptionsFor(throttled: boolean): Location.LocationOptions {
 // 이 계약을 강제한다.
 interface UseNearestStationReturn {
   result: NearestStationResult | null;
+  /**
+   * #1486 (ADR-015 §2) — sticky override 없는 live GPS 최근접 결과.
+   *
+   * `result`는 sticky lock이 활성이고 다른 역이면 sticky station으로 override된다(`exposed` 로직).
+   * fire path(`useFusedNearestStation` cascade fallback → `useStationAlarm.nearestStation`)가 sticky
+   * 결과를 받지 않도록 호출자(useFusedNearestStation)는 본 필드를 사용한다.
+   *
+   * sticky 비활성 시 `result`와 동일 reference — 추가 cost 없음.
+   * sticky 활성 + 다른 역 lock 시 `result`는 sticky station, `liveResult`는 GPS 최근접 그대로.
+   *
+   * ADR-015 §2 — sticky:locked fire 권한 영구 박탈, UI 표시 채널만 유지.
+   */
+  liveResult: NearestStationResult | null;
+  /**
+   * #1486 (ADR-015 §2) — sticky lock 정보 표시 전용 채널.
+   *
+   * sticky lock 활성 시 lock된 station만 노출. lock 비활성 시 null.
+   * fire path 진입 금지 — DebugModal/UI 추적 신호 표시에만 사용.
+   *
+   * 호출자(useFusedNearestStation)가 표시 채널로 그대로 통과시킨다.
+   */
+  stickyDisplayOnly: Station | null;
   variants: Station[];
   userLocation: { lat: number; lng: number } | null;
   speedMps: number | null;
@@ -505,6 +527,13 @@ export function useNearestStation(
 
   return {
     result: exposed.result,
+    // #1486 (ADR-015 §2) — sticky override 없는 live GPS 결과. useFusedNearestStation cascade가
+    // fire path 입력으로 사용 (sticky 격리). sticky 비활성 또는 같은 역이면 exposed.result와
+    // 동일 reference (위 useMemo 분기 0의 `result` 그대로) — 추가 cost 없음.
+    liveResult: result,
+    // #1486 (ADR-015 §2) — sticky lock 정보 표시 전용 채널.
+    // 호출자(useFusedNearestStation)가 DebugModal/UI 추적용으로 그대로 통과시킨다.
+    stickyDisplayOnly: sticky.locked,
     variants,
     userLocation,
     speedMps,

@@ -1031,6 +1031,9 @@ describe('useNearestStation — #876 sticky station integration', () => {
     await waitFor(() => expect(result.current.result).not.toBeNull());
     expect(result.current.source).toBe('live');
     expect(result.current.result?.station.name).toBe('강남');
+    // #1486 (ADR-015 §2) — sticky 비활성 시 liveResult=result, stickyDisplayOnly=null.
+    expect(result.current.liveResult?.station.name).toBe('강남');
+    expect(result.current.stickyDisplayOnly).toBeNull();
   });
 
   it('AsyncStorage 미리 저장된 sticky lock 있고 GPS가 다른 역이면 result는 sticky 역으로 override', async () => {
@@ -1049,6 +1052,11 @@ describe('useNearestStation — #876 sticky station integration', () => {
     expect(result.current.result?.station.name).toBe('효창공원앞');
     // distanceKm은 userLocation 기준 재계산 (효창 ↔ 강남 ≈ 10km+)
     expect(result.current.result?.distanceKm).toBeGreaterThan(5);
+    // #1486 (ADR-015 §2) — sticky override 상황에서 liveResult/stickyDisplayOnly 분리 검증.
+    // liveResult는 sticky 무시 GPS 최근접(강남) — fire path 입력.
+    expect(result.current.liveResult?.station.name).toBe('강남');
+    // stickyDisplayOnly는 표시 전용 sticky 정보(효창공원앞) — DebugModal/UI 추적.
+    expect(result.current.stickyDisplayOnly?.name).toBe('효창공원앞');
   });
 
   // #876 — sticky.locked와 result.station이 같은 역이면 source='sticky'지만 result는 live 객체 그대로 반환.
