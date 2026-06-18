@@ -41,13 +41,17 @@ const MIN_DISTANCE_CHANGE_KM = 0.003; // 3m — UI 갱신을 자주 흘려보낸
 
 // #1313 — subsurface 여부로 갈리는 FG watch 옵션. accuracy 선택 + interval을 한 데이터로 묶어
 // startWatch가 throttle boolean만 보고 분기 없이 선택하게 한다(하드코딩 분기 회피).
-// #1416 — surface는 distanceInterval=5(m)로 GPS jitter callback을 native 단에서 차단한다.
-// 정적 FG 21분에 ~170건 fg fire path cascade(gate-hop-window suppress)가 관측됐고, BG task가
-// TRACKING_DISTANCE_INTERVAL_M=20m 패턴으로 검증된 메커니즘이라 5m는 보수적 적용이다.
-// subsurface(distanceInterval=0)는 지하 indoor positioning에 매 fix가 필요하므로 유지한다.
+// #1440 — surface는 distanceInterval=0으로 되돌린다. #1416에서 5m로 throttle한 결과 정적 FG
+// 30분에 GPS acc 회복 실패(acc>30m stuck) + 한양대 820m 같은 stuck fix 오인 fire가 관측됐다.
+// iOS Core Location은 distanceInterval>0일 때 distanceFilter 활성 → 정적 상태에서 callback 자체가
+// 끊기고, OS가 GPS fix 정밀도를 재조정하지 못해 stale acc가 그대로 굳어 ADR-015 §3 합의 게이트의
+// strong A 신호(acc≤30m + 거리≤100m)가 영구 미달이 된다. fg fire path cascade는 #1416-B의
+// useStationAlarm effect short-circuit으로 별개 layer에서 해소됐으므로 GPS callback throttle을
+// 제거해도 cascade가 재발하지 않는다.
+// subsurface는 동일하게 distanceInterval=0 — 지하 indoor positioning 보강 동안에는 매 fix가 필요.
 const FG_WATCH_OPTIONS_SURFACE: Location.LocationOptions = {
   accuracy: Location.Accuracy.High,
-  distanceInterval: 5,
+  distanceInterval: 0,
   timeInterval: FG_WATCH_SURFACE_TIME_INTERVAL_MS,
 };
 const FG_WATCH_OPTIONS_SUBSURFACE: Location.LocationOptions = {
