@@ -700,6 +700,97 @@ describe('useFusedNearestStation', () => {
         mockUsePositions.mockReset();
       }
     });
+
+    describe('#1450 (B2): traincode TTL 동적 갱신 (lock 활성 시 arrival 폴링 동일 trainCode 지속)', () => {
+      // 두 케이스(lock 활성 / lockless) 공통 setup. mockReset은 finally에 둠.
+      const setupTrainCodePolling = (params: {
+        station: typeof sagajeong;
+        accuracyMeters: number;
+        trainNo: string;
+      }) => {
+        mockUseNearest.mockReturnValue(
+          gpsBase({
+            userLocation: { lat: params.station.lat, lng: params.station.lng },
+            accuracyMeters: params.accuracyMeters,
+            result: { station: params.station, distanceKm: 0 },
+          }),
+        );
+        mockFindTop.mockReturnValue([{ station: params.station, distanceKm: 0 }]);
+        mockUseArrival.mockReturnValue(arrivalRet(null));
+        mockUsePositions.mockImplementation((line: string | null) =>
+          line === '7'
+            ? positionRet({
+                line: '7',
+                trains: [train(params.station.name, TRAIN_STATUS.ARRIVED, { trainNo: params.trainNo })],
+              })
+            : positionRet(null),
+        );
+      };
+      const advanceWithJitter = (
+        station: typeof sagajeong,
+        accuracyMeters: number,
+        jitterIndex: number,
+      ) => {
+        jest.advanceTimersByTime(30_000);
+        mockUseNearest.mockReturnValue(
+          gpsBase({
+            userLocation: { lat: station.lat + 0.00001 * jitterIndex, lng: station.lng },
+            accuracyMeters,
+            result: { station, distanceKm: 0 },
+          }),
+        );
+      };
+
+      it('lock 활성 + 동일 trainCode 5회 폴링 지속 → TTL 만료(150s)해도 traincode 강등 없음', () => {
+        jest.useFakeTimers();
+        try {
+          const lock: import('../../../../shared/types/boardingLock').BoardingLock = {
+            destinationId: 'dest-1',
+            trainCode: 'T-LOCK-ALIVE',
+            boardingStationId: sagajeong.id,
+            boardingLine: '7',
+            boardedAt: Date.now(),
+            expectedDurationMs: 600_000,
+          };
+          setupTrainCodePolling({ station: sagajeong, accuracyMeters: 50, trainNo: 'T-LOCK-ALIVE' });
+          const { result, rerender } = renderHook(
+            ({ tick }: { tick: number }) =>
+              useFusedNearestStation(undefined, undefined, undefined, lock.trainCode, {
+                ...lock,
+                boardedAt: lock.boardedAt + tick,
+              }),
+            { initialProps: { tick: 0 } },
+          );
+          expect(result.current.source).toBe('boarding-lock');
+
+          for (let i = 0; i < 5; i += 1) {
+            advanceWithJitter(sagajeong, 50, i + 1);
+            rerender({ tick: i + 1 });
+          }
+          expect(result.current.source).toBe('boarding-lock');
+        } finally {
+          jest.useRealTimers();
+          mockUsePositions.mockReset();
+        }
+      });
+
+      it('lock 부재 시 동일 trainCode 지속이어도 기존 TTL 강등 동작 유지 (#1432)', () => {
+        jest.useFakeTimers();
+        try {
+          setupTrainCodePolling({ station: yongmasan, accuracyMeters: 1500, trainNo: 'T-NOLOCK' });
+          const { result, rerender } = renderHook(() => useFusedNearestStation());
+          expect(result.current.source).toBe('position-train');
+
+          advanceWithJitter(yongmasan, 1500, 1);
+          jest.advanceTimersByTime(31_000); // 합산 61s — TTL 60s 초과
+          rerender(undefined);
+          expect(result.current.source).not.toBe('position-train');
+        } finally {
+          jest.useRealTimers();
+          mockUsePositions.mockReset();
+        }
+      });
+    });
   });
 
   describe('#444 fused/route 거리 sanity gate', () => {

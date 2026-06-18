@@ -50,10 +50,10 @@ import {
 import type { LinePositions } from '../api/positionApi';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
-import type { LineNumber, NearestStationResult, Station } from '../../../shared/types/station';
+import type { NearestStationResult, Station } from '../../../shared/types/station';
 import type { ArrivalProvider } from '../../../shared/types/providers';
 import type { PositionProvider } from '../providers/types';
-import type { Route } from '../../../shared/utils/stationRoute';
+import { allowedLinesFromRoute, type Route } from '../../../shared/utils/stationRoute';
 
 /**
  * fusion 후보 개수. MAX_ACTIVE_LINES와 동기화 — Rules of Hooks로 useArrivalInfo/useTrainPositions를
@@ -292,27 +292,6 @@ export interface FusedRouteContext {
   destination: Station | null;
 }
 
-/**
- * #1436 — trip route에 포함된 노선 집합. fusion 후보 단계에서 trip 외 노선 entry를 차단한다.
- * route 형태별로 leg의 line을 모두 모은다. trip 비활성/route null이면 undefined.
- */
-function allowedLinesFromRoute(route: Route | null | undefined): Set<LineNumber> | undefined {
-  if (!route) return undefined;
-  const lines = new Set<LineNumber>();
-  if (route.type === 'direct') {
-    lines.add(route.line);
-  } else if (route.type === 'transfer') {
-    lines.add(route.fromLine);
-    lines.add(route.toLine);
-  } else {
-    for (const t of route.transfers) {
-      lines.add(t.fromLine);
-      lines.add(t.toLine);
-    }
-  }
-  return lines;
-}
-
 export function useFusedNearestStation(
   arrivalProvider?: ArrivalProvider,
   positionProvider?: PositionProvider,
@@ -499,6 +478,26 @@ export function useFusedNearestStation(
     lastProgressTsRef.current = now;
   }, [trainProgress]);
 
+  // #1450 (B2): lock 활성 trip에서 매 arrival 폴링마다 lock.trainCode와 동일한 후보가
+  // 계속 관찰되면 traincode strong C가 TTL 만료로 강등되는 사이클을 끊는다.
+  // 위 effect는 trainProgress 의존이라 trainProgress가 일시적으로 null(GPS 끊김 등)이거나
+  // 동일 ref면 발화하지 않아 TTL이 자연 만료된다. lockless trip에서는 기존 #445 sticky-락
+  // 해제 동작이 유지되어야 하므로 본 refresh는 lock 활성 + lockedTrainCode 일치 시만 발화.
+  // ADR-015 §3 지하 분기 strong C 합의 게이트.
+  // boardingLock.trainCode가 이번 폴링 candidateTrains에서 관찰되면 strong C 살아있음.
+  // 두 값 중 하나라도 빠지면 null → effect는 비활성 + positionTrainResult TTL 게이트 정상 적용.
+  const aliveLockedTrainCode = useMemo<string | null>(() => {
+    const code = boardingLock?.trainCode;
+    if (code == null) return null;
+    return candidateTrains.some((c) => c.trainNo === code) ? code : null;
+  }, [candidateTrains, boardingLock]);
+  const lockedTrainCodeAlive = aliveLockedTrainCode != null;
+  useEffect(() => {
+    if (aliveLockedTrainCode == null) return;
+    lastProgressTsRef.current = Date.now();
+    lastConfirmedTrainNoRef.current = aliveLockedTrainCode;
+  }, [aliveLockedTrainCode]);
+
   const positionTrainResult: NearestStationResult | null = useMemo(() => {
     if (!trainProgress) return null;
     // #1016 hole (a): userLocation 없으면 distanceKm=0 placeholder 대신 null 반환.
@@ -510,9 +509,12 @@ export function useFusedNearestStation(
 
     // #445 TTL: trainProgress가 신선해야 함. stale하면 강등.
     // ref가 0이면 effect가 첫 ts를 commit하기 전 — useMemo는 pure하게 두기 위해 면제.
+    // #1450 (B2): lock 활성 + lockedTrainCode가 이번 폴링 candidateTrains에서 관찰되면
+    // TTL 게이트 면제 — strong C 신호가 살아있다고 보고 강등하지 않는다. lockless trip은 기존대로.
     if (
       lastProgressTsRef.current !== 0 &&
-      Date.now() - lastProgressTsRef.current > POSITION_TRAIN_TTL_MS
+      Date.now() - lastProgressTsRef.current > POSITION_TRAIN_TTL_MS &&
+      !lockedTrainCodeAlive
     ) {
       return null;
     }
@@ -557,7 +559,7 @@ export function useFusedNearestStation(
       }
     }
     return candidate;
-  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock, arcStations]);
+  }, [trainProgress, gps.userLocation, gps.accuracyMeters, candidates, boardingLock, arcStations, lockedTrainCodeAlive]);
 
   const routeResult: NearestStationResult | null = progress.position
     ? {

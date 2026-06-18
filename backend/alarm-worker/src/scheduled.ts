@@ -38,6 +38,7 @@ import {
   type LiveActivityStats,
 } from './liveActivity';
 import { matchLine } from './lineAlias';
+import { computeAllowedLines } from './consensusGate';
 import { attachTrainCodeForLeg } from './lockSwap';
 import {
   evaluateWindow,
@@ -1099,6 +1100,8 @@ async function attemptVanishSwap(
     targetWaypoint: waypoint,
     seoul: deps.seoul,
     now,
+    // #1439 (E6, ADR-015 §9) — vanish-swap이 trip route 외 line으로 잘못 매핑되지 않도록.
+    allowedLines: computeAllowedLines(trip.route, trip.waypoints),
   });
   if (!swapped || swapped.trainCode === activeLock.trainCode) return null;
   log('boarding-lock: trainCode vanished, swapped', {
@@ -1539,6 +1542,8 @@ export async function advanceBoardingLockWaypoint(
       targetWaypoint: next,
       seoul: deps.seoul,
       now,
+      // #1439 (E6, ADR-015 §9) — transfer-swap이 trip route 외 line으로 잘못 매핑되지 않도록.
+      allowedLines: computeAllowedLines(trip.route, trip.waypoints),
     });
     if (swapped) {
       trip.boardingLock = swapped;
@@ -1777,6 +1782,8 @@ async function maybeBindLocklessTrainCode(
     now,
     boardingPromptState: trip.boardingPromptState,
     lastMotionAt: fusion.series[fusion.series.length - 1]?.ts,
+    // #1439 (E6, ADR-015 §9) — lockless auto-lock 합성도 route 외 line이면 reject.
+    allowedLines: computeAllowedLines(trip.route, trip.waypoints),
   });
   if (autoLockResult.confidenceTrace && env.TELEMETRY) {
     recordAutoLockConfidence(env.TELEMETRY, trip.token, autoLockResult.confidenceTrace);
@@ -2195,6 +2202,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       // #1018 RC1 confidence gate 입력 — arvlCd=2 at next-waypoint 검출 시 사용.
       boardingPromptState: trip.boardingPromptState,
       lastMotionAt: fusion.series[fusion.series.length - 1]?.ts,
+      // #1439 (E6, ADR-015 §9) — boarding-prompt auto-lock 합성도 route 외 line이면 reject.
+      allowedLines: computeAllowedLines(trip.route, trip.waypoints),
     });
     // #1171 — RC1 confidence gate가 평가된 경우(arvlCd=2 branch) score 분포를 AE에 적재.
     // 1주 운영 후 본 분포로 AUTO_LOCK_CONFIDENCE_THRESHOLD 튜닝 결정.

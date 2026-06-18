@@ -23,6 +23,7 @@
  */
 
 import { pickAutoTrainCode } from './boardingPrompt';
+import { isLockLineAllowed } from './consensusGate';
 import { matchLine, subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import { METRIC_KIND, writeMetricDataPoints, type HistogramMetric } from './metrics';
@@ -31,6 +32,7 @@ import type {
   AnalyticsEngineWriter,
   BoardingLockMeta,
   BoardingPromptState,
+  LineNumber,
   Trip,
   Waypoint,
 } from './types';
@@ -106,6 +108,14 @@ export interface AttemptAutoLockInputs {
    * RECENT_MOTION_WINDOW_MS 이내이면 confidence +1. 미전달 시 0점으로 간주.
    */
   lastMotionAt?: number;
+  /**
+   * #1439 (E6, ADR-015 §9) — trip route의 allowedLines union. lock 합성 시 `lock.line`이
+   * 본 set 밖이면 reject한다(분당선 variant 같은 cross-line 매핑 차단).
+   *
+   * caller(`scheduled.ts`)가 `computeAllowedLines(trip.route)` 결과를 전달한다. 미전달 시
+   * 검증을 skip — 구 호출자 호환 + trip route 데이터가 없는 케이스 보수적 허용.
+   */
+  allowedLines?: Set<LineNumber>;
 }
 
 /**
@@ -167,10 +177,15 @@ export async function attemptAutoLock(
     now,
     boardingPromptState,
     lastMotionAt,
+    allowedLines,
   } = inputs;
   const line = targetWaypoint.line;
   const subwayId = subwayIdForLine(line);
   if (!subwayId) return { lock: null };
+  // #1439 (E6, ADR-015 §9) — targetWaypoint.line이 trip route allowedLines 밖이면 reject.
+  // 정상 trip에서는 waypoint.line이 항상 route 안이라 통과, 비정상 fusion 매핑(분당선 variant
+  // 등으로 waypoint 자체가 오염된 케이스)에서만 차단된다. set 미지정 시 검증 skip.
+  if (allowedLines && !isLockLineAllowed({ line }, allowedLines)) return { lock: null };
 
   const legStations = buildLegSegmentStations(trip.waypoints, line);
   if (legStations.length === 0) return { lock: null };

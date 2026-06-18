@@ -11,6 +11,7 @@ import { AppState, type AppStateStatus } from 'react-native';
 import { useBoardingLockStore } from '../store/useBoardingLockStore';
 import { resolveTripDirection } from '../../route/utils/tripDirection';
 import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
+import { allowedLinesFromRoute } from '../../../shared/utils/stationRoute';
 import { STATIC_SPEED_THRESHOLD_MPS } from '../../nearest-station/utils/movementGate';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { Route } from '../../../shared/utils/stationRoute';
@@ -153,6 +154,13 @@ export function useBoardingLockController({
     return resolveTripDirection(route, destinationName, currentStation.id);
   }, [route, destinationName, currentStation]);
 
+  // #1449 (ADR-015 §9 frontend) — trip route에 포함된 노선 집합. lock 채택 시 line filter SSOT.
+  // trip 비활성/route null이면 undefined — 두 진입점은 undefined를 "필터 미적용"으로 해석한다
+  // (free-trip / hydrate 경로에서 route가 없는 상태도 기존처럼 허용).
+  // backend(#1439 E6) gate와 같은 규칙을 device 측에도 적용해, trip route 외 line의 traincode가
+  // BoardingLock store로 흘러드는 회귀를 차단한다.
+  const allowedLines = useMemo(() => allowedLinesFromRoute(route), [route]);
+
   const directionalArrivals = useMemo<ArrivalInfo[]>(() => {
     if (!arrival) return [];
     if (direction === 'up') return arrival.up.filter(isReachable);
@@ -176,6 +184,11 @@ export function useBoardingLockController({
   const createLockFromTrain = useCallback(
     (train: ArrivalInfo) => {
       if (!destinationId || !currentStation) return;
+      // #1449 (ADR-015 §9 frontend) — trip route 외 line traincode reject.
+      // 환승역(왕십리/청량리 등)에서 사용자가 옆 노선 열차를 잘못 탭하거나, fusion이 옆 노선의
+      // train arrival을 directionalArrivals에 섞어 노출한 경우 lock 채택을 차단한다.
+      // allowedLines === undefined는 trip 비활성 → 필터 미적용(free-trip 등 기존 UX 유지).
+      if (allowedLines && !allowedLines.has(train.line)) return;
       const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
       // #663: boardingLine은 사용자가 실제로 탭한 train의 line을 사용. currentStation.line은 fusion
       // 추정이라 환승역에서 옆 노선으로 잘못 잠긴 상태일 수 있다 (#662). train.line은 어댑터가 subwayId로
@@ -197,7 +210,7 @@ export function useBoardingLockController({
         initialEtaSeconds: train.arrivalSeconds,
       });
     },
-    [destinationId, currentStation, expectedDurationMinutes, createLock],
+    [destinationId, currentStation, expectedDurationMinutes, createLock, allowedLines],
   );
 
   const release = useCallback(() => {
@@ -224,6 +237,11 @@ export function useBoardingLockController({
       const boardingLine = asLineNumber(candidate.line);
       if (!boardingLine) return;
       if (lock) return;
+      // #1449 (ADR-015 §9 frontend) — trip route 외 line autoLockCandidate reject.
+      // backend autoLock(#916) 9-AND gate가 device-side trip context를 완전히 모르므로,
+      // device가 trip route allowedLines 검증을 한 번 더 강제한다.
+      // allowedLines === undefined는 trip 비활성 → 필터 미적용 (free-trip sentinel 경로 유지).
+      if (allowedLines && !allowedLines.has(boardingLine)) return;
 
       // #1014 Gate 1: trainCode가 현재 directionalArrivals에 있는지 확인.
       // directionalArrivals는 arrival + direction 필터로 이미 방향 일치 검증을 포함한다.
@@ -287,7 +305,7 @@ export function useBoardingLockController({
         // store action rejection은 graceful — loadLock race / storage 일시 실패는 다음 sync에서 자연 재시도.
       });
     },
-    [destinationId, currentStation, expectedDurationMinutes, lock, createLock, directionalArrivals, motionStationary, speedMps],
+    [destinationId, currentStation, expectedDurationMinutes, lock, createLock, directionalArrivals, motionStationary, speedMps, allowedLines],
   );
 
   return {
