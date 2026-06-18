@@ -25,12 +25,15 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// SonarCloud S4036 — bash 절대경로로 PATH 해석 의존성 제거.
+const BASH = '/bin/bash';
+
 /**
  * Spawn the watchdog and return { child, exited }. Caller decides when to kill.
  * Caller MUST call `child.kill()` and `await exited` to avoid jest open handles.
  */
 function spawnWatchdog(env) {
-  const child = spawn('bash', [SCRIPT, 'test'], {
+  const child = spawn(BASH, [SCRIPT, 'test'], {
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
