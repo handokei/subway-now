@@ -1,8 +1,8 @@
 {
   "_meta": {
-    "description": "역별 platform WiFi 통계 (#1451). DebugModal / 운영 검증용. ssids는 distinct list (정렬), bssidCount는 platform AP 개수.",
+    "description": "역별 platform WiFi 통계 (#1451). DebugModal / 운영 검증용. bssidCount는 platform AP 개수. #1481 slim 적용 후 ssids distinct list는 제외 (CSV SSID 컬럼 미보존).",
     "source": "scripts/서울교통공사_지하철역_WiFi_20260618.csv",
-    "generatedAt": "2026-06-18T10:27:49.406Z",
+    "generatedAt": "2026-06-18T15:23:02.430Z",
     "stationLinePairs": 377,
     "linesCovered": [
       "1",
@@ -23,4450 +23,1886 @@
     {
       "stationName": "가락시장",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 96
     },
     {
       "stationName": "가락시장",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 70
     },
     {
       "stationName": "가산디지털단지",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "가산디지털단지",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 24
     },
     {
       "stationName": "가양",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone X",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 76
     },
     {
       "stationName": "가천대",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 48
     },
     {
       "stationName": "강남",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "ollehWiFi_R0F1",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 86
     },
     {
       "stationName": "강남",
       "line": "sinbundang",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone",
-        "U+zone gate"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "강남구청",
       "line": "7",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 67
     },
     {
       "stationName": "강남구청",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 50
     },
     {
       "stationName": "강동",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 50
     },
     {
       "stationName": "강동구청",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 60
     },
     {
       "stationName": "강변",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 48
     },
     {
       "stationName": "개롱",
       "line": "5",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "개포동",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "개화산",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 41
     },
     {
       "stationName": "거여",
       "line": "5",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "건대입구",
       "line": "2",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "5G_U+zone",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 98
     },
     {
       "stationName": "건대입구",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "ollehWiFi_R130",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 69
     },
     {
       "stationName": "검암",
       "line": "airport",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 31
     },
     {
       "stationName": "경복궁",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "경찰병원",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 105
     },
     {
       "stationName": "계양",
       "line": "airport",
-      "ssids": [
-        "5G_FREE_U+zone",
-        "5G_U+zone",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 58
     },
     {
       "stationName": "고덕",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 53
     },
     {
       "stationName": "고려대",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 51
     },
     {
       "stationName": "고속터미널",
       "line": "3",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 106
     },
     {
       "stationName": "고속터미널",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 89
     },
     {
       "stationName": "고속터미널",
       "line": "9",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 83
     },
     {
       "stationName": "공덕",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "공덕",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 69
     },
     {
       "stationName": "공덕",
       "line": "airport",
-      "ssids": [
-        "ollehWiFi"
-      ],
       "bssidCount": 8
     },
     {
       "stationName": "공릉",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "공항시장",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone X",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 55
     },
     {
       "stationName": "공항화물청사",
       "line": "airport",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure"
-      ],
       "bssidCount": 26
     },
     {
       "stationName": "과천",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 14
     },
     {
       "stationName": "관악",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "광나루",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 49
     },
     {
       "stationName": "광명사거리",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 16
     },
     {
       "stationName": "광화문",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 23
     },
     {
       "stationName": "광흥창",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "교대",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 84
     },
     {
       "stationName": "교대",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 55
     },
     {
       "stationName": "구로",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 16
     },
     {
       "stationName": "구로디지털단지",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 63
     },
     {
       "stationName": "구룡",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "구반포",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone X",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 80
     },
     {
       "stationName": "구산",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 32
     },
     {
       "stationName": "구성",
       "line": "bundang",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 19
     },
     {
       "stationName": "구의",
       "line": "2",
-      "ssids": [
-        "5G_U+zone",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 53
     },
     {
       "stationName": "구파발",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 46
     },
     {
       "stationName": "국회의사당",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 66
     },
     {
       "stationName": "군자",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone x",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 90
     },
     {
       "stationName": "군자",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 43
     },
     {
       "stationName": "군포",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "굽은다리",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 63
     },
     {
       "stationName": "금정",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "금천구청",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "금호",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 35
     },
     {
       "stationName": "기흥",
       "line": "bundang",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 20
     },
     {
       "stationName": "길동",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 60
     },
     {
       "stationName": "길음",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 35
     },
     {
       "stationName": "김포공항",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "김포공항",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone X",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 51
     },
     {
       "stationName": "김포공항",
       "line": "airport",
-      "ssids": [
-        "ollehWiFi",
-        "U+zone"
-      ],
       "bssidCount": 4
     },
     {
       "stationName": "까치산",
       "line": "2",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 5
     },
     {
       "stationName": "까치산",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 84
     },
     {
       "stationName": "낙성대",
       "line": "2",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 58
     },
     {
       "stationName": "남구로",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 19
     },
     {
       "stationName": "남부터미널",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 72
     },
     {
       "stationName": "남성",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 11
     },
     {
       "stationName": "남영",
       "line": "1",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 32
     },
     {
       "stationName": "남태령",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 16
     },
     {
       "stationName": "남한산성입구",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "ollehWiFi_R141",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 39
     },
     {
       "stationName": "내방",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 43
     },
     {
       "stationName": "노들",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 63
     },
     {
       "stationName": "노량진",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 8
     },
     {
       "stationName": "노량진",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "노량진(9호선)",
       "line": "9",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 14
     },
     {
       "stationName": "노원",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "노원",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "녹번",
       "line": "3",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 37
     },
     {
       "stationName": "녹사평",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 49
     },
     {
       "stationName": "논현",
       "line": "7",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 69
     },
     {
       "stationName": "단대오거리",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 36
     },
     {
       "stationName": "답십리",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 61
     },
     {
       "stationName": "당고개",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "당산",
       "line": "2",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "5G_U+zone",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 76
     },
     {
       "stationName": "당산",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 89
     },
     {
       "stationName": "당정",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "대곡",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 57
     },
     {
       "stationName": "대림",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 72
     },
     {
       "stationName": "대림",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 18
     },
     {
       "stationName": "대모산입구",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 61
     },
     {
       "stationName": "대방",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 8
     },
     {
       "stationName": "대청",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 79
     },
     {
       "stationName": "대치",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 39
     },
     {
       "stationName": "대화",
       "line": "3",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 10
     },
     {
       "stationName": "대흥",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 36
     },
     {
       "stationName": "도곡",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "도곡",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 26
     },
     {
       "stationName": "도림천",
       "line": "2",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 10
     },
     {
       "stationName": "도봉산",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 38
     },
     {
       "stationName": "독립문",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 51
     },
     {
       "stationName": "독바위",
       "line": "6",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 13
     },
     {
       "stationName": "독산",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "돌곶이",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 44
     },
     {
       "stationName": "동대문",
       "line": "1",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 48
     },
     {
       "stationName": "동대문",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 77
     },
     {
       "stationName": "동대문역사문화공원",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 86
     },
     {
       "stationName": "동대문역사문화공원",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "동대문역사문화공원",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone X",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 51
     },
     {
       "stationName": "동대입구",
       "line": "3",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 37
     },
     {
       "stationName": "동묘앞",
       "line": "1",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 57
     },
     {
       "stationName": "동묘앞",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 44
     },
     {
       "stationName": "동작",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "동작",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "ollehWiFi_R051",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 99
     },
     {
       "stationName": "둔촌동",
       "line": "5",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 10
     },
     {
       "stationName": "등촌",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone X",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "디지털미디어시티",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "디지털미디어시티",
       "line": "airport",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure"
-      ],
       "bssidCount": 45
     },
     {
       "stationName": "뚝섬",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "U+zone"
-      ],
       "bssidCount": 66
     },
     {
       "stationName": "마곡",
       "line": "5",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 8
     },
     {
       "stationName": "마두",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 66
     },
     {
       "stationName": "마들",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 42
     },
     {
       "stationName": "마장",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "마천",
       "line": "5",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "마포",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 35
     },
     {
       "stationName": "마포구청",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 45
     },
     {
       "stationName": "망원",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 43
     },
     {
       "stationName": "매봉",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 100
     },
     {
       "stationName": "먹골",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "면목",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "명동",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "명일",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 58
     },
     {
       "stationName": "명학",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "모란",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "모란",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 71
     },
     {
       "stationName": "목동",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone",
-        "U+zone gate"
-      ],
       "bssidCount": 53
     },
     {
       "stationName": "몽촌토성",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 68
     },
     {
       "stationName": "무악재",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 70
     },
     {
       "stationName": "문래",
       "line": "2",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure"
-      ],
       "bssidCount": 44
     },
     {
       "stationName": "문정",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "미금",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 77
     },
     {
       "stationName": "미아",
       "line": "4",
-      "ssids": [
-        "5G_FREE_U+zone",
-        "5G_U+zone",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "미아삼거리",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 36
     },
     {
       "stationName": "반포",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 60
     },
     {
       "stationName": "발산",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 58
     },
     {
       "stationName": "방배",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 88
     },
     {
       "stationName": "방이",
       "line": "5",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 10
     },
     {
       "stationName": "방화",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 33
     },
     {
       "stationName": "방화",
       "line": "6",
-      "ssids": [
-        "T wifi zone_secure"
-      ],
       "bssidCount": 1
     },
     {
       "stationName": "방화",
       "line": "7",
-      "ssids": [
-        "T wifi zone_secure"
-      ],
       "bssidCount": 1
     },
     {
       "stationName": "방화",
       "line": "8",
-      "ssids": [
-        "ollehWiFi"
-      ],
       "bssidCount": 1
     },
     {
       "stationName": "백석",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 43
     },
     {
       "stationName": "버티고개",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "보라매",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 7
     },
     {
       "stationName": "보문",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 41
     },
     {
       "stationName": "보정",
       "line": "bundang",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 20
     },
     {
       "stationName": "복정",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 66
     },
     {
       "stationName": "복정",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 26
     },
     {
       "stationName": "봉천",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 41
     },
     {
       "stationName": "봉화산",
       "line": "6",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "부평",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "불광",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 63
     },
     {
       "stationName": "불광",
       "line": "6",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 24
     },
     {
       "stationName": "사가정",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 47
     },
     {
       "stationName": "사당",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 88
     },
     {
       "stationName": "사당",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 30
     },
     {
       "stationName": "사평",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 76
     },
     {
       "stationName": "산성",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 22
     },
     {
       "stationName": "삼각지",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 18
     },
     {
       "stationName": "삼각지",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 62
     },
     {
       "stationName": "삼성",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 63
     },
     {
       "stationName": "삼송",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 60
     },
     {
       "stationName": "상계",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "상도",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "상봉",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 61
     },
     {
       "stationName": "상수",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 40
     },
     {
       "stationName": "상왕십리",
       "line": "2",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure"
-      ],
       "bssidCount": 27
     },
     {
       "stationName": "상월곡",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 45
     },
     {
       "stationName": "상일동",
       "line": "5",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 14
     },
     {
       "stationName": "새절",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "샛강",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 69
     },
     {
       "stationName": "서대문",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 40
     },
     {
       "stationName": "서울",
       "line": "1",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 30
     },
     {
       "stationName": "서울",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 48
     },
     {
       "stationName": "서울",
       "line": "airport",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 29
     },
     {
       "stationName": "서울(공항철도)",
       "line": "airport",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 21
     },
     {
       "stationName": "서울대입구",
       "line": "2",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 55
     },
     {
       "stationName": "서울숲",
       "line": "bundang",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure"
-      ],
       "bssidCount": 52
     },
     {
       "stationName": "서초",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 47
     },
     {
       "stationName": "서현",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 73
     },
     {
       "stationName": "석계",
       "line": "1",
-      "ssids": [
-        "ollehWiFi",
-        "U+zone"
-      ],
       "bssidCount": 4
     },
     {
       "stationName": "석계",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 47
     },
     {
       "stationName": "석수",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 10
     },
     {
       "stationName": "석촌",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 63
     },
     {
       "stationName": "선릉",
       "line": "2",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 76
     },
     {
       "stationName": "선릉",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 75
     },
     {
       "stationName": "선유도",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone X",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 55
     },
     {
       "stationName": "선정릉",
       "line": "bundang",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "성균관대",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "성수",
       "line": "2",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "성신여대입구",
       "line": "4",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "송정",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 34
     },
     {
       "stationName": "송파",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 49
     },
     {
       "stationName": "수내",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "수락산",
       "line": "7",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 57
     },
     {
       "stationName": "수서",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 76
     },
     {
       "stationName": "수서",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "수유",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 57
     },
     {
       "stationName": "수진",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 55
     },
     {
       "stationName": "숙대입구",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 10
     },
     {
       "stationName": "숭실대입구",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "시청",
       "line": "1",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 64
     },
     {
       "stationName": "시청",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 60
     },
     {
       "stationName": "신갈",
       "line": "bundang",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 24
     },
     {
       "stationName": "신금호",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 50
     },
     {
       "stationName": "신길",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "신길",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 76
     },
     {
       "stationName": "신논현",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 84
     },
     {
       "stationName": "신답",
       "line": "2",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 7
     },
     {
       "stationName": "신당",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 77
     },
     {
       "stationName": "신당",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "신대방",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 37
     },
     {
       "stationName": "신대방삼거리",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 16
     },
     {
       "stationName": "신도림",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 27
     },
     {
       "stationName": "신도림",
       "line": "2",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure"
-      ],
       "bssidCount": 107
     },
     {
       "stationName": "신림",
       "line": "2",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 39
     },
     {
       "stationName": "신목동",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone X",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 72
     },
     {
       "stationName": "신반포",
       "line": "9",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 57
     },
     {
       "stationName": "신방화",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "신사",
       "line": "3",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 85
     },
     {
       "stationName": "신설동",
       "line": "1",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 58
     },
     {
       "stationName": "신설동",
       "line": "2",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 18
     },
     {
       "stationName": "신용산",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 16
     },
     {
       "stationName": "신이문",
       "line": "1",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 2
     },
     {
       "stationName": "신정",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 61
     },
     {
       "stationName": "신정네거리",
       "line": "2",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "신천",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 63
     },
     {
       "stationName": "신촌",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 64
     },
     {
       "stationName": "신풍",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 10
     },
     {
       "stationName": "신흥",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 62
     },
     {
       "stationName": "쌍문",
       "line": "4",
-      "ssids": [
-        "T wifi zone",
-        "T wifi zone_secure"
-      ],
       "bssidCount": 19
     },
     {
       "stationName": "아차산",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 47
     },
     {
       "stationName": "아현",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 30
     },
     {
       "stationName": "안국",
       "line": "3",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 48
     },
     {
       "stationName": "안암",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 53
     },
     {
       "stationName": "암사",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 63
     },
     {
       "stationName": "압구정",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 84
     },
     {
       "stationName": "압구정로데오",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 62
     },
     {
       "stationName": "애오개",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "U+zone"
-      ],
       "bssidCount": 22
     },
     {
       "stationName": "야탑",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "약수",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 48
     },
     {
       "stationName": "약수",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 59
     },
     {
       "stationName": "양재",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "ollehWiFi_R112",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 62
     },
     {
       "stationName": "양재",
       "line": "sinbundang",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone",
-        "U+zone gate"
-      ],
       "bssidCount": 49
     },
     {
       "stationName": "양재시민의숲",
       "line": "sinbundang",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone",
-        "U+zone gate"
-      ],
       "bssidCount": 44
     },
     {
       "stationName": "양천구청",
       "line": "2",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "양천향교",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone X",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 57
     },
     {
       "stationName": "양평",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 51
     },
     {
       "stationName": "어린이대공원",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 49
     },
     {
       "stationName": "여의나루",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 61
     },
     {
       "stationName": "여의도",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 115
     },
     {
       "stationName": "여의도",
       "line": "9",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone",
-        "U+zone gate"
-      ],
       "bssidCount": 75
     },
     {
       "stationName": "역삼",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 80
     },
     {
       "stationName": "역촌",
       "line": "6",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 10
     },
     {
       "stationName": "연신내",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 66
     },
     {
       "stationName": "연신내",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 48
     },
     {
       "stationName": "염창",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "영등포구청",
       "line": "2",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 83
     },
     {
       "stationName": "영등포구청",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 66
     },
     {
       "stationName": "영등포시장",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 57
     },
     {
       "stationName": "오금",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 103
     },
     {
       "stationName": "오금",
       "line": "5",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 18
     },
     {
       "stationName": "오리",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 58
     },
     {
       "stationName": "오목교",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 61
     },
     {
       "stationName": "옥수",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "온수",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 13
     },
     {
       "stationName": "올림픽공원",
       "line": "5",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 14
     },
     {
       "stationName": "왕십리",
       "line": "2",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 100
     },
     {
       "stationName": "왕십리",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 72
     },
     {
       "stationName": "왕십리",
       "line": "bundang",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "외대앞",
       "line": "1",
-      "ssids": [
-        "U+zone"
-      ],
       "bssidCount": 1
     },
     {
       "stationName": "용답",
       "line": "2",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 8
     },
     {
       "stationName": "용두",
       "line": "2",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "용마산",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 46
     },
     {
       "stationName": "용산",
       "line": "1",
-      "ssids": [
-        "5G_FREE_U+zone",
-        "5G_U+zone",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 86
     },
     {
       "stationName": "우장산",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 49
     },
     {
       "stationName": "운서",
       "line": "airport",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure"
-      ],
       "bssidCount": 26
     },
     {
       "stationName": "원당",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 32
     },
     {
       "stationName": "월계",
       "line": "1",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 8
     },
     {
       "stationName": "월곡",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 41
     },
     {
       "stationName": "월드컵경기장",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 55
     },
     {
       "stationName": "을지로3가",
       "line": "2",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 86
     },
     {
       "stationName": "을지로3가",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "ollehWiFi_R155",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "을지로4가",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 99
     },
     {
       "stationName": "을지로4가",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone X",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 62
     },
     {
       "stationName": "을지로입구",
       "line": "2",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 96
     },
     {
       "stationName": "응암",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 55
     },
     {
       "stationName": "의왕",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "이대",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 70
     },
     {
       "stationName": "이매",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 62
     },
     {
       "stationName": "이촌",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 26
     },
     {
       "stationName": "이태원",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 36
     },
     {
       "stationName": "인천국제공항",
       "line": "airport",
-      "ssids": [
-        "5G_FREE_U+zone",
-        "5G_U+zone",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 73
     },
     {
       "stationName": "일원",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 87
     },
     {
       "stationName": "자양",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 70
     },
     {
       "stationName": "잠실",
       "line": "2",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 86
     },
     {
       "stationName": "잠실",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 75
     },
     {
       "stationName": "잠실나루",
       "line": "2",
-      "ssids": [
-        "5G_U+zone",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 51
     },
     {
       "stationName": "잠원",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 77
     },
     {
       "stationName": "장승배기",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 16
     },
     {
       "stationName": "장암",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 6
     },
     {
       "stationName": "장지",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 53
     },
     {
       "stationName": "장한평",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 53
     },
     {
       "stationName": "정발산",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 71
     },
     {
       "stationName": "정자",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone",
-        "U+zone gate"
-      ],
       "bssidCount": 60
     },
     {
       "stationName": "정자",
       "line": "sinbundang",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone",
-        "U+zone gate"
-      ],
       "bssidCount": 33
     },
     {
       "stationName": "제기동",
       "line": "1",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 57
     },
     {
       "stationName": "종각",
       "line": "1",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 53
     },
     {
       "stationName": "종로3가",
       "line": "1",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 74
     },
     {
       "stationName": "종로3가",
       "line": "3",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 75
     },
     {
       "stationName": "종로3가",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 48
     },
     {
       "stationName": "종로5가",
       "line": "1",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 58
     },
     {
       "stationName": "종합운동장",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 80
     },
     {
       "stationName": "주엽",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 68
     },
     {
       "stationName": "죽전",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "ollehWiFi_R1",
-        "U+zone"
-      ],
       "bssidCount": 47
     },
     {
       "stationName": "중계",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 50
     },
     {
       "stationName": "중곡",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 49
     },
     {
       "stationName": "중화",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 50
     },
     {
       "stationName": "증미",
       "line": "9",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "증산",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 45
     },
     {
       "stationName": "지축",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 32
     },
     {
       "stationName": "창동",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 2
     },
     {
       "stationName": "창동",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "창신",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 38
     },
     {
       "stationName": "천왕",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 10
     },
     {
       "stationName": "천호",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 53
     },
     {
       "stationName": "천호",
       "line": "8",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "ollehWiFi_R0A1",
-        "T wifi zone",
-        "U+zone"
-      ],
       "bssidCount": 44
     },
     {
       "stationName": "철산",
       "line": "7",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "청계산입구",
       "line": "sinbundang",
-      "ssids": [
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone",
-        "U+zone gate"
-      ],
       "bssidCount": 47
     },
     {
       "stationName": "청구",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 51
     },
     {
       "stationName": "청구",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 64
     },
     {
       "stationName": "청담",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 61
     },
     {
       "stationName": "청량리",
       "line": "1",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "U+zone"
-      ],
       "bssidCount": 25
     },
     {
       "stationName": "총신대입구(이수)",
       "line": "4",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 27
     },
     {
       "stationName": "총신대입구(이수)",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 66
     },
     {
       "stationName": "충무로",
       "line": "3",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 64
     },
     {
       "stationName": "충무로",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 41
     },
     {
       "stationName": "충정로",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 56
     },
     {
       "stationName": "충정로",
       "line": "5",
-      "ssids": [
-        "5G_FREE_U+zone",
-        "5G_U+zone",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 53
     },
     {
       "stationName": "태릉입구",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 49
     },
     {
       "stationName": "태릉입구",
       "line": "7",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 72
     },
     {
       "stationName": "태평",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 61
     },
     {
       "stationName": "판교",
       "line": "sinbundang",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone",
-        "U+zone gate"
-      ],
       "bssidCount": 44
     },
     {
       "stationName": "하계",
       "line": "7",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 39
     },
     {
       "stationName": "학동",
       "line": "7",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 45
     },
     {
       "stationName": "학여울",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 80
     },
     {
       "stationName": "한강진",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 48
     },
     {
       "stationName": "한성대입구",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 42
     },
     {
       "stationName": "한양대",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "U+zone"
-      ],
       "bssidCount": 16
     },
     {
       "stationName": "한티",
       "line": "bundang",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 55
     },
     {
       "stationName": "합정",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 67
     },
     {
       "stationName": "합정",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 63
     },
     {
       "stationName": "행당",
       "line": "5",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 57
     },
     {
       "stationName": "혜화",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 55
     },
     {
       "stationName": "홍대입구",
       "line": "2",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 51
     },
     {
       "stationName": "홍대입구",
       "line": "airport",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 44
     },
     {
       "stationName": "홍제",
       "line": "3",
-      "ssids": [
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 57
     },
     {
       "stationName": "화곡",
       "line": "5",
-      "ssids": [
-        "5G_T wifi zone",
-        "5G_T wifi zone_secure",
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 38
     },
     {
       "stationName": "화랑대",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 45
     },
     {
       "stationName": "화서",
       "line": "1",
-      "ssids": [
-        "T wifi zone"
-      ],
       "bssidCount": 12
     },
     {
       "stationName": "화정",
       "line": "3",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 60
     },
     {
       "stationName": "회기",
       "line": "1",
-      "ssids": [
-        "T wifi zone",
-        "T wifi zone_secure"
-      ],
       "bssidCount": 15
     },
     {
       "stationName": "회현",
       "line": "4",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "ollehWiFi_R0A5",
-        "T wifi zone",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "효창공원앞",
       "line": "6",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 54
     },
     {
       "stationName": "흑석",
       "line": "9",
-      "ssids": [
-        "FREE_U+zone",
-        "ollehWiFi",
-        "T wifi zone",
-        "T wifi zone_1",
-        "T wifi zone_secure",
-        "U+zone"
-      ],
       "bssidCount": 67
     }
   ]

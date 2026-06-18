@@ -155,19 +155,29 @@ function classifyFloor(floor) {
 
 /**
  * seoul-station-architecture.csv → (line|name) → env 맵.
+ *
+ * 첫 줄 header에서 `호선` / `역명` / `층수` 컬럼 인덱스를 indexOf로 lookup.
+ * slim 본 (#1481, 4 col: 호선/역명/형식/층수) 과 원본 (7 col) 모두 동일 코드로 처리.
+ *
  * @param {string} csvText UTF-8
  * @returns {Map<string, 'surface'|'underground'|'mixed'|'unknown'>}
  */
 function parseCsv(csvText) {
   const lines = csvText.split(/\r?\n/u).filter((l) => l.length > 0);
   const map = new Map();
-  // 첫 줄 header skip.
+  if (lines.length === 0) return map;
+  const header = parseCsvRow(lines[0]);
+  const idxLine = header.indexOf('호선');
+  const idxName = header.indexOf('역명');
+  const idxFloor = header.indexOf('층수');
+  if (idxLine === -1 || idxName === -1 || idxFloor === -1) return map;
+  const minCols = Math.max(idxLine, idxName, idxFloor) + 1;
   for (let i = 1; i < lines.length; i++) {
     const cols = parseCsvRow(lines[i]);
-    if (cols.length < 5) continue;
-    const line = cols[0];
-    const name = normalizeStationName(cols[1]);
-    const floor = cols[4];
+    if (cols.length < minCols) continue;
+    const line = cols[idxLine];
+    const name = normalizeStationName(cols[idxName]);
+    const floor = cols[idxFloor];
     const env = classifyFloor(floor);
     const key = `${line}|${name}`;
     map.set(key, env);
@@ -188,9 +198,10 @@ function parseCsvRow(row) {
 /**
  * 국가철도공단 승강장 CSV → (lineKey|name) → env 맵.
  *
- * CSV 컬럼: 철도운영기관명(0) / 선명(1) / 역명(2) / 승강장번호(3) / 상하행(4) /
- * 지상구분(5) / 역층(6) / ... 같은 역명에 상행/하행 row가 있고, 지상구분이
- * 일치하면 단일 값, 다르면 mixed로 그룹화한다.
+ * 첫 줄 header에서 `역명` / `지상구분` 컬럼 인덱스를 indexOf로 lookup.
+ * slim 본 (#1481, 4 col: 선명/역명/지상구분/역층) 과 원본 (10 col) 모두 동일 코드로 처리.
+ *
+ * 같은 역명에 상행/하행 row가 있고, 지상구분이 일치하면 단일 값, 다르면 mixed로 그룹화한다.
  *
  * CSV 선명 컬럼은 운영기관마다 표기 다양 (`1호선` / `수인분당` / `9호선` /
  * `경의중앙` / `신분당` / `공항철도` 등) → 파싱 시 무시하고 호출 측 `lineKey`로
@@ -204,11 +215,17 @@ function parseKrricCsv(csvText, lineKey) {
   const lines = csvText.split(/\r?\n/u).filter((l) => l.length > 0);
   /** @type {Map<string, Set<string>>} */
   const byStation = new Map();
+  if (lines.length === 0) return new Map();
+  const header = parseCsvRow(lines[0]);
+  const idxName = header.indexOf('역명');
+  const idxSurface = header.indexOf('지상구분');
+  if (idxName === -1 || idxSurface === -1) return new Map();
+  const minCols = Math.max(idxName, idxSurface) + 1;
   for (let i = 1; i < lines.length; i++) {
     const cols = parseCsvRow(lines[i]);
-    if (cols.length < 6) continue;
-    const name = normalizeStationName(cols[2]);
-    const label = cols[5];
+    if (cols.length < minCols) continue;
+    const name = normalizeStationName(cols[idxName]);
+    const label = cols[idxSurface];
     if (name.length === 0) continue;
     if (label !== KRRIC_SURFACE_LABEL && label !== KRRIC_UNDERGROUND_LABEL) continue;
     let bucket = byStation.get(name);

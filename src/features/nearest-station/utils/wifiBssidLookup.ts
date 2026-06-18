@@ -19,7 +19,6 @@ import type { LineNumber, Station } from '../../../shared/types/station';
 interface BssidEntry {
   stationName: string;
   line: LineNumber;
-  ssid: string;
 }
 
 interface BssidMap {
@@ -31,7 +30,6 @@ const bssidMap = wifiBssidMapRaw as unknown as BssidMap;
 export interface BssidLookupResult {
   station: Station;
   line: LineNumber;
-  ssid: string;
 }
 
 /**
@@ -53,7 +51,7 @@ export function normalizeBssid(value: unknown): string {
  * 환승역에서도 line이 정확하므로 호출자가 호선 모호성 없이 fusion에 활용 가능.
  *
  * @param bssid - 네이티브에서 조회한 현재 연결된 WiFi의 BSSID(MAC). 미연결/미지원 시 null/empty.
- * @returns 매칭 시 {station, line, ssid}, 미매칭 시 null. station.line은 dataset의 line으로 덮어쓴다.
+ * @returns 매칭 시 {station, line}, 미매칭 시 null. station.line은 dataset의 line으로 덮어쓴다.
  */
 export function lookupStationByBssid(bssid: string | null | undefined): BssidLookupResult | null {
   if (typeof bssid !== 'string') return null;
@@ -67,6 +65,5 @@ export function lookupStationByBssid(bssid: string | null | undefined): BssidLoo
   return {
     station: { ...station, line: entry.line },
     line: entry.line,
-    ssid: entry.ssid,
   };
 }

@@ -49,9 +49,32 @@ function parseHmToSeconds(hm) {
   return mm * 60 + ss;
 }
 
+// CSV cell 둘러싼 따옴표 제거 — slim CSV(#1481)는 모든 값이 `"..."`로 quoted.
+function stripQuote(s) {
+  return typeof s === 'string' ? s.replace(/^"|"$/g, '').trim() : '';
+}
+
 function main() {
-  const csv = fs.readFileSync(CSV_PATH, 'utf-8');
-  const rows = csv.split('\n').slice(1).filter(Boolean);
+  const csv = fs.readFileSync(CSV_PATH, 'utf-8').replace(/^﻿/, '');
+  const lines = csv.split(/\r?\n/u).filter(Boolean);
+  if (lines.length === 0) {
+    console.error('CSV empty');
+    return;
+  }
+  // 첫 줄 header에서 컬럼 인덱스 lookup.
+  // slim CSV (#1481, 4 col): 호선/환승역명/환승노선/환승소요시간.
+  // 원본 CSV (6 col): 연번/호선/환승역명/환승노선/환승거리/환승소요시간.
+  const header = lines[0].split(',').map(stripQuote);
+  const idxLine = header.indexOf('호선');
+  const idxStation = header.indexOf('환승역명');
+  const idxTransferLine = header.indexOf('환승노선');
+  const idxTime = header.indexOf('환승소요시간');
+  if (idxLine === -1 || idxStation === -1 || idxTransferLine === -1 || idxTime === -1) {
+    console.error(`header mismatch: ${header.join(',')}`);
+    return;
+  }
+  const minCols = Math.max(idxLine, idxStation, idxTransferLine, idxTime) + 1;
+  const rows = lines.slice(1);
   const stations = JSON.parse(fs.readFileSync(STATIONS_PATH, 'utf-8'));
 
   // validStationKey: 역명 조회 시 정규화 후 별칭까지 적용한 canonical 표기로 등록.
@@ -68,12 +91,12 @@ function main() {
   const droppedSamples = [];
 
   for (const ln of rows) {
-    const parts = ln.split(',');
-    if (parts.length < 6) continue;
-    const csvFromLine = parts[1].trim();
-    const station = parts[2].trim();
-    const transferLineKo = parts[3].trim();
-    const hm = parts[5].trim();
+    const parts = ln.split(',').map(stripQuote);
+    if (parts.length < minCols) continue;
+    const csvFromLine = parts[idxLine];
+    const station = parts[idxStation];
+    const transferLineKo = parts[idxTransferLine];
+    const hm = parts[idxTime];
 
     // CSV 현재 스냅샷은 fromLine을 숫자(1~8)로만 발행하지만, 향후 공항철도/신분당선 등
     // 한글 노선명으로 바뀔 가능성 대비 양쪽 모두 LINE_MAP을 통과시킨다.
