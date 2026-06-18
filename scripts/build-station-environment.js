@@ -22,13 +22,20 @@
  *      - 둘 다 `지하` → underground
  *      - 상행/하행 다름 → mixed
  *    출처: 공공데이터포털 — 국가철도공단_수도권9호선_승강장_정보 (#1460).
- * 4. **매칭 실패** → `unknown`. 표준 출력에 리스트 출력 (사용자 검수용).
+ * 4. **국가철도공단 경의중앙선 승강장 정보 CSV** (`scripts/fixtures/krric-gyeongui-platform.csv`)
+ *    — 경의중앙선(`line === "gyeongui"`) 51역. `지상구분` 컬럼(지상/지하)으로 분류.
+ *    같은 역에 상행/하행 row가 dual로 들어있고 둘이 다르면 → `mixed`.
+ *    출처: 국가철도공단 공개 CSV (cp949 원본 → utf-8 변환 박제). #1461.
+ * 5. **매칭 실패** → `unknown`. 표준 출력에 리스트 출력 (사용자 검수용).
  *
  * ## 매칭 규칙
- * - CSV `호선` ↔ stations.json `line` 직접 비교 (둘 다 `"1"`~`"8"`).
+ * - 서울교통공사 CSV `호선` ↔ stations.json `line` 직접 비교 (둘 다 `"1"`~`"8"`).
+ * - 9호선 CSV는 line key를 `"9"`로 고정.
+ * - 경의중앙선 CSV는 line 컬럼 무시 — 모든 row가 `line === "gyeongui"`로 매핑.
  * - 역명은 `normalizeStationName`으로 후행 괄호 부제 제거 후 매칭
- *   (예: stations.json "왕십리(성동구청)" ↔ CSV "왕십리").
- * - override는 (line, normalized name) 키. CSV보다 우선.
+ *   (예: stations.json "왕십리(성동구청)" ↔ CSV "왕십리",
+ *    CSV "양원(서울시북부병원)" ↔ stations.json "양원").
+ * - 우선순위: override > 9호선 CSV > 서울교통공사 CSV > 경의중앙선 CSV > unknown.
  *
  * ## 결정성
  * 같은 입력 → 같은 출력. 위키 스크랩 같은 네트워크 의존 X. CI 안전.
@@ -40,7 +47,7 @@
  * ## 출력 통계
  *   surface / underground / mixed / unknown 카운트
  *   unknown 리스트 (검수용)
- *   override / csv / unknown source 분포
+ *   override / csv / line9 / gyeonguiCsv / unknown source 분포
  */
 
 'use strict';
@@ -54,6 +61,7 @@ const ROOT = path.join(__dirname, '..');
 const STATIONS_PATH = path.join(ROOT, 'src', 'data', 'stations.json');
 const CSV_PATH = path.join(__dirname, 'fixtures', 'seoul-station-architecture.csv');
 const LINE9_CSV_PATH = path.join(__dirname, 'fixtures', 'line9-platform.csv');
+const GYEONGUI_CSV_PATH = path.join(__dirname, 'fixtures', 'krric-gyeongui-platform.csv');
 
 const LINE9_KEY = '9';
 const LINE9_SURFACE_LABEL = '지상';
@@ -79,8 +87,21 @@ const ENVIRONMENT_OVERRIDES = Object.freeze({
   '2|왕십리': 'underground',
   '5|왕십리': 'underground',
   '5|마장': 'underground',
-  'gyeongui|왕십리': 'underground',
+  // 경의중앙선 왕십리 분리 승강장은 국가철도공단 CSV 기준 지상. 환승객 인지와 다를 수 있으나
+  // SSOT는 물리적 승강장 환경 → CSV(지상)가 정답. 이 키는 CSV 파일이 line 컬럼 무시하고
+  // 직접 매핑하므로 override 불필요.
   'bundang|왕십리': 'underground',
+  // ---- 경의중앙선 — CSV(국가철도공단)에 누락된 환승/지방 종착역 ----
+  // 서울역 경의선 승강장은 KTX/1호선과 분리된 지하 승강장 (출처: 한국어 위키백과 "서울역 (경의선)").
+  'gyeongui|서울역': 'underground',
+  // 효창공원앞 경의중앙선 승강장은 지하 (출처: 한국어 위키백과 "효창공원앞역").
+  'gyeongui|효창공원앞': 'underground',
+  // 신촌(경의선)·외대앞·임진강·지평·화전은 지상 (출처: 한국어 위키백과 각 역 페이지 "구조" 절).
+  'gyeongui|신촌': 'surface',
+  'gyeongui|외대앞': 'surface',
+  'gyeongui|임진강': 'surface',
+  'gyeongui|지평': 'surface',
+  'gyeongui|화전': 'surface',
 });
 
 /**
@@ -176,27 +197,103 @@ function parseLine9Csv(csvText) {
 }
 
 /**
+ * 국가철도공단 경의중앙선 CSV (utf-8 변환본) 파싱.
+ * 컬럼: 철도운영기관명 / 선명 / 역명 / 승강장번호 / 상하행 / 지상구분 / ...
+ * 같은 역에 상행/하행 row가 dual로 들어있고 지상구분 값이 다르면 → `mixed`.
+ * 역명은 `normalizeStationName`으로 후행 괄호 부제 제거.
+ *
+ * 모든 row가 경의중앙선이므로 line은 항상 `"gyeongui"`로 키를 생성.
+ *
+ * @param {string} csvText UTF-8
+ * @returns {Map<string, 'surface'|'underground'|'mixed'|'unknown'>}
+ */
+function parseGyeonguiCsv(csvText) {
+  const rows = csvText.split(/\r?\n/u).filter((l) => l.length > 0);
+  // 역명 → Set of {surface|underground|unknown}
+  const perStation = new Map();
+  // 첫 줄 header skip.
+  for (let i = 1; i < rows.length; i++) {
+    const cols = parseCsvRow(rows[i]);
+    // 최소 6 컬럼 (지상구분이 6번째)
+    if (cols.length < 6) continue;
+    const rawName = cols[2];
+    const surfaceCol = cols[5];
+    if (typeof rawName !== 'string' || rawName.length === 0) continue;
+    const name = normalizeStationName(rawName);
+    const env = classifySurfaceColumn(surfaceCol);
+    let set = perStation.get(name);
+    if (!set) {
+      set = new Set();
+      perStation.set(name, set);
+    }
+    set.add(env);
+  }
+
+  const map = new Map();
+  for (const [name, envSet] of perStation) {
+    map.set(`gyeongui|${name}`, reduceEnvSet(envSet));
+  }
+  return map;
+}
+
+/**
+ * 국가철도공단 CSV "지상구분" 컬럼 분류.
+ * @param {string} col
+ * @returns {'surface'|'underground'|'unknown'}
+ */
+function classifySurfaceColumn(col) {
+  if (typeof col !== 'string') return 'unknown';
+  const trimmed = col.trim();
+  if (trimmed === '지상') return 'surface';
+  if (trimmed === '지하') return 'underground';
+  return 'unknown';
+}
+
+/**
+ * 같은 역의 상행/하행 환경 Set을 단일 enum으로 환원.
+ * - 단일 값 → 그 값
+ * - surface + underground → mixed
+ * - unknown 포함 + 다른 값 → 다른 값 (unknown은 누락 신호이므로 무시)
+ * - 전부 unknown → unknown
+ * @param {Set<'surface'|'underground'|'unknown'>} envSet
+ * @returns {'surface'|'underground'|'mixed'|'unknown'}
+ */
+function reduceEnvSet(envSet) {
+  const hasSurface = envSet.has('surface');
+  const hasUnderground = envSet.has('underground');
+  if (hasSurface && hasUnderground) return 'mixed';
+  if (hasSurface) return 'surface';
+  if (hasUnderground) return 'underground';
+  return 'unknown';
+}
+
+/**
  * @param {{
  *   stations: Array<Record<string, unknown>>,
  *   csvText: string,
  *   line9CsvText?: string,
+ *   gyeonguiCsvText?: string,
  * }} input
  * @returns {{
  *   stations: Array<Record<string, unknown>>,
  *   stats: {
  *     total: number,
- *     bySource: { override: number, csv: number, line9: number, unknown: number },
+ *     bySource: { override: number, csv: number, line9: number, gyeonguiCsv: number, unknown: number },
  *     byEnv: { surface: number, underground: number, mixed: number, unknown: number },
  *     unknownEntries: Array<{ id: string, name: string, line: string }>,
  *   },
  * }}
  */
-function build({ stations, csvText, line9CsvText }) {
+function build({ stations, csvText, line9CsvText, gyeonguiCsvText }) {
   const csvMap = parseCsv(csvText);
   const line9Map = typeof line9CsvText === 'string' ? parseLine9Csv(line9CsvText) : new Map();
+  const gyeonguiMap =
+    typeof gyeonguiCsvText === 'string' && gyeonguiCsvText.length > 0
+      ? parseGyeonguiCsv(gyeonguiCsvText)
+      : new Map();
   const stats = {
     total: stations.length,
-    bySource: { override: 0, csv: 0, line9: 0, unknown: 0 },
+    bySource: { override: 0, csv: 0, line9: 0, gyeonguiCsv: 0, unknown: 0 },
     byEnv: { surface: 0, underground: 0, mixed: 0, unknown: 0 },
     unknownEntries: [],
   };
@@ -218,6 +315,9 @@ function build({ stations, csvText, line9CsvText }) {
     } else if (csvMap.has(key)) {
       environment = csvMap.get(key);
       source = environment === 'unknown' ? 'unknown' : 'csv';
+    } else if (gyeonguiMap.has(key)) {
+      environment = gyeonguiMap.get(key);
+      source = environment === 'unknown' ? 'unknown' : 'gyeonguiCsv';
     }
 
     stats.bySource[source] += 1;
@@ -247,11 +347,13 @@ function main(argv, deps = {}) {
   const stationsPath = deps.stationsPath ?? STATIONS_PATH;
   const csvPath = deps.csvPath ?? CSV_PATH;
   const line9CsvPath = deps.line9CsvPath ?? LINE9_CSV_PATH;
+  const gyeonguiCsvPath = deps.gyeonguiCsvPath ?? GYEONGUI_CSV_PATH;
   const dryRun = argv.includes('--dry-run');
 
   let stations;
   let csvText;
   let line9CsvText;
+  let gyeonguiCsvText;
   try {
     stations = JSON.parse(readFile(stationsPath));
   } catch (e) {
@@ -270,15 +372,26 @@ function main(argv, deps = {}) {
     writeErr(`build-station-environment: 9호선 CSV 읽기 실패 — ${e.message}`);
     return 1;
   }
+  try {
+    gyeonguiCsvText = readFile(gyeonguiCsvPath);
+  } catch (e) {
+    writeErr(`build-station-environment: 경의중앙선 CSV 읽기 실패 — ${e.message}`);
+    return 1;
+  }
 
-  const { stations: nextStations, stats } = build({ stations, csvText, line9CsvText });
+  const { stations: nextStations, stats } = build({
+    stations,
+    csvText,
+    line9CsvText,
+    gyeonguiCsvText,
+  });
 
   writeOut(`✅ ${stats.total} stations classified`);
   writeOut(
     `  byEnv  : surface=${stats.byEnv.surface} underground=${stats.byEnv.underground} mixed=${stats.byEnv.mixed} unknown=${stats.byEnv.unknown}`,
   );
   writeOut(
-    `  source : override=${stats.bySource.override} csv=${stats.bySource.csv} line9=${stats.bySource.line9} unknown=${stats.bySource.unknown}`,
+    `  source : override=${stats.bySource.override} csv=${stats.bySource.csv} line9=${stats.bySource.line9} gyeonguiCsv=${stats.bySource.gyeonguiCsv} unknown=${stats.bySource.unknown}`,
   );
 
   if (stats.unknownEntries.length > 0) {
@@ -300,9 +413,12 @@ function main(argv, deps = {}) {
 
 module.exports = {
   classifyFloor,
+  classifySurfaceColumn,
   parseCsv,
   parseCsvRow,
   parseLine9Csv,
+  parseGyeonguiCsv,
+  reduceEnvSet,
   build,
   ENVIRONMENT_OVERRIDES,
   VALID_ENVIRONMENTS,
