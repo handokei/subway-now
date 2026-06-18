@@ -79,63 +79,77 @@ describe('lineFromSubwayId', () => {
   );
 });
 
-describe('parseCsv', () => {
-  const HEADER = 'SSID_MAC,SSID통신사,역ID,역명,호선ID,RSSI';
-  const ROW = (bssid, ssid, code, name, line, rssi) =>
+describe('parseCsv (#1481 slim header)', () => {
+  // Slim CSV header — `SSID_MAC주소` / `지하철역명` / `지하철호선ID` 3 컬럼만.
+  const SLIM_HEADER = 'SSID_MAC주소,지하철역명,지하철호선ID';
+  const SLIM_ROW = (bssid, name, line) => `${BOM}${bssid},${BOM}${name},${BOM}${line}`;
+
+  // 원본 CSV header — slim 전 6 컬럼 형식 (후방 호환).
+  const RAW_HEADER = 'SSID_MAC주소,SSID등록통신사,지하철역ID,지하철역명,지하철호선ID,WIFI신호세기';
+  const RAW_ROW = (bssid, ssid, code, name, line, rssi) =>
     `${BOM}${bssid},${BOM}${ssid},${BOM}${code},${BOM}${name},${BOM}${line},${BOM}${rssi}`;
 
-  it('header를 skip하고 유효 row만 반환', () => {
-    const text = `${BOM}${HEADER}\r\n${ROW('aa:bb:cc:dd:ee:ff', 'T wifi zone', '1', '강남', '1002', '-60')}\r\n`;
+  it('slim header (3 col) — bssid/stationName/line만 보존', () => {
+    const text = `${BOM}${SLIM_HEADER}\r\n${SLIM_ROW('aa:bb:cc:dd:ee:ff', '강남', '1002')}\r\n`;
+    const rows = parseCsv(text);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual({
+      bssid: 'aa:bb:cc:dd:ee:ff',
+      ssid: '', // slim 본은 SSID 컬럼 미포함 → 빈 문자열.
+      stationName: '강남',
+      line: '2',
+    });
+  });
+
+  it('원본 header (6 col) — ssid 컬럼도 row.ssid로 보존 (후방 호환)', () => {
+    const text = `${BOM}${RAW_HEADER}\r\n${RAW_ROW('aa:bb:cc:dd:ee:ff', 'T wifi zone', '1', '강남', '1002', '-60')}\r\n`;
     const rows = parseCsv(text);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toEqual({
       bssid: 'aa:bb:cc:dd:ee:ff',
       ssid: 'T wifi zone',
-      carrier: 'T wifi zone',
-      stationCode: '1',
       stationName: '강남',
       line: '2',
-      rssi: -60,
     });
   });
 
+  it('header 누락 시 빈 결과', () => {
+    expect(parseCsv('')).toEqual([]);
+    expect(parseCsv('only,header,wrong')).toEqual([]);
+  });
+
   it('빈 줄/짧은 row는 skip', () => {
-    const text = `${HEADER}\r\n\r\n${BOM}a,b,c\r\n${ROW('a1', 'T', 'c', 'd', '1009', '-50')}`;
+    const text = `${SLIM_HEADER}\r\n\r\n${BOM}a,b\r\n${SLIM_ROW('a1', 'd', '1009')}`;
     expect(parseCsv(text)).toHaveLength(1);
   });
 
-  it('필수 필드(bssid/ssid/stationName) 비어 있으면 skip', () => {
-    const text = `${HEADER}\r\n${ROW('', 'T', 'c', 'd', '1001', '-50')}\r\n${ROW('a', '', 'c', 'd', '1001', '-50')}\r\n${ROW('a', 'T', 'c', '', '1001', '-50')}`;
+  it('필수 필드(bssid/stationName) 비어 있으면 skip', () => {
+    const text = `${SLIM_HEADER}\r\n${SLIM_ROW('', 'd', '1001')}\r\n${SLIM_ROW('a', '', '1001')}`;
     expect(parseCsv(text)).toHaveLength(0);
   });
 
   it('미등록 호선 코드(9999 등) row는 line=null로 보존', () => {
-    const text = `${HEADER}\r\n${ROW('aa', 'T', '1', '강남', '9999', '-50')}`;
+    const text = `${SLIM_HEADER}\r\n${SLIM_ROW('aa', '강남', '9999')}`;
     const rows = parseCsv(text);
     expect(rows).toHaveLength(1);
     expect(rows[0].line).toBeNull();
   });
 
-  it('rssi가 숫자 아니면 null', () => {
-    const text = `${HEADER}\r\n${ROW('aa', 'T', '1', '강남', '1001', 'NaN')}`;
-    expect(parseCsv(text)[0].rssi).toBeNull();
-  });
-
   it('bssid는 lower-case 정규화', () => {
-    const text = `${HEADER}\r\n${ROW('AA:BB:CC:DD:EE:FF', 'T', '1', '강남', '1001', '-50')}`;
+    const text = `${SLIM_HEADER}\r\n${SLIM_ROW('AA:BB:CC:DD:EE:FF', '강남', '1001')}`;
     expect(parseCsv(text)[0].bssid).toBe('aa:bb:cc:dd:ee:ff');
   });
 });
 
 describe('buildBssidMap', () => {
-  it('row들을 BSSID → meta 맵으로 변환', () => {
+  it('row들을 BSSID → meta 맵으로 변환 (ssid 필드 미보존, #1481)', () => {
     const rows = [
       { bssid: 'aa', ssid: 'T', stationName: '강남', line: '2' },
       { bssid: 'bb', ssid: 'ollehWiFi', stationName: '왕십리', line: '5' },
     ];
     const { entries, bssidCollisions } = buildBssidMap(rows);
-    expect(entries.aa).toEqual({ stationName: '강남', line: '2', ssid: 'T' });
-    expect(entries.bb).toEqual({ stationName: '왕십리', line: '5', ssid: 'ollehWiFi' });
+    expect(entries.aa).toEqual({ stationName: '강남', line: '2' });
+    expect(entries.bb).toEqual({ stationName: '왕십리', line: '5' });
     expect(bssidCollisions).toBe(0);
   });
 
@@ -156,18 +170,18 @@ describe('buildBssidMap', () => {
 });
 
 describe('buildStationIndex', () => {
-  it('(stationName, line) 단위로 ssids/bssids 집계 + distinct', () => {
+  it('(stationName, line) 단위로 distinct BSSID 집계 (ssids 미보존, #1481)', () => {
     const rows = [
       { bssid: 'aa', ssid: 'T', stationName: '강남', line: '2' },
-      { bssid: 'bb', ssid: 'T', stationName: '강남', line: '2' }, // 같은 SSID, 다른 BSSID
+      { bssid: 'bb', ssid: 'T', stationName: '강남', line: '2' },
       { bssid: 'cc', ssid: 'ollehWiFi', stationName: '강남', line: '2' },
       { bssid: 'dd', ssid: 'T', stationName: '강남', line: '7' }, // 다른 호선(타 platform)
     ];
     const idx = buildStationIndex(rows);
     expect(idx).toHaveLength(2);
     const line2 = idx.find((e) => e.line === '2');
-    expect(line2.ssids).toEqual(['ollehWiFi', 'T']); // sorted localeCompare (소문자 우선)
     expect(line2.bssidCount).toBe(3);
+    expect(line2.ssids).toBeUndefined();
   });
 
   it('line=null row 제외', () => {
@@ -207,10 +221,10 @@ describe('validateAgainstStations', () => {
 });
 
 describe('summarize', () => {
-  it('통계 객체 + missing sample 10건 자르기', () => {
+  it('통계 객체 + missing sample 10건 자르기 (원본 CSV ssid 있을 시)', () => {
     const rows = Array.from({ length: 3 }, (_, i) => ({
       bssid: `mac-${i}`,
-      ssid: 'T wifi zone',
+      ssid: 'T wifi zone', // 원본 CSV — row.ssid 보존.
       stationName: '강남',
       line: '2',
     }));
@@ -228,6 +242,14 @@ describe('summarize', () => {
     expect(s.carrierCounts['T wifi zone']).toBe(3);
     expect(s.missingSample).toHaveLength(10);
     expect(s.stationsMissingInStationsJson).toBe(15);
+  });
+
+  it('slim CSV (row.ssid=빈 문자열) — carrierCounts 비어 있음 (#1481)', () => {
+    const rows = [{ bssid: 'aa', ssid: '', stationName: '강남', line: '2' }];
+    const idx = buildStationIndex(rows);
+    const bmap = buildBssidMap(rows);
+    const s = summarize(rows, idx, bmap, []);
+    expect(s.carrierCounts).toEqual({});
   });
 });
 
@@ -254,8 +276,8 @@ describe('buildOutput', () => {
 });
 
 describe('main (io 주입)', () => {
-  it('readCsv/readJson 받아 writeJson 2회 호출 + 로그', () => {
-    const csv = `${BOM}H1,H2,H3,H4,H5,H6\r\n${BOM}aa:bb:cc:dd:ee:ff,${BOM}T wifi zone,${BOM}1,${BOM}강남,${BOM}1002,${BOM}-60\r\n`;
+  it('readCsv/readJson 받아 writeJson 2회 호출 + 로그 (slim header, #1481)', () => {
+    const csv = `${BOM}SSID_MAC주소,지하철역명,지하철호선ID\r\n${BOM}aa:bb:cc:dd:ee:ff,${BOM}강남,${BOM}1002\r\n`;
     const stations = [{ name: '강남', line: '2' }];
     const writes = [];
     const logs = [];

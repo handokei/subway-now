@@ -86,27 +86,44 @@ function lineFromSubwayId(code) {
 
 /**
  * CSV 텍스트 전체를 파싱해 row 배열을 만든다. header는 제거.
- * row shape: { bssid, ssid, carrier, stationCode, stationName, line, rssi }
+ *
+ * Slim CSV (#1481, 3 col): `SSID_MAC주소` / `지하철역명` / `지하철호선ID`.
+ * `SSID등록통신사` / `지하철역ID` / `WIFI신호세기`는 미사용 컬럼으로 slim 시 제거.
+ * `wifiBssidLookup`은 MAC+역명+호선만 활용한다.
+ *
+ * 후방 호환 — header에 6 컬럼이 모두 있는 원본 CSV도 동일 코드로 처리. 원본의
+ * `SSID등록통신사` 컬럼이 있을 경우 `row.ssid`에 보존하지만, slim 본은 row.ssid=''.
+ *
+ * row shape: { bssid, ssid, stationName, line }
  * 잘못된 line(미등록 호선 코드) row는 stationName 정규화는 그대로지만 line=null로 둔다 — 호출자가 skip.
  */
 function parseCsv(text) {
   const rows = [];
   const lines = text.split(/\r?\n/);
+  if (lines.length === 0) return rows;
+  // 첫 줄 header에서 컬럼 인덱스 lookup.
+  const header = parseCsvLine(lines[0]);
+  const idxMac = header.indexOf('SSID_MAC주소');
+  const idxName = header.indexOf('지하철역명');
+  const idxLine = header.indexOf('지하철호선ID');
+  const idxSsid = header.indexOf('SSID등록통신사'); // 원본 한정 (slim 본은 -1).
+  if (idxMac === -1 || idxName === -1 || idxLine === -1) return rows;
+  const minCols = Math.max(idxMac, idxName, idxLine) + 1;
   for (let i = 1; i < lines.length; i += 1) {
     const raw = lines[i];
     if (typeof raw !== 'string' || raw.length === 0) continue;
     const cells = parseCsvLine(raw);
-    if (cells.length < 6) continue;
-    const [bssid, ssid, stationCode, stationName, lineCode, rssi] = cells;
-    if (bssid.length === 0 || ssid.length === 0 || stationName.length === 0) continue;
+    if (cells.length < minCols) continue;
+    const bssid = cells[idxMac];
+    const stationName = cells[idxName];
+    const lineCode = cells[idxLine];
+    if (bssid.length === 0 || stationName.length === 0) continue;
+    const ssid = idxSsid !== -1 && cells.length > idxSsid ? cells[idxSsid] : '';
     rows.push({
       bssid: bssid.toLowerCase(),
       ssid,
-      carrier: ssid, // CSV 통신사 컬럼 == SSID 명 (실측). carrier 별칭으로 보존.
-      stationCode,
       stationName: applyStationAlias(stationName),
       line: lineFromSubwayId(lineCode),
-      rssi: Number.isFinite(Number(rssi)) ? Number(rssi) : null,
     });
   }
   return rows;
@@ -115,6 +132,8 @@ function parseCsv(text) {
 /**
  * row 배열을 BSSID → meta 맵으로 변환. 중복 BSSID(같은 MAC이 다른 역에 등장)는
  * 첫 row 보존 + 충돌 카운트만 stats에 기록 (이론상 unique지만 데이터 결함 방어).
+ *
+ * #1481 — `wifiBssidLookup`은 MAC+역명+호선만 활용하므로 ssid 필드는 제외.
  */
 function buildBssidMap(rows) {
   const entries = {};
@@ -128,15 +147,16 @@ function buildBssidMap(rows) {
     entries[row.bssid] = {
       stationName: row.stationName,
       line: row.line,
-      ssid: row.ssid,
     };
   }
   return { entries, bssidCollisions };
 }
 
 /**
- * row 배열을 (stationName, line) → {ssids, bssids, count} 인덱스로 변환.
- * ssids/bssids는 distinct list. ssids는 정렬 (재현성).
+ * row 배열을 (stationName, line) → { bssidCount } 인덱스로 변환.
+ * bssidCount는 platform AP 개수 (distinct BSSID).
+ *
+ * #1481 — SSID 컬럼 slim 후 `ssids` distinct list는 제외.
  */
 function buildStationIndex(rows) {
   const grouped = new Map();
@@ -147,12 +167,10 @@ function buildStationIndex(rows) {
       grouped.set(key, {
         stationName: row.stationName,
         line: row.line,
-        ssids: new Set(),
         bssids: new Set(),
       });
     }
     const bucket = grouped.get(key);
-    bucket.ssids.add(row.ssid);
     bucket.bssids.add(row.bssid);
   }
   const entries = [];
@@ -160,7 +178,6 @@ function buildStationIndex(rows) {
     entries.push({
       stationName: bucket.stationName,
       line: bucket.line,
-      ssids: Array.from(bucket.ssids).sort((a, b) => a.localeCompare(b)),
       bssidCount: bucket.bssids.size,
     });
   }
@@ -201,9 +218,12 @@ function readCsv(filePath) {
 }
 
 function summarize(rows, stationIndex, bssidMap, missingStations) {
+  // #1481 — slim CSV는 SSID 컬럼 미포함. 후방 호환을 위해 row.ssid가 있을 때만 카운트.
   const carrierCounts = {};
   for (const row of rows) {
-    carrierCounts[row.ssid] = (carrierCounts[row.ssid] ?? 0) + 1;
+    if (typeof row.ssid === 'string' && row.ssid.length > 0) {
+      carrierCounts[row.ssid] = (carrierCounts[row.ssid] ?? 0) + 1;
+    }
   }
   const linesCovered = new Set();
   for (const entry of stationIndex) linesCovered.add(entry.line);
@@ -231,8 +251,8 @@ function buildOutput({ rows, stations, generatedAt }) {
       description:
         '지하철 역사 platform WiFi BSSID → 역 매핑 (#1451, Epic #1432, B3). ' +
         '서울교통공사 tnSubwayWifi 공공데이터셋 기반. ' +
-        'SSID는 carrier-generic("T wifi zone", "ollehWiFi" 등)이라 다중 역 공유 — ' +
-        '식별 단위는 BSSID(MAC) 1개당 1 platform.',
+        '식별 단위는 BSSID(MAC) 1개당 1 platform. ' +
+        'SSID는 carrier-generic이라 식별 가치가 낮아 slim CSV(#1481) 시 컬럼 제거됨.',
       source: 'scripts/서울교통공사_지하철역_WiFi_20260618.csv',
       sourceLicense: '서울교통공사 공공데이터',
       generatedAt,
@@ -246,7 +266,8 @@ function buildOutput({ rows, stations, generatedAt }) {
     _meta: {
       description:
         '역별 platform WiFi 통계 (#1451). DebugModal / 운영 검증용. ' +
-        'ssids는 distinct list (정렬), bssidCount는 platform AP 개수.',
+        'bssidCount는 platform AP 개수. ' +
+        '#1481 slim 적용 후 ssids distinct list는 제외 (CSV SSID 컬럼 미보존).',
       source: 'scripts/서울교통공사_지하철역_WiFi_20260618.csv',
       generatedAt,
       stationLinePairs: stats.stationLinePairs,

@@ -78,13 +78,14 @@ function splitCsvLine(line) {
   return line.split(',').map((v) => v.replace(/^"|"$/g, '').trim());
 }
 
-function buildEndCodePrefixToLine(rows) {
+function buildEndCodePrefixToLine(rows, idxStartCode = 2, idxStartLine = 3) {
   // 학습: start 코드 prefix(2자리) → start 호선(normalize) 단일이면 채택.
   // 종료 코드 prefix도 동일 매핑을 따른다고 가정 (서울 도시철도 표준 station code 규칙).
+  // 원본 CSV 전용 — slim CSV(#1481)에는 환승종료 호선이 이미 명시되어 prefix 학습 X.
   const prefixToLines = {};
   for (const row of rows) {
-    const startCode = row[2];
-    const startLineRaw = row[3];
+    const startCode = row[idxStartCode];
+    const startLineRaw = row[idxStartLine];
     const line = normalizeLine(startLineRaw);
     if (!line || !startCode || startCode.length < 2) continue;
     const prefix = startCode.slice(0, 2);
@@ -123,6 +124,32 @@ function resolveEndLine(endCode, station, startLine, prefixMap, stationLines) {
 function main() {
   const raw = fs.readFileSync(CSV_PATH, 'utf-8').replace(/^﻿/, '');
   const lines = raw.split(/\r?\n/).filter(Boolean);
+  if (lines.length === 0) {
+    console.error('CSV empty');
+    return;
+  }
+  // 첫 줄 header에서 컬럼 인덱스 lookup. #1481 slim(5 col: 환승시작 호선/환승시작역/
+  // 환승종료 호선/환승종료역/소요시간) + 원본(12 col: 고유번호/환승시작역/환승시작 코드/
+  // 환승시작 호선/.../환승종료역(코드)/.../소요시간) 모두 동일 코드로 처리.
+  const header = splitCsvLine(lines[0]);
+  const idxStartLine = header.indexOf('환승시작 호선');
+  const idxStartStation = header.indexOf('환승시작역');
+  const idxStartCode = header.indexOf('환승시작 코드');
+  const idxEndLine = header.indexOf('환승종료 호선');
+  const idxEndStationOrCode = header.indexOf('환승종료역');
+  const idxTime = header.indexOf('소요시간');
+  // slim 본은 endLine 컬럼 명시(`환승종료 호선` 존재) → prefix 학습 불필요.
+  // 원본은 endLine 없음 → endCode prefix 학습.
+  const hasEndLine = idxEndLine !== -1;
+  if (
+    idxStartLine === -1 ||
+    idxStartStation === -1 ||
+    idxEndStationOrCode === -1 ||
+    idxTime === -1
+  ) {
+    console.error(`header mismatch: ${header.join(',')}`);
+    return;
+  }
   const rows = lines.slice(1).map(splitCsvLine);
   const stations = JSON.parse(fs.readFileSync(STATIONS_PATH, 'utf-8'));
 
@@ -133,7 +160,17 @@ function main() {
     (stationLines[canonical] = stationLines[canonical] || new Set()).add(s.line);
   }
 
-  const { map: prefixMap } = buildEndCodePrefixToLine(rows);
+  // slim 본은 prefix 학습 불필요. 원본만 endCode prefix → line 학습.
+  const prefixMap = hasEndLine
+    ? {}
+    : buildEndCodePrefixToLine(rows, idxStartCode, idxStartLine).map;
+  const minCols = Math.max(
+    idxStartLine,
+    idxStartStation,
+    idxEndStationOrCode,
+    idxTime,
+    hasEndLine ? idxEndLine : (idxStartCode !== -1 ? idxStartCode : 0),
+  ) + 1;
 
   // (fromLine, toLine, station) → [seconds...]
   const buckets = new Map();
@@ -148,18 +185,22 @@ function main() {
   const droppedSamples = [];
 
   for (const row of rows) {
-    if (row.length < 12) continue;
-    const station = applyStationAlias(normalizeStationName(row[1]));
-    const startLine = normalizeLine(row[3]);
+    if (row.length < minCols) continue;
+    const station = applyStationAlias(normalizeStationName(row[idxStartStation]));
+    const startLine = normalizeLine(row[idxStartLine]);
     if (!startLine) {
       stats.droppedStartLine++;
       continue;
     }
-    const endLine = resolveEndLine(row[7], station, startLine, prefixMap, stationLines);
+    const endLine = hasEndLine
+      ? normalizeLine(row[idxEndLine])
+      : resolveEndLine(row[idxEndStationOrCode], station, startLine, prefixMap, stationLines);
     if (!endLine) {
       stats.droppedEndLine++;
       if (droppedSamples.length < 10) {
-        droppedSamples.push(`endLine? ${station} start=${startLine} endCode=${row[7]}`);
+        droppedSamples.push(
+          `endLine? ${station} start=${startLine} endRaw=${row[idxEndStationOrCode]}`,
+        );
       }
       continue;
     }
@@ -178,7 +219,7 @@ function main() {
       }
       continue;
     }
-    const seconds = parseMmSsToSeconds(row[11]);
+    const seconds = parseMmSsToSeconds(row[idxTime]);
     if (seconds === null || seconds <= 0) {
       stats.droppedTime++;
       continue;

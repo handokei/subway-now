@@ -24,9 +24,10 @@ describe('normalizeBssid', () => {
 
 describe('lookupStationByBssid', () => {
   // 실제 BSSID 1건을 dataset에서 동적으로 픽업해 회귀 점검
+  // #1481 — slim CSV 적용 후 dataset entry는 stationName/line만 보존 (ssid 컬럼 제거)
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const dataset = require('../../../../data/subwayWifiBssidMap.json') as {
-    entries: Record<string, { stationName: string; line: string; ssid: string }>;
+    entries: Record<string, { stationName: string; line: string }>;
   };
   const firstBssid = Object.keys(dataset.entries)[0];
   const firstEntry = dataset.entries[firstBssid];
@@ -36,7 +37,7 @@ describe('lookupStationByBssid', () => {
     expect(result).not.toBeNull();
     expect(result?.line).toBe(firstEntry.line);
     expect(result?.station.line).toBe(firstEntry.line);
-    expect(result?.ssid).toBe(firstEntry.ssid);
+    expect(result?.station.name).toBe(firstEntry.stationName);
     expect(typeof result?.station.lat).toBe('number');
     expect(typeof result?.station.lng).toBe('number');
   });

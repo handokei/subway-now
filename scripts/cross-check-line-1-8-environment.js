@@ -60,25 +60,79 @@ function classifyDepthFloor(floor) {
 }
 
 /**
- * 새 CSV는 비고 컬럼이 `"4호선,경의중앙선,공항철도환승"` 같은 쉼표 포함
- * quoted 문자열을 가질 수 있다. 9번째 컬럼(정거장깊이)까지만 안전하게 뽑는
- * minimal parser.
+ * CSV row parser — quoted 값이 섞일 수 있는 (#1481 slim) + unquoted 원본 모두 지원.
+ * 값 내부 쉼표는 quoted 블록 안에서만 출현하므로 quoted block 단위로 split.
  *
  * @param {string} row
+ * @returns {string[]}
+ */
+function parseSlimCsvRow(row) {
+  const cells = [];
+  let buf = '';
+  let inQuote = false;
+  for (let i = 0; i < row.length; i++) {
+    const ch = row[i];
+    if (ch === '"') {
+      // "" inside quoted → literal "
+      if (inQuote && row[i + 1] === '"') {
+        buf += '"';
+        i++;
+      } else {
+        inQuote = !inQuote;
+      }
+    } else if (ch === ',' && !inQuote) {
+      cells.push(buf);
+      buf = '';
+    } else {
+      buf += ch;
+    }
+  }
+  cells.push(buf);
+  return cells;
+}
+
+/**
+ * Slim CSV (#1481, 5 col: 호선/역명/형식/층수/비고 — 비고 quoted) +
+ * 원본 CSV (10 col, unquoted regex fallback) 둘 다 처리.
+ *
+ * Slim 본은 정거장깊이 컬럼이 제거 → depth=null (사용처는 리포트 출력만, environment 결정 X).
+ *
+ * @param {string} row
+ * @param {Array<string>} [header] header 셀 — 있으면 column-name 기반, 없으면 원본 regex fallback.
  * @returns {{ line: string, name: string, floor: string, depth: number | null } | null}
  */
-function parseDepthRow(row) {
-  // 첫 9개 컬럼은 모두 unquoted (숫자/한글, 쉼표 없음). 10번째 비고만 quote 가능.
-  const match = /^(\d+),(\d+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),(-?[\d.]+)/u.exec(row);
-  if (!match) return null;
-  const line = match[2];
-  const name = normalizeStationName(match[3]);
-  const floor = match[4];
-  const depthRaw = match[9];
-  const depth = Number.parseFloat(depthRaw);
-  /* istanbul ignore next -- regex `(-?[\d.]+)`이 match된 시점에 parseFloat는 항상 finite. 방어용 fallback. */
-  const depthOut = Number.isFinite(depth) ? depth : null;
-  return { line, name, floor, depth: depthOut };
+function parseDepthRow(row, header) {
+  if (!header) {
+    // 원본 10 col fallback — 첫 9개 컬럼 unquoted (숫자/한글), 10번째 비고만 quote 가능.
+    const match = /^(\d+),(\d+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),([^,]+),(-?[\d.]+)/u.exec(row);
+    if (!match) return null;
+    const line = match[2];
+    const name = normalizeStationName(match[3]);
+    const floor = match[4];
+    const depthRaw = match[9];
+    const depth = Number.parseFloat(depthRaw);
+    /* istanbul ignore next -- regex `(-?[\d.]+)`이 match된 시점에 parseFloat는 항상 finite. 방어용 fallback. */
+    const depthOut = Number.isFinite(depth) ? depth : null;
+    return { line, name, floor, depth: depthOut };
+  }
+  const cells = parseSlimCsvRow(row);
+  const idxLine = header.indexOf('호선');
+  const idxName = header.indexOf('역명');
+  const idxFloor = header.indexOf('층수');
+  const idxDepth = header.indexOf('정거장깊이');
+  if (idxLine === -1 || idxName === -1 || idxFloor === -1) return null;
+  const minCols = Math.max(idxLine, idxName, idxFloor) + 1;
+  if (cells.length < minCols) return null;
+  const line = cells[idxLine];
+  const name = normalizeStationName(cells[idxName]);
+  const floor = cells[idxFloor];
+  let depth = null;
+  if (idxDepth !== -1 && cells.length > idxDepth) {
+    const parsed = Number.parseFloat(cells[idxDepth]);
+    if (Number.isFinite(parsed)) depth = parsed;
+  }
+  if (!line || name.length === 0 || !floor) return null;
+  return { line, name, floor, depth };
 }
 
 /**
@@ -88,9 +142,13 @@ function parseDepthRow(row) {
 function parseDepthCsv(csvText) {
   const rows = csvText.split(/\r?\n/u).filter((l) => l.length > 0);
   const map = new Map();
-  // 헤더 skip.
+  if (rows.length === 0) return map;
+  // 첫 줄 header 파싱. slim/원본 둘 다 호선/역명/층수가 header에 있으면 column-name 기반.
+  // 없으면 (구버전 CSV) regex fallback.
+  const headerCells = parseSlimCsvRow(rows[0]);
+  const useHeader = ['호선', '역명', '층수'].every((col) => headerCells.indexOf(col) !== -1);
   for (let i = 1; i < rows.length; i++) {
-    const parsed = parseDepthRow(rows[i]);
+    const parsed = useHeader ? parseDepthRow(rows[i], headerCells) : parseDepthRow(rows[i]);
     if (parsed === null) continue;
     const environment = classifyDepthFloor(parsed.floor);
     map.set(`${parsed.line}|${parsed.name}`, {
@@ -258,6 +316,7 @@ function main(argv, deps = {}) {
 module.exports = {
   classifyDepthFloor,
   parseDepthRow,
+  parseSlimCsvRow,
   parseDepthCsv,
   build,
   LINES_IN_SCOPE,

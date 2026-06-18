@@ -11,6 +11,7 @@ const crypto = require('node:crypto');
 const {
   classifyDepthFloor,
   parseDepthRow,
+  parseSlimCsvRow,
   parseDepthCsv,
   build,
   LINES_IN_SCOPE,
@@ -90,6 +91,83 @@ describe('parseDepthRow', () => {
     // NaN literal은 (-?[\d.]+) 패턴에 매치 안 됨 → row 자체가 null.
     expect(parseDepthRow(row)).toBeNull();
   });
+
+  describe('slim CSV (#1481) — header 인자 전달', () => {
+    // Slim 본 5 col: 호선/역명/형식/층수/비고 (비고 quoted).
+    const HEADER = ['호선', '역명', '형식', '층수', '비고'];
+
+    it('parses slim row using header column lookup (depth=null)', () => {
+      const row = '"1","서울","섬식","B2","4호선,경의중앙선,공항철도환승"';
+      expect(parseDepthRow(row, HEADER)).toEqual({
+        line: '1',
+        name: '서울',
+        floor: 'B2',
+        depth: null,
+      });
+    });
+
+    it('returns null when 호선/역명/층수 missing in header', () => {
+      const row = '"1","서울","섬식","B2",""';
+      expect(parseDepthRow(row, ['x', 'y', 'z'])).toBeNull();
+    });
+
+    it('returns null for short row', () => {
+      expect(parseDepthRow('"1","서울"', HEADER)).toBeNull();
+    });
+
+    it('returns null when line/name/floor empty', () => {
+      expect(parseDepthRow('"","서울","섬식","B2",""', HEADER)).toBeNull();
+      expect(parseDepthRow('"1","","섬식","B2",""', HEADER)).toBeNull();
+      expect(parseDepthRow('"1","서울","섬식","",""', HEADER)).toBeNull();
+    });
+
+    it('parses depth when 정거장깊이 column present (raw CSV via header)', () => {
+      const fullHeader = ['연번', '호선', '역명', '층수', '형식', '지반고', '레일면고', '선로기준정거장깊이', '정거장깊이', '비고'];
+      const row = '1,1,서울,B2,섬식,129.99,117.04,12.95,11.85,';
+      expect(parseDepthRow(row, fullHeader)).toEqual({
+        line: '1',
+        name: '서울',
+        floor: 'B2',
+        depth: 11.85,
+      });
+    });
+
+    it('depth defaults to null when 정거장깊이 value not finite', () => {
+      const fullHeader = ['연번', '호선', '역명', '층수', '형식', '지반고', '레일면고', '선로기준정거장깊이', '정거장깊이', '비고'];
+      const row = '1,1,서울,B2,섬식,1,2,3,NaN,';
+      expect(parseDepthRow(row, fullHeader)).toEqual({
+        line: '1',
+        name: '서울',
+        floor: 'B2',
+        depth: null,
+      });
+    });
+  });
+});
+
+describe('parseSlimCsvRow', () => {
+  it('parses unquoted simple row', () => {
+    expect(parseSlimCsvRow('a,b,c')).toEqual(['a', 'b', 'c']);
+  });
+
+  it('strips surrounding double quotes around cells', () => {
+    expect(parseSlimCsvRow('"1","서울","섬식","B2"')).toEqual(['1', '서울', '섬식', 'B2']);
+  });
+
+  it('preserves commas inside quoted cells', () => {
+    const row = '"1","서울","섬식","B2","4호선,경의중앙선,공항철도환승"';
+    expect(parseSlimCsvRow(row)).toEqual([
+      '1', '서울', '섬식', 'B2', '4호선,경의중앙선,공항철도환승',
+    ]);
+  });
+
+  it('handles escaped double-quote inside quoted cell', () => {
+    expect(parseSlimCsvRow('"a""b","c"')).toEqual(['a"b', 'c']);
+  });
+
+  it('returns single cell for empty input', () => {
+    expect(parseSlimCsvRow('')).toEqual(['']);
+  });
 });
 
 describe('parseDepthCsv', () => {
@@ -121,6 +199,33 @@ describe('parseDepthCsv', () => {
       '연번,호선,역명,층수,형식,지반고,레일면고,선로기준정거장깊이,정거장깊이,비고\r\n' +
       '1,1,서울,B2,섬식,1,2,3,4,\r\n';
     expect(parseDepthCsv(csv).size).toBe(1);
+  });
+
+  it('parses slim CSV (#1481, 5 col quoted) — depth=null', () => {
+    const csv = [
+      '"호선","역명","형식","층수","비고"',
+      '"1","서울","섬식","B2","4호선,경의중앙선,공항철도환승"',
+      '"2","성수","상대식","고가","5호선환승"',
+    ].join('\n');
+    const m = parseDepthCsv(csv);
+    expect(m.size).toBe(2);
+    expect(m.get('1|서울')).toEqual({ environment: 'underground', floor: 'B2', depth: null });
+    expect(m.get('2|성수')).toEqual({ environment: 'surface', floor: '고가', depth: null });
+  });
+
+  it('returns empty map for empty input', () => {
+    expect(parseDepthCsv('').size).toBe(0);
+  });
+
+  it('falls back to regex when header lacks 호선/역명/층수', () => {
+    // dummy header → useHeader=false → regex fallback. row가 10 col 원본 형식이어야 매치.
+    const csv = [
+      'col1,col2,col3',
+      '1,1,서울,B2,섬식,1,2,3,4,',
+    ].join('\n');
+    const m = parseDepthCsv(csv);
+    expect(m.size).toBe(1);
+    expect(m.get('1|서울').floor).toBe('B2');
   });
 });
 

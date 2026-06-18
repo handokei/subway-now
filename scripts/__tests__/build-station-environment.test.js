@@ -83,16 +83,31 @@ describe('parseCsv', () => {
   });
 
   it('handles CRLF line endings', () => {
-    const csv = '"hdr"\r\n"2","뚝섬","상대식","205","3F","8384","1983"\r\n';
+    const csv =
+      '"호선","역명","형식","길이(M)","층수","면적","준공년도"\r\n' +
+      '"2","뚝섬","상대식","205","3F","8384","1983"\r\n';
     const map = parseCsv(csv);
     expect(map.get('2|뚝섬')).toBe('surface');
+  });
+
+  it('returns empty map when 호선/역명/층수 missing in header (#1481)', () => {
+    expect(parseCsv('"x","y","z"\n"1","서울","B2"').size).toBe(0);
+  });
+
+  it('returns empty map for empty CSV text', () => {
+    expect(parseCsv('').size).toBe(0);
   });
 });
 
 describe('parseKrricCsv', () => {
+  // #1481 — parseKrricCsv는 header에서 `역명` / `지상구분` 컬럼을 indexOf로 lookup.
+  // 원본 CSV(10 col)와 slim CSV(4 col) 모두 동일한 header 컬럼명을 가짐.
+  const RAW_HEADER = '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무';
+  const SLIM_HEADER = '"선명","역명","지상구분","역층"';
+
   it('groups 상행/하행 rows by station; same label → single env', () => {
     const csv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      `${RAW_HEADER}\n` +
       '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n' +
       '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
       '서울시메트로9호선주식회사,9호선,김포공항,1,상행,지하,3,Y,Y,N\n' +
@@ -105,7 +120,7 @@ describe('parseKrricCsv', () => {
   it('uses lineKey arg as map key (ignores 선명 column)', () => {
     // 분당선 CSV는 선명이 "수인분당"이지만 stations.json은 "bundang" line.
     const csv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      `${RAW_HEADER}\n` +
       '코레일,수인분당,왕십리,1,하행,지상,1,Y,N,N\n' +
       '코레일,수인분당,왕십리,2,상행,지상,1,Y,N,N\n';
     const map = parseKrricCsv(csv, 'bundang');
@@ -115,42 +130,61 @@ describe('parseKrricCsv', () => {
 
   it('differing 지상구분 between 상행/하행 → mixed', () => {
     const csv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      `${RAW_HEADER}\n` +
       '서울시메트로9호선주식회사,9호선,섞임역,1,상행,지상,1,Y,N,N\n' +
       '서울시메트로9호선주식회사,9호선,섞임역,2,하행,지하,2,Y,N,N\n';
     expect(parseKrricCsv(csv, '9').get('9|섞임역')).toBe('mixed');
   });
 
-  it('skips rows with fewer than 6 columns', () => {
-    const csv = '"hdr","x"\n서울시메트로9호선주식회사,9호선,개화\n';
+  it('skips rows with fewer columns than required header indexes', () => {
+    const csv = `${RAW_HEADER}\n코레일,9호선,개화\n`;
     expect(parseKrricCsv(csv, '9').size).toBe(0);
+  });
+
+  it('returns empty map when 역명/지상구분 columns missing in header', () => {
+    expect(parseKrricCsv('"hdr","x"\n코레일,9호선,개화\n', '9').size).toBe(0);
+  });
+
+  it('returns empty map for empty CSV text', () => {
+    expect(parseKrricCsv('', '9').size).toBe(0);
   });
 
   it('skips rows with unknown 지상구분 label', () => {
     const csv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      `${RAW_HEADER}\n` +
       '서울시메트로9호선주식회사,9호선,수상한역,1,상행,수상,1,Y,N,N\n';
     expect(parseKrricCsv(csv, '9').size).toBe(0);
   });
 
   it('skips rows with empty station name', () => {
     const csv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      `${RAW_HEADER}\n` +
       '서울시메트로9호선주식회사,9호선,,1,상행,지상,1,Y,N,N\n';
     expect(parseKrricCsv(csv, '9').size).toBe(0);
   });
 
   it('handles CRLF line endings', () => {
     const csv =
-      '"hdr","x","x","x","x","x","x"\r\n' +
+      `${RAW_HEADER}\r\n` +
       '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\r\n' +
       '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\r\n';
     expect(parseKrricCsv(csv, '9').get('9|개화')).toBe('surface');
   });
 
+  it('parses slim CSV (#1481, 4 col) — quoted header + values', () => {
+    const csv =
+      `${SLIM_HEADER}\n` +
+      '"9호선","개화","지상","1"\n' +
+      '"9호선","김포공항","지하","3"\n' +
+      '"9호선","김포공항","지하","4"\n';
+    const map = parseKrricCsv(csv, '9');
+    expect(map.get('9|개화')).toBe('surface');
+    expect(map.get('9|김포공항')).toBe('underground');
+  });
+
   it('parses gyeongui CSV with parenthesized names and dual underground rows (#1461)', () => {
     const csv =
-      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      `${RAW_HEADER}\n` +
       '코레일,경의중앙,공덕,1,상행,지하,2\n' +
       '코레일,경의중앙,공덕,2,하행,지하,2\n' +
       '코레일,경의중앙,양원(서울시북부병원),1,상행,지상,1\n' +
@@ -163,7 +197,7 @@ describe('parseKrricCsv', () => {
 
   it('parseLine9Csv alias forwards to parseKrricCsv with "9" key', () => {
     const csv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      `${RAW_HEADER}\n` +
       '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
       '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n';
     expect(parseLine9Csv(csv).get('9|개화')).toBe('surface');
@@ -171,7 +205,7 @@ describe('parseKrricCsv', () => {
 
   it('parseGyeonguiCsv alias forwards to parseKrricCsv with "gyeongui" key (#1461)', () => {
     const csv =
-      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      `${RAW_HEADER}\n` +
       '코레일,경의중앙,회기,1,상행,지상,1\n' +
       '코레일,경의중앙,회기,2,하행,지상,1\n';
     expect(parseGyeonguiCsv(csv).get('gyeongui|회기')).toBe('surface');
@@ -179,13 +213,15 @@ describe('parseKrricCsv', () => {
 });
 
 describe('buildKrricMap', () => {
+  const HEADER = '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무';
+
   it('merges multiple lineKey CSV texts into single map', () => {
     const csvLine1 =
-      '"hdr","x","x","x","x","x","x"\n' +
+      `${HEADER}\n` +
       '코레일,1호선,소요산,1,상행,지상,2,Y,N,N\n' +
       '코레일,1호선,소요산,2,하행,지상,2,Y,N,N\n';
     const csvBundang =
-      '"hdr","x","x","x","x","x","x"\n' +
+      `${HEADER}\n` +
       '코레일,수인분당,왕십리,1,상행,지상,1,Y,N,N\n' +
       '코레일,수인분당,왕십리,2,하행,지상,1,Y,N,N\n';
     const merged = buildKrricMap({ 1: csvLine1, bundang: csvBundang });
@@ -236,9 +272,11 @@ describe('diffSources', () => {
 });
 
 describe('parseKrricCsv (external operator CSVs #1469/#1461)', () => {
+  const HEADER = '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무';
+
   it('parses generic operator platform CSV with given lineKey (#1469)', () => {
     const csv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      `${HEADER}\n` +
       '코레일,수인분당,수내(한국잡월드),1,하행,지하,1,Y,Y,Y\n' +
       '코레일,수인분당,수내(한국잡월드),2,상행,지하,1,Y,Y,Y\n' +
       '코레일,수인분당,죽전(단국대),1,하행,지상,1,Y,Y,Y\n' +
@@ -250,7 +288,7 @@ describe('parseKrricCsv (external operator CSVs #1469/#1461)', () => {
 
   it('emits mixed when 상행/하행 differ for the same station', () => {
     const csv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      `${HEADER}\n` +
       '네오트랜스주식회사,신분당,섞임역,1,상행,지상,1,Y,N,N\n' +
       '네오트랜스주식회사,신분당,섞임역,2,하행,지하,2,Y,N,N\n';
     expect(parseKrricCsv(csv, 'sinbundang').get('sinbundang|섞임역')).toBe('mixed');
@@ -258,9 +296,9 @@ describe('parseKrricCsv (external operator CSVs #1469/#1461)', () => {
 
   it('normalizes parenthesized station names (#1461)', () => {
     const csv =
-      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
-      '코레일,경의중앙,양원(서울시북부병원),1,상행,지상,1\n' +
-      '코레일,경의중앙,양원(서울시북부병원),2,하행,지상,1\n';
+      `${HEADER}\n` +
+      '코레일,경의중앙,양원(서울시북부병원),1,상행,지상,1,Y,N,N\n' +
+      '코레일,경의중앙,양원(서울시북부병원),2,하행,지상,1,Y,N,N\n';
     const map = parseKrricCsv(csv, 'gyeongui');
     expect(map.has('gyeongui|양원')).toBe(true);
     expect(map.has('gyeongui|양원(서울시북부병원)')).toBe(false);
@@ -268,15 +306,16 @@ describe('parseKrricCsv (external operator CSVs #1469/#1461)', () => {
 
   it('skips rows with empty station name', () => {
     const csv =
-      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
-      '코레일,경의중앙,,1,상행,지상,1\n';
+      `${HEADER}\n` +
+      '코레일,경의중앙,,1,상행,지상,1,Y,N,N\n';
     expect(parseKrricCsv(csv, 'gyeongui').size).toBe(0);
   });
 });
 
 describe('build', () => {
+  // #1481 — header에서 `호선` / `역명` / `층수` 컬럼 lookup. slim(4 col) + 원본(7 col) 모두 지원.
   const csvText =
-    '"hdr","x","x","x","x","x","x"\n' +
+    '"호선","역명","형식","길이(M)","층수","면적","준공년도"\n' +
     '"2","왕십리(성동구청)","상대식","205","B2","9877","1983"\n' +
     '"2","한양대","상대식","205","2F","5974","1983"\n' +
     '"1","동묘앞","상대식","210","5FB2","9894.75","2005"\n';
@@ -349,13 +388,13 @@ describe('build', () => {
   it('applies KRRIC classification via krricCsvTexts (#1466)', () => {
     const krricCsvTexts = {
       9:
-        '"hdr","x","x","x","x","x","x"\n' +
+        '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
         '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
         '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n' +
         '서울시메트로9호선주식회사,9호선,김포공항,1,상행,지하,3,Y,Y,N\n' +
         '서울시메트로9호선주식회사,9호선,김포공항,2,하행,지하,4,Y,Y,N\n',
       bundang:
-        '"hdr","x","x","x","x","x","x"\n' +
+        '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
         '코레일,수인분당,서울숲,1,상행,지하,4,Y,Y,N\n' +
         '코레일,수인분당,서울숲,2,하행,지하,4,Y,Y,N\n',
     };
@@ -377,7 +416,7 @@ describe('build', () => {
   it('override wins over KRRIC when both match', () => {
     const krricCsvTexts = {
       2:
-        '"hdr","x","x","x","x","x","x"\n' +
+        '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
         '서울교통공사,2호선,한양대,1,상행,지하,1,Y,N,N\n' +
         '서울교통공사,2호선,한양대,2,하행,지하,1,Y,N,N\n',
     };
@@ -393,7 +432,7 @@ describe('build', () => {
     // seoul says 동묘앞 = mixed (2FB3 layout), KRRIC overrides with underground.
     const krricCsvTexts = {
       1:
-        '"hdr","x","x","x","x","x","x"\n' +
+        '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
         '서울교통공사,1호선,동묘앞,1,상행,지하,2,Y,N,N\n' +
         '서울교통공사,1호선,동묘앞,2,하행,지하,2,Y,N,N\n',
     };
@@ -410,7 +449,7 @@ describe('build', () => {
 
   it('legacy line9CsvText input is absorbed as krricCsvTexts["9"] (backward compat)', () => {
     const line9CsvText =
-      '"hdr","x","x","x","x","x","x"\n' +
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
       '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
       '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n';
     const stations = [{ id: '9-001', name: '개화', line: '9' }];
@@ -421,12 +460,12 @@ describe('build', () => {
 
   it('legacy line9CsvText is ignored when krricCsvTexts["9"] already set', () => {
     const line9CsvText =
-      '"hdr","x","x","x","x","x","x"\n' +
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
       '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
       '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n';
     const krricCsvTexts = {
       9:
-        '"hdr","x","x","x","x","x","x"\n' +
+        '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
         '서울시메트로9호선주식회사,9호선,개화,1,상행,지하,1,Y,Y,N\n' +
         '서울시메트로9호선주식회사,9호선,개화,2,하행,지하,1,Y,Y,N\n',
     };
@@ -481,7 +520,7 @@ describe('build', () => {
     // KRRIC가 underground라고 해도 역사심도 -1.7m(지상) override가 우선.
     const krricCsvTexts = {
       6:
-        '"hdr","x","x","x","x","x","x"\n' +
+        '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
         '서울교통공사,6호선,신내,1,상행,지하,1,Y,N,N\n' +
         '서울교통공사,6호선,신내,2,하행,지하,1,Y,N,N\n',
     };
@@ -495,7 +534,7 @@ describe('build', () => {
   it('KRRIC row with empty 지상구분 → station stays unknown (no krric source credit)', () => {
     const krricCsvTexts = {
       9:
-        '"hdr","x","x","x","x","x","x"\n' +
+        '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
         '서울시메트로9호선주식회사,9호선,개화,1,상행,?,1,Y,N,N\n',
     };
     const stations = [{ id: '9-001', name: '개화', line: '9' }];
@@ -514,7 +553,7 @@ describe('build', () => {
 
   it('treats CSV row whose floor is empty as unknown source', () => {
     const csv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
       '"2","빈층","상대식","205","","0","1983"\n';
     const stations = [{ id: '2-x', name: '빈층', line: '2' }];
     const { stations: out, stats } = build({ stations, csvText: csv });
@@ -562,15 +601,15 @@ describe('KRRIC_SOURCES', () => {
 });
 
 describe('build with external operator KRRIC CSVs (#1469 / #1461)', () => {
-  const csvText = '"hdr","x","x","x","x","x","x"\n';
+  const csvText = '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n';
 
   it('classifies external lines via krricCsvTexts entries', () => {
     const bundangCsv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
       '코레일,수인분당,수내,1,하행,지하,1,Y,Y,Y\n' +
       '코레일,수인분당,수내,2,상행,지하,1,Y,Y,Y\n';
     const airportCsv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
       '공항철도주식회사,공항,검암,1,하행,지상,2,Y,Y,Y\n' +
       '공항철도주식회사,공항,검암,2,상행,지상,2,Y,Y,Y\n';
     const stations = [
@@ -622,7 +661,7 @@ describe('build with external operator KRRIC CSVs (#1469 / #1461)', () => {
 
   it('override wins over external KRRIC CSV source', () => {
     const bundangCsv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
       '코레일,수인분당,왕십리,1,하행,지상,1,Y,Y,Y\n' +
       '코레일,수인분당,왕십리,2,상행,지상,1,Y,Y,Y\n';
     const stations = [{ id: 'bundang-052', name: '왕십리', line: 'bundang' }];
@@ -657,7 +696,7 @@ describe('build with external operator KRRIC CSVs (#1469 / #1461)', () => {
   it('krricCsvTexts unknown env keeps unknown source credit', () => {
     // platform CSV with unrecognized 지상구분 label → no entry → station stays unknown.
     const bundangCsv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
       '코레일,수인분당,개포동,1,하행,?,1,Y,Y,Y\n';
     const stations = [{ id: 'bundang-043', name: '개포동', line: 'bundang' }];
     const { stations: out, stats } = build({
@@ -732,15 +771,16 @@ describe('ENVIRONMENT_OVERRIDES', () => {
 });
 
 describe('main()', () => {
+  // #1481 — seoul-station-architecture는 (호선/역명/형식/길이/층수/면적/준공년도) 7 col header.
   const seoulCsvText =
-    '"hdr","x","x","x","x","x","x"\n' +
+    '"호선","역명","형식","길이(M)","층수","면적","준공년도"\n' +
     '"2","한양대","상대식","205","2F","5974","1983"\n';
   const stationsJson = JSON.stringify([
     { id: '2-009', name: '한양대', line: '2' },
     { id: '9-001', name: '개화', line: '9' },
   ]);
   const krricLine9Csv =
-    '"hdr","x","x","x","x","x","x"\n' +
+    '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
     '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
     '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n';
 
@@ -857,7 +897,7 @@ describe('main()', () => {
   it('classifies external-line stations via krricSources in main() (#1469)', () => {
     // 외부 노선(수인분당) fixture가 KRRIC_SOURCES 테이블을 통해 main에서 분류된다.
     const bundangCsv =
-      '"hdr","x","x","x","x","x","x"\n' +
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층,승강장연결 여부,스크린도어 유무,안전발판 유무\n' +
       '코레일,수인분당,수내,1,하행,지하,1,Y,Y,Y\n' +
       '코레일,수인분당,수내,2,상행,지하,1,Y,Y,Y\n';
     const d = deps({
@@ -908,8 +948,9 @@ describe('main()', () => {
 
   it('prints cross-check diffs when KRRIC disagrees with seoul', () => {
     // KRRIC: 개화 = surface (지상), seoul: 개화 = underground (B2) → diff.
+    // seoul-station-architecture header (호선/역명/형식/길이/층수/면적/준공년도).
     const seoulMismatch =
-      '"hdr","x","x","x","x","x","x"\n' +
+      '"호선","역명","형식","길이(M)","층수","면적","준공년도"\n' +
       '"9","개화","상대식","205","B2","100","2009"\n';
     const d = deps({
       readFile: (p) => {
