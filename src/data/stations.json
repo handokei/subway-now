@@ -4530,7 +4530,7 @@
     "lng": 126.969769,
     "nameEn": "Seoul Station",
     "nameJa": "ソウル",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "airport-002",
@@ -4542,7 +4542,7 @@
     "nameEn": "Gongdeok",
     "nameJa": "コンドク",
     "nameHanja": "孔德",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "airport-003",
@@ -4554,7 +4554,7 @@
     "nameEn": "Hongik Univ.",
     "nameJa": "ホンデイック",
     "nameHanja": "弘大入口",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "airport-004",
@@ -4565,7 +4565,7 @@
     "lng": 126.898609,
     "nameEn": "Digital Media City",
     "nameJa": "デジタルメディアシティ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "airport-005",
@@ -4576,7 +4576,7 @@
     "lng": 126.827378,
     "nameEn": "Magongnaru",
     "nameJa": "マゴンナル",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "airport-006",
@@ -4588,7 +4588,7 @@
     "nameEn": "Gimpo Intl. Airport",
     "nameJa": "キンポゴンハン",
     "nameHanja": "金浦空港",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "airport-007",
@@ -4599,7 +4599,7 @@
     "lng": 126.7363,
     "nameEn": "Gyeyang",
     "nameJa": "ケヤン",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "airport-008",
@@ -4610,7 +4610,7 @@
     "lng": 126.674007,
     "nameEn": "Geomam",
     "nameJa": "コマム",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "airport-009",
@@ -4621,7 +4621,7 @@
     "lng": 126.624648,
     "nameEn": "Cheongna Int’l City Station",
     "nameJa": "チョンナグクチェドシ",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "airport-010",
@@ -4632,7 +4632,7 @@
     "lng": 126.49379,
     "nameEn": "Unseo",
     "nameJa": "ウンソ",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "airport-011",
@@ -4643,7 +4643,7 @@
     "lng": 126.477516,
     "nameEn": "Incheon Intl. Airport Cargo Terminal",
     "nameJa": "コンハンファムルチョンサ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "airport-012",
@@ -4654,7 +4654,7 @@
     "lng": 126.452508,
     "nameEn": "Incheon Int’l Airport Terminal 1",
     "nameJa": "仁川空港第1ターミナル",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "airport-013",
@@ -4665,7 +4665,7 @@
     "lng": 126.441442,
     "nameEn": "Incheon Int’l Airport Terminal 2",
     "nameJa": "仁川空港第2ターミナル",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "gyeongui-001",
@@ -5312,7 +5312,7 @@
     "lng": 126.617326,
     "nameEn": "Incheon",
     "nameJa": "インチョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-002",
@@ -5323,7 +5323,7 @@
     "lng": 126.623853,
     "nameEn": "Sinpo",
     "nameJa": "シンポ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-003",
@@ -5334,7 +5334,7 @@
     "lng": 126.638297,
     "nameEn": "Sungui",
     "nameJa": "スンイ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-004",
@@ -5345,7 +5345,7 @@
     "lng": 126.649619,
     "nameEn": "Inha Univ.",
     "nameJa": "インハデ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-005",
@@ -5356,7 +5356,7 @@
     "lng": 126.657772,
     "nameEn": "Songdo",
     "nameJa": "ソンド",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-006",
@@ -5367,7 +5367,7 @@
     "lng": 126.67894,
     "nameEn": "Yeonsu",
     "nameJa": "ヨンス",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-007",
@@ -5378,7 +5378,7 @@
     "lng": 126.686648,
     "nameEn": "Woninjae",
     "nameJa": "ウォニンジェ",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-008",
@@ -5389,7 +5389,7 @@
     "lng": 126.695216,
     "nameEn": "Namdong Induspark",
     "nameJa": "ナムドンインドスパーク",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-009",
@@ -5400,7 +5400,7 @@
     "lng": 126.708627,
     "nameEn": "Hogupo",
     "nameJa": "ホグポ",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-010",
@@ -5411,7 +5411,7 @@
     "lng": 126.722478,
     "nameEn": "Incheon Nonhyeon",
     "nameJa": "インチョンノンヒョン",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-011",
@@ -5422,7 +5422,7 @@
     "lng": 126.733522,
     "nameEn": "Soraepogu",
     "nameJa": "ソレポグ",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-012",
@@ -5433,7 +5433,7 @@
     "lng": 126.742699,
     "nameEn": "Wolgot",
     "nameJa": "ウォルゴッ",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-013",
@@ -5444,7 +5444,7 @@
     "lng": 126.745177,
     "nameEn": "Dalwol",
     "nameJa": "タロル",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-014",
@@ -5455,7 +5455,7 @@
     "lng": 126.85685,
     "nameEn": "Sari",
     "nameJa": "サリ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-015",
@@ -5466,7 +5466,7 @@
     "lng": 126.879483,
     "nameEn": "Yamok",
     "nameJa": "ヤモク",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-016",
@@ -5477,7 +5477,7 @@
     "lng": 126.90879,
     "nameEn": "Eocheon",
     "nameJa": "オチョン",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-017",
@@ -5488,7 +5488,7 @@
     "lng": 126.963676,
     "nameEn": "Omokcheon",
     "nameJa": "オモックチョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-018",
@@ -5499,7 +5499,7 @@
     "lng": 126.980248,
     "nameEn": "Gosaek",
     "nameJa": "ゴセク",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-019",
@@ -5510,7 +5510,7 @@
     "lng": 126.999422,
     "nameEn": "Suwon",
     "nameJa": "スウォン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-020",
@@ -5521,7 +5521,7 @@
     "lng": 127.015678,
     "nameEn": "Maegyo",
     "nameJa": "メギョ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-021",
@@ -5532,7 +5532,7 @@
     "lng": 127.030736,
     "nameEn": "Suwon City Hall",
     "nameJa": "スウォンシチョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-022",
@@ -5543,7 +5543,7 @@
     "lng": 127.040566,
     "nameEn": "MaetanGwonseon",
     "nameJa": "メタン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-023",
@@ -5554,7 +5554,7 @@
     "lng": 127.057353,
     "nameEn": "Mangpo",
     "nameJa": "マンポ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-024",
@@ -5565,7 +5565,7 @@
     "lng": 127.071394,
     "nameEn": "Yeongtong",
     "nameJa": "ヨントン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-025",
@@ -5576,7 +5576,7 @@
     "lng": 127.078934,
     "nameEn": "Cheongmyeong",
     "nameJa": "チョンミョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-026",
@@ -5587,7 +5587,7 @@
     "lng": 127.108847,
     "nameEn": "Sanggal",
     "nameJa": "サンガル",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-027",
@@ -5598,7 +5598,7 @@
     "lng": 127.11591,
     "nameEn": "Giheung",
     "nameJa": "キフン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-028",
@@ -5609,7 +5609,7 @@
     "lng": 127.111313,
     "nameEn": "Singal",
     "nameJa": "シンガル",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-029",
@@ -5620,7 +5620,7 @@
     "lng": 127.105664,
     "nameEn": "Guseong",
     "nameJa": "クソン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-030",
@@ -5631,7 +5631,7 @@
     "lng": 127.108196,
     "nameEn": "Bojeong",
     "nameJa": "ポジョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-031",
@@ -5642,7 +5642,7 @@
     "lng": 127.107395,
     "nameEn": "Jukjeon",
     "nameJa": "チュクチョン",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-032",
@@ -5653,7 +5653,7 @@
     "lng": 127.108942,
     "nameEn": "Ori",
     "nameJa": "オリ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-033",
@@ -5664,7 +5664,7 @@
     "lng": 127.10891,
     "nameEn": "Migeum",
     "nameJa": "ミグム",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-034",
@@ -5675,7 +5675,7 @@
     "lng": 127.10807,
     "nameEn": "Jeongja",
     "nameJa": "チョンジャ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-035",
@@ -5686,7 +5686,7 @@
     "lng": 127.114322,
     "nameEn": "Sunae",
     "nameJa": "スネ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-036",
@@ -5697,7 +5697,7 @@
     "lng": 127.123592,
     "nameEn": "Seohyeon",
     "nameJa": "ソヒョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-037",
@@ -5708,7 +5708,7 @@
     "lng": 127.128248,
     "nameEn": "Imae",
     "nameJa": "イメ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-038",
@@ -5719,7 +5719,7 @@
     "lng": 127.128715,
     "nameEn": "Yatap",
     "nameJa": "ヤタプ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-039",
@@ -5731,7 +5731,7 @@
     "nameEn": "Moran",
     "nameJa": "モラン",
     "nameHanja": "牡丹",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-040",
@@ -5742,7 +5742,7 @@
     "lng": 127.127709,
     "nameEn": "Taepyeong",
     "nameJa": "テピョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-041",
@@ -5753,7 +5753,7 @@
     "lng": 127.126697,
     "nameEn": "Gachon Univ.",
     "nameJa": "カチョンデ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-042",
@@ -5765,7 +5765,7 @@
     "nameEn": "Suseo",
     "nameJa": "スソ",
     "nameHanja": "水西",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-043",
@@ -5776,7 +5776,7 @@
     "lng": 127.07272,
     "nameEn": "Daemosan",
     "nameJa": "テモサンイック",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-044",
@@ -5787,7 +5787,7 @@
     "lng": 127.06614,
     "nameEn": "Gaepo-dong",
     "nameJa": "ケポドン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-045",
@@ -5798,7 +5798,7 @@
     "lng": 127.058856,
     "nameEn": "Guryong",
     "nameJa": "クリョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-046",
@@ -5810,7 +5810,7 @@
     "nameEn": "Dogok",
     "nameJa": "トゴク",
     "nameHanja": "道谷",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-047",
@@ -5821,7 +5821,7 @@
     "lng": 127.052873,
     "nameEn": "Hanti",
     "nameJa": "ハンティ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-048",
@@ -5833,7 +5833,7 @@
     "nameEn": "Seolleung",
     "nameJa": "ソンルン",
     "nameHanja": "宣陵",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-049",
@@ -5845,7 +5845,7 @@
     "nameEn": "Seonjeongneung",
     "nameJa": "ソンジョンヌン",
     "nameHanja": "宣靖陵",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-050",
@@ -5857,7 +5857,7 @@
     "nameEn": "Gangnam-gu Office",
     "nameJa": "カンナムグチョン",
     "nameHanja": "江南區廳",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-051",
@@ -5868,7 +5868,7 @@
     "lng": 127.040534,
     "nameEn": "Apgujeong rodeo",
     "nameJa": "アックジョンロデオ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-052",
@@ -5879,7 +5879,7 @@
     "lng": 127.044707,
     "nameEn": "Seoul-forest",
     "nameJa": "ソウルスプ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "bundang-053",
@@ -5901,7 +5901,7 @@
     "lng": 127.0483,
     "nameEn": "Cheongnyangni",
     "nameJa": "チョンニャンニ",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "bundang-041a",
@@ -5913,7 +5913,7 @@
     "nameEn": "Bokjeong",
     "nameJa": "ポクチョン",
     "nameHanja": "福井",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-001",
@@ -5924,7 +5924,7 @@
     "lng": 127.044483,
     "nameEn": "Gwanggyo",
     "nameJa": "クァンギョ",
-    "environment": "unknown"
+    "environment": "surface"
   },
   {
     "id": "sinbundang-002",
@@ -5935,7 +5935,7 @@
     "lng": 127.051478,
     "nameEn": "GwanggyoJungang",
     "nameJa": "クァンギョジュンアン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-003",
@@ -5946,7 +5946,7 @@
     "lng": 127.069342,
     "nameEn": "Sanghyeon",
     "nameJa": "サンヒョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-004",
@@ -5957,7 +5957,7 @@
     "lng": 127.0801,
     "nameEn": "Seongbok",
     "nameJa": "ソンボク",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-005",
@@ -5968,7 +5968,7 @@
     "lng": 127.095026,
     "nameEn": "Suji-gu office",
     "nameJa": "スヅグチョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-006",
@@ -5979,7 +5979,7 @@
     "lng": 127.102976,
     "nameEn": "Dongcheon",
     "nameJa": "トンチョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-007",
@@ -5990,7 +5990,7 @@
     "lng": 127.108918,
     "nameEn": "Migeum",
     "nameJa": "ミグム",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-008",
@@ -6001,7 +6001,7 @@
     "lng": 127.108403,
     "nameEn": "Jeongja",
     "nameJa": "チョンジャ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-009",
@@ -6012,7 +6012,7 @@
     "lng": 127.112217,
     "nameEn": "Pangyo",
     "nameJa": "パンギョ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-010",
@@ -6023,7 +6023,7 @@
     "lng": 127.055664,
     "nameEn": "Cheonggyesan",
     "nameJa": "チョンゲサンイック",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-011",
@@ -6034,7 +6034,7 @@
     "lng": 127.03842,
     "nameEn": "Yangjae Citizen's Forest",
     "nameJa": "ヤンジェ·シミネスプ",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-012",
@@ -6046,7 +6046,7 @@
     "nameEn": "Yangjae",
     "nameJa": "ヤンジェ",
     "nameHanja": "良才(瑞草區廳)",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-013",
@@ -6058,7 +6058,7 @@
     "nameEn": "Gangnam",
     "nameJa": "カンナム",
     "nameHanja": "江南",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-014",
@@ -6069,7 +6069,7 @@
     "lng": 127.02506,
     "nameEn": "Sinnonhyeon",
     "nameJa": "シンノンヒョン",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-015",
@@ -6081,7 +6081,7 @@
     "nameEn": "Nonhyeon",
     "nameJa": "ノンヒョン",
     "nameHanja": "論峴",
-    "environment": "unknown"
+    "environment": "underground"
   },
   {
     "id": "sinbundang-016",
@@ -6093,6 +6093,6 @@
     "nameEn": "Sinsa",
     "nameJa": "シンサ",
     "nameHanja": "新沙",
-    "environment": "unknown"
+    "environment": "underground"
   }
 ]

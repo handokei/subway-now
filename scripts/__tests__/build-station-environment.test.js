@@ -10,8 +10,10 @@ const {
   parseCsv,
   parseCsvRow,
   parseLine9Csv,
+  parseOperatorPlatformCsv,
   build,
   ENVIRONMENT_OVERRIDES,
+  EXTERNAL_LINE_CSV_KEYS,
   VALID_ENVIRONMENTS,
   main,
 } = require('../build-station-environment');
@@ -277,6 +279,115 @@ describe('build', () => {
   });
 });
 
+describe('parseOperatorPlatformCsv', () => {
+  it('parses generic operator platform CSV with given lineKey (#1469)', () => {
+    const csv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,수내(한국잡월드),1,하행,지하,1,Y,Y,Y\n' +
+      '코레일,수인분당,수내(한국잡월드),2,상행,지하,1,Y,Y,Y\n' +
+      '코레일,수인분당,죽전(단국대),1,하행,지상,1,Y,Y,Y\n' +
+      '코레일,수인분당,죽전(단국대),2,상행,지상,1,Y,Y,Y\n';
+    const map = parseOperatorPlatformCsv(csv, 'bundang');
+    expect(map.get('bundang|수내')).toBe('underground');
+    expect(map.get('bundang|죽전')).toBe('surface');
+  });
+
+  it('emits mixed when 상행/하행 differ for the same station', () => {
+    const csv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '네오트랜스주식회사,신분당,섞임역,1,상행,지상,1,Y,N,N\n' +
+      '네오트랜스주식회사,신분당,섞임역,2,하행,지하,2,Y,N,N\n';
+    expect(parseOperatorPlatformCsv(csv, 'sinbundang').get('sinbundang|섞임역')).toBe('mixed');
+  });
+});
+
+describe('build with externalCsvs (#1469)', () => {
+  const csvText = '"hdr","x","x","x","x","x","x"\n';
+
+  it('classifies external lines via externalCsvs entries', () => {
+    const bundangCsv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,수내,1,하행,지하,1,Y,Y,Y\n' +
+      '코레일,수인분당,수내,2,상행,지하,1,Y,Y,Y\n';
+    const airportCsv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '공항철도주식회사,공항,검암,1,하행,지상,2,Y,Y,Y\n' +
+      '공항철도주식회사,공항,검암,2,상행,지상,2,Y,Y,Y\n';
+    const stations = [
+      { id: 'bundang-034', name: '수내', line: 'bundang' },
+      { id: 'airport-005', name: '검암', line: 'airport' },
+    ];
+    const { stations: out, stats } = build({
+      stations,
+      csvText,
+      externalCsvs: [
+        { lineKey: 'bundang', csvText: bundangCsv, source: 'bundang' },
+        { lineKey: 'airport', csvText: airportCsv, source: 'airport' },
+      ],
+    });
+    expect(out[0].environment).toBe('underground');
+    expect(out[1].environment).toBe('surface');
+    expect(stats.bySource.bundang).toBe(1);
+    expect(stats.bySource.airport).toBe(1);
+    expect(stats.bySource.unknown).toBe(0);
+  });
+
+  it('override wins over externalCsvs source', () => {
+    const bundangCsv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,왕십리,1,하행,지상,1,Y,Y,Y\n' +
+      '코레일,수인분당,왕십리,2,상행,지상,1,Y,Y,Y\n';
+    const stations = [{ id: 'bundang-052', name: '왕십리', line: 'bundang' }];
+    const { stations: out, stats } = build({
+      stations,
+      csvText,
+      externalCsvs: [{ lineKey: 'bundang', csvText: bundangCsv, source: 'bundang' }],
+    });
+    // override says underground; CSV says surface — override must win.
+    expect(out[0].environment).toBe(ENVIRONMENT_OVERRIDES['bundang|왕십리']);
+    expect(out[0].environment).toBe('underground');
+    expect(stats.bySource.override).toBe(1);
+    expect(stats.bySource.bundang ?? 0).toBe(0);
+  });
+
+  it('externalCsvs unknown env keeps unknown source credit', () => {
+    // platform CSV with unrecognized 지상구분 label → no entry → station stays unknown.
+    const bundangCsv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,개포동,1,하행,?,1,Y,Y,Y\n';
+    const stations = [{ id: 'bundang-043', name: '개포동', line: 'bundang' }];
+    const { stations: out, stats } = build({
+      stations,
+      csvText,
+      externalCsvs: [{ lineKey: 'bundang', csvText: bundangCsv, source: 'bundang' }],
+    });
+    expect(out[0].environment).toBe('unknown');
+    expect(stats.bySource.unknown).toBe(1);
+    expect(stats.bySource.bundang ?? 0).toBe(0);
+  });
+
+  it('omitting externalCsvs leaves external-line stations unknown (backward compat)', () => {
+    const stations = [{ id: 'sinbundang-001', name: '강남', line: 'sinbundang' }];
+    const { stations: out, stats } = build({ stations, csvText });
+    expect(out[0].environment).toBe('unknown');
+    expect(stats.bySource.unknown).toBe(1);
+  });
+});
+
+describe('EXTERNAL_LINE_CSV_KEYS', () => {
+  it('exposes bundang/sinbundang/airport keys matching stations.json line values', () => {
+    expect(EXTERNAL_LINE_CSV_KEYS).toEqual({
+      BUNDANG: 'bundang',
+      SINBUNDANG: 'sinbundang',
+      AIRPORT: 'airport',
+    });
+  });
+
+  it('is frozen', () => {
+    expect(Object.isFrozen(EXTERNAL_LINE_CSV_KEYS)).toBe(true);
+  });
+});
+
 describe('VALID_ENVIRONMENTS', () => {
   it('exposes the four enum values', () => {
     const cmp = (a, b) => a.localeCompare(b);
@@ -411,6 +522,40 @@ describe('main()', () => {
     const code = main([], d);
     expect(code).toBe(1);
     expect(d._captured.errs.some((s) => /9호선 CSV 읽기 실패.*no-line9/.test(s))).toBe(true);
+  });
+
+  it('returns 1 when external-line CSV read fails (#1469)', () => {
+    const d = deps({
+      readFile: (p) => {
+        if (p.includes('bundang')) throw new Error('no-bundang');
+        if (p.endsWith('.csv')) return csvText;
+        return stationsJson;
+      },
+    });
+    const code = main([], d);
+    expect(code).toBe(1);
+    expect(d._captured.errs.some((s) => /외부 노선 CSV 읽기 실패.*no-bundang/.test(s))).toBe(
+      true,
+    );
+  });
+
+  it('classifies external-line stations via externalCsvs in main() (#1469)', () => {
+    const bundangCsv =
+      '"hdr","x","x","x","x","x","x"\n' +
+      '코레일,수인분당,수내,1,하행,지하,1,Y,Y,Y\n' +
+      '코레일,수인분당,수내,2,상행,지하,1,Y,Y,Y\n';
+    const d = deps({
+      readFile: (p) => {
+        if (p.includes('bundang')) return bundangCsv;
+        if (p.endsWith('.csv')) return csvText;
+        return JSON.stringify([{ id: 'bundang-034', name: '수내', line: 'bundang' }]);
+      },
+    });
+    const code = main([], d);
+    expect(code).toBe(0);
+    const written = JSON.parse(d._captured.writes[0].c);
+    expect(written[0].environment).toBe('underground');
+    expect(d._captured.outs.some((s) => /source.*bundang=1/.test(s))).toBe(true);
   });
 
   it('classifies 9호선 stations via line9 CSV in main()', () => {
