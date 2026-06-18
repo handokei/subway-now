@@ -111,6 +111,17 @@ describe('buildLineIdxMap', () => {
   });
 });
 
+function emptyStats() {
+  return {
+    added: 0,
+    preserved: 0,
+    unmatchedNames: [],
+    nonAdjacent: [],
+    skippedLines: new Set(),
+    missingCsvs: [],
+  };
+}
+
 describe('ingestCsv', () => {
   const stations = [
     { id: 'sinbundang-001', name: '신사', line: 'sinbundang' },
@@ -122,17 +133,6 @@ describe('ingestCsv', () => {
     encoding: 'cp949',
     lineMap: { 신분당: 'sinbundang' },
   };
-
-  function emptyStats() {
-    return {
-      added: 0,
-      preserved: 0,
-      unmatchedNames: [],
-      nonAdjacent: [],
-      skippedLines: new Set(),
-      missingCsvs: [],
-    };
-  }
 
   it('인접 hop 양방향 미터로 저장', () => {
     const csv =

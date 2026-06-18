@@ -168,6 +168,70 @@ function lookupStationId(byLine, line, rawName) {
   return idx.get(rawName) || idx.get(normalized) || null;
 }
 
+// CSV 행들을 stationsLine 키로 grouping — 같은 노선 내 연속 row만 인접 hop으로 본다.
+function groupRowsByStationsLine(rows, csvSpec) {
+  const grouped = new Map();
+  for (const row of rows) {
+    const csvLine = pickField(row, LINE_KEYS);
+    if (!csvLine) continue;
+    const stationsLine = csvSpec.lineMap[csvLine];
+    if (!stationsLine) continue;
+    let arr = grouped.get(stationsLine);
+    if (!arr) {
+      arr = [];
+      grouped.set(stationsLine, arr);
+    }
+    arr.push(row);
+  }
+  return grouped;
+}
+
+// 두 역이 lineIdxMap 기준 인접한지 (|idx 차| === 1).
+function isAdjacentHop(idxMap, prevId, stationId) {
+  const prevIdx = idxMap.get(prevId);
+  const curIdx = idxMap.get(stationId);
+  return prevIdx !== undefined && curIdx !== undefined && Math.abs(prevIdx - curIdx) === 1;
+}
+
+// 하나의 hop을 distances에 머지. 신규는 양방향 저장, 기존은 보존.
+function recordHop(distances, stats, stationsLine, prevId, stationId, km) {
+  const meters = Math.round(km * 1000);
+  const fwd = `${stationsLine}|${prevId}|${stationId}`;
+  const rev = `${stationsLine}|${stationId}|${prevId}`;
+  if (distances[fwd] === undefined) {
+    distances[fwd] = meters;
+    distances[rev] = meters;
+    stats.added++;
+  } else {
+    stats.preserved++;
+  }
+}
+
+// 한 노선 분의 row들을 순회하며 인접 hop을 distances에 머지.
+function mergeLineHops(stationsLine, lineRows, byLine, idxMap, distances, stats) {
+  let prevId = null;
+  for (const row of lineRows) {
+    const rawName = pickField(row, NAME_KEYS);
+    if (!rawName) {
+      prevId = null;
+      continue;
+    }
+    const stationId = lookupStationId(byLine, stationsLine, rawName);
+    const km = parseDistKm(pickField(row, DIST_KEYS));
+
+    if (prevId !== null && stationId !== null && km !== null) {
+      if (isAdjacentHop(idxMap, prevId, stationId)) {
+        recordHop(distances, stats, stationsLine, prevId, stationId, km);
+      } else {
+        stats.nonAdjacent.push(`${stationsLine} ${prevId}↔${stationId} (raw="${rawName}")`);
+      }
+    } else if (prevId !== null && stationId === null) {
+      stats.unmatchedNames.push(`${stationsLine}:${rawName}`);
+    }
+    prevId = stationId;
+  }
+}
+
 /**
  * 하나의 CSV에서 (선명→stationsLine 매핑된) 인접 hop 거리를 추출해 distances에 머지한다.
  *
@@ -179,21 +243,7 @@ function ingestCsv(csvSpec, rawBuf, stations, distances, stats) {
   const { rows } = parseCsv(text);
   const byLine = buildNameIndex(stations);
   const lineIdxMap = buildLineIdxMap(stations);
-
-  // CSV 안 선명별로 grouping — 같은 노선 내 연속 row만 인접 hop.
-  const groupedByCsvLine = new Map();
-  for (const row of rows) {
-    const csvLine = pickField(row, LINE_KEYS);
-    if (!csvLine) continue;
-    const stationsLine = csvSpec.lineMap[csvLine];
-    if (!stationsLine) continue;
-    let arr = groupedByCsvLine.get(stationsLine);
-    if (!arr) {
-      arr = [];
-      groupedByCsvLine.set(stationsLine, arr);
-    }
-    arr.push(row);
-  }
+  const groupedByCsvLine = groupRowsByStationsLine(rows, csvSpec);
 
   for (const [stationsLine, lineRows] of groupedByCsvLine) {
     const idxMap = lineIdxMap.get(stationsLine);
@@ -201,40 +251,7 @@ function ingestCsv(csvSpec, rawBuf, stations, distances, stats) {
       stats.skippedLines.add(`${csvSpec.filename}:${stationsLine}`);
       continue;
     }
-    let prevId = null;
-    for (const row of lineRows) {
-      const rawName = pickField(row, NAME_KEYS);
-      if (!rawName) {
-        prevId = null;
-        continue;
-      }
-      const stationId = lookupStationId(byLine, stationsLine, rawName);
-      const km = parseDistKm(pickField(row, DIST_KEYS));
-
-      if (prevId !== null && stationId !== null && km !== null) {
-        const prevIdx = idxMap.get(prevId);
-        const curIdx = idxMap.get(stationId);
-        const isAdjacent =
-          prevIdx !== undefined && curIdx !== undefined && Math.abs(prevIdx - curIdx) === 1;
-        if (isAdjacent) {
-          const meters = Math.round(km * 1000);
-          const fwd = `${stationsLine}|${prevId}|${stationId}`;
-          const rev = `${stationsLine}|${stationId}|${prevId}`;
-          if (distances[fwd] === undefined) {
-            distances[fwd] = meters;
-            distances[rev] = meters;
-            stats.added++;
-          } else {
-            stats.preserved++;
-          }
-        } else {
-          stats.nonAdjacent.push(`${stationsLine} ${prevId}↔${stationId} (raw="${rawName}")`);
-        }
-      } else if (prevId !== null && stationId === null) {
-        stats.unmatchedNames.push(`${stationsLine}:${rawName}`);
-      }
-      prevId = stationId;
-    }
+    mergeLineHops(stationsLine, lineRows, byLine, idxMap, distances, stats);
   }
 }
 
