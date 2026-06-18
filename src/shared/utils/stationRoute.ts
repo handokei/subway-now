@@ -137,6 +137,32 @@ export interface MultiTransferRoute {
 
 export type Route = DirectRoute | TransferRoute | MultiTransferRoute | null;
 
+/**
+ * #1436 / #1449 — trip route에 포함된 노선 집합.
+ * fusion 후보 단계(#1436)와 BoardingLock 채택 단계(#1449, ADR-015 §9 frontend)에서
+ * trip route 외 노선을 차단하는 SSOT.
+ * route 형태별로 leg의 line을 모두 모은다. trip 비활성/route null이면 undefined —
+ * 호출자는 undefined를 "필터 미적용"으로 해석한다.
+ */
+export function allowedLinesFromRoute(
+  route: Route | null | undefined,
+): Set<LineNumber> | undefined {
+  if (!route) return undefined;
+  const lines = new Set<LineNumber>();
+  if (route.type === 'direct') {
+    lines.add(route.line);
+  } else if (route.type === 'transfer') {
+    lines.add(route.fromLine);
+    lines.add(route.toLine);
+  } else {
+    for (const t of route.transfers) {
+      lines.add(t.fromLine);
+      lines.add(t.toLine);
+    }
+  }
+  return lines;
+}
+
 export type RoutePreference = 'optimal' | 'minTransfer';
 
 export interface RouteCandidate {

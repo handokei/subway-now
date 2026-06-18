@@ -8,7 +8,10 @@ import { useBoardingLockStore } from '../../store/useBoardingLockStore';
 import type { ArrivalInfo, StationArrival } from '../../../../shared/types/arrival';
 import type { Station } from '../../../../shared/types/station';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
-import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
+import {
+  makeDirectRoute,
+  makeTransferRoute,
+} from '../../../../testUtils/routeFixtures';
 
 const mockGetBoardingLock = jest.fn();
 const mockSetBoardingLock = jest.fn();
@@ -260,8 +263,18 @@ describe('useBoardingLockController', () => {
     });
 
     it('boardingLine은 train.line을 사용한다 (currentStation.line이 fusion 잘못 잠금 상태여도 lock은 정확) — #663', async () => {
-      // currentStation.line='2'(fusion이 옆 노선으로 잘못 잠긴 상태), train.line='7'(사용자가 탭한 실제 열차)
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      // currentStation.line='2'(fusion이 옆 노선으로 잘못 잠긴 상태), train.line='7'(사용자가 탭한 실제 열차).
+      // #1449 filter 회피: trip route를 2↔7 환승으로 두어 line 7이 allowedLines에 포함되게 한다.
+      const transferRoute2to7 = makeTransferRoute({
+        transferName: '강남구청',
+        fromLine: '2',
+        toLine: '7',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, route: transferRoute2to7 }),
+      );
       await act(async () => {
         result.current.createLockFromTrain(makeTrain({ trainCode: 'T-7', line: '7' }));
       });
@@ -280,7 +293,16 @@ describe('useBoardingLockController', () => {
         lat: 37.5,
         lng: 127.0,
       });
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      const transferRoute2to7 = makeTransferRoute({
+        transferName: '강남구청',
+        fromLine: '2',
+        toLine: '7',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, route: transferRoute2to7 }),
+      );
       await act(async () => {
         result.current.createLockFromTrain(makeTrain({ trainCode: 'T-7', line: '7' }));
       });
@@ -292,13 +314,84 @@ describe('useBoardingLockController', () => {
 
     it('정정 lookup 실패 시 currentStation.id로 폴백 (#707) — stations.json에 매칭 없는 가상 케이스도 안전', async () => {
       mockFindStationByNameAndLine.mockReturnValue(null);
-      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      const transferRoute2to7 = makeTransferRoute({
+        transferName: '강남구청',
+        fromLine: '2',
+        toLine: '7',
+        stopsToTransfer: 2,
+        stopsFromTransfer: 3,
+      });
+      const { result } = renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, route: transferRoute2to7 }),
+      );
       await act(async () => {
         result.current.createLockFromTrain(makeTrain({ trainCode: 'T-X', line: '7' }));
       });
       expect(mockSetBoardingLock).toHaveBeenCalledWith(
         expect.objectContaining({ boardingStationId: 'stn-A' }),
       );
+    });
+
+    // #1449 (ADR-015 §9 frontend) — trip route allowedLines 외 line traincode reject.
+    describe('#1449 trip route line filter', () => {
+      it('direct route(line 2) 일 때 trip 외 line(7) train 탭 → no-op (lock 채택 차단)', async () => {
+        // defaultInputs.route = makeDirectRoute(_, '2'). train.line='7'은 trip 외.
+        const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'T-7', line: '7' }));
+        });
+        expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      });
+
+      it('transfer route(2↔5, 왕십리) 다중 line 환승역에서 양쪽 line 모두 허용', async () => {
+        const transferRoute = makeTransferRoute({
+          transferName: '왕십리',
+          fromLine: '2',
+          toLine: '5',
+          stopsToTransfer: 3,
+          stopsFromTransfer: 4,
+        });
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...defaultInputs, route: transferRoute }),
+        );
+        // line 5 (toLine) train 탭 → 허용
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'T-5', line: '5' }));
+        });
+        expect(mockSetBoardingLock).toHaveBeenCalledWith(
+          expect.objectContaining({ trainCode: 'T-5', boardingLine: '5' }),
+        );
+      });
+
+      it('transfer route에서 양쪽 line 외 line(7) train 탭 → no-op', async () => {
+        const transferRoute = makeTransferRoute({
+          transferName: '왕십리',
+          fromLine: '2',
+          toLine: '5',
+          stopsToTransfer: 3,
+          stopsFromTransfer: 4,
+        });
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...defaultInputs, route: transferRoute }),
+        );
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'T-7', line: '7' }));
+        });
+        expect(mockSetBoardingLock).not.toHaveBeenCalled();
+      });
+
+      it('trip 비활성(route=null) → filter 미적용 (free-trip 등 기존 UX 유지)', async () => {
+        // route=null이면 allowedLines=undefined → filter skip. 어떤 line이든 lock 생성.
+        const { result } = renderHook(() =>
+          useBoardingLockController({ ...defaultInputs, route: null }),
+        );
+        await act(async () => {
+          result.current.createLockFromTrain(makeTrain({ trainCode: 'T-9', line: '9' }));
+        });
+        expect(mockSetBoardingLock).toHaveBeenCalledWith(
+          expect.objectContaining({ trainCode: 'T-9', boardingLine: '9' }),
+        );
+      });
     });
   });
 
@@ -627,6 +720,99 @@ describe('useBoardingLockController', () => {
             });
           });
           expect(mockSetBoardingLock).not.toHaveBeenCalled();
+        });
+      });
+
+      // #1449 (ADR-015 §9 frontend) — trip route allowedLines 외 candidate.line reject.
+      // backend autoLock(#916) 9-AND gate는 device-side trip context를 모르므로 device가 한 번 더 검증.
+      describe('#1449 trip route line filter', () => {
+        it('direct route(line 2) 일 때 candidate.line=7 → no-op (trip 외 line autoLock 차단)', async () => {
+          // defaultInputs.route = makeDirectRoute(_, '2'). candidate.line='7'은 trip 외.
+          // arrival에 AUTO-7이 있어 Gate 1은 통과해도 line filter에서 차단됨.
+          const arrivalLine7: StationArrival = {
+            up: [makeTrain({ trainCode: 'AUTO-7', line: '7' })],
+            down: [],
+          };
+          const { result } = renderHook(() =>
+            useBoardingLockController({ ...defaultInputs, arrival: arrivalLine7 }),
+          );
+          await act(async () => {
+            result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '7', subwayId: '1007' });
+          });
+          expect(mockSetBoardingLock).not.toHaveBeenCalled();
+        });
+
+        it('transfer route(2↔5, 청량리) 다중 line 환승역 — 양쪽 line 모두 hydrate 허용', async () => {
+          const transferRoute = makeTransferRoute({
+            transferName: '청량리',
+            fromLine: '2',
+            toLine: '5',
+            stopsToTransfer: 3,
+            stopsFromTransfer: 4,
+          });
+          const arrivalLine5: StationArrival = {
+            up: [makeTrain({ trainCode: 'AUTO-5', line: '5' })],
+            down: [],
+          };
+          const { result } = renderHook(() =>
+            useBoardingLockController({
+              ...defaultInputs,
+              route: transferRoute,
+              arrival: arrivalLine5,
+            }),
+          );
+          await act(async () => {
+            result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-5', line: '5', subwayId: '1005' });
+          });
+          await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
+          expect(mockSetBoardingLock.mock.calls[0][0]).toMatchObject({
+            trainCode: 'AUTO-5',
+            boardingLine: '5',
+          });
+        });
+
+        it('transfer route(2↔5)에서 양쪽 line 외 line(7) candidate → no-op', async () => {
+          const transferRoute = makeTransferRoute({
+            transferName: '왕십리',
+            fromLine: '2',
+            toLine: '5',
+            stopsToTransfer: 3,
+            stopsFromTransfer: 4,
+          });
+          const arrivalLine7: StationArrival = {
+            up: [makeTrain({ trainCode: 'AUTO-7', line: '7' })],
+            down: [],
+          };
+          const { result } = renderHook(() =>
+            useBoardingLockController({
+              ...defaultInputs,
+              route: transferRoute,
+              arrival: arrivalLine7,
+            }),
+          );
+          await act(async () => {
+            result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-7', line: '7', subwayId: '1007' });
+          });
+          expect(mockSetBoardingLock).not.toHaveBeenCalled();
+        });
+
+        it('trip 비활성(route=null) → line filter 미적용 (기존 free-trip hydrate 경로 유지)', async () => {
+          const arrivalLine9: StationArrival = {
+            up: [makeTrain({ trainCode: 'AUTO-9', line: '9' })],
+            down: [],
+          };
+          const { result } = renderHook(() =>
+            useBoardingLockController({
+              ...defaultInputs,
+              route: null,
+              destinationId: null,
+              arrival: arrivalLine9,
+            }),
+          );
+          await act(async () => {
+            result.current.hydrateLockFromCandidate({ trainCode: 'AUTO-9', line: '9', subwayId: '1009' });
+          });
+          await waitFor(() => expect(mockSetBoardingLock).toHaveBeenCalled());
         });
       });
     });
