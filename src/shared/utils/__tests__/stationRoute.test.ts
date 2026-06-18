@@ -1,4 +1,4 @@
-import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters } from '../stationRoute';
+import { getStationsOnLine, getRemainingStops, getIntermediateStationNames, findRoute, findRoutes, pickRouteByPreference, buildJourneyDisplay, calculateETA, calculateStaticETA, calculateRemainingLegETA, getNextStationName, findStationByNameAndLine, updateRouteFromPosition, isStationOnRoute, isStationWithinHopWindow, arcIndexOf, LOCKLESS_HOP_WINDOW_DEFAULT, getFirstLeg, findRouteCandidatesByCategory, ROUTE_CATEGORIES, normalizeStationName, isSameStationName, routeSignature, getStopDistanceMeters, allowedLinesFromRoute } from '../stationRoute';
 import type { Station, LineNumber } from '../../types/station';
 import type { DirectRoute, TransferRoute, MultiTransferRoute, RouteCandidate, RouteCategory } from '../stationRoute';
 import {
@@ -1892,5 +1892,45 @@ describe('getIntermediateStationNames', () => {
   it('returns null for unknown station id', () => {
     expect(getIntermediateStationNames('1-001', 'unknown-id')).toBeNull();
     expect(getIntermediateStationNames('unknown-id', '1-001')).toBeNull();
+  });
+});
+
+describe('allowedLinesFromRoute (#1436 / #1449)', () => {
+  it('route null/undefined → undefined (필터 미적용)', () => {
+    expect(allowedLinesFromRoute(null)).toBeUndefined();
+    expect(allowedLinesFromRoute(undefined)).toBeUndefined();
+  });
+
+  it('DirectRoute → 단일 line set', () => {
+    const route: DirectRoute = makeDirectRoute(3, '2');
+    const lines = allowedLinesFromRoute(route);
+    expect(lines).toBeDefined();
+    expect(Array.from(lines!).sort((a, b) => a.localeCompare(b))).toEqual(['2']);
+  });
+
+  it('TransferRoute → fromLine + toLine 양쪽 포함', () => {
+    const route: TransferRoute = makeTransferRoute({
+      transferName: '왕십리',
+      fromLine: '2',
+      toLine: '5',
+      stopsToTransfer: 3,
+      stopsFromTransfer: 4,
+    });
+    const lines = allowedLinesFromRoute(route);
+    expect(lines).toBeDefined();
+    expect(Array.from(lines!).sort((a, b) => a.localeCompare(b))).toEqual(['2', '5']);
+  });
+
+  it('MultiTransferRoute → 모든 transfer leg의 fromLine/toLine 합집합', () => {
+    const route: MultiTransferRoute = makeMultiTransferRoute({
+      transfers: [
+        { transferName: '잠실(송파구청)', fromLine: '8', toLine: '2', stopsToTransfer: 3 },
+        { transferName: '시청', fromLine: '2', toLine: '1', stopsToTransfer: 5 },
+      ],
+      stopsAfterLastTransfer: 4,
+    });
+    const lines = allowedLinesFromRoute(route);
+    expect(lines).toBeDefined();
+    expect(Array.from(lines!).sort((a, b) => a.localeCompare(b))).toEqual(['1', '2', '8']);
   });
 });

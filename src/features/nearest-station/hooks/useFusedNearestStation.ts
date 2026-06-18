@@ -50,10 +50,10 @@ import {
 import type { LinePositions } from '../api/positionApi';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
-import type { LineNumber, NearestStationResult, Station } from '../../../shared/types/station';
+import type { NearestStationResult, Station } from '../../../shared/types/station';
 import type { ArrivalProvider } from '../../../shared/types/providers';
 import type { PositionProvider } from '../providers/types';
-import type { Route } from '../../../shared/utils/stationRoute';
+import { allowedLinesFromRoute, type Route } from '../../../shared/utils/stationRoute';
 
 /**
  * fusion 후보 개수. MAX_ACTIVE_LINES와 동기화 — Rules of Hooks로 useArrivalInfo/useTrainPositions를
@@ -290,27 +290,6 @@ export interface FusedRouteContext {
   route: Route;
   origin: Station | null;
   destination: Station | null;
-}
-
-/**
- * #1436 — trip route에 포함된 노선 집합. fusion 후보 단계에서 trip 외 노선 entry를 차단한다.
- * route 형태별로 leg의 line을 모두 모은다. trip 비활성/route null이면 undefined.
- */
-function allowedLinesFromRoute(route: Route | null | undefined): Set<LineNumber> | undefined {
-  if (!route) return undefined;
-  const lines = new Set<LineNumber>();
-  if (route.type === 'direct') {
-    lines.add(route.line);
-  } else if (route.type === 'transfer') {
-    lines.add(route.fromLine);
-    lines.add(route.toLine);
-  } else {
-    for (const t of route.transfers) {
-      lines.add(t.fromLine);
-      lines.add(t.toLine);
-    }
-  }
-  return lines;
 }
 
 export function useFusedNearestStation(
