@@ -114,10 +114,31 @@ function loadLineTerminals() {
 //   1) 원본
 //   2) 괄호 부제 제거(예: '청량리(서울시립대입구)' → '청량리')
 //   3) '역' 접미사 제거(예: '서울역' → '서울')
+// 괄호 부제를 정규식 없이 제거한다(예: '청량리(서울시립대입구)' → '청량리').
+// indexOf 선형 스캔이라 정의상 super-linear 경로가 없다 (SonarCloud S5852 회피).
+function stripParens(input) {
+  let out = '';
+  let cursor = 0;
+  while (cursor < input.length) {
+    const open = input.indexOf('(', cursor);
+    if (open < 0) {
+      out += input.slice(cursor);
+      break;
+    }
+    out += input.slice(cursor, open);
+    const close = input.indexOf(')', open + 1);
+    if (close < 0) {
+      // 짝 안 맞는 여는 괄호: 원본을 그대로 보존 (잘못 잘라내지 않는다).
+      out += input.slice(open);
+      break;
+    }
+    cursor = close + 1;
+  }
+  return out;
+}
+
 function buildNameAliases(name) {
-  // ReDoS-safe: `[^)]*`는 부정 character class라 backtracking이 발생하지 않는다.
-  // (lazy `.*?`는 입력에 따라 super-linear가 될 수 있어 SonarCloud S5852가 차단.)
-  const baseName = name.replace(/\([^)]*\)/g, '').trim();
+  const baseName = stripParens(name).trim();
   const aliases = new Set([name, baseName]);
   if (baseName.endsWith('역')) {
     aliases.add(baseName.slice(0, -1));
@@ -242,6 +263,7 @@ module.exports = {
   mapFormatToSide,
   parseCsvLine,
   buildNameAliases,
+  stripParens,
   FORMAT_TO_SIDE,
   SUPPORTED_LINES,
 };

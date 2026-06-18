@@ -14,6 +14,7 @@ const {
   mapFormatToSide,
   parseCsvLine,
   buildNameAliases,
+  stripParens,
   FORMAT_TO_SIDE,
   SUPPORTED_LINES,
 } = require('../build-platform-exit-side');
@@ -112,6 +113,19 @@ describe('parseCsvLine', () => {
 
   it('빈 줄은 빈 문자열 컬럼 1개', () => {
     expect(parseCsvLine('')).toEqual(['']);
+  });
+});
+
+describe('stripParens', () => {
+  it.each([
+    ['괄호 없음', '한양대', '한양대'],
+    ['단일 괄호 부제', '청량리(서울시립대입구)', '청량리'],
+    ['다중 괄호', '서울(메인)(B)역', '서울역'],
+    ['짝 안 맞는 여는 괄호는 원본 보존', '동대문(역사', '동대문(역사'],
+    ['빈 문자열', '', ''],
+    ['빈 괄호', '서울()역', '서울역'],
+  ])('%s: "%s" → "%s"', (_label, input, expected) => {
+    expect(stripParens(input)).toBe(expected);
   });
 });
 
