@@ -50,7 +50,7 @@ import {
 import type { LinePositions } from '../api/positionApi';
 import type { ArrivalInfo, StationArrival } from '../../../shared/types/arrival';
 import type { BoardingLock } from '../../../shared/types/boardingLock';
-import type { LineNumber, NearestStationResult, Station } from '../../../shared/types/station';
+import type { NearestStationResult, Station } from '../../../shared/types/station';
 import type { ArrivalProvider } from '../../../shared/types/providers';
 import type { PositionProvider } from '../providers/types';
 import { allowedLinesFromRoute, type Route } from '../../../shared/utils/stationRoute';

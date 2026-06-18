@@ -1905,7 +1905,7 @@ describe('allowedLinesFromRoute (#1436 / #1449)', () => {
     const route: DirectRoute = makeDirectRoute(3, '2');
     const lines = allowedLinesFromRoute(route);
     expect(lines).toBeDefined();
-    expect(Array.from(lines!).sort()).toEqual(['2']);
+    expect(Array.from(lines!).sort((a, b) => a.localeCompare(b))).toEqual(['2']);
   });
 
   it('TransferRoute → fromLine + toLine 양쪽 포함', () => {
@@ -1918,7 +1918,7 @@ describe('allowedLinesFromRoute (#1436 / #1449)', () => {
     });
     const lines = allowedLinesFromRoute(route);
     expect(lines).toBeDefined();
-    expect(Array.from(lines!).sort()).toEqual(['2', '5']);
+    expect(Array.from(lines!).sort((a, b) => a.localeCompare(b))).toEqual(['2', '5']);
   });
 
   it('MultiTransferRoute → 모든 transfer leg의 fromLine/toLine 합집합', () => {
@@ -1931,6 +1931,6 @@ describe('allowedLinesFromRoute (#1436 / #1449)', () => {
     });
     const lines = allowedLinesFromRoute(route);
     expect(lines).toBeDefined();
-    expect(Array.from(lines!).sort()).toEqual(['1', '2', '8']);
+    expect(Array.from(lines!).sort((a, b) => a.localeCompare(b))).toEqual(['1', '2', '8']);
   });
 });
