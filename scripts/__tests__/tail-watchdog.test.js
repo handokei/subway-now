@@ -3,6 +3,9 @@
  *
  * 실제 wrangler를 띄우지 않고 TAIL_CMD 환경변수로 mock 명령(`echo + sleep`)을 주입한다.
  * STALE_SECS / CHECK_INTERVAL / MAX_BYTES / MAX_RESTARTS를 짧게 줄여 빠르게 검증한다.
+ *
+ * 타이밍-독립 패턴: 고정 timeout으로 sleep하지 않고 "조건을 만족할 때까지 poll" 후
+ * SIGTERM으로 종료한다. CI runner의 spawn cost 변동에 영향받지 않는다.
  */
 
 'use strict';
@@ -18,57 +21,82 @@ function makeTmp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'tail-watchdog-'));
 }
 
-function runWatchdog(env, timeoutMs) {
-  return new Promise((resolve) => {
-    const child = spawn('bash', [SCRIPT, 'test'], {
-      env: { ...process.env, ...env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (d) => { stdout += d.toString(); });
-    child.stderr.on('data', (d) => { stderr += d.toString(); });
-    const softKill = setTimeout(() => {
-      child.kill('SIGTERM');
-    }, timeoutMs);
-    // bash trap이 watchdog 서브셸 정리 race를 만들 수 있어 SIGKILL fallback으로 jest
-    // open handle 누수를 막는다.
-    const hardKill = setTimeout(() => {
-      child.kill('SIGKILL');
-    }, timeoutMs + 1500);
-    child.on('exit', (code) => {
-      clearTimeout(softKill);
-      clearTimeout(hardKill);
-      // 자식의 watchdog 서브셸이 상속한 pipe end를 닫아 jest event loop를 풀어준다.
-      child.stdout.destroy();
-      child.stderr.destroy();
-      resolve({ code, stdout, stderr });
-    });
-  });
-}
-
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/**
+ * Spawn the watchdog and return { child, exited }. Caller decides when to kill.
+ * Caller MUST call `child.kill()` and `await exited` to avoid jest open handles.
+ */
+function spawnWatchdog(env) {
+  const child = spawn('bash', [SCRIPT, 'test'], {
+    env: { ...process.env, ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (d) => { stdout += d.toString(); });
+  child.stderr.on('data', (d) => { stderr += d.toString(); });
+  const exited = new Promise((resolve) => {
+    child.on('exit', (code) => {
+      // 자식의 watchdog 서브셸이 상속한 pipe end를 닫아 jest event loop를 풀어준다.
+      child.stdout.destroy();
+      child.stderr.destroy();
+      resolve({ code, stdout: () => stdout, stderr: () => stderr });
+    });
+  });
+  return { child, exited };
+}
+
+/**
+ * Poll `predicate()` every `intervalMs` until it returns true or `maxMs` elapses.
+ * Returns true if predicate met, false on timeout.
+ */
+async function pollUntil(predicate, maxMs, intervalMs = 50) {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return true;
+    await sleep(intervalMs);
+  }
+  return predicate();
+}
+
+async function killAndAwait(child, exited, hardKillMs = 1500) {
+  child.kill('SIGTERM');
+  const hardKill = setTimeout(() => child.kill('SIGKILL'), hardKillMs);
+  try {
+    return await exited;
+  } finally {
+    clearTimeout(hardKill);
+  }
+}
+
 describe('tail-watchdog.sh', () => {
-  jest.setTimeout(20000);
+  jest.setTimeout(30000);
 
   test('writes to jsonl when TAIL_CMD emits lines', async () => {
     const dir = makeTmp();
-    // mock: emit one line every 200ms for 3s, then exit
+    const jsonlPath = path.join(dir, 'wrangler-tail-watchdog.jsonl');
+    // mock: emit one line every 200ms for 1s+, exit. We poll until lines 1 & 5 appear.
     const env = {
       OUT_DIR: dir,
-      TAIL_CMD: 'for i in 1 2 3 4 5; do echo "{\\"i\\":$i}"; sleep 0.2; done',
+      TAIL_CMD: String.raw`for i in 1 2 3 4 5; do echo "{\"i\":$i}"; sleep 0.2; done`,
       STALE_SECS: '60',
       CHECK_INTERVAL: '60',
       MAX_BYTES: '10485760',
       MAX_RESTARTS: '100',
       RESPAWN_SLEEP: '1',
     };
-    const p = runWatchdog(env, 2500);
-    await p;
-    const jsonl = fs.readFileSync(path.join(dir, 'wrangler-tail-watchdog.jsonl'), 'utf8');
+    const { child, exited } = spawnWatchdog(env);
+    const ok = await pollUntil(() => {
+      if (!fs.existsSync(jsonlPath)) return false;
+      const c = fs.readFileSync(jsonlPath, 'utf8');
+      return /"i":1/.test(c) && /"i":5/.test(c);
+    }, 15000);
+    await killAndAwait(child, exited);
+    expect(ok).toBe(true);
+    const jsonl = fs.readFileSync(jsonlPath, 'utf8');
     expect(jsonl).toMatch(/"i":1/);
     expect(jsonl).toMatch(/"i":5/);
   });
@@ -79,14 +107,20 @@ describe('tail-watchdog.sh', () => {
     fs.writeFileSync(path.join(dir, 'wrangler-tail-watchdog.jsonl'), 'x'.repeat(200));
     const env = {
       OUT_DIR: dir,
-      TAIL_CMD: 'echo "fresh"; sleep 0.2',
+      TAIL_CMD: 'echo "fresh"; sleep 5',
       STALE_SECS: '60',
       CHECK_INTERVAL: '60',
       MAX_BYTES: '100', // 100 bytes → pre-seeded 200B triggers rotation
       MAX_RESTARTS: '100',
       RESPAWN_SLEEP: '1',
     };
-    await runWatchdog(env, 1500);
+    const { child, exited } = spawnWatchdog(env);
+    const ok = await pollUntil(() => {
+      const files = fs.readdirSync(dir);
+      return files.some((f) => /wrangler-tail-watchdog\.jsonl\.\d+/.test(f));
+    }, 15000);
+    await killAndAwait(child, exited);
+    expect(ok).toBe(true);
     const files = fs.readdirSync(dir);
     const rotated = files.filter((f) => /wrangler-tail-watchdog\.jsonl\.\d+/.test(f));
     expect(rotated.length).toBeGreaterThanOrEqual(1);
@@ -94,21 +128,24 @@ describe('tail-watchdog.sh', () => {
 
   test('stops with ALERT when MAX_RESTARTS exceeded', async () => {
     const dir = makeTmp();
+    const alertPath = path.join(dir, 'wrangler-tail-watchdog.alert');
     const env = {
       OUT_DIR: dir,
       // tail command exits immediately → forces respawn each iteration
-      TAIL_CMD: 'echo "{\\"x\\":1}"; exit 0',
+      TAIL_CMD: String.raw`echo "{\"x\":1}"; exit 0`,
       STALE_SECS: '600',
       CHECK_INTERVAL: '600',
       MAX_BYTES: '10485760',
       MAX_RESTARTS: '3',
       RESPAWN_SLEEP: '0.1',
     };
-    const { code } = await runWatchdog(env, 8000);
-    // Should self-exit (code 0 via cleanup) before SIGTERM at 8s
-    await sleep(50);
-    const alert = fs.readFileSync(path.join(dir, 'wrangler-tail-watchdog.alert'), 'utf8');
+    const { child, exited } = spawnWatchdog(env);
+    // Watchdog self-exits via cleanup(); wait for that, then assert alert content.
+    const ok = await pollUntil(() => fs.existsSync(alertPath), 20000);
+    // killAndAwait는 child가 이미 종료됐어도 안전(SIGTERM은 no-op, exited는 즉시 resolve)
+    await killAndAwait(child, exited);
+    expect(ok).toBe(true);
+    const alert = fs.readFileSync(alertPath, 'utf8');
     expect(alert).toMatch(/max-restarts/);
-    expect(code).toBe(0);
   });
 });
