@@ -12,8 +12,8 @@
  * 노선 entry 추가 작업 머지 후 재실행 시 자동 흡수된다.
  *
  * 사용법:
- *   CSV_DIR=/path/to/csvs node scripts/build-station-distances.js
- *   CSV_DIR 미지정 시 기본값 ~/Downloads.
+ *   node scripts/build-station-distances.js                    # scripts/fixtures/ slim utf-8 SSOT 사용
+ *   CSV_DIR=~/Downloads node scripts/build-station-distances.js  # KRRIC 원본 cp949 사용 (#1493 이전 호환)
  *
  * 출력 포맷 (stationDistances.json):
  *   {
@@ -31,48 +31,84 @@ const { normalizeStationName, buildNameIndex, lookupStationId } = require('./lib
 
 const STATIONS_PATH = path.join(__dirname, '..', 'src', 'data', 'stations.json');
 const OUT_PATH = path.join(__dirname, '..', 'src', 'data', 'stationDistances.json');
-const DEFAULT_CSV_DIR = path.join(os.homedir(), 'Downloads');
+// SSOT: 박제된 slim utf-8 fixture (#1493). CSV_DIR override 시 cp949 원본도 받는다.
+const DEFAULT_CSV_DIR = path.join(__dirname, 'fixtures');
+const DOWNLOADS_CSV_DIR = path.join(os.homedir(), 'Downloads');
 
 // CSV 파일명 → stations.json line key 매핑. 한 CSV가 여러 노선을 포함하면 선명(row)로 추가 분기.
+// 박제 fixture는 utf-8 slim 본, Downloads override는 cp949 원본 — 둘 다 지원.
 const CSV_FILES = [
   {
-    filename: '국가철도공단_서울교통공사 역간거리_20231231.csv',
-    encoding: 'cp949',
+    filename: 'krric-seoul-metro-distance-20231231.csv',
+    legacyFilename: '국가철도공단_서울교통공사 역간거리_20231231.csv',
+    encoding: 'utf8',
+    legacyEncoding: 'cp949',
     // 1호선~8호선 모두 — 기존 서울 열린데이터와 중복이지만 머지 시 동일 값(±1m)으로 무해.
     lineMap: { '1호선': '1', '2호선': '2', '3호선': '3', '4호선': '4', '5호선': '5', '6호선': '6', '7호선': '7', '8호선': '8' },
   },
+  // 신규: 수도권4호선 — 진접연장(stations.json 미커버 3역 skip) + 풀 4호선 hop 보강.
+  // 서울교통공사/코레일 분기 row 모두 '4호선' 선명으로 표시되므로 단일 매핑.
   {
-    filename: '국가철도공단_신분당선_역간거리_20250630.csv',
-    encoding: 'cp949',
+    filename: 'krric-line4-extension-distance-20251231.csv',
+    legacyFilename: '국가철도공단_수도권4호선_역간거리_20251231.CSV',
+    encoding: 'utf8',
+    legacyEncoding: 'cp949',
+    lineMap: { '4호선': '4' },
+  },
+  {
+    filename: 'krric-sinbundang-distance-20250630.csv',
+    legacyFilename: '국가철도공단_신분당선_역간거리_20250630.csv',
+    encoding: 'utf8',
+    legacyEncoding: 'cp949',
     lineMap: { 신분당: 'sinbundang' },
   },
   // 인천교통공사 7호선 인천연장 + 인천1·2호선 — stations.json에 인천1·2 entry 없으므로 7호선 인천분만 매칭 시도.
   {
-    filename: '국가철도공단_인천교통공사 역간거리_20251231.CSV',
-    encoding: 'cp949',
+    filename: 'krric-incheon-transit-distance-20251231.csv',
+    legacyFilename: '국가철도공단_인천교통공사 역간거리_20251231.CSV',
+    encoding: 'utf8',
+    legacyEncoding: 'cp949',
     lineMap: { '7호선': '7' },
   },
   {
-    filename: '국가철도공단_인천1호선 역간거리_20250630.csv',
-    encoding: 'cp949',
+    filename: 'krric-incheon1-distance-20250630.csv',
+    legacyFilename: '국가철도공단_인천1호선 역간거리_20250630.csv',
+    encoding: 'utf8',
+    legacyEncoding: 'cp949',
     // stations.json 미커버 — skip되지만 추후 entry 추가 시 자동 활성. line key는 placeholder.
-    lineMap: { '인천1': 'incheon1' },
+    lineMap: { 인천1호선: 'incheon1' },
   },
   {
-    filename: '국가철도공단_인천2호선 역간거리_20251231.CSV',
-    encoding: 'cp949',
-    lineMap: { '인천2': 'incheon2' },
+    filename: 'krric-incheon2-distance-20251231.csv',
+    legacyFilename: '국가철도공단_인천2호선 역간거리_20251231.CSV',
+    encoding: 'utf8',
+    legacyEncoding: 'cp949',
+    lineMap: { 인천2호선: 'incheon2' },
   },
   {
-    filename: '694.우이신설역간거리.csv',
-    encoding: 'cp949',
+    filename: 'seoul-694-ui-sinseol-distance.csv',
+    legacyFilename: '694.우이신설역간거리.csv',
+    encoding: 'utf8',
+    legacyEncoding: 'cp949',
     lineMap: { 우이신설: 'ui' },
   },
-  // 코레일 — 분당/경의중앙만 추출 (1호선 경부/경인은 서울교통공사 중복, 4호선 수도권연장은 별도).
+  // 신규: 코레일 — 1호선 4개 분기(경부/경인/광명/서동탄) + 3호선 일산선 분 + 4호선 코레일 구간 + 분당/경의중앙.
+  // 1호선(경부선) 등 괄호 표기는 lineMap에서 string 그대로 매칭.
   {
-    filename: '국가철도공단_코레일 역간거리_20251231.CSV',
-    encoding: 'cp949',
-    lineMap: { 수인분당: 'bundang', 경의중앙: 'gyeongui' },
+    filename: 'krric-korail-distance-20251231.csv',
+    legacyFilename: '국가철도공단_코레일 역간거리_20251231.CSV',
+    encoding: 'utf8',
+    legacyEncoding: 'cp949',
+    lineMap: {
+      '1호선(경부선)': '1',
+      '1호선(경인선)': '1',
+      '1호선(광명선)': '1',
+      '1호선(서동탄선)': '1',
+      '3호선': '3',
+      '4호선': '4',
+      수인분당: 'bundang',
+      경의중앙: 'gyeongui',
+    },
   },
 ];
 
@@ -222,6 +258,20 @@ function ingestCsv(csvSpec, rawBuf, stations, distances, stats) {
   }
 }
 
+// fixture(slim utf-8) 우선 lookup, CSV_DIR override 시 legacy cp949 원본도 받는다.
+// 반환: { fullPath, encoding } | null.
+function resolveCsvSource(spec, csvDir) {
+  const fixturePath = path.join(csvDir, spec.filename);
+  if (fs.existsSync(fixturePath)) return { fullPath: fixturePath, encoding: spec.encoding };
+  if (spec.legacyFilename) {
+    const legacy = path.join(csvDir, spec.legacyFilename);
+    if (fs.existsSync(legacy)) {
+      return { fullPath: legacy, encoding: spec.legacyEncoding || spec.encoding };
+    }
+  }
+  return null;
+}
+
 function main() {
   const csvDir = process.env.CSV_DIR || DEFAULT_CSV_DIR;
   const stations = JSON.parse(fs.readFileSync(STATIONS_PATH, 'utf8'));
@@ -239,13 +289,13 @@ function main() {
   };
 
   for (const spec of CSV_FILES) {
-    const full = path.join(csvDir, spec.filename);
-    if (!fs.existsSync(full)) {
+    const source = resolveCsvSource(spec, csvDir);
+    if (!source) {
       stats.missingCsvs.push(spec.filename);
       continue;
     }
-    const buf = fs.readFileSync(full);
-    ingestCsv(spec, buf, stations, distances, stats);
+    const buf = fs.readFileSync(source.fullPath);
+    ingestCsv({ ...spec, encoding: source.encoding }, buf, stations, distances, stats);
   }
 
   console.log('# stationDistances.json 보강 통계');
@@ -294,5 +344,6 @@ module.exports = {
   buildLineIdxMap,
   lookupStationId,
   ingestCsv,
+  resolveCsvSource,
   CSV_FILES,
 };
