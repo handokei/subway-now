@@ -169,7 +169,7 @@ describe('evaluateConsensusGate (ADR-015 §3/§4)', () => {
 describe('computeAllowedLines (ADR-015 §5/§9)', () => {
   it('direct route — 단일 line', () => {
     const route: Route = { type: 'direct', line: '2', stops: 5 };
-    expect(Array.from(computeAllowedLines(route)).sort()).toEqual(['2']);
+    expect(Array.from(computeAllowedLines(route)).sort((a, b) => a.localeCompare(b))).toEqual(['2']);
   });
 
   it('transfer route — fromLine + toLine union', () => {
@@ -181,7 +181,7 @@ describe('computeAllowedLines (ADR-015 §5/§9)', () => {
       stopsToTransfer: 3,
       stopsFromTransfer: 2,
     };
-    expect(Array.from(computeAllowedLines(route)).sort()).toEqual(['2', '5']);
+    expect(Array.from(computeAllowedLines(route)).sort((a, b) => a.localeCompare(b))).toEqual(['2', '5']);
   });
 
   it('multi-transfer route — 모든 segment union', () => {
@@ -193,7 +193,7 @@ describe('computeAllowedLines (ADR-015 §5/§9)', () => {
       ],
       stopsAfterLastTransfer: 4,
     };
-    expect(Array.from(computeAllowedLines(route)).sort()).toEqual(['2', '5', '6']);
+    expect(Array.from(computeAllowedLines(route)).sort((a, b) => a.localeCompare(b))).toEqual(['2', '5', '6']);
   });
 
   it('waypoints의 line도 union (구 client direct + cross-line waypoints 호환)', () => {
@@ -203,7 +203,7 @@ describe('computeAllowedLines (ADR-015 §5/§9)', () => {
       { stationName: '건대입구', line: '7' as const, kind: 'transfer' as const },
       { stationName: '성수', line: '2' as const, kind: 'destination' as const },
     ];
-    expect(Array.from(computeAllowedLines(route, waypoints)).sort()).toEqual(['2', '7']);
+    expect(Array.from(computeAllowedLines(route, waypoints)).sort((a, b) => a.localeCompare(b))).toEqual(['2', '7']);
   });
 });
 
