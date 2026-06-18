@@ -7,6 +7,7 @@
 
 const path = require('node:path');
 const os = require('node:os');
+const crypto = require('node:crypto');
 const {
   classifyDepthFloor,
   parseDepthRow,
@@ -18,6 +19,9 @@ const {
 } = require('../cross-check-line-1-8-environment');
 
 const TEST_TMP_DIR = path.join(os.tmpdir(), 'subway-now-test-1465');
+
+// 충돌 없는 고유 파일명. crypto는 SonarCloud S2245 (weak prng) 회피.
+const uniqueSuffix = () => `${Date.now()}-${crypto.randomBytes(8).toString('hex')}`;
 
 describe('classifyDepthFloor', () => {
   it.each([
@@ -264,8 +268,8 @@ describe('main (CLI)', () => {
   beforeAll(() => fs.mkdirSync(TEST_TMP_DIR, { recursive: true }));
 
   function withFiles(stationsArr, csvText, fn) {
-    const stationsPath = path.join(TEST_TMP_DIR, `stations-${Date.now()}-${Math.random()}.json`);
-    const csvPath = path.join(TEST_TMP_DIR, `depth-${Date.now()}-${Math.random()}.csv`);
+    const stationsPath = path.join(TEST_TMP_DIR, `stations-${uniqueSuffix()}.json`);
+    const csvPath = path.join(TEST_TMP_DIR, `depth-${uniqueSuffix()}.csv`);
     fs.writeFileSync(stationsPath, JSON.stringify(stationsArr));
     fs.writeFileSync(csvPath, csvText);
     try {
@@ -276,24 +280,30 @@ describe('main (CLI)', () => {
     }
   }
 
+  // duplication 회피용 helper — main 호출 + stdout 캡처 통합.
+  function runMain({ stationsPath, csvPath, argv = [] } = {}) {
+    const out = [];
+    const code = main(argv, {
+      stationsPath,
+      csvPath,
+      writeOut: (s) => out.push(s),
+      writeErr: () => {},
+    });
+    return { code, out: out.join('\n') };
+  }
+
   it('writes refined stations.json when changes detected', () => {
     const csv =
       '연번,호선,역명,층수,형식,지반고,레일면고,선로기준정거장깊이,정거장깊이,비고\n' +
       '1,1,동묘앞,B1,섬식,1,1,1,8.84,\n';
     const stations = [{ id: '101', name: '동묘앞', line: '1', environment: 'mixed' }];
     withFiles(stations, csv, ({ stationsPath, csvPath }) => {
-      const out = [];
-      const code = main([], {
-        stationsPath,
-        csvPath,
-        writeOut: (s) => out.push(s),
-        writeErr: (s) => out.push(`ERR: ${s}`),
-      });
+      const { code, out } = runMain({ stationsPath, csvPath });
       expect(code).toBe(0);
       const written = JSON.parse(fs.readFileSync(stationsPath, 'utf8'));
       expect(written[0].environment).toBe('underground');
-      expect(out.join('\n')).toMatch(/refined 1 entries/u);
-      expect(out.join('\n')).toMatch(/wrote/u);
+      expect(out).toMatch(/refined 1 entries/u);
+      expect(out).toMatch(/wrote/u);
     });
   });
 
@@ -304,16 +314,10 @@ describe('main (CLI)', () => {
     const stations = [{ id: '102', name: '성수', line: '2', environment: 'surface' }];
     withFiles(stations, csv, ({ stationsPath, csvPath }) => {
       const before = fs.readFileSync(stationsPath, 'utf8');
-      const out = [];
-      const code = main([], {
-        stationsPath,
-        csvPath,
-        writeOut: (s) => out.push(s),
-        writeErr: (s) => out.push(`ERR: ${s}`),
-      });
+      const { code, out } = runMain({ stationsPath, csvPath });
       expect(code).toBe(0);
       expect(fs.readFileSync(stationsPath, 'utf8')).toBe(before);
-      expect(out.join('\n')).toMatch(/no changes/u);
+      expect(out).toMatch(/no changes/u);
     });
   });
 
@@ -324,16 +328,10 @@ describe('main (CLI)', () => {
     const stations = [{ id: '101', name: '동묘앞', line: '1', environment: 'mixed' }];
     withFiles(stations, csv, ({ stationsPath, csvPath }) => {
       const before = fs.readFileSync(stationsPath, 'utf8');
-      const out = [];
-      const code = main(['--dry-run'], {
-        stationsPath,
-        csvPath,
-        writeOut: (s) => out.push(s),
-        writeErr: () => {},
-      });
+      const { code, out } = runMain({ stationsPath, csvPath, argv: ['--dry-run'] });
       expect(code).toBe(0);
       expect(fs.readFileSync(stationsPath, 'utf8')).toBe(before);
-      expect(out.join('\n')).toMatch(/dry-run/u);
+      expect(out).toMatch(/dry-run/u);
     });
   });
 
@@ -350,7 +348,7 @@ describe('main (CLI)', () => {
   });
 
   it('returns 1 when CSV read fails', () => {
-    const stationsPath = path.join(TEST_TMP_DIR, `stations-err-${Date.now()}.json`);
+    const stationsPath = path.join(TEST_TMP_DIR, `stations-err-${uniqueSuffix()}.json`);
     fs.writeFileSync(stationsPath, '[]');
     const errs = [];
     const code = main([], {
@@ -370,17 +368,11 @@ describe('main (CLI)', () => {
       '1,2,한양대,B2,상대식,1,1,1,-3.12,\n';
     const stations = [{ id: '103', name: '한양대', line: '2', environment: 'surface' }];
     withFiles(stations, csv, ({ stationsPath, csvPath }) => {
-      const out = [];
-      const code = main([], {
-        stationsPath,
-        csvPath,
-        writeOut: (s) => out.push(s),
-        writeErr: () => {},
-      });
+      const { code, out } = runMain({ stationsPath, csvPath });
       expect(code).toBe(0);
       const written = JSON.parse(fs.readFileSync(stationsPath, 'utf8'));
       expect(written[0].environment).toBe('surface'); // 자동 갱신 X
-      expect(out.join('\n')).toMatch(/1 conflicts/u);
+      expect(out).toMatch(/1 conflicts/u);
     });
   });
 
@@ -390,15 +382,9 @@ describe('main (CLI)', () => {
       '1,1,서울,B2,섬식,1,1,1,1,\n';
     const stations = [{ id: '999', name: '소요산', line: '1', environment: 'unknown' }];
     withFiles(stations, csv, ({ stationsPath, csvPath }) => {
-      const out = [];
-      const code = main([], {
-        stationsPath,
-        csvPath,
-        writeOut: (s) => out.push(s),
-        writeErr: () => {},
-      });
+      const { code, out } = runMain({ stationsPath, csvPath });
       expect(code).toBe(0);
-      expect(out.join('\n')).toMatch(/1 unmatched/u);
+      expect(out).toMatch(/1 unmatched/u);
     });
   });
 });
