@@ -11,13 +11,13 @@
  *    불가 케이스. 사용자 검증 trip의 역들(성수/뚝섬/한양대/왕십리/마장)은 모두
  *    명시 — CSV 매칭과 cross-check 대상.
  * 2. **국가철도공단 승강장 CSV** (`scripts/fixtures/<lineKey>-platform.csv`)
- *    — 1~9호선 + 분당선(수인분당) 등 KRRIC가 발행한 노선별 승강장 정보.
+ *    — 1~9호선 + 분당선(수인분당) + 경의중앙선 등 KRRIC가 발행한 노선별 승강장 정보.
  *    상행/하행 2 row의 `지상구분`(지상/지하) 컬럼 그룹화:
  *      - 둘 다 `지상` → surface
  *      - 둘 다 `지하` → underground
  *      - 상행/하행 다름 → mixed
- *    출처: 공공데이터포털 — 국가철도공단_수도권<N>호선/분당선_승강장_정보.
- *    (#1460 9호선, #1466 1~8호선 + 분당선 일괄)
+ *    출처: 공공데이터포털 — 국가철도공단_수도권<N>호선/분당선/경의중앙선_승강장_정보.
+ *    (#1460 9호선, #1461 경의중앙, #1466 1~8호선 + 분당선 일괄)
  * 3. **서울교통공사 역사건축정보 CSV** (`scripts/fixtures/seoul-station-architecture.csv`)
  *    — 1~8호선 약 275역 (서울교통공사 운영 구간만, KORAIL 구간 누락).
  *    층수 컬럼으로 자동 분류:
@@ -30,8 +30,9 @@
  *
  * ## 매칭 규칙
  * - KRRIC CSV는 fixture file당 lineKey가 고정. CSV 선명 컬럼은 무시 (운영기관
- *   별 표기 다양: "1호선" / "수인분당" / "9호선" 등 → stations.json line key는
- *   `"1"`~`"9"`/`"bundang"`). lineKey 매핑은 `KRRIC_SOURCES` 테이블 단일 SSOT.
+ *   별 표기 다양: "1호선" / "수인분당" / "9호선" / "경의중앙" 등 → stations.json
+ *   line key는 `"1"`~`"9"`/`"bundang"`/`"gyeongui"`). lineKey 매핑은
+ *   `KRRIC_SOURCES` 테이블 단일 SSOT.
  * - seoul CSV는 첫 컬럼이 호선 (`"1"`~`"8"`).
  * - 역명은 `normalizeStationName`으로 후행 괄호 부제 제거 후 매칭
  *   (예: stations.json "왕십리(성동구청)" ↔ CSV "왕십리").
@@ -82,6 +83,7 @@ const KRRIC_SOURCES = Object.freeze({
   8: 'line8-platform.csv',
   9: 'line9-platform.csv',
   bundang: 'bundang-platform.csv',
+  gyeongui: 'krric-gyeongui-platform.csv',
 });
 
 const KRRIC_SURFACE_LABEL = '지상';
@@ -93,7 +95,8 @@ const VALID_ENVIRONMENTS = new Set(['surface', 'underground', 'mixed', 'unknown'
  * 외부 노선(airport/gyeongui/sinbundang) + CSV에 없는 역 +
  * 사용자 검증 trip 역들의 명시적 분류.
  *
- * 출처: 한국어 위키백과/나무위키 각 역 페이지 "구조" 절 + 운영사 공식 안내도.
+ * 출처: 한국어 위키백과/나무위키 각 역 페이지 "구조" 절 + 운영사 공식 안내도
+ * + 서울 열린데이터 역사심도정보(`scripts/fixtures/seoul-station-depth.csv`).
  * 데이터셋이 정적이므로 stations.json 다음 갱신 시점에 동일 절차로 갱신한다.
  *
  * 키 형식: `"<line>|<normalizedName>"` (예: `"bundang|왕십리"`).
@@ -109,6 +112,20 @@ const ENVIRONMENT_OVERRIDES = Object.freeze({
   '5|마장': 'underground',
   'gyeongui|왕십리': 'underground',
   'bundang|왕십리': 'underground',
+  // ---- 경의중앙선 — KRRIC CSV에 누락된 환승/지방 종착역 ----
+  // 서울역 경의선 승강장은 KTX/1호선과 분리된 지하 승강장 (출처: 한국어 위키백과 "서울역 (경의선)").
+  'gyeongui|서울역': 'underground',
+  // 효창공원앞 경의중앙선 승강장은 지하 (출처: 한국어 위키백과 "효창공원앞역").
+  'gyeongui|효창공원앞': 'underground',
+  // 신촌(경의선)·외대앞·임진강·지평·화전은 지상 (출처: 한국어 위키백과 각 역 페이지 "구조" 절).
+  'gyeongui|신촌': 'surface',
+  'gyeongui|외대앞': 'surface',
+  'gyeongui|임진강': 'surface',
+  'gyeongui|지평': 'surface',
+  'gyeongui|화전': 'surface',
+  // ---- #1465 역사심도정보 CSV cross-check로 정밀화 (KRRIC 분류와 다름) ----
+  // 신내(6호선) — KRRIC는 underground지만 역사심도 -1.7m(지상). 6호선 신내 차고지 인근 평지 운영.
+  '6|신내': 'surface',
 });
 
 /**
@@ -168,11 +185,12 @@ function parseCsvRow(row) {
  * 지상구분(5) / 역층(6) / ... 같은 역명에 상행/하행 row가 있고, 지상구분이
  * 일치하면 단일 값, 다르면 mixed로 그룹화한다.
  *
- * CSV 선명 컬럼은 운영기관마다 표기 다양 (`1호선` / `수인분당` / `9호선` 등) →
- * 파싱 시 무시하고 호출 측 `lineKey`로 stations.json의 line 값과 직접 매칭한다.
+ * CSV 선명 컬럼은 운영기관마다 표기 다양 (`1호선` / `수인분당` / `9호선` /
+ * `경의중앙` 등) → 파싱 시 무시하고 호출 측 `lineKey`로 stations.json의 line
+ * 값과 직접 매칭한다.
  *
  * @param {string} csvText UTF-8 (cp949 입력은 호출 측에서 사전 변환)
- * @param {string} lineKey stations.json `line` 값 (`"1"`~`"9"`/`"bundang"`)
+ * @param {string} lineKey stations.json `line` 값 (`"1"`~`"9"`/`"bundang"`/`"gyeongui"`)
  * @returns {Map<string, 'surface'|'underground'|'mixed'|'unknown'>}
  */
 function parseKrricCsv(csvText, lineKey) {
@@ -180,7 +198,7 @@ function parseKrricCsv(csvText, lineKey) {
   /** @type {Map<string, Set<string>>} */
   const byStation = new Map();
   for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].split(',');
+    const cols = parseCsvRow(lines[i]);
     if (cols.length < 6) continue;
     const name = normalizeStationName(cols[2]);
     const label = cols[5];
@@ -212,6 +230,15 @@ function parseKrricCsv(csvText, lineKey) {
  */
 function parseLine9Csv(csvText) {
   return parseKrricCsv(csvText, '9');
+}
+
+/**
+ * 역호환 alias — #1461에서 도입된 이름. 신규 호출은 parseKrricCsv 권장.
+ * @param {string} csvText
+ * @returns {Map<string, 'surface'|'underground'|'mixed'|'unknown'>}
+ */
+function parseGyeonguiCsv(csvText) {
+  return parseKrricCsv(csvText, 'gyeongui');
 }
 
 /**
@@ -254,6 +281,7 @@ function diffSources(krricMap, seoulMap) {
  *   csvText: string,
  *   krricCsvTexts?: Record<string, string>,
  *   line9CsvText?: string,
+ *   gyeonguiCsvText?: string,
  * }} input
  * @returns {{
  *   stations: Array<Record<string, unknown>>,
@@ -266,12 +294,15 @@ function diffSources(krricMap, seoulMap) {
  *   },
  * }}
  */
-function build({ stations, csvText, krricCsvTexts, line9CsvText }) {
+function build({ stations, csvText, krricCsvTexts, line9CsvText, gyeonguiCsvText }) {
   const seoulMap = parseCsv(csvText);
-  // 역호환: line9CsvText 단독 입력은 { '9': ... }로 흡수.
+  // 역호환: line9CsvText/gyeonguiCsvText 단독 입력은 krricCsvTexts로 흡수.
   const krricInput = { ...(krricCsvTexts ?? {}) };
   if (typeof line9CsvText === 'string' && krricInput['9'] === undefined) {
     krricInput['9'] = line9CsvText;
+  }
+  if (typeof gyeonguiCsvText === 'string' && krricInput.gyeongui === undefined) {
+    krricInput.gyeongui = gyeonguiCsvText;
   }
   const krricMap = buildKrricMap(krricInput);
   const crossCheckDiffs = diffSources(krricMap, seoulMap);
@@ -399,6 +430,7 @@ module.exports = {
   parseCsvRow,
   parseKrricCsv,
   parseLine9Csv,
+  parseGyeonguiCsv,
   buildKrricMap,
   diffSources,
   build,

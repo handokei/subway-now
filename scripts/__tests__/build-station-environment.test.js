@@ -1,5 +1,5 @@
 /**
- * build-station-environment (#1434/#1460/#1466) — 단위 테스트.
+ * build-station-environment (#1434/#1460/#1461/#1466) — 단위 테스트.
  * ADR-015 §1 Deterministic Environment SSOT.
  */
 
@@ -11,6 +11,7 @@ const {
   parseCsvRow,
   parseKrricCsv,
   parseLine9Csv,
+  parseGyeonguiCsv,
   buildKrricMap,
   diffSources,
   build,
@@ -147,12 +148,33 @@ describe('parseKrricCsv', () => {
     expect(parseKrricCsv(csv, '9').get('9|개화')).toBe('surface');
   });
 
+  it('parses gyeongui CSV with parenthesized names and dual underground rows (#1461)', () => {
+    const csv =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,공덕,1,상행,지하,2\n' +
+      '코레일,경의중앙,공덕,2,하행,지하,2\n' +
+      '코레일,경의중앙,양원(서울시북부병원),1,상행,지상,1\n' +
+      '코레일,경의중앙,양원(서울시북부병원),2,하행,지상,1\n';
+    const map = parseKrricCsv(csv, 'gyeongui');
+    expect(map.get('gyeongui|공덕')).toBe('underground');
+    expect(map.get('gyeongui|양원')).toBe('surface');
+    expect(map.has('gyeongui|양원(서울시북부병원)')).toBe(false);
+  });
+
   it('parseLine9Csv alias forwards to parseKrricCsv with "9" key', () => {
     const csv =
       '"hdr","x","x","x","x","x","x"\n' +
       '서울시메트로9호선주식회사,9호선,개화,1,상행,지상,1,Y,N,N\n' +
       '서울시메트로9호선주식회사,9호선,개화,2,하행,지상,1,Y,N,N\n';
     expect(parseLine9Csv(csv).get('9|개화')).toBe('surface');
+  });
+
+  it('parseGyeonguiCsv alias forwards to parseKrricCsv with "gyeongui" key (#1461)', () => {
+    const csv =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,회기,1,상행,지상,1\n' +
+      '코레일,경의중앙,회기,2,하행,지상,1\n';
+    expect(parseGyeonguiCsv(csv).get('gyeongui|회기')).toBe('surface');
   });
 });
 
@@ -375,6 +397,62 @@ describe('build', () => {
     expect(out[0].environment).toBe('underground');
   });
 
+  it('legacy gyeonguiCsvText input is absorbed as krricCsvTexts["gyeongui"] (backward compat, #1461)', () => {
+    const gyeonguiCsvText =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,공덕,1,상행,지하,2\n' +
+      '코레일,경의중앙,공덕,2,하행,지하,2\n';
+    const stations = [{ id: 'gyeongui-x', name: '공덕', line: 'gyeongui' }];
+    const { stations: out, stats } = build({ stations, csvText, gyeonguiCsvText });
+    expect(out[0].environment).toBe('underground');
+    expect(stats.bySource.krric).toBe(1);
+    expect(stats.bySource.override).toBe(0);
+  });
+
+  it('legacy gyeonguiCsvText is ignored when krricCsvTexts["gyeongui"] already set', () => {
+    const gyeonguiCsvText =
+      '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+      '코레일,경의중앙,공덕,1,상행,지상,1\n';
+    const krricCsvTexts = {
+      gyeongui:
+        '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+        '코레일,경의중앙,공덕,1,상행,지하,2\n' +
+        '코레일,경의중앙,공덕,2,하행,지하,2\n',
+    };
+    const stations = [{ id: 'gyeongui-x', name: '공덕', line: 'gyeongui' }];
+    const { stations: out } = build({ stations, csvText, krricCsvTexts, gyeonguiCsvText });
+    expect(out[0].environment).toBe('underground');
+  });
+
+  it('overrides take priority over gyeongui KRRIC (#1461)', () => {
+    // override 서울역=underground vs gyeongui KRRIC (가상으로) 지상.
+    const krricCsvTexts = {
+      gyeongui:
+        '철도운영기관명,선명,역명,승강장번호,상하행,지상구분,역층\n' +
+        '코레일,경의중앙,서울역,1,상행,지상,1\n' +
+        '코레일,경의중앙,서울역,2,하행,지상,1\n',
+    };
+    const stations = [{ id: 'gyeongui-x', name: '서울역', line: 'gyeongui' }];
+    const { stations: out, stats } = build({ stations, csvText, krricCsvTexts });
+    expect(out[0].environment).toBe('underground');
+    expect(stats.bySource.override).toBe(1);
+  });
+
+  it('overrides take priority over KRRIC for 신내 (#1465 cross-check)', () => {
+    // KRRIC가 underground라고 해도 역사심도 -1.7m(지상) override가 우선.
+    const krricCsvTexts = {
+      6:
+        '"hdr","x","x","x","x","x","x"\n' +
+        '서울교통공사,6호선,신내,1,상행,지하,1,Y,N,N\n' +
+        '서울교통공사,6호선,신내,2,하행,지하,1,Y,N,N\n',
+    };
+    const stations = [{ id: '6-039', name: '신내', line: '6' }];
+    const { stations: out, stats } = build({ stations, csvText, krricCsvTexts });
+    expect(out[0].environment).toBe('surface');
+    expect(stats.bySource.override).toBe(1);
+    expect(stats.bySource.krric).toBe(0);
+  });
+
   it('KRRIC row with empty 지상구분 → station stays unknown (no krric source credit)', () => {
     const krricCsvTexts = {
       9:
@@ -408,12 +486,12 @@ describe('build', () => {
 });
 
 describe('KRRIC_SOURCES', () => {
-  it('covers 1~9호선 + 분당선 fixture mapping (#1466)', () => {
-    const expectedKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'bundang'];
+  it('covers 1~9호선 + 분당선 + 경의중앙선 fixture mapping (#1461/#1466)', () => {
+    const expectedKeys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'bundang', 'gyeongui'];
     const cmp = (a, b) => a.localeCompare(b);
     expect(Object.keys(KRRIC_SOURCES).sort(cmp)).toEqual(expectedKeys.sort(cmp));
     for (const f of Object.values(KRRIC_SOURCES)) {
-      expect(f).toMatch(/-platform\.csv$/u);
+      expect(f).toMatch(/\.csv$/u);
     }
   });
 
@@ -446,6 +524,27 @@ describe('ENVIRONMENT_OVERRIDES', () => {
     for (const [key, env] of Object.entries(expected)) {
       expect(ENVIRONMENT_OVERRIDES[key]).toBe(env);
     }
+  });
+
+  it('covers gyeongui stations missing from KRRIC CSV (#1461)', () => {
+    // 경의중앙선 CSV 누락 7개 환승/지방종착역.
+    const expected = {
+      'gyeongui|서울역': 'underground',
+      'gyeongui|효창공원앞': 'underground',
+      'gyeongui|신촌': 'surface',
+      'gyeongui|외대앞': 'surface',
+      'gyeongui|임진강': 'surface',
+      'gyeongui|지평': 'surface',
+      'gyeongui|화전': 'surface',
+    };
+    for (const [key, env] of Object.entries(expected)) {
+      expect(ENVIRONMENT_OVERRIDES[key]).toBe(env);
+    }
+  });
+
+  it('refines 신내(6) to surface via #1465 역사심도 cross-check', () => {
+    // KRRIC underground이지만 seoul-station-depth.csv가 지상(-1.7m)으로 정밀화. override가 SSOT.
+    expect(ENVIRONMENT_OVERRIDES['6|신내']).toBe('surface');
   });
 
   it('is frozen', () => {
