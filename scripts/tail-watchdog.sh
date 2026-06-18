@@ -62,16 +62,34 @@ if [[ -z "${TAIL_CMD:-}" ]]; then
 fi
 
 # stat -f (BSD/macOS) vs stat -c (GNU/Linux) shim.
+#
+# 주의: `stat -f %z file` 의 `-f` 는 BSD/macOS에서 `--format`이지만 GNU coreutils
+# stat에서는 `--file-system` 옵션으로 해석되어 filesystem info를 출력하고 exit 0
+# 한다. 즉 `stat -f ... || stat -c ...` chain은 GNU에서도 첫 호출이 exit 0이라
+# fallback이 안 일어나고 잘못된 출력을 size로 받는다. → version 감지 후 분기한다.
+if stat --version >/dev/null 2>&1; then
+  STAT_IS_GNU=1
+else
+  STAT_IS_GNU=0
+fi
+
 file_mtime() {
   local f="$1"
   if [[ ! -e "$f" ]]; then echo 0; return; fi
-  stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0
+  if [[ "$STAT_IS_GNU" -eq 1 ]]; then
+    stat -c %Y "$f" 2>/dev/null || echo 0
+  else
+    stat -f %m "$f" 2>/dev/null || echo 0
+  fi
 }
 
+# `wc -c < file` 은 GNU/BSD 동일 출력 (leading whitespace는 trim).
 file_size() {
   local f="$1"
   if [[ ! -e "$f" ]]; then echo 0; return; fi
-  stat -f %z "$f" 2>/dev/null || stat -c %s "$f" 2>/dev/null || echo 0
+  local size
+  size=$(wc -c < "$f" 2>/dev/null | tr -d ' ')
+  echo "${size:-0}"
 }
 
 rotate_if_needed() {
