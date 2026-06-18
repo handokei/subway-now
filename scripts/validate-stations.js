@@ -7,6 +7,7 @@
  *   - id 중복
  *   - monotonicLines의 노선이 stations.json에 2개 미만으로 존재
  *   - endpoints[line].low / .high 가 비어있는 문자열
+ *   - environment 필드 누락 또는 enum 외 값 (#1434 ADR-015 §1)
  *
  * Warnings (exit 0):
  *   - 같은 line 내 name 중복 (데이터 오류 의심)
@@ -33,6 +34,10 @@ const LNG_MAX = 132;
 // 서울 지하철 평균 hop ≈ 1.0~1.5km, p99 ≈ 4km. 8km 초과는 누락된 중간역 강한 의심.
 // 9호선 김포공항(공항철도 환승) 같이 특수 구조 hop도 6~7km 수준이라 8km는 보수적 floor.
 const ADJACENT_DISTANCE_MAX_METERS = 8000;
+
+// #1434: ADR-015 §1 Deterministic Environment SSOT 허용 값.
+// `unknown`은 사용자 검수 대기 placeholder — 100% 존재만 요구, 분포는 별 follow-up.
+const ALLOWED_ENVIRONMENTS = new Set(['surface', 'underground', 'mixed', 'unknown']);
 
 const STATIONS_PATH = path.resolve(__dirname, '..', 'src', 'data', 'stations.json');
 const TOPOLOGY_PATH = path.resolve(__dirname, '..', 'src', 'data', 'lineTopology.json');
@@ -113,6 +118,13 @@ function validate(input) {
       } else {
         idSeen.set(stn.id, idx);
       }
+    }
+
+    // #1434: environment 필드 100% 존재 + enum 검증.
+    if (!isNonEmptyString(stn.environment) || !ALLOWED_ENVIRONMENTS.has(stn.environment)) {
+      errors.push(
+        `${where} (id=${stn.id ?? '?'}): environment가 ${[...ALLOWED_ENVIRONMENTS].join('|')} 중 하나가 아님 (got ${JSON.stringify(stn.environment)})`,
+      );
     }
   });
 
@@ -269,6 +281,7 @@ module.exports = {
   LNG_MIN,
   LNG_MAX,
   ADJACENT_DISTANCE_MAX_METERS,
+  ALLOWED_ENVIRONMENTS,
   haversineMeters,
   validate,
   main,
