@@ -2,16 +2,19 @@ import { Linking, Text } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import { useTheme, typography, spacing } from '../theme';
 import { ActionBanner } from './ActionBanner';
+import { createLogger } from '../utils/logger';
 import type { LocationPermissionChange } from '../hooks/useLocationPermissionWatcher';
+
+const logger = createLogger('PermissionChangeBanner');
 
 interface Props {
   /**
    * 직전 권한 상태 대비 변화 종류. 'none'이면 banner를 렌더링하지 않는다.
    * 호출자는 useLocationPermissionWatcher().change를 그대로 전달한다.
    */
-  change: LocationPermissionChange;
+  readonly change: LocationPermissionChange;
   /** 사용자가 dismiss/액션 시 watcher의 acknowledge를 호출하기 위한 콜백. */
-  onAcknowledge: () => void;
+  readonly onAcknowledge: () => void;
 }
 
 /**
@@ -40,7 +43,9 @@ export function PermissionChangeBanner({ change, onAcknowledge }: Props) {
 
   const handlePress = () => {
     onAcknowledge();
-    void Linking.openSettings();
+    // Linking.openSettings()는 Promise를 반환한다.
+    // 실패해도 사용자에게 추가로 안내할 수단이 없으므로 logger.warn만 남기고 종결한다(SonarCloud S3735).
+    Linking.openSettings().catch((e: unknown) => logger.warn('설정 앱 열기 실패', e));
   };
 
   return (

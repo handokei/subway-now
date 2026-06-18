@@ -99,9 +99,17 @@ export function useLocationPermissionWatcher(): LocationPermissionWatcherResult 
 
   useEffect(() => {
     const cancelledRef = { current: false };
-    void refresh(cancelledRef);
+    // refresh 내부에서 probePermissionStatus가 모든 에러를 흡수하므로 reject 가능성은 없지만,
+    // 방어적으로 .catch로 floating promise를 명시적으로 종결한다(SonarCloud S3735 회피).
+    const runRefresh = () => {
+      refresh(cancelledRef).catch(
+        /* istanbul ignore next — probePermissionStatus가 모든 에러를 흡수해 도달 불가 */
+        (e: unknown) => logger.warn('refresh 실패 — 무시', e),
+      );
+    };
+    runRefresh();
     const sub = AppState.addEventListener('change', (s: AppStateStatus) => {
-      if (s === 'active') void refresh(cancelledRef);
+      if (s === 'active') runRefresh();
     });
     return () => {
       cancelledRef.current = true;

@@ -45,4 +45,17 @@ describe('PermissionChangeBanner', () => {
     expect(onAcknowledge).toHaveBeenCalledTimes(1);
     expect(openSettingsSpy).toHaveBeenCalledTimes(1);
   });
+
+  it('Linking.openSettings rejection은 흡수되어 throw하지 않는다', async () => {
+    openSettingsSpy.mockRejectedValueOnce(new Error('settings unavailable'));
+    const onAcknowledge = jest.fn();
+    const { getByTestId } = renderWithTheme(
+      <PermissionChangeBanner change="revoked" onAcknowledge={onAcknowledge} />,
+    );
+    fireEvent.press(getByTestId('permission-change-open-settings'));
+    // 비동기 catch가 흐르도록 한 cycle 흘려보낸다 — throw가 없으면 통과.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onAcknowledge).toHaveBeenCalledTimes(1);
+  });
 });
