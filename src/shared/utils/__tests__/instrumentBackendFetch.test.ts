@@ -15,6 +15,11 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   },
 }));
 
+const makeResponse = (status: number): Response =>
+  ({ ok: status < 400, status }) as unknown as Response;
+
+const asFetch = (fn: jest.Mock): typeof fetch => fn as unknown as typeof fetch;
+
 describe('instrumentBackendFetch', () => {
   beforeEach(() => {
     clearBackendCallEntries();
@@ -23,12 +28,12 @@ describe('instrumentBackendFetch', () => {
   });
 
   it('성공 시 call + response entry를 push한다', async () => {
-    const fakeRes = { ok: true, status: 200 } as Response;
+    const fakeRes = makeResponse(200);
     const fetchImpl = jest.fn().mockResolvedValue(fakeRes);
     const res = await instrumentBackendFetch(
       'https://api.example.com/trips',
       { method: 'POST' },
-      fetchImpl as unknown as typeof fetch,
+      asFetch(fetchImpl),
     );
     expect(res).toBe(fakeRes);
     const entries = getBackendCallEntries();
@@ -45,11 +50,7 @@ describe('instrumentBackendFetch', () => {
   it('throw 시 call + error entry를 push하고 re-throw한다', async () => {
     const fetchImpl = jest.fn().mockRejectedValue(new Error('aborted'));
     await expect(
-      instrumentBackendFetch(
-        'https://x/y',
-        { method: 'GET' },
-        fetchImpl as unknown as typeof fetch,
-      ),
+      instrumentBackendFetch('https://x/y', { method: 'GET' }, asFetch(fetchImpl)),
     ).rejects.toThrow('aborted');
     const entries = getBackendCallEntries();
     expect(entries).toHaveLength(2);
@@ -62,7 +63,7 @@ describe('instrumentBackendFetch', () => {
   it('non-Error throw 시 String()으로 message 박제', async () => {
     const fetchImpl = jest.fn().mockRejectedValue('plain-string');
     await expect(
-      instrumentBackendFetch('https://x/y', {}, fetchImpl as unknown as typeof fetch),
+      instrumentBackendFetch('https://x/y', {}, asFetch(fetchImpl)),
     ).rejects.toBe('plain-string');
     const entries = getBackendCallEntries();
     expect(entries[1].kind).toBe('error');
@@ -70,8 +71,8 @@ describe('instrumentBackendFetch', () => {
   });
 
   it('method 미지정 시 GET으로 기록', async () => {
-    const fetchImpl = jest.fn().mockResolvedValue({ ok: true, status: 204 } as Response);
-    await instrumentBackendFetch('https://x/y', {}, fetchImpl as unknown as typeof fetch);
+    const fetchImpl = jest.fn().mockResolvedValue(makeResponse(204));
+    await instrumentBackendFetch('https://x/y', {}, asFetch(fetchImpl));
     const entries = getBackendCallEntries();
     expect(entries[0].method).toBe('GET');
     expect(entries[1].method).toBe('GET');
@@ -79,24 +80,24 @@ describe('instrumentBackendFetch', () => {
 
   it('현재 corrId가 entry에 박힌다', async () => {
     __setCorrIdForTest('t-abc');
-    const fetchImpl = jest.fn().mockResolvedValue({ ok: true, status: 200 } as Response);
-    await instrumentBackendFetch('https://x/y', {}, fetchImpl as unknown as typeof fetch);
+    const fetchImpl = jest.fn().mockResolvedValue(makeResponse(200));
+    await instrumentBackendFetch('https://x/y', {}, asFetch(fetchImpl));
     const entries = getBackendCallEntries();
     expect(entries[0].corrId).toBe('t-abc');
     expect(entries[1].corrId).toBe('t-abc');
   });
 
   it('기본 fetch 구현을 사용한다 (fetchImpl 미주입)', async () => {
-    const originalFetch = global.fetch;
-    const spy = jest.fn().mockResolvedValue({ ok: true, status: 200 } as Response);
-    global.fetch = spy as unknown as typeof fetch;
+    const originalFetch = globalThis.fetch;
+    const spy = jest.fn().mockResolvedValue(makeResponse(200));
+    globalThis.fetch = asFetch(spy);
     try {
       await instrumentBackendFetch('https://x/y', { method: 'PUT' });
       expect(spy).toHaveBeenCalledWith('https://x/y', { method: 'PUT' });
       const entries = getBackendCallEntries();
       expect(entries[0].method).toBe('PUT');
     } finally {
-      global.fetch = originalFetch;
+      globalThis.fetch = originalFetch;
     }
   });
 });

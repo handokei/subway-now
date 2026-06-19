@@ -120,7 +120,7 @@ export function getBackendCallEntries(): readonly BackendCallEntry[] {
 
 export function clearBackendCallEntries(): void {
   db.clear();
-  void AsyncStorage.removeItem(BACKEND_CALL_LOG_KEY).catch(() => {
+  AsyncStorage.removeItem(BACKEND_CALL_LOG_KEY).catch(() => {
     // graceful — in-memory clear는 이미 수행됨.
   });
 }
