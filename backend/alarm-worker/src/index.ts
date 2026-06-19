@@ -42,6 +42,7 @@ import {
 import { ackPending, stampReceived } from './pendingPushes';
 import { appendPositionPoint } from './positionSeries';
 import { appendAccelSample, isAccelSummary } from './accelSeries';
+import { updateSsotMotion } from './motionState';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
@@ -888,6 +889,9 @@ app.post('/position', async (c) => {
   if (payload.accelSummary) {
     await appendAccelSample(c.env.TRIPS, payload.token, payload.accelSummary);
   }
+  // #1556 (T3) — SSOT.motionState 갱신. SSOT 부재(trip 미등록) 시 graceful no-op.
+  // T2 advanceTripPosition 게이트 #2가 본 motionState='stationary'를 차단 입력으로 사용한다.
+  await updateSsotMotion(c.env.TRIPS, payload.token, payload.point, Date.now());
   return c.json({ ok: true });
 });
 
