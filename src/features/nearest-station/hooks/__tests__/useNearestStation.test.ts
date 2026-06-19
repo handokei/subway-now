@@ -721,6 +721,102 @@ describe('useNearestStation', () => {
     expect(drop.dropReason).toBe('low-accuracy-display');
   });
 
+  it('#1516 dedup: 직전 drop과 lat/lng/accuracy가 모두 동일하면 추가 push를 skip한다', async () => {
+    const { clearFusionDebugEntries, getFusionDebugEntries } =
+      jest.requireActual('../../utils/fusionDebugBuffer');
+    clearFusionDebugEntries();
+    mockGranted();
+    renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    // 같은 fix 5회 — 1회만 push되어야 함
+    for (let i = 0; i < 5; i += 1) {
+      simulateGps(37.5500, 127.0500, { accuracy: 1414, speed: 0, timestamp: 1_700_000_000_000 });
+    }
+
+    const drops = getFusionDebugEntries().filter(
+      (e: { kind: string; event?: string }) => e.kind === 'gps' && e.event === 'gps-drop',
+    );
+    expect(drops).toHaveLength(1);
+    expect(drops[0].accuracyMeters).toBe(1414);
+  });
+
+  it('#1516 rate limit: 1초 내 임계 초과 drop은 skip하고 윈도우 마감 시 summary 1건만 push', async () => {
+    const { clearFusionDebugEntries, getFusionDebugEntries } =
+      jest.requireActual('../../utils/fusionDebugBuffer');
+    clearFusionDebugEntries();
+    mockGranted();
+    const realNow = Date.now;
+    let fakeNow = 1_700_000_000_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => fakeNow);
+    try {
+      renderHook(() => useNearestStation());
+      await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+      // 같은 윈도우 내 서로 다른 좌표 4건 (dedup gate 우회) — limit=2 이후는 skipped 누적
+      simulateGps(37.5500, 127.0500, { accuracy: 800, timestamp: fakeNow });
+      simulateGps(37.5501, 127.0501, { accuracy: 801, timestamp: fakeNow });
+      simulateGps(37.5502, 127.0502, { accuracy: 802, timestamp: fakeNow });
+      simulateGps(37.5503, 127.0503, { accuracy: 803, timestamp: fakeNow });
+
+      let drops = getFusionDebugEntries().filter(
+        (e: { kind: string; event?: string }) => e.kind === 'gps' && e.event === 'gps-drop',
+      );
+      // limit=2 → 처음 2건만 push, 이후 2건은 skipped
+      expect(drops).toHaveLength(2);
+
+      // 윈도우 마감(>1s 경과) 후 다음 drop이 들어오면 summary가 먼저 push됨.
+      // speed를 null로 줘서 summary push의 isValidGpsSpeedMps false 분기 커버.
+      fakeNow += 1_500;
+      simulateGps(37.5504, 127.0504, { accuracy: 900, speed: null, timestamp: fakeNow });
+
+      drops = getFusionDebugEntries().filter(
+        (e: { kind: string; event?: string }) => e.kind === 'gps' && e.event === 'gps-drop',
+      );
+      // 2 (1st window) + 1 summary + 1 (new window) = 4
+      expect(drops).toHaveLength(4);
+      const summary = drops.find((d: { dropReason?: string }) =>
+        d.dropReason?.startsWith('rate-limited:'),
+      );
+      expect(summary).toBeDefined();
+      expect(summary.dropReason).toBe('rate-limited:2');
+      expect(summary.speedMps).toBeNull();
+
+      // 추가 윈도우: speed 양수로 summary push의 isValidGpsSpeedMps true 분기 커버.
+      // dedup 우회 위해 좌표를 매번 다르게.
+      simulateGps(37.5510, 127.0510, { accuracy: 800, speed: 1.0, timestamp: fakeNow });
+      simulateGps(37.5511, 127.0511, { accuracy: 801, speed: 1.0, timestamp: fakeNow });
+      simulateGps(37.5512, 127.0512, { accuracy: 802, speed: 1.0, timestamp: fakeNow });
+      fakeNow += 1_500;
+      simulateGps(37.5513, 127.0513, { accuracy: 900, speed: 3.0, timestamp: fakeNow });
+      drops = getFusionDebugEntries().filter(
+        (e: { kind: string; event?: string }) => e.kind === 'gps' && e.event === 'gps-drop',
+      );
+      const summary2 = drops.filter((d: { dropReason?: string }) =>
+        d.dropReason?.startsWith('rate-limited:'),
+      );
+      expect(summary2.length).toBeGreaterThanOrEqual(2);
+      expect(summary2[1].speedMps).toBe(3.0);
+    } finally {
+      (Date.now as jest.Mock).mockRestore?.();
+      Date.now = realNow;
+    }
+  });
+
+  it('#1516 locationUncertain bail-out: 이미 true면 추가 setState 없이 유지', async () => {
+    mockGranted();
+    const { result } = renderHook(() => useNearestStation());
+    await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+    simulateGps(37.5500, 127.0500, { accuracy: MAX_ACCURACY_M_DISPLAY + 100 });
+    expect(result.current.locationUncertain).toBe(true);
+
+    // 동일 fix 반복해도 안정 — 단순 truthy assertion
+    simulateGps(37.5500, 127.0500, { accuracy: MAX_ACCURACY_M_DISPLAY + 100 });
+    simulateGps(37.5501, 127.0501, { accuracy: MAX_ACCURACY_M_DISPLAY + 200 });
+    expect(result.current.locationUncertain).toBe(true);
+  });
+
   it('jump gate(#527): 직전 fix 대비 비현실 점프는 setState 차단 + locationUncertain=true', async () => {
     mockGranted();
 

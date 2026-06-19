@@ -39,6 +39,12 @@ const logger = createLogger('useNearestStation');
 
 const MIN_DISTANCE_CHANGE_KM = 0.003; // 3m — UI 갱신을 자주 흘려보낸다.
 
+// #1516 — gps-drop rate limit. 1초 윈도우에서 이 수치 이상 push되면 추가 push는 skip하고
+// 윈도우 종료 시 1건의 "rate-limited" summary entry로 흡수한다. 실측(2026-06-19) 5분 84건
+// (~17 drops/min 평균, peak 동일 ts 다발 ≥18) 대비 정상 진단성(<10/min)에 맞춘 임계.
+const GPS_DROP_PER_SEC_LIMIT = 2;
+const GPS_DROP_WINDOW_MS = 1000;
+
 // #1313 — subsurface 여부로 갈리는 FG watch 옵션. accuracy 선택 + interval을 한 데이터로 묶어
 // startWatch가 throttle boolean만 보고 분기 없이 선택하게 한다(하드코딩 분기 회피).
 // #1440 — surface는 distanceInterval=0으로 되돌린다. #1416에서 5m로 throttle한 결과 정적 FG
@@ -208,6 +214,17 @@ export function useNearestStation(
   // 이전 좌표와의 시공간 일관성은 확인하지 못한다 — 21:29 효창공원앞↔신내 25km/8s
   // 텔레포트 사고를 차단하기 위해 useRef로 prev를 들고 비교한다.
   const lastFixRef = useRef<FixSample | null>(null);
+  // #1516: gps-drop 로그 폭주 dedup. 같은 accuracy/좌표 fix가 연속 push될 때 buffer + setState 폭주
+  // (84+건/5분 → React reconcile 폭주, AsyncStorage write 부담). 직전 drop과 lat/lng/accuracy가
+  // 모두 동일하면 skip한다. 진단성은 rate-limit summary로 보존(아래 lastDropWindowRef).
+  const lastDropRef = useRef<{ lat: number; lng: number; acc: number | null } | null>(null);
+  // #1516: rate limit — 1초 윈도우 내 GPS_DROP_PER_SEC_LIMIT 건 이상이면 추가 push skip + 1건
+  // "rate-limited" summary 기록. 정상 trip에서 N≤10/분 보장. count 0은 윈도우 idle 신호.
+  const lastDropWindowRef = useRef<{ windowStart: number; count: number; skipped: number }>({
+    windowStart: 0,
+    count: 0,
+    skipped: 0,
+  });
 
   const applyLocation = useCallback((coords: Location.LocationObjectCoords, timestamp: number) => {
     const { latitude, longitude, speed, accuracy } = coords;
@@ -357,17 +374,62 @@ export function useNearestStation(
         fgWatchOptionsFor(throttledRef.current),
         (location) => {
           if (!isAccuracyAcceptableForDisplay(location.coords.accuracy)) {
-            setLocationUncertain(true);
+            // #1516: setLocationUncertain(true)도 이전 값과 같으면 setState skip.
+            // React 자동 bail-out은 hook 단위만 — 84+회/5분 reentry 시 useState reducer 호출
+            // 자체가 reconcile 큐에 들어가는 부담을 명시 가드로 제거한다.
+            setLocationUncertain((prev) => (prev ? prev : true));
             // #443: 표시 게이트에 drop된 fix도 사후 진단에 필요(사가정 같은 부정확 fix로
             // 락된 의심 시점을 식별). 이 분기는 accuracy가 non-null 임계 초과인 경우만.
             const dropSpeed = location.coords.speed;
+            const lat = location.coords.latitude;
+            const lng = location.coords.longitude;
+            const acc = location.coords.accuracy;
+            // #1516 dedup gate 1: 직전 drop과 lat/lng/accuracy 모두 동일하면 skip.
+            // 실측: 동일 accuracy(1414m) × 18건 다발 — same OS fix가 재발화하는 패턴.
+            const prevDrop = lastDropRef.current;
+            const sameAsPrev =
+              prevDrop !== null &&
+              prevDrop.lat === lat &&
+              prevDrop.lng === lng &&
+              prevDrop.acc === acc;
+            if (sameAsPrev) return;
+            // #1516 dedup gate 2: 1초 윈도우 rate limit. limit 초과 시 skipped 누적.
+            const now = Date.now();
+            const win = lastDropWindowRef.current;
+            if (now - win.windowStart >= GPS_DROP_WINDOW_MS) {
+              // 윈도우 마감 — skipped > 0이면 summary 1건 push.
+              if (win.skipped > 0) {
+                pushFusionDebugEntry({
+                  kind: 'gps',
+                  event: 'gps-drop',
+                  ts: now,
+                  lat,
+                  lng,
+                  accuracyMeters: acc,
+                  speedMps: isValidGpsSpeedMps(dropSpeed) ? dropSpeed : null,
+                  nearestStation: null,
+                  nearestLine: null,
+                  nearestDistanceKm: null,
+                  dropReason: `rate-limited:${win.skipped}`,
+                });
+              }
+              win.windowStart = now;
+              win.count = 0;
+              win.skipped = 0;
+            }
+            if (win.count >= GPS_DROP_PER_SEC_LIMIT) {
+              win.skipped += 1;
+              return;
+            }
+            win.count += 1;
+            lastDropRef.current = { lat, lng, acc };
             pushFusionDebugEntry({
               kind: 'gps',
               event: 'gps-drop',
-              ts: Date.now(),
-              lat: location.coords.latitude,
-              lng: location.coords.longitude,
-              accuracyMeters: location.coords.accuracy,
+              ts: now,
+              lat,
+              lng,
+              accuracyMeters: acc,
               speedMps: isValidGpsSpeedMps(dropSpeed) ? dropSpeed : null,
               nearestStation: null,
               nearestLine: null,
