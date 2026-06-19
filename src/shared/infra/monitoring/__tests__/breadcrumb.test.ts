@@ -1,5 +1,5 @@
 import * as Sentry from '@sentry/react-native';
-import { addDomainBreadcrumb, addLogBreadcrumb } from '../breadcrumb';
+import { addDomainBreadcrumb, addLogBreadcrumb, recordEnvironmentTransition } from '../breadcrumb';
 import { setSentryEnabled } from '../sentryState';
 
 const addBreadcrumbMock = Sentry.addBreadcrumb as jest.Mock;
@@ -112,5 +112,42 @@ describe('addDomainBreadcrumb', () => {
       category: 'lifecycle',
       message: 'foreground',
     });
+  });
+});
+
+describe('recordEnvironmentTransition (S13 #1546)', () => {
+  beforeEach(() => {
+    setSentryEnabled(true);
+  });
+
+  it('prev === undefined (첫 관측)이면 no-op', () => {
+    recordEnvironmentTransition(undefined, 'surface');
+    expect(addBreadcrumbMock).not.toHaveBeenCalled();
+  });
+
+  it('prev === next (전환 없음)이면 no-op', () => {
+    recordEnvironmentTransition('surface', 'surface');
+    expect(addBreadcrumbMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['surface' as const, 'underground' as const],
+    ['underground' as const, 'surface' as const],
+    ['unknown' as const, 'underground' as const],
+    ['surface' as const, 'unknown' as const],
+  ])('%s → %s 전환 시 lifecycle breadcrumb 발사', (from, to) => {
+    recordEnvironmentTransition(from, to);
+    expect(addBreadcrumbMock).toHaveBeenCalledWith({
+      level: 'info',
+      category: 'lifecycle',
+      message: 'environment-transition',
+      data: { from, to },
+    });
+  });
+
+  it('opt-in 비활성이면 no-op', () => {
+    setSentryEnabled(false);
+    recordEnvironmentTransition('surface', 'underground');
+    expect(addBreadcrumbMock).not.toHaveBeenCalled();
   });
 });

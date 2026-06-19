@@ -93,3 +93,22 @@ export function addDomainBreadcrumb(
     ...(data ? { data } : {}),
   });
 }
+
+/**
+ * S13(#1546) — 환경 전환 breadcrumb. delta-only 발사.
+ *
+ * `prev === next`(전환 없음) 또는 `prev === undefined`(첫 관측, 비교 기준 없음)이면 no-op.
+ * 호출자는 이전 환경을 ref/state로 보존하고 매 폴링마다 호출하면 된다 — 본 함수가 dedup 책임.
+ *
+ * 예: `surface → underground` 전환은 silent push polling 주기 변화 / boardingPrompt 게이트
+ * 활성화 / GPS gating downgrade 등 여러 downstream 효과를 가져온다. Sentry trail에서
+ * "정확히 언제 지하 진입을 감지했는가"를 보기 위함.
+ */
+export function recordEnvironmentTransition(
+  prev: 'surface' | 'underground' | 'unknown' | undefined,
+  next: 'surface' | 'underground' | 'unknown',
+): void {
+  if (prev === undefined) return;
+  if (prev === next) return;
+  addDomainBreadcrumb('lifecycle', 'environment-transition', { from: prev, to: next });
+}
