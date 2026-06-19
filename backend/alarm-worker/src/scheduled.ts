@@ -41,6 +41,12 @@ import { matchLine } from './lineAlias';
 import { computeAllowedLines } from './consensusGate';
 import { attachTrainCodeForLeg } from './lockSwap';
 import {
+  advanceTripPosition,
+  type AdvanceBlockReason,
+  type EvidenceEnvironment,
+} from './advanceTripPosition';
+import { readSsot, seedSsot, SSOT_CRON_READ_CACHE_TTL_SEC } from './tripPositionSsot';
+import {
   evaluateWindow,
   readSeries,
   type WindowedMetrics,
@@ -329,6 +335,20 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   arvlCdFireMismatch: number;
   /**
+   * ADR-017 T4 (#1557) — `advanceTripPosition` SSoT 게이트가 차단해 매역 push가 발사되지
+   * 않은 누적 횟수. 2026-06-19 정지 trip + lock active + arvlcd ARRIVED → false 발사 회귀
+   * (N1)를 직접 차단하는 게이트. 0이 아니면 stationary trip / env-consensus-fail /
+   * train-mismatch 등 6단 게이트 reject 분포를 production tail로 측정 가능.
+   */
+  arvlCdFireBlocked: number;
+  /**
+   * ADR-017 T4 (#1557) — `advanceTripPosition`이 'advanced' 통과 후 실제로 push 발사 시도까지
+   * 도달한 누적 횟수. `arvlCdFireSuccess`(push ack 성공)와 별개 — fire 진입(SSoT 통과)
+   * vs 외부 APNs 성공률을 분리 측정. `arvlCdFireBlocked`와 합쳐 SSoT 게이트의 traffic
+   * 비중(blocked / fired) 분포를 추적한다.
+   */
+  arvlCdFireFired: number;
+  /**
    * #1370 L2 — trainCode vanish 후 시간 기반 fallback advance 직전에 station-passed silent push가
    * 발사된 누적 횟수. fallback path가 어린이대공원/군자/중곡 같은 intermediate를 "지났음" 신호 없이
    * 통과하던 회귀(silent push 0건)를 닫는다.
@@ -418,6 +438,8 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     arvlCdFireSuccess: 0,
     arvlCdFireDedup: 0,
     arvlCdFireMismatch: 0,
+    arvlCdFireBlocked: 0,
+    arvlCdFireFired: 0,
     vanishFallbackFired: 0,
     vanishReleaseFired: 0,
     vanishLocklessTakeover: 0,
@@ -1011,6 +1033,103 @@ export async function fireArvlCdStationPush(
 }
 
 /**
+ * ADR-017 T4 (#1557) — `advanceTripPosition` SSoT 게이트를 통과한 경우에만 매역 arvlCd push를
+ * 발사하는 thin wrapper.
+ *
+ * 호출 흐름:
+ *   1. SSoT 부재 시 lazy-seed (currentStationId = waypoint.stationName). T1/T2 마이그레이션
+ *      이전 trip 호환. seed 직후 candidate=current이지만 `appendUnique`가 noop 처리.
+ *   2. `advanceTripPosition` 6단 게이트 호출.
+ *   3. `blocked` → push 발사 X. `arvlCdFireBlocked` 카운트 + reason log. Trip mutation 없음.
+ *   4. `advanced` → `arvlCdFireFired` 카운트 후 기존 `fireArvlCdStationPush` 위임 (cross-station
+ *      dedup + APNs send + envHeal + pending fallback 안전망 등 기존 wiring 재사용).
+ *
+ * Trip mutation은 fire 성공 시 `fireArvlCdStationPush`의 dirty 결과를 그대로 forward — 호출자
+ * (`handleBoardingLockTracking`)가 putTrip을 결정한다.
+ *
+ * @returns dirty=true는 trip 객체가 in-place mutate되어 caller가 putTrip 필요.
+ */
+async function tryAdvanceAndFireArvlcd(inputs: {
+  trip: Trip;
+  waypoint: Waypoint;
+  lock: BoardingLockMeta;
+  arvlCd: number;
+  env: Env;
+  deps: ScheduledDeps;
+  stats: ScheduledStats;
+  now: number;
+  log: Logger;
+  generatePushId: () => string;
+}): Promise<{ dirty: boolean }> {
+  const { trip, waypoint, lock, arvlCd, env, deps, stats, now, log, generatePushId } = inputs;
+  let ssot = await readSsot(env.TRIPS, trip.token, { cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC });
+  if (ssot === null) {
+    // Lazy-seed for legacy trips (T1 미마이그레이션). motionState='unknown'로 시작 — T3가
+    // device upload로 motion 갱신을 시작하면 게이트 #2가 자동 활성화.
+    ssot = await seedSsot(env.TRIPS, trip.token, waypoint.stationName, {
+      expiresAt: trip.expiresAt,
+    });
+    log('arvlcd-fire: lazy-seed ssot', {
+      token: trip.token.slice(0, 8),
+      currentStationId: waypoint.stationName,
+    });
+  }
+  const outcome = await advanceTripPosition(
+    env.TRIPS,
+    trip.token,
+    waypoint.stationName,
+    {
+      type: 'arvlcd-confirmed-train',
+      stationId: waypoint.stationName,
+      ts: now,
+      environment: deriveEvidenceEnvironment(trip),
+      arvlcdTrainCode: lock.trainCode,
+      arvlCd,
+    },
+    {
+      // lock 활성 = base 합의 surrogate. consensusGate가 surface는 base만으로, underground는
+      // arrival + lockAttachable 2-of-2로, mixed/unknown은 base + arrival + lockAttachable 모두로
+      // 검증. lock 활성 trip에서 lockAttachable 단일 trainCode 수렴은 lock 부착 자체가 증거.
+      gatePassed: true,
+      lockAttachable: true,
+    },
+  );
+  if (outcome.result !== 'advanced') {
+    stats.arvlCdFireBlocked += 1;
+    log('arvlcd-fire: blocked', {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+      reason: outcome.blockReason satisfies AdvanceBlockReason | undefined,
+    });
+    return { dirty: false };
+  }
+  stats.arvlCdFireFired += 1;
+  return fireArvlCdStationPush({
+    trip,
+    waypoint,
+    lock,
+    arvlCd,
+    env,
+    deps,
+    stats,
+    now,
+    log,
+    generatePushId,
+  });
+}
+
+/**
+ * Trip.subsurface → EvidenceEnvironment 매핑. `consensusGate.StationEnvironment` 어휘로 변환은
+ * `mapEvidenceEnvironment`가 담당하므로 본 함수는 device upload 어휘만 산출한다.
+ */
+function deriveEvidenceEnvironment(trip: Trip): EvidenceEnvironment {
+  if (trip.subsurface === true) return 'underground';
+  if (trip.subsurface === false) return 'surface';
+  return 'unknown';
+}
+
+/**
  * #1370 L2 — trainCode vanish 후 시간 기반 fallback advance 직전에 발사하는 station-passed silent push.
  *
  * arvlCd fire 경로와 모양은 같지만 SSOT가 다르다 — arvlCd∈{0,1}이 아니라 "trainCode 사라짐 + hop 시간
@@ -1420,10 +1539,17 @@ export async function runTrainCodeTracking(
     stats.kalmanReset += 1;
     // #917 A2 — 매역 알림 1차 source는 arvlCd∈{0(ENTERING), 1(ARRIVED)}.
     // positions-fallback arrived(arvlCd=null)는 SSOT 다름 — mismatch로 분류해 push X.
-    // prereq 게이트: lock 활성 + arvlCd∈{0,1}. #640 회귀(lock 없는 trip 발사) defensive recheck.
-    const gate = evaluateArvlCdFireGate(activeLock, estimate.arvlCd, now);
-    if (gate === 'fire' && estimate.arvlCd !== null) {
-      const fire = await fireArvlCdStationPush({
+    // prereq 게이트(레거시): lock 활성 + arvlCd∈{0,1}. #640 회귀(lock 없는 trip 발사) defensive recheck.
+    const legacyGate = evaluateArvlCdFireGate(activeLock, estimate.arvlCd, now);
+    if (legacyGate === 'fire' && estimate.arvlCd !== null) {
+      // ADR-017 T4 (#1557) — 분산된 fire 게이트를 `advanceTripPosition` 단일 진입점으로 통합.
+      // 6단 게이트(seed/motion/env/type/train identity/lockless arvlcd 단독)를 통과한 advance
+      // 결과만 push 발사로 이어진다. 2026-06-19 정지 trip false 발사 회귀(N1)를 직접 차단.
+      //
+      // SSoT 부재 (legacy trip / 마이그레이션 전) → lazy-seed로 currentStationId=waypoint.stationName
+      // 정착. T3 motion state machine wire 전이므로 motionState='unknown' — 정지 게이트는 dormant
+      // 상태이지만, T3가 device upload로 motionState='stationary'를 stamp하기 시작하면 자동 활성화.
+      const fireOutcome = await tryAdvanceAndFireArvlcd({
         trip,
         waypoint,
         lock: activeLock,
@@ -1435,7 +1561,7 @@ export async function runTrainCodeTracking(
         log,
         generatePushId,
       });
-      if (fire.dirty) await putTrip(env.TRIPS, trip);
+      if (fireOutcome.dirty) await putTrip(env.TRIPS, trip);
     } else {
       stats.arvlCdFireMismatch += 1;
       log('arvlcd-fire: mismatch (prereq failed)', {
