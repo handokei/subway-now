@@ -43,9 +43,15 @@ import { attachTrainCodeForLeg } from './lockSwap';
 import {
   advanceTripPosition,
   type AdvanceBlockReason,
+  type AdvanceEvidence,
   type EvidenceEnvironment,
 } from './advanceTripPosition';
-import { readSsot, seedSsot, SSOT_CRON_READ_CACHE_TTL_SEC } from './tripPositionSsot';
+import {
+  deleteSsot,
+  readSsot,
+  seedSsot,
+  SSOT_CRON_READ_CACHE_TTL_SEC,
+} from './tripPositionSsot';
 import {
   evaluateWindow,
   readSeries,
@@ -151,19 +157,17 @@ export function isAdvanceAllowedByMotion(motion: PositionPoint['motion']): boole
 /**
  * #1386 — lock-active vanish fallback advance(`handleEtaMissing` time-based) 전용 motion 게이트.
  *
- * lockless 경로(`isAdvanceAllowedByMotion`)는 엄격(walking/automotive만 허용)이지만, 이 분기는
- * trip이 한 번이라도 정상 추적된 적이 있고(`lastTrackedArrivalEpoch !== undefined`) hop 시간을
- * 채웠다는 약한 ground truth가 이미 있다. 그래서 보수의 결을 다르게 잡는다:
+ * @deprecated ADR-017 T5 (#1558) — `advanceBoardingLockWaypoint`가 `advanceTripPosition` 단일
+ *   진입점을 통해 SSoT motion 게이트(#2)로 정지 trip을 차단한다. 본 함수는 backward-compat 용으로
+ *   export를 유지하지만 신규 호출 X. vanish-fallback path는 evidence를 stamp하면 SSoT가 자동으로
+ *   stationary를 차단한다 (`tripPositionSsot.motionState` + `advanceTripPosition` #2 게이트).
  *
- * - `stationary` (사용자가 명확히 정지 중) → 보류 (false positive 1차 방어).
- * - `walking` / `automotive` (실제 이동) → 진행 (기존 동작).
- * - `unknown` (센서 미지원/권한 거절/샘플 없음) → 진행 (기존 동작 유지, 사용자 가시성 트레이드오프).
- *   `unknown`까지 보류하면 motion 신호 없는 다수 사용자의 trip이 무한 freeze에 가까워지므로
- *   기존 hop-elapsed advance를 유지한다. positive stationary 신호가 있는 경우만 게이트 진입.
+ * 기존 동작 (참조):
+ * - `stationary` → 보류, `walking`/`automotive`/`unknown` → 진행.
+ * - SSoT 도입 후엔 motionState='stationary' + userIntentDeclared=false 시 자동 차단.
  *
- * 트레이드오프(이슈 #1386): `unknown` 중 실제 정지인 케이스는 못 잡는다 — 대신 false negative
- * (정상 이동 trip을 잘못 동결)를 피한다. 사용자가 진짜 정지일 땐 device가 stationary로 송신하므로
- * (`backgroundLocationTask.ts:150` / `useFgPositionUpload.ts`) 실측 신호 도달 시 게이트 발동.
+ * 트레이드오프(이슈 #1386): `unknown` 중 실제 정지인 케이스는 못 잡는다 — SSoT motionState
+ * 'unknown'도 #2 게이트를 통과하므로 동등한 트레이드오프가 유지된다.
  */
 export function isFallbackAdvanceBlockedByMotion(motion: PositionPoint['motion']): boolean {
   return motion === 'stationary';
@@ -349,6 +353,13 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   arvlCdFireFired: number;
   /**
+   * ADR-017 T5 (#1558) — `advanceBoardingLockWaypoint` 진입했지만 `advanceTripPosition` SSoT
+   * 게이트가 차단해 trip.waypoints advance 가 일어나지 않은 횟수. 2026-06-19 정지 trip 매분
+   * waypoint advance 회귀(8회)를 직접 차단하는 게이트. arvlcd-arrived path (T4 와 짝) +
+   * vanish-fallback path 모두 본 카운터에 집계. blockReason 분포는 log 로 확인.
+   */
+  boardingLockWaypointAdvanceBlocked: number;
+  /**
    * #1370 L2 — trainCode vanish 후 시간 기반 fallback advance 직전에 station-passed silent push가
    * 발사된 누적 횟수. fallback path가 어린이대공원/군자/중곡 같은 intermediate를 "지났음" 신호 없이
    * 통과하던 회귀(silent push 0건)를 닫는다.
@@ -440,6 +451,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     arvlCdFireMismatch: 0,
     arvlCdFireBlocked: 0,
     arvlCdFireFired: 0,
+    boardingLockWaypointAdvanceBlocked: 0,
     vanishFallbackFired: 0,
     vanishReleaseFired: 0,
     vanishLocklessTakeover: 0,
@@ -1413,7 +1425,18 @@ async function handleEtaMissing(inputs: HandleEtaMissingInputs): Promise<void> {
         generatePushId,
         origin: 'vanish-fallback',
       });
-      await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log);
+      // ADR-017 T5 (#1558) — vanish-fallback path 도 SSoT 단일 진입점을 통과해야 trip.waypoints
+      // 가 advance 한다. evidence type 은 `arvlcd-confirmed-train` — lock 활성 시점에서 vanish 직전
+      // 마지막으로 확정된 trainCode 가 ground truth 이고, 본 fallback 은 hop 시간 + 직전 lock 으로
+      // optimistic advance 를 취급하기 때문. SSoT motionState='stationary' 이면 #2 게이트가 차단해
+      // 기존 `isFallbackAdvanceBlockedByMotion` 보다 광범위(정지 trip 어떤 경로도)로 보호한다.
+      await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log, {
+        type: 'arvlcd-confirmed-train',
+        stationId: waypoint.stationName,
+        ts: now,
+        environment: deriveEvidenceEnvironment(trip),
+        arvlcdTrainCode: activeLock.trainCode,
+      });
       return;
     }
     // hop 시간 미경과 → lock release해 lockless/boardingPrompt가 인계받도록.
@@ -1571,7 +1594,31 @@ export async function runTrainCodeTracking(
         arvlCd: estimate.arvlCd,
       });
     }
-    await advanceBoardingLockWaypoint(trip, waypoint, env, deps, stats, now, log);
+    // ADR-017 T5 (#1558) — arvlcd-arrived path 도 SSoT 단일 진입점을 통과해야 trip.waypoints
+    // 가 advance 한다. T4 가 fire 를 게이트했더라도 본 진행분(waypoints shift / passedStations
+    // stamp / progress 누적) 자체는 SSoT 동의 후만 적용. arvlCd=null (positions-fallback arrived)
+    // 경로는 evidence 가 없으므로 legacy 호출(evidence X)로 backward-compat 진행 — 정지 trip 보호는
+    // T6/T7 의 lockless / positions reader migration 에서 같은 패턴으로 닫는다.
+    const arvlCdEvidence = estimate.arvlCd !== null
+      ? ({
+          type: 'arvlcd-confirmed-train',
+          stationId: waypoint.stationName,
+          ts: now,
+          environment: deriveEvidenceEnvironment(trip),
+          arvlcdTrainCode: activeLock.trainCode,
+          arvlCd: estimate.arvlCd,
+        } satisfies AdvanceEvidence)
+      : undefined;
+    await advanceBoardingLockWaypoint(
+      trip,
+      waypoint,
+      env,
+      deps,
+      stats,
+      now,
+      log,
+      arvlCdEvidence,
+    );
     return;
   }
 
@@ -1661,10 +1708,65 @@ export async function advanceBoardingLockWaypoint(
   stats: ScheduledStats,
   now: number,
   log: Logger,
+  // ADR-017 T5 (#1558) — SSoT advance evidence. 호출자가 stamp 한 evidence로
+  // `advanceTripPosition` 6단 게이트 통과 시에만 trip.waypoints 를 advance 한다.
+  // optional 인 이유: legacy 호출자(테스트 fixture, T6 reader migration 미적용 path)는
+  // evidence 없이 호출 가능 — 그 경우 SSoT 게이트를 skip 하고 기존 동작 그대로 진행한다.
+  // 새 호출자는 반드시 evidence 를 전달해야 한다.
+  evidence?: AdvanceEvidence,
 ): Promise<void> {
+  // ADR-017 T5 (#1558) — SSoT 통합 게이트.
+  // evidence 가 제공되면 `advanceTripPosition`이 동의해야만 trip.waypoints / cleanup 이 진행된다.
+  // 정지 trip + arvlcd ARRIVED → SSoT motion 게이트(#2)가 blocked('motion-stationary') 반환 →
+  // trip mutation X (2026-06-19 정지 trip 8회 waypoint advance 회귀 직접 차단).
+  if (evidence !== undefined) {
+    // T4 `tryAdvanceAndFireArvlcd` 와 같은 lazy-seed 정책 — legacy trip (SSoT 미정착) 은
+    // currentStationId=waypoint.stationName 로 seed 후 정상 advance. motionState='unknown' 으로
+    // 시작하므로 정지 게이트는 dormant 이지만 T3 motion state machine 갱신 후 자동 활성화.
+    // seed 없이 바로 advanceTripPosition 을 호출하면 #1 Seed 게이트가 blocked('no-seed') 반환 →
+    // legacy 호출자가 모두 frozen 되는 회귀 발생.
+    const existingSsot = await readSsot(env.TRIPS, trip.token, {
+      cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+    });
+    if (existingSsot === null) {
+      await seedSsot(env.TRIPS, trip.token, waypoint.stationName, {
+        expiresAt: trip.expiresAt,
+      });
+      log('boarding-lock: lazy-seed ssot for waypoint advance', {
+        token: trip.token.slice(0, 8),
+        currentStationId: waypoint.stationName,
+      });
+    }
+    const outcome = await advanceTripPosition(
+      env.TRIPS,
+      trip.token,
+      waypoint.stationName,
+      evidence,
+      {
+        // lock 활성 = base 합의 surrogate (T4 `tryAdvanceAndFireArvlcd` 와 같은 정책).
+        gatePassed: true,
+        lockAttachable: trip.boardingLock !== undefined,
+      },
+    );
+    if (outcome.result !== 'advanced') {
+      stats.boardingLockWaypointAdvanceBlocked += 1;
+      log('boarding-lock: waypoint advance blocked by ssot gate', {
+        token: trip.token.slice(0, 8),
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+        reason: outcome.blockReason satisfies AdvanceBlockReason | undefined,
+        evidenceType: evidence.type,
+      });
+      return;
+    }
+  }
+
   if (waypoint.kind === 'destination') {
     // #868 — destination 도착으로 trip 종료. 클라 state sync용 trip-ended silent push 발사.
     await cleanupTripWithLa(trip, env, deps, stats, now, log, 'destination-arrived');
+    // ADR-017 T5 (#1558) — trip 종료 시 SSoT 도 cleanup. cleanupTripWithLa 가 throw 하면
+    // SSoT 가 남아있을 수 있으나 본 PR 스코프 외 (다음 cron 의 stale 정리 path 는 후속 PR).
+    await deleteSsot(env.TRIPS, trip.token);
     log('boarding-lock: destination arrived, trip cleared', {
       token: trip.token.slice(0, 8),
       station: waypoint.stationName,
@@ -1675,7 +1777,8 @@ export async function advanceBoardingLockWaypoint(
   // device가 사전 예약 큐와 diff하여 cron 1분 race로 누락된 station-passed를 backfill 발사한다
   // (S5 머지 후 후속 wiring PR). 본 PR은 backend → device 데이터 plumbing만.
   appendPassedStation(trip, waypoint.stationName);
-  trip.waypoints.shift();
+  // ADR-017 T5 (#1558) — immutable slice 로 mutation race 방지 (.shift 는 in-place).
+  trip.waypoints = trip.waypoints.slice(1);
   trip.lastTrackedArrivalEpoch = undefined;
   trip.lastLaPushEpoch = undefined;
   // #900 Seam D — heartbeat 기준점도 reset. 다음 hop은 첫 LA push 후 wall-clock stamp.
@@ -1763,6 +1866,8 @@ export async function advanceBoardingLockWaypoint(
   if (trip.waypoints.length === 0) {
     // #868 — waypoints 소진(intermediate 마지막 통과)도 effective destination-arrived.
     await cleanupTripWithLa(trip, env, deps, stats, now, log, 'destination-arrived');
+    // ADR-017 T5 (#1558) — trip 종료 시 SSoT cleanup.
+    await deleteSsot(env.TRIPS, trip.token);
     return;
   }
   // stopsRemaining 변동 즉시 LA 발사 — 사용자에게 새 hop 정보를 즉시 노출.
