@@ -29,8 +29,18 @@ describe('tripStartStorage', () => {
   describe('setTripStartedAt', () => {
     it('주어진 시각을 TRIP_STARTED_AT_KEY 에 기록한다', async () => {
       mockSetItem.mockResolvedValue(undefined);
+      mockGetItem.mockResolvedValue(null);
       await setTripStartedAt(123456);
       expect(mockSetItem).toHaveBeenCalledWith(TRIP_STARTED_AT_KEY, '123456');
+    });
+
+    it('성공 시 #1518 refreshCorrId 도 호출한다 (TRIP_STARTED_AT_KEY getItem)', async () => {
+      mockSetItem.mockResolvedValue(undefined);
+      mockGetItem.mockResolvedValue('1700000000000');
+      await setTripStartedAt(1);
+      // refreshCorrId가 fire-and-forget이라 microtask 비움.
+      await Promise.resolve();
+      expect(mockGetItem).toHaveBeenCalledWith(TRIP_STARTED_AT_KEY);
     });
 
     it('인자 미지정 시 Date.now() 사용', async () => {
@@ -73,8 +83,17 @@ describe('tripStartStorage', () => {
   describe('clearTripStartedAt', () => {
     it('TRIP_STARTED_AT_KEY 를 제거한다', async () => {
       mockRemoveItem.mockResolvedValue(undefined);
+      mockGetItem.mockResolvedValue(null);
       await clearTripStartedAt();
       expect(mockRemoveItem).toHaveBeenCalledWith(TRIP_STARTED_AT_KEY);
+    });
+
+    it('성공 시 #1518 refreshCorrId 도 호출한다', async () => {
+      mockRemoveItem.mockResolvedValue(undefined);
+      mockGetItem.mockResolvedValue(null);
+      await clearTripStartedAt();
+      await Promise.resolve();
+      expect(mockGetItem).toHaveBeenCalledWith(TRIP_STARTED_AT_KEY);
     });
 
     it('AsyncStorage 실패 시 graceful (throw 안 함)', async () => {

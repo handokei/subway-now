@@ -60,6 +60,13 @@ import {
   subscribeFusionDebug,
   type FusionDebugEntry,
 } from '../../../features/nearest-station/utils/fusionDebugBuffer';
+// #1518 — device → backend HTTP 호출 ring buffer. 모든 backend fetch chokepoint가 entry를 push.
+import {
+  clearBackendCallEntries,
+  getBackendCallEntries,
+  subscribeBackendCallEntries,
+  type BackendCallEntry,
+} from '../../../shared/utils/backendCallBuffer';
 // #1501 — PR-C. PR-A(#1512)가 만든 raw signal ring buffer를 DebugModal에 자동 노출 + share dump 통합.
 // 매 fusion cycle/enter/exit 시 push되는 entry를 직전 30건까지 표시 — toggle 없이 모달 열면 즉시.
 import {
@@ -509,6 +516,11 @@ interface BuildDumpArgs {
    */
   envDistribution?: EnvironmentDistributionSnapshot;
   /**
+   * #1518 — Backend call ring buffer entries. 미전달/빈 배열은 (empty)로 출력.
+   * call/response/error 1쌍이 callId로 묶여 있어 dump 본문만으로 latency·status 재구성 가능.
+   */
+  backendCalls?: readonly BackendCallEntry[];
+  /**
    * #1501 — Raw signal ring buffer entries (직전 30건까지). 미전달 시 (empty) 출력 —
    * 단위 테스트에서 raw signal을 다루지 않는 경우 호환.
    */
@@ -701,6 +713,36 @@ function buildFusionLogSection(args: BuildDumpArgs): string[] {
   if (entries.length === 0) return ['(empty)'];
   // 최신이 위로 — Alarm log와 동일 정렬.
   return [...entries].reverse().map(formatFusionDebugLine);
+}
+
+/**
+ * #1518 — Backend call ring buffer 1줄 포맷. call/response/error를 한 줄에 압축해
+ * dump 분량을 줄인다. host 부분만 노출하고 path는 trim 안 함(진단 시 endpoint 식별).
+ */
+function formatBackendCallLine(entry: BackendCallEntry): string {
+  const time = formatClockTimeWithSeconds(entry.ts);
+  const corr = entry.corrId ? ` corrId=${entry.corrId}` : '';
+  const callRef = ` callId=${entry.callId}`;
+  if (entry.kind === 'call') {
+    return `${time} CALL  ${entry.method} ${entry.url}${corr}${callRef}`;
+  }
+  if (entry.kind === 'response') {
+    const lat = entry.latencyMs ?? 0;
+    return `${time} RESP  ${entry.method} ${entry.url} status=${entry.status ?? '-'} ${lat}ms${corr}${callRef}`;
+  }
+  const lat = entry.latencyMs ?? 0;
+  const msg = entry.errorMessage ?? '(no message)';
+  return `${time} ERR   ${entry.method} ${entry.url} err="${msg}" ${lat}ms${corr}${callRef}`;
+}
+
+/**
+ * #1518 — Backend Calls 섹션. 빈 buffer는 (empty)로 명시 출력해 "한 번도 fetch 안 됨"과
+ * "buffer 미연동"을 구분 가능하게 한다. 최신이 위로 정렬(다른 log 섹션과 동일).
+ */
+function buildBackendCallsSection(args: BuildDumpArgs): string[] {
+  const entries = args.backendCalls ?? [];
+  if (entries.length === 0) return ['(empty)'];
+  return [...entries].reverse().map(formatBackendCallLine);
 }
 
 /**
@@ -1025,6 +1067,13 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     build: buildFusionLogSection,
     suffix: (args) => ` (${args.fusionLog?.length ?? 0})`,
   },
+  // #1518 — device → backend HTTP 호출 ring buffer. 직전 trip의 register/sync/telemetry 호출
+  // 흔적이 dump만 보고 재구성 가능해야 #622 transfer-leg sync 같은 회귀 진단이 가능하다.
+  {
+    title: 'Backend Calls',
+    build: buildBackendCallsSection,
+    suffix: (args) => ` (${args.backendCalls?.length ?? 0})`,
+  },
   // #1413 — boardingPrompt 발사 빈도 카운터(5m/1h/all).
   { title: 'Boarding Prompt', build: buildBoardingPromptSection },
   // #1413 — boardingPrompt acceptance dashboard (displayed/responded/rates + 7일 시계열).
@@ -1293,6 +1342,10 @@ function DebugModalInner({
   const [estimatorLogs, setEstimatorLogs] = useState<readonly EstimatorDebugEntry[]>(() =>
     getEstimatorEntries(),
   );
+  // #1518 — backend call ring buffer subscribe. 모든 backend fetch chokepoint가 push.
+  const [backendCalls, setBackendCalls] = useState<readonly BackendCallEntry[]>(() =>
+    getBackendCallEntries(),
+  );
   // #1501 — PR-C. Raw signal buffer는 module-level singleton(영속 + boot hydrate).
   // 모달 마운트 시점 스냅샷으로 초기화, 이후 subscribe로 실시간 갱신.
   const [rawSignalLog, setRawSignalLog] = useState<readonly RawSignalEntry[]>(() =>
@@ -1319,6 +1372,12 @@ function DebugModalInner({
 
   useEffect(() => {
     return subscribeEstimatorDebug(() => setEstimatorLogs([...getEstimatorEntries()]));
+  }, []);
+
+  useEffect(() => {
+    return subscribeBackendCallEntries(() =>
+      setBackendCalls([...getBackendCallEntries()]),
+    );
   }, []);
 
   // #1501 — PR-C. Raw signal buffer 변경 구독. push/clear 어느 쪽이든 같은 listener로 반응.
@@ -1405,6 +1464,8 @@ function DebugModalInner({
       autoLockMeta,
       // #1430 — 환경 분포 측정 인프라. state별 누적 ms + transition 카운트.
       envDistribution,
+      // #1518 — backend call ring buffer entries.
+      backendCalls,
       // #1501 — PR-C. Raw signal buffer entries (직전 N건). share dump가 모달 표시와 동일 SSOT.
       rawSignalLog,
     });
@@ -1448,6 +1509,8 @@ function DebugModalInner({
     autoLockMeta,
     // #1430 — env distribution snapshot도 render-time 산출. state flip 시 share 텍스트 갱신.
     envDistribution,
+    // #1518 — backend call entries 변경 시 share 텍스트 갱신.
+    backendCalls,
     // #1501 — PR-C. raw signal entries 변경 시 share 텍스트 자동 갱신.
     rawSignalLog,
   ]);
@@ -1672,6 +1735,20 @@ function DebugModalInner({
             }}
             clearTestId="debug-fusion-log-clear"
             entryTestId="debug-fusion-log-entry"
+            colors={colors}
+          />
+
+          {/* #1518 — device → backend HTTP 호출 ring buffer. 토글 없이 직전 entries 자동 표시. */}
+          <DebugLogSection
+            title="Backend Calls"
+            logs={backendCalls}
+            formatLine={formatBackendCallLine}
+            onClear={() => {
+              clearBackendCallEntries();
+              setBackendCalls([]);
+            }}
+            clearTestId="debug-backend-calls-clear"
+            entryTestId="debug-backend-calls-entry"
             colors={colors}
           />
 
@@ -2131,6 +2208,9 @@ export const __test__ = {
   deriveEnvironmentState,
   formatPercentage,
   formatDurationMs,
+  // #1518 — backend call formatter / section builder. test에서 직접 검증.
+  formatBackendCallLine,
+  buildBackendCallsSection,
   // #1501 — PR-C. Raw signal 라인 포맷 helper. share dump 단위 테스트에서 직접 호출.
   formatRawSignalLine,
   RAW_SIGNAL_DISPLAY_LIMIT,

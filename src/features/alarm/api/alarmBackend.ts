@@ -13,6 +13,7 @@ import type { Route } from '../../../shared/utils/stationRoute';
 import type { ApnsEnv } from '../../../shared/utils/apnsEnv';
 import { createLogger } from '../../../shared/utils/logger';
 import { ACTIVE_BOARDING_LINE_KEY } from '../../../shared/constants/storageKeys';
+import { instrumentBackendFetch } from '../../../shared/utils/instrumentBackendFetch';
 
 const log = createLogger('alarmBackend');
 
@@ -213,7 +214,8 @@ async function fetchWithTimeout(input: string, init: RequestInit): Promise<Respo
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    // #1518 — instrumentBackendFetch로 wrapping해 call/response/error entry를 진단 buffer에 push.
+    return await instrumentBackendFetch(input, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
