@@ -18,7 +18,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 const makeResponse = (status: number): Response =>
   ({ ok: status < 400, status }) as unknown as Response;
 
-const asFetch = (fn: jest.Mock): typeof fetch => fn as unknown as typeof fetch;
+const asFetch = (fn: jest.Mock): typeof fetch => fn;
 
 describe('instrumentBackendFetch', () => {
   beforeEach(() => {
