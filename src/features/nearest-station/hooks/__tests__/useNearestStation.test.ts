@@ -815,7 +815,7 @@ describe('useNearestStation', () => {
       // 이전 fixed window 구현은 windowStart>=1000ms 마다 reset되어 동일한 결과를 내지만,
       // 본 테스트는 sliding 동작이 회귀하지 않음을 박제한다.
       for (let i = 0; i < 6; i += 1) {
-        simulateGps(37.6000 + i * 0.001, 127.0000 + i * 0.001, {
+        simulateGps(37.6 + i * 0.001, 127 + i * 0.001, {
           accuracy: 800 + i,
           speed: 0,
           timestamp: fakeNow,
@@ -847,7 +847,7 @@ describe('useNearestStation', () => {
       await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
       // t0: push 1건 → timestamps=[t0]
-      simulateGps(37.7000, 127.0000, { accuracy: 800, timestamp: fakeNow });
+      simulateGps(37.7, 127, { accuracy: 800, timestamp: fakeNow });
       // t0+500: push 2번째 → timestamps=[t0, t0+500] (limit=2 도달)
       fakeNow += 500;
       simulateGps(37.7001, 127.0001, { accuracy: 801, timestamp: fakeNow });
@@ -860,13 +860,13 @@ describe('useNearestStation', () => {
       // skipped=1이므로 summary push → timestamps=[t0+500, t0+1100] length=2=limit.
       // 본 drop은 미뤄지고 skipped=1로 재설정.
       fakeNow = 1_700_000_000_000 + 1_100;
-      simulateGps(37.7003, 127.0003, { accuracy: 803, speed: 2.0, timestamp: fakeNow });
+      simulateGps(37.7003, 127.0003, { accuracy: 803, speed: 2, timestamp: fakeNow });
       const drops = getGpsDropEntries();
       // 2 (1st window pushes) + 1 summary = 3. 본 drop은 다음 윈도우로 미뤄짐.
       expect(drops).toHaveLength(3);
       const summary = drops[2];
       expect(summary.dropReason).toBe('rate-limited:1');
-      expect(summary.speedMps).toBe(2.0);
+      expect(summary.speedMps).toBe(2);
     } finally {
       (Date.now as jest.Mock).mockRestore?.();
       Date.now = realNow;

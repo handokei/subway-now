@@ -3715,7 +3715,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
     const makeDrop = (overrides: Partial<DropEntry> = {}): DropEntry => ({
       ts: 1_700_000_000_000,
       lat: 37.5,
-      lng: 127.0,
+      lng: 127,
       accuracyMeters: 1414,
       speedMps: null,
       dropReason: 'low-accuracy-display',
@@ -3744,7 +3744,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
     it('buildGpsDropLogSection: 미전달/빈 배열 모두 (empty)', () => {
       expect(buildGpsDropLogSection(baselineDumpArgs)).toEqual(['(empty)']);
       expect(
-        buildGpsDropLogSection({ ...baselineDumpArgs, gpsDropLog: [] } as never),
+        buildGpsDropLogSection({ ...baselineDumpArgs, gpsDropLog: [] }),
       ).toEqual(['(empty)']);
     });
 
@@ -3755,7 +3755,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
           makeDrop({ ts: 1000, accuracyMeters: 800 }),
           makeDrop({ ts: 2000, accuracyMeters: 900 }),
         ],
-      } as never);
+      });
       expect(result).toHaveLength(2);
       expect(result[0]).toContain('acc=900m');
       expect(result[1]).toContain('acc=800m');
@@ -3765,7 +3765,7 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       const dump = buildDumpText(
         makeDumpArgs({
           gpsDropLog: [makeDrop({ accuracyMeters: 1234 })],
-        } as Partial<DumpArgs>),
+        }),
       );
       expect(dump).toContain('## GPS drops (1)');
       expect(dump).toContain('acc=1234m');

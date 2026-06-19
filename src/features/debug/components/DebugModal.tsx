@@ -734,8 +734,8 @@ function buildFusionLogSection(args: BuildDumpArgs): string[] {
  */
 function formatGpsDropLine(entry: GpsDropEntry): string {
   const time = formatTime(entry.ts);
-  const acc = entry.accuracyMeters != null ? `${Math.round(entry.accuracyMeters)}m` : '-';
-  const sp = entry.speedMps != null ? `${entry.speedMps.toFixed(1)}m/s` : '-';
+  const acc = entry.accuracyMeters == null ? '-' : `${Math.round(entry.accuracyMeters)}m`;
+  const sp = entry.speedMps == null ? '-' : `${entry.speedMps.toFixed(1)}m/s`;
   return `${time} | gps-drop | acc=${acc} sp=${sp} reason=${entry.dropReason}`;
 }
 

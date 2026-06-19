@@ -10,7 +10,7 @@ function makeDrop(overrides: Partial<Parameters<typeof pushGpsDropEntry>[0]> = {
   return {
     ts: Date.now(),
     lat: 37.5,
-    lng: 127.0,
+    lng: 127,
     accuracyMeters: 1500,
     speedMps: null,
     dropReason: 'low-accuracy-display',
