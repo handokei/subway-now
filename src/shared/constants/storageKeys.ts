@@ -154,6 +154,15 @@ export const TRIP_CORR_ID_KEY = 'subway-now:trip-corr-id';
 // 마지막 ~120 entry가 복원돼 7일 회귀 사후 분석에 사용.
 // 형식: RawSignalEntry[] JSON.
 export const RAW_SIGNAL_BUFFER_KEY = 'subway-now:raw-signal-buffer';
+// #1520 (ADR-015 §10 P5 / PR-B) — Raw signal dump outbox queue.
+// triggerTripEndRecall이 fire-and-forget으로 upload 시도 → 네트워크 실패 시 outbox에 enqueue,
+// 다음 cold-launch에서 useLaunchTripReconciliation 시점에 flush. 같은 corrId 재전송은 backend가 덮어쓰기로 처리.
+// 형식: {corrId, token, entries}[] JSON. 단일 항목만 보존(가장 최근 trip-end).
+export const RAW_SIGNAL_OUTBOX_KEY = 'subway-now:raw-signal-outbox';
+// #1520 — 마지막으로 backend에 upload 성공한 corrId. 같은 corrId 재시도는 즉시 skip.
+// triggerTripEndRecall이 1차 호출 + outbox flush 양쪽에서 이 키로 멱등성 보장.
+// 형식: 문자열 (corrId). 부재 = 아직 upload 성공 trip 없음.
+export const LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY = 'subway-now:last-uploaded-signal-dump-corr-id';
 // #1279 — 기압계 지하 감지 상태(subsurface boolean) AsyncStorage stamp.
 // useBarometer(FG-only React state)가 subsurface flip 시 write → BG silent-push task와
 // 위치 게이트가 동일한 값을 read할 수 있도록 한다. updatedAt(epoch ms)은 TTL 만료 판별용.

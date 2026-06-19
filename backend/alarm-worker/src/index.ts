@@ -49,6 +49,12 @@ import {
   recordRecallUpload,
   validateRecallUpload,
 } from './recallTelemetry';
+import {
+  MAX_DUMP_ENTRIES,
+  readSignalDump,
+  storeSignalDump,
+  validateSignalDumpUpload,
+} from './rawSignalDump';
 import { MIN_RECALL_RATIO_THRESHOLD, RECALL_THRESHOLD_CRITICAL } from './metrics';
 import { RECALL_DATASET, RECALL_OPS_PAGE_URL, RECALL_QUERIES } from './recallQueries';
 import {
@@ -718,6 +724,83 @@ app.get('/admin/telemetry/regressions', async (c) => {
   if (authError) return c.json({ error: authError.code }, authError.status);
   const counts = await readRegressionCounters(c.env.TRIPS, Date.now());
   return c.json({ ids: KNOWN_REGRESSION_IDS, counts });
+});
+
+/**
+ * Device raw signal dump upload (#1520, ADR-015 §10 P5 / PR-B).
+ *
+ * Trip 종료 시 device가 `useFusedNearestStation` ring buffer(capacity 120)을 한 번 보낸다.
+ * KV에 `dump:{corrId}` 키로 60일 TTL 적재 — 운영자가 `/admin/signals/export?corrId=`로 조회.
+ *
+ * Body: { corrId, token, entries[] }
+ *   - corrId: `${epoch ms}-${8 hex}` 형식 (device tripCorrId.ts와 정합)
+ *   - token: APNs device token (8자 prefix만 KV에 저장 — PII 보호)
+ *   - entries: RawSignalEntry[] (1~500개, schema 검증은 device 책임 — forward compat)
+ *
+ * Response:
+ *   200 { ok: true, accepted: N }      — 정상 적재
+ *   400 { error: 'invalid_json' | 'invalid_payload' }
+ *   503 { error: 'raw_signals_unavailable' } — RAW_SIGNALS binding 미설정 (개발 환경 호환)
+ *
+ * Idempotency: 같은 corrId 재호출은 덮어쓰기 — device가 outbox flush로 retry해도
+ *   server side에서 별도 dedup 불필요 (entries는 동일 trip의 동일 buffer 스냅샷).
+ */
+app.post('/signals/dump', async (c) => {
+  const kv = c.env.RAW_SIGNALS;
+  if (!kv) return c.json({ error: 'raw_signals_unavailable' }, 503);
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const payload = validateSignalDumpUpload(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  await storeSignalDump(kv, payload, Date.now());
+
+  console.log(
+    JSON.stringify({
+      msg: 'signal dump stored',
+      tokenPrefix: tokenPrefix(payload.token),
+      corrId: payload.corrId,
+      entries: payload.entries.length,
+      maxEntries: MAX_DUMP_ENTRIES,
+    }),
+  );
+  return c.json({ ok: true, accepted: payload.entries.length });
+});
+
+/**
+ * Raw signal dump export (#1520). 운영자가 corrId로 적재된 dump를 조회한다.
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — admin endpoint 공통 정책.
+ * Query: `?corrId={cid}` — 필수.
+ *
+ * Response:
+ *   200 { corrId, tokenPrefix, entries[], uploadedAt }
+ *   400 { error: 'invalid_corrId' }
+ *   404 { error: 'not_found' }
+ *   401/503: 인증/binding 정책 동일 (`/admin/feedback` 패턴).
+ */
+app.get('/admin/signals/export', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const kv = c.env.RAW_SIGNALS;
+  if (!kv) return c.json({ error: 'raw_signals_unavailable' }, 503);
+
+  const corrId = c.req.query('corrId');
+  if (!corrId) return c.json({ error: 'invalid_corrId' }, 400);
+
+  const stored = await readSignalDump(kv, corrId);
+  if (!stored) {
+    // invalid pattern과 not-found를 같은 응답으로 구분 — readSignalDump가 pattern 위반 시 null 반환.
+    // 호출자(운영자) 입장에서 둘 다 "조회 불가" 동일 의미이므로 404로 정렬.
+    return c.json({ error: 'not_found' }, 404);
+  }
+  return c.json({ corrId, ...stored });
 });
 
 /**
