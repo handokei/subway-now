@@ -1306,6 +1306,13 @@ function DebugModalInner({
     setScheduledDump(await dumpScheduledNotifications());
   }, []);
 
+  // #1525 — DebugModal 진입 즉시 OS scheduled queue를 1회 dump한다. 사용자가 Refresh를
+  // 누르지 않은 share dump가 항상 "(not loaded)"로 나가 zombie alarm 추적이 불가능했던
+  // 회귀 차단. 이후 갱신은 기존 Refresh 버튼이 담당.
+  useEffect(() => {
+    void refreshScheduledDump();
+  }, [refreshScheduledDump]);
+
   useEffect(() => {
     return subscribeFusionDebug(() => setFusionLogs([...getFusionDebugEntries()]));
   }, []);

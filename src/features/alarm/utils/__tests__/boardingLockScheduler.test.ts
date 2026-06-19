@@ -350,6 +350,32 @@ describe('cancelAllHopsForLock', () => {
     await expect(cancelAllHopsForLock(lock)).resolves.toBeUndefined();
     expect(mockedCancel).toHaveBeenCalled();
   });
+
+  it('#1525 — 한 identifier의 cancel reject가 나머지 identifier cancel을 막지 않는다', async () => {
+    // 직렬 await 루프였을 때는 첫 id의 cancel reject에서 throw → 나머지 `bl:` 사전 예약이
+    // OS 큐에 남아 trip 종료 후 좀비 알림으로 발사됐다. allSettled로 묶여 한 id의
+    // cancel reject가 나머지를 막지 않아야 한다.
+    mockedGet.mockResolvedValueOnce([
+      'bl:T-100:0:early:강남',
+      'bl:T-100:0:imminent:강남',
+      'bl:T-100:1:early:역삼',
+    ]);
+    mockedCancel.mockImplementation((id) => {
+      if (id === 'bl:T-100:0:early:강남') return Promise.reject(new Error('already fired'));
+      return Promise.resolve();
+    });
+
+    try {
+      await expect(cancelAllHopsForLock(lock)).resolves.toBeUndefined();
+
+      expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:early:강남');
+      expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:0:imminent:강남');
+      expect(mockedCancel).toHaveBeenCalledWith('bl:T-100:1:early:역삼');
+    } finally {
+      // 다른 describe로 reject impl leak 방지.
+      mockedCancel.mockReset();
+    }
+  });
 });
 
 // #1356 E1 / #1355 D1 — silent push suppress & cross-channel cancel helper.

@@ -30,9 +30,30 @@ import { clearTripTrainCode } from '../../route/utils/tripTrainCode';
 import { clearDismissSilence as clearDismissSilenceStorage } from '../utils/dismissSilenceStorage';
 import { clearLaDismissSentinel } from '../utils/laDismissSentinel';
 import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
-import { purgeBoardingLockSchedulerQueue } from '../utils/boardingLockScheduler';
-import { cancelTripBoundAlarms } from '../utils/tripBoundScheduler';
+import {
+  getRegisteredBlRouteSig,
+  purgeBoardingLockSchedulerQueue,
+} from '../utils/boardingLockScheduler';
+import {
+  cancelTripBoundAlarms,
+  getRegisteredTripRouteSig,
+} from '../utils/tripBoundScheduler';
 import { clearTripCorrId } from '../../observability/utils/tripCorrId';
+import { createLogger } from '../../../shared/utils/logger';
+
+const log = createLogger('tripBoundCleanups');
+
+/**
+ * #1525 — defensive cancel retry interval (ms). trip 종료 직후 한 번 cancel 한 뒤
+ * 이 시간 후 한 번 더 cancel을 시도해 ETA 도달 직전 race window를 좁힌다.
+ *
+ * 1분은 silent push 처리 → setDestination(null) → AsyncStorage settle → OS notification
+ * scheduler 반영의 typical lag(수 초)보다 충분히 길고, 평균 hop time(2~3분) 보다 짧아
+ * 다음 hop이 ETA에 도달하기 전에 두 번째 cancel이 들어간다.
+ */
+const DEFENSIVE_CANCEL_DELAY_MS = 60_000;
+
+let defensiveTimer: ReturnType<typeof setTimeout> | null = null;
 
 // trip-bound storage cleanup 단일 출처.
 // useDestinationStore.setDestination이 isSwitch(목적지 변경 또는 null 클리어) 분기에서 호출한다.
@@ -107,6 +128,10 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
  * 다른 항목 실행이나 호출자에게 전파되지 않도록).
  */
 export function runTripBoundCleanups(): Promise<void> {
+  // #1525 — FG setDestination(null) 경로의 zombie alarm backstop. 1차 cleanup이 in-flight인
+  // 동안 expo-notifications 내부 race로 일부 사전 예약이 살아남는 사례를 1분 후 두번째
+  // cancel pass로 정리. 새 trip이 시작되면 route sig 가드가 skip한다.
+  scheduleDefensiveCancel();
   return Promise.allSettled(TRIP_BOUND_CLEANUPS.map((cleanup) => cleanup())).then(noop);
 }
 
@@ -122,10 +147,63 @@ export function runTripBoundCleanups(): Promise<void> {
  * 두 cancel은 독립적이라 allSettled로 묶어 한쪽 실패가 다른 쪽 실행을 막지 않도록 한다.
  */
 export function cancelTripBoundOsQueue(): Promise<void> {
+  scheduleDefensiveCancel();
   return Promise.allSettled([
     purgeBoardingLockSchedulerQueue(),
     cancelTripBoundAlarms(),
   ]).then(noop);
+}
+
+/**
+ * #1525 — trip 종료 직후 1분 뒤 한 번 더 `tba:`/`bl:` OS 사전 예약을 cancel한다.
+ *
+ * 1차 cancel 시점에 race로 schedule이 in-flight였거나, expo-notifications 내부 큐 반영
+ * 지연으로 일부 identifier가 cancel을 빠져나가는 경우를 보강. 2026-06-19 trip 종료
+ * 11분 후 "안내 종료" 알림이 사용자에게 도달한 사례(zombie alarm)의 backstop.
+ *
+ * 새 trip이 시작되어 routeSig가 다시 기록됐다면 정상 사전 예약을 지우면 안 되므로 skip.
+ * 이미 예약된 defensive timer가 있으면 새 호출이 reset(이전 timer cancel → 새 timer).
+ *
+ * 별도 export 없이 cancelTripBoundOsQueue / runTripBoundCleanups 내부에서만 호출.
+ */
+function scheduleDefensiveCancel(): void {
+  if (defensiveTimer !== null) {
+    clearTimeout(defensiveTimer);
+  }
+  defensiveTimer = setTimeout(() => {
+    defensiveTimer = null;
+    void runDefensiveCancel();
+  }, DEFENSIVE_CANCEL_DELAY_MS);
+}
+
+async function runDefensiveCancel(): Promise<void> {
+  // 새 trip이 시작되어 route sig가 기록됐으면 사전 예약은 정상 — defensive cancel skip.
+  // `tba:` / `bl:` 두 채널 중 하나라도 sig가 살아있으면 새 trip 진행 중으로 판단.
+  // getRegisteredXxxRouteSig는 storage 실패를 내부에서 catch해 null 반환 — 본 함수의
+  // try/catch 없이도 throw가 외부로 새지 않는다 (Promise.allSettled가 cancel 양쪽을 흡수).
+  const [tbaSig, blSig] = await Promise.all([
+    getRegisteredTripRouteSig(),
+    getRegisteredBlRouteSig(),
+  ]);
+  if (tbaSig !== null || blSig !== null) {
+    log.info(`defensive cancel skip: new trip active (tbaSig=${tbaSig !== null} blSig=${blSig !== null})`);
+    return;
+  }
+  log.info('defensive cancel: running second cancel pass (#1525)');
+  await Promise.allSettled([
+    purgeBoardingLockSchedulerQueue(),
+    cancelTripBoundAlarms(),
+  ]);
+}
+
+/**
+ * 테스트용 — pending defensive timer를 즉시 cancel + 모듈 상태 reset. production 호출자 없음.
+ */
+export function __resetDefensiveCancelForTest(): void {
+  if (defensiveTimer !== null) {
+    clearTimeout(defensiveTimer);
+    defensiveTimer = null;
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-empty-function
