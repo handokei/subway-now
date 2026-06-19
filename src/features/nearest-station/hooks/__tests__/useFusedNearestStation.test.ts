@@ -34,6 +34,15 @@ jest.mock('../../../route/hooks/useTrainPositions');
 jest.mock('../../utils/findNearestStation', () => ({
   findTopNearestStations: jest.fn(),
 }));
+// #1501 (PR-A) — rawSignalBuffer / tripCorrId은 본 hook의 측정 채널이라 mock으로 격리.
+// 자체 단위 테스트가 buffer/persist/throttle을 따로 검증한다. 실제 push 호출 횟수/형태만
+// jest.fn으로 확인.
+jest.mock('../../../observability/utils/rawSignalBuffer', () => ({
+  pushRawSignal: jest.fn(),
+}));
+jest.mock('../../../observability/utils/tripCorrId', () => ({
+  getCurrentTripCorrIdSync: jest.fn(() => null),
+}));
 
 const mockUseNearest = useNearestStation as jest.Mock;
 const mockUseArrival = useArrivalInfo as jest.Mock;

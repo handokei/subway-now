@@ -23,6 +23,7 @@
     "validate:data": "node scripts/validate-stations.js",
     "check:infoplist": "bash scripts/check-infoplist-sync.sh",
     "tail:capture": "scripts/capture-tail.sh",
+    "kv:snapshot": "scripts/snapshot-trip-kv.sh",
     "measure:blocked-reasons": "scripts/capture-blocked-reasons.sh",
     "measure:blocked-reasons:aggregate": "node scripts/aggregate-blocked-reasons.js",
     "perf:report": "node scripts/perf-report.js",

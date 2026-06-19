@@ -3480,3 +3480,223 @@ describe('buildBackendCallsSection — #1518', () => {
   });
 });
 
+// #1501 — PR-C. Raw signal 라인 포맷 + share dump 섹션 + UI 자동 표시 / Clear 통합.
+describe('DebugModal — #1501 Raw Signal 섹션', () => {
+  const { formatRawSignalLine, buildDumpText, RAW_SIGNAL_DISPLAY_LIMIT } = __test__;
+  type RawEntry = import('../../../observability/utils/rawSignalBuffer').RawSignalEntry;
+
+  // 단일 entry 빌더 — 테스트마다 override 필드만 지정해 표시/dump 케이스를 격리한다.
+  const makeRawEntry = (overrides: Partial<RawEntry> = {}): RawEntry => ({
+    ts: new Date('2026-06-19T08:00:00Z').getTime(),
+    corrId: null,
+    kind: 'cycle',
+    gps: { lat: 37.5, lng: 127, accM: 25, speedMps: 8.3 },
+    motion: 'automotive',
+    subsurface: false,
+    arvlCd: 99,
+    line: '7',
+    dir: 'up',
+    arcIdx: 3,
+    arcProgress: 0.42,
+    stationId: '7-220',
+    source: 'gps',
+    confidence: 'gps-only',
+    ...overrides,
+  });
+
+  describe('formatRawSignalLine', () => {
+    it.each<{ readonly name: string; readonly entry: RawEntry; readonly contains: readonly string[] }>([
+      {
+        name: '전체 필드 채워진 cycle entry → 9개 토큰 직렬화',
+        entry: makeRawEntry(),
+        contains: [
+          'cycle',
+          '7-220',
+          'gps/gps-only',
+          'gps(25m/8.3m/s)',
+          'automotive',
+          'sub=false',
+          'arvlCd=99',
+          'arc=0.42',
+        ],
+      },
+      {
+        name: 'enter kind + stationId/source/confidence null → kind만 표시 + 나머지 -/—',
+        entry: makeRawEntry({
+          kind: 'enter',
+          stationId: null,
+          source: null,
+          confidence: null,
+          arvlCd: null,
+          arcProgress: null,
+        }),
+        contains: ['enter', '-/-', 'arvlCd=-', 'arc=-'],
+      },
+      {
+        name: 'gps null + motion null + subsurface true → gps(-/-)·motion=-·sub=true',
+        entry: makeRawEntry({
+          gps: null,
+          motion: null,
+          subsurface: true,
+        }),
+        contains: ['gps(-/-)', '| - |', 'sub=true'],
+      },
+      {
+        name: 'gps.accM/speedMps null → 개별 토큰만 -',
+        entry: makeRawEntry({
+          gps: { lat: 37.5, lng: 127, accM: null, speedMps: null },
+        }),
+        contains: ['gps(-/-)'],
+      },
+      {
+        name: 'subsurface null → sub=— (unknown sentinel)',
+        entry: makeRawEntry({ subsurface: null }),
+        contains: ['sub=—'],
+      },
+      {
+        name: 'exit kind + arvlCd=0 → arvlCd=0 (truthy 분기 회귀 방지)',
+        entry: makeRawEntry({ kind: 'exit', arvlCd: 0, arcProgress: 0 }),
+        contains: ['exit', 'arvlCd=0', 'arc=0.00'],
+      },
+    ])('$name', ({ entry, contains }) => {
+      const line = formatRawSignalLine(entry);
+      for (const expected of contains) {
+        expect(line).toContain(expected);
+      }
+    });
+  });
+
+  describe('buildDumpText ## Raw Signal', () => {
+    const dumpRawSection = (rawSignalLog?: readonly RawEntry[]): string => {
+      const dump = buildDumpText(
+        makeDumpArgs(rawSignalLog === undefined ? {} : { rawSignalLog }),
+      );
+      return dump.slice(dump.indexOf('## Raw Signal'));
+    };
+
+    it('rawSignalLog 미전달 → 헤더(0) + (empty)', () => {
+      const section = dumpRawSection();
+      expect(section).toContain('## Raw Signal (0)');
+      expect(section).toContain('(empty)');
+    });
+
+    it('빈 배열도 (empty) 출력 (Fusion log 컨벤션)', () => {
+      const section = dumpRawSection([]);
+      expect(section).toContain('## Raw Signal (0)');
+      expect(section).toContain('(empty)');
+    });
+
+    it('3건 → 최신이 위 (역순) + suffix는 buffer 전체 길이', () => {
+      const entries: RawEntry[] = [
+        makeRawEntry({ ts: 1000, stationId: 'A' }),
+        makeRawEntry({ ts: 2000, stationId: 'B' }),
+        makeRawEntry({ ts: 3000, stationId: 'C' }),
+      ];
+      const section = dumpRawSection(entries);
+      expect(section).toContain('## Raw Signal (3)');
+      const stationCIdx = section.indexOf('| C |');
+      const stationBIdx = section.indexOf('| B |');
+      const stationAIdx = section.indexOf('| A |');
+      expect(stationCIdx).toBeGreaterThan(-1);
+      expect(stationCIdx).toBeLessThan(stationBIdx);
+      expect(stationBIdx).toBeLessThan(stationAIdx);
+    });
+
+    it(`상위 ${RAW_SIGNAL_DISPLAY_LIMIT}건만 dump (overflow 분리)`, () => {
+      const entries: RawEntry[] = Array.from({ length: RAW_SIGNAL_DISPLAY_LIMIT + 5 }, (_, i) =>
+        makeRawEntry({ ts: i * 1000, stationId: `S${i}` }),
+      );
+      const dump = buildDumpText(makeDumpArgs({ rawSignalLog: entries }));
+      // suffix는 buffer 전체 (35) — display limit과 분리.
+      expect(dump).toContain(`## Raw Signal (${RAW_SIGNAL_DISPLAY_LIMIT + 5})`);
+      const section = dump.slice(dump.indexOf('## Raw Signal'));
+      // 가장 오래된 entry(S0)는 dump에서 잘림.
+      expect(section).not.toContain('| S0 |');
+      // 가장 최신(S34)은 포함.
+      expect(section).toContain(`| S${RAW_SIGNAL_DISPLAY_LIMIT + 4} |`);
+    });
+
+    it('SHARE_SECTIONS에 Raw Signal 헤더 1회 + Environment Distribution 다음에 위치', () => {
+      const dump = buildDumpText(makeDumpArgs());
+      const envIdx = dump.indexOf('## Environment Distribution');
+      const rawIdx = dump.indexOf('## Raw Signal');
+      expect(envIdx).toBeGreaterThan(-1);
+      expect(rawIdx).toBeGreaterThan(envIdx);
+      expect(dump.split('## Raw Signal').length - 1).toBe(1);
+    });
+  });
+
+  describe('DebugModal UI 자동 표시 + Clear', () => {
+    const {
+      pushRawSignal,
+      clearRawSignalEntries,
+      __resetRawSignalForTests__,
+    } = jest.requireActual('../../../observability/utils/rawSignalBuffer');
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      __resetRawSignalForTests__();
+      setupHookDefaults();
+      jest.spyOn(AppState, 'addEventListener').mockReturnValue({
+        remove: jest.fn(),
+      } as unknown as ReturnType<typeof AppState.addEventListener>);
+    });
+
+    afterEach(() => {
+      __resetRawSignalForTests__();
+    });
+
+    it('모달 진입 시 buffer 스냅샷 표시 (toggle 없음, 직전 entry 자동 노출)', async () => {
+      pushRawSignal(makeRawEntry({ ts: 1000, stationId: 'PRE-MOUNT' }));
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByText('Raw Signal (1)')).toBeTruthy();
+      const entries = screen.getAllByTestId('debug-raw-signal-entry');
+      expect(entries[0].props.children).toContain('PRE-MOUNT');
+    });
+
+    it('마운트 이후 push 시 listener가 UI 갱신', async () => {
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByText('Raw Signal (0)')).toBeTruthy();
+      act(() => {
+        pushRawSignal(makeRawEntry({ ts: 5000, stationId: 'POST-MOUNT' }));
+      });
+      expect(screen.getByText('Raw Signal (1)')).toBeTruthy();
+      const entries = screen.getAllByTestId('debug-raw-signal-entry');
+      expect(entries[0].props.children).toContain('POST-MOUNT');
+    });
+
+    it('Clear 버튼이 buffer와 UI를 동시에 비운다', async () => {
+      pushRawSignal(makeRawEntry({ stationId: 'TO-CLEAR' }));
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(screen.getByText('Raw Signal (1)')).toBeTruthy());
+      act(() => {
+        fireEvent.press(screen.getByTestId('debug-raw-signal-clear'));
+      });
+      expect(screen.getByText('Raw Signal (0)')).toBeTruthy();
+      // buffer SSOT까지 비웠는지 확인 — getRawSignalEntries는 listener와 동일 buffer.
+      const { getRawSignalEntries } = jest.requireActual(
+        '../../../observability/utils/rawSignalBuffer',
+      );
+      expect(getRawSignalEntries()).toEqual([]);
+      // 직접 clearRawSignalEntries도 호출 가능(idempotent 확인).
+      clearRawSignalEntries();
+      expect(getRawSignalEntries()).toEqual([]);
+    });
+
+    it('share dump가 SSOT raw signal entries를 포함한다', async () => {
+      pushRawSignal(makeRawEntry({ stationId: 'SHARE-INTEGRATION' }));
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByText('Raw Signal (1)')).toBeTruthy());
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const msg = shareSpy.mock.calls[0][0].message;
+      expect(msg).toContain('## Raw Signal (1)');
+      expect(msg).toContain('SHARE-INTEGRATION');
+      shareSpy.mockRestore();
+    });
+  });
+});

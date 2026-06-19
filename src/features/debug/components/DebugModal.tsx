@@ -67,6 +67,14 @@ import {
   subscribeBackendCallEntries,
   type BackendCallEntry,
 } from '../../../shared/utils/backendCallBuffer';
+// #1501 — PR-C. PR-A(#1512)가 만든 raw signal ring buffer를 DebugModal에 자동 노출 + share dump 통합.
+// 매 fusion cycle/enter/exit 시 push되는 entry를 직전 30건까지 표시 — toggle 없이 모달 열면 즉시.
+import {
+  clearRawSignalEntries,
+  getRawSignalEntries,
+  subscribeRawSignal,
+  type RawSignalEntry,
+} from '../../observability/utils/rawSignalBuffer';
 import {
   dumpScheduledNotifications,
   formatScheduledNotificationLine,
@@ -169,6 +177,12 @@ export interface AutoLockDebugMeta {
 
 const UNKNOWN_LABEL = '—';
 
+/**
+ * #1501 — Raw signal 섹션 UI/share dump에 노출할 최대 엔트리 수. PR-A의 buffer capacity(120)는
+ * 7일 cold-launch 회귀 사후 재구성용이라 더 크고, 모달 진입 시점에는 직전 30건이면 충분.
+ */
+const RAW_SIGNAL_DISPLAY_LIMIT = 30;
+
 function formatOptionalBool(value: boolean | null | undefined): string {
   if (value === true) return 'true';
   if (value === false) return 'false';
@@ -256,6 +270,29 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
     .join(' ');
   const candPart = cand.length > 0 ? cand : '-';
   return `${time} | src=${entry.source} conf=${entry.confidence} | ${station} d=${d} acc=${acc} | ${candPart}`;
+}
+
+/**
+ * #1501 — Raw signal ring buffer entry를 한 줄 텍스트로. 필드 순서:
+ *   `HH:MM:SS | kind | stationId | source/confidence | gps(acc/speed) | motion | subsurface | arvlCd | arcProgress`
+ * 누락 필드는 `-`로 출력 — Fusion log와 동일 컨벤션. line/dir/corrId는 share dump 본문에
+ * 추가 정보가 필요할 때 별도 PR로 확장한다(본 PR-C는 필수 9필드만 노출).
+ */
+function formatRawSignalLine(entry: RawSignalEntry): string {
+  const time = formatTime(entry.ts);
+  const stationId = entry.stationId ?? '-';
+  const source = entry.source ?? '-';
+  const confidence = entry.confidence ?? '-';
+  const acc =
+    entry.gps?.accM != null ? `${Math.round(entry.gps.accM)}m` : '-';
+  const speed =
+    entry.gps?.speedMps != null ? `${entry.gps.speedMps.toFixed(1)}m/s` : '-';
+  const motion = entry.motion ?? '-';
+  const subsurface = formatOptionalBool(entry.subsurface ?? undefined);
+  const arvlCd = entry.arvlCd != null ? String(entry.arvlCd) : '-';
+  const progress =
+    entry.arcProgress != null ? entry.arcProgress.toFixed(2) : '-';
+  return `${time} | ${entry.kind} | ${stationId} | ${source}/${confidence} | gps(${acc}/${speed}) | ${motion} | sub=${subsurface} | arvlCd=${arvlCd} | arc=${progress}`;
 }
 
 /**
@@ -483,6 +520,11 @@ interface BuildDumpArgs {
    * call/response/error 1쌍이 callId로 묶여 있어 dump 본문만으로 latency·status 재구성 가능.
    */
   backendCalls?: readonly BackendCallEntry[];
+  /**
+   * #1501 — Raw signal ring buffer entries (직전 30건까지). 미전달 시 (empty) 출력 —
+   * 단위 테스트에서 raw signal을 다루지 않는 경우 호환.
+   */
+  rawSignalLog?: readonly RawSignalEntry[];
 }
 
 /** dump 본체에서 사용하는 single builder 시그니처 — 본문 줄 배열을 반환. */
@@ -644,6 +686,22 @@ function buildAlarmLogSection(args: BuildDumpArgs): string[] {
     lines.push(formatLogLine(entry));
   }
   return lines;
+}
+
+/**
+ * #1501 — Raw signal 섹션. 직전 30건(혹은 그 이하)을 최신순으로 직렬화. 빈 buffer는
+ * (empty)로 명시 — "한 번도 push 안 됨"과 "load 안 함"을 구분(Fusion log와 동일 컨벤션).
+ *
+ * 표시 범위는 buffer 전체가 아닌 상위 RAW_SIGNAL_DISPLAY_LIMIT — share dump가 모달
+ * 모든 신호로 폭주하지 않도록. 사후 분석이 더 필요하면 PR-B의 dump 업로드 채널로.
+ */
+function buildRawSignalSection(args: BuildDumpArgs): string[] {
+  const entries = args.rawSignalLog ?? [];
+  if (entries.length === 0) return ['(empty)'];
+  return [...entries]
+    .reverse()
+    .slice(0, RAW_SIGNAL_DISPLAY_LIMIT)
+    .map(formatRawSignalLine);
 }
 
 /**
@@ -1026,6 +1084,13 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
   { title: 'Auto-lock Candidate', build: buildAutoLockSection },
   // #1430 — 환경 분포 측정 인프라. SSOT 활성 cascade → state별 누적 시간 + transition 카운트.
   { title: 'Environment Distribution', build: buildEnvironmentDistributionSection },
+  // #1501 — PR-C. Raw signal ring buffer 직전 30건. cold-launch 사후 재구성 데이터 채널.
+  // suffix는 buffer 전체 개수(>= 표시 개수) — 모달은 상위 30건만 노출하더라도 전체 누적량 확인 가능.
+  {
+    title: 'Raw Signal',
+    build: buildRawSignalSection,
+    suffix: (args) => ` (${args.rawSignalLog?.length ?? 0})`,
+  },
 ];
 
 function buildDumpText(args: BuildDumpArgs): string {
@@ -1281,6 +1346,11 @@ function DebugModalInner({
   const [backendCalls, setBackendCalls] = useState<readonly BackendCallEntry[]>(() =>
     getBackendCallEntries(),
   );
+  // #1501 — PR-C. Raw signal buffer는 module-level singleton(영속 + boot hydrate).
+  // 모달 마운트 시점 스냅샷으로 초기화, 이후 subscribe로 실시간 갱신.
+  const [rawSignalLog, setRawSignalLog] = useState<readonly RawSignalEntry[]>(() =>
+    getRawSignalEntries(),
+  );
   // #756: OS 큐 ground-truth dump. 호출 직후 한 번 비동기로 채워진다.
   // null = 아직 한 번도 dump 안 한 상태 → "Tap Refresh" placeholder 노출.
   const [scheduledDump, setScheduledDump] = useState<ScheduledNotificationDumpEntry[] | null>(null);
@@ -1301,6 +1371,11 @@ function DebugModalInner({
     return subscribeBackendCallEntries(() =>
       setBackendCalls([...getBackendCallEntries()]),
     );
+  }, []);
+
+  // #1501 — PR-C. Raw signal buffer 변경 구독. push/clear 어느 쪽이든 같은 listener로 반응.
+  useEffect(() => {
+    return subscribeRawSignal(() => setRawSignalLog([...getRawSignalEntries()]));
   }, []);
 
   const refreshLogs = useCallback(async () => {
@@ -1384,6 +1459,8 @@ function DebugModalInner({
       envDistribution,
       // #1518 — backend call ring buffer entries.
       backendCalls,
+      // #1501 — PR-C. Raw signal buffer entries (직전 N건). share dump가 모달 표시와 동일 SSOT.
+      rawSignalLog,
     });
     void Share.share({ message });
   }, [
@@ -1427,6 +1504,8 @@ function DebugModalInner({
     envDistribution,
     // #1518 — backend call entries 변경 시 share 텍스트 갱신.
     backendCalls,
+    // #1501 — PR-C. raw signal entries 변경 시 share 텍스트 자동 갱신.
+    rawSignalLog,
   ]);
 
   return (
@@ -1742,6 +1821,21 @@ function DebugModalInner({
 
           {/* #1024 — ## Counters: reason별 누적 count + 마지막 발생 시각 */}
           <CountersSection logs={logs} colors={colors} />
+
+          {/* #1501 — PR-C. Raw signal 자동 표시 (toggle 없음). 직전 30건만 노출 — share dump에는
+              buffer 전체가 시간 역순으로 흐른다. Clear는 buffer + AsyncStorage 모두 wipe. */}
+          <DebugLogSection
+            title="Raw Signal"
+            logs={[...rawSignalLog].slice(-RAW_SIGNAL_DISPLAY_LIMIT)}
+            formatLine={formatRawSignalLine}
+            onClear={() => {
+              clearRawSignalEntries();
+              setRawSignalLog([]);
+            }}
+            clearTestId="debug-raw-signal-clear"
+            entryTestId="debug-raw-signal-entry"
+            colors={colors}
+          />
 
           {/* #1022: Worker Quota admin view */}
           <Section title="Worker Quota" colors={colors}>
@@ -2110,6 +2204,9 @@ export const __test__ = {
   // #1518 — backend call formatter / section builder. test에서 직접 검증.
   formatBackendCallLine,
   buildBackendCallsSection,
+  // #1501 — PR-C. Raw signal 라인 포맷 helper. share dump 단위 테스트에서 직접 호출.
+  formatRawSignalLine,
+  RAW_SIGNAL_DISPLAY_LIMIT,
 };
 
 const styles = StyleSheet.create({

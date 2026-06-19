@@ -141,6 +141,19 @@ export const LOCKLESS_FUNNEL_SEEN_OFF_KEY = 'subway-now:lockless-funnel-seen-off
 // UI 토글은 follow-up PR — 현재는 init 인프라만.
 // 형식: 'true' 또는 키 부재.
 export const SENTRY_OPT_IN_KEY = 'subway-now:sentry-opt-in';
+// #1501 (ADR-015 §10 P5 / PR-A) — Trip correlation id.
+// trip 시작 시 `${epoch ms}-${8 hex}` 형식으로 생성하고 trip 종료(tripBoundCleanups)
+// 시점에 제거한다. rawSignalBuffer entry와 backend evidence(P5 PR-B)의 같은 trip을
+// 묶기 위한 unique id — 사용자가 trip을 여러 개 빠르게 만들어도 cycle/enter/exit
+// entry가 어느 trip 소속인지 사후 재구성한다.
+// 형식: 문자열 (`${epoch ms}-${8 hex}`). 키 부재 = trip 미시작 또는 종료된 상태.
+export const TRIP_CORR_ID_KEY = 'subway-now:trip-corr-id';
+// #1501 (ADR-015 §10 P5 / PR-A) — Device raw signal dump ring buffer (capacity 120).
+// useFusedNearestStation 매 cycle에 push되는 (gps, motion, subsurface, source, confidence)
+// 측정 entry. boot 시 1회 hydrate, push 후 1초 idle throttle write — 강제종료 후에도
+// 마지막 ~120 entry가 복원돼 7일 회귀 사후 분석에 사용.
+// 형식: RawSignalEntry[] JSON.
+export const RAW_SIGNAL_BUFFER_KEY = 'subway-now:raw-signal-buffer';
 // #1279 — 기압계 지하 감지 상태(subsurface boolean) AsyncStorage stamp.
 // useBarometer(FG-only React state)가 subsurface flip 시 write → BG silent-push task와
 // 위치 게이트가 동일한 값을 read할 수 있도록 한다. updatedAt(epoch ms)은 TTL 만료 판별용.

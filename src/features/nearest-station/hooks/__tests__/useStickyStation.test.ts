@@ -583,4 +583,81 @@ describe('useStickyStation (#876)', () => {
       expect(movedAwayEvents).toHaveLength(0);
     });
   });
+
+  // #1524 — trip-end flip 감지로 sticky lock 즉시 해제.
+  describe('#1524 — trip-ended unlock (자동 하차 후 stale lock 차단)', () => {
+    const lockSeoul = async (initialMotion: StickyMotionInput) => {
+      const hook = renderSticky({ fix: fixAt(seoul), motion: initialMotion });
+      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      hook.rerender({ fix: fixAt(seoul), motion: initialMotion });
+      hook.rerender({ fix: fixAt(seoul), motion: initialMotion });
+      await waitFor(() => expect(hook.result.current.locked?.id).toBe(seoul.id));
+      return hook;
+    };
+
+    it('motion.tripActive가 true→false로 flip되면 즉시 unlock + unlocked-trip-ended 이벤트', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      const removeSpy = jest.spyOn(AsyncStorage, 'removeItem');
+      const { result, rerender } = await lockSeoul({ tripActive: true });
+      pushSpy.mockClear();
+      removeSpy.mockClear();
+
+      // trip 종료 시뮬레이션: tripActive true→false flip. fix는 동일.
+      rerender({ fix: fixAt(seoul), motion: { tripActive: false } });
+      await waitFor(() => expect(result.current.locked).toBeNull());
+
+      expect(pushSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'sticky',
+          event: 'unlocked-trip-ended',
+          stationName: '서울역',
+        }),
+      );
+      // persisted lock도 정리.
+      await waitFor(() => expect(removeSpy).toHaveBeenCalledWith(STICKY_STATION_KEY));
+    });
+
+    it('lock 없는 상태에서 tripActive flip → no-op (이벤트 emit 안 함)', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      const { result, rerender } = renderSticky({
+        fix: fixAt(null),
+        motion: { tripActive: true },
+      });
+      await waitFor(() => expect(AsyncStorage.getItem).toHaveBeenCalled());
+      pushSpy.mockClear();
+
+      rerender({ fix: fixAt(null), motion: { tripActive: false } });
+      expect(result.current.locked).toBeNull();
+      expect(pushSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'unlocked-trip-ended' }),
+      );
+    });
+
+    it('tripActive가 undefined→false 전이는 unlock 트리거 아님 (true에서 내려간 게 아니므로)', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      // tripActive undefined로 lock.
+      const { result, rerender } = await lockSeoul({});
+      pushSpy.mockClear();
+
+      // undefined → false: 사용자 명시 trip 종료가 아닌 보조 신호 도착. lock 유지해야 함.
+      rerender({ fix: fixAt(seoul), motion: { tripActive: false } });
+      expect(result.current.locked?.id).toBe(seoul.id);
+      expect(pushSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'unlocked-trip-ended' }),
+      );
+    });
+
+    it('tripActive가 true 유지인 동안에는 unlock 안 함', async () => {
+      const pushSpy = jest.spyOn(fusionDebugBuffer, 'pushFusionDebugEntry');
+      const { result, rerender } = await lockSeoul({ tripActive: true });
+      pushSpy.mockClear();
+
+      rerender({ fix: fixAt(seoul), motion: { tripActive: true } });
+      rerender({ fix: fixAt(seoul), motion: { tripActive: true } });
+      expect(result.current.locked?.id).toBe(seoul.id);
+      expect(pushSpy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'unlocked-trip-ended' }),
+      );
+    });
+  });
 });

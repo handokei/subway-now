@@ -36,3 +36,25 @@ export const LOCK_NEXT_HOP_WINDOW = 3;
  * 유일한 신호이므로 통과시킨다.
  */
 export const WIFI_SSID_MAX_DISTANCE_KM = 1.5;
+
+/**
+ * #1513 (ADR-015 §3) — 다중 신호 합의 verdict가 fused candidate를 채택할 때의 근접 게이트.
+ *
+ * 본 게이트는 `fusedPasses`(`MAX_FUSION_DISTANCE_KM=0.6km`)가 GPS 부정확으로 거부한 fused 후보를
+ * verdict 합의(≥2 신호: barometer-stop / motion-stationary / arvlcd-arrived)가 있을 때 복구하기
+ * 위한 cascade slot — positionTrain > arrival-confirmed(fused passes) > **multi-signal verdict** >
+ * routeProgress > GPS 순서의 4번째 우선순위.
+ *
+ * false positive 방어:
+ *   1. ≥2 신호 합의 — 단일 신호 오발 차단 (이미 fuseStationDetectionSignals AGREEMENT_THRESHOLD).
+ *   2. 거리 500m — 인접역 평균 800m의 절반 미만으로 "현재역" 의미 보존. fused 후보가 user GPS와
+ *      이보다 멀면 verdict가 detected여도 다른 역의 정차 신호일 가능성 (ADR-010 두 실패 모드 동급).
+ *   3. GPS userLocation 자체가 없는 완전 dead 케이스는 candidates=[]가 되어 fused=null →
+ *      본 슬롯 자연 비활성. station identity는 wifi/positionTrain/lock cascade가 담당.
+ *
+ * 2026-06-19 trip 실측 evidence (issue #1513): 어린이대공원역 station-passed fire 0건. 지하 GPS
+ * drop(acc 1400~2593m) 구간에서 fusedPasses=false → cascade가 routeResult/gps fallback으로 떨어져
+ * verdict가 dormant. 본 게이트가 cascade에 결합. accuracy가 나빠도 좌표 자체는 보고되므로
+ * fused 후보는 산출된다(거리만 fusedPasses 임계 0.6km를 넘김).
+ */
+export const DETECTION_FUSED_MAX_DISTANCE_KM = 0.5;

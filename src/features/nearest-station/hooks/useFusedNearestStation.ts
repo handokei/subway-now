@@ -11,6 +11,8 @@ import {
   pushFusionDebugEntry,
   type FusionCandidateMini,
 } from '../utils/fusionDebugBuffer';
+import { pushRawSignal } from '../../observability/utils/rawSignalBuffer';
+import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { pushEstimatorEntry } from '../../route/utils/estimatorDebugBuffer';
 import { useNearestStation } from './useNearestStation';
 import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
@@ -41,6 +43,7 @@ import { hopTimeMsAt } from '../../route/utils/hopTime';
 import { getTripStartedAt } from '../../alarm/utils/tripStartStorage';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
 import {
+  DETECTION_FUSED_MAX_DISTANCE_KM,
   MAX_ACTIVE_LINES,
   MAX_FUSION_DELTA_KM,
   MAX_FUSION_DISTANCE_KM,
@@ -640,6 +643,64 @@ export function useFusedNearestStation(
     return { station: resolvedStation, distanceKm: 0 };
   })();
 
+  // #1513 (ADR-015 §3) — multi-signal verdict cascade 결합 prereq.
+  //
+  // detectionVerdict(barometer-stop + motion-stationary + arvlcd-arrived ≥2 합의)를 cascade picker
+  // 내부에서 참조하기 위해 cascade *이전*에 산출. 입력 arrival은 후보 우선순위(wifi > positionTrain >
+  // fused > GPS top-1) 중 가장 신뢰되는 station을 키로 사용 — cascade가 어떤 분기로 떨어지든 verdict는
+  // 같은 후보를 평가한다.
+  //
+  // fused가 거리 게이트(`fusedPasses=false`)로 거부됐어도 verdict가 detected면 verdict-driven 채택을
+  // 허용해 지하 GPS drop 환경에서도 currentStation을 확정한다 (issue #1513 2026-06-19 어린이대공원역
+  // station-passed fire 0건 evidence).
+  const verdictCandidateStation: Station | null =
+    wifiStationResolved?.station ??
+    positionTrainResult?.station ??
+    fused?.result.station ??
+    gps.liveResult?.station ??
+    null;
+  const verdictArrival = verdictCandidateStation
+    ? pickArrivalForStationName(
+        verdictCandidateStation.name,
+        verdictCandidateStation.line,
+        [
+          { stationName: c0, line: h0, arrival: a0.arrival },
+          { stationName: c1, line: h1, arrival: a1.arrival },
+          { stationName: c2, line: h2, arrival: a2.arrival },
+        ],
+      )
+    : null;
+  const detectionInput = useMemo(
+    () => ({
+      barometer: barometerSignal ?? null,
+      motionStationary,
+      arrival: verdictArrival,
+      lockedTrainCode: lockedTrainCode ?? null,
+    }),
+    [barometerSignal, motionStationary, verdictArrival, lockedTrainCode],
+  );
+  const detectionVerdict = useFusedStationDetection(detectionInput);
+
+  // #1513 — verdict가 fused candidate를 채택할 수 있는 cascade slot 가드.
+  //
+  // 게이트 (false positive 방어 — ADR-010 두 실패 모드 동급):
+  //   1. fused 후보 존재 — arrival 신호 기반 fusion 결과가 있어야 station identity가 명확.
+  //      (GPS userLocation=null 완전 dead zone에서는 candidates=[]가 되어 fused=null →
+  //       본 슬롯 자연 비활성. station identity는 wifi/positionTrain/lock cascade가 담당.)
+  //   2. detectionVerdict.detected — ≥2 신호 합의 (fuseStationDetectionSignals AGREEMENT_THRESHOLD).
+  //   3. 근접 게이트 — fused.result.distanceKm ≤ DETECTION_FUSED_MAX_DISTANCE_KM(0.5km).
+  //      지하 GPS drop 환경(accuracy 1~2km+)은 좌표 자체는 보고되지만 fusedPasses=false로 거부되는
+  //      케이스가 evidence (2026-06-19 어린이대공원). 본 게이트는 0.5km 근접만 통과시켜
+  //      false positive(먼 역의 정차 신호 오매칭)를 차단한다.
+  //
+  // 노선 가드: lock 활성 시 fused.result.station.line이 lock.boardingLine과 일치해야 채택 (cross-line
+  // false positive 차단, ADR-015 §9 정신).
+  const detectionVerdictAccepts =
+    fused != null &&
+    detectionVerdict.detected &&
+    fused.result.distanceKm <= DETECTION_FUSED_MAX_DISTANCE_KM &&
+    (!boardingLock || fused.result.station.line === boardingLock.boardingLine);
+
   let result: NearestStationResult | null;
   let confidence: FusionConfidence;
   let source: FusionSource;
@@ -660,6 +721,12 @@ export function useFusedNearestStation(
     result = fused.result;
     confidence = fused.confidence;
     source = fused.source;
+  } else if (detectionVerdictAccepts) {
+    // #1513 — fusedPasses 거리 게이트가 거부했어도 multi-signal verdict 합의로 fused 후보 채택.
+    // 지하 GPS drop 환경에서 currentStation 확정 경로. 우선순위: arrival-confirmed > 본 슬롯 > routeProgress > GPS.
+    result = fused!.result;
+    confidence = 'detection-fused';
+    source = fused!.source;
   } else if (routeResult && routePasses) {
     result = routeResult;
     confidence = 'route-progress';
@@ -950,34 +1017,10 @@ export function useFusedNearestStation(
     confidence = 'gps-only-underground';
   }
 
-  // #921 — 신호 fusion(barometer-stop + motion-stationary + arvlcd-arrived) wire-up.
-  // #1398 — cascade 결합 (verdict가 confidence 라벨에 실제 기여).
-  //   `gps-only-underground` 강등 결과에 verdict.detected가 결합되면 → `detection-fused`로 승격
-  //   (`subsurfaceStationDetected` 충족 시). cascade가 verdict를 인식한다는 사실을 측정/dump에서
-  //   명확히 표시. station-passed 발사는 별도(useStationAlarm `subsurfaceStationDetected` 패스스루).
+  // #921 / #1398 / #1513 — 신호 fusion verdict 산출은 cascade picker 이전으로 이동
+  // (verdictCandidateStation / verdictArrival / detectionInput / detectionVerdict 참조).
+  // cascade 결합 단계가 verdict를 인식하기 위해 사전 산출이 필요.
   //
-  // arrival 입력: 채택된 result의 station name과 매칭되는 후보 슬롯의 arrival을 사용. result가
-  // 어떤 후보(c0/c1/c2)에서 왔든 같은 station name이면 한 슬롯에서 lockedTrainCode를 찾을 수 있다.
-  // 매칭 슬롯이 없으면 (route-progress/interp 결과가 GPS top-3 밖) arrival=null → arvlcd 입력
-  // unavailable로 흐른다.
-  const fusionArrival = result
-    ? pickArrivalForStationName(result.station.name, result.station.line, [
-        { stationName: c0, line: h0, arrival: a0.arrival },
-        { stationName: c1, line: h1, arrival: a1.arrival },
-        { stationName: c2, line: h2, arrival: a2.arrival },
-      ])
-    : null;
-  const detectionInput = useMemo(
-    () => ({
-      barometer: barometerSignal ?? null,
-      motionStationary,
-      arrival: fusionArrival,
-      lockedTrainCode: lockedTrainCode ?? null,
-    }),
-    [barometerSignal, motionStationary, fusionArrival, lockedTrainCode],
-  );
-  const detectionVerdict = useFusedStationDetection(detectionInput);
-
   // #1290 — 지하 도착 확정 cascade.
   // subsurface=true(지하 진입 확정) + fusion verdict detected(≥2 신호 합의) + 역 근접 게이트 통과
   // → station-passed 발사 트리거. GPS/arrival 독립 경로 — 지하 GPS 동결 구간에서도 발사 가능.
@@ -1028,6 +1071,10 @@ export function useFusedNearestStation(
   const lastDecisionKeyRef = useRef<string | null>(null);
   const resultStationId = result?.station.id ?? null;
   const decisionKey = `${source}|${confidence}|${resultStationId}|${detectionVerdict.signalMask}`;
+
+  // #1501 (ADR-015 §10 P5 / PR-A) — 직전 cycle stationId 추적해 변화 시 exit + enter stamp.
+  // corrId는 in-memory cache에서 sync read (setTripCorrId/clear 시 cache 갱신 보장).
+  const lastStationIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (lastDecisionKeyRef.current === decisionKey) return;
     lastDecisionKeyRef.current = decisionKey;
@@ -1090,7 +1137,92 @@ export function useFusedNearestStation(
               signalsAvailable: detectionVerdict.signalsAvailable,
             },
     });
-  }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, trainProgress, lockedTrainCode, detectionVerdict]);
+
+    // #1501 (ADR-015 §10 P5 / PR-A) — device raw signal dump.
+    // fusionDebugBuffer는 in-memory 전용(강제종료 시 소실). rawSignalBuffer는 영속화돼
+    // 7일 cold-launch 회귀 사후 분석에 사용. 동일 결정 변화 keyed cycle에서 함께 push.
+    // 가용 신호를 최대한 채워야 P5 학습 입력으로 활용 가능 (review P1-1).
+    const gpsForDump = gps.userLocation
+      ? {
+          lat: gps.userLocation.lat,
+          lng: gps.userLocation.lng,
+          accM: gps.accuracyMeters,
+          speedMps: gps.speedMps,
+        }
+      : null;
+    // motionStationary는 boolean | undefined. boolean으로 들어오면 stationary/unknown 라벨로 매핑.
+    // 정확한 motion provider 라벨(walking/automotive)은 후속 PR에서 motion-activity 모듈 expose 후 보강.
+    let motionForDump: 'stationary' | 'unknown' | null = null;
+    if (motionStationary === true) {
+      motionForDump = 'stationary';
+    } else if (motionStationary === false) {
+      motionForDump = 'unknown';
+    }
+    // arvlCd: up 방향 첫 슬롯 우선, 없으면 down 첫 슬롯. 둘 다 없으면 null.
+    // 후속 PR에서 up/down 둘 다 기록하도록 entry shape 확장 검토.
+    // result station에 해당하는 arrival을 arrivalSlots에서 추출 (cascade 재구조화로
+    // 본 effect 내부에서 산출 — #1517 PR-A merge 시 scope 조정).
+    const fusionArrival = result
+      ? pickArrivalForStationName(result.station.name, result.station.line, arrivalSlots)
+      : null;
+    const arvlCdForDump =
+      fusionArrival?.up[0]?.arrivalCode ?? fusionArrival?.down[0]?.arrivalCode ?? null;
+    const arcProgressForDump = progress.progressM ?? null;
+    const ts = Date.now();
+    const prevStationId = lastStationIdRef.current;
+    const nextStationId = resultStationId;
+    if (prevStationId !== null && result !== null && nextStationId !== null && prevStationId !== nextStationId) {
+      pushRawSignal({
+        ts,
+        corrId: getCurrentTripCorrIdSync(),
+        kind: 'exit',
+        gps: gpsForDump,
+        motion: motionForDump,
+        subsurface: barometerSubsurface ?? null,
+        arvlCd: arvlCdForDump,
+        line: null,
+        dir: null,
+        arcIdx: null,
+        arcProgress: arcProgressForDump,
+        stationId: prevStationId,
+        source: null,
+        confidence: null,
+      });
+      pushRawSignal({
+        ts,
+        corrId: getCurrentTripCorrIdSync(),
+        kind: 'enter',
+        gps: gpsForDump,
+        motion: motionForDump,
+        subsurface: barometerSubsurface ?? null,
+        arvlCd: arvlCdForDump,
+        line: result.station.line,
+        dir: null,
+        arcIdx: null,
+        arcProgress: arcProgressForDump,
+        stationId: nextStationId,
+        source,
+        confidence,
+      });
+    }
+    lastStationIdRef.current = nextStationId;
+    pushRawSignal({
+      ts,
+      corrId: getCurrentTripCorrIdSync(),
+      kind: 'cycle',
+      gps: gpsForDump,
+      motion: motionForDump,
+      subsurface: barometerSubsurface ?? null,
+      arvlCd: arvlCdForDump,
+      line: result?.station.line ?? null,
+      dir: null,
+      arcIdx: null,
+      arcProgress: arcProgressForDump,
+      stationId: nextStationId,
+      source,
+      confidence,
+    });
+  }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, gps.userLocation, gps.speedMps, trainProgress, lockedTrainCode, detectionVerdict, barometerSubsurface, resultStationId, motionStationary, a0.arrival, a1.arrival, a2.arrival, c0, c1, c2, h0, h1, h2, progress.progressM]);
 
   return {
     result,
