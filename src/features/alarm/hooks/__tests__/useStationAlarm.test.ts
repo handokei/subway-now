@@ -81,6 +81,7 @@ const mockLogSuppressedDismissSilence = jest.fn();
 const mockLogSuppressedStationPassedWarmup = jest.fn();
 const mockLogSuppressedHopWindow = jest.fn();
 const mockLogSuppressedHopWindowNoSource = jest.fn();
+const mockLogSuppressedOriginHopLockless = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -101,6 +102,8 @@ jest.mock('../../utils/alarmLog', () => ({
   logSuppressedHopWindow: (...args: unknown[]) => mockLogSuppressedHopWindow(...args),
   logSuppressedHopWindowNoSource: (...args: unknown[]) =>
     mockLogSuppressedHopWindowNoSource(...args),
+  logSuppressedOriginHopLockless: (...args: unknown[]) =>
+    mockLogSuppressedOriginHopLockless(...args),
 }));
 
 const mockGetBoardingLock = jest.fn();
@@ -3653,6 +3656,136 @@ describe('useStationAlarm', () => {
         });
       });
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+  });
+
+  // #1514 — 2026-06-19 용마산 회귀: lockless trip 출발역(arc[0]) station-passed false fire 차단.
+  // GPS path에서 currentHopIndex=0 + candidateIndex=0이면 estimator default-hop 신호이므로
+  // lock 부재 시 fire 차단. lock 활성은 boardingStationId 기준 origin 알림이 정당이라 우회.
+  describe('#1514 lockless origin hop 차단 (출발역 자기 자신)', () => {
+    const arcOrigin: Station[] = Array.from({ length: 5 }, (_, i) =>
+      makeStation(`OH-A${i}`, `OHname${i}`, 37.6 + i * 0.001, 127.1 + i * 0.001),
+    );
+    const routeDirectOrigin = makeDirectRoute(4, '2');
+
+    it('lockless + currentHopIndex=0 + candidate arc[0] → suppressed (gate-origin-hop-lockless)', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirectOrigin,
+            destination,
+            nearestStation: arcOrigin[0],
+            currentHopIndex: 0,
+            arcStations: arcOrigin,
+            userLocation: { lat: 37.6, lng: 127.1 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockLogSuppressedOriginHopLockless).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: arcOrigin[0].name,
+        });
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredStationPassed).not.toHaveBeenCalledWith('fg', arcOrigin[0]);
+    });
+
+    it('lock 활성 + currentHopIndex=0 + candidate arc[0] (= boardingStationId) → 통과 (ADR-014 동급 보장)', async () => {
+      mockGetBoardingLock.mockResolvedValue({
+        destinationId: destination.id,
+        trainCode: 'T-LOCK',
+        boardingStationId: arcOrigin[0].id,
+        boardingLine: '2' as const,
+        boardedAt: Date.now(),
+        expectedDurationMs: 600_000,
+      });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 4,
+        isTransfer: false,
+        stopsToDestination: 4,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirectOrigin,
+            destination,
+            nearestStation: arcOrigin[0],
+            currentHopIndex: 0,
+            arcStations: arcOrigin,
+            userLocation: { lat: 37.6, lng: 127.1 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+      expect(mockLogSuppressedOriginHopLockless).not.toHaveBeenCalled();
+    });
+
+    it('lockless + currentHopIndex=0 + candidate arc[1] (다음 hop) → 통과 (정상 진행 신호)', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 3,
+        isTransfer: false,
+        stopsToDestination: 3,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirectOrigin,
+            destination,
+            nearestStation: arcOrigin[1],
+            currentHopIndex: 0,
+            arcStations: arcOrigin,
+            userLocation: { lat: 37.6, lng: 127.1 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+      expect(mockLogSuppressedOriginHopLockless).not.toHaveBeenCalled();
+    });
+
+    it('lockless + currentHopIndex=2 + candidate arc[2] (중간 hop origin 아님) → 통과 (기존 동작 보존)', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      });
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: routeDirectOrigin,
+            destination,
+            nearestStation: arcOrigin[2],
+            currentHopIndex: 2,
+            arcStations: arcOrigin,
+            userLocation: { lat: 37.6, lng: 127.1 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      await waitFor(() => {
+        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+      });
+      expect(mockLogSuppressedOriginHopLockless).not.toHaveBeenCalled();
     });
   });
 

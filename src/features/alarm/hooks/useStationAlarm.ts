@@ -44,6 +44,7 @@ import {
   logSuppressedDismissSilence,
   logSuppressedHopWindow,
   logSuppressedHopWindowNoSource,
+  logSuppressedOriginHopLockless,
   logSuppressedMovement,
   logSuppressedPhaseGate,
   logSuppressedSleepFirstTransfer,
@@ -859,6 +860,9 @@ export function useStationAlarm({
       //   1. currentHopIndex prop (D1 estimator 또는 lock 활성 시 interp 결과 — 호출자가 결정)
       //   2. firedAlarms set 기반 fallback (graceful, false negative risk)
       //   3. 둘 다 부재 + arcStations 없음 → 게이트 미적용 (gate-hop-window-no-source)
+      // #1514 — 출발역(arc[0]) origin hop fire 차단. lock 활성 trip은 boardingStationId 기준
+      // origin 알림이 정당 신호이므로 IIFE 안에서 추가 검사 (lock fetch 후).
+      let isOriginHopCandidate = false;
       if (arcStations && arcStations.length > 0) {
         const effectiveHopIndex =
           currentHopIndex ?? inferHopIndexFromFiredAlarms(firedAlarmsRef.current, arcStations);
@@ -872,6 +876,10 @@ export function useStationAlarm({
             candidateIndex: arcIndexOf(arcStations, candidateStation),
           });
           return;
+        } else {
+          // hop window 통과 — origin hop 케이스만 추가 표식 (lockless 차단은 IIFE 내부).
+          const candidateIndex = arcIndexOf(arcStations, candidateStation);
+          isOriginHopCandidate = effectiveHopIndex === 0 && candidateIndex === 0;
         }
       }
 
@@ -897,6 +905,15 @@ export function useStationAlarm({
       void (async () => {
         const lock = await getBoardingLock();
         if (cancelled) return;
+        // #1514 — lockless origin hop 차단 (2026-06-19 용마산 evidence).
+        // lock 활성 시는 boardingStationId 기준 origin 알림이 정당이므로 우회 (ADR-014 §4 동급 보장).
+        if (isOriginHopCandidate && !lock) {
+          logSuppressedOriginHopLockless({
+            source: 'fg',
+            stationName: candidateStation.name,
+          });
+          return;
+        }
         await runSilenceGateAndDispatch({
           source: 'fg',
           candidateStation,

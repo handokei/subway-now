@@ -46,6 +46,7 @@ import {
   logSuppressedStationPassedWarmup,
   logSuppressedHopWindow,
   logSuppressedHopWindowNoSource,
+  logSuppressedOriginHopLockless,
   logSuppressedTbaRevalidation,
   summarizeAlarmLogBySource,
   countGateReasons,
@@ -718,6 +719,21 @@ describe('alarmLog', () => {
         source: 'fg',
         outcome: 'suppressed',
         reason: 'gate-hop-window-no-source',
+        stationName: '용마산',
+        kind: 'station-passed',
+      });
+    });
+
+    it('#1514 logSuppressedOriginHopLockless: reason=gate-origin-hop-lockless + kind=station-passed', async () => {
+      logSuppressedOriginHopLockless({ source: 'fg', stationName: '용마산' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'gate-origin-hop-lockless',
         stationName: '용마산',
         kind: 'station-passed',
       });
