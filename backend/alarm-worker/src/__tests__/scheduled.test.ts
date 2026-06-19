@@ -5577,3 +5577,221 @@ describe('runScheduled — ADR-017 T4 (#1557) advanceTripPosition SSoT gate (arv
     expect(await kv.get(ssotKey(TOKEN))).not.toBeNull();
   });
 });
+
+describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT gate', () => {
+  // 양방향 — arvlcd-arrived path (T4 합쳐) + vanish-fallback path 모두 SSoT 단일 진입점 통과 후
+  // trip.waypoints / cleanup 진행. 정지 trip 매분 advance 회귀(2026-06-19 8회)를 박제 차단.
+  const TOKEN = 'lock-tok';
+  const FALLBACK_TRIGGER = VANISH_RE_ATTACH_THRESHOLD + FALLBACK_ADVANCE_GRACE_CYCLES;
+  const LAST_EPOCH_ELAPSED = NOW - FALLBACK_HOP_SEC * 1000;
+
+  function makeArvlCdSeoulFor(stationName: string, trainCode = '7246'): SeoulArrivalClient {
+    return makeArvlCdFireSeoul(stationName, 0, 1, trainCode);
+  }
+  function makeVanishedSeoul(): SeoulArrivalClient {
+    // arrivals/positions 모두 비어있음 → vanish-fallback path 진입. stats.callCount 가 호출되므로
+    // 실제 SeoulArrivalClient 인스턴스를 사용 (mock client 는 stats 부재로 runScheduled 끝단 throw).
+    return new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async (url: string) => {
+        if (url.includes('/realtimePosition/')) {
+          return new Response(JSON.stringify({ realtimePositionList: [] }), { status: 200 });
+        }
+        return new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+  }
+
+  type Scenario = {
+    name: string;
+    path: 'arvlcd-arrived' | 'vanish-fallback';
+    motionState: 'moving' | 'stationary' | 'unknown';
+    /** trip이 destination 1개만 갖도록 fixture override — destination 통과 + cleanup 검증용. */
+    destinationOnly?: boolean;
+    expectAdvance: boolean;
+    expectBlockReason?: 'motion-stationary';
+    expectCleanup?: boolean;
+  };
+
+  const advanceScenarios: Scenario[] = [
+    // Positive — arvlcd-arrived + moving → advance
+    {
+      name: 'P1 arvlcd-arrived + moving + lock → trip.waypoints shift',
+      path: 'arvlcd-arrived',
+      motionState: 'moving',
+      expectAdvance: true,
+    },
+    // Positive — vanish-fallback + moving → advance
+    {
+      name: 'P2 vanish-fallback + moving → trip.waypoints shift',
+      path: 'vanish-fallback',
+      motionState: 'moving',
+      expectAdvance: true,
+    },
+    // Positive — destination 단독 + advance → cleanupTripWithLa + deleteSsot
+    {
+      name: 'P3 destination 단독 + moving → cleanup + SSoT delete',
+      path: 'arvlcd-arrived',
+      motionState: 'moving',
+      destinationOnly: true,
+      expectAdvance: true,
+      expectCleanup: true,
+    },
+    // Negative — 2026-06-19 회귀 박제
+    {
+      name: 'N1 arvlcd-arrived + stationary trip → trip.waypoints 보존 (회귀 박제)',
+      path: 'arvlcd-arrived',
+      motionState: 'stationary',
+      expectAdvance: false,
+      expectBlockReason: 'motion-stationary',
+    },
+    {
+      name: 'N2 vanish-fallback + stationary trip → trip.waypoints 보존',
+      path: 'vanish-fallback',
+      motionState: 'stationary',
+      expectAdvance: false,
+      expectBlockReason: 'motion-stationary',
+    },
+  ];
+
+  it.each(advanceScenarios)('$name', async (sc) => {
+    const kv = new InMemoryKV();
+    const tripOverrides: Partial<Trip> = sc.destinationOnly
+      ? { waypoints: [{ stationName: '중곡', line: '7', kind: 'destination' }] }
+      : {};
+    // vanish-fallback path 는 hop 시간 경과 + miss 카운터 trigger 도달.
+    if (sc.path === 'vanish-fallback') {
+      tripOverrides.consecutiveEtaMissing = FALLBACK_TRIGGER - 1;
+      tripOverrides.lastTrackedArrivalEpoch = LAST_EPOCH_ELAPSED;
+    }
+    const trip = makeLockTripFixture(TOKEN, tripOverrides);
+    await putTrip(kv as unknown as KVNamespace, trip);
+
+    // motion=stationary 는 SSoT motionState 명시 stamp 필요 (default 'unknown'은 dormant).
+    if (sc.motionState !== 'unknown') {
+      const seeded = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산', {
+        expiresAt: trip.expiresAt,
+      });
+      seeded.motionState = sc.motionState;
+      await writeSsot(kv as unknown as KVNamespace, seeded, { expiresAt: trip.expiresAt });
+    }
+
+    const seoul = sc.path === 'arvlcd-arrived'
+      ? makeArvlCdSeoulFor(trip.waypoints[0].stationName)
+      : makeVanishedSeoul();
+    const logMessages: { msg: string; meta?: Record<string, unknown> }[] = [];
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (vi.fn(async () => new Response('', { status: 200 }))) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-t5',
+      log: (msg, meta) => {
+        logMessages.push({ msg, meta });
+      },
+    });
+
+    const storedRaw = await kv.get(`trip:${TOKEN}`);
+    if (sc.expectCleanup) {
+      expect(storedRaw).toBeNull();
+      // SSoT 도 같이 삭제됐어야 함.
+      expect(await kv.get(ssotKey(TOKEN))).toBeNull();
+      return;
+    }
+    expect(storedRaw).not.toBeNull();
+    const stored = JSON.parse(storedRaw!) as Trip;
+
+    if (sc.expectAdvance) {
+      // 첫 waypoint(중곡)가 shift되어 군자만 남아야 함.
+      expect(stored.waypoints[0].stationName).toBe('군자');
+      expect(stats.boardingLockWaypointAdvanceBlocked).toBe(0);
+    } else {
+      // SSoT 게이트 차단 → trip.waypoints 그대로.
+      expect(stored.waypoints[0].stationName).toBe('중곡');
+      expect(stats.boardingLockWaypointAdvanceBlocked).toBe(1);
+      const blockedLog = logMessages.find(
+        (l) => l.msg === 'boarding-lock: waypoint advance blocked by ssot gate',
+      );
+      expect(blockedLog?.meta?.reason).toBe(sc.expectBlockReason);
+    }
+  });
+
+  it('legacy lazy-seed — SSoT 미정착 trip 도 evidence 호출 시 자동 seed 후 advance', async () => {
+    // SSoT 부재 → 게이트 #1 blocked('no-seed') 회귀 방지. T4 와 동일 정책.
+    const kv = new InMemoryKV();
+    const trip = makeLockTripFixture(TOKEN);
+    await putTrip(kv as unknown as KVNamespace, trip);
+    expect(await readSsot(kv as unknown as KVNamespace, TOKEN)).toBeNull();
+    const logMessages: { msg: string; meta?: Record<string, unknown> }[] = [];
+    await runScheduled(makeEnv(kv), {
+      seoul: makeArvlCdSeoulFor('중곡'),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (vi.fn(async () => new Response('', { status: 200 }))) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-t5-seed',
+      log: (msg, meta) => {
+        logMessages.push({ msg, meta });
+      },
+    });
+    // legacy advance(unknown motionState) 통과 → waypoints shift.
+    const stored = JSON.parse((await kv.get(`trip:${TOKEN}`))!) as Trip;
+    expect(stored.waypoints[0].stationName).toBe('군자');
+    // lazy-seed log stamped — 두 entry: arvlcd-fire 의 lazy-seed (T4) + waypoint advance 의 lazy-seed
+    // (T5). T4 의 lazy-seed 가 먼저 실행돼 SSoT 가 생성되므로 T5 진입 시 existingSsot !== null →
+    // T5 lazy-seed log 는 stamp되지 않을 수 있다. 둘 중 하나만 보장.
+    const anyLazySeed = logMessages.some(
+      (l) =>
+        l.msg === 'arvlcd-fire: lazy-seed ssot' ||
+        l.msg === 'boarding-lock: lazy-seed ssot for waypoint advance',
+    );
+    expect(anyLazySeed).toBe(true);
+  });
+
+  it('stats — runScheduled 초기 stats에 boardingLockWaypointAdvanceBlocked 0으로 초기화', async () => {
+    const kv = new InMemoryKV();
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArvlCdSeoulFor('중곡'),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-t5-init',
+    });
+    expect(stats.boardingLockWaypointAdvanceBlocked).toBe(0);
+  });
+
+  it('vanish-fallback path 도 stationary trip → trip.waypoints 보존 (SSoT 게이트 광범위 보호)', async () => {
+    // 기존 `isFallbackAdvanceBlockedByMotion`은 GPS series stationary 만 검증.
+    // 본 PR(T5) 이후엔 SSoT motionState='stationary' 가 evidence type 무관(arvlcd 계열 / vanish 계열
+    // 모두)으로 차단 — 동급 보호 보장. 본 테스트는 GPS series 없는 시나리오에서도 SSoT 게이트만으로
+    // advance 차단됨을 박제한다.
+    const kv = new InMemoryKV();
+    const trip = makeLockTripFixture(TOKEN, {
+      consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
+      lastTrackedArrivalEpoch: LAST_EPOCH_ELAPSED,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const seeded = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산', {
+      expiresAt: trip.expiresAt,
+    });
+    seeded.motionState = 'stationary';
+    await writeSsot(kv as unknown as KVNamespace, seeded, { expiresAt: trip.expiresAt });
+    // GPS series 는 없음(=`isFallbackAdvanceBlockedByMotion` 경유 motion='unknown')으로 두어
+    // SSoT 게이트만 advance 차단을 책임짐을 보장한다.
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeVanishedSeoul(),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (vi.fn(async () => new Response('', { status: 200 }))) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-t5-ssot-vanish',
+    });
+    const stored = JSON.parse((await kv.get(`trip:${TOKEN}`))!) as Trip;
+    expect(stored.waypoints[0].stationName).toBe('중곡');
+    expect(stats.boardingLockWaypointAdvanceBlocked).toBe(1);
+  });
+});
