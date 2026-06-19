@@ -7,6 +7,7 @@ import {
   clearLiveActivityToken,
   reportBoardingPromptOutcome,
   __resetAlarmBackendDedup,
+  resetAlarmBackendDedup,
 } from '../alarmBackend';
 import type { RegisterTripPayload } from '../alarmBackend';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
@@ -650,6 +651,28 @@ describe('alarmBackend', () => {
       });
       expect(result.ok).toBe(true);
       AsyncStorage.setItem = originalSetItem;
+    });
+  });
+
+  // #1545 (S12) — TRIP_BOUND_CLEANUPS에 wiring될 production reset.
+  describe('resetAlarmBackendDedup (#1545 S12)', () => {
+    it('완료 hash를 초기화해 같은 페이로드 재등록 시 fetch가 다시 발사된다 (token 불필요)', async () => {
+      process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://example.com';
+      (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 } as Response);
+
+      // 같은 SAMPLE_PAYLOAD 첫 등록 → fetch 1회.
+      await registerActiveTrip(SAMPLE_PAYLOAD);
+      const afterFirst = (global.fetch as jest.Mock).mock.calls.length;
+      expect(afterFirst).toBe(1);
+
+      // 동일 페이로드 재등록 → hash dedup으로 fetch skip.
+      await registerActiveTrip(SAMPLE_PAYLOAD);
+      expect((global.fetch as jest.Mock).mock.calls.length).toBe(afterFirst);
+
+      // production reset 호출 → 다음 동일 페이로드 등록은 dedup 풀려 fetch 재발사.
+      await expect(resetAlarmBackendDedup()).resolves.toBeUndefined();
+      await registerActiveTrip(SAMPLE_PAYLOAD);
+      expect((global.fetch as jest.Mock).mock.calls.length).toBeGreaterThan(afterFirst);
     });
   });
 });

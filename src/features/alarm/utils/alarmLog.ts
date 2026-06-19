@@ -468,6 +468,24 @@ export function _resetBurstSuppressWindowForTests(): void {
 }
 
 /**
+ * #1545 (S12) — trip 종료 시 3개 dedup 윈도우 Map을 모두 클리어.
+ *
+ * 사용자가 직전 trip에서 동일 destination/같은 phaseId를 가진 새 trip을 즉시 시작하면,
+ * 5s 윈도우 안의 lastDedupLogTs / lastBurstSuppressTs / lastRefMismatchTs 엔트리가
+ * 새 trip의 정상 신호를 silence할 수 있다. trip 경계에서 3개 Map을 함께 비워 다음
+ * trip이 깨끗한 상태로 시작하도록 보장. `TRIP_BOUND_CLEANUPS`에 wiring (BG silent push
+ * trip-ended 경로 + FG setDestination(null/switch) 양쪽 커버).
+ *
+ * 멱등 — 빈 Map에서도 graceful no-op.
+ */
+export function clearAlarmLogWindows(): Promise<void> {
+  lastRefMismatchTs.clear();
+  lastDedupLogTs.clear();
+  lastBurstSuppressTs.clear();
+  return Promise.resolve();
+}
+
+/**
  * silent push 수신 1건 적재 (#478 측정 인프라).
  * sentAt(백엔드 payload)와 receivedAt(클라 수신 시점) 차로 도달 지연 측정.
  * sentAt이 없으면(구 백엔드) undefined로 기록 — 추후 백엔드 배포 전후 분리 분석 가능.

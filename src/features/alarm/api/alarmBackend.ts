@@ -204,6 +204,20 @@ export function __resetAlarmBackendDedup(): void {
   inFlightRegisters.clear();
 }
 
+/**
+ * #1545 (S12) — trip 종료 시 alarm-backend dedup 캐시(완료 hash + in-flight Map) 초기화.
+ *
+ * `clearActiveTrip`이 동일 작업을 수행하지만, BG silent push trip-ended 경로는 token이 없는
+ * 채로 `runTripBoundCleanups`만 호출되어 in-flight Promise/last hash가 다음 trip register에
+ * 의도치 않게 재사용되는 회귀(같은 hash로 stale Promise 공유)가 발생. 본 함수는 token 없이
+ * dedup 상태만 즉시 초기화 — 멱등.
+ */
+export function resetAlarmBackendDedup(): Promise<void> {
+  lastRegisteredHash = null;
+  inFlightRegisters.clear();
+  return Promise.resolve();
+}
+
 function getBackendUrl(): string | null {
   const url = process.env.EXPO_PUBLIC_ALARM_BACKEND_URL;
   if (!url) return null;

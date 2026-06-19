@@ -200,3 +200,34 @@ describe('#1176 tripBoundCleanups audit — lockless ↔ lock 전이 회귀 가�
     expect(useDestinationStore.getState().destination).toEqual(station);
   });
 });
+
+/**
+ * #1545 (S12) — TRIP_BOUND_CLEANUPS enumeration audit (잘못된 누락 제거 회귀 가드).
+ *
+ * 본 describe는 위 audit과 분리해 mock 없이 실제 메타 배열을 직접 inspect한다 — 새 cleanup
+ * 항목 추가 시 갱신해야 할 baseline + 카테고리 카운트를 한 자리에 박제한다. PR에서 항목이
+ * 의도치 않게 제거되면 본 가드가 빨갛게 깨져 코드리뷰에서 의도 여부를 확인하게 강제.
+ */
+describe('#1545 (S12) — TRIP_BOUND_CLEANUPS enumeration audit', () => {
+  // 본 audit 파일 상단은 `../tripBoundCleanups`를 모킹하므로(runTripBoundCleanups 호출 contract용),
+  // 메타 배열 자체를 검증하려면 requireActual로 실제 모듈을 가져온다. crossCategory/alarmLog/
+  // alarmBackend는 모킹 대상이 아니므로 일반 require로 충분.
+  it('S12 신규 wiring(crossCategoryDedup / alarmLogWindows / alarmBackendDedup)이 모두 등록돼 있다', () => {
+    const { TRIP_BOUND_CLEANUPS } = jest.requireActual('../tripBoundCleanups');
+    const { clearCrossCategoryDedup } = jest.requireActual(
+      '../../utils/crossCategoryStationDedup',
+    );
+    const { clearAlarmLogWindows } = jest.requireActual('../../utils/alarmLog');
+    const { resetAlarmBackendDedup } = jest.requireActual('../../api/alarmBackend');
+
+    expect(TRIP_BOUND_CLEANUPS).toContain(clearCrossCategoryDedup);
+    expect(TRIP_BOUND_CLEANUPS).toContain(clearAlarmLogWindows);
+    expect(TRIP_BOUND_CLEANUPS).toContain(resetAlarmBackendDedup);
+  });
+
+  it('baseline 25 항목(기존 22 + S12 신규 3 wrapper + storeMemory 1)에서 줄어들면 회귀', () => {
+    const { TRIP_BOUND_CLEANUPS } = jest.requireActual('../tripBoundCleanups');
+    // 현재 baseline. 새 항목 추가 시 한 줄 갱신. 누군가 항목을 의도치 않게 제거하면 회귀로 감지.
+    expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(25);
+  });
+});

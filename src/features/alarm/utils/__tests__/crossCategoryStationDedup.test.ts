@@ -1,6 +1,7 @@
 import {
   CROSS_CATEGORY_DEDUP_WINDOW_MS,
   _resetCrossCategoryDedupForTests,
+  clearCrossCategoryDedup,
   isStationRecentlyFired,
   markStationFired,
 } from '../crossCategoryStationDedup';
@@ -95,5 +96,13 @@ describe('crossCategoryStationDedup (#1515)', () => {
         CROSS_CATEGORY_DEDUP_WINDOW_MS + 2,
       ),
     ).toBe(true);
+  });
+
+  // #1545 (S12) — TRIP_BOUND_CLEANUPS에 wiring될 production reset.
+  it('clearCrossCategoryDedup empties the window and resolves', async () => {
+    markStationFired('dest-1', '강남', 'destination', 1_000);
+    expect(isStationRecentlyFired('dest-1', '강남', 'station-passed', 2_000)).toBe(true);
+    await expect(clearCrossCategoryDedup()).resolves.toBeUndefined();
+    expect(isStationRecentlyFired('dest-1', '강남', 'station-passed', 2_000)).toBe(false);
   });
 });

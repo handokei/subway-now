@@ -128,3 +128,16 @@ export function markStationFired(
 export function _resetCrossCategoryDedupForTests(): void {
   lastFire.clear();
 }
+
+/**
+ * #1545 (S12) — trip 종료 시 dedup 윈도우 전체 클리어.
+ *
+ * 사용자가 같은 destination으로 새 trip을 즉시 다시 시작할 때, 직전 trip에서 fire된 station
+ * 키가 30s 윈도우 안에 살아 있으면 새 trip의 같은 station 첫 fire가 silence된다. 본 함수는
+ * `TRIP_BOUND_CLEANUPS`에 wiring되어 BG silent push trip-ended 경로에서도 모든 fire 기록을
+ * 비운다 (멱등 — 빈 Map에서도 graceful no-op).
+ */
+export function clearCrossCategoryDedup(): Promise<void> {
+  lastFire.clear();
+  return Promise.resolve();
+}
