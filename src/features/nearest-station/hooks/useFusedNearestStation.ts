@@ -34,6 +34,7 @@ import { isWithinArcWindow, passesFusionDistanceGate } from '../utils/fusionDist
 import { surfaceSSOTConsensus } from '../utils/surfaceSSotConsensus';
 import { undergroundSSOTConsensus } from '../utils/undergroundSSotConsensus';
 import { inferEnvironment, type Environment } from '../utils/inferEnvironment';
+import { recordEnvironmentTransition } from '../../../shared/infra/monitoring/breadcrumb';
 import { computeRouteArc } from '../../route/utils/routeProgress';
 import {
   arcIndexOfStation,
@@ -787,6 +788,14 @@ export function useFusedNearestStation(
     surfaceSSOT: surfaceSSOT !== null,
     undergroundSSOT: undergroundSSOT !== null,
   });
+
+  // S13(#1546) — 환경 전환 Sentry breadcrumb. delta-only emit.
+  // dedup은 recordEnvironmentTransition 내부에서 처리(prev === next 시 no-op).
+  const prevEnvironmentRef = useRef<Environment | undefined>(undefined);
+  useEffect(() => {
+    recordEnvironmentTransition(prevEnvironmentRef.current, environment);
+    prevEnvironmentRef.current = environment;
+  }, [environment]);
 
   // ADR-008 stationProgressEstimator — 시간 적분 → 관측 구동 전환 (#739).
   // arc상 추정 위치가 현 채택된 결과보다 앞이거나, 채택 결과가 arc 밖이면 override.
