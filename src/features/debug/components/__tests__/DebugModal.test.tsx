@@ -40,6 +40,11 @@ jest.mock('../../../../shared/hooks/useLowPowerMode', () => ({
 jest.mock('../../../alarm/hooks/useSilentPushDiagnostics', () => ({
   useSilentPushDiagnostics: () => mockUseSilentPushDiagnostics(),
 }));
+// #1568 (T8b) — backend SSoT mirror 폴링. test에서는 default null로 mock.
+const mockReadBackendSsotMirror = jest.fn();
+jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
+  readBackendSsotMirror: () => mockReadBackendSsotMirror(),
+}));
 jest.mock('../../../alarm/utils/alarmLog', () => {
   const actual = jest.requireActual('../../../alarm/utils/alarmLog');
   return {
@@ -175,6 +180,8 @@ const setupHookDefaults = () => {
   mockUseLowPowerMode.mockReturnValue(false);
   // #1235 (D9 wire) — tripStartedAt 기본 null (trip 미시작).
   mockGetTripStartedAt.mockResolvedValue(null);
+  // #1568 (T8b) — backend SSoT mirror 기본 null (backend가 forward 안 함).
+  mockReadBackendSsotMirror.mockResolvedValue(null);
   // #1235 (D9 wire) — destinationStore/settingsStore SSOT 초기화. 매 테스트 독립.
   useDestinationStore.setState({ destination: null });
   useSettingsStore.setState({ sleepMode: false });
@@ -2024,6 +2031,98 @@ describe('DebugModal — Silent Push 진단 섹션 (#506)', () => {
     expect(dump).toContain('bl:T:1:early:군자');
     expect(dump).toContain('bl:T:1:imminent:군자');
     expect(dump).not.toContain('(not loaded)');
+  });
+});
+
+describe('DebugModal — Backend SSoT 섹션 (#1568, T8b)', () => {
+  const mirrorEntry = {
+    currentStationId: '용마산',
+    motionState: 'moving' as const,
+    lastAdvanceEvidence: 'arvlcd-arrived',
+    lastAdvanceAt: 1_700_000_000_000,
+    passedStations: ['중곡', '군자'] as readonly string[],
+    receivedAt: 1_700_000_001_000,
+  };
+
+  let appStateListener: ((state: string) => void) | null = null;
+  const appStateRemove = jest.fn();
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    appStateListener = null;
+    jest.spyOn(AppState, 'addEventListener').mockImplementation((_t, l) => {
+      appStateListener = l as (state: string) => void;
+      return { remove: appStateRemove } as unknown as ReturnType<typeof AppState.addEventListener>;
+    });
+    setupHookDefaults();
+  });
+
+  it('UI: mirror 미존재 시 "(no recent SSoT push)" 노출', async () => {
+    mockReadBackendSsotMirror.mockResolvedValue(null);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => {
+      expect(screen.getByTestId('debug-backend-ssot-empty')).toBeTruthy();
+    });
+    expect(screen.getByText('(no recent SSoT push)')).toBeTruthy();
+  });
+
+  it('UI: mirror 존재 시 4 row 노출', async () => {
+    mockReadBackendSsotMirror.mockResolvedValue(mirrorEntry);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    // currentStationId row value 등장 — 폴링 첫 tick 후
+    await waitFor(() => {
+      expect(screen.getByText('용마산')).toBeTruthy();
+    });
+    expect(screen.getByText('moving')).toBeTruthy();
+    expect(screen.getByText('arvlcd-arrived')).toBeTruthy();
+    expect(screen.getByText(String(mirrorEntry.lastAdvanceAt))).toBeTruthy();
+  });
+
+  it('UI: 동일 entry로 두 cycle → reducer no-op (extra render 없음)', async () => {
+    jest.useFakeTimers();
+    try {
+      mockReadBackendSsotMirror.mockResolvedValue(mirrorEntry);
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      // 첫 tick는 즉시 실행. microtask flush로 setState 적용.
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByText('용마산')).toBeTruthy();
+      // 5s 후 interval tick — 동일 entry → reducer가 prev 그대로 반환.
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+        await Promise.resolve();
+      });
+      expect(screen.getByText('용마산')).toBeTruthy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('mirror 미전달 → dump에 (no recent SSoT push) 1줄', () => {
+    const dump = __test__.buildDumpText(makeDumpArgs({}));
+    expect(dump).toContain('## Backend SSoT');
+    expect(dump).toContain('(no recent SSoT push)');
+  });
+
+  it('mirror 존재 → currentStationId/motionState/lastAdvanceEvidence/lastAdvanceAt 4줄', () => {
+    const dump = __test__.buildDumpText(
+      makeDumpArgs({ backendSsotMirror: mirrorEntry }),
+    );
+    expect(dump).toContain('## Backend SSoT');
+    expect(dump).toContain('currentStationId=용마산');
+    expect(dump).toContain('motionState=moving');
+    expect(dump).toContain('lastAdvanceEvidence=arvlcd-arrived');
+    expect(dump).toContain(`lastAdvanceAt=${mirrorEntry.lastAdvanceAt}`);
+    expect(dump).not.toContain('(no recent SSoT push)');
+  });
+
+  it('mirror null도 (no recent SSoT push)로 처리 (graceful)', () => {
+    const dump = __test__.buildDumpText(
+      makeDumpArgs({ backendSsotMirror: null }),
+    );
+    expect(dump).toContain('## Backend SSoT');
+    expect(dump).toContain('(no recent SSoT push)');
   });
 });
 

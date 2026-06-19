@@ -25,6 +25,7 @@ import type { FusionConfidence, FusionSource } from '../../../shared/types/fusio
  * 자리만 미리 박아둔다(미통합이라 결정 트리에 영향 없음).
  */
 export type FusionTier =
+  | 'backend-ssot'
   | 'wifi-ssid'
   | 'boarding-lock-train-match'
   | 'position-train-locked'
@@ -50,6 +51,10 @@ export type FusionTier =
  *   여전히 'gps'다.
  */
 export const FUSION_TIER_PRIORITY: readonly FusionTier[] = [
+  // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT 권위 mirror가 cascade 최상위.
+  // backend advance 게이트(seed/repeat/motion-stop/cross-validation 6단)를 통과한 결과라
+  // device-side cascade tier보다 신뢰도 우선.
+  'backend-ssot',
   'wifi-ssid',
   'boarding-lock-train-match',
   'position-train-locked',
@@ -99,6 +104,8 @@ export function getTierRank(tier: FusionTier): number {
  */
 export function tierFor(source: FusionSource, confidence: FusionConfidence): FusionTier {
   switch (source) {
+    case 'backend-ssot':
+      return 'backend-ssot';
     case 'wifi-ssid':
       return 'wifi-ssid';
     case 'boarding-lock':

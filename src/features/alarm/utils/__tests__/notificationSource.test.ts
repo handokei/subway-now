@@ -13,6 +13,7 @@ jest.mock('../../../../shared/constants/debugFlags', () => ({
 
 describe('resolveNotificationSource', () => {
   it.each<[FusionSource, NotificationSource]>([
+    ['backend-ssot', 'positionTrain'],
     ['boarding-lock', 'positionTrain'],
     ['boarding-lock-interp', 'positionTrain'],
     ['position-train', 'positionTrain'],

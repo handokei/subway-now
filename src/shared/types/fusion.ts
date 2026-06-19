@@ -26,6 +26,7 @@
  * 별도 트리거. 본 라벨은 cascade의 confidence 표시 단에서 verdict 기여를 명확히 표기한다.
  */
 export type FusionConfidence =
+  | 'backend-ssot'
   | 'boarding-lock'
   | 'boarding-lock-interp'
   | 'position-train'
@@ -47,6 +48,7 @@ export type FusionConfidence =
  * 사용되며 GPS/arrival 호출 없이 역을 확정한다.
  */
 export type FusionSource =
+  | 'backend-ssot'
   | 'boarding-lock'
   | 'boarding-lock-interp'
   | 'position-train'

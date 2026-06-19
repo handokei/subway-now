@@ -27,11 +27,14 @@ import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
+import {
+  persistBackendSsotMirror,
+  type SilentPushSsotMirror,
+} from '../utils/backendSsotMirror';
 import type { LineNumber, Station } from '../../../shared/types/station';
 import {
   APNS_TOKEN_KEY,
   ACTIVE_TRIP_KEY,
-  BACKEND_SSOT_MIRROR_KEY,
   DESTINATION_KEY,
   LOCKLESS_STATION_PASSED_KEY,
   SLEEP_MODE_KEY,
@@ -176,18 +179,16 @@ export interface SilentPushPayload {
 }
 
 /**
- * #1561 (T8) — silent push payload에 실린 SSoT 권위 스냅샷 형태.
- *
- * backend `apns.ts`의 `SilentPushSsotPayload`와 1:1. device는 본 값을 BACKEND_SSOT_MIRROR_KEY에
- * mirror하며 cascade picker가 다음 polling cycle에서 read해 `backend-ssot` tier로 채택.
+ * #1568 (T8b) — `SilentPushSsotMirror` / `BackendSsotMirrorEntry` / `persistBackendSsotMirror` /
+ * `readBackendSsotMirror`는 expo-notifications 의존성 없이 cascade picker / DebugModal에서 import
+ * 가능하도록 `utils/backendSsotMirror.ts`로 이전했다. 기존 호출자 호환을 위해 본 파일에서 re-export.
  */
-export interface SilentPushSsotMirror {
-  currentStationId: string;
-  motionState: 'moving' | 'stationary' | 'unknown';
-  lastAdvanceEvidence: string;
-  lastAdvanceAt: number;
-  passedStations: readonly string[];
-}
+export {
+  persistBackendSsotMirror,
+  readBackendSsotMirror,
+  type SilentPushSsotMirror,
+  type BackendSsotMirrorEntry,
+} from '../utils/backendSsotMirror';
 
 /**
  * Reschedule push channel discriminator (#918 A3 PR4). Backend `types.ts`의 `RescheduleChannel`과 정렬.
@@ -682,71 +683,8 @@ async function loadApnsToken(): Promise<string | null> {
   }
 }
 
-/**
- * #1561 (T8, ADR-017 / S2 #1535 흡수) — backend SSoT 권위 mirror를 AsyncStorage에 영속화.
- *
- * useFusedNearestStation cascade picker가 다음 polling cycle에서 본 값을 read해 `backend-ssot`
- * tier(최상위)로 채택한다. receivedAt epoch ms를 함께 stamp해 cascade picker가 자체 staleness
- * 판단(cascade tier policy 후속 PR).
- *
- * write 실패는 silent — backend SSoT mirror는 보조 신호로 미존재 시 cascade는 기존 tier fallback.
- */
-export async function persistBackendSsotMirror(
-  ssot: SilentPushSsotMirror,
-  receivedAt: number,
-): Promise<void> {
-  try {
-    await AsyncStorage.setItem(
-      BACKEND_SSOT_MIRROR_KEY,
-      JSON.stringify({ ...ssot, receivedAt }),
-    );
-  } catch {
-    // graceful — cascade picker는 mirror 부재 시 기존 tier fallback.
-  }
-}
-
-/**
- * #1561 (T8) — AsyncStorage에서 backend SSoT mirror 읽기. cascade picker가 polling cycle마다 호출.
- *
- * 미존재 / parse 실패 → null. cascade picker는 기존 tier fallback.
- */
-export interface BackendSsotMirrorEntry extends SilentPushSsotMirror {
-  receivedAt: number;
-}
-
-export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | null> {
-  try {
-    const raw = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<BackendSsotMirrorEntry> | null;
-    if (
-      !parsed ||
-      typeof parsed.currentStationId !== 'string' ||
-      parsed.currentStationId.length === 0 ||
-      (parsed.motionState !== 'moving' &&
-        parsed.motionState !== 'stationary' &&
-        parsed.motionState !== 'unknown') ||
-      typeof parsed.lastAdvanceEvidence !== 'string' ||
-      typeof parsed.lastAdvanceAt !== 'number' ||
-      !Array.isArray(parsed.passedStations) ||
-      typeof parsed.receivedAt !== 'number'
-    ) {
-      return null;
-    }
-    return {
-      currentStationId: parsed.currentStationId,
-      motionState: parsed.motionState,
-      lastAdvanceEvidence: parsed.lastAdvanceEvidence,
-      lastAdvanceAt: parsed.lastAdvanceAt,
-      passedStations: parsed.passedStations.filter(
-        (p): p is string => typeof p === 'string' && p.length > 0,
-      ),
-      receivedAt: parsed.receivedAt,
-    };
-  } catch {
-    return null;
-  }
-}
+// #1568 (T8b) — persistBackendSsotMirror / readBackendSsotMirror는 utils/backendSsotMirror로 이전.
+// 본 파일 상단에서 type/함수 re-export 유지.
 
 /**
  * #816 C — 사용자 토글 (lockless station-passed opt-in) 현재값을 AsyncStorage에서 읽는다.

@@ -190,7 +190,7 @@ export default function HomeScreen() {
   //   2) useCurrentStationConfirmModal: 매칭되면 useStationCandidates가 단일 후보로 자동 확정(#914 F4).
   // useFusedNearestStation 호출(아래) 전에 선언해 8번째 인자로 전달한다.
   const wifiStation = useWifiStation();
-  const { result, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation);
+  const { result, liveResult, variants, userLocation, speedMps, accuracyMeters, loading, error, permissionDenied, locationUncertain, positionStability, refresh, confidence, source, currentHopIndex, arcStations, trainProgressing } = useFusedNearestStation(undefined, undefined, routeContext, lockedTrainCode, fusionBoardingLock, motionStationary, { subsurface: barometerSubsurface, signal: barometerSignal }, wifiStation);
 
   // #914 (F4) — 1탭 현재역 확정 모달. 자동 추정이 locationUncertain으로 길어지면 후보 1~3개를
   // 카드로 노출, 1탭 = customOrigin 적용.
@@ -693,7 +693,11 @@ export default function HomeScreen() {
 
   // #1094: 위젯은 destination/route 진행 여부와 무관하게 항상 nearest station을 미러링한다.
   // 50m bucket 단위로 dedupe되어 GPS tick 폭주를 흡수. LA/푸시 알림 lifecycle과 의도적으로 분리.
-  useWidgetMirror(result?.station ?? null, result?.distanceKm ?? null);
+  //
+  // #1568 (T8b, Epic ADR-017 #1553) — sticky 격리: fused result는 sticky:locked override가 들어가
+  // 위젯에 stuck되는 회귀("반포 stuck") 회피하려고 raw GPS 최근접(liveResult)을 전달한다.
+  // 위젯은 boardingLock·trip context와 무관한 ambient display 채널이라 sticky override 의무 없음.
+  useWidgetMirror(liveResult?.station ?? null, liveResult?.distanceKm ?? null);
 
   useEffect(() => {
     const prevDestId = prevDestIdRef.current;
