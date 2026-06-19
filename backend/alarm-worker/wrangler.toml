@@ -44,6 +44,20 @@ preview_id = "d38f190e3f7f4fd3b6e7f6485dd1733d"
 # binding = "TELEMETRY"
 # dataset = "silent_push_telemetry"
 
+# KV: device raw signal dump (#1520, ADR-015 §10 P5 / PR-B)
+# `POST /signals/dump`이 trip 종료 시 device fusion ring buffer를 60일 TTL로 적재한다.
+# `GET /admin/signals/export?corrId=`로 운영자가 7일 회귀 사후 분석.
+# 코드는 `if (env.RAW_SIGNALS)` 분기로 graceful — binding 없으면 endpoint가 503 반환.
+#
+# 운영자 1회성 등록 절차:
+#   1) `wrangler kv namespace create RAW_SIGNALS`
+#   2) `wrangler kv namespace create RAW_SIGNALS --preview`
+#   3) 출력된 id / preview_id를 아래 두 줄에 채워 binding 활성화.
+# [[kv_namespaces]]
+# binding = "RAW_SIGNALS"
+# id = ""
+# preview_id = ""
+
 # 1분마다 활성 트립 폴링
 [triggers]
 crons = ["*/1 * * * *"]

@@ -34,6 +34,11 @@ jest.mock('../../store/tripBoundCleanups', () => ({
   runTripBoundCleanups: (...args: unknown[]) => mockRunTripBoundCleanups(...args),
 }));
 
+const mockFlushSignalDumpOutbox = jest.fn();
+jest.mock('../../api/signalDumpBackend', () => ({
+  flushSignalDumpOutbox: (...args: unknown[]) => mockFlushSignalDumpOutbox(...args),
+}));
+
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -51,6 +56,7 @@ beforeEach(async () => {
   mockSendTripEnded.mockResolvedValue(undefined);
   mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
+  mockFlushSignalDumpOutbox.mockResolvedValue({ ok: false, skipped: true });
   process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
 });
 
@@ -186,6 +192,18 @@ describe('runLaunchTripReconciliation', () => {
       endedAt: 1,
       endReason: 'expired',
     });
+    await expect(runLaunchTripReconciliation()).resolves.toBeUndefined();
+  });
+
+  it('#1520 — flushSignalDumpOutbox 항상 호출 (cold-launch retry)', async () => {
+    // ACTIVE_TRIP_KEY 없어도 flush는 호출되어야 한다 — outbox에는 직전 trip의 dump가 남아있을 수 있음.
+    await runLaunchTripReconciliation();
+    expect(mockFlushSignalDumpOutbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('#1520 — flushSignalDumpOutbox 예외 시에도 trip status reconciliation은 계속 진행', async () => {
+    // runLaunchTripReconciliation은 outer try-catch로 보호되므로 예외는 silent fail로 흡수.
+    mockFlushSignalDumpOutbox.mockRejectedValueOnce(new Error('boom'));
     await expect(runLaunchTripReconciliation()).resolves.toBeUndefined();
   });
 });

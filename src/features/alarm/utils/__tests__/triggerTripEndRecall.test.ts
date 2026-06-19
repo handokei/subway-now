@@ -12,6 +12,10 @@ const mockComputeAndUploadTripPrescheduled = jest.fn();
 const mockComputeRouteArc = jest.fn();
 const mockGetTripStartedAt = jest.fn();
 const mockFlushRegressionCounters = jest.fn();
+const mockUploadSignalDump = jest.fn();
+const mockGetCurrentTripCorrIdSync = jest.fn();
+const mockGetCurrentTripCorrId = jest.fn();
+const mockGetRawSignalEntries = jest.fn();
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -48,6 +52,19 @@ jest.mock('../../../../shared/utils/regressionMetrics', () => ({
   flushRegressionCounters: (...args: unknown[]) => mockFlushRegressionCounters(...args),
 }));
 
+jest.mock('../../api/signalDumpBackend', () => ({
+  uploadSignalDump: (...args: unknown[]) => mockUploadSignalDump(...args),
+}));
+
+jest.mock('../../../observability/utils/tripCorrId', () => ({
+  getCurrentTripCorrIdSync: (...args: unknown[]) => mockGetCurrentTripCorrIdSync(...args),
+  getCurrentTripCorrId: (...args: unknown[]) => mockGetCurrentTripCorrId(...args),
+}));
+
+jest.mock('../../../observability/utils/rawSignalBuffer', () => ({
+  getRawSignalEntries: (...args: unknown[]) => mockGetRawSignalEntries(...args),
+}));
+
 import { triggerTripEndRecall } from '../triggerTripEndRecall';
 import {
   APNS_TOKEN_KEY,
@@ -74,6 +91,24 @@ const ROUTE_ARC_STATIONS = [
   { id: 'd', name: 'Dest', line: '2', lat: 0, lng: 0 },
 ];
 
+function setupHappyPath(): void {
+  mockGetTripStartedAt.mockResolvedValue(100);
+  setStorage({
+    [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+    [ROUTE_KEY]: ROUTE_JSON,
+    [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+    [DESTINATION_KEY]: DEST_JSON,
+    [APNS_TOKEN_KEY]: 'apns-token-xyz',
+  });
+  mockComputeRouteArc.mockReturnValue({
+    stations: ROUTE_ARC_STATIONS,
+    arcM: [0, 1, 2],
+    totalLengthM: 2,
+  });
+  mockComputeAndUploadTripRecall.mockResolvedValue({ uploaded: true });
+  mockSetItem.mockResolvedValue(undefined);
+}
+
 describe('triggerTripEndRecall', () => {
   beforeEach(() => {
     mockGetItem.mockReset();
@@ -85,6 +120,14 @@ describe('triggerTripEndRecall', () => {
     mockGetTripStartedAt.mockReset();
     mockFlushRegressionCounters.mockReset();
     mockFlushRegressionCounters.mockResolvedValue(undefined);
+    mockUploadSignalDump.mockReset();
+    mockUploadSignalDump.mockResolvedValue({ ok: true });
+    mockGetCurrentTripCorrIdSync.mockReset();
+    mockGetCurrentTripCorrIdSync.mockReturnValue(null);
+    mockGetCurrentTripCorrId.mockReset();
+    mockGetCurrentTripCorrId.mockResolvedValue(null);
+    mockGetRawSignalEntries.mockReset();
+    mockGetRawSignalEntries.mockReturnValue([]);
   });
 
   it('tripStart 부재 시 즉시 skip (no-trip-start)', async () => {
@@ -373,5 +416,81 @@ describe('triggerTripEndRecall', () => {
 
     const result = await triggerTripEndRecall();
     expect(result.uploaded).toBe(true); // recall 성공 영향 없음
+  });
+
+  describe('#1520 — signal dump upload', () => {
+    it('corrId(sync) + token + entries 정상 시 uploadSignalDump 호출', async () => {
+      setupHappyPath();
+      mockGetCurrentTripCorrIdSync.mockReturnValue('1700000000000-deadbeef');
+      const entries = [{ ts: 1, kind: 'cycle' }];
+      mockGetRawSignalEntries.mockReturnValue(entries);
+
+      await triggerTripEndRecall();
+
+      expect(mockUploadSignalDump).toHaveBeenCalledWith(
+        '1700000000000-deadbeef',
+        'apns-token-xyz',
+        entries,
+      );
+      // sync hit으로 async getCurrentTripCorrId는 호출 안 됨.
+      expect(mockGetCurrentTripCorrId).not.toHaveBeenCalled();
+    });
+
+    it('sync 부재 시 storage hydrate fallback 사용', async () => {
+      setupHappyPath();
+      mockGetCurrentTripCorrIdSync.mockReturnValue(null);
+      mockGetCurrentTripCorrId.mockResolvedValue('1700000000000-deadbeef');
+      mockGetRawSignalEntries.mockReturnValue([{ ts: 1, kind: 'cycle' }]);
+
+      await triggerTripEndRecall();
+
+      expect(mockGetCurrentTripCorrId).toHaveBeenCalled();
+      expect(mockUploadSignalDump).toHaveBeenCalled();
+    });
+
+    it('corrId 부재 시 upload skip', async () => {
+      setupHappyPath();
+      mockGetCurrentTripCorrIdSync.mockReturnValue(null);
+      mockGetCurrentTripCorrId.mockResolvedValue(null);
+      mockGetRawSignalEntries.mockReturnValue([{ ts: 1 }]);
+
+      await triggerTripEndRecall();
+      expect(mockUploadSignalDump).not.toHaveBeenCalled();
+    });
+
+    it('APNS token 부재 시 upload skip', async () => {
+      setupHappyPath();
+      setStorage({
+        [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+        [ROUTE_KEY]: ROUTE_JSON,
+        [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+        [DESTINATION_KEY]: DEST_JSON,
+        [APNS_TOKEN_KEY]: null,
+      });
+      mockGetCurrentTripCorrIdSync.mockReturnValue('1700000000000-deadbeef');
+      mockGetRawSignalEntries.mockReturnValue([{ ts: 1 }]);
+
+      await triggerTripEndRecall();
+      expect(mockUploadSignalDump).not.toHaveBeenCalled();
+    });
+
+    it('entries 빈 배열이면 upload skip', async () => {
+      setupHappyPath();
+      mockGetCurrentTripCorrIdSync.mockReturnValue('1700000000000-deadbeef');
+      mockGetRawSignalEntries.mockReturnValue([]);
+
+      await triggerTripEndRecall();
+      expect(mockUploadSignalDump).not.toHaveBeenCalled();
+    });
+
+    it('uploadSignalDump 예외 흡수 (recall 결과는 영향 없음)', async () => {
+      setupHappyPath();
+      mockGetCurrentTripCorrIdSync.mockReturnValue('1700000000000-deadbeef');
+      mockGetRawSignalEntries.mockReturnValue([{ ts: 1 }]);
+      mockUploadSignalDump.mockRejectedValue(new Error('boom'));
+
+      const result = await triggerTripEndRecall();
+      expect(result.uploaded).toBe(true);
+    });
   });
 });

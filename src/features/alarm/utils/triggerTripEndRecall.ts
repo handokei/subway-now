@@ -43,6 +43,12 @@ import {
 import { getTripStartedAt } from './tripStartStorage';
 import { createLogger } from '../../../shared/utils/logger';
 import { flushRegressionCounters } from '../../../shared/utils/regressionMetrics';
+import {
+  getCurrentTripCorrIdSync,
+  getCurrentTripCorrId,
+} from '../../observability/utils/tripCorrId';
+import { getRawSignalEntries } from '../../observability/utils/rawSignalBuffer';
+import { uploadSignalDump } from '../api/signalDumpBackend';
 
 const log = createLogger('triggerTripEndRecall');
 
@@ -107,6 +113,11 @@ export async function triggerTripEndRecall(): Promise<TriggerTripEndRecallResult
     // 즉시 reset하므로 같은 trip이 두 번 trigger되어도 두 번째는 자연스럽게 no-op이 된다.
     await triggerRegressionFlush();
 
+    // #1520 (ADR-015 §10 P5 / PR-B) — fusion raw signal dump upload. tripBoundCleanups가
+    // 도착하기 *전*에 호출되어야 corrId/entries가 유효. fire-and-forget — silent push ack
+    // 같은 critical path와 분리해 실패해도 trip-end 흐름은 정상 동작.
+    await triggerSignalDumpUpload();
+
     return { uploaded: result.uploaded };
   } catch (e) {
     log.warn('trigger error', e);
@@ -137,6 +148,35 @@ async function triggerPrescheduledUpload(tripStart: number): Promise<void> {
     }
   } catch (e) {
     log.warn('prescheduled trigger error', e);
+  }
+}
+
+/**
+ * #1520 — fusion raw signal dump upload. corrId(sync 우선, 부재 시 storage hydrate) +
+ * token + 현재 ring buffer entries를 upload한다.
+ *
+ * cleanup 전에 호출되어야 한다 — tripBoundCleanups가 corrId/buffer를 모두 비우기 때문.
+ * graceful: corrId 부재 / token 부재 / entries 빈 어떤 경우도 trip-end critical path 차단 안 함.
+ */
+async function triggerSignalDumpUpload(): Promise<void> {
+  try {
+    // sync 우선 (fusion hot path 정합). 부재 시 storage hydrate fallback.
+    const corrId =
+      getCurrentTripCorrIdSync() ?? (await getCurrentTripCorrId());
+    if (corrId === null) {
+      return;
+    }
+    const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
+    if (!token) {
+      return;
+    }
+    const entries = getRawSignalEntries();
+    if (entries.length === 0) {
+      return;
+    }
+    await uploadSignalDump(corrId, token, entries);
+  } catch (e) {
+    log.warn('signal dump trigger error', e);
   }
 }
 

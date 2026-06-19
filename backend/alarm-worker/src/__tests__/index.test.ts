@@ -3354,3 +3354,143 @@ describe('POST /trips — #1425 trip-recently-ended reject', () => {
     expect(await env.TRIPS.get('trip:fresh-token')).not.toBeNull();
   });
 });
+
+function rawSignalsEnv(): Env {
+  return makeEnv({ RAW_SIGNALS: new InMemoryKV() as unknown as KVNamespace });
+}
+function dumpBody(): Record<string, unknown> {
+  return {
+    corrId: '1700000000000-deadbeef',
+    token: 'aabbccdd11223344',
+    entries: [{ ts: 1, kind: 'cycle' }, { ts: 2, kind: 'enter' }],
+  };
+}
+
+describe('POST /signals/dump (#1520)', () => {
+  it('returns 503 when RAW_SIGNALS binding is missing (graceful)', async () => {
+    const env = makeEnv();
+    const res = await post('/signals/dump', dumpBody(), env);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'raw_signals_unavailable' });
+  });
+
+  it('returns 400 on invalid JSON', async () => {
+    const env = rawSignalsEnv();
+    const res = await post('/signals/dump', 'not-json{', env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_json' });
+  });
+
+  it('returns 400 on invalid payload (bad corrId)', async () => {
+    const env = rawSignalsEnv();
+    const res = await post('/signals/dump', { ...dumpBody(), corrId: 'bad' }, env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_payload' });
+  });
+
+  it('returns 400 when entries exceeds cap', async () => {
+    const env = rawSignalsEnv();
+    const tooMany = Array.from({ length: 501 }, (_, i) => ({ ts: i }));
+    const res = await post('/signals/dump', { ...dumpBody(), entries: tooMany }, env);
+    expect(res.status).toBe(400);
+  });
+
+  it('stores entries under dump:{corrId} with TTL', async () => {
+    const env = rawSignalsEnv();
+    const res = await post('/signals/dump', dumpBody(), env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, accepted: 2 });
+
+    const stored = await env.RAW_SIGNALS!.get('dump:1700000000000-deadbeef');
+    expect(stored).not.toBeNull();
+    const parsed = JSON.parse(stored ?? '');
+    expect(parsed.tokenPrefix).toBe('aabbccdd');
+    expect(parsed.entries.length).toBe(2);
+    expect(typeof parsed.uploadedAt).toBe('number');
+  });
+});
+
+function makeAdminRawSignalsEnv(): Env {
+  return makeEnv({
+    RAW_SIGNALS: new InMemoryKV() as unknown as KVNamespace,
+    ADMIN_TOKEN: 'secret',
+  });
+}
+
+async function getAdminSignalsExport(
+  env: Env,
+  query: string,
+  auth?: string,
+): Promise<Response> {
+  return app.fetch(
+    new Request(`http://example.com/admin/signals/export${query}`, {
+      method: 'GET',
+      headers: auth ? { authorization: auth } : {},
+    }),
+    env,
+  );
+}
+
+describe('GET /admin/signals/export (#1520)', () => {
+  it('returns 503 when ADMIN_TOKEN not configured', async () => {
+    const env = makeEnv({ RAW_SIGNALS: new InMemoryKV() as unknown as KVNamespace });
+    const res = await getAdminSignalsExport(env, '?corrId=1700000000000-deadbeef', 'Bearer x');
+    expect(res.status).toBe(503);
+  });
+
+  it('returns 401 when auth header missing', async () => {
+    const env = makeAdminRawSignalsEnv();
+    const res = await getAdminSignalsExport(env, '?corrId=1700000000000-deadbeef');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 503 when RAW_SIGNALS binding missing', async () => {
+    const env = makeEnv({ ADMIN_TOKEN: 'secret' });
+    const res = await getAdminSignalsExport(env, '?corrId=1700000000000-deadbeef', 'Bearer secret');
+    expect(res.status).toBe(503);
+  });
+
+  it('returns 400 when corrId param missing', async () => {
+    const env = makeAdminRawSignalsEnv();
+    const res = await getAdminSignalsExport(env, '', 'Bearer secret');
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid_corrId' });
+  });
+
+  it('returns 404 when corrId pattern invalid', async () => {
+    const env = makeAdminRawSignalsEnv();
+    const res = await getAdminSignalsExport(env, '?corrId=bad', 'Bearer secret');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'not_found' });
+  });
+
+  it('returns 404 when no stored dump for corrId', async () => {
+    const env = makeAdminRawSignalsEnv();
+    const res = await getAdminSignalsExport(env, '?corrId=1700000000000-deadbeef', 'Bearer secret');
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 200 with stored dump after upload', async () => {
+    const env = makeAdminRawSignalsEnv();
+    await post(
+      '/signals/dump',
+      {
+        corrId: '1700000000000-deadbeef',
+        token: 'aabbccdd11223344',
+        entries: [{ ts: 1 }],
+      },
+      env,
+    );
+    const res = await getAdminSignalsExport(env, '?corrId=1700000000000-deadbeef', 'Bearer secret');
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      corrId: string;
+      tokenPrefix: string;
+      entries: unknown[];
+      uploadedAt: number;
+    };
+    expect(body.corrId).toBe('1700000000000-deadbeef');
+    expect(body.tokenPrefix).toBe('aabbccdd');
+    expect(body.entries.length).toBe(1);
+  });
+});

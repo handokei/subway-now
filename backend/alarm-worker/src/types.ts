@@ -533,4 +533,12 @@ export interface Env {
    * 등록: `wrangler secret put QUOTA_ALERT_WEBHOOK_URL`
    */
   QUOTA_ALERT_WEBHOOK_URL?: string;
+  /**
+   * Device raw signal dump KV (#1520, ADR-015 §10 P5 / PR-B).
+   * Trip 종료 시 device가 fusion raw signal ring buffer를 60일 TTL로 적재 →
+   * 운영자가 `/admin/signals/export?corrId=`로 조회해 7일 회귀 사후 분석.
+   * 미바인딩 시 `/signals/dump`는 503 graceful (개발 환경 호환).
+   * 생성: `wrangler kv namespace create RAW_SIGNALS`
+   */
+  RAW_SIGNALS?: KVNamespace;
 }

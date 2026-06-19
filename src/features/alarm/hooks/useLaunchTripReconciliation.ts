@@ -47,6 +47,7 @@ import { sendTripEndedNotification } from '../utils/stationNotification';
 import { fetchTripStatus } from '../api/tripStatus';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
+import { flushSignalDumpOutbox } from '../api/signalDumpBackend';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useLaunchTripReconciliation');
@@ -65,6 +66,11 @@ function getBackendUrl(): string | null {
  */
 export async function runLaunchTripReconciliation(): Promise<void> {
   try {
+    // #1520 (ADR-015 §10 P5 / PR-B) — outbox flush retry. trip-end 시 upload 실패해 outbox에
+    // enqueue된 raw signal dump를 cold-launch 시점에 다시 시도. trip status reconciliation과
+    // 독립 — backend URL이 없거나 outbox 비어있으면 즉시 graceful skip.
+    await flushSignalDumpOutbox();
+
     const baseUrl = getBackendUrl();
     if (!baseUrl) {
       logger.info('skip — ALARM_BACKEND_URL not set');
