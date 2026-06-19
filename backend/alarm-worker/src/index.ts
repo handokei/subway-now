@@ -944,6 +944,13 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
     typeof obj.currentStationName === 'string' && obj.currentStationName.length > 0
       ? obj.currentStationName
       : undefined;
+  // #1543 (S10) — CTRadioAccessTechnology 환경 vote. iOS만 송신. 정의된 enum 외 값은 graceful drop.
+  const cellularEnvironmentVote =
+    obj.cellularEnvironmentVote === 'surface' ||
+    obj.cellularEnvironmentVote === 'underground' ||
+    obj.cellularEnvironmentVote === 'unknown'
+      ? obj.cellularEnvironmentVote
+      : undefined;
   return {
     token: obj.token,
     point: {
@@ -955,6 +962,7 @@ export function validatePositionPayload(input: unknown): PositionUploadPayload |
       ...(hasPair ? { mapMatchedLine, mapMatchedArcM } : {}),
       ...(nearestStationDistanceM !== undefined ? { nearestStationDistanceM } : {}),
       ...(currentStationName !== undefined ? { currentStationName } : {}),
+      ...(cellularEnvironmentVote !== undefined ? { cellularEnvironmentVote } : {}),
     },
     accelSummary,
   };

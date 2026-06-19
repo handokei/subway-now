@@ -127,6 +127,16 @@ function isPositionPoint(value: unknown): value is PositionPoint {
     if (typeof o.currentStationName !== 'string') return false;
     if (o.currentStationName.length === 0) return false;
   }
+  // #1543 (S10) — cellularEnvironmentVote는 옵션. 정의된 enum 외 값은 series 거부 (graceful).
+  if (o.cellularEnvironmentVote !== undefined) {
+    if (
+      o.cellularEnvironmentVote !== 'surface' &&
+      o.cellularEnvironmentVote !== 'underground' &&
+      o.cellularEnvironmentVote !== 'unknown'
+    ) {
+      return false;
+    }
+  }
   return true;
 }
 

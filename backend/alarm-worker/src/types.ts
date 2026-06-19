@@ -401,6 +401,18 @@ export interface PositionPoint {
    * 차단한다. 미전달 시 log에서 `currentStation` 키가 omit (graceful, 회귀 없음).
    */
   currentStationName?: string;
+  /**
+   * #1543 (ADR-016 S10) — 디바이스 CTRadioAccessTechnology 환경 vote.
+   *
+   * - 'surface'      : 4G/5G 잡힘 → 지상 환경 vote
+   * - 'underground'  : 2G/3G fallback → 지하 환경 vote
+   * - 'unknown' / 미전송 : vote 미투표 (게이트 영향 0)
+   *
+   * 본 필드는 backend `evaluateConsensusGate`가 `cellularEnvironmentVote`로 입력받아 4분면 SSOT
+   * 합의 게이트의 환경 contradict 판정에 사용한다. iOS only — Android는 본 값을 보내지 않으며
+   * backend는 undefined를 'unknown' 동급으로 graceful 처리.
+   */
+  cellularEnvironmentVote?: 'surface' | 'underground' | 'unknown';
 }
 
 /**

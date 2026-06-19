@@ -471,6 +471,57 @@ describe('positionSeries — currentStationName field validation (#1363)', () =>
   });
 });
 
+describe('positionSeries — cellularEnvironmentVote field validation (#1543)', () => {
+  it.each(['surface', 'underground', 'unknown'] as const)(
+    'enum %s → series에 정상 적재',
+    async (vote) => {
+      const kv = new InMemoryKV() as unknown as KVNamespace;
+      const raw = JSON.stringify([
+        {
+          lat: 37.5,
+          lng: 127.0,
+          accuracy: 5,
+          ts: 1000,
+          motion: 'walking',
+          cellularEnvironmentVote: vote,
+        },
+      ]);
+      await kv.put('pos:tok', raw);
+      const series = await readSeries(kv, 'tok');
+      expect(series).toHaveLength(1);
+      expect(series[0].cellularEnvironmentVote).toBe(vote);
+    },
+  );
+
+  it('enum 외 값 → series에서 filter됨 (정합성 보장)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      {
+        lat: 37.5,
+        lng: 127.0,
+        accuracy: 5,
+        ts: 1000,
+        motion: 'walking',
+        cellularEnvironmentVote: 'mars',
+      },
+    ]);
+    await kv.put('pos:tok', raw);
+    const series = await readSeries(kv, 'tok');
+    expect(series).toHaveLength(0);
+  });
+
+  it('필드 부재 → 정상 적재 (옵션)', async () => {
+    const kv = new InMemoryKV() as unknown as KVNamespace;
+    const raw = JSON.stringify([
+      { lat: 37.5, lng: 127.0, accuracy: 5, ts: 1000, motion: 'walking' },
+    ]);
+    await kv.put('pos:tok', raw);
+    const series = await readSeries(kv, 'tok');
+    expect(series).toHaveLength(1);
+    expect(series[0].cellularEnvironmentVote).toBeUndefined();
+  });
+});
+
 describe('cosineDirection', () => {
   it('같은 방향 → 1', () => {
     // 동→서 두 vector 동일 방향

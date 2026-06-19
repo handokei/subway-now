@@ -1725,6 +1725,57 @@ describe('POST /position (#819)', () => {
       expect(stored[0].currentStationName).toBeUndefined();
     });
   });
+
+  describe('#1543 (S10) — cellularEnvironmentVote 옵션 필드', () => {
+    const BASE_POS = {
+      token: 'tok-cell',
+      lat: 1,
+      lng: 2,
+      accuracy: 5,
+      ts: 1234,
+      motion: 'walking' as const,
+    };
+
+    it.each(['surface', 'underground', 'unknown'] as const)(
+      'enum %s → point.cellularEnvironmentVote에 set',
+      async (vote) => {
+        const env = makeKvEnv();
+        const res = await post(
+          '/position',
+          { ...BASE_POS, cellularEnvironmentVote: vote },
+          env,
+        );
+        expect(res.status).toBe(200);
+        const stored = JSON.parse(
+          (await env.TRIPS.get('pos:tok-cell'))!,
+        ) as Array<Record<string, unknown>>;
+        expect(stored[0].cellularEnvironmentVote).toBe(vote);
+      },
+    );
+
+    it('enum 외 값 → undefined로 graceful skip (payload 거부 X)', async () => {
+      const env = makeKvEnv();
+      const res = await post(
+        '/position',
+        { ...BASE_POS, cellularEnvironmentVote: 'mars' },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const stored = JSON.parse(
+        (await env.TRIPS.get('pos:tok-cell'))!,
+      ) as Array<Record<string, unknown>>;
+      expect(stored[0].cellularEnvironmentVote).toBeUndefined();
+    });
+
+    it('필드 없음 → undefined (회귀 없음)', async () => {
+      const env = makeKvEnv();
+      await post('/position', BASE_POS, env);
+      const stored = JSON.parse(
+        (await env.TRIPS.get('pos:tok-cell'))!,
+      ) as Array<Record<string, unknown>>;
+      expect(stored[0].cellularEnvironmentVote).toBeUndefined();
+    });
+  });
 });
 
 describe('POST /boarding-prompt/dismiss (#819)', () => {
