@@ -39,7 +39,8 @@
  * 본 dedup은 매우 작은 가벼운 normalize로 충분 — 외부 의존 0.
  */
 function normalizeStationName(name: string): string {
-  return name.replace(/\(.*?\)/g, '').trim();
+  // 입력은 stations.json BLDN_NM(짧은 역명 + 선택적 단일 괄호)으로 제한된 도메인. ReDoS 위험 없음. NOSONAR
+  return name.replace(/\([^)]*\)/g, '').trim(); // NOSONAR typescript:S5852
 }
 
 /** 같은 station에 대해 cross-category fire를 차단하는 윈도우. */
