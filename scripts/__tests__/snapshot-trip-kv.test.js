@@ -18,12 +18,28 @@ const BASH = '/bin/bash';
 
 function makeMockWrangler(tmpDir, payload) {
   const mockPath = path.join(tmpDir, 'mock-wrangler.sh');
+  const escaped = payload.replaceAll("'", String.raw`'\''`);
   fs.writeFileSync(
     mockPath,
-    `#!/bin/bash\nprintf '%s' '${payload.replace(/'/g, "'\\''")}'\n`,
+    `#!/bin/bash\nprintf '%s' '${escaped}'\n`,
     { mode: 0o755 },
   );
   return mockPath;
+}
+
+function runSnapshot(prefix, payload) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'snap-kv-'));
+  const mock = makeMockWrangler(tmp, payload);
+  const res = spawnSync(
+    BASH,
+    [SCRIPT, prefix, '--interval=1', '--duration=1'],
+    { encoding: 'utf8', env: { ...process.env, WRANGLER_BIN: mock }, timeout: 15000 },
+  );
+  expect(res.status).toBe(0);
+  const out = latestSnapshotFile(prefix);
+  expect(out).toBeTruthy();
+  const lines = readNdjson(out);
+  return { lines, cleanup: () => fs.unlinkSync(out) };
 }
 
 function readNdjson(file) {
@@ -69,55 +85,27 @@ describe('snapshot-trip-kv.sh', () => {
   });
 
   test('captures one sample with valid JSON KV payload', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'snap-kv-'));
-    const prefix = 'deadbeef';
-    const mock = makeMockWrangler(tmp, '{"currentLine":"2","lock":{"active":true,"stationName":"강남"}}');
-    const res = spawnSync(
-      BASH,
-      [SCRIPT, prefix, '--interval=1', '--duration=1'],
-      { encoding: 'utf8', env: { ...process.env, WRANGLER_BIN: mock }, timeout: 15000 },
+    const { lines, cleanup } = runSnapshot(
+      'deadbeef',
+      '{"currentLine":"2","lock":{"active":true,"stationName":"강남"}}',
     );
-    expect(res.status).toBe(0);
-    const out = latestSnapshotFile(prefix);
-    expect(out).toBeTruthy();
-    const lines = readNdjson(out);
     expect(lines.length).toBeGreaterThanOrEqual(1);
     expect(lines[0]).toMatchObject({ kv: { currentLine: '2' } });
     expect(typeof lines[0].ts).toBe('string');
-    fs.unlinkSync(out);
+    cleanup();
   });
 
   test('records null when KV returns empty', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'snap-kv-'));
-    const prefix = 'cafebabe';
-    const mock = makeMockWrangler(tmp, '');
-    const res = spawnSync(
-      BASH,
-      [SCRIPT, prefix, '--interval=1', '--duration=1'],
-      { encoding: 'utf8', env: { ...process.env, WRANGLER_BIN: mock }, timeout: 15000 },
-    );
-    expect(res.status).toBe(0);
-    const out = latestSnapshotFile(prefix);
-    const lines = readNdjson(out);
+    const { lines, cleanup } = runSnapshot('cafebabe', '');
     expect(lines[0].kv).toBeNull();
     expect(lines[0].error).toBeUndefined();
-    fs.unlinkSync(out);
+    cleanup();
   });
 
   test('records error when KV returns non-JSON garbage', () => {
-    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'snap-kv-'));
-    const prefix = 'feedface';
-    const mock = makeMockWrangler(tmp, 'not-json-output');
-    const res = spawnSync(
-      BASH,
-      [SCRIPT, prefix, '--interval=1', '--duration=1'],
-      { encoding: 'utf8', env: { ...process.env, WRANGLER_BIN: mock }, timeout: 15000 },
-    );
-    expect(res.status).toBe(0);
-    const out = latestSnapshotFile(prefix);
-    const lines = readNdjson(out);
+    const { lines, cleanup } = runSnapshot('feedface', 'not-json-output');
     expect(lines[0].kv).toBeNull();
     expect(lines[0].error).toMatch(/not-json-output/);
-    fs.unlinkSync(out);
+    cleanup();
   });
 });
