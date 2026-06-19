@@ -17,6 +17,7 @@ import { getLastNotifiedStationId, setLastNotifiedStationId } from './notificati
 import {
   logFiredAlarm,
   logFiredStationPassed,
+  logSuppressedCrossCategoryDedup,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
@@ -24,6 +25,10 @@ import {
   logSuppressedSleepStationPassed,
   type AlarmLogSource,
 } from './alarmLog';
+import {
+  isStationRecentlyFired,
+  markStationFired,
+} from './crossCategoryStationDedup';
 import { isStationPassedFirstHop, shouldSuppressBySleepRule } from './shouldSuppressBySleepRule';
 import { evaluateDismissSilence } from './dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from './dismissSilenceStorage';
@@ -303,7 +308,19 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
         stationName: alarmEvent.stationName,
         phaseId: alarmEvent.phaseId,
       });
+    } else if (
+      isStationRecentlyFired(destination.id, alarmEvent.stationName, alarmEvent.type, Date.now())
+    ) {
+      // #1515 — cross-category station-level dedup. 같은 station에 직전 station-passed 발사가
+      // 있었다면 phase 알람 차단(BG path 동등 가드). lock 활성/lockless 동급 (ADR-014).
+      logSuppressedCrossCategoryDedup({
+        source,
+        stationName: alarmEvent.stationName,
+        kind: alarmEvent.type,
+        phaseId: alarmEvent.phaseId,
+      });
     } else {
+      markStationFired(destination.id, alarmEvent.stationName, alarmEvent.type, Date.now());
       await sendAlarmNotification(alarmEvent, sleepMode, allowSpeaker, notificationSource);
       logFiredAlarm(source, alarmEvent);
     }
@@ -341,7 +358,25 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
       logSuppressedSleepStationPassed({ source, stationName: nearest.station.name });
     } else {
       const lastNotifiedStationId = await getLastNotifiedStationId(destination.id);
-      if (nearest.station.id !== lastNotifiedStationId) {
+      if (nearest.station.id === lastNotifiedStationId) {
+        logSuppressedDedupStation(source, nearest.station);
+      } else if (
+        isStationRecentlyFired(
+          destination.id,
+          nearest.station.name,
+          'station-passed',
+          Date.now(),
+        )
+      ) {
+        // #1515 — cross-category dedup. lastNotifiedStationId가 다른 stationId여도 같은 stationName이
+        // 직전 phase 알람(destination/transfer)에서 fire됐다면 BG station-passed 차단. FG phase fire와
+        // BG station-passed가 같은 station에 거의 동시 fire하는 회귀 차단. lock/lockless 동급 (ADR-014).
+        logSuppressedCrossCategoryDedup({
+          source,
+          stationName: nearest.station.name,
+          kind: 'station-passed',
+        });
+      } else {
         // #796: 환승역 도착 timing의 segment 정확 식별. evaluateAlarmPhase(:233)와 동일한
         // currentLine 결정 — lock.boardingLine 우선 → BG GPS jitter로 nearest가 옆 노선 station을
         // 잡아도 잘못된 다음-다음 transfer 안내를 차단. lock 없으면 nearest.station.line fallback.
@@ -351,6 +386,8 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
           lockForLineGuard?.boardingLine ?? nearest.station.line,
         );
         if (target) {
+          // #1515 — race reservation: send 전에 cross-category 윈도우 갱신. category='station-passed'.
+          markStationFired(destination.id, nearest.station.name, 'station-passed', Date.now());
           // 알림 발송 성공 후에만 storage write — 발송 실패 시 다음 폴링에서 재시도 가능.
           await sendStationPassedNotification(
             nearest.station.name,
@@ -382,8 +419,6 @@ export async function processLocationUpdate(inputs: ProcessLocationInputs): Prom
             }
           }
         }
-      } else {
-        logSuppressedDedupStation(source, nearest.station);
       }
     }
   }

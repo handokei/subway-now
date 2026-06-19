@@ -82,6 +82,7 @@ const mockLogSuppressedStationPassedWarmup = jest.fn();
 const mockLogSuppressedHopWindow = jest.fn();
 const mockLogSuppressedHopWindowNoSource = jest.fn();
 const mockLogSuppressedOriginHopLockless = jest.fn();
+const mockLogSuppressedCrossCategoryDedup = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -104,6 +105,8 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSuppressedHopWindowNoSource(...args),
   logSuppressedOriginHopLockless: (...args: unknown[]) =>
     mockLogSuppressedOriginHopLockless(...args),
+  logSuppressedCrossCategoryDedup: (...args: unknown[]) =>
+    mockLogSuppressedCrossCategoryDedup(...args),
 }));
 
 const mockGetBoardingLock = jest.fn();
@@ -185,6 +188,9 @@ describe('useStationAlarm', () => {
     mockGetBoardingLock.mockResolvedValue(null);
     mockFindFgArvlCdFireSignal.mockReturnValue(null);
     mockAwaitInitialScheduledAlarmDrain.mockResolvedValue(undefined);
+    // #1515 — cross-category dedup 모듈 in-memory 상태 리셋. mock하지 않은 실모듈 사용.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require('../../utils/crossCategoryStationDedup')._resetCrossCategoryDedupForTests();
   });
 
   it('does not evaluate when route is null', () => {
@@ -607,6 +613,29 @@ describe('useStationAlarm', () => {
       expect(mockSendAlarmNotification).toHaveBeenLastCalledWith(imminentDest, false, true, undefined),
     );
     expect(mockSendAlarmNotification).toHaveBeenCalledTimes(2);
+  });
+
+  it('#1515 cross-category dedup — 같은 station에 station-passed가 직전 fire됐다면 phase 알람 차단', async () => {
+    // 직전 station-passed fire를 시뮬레이션: dedup map에 직접 mark.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const dedup = require('../../utils/crossCategoryStationDedup');
+    const route = makeDirectRoute(1, '2');
+    dedup.markStationFired(destination.id, earlyDest.stationName, 'station-passed', Date.now());
+    mockEvaluateAlarmPhase.mockReturnValue(earlyDest);
+    renderHook(() =>
+      useStationAlarm(
+        defaultInputs({ route, destination, userLocation: { lat: 37.4, lng: 127 }, speedMps: 5 }),
+      ),
+    );
+    await waitFor(() =>
+      expect(mockLogSuppressedCrossCategoryDedup).toHaveBeenCalledWith({
+        source: 'fg',
+        stationName: earlyDest.stationName,
+        kind: 'destination',
+        phaseId: 'early',
+      }),
+    );
+    expect(mockSendAlarmNotification).not.toHaveBeenCalled();
   });
 
   it('destination 변경 시 새 destinationId로 re-hydrate 한다 (#462 destination scoped)', async () => {
@@ -2762,15 +2791,20 @@ describe('useStationAlarm', () => {
     // fast path 발사 여부만 가린다. GPS path는 sendStationPassedNotification을 'fg' source로 logFiredStationPassed
     // 호출하므로 mock 호출 인자로 식별 가능.
 
-    it('lock 활성 + arvlCd 신호 → station-passed 알림 발사 + lastNotifiedStationId 갱신 + fg-arvlcd source 적재', async () => {
+    it('lock 활성 + arvlCd 신호 → station-passed 알림 발사 + lastNotifiedStationId 갱신', async () => {
       mockGetBoardingLock.mockResolvedValue(activeLock);
       mockGetLastNotifiedStationId.mockResolvedValue(null);
       mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
 
       renderHook(() => useStationAlarm(fastPathInputs()));
 
-      await waitFor(() =>
-        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg-arvlcd', onRouteStation),
+      // #1515 — cross-category station-level dedup으로 GPS path와 fast-path 중 먼저 reservation을
+      // 점유한 쪽만 발사된다(같은 station, 같은 destination, 30s 윈도우). 발사 1회 + 호출 인자만 검증.
+      await waitFor(() => expect(mockLogFiredStationPassed).toHaveBeenCalled());
+      expect(mockLogFiredStationPassed).toHaveBeenCalledTimes(1);
+      expect(mockLogFiredStationPassed).toHaveBeenCalledWith(
+        expect.stringMatching(/^fg(-arvlcd)?$/),
+        onRouteStation,
       );
       expect(mockSendStationPassedNotification).toHaveBeenCalled();
       expect(mockSetLastNotifiedStationId).toHaveBeenCalledWith(destination.id, onRouteStation.id);
@@ -3211,8 +3245,11 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() =>
-        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg-arvlcd', arcLine2[3]),
+      // #1515 — cross-category dedup으로 GPS path/fast-path 중 먼저 reservation 점유한 쪽만 발사.
+      await waitFor(() => expect(mockLogFiredStationPassed).toHaveBeenCalled());
+      expect(mockLogFiredStationPassed).toHaveBeenCalledWith(
+        expect.stringMatching(/^fg(-arvlcd)?$/),
+        arcLine2[3],
       );
       expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
     });
@@ -3238,9 +3275,11 @@ describe('useStationAlarm', () => {
           stationName: arcLine2[0].name,
         });
       });
-      // 게이트 미적용이므로 정상 발사.
-      await waitFor(() =>
-        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg-arvlcd', arcLine2[0]),
+      // 게이트 미적용이므로 정상 발사. #1515 — GPS path/fast-path 중 reservation을 먼저 잡은 쪽만 fire.
+      await waitFor(() => expect(mockLogFiredStationPassed).toHaveBeenCalled());
+      expect(mockLogFiredStationPassed).toHaveBeenCalledWith(
+        expect.stringMatching(/^fg(-arvlcd)?$/),
+        arcLine2[0],
       );
     });
 
@@ -3258,8 +3297,11 @@ describe('useStationAlarm', () => {
         ),
       );
 
-      await waitFor(() =>
-        expect(mockLogFiredStationPassed).toHaveBeenCalledWith('fg-arvlcd', arcLine2[0]),
+      // #1515 — GPS path/fast-path 중 reservation을 먼저 잡은 쪽만 fire.
+      await waitFor(() => expect(mockLogFiredStationPassed).toHaveBeenCalled());
+      expect(mockLogFiredStationPassed).toHaveBeenCalledWith(
+        expect.stringMatching(/^fg(-arvlcd)?$/),
+        arcLine2[0],
       );
       expect(mockLogSuppressedHopWindow).not.toHaveBeenCalled();
       expect(mockLogSuppressedHopWindowNoSource).not.toHaveBeenCalled();
