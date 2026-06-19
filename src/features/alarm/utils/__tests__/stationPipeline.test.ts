@@ -837,7 +837,6 @@ describe('processLocationUpdate', () => {
 
   // #1515 — cross-category station-level dedup (BG path).
   describe('#1515 cross-category station-level dedup (BG path)', () => {
-    const destStation: Station = { ...mockDestination, name: '시청', id: 'station-2' };
     const passedStation: Station = { ...mockStation, name: '강남', id: 'station-1' };
     beforeEach(() => {
       mockFindNearestStation.mockReturnValue({ station: passedStation, distanceKm: 0.05 });
@@ -894,8 +893,6 @@ describe('processLocationUpdate', () => {
       expect(mockSendAlarmNotification).not.toHaveBeenCalled();
     });
 
-    // 미사용 변수 silencing: destStation은 위 시나리오에서 호출자 destination으로 사용 가능.
-    void destStation;
   });
 
   // #1236 (Epic #1204 D8 wire) — BG station-passed dispatch path도 sleep 룰 게이트 호출.

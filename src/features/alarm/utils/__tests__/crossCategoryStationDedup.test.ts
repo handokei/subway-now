@@ -5,6 +5,8 @@ import {
   markStationFired,
 } from '../crossCategoryStationDedup';
 
+type Category = Parameters<typeof markStationFired>[2];
+
 describe('crossCategoryStationDedup (#1515)', () => {
   beforeEach(() => {
     _resetCrossCategoryDedupForTests();
@@ -14,34 +16,20 @@ describe('crossCategoryStationDedup (#1515)', () => {
     expect(isStationRecentlyFired('dest-1', '성수', 'station-passed', 1_000)).toBe(false);
   });
 
-  it('cross-category: destination fired → station-passed within window is blocked', () => {
-    markStationFired('dest-1', '성수', 'destination', 1_000);
-    expect(isStationRecentlyFired('dest-1', '성수', 'station-passed', 1_500)).toBe(true);
-  });
-
-  it('cross-category: station-passed fired → destination within window is blocked', () => {
-    markStationFired('dest-1', '성수', 'station-passed', 1_000);
-    expect(isStationRecentlyFired('dest-1', '성수', 'destination', 1_500)).toBe(true);
-  });
-
-  it('cross-category: station-passed fired → transfer within window is blocked', () => {
-    markStationFired('dest-1', '성수', 'station-passed', 1_000);
-    expect(isStationRecentlyFired('dest-1', '성수', 'transfer', 1_500)).toBe(true);
-  });
-
-  it('same category (phase progression): destination → destination is NOT blocked (early→imminent)', () => {
-    markStationFired('dest-1', '성수', 'destination', 1_000);
-    expect(isStationRecentlyFired('dest-1', '성수', 'destination', 1_500)).toBe(false);
-  });
-
-  it('same category (phase group): destination → transfer is NOT blocked', () => {
-    markStationFired('dest-1', '성수', 'destination', 1_000);
-    expect(isStationRecentlyFired('dest-1', '성수', 'transfer', 1_500)).toBe(false);
-  });
-
-  it('station-passed → station-passed within window IS blocked (FG GPS path / fast-path race fix)', () => {
-    markStationFired('dest-1', '성수', 'station-passed', 1_000);
-    expect(isStationRecentlyFired('dest-1', '성수', 'station-passed', 1_500)).toBe(true);
+  // (firstFired, secondQuery, expectedBlocked, label)
+  // - cross-category within window → blocked
+  // - same-category phase progression (destination→destination, destination→transfer) → NOT blocked
+  // - station-passed → station-passed → blocked (FG GPS path / fast-path race fix)
+  it.each<[Category, Category, boolean, string]>([
+    ['destination', 'station-passed', true, 'cross-cat: destination → station-passed blocked'],
+    ['station-passed', 'destination', true, 'cross-cat: station-passed → destination blocked'],
+    ['station-passed', 'transfer', true, 'cross-cat: station-passed → transfer blocked'],
+    ['destination', 'destination', false, 'same-cat phase progression: destination → destination NOT blocked'],
+    ['destination', 'transfer', false, 'same-cat phase group: destination → transfer NOT blocked'],
+    ['station-passed', 'station-passed', true, 'station-passed → station-passed blocked (FG fast-path race fix)'],
+  ])('%s → %s within window: blocked=%s (%s)', (first, second, blocked) => {
+    markStationFired('dest-1', '성수', first, 1_000);
+    expect(isStationRecentlyFired('dest-1', '성수', second, 1_500)).toBe(blocked);
   });
 
   it('returns false once the window has elapsed', () => {
