@@ -14,12 +14,18 @@ import {
   LAST_UPLOADED_RECALL_TRIP_START_KEY,
   LA_DISMISSED_AT_KEY,
   SCHEDULED_NOTIFICATIONS_KEY,
+  STICKY_STATION_KEY,
 } from '../../../../shared/constants/storageKeys';
+
+const mockClearWidgetStation = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
 );
 jest.mock('expo-notifications');
+jest.mock('../../../widget/api/widgetStorage', () => ({
+  clearWidgetStation: () => mockClearWidgetStation(),
+}));
 
 describe('tripBoundCleanups', () => {
   beforeEach(() => {
@@ -57,6 +63,17 @@ describe('tripBoundCleanups', () => {
     // LA 재상승 허용. 누락 회귀가 발생하면 dismiss 후 새 trip 시작해도 LA가 살아나지 않음.
     expect(removedKeys).toContain(LA_DISMISSED_AT_KEY);
     expect(removedKeys).not.toContain(LAST_UPLOADED_RECALL_TRIP_START_KEY);
+    // #1524 — sticky station persisted lock도 trip 종료 시 제거되어야 함.
+    // hook 메모리 unlock만으로는 다음 FG 재마운트 hydrate가 stale lock을 부활시킴.
+    expect(removedKeys).toContain(STICKY_STATION_KEY);
+  });
+
+  it('#1524 — runTripBoundCleanups 실행 시 위젯 storage를 clear한다 (자동 하차 후 stale 차단)', async () => {
+    // trip 종료 시 위젯에는 trip 중 마지막 역이 남아 stale 상태로 노출됨.
+    // clearWidgetStation을 호출해 "감지 중" 상태로 즉시 전환.
+    mockClearWidgetStation.mockClear();
+    await runTripBoundCleanups();
+    expect(mockClearWidgetStation).toHaveBeenCalledTimes(1);
   });
 
   it('#773 — runTripBoundCleanups 실행 시 OS 사전 예약 큐를 cancel + storage clear한다 (옛 trip 알람 burst 차단)', async () => {

@@ -74,7 +74,10 @@ export type StickyStationEvent =
   // #1317 — 저품질 GPS에서 1km+ 멀어진 다른 역 fix가 N회 연속 관찰돼 unlock.
   | 'unlocked-moved-away'
   // #1317 — 사용자가 지도탭 "현재위치"를 명시적으로 탭해 unlock(live 위치 요청).
-  | 'unlocked-manual';
+  | 'unlocked-manual'
+  // #1524 — trip이 종료(tripActive true→false)되면 sticky lock도 즉시 해제.
+  // 자동 하차 후 stale lock(예: 현재역=군자 고착) 회귀 차단.
+  | 'unlocked-trip-ended';
 
 export interface StickyStationEntry {
   kind: 'sticky';

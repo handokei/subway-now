@@ -21,6 +21,9 @@
  *   5. moved-away (#1317) — 저품질 fix(≤250m)여도 lock된 역에서 1km+ 떨어진 다른 역이
  *      STICKY_DEGRADED_UNLOCK_COUNT(3)회 연속 관찰되면 unlock. 좋은 fix가 안 잡히는 지하·도심
  *      협곡에서 출발역 lock이 고착되는 회귀 차단. 단발성 부정확 fix는 카운트가 리셋돼 안 풀린다.
+ *   6. trip-ended (#1524) — motion.tripActive가 true→false로 flip되면 즉시 unlock. 자동 하차/
+ *      목적지 클리어 직후 stale lock(예: 현재역=군자 고착)으로 위젯/메인 화면이 잘못된 역을
+ *      계속 보여주는 회귀 차단. tripBoundCleanups의 storage 정리와 일관된 동기 unlock.
  *
  * 명시적 unlock: 사용자가 지도탭 "현재위치"를 탭하면 releaseLock()으로 sticky를 비우고 live 위치를
  * 노출한다(호출자 useNearestStation의 requestCurrentLocation 경로).
@@ -201,6 +204,21 @@ export function useStickyStation(
 
   // releaseLock이 stale closure 없이 최신 lock/fix를 읽도록 ref를 동기화한다.
   lockedRef.current = locked;
+
+  // #1524 — tripActive true→false flip 감지(자동 하차 / 목적지 클리어 / silent push trip-ended).
+  // tripBoundCleanups가 STICKY_STATION_KEY storage를 지우지만, 메모리 lock은 다음 fix까지 남아
+  // 위젯/현재역 표시가 stale로 유지되는 회귀(예: 군자 고착)를 즉시 차단한다.
+  // 이전 tripActive 값을 ref로 추적해 transition만 잡는다(undefined→false 등은 무시).
+  const prevTripActiveRef = useRef<boolean | undefined>(motion.tripActive);
+  useEffect(() => {
+    const prev = prevTripActiveRef.current;
+    const next = motion.tripActive;
+    prevTripActiveRef.current = next;
+    if (prev !== true || next === true) return;
+    if (lockedRef.current == null) return;
+    emitMetric('unlocked-trip-ended', lockedRef.current, lastFixMetaRef.current);
+    clearLockState();
+  }, [motion.tripActive, clearLockState]);
 
   // 매 fix마다 lock/unlock 평가. hydrate 완료 전엔 평가 보류 (race 방지).
   useEffect(() => {
