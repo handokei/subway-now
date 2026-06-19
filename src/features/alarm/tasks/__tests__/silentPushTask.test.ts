@@ -641,6 +641,79 @@ describe('silentPushTask', () => {
       });
     });
 
+    // #1539 (S6, Epic #1533 / ADR-016) — backend가 silent push payload에 통과 station 누적 배열을
+    // forward. device는 사전 예약 큐와 diff하여 cron 1분 race로 놓친 station-passed를 backfill 발사
+    // (실제 backfill wiring은 S5 머지 후 별 PR — 본 PR은 extract만).
+    describe('passedStations (#1539 S6)', () => {
+      it('non-empty 문자열 배열은 그대로 전달', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              nextWaypoint: '용마산',
+              etaSeconds: 0,
+              phase: 'imminent',
+              passedStations: ['군자', '중곡'],
+            }),
+          ),
+        ).toMatchObject({ passedStations: ['군자', '중곡'] });
+      });
+
+      it('빈 배열은 undefined (구 backend 호환)', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              nextWaypoint: 'A',
+              etaSeconds: 0,
+              phase: 'imminent',
+              passedStations: [],
+            }),
+          ),
+        ).toMatchObject({ passedStations: undefined });
+      });
+
+      it('비-배열/누락은 undefined', () => {
+        expect(
+          extractPayload(bgTaskData({ nextWaypoint: 'A', etaSeconds: 0, phase: 'imminent' })),
+        ).toMatchObject({ passedStations: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({
+              nextWaypoint: 'A',
+              etaSeconds: 0,
+              phase: 'imminent',
+              passedStations: 'not-an-array',
+            }),
+          ),
+        ).toMatchObject({ passedStations: undefined });
+      });
+
+      it('비-string/빈 string 항목은 필터링, 잔여만 채택', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              nextWaypoint: 'A',
+              etaSeconds: 0,
+              phase: 'imminent',
+              passedStations: ['군자', '', 42, '중곡', null],
+            }),
+          ),
+        ).toMatchObject({ passedStations: ['군자', '중곡'] });
+      });
+
+      it('필터링 후 잔여 0이면 undefined', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              nextWaypoint: 'A',
+              etaSeconds: 0,
+              phase: 'imminent',
+              passedStations: ['', null, 42],
+            }),
+          ),
+        ).toMatchObject({ passedStations: undefined });
+      });
+    });
+
     // #725 — reschedule schema는 standard와 다르므로 별도 분기 검증.
     describe('reschedule kind (#725)', () => {
       it('정상 reschedule payload → RescheduleSilentPushPayload', () => {

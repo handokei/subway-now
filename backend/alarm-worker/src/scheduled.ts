@@ -181,6 +181,58 @@ export function resolveEtaMissingThreshold(trip: Pick<Trip, 'subsurface'>): numb
  * 런타임에서 `Invalid cache_ttl` 던짐(#770 hotfix).
  */
 const CRON_PROGRESS_CACHE_TTL_SEC = 30;
+
+/**
+ * #1539 (S6) — `Trip.passedStations` 누적 최대 길이.
+ * silent push payload가 비대해지는 것을 막고(APNs payload limit 4KB), device 사전 예약 큐와
+ * diff에 필요한 직전 N개 station만 유지한다(트립 누적 알림 수는 일반적으로 한 자릿수~십 수개).
+ *
+ * 20은 보수적 상한 — 1분 cron jitter로 device가 놓칠 수 있는 최대 통과 station 수의 2배 이상.
+ */
+export const PASSED_STATIONS_MAX_LEN = 20;
+
+/**
+ * #1539 (S6) — Cloudflare cron trigger의 nominal interval (60s, `wrangler.toml` `[triggers].crons`).
+ * `runScheduled`가 실제 실행된 시각과 직전 60s boundary의 차이로 cron jitter를 측정한다.
+ *
+ * 정상 운영: jitter < 1s. Cloudflare scheduler 부하 시 수 초~수십 초까지 늘어날 수 있고,
+ * device 매역 알림 누락의 1차 원인 중 하나(epic #1533 ADR-016 §3 결정 5). 이 값이 P99로
+ * 추적되면 cron 윈도우 확장(S5) 영향 평가의 정량 근거가 된다.
+ */
+export const CRON_NOMINAL_INTERVAL_MS = 60_000;
+
+/**
+ * #1539 (S6) — `Trip.passedStations`에 stationName을 cap 적용해 누적.
+ * 같은 stationName이 연속 호출되면 push하지 않는다(arrived+entering 양쪽 신호로 advance 헬퍼가
+ * 1 hop에 한 번만 진입하지만 defensive). 길이 초과 시 oldest를 drop.
+ *
+ * pure helper — trip 객체를 mutate하고 변경 여부(dirty)를 반환해 호출자가 putTrip 분기에 사용한다.
+ */
+export function appendPassedStation(trip: Trip, stationName: string): boolean {
+  if (stationName.length === 0) return false;
+  if (trip.passedStations === undefined) {
+    trip.passedStations = [stationName];
+    return true;
+  }
+  const last = trip.passedStations[trip.passedStations.length - 1];
+  if (last === stationName) return false;
+  trip.passedStations.push(stationName);
+  if (trip.passedStations.length > PASSED_STATIONS_MAX_LEN) {
+    trip.passedStations.splice(0, trip.passedStations.length - PASSED_STATIONS_MAX_LEN);
+  }
+  return true;
+}
+
+/**
+ * #1539 (S6) — cron jitter 측정. 실제 실행 시각과 직전 60s boundary의 차이(ms).
+ * 정상 운영에서 < 1s. Cloudflare scheduler 부하 또는 cold start 시 수 초까지 늘어날 수 있다.
+ *
+ * 음수 반환 가능성 없음 — `now`가 boundary 이전인 case는 floor의 의미상 불가능(now ≥ boundary).
+ */
+export function computeCronJitterMs(now: number): number {
+  const boundary = Math.floor(now / CRON_NOMINAL_INTERVAL_MS) * CRON_NOMINAL_INTERVAL_MS;
+  return now - boundary;
+}
 // #1402 — load-time 회귀 가드. 컴파일 시 0/10 같은 값을 silently 넣지 못하도록 module load
 // 시점에 즉시 throw. 신규 callsite 추가 시 type-check + 첫 test run 양쪽에서 잡힌다.
 assertCronCacheTtl(CRON_PROGRESS_CACHE_TTL_SEC);
@@ -304,6 +356,13 @@ export interface ScheduledStats extends LiveActivityStats {
    * 발사하던 회귀(2026-06-16 용마산 정지 trip)를 차단한다.
    */
   vanishFallbackMotionGateBlocked: number;
+  /**
+   * #1539 (S6, Epic #1533 / ADR-016) — `runScheduled` 진입 시점의 cron jitter (ms).
+   * 직전 60s boundary와 실제 실행 시각의 차이. 정상 운영 < 1s. 매역 알림 누락 회귀의 1차
+   * 원인 중 하나로 추정되며(2026-06-19 트립 2 evidence), P50/P99 추적이 S5 윈도우 확장 효과
+   * 측정의 정량 근거가 된다. 누적 metric이 아니라 매 cycle의 즉시값을 그대로 log한다.
+   */
+  cronJitterMs: number;
 }
 
 /**
@@ -363,7 +422,11 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     vanishReleaseFired: 0,
     vanishLocklessTakeover: 0,
     vanishFallbackMotionGateBlocked: 0,
+    // #1539 (S6) — cron jitter (실행 시각 - 직전 60s boundary). 매 cycle 즉시값으로 stamp.
+    cronJitterMs: computeCronJitterMs(now),
   };
+  // #1539 (S6) — cron jitter 즉시 log. 누적 stat이 아니라 매 cycle 1줄 → tail에서 P50/P99 산출.
+  log('scheduled: cron jitter', { jitterMs: stats.cronJitterMs });
 
   for await (const trip of listTrips(env.TRIPS)) {
     stats.scanned += 1;
@@ -800,6 +863,9 @@ function buildStationPassedImminentPayload(
     origin,
     // #1438 (E5) — lock release sync. 정의된 경우에만 wire (apns.ts JSON serializer가 undefined 누락).
     lockReleasedReason,
+    // #1539 (S6) — backend 누적 passedStations forward. 빈 배열/undefined는 apns.ts JSON
+    // serializer가 자연 누락. device backfill diff(S5 후속 wiring PR)에서 사용.
+    passedStations: trip.passedStations,
   };
 }
 
@@ -1474,6 +1540,10 @@ export async function advanceBoardingLockWaypoint(
     });
     return;
   }
+  // #1539 (S6) — waypoint advance 시점 직전 station 누적. silent push payload로 forward되어
+  // device가 사전 예약 큐와 diff하여 cron 1분 race로 누락된 station-passed를 backfill 발사한다
+  // (S5 머지 후 후속 wiring PR). 본 PR은 backend → device 데이터 plumbing만.
+  appendPassedStation(trip, waypoint.stationName);
   trip.waypoints.shift();
   trip.lastTrackedArrivalEpoch = undefined;
   trip.lastLaPushEpoch = undefined;
@@ -1945,6 +2015,9 @@ export async function runLocklessIntermediate(
           tripToken: trip.token,
           // #1402 — 발사 경로 stamp. device alarmLog에 pushOrigin=lockless로 기록.
           origin: 'lockless' as const,
+          // #1539 (S6) — backend 누적 passedStations forward. 빈 배열/undefined는 apns.ts JSON
+          // serializer가 자연 누락. device backfill diff(S5 후속 wiring PR)에서 사용.
+          passedStations: trip.passedStations,
         },
         config: deps.apnsConfig,
         host,
@@ -1997,6 +2070,9 @@ export async function runLocklessIntermediate(
     apnsEnv: trip.apnsEnv ?? 'sandbox',
   });
   trip.lastFiredPhase = 'imminent';
+  // #1539 (S6) — lockless intermediate 통과 시점도 동일하게 stationName 누적. lock 경로와 동등
+  // 정확도 보장 의무(ADR-014: 사용자 명시 의향 trip = lock 활성과 동급).
+  appendPassedStation(trip, waypoint.stationName);
   trip.waypoints.shift();
   if (trip.waypoints.length === 0) {
     // 마지막 intermediate까지 통과 — trip 종료. lockless는 destination을 직접 다루지 않는다.

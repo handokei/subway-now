@@ -208,6 +208,19 @@ export interface Trip {
    * 한 trip 내에서 지상→지하 전이로 false→true 변동 가능. cron 사이클 사이의 stale은 next register로 자연 정정.
    */
   subsurface?: boolean;
+  /**
+   * #1539 (S6, Epic #1533 / ADR-016) — backend가 trip 시작 후 통과를 확인한 모든 station
+   * 누적 배열. waypoint advance 시점(`advanceBoardingLockWaypoint` / `runLocklessIntermediate`)에
+   * 직전 waypoint stationName을 push한다. 최대 길이 `PASSED_STATIONS_MAX_LEN`로 cap.
+   *
+   * 용도: silent push payload에 forward되어 device가 사전 예약 큐와 diff하여 cron 1분 race로
+   * 누락된 station-passed 알림을 backfill 발사할 수 있게 한다(S5의 pre-scheduled window 확장과
+   * 결합). 본 PR(S6)은 누적 + payload wire + cron jitter metric만 다루고, device-side diff/fire
+   * wiring은 S5 머지 후 후속 PR.
+   *
+   * 부재(레거시 trip / 신규 trip 첫 cycle 전) → undefined → device는 backfill 자연 skip.
+   */
+  passedStations?: string[];
 }
 
 /**

@@ -151,6 +151,18 @@ export interface SilentPushPayload {
    * 구 backend 호환 위해 optional — 누락 시 sync 자연 skip(기존 동작 보존).
    */
   lockReleasedReason?: 'transfer' | 'vanish';
+  /**
+   * #1539 (S6, Epic #1533 / ADR-016) — backend가 trip 시작 후 통과를 확인한 모든 station 누적 배열
+   * (직전 N개, 최신순 뒤). cron 1분 race로 device가 station을 "지나친 것" 인지 못 한 케이스를
+   * 사후 backfill하기 위한 SSOT.
+   *
+   * 사용: device는 사전 예약 큐(`bl:`/`tba:`)와 diff하여 payload에 있지만 아직 발사되지 않은
+   * station-passed를 backfill 발사한다. **본 PR(S6) 단계는 schema/extract만 — actual diff/fire
+   * wiring은 S5 머지 후 후속 PR**(S5 pre-scheduled window 확장과 결합).
+   *
+   * 구 backend 호환 / 빈 배열 / wire 누락 → undefined → 기존 동작 그대로(backfill 자연 skip).
+   */
+  passedStations?: readonly string[];
 }
 
 /**
@@ -351,6 +363,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     occupiedLine,
     tripToken,
     lockReleasedReason,
+    passedStations,
   } = obj as {
     nextWaypoint: string;
   } & Record<string, unknown>;
@@ -371,7 +384,26 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     occupiedLine: validBoardingLine(occupiedLine),
     tripToken: validTripToken(tripToken),
     lockReleasedReason: validLockReleasedReason(lockReleasedReason),
+    passedStations: validPassedStations(passedStations),
   };
+}
+
+/**
+ * #1539 (S6) — payload.passedStations 검증. non-empty string 배열만 통과.
+ * - 누락/형식 오류/빈 배열 → undefined → device backfill 자연 skip(기존 동작 보존).
+ * - 항목별 비-string 또는 빈 string은 필터 후 잔여가 있으면 그것만 채택. 잔여 0이면 undefined.
+ * - 길이 cap은 backend 책임(`PASSED_STATIONS_MAX_LEN`). device 추가 cap은 적용하지 않는다 —
+ *   payload 크기 제약은 APNs serializer에서 이미 강제.
+ *
+ * S5 머지 후 wiring PR에서 사전 예약 큐 diff에 사용된다.
+ */
+function validPassedStations(value: unknown): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const filtered: string[] = [];
+  for (const v of value) {
+    if (typeof v === 'string' && v.length > 0) filtered.push(v);
+  }
+  return filtered.length > 0 ? filtered : undefined;
 }
 
 /**
