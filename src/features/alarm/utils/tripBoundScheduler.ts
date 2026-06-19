@@ -753,13 +753,15 @@ export async function rescheduleTripBoundAlarm(
  */
 export async function cancelTripBoundAlarms(): Promise<void> {
   const all = await Notifications.getAllScheduledNotificationsAsync();
-  let cancelled = 0;
-  for (const req of all) {
-    if (req.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX)) {
-      await Notifications.cancelScheduledNotificationAsync(req.identifier);
-      cancelled++;
-    }
-  }
+  const targets = all.filter((req) => req.identifier.startsWith(TRIP_BOUND_ALARM_PREFIX));
+  // #1525 — Promise.allSettled로 per-identifier cancel을 묶어 한 개의 cancel reject가
+  // 나머지 identifier cancel을 막지 않도록 한다. 직렬 await 루프에서 한 번 throw하면
+  // 뒤에 남아 있는 `tba:` 사전 예약이 OS 큐에 그대로 남아 trip 종료 후 좀비 알림으로
+  // 발사된다 (2026-06-19 08:48 "안내 종료" 도달 사례).
+  const results = await Promise.allSettled(
+    targets.map((req) => Notifications.cancelScheduledNotificationAsync(req.identifier)),
+  );
+  const cancelled = results.filter((r) => r.status === 'fulfilled').length;
   if (cancelled > 0) {
     logger.info(`cancelled ${cancelled} trip-bound alarms`);
   }

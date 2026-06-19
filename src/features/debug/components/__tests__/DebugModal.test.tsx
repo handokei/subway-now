@@ -1991,15 +1991,21 @@ describe('DebugModal — Scheduled queue UI (#756)', () => {
     setupHookDefaults();
   });
 
-  it('초기 마운트 상태에서는 "(tap Refresh to load)" placeholder', () => {
+  it('#1525 — 마운트 즉시 dumpScheduledNotifications가 1회 호출돼 share dump 좀비 추적 가능', async () => {
+    // 직전 동작은 (not loaded) placeholder + 사용자가 Refresh 눌러야 dump. 그 사이에
+    // share dump하면 항상 "(not loaded)"로 박혀 좀비 알림(#1525) 추적 불가. 마운트 시점
+    // 자동 1회 dump로 share에 항상 실제 OS 큐 스냅샷이 들어가야 한다.
+    mockDumpScheduledNotifications.mockResolvedValue([]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
-    expect(screen.getByText('(tap Refresh to load)')).toBeTruthy();
-    expect(screen.getByText('Scheduled queue')).toBeTruthy();
+    await waitFor(() => expect(mockDumpScheduledNotifications).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.getByText('Scheduled queue (0)')).toBeTruthy());
   });
 
   it('Refresh 누르면 dumpScheduledNotifications 호출 + 빈 결과면 "(empty)" 표시', async () => {
     mockDumpScheduledNotifications.mockResolvedValue([]);
     renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    // #1525 — 마운트 자동 dump 1회.
+    await waitFor(() => expect(mockDumpScheduledNotifications).toHaveBeenCalledTimes(1));
 
     await act(async () => {
       fireEvent.press(screen.getByTestId('debug-scheduled-dump-refresh'));
@@ -2008,7 +2014,8 @@ describe('DebugModal — Scheduled queue UI (#756)', () => {
     await waitFor(() => expect(screen.getByText('Scheduled queue (0)')).toBeTruthy());
     // "(empty)"는 Alarm log 섹션에도 등장 (logs=[])하므로 getByText 다중매칭 회피 — 카운트만 검증.
     expect(screen.getAllByText('(empty)').length).toBeGreaterThanOrEqual(1);
-    expect(mockDumpScheduledNotifications).toHaveBeenCalledTimes(1);
+    // 마운트 자동 1회 + Refresh 1회 = 2회.
+    expect(mockDumpScheduledNotifications).toHaveBeenCalledTimes(2);
     expect(appStateListener).toBeTruthy();
   });
 

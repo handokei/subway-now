@@ -252,14 +252,20 @@ function shouldSkipFirstTransferForSleep(
 }
 
 async function cancelAndDismiss(ids: string[]): Promise<void> {
-  for (const id of ids) {
-    await Notifications.cancelScheduledNotificationAsync(id);
-    try {
-      await Notifications.dismissNotificationAsync(id);
-    } catch {
-      // 미발사 알람은 dismiss 대상 아님 — 무시.
-    }
-  }
+  // #1525 — Promise.allSettled로 per-id cancel+dismiss를 묶어 한 id의 cancel reject가
+  // 뒤의 id들을 막지 않게 한다. 직렬 await에서 한 번 throw하면 `bl:` 사전 예약 잔여가
+  // OS 큐에 남아 trip 종료 후 좀비 알림이 발사된다 (cancelTripBoundAlarms와 같은 회귀
+  // 표면). dismiss는 기존과 동일하게 throw를 swallow한다.
+  await Promise.allSettled(
+    ids.map(async (id) => {
+      await Notifications.cancelScheduledNotificationAsync(id);
+      try {
+        await Notifications.dismissNotificationAsync(id);
+      } catch {
+        // 미발사 알람은 dismiss 대상 아님 — 무시.
+      }
+    }),
+  );
 }
 
 export interface ScheduleHopsParams {

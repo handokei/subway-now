@@ -437,6 +437,39 @@ describe('cancelTripBoundAlarms', () => {
     expect(removeSpy).toHaveBeenCalledWith(TRIP_BOUND_ROUTE_SIG_KEY);
     removeSpy.mockRestore();
   });
+
+  it('#1525 — 한 identifier의 cancel이 reject해도 다른 identifier의 cancel은 진행된다 (zombie alarm 방지)', async () => {
+    // 직렬 for await 루프였을 때는 첫 reject에서 throw → 나머지 `tba:` 사전 예약이 OS 큐에
+    // 남아 trip 종료 후 좀비 알림이 발사됐다 (2026-06-19 08:48 사례). allSettled로 묶여
+    // 한 id의 cancel reject가 나머지를 막지 않아야 한다.
+    mockedGetAll.mockResolvedValue([
+      { identifier: 'tba:early:강남' },
+      { identifier: 'tba:imminent:강남' },
+      { identifier: 'tba:early:역삼' },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ] as any);
+    mockedCancel.mockImplementation((id) => {
+      if (id === 'tba:early:강남') return Promise.reject(new Error('already fired'));
+      return Promise.resolve();
+    });
+
+    try {
+      await expect(cancelTripBoundAlarms()).resolves.toBeUndefined();
+
+      // 첫 id가 reject해도 모든 id에 cancel 호출이 발생해야 한다.
+      expect(mockedCancel).toHaveBeenCalledWith('tba:early:강남');
+      expect(mockedCancel).toHaveBeenCalledWith('tba:imminent:강남');
+      expect(mockedCancel).toHaveBeenCalledWith('tba:early:역삼');
+      // fulfilled 2건만 cancelled 카운트에 반영.
+      expect(mockLoggerInfo).toHaveBeenCalledWith(
+        expect.stringContaining('cancelled 2 trip-bound alarms'),
+      );
+    } finally {
+      // 다른 describe로 reject impl이 leak되지 않도록 default 복귀 (beforeEach가
+      // mockReset이 아닌 clearAllMocks만 하므로 implementation은 유지된다).
+      mockedCancel.mockReset();
+    }
+  });
 });
 
 // #1356 E1 / #1355 D1 — silent push suppress & cross-channel cancel helper.
