@@ -121,8 +121,6 @@ function setupGpsDropAtEodae({
     (stationName: string | null, line: string | null) => {
       if (stationName === eodae.name && line === '7' && arrivedSignal) {
         return arrivalRet({
-          stationName: eodae.name,
-          line: '7',
           up: [arrivedAtEodae()],
           down: [],
           isMock: false,
@@ -233,10 +231,12 @@ describe('#1513 detection-verdict cascade slot', () => {
         undefined,
         'LOCK-2',
         {
+          destinationId: 'DEST-2',
           trainCode: 'LOCK-2',
           boardingLine: '2',
           boardingStationId: '0201',
           boardedAt: 1000,
+          expectedDurationMs: 600_000,
         },
         true,
         // barometer.subsurface=false — 'gps-only-underground'→'detection-fused' 사후 승격(line 998)
@@ -259,10 +259,12 @@ describe('#1513 detection-verdict cascade slot', () => {
         undefined,
         'LOCK-7',
         {
+          destinationId: 'DEST-7',
           trainCode: 'LOCK-7',
           boardingLine: '7',
           boardingStationId: eodae.id,
           boardedAt: 1000,
+          expectedDurationMs: 600_000,
         },
         true,
         barometerStop(true),
