@@ -1160,6 +1160,11 @@ export function useFusedNearestStation(
     }
     // arvlCd: up 방향 첫 슬롯 우선, 없으면 down 첫 슬롯. 둘 다 없으면 null.
     // 후속 PR에서 up/down 둘 다 기록하도록 entry shape 확장 검토.
+    // result station에 해당하는 arrival을 arrivalSlots에서 추출 (cascade 재구조화로
+    // 본 effect 내부에서 산출 — #1517 PR-A merge 시 scope 조정).
+    const fusionArrival = result
+      ? pickArrivalForStationName(result.station.name, result.station.line, arrivalSlots)
+      : null;
     const arvlCdForDump =
       fusionArrival?.up[0]?.arrivalCode ?? fusionArrival?.down[0]?.arrivalCode ?? null;
     const arcProgressForDump = progress.progressM ?? null;
@@ -1217,7 +1222,7 @@ export function useFusedNearestStation(
       source,
       confidence,
     });
-  }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, gps.userLocation, gps.speedMps, trainProgress, lockedTrainCode, detectionVerdict, barometerSubsurface, resultStationId, motionStationary, fusionArrival, progress.progressM]);
+  }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, gps.userLocation, gps.speedMps, trainProgress, lockedTrainCode, detectionVerdict, barometerSubsurface, resultStationId, motionStationary, a0.arrival, a1.arrival, a2.arrival, c0, c1, c2, h0, h1, h2, progress.progressM]);
 
   return {
     result,
