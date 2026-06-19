@@ -21,7 +21,7 @@ function entry(overrides?: Partial<RawSignalEntry>): RawSignalEntry {
     ts: 1_700_000_000_000,
     corrId: 'cid-1',
     kind: 'cycle',
-    gps: { lat: 37.5, lng: 127.0, accM: 30, speedMps: 1.2 },
+    gps: { lat: 37.5, lng: 127, accM: 30, speedMps: 1.2 },
     motion: null,
     subsurface: false,
     arvlCd: null,
@@ -94,7 +94,7 @@ describe('rawSignalBuffer (#1501 PR-A)', () => {
       const entries = getRawSignalEntries();
       expect(entries).toHaveLength(RAW_SIGNAL_BUFFER_CAPACITY);
       expect(entries[0].stationId).toBe('S5');
-      expect(entries[entries.length - 1].stationId).toBe(`S${RAW_SIGNAL_BUFFER_CAPACITY + 4}`);
+      expect(entries.at(-1)?.stationId).toBe(`S${RAW_SIGNAL_BUFFER_CAPACITY + 4}`);
     });
   });
 

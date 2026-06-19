@@ -24,12 +24,13 @@ export interface CorrIdDeps {
 
 const defaultDeps: CorrIdDeps = {
   now: () => Date.now(),
-  random: () => Math.random(),
+  // Math.random은 trip 식별용 비암호 collision suffix 목적. 보안/예측 불가성 요구 없음. NOSONAR
+  random: () => Math.random(), // NOSONAR typescript:S2245
 };
 
 function hex8(rand: () => number): string {
   // 8 hex chars = 32 bit. Math.random은 unbiased 가정.
-  const n = Math.floor(rand() * 0x1_0000_0000);
+  const n = Math.floor(rand() * 2 ** 32);
   return n.toString(16).padStart(8, '0');
 }
 

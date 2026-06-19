@@ -1111,8 +1111,12 @@ export function useFusedNearestStation(
       : null;
     // motionStationary는 boolean | undefined. boolean으로 들어오면 stationary/unknown 라벨로 매핑.
     // 정확한 motion provider 라벨(walking/automotive)은 후속 PR에서 motion-activity 모듈 expose 후 보강.
-    const motionForDump =
-      motionStationary === true ? 'stationary' : motionStationary === false ? 'unknown' : null;
+    let motionForDump: 'stationary' | 'unknown' | null = null;
+    if (motionStationary === true) {
+      motionForDump = 'stationary';
+    } else if (motionStationary === false) {
+      motionForDump = 'unknown';
+    }
     // arvlCd: up 방향 첫 슬롯 우선, 없으면 down 첫 슬롯. 둘 다 없으면 null.
     // 후속 PR에서 up/down 둘 다 기록하도록 entry shape 확장 검토.
     const arvlCdForDump =
