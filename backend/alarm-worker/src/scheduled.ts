@@ -57,6 +57,7 @@ import { deleteProgress, getProgress, putProgress, type TripProgress } from './p
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import { listTrips, putTrip } from './trips';
+import { readSsot, SSOT_CRON_READ_CACHE_TTL_SEC } from './tripPositionSsot';
 import type {
   ApnsEnv,
   BoardingLockMeta,
@@ -383,6 +384,20 @@ export interface ScheduledStats extends LiveActivityStats {
    * 측정의 정량 근거가 된다. 누적 metric이 아니라 매 cycle의 즉시값을 그대로 log한다.
    */
   cronJitterMs: number;
+  /**
+   * #1559 (T6, Epic #1553 / ADR-017) — `maybeReschedulePush` 진입 시 SSoT.motionState === 'stationary'로
+   * reschedule silent push가 차단된 누적 횟수. 정지 trip에서 ETA 임계치 변동만으로 LA/scheduled queue를
+   * 재발사하던 회귀(2026-06-19 15:53/15:56 evidence)를 닫는다. lock-active fallback
+   * (`vanishFallbackMotionGateBlocked`) / lockless advance(`locklessMotionGateBlocked`)와 동일 정책의
+   * reschedule-push 버전 — `tripPositionSsot.motionState` SSoT 단일 소스.
+   */
+  rescheduleBlockedMotion: number;
+  /**
+   * #1559 (T6) — `maybeReschedulePush` 진입 시 SSoT가 존재하지 않아(legacy trip — T1 SSoT seeding 이전에
+   * 생성된 trip 또는 KV TTL 만료) motion 게이트를 적용하지 않고 기존 로직으로 fallback한 누적 횟수.
+   * SSoT 마이그레이션 진행도 측정 — 모든 trip이 T1 seeding을 거치게 되면 0으로 수렴한다.
+   */
+  rescheduleFallbackNoSsot: number;
 }
 
 /**
@@ -446,6 +461,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     vanishFallbackMotionGateBlocked: 0,
     // #1539 (S6) — cron jitter (실행 시각 - 직전 60s boundary). 매 cycle 즉시값으로 stamp.
     cronJitterMs: computeCronJitterMs(now),
+    // #1559 (T6) — reschedule push motion 게이트 차단/fallback 누적.
+    rescheduleBlockedMotion: 0,
+    rescheduleFallbackNoSsot: 0,
   };
   // #1539 (S6) — cron jitter 즉시 log. 누적 stat이 아니라 매 cycle 1줄 → tail에서 P50/P99 산출.
   log('scheduled: cron jitter', { jitterMs: stats.cronJitterMs });
@@ -1851,6 +1869,25 @@ export async function maybeReschedulePush(
   log: Logger,
   generatePushId: () => string,
 ): Promise<{ cleanedUp: boolean }> {
+  // #1559 (T6, Epic #1553 / ADR-017) — SSoT.motionState 게이트.
+  // 정지 trip에서도 ETA 임계치 변동만으로 reschedule silent push가 발사되던 회귀
+  // (2026-06-19 15:53/15:56 evidence) 차단. SSoT 부재 시(legacy trip — T1 seeding 이전 또는
+  // KV TTL 만료)는 backward compat을 위해 fallback. cron read는 SSOT_CRON_READ_CACHE_TTL_SEC
+  // (30s)로 같은 사이클 내 stale read 방지.
+  const ssot = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
+  if (ssot === null) {
+    log('reschedule push: no-ssot fallback', { token: trip.token.slice(0, 8) });
+    stats.rescheduleFallbackNoSsot += 1;
+  } else if (ssot.motionState === 'stationary') {
+    log('reschedule push: blocked (motion-stationary)', {
+      token: trip.token.slice(0, 8),
+    });
+    stats.rescheduleBlockedMotion += 1;
+    return { cleanedUp: false };
+  }
+
   const lastEpoch = trip.lastTrackedArrivalEpoch;
   if (
     lastEpoch !== undefined &&

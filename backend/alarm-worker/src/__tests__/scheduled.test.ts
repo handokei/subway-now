@@ -2092,6 +2092,109 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
     });
     expect(stats.pushed).toBe(0);
   });
+
+  // #1559 (T6, Epic #1553 / ADR-017) — maybeReschedulePush SSoT motion 게이트.
+  // 정지 trip에서 ETA 임계치 변동만으로 reschedule silent push가 발사되던 회귀
+  // (2026-06-19 15:53/15:56 evidence) 차단. SSoT 부재(legacy trip) → fallback.
+  describe('#1559 SSoT motion gate', () => {
+    type Scenario = {
+      name: string;
+      ssotMotion: 'moving' | 'stationary' | null; // null = SSoT 없음 (legacy fallback)
+      arrivalSec: number;
+      lastTrackedDeltaMs: number | undefined; // baseline epoch offset (undefined → no baseline)
+      expectedFire: boolean;
+      expectedBlockedMotion: number;
+      expectedFallbackNoSsot: number;
+    };
+    const rescheduleScenarios: Scenario[] = [
+      // Positive — SSoT moving + delta > 15s → fire
+      {
+        name: 'SSoT moving + ETA delta > 15s → reschedule fires',
+        ssotMotion: 'moving',
+        arrivalSec: 140,
+        lastTrackedDeltaMs: 120_000,
+        expectedFire: true,
+        expectedBlockedMotion: 0,
+        expectedFallbackNoSsot: 0,
+      },
+      // Negative — SSoT stationary + delta > 15s → blocked
+      {
+        name: 'SSoT stationary + ETA delta > 15s → blocked (motion-stationary)',
+        ssotMotion: 'stationary',
+        arrivalSec: 140,
+        lastTrackedDeltaMs: 120_000,
+        expectedFire: false,
+        expectedBlockedMotion: 1,
+        expectedFallbackNoSsot: 0,
+      },
+      // Fallback — SSoT 없음 (legacy) + delta > 15s → fire (기존 동작 유지)
+      {
+        name: 'SSoT missing (legacy) + ETA delta > 15s → fallback fires',
+        ssotMotion: null,
+        arrivalSec: 140,
+        lastTrackedDeltaMs: 120_000,
+        expectedFire: true,
+        expectedBlockedMotion: 0,
+        expectedFallbackNoSsot: 1,
+      },
+      // Noop — SSoT moving + delta < 15s → 기존 임계치 게이트로 미발사 (motion 게이트 통과 후)
+      {
+        name: 'SSoT moving + ETA delta < 15s → noop (existing threshold gate)',
+        ssotMotion: 'moving',
+        arrivalSec: 125,
+        lastTrackedDeltaMs: 120_000,
+        expectedFire: false,
+        expectedBlockedMotion: 0,
+        expectedFallbackNoSsot: 0,
+      },
+    ];
+
+    it.each(rescheduleScenarios)(
+      '$name',
+      async ({
+        ssotMotion,
+        arrivalSec,
+        lastTrackedDeltaMs,
+        expectedFire,
+        expectedBlockedMotion,
+        expectedFallbackNoSsot,
+      }) => {
+        const kv = new InMemoryKV();
+        const trip = makeLockTrip(
+          lastTrackedDeltaMs !== undefined
+            ? { lastTrackedArrivalEpoch: NOW + lastTrackedDeltaMs }
+            : {},
+        );
+        await putTrip(kv as unknown as KVNamespace, trip);
+        if (ssotMotion !== null) {
+          await writeSsot(kv as unknown as KVNamespace, {
+            tripToken: trip.token,
+            currentStationId: '용마산',
+            motionState: ssotMotion,
+            motionEvidence: [],
+            lastAdvanceAt: 0,
+            lastAdvanceEvidence: 'seed-override',
+            passedStations: [],
+            userIntentDeclared: false,
+            seedOverrideCount: 0,
+            schemaVersion: 1,
+          });
+        }
+        const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+        const stats = await runScheduled(makeEnv(kv), {
+          seoul: makeSeoulCombo([arrivalForLock('중곡', arrivalSec)], []),
+          apnsConfig,
+          apnsHosts: APNS_HOSTS,
+          fetchImpl: apnsFetch as unknown as typeof fetch,
+          now: () => NOW,
+          generatePushId: () => 'p-t6',
+        });
+        expect(stats.pushed).toBe(expectedFire ? 1 : 0);
+        expect(stats.rescheduleBlockedMotion).toBe(expectedBlockedMotion);
+        expect(stats.rescheduleFallbackNoSsot).toBe(expectedFallbackNoSsot);
+      },
+    );
+  });
 });
 
 describe('estimateArrivalFromPosition (#585)', () => {
