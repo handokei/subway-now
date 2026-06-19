@@ -242,6 +242,9 @@ beforeEach(() => {
   mockSendStationPassedNotification.mockClear();
   mockSendAlarmNotification.mockClear();
   mockUpdateStationNotification.mockClear();
+  // #1515 — cross-category dedup module 인메모리 상태 리셋(테스트 간 격리).
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  require('../../../alarm/utils/crossCategoryStationDedup')._resetCrossCategoryDedupForTests();
 });
 
 describe('FG↔BG 통합: 알림 dedup (notificationState 단일 출처)', () => {

@@ -64,6 +64,10 @@ export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 export type AlarmLogReason =
   | 'dedup-station'
   | 'dedup-alarm'
+  // #1515 — station-level cross-category dedup. firedAlarms(phase) + lastNotifiedStationId(station-passed)
+  // 분리된 두 dedup 위에 얹은 station 단위 윈도우 dedup. 같은 (destinationId, stationName)이
+  // CROSS_CATEGORY_DEDUP_WINDOW_MS 안에 fire되면 후속 카테고리 발사 차단(2026-06-19 성수 회귀).
+  | 'dedup-station-unified'
   | 'gate-age'
   | 'gate-accuracy'
   | 'gate-jump'
@@ -284,6 +288,31 @@ export function logFiredStationPassed(source: AlarmLogSource, station: Station):
     outcome: 'fired',
     stationName: station.name,
     kind: 'station-passed',
+  });
+}
+
+/**
+ * #1515 — cross-category station-level dedup 적중 1건 적재.
+ *
+ * 같은 (destinationId, stationName)이 CROSS_CATEGORY_DEDUP_WINDOW_MS 안에 fire된 station에
+ * destination/transfer/station-passed 어느 카테고리든 후속 발사를 차단한 케이스.
+ * burst dedup 윈도우로 같은 (source, stationName) 반복 로그는 1건만 적재.
+ */
+export function logSuppressedCrossCategoryDedup(input: {
+  source: AlarmLogSource;
+  stationName: string;
+  kind: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+}): void {
+  if (isBurstDuplicate('dedup-station-unified', input.stationName)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'dedup-station-unified',
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
   });
 }
 

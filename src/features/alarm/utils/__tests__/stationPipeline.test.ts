@@ -76,6 +76,7 @@ const mockLogSuppressedDedupAlarm = jest.fn();
 const mockLogSuppressedSleepFirstTransfer = jest.fn();
 const mockLogSuppressedSleepStationPassed = jest.fn();
 const mockLogSuppressedDismissSilence = jest.fn();
+const mockLogSuppressedCrossCategoryDedup = jest.fn();
 jest.mock('../alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
@@ -86,6 +87,8 @@ jest.mock('../alarmLog', () => ({
   logSuppressedSleepStationPassed: (...args: unknown[]) =>
     mockLogSuppressedSleepStationPassed(...args),
   logSuppressedDismissSilence: (...args: unknown[]) => mockLogSuppressedDismissSilence(...args),
+  logSuppressedCrossCategoryDedup: (...args: unknown[]) =>
+    mockLogSuppressedCrossCategoryDedup(...args),
 }));
 
 import { processLocationUpdate, resolveNextTarget } from '../stationPipeline';
@@ -131,6 +134,9 @@ function call(overrides: Partial<Parameters<typeof processLocationUpdate>[0]> = 
 describe('processLocationUpdate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // #1515 — cross-category dedup module 상태는 mock 대상이 아니므로 명시 리셋.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require('../crossCategoryStationDedup')._resetCrossCategoryDedupForTests();
     mockSendAlarmNotification.mockResolvedValue(undefined);
     mockUpdateStationNotification.mockResolvedValue(undefined);
     mockSendStationPassedNotification.mockResolvedValue(undefined);
@@ -827,6 +833,66 @@ describe('processLocationUpdate', () => {
       expect(mockSendAlarmNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedSleepFirstTransfer).not.toHaveBeenCalled();
     });
+  });
+
+  // #1515 — cross-category station-level dedup (BG path).
+  describe('#1515 cross-category station-level dedup (BG path)', () => {
+    const passedStation: Station = { ...mockStation, name: '강남', id: 'station-1' };
+    beforeEach(() => {
+      mockFindNearestStation.mockReturnValue({ station: passedStation, distanceKm: 0.05 });
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockIsStationOnRoute.mockReturnValue(true);
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+    });
+
+    it('phase 알람 발사 후 같은 station BG station-passed는 cross-category dedup으로 차단', async () => {
+      // 1st call — phase 알람 발사 → mark.
+      mockEvaluateAlarmPhase.mockReturnValueOnce({
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: passedStation.name,
+      });
+      // station-passed 분기를 진입하지 않도록 isStationOnRoute=false로 1차 call 한정.
+      mockIsStationOnRoute.mockReturnValueOnce(false);
+      await call({ source: 'fg-evaluated' });
+      expect(mockLogFiredAlarm).toHaveBeenCalled();
+
+      // 2nd call — station-passed 분기 진입. cross-category로 차단되어야 함.
+      mockEvaluateAlarmPhase.mockReturnValue(null);
+      mockIsStationOnRoute.mockReturnValue(true);
+      await call({ source: 'bg' });
+      expect(mockLogSuppressedCrossCategoryDedup).toHaveBeenCalledWith({
+        source: 'bg',
+        stationName: passedStation.name,
+        kind: 'station-passed',
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('station-passed 발사 후 같은 station phase 알람은 cross-category dedup으로 차단', async () => {
+      // 1st: station-passed 발사 → mark.
+      await call({ source: 'bg' });
+      expect(mockSendStationPassedNotification).toHaveBeenCalled();
+
+      // 2nd: phase 알람 같은 station — cross-cat 차단. (다른 destination이라 lastNotifiedStationId
+      // 게이트는 다른 키, isStationOnRoute false로 station-passed 분기 회피.)
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: passedStation.name,
+      });
+      mockIsStationOnRoute.mockReturnValue(false);
+      await call({ source: 'fg-evaluated' });
+      expect(mockLogSuppressedCrossCategoryDedup).toHaveBeenCalledWith({
+        source: 'fg-evaluated',
+        stationName: passedStation.name,
+        kind: 'destination',
+        phaseId: 'imminent',
+      });
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
   });
 
   // #1236 (Epic #1204 D8 wire) — BG station-passed dispatch path도 sleep 룰 게이트 호출.

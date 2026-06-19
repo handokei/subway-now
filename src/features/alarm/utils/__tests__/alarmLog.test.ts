@@ -28,6 +28,7 @@ import {
   DEDUP_LOG_WINDOW_MS,
   FLUSH_DEBOUNCE_MS,
   FLUSH_MAX_DELAY_MS,
+  logSuppressedCrossCategoryDedup,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
   logSuppressedSleepFirstTransfer,
@@ -522,6 +523,34 @@ describe('alarmLog', () => {
         stationName: station.name,
         kind: 'station-passed',
       });
+    });
+
+    it('#1515 logSuppressedCrossCategoryDedup: reason=dedup-station-unified + kind/phase 보존', async () => {
+      _resetBurstSuppressWindowForTests();
+      logSuppressedCrossCategoryDedup({
+        source: 'fg',
+        stationName: '성수',
+        kind: 'station-passed',
+      });
+      await expectLastSavedEntryMatches({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'dedup-station-unified',
+        stationName: '성수',
+        kind: 'station-passed',
+      });
+    });
+
+    it('#1515 logSuppressedCrossCategoryDedup: 윈도우 내 같은 stationName 재호출은 drop', async () => {
+      _resetBurstSuppressWindowForTests();
+      logSuppressedCrossCategoryDedup({ source: 'fg', stationName: '성수', kind: 'destination' });
+      logSuppressedCrossCategoryDedup({ source: 'fg', stationName: '성수', kind: 'station-passed' });
+      await flushAlarmLog();
+      const calls = (AsyncStorage.setItem as jest.Mock).mock.calls;
+      const lastJson = calls[calls.length - 1][1];
+      const saved: AlarmLogEntry[] = JSON.parse(lastJson);
+      const unified = saved.filter((e) => e.reason === 'dedup-station-unified');
+      expect(unified).toHaveLength(1);
     });
 
     it('logSuppressedDedupAlarm: reason=dedup-alarm, phase+type+stationName 적재 (#580)', async () => {

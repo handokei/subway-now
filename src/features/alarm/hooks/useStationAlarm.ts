@@ -39,6 +39,7 @@ import {
   logFiredStationPassed,
   logHydrationTransition,
   logRefMismatch,
+  logSuppressedCrossCategoryDedup,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
@@ -52,6 +53,10 @@ import {
   logSuppressedStationPassedWarmup,
   type HydrationPhase,
 } from '../utils/alarmLog';
+import {
+  isStationRecentlyFired,
+  markStationFired,
+} from '../utils/crossCategoryStationDedup';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { getBoardingLock } from '../utils/boardingLockStorage';
 import { resolveCurrentLine } from '../utils/resolveCurrentLine';
@@ -152,6 +157,35 @@ async function dispatchStationPassed(params: {
       logSuppressedDedupStation(source, candidateStation);
       return;
     }
+    // #1515 — cross-category station-level dedup. destination/transfer가 같은 station에 직전 fire됐다면
+    // station-passed 발사 차단. 같은 station 30s 내 카테고리 합산 1건 보장(2026-06-19 성수 회귀).
+    // 본 가드는 lastNotifiedStationId(같은 카테고리) dedup 다음에 위치 — destination phase fire가
+    // 별도 dedup 출처를 쓰는 회귀를 cross-cut으로 차단한다.
+    if (
+      isStationRecentlyFired(
+        capturedDestinationId,
+        candidateStation.name,
+        'station-passed',
+        Date.now(),
+      )
+    ) {
+      logSuppressedCrossCategoryDedup({
+        source,
+        stationName: candidateStation.name,
+        kind: 'station-passed',
+      });
+      return;
+    }
+    // race 차단: send 도중 동일 effect/다른 path가 진입해 같은 station을 발사하는 것을 막기 위해
+    // send 전에 윈도우 갱신(reservation). send 실패 시에도 30s 동안 cross-category 재발사 차단 —
+    // 이슈 acceptance "같은 station 30s 내 cross-category fire 1건 이하"에 정합.
+    // category='station-passed' → 후속 destination/transfer 발사 차단.
+    markStationFired(
+      capturedDestinationId,
+      candidateStation.name,
+      'station-passed',
+      Date.now(),
+    );
     // #796: candidateStation.line을 전달해 multi-transfer 환승역 정확 식별.
     const target = resolveNextTarget(
       capturedRoute,
@@ -551,6 +585,27 @@ export function useStationAlarm({
       });
       return;
     }
+    // #1515 — cross-category station-level dedup. 같은 station에 직전 station-passed가 fire됐다면
+    // destination/transfer phase 알람 후속 발사 차단. category 인자로 phase 알람끼리 진행
+    // (early→imminent)은 차단하지 않음 — firedAlarms(phase 카테고리 내 dedup)이 단독 작동.
+    if (
+      isStationRecentlyFired(activeDestination.id, rawEvent.stationName, rawEvent.type, Date.now())
+    ) {
+      // firedAlarmsRef.add(key)는 진입부에서 이미 수행 — phase 카테고리 dedup은 유지(다음 사이클에
+      // 같은 phase 재평가 막음). cross-category 차단도 sleep 차단과 동일하게 firedAlarms ref만
+      // 갱신했으므로 storage 영속화 skip(net-zero).
+      firedAlarmsRef.current.delete(key);
+      logSuppressedCrossCategoryDedup({
+        source: 'fg',
+        stationName: rawEvent.stationName,
+        kind: rawEvent.type,
+        phaseId: rawEvent.phaseId,
+      });
+      return;
+    }
+    // race 차단 reservation — send 전에 윈도우 갱신해 await 동안 다른 effect가 같은 station을 발사
+    // 못하게 한다. category=phase type → 후속 station-passed 차단.
+    markStationFired(activeDestination.id, rawEvent.stationName, rawEvent.type, Date.now());
     // 좌/우 안내 방향. nearestStation 미정이면 direction 미부착(본문에 좌/우 라인 생략).
     const direction = nearestStation
       ? resolveAlarmDirection(rawEvent, {
