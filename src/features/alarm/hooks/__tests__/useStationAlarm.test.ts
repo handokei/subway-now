@@ -3668,15 +3668,14 @@ describe('useStationAlarm', () => {
     );
     const routeDirectOrigin = makeDirectRoute(4, '2');
 
-    it('lockless + currentHopIndex=0 + candidate arc[0] → suppressed (gate-origin-hop-lockless)', async () => {
-      mockGetBoardingLock.mockResolvedValue(null);
+    const renderOriginHopCase = (nearestIndex: number, currentHopIndex: number) =>
       renderHook(() =>
         useStationAlarm(
           defaultInputs({
             route: routeDirectOrigin,
             destination,
-            nearestStation: arcOrigin[0],
-            currentHopIndex: 0,
+            nearestStation: arcOrigin[nearestIndex],
+            currentHopIndex,
             arcStations: arcOrigin,
             userLocation: { lat: 37.6, lng: 127.1 },
             speedMps: 10,
@@ -3684,6 +3683,20 @@ describe('useStationAlarm', () => {
           }),
         ),
       );
+
+    const mockNextTargetStops = (stops: number) => {
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: stops,
+        isTransfer: false,
+        stopsToDestination: stops,
+      });
+    };
+
+    it('lockless + currentHopIndex=0 + candidate arc[0] → suppressed (gate-origin-hop-lockless)', async () => {
+      mockGetBoardingLock.mockResolvedValue(null);
+      renderOriginHopCase(0, 0);
       await waitFor(() => {
         expect(mockLogSuppressedOriginHopLockless).toHaveBeenCalledWith({
           source: 'fg',
@@ -3703,27 +3716,8 @@ describe('useStationAlarm', () => {
         boardedAt: Date.now(),
         expectedDurationMs: 600_000,
       });
-      mockGetLastNotifiedStationId.mockResolvedValue(null);
-      mockResolveNextTarget.mockReturnValue({
-        nextStationName: '강남',
-        stopsToNextStation: 4,
-        isTransfer: false,
-        stopsToDestination: 4,
-      });
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route: routeDirectOrigin,
-            destination,
-            nearestStation: arcOrigin[0],
-            currentHopIndex: 0,
-            arcStations: arcOrigin,
-            userLocation: { lat: 37.6, lng: 127.1 },
-            speedMps: 10,
-            accuracyMeters: 50,
-          }),
-        ),
-      );
+      mockNextTargetStops(4);
+      renderOriginHopCase(0, 0);
       await waitFor(() => {
         expect(mockSendStationPassedNotification).toHaveBeenCalled();
       });
@@ -3732,27 +3726,8 @@ describe('useStationAlarm', () => {
 
     it('lockless + currentHopIndex=0 + candidate arc[1] (다음 hop) → 통과 (정상 진행 신호)', async () => {
       mockGetBoardingLock.mockResolvedValue(null);
-      mockGetLastNotifiedStationId.mockResolvedValue(null);
-      mockResolveNextTarget.mockReturnValue({
-        nextStationName: '강남',
-        stopsToNextStation: 3,
-        isTransfer: false,
-        stopsToDestination: 3,
-      });
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route: routeDirectOrigin,
-            destination,
-            nearestStation: arcOrigin[1],
-            currentHopIndex: 0,
-            arcStations: arcOrigin,
-            userLocation: { lat: 37.6, lng: 127.1 },
-            speedMps: 10,
-            accuracyMeters: 50,
-          }),
-        ),
-      );
+      mockNextTargetStops(3);
+      renderOriginHopCase(1, 0);
       await waitFor(() => {
         expect(mockSendStationPassedNotification).toHaveBeenCalled();
       });
@@ -3761,27 +3736,8 @@ describe('useStationAlarm', () => {
 
     it('lockless + currentHopIndex=2 + candidate arc[2] (중간 hop origin 아님) → 통과 (기존 동작 보존)', async () => {
       mockGetBoardingLock.mockResolvedValue(null);
-      mockGetLastNotifiedStationId.mockResolvedValue(null);
-      mockResolveNextTarget.mockReturnValue({
-        nextStationName: '강남',
-        stopsToNextStation: 2,
-        isTransfer: false,
-        stopsToDestination: 2,
-      });
-      renderHook(() =>
-        useStationAlarm(
-          defaultInputs({
-            route: routeDirectOrigin,
-            destination,
-            nearestStation: arcOrigin[2],
-            currentHopIndex: 2,
-            arcStations: arcOrigin,
-            userLocation: { lat: 37.6, lng: 127.1 },
-            speedMps: 10,
-            accuracyMeters: 50,
-          }),
-        ),
-      );
+      mockNextTargetStops(2);
+      renderOriginHopCase(2, 2);
       await waitFor(() => {
         expect(mockSendStationPassedNotification).toHaveBeenCalled();
       });

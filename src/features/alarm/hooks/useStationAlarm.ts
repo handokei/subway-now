@@ -868,7 +868,11 @@ export function useStationAlarm({
           currentHopIndex ?? inferHopIndexFromFiredAlarms(firedAlarmsRef.current, arcStations);
         if (effectiveHopIndex < 0) {
           logSuppressedHopWindowNoSource({ source: 'fg', stationName: candidateStation.name });
-        } else if (!isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex)) {
+        } else if (isStationWithinHopWindow(candidateStation, arcStations, effectiveHopIndex)) {
+          // hop window 통과 — origin hop 케이스만 추가 표식 (lockless 차단은 IIFE 내부).
+          const candidateIndex = arcIndexOf(arcStations, candidateStation);
+          isOriginHopCandidate = effectiveHopIndex === 0 && candidateIndex === 0;
+        } else {
           logSuppressedHopWindow({
             source: 'fg',
             stationName: candidateStation.name,
@@ -876,10 +880,6 @@ export function useStationAlarm({
             candidateIndex: arcIndexOf(arcStations, candidateStation),
           });
           return;
-        } else {
-          // hop window 통과 — origin hop 케이스만 추가 표식 (lockless 차단은 IIFE 내부).
-          const candidateIndex = arcIndexOf(arcStations, candidateStation);
-          isOriginHopCandidate = effectiveHopIndex === 0 && candidateIndex === 0;
         }
       }
 
