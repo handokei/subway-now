@@ -25,6 +25,10 @@ import {
   pickLatestCurrentStationName,
   resolveEtaMissingThreshold,
   runScheduled,
+  appendPassedStation,
+  computeCronJitterMs,
+  PASSED_STATIONS_MAX_LEN,
+  CRON_NOMINAL_INTERVAL_MS,
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
@@ -4941,5 +4945,195 @@ describe('runScheduled — #1402 인프라 안전망 (pendingPushes wire-up + pa
     });
     const body = findApnsCallByPushId(apnsFetch, 'p1402-vf');
     expect((body.data as { origin: string }).origin).toBe('vanish-fallback');
+  });
+});
+
+// #1539 (S6, Epic #1533 / ADR-016) — passedStations 누적 + cron jitter 측정.
+// device가 cron 1분 race로 놓친 station-passed를 사전 예약 큐 diff로 backfill 발사할 수 있게
+// backend가 통과 station 누적 배열 + jitter metric을 제공한다. 본 PR은 데이터 plumbing만,
+// device-side diff/fire wiring은 S5 머지 후 후속 PR.
+describe('appendPassedStation (#1539 S6)', () => {
+  function makeTrip(passed?: string[]): Trip {
+    return {
+      token: 't',
+      route: { type: 'direct', stops: 3, line: '7' },
+      destination: 'D',
+      waypoints: [],
+      expiresAt: NOW + 60_000,
+      createdAt: NOW,
+      alarmAtEpochMs: NOW + 60_000,
+      ...(passed === undefined ? {} : { passedStations: passed }),
+    };
+  }
+
+  it('initializes array on first call (#1539)', () => {
+    const trip = makeTrip();
+    const dirty = appendPassedStation(trip, '군자');
+    expect(dirty).toBe(true);
+    expect(trip.passedStations).toEqual(['군자']);
+  });
+
+  it('appends a different stationName at the end', () => {
+    const trip = makeTrip(['군자']);
+    const dirty = appendPassedStation(trip, '중곡');
+    expect(dirty).toBe(true);
+    expect(trip.passedStations).toEqual(['군자', '중곡']);
+  });
+
+  it('skips duplicate consecutive stationName (defensive dedup)', () => {
+    const trip = makeTrip(['군자']);
+    const dirty = appendPassedStation(trip, '군자');
+    expect(dirty).toBe(false);
+    expect(trip.passedStations).toEqual(['군자']);
+  });
+
+  it('rejects empty stationName', () => {
+    const trip = makeTrip(['군자']);
+    const dirty = appendPassedStation(trip, '');
+    expect(dirty).toBe(false);
+    expect(trip.passedStations).toEqual(['군자']);
+  });
+
+  it(`caps length to PASSED_STATIONS_MAX_LEN (${PASSED_STATIONS_MAX_LEN})`, () => {
+    const initial = Array.from({ length: PASSED_STATIONS_MAX_LEN }, (_, i) => `S${i}`);
+    const trip = makeTrip([...initial]);
+    const dirty = appendPassedStation(trip, 'NEW');
+    expect(dirty).toBe(true);
+    expect(trip.passedStations).toHaveLength(PASSED_STATIONS_MAX_LEN);
+    expect(trip.passedStations?.[0]).toBe('S1');
+    expect(trip.passedStations?.[PASSED_STATIONS_MAX_LEN - 1]).toBe('NEW');
+  });
+});
+
+describe('computeCronJitterMs (#1539 S6)', () => {
+  it('returns 0 when called exactly at a boundary', () => {
+    const boundary = Math.floor(NOW / CRON_NOMINAL_INTERVAL_MS) * CRON_NOMINAL_INTERVAL_MS;
+    expect(computeCronJitterMs(boundary)).toBe(0);
+  });
+
+  it('returns positive ms offset from the prior 60s boundary', () => {
+    const boundary = Math.floor(NOW / CRON_NOMINAL_INTERVAL_MS) * CRON_NOMINAL_INTERVAL_MS;
+    expect(computeCronJitterMs(boundary + 1_234)).toBe(1_234);
+  });
+
+  it('always returns less than CRON_NOMINAL_INTERVAL_MS', () => {
+    const boundary = Math.floor(NOW / CRON_NOMINAL_INTERVAL_MS) * CRON_NOMINAL_INTERVAL_MS;
+    expect(computeCronJitterMs(boundary + CRON_NOMINAL_INTERVAL_MS - 1)).toBe(
+      CRON_NOMINAL_INTERVAL_MS - 1,
+    );
+  });
+});
+
+describe('advanceBoardingLockWaypoint passedStations 누적 (#1539 S6)', () => {
+  // arvlCd=ARRIVED → fireArvlCdStationPush → advance → trip.passedStations에 통과 station이 누적.
+  // 이후 putTrip되어 KV에서 읽으면 wire가 전달된다 (다음 cycle silent push payload).
+  it('accumulates passed stationName into trip.passedStations and forwards to payload', async () => {
+    const kv = new InMemoryKV();
+    // intermediate waypoint(중곡)가 ARRIVED로 advance → trip.passedStations에 push.
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'pass-1',
+        waypoints: [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '용마산', line: '7', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+        boardingLock: {
+          trainCode: 'T',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: NOW,
+          segmentStations: ['중곡', '용마산'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+      }),
+    );
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeLockedSeoul(0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    const stored = JSON.parse((await kv.get('trip:pass-1')) as string) as Trip;
+    expect(stored.passedStations).toEqual(['중곡']);
+    // arvlCd-fire path silent push payload에 passedStations forward.
+    const calls = apnsFetch.mock.calls as unknown as [string, RequestInit][];
+    const arvlcdCall = calls.find((c) => {
+      const body = JSON.parse(c[1].body as string);
+      return body.data?.origin === 'arvlcd';
+    });
+    expect(arvlcdCall).toBeDefined();
+    const arvlcdBody = JSON.parse(arvlcdCall![1].body as string);
+    // arvlCd-fire는 advance 직전 호출이라 fire 시점엔 아직 passedStations에 push되지 않은 상태.
+    // arvlCd fire path는 stationary trip-state(즉, 발사 시점)를 그대로 forward — empty이면 omit.
+    expect(arvlcdBody.data.passedStations).toBeUndefined();
+  });
+});
+
+describe('runLocklessIntermediate passedStations 누적 (#1539 S6)', () => {
+  it('accumulates passed stationName on lockless advance', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'lockless-pass',
+      route: { type: 'direct', line: '2', stops: 2 },
+      waypoints: [
+        { stationName: '강남', line: '2', kind: 'intermediate' },
+        { stationName: '역삼', line: '2', kind: 'intermediate' },
+      ],
+      locklessStationPassed: true,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const arrived: ArrivalEntry = {
+      destination: '강남행',
+      arrivalSeconds: 30,
+      trainCode: '7246',
+      isUp: true,
+      subwayNm: '지하철2호선',
+      arvlCd: 1,
+    };
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([arrived]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    expect(stats.locklessIntermediateFired).toBe(1);
+    const stored = JSON.parse((await kv.get('trip:lockless-pass')) as string) as Trip;
+    expect(stored.passedStations).toEqual(['강남']);
+  });
+});
+
+describe('runScheduled cron jitter stat (#1539 S6)', () => {
+  it('stamps cronJitterMs on stats + logs it', async () => {
+    const kv = new InMemoryKV();
+    const env = makeEnv(kv);
+    const logMessages: Array<{ msg: string; meta?: Record<string, unknown> }> = [];
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(env, {
+      seoul: new SeoulArrivalClient({
+        apiKey: 'K',
+        host: 'h',
+        now: () => NOW + 7_321,
+        fetchImpl: (async () =>
+          new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 })) as unknown as typeof fetch,
+      }),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW + 7_321,
+      log: (msg, meta) => {
+        logMessages.push({ msg, meta });
+      },
+    });
+    const expectedJitter = computeCronJitterMs(NOW + 7_321);
+    expect(stats.cronJitterMs).toBe(expectedJitter);
+    expect(logMessages.some((l) => l.msg === 'scheduled: cron jitter' && l.meta?.jitterMs === expectedJitter))
+      .toBe(true);
   });
 });

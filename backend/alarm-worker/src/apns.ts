@@ -136,6 +136,16 @@ export interface SilentPushPayload {
    * 구 backend 호환 위해 optional — 미전달 시 wire에서 자연 누락.
    */
   lockReleasedReason?: LockReleasedReason;
+  /**
+   * #1539 (S6, Epic #1533 / ADR-016) — backend가 trip 시작 후 통과 확인한 모든 station 누적 배열
+   * (`Trip.passedStations` forward, 최신 N개). device는 사전 예약 큐와 diff하여 cron 1분 race로
+   * 누락된 station-passed 알림을 backfill할 수 있게 된다(S5 머지 후 wiring PR).
+   *
+   * - 빈 배열 또는 undefined → wire 누락 (device backfill 자연 skip)
+   * - 본 PR(S6)은 backend → device 데이터 plumbing만 — actual backfill 발사는 후속 PR.
+   * - readonly: payload 빌더가 trip 상태를 share-by-reference로 전달해도 JSON serialize 시 안전.
+   */
+  passedStations?: readonly string[];
 }
 
 /**
@@ -249,6 +259,11 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
       ...(options.payload.lockReleasedReason === undefined
         ? {}
         : { lockReleasedReason: options.payload.lockReleasedReason }),
+      // #1539 (S6) — passedStations는 non-empty 배열일 때만 wire. 빈 배열/누락은 JSON에서 자연
+      // 누락 → 구 device(필드 무시) 호환. device는 사전 예약 큐 backfill에 사용한다(후속 PR).
+      ...(options.payload.passedStations && options.payload.passedStations.length > 0
+        ? { passedStations: [...options.payload.passedStations] }
+        : {}),
     },
   });
 

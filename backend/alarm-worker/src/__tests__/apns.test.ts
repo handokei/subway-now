@@ -352,6 +352,34 @@ describe('sendSilentPush', () => {
     if (expectPresent) expect(body.data.lockReleasedReason).toBe(input);
   });
 
+  // #1539 (S6) — payload.passedStations wire 검증. non-empty 배열만 wire, undefined/빈 배열은 omit.
+  it.each([
+    ['non-empty 배열은 body.data.passedStations로 전달', ['군자', '중곡'], true],
+    ['빈 배열은 omit (구 device 호환)', [], false],
+    ['미지정은 omit (구 backend 호환)', undefined, false],
+  ])('passedStations %s (#1539)', async (_label, input, expectPresent) => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: {
+        nextWaypoint: '용마산',
+        etaSeconds: 0,
+        phase: 'imminent',
+        kind: 'intermediate',
+        sentAt: 1_700_000_000_000,
+        pushId: 'p',
+        ...(input === undefined ? {} : { passedStations: input }),
+      },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('passedStations' in body.data).toBe(expectPresent);
+    if (expectPresent) expect(body.data.passedStations).toEqual(input);
+  });
+
   it('uses sandbox host when provided', async () => {
     const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response('', { status: 200 }),
