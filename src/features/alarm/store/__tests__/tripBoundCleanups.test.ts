@@ -18,6 +18,16 @@ import {
   SCHEDULED_NOTIFICATIONS_KEY,
   STICKY_STATION_KEY,
 } from '../../../../shared/constants/storageKeys';
+import {
+  clearCrossCategoryDedup,
+  markStationFired,
+  isStationRecentlyFired,
+} from '../../utils/crossCategoryStationDedup';
+import { clearAlarmLogWindows } from '../../utils/alarmLog';
+import { resetAlarmBackendDedup } from '../../api/alarmBackend';
+import { useDestinationStore } from '../../../route/store/useDestinationStore';
+import { useBoardingLockStore } from '../useBoardingLockStore';
+import { useAlarmEventStore } from '../useAlarmEventStore';
 
 const mockClearWidgetStation = jest.fn().mockResolvedValue(undefined);
 
@@ -317,6 +327,89 @@ describe('tripBoundCleanups', () => {
     });
   });
 
+  describe('#1545 (S12) — 누락 8 항목 wiring 회귀 가드', () => {
+    // BG silent push trip-ended 경로에서 runTripBoundCleanups만 호출되는 경우, 모든
+    // module-level / in-memory 상태가 일관되게 클리어되는지 검증. 새 cleanup 항목이 누락되면
+    // 본 describe 블록의 assertion 중 하나가 빨갛게 깨진다.
+
+    it('S12-1: clearCrossCategoryDedup이 TRIP_BOUND_CLEANUPS에 포함된다 (lastFire Map 클리어)', async () => {
+      const now = Date.now();
+      markStationFired('dest-1', '강남', 'destination', now);
+      expect(
+        isStationRecentlyFired('dest-1', '강남', 'station-passed', now + 1_000),
+      ).toBe(true);
+      // TRIP_BOUND_CLEANUPS에 포함되어야 함 — 함수 reference 비교.
+      expect(TRIP_BOUND_CLEANUPS).toContain(clearCrossCategoryDedup);
+      // 실제 cleanup 효과: 비운 뒤엔 fire 기록 없음.
+      await clearCrossCategoryDedup();
+      expect(
+        isStationRecentlyFired('dest-1', '강남', 'station-passed', now + 1_000),
+      ).toBe(false);
+    });
+
+    it('S12-2: clearAlarmLogWindows가 TRIP_BOUND_CLEANUPS에 포함된다 (alarmLog 3 Maps 클리어)', async () => {
+      expect(TRIP_BOUND_CLEANUPS).toContain(clearAlarmLogWindows);
+      // 멱등 호출 — 빈 Map 상태에서도 graceful 통과.
+      await expect(clearAlarmLogWindows()).resolves.toBeUndefined();
+    });
+
+    it('S12-3: resetAlarmBackendDedup이 TRIP_BOUND_CLEANUPS에 포함된다 (in-flight + last hash 클리어)', async () => {
+      expect(TRIP_BOUND_CLEANUPS).toContain(resetAlarmBackendDedup);
+      await expect(resetAlarmBackendDedup()).resolves.toBeUndefined();
+    });
+
+    it('S12-4+5+6+7: in-memory zustand store mirror가 일괄 클리어된다 (customOrigin/lock/alarmEvent/dismissSilence)', async () => {
+      // BG silent push trip-ended 직전 상태: 모든 store 메모리에 trip-bound state 존재.
+      useDestinationStore.setState({
+        customOrigin: {
+          id: 'orig-1',
+          name: '용마산',
+          line: '7',
+          lineColor: '#000',
+          lat: 37.5,
+          lng: 127.0,
+        },
+      });
+      useBoardingLockStore.setState({
+        lock: {
+          destinationId: 'stn-1',
+          trainCode: 'T-100',
+          boardingStationId: 'stn-0',
+          boardingLine: '7',
+          boardedAt: Date.now(),
+          expectedDurationMs: 600_000,
+        },
+      });
+      useAlarmEventStore.setState({
+        alarmEvent: {
+          phaseId: 'imminent',
+          type: 'destination',
+          stationName: '강남',
+        },
+        dismissSilence: { sinceTs: Date.now(), sinceLat: null, sinceLng: null },
+      });
+
+      await runTripBoundCleanups();
+
+      // 모든 메모리 state가 null로 비워졌어야 한다 — BG 경로에서도 일관.
+      expect(useDestinationStore.getState().customOrigin).toBeNull();
+      expect(useBoardingLockStore.getState().lock).toBeNull();
+      expect(useAlarmEventStore.getState().alarmEvent).toBeNull();
+      expect(useAlarmEventStore.getState().dismissSilence).toBeNull();
+    });
+
+    it('S12-8: enumeration 가드 — TRIP_BOUND_CLEANUPS 길이가 baseline 이하로 떨어지면 회귀', () => {
+      // 새 cleanup 항목이 추가될 때마다 baseline을 한 줄로 갱신. 누군가 실수로 항목을 제거하면
+      // 본 assertion이 빨갛게 깨져 의도된 제거인지 코드리뷰에서 확인하도록 강제한다.
+      //
+      // #1545 (S12) 이전: 22 항목. S12에서 5 항목 추가(crossCategoryDedup / alarmLogWindows /
+      // alarmBackendDedup / storeMemoryMirror / [기존 22] = 22 + 4 신규 + 1 wrapper). 일부 항목은
+      // BG-only 메모리/dedup이라 storage write 없이도 효력 있음.
+      const MIN_ITEMS = 25;
+      expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(MIN_ITEMS);
+    });
+  });
+
   it('runTripBoundCleanups: 한 항목이 reject해도 나머지 항목이 모두 실행된다', async () => {
     // 첫 호출만 reject, 나머지는 정상 — Promise.all 안에서 catch로 흡수되어
     // 다른 cleanup의 실행 자체에는 영향이 없어야 한다.
@@ -330,9 +423,13 @@ describe('tripBoundCleanups', () => {
     await runTripBoundCleanups();
 
     // removeItem이 항목 수만큼(또는 그 이상 helper 경유분 포함) 호출됐는지 확인.
-    // 최소 메타 배열 길이만큼은 호출되어야 한다.
+    // #1545 (S12) — 신규 wiring 4건(clearCrossCategoryDedup / clearAlarmLogWindows /
+    // resetAlarmBackendDedup / clearTripBoundStoreMemory)은 storage write를 하지 않는
+    // module-level/memory 클리어라 removeItem 카운트에 기여하지 않는다. 신규 항목 수만큼
+    // 임계값을 낮춰 기존 invariant(storage 기반 항목 모두 실행)는 유지.
+    const NON_STORAGE_CLEANUPS = 4;
     expect((AsyncStorage.removeItem as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(
-      TRIP_BOUND_CLEANUPS.length,
+      TRIP_BOUND_CLEANUPS.length - NON_STORAGE_CLEANUPS,
     );
   });
 });

@@ -24,6 +24,7 @@ import {
   logSuppressedDedupAlarm,
   _resetDedupAlarmWindowForTests,
   _resetBurstSuppressWindowForTests,
+  clearAlarmLogWindows,
   _simulateAppStateForTest,
   DEDUP_LOG_WINDOW_MS,
   FLUSH_DEBOUNCE_MS,
@@ -1798,5 +1799,46 @@ describe('alarmLog', () => {
     });
   });
 
+  // #1545 (S12) — TRIP_BOUND_CLEANUPS에 wiring될 production reset.
+  describe('clearAlarmLogWindows (#1545 S12)', () => {
+    it('3개 윈도우(refMismatch / dedupAlarm / burst)를 모두 비우고 graceful resolve한다', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+
+      // 윈도우를 채운다 — 같은 key를 5_000ms 내에 두 번 호출하면 두 번째는 silence.
+      logRefMismatch('dest-1', 'ref-1');
+      logSuppressedDedupAlarm('fg-arvlcd', {
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: '강남',
+      });
+      const baseline = (await getAlarmLog()).length;
+
+      // 같은 키 즉시 재호출 — 윈도우 silence로 추가 entry 0건이어야 함 (sanity check).
+      logRefMismatch('dest-1', 'ref-1');
+      logSuppressedDedupAlarm('fg-arvlcd', {
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: '강남',
+      });
+      const blocked = (await getAlarmLog()).length;
+      expect(blocked).toBe(baseline);
+
+      // production reset → 다음 동일 키 호출이 silence 풀려 다시 append.
+      await expect(clearAlarmLogWindows()).resolves.toBeUndefined();
+      logRefMismatch('dest-1', 'ref-1');
+      logSuppressedDedupAlarm('fg-arvlcd', {
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: '강남',
+      });
+      const afterClear = (await getAlarmLog()).length;
+      expect(afterClear).toBeGreaterThan(baseline);
+    });
+
+    it('빈 상태에서도 graceful no-op resolve한다 (멱등)', async () => {
+      await expect(clearAlarmLogWindows()).resolves.toBeUndefined();
+      await expect(clearAlarmLogWindows()).resolves.toBeUndefined();
+    });
+  });
 });
 

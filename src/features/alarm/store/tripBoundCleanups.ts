@@ -39,6 +39,12 @@ import {
   getRegisteredTripRouteSig,
 } from '../utils/tripBoundScheduler';
 import { clearTripCorrId } from '../../observability/utils/tripCorrId';
+import { clearCrossCategoryDedup } from '../utils/crossCategoryStationDedup';
+import { clearAlarmLogWindows } from '../utils/alarmLog';
+import { resetAlarmBackendDedup } from '../api/alarmBackend';
+import { useDestinationStore } from '../../route/store/useDestinationStore';
+import { useBoardingLockStore } from './useBoardingLockStore';
+import { useAlarmEventStore } from './useAlarmEventStore';
 import { createLogger } from '../../../shared/utils/logger';
 
 const log = createLogger('tripBoundCleanups');
@@ -120,7 +126,58 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // 저장하므로 trip 끝나도 위젯에는 trip 중 마지막 역이 남는다. clearWidgetStation으로 즉시
   // "감지 중" 상태로 전환해 다음 fresh fix가 들어올 때까지 정확하지 않은 현재역 노출을 막는다.
   clearWidgetStation,
+  // #1545 (S12) — 모듈-level in-memory dedup 윈도우 클리어.
+  // 같은 destination/같은 phase로 새 trip을 즉시 시작할 때 직전 trip의 fire 기록이
+  // 새 trip 첫 fire를 silence하는 회귀 차단. BG silent push trip-ended 경로에서도
+  // 동일하게 비워야 일관.
+  clearCrossCategoryDedup,
+  clearAlarmLogWindows,
+  // #1545 (S12) — alarm-backend register dedup 캐시 클리어. clearActiveTrip이 token이 있을
+  // 때만 호출되는 반면, BG silent push trip-ended 경로는 token 없이 cleanup만 진행 →
+  // in-flight Promise/last hash가 다음 trip register에 stale로 재사용되는 회귀 차단.
+  resetAlarmBackendDedup,
+  // #1545 (S12) — in-memory zustand store mirror 클리어.
+  // FG setDestination(null/switch) 경로는 useDestinationStore가 inline으로 customOrigin/
+  // alarmEvent/dismissSilence 메모리를 동기화하지만, BG silent push trip-ended 경로는
+  // runTripBoundCleanups만 호출되어 storage는 비워도 메모리는 stale로 남는다 (FG 복귀 시
+  // useStateRehydration이 sentinel을 보고 destination/lock만 reset — alarmEvent 등은 누락).
+  // 본 wiring으로 BG 경로에서도 메모리/storage가 동시에 일관 상태가 된다.
+  clearTripBoundStoreMemory,
 ];
+
+/**
+ * #1545 (S12) — trip-bound zustand store의 in-memory mirror를 일괄 클리어.
+ *
+ * storage는 다른 항목에서 이미 removeItem 되므로 본 함수는 메모리 setState만 수행.
+ * 멱등 — 이미 null인 state에 setState 호출은 graceful no-op.
+ *
+ * useDestinationStore.customOrigin / useBoardingLockStore.lock / useAlarmEventStore.alarmEvent /
+ * useAlarmEventStore.dismissSilence를 한 번에 동기화한다. setState는 sync — Promise.resolve로
+ * 반환해 TRIP_BOUND_CLEANUPS의 () => Promise<void> shape에 맞춘다.
+ */
+function clearTripBoundStoreMemory(): Promise<void> {
+  const destState = useDestinationStore.getState();
+  // customOrigin: setDestination 경로는 이미 null로 동기화하지만, BG silent push 경로는
+  // 누락. 사용자가 직접 지정한 출발역이 새 trip에 leak되지 않도록 비운다.
+  if (destState.customOrigin !== null) {
+    useDestinationStore.setState({ customOrigin: null });
+  }
+  // boardingLock: storage(BOARDING_LOCK_KEY)는 이미 removeItem 됐지만 zustand snapshot이
+  // 메모리에 lock을 갖고 있으면 FG UI가 stale lock UI를 일시 노출한다.
+  if (useBoardingLockStore.getState().lock !== null) {
+    useBoardingLockStore.setState({ lock: null });
+  }
+  // alarmEvent / dismissSilence: storage(ALARM_EVENT_KEY/dismissSilenceStorage)도 위에서
+  // 이미 cleanup. 메모리만 추가 동기화 — 새 trip UI에 이전 alarm overlay/silence가 leak 차단.
+  const alarmState = useAlarmEventStore.getState();
+  if (alarmState.alarmEvent !== null) {
+    useAlarmEventStore.setState({ alarmEvent: null });
+  }
+  if (alarmState.dismissSilence !== null) {
+    useAlarmEventStore.setState({ dismissSilence: null });
+  }
+  return Promise.resolve();
+}
 
 /**
  * 모든 trip-bound cleanup을 병렬로 실행한다. 항목들 사이에 순서 의존성이 없어
