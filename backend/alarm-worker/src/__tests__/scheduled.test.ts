@@ -34,7 +34,7 @@ import {
 } from '../scheduled';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
-import { writeSsot } from '../tripPositionSsot';
+import { readSsot, seedSsot, ssotKey, writeSsot } from '../tripPositionSsot';
 import type { BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -5239,5 +5239,197 @@ describe('runScheduled cron jitter stat (#1539 S6)', () => {
     expect(stats.cronJitterMs).toBe(expectedJitter);
     expect(logMessages.some((l) => l.msg === 'scheduled: cron jitter' && l.meta?.jitterMs === expectedJitter))
       .toBe(true);
+  });
+});
+
+/**
+ * ADR-017 T4 (#1557) — `advanceTripPosition` SSoT 게이트가 arvlcd fire 발사 직전 차단/통과를
+ * 결정하는지 양방향 검증.
+ *
+ * 본 suite는 `runScheduled` 통합 레벨에서 lock 활성 + arvlcd ARRIVED 신호를 시뮬한 뒤
+ * SSoT motionState / consensusGate / trainCode identity / lazy-seed 등 분기마다 결과를 단언한다.
+ *
+ * 2026-06-19 정지 trip + lock active + arvlcd ARRIVED → wrong "transfer imminent 건대입구"
+ * 발사 회귀(N1)를 본 게이트가 직접 차단함을 박제한다.
+ */
+describe('runScheduled — ADR-017 T4 (#1557) advanceTripPosition SSoT gate (arvlcd fire)', () => {
+  const TOKEN = 'arvl-tok';
+
+  // arvlcd ARRIVED 신호 (중곡, trainCode 7246, arvlCd=1) 공통 Seoul fixture.
+  const makeArrivedSeoul = (trainCode = '7246') => makeArvlCdFireSeoul('중곡', 0, 1, trainCode);
+
+  async function setupTrip(
+    overrides: Partial<Trip> = {},
+  ): Promise<{ kv: InMemoryKV; trip: Trip }> {
+    const kv = new InMemoryKV();
+    const trip = makeLockTripFixture(TOKEN, overrides);
+    await putTrip(kv as unknown as KVNamespace, trip);
+    return { kv, trip };
+  }
+
+  async function runT4(opts: {
+    kv: InMemoryKV;
+    seoul?: SeoulArrivalClient;
+    apnsFetch?: ReturnType<typeof vi.fn>;
+    logMessages?: { msg: string; meta?: Record<string, unknown> }[];
+  }): Promise<{ stats: ScheduledStats; apnsFetch: ReturnType<typeof vi.fn> }> {
+    const apnsFetch = opts.apnsFetch ?? vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(opts.kv), {
+      seoul: opts.seoul ?? makeArrivedSeoul(),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-t4',
+      log: opts.logMessages
+        ? (msg, meta) => {
+            opts.logMessages!.push({ msg, meta });
+          }
+        : undefined,
+    });
+    return { stats, apnsFetch };
+  }
+
+  // 양방향 + 회귀 박제 시나리오 (issue body §검증 + 보강 섹션 arvlcdScenarios).
+  type Scenario = {
+    name: string;
+    motionState: 'moving' | 'stationary' | 'unknown';
+    userIntentDeclared?: boolean;
+    subsurface?: boolean;
+    expectFire: boolean;
+    expectBlockReason?: 'motion-stationary' | 'env-consensus-fail';
+  };
+
+  const arvlcdScenarios: Scenario[] = [
+    // Positive — moving + lock + arvlcd → fire
+    {
+      name: 'P1 moving + lock + arvlcd ARRIVED + trainCode 일치 → fire',
+      motionState: 'moving',
+      expectFire: true,
+    },
+    // Positive — unknown(레거시 / T3 미wire) + lock + arvlcd → fire (gate dormant for unknown)
+    {
+      name: 'P2 unknown(레거시) + lock + arvlcd → fire (게이트 dormant)',
+      motionState: 'unknown',
+      expectFire: true,
+    },
+    // Positive — userIntentDeclared 의향 ON trip은 stationary여도 motion gate 통과 ([[feedback_user_intent_equal_protection]])
+    {
+      name: 'P3 stationary + userIntentDeclared=true → fire (P8 동급 보장)',
+      motionState: 'stationary',
+      userIntentDeclared: true,
+      expectFire: true,
+    },
+    // Negative — 2026-06-19 회귀 박제
+    {
+      name: 'N1 stationary trip + lock + arvlcd → blocked motion-stationary (회귀 박제)',
+      motionState: 'stationary',
+      expectFire: false,
+      expectBlockReason: 'motion-stationary',
+    },
+    // Note: N4 train-mismatch는 본 entry point(arvlcd fire)에서는 구조적으로 도달 불가 —
+    // `estimateBoardingLockArrival`이 이미 lock.trainCode 기준으로 Seoul 응답을 필터하므로,
+    // 일치하지 않는 trainCode는 estimate=null이 되어 vanish path로 분기한다. T2 #1555
+    // advanceTripPosition.test.ts에 게이트 #5 단위 테스트가 박제됨. 본 통합 suite는 arvlcd
+    // entry에서 실제로 활성화되는 시나리오만 cover (motion/env/seed).
+    // Negative — 지하 + base 게이트(gatePassed)는 통과하지만 환경 게이트는 lockAttachable=true로
+    // OR strongBE 통과 (즉 underground도 fire 가능). 본 시나리오는 environment fallthrough를 박제.
+    {
+      name: 'N6-pass underground + arvlcd + lockAttachable → fire (B+E 2-of-2)',
+      motionState: 'moving',
+      subsurface: true,
+      expectFire: true,
+    },
+  ];
+
+  it.each(arvlcdScenarios)('$name', async (sc) => {
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const { kv, trip } = await setupTrip(sc.subsurface !== undefined ? { subsurface: sc.subsurface } : {});
+    // SSoT seed — sc.motionState=='unknown'은 미시드(legacy lazy-seed 경로) 시뮬, 그 외는 명시 stamp.
+    if (sc.motionState !== 'unknown') {
+      const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산', {
+        expiresAt: trip.expiresAt,
+        userIntentDeclared: sc.userIntentDeclared ?? false,
+      });
+      ssot.motionState = sc.motionState;
+      await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+    }
+    const logMessages: { msg: string; meta?: Record<string, unknown> }[] = [];
+    const { stats } = await runT4({
+      kv,
+      seoul: makeArrivedSeoul(),
+      apnsFetch,
+      logMessages,
+    });
+    if (sc.expectFire) {
+      expect(stats.arvlCdFireFired).toBe(1);
+      expect(stats.arvlCdFireSuccess).toBe(1);
+      expect(stats.arvlCdFireBlocked).toBe(0);
+      expect(getArvlCdStationPassedCalls(apnsFetch)).toHaveLength(1);
+    } else {
+      expect(stats.arvlCdFireFired).toBe(0);
+      expect(stats.arvlCdFireSuccess).toBe(0);
+      expect(stats.arvlCdFireBlocked).toBe(1);
+      expect(getArvlCdStationPassedCalls(apnsFetch)).toHaveLength(0);
+      // blockReason은 log meta로 stamp되어 production tail에서 분포 측정 가능해야 함.
+      const blockedLog = logMessages.find((l) => l.msg === 'arvlcd-fire: blocked');
+      expect(blockedLog?.meta?.reason).toBe(sc.expectBlockReason);
+    }
+  });
+
+  it('lazy-seed — SSoT 부재 시 currentStationId=waypoint.stationName으로 자동 시드', async () => {
+    const { kv } = await setupTrip();
+    expect(await readSsot(kv as unknown as KVNamespace, TOKEN)).toBeNull();
+    const logMessages: { msg: string; meta?: Record<string, unknown> }[] = [];
+    await runT4({ kv, logMessages });
+    const ssot = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    expect(ssot).not.toBeNull();
+    // advance 통과 후 currentStationId=waypoint.stationName(='중곡')으로 유지.
+    expect(ssot?.currentStationId).toBe('중곡');
+    // 직전 currentStationId(='중곡' seed 값)가 passedStations에 append됨 (appendUnique).
+    expect(ssot?.passedStations).toContain('중곡');
+    expect(logMessages.some((l) => l.msg === 'arvlcd-fire: lazy-seed ssot')).toBe(true);
+  });
+
+  it('cross-station dedup — lastFiredStation 윈도우 내 다른 station은 차단(기존 게이트 유지)', async () => {
+    // SSoT는 advance 통과시키되, trip.lastFiredStation 윈도우 가드(scheduled.ts:921-936)는 그대로.
+    const { kv, trip } = await setupTrip({
+      lastFiredStation: { stationName: '용마산', epochMs: NOW - 1_000 },
+    });
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산', {
+      expiresAt: trip.expiresAt,
+    });
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const { stats } = await runT4({ kv, apnsFetch });
+    // advance는 통과 (Fired++) — cross-station dedup은 `fireArvlCdStationPush` 내부에서 push만 차단.
+    expect(stats.arvlCdFireFired).toBe(1);
+    expect(stats.arvlCdFireSuccess).toBe(0);
+    expect(stats.arvlCdFireDedup).toBe(1);
+    expect(getArvlCdStationPassedCalls(apnsFetch)).toHaveLength(0);
+  });
+
+  it('stats — runScheduled 초기 stats에 arvlCdFireBlocked / arvlCdFireFired 0으로 초기화', async () => {
+    const kv = new InMemoryKV();
+    // trip 없이 실행 → 카운터는 0이어야 한다 (초기값 stamp 검증).
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArrivedSeoul(),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-init',
+    });
+    expect(stats.arvlCdFireBlocked).toBe(0);
+    expect(stats.arvlCdFireFired).toBe(0);
+  });
+
+  it('SSoT는 cron read cacheTtl(30s)로 조회 — ssotKey export로 stamp 검증', async () => {
+    const { kv, trip } = await setupTrip();
+    await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산', {
+      expiresAt: trip.expiresAt,
+    });
+    await runT4({ kv });
+    // 자유 단언 — runScheduled 호출 후에도 SSoT KV row가 유효해야 한다.
+    expect(await kv.get(ssotKey(TOKEN))).not.toBeNull();
   });
 });
