@@ -791,6 +791,11 @@ export function arvlCdFireKey(
  * #640 회귀 차단: lock 없는 trip은 애초에 runTrainCodeTracking에 도달하지 못한다.
  * positions-fallback arrived(arvlCd=null)는 매역 알림 SSOT(arvlCd)와 다른 신호 →
  * mismatch로 분류해 push 미발사 + 운영 가시성 카운트.
+ *
+ * @deprecated ADR-017 T2 (#1555) — 본 게이트는 분산된 fire path 잔존 호출자 보존용. 신규 호출자는
+ *   `advanceTripPosition` (단일 mutation 진입점)을 사용해 6단 게이트(seed/motion/env/type/train
+ *   identity/lockless arvlcd 단독)를 전부 거치게 해야 한다. T4~T7 reader migration에서 호출자
+ *   교체가 완료되면 본 함수는 제거 예정.
  */
 export function evaluateArvlCdFireGate(
   lock: BoardingLockMeta | undefined,
