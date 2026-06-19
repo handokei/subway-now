@@ -30,6 +30,7 @@ import { clearLaDismissSentinel } from '../utils/laDismissSentinel';
 import { clearPrescheduledLedger } from '../utils/prescheduledMetrics';
 import { purgeBoardingLockSchedulerQueue } from '../utils/boardingLockScheduler';
 import { cancelTripBoundAlarms } from '../utils/tripBoundScheduler';
+import { clearTripCorrId } from '../../observability/utils/tripCorrId';
 
 // trip-bound storage cleanup 단일 출처.
 // useDestinationStore.setDestination이 isSwitch(목적지 변경 또는 null 클리어) 분기에서 호출한다.
@@ -84,6 +85,9 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // 새 trip 분모에 섞이는 회귀 차단. LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY는 recall과
   // 같은 이유로 보존 (tripStart값으로 자연 무효화).
   clearPrescheduledLedger,
+  // #1501 (ADR-015 §10 P5 / PR-A) — trip 종료 시 corrId 제거. 다음 trip은 새 corrId를
+  // 받고 rawSignalBuffer entry가 어느 trip 소속인지 명확해진다.
+  clearTripCorrId,
 ];
 
 /**

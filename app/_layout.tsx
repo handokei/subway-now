@@ -30,12 +30,27 @@ import { useLaunchTripReconciliation } from '../src/features/alarm/hooks/useLaun
 import { fetchArrivalInfo } from '../src/features/arrival/api/arrivalApi';
 import { FALLBACK_BOARDING_DURATION_MINUTES } from '../src/shared/constants/boardingLock';
 import { initSentryIfOptedIn } from '../src/shared/infra/monitoring/sentryInit';
+import { hydrateRawSignalBuffer } from '../src/features/observability/utils/rawSignalBuffer';
+import { getCurrentTripCorrId } from '../src/features/observability/utils/tripCorrId';
 
 const layoutLogger = createLogger('RootLayout');
 
 // #1038 — Sentry 에러 모니터링 init (default OFF, opt-in only).
 // fire-and-forget — boot path 비차단. UI 토글은 follow-up PR.
 initSentryIfOptedIn().catch((e) => layoutLogger.warn('Sentry init 실패(#1038):', e));
+
+// #1501 (ADR-015 §10 P5 / PR-A) — boot 시 device raw signal buffer 복원.
+// 강제종료 후 재시작에서도 마지막 ~120 entry가 살아남아 7일 회귀(2026-06-17 용마산)
+// 같은 cold-launch 사이 데이터 단절을 막는다. fire-and-forget — boot path 비차단.
+hydrateRawSignalBuffer().catch((e) =>
+  layoutLogger.warn('rawSignalBuffer hydrate 실패(#1501):', e),
+);
+// #1501 — trip corrId in-memory cache도 boot 시 storage에서 복원.
+// 강제종료 후 재진입 시 활성 trip이 살아있는데도 cache=null이면 첫 fusion cycle entries에
+// corrId가 박히지 않아 backend join이 깨진다(P2-2 review).
+getCurrentTripCorrId().catch((e) =>
+  layoutLogger.warn('tripCorrId hydrate 실패(#1501):', e),
+);
 
 SplashScreen.preventAutoHideAsync();
 setupNotificationHandler();

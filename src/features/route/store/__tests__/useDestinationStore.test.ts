@@ -10,6 +10,7 @@ import { useAlarmEventStore } from '../../../alarm/store/useAlarmEventStore';
 import { Station } from '../../../../shared/types/station';
 import { setTripStartedAt } from '../../../alarm/utils/tripStartStorage';
 import { triggerTripEndRecall } from '../../../alarm/utils/triggerTripEndRecall';
+import { setTripCorrId, generateTripCorrId } from '../../../observability/utils/tripCorrId';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'),
@@ -22,6 +23,22 @@ jest.mock('../../../alarm/utils/tripStartStorage', () => ({
 }));
 jest.mock('../../../alarm/utils/triggerTripEndRecall', () => ({
   triggerTripEndRecall: jest.fn().mockResolvedValue({ uploaded: false }),
+}));
+// #1501 (PR-A) — trip 시작 시 corrId 생성 wiring 검증용 mock.
+jest.mock('../../../observability/utils/tripCorrId', () => ({
+  generateTripCorrId: jest.fn(() => 'cid-test-1700000000000-deadbeef'),
+  setTripCorrId: jest.fn().mockResolvedValue(undefined),
+  clearTripCorrId: jest.fn().mockResolvedValue(undefined),
+}));
+// expo-notifications mock — cancelTripBoundAlarms가 getAllScheduledNotificationsAsync()를
+// 호출하는데 native module이 undefined를 반환하면 `.map()`에서 process crash. 빈 큐로 graceful.
+jest.mock('expo-notifications', () => ({
+  getAllScheduledNotificationsAsync: jest.fn().mockResolvedValue([]),
+  cancelScheduledNotificationAsync: jest.fn().mockResolvedValue(undefined),
+  dismissNotificationAsync: jest.fn().mockResolvedValue(undefined),
+  scheduleNotificationAsync: jest.fn().mockResolvedValue('id'),
+  addPushTokenListener: jest.fn(() => ({ remove: jest.fn() })),
+  setNotificationHandler: jest.fn(),
 }));
 
 const mockAddDomainBreadcrumb = jest.fn();
@@ -66,6 +83,8 @@ describe('useDestinationStore', () => {
     // Promise를 반환하지 않으면 setDestination의 .then chain이 깨진다. 기본 impl 복구.
     (triggerTripEndRecall as jest.Mock).mockResolvedValue({ uploaded: false });
     (setTripStartedAt as jest.Mock).mockResolvedValue(undefined);
+    (setTripCorrId as jest.Mock).mockResolvedValue(undefined);
+    (generateTripCorrId as jest.Mock).mockReturnValue('cid-test-1700000000000-deadbeef');
   });
 
   // ── destination ──
@@ -333,8 +352,9 @@ describe('useDestinationStore', () => {
     const setItemImpl = (AsyncStorage.setItem as jest.Mock).getMockImplementation();
     const removeItemImpl = (AsyncStorage.removeItem as jest.Mock).getMockImplementation();
     (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('저장 실패'));
-    // setDestination(null) switch: DESTINATION + fired + route + customOrigin + lock + scheduled + active-trip + TRIP_ORIGIN = 8 removeItem
-    for (let i = 0; i < 8; i++) {
+    // setDestination(null) switch: trip-bound cleanup의 모든 removeItem이 실패해도 graceful해야.
+    // tripBoundCleanups에 키 추가 시 카운트 fragility를 피하기 위해 충분히 큰 N(20)으로 queue.
+    for (let i = 0; i < 20; i++) {
       (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('삭제 실패'));
     }
 
@@ -767,6 +787,33 @@ describe('useDestinationStore', () => {
 
     expect(triggerMock).not.toHaveBeenCalled();
     expect(setTripStartedAtMock).not.toHaveBeenCalled();
+  });
+
+  // ── #1501 (PR-A) — trip start 시 corrId 생성 wire-up ──
+
+  it('setDestination(#1501): switch(prev=null→station) 시 setTripCorrId가 호출된다 (chain 밖 fire-and-forget)', () => {
+    (setTripCorrId as jest.Mock).mockClear();
+    (generateTripCorrId as jest.Mock).mockClear();
+    useDestinationStore.getState().setDestination(mockStation);
+    // sync 분기 — chain 밖이므로 microtask flush 없이도 fire.
+    expect(generateTripCorrId).toHaveBeenCalledTimes(1);
+    expect(setTripCorrId).toHaveBeenCalledWith('cid-test-1700000000000-deadbeef');
+  });
+
+  it('setDestination(#1501): null로 종료 시 setTripCorrId 호출 안 됨 (cleanup이 clear 담당)', async () => {
+    useDestinationStore.setState({ destination: mockStation });
+    (setTripCorrId as jest.Mock).mockClear();
+    useDestinationStore.getState().setDestination(null);
+    await flushMicrotasks();
+    expect(setTripCorrId).not.toHaveBeenCalled();
+  });
+
+  it('setDestination(#1501): 같은 destination 재설정 시 setTripCorrId 호출 안 됨', async () => {
+    useDestinationStore.setState({ destination: mockStation });
+    (setTripCorrId as jest.Mock).mockClear();
+    useDestinationStore.getState().setDestination(mockStation);
+    await flushMicrotasks();
+    expect(setTripCorrId).not.toHaveBeenCalled();
   });
 
   it('setDestination(#919): trigger가 reject해도 setDestination 흐름은 영향 없음 (graceful)', async () => {
