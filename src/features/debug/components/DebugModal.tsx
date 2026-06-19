@@ -60,6 +60,14 @@ import {
   subscribeFusionDebug,
   type FusionDebugEntry,
 } from '../../../features/nearest-station/utils/fusionDebugBuffer';
+// #1540 (S7) — gps-drop 전용 buffer. fusionDebugBuffer와 cap을 공유하지 않아 fire-related
+// entry(fusion decision / sticky / gps-fix)를 점령하지 않는다.
+import {
+  clearGpsDropEntries,
+  getGpsDropEntries,
+  subscribeGpsDrop,
+  type GpsDropEntry,
+} from '../../../features/nearest-station/utils/gpsDropBuffer';
 // #1518 — device → backend HTTP 호출 ring buffer. 모든 backend fetch chokepoint가 entry를 push.
 import {
   clearBackendCallEntries,
@@ -525,6 +533,11 @@ interface BuildDumpArgs {
    * 단위 테스트에서 raw signal을 다루지 않는 경우 호환.
    */
   rawSignalLog?: readonly RawSignalEntry[];
+  /**
+   * #1540 (S7) — GPS drop ring buffer entries. 미전달/빈 배열은 (empty)로 출력.
+   * fusionDebugBuffer와 분리된 채널이라 dump에서도 별도 섹션으로 노출한다.
+   */
+  gpsDropLog?: readonly GpsDropEntry[];
 }
 
 /** dump 본체에서 사용하는 single builder 시그니처 — 본문 줄 배열을 반환. */
@@ -713,6 +726,23 @@ function buildFusionLogSection(args: BuildDumpArgs): string[] {
   if (entries.length === 0) return ['(empty)'];
   // 최신이 위로 — Alarm log와 동일 정렬.
   return [...entries].reverse().map(formatFusionDebugLine);
+}
+
+/**
+ * #1540 (S7) — gps-drop 한 줄 포맷. Fusion log와 동일 컨벤션(HH:MM:SS | … ).
+ * acc/speed/reason만 노출 — drop entry는 nearestStation 결정 전 단계이므로 station 컬럼 없음.
+ */
+function formatGpsDropLine(entry: GpsDropEntry): string {
+  const time = formatTime(entry.ts);
+  const acc = entry.accuracyMeters == null ? '-' : `${Math.round(entry.accuracyMeters)}m`;
+  const sp = entry.speedMps == null ? '-' : `${entry.speedMps.toFixed(1)}m/s`;
+  return `${time} | gps-drop | acc=${acc} sp=${sp} reason=${entry.dropReason}`;
+}
+
+function buildGpsDropLogSection(args: BuildDumpArgs): string[] {
+  const entries = args.gpsDropLog ?? [];
+  if (entries.length === 0) return ['(empty)'];
+  return [...entries].reverse().map(formatGpsDropLine);
 }
 
 /**
@@ -1067,6 +1097,12 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     build: buildFusionLogSection,
     suffix: (args) => ` (${args.fusionLog?.length ?? 0})`,
   },
+  // #1540 (S7) — gps-drop 채널. fusionDebugBuffer 점령 회귀 차단용 별 buffer를 dump에 그대로 노출.
+  {
+    title: 'GPS drops',
+    build: buildGpsDropLogSection,
+    suffix: (args) => ` (${args.gpsDropLog?.length ?? 0})`,
+  },
   // #1518 — device → backend HTTP 호출 ring buffer. 직전 trip의 register/sync/telemetry 호출
   // 흔적이 dump만 보고 재구성 가능해야 #622 transfer-leg sync 같은 회귀 진단이 가능하다.
   {
@@ -1339,6 +1375,10 @@ function DebugModalInner({
   const [fusionLogs, setFusionLogs] = useState<readonly FusionDebugEntry[]>(() =>
     getFusionDebugEntries(),
   );
+  // #1540 (S7) — gps-drop ring buffer. fusionLogs와 동일 패턴(snapshot + subscribe + clear button).
+  const [gpsDropLogs, setGpsDropLogs] = useState<readonly GpsDropEntry[]>(() =>
+    getGpsDropEntries(),
+  );
   const [estimatorLogs, setEstimatorLogs] = useState<readonly EstimatorDebugEntry[]>(() =>
     getEstimatorEntries(),
   );
@@ -1368,6 +1408,11 @@ function DebugModalInner({
 
   useEffect(() => {
     return subscribeFusionDebug(() => setFusionLogs([...getFusionDebugEntries()]));
+  }, []);
+
+  // #1540 (S7) — gps-drop buffer 구독. push/clear 어느 쪽이든 같은 listener로 반응.
+  useEffect(() => {
+    return subscribeGpsDrop(() => setGpsDropLogs([...getGpsDropEntries()]));
   }, []);
 
   useEffect(() => {
@@ -1457,6 +1502,8 @@ function DebugModalInner({
       sleep,
       // #1346 — fusion log entries를 share에 포함. sticky cascade 같은 회귀 사후 재구성용.
       fusionLog: fusionLogs,
+      // #1540 (S7) — gps-drop entries를 share에 포함. 별 buffer라 fusion log와 동시 dump.
+      gpsDropLog: gpsDropLogs,
       // #1413 — UI에만 노출되던 BoardingLock/Estimator/Boarding Prompt(+Acceptance)/Counters를 share에 포함.
       boardingLock: lock,
       estimatorLog: estimatorLogs,
@@ -1502,6 +1549,8 @@ function DebugModalInner({
     sleep,
     // #1346 — fusion log 신규 캡쳐.
     fusionLogs,
+    // #1540 (S7) — gps-drop entries 변경 시 share 텍스트 자동 갱신.
+    gpsDropLogs,
     // #1413 — BoardingLock/Estimator 신규 캡쳐.
     lock,
     estimatorLogs,
@@ -1735,6 +1784,20 @@ function DebugModalInner({
             }}
             clearTestId="debug-fusion-log-clear"
             entryTestId="debug-fusion-log-entry"
+            colors={colors}
+          />
+
+          {/* #1540 (S7) — gps-drop 별 buffer. fusion log cap 점령 회귀 차단용 별 채널 표시. */}
+          <DebugLogSection
+            title="GPS drops"
+            logs={gpsDropLogs}
+            formatLine={formatGpsDropLine}
+            onClear={() => {
+              clearGpsDropEntries();
+              setGpsDropLogs([]);
+            }}
+            clearTestId="debug-gps-drop-log-clear"
+            entryTestId="debug-gps-drop-log-entry"
             colors={colors}
           />
 
@@ -2214,6 +2277,9 @@ export const __test__ = {
   // #1501 — PR-C. Raw signal 라인 포맷 helper. share dump 단위 테스트에서 직접 호출.
   formatRawSignalLine,
   RAW_SIGNAL_DISPLAY_LIMIT,
+  // #1540 (S7) — gps-drop 별 buffer 포맷/섹션. 단위 테스트에서 직접 호출.
+  formatGpsDropLine,
+  buildGpsDropLogSection,
 };
 
 const styles = StyleSheet.create({

@@ -28,6 +28,7 @@ import {
 } from '../../../shared/constants/gpsStatus';
 import { createLogger } from '../../../shared/utils/logger';
 import { pushFusionDebugEntry } from '../utils/fusionDebugBuffer';
+import { pushGpsDropEntry } from '../utils/gpsDropBuffer';
 import { haversine } from '../../../shared/utils/haversine';
 import { useStickyStation } from './useStickyStation';
 
@@ -218,11 +219,16 @@ export function useNearestStation(
   // (84+건/5분 → React reconcile 폭주, AsyncStorage write 부담). 직전 drop과 lat/lng/accuracy가
   // 모두 동일하면 skip한다. 진단성은 rate-limit summary로 보존(아래 lastDropWindowRef).
   const lastDropRef = useRef<{ lat: number; lng: number; acc: number | null } | null>(null);
-  // #1516: rate limit — 1초 윈도우 내 GPS_DROP_PER_SEC_LIMIT 건 이상이면 추가 push skip + 1건
-  // "rate-limited" summary 기록. 정상 trip에서 N≤10/분 보장. count 0은 윈도우 idle 신호.
-  const lastDropWindowRef = useRef<{ windowStart: number; count: number; skipped: number }>({
-    windowStart: 0,
-    count: 0,
+  // #1516 + #1540 (S7): rate limit — sliding 1초 윈도우. 직전 push 시각 배열을 들고, 새 drop이
+  // 들어올 때마다 1초보다 오래된 시각을 trim한 뒤 남은 개수가 GPS_DROP_PER_SEC_LIMIT 미만일 때만 push.
+  //
+  // 이전 구현(fixed window)은 `windowStart` 이후 1초가 경과하면 `count`/`skipped`를 reset하는 트랩이
+  // 있었다 — drop이 1초보다 살짝 길게 spaced 도착하면 매번 윈도우가 reset되어 실효 한도가 ~2건/1.x초로
+  // 풀려 cap 점령을 막지 못했다. 슬라이딩 윈도우는 직전 1초 동안의 실제 push 수만 본다.
+  //
+  // 작은 고정 ring buffer(limit + 1 슬롯)로 들고 있어 매 fix마다 GC 압박 없이 O(limit)로 trim.
+  const lastDropWindowRef = useRef<{ timestamps: number[]; skipped: number }>({
+    timestamps: [],
     skipped: 0,
   });
 
@@ -393,47 +399,49 @@ export function useNearestStation(
               prevDrop.lng === lng &&
               prevDrop.acc === acc;
             if (sameAsPrev) return;
-            // #1516 dedup gate 2: 1초 윈도우 rate limit. limit 초과 시 skipped 누적.
+            // #1516 + #1540 (S7) dedup gate 2: 슬라이딩 1초 윈도우 rate limit.
+            // 직전 1초보다 오래된 timestamp를 trim한 뒤 남은 push 수가 limit 미만이면 push.
+            // limit 도달 시 skipped 누적 — 다음 push 시점에 summary 1건으로 흡수해 drop 가시성 보존.
+            // #1540: gps-drop entry는 fusionDebugBuffer가 아니라 gpsDropBuffer로 분리해
+            // fire-related entry(fusion decision / sticky / gps-fix)가 점령되지 않게 한다.
             const now = Date.now();
             const win = lastDropWindowRef.current;
-            if (now - win.windowStart >= GPS_DROP_WINDOW_MS) {
-              // 윈도우 마감 — skipped > 0이면 summary 1건 push.
-              if (win.skipped > 0) {
-                pushFusionDebugEntry({
-                  kind: 'gps',
-                  event: 'gps-drop',
-                  ts: now,
-                  lat,
-                  lng,
-                  accuracyMeters: acc,
-                  speedMps: isValidGpsSpeedMps(dropSpeed) ? dropSpeed : null,
-                  nearestStation: null,
-                  nearestLine: null,
-                  nearestDistanceKm: null,
-                  dropReason: `rate-limited:${win.skipped}`,
-                });
-              }
-              win.windowStart = now;
-              win.count = 0;
-              win.skipped = 0;
+            const cutoff = now - GPS_DROP_WINDOW_MS;
+            // 슬라이딩 윈도우 trim — 가장 오래된 entry부터 cutoff 이전이면 제거.
+            while (win.timestamps.length > 0 && win.timestamps[0] <= cutoff) {
+              win.timestamps.shift();
             }
-            if (win.count >= GPS_DROP_PER_SEC_LIMIT) {
+            if (win.timestamps.length >= GPS_DROP_PER_SEC_LIMIT) {
               win.skipped += 1;
               return;
             }
-            win.count += 1;
+            // 윈도우 capacity 여유 있음 → push. 직전 skipped > 0이면 summary 1건 먼저 push.
+            if (win.skipped > 0) {
+              pushGpsDropEntry({
+                ts: now,
+                lat,
+                lng,
+                accuracyMeters: acc,
+                speedMps: isValidGpsSpeedMps(dropSpeed) ? dropSpeed : null,
+                dropReason: `rate-limited:${win.skipped}`,
+              });
+              // summary도 rate에 포함시켜 limit 내에 머무르게 한다.
+              win.timestamps.push(now);
+              win.skipped = 0;
+              if (win.timestamps.length >= GPS_DROP_PER_SEC_LIMIT) {
+                // summary로 limit 소진 — 본 drop은 다음 윈도우로 미룬다.
+                win.skipped = 1;
+                return;
+              }
+            }
+            win.timestamps.push(now);
             lastDropRef.current = { lat, lng, acc };
-            pushFusionDebugEntry({
-              kind: 'gps',
-              event: 'gps-drop',
+            pushGpsDropEntry({
               ts: now,
               lat,
               lng,
               accuracyMeters: acc,
               speedMps: isValidGpsSpeedMps(dropSpeed) ? dropSpeed : null,
-              nearestStation: null,
-              nearestLine: null,
-              nearestDistanceKm: null,
               dropReason: 'low-accuracy-display',
             });
             return;

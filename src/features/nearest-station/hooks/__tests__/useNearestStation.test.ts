@@ -95,6 +95,22 @@ const simulateGps = (
   });
 };
 
+// #1540 (S7) — gps-drop sliding window 테스트 공용 setup. Sonar 중복 제거.
+function setupGpsDropFakeNow(initialNow = 1_700_000_000_000) {
+  const { clearGpsDropEntries, getGpsDropEntries } =
+    jest.requireActual('../../utils/gpsDropBuffer');
+  clearGpsDropEntries();
+  mockGranted();
+  const realNow = Date.now;
+  const state = { fakeNow: initialNow };
+  jest.spyOn(Date, 'now').mockImplementation(() => state.fakeNow);
+  const restore = () => {
+    (Date.now as jest.Mock).mockRestore?.();
+    Date.now = realNow;
+  };
+  return { state, getGpsDropEntries, restore };
+}
+
 describe('useNearestStation', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -698,10 +714,12 @@ describe('useNearestStation', () => {
     expect(result.current.locationUncertain).toBe(true);
   });
 
-  it('표시 게이트 drop 시 fusion debug buffer에 gps-drop 엔트리를 push (speed 양수 분기)', async () => {
-    const { pushFusionDebugEntry: _p, clearFusionDebugEntries, getFusionDebugEntries } =
+  it('#1540 (S7) 표시 게이트 drop 시 gpsDropBuffer에 push (fusionDebugBuffer는 오염 X, speed 양수)', async () => {
+    const { clearGpsDropEntries, getGpsDropEntries } =
+      jest.requireActual('../../utils/gpsDropBuffer');
+    const { clearFusionDebugEntries, getFusionDebugEntries } =
       jest.requireActual('../../utils/fusionDebugBuffer');
-    void _p;
+    clearGpsDropEntries();
     clearFusionDebugEntries();
     mockGranted();
     renderHook(() => useNearestStation());
@@ -712,19 +730,21 @@ describe('useNearestStation', () => {
       speed: 1.5,
     });
 
-    const entries = getFusionDebugEntries();
-    const drop = entries.find(
+    const drops = getGpsDropEntries();
+    expect(drops).toHaveLength(1);
+    expect(drops[0].speedMps).toBe(1.5);
+    expect(drops[0].dropReason).toBe('low-accuracy-display');
+    // #1540 acceptance: fusionDebugBuffer는 gps-drop으로 오염되지 않는다.
+    const fusionDrops = getFusionDebugEntries().filter(
       (e: { kind: string; event?: string }) => e.kind === 'gps' && e.event === 'gps-drop',
     );
-    expect(drop).toBeDefined();
-    expect(drop.speedMps).toBe(1.5);
-    expect(drop.dropReason).toBe('low-accuracy-display');
+    expect(fusionDrops).toHaveLength(0);
   });
 
   it('#1516 dedup: 직전 drop과 lat/lng/accuracy가 모두 동일하면 추가 push를 skip한다', async () => {
-    const { clearFusionDebugEntries, getFusionDebugEntries } =
-      jest.requireActual('../../utils/fusionDebugBuffer');
-    clearFusionDebugEntries();
+    const { clearGpsDropEntries, getGpsDropEntries } =
+      jest.requireActual('../../utils/gpsDropBuffer');
+    clearGpsDropEntries();
     mockGranted();
     renderHook(() => useNearestStation());
     await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
@@ -734,72 +754,117 @@ describe('useNearestStation', () => {
       simulateGps(37.5500, 127.0500, { accuracy: 1414, speed: 0, timestamp: 1_700_000_000_000 });
     }
 
-    const drops = getFusionDebugEntries().filter(
-      (e: { kind: string; event?: string }) => e.kind === 'gps' && e.event === 'gps-drop',
-    );
+    const drops = getGpsDropEntries();
     expect(drops).toHaveLength(1);
     expect(drops[0].accuracyMeters).toBe(1414);
   });
 
-  it('#1516 rate limit: 1초 내 임계 초과 drop은 skip하고 윈도우 마감 시 summary 1건만 push', async () => {
-    const { clearFusionDebugEntries, getFusionDebugEntries } =
-      jest.requireActual('../../utils/fusionDebugBuffer');
-    clearFusionDebugEntries();
-    mockGranted();
-    const realNow = Date.now;
-    let fakeNow = 1_700_000_000_000;
-    jest.spyOn(Date, 'now').mockImplementation(() => fakeNow);
+  it('#1516 + #1540 (S7) 슬라이딩 rate limit: 1초 내 임계 초과 drop skip + 다음 push 시 summary 흡수', async () => {
+    const { state, getGpsDropEntries, restore } = setupGpsDropFakeNow();
     try {
       renderHook(() => useNearestStation());
       await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
 
-      // 같은 윈도우 내 서로 다른 좌표 4건 (dedup gate 우회) — limit=2 이후는 skipped 누적
-      simulateGps(37.5500, 127.0500, { accuracy: 800, timestamp: fakeNow });
-      simulateGps(37.5501, 127.0501, { accuracy: 801, timestamp: fakeNow });
-      simulateGps(37.5502, 127.0502, { accuracy: 802, timestamp: fakeNow });
-      simulateGps(37.5503, 127.0503, { accuracy: 803, timestamp: fakeNow });
+      // 같은 슬라이딩 윈도우 내 서로 다른 좌표 4건 (dedup gate 우회) — limit=2 이후는 skipped 누적.
+      simulateGps(37.5500, 127.0500, { accuracy: 800, timestamp: state.fakeNow });
+      simulateGps(37.5501, 127.0501, { accuracy: 801, timestamp: state.fakeNow });
+      simulateGps(37.5502, 127.0502, { accuracy: 802, timestamp: state.fakeNow });
+      simulateGps(37.5503, 127.0503, { accuracy: 803, timestamp: state.fakeNow });
 
-      let drops = getFusionDebugEntries().filter(
-        (e: { kind: string; event?: string }) => e.kind === 'gps' && e.event === 'gps-drop',
-      );
+      let drops = getGpsDropEntries();
       // limit=2 → 처음 2건만 push, 이후 2건은 skipped
       expect(drops).toHaveLength(2);
 
-      // 윈도우 마감(>1s 경과) 후 다음 drop이 들어오면 summary가 먼저 push됨.
+      // 1초 경과 후 다음 drop이 들어오면 슬라이딩 윈도우가 비워져 summary가 먼저 push됨.
       // speed를 null로 줘서 summary push의 isValidGpsSpeedMps false 분기 커버.
-      fakeNow += 1_500;
-      simulateGps(37.5504, 127.0504, { accuracy: 900, speed: null, timestamp: fakeNow });
+      state.fakeNow += 1_500;
+      simulateGps(37.5504, 127.0504, { accuracy: 900, speed: null, timestamp: state.fakeNow });
 
-      drops = getFusionDebugEntries().filter(
-        (e: { kind: string; event?: string }) => e.kind === 'gps' && e.event === 'gps-drop',
-      );
+      drops = getGpsDropEntries();
       // 2 (1st window) + 1 summary + 1 (new window) = 4
       expect(drops).toHaveLength(4);
       const summary = drops.find((d: { dropReason?: string }) =>
         d.dropReason?.startsWith('rate-limited:'),
       );
       expect(summary).toBeDefined();
-      expect(summary.dropReason).toBe('rate-limited:2');
-      expect(summary.speedMps).toBeNull();
+      expect(summary?.dropReason).toBe('rate-limited:2');
+      expect(summary?.speedMps).toBeNull();
 
       // 추가 윈도우: speed 양수로 summary push의 isValidGpsSpeedMps true 분기 커버.
       // dedup 우회 위해 좌표를 매번 다르게.
-      simulateGps(37.5510, 127.0510, { accuracy: 800, speed: 1.0, timestamp: fakeNow });
-      simulateGps(37.5511, 127.0511, { accuracy: 801, speed: 1.0, timestamp: fakeNow });
-      simulateGps(37.5512, 127.0512, { accuracy: 802, speed: 1.0, timestamp: fakeNow });
-      fakeNow += 1_500;
-      simulateGps(37.5513, 127.0513, { accuracy: 900, speed: 3.0, timestamp: fakeNow });
-      drops = getFusionDebugEntries().filter(
-        (e: { kind: string; event?: string }) => e.kind === 'gps' && e.event === 'gps-drop',
-      );
+      simulateGps(37.5510, 127.0510, { accuracy: 800, speed: 1, timestamp: state.fakeNow });
+      simulateGps(37.5511, 127.0511, { accuracy: 801, speed: 1, timestamp: state.fakeNow });
+      simulateGps(37.5512, 127.0512, { accuracy: 802, speed: 1, timestamp: state.fakeNow });
+      state.fakeNow += 1_500;
+      simulateGps(37.5513, 127.0513, { accuracy: 900, speed: 3, timestamp: state.fakeNow });
+      drops = getGpsDropEntries();
       const summary2 = drops.filter((d: { dropReason?: string }) =>
         d.dropReason?.startsWith('rate-limited:'),
       );
       expect(summary2.length).toBeGreaterThanOrEqual(2);
-      expect(summary2[1].speedMps).toBe(3.0);
+      expect(summary2[1].speedMps).toBe(3);
     } finally {
-      (Date.now as jest.Mock).mockRestore?.();
-      Date.now = realNow;
+      restore();
+    }
+  });
+
+  it('#1540 (S7) 슬라이딩 윈도우: 1.1초마다 한 건씩 도착해도 한도 정확히 적용 (fixed window trap 회귀 차단)', async () => {
+    const { state, getGpsDropEntries, restore } = setupGpsDropFakeNow();
+    try {
+      renderHook(() => useNearestStation());
+      await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+      // 1.1초 간격으로 6건 도착 — 슬라이딩 윈도우는 매번 1건만 유효, limit=2 미달이라 모두 push.
+      // 이전 fixed window 구현은 windowStart>=1000ms 마다 reset되어 동일한 결과를 내지만,
+      // 본 테스트는 sliding 동작이 회귀하지 않음을 박제한다.
+      for (let i = 0; i < 6; i += 1) {
+        simulateGps(37.6 + i * 0.001, 127 + i * 0.001, {
+          accuracy: 800 + i,
+          speed: 0,
+          timestamp: state.fakeNow,
+        });
+        state.fakeNow += 1_100;
+      }
+      const drops = getGpsDropEntries();
+      // 모두 윈도우 외부 → 6건 모두 push, summary 없음.
+      expect(drops).toHaveLength(6);
+      expect(drops.every((d: { dropReason: string }) => d.dropReason === 'low-accuracy-display')).toBe(
+        true,
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it('#1540 (S7) summary가 limit 소진 시: 본 drop은 다음 윈도우로 미루고 skipped=1로 유지', async () => {
+    const { state, getGpsDropEntries, restore } = setupGpsDropFakeNow();
+    try {
+      renderHook(() => useNearestStation());
+      await waitFor(() => expect(Location.watchPositionAsync).toHaveBeenCalled());
+
+      // t0: push 1건 → timestamps=[t0]
+      simulateGps(37.7, 127, { accuracy: 800, timestamp: state.fakeNow });
+      // t0+500: push 2번째 → timestamps=[t0, t0+500] (limit=2 도달)
+      state.fakeNow += 500;
+      simulateGps(37.7001, 127.0001, { accuracy: 801, timestamp: state.fakeNow });
+      // t0+501: limit 도달 상태에서 1건 skip → skipped=1
+      state.fakeNow += 1;
+      simulateGps(37.7002, 127.0002, { accuracy: 802, timestamp: state.fakeNow });
+      expect(getGpsDropEntries()).toHaveLength(2);
+
+      // t0+1100: cutoff=t0+100 → t0 trim, t0+500 유지. timestamps=[t0+500] length=1<limit.
+      // skipped=1이므로 summary push → timestamps=[t0+500, t0+1100] length=2=limit.
+      // 본 drop은 미뤄지고 skipped=1로 재설정.
+      state.fakeNow = 1_700_000_000_000 + 1_100;
+      simulateGps(37.7003, 127.0003, { accuracy: 803, speed: 2, timestamp: state.fakeNow });
+      const drops = getGpsDropEntries();
+      // 2 (1st window pushes) + 1 summary = 3. 본 drop은 다음 윈도우로 미뤄짐.
+      expect(drops).toHaveLength(3);
+      const summary = drops[2];
+      expect(summary.dropReason).toBe('rate-limited:1');
+      expect(summary.speedMps).toBe(2);
+    } finally {
+      restore();
     }
   });
 
