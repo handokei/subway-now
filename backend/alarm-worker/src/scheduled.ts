@@ -10,6 +10,7 @@ import {
   sendSilentPush,
   type ApnsConfig,
   type PushOrigin,
+  type SilentPushPayload,
 } from './apns';
 import { flipApnsEnv, pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import {
@@ -51,6 +52,11 @@ import { deleteProgress, getProgress, putProgress, type TripProgress } from './p
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import { listTrips, putTrip } from './trips';
+import {
+  readSsot,
+  SSOT_CRON_READ_CACHE_TTL_SEC,
+  type TripPositionSSoT,
+} from './tripPositionSsot';
 import type {
   ApnsEnv,
   BoardingLockMeta,
@@ -833,11 +839,46 @@ interface BuildStationPassedImminentPayloadInputs {
    * lock을 release하지 않으므로 undefined.
    */
   lockReleasedReason?: 'transfer' | 'vanish';
+  /**
+   * #1561 (T8, ADR-017 / S2 #1535 흡수) — backend가 보유한 TripPositionSSoT 권위 스냅샷.
+   *
+   * 정의된 경우 silent push payload에 `ssot` 필드로 forward → device cascade picker가 `backend-ssot`
+   * tier(최상위)로 채택. 미전달(undefined) 시 payload에서 자연 누락 → device는 기존 cascade fallback.
+   *
+   * SSoT는 caller가 `readSsot(env.TRIPS, trip.token, { cacheTtl: CRON_READ_CACHE_TTL_SEC })`로
+   * 로드해 전달. read 실패 시 undefined를 그대로 전달해 wire에서 자연 누락하는 정책 — backend SSoT가
+   * 부재한 trip(seed 전 / KV race)도 push 발사 자체는 막지 않는다(graceful).
+   */
+  ssot?: TripPositionSSoT | null;
 }
+/**
+ * #1561 (T8) — silent push payload에 forward되는 SSoT 스냅샷의 passedStations 최근 N개 한도.
+ * 4호선 전 구간(40+ 역) 같은 긴 trip에서도 payload 크기 폭주 차단. device는 자체 누적 + 본 forward로
+ * 짧은 history만 cross-check.
+ */
+const SSOT_FORWARD_PASSED_STATIONS_MAX = 5;
+
+/**
+ * #1561 (T8) — `TripPositionSSoT`를 silent push payload에 forward할 수 있는 `SilentPushSsotPayload`
+ * 형태로 축소. null/undefined는 그대로 통과시켜 caller가 wire 자연 누락 분기를 단순화.
+ */
+export function toSilentPushSsot(
+  ssot: TripPositionSSoT | null | undefined,
+): SilentPushPayload['ssot'] {
+  if (ssot == null) return undefined;
+  return {
+    currentStationId: ssot.currentStationId,
+    motionState: ssot.motionState,
+    lastAdvanceEvidence: ssot.lastAdvanceEvidence,
+    lastAdvanceAt: ssot.lastAdvanceAt,
+    passedStations: ssot.passedStations.slice(-SSOT_FORWARD_PASSED_STATIONS_MAX),
+  };
+}
+
 function buildStationPassedImminentPayload(
   inputs: BuildStationPassedImminentPayloadInputs,
 ): Parameters<typeof sendSilentPush>[0]['payload'] {
-  const { trip, waypoint, lock, pushId, now, origin, lockReleasedReason } = inputs;
+  const { trip, waypoint, lock, pushId, now, origin, lockReleasedReason, ssot } = inputs;
   return {
     nextWaypoint: waypoint.stationName,
     // arvlCd∈{0,1}은 "지금 진입/도착" 신호 — eta는 사실상 0. vanish-fallback도 동일 의미.
@@ -871,6 +912,10 @@ function buildStationPassedImminentPayload(
     // #1539 (S6) — backend 누적 passedStations forward. 빈 배열/undefined는 apns.ts JSON
     // serializer가 자연 누락. device backfill diff(S5 후속 wiring PR)에서 사용.
     passedStations: trip.passedStations,
+    // #1561 (T8, ADR-017 / S2 흡수) — TripPositionSSoT 권위 forward. null/undefined는 apns.ts JSON
+    // serializer가 자연 누락 → device cascade picker는 기존 tier fallback. caller가 SSoT를 읽어
+    // 명시 전달. payload size 폭주 차단 위해 passedStations는 최근 5개로 잘려 forward된다.
+    ssot: toSilentPushSsot(ssot),
   };
 }
 
@@ -948,6 +993,12 @@ export async function fireArvlCdStationPush(
     arvlCd,
     kind: waypoint.kind,
   });
+  // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷을 읽어 payload로 forward.
+  // read 실패/null은 그대로 forward → wire에서 자연 누락(graceful). cacheTtl=30s는 다른 cron read와
+  // 동일 ([[lesson_cron_cachettl_runtime_constraint]]).
+  const ssot = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
   const heal = await sendWithEnvHeal(
     (host) =>
       sendSilentPush({
@@ -959,6 +1010,7 @@ export async function fireArvlCdStationPush(
           pushId,
           now,
           origin: 'arvlcd',
+          ssot,
         }),
         config: deps.apnsConfig,
         host,
@@ -1090,6 +1142,10 @@ export async function fireVanishFallbackStationPush(
   // release하므로 device에 `lockReleasedReason='vanish'`를 forward해 store sync. vanish-fallback은
   // 직후 `advanceBoardingLockWaypoint`로 흘러가 그 함수가 transfer 시 별도로 release를 통지한다.
   const lockReleasedReason: 'vanish' | undefined = origin === 'vanish-release' ? 'vanish' : undefined;
+  // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward (arvlcd-fire와 동일 패턴).
+  const ssot = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
   const heal = await sendWithEnvHeal(
     (host) =>
       sendSilentPush({
@@ -1102,6 +1158,7 @@ export async function fireVanishFallbackStationPush(
           now,
           origin,
           lockReleasedReason,
+          ssot,
         }),
         config: deps.apnsConfig,
         host,
@@ -1581,6 +1638,10 @@ export async function advanceBoardingLockWaypoint(
   // payload.lockReleasedReason='transfer'가 우선 처리돼 store sync 후 본 처리 흐름을 그대로 진행한다.
   if (lockReleasedOnTransfer && releasedLockSnapshot !== undefined) {
     const pushId = crypto.randomUUID();
+    // #1561 (T8, ADR-017 / S2 흡수) — transfer-release fire 직전 SSoT 권위 스냅샷 forward.
+    const ssotForTransfer = await readSsot(env.TRIPS, trip.token, {
+      cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+    });
     await sendWithEnvHeal(
       (host) =>
         sendSilentPush({
@@ -1593,6 +1654,7 @@ export async function advanceBoardingLockWaypoint(
             now,
             origin: 'transfer-release',
             lockReleasedReason: 'transfer',
+            ssot: ssotForTransfer,
           }),
           config: deps.apnsConfig,
           host,
@@ -1995,6 +2057,10 @@ export async function runLocklessIntermediate(
     arvlCd: signal.arvlCd,
     etaSeconds: signal.etaSeconds,
   });
+  // #1561 (T8, ADR-017 / S2 흡수) — lockless fire 직전 SSoT 권위 스냅샷 forward.
+  const locklessSsot = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
   const heal = await sendWithEnvHeal(
     (host) =>
       sendSilentPush({
@@ -2023,6 +2089,10 @@ export async function runLocklessIntermediate(
           // #1539 (S6) — backend 누적 passedStations forward. 빈 배열/undefined는 apns.ts JSON
           // serializer가 자연 누락. device backfill diff(S5 후속 wiring PR)에서 사용.
           passedStations: trip.passedStations,
+          // #1561 (T8, ADR-017 / S2 흡수) — TripPositionSSoT 권위 forward. null/undefined는 apns.ts
+          // JSON serializer가 자연 누락 → device cascade picker는 기존 tier fallback. lockless trip은
+          // backend SSoT가 가장 신뢰 높은 단일 신호 (lock 부재 환경).
+          ssot: toSilentPushSsot(locklessSsot),
         },
         config: deps.apnsConfig,
         host,

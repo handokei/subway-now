@@ -168,6 +168,15 @@ export const LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY = 'subway-now:last-uploaded-s
 // 위치 게이트가 동일한 값을 read할 수 있도록 한다. updatedAt(epoch ms)은 TTL 만료 판별용.
 // 형식: {"subsurface": boolean, "updatedAt": number} JSON.
 export const SUBSURFACE_STATE_KEY = 'subway-now:subsurface';
+// #1561 (T8, ADR-017 / ADR-016 S2 흡수) — backend가 silent push로 forward한 TripPositionSSoT
+// 권위 스냅샷을 device가 mirror하는 AsyncStorage key.
+//
+// silent push handler가 payload.ssot를 추출하면 JSON으로 그대로 영속화. `useFusedNearestStation`
+// cascade picker가 다음 cycle에서 본 값을 읽어 `backend-ssot` tier(최상위)로 채택한다.
+// 형식: { currentStationId, motionState, lastAdvanceEvidence, lastAdvanceAt, passedStations, receivedAt } JSON.
+//   - receivedAt: device가 silent push를 수신한 epoch ms. cascade picker가 자체 staleness 판정에 사용.
+// 미존재 / parse 실패는 cascade가 자연 skip (구 backend 호환, graceful).
+export const BACKEND_SSOT_MIRROR_KEY = 'subway-now:backend-ssot-mirror';
 // #1518 — device → backend HTTP 호출 로그 ring buffer 영속화.
 // `instrumentBackendFetch` wrapper가 모든 backend fetch 시점에 call/response/error entry를
 // push하고 ring buffer를 통째로 AsyncStorage에 mirror한다. 앱 재시작 후 진단해도 직전 trip의

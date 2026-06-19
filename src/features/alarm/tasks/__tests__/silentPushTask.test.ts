@@ -189,12 +189,16 @@ import {
   extractPayload,
   getSilentPushRegistrationStatus,
   handleSilentPush,
+  persistBackendSsotMirror,
+  readBackendSsotMirror,
   registerSilentPushTask,
   SILENT_PUSH_TASK,
+  validSsotMirror,
 } from '../silentPushTask';
 import {
   APNS_TOKEN_KEY,
   ACTIVE_TRIP_KEY,
+  BACKEND_SSOT_MIRROR_KEY,
   DESTINATION_KEY,
   LOCKLESS_STATION_PASSED_KEY,
   ROUTE_KEY,
@@ -711,6 +715,99 @@ describe('silentPushTask', () => {
             }),
           ),
         ).toMatchObject({ passedStations: undefined });
+      });
+    });
+
+    // #1561 (T8, ADR-017 / S2 흡수) — payload.ssot 검증 + extraction.
+    describe('ssot (#1561 T8 / S2 흡수)', () => {
+      const validSsotInput = {
+        currentStationId: '강남',
+        motionState: 'moving' as const,
+        lastAdvanceEvidence: 'arvlcd-confirmed-train',
+        lastAdvanceAt: 1_700_000_000_500,
+        passedStations: ['교대', '서초'],
+      };
+
+      it('정상 ssot은 payload에 그대로 전달', () => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              nextWaypoint: '강남',
+              etaSeconds: 0,
+              phase: 'imminent',
+              ssot: validSsotInput,
+            }),
+          ),
+        ).toMatchObject({ ssot: validSsotInput });
+      });
+
+      it('누락은 undefined (구 backend 호환)', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 0, phase: 'imminent' }),
+          ),
+        ).toMatchObject({ ssot: undefined });
+      });
+
+      it('비-객체 / null은 undefined', () => {
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 0, phase: 'imminent', ssot: null }),
+          ),
+        ).toMatchObject({ ssot: undefined });
+        expect(
+          extractPayload(
+            bgTaskData({ nextWaypoint: 'A', etaSeconds: 0, phase: 'imminent', ssot: 'string' }),
+          ),
+        ).toMatchObject({ ssot: undefined });
+      });
+
+      it.each([
+        ['currentStationId 누락', { ...validSsotInput, currentStationId: undefined }],
+        ['currentStationId 빈 문자열', { ...validSsotInput, currentStationId: '' }],
+        ['motionState invalid', { ...validSsotInput, motionState: 'bogus' }],
+        ['lastAdvanceEvidence 누락', { ...validSsotInput, lastAdvanceEvidence: undefined }],
+        ['lastAdvanceEvidence 빈 문자열', { ...validSsotInput, lastAdvanceEvidence: '' }],
+        ['lastAdvanceAt 비-숫자', { ...validSsotInput, lastAdvanceAt: 'now' }],
+        ['lastAdvanceAt NaN', { ...validSsotInput, lastAdvanceAt: Number.NaN }],
+      ])('필수 필드 불완전 → undefined: %s', (_label, brokenSsot) => {
+        expect(
+          extractPayload(
+            bgTaskData({
+              nextWaypoint: 'A',
+              etaSeconds: 0,
+              phase: 'imminent',
+              ssot: brokenSsot,
+            }),
+          ),
+        ).toMatchObject({ ssot: undefined });
+      });
+
+      it('passedStations 비-string 항목은 필터링, 잔여만 채택', () => {
+        const result = extractPayload(
+          bgTaskData({
+            nextWaypoint: 'A',
+            etaSeconds: 0,
+            phase: 'imminent',
+            ssot: {
+              ...validSsotInput,
+              passedStations: ['교대', '', 42, '서초', null],
+            },
+          }),
+        );
+        expect(result).toMatchObject({ ssot: { passedStations: ['교대', '서초'] } });
+      });
+
+      it('passedStations 자체가 누락이면 빈 배열로 정규화', () => {
+        const result = extractPayload(
+          bgTaskData({
+            nextWaypoint: 'A',
+            etaSeconds: 0,
+            phase: 'imminent',
+            ssot: { ...validSsotInput, passedStations: undefined },
+          }),
+        );
+        expect(result).toMatchObject({ ssot: { passedStations: [] } });
       });
     });
 
@@ -3071,6 +3168,138 @@ describe('silentPushTask', () => {
     it('error input 시 breadcrumb 없음', async () => {
       await handleSilentPush({ data: undefined, error: { message: 'boom' } });
       expect(mockAddDomainBreadcrumb).not.toHaveBeenCalled();
+    });
+  });
+
+  // #1561 (T8, ADR-017 / S2 #1535 흡수) — backend SSoT mirror persistence + read.
+  describe('backend SSoT mirror (#1561 T8 / S2 흡수)', () => {
+    const validSsot = {
+      currentStationId: '강남',
+      motionState: 'moving' as const,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+      lastAdvanceAt: 1_700_000_000_500,
+      passedStations: ['교대', '서초'],
+    };
+
+    beforeEach(() => {
+      (AsyncStorage.getItem as jest.Mock).mockReset();
+      (AsyncStorage.setItem as jest.Mock).mockReset();
+    });
+
+    it('persistBackendSsotMirror writes JSON with receivedAt stamp', async () => {
+      (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+      await persistBackendSsotMirror(validSsot, 1_700_000_001_000);
+      expect(AsyncStorage.setItem).toHaveBeenCalledWith(
+        BACKEND_SSOT_MIRROR_KEY,
+        JSON.stringify({ ...validSsot, receivedAt: 1_700_000_001_000 }),
+      );
+    });
+
+    it('persistBackendSsotMirror swallows AsyncStorage errors (graceful)', async () => {
+      (AsyncStorage.setItem as jest.Mock).mockRejectedValue(new Error('boom'));
+      await expect(persistBackendSsotMirror(validSsot, 0)).resolves.toBeUndefined();
+    });
+
+    it('readBackendSsotMirror parses valid entry', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(
+        JSON.stringify({ ...validSsot, receivedAt: 1_700_000_001_000 }),
+      );
+      await expect(readBackendSsotMirror()).resolves.toEqual({
+        ...validSsot,
+        receivedAt: 1_700_000_001_000,
+      });
+    });
+
+    it('readBackendSsotMirror returns null when storage empty', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      await expect(readBackendSsotMirror()).resolves.toBeNull();
+    });
+
+    it('readBackendSsotMirror returns null when JSON parse fails', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue('not-json{');
+      await expect(readBackendSsotMirror()).resolves.toBeNull();
+    });
+
+    it('readBackendSsotMirror swallows AsyncStorage errors', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockRejectedValue(new Error('io'));
+      await expect(readBackendSsotMirror()).resolves.toBeNull();
+    });
+
+    it.each([
+      ['currentStationId missing', { ...validSsot, currentStationId: undefined }],
+      ['motionState invalid', { ...validSsot, motionState: 'bogus' }],
+      ['lastAdvanceEvidence missing', { ...validSsot, lastAdvanceEvidence: undefined }],
+      ['lastAdvanceAt non-number', { ...validSsot, lastAdvanceAt: 'now' }],
+      ['passedStations non-array', { ...validSsot, passedStations: 'x' }],
+    ])('readBackendSsotMirror returns null when %s', async (_label, broken) => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(
+        JSON.stringify({ ...broken, receivedAt: 1 }),
+      );
+      await expect(readBackendSsotMirror()).resolves.toBeNull();
+    });
+
+    it('readBackendSsotMirror returns null when receivedAt missing', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(JSON.stringify(validSsot));
+      await expect(readBackendSsotMirror()).resolves.toBeNull();
+    });
+
+    it('readBackendSsotMirror filters non-string passedStations entries', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(
+        JSON.stringify({
+          ...validSsot,
+          passedStations: ['교대', '', 42, '서초', null],
+          receivedAt: 1,
+        }),
+      );
+      const result = await readBackendSsotMirror();
+      expect(result?.passedStations).toEqual(['교대', '서초']);
+    });
+
+    it('handleSilentPush persists SSoT mirror when payload.ssot is present', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+      mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
+      await handleSilentPush(
+        bgTaskData({
+          nextWaypoint: '강남',
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: 'intermediate',
+          ssot: validSsot,
+        }),
+      );
+      const mirrorCall = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+        ([key]) => key === BACKEND_SSOT_MIRROR_KEY,
+      );
+      expect(mirrorCall).toBeDefined();
+      const stored = JSON.parse(mirrorCall![1] as string);
+      expect(stored).toMatchObject(validSsot);
+      expect(typeof stored.receivedAt).toBe('number');
+    });
+
+    it('handleSilentPush does not persist mirror when payload.ssot is absent', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+      mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
+      await handleSilentPush(
+        bgTaskData({
+          nextWaypoint: '강남',
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: 'intermediate',
+        }),
+      );
+      const mirrorCall = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+        ([key]) => key === BACKEND_SSOT_MIRROR_KEY,
+      );
+      expect(mirrorCall).toBeUndefined();
+    });
+
+    it('validSsotMirror returns undefined for null/non-object', () => {
+      expect(validSsotMirror(null)).toBeUndefined();
+      expect(validSsotMirror(undefined)).toBeUndefined();
+      expect(validSsotMirror('string')).toBeUndefined();
+      expect(validSsotMirror(123)).toBeUndefined();
     });
   });
 });

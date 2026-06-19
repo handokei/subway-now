@@ -29,9 +29,11 @@ import {
   computeCronJitterMs,
   PASSED_STATIONS_MAX_LEN,
   CRON_NOMINAL_INTERVAL_MS,
+  toSilentPushSsot,
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
+import { seedSsot, type TripPositionSSoT } from '../tripPositionSsot';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
 import type { BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
@@ -5135,5 +5137,163 @@ describe('runScheduled cron jitter stat (#1539 S6)', () => {
     expect(stats.cronJitterMs).toBe(expectedJitter);
     expect(logMessages.some((l) => l.msg === 'scheduled: cron jitter' && l.meta?.jitterMs === expectedJitter))
       .toBe(true);
+  });
+});
+
+// #1561 (T8, ADR-017 / S2 #1535 흡수) — silent push payload SSoT 권위 forward.
+//
+// 검증 범위:
+//   1. toSilentPushSsot helper — null/undefined → undefined, 정의된 SSoT → 축소 형태 + passedStations 최근 5개 슬라이스.
+//   2. fireArvlCdStationPush 발사 시 backend SSoT KV에서 읽어 payload.ssot으로 forward.
+//   3. SSoT 부재 trip(seed 전) — payload.ssot 자연 누락 (graceful, 구 device 호환).
+//   4. lockless intermediate fire도 동일하게 SSoT forward.
+describe('silent push SSoT forward (#1561 T8 / S2 흡수)', () => {
+  it('toSilentPushSsot returns undefined for null/undefined input', () => {
+    expect(toSilentPushSsot(null)).toBeUndefined();
+    expect(toSilentPushSsot(undefined)).toBeUndefined();
+  });
+
+  it('toSilentPushSsot reduces TripPositionSSoT to wire payload + slices passedStations to last 5', () => {
+    const ssot: TripPositionSSoT = {
+      tripToken: 'tok-ssot-1',
+      currentStationId: '강남',
+      motionState: 'moving',
+      motionEvidence: [],
+      lastAdvanceAt: 1_700_000_001_000,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+      passedStations: ['A', 'B', 'C', 'D', 'E', 'F', 'G'],
+      userIntentDeclared: false,
+      seedOverrideCount: 0,
+      schemaVersion: 1,
+    };
+    const payload = toSilentPushSsot(ssot);
+    expect(payload).toEqual({
+      currentStationId: '강남',
+      motionState: 'moving',
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+      lastAdvanceAt: 1_700_000_001_000,
+      passedStations: ['C', 'D', 'E', 'F', 'G'],
+    });
+  });
+
+  it('arvlcd-fire forwards SSoT from KV to silent push payload', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'ssot-arvlcd-1',
+        waypoints: [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '용마산', line: '7', kind: 'destination' },
+        ],
+        boardingLock: {
+          trainCode: 'T',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: NOW,
+          segmentStations: ['중곡', '용마산'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+      }),
+    );
+    await seedSsot(kv as unknown as KVNamespace, 'ssot-arvlcd-1', '중곡');
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeLockedSeoul(0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    const calls = apnsFetch.mock.calls as unknown as [string, RequestInit][];
+    const arvlcdCall = calls.find((c) => {
+      const body = JSON.parse(c[1].body as string);
+      return body.data?.origin === 'arvlcd';
+    });
+    expect(arvlcdCall).toBeDefined();
+    const body = JSON.parse(arvlcdCall![1].body as string);
+    expect(body.data.ssot).toBeDefined();
+    expect(body.data.ssot.currentStationId).toBe('중곡');
+    expect(body.data.ssot.motionState).toBe('unknown');
+  });
+
+  it('arvlcd-fire omits ssot field when SSoT KV is absent (graceful)', async () => {
+    const kv = new InMemoryKV();
+    await putTrip(
+      kv as unknown as KVNamespace,
+      makeTrip({
+        token: 'ssot-arvlcd-absent',
+        waypoints: [
+          { stationName: '중곡', line: '7', kind: 'intermediate' },
+          { stationName: '용마산', line: '7', kind: 'destination' },
+        ],
+        boardingLock: {
+          trainCode: 'T',
+          line: '7',
+          subwayId: '1007',
+          selectedDepartureTime: NOW,
+          segmentStations: ['중곡', '용마산'],
+          expiresAt: NOW + 60 * 60_000,
+        },
+      }),
+    );
+    // SSoT 미seed → readSsot null 반환.
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeLockedSeoul(0, 1),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    const calls = apnsFetch.mock.calls as unknown as [string, RequestInit][];
+    const arvlcdCall = calls.find((c) => {
+      const body = JSON.parse(c[1].body as string);
+      return body.data?.origin === 'arvlcd';
+    });
+    expect(arvlcdCall).toBeDefined();
+    const body = JSON.parse(arvlcdCall![1].body as string);
+    expect('ssot' in body.data).toBe(false);
+  });
+
+  it('lockless-fire forwards SSoT from KV to silent push payload', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeTrip({
+      token: 'ssot-lockless-1',
+      route: { type: 'direct', line: '2', stops: 2 },
+      waypoints: [
+        { stationName: '강남', line: '2', kind: 'intermediate' },
+        { stationName: '역삼', line: '2', kind: 'intermediate' },
+      ],
+      locklessStationPassed: true,
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    await seedLocklessMotionSeries(kv, trip.token, 'automotive');
+    await seedSsot(kv as unknown as KVNamespace, trip.token, '강남');
+    const arrived: ArrivalEntry = {
+      destination: '강남행',
+      arrivalSeconds: 30,
+      trainCode: '7246',
+      isUp: true,
+      subwayNm: '지하철2호선',
+      arvlCd: 1,
+    };
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    await runScheduled(makeEnv(kv), {
+      seoul: makeSeoul([arrived]),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+    });
+    const calls = apnsFetch.mock.calls as unknown as [string, RequestInit][];
+    const locklessCall = calls.find((c) => {
+      const body = JSON.parse(c[1].body as string);
+      return body.data?.origin === 'lockless';
+    });
+    expect(locklessCall).toBeDefined();
+    const body = JSON.parse(locklessCall![1].body as string);
+    expect(body.data.ssot).toBeDefined();
+    expect(body.data.ssot.currentStationId).toBe('강남');
   });
 });
