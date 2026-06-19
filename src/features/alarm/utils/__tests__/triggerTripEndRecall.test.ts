@@ -91,6 +91,24 @@ const ROUTE_ARC_STATIONS = [
   { id: 'd', name: 'Dest', line: '2', lat: 0, lng: 0 },
 ];
 
+function setupHappyPath(): void {
+  mockGetTripStartedAt.mockResolvedValue(100);
+  setStorage({
+    [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+    [ROUTE_KEY]: ROUTE_JSON,
+    [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+    [DESTINATION_KEY]: DEST_JSON,
+    [APNS_TOKEN_KEY]: 'apns-token-xyz',
+  });
+  mockComputeRouteArc.mockReturnValue({
+    stations: ROUTE_ARC_STATIONS,
+    arcM: [0, 1, 2],
+    totalLengthM: 2,
+  });
+  mockComputeAndUploadTripRecall.mockResolvedValue({ uploaded: true });
+  mockSetItem.mockResolvedValue(undefined);
+}
+
 describe('triggerTripEndRecall', () => {
   beforeEach(() => {
     mockGetItem.mockReset();
@@ -401,24 +419,6 @@ describe('triggerTripEndRecall', () => {
   });
 
   describe('#1520 — signal dump upload', () => {
-    function setupHappyPath(): void {
-      mockGetTripStartedAt.mockResolvedValue(100);
-      setStorage({
-        [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
-        [ROUTE_KEY]: ROUTE_JSON,
-        [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
-        [DESTINATION_KEY]: DEST_JSON,
-        [APNS_TOKEN_KEY]: 'apns-token-xyz',
-      });
-      mockComputeRouteArc.mockReturnValue({
-        stations: ROUTE_ARC_STATIONS,
-        arcM: [0, 1, 2],
-        totalLengthM: 2,
-      });
-      mockComputeAndUploadTripRecall.mockResolvedValue({ uploaded: true });
-      mockSetItem.mockResolvedValue(undefined);
-    }
-
     it('corrId(sync) + token + entries 정상 시 uploadSignalDump 호출', async () => {
       setupHappyPath();
       mockGetCurrentTripCorrIdSync.mockReturnValue('1700000000000-deadbeef');

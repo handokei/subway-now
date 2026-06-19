@@ -19,11 +19,13 @@ jest.mock('../../../../shared/utils/logger', () => ({
 }));
 
 const ORIGINAL_FETCH = globalThis.fetch;
+const TEST_URL = 'https://api.test/';
+const CORR_ID = '1700000000000-deadbeef';
 
 function entry(ts: number, kind: RawSignalEntry['kind'] = 'cycle'): RawSignalEntry {
   return {
     ts,
-    corrId: '1700000000000-deadbeef',
+    corrId: CORR_ID,
     kind,
     gps: null,
     motion: null,
@@ -37,6 +39,29 @@ function entry(ts: number, kind: RawSignalEntry['kind'] = 'cycle'): RawSignalEnt
     source: null,
     confidence: null,
   };
+}
+
+function configureBackend(fetchResult?: { ok: boolean; status?: number } | Error): void {
+  process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = TEST_URL;
+  if (fetchResult instanceof Error) {
+    (globalThis.fetch as jest.Mock).mockRejectedValue(fetchResult);
+  } else if (fetchResult) {
+    (globalThis.fetch as jest.Mock).mockResolvedValue(fetchResult);
+  }
+}
+
+async function seedOutbox(
+  overrides: Partial<{ corrId: string; token: string; entries: RawSignalEntry[] }> = {},
+): Promise<void> {
+  await AsyncStorage.setItem(
+    RAW_SIGNAL_OUTBOX_KEY,
+    JSON.stringify({
+      corrId: CORR_ID,
+      token: 'tok',
+      entries: [entry(1)],
+      ...overrides,
+    }),
+  );
 }
 
 describe('uploadSignalDump', () => {
@@ -57,52 +82,50 @@ describe('uploadSignalDump', () => {
   });
 
   it('빈 token이면 skipped=true (no-token)', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
+    configureBackend();
     const result = await uploadSignalDump('1-00000000', '', [entry(1)]);
     expect(result.skipReason).toBe('no-token');
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('빈 entries이면 skipped=true (no-entries)', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
+    configureBackend();
     const result = await uploadSignalDump('1-00000000', 'tok', []);
     expect(result.skipReason).toBe('no-entries');
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('성공 시 outbox 비우고 마지막 corrId 기록', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
+    configureBackend({ ok: true, status: 200 });
 
-    const result = await uploadSignalDump('1700000000000-deadbeef', 'tok', [entry(1)]);
+    const result = await uploadSignalDump(CORR_ID, 'tok', [entry(1)]);
     expect(result).toEqual({ ok: true, status: 200 });
 
     expect(await AsyncStorage.getItem(RAW_SIGNAL_OUTBOX_KEY)).toBeNull();
     expect(
       await AsyncStorage.getItem(LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY),
-    ).toBe('1700000000000-deadbeef');
+    ).toBe(CORR_ID);
 
     const [url, init] = (globalThis.fetch as jest.Mock).mock.calls[0];
-    expect(url).toBe('https://api.test/signals/dump');
+    expect(url).toBe(`${TEST_URL}signals/dump`);
     expect(init.method).toBe('POST');
     const body = JSON.parse(init.body);
-    expect(body.corrId).toBe('1700000000000-deadbeef');
+    expect(body.corrId).toBe(CORR_ID);
     expect(body.token).toBe('tok');
     expect(body.entries.length).toBe(1);
   });
 
   it('실패 시 outbox에 남고 last corrId 미기록', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
+    configureBackend({ ok: false, status: 500 });
 
-    const result = await uploadSignalDump('1700000000000-deadbeef', 'tok', [entry(1)]);
+    const result = await uploadSignalDump(CORR_ID, 'tok', [entry(1)]);
     expect(result.ok).toBe(false);
     expect(result.status).toBe(500);
 
     const outbox = await AsyncStorage.getItem(RAW_SIGNAL_OUTBOX_KEY);
     expect(outbox).not.toBeNull();
-    const parsed = JSON.parse(outbox!);
-    expect(parsed.corrId).toBe('1700000000000-deadbeef');
+    const parsed = JSON.parse(outbox ?? '');
+    expect(parsed.corrId).toBe(CORR_ID);
     expect(parsed.entries.length).toBe(1);
     expect(
       await AsyncStorage.getItem(LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY),
@@ -110,26 +133,18 @@ describe('uploadSignalDump', () => {
   });
 
   it('fetch throw 시 ok=false, outbox 보존', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (globalThis.fetch as jest.Mock).mockRejectedValue(new Error('network'));
+    configureBackend(new Error('network'));
 
-    const result = await uploadSignalDump('1700000000000-deadbeef', 'tok', [entry(1)]);
+    const result = await uploadSignalDump(CORR_ID, 'tok', [entry(1)]);
     expect(result).toEqual({ ok: false });
     expect(await AsyncStorage.getItem(RAW_SIGNAL_OUTBOX_KEY)).not.toBeNull();
   });
 
   it('같은 corrId 재시도 skip (duplicate)', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    await AsyncStorage.setItem(
-      LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY,
-      '1700000000000-deadbeef',
-    );
+    configureBackend();
+    await AsyncStorage.setItem(LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY, CORR_ID);
 
-    const result = await uploadSignalDump(
-      '1700000000000-deadbeef',
-      'tok',
-      [entry(1)],
-    );
+    const result = await uploadSignalDump(CORR_ID, 'tok', [entry(1)]);
     expect(result.skipReason).toBe('duplicate');
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
@@ -152,32 +167,25 @@ describe('flushSignalDumpOutbox', () => {
   });
 
   it('outbox 비어있으면 skip (no-entries)', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
+    configureBackend();
     const result = await flushSignalDumpOutbox();
     expect(result.skipReason).toBe('no-entries');
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
-  it('outbox JSON 손상이면 skip (no-entries)', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    await AsyncStorage.setItem(RAW_SIGNAL_OUTBOX_KEY, 'not-json{');
-    const result = await flushSignalDumpOutbox();
-    expect(result.skipReason).toBe('no-entries');
-  });
-
-  it('outbox shape 부적합도 skip', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    await AsyncStorage.setItem(RAW_SIGNAL_OUTBOX_KEY, JSON.stringify({ corrId: 1 }));
+  it.each([
+    ['JSON 손상', 'not-json{'],
+    ['shape 부적합', JSON.stringify({ corrId: 1 })],
+  ])('outbox %s이면 skip (no-entries)', async (_label, payload) => {
+    configureBackend();
+    await AsyncStorage.setItem(RAW_SIGNAL_OUTBOX_KEY, payload);
     const result = await flushSignalDumpOutbox();
     expect(result.skipReason).toBe('no-entries');
   });
 
   it('outbox.corrId가 이미 업로드된 corrId면 outbox만 정리 (duplicate)', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    await AsyncStorage.setItem(
-      RAW_SIGNAL_OUTBOX_KEY,
-      JSON.stringify({ corrId: 'c1', token: 'tok', entries: [entry(1)] }),
-    );
+    configureBackend();
+    await seedOutbox({ corrId: 'c1' });
     await AsyncStorage.setItem(LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY, 'c1');
 
     const result = await flushSignalDumpOutbox();
@@ -187,53 +195,23 @@ describe('flushSignalDumpOutbox', () => {
   });
 
   it('outbox flush 성공 시 outbox 정리 + last corrId 기록', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
-    await AsyncStorage.setItem(
-      RAW_SIGNAL_OUTBOX_KEY,
-      JSON.stringify({
-        corrId: '1700000000000-deadbeef',
-        token: 'tok',
-        entries: [entry(1)],
-      }),
-    );
+    configureBackend({ ok: true, status: 200 });
+    await seedOutbox();
 
     const result = await flushSignalDumpOutbox();
     expect(result.ok).toBe(true);
     expect(await AsyncStorage.getItem(RAW_SIGNAL_OUTBOX_KEY)).toBeNull();
     expect(
       await AsyncStorage.getItem(LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY),
-    ).toBe('1700000000000-deadbeef');
+    ).toBe(CORR_ID);
   });
 
-  it('outbox flush 실패 시 outbox 보존', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: false, status: 500 });
-    await AsyncStorage.setItem(
-      RAW_SIGNAL_OUTBOX_KEY,
-      JSON.stringify({
-        corrId: '1700000000000-deadbeef',
-        token: 'tok',
-        entries: [entry(1)],
-      }),
-    );
-
-    const result = await flushSignalDumpOutbox();
-    expect(result.ok).toBe(false);
-    expect(await AsyncStorage.getItem(RAW_SIGNAL_OUTBOX_KEY)).not.toBeNull();
-  });
-
-  it('outbox flush fetch throw 시에도 outbox 보존', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (globalThis.fetch as jest.Mock).mockRejectedValue(new Error('network'));
-    await AsyncStorage.setItem(
-      RAW_SIGNAL_OUTBOX_KEY,
-      JSON.stringify({
-        corrId: '1700000000000-deadbeef',
-        token: 'tok',
-        entries: [entry(1)],
-      }),
-    );
+  it.each([
+    ['실패 응답', { ok: false, status: 500 } as { ok: boolean; status?: number }],
+    ['fetch throw', new Error('network')],
+  ])('outbox flush %s 시 outbox 보존', async (_label, fetchResult) => {
+    configureBackend(fetchResult);
+    await seedOutbox();
 
     const result = await flushSignalDumpOutbox();
     expect(result.ok).toBe(false);
@@ -253,87 +231,53 @@ describe('storage failure handling (graceful)', () => {
     jest.restoreAllMocks();
   });
 
-  it('AsyncStorage.getItem(LAST_UPLOADED) throw → null fallback, upload 정상 진행', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
+  type StorageMethod = 'getItem' | 'setItem' | 'removeItem';
 
-    const original = AsyncStorage.getItem;
+  async function expectUploadOkWithFailingStorage(
+    method: StorageMethod,
+    keyMatcher: (key: string) => boolean,
+  ): Promise<void> {
+    configureBackend({ ok: true, status: 200 });
+    const originalGetItem = AsyncStorage.getItem.bind(AsyncStorage);
     const spy = jest
-      .spyOn(AsyncStorage, 'getItem')
-      .mockImplementation(async (key: string) => {
-        if (key === LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY) {
+      .spyOn(AsyncStorage, method)
+      .mockImplementation((async (key: string) => {
+        if (keyMatcher(key)) {
           throw new Error('storage fail');
         }
-        return original(key);
-      });
-
-    const result = await uploadSignalDump(
-      '1700000000000-deadbeef',
-      'tok',
-      [entry(1)],
-    );
-    expect(result.ok).toBe(true);
-    spy.mockRestore();
-  });
-
-  it('AsyncStorage.setItem(LAST_UPLOADED) throw 시 ok=true 유지', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
-
-    const spy = jest
-      .spyOn(AsyncStorage, 'setItem')
-      .mockImplementation(async (key: string) => {
-        if (key === LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY) {
-          throw new Error('storage fail');
+        if (method === 'getItem') {
+          return originalGetItem(key);
         }
-      });
+        return undefined;
+      }) as never);
 
-    const result = await uploadSignalDump(
-      '1700000000000-deadbeef',
-      'tok',
-      [entry(1)],
-    );
+    const result = await uploadSignalDump(CORR_ID, 'tok', [entry(1)]);
     expect(result.ok).toBe(true);
     spy.mockRestore();
-  });
+  }
 
-  it('AsyncStorage.setItem(outbox) throw 시 upload는 계속 진행', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
-
-    const spy = jest
-      .spyOn(AsyncStorage, 'setItem')
-      .mockImplementation(async (key: string) => {
-        if (key === RAW_SIGNAL_OUTBOX_KEY) {
-          throw new Error('storage fail');
-        }
-      });
-
-    const result = await uploadSignalDump(
-      '1700000000000-deadbeef',
-      'tok',
-      [entry(1)],
-    );
-    expect(result.ok).toBe(true);
-    spy.mockRestore();
-  });
-
-  it('AsyncStorage.removeItem(outbox) throw 시 ok=true 유지', async () => {
-    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test/';
-    (globalThis.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
-
-    const spy = jest
-      .spyOn(AsyncStorage, 'removeItem')
-      .mockImplementation(async () => {
-        throw new Error('storage fail');
-      });
-
-    const result = await uploadSignalDump(
-      '1700000000000-deadbeef',
-      'tok',
-      [entry(1)],
-    );
-    expect(result.ok).toBe(true);
-    spy.mockRestore();
+  it.each<[string, StorageMethod, (key: string) => boolean]>([
+    [
+      'getItem(LAST_UPLOADED) throw → null fallback, upload 정상 진행',
+      'getItem',
+      (key) => key === LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY,
+    ],
+    [
+      'setItem(LAST_UPLOADED) throw 시 ok=true 유지',
+      'setItem',
+      (key) => key === LAST_UPLOADED_SIGNAL_DUMP_CORR_ID_KEY,
+    ],
+    [
+      'setItem(outbox) throw 시 upload는 계속 진행',
+      'setItem',
+      (key) => key === RAW_SIGNAL_OUTBOX_KEY,
+    ],
+    [
+      'removeItem(outbox) throw 시 ok=true 유지',
+      'removeItem',
+      () => true,
+    ],
+  ])('AsyncStorage.%s', async (_label, method, matcher) => {
+    await expectUploadOkWithFailingStorage(method, matcher);
   });
 });
