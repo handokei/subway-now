@@ -380,6 +380,61 @@ describe('sendSilentPush', () => {
     if (expectPresent) expect(body.data.passedStations).toEqual(input);
   });
 
+  // #1561 (T8, ADR-017 / S2 #1535 흡수) — payload.ssot wire 검증.
+  // ssot이 정의되면 currentStationId/motionState/lastAdvanceEvidence/lastAdvanceAt/passedStations가
+  // body.data.ssot으로 그대로 forward. undefined면 omit (구 device 호환).
+  it('forwards ssot to body.data.ssot when defined (#1561)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const ssotInput = {
+      currentStationId: '강남',
+      motionState: 'moving' as const,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+      lastAdvanceAt: 1_700_000_000_500,
+      passedStations: ['교대', '서초'],
+    };
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: {
+        nextWaypoint: '강남',
+        etaSeconds: 0,
+        phase: 'imminent',
+        kind: 'intermediate',
+        sentAt: 1_700_000_000_000,
+        pushId: 'p',
+        ssot: ssotInput,
+      },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.ssot).toEqual(ssotInput);
+    // passedStations은 새 배열로 forward되어 caller mutate가 wire에 영향 주지 않아야.
+    expect(body.data.ssot.passedStations).not.toBe(ssotInput.passedStations);
+  });
+
+  it('omits ssot field when undefined (#1561 구 device 호환)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: {
+        nextWaypoint: '강남',
+        etaSeconds: 0,
+        phase: 'imminent',
+        kind: 'intermediate',
+        sentAt: 1_700_000_000_000,
+        pushId: 'p',
+      },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('ssot' in body.data).toBe(false);
+  });
+
   it('uses sandbox host when provided', async () => {
     const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) =>
       new Response('', { status: 200 }),

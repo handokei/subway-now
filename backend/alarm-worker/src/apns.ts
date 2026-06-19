@@ -146,6 +146,43 @@ export interface SilentPushPayload {
    * - readonly: payload 빌더가 trip 상태를 share-by-reference로 전달해도 JSON serialize 시 안전.
    */
   passedStations?: readonly string[];
+  /**
+   * #1561 (T8, ADR-017 / S2 #1535 흡수) — backend가 보유한 TripPositionSSoT를 device에 권위로 forward.
+   *
+   * device의 cascade picker(`useFusedNearestStation`)가 `backend-ssot` tier(최상위)로 채택해 lock 활성
+   * / lockless 양쪽에서 backend SSoT가 모든 다른 tier 위에 위치한다. 위젯 stuck("반포") 해소 + 16:04
+   * 어대 detect 즉시 반영 같은 evidence를 단일 권위 필드로 해결한다.
+   *
+   * - undefined → 구 backend 호환 (wire 자연 누락). 기존 cascade tier로 fallback.
+   * - passedStations.slice(-5): 최근 5개만 (payload 크기 폭주 차단).
+   *
+   * 본 필드와 별개로 기존 top-level `passedStations`는 #1539(S6) device backfill 용도로 유지 — 본 SSoT
+   * 필드의 내부 `passedStations`는 device cascade picker가 자기 일관성 검증에만 사용한다.
+   */
+  ssot?: SilentPushSsotPayload;
+}
+
+/**
+ * #1561 (T8) — silent push payload에 forward되는 TripPositionSSoT 권위 스냅샷.
+ *
+ * device가 backend에서 받은 currentStationId + motionState + lastAdvanceEvidence + passedStations
+ * (최근 5개)를 cascade picker의 `backend-ssot` tier 채택 입력으로 사용한다.
+ *
+ * 정수형 시각(sentAt 기준 relative ms가 아닌 epoch ms 그대로)을 사용해 device가 timestamp 비교 시
+ * 별도 변환이 필요 없다. backend SSoT가 stale한 case는 device가 `lastAdvanceAt` 기반으로 자체
+ * staleness 판단(추후 cascade picker policy).
+ */
+export interface SilentPushSsotPayload {
+  /** 현재 device가 위치한다고 backend가 확신하는 stationId(또는 stationName 호환). */
+  currentStationId: string;
+  /** backend SSoT motion state — `'moving'` | `'stationary'` | `'unknown'`. */
+  motionState: 'moving' | 'stationary' | 'unknown';
+  /** 마지막 advance를 통과시킨 evidence type 표시 — device 진단/cascade tier 보조 판단용. */
+  lastAdvanceEvidence: string;
+  /** 마지막 advance epoch ms. 0이면 미발생(seed 직후). */
+  lastAdvanceAt: number;
+  /** 통과 확인된 station 누적 (최근 5개만 forward). */
+  passedStations: readonly string[];
 }
 
 /**
@@ -264,6 +301,20 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
       ...(options.payload.passedStations && options.payload.passedStations.length > 0
         ? { passedStations: [...options.payload.passedStations] }
         : {}),
+      // #1561 (T8, ADR-017 / S2 흡수) — ssot은 정의된 경우에만 wire. 미전달 시 JSON에서 자연 누락 →
+      // 구 device(필드 무시) 및 구 backend payload(미존재)와 byte-level 호환. device cascade picker가
+      // `backend-ssot` tier(최상위)로 채택한다.
+      ...(options.payload.ssot === undefined
+        ? {}
+        : {
+            ssot: {
+              currentStationId: options.payload.ssot.currentStationId,
+              motionState: options.payload.ssot.motionState,
+              lastAdvanceEvidence: options.payload.ssot.lastAdvanceEvidence,
+              lastAdvanceAt: options.payload.ssot.lastAdvanceAt,
+              passedStations: [...options.payload.ssot.passedStations],
+            },
+          }),
     },
   });
 

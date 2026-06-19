@@ -31,6 +31,7 @@ import type { LineNumber, Station } from '../../../shared/types/station';
 import {
   APNS_TOKEN_KEY,
   ACTIVE_TRIP_KEY,
+  BACKEND_SSOT_MIRROR_KEY,
   DESTINATION_KEY,
   LOCKLESS_STATION_PASSED_KEY,
   SLEEP_MODE_KEY,
@@ -163,6 +164,29 @@ export interface SilentPushPayload {
    * 구 backend 호환 / 빈 배열 / wire 누락 → undefined → 기존 동작 그대로(backfill 자연 skip).
    */
   passedStations?: readonly string[];
+  /**
+   * #1561 (T8, ADR-017 / S2 #1535 흡수) — backend가 forward한 TripPositionSSoT 권위 스냅샷.
+   *
+   * device의 cascade picker(`useFusedNearestStation`)가 `backend-ssot` tier(최상위)로 채택한다.
+   * silent push handler가 본 값을 BACKEND_SSOT_MIRROR_KEY에 mirror하고 cascade picker가 다음 cycle에 read.
+   *
+   * 구 backend 호환 / 누락 → undefined → cascade는 기존 tier fallback (graceful).
+   */
+  ssot?: SilentPushSsotMirror;
+}
+
+/**
+ * #1561 (T8) — silent push payload에 실린 SSoT 권위 스냅샷 형태.
+ *
+ * backend `apns.ts`의 `SilentPushSsotPayload`와 1:1. device는 본 값을 BACKEND_SSOT_MIRROR_KEY에
+ * mirror하며 cascade picker가 다음 polling cycle에서 read해 `backend-ssot` tier로 채택.
+ */
+export interface SilentPushSsotMirror {
+  currentStationId: string;
+  motionState: 'moving' | 'stationary' | 'unknown';
+  lastAdvanceEvidence: string;
+  lastAdvanceAt: number;
+  passedStations: readonly string[];
 }
 
 /**
@@ -364,6 +388,7 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     tripToken,
     lockReleasedReason,
     passedStations,
+    ssot,
   } = obj as {
     nextWaypoint: string;
   } & Record<string, unknown>;
@@ -385,6 +410,38 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
     tripToken: validTripToken(tripToken),
     lockReleasedReason: validLockReleasedReason(lockReleasedReason),
     passedStations: validPassedStations(passedStations),
+    ssot: validSsotMirror(ssot),
+  };
+}
+
+/**
+ * #1561 (T8, ADR-017 / S2 흡수) — payload.ssot 검증. 모든 필수 필드가 유효해야 통과.
+ *
+ * 누락/형식 오류/필수 필드 부재 → undefined → cascade picker가 기존 tier fallback(graceful).
+ * passedStations는 string 배열로 정규화 (비-string 항목 필터). 빈 배열은 허용 (backend가 보낼 수 있음).
+ */
+export function validSsotMirror(value: unknown): SilentPushSsotMirror | undefined {
+  if (value == null || typeof value !== 'object') return undefined;
+  const obj = value as Record<string, unknown>;
+  const { currentStationId, motionState, lastAdvanceEvidence, lastAdvanceAt, passedStations } = obj;
+  if (typeof currentStationId !== 'string' || currentStationId.length === 0) return undefined;
+  if (motionState !== 'moving' && motionState !== 'stationary' && motionState !== 'unknown') {
+    return undefined;
+  }
+  if (typeof lastAdvanceEvidence !== 'string' || lastAdvanceEvidence.length === 0) return undefined;
+  if (typeof lastAdvanceAt !== 'number' || !Number.isFinite(lastAdvanceAt)) return undefined;
+  const passed: string[] = [];
+  if (Array.isArray(passedStations)) {
+    for (const p of passedStations) {
+      if (typeof p === 'string' && p.length > 0) passed.push(p);
+    }
+  }
+  return {
+    currentStationId,
+    motionState,
+    lastAdvanceEvidence,
+    lastAdvanceAt,
+    passedStations: passed,
   };
 }
 
@@ -626,6 +683,72 @@ async function loadApnsToken(): Promise<string | null> {
 }
 
 /**
+ * #1561 (T8, ADR-017 / S2 #1535 흡수) — backend SSoT 권위 mirror를 AsyncStorage에 영속화.
+ *
+ * useFusedNearestStation cascade picker가 다음 polling cycle에서 본 값을 read해 `backend-ssot`
+ * tier(최상위)로 채택한다. receivedAt epoch ms를 함께 stamp해 cascade picker가 자체 staleness
+ * 판단(cascade tier policy 후속 PR).
+ *
+ * write 실패는 silent — backend SSoT mirror는 보조 신호로 미존재 시 cascade는 기존 tier fallback.
+ */
+export async function persistBackendSsotMirror(
+  ssot: SilentPushSsotMirror,
+  receivedAt: number,
+): Promise<void> {
+  try {
+    await AsyncStorage.setItem(
+      BACKEND_SSOT_MIRROR_KEY,
+      JSON.stringify({ ...ssot, receivedAt }),
+    );
+  } catch {
+    // graceful — cascade picker는 mirror 부재 시 기존 tier fallback.
+  }
+}
+
+/**
+ * #1561 (T8) — AsyncStorage에서 backend SSoT mirror 읽기. cascade picker가 polling cycle마다 호출.
+ *
+ * 미존재 / parse 실패 → null. cascade picker는 기존 tier fallback.
+ */
+export interface BackendSsotMirrorEntry extends SilentPushSsotMirror {
+  receivedAt: number;
+}
+
+export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | null> {
+  try {
+    const raw = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<BackendSsotMirrorEntry> | null;
+    if (
+      !parsed ||
+      typeof parsed.currentStationId !== 'string' ||
+      parsed.currentStationId.length === 0 ||
+      (parsed.motionState !== 'moving' &&
+        parsed.motionState !== 'stationary' &&
+        parsed.motionState !== 'unknown') ||
+      typeof parsed.lastAdvanceEvidence !== 'string' ||
+      typeof parsed.lastAdvanceAt !== 'number' ||
+      !Array.isArray(parsed.passedStations) ||
+      typeof parsed.receivedAt !== 'number'
+    ) {
+      return null;
+    }
+    return {
+      currentStationId: parsed.currentStationId,
+      motionState: parsed.motionState,
+      lastAdvanceEvidence: parsed.lastAdvanceEvidence,
+      lastAdvanceAt: parsed.lastAdvanceAt,
+      passedStations: parsed.passedStations.filter(
+        (p): p is string => typeof p === 'string' && p.length > 0,
+      ),
+      receivedAt: parsed.receivedAt,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * #816 C — 사용자 토글 (lockless station-passed opt-in) 현재값을 AsyncStorage에서 읽는다.
  * BG task에서는 zustand store에 접근 불가하므로 useSettingsStore.setLocklessStationPassed가
  * 기록한 키를 직접 read. 값이 없거나 파싱 실패면 OFF(false) — default 보수적.
@@ -678,6 +801,19 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     const receivedAt = Date.now();
     addDomainBreadcrumb('push', 'silent-push', { kind: payload.kind ?? 'fire' });
     const apnsToken = await loadApnsToken();
+
+    // #1561 (T8, ADR-017 / S2 #1535 흡수) — backend SSoT 권위 mirror 저장.
+    //
+    // standard silent push payload에 ssot가 실려 있으면 BACKEND_SSOT_MIRROR_KEY에 그대로 영속화.
+    // useFusedNearestStation cascade picker가 다음 polling cycle에서 본 값을 read해 `backend-ssot`
+    // tier(최상위)로 채택한다. receivedAt도 함께 stamp해 cascade picker가 자체 staleness 판단.
+    //
+    // reschedule/trip-ended payload는 SSoT를 forward하지 않으므로 본 분기에서는 호출되지 않는다.
+    //
+    // 실패는 silent — backend SSoT mirror는 보조 신호로 cascade는 기존 tier fallback이 가능.
+    if ('ssot' in payload && payload.ssot !== undefined) {
+      await persistBackendSsotMirror(payload.ssot, receivedAt);
+    }
 
     // #1370 L5 — silent push 도달률 observability stamp.
     //
