@@ -82,6 +82,17 @@ export interface DestinationState {
   removeRecentDestination: (stationId: string) => void;
   loadRecentDestinations: () => Promise<void>;
   setCustomOrigin: (station: Station | null) => void;
+  /**
+   * #1541 — backend SSOT consensus가 강 신호로 customOrigin과 다른 station을 가리킬 때
+   * customOrigin을 unlock한다. customOrigin이 없거나 같은 station이면 no-op.
+   *
+   * 호출자(HomeScreen/fusion orchestration)는 `confidence === 'high'` 같은 강 신호 게이트를
+   * 통과한 후에만 호출해야 한다. ADR-014 §4 "사용자 명시 의향 = lock 동급 보호" 원칙상
+   * 약한 신호로 사용자 의향을 덮어쓰면 안 된다.
+   *
+   * @returns customOrigin이 실제로 해제됐으면 true, no-op이면 false.
+   */
+  clearCustomOriginForSsotOverride: (ssotStation: Station) => boolean;
   loadCustomOrigin: () => Promise<void>;
   setTripOrigin: (station: Station | null) => void;
   loadTripOrigin: () => Promise<void>;
@@ -261,6 +272,21 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
     } else {
       AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY).catch(noop);
     }
+  },
+
+  // #1541 — 강 SSOT consensus가 customOrigin과 다른 station을 가리키면 unlock.
+  // 같은 station 또는 customOrigin 없음이면 no-op (불필요한 storage write/breadcrumb 회피).
+  clearCustomOriginForSsotOverride: (ssotStation: Station) => {
+    const current = get().customOrigin;
+    if (current === null) return false;
+    if (current.id === ssotStation.id) return false;
+    addDomainBreadcrumb('trip', 'custom-origin-ssot-override', {
+      prev: current.name,
+      ssot: ssotStation.name,
+    });
+    set({ customOrigin: null });
+    AsyncStorage.removeItem(CUSTOM_ORIGIN_KEY).catch(noop);
+    return true;
   },
 
   loadCustomOrigin: async () => {

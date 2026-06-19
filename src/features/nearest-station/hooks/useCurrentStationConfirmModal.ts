@@ -31,6 +31,19 @@ export interface UseCurrentStationConfirmModalInputs {
   readonly wifiStation: Station | null;
   /** origin이 이미 결정돼 있으면 모달 차단 — UX 방해 회피. */
   readonly hasEffectiveOrigin: boolean;
+  /**
+   * #1541 — trip(목적지)이 활성 상태이면 F4 자동 확정/모달 모두 비활성.
+   *
+   * trip 중에는 effectiveOrigin이 lock(boardingLock) 또는 customOrigin(사용자 명시 의향)으로
+   * 이미 묶여 있는 게 정상이며, GPS pause(BG 진입/지하 dead zone)로 `result?.station`이
+   * 일시적으로 null이 되어 hasEffectiveOrigin이 false로 떨어지더라도 F4가 다른 station을
+   * customOrigin으로 설정하면 trip-locked origin을 영구 덮어쓰는 stuck 회귀가 발생한다
+   * (2026-06-19 트립 2 "고터 11분 stuck").
+   *
+   * trip 활성 중에는 origin 정정을 사용자 수동 탭(BoardingTrainList / OriginPicker) 또는
+   * 강 SSOT consensus(useDestinationStore.clearCustomOriginForSsotOverride)로만 허용한다.
+   */
+  readonly tripActive?: boolean;
   /** 사용자 1탭 또는 자동 확정 시 호출 (customOrigin 적용). */
   readonly onConfirmStation: (station: Station) => void;
   /** uncertain 지속 임계값(ms). 기본 8000. */
@@ -62,6 +75,7 @@ export function useCurrentStationConfirmModal(
     userLocation,
     wifiStation,
     hasEffectiveOrigin,
+    tripActive = false,
     onConfirmStation,
     uncertainThresholdMs = DEFAULT_UNCERTAIN_THRESHOLD_MS,
   } = inputs;
@@ -89,14 +103,15 @@ export function useCurrentStationConfirmModal(
   }, [locationUncertain, hasEffectiveOrigin, uncertainThresholdMs]);
 
   // 자동 확정: visible 조건 충족 + isAutoConfirmed이면 모달 없이 즉시 적용. 같은 station 재진입은 1회만.
+  // #1541 — trip 활성 중에는 자동 확정 비활성. trip-locked origin을 덮어쓰는 stuck 회귀 차단.
   useEffect(() => {
-    if (!uncertainSustained || dismissed || hasEffectiveOrigin) return;
+    if (!uncertainSustained || dismissed || hasEffectiveOrigin || tripActive) return;
     if (!isAutoConfirmed || topPick === null) return;
     if (autoConfirmedRef.current === topPick.id) return;
     autoConfirmedRef.current = topPick.id;
     setAutoConfirmedStation(topPick);
     onConfirmStation(topPick);
-  }, [uncertainSustained, dismissed, hasEffectiveOrigin, isAutoConfirmed, topPick, onConfirmStation]);
+  }, [uncertainSustained, dismissed, hasEffectiveOrigin, tripActive, isAutoConfirmed, topPick, onConfirmStation]);
 
   // 자동 확정 ref reset — origin이 변경(또는 해제)되면 다음 uncertain 세션에서 다시 자동 확정 가능.
   useEffect(() => {
@@ -120,13 +135,16 @@ export function useCurrentStationConfirmModal(
     setAutoConfirmedStation(null);
   }, []);
 
+  // #1541 — trip 활성 중에는 modal도 차단(자동 확정과 일관). trip 중 origin 정정은
+  // 수동 탭 또는 강 SSOT consensus 경유.
   const visible = useMemo(
     () =>
       uncertainSustained &&
       !dismissed &&
       !hasEffectiveOrigin &&
+      !tripActive &&
       !isAutoConfirmed,
-    [uncertainSustained, dismissed, hasEffectiveOrigin, isAutoConfirmed],
+    [uncertainSustained, dismissed, hasEffectiveOrigin, tripActive, isAutoConfirmed],
   );
 
   return {

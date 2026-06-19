@@ -27,6 +27,7 @@ interface RenderInputs {
   userLocation: typeof YONGMASAN_LOC | null;
   wifiStation: Station | null;
   hasEffectiveOrigin: boolean;
+  tripActive?: boolean;
   onConfirmStation: (s: Station) => void;
   uncertainThresholdMs?: number;
 }
@@ -286,6 +287,50 @@ describe('useCurrentStationConfirmModal', () => {
         jest.advanceTimersByTime(DEFAULT_UNCERTAIN_THRESHOLD_MS + 100);
       });
       expect(result.current.visible).toBe(false);
+    });
+
+    it('#1541 — tripActive=true면 자동 확정 비활성 (wifi 매칭이어도 onConfirmStation 미호출)', () => {
+      const onConfirmStation = jest.fn();
+      const { result } = setup({
+        locationUncertain: true,
+        wifiStation: YONGMASAN,
+        tripActive: true,
+        onConfirmStation,
+      });
+      act(() => {
+        jest.advanceTimersByTime(DEFAULT_UNCERTAIN_THRESHOLD_MS + 100);
+      });
+      expect(onConfirmStation).not.toHaveBeenCalled();
+      expect(result.current.autoConfirmedStation).toBeNull();
+    });
+
+    it('#1541 — tripActive=true면 모달도 차단 (uncertain 후보 다중이어도 visible=false)', () => {
+      const { result } = setup({
+        locationUncertain: true,
+        userLocation: FAR_OFFSHORE,
+        tripActive: true,
+      });
+      act(() => {
+        jest.advanceTimersByTime(DEFAULT_UNCERTAIN_THRESHOLD_MS + 100);
+      });
+      expect(result.current.visible).toBe(false);
+    });
+
+    it('#1541 — tripActive=true → false 전환 시 자동 확정 재개', () => {
+      const onConfirmStation = jest.fn();
+      const { result, rerender, props } = setup({
+        locationUncertain: true,
+        wifiStation: YONGMASAN,
+        tripActive: true,
+        onConfirmStation,
+      });
+      act(() => {
+        jest.advanceTimersByTime(DEFAULT_UNCERTAIN_THRESHOLD_MS + 100);
+      });
+      expect(onConfirmStation).not.toHaveBeenCalled();
+      rerender({ ...props, tripActive: false });
+      expect(onConfirmStation).toHaveBeenCalledWith(YONGMASAN);
+      expect(result.current.autoConfirmedStation).toBe(YONGMASAN);
     });
 
     it('dismiss 후 uncertain 해소되었다가 다시 발생 → 모달 재오픈 가능', () => {
