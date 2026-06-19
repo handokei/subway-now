@@ -1020,4 +1020,66 @@ describe('useDestinationStore', () => {
       expect(call).toBeUndefined();
     });
   });
+
+  // #1541 — 강 SSOT consensus 시 customOrigin unlock.
+  describe('clearCustomOriginForSsotOverride (#1541)', () => {
+    it('customOrigin이 없으면 no-op (false 반환, storage write 없음)', () => {
+      (AsyncStorage.removeItem as jest.Mock).mockClear();
+      const result = useDestinationStore
+        .getState()
+        .clearCustomOriginForSsotOverride(mockStation);
+      expect(result).toBe(false);
+      expect(useDestinationStore.getState().customOrigin).toBeNull();
+      expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:custom-origin');
+    });
+
+    it('customOrigin과 같은 station이면 no-op (false 반환)', () => {
+      useDestinationStore.getState().setCustomOrigin(mockStation);
+      (AsyncStorage.removeItem as jest.Mock).mockClear();
+      const result = useDestinationStore
+        .getState()
+        .clearCustomOriginForSsotOverride(mockStation);
+      expect(result).toBe(false);
+      expect(useDestinationStore.getState().customOrigin?.id).toBe(mockStation.id);
+      expect(AsyncStorage.removeItem).not.toHaveBeenCalledWith('subway-now:custom-origin');
+    });
+
+    it('customOrigin과 다른 station이면 메모리/storage 모두 unlock (true 반환)', () => {
+      useDestinationStore.getState().setCustomOrigin(mockStation);
+      (AsyncStorage.removeItem as jest.Mock).mockClear();
+      const result = useDestinationStore
+        .getState()
+        .clearCustomOriginForSsotOverride(mockStation2);
+      expect(result).toBe(true);
+      expect(useDestinationStore.getState().customOrigin).toBeNull();
+      expect(AsyncStorage.removeItem).toHaveBeenCalledWith('subway-now:custom-origin');
+    });
+
+    it('unlock 시 custom-origin-ssot-override breadcrumb 발사', () => {
+      useDestinationStore.getState().setCustomOrigin(mockStation);
+      mockAddDomainBreadcrumb.mockClear();
+      useDestinationStore
+        .getState()
+        .clearCustomOriginForSsotOverride(mockStation2);
+      const call = mockAddDomainBreadcrumb.mock.calls.find(
+        ([_category, message]) => message === 'custom-origin-ssot-override',
+      );
+      expect(call).toBeDefined();
+      const data = call?.[2] as Record<string, unknown> | undefined;
+      expect(data).toMatchObject({
+        prev: mockStation.name,
+        ssot: mockStation2.name,
+      });
+    });
+
+    it('AsyncStorage.removeItem reject돼도 crash 없이 메모리 unlock 유지', () => {
+      useDestinationStore.getState().setCustomOrigin(mockStation);
+      (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('boom'));
+      const result = useDestinationStore
+        .getState()
+        .clearCustomOriginForSsotOverride(mockStation2);
+      expect(result).toBe(true);
+      expect(useDestinationStore.getState().customOrigin).toBeNull();
+    });
+  });
 });

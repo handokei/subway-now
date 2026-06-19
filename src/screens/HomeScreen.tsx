@@ -56,6 +56,7 @@ import { useDestinationAutoClear } from '../features/alarm/hooks/useDestinationA
 import { useBoardingLockSync } from '../features/alarm/hooks/useBoardingLockSync';
 import { useFgPositionUpload } from '../features/alarm/hooks/useFgPositionUpload';
 import { useCurrentStationConfirmModal } from '../features/nearest-station/hooks/useCurrentStationConfirmModal';
+import { isStrongFusionConfidence } from '../shared/constants/fusionConfidenceStrength';
 import { useWifiStation } from '../features/nearest-station/hooks/useWifiStation';
 import { CurrentStationConfirmModal } from '../features/nearest-station/components/CurrentStationConfirmModal';
 import { MisBoardingBanner } from '../features/route/components/MisBoardingBanner';
@@ -95,6 +96,10 @@ export default function HomeScreen() {
   const customOrigin = useDestinationStore((s) => s.customOrigin);
   const setCustomOrigin = useDestinationStore((s) => s.setCustomOrigin);
   const loadCustomOrigin = useDestinationStore((s) => s.loadCustomOrigin);
+  // #1541 — 강 SSOT consensus가 customOrigin과 다른 station을 가리킬 때 unlock하는 액션.
+  const clearCustomOriginForSsotOverride = useDestinationStore(
+    (s) => s.clearCustomOriginForSsotOverride,
+  );
   const addFavorite = useFavoritesStore((s) => s.addFavorite);
   const removeFavorite = useFavoritesStore((s) => s.removeFavorite);
   const setSlotFavorite = useFavoritesStore((s) => s.setSlotFavorite);
@@ -207,8 +212,22 @@ export default function HomeScreen() {
     userLocation,
     wifiStation,
     hasEffectiveOrigin: customOrigin !== null || result?.station != null,
+    // #1541 — trip 활성 중에는 F4 자동 확정/모달 모두 비활성. trip-locked origin을
+    // 덮어쓰는 stuck 회귀 차단(2026-06-19 트립 2 "고터 11분 stuck").
+    tripActive: destination !== null,
     onConfirmStation: handleConfirmStation,
   });
+  // #1541 — fusion이 강 confidence로 customOrigin과 다른 station을 SSOT로 가리킬 때
+  // customOrigin을 unlock해 사용자가 trip 내내 stuck되는 회귀를 차단한다. confidence='high'는
+  // ADR-015 §5 consensus gate 통과 신호이며, ADR-014 §4 "사용자 명시 의향 동급 보호" 원칙상
+  // 약한 신호로 덮어쓰지 않는다.
+  useEffect(() => {
+    if (!customOrigin) return;
+    if (!result?.station) return;
+    if (!isStrongFusionConfidence(confidence)) return;
+    if (result.station.id === customOrigin.id) return;
+    clearCustomOriginForSsotOverride(result.station);
+  }, [customOrigin, result?.station, confidence, clearCustomOriginForSsotOverride]);
   useEffect(() => {
     if (confirmModal.autoConfirmedStation) {
       setConfirmAutoToast(
