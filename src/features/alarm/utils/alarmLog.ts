@@ -112,6 +112,11 @@ export type AlarmLogReason =
   // 'gate-hop-window-no-source'는 hop SSOT(estimator/lock/firedAlarms)가 모두 없어 게이트 미적용 graceful skip 적재.
   | 'gate-hop-window'
   | 'gate-hop-window-no-source'
+  // #1514 — lockless trip의 출발역 자기 자신(arc[0])에서 currentHopIndex=0일 때 차단된 발사.
+  // 2026-06-19 용마산 evidence: lockless 또는 lock fetch 부재 상태에서 origin hop window가
+  // candidate=0을 허용해 "출발역 도착" false fire 발생. lock 활성 trip은 본 가드 미적용
+  // (boardingStationId 기준 startStation 진행 알림은 정당 — ADR-014 §4 동급 보장).
+  | 'gate-origin-hop-lockless'
   // #1012 (H5) — useStationAlarm hydration state machine 각 phase 진입 stamp.
   // pre-hydrate → hydrating → storage-synced → ready 4단계. 'ready' 전 phase에서는
   // 모든 phase 알람 발사가 보류된다. transition 한 번에 1엔트리 적재 — 운영에서 phase
@@ -844,6 +849,30 @@ export function logSuppressedHopWindowNoSource(input: {
     source: input.source,
     outcome: 'suppressed',
     reason: 'gate-hop-window-no-source',
+    stationName: input.stationName,
+    kind: 'station-passed',
+  });
+}
+
+/**
+ * #1514 — lockless trip의 origin hop(arc[0] + currentHopIndex=0) station-passed 1건 차단 적재.
+ *
+ * `gate-hop-window`는 currentHopIndex ± windowSize 안의 candidate를 허용하므로 hopIndex=0일 때
+ * arc[0] (출발역 자기 자신)이 통과한다. lockless trip은 사용자가 origin에 도달한 신호가 아니라
+ * estimator default-hop이라 false positive — 본 reason으로 별도 분리해 운영에서 발생률을 추적한다.
+ *
+ * 호출자는 lock=null일 때만 본 함수를 호출 — lock 활성 trip은 boardingStationId 기준 origin
+ * 알림이 정당 신호이므로 본 가드 미적용 (ADR-014 §4 사용자 명시 의향 동급 보장).
+ */
+export function logSuppressedOriginHopLockless(input: {
+  source: AlarmLogSource;
+  stationName: string;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'gate-origin-hop-lockless',
     stationName: input.stationName,
     kind: 'station-passed',
   });
