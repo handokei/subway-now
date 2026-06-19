@@ -90,13 +90,15 @@ export function __setCorrIdForTest(value: string | null): void {
   cachedCorrId = value;
 }
 
+let callIdCounter = 0;
+
 /**
  * 새 callId 생성 — 한 fetch 호출의 call/response·error 1쌍을 묶는다.
- * Math.random + ts로 충돌 가능성을 무시할 수 있는 수준으로 떨어뜨린다.
+ * 단조 증가 counter + ts base36 — 보안용이 아닌 단순 진단 상관 식별자.
  */
 export function createCallId(): string {
-  // base36 short id — 9자리 이내. 시간 prefix 없이 충돌만 피하면 충분.
-  return Math.random().toString(36).slice(2, 11);
+  callIdCounter = (callIdCounter + 1) >>> 0;
+  return `${Date.now().toString(36)}${callIdCounter.toString(36)}`;
 }
 
 async function persist(): Promise<void> {
