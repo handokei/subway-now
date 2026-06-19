@@ -6,7 +6,7 @@
  *
  * ADR Roadmap "Feature-based + Ports & Adapters 디렉토리 재정비" Phase 5 (#890).
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   pushFusionDebugEntry,
   type FusionCandidateMini,
@@ -29,7 +29,7 @@ import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
 import { haversine } from '../../../shared/utils/haversine';
-import { findStationByNameAndLine } from '../../../shared/utils/stationLookup';
+import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { isWithinArcWindow, passesFusionDistanceGate } from '../utils/fusionDistanceGate';
 import { surfaceSSOTConsensus } from '../utils/surfaceSSotConsensus';
 import { undergroundSSOTConsensus } from '../utils/undergroundSSotConsensus';
@@ -42,8 +42,13 @@ import {
 } from '../../route/utils/stationProgressEstimator';
 import { hopTimeMsAt } from '../../route/utils/hopTime';
 import { getTripStartedAt } from '../../alarm/utils/tripStartStorage';
+import {
+  readBackendSsotMirror,
+  type BackendSsotMirrorEntry,
+} from '../../alarm/utils/backendSsotMirror';
 import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
 import {
+  BACKEND_SSOT_MIRROR_MAX_AGE_MS,
   DETECTION_FUSED_MAX_DISTANCE_KM,
   MAX_ACTIVE_LINES,
   MAX_FUSION_DELTA_KM,
@@ -72,6 +77,14 @@ interface UseFusedNearestStationReturn {
   result: NearestStationResult | null;
   /** GPS 원본 result — 비교/디버깅용. */
   gpsResult: NearestStationResult | null;
+  /**
+   * #1568 (T8b, Epic ADR-017 #1553) — sticky override 없는 raw GPS 최근접.
+   *
+   * 위젯 mirror(useWidgetMirror)는 본 값을 사용해 sticky:locked가 위젯에 stuck되는 회귀를 차단한다.
+   * fire path 채택 SSOT는 본 hook의 `result`(cascade 산출). 본 필드는 표시·sticky 격리 전용.
+   * 미정의 시 null (GPS dead zone 또는 권한 미부여).
+   */
+  liveResult: NearestStationResult | null;
   /** fusion 신뢰도. */
   confidence: FusionConfidence;
   /** fusion 신호 출처. position(가장 정확) > arrival(추정) > gps(거리). */
@@ -361,6 +374,43 @@ export function useFusedNearestStation(
   // #733 — 위치 이력 기반 정적 판정. shouldDowngradeFusion이 speed=null일 때 fallback으로 사용.
   // useNearestStation의 userLocation 변경마다 자동 누적/판정.
   const positionStability = usePositionStability(gps.userLocation);
+
+  // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT mirror 폴링.
+  //
+  // silent push handler가 BACKEND_SSOT_MIRROR_KEY에 영속화한 권위 스냅샷을 읽어 cascade picker가
+  // `backend-ssot` tier(최상위)로 채택할 수 있게 한다. 5s 간격 폴링 — backend는 cycle(~30s)마다
+  // 발사하므로 충분히 빈번하며 매 render read를 피해 AsyncStorage I/O 폭주를 방지.
+  // 미존재 / parse 실패 / staleness(60s 초과) 시 null로 두어 cascade는 기존 tier fallback (graceful).
+  const [backendSsotMirror, setBackendSsotMirror] = useState<BackendSsotMirrorEntry | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      void readBackendSsotMirror().then((entry) => {
+        if (cancelled) return;
+        // 무의미한 state update로 인한 추가 render 방지 — receivedAt이 같으면 동일 entry.
+        // 미존재(null) → 미존재(null) 전이도 setState skip.
+        setBackendSsotMirror((prev) => {
+          if (prev === null && entry === null) return prev;
+          if (
+            prev !== null &&
+            entry !== null &&
+            prev.receivedAt === entry.receivedAt &&
+            prev.currentStationId === entry.currentStationId
+          ) {
+            return prev;
+          }
+          return entry;
+        });
+      });
+    };
+    // 첫 read는 5s interval 첫 tick에 맡긴다 — 마운트 직후 동기 read의 microtask resolve가
+    // 첫 render commit phase와 겹쳐 act() warning을 발생시키는 회귀 차단(jest-expo setup).
+    const id = setInterval(tick, 5_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   // Phase A: 경로가 설정되면 진행도 기반 현재역으로 GPS 결과를 덮어쓴다.
   // origin/destination이 빠지면 useRouteProgress가 arc를 만들지 못하고 null을 반환,
@@ -702,10 +752,42 @@ export function useFusedNearestStation(
     fused.result.distanceKm <= DETECTION_FUSED_MAX_DISTANCE_KM &&
     (!boardingLock || fused.result.station.line === boardingLock.boardingLine);
 
+  // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT mirror cascade 채택 자격.
+  //
+  // 게이트 (false positive 방어):
+  //   1. mirror entry 존재 + station name이 stations.json로 resolve 가능.
+  //   2. lastAdvanceAt 기준 staleness 60s 이하 — backend cycle(~30s) 2회 + margin.
+  //      stale entry는 backend가 trip을 잊었거나 device가 silent push를 한동안 못 받은 상태 →
+  //      cascade 채택 시 사용자 실제 위치를 뒤덮을 risk가 있어 자연 fallback.
+  //   3. 노선 가드 — lock 활성 시 resolved station이 lock.boardingLine과 일치해야 채택.
+  //      lockless trip은 노선 가드 없이 backend가 advance한 station을 신뢰(보조 cross-check 없음).
+  const ssotStation = useMemo<Station | null>(() => {
+    if (!backendSsotMirror) return null;
+    if (boardingLock) {
+      return findStationByNameAndLine(
+        backendSsotMirror.currentStationId,
+        boardingLock.boardingLine,
+      );
+    }
+    return findStationByName(backendSsotMirror.currentStationId);
+  }, [backendSsotMirror, boardingLock]);
+  const nowMsForSsot = Date.now();
+  const ssotFresh =
+    backendSsotMirror !== null &&
+    nowMsForSsot - backendSsotMirror.lastAdvanceAt <= BACKEND_SSOT_MIRROR_MAX_AGE_MS;
+  const backendSsotAccepts = ssotStation !== null && ssotFresh;
+
   let result: NearestStationResult | null;
   let confidence: FusionConfidence;
   let source: FusionSource;
-  if (wifiStationResolved) {
+  if (backendSsotAccepts) {
+    // #1568 (T8b) — backend SSoT 권위 mirror. cascade 최상위. backend advance 게이트가
+    // ADR-017 6단(seed/repeat/motion-stop/cross-validation 등)을 이미 통과한 결과이므로
+    // device-side cascade tier보다 신뢰도가 높다. lock 활성/lockless 모두 동일 우선순위.
+    result = { station: ssotStation!, distanceKm: 0 };
+    confidence = 'backend-ssot';
+    source = 'backend-ssot';
+  } else if (wifiStationResolved) {
     result = wifiStationResolved;
     confidence = 'wifi-ssid';
     source = 'wifi-ssid';
@@ -1236,6 +1318,7 @@ export function useFusedNearestStation(
   return {
     result,
     gpsResult: gps.result,
+    liveResult: gps.liveResult,
     confidence,
     source,
     variants: gps.variants,

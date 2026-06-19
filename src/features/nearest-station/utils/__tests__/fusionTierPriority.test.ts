@@ -8,9 +8,15 @@ import type { FusionConfidence, FusionSource } from '../../../../shared/types/fu
 
 describe('fusionTierPriority (R-10, #1168)', () => {
   describe('FUSION_TIER_PRIORITY table', () => {
-    it('spec §4.2 순서 — wifi-ssid가 최상위, gps-only가 최하위', () => {
-      expect(FUSION_TIER_PRIORITY[0]).toBe<FusionTier>('wifi-ssid');
+    it('spec §4.2 순서 — backend-ssot가 최상위, gps-only가 최하위 (#1568 T8b)', () => {
+      expect(FUSION_TIER_PRIORITY[0]).toBe<FusionTier>('backend-ssot');
       expect(FUSION_TIER_PRIORITY[FUSION_TIER_PRIORITY.length - 1]).toBe<FusionTier>('gps-only');
+    });
+
+    it('#1568 (T8b) — backend-ssot이 wifi-ssid보다 상위', () => {
+      expect(FUSION_TIER_PRIORITY.indexOf('backend-ssot')).toBeLessThan(
+        FUSION_TIER_PRIORITY.indexOf('wifi-ssid'),
+      );
     });
 
     it('boarding-lock-train-match가 position-train보다 상위', () => {
@@ -46,7 +52,8 @@ describe('fusionTierPriority (R-10, #1168)', () => {
 
   describe('getTierRank', () => {
     it('표에 있는 tier는 indexOf 결과 반환', () => {
-      expect(getTierRank('wifi-ssid')).toBe(0);
+      expect(getTierRank('backend-ssot')).toBe(0);
+      expect(getTierRank('wifi-ssid')).toBe(1);
       expect(getTierRank('gps-only')).toBe(FUSION_TIER_PRIORITY.length - 1);
     });
 
@@ -57,6 +64,7 @@ describe('fusionTierPriority (R-10, #1168)', () => {
 
   describe('tierFor — (source, confidence) → FusionTier 매핑', () => {
     const cases: ReadonlyArray<[FusionSource, FusionConfidence, FusionTier]> = [
+      ['backend-ssot', 'backend-ssot', 'backend-ssot'],
       ['wifi-ssid', 'wifi-ssid', 'wifi-ssid'],
       ['boarding-lock', 'boarding-lock', 'boarding-lock-train-match'],
       ['boarding-lock-interp', 'boarding-lock-interp', 'estimator-live-position'],

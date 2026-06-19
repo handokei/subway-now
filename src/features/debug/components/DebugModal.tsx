@@ -14,6 +14,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
 import { getTripStartedAt } from '../../alarm/utils/tripStartStorage';
+import {
+  readBackendSsotMirror,
+  type BackendSsotMirrorEntry,
+} from '../../alarm/utils/backendSsotMirror';
 import { isDebugModalEnabled } from '../../../shared/constants/debugFlags';
 import type { GpsActiveState } from '../../../shared/constants/gpsStatus';
 import { formatClockTimeWithSeconds } from '../../../shared/utils/formatTime';
@@ -468,6 +472,11 @@ interface BuildDumpArgs {
   arrivalSummary: string;
   isMock: boolean;
   silentPush: SilentPushDiagnostics;
+  /**
+   * #1568 (T8b, Epic ADR-017 #1553) — backend가 silent push로 forward한 TripPositionSSoT mirror.
+   * null/미전달 시 dump는 `(no recent SSoT push)` 한 줄만 출력 — backend 호환성 추적용.
+   */
+  backendSsotMirror?: BackendSsotMirrorEntry | null;
   logs: AlarmLogEntry[];
   // #856: lockless station-passed toggle ON/OFF — Silent Push 섹션 row의 SSOT.
   // optional — DebugModal 본체는 항상 전달, 단순 dump 단위 테스트는 생략 가능(기본 false).
@@ -674,6 +683,31 @@ function buildSilentPushSection(args: BuildDumpArgs): string[] {
     args.locklessOn ?? false,
     args.lowPowerMode ?? false,
   ).map(({ dumpKey, value }) => `${dumpKey}=${value}`);
+}
+
+/**
+ * #1568 (T8b, Epic ADR-017 #1553) — backend SSoT mirror dump rows.
+ *
+ * silent push payload.ssot가 BACKEND_SSOT_MIRROR_KEY에 영속화한 상태. backend cycle이 한 번도
+ * SSoT 권위를 forward 안 했으면 `(no recent SSoT push)` 1줄만 노출 — share dump에서 backend
+ * 호환성/cycle 활성 여부가 즉시 식별 가능하도록.
+ */
+const BACKEND_SSOT_DUMP_LABELS = {
+  currentStationId: 'currentStationId',
+  motionState: 'motionState',
+  lastAdvanceEvidence: 'lastAdvanceEvidence',
+  lastAdvanceAt: 'lastAdvanceAt',
+} as const;
+
+function buildBackendSsotSection(args: BuildDumpArgs): string[] {
+  const entry = args.backendSsotMirror ?? null;
+  if (!entry) return ['(no recent SSoT push)'];
+  return [
+    `${BACKEND_SSOT_DUMP_LABELS.currentStationId}=${entry.currentStationId}`,
+    `${BACKEND_SSOT_DUMP_LABELS.motionState}=${entry.motionState}`,
+    `${BACKEND_SSOT_DUMP_LABELS.lastAdvanceEvidence}=${entry.lastAdvanceEvidence}`,
+    `${BACKEND_SSOT_DUMP_LABELS.lastAdvanceAt}=${entry.lastAdvanceAt}`,
+  ];
 }
 
 function buildScheduledQueueSection(args: BuildDumpArgs): string[] {
@@ -1071,6 +1105,8 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
   { title: 'Sleep', build: buildSleepSection },
   { title: 'Arrival', build: buildArrivalSection },
   { title: 'Silent Push', build: buildSilentPushSection },
+  // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT 권위 mirror.
+  { title: 'Backend SSoT', build: buildBackendSsotSection },
   {
     title: 'Scheduled queue',
     build: buildScheduledQueueSection,
@@ -1271,6 +1307,37 @@ function DebugModalInner({
   const stationName = result?.station.name ?? null;
   const { arrival, isMock } = useArrivalInfo(stationName);
   const silentPush = useSilentPushDiagnostics();
+  // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT 권위 mirror 폴링. 5s 간격.
+  // 미존재(backend가 한 번도 forward 안 함) / parse 실패 시 null → '(no recent SSoT push)' 표시.
+  const [backendSsotMirror, setBackendSsotMirror] =
+    useState<BackendSsotMirrorEntry | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const tick = () => {
+      void readBackendSsotMirror().then((entry) => {
+        if (cancelled) return;
+        setBackendSsotMirror((prev) => {
+          if (prev === null && entry === null) return prev;
+          if (
+            prev !== null &&
+            entry !== null &&
+            prev.receivedAt === entry.receivedAt &&
+            prev.currentStationId === entry.currentStationId
+          ) {
+            return prev;
+          }
+          return entry;
+        });
+      });
+    };
+    // 첫 read 즉시 실행 — DebugModal은 사용자가 명시적으로 연 화면이라 첫 entry를 빠르게 표시.
+    tick();
+    const id = setInterval(tick, 5_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
   // #856: lockless station-passed toggle. OFF면 backend가 받은 silent push도 client가
   // intermediate 알림을 차단 → "received는 늘어도 fired는 안 늘어남"이 정상 동작.
   // DebugModal에 한 줄로 노출해 사용자가 설정 위치를 즉시 알 수 있게 한다.
@@ -1489,6 +1556,8 @@ function DebugModalInner({
       arrivalSummary,
       isMock,
       silentPush,
+      // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT 권위 mirror.
+      backendSsotMirror,
       logs,
       locklessOn,
       lowPowerMode,
@@ -1536,6 +1605,7 @@ function DebugModalInner({
     arrivalSummary,
     isMock,
     silentPush,
+    backendSsotMirror,
     logs,
     locklessOn,
     lowPowerMode,
@@ -1754,6 +1824,45 @@ function DebugModalInner({
               ({ uiLabel, value }) => (
                 <KeyValue key={uiLabel} label={uiLabel} value={value} colors={colors} />
               ),
+            )}
+          </Section>
+
+          {/*
+           * #1568 (T8b, Epic ADR-017 #1553) — backend SSoT 권위 mirror 표시.
+           * silent push payload.ssot가 BACKEND_SSOT_MIRROR_KEY에 영속화한 권위 스냅샷.
+           * backend가 한 번도 SSoT 권위를 forward 안 한 cycle은 `(no recent SSoT push)` 1줄.
+           */}
+          <Section title="Backend SSoT" colors={colors}>
+            {backendSsotMirror ? (
+              <>
+                <KeyValue
+                  label={BACKEND_SSOT_DUMP_LABELS.currentStationId}
+                  value={backendSsotMirror.currentStationId}
+                  colors={colors}
+                />
+                <KeyValue
+                  label={BACKEND_SSOT_DUMP_LABELS.motionState}
+                  value={backendSsotMirror.motionState}
+                  colors={colors}
+                />
+                <KeyValue
+                  label={BACKEND_SSOT_DUMP_LABELS.lastAdvanceEvidence}
+                  value={backendSsotMirror.lastAdvanceEvidence}
+                  colors={colors}
+                />
+                <KeyValue
+                  label={BACKEND_SSOT_DUMP_LABELS.lastAdvanceAt}
+                  value={String(backendSsotMirror.lastAdvanceAt)}
+                  colors={colors}
+                />
+              </>
+            ) : (
+              <Text
+                style={[typography.mono, { color: colors.muted }]}
+                testID="debug-backend-ssot-empty"
+              >
+                (no recent SSoT push)
+              </Text>
             )}
           </Section>
 

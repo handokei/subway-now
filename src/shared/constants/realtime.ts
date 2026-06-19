@@ -15,6 +15,10 @@ export const MAX_FUSION_DELTA_KM = 0.2;
 // #445 positionTrain trainProgress 신선도. 7호선 역간 평균 100~120s의 절반.
 // 이 시간 이상 갱신 없으면 sticky 락(lastConfirmedTrainNo) 자체를 해제한다.
 export const POSITION_TRAIN_TTL_MS = 60_000;
+// #1568 (T8b, Epic ADR-017 #1553) — backend SSoT mirror staleness 게이트.
+// silent push payload.ssot.lastAdvanceAt 기준 본 ms 초과 시 cascade 채택 거부.
+// backend는 cycle(~30s)마다 advance를 보내므로 2 cycle + 여유 margin.
+export const BACKEND_SSOT_MIRROR_MAX_AGE_MS = 60_000;
 // #1016 hole (c): BoardingLock 활성 시 positionTrain 후보가 유효한 arc 구간 window.
 // 탑승역 인덱스 + LOCK_NEXT_HOP_WINDOW 범위 내 역만 허용. 지하 dead zone에서 훨씬 앞의
 // 역을 채택하는 false positive를 차단한다. 인접역 간 평균 주행 시간(90s) × TTL(60s) 기준으로
