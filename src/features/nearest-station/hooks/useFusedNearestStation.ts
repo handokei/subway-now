@@ -11,6 +11,8 @@ import {
   pushFusionDebugEntry,
   type FusionCandidateMini,
 } from '../utils/fusionDebugBuffer';
+import { pushRawSignal } from '../../observability/utils/rawSignalBuffer';
+import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { pushEstimatorEntry } from '../../route/utils/estimatorDebugBuffer';
 import { useNearestStation } from './useNearestStation';
 import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
@@ -1028,6 +1030,10 @@ export function useFusedNearestStation(
   const lastDecisionKeyRef = useRef<string | null>(null);
   const resultStationId = result?.station.id ?? null;
   const decisionKey = `${source}|${confidence}|${resultStationId}|${detectionVerdict.signalMask}`;
+
+  // #1501 (ADR-015 §10 P5 / PR-A) — 직전 cycle stationId 추적해 변화 시 exit + enter stamp.
+  // corrId는 in-memory cache에서 sync read (setTripCorrId/clear 시 cache 갱신 보장).
+  const lastStationIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (lastDecisionKeyRef.current === decisionKey) return;
     lastDecisionKeyRef.current = decisionKey;
@@ -1090,7 +1096,87 @@ export function useFusedNearestStation(
               signalsAvailable: detectionVerdict.signalsAvailable,
             },
     });
-  }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, trainProgress, lockedTrainCode, detectionVerdict]);
+
+    // #1501 (ADR-015 §10 P5 / PR-A) — device raw signal dump.
+    // fusionDebugBuffer는 in-memory 전용(강제종료 시 소실). rawSignalBuffer는 영속화돼
+    // 7일 cold-launch 회귀 사후 분석에 사용. 동일 결정 변화 keyed cycle에서 함께 push.
+    // 가용 신호를 최대한 채워야 P5 학습 입력으로 활용 가능 (review P1-1).
+    const gpsForDump = gps.userLocation
+      ? {
+          lat: gps.userLocation.lat,
+          lng: gps.userLocation.lng,
+          accM: gps.accuracyMeters,
+          speedMps: gps.speedMps,
+        }
+      : null;
+    // motionStationary는 boolean | undefined. boolean으로 들어오면 stationary/unknown 라벨로 매핑.
+    // 정확한 motion provider 라벨(walking/automotive)은 후속 PR에서 motion-activity 모듈 expose 후 보강.
+    let motionForDump: 'stationary' | 'unknown' | null = null;
+    if (motionStationary === true) {
+      motionForDump = 'stationary';
+    } else if (motionStationary === false) {
+      motionForDump = 'unknown';
+    }
+    // arvlCd: up 방향 첫 슬롯 우선, 없으면 down 첫 슬롯. 둘 다 없으면 null.
+    // 후속 PR에서 up/down 둘 다 기록하도록 entry shape 확장 검토.
+    const arvlCdForDump =
+      fusionArrival?.up[0]?.arrivalCode ?? fusionArrival?.down[0]?.arrivalCode ?? null;
+    const arcProgressForDump = progress.progressM ?? null;
+    const ts = Date.now();
+    const prevStationId = lastStationIdRef.current;
+    const nextStationId = resultStationId;
+    if (prevStationId !== null && result !== null && nextStationId !== null && prevStationId !== nextStationId) {
+      pushRawSignal({
+        ts,
+        corrId: getCurrentTripCorrIdSync(),
+        kind: 'exit',
+        gps: gpsForDump,
+        motion: motionForDump,
+        subsurface: barometerSubsurface ?? null,
+        arvlCd: arvlCdForDump,
+        line: null,
+        dir: null,
+        arcIdx: null,
+        arcProgress: arcProgressForDump,
+        stationId: prevStationId,
+        source: null,
+        confidence: null,
+      });
+      pushRawSignal({
+        ts,
+        corrId: getCurrentTripCorrIdSync(),
+        kind: 'enter',
+        gps: gpsForDump,
+        motion: motionForDump,
+        subsurface: barometerSubsurface ?? null,
+        arvlCd: arvlCdForDump,
+        line: result.station.line,
+        dir: null,
+        arcIdx: null,
+        arcProgress: arcProgressForDump,
+        stationId: nextStationId,
+        source,
+        confidence,
+      });
+    }
+    lastStationIdRef.current = nextStationId;
+    pushRawSignal({
+      ts,
+      corrId: getCurrentTripCorrIdSync(),
+      kind: 'cycle',
+      gps: gpsForDump,
+      motion: motionForDump,
+      subsurface: barometerSubsurface ?? null,
+      arvlCd: arvlCdForDump,
+      line: result?.station.line ?? null,
+      dir: null,
+      arcIdx: null,
+      arcProgress: arcProgressForDump,
+      stationId: nextStationId,
+      source,
+      confidence,
+    });
+  }, [decisionKey, source, confidence, result, wifiStationResolved, positionTrainResult, fused, routeResult, gps.result, gps.accuracyMeters, gps.userLocation, gps.speedMps, trainProgress, lockedTrainCode, detectionVerdict, barometerSubsurface, resultStationId, motionStationary, fusionArrival, progress.progressM]);
 
   return {
     result,

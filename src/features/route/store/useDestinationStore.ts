@@ -19,6 +19,7 @@ import {
 import { RECENT_ROUTES_LIMIT } from '../../../shared/constants/recentDestinations';
 import { runTripBoundCleanups } from '../../alarm/store/tripBoundCleanups';
 import { setTripStartedAt } from '../../alarm/utils/tripStartStorage';
+import { generateTripCorrId, setTripCorrId } from '../../observability/utils/tripCorrId';
 import { triggerTripEndRecall } from '../../alarm/utils/triggerTripEndRecall';
 import { useAlarmEventStore } from '../../alarm/store/useAlarmEventStore';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../../../shared/utils/stationRoute';
@@ -181,6 +182,14 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
         .catch(noop)
         .then(() => (station ? setTripStartedAt() : undefined))
         .catch(noop);
+      // #1501 (ADR-015 §10 P5 / PR-A) — 새 trip 시작 시 corrId 생성.
+      // rawSignalBuffer entry / backend evidence가 어떤 trip 소속인지 사후 재구성용.
+      // chain 밖 fire-and-forget — setTripCorrId가 sync cache를 즉시 갱신해 fusion cycle 다음
+      // cycle부터 새 corrId 보장. AsyncStorage write는 백그라운드 (storage 실패는 graceful).
+      // station === null(trip 종료) 경로에서는 tripBoundCleanups가 clearTripCorrId를 처리.
+      if (station) {
+        void setTripCorrId(generateTripCorrId());
+      }
       // customOrigin 메모리 상태도 동기화. (loadCustomOrigin은 hydration용이므로 영향 없음)
       if (get().customOrigin !== null) {
         set({ customOrigin: null });
