@@ -65,6 +65,11 @@ import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seo
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import { listTrips, putTrip } from './trips';
 import {
+  evaluateTransferDestinationGate,
+  isTransferOrDestination,
+  type TransferDestinationBlockReason,
+} from './transferDestinationGate';
+import {
   readSsot,
   SSOT_CRON_READ_CACHE_TTL_SEC,
   type TripPositionSSoT,
@@ -366,6 +371,13 @@ export interface ScheduledStats extends LiveActivityStats {
    */
   boardingLockWaypointAdvanceBlocked: number;
   /**
+   * ADR-017 T7 (#1560) — transfer/destination kind 의 station-passed/transfer-release fire 시점에
+   * `evaluateTransferDestinationGate`가 차단한 누적 횟수. SSoT.currentStationId 가 waypoint 또는
+   * 직전 1 hop 아님 / lastAdvanceAt 60s stale / 미advance 분포를 production tail 로 확인. 2026-06-19
+   * 정지 trip "환승임박 건대입구" false 발사(N9) 회귀를 직접 차단하는 게이트.
+   */
+  transferDestinationGateBlocked: number;
+  /**
    * #1370 L2 — trainCode vanish 후 시간 기반 fallback advance 직전에 station-passed silent push가
    * 발사된 누적 횟수. fallback path가 어린이대공원/군자/중곡 같은 intermediate를 "지났음" 신호 없이
    * 통과하던 회귀(silent push 0건)를 닫는다.
@@ -472,6 +484,7 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     arvlCdFireBlocked: 0,
     arvlCdFireFired: 0,
     boardingLockWaypointAdvanceBlocked: 0,
+    transferDestinationGateBlocked: 0,
     vanishFallbackFired: 0,
     vanishReleaseFired: 0,
     vanishLocklessTakeover: 0,
@@ -1155,6 +1168,27 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       currentStationId: waypoint.stationName,
     });
   }
+  // ADR-017 T7 (#1560) — transfer/destination kind 발사 직전 추가 SSoT 일관성 검증.
+  // pre-advance SSoT 스냅샷으로 (1) currentStationId가 transfer/destination waypoint 또는
+  // 직전 1 hop 인지 (2) 마지막 advance 가 60s 이내 신선한지 확인. intermediate kind는 본 게이트
+  // 우회 — T4/T5 6단 게이트만으로 충분. 정지 trip "환승임박 건대입구" false fire(N9) 차단.
+  if (isTransferOrDestination(waypoint)) {
+    const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now);
+    if (!transferGate.pass) {
+      stats.arvlCdFireBlocked += 1;
+      stats.transferDestinationGateBlocked += 1;
+      log('arvlcd-fire: transfer/destination gate blocked', {
+        token: trip.token.slice(0, 8),
+        trainCode: lock.trainCode,
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+        reason: transferGate.blockReason satisfies TransferDestinationBlockReason | undefined,
+        ssotCurrent: ssot.currentStationId,
+        ssotLastAdvanceAt: ssot.lastAdvanceAt,
+      });
+      return { dirty: false };
+    }
+  }
   const outcome = await advanceTripPosition(
     env.TRIPS,
     trip.token,
@@ -1278,6 +1312,29 @@ export async function fireVanishFallbackStationPush(
     });
     return;
   }
+  // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward (arvlcd-fire와 동일 패턴).
+  const ssot = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
+  // ADR-017 T7 (#1560) — transfer/destination kind 발사 직전 SSoT 위치 + 신선도 일관성 검증.
+  // SSoT 부재 trip(legacy)은 본 게이트 통과시켜 기존 vanish-fallback 흐름 유지 — graceful.
+  if (ssot !== null && isTransferOrDestination(waypoint)) {
+    const transferGate = evaluateTransferDestinationGate(ssot, trip, waypoint, now);
+    if (!transferGate.pass) {
+      stats.transferDestinationGateBlocked += 1;
+      log(`${logPrefix}: transfer/destination gate blocked`, {
+        token: trip.token.slice(0, 8),
+        trainCode: lock.trainCode,
+        station: waypoint.stationName,
+        kind: waypoint.kind,
+        origin,
+        reason: transferGate.blockReason satisfies TransferDestinationBlockReason | undefined,
+        ssotCurrent: ssot.currentStationId,
+        ssotLastAdvanceAt: ssot.lastAdvanceAt,
+      });
+      return;
+    }
+  }
   const pushId = generatePushId();
   log(`${logPrefix}: station-passed push`, {
     token: trip.token.slice(0, 8),
@@ -1290,10 +1347,6 @@ export async function fireVanishFallbackStationPush(
   // release하므로 device에 `lockReleasedReason='vanish'`를 forward해 store sync. vanish-fallback은
   // 직후 `advanceBoardingLockWaypoint`로 흘러가 그 함수가 transfer 시 별도로 release를 통지한다.
   const lockReleasedReason: 'vanish' | undefined = origin === 'vanish-release' ? 'vanish' : undefined;
-  // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward (arvlcd-fire와 동일 패턴).
-  const ssot = await readSsot(env.TRIPS, trip.token, {
-    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
-  });
   const heal = await sendWithEnvHeal(
     (host) =>
       sendSilentPush({
