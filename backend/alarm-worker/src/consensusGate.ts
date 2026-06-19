@@ -63,6 +63,10 @@ export type StationEnvironment = 'surface' | 'underground' | 'mixed' | 'unknown'
  * 추후 wire 대상(현 cycle 미지원, undefined로 무시):
  * - `positionTrainAgreement`: device fusion이 산출한 position-train 일치 (strong C)
  * - `wifiSsidMatch`: 역 WiFi SSID 일치 (strong D)
+ * - `cellularEnvironmentVote`: device CTRadioAccessTechnology 기반 환경 vote (S10 #1543)
+ *     - 'surface'      : 4G/5G 잡힘 → 지상 환경 vote (strong F)
+ *     - 'underground'  : 2G/3G fallback → 지하 환경 vote (strong F)
+ *     - 'unknown'/미전송 : vote 미투표 (정책 영향 0)
  */
 export interface ConsensusSignals {
   gateOutcome: GateOutcome;
@@ -70,6 +74,7 @@ export interface ConsensusSignals {
   lockAttachable: boolean;
   positionTrainAgreement?: boolean;
   wifiSsidMatch?: boolean;
+  cellularEnvironmentVote?: 'surface' | 'underground' | 'unknown';
 }
 
 /**
@@ -86,7 +91,8 @@ export type ConsensusOutcome =
       reason:
         | 'base-gate-failed'
         | 'environment-no-gps-consensus'
-        | 'mixed-strong-signals-insufficient';
+        | 'mixed-strong-signals-insufficient'
+        | 'cellular-environment-contradicts';
     };
 
 /**
@@ -99,10 +105,41 @@ export type ConsensusOutcome =
  * - mixed/unknown: 보수적. arrival + lockAttachable 동시 충족 강제. base 9단 게이트 통과도
  *   동시에 요구해 false positive 누적 차단.
  */
+/**
+ * S10 #1543 — cellular vote가 trip 환경과 정면 충돌하는지 판정.
+ *
+ * 충돌 케이스(둘 다 명시적 surface ↔ underground일 때만 contradict):
+ *   - environment=surface + cellularEnvironmentVote=underground
+ *   - environment=underground + cellularEnvironmentVote=surface
+ *
+ * 비충돌 케이스 (모두 false):
+ *   - vote가 'unknown' / undefined (미투표) — 모르는 상태는 차단 안 함
+ *   - environment=mixed/unknown — 환경 자체가 보수적이라 vote로 추가 거절 X
+ *   - vote가 environment와 일치 — 정상
+ *
+ * 정책: 본 함수는 contradict만 식별. 일치 vote가 OR 통과를 추가로 열어주진 않는다
+ * (false positive 차단 우선 — surface GPS jitter가 cellular 4G와 동시에 거짓 합의를 만들면
+ *  지상 false positive로 새는 회귀를 막기 위함).
+ */
+function cellularContradictsEnvironment(
+  environment: StationEnvironment,
+  vote: ConsensusSignals['cellularEnvironmentVote'],
+): boolean {
+  if (vote === undefined || vote === 'unknown') return false;
+  if (environment === 'surface' && vote === 'underground') return true;
+  if (environment === 'underground' && vote === 'surface') return true;
+  return false;
+}
+
 export function evaluateConsensusGate(
   environment: StationEnvironment,
   signals: ConsensusSignals,
 ): ConsensusOutcome {
+  // S10 #1543 — cellular vote가 환경과 정면 충돌하면 즉시 reject.
+  // 본 게이트는 base 통과/미통과와 무관하게 적용 — 환경 자체가 신뢰 불가하다는 강한 신호.
+  if (cellularContradictsEnvironment(environment, signals.cellularEnvironmentVote)) {
+    return { pass: false, environment, reason: 'cellular-environment-contradicts' };
+  }
   const baseGatePassed = signals.gateOutcome.pass;
   if (environment === 'surface') {
     return baseGatePassed

@@ -126,6 +126,50 @@ describe('evaluateConsensusGate (ADR-015 §3/§4)', () => {
     });
   });
 
+  describe('S10 #1543 — cellularEnvironmentVote contradict 게이트', () => {
+    it('surface env + cellular=underground → reject (cellular-environment-contradicts)', () => {
+      expect(runGate('surface', { cellularEnvironmentVote: 'underground' })).toEqual({
+        pass: false,
+        environment: 'surface',
+        reason: 'cellular-environment-contradicts',
+      });
+    });
+
+    it('underground env + cellular=surface → reject (contradicts) — base 통과 무시', () => {
+      expect(runGate('underground', { cellularEnvironmentVote: 'surface' })).toEqual({
+        pass: false,
+        environment: 'underground',
+        reason: 'cellular-environment-contradicts',
+      });
+    });
+
+    it('surface env + cellular=surface (일치) → 기존 base 게이트 결과 그대로', () => {
+      expect(runGate('surface', { cellularEnvironmentVote: 'surface' }).pass).toBe(true);
+    });
+
+    it('underground env + cellular=underground (일치) → 기존 B+E 합의 통과', () => {
+      expect(runGate('underground', { cellularEnvironmentVote: 'underground' }).pass).toBe(true);
+    });
+
+    it('cellular=unknown → vote 미투표, 게이트 정책 영향 0', () => {
+      expect(runGate('surface', { cellularEnvironmentVote: 'unknown' }).pass).toBe(true);
+      expect(runGate('underground', { cellularEnvironmentVote: 'unknown' }).pass).toBe(true);
+    });
+
+    it('cellular undefined (필드 미전송) → vote 미투표', () => {
+      expect(runGate('surface').pass).toBe(true);
+    });
+
+    it('mixed env — cellular vote는 contradict 판정 대상이 아님 (보수)', () => {
+      expect(runGate('mixed', { cellularEnvironmentVote: 'surface' }).pass).toBe(true);
+      expect(runGate('mixed', { cellularEnvironmentVote: 'underground' }).pass).toBe(true);
+    });
+
+    it('unknown env — mixed와 동일 (cellular vote는 contradict 판정 X)', () => {
+      expect(runGate('unknown', { cellularEnvironmentVote: 'surface' }).pass).toBe(true);
+    });
+  });
+
   describe('§7 토글 input X — backend는 trip 등록만 본다', () => {
     it.each<StationEnvironment>(['surface', 'underground', 'mixed'])(
       '%s: 동일 signals → 토글 ON/OFF / boardingPrompt 응답 유무와 무관하게 동일 결과',

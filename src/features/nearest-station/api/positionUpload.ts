@@ -94,6 +94,17 @@ export interface PositionUploadPayload {
    * undefined/빈 문자열은 backend가 graceful drop (회귀 없음).
    */
   currentStationName?: string;
+  /**
+   * #1543 (ADR-016 S10) — 디바이스 CTRadioAccessTechnology 환경 vote (`useCellularTech`).
+   *
+   * - 'surface'      : 4G/5G 잡힘 → 지상 환경 vote
+   * - 'underground'  : 2G/3G fallback → 지하 환경 vote
+   * - 'unknown' / 미전송 : vote 미투표 (게이트 영향 0)
+   *
+   * iOS only. Android / 미지원 디바이스 / native module 부재 시 omit (graceful).
+   * backend `consensusGate`의 environment contradict 판정에 사용된다.
+   */
+  cellularEnvironmentVote?: 'surface' | 'underground' | 'unknown';
 }
 
 export interface PositionUploadResult {
