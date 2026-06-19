@@ -1616,6 +1616,56 @@ describe('DebugModal fusion log section', () => {
   });
 });
 
+describe('DebugModal backend calls section — #1518', () => {
+  const {
+    pushBackendCallEntry,
+    clearBackendCallEntries,
+  } = jest.requireActual('../../../../shared/utils/backendCallBuffer');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    clearBackendCallEntries();
+    setupHookDefaults();
+  });
+
+  it('비어있으면 (0) 헤더, push 시 라인을 노출한다', async () => {
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByText('Backend Calls (0)')).toBeTruthy();
+    act(() => {
+      pushBackendCallEntry({
+        kind: 'call',
+        ts: Date.now(),
+        callId: 'ui-test',
+        corrId: 't-ui',
+        url: 'https://api.example.com/trips',
+        method: 'POST',
+      });
+    });
+    expect(screen.getByText('Backend Calls (1)')).toBeTruthy();
+    const entries = screen.getAllByTestId('debug-backend-calls-entry');
+    expect(entries[0].props.children).toContain('CALL');
+    expect(entries[0].props.children).toContain('corrId=t-ui');
+  });
+
+  it('Clear 버튼이 backend call 로그를 비운다', async () => {
+    pushBackendCallEntry({
+      kind: 'call',
+      ts: Date.now(),
+      callId: 'ui-clear',
+      corrId: null,
+      url: 'https://api.example.com/x',
+      method: 'GET',
+    });
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(screen.getByText('Backend Calls (1)')).toBeTruthy());
+    act(() => {
+      fireEvent.press(screen.getByTestId('debug-backend-calls-clear'));
+    });
+    expect(screen.getByText('Backend Calls (0)')).toBeTruthy();
+  });
+});
+
 describe('formatFusionDebugLine', () => {
   const { formatFusionDebugLine } = __test__;
 
@@ -3288,3 +3338,145 @@ describe('DebugModal — #1430 환경 분포 share dump 통합', () => {
     shareSpy.mockRestore();
   });
 });
+
+describe('formatBackendCallLine — #1518', () => {
+  const { formatBackendCallLine } = __test__;
+
+  it('call entry: method/url/corrId/callId', () => {
+    const line = formatBackendCallLine({
+      kind: 'call',
+      ts: 0,
+      callId: 'cid1',
+      corrId: 't-abc',
+      url: 'https://api/trips',
+      method: 'POST',
+    });
+    expect(line).toContain('CALL');
+    expect(line).toContain('POST');
+    expect(line).toContain('https://api/trips');
+    expect(line).toContain('corrId=t-abc');
+    expect(line).toContain('callId=cid1');
+  });
+
+  it('response entry: status + latency', () => {
+    const line = formatBackendCallLine({
+      kind: 'response',
+      ts: 0,
+      callId: 'cid1',
+      corrId: null,
+      url: 'https://api/x',
+      method: 'GET',
+      status: 200,
+      latencyMs: 42,
+    });
+    expect(line).toContain('RESP');
+    expect(line).toContain('status=200');
+    expect(line).toContain('42ms');
+    expect(line).not.toContain('corrId=');
+  });
+
+  it('response entry: status/latency 누락 시 "-"/"0ms"', () => {
+    const line = formatBackendCallLine({
+      kind: 'response',
+      ts: 0,
+      callId: 'cid1',
+      corrId: null,
+      url: 'https://api/x',
+      method: 'GET',
+    });
+    expect(line).toContain('status=-');
+    expect(line).toContain('0ms');
+  });
+
+  it('error entry: errorMessage + latency', () => {
+    const line = formatBackendCallLine({
+      kind: 'error',
+      ts: 0,
+      callId: 'cid1',
+      corrId: 't-x',
+      url: 'https://api/y',
+      method: 'POST',
+      latencyMs: 4999,
+      errorMessage: 'aborted',
+    });
+    expect(line).toContain('ERR');
+    expect(line).toContain('err="aborted"');
+    expect(line).toContain('4999ms');
+  });
+
+  it('error entry: errorMessage 누락 시 "(no message)"', () => {
+    const line = formatBackendCallLine({
+      kind: 'error',
+      ts: 0,
+      callId: 'cid1',
+      corrId: null,
+      url: 'https://api/y',
+      method: 'POST',
+    });
+    expect(line).toContain('err="(no message)"');
+  });
+});
+
+describe('buildBackendCallsSection — #1518', () => {
+  const { buildBackendCallsSection } = __test__;
+  const baseArgs = {
+    userLocation: null,
+    speedMps: null,
+    accuracyMeters: null,
+    nearestName: null,
+    nearestDistanceM: null,
+    variants: [],
+    fusion: {
+      confidence: 'low' as const,
+      source: 'gps' as const,
+      fusedLabel: '',
+      gpsLabel: '',
+      differs: false,
+      candidateTrains: null,
+    },
+    arrivalSummary: '',
+    isMock: false,
+    silentPush: {} as never,
+    logs: [],
+  };
+
+  it('미전달 시 (empty) 1줄', () => {
+    expect(buildBackendCallsSection(baseArgs as never)).toEqual(['(empty)']);
+  });
+
+  it('빈 배열도 (empty)', () => {
+    expect(buildBackendCallsSection({ ...baseArgs, backendCalls: [] } as never)).toEqual([
+      '(empty)',
+    ]);
+  });
+
+  it('entries는 최신이 위로 정렬', () => {
+    const result = buildBackendCallsSection({
+      ...baseArgs,
+      backendCalls: [
+        {
+          kind: 'call',
+          ts: 1,
+          callId: 'a',
+          corrId: null,
+          url: 'https://x/1',
+          method: 'POST',
+        },
+        {
+          kind: 'response',
+          ts: 2,
+          callId: 'a',
+          corrId: null,
+          url: 'https://x/1',
+          method: 'POST',
+          status: 200,
+          latencyMs: 10,
+        },
+      ],
+    } as never);
+    expect(result).toHaveLength(2);
+    expect(result[0]).toContain('RESP');
+    expect(result[1]).toContain('CALL');
+  });
+});
+

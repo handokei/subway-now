@@ -146,3 +146,8 @@ export const SENTRY_OPT_IN_KEY = 'subway-now:sentry-opt-in';
 // 위치 게이트가 동일한 값을 read할 수 있도록 한다. updatedAt(epoch ms)은 TTL 만료 판별용.
 // 형식: {"subsurface": boolean, "updatedAt": number} JSON.
 export const SUBSURFACE_STATE_KEY = 'subway-now:subsurface';
+// #1518 — device → backend HTTP 호출 로그 ring buffer 영속화.
+// `instrumentBackendFetch` wrapper가 모든 backend fetch 시점에 call/response/error entry를
+// push하고 ring buffer를 통째로 AsyncStorage에 mirror한다. 앱 재시작 후 진단해도 직전 trip의
+// 호출 흔적을 잃지 않게 하는 게 목적. 형식: BackendCallLogEntry[] JSON (capacity 100).
+export const BACKEND_CALL_LOG_KEY = 'subway-now:backend-call-log';

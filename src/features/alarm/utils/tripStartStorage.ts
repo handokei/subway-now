@@ -14,11 +14,15 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { TRIP_STARTED_AT_KEY } from '../../../shared/constants/storageKeys';
+import { refreshCorrId } from '../../../shared/utils/backendCallBuffer';
 
 /** Trip 시작 시각 기록. setDestination switch 분기에서 호출. */
 export async function setTripStartedAt(at: number = Date.now()): Promise<void> {
   try {
     await AsyncStorage.setItem(TRIP_STARTED_AT_KEY, String(at));
+    // #1518 — backend call 로그 corrId 캐시 즉시 갱신. write와 동일 cycle에 hydrate해
+    // 다음 fetch부터 새 trip의 corrId가 entry에 박힌다.
+    void refreshCorrId();
   } catch {
     // graceful — recall 측정만 영향, trip 흐름 무관.
   }
@@ -40,6 +44,9 @@ export async function getTripStartedAt(): Promise<number | null> {
 export async function clearTripStartedAt(): Promise<void> {
   try {
     await AsyncStorage.removeItem(TRIP_STARTED_AT_KEY);
+    // #1518 — corrId 캐시도 즉시 비워 trip 종료 후 호출(LA clear, telemetry flush 등)에는
+    // corrId=null로 entry가 박힌다. trip 식별성 유지 + 누설 차단.
+    void refreshCorrId();
   } catch {
     // graceful — 다음 cleanup에서 재시도.
   }

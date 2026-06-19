@@ -23,6 +23,7 @@
  */
 
 import type { TripEndedReason } from '../tasks/silentPushTask';
+import { instrumentBackendFetch } from '../../../shared/utils/instrumentBackendFetch';
 
 /** active/ended 응답 (200) — null이면 trip이 사라진 것(404/410). */
 export interface TripStatusResult {
@@ -62,7 +63,8 @@ async function fetchWithTimeout(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await fetchImpl(input, { ...init, signal: controller.signal });
+    // #1518 — instrumentBackendFetch로 wrapping해 call/response/error entry를 진단 buffer에 push.
+    return await instrumentBackendFetch(input, { ...init, signal: controller.signal }, fetchImpl);
   } finally {
     clearTimeout(timer);
   }

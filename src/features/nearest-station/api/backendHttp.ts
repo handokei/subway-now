@@ -5,6 +5,8 @@
  * 사용하는 동일 로직. 한곳에서만 정의해 dup 제거 + 후속 backend endpoint 추가 시 동일 패턴 재사용.
  */
 
+import { instrumentBackendFetch } from '../../../shared/utils/instrumentBackendFetch';
+
 const REQUEST_TIMEOUT_MS = 5000;
 
 /** `EXPO_PUBLIC_ALARM_BACKEND_URL` trim. 미설정 시 null — 호출자는 graceful skip 처리. */
@@ -14,12 +16,15 @@ export function getBackendUrl(): string | null {
   return url.replace(/\/$/, '');
 }
 
-/** AbortController 기반 5s 타임아웃 fetch. BG/foreground 모두 동일 짧은 cutoff. */
+/**
+ * AbortController 기반 5s 타임아웃 fetch. BG/foreground 모두 동일 짧은 cutoff.
+ * #1518 — instrumentBackendFetch로 wrapping해 call/response/error entry를 진단 buffer에 push.
+ */
 export async function fetchWithTimeout(input: string, init: RequestInit): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    return await instrumentBackendFetch(input, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
