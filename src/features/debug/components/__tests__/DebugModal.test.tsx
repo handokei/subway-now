@@ -3706,4 +3706,104 @@ describe('DebugModal — #1501 Raw Signal 섹션', () => {
       shareSpy.mockRestore();
     });
   });
+
+  // #1540 (S7) — gps-drop 별 buffer. fusion log cap 점령 회귀 차단용 별 채널.
+  describe('GPS drops 섹션 (#1540)', () => {
+    const { formatGpsDropLine, buildGpsDropLogSection, buildDumpText } = __test__;
+    type DropEntry = import('../../../nearest-station/utils/gpsDropBuffer').GpsDropEntry;
+
+    const makeDrop = (overrides: Partial<DropEntry> = {}): DropEntry => ({
+      ts: 1_700_000_000_000,
+      lat: 37.5,
+      lng: 127.0,
+      accuracyMeters: 1414,
+      speedMps: null,
+      dropReason: 'low-accuracy-display',
+      ...overrides,
+    });
+
+    it('formatGpsDropLine: acc/speed/reason 모두 노출', () => {
+      const line = formatGpsDropLine(
+        makeDrop({ accuracyMeters: 1414, speedMps: 1.5, dropReason: 'low-accuracy-display' }),
+      );
+      expect(line).toContain('gps-drop');
+      expect(line).toContain('acc=1414m');
+      expect(line).toContain('sp=1.5m/s');
+      expect(line).toContain('reason=low-accuracy-display');
+    });
+
+    it('formatGpsDropLine: null acc/speed는 "-"로 표기', () => {
+      const line = formatGpsDropLine(
+        makeDrop({ accuracyMeters: null, speedMps: null, dropReason: 'rate-limited:5' }),
+      );
+      expect(line).toContain('acc=-');
+      expect(line).toContain('sp=-');
+      expect(line).toContain('reason=rate-limited:5');
+    });
+
+    it('buildGpsDropLogSection: 미전달/빈 배열 모두 (empty)', () => {
+      expect(buildGpsDropLogSection(baselineDumpArgs)).toEqual(['(empty)']);
+      expect(
+        buildGpsDropLogSection({ ...baselineDumpArgs, gpsDropLog: [] } as never),
+      ).toEqual(['(empty)']);
+    });
+
+    it('buildGpsDropLogSection: 최신이 위로 정렬', () => {
+      const result = buildGpsDropLogSection({
+        ...baselineDumpArgs,
+        gpsDropLog: [
+          makeDrop({ ts: 1000, accuracyMeters: 800 }),
+          makeDrop({ ts: 2000, accuracyMeters: 900 }),
+        ],
+      } as never);
+      expect(result).toHaveLength(2);
+      expect(result[0]).toContain('acc=900m');
+      expect(result[1]).toContain('acc=800m');
+    });
+
+    it('share dump가 GPS drops 섹션을 포함한다 (suffix는 buffer 길이)', () => {
+      const dump = buildDumpText(
+        makeDumpArgs({
+          gpsDropLog: [makeDrop({ accuracyMeters: 1234 })],
+        } as Partial<DumpArgs>),
+      );
+      expect(dump).toContain('## GPS drops (1)');
+      expect(dump).toContain('acc=1234m');
+    });
+
+    it('share dump: gpsDropLog 미전달 시 헤더(0) + (empty)', () => {
+      const dump = buildDumpText(makeDumpArgs());
+      expect(dump).toContain('## GPS drops (0)');
+      const section = dump.slice(dump.indexOf('## GPS drops'));
+      expect(section).toContain('(empty)');
+    });
+
+    it('UI: 비어있으면 (0) 표시, push 시 entry 노출, Clear가 비운다', async () => {
+      const {
+        clearGpsDropEntries,
+        pushGpsDropEntry,
+      } = jest.requireActual('../../../nearest-station/utils/gpsDropBuffer');
+      clearGpsDropEntries();
+      renderWithTheme(<DebugModal onClose={jest.fn()} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByText('GPS drops (0)')).toBeTruthy();
+      act(() => {
+        pushGpsDropEntry({
+          ts: new Date('2026-06-19T15:42:00Z').getTime(),
+          lat: 37.5,
+          lng: 127,
+          accuracyMeters: 1414,
+          speedMps: null,
+          dropReason: 'low-accuracy-display',
+        });
+      });
+      expect(screen.getByText('GPS drops (1)')).toBeTruthy();
+      const entries = screen.getAllByTestId('debug-gps-drop-log-entry');
+      expect(entries[0].props.children).toContain('acc=1414m');
+      act(() => {
+        fireEvent.press(screen.getByTestId('debug-gps-drop-log-clear'));
+      });
+      expect(screen.getByText('GPS drops (0)')).toBeTruthy();
+    });
+  });
 });
