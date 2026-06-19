@@ -5578,6 +5578,159 @@ describe('runScheduled — ADR-017 T4 (#1557) advanceTripPosition SSoT gate (arv
   });
 });
 
+/**
+ * ADR-017 T7 (#1560) — transfer/destination kind 발사 직전 SSoT 위치 + 신선도 게이트 통합 검증.
+ *
+ * 본 suite는 `tryAdvanceAndFireArvlcd` 진입 시점에 `evaluateTransferDestinationGate`가
+ * pre-advance SSoT 스냅샷으로 위치 일관성을 확인해 N9 회귀(2026-06-19 정지 trip "환승임박
+ * 건대입구" false 발사)를 차단함을 박제한다.
+ *
+ * 시나리오 매트릭스 (issue 본문 §검증 + 보강 §transferScenarios):
+ *   - P1 transfer at-target + 신선 SSoT → fire
+ *   - P2 transfer 직전 1 hop + 신선 SSoT → fire
+ *   - N9 transfer SSoT 다른 station + 신선 → block(ssot-not-at-or-approaching)
+ *   - N9-stale transfer at-target 인데 lastAdvanceAt 60s 초과 → block(ssot-stale)
+ *   - destination 동일 매트릭스 1개로 cover (N10)
+ */
+describe('runScheduled — ADR-017 T7 (#1560) transfer/destination SSoT gate', () => {
+  const TOKEN = 't7-tok';
+  const FRESH_LAST_ADVANCE = NOW - 30_000;
+  const STALE_LAST_ADVANCE = NOW - 90_000;
+
+  type T7Scenario = {
+    name: string;
+    waypointKind: 'transfer' | 'destination';
+    waypointStation: string;
+    ssotCurrentStation: string;
+    ssotLastAdvanceAt: number;
+    passedStations?: string[];
+    expectFire: boolean;
+    expectReason?: 'ssot-not-at-or-approaching' | 'ssot-stale';
+  };
+
+  const t7Scenarios: T7Scenario[] = [
+    {
+      name: 'P1 transfer at-target + 신선 SSoT → fire',
+      waypointKind: 'transfer',
+      waypointStation: '중곡',
+      ssotCurrentStation: '중곡',
+      ssotLastAdvanceAt: FRESH_LAST_ADVANCE,
+      expectFire: true,
+    },
+    {
+      name: 'P2 transfer 직전 1 hop(passedStations[-1]) + 신선 → fire',
+      waypointKind: 'transfer',
+      waypointStation: '중곡',
+      ssotCurrentStation: '용마산',
+      ssotLastAdvanceAt: FRESH_LAST_ADVANCE,
+      passedStations: ['용마산'],
+      expectFire: true,
+    },
+    {
+      name: 'N9 transfer SSoT 다른 station + 신선 → block(ssot-not-at-or-approaching) [회귀 박제]',
+      waypointKind: 'transfer',
+      waypointStation: '중곡',
+      ssotCurrentStation: '강남',
+      ssotLastAdvanceAt: FRESH_LAST_ADVANCE,
+      passedStations: ['역삼'],
+      expectFire: false,
+      expectReason: 'ssot-not-at-or-approaching',
+    },
+    {
+      name: 'N9-stale transfer at-target 인데 60s 초과 → block(ssot-stale)',
+      waypointKind: 'transfer',
+      waypointStation: '중곡',
+      ssotCurrentStation: '중곡',
+      ssotLastAdvanceAt: STALE_LAST_ADVANCE,
+      expectFire: false,
+      expectReason: 'ssot-stale',
+    },
+    {
+      name: 'N10 destination SSoT 다른 station + 신선 → block',
+      waypointKind: 'destination',
+      waypointStation: '군자',
+      ssotCurrentStation: '강남',
+      ssotLastAdvanceAt: FRESH_LAST_ADVANCE,
+      passedStations: ['역삼'],
+      expectFire: false,
+      expectReason: 'ssot-not-at-or-approaching',
+    },
+  ];
+
+  it.each(t7Scenarios)('$name', async (sc) => {
+    const kv = new InMemoryKV();
+    const trip = makeLockTripFixture(TOKEN, {
+      waypoints: [{ stationName: sc.waypointStation, line: '7', kind: sc.waypointKind }],
+      passedStations: sc.passedStations ?? [],
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, sc.ssotCurrentStation, {
+      expiresAt: trip.expiresAt,
+    });
+    ssot.motionState = 'moving';
+    ssot.lastAdvanceAt = sc.ssotLastAdvanceAt;
+    ssot.lastAdvanceEvidence = 'arvlcd-confirmed-train';
+    await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const logMessages: { msg: string; meta?: Record<string, unknown> }[] = [];
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArvlCdFireSeoul(sc.waypointStation, 0, 1, '7246'),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-t7',
+      log: (msg, meta) => {
+        logMessages.push({ msg, meta });
+      },
+    });
+    if (sc.expectFire) {
+      expect(stats.arvlCdFireFired).toBe(1);
+      expect(stats.transferDestinationGateBlocked).toBe(0);
+    } else {
+      expect(stats.arvlCdFireFired).toBe(0);
+      expect(stats.transferDestinationGateBlocked).toBe(1);
+      expect(stats.arvlCdFireBlocked).toBe(1);
+      const blockedLog = logMessages.find(
+        (l) => l.msg === 'arvlcd-fire: transfer/destination gate blocked',
+      );
+      expect(blockedLog?.meta?.reason).toBe(sc.expectReason);
+      expect(blockedLog?.meta?.kind).toBe(sc.waypointKind);
+    }
+  });
+
+  it('intermediate kind 는 본 게이트 우회 (T4 6단 게이트만으로 충분)', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeLockTripFixture(TOKEN, {
+      waypoints: [{ stationName: '중곡', line: '7', kind: 'intermediate' }],
+      passedStations: [],
+    });
+    await putTrip(kv as unknown as KVNamespace, trip);
+    // SSoT를 의도적으로 mismatch state (다른 station + stale) → transfer kind 라면 block 됐을 조건.
+    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '강남', {
+      expiresAt: trip.expiresAt,
+    });
+    ssot.motionState = 'moving';
+    ssot.lastAdvanceAt = STALE_LAST_ADVANCE;
+    ssot.lastAdvanceEvidence = 'arvlcd-confirmed-train';
+    await writeSsot(kv as unknown as KVNamespace, ssot, { expiresAt: trip.expiresAt });
+
+    const apnsFetch = vi.fn(async () => new Response('', { status: 200 }));
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul: makeArvlCdFireSeoul('중곡', 0, 1, '7246'),
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: apnsFetch as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-t7-int',
+    });
+    // intermediate 는 T7 게이트 미적용 → T4 6단 게이트만 통과해 fire 진입.
+    expect(stats.transferDestinationGateBlocked).toBe(0);
+    expect(stats.arvlCdFireFired).toBe(1);
+  });
+});
+
 describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT gate', () => {
   // 양방향 — arvlcd-arrived path (T4 합쳐) + vanish-fallback path 모두 SSoT 단일 진입점 통과 후
   // trip.waypoints / cleanup 진행. 정지 trip 매분 advance 회귀(2026-06-19 8회)를 박제 차단.
