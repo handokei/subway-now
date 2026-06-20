@@ -19,8 +19,13 @@ import {
 import { RECENT_ROUTES_LIMIT } from '../../../shared/constants/recentDestinations';
 import { runTripBoundCleanups } from '../../alarm/store/tripBoundCleanups';
 import { setTripStartedAt } from '../../alarm/utils/tripStartStorage';
-import { generateTripCorrId, setTripCorrId } from '../../observability/utils/tripCorrId';
+import {
+  generateTripCorrId,
+  getCurrentTripCorrIdSync,
+  setTripCorrId,
+} from '../../observability/utils/tripCorrId';
 import { triggerTripEndRecall } from '../../alarm/utils/triggerTripEndRecall';
+import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { useAlarmEventStore } from '../../alarm/store/useAlarmEventStore';
 import { ROUTE_CATEGORIES, type RoutePreference } from '../../../shared/utils/stationRoute';
 import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
@@ -175,6 +180,10 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       //    LAST_FIRED_ALARM_STATION_NAME_KEY, #746 dismissSilence 등 누락 사례 재발 방지.)
       // 3) 새 trip(station != null)이면 새 tripStart를 기록 — cleanup이 직전에 이전 키를 제거했으니
       //    여기서 set하면 다음 trip 측정 가능. station === null(trip 종료) 경로에서는 set 안 함.
+      // #1597 — prev trip의 corrId snapshot. setTripCorrId가 sync cache를 새 값으로 덮어쓰기 전
+      // 캡처해 trip-end prompt가 올바른 (종료된) trip의 corrId로 enqueue되게 한다. prev === null
+      // (첫 trip 시작) 경로에서는 snapshot도 null → prompt graceful skip.
+      const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
       // #1321 — delete→recreate race 차단: tripTransitionQueue에 chain해 직렬화한다.
       // 직전 transition(예: delete)의 cleanup이 완전히 끝난 뒤에야 이번 transition(예: recreate)의
       // cleanup + setTripStartedAt이 시작된다.
@@ -182,6 +191,13 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
         .then(() => triggerTripEndRecall())
         .catch(noop)
         .then(() => runTripBoundCleanups())
+        .catch(noop)
+        // #1597 — cleanup 후, 새 trip의 storage write 전에 ground-truth prompt enqueue.
+        // prev trip이 실제로 종료된 경우(prev !== null)에만 fire. 첫 trip 시작(prev === null)
+        // 시 snapshot은 null이라 trigger 내부에서 graceful skip되지만 명시적 분기로 의도를 분명히 함.
+        .then(() =>
+          prev !== null ? triggerTripGroundTruthPrompt(endedCorrIdSnapshot) : undefined,
+        )
         .catch(noop)
         // #1379 — cleanup이 DESTINATION_KEY를 removeItem한 뒤 새 trip의 destination을 write.
         // 분기 순서를 직렬화해 storage 최종 상태가 station(new trip) 또는 null(end)으로 결정적.
@@ -198,6 +214,7 @@ export const useDestinationStore = create<DestinationState>((set, get) => ({
       // chain 밖 fire-and-forget — setTripCorrId가 sync cache를 즉시 갱신해 fusion cycle 다음
       // cycle부터 새 corrId 보장. AsyncStorage write는 백그라운드 (storage 실패는 graceful).
       // station === null(trip 종료) 경로에서는 tripBoundCleanups가 clearTripCorrId를 처리.
+      // #1597 — 위에서 prev corrId snapshot을 미리 캡처했으므로 여기서 새 corrId로 덮어써도 안전.
       if (station) {
         void setTripCorrId(generateTripCorrId());
       }

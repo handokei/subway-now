@@ -39,6 +39,17 @@ jest.mock('../../api/signalDumpBackend', () => ({
   flushSignalDumpOutbox: (...args: unknown[]) => mockFlushSignalDumpOutbox(...args),
 }));
 
+// #1597 — trip 종료 ended 경로에서 cleanup 직전에 corrId snapshot 캡처 + cleanup 후 prompt enqueue.
+const mockGetCurrentTripCorrIdSync = jest.fn(() => null);
+jest.mock('../../../observability/utils/tripCorrId', () => ({
+  getCurrentTripCorrIdSync: () => mockGetCurrentTripCorrIdSync(),
+}));
+const mockTriggerTripGroundTruthPrompt = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../../debug/utils/triggerTripGroundTruthPrompt', () => ({
+  triggerTripGroundTruthPrompt: (...args: unknown[]) =>
+    mockTriggerTripGroundTruthPrompt(...args),
+}));
+
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),

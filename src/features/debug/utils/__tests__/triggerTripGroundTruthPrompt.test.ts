@@ -1,9 +1,12 @@
 /**
- * Trip ground truth trigger (#1502 M2) — TRIP_BOUND_CLEANUPS 호출 시점에 corrId 캡처 검증.
+ * Trip ground truth trigger (#1502 M2, #1597 fix).
+ *
+ * #1597 — 호출자가 corrId를 명시적으로 캡처해서 전달하도록 signature 변경. trip-start
+ * 경로에서 false fire되는 회귀(setTripCorrId가 sync cache를 덮어쓴 뒤 cleanup chain이 돌아
+ * 새 corrId로 enqueue됨)를 근본 차단.
  */
 import { triggerTripGroundTruthPrompt } from '../triggerTripGroundTruthPrompt';
 import { useTripGroundTruthStore } from '../../store/useTripGroundTruthStore';
-import * as tripCorrId from '../../../observability/utils/tripCorrId';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn().mockResolvedValue(null),
@@ -11,7 +14,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   removeItem: jest.fn().mockResolvedValue(undefined),
 }));
 
-describe('triggerTripGroundTruthPrompt (#1502 M2)', () => {
+describe('triggerTripGroundTruthPrompt (#1502 M2 / #1597)', () => {
   beforeEach(() => {
     useTripGroundTruthStore.setState({
       hydrated: true,
@@ -21,29 +24,27 @@ describe('triggerTripGroundTruthPrompt (#1502 M2)', () => {
   });
 
   it('corrId가 null이면 prompt enqueue X (graceful skip)', async () => {
-    jest.spyOn(tripCorrId, 'getCurrentTripCorrIdSync').mockReturnValue(null);
-    await triggerTripGroundTruthPrompt();
+    await triggerTripGroundTruthPrompt(null);
     expect(useTripGroundTruthStore.getState().pendingPrompt).toBeNull();
   });
 
-  it('corrId가 있으면 동기 캡처 후 enqueue', async () => {
-    jest.spyOn(tripCorrId, 'getCurrentTripCorrIdSync').mockReturnValue('trip-abc');
+  it('corrId가 있으면 enqueue', async () => {
     jest.spyOn(Date, 'now').mockReturnValue(12345);
-    await triggerTripGroundTruthPrompt();
+    await triggerTripGroundTruthPrompt('trip-abc');
     expect(useTripGroundTruthStore.getState().pendingPrompt).toEqual({
       corrId: 'trip-abc',
       endedAt: 12345,
     });
   });
 
-  it('clearTripCorrId가 같은 batch에서 cache를 비워도 트리거가 먼저 호출되면 corrId 캡처 보존', async () => {
-    // 시뮬레이션: triggerTripGroundTruthPrompt 첫 줄이 sync read하므로
-    // 이후 clearTripCorrId가 실행돼도 캡처값은 유지된다.
-    jest.spyOn(tripCorrId, 'getCurrentTripCorrIdSync').mockReturnValue('trip-xyz');
-    const triggerPromise = triggerTripGroundTruthPrompt();
-    // trigger 호출 시점 직후 cache를 비워본다.
-    jest.spyOn(tripCorrId, 'getCurrentTripCorrIdSync').mockReturnValue(null);
-    await triggerPromise;
-    expect(useTripGroundTruthStore.getState().pendingPrompt?.corrId).toBe('trip-xyz');
+  it('#1597 — 호출자가 캡처한 snapshot이 그대로 enqueue된다 (cache mutation과 무관)', async () => {
+    // setDestination switch 경로에서 setTripCorrId(new)가 동기적으로 sync cache를 덮어써도
+    // 호출자가 미리 snapshot을 캡처해서 넘기면 그 값이 보존된다 (read 시점 race 차단).
+    jest.spyOn(Date, 'now').mockReturnValue(99999);
+    const snapshot = 'prev-trip-corr-id';
+    // snapshot 캡처 후 다른 corrId로 cache가 바뀐 상황을 시뮬레이션해도 (본 함수는 sync cache를
+    // 더 이상 읽지 않으므로) snapshot 값이 그대로 사용된다.
+    await triggerTripGroundTruthPrompt(snapshot);
+    expect(useTripGroundTruthStore.getState().pendingPrompt?.corrId).toBe(snapshot);
   });
 });
