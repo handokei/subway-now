@@ -46,6 +46,7 @@ import { updateSsotMotion } from './motionState';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
+import { sentryInit } from './sentry';
 import {
   recordRecallUpload,
   validateRecallUpload,
@@ -121,6 +122,14 @@ function makeLaStats(): LiveActivityStats {
 }
 
 export const app = new Hono<{ Bindings: Env }>();
+
+/**
+ * #1578 — Sentry init 미들웨어. DSN 미설정 시 graceful no-op (idempotent).
+ */
+app.use('*', async (c, next) => {
+  sentryInit(c.env);
+  return next();
+});
 
 /**
  * 일일 요청 카운트 미들웨어 (#1022).
@@ -1712,6 +1721,7 @@ function parseBoardingLock(raw: unknown): BoardingLockMeta | undefined {
 export default {
   fetch: app.fetch,
   async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    sentryInit(env);
     const seoul = new SeoulArrivalClient({
       apiKey: env.SEOUL_API_KEY,
       host: env.SEOUL_API_HOST,

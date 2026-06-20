@@ -566,4 +566,9 @@ export interface Env {
    * 생성: `wrangler kv namespace create RAW_SIGNALS`
    */
   RAW_SIGNALS?: KVNamespace;
+  /**
+   * Sentry DSN (#1578, Phase 0 P0-2). 미설정 시 `sentryInit`/`captureXEvent`는
+   * graceful no-op. 등록: `wrangler secret put SENTRY_DSN`.
+   */
+  SENTRY_DSN?: string;
 }

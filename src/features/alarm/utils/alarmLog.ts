@@ -1,6 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AppState, type AppStateStatus } from 'react-native';
 import { ALARM_LOG_KEY } from '../../../shared/constants/storageKeys';
+import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb';
+import { captureXEvent } from '../../../shared/infra/monitoring/captureXEvent';
 import { createLogger } from '../../../shared/utils/logger';
 import type { AlarmEvent } from './stationAlarm';
 import type { AlarmPhaseId } from './alarmPhases';
@@ -1161,6 +1163,45 @@ export function appendAlarmLog(entry: AlarmLogEntry): void {
   pendingEntries.push(entry);
   oldestPendingTs ??= Date.now();
   scheduleFlush();
+  // #1578 — alarmLog ring → Sentry breadcrumb forward (opt-in 시만 발사, 내부에서 no-op gate).
+  // PII: stationName은 공개 정보로 허용. location/distance는 노출하지 않는다.
+  addDomainBreadcrumb('alarm', `${entry.source}/${entry.outcome}`, {
+    kind: entry.kind,
+    phaseId: entry.phaseId,
+    reason: entry.reason,
+    stationName: entry.stationName,
+    trigger: entry.trigger,
+  });
+  // #1578 — X event 실시간 alert. 가치 손상 reason → Sentry captureMessage(level=error).
+  // captureXEvent 내부에서 opt-in 미동의 시 no-op.
+  forwardXEventIfApplicable(entry);
+}
+
+/**
+ * #1578 — V/X acceptance 표 매핑.
+ *
+ *  - `gate-stale-location` (SSoT lastAdvanceAt < now-5min에 fire) → X3
+ *  - `revalidate-waypoint-mismatch` (BG scheduled queue 잔존 → 잘못된 waypoint로 발사 시도) → X11
+ *
+ * 추가 매핑은 후속 PR에서 (V8c motion gate burst → X4 등).
+ */
+function forwardXEventIfApplicable(entry: AlarmLogEntry): void {
+  if (entry.reason === 'gate-stale-location') {
+    captureXEvent('X3-stale-alarm', {
+      source: entry.source,
+      kind: entry.kind,
+      phaseId: entry.phaseId,
+      stationName: entry.stationName,
+      locationAgeMs: entry.locationAgeMs,
+    });
+  } else if (entry.reason === 'revalidate-waypoint-mismatch') {
+    captureXEvent('X11-bg-scheduled-leak', {
+      source: entry.source,
+      kind: entry.kind,
+      phaseId: entry.phaseId,
+      stationName: entry.stationName,
+    });
+  }
 }
 
 function fireAndForgetFlush(): void {
