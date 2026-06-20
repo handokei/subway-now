@@ -45,6 +45,23 @@ GPS 기반으로 현재 탑승 중인 지하철역을 실시간으로 감지하�
 - ADR-010 첫 줄: "두 실패 모드(false positive / miss)는 비대칭이 아니라 **동급**."
 - 출처: `memory/feedback_user_intent_equal_protection.md`, `docs/decisions/ADR-014-decision-process-rules.md`
 
+### Wire-completion 5단 룰 (#1582)
+
+"코드만 머지되고 실제 연결 안 됨" 회귀 차단. 모든 PR에 5단 체크 필수 (`.github/PULL_REQUEST_TEMPLATE.md`).
+
+1. **Orphan 없음** — `npm run lint:orphan` pass. CI `Orphan Export Detection` job이 강제. 신규 export 추가 시 caller 반드시 존재.
+   - 의도적 entry-point(`app/` route, `modules/*/index.ts`, barrel `providers/index.ts` 등)는 `scripts/check-orphan-exports.sh`의 `IGNORE_PATTERN`에 추가.
+   - "(used in module)" 라인은 false-positive로 자동 무시.
+2. **V/X dashboard** — 변경된 신호가 어디서 시각화/관측 가능한지(DebugModal / wrangler tail / Cloudflare Dashboard / Sentry) PR 본문에 명시.
+3. **의존 PR** — 본 PR이 작동하려면 머지돼야 할 다른 PR(backend/device/infra) 번호 명시. 없으면 "N/A".
+4. **측정 plan** — 회귀 신호를 1주 안에 어떻게 측정할지(시나리오 / log query / 사용자 trip 캡처) 명시.
+5. **Device verify** — 실기기 검증 필요 여부 + 시나리오. 코드-only면 "N/A — type+unit only" 명시.
+
+검증 절차:
+- `npm run lint:orphan` 로컬 실행 → 0 orphan 확인 후 PR 생성.
+- CI `Wire-completion CI / Orphan Export Detection` job pass 확인 후 머지.
+- 신규 entry-point export 추가 시 ignore pattern 갱신 PR을 분리하지 말고 같은 PR에 포함.
+
 ---
 
 ## Agent skills
