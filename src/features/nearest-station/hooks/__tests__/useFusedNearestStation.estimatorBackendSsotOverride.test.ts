@@ -35,18 +35,17 @@ import {
 } from '../../../../testUtils/backendSsotMirrorFixtures';
 import { readBackendSsotMirror } from '../../../alarm/utils/backendSsotMirror';
 
-jest.mock('../../utils/findNearestStation', () => ({
-  findTopNearestStations: jest.fn(),
-}));
+// #1605 — useFusedNearestStation 의존 hook/util mock + cascade I/O mock 세트.
+// jest.mock은 호이스팅돼 module scope에서만 가능 — 공통 helper로 추출 불가.
+// 본 fixture 그룹은 backendSsotCascade.test.ts와 의도적으로 같은 구성 (Backend SSoT cascade 검증).
 jest.mock('../useNearestStation');
 jest.mock('../../../arrival/hooks/useArrivalInfo');
 jest.mock('../../../route/hooks/useTrainPositions');
+jest.mock('../../utils/findNearestStation', () => ({ findTopNearestStations: jest.fn() }));
 jest.mock('../../../alarm/utils/tripStartStorage', () => ({
   getTripStartedAt: jest.fn().mockResolvedValue(null),
 }));
-jest.mock('../../../alarm/utils/backendSsotMirror', () => ({
-  readBackendSsotMirror: jest.fn(),
-}));
+jest.mock('../../../alarm/utils/backendSsotMirror', () => ({ readBackendSsotMirror: jest.fn() }));
 
 const mockNearest = useNearestStation as jest.Mock;
 const mockArrival = useArrivalInfo as jest.Mock;
@@ -54,6 +53,7 @@ const mockPos = useTrainPositions as jest.Mock;
 const mockFindTop = findTopNearestStations as jest.Mock;
 const mockRead = readBackendSsotMirror as jest.Mock;
 
+// 시나리오: lockless trip yongmasan→chungdam(7호선). 정적 사용자가 origin에 머무름.
 const yongmasan = findStationByNameAndLine('용마산', '7')!;
 const chungdam = findStationByNameAndLine('청담', '7')!;
 
