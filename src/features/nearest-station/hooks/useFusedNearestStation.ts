@@ -1174,11 +1174,13 @@ export function useFusedNearestStation(
       return {
         station: ssotStation,
         strategy: 'backend-ssot-override' as const,
-        index: ssotArcIdx !== -1 ? ssotArcIdx : (estimate?.index ?? 0),
+        index: ssotArcIdx === -1 ? (estimate?.index ?? 0) : ssotArcIdx,
       };
     }
-    if (!estimate) return null;
-    return { station: estimate.station, strategy: estimate.strategy, index: estimate.index };
+    if (estimate) {
+      return { station: estimate.station, strategy: estimate.strategy, index: estimate.index };
+    }
+    return null;
   })();
 
   // #1025 — Estimator 전략 변화 시 debug buffer에 push.

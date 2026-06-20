@@ -15,7 +15,7 @@
  *   - 라벨 backend-ssot-override가 estimator buffer push 시 strategy로 기록되어 DebugModal 추적 가능
  */
 
-import { act, renderHook, waitFor } from '@testing-library/react-native';
+import { renderHook, waitFor } from '@testing-library/react-native';
 import { useFusedNearestStation } from '../useFusedNearestStation';
 import { useNearestStation } from '../useNearestStation';
 import { useArrivalInfo } from '../../../arrival/hooks/useArrivalInfo';
@@ -28,8 +28,12 @@ import {
   GPS_BASE_DEFAULTS,
 } from '../../../../testUtils/positionApiFixtures';
 import { makeDirectRoute } from '../../../../testUtils/routeFixtures';
+import {
+  BACKEND_SSOT_FIXTURE_T0 as T0,
+  flushBackendSsotMirrorTick,
+  makeBackendSsotMirrorEntry,
+} from '../../../../testUtils/backendSsotMirrorFixtures';
 import { readBackendSsotMirror } from '../../../alarm/utils/backendSsotMirror';
-import type { BackendSsotMirrorEntry } from '../../../alarm/utils/backendSsotMirror';
 
 jest.mock('../../utils/findNearestStation', () => ({
   findTopNearestStations: jest.fn(),
@@ -53,22 +57,11 @@ const mockRead = readBackendSsotMirror as jest.Mock;
 const yongmasan = findStationByNameAndLine('용마산', '7')!;
 const chungdam = findStationByNameAndLine('청담', '7')!;
 
-const T0 = 1_700_000_000_000;
-
-function makeMirror(overrides: Partial<BackendSsotMirrorEntry> = {}): BackendSsotMirrorEntry {
-  return {
-    currentStationId: yongmasan.name,
-    motionState: 'moving',
-    lastAdvanceEvidence: 'arvlcd-arrived',
-    lastAdvanceAt: T0,
-    passedStations: [],
-    receivedAt: T0,
-    ...overrides,
-  };
-}
-
-function setupLocklessTripAtYongmasan() {
-  // GPS 용마산 정적 보고 (위치는 origin, estimator가 lockless-route-hop으로 destination을 가리킴).
+/**
+ * GPS hook mock + arrival/position empty mock 셋업 helper.
+ * setupLocklessTripAtYongmasan과 'mirror fresh + estimator null' 케이스가 동일 패턴이라 추출.
+ */
+function setupQuietGpsAtYongmasan() {
   const live = { station: yongmasan, distanceKm: 0 };
   mockNearest.mockReturnValue({
     result: live,
@@ -83,17 +76,14 @@ function setupLocklessTripAtYongmasan() {
   mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
   mockArrival.mockReturnValue(arrivalRet(null));
   mockPos.mockReturnValue(positionRet(null));
+}
 
+function setupLocklessTripAtYongmasan() {
+  // GPS 용마산 정적 보고 (위치는 origin, estimator가 lockless-route-hop으로 destination을 가리킴).
+  setupQuietGpsAtYongmasan();
   // 8개 hop arc (yongmasan → chungdam). tripStartedAt 60분 전 → lockless-route-hop이 arc 끝으로 적분.
   const route = makeDirectRoute(8, '7');
   return { route, routeContext: { route, origin: yongmasan, destination: chungdam } };
-}
-
-async function flushSsotRead() {
-  await act(async () => {
-    jest.advanceTimersByTime(5_000);
-    await Promise.resolve();
-  });
 }
 
 describe('#1605 — Estimator backend SSoT 우선 + lockless-route-hop fallback', () => {
@@ -114,13 +104,13 @@ describe('#1605 — Estimator backend SSoT 우선 + lockless-route-hop fallback'
     const nowMs = T0 + 60 * 60_000;
     jest.setSystemTime(nowMs);
     mockRead.mockResolvedValue(
-      makeMirror({ currentStationId: yongmasan.name, lastAdvanceAt: nowMs, receivedAt: nowMs }),
+      makeBackendSsotMirrorEntry({ currentStationId: yongmasan.name, lastAdvanceAt: nowMs, receivedAt: nowMs }),
     );
 
     const hook = renderHook(() =>
       useFusedNearestStation(undefined, undefined, routeContext),
     );
-    await flushSsotRead();
+    await flushBackendSsotMirrorTick();
 
     await waitFor(() => {
       expect(hook.result.current.displayOnlyEstimate?.strategy).toBe('backend-ssot-override');
@@ -139,7 +129,7 @@ describe('#1605 — Estimator backend SSoT 우선 + lockless-route-hop fallback'
     const hook = renderHook(() =>
       useFusedNearestStation(undefined, undefined, routeContext),
     );
-    await flushSsotRead();
+    await flushBackendSsotMirrorTick();
 
     // mirror 없으면 estimator 결과 그대로 노출 (lockless-route-hop).
     expect(hook.result.current.displayOnlyEstimate?.strategy).toBe('lockless-route-hop');
@@ -151,7 +141,7 @@ describe('#1605 — Estimator backend SSoT 우선 + lockless-route-hop fallback'
     jest.setSystemTime(nowMs);
     // lastAdvanceAt이 nowMs보다 240s 전 — staleness 180s 초과.
     mockRead.mockResolvedValue(
-      makeMirror({
+      makeBackendSsotMirrorEntry({
         currentStationId: yongmasan.name,
         lastAdvanceAt: nowMs - 240_000,
         receivedAt: nowMs - 240_000,
@@ -161,7 +151,7 @@ describe('#1605 — Estimator backend SSoT 우선 + lockless-route-hop fallback'
     const hook = renderHook(() =>
       useFusedNearestStation(undefined, undefined, routeContext),
     );
-    await flushSsotRead();
+    await flushBackendSsotMirrorTick();
 
     // stale mirror → estimator fallback.
     expect(hook.result.current.displayOnlyEstimate?.strategy).not.toBe('backend-ssot-override');
@@ -175,13 +165,13 @@ describe('#1605 — Estimator backend SSoT 우선 + lockless-route-hop fallback'
     const nowMs = T0 + 60 * 60_000;
     jest.setSystemTime(nowMs);
     mockRead.mockResolvedValue(
-      makeMirror({ currentStationId: gangnam2.name, lastAdvanceAt: nowMs, receivedAt: nowMs }),
+      makeBackendSsotMirrorEntry({ currentStationId: gangnam2.name, lastAdvanceAt: nowMs, receivedAt: nowMs }),
     );
 
     const hook = renderHook(() =>
       useFusedNearestStation(undefined, undefined, routeContext),
     );
-    await flushSsotRead();
+    await flushBackendSsotMirrorTick();
 
     await waitFor(() => {
       expect(hook.result.current.displayOnlyEstimate?.strategy).toBe('backend-ssot-override');
@@ -194,27 +184,14 @@ describe('#1605 — Estimator backend SSoT 우선 + lockless-route-hop fallback'
 
   it('mirror fresh + estimator null → displayOnlyEstimate.station=mirror, index=0 fallback', async () => {
     // route 없음 → arcStations=[] → estimator=null. mirror만 있는 경우 idx=0으로 fallback.
-    const live = { station: yongmasan, distanceKm: 0 };
-    mockNearest.mockReturnValue({
-      result: live,
-      liveResult: live,
-      stickyDisplayOnly: null,
-      variants: [yongmasan],
-      userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
-      ...GPS_BASE_DEFAULTS,
-      accuracyMeters: 14,
-      refresh: jest.fn(),
-    });
-    mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
-    mockArrival.mockReturnValue(arrivalRet(null));
-    mockPos.mockReturnValue(positionRet(null));
+    setupQuietGpsAtYongmasan();
     const nowMs = T0;
     mockRead.mockResolvedValue(
-      makeMirror({ currentStationId: yongmasan.name, lastAdvanceAt: nowMs, receivedAt: nowMs }),
+      makeBackendSsotMirrorEntry({ currentStationId: yongmasan.name, lastAdvanceAt: nowMs, receivedAt: nowMs }),
     );
 
     const hook = renderHook(() => useFusedNearestStation()); // routeContext 없음
-    await flushSsotRead();
+    await flushBackendSsotMirrorTick();
 
     await waitFor(() => {
       expect(hook.result.current.displayOnlyEstimate?.strategy).toBe('backend-ssot-override');

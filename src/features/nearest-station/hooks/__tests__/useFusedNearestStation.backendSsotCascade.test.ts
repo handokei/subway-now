@@ -23,6 +23,11 @@ import {
   positionRet,
   GPS_BASE_DEFAULTS,
 } from '../../../../testUtils/positionApiFixtures';
+import {
+  BACKEND_SSOT_FIXTURE_T0 as T0,
+  flushBackendSsotMirrorTick,
+  makeBackendSsotMirrorEntry,
+} from '../../../../testUtils/backendSsotMirrorFixtures';
 import { readBackendSsotMirror } from '../../../alarm/utils/backendSsotMirror';
 import type { BackendSsotMirrorEntry } from '../../../alarm/utils/backendSsotMirror';
 import type { BoardingLock } from '../../../../shared/types/boardingLock';
@@ -50,18 +55,10 @@ const yongmasan = findStationByNameAndLine('용마산', '7')!;
 const chungdam = findStationByNameAndLine('청담', '7')!;
 const gangnam2 = findStationByNameAndLine('강남', '2')!;
 
-const T0 = 1_700_000_000_000;
-
-function makeMirror(overrides: Partial<BackendSsotMirrorEntry> = {}): BackendSsotMirrorEntry {
-  return {
-    currentStationId: yongmasan.name,
-    motionState: 'moving',
-    lastAdvanceEvidence: 'arvlcd-arrived',
-    lastAdvanceAt: T0,
-    passedStations: [],
-    receivedAt: T0,
-    ...overrides,
-  };
+// fixture 기본값(`makeBackendSsotMirrorEntry`)이 이미 '용마산' currentStationId라 단순 위임.
+// override 없는 호출(line ~164, 208)은 본 wrapper의 default arg branch도 같이 커버.
+function makeMirror(overrides?: Partial<BackendSsotMirrorEntry>): BackendSsotMirrorEntry {
+  return makeBackendSsotMirrorEntry(overrides);
 }
 
 function setupBaselineGpsAt(stationName: string) {
@@ -102,14 +99,7 @@ describe('#1568 (T8b) cascade picker — backend-ssot tier', () => {
     jest.useRealTimers();
   });
 
-  async function flushSsotRead() {
-    // 5s interval tick으로 SSoT mirror state hydrate.
-    await act(async () => {
-      jest.advanceTimersByTime(5_000);
-      // microtask flush
-      await Promise.resolve();
-    });
-  }
+  const flushSsotRead = flushBackendSsotMirrorTick;
 
   it('mirror 존재 + fresh → cascade 1순위 (lock 활성, lockless 동등 우선순위)', async () => {
     // 사용자가 다른 역(청담)에 있다고 GPS가 가리켜도 backend mirror가 용마산을 권위 산출 → mirror 우선.
