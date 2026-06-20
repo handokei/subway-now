@@ -593,6 +593,25 @@ describe('estimateStationProgress', () => {
       expect(r).toBeNull();
     });
 
+    it('#1605 lock null + locklessTrip + arcStations 단일 역(route hop count=0) → null', () => {
+      // arc가 1개 역만 가지는 edge case(예: destination 미설정 직후 / origin==destination).
+      // 시간 적분이 무의미하므로 estimator skip — strategy=null entry가 buffer에 push되어
+      // trip context 미준비 상태가 명시된다.
+      const singleArc: Station[] = [ARC[0]];
+      const r = estimateStationProgress({
+        lock: null,
+        locklessTrip: { tripStartedAt: T0 },
+        arcStations: singleArc,
+        now: T0 + 60 * 60_000, // 60분 경과해도 idx=0 강제 의미 없음.
+        trainProgress: null,
+        lockedTrainCode: null,
+        lastObserved: null,
+        hopTimeMsForHop: UNIFORM_HOP,
+        ...NO_ARRIVAL_INPUT,
+      });
+      expect(r).toBeNull();
+    });
+
     it('lock null + locklessTrip tripStartedAt 미래(시계 후진) → null', () => {
       const r = estimateStationProgress({
         lock: null,

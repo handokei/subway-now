@@ -1143,14 +1143,55 @@ export function useFusedNearestStation(
     confidence = 'detection-fused';
   }
 
+  // #1605 — Backend SSoT 권위 override (option C — Estimator backend SSoT 우선 + estimator fallback).
+  //
+  // backend SSoT mirror가 fresh(≤180s, BACKEND_SSOT_MIRROR_MAX_AGE_MS)이고 station이 resolve되면
+  // estimator(lockless-route-hop 등 시간 적분 strategy)의 결과를 override해 displayOnlyEstimate /
+  // estimator buffer push의 SSOT로 채택한다. mirror stale/null/lock line mismatch면 estimator
+  // 결과 그대로 fallback (graceful).
+  //
+  // 사용자 가치(2026-06-20 trip dump 21:16:05 evidence): lockless-route-hop이 destination 성수(idx=6)를
+  // 가리켰으나 사용자 실제 위치는 origin 용마산(idx=0). estimator 시간 적분 SSOT 가정 결함
+  // (lesson_lockless_route_hop_time_integration_ssot_assumption) 때문에 잘못된 station 표시. backend
+  // SSoT는 ADR-017 6단 advance 게이트(seed/repeat/motion-stop/cross-validation 등)를 이미 통과한
+  // 권위 신호이므로 estimator보다 신뢰도가 높다.
+  //
+  // 본 override는 fire path(result/source/confidence/currentHopIndex)와는 분리 — 위 cascade가
+  // backend-ssot tier로 이미 fire path를 점유하므로 본 분기는 *표시 채널*만 갱신한다.
+  // - effectiveEstimate: displayOnlyEstimate에 노출 (DebugModal/UI 추적용).
+  // - estimator buffer: strategy='backend-ssot-override'로 push해 "어떤 estimator strategy를 어떤
+  //   backend SSoT가 override했나" 사후 분석 가능.
+  //
+  // arc index 계산: ssotStation이 arc 위에 있으면 그 idx, 아니면 estimator의 idx 유지 (사용자가
+  // arc 밖 station에 있는 case는 estimator idx fallback이 더 의미 있는 추적값).
+  const effectiveEstimate: {
+    station: Station;
+    strategy: import('../../route/utils/stationProgressEstimator').StationProgressStrategy;
+    index: number;
+  } | null = (() => {
+    if (backendSsotAccepts && ssotStation) {
+      const ssotArcIdx = arcIndexOfStation(arcStations, ssotStation);
+      return {
+        station: ssotStation,
+        strategy: 'backend-ssot-override' as const,
+        index: ssotArcIdx !== -1 ? ssotArcIdx : (estimate?.index ?? 0),
+      };
+    }
+    if (!estimate) return null;
+    return { station: estimate.station, strategy: estimate.strategy, index: estimate.index };
+  })();
+
   // #1025 — Estimator 전략 변화 시 debug buffer에 push.
   // estimate key: strategy|stationId|arcIndex. null estimate는 strategy=null로 기록.
   // estimateRef: effect 내부에서 estimate를 deps 없이 최신값으로 읽기 위한 ref.
   // estimateKey만 deps에 두면 key 변화 시 최신 estimate를 ref로 안전하게 참조 가능.
-  const estimateRef = useRef(estimate);
-  estimateRef.current = estimate;
-  const estimateKey = estimate
-    ? `${estimate.strategy}|${estimate.station.id}|${estimate.index}`
+  //
+  // #1605 — effectiveEstimate(backend SSoT override 결합)를 push해 DebugModal Estimator State 섹션이
+  // SSoT 권위 결과를 그대로 표시. estimator 자체 결과는 ref로 보관해 sanity 비교 가능.
+  const estimateRef = useRef(effectiveEstimate);
+  estimateRef.current = effectiveEstimate;
+  const estimateKey = effectiveEstimate
+    ? `${effectiveEstimate.strategy}|${effectiveEstimate.station.id}|${effectiveEstimate.index}`
     : 'null';
   useEffect(() => {
     const est = estimateRef.current;
@@ -1348,9 +1389,9 @@ export function useFusedNearestStation(
     // fire path 입력에서 박탈. estimator 결과는 displayOnlyEstimate로만 노출.
     currentHopIndex: fireSafeHopIndex,
     // #1437 — UI/DebugModal 추적용 별 채널. fire path는 본 필드를 읽지 않는다.
-    displayOnlyEstimate: estimate
-      ? { station: estimate.station, strategy: estimate.strategy, index: estimate.index }
-      : null,
+    // #1605 — backend SSoT mirror가 fresh면 estimator 결과를 backend-ssot-override로 대체. mirror
+    // null/stale 시 estimator 그대로 fallback. effectiveEstimate가 두 케이스를 모두 캡슐화.
+    displayOnlyEstimate: effectiveEstimate,
     arcStations,
     detectionTier: detectionVerdict.confidence,
     detectionSignalMask: detectionVerdict.signalMask,

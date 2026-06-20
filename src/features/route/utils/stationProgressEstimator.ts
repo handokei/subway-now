@@ -116,7 +116,17 @@ export type StationProgressStrategy =
   | 'arrival-eta'
   | 'reanchored-hop'
   | 'default-hop'
-  | 'lockless-route-hop';
+  | 'lockless-route-hop'
+  /**
+   * #1605 — backend SSoT 권위 override 결과. estimator 자체가 산출하는 strategy가 아니라
+   * `useFusedNearestStation`이 backend SSoT mirror가 fresh일 때 estimator 결과를 override한 표시.
+   *
+   * cascade의 `backend-ssot` source/confidence와는 분리된 라벨 — estimator/DebugModal Estimator State
+   * 채널에서만 사용한다. `displayOnlyEstimate`와 buffer push의 strategy 출처 표시로 사용해
+   * "estimator가 어떤 strategy로 wrong station을 가리켰는데 backend SSoT가 override했다"의 사후
+   * 분석을 가능하게 한다.
+   */
+  | 'backend-ssot-override';
 
 export interface StationProgressEstimate {
   station: Station;
@@ -289,6 +299,12 @@ function tryLocklessRouteHop(
   // 도달 불가하지만 방어적 유지 — 직접 호출자가 추가될 때 안전.
   /* istanbul ignore next */
   if (arcStations.length === 0) return null;
+  // #1605 — route hop count=0 (arcStations 단일 역 = origin 자체) 가드.
+  // arc가 1개 역만 가지는 경우(예: destination 미설정 직후 / origin==destination edge case)
+  // 시간 적분 자체가 의미 없다 — clamp 결과가 항상 idx=0이라 origin과 동일하지만, "lockless-route-hop"
+  // entry를 강제로 push하면 DebugModal에서 estimator 활성으로 오인되어 보인다. null 반환으로
+  // estimator skip → strategy=null entry가 buffer에 push되어 trip context 미준비 상태가 명시된다.
+  if (arcStations.length === 1) return null;
   const elapsedMs = now - tripStartedAt;
   if (elapsedMs < 0) return null;
   const hops = hopsElapsedFrom(arcStations.length, 0, elapsedMs, hopTimeMsForHop);
