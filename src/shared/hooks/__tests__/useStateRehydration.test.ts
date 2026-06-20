@@ -32,6 +32,13 @@ jest.mock('../../../features/alarm/utils/alarmLog', () => ({
   appendAlarmLog: (...args: unknown[]) => mockAppendAlarmLog(...args),
 }));
 
+const mockReadBackendSsotMirror = jest.fn();
+const mockClearBackendSsotMirror = jest.fn();
+jest.mock('../../../features/alarm/utils/backendSsotMirror', () => ({
+  readBackendSsotMirror: (...args: unknown[]) => mockReadBackendSsotMirror(...args),
+  clearBackendSsotMirror: (...args: unknown[]) => mockClearBackendSsotMirror(...args),
+}));
+
 const mockAddDomainBreadcrumb = jest.fn();
 jest.mock('../../infra/monitoring/breadcrumb', () => ({
   addLogBreadcrumb: jest.fn(),
@@ -70,6 +77,9 @@ beforeEach(() => {
   // 기본은 trip 미존재(none) — 기존 테스트들이 backstop 영향 받지 않도록.
   mockGetTripStartedAt.mockResolvedValue(null);
   mockTripLifecyclePhase.mockReturnValue('none');
+  // 기본 mirror 미존재 — 기존 테스트들이 mirror backstop 영향 받지 않도록.
+  mockReadBackendSsotMirror.mockResolvedValue(null);
+  mockClearBackendSsotMirror.mockResolvedValue(undefined);
   jest.spyOn(useDestinationStore, 'getState').mockReturnValue({
     setDestination: mockSetDestination,
     loadDestination: mockLoadDestination,
@@ -286,6 +296,57 @@ describe('useStateRehydration', () => {
       mockGetTripStartedAt.mockRejectedValue(new Error('io'));
       mockAppState();
       // throw가 새지 않아 hook 자체는 정상 마운트.
+      expect(() => renderHook(() => useStateRehydration())).not.toThrow();
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+    });
+  });
+
+  describe('#1598 stale Backend SSoT mirror boot clear', () => {
+    it('active trip 없음 + mirror 잔존 — clearBackendSsotMirror 호출 (2026-06-20 dump 회귀)', async () => {
+      mockGetTripStartedAt.mockResolvedValue(null);
+      mockReadBackendSsotMirror.mockResolvedValue({
+        currentStationId: '건대입구',
+        motionState: 'unknown',
+        lastAdvanceEvidence: 'arrival-prior',
+        lastAdvanceAt: 1_700_000_000_000,
+        passedStations: [],
+        receivedAt: 1_700_000_000_000,
+      });
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1));
+    });
+
+    it('active trip 있음 — mirror 그대로 (clear 호출 안 함)', async () => {
+      mockGetTripStartedAt.mockResolvedValue(1_000_000);
+      mockTripLifecyclePhase.mockReturnValue('normal');
+      mockReadBackendSsotMirror.mockResolvedValue({
+        currentStationId: '건대입구',
+        motionState: 'moving',
+        lastAdvanceEvidence: 'arrival',
+        lastAdvanceAt: 1_700_000_000_000,
+        passedStations: [],
+        receivedAt: 1_700_000_000_000,
+      });
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockClearBackendSsotMirror).not.toHaveBeenCalled();
+    });
+
+    it('active trip 없음 + mirror 부재 — read만 하고 clear 호출 안 함', async () => {
+      mockGetTripStartedAt.mockResolvedValue(null);
+      mockReadBackendSsotMirror.mockResolvedValue(null);
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockReadBackendSsotMirror).toHaveBeenCalled());
+      expect(mockClearBackendSsotMirror).not.toHaveBeenCalled();
+    });
+
+    it('mirror read 실패는 graceful (throw 없음)', async () => {
+      mockGetTripStartedAt.mockResolvedValue(null);
+      mockReadBackendSsotMirror.mockRejectedValue(new Error('io'));
+      mockAppState();
       expect(() => renderHook(() => useStateRehydration())).not.toThrow();
       await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
     });
