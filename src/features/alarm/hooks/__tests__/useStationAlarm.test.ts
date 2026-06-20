@@ -3828,13 +3828,14 @@ describe('useStationAlarm', () => {
       });
     }
 
+    type ExpectGate = 'sleep' | 'lock-origin' | 'none';
     it.each([
       {
         name: 'FG GPS path — lockless + sleep ON + currentHopIndex=0 → station-passed 차단 (사가정 22:11:56 evidence)',
         sleepMode: true,
         lockValue: null,
         currentHopIndex: 0 as number | null,
-        expectGate: 'sleep' as 'sleep' | 'lock-origin' | 'none',
+        expectGate: 'sleep' as ExpectGate,
       },
       {
         // #1599 band-aid — lock 활성 + candidate=boardingStation은 sleep gate 진입 전에
@@ -3843,28 +3844,28 @@ describe('useStationAlarm', () => {
         sleepMode: true,
         lockValue: lockOnSagajeong,
         currentHopIndex: null,
-        expectGate: 'lock-origin' as 'sleep' | 'lock-origin' | 'none',
+        expectGate: 'lock-origin' as ExpectGate,
       },
       {
         name: 'FG GPS path — sleep OFF + lockless + currentHopIndex=0 → 정상 발사',
         sleepMode: false,
         lockValue: null,
         currentHopIndex: 0 as number | null,
-        expectGate: 'none' as 'sleep' | 'lock-origin' | 'none',
+        expectGate: 'none' as ExpectGate,
       },
       {
         name: 'FG GPS path — sleep ON + lockless + currentHopIndex=3 → 정상 발사 (첫 hop 아님)',
         sleepMode: true,
         lockValue: null,
         currentHopIndex: 3 as number | null,
-        expectGate: 'none' as 'sleep' | 'lock-origin' | 'none',
+        expectGate: 'none' as ExpectGate,
       },
       {
         name: 'FG GPS path — sleep ON + lock 활성 + candidate≠boardingStation → 정상 발사',
         sleepMode: true,
         lockValue: { ...lockOnSagajeong, boardingStationId: 'S-OTHER' },
         currentHopIndex: null,
-        expectGate: 'none' as 'sleep' | 'lock-origin' | 'none',
+        expectGate: 'none' as ExpectGate,
       },
     ])('$name', async ({ sleepMode, lockValue, currentHopIndex, expectGate }) => {
       useSettingsStore.setState({ sleepMode });

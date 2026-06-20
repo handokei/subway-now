@@ -238,7 +238,7 @@ async function runSilenceGateAndDispatch(params: {
   // 2026-06-20 용마산 evidence: lock 활성 1초 후 lock origin 자체에 station-passed fire (X1).
   // #1596(autoLock multi-signal consensus) 머지 전까지 band-aid — origin은 "출발역"이라 station-passed
   // 첫 대상이 될 수 없다 (다음 역이 첫 hop). 모든 다른 게이트보다 위 — 가장 강한 사용자 의향 가드.
-  if (params.lock && params.candidateStation.id === params.lock.boardingStationId) {
+  if (params.candidateStation.id === params.lock?.boardingStationId) {
     logSuppressedPassedEventOnLockOrigin({
       source: params.source,
       stationName: params.candidateStation.name,
