@@ -87,7 +87,7 @@ function sanitizeContext(context: BackendXEventContext): Record<string, unknown>
 export function hashTripToken(token: string): string {
   let hash = 0x811c9dc5;
   for (let i = 0; i < token.length; i++) {
-    hash ^= token.charCodeAt(i);
+    hash ^= token.codePointAt(i) ?? 0;
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
   return hash.toString(16).padStart(8, '0');

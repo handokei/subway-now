@@ -26,7 +26,7 @@ function makeEnv(overrides: Partial<Env> = {}): Env {
     APNS_PRIVATE_KEY: 'pem',
     APNS_BUNDLE_ID: 'bundle',
     ...overrides,
-  } as Env;
+  };
 }
 
 describe('backend sentry (#1578)', () => {
@@ -81,7 +81,9 @@ describe('backend sentry (#1578)', () => {
         stationName: '용마산',
         unset: undefined,
       });
-      const args = (Sentry.captureMessage as ReturnType<typeof vi.fn>).mock.calls[0][1];
+      const args = vi.mocked(Sentry.captureMessage).mock.calls[0][1] as {
+        extra: Record<string, unknown>;
+      };
       expect(args.extra.tripToken).toBeUndefined();
       expect(args.extra.tripTokenHash).toBe(hashTripToken('raw-secret-token'));
       expect(args.extra.stationName).toBe('용마산');
@@ -90,7 +92,7 @@ describe('backend sentry (#1578)', () => {
 
     it('SDK throw 시 swallow', () => {
       sentryInit(makeEnv({ SENTRY_DSN: 'https://x@s/1' }));
-      (Sentry.captureMessage as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+      vi.mocked(Sentry.captureMessage).mockImplementationOnce(() => {
         throw new Error('crash');
       });
       expect(() => captureXEvent('X6-late-alarm', {})).not.toThrow();
