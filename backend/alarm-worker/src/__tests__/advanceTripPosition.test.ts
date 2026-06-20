@@ -542,6 +542,32 @@ describe('advanceTripPosition — lockSuggestion 추론 (S1 T9b, #1534)', () => 
     kv = new InMemoryKV();
   });
 
+  // 게이트 통과만 시키기 위해 wifi-ssid-match strong evidence 1건 주입.
+  // (gps-displacement는 자체로 약하지만 strong evidence가 윈도우 안에 있으면 advance 흐름 평가 가능.)
+  function pushWifiSsotEvidence(ssot: { motionEvidence: MotionEvidence[] }): void {
+    ssot.motionEvidence.push({
+      source: 'device-wifi',
+      ts: NOW - 10_000,
+      signal: { type: 'wifi-ssid-match' },
+    });
+  }
+
+  // 약 evidence (gps-displacement)로 advanceTripPosition 호출 — suggestion 보존/미생성 검증 용.
+  async function advanceWithGpsDisplacement(stationId: string): Promise<void> {
+    await advanceTripPosition(
+      kv as unknown as KVNamespace,
+      TOKEN,
+      stationId,
+      {
+        type: 'gps-displacement',
+        stationId,
+        ts: NOW,
+        environment: 'surface',
+      },
+      { gatePassed: true, lockAttachable: false },
+    );
+  }
+
   it('lockless + arvlcd-confirmed-train + arvlcdTrainCode → high confidence suggestion (waypoint line)', async () => {
     const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
     ssot.motionState = 'moving';
@@ -626,27 +652,11 @@ describe('advanceTripPosition — lockSuggestion 추론 (S1 T9b, #1534)', () => 
   it('lockless + gps-displacement → suggestion 미생성 (약 evidence)', async () => {
     const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
     ssot.motionState = 'moving';
-    // strong evidence 1개 추가 — gps-displacement는 약하지만 게이트 통과만 시켜서 advance 흐름 평가
-    ssot.motionEvidence.push({
-      source: 'device-wifi',
-      ts: NOW - 10_000,
-      signal: { type: 'wifi-ssid-match' },
-    });
+    pushWifiSsotEvidence(ssot);
     await writeSsot(kv as unknown as KVNamespace, ssot);
     await putTrip(kv as unknown as KVNamespace, makeTrip());
 
-    await advanceTripPosition(
-      kv as unknown as KVNamespace,
-      TOKEN,
-      '중곡',
-      {
-        type: 'gps-displacement',
-        stationId: '중곡',
-        ts: NOW,
-        environment: 'surface',
-      },
-      { gatePassed: true, lockAttachable: false },
-    );
+    await advanceWithGpsDisplacement('중곡');
 
     const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
     expect(after?.lockSuggestion).toBeUndefined();
@@ -690,26 +700,11 @@ describe('advanceTripPosition — lockSuggestion 추론 (S1 T9b, #1534)', () => 
     const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
     ssot.motionState = 'moving';
     ssot.lockSuggestion = existing;
-    ssot.motionEvidence.push({
-      source: 'device-wifi',
-      ts: NOW - 10_000,
-      signal: { type: 'wifi-ssid-match' },
-    });
+    pushWifiSsotEvidence(ssot);
     await writeSsot(kv as unknown as KVNamespace, ssot);
     await putTrip(kv as unknown as KVNamespace, makeTrip());
 
-    await advanceTripPosition(
-      kv as unknown as KVNamespace,
-      TOKEN,
-      '중곡',
-      {
-        type: 'gps-displacement',
-        stationId: '중곡',
-        ts: NOW,
-        environment: 'surface',
-      },
-      { gatePassed: true, lockAttachable: false },
-    );
+    await advanceWithGpsDisplacement('중곡');
 
     const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
     expect(after?.lockSuggestion).toEqual(existing);

@@ -984,6 +984,25 @@ describe('useBoardingLockController', () => {
       lockSuggestion: SUGGESTION,
     };
 
+    // 폴링 1 cycle (5s tick) → effect flush (0s tick) — suggestion 채택 흐름 settle 헬퍼.
+    async function tickAndSettleCycle() {
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+      });
+    }
+
+    // suggestion reject 시나리오 공용 setup — lock=null + createLock mock + renderHook 후 settle 까지.
+    // assertion(`expect(createLockMock).not.toHaveBeenCalled()`)는 caller가 검증.
+    function setupRejectScenario(inputs: UseBoardingLockControllerInputs = defaultInputs) {
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() => useBoardingLockController(inputs));
+      return createLockMock;
+    }
+
     beforeEach(() => {
       jest.useFakeTimers();
       // jest.requireActual로 module을 가져오고 readBackendSsotMirror만 spy.
@@ -1032,13 +1051,7 @@ describe('useBoardingLockController', () => {
       mockGetBoardingLock.mockResolvedValue(existing);
       useBoardingLockStore.setState({ lock: existing, createLock: createLockMock });
       renderHook(() => useBoardingLockController(defaultInputs));
-      await act(async () => {
-        jest.advanceTimersByTime(5_000);
-      });
-      // wait briefly — createLock 미호출 확인
-      await act(async () => {
-        jest.advanceTimersByTime(0);
-      });
+      await tickAndSettleCycle();
       expect(createLockMock).not.toHaveBeenCalled();
     });
 
@@ -1047,15 +1060,8 @@ describe('useBoardingLockController', () => {
         ...MIRROR,
         lockSuggestion: { ...SUGGESTION, lineId: '7' }, // route는 line 2
       });
-      const createLockMock = jest.fn().mockResolvedValue(undefined);
-      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
-      renderHook(() => useBoardingLockController(defaultInputs));
-      await act(async () => {
-        jest.advanceTimersByTime(5_000);
-      });
-      await act(async () => {
-        jest.advanceTimersByTime(0);
-      });
+      const createLockMock = setupRejectScenario();
+      await tickAndSettleCycle();
       expect(createLockMock).not.toHaveBeenCalled();
     });
 
@@ -1064,15 +1070,8 @@ describe('useBoardingLockController', () => {
         ...MIRROR,
         lockSuggestion: { ...SUGGESTION, lineId: 'mars' },
       });
-      const createLockMock = jest.fn().mockResolvedValue(undefined);
-      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
-      renderHook(() => useBoardingLockController(defaultInputs));
-      await act(async () => {
-        jest.advanceTimersByTime(5_000);
-      });
-      await act(async () => {
-        jest.advanceTimersByTime(0);
-      });
+      const createLockMock = setupRejectScenario();
+      await tickAndSettleCycle();
       expect(createLockMock).not.toHaveBeenCalled();
     });
 
@@ -1107,15 +1106,8 @@ describe('useBoardingLockController', () => {
 
     it('lockSuggestion 부재 → createLock 미호출 (caller 9-AND fallback)', async () => {
       readSpy.mockResolvedValue(null);
-      const createLockMock = jest.fn().mockResolvedValue(undefined);
-      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
-      renderHook(() => useBoardingLockController(defaultInputs));
-      await act(async () => {
-        jest.advanceTimersByTime(5_000);
-      });
-      await act(async () => {
-        jest.advanceTimersByTime(0);
-      });
+      const createLockMock = setupRejectScenario();
+      await tickAndSettleCycle();
       expect(createLockMock).not.toHaveBeenCalled();
     });
 
@@ -1173,17 +1165,11 @@ describe('useBoardingLockController', () => {
         lockSuggestion: { ...SUGGESTION, stationId: '' },
       });
       mockFindStationByNameAndLine.mockReturnValue(null);
-      const createLockMock = jest.fn().mockResolvedValue(undefined);
-      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
-      renderHook(() =>
-        useBoardingLockController({ ...defaultInputs, currentStation: null }),
-      );
-      await act(async () => {
-        jest.advanceTimersByTime(5_000);
+      const createLockMock = setupRejectScenario({
+        ...defaultInputs,
+        currentStation: null,
       });
-      await act(async () => {
-        jest.advanceTimersByTime(0);
-      });
+      await tickAndSettleCycle();
       expect(createLockMock).not.toHaveBeenCalled();
     });
   });
