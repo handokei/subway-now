@@ -13,7 +13,11 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useSettingsStore } from '../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../route/store/useDestinationStore';
-import { getTripStartedAt } from '../../alarm/utils/tripStartStorage';
+import {
+  getTripStartedAt,
+  tripLifecyclePhase,
+  type TripLifecyclePhase,
+} from '../../alarm/utils/tripStartStorage';
 import {
   readBackendSsotMirror,
   type BackendSsotMirrorEntry,
@@ -153,6 +157,17 @@ export interface TripDebugState {
   displayOnlyEstimateStrategy:
     | import('../../route/utils/stationProgressEstimator').StationProgressStrategy
     | null;
+  /**
+   * #1604 — Trip lifecycle 단계 (T10 #1594). 4가지: none/normal/silence/force-end.
+   *
+   * 사용자가 trip 종료 원인을 즉시 알 수 있도록 DebugModal에 노출 — backstop이 silence/force-end
+   * 분기에 들어갔는지 확인. 활성 trip이 'normal' 외 phase로 잠깐이라도 갔다가 종료되면 사용자가
+   * 사후 재구성 가능.
+   *
+   * 산출: `tripLifecyclePhase(tripStartedAt)` 단순 호출. tripStartedAt=null이면 'none'.
+   * Optional — 명시 전달 안 하면 caller가 tripStartedAt에서 derive해 표시한다 (backward-compat).
+   */
+  lifecyclePhase?: TripLifecyclePhase;
 }
 
 export interface SleepDebugState {
@@ -651,6 +666,15 @@ function formatDisplayOnlyEstimateStrategy(
   return strategy == null ? DISPLAY_ONLY_ESTIMATE_NONE_LABEL : strategy;
 }
 
+/**
+ * #1604 — trip 미전달 / lifecyclePhase 미명시 케이스에서 tripStartedAt으로 자동 derive.
+ * tripStartedAt 자체도 없으면 'none' 반환.
+ */
+function resolveLifecyclePhase(trip: TripDebugState | null | undefined): TripLifecyclePhase {
+  if (trip?.lifecyclePhase !== undefined) return trip.lifecyclePhase;
+  return tripLifecyclePhase(trip?.tripStartedAt ?? null);
+}
+
 function buildTripSection(args: BuildDumpArgs): string[] {
   return [
     `lockless=${formatOptionalBool(args.trip?.lockless)}`,
@@ -659,6 +683,8 @@ function buildTripSection(args: BuildDumpArgs): string[] {
     `route hop count=${formatOptionalNumber(args.trip?.routeHopCount ?? null)}`,
     // #1447 — displayOnlyEstimate.strategy 라벨. null 케이스도 fallback으로 항상 노출.
     `displayOnlyEstimate=${formatDisplayOnlyEstimateStrategy(args.trip?.displayOnlyEstimateStrategy)}`,
+    // #1604 — trip lifecycle phase (T10 #1594). 사용자가 trip 종료 원인(silence/force-end)을 즉시 확인.
+    `lifecyclePhase=${resolveLifecyclePhase(args.trip)}`,
   ];
 }
 
@@ -1393,6 +1419,8 @@ function DebugModalInner({
         routeHopCount: destination ? routeHopCount : null,
         // #1447 — displayOnlyEstimate가 없으면 null 전달 → UI/dump가 fallback 라벨 표시.
         displayOnlyEstimateStrategy: displayOnlyEstimate?.strategy ?? null,
+        // #1604 — T10 #1594 backstop 단계 노출. tripStartedAt=null이면 'none'.
+        lifecyclePhase: tripLifecyclePhase(tripStartedAt),
       },
     [
       tripProp,
@@ -1766,6 +1794,13 @@ function DebugModalInner({
               value={formatDisplayOnlyEstimateStrategy(trip?.displayOnlyEstimateStrategy)}
               colors={colors}
               testID="debug-modal-display-only-estimate"
+            />
+            {/* #1604 — trip lifecycle phase (T10 #1594). 사용자가 trip 종료 원인(silence/force-end)을 확인. */}
+            <KeyValue
+              label="lifecyclePhase"
+              value={resolveLifecyclePhase(trip)}
+              colors={colors}
+              testID="debug-modal-lifecycle-phase"
             />
           </Section>
 

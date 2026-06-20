@@ -18,9 +18,15 @@ const mockUseBarometer = jest.fn();
 const mockUseLowPowerMode = jest.fn();
 // #1235 (D9 wire) — DebugModal이 destinationStore + tripStartStorage SSOT로 trip props 도출.
 const mockGetTripStartedAt = jest.fn();
-jest.mock('../../../alarm/utils/tripStartStorage', () => ({
-  getTripStartedAt: () => mockGetTripStartedAt(),
-}));
+// #1604 — `tripLifecyclePhase`는 실 구현(순수 함수) 그대로 통과. 테스트가 phase 별도 검증 시
+// `getTripStartedAt` mock 반환값으로 분기.
+jest.mock('../../../alarm/utils/tripStartStorage', () => {
+  const actual = jest.requireActual('../../../alarm/utils/tripStartStorage');
+  return {
+    ...actual,
+    getTripStartedAt: () => mockGetTripStartedAt(),
+  };
+});
 
 jest.mock('../../../nearest-station/hooks/useFusedNearestStation', () => ({
   useFusedNearestStation: () => mockUseFusedNearestStation(),
@@ -1358,6 +1364,101 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
     expect(screen.getByText('currentHopIndex')).toBeTruthy();
     expect(screen.getAllByText('false').length).toBeGreaterThan(0);
+  });
+
+  // #1604 — T10 trip lifecycle phase wire-up.
+  // 4가지 phase가 UI에 노출되는지 + tripStartedAt null/non-null에서 derive가 정확한지.
+  describe('#1604 — lifecyclePhase wire-up', () => {
+    it('tripStartedAt=null → lifecyclePhase=none', async () => {
+      renderWithTheme(
+        <DebugModal
+          onClose={jest.fn()}
+          trip={{
+            lockless: false,
+            tripStartedAt: null,
+            currentHopIndex: null,
+            routeHopCount: null,
+            displayOnlyEstimateStrategy: null,
+          }}
+        />,
+      );
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('none');
+    });
+
+    it('tripStartedAt 최근(<6h) → lifecyclePhase=normal', async () => {
+      renderWithTheme(
+        <DebugModal
+          onClose={jest.fn()}
+          trip={{
+            lockless: true,
+            tripStartedAt: Date.now() - 60_000, // 1분 전
+            currentHopIndex: 0,
+            routeHopCount: 5,
+            displayOnlyEstimateStrategy: null,
+          }}
+        />,
+      );
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('normal');
+    });
+
+    it('명시 lifecyclePhase 전달 시 그 값 우선 (silence)', async () => {
+      renderWithTheme(
+        <DebugModal
+          onClose={jest.fn()}
+          trip={{
+            lockless: true,
+            tripStartedAt: Date.now() - 60_000,
+            currentHopIndex: 0,
+            routeHopCount: 5,
+            displayOnlyEstimateStrategy: null,
+            lifecyclePhase: 'silence',
+          }}
+        />,
+      );
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('silence');
+    });
+
+    it('명시 lifecyclePhase=force-end 전달 시 그대로 노출', async () => {
+      renderWithTheme(
+        <DebugModal
+          onClose={jest.fn()}
+          trip={{
+            lockless: true,
+            tripStartedAt: Date.now() - 60_000,
+            currentHopIndex: 0,
+            routeHopCount: 5,
+            displayOnlyEstimateStrategy: null,
+            lifecyclePhase: 'force-end',
+          }}
+        />,
+      );
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('force-end');
+    });
+
+    it('Share dump에 lifecyclePhase 라인 포함', async () => {
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(
+        <DebugModal
+          onClose={jest.fn()}
+          trip={{
+            lockless: true,
+            tripStartedAt: null,
+            currentHopIndex: null,
+            routeHopCount: null,
+            displayOnlyEstimateStrategy: null,
+          }}
+        />,
+      );
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      expect(message).toContain('lifecyclePhase=none');
+    });
   });
 
   it.each([
