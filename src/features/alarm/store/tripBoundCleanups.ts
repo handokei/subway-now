@@ -39,6 +39,7 @@ import {
   getRegisteredTripRouteSig,
 } from '../utils/tripBoundScheduler';
 import { clearTripCorrId } from '../../observability/utils/tripCorrId';
+import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { clearCrossCategoryDedup } from '../utils/crossCategoryStationDedup';
 import { clearAlarmLogWindows } from '../utils/alarmLog';
 import { resetAlarmBackendDedup } from '../api/alarmBackend';
@@ -115,6 +116,10 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // 새 trip 분모에 섞이는 회귀 차단. LAST_UPLOADED_PRESCHEDULED_TRIP_START_KEY는 recall과
   // 같은 이유로 보존 (tripStart값으로 자연 무효화).
   clearPrescheduledLedger,
+  // #1502 (M2) — trip 종료 직후 사용자 정답지 prompt enqueue. clearTripCorrId보다 앞에 두어
+  // trigger가 동기 첫 줄에서 corrId를 캡처할 수 있게 한다 (cleanup map은 parallel-fired지만
+  // 동기 cache read는 순서대로 실행됨). corrId 부재면 graceful skip.
+  triggerTripGroundTruthPrompt,
   // #1501 (ADR-015 §10 P5 / PR-A) — trip 종료 시 corrId 제거. 다음 trip은 새 corrId를
   // 받고 rawSignalBuffer entry가 어느 trip 소속인지 명확해진다.
   clearTripCorrId,

@@ -345,5 +345,15 @@
       "buttonLabel": "Share route",
       "bodyTemplate": "🚇 Subway Route\nFrom: {{fromName}} ({{fromLine}})\nTo: {{toName}} ({{toLine}})\nAbout {{minutes}} min ({{stops}} stops)"
     }
+  },
+  "debug": {
+    "tripGroundTruth": {
+      "title": "Were the alarms accurate this trip?",
+      "body": "Your answer trains the alarm accuracy model.",
+      "accurate": "All good",
+      "inaccurate": "Some were wrong",
+      "dismiss": "Later",
+      "thanks": "Thanks for your feedback."
+    }
   }
 }
