@@ -173,6 +173,7 @@ export async function updateSsotMotion(
   token: string,
   position: PositionPoint,
   now: number,
+  options?: { onTransition?: (from: MotionState, to: MotionState) => void },
 ): Promise<TripPositionSSoT | null> {
   const ssot = await readSsot(kv, token);
   if (!ssot) return null;
@@ -191,6 +192,8 @@ export async function updateSsotMotion(
   const next = computeMotionState(ssot, position, now);
   if (next !== ssot.motionState) {
     emitMotionTransitionBreadcrumb(ssot.motionState, next);
+    // P0-1 (#1577) — Site 5 of 6: motion-transition. caller가 analytics sink을 주입한다.
+    options?.onTransition?.(ssot.motionState, next);
     ssot.motionState = next;
   }
 

@@ -33,10 +33,9 @@ import {
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
-import { seedSsot, type TripPositionSSoT } from '../tripPositionSsot';
+import { readSsot, seedSsot, ssotKey, writeSsot, type TripPositionSSoT } from '../tripPositionSsot';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
-import { readSsot, seedSsot, ssotKey, writeSsot } from '../tripPositionSsot';
 import type { BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 

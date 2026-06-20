@@ -104,3 +104,64 @@ npm run type-check   # tsc --noEmit
 - 앱 측 push handler (이슈 #337)
 - 통합 테스트 (#339)
 - Seoul API 트래픽 증설 신청 (#341)
+
+## Analytics Engine — trip_metrics (Phase 0 #1577 / Epic #1576)
+
+ADR-017 / ADR-016의 V/X acceptance를 SQL로 직접 검증하기 위한 시계열 dataset.
+
+### Binding
+
+```toml
+# wrangler.toml
+[[analytics_engine_datasets]]
+binding = "TRIP_METRICS"
+dataset = "trip_metrics"
+```
+
+> Workers Paid plan 필수. Free plan은 binding 선언만으로도 deploy 실패 (Cloudflare API 10089).
+> 코드는 `if (env.TRIP_METRICS)` 분기로 graceful — binding 미바인딩 시 모든 적재 경로가 no-op.
+
+### Event 어휘 (6종)
+
+| eventType | 적재 site | 용도 |
+| --- | --- | --- |
+| `advance` | `tryAdvanceAndFireArvlcd` / `advanceBoardingLockWaypoint` 통과 | V8 적재 카운터 |
+| `fire` | `fireArvlCdStationPush` / `fireVanishFallbackStationPush` 성공 | X3 stale fire 검증 |
+| `suppress` | advance blocked / fire dedup / cross-station dedup | V9 suppress rate |
+| `motion-transition` | `updateSsotMotion` state 전환 | motion 정확도 진단 |
+| `position-upload` | `POST /position` 수신 | V8a `/position` rate |
+| `trip-mutation` | `POST /trips` 수신 | V8b `/trips` rate |
+
+Dimensions(blobs): `eventType`, `station:<id>`, `reason:<r>`, `env:<surface|underground|hybrid|unknown>`
+Metrics(doubles): `staleMs`, `hopIndex`, `motionConfidence`
+Index: `tripToken` 8자 prefix (full token 노출 안 함)
+
+### SQL query examples
+
+```sql
+-- V8a: /position 업로드 ≤ 100건/10min/trip 확인
+SELECT index1 AS tokenPrefix, COUNT(*) AS cnt
+FROM trip_metrics
+WHERE blob1 = 'position-upload' AND timestamp > NOW() - INTERVAL '10' MINUTE
+GROUP BY index1
+HAVING cnt > 100;
+
+-- V9: suppress rate < 100건/시간/trip
+SELECT index1 AS tokenPrefix, COUNT(*) AS suppress_cnt
+FROM trip_metrics
+WHERE blob1 = 'suppress' AND timestamp > NOW() - INTERVAL '1' HOUR
+GROUP BY index1
+HAVING suppress_cnt >= 100;
+
+-- X3: stale fire (SSoT lastAdvanceAt 기준 5분+ 경과 후 fire)
+SELECT index1 AS tokenPrefix, blob2 AS station, double1 AS staleMs
+FROM trip_metrics
+WHERE blob1 = 'fire' AND double1 > 300000;
+
+-- 6 event type 적재 1주 분포 (dashboard 첫 화면용)
+SELECT blob1 AS eventType, COUNT(*) AS cnt
+FROM trip_metrics
+WHERE timestamp > NOW() - INTERVAL '7' DAY
+GROUP BY blob1
+ORDER BY cnt DESC;
+```

@@ -571,4 +571,16 @@ export interface Env {
    * graceful no-op. 등록: `wrangler secret put SENTRY_DSN`.
    */
   SENTRY_DSN?: string;
+  /**
+   * Phase 0 측정 인프라 — Cloudflare Analytics Engine dataset (#1577, Epic #1576).
+   *
+   * V/X acceptance (ADR-017/016) 검증용 시계열. advance / fire / suppress /
+   * motion-transition / position-upload / trip-mutation 6 event를 `src/analytics.ts`의
+   * `writeMetric()` helper로 적재한다.
+   *
+   * 미바인딩 시 모든 적재 경로는 graceful no-op (TELEMETRY 동형) — 개발/테스트 환경 호환.
+   * 생성: `wrangler.toml`의 `[[analytics_engine_datasets]]` binding=`TRIP_METRICS`,
+   *      dataset=`trip_metrics`.
+   */
+  TRIP_METRICS?: AnalyticsEngineWriter;
 }

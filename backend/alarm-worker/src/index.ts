@@ -43,6 +43,7 @@ import { ackPending, stampReceived } from './pendingPushes';
 import { appendPositionPoint } from './positionSeries';
 import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { updateSsotMotion } from './motionState';
+import { writeMetric } from './analytics';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient } from './seoul';
 import { runScheduled } from './scheduled';
@@ -495,6 +496,14 @@ app.post('/trips', async (c) => {
 
   await putTrip(c.env.TRIPS, trip);
 
+  // P0-1 (#1577) — Site 6 of 6: trip-mutation 적재 (V8b /trips rate 검증).
+  writeMetric(c.env, {
+    eventType: 'trip-mutation',
+    tripToken: trip.token,
+    reason: trip.boardingLock ? 'lock-active' : 'lockless',
+    hopIndex: trip.waypoints[0]?.hopIndex,
+  });
+
   return c.json({ ok: true, token: trip.token });
 });
 
@@ -900,7 +909,22 @@ app.post('/position', async (c) => {
   }
   // #1556 (T3) — SSOT.motionState 갱신. SSOT 부재(trip 미등록) 시 graceful no-op.
   // T2 advanceTripPosition 게이트 #2가 본 motionState='stationary'를 차단 입력으로 사용한다.
-  await updateSsotMotion(c.env.TRIPS, payload.token, payload.point, Date.now());
+  await updateSsotMotion(c.env.TRIPS, payload.token, payload.point, Date.now(), {
+    onTransition: (from, to) => {
+      // P0-1 (#1577) — Site 5 of 6: motion-transition 적재.
+      writeMetric(c.env, {
+        eventType: 'motion-transition',
+        tripToken: payload.token,
+        reason: `${from}->${to}`,
+      });
+    },
+  });
+  // P0-1 (#1577) — Site 6 of 6: position-upload 적재 (V8a /position rate 검증).
+  writeMetric(c.env, {
+    eventType: 'position-upload',
+    tripToken: payload.token,
+    reason: payload.point.motion,
+  });
   return c.json({ ok: true });
 });
 
