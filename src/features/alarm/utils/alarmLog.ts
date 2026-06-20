@@ -126,6 +126,13 @@ export type AlarmLogReason =
   // candidate=0을 허용해 "출발역 도착" false fire 발생. lock 활성 trip은 본 가드 미적용
   // (boardingStationId 기준 startStation 진행 알림은 정당 — ADR-014 §4 동급 보장).
   | 'gate-origin-hop-lockless'
+  // #1599 — boardingLock active 상태에서 candidate stationId가 lock.boardingStationId와 일치할 때
+  // 차단된 station-passed 발사. 2026-06-20 용마산 evidence: lock 활성 1초 후 lock origin
+  // 자체에 station-passed 발사 → 사용자는 출발도 안 했는데 "용마산 통과" 알람 (X1 wrong-station-alarm).
+  // 본 가드는 #1596(autoLock multi-signal consensus)이 머지될 때까지 band-aid — origin = 출발역,
+  // 출발역에서 출발하면 첫 station-passed 대상은 "다음 역"이지 origin 자체가 아님. lock 없는 trip
+  // (lockless)에는 영향 X — 그 케이스는 'gate-origin-hop-lockless'가 담당.
+  | 'gate-passed-event-on-lock-origin'
   // #1012 (H5) — useStationAlarm hydration state machine 각 phase 진입 stamp.
   // pre-hydrate → hydrating → storage-synced → ready 4단계. 'ready' 전 phase에서는
   // 모든 phase 알람 발사가 보류된다. transition 한 번에 1엔트리 적재 — 운영에서 phase
@@ -936,6 +943,31 @@ export function logSuppressedOriginHopLockless(input: {
     source: input.source,
     outcome: 'suppressed',
     reason: 'gate-origin-hop-lockless',
+    stationName: input.stationName,
+    kind: 'station-passed',
+  });
+}
+
+/**
+ * #1599 — boardingLock active 상태에서 candidate stationId === lock.boardingStationId일 때
+ * station-passed 발사 1건 차단 적재. #1596(autoLock multi-signal consensus) 머지 전까지 band-aid.
+ *
+ * 2026-06-20 용마산 evidence: lock 활성 1초 후 lock origin (= boardingStationId) 자체에
+ * station-passed fire → "출발도 안 했는데 통과 알람"(X1). lock origin은 사용자가 직접 탭한
+ * 출발역이므로 station-passed의 의미상 첫 대상이 될 수 없다 (출발역에서 출발 → 다음 역이 첫 hop).
+ *
+ * 호출자는 lock 활성(lock !== null)이며 candidate.id === lock.boardingStationId일 때만 호출.
+ * lockless 케이스는 'gate-origin-hop-lockless'(#1514)가 별도 담당.
+ */
+export function logSuppressedPassedEventOnLockOrigin(input: {
+  source: AlarmLogSource;
+  stationName: string;
+}): void {
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: 'gate-passed-event-on-lock-origin',
     stationName: input.stationName,
     kind: 'station-passed',
   });
