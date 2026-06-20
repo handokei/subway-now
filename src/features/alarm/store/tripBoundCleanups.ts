@@ -40,6 +40,7 @@ import {
 } from '../utils/tripBoundScheduler';
 import { clearTripCorrId } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
+import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { clearCrossCategoryDedup } from '../utils/crossCategoryStationDedup';
 import { clearAlarmLogWindows } from '../utils/alarmLog';
 import { resetAlarmBackendDedup } from '../api/alarmBackend';
@@ -123,6 +124,13 @@ export const TRIP_BOUND_CLEANUPS: ReadonlyArray<() => Promise<void>> = [
   // #1501 (ADR-015 §10 P5 / PR-A) — trip 종료 시 corrId 제거. 다음 trip은 새 corrId를
   // 받고 rawSignalBuffer entry가 어느 trip 소속인지 명확해진다.
   clearTripCorrId,
+  // #1573 (T10) — backend SSoT mirror 제거.
+  // 누락 시 새 trip 등록 직후 cascade picker가 이전 trip의 mirror entry를 freshness 윈도우
+  // 내에서 backend-ssot tier로 채택할 수 있다(Mirror leak #3). 4개 cleanup 경로
+  // (FG setDestination(null/switch) / silent push trip-ended / useStateRehydration sentinel /
+  // useLaunchTripReconciliation cold-launch) 모두 runTripBoundCleanups를 호출하므로 본 배열에
+  // 한 줄 추가로 4 경로 자동 wire.
+  clearBackendSsotMirror,
   // #1524 — trip 종료 시 sticky station persisted lock 제거. useStickyStation의 메모리 lock은
   // motion.tripActive flip 감지로 즉시 해제되지만, BG silent push trip-ended 경로에서는 hook이
   // 실행되지 않으므로 storage를 직접 제거해야 다음 FG 재마운트 hydrate가 stale lock을 부활

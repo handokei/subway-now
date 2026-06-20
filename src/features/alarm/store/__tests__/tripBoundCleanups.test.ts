@@ -25,6 +25,7 @@ import {
 } from '../../utils/crossCategoryStationDedup';
 import { clearAlarmLogWindows } from '../../utils/alarmLog';
 import { resetAlarmBackendDedup } from '../../api/alarmBackend';
+import { clearBackendSsotMirror } from '../../utils/backendSsotMirror';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
 import { useBoardingLockStore } from '../useBoardingLockStore';
 import { useAlarmEventStore } from '../useAlarmEventStore';
@@ -400,14 +401,17 @@ describe('tripBoundCleanups', () => {
       expect(useAlarmEventStore.getState().dismissSilence).toBeNull();
     });
 
+    it('#1573 (T10): clearBackendSsotMirror가 TRIP_BOUND_CLEANUPS에 포함된다 (Mirror leak #3 가드)', () => {
+      expect(TRIP_BOUND_CLEANUPS).toContain(clearBackendSsotMirror);
+    });
+
     it('S12-8: enumeration 가드 — TRIP_BOUND_CLEANUPS 길이가 baseline 이하로 떨어지면 회귀', () => {
       // 새 cleanup 항목이 추가될 때마다 baseline을 한 줄로 갱신. 누군가 실수로 항목을 제거하면
       // 본 assertion이 빨갛게 깨져 의도된 제거인지 코드리뷰에서 확인하도록 강제한다.
       //
-      // #1545 (S12) 이전: 22 항목. S12에서 5 항목 추가(crossCategoryDedup / alarmLogWindows /
-      // alarmBackendDedup / storeMemoryMirror / [기존 22] = 22 + 4 신규 + 1 wrapper). 일부 항목은
-      // BG-only 메모리/dedup이라 storage write 없이도 효력 있음.
-      const MIN_ITEMS = 25;
+      // #1545 (S12) 이전: 22 항목. S12에서 4 신규 + #1573 (T10) clearBackendSsotMirror 1 신규.
+      // 일부 항목은 BG-only 메모리/dedup이라 storage write 없이도 효력 있음.
+      const MIN_ITEMS = 26;
       expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(MIN_ITEMS);
     });
   });

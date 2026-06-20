@@ -13,10 +13,23 @@ import { useBoardingLockStore } from '../../../features/alarm/store/useBoardingL
 
 const mockGetSentinel = jest.fn();
 const mockClearSentinel = jest.fn();
+const mockSetSentinel = jest.fn();
 jest.mock('../../../features/alarm/utils/tripEndedSentinel', () => ({
   getTripEndedSentinel: (...args: unknown[]) => mockGetSentinel(...args),
   clearTripEndedSentinel: (...args: unknown[]) => mockClearSentinel(...args),
-  setTripEndedSentinel: jest.fn(),
+  setTripEndedSentinel: (...args: unknown[]) => mockSetSentinel(...args),
+}));
+
+const mockGetTripStartedAt = jest.fn();
+const mockTripLifecyclePhase = jest.fn();
+jest.mock('../../../features/alarm/utils/tripStartStorage', () => ({
+  getTripStartedAt: (...args: unknown[]) => mockGetTripStartedAt(...args),
+  tripLifecyclePhase: (...args: unknown[]) => mockTripLifecyclePhase(...args),
+}));
+
+const mockAppendAlarmLog = jest.fn();
+jest.mock('../../../features/alarm/utils/alarmLog', () => ({
+  appendAlarmLog: (...args: unknown[]) => mockAppendAlarmLog(...args),
 }));
 
 const mockAddDomainBreadcrumb = jest.fn();
@@ -53,6 +66,10 @@ beforeEach(() => {
   mockReleaseLock.mockResolvedValue(undefined);
   mockLoadLock.mockResolvedValue(undefined);
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
+  mockSetSentinel.mockResolvedValue(undefined);
+  // 기본은 trip 미존재(none) — 기존 테스트들이 backstop 영향 받지 않도록.
+  mockGetTripStartedAt.mockResolvedValue(null);
+  mockTripLifecyclePhase.mockReturnValue('none');
   jest.spyOn(useDestinationStore, 'getState').mockReturnValue({
     setDestination: mockSetDestination,
     loadDestination: mockLoadDestination,
@@ -196,6 +213,81 @@ describe('useStateRehydration', () => {
     const { unmount } = renderHook(() => useStateRehydration());
     unmount();
     expect(app.remove).toHaveBeenCalled();
+  });
+
+  describe('#1573 (T10) lifecycle backstop', () => {
+    it("phase='none' — backstop 아무 동작 안 함 (회귀 0)", async () => {
+      mockTripLifecyclePhase.mockReturnValue('none');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockAppendAlarmLog).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
+    });
+
+    it("phase='normal' — backstop 아무 동작 안 함", async () => {
+      mockGetTripStartedAt.mockResolvedValue(Date.now() - 60_000);
+      mockTripLifecyclePhase.mockReturnValue('normal');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+      expect(mockAppendAlarmLog).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
+      expect(mockReleaseLock).not.toHaveBeenCalled();
+    });
+
+    it("phase='silence' (6h~9h) — alarmLog suppressed 적재 + 강제 종료 안 함", async () => {
+      mockGetTripStartedAt.mockResolvedValue(1_000_000);
+      mockTripLifecyclePhase.mockReturnValue('silence');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() =>
+        expect(mockAppendAlarmLog).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'lifecycle-backstop',
+            outcome: 'suppressed',
+            reason: 'trip-lifecycle-silence',
+          }),
+        ),
+      );
+      // silence에서는 force-end 시퀀스 (setState/releaseLock/setSentinel) 호출 금지.
+      expect(mockSetState).not.toHaveBeenCalled();
+      expect(mockReleaseLock).not.toHaveBeenCalled();
+      expect(mockSetSentinel).not.toHaveBeenCalled();
+    });
+
+    it("phase='force-end' (9h+) — runTripBoundCleanups + setState reset + releaseLock + sentinel + alarmLog fired", async () => {
+      mockGetTripStartedAt.mockResolvedValue(1_000_000);
+      mockTripLifecyclePhase.mockReturnValue('force-end');
+      mockAppState();
+      renderHook(() => useStateRehydration());
+      await waitFor(() => expect(mockSetSentinel).toHaveBeenCalled());
+      expect(mockAppendAlarmLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'lifecycle-backstop',
+          outcome: 'fired',
+          reason: 'trip-lifecycle-force-ended',
+        }),
+      );
+      expect(mockRunTripBoundCleanups).toHaveBeenCalled();
+      expect(mockSetState).toHaveBeenCalledWith({
+        destination: null,
+        customOrigin: null,
+        tripOrigin: null,
+      });
+      expect(mockReleaseLock).toHaveBeenCalled();
+      expect(mockAddDomainBreadcrumb).toHaveBeenCalledWith('trip', 'end', {
+        reason: 'lifecycle-9h-force-end',
+      });
+    });
+
+    it("backstop 실패는 graceful (다음 launch 영향 X)", async () => {
+      mockGetTripStartedAt.mockRejectedValue(new Error('io'));
+      mockAppState();
+      // throw가 새지 않아 hook 자체는 정상 마운트.
+      expect(() => renderHook(() => useStateRehydration())).not.toThrow();
+      await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
+    });
   });
 
   it('active 진입에서도 sentinel 있으면 cleanup + setState reset 호출', async () => {

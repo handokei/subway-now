@@ -17,8 +17,30 @@ export const MAX_FUSION_DELTA_KM = 0.2;
 export const POSITION_TRAIN_TTL_MS = 60_000;
 // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT mirror staleness 게이트.
 // silent push payload.ssot.lastAdvanceAt 기준 본 ms 초과 시 cascade 채택 거부.
-// backend는 cycle(~30s)마다 advance를 보내므로 2 cycle + 여유 margin.
-export const BACKEND_SSOT_MIRROR_MAX_AGE_MS = 60_000;
+//
+// #1573 (T10) — 60s → 180s 상향.
+// 60s는 backend cycle(~30s) 2 cycle만 허용해 한 cycle 손실(BG silent push 지연/dropped)에
+// cascade가 즉시 GPS-only로 떨어졌다. 12:32:14 trip evidence: 60s 만료 → fallback
+// `position-train` → stale GPS(acc=4200m) → 용마산 false fire. 180s로 늘려 6 cycle margin을
+// 확보하고, 그 이후의 staleness는 단계적으로 알람/알림을 차단한다(아래 두 상수).
+export const BACKEND_SSOT_MIRROR_MAX_AGE_MS = 180_000;
+
+/**
+ * #1573 (T10) — Trip lifecycle 단계적 backstop 임계.
+ *
+ * trip이 명시 종료(도착 / 사용자 종료 / backend trip-ended) 없이 본 시간 이상 잔존하면
+ * `feedback_6h_backstop_staged_handling` 룰에 따라 단계 처리:
+ *  - 6h (silence): alarm/notification 차단만 (UI는 trip 유지). KTX/장거리 trip noise 방지.
+ *  - 9h (force-end): 강제 종료 (runTripBoundCleanups + tripEndedSentinel). lockless 9h+ 잔존 #1346 차단.
+ *
+ * 즉시 강제 종료는 KTX 장거리 사용자에게 false positive — 단계 처리로 사용자 가치 보호.
+ * 12h opt-in extend 토글은 후속 sub-task에서 별도 상수와 함께 도입(현 PR 범위 외).
+ *
+ * stale 5분+ 알람 차단 / 30분+ 알림 차단 임계는 T9 (#1572) / T12에서 wire될 때 함께 도입한다
+ * — 본 PR에 orphan 상수로 남기지 않는다 (Wire-completion 5단 룰).
+ */
+export const TRIP_LIFECYCLE_SILENCE_MS = 6 * 60 * 60_000;
+export const TRIP_LIFECYCLE_FORCE_END_MS = 9 * 60 * 60_000;
 // #1016 hole (c): BoardingLock 활성 시 positionTrain 후보가 유효한 arc 구간 window.
 // 탑승역 인덱스 + LOCK_NEXT_HOP_WINDOW 범위 내 역만 허용. 지하 dead zone에서 훨씬 앞의
 // 역을 채택하는 false positive를 차단한다. 인접역 간 평균 주행 시간(90s) × TTL(60s) 기준으로
