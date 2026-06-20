@@ -1840,5 +1840,84 @@ describe('alarmLog', () => {
       await expect(clearAlarmLogWindows()).resolves.toBeUndefined();
     });
   });
+
+  describe('Sentry breadcrumb forward (#1578)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const Sentry = require('@sentry/react-native');
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { setSentryEnabled } = require('../../../../shared/infra/monitoring/sentryState');
+
+    afterEach(() => {
+      setSentryEnabled(false);
+    });
+
+    it('opt-in 미동의 시 breadcrumb 발사 X', () => {
+      appendAlarmLog(makeEntry({ stationName: '강남' }));
+      expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
+    });
+
+    it('opt-in 활성 시 alarmLog entry → breadcrumb forward (category=alarm)', () => {
+      setSentryEnabled(true);
+      appendAlarmLog(
+        makeEntry({
+          source: 'fg',
+          outcome: 'fired',
+          stationName: '용마산',
+          kind: 'destination',
+          phaseId: 'imminent',
+        }),
+      );
+      expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: 'alarm',
+          message: 'fg/fired',
+          data: expect.objectContaining({
+            kind: 'destination',
+            phaseId: 'imminent',
+            stationName: '용마산',
+          }),
+        }),
+      );
+    });
+
+    it('gate-stale-location entry → X3 captureMessage', () => {
+      setSentryEnabled(true);
+      appendAlarmLog(
+        makeEntry({
+          source: 'bg',
+          outcome: 'suppressed',
+          reason: 'gate-stale-location',
+          stationName: '용마산',
+          locationAgeMs: 360_000,
+        }),
+      );
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'X3-stale-alarm',
+        expect.objectContaining({ tags: { xEvent: 'X3-stale-alarm' } }),
+      );
+    });
+
+    it('revalidate-waypoint-mismatch entry → X11 captureMessage', () => {
+      setSentryEnabled(true);
+      appendAlarmLog(
+        makeEntry({
+          source: 'bg-scheduled',
+          outcome: 'suppressed',
+          reason: 'revalidate-waypoint-mismatch',
+          stationName: '용마산',
+        }),
+      );
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'X11-bg-scheduled-leak',
+        expect.objectContaining({ tags: { xEvent: 'X11-bg-scheduled-leak' } }),
+      );
+    });
+
+    it('일반 entry는 X event 발사 X', () => {
+      setSentryEnabled(true);
+      appendAlarmLog(makeEntry({ source: 'fg', outcome: 'fired' }));
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+  });
 });
 

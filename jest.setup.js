@@ -25,6 +25,7 @@ jest.mock('@sentry/react-native', () => ({
   close: jest.fn(),
   addBreadcrumb: jest.fn(),
   captureException: jest.fn(),
+  captureMessage: jest.fn(),
 }));
 
 const i18next = require('i18next');
