@@ -893,7 +893,7 @@ function buildAutoLockSection(args: BuildDumpArgs): string[] {
   const stabilityLine = `stability=${m.stability.stable ? 'stable' : 'pending'} count=${m.stability.count} stationId=${m.stability.stationId ?? UNKNOWN_LABEL}`;
   const directionLine = formatDirectionLine(m.direction);
   const candidateLine = m.candidate
-    ? `candidate=trainCode=${m.candidate.candidate.trainCode} line=${m.candidate.candidate.line} source=${m.candidate.source}`
+    ? `candidate=trainCode=${m.candidate.candidate.trainCode} line=${m.candidate.candidate.line} source=${m.candidate.source} path=${m.candidate.path}`
     : `candidate=null reason=${m.nullReason ?? UNKNOWN_LABEL}`;
   return [ssotLine, stabilityLine, directionLine, candidateLine];
 }
@@ -1012,16 +1012,14 @@ function findArrivalTerminal(
 function computeAutoLockNullReason(
   hasSSOT: boolean,
   stable: boolean,
-  directionMatched: boolean,
   hasCandidate: boolean,
 ): AutoLockDebugMeta['nullReason'] {
   if (hasCandidate) return null;
   if (!hasSSOT) return 'no-ssot';
   if (!stable) return 'stability-pending';
-  if (!directionMatched) return 'direction-mismatch';
-  /* istanbul ignore next -- 3 게이트 모두 통과면 hasCandidate=true가 보장됨 — buildCandidate
-     실패는 lineToSubwayId null 케이스로 valid LineNumber에서 도달 불능. 방어 fallback. */
-  return null;
+  // #1526 — stable+SSOT가 있는데도 candidate=null이면 direction 게이트가 미달 (judge-impossible
+  // + stability count < THRESHOLD 또는 reverse/terminal-out-of-route).
+  return 'direction-mismatch';
 }
 
 /**
@@ -1059,7 +1057,9 @@ function buildAutoLockMeta(input: {
     surfaceSSOT,
     undergroundSSOT,
     stabilityStable: stability.stable,
+    stabilityCount: stability.count,
     directionMatched: direction?.matched ?? false,
+    directionReason: direction?.reason ?? null,
   });
   return {
     surfaceSSOTActive: surfaceSSOT !== null,
@@ -1070,7 +1070,6 @@ function buildAutoLockMeta(input: {
     nullReason: computeAutoLockNullReason(
       surfaceSSOT !== null || undergroundSSOT !== null,
       stability.stable,
-      direction?.matched ?? false,
       candidate !== null,
     ),
   };
