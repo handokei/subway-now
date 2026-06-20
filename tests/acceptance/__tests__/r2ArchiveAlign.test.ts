@@ -2,9 +2,9 @@
  * r2ArchiveAlign 단위 테스트 (P0-4 / #1580).
  */
 
-import { promises as fs } from 'fs';
-import * as os from 'os';
-import * as path from 'path';
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 import {
   ALARM_FIRED_KIND,
@@ -122,7 +122,7 @@ describe('listFixtureFiles', () => {
   });
 
   it('디렉토리 없으면 빈 배열', async () => {
-    const files = await listFixtureFiles('/tmp/definitely-not-exists-xyz-1580');
+    const files = await listFixtureFiles(path.join(__dirname, 'definitely-not-exists-xyz-1580'));
     expect(files).toEqual([]);
   });
 

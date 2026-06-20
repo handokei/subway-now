@@ -10,8 +10,6 @@
  * Phase 0 epic #1576 — sub-task #1580. 인프라 PR (사용자 입력 제외).
  */
 
-export type IsoString = string;
-
 export type TripEnvironment = 'underground' | 'surface' | 'hybrid';
 
 export interface ActualStation {
@@ -19,8 +17,8 @@ export interface ActualStation {
   stationId: string;
   /** 표시명 (예: "건대입구"). diff 시 human-readable). */
   name: string;
-  arrivedAt: IsoString;
-  departedAt: IsoString;
+  arrivedAt: string;
+  departedAt: string;
 }
 
 export interface ActualTransfer {
@@ -29,20 +27,20 @@ export interface ActualTransfer {
   /** 환승해 들어간 노선 id (예: "1"). */
   toLineId: string;
   /** 환승역 도착 시각. */
-  arrivedAt: IsoString;
+  arrivedAt: string;
   /** 새 노선 열차 출발 시각 (= 환승 완료). */
-  departedAt: IsoString;
+  departedAt: string;
 }
 
 export interface ActualDestination {
   stationId: string;
   name: string;
-  arrivedAt: IsoString;
+  arrivedAt: string;
 }
 
 export interface TripGroundTruth {
-  tripStartedAt: IsoString;
-  tripEndedAt: IsoString;
+  tripStartedAt: string;
+  tripEndedAt: string;
   actualStations: ActualStation[];
   actualTransfers: ActualTransfer[];
   actualDestination: ActualDestination;
@@ -56,11 +54,11 @@ export interface ValidationIssue {
   message: string;
 }
 
-const ENVIRONMENTS: TripEnvironment[] = ['underground', 'surface', 'hybrid'];
+const ENVIRONMENTS = new Set<TripEnvironment>(['underground', 'surface', 'hybrid']);
 
 const ISO_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
-function isIso(value: unknown): value is IsoString {
+function isIso(value: unknown): value is string {
   return typeof value === 'string' && ISO_PATTERN.test(value) && !Number.isNaN(Date.parse(value));
 }
 
@@ -136,15 +134,15 @@ export function validateTripGroundTruth(input: unknown): ValidationIssue[] {
     obj.actualStations.forEach((s, i) => checkStation(s, `actualStations[${i}]`, issues));
   }
 
-  if (!Array.isArray(obj.actualTransfers)) {
-    issues.push({ path: 'actualTransfers', message: '배열 필수 (환승 없으면 빈 배열)' });
-  } else {
+  if (Array.isArray(obj.actualTransfers)) {
     obj.actualTransfers.forEach((t, i) => checkTransfer(t, `actualTransfers[${i}]`, issues));
+  } else {
+    issues.push({ path: 'actualTransfers', message: '배열 필수 (환승 없으면 빈 배열)' });
   }
 
   checkDestination(obj.actualDestination, 'actualDestination', issues);
 
-  if (!ENVIRONMENTS.includes(obj.environment as TripEnvironment)) {
+  if (!ENVIRONMENTS.has(obj.environment as TripEnvironment)) {
     issues.push({
       path: 'environment',
       message: `'underground' | 'surface' | 'hybrid' 중 하나여야 함`,

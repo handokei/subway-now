@@ -15,8 +15,8 @@
  * P0-3 PR 머지 후 실제 ndjson을 받으면 필요한 helper만 추가한다.
  */
 
-import { promises as fs } from 'fs';
-import * as path from 'path';
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
 
 export interface ArchiveEvent {
   ts: string;
@@ -123,5 +123,5 @@ export async function listFixtureFiles(fixturesDir: string): Promise<string[]> {
     .filter((f) => f.startsWith('trip-ground-truth-') && f.endsWith('.json'))
     .filter((f) => !f.includes('.template.'))
     .map((f) => path.join(fixturesDir, f))
-    .sort();
+    .sort((a, b) => a.localeCompare(b));
 }

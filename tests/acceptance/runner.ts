@@ -8,8 +8,8 @@
  * 들어오면 자동으로 활성화된다 (Wire-completion: orphan 없음, 측정 plan = fixture 수집).
  */
 
-import { promises as fs } from 'fs';
-import * as path from 'path';
+import { promises as fs } from 'node:fs';
+import * as path from 'node:path';
 
 import { parseTripGroundTruth, TripGroundTruth } from '../fixtures/trip-ground-truth.schema';
 import {
