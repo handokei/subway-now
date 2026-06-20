@@ -3413,37 +3413,38 @@ describe('POST /trips — #1366 boardingLock metadata cross-validation', () => {
 // route 미설정 trip(legacy collapse: waypoints=[destination only])이 도착하면 backend가
 // `promptDisplay`(originStation + line) + `destination`(station id)로 Dijkstra 자동 추론.
 // device의 정상 `routeToWaypoints` 시퀀스와 동형으로 채워, 다음 cron 사이클부터 정상 매역 추적.
-describe('POST /trips — #1604 backend Dijkstra route infer', () => {
-  function collapseBody(
-    waypoints: Array<Record<string, unknown>>,
-    extras: Record<string, unknown> = {},
-  ): Record<string, unknown> {
-    return {
-      ...base(),
-      token: 'tok-1604',
-      waypoints,
-      ...extras,
-    };
-  }
+const COLLAPSE_PROMPT_GEO_1604 = {
+  origin: { lat: 37.573647, lng: 127.092833 }, // 용마산
+  nextStation: { lat: 37.561446, lng: 127.082888 }, // 중곡 근사
+  direction: null as 'up' | 'down' | null,
+};
 
-  const PROMPT_GEO = {
-    origin: { lat: 37.573647, lng: 127.092833 }, // 용마산
-    nextStation: { lat: 37.561446, lng: 127.082888 }, // 중곡 근사
-    direction: null,
+function collapseBody1604(
+  waypoints: Array<Record<string, unknown>>,
+  extras: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    ...base(),
+    token: 'tok-1604',
+    waypoints,
+    ...extras,
   };
+}
+
+describe('POST /trips — #1604 backend Dijkstra route infer', () => {
 
   it('infers waypoints when waypoints=[destination only] + promptDisplay 제공 (직선 trip)', async () => {
     const env = makeKvEnv();
     await post(
       '/trips',
-      collapseBody(
+      collapseBody1604(
         // 용마산 → 어린이대공원(세종대), 동일 7호선 → Dijkstra가 직선 추론.
         [{ stationName: '어린이대공원(세종대)', line: '7', kind: 'destination' }],
         {
           destination: '7-018',
           route: { type: 'direct', line: '7', stops: 3 },
           promptDisplay: { originStation: '용마산', line: '7' },
-          promptGeoContext: PROMPT_GEO,
+          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
         },
       ),
       env,
@@ -3471,13 +3472,13 @@ describe('POST /trips — #1604 backend Dijkstra route infer', () => {
     const env = makeKvEnv();
     await post(
       '/trips',
-      collapseBody(
+      collapseBody1604(
         [{ stationName: '성수', line: '2', kind: 'destination' }],
         {
           destination: '2-011',
           route: { type: 'direct', line: '2', stops: 1 },
           promptDisplay: { originStation: '용마산', line: '7' },
-          promptGeoContext: PROMPT_GEO,
+          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
         },
       ),
       env,
@@ -3500,13 +3501,13 @@ describe('POST /trips — #1604 backend Dijkstra route infer', () => {
     const env = makeKvEnv();
     await post(
       '/trips',
-      collapseBody(
+      collapseBody1604(
         [{ stationName: '어린이대공원(세종대)', line: '7', kind: 'destination' }],
         {
           destination: '7-018',
           route: { type: 'direct', line: '7', stops: 1 },
           promptDisplay: { originStation: '신도림', line: '1' },
-          promptGeoContext: PROMPT_GEO,
+          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
         },
       ),
       env,
@@ -3523,13 +3524,13 @@ describe('POST /trips — #1604 backend Dijkstra route infer', () => {
     const env = makeKvEnv();
     await post(
       '/trips',
-      collapseBody(
+      collapseBody1604(
         [{ stationName: '용마산', line: '7', kind: 'destination' }],
         {
           destination: '7-015',
           route: { type: 'direct', line: '7', stops: 3 },
           promptDisplay: { originStation: '어린이대공원(세종대)', line: '7' },
-          promptGeoContext: PROMPT_GEO,
+          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
         },
       ),
       env,
@@ -3545,7 +3546,7 @@ describe('POST /trips — #1604 backend Dijkstra route infer', () => {
     const env = makeKvEnv();
     await post(
       '/trips',
-      collapseBody([{ stationName: '강남', line: '2', kind: 'destination' }]),
+      collapseBody1604([{ stationName: '강남', line: '2', kind: 'destination' }]),
       env,
     );
     const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
@@ -3558,7 +3559,7 @@ describe('POST /trips — #1604 backend Dijkstra route infer', () => {
     const env = makeKvEnv();
     await post(
       '/trips',
-      collapseBody(
+      collapseBody1604(
         [
           { stationName: '강변', line: '2', kind: 'intermediate' },
           { stationName: '잠실', line: '2', kind: 'destination' },
@@ -3566,7 +3567,7 @@ describe('POST /trips — #1604 backend Dijkstra route infer', () => {
         {
           destination: '2-216',
           promptDisplay: { originStation: '신도림', line: '2' },
-          promptGeoContext: PROMPT_GEO,
+          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
         },
       ),
       env,
@@ -3581,12 +3582,12 @@ describe('POST /trips — #1604 backend Dijkstra route infer', () => {
     const env = makeKvEnv();
     await post(
       '/trips',
-      collapseBody(
+      collapseBody1604(
         [{ stationName: '강남', line: '2', kind: 'destination' }],
         {
           destination: '2-022',
           promptDisplay: { originStation: '존재안함역', line: '2' },
-          promptGeoContext: PROMPT_GEO,
+          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
         },
       ),
       env,

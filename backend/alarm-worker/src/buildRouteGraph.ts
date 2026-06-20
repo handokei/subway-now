@@ -90,44 +90,45 @@ function computeDurationSeconds(distanceMeters: number, line: LineNumber): numbe
 
 let cachedGraph: RouteGraph | null = null;
 
-/**
- * 그래프를 1회 빌드 후 캐싱. stations.json 등 SSOT가 정적이므로 안전.
- * 테스트는 `__resetRouteGraphCache()`로 초기화 가능.
- */
-export function buildRouteGraph(): RouteGraph {
-  if (cachedGraph) {
-    return cachedGraph;
-  }
-
+function buildStationNodes(): Map<string, GraphStation> {
   const nodes = new Map<string, GraphStation>();
   for (const station of STATIONS) {
     nodes.set(station.id, { id: station.id, name: station.name, line: station.line });
   }
+  return nodes;
+}
 
-  const adjacency = new Map<string, RouteEdge[]>();
-  const pushEdge = (fromId: string, edge: RouteEdge): void => {
-    const list = adjacency.get(fromId);
-    if (list) {
-      list.push(edge);
-    } else {
-      adjacency.set(fromId, [edge]);
-    }
-  };
+function pushAdjacentEdge(
+  adjacency: Map<string, RouteEdge[]>,
+  fromId: string,
+  edge: RouteEdge,
+): void {
+  const list = adjacency.get(fromId);
+  if (list) {
+    list.push(edge);
+  } else {
+    adjacency.set(fromId, [edge]);
+  }
+}
 
-  let lineEdgeCount = 0;
+function addLineEdges(adjacency: Map<string, RouteEdge[]>): number {
+  let count = 0;
   for (const [key, distanceMeters] of Object.entries(DISTANCES)) {
     const [line, fromId, toId] = key.split('|') as [LineNumber, string, string];
     const durationSeconds = computeDurationSeconds(distanceMeters, line);
-    pushEdge(fromId, {
+    pushAdjacentEdge(adjacency, fromId, {
       kind: 'line',
       toId,
       line,
       distanceMeters,
       durationSeconds,
     });
-    lineEdgeCount += 1;
+    count += 1;
   }
+  return count;
+}
 
+function groupStationsByName(nodes: Map<string, GraphStation>): Map<string, GraphStation[]> {
   const nameGroups = new Map<string, GraphStation[]>();
   for (const station of nodes.values()) {
     const list = nameGroups.get(station.name);
@@ -137,34 +138,61 @@ export function buildRouteGraph(): RouteGraph {
       nameGroups.set(station.name, [station]);
     }
   }
+  return nameGroups;
+}
 
-  let transferEdgeCount = 0;
-  for (const [name, group] of nameGroups) {
-    if (group.length < 2) {
-      continue;
-    }
-    for (const a of group) {
-      for (const b of group) {
-        if (a.line === b.line) {
-          continue;
-        }
-        const key = `${a.line}|${b.line}|${name}`;
-        const walkingSeconds = TRANSFERS[key];
-        if (walkingSeconds === undefined) {
-          continue;
-        }
-        pushEdge(a.id, {
-          kind: 'transfer',
-          toId: b.id,
-          walkingSeconds,
-          stationName: name,
-          fromLine: a.line,
-          toLine: b.line,
-        });
-        transferEdgeCount += 1;
-      }
+function addTransferEdgesForGroup(
+  adjacency: Map<string, RouteEdge[]>,
+  name: string,
+  group: GraphStation[],
+): number {
+  let count = 0;
+  for (const a of group) {
+    for (const b of group) {
+      if (a.line === b.line) continue;
+      const key = `${a.line}|${b.line}|${name}`;
+      const walkingSeconds = TRANSFERS[key];
+      if (walkingSeconds === undefined) continue;
+      pushAdjacentEdge(adjacency, a.id, {
+        kind: 'transfer',
+        toId: b.id,
+        walkingSeconds,
+        stationName: name,
+        fromLine: a.line,
+        toLine: b.line,
+      });
+      count += 1;
     }
   }
+  return count;
+}
+
+function addTransferEdges(
+  adjacency: Map<string, RouteEdge[]>,
+  nameGroups: Map<string, GraphStation[]>,
+): number {
+  let count = 0;
+  for (const [name, group] of nameGroups) {
+    if (group.length < 2) continue;
+    count += addTransferEdgesForGroup(adjacency, name, group);
+  }
+  return count;
+}
+
+/**
+ * 그래프를 1회 빌드 후 캐싱. stations.json 등 SSOT가 정적이므로 안전.
+ * 테스트는 `__resetRouteGraphCache()`로 초기화 가능.
+ */
+export function buildRouteGraph(): RouteGraph {
+  if (cachedGraph) {
+    return cachedGraph;
+  }
+
+  const nodes = buildStationNodes();
+  const adjacency = new Map<string, RouteEdge[]>();
+  const lineEdgeCount = addLineEdges(adjacency);
+  const nameGroups = groupStationsByName(nodes);
+  const transferEdgeCount = addTransferEdges(adjacency, nameGroups);
 
   cachedGraph = {
     nodes,

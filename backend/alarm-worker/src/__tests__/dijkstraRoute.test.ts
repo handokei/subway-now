@@ -39,7 +39,7 @@ describe('#1604 backend Dijkstra', () => {
 
     it('findStationIdByNameAndLine — 미매치는 null', () => {
       expect(findStationIdByNameAndLine('존재하지않는역', '2')).toBeNull();
-      expect(findStationIdByNameAndLine('성수', '99' as never)).toBeNull();
+      expect(findStationIdByNameAndLine('성수', '99')).toBeNull();
     });
   });
 
@@ -54,7 +54,7 @@ describe('#1604 backend Dijkstra', () => {
       expect(route!.legs[0].toId).toBe('7-018');
       // 7-015 → 7-016 → 7-017 → 7-018 (인접 시퀀스)
       expect(route!.legs[0].stationIds[0]).toBe('7-015');
-      expect(route!.legs[0].stationIds[route!.legs[0].stationIds.length - 1]).toBe('7-018');
+      expect(route!.legs[0].stationIds.at(-1)).toBe('7-018');
     });
 
     it('역방향도 동일 leg 길이 (양방향 검증)', () => {
@@ -89,8 +89,9 @@ describe('#1604 backend Dijkstra', () => {
       expect(route!.legs.length).toBeGreaterThanOrEqual(1);
       expect(route!.transfers.length).toBeGreaterThanOrEqual(1);
       // 마지막 leg는 7호선에서 끝나고 toId는 7-018.
-      expect(route!.legs[route!.legs.length - 1].line).toBe('7');
-      expect(route!.legs[route!.legs.length - 1].toId).toBe('7-018');
+      const lastLeg = route!.legs.at(-1)!;
+      expect(lastLeg.line).toBe('7');
+      expect(lastLeg.toId).toBe('7-018');
     });
   });
 
@@ -117,9 +118,10 @@ describe('#1604 backend Dijkstra', () => {
       const waypoints = inferredRouteToWaypoints(route!, '어린이대공원(세종대)');
       // 7-015 → 7-016 → 7-017 → 7-018: 출발역 제외 3개 waypoint (intermediate × 2 + destination).
       expect(waypoints.length).toBeGreaterThanOrEqual(2);
-      expect(waypoints[waypoints.length - 1].kind).toBe('destination');
-      expect(waypoints[waypoints.length - 1].stationName).toBe('어린이대공원(세종대)');
-      expect(waypoints[waypoints.length - 1].line).toBe('7');
+      const lastWp = waypoints.at(-1)!;
+      expect(lastWp.kind).toBe('destination');
+      expect(lastWp.stationName).toBe('어린이대공원(세종대)');
+      expect(lastWp.line).toBe('7');
       // intermediate들은 모두 line 7
       for (let i = 0; i < waypoints.length - 1; i += 1) {
         expect(waypoints[i].kind).toBe('intermediate');
@@ -136,7 +138,7 @@ describe('#1604 backend Dijkstra', () => {
       expect(transferCount).toBe(1);
       expect(destinationCount).toBe(1);
       // 마지막은 destination, line=2
-      const last = waypoints[waypoints.length - 1];
+      const last = waypoints.at(-1)!;
       expect(last.kind).toBe('destination');
       expect(last.stationName).toBe('성수');
       expect(last.line).toBe('2');
@@ -154,7 +156,7 @@ describe('#1604 backend Dijkstra', () => {
       // 1호선 → 7호선은 일반적으로 1~2 환승 (가산디지털단지 1↔7 단일 환승).
       expect(transferCount).toBeGreaterThanOrEqual(1);
       expect(destinationCount).toBe(1);
-      expect(waypoints[waypoints.length - 1].stationName).toBe('어린이대공원(세종대)');
+      expect(waypoints.at(-1)!.stationName).toBe('어린이대공원(세종대)');
     });
   });
 
@@ -168,8 +170,9 @@ describe('#1604 backend Dijkstra', () => {
       });
       expect(waypoints).not.toBeNull();
       expect(waypoints!.length).toBeGreaterThan(0);
-      expect(waypoints![waypoints!.length - 1].kind).toBe('destination');
-      expect(waypoints![waypoints!.length - 1].stationName).toBe('성수');
+      const last = waypoints!.at(-1)!;
+      expect(last.kind).toBe('destination');
+      expect(last.stationName).toBe('성수');
     });
 
     it('origin 미해소 — null', () => {

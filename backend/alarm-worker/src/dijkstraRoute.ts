@@ -13,6 +13,9 @@ import {
 } from './buildRouteGraph';
 import type { LineNumber, Waypoint } from './types';
 
+/** Dijkstra 결과를 Waypoint 형태로 매핑하기 위한 sub-shape. validateTrip이 occurrenceIdx/hopIndex stamp. */
+export type InferredWaypoint = Pick<Waypoint, 'stationName' | 'line' | 'kind'>;
+
 export interface RouteLeg {
   readonly fromId: string;
   readonly toId: string;
@@ -229,8 +232,9 @@ function reconstructRoute(
 export function inferredRouteToWaypoints(
   route: InferredRoute,
   destinationName: string,
-): Array<Pick<Waypoint, 'stationName' | 'line' | 'kind'>> {
-  const result: Array<Pick<Waypoint, 'stationName' | 'line' | 'kind'>> = [];
+): InferredWaypoint[] {
+  const result: InferredWaypoint[] = [];
+
   const graph = buildRouteGraph();
   const stationName = (id: string): string => graph.nodes.get(id)?.name ?? id;
 
@@ -270,7 +274,7 @@ export function inferWaypointsFromOriginAndDestination(args: {
   originLine: LineNumber;
   destinationId: string;
   destinationName: string;
-}): Array<Pick<Waypoint, 'stationName' | 'line' | 'kind'>> | null {
+}): InferredWaypoint[] | null {
   const fromId = findStationIdByNameAndLine(args.originName, args.originLine);
   if (fromId === null) return null;
   const graph = buildRouteGraph();
