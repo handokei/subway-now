@@ -15,8 +15,10 @@ const THANKS_AUTO_CLOSE_MS = 1500;
  * `useTripGroundTruthStore.pendingPrompt`가 non-null인 동안 modal로 자동 노출.
  * 사용자가 [좋았어요]/[틀린 알람] 응답 또는 [나중에] dismiss하면 store 갱신.
  *
- * trigger source = `TRIP_BOUND_CLEANUPS`의 `triggerTripGroundTruthPrompt` — 모든 trip 종료
- * 경로(FG setDestination(null/switch) + BG silent push trip-ended) 양쪽 자동 enqueue.
+ * trigger source = `triggerTripGroundTruthPrompt(corrIdSnapshot)` — 4 trip-end 경로에서
+ * 명시 호출(FG setDestination(prev !== null) switch / BG silent push trip-ended /
+ * useLaunchTripReconciliation cold-launch / useStateRehydration sentinel+force-end).
+ * #1597 — TRIP_BOUND_CLEANUPS 배열에서 분리. trip 시작 시 false fire 회귀 차단.
  * issue 본문 정책: dismiss 후에도 다음 trip 종료 시 다시 노출 (one-time opt-out X).
  *
  * 본 컴포넌트는 cross-feature observer로서 DebugModal과 분리 — DebugModal 토글과 무관하게

@@ -411,7 +411,10 @@ describe('tripBoundCleanups', () => {
       //
       // #1545 (S12) 이전: 22 항목. S12에서 4 신규 + #1573 (T10) clearBackendSsotMirror 1 신규.
       // 일부 항목은 BG-only 메모리/dedup이라 storage write 없이도 효력 있음.
-      const MIN_ITEMS = 26;
+      // #1597 — triggerTripGroundTruthPrompt 제거 (trip-start 경로에서 false fire 회귀 차단).
+      // 종료-only trigger이므로 4 trip-end 호출 경로(setDestination switch/silentPushTask trip-ended/
+      // useLaunchTripReconciliation/useStateRehydration sentinel+force-end)에서 명시 호출.
+      const MIN_ITEMS = 25;
       expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(MIN_ITEMS);
     });
   });
@@ -433,9 +436,8 @@ describe('tripBoundCleanups', () => {
     // resetAlarmBackendDedup / clearTripBoundStoreMemory)은 storage write를 하지 않는
     // module-level/memory 클리어라 removeItem 카운트에 기여하지 않는다. 신규 항목 수만큼
     // 임계값을 낮춰 기존 invariant(storage 기반 항목 모두 실행)는 유지.
-    // #1502 (M2) — triggerTripGroundTruthPrompt는 zustand setState만 수행 (storage는
-    // AsyncStorage.setItem이라 removeItem 카운트와 무관) → NON_STORAGE 5로 증가.
-    const NON_STORAGE_CLEANUPS = 5;
+    // #1597 — triggerTripGroundTruthPrompt 제거로 NON_STORAGE 5→4.
+    const NON_STORAGE_CLEANUPS = 4;
     expect((AsyncStorage.removeItem as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(
       TRIP_BOUND_CLEANUPS.length - NON_STORAGE_CLEANUPS,
     );

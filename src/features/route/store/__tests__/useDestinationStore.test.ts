@@ -25,10 +25,16 @@ jest.mock('../../../alarm/utils/triggerTripEndRecall', () => ({
   triggerTripEndRecall: jest.fn().mockResolvedValue({ uploaded: false }),
 }));
 // #1501 (PR-A) — trip 시작 시 corrId 생성 wiring 검증용 mock.
+// #1597 — getCurrentTripCorrIdSync는 setDestination이 setTripCorrId 호출 전 snapshot 캡처에 사용.
 jest.mock('../../../observability/utils/tripCorrId', () => ({
   generateTripCorrId: jest.fn(() => 'cid-test-1700000000000-deadbeef'),
   setTripCorrId: jest.fn().mockResolvedValue(undefined),
   clearTripCorrId: jest.fn().mockResolvedValue(undefined),
+  getCurrentTripCorrIdSync: jest.fn(() => null),
+}));
+// #1597 — trigger 호출 자체를 검증하기 위한 spy mock.
+jest.mock('../../../debug/utils/triggerTripGroundTruthPrompt', () => ({
+  triggerTripGroundTruthPrompt: jest.fn().mockResolvedValue(undefined),
 }));
 // expo-notifications mock — cancelTripBoundAlarms가 getAllScheduledNotificationsAsync()를
 // 호출하는데 native module이 undefined를 반환하면 `.map()`에서 process crash. 빈 큐로 graceful.
@@ -1080,6 +1086,77 @@ describe('useDestinationStore', () => {
         .clearCustomOriginForSsotOverride(mockStation2);
       expect(result).toBe(true);
       expect(useDestinationStore.getState().customOrigin).toBeNull();
+    });
+  });
+
+  // ── #1597 — Trip ground truth prompt timing 회귀 가드 ──
+  // 이슈: trip 시작 직후 prompt가 노출되는 회귀 (사용자 보고 2026-06-20).
+  // root cause: triggerTripGroundTruthPrompt가 TRIP_BOUND_CLEANUPS 배열에 있어
+  //   setDestination(null→station) switch 경로에서도 호출되며, setTripCorrId(generateTripCorrId())가
+  //   동기적으로 sync cache를 새 corrId로 덮어쓴 뒤 cleanup chain microtask가 돌아 새 corrId로
+  //   prompt가 enqueue됨.
+  // fix: trigger를 cleanup 배열에서 제거 + 4 trip-end 경로에서 명시 호출 + corrId snapshot을
+  //   호출자가 캡처해서 전달.
+  describe('#1597 ground truth prompt timing 회귀 가드', () => {
+    // 4 acceptance: start no-fire / end fire / 이미 응답한 trip no-fire / app boot no-fire.
+    // 검증은 spy mock된 triggerTripGroundTruthPrompt의 호출 횟수/인자.
+
+    /* eslint-disable @typescript-eslint/no-require-imports */
+    const triggerMock =
+      require('../../../debug/utils/triggerTripGroundTruthPrompt')
+        .triggerTripGroundTruthPrompt as jest.Mock;
+    const corrIdModule = require('../../../observability/utils/tripCorrId');
+    /* eslint-enable @typescript-eslint/no-require-imports */
+
+    beforeEach(() => {
+      triggerMock.mockClear();
+      triggerMock.mockResolvedValue(undefined);
+      // 기본 corrId snapshot — null (trip 미시작). 각 case에서 override.
+      corrIdModule.getCurrentTripCorrIdSync.mockReturnValue(null);
+    });
+
+    it('case 1 (start no-fire): 첫 trip 시작(prev=null → station) 시 trigger 호출 X', async () => {
+      // #1597 root cause 시나리오. prev=null 경로에서 prompt는 절대 fire되어선 안 된다.
+      useDestinationStore.setState({ destination: null });
+      // 새 trip 시작 시뮬레이션 — 새 corrId가 곧 setTripCorrId로 설정될 예정이지만,
+      // setDestination이 setTripCorrId 호출 *전* snapshot을 캡처해야 한다.
+      corrIdModule.getCurrentTripCorrIdSync.mockReturnValue(null);
+      useDestinationStore.getState().setDestination(mockStation);
+      await flushMicrotasks();
+      // prev === null이라 명시 분기로 trigger 호출 자체가 안 일어난다.
+      expect(triggerMock).not.toHaveBeenCalled();
+    });
+
+    it('case 2 (end fire): trip 종료(station → null) 시 trigger 1회 호출 + 종료된 trip의 corrId snapshot 전달', async () => {
+      // prev !== null AND snapshot은 종료될 trip의 corrId.
+      corrIdModule.getCurrentTripCorrIdSync.mockReturnValue('cid-prev-trip');
+      useDestinationStore.setState({ destination: mockStation });
+      useDestinationStore.getState().setDestination(null);
+      await flushMicrotasks();
+      expect(triggerMock).toHaveBeenCalledTimes(1);
+      expect(triggerMock).toHaveBeenCalledWith('cid-prev-trip');
+    });
+
+    it('case 3 (already-responded no-fire): cache가 비어있는 trip 종료(snapshot=null)는 trigger 호출돼도 prompt 미enqueue (graceful skip)', async () => {
+      // 사용자가 이전 prompt에 응답 → cache가 cleanup으로 비워진 상태에서 다음 trip-end 신호가
+      // 도달하더라도 snapshot=null → trigger 내부에서 graceful skip하므로 enqueue 안 됨.
+      // 본 invariant는 trigger 함수 자체의 단위 테스트(triggerTripGroundTruthPrompt.test.ts)에서도
+      // 검증되지만, setDestination 경로에서 snapshot=null이 그대로 전달되는지 한 번 더 확인.
+      corrIdModule.getCurrentTripCorrIdSync.mockReturnValue(null);
+      useDestinationStore.setState({ destination: mockStation });
+      useDestinationStore.getState().setDestination(null);
+      await flushMicrotasks();
+      expect(triggerMock).toHaveBeenCalledTimes(1);
+      expect(triggerMock).toHaveBeenCalledWith(null);
+    });
+
+    it('case 4 (app boot no-fire): app boot 자체로는 trigger 호출 안 됨 — 어떤 setDestination 호출도 없으면 prompt 미발사 (다음 trip 종료까지 보류)', async () => {
+      // store boot 시 storage 복원만 일어남. 어떤 setDestination 호출도 없으면 trigger도 호출 X.
+      // 이전 trip 미응답 pendingPrompt가 storage에 남아 있어도 store hydrate만 일어나며 trigger
+      // 자체는 호출되지 않는다 — 다음 trip 종료까지 보류.
+      useDestinationStore.setState({ destination: null }); // boot init state
+      await flushMicrotasks();
+      expect(triggerMock).not.toHaveBeenCalled();
     });
   });
 });

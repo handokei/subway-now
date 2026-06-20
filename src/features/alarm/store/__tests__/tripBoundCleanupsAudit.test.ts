@@ -225,24 +225,21 @@ describe('#1545 (S12) — TRIP_BOUND_CLEANUPS enumeration audit', () => {
     expect(TRIP_BOUND_CLEANUPS).toContain(resetAlarmBackendDedup);
   });
 
-  it('baseline 26 항목(기존 25 + #1502 ground-truth trigger 1)에서 줄어들면 회귀', () => {
+  it('baseline 25 항목에서 줄어들면 회귀 (#1597 ground-truth trigger 제거 후)', () => {
     const { TRIP_BOUND_CLEANUPS } = jest.requireActual('../tripBoundCleanups');
-    // 현재 baseline. 새 항목 추가 시 한 줄 갱신. 누군가 항목을 의도치 않게 제거하면 회귀로 감지.
-    expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(26);
+    // #1597 — triggerTripGroundTruthPrompt 제거(trip-start 회귀 차단). 종료-only trigger이므로
+    // 4 trip-end 호출 경로(setDestination switch/silentPushTask trip-ended/
+    // useLaunchTripReconciliation/useStateRehydration sentinel+force-end)에서 명시 호출.
+    expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(25);
   });
 
-  it('#1502 (M2) ground truth prompt trigger가 등록돼 있고 clearTripCorrId보다 앞에 있다', () => {
+  it('#1597 (regression guard) — ground truth prompt trigger는 TRIP_BOUND_CLEANUPS에 포함되지 않는다 (trip-start 경로 false fire 차단)', () => {
+    // 누군가 실수로 다시 cleanup 배열에 추가하면 trip 시작 직후 prompt가 노출되는 회귀가 재발한다.
+    // trip-end 경로에서만 명시 호출되어야 한다.
     const { TRIP_BOUND_CLEANUPS } = jest.requireActual('../tripBoundCleanups');
     const { triggerTripGroundTruthPrompt } = jest.requireActual(
       '../../../debug/utils/triggerTripGroundTruthPrompt',
     );
-    const { clearTripCorrId } = jest.requireActual('../../../observability/utils/tripCorrId');
-    const triggerIdx = TRIP_BOUND_CLEANUPS.indexOf(triggerTripGroundTruthPrompt);
-    const clearIdx = TRIP_BOUND_CLEANUPS.indexOf(clearTripCorrId);
-    expect(triggerIdx).toBeGreaterThanOrEqual(0);
-    expect(clearIdx).toBeGreaterThanOrEqual(0);
-    // 본 순서가 깨지면 prompt trigger가 corrId=null을 읽고 graceful skip되어 모든 trip 종료가
-    // ground truth 미수집 회귀. 코드 리뷰에서 의도 확인 강제.
-    expect(triggerIdx).toBeLessThan(clearIdx);
+    expect(TRIP_BOUND_CLEANUPS).not.toContain(triggerTripGroundTruthPrompt);
   });
 });

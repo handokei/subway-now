@@ -24,6 +24,8 @@ import {
   clearBackendSsotMirror,
   readBackendSsotMirror,
 } from '../../features/alarm/utils/backendSsotMirror';
+import { getCurrentTripCorrIdSync } from '../../features/observability/utils/tripCorrId';
+import { triggerTripGroundTruthPrompt } from '../../features/debug/utils/triggerTripGroundTruthPrompt';
 import { createLogger } from '../utils/logger';
 import { addDomainBreadcrumb } from '../infra/monitoring/breadcrumb';
 
@@ -72,7 +74,11 @@ async function runRehydration(trigger: 'mount' | 'active'): Promise<void> {
     // isSwitch=false로 평가되어 cleanup chain이 실행되지 않는 버그가 있었다.
     // isSwitch 의존 없이 storage cleanup을 직접 호출. 멱등이므로 Fix 1 / silent push handler와
     // 중복 호출 안전. 메모리 store도 setState로 즉시 reset해 stale state가 노출되지 않게 한다.
+    // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
+    const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
     await runTripBoundCleanups();
+    // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
+    await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
     useDestinationStore.setState({
       destination: null,
       customOrigin: null,
@@ -170,7 +176,11 @@ async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> 
       reason: 'trip-lifecycle-force-ended',
     });
     logger.info(`trigger=${trigger} force-end elapsedMs=${elapsedMs} → cleanup`);
+    // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
+    const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
     await runTripBoundCleanups();
+    // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
+    await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
     useDestinationStore.setState({
       destination: null,
       customOrigin: null,

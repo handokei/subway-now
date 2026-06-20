@@ -50,6 +50,17 @@ jest.mock('../../../features/alarm/store/tripBoundCleanups', () => ({
   runTripBoundCleanups: (...args: unknown[]) => mockRunTripBoundCleanups(...args),
 }));
 
+// #1597 — sentinel + force-end 경로에서 cleanup 직전 corrId snapshot 캡처 + cleanup 후 prompt enqueue.
+const mockGetCurrentTripCorrIdSync = jest.fn(() => null);
+jest.mock('../../../features/observability/utils/tripCorrId', () => ({
+  getCurrentTripCorrIdSync: () => mockGetCurrentTripCorrIdSync(),
+}));
+const mockTriggerTripGroundTruthPrompt = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../../features/debug/utils/triggerTripGroundTruthPrompt', () => ({
+  triggerTripGroundTruthPrompt: (...args: unknown[]) =>
+    mockTriggerTripGroundTruthPrompt(...args),
+}));
+
 // destination store cross-feature import는 storage helper 안에서 일어나므로 spy로 충분.
 // useDestinationStore.getState()를 그대로 사용한다 (실제 store)
 

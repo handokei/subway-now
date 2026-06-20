@@ -56,6 +56,17 @@ jest.mock('../../utils/triggerTripEndRecall', () => ({
   triggerTripEndRecall: (...args: unknown[]) => mockTriggerTripEndRecall(...args),
 }));
 
+// #1597 — trip-ended 경로에서 cleanup 직전에 corrId snapshot 캡처 + cleanup 후 prompt enqueue.
+const mockGetCurrentTripCorrIdSync = jest.fn(() => null);
+jest.mock('../../../observability/utils/tripCorrId', () => ({
+  getCurrentTripCorrIdSync: () => mockGetCurrentTripCorrIdSync(),
+}));
+const mockTriggerTripGroundTruthPrompt = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../../debug/utils/triggerTripGroundTruthPrompt', () => ({
+  triggerTripGroundTruthPrompt: (...args: unknown[]) =>
+    mockTriggerTripGroundTruthPrompt(...args),
+}));
+
 const mockCheckGate = jest.fn();
 jest.mock('../../utils/silentPushLocationGate', () => ({
   checkSilentPushLocationGate: (...args: unknown[]) => mockCheckGate(...args),

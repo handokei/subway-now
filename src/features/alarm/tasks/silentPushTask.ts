@@ -53,6 +53,8 @@ import {
 import { runTripBoundCleanups, cancelTripBoundOsQueue } from '../store/tripBoundCleanups';
 import { setTripEndedSentinel } from '../utils/tripEndedSentinel';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
+import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
+import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from '../utils/dismissSilenceStorage';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
@@ -835,7 +837,11 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
       // ROUTE_KEY/DESTINATION_KEY/TRIP_STARTED_AT_KEY를 읽어 routeStops를 구성하기 때문.
       // trigger는 throw하지 않으므로 후속 cleanup/sentinel 흐름 차단 없음.
       await triggerTripEndRecall();
+      // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
+      const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
       await runTripBoundCleanups();
+      // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
+      await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
       // #899 (Seam C) — BG에서는 zustand store에 접근 불가. FG 복귀 시점에
       // useStateRehydration이 이 sentinel을 보고 destination/lock store도 reset.
       await setTripEndedSentinel(receivedAt);

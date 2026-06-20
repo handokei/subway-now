@@ -48,6 +48,8 @@ import { fetchTripStatus } from '../api/tripStatus';
 import { triggerTripEndRecall } from '../utils/triggerTripEndRecall';
 import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { flushSignalDumpOutbox } from '../api/signalDumpBackend';
+import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
+import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useLaunchTripReconciliation');
@@ -121,7 +123,11 @@ export async function runLaunchTripReconciliation(): Promise<void> {
     // recall은 cleanup이 storage를 비우기 전에 호출되어야 입력을 읽을 수 있다.
     // 두 호출 모두 멱등 — silent push handler와 중복 호출 안전.
     await triggerTripEndRecall();
+    // #1597 — clearTripCorrId가 cache를 비우기 전에 종료된 trip의 corrId snapshot 캡처.
+    const endedCorrIdSnapshot = getCurrentTripCorrIdSync();
     await runTripBoundCleanups();
+    // #1597 — trip-end 사용자 정답지 prompt enqueue (cleanup 후, corrId snapshot으로).
+    await triggerTripGroundTruthPrompt(endedCorrIdSnapshot);
     await setTripEndedSentinel(endedAt);
     await AsyncStorage.removeItem(ACTIVE_TRIP_KEY);
   } catch (e) {
