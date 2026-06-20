@@ -82,6 +82,7 @@ const mockLogSuppressedStationPassedWarmup = jest.fn();
 const mockLogSuppressedHopWindow = jest.fn();
 const mockLogSuppressedHopWindowNoSource = jest.fn();
 const mockLogSuppressedOriginHopLockless = jest.fn();
+const mockLogSuppressedPassedEventOnLockOrigin = jest.fn();
 const mockLogSuppressedCrossCategoryDedup = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
@@ -105,6 +106,8 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSuppressedHopWindowNoSource(...args),
   logSuppressedOriginHopLockless: (...args: unknown[]) =>
     mockLogSuppressedOriginHopLockless(...args),
+  logSuppressedPassedEventOnLockOrigin: (...args: unknown[]) =>
+    mockLogSuppressedPassedEventOnLockOrigin(...args),
   logSuppressedCrossCategoryDedup: (...args: unknown[]) =>
     mockLogSuppressedCrossCategoryDedup(...args),
 }));
@@ -3749,7 +3752,10 @@ describe('useStationAlarm', () => {
       expect(mockLogFiredStationPassed).not.toHaveBeenCalledWith('fg', arcOrigin[0]);
     });
 
-    it('lock 활성 + currentHopIndex=0 + candidate arc[0] (= boardingStationId) → 통과 (ADR-014 동급 보장)', async () => {
+    it('#1599 band-aid — lock 활성 + currentHopIndex=0 + candidate arc[0] (= boardingStationId) → 차단 (passed-event-on-lock-origin)', async () => {
+      // ADR-014 §4 "lock origin은 정당 신호" 명제는 2026-06-20 용마산 evidence(lock 1초 후 origin 자체에
+      // station-passed fire = X1 wrong-station-alarm)로 반증됨. #1596(autoLock multi-signal consensus)이
+      // 머지될 때까지 origin candidate는 차단 — 출발역에서 출발하면 첫 hop은 "다음 역"이지 origin 자체가 아님.
       mockGetBoardingLock.mockResolvedValue({
         destinationId: destination.id,
         trainCode: 'T-LOCK',
@@ -3761,8 +3767,12 @@ describe('useStationAlarm', () => {
       mockNextTargetStops(4);
       renderOriginHopCase(0, 0);
       await waitFor(() => {
-        expect(mockSendStationPassedNotification).toHaveBeenCalled();
+        expect(mockLogSuppressedPassedEventOnLockOrigin).toHaveBeenCalledWith({
+          source: 'fg',
+          stationName: arcOrigin[0].name,
+        });
       });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
       expect(mockLogSuppressedOriginHopLockless).not.toHaveBeenCalled();
     });
 
@@ -3818,43 +3828,46 @@ describe('useStationAlarm', () => {
       });
     }
 
+    type ExpectGate = 'sleep' | 'lock-origin' | 'none';
     it.each([
       {
         name: 'FG GPS path — lockless + sleep ON + currentHopIndex=0 → station-passed 차단 (사가정 22:11:56 evidence)',
         sleepMode: true,
         lockValue: null,
         currentHopIndex: 0 as number | null,
-        expectSuppress: true,
+        expectGate: 'sleep' as ExpectGate,
       },
       {
-        name: 'FG GPS path — lock 활성 + sleep ON + candidate=boardingStation → station-passed 차단',
+        // #1599 band-aid — lock 활성 + candidate=boardingStation은 sleep gate 진입 전에
+        // passed-event-on-lock-origin 가드가 먼저 차단. 다른 가드(#1236 sleep)는 호출되지 않음.
+        name: 'FG GPS path — lock 활성 + sleep ON + candidate=boardingStation → #1599 lock-origin 가드로 차단 (sleep gate 전)',
         sleepMode: true,
         lockValue: lockOnSagajeong,
         currentHopIndex: null,
-        expectSuppress: true,
+        expectGate: 'lock-origin' as ExpectGate,
       },
       {
         name: 'FG GPS path — sleep OFF + lockless + currentHopIndex=0 → 정상 발사',
         sleepMode: false,
         lockValue: null,
         currentHopIndex: 0 as number | null,
-        expectSuppress: false,
+        expectGate: 'none' as ExpectGate,
       },
       {
         name: 'FG GPS path — sleep ON + lockless + currentHopIndex=3 → 정상 발사 (첫 hop 아님)',
         sleepMode: true,
         lockValue: null,
         currentHopIndex: 3 as number | null,
-        expectSuppress: false,
+        expectGate: 'none' as ExpectGate,
       },
       {
         name: 'FG GPS path — sleep ON + lock 활성 + candidate≠boardingStation → 정상 발사',
         sleepMode: true,
         lockValue: { ...lockOnSagajeong, boardingStationId: 'S-OTHER' },
         currentHopIndex: null,
-        expectSuppress: false,
+        expectGate: 'none' as ExpectGate,
       },
-    ])('$name', async ({ sleepMode, lockValue, currentHopIndex, expectSuppress }) => {
+    ])('$name', async ({ sleepMode, lockValue, currentHopIndex, expectGate }) => {
       useSettingsStore.setState({ sleepMode });
       mockGetBoardingLock.mockResolvedValue(lockValue);
       mockResolveNextTarget.mockReturnValue({
@@ -3866,7 +3879,7 @@ describe('useStationAlarm', () => {
 
       renderHook(() => useStationAlarm(withSleepGateInputs({ currentHopIndex })));
 
-      if (expectSuppress) {
+      if (expectGate === 'sleep') {
         await waitFor(() =>
           expect(mockLogSuppressedSleepStationPassed).toHaveBeenCalledWith({
             source: 'fg',
@@ -3875,58 +3888,62 @@ describe('useStationAlarm', () => {
         );
         expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
         expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+      } else if (expectGate === 'lock-origin') {
+        await waitFor(() =>
+          expect(mockLogSuppressedPassedEventOnLockOrigin).toHaveBeenCalledWith({
+            source: 'fg',
+            stationName: onRouteStation.name,
+          }),
+        );
+        expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+        expect(mockSetLastNotifiedStationId).not.toHaveBeenCalled();
+        // lock-origin guard는 sleep gate보다 위에 있어 sleep stamp는 발생하지 않음.
+        expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
       } else {
         await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
         expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
+        expect(mockLogSuppressedPassedEventOnLockOrigin).not.toHaveBeenCalled();
       }
     });
 
-    it('FG arvlCd fast path — lock 활성 + sleep ON + candidate=boardingStation → 차단 + fg-arvlcd suppress 로그', async () => {
-      // arvlCd fast path는 lock != null 필요 (#640 회귀 가드). lock 활성 + first hop 케이스로 검증.
-      useSettingsStore.setState({ sleepMode: true });
-      mockGetBoardingLock.mockResolvedValue(lockOnSagajeong);
-      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
-      mockGetLastNotifiedStationId.mockResolvedValue(null);
+    // #1599 band-aid: arvlCd fast path에서 lock 활성 + candidate=boardingStation은
+    // sleep 무관 항상 lock-origin 가드가 먼저 차단. 사용자 의향 가장 강한 가드이므로
+    // sleep ON/OFF 모두 적용 (it.each로 매트릭스 검증).
+    it.each([
+      { sleepMode: true, label: 'sleep ON (sleep gate 전 차단)' },
+      { sleepMode: false, label: 'sleep OFF (사용자 의향 강한 가드)' },
+    ])(
+      'FG arvlCd fast path — lock 활성 + first hop + $label → #1599 lock-origin 가드로 차단',
+      async ({ sleepMode }) => {
+        useSettingsStore.setState({ sleepMode });
+        mockGetBoardingLock.mockResolvedValue(lockOnSagajeong);
+        mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+        mockGetLastNotifiedStationId.mockResolvedValue(null);
 
-      renderHook(() =>
-        useStationAlarm(
-          withSleepGateInputs({
-            currentHopIndex: null,
-            currentStationArrival: { up: [], down: [] } as unknown as Parameters<
-              typeof useStationAlarm
-            >[0]['currentStationArrival'],
-          }),
-        ),
-      );
+        renderHook(() =>
+          useStationAlarm(
+            withSleepGateInputs({
+              currentHopIndex: null,
+              currentStationArrival: { up: [], down: [] } as unknown as Parameters<
+                typeof useStationAlarm
+              >[0]['currentStationArrival'],
+            }),
+          ),
+        );
 
-      await waitFor(() => {
-        const calls = mockLogSuppressedSleepStationPassed.mock.calls;
-        expect(calls.some((c) => c[0]?.source === 'fg-arvlcd')).toBe(true);
-      });
-      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
-      expect(arvlCdFires).toHaveLength(0);
-    });
-
-    it('FG arvlCd fast path — sleep OFF + lock 활성 + first hop → 정상 발사 (게이트 비활성)', async () => {
-      useSettingsStore.setState({ sleepMode: false });
-      mockGetBoardingLock.mockResolvedValue(lockOnSagajeong);
-      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
-      mockGetLastNotifiedStationId.mockResolvedValue(null);
-
-      renderHook(() =>
-        useStationAlarm(
-          withSleepGateInputs({
-            currentHopIndex: null,
-            currentStationArrival: { up: [], down: [] } as unknown as Parameters<
-              typeof useStationAlarm
-            >[0]['currentStationArrival'],
-          }),
-        ),
-      );
-
-      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
-      expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
-    });
+        await waitFor(() => {
+          const calls = mockLogSuppressedPassedEventOnLockOrigin.mock.calls;
+          expect(calls.some((c) => c[0]?.source === 'fg-arvlcd')).toBe(true);
+        });
+        const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter(
+          (c) => c[0] === 'fg-arvlcd',
+        );
+        expect(arvlCdFires).toHaveLength(0);
+        expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+        // lock-origin guard가 sleep gate보다 위에 있어 sleep stamp는 발생하지 않음.
+        expect(mockLogSuppressedSleepStationPassed).not.toHaveBeenCalled();
+      },
+    );
 
     it('GPS station-passed IIFE: getBoardingLock 후 cleanup → 후속 dispatch 미실행 (cancelled guard)', async () => {
       // #1236 — GPS path에 추가된 lock fetch IIFE의 `if (cancelled) return;` 분기 커버.

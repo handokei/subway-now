@@ -46,6 +46,7 @@ import {
   logSuppressedHopWindow,
   logSuppressedHopWindowNoSource,
   logSuppressedOriginHopLockless,
+  logSuppressedPassedEventOnLockOrigin,
   logSuppressedMovement,
   logSuppressedPhaseGate,
   logSuppressedSleepFirstTransfer,
@@ -233,6 +234,17 @@ async function runSilenceGateAndDispatch(params: {
   /** lock=null이면 lockless trip — currentHopIndex===0으로 판정. lock 활성이면 boardingStationId 비교. */
   lock: import('../../../shared/types/boardingLock').BoardingLock | null;
 }): Promise<void> {
+  // #1599 — boardingLock active 시 candidate가 lock origin(= boardingStationId)이면 station-passed 차단.
+  // 2026-06-20 용마산 evidence: lock 활성 1초 후 lock origin 자체에 station-passed fire (X1).
+  // #1596(autoLock multi-signal consensus) 머지 전까지 band-aid — origin은 "출발역"이라 station-passed
+  // 첫 대상이 될 수 없다 (다음 역이 첫 hop). 모든 다른 게이트보다 위 — 가장 강한 사용자 의향 가드.
+  if (params.candidateStation.id === params.lock?.boardingStationId) {
+    logSuppressedPassedEventOnLockOrigin({
+      source: params.source,
+      stationName: params.candidateStation.name,
+    });
+    return;
+  }
   // #1236 — sleep 룰 게이트. dismiss silence 위 — silence 만료/위치 무관하게 sleep 첫 hop은 정책상 차단.
   // sleep 룰은 정확성 게이트(ADR-013 §B3 / ADR-014)라 silence 만료 부수효과(clear)를 막아도 무방.
   if (
