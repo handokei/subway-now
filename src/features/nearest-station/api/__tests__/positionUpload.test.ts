@@ -473,30 +473,30 @@ describe('dismissBoardingPrompt (#819)', () => {
   });
 });
 
+const RESPONSE_EMBED_SUGGESTION: LockSuggestionMirror = {
+  stationId: '용마산',
+  trainCode: '7246',
+  lineId: '7',
+  confidence: 'high',
+  decidedAt: 1_700_000_000_000,
+};
+
+function makeFetchResponse(body: unknown): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: async () => body,
+  } as unknown as Response;
+}
+
 describe('uploadPosition response embed (#1534 S1 T9b, ADR-016)', () => {
-  const SUGGESTION: LockSuggestionMirror = {
-    stationId: '용마산',
-    trainCode: '7246',
-    lineId: '7',
-    confidence: 'high',
-    decidedAt: 1_700_000_000_000,
-  };
-
-  function makeFetchResponse(body: unknown): Response {
-    return {
-      ok: true,
-      status: 200,
-      json: async () => body,
-    } as unknown as Response;
-  }
-
   it('response body에 lockSuggestion + originStationId → BACKEND_SSOT_MIRROR_KEY mirror write', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
-    (global.fetch as jest.Mock).mockResolvedValue(
+    (globalThis.fetch as jest.Mock).mockResolvedValue(
       makeFetchResponse({
         ok: true,
         originStationId: '용마산',
-        lockSuggestion: SUGGESTION,
+        lockSuggestion: RESPONSE_EMBED_SUGGESTION,
       }),
     );
     await uploadPosition({
@@ -511,13 +511,13 @@ describe('uploadPosition response embed (#1534 S1 T9b, ADR-016)', () => {
     expect(stored).not.toBeNull();
     const parsed = JSON.parse(stored as string);
     expect(parsed.currentStationId).toBe('용마산');
-    expect(parsed.lockSuggestion).toEqual(SUGGESTION);
+    expect(parsed.lockSuggestion).toEqual(RESPONSE_EMBED_SUGGESTION);
     expect(typeof parsed.receivedAt).toBe('number');
   });
 
   it('response body에 originStationId만 (lockSuggestion 없음) → mirror write originStationId만', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
-    (global.fetch as jest.Mock).mockResolvedValue(
+    (globalThis.fetch as jest.Mock).mockResolvedValue(
       makeFetchResponse({ ok: true, originStationId: '중곡' }),
     );
     await uploadPosition({
@@ -537,8 +537,8 @@ describe('uploadPosition response embed (#1534 S1 T9b, ADR-016)', () => {
 
   it('response body에 lockSuggestion만 (originStationId 없음) → lockSuggestion.stationId fallback', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
-    (global.fetch as jest.Mock).mockResolvedValue(
-      makeFetchResponse({ ok: true, lockSuggestion: SUGGESTION }),
+    (globalThis.fetch as jest.Mock).mockResolvedValue(
+      makeFetchResponse({ ok: true, lockSuggestion: RESPONSE_EMBED_SUGGESTION }),
     );
     await uploadPosition({
       token: 'tok-ls-only',
@@ -552,12 +552,12 @@ describe('uploadPosition response embed (#1534 S1 T9b, ADR-016)', () => {
     expect(stored).not.toBeNull();
     const parsed = JSON.parse(stored as string);
     expect(parsed.currentStationId).toBe('용마산');
-    expect(parsed.lockSuggestion).toEqual(SUGGESTION);
+    expect(parsed.lockSuggestion).toEqual(RESPONSE_EMBED_SUGGESTION);
   });
 
   it('response body에 둘 다 없음 → mirror write skip (graceful)', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
-    (global.fetch as jest.Mock).mockResolvedValue(makeFetchResponse({ ok: true }));
+    (globalThis.fetch as jest.Mock).mockResolvedValue(makeFetchResponse({ ok: true }));
     await uploadPosition({
       token: 'tok-empty',
       lat: 37.5,
@@ -572,13 +572,13 @@ describe('uploadPosition response embed (#1534 S1 T9b, ADR-016)', () => {
 
   it('response body json parse 실패 → graceful (caller에는 ok=true 회신)', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
-    (global.fetch as jest.Mock).mockResolvedValue({
+    (globalThis.fetch as jest.Mock).mockResolvedValue({
       ok: true,
       status: 200,
       json: async () => {
         throw new Error('invalid json');
       },
-    } as unknown as Response);
+    });
     const r = await uploadPosition({
       token: 'tok-parse',
       lat: 37.5,
@@ -594,10 +594,10 @@ describe('uploadPosition response embed (#1534 S1 T9b, ADR-016)', () => {
 
   it('non-OK status → mirror write skip + ok=false 회신 (기존 동작 보존)', async () => {
     process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
-    (global.fetch as jest.Mock).mockResolvedValue({
+    (globalThis.fetch as jest.Mock).mockResolvedValue({
       ok: false,
       status: 500,
-    } as Response);
+    });
     await uploadPosition({
       token: 'tok-err',
       lat: 0,

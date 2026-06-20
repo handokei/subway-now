@@ -1021,7 +1021,7 @@ app.post('/position', async (c) => {
     ok: true,
     // currentStationId가 빈 문자열이 아닐 때만 forward — 빈 stationId는 device 측에서
     // "추론 미정착" 신호로 다뤄야 하므로 명시 누락 (graceful).
-    ...(ssot && ssot.currentStationId
+    ...(ssot?.currentStationId
       ? { originStationId: ssot.currentStationId }
       : {}),
     ...(ssot?.lockSuggestion ? { lockSuggestion: ssot.lockSuggestion } : {}),

@@ -257,18 +257,18 @@ describe('tripPositionSsot — migrateTripPassedStationsToSsot', () => {
   });
 });
 
-describe('tripPositionSsot — lockSuggestion helpers (S1 T9b, #1534)', () => {
-  function makeSuggestion(overrides?: Partial<LockSuggestion>): LockSuggestion {
-    return {
-      stationId: '0228',
-      trainCode: '7246',
-      lineId: '7',
-      confidence: 'high',
-      decidedAt: 1_700_000_000_000,
-      ...overrides,
-    };
-  }
+function makeSuggestion(overrides?: Partial<LockSuggestion>): LockSuggestion {
+  return {
+    stationId: '0228',
+    trainCode: '7246',
+    lineId: '7',
+    confidence: 'high',
+    decidedAt: 1_700_000_000_000,
+    ...overrides,
+  };
+}
 
+describe('tripPositionSsot — lockSuggestion helpers (S1 T9b, #1534)', () => {
   it('setLockSuggestion: in-place mutate ssot.lockSuggestion', () => {
     const ssot = makeSsot();
     expect(ssot.lockSuggestion).toBeUndefined();

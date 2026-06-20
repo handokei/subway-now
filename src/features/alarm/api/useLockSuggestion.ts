@@ -27,6 +27,7 @@
 import { useEffect, useState } from 'react';
 import {
   readBackendSsotMirror,
+  type BackendSsotMirrorEntry,
   type LockSuggestionMirror,
 } from '../utils/backendSsotMirror';
 
@@ -84,53 +85,13 @@ export function useLockSuggestion(options?: {
 
   useEffect(() => {
     let cancelled = false;
+    const handleEntry = (entry: BackendSsotMirrorEntry | null): void => {
+      if (cancelled) return;
+      const next = computeNextState(entry, now());
+      setState((prev) => mergeSuggestionState(prev, next));
+    };
     const tick = (): void => {
-      void readBackendSsotMirror().then((entry) => {
-        if (cancelled) return;
-        if (entry === null || !entry.lockSuggestion) {
-          // 무의미한 state update 차단 — null→null transitions에서 setState skip.
-          setState((prev) =>
-            prev.suggestion === null &&
-            prev.decidedAt === null &&
-            prev.sourceReceivedAt === null
-              ? prev
-              : { suggestion: null, decidedAt: null, sourceReceivedAt: null },
-          );
-          return;
-        }
-        const suggestion = entry.lockSuggestion;
-        const ageMs = now() - entry.receivedAt;
-        if (ageMs > LOCK_SUGGESTION_MAX_AGE_MS) {
-          // stale — 채택 차단 (caller 9-AND fallback). receivedAt 노출은 보류
-          // (decidedAt도 함께 null로 두어 caller가 채택 가능성 자체를 0로 본다).
-          setState((prev) =>
-            prev.suggestion === null &&
-            prev.decidedAt === null &&
-            prev.sourceReceivedAt === null
-              ? prev
-              : { suggestion: null, decidedAt: null, sourceReceivedAt: null },
-          );
-          return;
-        }
-        setState((prev) => {
-          if (
-            prev.suggestion !== null &&
-            prev.suggestion.stationId === suggestion.stationId &&
-            prev.suggestion.trainCode === suggestion.trainCode &&
-            prev.suggestion.lineId === suggestion.lineId &&
-            prev.suggestion.confidence === suggestion.confidence &&
-            prev.decidedAt === suggestion.decidedAt &&
-            prev.sourceReceivedAt === entry.receivedAt
-          ) {
-            return prev;
-          }
-          return {
-            suggestion,
-            decidedAt: suggestion.decidedAt,
-            sourceReceivedAt: entry.receivedAt,
-          };
-        });
-      });
+      void readBackendSsotMirror().then(handleEntry);
     };
     // 첫 read는 폴링 첫 tick에 맡긴다 — useFusedNearestStation BACKEND_SSOT_MIRROR_KEY 폴링과
     // 동일 패턴. 마운트 직후 동기 read의 microtask resolve가 첫 render commit phase와 겹쳐
@@ -143,4 +104,53 @@ export function useLockSuggestion(options?: {
   }, [now]);
 
   return state;
+}
+
+const NULL_STATE: LockSuggestionResult = {
+  suggestion: null,
+  decidedAt: null,
+  sourceReceivedAt: null,
+};
+
+/**
+ * 폴링 entry를 LockSuggestionResult로 변환. 부재 / stale entry는 null state, valid 정상은 매칭
+ * suggestion entry를 반환. 본 함수는 순수 — `useEffect` 안 nested function 깊이를 4 미만으로 유지.
+ */
+function computeNextState(
+  entry: BackendSsotMirrorEntry | null,
+  nowMs: number,
+): LockSuggestionResult {
+  if (!entry?.lockSuggestion) return NULL_STATE;
+  const ageMs = nowMs - entry.receivedAt;
+  if (ageMs > LOCK_SUGGESTION_MAX_AGE_MS) return NULL_STATE;
+  return {
+    suggestion: entry.lockSuggestion,
+    decidedAt: entry.lockSuggestion.decidedAt,
+    sourceReceivedAt: entry.receivedAt,
+  };
+}
+
+/**
+ * setState reducer — 동일 state 비교로 무용한 update 차단 (re-render 폭주 방지).
+ */
+function mergeSuggestionState(
+  prev: LockSuggestionResult,
+  next: LockSuggestionResult,
+): LockSuggestionResult {
+  if (next.suggestion === null) {
+    if (prev.suggestion === null) return prev;
+    return NULL_STATE;
+  }
+  if (
+    prev.suggestion !== null &&
+    prev.suggestion.stationId === next.suggestion.stationId &&
+    prev.suggestion.trainCode === next.suggestion.trainCode &&
+    prev.suggestion.lineId === next.suggestion.lineId &&
+    prev.suggestion.confidence === next.suggestion.confidence &&
+    prev.decidedAt === next.decidedAt &&
+    prev.sourceReceivedAt === next.sourceReceivedAt
+  ) {
+    return prev;
+  }
+  return next;
 }

@@ -364,30 +364,47 @@ export async function advanceTripPosition(
     lastAdvanceEvidence: evidence.type,
   };
 
-  // #1534 (S1, T9b) — lockless trip + 강 evidence 합의 시 lockSuggestion 추론.
-  //
-  // device가 `useLockSuggestion`으로 본 값을 1순위 채택해 lock 없이도 fire path를 활성화한다
-  // (lockless 첫 station miss 0 acceptance V2). lock 활성 trip에는 set하지 않음 (기존 lock이
-  // SSOT 그대로 forward — 별 reader 정책 불필요).
-  //
-  // 기존 lockSuggestion이 동일 stationId+trainCode+lineId면 보존 (KV write 비용 최소화 +
-  // device cascade picker가 receivedAt drift로 무용한 re-render 방지). 어떤 분기에서도 기존
-  // suggestion이 silently dropped되지 않도록 항상 forward.
-  const suggestion = deriveLockSuggestion({
+  applyLockSuggestion(next, ssot, {
     lockActive: lock !== undefined,
     candidateStationId,
     evidence,
     waypointLine: trip.waypoints[0]?.line,
   });
-  if (suggestion && !isSameLockSuggestion(ssot.lockSuggestion, suggestion)) {
-    setLockSuggestion(next, suggestion);
-  } else if (ssot.lockSuggestion) {
-    // 기존 suggestion 보존 — drop 회귀 차단.
-    next.lockSuggestion = ssot.lockSuggestion;
-  }
 
   await writeSsot(kv, next, { expiresAt: trip.expiresAt });
   return { result: 'advanced', ssot: next };
+}
+
+/**
+ * #1534 (S1, T9b) — lockless trip + 강 evidence 합의 시 lockSuggestion 추론.
+ *
+ * device가 `useLockSuggestion`으로 본 값을 1순위 채택해 lock 없이도 fire path를 활성화한다
+ * (lockless 첫 station miss 0 acceptance V2). lock 활성 trip에는 set하지 않음 (기존 lock이
+ * SSOT 그대로 forward — 별 reader 정책 불필요).
+ *
+ * 기존 lockSuggestion이 동일 stationId+trainCode+lineId면 보존 (KV write 비용 최소화 +
+ * device cascade picker가 receivedAt drift로 무용한 re-render 방지). 어떤 분기에서도 기존
+ * suggestion이 silently dropped되지 않도록 항상 forward.
+ */
+function applyLockSuggestion(
+  next: TripPositionSSoT,
+  prev: TripPositionSSoT,
+  input: {
+    lockActive: boolean;
+    candidateStationId: string;
+    evidence: AdvanceEvidence;
+    waypointLine: string | undefined;
+  },
+): void {
+  const suggestion = deriveLockSuggestion(input);
+  if (suggestion && !isSameLockSuggestion(prev.lockSuggestion, suggestion)) {
+    setLockSuggestion(next, suggestion);
+    return;
+  }
+  if (prev.lockSuggestion) {
+    // 기존 suggestion 보존 — drop 회귀 차단.
+    next.lockSuggestion = prev.lockSuggestion;
+  }
 }
 
 /**

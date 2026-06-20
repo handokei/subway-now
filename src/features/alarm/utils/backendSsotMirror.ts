@@ -116,6 +116,8 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
     ) {
       return null;
     }
+    // #1534 (S1, T9b) — lockSuggestion parse (optional). 형식 misjudge 시 omit (graceful).
+    const lockSuggestion = parseLockSuggestion(parsed.lockSuggestion);
     return {
       currentStationId: parsed.currentStationId,
       motionState: parsed.motionState,
@@ -125,10 +127,7 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
         (p): p is string => typeof p === 'string' && p.length > 0,
       ),
       receivedAt: parsed.receivedAt,
-      // #1534 (S1, T9b) — lockSuggestion parse (optional). 형식 misjudge 시 omit (graceful).
-      ...(parseLockSuggestion(parsed.lockSuggestion) !== null
-        ? { lockSuggestion: parseLockSuggestion(parsed.lockSuggestion) as LockSuggestionMirror }
-        : {}),
+      ...(lockSuggestion ? { lockSuggestion } : {}),
     };
   } catch {
     return null;

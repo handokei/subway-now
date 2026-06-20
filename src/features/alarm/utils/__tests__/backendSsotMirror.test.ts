@@ -90,7 +90,7 @@ describe('readBackendSsotMirror lockSuggestion parse (#1534 S1 T9b)', () => {
     ],
     [
       'decidedAt NaN',
-      { stationId: 'S', trainCode: 'X', lineId: '2', confidence: 'low', decidedAt: NaN },
+      { stationId: 'S', trainCode: 'X', lineId: '2', confidence: 'low', decidedAt: Number.NaN },
     ],
     [
       'decidedAt string',

@@ -197,7 +197,7 @@ export function useBoardingLockController({
     const effectiveDestinationId = destinationId ?? FREE_TRIP_DESTINATION_SENTINEL;
     const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
     const now = Date.now();
-    void createLock({
+    createLock({
       destinationId: effectiveDestinationId,
       trainCode: lockSuggestion.trainCode,
       boardingStationId,
