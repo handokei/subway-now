@@ -52,6 +52,7 @@ import {
   readSsot,
   seedSsot,
   SSOT_CRON_READ_CACHE_TTL_SEC,
+  type TripPositionSSoT,
 } from './tripPositionSsot';
 import {
   evaluateWindow,
@@ -69,11 +70,6 @@ import {
   isTransferOrDestination,
   type TransferDestinationBlockReason,
 } from './transferDestinationGate';
-import {
-  readSsot,
-  SSOT_CRON_READ_CACHE_TTL_SEC,
-  type TripPositionSSoT,
-} from './tripPositionSsot';
 import type {
   ApnsEnv,
   BoardingLockMeta,
@@ -84,6 +80,7 @@ import type {
   Waypoint,
 } from './types';
 import { RESCHEDULE_CHANNELS_DEFAULT } from './types';
+import { writeMetric } from './analytics';
 
 // pickApnsHost / flipApnsEnv는 ./apnsHost로 이동 (liveActivity.ts와 공유 SSOT, #482).
 // 외부(테스트 / index.ts 등)가 scheduled.ts 경유로 import하던 호환성 유지를 위해 re-export.
@@ -1026,6 +1023,14 @@ export async function fireArvlCdStationPush(
       station: waypoint.stationName,
       arvlCd,
     });
+    // P0-1 (#1577) — Site 2 of 6: cross-category station dedup suppress.
+    writeMetric(env, {
+      eventType: 'suppress',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: 'arvlcd-dedup',
+      hopIndex: waypoint.hopIndex,
+    });
     return { dirty: false };
   }
 
@@ -1046,6 +1051,14 @@ export async function fireArvlCdStationPush(
       previousStation: lastFired.stationName,
       sinceMs: now - lastFired.epochMs,
       arvlCd,
+    });
+    // P0-1 (#1577) — Site 2 of 6: cross-station dedup suppress.
+    writeMetric(env, {
+      eventType: 'suppress',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: 'cross-station-dedup',
+      hopIndex: waypoint.hopIndex,
     });
     return { dirty: false };
   }
@@ -1123,6 +1136,15 @@ export async function fireArvlCdStationPush(
   // #1367 — cross-station dedup용 마지막 fire 마커. 성공 시에만 stamp(실패는 다음 cycle 재시도 허용).
   trip.lastFiredStation = { stationName: waypoint.stationName, epochMs: now };
   dirty = true;
+  // P0-1 (#1577) — Site 3 of 6: arvlcd fire 적재 (X3 stale fire 검증).
+  writeMetric(env, {
+    eventType: 'fire',
+    tripToken: trip.token,
+    stationId: waypoint.stationName,
+    reason: `arvlcd:${waypoint.kind}`,
+    hopIndex: waypoint.hopIndex,
+    staleMs: ssot?.lastAdvanceAt ? now - ssot.lastAdvanceAt : undefined,
+  });
   return { dirty };
 }
 
@@ -1217,9 +1239,27 @@ async function tryAdvanceAndFireArvlcd(inputs: {
       station: waypoint.stationName,
       reason: outcome.blockReason satisfies AdvanceBlockReason | undefined,
     });
+    // P0-1 (#1577) — Site 1 of 6: advance suppress 적재 (V/X X3/X8 검증).
+    writeMetric(env, {
+      eventType: 'suppress',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: outcome.blockReason ?? 'advance-blocked',
+      environment: deriveEvidenceEnvironment(trip),
+      hopIndex: waypoint.hopIndex,
+    });
     return { dirty: false };
   }
   stats.arvlCdFireFired += 1;
+  // P0-1 (#1577) — Site 1 of 6: advance 적재 (V8 적재 카운터).
+  writeMetric(env, {
+    eventType: 'advance',
+    tripToken: trip.token,
+    stationId: waypoint.stationName,
+    reason: 'arvlcd-confirmed-train',
+    environment: deriveEvidenceEnvironment(trip),
+    hopIndex: waypoint.hopIndex,
+  });
   return fireArvlCdStationPush({
     trip,
     waypoint,
@@ -1310,6 +1350,14 @@ export async function fireVanishFallbackStationPush(
       trainCode: lock.trainCode,
       station: waypoint.stationName,
     });
+    // P0-1 (#1577) — Site 4 of 6: vanish-fallback dedup suppress.
+    writeMetric(env, {
+      eventType: 'suppress',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: `${origin}-dedup`,
+      hopIndex: waypoint.hopIndex,
+    });
     return;
   }
   // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward (arvlcd-fire와 동일 패턴).
@@ -1391,6 +1439,15 @@ export async function fireVanishFallbackStationPush(
   } else {
     stats.vanishFallbackFired += 1;
   }
+  // P0-1 (#1577) — Site 4 of 6: vanish fire 적재 (transfer/destination imminent 포함).
+  writeMetric(env, {
+    eventType: 'fire',
+    tripToken: trip.token,
+    stationId: waypoint.stationName,
+    reason: `${origin}:${waypoint.kind}`,
+    hopIndex: waypoint.hopIndex,
+    staleMs: ssot?.lastAdvanceAt ? now - ssot.lastAdvanceAt : undefined,
+  });
   // #1402 — 30s alert fallback 안전망 등록. listPending → runFallbackPushes가 30s 내 ACK
   // 없으면 alert(소리) fallback 발사. vanish 경로는 silent push가 가장 잘 누락되는 경로라
   // 안전망 가동이 acceptance("하차 침묵 0")의 핵심. PENDING_PUSHES 미바인딩(dev/test 호환)
@@ -1884,8 +1941,24 @@ export async function advanceBoardingLockWaypoint(
         reason: outcome.blockReason satisfies AdvanceBlockReason | undefined,
         evidenceType: evidence.type,
       });
+      // P0-1 (#1577) — Site 1 of 6: boarding-lock waypoint advance suppress.
+      writeMetric(env, {
+        eventType: 'suppress',
+        tripToken: trip.token,
+        stationId: waypoint.stationName,
+        reason: outcome.blockReason ?? 'lock-advance-blocked',
+        hopIndex: waypoint.hopIndex,
+      });
       return;
     }
+    // P0-1 (#1577) — Site 1 of 6: boarding-lock waypoint advance.
+    writeMetric(env, {
+      eventType: 'advance',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: evidence.type,
+      hopIndex: waypoint.hopIndex,
+    });
   }
 
   if (waypoint.kind === 'destination') {
