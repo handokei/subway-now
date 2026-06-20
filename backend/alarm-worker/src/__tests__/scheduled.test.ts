@@ -33,9 +33,9 @@ import {
   type ScheduledDeps,
   type ScheduledStats,
 } from '../scheduled';
-import { readSsot, seedSsot, ssotKey, writeSsot, type TripPositionSSoT } from '../tripPositionSsot';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from '../seoul';
 import { putTrip } from '../trips';
+import { readSsot, seedSsot, ssotKey, writeSsot, type TripPositionSSoT } from '../tripPositionSsot';
 import type { BoardingLockMeta, Env, PositionPoint, Trip, Waypoint } from '../types';
 import { InMemoryKV } from './inMemoryKv';
 
@@ -1679,8 +1679,8 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         expect(stats.vanishFallbackMotionGateBlocked).toBe(1);
         expect(stats.vanishFallbackFired).toBe(0);
         // station-passed push가 발사되지 않아야 함
-        const stationPassedCalls = apnsFetch.mock.calls.filter((c) => {
-          const body = JSON.parse((c[1] as RequestInit).body as string);
+        const stationPassedCalls = (apnsFetch.mock.calls as unknown as [string, RequestInit][]).filter((c) => {
+          const body = JSON.parse(c[1].body as string);
           return body.data?.phase === 'imminent';
         });
         expect(stationPassedCalls.length).toBe(0);
@@ -1888,8 +1888,8 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       generatePushId: () => 'p-transfer-1438',
     });
     // transfer-release silent push가 발사된 APNs fetch 호출 1건 이상 존재 + payload에 reason 포함.
-    const transferReleaseCall = fetchImpl.mock.calls.find((call) => {
-      const init = call[1] as RequestInit | undefined;
+    const transferReleaseCall = (fetchImpl.mock.calls as unknown as [string, RequestInit][]).find((call) => {
+      const init = call[1];
       if (!init?.body) return false;
       try {
         const body = JSON.parse(init.body as string);
@@ -1899,7 +1899,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       }
     });
     expect(transferReleaseCall).toBeDefined();
-    const body = JSON.parse((transferReleaseCall![1] as RequestInit).body as string);
+    const body = JSON.parse(transferReleaseCall![1].body as string);
     expect(body.data.lockReleasedReason).toBe('transfer');
     expect(body.data.origin).toBe('transfer-release');
   });
@@ -5130,14 +5130,14 @@ describe('computeCronJitterMs (#1539 S6)', () => {
 });
 
 // #1561 (T8) — SSoT forward + passedStations 테스트 공용 setup. Sonar 중복 제거.
-const ARVLCD_LOCK_BOILER = {
+const ARVLCD_LOCK_BOILER: BoardingLockMeta = {
   trainCode: 'T',
   line: '7',
   subwayId: '1007',
   selectedDepartureTime: NOW,
   segmentStations: ['중곡', '용마산'],
   expiresAt: NOW + 60 * 60_000,
-} as const;
+};
 
 const LOCKLESS_ARRIVED: ArrivalEntry = {
   destination: '강남행',
