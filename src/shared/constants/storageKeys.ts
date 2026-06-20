@@ -187,3 +187,8 @@ export const BACKEND_CALL_LOG_KEY = 'subway-now:backend-call-log';
 // 네트워크 실패 시 단건 enqueue, 다음 trip 종료 시 재시도. 가장 최근 trip만 보존 (1건).
 // 형식: TelemetryForwardOutboxEntry JSON.
 export const TELEMETRY_FORWARD_RETRY_QUEUE_KEY = 'subway-now:telemetry-forward-retry';
+// #1575 (T12, ADR-017) — NotificationRouter surface delivery log (ring buffer 200건).
+// router.deliver()가 모든 surface fan-out 결과(delivered/suppressed + reason)를 push.
+// DebugModal "Notification Delivery" 섹션이 read해 surface별 카운터 + suppress 사유 분포 표시.
+// 형식: NotificationDeliveryEntry[] JSON (capacity 200, FIFO eviction).
+export const NOTIFICATION_DELIVERY_LOG_KEY = 'subway-now:notification-delivery-log';

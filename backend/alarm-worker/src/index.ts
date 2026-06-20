@@ -90,6 +90,7 @@ import {
 } from './regressionTelemetry';
 import { KV_MIN_CACHE_TTL_SEC } from './kvConsistency';
 import { getTrip, putTrip } from './trips';
+import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
 import {
   TRIP_STATUS_RETENTION_MS,
   readTripEndedStatus,
@@ -340,6 +341,32 @@ app.post('/trips', async (c) => {
 
   const incoming = validateTrip(body);
   if (!incoming) return c.json({ error: 'invalid_trip' }, 400);
+
+  // #1575 (T12, ADR-017 V8 (b)) — per-token rate limit 10 req / 10 min.
+  // Device register loop / cold restart 반복 / FG↔BG 빠른 전환 race로 같은 token이 분당
+  // 5~10회 POST되는 사례 차단. Cloudflare Worker quota(100K/day) 보호 + dedup state 안정.
+  // 정상 사용자(<10 req/10min)는 영향 없음. checkTripRegisterRateLimit은 fixed-window KV
+  // counter — best-effort atomic (KV는 strict atomic 없음). cap 근처에서만 race 가능.
+  const rateLimit = await checkTripRegisterRateLimit(
+    c.env.TRIPS,
+    incoming.token,
+    Date.now(),
+  );
+  if (!rateLimit.allowed) {
+    console.log(
+      JSON.stringify({
+        msg: 'trip-register: rate-limited (#1575 T12)',
+        tokenPrefix: tokenPrefix(incoming.token),
+        count: rateLimit.count,
+        retryAfterSeconds: rateLimit.retryAfterSeconds,
+      }),
+    );
+    return c.json(
+      { error: 'rate_limited', retryAfterSeconds: rateLimit.retryAfterSeconds },
+      429,
+      { 'Retry-After': String(rateLimit.retryAfterSeconds) },
+    );
+  }
 
   // #1366 Layer 3 — incoming boardingLock metadata cross-validation.
   // Frontend가 환승 hop 진입 시 store 업데이트 race로 trainCode/line(새 leg) +
