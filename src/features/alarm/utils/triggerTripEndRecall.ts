@@ -49,6 +49,14 @@ import {
 } from '../../observability/utils/tripCorrId';
 import { getRawSignalEntries } from '../../observability/utils/rawSignalBuffer';
 import { uploadSignalDump } from '../api/signalDumpBackend';
+import {
+  buildDeviceMetadata,
+  forwardTripTelemetry,
+} from '../api/telemetryForward';
+import { getAlarmLog } from './alarmLog';
+import { getFusionDebugEntries } from '../../nearest-station/utils/fusionDebugBuffer';
+import { getGpsDropEntries } from '../../nearest-station/utils/gpsDropBuffer';
+import { readBackendSsotMirror } from './backendSsotMirror';
 
 const log = createLogger('triggerTripEndRecall');
 
@@ -118,6 +126,11 @@ export async function triggerTripEndRecall(): Promise<TriggerTripEndRecallResult
     // 같은 critical path와 분리해 실패해도 trip-end 흐름은 정상 동작.
     await triggerSignalDumpUpload();
 
+    // #1579 (Phase 0 epic #1576 P0-3) — alarmLog/fusionLog/gpsDrops/ssotMirror snapshot을
+    // backend R2로 forward. cleanup 전에 호출되어야 ring buffer가 유효. fire-and-forget —
+    // 짧은 trip(<30s)/payload 비었음은 함수가 자체 skip.
+    await triggerAlarmLogForward(tripStart);
+
     return { uploaded: result.uploaded };
   } catch (e) {
     log.warn('trigger error', e);
@@ -177,6 +190,38 @@ async function triggerSignalDumpUpload(): Promise<void> {
     await uploadSignalDump(corrId, token, entries);
   } catch (e) {
     log.warn('signal dump trigger error', e);
+  }
+}
+
+/**
+ * #1579 (P0-3) — alarmLog/fusionLog/gpsDrops/ssotMirror snapshot을 backend로 forward.
+ *
+ * tripBoundCleanups 전에 호출되어야 한다 — cleanup 시점에 alarmLog 모듈 in-memory 윈도우
+ * (`clearAlarmLogWindows`)가 초기화되고 ssotMirror가 storage에서 사라진다.
+ *
+ * graceful: token 부재 / 30s 미만 trip / payload 빈 케이스는 forward 함수 내부에서 skip.
+ * 모든 오류는 흡수 — trip-end critical path 보호.
+ */
+async function triggerAlarmLogForward(tripStart: number): Promise<void> {
+  try {
+    const token = await AsyncStorage.getItem(APNS_TOKEN_KEY);
+    if (!token) return;
+    const [alarmLog, ssotMirror] = await Promise.all([
+      getAlarmLog(),
+      readBackendSsotMirror(),
+    ]);
+    await forwardTripTelemetry({
+      token,
+      tripStartedAt: tripStart,
+      tripEndedAt: Date.now(),
+      alarmLog,
+      fusionLog: getFusionDebugEntries(),
+      gpsDrops: getGpsDropEntries(),
+      backendSsotSnapshot: ssotMirror,
+      deviceMetadata: buildDeviceMetadata(),
+    });
+  } catch (e) {
+    log.warn('alarm log forward trigger error', e);
   }
 }
 

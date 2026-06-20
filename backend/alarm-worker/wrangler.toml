@@ -69,6 +69,21 @@ preview_id = "d38f190e3f7f4fd3b6e7f6485dd1733d"
 binding = "TRIP_METRICS"
 dataset = "trip_metrics"
 
+# R2: device alarmLog/fusionLog telemetry forward archive (#1579, Phase 0 epic #1576 P0-3)
+# Trip 종료 시 device가 `POST /telemetry/alarm-log`로 4개 buffer snapshot을 forward.
+# `trip-evidence/YYYY/MM/DD/{tokenPrefix}-{tripStartedAt}.ndjson` 키로 90일 보관해
+# 운영자가 사용자 trip evidence를 사용자 부담 없이 자동 수집.
+# 미바인딩 시 endpoint는 503 graceful (개발 환경 호환).
+#
+# 운영자 1회성 등록 절차:
+#   1) `wrangler r2 bucket create subway-now-telemetry`
+#   2) 아래 binding 활성화 (id 불필요 — bucket_name만 지정).
+#   3) Cloudflare Dashboard → R2 → subway-now-telemetry → Lifecycle 룰에서
+#      "Delete objects after 90 days" 추가 (cost 절감, evidence는 단기 분석 목적).
+# [[r2_buckets]]
+# binding = "TELEMETRY_R2"
+# bucket_name = "subway-now-telemetry"
+
 # 1분마다 활성 트립 폴링
 [triggers]
 crons = ["*/1 * * * *"]
