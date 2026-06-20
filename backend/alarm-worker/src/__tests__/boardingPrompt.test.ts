@@ -389,23 +389,23 @@ describe('evaluateBoardingPromptGates — #833 pre-computed metrics 재사용', 
   });
 });
 
+/**
+ * 지하 환경에서 GPS series 가 stale(=잘못된 좌표) 인 경우. 기존 9단 AND 게이트는
+ * #4 origin-too-far / #5 direction-mismatch 등으로 100% fail → 7일 누적 0건 회귀.
+ * environment='underground' 분기는 GPS 의존 게이트(#3~#7) byPass 후 #8 motion 만 평가.
+ * accuracy 는 surface 분기의 #4 origin-too-far reason 분리를 위해 cutoff(50m) 미만 사용.
+ */
+function staleGpsSeries(n: number): PositionPoint[] {
+  // 출발역(0,0) 에서 1km 떨어진 wrong 좌표 + 잘못된 방향 진행 (서쪽). accuracy 10m.
+  return [
+    { lat: 0.01, lng: 0.01, accuracy: 10, ts: n - 60_000, motion: 'automotive' },
+    { lat: 0.01, lng: 0.009, accuracy: 10, ts: n - 30_000, motion: 'automotive' },
+    { lat: 0.01, lng: 0.008, accuracy: 10, ts: n, motion: 'automotive' },
+  ];
+}
+
 describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
   const now = 1_000_000;
-
-  /**
-   * 지하 환경에서 GPS series 가 stale(=잘못된 좌표) 인 경우. 기존 9단 AND 게이트는
-   * #4 origin-too-far / #5 direction-mismatch 등으로 100% fail → 7일 누적 0건 회귀.
-   * environment='underground' 분기는 GPS 의존 게이트(#3~#7) byPass 후 #8 motion 만 평가.
-   * accuracy 는 surface 분기의 #4 origin-too-far reason 분리를 위해 cutoff(50m) 미만 사용.
-   */
-  function staleGpsSeries(n: number): PositionPoint[] {
-    // 출발역(0,0) 에서 1km 떨어진 wrong 좌표 + 잘못된 방향 진행 (서쪽). accuracy 10m.
-    return [
-      { lat: 0.01, lng: 0.01, accuracy: 10, ts: n - 60_000, motion: 'automotive' },
-      { lat: 0.01, lng: 0.009, accuracy: 10, ts: n - 30_000, motion: 'automotive' },
-      { lat: 0.01, lng: 0.008, accuracy: 10, ts: n, motion: 'automotive' },
-    ];
-  }
 
   it('underground: stale GPS series 도 motion=automotive 면 통과 (fusedSpeedKmh=0)', () => {
     const r = evaluateBoardingPromptGates({

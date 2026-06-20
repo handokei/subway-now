@@ -408,26 +408,26 @@ describe('attemptAutoLock allowedLines gate (#1439 ADR-015 §9)', () => {
   });
 });
 
-describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
-  function passingGateOutcome(): Parameters<typeof attemptAutoLock>[0]['gateOutcome'] {
-    return {
-      pass: true as const,
-      metrics: {
-        count: 3,
-        gpsAvgKmh: 20,
-        avgAccuracyMeters: 10,
-        motion: 'automotive',
-        start: { lat: 0, lng: 0 },
-        end: { lat: 0, lng: 0.001 },
-        mapMatchedKmh: null,
-      },
-      fusedSpeedKmh: 20,
-    };
-  }
-  function failingGateOutcome(): Parameters<typeof attemptAutoLock>[0]['gateOutcome'] {
-    return { pass: false as const, reason: 'window-too-small' as const };
-  }
+function passingGateOutcome(): Parameters<typeof attemptAutoLock>[0]['gateOutcome'] {
+  return {
+    pass: true as const,
+    metrics: {
+      count: 3,
+      gpsAvgKmh: 20,
+      avgAccuracyMeters: 10,
+      motion: 'automotive',
+      start: { lat: 0, lng: 0 },
+      end: { lat: 0, lng: 0.001 },
+      mapMatchedKmh: null,
+    },
+    fusedSpeedKmh: 20,
+  };
+}
+function failingGateOutcome(): Parameters<typeof attemptAutoLock>[0]['gateOutcome'] {
+  return { pass: false as const, reason: 'window-too-small' as const };
+}
 
+describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
   it('surface + base gate pass + arrival 신호 있음 → lock 합성', async () => {
     const { lock } = await attemptAutoLock({
       trip: makeTrip(),

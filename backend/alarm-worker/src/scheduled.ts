@@ -43,6 +43,7 @@ import { computeAllowedLines, type StationEnvironment } from './consensusGate';
 import { attachTrainCodeForLeg } from './lockSwap';
 import {
   advanceTripPosition,
+  mapEvidenceEnvironment,
   type AdvanceBlockReason,
   type AdvanceEvidence,
   type EvidenceEnvironment,
@@ -1288,18 +1289,15 @@ function deriveEvidenceEnvironment(trip: Trip): EvidenceEnvironment {
 }
 
 /**
- * #1536 (S3) — Trip.subsurface → consensusGate.StationEnvironment 직접 매핑.
+ * #1536 (S3) — Trip.subsurface → consensusGate.StationEnvironment 매핑.
  *
- * `deriveEvidenceEnvironment` 와 어휘 set 이 동일하지만(subsurface true→underground,
- * false→surface, undefined→unknown), boardingPrompt + autoLock + consensusGate 경로는
- * EvidenceEnvironment 의 'hybrid' 변환을 거치지 않으므로 별도 헬퍼로 분리. trip 데이터
- * 자체가 device 어휘인 `subsurface` boolean 만 갖고 'mixed' 표현이 없어, mixed 분기는
- * 현재 호출자에서 발생하지 않는다(추후 trip.environment 필드 도입 시 확장).
+ * `deriveEvidenceEnvironment` (EvidenceEnvironment 어휘) 결과를 `mapEvidenceEnvironment`
+ * 로 한 단계 변환해 single source 유지 (S4144 회피). trip 데이터 자체가 device 어휘인
+ * `subsurface` boolean 만 갖고 'mixed' 표현이 없으므로 mapping 결과는 underground / surface
+ * / unknown 셋 중 하나(추후 trip.environment 필드 도입 시 'mixed' 분기 자연 확장).
  */
 function deriveTripEnvironment(trip: Trip): StationEnvironment {
-  if (trip.subsurface === true) return 'underground';
-  if (trip.subsurface === false) return 'surface';
-  return 'unknown';
+  return mapEvidenceEnvironment(deriveEvidenceEnvironment(trip));
 }
 
 /**

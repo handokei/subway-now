@@ -111,6 +111,101 @@ export interface EvaluateBoardingPromptInputs {
 }
 
 /**
+ * 게이트 #9 — silence / 1회 발사 dedup. promptState 부재 = 첫 시도, 통과 (null 반환).
+ */
+function evaluateSilenceGate(
+  promptState: BoardingPromptState | undefined,
+  now: number,
+): GateOutcome | null {
+  if (!promptState) return null;
+  if (promptState.fired) {
+    return { pass: false, reason: 'already-fired' };
+  }
+  if (
+    promptState.silencedUntil !== undefined &&
+    promptState.silencedUntil > now
+  ) {
+    return { pass: false, reason: 'silenced' };
+  }
+  return null;
+}
+
+/**
+ * GPS 의존 게이트 #3~#5 + #6 평가 (window + accuracy + origin + direction).
+ * 통과 시 null 반환, fail 시 GateOutcome.
+ */
+function evaluateGpsGeometryGates(
+  inputs: EvaluateBoardingPromptInputs,
+  metrics: WindowedMetrics,
+): GateOutcome | null {
+  if (metrics.count < MIN_WINDOW_SAMPLES) {
+    return { pass: false, reason: 'window-too-small', metrics };
+  }
+  // window-too-small이 통과한 이후엔 start/end가 null이 될 수 없음(count ≥ 3).
+  // TypeScript narrowing을 위해 명시 assert로 진행.
+  if (!metrics.start || !metrics.end) {
+    return { pass: false, reason: 'window-too-small', metrics };
+  }
+  // #3 — accuracy. 평균 accuracy가 50m 이상이면 신뢰 불가.
+  if (metrics.avgAccuracyMeters >= ACCURACY_CUTOFF_M) {
+    return { pass: false, reason: 'accuracy-too-poor', metrics };
+  }
+  // #4 — 출발역 100m 이내. 마지막 sample 기준 (가장 최신 위치).
+  const originDistanceKm = haversineKm(
+    metrics.end.lat,
+    metrics.end.lng,
+    inputs.origin.lat,
+    inputs.origin.lng,
+  );
+  if (originDistanceKm > ORIGIN_RADIUS_KM) {
+    return { pass: false, reason: 'origin-too-far', metrics };
+  }
+  // #5 — 방향 cosine ≥ 0.7. expected vector는 출발역 → 다음역.
+  const cos = cosineDirection(
+    metrics.start.lat,
+    metrics.start.lng,
+    metrics.end.lat,
+    metrics.end.lng,
+    inputs.origin.lat,
+    inputs.origin.lng,
+    inputs.nextStation.lat,
+    inputs.nextStation.lng,
+  );
+  if (cos < DIRECTION_COSINE_THRESHOLD) {
+    return { pass: false, reason: 'direction-mismatch', metrics };
+  }
+  return null;
+}
+
+/**
+ * 게이트 #7 — fused speed 평가. mapMatchedKmh + kalmanKmh 가중 합산.
+ * 통과 시 fusedSpeedKmh, fail 시 reason.
+ */
+function evaluateFusedSpeedGate(
+  inputs: EvaluateBoardingPromptInputs,
+  metrics: WindowedMetrics,
+): { pass: true; fusedSpeedKmh: number } | { pass: false; reason: GateSkipReason } {
+  const fused = fusedSpeed({
+    gpsAvgKmh: metrics.gpsAvgKmh,
+    gpsAccuracyMeters: metrics.avgAccuracyMeters,
+    motion: metrics.motion,
+    mapMatchedKmh: metrics.mapMatchedKmh,
+    kalmanKmh: inputs.kalmanKmh ?? null,
+  });
+  if (fused.speed < MIN_FUSED_SPEED_KMH || fused.confidence === 'low') {
+    return { pass: false, reason: 'speed-too-low' };
+  }
+  return { pass: true, fusedSpeedKmh: fused.speed };
+}
+
+/**
+ * #1536 — 환경 분기 판정. underground / mixed / unknown 은 GPS 의존 게이트 byPass.
+ */
+function isGpsDependentBypassEnv(env: StationEnvironment | undefined): boolean {
+  return env === 'underground' || env === 'mixed' || env === 'unknown';
+}
+
+/**
  * 9단 AND 게이트 평가. 한 게이트라도 실패하면 즉시 reason과 함께 fail.
  * 게이트 #1/#2는 caller가 미리 보장 (listTrips × lockMissing 분기) — 본 함수는 #3~#9만 평가.
  *
@@ -123,101 +218,40 @@ export interface EvaluateBoardingPromptInputs {
 export function evaluateBoardingPromptGates(
   inputs: EvaluateBoardingPromptInputs,
 ): GateOutcome {
-  // #9 — silence / 1회 발사 dedup. promptState 부재 = 첫 시도, 통과.
-  if (inputs.promptState) {
-    if (inputs.promptState.fired) {
-      return { pass: false, reason: 'already-fired' };
-    }
-    if (
-      inputs.promptState.silencedUntil !== undefined &&
-      inputs.promptState.silencedUntil > inputs.now
-    ) {
-      return { pass: false, reason: 'silenced' };
-    }
-  }
+  // #9 — silence / 1회 발사 dedup (가장 cheap한 가드 우선).
+  const silenceOutcome = evaluateSilenceGate(inputs.promptState, inputs.now);
+  if (silenceOutcome) return silenceOutcome;
 
-  const env = inputs.environment;
-  const gpsDependentBypass =
-    env === 'underground' || env === 'mixed' || env === 'unknown';
+  const gpsDependentBypass = isGpsDependentBypassEnv(inputs.environment);
 
-  // #6 — 60s 윈도우 N≥3 (cold start 보호). 0/1 sample은 metrics.start/end null로 자연 차단.
-  // #833 — 호출자가 동일 series/now로 이미 evaluateWindow를 돌렸다면(예: scheduled.ts의
-  // Kalman observation) 결과를 재사용해 hot path 중복 계산을 제거한다.
+  // #833 — 호출자가 동일 series/now로 이미 evaluateWindow를 돌렸다면 결과 재사용.
   // #1536 — series 가 비어 있을 수 있는 지하 환경에서도 metrics 자체는 산출 가능
   // (count=0). GPS bypass 분기는 motion 평가에 metrics.motion 가 'unknown'(window-too-small의
-  // 자연 결과)이라도 #8 motion 게이트가 자연 차단. 분기 이전에 metrics 계산은 공통 비용.
+  // 자연 결과)이라도 #8 motion 게이트가 자연 차단.
   const metrics = inputs.metrics ?? evaluateWindow(inputs.series, inputs.now);
 
+  // surface / undefined 만 GPS 의존 게이트 평가 — underground/mixed/unknown 은 byPass.
   if (!gpsDependentBypass) {
-    if (metrics.count < MIN_WINDOW_SAMPLES) {
-      return { pass: false, reason: 'window-too-small', metrics };
-    }
-    // window-too-small이 통과한 이후엔 start/end가 null이 될 수 없음(count ≥ 3).
-    // TypeScript narrowing을 위해 명시 assert로 진행.
-    if (!metrics.start || !metrics.end) {
-      return { pass: false, reason: 'window-too-small', metrics };
-    }
-
-    // #3 — accuracy. 평균 accuracy가 50m 이상이면 신뢰 불가.
-    if (metrics.avgAccuracyMeters >= ACCURACY_CUTOFF_M) {
-      return { pass: false, reason: 'accuracy-too-poor', metrics };
-    }
-
-    // #4 — 출발역 100m 이내. 마지막 sample 기준 (가장 최신 위치).
-    const originDistanceKm = haversineKm(
-      metrics.end.lat,
-      metrics.end.lng,
-      inputs.origin.lat,
-      inputs.origin.lng,
-    );
-    if (originDistanceKm > ORIGIN_RADIUS_KM) {
-      return { pass: false, reason: 'origin-too-far', metrics };
-    }
-
-    // #5 — 방향 cosine ≥ 0.7. expected vector는 출발역 → 다음역.
-    const cos = cosineDirection(
-      metrics.start.lat,
-      metrics.start.lng,
-      metrics.end.lat,
-      metrics.end.lng,
-      inputs.origin.lat,
-      inputs.origin.lng,
-      inputs.nextStation.lat,
-      inputs.nextStation.lng,
-    );
-    if (cos < DIRECTION_COSINE_THRESHOLD) {
-      return { pass: false, reason: 'direction-mismatch', metrics };
-    }
+    const geomOutcome = evaluateGpsGeometryGates(inputs, metrics);
+    if (geomOutcome) return geomOutcome;
   }
 
-  // #8 — motion ∈ {walking, automotive}. stationary/unknown은 차단. GPS bypass 분기에서도
-  // 평가 — CMMotionActivity 기반 신호는 지하에서도 작동(mem `lesson_motion_activity_intermittent_signal`
-  // 의 5~10분 주기 뒤집힘 한계는 있으나 #819 게이트 #8 단독으로 false positive 차단 의무는 없음 —
-  // caller 의 consensusGate 가 arrival+lockAttachable 합의로 보완).
+  // #8 — motion ∈ {walking, automotive}. GPS bypass 분기에서도 평가 — CMMotionActivity
+  // 기반 신호는 지하에서도 작동 (mem `lesson_motion_activity_intermittent_signal` 의 5~10분
+  // 주기 뒤집힘 한계는 caller 의 consensusGate 가 arrival+lockAttachable 합의로 보완).
   if (metrics.motion !== 'walking' && metrics.motion !== 'automotive') {
     return { pass: false, reason: 'motion-not-moving', metrics };
   }
 
-  if (!gpsDependentBypass) {
-    // #7 — fused speed. mapMatchedKmh는 #828, kalmanKmh는 #824에서 wire — 양 끝 sample이 같은
-    // line + arcM을 가질 때만 evaluateWindow가 mapMatchedKmh 산출, 그 외에는 null로 강등
-    // (GPS-only fallback). kalmanKmh는 호출자(scheduled.ts)가 runKalmanStep으로 산출 후 주입.
-    const fused = fusedSpeed({
-      gpsAvgKmh: metrics.gpsAvgKmh,
-      gpsAccuracyMeters: metrics.avgAccuracyMeters,
-      motion: metrics.motion,
-      mapMatchedKmh: metrics.mapMatchedKmh,
-      kalmanKmh: inputs.kalmanKmh ?? null,
-    });
-    if (fused.speed < MIN_FUSED_SPEED_KMH || fused.confidence === 'low') {
-      return { pass: false, reason: 'speed-too-low', metrics };
-    }
-    return { pass: true, metrics, fusedSpeedKmh: fused.speed };
+  // #7 — fused speed. GPS bypass 분기는 fusedSpeed 산출 자체가 의미 없어 0 으로 표기.
+  if (gpsDependentBypass) {
+    return { pass: true, metrics, fusedSpeedKmh: 0 };
   }
-
-  // #1536 — GPS bypass 분기는 fusedSpeed 산출 자체가 의미 없으므로 0 으로 표기.
-  // caller 가 본 값을 로깅 외 용도로 쓰면 회귀 → caller(scheduled.ts) 가 분기 인지하고 사용.
-  return { pass: true, metrics, fusedSpeedKmh: 0 };
+  const speedOutcome = evaluateFusedSpeedGate(inputs, metrics);
+  if (!speedOutcome.pass) {
+    return { pass: false, reason: speedOutcome.reason, metrics };
+  }
+  return { pass: true, metrics, fusedSpeedKmh: speedOutcome.fusedSpeedKmh };
 }
 
 /**
