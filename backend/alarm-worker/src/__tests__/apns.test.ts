@@ -770,6 +770,30 @@ describe('sendBoardingPromptPush (#819)', () => {
     });
     expect(result).toEqual({ ok: false, status: 410, reason: 'BadDeviceToken' });
   });
+
+  it.each([['cron' as const], ['instant' as const]])(
+    '#1536 (S3) — triggerKind=%s payload.data.triggerKind forward',
+    async (triggerKind) => {
+      const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+      await sendBoardingPromptPush({
+        deviceToken: 'device-hex',
+        pushId: 'p-trigger',
+        title: 'T',
+        body: 'B',
+        originStation: 'O',
+        line: 'L',
+        tripToken: 't',
+        sentAt: 0,
+        triggerKind,
+        config: makeConfig(),
+        host: TEST_HOST,
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+      const body = JSON.parse(call[1].body as string);
+      expect(body.data.triggerKind).toBe(triggerKind);
+    },
+  );
 });
 
 // #1337 — trip-ended를 silent → alert로 전환. killed 앱에 OS banner로 즉시 표시.

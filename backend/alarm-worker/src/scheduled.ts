@@ -39,10 +39,11 @@ import {
   type LiveActivityStats,
 } from './liveActivity';
 import { matchLine } from './lineAlias';
-import { computeAllowedLines } from './consensusGate';
+import { computeAllowedLines, type StationEnvironment } from './consensusGate';
 import { attachTrainCodeForLeg } from './lockSwap';
 import {
   advanceTripPosition,
+  mapEvidenceEnvironment,
   type AdvanceBlockReason,
   type AdvanceEvidence,
   type EvidenceEnvironment,
@@ -1288,6 +1289,18 @@ function deriveEvidenceEnvironment(trip: Trip): EvidenceEnvironment {
 }
 
 /**
+ * #1536 (S3) — Trip.subsurface → consensusGate.StationEnvironment 매핑.
+ *
+ * `deriveEvidenceEnvironment` (EvidenceEnvironment 어휘) 결과를 `mapEvidenceEnvironment`
+ * 로 한 단계 변환해 single source 유지 (S4144 회피). trip 데이터 자체가 device 어휘인
+ * `subsurface` boolean 만 갖고 'mixed' 표현이 없으므로 mapping 결과는 underground / surface
+ * / unknown 셋 중 하나(추후 trip.environment 필드 도입 시 'mixed' 분기 자연 확장).
+ */
+function deriveTripEnvironment(trip: Trip): StationEnvironment {
+  return mapEvidenceEnvironment(deriveEvidenceEnvironment(trip));
+}
+
+/**
  * #1370 L2 — trainCode vanish 후 시간 기반 fallback advance 직전에 발사하는 station-passed silent push.
  *
  * arvlCd fire 경로와 모양은 같지만 SSOT가 다르다 — arvlCd∈{0,1}이 아니라 "trainCode 사라짐 + hop 시간
@@ -2295,6 +2308,8 @@ async function maybeBindLocklessTrainCode(
 
   // 9단 AND 게이트 — 사용자가 실제 이동 중일 때만 통과 (정적/저신뢰는 false positive 차단).
   // boarding-prompt 경로와 동일하게 fusion 결과(series/kalman/metrics)를 그대로 입력으로 전달.
+  // #1536 (S3) — 환경 분기. underground/unknown 은 GPS 의존 게이트(#3~#7) 를 byPass.
+  const environment = deriveTripEnvironment(trip);
   const outcome = evaluateBoardingPromptGates({
     series: fusion.series,
     origin: geo.origin,
@@ -2303,9 +2318,14 @@ async function maybeBindLocklessTrainCode(
     promptState: trip.boardingPromptState,
     kalmanKmh: fusion.kalmanKmh,
     metrics: fusion.posMetrics,
+    environment,
   });
   if (!outcome.pass) return false;
-
+  // #1536 (S3) — environment-aware consensusGate. underground 분기는 arrival +
+  // lockAttachable 2-of-2 합의로 false positive 차단. arrivals 는 attemptAutoLock 이
+  // fetch 하므로 본 함수에서는 lockAttachable 신호만 forward 하고 consensusGate 의 분기
+  // 자체는 attemptAutoLock 내부에서 평가한다. caller 는 outcome.pass(motion+silence) 만
+  // 사용해 auto-lock 시도 진입을 허용.
   const autoLockResult = await attemptAutoLock({
     trip,
     targetWaypoint: waypoint,
@@ -2317,6 +2337,10 @@ async function maybeBindLocklessTrainCode(
     lastMotionAt: fusion.series[fusion.series.length - 1]?.ts,
     // #1439 (E6, ADR-015 §9) — lockless auto-lock 합성도 route 외 line이면 reject.
     allowedLines: computeAllowedLines(trip.route, trip.waypoints),
+    // #1536 (S3) — environment + gateOutcome forward. attemptAutoLock 이 환경 분기
+    // consensusGate 평가로 surface 통과 / underground arrival+lockAttachable 합의 강제.
+    environment,
+    gateOutcome: outcome,
   });
   if (autoLockResult.confidenceTrace && env.TELEMETRY) {
     recordAutoLockConfidence(env.TELEMETRY, trip.token, autoLockResult.confidenceTrace);
@@ -2710,6 +2734,10 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     dirty = true;
   }
 
+  // #1536 (S3) — 환경 분기. underground/unknown 은 GPS 의존 게이트(#3~#7) 를 byPass.
+  // 결과(outcome.pass) 는 motion+silence/fired 만 보장하므로 caller 는 별도 consensusGate
+  // 로 arrival+lockAttachable 합의를 검증해야 false positive 차단.
+  const environment = deriveTripEnvironment(trip);
   const outcome = evaluateBoardingPromptGates({
     series: fusion.series,
     origin: geo.origin,
@@ -2720,6 +2748,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     // #833 — runFusionStep이 Kalman observation을 위해 이미 evaluateWindow를 1회 돌렸다.
     // 그 결과를 그대로 재사용해 trip당 redundant window 평가를 제거 (동작 동치).
     metrics: fusion.posMetrics,
+    environment,
   });
 
   if (!outcome.pass) {
@@ -2727,6 +2756,7 @@ export async function evaluateAndMaybeFireBoardingPrompt(
     log('boarding-prompt: gate blocked', {
       token: trip.token.slice(0, 8),
       reason: outcome.reason satisfies GateSkipReason,
+      environment,
     });
     if (dirty) await putTrip(env.TRIPS, trip);
     return;
@@ -2751,6 +2781,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       lastMotionAt: fusion.series[fusion.series.length - 1]?.ts,
       // #1439 (E6, ADR-015 §9) — boarding-prompt auto-lock 합성도 route 외 line이면 reject.
       allowedLines: computeAllowedLines(trip.route, trip.waypoints),
+      // #1536 (S3) — environment + gateOutcome forward. 환경 분기 consensusGate 강제.
+      environment,
+      gateOutcome: outcome,
     });
     // #1171 — RC1 confidence gate가 평가된 경우(arvlCd=2 branch) score 분포를 AE에 적재.
     // 1주 운영 후 본 분포로 AUTO_LOCK_CONFIDENCE_THRESHOLD 튜닝 결정.
@@ -2792,6 +2825,8 @@ export async function evaluateAndMaybeFireBoardingPrompt(
         line: display.line,
         tripToken: trip.token,
         sentAt: now,
+        // #1536 (S3, T13) — cron loop 경로. POST /trips instant path 와 source 구분.
+        triggerKind: 'cron',
         config: deps.apnsConfig,
         host,
         fetchImpl: deps.fetchImpl,

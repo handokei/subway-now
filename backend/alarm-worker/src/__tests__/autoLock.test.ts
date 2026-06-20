@@ -407,3 +407,95 @@ describe('attemptAutoLock allowedLines gate (#1439 ADR-015 §9)', () => {
     expect(lock).not.toBeNull();
   });
 });
+
+function passingGateOutcome(): Parameters<typeof attemptAutoLock>[0]['gateOutcome'] {
+  return {
+    pass: true as const,
+    metrics: {
+      count: 3,
+      gpsAvgKmh: 20,
+      avgAccuracyMeters: 10,
+      motion: 'automotive',
+      start: { lat: 0, lng: 0 },
+      end: { lat: 0, lng: 0.001 },
+      mapMatchedKmh: null,
+    },
+    fusedSpeedKmh: 20,
+  };
+}
+function failingGateOutcome(): Parameters<typeof attemptAutoLock>[0]['gateOutcome'] {
+  return { pass: false as const, reason: 'window-too-small' as const };
+}
+
+/**
+ * #1536 환경 분기 테스트 공통 fixture — `arrivalEntry` 와 옵션만 받아 attemptAutoLock 호출.
+ * 중복 호출 패턴 제거(SonarCloud duplication < 3% 충족).
+ */
+function callEnvAutoLock(
+  arrivalEntry: ArrivalEntry,
+  opts: {
+    environment?: Parameters<typeof attemptAutoLock>[0]['environment'];
+    gateOutcome?: Parameters<typeof attemptAutoLock>[0]['gateOutcome'];
+  } = {},
+) {
+  return attemptAutoLock({
+    trip: makeTrip(),
+    targetWaypoint: target,
+    originStation: '강남',
+    direction: 'up',
+    seoul: makeSeoul([arrivalEntry]),
+    now: NOW,
+    environment: opts.environment,
+    gateOutcome: opts.gateOutcome,
+  });
+}
+
+describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
+  // it.each: (env, gate pass/fail, expected) 매트릭스로 surface + mixed 의 base-gate 의존성 일괄 검증.
+  // surface = base gate pass-through, mixed = base gate + 합의 동시 강제 (둘 다 base fail 시 null).
+  // underground 는 base gate 무관 — 별도 it 로 분리.
+  it.each([
+    ['surface', 'pass', 'lock'] as const,
+    ['surface', 'fail', 'null'] as const,
+    ['mixed', 'pass', 'lock'] as const,
+    ['mixed', 'fail', 'null'] as const,
+  ])('%s + base gate %s → %s', async (env, gate, expected) => {
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
+      environment: env,
+      gateOutcome: gate === 'pass' ? passingGateOutcome() : failingGateOutcome(),
+    });
+    if (expected === 'lock') {
+      expect(lock?.trainCode).toBe('T1');
+    } else {
+      expect(lock).toBeNull();
+    }
+  });
+
+  it('underground: base gate fail 도 arrival+lockAttachable 만 있으면 통과 (GPS 무관)', async () => {
+    // underground 분기는 base gate 결과 무관하게 arrival + lockAttachable 2-of-2
+    // (consensusGate.ts:149-158).
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
+      environment: 'underground',
+      gateOutcome: failingGateOutcome(),
+    });
+    expect(lock?.trainCode).toBe('T1');
+  });
+
+  it('underground + arrival arvlCd 범위 밖 (=5) → arrival signal 미존재 → null', async () => {
+    // arvlCd=5 (PREV_ARRIVED) 는 0~3 범위 밖 → arrivalSignalPresent=false → 합의 미달.
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 5 }), {
+      environment: 'underground',
+      gateOutcome: passingGateOutcome(),
+    });
+    expect(lock).toBeNull();
+  });
+
+  // env / gateOutcome 미전달 시 모두 consensusGate skip (구 호출자 호환). 매트릭스로 한번에.
+  it.each([
+    ['env 미전달', {} as const],
+    ['gateOutcome 미전달', { environment: 'underground' as const }],
+  ])('%s → consensusGate skip', async (_label, opts) => {
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), opts);
+    expect(lock).not.toBeNull();
+  });
+});

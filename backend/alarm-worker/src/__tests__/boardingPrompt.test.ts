@@ -389,6 +389,123 @@ describe('evaluateBoardingPromptGates — #833 pre-computed metrics 재사용', 
   });
 });
 
+/**
+ * 지하 환경에서 GPS series 가 stale(=잘못된 좌표) 인 경우. 기존 9단 AND 게이트는
+ * #4 origin-too-far / #5 direction-mismatch 등으로 100% fail → 7일 누적 0건 회귀.
+ * environment='underground' 분기는 GPS 의존 게이트(#3~#7) byPass 후 #8 motion 만 평가.
+ * accuracy 는 surface 분기의 #4 origin-too-far reason 분리를 위해 cutoff(50m) 미만 사용.
+ */
+function staleGpsSeries(n: number): PositionPoint[] {
+  // 출발역(0,0) 에서 1km 떨어진 wrong 좌표 + 잘못된 방향 진행 (서쪽). accuracy 10m.
+  return [
+    { lat: 0.01, lng: 0.01, accuracy: 10, ts: n - 60_000, motion: 'automotive' },
+    { lat: 0.01, lng: 0.009, accuracy: 10, ts: n - 30_000, motion: 'automotive' },
+    { lat: 0.01, lng: 0.008, accuracy: 10, ts: n, motion: 'automotive' },
+  ];
+}
+
+describe('evaluateBoardingPromptGates — #1536 (S3) 환경 분기', () => {
+  const now = 1_000_000;
+
+  it('underground: stale GPS series 도 motion=automotive 면 통과 (fusedSpeedKmh=0)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: staleGpsSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'underground',
+    });
+    expect(r.pass).toBe(true);
+    if (r.pass) expect(r.fusedSpeedKmh).toBe(0);
+  });
+
+  it('underground: motion=stationary 면 #8 게이트로 차단 (motion-not-moving)', () => {
+    const stationary = staleGpsSeries(now).map((p) => ({
+      ...p,
+      motion: 'stationary' as const,
+    }));
+    const r = evaluateBoardingPromptGates({
+      series: stationary,
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'underground',
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('motion-not-moving');
+  });
+
+  it('underground: 이미 fired = already-fired (게이트 #9 우선 평가)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: staleGpsSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'underground',
+      promptState: { fired: true, lastFiredAt: now - 1000 },
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('already-fired');
+  });
+
+  it('mixed: GPS 의존 게이트 byPass (underground 와 동일 분기)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: staleGpsSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'mixed',
+    });
+    expect(r.pass).toBe(true);
+  });
+
+  it('unknown: GPS 의존 게이트 byPass (보수적 분기)', () => {
+    const r = evaluateBoardingPromptGates({
+      series: staleGpsSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'unknown',
+    });
+    expect(r.pass).toBe(true);
+  });
+
+  it('surface: stale GPS series 는 기존 9단 AND 그대로 — origin-too-far 차단', () => {
+    const r = evaluateBoardingPromptGates({
+      series: staleGpsSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'surface',
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('origin-too-far');
+  });
+
+  it('environment undefined (legacy 호출자) 는 기존 9단 AND 그대로', () => {
+    const r = evaluateBoardingPromptGates({
+      series: staleGpsSeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+    });
+    expect(r.pass).toBe(false);
+    if (!r.pass) expect(r.reason).toBe('origin-too-far');
+  });
+
+  it('surface env + happy series → 기존처럼 fusedSpeedKmh>0', () => {
+    const r = evaluateBoardingPromptGates({
+      series: happySeries(now),
+      origin: ORIGIN,
+      nextStation: NEXT,
+      now,
+      environment: 'surface',
+    });
+    expect(r.pass).toBe(true);
+    if (r.pass) expect(r.fusedSpeedKmh).toBeGreaterThan(5);
+  });
+});
+
 describe('markPromptFired / markPromptSilenced', () => {
   it('markPromptFired는 fired=true + lastFiredAt 설정', () => {
     expect(markPromptFired(1234)).toEqual({ fired: true, lastFiredAt: 1234 });
