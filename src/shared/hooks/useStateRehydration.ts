@@ -108,11 +108,13 @@ async function runRehydration(trigger: 'mount' | 'active'): Promise<void> {
 async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> {
   try {
     const startedAt = await getTripStartedAt();
+    if (startedAt === null) return;
+    // tripLifecyclePhase는 startedAt non-null이면 'none' 외 3개 phase만 반환.
     const phase = tripLifecyclePhase(startedAt);
-    if (phase === 'none' || phase === 'normal') return;
+    if (phase === 'normal') return;
 
     const now = Date.now();
-    const elapsedMs = startedAt !== null ? now - startedAt : 0;
+    const elapsedMs = now - startedAt;
 
     if (phase === 'silence') {
       appendAlarmLog({

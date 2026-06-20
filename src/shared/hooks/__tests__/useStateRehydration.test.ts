@@ -216,13 +216,14 @@ describe('useStateRehydration', () => {
   });
 
   describe('#1573 (T10) lifecycle backstop', () => {
-    it("phase='none' — backstop 아무 동작 안 함 (회귀 0)", async () => {
-      mockTripLifecyclePhase.mockReturnValue('none');
+    it("startedAt=null — backstop early return (회귀 0)", async () => {
+      mockGetTripStartedAt.mockResolvedValue(null);
       mockAppState();
       renderHook(() => useStateRehydration());
       await waitFor(() => expect(mockLoadDestination).toHaveBeenCalled());
       expect(mockAppendAlarmLog).not.toHaveBeenCalled();
       expect(mockSetSentinel).not.toHaveBeenCalled();
+      expect(mockTripLifecyclePhase).not.toHaveBeenCalled();
     });
 
     it("phase='normal' — backstop 아무 동작 안 함", async () => {
