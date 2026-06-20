@@ -486,6 +486,17 @@ export interface BoardingPromptPushPayload {
   /** trip 토큰 — 푸시 응답 시점에 trip 컨텍스트 복원용. */
   tripToken: string;
   sentAt: number;
+  /**
+   * #1536 (S3, T13) — trigger source 구분.
+   *
+   * - 'cron': scheduled.ts cron 사이클에서 9단 게이트 통과로 발사 (기존 동작).
+   * - 'instant': POST /trips 등록 즉시 발사 path (T13 trigger 재설계). 9단 cron loop
+   *   우회. lockSuggestion 부재 + 30s advance 없음 confidence 가 부족할 때 fallback 으로
+   *   cron 게이트 발사.
+   *
+   * 부재(legacy) = 'cron' 으로 해석. device 는 telemetry 적재 시 source 분포 측정에 사용.
+   */
+  triggerKind?: 'cron' | 'instant';
 }
 
 /**

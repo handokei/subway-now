@@ -407,3 +407,138 @@ describe('attemptAutoLock allowedLines gate (#1439 ADR-015 §9)', () => {
     expect(lock).not.toBeNull();
   });
 });
+
+describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
+  function passingGateOutcome(): Parameters<typeof attemptAutoLock>[0]['gateOutcome'] {
+    return {
+      pass: true as const,
+      metrics: {
+        count: 3,
+        gpsAvgKmh: 20,
+        avgAccuracyMeters: 10,
+        motion: 'automotive',
+        start: { lat: 0, lng: 0 },
+        end: { lat: 0, lng: 0.001 },
+        mapMatchedKmh: null,
+      },
+      fusedSpeedKmh: 20,
+    };
+  }
+  function failingGateOutcome(): Parameters<typeof attemptAutoLock>[0]['gateOutcome'] {
+    return { pass: false as const, reason: 'window-too-small' as const };
+  }
+
+  it('surface + base gate pass + arrival 신호 있음 → lock 합성', async () => {
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      environment: 'surface',
+      gateOutcome: passingGateOutcome(),
+    });
+    expect(lock?.trainCode).toBe('T1');
+  });
+
+  it('surface + base gate fail → consensusGate "base-gate-failed" → null', async () => {
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      environment: 'surface',
+      gateOutcome: failingGateOutcome(),
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('underground + arrival(arvlCd=1) + lockAttachable → 합의 통과 → lock 합성', async () => {
+    // underground 분기는 base gate 결과 무관하게 arrival + lockAttachable 2-of-2
+    // (consensusGate.ts:149-158). 따라서 base gate fail 도 통과.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      environment: 'underground',
+      gateOutcome: failingGateOutcome(),
+    });
+    expect(lock?.trainCode).toBe('T1');
+  });
+
+  it('underground + arrival arvlCd 범위 밖 (=5) → arrival signal 미존재 → null', async () => {
+    // arvlCd=5 (PREV_ARRIVED) 는 0~3 범위 밖 → arrivalSignalPresent=false → 합의 미달.
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 5 })]),
+      now: NOW,
+      environment: 'underground',
+      gateOutcome: passingGateOutcome(),
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('mixed + base gate pass + arrival + lockAttachable → 통과', async () => {
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      environment: 'mixed',
+      gateOutcome: passingGateOutcome(),
+    });
+    expect(lock?.trainCode).toBe('T1');
+  });
+
+  it('mixed + base gate fail → null (mixed 는 base gate 통과 강제)', async () => {
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      environment: 'mixed',
+      gateOutcome: failingGateOutcome(),
+    });
+    expect(lock).toBeNull();
+  });
+
+  it('environment 미전달 → consensusGate skip (구 호출자 호환)', async () => {
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      // environment 미전달 → consensusGate 미적용
+    });
+    expect(lock).not.toBeNull();
+  });
+
+  it('gateOutcome 미전달 → consensusGate skip (구 호출자 호환)', async () => {
+    const { lock } = await attemptAutoLock({
+      trip: makeTrip(),
+      targetWaypoint: target,
+      originStation: '강남',
+      direction: 'up',
+      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
+      now: NOW,
+      environment: 'underground',
+      // gateOutcome 미전달 → consensusGate 미적용
+    });
+    expect(lock).not.toBeNull();
+  });
+});

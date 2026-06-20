@@ -643,6 +643,11 @@ export interface SendBoardingPromptPushOptions {
   line: string;
   tripToken: string;
   sentAt: number;
+  /**
+   * #1536 (S3, T13) — trigger source. 미지정 시 'cron' (기존 동작).
+   * device 는 telemetry 적재 시 source 분포 측정에 사용.
+   */
+  triggerKind?: 'cron' | 'instant';
   config: ApnsConfig;
   host: string;
   fetchImpl?: typeof fetch;
@@ -663,6 +668,7 @@ export async function sendBoardingPromptPush(
     line: options.line,
     tripToken: options.tripToken,
     sentAt: options.sentAt,
+    triggerKind: options.triggerKind,
   };
 
   const body = JSON.stringify({

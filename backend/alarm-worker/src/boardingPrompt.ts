@@ -15,9 +15,20 @@
  * arvlCd 우선순위 (ADR Section 1.2):
  *   2 (출발) > 1 (도착) > 0 (진입) > 그 외 receivedAt 가까운 + 방향 매칭
  *   ambiguity → 자동 안 함 → 클라가 manual fallback.
+ *
+ * #1536 (S3, Epic #1533) — 환경 분기 추가.
+ *   inputs.environment 가 underground / mixed / unknown 인 경우 GPS 의존 게이트
+ *   (#3 accuracy / #4 origin / #5 direction / #6 window / #7 speed) 를 byPass 한다.
+ *   이 게이트들은 모두 GPS series 신호에서 유도되므로 지하 GPS stale 환경에서는
+ *   100% fail → 7일 누적 boardingPrompt 0건 회귀 (mem `lesson_boarding_prompt_9and_gate_gps_only`).
+ *   대신 caller(scheduled.ts)가 evaluateConsensusGate(environment, signals)로 합의 게이트를
+ *   적용하여 arrival + lockAttachable 2-of-2 신호로 통과 판정한다. 본 함수는 environment
+ *   인자가 underground/mixed/unknown 이면 #8(motion) + #9(silence/fired) 만 평가 — caller가
+ *   consensusGate 통과 책임을 진다. surface(또는 환경 미상 = undefined)는 기존 9단 AND 동작 유지.
  */
 
 import { ARRIVAL_CODE } from './alarm';
+import type { StationEnvironment } from './consensusGate';
 import { fusedSpeed } from './fusedSpeed';
 import { matchLine } from './lineAlias';
 import {
@@ -86,11 +97,28 @@ export interface EvaluateBoardingPromptInputs {
    * hot path redundancy를 제거한다. 미지정 시 내부에서 1회 계산 — 회귀 없음.
    */
   metrics?: WindowedMetrics;
+  /**
+   * #1536 (S3) — trip 환경. 'underground' | 'mixed' | 'unknown' 이면 GPS 의존 게이트
+   * (#3 accuracy / #4 origin / #5 direction / #6 window / #7 speed) 를 byPass 한다.
+   * 'surface' 또는 undefined(legacy 호출자) 는 기존 9단 AND 게이트를 그대로 평가한다.
+   *
+   * caller(scheduled.ts)가 trip.subsurface → deriveEvidenceEnvironment → mapEvidenceEnvironment
+   * 로 변환된 값을 그대로 forward한다. underground 분기에서도 #8 motion + #9 silence/fired는
+   * 반드시 평가 — caller는 별도로 evaluateConsensusGate(environment, signals)로 arrival+
+   * lockAttachable 2-of-2 합의를 검증해야 한다(false positive 차단).
+   */
+  environment?: StationEnvironment;
 }
 
 /**
  * 9단 AND 게이트 평가. 한 게이트라도 실패하면 즉시 reason과 함께 fail.
  * 게이트 #1/#2는 caller가 미리 보장 (listTrips × lockMissing 분기) — 본 함수는 #3~#9만 평가.
+ *
+ * #1536 (S3) — `inputs.environment` 가 'underground' | 'mixed' | 'unknown' 이면 GPS 의존
+ * 게이트(#3~#7) 를 byPass 한다. 지하 GPS stale 환경에서 series 신호가 항상 wrong → 100%
+ * fail 회귀 차단. 이 분기에서는 #8 motion + #9 silence/fired 만 평가하며, caller(scheduled.ts)
+ * 가 evaluateConsensusGate(environment, signals) 로 arrival + lockAttachable 합의를 별도 검증해
+ * false positive 를 차단해야 한다. `environment` 미지정 또는 'surface' 면 기존 9단 AND 평가.
  */
 export function evaluateBoardingPromptGates(
   inputs: EvaluateBoardingPromptInputs,
@@ -108,70 +136,88 @@ export function evaluateBoardingPromptGates(
     }
   }
 
+  const env = inputs.environment;
+  const gpsDependentBypass =
+    env === 'underground' || env === 'mixed' || env === 'unknown';
+
   // #6 — 60s 윈도우 N≥3 (cold start 보호). 0/1 sample은 metrics.start/end null로 자연 차단.
   // #833 — 호출자가 동일 series/now로 이미 evaluateWindow를 돌렸다면(예: scheduled.ts의
   // Kalman observation) 결과를 재사용해 hot path 중복 계산을 제거한다.
+  // #1536 — series 가 비어 있을 수 있는 지하 환경에서도 metrics 자체는 산출 가능
+  // (count=0). GPS bypass 분기는 motion 평가에 metrics.motion 가 'unknown'(window-too-small의
+  // 자연 결과)이라도 #8 motion 게이트가 자연 차단. 분기 이전에 metrics 계산은 공통 비용.
   const metrics = inputs.metrics ?? evaluateWindow(inputs.series, inputs.now);
-  if (metrics.count < MIN_WINDOW_SAMPLES) {
-    return { pass: false, reason: 'window-too-small', metrics };
-  }
-  // window-too-small이 통과한 이후엔 start/end가 null이 될 수 없음(count ≥ 3).
-  // TypeScript narrowing을 위해 명시 assert로 진행.
-  if (!metrics.start || !metrics.end) {
-    return { pass: false, reason: 'window-too-small', metrics };
+
+  if (!gpsDependentBypass) {
+    if (metrics.count < MIN_WINDOW_SAMPLES) {
+      return { pass: false, reason: 'window-too-small', metrics };
+    }
+    // window-too-small이 통과한 이후엔 start/end가 null이 될 수 없음(count ≥ 3).
+    // TypeScript narrowing을 위해 명시 assert로 진행.
+    if (!metrics.start || !metrics.end) {
+      return { pass: false, reason: 'window-too-small', metrics };
+    }
+
+    // #3 — accuracy. 평균 accuracy가 50m 이상이면 신뢰 불가.
+    if (metrics.avgAccuracyMeters >= ACCURACY_CUTOFF_M) {
+      return { pass: false, reason: 'accuracy-too-poor', metrics };
+    }
+
+    // #4 — 출발역 100m 이내. 마지막 sample 기준 (가장 최신 위치).
+    const originDistanceKm = haversineKm(
+      metrics.end.lat,
+      metrics.end.lng,
+      inputs.origin.lat,
+      inputs.origin.lng,
+    );
+    if (originDistanceKm > ORIGIN_RADIUS_KM) {
+      return { pass: false, reason: 'origin-too-far', metrics };
+    }
+
+    // #5 — 방향 cosine ≥ 0.7. expected vector는 출발역 → 다음역.
+    const cos = cosineDirection(
+      metrics.start.lat,
+      metrics.start.lng,
+      metrics.end.lat,
+      metrics.end.lng,
+      inputs.origin.lat,
+      inputs.origin.lng,
+      inputs.nextStation.lat,
+      inputs.nextStation.lng,
+    );
+    if (cos < DIRECTION_COSINE_THRESHOLD) {
+      return { pass: false, reason: 'direction-mismatch', metrics };
+    }
   }
 
-  // #3 — accuracy. 평균 accuracy가 50m 이상이면 신뢰 불가.
-  if (metrics.avgAccuracyMeters >= ACCURACY_CUTOFF_M) {
-    return { pass: false, reason: 'accuracy-too-poor', metrics };
-  }
-
-  // #4 — 출발역 100m 이내. 마지막 sample 기준 (가장 최신 위치).
-  const originDistanceKm = haversineKm(
-    metrics.end.lat,
-    metrics.end.lng,
-    inputs.origin.lat,
-    inputs.origin.lng,
-  );
-  if (originDistanceKm > ORIGIN_RADIUS_KM) {
-    return { pass: false, reason: 'origin-too-far', metrics };
-  }
-
-  // #5 — 방향 cosine ≥ 0.7. expected vector는 출발역 → 다음역.
-  const cos = cosineDirection(
-    metrics.start.lat,
-    metrics.start.lng,
-    metrics.end.lat,
-    metrics.end.lng,
-    inputs.origin.lat,
-    inputs.origin.lng,
-    inputs.nextStation.lat,
-    inputs.nextStation.lng,
-  );
-  if (cos < DIRECTION_COSINE_THRESHOLD) {
-    return { pass: false, reason: 'direction-mismatch', metrics };
-  }
-
-  // #8 — motion ∈ {walking, automotive}. stationary/unknown은 차단.
+  // #8 — motion ∈ {walking, automotive}. stationary/unknown은 차단. GPS bypass 분기에서도
+  // 평가 — CMMotionActivity 기반 신호는 지하에서도 작동(mem `lesson_motion_activity_intermittent_signal`
+  // 의 5~10분 주기 뒤집힘 한계는 있으나 #819 게이트 #8 단독으로 false positive 차단 의무는 없음 —
+  // caller 의 consensusGate 가 arrival+lockAttachable 합의로 보완).
   if (metrics.motion !== 'walking' && metrics.motion !== 'automotive') {
     return { pass: false, reason: 'motion-not-moving', metrics };
   }
 
-  // #7 — fused speed. mapMatchedKmh는 #828, kalmanKmh는 #824에서 wire — 양 끝 sample이 같은
-  // line + arcM을 가질 때만 evaluateWindow가 mapMatchedKmh 산출, 그 외에는 null로 강등
-  // (GPS-only fallback). kalmanKmh는 호출자(scheduled.ts)가 runKalmanStep으로 산출 후 주입.
-  const fused = fusedSpeed({
-    gpsAvgKmh: metrics.gpsAvgKmh,
-    gpsAccuracyMeters: metrics.avgAccuracyMeters,
-    motion: metrics.motion,
-    mapMatchedKmh: metrics.mapMatchedKmh,
-    kalmanKmh: inputs.kalmanKmh ?? null,
-  });
-  if (fused.speed < MIN_FUSED_SPEED_KMH || fused.confidence === 'low') {
-    return { pass: false, reason: 'speed-too-low', metrics };
+  if (!gpsDependentBypass) {
+    // #7 — fused speed. mapMatchedKmh는 #828, kalmanKmh는 #824에서 wire — 양 끝 sample이 같은
+    // line + arcM을 가질 때만 evaluateWindow가 mapMatchedKmh 산출, 그 외에는 null로 강등
+    // (GPS-only fallback). kalmanKmh는 호출자(scheduled.ts)가 runKalmanStep으로 산출 후 주입.
+    const fused = fusedSpeed({
+      gpsAvgKmh: metrics.gpsAvgKmh,
+      gpsAccuracyMeters: metrics.avgAccuracyMeters,
+      motion: metrics.motion,
+      mapMatchedKmh: metrics.mapMatchedKmh,
+      kalmanKmh: inputs.kalmanKmh ?? null,
+    });
+    if (fused.speed < MIN_FUSED_SPEED_KMH || fused.confidence === 'low') {
+      return { pass: false, reason: 'speed-too-low', metrics };
+    }
+    return { pass: true, metrics, fusedSpeedKmh: fused.speed };
   }
 
-  return { pass: true, metrics, fusedSpeedKmh: fused.speed };
+  // #1536 — GPS bypass 분기는 fusedSpeed 산출 자체가 의미 없으므로 0 으로 표기.
+  // caller 가 본 값을 로깅 외 용도로 쓰면 회귀 → caller(scheduled.ts) 가 분기 인지하고 사용.
+  return { pass: true, metrics, fusedSpeedKmh: 0 };
 }
 
 /**

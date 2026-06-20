@@ -20,10 +20,20 @@
  *
  * 거짓 양성 차단: 사용자가 자동 lock 직후 다른 trainCode를 탭하면 client가 새 lock POST →
  * 기존 #864/#704 same-session 분기가 새 lock으로 자연 교체 (Seam F swap과 동일 경로).
+ *
+ * #1536 (S3, Epic #1533) — 환경 분기. caller 가 `environment` + `gateOutcome` 동반 전달 시
+ * `evaluateConsensusGate(environment, signals)` 가 추가 합의 검증. underground 환경에서
+ * arrival(arvlCd 0~3) + lockAttachable(trainCode 단일 수렴) 2-of-2 합의 미충족 시 null
+ * 반환 → boarding-prompt push fallback. lesson `boarding_prompt_9and_gate_gps_only` 회귀
+ * (지하 7일 누적 0건) 직접 해소.
  */
 
-import { pickAutoTrainCode } from './boardingPrompt';
-import { isLockLineAllowed } from './consensusGate';
+import { pickAutoTrainCode, type GateOutcome } from './boardingPrompt';
+import {
+  evaluateConsensusGate,
+  isLockLineAllowed,
+  type StationEnvironment,
+} from './consensusGate';
 import { matchLine, subwayIdForLine } from './lineAlias';
 import { buildLegSegmentStations, SWAP_LOCK_TTL_MS } from './lockSwap';
 import { METRIC_KIND, writeMetricDataPoints, type HistogramMetric } from './metrics';
@@ -116,6 +126,29 @@ export interface AttemptAutoLockInputs {
    * 검증을 skip — 구 호출자 호환 + trip route 데이터가 없는 케이스 보수적 허용.
    */
   allowedLines?: Set<LineNumber>;
+  /**
+   * #1536 (S3, Epic #1533) — trip 환경. consensusGate 분기 입력.
+   *
+   * - 'surface': 9단 게이트 통과면 lockAttachable=true 면 즉시 통과 — 기존 동작.
+   * - 'underground' | 'mixed' | 'unknown': arrival + lockAttachable 2-of-2 합의 강제.
+   *   `evaluateConsensusGate` 가 미통과면 lock 합성 skip — `pickAutoTrainCode` 단일 수렴이
+   *   lockAttachable signal 로 forward 되어 합의를 만든다(arrival signal 은 chosen
+   *   ArrivalEntry.arvlCd 가 0~3 범위면 present 로 판정).
+   *
+   * 미전달(undefined) 시 검증 skip — 구 호출자 호환. 신규 호출자(scheduled.ts)는 항상 전달.
+   */
+  environment?: StationEnvironment;
+  /**
+   * #1536 (S3) — 9단 게이트 결과. `evaluateConsensusGate` 의 `gateOutcome` 입력으로 forward.
+   *
+   * caller(scheduled.ts) 가 `evaluateBoardingPromptGates` 결과를 그대로 전달한다.
+   * GPS bypass 분기에서는 `outcome.pass=true` 이고 `fusedSpeedKmh=0` 이지만 consensusGate
+   * 의 underground 분기는 baseGatePassed 와 무관하게 arrival+lockAttachable 만 평가하므로
+   * 안전(consensusGate.ts:149-158 참조).
+   *
+   * 미전달(undefined) 시 검증 skip — 구 호출자 호환.
+   */
+  gateOutcome?: GateOutcome;
 }
 
 /**
@@ -178,6 +211,8 @@ export async function attemptAutoLock(
     boardingPromptState,
     lastMotionAt,
     allowedLines,
+    environment,
+    gateOutcome,
   } = inputs;
   const line = targetWaypoint.line;
   const subwayId = subwayIdForLine(line);
@@ -200,6 +235,26 @@ export async function attemptAutoLock(
 
   const trainCode = pickAutoTrainCode(arrivals, line, direction);
   if (!trainCode) return { lock: null };
+
+  // #1536 (S3, Epic #1533) — environment + gateOutcome 모두 전달 시 consensusGate 분기 강제.
+  // underground/mixed/unknown 환경에서 arrival(=chosen arvlCd 0~3) + lockAttachable(=trainCode
+  // 단일 수렴 = true) 2-of-2 합의가 통과해야 lock 합성 진행. surface 는 base gate(=outcome.pass)
+  // 가 통과하면 즉시 통과. 미전달 시 (구 호출자) skip.
+  if (environment && gateOutcome) {
+    const chosenForGate = arrivals.find((a) => a.trainCode === trainCode);
+    const arrivalSignalPresent =
+      typeof chosenForGate?.arvlCd === 'number' &&
+      chosenForGate.arvlCd >= 0 &&
+      chosenForGate.arvlCd <= 3;
+    const consensus = evaluateConsensusGate(environment, {
+      gateOutcome,
+      arrivalSignalPresent,
+      // trainCode 단일 수렴 = lockAttachable. pickAutoTrainCode 가 null 이면 함수가 이미
+      // 더 위에서 return 했으므로 본 시점에서는 항상 true.
+      lockAttachable: true,
+    });
+    if (!consensus.pass) return { lock: null };
+  }
 
   // #1018 RC1 confidence gate — arvlCd=2(출발) at next-waypoint는 사용자가 이미 그 열차를
   // 타고 origin을 떠났거나, 반대로 그 열차가 사용자보다 먼저 출발했을 수 있다 (origin-pass 후보).
