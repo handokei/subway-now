@@ -1,5 +1,8 @@
 import * as Sentry from '@sentry/react-native';
 import { isSentryEnabled } from './sentryState';
+import { hashTripToken, sanitizeContext } from './tripTokenHash';
+
+export { hashTripToken };
 
 /**
  * #1578 — Phase 0 P0-2: V/X acceptance X1~X11 자동 alert.
@@ -53,32 +56,3 @@ export function captureXEvent(name: XEventName, context: XEventContext = {}): vo
   }
 }
 
-function sanitizeContext(context: XEventContext): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(context)) {
-    if (value === undefined) continue;
-    if (key === 'tripToken' && typeof value === 'string') {
-      out.tripTokenHash = hashTripToken(value);
-      continue;
-    }
-    out[key] = value;
-  }
-  return out;
-}
-
-/**
- * tripToken을 8자 hash로 환원 (PII 보호).
- *
- * crypto SubtleCrypto가 RN 환경에서 sync로 보장되지 않으므로 FNV-1a 32bit 같은
- * non-cryptographic hash로 충분 — 목적이 PII 노출 차단(역추적 불가)이지
- * 무결성 검증이 아니므로. 충돌은 trip 식별성을 떨어뜨리지만, 같은 분석 window에서
- * 동일 hash 반복 = 같은 trip 추적 가능 수준.
- */
-export function hashTripToken(token: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < token.length; i++) {
-    hash ^= token.codePointAt(i)!;
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, '0');
-}

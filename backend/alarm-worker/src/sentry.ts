@@ -19,7 +19,13 @@
  */
 
 import { captureMessage } from '@sentry/cloudflare';
+import {
+  hashTripToken,
+  sanitizeContext,
+} from '../../../src/shared/infra/monitoring/tripTokenHash';
 import type { Env } from './types';
+
+export { hashTripToken };
 
 export type BackendXEventName =
   | 'X1-wrong-station-alarm'
@@ -69,28 +75,6 @@ export function captureXEvent(
   } catch (e) {
     console.warn(JSON.stringify({ msg: 'sentry capture failed', err: String(e) }));
   }
-}
-
-function sanitizeContext(context: BackendXEventContext): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(context)) {
-    if (value === undefined) continue;
-    if (key === 'tripToken' && typeof value === 'string') {
-      out.tripTokenHash = hashTripToken(value);
-      continue;
-    }
-    out[key] = value;
-  }
-  return out;
-}
-
-export function hashTripToken(token: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < token.length; i++) {
-    hash ^= token.codePointAt(i)!;
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, '0');
 }
 
 /** 진단/테스트용 — DSN 등록 여부 확인. */

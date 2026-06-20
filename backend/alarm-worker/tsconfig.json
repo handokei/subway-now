@@ -18,6 +18,9 @@
     "noEmit": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["src/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "../../src/shared/infra/monitoring/tripTokenHash.ts"
+  ],
   "exclude": ["node_modules"]
 }
