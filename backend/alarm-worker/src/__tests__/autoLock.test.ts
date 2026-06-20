@@ -451,25 +451,29 @@ function callEnvAutoLock(
 }
 
 describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
-  it('surface + base gate pass + arrival 신호 있음 → lock 합성', async () => {
+  // it.each: (env, gate pass/fail, expected) 매트릭스로 surface + mixed 의 base-gate 의존성 일괄 검증.
+  // surface = base gate pass-through, mixed = base gate + 합의 동시 강제 (둘 다 base fail 시 null).
+  // underground 는 base gate 무관 — 별도 it 로 분리.
+  it.each([
+    ['surface', 'pass', 'lock'] as const,
+    ['surface', 'fail', 'null'] as const,
+    ['mixed', 'pass', 'lock'] as const,
+    ['mixed', 'fail', 'null'] as const,
+  ])('%s + base gate %s → %s', async (env, gate, expected) => {
     const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
-      environment: 'surface',
-      gateOutcome: passingGateOutcome(),
+      environment: env,
+      gateOutcome: gate === 'pass' ? passingGateOutcome() : failingGateOutcome(),
     });
-    expect(lock?.trainCode).toBe('T1');
+    if (expected === 'lock') {
+      expect(lock?.trainCode).toBe('T1');
+    } else {
+      expect(lock).toBeNull();
+    }
   });
 
-  it('surface + base gate fail → consensusGate "base-gate-failed" → null', async () => {
-    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
-      environment: 'surface',
-      gateOutcome: failingGateOutcome(),
-    });
-    expect(lock).toBeNull();
-  });
-
-  it('underground + arrival(arvlCd=1) + lockAttachable → 합의 통과 → lock 합성', async () => {
+  it('underground: base gate fail 도 arrival+lockAttachable 만 있으면 통과 (GPS 무관)', async () => {
     // underground 분기는 base gate 결과 무관하게 arrival + lockAttachable 2-of-2
-    // (consensusGate.ts:149-158). 따라서 base gate fail 도 통과.
+    // (consensusGate.ts:149-158).
     const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
       environment: 'underground',
       gateOutcome: failingGateOutcome(),
@@ -486,31 +490,12 @@ describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
     expect(lock).toBeNull();
   });
 
-  it('mixed + base gate pass + arrival + lockAttachable → 통과', async () => {
-    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
-      environment: 'mixed',
-      gateOutcome: passingGateOutcome(),
-    });
-    expect(lock?.trainCode).toBe('T1');
-  });
-
-  it('mixed + base gate fail → null (mixed 는 base gate 통과 강제)', async () => {
-    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
-      environment: 'mixed',
-      gateOutcome: failingGateOutcome(),
-    });
-    expect(lock).toBeNull();
-  });
-
-  it('environment 미전달 → consensusGate skip (구 호출자 호환)', async () => {
-    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }));
-    expect(lock).not.toBeNull();
-  });
-
-  it('gateOutcome 미전달 → consensusGate skip (구 호출자 호환)', async () => {
-    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
-      environment: 'underground',
-    });
+  // env / gateOutcome 미전달 시 모두 consensusGate skip (구 호출자 호환). 매트릭스로 한번에.
+  it.each([
+    ['env 미전달', {} as const],
+    ['gateOutcome 미전달', { environment: 'underground' as const }],
+  ])('%s → consensusGate skip', async (_label, opts) => {
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), opts);
     expect(lock).not.toBeNull();
   });
 });
