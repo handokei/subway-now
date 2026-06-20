@@ -345,5 +345,15 @@
       "buttonLabel": "分享路线",
       "bodyTemplate": "🚇 地铁路线\n起点: {{fromName}} ({{fromLine}})\n终点: {{toName}} ({{toLine}})\n约 {{minutes}} 分钟 ({{stops}} 站)"
     }
+  },
+  "debug": {
+    "tripGroundTruth": {
+      "title": "本次行程的提醒准确吗?",
+      "body": "您的反馈将用于提升提醒准确度。",
+      "accurate": "都不错",
+      "inaccurate": "有错误的提醒",
+      "dismiss": "稍后",
+      "thanks": "感谢您的反馈。"
+    }
   }
 }

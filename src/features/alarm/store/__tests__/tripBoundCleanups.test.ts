@@ -429,7 +429,9 @@ describe('tripBoundCleanups', () => {
     // resetAlarmBackendDedup / clearTripBoundStoreMemory)은 storage write를 하지 않는
     // module-level/memory 클리어라 removeItem 카운트에 기여하지 않는다. 신규 항목 수만큼
     // 임계값을 낮춰 기존 invariant(storage 기반 항목 모두 실행)는 유지.
-    const NON_STORAGE_CLEANUPS = 4;
+    // #1502 (M2) — triggerTripGroundTruthPrompt는 zustand setState만 수행 (storage는
+    // AsyncStorage.setItem이라 removeItem 카운트와 무관) → NON_STORAGE 5로 증가.
+    const NON_STORAGE_CLEANUPS = 5;
     expect((AsyncStorage.removeItem as jest.Mock).mock.calls.length).toBeGreaterThanOrEqual(
       TRIP_BOUND_CLEANUPS.length - NON_STORAGE_CLEANUPS,
     );

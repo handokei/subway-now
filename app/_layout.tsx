@@ -15,6 +15,7 @@ import { useDebugStore } from '../src/features/debug/store/useDebugStore';
 import { useDestinationStore } from '../src/features/route/store/useDestinationStore';
 import { useLocaleStore } from '../src/shared/i18n/store/useLocaleStore';
 import { DebugModal } from '../src/features/debug/components/DebugModal';
+import { TripGroundTruthPrompt } from '../src/features/debug/components/TripGroundTruthPrompt';
 import { isDebugModalEnabled } from '../src/shared/constants/debugFlags';
 import '../src/features/nearest-station/tasks/backgroundLocationTask';
 import { registerSilentPushTask } from '../src/features/alarm/tasks/silentPushTask';
@@ -148,6 +149,8 @@ function RootContent() {
       {isDebugModalEnabled() && debugVisible && (
         <DebugModal onClose={() => setDebugVisible(false)} />
       )}
+      {/* #1502 (M2) — trip 종료 정답지 prompt. DebugModal 토글 무관 항상 마운트. */}
+      {isDebugModalEnabled() && <TripGroundTruthPrompt />}
     </>
   );
 }

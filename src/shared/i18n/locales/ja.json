@@ -345,5 +345,15 @@
       "buttonLabel": "ルートを共有",
       "bodyTemplate": "🚇 地下鉄ルート\n出発: {{fromName}} ({{fromLine}})\n到着: {{toName}} ({{toLine}})\n約 {{minutes}} 分 ({{stops}} 駅)"
     }
+  },
+  "debug": {
+    "tripGroundTruth": {
+      "title": "今回のtripのアラームは正確でしたか?",
+      "body": "回答はアラーム精度の学習に使われます。",
+      "accurate": "良かった",
+      "inaccurate": "間違いがあった",
+      "dismiss": "あとで",
+      "thanks": "ご回答ありがとうございます。"
+    }
   }
 }

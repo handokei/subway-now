@@ -192,3 +192,8 @@ export const TELEMETRY_FORWARD_RETRY_QUEUE_KEY = 'subway-now:telemetry-forward-r
 // DebugModal "Notification Delivery" 섹션이 read해 surface별 카운터 + suppress 사유 분포 표시.
 // 형식: NotificationDeliveryEntry[] JSON (capacity 200, FIFO eviction).
 export const NOTIFICATION_DELIVERY_LOG_KEY = 'subway-now:notification-delivery-log';
+// #1502 (M2) — Trip ground truth (사용자 정답지) state.
+// trip 종료 직후 사용자에게 "이번 trip 알람 정확했어요? Yes/No" 자동 prompt를 띄우고
+// 응답을 누적. ADR-015 §10 P5 가중치 자동 학습의 label(=ground truth)이다.
+// 형식: { pendingPrompt: { corrId, endedAt } | null, responses: TripGroundTruthResponse[] } JSON.
+export const TRIP_GROUND_TRUTH_KEY = 'subway-now:trip-ground-truth';

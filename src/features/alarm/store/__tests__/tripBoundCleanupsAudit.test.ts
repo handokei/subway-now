@@ -225,9 +225,24 @@ describe('#1545 (S12) — TRIP_BOUND_CLEANUPS enumeration audit', () => {
     expect(TRIP_BOUND_CLEANUPS).toContain(resetAlarmBackendDedup);
   });
 
-  it('baseline 25 항목(기존 22 + S12 신규 3 wrapper + storeMemory 1)에서 줄어들면 회귀', () => {
+  it('baseline 26 항목(기존 25 + #1502 ground-truth trigger 1)에서 줄어들면 회귀', () => {
     const { TRIP_BOUND_CLEANUPS } = jest.requireActual('../tripBoundCleanups');
     // 현재 baseline. 새 항목 추가 시 한 줄 갱신. 누군가 항목을 의도치 않게 제거하면 회귀로 감지.
-    expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(25);
+    expect(TRIP_BOUND_CLEANUPS.length).toBeGreaterThanOrEqual(26);
+  });
+
+  it('#1502 (M2) ground truth prompt trigger가 등록돼 있고 clearTripCorrId보다 앞에 있다', () => {
+    const { TRIP_BOUND_CLEANUPS } = jest.requireActual('../tripBoundCleanups');
+    const { triggerTripGroundTruthPrompt } = jest.requireActual(
+      '../../../debug/utils/triggerTripGroundTruthPrompt',
+    );
+    const { clearTripCorrId } = jest.requireActual('../../../observability/utils/tripCorrId');
+    const triggerIdx = TRIP_BOUND_CLEANUPS.indexOf(triggerTripGroundTruthPrompt);
+    const clearIdx = TRIP_BOUND_CLEANUPS.indexOf(clearTripCorrId);
+    expect(triggerIdx).toBeGreaterThanOrEqual(0);
+    expect(clearIdx).toBeGreaterThanOrEqual(0);
+    // 본 순서가 깨지면 prompt trigger가 corrId=null을 읽고 graceful skip되어 모든 trip 종료가
+    // ground truth 미수집 회귀. 코드 리뷰에서 의도 확인 강제.
+    expect(triggerIdx).toBeLessThan(clearIdx);
   });
 });

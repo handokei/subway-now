@@ -345,5 +345,15 @@
       "buttonLabel": "경로 공유",
       "bodyTemplate": "🚇 지하철 경로\n출발: {{fromName}} ({{fromLine}})\n도착: {{toName}} ({{toLine}})\n약 {{minutes}}분 소요 ({{stops}}정거장)"
     }
+  },
+  "debug": {
+    "tripGroundTruth": {
+      "title": "이번 trip 알람 정확했어요?",
+      "body": "사용자 응답은 알람 정확도 학습에 사용돼요.",
+      "accurate": "좋았어요",
+      "inaccurate": "틀린 알람 있었어요",
+      "dismiss": "나중에",
+      "thanks": "응답 감사합니다."
+    }
   }
 }
