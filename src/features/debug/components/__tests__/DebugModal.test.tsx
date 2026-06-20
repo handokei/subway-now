@@ -3000,6 +3000,7 @@ describe('DebugModal share SSOT (#1346)', () => {
       candidate: { trainCode: '2001', line: '2', subwayId: '1002' },
       source: 'device-ssot' as const,
       stationId: '0201',
+      path: 'direction-matched' as const,
     };
 
     type AutoLockMeta = NonNullable<Parameters<typeof __test__.buildDumpText>[0]['autoLockMeta']>;
@@ -3062,7 +3063,7 @@ describe('DebugModal share SSOT (#1346)', () => {
         contains: [
           'ssot=underground',
           'stability=stable count=3',
-          'candidate=trainCode=2001 line=2 source=device-ssot',
+          'candidate=trainCode=2001 line=2 source=device-ssot path=direction-matched',
         ],
       },
       {
@@ -3212,25 +3213,19 @@ describe('DebugModal helpers — #1421 auto-lock', () => {
 
   describe('computeAutoLockNullReason', () => {
     it('candidate 있으면 null 반환', () => {
-      expect(computeAutoLockNullReason(true, true, true, true)).toBeNull();
+      expect(computeAutoLockNullReason(true, true, true)).toBeNull();
     });
 
     it('SSOT 없으면 no-ssot', () => {
-      expect(computeAutoLockNullReason(false, false, false, false)).toBe('no-ssot');
+      expect(computeAutoLockNullReason(false, false, false)).toBe('no-ssot');
     });
 
     it('SSOT 있고 stable 아니면 stability-pending', () => {
-      expect(computeAutoLockNullReason(true, false, false, false)).toBe('stability-pending');
+      expect(computeAutoLockNullReason(true, false, false)).toBe('stability-pending');
     });
 
-    it('SSOT + stable이지만 direction 미일치면 direction-mismatch', () => {
-      expect(computeAutoLockNullReason(true, true, false, false)).toBe('direction-mismatch');
-    });
-
-    it('3 게이트 모두 통과 + hasCandidate=false (inconsistent state) → fallback null', () => {
-      // buildCandidate가 lineToSubwayId null 반환 시 도달 가능 — valid LineNumber에선 미도달.
-      // 방어 fallback 분기 자체를 검증.
-      expect(computeAutoLockNullReason(true, true, true, false)).toBeNull();
+    it('SSOT + stable인데 candidate=null이면 direction-mismatch (judge-wrong 또는 strong-stability 미충족)', () => {
+      expect(computeAutoLockNullReason(true, true, false)).toBe('direction-mismatch');
     });
   });
 });
