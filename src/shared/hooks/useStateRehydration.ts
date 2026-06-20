@@ -20,6 +20,10 @@ import {
   tripLifecyclePhase,
 } from '../../features/alarm/utils/tripStartStorage';
 import { appendAlarmLog } from '../../features/alarm/utils/alarmLog';
+import {
+  clearBackendSsotMirror,
+  readBackendSsotMirror,
+} from '../../features/alarm/utils/backendSsotMirror';
 import { createLogger } from '../utils/logger';
 import { addDomainBreadcrumb } from '../infra/monitoring/breadcrumb';
 
@@ -96,6 +100,37 @@ async function runRehydration(trigger: 'mount' | 'active'): Promise<void> {
   // silence 적재는 entry 1회당 한 cycle만 의미가 있고 멱등이 자연 — 매 active 진입마다 1엔트리.
   // share dump에서 lifecycle-backstop source 카운트로 측정.
   await runLifecycleBackstop(trigger);
+
+  // #1598 — app boot / FG 복귀 시 active trip이 없는데 Backend SSoT mirror가 잔존하면 즉시 clear.
+  // 2026-06-20 trip dump evidence: 사용자 위치 용마산 / activeTrip=(none) / mirror=건대입구.
+  // TRIP_BOUND_CLEANUPS는 trip 종료 경로(setDestination(null)/silent push trip-ended/sentinel/
+  // launch reconciliation)에서만 동작 — 정상 종료가 누락된 옛 trip의 mirror 잔재는 본 backstop으로
+  // 회수. mirror read 실패는 graceful — 다음 active 진입에서 재시도.
+  await clearStaleBackendSsotMirrorIfNoTrip(trigger);
+}
+
+/**
+ * #1598 — active trip 없음 + mirror 잔존 시 mirror만 즉시 제거.
+ *
+ * `getTripStartedAt`을 단일 source로 삼아 "active trip 있음" 판정. tripStartedAt 부재 = 정상 종료
+ * 후 잔재이거나 boot 시점 미시작 상태. mirror가 있으면 cascade picker가 다음 polling cycle에서
+ * 이전 trip의 stationId를 backend-ssot tier로 채택하는 회귀(#1598)를 차단.
+ *
+ * mirror 부재 시 read만 하고 종료 — 불필요한 storage write 회피. throw 없음 — launch 차단 금지.
+ */
+async function clearStaleBackendSsotMirrorIfNoTrip(
+  trigger: 'mount' | 'active',
+): Promise<void> {
+  try {
+    const startedAt = await getTripStartedAt();
+    if (startedAt !== null) return;
+    const mirror = await readBackendSsotMirror();
+    if (mirror === null) return;
+    logger.info(`trigger=${trigger} no active trip + mirror stale → clearBackendSsotMirror`);
+    await clearBackendSsotMirror();
+  } catch (e) {
+    logger.warn('stale mirror clear 실패 (graceful)', e);
+  }
 }
 
 /**
