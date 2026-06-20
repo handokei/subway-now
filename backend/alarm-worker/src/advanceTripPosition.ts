@@ -44,6 +44,8 @@
 import { evaluateConsensusGate, type StationEnvironment } from './consensusGate';
 import type { ArrivalEntry, PositionEntry } from './seoul';
 import {
+  appendAlarmEvent,
+  computeAlarmId,
   isSameLockSuggestion,
   MOTION_EVIDENCE_CAP,
   readSsot,
@@ -362,6 +364,8 @@ export async function advanceTripPosition(
     currentStationId: candidateStationId,
     lastAdvanceAt: evidence.ts,
     lastAdvanceEvidence: evidence.type,
+    // alarmEvents는 ssot에서 inherit — 아래 appendAlarmEvent로 in-place mutate.
+    alarmEvents: ssot.alarmEvents ? [...ssot.alarmEvents] : [],
   };
 
   applyLockSuggestion(next, ssot, {
@@ -369,6 +373,18 @@ export async function advanceTripPosition(
     candidateStationId,
     evidence,
     waypointLine: trip.waypoints[0]?.line,
+  });
+
+  // #1572 (T9) — advance 성공 = 이전 currentStationId가 통과 확정 → station-passed alarmEvent
+  // stamp. device가 silent push payload `ssot.alarmEvents`로 동일 list를 받아 fire path 5개에서
+  // `evaluateSsotFireGate`로 reader-only 게이트 사용. 같은 alarmId는 appendAlarmEvent가 idempotent로 skip.
+  const passedStationId = ssot.currentStationId;
+  const alarmId = await computeAlarmId(token, passedStationId, 'station-passed');
+  appendAlarmEvent(next, {
+    alarmId,
+    stationId: passedStationId,
+    type: 'station-passed',
+    decidedAt: evidence.ts,
   });
 
   await writeSsot(kv, next, { expiresAt: trip.expiresAt });

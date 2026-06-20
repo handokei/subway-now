@@ -936,6 +936,10 @@ export function toSilentPushSsot(
     // #1534 (S1, T9b) — backend lockSuggestion forward. 부재 시 wire 자연 누락
     // (apns.ts JSON serializer는 undefined 필드 omit). device cascade picker는 기존 tier fallback.
     ...(ssot.lockSuggestion ? { lockSuggestion: ssot.lockSuggestion } : {}),
+    // #1572 (T9) — backend alarmEvents forward. 부재 시 wire 자연 누락. device 측 evaluateSsotFireGate가
+    // mirror에서 read해 5 fire path 게이트 A/B로 사용. SSOT_FORWARD_PASSED_STATIONS_MAX와 별개 cap —
+    // alarmEvents는 source에서 이미 ALARM_EVENTS_CAP=50으로 제한돼 추가 slice 불필요.
+    ...(ssot.alarmEvents ? { alarmEvents: ssot.alarmEvents } : {}),
   };
 }
 

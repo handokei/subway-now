@@ -101,6 +101,62 @@ export interface MotionEvidence {
 }
 
 /**
+ * #1572 (T9) — Alarm 결정 1건의 idempotency key + 컨텍스트.
+ *
+ * 배경: device fire path 5개가 각자 fire 결정을 내려 같은 alarmId/stationId가 중복 발사되는
+ * X1/X2/X6 회귀(2026-06-20 용마산 station-passed 12:30:14 + 12:32:24 evidence). backend가
+ * advance 성공 시 본 entry를 ring buffer로 append-only stamp하면 device 5 fire path가
+ * `evaluateSsotFireGate`로 본 list를 reader-only 게이트로 사용 — backend SSoT가 alarm 결정의
+ * 단일 권위.
+ *
+ * - `alarmId`   : `computeAlarmId(tripToken, stationId, type)` SHA-256 prefix 8-bytes hash.
+ *                 같은 alarm 결정 = 같은 alarmId → device 게이트 A(`gate-alarm-already-decided`).
+ * - `stationId` : 결정 station identifier (currentStationId와 매칭). 게이트 B
+ *                 (`gate-station-already-passed`)가 본 필드로 stationId 단위 차단.
+ * - `type`      : alarm 카테고리 — backend가 발사 결정 시 분류한 type.
+ * - `decidedAt` : 결정 시각 (epoch ms). device staleness 판단 보조.
+ */
+export type AlarmEventType = 'station-passed' | 'transfer' | 'destination' | 'imminent';
+
+export interface AlarmEventRecord {
+  alarmId: string;
+  stationId: string;
+  type: AlarmEventType;
+  decidedAt: number;
+}
+
+/**
+ * Alarm event ring buffer cap. motionEvidence와 동일 정책 — KV row 폭주 방지.
+ * 50건 초과 push 시 oldest FIFO eviction.
+ */
+export const ALARM_EVENTS_CAP = 50;
+
+/**
+ * #1572 (T9) — Alarm idempotency key. tripToken + stationId + type 셋의 결정적 hash.
+ *
+ * 같은 alarm 결정에 항상 같은 alarmId를 산출 → device가 mirror에서 alarmId 매칭으로
+ * 결정-이미-내려진 여부 판단 가능. Web Crypto SubtleCrypto.digest(SHA-256) prefix 8-bytes(16 hex char)
+ * 사용 — 충돌 확률 무시 가능 + KV row 크기 비용 최소.
+ *
+ * 본 함수는 backend(Workers)와 device(RN) 양쪽 implementation이 필요하지만, 본 PR(T9)에서는
+ * backend가 alarmEvents를 생성/forward할 때만 사용된다. device 측은 mirror에서 받은 alarmId를
+ * 그대로 비교(`evaluateSsotFireGate`) — device가 직접 hash를 산출할 필요 없음.
+ */
+export async function computeAlarmId(
+  tripToken: string,
+  stationId: string,
+  type: AlarmEventType,
+): Promise<string> {
+  const input = `${tripToken}|${stationId}|${type}`;
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  const bytes = new Uint8Array(digest).subarray(0, 8);
+  let hex = '';
+  for (const b of bytes) hex += b.toString(16).padStart(2, '0');
+  return hex;
+}
+
+/**
  * #1534 (S1, ADR-016 / ADR-017 T9b) — backend가 추론한 lock 제안.
  *
  * 배경: lockless trip 등록 직후 backend가 GPS + arvlcd + trainCode 종합으로 origin/train을
@@ -159,6 +215,16 @@ export interface TripPositionSSoT {
   userIntentDeclared: boolean;
   /** seed override 발생 횟수 (E5 강 신호 2개 + 30s 연속 일치로 currentStationId 정정 시 +1). */
   seedOverrideCount: number;
+  /**
+   * #1572 (T9) — Alarm 결정 ring buffer (append-only, ALARM_EVENTS_CAP=50 cap).
+   *
+   * advance 통과 시 caller가 `appendAlarmEvent`로 stamp. silent push payload `ssot.alarmEvents`
+   * 슬롯으로 forward되어 device 5 fire path가 `evaluateSsotFireGate`로 read한다.
+   *
+   * 구 backend 호환을 위해 optional — seedSsot은 빈 배열로 초기화하지만 KV에서 읽은 구 row는
+   * undefined일 수 있고 caller는 본 필드를 항상 옵션 처리한다 (apns toSilentPushSsot은 빈 배열로 정규화).
+   */
+  alarmEvents?: AlarmEventRecord[];
   /**
    * #1534 (S1, T9b) — backend가 추론한 lock 제안. lockless trip + 강 evidence 합의 시 set.
    * device `useLockSuggestion`이 reader-only로 채택해 9-AND gate 우회. 부재 시 device는
@@ -261,6 +327,7 @@ export async function seedSsot(
     passedStations: [],
     userIntentDeclared: options?.userIntentDeclared ?? false,
     seedOverrideCount: 0,
+    alarmEvents: [],
     schemaVersion: 1,
   };
   await writeSsot(kv, ssot, { expiresAt: options?.expiresAt });
@@ -331,6 +398,29 @@ export function setLockSuggestion(
   suggestion: LockSuggestion,
 ): void {
   ssot.lockSuggestion = suggestion;
+}
+
+/**
+ * #1572 (T9) — alarmEvents에 결정 1건 append (ring buffer, cap=ALARM_EVENTS_CAP).
+ *
+ * 같은 alarmId가 이미 있으면 skip (idempotent — 같은 결정 중복 stamp 방지). caller(advance 통과
+ * site)는 in-place mutate 후 writeSsot 책임. backend가 SSoT를 advance 통과 시점에 stamp하면
+ * device가 다음 silent push payload `ssot.alarmEvents`로 동일 list를 받아 fire path 5개에서
+ * reader-only 게이트로 사용.
+ */
+export function appendAlarmEvent(
+  ssot: TripPositionSSoT,
+  event: AlarmEventRecord,
+): void {
+  if (!ssot.alarmEvents) ssot.alarmEvents = [];
+  // Idempotency — 같은 alarmId 중복 stamp 차단.
+  for (const e of ssot.alarmEvents) {
+    if (e.alarmId === event.alarmId) return;
+  }
+  ssot.alarmEvents.push(event);
+  while (ssot.alarmEvents.length > ALARM_EVENTS_CAP) {
+    ssot.alarmEvents.shift();
+  }
 }
 
 /**

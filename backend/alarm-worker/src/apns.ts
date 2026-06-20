@@ -193,6 +193,31 @@ export interface SilentPushSsotPayload {
    * device 측 정책: high/medium confidence 모두 채택. low는 향후 확장 slot.
    */
   lockSuggestion?: LockSuggestionPayload;
+  /**
+   * #1572 (T9, ADR-017) — backend가 결정한 alarmEvents ring buffer (최근 ALARM_EVENTS_CAP=50개).
+   *
+   * device fire path 5개가 `evaluateSsotFireGate`로 reader-only 게이트 사용:
+   *   - Gate A `gate-alarm-already-decided`: alarmId 매칭 시 fire 차단 (중복 alarm 차단)
+   *   - Gate B `gate-station-already-passed`: stationId 매칭 + type=station-passed/imminent 시 fire 차단
+   *
+   * 구 backend 호환 위해 optional — 부재 시 device 게이트는 `mirror-missing`/`mirror-stale`로
+   * graceful no-block (기존 fire path 동작). 본 필드를 통한 wire가 활성화되면 같은 alarmId/stationId가
+   * 두 번 발사되는 X1/X2/X6 회귀 차단.
+   */
+  alarmEvents?: ReadonlyArray<AlarmEventPayload>;
+}
+
+/**
+ * #1572 (T9) — silent push payload + POST /position response 양쪽이 공유하는 alarmEvents wire schema.
+ * backend `TripPositionSSoT.alarmEvents` AlarmEventRecord와 1:1.
+ *
+ * `type`은 backend AlarmEventType — device validator(`validSsotMirror`)가 narrow.
+ */
+export interface AlarmEventPayload {
+  alarmId: string;
+  stationId: string;
+  type: 'station-passed' | 'transfer' | 'destination' | 'imminent';
+  decidedAt: number;
 }
 
 /**
@@ -338,6 +363,19 @@ export async function sendSilentPush(options: SendPushOptions): Promise<SendPush
               lastAdvanceEvidence: options.payload.ssot.lastAdvanceEvidence,
               lastAdvanceAt: options.payload.ssot.lastAdvanceAt,
               passedStations: [...options.payload.ssot.passedStations],
+              // #1572 (T9) — alarmEvents 정의된 경우에만 wire. 빈 배열도 wire(device 측 게이트가
+              // 빈 list와 미정의를 구분하지 않으므로 동일 graceful — 단 backend 호환 위해 forward).
+              // 같은 패턴: undefined는 omit, 정의됨(빈 배열 포함)은 forward.
+              ...(options.payload.ssot.alarmEvents === undefined
+                ? {}
+                : {
+                    alarmEvents: options.payload.ssot.alarmEvents.map((e) => ({
+                      alarmId: e.alarmId,
+                      stationId: e.stationId,
+                      type: e.type,
+                      decidedAt: e.decidedAt,
+                    })),
+                  }),
             },
           }),
     },

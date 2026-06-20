@@ -50,6 +50,7 @@ import {
   logSuppressedHopWindowNoSource,
   logSuppressedOriginHopLockless,
   logSuppressedPassedEventOnLockOrigin,
+  logSuppressedSsotFireGate,
   logSuppressedTbaRevalidation,
   summarizeAlarmLogBySource,
   countGateReasons,
@@ -783,6 +784,65 @@ describe('alarmLog', () => {
         stationName: '용마산',
         kind: 'station-passed',
       });
+    });
+
+    it('#1572 logSuppressedSsotFireGate (Gate A alarm-already-decided): source/kind/phaseId 보존', async () => {
+      logSuppressedSsotFireGate({
+        source: 'fg',
+        reason: 'gate-alarm-already-decided',
+        stationName: '용마산',
+        kind: 'transfer',
+        phaseId: 'imminent',
+      });
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg',
+        outcome: 'suppressed',
+        reason: 'gate-alarm-already-decided',
+        stationName: '용마산',
+        kind: 'transfer',
+        phaseId: 'imminent',
+      });
+    });
+
+    it('#1572 logSuppressedSsotFireGate (Gate B station-already-passed): silent-push-skipped source', async () => {
+      logSuppressedSsotFireGate({
+        source: 'silent-push-skipped',
+        reason: 'gate-station-already-passed',
+        stationName: '용마산',
+        kind: 'station-passed',
+      });
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'silent-push-skipped',
+        outcome: 'suppressed',
+        reason: 'gate-station-already-passed',
+        stationName: '용마산',
+        kind: 'station-passed',
+      });
+    });
+
+    it('#1572 logSuppressedSsotFireGate: burst dedup 적용 (같은 reason+station 짧은 시간 중복은 drop)', async () => {
+      logSuppressedSsotFireGate({
+        source: 'fg',
+        reason: 'gate-alarm-already-decided',
+        stationName: '용마산',
+        kind: 'transfer',
+      });
+      logSuppressedSsotFireGate({
+        source: 'fg',
+        reason: 'gate-alarm-already-decided',
+        stationName: '용마산',
+        kind: 'transfer',
+      });
+      await flushAlarmLog();
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved).toHaveLength(1);
     });
 
     it('#1012 logHydrationTransition: 4 phase 각각 hydration-* reason + fg-hydrate source로 적재', async () => {

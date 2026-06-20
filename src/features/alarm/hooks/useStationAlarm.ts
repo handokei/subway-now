@@ -51,9 +51,11 @@ import {
   logSuppressedPhaseGate,
   logSuppressedSleepFirstTransfer,
   logSuppressedSleepStationPassed,
+  logSuppressedSsotFireGate,
   logSuppressedStationPassedWarmup,
   type HydrationPhase,
 } from '../utils/alarmLog';
+import { evaluateSsotFireGate } from '../utils/ssotFireGate';
 import {
   isStationRecentlyFired,
   markStationFired,
@@ -615,6 +617,29 @@ export function useStationAlarm({
       });
       return;
     }
+    // #1572 (T9) — backend SSoT 권위 게이트 (Path D fireAndLog phase ETA / imminent).
+    // AlarmEvent.type은 'transfer' | 'destination'만 (station-passed는 별도 effect).
+    // Gate A(alarmId 매칭)만 적용 — transfer/destination은 환승역에서 같은 station이 여러 hop을
+    // cover하므로 단순 stationId 매칭은 false positive 위험. type 인자 미명시 → Gate B 자연 비활성.
+    const ssotGate = await evaluateSsotFireGate({
+      alarmId: `${rawEvent.type}:${rawEvent.stationName}`,
+      stationId: rawEvent.stationName,
+      type: rawEvent.type,
+    });
+    if (ssotGate.blocked) {
+      // race 차단 reservation 진입 전이라 markStationFired 호출하지 않음.
+      // phase 카테고리 dedup ref(firedAlarmsRef)는 진입부에서 add됐는데 SSoT 차단 시 다른 카테고리에
+      // 영향 안 주려면 ref만 갱신(storage 영속화 skip — 다른 sleep/cross-category 차단과 동일 패턴).
+      firedAlarmsRef.current.delete(key);
+      logSuppressedSsotFireGate({
+        source: 'fg',
+        reason: ssotGate.reason as 'gate-alarm-already-decided' | 'gate-station-already-passed',
+        stationName: rawEvent.stationName,
+        kind: rawEvent.type,
+        phaseId: rawEvent.phaseId,
+      });
+      return;
+    }
     // race 차단 reservation — send 전에 윈도우 갱신해 await 동안 다른 effect가 같은 station을 발사
     // 못하게 한다. category=phase type → 후속 station-passed 차단.
     markStationFired(activeDestination.id, rawEvent.stationName, rawEvent.type, Date.now());
@@ -981,6 +1006,24 @@ export function useStationAlarm({
           });
           return;
         }
+        // #1572 (T9) — backend SSoT 권위 게이트 (Path A). mirror.alarmEvents에 같은 alarmId가
+        // 이미 있거나(Gate A) mirror.passedStations/alarmEvents에 같은 stationId가 station-passed로
+        // 이미 결정됐으면(Gate B) fire 차단. mirror 부재/stale은 graceful no-block.
+        const ssotGate = await evaluateSsotFireGate({
+          alarmId: `station-passed:${candidateStation.name}`,
+          stationId: candidateStation.id,
+          type: 'station-passed',
+        });
+        if (cancelled) return;
+        if (ssotGate.blocked) {
+          logSuppressedSsotFireGate({
+            source: 'fg',
+            reason: ssotGate.reason as 'gate-alarm-already-decided' | 'gate-station-already-passed',
+            stationName: candidateStation.name,
+            kind: 'station-passed',
+          });
+          return;
+        }
         await runSilenceGateAndDispatch({
           source: 'fg',
           candidateStation,
@@ -1104,6 +1147,24 @@ export function useStationAlarm({
         }
       }
 
+      // #1572 (T9) — backend SSoT 권위 게이트 (Path B fast-path). FG-arvlcd가 backend가 이미
+      // 결정한 alarmId/stationId를 재발사하는 회귀 차단. hop window 통과 직후, dispatch 전에 평가.
+      const ssotGate = await evaluateSsotFireGate({
+        alarmId: `station-passed:${candidateStation.name}`,
+        stationId: candidateStation.id,
+        type: 'station-passed',
+      });
+      if (cancelled) return;
+      if (ssotGate.blocked) {
+        logSuppressedSsotFireGate({
+          source: 'fg-arvlcd',
+          reason: ssotGate.reason as 'gate-alarm-already-decided' | 'gate-station-already-passed',
+          stationName: candidateStation.name,
+          kind: 'station-passed',
+        });
+        return;
+      }
+
       // #746 silence gate + dispatch는 helper로 통합 (Sonar cpd 회피).
       // lastNotifiedStationId 공유 dedup. cancelled 재확인 — getBoardingLock 후 effect cleanup 가능.
       // #1236 — sleep 룰 게이트 context. lock은 위에서 이미 fetch.
@@ -1174,6 +1235,23 @@ export function useStationAlarm({
     void (async () => {
       const lock = await getBoardingLock();
       if (cancelled) return;
+      // #1572 (T9) — backend SSoT 권위 게이트 (Path C subsurface verdict). subsurface fusion이
+      // backend가 이미 결정한 alarmId/stationId를 재발사하는 회귀 차단. dispatch helper 진입 직전 평가.
+      const ssotGate = await evaluateSsotFireGate({
+        alarmId: `station-passed:${candidateStation.name}`,
+        stationId: candidateStation.id,
+        type: 'station-passed',
+      });
+      if (cancelled) return;
+      if (ssotGate.blocked) {
+        logSuppressedSsotFireGate({
+          source: 'fg',
+          reason: ssotGate.reason as 'gate-alarm-already-decided' | 'gate-station-already-passed',
+          stationName: candidateStation.name,
+          kind: 'station-passed',
+        });
+        return;
+      }
       await runSilenceGateAndDispatch({
         source: 'fg',
         candidateStation,

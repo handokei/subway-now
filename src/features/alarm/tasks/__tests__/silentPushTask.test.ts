@@ -3312,5 +3312,190 @@ describe('silentPushTask', () => {
       expect(validSsotMirror('string')).toBeUndefined();
       expect(validSsotMirror(123)).toBeUndefined();
     });
+
+    // #1572 (T9, ADR-017) — Path E SSoT 게이트 통합 acceptance.
+    describe('Path E SSoT fire gate (#1572 T9)', () => {
+      const NOW = 1_700_000_000_000;
+
+      function makeFreshMirror(overrides: Record<string, unknown>): string {
+        return JSON.stringify({
+          currentStationId: '중곡',
+          motionState: 'moving',
+          lastAdvanceEvidence: 'arvlcd-confirmed-train',
+          lastAdvanceAt: NOW,
+          passedStations: [],
+          receivedAt: NOW,
+          ...overrides,
+        });
+      }
+
+      beforeEach(() => {
+        jest.spyOn(Date, 'now').mockReturnValue(NOW);
+      });
+
+      afterEach(() => {
+        jest.spyOn(Date, 'now').mockRestore();
+      });
+
+      it('mirror에 같은 stationId가 station-passed로 결정됨 → silent push fire 차단 (Gate B)', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === BACKEND_SSOT_MIRROR_KEY)
+            return makeFreshMirror({ passedStations: ['용마산'] });
+          return null;
+        });
+        await handleSilentPush(
+          bgTaskData({
+            nextWaypoint: '용마산',
+            etaSeconds: 0,
+            phase: 'imminent',
+            kind: 'intermediate',
+            sentAt: NOW,
+            pushId: 'p1',
+          }),
+        );
+        // location gate 도달 전 SSoT gate가 block → checkSilentPushLocationGate 미호출.
+        expect(mockCheckGate).not.toHaveBeenCalled();
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+
+      it('mirror.alarmEvents에 같은 alarmId 결정됨 → fire 차단 (Gate A)', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === BACKEND_SSOT_MIRROR_KEY)
+            return makeFreshMirror({
+              alarmEvents: [
+                {
+                  alarmId: 'transfer:군자',
+                  stationId: '군자',
+                  type: 'transfer',
+                  decidedAt: NOW,
+                },
+              ],
+            });
+          return null;
+        });
+        await handleSilentPush(
+          bgTaskData({
+            nextWaypoint: '군자',
+            etaSeconds: 0,
+            phase: 'imminent',
+            kind: 'transfer',
+            sentAt: NOW,
+            pushId: 'p2',
+          }),
+        );
+        expect(mockScheduleNotificationAsync).not.toHaveBeenCalled();
+      });
+
+      it('mirror 부재 → SSoT 게이트 graceful no-block → 후속 게이트로 진행', async () => {
+        // 기본 mock(`(AsyncStorage.getItem ...) return null`)는 BACKEND_SSOT_MIRROR_KEY가 null이라
+        // readBackendSsotMirror가 null → mirror-missing graceful pass.
+        await handleSilentPush(
+          bgTaskData({
+            nextWaypoint: '강남',
+            etaSeconds: 0,
+            phase: 'imminent',
+            kind: 'intermediate',
+            sentAt: NOW,
+            pushId: 'p3',
+          }),
+        );
+        // 후속 location gate가 호출됐는지 — SSoT gate가 차단하지 않았다는 증거.
+        expect(mockCheckGate).toHaveBeenCalled();
+      });
+
+      it('mirror stale(>180s) → SSoT 게이트 graceful no-block', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          if (key === BACKEND_SSOT_MIRROR_KEY)
+            return makeFreshMirror({
+              passedStations: ['용마산'],
+              receivedAt: NOW - 200_000,
+            });
+          return null;
+        });
+        await handleSilentPush(
+          bgTaskData({
+            nextWaypoint: '용마산',
+            etaSeconds: 0,
+            phase: 'imminent',
+            kind: 'intermediate',
+            sentAt: NOW,
+            pushId: 'p4',
+          }),
+        );
+        // SSoT gate가 mirror-stale로 no-block — location gate가 호출됨.
+        expect(mockCheckGate).toHaveBeenCalled();
+      });
+    });
+
+    // #1572 (T9, ADR-017) — alarmEvents validator.
+    describe('alarmEvents validator (#1572 T9)', () => {
+      it('validSsotMirror: alarmEvents 정의된 valid 배열 → narrow 통과', () => {
+        const result = validSsotMirror({
+          ...validSsot,
+          alarmEvents: [
+            { alarmId: 'a', stationId: 'X', type: 'station-passed', decidedAt: 1 },
+            { alarmId: 'b', stationId: 'Y', type: 'transfer', decidedAt: 2 },
+          ],
+        });
+        expect(result?.alarmEvents).toHaveLength(2);
+        expect(result?.alarmEvents?.[0].alarmId).toBe('a');
+      });
+
+      it('validSsotMirror: alarmEvents 비-array → undefined slot (전체 narrow는 통과)', () => {
+        const result = validSsotMirror({ ...validSsot, alarmEvents: 'invalid' });
+        expect(result).toBeDefined();
+        expect(result?.alarmEvents).toBeUndefined();
+      });
+
+      it.each([
+        ['alarmId missing', { stationId: 'X', type: 'station-passed', decidedAt: 1 }],
+        ['empty alarmId', { alarmId: '', stationId: 'X', type: 'station-passed', decidedAt: 1 }],
+        ['empty stationId', { alarmId: 'a', stationId: '', type: 'station-passed', decidedAt: 1 }],
+        ['invalid type', { alarmId: 'a', stationId: 'X', type: 'unknown', decidedAt: 1 }],
+        ['decidedAt non-number', { alarmId: 'a', stationId: 'X', type: 'station-passed', decidedAt: 'now' }],
+        ['decidedAt NaN', { alarmId: 'a', stationId: 'X', type: 'station-passed', decidedAt: Number.NaN }],
+        ['null entry', null],
+      ])('validSsotMirror: alarmEvents 항목 mismatch %s → 항목 graceful drop', (_label, badEntry) => {
+        const goodEntry = { alarmId: 'good', stationId: 'Y', type: 'transfer' as const, decidedAt: 5 };
+        const result = validSsotMirror({
+          ...validSsot,
+          alarmEvents: [badEntry, goodEntry],
+        });
+        expect(result?.alarmEvents).toEqual([goodEntry]);
+      });
+
+      it('handleSilentPush persists alarmEvents in mirror when payload.ssot.alarmEvents present', async () => {
+        (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+        (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+        mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
+        const ssotWithEvents = {
+          ...validSsot,
+          alarmEvents: [
+            { alarmId: 'aa', stationId: '교대', type: 'station-passed' as const, decidedAt: 1 },
+          ],
+        };
+        await handleSilentPush(
+          bgTaskData({
+            nextWaypoint: '강남',
+            etaSeconds: 0,
+            phase: 'imminent',
+            kind: 'intermediate',
+            ssot: ssotWithEvents,
+          }),
+        );
+        const mirrorCall = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+          ([key]) => key === BACKEND_SSOT_MIRROR_KEY,
+        );
+        expect(mirrorCall).toBeDefined();
+        const stored = JSON.parse(mirrorCall![1] as string);
+        expect(stored.alarmEvents).toEqual(ssotWithEvents.alarmEvents);
+      });
+    });
   });
 });

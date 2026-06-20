@@ -29,6 +29,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
 import {
   persistBackendSsotMirror,
+  type AlarmEventMirror,
   type SilentPushSsotMirror,
 } from '../utils/backendSsotMirror';
 import type { LineNumber, Station } from '../../../shared/types/station';
@@ -57,6 +58,7 @@ import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { evaluateDismissSilence } from '../utils/dismissSilenceGate';
 import { clearDismissSilence, getDismissSilence } from '../utils/dismissSilenceStorage';
+import { evaluateSsotFireGate } from '../utils/ssotFireGate';
 import { evaluateMovement, MOVEMENT_TO_ALARM_LOG_REASON } from '../../nearest-station/utils/movementGate';
 import { getCurrentMotionStationary } from '../../nearest-station/utils/motionActivity';
 import { addFiredPushId, hasFiredPushId } from '../utils/firedPushIds';
@@ -190,6 +192,7 @@ export {
   readBackendSsotMirror,
   type SilentPushSsotMirror,
   type BackendSsotMirrorEntry,
+  type AlarmEventMirror,
 } from '../utils/backendSsotMirror';
 
 /**
@@ -422,11 +425,14 @@ function extractStandardPayload(obj: Record<string, unknown>): SilentPushPayload
  *
  * 누락/형식 오류/필수 필드 부재 → undefined → cascade picker가 기존 tier fallback(graceful).
  * passedStations는 string 배열로 정규화 (비-string 항목 필터). 빈 배열은 허용 (backend가 보낼 수 있음).
+ *
+ * #1572 (T9) — alarmEvents 슬롯 추가 (optional). 각 entry는 alarmId/stationId/type/decidedAt
+ * strict 검사. 형식 mismatch entry는 graceful drop (잔여만 채택). 필드 자체가 array가 아니면 omit.
  */
 export function validSsotMirror(value: unknown): SilentPushSsotMirror | undefined {
   if (value == null || typeof value !== 'object') return undefined;
   const obj = value as Record<string, unknown>;
-  const { currentStationId, motionState, lastAdvanceEvidence, lastAdvanceAt, passedStations } = obj;
+  const { currentStationId, motionState, lastAdvanceEvidence, lastAdvanceAt, passedStations, alarmEvents } = obj;
   if (typeof currentStationId !== 'string' || currentStationId.length === 0) return undefined;
   if (motionState !== 'moving' && motionState !== 'stationary' && motionState !== 'unknown') {
     return undefined;
@@ -439,13 +445,46 @@ export function validSsotMirror(value: unknown): SilentPushSsotMirror | undefine
       if (typeof p === 'string' && p.length > 0) passed.push(p);
     }
   }
+  const events = validAlarmEvents(alarmEvents);
   return {
     currentStationId,
     motionState,
     lastAdvanceEvidence,
     lastAdvanceAt,
     passedStations: passed,
+    ...(events !== undefined ? { alarmEvents: events } : {}),
   };
+}
+
+/**
+ * #1572 (T9) — alarmEvents 항목별 strict 검사. 빈 배열도 허용 (backend가 보낼 수 있음).
+ * array 아니면 undefined → SSoT 본체는 채택 (graceful, evaluateSsotFireGate는 mirror-missing fallback).
+ */
+function validAlarmEvents(value: unknown): AlarmEventMirror[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const filtered: AlarmEventMirror[] = [];
+  for (const item of value) {
+    if (item === null || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    if (typeof o.alarmId !== 'string' || o.alarmId.length === 0) continue;
+    if (typeof o.stationId !== 'string' || o.stationId.length === 0) continue;
+    if (
+      o.type !== 'station-passed' &&
+      o.type !== 'transfer' &&
+      o.type !== 'destination' &&
+      o.type !== 'imminent'
+    ) {
+      continue;
+    }
+    if (typeof o.decidedAt !== 'number' || !Number.isFinite(o.decidedAt)) continue;
+    filtered.push({
+      alarmId: o.alarmId,
+      stationId: o.stationId,
+      type: o.type,
+      decidedAt: o.decidedAt,
+    });
+  }
+  return filtered;
 }
 
 /**
@@ -1156,6 +1195,34 @@ async function fireWithGate(
         return;
       }
     }
+  }
+
+  // #1572 (T9, ADR-017) — backend SSoT 권위 게이트 (Path E silent push). BG 경로가 backend가
+  // 이미 결정한 alarmId/stationId를 재발사하는 회귀 차단. lock/lockless 분기 통과 후 dismiss silence
+  // 게이트 진입 직전 평가 — silence/위치/movement 게이트 전에 위치해 가장 강한 권위 정책 적용.
+  // intermediate payload는 'station-passed'로 매핑(device convention과 일치). fireWithGate signature
+  // 가 payload.kind NonNullable 강제 — undefined 케이스 없음.
+  const ssotGateKind: 'station-passed' | 'transfer' | 'destination' | 'imminent' =
+    payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
+  const ssotGateOutcome = await evaluateSsotFireGate({
+    alarmId: `${ssotGateKind}:${payload.nextWaypoint}`,
+    stationId: payload.nextWaypoint,
+    type: ssotGateKind,
+  });
+  if (ssotGateOutcome.blocked) {
+    const logKind = payload.kind === 'intermediate' ? 'station-passed' : payload.kind;
+    const reason = ssotGateOutcome.reason as
+      | 'gate-alarm-already-decided'
+      | 'gate-station-already-passed';
+    logSilentPushSkipped({
+      stationName: payload.nextWaypoint,
+      kind: logKind,
+      phaseId: payload.phase,
+      reason,
+    });
+    ackOutcome(payload.pushId, apnsToken, 'skipped', reason);
+    logger.info(`SSoT fire gate skip reason=${reason} station=${payload.nextWaypoint}`);
+    return;
   }
 
   // #746 — dismiss silence 게이트. BG path는 좌표 신뢰성이 낮아 시간 조건만 평가

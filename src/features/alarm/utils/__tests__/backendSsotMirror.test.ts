@@ -106,3 +106,61 @@ describe('readBackendSsotMirror lockSuggestion parse (#1534 S1 T9b)', () => {
     expect(got?.currentStationId).toBe('용마산');
   });
 });
+
+// #1572 (T9, ADR-017) — readBackendSsotMirror alarmEvents parse + narrow.
+describe('readBackendSsotMirror alarmEvents parse (#1572 T9)', () => {
+  const baseEntry = {
+    currentStationId: '용마산',
+    motionState: 'moving',
+    lastAdvanceEvidence: 'arvlcd-confirmed-train',
+    lastAdvanceAt: 1_700_000_000_000,
+    passedStations: ['중곡'],
+    receivedAt: 1_700_000_010_000,
+  };
+
+  beforeEach(() => {
+    mockGetItem.mockReset();
+  });
+
+  it('valid alarmEvents forward 시 결과에 포함', async () => {
+    const alarmEvents = [
+      { alarmId: 'a', stationId: 'X', type: 'station-passed' as const, decidedAt: 1 },
+      { alarmId: 'b', stationId: 'Y', type: 'transfer' as const, decidedAt: 2 },
+    ];
+    mockGetItem.mockResolvedValue(JSON.stringify({ ...baseEntry, alarmEvents }));
+    const got = await readBackendSsotMirror();
+    expect(got?.alarmEvents).toEqual(alarmEvents);
+  });
+
+  it('alarmEvents 부재 → 결과 alarmEvents=undefined (legacy/graceful)', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(baseEntry));
+    const got = await readBackendSsotMirror();
+    expect(got?.alarmEvents).toBeUndefined();
+  });
+
+  it.each([
+    ['alarmId missing', { stationId: 'X', type: 'station-passed', decidedAt: 1 }],
+    ['empty alarmId', { alarmId: '', stationId: 'X', type: 'station-passed', decidedAt: 1 }],
+    ['empty stationId', { alarmId: 'a', stationId: '', type: 'station-passed', decidedAt: 1 }],
+    ['invalid type', { alarmId: 'a', stationId: 'X', type: 'unknown', decidedAt: 1 }],
+    ['decidedAt non-number', { alarmId: 'a', stationId: 'X', type: 'station-passed', decidedAt: 's' }],
+    ['decidedAt NaN', { alarmId: 'a', stationId: 'X', type: 'station-passed', decidedAt: Number.NaN }],
+    ['null entry', null],
+    ['scalar entry', 'string'],
+  ])('항목 mismatch %s → graceful drop (잔여만 채택)', async (_label, badEntry) => {
+    const goodEntry = { alarmId: 'good', stationId: 'Y', type: 'transfer' as const, decidedAt: 5 };
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...baseEntry, alarmEvents: [badEntry, goodEntry] }),
+    );
+    const got = await readBackendSsotMirror();
+    expect(got?.alarmEvents).toEqual([goodEntry]);
+  });
+
+  it('alarmEvents 비-array (raw 형식 mismatch) → undefined slot', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify({ ...baseEntry, alarmEvents: 'invalid' }));
+    const got = await readBackendSsotMirror();
+    expect(got?.alarmEvents).toBeUndefined();
+    // 본체는 살아 있음.
+    expect(got?.currentStationId).toBe('용마산');
+  });
+});
