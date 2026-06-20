@@ -15,6 +15,7 @@ import { pushRawSignal } from '../../observability/utils/rawSignalBuffer';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { pushEstimatorEntry } from '../../route/utils/estimatorDebugBuffer';
 import { useNearestStation } from './useNearestStation';
+import { useCellularTech } from './useCellularTech';
 import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import { useTrainPositions } from '../../route/hooks/useTrainPositions';
 import { useRouteProgress } from '../../route/hooks/useRouteProgress';
@@ -374,6 +375,11 @@ export function useFusedNearestStation(
   // #733 — 위치 이력 기반 정적 판정. shouldDowngradeFusion이 speed=null일 때 fallback으로 사용.
   // useNearestStation의 userLocation 변경마다 자동 누적/판정.
   const positionStability = usePositionStability(gps.userLocation);
+
+  // #1574 (ADR-017 T11) — CTRadioAccessTechnology 환경 vote. iOS BG에서도 동작
+  // (CTServiceRadioAccessTechnologyDidChangeNotification observer). underground SSOT 4-signal
+  // 합의의 환경-확정 vote로 사용. 미지원(Android/jest/web) 시 'unknown' 고정 → vote 미투표.
+  const cellularEnvironmentVote = useCellularTech();
 
   // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT mirror 폴링.
   //
@@ -864,6 +870,10 @@ export function useFusedNearestStation(
     wifiStation: wifiStationResolved?.station ?? null,
     positionTrainResult,
     arrival: undergroundArrival,
+    // #1574 (ADR-017 T11) — BG WiFi 갭 해소: barometer-stop + cellular env vote 보강.
+    // barometerSignal.stop=undefined(warmup) / cellular 'unknown'은 vote 미투표.
+    barometerStop: barometerSignal?.stop,
+    cellularEnvironmentVote,
   });
   const environment: Environment = inferEnvironment({
     subsurface: barometerSubsurface,

@@ -3,26 +3,64 @@
  *
  * #1418 — 지하 GPS dead zone에서 WiFi SSID 또는 realtimePosition train 신호 + Arrival arvlCd 합의.
  *
- * 합의 경로 (둘 중 하나라도 만족):
- *   - WiFi+Arrival: `wifiStation` 비-null + 매칭 arrival row `arvlCd ∈ {1,2,3,5}`
- *   - Position-Train+Arrival: `positionTrainResult` 비-null + 매칭 arrival row 동일 조건
+ * #1574 (ADR-017 T11) — BG WiFi 갭 해소를 위한 4-signal 합의로 확장.
+ *   - iOS BG에서 `NEHotspotNetwork.fetchCurrent`는 nil → WiFi pair 사실상 불가
+ *   - Position-Train+Arrival 1-input에 의존 → 1 input 실패 시 합의 붕괴
+ *   - Barometer `stop`(dP/dt 정착) + Cellular `underground` vote를 환경-확정 vote로 추가
  *
- * 두 신호 모두 활성이면 WiFi 우선 (SSID 매칭은 지하 직접 신호, position-train은 API 추정).
+ * 합의 구조 — station-providing pair + environment-confirming vote:
+ *   - Station pair (station 채택 가능, arrival 호선 매칭 필수):
+ *       (a) WiFi SSID    + Arrival  (FG only — BG에선 SSID nil)
+ *       (b) Position-Train + Arrival (FG/BG)
+ *   - Environment vote (station 미제공, 환경 확정만):
+ *       (c) Barometer `stop=true` (FG/BG) — #1574
+ *       (d) Cellular `underground` vote (FG/BG) — #1574
+ *
+ * 합의 임계:
+ *   - 2-of-N 통과 시 SSOT 채택 (station pair + env vote 어떤 조합이든 OK)
+ *   - 단, 채택 station이 필요하므로 station pair ≥ 1 필수 (env vote만 2개로는 불가)
+ *   - Cellular `surface` vote 시 underground SSOT 자체 reject (환경 확정 모순)
+ *   - GPS는 input set에서 reject (ADR-015 §5, backend `consensusGate.ts` 동일 정책)
+ *
+ * station 채택 우선순위: Position-Train > WiFi (강 → 약 신호).
+ *
+ * Backward-compat:
+ *   - barometerStop/cellularEnvironmentVote 미전달 → 기존 호출자 동작 유지
+ *   - 단, 2-of-N quorum이 강화되어 단일 station pair만으로는 통과 불가 (의도된 tightening).
+ *     기존 wifi-only / position-only 통과 케이스는 barometer/cellular 보강으로 회복.
  */
 
 import type { NearestStationResult, Station } from '../../../shared/types/station';
 import type { StationArrival } from '../../../shared/types/arrival';
+import type { CellularEnvironmentVote } from './cellularTech';
 
 /** arvlCd "정착한 위치 보고" 코드 집합. surfaceSSotConsensus와 동일 — 향후 공용 추출 여지. */
 const ARVL_CD_STATIONARY = new Set<number>([1, 2, 3, 5]);
 
+/** 2-of-N quorum 임계 — 4 input 중 2개 이상 통과 시 합의 채택. */
+const CONSENSUS_QUORUM = 2;
+
 export interface UndergroundSSOTInput {
-  /** useWifiStation 매칭 결과. null이면 SSID 미매칭. */
+  /** useWifiStation 매칭 결과. null이면 SSID 미매칭(또는 BG nil). */
   wifiStation: Station | null;
   /** trackTrainProgress 결과 (fusion 게이트 통과 후). null이면 position-train 신호 부재. */
   positionTrainResult: NearestStationResult | null;
   /** 채택 후보 station 매칭 슬롯의 arrival. null이면 arrival 신호 부재. */
   arrival: StationArrival | null;
+  /**
+   * #1574 — 기압계 `useBarometer().signal.stop`. 30s 윈도우 |dP|가 정착 임계 이하 = true.
+   * undefined(평가 불가, warmup) → vote 미투표.
+   * iOS BG에서도 동작 (NSMotionUsageDescription 1회로 충분).
+   */
+  barometerStop?: boolean | undefined;
+  /**
+   * #1574 — `useCellularTech()` 환경 vote (CTRadioAccessTechnology 분류).
+   * 'surface'면 underground SSOT 자체 reject (환경 확정 모순).
+   * 'underground'면 환경-확정 1표.
+   * 'unknown'/undefined → vote 미투표.
+   * iOS BG에서도 동작 (CTServiceRadioAccessTechnologyDidChangeNotification observer).
+   */
+  cellularEnvironmentVote?: CellularEnvironmentVote | undefined;
 }
 
 export interface UndergroundSSOT {
@@ -46,19 +84,35 @@ function findStationaryTrain(
 }
 
 export function undergroundSSOTConsensus(input: UndergroundSSOTInput): UndergroundSSOT | null {
-  const { wifiStation, positionTrainResult, arrival } = input;
-  // WiFi 우선 — SSID 직접 매칭.
-  if (wifiStation) {
-    const trainCode = findStationaryTrain(arrival, wifiStation.line);
-    if (trainCode !== null) {
-      return { station: wifiStation, trainCode };
-    }
-  }
+  const { wifiStation, positionTrainResult, arrival, barometerStop, cellularEnvironmentVote } = input;
+
+  // 환경 확정 모순 — cellular가 surface면 underground SSOT 자체 candidate X.
+  if (cellularEnvironmentVote === 'surface') return null;
+
+  // Station pair 후보 — 채택 우선순위 순서. position-train > wifi.
+  const stationPairs: Array<{ station: Station; trainCode: string }> = [];
   if (positionTrainResult) {
     const trainCode = findStationaryTrain(arrival, positionTrainResult.station.line);
     if (trainCode !== null) {
-      return { station: positionTrainResult.station, trainCode };
+      stationPairs.push({ station: positionTrainResult.station, trainCode });
     }
   }
-  return null;
+  if (wifiStation) {
+    const trainCode = findStationaryTrain(arrival, wifiStation.line);
+    if (trainCode !== null) {
+      stationPairs.push({ station: wifiStation, trainCode });
+    }
+  }
+
+  // Environment-confirming votes (station 미제공). 신규 #1574 — BG WiFi 갭 해소.
+  let envVotes = 0;
+  if (barometerStop === true) envVotes += 1;
+  if (cellularEnvironmentVote === 'underground') envVotes += 1;
+
+  // 2-of-N quorum. station pair ≥ 1 필수 (env vote만으로는 station 채택 불가).
+  if (stationPairs.length === 0) return null;
+  if (stationPairs.length + envVotes < CONSENSUS_QUORUM) return null;
+
+  // station 채택: position-train > wifi (stationPairs는 우선순위 순서로 push됨).
+  return stationPairs[0];
 }
