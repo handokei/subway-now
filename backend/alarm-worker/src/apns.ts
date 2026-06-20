@@ -183,6 +183,31 @@ export interface SilentPushSsotPayload {
   lastAdvanceAt: number;
   /** 통과 확인된 station 누적 (최근 5개만 forward). */
   passedStations: readonly string[];
+  /**
+   * #1534 (S1, T9b, ADR-016) — backend가 추론한 lock 제안.
+   *
+   * lockless trip + 강 evidence 합의 시 set. device `useLockSuggestion` reader가 1순위 채택해
+   * 9-AND gate 통과를 기다리지 않고 즉시 lock UX 활성화. 부재 시 device는 기존 9-AND gate
+   * fallback (graceful, backward-compat). 구 backend 호환 위해 optional.
+   *
+   * device 측 정책: high/medium confidence 모두 채택. low는 향후 확장 slot.
+   */
+  lockSuggestion?: LockSuggestionPayload;
+}
+
+/**
+ * #1534 (S1, T9b) — silent push payload + POST /position response 양쪽이 공유하는
+ * lockSuggestion wire schema. backend `TripPositionSSoT.lockSuggestion`과 1:1.
+ *
+ * 본 type을 apns.ts에 두는 이유: silent push payload schema의 일부이며 device 측 schema
+ * (`SilentPushSsotMirror.lockSuggestion`)와 1:1 mirror라 같은 정의를 backend 진입점에 둔다.
+ */
+export interface LockSuggestionPayload {
+  stationId: string;
+  trainCode: string;
+  lineId: string;
+  confidence: 'high' | 'medium' | 'low';
+  decidedAt: number;
 }
 
 /**

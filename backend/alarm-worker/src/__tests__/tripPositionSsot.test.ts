@@ -3,12 +3,15 @@ import {
   MOTION_EVIDENCE_CAP,
   SSOT_CRON_READ_CACHE_TTL_SEC,
   deleteSsot,
+  isSameLockSuggestion,
   migrateTripPassedStationsToSsot,
   pushMotionEvidence,
   readSsot,
   seedSsot,
+  setLockSuggestion,
   ssotKey,
   writeSsot,
+  type LockSuggestion,
   type MotionEvidence,
   type TripPositionSSoT,
 } from '../tripPositionSsot';
@@ -251,5 +254,74 @@ describe('tripPositionSsot — migrateTripPassedStationsToSsot', () => {
     const ssot = makeSsot({ passedStations: ['A', 'B'] });
     migrateTripPassedStationsToSsot({ passedStations: ['B', 'C', 'D'] }, ssot);
     expect(ssot.passedStations).toEqual(['A', 'B', 'C', 'D']);
+  });
+});
+
+describe('tripPositionSsot — lockSuggestion helpers (S1 T9b, #1534)', () => {
+  function makeSuggestion(overrides?: Partial<LockSuggestion>): LockSuggestion {
+    return {
+      stationId: '0228',
+      trainCode: '7246',
+      lineId: '7',
+      confidence: 'high',
+      decidedAt: 1_700_000_000_000,
+      ...overrides,
+    };
+  }
+
+  it('setLockSuggestion: in-place mutate ssot.lockSuggestion', () => {
+    const ssot = makeSsot();
+    expect(ssot.lockSuggestion).toBeUndefined();
+    const s = makeSuggestion();
+    setLockSuggestion(ssot, s);
+    expect(ssot.lockSuggestion).toEqual(s);
+  });
+
+  it('setLockSuggestion: 기존 suggestion 덮어쓰기 (unconditional write)', () => {
+    const ssot = makeSsot({ lockSuggestion: makeSuggestion({ trainCode: 'OLD' }) });
+    setLockSuggestion(ssot, makeSuggestion({ trainCode: 'NEW' }));
+    expect(ssot.lockSuggestion?.trainCode).toBe('NEW');
+  });
+
+  it('isSameLockSuggestion: 기존 undefined → false', () => {
+    expect(isSameLockSuggestion(undefined, makeSuggestion())).toBe(false);
+  });
+
+  it('isSameLockSuggestion: 동일 stationId+trainCode+lineId → true', () => {
+    const a = makeSuggestion();
+    const b = makeSuggestion();
+    expect(isSameLockSuggestion(a, b)).toBe(true);
+  });
+
+  it('isSameLockSuggestion: confidence/decidedAt 차이는 무시 (정체성 기준은 3개 핵심 필드)', () => {
+    const a = makeSuggestion({ confidence: 'high', decidedAt: 1 });
+    const b = makeSuggestion({ confidence: 'medium', decidedAt: 999 });
+    expect(isSameLockSuggestion(a, b)).toBe(true);
+  });
+
+  it('isSameLockSuggestion: stationId 다르면 false', () => {
+    expect(
+      isSameLockSuggestion(makeSuggestion(), makeSuggestion({ stationId: 'OTHER' })),
+    ).toBe(false);
+  });
+
+  it('isSameLockSuggestion: trainCode 다르면 false', () => {
+    expect(
+      isSameLockSuggestion(makeSuggestion(), makeSuggestion({ trainCode: 'OTHER' })),
+    ).toBe(false);
+  });
+
+  it('isSameLockSuggestion: lineId 다르면 false', () => {
+    expect(
+      isSameLockSuggestion(makeSuggestion(), makeSuggestion({ lineId: '2' })),
+    ).toBe(false);
+  });
+
+  it('lockSuggestion round-trip: writeSsot → readSsot 보존', async () => {
+    const kv = new InMemoryKV();
+    const ssot = makeSsot({ lockSuggestion: makeSuggestion() });
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    const got = await readSsot(kv as unknown as KVNamespace, ssot.tripToken);
+    expect(got?.lockSuggestion).toEqual(makeSuggestion());
   });
 });

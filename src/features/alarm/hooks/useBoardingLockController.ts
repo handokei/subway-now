@@ -22,6 +22,8 @@ import {
   FREE_TRIP_DESTINATION_SENTINEL,
 } from '../../../shared/constants/boardingLock';
 import type { AutoLockCandidate } from '../../nearest-station/api/boardingLockSync';
+import { useLockSuggestion } from '../api/useLockSuggestion';
+import type { LockSuggestionMirror } from '../utils/backendSsotMirror';
 
 export interface UseBoardingLockControllerInputs {
   destinationId: string | null;
@@ -50,6 +52,12 @@ export interface UseBoardingLockControllerInputs {
 
 export interface UseBoardingLockControllerResult {
   lock: BoardingLock | null;
+  /**
+   * #1534 (S1, T9b, ADR-016) — backend가 추론한 lock 제안 (read-only). UI는 본 값으로
+   * "출발역 확인 중..." indicator를 trip 활성 직후 5~30s 동안 노출하거나, 추론 완료 시 lock
+   * badge + station name 노출 분기에 사용. null이면 추론 미정착(또는 9-AND gate fallback 중).
+   */
+  lockSuggestion: LockSuggestionMirror | null;
   /**
    * route 진행 방향으로 필터된 도착 list. 방향 미상이면 up+down 합집합.
    * hydrateLockFromCandidate Gate 1(#1014)의 방향 일치 검증에 쓰이므로 방향 엄격성을 유지한다.
@@ -123,6 +131,10 @@ export function useBoardingLockController({
   const releaseLock = useBoardingLockStore((s) => s.releaseLock);
   const checkExpiry = useBoardingLockStore((s) => s.checkExpiry);
 
+  // #1534 (S1, T9b, ADR-016) — backend lockSuggestion 1순위 reader.
+  // null이면 기존 9-AND gate fallback (`hydrateLockFromCandidate`)이 그대로 동작.
+  const { suggestion: lockSuggestion } = useLockSuggestion();
+
   // 마운트 시 storage hydrate.
   useEffect(() => {
     void loadLock();
@@ -148,6 +160,72 @@ export function useBoardingLockController({
     const sub = AppState.addEventListener('change', handler);
     return () => sub.remove();
   }, [checkExpiry]);
+
+  // #1534 (S1, T9b, ADR-016) — backend lockSuggestion 1순위 채택.
+  //
+  // lock이 이미 존재하면 no-op (`hydrateLockFromCandidate`와 동일 idempotent 정책 — 사용자 명시
+  // 탭 lock 보호 + auto-lock도 한 번 잡히면 변경 X). lockSuggestion이 null이면 9-AND gate
+  // fallback이 `hydrateLockFromCandidate`로 동작 (consumer onAutoLockCandidate 경로).
+  //
+  // 9-AND gate 우회 정책:
+  //   - directionalArrivals 매칭 필수 X — backend가 이미 arvlcd-confirmed-train evidence로 합의
+  //     했으므로 device-side arrival list cross-check를 한 번 더 강제할 필요 없음.
+  //   - motion gate(stationary/speedMps) 우회 — backend가 SSOT 권위 결정. device GPS race로
+  //     일시 이동/정지 신호가 잘못 잡혀도 backend가 evidence 합의로 발사한 suggestion을 신뢰.
+  //
+  // 안전 가드:
+  //   - allowedLines 검증 유지 (trip route 외 line trainCode reject — 환승역 fusion 오류 보호).
+  //   - currentStation 부재 시 boardingStationId fallback이 불가하므로 stationId가 stations.json과
+  //     매칭되지 않으면 graceful skip (다음 cycle 재시도). lockSuggestion.stationId는 backend가
+  //     waypoint 기반으로 산출했으므로 정상 케이스 대부분 매칭.
+  //   - destinationId 없으면 free-trip sentinel으로 hydrate.
+  useEffect(() => {
+    if (!lockSuggestion) return;
+    if (lock) return;
+    const boardingLine = asLineNumber(lockSuggestion.lineId);
+    if (!boardingLine) return;
+    const allowed = allowedLinesFromRoute(route);
+    if (allowed && !allowed.has(boardingLine)) return;
+    // boardingStationId 산출: lockSuggestion.stationId가 stations.json id이면 그대로,
+    // station name이면 (lookup, line) 매칭 — 백엔드는 stationName 그대로 forward 케이스가
+    // 많아 양쪽 모두 지원해야 한다.
+    const stationByName = findStationByNameAndLine(lockSuggestion.stationId, boardingLine);
+    const boardingStationId =
+      stationByName?.id ?? currentStation?.id ?? lockSuggestion.stationId;
+    if (!boardingStationId) return;
+    const isSentinel = !destinationId;
+    const effectiveDestinationId = destinationId ?? FREE_TRIP_DESTINATION_SENTINEL;
+    const durationMin = expectedDurationMinutes ?? FALLBACK_BOARDING_DURATION_MINUTES;
+    const now = Date.now();
+    void createLock({
+      destinationId: effectiveDestinationId,
+      trainCode: lockSuggestion.trainCode,
+      boardingStationId,
+      boardingLine,
+      boardedAt: now,
+      expectedDurationMs: durationMin * 60_000,
+      // initialEtaSeconds는 lockSuggestion에 없음 — 자동 lock 지연 칩은 사용자 명시 탭 lock에만
+      // 노출되는 게 의도 (`hydrateLockFromCandidate`와 동일 정책).
+      ...(isSentinel
+        ? {
+            hydratedFromSentinel: {
+              destinationId: FREE_TRIP_DESTINATION_SENTINEL,
+              sentinelAt: now,
+            },
+          }
+        : {}),
+    }).catch(() => {
+      // store action rejection은 graceful — 다음 polling cycle에서 자연 재시도.
+    });
+  }, [
+    lockSuggestion,
+    lock,
+    route,
+    currentStation,
+    destinationId,
+    expectedDurationMinutes,
+    createLock,
+  ]);
 
   const direction = useMemo(() => {
     if (!route || !destinationName || !currentStation) return null;
@@ -310,6 +388,7 @@ export function useBoardingLockController({
 
   return {
     lock,
+    lockSuggestion,
     directionalArrivals,
     boardingListArrivals,
     createLockFromTrain,

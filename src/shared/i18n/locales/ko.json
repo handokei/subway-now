@@ -54,6 +54,7 @@
     "locationUncertainDescription": "현재 GPS 정확도가 낮아\n위치를 단정할 수 없습니다.\n잠시 후 자동으로 다시 확인합니다.",
     "refresh": "새로고침",
     "boardingProximityHint": "탑승역 근처에서 열차를 선택할 수 있어요",
+    "originResolving": "출발역 확인 중...",
     "boardingTrainListTitle": "탑승할 열차 선택",
     "boardingTrainListLoading": "도착 정보를 불러오는 중...",
     "boardingTrainListEmpty": "도착 예정 열차가 없습니다.",

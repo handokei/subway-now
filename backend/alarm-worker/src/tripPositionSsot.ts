@@ -101,6 +101,34 @@ export interface MotionEvidence {
 }
 
 /**
+ * #1534 (S1, ADR-016 / ADR-017 T9b) — backend가 추론한 lock 제안.
+ *
+ * 배경: lockless trip 등록 직후 backend가 GPS + arvlcd + trainCode 종합으로 origin/train을
+ * 추론하면 device가 9-AND gate 통과를 기다리지 않고도 lock을 즉시 채택할 수 있다 (lockless
+ * 첫 station miss 0 acceptance V2).
+ *
+ * 본 필드가 set되면 device `useLockSuggestion` reader가 본 값을 1순위로 채택. null이면
+ * device는 기존 9-AND gate fallback으로 동작 (graceful, backward-compat).
+ *
+ * confidence:
+ *   - 'high'   : arvlcd-confirmed-train evidence (trainCode/line 명확)
+ *   - 'medium' : position-train / wifi-ssid-match evidence (train 후보 좁힘 + 정합)
+ *   - 'low'    : 향후 cellular/accel single signal 채택 (현재 미사용 — 미래 확장 slot)
+ */
+export interface LockSuggestion {
+  /** 추론된 출발/현재 station identifier. */
+  stationId: string;
+  /** Seoul API btrainNo (예: "7246"). */
+  trainCode: string;
+  /** 노선 (Waypoint.line / BoardingLockMeta.line과 동일 표기). */
+  lineId: string;
+  /** 추론 신뢰도 — device가 채택 정책에 사용 가능 (현 PR은 high/medium 모두 채택). */
+  confidence: 'high' | 'medium' | 'low';
+  /** 추론 결정 시각 (epoch ms). device가 staleness 판단 가능. */
+  decidedAt: number;
+}
+
+/**
  * Trip Position Single Source of Truth (ADR-017).
  *
  * 단일 trip의 위치/모션/사용자 의향 상태를 한 곳에 응집. fire path는 read-only로 본 SSOT
@@ -109,7 +137,13 @@ export interface MotionEvidence {
 export interface TripPositionSSoT {
   /** SSOT가 속한 trip token (APNs device token). */
   tripToken: string;
-  /** 현재 device가 위치한다고 backend가 확신하는 stationId (또는 stationName 호환). */
+  /**
+   * 현재 device가 위치한다고 backend가 확신하는 stationId (또는 stationName 호환).
+   *
+   * #1534 (S1 GAP A) — currentStation 미상으로 trip이 등록되는 경우 빈 문자열("")로 seed될 수
+   * 있다. 후속 advance / lockSuggestion 추론이 정착되면 정상 stationId로 갱신된다.
+   * 본 필드가 빈 문자열인 동안 advance 게이트 #1(no-seed)이 blocked로 차단해 fire를 막는다.
+   */
   currentStationId: string;
   /** 게이트 #2 입력. T3 motion state machine이 갱신. */
   motionState: MotionState;
@@ -125,6 +159,12 @@ export interface TripPositionSSoT {
   userIntentDeclared: boolean;
   /** seed override 발생 횟수 (E5 강 신호 2개 + 30s 연속 일치로 currentStationId 정정 시 +1). */
   seedOverrideCount: number;
+  /**
+   * #1534 (S1, T9b) — backend가 추론한 lock 제안. lockless trip + 강 evidence 합의 시 set.
+   * device `useLockSuggestion`이 reader-only로 채택해 9-AND gate 우회. 부재 시 device는
+   * 기존 9-AND gate fallback (graceful, backward-compat).
+   */
+  lockSuggestion?: LockSuggestion;
   /** schemaVersion. 향후 마이그레이션 분기용. v1 박제. */
   schemaVersion: 1;
 }
@@ -198,6 +238,11 @@ export async function deleteSsot(kv: KVNamespace, token: string): Promise<void> 
  *
  * motionState는 `'unknown'`으로 시작 — T3 motion state machine이 첫 GPS sample 수신 후 갱신.
  * userIntentDeclared / seedOverrideCount는 false / 0.
+ *
+ * #1534 (S1 GAP A) — currentStationId는 빈 문자열("") 허용. device가 currentStation 미상으로
+ * trip을 등록할 때 backend는 빈 stationId로 seed하고, /position upload + 후속 advance 수렴으로
+ * lockSuggestion을 추론한다. advance 게이트 #1(no-seed)가 빈 stationId를 blocked로 차단해
+ * 그 동안 fire는 자연 보류된다.
  */
 export async function seedSsot(
   kv: KVNamespace,
@@ -271,3 +316,33 @@ export function migrateTripPassedStationsToSsot(
  * `CRON_READ_CACHE_TTL_SEC`(30s) 재export — `trips.ts:listTrips` 패턴과 정합.
  */
 export const SSOT_CRON_READ_CACHE_TTL_SEC = CRON_READ_CACHE_TTL_SEC;
+
+/**
+ * #1534 (S1, T9b) — backend lockSuggestion in-place set helper.
+ *
+ * caller(advanceTripPosition / 후속 cron 추론 site)가 LockSuggestion을 결정한 뒤 SSOT mutate.
+ * 본 함수는 in-place — caller가 writeSsot 책임. confidence 같은 비교 정책은 caller가 처리.
+ *
+ * 같은 stationId+trainCode+lineId가 이미 set 됐고 confidence가 같거나 더 높으면 caller가 호출
+ * 자체를 skip해 KV write 비용을 줄여야 한다 (본 함수는 unconditional write).
+ */
+export function setLockSuggestion(
+  ssot: TripPositionSSoT,
+  suggestion: LockSuggestion,
+): void {
+  ssot.lockSuggestion = suggestion;
+}
+
+/**
+ * #1534 (S1, T9b) — 같은 lockSuggestion이 이미 set 됐는지 비교.
+ *
+ * stationId / trainCode / lineId가 모두 같으면 동일 suggestion으로 판정. confidence 변화나
+ * decidedAt 갱신만으로는 본 함수는 false (caller가 더 강한 confidence면 자유롭게 갱신).
+ */
+export function isSameLockSuggestion(
+  a: LockSuggestion | undefined,
+  b: LockSuggestion,
+): boolean {
+  if (a === undefined) return false;
+  return a.stationId === b.stationId && a.trainCode === b.trainCode && a.lineId === b.lineId;
+}

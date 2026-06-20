@@ -54,6 +54,7 @@
     "locationUncertainDescription": "GPS精度较低,\n暂时无法确定您的位置。\n稍后将自动重试。",
     "refresh": "刷新",
     "boardingProximityHint": "靠近乘车站后可以选择列车",
+    "originResolving": "正在确认出发站...",
     "boardingTrainListTitle": "选择乘坐列车",
     "boardingTrainListLoading": "正在加载到达信息...",
     "boardingTrainListEmpty": "暂无即将到达的列车。",

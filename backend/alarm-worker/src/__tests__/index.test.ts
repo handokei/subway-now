@@ -1776,6 +1776,76 @@ describe('POST /position (#819)', () => {
       expect(stored[0].cellularEnvironmentVote).toBeUndefined();
     });
   });
+
+  describe('#1534 (S1, T9b, ADR-016) — response embed lockSuggestion + originStationId', () => {
+    const BASE_POS = {
+      token: 'tok-ls',
+      lat: 1,
+      lng: 2,
+      accuracy: 5,
+      ts: 1234,
+      motion: 'walking' as const,
+    };
+
+    it('SSOT 미존재 (trip 미등록) → response { ok: true } only, lockSuggestion/originStationId 누락', async () => {
+      const env = makeKvEnv();
+      const res = await post('/position', BASE_POS, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.ok).toBe(true);
+      expect(body.lockSuggestion).toBeUndefined();
+      expect(body.originStationId).toBeUndefined();
+    });
+
+    it('SSOT 존재 + currentStationId set → originStationId만 forward', async () => {
+      const env = makeKvEnv();
+      // SSOT 직접 seed
+      const { seedSsot } = await import('../tripPositionSsot');
+      await seedSsot(env.TRIPS, BASE_POS.token, '용마산');
+      const res = await post('/position', BASE_POS, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.originStationId).toBe('용마산');
+      expect(body.lockSuggestion).toBeUndefined();
+    });
+
+    it('SSOT + lockSuggestion → 둘 다 response embed', async () => {
+      const env = makeKvEnv();
+      const { seedSsot, setLockSuggestion, writeSsot } = await import('../tripPositionSsot');
+      const ssot = await seedSsot(env.TRIPS, BASE_POS.token, '용마산');
+      setLockSuggestion(ssot, {
+        stationId: '용마산',
+        trainCode: '7246',
+        lineId: '7',
+        confidence: 'high',
+        decidedAt: 1_700_000_000_000,
+      });
+      await writeSsot(env.TRIPS, ssot);
+      const res = await post('/position', BASE_POS, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.originStationId).toBe('용마산');
+      expect(body.lockSuggestion).toEqual({
+        stationId: '용마산',
+        trainCode: '7246',
+        lineId: '7',
+        confidence: 'high',
+        decidedAt: 1_700_000_000_000,
+      });
+    });
+
+    it('SSOT currentStationId 빈 문자열 (GAP A seed 직후) → originStationId 누락 (graceful)', async () => {
+      const env = makeKvEnv();
+      const { seedSsot, writeSsot } = await import('../tripPositionSsot');
+      const ssot = await seedSsot(env.TRIPS, BASE_POS.token, 'X');
+      ssot.currentStationId = '';
+      await writeSsot(env.TRIPS, ssot);
+      const res = await post('/position', BASE_POS, env);
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.originStationId).toBeUndefined();
+    });
+  });
 });
 
 describe('POST /boarding-prompt/dismiss (#819)', () => {

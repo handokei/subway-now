@@ -14,10 +14,29 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BACKEND_SSOT_MIRROR_KEY } from '../../../shared/constants/storageKeys';
 
 /**
+ * #1534 (S1, T9b, ADR-016) — backend가 추론한 lock 제안 (device 측 mirror schema).
+ *
+ * backend `apns.ts`의 `LockSuggestionPayload`와 1:1. device `useLockSuggestion` reader가
+ * `useBoardingLockController`에 1순위 candidate로 forward해 9-AND gate 우회.
+ *
+ * confidence 'low'는 향후 단일 cellular/accel 채택 slot. 현재는 high/medium만 backend가 set.
+ */
+export interface LockSuggestionMirror {
+  stationId: string;
+  trainCode: string;
+  lineId: string;
+  confidence: 'high' | 'medium' | 'low';
+  decidedAt: number;
+}
+
+/**
  * #1561 (T8) — silent push payload에 실린 SSoT 권위 스냅샷 형태.
  *
  * backend `apns.ts`의 `SilentPushSsotPayload`와 1:1. device는 본 값을 BACKEND_SSOT_MIRROR_KEY에
  * mirror하며 cascade picker가 다음 polling cycle에서 read해 `backend-ssot` tier로 채택.
+ *
+ * #1534 (S1, T9b) — lockSuggestion optional. 부재 시 device `useLockSuggestion` reader는 null
+ * 반환 (graceful, 기존 9-AND gate fallback).
  */
 export interface SilentPushSsotMirror {
   currentStationId: string;
@@ -25,6 +44,7 @@ export interface SilentPushSsotMirror {
   lastAdvanceEvidence: string;
   lastAdvanceAt: number;
   passedStations: readonly string[];
+  lockSuggestion?: LockSuggestionMirror;
 }
 
 /** #1561 (T8) — mirror entry에 receivedAt 추가. cascade picker가 자체 staleness 판정. */
@@ -105,8 +125,36 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
         (p): p is string => typeof p === 'string' && p.length > 0,
       ),
       receivedAt: parsed.receivedAt,
+      // #1534 (S1, T9b) — lockSuggestion parse (optional). 형식 misjudge 시 omit (graceful).
+      ...(parseLockSuggestion(parsed.lockSuggestion) !== null
+        ? { lockSuggestion: parseLockSuggestion(parsed.lockSuggestion) as LockSuggestionMirror }
+        : {}),
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * #1534 (S1, T9b) — JSON에서 LockSuggestionMirror 형식 검증 후 narrow.
+ *
+ * 필드 누락/타입 mismatch 시 null. graceful — device는 9-AND gate fallback. 본 함수가 backend
+ * forward 호환의 단일 진입점이라 backend가 confidence 어휘를 확장(예: 'very-high')해도 device가
+ * graceful drop으로 동작 (필드 자체 무효 시).
+ */
+function parseLockSuggestion(raw: unknown): LockSuggestionMirror | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const o = raw as Record<string, unknown>;
+  if (typeof o.stationId !== 'string' || o.stationId.length === 0) return null;
+  if (typeof o.trainCode !== 'string' || o.trainCode.length === 0) return null;
+  if (typeof o.lineId !== 'string' || o.lineId.length === 0) return null;
+  if (o.confidence !== 'high' && o.confidence !== 'medium' && o.confidence !== 'low') return null;
+  if (typeof o.decidedAt !== 'number' || !Number.isFinite(o.decidedAt)) return null;
+  return {
+    stationId: o.stationId,
+    trainCode: o.trainCode,
+    lineId: o.lineId,
+    confidence: o.confidence,
+    decidedAt: o.decidedAt,
+  };
 }

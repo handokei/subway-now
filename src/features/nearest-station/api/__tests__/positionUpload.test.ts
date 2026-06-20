@@ -2,12 +2,17 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   defaultNearestStationResolver,
   dismissBoardingPrompt,
+  persistFromPositionResponse,
   readActiveBoardingLine,
   uploadPosition,
   withMapMatched,
   withNearestStationDistance,
 } from '../positionUpload';
-import { ACTIVE_BOARDING_LINE_KEY } from '../../../../shared/constants/storageKeys';
+import {
+  ACTIVE_BOARDING_LINE_KEY,
+  BACKEND_SSOT_MIRROR_KEY,
+} from '../../../../shared/constants/storageKeys';
+import type { LockSuggestionMirror } from '../../../alarm/utils/backendSsotMirror';
 
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
@@ -465,5 +470,201 @@ describe('dismissBoardingPrompt (#819)', () => {
     (global.fetch as jest.Mock).mockRejectedValue(new Error('boom'));
     const r = await dismissBoardingPrompt('tok');
     expect(r).toEqual({ ok: false });
+  });
+});
+
+describe('uploadPosition response embed (#1534 S1 T9b, ADR-016)', () => {
+  const SUGGESTION: LockSuggestionMirror = {
+    stationId: '용마산',
+    trainCode: '7246',
+    lineId: '7',
+    confidence: 'high',
+    decidedAt: 1_700_000_000_000,
+  };
+
+  function makeFetchResponse(body: unknown): Response {
+    return {
+      ok: true,
+      status: 200,
+      json: async () => body,
+    } as unknown as Response;
+  }
+
+  it('response body에 lockSuggestion + originStationId → BACKEND_SSOT_MIRROR_KEY mirror write', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue(
+      makeFetchResponse({
+        ok: true,
+        originStationId: '용마산',
+        lockSuggestion: SUGGESTION,
+      }),
+    );
+    await uploadPosition({
+      token: 'tok-ls',
+      lat: 37.5,
+      lng: 127,
+      accuracy: 10,
+      ts: 0,
+      motion: 'walking',
+    });
+    const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+    expect(stored).not.toBeNull();
+    const parsed = JSON.parse(stored as string);
+    expect(parsed.currentStationId).toBe('용마산');
+    expect(parsed.lockSuggestion).toEqual(SUGGESTION);
+    expect(typeof parsed.receivedAt).toBe('number');
+  });
+
+  it('response body에 originStationId만 (lockSuggestion 없음) → mirror write originStationId만', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue(
+      makeFetchResponse({ ok: true, originStationId: '중곡' }),
+    );
+    await uploadPosition({
+      token: 'tok-os',
+      lat: 37.5,
+      lng: 127,
+      accuracy: 10,
+      ts: 0,
+      motion: 'walking',
+    });
+    const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+    expect(stored).not.toBeNull();
+    const parsed = JSON.parse(stored as string);
+    expect(parsed.currentStationId).toBe('중곡');
+    expect(parsed.lockSuggestion).toBeUndefined();
+  });
+
+  it('response body에 lockSuggestion만 (originStationId 없음) → lockSuggestion.stationId fallback', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue(
+      makeFetchResponse({ ok: true, lockSuggestion: SUGGESTION }),
+    );
+    await uploadPosition({
+      token: 'tok-ls-only',
+      lat: 37.5,
+      lng: 127,
+      accuracy: 10,
+      ts: 0,
+      motion: 'walking',
+    });
+    const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+    expect(stored).not.toBeNull();
+    const parsed = JSON.parse(stored as string);
+    expect(parsed.currentStationId).toBe('용마산');
+    expect(parsed.lockSuggestion).toEqual(SUGGESTION);
+  });
+
+  it('response body에 둘 다 없음 → mirror write skip (graceful)', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue(makeFetchResponse({ ok: true }));
+    await uploadPosition({
+      token: 'tok-empty',
+      lat: 37.5,
+      lng: 127,
+      accuracy: 10,
+      ts: 0,
+      motion: 'walking',
+    });
+    const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+    expect(stored).toBeNull();
+  });
+
+  it('response body json parse 실패 → graceful (caller에는 ok=true 회신)', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error('invalid json');
+      },
+    } as unknown as Response);
+    const r = await uploadPosition({
+      token: 'tok-parse',
+      lat: 37.5,
+      lng: 127,
+      accuracy: 10,
+      ts: 0,
+      motion: 'walking',
+    });
+    expect(r.ok).toBe(true);
+    const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+    expect(stored).toBeNull();
+  });
+
+  it('non-OK status → mirror write skip + ok=false 회신 (기존 동작 보존)', async () => {
+    process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev/';
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 500,
+    } as Response);
+    await uploadPosition({
+      token: 'tok-err',
+      lat: 0,
+      lng: 0,
+      accuracy: 0,
+      ts: 0,
+      motion: 'unknown',
+    });
+    const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+    expect(stored).toBeNull();
+  });
+});
+
+describe('persistFromPositionResponse (#1534 S1 T9b)', () => {
+  const SUGGESTION: LockSuggestionMirror = {
+    stationId: '용마산',
+    trainCode: '7246',
+    lineId: '7',
+    confidence: 'high',
+    decidedAt: 1_700_000_000_000,
+  };
+
+  beforeEach(async () => {
+    await AsyncStorage.clear();
+  });
+
+  it('originStationId만 있는 partial body → currentStationId set + lockSuggestion undefined', async () => {
+    await persistFromPositionResponse({ originStationId: '중곡' }, 1_700_000_010_000);
+    const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+    const parsed = JSON.parse(stored as string);
+    expect(parsed.currentStationId).toBe('중곡');
+    expect(parsed.motionState).toBe('unknown');
+    expect(parsed.lastAdvanceEvidence).toBe('seed-override');
+    expect(parsed.lastAdvanceAt).toBe(0);
+    expect(parsed.passedStations).toEqual([]);
+    expect(parsed.receivedAt).toBe(1_700_000_010_000);
+    expect(parsed.lockSuggestion).toBeUndefined();
+  });
+
+  it('lockSuggestion만 있는 partial body → stationId fallback + lastAdvanceAt=decidedAt', async () => {
+    await persistFromPositionResponse(
+      { lockSuggestion: SUGGESTION },
+      1_700_000_010_000,
+    );
+    const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+    const parsed = JSON.parse(stored as string);
+    expect(parsed.currentStationId).toBe('용마산');
+    expect(parsed.lastAdvanceAt).toBe(SUGGESTION.decidedAt);
+    expect(parsed.lockSuggestion).toEqual(SUGGESTION);
+  });
+
+  it('둘 다 없는 empty body → write skip', async () => {
+    await persistFromPositionResponse({}, 1_700_000_010_000);
+    const stored = await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY);
+    expect(stored).toBeNull();
+  });
+
+  it('둘 다 있는 정상 body → originStationId 우선', async () => {
+    await persistFromPositionResponse(
+      { originStationId: '강변', lockSuggestion: SUGGESTION },
+      1_700_000_010_000,
+    );
+    const parsed = JSON.parse(
+      (await AsyncStorage.getItem(BACKEND_SSOT_MIRROR_KEY)) as string,
+    );
+    // originStationId 우선 (lockSuggestion.stationId '용마산' fallback X)
+    expect(parsed.currentStationId).toBe('강변');
+    expect(parsed.lockSuggestion).toEqual(SUGGESTION);
   });
 });

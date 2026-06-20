@@ -962,4 +962,229 @@ describe('useBoardingLockController', () => {
       expect(remove).toHaveBeenCalled();
     });
   });
+
+  describe('lockSuggestion 1순위 채택 (#1534 S1 T9b, ADR-016)', () => {
+    let readSpy: jest.SpyInstance;
+
+    const SUGGESTION = {
+      stationId: '강남',
+      trainCode: 'AUTO-1',
+      lineId: '2',
+      confidence: 'high' as const,
+      decidedAt: 1_700_000_000_000,
+    };
+
+    const MIRROR = {
+      currentStationId: '강남',
+      motionState: 'moving' as const,
+      lastAdvanceEvidence: 'arvlcd-confirmed-train',
+      lastAdvanceAt: 1_700_000_000_000,
+      passedStations: [],
+      receivedAt: Date.now(),
+      lockSuggestion: SUGGESTION,
+    };
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      // jest.requireActual로 module을 가져오고 readBackendSsotMirror만 spy.
+      const mirror = jest.requireActual('../../utils/backendSsotMirror');
+      readSpy = jest.spyOn(mirror, 'readBackendSsotMirror');
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+      readSpy.mockRestore();
+    });
+
+    it('lockSuggestion → createLock 호출 (1순위 채택, 9-AND gate 우회)', async () => {
+      readSpy.mockResolvedValue(MIRROR);
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({
+        lock: null,
+        createLock: createLockMock,
+      });
+      renderHook(() => useBoardingLockController(defaultInputs));
+      // 첫 polling tick (5s) 후 readBackendSsotMirror → setState → createLock effect 발사
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalled();
+      });
+      const arg = createLockMock.mock.calls[0][0];
+      expect(arg.trainCode).toBe('AUTO-1');
+      expect(arg.boardingLine).toBe('2');
+      // motion gate / directionalArrivals 검증 X (suggestion 채택은 우회)
+    });
+
+    it('이미 lock 존재 → suggestion 채택 skip (idempotent)', async () => {
+      readSpy.mockResolvedValue(MIRROR);
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      const existing: BoardingLock = {
+        destinationId: 'dest-1',
+        trainCode: 'USER-TAP',
+        boardingStationId: 'stn-A',
+        boardingLine: '2',
+        boardedAt: Date.now(),
+        expectedDurationMs: 30 * 60_000,
+      };
+      // loadLock effect도 같은 lock을 반환하도록 모킹 — selector가 hydrate한 후에도 lock 유지.
+      mockGetBoardingLock.mockResolvedValue(existing);
+      useBoardingLockStore.setState({ lock: existing, createLock: createLockMock });
+      renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      // wait briefly — createLock 미호출 확인
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('lockSuggestion lineId가 trip route 허용 line이 아니면 reject', async () => {
+      readSpy.mockResolvedValue({
+        ...MIRROR,
+        lockSuggestion: { ...SUGGESTION, lineId: '7' }, // route는 line 2
+      });
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('lockSuggestion lineId가 invalid line code (모르는 노선) → reject', async () => {
+      readSpy.mockResolvedValue({
+        ...MIRROR,
+        lockSuggestion: { ...SUGGESTION, lineId: 'mars' },
+      });
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('createLock 실패는 graceful — throw 안 함 (다음 cycle 재시도)', async () => {
+      readSpy.mockResolvedValue(MIRROR);
+      const createLockMock = jest.fn().mockRejectedValue(new Error('storage'));
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() => useBoardingLockController(defaultInputs));
+      await expect(
+        act(async () => {
+          jest.advanceTimersByTime(5_000);
+        }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('destinationId null → free-trip sentinel으로 createLock', async () => {
+      readSpy.mockResolvedValue(MIRROR);
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, destinationId: null }),
+      );
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalled();
+      });
+      const arg = createLockMock.mock.calls[0][0];
+      expect(arg.hydratedFromSentinel).toBeDefined();
+    });
+
+    it('lockSuggestion 부재 → createLock 미호출 (caller 9-AND fallback)', async () => {
+      readSpy.mockResolvedValue(null);
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+
+    it('result.lockSuggestion 노출 (UI consumer 진입점)', async () => {
+      readSpy.mockResolvedValue(MIRROR);
+      useBoardingLockStore.setState({ lock: null });
+      const { result } = renderHook(() => useBoardingLockController(defaultInputs));
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => {
+        expect(result.current.lockSuggestion).toEqual(SUGGESTION);
+      });
+    });
+
+    it('stationByName lookup 실패 + currentStation null → lockSuggestion.stationId fallback (line 194)', async () => {
+      readSpy.mockResolvedValue(MIRROR);
+      mockFindStationByNameAndLine.mockReturnValue(null);
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, currentStation: null }),
+      );
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalled();
+      });
+      expect(createLockMock.mock.calls[0][0].boardingStationId).toBe('강남');
+    });
+
+    it('expectedDurationMinutes null → FALLBACK_BOARDING_DURATION_MINUTES (line 198)', async () => {
+      readSpy.mockResolvedValue(MIRROR);
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, expectedDurationMinutes: null }),
+      );
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      await waitFor(() => {
+        expect(createLockMock).toHaveBeenCalled();
+      });
+      // FALLBACK = 30분 (constants/boardingLock.ts) → 30 * 60_000 ms
+      expect(createLockMock.mock.calls[0][0].expectedDurationMs).toBe(30 * 60_000);
+    });
+
+    it('lockSuggestion.stationId가 빈 문자열 + currentStation null → boardingStationId=빈 → guard return (line 195)', async () => {
+      readSpy.mockResolvedValue({
+        ...MIRROR,
+        // 형식 검증을 우회하기 위해 직접 entry override — 실제 readBackendSsotMirror는 빈 stationId reject지만
+        // 미래 schema migration / 손상 KV 에 대비한 guard 분기 cover.
+        lockSuggestion: { ...SUGGESTION, stationId: '' },
+      });
+      mockFindStationByNameAndLine.mockReturnValue(null);
+      const createLockMock = jest.fn().mockResolvedValue(undefined);
+      useBoardingLockStore.setState({ lock: null, createLock: createLockMock });
+      renderHook(() =>
+        useBoardingLockController({ ...defaultInputs, currentStation: null }),
+      );
+      await act(async () => {
+        jest.advanceTimersByTime(5_000);
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(0);
+      });
+      expect(createLockMock).not.toHaveBeenCalled();
+    });
+  });
 });
