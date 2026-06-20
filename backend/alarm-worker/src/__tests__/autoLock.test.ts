@@ -427,15 +427,32 @@ function failingGateOutcome(): Parameters<typeof attemptAutoLock>[0]['gateOutcom
   return { pass: false as const, reason: 'window-too-small' as const };
 }
 
+/**
+ * #1536 환경 분기 테스트 공통 fixture — `arrivalEntry` 와 옵션만 받아 attemptAutoLock 호출.
+ * 중복 호출 패턴 제거(SonarCloud duplication < 3% 충족).
+ */
+function callEnvAutoLock(
+  arrivalEntry: ArrivalEntry,
+  opts: {
+    environment?: Parameters<typeof attemptAutoLock>[0]['environment'];
+    gateOutcome?: Parameters<typeof attemptAutoLock>[0]['gateOutcome'];
+  } = {},
+) {
+  return attemptAutoLock({
+    trip: makeTrip(),
+    targetWaypoint: target,
+    originStation: '강남',
+    direction: 'up',
+    seoul: makeSeoul([arrivalEntry]),
+    now: NOW,
+    environment: opts.environment,
+    gateOutcome: opts.gateOutcome,
+  });
+}
+
 describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
   it('surface + base gate pass + arrival 신호 있음 → lock 합성', async () => {
-    const { lock } = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
-      now: NOW,
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
       environment: 'surface',
       gateOutcome: passingGateOutcome(),
     });
@@ -443,13 +460,7 @@ describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
   });
 
   it('surface + base gate fail → consensusGate "base-gate-failed" → null', async () => {
-    const { lock } = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
-      now: NOW,
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
       environment: 'surface',
       gateOutcome: failingGateOutcome(),
     });
@@ -459,13 +470,7 @@ describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
   it('underground + arrival(arvlCd=1) + lockAttachable → 합의 통과 → lock 합성', async () => {
     // underground 분기는 base gate 결과 무관하게 arrival + lockAttachable 2-of-2
     // (consensusGate.ts:149-158). 따라서 base gate fail 도 통과.
-    const { lock } = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
-      now: NOW,
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
       environment: 'underground',
       gateOutcome: failingGateOutcome(),
     });
@@ -474,13 +479,7 @@ describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
 
   it('underground + arrival arvlCd 범위 밖 (=5) → arrival signal 미존재 → null', async () => {
     // arvlCd=5 (PREV_ARRIVED) 는 0~3 범위 밖 → arrivalSignalPresent=false → 합의 미달.
-    const { lock } = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 5 })]),
-      now: NOW,
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 5 }), {
       environment: 'underground',
       gateOutcome: passingGateOutcome(),
     });
@@ -488,13 +487,7 @@ describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
   });
 
   it('mixed + base gate pass + arrival + lockAttachable → 통과', async () => {
-    const { lock } = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
-      now: NOW,
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
       environment: 'mixed',
       gateOutcome: passingGateOutcome(),
     });
@@ -502,13 +495,7 @@ describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
   });
 
   it('mixed + base gate fail → null (mixed 는 base gate 통과 강제)', async () => {
-    const { lock } = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
-      now: NOW,
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
       environment: 'mixed',
       gateOutcome: failingGateOutcome(),
     });
@@ -516,28 +503,13 @@ describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
   });
 
   it('environment 미전달 → consensusGate skip (구 호출자 호환)', async () => {
-    const { lock } = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
-      now: NOW,
-      // environment 미전달 → consensusGate 미적용
-    });
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }));
     expect(lock).not.toBeNull();
   });
 
   it('gateOutcome 미전달 → consensusGate skip (구 호출자 호환)', async () => {
-    const { lock } = await attemptAutoLock({
-      trip: makeTrip(),
-      targetWaypoint: target,
-      originStation: '강남',
-      direction: 'up',
-      seoul: makeSeoul([arrival({ trainCode: 'T1', arvlCd: 1 })]),
-      now: NOW,
+    const { lock } = await callEnvAutoLock(arrival({ trainCode: 'T1', arvlCd: 1 }), {
       environment: 'underground',
-      // gateOutcome 미전달 → consensusGate 미적용
     });
     expect(lock).not.toBeNull();
   });
