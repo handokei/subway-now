@@ -85,7 +85,9 @@ describe('tripBoundCleanups', () => {
     // clearWidgetStation을 호출해 "감지 중" 상태로 즉시 전환.
     mockClearWidgetStation.mockClear();
     await runTripBoundCleanups();
-    expect(mockClearWidgetStation).toHaveBeenCalledTimes(1);
+    // #1524 직접 cleanup 1회 + #1575 (T12) router.clearAllForTrip의 widget surface clear 1회 = 2회.
+    // 둘 다 멱등 — 이미 비어 있으면 graceful no-op.
+    expect(mockClearWidgetStation).toHaveBeenCalledTimes(2);
   });
 
   it('#773 — runTripBoundCleanups 실행 시 OS 사전 예약 큐를 cancel + storage clear한다 (옛 trip 알람 burst 차단)', async () => {
