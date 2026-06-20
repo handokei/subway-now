@@ -3,8 +3,13 @@ import {
   setTripStartedAt,
   getTripStartedAt,
   clearTripStartedAt,
+  tripLifecyclePhase,
 } from '../tripStartStorage';
 import { TRIP_STARTED_AT_KEY } from '../../../../shared/constants/storageKeys';
+import {
+  TRIP_LIFECYCLE_SILENCE_MS,
+  TRIP_LIFECYCLE_FORCE_END_MS,
+} from '../../../../shared/constants/realtime';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -99,6 +104,44 @@ describe('tripStartStorage', () => {
     it('AsyncStorage 실패 시 graceful (throw 안 함)', async () => {
       mockRemoveItem.mockRejectedValue(new Error('fail'));
       await expect(clearTripStartedAt()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('#1573 tripLifecyclePhase', () => {
+    it('startedAt=null → none', () => {
+      expect(tripLifecyclePhase(null, 0)).toBe('none');
+    });
+
+    it('elapsed < 6h → normal', () => {
+      const now = 100_000_000;
+      expect(tripLifecyclePhase(now - (TRIP_LIFECYCLE_SILENCE_MS - 1), now)).toBe(
+        'normal',
+      );
+    });
+
+    it('elapsed = 6h 경계 → silence', () => {
+      const now = 100_000_000;
+      expect(tripLifecyclePhase(now - TRIP_LIFECYCLE_SILENCE_MS, now)).toBe('silence');
+    });
+
+    it('6h ≤ elapsed < 9h → silence', () => {
+      const now = 100_000_000;
+      const elapsed = TRIP_LIFECYCLE_SILENCE_MS + 60_000;
+      expect(tripLifecyclePhase(now - elapsed, now)).toBe('silence');
+    });
+
+    it('elapsed ≥ 9h → force-end', () => {
+      const now = 100_000_000;
+      expect(tripLifecyclePhase(now - TRIP_LIFECYCLE_FORCE_END_MS, now)).toBe(
+        'force-end',
+      );
+    });
+
+    it('now 기본값은 Date.now()', () => {
+      const NOW = 1_700_000_000_000;
+      jest.spyOn(Date, 'now').mockReturnValue(NOW);
+      expect(tripLifecyclePhase(NOW - 60_000)).toBe('normal');
+      (Date.now as jest.Mock).mockRestore();
     });
   });
 });

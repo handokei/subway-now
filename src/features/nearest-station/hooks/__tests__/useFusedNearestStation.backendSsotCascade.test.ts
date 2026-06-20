@@ -6,7 +6,7 @@
  * 시나리오:
  *   1. backend SSoT mirror 존재 + fresh → cascade 1순위 채택, confidence/source='backend-ssot'.
  *   2. mirror 미존재 → 기존 tier(WiFi/position-train/...) fallback.
- *   3. mirror stale(lastAdvanceAt 60s 초과) → cascade 채택 거부 → 기존 tier fallback.
+ *   3. mirror stale(lastAdvanceAt 180s 초과, #1573 T10) → cascade 채택 거부 → 기존 tier fallback.
  *   4. mirror lock 활성 + line mismatch → station resolve null → 채택 거부.
  *   5. mirror lockless + resolve 가능 → cascade 채택 (lockless도 lock과 동급 우선순위).
  */
@@ -136,12 +136,12 @@ describe('#1568 (T8b) cascade picker — backend-ssot tier', () => {
     expect(hook.result.current.confidence).not.toBe('backend-ssot');
   });
 
-  it('mirror stale(lastAdvanceAt > 60s) → 채택 거부', async () => {
+  it('mirror stale(lastAdvanceAt > 180s) → 채택 거부 (#1573 T10 60s → 180s)', async () => {
     setupBaselineGpsAt('청담');
     mockRead.mockResolvedValue(
       makeMirror({
         currentStationId: yongmasan.name,
-        lastAdvanceAt: T0 - 120_000, // 2분 전 — staleness 60s 초과
+        lastAdvanceAt: T0 - 240_000, // 4분 전 — staleness 180s 초과
       }),
     );
     const hook = renderHook(() => useFusedNearestStation());

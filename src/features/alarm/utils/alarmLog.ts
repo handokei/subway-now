@@ -54,7 +54,10 @@ export type AlarmLogSource =
   // 같은 destinationId에서 mismatch가 반복되면 hydration 완료 전에 effect가 재실행되는 race 정황.
   | 'fg-ref-mismatch'
   // #1021: boardingPrompt 발사 빈도 측정.
-  | 'boarding-prompt';
+  | 'boarding-prompt'
+  // #1573 (T10) — 6h/9h trip lifecycle backstop이 적재하는 silence/force-end 엔트리 출처.
+  // FG/BG 어느 경로에서도 동일 source로 적재 — 단계 진입 시점·발생 빈도 분포 측정.
+  | 'lifecycle-backstop';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -162,7 +165,17 @@ export type AlarmLogReason =
   | 'schedule-skipped-motion-stationary'
   // #1399 — backend가 push에 stamp한 tripToken이 device ACTIVE_TRIP_KEY와 mismatch.
   // 좀비 알림 cleanup: trip 종료 후 늦게 도착한 stale silent push 발사 차단(S8 14:19 회귀).
-  | 'trip-token-mismatch';
+  | 'trip-token-mismatch'
+  // #1573 (T10) — SSoT mirror staleness 게이트(realtime.ts BACKEND_SSOT_STALE_BLOCK_*).
+  //   'gate-stale-alarm-blocked' : mirror.lastAdvanceAt가 5분+ 지난 채 알람 fire 시도.
+  //   'gate-stale-notify-blocked': 30분+ stale에서 banner/LA/widget notify 시도.
+  | 'gate-stale-alarm-blocked'
+  | 'gate-stale-notify-blocked'
+  // #1573 (T10) — trip lifecycle 단계적 backstop.
+  //   'trip-lifecycle-silence'        : 6h~9h 잔존 trip의 alarm/notify silence 진입.
+  //   'trip-lifecycle-force-ended'    : 9h+ 잔존 trip 강제 종료 (runTripBoundCleanups + sentinel).
+  | 'trip-lifecycle-silence'
+  | 'trip-lifecycle-force-ended';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -726,6 +739,7 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'fg-arvlcd': null,
   'fg-ref-mismatch': null,
   'boarding-prompt': null,
+  'lifecycle-backstop': null,
 };
 
 export interface SilentPushOutcomeCounts {

@@ -14,7 +14,35 @@
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { TRIP_STARTED_AT_KEY } from '../../../shared/constants/storageKeys';
+import {
+  TRIP_LIFECYCLE_SILENCE_MS,
+  TRIP_LIFECYCLE_FORCE_END_MS,
+} from '../../../shared/constants/realtime';
 import { refreshCorrId } from '../../../shared/utils/backendCallBuffer';
+
+/**
+ * #1573 (T10) — trip lifecycle 단계 판정 helper.
+ *
+ * 입력: 마지막 trip 시작 시각(epoch ms) — null이면 'none'.
+ * 본 PR에서 silence/force-end만 wire. opt-in extend(12h)는 후속 토글 sub-task에서.
+ *
+ *  - 'none'      — trip 없음. 호출자 skip.
+ *  - 'normal'    — 정상 운행 (6h 미만). backstop 동작 없음.
+ *  - 'silence'   — 6h~9h. alarm/notify 차단만 (UI는 유지). KTX/장거리 trip 보호.
+ *  - 'force-end' — 9h+. runTripBoundCleanups + sentinel. lockless 9h+ 잔존 #1346 차단.
+ */
+export type TripLifecyclePhase = 'none' | 'normal' | 'silence' | 'force-end';
+
+export function tripLifecyclePhase(
+  startedAt: number | null,
+  now: number = Date.now(),
+): TripLifecyclePhase {
+  if (startedAt === null) return 'none';
+  const elapsed = now - startedAt;
+  if (elapsed >= TRIP_LIFECYCLE_FORCE_END_MS) return 'force-end';
+  if (elapsed >= TRIP_LIFECYCLE_SILENCE_MS) return 'silence';
+  return 'normal';
+}
 
 /** Trip 시작 시각 기록. setDestination switch 분기에서 호출. */
 export async function setTripStartedAt(at: number = Date.now()): Promise<void> {

@@ -12,8 +12,14 @@ import { useBoardingLockStore } from '../../features/alarm/store/useBoardingLock
 import {
   clearTripEndedSentinel,
   getTripEndedSentinel,
+  setTripEndedSentinel,
 } from '../../features/alarm/utils/tripEndedSentinel';
 import { runTripBoundCleanups } from '../../features/alarm/store/tripBoundCleanups';
+import {
+  getTripStartedAt,
+  tripLifecyclePhase,
+} from '../../features/alarm/utils/tripStartStorage';
+import { appendAlarmLog } from '../../features/alarm/utils/alarmLog';
 import { createLogger } from '../utils/logger';
 import { addDomainBreadcrumb } from '../infra/monitoring/breadcrumb';
 
@@ -81,4 +87,64 @@ async function runRehydration(trigger: 'mount' | 'active'): Promise<void> {
     destStore.loadTripOrigin(),
     useBoardingLockStore.getState().loadLock(),
   ]);
+
+  // #1573 (T10) — trip lifecycle 단계적 backstop. FG 복귀 / mount 마다 확인.
+  // silence(6h~9h)와 force-end(9h+)는 staged-handling 룰에 따라 분리 처리한다.
+  //   silence — alarm/notify 차단만 (UI는 유지). KTX/장거리 trip false positive 방지.
+  //   force-end — runTripBoundCleanups + sentinel + store reset. lockless 9h+ 잔존 #1346 차단.
+  //
+  // silence 적재는 entry 1회당 한 cycle만 의미가 있고 멱등이 자연 — 매 active 진입마다 1엔트리.
+  // share dump에서 lifecycle-backstop source 카운트로 측정.
+  await runLifecycleBackstop(trigger);
+}
+
+/**
+ * #1573 (T10) — trip 시작 시각 기준 단계 판정 후 backstop 실행. throw 없음 — launch 차단 금지.
+ *
+ * silence는 share dump 측정만, force-end는 silent push trip-ended와 동일한 cleanup 시퀀스를
+ * 따라 store 메모리/storage 일관성 유지. setDestination 호출 대신 runTripBoundCleanups + setState
+ * 직접 호출은 #1351 R2와 동일 이유(prev=null 시 isSwitch=false로 cleanup chain skip되는 버그 회피).
+ */
+async function runLifecycleBackstop(trigger: 'mount' | 'active'): Promise<void> {
+  try {
+    const startedAt = await getTripStartedAt();
+    if (startedAt === null) return;
+    // tripLifecyclePhase는 startedAt non-null이면 'none' 외 3개 phase만 반환.
+    const phase = tripLifecyclePhase(startedAt);
+    if (phase === 'normal') return;
+
+    const now = Date.now();
+    const elapsedMs = now - startedAt;
+
+    if (phase === 'silence') {
+      appendAlarmLog({
+        ts: now,
+        source: 'lifecycle-backstop',
+        outcome: 'suppressed',
+        reason: 'trip-lifecycle-silence',
+      });
+      logger.info(`trigger=${trigger} silence elapsedMs=${elapsedMs}`);
+      return;
+    }
+
+    // force-end (9h+). silent push trip-ended와 동일 시퀀스.
+    appendAlarmLog({
+      ts: now,
+      source: 'lifecycle-backstop',
+      outcome: 'fired',
+      reason: 'trip-lifecycle-force-ended',
+    });
+    logger.info(`trigger=${trigger} force-end elapsedMs=${elapsedMs} → cleanup`);
+    await runTripBoundCleanups();
+    useDestinationStore.setState({
+      destination: null,
+      customOrigin: null,
+      tripOrigin: null,
+    });
+    addDomainBreadcrumb('trip', 'end', { reason: 'lifecycle-9h-force-end' });
+    await useBoardingLockStore.getState().releaseLock();
+    await setTripEndedSentinel(now);
+  } catch (e) {
+    logger.warn('lifecycle backstop 실패 (graceful)', e);
+  }
 }
