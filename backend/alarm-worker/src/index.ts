@@ -58,6 +58,10 @@ import {
   storeSignalDump,
   validateSignalDumpUpload,
 } from './rawSignalDump';
+import {
+  storeAlarmLogForward,
+  validateAlarmLogForward,
+} from './alarmLogForward';
 import { MIN_RECALL_RATIO_THRESHOLD, RECALL_THRESHOLD_CRITICAL } from './metrics';
 import { RECALL_DATASET, RECALL_OPS_PAGE_URL, RECALL_QUERIES } from './recallQueries';
 import {
@@ -790,6 +794,55 @@ app.post('/signals/dump', async (c) => {
     }),
   );
   return c.json({ ok: true, accepted: payload.entries.length });
+});
+
+/**
+ * Device alarmLog telemetry forward (#1579, Phase 0 epic #1576 P0-3).
+ *
+ * Trip 종료 시 device가 alarmLog 200 + fusionLog 200 + gpsDrops 100 + backendSsotSnapshot +
+ * deviceMetadata를 한 번 forward. R2 `trip-evidence/YYYY/MM/DD/{tokenPrefix}-{tripStartedAt}.ndjson`
+ * 키로 90일 보관 (lifecycle 룰은 Cloudflare Dashboard에서 운영자가 수동 설정).
+ *
+ * Body: { token, tripStartedAt, tripEndedAt, alarmLog[], fusionLog[], gpsDrops[],
+ *         backendSsotSnapshot, deviceMetadata: { os, appVersion?, locale? } }
+ *
+ * Response:
+ *   200 { ok: true, key, size }
+ *   400 { error: 'invalid_json' | 'invalid_payload' }
+ *   503 { error: 'telemetry_r2_unavailable' } — TELEMETRY_R2 미바인딩 (개발 환경 호환)
+ *
+ * Privacy: token은 8자 prefix만 R2 key/customMetadata에 저장 (원문 미저장).
+ */
+app.post('/telemetry/alarm-log', async (c) => {
+  const r2 = c.env.TELEMETRY_R2;
+  if (!r2) return c.json({ error: 'telemetry_r2_unavailable' }, 503);
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: 'invalid_json' }, 400);
+  }
+
+  const payload = validateAlarmLogForward(body);
+  if (!payload) return c.json({ error: 'invalid_payload' }, 400);
+
+  const { key, size } = await storeAlarmLogForward(r2, payload);
+
+  console.log(
+    JSON.stringify({
+      msg: 'telemetry-forward-success',
+      tokenPrefix: tokenPrefix(payload.token),
+      key,
+      size,
+      tripStartedAt: payload.tripStartedAt,
+      durationMs: payload.tripEndedAt - payload.tripStartedAt,
+      alarmLog: payload.alarmLog.length,
+      fusionLog: payload.fusionLog.length,
+      gpsDrops: payload.gpsDrops.length,
+    }),
+  );
+  return c.json({ ok: true, key, size });
 });
 
 /**

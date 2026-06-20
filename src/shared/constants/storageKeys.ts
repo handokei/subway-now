@@ -182,3 +182,8 @@ export const BACKEND_SSOT_MIRROR_KEY = 'subway-now:backend-ssot-mirror';
 // push하고 ring buffer를 통째로 AsyncStorage에 mirror한다. 앱 재시작 후 진단해도 직전 trip의
 // 호출 흔적을 잃지 않게 하는 게 목적. 형식: BackendCallLogEntry[] JSON (capacity 100).
 export const BACKEND_CALL_LOG_KEY = 'subway-now:backend-call-log';
+// #1579 (P0-3) — alarmLog telemetry forward retry queue.
+// trip 종료 시 device가 alarmLog/fusionLog/gpsDrops/ssotMirror snapshot을 backend로 forward.
+// 네트워크 실패 시 단건 enqueue, 다음 trip 종료 시 재시도. 가장 최근 trip만 보존 (1건).
+// 형식: TelemetryForwardOutboxEntry JSON.
+export const TELEMETRY_FORWARD_RETRY_QUEUE_KEY = 'subway-now:telemetry-forward-retry';

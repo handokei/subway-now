@@ -16,6 +16,12 @@ const mockUploadSignalDump = jest.fn();
 const mockGetCurrentTripCorrIdSync = jest.fn();
 const mockGetCurrentTripCorrId = jest.fn();
 const mockGetRawSignalEntries = jest.fn();
+const mockForwardTripTelemetry = jest.fn();
+const mockBuildDeviceMetadata = jest.fn();
+const mockGetAlarmLog = jest.fn();
+const mockGetFusionDebugEntries = jest.fn();
+const mockGetGpsDropEntries = jest.fn();
+const mockReadBackendSsotMirror = jest.fn();
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -63,6 +69,27 @@ jest.mock('../../../observability/utils/tripCorrId', () => ({
 
 jest.mock('../../../observability/utils/rawSignalBuffer', () => ({
   getRawSignalEntries: (...args: unknown[]) => mockGetRawSignalEntries(...args),
+}));
+
+jest.mock('../../api/telemetryForward', () => ({
+  forwardTripTelemetry: (...args: unknown[]) => mockForwardTripTelemetry(...args),
+  buildDeviceMetadata: (...args: unknown[]) => mockBuildDeviceMetadata(...args),
+}));
+
+jest.mock('../alarmLog', () => ({
+  getAlarmLog: (...args: unknown[]) => mockGetAlarmLog(...args),
+}));
+
+jest.mock('../../../nearest-station/utils/fusionDebugBuffer', () => ({
+  getFusionDebugEntries: (...args: unknown[]) => mockGetFusionDebugEntries(...args),
+}));
+
+jest.mock('../../../nearest-station/utils/gpsDropBuffer', () => ({
+  getGpsDropEntries: (...args: unknown[]) => mockGetGpsDropEntries(...args),
+}));
+
+jest.mock('../backendSsotMirror', () => ({
+  readBackendSsotMirror: (...args: unknown[]) => mockReadBackendSsotMirror(...args),
 }));
 
 import { triggerTripEndRecall } from '../triggerTripEndRecall';
@@ -128,6 +155,18 @@ describe('triggerTripEndRecall', () => {
     mockGetCurrentTripCorrId.mockResolvedValue(null);
     mockGetRawSignalEntries.mockReset();
     mockGetRawSignalEntries.mockReturnValue([]);
+    mockForwardTripTelemetry.mockReset();
+    mockForwardTripTelemetry.mockResolvedValue({ ok: true });
+    mockBuildDeviceMetadata.mockReset();
+    mockBuildDeviceMetadata.mockReturnValue({ os: 'ios' });
+    mockGetAlarmLog.mockReset();
+    mockGetAlarmLog.mockResolvedValue([]);
+    mockGetFusionDebugEntries.mockReset();
+    mockGetFusionDebugEntries.mockReturnValue([]);
+    mockGetGpsDropEntries.mockReset();
+    mockGetGpsDropEntries.mockReturnValue([]);
+    mockReadBackendSsotMirror.mockReset();
+    mockReadBackendSsotMirror.mockResolvedValue(null);
   });
 
   it('tripStart 부재 시 즉시 skip (no-trip-start)', async () => {
@@ -491,6 +530,61 @@ describe('triggerTripEndRecall', () => {
 
       const result = await triggerTripEndRecall();
       expect(result.uploaded).toBe(true);
+    });
+  });
+
+  describe('#1579 (P0-3) — alarm log telemetry forward', () => {
+    it('정상 흐름 — token + buffer snapshot + deviceMetadata로 forwardTripTelemetry 호출', async () => {
+      setupHappyPath();
+      mockGetAlarmLog.mockResolvedValue([{ ts: 1, source: 'fg' }]);
+      mockGetFusionDebugEntries.mockReturnValue([{ ts: 2, kind: 'cycle' }]);
+      mockGetGpsDropEntries.mockReturnValue([{ ts: 3 }]);
+      mockReadBackendSsotMirror.mockResolvedValue({ currentStationId: '강남' });
+      mockBuildDeviceMetadata.mockReturnValue({ os: 'ios', appVersion: '1.2.3' });
+
+      await triggerTripEndRecall();
+
+      expect(mockForwardTripTelemetry).toHaveBeenCalledTimes(1);
+      const payload = mockForwardTripTelemetry.mock.calls[0][0];
+      expect(payload.token).toBe('apns-token-xyz');
+      expect(payload.tripStartedAt).toBe(100);
+      expect(payload.tripEndedAt).toBeGreaterThanOrEqual(100);
+      expect(payload.alarmLog).toEqual([{ ts: 1, source: 'fg' }]);
+      expect(payload.fusionLog).toEqual([{ ts: 2, kind: 'cycle' }]);
+      expect(payload.gpsDrops).toEqual([{ ts: 3 }]);
+      expect(payload.backendSsotSnapshot).toEqual({ currentStationId: '강남' });
+      expect(payload.deviceMetadata).toEqual({ os: 'ios', appVersion: '1.2.3' });
+    });
+
+    it('APNS token 부재 시 forward skip', async () => {
+      setupHappyPath();
+      setStorage({
+        [LAST_UPLOADED_RECALL_TRIP_START_KEY]: null,
+        [ROUTE_KEY]: ROUTE_JSON,
+        [TRIP_ORIGIN_KEY]: ORIGIN_JSON,
+        [DESTINATION_KEY]: DEST_JSON,
+        [APNS_TOKEN_KEY]: null,
+      });
+
+      await triggerTripEndRecall();
+      expect(mockForwardTripTelemetry).not.toHaveBeenCalled();
+    });
+
+    it('forwardTripTelemetry 예외 흡수 (recall 결과는 영향 없음)', async () => {
+      setupHappyPath();
+      mockForwardTripTelemetry.mockRejectedValue(new Error('boom'));
+
+      const result = await triggerTripEndRecall();
+      expect(result.uploaded).toBe(true);
+    });
+
+    it('getAlarmLog 예외 흡수', async () => {
+      setupHappyPath();
+      mockGetAlarmLog.mockRejectedValue(new Error('storage'));
+
+      const result = await triggerTripEndRecall();
+      expect(result.uploaded).toBe(true);
+      expect(mockForwardTripTelemetry).not.toHaveBeenCalled();
     });
   });
 });

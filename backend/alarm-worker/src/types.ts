@@ -583,4 +583,13 @@ export interface Env {
    *      dataset=`trip_metrics`.
    */
   TRIP_METRICS?: AnalyticsEngineWriter;
+  /**
+   * Device alarmLog telemetry forward → R2 archive (#1579, Phase 0 epic #1576 P0-3).
+   * Trip 종료 시 device가 alarmLog/fusionLog/gpsDrops/ssotMirror snapshot을 forward해
+   * `trip-evidence/YYYY/MM/DD/{tokenPrefix}-{tripStartedAt}.ndjson` 키로 90일 보관.
+   * 미바인딩 시 `/telemetry/alarm-log`는 503 graceful.
+   * 생성: `wrangler r2 bucket create subway-now-telemetry`
+   *   + 90일 lifecycle 룰은 Cloudflare Dashboard에서 운영자가 수동 설정.
+   */
+  TELEMETRY_R2?: R2Bucket;
 }
