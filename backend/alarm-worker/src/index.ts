@@ -88,7 +88,8 @@ import {
   validateRegressionUpload,
   writeRegressionDataPoints,
 } from './regressionTelemetry';
-import { KV_MIN_CACHE_TTL_SEC } from './kvConsistency';
+import { CRON_READ_CACHE_TTL_SEC, KV_MIN_CACHE_TTL_SEC } from './kvConsistency';
+import { readSsot } from './tripPositionSsot';
 import { getTrip, putTrip } from './trips';
 import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
 import {
@@ -1005,7 +1006,26 @@ app.post('/position', async (c) => {
     tripToken: payload.token,
     reason: payload.point.motion,
   });
-  return c.json({ ok: true });
+
+  // #1534 (S1, T9b, ADR-016) — primary transport: POST /position response에 lockSuggestion +
+  // originStationId 회신. silent push가 비활성 OS suspend / kill / 저전력 분기에 도달 못해도
+  // device가 cycle마다 호출하는 /position 응답으로 즉시 lockSuggestion 인계. silent push payload는
+  // secondary transport (`toSilentPushSsot`).
+  //
+  // SSOT 부재 시(trip 미등록) lockSuggestion / originStationId 누락 — graceful, device는
+  // 기존 9-AND gate fallback. SSOT cacheTtl 30s 명시(KV 최소 제약 + cron 사이클 정합).
+  const ssot = await readSsot(c.env.TRIPS, payload.token, {
+    cacheTtl: CRON_READ_CACHE_TTL_SEC,
+  });
+  return c.json({
+    ok: true,
+    // currentStationId가 빈 문자열이 아닐 때만 forward — 빈 stationId는 device 측에서
+    // "추론 미정착" 신호로 다뤄야 하므로 명시 누락 (graceful).
+    ...(ssot?.currentStationId
+      ? { originStationId: ssot.currentStationId }
+      : {}),
+    ...(ssot?.lockSuggestion ? { lockSuggestion: ssot.lockSuggestion } : {}),
+  });
 });
 
 interface PositionUploadPayload {

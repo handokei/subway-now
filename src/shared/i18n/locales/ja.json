@@ -54,6 +54,7 @@
     "locationUncertainDescription": "GPSの精度が低いため、\n現在地を特定できません。\nしばらくしてから自動で再試行します。",
     "refresh": "更新",
     "boardingProximityHint": "乗車駅の近くで列車を選択できます",
+    "originResolving": "出発駅を確認中...",
     "boardingTrainListTitle": "乗車する列車を選択",
     "boardingTrainListLoading": "到着情報を読み込み中...",
     "boardingTrainListEmpty": "到着予定の列車がありません。",

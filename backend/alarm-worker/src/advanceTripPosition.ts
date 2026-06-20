@@ -44,10 +44,13 @@
 import { evaluateConsensusGate, type StationEnvironment } from './consensusGate';
 import type { ArrivalEntry, PositionEntry } from './seoul';
 import {
+  isSameLockSuggestion,
   MOTION_EVIDENCE_CAP,
   readSsot,
+  setLockSuggestion,
   writeSsot,
   type EvidenceType,
+  type LockSuggestion,
   type MotionEvidence,
   type TripPositionSSoT,
 } from './tripPositionSsot';
@@ -360,8 +363,93 @@ export async function advanceTripPosition(
     lastAdvanceAt: evidence.ts,
     lastAdvanceEvidence: evidence.type,
   };
+
+  applyLockSuggestion(next, ssot, {
+    lockActive: lock !== undefined,
+    candidateStationId,
+    evidence,
+    waypointLine: trip.waypoints[0]?.line,
+  });
+
   await writeSsot(kv, next, { expiresAt: trip.expiresAt });
   return { result: 'advanced', ssot: next };
+}
+
+/**
+ * #1534 (S1, T9b) — lockless trip + 강 evidence 합의 시 lockSuggestion 추론.
+ *
+ * device가 `useLockSuggestion`으로 본 값을 1순위 채택해 lock 없이도 fire path를 활성화한다
+ * (lockless 첫 station miss 0 acceptance V2). lock 활성 trip에는 set하지 않음 (기존 lock이
+ * SSOT 그대로 forward — 별 reader 정책 불필요).
+ *
+ * 기존 lockSuggestion이 동일 stationId+trainCode+lineId면 보존 (KV write 비용 최소화 +
+ * device cascade picker가 receivedAt drift로 무용한 re-render 방지). 어떤 분기에서도 기존
+ * suggestion이 silently dropped되지 않도록 항상 forward.
+ */
+function applyLockSuggestion(
+  next: TripPositionSSoT,
+  prev: TripPositionSSoT,
+  input: {
+    lockActive: boolean;
+    candidateStationId: string;
+    evidence: AdvanceEvidence;
+    waypointLine: string | undefined;
+  },
+): void {
+  const suggestion = deriveLockSuggestion(input);
+  if (suggestion && !isSameLockSuggestion(prev.lockSuggestion, suggestion)) {
+    setLockSuggestion(next, suggestion);
+    return;
+  }
+  if (prev.lockSuggestion) {
+    // 기존 suggestion 보존 — drop 회귀 차단.
+    next.lockSuggestion = prev.lockSuggestion;
+  }
+}
+
+/**
+ * #1534 (S1, T9b) — advance 통과 evidence로부터 lockSuggestion 추론.
+ *
+ * 정책:
+ *   - lock 활성 trip: suggestion 미설정 (이미 lock이 source of truth)
+ *   - lock 없음 + arvlcd-confirmed-train + arvlcdTrainCode 보유: high confidence suggestion
+ *   - lock 없음 + position-train + positionEntry.trainCode 보유: medium confidence
+ *   - 그 외 (gps / cellular / wifi 단독 등): 약 evidence — suggestion 없음 (caller가 다른 cycle 기다림)
+ *
+ * lineId는 waypointLine(trip route 첫 waypoint의 line)을 사용 — Seoul API는 ArrivalEntry/
+ * PositionEntry에 line 식별자(subwayId)를 제공하지 않으므로 trip route SSOT를 신뢰한다.
+ * 환승 hop 이후 (waypoint shift) 도 첫 waypoint가 현재 leg의 line이라 동일 패턴 적용.
+ */
+function deriveLockSuggestion(input: {
+  lockActive: boolean;
+  candidateStationId: string;
+  evidence: AdvanceEvidence;
+  waypointLine: string | undefined;
+}): LockSuggestion | null {
+  if (input.lockActive) return null;
+  if (!input.waypointLine) return null;
+  const { evidence, candidateStationId, waypointLine } = input;
+  // 강 (high) — arvlcd-confirmed-train evidence는 trainCode 확정. lineId는 waypoint line.
+  if (evidence.type === 'arvlcd-confirmed-train' && evidence.arvlcdTrainCode) {
+    return {
+      stationId: candidateStationId,
+      trainCode: evidence.arvlcdTrainCode,
+      lineId: waypointLine,
+      confidence: 'high',
+      decidedAt: evidence.ts,
+    };
+  }
+  // 중 (medium) — position-train evidence는 Seoul realtimePosition 매칭 trainCode.
+  if (evidence.type === 'position-train' && evidence.positionEntry?.trainCode) {
+    return {
+      stationId: candidateStationId,
+      trainCode: evidence.positionEntry.trainCode,
+      lineId: waypointLine,
+      confidence: 'medium',
+      decidedAt: evidence.ts,
+    };
+  }
+  return null;
 }
 
 /**

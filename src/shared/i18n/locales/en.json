@@ -54,6 +54,7 @@
     "locationUncertainDescription": "GPS accuracy is low,\nso we can't pinpoint your location.\nWe'll retry automatically.",
     "refresh": "Refresh",
     "boardingProximityHint": "Move closer to the boarding station to pick a train",
+    "originResolving": "Detecting origin station...",
     "boardingTrainListTitle": "Pick your train",
     "boardingTrainListLoading": "Loading arrivals...",
     "boardingTrainListEmpty": "No upcoming trains.",

@@ -451,6 +451,7 @@ export default function HomeScreen() {
   // alarm/Fusion과의 wiring은 후속 PR C/D에서 활성화된다.
   const {
     lock: boardingLock,
+    lockSuggestion,
     boardingListArrivals,
     createLockFromTrain,
     hydrateLockFromCandidate,
@@ -1079,6 +1080,22 @@ export default function HomeScreen() {
                               const nearBoardingStation =
                                 isCustomOrigin || distanceToCurrentM < BOARDING_PROXIMITY_THRESHOLD_M;
                               if (!nearBoardingStation) {
+                                // #1534 (S1, T9b, ADR-016) — GAP A 시나리오: backend가 lockSuggestion을
+                                // 추론 중이거나 추론 완료. 사용자에게 "추론 중" feedback 노출해 사용자 대기
+                                // 0초 UX 유지. lockSuggestion이 도착하면 useBoardingLockController가
+                                // 자동으로 lock을 createLock해 다음 cycle에 BoardingLockHopCard로 전이된다.
+                                if (lockSuggestion) {
+                                  return (
+                                    <View
+                                      style={styles.boardingProximityHint}
+                                      testID="origin-resolving-hint"
+                                    >
+                                      <Text style={[typography.bodySm, { color: colors.muted }]}>
+                                        {t('home.originResolving')}
+                                      </Text>
+                                    </View>
+                                  );
+                                }
                                 return (
                                   <View
                                     style={styles.boardingProximityHint}

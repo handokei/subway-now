@@ -933,6 +933,9 @@ export function toSilentPushSsot(
     lastAdvanceEvidence: ssot.lastAdvanceEvidence,
     lastAdvanceAt: ssot.lastAdvanceAt,
     passedStations: ssot.passedStations.slice(-SSOT_FORWARD_PASSED_STATIONS_MAX),
+    // #1534 (S1, T9b) — backend lockSuggestion forward. 부재 시 wire 자연 누락
+    // (apns.ts JSON serializer는 undefined 필드 omit). device cascade picker는 기존 tier fallback.
+    ...(ssot.lockSuggestion ? { lockSuggestion: ssot.lockSuggestion } : {}),
   };
 }
 

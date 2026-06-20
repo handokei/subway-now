@@ -17,6 +17,11 @@
  *
  * 백엔드 URL 미설정/네트워크 실패는 throw 없이 graceful `{ ok:false, skipped:true }` — Phase 0
  * baseline(사전 예약만)은 그대로 동작한다.
+ *
+ * #1534 (S1, T9b, ADR-016) — POST /position response body에 backend가 추론한 lockSuggestion +
+ * originStationId가 embed된다. 본 모듈이 response를 parse해 BACKEND_SSOT_MIRROR_KEY에 mirror
+ * write — `useLockSuggestion` reader hook이 다음 polling cycle에서 read해 lockless trip의
+ * lock UX를 즉시 활성화한다 (silent push secondary transport + position primary transport 패턴).
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -28,6 +33,11 @@ import { findNearestStation } from '../utils/findNearestStation';
 import type { LineNumber } from '../../../shared/types/station';
 import { createLogger } from '../../../shared/utils/logger';
 import type { AccelSummary } from '../utils/accelMotion';
+import {
+  persistBackendSsotMirror,
+  type LockSuggestionMirror,
+  type SilentPushSsotMirror,
+} from '../../alarm/utils/backendSsotMirror';
 
 const log = createLogger('positionUpload');
 
@@ -208,11 +218,72 @@ export async function uploadPosition(
       log.warn(`position upload failed status=${res.status}`);
       return { ok: false, status: res.status };
     }
+    // #1534 (S1, T9b, ADR-016) — POST /position response embed: lockSuggestion + originStationId.
+    //
+    // backend가 lockless trip을 추론해 lockSuggestion을 결정하면 응답 body에 embed해 회신한다
+    // (silent push 도달 안 되는 분기 — OS suspend/kill/저전력 — 에서도 device가 cycle마다
+    // 호출하는 /position 응답으로 즉시 인계 가능). device는 BACKEND_SSOT_MIRROR_KEY에 mirror
+    // write — useLockSuggestion이 다음 polling cycle에서 read해 useBoardingLockController가
+    // 1순위 lock 채택.
+    //
+    // parse 실패 / 필드 부재 / 형식 mismatch는 silent — device는 기존 9-AND gate fallback.
+    // res.json() 실패는 try/catch가 catch — 응답 자체는 ok=true로 caller에 회신.
+    try {
+      const body = (await res.json()) as Partial<PositionResponseBody> | null;
+      if (body && (body.lockSuggestion || body.originStationId)) {
+        await persistFromPositionResponse(body, Date.now());
+      }
+    } catch {
+      // graceful — body parse 실패 시 device 측 fallback으로 자연 동작.
+    }
     return { ok: true, status: res.status };
   } catch (e) {
     log.warn('position upload error', e);
     return { ok: false };
   }
+}
+
+/**
+ * #1534 (S1, T9b) — POST /position response body schema. backend `index.ts`의 응답 형태와 1:1.
+ *
+ * 둘 다 optional — backend가 SSOT 부재(trip 미등록) 시 embed 하지 않는다 (graceful).
+ */
+export interface PositionResponseBody {
+  ok: boolean;
+  /** backend가 추론한 출발/현재 station identifier — 빈 stationId 분기는 omit. */
+  originStationId?: string;
+  /** backend가 추론한 lock 제안. lockless trip + 강 evidence 합의 시 set. */
+  lockSuggestion?: LockSuggestionMirror;
+}
+
+/**
+ * #1534 (S1, T9b) — POST /position response body에서 SSOT mirror를 빌드해 영속화.
+ *
+ * silent push가 forward하는 `SilentPushSsotMirror`와 동일 schema로 통합 — device cascade picker
+ * + useLockSuggestion 양쪽이 같은 BACKEND_SSOT_MIRROR_KEY를 single source로 read.
+ *
+ * 본 함수는 response body가 partial 일 때(예: lockSuggestion만 있고 motionState/passedStations
+ * 누락) graceful 기본값으로 채워 mirror write를 시도 — useLockSuggestion이 lockSuggestion만 채택
+ * 하므로 motionState='unknown', passedStations=[]가 채택 결정에 영향 없다.
+ */
+export async function persistFromPositionResponse(
+  body: Partial<PositionResponseBody>,
+  receivedAt: number,
+): Promise<void> {
+  // currentStationId는 originStationId fallback. 둘 다 부재면 빈 문자열로 두는 게 적절하나
+  // SilentPushSsotMirror 형식 검증이 빈 문자열을 reject하므로 lockSuggestion.stationId fallback 시도.
+  const currentStationId =
+    body.originStationId ?? body.lockSuggestion?.stationId ?? '';
+  if (currentStationId.length === 0) return;
+  const mirror: SilentPushSsotMirror = {
+    currentStationId,
+    motionState: 'unknown',
+    lastAdvanceEvidence: 'seed-override',
+    lastAdvanceAt: body.lockSuggestion?.decidedAt ?? 0,
+    passedStations: [],
+    ...(body.lockSuggestion ? { lockSuggestion: body.lockSuggestion } : {}),
+  };
+  await persistBackendSsotMirror(mirror, receivedAt);
 }
 
 /**
