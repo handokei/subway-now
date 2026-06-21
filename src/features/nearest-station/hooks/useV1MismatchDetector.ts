@@ -48,7 +48,7 @@ export function useV1MismatchDetector(
     const now = Date.now();
     const key = `${uiCurrentStationId}|${ssotCurrentStationId}`;
     const last = lastMismatchRef.current;
-    if (last && last.key === key && now - last.ts < V1_MISMATCH_DEDUP_WINDOW_MS) return;
+    if (last?.key === key && now - last.ts < V1_MISMATCH_DEDUP_WINDOW_MS) return;
     lastMismatchRef.current = { key, ts: now };
     appendAlarmLog({
       ts: now,

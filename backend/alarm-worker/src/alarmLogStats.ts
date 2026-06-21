@@ -78,24 +78,29 @@ function accumulateEntry(
   }
 }
 
+/** 단일 ndjson 줄을 parse → alarmLog kind면 entries 추출, 아니면 null. malformed silent drop. */
+function parseAlarmLogLine(line: string): AlarmLogEntryLike[] | null {
+  if (!line) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const obj = parsed as { kind?: unknown; entries?: unknown };
+  if (obj.kind !== 'alarmLog' || !Array.isArray(obj.entries)) return null;
+  return obj.entries.filter(
+    (e): e is AlarmLogEntryLike => !!e && typeof e === 'object',
+  );
+}
+
 /** ndjson 본문에서 alarmLog 줄만 추려 entries 추출. malformed 줄/kind는 silent drop. */
 function extractAlarmLogEntries(body: string): AlarmLogEntryLike[] {
   const out: AlarmLogEntryLike[] = [];
   for (const line of body.split('\n')) {
-    if (!line) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (!parsed || typeof parsed !== 'object') continue;
-    const obj = parsed as { kind?: unknown; entries?: unknown };
-    if (obj.kind !== 'alarmLog') continue;
-    if (!Array.isArray(obj.entries)) continue;
-    for (const e of obj.entries) {
-      if (e && typeof e === 'object') out.push(e as AlarmLogEntryLike);
-    }
+    const entries = parseAlarmLogLine(line);
+    if (entries) out.push(...entries);
   }
   return out;
 }
@@ -122,6 +127,36 @@ function topN(dict: Record<string, number>, n: number): Record<string, number> {
   return Object.fromEntries(sorted);
 }
 
+/** scan loop 누적 카운터 — outcome/reason/source dict + totalEvents/tripsScanned. */
+interface ScanAccumulator {
+  outcomeCounts: Record<string, number>;
+  reasonCounts: Record<string, number>;
+  sourceCounts: Record<string, number>;
+  totalEvents: number;
+  tripsScanned: number;
+}
+
+/** 단일 trip-evidence object를 윈도우 필터링 후 acc에 누적. window 밖/빈 archive는 no-op. */
+async function scanTripEvidenceObject(
+  r2: R2Bucket,
+  obj: R2Object,
+  windowStart: number,
+  windowEnd: number,
+  acc: ScanAccumulator,
+): Promise<void> {
+  if (!isObjectInWindow(obj.customMetadata, windowStart, windowEnd)) return;
+  const archived = await r2.get(obj.key);
+  if (!archived) return;
+  const body = await archived.text();
+  const entries = extractAlarmLogEntries(body);
+  if (entries.length === 0) return;
+  acc.tripsScanned += 1;
+  for (const e of entries) {
+    acc.totalEvents += 1;
+    accumulateEntry(e, acc.outcomeCounts, acc.reasonCounts, acc.sourceCounts);
+  }
+}
+
 /**
  * R2 archive scan으로 windowHours 윈도우 안 alarmLog 분포 산출.
  *
@@ -141,11 +176,13 @@ export async function computeAlarmLogStats(
   const windowStart = now - safeWindowHours * MS_PER_HOUR;
   const windowEnd = now;
 
-  const outcomeCounts: Record<string, number> = {};
-  const reasonCounts: Record<string, number> = {};
-  const sourceCounts: Record<string, number> = {};
-  let totalEvents = 0;
-  let tripsScanned = 0;
+  const acc: ScanAccumulator = {
+    outcomeCounts: {},
+    reasonCounts: {},
+    sourceCounts: {},
+    totalEvents: 0,
+    tripsScanned: 0,
+  };
 
   let cursor: string | undefined;
   let enumerated = 0;
@@ -158,17 +195,7 @@ export async function computeAlarmLogStats(
     for (const obj of result.objects) {
       if (enumerated >= safeLimit) break;
       enumerated += 1;
-      if (!isObjectInWindow(obj.customMetadata, windowStart, windowEnd)) continue;
-      const archived = await r2.get(obj.key);
-      if (!archived) continue;
-      const body = await archived.text();
-      const entries = extractAlarmLogEntries(body);
-      if (entries.length === 0) continue;
-      tripsScanned += 1;
-      for (const e of entries) {
-        totalEvents += 1;
-        accumulateEntry(e, outcomeCounts, reasonCounts, sourceCounts);
-      }
+      await scanTripEvidenceObject(r2, obj, windowStart, windowEnd, acc);
     }
     cursor = result.truncated && enumerated < safeLimit ? result.cursor : undefined;
   } while (cursor);
@@ -176,12 +203,12 @@ export async function computeAlarmLogStats(
   return {
     windowStart,
     windowEnd,
-    totalEvents,
-    fired: outcomeCounts.fired ?? 0,
-    suppressed: outcomeCounts.suppressed ?? 0,
-    received: outcomeCounts.received ?? 0,
-    reasons: topN(reasonCounts, 20),
-    sources: topN(sourceCounts, 20),
-    tripsScanned,
+    totalEvents: acc.totalEvents,
+    fired: acc.outcomeCounts.fired ?? 0,
+    suppressed: acc.outcomeCounts.suppressed ?? 0,
+    received: acc.outcomeCounts.received ?? 0,
+    reasons: topN(acc.reasonCounts, 20),
+    sources: topN(acc.sourceCounts, 20),
+    tripsScanned: acc.tripsScanned,
   };
 }

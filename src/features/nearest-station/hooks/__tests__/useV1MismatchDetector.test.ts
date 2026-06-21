@@ -20,6 +20,15 @@ import {
   V1_MISMATCH_DEDUP_WINDOW_MS,
 } from '../useV1MismatchDetector';
 
+/** rerender 가능한 hook factory — 4건 테스트의 동일 setup 중복 제거. */
+function renderDetector(initialProps: { ui: string | null; ssot: string | null }) {
+  return renderHook(
+    ({ ui, ssot }: { ui: string | null; ssot: string | null }) =>
+      useV1MismatchDetector(ui, ssot),
+    { initialProps },
+  );
+}
+
 describe('useV1MismatchDetector (#1621 Phase B)', () => {
   beforeEach(() => {
     mockAppend.mockReset();
@@ -69,10 +78,7 @@ describe('useV1MismatchDetector (#1621 Phase B)', () => {
   });
 
   it('같은 (ui, ssot) mismatch 반복 — re-render에도 effect 미재실행 (deps 안 변함)', () => {
-    const { rerender } = renderHook(
-      ({ ui, ssot }: { ui: string; ssot: string }) => useV1MismatchDetector(ui, ssot),
-      { initialProps: { ui: 'STN_UI', ssot: 'STN_SSOT' } },
-    );
+    const { rerender } = renderDetector({ ui: 'STN_UI', ssot: 'STN_SSOT' });
     expect(mockAppend).toHaveBeenCalledTimes(1);
     // 같은 props 재호출 — useEffect deps([ui, ssot]) 안 바뀌어 재실행 X.
     rerender({ ui: 'STN_UI', ssot: 'STN_SSOT' });
@@ -82,10 +88,7 @@ describe('useV1MismatchDetector (#1621 Phase B)', () => {
   });
 
   it('같은 쌍이 dedup window 안에 재진입 시 차단 (effect deps 변경 케이스)', () => {
-    const { rerender } = renderHook(
-      ({ ui, ssot }: { ui: string; ssot: string }) => useV1MismatchDetector(ui, ssot),
-      { initialProps: { ui: 'STN_UI', ssot: 'STN_SSOT' } },
-    );
+    const { rerender } = renderDetector({ ui: 'STN_UI', ssot: 'STN_SSOT' });
     expect(mockAppend).toHaveBeenCalledTimes(1);
     // 일시적으로 SSoT가 UI와 일치 → mismatch 아님 (적재 X).
     rerender({ ui: 'STN_UI', ssot: 'STN_UI' });
@@ -96,10 +99,7 @@ describe('useV1MismatchDetector (#1621 Phase B)', () => {
   });
 
   it('dedup 윈도우 만료 후 같은 쌍 재적재', () => {
-    const { rerender } = renderHook(
-      ({ ui, ssot }: { ui: string; ssot: string }) => useV1MismatchDetector(ui, ssot),
-      { initialProps: { ui: 'STN_UI', ssot: 'STN_SSOT' } },
-    );
+    const { rerender } = renderDetector({ ui: 'STN_UI', ssot: 'STN_SSOT' });
     expect(mockAppend).toHaveBeenCalledTimes(1);
     // 다른 쌍으로 잠시 전환
     rerender({ ui: 'STN_OTHER', ssot: 'STN_SSOT' });
@@ -111,10 +111,7 @@ describe('useV1MismatchDetector (#1621 Phase B)', () => {
   });
 
   it('다른 (ui, ssot) 쌍은 각각 적재', () => {
-    const { rerender } = renderHook(
-      ({ ui, ssot }: { ui: string; ssot: string }) => useV1MismatchDetector(ui, ssot),
-      { initialProps: { ui: 'STN_A', ssot: 'STN_X' } },
-    );
+    const { rerender } = renderDetector({ ui: 'STN_A', ssot: 'STN_X' });
     expect(mockAppend).toHaveBeenCalledTimes(1);
     rerender({ ui: 'STN_B', ssot: 'STN_Y' });
     expect(mockAppend).toHaveBeenCalledTimes(2);
