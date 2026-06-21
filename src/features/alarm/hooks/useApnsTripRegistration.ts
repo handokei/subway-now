@@ -26,6 +26,7 @@ import { registerActiveTrip, clearActiveTrip, type AlarmBoardingLock } from '../
 import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import { buildBoardingLockMeta } from '../utils/buildBoardingLockMeta';
 import { cancelTripBoundAlarms } from '../utils/tripBoundScheduler';
+import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { buildBoardingPromptContext, type BoardingPromptContext } from '../utils/boardingPromptContext';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../shared/constants/boardingLock';
@@ -357,6 +358,12 @@ export function useApnsTripRegistration({
       // 일시 null이 돼도 cachedPromptContext로 fallback하여 backend 9단 게이트가 계속 진입 가능.
       const freshCtx = buildBoardingPromptContext({ route, currentStation, destination });
       if (freshCtx) lastPromptContextRef.current = freshCtx;
+      // R11-a (#1612): trip register 직전 backend SSoT mirror 강제 clean.
+      // 스펙 docs/requirements/15-trip-alarm-notification.md:89 명시 요구사항 — "trip 등록(new)
+      // → 이전 SSoT mirror 강제 clear". 본 호출이 register API보다 먼저여야 race A
+      // (cleanup 후 OLD trip 지연 push로 mirror 부활) 차단의 1단계로 작동한다.
+      // 호출은 멱등 (clearBackendSsotMirror 키 부재 시 graceful no-op).
+      await clearBackendSsotMirror();
       const result = await callRegister({
         token,
         route,

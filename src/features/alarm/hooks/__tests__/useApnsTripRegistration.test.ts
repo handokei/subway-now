@@ -26,6 +26,12 @@ jest.mock('../../utils/tripBoundScheduler', () => ({
   cancelTripBoundAlarms: (...args: unknown[]) => mockCancelTripBoundAlarms(...args),
 }));
 
+// R11-a (#1612) — POST /trips 직전 backend SSoT mirror 강제 clean 검증.
+const mockClearBackendSsotMirror = jest.fn();
+jest.mock('../../utils/backendSsotMirror', () => ({
+  clearBackendSsotMirror: (...args: unknown[]) => mockClearBackendSsotMirror(...args),
+}));
+
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -66,6 +72,7 @@ describe('useApnsTripRegistration', () => {
     mockRegister.mockResolvedValue({ ok: true });
     mockClear.mockResolvedValue({ ok: true });
     mockCancelTripBoundAlarms.mockResolvedValue(undefined);
+    mockClearBackendSsotMirror.mockResolvedValue(undefined);
     (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
       if (key === APNS_TOKEN_KEY) return 'token-abc';
       return null;
@@ -122,6 +129,51 @@ describe('useApnsTripRegistration', () => {
     await waitFor(() =>
       expect(AsyncStorage.setItem).toHaveBeenCalledWith(ACTIVE_TRIP_KEY, 'token-abc'),
     );
+  });
+
+  // R11-a (#1612) — POST /trips 직전 backend SSoT mirror 강제 clean (cross-trip 잔재 root).
+  describe('R11-a (#1612) — POST /trips 직전 clearBackendSsotMirror', () => {
+    it('register 호출 직전 clearBackendSsotMirror가 1회 호출된다 (호출 순서: clear → register)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+        }),
+      );
+      await waitFor(() => expect(mockRegister).toHaveBeenCalledTimes(1));
+      expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1);
+      // invocationCallOrder로 clear가 register보다 먼저 실행됐는지 검증 — race A 차단의 1단계 보장.
+      const clearOrder = mockClearBackendSsotMirror.mock.invocationCallOrder[0];
+      const registerOrder = mockRegister.mock.invocationCallOrder[0];
+      expect(clearOrder).toBeLessThan(registerOrder);
+    });
+
+    it('route/destination 없으면 clearBackendSsotMirror 호출 안 함 (trip 종료 경로는 별경로)', async () => {
+      renderHook(() =>
+        useApnsTripRegistration({ route: null, destination: null, nextStationEtaSeconds: null }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockClearBackendSsotMirror).not.toHaveBeenCalled();
+    });
+
+    it('토큰 없으면 register skip되고 clearBackendSsotMirror도 호출 안 함', async () => {
+      (AsyncStorage.getItem as jest.Mock).mockResolvedValue(null);
+      renderHook(() =>
+        useApnsTripRegistration({
+          route: directRoute,
+          destination: station,
+          nextStationEtaSeconds: 120,
+        }),
+      );
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(mockRegister).not.toHaveBeenCalled();
+      expect(mockClearBackendSsotMirror).not.toHaveBeenCalled();
+    });
   });
 
   it('register 실패 시 ACTIVE_TRIP_KEY 저장 안 함', async () => {
