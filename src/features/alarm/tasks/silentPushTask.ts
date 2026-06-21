@@ -29,7 +29,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import i18next from 'i18next';
 import {
   persistBackendSsotMirror,
-  type AlarmEventMirror,
+  parseAlarmEventsMirror,
   type SilentPushSsotMirror,
 } from '../utils/backendSsotMirror';
 import type { LineNumber, Station } from '../../../shared/types/station';
@@ -445,7 +445,10 @@ export function validSsotMirror(value: unknown): SilentPushSsotMirror | undefine
       if (typeof p === 'string' && p.length > 0) passed.push(p);
     }
   }
-  const events = validAlarmEvents(alarmEvents);
+  // #1572 (T9) — alarmEvents 항목별 strict 검사. 빈 배열도 허용 (backend가 보낼 수 있음).
+  // array 아니면 undefined → SSoT 본체는 채택 (graceful, evaluateSsotFireGate는 mirror-missing fallback).
+  // backendSsotMirror.parseAlarmEventsMirror와 같은 narrow 정책 — 단일 진입점으로 통합 (SonarCloud CPD 회피).
+  const events = parseAlarmEventsMirror(alarmEvents);
   return {
     currentStationId,
     motionState,
@@ -454,37 +457,6 @@ export function validSsotMirror(value: unknown): SilentPushSsotMirror | undefine
     passedStations: passed,
     ...(events !== undefined ? { alarmEvents: events } : {}),
   };
-}
-
-/**
- * #1572 (T9) — alarmEvents 항목별 strict 검사. 빈 배열도 허용 (backend가 보낼 수 있음).
- * array 아니면 undefined → SSoT 본체는 채택 (graceful, evaluateSsotFireGate는 mirror-missing fallback).
- */
-function validAlarmEvents(value: unknown): AlarmEventMirror[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const filtered: AlarmEventMirror[] = [];
-  for (const item of value) {
-    if (item === null || typeof item !== 'object') continue;
-    const o = item as Record<string, unknown>;
-    if (typeof o.alarmId !== 'string' || o.alarmId.length === 0) continue;
-    if (typeof o.stationId !== 'string' || o.stationId.length === 0) continue;
-    if (
-      o.type !== 'station-passed' &&
-      o.type !== 'transfer' &&
-      o.type !== 'destination' &&
-      o.type !== 'imminent'
-    ) {
-      continue;
-    }
-    if (typeof o.decidedAt !== 'number' || !Number.isFinite(o.decidedAt)) continue;
-    filtered.push({
-      alarmId: o.alarmId,
-      stationId: o.stationId,
-      type: o.type,
-      decidedAt: o.decidedAt,
-    });
-  }
-  return filtered;
 }
 
 /**

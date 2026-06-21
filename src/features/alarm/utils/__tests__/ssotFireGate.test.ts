@@ -147,84 +147,58 @@ describe('evaluateSsotFireGate — mirror state × type matrix (#1572 T9)', () =
   });
 
   describe('fresh + match → blocked', () => {
-    it('Gate A: alarmId 매칭 → blocked (gate-alarm-already-decided)', async () => {
-      mockGetItem.mockResolvedValue(makeMirror());
-      const out = await evaluateSsotFireGate({
-        alarmId: 'aaa111',
-        stationId: 'X',
-        type: 'transfer',
-        now: NOW,
-      });
-      expect(out).toEqual({ blocked: true, reason: 'gate-alarm-already-decided' });
-    });
-
-    it('Gate B: passedStations 매칭 + type=station-passed → blocked', async () => {
-      mockGetItem.mockResolvedValue(makeMirror());
-      const out = await evaluateSsotFireGate({
-        alarmId: 'different',
-        stationId: '용마산',
-        type: 'station-passed',
-        now: NOW,
-      });
-      expect(out).toEqual({ blocked: true, reason: 'gate-station-already-passed' });
-    });
-
-    it('Gate B: passedStations 매칭 + type=imminent → blocked', async () => {
-      mockGetItem.mockResolvedValue(makeMirror());
-      const out = await evaluateSsotFireGate({
-        alarmId: 'different',
-        stationId: '용마산',
-        type: 'imminent',
-        now: NOW,
-      });
-      expect(out).toEqual({ blocked: true, reason: 'gate-station-already-passed' });
-    });
-
-    it('Gate B: alarmEvents에 station-passed entry 매칭 → blocked', async () => {
-      // passedStations 비우고 alarmEvents에만 있는 경우.
-      mockGetItem.mockResolvedValue(
-        makeMirror({
+    // it.each 매트릭스로 Gate A/B 시나리오 통합 — 같은 4-line evaluate+expect 블록 5개 반복 dup 회피.
+    // [name, mirrorOverrides, input, expected]
+    const matchCases: Array<{
+      name: string;
+      mirrorOverrides?: Parameters<typeof makeMirror>[0];
+      input: Parameters<typeof evaluateSsotFireGate>[0];
+      expected: { blocked: boolean; reason: string };
+    }> = [
+      {
+        name: 'Gate A: alarmId 매칭 → blocked (gate-alarm-already-decided)',
+        input: { alarmId: 'aaa111', stationId: 'X', type: 'transfer', now: NOW },
+        expected: { blocked: true, reason: 'gate-alarm-already-decided' },
+      },
+      {
+        name: 'Gate B: passedStations 매칭 + type=station-passed → blocked',
+        input: { alarmId: 'different', stationId: '용마산', type: 'station-passed', now: NOW },
+        expected: { blocked: true, reason: 'gate-station-already-passed' },
+      },
+      {
+        name: 'Gate B: passedStations 매칭 + type=imminent → blocked',
+        input: { alarmId: 'different', stationId: '용마산', type: 'imminent', now: NOW },
+        expected: { blocked: true, reason: 'gate-station-already-passed' },
+      },
+      {
+        // passedStations 비우고 alarmEvents에만 있는 경우.
+        name: 'Gate B: alarmEvents에 station-passed entry 매칭 → blocked',
+        mirrorOverrides: {
           passedStations: [],
           alarmEvents: [
-            {
-              alarmId: 'aaa111',
-              stationId: '용마산',
-              type: 'station-passed',
-              decidedAt: NOW,
-            },
+            { alarmId: 'aaa111', stationId: '용마산', type: 'station-passed', decidedAt: NOW },
           ],
-        }),
-      );
-      const out = await evaluateSsotFireGate({
-        alarmId: 'different',
-        stationId: '용마산',
-        type: 'station-passed',
-        now: NOW,
-      });
-      expect(out).toEqual({ blocked: true, reason: 'gate-station-already-passed' });
-    });
-
-    it('Gate B: alarmEvents에 transfer type entry만 있고 stationId 매칭 → no-block (transfer는 Gate B 미적용)', async () => {
-      mockGetItem.mockResolvedValue(
-        makeMirror({
+        },
+        input: { alarmId: 'different', stationId: '용마산', type: 'station-passed', now: NOW },
+        expected: { blocked: true, reason: 'gate-station-already-passed' },
+      },
+      {
+        name: 'Gate B: alarmEvents에 transfer type entry만 있고 stationId 매칭 → no-block (transfer는 Gate B 미적용)',
+        mirrorOverrides: {
           passedStations: [],
           alarmEvents: [
-            {
-              alarmId: 'tt',
-              stationId: '용마산',
-              type: 'transfer',
-              decidedAt: NOW,
-            },
+            { alarmId: 'tt', stationId: '용마산', type: 'transfer', decidedAt: NOW },
           ],
-        }),
-      );
-      const out = await evaluateSsotFireGate({
-        alarmId: 'different',
-        stationId: '용마산',
-        type: 'station-passed',
-        now: NOW,
-      });
-      expect(out).toEqual({ blocked: false, reason: 'no-match' });
+        },
+        input: { alarmId: 'different', stationId: '용마산', type: 'station-passed', now: NOW },
+        expected: { blocked: false, reason: 'no-match' },
+      },
+    ];
+
+    it.each(matchCases)('$name', async ({ mirrorOverrides, input, expected }) => {
+      mockGetItem.mockResolvedValue(makeMirror(mirrorOverrides));
+      const out = await evaluateSsotFireGate(input);
+      expect(out).toEqual(expected);
     });
   });
 

@@ -139,7 +139,7 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
     const lockSuggestion = parseLockSuggestion(parsed.lockSuggestion);
     // #1572 (T9) — alarmEvents parse (optional). 부재/형식 mismatch entry는 graceful drop —
     // 잔여만 채택 (passedStations와 동일 패턴).
-    const alarmEvents = parseAlarmEvents(parsed.alarmEvents);
+    const alarmEvents = parseAlarmEventsMirror(parsed.alarmEvents);
     return {
       currentStationId: parsed.currentStationId,
       motionState: parsed.motionState,
@@ -162,8 +162,12 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
  *
  * raw가 array가 아니면 undefined (필드 자체 omit). array면 각 entry를 narrow — 통과한 것만 채택.
  * 잔여 0개여도 빈 배열 반환 (caller는 "fresh empty" vs "missing"을 mirror.alarmEvents 정의 여부로 구분).
+ *
+ * AsyncStorage 영속 mirror read 시(`readBackendSsotMirror`)와 silent push payload validation 시
+ * (`silentPushTask.validSsotMirror`) 둘 다 같은 형식 narrow가 필요 — 양쪽에서 본 함수를 호출한다.
+ * 통합으로 SonarCloud CPD dup 회피 + backend AlarmEventPayload 어휘 확장 시 단일 진입점.
  */
-function parseAlarmEvents(raw: unknown): readonly AlarmEventMirror[] | undefined {
+export function parseAlarmEventsMirror(raw: unknown): readonly AlarmEventMirror[] | undefined {
   if (!Array.isArray(raw)) return undefined;
   const filtered: AlarmEventMirror[] = [];
   for (const item of raw) {

@@ -294,6 +294,46 @@ async function runSilenceGateAndDispatch(params: {
 }
 
 /**
+ * #1572 (T9, ADR-017) — station-passed fire path SSoT 게이트 평가 + blocked 시 alarmLog 적재.
+ *
+ * 3 fire path(A=GPS station-passed / B=FG-arvlcd fast-path / C=subsurface verdict)가 같은
+ * 5-line SSoT gate 시퀀스(evaluateSsotFireGate → cancelled 재확인 → ssotGate.blocked 분기 →
+ * logSuppressedSsotFireGate)를 반복해 SonarCloud CPD가 dup 검출. 본 helper로 통합한다.
+ *
+ * 호출 규약:
+ *   - 입력: candidateStation (id+name) / source / isCancelled callback.
+ *   - kind는 'station-passed'로 고정 (3 path 모두 station-passed 카테고리). alarmId 형식도 동일.
+ *   - 반환 true: 차단됨 → caller가 즉시 return. cancelled=true도 true로 묶어 caller의 cancelled 분기 단순화.
+ *   - 반환 false: 통과 → caller가 다음 단계(dispatch 등) 진행.
+ *
+ * Path D (`fireAndLog` 내부)는 sync `firedAlarmsRef.current.delete(key)` cleanup이 끼어 있어
+ * 본 helper를 사용하지 않는다 (Sonar dup 블록 대상에서 제외됨).
+ */
+async function evaluateSsotFireGateAndLogIfBlocked(params: {
+  candidateStation: Station;
+  source: 'fg' | 'fg-arvlcd';
+  isCancelled: () => boolean;
+}): Promise<boolean> {
+  const { candidateStation, source, isCancelled } = params;
+  const ssotGate = await evaluateSsotFireGate({
+    alarmId: `station-passed:${candidateStation.name}`,
+    stationId: candidateStation.id,
+    type: 'station-passed',
+  });
+  if (isCancelled()) return true;
+  if (ssotGate.blocked) {
+    logSuppressedSsotFireGate({
+      source,
+      reason: ssotGate.reason as 'gate-alarm-already-decided' | 'gate-station-already-passed',
+      stationName: candidateStation.name,
+      kind: 'station-passed',
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
  * #1208 (Epic #1204 D2) — firedAlarms set 기반 fallback hop 추정.
  *
  * 우선 SSOT(estimator.index / lock 진행 시간)이 모두 부재할 때 사용.
@@ -1009,19 +1049,14 @@ export function useStationAlarm({
         // #1572 (T9) — backend SSoT 권위 게이트 (Path A). mirror.alarmEvents에 같은 alarmId가
         // 이미 있거나(Gate A) mirror.passedStations/alarmEvents에 같은 stationId가 station-passed로
         // 이미 결정됐으면(Gate B) fire 차단. mirror 부재/stale은 graceful no-block.
-        const ssotGate = await evaluateSsotFireGate({
-          alarmId: `station-passed:${candidateStation.name}`,
-          stationId: candidateStation.id,
-          type: 'station-passed',
-        });
-        if (cancelled) return;
-        if (ssotGate.blocked) {
-          logSuppressedSsotFireGate({
+        // #1572 — 3 path 공통 helper로 통합 (SonarCloud CPD 회피).
+        if (
+          await evaluateSsotFireGateAndLogIfBlocked({
+            candidateStation,
             source: 'fg',
-            reason: ssotGate.reason as 'gate-alarm-already-decided' | 'gate-station-already-passed',
-            stationName: candidateStation.name,
-            kind: 'station-passed',
-          });
+            isCancelled: () => cancelled,
+          })
+        ) {
           return;
         }
         await runSilenceGateAndDispatch({
@@ -1149,19 +1184,14 @@ export function useStationAlarm({
 
       // #1572 (T9) — backend SSoT 권위 게이트 (Path B fast-path). FG-arvlcd가 backend가 이미
       // 결정한 alarmId/stationId를 재발사하는 회귀 차단. hop window 통과 직후, dispatch 전에 평가.
-      const ssotGate = await evaluateSsotFireGate({
-        alarmId: `station-passed:${candidateStation.name}`,
-        stationId: candidateStation.id,
-        type: 'station-passed',
-      });
-      if (cancelled) return;
-      if (ssotGate.blocked) {
-        logSuppressedSsotFireGate({
+      // #1572 — 3 path 공통 helper로 통합 (SonarCloud CPD 회피).
+      if (
+        await evaluateSsotFireGateAndLogIfBlocked({
+          candidateStation,
           source: 'fg-arvlcd',
-          reason: ssotGate.reason as 'gate-alarm-already-decided' | 'gate-station-already-passed',
-          stationName: candidateStation.name,
-          kind: 'station-passed',
-        });
+          isCancelled: () => cancelled,
+        })
+      ) {
         return;
       }
 
@@ -1237,19 +1267,14 @@ export function useStationAlarm({
       if (cancelled) return;
       // #1572 (T9) — backend SSoT 권위 게이트 (Path C subsurface verdict). subsurface fusion이
       // backend가 이미 결정한 alarmId/stationId를 재발사하는 회귀 차단. dispatch helper 진입 직전 평가.
-      const ssotGate = await evaluateSsotFireGate({
-        alarmId: `station-passed:${candidateStation.name}`,
-        stationId: candidateStation.id,
-        type: 'station-passed',
-      });
-      if (cancelled) return;
-      if (ssotGate.blocked) {
-        logSuppressedSsotFireGate({
+      // #1572 — 3 path 공통 helper로 통합 (SonarCloud CPD 회피).
+      if (
+        await evaluateSsotFireGateAndLogIfBlocked({
+          candidateStation,
           source: 'fg',
-          reason: ssotGate.reason as 'gate-alarm-already-decided' | 'gate-station-already-passed',
-          stationName: candidateStation.name,
-          kind: 'station-passed',
-        });
+          isCancelled: () => cancelled,
+        })
+      ) {
         return;
       }
       await runSilenceGateAndDispatch({

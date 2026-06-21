@@ -824,12 +824,16 @@ describe('advanceTripPosition — alarmEvents stamping (#1572 T9)', () => {
     kv = new InMemoryKV();
   });
 
-  it('advance 성공 → 이전 currentStationId가 alarmEvents에 station-passed로 stamp', async () => {
+  // Shared setup — seedSsot(motion) + putTrip(with lock) + advanceTripPosition 4-line 시퀀스.
+  // 3 case가 motion state만 다르고 나머지가 동일 → factory + advance 호출 통합으로 SonarCloud CPD 회피.
+  async function setupAndAdvance(motion: 'moving' | 'stationary'): Promise<{
+    result: 'advanced' | 'blocked';
+    after: Awaited<ReturnType<typeof readSsot>>;
+  }> {
     const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
-    ssot.motionState = 'moving';
+    ssot.motionState = motion;
     await writeSsot(kv as unknown as KVNamespace, ssot);
     await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
-
     const out = await advanceTripPosition(
       kv as unknown as KVNamespace,
       TOKEN,
@@ -837,9 +841,13 @@ describe('advanceTripPosition — alarmEvents stamping (#1572 T9)', () => {
       makeEvidence(),
       { gatePassed: true, lockAttachable: true },
     );
-
-    expect(out.result).toBe('advanced');
     const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    return { result: out.result, after };
+  }
+
+  it('advance 성공 → 이전 currentStationId가 alarmEvents에 station-passed로 stamp', async () => {
+    const { result, after } = await setupAndAdvance('moving');
+    expect(result).toBe('advanced');
     expect(after?.alarmEvents).toHaveLength(1);
     expect(after?.alarmEvents?.[0].stationId).toBe('용마산');
     expect(after?.alarmEvents?.[0].type).toBe('station-passed');
@@ -847,44 +855,18 @@ describe('advanceTripPosition — alarmEvents stamping (#1572 T9)', () => {
   });
 
   it('advance 성공 idempotent → 같은 stationId 두 번 advance해도 alarmEvents 1건', async () => {
-    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
-    ssot.motionState = 'moving';
-    await writeSsot(kv as unknown as KVNamespace, ssot);
-    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
-
-    await advanceTripPosition(
-      kv as unknown as KVNamespace,
-      TOKEN,
-      '중곡',
-      makeEvidence(),
-      { gatePassed: true, lockAttachable: true },
-    );
-
     // 다시 같은 currentStationId로 strong evidence 재진입 — 게이트는 통과하지만 같은 alarmId라 skip.
     // 실제 시나리오는 ssot.currentStationId가 이미 '중곡'이므로 advance가 새 alarmEvent를 stamp
     // (이전 currentStationId='중곡')하면 alarmId 다름. 본 테스트는 idempotent 보호 패턴을 직접 검증.
     // tripPositionSsot.test.ts에서 appendAlarmEvent idempotency를 별도 검증 — 본 테스트는 핵심
     // 시나리오(advance가 stamp까지 1 cycle에서 완료)만 확인.
-    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    const { after } = await setupAndAdvance('moving');
     expect(after?.alarmEvents).toHaveLength(1);
   });
 
   it('blocked advance → alarmEvents stamp 안 함', async () => {
-    const ssot = await seedSsot(kv as unknown as KVNamespace, TOKEN, '용마산');
-    ssot.motionState = 'stationary'; // motion gate 차단
-    await writeSsot(kv as unknown as KVNamespace, ssot);
-    await putTrip(kv as unknown as KVNamespace, makeTrip({ boardingLock: makeLock() }));
-
-    const out = await advanceTripPosition(
-      kv as unknown as KVNamespace,
-      TOKEN,
-      '중곡',
-      makeEvidence(),
-      { gatePassed: true, lockAttachable: true },
-    );
-
-    expect(out.result).toBe('blocked');
-    const after = await readSsot(kv as unknown as KVNamespace, TOKEN);
+    const { result, after } = await setupAndAdvance('stationary'); // motion gate 차단
+    expect(result).toBe('blocked');
     expect(after?.alarmEvents).toEqual([]);
   });
 });
