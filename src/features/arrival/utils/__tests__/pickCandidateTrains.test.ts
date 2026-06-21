@@ -246,7 +246,7 @@ describe('pickCandidateTrains', () => {
         [{ trainNo: 'NEAR', statnNm: '시청' }, { trainNo: 'FAR', statnNm: '강변(동서울터미널)' }],
         { userLocation, stationCoordinates, onReject },
       );
-      expect(result.map((t) => t.trainNo).sort()).toEqual(['FAR', 'NEAR']);
+      expect(result.map((t) => t.trainNo).sort((a, b) => a.localeCompare(b))).toEqual(['FAR', 'NEAR']);
       expect(onReject).not.toHaveBeenCalled();
     });
 
@@ -274,7 +274,7 @@ describe('pickCandidateTrains', () => {
         [{ trainNo: 'A', statnNm: '시청' }, { trainNo: 'B', statnNm: '을지로입구' }],
         { userLocation: SICHEONG, stationCoordinates: makeCoords(), onReject },
       );
-      expect(result.map((t) => t.trainNo).sort()).toEqual(['A', 'B']);
+      expect(result.map((t) => t.trainNo).sort((a, b) => a.localeCompare(b))).toEqual(['A', 'B']);
       expect(onReject).not.toHaveBeenCalled();
     });
 
@@ -288,7 +288,7 @@ describe('pickCandidateTrains', () => {
         [{ trainNo: 'NEAR', statnNm: '시청' }, { trainNo: 'UNKNOWN', statnNm: '강변(동서울터미널)' }],
         { userLocation: SICHEONG, stationCoordinates: partialCoords, onReject },
       );
-      expect(result.map((t) => t.trainNo).sort()).toEqual(['NEAR', 'UNKNOWN']);
+      expect(result.map((t) => t.trainNo).sort((a, b) => a.localeCompare(b))).toEqual(['NEAR', 'UNKNOWN']);
       expect(onReject).not.toHaveBeenCalled();
     });
 
