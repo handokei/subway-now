@@ -45,6 +45,12 @@ jest.mock('../../utils/backendSsotMirror', () => ({
   clearBackendSsotMirror: (...args: unknown[]) => mockClearBackendSsotMirror(...args),
 }));
 
+// #1628 — R11-c 차단 1건 측정 검증. clear 호출과 짝지어 같은 site에서 1회만 발사.
+const mockLogCrossTripMirrorSkip = jest.fn();
+jest.mock('../../utils/alarmLog', () => ({
+  logCrossTripMirrorSkip: (...args: unknown[]) => mockLogCrossTripMirrorSkip(...args),
+}));
+
 // #1597 — trip 종료 ended 경로에서 cleanup 직전에 corrId snapshot 캡처 + cleanup 후 prompt enqueue.
 const mockGetCurrentTripCorrIdSync = jest.fn(() => null);
 jest.mock('../../../observability/utils/tripCorrId', () => ({
@@ -101,6 +107,9 @@ describe('runLaunchTripReconciliation', () => {
       await runLaunchTripReconciliation();
       expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1);
       expect(mockFetchTripStatus).not.toHaveBeenCalled();
+      // #1628 — R11-c 측정 wire-completion: clear와 짝지어 logCrossTripMirrorSkip('launch') 1회.
+      expect(mockLogCrossTripMirrorSkip).toHaveBeenCalledWith('launch');
+      expect(mockLogCrossTripMirrorSkip).toHaveBeenCalledTimes(1);
     });
 
     it('ACTIVE_TRIP_KEY 존재 → clearBackendSsotMirror 호출 안 함 (기존 동작 보존)', async () => {
@@ -112,6 +121,8 @@ describe('runLaunchTripReconciliation', () => {
       });
       await runLaunchTripReconciliation();
       expect(mockClearBackendSsotMirror).not.toHaveBeenCalled();
+      // #1628 — clear가 안 됐으면 측정도 안 발사.
+      expect(mockLogCrossTripMirrorSkip).not.toHaveBeenCalled();
     });
   });
 

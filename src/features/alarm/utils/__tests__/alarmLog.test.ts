@@ -49,6 +49,8 @@ import {
   logSuppressedHopWindow,
   logSuppressedHopWindowNoSource,
   logSuppressedLocklessForwardOnly,
+  logFusionCandidateDistanceReject,
+  logCrossTripMirrorSkip,
   logSuppressedOriginHopLockless,
   logSuppressedPassedEventOnLockOrigin,
   logSuppressedSsotFireGate,
@@ -787,6 +789,94 @@ describe('alarmLog', () => {
       const matching = saved.filter((e) => e.reason === 'lockless-forward-only-block');
       // 첫 entry 한 건 (burst inline count로 누적되거나 단일 entry 유지).
       expect(matching).toHaveLength(1);
+    });
+
+    it('#1628 logFusionCandidateDistanceReject: reason=candidate-distance-reject + source=fusion-candidate-reject + stationName stamped', async () => {
+      _resetBurstSuppressWindowForTests();
+      logFusionCandidateDistanceReject({ stationName: '시청' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fusion-candidate-reject',
+        outcome: 'suppressed',
+        reason: 'candidate-distance-reject',
+        stationName: '시청',
+      });
+    });
+
+    it('#1628 logFusionCandidateDistanceReject: burst dedup applies — same stationName within window dropped', async () => {
+      _resetBurstSuppressWindowForTests();
+      logFusionCandidateDistanceReject({ stationName: '시청' });
+      logFusionCandidateDistanceReject({ stationName: '시청' });
+      logFusionCandidateDistanceReject({ stationName: '시청' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'candidate-distance-reject');
+      expect(matching).toHaveLength(1);
+    });
+
+    it('#1628 logFusionCandidateDistanceReject: different stationName entries are NOT deduped', async () => {
+      _resetBurstSuppressWindowForTests();
+      logFusionCandidateDistanceReject({ stationName: '시청' });
+      logFusionCandidateDistanceReject({ stationName: '종각' });
+      logFusionCandidateDistanceReject({ stationName: '종로3가' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'candidate-distance-reject');
+      expect(matching).toHaveLength(3);
+    });
+
+    it.each([
+      ['register' as const, 'cross-trip-mirror-register' as const],
+      ['mismatch' as const, 'cross-trip-mirror-mismatch' as const],
+      ['launch' as const, 'cross-trip-mirror-launch' as const],
+    ])(
+      '#1628 logCrossTripMirrorSkip(%s): reason=cross-trip-mirror-skip + source=%s',
+      async (site, expectedSource) => {
+        _resetBurstSuppressWindowForTests();
+        logCrossTripMirrorSkip(site);
+        await flushAlarmLog();
+
+        const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+        const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+        expect(saved[0]).toMatchObject({
+          source: expectedSource,
+          outcome: 'suppressed',
+          reason: 'cross-trip-mirror-skip',
+        });
+      },
+    );
+
+    it('#1628 logCrossTripMirrorSkip: burst dedup applies per site — same site within window dropped', async () => {
+      _resetBurstSuppressWindowForTests();
+      logCrossTripMirrorSkip('register');
+      logCrossTripMirrorSkip('register');
+      logCrossTripMirrorSkip('register');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'cross-trip-mirror-skip');
+      expect(matching).toHaveLength(1);
+    });
+
+    it('#1628 logCrossTripMirrorSkip: different sites are NOT deduped (independent burst keys)', async () => {
+      _resetBurstSuppressWindowForTests();
+      logCrossTripMirrorSkip('register');
+      logCrossTripMirrorSkip('mismatch');
+      logCrossTripMirrorSkip('launch');
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'cross-trip-mirror-skip');
+      expect(matching).toHaveLength(3);
     });
 
     it('#1514 logSuppressedOriginHopLockless: reason=gate-origin-hop-lockless + kind=station-passed', async () => {

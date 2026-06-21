@@ -51,6 +51,7 @@ import { flushSignalDumpOutbox } from '../api/signalDumpBackend';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
+import { logCrossTripMirrorSkip } from '../utils/alarmLog';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useLaunchTripReconciliation');
@@ -87,6 +88,8 @@ export async function runLaunchTripReconciliation(): Promise<void> {
       // tier로 stale stationId를 채택해 cross-trip 잔재(2026-06-20 12:30 어대 → 용마산 도착) 회귀.
       // cleanup은 멱등 — 키 부재 시 graceful no-op.
       await clearBackendSsotMirror();
+      // #1628 — R11-c 차단 1건 측정.
+      logCrossTripMirrorSkip('launch');
       return;
     }
 

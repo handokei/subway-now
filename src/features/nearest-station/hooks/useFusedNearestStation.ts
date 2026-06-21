@@ -31,7 +31,10 @@ import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
 import { estimateArcStationsFromRoute } from '../../route/utils/arcEstimation';
-import { logSuppressedLocklessForwardOnly } from '../../alarm/utils/alarmLog';
+import {
+  logFusionCandidateDistanceReject,
+  logSuppressedLocklessForwardOnly,
+} from '../../alarm/utils/alarmLog';
 import { haversine } from '../../../shared/utils/haversine';
 import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { isWithinArcWindow, passesFusionDistanceGate } from '../utils/fusionDistanceGate';
@@ -540,6 +543,9 @@ export function useFusedNearestStation(
               line: info.line,
               distanceKm: info.distanceKm,
             });
+            // #1628 — alarmLog kind에도 mirror 적재. `/admin/alarm-log-stats`는 kind='alarmLog'만
+            // 카운트하므로 R12-a reject 효과를 측정하려면 alarmLog 적재가 필수.
+            logFusionCandidateDistanceReject({ stationName: info.stationName });
           },
         }),
       );
