@@ -253,4 +253,74 @@ describe('trackTrainProgress — forward-only guard (#1017)', () => {
     expect(result?.trainNo).toBe('A');
     expect(result?.confidence).toBe('single');
   });
+
+  // #1616 (R8a) — onFilteredBackward 콜백.
+  describe('onFilteredBackward callback (R8a)', () => {
+    it('invokes callback for each rejected backward candidate when forward survivors exist', () => {
+      const onFilteredBackward = jest.fn();
+      trackTrainProgress({
+        candidates: [
+          makeCandidate({ trainNo: 'BACK1', currentStationName: '시청' }), // backward (boardingIdx=2)
+          makeCandidate({ trainNo: 'BACK2', currentStationName: '을지로입구' }), // backward
+          makeCandidate({ trainNo: 'FWD', currentStationName: '을지로4가' }), // forward
+        ],
+        segmentStations: SEGMENT_2_3,
+        boardingStationId: stationOf('을지로3가').id,
+        onFilteredBackward,
+      });
+      expect(onFilteredBackward).toHaveBeenCalledTimes(2);
+      expect(onFilteredBackward).toHaveBeenNthCalledWith(1, { trainNo: 'BACK1', stationName: '시청' });
+      expect(onFilteredBackward).toHaveBeenNthCalledWith(2, { trainNo: 'BACK2', stationName: '을지로입구' });
+    });
+
+    it('does NOT invoke callback when ALL candidates are backward (fallback path)', () => {
+      // 전부 backward → forward.length===0 → fallback로 resolved 전체 사용 → 측정 의미 없음.
+      const onFilteredBackward = jest.fn();
+      trackTrainProgress({
+        candidates: [
+          makeCandidate({ trainNo: 'BACK1', currentStationName: '시청' }),
+          makeCandidate({ trainNo: 'BACK2', currentStationName: '을지로입구' }),
+        ],
+        segmentStations: SEGMENT_2_3,
+        boardingStationId: stationOf('을지로3가').id,
+        userLocation: NEAR_SICHEONG,
+        onFilteredBackward,
+      });
+      expect(onFilteredBackward).not.toHaveBeenCalled();
+    });
+
+    it('does NOT invoke callback when no backward candidates exist', () => {
+      const onFilteredBackward = jest.fn();
+      trackTrainProgress({
+        candidates: [makeCandidate({ trainNo: 'FWD', currentStationName: '을지로4가' })],
+        segmentStations: SEGMENT_2_3,
+        boardingStationId: stationOf('을지로3가').id,
+        onFilteredBackward,
+      });
+      expect(onFilteredBackward).not.toHaveBeenCalled();
+    });
+
+    it('does NOT invoke callback when guard is OFF (segmentStations / boardingStationId 없음)', () => {
+      const onFilteredBackward = jest.fn();
+      trackTrainProgress({
+        candidates: [makeCandidate({ trainNo: 'A', currentStationName: '시청' })],
+        onFilteredBackward,
+      });
+      expect(onFilteredBackward).not.toHaveBeenCalled();
+    });
+
+    it('skips reject (no-op) when onFilteredBackward is undefined', () => {
+      // 콜백 없어도 정상 동작 (기존 #1017 회귀 0).
+      const result = trackTrainProgress({
+        candidates: [
+          makeCandidate({ trainNo: 'BACK', currentStationName: '시청' }),
+          makeCandidate({ trainNo: 'FWD', currentStationName: '을지로4가' }),
+        ],
+        segmentStations: SEGMENT_2_3,
+        boardingStationId: stationOf('을지로3가').id,
+        // onFilteredBackward omitted
+      });
+      expect(result?.trainNo).toBe('FWD');
+    });
+  });
 });

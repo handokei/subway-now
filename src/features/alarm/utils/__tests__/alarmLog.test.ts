@@ -48,6 +48,7 @@ import {
   logSuppressedStationPassedWarmup,
   logSuppressedHopWindow,
   logSuppressedHopWindowNoSource,
+  logSuppressedLocklessForwardOnly,
   logSuppressedOriginHopLockless,
   logSuppressedPassedEventOnLockOrigin,
   logSuppressedSsotFireGate,
@@ -754,6 +755,38 @@ describe('alarmLog', () => {
         stationName: '용마산',
         kind: 'station-passed',
       });
+    });
+
+    it('#1616 (R8a) logSuppressedLocklessForwardOnly: reason=lockless-forward-only-block + source=fg-evaluated + trainNo stamped', async () => {
+      logSuppressedLocklessForwardOnly({
+        rejectedStationName: '시청',
+        rejectedTrainNo: 'BACK',
+      });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      expect(saved[0]).toMatchObject({
+        source: 'fg-evaluated',
+        outcome: 'suppressed',
+        reason: 'lockless-forward-only-block',
+        stationName: '시청',
+        usedTrainCode: 'BACK',
+      });
+    });
+
+    it('#1616 (R8a) logSuppressedLocklessForwardOnly: burst dedup applies — repeated same station within window dropped', async () => {
+      _resetBurstSuppressWindowForTests();
+      logSuppressedLocklessForwardOnly({ rejectedStationName: '시청', rejectedTrainNo: 'A' });
+      logSuppressedLocklessForwardOnly({ rejectedStationName: '시청', rejectedTrainNo: 'B' });
+      logSuppressedLocklessForwardOnly({ rejectedStationName: '시청', rejectedTrainNo: 'C' });
+      await flushAlarmLog();
+
+      const [, savedJson] = (AsyncStorage.setItem as jest.Mock).mock.calls[0];
+      const saved: AlarmLogEntry[] = JSON.parse(savedJson);
+      const matching = saved.filter((e) => e.reason === 'lockless-forward-only-block');
+      // 첫 entry 한 건 (burst inline count로 누적되거나 단일 entry 유지).
+      expect(matching).toHaveLength(1);
     });
 
     it('#1514 logSuppressedOriginHopLockless: reason=gate-origin-hop-lockless + kind=station-passed', async () => {

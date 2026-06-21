@@ -29,6 +29,8 @@ import { shouldDowngradeFusion } from '../utils/movementGate';
 import type { PositionStability } from '../utils/positionStaticDetector';
 import { pickCandidateTrains, type CandidateTrain } from '../../arrival/utils/pickCandidateTrains';
 import { trackTrainProgress } from '../../route/utils/trackTrainProgress';
+import { estimateArcStationsFromRoute } from '../../route/utils/arcEstimation';
+import { logSuppressedLocklessForwardOnly } from '../../alarm/utils/alarmLog';
 import { haversine } from '../../../shared/utils/haversine';
 import { findStationByName, findStationByNameAndLine } from '../../../shared/utils/stationLookup';
 import { isWithinArcWindow, passesFusionDistanceGate } from '../utils/fusionDistanceGate';
@@ -542,17 +544,44 @@ export function useFusedNearestStation(
     return arc?.stations ?? [];
   }, [routeContext]);
 
+  // #1616 (R8a) — lockless 시 forward-only 가드 활성화.
+  // boardingLock이 있으면 기존 동작(#1017): arcStations + lock.boardingStationId 그대로 사용.
+  // 없으면 estimateArcStationsFromRoute로 route + GPS 위치 기준 추정 윈도우 산출 — backward
+  // jump 차단 안전망. 추정 실패 시(route/origin/destination/GPS 없음) undefined로 fallback해
+  // 기존 lockless 동작 유지(회귀 0).
+  const locklessGuard = useMemo(() => {
+    if (boardingLock) return undefined;
+    return estimateArcStationsFromRoute({
+      route: routeContext?.route ?? null,
+      origin: routeContext?.origin ?? null,
+      destination: routeContext?.destination ?? null,
+      userLocation: gps.userLocation,
+    });
+  }, [boardingLock, routeContext, gps.userLocation]);
+
   const trainProgress = useMemo(
     () =>
       trackTrainProgress({
         candidates: candidateTrains,
         userLocation: gps.userLocation,
         lastConfirmedTrainNo: lastConfirmedTrainNoRef.current,
-        // #1017 forward-only 가드 — boardingLock이 있을 때만 적용.
-        segmentStations: boardingLock ? arcStations : undefined,
-        boardingStationId: boardingLock?.boardingStationId,
+        // #1017 + #1616 (R8a) forward-only 가드.
+        //   - boardingLock 활성: 기존 (#1017) arcStations + lock.boardingStationId.
+        //   - lockless: estimateArcStationsFromRoute 결과 (없으면 undefined → 가드 OFF graceful).
+        segmentStations: boardingLock ? arcStations : locklessGuard?.segmentStations,
+        boardingStationId: boardingLock?.boardingStationId ?? locklessGuard?.boardingStationId,
+        // #1616 (R8a) — lockless 시 forward-only 가드가 backward를 reject한 케이스만 alarmLog 적재.
+        // boardingLock 활성 시는 기존 (#1017) 가드와 동일 동작 — 별도 측정 X (lock 신호가 이미 강한 근거).
+        onFilteredBackward: boardingLock
+          ? undefined
+          : (info) => {
+              logSuppressedLocklessForwardOnly({
+                rejectedStationName: info.stationName,
+                rejectedTrainNo: info.trainNo,
+              });
+            },
       }),
-    [candidateTrains, gps.userLocation, boardingLock, arcStations],
+    [candidateTrains, gps.userLocation, boardingLock, arcStations, locklessGuard],
   );
 
   // #445: trainProgress 갱신 시각 추적 + TTL 만료 후 첫 갱신에서 sticky 락 해제.
