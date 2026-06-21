@@ -641,12 +641,16 @@ export function useFusedNearestStation(
   // 우선순위(Phase 1C 역전): position-train > position/arrival(fused) > route-progress > gps.
   // 기존: route-progress가 fused를 덮어쓰고 있었음.
   // #444: fused/route도 채택 직전 거리 sanity 통과 검사 — 미통과 시 다음 우선순위로.
+  // R13-a (#1612): lockActive를 fused/route caller에도 전달 — lock 활성 trip의 fused/route는
+  // strict bad-accuracy 가드 면제 (positionTrain caller와 동일 정신). lockless trip은 lockActive=false로
+  // R13-a strict reject 자연 적용 — 지하 dead zone 누수 차단.
   const gateOpts = {
     userLocation: gps.userLocation,
     accuracyMeters: gps.accuracyMeters,
     gpsNearest: candidates[0],
     maxAbsoluteKm: MAX_FUSION_DISTANCE_KM,
     maxDeltaKm: MAX_FUSION_DELTA_KM,
+    lockActive: boardingLock != null,
   };
   // #662: BoardingLock 활성 시 fused도 lock.boardingLine과 다른 노선이면 강등 — positionTrain과
   // 동일 정신. 환승역에서 GPS 후보가 두 노선 모두 잡아 fused가 옆 노선으로 fusion되는 케이스 방어.

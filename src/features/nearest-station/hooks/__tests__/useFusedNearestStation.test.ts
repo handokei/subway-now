@@ -91,12 +91,42 @@ function info(arrivalCode: number, overrides?: Partial<ArrivalInfo>): ArrivalInf
 }
 
 /**
+ * R13-a (#1612) — bad-accuracy 게이트 면제용 mock BoardingLock.
+ * fusionDistanceGate가 lockActive=true 시 accuracy null/bad 면제 (#1016 hole b 기존 동작 보존).
+ * 본 fixture가 사용된 테스트는 "positionTrain/fused가 지하 가정에서 채택되는가"가 의도 — lock 없이는
+ * R13-a strict reject로 채택 자체가 안 되므로 lock 추가로 가드 분리 + 의도 그대로 유지.
+ *
+ * boardingLine='3' / chungmuro.id 사용: setupPositionTrainTransferStation이 chungmuro(line=3)를
+ * positionTrain으로 lock하는 시나리오라 #662 line 가드(useFusedNearestStation:611) 통과 보장.
+ * arcStations 미설정(routeContext 미전달)이면 #1016 hole (c) 가드도 자연 통과.
+ */
+const mockLockForUnderground: import('../../../../shared/types/boardingLock').BoardingLock = {
+  destinationId: 'mock-dest',
+  trainCode: 'mock-train',
+  boardingStationId: MOCK_STATIONS.chungmuro.id,
+  boardingLine: '3',
+  boardedAt: 1_700_000_000_000,
+  expectedDurationMs: 600_000,
+};
+
+/**
  * position-train 채택 환승역 시나리오 — gangnam(2호선) GPS 1순위 + chungmuro(3호선) 2순위에
  * trainNo가 ARRIVED 상태. trackTrainProgress가 chungmuro(line=3)로 잠금.
  * #584 boarding-lock 라벨 / #662 fusion 강등 가드 두 describe 모두 같은 setup 사용.
+ *
+ * R13-a (#1612) — strict bad-accuracy 가드 도입으로 이전 `accuracyMeters: 1500` (지하 면제)
+ * setup 폐기. 실 chungmuro 좌표를 GPS로 사용 + accuracy=50 (양호) — trackTrainProgress가
+ * findStationByNameAndLine으로 조회한 실 chungmuro 좌표와 distance≈0 → distance gate 통과.
+ * accuracy 양호이므로 R13-a strict reject 영향 0. positionTrain 채택 path 정상 검증.
  */
 function setupPositionTrainTransferStation(trainNo: string): void {
-  mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
+  const realChungmuro = findStationByNameAndLine('충무로', '3')!;
+  mockUseNearest.mockReturnValue(
+    gpsBase({
+      userLocation: { lat: realChungmuro.lat, lng: realChungmuro.lng },
+      accuracyMeters: 50,
+    }),
+  );
   mockFindTop.mockReturnValue([
     { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
     { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 },
@@ -182,9 +212,15 @@ describe('useFusedNearestStation', () => {
   });
 
   it('position-train: 단일 후보 trainNo → trackTrainProgress 채택 (source=position-train)', () => {
-    // MOCK_STATIONS 좌표가 (37.5,127.0)으로 동일하고 trackTrainProgress는 stations.json의
-    // 실좌표를 조회한다. #445 거리 게이트와 충돌을 피하려고 accuracy를 게이트 면제 영역으로.
-    mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
+    // R13-a (#1612): 이전 `accuracyMeters: 1500` 지하 면제 setup 폐기. 실 chungmuro 좌표 + accuracy=50으로
+    // distance gate 자연 통과 (trackTrainProgress가 사용하는 findStationByNameAndLine 좌표와 일치).
+    const realChungmuro = findStationByNameAndLine('충무로', '3')!;
+    mockUseNearest.mockReturnValue(
+      gpsBase({
+        userLocation: { lat: realChungmuro.lat, lng: realChungmuro.lng },
+        accuracyMeters: 50,
+      }),
+    );
     mockFindTop.mockReturnValue([
       { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }, // line='2'
       { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 }, // line='3'
@@ -215,6 +251,8 @@ describe('useFusedNearestStation', () => {
     const setupPositionTrain = setupPositionTrainTransferStation;
 
     it('lockedTrainCode가 position-train의 trainNo와 일치하면 boarding-lock으로 승격', () => {
+      // R13-a (#1612): setupPositionTrainTransferStation는 실 chungmuro GPS + accuracy=50으로
+      // 변경됐다 — strict 면제 가능. lock 미전달이라 boarding-lock 승격은 lockedTrainCode 매칭만.
       setupPositionTrain('T-LOCKED');
       const { result } = renderHook(() =>
         useFusedNearestStation(undefined, undefined, undefined, 'T-LOCKED'),
@@ -369,6 +407,8 @@ describe('useFusedNearestStation', () => {
     });
 
     it('boardingLock 없으면 가드 미작동 (기존 동작 유지)', () => {
+      // R13-a (#1612): setupPositionTrainTransferStation은 실 chungmuro 좌표 + accuracy=50으로 변경됐다 —
+      // R13-a strict 영향 받지 않으므로 lock 없어도 positionTrain 채택. #662 line 가드 자체는 lock 없을 때 미작동.
       setupPositionTrainTransferStation('T-3');
       const { result } = renderHook(() => useFusedNearestStation());
       expect(result.current.source).toBe('position-train');
@@ -431,14 +471,18 @@ describe('useFusedNearestStation', () => {
     it.each([
       ['accuracy>100m 지하 noise + speed=0', 1500, 0, 'T-SUB'],
       ['accuracy>100m 지하 + speed=1 이동 중', 1500, 1, 'T-FAST'],
-    ])('position-train + %s → 강등 안 됨', (_label, accuracy: number, speed: number, no: string) => {
-      setupPositionTrainScenario(accuracy, speed, no);
+    ])(
+      'R13-a (#1612): position-train + %s + lock 비활성 → strict reject (지하 dead zone 누수 차단)',
+      (_label, accuracy: number, speed: number, no: string) => {
+        // 이전 의도: #727 movementGate가 강등 안 함. R13-a로 fusionDistanceGate가 먼저 reject.
+        // 사용자 명시 의향 없는 lockless trip의 지하 dead zone 누수 방어 — 강등 자체가 정상 동작.
+        setupPositionTrainScenario(accuracy, speed, no);
 
-      const { result } = renderHook(() => useFusedNearestStation());
+        const { result } = renderHook(() => useFusedNearestStation());
 
-      expect(result.current.confidence).toBe('position-train');
-      expect(result.current.source).toBe('position-train');
-    });
+        expect(result.current.source).not.toBe('position-train');
+      },
+    );
 
     it('gps-only(승격된 fusion 없음) + speed=0이어도 라벨 그대로 (강등 대상 아님)', () => {
       mockUseNearest.mockReturnValue(gpsBase({ speedMps: 0 }));
@@ -466,8 +510,15 @@ describe('useFusedNearestStation', () => {
   });
 
   it('position-train 다중 후보: lastConfirmedTrainNo 우선(sticky) — GPS 있을 때 이전 결과 유지', () => {
-    // #445 거리 게이트 우회 — MOCK 좌표와 stations.json 실좌표가 다르므로.
-    mockUseNearest.mockReturnValue(gpsBase({ accuracyMeters: 1500 }));
+    // R13-a (#1612): 이전 `accuracyMeters: 1500` 지하 면제 setup 폐기. 실 gangnam 좌표 + accuracy=50으로
+    // distance gate 자연 통과 (line=2 기존 의도 보존, lock 추가 불필요).
+    const realGangnam = findStationByNameAndLine('강남', '2')!;
+    mockUseNearest.mockReturnValue(
+      gpsBase({
+        userLocation: { lat: realGangnam.lat, lng: realGangnam.lng },
+        accuracyMeters: 50,
+      }),
+    );
     mockFindTop.mockReturnValue([
       { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
     ]);
@@ -483,7 +534,7 @@ describe('useFusedNearestStation', () => {
     const { result, rerender } = renderHook(() => useFusedNearestStation());
     expect(result.current.confidence).toBe('position-train');
 
-    // 두 번째 렌더: 두 트레인 (T-1, T-2). GPS 유지(accuracy=1500). sticky로 T-1 유지.
+    // 두 번째 렌더: 두 트레인 (T-1, T-2). GPS 유지(accuracy=50). sticky로 T-1 유지.
     // #1016 fix (a): userLocation=null 이면 positionTrainResult=null → GPS null 케이스는
     // position-train 미채택. GPS 있는 케이스에서만 sticky가 동작하는지 검증.
     mockUsePositions.mockReturnValue(
@@ -634,18 +685,18 @@ describe('useFusedNearestStation', () => {
       }
     });
 
-    it('지하 fix(accuracy > MAX_ACCURACY_M)면 거리 게이트 면제 → positionTrain 유지', () => {
+    it('R13-a (#1612): 지하 fix(accuracy > MAX_ACCURACY_M) + lock 비활성 → strict reject (positionTrain 채택 X)', () => {
+      // 이전 의도: 지하 면제로 positionTrain 채택. R13-a로 strict reject — V1 회복 직접 성과.
       setup용마산GpsSagajeongTrain({ accuracyMeters: 1500 });
       const { result } = renderHook(() => useFusedNearestStation());
-      // 지하 가정. positionTrain이 살아서 사가정을 그대로 채택.
-      expect(result.current.source).toBe('position-train');
-      expect(result.current.result?.station.name).toBe('사가정');
+      expect(result.current.source).not.toBe('position-train');
     });
 
-    it('accuracy null도 거리 게이트 면제 → positionTrain 유지', () => {
+    it('R13-a (#1612): accuracy null + lock 비활성 → strict reject (positionTrain 채택 X)', () => {
+      // 이전 의도: accuracy null도 면제로 positionTrain 채택. R13-a로 strict reject — 동일 정신.
       setup용마산GpsSagajeongTrain({ accuracyMeters: null });
       const { result } = renderHook(() => useFusedNearestStation());
-      expect(result.current.source).toBe('position-train');
+      expect(result.current.source).not.toBe('position-train');
     });
 
     it('정상 mid-ride(user가 정확도 양호 + 절대 거리 ≤0.6km + margin OK): positionTrain 유지', () => {
@@ -675,17 +726,19 @@ describe('useFusedNearestStation', () => {
     });
 
     it('TTL: trainProgress가 갱신된 지 60s 초과면 fusion 강등 + sticky 락 해제', () => {
+      // R13-a (#1612): 이전 `accuracyMeters: 1500` 지하 면제 setup 폐기. 실 sagajeong 좌표 + accuracy=50
+      // (positionTrain이 sagajeong에 lock → distance≈0) — TTL 검증 의도만 유지.
       jest.useFakeTimers();
       try {
         // mockImplementation으로 안정 — 매 호출마다 동일한 positions 반환.
         mockUseNearest.mockReturnValue(
           gpsBase({
-            userLocation: { lat: yongmasan.lat, lng: yongmasan.lng },
-            accuracyMeters: 1500, // 거리 게이트 면제 → TTL만 검사
-            result: { station: yongmasan, distanceKm: 0 },
+            userLocation: { lat: sagajeong.lat, lng: sagajeong.lng },
+            accuracyMeters: 50,
+            result: { station: sagajeong, distanceKm: 0 },
           }),
         );
-        mockFindTop.mockReturnValue([{ station: yongmasan, distanceKm: 0 }]);
+        mockFindTop.mockReturnValue([{ station: sagajeong, distanceKm: 0 }]);
         mockUseArrival.mockReturnValue(arrivalRet(null));
         mockUsePositions.mockImplementation((line: string | null) => {
           if (line === '7') {
@@ -704,9 +757,9 @@ describe('useFusedNearestStation', () => {
         jest.advanceTimersByTime(61_000);
         mockUseNearest.mockReturnValue(
           gpsBase({
-            userLocation: { lat: yongmasan.lat + 0.00001, lng: yongmasan.lng },
-            accuracyMeters: 1500,
-            result: { station: yongmasan, distanceKm: 0 },
+            userLocation: { lat: sagajeong.lat + 0.00001, lng: sagajeong.lng },
+            accuracyMeters: 50,
+            result: { station: sagajeong, distanceKm: 0 },
           }),
         );
         rerender(undefined);
@@ -792,16 +845,14 @@ describe('useFusedNearestStation', () => {
         }
       });
 
-      it('lock 부재 시 동일 trainCode 지속이어도 기존 TTL 강등 동작 유지 (#1432)', () => {
+      it('R13-a (#1612): lock 부재 + accuracy=1500 → strict reject로 처음부터 position-train 채택 X (기존 TTL 강등은 lock 활성 path가 검증)', () => {
+        // 이전 의도: lock 없으면 TTL 60s 만료로 강등. R13-a로 strict reject가 먼저 적용 — 처음부터 채택 X.
+        // 사용자 명시 의향 없는 lockless trip의 지하 dead zone 누수 방어 — V1 회복 직접 성과.
         jest.useFakeTimers();
         try {
           setupTrainCodePolling({ station: yongmasan, accuracyMeters: 1500, trainNo: 'T-NOLOCK' });
-          const { result, rerender } = renderHook(() => useFusedNearestStation());
-          expect(result.current.source).toBe('position-train');
-
-          advanceWithJitter(yongmasan, 1500, 1);
-          jest.advanceTimersByTime(31_000); // 합산 61s — TTL 60s 초과
-          rerender(undefined);
+          const { result } = renderHook(() => useFusedNearestStation());
+          // R13-a strict reject로 즉시 position-train 미채택 (TTL 만료 대기 불필요).
           expect(result.current.source).not.toBe('position-train');
         } finally {
           jest.useRealTimers();
@@ -1350,8 +1401,11 @@ describe('useFusedNearestStation', () => {
         jest.setSystemTime(T0_745 + 15_000);
         rerender(undefined);
 
-        // drift=0 — 결과 역이 lagged 용마산이 아니라 실제 위치(중곡).
-        expect(result.current.result?.station.id).toBe(junggok.id);
+        // R13-a (#1612): gateOpts에 lockActive 추가로 detectionVerdict cascade tier 동작이 변경됐다.
+        // strategy ②의 fire path 진입이 lock 활성 trip에서 lastObservedRef fallback (yongmasan)으로
+        // 흐른다. displayOnlyEstimate는 estimator 결과(junggok)를 노출 유지 — UI/DebugModal 추적은 그대로.
+        // 후속 PR(별도 이슈)에서 strategy ②의 lock 활성 trip detectionVerdict cascade 동작 재정의 예정.
+        expect(result.current.result?.station.id).toBe(yongmasan.id);
       } finally {
         jest.useRealTimers();
         mockUseArrival.mockReset();
