@@ -41,6 +41,8 @@ import {
 } from './liveActivity';
 import { ackPending, stampReceived } from './pendingPushes';
 import { computePushAckStats } from './pushAckStats';
+import { computeAlarmLogStats } from './alarmLogStats';
+import { computeBaselineCheck } from './baselineCheck';
 import { appendPositionPoint } from './positionSeries';
 import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { updateSsotMotion } from './motionState';
@@ -322,6 +324,64 @@ app.get('/admin/push-ack-stats', async (c) => {
   const limit = parseQueryNumber(c.req.query('limit'));
   const stats = await computePushAckStats(kv, Date.now(), limit);
   return c.json(stats);
+});
+
+/**
+ * #1621 Phase A — Device R2 archive alarmLog 분포 RCA endpoint.
+ *
+ * `alarmLogForward.ts:storeAlarmLogForward`가 trip 종료 시 archive한 `trip-evidence/`
+ * R2 object를 windowHours(default 1, max 24) 윈도우로 scan해 reason/source 분포 산출.
+ * 사용자 trip 1건이 종료되면 다음 호출에서 즉시 분포 노출 — baseline 측정 자동화.
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — admin 공통 정책.
+ * Query:
+ *   - `?windowHours=N` (default 1, clamp 1~24)
+ *   - `?limit=N` (default 50, max 500 — R2 cost 보호)
+ *
+ * Response 200: { windowStart, windowEnd, totalEvents, fired, suppressed, received,
+ *                 reasons, sources, tripsScanned }
+ * Response 401/503: 인증/binding 정책 동일 (TELEMETRY_R2 미바인딩 시 503 graceful).
+ */
+app.get('/admin/alarm-log-stats', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const r2 = c.env.TELEMETRY_R2;
+  if (!r2) return c.json({ error: 'telemetry_r2_unavailable' }, 503);
+  const windowHours = parseQueryNumber(c.req.query('windowHours')) ?? 1;
+  const limit = parseQueryNumber(c.req.query('limit')) ?? 50;
+  const stats = await computeAlarmLogStats(r2, Date.now(), windowHours, limit);
+  return c.json(stats);
+});
+
+/**
+ * #1621 Phase C — Baseline 작동 verify endpoint.
+ *
+ * 사용자 framework: 측정 기본 만들어 놓고 측정. 사용자 1 trip 시 즉시 baseline 작동
+ * (silent push 발사 + V1 mismatch 0) pass/fail 산출. V1 회복(Stage 1/2/3) 효과를
+ * 사용자 trip 1건이면 바로 검증 가능.
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` — admin 공통 정책.
+ * Query: `?tripToken=<X>` — 필수 (활성 trip 신호 source).
+ *
+ * Response 200: { baseline: 'pass' | 'fail', signals: {
+ *   tripActive, silentPushFired, silentPushReceived, v1Mismatch
+ * }}
+ * Response 400: { error: 'invalid_trip_token' } — tripToken 누락
+ * Response 401/503: 인증/binding 정책 동일 (TRIPS 또는 TELEMETRY_R2 미바인딩 시 503).
+ */
+app.get('/admin/baseline-check', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const tripToken = c.req.query('tripToken');
+  if (!tripToken || tripToken.length === 0) {
+    return c.json({ error: 'invalid_trip_token' }, 400);
+  }
+  const kv = c.env.TRIPS;
+  if (!kv) return c.json({ error: 'trips_unavailable' }, 503);
+  const r2 = c.env.TELEMETRY_R2;
+  if (!r2) return c.json({ error: 'telemetry_r2_unavailable' }, 503);
+  const result = await computeBaselineCheck(kv, r2, tripToken, Date.now());
+  return c.json(result);
 });
 
 interface AdminAuthError {
