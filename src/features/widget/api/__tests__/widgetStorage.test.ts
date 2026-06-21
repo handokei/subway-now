@@ -100,6 +100,39 @@ describe('widgetStorage (native)', () => {
       await saveStationToWidget(station, 0.1, 1);
       expect(mockSave).toHaveBeenCalledTimes(2);
     });
+
+    // R9-a (#1612) — force 옵션 시 module-level dedupe 우회. AppState 'active' 복귀 시 위젯 FG stale 차단.
+    describe('R9-a (#1612) — options.force', () => {
+      it('force=true면 같은 역+버킷+freshness 윈도우 내에서도 native 호출', async () => {
+        const t = 1_700_000_000_000;
+        await saveStationToWidget(station, 0.1, t);
+        await saveStationToWidget(station, 0.1, t + 1_000, { force: true });
+        // 첫 호출(통과) + force(통과) = 총 2회
+        expect(mockSave).toHaveBeenCalledTimes(2);
+        expect(mockSave).toHaveBeenNthCalledWith(2, '강남', '#009933', 100, t + 1_000);
+      });
+
+      it('force=false (명시) → 기존 dedupe 동작 그대로', async () => {
+        const t = 1_700_000_000_000;
+        await saveStationToWidget(station, 0.1, t);
+        await saveStationToWidget(station, 0.1, t + 1_000, { force: false });
+        expect(mockSave).toHaveBeenCalledTimes(1);
+      });
+
+      it('force=true 호출 후 dedupe key/savedAt 갱신 — 후속 정상 호출이 같은 bucket이면 dedupe', async () => {
+        const t = 1_700_000_000_000;
+        await saveStationToWidget(station, 0.1, t, { force: true });
+        await saveStationToWidget(station, 0.1, t + 1_000);
+        // force 1회 + 후속 dedupe skip = 총 1회
+        expect(mockSave).toHaveBeenCalledTimes(1);
+      });
+
+      it('iOS가 아니면 force=true 여도 native 호출 없음 (Platform 가드 보존)', async () => {
+        jest.replaceProperty(Platform, 'OS', 'android');
+        await saveStationToWidget(station, 0.1, 1, { force: true });
+        expect(mockSave).not.toHaveBeenCalled();
+      });
+    });
   });
 
   describe('clearWidgetStation', () => {
