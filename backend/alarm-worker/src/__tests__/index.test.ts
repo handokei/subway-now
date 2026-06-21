@@ -3615,3 +3615,66 @@ describe('GET /admin/signals/export (#1520)', () => {
     expect(body.entries.length).toBe(1);
   });
 });
+
+// ─── GET /admin/push-ack-stats (#1614 Phase D, S4 #1537) ──────────────────────
+
+async function getAdminPushAckStats(
+  env: Env,
+  authHeader?: string,
+): Promise<Response> {
+  return app.fetch(
+    new Request('http://example.com/admin/push-ack-stats', {
+      method: 'GET',
+      headers: authHeader ? { authorization: authHeader } : {},
+    }),
+    env,
+  );
+}
+
+describe('GET /admin/push-ack-stats (#1614 Phase D)', () => {
+  it('returns 503 when ADMIN_TOKEN is not configured', async () => {
+    const env = makeKvEnv();
+    const res = await getAdminPushAckStats(env, 'Bearer some-token');
+    expect(res.status).toBe(503);
+  });
+
+  it('returns 401 when no Authorization header', async () => {
+    const env = makeKvEnv();
+    env.ADMIN_TOKEN = 'secret';
+    const res = await getAdminPushAckStats(env);
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 401 when token does not match', async () => {
+    const env = makeKvEnv();
+    env.ADMIN_TOKEN = 'secret';
+    const res = await getAdminPushAckStats(env, 'Bearer wrong-token');
+    expect(res.status).toBe(401);
+  });
+
+  it('returns 200 with stats shape (empty KV)', async () => {
+    const env = makeKvEnv();
+    env.ADMIN_TOKEN = 'secret';
+    const res = await getAdminPushAckStats(env, 'Bearer secret');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      windowStart: number;
+      windowEnd: number;
+      pending: number;
+      received: number;
+      receivedByPhase: Record<string, number>;
+      receivedByStation: Record<string, number>;
+    };
+    expect(body.windowStart).toBeLessThan(body.windowEnd);
+    expect(body.pending).toBe(0);
+    expect(body.received).toBe(0);
+    expect(body.receivedByPhase).toEqual({});
+    expect(body.receivedByStation).toEqual({});
+  });
+
+  it('returns 503 when TRIPS binding unavailable', async () => {
+    const env = makeEnv({ TRIPS: undefined as unknown as Env['TRIPS'], ADMIN_TOKEN: 'secret' });
+    const res = await getAdminPushAckStats(env, 'Bearer secret');
+    expect(res.status).toBe(503);
+  });
+});

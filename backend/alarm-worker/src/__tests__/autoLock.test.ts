@@ -499,3 +499,103 @@ describe('attemptAutoLock #1536 (S3) 환경 분기 consensusGate', () => {
     expect(lock).not.toBeNull();
   });
 });
+
+/**
+ * #1614 Phase B — backend self-poll positionTrainAgreement wire (S4 #1537).
+ *
+ * selfPollPositions list forward 시 trainCode cross-match → consensusGate strongCB 통과 path
+ * 활성화. underground 환경에서 base gate fail + arrival 부재라도 strongCB로 통과.
+ */
+function callAutoLockWithSelfPoll(
+  arrivalEntry: ArrivalEntry,
+  selfPollPositions: readonly { trainCode: string; stationName: string }[] | undefined,
+  opts: {
+    environment?: Parameters<typeof attemptAutoLock>[0]['environment'];
+    gateOutcome?: Parameters<typeof attemptAutoLock>[0]['gateOutcome'];
+  } = {},
+) {
+  return attemptAutoLock({
+    trip: makeTrip(),
+    targetWaypoint: target,
+    originStation: '강남',
+    direction: 'up',
+    seoul: makeSeoul([arrivalEntry]),
+    now: NOW,
+    environment: opts.environment,
+    gateOutcome: opts.gateOutcome,
+    selfPollPositions,
+  });
+}
+
+describe('attemptAutoLock #1614 Phase B selfPollPositions wire (S4)', () => {
+  it.each([
+    {
+      label: 'trainCode 일치 + arvlCd 0~3 → strongCB pass (underground, base gate fail)',
+      positions: [{ trainCode: 'T1', stationName: '강남' }],
+      arvlCd: 1,
+      expected: 'lock' as const,
+    },
+    {
+      label: 'trainCode 불일치 + arvlCd 1 → strongCB undefined, strongBE pass (lockAttachable + arrival)',
+      positions: [{ trainCode: 'OTHER', stationName: '강남' }],
+      arvlCd: 1,
+      expected: 'lock' as const,
+    },
+    {
+      label: 'trainCode 불일치 + arvlCd 5(범위 밖) → strongCB false + strongBE false → null',
+      positions: [{ trainCode: 'OTHER', stationName: '강남' }],
+      arvlCd: 5,
+      expected: 'null' as const,
+    },
+    {
+      label: 'trainCode 일치 + arvlCd 5(범위 밖) → strongCB false (arrival missing) + strongBE false → null',
+      positions: [{ trainCode: 'T1', stationName: '강남' }],
+      arvlCd: 5,
+      expected: 'null' as const,
+    },
+    {
+      label: '빈 list + arvlCd 1 → positionTrainAgreement false, strongBE pass',
+      positions: [] as const,
+      arvlCd: 1,
+      expected: 'lock' as const,
+    },
+  ])('underground + $label', async ({ positions, arvlCd, expected }) => {
+    const { lock } = await callAutoLockWithSelfPoll(
+      arrival({ trainCode: 'T1', arvlCd }),
+      positions,
+      {
+        environment: 'underground',
+        gateOutcome: failingGateOutcome(),
+      },
+    );
+    if (expected === 'lock') {
+      expect(lock?.trainCode).toBe('T1');
+    } else {
+      expect(lock).toBeNull();
+    }
+  });
+
+  it('selfPollPositions undefined → 기존 동작 (구 호출자 호환)', async () => {
+    const { lock } = await callAutoLockWithSelfPoll(
+      arrival({ trainCode: 'T1', arvlCd: 1 }),
+      undefined,
+      {
+        environment: 'underground',
+        gateOutcome: passingGateOutcome(),
+      },
+    );
+    expect(lock?.trainCode).toBe('T1');
+  });
+
+  it('surface: selfPollPositions 무관 — base gate pass면 통과 (positionTrainAgreement 평가 X)', async () => {
+    const { lock } = await callAutoLockWithSelfPoll(
+      arrival({ trainCode: 'T1', arvlCd: 1 }),
+      [{ trainCode: 'OTHER', stationName: '강남' }],
+      {
+        environment: 'surface',
+        gateOutcome: passingGateOutcome(),
+      },
+    );
+    expect(lock?.trainCode).toBe('T1');
+  });
+});
