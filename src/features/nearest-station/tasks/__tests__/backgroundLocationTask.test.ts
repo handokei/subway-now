@@ -64,6 +64,17 @@ jest.mock('../../utils/accelMotionState', () => ({
   getLatestAccelSummary: () => mockGetLatestAccelSummary(),
 }));
 
+// ── accelerometerFingerprint 모킹 (#1542 BG location piggyback) ──
+// classifyAccelerometerPattern은 helper; default 'unknown' 반환으로 기존 motion stationary fallback 동작.
+const mockStartAccelerometerFingerprint = jest.fn();
+const mockGetLatestAccelerometerSnapshot = jest.fn();
+const mockClassifyAccelerometerPattern = jest.fn();
+jest.mock('../../utils/accelerometerFingerprint', () => ({
+  startAccelerometerFingerprint: () => mockStartAccelerometerFingerprint(),
+  getLatestAccelerometerSnapshot: () => mockGetLatestAccelerometerSnapshot(),
+  classifyAccelerometerPattern: (snapshot: unknown) => mockClassifyAccelerometerPattern(snapshot),
+}));
+
 // ── widgetStorage 모킹 (#1237 Phase 2) ──
 const mockSaveStationToWidget = jest.fn();
 jest.mock('../../../widget/api/widgetStorage', () => ({
@@ -196,6 +207,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockUploadPosition.mockResolvedValue({ ok: true, status: 200 });
     mockGetCurrentMotionStationary.mockReturnValue(false);
     mockGetLatestAccelSummary.mockReturnValue(null);
+    mockGetLatestAccelerometerSnapshot.mockReturnValue(null);
+    // 기본: 60s window 미수렴 → 'unknown' (CMMotionActivity fallback 경로 trigger).
+    mockClassifyAccelerometerPattern.mockReturnValue('unknown');
     mockSaveStationToWidget.mockResolvedValue(undefined);
     mockGetBoardingLock.mockResolvedValue(null);
     mockEvaluateBackgroundTransferSwap.mockResolvedValue({ fired: false });
@@ -1105,5 +1119,111 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
       expect(mockEvaluateBackgroundTransferSwap).not.toHaveBeenCalled();
     });
+  });
+
+  describe('#1542 (ADR-016 S9) — accelerometer fingerprint BG piggyback', () => {
+    /** Phase B 전용 token chain — APNS token after storage 4 + BG_LAST_FIX null. */
+    function stubApnsTokenAfterStorage(token: string | null): void {
+      (AsyncStorage.getItem as jest.Mock)
+        .mockResolvedValueOnce(null) // BG_LAST_FIX_KEY — prevFix 없음
+        .mockResolvedValueOnce(token); // APNS_TOKEN_KEY
+    }
+
+    it('apnsToken 있으면 BG fingerprint start 호출 (Background Location piggyback)', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      expect(mockStartAccelerometerFingerprint).toHaveBeenCalledTimes(1);
+    });
+
+    it('apnsToken 부재면 BG fingerprint start 미호출 (graceful)', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage(null);
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      expect(mockStartAccelerometerFingerprint).not.toHaveBeenCalled();
+    });
+
+    it.each<'stationary' | 'walking' | 'automotive'>(['stationary', 'walking', 'automotive'])(
+      'accelerometer pattern=%s → motion 필드 그대로 채택 (motionActivity 무시)',
+      async (pattern) => {
+        mockStorageValues(JSON.stringify(mockDestination));
+        stubApnsTokenAfterStorage('apns-tok-1');
+        // motionActivity는 false(이동 중)지만 accelerometer 분류가 우선.
+        mockGetCurrentMotionStationary.mockReturnValue(false);
+        mockClassifyAccelerometerPattern.mockReturnValue(pattern);
+
+        const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+        await taskCallback({ data: { locations: [loc] }, error: null });
+
+        expect(mockUploadPosition).toHaveBeenCalledWith(
+          expect.objectContaining({ motion: pattern }),
+        );
+      },
+    );
+
+    it('accelerometer unknown + motionActivity stationary → motion=stationary (fallback)', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+      mockGetCurrentMotionStationary.mockReturnValue(true);
+      mockClassifyAccelerometerPattern.mockReturnValue('unknown');
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      expect(mockUploadPosition).toHaveBeenCalledWith(
+        expect.objectContaining({ motion: 'stationary' }),
+      );
+    });
+
+    it('accelerometer unknown + motionActivity false → motion=unknown (기존 #819 정책)', async () => {
+      mockStorageValues(JSON.stringify(mockDestination));
+      stubApnsTokenAfterStorage('apns-tok-1');
+      mockGetCurrentMotionStationary.mockReturnValue(false);
+      mockClassifyAccelerometerPattern.mockReturnValue('unknown');
+
+      const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+      await taskCallback({ data: { locations: [loc] }, error: null });
+
+      expect(mockUploadPosition).toHaveBeenCalledWith(
+        expect.objectContaining({ motion: 'unknown' }),
+      );
+    });
+  });
+});
+
+describe('pickMotionLabel (#1542 ADR-016 S9)', () => {
+  // 별 describe — pure helper. backgroundLocationTask scope 외부에서 직접 unit test.
+  // accelerometer pattern이 'unknown'이 아니면 motionActivity stationary 무시 — RMS 60s 진동이
+  // CMMotionActivity의 5~10분 intermittent flip(lesson_motion_activity_intermittent_signal)보다 강.
+  const { pickMotionLabel } = jest.requireActual('../backgroundLocationTask');
+
+  it.each<['stationary' | 'walking' | 'automotive']>([
+    ['stationary'],
+    ['walking'],
+    ['automotive'],
+  ])('accelerometer pattern=%s + motionActivity false → 그대로 그 pattern', (pattern) => {
+    expect(pickMotionLabel(pattern, false)).toBe(pattern);
+  });
+
+  it.each<['stationary' | 'walking' | 'automotive']>([
+    ['stationary'],
+    ['walking'],
+    ['automotive'],
+  ])('accelerometer pattern=%s + motionActivity true → 그대로 그 pattern (accelerometer 우선)', (pattern) => {
+    expect(pickMotionLabel(pattern, true)).toBe(pattern);
+  });
+
+  it('accelerometer unknown + motionActivity true → stationary (fallback)', () => {
+    expect(pickMotionLabel('unknown', true)).toBe('stationary');
+  });
+
+  it('accelerometer unknown + motionActivity false → unknown (기존 #819 정책)', () => {
+    expect(pickMotionLabel('unknown', false)).toBe('unknown');
   });
 });
