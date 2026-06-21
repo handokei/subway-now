@@ -3306,6 +3306,109 @@ describe('silentPushTask', () => {
       expect(mirrorCall).toBeUndefined();
     });
 
+    // R11-b (#1612) — payload.tripToken mismatch 시 mirror write skip (race A 차단).
+    describe('R11-b (#1612) — trip token mismatch 시 mirror write skip', () => {
+      it('payload.tripToken === activeTripToken → mirror write 정상 진행 (정상 case)', async () => {
+        (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === ACTIVE_TRIP_KEY) return 'trip-token-A';
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          return null;
+        });
+        mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
+        await handleSilentPush(
+          bgTaskData({
+            nextWaypoint: '강남',
+            etaSeconds: 0,
+            phase: 'imminent',
+            kind: 'intermediate',
+            tripToken: 'trip-token-A',
+            ssot: validSsot,
+          }),
+        );
+        const mirrorCall = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+          ([key]) => key === BACKEND_SSOT_MIRROR_KEY,
+        );
+        expect(mirrorCall).toBeDefined();
+      });
+
+      it('payload.tripToken !== activeTripToken → mirror write skip (race A 차단)', async () => {
+        (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === ACTIVE_TRIP_KEY) return 'trip-token-NEW';
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          return null;
+        });
+        mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
+        await handleSilentPush(
+          bgTaskData({
+            nextWaypoint: '강남',
+            etaSeconds: 0,
+            phase: 'imminent',
+            kind: 'intermediate',
+            tripToken: 'trip-token-OLD',
+            ssot: validSsot,
+          }),
+        );
+        const mirrorCall = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+          ([key]) => key === BACKEND_SSOT_MIRROR_KEY,
+        );
+        expect(mirrorCall).toBeUndefined();
+      });
+
+      it('activeTripToken null (cold-launch race) → mirror write 허용 (backward-compat)', async () => {
+        (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === ACTIVE_TRIP_KEY) return null;
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          return null;
+        });
+        mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
+        await handleSilentPush(
+          bgTaskData({
+            nextWaypoint: '강남',
+            etaSeconds: 0,
+            phase: 'imminent',
+            kind: 'intermediate',
+            tripToken: 'trip-token-X',
+            ssot: validSsot,
+          }),
+        );
+        const mirrorCall = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+          ([key]) => key === BACKEND_SSOT_MIRROR_KEY,
+        );
+        expect(mirrorCall).toBeDefined();
+      });
+
+      it('payload.tripToken undefined (구 backend 호환) → mirror write 허용', async () => {
+        (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === ACTIVE_TRIP_KEY) return 'trip-token-Z';
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          return null;
+        });
+        mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
+        await handleSilentPush(
+          bgTaskData({
+            nextWaypoint: '강남',
+            etaSeconds: 0,
+            phase: 'imminent',
+            kind: 'intermediate',
+            // tripToken 명시적 누락 (구 backend 호환)
+            ssot: validSsot,
+          }),
+        );
+        const mirrorCall = (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+          ([key]) => key === BACKEND_SSOT_MIRROR_KEY,
+        );
+        expect(mirrorCall).toBeDefined();
+      });
+    });
+
     it('validSsotMirror returns undefined for null/non-object', () => {
       expect(validSsotMirror(null)).toBeUndefined();
       expect(validSsotMirror(undefined)).toBeUndefined();
