@@ -84,6 +84,7 @@ const mockLogSuppressedHopWindowNoSource = jest.fn();
 const mockLogSuppressedOriginHopLockless = jest.fn();
 const mockLogSuppressedPassedEventOnLockOrigin = jest.fn();
 const mockLogSuppressedCrossCategoryDedup = jest.fn();
+const mockLogSuppressedSsotFireGate = jest.fn();
 jest.mock('../../utils/alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredAlarmsHydrate: (...args: unknown[]) => mockLogFiredAlarmsHydrate(...args),
@@ -110,6 +111,21 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSuppressedPassedEventOnLockOrigin(...args),
   logSuppressedCrossCategoryDedup: (...args: unknown[]) =>
     mockLogSuppressedCrossCategoryDedup(...args),
+  logSuppressedSsotFireGate: (...args: unknown[]) =>
+    mockLogSuppressedSsotFireGate(...args),
+}));
+
+// #1572 (T9) — evaluateSsotFireGate mock. 기본 no-block (mirror-missing graceful).
+// 개별 테스트는 mockEvaluateSsotFireGate.mockResolvedValueOnce({blocked: true, reason: '...'})로 override.
+import type {
+  SsotFireGateInput,
+  SsotFireGateOutcome,
+} from '../../utils/ssotFireGate';
+const mockEvaluateSsotFireGate = jest.fn<Promise<SsotFireGateOutcome>, [SsotFireGateInput]>(
+  async () => ({ blocked: false, reason: 'mirror-missing' }),
+);
+jest.mock('../../utils/ssotFireGate', () => ({
+  evaluateSsotFireGate: (input: SsotFireGateInput) => mockEvaluateSsotFireGate(input),
 }));
 
 const mockGetBoardingLock = jest.fn();
@@ -4158,6 +4174,344 @@ describe('useStationAlarm', () => {
       for (let i = 0; i < 8; i++) await Promise.resolve();
 
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+  });
+
+  // #1572 (T9, ADR-017) — SSoT fire gate wire 통합 acceptance.
+  describe('#1572 SSoT fire gate (Path A / B / C / D wire)', () => {
+    const arc: Station[] = Array.from({ length: 7 }, (_, i) =>
+      makeStation(`A${i}`, `Sname${i}`, 37.5 + i * 0.001, 127.0 + i * 0.001),
+    );
+    const directRouteOnLine2 = makeDirectRoute(6, '2');
+
+    beforeEach(() => {
+      mockEvaluateSsotFireGate.mockReset();
+      mockLogSuppressedSsotFireGate.mockReset();
+      // 기본: mirror-missing graceful pass.
+      mockEvaluateSsotFireGate.mockResolvedValue({ blocked: false, reason: 'mirror-missing' });
+    });
+
+    it('Path A (FG GPS station-passed): SSoT 게이트 block 시 dispatch X + logSuppressedSsotFireGate 호출', async () => {
+      mockEvaluateSsotFireGate.mockResolvedValueOnce({
+        blocked: true,
+        reason: 'gate-station-already-passed',
+      });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[2],
+            currentHopIndex: 2,
+            arcStations: arc,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedSsotFireGate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            reason: 'gate-station-already-passed',
+            stationName: arc[2].name,
+            kind: 'station-passed',
+          }),
+        );
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('Path A: SSoT 게이트 no-block (mirror-missing) → 정상 dispatch (회귀 차단)', async () => {
+      mockEvaluateSsotFireGate.mockResolvedValue({ blocked: false, reason: 'mirror-missing' });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[2],
+            currentHopIndex: 2,
+            arcStations: arc,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      await waitFor(() => expect(mockSendStationPassedNotification).toHaveBeenCalled());
+      expect(mockLogSuppressedSsotFireGate).not.toHaveBeenCalled();
+    });
+
+    it('Path B (FG arvlCd fast-path): SSoT 게이트 block 시 dispatch X', async () => {
+      mockEvaluateSsotFireGate.mockResolvedValue({
+        blocked: true,
+        reason: 'gate-alarm-already-decided',
+      });
+      const onRouteStation = makeStation('S-시청', '시청');
+      const activeLock = {
+        destinationId: 'D1',
+        trainCode: 'T-LOCK',
+        boardingStationId: 'S0',
+        boardingLine: '2' as const,
+        boardedAt: 1_700_000_000_000,
+        expectedDurationMs: 600_000,
+      };
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      // GPS path는 dedup으로 막아 fast-path만 본 게이트에 도달하도록.
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: makeDirectRoute(3, '2'),
+            destination,
+            nearestStation: onRouteStation,
+            speedMps: 5,
+            accuracyMeters: 50,
+            currentStationArrival: { up: [], down: [], isMock: false },
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        const fastPathBlocks = mockLogSuppressedSsotFireGate.mock.calls.filter(
+          (c) => c[0].source === 'fg-arvlcd',
+        );
+        expect(fastPathBlocks.length).toBeGreaterThan(0);
+      });
+    });
+
+    it('Path D (fireAndLog phase): SSoT 게이트 block 시 phase 알람 dispatch X', async () => {
+      mockEvaluateSsotFireGate.mockResolvedValue({
+        blocked: true,
+        reason: 'gate-alarm-already-decided',
+      });
+      // phase 알람을 트리거하기 위한 evaluateAlarmPhase 반환.
+      mockEvaluateAlarmPhase.mockReturnValue({
+        phaseId: 'imminent',
+        type: 'destination',
+        stationName: destination.name,
+      });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[3],
+            currentHopIndex: 3,
+            arcStations: arc,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        const phaseBlocks = mockLogSuppressedSsotFireGate.mock.calls.filter(
+          (c) => c[0].kind === 'destination' || c[0].kind === 'transfer',
+        );
+        expect(phaseBlocks.length).toBeGreaterThan(0);
+      });
+      // phase 알람 dispatch(sendAlarmNotification) 미호출.
+      expect(mockSendAlarmNotification).not.toHaveBeenCalled();
+    });
+
+    it('Path C (subsurface verdict): SSoT 게이트 block 시 dispatch X', async () => {
+      mockEvaluateSsotFireGate.mockResolvedValue({
+        blocked: true,
+        reason: 'gate-alarm-already-decided',
+      });
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      });
+      const onRouteStation = makeStation('S-SUB', '봉은사', 37.5, 127.0);
+
+      renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: makeDirectRoute(3, '2'),
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 500, // GPS 차단 → subsurface path만 활성
+            userLocation: null,
+            speedMps: null,
+            subsurfaceStationDetected: true,
+          }),
+        ),
+      );
+
+      await waitFor(() => {
+        expect(mockLogSuppressedSsotFireGate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            source: 'fg',
+            reason: 'gate-alarm-already-decided',
+            stationName: onRouteStation.name,
+            kind: 'station-passed',
+          }),
+        );
+      });
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('Path B (arvlCd) evaluateSsotFireGate pending 중 unmount → cancelled guard (line 1157)', async () => {
+      const resolvers: Array<(v: { blocked: boolean; reason: 'mirror-missing' }) => void> = [];
+      mockEvaluateSsotFireGate.mockImplementation(
+        () =>
+          new Promise((r) => {
+            resolvers.push(r);
+          }),
+      );
+      const onRouteStation = makeStation('S-시청', '시청');
+      const activeLock = {
+        destinationId: 'D1',
+        trainCode: 'T-LOCK',
+        boardingStationId: 'S0',
+        boardingLine: '2' as const,
+        boardedAt: 1_700_000_000_000,
+        expectedDurationMs: 600_000,
+      };
+      mockGetBoardingLock.mockResolvedValue(activeLock);
+      mockGetLastNotifiedStationId.mockResolvedValue(onRouteStation.id);
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      const { unmount } = renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: makeDirectRoute(3, '2'),
+            destination,
+            nearestStation: onRouteStation,
+            speedMps: 5,
+            accuracyMeters: 50,
+            currentStationArrival: { up: [], down: [], isMock: false },
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockEvaluateSsotFireGate.mock.calls.length).toBeGreaterThanOrEqual(1),
+      );
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      unmount();
+      resolvers.forEach((r) => r({ blocked: false, reason: 'mirror-missing' }));
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+
+      // arvlCd fast-path silent — dispatch X
+      const arvlCdFires = mockLogFiredStationPassed.mock.calls.filter((c) => c[0] === 'fg-arvlcd');
+      expect(arvlCdFires).toHaveLength(0);
+    });
+
+    it('Path C (subsurface) evaluateSsotFireGate pending 중 unmount → cancelled guard (line 1245)', async () => {
+      const resolvers: Array<(v: { blocked: boolean; reason: 'mirror-missing' }) => void> = [];
+      mockEvaluateSsotFireGate.mockImplementation(
+        () =>
+          new Promise((r) => {
+            resolvers.push(r);
+          }),
+      );
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      });
+      const onRouteStation = makeStation('S-SUB', '봉은사', 37.5, 127.0);
+
+      const { unmount } = renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: makeDirectRoute(3, '2'),
+            destination,
+            nearestStation: onRouteStation,
+            accuracyMeters: 500, // GPS 차단 → subsurface path만 활성
+            userLocation: null,
+            speedMps: null,
+            subsurfaceStationDetected: true,
+          }),
+        ),
+      );
+      await waitFor(() =>
+        expect(mockEvaluateSsotFireGate.mock.calls.length).toBeGreaterThanOrEqual(1),
+      );
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      unmount();
+      resolvers.forEach((r) => r({ blocked: false, reason: 'mirror-missing' }));
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+
+    it('evaluateSsotFireGate pending 중 unmount → cancelled guard 진입 (Path A/B/C 동시 cover)', async () => {
+      // #1572 (T9) — 3 fire path 모두 `await evaluateSsotFireGate` 직후 `if (cancelled) return;` 가드.
+      // pending 동안 unmount → 모든 path가 cancelled=true 분기로 silence. dispatch/log 모두 X.
+      const resolvers: Array<(v: { blocked: boolean; reason: 'mirror-missing' }) => void> = [];
+      mockEvaluateSsotFireGate.mockImplementation(
+        () =>
+          new Promise((r) => {
+            resolvers.push(r);
+          }),
+      );
+      mockGetLastNotifiedStationId.mockResolvedValue(null);
+      mockResolveNextTarget.mockReturnValue({
+        nextStationName: '강남',
+        stopsToNextStation: 2,
+        isTransfer: false,
+        stopsToDestination: 2,
+      });
+      mockFindFgArvlCdFireSignal.mockReturnValue({ trainCode: 'T-LOCK', arvlCd: 0 });
+
+      const { unmount } = renderHook(() =>
+        useStationAlarm(
+          defaultInputs({
+            route: directRouteOnLine2,
+            destination,
+            nearestStation: arc[2],
+            currentHopIndex: 2,
+            arcStations: arc,
+            userLocation: { lat: 37.5, lng: 127.0 },
+            speedMps: 10,
+            accuracyMeters: 50,
+          }),
+        ),
+      );
+      // 모든 fire path가 evaluateSsotFireGate await 지점에 도달하도록 충분히 microtask flush.
+      await waitFor(() =>
+        expect(mockEvaluateSsotFireGate.mock.calls.length).toBeGreaterThanOrEqual(1),
+      );
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      unmount();
+      // resolve 후 cancelled guard로 dispatch 진입 안 함.
+      resolvers.forEach((r) => r({ blocked: false, reason: 'mirror-missing' }));
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+
+      expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+      expect(mockLogFiredStationPassed).not.toHaveBeenCalled();
     });
   });
 });

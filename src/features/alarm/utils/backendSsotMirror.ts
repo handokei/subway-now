@@ -30,6 +30,21 @@ export interface LockSuggestionMirror {
 }
 
 /**
+ * #1572 (T9, ADR-017) — backend가 결정한 alarmEvent (device 측 mirror schema).
+ *
+ * backend `apns.ts`의 `AlarmEventPayload`와 1:1. device `evaluateSsotFireGate`가 5 fire path에서
+ * reader-only 게이트로 사용 — alarmId 매칭 시 Gate A, stationId 매칭 시 Gate B.
+ *
+ * `type`: backend AlarmEventType과 동일 narrow. validator에서 부적합한 type은 graceful drop.
+ */
+export interface AlarmEventMirror {
+  alarmId: string;
+  stationId: string;
+  type: 'station-passed' | 'transfer' | 'destination' | 'imminent';
+  decidedAt: number;
+}
+
+/**
  * #1561 (T8) — silent push payload에 실린 SSoT 권위 스냅샷 형태.
  *
  * backend `apns.ts`의 `SilentPushSsotPayload`와 1:1. device는 본 값을 BACKEND_SSOT_MIRROR_KEY에
@@ -37,6 +52,9 @@ export interface LockSuggestionMirror {
  *
  * #1534 (S1, T9b) — lockSuggestion optional. 부재 시 device `useLockSuggestion` reader는 null
  * 반환 (graceful, 기존 9-AND gate fallback).
+ *
+ * #1572 (T9) — alarmEvents optional. 부재 시 `evaluateSsotFireGate`는 `mirror-missing` 반환
+ * (graceful, 기존 fire path 동작). 본 list에서 alarmId/stationId 매칭 시 게이트 A/B 차단.
  */
 export interface SilentPushSsotMirror {
   currentStationId: string;
@@ -45,6 +63,7 @@ export interface SilentPushSsotMirror {
   lastAdvanceAt: number;
   passedStations: readonly string[];
   lockSuggestion?: LockSuggestionMirror;
+  alarmEvents?: readonly AlarmEventMirror[];
 }
 
 /** #1561 (T8) — mirror entry에 receivedAt 추가. cascade picker가 자체 staleness 판정. */
@@ -118,6 +137,9 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
     }
     // #1534 (S1, T9b) — lockSuggestion parse (optional). 형식 misjudge 시 omit (graceful).
     const lockSuggestion = parseLockSuggestion(parsed.lockSuggestion);
+    // #1572 (T9) — alarmEvents parse (optional). 부재/형식 mismatch entry는 graceful drop —
+    // 잔여만 채택 (passedStations와 동일 패턴).
+    const alarmEvents = parseAlarmEventsMirror(parsed.alarmEvents);
     return {
       currentStationId: parsed.currentStationId,
       motionState: parsed.motionState,
@@ -128,10 +150,48 @@ export async function readBackendSsotMirror(): Promise<BackendSsotMirrorEntry | 
       ),
       receivedAt: parsed.receivedAt,
       ...(lockSuggestion ? { lockSuggestion } : {}),
+      ...(alarmEvents !== undefined ? { alarmEvents } : {}),
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * #1572 (T9) — alarmEvents JSON parse + 형식 검증. 항목별 형식 misjudge 시 graceful drop.
+ *
+ * raw가 array가 아니면 undefined (필드 자체 omit). array면 각 entry를 narrow — 통과한 것만 채택.
+ * 잔여 0개여도 빈 배열 반환 (caller는 "fresh empty" vs "missing"을 mirror.alarmEvents 정의 여부로 구분).
+ *
+ * AsyncStorage 영속 mirror read 시(`readBackendSsotMirror`)와 silent push payload validation 시
+ * (`silentPushTask.validSsotMirror`) 둘 다 같은 형식 narrow가 필요 — 양쪽에서 본 함수를 호출한다.
+ * 통합으로 SonarCloud CPD dup 회피 + backend AlarmEventPayload 어휘 확장 시 단일 진입점.
+ */
+export function parseAlarmEventsMirror(raw: unknown): readonly AlarmEventMirror[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const filtered: AlarmEventMirror[] = [];
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object') continue;
+    const o = item as Record<string, unknown>;
+    if (typeof o.alarmId !== 'string' || o.alarmId.length === 0) continue;
+    if (typeof o.stationId !== 'string' || o.stationId.length === 0) continue;
+    if (
+      o.type !== 'station-passed' &&
+      o.type !== 'transfer' &&
+      o.type !== 'destination' &&
+      o.type !== 'imminent'
+    ) {
+      continue;
+    }
+    if (typeof o.decidedAt !== 'number' || !Number.isFinite(o.decidedAt)) continue;
+    filtered.push({
+      alarmId: o.alarmId,
+      stationId: o.stationId,
+      type: o.type,
+      decidedAt: o.decidedAt,
+    });
+  }
+  return filtered;
 }
 
 /**

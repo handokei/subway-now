@@ -51,9 +51,11 @@ import {
   logSuppressedPhaseGate,
   logSuppressedSleepFirstTransfer,
   logSuppressedSleepStationPassed,
+  logSuppressedSsotFireGate,
   logSuppressedStationPassedWarmup,
   type HydrationPhase,
 } from '../utils/alarmLog';
+import { evaluateSsotFireGate } from '../utils/ssotFireGate';
 import {
   isStationRecentlyFired,
   markStationFired,
@@ -289,6 +291,46 @@ async function runSilenceGateAndDispatch(params: {
     isCancelled: params.isCancelled,
     errorLogPrefix: params.errorLogPrefix,
   });
+}
+
+/**
+ * #1572 (T9, ADR-017) — station-passed fire path SSoT 게이트 평가 + blocked 시 alarmLog 적재.
+ *
+ * 3 fire path(A=GPS station-passed / B=FG-arvlcd fast-path / C=subsurface verdict)가 같은
+ * 5-line SSoT gate 시퀀스(evaluateSsotFireGate → cancelled 재확인 → ssotGate.blocked 분기 →
+ * logSuppressedSsotFireGate)를 반복해 SonarCloud CPD가 dup 검출. 본 helper로 통합한다.
+ *
+ * 호출 규약:
+ *   - 입력: candidateStation (id+name) / source / isCancelled callback.
+ *   - kind는 'station-passed'로 고정 (3 path 모두 station-passed 카테고리). alarmId 형식도 동일.
+ *   - 반환 true: 차단됨 → caller가 즉시 return. cancelled=true도 true로 묶어 caller의 cancelled 분기 단순화.
+ *   - 반환 false: 통과 → caller가 다음 단계(dispatch 등) 진행.
+ *
+ * Path D (`fireAndLog` 내부)는 sync `firedAlarmsRef.current.delete(key)` cleanup이 끼어 있어
+ * 본 helper를 사용하지 않는다 (Sonar dup 블록 대상에서 제외됨).
+ */
+async function evaluateSsotFireGateAndLogIfBlocked(params: {
+  candidateStation: Station;
+  source: 'fg' | 'fg-arvlcd';
+  isCancelled: () => boolean;
+}): Promise<boolean> {
+  const { candidateStation, source, isCancelled } = params;
+  const ssotGate = await evaluateSsotFireGate({
+    alarmId: `station-passed:${candidateStation.name}`,
+    stationId: candidateStation.id,
+    type: 'station-passed',
+  });
+  if (isCancelled()) return true;
+  if (ssotGate.blocked) {
+    logSuppressedSsotFireGate({
+      source,
+      reason: ssotGate.reason as 'gate-alarm-already-decided' | 'gate-station-already-passed',
+      stationName: candidateStation.name,
+      kind: 'station-passed',
+    });
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -609,6 +651,29 @@ export function useStationAlarm({
       firedAlarmsRef.current.delete(key);
       logSuppressedCrossCategoryDedup({
         source: 'fg',
+        stationName: rawEvent.stationName,
+        kind: rawEvent.type,
+        phaseId: rawEvent.phaseId,
+      });
+      return;
+    }
+    // #1572 (T9) — backend SSoT 권위 게이트 (Path D fireAndLog phase ETA / imminent).
+    // AlarmEvent.type은 'transfer' | 'destination'만 (station-passed는 별도 effect).
+    // Gate A(alarmId 매칭)만 적용 — transfer/destination은 환승역에서 같은 station이 여러 hop을
+    // cover하므로 단순 stationId 매칭은 false positive 위험. type 인자 미명시 → Gate B 자연 비활성.
+    const ssotGate = await evaluateSsotFireGate({
+      alarmId: `${rawEvent.type}:${rawEvent.stationName}`,
+      stationId: rawEvent.stationName,
+      type: rawEvent.type,
+    });
+    if (ssotGate.blocked) {
+      // race 차단 reservation 진입 전이라 markStationFired 호출하지 않음.
+      // phase 카테고리 dedup ref(firedAlarmsRef)는 진입부에서 add됐는데 SSoT 차단 시 다른 카테고리에
+      // 영향 안 주려면 ref만 갱신(storage 영속화 skip — 다른 sleep/cross-category 차단과 동일 패턴).
+      firedAlarmsRef.current.delete(key);
+      logSuppressedSsotFireGate({
+        source: 'fg',
+        reason: ssotGate.reason as 'gate-alarm-already-decided' | 'gate-station-already-passed',
         stationName: rawEvent.stationName,
         kind: rawEvent.type,
         phaseId: rawEvent.phaseId,
@@ -981,6 +1046,19 @@ export function useStationAlarm({
           });
           return;
         }
+        // #1572 (T9) — backend SSoT 권위 게이트 (Path A). mirror.alarmEvents에 같은 alarmId가
+        // 이미 있거나(Gate A) mirror.passedStations/alarmEvents에 같은 stationId가 station-passed로
+        // 이미 결정됐으면(Gate B) fire 차단. mirror 부재/stale은 graceful no-block.
+        // #1572 — 3 path 공통 helper로 통합 (SonarCloud CPD 회피).
+        if (
+          await evaluateSsotFireGateAndLogIfBlocked({
+            candidateStation,
+            source: 'fg',
+            isCancelled: () => cancelled,
+          })
+        ) {
+          return;
+        }
         await runSilenceGateAndDispatch({
           source: 'fg',
           candidateStation,
@@ -1104,6 +1182,19 @@ export function useStationAlarm({
         }
       }
 
+      // #1572 (T9) — backend SSoT 권위 게이트 (Path B fast-path). FG-arvlcd가 backend가 이미
+      // 결정한 alarmId/stationId를 재발사하는 회귀 차단. hop window 통과 직후, dispatch 전에 평가.
+      // #1572 — 3 path 공통 helper로 통합 (SonarCloud CPD 회피).
+      if (
+        await evaluateSsotFireGateAndLogIfBlocked({
+          candidateStation,
+          source: 'fg-arvlcd',
+          isCancelled: () => cancelled,
+        })
+      ) {
+        return;
+      }
+
       // #746 silence gate + dispatch는 helper로 통합 (Sonar cpd 회피).
       // lastNotifiedStationId 공유 dedup. cancelled 재확인 — getBoardingLock 후 effect cleanup 가능.
       // #1236 — sleep 룰 게이트 context. lock은 위에서 이미 fetch.
@@ -1174,6 +1265,18 @@ export function useStationAlarm({
     void (async () => {
       const lock = await getBoardingLock();
       if (cancelled) return;
+      // #1572 (T9) — backend SSoT 권위 게이트 (Path C subsurface verdict). subsurface fusion이
+      // backend가 이미 결정한 alarmId/stationId를 재발사하는 회귀 차단. dispatch helper 진입 직전 평가.
+      // #1572 — 3 path 공통 helper로 통합 (SonarCloud CPD 회피).
+      if (
+        await evaluateSsotFireGateAndLogIfBlocked({
+          candidateStation,
+          source: 'fg',
+          isCancelled: () => cancelled,
+        })
+      ) {
+        return;
+      }
       await runSilenceGateAndDispatch({
         source: 'fg',
         candidateStation,

@@ -182,7 +182,15 @@ export type AlarmLogReason =
   //   'trip-lifecycle-silence'        : 6h~9h 잔존 trip의 alarm/notify silence 진입.
   //   'trip-lifecycle-force-ended'    : 9h+ 잔존 trip 강제 종료 (runTripBoundCleanups + sentinel).
   | 'trip-lifecycle-silence'
-  | 'trip-lifecycle-force-ended';
+  | 'trip-lifecycle-force-ended'
+  // #1572 (T9, ADR-017) — device fire path SSoT 게이트 차단 사유.
+  //   'gate-alarm-already-decided' : backend mirror.alarmEvents에 같은 alarmId가 이미 있어 fire 차단(X2).
+  //   'gate-station-already-passed': backend mirror.passedStations/alarmEvents에 같은 stationId가
+  //                                  이미 station-passed/imminent로 결정돼 fire 차단(X1/X6).
+  // 두 사유 모두 5 fire path(A~E) 어디서든 같은 reason으로 적재 — DebugModal Counters section에서
+  // 단일 분포로 시각화.
+  | 'gate-alarm-already-decided'
+  | 'gate-station-already-passed';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -970,6 +978,35 @@ export function logSuppressedPassedEventOnLockOrigin(input: {
     reason: 'gate-passed-event-on-lock-origin',
     stationName: input.stationName,
     kind: 'station-passed',
+  });
+}
+
+/**
+ * #1572 (T9, ADR-017) — device fire path SSoT 게이트 차단 1건 적재.
+ *
+ * 5 fire path(A=fg / B=fg-arvlcd / C=fg / D=fg / E=silent-push-skipped) 어디서든 본 helper 호출.
+ * reason은 'gate-alarm-already-decided'(Gate A) 또는 'gate-station-already-passed'(Gate B).
+ * stationName은 발사 시도된 station — DebugModal에서 어느 station에서 게이트가 동작했는지 추적.
+ *
+ * kind는 호출자가 명시 (station-passed/transfer/destination/imminent) — Sentry breadcrumb +
+ * Counters section 분류에 사용.
+ */
+export function logSuppressedSsotFireGate(input: {
+  source: AlarmLogSource;
+  reason: 'gate-alarm-already-decided' | 'gate-station-already-passed';
+  stationName: string;
+  kind?: AlarmLogKind;
+  phaseId?: AlarmPhaseId;
+}): void {
+  if (isBurstDuplicate(input.reason, input.stationName)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: input.source,
+    outcome: 'suppressed',
+    reason: input.reason,
+    stationName: input.stationName,
+    kind: input.kind,
+    phaseId: input.phaseId,
   });
 }
 

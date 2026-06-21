@@ -6,7 +6,11 @@
  * + lockSuggestion 형식 검증(readBackendSsotMirror)을 다룬다.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { clearBackendSsotMirror, readBackendSsotMirror } from '../backendSsotMirror';
+import {
+  clearBackendSsotMirror,
+  persistBackendSsotMirror,
+  readBackendSsotMirror,
+} from '../backendSsotMirror';
 import { BACKEND_SSOT_MIRROR_KEY } from '../../../../shared/constants/storageKeys';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -14,11 +18,13 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   default: {
     removeItem: jest.fn(),
     getItem: jest.fn(),
+    setItem: jest.fn(),
   },
 }));
 
 const mockRemoveItem = AsyncStorage.removeItem as jest.Mock;
 const mockGetItem = AsyncStorage.getItem as jest.Mock;
+const mockSetItem = AsyncStorage.setItem as jest.Mock;
 
 describe('clearBackendSsotMirror (#1573 T10)', () => {
   beforeEach(() => {
@@ -104,5 +110,126 @@ describe('readBackendSsotMirror lockSuggestion parse (#1534 S1 T9b)', () => {
     expect(got?.lockSuggestion).toBeUndefined();
     // 본체 mirror entry는 살아 있음 (lockSuggestion만 graceful drop)
     expect(got?.currentStationId).toBe('용마산');
+  });
+});
+
+// #1572 (T9, ADR-017) — readBackendSsotMirror alarmEvents parse + narrow.
+describe('readBackendSsotMirror alarmEvents parse (#1572 T9)', () => {
+  const baseEntry = {
+    currentStationId: '용마산',
+    motionState: 'moving',
+    lastAdvanceEvidence: 'arvlcd-confirmed-train',
+    lastAdvanceAt: 1_700_000_000_000,
+    passedStations: ['중곡'],
+    receivedAt: 1_700_000_010_000,
+  };
+
+  beforeEach(() => {
+    mockGetItem.mockReset();
+  });
+
+  it('valid alarmEvents forward 시 결과에 포함', async () => {
+    const alarmEvents = [
+      { alarmId: 'a', stationId: 'X', type: 'station-passed' as const, decidedAt: 1 },
+      { alarmId: 'b', stationId: 'Y', type: 'transfer' as const, decidedAt: 2 },
+    ];
+    mockGetItem.mockResolvedValue(JSON.stringify({ ...baseEntry, alarmEvents }));
+    const got = await readBackendSsotMirror();
+    expect(got?.alarmEvents).toEqual(alarmEvents);
+  });
+
+  it('alarmEvents 부재 → 결과 alarmEvents=undefined (legacy/graceful)', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify(baseEntry));
+    const got = await readBackendSsotMirror();
+    expect(got?.alarmEvents).toBeUndefined();
+  });
+
+  it.each([
+    ['alarmId missing', { stationId: 'X', type: 'station-passed', decidedAt: 1 }],
+    ['empty alarmId', { alarmId: '', stationId: 'X', type: 'station-passed', decidedAt: 1 }],
+    ['empty stationId', { alarmId: 'a', stationId: '', type: 'station-passed', decidedAt: 1 }],
+    ['invalid type', { alarmId: 'a', stationId: 'X', type: 'unknown', decidedAt: 1 }],
+    ['decidedAt non-number', { alarmId: 'a', stationId: 'X', type: 'station-passed', decidedAt: 's' }],
+    ['decidedAt NaN', { alarmId: 'a', stationId: 'X', type: 'station-passed', decidedAt: Number.NaN }],
+    ['null entry', null],
+    ['scalar entry', 'string'],
+  ])('항목 mismatch %s → graceful drop (잔여만 채택)', async (_label, badEntry) => {
+    const goodEntry = { alarmId: 'good', stationId: 'Y', type: 'transfer' as const, decidedAt: 5 };
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...baseEntry, alarmEvents: [badEntry, goodEntry] }),
+    );
+    const got = await readBackendSsotMirror();
+    expect(got?.alarmEvents).toEqual([goodEntry]);
+  });
+
+  it('alarmEvents 비-array (raw 형식 mismatch) → undefined slot', async () => {
+    mockGetItem.mockResolvedValue(JSON.stringify({ ...baseEntry, alarmEvents: 'invalid' }));
+    const got = await readBackendSsotMirror();
+    expect(got?.alarmEvents).toBeUndefined();
+    // 본체는 살아 있음.
+    expect(got?.currentStationId).toBe('용마산');
+  });
+
+  it('필수 필드 누락 시 null 반환 (validation reject)', async () => {
+    mockGetItem.mockResolvedValue(
+      JSON.stringify({ ...baseEntry, currentStationId: 123 }),
+    );
+    const got = await readBackendSsotMirror();
+    expect(got).toBeNull();
+  });
+
+  it('JSON parse 실패 시 null 반환 (graceful catch)', async () => {
+    mockGetItem.mockResolvedValue('not-json');
+    const got = await readBackendSsotMirror();
+    expect(got).toBeNull();
+  });
+
+  it('AsyncStorage.getItem null 반환 → null (key 미존재)', async () => {
+    mockGetItem.mockResolvedValue(null);
+    const got = await readBackendSsotMirror();
+    expect(got).toBeNull();
+  });
+
+  it('JSON.parse 결과가 null인 raw → null (parsed truthy check)', async () => {
+    mockGetItem.mockResolvedValue('null');
+    const got = await readBackendSsotMirror();
+    expect(got).toBeNull();
+  });
+
+  it.each([
+    ['currentStationId 빈 문자열', { ...baseEntry, currentStationId: '' }],
+    ['motionState invalid 값', { ...baseEntry, motionState: 'invalid' }],
+    ['lastAdvanceEvidence 비-string', { ...baseEntry, lastAdvanceEvidence: 123 }],
+    ['lastAdvanceAt 비-number', { ...baseEntry, lastAdvanceAt: 'now' }],
+    ['passedStations 비-array', { ...baseEntry, passedStations: 'wrong' }],
+    ['receivedAt 비-number', { ...baseEntry, receivedAt: 'wrong' }],
+  ])('%s → null', async (_label, raw) => {
+    mockGetItem.mockResolvedValue(JSON.stringify(raw));
+    const got = await readBackendSsotMirror();
+    expect(got).toBeNull();
+  });
+});
+
+describe('persistBackendSsotMirror (#1568 T8b)', () => {
+  beforeEach(() => {
+    mockSetItem.mockReset();
+  });
+
+  it('AsyncStorage.setItem 성공 — BACKEND_SSOT_MIRROR_KEY에 receivedAt 합쳐 저장', async () => {
+    mockSetItem.mockResolvedValue(undefined);
+    await persistBackendSsotMirror(
+      {
+        currentStationId: '용마산',
+        motionState: 'moving',
+        lastAdvanceEvidence: 'arvlcd-confirmed-train',
+        lastAdvanceAt: 1_700_000_000_000,
+        passedStations: ['중곡'],
+      },
+      1_700_000_010_000,
+    );
+    expect(mockSetItem).toHaveBeenCalledWith(
+      BACKEND_SSOT_MIRROR_KEY,
+      expect.stringContaining('"receivedAt":1700000010000'),
+    );
   });
 });

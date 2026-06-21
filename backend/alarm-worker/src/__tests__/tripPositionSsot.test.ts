@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  ALARM_EVENTS_CAP,
   MOTION_EVIDENCE_CAP,
   SSOT_CRON_READ_CACHE_TTL_SEC,
+  appendAlarmEvent,
+  computeAlarmId,
   deleteSsot,
   isSameLockSuggestion,
   migrateTripPassedStationsToSsot,
@@ -39,6 +42,7 @@ function makeSsot(overrides?: Partial<TripPositionSSoT>): TripPositionSSoT {
     passedStations: [],
     userIntentDeclared: false,
     seedOverrideCount: 0,
+    alarmEvents: [],
     schemaVersion: 1,
     ...overrides,
   };
@@ -323,5 +327,98 @@ describe('tripPositionSsot — lockSuggestion helpers (S1 T9b, #1534)', () => {
     await writeSsot(kv as unknown as KVNamespace, ssot);
     const got = await readSsot(kv as unknown as KVNamespace, ssot.tripToken);
     expect(got?.lockSuggestion).toEqual(makeSuggestion());
+  });
+});
+
+// #1572 (T9, ADR-017) — alarmEvents + computeAlarmId + appendAlarmEvent acceptance.
+describe('alarmEvents helpers (#1572 T9)', () => {
+  it('computeAlarmId: 같은 (tripToken, stationId, type) → 결정적 동일 hash', async () => {
+    const id1 = await computeAlarmId('tok-abc', '용마산', 'station-passed');
+    const id2 = await computeAlarmId('tok-abc', '용마산', 'station-passed');
+    expect(id1).toBe(id2);
+  });
+
+  it('computeAlarmId: type 다르면 다른 hash', async () => {
+    const id1 = await computeAlarmId('tok-abc', '용마산', 'station-passed');
+    const id2 = await computeAlarmId('tok-abc', '용마산', 'transfer');
+    expect(id1).not.toBe(id2);
+  });
+
+  it('computeAlarmId: 16-char hex prefix (8 bytes)', async () => {
+    const id = await computeAlarmId('tok', 'X', 'station-passed');
+    expect(id).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('appendAlarmEvent: 빈 배열에 1건 push', () => {
+    const ssot = makeSsot();
+    appendAlarmEvent(ssot, {
+      alarmId: 'abc123',
+      stationId: '용마산',
+      type: 'station-passed',
+      decidedAt: 1_700_000_000_000,
+    });
+    expect(ssot.alarmEvents).toHaveLength(1);
+    expect(ssot.alarmEvents?.[0].alarmId).toBe('abc123');
+  });
+
+  it('appendAlarmEvent: 같은 alarmId 중복 push 차단 (idempotent)', () => {
+    const ssot = makeSsot({ alarmEvents: [] });
+    const event = {
+      alarmId: 'abc123',
+      stationId: '용마산',
+      type: 'station-passed' as const,
+      decidedAt: 1_700_000_000_000,
+    };
+    appendAlarmEvent(ssot, event);
+    appendAlarmEvent(ssot, event);
+    expect(ssot.alarmEvents).toHaveLength(1);
+  });
+
+  it('appendAlarmEvent: alarmEvents 미정의 시 자동 초기화', () => {
+    const ssot = makeSsot();
+    delete ssot.alarmEvents;
+    appendAlarmEvent(ssot, {
+      alarmId: 'x',
+      stationId: 'Y',
+      type: 'station-passed',
+      decidedAt: 1,
+    });
+    expect(ssot.alarmEvents).toEqual([
+      { alarmId: 'x', stationId: 'Y', type: 'station-passed', decidedAt: 1 },
+    ]);
+  });
+
+  it('appendAlarmEvent: ALARM_EVENTS_CAP(50) 초과 시 oldest FIFO eviction', () => {
+    const ssot = makeSsot({ alarmEvents: [] });
+    for (let i = 0; i < ALARM_EVENTS_CAP + 5; i += 1) {
+      appendAlarmEvent(ssot, {
+        alarmId: `id-${i}`,
+        stationId: `S-${i}`,
+        type: 'station-passed',
+        decidedAt: i,
+      });
+    }
+    expect(ssot.alarmEvents).toHaveLength(ALARM_EVENTS_CAP);
+    expect(ssot.alarmEvents?.[0].alarmId).toBe('id-5'); // 첫 5건이 eviction됨
+  });
+
+  it('seedSsot: alarmEvents 빈 배열로 초기화', async () => {
+    const kv = new InMemoryKV();
+    const ssot = await seedSsot(kv as unknown as KVNamespace, 'tok', '용마산');
+    expect(ssot.alarmEvents).toEqual([]);
+  });
+
+  it('alarmEvents round-trip: writeSsot → readSsot 보존', async () => {
+    const kv = new InMemoryKV();
+    const ssot = makeSsot({
+      alarmEvents: [
+        { alarmId: 'a', stationId: 'X', type: 'station-passed', decidedAt: 1 },
+      ],
+    });
+    await writeSsot(kv as unknown as KVNamespace, ssot);
+    const got = await readSsot(kv as unknown as KVNamespace, ssot.tripToken);
+    expect(got?.alarmEvents).toEqual([
+      { alarmId: 'a', stationId: 'X', type: 'station-passed', decidedAt: 1 },
+    ]);
   });
 });

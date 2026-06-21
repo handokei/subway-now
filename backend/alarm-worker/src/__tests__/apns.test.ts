@@ -414,6 +414,72 @@ describe('sendSilentPush', () => {
     expect(body.data.ssot.passedStations).not.toBe(ssotInput.passedStations);
   });
 
+  // #1572 (T9, ADR-017) — payload.ssot.alarmEvents wire 검증. 정의 시만 forward, undefined는 omit.
+  it('forwards ssot.alarmEvents to body.data.ssot.alarmEvents when defined (#1572 T9)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    const alarmEvents = [
+      {
+        alarmId: 'abc123',
+        stationId: '용마산',
+        type: 'station-passed' as const,
+        decidedAt: 1_700_000_000_400,
+      },
+    ];
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: {
+        nextWaypoint: '중곡',
+        etaSeconds: 0,
+        phase: 'imminent',
+        kind: 'intermediate',
+        sentAt: 1_700_000_000_000,
+        pushId: 'p',
+        ssot: {
+          currentStationId: '중곡',
+          motionState: 'moving',
+          lastAdvanceEvidence: 'arvlcd-confirmed-train',
+          lastAdvanceAt: 1_700_000_000_500,
+          passedStations: ['용마산'],
+          alarmEvents,
+        },
+      },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect(body.data.ssot.alarmEvents).toEqual(alarmEvents);
+  });
+
+  it('omits ssot.alarmEvents when undefined (#1572 T9 구 device 호환)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
+    await sendSilentPush({
+      deviceToken: 'tok',
+      payload: {
+        nextWaypoint: '강남',
+        etaSeconds: 0,
+        phase: 'imminent',
+        kind: 'intermediate',
+        sentAt: 1_700_000_000_000,
+        pushId: 'p',
+        ssot: {
+          currentStationId: '강남',
+          motionState: 'moving',
+          lastAdvanceEvidence: 'arvlcd-confirmed-train',
+          lastAdvanceAt: 1_700_000_000_500,
+          passedStations: ['교대'],
+        },
+      },
+      config: makeConfig(),
+      host: TEST_HOST,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    const call = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(call[1].body as string);
+    expect('alarmEvents' in body.data.ssot).toBe(false);
+  });
+
   it('omits ssot field when undefined (#1561 구 device 호환)', async () => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 200 }));
     await sendSilentPush({

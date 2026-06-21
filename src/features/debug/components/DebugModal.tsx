@@ -697,6 +697,9 @@ const BACKEND_SSOT_DUMP_LABELS = {
   motionState: 'motionState',
   lastAdvanceEvidence: 'lastAdvanceEvidence',
   lastAdvanceAt: 'lastAdvanceAt',
+  // #1572 (T9, ADR-017) — alarmEvents 카운트. backend가 결정한 alarm 누적 개수.
+  // 5 fire path가 evaluateSsotFireGate로 본 list를 reader-only 게이트로 사용.
+  alarmEventsCount: 'alarmEventsCount',
 } as const;
 
 function buildBackendSsotSection(args: BuildDumpArgs): string[] {
@@ -707,6 +710,7 @@ function buildBackendSsotSection(args: BuildDumpArgs): string[] {
     `${BACKEND_SSOT_DUMP_LABELS.motionState}=${entry.motionState}`,
     `${BACKEND_SSOT_DUMP_LABELS.lastAdvanceEvidence}=${entry.lastAdvanceEvidence}`,
     `${BACKEND_SSOT_DUMP_LABELS.lastAdvanceAt}=${entry.lastAdvanceAt}`,
+    `${BACKEND_SSOT_DUMP_LABELS.alarmEventsCount}=${entry.alarmEvents?.length ?? 0}`,
   ];
 }
 
@@ -1852,6 +1856,11 @@ function DebugModalInner({
                 <KeyValue
                   label={BACKEND_SSOT_DUMP_LABELS.lastAdvanceAt}
                   value={String(backendSsotMirror.lastAdvanceAt)}
+                  colors={colors}
+                />
+                <KeyValue
+                  label={BACKEND_SSOT_DUMP_LABELS.alarmEventsCount}
+                  value={String(backendSsotMirror.alarmEvents?.length ?? 0)}
                   colors={colors}
                 />
               </>
