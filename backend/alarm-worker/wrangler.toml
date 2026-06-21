@@ -65,9 +65,9 @@ preview_id = "d38f190e3f7f4fd3b6e7f6485dd1733d"
 # ⚠️ Workers Paid plan 필수 — Free plan에서는 binding 선언만으로도 deploy 실패(Cloudflare API 10089).
 # Free plan 환경이면 아래 3줄을 주석 처리. 코드는 `if (env.TRIP_METRICS)` 분기로 graceful —
 # binding 없으면 모든 적재 경로가 no-op (개발/테스트 환경 호환, TELEMETRY 동형).
-[[analytics_engine_datasets]]
-binding = "TRIP_METRICS"
-dataset = "trip_metrics"
+# [[analytics_engine_datasets]]
+# binding = "TRIP_METRICS"
+# dataset = "trip_metrics"
 
 # R2: device alarmLog/fusionLog telemetry forward archive (#1579, Phase 0 epic #1576 P0-3)
 # Trip 종료 시 device가 `POST /telemetry/alarm-log`로 4개 buffer snapshot을 forward.
@@ -80,9 +80,9 @@ dataset = "trip_metrics"
 #   2) 아래 binding 활성화 (id 불필요 — bucket_name만 지정).
 #   3) Cloudflare Dashboard → R2 → subway-now-telemetry → Lifecycle 룰에서
 #      "Delete objects after 90 days" 추가 (cost 절감, evidence는 단기 분석 목적).
-# [[r2_buckets]]
-# binding = "TELEMETRY_R2"
-# bucket_name = "subway-now-telemetry"
+[[r2_buckets]]
+binding = "TELEMETRY_R2"
+bucket_name = "subway-now-telemetry"
 
 # 1분마다 활성 트립 폴링
 [triggers]
