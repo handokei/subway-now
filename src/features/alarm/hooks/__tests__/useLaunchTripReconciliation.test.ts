@@ -39,6 +39,12 @@ jest.mock('../../api/signalDumpBackend', () => ({
   flushSignalDumpOutbox: (...args: unknown[]) => mockFlushSignalDumpOutbox(...args),
 }));
 
+// R11-c (#1612) — cold-launch active trip 없으면 backend SSoT mirror clear (race C 차단).
+const mockClearBackendSsotMirror = jest.fn();
+jest.mock('../../utils/backendSsotMirror', () => ({
+  clearBackendSsotMirror: (...args: unknown[]) => mockClearBackendSsotMirror(...args),
+}));
+
 // #1597 — trip 종료 ended 경로에서 cleanup 직전에 corrId snapshot 캡처 + cleanup 후 prompt enqueue.
 const mockGetCurrentTripCorrIdSync = jest.fn(() => null);
 jest.mock('../../../observability/utils/tripCorrId', () => ({
@@ -68,6 +74,7 @@ beforeEach(async () => {
   mockTriggerTripEndRecall.mockResolvedValue({ uploaded: false });
   mockRunTripBoundCleanups.mockResolvedValue(undefined);
   mockFlushSignalDumpOutbox.mockResolvedValue({ ok: false, skipped: true });
+  mockClearBackendSsotMirror.mockResolvedValue(undefined);
   process.env.EXPO_PUBLIC_ALARM_BACKEND_URL = 'https://api.test.dev';
 });
 
@@ -86,6 +93,26 @@ describe('runLaunchTripReconciliation', () => {
   it('ACTIVE_TRIP_KEY 부재 → skip', async () => {
     await runLaunchTripReconciliation();
     expect(mockFetchTripStatus).not.toHaveBeenCalled();
+  });
+
+  // R11-c (#1612) — cold-launch active trip 없으면 stale backend SSoT mirror clear (race C 차단).
+  describe('R11-c (#1612) — cold-launch mirror clear', () => {
+    it('ACTIVE_TRIP_KEY 부재 → clearBackendSsotMirror 1회 호출 (mirror 잔재 차단)', async () => {
+      await runLaunchTripReconciliation();
+      expect(mockClearBackendSsotMirror).toHaveBeenCalledTimes(1);
+      expect(mockFetchTripStatus).not.toHaveBeenCalled();
+    });
+
+    it('ACTIVE_TRIP_KEY 존재 → clearBackendSsotMirror 호출 안 함 (기존 동작 보존)', async () => {
+      await AsyncStorage.setItem(ACTIVE_TRIP_KEY, 'tk');
+      mockFetchTripStatus.mockResolvedValue({
+        status: 'active',
+        endedAt: null,
+        endReason: null,
+      });
+      await runLaunchTripReconciliation();
+      expect(mockClearBackendSsotMirror).not.toHaveBeenCalled();
+    });
   });
 
   it('sentinel 기록 있음 → fetch skip', async () => {

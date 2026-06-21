@@ -170,15 +170,15 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       expect(result.current.source).not.toBe('position-train');
     });
 
-    it('GPS 좌표 복구되면 positionTrainResult 정상 채택', () => {
-      // accuracyMeters=1500: 지하 bypass 모드. userLocation 있으므로 (a) 통과.
-      // arc 없으므로 fix(b) 적용 — 하지만 거리 0(같은 좌표)이므로 gate 통과.
+    it('R13-a (#1612): GPS 좌표 복구되어도 lock 비활성 + accuracy=1500 → strict reject (positionTrain 채택 X)', () => {
+      // 이전 의도: userLocation 있으므로 (a) 통과 + arc 없음 + 거리 0 → gate 통과. R13-a로 strict reject.
+      // 사용자 명시 의향 없는 lockless trip의 지하 dead zone 누수 방어 — V1 회복 직접 성과.
       const { result } = setup({
         gps: { userLocation: { lat: yongmasan.lat, lng: yongmasan.lng }, accuracyMeters: 1500 },
         positions: { line: '7', trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-A' })] },
       });
 
-      expect(result.current.source).toBe('position-train');
+      expect(result.current.source).not.toBe('position-train');
     });
   });
 
@@ -216,14 +216,15 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       expect(result.current.source).toBe('boarding-lock');
     });
 
-    it('lock 없을 때 accuracy=1500(지하) bypass는 그대로 동작', () => {
-      // fix(b)는 lock 활성 시에만 적용 — lock 없으면 기존 bypass 유지.
+    it('R13-a (#1612): lock 없을 때 accuracy=1500 → strict reject (지하 dead zone 누수 차단)', () => {
+      // 이전 의도: fix(b)는 lock 활성 시에만 — lock 없으면 bypass 유지. R13-a로 lockless도 strict reject.
+      // 사용자 명시 의향 없는 lockless trip은 V1 회복 위해 보호 X — 정상 동작.
       const { result } = setup({
         gps: { accuracyMeters: 1500 },
         positions: { line: '7', trains: [train(yongmasan.name, TRAIN_STATUS.ARRIVED, { trainNo: 'T-NOLOCK' })] },
       });
 
-      expect(result.current.source).toBe('position-train');
+      expect(result.current.source).not.toBe('position-train');
     });
   });
 
@@ -266,12 +267,9 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
       expect(result.current.source).toBe('boarding-lock');
     });
 
-    it('lock 없으면 arc 소속 검사 미작동 (gate 자체는 비활성)', () => {
-      // fix(c)는 boardingLock 활성 시에만 동작 — 면목도 gate 통과.
-      // #1207 (Epic #1204 D1): lock 없음 + routeCtx 있음 → lockless-route-hop estimator 활성.
-      // #1418 — positionTrainResult(=Tier 4 실측)가 활성이면 lockless-route-hop(Tier 5)의
-      //         forward ratchet은 차단된다 → positionTrainResult 채택 결과(position-train) 유지.
-      //         (구 버전은 boarding-lock-interp로 override됐으나 그것이 #1415 회귀의 layer 2.)
+    it('R13-a (#1612): lock 없으면 accuracy=1500 → strict reject (arc 소속 검사 도달 전 차단)', () => {
+      // 이전 의도: fix(c)는 boardingLock 활성 시에만. lock 없으면 arc 검사 안 함 → 면목도 gate 통과.
+      // R13-a로 lockless + bad accuracy strict reject — arc 검사 도달 전 차단. V1 회복 직접 성과.
       const myeonmok = findStationByNameAndLine('면목', '7')!;
       const { result } = setup({
         gps: { userLocation: { lat: yongmasan.lat, lng: yongmasan.lng }, accuracyMeters: 1500 },
@@ -279,9 +277,8 @@ describe('#1016 positionTrainResult 거리 게이트 hole 봉합', () => {
         routeCtx: routeContext,
       });
 
-      // lock 없으면 arc 검사 안 함 → 면목도 gate 통과 (position-train 채택).
-      // #1418 Tier 5 reject 게이트 — positionTrainResult 활성 → lockless-route-hop override 차단.
-      expect(result.current.source).toBe('position-train');
+      // R13-a (#1612): lock 비활성 + accuracy=1500 → strict reject로 positionTrain 자체가 null.
+      expect(result.current.source).not.toBe('position-train');
     });
 
     it('arc 안에 있지만 LOCK_NEXT_HOP_WINDOW 초과 시 gate 탈락', () => {

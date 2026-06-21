@@ -19,17 +19,32 @@ function distanceBucket(distanceKm: number): number {
   return Math.floor(distanceM / DISTANCE_BUCKET_M);
 }
 
+/**
+ * R9-a (#1612) — `options.force` 시 module-level dedupe 우회.
+ *
+ * 기본(미전달/false)은 기존 dedupe 동작 그대로 — GPS tick 폭주 흡수, 5분 freshness 윈도우.
+ * AppState 'active' 복귀 같이 위젯 FG stale 회복이 명시적으로 필요한 caller만 force=true를 지정한다.
+ * dedupe key/savedAt도 force 경로에서 갱신해 다음 정상 호출이 같은 bucket이어도 freshness가
+ * 일관되게 stamp되도록 한다.
+ */
+export interface SaveStationToWidgetOptions {
+  force?: boolean;
+}
+
 export async function saveStationToWidget(
   station: Station,
   distanceKm: number,
   savedAt: number = Date.now(),
+  options?: SaveStationToWidgetOptions,
 ): Promise<void> {
   if (Platform.OS !== 'ios') return;
   const key = `${station.id}:${distanceBucket(distanceKm)}`;
-  const isSameKey = key === lastDedupeKey;
-  const isFresh =
-    lastSavedAt !== null && savedAt - lastSavedAt < FRESHNESS_REFRESH_MS;
-  if (isSameKey && isFresh) return;
+  if (!options?.force) {
+    const isSameKey = key === lastDedupeKey;
+    const isFresh =
+      lastSavedAt !== null && savedAt - lastSavedAt < FRESHNESS_REFRESH_MS;
+    if (isSameKey && isFresh) return;
+  }
   lastDedupeKey = key;
   lastSavedAt = savedAt;
   await LiveActivity.saveWidgetStation(

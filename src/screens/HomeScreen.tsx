@@ -23,6 +23,7 @@ import { useRouter } from 'expo-router';
 import { getStationDisplayName } from '../shared/utils/stationDisplay';
 import { initStationNotification, updateStationNotification, clearStationNotification, clearAlarmNotification } from '../features/alarm/utils/stationNotification';
 import { useWidgetMirror } from '../features/widget/hooks/useWidgetMirror';
+import { saveStationToWidget } from '../features/widget/api/widgetStorage';
 import { useStationAlarm } from '../features/alarm/hooks/useStationAlarm';
 import { useMotionActivity } from '../features/nearest-station/hooks/useMotionActivity';
 import { useAccelerometer } from '../features/nearest-station/hooks/useAccelerometer';
@@ -277,6 +278,10 @@ export default function HomeScreen() {
   // 최신 refresh 함수를 ref에 보관해 listener에서 호출한다.
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
+  // R9-a (#1612) — AppState 'active' 복귀 시 widgetStorage module-level dedupe를 우회해
+  // 위젯 currentStation을 강제 동기화. listener는 단일-바인딩이라 latest liveResult를 ref로 stamp.
+  const liveResultRef = useRef(liveResult);
+  liveResultRef.current = liveResult;
   const isCustomOrigin = customOrigin !== null;
   // #1379: effectiveOrigin은 trip 생명선이다. GPS pause(BG 진입/지하 dead zone)로 result?.station이
   // 일시 null이 되면 아래 storage/effect들이 trip을 종료한 것으로 오인해 ROUTE_KEY removeItem →
@@ -681,6 +686,16 @@ export default function HomeScreen() {
         // 방지하기 위해 FG 복귀 즉시 fresh GPS fix를 요청한다. WhileInUse 권한 환경에서
         // 특히 중요 — BG GPS가 없으므로 FG 복귀가 위치 갱신의 유일한 트리거다.
         void refreshRef.current();
+        // R9-a (#1612) — 위젯 FG stale 차단. widgetStorage module-level dedupe(5분 freshness)로
+        // useWidgetMirror가 같은 bucket/station이면 reload skip이라 BG에서 FG 복귀 시 위젯이
+        // 잘못된 station에 stuck되는 회귀(2026-06-19 반포 stuck) 발생. force=true로 dedupe 우회.
+        // liveResult는 raw GPS 최근접(sticky override 없음) — useWidgetMirror와 동일 SSoT.
+        const live = liveResultRef.current;
+        if (live) {
+          void saveStationToWidget(live.station, live.distanceKm, Date.now(), { force: true }).catch((e) =>
+            logger.error('R9-a force-save 실패:', e),
+          );
+        }
       }
     });
     return () => {

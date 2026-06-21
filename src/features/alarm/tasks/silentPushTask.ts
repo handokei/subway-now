@@ -762,8 +762,27 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
     // reschedule/trip-ended payload는 SSoT를 forward하지 않으므로 본 분기에서는 호출되지 않는다.
     //
     // 실패는 silent — backend SSoT mirror는 보조 신호로 cascade는 기존 tier fallback이 가능.
+    //
+    // R11-b (#1612) — trip token mismatch 시 mirror write skip (race A 차단).
+    // cleanup 후 OLD trip의 지연 silent push가 늦게 도착해 mirror가 부활하면
+    // 다음 cascade cycle이 stale `backend-ssot` tier로 잘못된 currentStationId 채택 — cross-trip
+    // 잔재 회귀(2026-06-19/20 trip evidence). payload.tripToken과 device ACTIVE_TRIP_KEY가
+    // 명확히 다르면 mirror write를 건너뛴다. activeToken null(cold-launch race)이거나
+    // payload.tripToken undefined(구 backend 호환)면 기존 동작 보존 — 정상 진입을 막지 않는다.
     if ('ssot' in payload && payload.ssot !== undefined) {
-      await persistBackendSsotMirror(payload.ssot, receivedAt);
+      const activeTripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
+      const tripTokenMismatch =
+        'tripToken' in payload &&
+        payload.tripToken !== undefined &&
+        activeTripToken !== null &&
+        activeTripToken !== payload.tripToken;
+      if (tripTokenMismatch) {
+        logger.info(
+          `mirror write skip: trip token mismatch payload=${payload.tripToken!.slice(0, 8)} active=${activeTripToken.slice(0, 8)}`,
+        );
+      } else {
+        await persistBackendSsotMirror(payload.ssot, receivedAt);
+      }
     }
 
     // #1370 L5 — silent push 도달률 observability stamp.

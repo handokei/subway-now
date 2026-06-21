@@ -3306,6 +3306,85 @@ describe('silentPushTask', () => {
       expect(mirrorCall).toBeUndefined();
     });
 
+    // R11-b (#1612) — payload.tripToken mismatch 시 mirror write skip (race A 차단).
+    // it.each + helper로 4 case 통합 (SonarCloud dup 회피, lesson_sonarcloud_dup_prevention).
+    describe('R11-b (#1612) — trip token mismatch 시 mirror write skip', () => {
+      type R11bCase = {
+        label: string;
+        activeTripValue: string | null;
+        payloadTripToken: string | undefined;
+        expectMirrorDefined: boolean;
+      };
+
+      async function runR11bCase({
+        activeTripValue,
+        payloadTripToken,
+      }: R11bCase) {
+        (AsyncStorage.setItem as jest.Mock).mockResolvedValue(undefined);
+        (AsyncStorage.getItem as jest.Mock).mockImplementation(async (key: string) => {
+          if (key === ACTIVE_TRIP_KEY) return activeTripValue;
+          if (key === DESTINATION_KEY) return JSON.stringify(destStation);
+          if (key === APNS_TOKEN_KEY) return DEFAULT_APNS_TOKEN;
+          return null;
+        });
+        mockCheckGate.mockReturnValue({ allow: false, skip: 'gate-no-location' });
+        // tripToken undefined일 때 'tripToken' in payload는 true가 되지만 코드 가드는
+        // `payload.tripToken !== undefined`로 분기 — 구 backend 호환 path 그대로 검증.
+        const fields: Record<string, unknown> = {
+          nextWaypoint: '강남',
+          etaSeconds: 0,
+          phase: 'imminent',
+          kind: 'intermediate',
+          ssot: validSsot,
+        };
+        if (payloadTripToken !== undefined) {
+          fields.tripToken = payloadTripToken;
+        }
+        await handleSilentPush(bgTaskData(fields));
+      }
+
+      function findMirrorCall() {
+        return (AsyncStorage.setItem as jest.Mock).mock.calls.find(
+          ([key]) => key === BACKEND_SSOT_MIRROR_KEY,
+        );
+      }
+
+      it.each<R11bCase>([
+        {
+          label: 'payload.tripToken === activeTripToken → mirror write 정상 진행 (정상 case)',
+          activeTripValue: 'trip-token-A',
+          payloadTripToken: 'trip-token-A',
+          expectMirrorDefined: true,
+        },
+        {
+          label: 'payload.tripToken !== activeTripToken → mirror write skip (race A 차단)',
+          activeTripValue: 'trip-token-NEW',
+          payloadTripToken: 'trip-token-OLD',
+          expectMirrorDefined: false,
+        },
+        {
+          label: 'activeTripToken null (cold-launch race) → mirror write 허용 (backward-compat)',
+          activeTripValue: null,
+          payloadTripToken: 'trip-token-X',
+          expectMirrorDefined: true,
+        },
+        {
+          label: 'payload.tripToken undefined (구 backend 호환) → mirror write 허용',
+          activeTripValue: 'trip-token-Z',
+          payloadTripToken: undefined,
+          expectMirrorDefined: true,
+        },
+      ])('$label', async (testCase) => {
+        await runR11bCase(testCase);
+        const mirrorCall = findMirrorCall();
+        if (testCase.expectMirrorDefined) {
+          expect(mirrorCall).toBeDefined();
+        } else {
+          expect(mirrorCall).toBeUndefined();
+        }
+      });
+    });
+
     it('validSsotMirror returns undefined for null/non-object', () => {
       expect(validSsotMirror(null)).toBeUndefined();
       expect(validSsotMirror(undefined)).toBeUndefined();
