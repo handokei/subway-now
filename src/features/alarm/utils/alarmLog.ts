@@ -190,7 +190,12 @@ export type AlarmLogReason =
   // 두 사유 모두 5 fire path(A~E) 어디서든 같은 reason으로 적재 — DebugModal Counters section에서
   // 단일 분포로 시각화.
   | 'gate-alarm-already-decided'
-  | 'gate-station-already-passed';
+  | 'gate-station-already-passed'
+  // #1616 (R8a) — lockless trip + route 활성 시 trackTrainProgress가 estimateArcStationsFromRoute로
+  // 추정된 arcStations에 의해 backward jump candidate를 reject한 경우. boardingLock 없으면 forward-only
+  // 가드가 OFF였던 기존 동작과 다르게 보수적 안전망 — R2 lockless time-integration cascade(backward
+  // jump 허용) 차단. 1주 production 측정: false reject 빈도 + 사용자 trip V1 회복 evidence.
+  | 'lockless-forward-only-block';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -797,6 +802,33 @@ export function logSuppressedPhaseGate(reason: 'gate-phase-accuracy' | 'gate-pha
   const name = stationName ?? '(unknown)';
   if (isBurstDuplicate(reason, name)) return;
   appendAlarmLog({ ts: Date.now(), source: 'fg-evaluated', outcome: 'suppressed', reason, stationName: name });
+}
+
+/**
+ * #1616 (R8a) — lockless trip + route 활성 시 forward-only 가드(추정 arcStations)가 backward
+ * jump candidate를 reject한 1건 적재. trackTrainProgress의 onFilteredBackward 콜백에서 호출.
+ *
+ * source='fg-evaluated' — picker는 FG 루프에서 동작. burst dedup으로 같은 stationName+reason
+ * 연속 발생 시 burst 카운트만 누적(새 entry 생성 X) — 한 trip에서 폭주해 다른 entry 점령 방지.
+ *
+ * 측정 목적:
+ *  - 1주 production: 본 reason count > 0이면 lockless 회복 path 동작 evidence.
+ *  - false positive 감지: 동일 stationName에 burst count가 비정상적으로 높으면 추정 윈도우 정확도 의심.
+ */
+export function logSuppressedLocklessForwardOnly(input: {
+  rejectedStationName: string;
+  rejectedTrainNo: string;
+}): void {
+  const name = input.rejectedStationName;
+  if (isBurstDuplicate('lockless-forward-only-block', name)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'fg-evaluated',
+    outcome: 'suppressed',
+    reason: 'lockless-forward-only-block',
+    stationName: name,
+    usedTrainCode: input.rejectedTrainNo,
+  });
 }
 
 /**

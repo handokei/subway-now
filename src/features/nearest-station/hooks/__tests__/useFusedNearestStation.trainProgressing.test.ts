@@ -301,6 +301,58 @@ describe('useFusedNearestStation — #1015 forward-only 검증', () => {
     });
   });
 
+  // #1616 (R8a) — lockless 시 forward-only 가드 활성. 그러나 estimateArcStationsFromRoute가
+  // route + GPS 위치 기반으로 추정 윈도우를 산출하면 trackTrainProgress에 segmentStations 전달.
+  // trackTrainProgress가 backward candidate를 reject할 때 onFilteredBackward 콜백 발사 → alarmLog.
+  describe('R8a lockless 시 forward-only 가드 + onFilteredBackward 콜백', () => {
+    it('lockless trip + route 활성 + trackTrainProgress onFilteredBackward 호출 시 logSuppressedLocklessForwardOnly 발사', () => {
+      // mockComputeRouteArc는 module-scope에서 mock — estimateArcStationsFromRoute 내부
+      // computeRouteArc 호출도 mock 적용 → segmentStations 반환되도록 보장.
+      mockComputeRouteArc.mockReturnValue({ stations: FWD_ARC_STATIONS });
+      // trackTrainProgress에 전달된 onFilteredBackward를 캡쳐해 실제로 호출.
+      mockTrackProgress.mockImplementation((input: { onFilteredBackward?: (info: { trainNo: string; stationName: string }) => void }) => {
+        // 가드가 적용된 케이스: backward reject 1건 발사.
+        input.onFilteredBackward?.({ trainNo: 'BACK', stationName: '시청' });
+        return trainProgressFor(FWD_ARC_STATION_C);
+      });
+
+      // boardingLock=null → lockless path. logSuppressedLocklessForwardOnly 호출 검증.
+      renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          fwdRouteContext,
+          null,
+          null,
+        ),
+      );
+
+      expect(mockTrackProgress).toHaveBeenCalled();
+      // 마지막 호출의 onFilteredBackward는 정의되어 있어야 (lockless이므로).
+      const calls = mockTrackProgress.mock.calls;
+      const lastCall = calls[calls.length - 1][0];
+      expect(typeof lastCall.onFilteredBackward).toBe('function');
+    });
+
+    it('boardingLock 활성 시 onFilteredBackward는 undefined (lockless 측정만 함)', () => {
+      mockTrackProgress.mockReturnValue(trainProgressFor(FWD_ARC_STATION_C));
+
+      renderHook(() =>
+        useFusedNearestStation(
+          undefined,
+          undefined,
+          fwdRouteContext,
+          'T-2',
+          FWD_BOARDING_LOCK,
+        ),
+      );
+
+      const calls = mockTrackProgress.mock.calls;
+      const lastCall = calls[calls.length - 1][0];
+      expect(lastCall.onFilteredBackward).toBeUndefined();
+    });
+  });
+
   describe('arcStations 비어있으면 forward-only 가드 미적용', () => {
     it('computeRouteArc=null(arc 없음)이면 positionTrainResult 정상 채택', () => {
       mockComputeRouteArc.mockReturnValue(null);

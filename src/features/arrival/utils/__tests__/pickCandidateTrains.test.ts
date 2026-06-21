@@ -1,6 +1,6 @@
 import type { LinePositions, TrainPosition } from '../../../../shared/types/position';
 import type { LineNumber } from '../../../../shared/types/station';
-import { pickCandidateTrains } from '../pickCandidateTrains';
+import { pickCandidateTrains, CANDIDATE_DISTANCE_THRESHOLD_KM } from '../pickCandidateTrains';
 
 const LINE: LineNumber = '2';
 
@@ -198,6 +198,133 @@ describe('pickCandidateTrains', () => {
       windowStations: -1,
     });
     expect(result.map((t) => t.trainNo)).toEqual(['AT']);
+  });
+
+  // #1616 (R12-a) — candidate별 GPS 거리 hard gate.
+  // helper: 시청 좌표 근처 + 강변 좌표 trains 동시 운영해 거리 기반 reject 검증.
+  describe('candidate distance hard gate (R12-a)', () => {
+    // 시청 좌표 (37.563588, 126.975411), 강변(동서울터미널) 좌표 (37.535095, 127.094681)
+    // 두 역 사이 직선거리 약 11.2km — threshold 3km 보다 크므로 reject 대상.
+    const SICHEONG = { lat: 37.5636, lng: 126.9754 };
+    function makeCoords(): Map<string, { lat: number; lng: number }> {
+      return new Map([
+        ['시청', { lat: 37.563588, lng: 126.975411 }],
+        ['을지로입구', { lat: 37.566014, lng: 126.982618 }],
+        // 강변 — 시청으로부터 약 11.2km (>3km threshold)
+        ['강변(동서울터미널)', { lat: 37.535095, lng: 127.094681 }],
+      ]);
+    }
+
+    function runDistanceGate(
+      trains: Array<{ trainNo: string; statnNm: string }>,
+      opts: {
+        userLocation?: { lat: number; lng: number } | null;
+        stationCoordinates?: Map<string, { lat: number; lng: number }> | undefined;
+        onReject?: jest.Mock;
+      },
+    ): ReturnType<typeof pickCandidateTrains> {
+      return pickCandidateTrains({
+        positions: [makeLine(trains.map((t) => makeTrain(t)))],
+        line: LINE,
+        userLocation: opts.userLocation,
+        stationCoordinates: opts.stationCoordinates,
+        onCandidateDistanceReject: opts.onReject,
+      });
+    }
+
+    it.each<{
+      label: string;
+      userLocation: { lat: number; lng: number } | null | undefined;
+      stationCoordinates: Map<string, { lat: number; lng: number }> | undefined;
+    }>([
+      { label: 'userLocation null → graceful (gate skip)', userLocation: null, stationCoordinates: makeCoords() },
+      { label: 'userLocation undefined → graceful (gate skip)', userLocation: undefined, stationCoordinates: makeCoords() },
+      { label: 'stationCoordinates undefined → graceful (gate skip)', userLocation: SICHEONG, stationCoordinates: undefined },
+    ])('$label — far candidate not rejected', ({ userLocation, stationCoordinates }) => {
+      const onReject = jest.fn();
+      const result = runDistanceGate(
+        [{ trainNo: 'NEAR', statnNm: '시청' }, { trainNo: 'FAR', statnNm: '강변(동서울터미널)' }],
+        { userLocation, stationCoordinates, onReject },
+      );
+      expect(result.map((t) => t.trainNo).sort((a, b) => a.localeCompare(b))).toEqual(['FAR', 'NEAR']);
+      expect(onReject).not.toHaveBeenCalled();
+    });
+
+    it('rejects candidates whose station distance > threshold (R12-a)', () => {
+      const onReject = jest.fn();
+      const result = runDistanceGate(
+        [{ trainNo: 'NEAR', statnNm: '시청' }, { trainNo: 'FAR', statnNm: '강변(동서울터미널)' }],
+        { userLocation: SICHEONG, stationCoordinates: makeCoords(), onReject },
+      );
+      expect(result.map((t) => t.trainNo)).toEqual(['NEAR']);
+      expect(onReject).toHaveBeenCalledTimes(1);
+      expect(onReject).toHaveBeenCalledWith({
+        trainNo: 'FAR',
+        line: LINE,
+        stationName: '강변(동서울터미널)',
+        distanceKm: expect.any(Number),
+      });
+      const callDistanceKm = onReject.mock.calls[0][0].distanceKm as number;
+      expect(callDistanceKm).toBeGreaterThan(CANDIDATE_DISTANCE_THRESHOLD_KM);
+    });
+
+    it('keeps candidates whose station distance ≤ threshold (R12-a)', () => {
+      const onReject = jest.fn();
+      const result = runDistanceGate(
+        [{ trainNo: 'A', statnNm: '시청' }, { trainNo: 'B', statnNm: '을지로입구' }],
+        { userLocation: SICHEONG, stationCoordinates: makeCoords(), onReject },
+      );
+      expect(result.map((t) => t.trainNo).sort((a, b) => a.localeCompare(b))).toEqual(['A', 'B']);
+      expect(onReject).not.toHaveBeenCalled();
+    });
+
+    it('graceful pass when stationCoordinates missing key — no reject, no throw', () => {
+      // coords map에 statnNm이 없는 경우(노선 데이터 부분 lookup)는 거리 검사 생략.
+      const partialCoords = new Map([
+        ['시청', { lat: 37.563588, lng: 126.975411 }],
+      ]);
+      const onReject = jest.fn();
+      const result = runDistanceGate(
+        [{ trainNo: 'NEAR', statnNm: '시청' }, { trainNo: 'UNKNOWN', statnNm: '강변(동서울터미널)' }],
+        { userLocation: SICHEONG, stationCoordinates: partialCoords, onReject },
+      );
+      expect(result.map((t) => t.trainNo).sort((a, b) => a.localeCompare(b))).toEqual(['NEAR', 'UNKNOWN']);
+      expect(onReject).not.toHaveBeenCalled();
+    });
+
+    it('reject works when onCandidateDistanceReject is undefined — no throw, candidate still removed', () => {
+      const result = pickCandidateTrains({
+        positions: [makeLine([
+          makeTrain({ trainNo: 'NEAR', statnNm: '시청' }),
+          makeTrain({ trainNo: 'FAR', statnNm: '강변(동서울터미널)' }),
+        ])],
+        line: LINE,
+        userLocation: SICHEONG,
+        stationCoordinates: makeCoords(),
+        // onCandidateDistanceReject omitted
+      });
+      expect(result.map((t) => t.trainNo)).toEqual(['NEAR']);
+    });
+
+    it('rejects candidate exceeding threshold even when anchor window kept it', () => {
+      // anchor=시청(idx 0), windowStations=15 → 강변(idx 14)도 index window 통과.
+      // 그러나 GPS 거리 11.2km > 3km → distance gate가 reject.
+      const onReject = jest.fn();
+      const result = pickCandidateTrains({
+        positions: [makeLine([
+          makeTrain({ trainNo: 'NEAR', statnNm: '시청' }),
+          makeTrain({ trainNo: 'FAR', statnNm: '강변(동서울터미널)' }),
+        ])],
+        line: LINE,
+        anchorStationName: '시청',
+        windowStations: 15,
+        userLocation: SICHEONG,
+        stationCoordinates: makeCoords(),
+        onCandidateDistanceReject: onReject,
+      });
+      expect(result.map((t) => t.trainNo)).toEqual(['NEAR']);
+      expect(onReject).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('maps fields correctly (trainNo/line/direction/currentStationName/trainStatus/receivedAtMs)', () => {

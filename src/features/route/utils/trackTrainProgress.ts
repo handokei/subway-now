@@ -12,9 +12,16 @@ export interface TrackTrainProgressInput {
    * 탑승역부터 목적지까지의 순서 있는 역 목록(route arc).
    * 제공되면 currentStation이 탑승역 이전에 해당하는 candidate를 탈락시킨다.
    */
-  segmentStations?: Station[];
+  segmentStations?: readonly Station[];
   /** #1017: segmentStations 내에서 탑승역 id — boardingIdx 계산에 사용. */
   boardingStationId?: string;
+  /**
+   * #1616 (R8a) — forward-only 가드가 backward candidate를 탈락시킨 경우 호출되는 측정 hook.
+   * 호출자는 lockless 시 alarmLog `lockless-forward-only-block`로 적재해 1주 production
+   * evidence를 모은다. fallback(전부 backward → resolved 그대로 사용)에 진입한 경우에는
+   * 호출하지 않는다 — fallback은 실질적으로 가드 미적용이라 measurement 의미 X.
+   */
+  onFilteredBackward?: (info: { trainNo: string; stationName: string }) => void;
 }
 
 export interface TrainProgressResult {
@@ -44,8 +51,14 @@ function toResult(
 export function trackTrainProgress(
   input: TrackTrainProgressInput,
 ): TrainProgressResult | null {
-  const { candidates, userLocation, lastConfirmedTrainNo, segmentStations, boardingStationId } =
-    input;
+  const {
+    candidates,
+    userLocation,
+    lastConfirmedTrainNo,
+    segmentStations,
+    boardingStationId,
+    onFilteredBackward,
+  } = input;
 
   if (candidates.length === 0) return null;
 
@@ -64,12 +77,28 @@ export function trackTrainProgress(
     if (!segmentStations || segmentStations.length === 0 || !boardingStationId) return resolved;
     const boardingIdx = segmentStations.findIndex((s) => s.id === boardingStationId);
     if (boardingIdx === -1) return resolved;
+    const rejected: ResolvedCandidate[] = [];
     const forward = resolved.filter((r) => {
       const idx = segmentStations.findIndex((s) => s.id === r.station.id);
       // arc 밖(idx === -1)은 탈락시키지 않는다 — 다른 가드(#662 노선 가드 등)가 처리.
-      return idx === -1 || idx >= boardingIdx;
+      const keep = idx === -1 || idx >= boardingIdx;
+      if (!keep) rejected.push(r);
+      return keep;
     });
-    return forward.length > 0 ? forward : resolved;
+    if (forward.length > 0) {
+      // #1616 (R8a) — 실제 가드가 적용된 (fallback X) 경우에만 onFilteredBackward 발사.
+      // fallback은 실질적으로 가드 미적용이라 measurement 의미 없음.
+      if (onFilteredBackward) {
+        for (const r of rejected) {
+          onFilteredBackward({
+            trainNo: r.candidate.trainNo,
+            stationName: r.station.name,
+          });
+        }
+      }
+      return forward;
+    }
+    return resolved;
   })();
 
   /* istanbul ignore next — graceful fallback(forward.length>0 ? forward : resolved)가
