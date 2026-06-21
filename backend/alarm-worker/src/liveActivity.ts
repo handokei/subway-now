@@ -21,9 +21,13 @@ import {
 import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
+import { computeMultiHopContext } from './tripMultiHop';
 import { deleteTrip } from './trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from './types';
 import { writeTripEndedStatus } from './tripStatus';
+
+// S7763 — direct re-export avoids local rebinding when only forwarding the type.
+export type { MultiHopContext } from './tripMultiHop';
 
 /**
  * stale-date까지 클라이언트가 last content-state를 신뢰할 수 있는 시간(초).
@@ -75,14 +79,20 @@ export interface LiveActivityDeps {
  * alarmType은 채우지 않는다 — backend는 알람을 트리거하지 않고(디바이스 사전 예약, #584) 정보 갱신만 함.
  * widget의 긴급 모드(LockScreenView.isUrgent)는 alarmType 존재로 판정하므로, polling 정정마다
  * 긴급 UI가 강제되지 않도록 omit. 알람 트리거 시점의 별도 텍스트 push에서 채우는 것이 정상 경로.
+ *
+ * `trip` 인자 (#1618 R9-b) — 채워주면 multi-hop 필드(destinationName / transferStationName /
+ * stopsToTransfer / secondTransferStationName / stopsAfterLastTransfer / stopsToSecondTransfer /
+ * stopsFromTransfer)를 함께 emit해 ActivityKit 전체 교체 후도 JS init이 채운 "전체 trip 여정"
+ * UI가 유지된다. 누락 시 (legacy 호출) 기존 5 필드만 emit — 회귀 0 / backward compat.
  */
 export function buildLiveActivityContentState(
   waypoint: Waypoint,
   etaSeconds: number,
   stopsRemaining: number,
+  trip?: Trip,
 ): LiveActivityContentState {
   const meta = LINE_META[waypoint.line];
-  return {
+  const base: LiveActivityContentState = {
     stationName: waypoint.stationName,
     // LINE_META는 13개 노선을 모두 커버하지만, stations.json에 없는 신규 line code가 들어와도
     // widget의 non-optional 필드가 비지 않도록 raw line code를 fallback으로 사용한다.
@@ -91,6 +101,11 @@ export function buildLiveActivityContentState(
     stopsRemaining,
     etaMinutes: Math.max(0, Math.round(etaSeconds / 60)),
   };
+  if (!trip) return base;
+  // multi-hop optional 필드는 존재하는 것만 spread — undefined assignment를 피해 기존 5 필드
+  // toEqual 단언과 ActivityKit content-state diff 모두 깔끔.
+  const multiHop = computeMultiHopContext(trip);
+  return { ...base, ...multiHop };
 }
 
 export interface LiveActivityFireResult {

@@ -104,6 +104,146 @@ describe('buildLiveActivityContentState (#613)', () => {
   });
 });
 
+// #1618 R9-b — backend buildLiveActivityContentState multi-hop 필드 wipe 차단.
+// ActivityKit content-state는 update 시 전체 교체 → backend가 multi-hop 필드를 누락하면
+// JS init이 stamp한 transfer/destination chain이 첫 backend push에 wipe된다.
+// `trip` 인자가 전달되면 multi-hop context를 함께 emit해 LA 화면 "전체 여정" 유지.
+describe('buildLiveActivityContentState multi-hop (#1618 R9-b)', () => {
+  /** Trip factory — multi-hop test 케이스 dedup. waypoints만 override해 케이스 표현. */
+  const makeTripForMultiHop = (waypoints: Waypoint[]): Trip =>
+    makeTrip({ waypoints, route: { type: 'direct', line: '2', stops: waypoints.length } });
+
+  /**
+   * direct trip: destination 한 개만. transferStationName / stopsToTransfer /
+   * secondTransferStationName / stopsAfterLastTransfer / stopsToSecondTransfer /
+   * stopsFromTransfer 모두 undefined.
+   */
+  it('direct trip — destinationName 채움, transfer 필드 모두 undefined', () => {
+    const trip = makeTripForMultiHop([
+      { stationName: '중곡', line: '2', kind: 'intermediate' },
+      { stationName: '강남', line: '2', kind: 'destination' },
+    ]);
+    const cs = buildLiveActivityContentState(WAYPOINT, 60, 2, trip);
+    expect(cs.destinationName).toBe('강남');
+    expect(cs.transferStationName).toBeUndefined();
+    expect(cs.stopsToTransfer).toBeUndefined();
+    expect(cs.secondTransferStationName).toBeUndefined();
+    expect(cs.stopsAfterLastTransfer).toBeUndefined();
+    expect(cs.stopsToSecondTransfer).toBeUndefined();
+    expect(cs.stopsFromTransfer).toBeUndefined();
+  });
+
+  /**
+   * single-transfer trip: transfer 1개. stopsToTransfer = first transfer index + 1,
+   * stopsFromTransfer = remaining after transfer. secondTransfer 필드는 undefined.
+   */
+  it('transfer 1회 — transferStationName + stopsToTransfer + stopsFromTransfer 채움', () => {
+    // 진행: [A(int), 시청(t1), C(int), 강남(dest)]
+    //   - transfer 위치 idx=1 → stopsToTransfer = 2 (A 지나서 시청 도착)
+    //   - 환승 이후 남은 stop = 2 (C 지나 강남)
+    const trip = makeTripForMultiHop([
+      { stationName: 'A', line: '2', kind: 'intermediate' },
+      { stationName: '시청', line: '2', kind: 'transfer' },
+      { stationName: 'C', line: '1', kind: 'intermediate' },
+      { stationName: '강남', line: '1', kind: 'destination' },
+    ]);
+    const cs = buildLiveActivityContentState(WAYPOINT, 60, 4, trip);
+    expect(cs.destinationName).toBe('강남');
+    expect(cs.transferStationName).toBe('시청');
+    expect(cs.stopsToTransfer).toBe(2);
+    expect(cs.stopsFromTransfer).toBe(2);
+    expect(cs.secondTransferStationName).toBeUndefined();
+    expect(cs.stopsToSecondTransfer).toBeUndefined();
+    expect(cs.stopsAfterLastTransfer).toBeUndefined();
+  });
+
+  /**
+   * multi-transfer trip: transfer 2개 이상. secondTransfer 필드 + stopsAfterLastTransfer 채움,
+   * stopsFromTransfer는 undefined (multi-transfer schema는 stopsAfterLastTransfer로만 표현).
+   */
+  it('transfer 2회 — second transfer 필드 + stopsAfterLastTransfer 채움', () => {
+    // 진행: [A(int), 시청(t1), C(int), 동대문(t2), E(int), F(int), 강남(dest)]
+    //   - first transfer idx=1 → stopsToTransfer = 2
+    //   - second transfer idx=3 → stopsToSecondTransfer = 2 (3 - 1)
+    //   - 마지막 transfer 이후 남은 stop = 3 (E, F 지나 강남) = (7 - 1 - 3)
+    const trip = makeTripForMultiHop([
+      { stationName: 'A', line: '2', kind: 'intermediate' },
+      { stationName: '시청', line: '2', kind: 'transfer' },
+      { stationName: 'C', line: '1', kind: 'intermediate' },
+      { stationName: '동대문', line: '1', kind: 'transfer' },
+      { stationName: 'E', line: '4', kind: 'intermediate' },
+      { stationName: 'F', line: '4', kind: 'intermediate' },
+      { stationName: '강남', line: '4', kind: 'destination' },
+    ]);
+    const cs = buildLiveActivityContentState(WAYPOINT, 60, 7, trip);
+    expect(cs.destinationName).toBe('강남');
+    expect(cs.transferStationName).toBe('시청');
+    expect(cs.stopsToTransfer).toBe(2);
+    expect(cs.secondTransferStationName).toBe('동대문');
+    expect(cs.stopsToSecondTransfer).toBe(2);
+    expect(cs.stopsAfterLastTransfer).toBe(3);
+    expect(cs.stopsFromTransfer).toBeUndefined();
+  });
+
+  /**
+   * transfer가 next waypoint 인 경우 — stopsToTransfer는 최소 1 (next stop이 transfer)
+   * 이어야 한다. 0이 아닌 1.
+   */
+  it('next waypoint가 transfer일 때 stopsToTransfer = 1 (off-by-one 회귀 가드)', () => {
+    const trip = makeTripForMultiHop([
+      { stationName: '시청', line: '2', kind: 'transfer' },
+      { stationName: '강남', line: '1', kind: 'destination' },
+    ]);
+    const cs = buildLiveActivityContentState(WAYPOINT, 60, 2, trip);
+    expect(cs.stopsToTransfer).toBe(1);
+    expect(cs.stopsFromTransfer).toBe(1);
+  });
+
+  /**
+   * 빈 waypoints — 사용자 도착 직후 (advance 후 호출). multi-hop 필드 모두 undefined.
+   * base 5 필드는 그대로 유지.
+   */
+  it('빈 waypoints — multi-hop 필드 전부 omit, base 5 필드만 emit', () => {
+    const trip = makeTrip({ waypoints: [] });
+    const cs = buildLiveActivityContentState(WAYPOINT, 0, 0, trip);
+    expect(cs).toEqual({
+      stationName: '강남',
+      lineName: '2호선',
+      lineColorHex: '#009D3E',
+      stopsRemaining: 0,
+      etaMinutes: 0,
+    });
+  });
+
+  /**
+   * destination만 있고 transfer가 한 개도 없으면, 마지막에 destination이 와도 정상 추출.
+   * (단, 마지막이 destination이 아닌 비정상 경우도 가장 마지막 destination을 추출 — defensive.)
+   */
+  it('마지막이 intermediate 인 비정상 waypoints에서도 destination 정상 추출', () => {
+    const trip = makeTripForMultiHop([
+      { stationName: '강남', line: '2', kind: 'destination' },
+      // 비정상: destination 뒤 추가 intermediate (예: 미래 변경 또는 schema drift).
+      { stationName: '잘못된역', line: '2', kind: 'intermediate' },
+    ]);
+    const cs = buildLiveActivityContentState(WAYPOINT, 60, 2, trip);
+    expect(cs.destinationName).toBe('강남');
+  });
+
+  /**
+   * trip 미전달 시 (legacy 호출자) — base 5 필드만 emit, multi-hop 필드 0개. backward-compat.
+   * 기존 테스트(line 65-74)와 동일 결과지만 명시 회귀 가드.
+   */
+  it('trip 미전달 — base 5 필드만 emit (backward-compat)', () => {
+    const cs = buildLiveActivityContentState(WAYPOINT, 60, 3);
+    expect(cs).not.toHaveProperty('destinationName');
+    expect(cs).not.toHaveProperty('transferStationName');
+    expect(cs).not.toHaveProperty('stopsToTransfer');
+    expect(cs).not.toHaveProperty('secondTransferStationName');
+    expect(cs).not.toHaveProperty('stopsAfterLastTransfer');
+    expect(cs).not.toHaveProperty('stopsFromTransfer');
+  });
+});
+
 describe('fireLiveActivityUpdate', () => {
   it('no-ops when activityPushToken is missing', async () => {
     const fetchImpl = vi.fn();
