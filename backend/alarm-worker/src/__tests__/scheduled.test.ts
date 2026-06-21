@@ -11,12 +11,14 @@ import {
   FALLBACK_HOP_SEC,
   MAX_CONSECUTIVE_ETA_MISSING,
   RESCHEDULE_THRESHOLD_MS,
+  STALE_LOCK_FIRE_THRESHOLD_MS,
   SUBSURFACE_ETA_MISSING_TOLERANCE,
   VANISH_RE_ATTACH_THRESHOLD,
   arvlCdFireKey,
   estimateArrivalFromPosition,
   estimateBoardingLockArrival,
   evaluateArvlCdFireGate,
+  fireArvlCdStationPush,
   flipApnsEnv,
   maybeCountDrift,
   pickActiveWaypoint,
@@ -489,10 +491,12 @@ describe('runScheduled', () => {
   // 이전 legacy phase-based push 경로의 회귀 방지 테스트들은 boardingLock 경로의
   // 대응 케이스(self-heal/intermediate/410 등)로 모두 커버되어 삭제됨 (회귀 동등성 유지).
   describe('#640 lockMissing gate', () => {
-    it('lock 부재 trip은 arrival이 와도 push 미발사 + Seoul API 미호출', async () => {
+    it('lock 부재 trip은 arrival이 와도 push 미발사 + Seoul arrivals API 미호출', async () => {
       const kv = new InMemoryKV();
       await putTrip(kv as unknown as KVNamespace, makeTrip()); // makeTrip default: boardingLock undefined
-      const seoulFetch = vi.fn();
+      const seoulFetch = vi.fn(async () =>
+        new Response(JSON.stringify({ realtimePositionList: [] }), { status: 200 }),
+      );
       const seoul = new SeoulArrivalClient({
         apiKey: 'K',
         host: 'h',
@@ -510,7 +514,12 @@ describe('runScheduled', () => {
       expect(stats.pushed).toBe(0);
       expect(stats.lockMissing).toBe(1);
       expect(apnsFetch).not.toHaveBeenCalled();
-      expect(seoulFetch).not.toHaveBeenCalled();
+      // #1614 Phase A — cron 진입부 self-poll로 realtimePosition fetch는 발생할 수 있음.
+      // 본 테스트의 진짜 의도는 arrivals fetch 0 + push 발사 0.
+      const arrivalsCalls = seoulFetch.mock.calls.filter((args: unknown[]) =>
+        String(args[0]).includes('/realtimeStationArrival/'),
+      );
+      expect(arrivalsCalls).toHaveLength(0);
     });
   });
 
@@ -605,12 +614,13 @@ describe('runScheduled', () => {
         apnsCalled: true,
       },
       {
-        name: '토글 OFF + intermediate → lockMissing 카운트 (발사 0, Seoul fetch 미호출)',
+        name: '토글 OFF + intermediate → lockMissing 카운트 (발사 0, arrivals fetch 미호출)',
         trip: () => intermediateTrip({ locklessStationPassed: false }),
         apnsOk: false,
         expect: { pushed: 0, locklessFired: 0, lockMissing: 1 },
         apnsCalled: false,
-        seoulCalled: false,
+        // #1614 Phase A — self-poll은 cron 진입부 unconditional (line set에 활성 trip이 있으면 fetch).
+        // arrivals/realtimePosition fetch 0 보장은 더 이상 lockMissing 진단 신호로 유효 X — seoulCalled 검증 생략.
       },
       {
         name: '토글 ON + destination kind → lockMissing 카운트 (lockless는 intermediate만)',
@@ -5879,7 +5889,7 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
     expect(await readSsot(kv as unknown as KVNamespace, TOKEN)).toBeNull();
     const logMessages: { msg: string; meta?: Record<string, unknown> }[] = [];
     await runScheduled(makeEnv(kv), {
-      seoul: makeArvlCdSeoulFor('중곡'),
+      seoul: makeArvlCdFireSeoul('중곡', 0, 1, '7246'),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       fetchImpl: (vi.fn(async () => new Response('', { status: 200 }))) as unknown as typeof fetch,
@@ -5906,7 +5916,7 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
   it('stats — runScheduled 초기 stats에 boardingLockWaypointAdvanceBlocked 0으로 초기화', async () => {
     const kv = new InMemoryKV();
     const stats = await runScheduled(makeEnv(kv), {
-      seoul: makeArvlCdSeoulFor('중곡'),
+      seoul: makeArvlCdFireSeoul('중곡', 0, 1, '7246'),
       apnsConfig,
       apnsHosts: APNS_HOSTS,
       fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
@@ -5945,5 +5955,210 @@ describe('runScheduled — ADR-017 T5 (#1558) advanceBoardingLockWaypoint SSoT g
     const stored = JSON.parse((await kv.get(`trip:${TOKEN}`))!) as Trip;
     expect(stored.waypoints[0].stationName).toBe('중곡');
     expect(stats.boardingLockWaypointAdvanceBlocked).toBe(1);
+  });
+});
+
+/**
+ * #1614 Phase A (S4 #1537) — backend self-poll realtimePosition stats wire.
+ *
+ * runScheduled 진입부에서 활성 trip line union을 추출 → 각 line `seoul.fetchPositions(line)` 호출
+ * → KV `realtime-position:<line>` 30s stamp. stats `realtimePositionFetch` / `selfPollCacheHit` /
+ * `realtimePositionFetchError` 가 분포 측정의 입력.
+ */
+describe('runScheduled — #1614 Phase A self-poll realtimePosition (S4)', () => {
+  const TOKEN = 'phase-a-tok';
+
+  function makeSeoulCallTracker(positionsForLine: Record<string, PositionEntry[]>) {
+    const fetchCalls: string[] = [];
+    const seoul = new SeoulArrivalClient({
+      apiKey: 'K',
+      host: 'h',
+      now: () => NOW,
+      fetchImpl: (async (url: string) => {
+        if (url.includes('/realtimePosition/')) {
+          fetchCalls.push(url);
+          // 호선 매칭 — URL에 encoded canonical name 포함 여부.
+          const matchedLine = Object.keys(positionsForLine).find((line) => {
+            const canonical = `${line}호선`;
+            return url.includes(encodeURIComponent(canonical));
+          });
+          const positions = matchedLine ? positionsForLine[matchedLine] : [];
+          return new Response(
+            JSON.stringify({
+              realtimePositionList: positions.map((p) => ({
+                trainNo: p.trainCode,
+                statnNm: p.stationName,
+                updnLine: p.isUp ? '상행' : '하행',
+                trainSttus: p.trainSttus,
+                lastRecptnDt: '',
+              })),
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(JSON.stringify({ realtimeArrivalList: [] }), { status: 200 });
+      }) as unknown as typeof fetch,
+    });
+    return { seoul, fetchCalls };
+  }
+
+  it('활성 trip 있음 → cron 진입부에서 line별 fetch + stats 누적', async () => {
+    const kv = new InMemoryKV();
+    const trip = makeLockTripFixture(TOKEN);
+    await putTrip(kv as unknown as KVNamespace, trip);
+    const { seoul, fetchCalls } = makeSeoulCallTracker({
+      '7': [{ trainCode: '7246', stationName: '중곡', trainSttus: 1, isUp: true, recptnMs: NOW }],
+    });
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-self-poll',
+    });
+    expect(stats.realtimePositionFetch).toBeGreaterThan(0);
+    expect(stats.realtimePositionFetchError).toBe(0);
+    // realtimePosition URL이 한 번 이상 호출됨 (자체 SeoulClient + cron 진입부 self-poll 양쪽).
+    expect(fetchCalls.length).toBeGreaterThan(0);
+  });
+
+  it('활성 trip 없음 → fetch/error 0', async () => {
+    const kv = new InMemoryKV();
+    const { seoul } = makeSeoulCallTracker({});
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-empty',
+    });
+    expect(stats.realtimePositionFetch).toBe(0);
+    expect(stats.selfPollCacheHit).toBe(0);
+    expect(stats.realtimePositionFetchError).toBe(0);
+  });
+
+  it('expiresAt 만료 trip은 self-poll line set에서 제외', async () => {
+    const kv = new InMemoryKV();
+    // 만료 trip — expiresAt <= now.
+    const expiredTrip = makeLockTripFixture(TOKEN, { expiresAt: NOW - 1 });
+    await putTrip(kv as unknown as KVNamespace, expiredTrip);
+    const { seoul } = makeSeoulCallTracker({});
+    const stats = await runScheduled(makeEnv(kv), {
+      seoul,
+      apnsConfig,
+      apnsHosts: APNS_HOSTS,
+      fetchImpl: (async () => new Response('', { status: 200 })) as unknown as typeof fetch,
+      now: () => NOW,
+      generatePushId: () => 'p-expired',
+    });
+    // 만료 trip은 line set에 포함 안 됨 → fetch 0.
+    expect(stats.realtimePositionFetch).toBe(0);
+  });
+});
+
+/**
+ * #1614 Phase C — fireArvlCdStationPush stale SSoT 가드 (단위).
+ *
+ * SSoT.lastAdvanceAt > 0 + (now - lastAdvanceAt > 3분) 시 fire 차단. lazy-seed (==0) /
+ * SSoT 부재 (legacy) 는 dormant 통과.
+ *
+ * 정상 runScheduled flow 는 advanceTripPosition이 우선 → SSoT fresh이므로 본 가드는
+ * defense-in-depth (외부 race / 다른 entry point). 단위 호출로 가드 자체 효과를 검증.
+ */
+describe('fireArvlCdStationPush — #1614 Phase C stale SSoT 가드', () => {
+  const TOKEN = 'phase-c-tok';
+
+  async function callFireDirectly(opts: {
+    setupSsot?: (kv: InMemoryKV, trip: Trip) => Promise<void>;
+  }) {
+    const kv = new InMemoryKV();
+    const trip = makeLockTripFixture(TOKEN);
+    await putTrip(kv as unknown as KVNamespace, trip);
+    if (opts.setupSsot) await opts.setupSsot(kv, trip);
+    const stats: ScheduledStats = {
+      scanned: 0, polled: 0, pushed: 0, errors: 0, etaMissing: 0, envCorrected: 0,
+      lockMissing: 0, locklessIntermediateFired: 0, locklessMotionGateBlocked: 0,
+      laPushSent: 0, laPushFailed: 0, laTokenCleared: 0,
+      boardingPromptEvaluated: 0, boardingPromptFired: 0, boardingPromptBlocked: 0,
+      phaseImminentBlocked: 0, kalmanReset: 0, kalmanDriftWarning: 0,
+      autoLockSuccess: 0, autoLockFalsePositive: 0, boardingPromptAutoDeduped: 0,
+      arvlCdFireSuccess: 0, arvlCdFireDedup: 0, arvlCdFireMismatch: 0,
+      arvlCdFireBlocked: 0, arvlCdFireFired: 0,
+      boardingLockWaypointAdvanceBlocked: 0, transferDestinationGateBlocked: 0,
+      vanishFallbackFired: 0, vanishReleaseFired: 0, vanishLocklessTakeover: 0,
+      vanishFallbackMotionGateBlocked: 0,
+      cronJitterMs: 0, rescheduleBlockedMotion: 0, rescheduleFallbackNoSsot: 0,
+      realtimePositionFetch: 0, selfPollCacheHit: 0, realtimePositionFetchError: 0,
+      staleLockFireSkipped: 0,
+    };
+    const { dirty } = await fireArvlCdStationPush({
+      trip,
+      waypoint: trip.waypoints[0],
+      lock: trip.boardingLock!,
+      arvlCd: 1,
+      env: makeEnv(kv),
+      deps: {
+        seoul: makeArvlCdFireSeoul('중곡', 0, 1, '7246'),
+        apnsConfig,
+        apnsHosts: APNS_HOSTS,
+        fetchImpl: (vi.fn(async () => new Response('', { status: 200 }))) as unknown as typeof fetch,
+        now: () => NOW,
+      },
+      stats,
+      now: NOW,
+      log: () => undefined,
+      generatePushId: () => 'p-direct',
+    });
+    return { stats, dirty };
+  }
+
+  it('SSoT.lastAdvanceAt > 3분 stale → fire skip + staleLockFireSkipped++', async () => {
+    const { stats, dirty } = await callFireDirectly({
+      setupSsot: async (kv, trip) => {
+        const seeded = await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', {
+          expiresAt: trip.expiresAt,
+        });
+        seeded.lastAdvanceAt = NOW - 4 * 60 * 1000;
+        await writeSsot(kv as unknown as KVNamespace, seeded, { expiresAt: trip.expiresAt });
+      },
+    });
+    expect(stats.staleLockFireSkipped).toBe(1);
+    expect(dirty).toBe(false);
+  });
+
+  it('SSoT.lastAdvanceAt 60s fresh → 가드 통과', async () => {
+    const { stats } = await callFireDirectly({
+      setupSsot: async (kv, trip) => {
+        const seeded = await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', {
+          expiresAt: trip.expiresAt,
+        });
+        seeded.lastAdvanceAt = NOW - 30_000;
+        await writeSsot(kv as unknown as KVNamespace, seeded, { expiresAt: trip.expiresAt });
+      },
+    });
+    expect(stats.staleLockFireSkipped).toBe(0);
+  });
+
+  it('SSoT.lastAdvanceAt===0 (lazy-seed) → 가드 dormant 통과', async () => {
+    const { stats } = await callFireDirectly({
+      setupSsot: async (kv, trip) => {
+        await seedSsot(kv as unknown as KVNamespace, TOKEN, '중곡', {
+          expiresAt: trip.expiresAt,
+        });
+        // lastAdvanceAt 0 (seed default).
+      },
+    });
+    expect(stats.staleLockFireSkipped).toBe(0);
+  });
+
+  it('SSoT 부재 (legacy) → 가드 dormant 통과', async () => {
+    const { stats } = await callFireDirectly({});
+    expect(stats.staleLockFireSkipped).toBe(0);
+  });
+
+  it('STALE_LOCK_FIRE_THRESHOLD_MS는 3분 (transferDestinationGate 60s 보다 보수적)', () => {
+    expect(STALE_LOCK_FIRE_THRESHOLD_MS).toBe(3 * 60 * 1000);
   });
 });

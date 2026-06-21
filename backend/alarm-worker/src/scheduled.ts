@@ -64,6 +64,7 @@ import { assertCronCacheTtl } from './kvConsistency';
 import { buildAlarmKey, putPending } from './pendingPushes';
 import { deleteProgress, getProgress, putProgress, type TripProgress } from './progress';
 import { SeoulArrivalClient, type ArrivalEntry, type PositionEntry } from './seoul';
+import { pollLinesAndStamp, readSelfPollPosition } from './selfPollPosition';
 import { phaseAllowsImminentFiring, runStationPhaseStep } from './stationPhase';
 import { listTrips, putTrip } from './trips';
 import {
@@ -75,6 +76,7 @@ import type {
   ApnsEnv,
   BoardingLockMeta,
   Env,
+  LineNumber,
   PositionPoint,
   StationPhaseState,
   Trip,
@@ -424,6 +426,28 @@ export interface ScheduledStats extends LiveActivityStats {
    * SSoT 마이그레이션 진행도 측정 — 모든 trip이 T1 seeding을 거치게 되면 0으로 수렴한다.
    */
   rescheduleFallbackNoSsot: number;
+  /**
+   * #1614 Phase A (S4 #1537) — cron 진입부 self-poll realtimePosition fetch 횟수.
+   * 활성 trip line union에 대해 Seoul API를 1회 호출(KV cache miss). 호선당 30s TTL.
+   * positionTrainAgreement strongCB wire의 입력 단(端) 카운터.
+   */
+  realtimePositionFetch: number;
+  /**
+   * #1614 Phase A — KV stamp 살아있어 fetch skip한 횟수. cron 1분 race에서 동일 line 재진입 시.
+   */
+  selfPollCacheHit: number;
+  /**
+   * #1614 Phase A — Seoul API throw 또는 KV write throw 등 self-poll 전반 실패 횟수.
+   * 0이 아니면 cron tail에서 Seoul API rate limit / KV 장애 진단 신호.
+   */
+  realtimePositionFetchError: number;
+  /**
+   * #1614 Phase C — `fireArvlCdStationPush` 진입 시 SSoT.lastAdvanceAt이 stale(>3분 경과)이라
+   * fire를 차단한 누적 횟수. transferDestinationGate(60s)보다 보수적이지만 모든 fire kind에
+   * 동일 적용. 정상 운영에서는 0에 가깝고, 0이 아니면 motion 추적 cascade fail 또는 stale lock
+   * misfire 회귀 신호. (transferDestinationGateBlocked와 별도 계측 — 본 가드는 intermediate 포함.)
+   */
+  staleLockFireSkipped: number;
 }
 
 /**
@@ -448,6 +472,28 @@ export interface ScheduledDeps {
   log?: (message: string, meta?: Record<string, unknown>) => void;
   /** pushId 발급 — 테스트에선 결정적 값을 주입한다. 기본은 crypto.randomUUID. */
   generatePushId?: () => string;
+}
+
+/**
+ * #1614 Phase A — 활성 trip의 line union 수집.
+ *
+ * 다음 메인 루프와 같은 `listTrips`를 한 번 더 iterate해 route + waypoints의 모든 line을
+ * `computeAllowedLines`로 union. 환승 route는 fromLine/toLine 모두 포함되므로 leg마다 별도 fetch
+ * 필요 없이 한 cron tick에 trip이 다닐 수 있는 모든 line이 stamp된다.
+ *
+ * `expiresAt` 만료 trip은 skip — 메인 루프의 cleanup 분기가 어차피 처리하므로 self-poll 대상 X.
+ * `alarmAtEpochMs - now > POLLING_WINDOW_MS`(아직 알람 윈도우 진입 전) trip은 포함 — 미리 line의
+ * realtimePosition stamp를 적재해두면 윈도우 진입 시 첫 cycle부터 cross-match 가능.
+ */
+async function collectActiveLines(env: Env, now: number): Promise<Set<LineNumber>> {
+  const lines = new Set<LineNumber>();
+  for await (const trip of listTrips(env.TRIPS)) {
+    if (trip.expiresAt <= now) continue;
+    for (const line of computeAllowedLines(trip.route, trip.waypoints)) {
+      lines.add(line);
+    }
+  }
+  return lines;
 }
 
 export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<ScheduledStats> {
@@ -492,9 +538,33 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     // #1559 (T6) — reschedule push motion 게이트 차단/fallback 누적.
     rescheduleBlockedMotion: 0,
     rescheduleFallbackNoSsot: 0,
+    // #1614 Phase A (S4) — backend self-poll realtimePosition stats.
+    realtimePositionFetch: 0,
+    selfPollCacheHit: 0,
+    realtimePositionFetchError: 0,
+    // #1614 Phase C — stale SSoT 가드 fire 차단.
+    staleLockFireSkipped: 0,
   };
   // #1539 (S6) — cron jitter 즉시 log. 누적 stat이 아니라 매 cycle 1줄 → tail에서 P50/P99 산출.
   log('scheduled: cron jitter', { jitterMs: stats.cronJitterMs });
+
+  // #1614 Phase A (S4 #1537) — 활성 trip line union 추출 + Seoul realtimePosition 전수 self-poll.
+  // 1차 iterate: 활성 trip의 route + waypoints에서 line set 수집 (computeAllowedLines 활용 — 환승
+  // route는 transfers의 fromLine/toLine 모두 포함). 2차 iterate(아래 메인 루프)는 그대로 폴링 ·
+  // push 발사 흐름 유지. KV stamp는 advanceTripPosition site들이 lock.trainCode cross-match에 사용.
+  const activeLines = await collectActiveLines(env, now);
+  const selfPollStats = await pollLinesAndStamp(env.TRIPS, deps.seoul, activeLines, now);
+  stats.realtimePositionFetch += selfPollStats.fetched;
+  stats.selfPollCacheHit += selfPollStats.cacheHit;
+  stats.realtimePositionFetchError += selfPollStats.error;
+  if (activeLines.size > 0) {
+    log('self-poll: realtimePosition', {
+      lines: activeLines.size,
+      fetched: selfPollStats.fetched,
+      cacheHit: selfPollStats.cacheHit,
+      error: selfPollStats.error,
+    });
+  }
 
   for await (const trip of listTrips(env.TRIPS)) {
     stats.scanned += 1;
@@ -1017,10 +1087,52 @@ export interface FireArvlCdStationPushInputs {
   generatePushId: () => string;
 }
 
+/**
+ * #1614 Phase C — stale SSoT lock false-fire 차단 임계.
+ *
+ * `transferDestinationGate.TRANSFER_DESTINATION_FRESH_WINDOW_MS` (60s) 는 transfer/destination
+ * kind 만 보호. 본 임계는 intermediate 포함 모든 arvlCd fire 에 적용 — transfer 게이트보다 보수적
+ * (3분) 으로 두어 정상 운영(역 간 hop 평균 1~2분 + cron jitter) 을 차단하지 않으면서, 멈춘 trip
+ * 의 stale lock 에서 cron 누적 misfire(2026-06-19 evidence) 를 차단한다.
+ *
+ * `lastAdvanceAt===0` (lazy-seed 직후, 미advance) 은 본 가드 dormant — T4 motion 게이트의
+ * 'unknown' 통과 정책과 동일 ([[transferDestinationGate.isSsotAdvanceRecent]] 와 같은 의미론).
+ */
+export const STALE_LOCK_FIRE_THRESHOLD_MS = 3 * 60 * 1000;
+
 export async function fireArvlCdStationPush(
   inputs: FireArvlCdStationPushInputs,
 ): Promise<{ dirty: boolean }> {
   const { trip, waypoint, lock, arvlCd, env, deps, stats, now, log, generatePushId } = inputs;
+  // #1614 Phase C — stale SSoT 가드. SSoT.lastAdvanceAt > 0 이고 3분 초과면 fire skip.
+  // transferDestinationGate (60s) 보다 보수적이지만 intermediate 까지 보호. lazy-seed (==0) 통과.
+  // SSoT 부재 trip (legacy) 도 통과 — 본 가드는 SSoT 활성화 후 stale 진단 만.
+  const ssotForStale = await readSsot(env.TRIPS, trip.token, {
+    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
+  });
+  if (
+    ssotForStale !== null &&
+    ssotForStale.lastAdvanceAt > 0 &&
+    now - ssotForStale.lastAdvanceAt > STALE_LOCK_FIRE_THRESHOLD_MS
+  ) {
+    stats.staleLockFireSkipped += 1;
+    log('arvlcd-fire: stale SSoT skip', {
+      token: trip.token.slice(0, 8),
+      trainCode: lock.trainCode,
+      station: waypoint.stationName,
+      lastAdvanceAt: ssotForStale.lastAdvanceAt,
+      staleMs: now - ssotForStale.lastAdvanceAt,
+    });
+    writeMetric(env, {
+      eventType: 'suppress',
+      tripToken: trip.token,
+      stationId: waypoint.stationName,
+      reason: 'stale-lock-fire',
+      hopIndex: waypoint.hopIndex,
+      staleMs: now - ssotForStale.lastAdvanceAt,
+    });
+    return { dirty: false };
+  }
   const key = arvlCdFireKey(trip.token, lock.trainCode, waypoint.stationName, arvlCd);
   const existing = await env.TRIPS.get(key);
   if (existing !== null) {
@@ -1078,12 +1190,8 @@ export async function fireArvlCdStationPush(
     arvlCd,
     kind: waypoint.kind,
   });
-  // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷을 읽어 payload로 forward.
-  // read 실패/null은 그대로 forward → wire에서 자연 누락(graceful). cacheTtl=30s는 다른 cron read와
-  // 동일 ([[lesson_cron_cachettl_runtime_constraint]]).
-  const ssot = await readSsot(env.TRIPS, trip.token, {
-    cacheTtl: SSOT_CRON_READ_CACHE_TTL_SEC,
-  });
+  // #1561 (T8, ADR-017 / S2 흡수) — fire 직전 SSoT 권위 스냅샷 forward.
+  // #1614 Phase C — stale guard 단계에서 이미 read한 ssotForStale 재사용 (KV read 1회 절약).
   const heal = await sendWithEnvHeal(
     (host) =>
       sendSilentPush({
@@ -1095,7 +1203,7 @@ export async function fireArvlCdStationPush(
           pushId,
           now,
           origin: 'arvlcd',
-          ssot,
+          ssot: ssotForStale,
         }),
         config: deps.apnsConfig,
         host,
@@ -1151,7 +1259,7 @@ export async function fireArvlCdStationPush(
     stationId: waypoint.stationName,
     reason: `arvlcd:${waypoint.kind}`,
     hopIndex: waypoint.hopIndex,
-    staleMs: ssot?.lastAdvanceAt ? now - ssot.lastAdvanceAt : undefined,
+    staleMs: ssotForStale?.lastAdvanceAt ? now - ssotForStale.lastAdvanceAt : undefined,
   });
   return { dirty };
 }
@@ -2330,6 +2438,12 @@ async function maybeBindLocklessTrainCode(
   // fetch 하므로 본 함수에서는 lockAttachable 신호만 forward 하고 consensusGate 의 분기
   // 자체는 attemptAutoLock 내부에서 평가한다. caller 는 outcome.pass(motion+silence) 만
   // 사용해 auto-lock 시도 진입을 허용.
+  // #1614 Phase B (S4 #1537) — backend self-poll positionTrainAgreement forward. cron 진입부에서
+  // stamp된 `realtime-position:<line>` KV를 read해, pickAutoTrainCode 가 선택할 candidate
+  // trainCode가 line에서 실제 운행 중인지 검사. caller 시점에는 trainCode 가 아직 결정 안 됐으므로
+  // line의 positions list 자체를 forward — attemptAutoLock 가 pickAutoTrainCode 결과를 그 list 와
+  // cross-match (Phase B-2 함수에서 처리). 본 caller 는 raw list 전달만 담당.
+  const selfPollPositions = await readSelfPollPosition(env.TRIPS, waypoint.line);
   const autoLockResult = await attemptAutoLock({
     trip,
     targetWaypoint: waypoint,
@@ -2345,6 +2459,9 @@ async function maybeBindLocklessTrainCode(
     // consensusGate 평가로 surface 통과 / underground arrival+lockAttachable 합의 강제.
     environment,
     gateOutcome: outcome,
+    // #1614 Phase B — self-poll 결과를 attemptAutoLock 에 forward. 함수 내부에서 trainCode 결정
+    // 직후 cross-match 후 consensusGate 입력으로 positionTrainAgreement 전달.
+    selfPollPositions: selfPollPositions?.positions,
   });
   if (autoLockResult.confidenceTrace && env.TELEMETRY) {
     recordAutoLockConfidence(env.TELEMETRY, trip.token, autoLockResult.confidenceTrace);

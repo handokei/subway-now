@@ -40,6 +40,7 @@ import {
   type LiveActivityStats,
 } from './liveActivity';
 import { ackPending, stampReceived } from './pendingPushes';
+import { computePushAckStats } from './pushAckStats';
 import { appendPositionPoint } from './positionSeries';
 import { appendAccelSample, isAccelSummary } from './accelSeries';
 import { updateSsotMotion } from './motionState';
@@ -299,6 +300,28 @@ app.get('/admin/quota', async (c) => {
   if (authError) return c.json({ error: authError.code }, authError.status);
   const status = await getQuotaStatus(c.env.TRIPS, Date.now());
   return c.json(status);
+});
+
+/**
+ * #1614 Phase D — silent push 도달률 측정 RCA (S4 #1537).
+ *
+ * `pendingPushes.ts`의 `received:<pushId>` stamp(1h TTL) 와 `pending:<pushId>` (60s TTL) 를
+ * scan해 1시간 윈도우 분포 산출. 도달률 = received / sent (sent는 별도 stats catalog에서).
+ *
+ * Auth: `Authorization: Bearer <ADMIN_TOKEN>` 필수 — admin 공통 정책.
+ * Query: `?limit=N` (default 500, KV cost 보호).
+ *
+ * Response 200: { windowStart, windowEnd, pending, received, receivedByPhase, receivedByStation }
+ * Response 401/503: 인증/binding 정책은 /admin/feedback과 동일.
+ */
+app.get('/admin/push-ack-stats', async (c) => {
+  const authError = checkAdminAuth(c.req.header('authorization'), c.env.ADMIN_TOKEN);
+  if (authError) return c.json({ error: authError.code }, authError.status);
+  const kv = c.env.TRIPS;
+  if (!kv) return c.json({ error: 'trips_unavailable' }, 503);
+  const limit = parseQueryNumber(c.req.query('limit'));
+  const stats = await computePushAckStats(kv, Date.now(), limit);
+  return c.json(stats);
 });
 
 interface AdminAuthError {

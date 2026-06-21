@@ -149,6 +149,18 @@ export interface AttemptAutoLockInputs {
    * 미전달(undefined) 시 검증 skip — 구 호출자 호환.
    */
   gateOutcome?: GateOutcome;
+  /**
+   * #1614 Phase B (S4 #1537) — backend self-poll realtimePosition 결과 (호선 단위 운행 trainCode 위치).
+   *
+   * caller(scheduled.ts `maybeBindLocklessTrainCode`)가 `readSelfPollPosition(env.TRIPS, line)`
+   * 으로 KV stamp 읽어 그대로 전달. attemptAutoLock 가 `pickAutoTrainCode` 결과로 trainCode를
+   * 결정한 직후, 본 list 에 해당 trainCode가 존재하면 `consensusGate.ts:155` strongCB
+   * (positionTrainAgreement + arrival) 통과 path를 연다 — underground 환경에서 strongBE 외 추가
+   * 합의 분기를 활성화.
+   *
+   * 미전달(undefined) / 빈 배열 시 consensusGate가 자연 `?? false` fallback (strongBE 동작 유지).
+   */
+  selfPollPositions?: readonly { trainCode: string; stationName: string }[];
 }
 
 /**
@@ -213,6 +225,7 @@ export async function attemptAutoLock(
     allowedLines,
     environment,
     gateOutcome,
+    selfPollPositions,
   } = inputs;
   const line = targetWaypoint.line;
   const subwayId = subwayIdForLine(line);
@@ -246,12 +259,19 @@ export async function attemptAutoLock(
       typeof chosenForGate?.arvlCd === 'number' &&
       chosenForGate.arvlCd >= 0 &&
       chosenForGate.arvlCd <= 3;
+    // #1614 Phase B — backend self-poll realtimePosition cross-match.
+    // pickAutoTrainCode 가 선택한 trainCode가 line의 운행 trains 중에 실제 존재하면 true.
+    // undefined / 빈 list 시 자연 undefined → consensusGate가 `?? false` fallback (strongBE 동작 유지).
+    const positionTrainAgreement = selfPollPositions
+      ? selfPollPositions.some((p) => p.trainCode === trainCode)
+      : undefined;
     const consensus = evaluateConsensusGate(environment, {
       gateOutcome,
       arrivalSignalPresent,
       // trainCode 단일 수렴 = lockAttachable. pickAutoTrainCode 가 null 이면 함수가 이미
       // 더 위에서 return 했으므로 본 시점에서는 항상 true.
       lockAttachable: true,
+      positionTrainAgreement,
     });
     if (!consensus.pass) return { lock: null };
   }
