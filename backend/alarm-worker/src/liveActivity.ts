@@ -21,13 +21,13 @@ import {
 import { pickApnsHost, sendWithEnvHeal } from './apnsHost';
 import { LINE_META } from './lineAlias';
 import { deleteProgress } from './progress';
-import {
-  computeMultiHopContext,
-  type MultiHopContext,
-} from './tripMultiHop';
+import { computeMultiHopContext } from './tripMultiHop';
 import { deleteTrip } from './trips';
 import type { ApnsEnv, Env, Trip, TripEndedReason, Waypoint } from './types';
 import { writeTripEndedStatus } from './tripStatus';
+
+// S7763 — direct re-export avoids local rebinding when only forwarding the type.
+export type { MultiHopContext } from './tripMultiHop';
 
 /**
  * stale-date까지 클라이언트가 last content-state를 신뢰할 수 있는 시간(초).
@@ -107,9 +107,6 @@ export function buildLiveActivityContentState(
   const multiHop = computeMultiHopContext(trip);
   return { ...base, ...multiHop };
 }
-
-/** Re-export for callers/tests that want the helper signature explicitly. */
-export type { MultiHopContext };
 
 export interface LiveActivityFireResult {
   /** trip의 activityPushToken/activityState가 변경되어 putTrip이 필요한지. */

@@ -24,6 +24,17 @@ function makeTrip(waypoints: Waypoint[]): Trip {
   };
 }
 
+// Waypoint factory helpers — kill the repeated `{ stationName, line, kind }` literal noise across
+// it.each cases. `line` defaults to '2' (most cases) and overrides only when crossing lines.
+const wp = (
+  stationName: string,
+  kind: Waypoint['kind'],
+  line: string = '2',
+): Waypoint => ({ stationName, line, kind });
+const int = (stationName: string, line: string = '2'): Waypoint => wp(stationName, 'intermediate', line);
+const tx = (stationName: string, line: string = '2'): Waypoint => wp(stationName, 'transfer', line);
+const dst = (stationName: string, line: string = '2'): Waypoint => wp(stationName, 'destination', line);
+
 describe('computeMultiHopContext (#1618)', () => {
   it('returns empty object for trips with no remaining waypoints', () => {
     expect(computeMultiHopContext(makeTrip([]))).toEqual({});
@@ -31,14 +42,8 @@ describe('computeMultiHopContext (#1618)', () => {
 
   // Direct trip (no transfer waypoints) — only destinationName is populated.
   it.each<[string, Waypoint[]]>([
-    ['destination only', [{ stationName: '강남', line: '2', kind: 'destination' }]],
-    [
-      'intermediate + destination',
-      [
-        { stationName: '중곡', line: '2', kind: 'intermediate' },
-        { stationName: '강남', line: '2', kind: 'destination' },
-      ],
-    ],
+    ['destination only', [dst('강남')]],
+    ['intermediate + destination', [int('중곡'), dst('강남')]],
   ])('direct trip (%s) populates destinationName only', (_label, waypoints) => {
     const ctx = computeMultiHopContext(makeTrip(waypoints));
     expect(ctx.destinationName).toBe('강남');
@@ -56,35 +61,16 @@ describe('computeMultiHopContext (#1618)', () => {
    * transfer waypoint (= waypoints.length - 1 - transferIdx).
    */
   it.each<[string, Waypoint[], number, number]>([
-    [
-      'transfer as next waypoint',
-      [
-        { stationName: '시청', line: '2', kind: 'transfer' },
-        { stationName: '강남', line: '1', kind: 'destination' },
-      ],
-      1,
-      1,
-    ],
+    ['transfer as next waypoint', [tx('시청'), dst('강남', '1')], 1, 1],
     [
       'transfer after 1 intermediate',
-      [
-        { stationName: 'A', line: '2', kind: 'intermediate' },
-        { stationName: '시청', line: '2', kind: 'transfer' },
-        { stationName: 'C', line: '1', kind: 'intermediate' },
-        { stationName: '강남', line: '1', kind: 'destination' },
-      ],
+      [int('A'), tx('시청'), int('C', '1'), dst('강남', '1')],
       2,
       2,
     ],
     [
       'transfer after 3 intermediates',
-      [
-        { stationName: 'A', line: '2', kind: 'intermediate' },
-        { stationName: 'B', line: '2', kind: 'intermediate' },
-        { stationName: 'C', line: '2', kind: 'intermediate' },
-        { stationName: '시청', line: '2', kind: 'transfer' },
-        { stationName: '강남', line: '1', kind: 'destination' },
-      ],
+      [int('A'), int('B'), int('C'), tx('시청'), dst('강남', '1')],
       4,
       1,
     ],
@@ -110,11 +96,7 @@ describe('computeMultiHopContext (#1618)', () => {
   it.each<[string, Waypoint[], number, number, number]>([
     [
       'two adjacent transfers',
-      [
-        { stationName: '시청', line: '2', kind: 'transfer' },
-        { stationName: '동대문', line: '1', kind: 'transfer' },
-        { stationName: '강남', line: '4', kind: 'destination' },
-      ],
+      [tx('시청'), tx('동대문', '1'), dst('강남', '4')],
       1, // stopsToTransfer
       1, // stopsToSecondTransfer
       1, // stopsAfterLastTransfer
@@ -122,13 +104,13 @@ describe('computeMultiHopContext (#1618)', () => {
     [
       'two transfers with intermediates between',
       [
-        { stationName: 'A', line: '2', kind: 'intermediate' },
-        { stationName: '시청', line: '2', kind: 'transfer' },
-        { stationName: 'C', line: '1', kind: 'intermediate' },
-        { stationName: '동대문', line: '1', kind: 'transfer' },
-        { stationName: 'E', line: '4', kind: 'intermediate' },
-        { stationName: 'F', line: '4', kind: 'intermediate' },
-        { stationName: '강남', line: '4', kind: 'destination' },
+        int('A'),
+        tx('시청'),
+        int('C', '1'),
+        tx('동대문', '1'),
+        int('E', '4'),
+        int('F', '4'),
+        dst('강남', '4'),
       ],
       2,
       2,
@@ -136,12 +118,7 @@ describe('computeMultiHopContext (#1618)', () => {
     ],
     [
       'three transfers — only first two surface',
-      [
-        { stationName: '시청', line: '2', kind: 'transfer' },
-        { stationName: '동대문', line: '1', kind: 'transfer' },
-        { stationName: '왕십리', line: '4', kind: 'transfer' },
-        { stationName: '강남', line: '5', kind: 'destination' },
-      ],
+      [tx('시청'), tx('동대문', '1'), tx('왕십리', '4'), dst('강남', '5')],
       1,
       1,
       2,
@@ -166,12 +143,7 @@ describe('computeMultiHopContext (#1618)', () => {
    * scan tolerates schema drift (e.g. backfilled intermediates after the destination).
    */
   it('defensive destination scan — picks last destination even if not at tail', () => {
-    const ctx = computeMultiHopContext(
-      makeTrip([
-        { stationName: '강남', line: '2', kind: 'destination' },
-        { stationName: '잘못된역', line: '2', kind: 'intermediate' },
-      ]),
-    );
+    const ctx = computeMultiHopContext(makeTrip([dst('강남'), int('잘못된역')]));
     expect(ctx.destinationName).toBe('강남');
   });
 
@@ -180,9 +152,7 @@ describe('computeMultiHopContext (#1618)', () => {
    * Returns undefined `destinationName` rather than crashing.
    */
   it('returns undefined destinationName when no destination waypoint present', () => {
-    const ctx = computeMultiHopContext(
-      makeTrip([{ stationName: 'A', line: '2', kind: 'intermediate' }]),
-    );
+    const ctx = computeMultiHopContext(makeTrip([int('A')]));
     expect(ctx.destinationName).toBeUndefined();
   });
 });
