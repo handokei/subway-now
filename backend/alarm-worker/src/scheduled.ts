@@ -2210,6 +2210,7 @@ export async function advanceBoardingLockWaypoint(
       nextWaypoint,
       0,
       trip.waypoints.length,
+      trip,
     );
     await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, nextWaypoint.kind);
   }
@@ -2258,6 +2259,7 @@ export async function maybeFireLiveActivityUpdate(
     waypoint,
     etaSeconds,
     trip.waypoints.length,
+    trip,
   );
   const result = await fireLiveActivityUpdate(trip, contentState, deps, stats, now, log, waypoint.kind);
   if (result.dirty) {
