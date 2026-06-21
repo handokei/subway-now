@@ -219,6 +219,10 @@ function formatTime(ts: number): string {
   return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+// #1626 — outcome filter helper. AlarmLogOutcome union 값 변경 시 grep이 흩어지지 않게
+// 한 곳에서 표현. SHARE_SECTIONS suffix / section builder / UI 컴포넌트 3곳 공유.
+const isFired = (e: AlarmLogEntry): boolean => e.outcome === 'fired';
+
 function formatLogLine(entry: AlarmLogEntry): string {
   const parts: string[] = [
     formatTime(entry.ts),
@@ -734,6 +738,14 @@ function buildGatesSection(args: BuildDumpArgs): string[] {
   return reasonLine ? [reasonLine] : [];
 }
 
+// #1626 — AlarmLog 중 outcome='fired'만 시간순 reverse. baseline 측정 fidelity 향상:
+// backend `/admin/alarm-log-stats` 호출 없이 device DebugModal에서 V4 발사 시점 즉시 확인.
+// 30s 미만 trip (R2 forward skip)에도 device-local 보존 — 사용자 자가 진단용.
+function buildNotificationsFiredSection(args: BuildDumpArgs): string[] {
+  const fired = args.logs.filter(isFired);
+  return [...fired].reverse().map(formatLogLine);
+}
+
 function buildAlarmLogSection(args: BuildDumpArgs): string[] {
   const lines: string[] = [];
   // #564 — source별 카운트 헤더(UI와 동일 포매터 공유). 빈 문자열이면 헤더 생략.
@@ -1130,6 +1142,14 @@ const SHARE_SECTIONS: ReadonlyArray<ShareSectionSpec> = [
     title: 'Estimator State',
     build: buildEstimatorSection,
     suffix: (args) => ` (${args.estimatorLog?.length ?? 0})`,
+  },
+  // #1626 — V4 발사 시점만 시간순 reverse. Alarm log 통합 섹션 직전에 노출 →
+  // 사용자가 fired 시점 먼저 보고, 거부/시도는 아래 Alarm log에서 분석.
+  {
+    title: 'Notifications fired',
+    build: buildNotificationsFiredSection,
+    omitIfEmpty: true,
+    suffix: (args) => ` (${args.logs.filter(isFired).length})`,
   },
   {
     title: 'Alarm log',
@@ -1954,6 +1974,8 @@ function DebugModalInner({
             <ScheduledQueueBody dump={scheduledDump} colors={colors} />
           </Section>
 
+          <NotificationsFiredSection logs={logs} colors={colors} />
+
           <Section
             title={`Alarm log (${logs.length})`}
             colors={colors}
@@ -2092,6 +2114,37 @@ function ScheduledQueueBody({
         </MonoEntry>
       ))}
     </>
+  );
+}
+
+// #1626 — V4 발사된 notification만 시간순 reverse. baseline 측정 fidelity 향상.
+// fired 0건이면 섹션 자체를 노출하지 않는다 — 사용자 노이즈 최소화 (fired 없으면 Alarm log
+// Section만 보면 충분).
+function NotificationsFiredSection({
+  logs,
+  colors,
+}: Readonly<{
+  logs: readonly AlarmLogEntry[];
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  const fired = logs.filter(isFired);
+  if (fired.length === 0) return null;
+  return (
+    <Section
+      title={`Notifications fired (${fired.length})`}
+      colors={colors}
+      testID="notifications-fired-section"
+    >
+      {[...fired].reverse().map((entry, idx) => (
+        <MonoEntry
+          key={`fired-${entry.ts}-${idx}`}
+          testID="debug-notifications-fired-entry"
+          colors={colors}
+        >
+          {formatLogLine(entry)}
+        </MonoEntry>
+      ))}
+    </Section>
   );
 }
 
