@@ -91,6 +91,7 @@ import {
 import { CRON_READ_CACHE_TTL_SEC, KV_MIN_CACHE_TTL_SEC } from './kvConsistency';
 import { readSsot } from './tripPositionSsot';
 import { getTrip, putTrip } from './trips';
+import { inferWaypointsFromOriginAndDestination } from './dijkstraWaypointAdapter';
 import { checkTripRegisterRateLimit } from './tripRegisterRateLimit';
 import {
   TRIP_STATUS_RETENTION_MS,
@@ -367,6 +368,66 @@ app.post('/trips', async (c) => {
       429,
       { 'Retry-After': String(rateLimit.retryAfterSeconds) },
     );
+  }
+
+  // #1604 (#1610 shared dijkstra) — Route 미설정 trip(legacy collapse: waypoints=[destination
+  // only])에 대한 backend Dijkstra 자동 추론.
+  //
+  // 발생 조건: device가 currentStation 없이 trip을 시작하면 `routeToWaypoints`가 destination만
+  // 반환 → backend cron이 첫 waypoint=destination을 무한 폴링 → 매역 push 누락 → 16분 후
+  // `revalidate-route-sig-mismatch` 누적 → trip auto-end(이슈 #1604 RCA).
+  //
+  // 본 게이트는 `promptDisplay`(originStation + line)와 `destination`(station id) 둘 다 있을
+  // 때만 동작 — Dijkstra가 currentStation → destination 사이 min-time 경로를 산출해 device의
+  // 정상 routeToWaypoints와 동형 시퀀스를 만든다. 산출 실패(미해소/동일역/도달 불가)는
+  // incoming 그대로 유지(backward-compat) — 기존 trip 동작 무변경. S1 #1534(lockSuggestion
+  // backend infer)와 같은 "backend = decider" 정신.
+  //
+  // Wire-completion: device-side는 `useApnsTripRegistration` 변경 X — 같은 endpoint로 register
+  // 후 다음 cron 사이클부터 정상 waypoints로 추적된다 (revalidate-route-sig-mismatch 0건 목표).
+  if (
+    incoming.waypoints.length === 1 &&
+    incoming.waypoints[0].kind === 'destination' &&
+    incoming.promptDisplay !== undefined
+  ) {
+    const inferred = inferWaypointsFromOriginAndDestination({
+      originName: incoming.promptDisplay.originStation,
+      originLine: incoming.promptDisplay.line,
+      destinationId: incoming.destination,
+      destinationName: incoming.waypoints[0].stationName,
+    });
+    if (inferred !== null && inferred.length > 0) {
+      // occurrenceIdx 재stamp — `validateTrip` 규약과 동일. 중복 stationName(순환선/회차)에
+      // 정확한 :n suffix 매칭을 위해 sequence 1-pass로 stamp.
+      const occurrenceCount = new Map<string, number>();
+      const stamped = inferred.map((wp, idx) => {
+        const occIdx = occurrenceCount.get(wp.stationName) ?? 0;
+        occurrenceCount.set(wp.stationName, occIdx + 1);
+        return { ...wp, occurrenceIdx: occIdx, hopIndex: idx };
+      });
+      console.log(
+        JSON.stringify({
+          msg: 'trip-register: backend Dijkstra inferred waypoints (#1604)',
+          tokenPrefix: tokenPrefix(incoming.token),
+          origin: incoming.promptDisplay.originStation,
+          originLine: incoming.promptDisplay.line,
+          destinationId: incoming.destination,
+          inferredCount: stamped.length,
+          transferCount: stamped.filter((w) => w.kind === 'transfer').length,
+        }),
+      );
+      incoming.waypoints = stamped;
+    } else {
+      console.log(
+        JSON.stringify({
+          msg: 'trip-register: backend Dijkstra infer skipped (no resolution)',
+          tokenPrefix: tokenPrefix(incoming.token),
+          origin: incoming.promptDisplay.originStation,
+          originLine: incoming.promptDisplay.line,
+          destinationId: incoming.destination,
+        }),
+      );
+    }
   }
 
   // #1366 Layer 3 — incoming boardingLock metadata cross-validation.

@@ -1,7 +1,7 @@
 import React from 'react';
 import { AppState, Share } from 'react-native';
 import { act, fireEvent, screen, waitFor } from '@testing-library/react-native';
-import { DebugModal, __test__ } from '../DebugModal';
+import { DebugModal, __test__, type TripDebugState } from '../DebugModal';
 import { renderWithTheme } from '../../../../testUtils/renderWithTheme';
 import { useSettingsStore } from '../../../settings/store/useSettingsStore';
 import { useDestinationStore } from '../../../route/store/useDestinationStore';
@@ -18,9 +18,17 @@ const mockUseBarometer = jest.fn();
 const mockUseLowPowerMode = jest.fn();
 // #1235 (D9 wire) — DebugModal이 destinationStore + tripStartStorage SSOT로 trip props 도출.
 const mockGetTripStartedAt = jest.fn();
-jest.mock('../../../alarm/utils/tripStartStorage', () => ({
-  getTripStartedAt: () => mockGetTripStartedAt(),
-}));
+// #1604 — `tripLifecyclePhase`는 실 구현(순수 함수) 그대로 통과 — DebugModal이 `tripStartedAt`
+// 으로 derive하므로 mock 반환값에 따라 phase가 자연스럽게 산출된다. 테스트가 phase를 별도
+// 검증하려면 mock `getTripStartedAt`을 silence/force-end 임계 직전 epoch로 세팅하거나
+// `lifecyclePhase` prop을 직접 명시한다 (resolveLifecyclePhase의 우선순위 분기 참조).
+jest.mock('../../../alarm/utils/tripStartStorage', () => {
+  const actual = jest.requireActual('../../../alarm/utils/tripStartStorage');
+  return {
+    ...actual,
+    getTripStartedAt: () => mockGetTripStartedAt(),
+  };
+});
 
 jest.mock('../../../nearest-station/hooks/useFusedNearestStation', () => ({
   useFusedNearestStation: () => mockUseFusedNearestStation(),
@@ -1410,7 +1418,94 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
     expect(message).toContain('firstHopApproaching=true');
     // #1447 — displayOnlyEstimate strategy 라벨이 Share dump에 포함돼야 한다.
     expect(message).toContain('displayOnlyEstimate=lockless-route-hop');
+    // #1604 — trip lifecycle phase 라벨 (T10 #1573)이 Share dump에 포함.
+    expect(message).toContain('lifecyclePhase=none');
     shareSpy.mockRestore();
+  });
+
+  // #1604 — T10 trip lifecycle phase wire-up.
+  // 4가지 phase가 UI/dump에 노출되는지 + tripStartedAt null/non-null에서 derive가 정확한지.
+  describe('#1604 — lifecyclePhase wire-up', () => {
+    const tripFixture = (overrides: Partial<TripDebugState>): TripDebugState => ({
+      lockless: false,
+      tripStartedAt: null,
+      currentHopIndex: null,
+      routeHopCount: null,
+      displayOnlyEstimateStrategy: null,
+      ...overrides,
+    });
+
+    it('tripStartedAt=null → lifecyclePhase=none', async () => {
+      renderWithTheme(<DebugModal onClose={jest.fn()} trip={tripFixture({})} />);
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('none');
+    });
+
+    it('tripStartedAt 최근(<6h) → lifecyclePhase=normal', async () => {
+      renderWithTheme(
+        <DebugModal
+          onClose={jest.fn()}
+          trip={tripFixture({
+            lockless: true,
+            tripStartedAt: Date.now() - 60_000, // 1분 전
+            currentHopIndex: 0,
+            routeHopCount: 5,
+          })}
+        />,
+      );
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('normal');
+    });
+
+    it('명시 lifecyclePhase 전달 시 그 값 우선 (silence)', async () => {
+      renderWithTheme(
+        <DebugModal
+          onClose={jest.fn()}
+          trip={tripFixture({
+            lockless: true,
+            tripStartedAt: Date.now() - 60_000,
+            currentHopIndex: 0,
+            routeHopCount: 5,
+            lifecyclePhase: 'silence',
+          })}
+        />,
+      );
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('silence');
+    });
+
+    it('명시 lifecyclePhase=force-end 전달 시 그대로 노출', async () => {
+      renderWithTheme(
+        <DebugModal
+          onClose={jest.fn()}
+          trip={tripFixture({
+            lockless: true,
+            tripStartedAt: Date.now() - 60_000,
+            currentHopIndex: 0,
+            routeHopCount: 5,
+            lifecyclePhase: 'force-end',
+          })}
+        />,
+      );
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('force-end');
+    });
+
+    it('Share dump에 lifecyclePhase 라인 포함 (명시 silence)', async () => {
+      const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
+      renderWithTheme(
+        <DebugModal
+          onClose={jest.fn()}
+          trip={tripFixture({ tripStartedAt: null, lifecyclePhase: 'silence' })}
+        />,
+      );
+      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      fireEvent.press(screen.getByTestId('debug-share-dump'));
+      await waitFor(() => expect(shareSpy).toHaveBeenCalled());
+      const { message } = shareSpy.mock.calls[0][0] as { message: string };
+      expect(message).toContain('lifecyclePhase=silence');
+      shareSpy.mockRestore();
+    });
   });
 
   // #1235 (D9 wire) — props 미전달 시 DebugModal이 hook return + store + tripStartStorage에서

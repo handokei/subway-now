@@ -1,5 +1,6 @@
 /**
  * #1499 — 자체 Dijkstra 그래프 빌더.
+ * #1610 — `src/features/route/utils/` → `src/shared/utils/` 이전 (backend 재사용).
  *
  * 데이터 SSOT (외부 API 의존 없음, ADR-015 §6):
  *   - `src/data/stations.json` — 533 역 (그래프 노드)
@@ -13,12 +14,15 @@
  *   - transfer edge: 같은 name + 다른 line. weight = transferTimes 도보 초
  *
  * Sub-D 본 PR 범위. boardable wait(Sub C cascade) 합산은 Sub-E 후속.
+ *
+ * #1610 — backend(`backend/alarm-worker/src/index.ts` POST /trips)가 #1604 route infer에서
+ * 본 모듈을 그대로 import한다. backend tsconfig.json `include`에 해당 경로 명시.
  */
-import stationsRaw from '../../../data/stations.json';
-import stationDistancesRaw from '../../../data/stationDistances.json';
-import transferTimesRaw from '../../../data/transferTimes.json';
-import { LINE_AVERAGE_SPEED_KMH } from '../../../shared/constants/lineSpeeds';
-import type { LineNumber, Station } from '../../../shared/types/station';
+import stationsRaw from '../../data/stations.json';
+import stationDistancesRaw from '../../data/stationDistances.json';
+import transferTimesRaw from '../../data/transferTimes.json';
+import { LINE_AVERAGE_SPEED_KMH } from '../constants/lineSpeeds';
+import type { LineNumber, Station } from '../types/station';
 
 const STATIONS = stationsRaw as Station[];
 const DISTANCES = stationDistancesRaw as Record<string, number>;

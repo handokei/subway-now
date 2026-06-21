@@ -1,5 +1,6 @@
 /**
  * #1499 — 자체 Dijkstra 최단경로 알고리즘.
+ * #1610 — `src/features/route/utils/` → `src/shared/utils/` 이전 (backend 재사용).
  *
  * 3종 type:
  *   - `min-transfer`: 환승 횟수 최소화. line edge=1, transfer edge=1000.
@@ -8,9 +9,15 @@
  *
  * 결과는 `Route` 객체로 leg + transfer 정보를 모두 포함, downstream
  * stationRoute.ts / DebugModal에서 cross-check 가능하게 한다.
+ *
+ * #1610 — backend(`backend/alarm-worker/src/dijkstraWaypointAdapter.ts`)가 `min-time`
+ * 단일 mode로 본 모듈의 `findRouteByType`을 호출한다. backend-only helper
+ * (`inferredRouteToWaypoints`/`inferWaypointsFromOriginAndDestination`/
+ * `findStationIdByNameAndLine`/`getRouteGraphStats`)는 adapter에 분리한다 —
+ * backend Worker 환경 의존(types.ts `Waypoint` import)을 shared 모듈로 끌어오지 않기 위함.
  */
 import { buildRouteGraph, type RouteEdge } from './buildRouteGraph';
-import type { LineNumber } from '../../../shared/types/station';
+import type { LineNumber } from '../types/station';
 
 export type RouteOptimizationType = 'min-transfer' | 'min-distance' | 'min-time';
 
