@@ -63,7 +63,11 @@ import type { BoardingLock } from '../../../shared/types/boardingLock';
 import type { NearestStationResult, Station } from '../../../shared/types/station';
 import type { ArrivalProvider } from '../../../shared/types/providers';
 import type { PositionProvider } from '../providers/types';
-import { allowedLinesFromRoute, type Route } from '../../../shared/utils/stationRoute';
+import {
+  allowedLinesFromRoute,
+  getStationsOnLine,
+  type Route,
+} from '../../../shared/utils/stationRoute';
 
 /**
  * fusion 후보 개수. MAX_ACTIVE_LINES와 동기화 — Rules of Hooks로 useArrivalInfo/useTrainPositions를
@@ -492,19 +496,39 @@ export function useFusedNearestStation(
   const candidateTrains = useMemo<CandidateTrain[]>(() => {
     const lps: (LinePositions | null)[] = [p0.positions, p1.positions, p2.positions];
     const out: CandidateTrain[] = [];
+    // #1616 (R12-a): candidate별 GPS 거리 hard gate. userLocation + line별 station 좌표 lookup을
+    // pickCandidateTrains에 전달해 anchor GPS drift 시 잘못된 영역 train 후보 진입을 차단.
+    // pushFusionDebugEntry로 reject 측정 — DebugModal에서 'reject:candidate-distance' 표시.
     for (const lp of lps) {
       if (!lp) continue;
       const anchor = candidates.find((c) => c.station.line === lp.line)?.station.name;
+      const lineStations = getStationsOnLine(lp.line);
+      const stationCoordinates = new Map<string, { lat: number; lng: number }>(
+        lineStations.map((s) => [s.name, { lat: s.lat, lng: s.lng }]),
+      );
       out.push(
         ...pickCandidateTrains({
           positions: [lp],
           line: lp.line,
           anchorStationName: anchor,
+          userLocation: gps.userLocation,
+          stationCoordinates,
+          onCandidateDistanceReject: (info) => {
+            pushFusionDebugEntry({
+              kind: 'candidate-reject',
+              ts: Date.now(),
+              reason: 'candidate-distance',
+              trainNo: info.trainNo,
+              stationName: info.stationName,
+              line: info.line,
+              distanceKm: info.distanceKm,
+            });
+          },
         }),
       );
     }
     return out;
-  }, [candidates, p0.positions, p1.positions, p2.positions]);
+  }, [candidates, p0.positions, p1.positions, p2.positions, gps.userLocation]);
 
   // #1017: arcStations를 trackTrainProgress forward-only 가드에 넘기기 위해 trainProgress 이전에 선언.
   // 기존 arcStations useMemo(ADR-008 estimator용)는 아래에서 이 값을 재사용한다.

@@ -73,6 +73,24 @@ describe('fusionDebugBuffer', () => {
     expect(listener).toHaveBeenCalledTimes(3);
   });
 
+  it('#1616 (R12-a) accepts candidate-reject entries with distance/trainNo/reason', () => {
+    pushFusionDebugEntry({
+      kind: 'candidate-reject',
+      ts: 100,
+      reason: 'candidate-distance',
+      trainNo: 'T-9001',
+      stationName: '강변(동서울터미널)',
+      line: '2',
+      distanceKm: 5.4,
+    });
+    const entries = getFusionDebugEntries();
+    expect(entries).toHaveLength(1);
+    const entry = entries[0];
+    expect(entry.kind).toBe('candidate-reject');
+    expect((entry as { trainNo: string }).trainNo).toBe('T-9001');
+    expect((entry as { distanceKm: number }).distanceKm).toBe(5.4);
+  });
+
   it('accepts gps-fix and gps-drop entries', () => {
     pushFusionDebugEntry({
       kind: 'gps',

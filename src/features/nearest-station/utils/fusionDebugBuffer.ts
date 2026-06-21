@@ -90,7 +90,33 @@ export interface StickyStationEntry {
   speedMps: number | null;
 }
 
-export type FusionDebugEntry = FusionDecisionEntry | GpsFixEntry | StickyStationEntry;
+/**
+ * #1616 (R12-a) — candidate별 GPS 거리 hard gate가 reject한 entry.
+ *
+ * pickCandidateTrains에서 anchorIdx ± window 통과 후 candidate.currentStation의 GPS 좌표가
+ * 사용자 마지막 known location 기준 CANDIDATE_DISTANCE_THRESHOLD_KM(3.0km)을 초과해 reject된
+ * 케이스. anchor GPS drift 시 잘못된 영역 train이 후보 진입하는 cascade(2026-06-19 trip evidence:
+ * pt/fu/gp 다 이수) 차단을 사후 측정.
+ *
+ * fusion decision과 분리한 이유: reject 자체는 결정 entry가 아니라 입력 단계 reject. fusion
+ * decision 이력과 합치면 DebugModal 시각화에서 둘이 섞여 신호 구분 어려움.
+ */
+export interface CandidateRejectEntry {
+  kind: 'candidate-reject';
+  ts: number;
+  /** reject 사유 — 후속 확장 가능 (예: 'lockless-direction-reject' 등). */
+  reason: 'candidate-distance';
+  trainNo: string;
+  stationName: string;
+  line: string;
+  distanceKm: number;
+}
+
+export type FusionDebugEntry =
+  | FusionDecisionEntry
+  | GpsFixEntry
+  | StickyStationEntry
+  | CandidateRejectEntry;
 
 const db = createDebugBuffer<FusionDebugEntry>(FUSION_DEBUG_BUFFER_CAPACITY);
 

@@ -269,6 +269,12 @@ function formatFusionDebugLine(entry: FusionDebugEntry): string {
     const sp = entry.speedMps != null ? `${entry.speedMps.toFixed(1)}m/s` : '-';
     return `${time} | sticky:${entry.event} | ${entry.stationName}(${entry.line}) acc=${acc} sp=${sp}`;
   }
+  if (entry.kind === 'candidate-reject') {
+    // #1616 (R12-a) — pickCandidateTrains에서 candidate.currentStation GPS 거리가 threshold 초과로
+    // reject된 case. trainNo / station / 측정 거리 같이 보여 사용자 trip 사후 misfire 차단 검증.
+    const d = `${Math.round(entry.distanceKm * 1000)}m`;
+    return `${time} | reject:${entry.reason} | ${entry.trainNo} ${entry.stationName}(${entry.line}) d=${d}`;
+  }
   const station = entry.stationName ? `${entry.stationName}(${entry.line ?? '-'})` : '-';
   const d = entry.distanceKm != null ? `${Math.round(entry.distanceKm * 1000)}m` : '-';
   const acc =

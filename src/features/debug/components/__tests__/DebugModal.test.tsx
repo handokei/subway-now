@@ -1739,6 +1739,22 @@ describe('formatFusionDebugLine', () => {
     },
   );
 
+  it('#1616 (R12-a) candidate-reject 엔트리: reject reason / trainNo / station / distance 포함', () => {
+    const line = formatFusionDebugLine({
+      kind: 'candidate-reject',
+      ts: new Date('2026-06-21T12:00:00Z').getTime(),
+      reason: 'candidate-distance',
+      trainNo: 'T-2099',
+      stationName: '강변(동서울터미널)',
+      line: '2',
+      distanceKm: 5.4,
+    });
+    expect(line).toContain('reject:candidate-distance');
+    expect(line).toContain('T-2099');
+    expect(line).toContain('강변(동서울터미널)(2)');
+    expect(line).toContain('d=5400m');
+  });
+
   it('gps 엔트리: nearestStation/distance/accuracy 누락 시 "-" 표기', () => {
     const line = formatFusionDebugLine({
       kind: 'gps',
