@@ -50,6 +50,7 @@ import { runTripBoundCleanups } from '../store/tripBoundCleanups';
 import { flushSignalDumpOutbox } from '../api/signalDumpBackend';
 import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { triggerTripGroundTruthPrompt } from '../../debug/utils/triggerTripGroundTruthPrompt';
+import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
 import { createLogger } from '../../../shared/utils/logger';
 
 const logger = createLogger('useLaunchTripReconciliation');
@@ -81,6 +82,11 @@ export async function runLaunchTripReconciliation(): Promise<void> {
 
     const tripToken = await AsyncStorage.getItem(ACTIVE_TRIP_KEY);
     if (!tripToken) {
+      // R11-c (#1612): active trip 없으면 stale backend SSoT mirror clear.
+      // 180s freshness 윈도우 내에 mirror가 남아 있으면 다음 cascade cycle이 `backend-ssot`
+      // tier로 stale stationId를 채택해 cross-trip 잔재(2026-06-20 12:30 어대 → 용마산 도착) 회귀.
+      // cleanup은 멱등 — 키 부재 시 graceful no-op.
+      await clearBackendSsotMirror();
       return;
     }
 
