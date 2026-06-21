@@ -223,6 +223,14 @@ interface UseFusedNearestStationReturn {
    * fire path SSOT(result/confidence/source)에서 분리되어 표시 채널로만 노출된다.
    */
   stickyDisplayOnly: import('../../../shared/types/station').Station | null;
+  /**
+   * #1621 (Phase B) — backend SSoT mirror가 fresh일 때 currentStationId, 미존재/stale일 때 null.
+   *
+   * `useV1MismatchDetector(uiCurrentStationId, ssotCurrentStationId)`의 두 번째 입력.
+   * cascade picker 내부 polling(5s)을 재사용해 별도 폴링 중복 방지 — consumer는 이 값만 받으면
+   * V1 mismatch 자동 측정에 충분.
+   */
+  backendSsotCurrentStationId: string | null;
   refresh: () => Promise<void>;
 }
 
@@ -1474,8 +1482,12 @@ export function useFusedNearestStation(
     surfaceSSOT,
     undergroundSSOT,
     // #1486 (ADR-015 §2) — sticky 표시 채널 패스스루. useNearestStation이 sticky.locked를 노출하고
-    // 본 hook은 그대로 통과. fire path는 본 필드를 읽지 않는다.
+    // 본 hook은 그대로 통과. fire path는 본 필드는 읽지 않는다.
     stickyDisplayOnly: gps.stickyDisplayOnly,
+    // #1621 (Phase B) — V1 mismatch 자동 측정용. silent push handler가 영속화한 backend SSoT
+    // currentStationId를 그대로 노출. mirror null/stale 시 null. consumer는
+    // `useV1MismatchDetector(uiCurrentStationId, ssotCurrentStationId)` 한 줄로 wire.
+    backendSsotCurrentStationId: backendSsotMirror?.currentStationId ?? null,
     refresh: gps.refresh,
   };
 }

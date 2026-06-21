@@ -15,6 +15,7 @@ import { pendingKey } from '../pendingPushes';
 import { KV_MIN_CACHE_TTL_SEC } from '../kvConsistency';
 import type { AnalyticsEngineWriter, Env } from '../types';
 import { InMemoryKV } from './inMemoryKv';
+import { makeEmptyFakeR2 } from './helpers/r2Fixtures';
 
 function makeEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -3676,5 +3677,176 @@ describe('GET /admin/push-ack-stats (#1614 Phase D)', () => {
     const env = makeEnv({ TRIPS: undefined as unknown as Env['TRIPS'], ADMIN_TOKEN: 'secret' });
     const res = await getAdminPushAckStats(env, 'Bearer secret');
     expect(res.status).toBe(503);
+  });
+});
+
+// ─── GET /admin/alarm-log-stats (#1621 Phase A) ───────────────────────────────
+
+async function getAdminAlarmLogStats(env: Env, authHeader?: string): Promise<Response> {
+  return app.fetch(
+    new Request('http://example.com/admin/alarm-log-stats', {
+      method: 'GET',
+      headers: authHeader ? { authorization: authHeader } : {},
+    }),
+    env,
+  );
+}
+
+// Sonar dup 차단 — R2 empty/fake mock은 helpers/r2Fixtures.ts에 단일 정의 (#1621).
+const makeEmptyR2 = makeEmptyFakeR2;
+
+describe('GET /admin/alarm-log-stats (#1621 Phase A)', () => {
+  it.each([
+    {
+      label: '503 when ADMIN_TOKEN is not configured',
+      configureEnv: (env: Env) => {
+        env.TELEMETRY_R2 = makeEmptyR2();
+      },
+      authHeader: 'Bearer some-token',
+      expectedStatus: 503,
+    },
+    {
+      label: '401 when no Authorization header',
+      configureEnv: (env: Env) => {
+        env.ADMIN_TOKEN = 'secret';
+        env.TELEMETRY_R2 = makeEmptyR2();
+      },
+      authHeader: undefined,
+      expectedStatus: 401,
+    },
+    {
+      label: '401 when token does not match',
+      configureEnv: (env: Env) => {
+        env.ADMIN_TOKEN = 'secret';
+        env.TELEMETRY_R2 = makeEmptyR2();
+      },
+      authHeader: 'Bearer wrong-token',
+      expectedStatus: 401,
+    },
+    {
+      label: '503 when TELEMETRY_R2 binding unavailable',
+      configureEnv: (env: Env) => {
+        env.ADMIN_TOKEN = 'secret';
+      },
+      authHeader: 'Bearer secret',
+      expectedStatus: 503,
+    },
+  ])('returns $expectedStatus — $label', async ({ configureEnv, authHeader, expectedStatus }) => {
+    const env = makeKvEnv();
+    configureEnv(env);
+    const res = await getAdminAlarmLogStats(env, authHeader);
+    expect(res.status).toBe(expectedStatus);
+  });
+
+  it('returns 200 with stats shape (empty R2)', async () => {
+    const env = makeKvEnv();
+    env.ADMIN_TOKEN = 'secret';
+    env.TELEMETRY_R2 = makeEmptyR2();
+    const res = await getAdminAlarmLogStats(env, 'Bearer secret');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      windowStart: number;
+      windowEnd: number;
+      totalEvents: number;
+      fired: number;
+      suppressed: number;
+      received: number;
+      reasons: Record<string, number>;
+      sources: Record<string, number>;
+      tripsScanned: number;
+    };
+    expect(body.windowStart).toBeLessThan(body.windowEnd);
+    expect(body.totalEvents).toBe(0);
+    expect(body.fired).toBe(0);
+    expect(body.tripsScanned).toBe(0);
+    expect(body.reasons).toEqual({});
+    expect(body.sources).toEqual({});
+  });
+});
+
+// ─── GET /admin/baseline-check (#1621 Phase C) ────────────────────────────────
+
+async function getAdminBaselineCheck(
+  env: Env,
+  query: string,
+  authHeader?: string,
+): Promise<Response> {
+  const url = `http://example.com/admin/baseline-check${query ? '?' + query : ''}`;
+  return app.fetch(
+    new Request(url, {
+      method: 'GET',
+      headers: authHeader ? { authorization: authHeader } : {},
+    }),
+    env,
+  );
+}
+
+describe('GET /admin/baseline-check (#1621 Phase C)', () => {
+  it.each([
+    {
+      label: '503 when ADMIN_TOKEN is not configured',
+      configureEnv: (env: Env) => {
+        env.TELEMETRY_R2 = makeEmptyR2();
+      },
+      query: 'tripToken=tok',
+      authHeader: 'Bearer some-token',
+      expectedStatus: 503,
+    },
+    {
+      label: '401 when no Authorization header',
+      configureEnv: (env: Env) => {
+        env.ADMIN_TOKEN = 'secret';
+        env.TELEMETRY_R2 = makeEmptyR2();
+      },
+      query: 'tripToken=tok',
+      authHeader: undefined,
+      expectedStatus: 401,
+    },
+    {
+      label: '400 when tripToken missing',
+      configureEnv: (env: Env) => {
+        env.ADMIN_TOKEN = 'secret';
+        env.TELEMETRY_R2 = makeEmptyR2();
+      },
+      query: '',
+      authHeader: 'Bearer secret',
+      expectedStatus: 400,
+    },
+    {
+      label: '503 when TELEMETRY_R2 binding unavailable',
+      configureEnv: (env: Env) => {
+        env.ADMIN_TOKEN = 'secret';
+      },
+      query: 'tripToken=tok',
+      authHeader: 'Bearer secret',
+      expectedStatus: 503,
+    },
+  ])('returns $expectedStatus — $label', async ({ configureEnv, query, authHeader, expectedStatus }) => {
+    const env = makeKvEnv();
+    configureEnv(env);
+    const res = await getAdminBaselineCheck(env, query, authHeader);
+    expect(res.status).toBe(expectedStatus);
+  });
+
+  it('returns 200 with baseline=fail shape (empty KV + empty R2)', async () => {
+    const env = makeKvEnv();
+    env.ADMIN_TOKEN = 'secret';
+    env.TELEMETRY_R2 = makeEmptyR2();
+    const res = await getAdminBaselineCheck(env, 'tripToken=tok', 'Bearer secret');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      baseline: string;
+      signals: {
+        tripActive: boolean;
+        silentPushFired: number;
+        silentPushReceived: number;
+        v1Mismatch: number;
+      };
+    };
+    // No fired push, no mismatch — baseline 'fail' (silentPushFired === 0).
+    expect(body.baseline).toBe('fail');
+    expect(body.signals.tripActive).toBe(false);
+    expect(body.signals.silentPushFired).toBe(0);
+    expect(body.signals.v1Mismatch).toBe(0);
   });
 });

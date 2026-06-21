@@ -195,7 +195,12 @@ export type AlarmLogReason =
   // 추정된 arcStations에 의해 backward jump candidate를 reject한 경우. boardingLock 없으면 forward-only
   // 가드가 OFF였던 기존 동작과 다르게 보수적 안전망 — R2 lockless time-integration cascade(backward
   // jump 허용) 차단. 1주 production 측정: false reject 빈도 + 사용자 trip V1 회복 evidence.
-  | 'lockless-forward-only-block';
+  | 'lockless-forward-only-block'
+  // #1621 (Phase B) — V1 자동 측정 신호: UI currentStation(useFusedNearestStation.result.station.id)이
+  // backend SSoT mirror(currentStationId)와 일치하지 않을 때 적재. mismatch는 lockless 회복 path
+  // (Stage 1/2/3 누적) 효과를 직접 측정 — 1주 production 카운트 ≪ baseline trip 수면 V1 회복 신호.
+  // dedup 1분 윈도우 + (ui, ssot) 쌍 키 — 같은 mismatch가 폴링 cycle마다 반복 적재되는 회귀 차단.
+  | 'v1-mismatch';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
