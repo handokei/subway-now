@@ -91,6 +91,21 @@ function info(arrivalCode: number, overrides?: Partial<ArrivalInfo>): ArrivalInf
 }
 
 /**
+ * R13-a (#1612) — strict bad-accuracy 가드 도입 후 4곳에서 반복되는 mock GPS setup.
+ * `accuracyMeters: 1500` (이전 지하 면제) 폐기 → 실 station 좌표 + accuracy=50 으로 distance gate 자연 통과.
+ * SonarCloud dup 회피 (lesson_sonarcloud_dup_prevention).
+ */
+function mockGpsAtRealStation(stn: { lat: number; lng: number }, extra?: Parameters<typeof gpsBase>[0]): void {
+  mockUseNearest.mockReturnValue(
+    gpsBase({
+      userLocation: { lat: stn.lat, lng: stn.lng },
+      accuracyMeters: 50,
+      ...extra,
+    }),
+  );
+}
+
+/**
  * R13-a (#1612) — bad-accuracy 게이트 면제용 mock BoardingLock.
  * fusionDistanceGate가 lockActive=true 시 accuracy null/bad 면제 (#1016 hole b 기존 동작 보존).
  * 본 fixture가 사용된 테스트는 "positionTrain/fused가 지하 가정에서 채택되는가"가 의도 — lock 없이는
@@ -121,12 +136,7 @@ const mockLockForUnderground: import('../../../../shared/types/boardingLock').Bo
  */
 function setupPositionTrainTransferStation(trainNo: string): void {
   const realChungmuro = findStationByNameAndLine('충무로', '3')!;
-  mockUseNearest.mockReturnValue(
-    gpsBase({
-      userLocation: { lat: realChungmuro.lat, lng: realChungmuro.lng },
-      accuracyMeters: 50,
-    }),
-  );
+  mockGpsAtRealStation(realChungmuro);
   mockFindTop.mockReturnValue([
     { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
     { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 },
@@ -215,12 +225,7 @@ describe('useFusedNearestStation', () => {
     // R13-a (#1612): 이전 `accuracyMeters: 1500` 지하 면제 setup 폐기. 실 chungmuro 좌표 + accuracy=50으로
     // distance gate 자연 통과 (trackTrainProgress가 사용하는 findStationByNameAndLine 좌표와 일치).
     const realChungmuro = findStationByNameAndLine('충무로', '3')!;
-    mockUseNearest.mockReturnValue(
-      gpsBase({
-        userLocation: { lat: realChungmuro.lat, lng: realChungmuro.lng },
-        accuracyMeters: 50,
-      }),
-    );
+    mockGpsAtRealStation(realChungmuro);
     mockFindTop.mockReturnValue([
       { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 }, // line='2'
       { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 }, // line='3'
@@ -359,10 +364,7 @@ describe('useFusedNearestStation', () => {
 
     function setupPositionTrainWithRealCoords(trainNo: string): void {
       // GPS를 실 충무로(3호선) 좌표에 배치 — lock 활성 + accuracyMeters=50이어도 gate 통과.
-      mockUseNearest.mockReturnValue(gpsBase({
-        userLocation: { lat: realChungmuro3.lat, lng: realChungmuro3.lng },
-        accuracyMeters: 50,
-      }));
+      mockGpsAtRealStation(realChungmuro3);
       mockFindTop.mockReturnValue([
         { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
         { station: MOCK_STATIONS.chungmuro, distanceKm: 0.3 },
@@ -513,12 +515,7 @@ describe('useFusedNearestStation', () => {
     // R13-a (#1612): 이전 `accuracyMeters: 1500` 지하 면제 setup 폐기. 실 gangnam 좌표 + accuracy=50으로
     // distance gate 자연 통과 (line=2 기존 의도 보존, lock 추가 불필요).
     const realGangnam = findStationByNameAndLine('강남', '2')!;
-    mockUseNearest.mockReturnValue(
-      gpsBase({
-        userLocation: { lat: realGangnam.lat, lng: realGangnam.lng },
-        accuracyMeters: 50,
-      }),
-    );
+    mockGpsAtRealStation(realGangnam);
     mockFindTop.mockReturnValue([
       { station: MOCK_STATIONS.gangnam, distanceKm: 0.1 },
     ]);
