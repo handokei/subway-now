@@ -226,3 +226,95 @@ describe('undergroundSSOTConsensus — 4-signal 2-of-N (#1574 ADR-017 T11)', () 
     expect(result?.station.id).toBe(positionTrain.station.id);
   });
 });
+
+describe('undergroundSSOTConsensus — accelerometer fingerprint (#1542 ADR-016 S9)', () => {
+  it('Position + accelerometer automotive (BG WiFi nil, baro/cellular 미수렴) → 2-of-N pass', () => {
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    const result = undergroundSSOTConsensus({
+      wifiStation: null,
+      positionTrainResult: positionTrain,
+      arrival: arrivalLine2,
+      accelerometerPattern: 'automotive',
+    });
+    expect(result?.station.id).toBe(positionTrain.station.id);
+    expect(result?.trainCode).toBe('T1');
+  });
+
+  it('WiFi + accelerometer automotive → 2-of-N pass', () => {
+    const wifi = MOCK_STATIONS.gangnam;
+    const result = undergroundSSOTConsensus({
+      wifiStation: wifi,
+      positionTrainResult: null,
+      arrival: arrivalLine2,
+      accelerometerPattern: 'automotive',
+    });
+    expect(result?.station.id).toBe(wifi.id);
+    expect(result?.trainCode).toBe('T1');
+  });
+
+  it('Position + barometer + accelerometer → 3 env votes 누적, station 채택 (position 우선)', () => {
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    const result = undergroundSSOTConsensus({
+      wifiStation: null,
+      positionTrainResult: positionTrain,
+      arrival: arrivalLine2,
+      barometerStop: true,
+      cellularEnvironmentVote: 'underground',
+      accelerometerPattern: 'automotive',
+    });
+    expect(result?.station.id).toBe(positionTrain.station.id);
+  });
+
+  it.each<'stationary' | 'walking' | 'unknown'>(['stationary', 'walking', 'unknown'])(
+    'accelerometer pattern=%s → vote 미투표 (1-of-N)',
+    (pattern) => {
+      const positionTrain = makeNearestResult('gangnam', 0.05);
+      expect(
+        undergroundSSOTConsensus({
+          wifiStation: null,
+          positionTrainResult: positionTrain,
+          arrival: arrivalLine2,
+          accelerometerPattern: pattern,
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it('accelerometer automotive + cellular surface → reject (환경 확정 모순 우선)', () => {
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: null,
+        positionTrainResult: positionTrain,
+        arrival: arrivalLine2,
+        accelerometerPattern: 'automotive',
+        cellularEnvironmentVote: 'surface',
+      }),
+    ).toBeNull();
+  });
+
+  it('env vote만 (baro + cellular + accelerometer) station pair 0 → null', () => {
+    expect(
+      undergroundSSOTConsensus({
+        wifiStation: null,
+        positionTrainResult: null,
+        arrival: arrivalLine2,
+        barometerStop: true,
+        cellularEnvironmentVote: 'underground',
+        accelerometerPattern: 'automotive',
+      }),
+    ).toBeNull();
+  });
+
+  it('accelerometer undefined (호출자 미전달) → backward-compat 기존 동작 보존', () => {
+    // wifi + position 둘 다 매칭 → 2-of-N station pair 모드 그대로.
+    const wifi = MOCK_STATIONS.gangnam;
+    const positionTrain = makeNearestResult('gangnam', 0.05);
+    const result = undergroundSSOTConsensus({
+      wifiStation: wifi,
+      positionTrainResult: positionTrain,
+      arrival: arrivalLine2,
+    });
+    expect(result?.station.id).toBe(positionTrain.station.id);
+  });
+});

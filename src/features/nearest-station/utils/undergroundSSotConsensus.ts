@@ -8,6 +8,10 @@
  *   - Position-Train+Arrival 1-input에 의존 → 1 input 실패 시 합의 붕괴
  *   - Barometer `stop`(dP/dt 정착) + Cellular `underground` vote를 환경-확정 vote로 추가
  *
+ * #1542 (ADR-016 S9) — CMMotionManager accelerometer fingerprint 환경 vote 추가.
+ *   - V1 BG 지하 천장 70 → 90% (Transit App 90% / SubwayPS 학술 85% baseline)
+ *   - patternClass='automotive' (RMS ≥ 2.0 m/s² 진동) = train 진행 신호 환경 vote 1표
+ *
  * 합의 구조 — station-providing pair + environment-confirming vote:
  *   - Station pair (station 채택 가능, arrival 호선 매칭 필수):
  *       (a) WiFi SSID    + Arrival  (FG only — BG에선 SSID nil)
@@ -15,6 +19,7 @@
  *   - Environment vote (station 미제공, 환경 확정만):
  *       (c) Barometer `stop=true` (FG/BG) — #1574
  *       (d) Cellular `underground` vote (FG/BG) — #1574
+ *       (e) Accelerometer `automotive` pattern (FG/BG, BG location piggyback) — #1542
  *
  * 합의 임계:
  *   - 2-of-N 통과 시 SSOT 채택 (station pair + env vote 어떤 조합이든 OK)
@@ -25,14 +30,15 @@
  * station 채택 우선순위: Position-Train > WiFi (강 → 약 신호).
  *
  * Backward-compat:
- *   - barometerStop/cellularEnvironmentVote 미전달 → 기존 호출자 동작 유지
+ *   - barometerStop/cellularEnvironmentVote/accelerometerPattern 미전달 → 기존 호출자 동작 유지
  *   - 단, 2-of-N quorum이 강화되어 단일 station pair만으로는 통과 불가 (의도된 tightening).
- *     기존 wifi-only / position-only 통과 케이스는 barometer/cellular 보강으로 회복.
+ *     기존 wifi-only / position-only 통과 케이스는 barometer/cellular/accelerometer 보강으로 회복.
  */
 
 import type { NearestStationResult, Station } from '../../../shared/types/station';
 import type { StationArrival } from '../../../shared/types/arrival';
 import type { CellularEnvironmentVote } from './cellularTech';
+import type { AccelerometerPattern } from './accelerometerFingerprint';
 
 /** arvlCd "정착한 위치 보고" 코드 집합. surfaceSSotConsensus와 동일 — 향후 공용 추출 여지. */
 const ARVL_CD_STATIONARY = new Set<number>([1, 2, 3, 5]);
@@ -61,6 +67,14 @@ export interface UndergroundSSOTInput {
    * iOS BG에서도 동작 (CTServiceRadioAccessTechnologyDidChangeNotification observer).
    */
   cellularEnvironmentVote?: CellularEnvironmentVote | undefined;
+  /**
+   * #1542 (ADR-016 S9) — CMMotionManager 60s window RMS magnitude 분류 결과.
+   * 'automotive' (RMS ≥ 2.0 m/s² 진동 — train 진행)이면 환경-확정 1표 추가.
+   * 'stationary' / 'walking' (정지/도보) → vote 미투표 (station 채택 신호 X, 환경 모순 X).
+   * 'unknown'/undefined (60s window 미수렴, 미지원) → vote 미투표.
+   * iOS BG에서도 동작 (Background Location piggyback으로 raw 가속도 수신).
+   */
+  accelerometerPattern?: AccelerometerPattern | undefined;
 }
 
 export interface UndergroundSSOT {
@@ -84,7 +98,14 @@ function findStationaryTrain(
 }
 
 export function undergroundSSOTConsensus(input: UndergroundSSOTInput): UndergroundSSOT | null {
-  const { wifiStation, positionTrainResult, arrival, barometerStop, cellularEnvironmentVote } = input;
+  const {
+    wifiStation,
+    positionTrainResult,
+    arrival,
+    barometerStop,
+    cellularEnvironmentVote,
+    accelerometerPattern,
+  } = input;
 
   // 환경 확정 모순 — cellular가 surface면 underground SSOT 자체 candidate X.
   if (cellularEnvironmentVote === 'surface') return null;
@@ -104,10 +125,11 @@ export function undergroundSSOTConsensus(input: UndergroundSSOTInput): Undergrou
     }
   }
 
-  // Environment-confirming votes (station 미제공). 신규 #1574 — BG WiFi 갭 해소.
+  // Environment-confirming votes (station 미제공). 신규 #1574 — BG WiFi 갭 해소 + #1542 accelerometer.
   let envVotes = 0;
   if (barometerStop === true) envVotes += 1;
   if (cellularEnvironmentVote === 'underground') envVotes += 1;
+  if (accelerometerPattern === 'automotive') envVotes += 1;
 
   // 2-of-N quorum. station pair ≥ 1 필수 (env vote만으로는 station 채택 불가).
   if (stationPairs.length === 0) return null;

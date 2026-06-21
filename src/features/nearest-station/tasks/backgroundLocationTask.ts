@@ -20,6 +20,15 @@ import { BG_LAST_FIX_KEY, BG_LAST_STATION_KEY } from '../../../shared/constants/
 import { uploadPosition, type PositionMotion } from '../api/positionUpload';
 import { getCurrentMotionStationary } from '../utils/motionActivity';
 import { getLatestAccelSummary } from '../utils/accelMotionState';
+// #1542 (ADR-016 S9) — CMMotionManager accelerometer fingerprint (Background Location piggyback).
+// BG location updates 활성 동안 raw 가속도 5Hz sampling 시작 — 정적 native module (no-op if already
+// started). position upload 시점에 latest 60s window snapshot을 첨부해 backend가 진동 fingerprint
+// 환경 vote로 사용 + undergroundSSotConsensus가 'automotive' pattern을 1표로 채택.
+import {
+  startAccelerometerFingerprint,
+  getLatestAccelerometerSnapshot,
+  classifyAccelerometerPattern,
+} from '../utils/accelerometerFingerprint';
 import { evaluateMovement } from '../utils/movementGate';
 // #1237 — BG tick에서도 위젯 SSOT(App Groups UserDefaults)를 갱신해 FG 진입 전까지 stale로 남지 않게 한다.
 // cross-feature import는 파일 헤더의 file-level eslint-disable로 옵트인 (orchestrator 본질).
@@ -44,6 +53,29 @@ export const BACKGROUND_LOCATION_TASK = 'background-location-task';
  * FG가 짧게 꺼졌다 다시 켜지는 경우는 허용하면서, 분 단위로 오래된 stale은 차단한다.
  */
 export const ACCEL_SUMMARY_MAX_AGE_MS = 5_000;
+
+/**
+ * #1542 (ADR-016 S9) — accelerometer fingerprint pattern + CMMotionActivity stationary 신호 결합.
+ *
+ * 정책:
+ *   - accelerometer 'stationary' / 'walking' / 'automotive' → 그대로 PositionMotion 라벨 채택
+ *   - accelerometer 'unknown' (60s window 미수렴 / 미지원) → CMMotionActivity fallback
+ *       - motionActivity.stationary=true → 'stationary'
+ *       - 그 외 → 'unknown' (기존 #819 정책)
+ *
+ * 우선순위 이유: 60s window RMS magnitude는 CMMotionActivity의 5~10분 intermittent flip 문제
+ * (lesson_motion_activity_intermittent_signal)를 piggyback BG 실측으로 mitigation한다. 단,
+ * 60s window 미수렴 시(0-60s 첫 cycle) fallback이 안전.
+ *
+ * pure function — 별 파일 분리 없이 backgroundLocationTask scope 내부 helper.
+ */
+export function pickMotionLabel(
+  accelPattern: 'stationary' | 'walking' | 'automotive' | 'unknown',
+  motionStationary: boolean,
+): PositionMotion {
+  if (accelPattern !== 'unknown') return accelPattern;
+  return motionStationary ? 'stationary' : 'unknown';
+}
 
 async function readBgLastFix(): Promise<FixSample | null> {
   try {
@@ -147,7 +179,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     // 통과 못 하게 만들 뿐).
     const apnsToken = await AsyncStorage.getItem(APNS_TOKEN_KEY).catch(() => null);
     if (apnsToken) {
-      const motion: PositionMotion = getCurrentMotionStationary() ? 'stationary' : 'unknown';
+      // #1542 (ADR-016 S9) — Background Location piggyback: BG task가 호출될 때마다
+      // accelerometer fingerprint start를 no-op 보장으로 호출. native 모듈이 isUpdating 가드를
+      // 갖고 있어 한 번만 시작되며, 이후 BG location updates 활성 동안 raw 가속도 5Hz가 계속 흐른다.
+      // 미지원/실패는 graceful (snapshot 조회가 null로 fallback).
+      startAccelerometerFingerprint();
       // #823 — 가속도 latest summary 첨부 (옵션). useAccelerometer가 FG에서 갱신.
       //   BG-only 또는 FG → BG 전환 후 시간이 지난 케이스에 stale snapshot이 남아있을 수 있어
       //   ACCEL_SUMMARY_MAX_AGE_MS 이상 오래된 건 제외 (E1 정책: 결정적 freshness 우선).
@@ -156,6 +192,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         latestAccel && Date.now() - latestAccel.endTs <= ACCEL_SUMMARY_MAX_AGE_MS
           ? latestAccel
           : undefined;
+      // #1542 — 60s window snapshot pattern 분류. motion 필드와 결합 — accelerometer 'automotive'/
+      // 'walking'은 stationary 우선보다 강 신호 (raw 가속도 진동은 CMMotionActivity stationary 5~10분
+      // 뒤집힘 mitigation, lesson_motion_activity_intermittent_signal).
+      const accelPattern = classifyAccelerometerPattern(getLatestAccelerometerSnapshot());
+      const motion: PositionMotion = pickMotionLabel(accelPattern, getCurrentMotionStationary());
       void uploadPosition({
         token: apnsToken,
         lat,
