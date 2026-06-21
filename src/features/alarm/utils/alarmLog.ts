@@ -57,7 +57,19 @@ export type AlarmLogSource =
   | 'boarding-prompt'
   // #1573 (T10) — 6h/9h trip lifecycle backstop이 적재하는 silence/force-end 엔트리 출처.
   // FG/BG 어느 경로에서도 동일 source로 적재 — 단계 진입 시점·발생 빈도 분포 측정.
-  | 'lifecycle-backstop';
+  | 'lifecycle-backstop'
+  // #1628 — fusion candidate distance hard gate(R12-a, #1616)가 reject한 1건의 alarmLog mirror.
+  // 기존 pushFusionDebugEntry(fusionLog kind)만 적재되던 reject 신호를 alarmLog kind에도
+  // 적재해 `/admin/alarm-log-stats` (kind='alarmLog' 만 카운트) 응답에서 R12-a 효과 측정 가능.
+  | 'fusion-candidate-reject'
+  // #1628 — R11 cross-trip mirror skip(PR #1613) 차단 3 site 출처. site별로 source 구분해
+  // 분포 측정 — 어느 race(register/mismatch/launch)가 가장 자주 차단하는지 RCA.
+  //   'cross-trip-mirror-register' : R11-a (useApnsTripRegistration.ts:361, POST /trips 직전 clear)
+  //   'cross-trip-mirror-mismatch' : R11-b (silentPushTask.ts:779, token mismatch 시 write skip)
+  //   'cross-trip-mirror-launch'   : R11-c (useLaunchTripReconciliation.ts:89, active trip 없을 때 clear)
+  | 'cross-trip-mirror-register'
+  | 'cross-trip-mirror-mismatch'
+  | 'cross-trip-mirror-launch';
 export type AlarmLogOutcome = 'fired' | 'suppressed' | 'received';
 // 'dedup-alarm'(#580): evaluateAlarmPhase의 firedAlarms 적중. destination/transfer phase alarm dedup
 // 발생 관찰. station-passed는 별도 메커니즘(lastNotifiedStationId)이라 'dedup-station' 사용.
@@ -200,7 +212,13 @@ export type AlarmLogReason =
   // backend SSoT mirror(currentStationId)와 일치하지 않을 때 적재. mismatch는 lockless 회복 path
   // (Stage 1/2/3 누적) 효과를 직접 측정 — 1주 production 카운트 ≪ baseline trip 수면 V1 회복 신호.
   // dedup 1분 윈도우 + (ui, ssot) 쌍 키 — 같은 mismatch가 폴링 cycle마다 반복 적재되는 회귀 차단.
-  | 'v1-mismatch';
+  | 'v1-mismatch'
+  // #1628 — fusion candidate distance hard gate(R12-a) reject 사유. distanceKm/trainNo/stationName/line은
+  // 엔트리 컨텍스트로 별도 적재되지 않으므로 dedup 키는 (trainNo|stationName)으로 station 단위 burst 차단.
+  | 'candidate-distance-reject'
+  // #1628 — R11 cross-trip mirror skip(PR #1613) 차단 1건. 같은 site에서 burst 발사하는 race 케이스를
+  // 차단하기 위해 5s 윈도우 burst dedup 적용.
+  | 'cross-trip-mirror-skip';
 export type AlarmLogKind = 'destination' | 'transfer' | 'station-passed';
 export type AlarmLogDirection = 'up' | 'down';
 // #396 — imminent 발사 신호 출처. 'api'는 도착정보 arrivalCode 신호, 'eta'는 기존 ETA 임계.
@@ -492,9 +510,13 @@ function sweepExpiredBurstEntries(now: number): void {
   }
 }
 
-function isBurstDuplicate(reason: string, stationName: string): boolean {
+// discriminator는 dedup key를 reason과 함께 구성하는 두 번째 차원 — 호출자는 station name이든
+// site label('register'/'mismatch'/'launch')이든 자유롭게 사용한다 (#1628). 키 구성은
+// `${reason}|${discriminator}` 단순 문자열 결합으로, 호출 간 의미 차이는 reason 단위로
+// 격리되므로 같은 reason에서 일관된 차원만 쓰면 충돌하지 않는다.
+function isBurstDuplicate(reason: string, discriminator: string): boolean {
   const now = Date.now();
-  const key = `${reason}|${stationName}`;
+  const key = `${reason}|${discriminator}`;
   const last = lastBurstSuppressTs.get(key);
   if (last !== undefined && now - last < DEDUP_LOG_WINDOW_MS) return true;
   lastBurstSuppressTs.set(key, now);
@@ -505,6 +527,57 @@ function isBurstDuplicate(reason: string, stationName: string): boolean {
 /** 테스트용 — burst dedup 윈도우 캐시 리셋. */
 export function _resetBurstSuppressWindowForTests(): void {
   lastBurstSuppressTs.clear();
+}
+
+/**
+ * #1628 — fusion candidate distance reject 1건 적재 (R12-a 효과 측정).
+ *
+ * 호출 site: `src/features/nearest-station/hooks/useFusedNearestStation.ts:533-543`
+ * `pickCandidateTrains`의 `onCandidateDistanceReject` 콜백. 기존 `pushFusionDebugEntry`
+ * (kind='candidate-reject', reason='candidate-distance')는 fusionLog ring buffer에 적재되어
+ * DebugModal에서만 확인 가능. `/admin/alarm-log-stats` (kind='alarmLog' 만 카운트) 응답에
+ * 노출되도록 alarmLog kind에도 mirror 적재.
+ *
+ * burst dedup: stationName 키 — 같은 station이 5s 윈도우 안에 반복 reject되면 첫 1건만 적재.
+ * trainNo는 동일 station에서 다양해도 측정 목적(reject 분포)에는 영향 없음 — appendAlarmLog의
+ * inline burst counter도 (source, reason, stationName) 동등성으로 합쳐 station 단위 카운트만 유의미.
+ */
+export function logFusionCandidateDistanceReject(input: { stationName: string }): void {
+  if (isBurstDuplicate('candidate-distance-reject', input.stationName)) return;
+  appendAlarmLog({
+    ts: Date.now(),
+    source: 'fusion-candidate-reject',
+    outcome: 'suppressed',
+    reason: 'candidate-distance-reject',
+    stationName: input.stationName,
+  });
+}
+
+/**
+ * #1628 — R11 cross-trip mirror skip 1건 적재 (PR #1613 효과 측정).
+ *
+ * R11 차단 site 3곳:
+ *   - 'register' : `useApnsTripRegistration.ts:361` (POST /trips 직전 mirror clear)
+ *   - 'mismatch' : `silentPushTask.ts:779` (token mismatch 시 mirror write skip)
+ *   - 'launch'   : `useLaunchTripReconciliation.ts:89` (active trip 없을 때 mirror clear)
+ *
+ * burst dedup: site 키 — 같은 site에서 5s 윈도우 안에 반복 차단되면 첫 1건만 적재.
+ * 정상 trip 1건 (각 site별 1-3건).
+ */
+export function logCrossTripMirrorSkip(site: 'register' | 'mismatch' | 'launch'): void {
+  if (isBurstDuplicate('cross-trip-mirror-skip', site)) return;
+  const source: AlarmLogSource =
+    site === 'register'
+      ? 'cross-trip-mirror-register'
+      : site === 'mismatch'
+        ? 'cross-trip-mirror-mismatch'
+        : 'cross-trip-mirror-launch';
+  appendAlarmLog({
+    ts: Date.now(),
+    source,
+    outcome: 'suppressed',
+    reason: 'cross-trip-mirror-skip',
+  });
 }
 
 /**
@@ -765,6 +838,10 @@ const SILENT_PUSH_OUTCOME_SOURCES: Record<AlarmLogSource, keyof SilentPushOutcom
   'fg-ref-mismatch': null,
   'boarding-prompt': null,
   'lifecycle-backstop': null,
+  'fusion-candidate-reject': null,
+  'cross-trip-mirror-register': null,
+  'cross-trip-mirror-mismatch': null,
+  'cross-trip-mirror-launch': null,
 };
 
 export interface SilentPushOutcomeCounts {

@@ -32,6 +32,12 @@ jest.mock('../../utils/backendSsotMirror', () => ({
   clearBackendSsotMirror: (...args: unknown[]) => mockClearBackendSsotMirror(...args),
 }));
 
+// #1628 — R11-a 차단 1건 측정 검증. clear 호출과 짝지어 같은 site에서 1회만 발사.
+const mockLogCrossTripMirrorSkip = jest.fn();
+jest.mock('../../utils/alarmLog', () => ({
+  logCrossTripMirrorSkip: (...args: unknown[]) => mockLogCrossTripMirrorSkip(...args),
+}));
+
 jest.mock('../../../../shared/utils/logger', () => ({
   createLogger: () => ({
     debug: jest.fn(),
@@ -147,6 +153,9 @@ describe('useApnsTripRegistration', () => {
       const clearOrder = mockClearBackendSsotMirror.mock.invocationCallOrder[0];
       const registerOrder = mockRegister.mock.invocationCallOrder[0];
       expect(clearOrder).toBeLessThan(registerOrder);
+      // #1628 — R11-a 측정 wire-completion: clear와 짝지어 logCrossTripMirrorSkip('register') 1회.
+      expect(mockLogCrossTripMirrorSkip).toHaveBeenCalledWith('register');
+      expect(mockLogCrossTripMirrorSkip).toHaveBeenCalledTimes(1);
     });
 
     it('route/destination 없으면 clearBackendSsotMirror 호출 안 함 (trip 종료 경로는 별경로)', async () => {
@@ -157,6 +166,8 @@ describe('useApnsTripRegistration', () => {
         await Promise.resolve();
       });
       expect(mockClearBackendSsotMirror).not.toHaveBeenCalled();
+      // #1628 — clear가 안 됐으면 측정도 안 발사.
+      expect(mockLogCrossTripMirrorSkip).not.toHaveBeenCalled();
     });
 
     it('토큰 없으면 register skip되고 clearBackendSsotMirror도 호출 안 함', async () => {
@@ -173,6 +184,7 @@ describe('useApnsTripRegistration', () => {
       });
       expect(mockRegister).not.toHaveBeenCalled();
       expect(mockClearBackendSsotMirror).not.toHaveBeenCalled();
+      expect(mockLogCrossTripMirrorSkip).not.toHaveBeenCalled();
     });
   });
 

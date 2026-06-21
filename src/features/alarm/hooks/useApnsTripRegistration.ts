@@ -27,6 +27,7 @@ import { routeToWaypoints } from '../../route/utils/routeWaypoints';
 import { buildBoardingLockMeta } from '../utils/buildBoardingLockMeta';
 import { cancelTripBoundAlarms } from '../utils/tripBoundScheduler';
 import { clearBackendSsotMirror } from '../utils/backendSsotMirror';
+import { logCrossTripMirrorSkip } from '../utils/alarmLog';
 import { buildBoardingPromptContext, type BoardingPromptContext } from '../utils/boardingPromptContext';
 import { APNS_TOKEN_KEY, ACTIVE_TRIP_KEY } from '../../../shared/constants/storageKeys';
 import { BOARDING_LOCK_RELEASE_DEBOUNCE_MS } from '../../../shared/constants/boardingLock';
@@ -364,6 +365,8 @@ export function useApnsTripRegistration({
       // (cleanup 후 OLD trip 지연 push로 mirror 부활) 차단의 1단계로 작동한다.
       // 호출은 멱등 (clearBackendSsotMirror 키 부재 시 graceful no-op).
       await clearBackendSsotMirror();
+      // #1628 — R11-a 차단 1건 측정. burst dedup으로 같은 site 반복은 첫 1건만 적재.
+      logCrossTripMirrorSkip('register');
       const result = await callRegister({
         token,
         route,

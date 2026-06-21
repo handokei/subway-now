@@ -44,6 +44,7 @@ import { sendPushAck } from '../api/alarmBackend';
 import { createLogger } from '../../../shared/utils/logger';
 import {
   flushAlarmLog,
+  logCrossTripMirrorSkip,
   logSilentPushReceived,
   logSilentPushRescheduleReceived,
   logSilentPushTripEndedReceived,
@@ -780,6 +781,8 @@ export async function handleSilentPush(input: NotificationBackgroundTaskData): P
         logger.info(
           `mirror write skip: trip token mismatch payload=${payload.tripToken!.slice(0, 8)} active=${activeTripToken.slice(0, 8)}`,
         );
+        // #1628 — R11-b 차단 1건 측정.
+        logCrossTripMirrorSkip('mismatch');
       } else {
         await persistBackendSsotMirror(payload.ssot, receivedAt);
       }

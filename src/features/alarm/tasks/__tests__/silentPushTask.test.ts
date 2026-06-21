@@ -23,6 +23,7 @@ const mockLogSilentPushRescheduleReceived = jest.fn();
 const mockLogSilentPushTripEndedReceived = jest.fn();
 const mockLogSilentPushFired = jest.fn();
 const mockLogSilentPushSkipped = jest.fn();
+const mockLogCrossTripMirrorSkip = jest.fn();
 const mockFlushAlarmLog = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../utils/alarmLog', () => ({
   logSilentPushReceived: (...args: unknown[]) => mockLogSilentPushReceived(...args),
@@ -32,6 +33,7 @@ jest.mock('../../utils/alarmLog', () => ({
     mockLogSilentPushTripEndedReceived(...args),
   logSilentPushFired: (...args: unknown[]) => mockLogSilentPushFired(...args),
   logSilentPushSkipped: (...args: unknown[]) => mockLogSilentPushSkipped(...args),
+  logCrossTripMirrorSkip: (...args: unknown[]) => mockLogCrossTripMirrorSkip(...args),
   flushAlarmLog: () => mockFlushAlarmLog(),
 }));
 
@@ -3314,6 +3316,8 @@ describe('silentPushTask', () => {
         activeTripValue: string | null;
         payloadTripToken: string | undefined;
         expectMirrorDefined: boolean;
+        // #1628 — mismatch 분기에서만 logCrossTripMirrorSkip('mismatch') 1회 호출.
+        expectMirrorSkipLogged: boolean;
       };
 
       async function runR11bCase({
@@ -3355,32 +3359,43 @@ describe('silentPushTask', () => {
           activeTripValue: 'trip-token-A',
           payloadTripToken: 'trip-token-A',
           expectMirrorDefined: true,
+          expectMirrorSkipLogged: false,
         },
         {
           label: 'payload.tripToken !== activeTripToken → mirror write skip (race A 차단)',
           activeTripValue: 'trip-token-NEW',
           payloadTripToken: 'trip-token-OLD',
           expectMirrorDefined: false,
+          expectMirrorSkipLogged: true,
         },
         {
           label: 'activeTripToken null (cold-launch race) → mirror write 허용 (backward-compat)',
           activeTripValue: null,
           payloadTripToken: 'trip-token-X',
           expectMirrorDefined: true,
+          expectMirrorSkipLogged: false,
         },
         {
           label: 'payload.tripToken undefined (구 backend 호환) → mirror write 허용',
           activeTripValue: 'trip-token-Z',
           payloadTripToken: undefined,
           expectMirrorDefined: true,
+          expectMirrorSkipLogged: false,
         },
       ])('$label', async (testCase) => {
+        mockLogCrossTripMirrorSkip.mockClear();
         await runR11bCase(testCase);
         const mirrorCall = findMirrorCall();
         if (testCase.expectMirrorDefined) {
           expect(mirrorCall).toBeDefined();
         } else {
           expect(mirrorCall).toBeUndefined();
+        }
+        // #1628 — mismatch case 1회 호출 / 그 외 0회.
+        if (testCase.expectMirrorSkipLogged) {
+          expect(mockLogCrossTripMirrorSkip).toHaveBeenCalledWith('mismatch');
+        } else {
+          expect(mockLogCrossTripMirrorSkip).not.toHaveBeenCalled();
         }
       });
     });
