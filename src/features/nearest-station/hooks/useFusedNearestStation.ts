@@ -16,6 +16,7 @@ import { getCurrentTripCorrIdSync } from '../../observability/utils/tripCorrId';
 import { pushEstimatorEntry } from '../../route/utils/estimatorDebugBuffer';
 import { useNearestStation } from './useNearestStation';
 import { useCellularTech } from './useCellularTech';
+import { useAccelerometerFingerprint } from './useAccelerometerFingerprint';
 import { useArrivalInfo } from '../../arrival/hooks/useArrivalInfo';
 import { useTrainPositions } from '../../route/hooks/useTrainPositions';
 import { useRouteProgress } from '../../route/hooks/useRouteProgress';
@@ -386,6 +387,12 @@ export function useFusedNearestStation(
   // (CTServiceRadioAccessTechnologyDidChangeNotification observer). underground SSOT 4-signal
   // 합의의 환경-확정 vote로 사용. 미지원(Android/jest/web) 시 'unknown' 고정 → vote 미투표.
   const cellularEnvironmentVote = useCellularTech();
+
+  // #1542 (ADR-016 S9) — CMMotionManager raw accelerometer 60s window RMS magnitude 분류.
+  // 'automotive' (RMS ≥ 2.0 m/s²)이면 train 진동 환경 vote 1표 — undergroundSSotConsensus 5번째 signal.
+  // BG location piggyback (backgroundLocationTask가 별 start 호출)로 BG에서도 동작.
+  // V1 BG 지하 천장 70 → 90% (Transit App 90% / SubwayPS 학술 85% baseline).
+  const accelerometerPattern = useAccelerometerFingerprint();
 
   // #1568 (T8b, Epic ADR-017 #1553) — backend SSoT mirror 폴링.
   //
@@ -931,6 +938,9 @@ export function useFusedNearestStation(
     // barometerSignal.stop=undefined(warmup) / cellular 'unknown'은 vote 미투표.
     barometerStop: barometerSignal?.stop,
     cellularEnvironmentVote,
+    // #1542 (ADR-016 S9) — accelerometer fingerprint env vote. 'automotive' = train 진동 1표,
+    // 'stationary'/'walking'/'unknown'은 vote 미투표. 미지원/warmup 60s 동안 'unknown' fallback.
+    accelerometerPattern,
   });
   const environment: Environment = inferEnvironment({
     subsurface: barometerSubsurface,
