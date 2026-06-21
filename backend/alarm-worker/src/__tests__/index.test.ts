@@ -3413,6 +3413,8 @@ describe('POST /trips — #1366 boardingLock metadata cross-validation', () => {
 // route 미설정 trip(legacy collapse: waypoints=[destination only])이 도착하면 backend가
 // `promptDisplay`(originStation + line) + `destination`(station id)로 Dijkstra 자동 추론.
 // device의 정상 `routeToWaypoints` 시퀀스와 동형으로 채워, 다음 cron 사이클부터 정상 매역 추적.
+//
+// SonarCloud dup 회피: outer scope helper + it.each (lesson_sonarcloud_dup_prevention.md).
 const COLLAPSE_PROMPT_GEO_1604 = {
   origin: { lat: 37.573647, lng: 127.092833 }, // 용마산
   nextStation: { lat: 37.561446, lng: 127.082888 }, // 중곡 근사
@@ -3431,170 +3433,160 @@ function collapseBody1604(
   };
 }
 
+async function postCollapse1604(
+  env: Env,
+  waypoints: Array<Record<string, unknown>>,
+  extras: Record<string, unknown> = {},
+): Promise<Record<string, unknown>> {
+  await post('/trips', collapseBody1604(waypoints, extras), env);
+  return JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
+}
+
 describe('POST /trips — #1604 backend Dijkstra route infer', () => {
-  it('infers waypoints when waypoints=[destination only] + promptDisplay 제공 (직선 trip)', async () => {
-    const env = makeKvEnv();
-    await post(
-      '/trips',
-      collapseBody1604(
-        // 용마산 → 어린이대공원(세종대), 동일 7호선 → Dijkstra가 직선 추론.
-        [{ stationName: '어린이대공원(세종대)', line: '7', kind: 'destination' }],
-        {
-          destination: '7-018',
-          route: { type: 'direct', line: '7', stops: 3 },
-          promptDisplay: { originStation: '용마산', line: '7' },
-          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
-        },
-      ),
-      env,
+  it('infers waypoints (직선 trip: 용마산 → 어린이대공원, 7호선)', async () => {
+    const stored = await postCollapse1604(
+      makeKvEnv(),
+      [{ stationName: '어린이대공원(세종대)', line: '7', kind: 'destination' }],
+      {
+        destination: '7-018',
+        route: { type: 'direct', line: '7', stops: 3 },
+        promptDisplay: { originStation: '용마산', line: '7' },
+        promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
+      },
     );
-    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
-    // 1 waypoint → 3+ waypoints (intermediates + destination).
-    expect(stored.waypoints.length).toBeGreaterThanOrEqual(2);
-    const last = stored.waypoints[stored.waypoints.length - 1];
+    const waypoints = stored.waypoints as Array<{ kind: string; line: string; stationName: string; hopIndex: number }>;
+    expect(waypoints.length).toBeGreaterThanOrEqual(2);
+    const last = waypoints[waypoints.length - 1];
     expect(last.kind).toBe('destination');
     expect(last.stationName).toBe('어린이대공원(세종대)');
     expect(last.line).toBe('7');
     // 모든 intermediate은 7호선
-    for (let i = 0; i < stored.waypoints.length - 1; i += 1) {
-      expect(stored.waypoints[i].kind).toBe('intermediate');
-      expect(stored.waypoints[i].line).toBe('7');
+    for (let i = 0; i < waypoints.length - 1; i += 1) {
+      expect(waypoints[i].kind).toBe('intermediate');
+      expect(waypoints[i].line).toBe('7');
     }
-    // hopIndex/occurrenceIdx stamp 검증
-    expect(stored.waypoints[0].hopIndex).toBe(0);
-    expect(stored.waypoints[stored.waypoints.length - 1].hopIndex).toBe(
-      stored.waypoints.length - 1,
-    );
+    // hopIndex stamp 검증
+    expect(waypoints[0].hopIndex).toBe(0);
+    expect(waypoints[waypoints.length - 1].hopIndex).toBe(waypoints.length - 1);
   });
 
-  it('infers waypoints for 환승 1회 trip (7호선 용마산 → 2호선 성수)', async () => {
-    const env = makeKvEnv();
-    await post(
-      '/trips',
-      collapseBody1604(
-        [{ stationName: '성수', line: '2', kind: 'destination' }],
-        {
-          destination: '2-011',
-          route: { type: 'direct', line: '2', stops: 1 },
-          promptDisplay: { originStation: '용마산', line: '7' },
-          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
-        },
-      ),
-      env,
-    );
-    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
-    const transferCount = stored.waypoints.filter(
-      (w: { kind: string }) => w.kind === 'transfer',
-    ).length;
-    const destinationCount = stored.waypoints.filter(
-      (w: { kind: string }) => w.kind === 'destination',
-    ).length;
-    expect(transferCount).toBe(1);
-    expect(destinationCount).toBe(1);
-    const last = stored.waypoints[stored.waypoints.length - 1];
-    expect(last.stationName).toBe('성수');
-    expect(last.line).toBe('2');
-  });
+  // 환승 케이스 (1회 / 2회+ / 양방향) — 같은 호출 패턴, 검증 expectation만 다름.
+  type TransferCase = {
+    label: string;
+    waypoints: Array<Record<string, unknown>>;
+    extras: Record<string, unknown>;
+    expectLastName: string;
+    expectLastLine: string;
+    expectMinTransfers: number;
+  };
+  const transferCases: TransferCase[] = [
+    {
+      label: '환승 1회 (7호선 용마산 → 2호선 성수)',
+      waypoints: [{ stationName: '성수', line: '2', kind: 'destination' }],
+      extras: {
+        destination: '2-011',
+        route: { type: 'direct', line: '2', stops: 1 },
+        promptDisplay: { originStation: '용마산', line: '7' },
+        promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
+      },
+      expectLastName: '성수',
+      expectLastLine: '2',
+      expectMinTransfers: 1,
+    },
+    {
+      label: '환승 2회+ (1호선 신도림 → 7호선 어린이대공원)',
+      waypoints: [{ stationName: '어린이대공원(세종대)', line: '7', kind: 'destination' }],
+      extras: {
+        destination: '7-018',
+        route: { type: 'direct', line: '7', stops: 1 },
+        promptDisplay: { originStation: '신도림', line: '1' },
+        promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
+      },
+      expectLastName: '어린이대공원(세종대)',
+      expectLastLine: '7',
+      expectMinTransfers: 1,
+    },
+    {
+      label: '같은 노선 양방향 (어린이대공원 → 용마산, 7호선)',
+      waypoints: [{ stationName: '용마산', line: '7', kind: 'destination' }],
+      extras: {
+        destination: '7-015',
+        route: { type: 'direct', line: '7', stops: 3 },
+        promptDisplay: { originStation: '어린이대공원(세종대)', line: '7' },
+        promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
+      },
+      expectLastName: '용마산',
+      expectLastLine: '7',
+      expectMinTransfers: 0,
+    },
+  ];
 
-  it('infers waypoints for 환승 2회+ trip (1호선 신도림 → 7호선 어린이대공원)', async () => {
-    const env = makeKvEnv();
-    await post(
-      '/trips',
-      collapseBody1604(
-        [{ stationName: '어린이대공원(세종대)', line: '7', kind: 'destination' }],
-        {
-          destination: '7-018',
-          route: { type: 'direct', line: '7', stops: 1 },
-          promptDisplay: { originStation: '신도림', line: '1' },
-          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
-        },
-      ),
-      env,
-    );
-    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
-    expect(
-      stored.waypoints.filter((w: { kind: string }) => w.kind === 'transfer').length,
-    ).toBeGreaterThanOrEqual(1);
-    const last = stored.waypoints[stored.waypoints.length - 1];
-    expect(last.stationName).toBe('어린이대공원(세종대)');
-  });
+  it.each(transferCases)(
+    '$label',
+    async ({ waypoints, extras, expectLastName, expectLastLine, expectMinTransfers }) => {
+      const stored = await postCollapse1604(makeKvEnv(), waypoints, extras);
+      const stored_wps = stored.waypoints as Array<{ kind: string; line: string; stationName: string }>;
+      expect(stored_wps.length).toBeGreaterThanOrEqual(2);
+      const transferCount = stored_wps.filter((w) => w.kind === 'transfer').length;
+      expect(transferCount).toBeGreaterThanOrEqual(expectMinTransfers);
+      const last = stored_wps[stored_wps.length - 1];
+      expect(last.stationName).toBe(expectLastName);
+      expect(last.line).toBe(expectLastLine);
+    },
+  );
 
-  it('같은 노선 양방향 — direction 검증 (어린이대공원 → 용마산)', async () => {
-    const env = makeKvEnv();
-    await post(
-      '/trips',
-      collapseBody1604(
-        [{ stationName: '용마산', line: '7', kind: 'destination' }],
-        {
-          destination: '7-015',
-          route: { type: 'direct', line: '7', stops: 3 },
-          promptDisplay: { originStation: '어린이대공원(세종대)', line: '7' },
-          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
-        },
-      ),
-      env,
-    );
-    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
-    expect(stored.waypoints.length).toBeGreaterThanOrEqual(2);
-    const last = stored.waypoints[stored.waypoints.length - 1];
-    expect(last.stationName).toBe('용마산');
-    expect(last.line).toBe('7');
-  });
+  // Skip 케이스 — infer가 incoming 그대로 보존하는 분기. expectedWaypoints는 stored.waypoints 그대로 비교.
+  type SkipCase = {
+    label: string;
+    waypoints: Array<Record<string, unknown>>;
+    extras: Record<string, unknown>;
+    expectStoredCount: number;
+    expectStoredFirstName: string;
+  };
+  const skipCases: SkipCase[] = [
+    {
+      label: 'promptDisplay 부재 → infer skip (backward-compat)',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      extras: {},
+      expectStoredCount: 1,
+      expectStoredFirstName: '강남',
+    },
+    {
+      label: '이미 채워진 waypoints → infer skip (정상 trip 변경 X)',
+      waypoints: [
+        { stationName: '강변', line: '2', kind: 'intermediate' },
+        { stationName: '잠실', line: '2', kind: 'destination' },
+      ],
+      extras: {
+        destination: '2-216',
+        promptDisplay: { originStation: '신도림', line: '2' },
+        promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
+      },
+      expectStoredCount: 2,
+      expectStoredFirstName: '강변',
+    },
+    {
+      label: 'origin 미해소 → infer skip (incoming 보존)',
+      waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
+      extras: {
+        destination: '2-022',
+        promptDisplay: { originStation: '존재안함역', line: '2' },
+        promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
+      },
+      expectStoredCount: 1,
+      expectStoredFirstName: '강남',
+    },
+  ];
 
-  it('promptDisplay 부재 → infer skip, incoming 그대로 보존 (backward-compat)', async () => {
-    const env = makeKvEnv();
-    await post(
-      '/trips',
-      collapseBody1604([{ stationName: '강남', line: '2', kind: 'destination' }]),
-      env,
-    );
-    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
-    // promptDisplay 없으면 infer 안 함 — incoming 그대로 1 waypoint.
-    expect(stored.waypoints.length).toBe(1);
-    expect(stored.waypoints[0].stationName).toBe('강남');
-  });
-
-  it('이미 채워진 waypoints는 infer 건너뛰기 (정상 trip은 변경 X)', async () => {
-    const env = makeKvEnv();
-    await post(
-      '/trips',
-      collapseBody1604(
-        [
-          { stationName: '강변', line: '2', kind: 'intermediate' },
-          { stationName: '잠실', line: '2', kind: 'destination' },
-        ],
-        {
-          destination: '2-216',
-          promptDisplay: { originStation: '신도림', line: '2' },
-          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
-        },
-      ),
-      env,
-    );
-    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
-    expect(stored.waypoints.length).toBe(2);
-    expect(stored.waypoints[0].stationName).toBe('강변');
-    expect(stored.waypoints[1].stationName).toBe('잠실');
-  });
-
-  it('origin 미해소 (잘못된 역명) → infer skip, incoming 그대로 보존', async () => {
-    const env = makeKvEnv();
-    await post(
-      '/trips',
-      collapseBody1604(
-        [{ stationName: '강남', line: '2', kind: 'destination' }],
-        {
-          destination: '2-022',
-          promptDisplay: { originStation: '존재안함역', line: '2' },
-          promptGeoContext: COLLAPSE_PROMPT_GEO_1604,
-        },
-      ),
-      env,
-    );
-    const stored = JSON.parse((await env.TRIPS.get('trip:tok-1604')) as string);
-    expect(stored.waypoints.length).toBe(1);
-    expect(stored.waypoints[0].stationName).toBe('강남');
-  });
+  it.each(skipCases)(
+    '$label',
+    async ({ waypoints, extras, expectStoredCount, expectStoredFirstName }) => {
+      const stored = await postCollapse1604(makeKvEnv(), waypoints, extras);
+      const stored_wps = stored.waypoints as Array<{ stationName: string }>;
+      expect(stored_wps.length).toBe(expectStoredCount);
+      expect(stored_wps[0].stationName).toBe(expectStoredFirstName);
+    },
+  );
 });
 
 // #1425 — POST /trips trip-ended retention 안 같은 token 재등록 차단.

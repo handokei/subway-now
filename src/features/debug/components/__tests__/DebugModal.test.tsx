@@ -1425,6 +1425,7 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
 
   // #1604 — T10 trip lifecycle phase wire-up.
   // 4가지 phase가 UI/dump에 노출되는지 + tripStartedAt null/non-null에서 derive가 정확한지.
+  // SonarCloud dup 회피: outer scope helper + it.each (lesson_sonarcloud_dup_prevention.md).
   describe('#1604 — lifecyclePhase wire-up', () => {
     const tripFixture = (overrides: Partial<TripDebugState>): TripDebugState => ({
       lockless: false,
@@ -1434,72 +1435,42 @@ describe('DebugModal — D9 UI sections (#1215)', () => {
       displayOnlyEstimateStrategy: null,
       ...overrides,
     });
-
-    it('tripStartedAt=null → lifecyclePhase=none', async () => {
-      renderWithTheme(<DebugModal onClose={jest.fn()} trip={tripFixture({})} />);
+    const renderAndAwaitLog = async (tripOverrides: Partial<TripDebugState>) => {
+      renderWithTheme(<DebugModal onClose={jest.fn()} trip={tripFixture(tripOverrides)} />);
       await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('none');
-    });
+    };
 
-    it('tripStartedAt 최근(<6h) → lifecyclePhase=normal', async () => {
-      renderWithTheme(
-        <DebugModal
-          onClose={jest.fn()}
-          trip={tripFixture({
-            lockless: true,
-            tripStartedAt: Date.now() - 60_000, // 1분 전
-            currentHopIndex: 0,
-            routeHopCount: 5,
-          })}
-        />,
-      );
-      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('normal');
-    });
-
-    it('명시 lifecyclePhase 전달 시 그 값 우선 (silence)', async () => {
-      renderWithTheme(
-        <DebugModal
-          onClose={jest.fn()}
-          trip={tripFixture({
-            lockless: true,
-            tripStartedAt: Date.now() - 60_000,
-            currentHopIndex: 0,
-            routeHopCount: 5,
-            lifecyclePhase: 'silence',
-          })}
-        />,
-      );
-      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('silence');
-    });
-
-    it('명시 lifecyclePhase=force-end 전달 시 그대로 노출', async () => {
-      renderWithTheme(
-        <DebugModal
-          onClose={jest.fn()}
-          trip={tripFixture({
-            lockless: true,
-            tripStartedAt: Date.now() - 60_000,
-            currentHopIndex: 0,
-            routeHopCount: 5,
-            lifecyclePhase: 'force-end',
-          })}
-        />,
-      );
-      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
-      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe('force-end');
+    type PhaseCase = {
+      label: string;
+      overrides: Partial<TripDebugState>;
+      expected: 'none' | 'normal' | 'silence' | 'force-end';
+    };
+    const phaseCases: PhaseCase[] = [
+      { label: 'tripStartedAt=null → none', overrides: {}, expected: 'none' },
+      {
+        label: 'tripStartedAt 최근(<6h) → normal',
+        overrides: { tripStartedAt: Date.now() - 60_000 },
+        expected: 'normal',
+      },
+      {
+        label: '명시 lifecyclePhase=silence 우선',
+        overrides: { tripStartedAt: Date.now() - 60_000, lifecyclePhase: 'silence' },
+        expected: 'silence',
+      },
+      {
+        label: '명시 lifecyclePhase=force-end 우선',
+        overrides: { tripStartedAt: Date.now() - 60_000, lifecyclePhase: 'force-end' },
+        expected: 'force-end',
+      },
+    ];
+    it.each(phaseCases)('$label', async ({ overrides, expected }) => {
+      await renderAndAwaitLog(overrides);
+      expect(screen.getByTestId('debug-modal-lifecycle-phase').props.children).toBe(expected);
     });
 
     it('Share dump에 lifecyclePhase 라인 포함 (명시 silence)', async () => {
       const shareSpy = jest.spyOn(Share, 'share').mockResolvedValue({ action: 'sharedAction' });
-      renderWithTheme(
-        <DebugModal
-          onClose={jest.fn()}
-          trip={tripFixture({ tripStartedAt: null, lifecyclePhase: 'silence' })}
-        />,
-      );
-      await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+      await renderAndAwaitLog({ lifecyclePhase: 'silence' });
       fireEvent.press(screen.getByTestId('debug-share-dump'));
       await waitFor(() => expect(shareSpy).toHaveBeenCalled());
       const { message } = shareSpy.mock.calls[0][0] as { message: string };
