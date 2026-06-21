@@ -292,6 +292,30 @@ describe('DebugModal', () => {
     expect(screen.queryByTestId('debug-log-source-counts')).toBeNull();
   });
 
+  it('Notifications fired 섹션은 outcome=fired만 시간순 reverse로 표시한다 (#1626)', async () => {
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: 1, source: 'fg', outcome: 'fired', stationName: '강남' },
+      { ts: 2, source: 'boarding-prompt', outcome: 'suppressed', reason: 'cooldown' },
+      { ts: 3, source: 'silent-push-received', outcome: 'received' },
+      { ts: 4, source: 'bg-scheduled', outcome: 'fired', stationName: '면목' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    expect(await screen.findByText('Notifications fired (2)')).toBeTruthy();
+    const entries = screen.getAllByTestId('debug-notifications-fired-entry');
+    expect(entries).toHaveLength(2);
+    expect(entries[0].props.children).toContain('면목');
+    expect(entries[1].props.children).toContain('강남');
+  });
+
+  it('fired 0건이면 Notifications fired 섹션 자체를 렌더링하지 않는다 (#1626)', async () => {
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: 1, source: 'fg', outcome: 'suppressed', reason: 'distance-gate' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await screen.findByText('Alarm log (1)');
+    expect(screen.queryByTestId('notifications-fired-section')).toBeNull();
+  });
+
   it('userLocation이 null이면 "no location"을 표시한다', () => {
     mockUseFusedNearestStation.mockReturnValue(
       fusedReturnFixture({
