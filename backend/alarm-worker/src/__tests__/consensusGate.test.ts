@@ -174,7 +174,7 @@ describe('evaluateConsensusGate (ADR-015 §3/§4)', () => {
     it.each<StationEnvironment>(['surface', 'underground', 'mixed'])(
       '%s: 동일 signals → 토글 ON/OFF / boardingPrompt 응답 유무와 무관하게 동일 결과',
       (env) => {
-        // 본 게이트 시그너처는 BoardingPromptState / locklessStationPassed를 받지 않는다.
+        // 본 게이트 시그너처는 BoardingPromptState / infoModeEnabled를 받지 않는다.
         // 동일 signals 입력은 두 trip이 모두 동일 결과를 반환해야 한다 — 정적 보증.
         expect(runGate(env)).toEqual(runGate(env));
       },

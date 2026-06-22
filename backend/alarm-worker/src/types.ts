@@ -148,7 +148,7 @@ export interface Trip {
    */
   consecutiveEtaMissing?: number;
   /**
-   * #816 C — 사용자 opt-in lockless station-passed.
+   * #816 C — 사용자 opt-in lockless station-passed (UI: "전체역 보기").
    * BoardingLock 없는 trip에서도 station-passed(intermediate) 알림을 발사할지 여부.
    *
    * 기본 (필드 부재 또는 false): #640 게이트 그대로 — lock 없으면 cycle skip.
@@ -157,8 +157,9 @@ export interface Trip {
    *   - 사용자가 명시 설정 토글로 ON했을 때만 trip 등록 시 송신
    *
    * 노이즈 차단 책임: 사용자에게 옵트인 권한 위임. #640 회귀는 OFF가 default로 보호.
+   * (#1669 device rename: locklessStationPassed → infoModeEnabled, 필드명 동기화)
    */
-  locklessStationPassed?: boolean;
+  infoModeEnabled?: boolean;
   /**
    * boarding-prompt(#819) 발사 추적 — trip당 1회 + dismiss 5분 silence 게이트(#9).
    * 부재 = 미발사 상태. 사용자 응답으로 lock이 생기면 자연스럽게 게이트 #2가 차단한다.

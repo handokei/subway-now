@@ -538,7 +538,7 @@ describe('runScheduled', () => {
           { stationName: '강남', line: '2', kind: 'intermediate' },
           { stationName: '역삼', line: '2', kind: 'destination' },
         ],
-        locklessStationPassed: true,
+        infoModeEnabled: true,
         ...overrides,
       });
     }
@@ -618,7 +618,7 @@ describe('runScheduled', () => {
       },
       {
         name: '토글 OFF + intermediate → lockMissing 카운트 (발사 0, arrivals fetch 미호출)',
-        trip: () => intermediateTrip({ locklessStationPassed: false }),
+        trip: () => intermediateTrip({ infoModeEnabled: false }),
         apnsOk: false,
         expect: { pushed: 0, locklessFired: 0, lockMissing: 1 },
         apnsCalled: false,
@@ -630,7 +630,7 @@ describe('runScheduled', () => {
         trip: () =>
           makeTrip({
             waypoints: [{ stationName: '강남', line: '2', kind: 'destination' }],
-            locklessStationPassed: true,
+            infoModeEnabled: true,
           }),
         apnsOk: false,
         expect: { pushed: 0, locklessFired: 0, lockMissing: 1 },
@@ -680,7 +680,7 @@ describe('runScheduled', () => {
             { stationName: '강남', line: '2', kind: 'intermediate', hopIndex: 3 },
             { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
           ],
-          locklessStationPassed: true,
+          infoModeEnabled: true,
         }),
         arrivals: [ARVL_ARRIVED],
         apnsOk: true,
@@ -696,7 +696,7 @@ describe('runScheduled', () => {
             { stationName: '강남', line: '2', kind: 'intermediate' },
             { stationName: '역삼', line: '2', kind: 'destination' },
           ],
-          locklessStationPassed: true,
+          infoModeEnabled: true,
         }),
         arrivals: [ARVL_ARRIVED],
         apnsOk: true,
@@ -717,7 +717,7 @@ describe('runScheduled', () => {
             { stationName: '강남', line: '2', kind: 'intermediate', hopIndex: 3 },
             { stationName: '역삼', line: '2', kind: 'destination', hopIndex: 4 },
           ],
-          locklessStationPassed: true,
+          infoModeEnabled: true,
           ...(input === undefined ? {} : { subsurface: input }),
         }),
         arrivals: [ARVL_ARRIVED],
@@ -736,7 +736,7 @@ describe('runScheduled', () => {
             { stationName: '역삼', line: '2', kind: 'intermediate' },
             { stationName: '선릉', line: '2', kind: 'destination' },
           ],
-          locklessStationPassed: true,
+          infoModeEnabled: true,
         }),
         arrivals: [{ ...ARVL_ARRIVED, destination: '선릉행', arrivalSeconds: 0, trainCode: 'X' }],
         apnsOk: true,
@@ -757,7 +757,7 @@ describe('runScheduled', () => {
             { stationName: '중곡', line: '5', kind: 'intermediate' },
             { stationName: '군자', line: '5', kind: 'destination' },
           ],
-          locklessStationPassed: true,
+          infoModeEnabled: true,
         }),
         arrivals: [ARVL_ARRIVED],
         apnsOk: true,
@@ -782,7 +782,7 @@ describe('runScheduled', () => {
           { stationName: '군자', line: '5', kind: 'intermediate' },
           { stationName: '아차산', line: '5', kind: 'destination' },
         ],
-        locklessStationPassed: true,
+        infoModeEnabled: true,
       });
       await putTrip(kv as unknown as KVNamespace, trip);
       // #1315 — bare-arvlCd advance는 motion=walking/automotive에서만 허용 → 이동 series 시드.
@@ -861,7 +861,7 @@ describe('runScheduled', () => {
             { stationName: '어린이대공원', line: '2', kind: 'intermediate' },
             { stationName: '건대입구', line: '2', kind: 'destination' },
           ],
-          locklessStationPassed: true,
+          infoModeEnabled: true,
         });
         await putTrip(kv as unknown as KVNamespace, trip);
         await seedLocklessMotionSeries(kv, trip.token, 'stationary');
@@ -912,7 +912,7 @@ describe('runScheduled', () => {
             { stationName: '역삼', line: '2', kind: 'intermediate' },
             { stationName: '선릉', line: '2', kind: 'destination' },
           ],
-          locklessStationPassed: true,
+          infoModeEnabled: true,
           promptGeoContext: {
             origin: { lat: 0, lng: 0 },
             nextStation: { lat: 0, lng: 0.01 },
@@ -1424,7 +1424,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expect(stored.boardingLock).toBeUndefined();
       expect(stored.consecutiveEtaMissing).toBe(0);
       // #1370 L3 — lockless 인계가 실제로 작동하도록 강제 enable + stat 기록
-      expect(stored.locklessStationPassed).toBe(true);
+      expect(stored.infoModeEnabled).toBe(true);
     });
 
     it('#1370 L2 — fallback advance 직전 station-passed silent push 발사 (intermediate)', async () => {
@@ -1548,14 +1548,14 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
       expect(stats.errors).toBeGreaterThanOrEqual(1);
     });
 
-    it('#1370 L3 — lock release 시 locklessStationPassed 강제 enable + stat 기록', async () => {
+    it('#1370 L3 — lock release 시 infoModeEnabled 강제 enable + stat 기록', async () => {
       const kv = new InMemoryKV();
       await putTrip(
         kv as unknown as KVNamespace,
         makeLockTrip({
           consecutiveEtaMissing: FALLBACK_TRIGGER - 1,
           lastTrackedArrivalEpoch: LAST_EPOCH_NOT_ELAPSED,
-          locklessStationPassed: false,
+          infoModeEnabled: false,
         }),
       );
       const stats = await runScheduled(makeEnv(kv), {
@@ -1567,7 +1567,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         generatePushId: () => 'p1370-l3',
       });
       const stored = JSON.parse((await kv.get('trip:lock-tok'))!) as Trip;
-      expect(stored.locklessStationPassed).toBe(true);
+      expect(stored.infoModeEnabled).toBe(true);
       expect(stats.vanishLocklessTakeover).toBe(1);
     });
 
@@ -1797,7 +1797,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
           motion: 'stationary',
           hopElapsed: false,
           pushId: 'p1386-not-elapsed',
-          tripOverrides: { locklessStationPassed: false },
+          tripOverrides: { infoModeEnabled: false },
         });
         // floor fire 차단 (release 경로 motion gate)
         expect(stats.vanishFallbackMotionGateBlocked).toBe(1);
@@ -1805,7 +1805,7 @@ describe('runScheduled — boardingLock trainCode tracking (#585)', () => {
         // lock release + lockless takeover 경로 활성 — gate와 무관하게 진행
         expect(stats.vanishLocklessTakeover).toBe(1);
         expect(stored.boardingLock).toBeUndefined();
-        expect(stored.locklessStationPassed).toBe(true);
+        expect(stored.infoModeEnabled).toBe(true);
       });
     });
   });
@@ -3406,7 +3406,7 @@ describe('runScheduled — #825 Phase 3 E3: phaseImminentBlocked + stationPhase 
         { stationName: '강남', line: '2', kind: 'intermediate' },
         { stationName: '역삼', line: '2', kind: 'destination' },
       ],
-      locklessStationPassed: true,
+      infoModeEnabled: true,
       ...overrides,
     });
   }
@@ -3763,7 +3763,7 @@ describe('runScheduled — #1652 staged lifecycle backstop', () => {
         createdAt: NOW - 10.5 * 60 * 60_000,
         expiresAt: NOW + 60 * 60_000,
         alarmAtEpochMs: NOW + 60_000,
-        locklessStationPassed: true,
+        infoModeEnabled: true,
       }),
     );
 
@@ -4010,7 +4010,7 @@ function makeLocklessKalmanTrip(token: string, overrides: Partial<Trip> = {}): T
       { stationName: '강남', line: '2', kind: 'intermediate' },
       { stationName: '역삼', line: '2', kind: 'destination' },
     ],
-    locklessStationPassed: true,
+    infoModeEnabled: true,
     ...overrides,
   });
 }
@@ -5512,7 +5512,7 @@ async function runLocklessSsotFireScenario(opts: {
     token: opts.token,
     route: { type: 'direct', line: '2', stops: 2 },
     waypoints: opts.waypoints,
-    locklessStationPassed: true,
+    infoModeEnabled: true,
   });
   await putTrip(kv as unknown as KVNamespace, trip);
   await seedLocklessMotionSeries(kv, trip.token, 'automotive');
@@ -5567,7 +5567,7 @@ describe('runLocklessIntermediate passedStations 누적 (#1539 S6)', () => {
         { stationName: '강남', line: '2', kind: 'intermediate' },
         { stationName: '역삼', line: '2', kind: 'intermediate' },
       ],
-      locklessStationPassed: true,
+      infoModeEnabled: true,
     });
     await putTrip(kv as unknown as KVNamespace, trip);
     await seedLocklessMotionSeries(kv, trip.token, 'automotive');

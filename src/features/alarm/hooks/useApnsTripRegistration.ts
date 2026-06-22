@@ -55,7 +55,7 @@ export interface UseApnsTripRegistrationInputs {
    * true면 backend가 lock 부재 trip에서도 intermediate waypoint 통과 시 silent push 발사한다.
    * 미설정/false면 기존 #640 게이트 그대로 (lock 없으면 push 0건).
    */
-  locklessStationPassed?: boolean;
+  infoModeEnabled?: boolean;
   /**
    * #903 (Seam G) — 기압계 dP/dt가 지하 진입을 시사하는가. true면 backend로 함께 전달되어
    * consecutiveEtaMissing threshold를 5→10으로 늘려 일시 GPS/arrival 누락에 더 인내한다.
@@ -83,7 +83,7 @@ interface RegisterCallInputs {
   nextStationEtaSeconds: number | null;
   currentStation: Station | null;
   boardingLock: BoardingLock | null;
-  locklessStationPassed: boolean;
+  infoModeEnabled: boolean;
   /** #903 (Seam G) — 기압계 subsurface 신호. true면 backend threshold 5→10. */
   subsurface: boolean;
   /** 같은 trip 세션 동안 고정되는 epoch ms. backend `isSameSession` 판정 키(#589). */
@@ -175,7 +175,7 @@ async function callRegister(input: RegisterCallInputs) {
     createdAt: input.createdAt,
     ...(boardingLockMeta ? { boardingLock: boardingLockMeta } : {}),
     // #816 C — 토글 ON이면 backend에 lockless station-passed opt-in 명시. OFF면 필드 누락.
-    ...(input.locklessStationPassed ? { locklessStationPassed: true } : {}),
+    ...(input.infoModeEnabled ? { infoModeEnabled: true } : {}),
     // #819 / #1028 — boarding-prompt 평가/표시 컨텍스트. 짝으로만 송신.
     ...(promptContext
       ? {
@@ -194,7 +194,7 @@ export function useApnsTripRegistration({
   nextStationEtaSeconds,
   currentStation = null,
   boardingLock = null,
-  locklessStationPassed = false,
+  infoModeEnabled = false,
   subsurface = false,
 }: UseApnsTripRegistrationInputs): void {
   // route 객체 reference가 categorized recompute로 자주 바뀌므로 내용 기반 signature로
@@ -204,9 +204,9 @@ export function useApnsTripRegistration({
   // alarmBackend dedup hash와 동일 필드 사용 (trainCode + line + boardedAt).
   const boardingLockSig = lockSig(boardingLock);
   // 최신 트립 입력을 ref에 보관 — pushTokenListener가 갱신 시 재등록에 사용한다.
-  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, locklessStationPassed, subsurface });
+  const latestInputsRef = useRef({ route, destination, nextStationEtaSeconds, currentStation, boardingLock, infoModeEnabled, subsurface });
   useEffect(() => {
-    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, locklessStationPassed, subsurface };
+    latestInputsRef.current = { route, destination, nextStationEtaSeconds, currentStation, boardingLock, infoModeEnabled, subsurface };
   });
 
   // #589 — backend `isSameSession`(token+createdAt) 판정용. 같은 trip(같은
@@ -275,7 +275,7 @@ export function useApnsTripRegistration({
           nextStationEtaSeconds: eta,
           currentStation: cs,
           boardingLock: bl,
-          locklessStationPassed: lsp,
+          infoModeEnabled: lsp,
           subsurface: sub,
         } = latestInputsRef.current;
         if (!r || !d) return;
@@ -287,7 +287,7 @@ export function useApnsTripRegistration({
           nextStationEtaSeconds: eta,
           currentStation: cs,
           boardingLock: bl,
-          locklessStationPassed: lsp,
+          infoModeEnabled: lsp,
           subsurface: sub,
           createdAt: resolveTripCreatedAt(sessionKey),
           cachedPromptContext: lastPromptContextRef.current,
@@ -374,7 +374,7 @@ export function useApnsTripRegistration({
         nextStationEtaSeconds,
         currentStation,
         boardingLock,
-        locklessStationPassed,
+        infoModeEnabled,
         subsurface,
         createdAt: resolveTripCreatedAt(sessionKey),
         cachedPromptContext: lastPromptContextRef.current,
@@ -428,5 +428,5 @@ export function useApnsTripRegistration({
     // 일시 GPS/arrival 누락에 인내. useBarometer의 60s 윈도우 평가가 토글 폭주를 자체 흡수하므로
     // deps churn 위험 낮음. alarmBackend의 dedup hash가 subsurface 미변화 사이클은 POST를 skip.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeSig, destination?.id, boardingLockSig, locklessStationPassed, subsurface]);
+  }, [routeSig, destination?.id, boardingLockSig, infoModeEnabled, subsurface]);
 }
