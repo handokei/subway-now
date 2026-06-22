@@ -48,3 +48,32 @@ jobs:
 
       - name: 단위 테스트 실행 (커버리지 100% 검증)
         run: npm test -- --ci --forceExit
+
+  backend-validation:
+    # #1624 — backend/alarm-worker type-check + vitest CI gate.
+    # frontend `test` job은 backend를 검증하지 않으므로 별도 job으로 회귀 차단.
+    name: Backend Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 코드 체크아웃
+        uses: actions/checkout@v4
+
+      - name: Node.js 20 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: backend/alarm-worker/package-lock.json
+
+      - name: 의존성 설치
+        working-directory: backend/alarm-worker
+        run: npm ci
+
+      - name: TypeScript 타입 체크
+        working-directory: backend/alarm-worker
+        run: npm run type-check
+
+      - name: vitest 실행
+        working-directory: backend/alarm-worker
+        run: npm test
