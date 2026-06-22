@@ -2004,6 +2004,35 @@ describe('alarmLog', () => {
       const result = countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now);
       expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: now - 100 }]);
     });
+
+    it('나중 entry의 ts가 더 크면 lastTs를 갱신한다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 500 }),
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: now - 100 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now);
+      expect(result).toEqual([{ reason: 'gate-age', count: 2, lastTs: now - 100 }]);
+    });
+
+    it('reason이 없으면 (unknown)으로 집계한다', () => {
+      const now = 1_700_000_000_000;
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: undefined, ts: now - 100 }),
+        makeEntry({ outcome: 'suppressed', reason: undefined, ts: now - 200 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries, 60 * 60 * 1000, now);
+      expect(result).toEqual([{ reason: '(unknown)', count: 2, lastTs: now - 100 }]);
+    });
+
+    it('windowMs/now 기본값으로 호출해도 동작한다', () => {
+      const entries: AlarmLogEntry[] = [
+        makeEntry({ outcome: 'suppressed', reason: 'gate-age', ts: Date.now() - 1000 }),
+      ];
+      const result = countAlarmLogReasonsByWindow(entries);
+      expect(result).toHaveLength(1);
+      expect(result[0]?.reason).toBe('gate-age');
+    });
   });
 
   describe('logBoardingPromptFired + countBoardingPromptByWindow (#1021)', () => {
