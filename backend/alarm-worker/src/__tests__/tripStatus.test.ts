@@ -25,6 +25,10 @@ describe('toTripStatusEndReason', () => {
     expect(toTripStatusEndReason('eta-missing')).toBe('eta-missing');
     expect(toTripStatusEndReason('push-unrecoverable')).toBe('push-unrecoverable');
   });
+
+  it('passes through seoul-outage unchanged (#1663)', () => {
+    expect(toTripStatusEndReason('seoul-outage')).toBe('seoul-outage');
+  });
 });
 
 describe('writeTripEndedStatus', () => {
@@ -68,6 +72,13 @@ describe('readTripEndedStatus', () => {
     await writeTripEndedStatus(kv as unknown as KVNamespace, 'tok', 'eta-missing', 500);
     const got = await readTripEndedStatus(kv as unknown as KVNamespace, 'tok');
     expect(got).toEqual({ endedAt: 500, endReason: 'eta-missing' });
+  });
+
+  it('returns parsed record for seoul-outage (#1663)', async () => {
+    const kv = new InMemoryKV();
+    await writeTripEndedStatus(kv as unknown as KVNamespace, 'tok', 'seoul-outage', 999);
+    const got = await readTripEndedStatus(kv as unknown as KVNamespace, 'tok');
+    expect(got).toEqual({ endedAt: 999, endReason: 'seoul-outage' });
   });
 
   it('returns null when stored JSON is malformed', async () => {

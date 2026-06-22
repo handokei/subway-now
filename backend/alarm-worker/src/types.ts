@@ -333,6 +333,8 @@ export interface ReschedulePushPayload {
 /**
  * Trip 자동 종료 reason (#868).
  *   - 'eta-missing' — consecutiveEtaMissing 임계 초과 (운행 시간대 외 / trainCode 소실)
+ *   - 'seoul-outage' — consecutiveEtaMissing 임계 초과 + Seoul API HTTP error 관측 (#1663)
+ *                      outage 기인 false-end로 판별 → #1425 cooldown 면제 대상
  *   - 'destination-arrived' — 목적지 도착 또는 마지막 intermediate 통과로 trip 종료
  *   - 'expired' — trip.expiresAt 시각 초과로 자동 만료
  *   - 'push-unrecoverable' — APNs unrecoverable error로 trip 폐기
@@ -342,6 +344,7 @@ export interface ReschedulePushPayload {
  */
 export type TripEndedReason =
   | 'eta-missing'
+  | 'seoul-outage'
   | 'destination-arrived'
   | 'expired'
   | 'push-unrecoverable';

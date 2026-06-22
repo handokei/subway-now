@@ -554,19 +554,34 @@ app.post('/trips', async (c) => {
   // `Date.now()` 기준 — device 시계 drift 위험을 피하려면 backend wall clock 사용해야 한다.
   const recentlyEnded = await readTripEndedStatus(c.env.TRIPS, incoming.token);
   if (recentlyEnded && Date.now() - recentlyEnded.endedAt < TRIP_STATUS_RETENTION_MS) {
-    console.log(
-      JSON.stringify({
-        msg: 'trip-recently-ended: reject re-register (#1425)',
-        tokenPrefix: tokenPrefix(incoming.token),
-        endedAt: recentlyEnded.endedAt,
-        endReason: recentlyEnded.endReason,
-        ageMs: Date.now() - recentlyEnded.endedAt,
-      }),
-    );
-    return c.json(
-      { error: 'trip-recently-ended', reason: recentlyEnded.endReason },
-      400,
-    );
+    // #1663 — Seoul outage로 강제 종료된 trip은 cooldown 면제. 사용자가 재등록하면 즉시 허용.
+    // 원래 #1425 cooldown 목적(device race/자동 재시도 차단)과 충돌 없음 — outage false-end는
+    // 사용자 명시 재등록이며, 같은 token의 device race가 아니다.
+    if (recentlyEnded.endReason === 'seoul-outage') {
+      console.log(
+        JSON.stringify({
+          msg: 'trip-recently-ended: bypass cooldown (seoul-outage) (#1663)',
+          tokenPrefix: tokenPrefix(incoming.token),
+          endedAt: recentlyEnded.endedAt,
+          ageMs: Date.now() - recentlyEnded.endedAt,
+        }),
+      );
+      // cooldown skip — 아래 getTrip / isSameSession 경로로 정상 진행
+    } else {
+      console.log(
+        JSON.stringify({
+          msg: 'trip-recently-ended: reject re-register (#1425)',
+          tokenPrefix: tokenPrefix(incoming.token),
+          endedAt: recentlyEnded.endedAt,
+          endReason: recentlyEnded.endReason,
+          ageMs: Date.now() - recentlyEnded.endedAt,
+        }),
+      );
+      return c.json(
+        { error: 'trip-recently-ended', reason: recentlyEnded.endReason },
+        400,
+      );
+    }
   }
 
   const existing = await getTrip(c.env.TRIPS, incoming.token);

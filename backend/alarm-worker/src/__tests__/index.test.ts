@@ -3608,7 +3608,7 @@ describe('POST /trips — #1425 trip-recently-ended reject', () => {
     env: Env,
     token: string,
     endedAt: number,
-    endReason: 'expired' | 'eta-missing' | 'destination' | 'push-unrecoverable' = 'eta-missing',
+    endReason: 'expired' | 'eta-missing' | 'seoul-outage' | 'destination' | 'push-unrecoverable' = 'eta-missing',
   ): void {
     const kv = env.TRIPS as unknown as InMemoryKV;
     kv.store.set(`tripStatus:${token}`, {
@@ -3663,6 +3663,27 @@ describe('POST /trips — #1425 trip-recently-ended reject', () => {
     const res = await post('/trips', { ...base(), token: 'fresh-token' }, env);
     expect(res.status).toBe(200);
     expect(await env.TRIPS.get('trip:fresh-token')).not.toBeNull();
+  });
+
+  // #1663 — Seoul outage cooldown bypass
+  it('bypasses cooldown and accepts re-register when endReason is seoul-outage (within retention)', async () => {
+    const env = makeKvEnv();
+    // trip ended 5s ago due to Seoul outage (still within 1h retention)
+    seedTripEnded(env, 'tok', Date.now() - 5_000, 'seoul-outage');
+
+    const res = await post('/trips', base(), env);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, token: 'tok' });
+    expect(await env.TRIPS.get('trip:tok')).not.toBeNull();
+  });
+
+  it('still rejects eta-missing within retention (non-outage cooldown preserved)', async () => {
+    const env = makeKvEnv();
+    seedTripEnded(env, 'tok', Date.now() - 5_000, 'eta-missing');
+
+    const res = await post('/trips', base(), env);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: 'trip-recently-ended' });
   });
 });
 

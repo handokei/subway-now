@@ -259,9 +259,11 @@ export interface TripEndedSilentPushPayload {
 /**
  * Trip 자동 종료 reason — backend `types.ts`의 TripEndedReason과 정렬.
  * 알 수 없는 reason은 'unknown'으로 정규화해 처리 (구버전 backend 호환 + cleanup은 동일).
+ * 'seoul-outage' (#1663) — Seoul API HTTP error로 인한 false-end. cleanup 동작은 'eta-missing'과 동일.
  */
 export type TripEndedReason =
   | 'eta-missing'
+  | 'seoul-outage'
   | 'destination-arrived'
   | 'expired'
   | 'push-unrecoverable'
@@ -592,6 +594,7 @@ function extractTripEndedPayload(
 
 const KNOWN_TRIP_ENDED_REASONS: ReadonlyArray<TripEndedReason> = [
   'eta-missing',
+  'seoul-outage',
   'destination-arrived',
   'expired',
   'push-unrecoverable',
