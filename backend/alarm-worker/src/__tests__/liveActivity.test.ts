@@ -102,6 +102,58 @@ describe('buildLiveActivityContentState (#613)', () => {
     expect(cs).not.toHaveProperty('alarmType');
     expect(cs).not.toHaveProperty('alarmStationName');
   });
+
+  // #1658 — 환승역 waypoint 추적 시 다음 leg의 line을 LA에 즉시 반영 (60s lag 차단).
+  describe('transfer waypoint → new leg line forward (#1658)', () => {
+    /** 경의중앙선(K) → 2호선 환승 trip: 홍대입구(transfer, K) → 신촌(intermediate, 2) → 강남(dest, 2). */
+    function makeTransferTrip(): Trip {
+      return makeTrip({
+        waypoints: [
+          { stationName: '홍대입구', line: 'K', kind: 'transfer' },
+          { stationName: '신촌', line: '2', kind: 'intermediate' },
+          { stationName: '강남', line: '2', kind: 'destination' },
+        ],
+        route: { type: 'transfer', fromLine: 'K', toLine: '2', transferName: '홍대입구', stopsToTransfer: 1, stopsFromTransfer: 2 },
+      });
+    }
+
+    it('환승 waypoint + trip 전달 시 다음 leg line(2호선)을 lineName/lineColorHex에 사용', () => {
+      const transferWp: Waypoint = { stationName: '홍대입구', line: 'K', kind: 'transfer' };
+      const trip = makeTransferTrip();
+      const cs = buildLiveActivityContentState(transferWp, 30, 3, trip);
+      // 2호선 meta 사용 — waypoint.line='K' 아니라 trip.waypoints[1].line='2'를 기준으로 해야 함
+      expect(cs.lineName).toBe('2호선');
+      expect(cs.lineColorHex).toBe('#009D3E');
+      // stationName은 transfer station 이름 그대로 유지
+      expect(cs.stationName).toBe('홍대입구');
+    });
+
+    it('환승 waypoint이더라도 trip 미전달이면 waypoint.line으로 fallback (legacy 호환)', () => {
+      const transferWp: Waypoint = { stationName: '홍대입구', line: 'K', kind: 'transfer' };
+      const cs = buildLiveActivityContentState(transferWp, 30, 3);
+      // trip 없음 → waypoint.line='K' 사용, LINE_META['K'] 없으면 raw 코드 fallback
+      expect(cs.lineName).toBe('K');
+      expect(cs.lineColorHex).toBe('#888888');
+    });
+
+    it('환승 waypoint + trip.waypoints[1] 없음(마지막 waypoint)이면 waypoint.line fallback', () => {
+      const transferWp: Waypoint = { stationName: '홍대입구', line: 'K', kind: 'transfer' };
+      // waypoints에 transfer만 있고 그 다음이 없는 edge case
+      const trip = makeTrip({ waypoints: [transferWp] });
+      const cs = buildLiveActivityContentState(transferWp, 30, 1, trip);
+      // trip.waypoints.length === 1 (> 1 조건 불충족) → fallback to waypoint.line='K'
+      expect(cs.lineName).toBe('K');
+    });
+
+    it('non-transfer waypoint(intermediate/destination)는 영향 없음 (회귀 가드)', () => {
+      // intermediate: waypoint.line='2' 그대로 사용
+      const intermediateWp: Waypoint = { stationName: '신촌', line: '2', kind: 'intermediate' };
+      const trip = makeTransferTrip();
+      const cs = buildLiveActivityContentState(intermediateWp, 60, 2, trip);
+      expect(cs.lineName).toBe('2호선');
+      expect(cs.lineColorHex).toBe('#009D3E');
+    });
+  });
 });
 
 // #1618 R9-b — backend buildLiveActivityContentState multi-hop 필드 wipe 차단.

@@ -84,6 +84,12 @@ export interface LiveActivityDeps {
  * stopsToTransfer / secondTransferStationName / stopsAfterLastTransfer / stopsToSecondTransfer /
  * stopsFromTransfer)를 함께 emit해 ActivityKit 전체 교체 후도 JS init이 채운 "전체 trip 여정"
  * UI가 유지된다. 누락 시 (legacy 호출) 기존 5 필드만 emit — 회귀 0 / backward compat.
+ *
+ * **환승 호선 forward (#1658)**: `waypoint.kind === 'transfer'`이고 `trip.waypoints[1]`이 존재하면
+ * 다음 leg의 line(`trip.waypoints[1].line`)을 `lineName`/`lineColorHex`로 사용한다.
+ * 환승역 waypoint는 현재 leg(경의중앙선 등)의 line을 갖지만, 사용자가 환승역에 도착하거나
+ * 도착 중인 시점에는 이미 새 호선(2호선 등)으로 탑승 준비 중이므로 새 leg의 호선을 즉시 노출한다.
+ * trip.waypoints는 매 advance마다 shifted SSOT라 race 없이 현재 시점을 정확히 반영한다.
  */
 export function buildLiveActivityContentState(
   waypoint: Waypoint,
@@ -91,12 +97,19 @@ export function buildLiveActivityContentState(
   stopsRemaining: number,
   trip?: Trip,
 ): LiveActivityContentState {
-  const meta = LINE_META[waypoint.line];
+  // #1658 — 환승 waypoint 추적 중에는 다음 leg의 line을 lineName/lineColorHex에 반영한다.
+  // waypoint.kind==='transfer' + trip.waypoints[1]이 존재하면 새 leg의 line을 우선 사용.
+  // trip이 없거나(legacy 호출) waypoints[1] 부재(직접 환승 도착)이면 waypoint.line으로 fallback.
+  const displayLine =
+    waypoint.kind === 'transfer' && trip !== undefined && trip.waypoints.length > 1
+      ? trip.waypoints[1].line
+      : waypoint.line;
+  const meta = LINE_META[displayLine];
   const base: LiveActivityContentState = {
     stationName: waypoint.stationName,
     // LINE_META는 13개 노선을 모두 커버하지만, stations.json에 없는 신규 line code가 들어와도
     // widget의 non-optional 필드가 비지 않도록 raw line code를 fallback으로 사용한다.
-    lineName: meta?.canonical ?? waypoint.line,
+    lineName: meta?.canonical ?? displayLine,
     lineColorHex: meta?.color ?? '#888888',
     stopsRemaining,
     etaMinutes: Math.max(0, Math.round(etaSeconds / 60)),
