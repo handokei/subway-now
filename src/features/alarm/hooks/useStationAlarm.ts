@@ -41,6 +41,7 @@ import {
   logRefMismatch,
   logSuppressedCrossCategoryDedup,
   logSuppressedCrossCategoryRecent,
+  logSuppressedPhaseToPhaseDedup,
   logSuppressedDedupAlarm,
   logSuppressedDedupStation,
   logSuppressedDismissSilence,
@@ -59,6 +60,7 @@ import {
 import { evaluateSsotFireGate } from '../utils/ssotFireGate';
 import {
   isStationRecentlyFired,
+  isPhaseToPhaseCrossStationRecentlyFired,
   isTripScopedCrossCategoryRecentlyFired,
   markStationFired,
 } from '../utils/crossCategoryStationDedup';
@@ -686,8 +688,7 @@ export function useStationAlarm({
     // #1643 — trip-scoped cross-category + cross-station 즉시 cascade(5s 윈도우). 같은 trip에 직전
     // 5s 안에 **다른 station에서 station-passed** fire가 있었다면 phase 알람 차단. 2026-06-20 12:31
     // 어대 "군자 도착"(SP) → "곧 성수 도착"(D imminent) 회귀 차단. 같은 station 진행(early→imminent)은
-    // 통과 — firedAlarms set이 그 dedup을 담당. same-category(phase→phase) cross-station도 통과 —
-    // 별도 leg 진행 보존(case 2 어대 "곧 건대"+"성수 도착"은 currentLine 게이트가 잡아야 함).
+    // 통과 — firedAlarms set이 그 dedup을 담당.
     // firedAlarmsRef는 sleep/CC dedup와 동일 패턴 (storage 영속화 skip — net-zero).
     if (
       isTripScopedCrossCategoryRecentlyFired(
@@ -699,6 +700,29 @@ export function useStationAlarm({
     ) {
       firedAlarmsRef.current.delete(key);
       logSuppressedCrossCategoryRecent({
+        source: 'fg',
+        stationName: rawEvent.stationName,
+        kind: rawEvent.type,
+        phaseId: rawEvent.phaseId,
+      });
+      return;
+    }
+    // #1656 — phase↔phase cross-station 즉시 cascade(3s 윈도우). 같은 trip에 직전 3s 안에 **다른
+    // station에서 phase(transfer/destination) fire**가 있었다면 차단. leg 전환 race에서 옛 leg +
+    // 새 leg phase가 동시 fire되는 회귀 차단:
+    //   - 2026-06-20 12:32 어대: "곧 건대"(transfer imminent) + "성수 도착"(destination)
+    //   - 2026-06-19 15:37 BG: "곧 이수"(destination imminent) + "다음 역 사당"(transfer)
+    // firedAlarmsRef.current.delete(key) — 나중 발사가 차단되므로 진입부 add를 복구.
+    if (
+      isPhaseToPhaseCrossStationRecentlyFired(
+        activeDestination.id,
+        rawEvent.stationName,
+        rawEvent.type,
+        Date.now(),
+      )
+    ) {
+      firedAlarmsRef.current.delete(key);
+      logSuppressedPhaseToPhaseDedup({
         source: 'fg',
         stationName: rawEvent.stationName,
         kind: rawEvent.type,

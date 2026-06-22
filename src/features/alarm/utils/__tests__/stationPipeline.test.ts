@@ -78,6 +78,7 @@ const mockLogSuppressedSleepStationPassed = jest.fn();
 const mockLogSuppressedDismissSilence = jest.fn();
 const mockLogSuppressedCrossCategoryDedup = jest.fn();
 const mockLogSuppressedCrossCategoryRecent = jest.fn();
+const mockLogSuppressedPhaseToPhaseDedup = jest.fn();
 jest.mock('../alarmLog', () => ({
   logFiredAlarm: (...args: unknown[]) => mockLogFiredAlarm(...args),
   logFiredStationPassed: (...args: unknown[]) => mockLogFiredStationPassed(...args),
@@ -92,6 +93,8 @@ jest.mock('../alarmLog', () => ({
     mockLogSuppressedCrossCategoryDedup(...args),
   logSuppressedCrossCategoryRecent: (...args: unknown[]) =>
     mockLogSuppressedCrossCategoryRecent(...args),
+  logSuppressedPhaseToPhaseDedup: (...args: unknown[]) =>
+    mockLogSuppressedPhaseToPhaseDedup(...args),
 }));
 
 import { processLocationUpdate, resolveNextTarget } from '../stationPipeline';
@@ -958,6 +961,68 @@ describe('processLocationUpdate', () => {
         kind: 'station-passed',
       });
       expect(mockSendStationPassedNotification).not.toHaveBeenCalled();
+    });
+  });
+
+  // #1656 — phase↔phase cross-station 즉시 cascade dedup (BG path).
+  // 2026-06-20 12:32 어대 "곧 건대"(transfer) + "성수 도착"(destination) 회귀 차단.
+  describe('#1656 phase↔phase cross-station cascade dedup (BG path)', () => {
+    const transferStation: Station = { ...mockStation, name: '건대', id: 'station-transfer' };
+    const destStation: Station = { ...mockStation, name: '성수', id: 'station-dest' };
+
+    beforeEach(() => {
+      mockFindRoute.mockReturnValue(mockRoute);
+      mockIsStationOnRoute.mockReturnValue(false);
+    });
+
+    it('transfer phase 발사(건대) 후 3s 안 destination phase(성수=다른 station)는 phase↔phase dedup으로 차단', async () => {
+      // 1st: 건대 transfer phase 발사.
+      mockFindNearestStation.mockReturnValue({ station: transferStation, distanceKm: 0.05 });
+      mockEvaluateAlarmPhase.mockReturnValueOnce({
+        phaseId: 'imminent',
+        type: 'transfer',
+        stationName: transferStation.name,
+      });
+      await call({ source: 'bg' });
+      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+
+      // 2nd: 성수(다른 station) destination phase — 3s 안 phase→phase cross-station → 차단.
+      mockFindNearestStation.mockReturnValue({ station: destStation, distanceKm: 0.05 });
+      mockEvaluateAlarmPhase.mockReturnValueOnce({
+        phaseId: 'early',
+        type: 'destination',
+        stationName: destStation.name,
+      });
+      await call({ source: 'bg' });
+      expect(mockLogSuppressedPhaseToPhaseDedup).toHaveBeenCalledWith({
+        source: 'bg',
+        stationName: destStation.name,
+        kind: 'destination',
+        phaseId: 'early',
+      });
+      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1); // 추가 발사 없음
+    });
+
+    it('같은 station 진행(건대 transfer → 건대 destination early→imminent)은 차단하지 않음', async () => {
+      // 1st: 건대 transfer imminent 발사.
+      mockFindNearestStation.mockReturnValue({ station: transferStation, distanceKm: 0.05 });
+      mockEvaluateAlarmPhase.mockReturnValueOnce({
+        phaseId: 'imminent',
+        type: 'transfer',
+        stationName: transferStation.name,
+      });
+      await call({ source: 'bg' });
+      expect(mockSendAlarmNotification).toHaveBeenCalledTimes(1);
+
+      // 2nd: 같은 station(건대) destination — same station이라 통과.
+      mockEvaluateAlarmPhase.mockReturnValueOnce({
+        phaseId: 'early',
+        type: 'destination',
+        stationName: transferStation.name, // 건대 = 같은 station
+      });
+      await call({ source: 'bg' });
+      // phase↔phase dedup은 발동 안 됨 — same station은 firedAlarms가 담당.
+      expect(mockLogSuppressedPhaseToPhaseDedup).not.toHaveBeenCalled();
     });
   });
 
