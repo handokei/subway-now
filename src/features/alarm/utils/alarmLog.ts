@@ -1365,6 +1365,40 @@ export function countBoardingPromptAutoLockOutcomes(
   return counts;
 }
 
+/**
+ * #1687 — 시간 윈도우 기반 autolock outcome 분포 집계.
+ *
+ * `countBoardingPromptAutoLockOutcomes`와 동일 로직에 windowMs 시간 필터를 추가.
+ * DebugModal Telemetry 섹션에서 "autoLock (1h)" 같은 최근 N분/시간 집계에 사용.
+ *
+ * @param entries  alarmLog 전체 엔트리 배열
+ * @param windowMs 집계 윈도우(ms). `now - windowMs` 이후 엔트리만 포함.
+ * @param now      현재 시각(epoch ms). 기본값 Date.now() — 테스트에서 고정값 주입 가능.
+ */
+export function countAutoLockReasonsByWindow(
+  entries: readonly AlarmLogEntry[],
+  windowMs: number,
+  now: number = Date.now(),
+): Record<BoardingPromptAutoLockReason, number> {
+  const cutoff = now - windowMs;
+  const counts: Record<BoardingPromptAutoLockReason, number> = {
+    'autolock-success': 0,
+    'autolock-no-trip': 0,
+    'autolock-arrivals-empty': 0,
+    'autolock-ambiguity': 0,
+    'autolock-station-lookup': 0,
+    'autolock-lock-failed': 0,
+  };
+  for (const entry of entries) {
+    if (entry.ts <= cutoff) continue;
+    if (entry.source !== 'boarding-prompt') continue;
+    const { reason } = entry;
+    if (reason === undefined) continue;
+    if (reason in counts) counts[reason as BoardingPromptAutoLockReason] += 1;
+  }
+  return counts;
+}
+
 /** #1170: boardingPrompt 사용자 응답 1건 적재. */
 export function logBoardingPromptResponded(input: {
   outcome: 'boarded' | 'dismissed';

@@ -34,6 +34,7 @@ import {
 import {
   BOARDING_PROMPT_WINDOWS,
   clearAlarmLog,
+  countAutoLockReasonsByWindow,
   countBoardingPromptByWindow,
   countGateReasons,
   countSilentPushOutcomes,
@@ -2064,6 +2065,8 @@ function DebugModalInner({
                 colors={colors}
               />
             ))}
+            {/* #1687 — autoLock outcome 분포 (1h 윈도우). success rate baseline 측정. */}
+            <AutoLockTelemetryRow logs={logs} colors={colors} />
           </Section>
 
           {/* #1170: boarding-prompt acceptance dashboard (gate 통과율/응답률) */}
@@ -2398,6 +2401,44 @@ function CountersSection({
         ))
       )}
     </Section>
+  );
+}
+
+const AUTOLOCK_1H_MS = 60 * 60 * 1000;
+
+/**
+ * #1687 — autoLock outcome 분포 row (1h 윈도우).
+ *
+ * boardingPrompt 응답 → autoLock chain 성공률 baseline 측정 인프라.
+ * 표시: success / ambiguous(=ambiguity) / empty(=arrivals-empty) / failed(=lock-failed) 4개 카운트.
+ * 1시간 윈도우 고정 — 단기 측정에 적합. 0건이면 "—"로 표기.
+ */
+function AutoLockTelemetryRow({
+  logs,
+  colors,
+}: Readonly<{
+  logs: readonly AlarmLogEntry[];
+  colors: ReturnType<typeof useTheme>['colors'];
+}>) {
+  const counts = useMemo(() => countAutoLockReasonsByWindow(logs, AUTOLOCK_1H_MS), [logs]);
+  const total =
+    counts['autolock-success'] +
+    counts['autolock-ambiguity'] +
+    counts['autolock-arrivals-empty'] +
+    counts['autolock-no-trip'] +
+    counts['autolock-station-lookup'] +
+    counts['autolock-lock-failed'];
+  const value =
+    total === 0
+      ? '—'
+      : `ok=${counts['autolock-success']} amb=${counts['autolock-ambiguity']} empty=${counts['autolock-arrivals-empty']} fail=${counts['autolock-lock-failed']}`;
+  return (
+    <KeyValue
+      label="autoLock(1h)"
+      value={value}
+      colors={colors}
+      testID="debug-autolock-telemetry-1h"
+    />
   );
 }
 
