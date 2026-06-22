@@ -305,20 +305,11 @@ describe('useDestinationAutoClear', () => {
   // #1647 — Seoul API-independent stationary 게이트 (3-of-3: destination 100m + 5min + lock 활성)
   describe('#1647 stationary 게이트 (API-independent fallback)', () => {
     it('arvlCd 없고 lockActive=true + 100m + 5min stationary → 자동 종료', () => {
-      // arrival=null로 arvlCd 게이트 fail. stationary 게이트만으로 fire.
-      setArrival(null);
-      const onAutoClear = jest.fn();
-      const initial: UseDestinationAutoClearInputs = {
-        ...baseInputs(),
-        onAutoClear,
-        motionStationary: true,
-        lockActive: true,
-      };
-      const { rerender } = withDateNow(T0, () =>
-        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
-          initialProps: initial,
-        }),
-      );
+      // arvlCodes: [] → arrival 게이트 fail (pickDestinationArvlCd null). stationary 게이트만으로 fire.
+      const { onAutoClear, initial, rerender } = mountStationaryDetect({
+        arvlCodes: [],
+        inputOverrides: { lockActive: true },
+      });
       withDateNow(T0 + STATIONARY_TRIP_END_THRESHOLD_MS, () => {
         rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
       });
@@ -330,19 +321,10 @@ describe('useDestinationAutoClear', () => {
     });
 
     it('lockActive=false면 stationary 게이트 차단 — lockless trip 보호', () => {
-      setArrival(null);
-      const onAutoClear = jest.fn();
-      const initial: UseDestinationAutoClearInputs = {
-        ...baseInputs(),
-        onAutoClear,
-        motionStationary: true,
-        lockActive: false,
-      };
-      const { rerender } = withDateNow(T0, () =>
-        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
-          initialProps: initial,
-        }),
-      );
+      const { onAutoClear, initial, rerender } = mountStationaryDetect({
+        arvlCodes: [],
+        inputOverrides: { lockActive: false },
+      });
       withDateNow(T0 + STATIONARY_TRIP_END_THRESHOLD_MS, () => {
         rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
       });
@@ -350,21 +332,12 @@ describe('useDestinationAutoClear', () => {
     });
 
     it('userLocation이 100m 밖이면 stationary 게이트도 차단', () => {
-      setArrival(null);
       // 200m offset (1 deg lat ≈ 111km → 0.002 ≈ 222m)
       const far = { lat: destination.lat + 0.002, lng: destination.lng };
-      const onAutoClear = jest.fn();
-      const initial: UseDestinationAutoClearInputs = {
-        ...baseInputs({ userLocation: far }),
-        onAutoClear,
-        motionStationary: true,
-        lockActive: true,
-      };
-      const { rerender } = withDateNow(T0, () =>
-        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
-          initialProps: initial,
-        }),
-      );
+      const { onAutoClear, initial, rerender } = mountStationaryDetect({
+        arvlCodes: [],
+        inputOverrides: { userLocation: far, lockActive: true },
+      });
       withDateNow(T0 + STATIONARY_TRIP_END_THRESHOLD_MS, () => {
         rerender({ ...initial, userLocation: { ...far, lat: far.lat + 0.00001 } });
       });
@@ -372,19 +345,10 @@ describe('useDestinationAutoClear', () => {
     });
 
     it('stationary 5min 미달이면 fire 안 함', () => {
-      setArrival(null);
-      const onAutoClear = jest.fn();
-      const initial: UseDestinationAutoClearInputs = {
-        ...baseInputs(),
-        onAutoClear,
-        motionStationary: true,
-        lockActive: true,
-      };
-      const { rerender } = withDateNow(T0, () =>
-        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
-          initialProps: initial,
-        }),
-      );
+      const { onAutoClear, initial, rerender } = mountStationaryDetect({
+        arvlCodes: [],
+        inputOverrides: { lockActive: true },
+      });
       // 4min만 경과 — 5min 임계 미달
       withDateNow(T0 + STATIONARY_TRIP_END_THRESHOLD_MS - 60_000, () => {
         rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
@@ -395,19 +359,10 @@ describe('useDestinationAutoClear', () => {
     it('두 게이트 동시 만족 시 arrival 게이트 우선 — log gate=arrival', () => {
       // arvlCd ARRIVED + 50m 안 + 60s stationary → arrival 게이트 first 통과.
       // (stationary 게이트도 5min 후 만족하지만 firedRef로 막힘)
-      setArrival(arrivalWithCodes([1])); // ARRIVED
-      const onAutoClear = jest.fn();
-      const initial: UseDestinationAutoClearInputs = {
-        ...baseInputs(),
-        onAutoClear,
-        motionStationary: true,
-        lockActive: true,
-      };
-      const { rerender } = withDateNow(T0, () =>
-        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
-          initialProps: initial,
-        }),
-      );
+      const { onAutoClear, initial, rerender } = mountStationaryDetect({
+        arvlCodes: [1], // ARRIVED
+        inputOverrides: { lockActive: true },
+      });
       // 60s만 경과 — arrival 게이트는 통과, stationary는 미통과
       withDateNow(T0 + STATIONARY_THRESHOLD_MS, () => {
         rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
@@ -419,19 +374,10 @@ describe('useDestinationAutoClear', () => {
     });
 
     it('한 trip에서 stationary 게이트도 1회만 발사 — firedRef로 차단', () => {
-      setArrival(null);
-      const onAutoClear = jest.fn();
-      const initial: UseDestinationAutoClearInputs = {
-        ...baseInputs(),
-        onAutoClear,
-        motionStationary: true,
-        lockActive: true,
-      };
-      const { rerender } = withDateNow(T0, () =>
-        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
-          initialProps: initial,
-        }),
-      );
+      const { onAutoClear, initial, rerender } = mountStationaryDetect({
+        arvlCodes: [],
+        inputOverrides: { lockActive: true },
+      });
       withDateNow(T0 + STATIONARY_TRIP_END_THRESHOLD_MS, () => {
         rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
       });
