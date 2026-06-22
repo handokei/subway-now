@@ -2008,19 +2008,27 @@ export async function runTrainCodeTracking(
     }
     // ADR-017 T5 (#1558) — arvlcd-arrived path 도 SSoT 단일 진입점을 통과해야 trip.waypoints
     // 가 advance 한다. T4 가 fire 를 게이트했더라도 본 진행분(waypoints shift / passedStations
-    // stamp / progress 누적) 자체는 SSoT 동의 후만 적용. arvlCd=null (positions-fallback arrived)
-    // 경로는 evidence 가 없으므로 legacy 호출(evidence X)로 backward-compat 진행 — 정지 trip 보호는
-    // T6/T7 의 lockless / positions reader migration 에서 같은 패턴으로 닫는다.
-    const arvlCdEvidence = estimate.arvlCd !== null
-      ? ({
-          type: 'arvlcd-confirmed-train',
-          stationId: waypoint.stationName,
-          ts: now,
-          environment: deriveEvidenceEnvironment(trip),
-          arvlcdTrainCode: activeLock.trainCode,
-          arvlCd: estimate.arvlCd,
-        } satisfies AdvanceEvidence)
-      : undefined;
+    // stamp / progress 누적) 자체는 SSoT 동의 후만 적용.
+    // #1665 — arvlCd=null (positions-fallback arrived) 경로를 'position-train' evidence로 마이그레이션.
+    // positionEntryFetchedAt=now: estimateBoardingLockArrival이 Seoul API를 직접 호출
+    // (15s in-memory cache 안)하므로 fresh snapshot. stale 가드는 30s 임계 — false reject 없음.
+    const arvlCdEvidence: AdvanceEvidence =
+      estimate.arvlCd !== null
+        ? {
+            type: 'arvlcd-confirmed-train',
+            stationId: waypoint.stationName,
+            ts: now,
+            environment: deriveEvidenceEnvironment(trip),
+            arvlcdTrainCode: activeLock.trainCode,
+            arvlCd: estimate.arvlCd,
+          }
+        : {
+            type: 'position-train',
+            stationId: waypoint.stationName,
+            ts: now,
+            environment: deriveEvidenceEnvironment(trip),
+            positionEntryFetchedAt: now,
+          };
     await advanceBoardingLockWaypoint(
       trip,
       waypoint,

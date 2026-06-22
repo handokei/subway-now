@@ -26,6 +26,15 @@
  *   #5 Train identity 게이트 — lock 활성 + arvlcd-confirmed-train evidence면 trainCode 일치 필수
  *   #6 Lockless arvlcd 단독 게이트 — lock 없는 trip에서 arvlcd-lockless 단독은 60s 윈도우 내
  *                                    strong evidence 1+개가 추가로 있어야 통과
+ *   #7 position-train jump/stale 게이트 — position-train evidence에만 적용 (#1665):
+ *      (a) Jump 가드: candidate stationId가 ssot.currentStationId 기준 hop 거리 ≥ 3 → blocked
+ *          ('position-train-jump'). express 9호선은 1-2 hop이 전형 → 3 미만 임계는 보수적.
+ *          lock 활성: lock.segmentStations 기준. lockless trip: ssot.passedStations +
+ *          [ssot.currentStationId] + trip.waypoints 기준(lock 없어도 지나온 역+앞으로 갈 역
+ *          순서로 hop 거리 산출). 두 역 중 하나라도 없으면 dormant(0) — false positive 방지.
+ *      (b) Stale 가드: positionEntryFetchedAt이 stamp돼 있고 evidence.ts - positionEntryFetchedAt >
+ *          30s → blocked('position-train-stale'). Seoul API 30s 폴링 주기와 동일 임계.
+ *          부재 시 dormant (backward compat).
  *
  * Seed override (E5)
  * ==================
@@ -108,6 +117,15 @@ export interface AdvanceEvidence {
   arrivalEntry?: ArrivalEntry;
   /** Seoul realtimePosition entry (caller forward — 본 함수는 type='position-train' weight로만 사용). */
   positionEntry?: PositionEntry;
+  /**
+   * #1665 — position-train evidence의 Seoul API 응답 적재 시각 (epoch ms).
+   *
+   * caller가 Seoul API fetch 시점의 `now`를 forward한다.
+   * 게이트 #7(b) stale 가드: evidence.ts - positionEntryFetchedAt > 30s이면 Seoul API 응답이
+   * 최신 cron cycle의 것이 아닌 stale snapshot으로 판단 → blocked('position-train-stale').
+   * 부재 시(레거시 caller) 게이트 dormant — backward compat 보장.
+   */
+  positionEntryFetchedAt?: number;
   /** WiFi SSID 원본 — 진단/observability stamp용. lookup은 caller가 수행. */
   wifiSsid?: string;
   /** consensusGate에 forward할 cellular vote (S10 #1543). */
@@ -127,7 +145,9 @@ export type AdvanceBlockReason =
   | 'env-consensus-fail'
   | 'time-only-forbidden'
   | 'train-mismatch'
-  | 'lockless-arvlcd-alone';
+  | 'lockless-arvlcd-alone'
+  | 'position-train-jump'
+  | 'position-train-stale';
 
 /** advance 호출 결과 — caller가 SSoT 후속 작업(fire 발사 등)을 진행할지 결정. */
 export interface AdvanceOutcome {
@@ -167,6 +187,52 @@ export interface WifiSsidEntry {
 export function mapEvidenceEnvironment(env: EvidenceEnvironment): StationEnvironment {
   if (env === 'hybrid') return 'mixed';
   return env;
+}
+
+/**
+ * #1665 — position-train jump 가드 hop 거리 임계.
+ *
+ * candidate stationId가 ssot.currentStationId 기준으로 이 값 초과의 hop을 뛰면 jump로 간주 →
+ * blocked('position-train-jump'). express 9호선도 1-2 hop이 전형; 2는 보수적 임계.
+ */
+export const POSITION_TRAIN_MAX_HOP = 2;
+
+/**
+ * #1665 — position-train stale 가드 임계 (ms).
+ *
+ * Seoul API realtimePosition 30s 폴링 주기와 동일. positionEntryFetchedAt이 stamp됐고
+ * evidence.ts - positionEntryFetchedAt > 이 값이면 stale snapshot → blocked('position-train-stale').
+ * 부재 시 게이트 dormant (backward compat).
+ */
+export const POSITION_TRAIN_STALE_THRESHOLD_MS = 30_000;
+
+/**
+ * #1665 — position-train evidence의 jump 거리 계산.
+ *
+ * `segmentStations` 리스트에서 currentStationId와 candidateStationId의 인덱스 차이로 hop 거리를 산출.
+ *
+ *   - 둘 중 하나라도 없음 → 0 (미지, 게이트 dormant — false positive 방지).
+ *   - candidate가 current보다 앞(역방향/중복) → 0.
+ *   - candidate가 current 이후 k 번째 → k 반환.
+ *
+ * 0을 반환하면 jump 판정을 건너뛴다 — 미지 역/lock 없는 trip은 false positive 방지 우선.
+ *
+ * @param segmentStations hop 순서 정렬 정차역 리스트
+ * @param currentStationId ssot.currentStationId
+ * @param candidateStationId advance 대상 stationId
+ */
+export function computePositionTrainHopDistance(
+  segmentStations: readonly string[],
+  currentStationId: string,
+  candidateStationId: string,
+): number {
+  const currentIdx = segmentStations.indexOf(currentStationId);
+  const candidateIdx = segmentStations.indexOf(candidateStationId);
+  // 미지 위치(segmentStations에 없음) — jump 판정 X
+  if (currentIdx < 0 || candidateIdx < 0) return 0;
+  // 역방향(이미 지남) 또는 same → 0
+  if (candidateIdx <= currentIdx) return 0;
+  return candidateIdx - currentIdx;
 }
 
 /**
@@ -354,6 +420,40 @@ export async function advanceTripPosition(
     const otherStrong = countStrongEvidence(ssot.motionEvidence, evidence.ts - 60_000);
     if (otherStrong < 1) {
       return { result: 'blocked', blockReason: 'lockless-arvlcd-alone', ssot };
+    }
+  }
+
+  // #7 position-train jump / stale 게이트 (#1665)
+  // Seoul API stale (30s 지연) 또는 trainCode 모호 시 잘못된 next waypoint advance 차단.
+  // (a) jump 가드: hop 거리 > POSITION_TRAIN_MAX_HOP → reject.
+  //     lock 활성: lock.segmentStations 기준.
+  //     lockless trip: ssot.passedStations + [ssot.currentStationId] + trip.waypoints 기준 —
+  //       lock 없어도 지나온 역+앞으로 갈 역 순서로 hop 거리 계산 가능.
+  //       두 역 중 하나라도 없으면 dormant(0) — false positive 방지.
+  // (b) stale 가드: positionEntryFetchedAt stamp 있고 age > 30s → reject.
+  //     부재(레거시 caller)는 dormant (backward compat).
+  if (evidence.type === 'position-train') {
+    const segmentForJump: readonly string[] =
+      lock !== undefined
+        ? lock.segmentStations
+        : [
+            ...ssot.passedStations,
+            ssot.currentStationId,
+            ...trip.waypoints.map((w) => w.stationName),
+          ];
+    const hopDist = computePositionTrainHopDistance(
+      segmentForJump,
+      ssot.currentStationId,
+      candidateStationId,
+    );
+    if (hopDist > POSITION_TRAIN_MAX_HOP) {
+      return { result: 'blocked', blockReason: 'position-train-jump', ssot };
+    }
+    if (
+      evidence.positionEntryFetchedAt !== undefined &&
+      evidence.ts - evidence.positionEntryFetchedAt > POSITION_TRAIN_STALE_THRESHOLD_MS
+    ) {
+      return { result: 'blocked', blockReason: 'position-train-stale', ssot };
     }
   }
 
