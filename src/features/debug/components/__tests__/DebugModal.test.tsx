@@ -117,6 +117,8 @@ const fusedReturnFixture = (overrides: Record<string, unknown> = {}) => ({
   undergroundSSOT: null,
   // #1447 — E4(#1437) 격리 후 별 채널. 기본값은 null(estimator 미산출).
   displayOnlyEstimate: null,
+  // #1678 — S9 accelerometer fingerprint. 기본값은 unknown(미지원/미수렴).
+  accelerometerPattern: 'unknown' as const,
   ...overrides,
 });
 const arrivalDefaults = {
@@ -161,6 +163,8 @@ const setupHookDefaults = () => {
     undergroundSSOT: null,
     // #1447 — E4(#1437) 격리 후 별 채널. 기본 setupHook은 estimator 미산출(null).
     displayOnlyEstimate: null,
+    // #1678 — S9 accelerometer fingerprint. 기본값은 unknown(미지원/미수렴).
+    accelerometerPattern: 'unknown',
   });
   mockUseArrivalInfo.mockReturnValue({ arrival: baseArrival, loading: false, isMock: false });
   mockUseSilentPushDiagnostics.mockReturnValue({

@@ -1377,6 +1377,9 @@ function DebugModalInner({
     // #1447 — E4(#1437) 격리 후 노출된 별 채널. strategy 라벨을 Trip 섹션 + Share dump에 wire-up.
     // null이면 fallback 라벨로 항상 표시(estimator 미산출 상태 명시).
     displayOnlyEstimate,
+    // #1678 — S9 accelerometer fingerprint vote 상태. 'automotive' = train 진동 env 1표.
+    // 'unknown' = 60s window 미수렴 또는 네이티브 모듈 미지원(EAS rebuild 전).
+    accelerometerPattern,
   } = useFusedNearestStation();
   // arc 길이 = trip의 hop 총 수. trip 미설정이면 0.
   const routeHopCount = arcStations.length;
@@ -1785,6 +1788,14 @@ function DebugModalInner({
             <KeyValue
               label="undergroundSSOT"
               value={undergroundSSOTActive ? 'active' : 'null'}
+              colors={colors}
+            />
+            {/* #1678 — S9 accelerometer fingerprint env vote. 'automotive' = train 진동 1표.
+                'unknown' = 60s window 미수렴 또는 네이티브 모듈 미포함(EAS rebuild 필요).
+                EAS rebuild 후에도 'unknown'이면 native 모듈 autolinking 실패 의심. */}
+            <KeyValue
+              label="accelPattern"
+              value={accelerometerPattern}
               colors={colors}
             />
             {differs && (
