@@ -67,6 +67,7 @@ import { ShareTripButton } from '../features/route/components/ShareTripButton';
 import { isDegenerateDestination } from '../features/route/utils/isDegenerateDestination';
 import { Toast } from '../shared/ui/Toast';
 import { useMisBoardingDetector } from '../features/route/hooks/useMisBoardingDetector';
+import { useTrainCodeMismatchDetector } from '../features/route/hooks/useTrainCodeMismatchDetector';
 import { useTrainPositions } from '../features/route/hooks/useTrainPositions';
 import { useTransferTrainList } from '../features/route/hooks/useTransferTrainList';
 import { useTransferAutoDetect } from '../features/route/hooks/useTransferAutoDetect';
@@ -174,6 +175,9 @@ export default function HomeScreen() {
   // #621: lock 전체도 전달 — 지하 GPS stale 시 시간 interpolation으로 ratchet forward.
   // 동일 store의 lock을 useBoardingLockController가 아래서 다시 소비하지만 selector라 churn 없음.
   const fusionBoardingLock = useBoardingLockStore((s) => s.lock);
+  // #1659 — train-code-mismatch release 시 reason stamp용. controller releaseLock은 () => void라
+  // breadcrumb reason을 전달할 수 없어 store를 직접 참조한다.
+  const releaseLockWithReason = useBoardingLockStore((s) => s.releaseLock);
   const lockedTrainCode = fusionBoardingLock?.trainCode ?? null;
   // #728 — CMMotionActivity 신호. 권한 요청/폴링은 hook 내부에서 lifecycle 관리.
   // 미지원/거절 시 false로 고정되어 기존 가드만 동작 (graceful fallback).
@@ -604,6 +608,24 @@ export default function HomeScreen() {
   // Toast의 5초 타이머 effect가 재설정된다(역 폴링 30s, 도착 갱신 등으로 리렌더 잦음).
   const handleMisBoardingToastDismiss = useCallback(() => setMisBoardingToastVisible(false), []);
   const handleMisBoardingModalClose = useCallback(() => setMisBoardingModalVisible(false), []);
+  // #1659: 같은 노선 다른 trainCode가 90s 지속 → lock 무효화 + 재선택 모달.
+  // useMisBoardingDetector(absent)와 달리 trains 배열에 다른 trainCode가 있을 때만 감지 —
+  // Seoul API stale(빈 배열) 오판 차단. lockLinePositions를 공유해 추가 폴링 비용 없음.
+  const { detected: trainCodeMismatchDetected } = useTrainCodeMismatchDetector({
+    lock: boardingLock,
+    positions: lockLinePositions,
+  });
+  const prevTrainCodeMismatchRef = useRef(false);
+  useEffect(() => {
+    if (trainCodeMismatchDetected && !prevTrainCodeMismatchRef.current) {
+      // lock 무효화 — breadcrumb에 reason='train-code-mismatch' stamp.
+      void releaseLockWithReason('train-code-mismatch');
+      // 사용자에게 재선택 UI 제시. 기존 MisBoardingReselectModal 재사용.
+      setMisBoardingToastVisible(true);
+      setMisBoardingModalVisible(true);
+    }
+    prevTrainCodeMismatchRef.current = trainCodeMismatchDetected;
+  }, [trainCodeMismatchDetected, releaseLockWithReason]);
   // #584 PR E: 활성 lock이 현재 leg의 transfer waypoint에 도달하면 다음 노선 도착 list 노출.
   const {
     context: transferContext,
