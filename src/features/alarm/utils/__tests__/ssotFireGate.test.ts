@@ -94,31 +94,59 @@ describe('evaluateSsotFireGate — mirror state × type matrix (#1572 T9)', () =
     });
   });
 
-  describe('mirror-stale (no-block, graceful — T10이 별도 staleness 차단 담당)', () => {
-    it('staleness 임계 초과 + station-passed 매칭 → no-block (mirror-stale)', async () => {
+  describe('mirror-stale × Gate A/B 분리 (#1645)', () => {
+    // #1645 — Gate A는 staleness 무관 always-check. alarmId 매칭은 mirror가 stale이어도 차단.
+    // Gate B는 staleness 안에만 적용 → stale 시 stationId 매칭이어도 no-block.
+    it('staleness 초과 + alarmId 매칭(Gate A) → blocked (staleness 무관)', async () => {
       mockGetItem.mockResolvedValue(
         makeMirror({ receivedAt: NOW - SSOT_FIRE_GATE_STALENESS_MS - 1 }),
       );
       const out = await evaluateSsotFireGate({
-        alarmId: 'aaa111',
-        stationId: '용마산',
+        alarmId: 'aaa111', // mirror.alarmEvents[0].alarmId와 매칭
+        stationId: 'X', // 다른 station
+        type: 'station-passed',
+        now: NOW,
+      });
+      expect(out).toEqual({ blocked: true, reason: 'gate-alarm-already-decided' });
+    });
+
+    it('staleness 초과 + Gate B 후보 (stationId 매칭, alarmId 미매칭) → no-block (mirror-stale)', async () => {
+      mockGetItem.mockResolvedValue(
+        makeMirror({ receivedAt: NOW - SSOT_FIRE_GATE_STALENESS_MS - 1 }),
+      );
+      const out = await evaluateSsotFireGate({
+        alarmId: 'different', // alarmId 미매칭 (Gate A pass)
+        stationId: '용마산', // mirror.passedStations 매칭이지만 stale → graceful skip
         type: 'station-passed',
         now: NOW,
       });
       expect(out).toEqual({ blocked: false, reason: 'mirror-stale' });
     });
 
-    it('staleness 경계(=)는 fresh로 판정 — block 가능', async () => {
+    it('staleness 경계(=)는 fresh로 판정 — Gate B block 가능', async () => {
       mockGetItem.mockResolvedValue(
         makeMirror({ receivedAt: NOW - SSOT_FIRE_GATE_STALENESS_MS }),
       );
       const out = await evaluateSsotFireGate({
-        alarmId: 'aaa111',
+        alarmId: 'different',
         stationId: '용마산',
         type: 'station-passed',
         now: NOW,
       });
       expect(out.blocked).toBe(true);
+    });
+
+    it('staleness 초과 + transfer type + alarmId 미매칭 → no-block (mirror-stale)', async () => {
+      mockGetItem.mockResolvedValue(
+        makeMirror({ receivedAt: NOW - SSOT_FIRE_GATE_STALENESS_MS - 1 }),
+      );
+      const out = await evaluateSsotFireGate({
+        alarmId: 'different',
+        stationId: 'X',
+        type: 'transfer',
+        now: NOW,
+      });
+      expect(out).toEqual({ blocked: false, reason: 'mirror-stale' });
     });
   });
 
