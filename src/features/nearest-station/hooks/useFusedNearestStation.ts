@@ -57,6 +57,9 @@ import { MAX_STATION_DISTANCE_KM } from '../../../shared/constants/location';
 import {
   BACKEND_SSOT_MIRROR_MAX_AGE_MS,
   DETECTION_FUSED_MAX_DISTANCE_KM,
+  GPS_DERIVED_ACCURACY_MAX_M,
+  GPS_DERIVED_FIX_MAX_AGE_MS,
+  GPS_DERIVED_ROUTE_MATCH_MAX_KM,
   MAX_ACTIVE_LINES,
   MAX_FUSION_DELTA_KM,
   MAX_FUSION_DISTANCE_KM,
@@ -885,6 +888,46 @@ export function useFusedNearestStation(
     barometerSubsurface === true &&
     boardingLock != null;
 
+  // #1657 — GPS-derived advance fast-path (지상 lock 활성 보완).
+  //
+  // PR #1646 보완 — 지상 lock 활성 + GPS 신선 케이스.
+  // 지상(subsurface===false)에서 GPS가 신선(accuracy ≤ 50m, age ≤ 30s)하면
+  // GPS-nearest station을 backend SSoT mirror보다 1순위로 채택.
+  // backend mirror 10-30s lag를 GPS 실시간 신호로 우회한다.
+  //
+  // 4-gate 3-of-3 합의 (false positive 방어 — ADR-010 두 실패 모드 동급):
+  //   1. boardingLock != null — 사용자 명시 의향 trip 한정 (lockless trip 미적용).
+  //   2. barometerSubsurface === false — 지상 환경 명시. 지하에서는 PR #1646이 담당.
+  //   3. GPS 신선 — accuracy ≤ GPS_DERIVED_ACCURACY_MAX_M(50m) AND fix age ≤ 30s.
+  //      stale GPS(lastFixAtMs === null)는 게이트 실패 → 기존 cascade.
+  //   4. 노선 정합 — candidates[0].station.line === boardingLock.boardingLine AND
+  //      candidates[0].distanceKm ≤ GPS_DERIVED_ROUTE_MATCH_MAX_KM(100m).
+  //      옆 노선 역 drift(GPS 정확도 한계로 인접 노선 역이 candidates[0]가 되는 케이스) 차단.
+  //
+  // candidates[0]는 GPS userLocation 기준 최근접 역(haversine 정렬, allowedLines 필터 적용).
+  // boardingLine 일치 + 100m 이내이면 GPS 좌표가 해당 역에 있다고 판단 가능.
+  //
+  // GPS 결정 권한 X 룰 정합 (memory/feedback_no_gps_for_decision.md):
+  //   - 지상(subsurface===false 명시)에서만 적용 — 지하 GPS는 WiFi/cell 삼각측량 fallback일
+  //     가능성이 높아 결정 권한 금지 룰 적용.
+  //   - 이 tier는 지상 open-sky GPS fix에서만 활성되므로 룰 위반 아님.
+  //
+  // 트레이드오프 완화:
+  //   - GPS drift false advance → accuracy 50m + boardingLine 정합 100m 이중 gate.
+  //   - 지상↔지하 환경 전환 race → subsurface false → cascade 진입 X (자연 fallback).
+  //   - 사용자 하차 후 lock 잔존 → useMisBoardingDetector 90s absent 가드 (별도 seam).
+  const gpsTopCandidate = candidates[0] ?? null;
+  const gpsDerivedFastPath =
+    boardingLock != null &&
+    barometerSubsurface === false &&
+    gps.accuracyMeters !== null &&
+    gps.accuracyMeters <= GPS_DERIVED_ACCURACY_MAX_M &&
+    gps.lastFixAtMs !== null &&
+    Date.now() - gps.lastFixAtMs <= GPS_DERIVED_FIX_MAX_AGE_MS &&
+    gpsTopCandidate !== null &&
+    gpsTopCandidate.station.line === boardingLock.boardingLine &&
+    gpsTopCandidate.distanceKm <= GPS_DERIVED_ROUTE_MATCH_MAX_KM;
+
   let result: NearestStationResult | null;
   let confidence: FusionConfidence;
   let source: FusionSource;
@@ -895,11 +938,19 @@ export function useFusedNearestStation(
     result = positionTrainResult!;
     confidence = 'boarding-lock';
     source = 'boarding-lock';
+  } else if (gpsDerivedFastPath) {
+    // #1657 — 지상 + GPS 신선 + 노선 정합 4-gate 합의 시 GPS-derived station 1순위.
+    // backend SSoT mirror lag(10-30s)를 지상 open-sky GPS 실시간 신호로 우회한다.
+    // candidates[0]는 이미 boardingLine + 100m 게이트를 통과 — gps-only와 달리 노선 정합 강화.
+    result = gpsTopCandidate!;
+    confidence = 'gps-only';
+    source = 'gps';
   } else if (backendSsotAccepts) {
     // #1568 (T8b) — backend SSoT 권위 mirror. backend advance 게이트가
     // ADR-017 6단(seed/repeat/motion-stop/cross-validation 등)을 이미 통과한 결과이므로
     // device-side cascade tier보다 신뢰도가 높다. lock 활성/lockless 모두 동일 우선순위.
     // #1646 — 3-of-3 합의(lock+지하+lockMatch) 시 positionTrain에 양보 (위 분기).
+    // #1657 — 지상 GPS 신선 합의 시 gpsDerivedFastPath에 양보 (위 분기).
     result = { station: ssotStation!, distanceKm: 0 };
     confidence = 'backend-ssot';
     source = 'backend-ssot';
