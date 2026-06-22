@@ -681,7 +681,33 @@ describe('DebugModal', () => {
     expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(2);
   });
 
-    it('unmount 시 AppState listener를 정리한다', async () => {
+  it('#1687: autoLock(1h) row — 엔트리 없을 때 "—" 표기', async () => {
+    mockGetAlarmLog.mockResolvedValue([]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    expect(screen.getByTestId('debug-autolock-telemetry-1h')).toBeTruthy();
+    expect(screen.getByTestId('debug-autolock-telemetry-1h').props.children).toBe('—');
+  });
+
+  it('#1687: autoLock(1h) row — success/ambiguous/empty/failed 분포 표기', async () => {
+    const now = Date.now();
+    mockGetAlarmLog.mockResolvedValue([
+      { ts: now - 1_000, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+      { ts: now - 2_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-ambiguity' },
+      { ts: now - 3_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-arrivals-empty' },
+      { ts: now - 4_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-lock-failed' },
+    ]);
+    renderWithTheme(<DebugModal onClose={jest.fn()} />);
+    await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
+    const el = screen.getByTestId('debug-autolock-telemetry-1h');
+    expect(el).toBeTruthy();
+    expect(el.props.children).toContain('ok=1');
+    expect(el.props.children).toContain('amb=1');
+    expect(el.props.children).toContain('empty=1');
+    expect(el.props.children).toContain('fail=1');
+  });
+
+  it('unmount 시 AppState listener를 정리한다', async () => {
     const { unmount } = renderWithTheme(<DebugModal onClose={jest.fn()} />);
     await waitFor(() => expect(mockGetAlarmLog).toHaveBeenCalled());
     unmount();

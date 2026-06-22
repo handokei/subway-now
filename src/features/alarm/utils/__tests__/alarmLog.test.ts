@@ -70,6 +70,7 @@ import {
   countBoardingPromptByWindow,
   logBoardingPromptAutoLock,
   countBoardingPromptAutoLockOutcomes,
+  countAutoLockReasonsByWindow,
   logScheduleSkipped,
   ALARM_LOG_BUFFER_SIZE,
   type AlarmLogEntry,
@@ -2068,6 +2069,74 @@ describe('alarmLog', () => {
       const counts = countBoardingPromptAutoLockOutcomes(entries);
       expect(counts['autolock-success']).toBe(0);
       expect(counts['autolock-no-trip']).toBe(0);
+    });
+  });
+
+  describe('countAutoLockReasonsByWindow (#1687)', () => {
+    it('windowMs 이후 엔트리만 집계한다', () => {
+      const now = 10_000;
+      const entries: AlarmLogEntry[] = [
+        // 윈도우 안 (now - 5000 = 5000, ts=6000 > 5000)
+        { ts: 6_000, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+        // 윈도우 경계 밖 (ts=5000 <= 5000)
+        { ts: 5_000, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+        // 윈도우 밖 (ts=4000 < 5000)
+        { ts: 4_000, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-ambiguity' },
+      ];
+      const counts = countAutoLockReasonsByWindow(entries, 5_000, now);
+      expect(counts['autolock-success']).toBe(1);
+      expect(counts['autolock-ambiguity']).toBe(0);
+    });
+
+    it('reason별 분포를 올바르게 집계한다', () => {
+      const now = 100_000;
+      const entries: AlarmLogEntry[] = [
+        { ts: 99_000, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+        { ts: 99_001, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-ambiguity' },
+        { ts: 99_002, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-arrivals-empty' },
+        { ts: 99_003, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-no-trip' },
+        { ts: 99_004, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-station-lookup' },
+        { ts: 99_005, source: 'boarding-prompt', outcome: 'suppressed', reason: 'autolock-lock-failed' },
+      ];
+      const counts = countAutoLockReasonsByWindow(entries, 10_000, now);
+      expect(counts).toEqual({
+        'autolock-success': 1,
+        'autolock-ambiguity': 1,
+        'autolock-arrivals-empty': 1,
+        'autolock-no-trip': 1,
+        'autolock-station-lookup': 1,
+        'autolock-lock-failed': 1,
+      });
+    });
+
+    it('boarding-prompt 외 source는 무시한다', () => {
+      const now = 10_000;
+      const entries: AlarmLogEntry[] = [
+        { ts: 9_000, source: 'fg', outcome: 'fired', reason: 'autolock-success' },
+        { ts: 9_001, source: 'boarding-prompt', outcome: 'fired', reason: 'autolock-success' },
+      ];
+      const counts = countAutoLockReasonsByWindow(entries, 5_000, now);
+      expect(counts['autolock-success']).toBe(1);
+    });
+
+    it('엔트리 없을 때 모든 카운터가 0', () => {
+      const counts = countAutoLockReasonsByWindow([], 3_600_000);
+      expect(counts['autolock-success']).toBe(0);
+      expect(counts['autolock-ambiguity']).toBe(0);
+      expect(counts['autolock-arrivals-empty']).toBe(0);
+      expect(counts['autolock-no-trip']).toBe(0);
+      expect(counts['autolock-station-lookup']).toBe(0);
+      expect(counts['autolock-lock-failed']).toBe(0);
+    });
+
+    it('reason 없는 entry(발사 빈도 #1021)는 집계에서 제외한다', () => {
+      const now = 10_000;
+      const entries: AlarmLogEntry[] = [
+        // reason 없는 발사 빈도 entry — autolock 집계 제외
+        { ts: 9_000, source: 'boarding-prompt', outcome: 'fired' },
+      ];
+      const counts = countAutoLockReasonsByWindow(entries, 5_000, now);
+      expect(counts['autolock-success']).toBe(0);
     });
   });
 
