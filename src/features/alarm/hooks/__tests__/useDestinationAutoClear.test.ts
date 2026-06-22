@@ -7,8 +7,10 @@ import {
 import type { Station } from '../../../../shared/types/station';
 import type { StationArrival, ArrivalInfo } from '../../../../shared/types/arrival';
 import {
+  DESTINATION_NEARBY_RADIUS_M,
   NEAR_STATION_RADIUS_M,
   STATIONARY_THRESHOLD_MS,
+  STATIONARY_TRIP_END_THRESHOLD_MS,
 } from '../../../../shared/constants/arrivalDetect';
 
 const mockUseArrivalInfo = jest.fn();
@@ -79,6 +81,9 @@ function baseInputs(overrides: Partial<UseDestinationAutoClearInputs> = {}): Use
     destination,
     userLocation: { lat: destination.lat, lng: destination.lng },
     motionStationary: false,
+    // #1647 — 기존 arvlCd 게이트 테스트는 lock 무관 → lockActive 기본 false로 후방 호환 보장.
+    // stationary 게이트 테스트만 명시적으로 true로 override.
+    lockActive: false,
     onAutoClear: jest.fn(),
     ...overrides,
   };
@@ -186,7 +191,7 @@ describe('useDestinationAutoClear', () => {
     // #1058: cleared station snapshot이 인자로 전달돼야 함 (undo 복원용).
     expect(onAutoClear).toHaveBeenCalledWith(destination);
     expect(mockLoggerInfo).toHaveBeenCalledWith(
-      'destination=강남 자동 해제 (confidence=high)',
+      'destination=강남 자동 해제 (confidence=high, gate=arrival)',
     );
   });
 
@@ -295,5 +300,152 @@ describe('useDestinationAutoClear', () => {
       rerender({ ...initial, userLocation: { ...near, lat: near.lat + 0.00001 } });
     });
     expect(onAutoClear).toHaveBeenCalledTimes(1);
+  });
+
+  // #1647 — Seoul API-independent stationary 게이트 (3-of-3: destination 100m + 5min + lock 활성)
+  describe('#1647 stationary 게이트 (API-independent fallback)', () => {
+    it('arvlCd 없고 lockActive=true + 100m + 5min stationary → 자동 종료', () => {
+      // arrival=null로 arvlCd 게이트 fail. stationary 게이트만으로 fire.
+      setArrival(null);
+      const onAutoClear = jest.fn();
+      const initial: UseDestinationAutoClearInputs = {
+        ...baseInputs(),
+        onAutoClear,
+        motionStationary: true,
+        lockActive: true,
+      };
+      const { rerender } = withDateNow(T0, () =>
+        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
+          initialProps: initial,
+        }),
+      );
+      withDateNow(T0 + STATIONARY_TRIP_END_THRESHOLD_MS, () => {
+        rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
+      });
+      expect(onAutoClear).toHaveBeenCalledTimes(1);
+      expect(onAutoClear).toHaveBeenCalledWith(destination);
+      expect(mockLoggerInfo).toHaveBeenCalledWith(
+        'destination=강남 자동 해제 (confidence=high, gate=stationary)',
+      );
+    });
+
+    it('lockActive=false면 stationary 게이트 차단 — lockless trip 보호', () => {
+      setArrival(null);
+      const onAutoClear = jest.fn();
+      const initial: UseDestinationAutoClearInputs = {
+        ...baseInputs(),
+        onAutoClear,
+        motionStationary: true,
+        lockActive: false,
+      };
+      const { rerender } = withDateNow(T0, () =>
+        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
+          initialProps: initial,
+        }),
+      );
+      withDateNow(T0 + STATIONARY_TRIP_END_THRESHOLD_MS, () => {
+        rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
+      });
+      expect(onAutoClear).not.toHaveBeenCalled();
+    });
+
+    it('userLocation이 100m 밖이면 stationary 게이트도 차단', () => {
+      setArrival(null);
+      // 200m offset (1 deg lat ≈ 111km → 0.002 ≈ 222m)
+      const far = { lat: destination.lat + 0.002, lng: destination.lng };
+      const onAutoClear = jest.fn();
+      const initial: UseDestinationAutoClearInputs = {
+        ...baseInputs({ userLocation: far }),
+        onAutoClear,
+        motionStationary: true,
+        lockActive: true,
+      };
+      const { rerender } = withDateNow(T0, () =>
+        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
+          initialProps: initial,
+        }),
+      );
+      withDateNow(T0 + STATIONARY_TRIP_END_THRESHOLD_MS, () => {
+        rerender({ ...initial, userLocation: { ...far, lat: far.lat + 0.00001 } });
+      });
+      expect(onAutoClear).not.toHaveBeenCalled();
+    });
+
+    it('stationary 5min 미달이면 fire 안 함', () => {
+      setArrival(null);
+      const onAutoClear = jest.fn();
+      const initial: UseDestinationAutoClearInputs = {
+        ...baseInputs(),
+        onAutoClear,
+        motionStationary: true,
+        lockActive: true,
+      };
+      const { rerender } = withDateNow(T0, () =>
+        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
+          initialProps: initial,
+        }),
+      );
+      // 4min만 경과 — 5min 임계 미달
+      withDateNow(T0 + STATIONARY_TRIP_END_THRESHOLD_MS - 60_000, () => {
+        rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
+      });
+      expect(onAutoClear).not.toHaveBeenCalled();
+    });
+
+    it('두 게이트 동시 만족 시 arrival 게이트 우선 — log gate=arrival', () => {
+      // arvlCd ARRIVED + 50m 안 + 60s stationary → arrival 게이트 first 통과.
+      // (stationary 게이트도 5min 후 만족하지만 firedRef로 막힘)
+      setArrival(arrivalWithCodes([1])); // ARRIVED
+      const onAutoClear = jest.fn();
+      const initial: UseDestinationAutoClearInputs = {
+        ...baseInputs(),
+        onAutoClear,
+        motionStationary: true,
+        lockActive: true,
+      };
+      const { rerender } = withDateNow(T0, () =>
+        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
+          initialProps: initial,
+        }),
+      );
+      // 60s만 경과 — arrival 게이트는 통과, stationary는 미통과
+      withDateNow(T0 + STATIONARY_THRESHOLD_MS, () => {
+        rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
+      });
+      expect(onAutoClear).toHaveBeenCalledTimes(1);
+      expect(mockLoggerInfo).toHaveBeenCalledWith(
+        'destination=강남 자동 해제 (confidence=high, gate=arrival)',
+      );
+    });
+
+    it('한 trip에서 stationary 게이트도 1회만 발사 — firedRef로 차단', () => {
+      setArrival(null);
+      const onAutoClear = jest.fn();
+      const initial: UseDestinationAutoClearInputs = {
+        ...baseInputs(),
+        onAutoClear,
+        motionStationary: true,
+        lockActive: true,
+      };
+      const { rerender } = withDateNow(T0, () =>
+        renderHook((p: UseDestinationAutoClearInputs) => useDestinationAutoClear(p), {
+          initialProps: initial,
+        }),
+      );
+      withDateNow(T0 + STATIONARY_TRIP_END_THRESHOLD_MS, () => {
+        rerender({ ...initial, userLocation: { lat: destination.lat + 0.00001, lng: destination.lng } });
+      });
+      expect(onAutoClear).toHaveBeenCalledTimes(1);
+      // 같은 destination + 추가 update → fired ref 차단
+      withDateNow(T0 + STATIONARY_TRIP_END_THRESHOLD_MS + 30_000, () => {
+        rerender({ ...initial, userLocation: { lat: destination.lat + 0.00002, lng: destination.lng } });
+      });
+      expect(onAutoClear).toHaveBeenCalledTimes(1);
+    });
+
+    it('100m 안 + lockActive 안전 확인 — DESTINATION_NEARBY_RADIUS_M(100m) sanity', () => {
+      expect(DESTINATION_NEARBY_RADIUS_M).toBe(100);
+      expect(STATIONARY_TRIP_END_THRESHOLD_MS).toBe(5 * 60 * 1_000);
+    });
   });
 });

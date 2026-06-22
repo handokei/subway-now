@@ -1,10 +1,12 @@
 import { ARRIVAL_CODE } from '../../../../shared/constants/arrivalCodes';
 import {
+  DESTINATION_NEARBY_RADIUS_M,
   NEAR_STATION_RADIUS_M,
   STATIONARY_THRESHOLD_MS,
+  STATIONARY_TRIP_END_THRESHOLD_MS,
 } from '../../../../shared/constants/arrivalDetect';
 import type { Station } from '../../../../shared/types/station';
-import { detectDestinationArrival } from '../destinationArrivalDetect';
+import { detectDestinationArrival, detectStationaryTripEnd } from '../destinationArrivalDetect';
 
 const DESTINATION: Station = {
   id: '0150',
@@ -159,5 +161,136 @@ describe('detectDestinationArrival', () => {
   it('상수 export 확인 — 회귀 게이트', () => {
     expect(NEAR_STATION_RADIUS_M).toBe(50);
     expect(STATIONARY_THRESHOLD_MS).toBe(60_000);
+  });
+});
+
+describe('detectStationaryTripEnd', () => {
+  it('3-of-3 합의 만족(destination 100m + 5min stationary + lock 활성) → high', () => {
+    const result = detectStationaryTripEnd({
+      destinationStation: DESTINATION,
+      userLocation: AT_DESTINATION,
+      stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS,
+      lockActive: true,
+    });
+    expect(result).toEqual({ shouldAutoClear: true, confidence: 'high' });
+  });
+
+  it('lockActive=false → 자동 종료 차단 (lockless trip 보호)', () => {
+    const result = detectStationaryTripEnd({
+      destinationStation: DESTINATION,
+      userLocation: AT_DESTINATION,
+      stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS,
+      lockActive: false,
+    });
+    expect(result).toEqual({ shouldAutoClear: false, confidence: 'low' });
+  });
+
+  it('destinationStation 없으면 low', () => {
+    const result = detectStationaryTripEnd({
+      destinationStation: null,
+      userLocation: AT_DESTINATION,
+      stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS,
+      lockActive: true,
+    });
+    expect(result).toEqual({ shouldAutoClear: false, confidence: 'low' });
+  });
+
+  it('destinationStation undefined도 low', () => {
+    const result = detectStationaryTripEnd({
+      destinationStation: undefined,
+      userLocation: AT_DESTINATION,
+      stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS,
+      lockActive: true,
+    });
+    expect(result.shouldAutoClear).toBe(false);
+    expect(result.confidence).toBe('low');
+  });
+
+  it('userLocation 없으면 low', () => {
+    const result = detectStationaryTripEnd({
+      destinationStation: DESTINATION,
+      userLocation: null,
+      stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS,
+      lockActive: true,
+    });
+    expect(result).toEqual({ shouldAutoClear: false, confidence: 'low' });
+  });
+
+  it('userLocation undefined도 low', () => {
+    const result = detectStationaryTripEnd({
+      destinationStation: DESTINATION,
+      userLocation: undefined,
+      stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS,
+      lockActive: true,
+    });
+    expect(result.shouldAutoClear).toBe(false);
+    expect(result.confidence).toBe('low');
+  });
+
+  it('destination 100m 밖 → low (환승역/인접역 false fire 차단)', () => {
+    const result = detectStationaryTripEnd({
+      destinationStation: DESTINATION,
+      userLocation: FAR_FROM_DESTINATION,
+      stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS,
+      lockActive: true,
+    });
+    expect(result).toEqual({ shouldAutoClear: false, confidence: 'low' });
+  });
+
+  it('destination 100m 안 + lock + 정지 시간 부족 → medium', () => {
+    const result = detectStationaryTripEnd({
+      destinationStation: DESTINATION,
+      userLocation: AT_DESTINATION,
+      stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS - 1,
+      lockActive: true,
+    });
+    expect(result).toEqual({ shouldAutoClear: false, confidence: 'medium' });
+  });
+
+  it('stationaryDurationMs null이면 medium', () => {
+    const result = detectStationaryTripEnd({
+      destinationStation: DESTINATION,
+      userLocation: AT_DESTINATION,
+      stationaryDurationMs: null,
+      lockActive: true,
+    });
+    expect(result).toEqual({ shouldAutoClear: false, confidence: 'medium' });
+  });
+
+  it('stationaryDurationMs undefined도 medium', () => {
+    const result = detectStationaryTripEnd({
+      destinationStation: DESTINATION,
+      userLocation: AT_DESTINATION,
+      stationaryDurationMs: undefined,
+      lockActive: true,
+    });
+    expect(result).toEqual({ shouldAutoClear: false, confidence: 'medium' });
+  });
+
+  it('정확히 DESTINATION_NEARBY_RADIUS_M 경계 직전(99m)은 통과', () => {
+    // 위도 1m ≈ 0.0000090 도. 99m ≈ 0.000891 도 (위도축).
+    const nearEdge = { lat: DESTINATION.lat + 0.00089, lng: DESTINATION.lng };
+    const result = detectStationaryTripEnd({
+      destinationStation: DESTINATION,
+      userLocation: nearEdge,
+      stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS,
+      lockActive: true,
+    });
+    expect(result.shouldAutoClear).toBe(true);
+  });
+
+  it('상수 export 확인 — 회귀 게이트', () => {
+    expect(DESTINATION_NEARBY_RADIUS_M).toBe(100);
+    expect(STATIONARY_TRIP_END_THRESHOLD_MS).toBe(5 * 60 * 1_000);
+  });
+
+  it('lockActive와 destination 동시 조건 — destination null이면 lock 무관하게 low', () => {
+    const result = detectStationaryTripEnd({
+      destinationStation: null,
+      userLocation: AT_DESTINATION,
+      stationaryDurationMs: STATIONARY_TRIP_END_THRESHOLD_MS,
+      lockActive: false,
+    });
+    expect(result.shouldAutoClear).toBe(false);
   });
 });

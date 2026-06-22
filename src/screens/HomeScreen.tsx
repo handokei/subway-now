@@ -562,10 +562,15 @@ export default function HomeScreen() {
     setAutoDisembarkToast(null);
   }, [autoDisembarkToast, setDestination]);
   const handleAutoDisembarkDismiss = useCallback(() => setAutoDisembarkToast(null), []);
+  // #1647 — boardingLock 활성 시 API-independent fallback 게이트 활성화.
+  // Seoul Arrival API outage / 지하 dead zone에서 기존 arvlCd 게이트가 fire 0건이라
+  // 좀비 trip(10.5h evidence) + V5/X8/X9 회귀 발생. 5min stationary + 100m + lock 활성
+  // 3-of-3 합의로 device self-contained 자동 종료.
   useDestinationAutoClear({
     destination,
     userLocation,
     motionStationary,
+    lockActive: Boolean(boardingLock),
     onAutoClear: handleAutoDisembark,
   });
   // #584 PR D3: lock.boardingLine 위치 데이터를 별도 구독 — fusion 캐시와 dedup되어 추가 비용 없음.
