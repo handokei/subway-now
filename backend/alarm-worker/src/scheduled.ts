@@ -2584,6 +2584,9 @@ async function maybeBindLocklessTrainCode(
     // #1614 Phase B — self-poll 결과를 attemptAutoLock 에 forward. 함수 내부에서 trainCode 결정
     // 직후 cross-match 후 consensusGate 입력으로 positionTrainAgreement 전달.
     selfPollPositions: selfPollPositions?.positions,
+    // #1667 (ADR-015 strongDB) — 마지막 position point의 WiFi SSID 매핑 역명 forward.
+    // undefined(iOS WiFi 미연결/Android/시리즈 없음) 시 consensusGate가 자연 false fallback.
+    wifiSsidStationName: fusion.series[fusion.series.length - 1]?.wifiSsidStationName,
   });
   if (autoLockResult.confidenceTrace && env.TELEMETRY) {
     recordAutoLockConfidence(env.TELEMETRY, trip.token, autoLockResult.confidenceTrace);
@@ -3031,6 +3034,9 @@ export async function evaluateAndMaybeFireBoardingPrompt(
       // #1536 (S3) — environment + gateOutcome forward. 환경 분기 consensusGate 강제.
       environment,
       gateOutcome: outcome,
+      // #1667 (ADR-015 strongDB) — 마지막 position point의 WiFi SSID 매핑 역명 forward.
+      // undefined(iOS WiFi 미연결/Android/시리즈 없음) 시 consensusGate가 자연 false fallback.
+      wifiSsidStationName: fusion.series[fusion.series.length - 1]?.wifiSsidStationName,
     });
     // #1171 — RC1 confidence gate가 평가된 경우(arvlCd=2 branch) score 분포를 AE에 적재.
     // 1주 운영 후 본 분포로 AUTO_LOCK_CONFIDENCE_THRESHOLD 튜닝 결정.

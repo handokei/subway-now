@@ -1788,6 +1788,54 @@ describe('POST /position (#819)', () => {
     });
   });
 
+  describe('#1667 (ADR-015 strongDB) — wifiSsidStationName 옵션 필드', () => {
+    const BASE_POS = {
+      token: 'tok-wifi',
+      lat: 1,
+      lng: 2,
+      accuracy: 5,
+      ts: 1234,
+      motion: 'walking' as const,
+    };
+
+    it('비어있지 않은 문자열 → point.wifiSsidStationName에 set', async () => {
+      const env = makeKvEnv();
+      const res = await post(
+        '/position',
+        { ...BASE_POS, wifiSsidStationName: '강남' },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const stored = JSON.parse(
+        (await env.TRIPS.get('pos:tok-wifi'))!,
+      ) as Array<Record<string, unknown>>;
+      expect(stored[0].wifiSsidStationName).toBe('강남');
+    });
+
+    it('빈 문자열 → undefined로 graceful skip (payload 거부 X)', async () => {
+      const env = makeKvEnv();
+      const res = await post(
+        '/position',
+        { ...BASE_POS, wifiSsidStationName: '' },
+        env,
+      );
+      expect(res.status).toBe(200);
+      const stored = JSON.parse(
+        (await env.TRIPS.get('pos:tok-wifi'))!,
+      ) as Array<Record<string, unknown>>;
+      expect(stored[0].wifiSsidStationName).toBeUndefined();
+    });
+
+    it('필드 없음 → undefined (회귀 없음)', async () => {
+      const env = makeKvEnv();
+      await post('/position', BASE_POS, env);
+      const stored = JSON.parse(
+        (await env.TRIPS.get('pos:tok-wifi'))!,
+      ) as Array<Record<string, unknown>>;
+      expect(stored[0].wifiSsidStationName).toBeUndefined();
+    });
+  });
+
   describe('#1534 (S1, T9b, ADR-016) — response embed lockSuggestion + originStationId', () => {
     const BASE_POS = {
       token: 'tok-ls',

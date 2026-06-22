@@ -113,6 +113,16 @@ jest.mock('../../../../shared/utils/logger', () => ({
   }),
 }));
 
+// ── #1667 WiFi SSID 모킹 ──
+const mockGetCurrentWifiSsid = jest.fn<Promise<string | null>, []>();
+jest.mock('../../utils/wifiSsidNative', () => ({
+  getCurrentWifiSsid: () => mockGetCurrentWifiSsid(),
+}));
+const mockLookupStationBySsid = jest.fn<{ name: string } | null, [string | null | undefined]>();
+jest.mock('../../utils/wifiSsidLookup', () => ({
+  lookupStationBySsid: (ssid: string | null | undefined) => mockLookupStationBySsid(ssid),
+}));
+
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { AlarmEvent } from '../../../../shared/types/alarm';
 // 모듈 import — defineTask가 이 시점에 호출되어 global에 콜백이 저장됨
@@ -214,6 +224,9 @@ describe('backgroundLocationTask defineTask 콜백', () => {
     mockGetBoardingLock.mockResolvedValue(null);
     mockEvaluateBackgroundTransferSwap.mockResolvedValue({ fired: false });
     mockFindNearestStations.mockReturnValue(null);
+    // #1667 기본값: WiFi 미연결(null) → wifiSsidStationName undefined
+    mockGetCurrentWifiSsid.mockResolvedValue(null);
+    mockLookupStationBySsid.mockReturnValue(null);
   });
 
   it('defineTask가 올바른 태스크 이름으로 등록된다', () => {
@@ -1031,6 +1044,67 @@ describe('backgroundLocationTask defineTask 콜백', () => {
 
       expect(mockUploadPosition).toHaveBeenCalledWith(expect.objectContaining({ motion: 'stationary' }));
       expect(mockProcessLocationUpdate).not.toHaveBeenCalled();
+    });
+
+    describe('#1667 (ADR-015 strongDB wire) — wifiSsidStationName forward', () => {
+      function stubApnsToken(token: string): void {
+        (AsyncStorage.getItem as jest.Mock)
+          .mockResolvedValueOnce(JSON.stringify(mockDestination))
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce(null) // BG_LAST_FIX_KEY
+          .mockResolvedValueOnce(token); // APNS_TOKEN_KEY
+      }
+
+      it('WiFi 매칭 성공 → uploadPosition에 wifiSsidStationName 포함', async () => {
+        stubApnsToken('apns-tok-wifi');
+        mockGetCurrentWifiSsid.mockResolvedValue('T_subway_gangnam_01');
+        mockLookupStationBySsid.mockReturnValue({ name: '강남' });
+
+        const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+        await taskCallback({ data: { locations: [loc] }, error: null });
+
+        expect(mockUploadPosition).toHaveBeenCalledWith(
+          expect.objectContaining({ wifiSsidStationName: '강남' }),
+        );
+      });
+
+      it('WiFi 미연결(null) → uploadPosition에 wifiSsidStationName 없음', async () => {
+        stubApnsToken('apns-tok-wifi');
+        mockGetCurrentWifiSsid.mockResolvedValue(null);
+        mockLookupStationBySsid.mockReturnValue(null);
+
+        const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+        await taskCallback({ data: { locations: [loc] }, error: null });
+
+        const call = mockUploadPosition.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+        expect(call?.wifiSsidStationName).toBeUndefined();
+      });
+
+      it('WiFi SSID 매핑 미일치 → uploadPosition에 wifiSsidStationName 없음', async () => {
+        stubApnsToken('apns-tok-wifi');
+        mockGetCurrentWifiSsid.mockResolvedValue('unknown-ssid');
+        mockLookupStationBySsid.mockReturnValue(null);
+
+        const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+        await taskCallback({ data: { locations: [loc] }, error: null });
+
+        const call = mockUploadPosition.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+        expect(call?.wifiSsidStationName).toBeUndefined();
+      });
+
+      it('getCurrentWifiSsid throw → graceful, wifiSsidStationName 없이 uploadPosition 정상 호출', async () => {
+        stubApnsToken('apns-tok-wifi');
+        mockGetCurrentWifiSsid.mockRejectedValue(new Error('wifi error'));
+
+        const loc = makeLocation(37.498, 127.028, { accuracy: 10 });
+        await taskCallback({ data: { locations: [loc] }, error: null });
+
+        expect(mockUploadPosition).toHaveBeenCalled();
+        const call = mockUploadPosition.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+        expect(call?.wifiSsidStationName).toBeUndefined();
+      });
     });
   });
 

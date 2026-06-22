@@ -614,3 +614,103 @@ describe('attemptAutoLock #1614 Phase B selfPollPositions wire (S4)', () => {
     expect(lock?.trainCode).toBe('T1');
   });
 });
+
+/**
+ * #1667 (ADR-015 strongDB wire) — wifiSsidStationName → wifiSsidMatch forward.
+ *
+ * targetWaypoint.stationName = '역삼'. wifiSsidStationName이 '역삼'이면 wifiSsidMatch=true → strongDB.
+ * 다른 역명 / undefined → wifiSsidMatch false/undefined → strongDB 비활성.
+ */
+function callAutoLockWithWifi(
+  arrivalEntry: ArrivalEntry,
+  wifiSsidStationName: string | undefined,
+  opts: {
+    environment?: Parameters<typeof attemptAutoLock>[0]['environment'];
+    gateOutcome?: Parameters<typeof attemptAutoLock>[0]['gateOutcome'];
+  } = {},
+) {
+  return attemptAutoLock({
+    trip: makeTrip(),
+    targetWaypoint: target, // stationName='역삼'
+    originStation: '강남',
+    direction: 'up',
+    seoul: makeSeoul([arrivalEntry]),
+    now: NOW,
+    environment: opts.environment,
+    gateOutcome: opts.gateOutcome,
+    wifiSsidStationName,
+  });
+}
+
+describe('attemptAutoLock #1667 wifiSsidStationName → strongDB wire', () => {
+  it.each([
+    {
+      label: 'wifiSsidStationName 일치(역삼) + arvlCd 1 → strongDB pass (underground, base gate fail)',
+      wifi: '역삼',
+      arvlCd: 1,
+      expected: 'lock' as const,
+    },
+    {
+      label: 'wifiSsidStationName 불일치(강남) + arvlCd 1 → strongDB false, strongBE pass (lockAttachable + arrival)',
+      wifi: '강남',
+      arvlCd: 1,
+      expected: 'lock' as const,
+    },
+    {
+      label: 'wifiSsidStationName 불일치(강남) + arvlCd 5(범위 밖) → strongDB false + strongBE false → null',
+      wifi: '강남',
+      arvlCd: 5,
+      expected: 'null' as const,
+    },
+    {
+      label: 'wifiSsidStationName 일치(역삼) + arvlCd 5(범위 밖) → wifiSsidMatch true but arrivalSignalPresent false → null',
+      wifi: '역삼',
+      arvlCd: 5,
+      expected: 'null' as const,
+    },
+    {
+      label: 'wifiSsidStationName undefined + arvlCd 1 → wifiSsidMatch undefined, strongBE pass',
+      wifi: undefined,
+      arvlCd: 1,
+      expected: 'lock' as const,
+    },
+  ])('underground + $label', async ({ wifi, arvlCd, expected }) => {
+    const { lock } = await callAutoLockWithWifi(
+      arrival({ trainCode: 'T1', arvlCd }),
+      wifi,
+      {
+        environment: 'underground',
+        gateOutcome: failingGateOutcome(),
+      },
+    );
+    if (expected === 'lock') {
+      expect(lock?.trainCode).toBe('T1');
+    } else {
+      expect(lock).toBeNull();
+    }
+  });
+
+  it('wifiSsidStationName undefined → 기존 동작 (구 호출자 호환, consensusGate skip)', async () => {
+    const { lock } = await callAutoLockWithWifi(
+      arrival({ trainCode: 'T1', arvlCd: 1 }),
+      undefined,
+      {
+        environment: 'underground',
+        gateOutcome: passingGateOutcome(),
+      },
+    );
+    expect(lock?.trainCode).toBe('T1');
+  });
+
+  it('surface: wifiSsidStationName 무관 — base gate pass면 통과 (wifiSsidMatch 평가 X)', async () => {
+    const { lock } = await callAutoLockWithWifi(
+      arrival({ trainCode: 'T1', arvlCd: 1 }),
+      '강남', // 불일치지만 surface는 base gate만
+      {
+        environment: 'surface',
+        gateOutcome: passingGateOutcome(),
+      },
+    );
+    expect(lock?.trainCode).toBe('T1');
+  });
+});

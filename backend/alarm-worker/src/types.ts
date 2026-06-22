@@ -430,6 +430,19 @@ export interface PositionPoint {
    * backend는 undefined를 'unknown' 동급으로 graceful 처리.
    */
   cellularEnvironmentVote?: 'surface' | 'underground' | 'unknown';
+  /**
+   * #1667 (ADR-015 strongDB wire) — 디바이스가 WiFi SSID 매핑으로 결정한 역명.
+   *
+   * device가 `lookupStationBySsid(currentWifiSsid)` 결과를 forward한다 — backend는
+   * stations.json을 갖지 않으므로 lookup은 device 책임 (`mapMatchedLine/ArcM`과 동일 패턴).
+   *
+   * - 매칭 성공: `Station.name` 문자열 (예: '강남')
+   * - 미연결 / 매칭 실패 / Android: undefined → consensusGate strongDB는 자연 false fallback
+   *   (undefined → `wifiSsidMatch ?? false` → false, strongBE/strongCB fallback 유지)
+   * - iOS WiFi constraint: 사용자가 연결된 SSID만 얻을 수 있음 (5G/LTE 전용 시 undefined).
+   *   `reference_ios_wifi_api_constraint.md` 참조.
+   */
+  wifiSsidStationName?: string;
 }
 
 /**
