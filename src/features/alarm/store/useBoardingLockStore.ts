@@ -17,13 +17,15 @@ import { addDomainBreadcrumb } from '../../../shared/infra/monitoring/breadcrumb
  * - 'vanish'          — backend silent push로 trainCode 소실 release 통보.
  * - 'destination-change' — 화면에서 destination이 바뀌어 stale lock 자동 release (controller).
  * - 'expired'         — 자동 만료(`checkExpiry`).
+ * - 'train-code-mismatch' — 같은 노선에서 다른 trainCode가 90s 지속 관찰 (useTrainCodeMismatchDetector, #1659).
  */
 export type LockReleaseReason =
   | 'user'
   | 'transfer'
   | 'vanish'
   | 'destination-change'
-  | 'expired';
+  | 'expired'
+  | 'train-code-mismatch';
 
 /**
  * BoardingLock 전역 store (#584 PR A).
