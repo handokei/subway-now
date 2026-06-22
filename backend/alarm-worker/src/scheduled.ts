@@ -134,6 +134,48 @@ export const MAX_CONSECUTIVE_ETA_MISSING = 5;
 export const SUBSURFACE_ETA_MISSING_TOLERANCE = 10;
 
 /**
+ * #1652 — backend cron staged trip lifecycle backstop (X8 차단).
+ *
+ * 배경: `consecutiveEtaMissing` 임계 종료(5/10 cycle)는 Seoul API가 trainCode를 잃을 때만 발동.
+ * Seoul outage / lockless 정적 / 권한 손상 등으로 cleanup 분기에 닿지 않으면 trip이 무한 잔존
+ * (10.5h 좀비 evidence, 2026-06-20 dump).
+ *
+ * Device-side는 T10 #1573 / PR #1594에서 `tripStartStorage.tripLifecyclePhase` +
+ * `useStateRehydration.runLifecycleBackstop`이 같은 임계로 silence/force-end를 처리한다.
+ * 본 backend backstop은 device가 죽거나 BG 미진입 상태에서도 trip이 KV에 무한 잔존하지
+ * 않도록 하는 **마지막 line of defense** — device-side와 dual safety net.
+ *
+ * 정합성: 임계는 device-side `TRIP_LIFECYCLE_SILENCE_MS` / `TRIP_LIFECYCLE_FORCE_END_MS`와 1:1
+ * (`src/shared/constants/realtime.ts`). 두 값이 어긋나면 한쪽이 먼저 발동해 cleanup race가 발생하므로
+ * 변경 시 양쪽 동시 업데이트 필수.
+ */
+export const BACKEND_TRIP_LIFECYCLE_SILENCE_MS = 6 * 60 * 60 * 1000;
+export const BACKEND_TRIP_LIFECYCLE_FORCE_END_MS = 9 * 60 * 60 * 1000;
+
+/**
+ * #1652 — trip lifecycle phase 판정.
+ *
+ * `createdAt` 기준 elapsed로 단계 분리. cron이 매 cycle iterate하면서 phase에 따라 처리 분기:
+ *  - 'normal'    : 정상 운행 (createdAt < 6h). 기존 로직 그대로
+ *  - 'silence'   : 6h~9h. cron skip (Seoul polling + push 모두 미발사) — KTX/장거리 trip 보호
+ *  - 'force-end' : 9h+. cleanupTripWithLa('expired')로 강제 종료
+ *
+ * 좀비 회수가 cleanup이므로 reason='expired' 재사용 — TripEndedReason enum 변경 없이 client는
+ * 이미 graceful handle. log/stats에 별도 label로 telemetry 구분.
+ */
+export type TripLifecyclePhase = 'normal' | 'silence' | 'force-end';
+
+export function tripLifecyclePhase(
+  trip: Pick<Trip, 'createdAt'>,
+  now: number,
+): TripLifecyclePhase {
+  const elapsed = now - trip.createdAt;
+  if (elapsed >= BACKEND_TRIP_LIFECYCLE_FORCE_END_MS) return 'force-end';
+  if (elapsed >= BACKEND_TRIP_LIFECYCLE_SILENCE_MS) return 'silence';
+  return 'normal';
+}
+
+/**
  * #1315 — lockless trip에서 trainCode를 확보하지 못한 cycle의 bare-arvlCd advance 보수 게이트.
  *
  * 배경(2026-06-15 trip): 사용자가 정적(용마산 근처)인데 backend가 waypoint 역의 "아무 열차"
@@ -448,6 +490,20 @@ export interface ScheduledStats extends LiveActivityStats {
    * misfire 회귀 신호. (transferDestinationGateBlocked와 별도 계측 — 본 가드는 intermediate 포함.)
    */
   staleLockFireSkipped: number;
+  /**
+   * #1652 — staged lifecycle backstop. trip이 createdAt > 6h이라 silence cycle로 skip된 누적 횟수.
+   * Seoul polling + push 발사 모두 skip된 cycle 수 = 6h+ 잔존 trip × 분당 1 cycle. 정상 운영에선
+   * 일반적으로 0에 수렴 (대부분 trip이 6h 이내 종료). 0이 아니면 KTX/장거리 trip 또는 좀비 trip이
+   * 잔존 중이라는 신호 — 9h 도달 시 force-end로 자연 회수.
+   */
+  lifecycleSilenceSkipped: number;
+  /**
+   * #1652 — staged lifecycle backstop. trip이 createdAt > 9h이라 force-end로 cleanup된 누적 횟수.
+   * 정상 운영에선 0이어야 (정상 trip + device staged backstop이 9h 이내 종료). 0이 아니면 device가
+   * 죽었거나 BG 미진입 상태에서 backend가 마지막 line of defense로 cleanup한 케이스 = 회귀 신호.
+   * cron tail에서 1주 0건이면 본 backstop이 dual safety net으로 동작 중임을 확인.
+   */
+  lifecycleForceEnded: number;
 }
 
 /**
@@ -484,11 +540,17 @@ export interface ScheduledDeps {
  * `expiresAt` 만료 trip은 skip — 메인 루프의 cleanup 분기가 어차피 처리하므로 self-poll 대상 X.
  * `alarmAtEpochMs - now > POLLING_WINDOW_MS`(아직 알람 윈도우 진입 전) trip은 포함 — 미리 line의
  * realtimePosition stamp를 적재해두면 윈도우 진입 시 첫 cycle부터 cross-match 가능.
+ *
+ * #1652 — staged lifecycle backstop 도달 trip은 self-poll 대상 X. 같은 cycle에 메인 루프가
+ *   - silence(6h~9h): cron skip → polling 무의미
+ *   - force-end(9h+): cleanupTripWithLa로 cleanup → 다음 cycle에 line union에서 자연 빠짐
+ *   둘 다 Seoul 호출을 미리 줄여 quota 절감 + cron throughput 보호.
  */
 async function collectActiveLines(env: Env, now: number): Promise<Set<LineNumber>> {
   const lines = new Set<LineNumber>();
   for await (const trip of listTrips(env.TRIPS)) {
     if (trip.expiresAt <= now) continue;
+    if (tripLifecyclePhase(trip, now) !== 'normal') continue;
     for (const line of computeAllowedLines(trip.route, trip.waypoints)) {
       lines.add(line);
     }
@@ -544,6 +606,9 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
     realtimePositionFetchError: 0,
     // #1614 Phase C — stale SSoT 가드 fire 차단.
     staleLockFireSkipped: 0,
+    // #1652 — staged lifecycle backstop (X8). 6h~9h skip / 9h+ force-end.
+    lifecycleSilenceSkipped: 0,
+    lifecycleForceEnded: 0,
   };
   // #1539 (S6) — cron jitter 즉시 log. 누적 stat이 아니라 매 cycle 1줄 → tail에서 P50/P99 산출.
   log('scheduled: cron jitter', { jitterMs: stats.cronJitterMs });
@@ -573,6 +638,31 @@ export async function runScheduled(env: Env, deps: ScheduledDeps): Promise<Sched
       // #586 D — trip 만료 시 활성 LA가 남아 있으면 dismissal push로 정리하고 KV에서 제거.
       // #868 — 클라 state sync용 trip-ended silent push도 함께 발사 (reason=expired).
       await cleanupTripWithLa(trip, env, deps, stats, now, log, 'expired');
+      continue;
+    }
+
+    // #1652 — staged lifecycle backstop (X8 차단). expiresAt 만료 분기 직후 게이트.
+    // device-side (T10 #1573 / PR #1594)가 staged backstop을 처리하지만 device가 죽거나 BG 미진입
+    // 시 trip이 backend KV에 무한 잔존(10.5h 좀비 evidence). backend 마지막 line of defense.
+    //   - silence (6h~9h): cron skip — KTX/장거리 trip 보호. Seoul polling + push 모두 미발사.
+    //   - force-end (9h+) : cleanupTripWithLa로 강제 종료. reason='expired' 재사용 (client는 이미
+    //     graceful handle, 신규 enum 추가 없이 backward-compat). log/stats로 telemetry 구분.
+    const lifecyclePhase = tripLifecyclePhase(trip, now);
+    if (lifecyclePhase === 'force-end') {
+      stats.lifecycleForceEnded += 1;
+      log('lifecycle: force-end (>9h)', {
+        token: trip.token.slice(0, 8),
+        elapsedMs: now - trip.createdAt,
+      });
+      await cleanupTripWithLa(trip, env, deps, stats, now, log, 'expired');
+      continue;
+    }
+    if (lifecyclePhase === 'silence') {
+      stats.lifecycleSilenceSkipped += 1;
+      log('lifecycle: silence cycle skipped (>6h)', {
+        token: trip.token.slice(0, 8),
+        elapsedMs: now - trip.createdAt,
+      });
       continue;
     }
 
